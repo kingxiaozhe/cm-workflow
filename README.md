@@ -11,7 +11,7 @@ commands/                    # 斜杠命令（安装到 ~/.claude/commands/）
 ├── cm:ai.md                 # 自动开发主循环（流程图状态机）
 └── cm-ai-nodes/             # cm:ai 的 8 个流程节点，按需加载
     ├── N1-init.md           # 初始化：解析路径、扫描 features、加载上下文
-    ├── N2-enter-feature.md  # 进入 feature：断点恢复、依赖分析、串/并行计划
+    ├── N2-enter-feature.md  # 进入 feature：断点恢复、依赖分析、串/并行计划（跨项目并行可选 Agent Teams）
     ├── N3-execute-task.md   # 执行 task：按工种匹配 skill
     ├── N4-review.md         # AI 自审 + Codex 复审（环境不可用时降级）
     ├── N5-mark-done.md      # 标记 [x]、写 LESSONS.md
