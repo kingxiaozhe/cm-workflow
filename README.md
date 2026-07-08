@@ -19,20 +19,29 @@ commands/                    # 斜杠命令（安装到 ~/.claude/commands/）
     ├── N7-context.md        # 每个 task 后 /clear 重载 specs
     └── N8-finish.md         # 调用 cm-doc-syncer、输出总结
 
-skills/                      # 工种 Skills（安装到 ~/.claude/skills/）
-├── cm-frontend-engineer/    # Web 前端（React/Vue/Svelte/Next 等自适配，Figma/Stitch 还原）
+skills/                      # 工种 Skills（安装到 ~/.claude/skills/）—— skill 管技术
+├── cm-frontend-engineer/    # Web 前端（React/Vue/Svelte/Next 等自适配，设计稿还原 + BackstopJS 像素对比）
 ├── cm-miniprogram-engineer/ # 微信小程序（原生/Taro/uni-app）
 ├── cm-database-engineer/    # 数据库（migration、模型、查询优化）
 ├── cm-contract-engineer/    # 智能合约（EVM/Solana/Move 多链）
 ├── cm-qa-engineer/          # QA（测试补全、E2E、可视化回归、验收核验）
 └── cm-doc-syncer/           # 文档同步（README/CLAUDE.md/rules/CHANGELOG）
+
+agents/                      # 并行工种的子 agent 定义（安装到 ~/.claude/agents/）—— agent 管纪律
+├── cm-frontend-agent.md     # 只做指定任务、不碰界外文件、不自行标记、规范汇报
+├── cm-miniprogram-agent.md  # （每个 agent 内部加载同名工种 skill）
+├── cm-database-agent.md     # 破坏性 migration 强制上报
+└── cm-contract-agent.md     # 不碰私钥、不执行主网部署
 ```
+
+**分工原则**：并行干活的做 agent（前端/小程序/数据库/合约），串行把关的做 skill（QA/doc-syncer）。
 
 ## 安装
 
 ```bash
 cp -r commands/* ~/.claude/commands/
 cp -r skills/*   ~/.claude/skills/
+cp -r agents/*   ~/.claude/agents/
 ```
 
 ## 使用流程

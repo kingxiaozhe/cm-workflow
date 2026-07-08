@@ -20,6 +20,8 @@
 
 有匹配的 skill → 调用该 skill 执行。
 
+**串行 / 并行的执行方式**：串行任务由主 agent 直接按 skill 执行；并行任务（由 N2 计划决定）派发对应的 `cm-*-agent` 子 agent，agent 内部加载同名工种 skill。两种方式的产出都必须回到 N4 走审查。
+
 ## 开发
 
 - 参考 design.md 技术设计和 `.claude/rules/` 规范
