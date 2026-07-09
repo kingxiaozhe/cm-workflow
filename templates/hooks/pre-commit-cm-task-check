@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# cm 工作流 · 任务标记双保险（灰度阶段启用，可选）
+#
+# 用途：防止 N5 漏标记——代码提交时校验 tasks.md 的勾选状态有同步更新。
+# 安装（在代码仓库内）：
+#   export CM_SPECS_DIR=/path/to/specs        # specs 文件夹路径（含 N.feature 目录）
+#   cp templates/hooks/pre-commit-cm-task-check .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+#
+# 逻辑：本次提交包含源码变更、且 CM_SPECS_DIR 已设置时，检查 specs 下
+# 是否存在"最近修改时间晚于上次提交"的 tasks.md——没有则给出警告。
+# 默认仅警告不阻断；置 CM_TASK_CHECK_STRICT=1 时阻断提交。
+set -uo pipefail
+
+[ -z "${CM_SPECS_DIR:-}" ] && exit 0            # 未启用则直接放行
+[ -d "$CM_SPECS_DIR" ] || exit 0
+
+# 本次提交是否包含源码变更（排除纯文档）
+changed=$(git diff --cached --name-only | grep -vE '\.(md|txt)$' || true)
+[ -z "$changed" ] && exit 0
+
+last_commit_ts=$(git log -1 --format=%ct 2>/dev/null || echo 0)
+fresh_tasks=$(find "$CM_SPECS_DIR" -name tasks.md -newermt "@$last_commit_ts" 2>/dev/null || true)
+
+if [ -z "$fresh_tasks" ]; then
+  echo "⚠ [cm] 本次提交含源码变更，但 $CM_SPECS_DIR 下没有新更新的 tasks.md。" >&2
+  echo "  若刚完成某个任务，请确认 N5 已将其标记为 [x]（漏标会导致断点恢复时重复执行）。" >&2
+  if [ "${CM_TASK_CHECK_STRICT:-0}" = "1" ]; then
+    echo "  严格模式已开启：提交被阻断。确认无碍可用 git commit --no-verify 跳过。" >&2
+    exit 1
+  fi
+fi
+exit 0

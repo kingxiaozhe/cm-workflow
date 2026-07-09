@@ -48,10 +48,23 @@ agents/                      # 并行工种的子 agent 定义（安装到 ~/.cl
 ## 安装
 
 ```bash
+./install.sh          # 一键安装（含覆盖确认），装完自动提示运行 /cm:check
+```
+
+或手动：
+
+```bash
 cp -r commands/* ~/.claude/commands/
 cp -r skills/*   ~/.claude/skills/
 cp -r agents/*   ~/.claude/agents/
 ```
+
+安装/修改框架后运行 `/cm:check` 做一致性自检（角色存在性、命名一致、引用有效、配套完整）。
+
+## 度量与双保险
+
+- **METRICS.md**（specs 目录，N5 自动落盘）：每任务记录审查轮次、Codex 拦截、QA 结果、人工介入次数——试点/灰度门槛的唯一数据源
+- **templates/hooks/pre-commit-cm-task-check**：任务标记双保险 git hook（灰度阶段在代码仓库启用，防 N5 漏标记），默认仅警告，`CM_TASK_CHECK_STRICT=1` 时阻断
 
 ## 使用流程
 

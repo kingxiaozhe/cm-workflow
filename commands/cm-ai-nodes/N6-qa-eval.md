@@ -34,6 +34,8 @@ AI 动态决策是否触发 `cm-qa-engineer`，不按固定间隔。
 
 QA 通过 → 继续。发现问题 → 修复后重新 QA，最多 3 轮。
 
+触发 QA 后，回填 METRICS.md 中对应任务行的 QA 列：`通过` / `N轮通过` / `失败上报`。
+
 ## 业务验收走查（feature 完成时）
 
 触发原因为「当前 feature 所有 task 完成」且 QA 通过后，调用 `cm-product-manager` skill 做**业务验收走查**（用户视角流程闭环 + AC 逐条对照，非技术测试）：
