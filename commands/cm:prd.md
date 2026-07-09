@@ -270,6 +270,7 @@ feature 涉及页面/界面时，在生成 design.md 前确定设计基准：
 
 - 按功能拆，AI 执行时读 design.md 自动识别涉及哪些层
 - 原子性，可独立完成和验证
+- **同一组件/同一文件内的行为不拆分为多个任务**（如"渲染列表项"和"列表项的删除确认"归一个任务）——拆开会导致执行时自然合并、任务标记与提交失配（实跑验证的教训）
 - 预估完成时间（5min / 15min / 30min / 1h）
 - **粒度控制**：每个子 specs（feature 目录）不宜过大，单个 tasks.md 控制在 **10-15 个任务以内**。如果需求过大，应在 Step 6 之前拆成多个独立的 feature 目录（如 `2.user-auth-login`、`3.user-auth-register`），每个 feature 有自己的 requirements/design/tasks 三件套。这样 cm:ai 执行时上下文可控，不会因为 specs 太大导致丢失关键信息。
 
