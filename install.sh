@@ -42,6 +42,10 @@ if [ -d "$SRC_DIR/templates/rules" ]; then
   cp -R "$SRC_DIR/templates/rules/." "$DEST/templates/cm-rules/"
   echo "✓ rules 模板已安装 → $DEST/templates/cm-rules/（$(ls "$SRC_DIR/templates/rules" | wc -l | tr -d ' ') 个）"
 fi
+if [ -f "$SRC_DIR/templates/arch-reference.md" ]; then
+  cp "$SRC_DIR/templates/arch-reference.md" "$DEST/templates/arch-reference.md"
+  echo "✓ 架构基准参考表已安装（G1 离线兜底,联网时自动校验刷新）"
+fi
 
 echo
 echo "完成。建议在 Claude Code 中运行 /cm:check 校验安装一致性。"

@@ -50,6 +50,7 @@ CLAUDE.md 必须包含以下部分，控制在 150 行以内：
 - 框架: {framework}
 - 包管理: {pkg manager}
 - 版本控制: {remote | local | none}   # /cm:ai 各节点据此执行或降级 git 操作，不再重复询问
+- 交付形态: {Web | iOS | Android | 小程序 | 桌面 | 多端}   # 架构第一分叉，涉形态的需求变更必须过人工确认
 
 ## 常用命令
 
