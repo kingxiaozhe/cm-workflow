@@ -28,6 +28,7 @@ skills/                      # 工种 Skills（安装到 ~/.claude/skills/）—
 ├── cm-qa-engineer/          # QA（测试补全、E2E、可视化回归、技术验收）
 ├── cm-product-manager/      # 产品（需求分析、歧义五问、变更影响、业务验收走查）
 ├── cm-finance-expert/       # 金融专家（Web3/证券领域把关、营销合规红线、只举旗不定性）
+├── cm-devops-engineer/      # 发布/运维（staging 部署+冒烟、发布记录、生产发布人工确认）
 └── cm-doc-syncer/           # 文档同步（README/CLAUDE.md/rules/CHANGELOG）
 
 agents/                      # 并行工种的子 agent 定义（安装到 ~/.claude/agents/）—— agent 管纪律

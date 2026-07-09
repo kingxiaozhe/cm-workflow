@@ -17,6 +17,7 @@
 - 数据库 → `cm-database-engineer`
 - 合约 → `cm-contract-engineer`
 - QA/测试 → `cm-qa-engineer`
+- 部署/发布 → `cm-devops-engineer`
 - 没有匹配 → AI 直接执行
 
 有匹配的 skill → 调用该 skill 执行。
