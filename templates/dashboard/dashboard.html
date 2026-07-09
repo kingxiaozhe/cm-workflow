@@ -38,6 +38,18 @@
   h3{font-size:14px;margin:24px 0 10px}
   #lessons li{font-size:13px;color:var(--muted);margin:4px 0}
   .empty{color:var(--muted);padding:30px;text-align:center}
+  /* 状态机横条 */
+  #pipeline{display:none;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 18px;margin:16px 0}
+  #statusline{font-size:13px;margin-bottom:10px}
+  #statusline b{color:var(--accent)}
+  .nodes{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .node{padding:6px 10px;border-radius:6px;border:1px solid var(--line);font-size:12px;color:var(--muted);background:var(--bg);white-space:nowrap}
+  .node.active{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700;animation:pulse 1.2s ease-in-out infinite}
+  .node.passed{background:var(--soft);color:var(--accent);border-color:var(--soft)}
+  .arrowc{color:var(--line);font-size:11px}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+  #pausebanner{display:none;background:var(--warnbg);border:1px solid var(--warn);color:var(--warn);
+    border-radius:8px;padding:10px 16px;margin:12px 0;font-weight:700;font-size:14px}
 </style>
 </head>
 <body>
@@ -46,6 +58,11 @@
     <h1>cm 工作流看板 <span id="dot" style="color:var(--accent)">●</span></h1>
     <div id="meta">加载中…</div>
   </header>
+  <div id="pausebanner"></div>
+  <div id="pipeline">
+    <div id="statusline"></div>
+    <div class="nodes" id="nodes"></div>
+  </div>
   <div class="tiles" id="tiles"></div>
   <div id="features"><div class="empty">正在读取 specs…（确认由 serve.sh 启动且 specs 目录下有编号 feature）</div></div>
   <h3>📊 METRICS（每任务度量）</h3>
@@ -67,7 +84,26 @@ function parseTasks(md){
   return out;
 }
 
+const NODES=[['N1','初始化'],['N2','进Feature'],['N3','执行'],['N4','审查'],['N5','标记'],['N6','QA'],['N7','轮换'],['N8','收尾']];
+async function renderStatus(){
+  const raw=await txt('./.cm-status.json');
+  const pl=$('pipeline'),pb=$('pausebanner');
+  if(!raw){pl.style.display='none';pb.style.display='none';return}
+  let s;try{s=JSON.parse(raw)}catch{return}
+  pl.style.display='block';
+  const curIdx=NODES.findIndex(n=>n[0]===s.node);
+  $('nodes').innerHTML=NODES.map((n,i)=>{
+    const cls=s.state==='done'?'passed':(i===curIdx?'active':(i<curIdx||['N3','N4','N5','N6','N7'].includes(s.node)&&i<2?'passed':''));
+    return `<span class="node ${cls}">${n[0]} ${n[1]}</span>`;
+  }).join('<span class="arrowc">▸</span>');
+  $('statusline').innerHTML=s.state==='done'
+    ?`🎉 全部完成 · ${s.at||''}`
+    :`当前: <b>${s.feature||'—'}</b> / <b>${s.task||'—'}</b> / <b>${s.node}</b> · ${s.detail||''} · ${s.at||''}`;
+  if(s.state==='paused_for_human'){pb.style.display='block';pb.textContent=`⏸ 等待人工介入: ${s.detail||'请查看会话'}`}
+  else pb.style.display='none';
+}
 async function load(){
+  renderStatus();
   const idx=await txt('./');if(!idx){$('meta').textContent='无法读取 specs 目录';return}
   const dirs=[...new Set([...idx.matchAll(/href="(\d+\.[^"\/]+)\//g)].map(m=>decodeURIComponent(m[1])))]
     .sort((a,b)=>parseInt(a)-parseInt(b));
