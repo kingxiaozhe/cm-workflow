@@ -93,6 +93,7 @@ globs: { 可选，如 "src/web/**" }
 - **security.md**: 列出禁止硬编码密钥、环境变量处理、敏感文件 .gitignore 规则等。
 - **git-workflow.md**: 从 git 历史推断 commit 风格（conventional commits?），分支命名规范，PR 流程。
 - **frontend.md**: 组件规范、状态管理、路由约定等（仅当项目有前端时创建）。
+- **miniprogram.md**: 小程序页面/组件规范、rpx 与 setData 约定、分包与授权处理等（仅当项目为微信小程序时创建，检测 project.config.json、app.json 等）。
 - **backend-api.md**: API 设计规范、错误处理、中间件约定等（仅当项目有后端 API 时创建）。
 - **database.md**: migration 规范、ORM 约定、查询规范等（仅当项目有数据库时创建）。
 - **smart-contract.md**: 合约安全规范、常见漏洞防范（重入攻击、整数溢出、权限控制）、审计检查清单、测试要求、部署流程等（仅当项目有智能合约时创建，检测 contracts/、hardhat.config、foundry.toml、truffle-config、anchor.toml 等）。
