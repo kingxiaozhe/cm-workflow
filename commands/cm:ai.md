@@ -64,6 +64,6 @@ START
 `{"node":"N4","feature":"1.xxx","task":"T-005","detail":"一句话当前动作","state":"running","at":"HH:MM:SS"}`
 ——**detail 必须写大白话**，标准是"路过的非工程师扫一眼能懂"：写"正在开发数据接口"不写"cm-backend-engineer 执行 T-004"；写"第2轮代码审查"不写"对抗式子agent复审"；写"确认一下：原型里有3个按钮点了没反应,要做吗?"不写"原型死区待确认"。节点号/任务号由状态条自动放在行尾角标，detail 里不要再写。
 ——暂停等人时 `state` 改为 `paused_for_human`（detail 写等什么），全部完成时 N8 写 `done`。N1 时**额外把 specs 绝对路径写入 `~/.claude/cm-current-specs`**（终端状态条据此定位）。每节点一次写入，成本可忽略，不得跳过。
-**终端任务清单镜像：** 进入每个 feature（N2）时，把该 feature 的任务镜像到 Claude Code **内置任务清单**（TaskCreate/TodoWrite，一任务一条，含编号与标题）；N3 开始执行置 in_progress，N5 标记时同步置 completed——终端原生渲染勾选进度，无需任何外部工具。
+**终端任务清单镜像：** 进入每个 feature（N2）时，把该 feature 的任务镜像到 Claude Code **内置任务清单**（TaskCreate/TodoWrite，一任务一条，含编号与标题）；N3 开始执行置 in_progress，N5 标记时同步置 completed——终端原生渲染勾选进度，无需任何外部工具。**断点恢复时**：已完成（`[x]`）任务直接以 completed 状态镜像或跳过，`[DROPPED]` 不镜像——不得重复创建条目。
 
 **执行策略：** AI 自主决策串行或并行（无依赖 + 不同项目 → 并行，否则串行）。

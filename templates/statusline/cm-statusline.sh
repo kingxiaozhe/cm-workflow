@@ -9,7 +9,7 @@ if [ -f "$PTR" ]; then
   ST="$SPECS/.cm-status.json"
   if [ -f "$ST" ]; then
     python3 - "$ST" "$SPECS" <<'EOF' && exit 0
-import json, sys, os, re
+import json, sys, os, re, time
 try:
     s = json.load(open(sys.argv[1]))
 except Exception:
@@ -22,7 +22,10 @@ PHASE = {  # 节点 → 人话阶段
     "N4": ("🔍", "检查代码"), "N5": ("💾", "保存进度"), "N6": ("🧪", "质量检测"),
     "N7": ("🧹", "整理现场"), "N8": ("📦", "收尾总结"),
 }
+age = time.time() - os.path.getmtime(sys.argv[1])   # 状态新鲜度
 node = s.get("node", ""); st = s.get("state", "")
+if st == "done" and age > 3600:
+    sys.exit(1)   # 完成态过期 1 小时 → 回落默认显示,不再霸屏
 det = s.get("detail", "")[:44]; feat = s.get("feature", ""); task = s.get("task", "")
 feat_name = re.sub(r"^\d+\.", "", feat)  # 去掉编号前缀
 
@@ -41,7 +44,10 @@ def progress(feature):
 icon, phase = PHASE.get(node, ("⚙", "运行中"))
 tag = f"{D} ·{node}{' '+task if task else ''}{R}"   # 工程角标,暗色收尾
 
-if st == "paused_for_human":
+if st not in ("paused_for_human", "done") and age > 600:
+    # 崩溃残留检测: 运行态超 10 分钟无更新,大概率已中断——错误的仪表比没有仪表危险
+    print(f"{Y}⚠ 可能已中断{R}（最后更新 {int(age//60)} 分钟前,去会话确认）{D}原状态: {phase}·{det[:20]}{R}{tag}")
+elif st == "paused_for_human":
     print(f"{Y}🖐 等你确认：{det} —— 流程已暂停,回 Claude Code 回复即可{R}{tag}")
 elif st == "done":
     print(f"{G}✅ 全部完成!{R} 所有任务已交付,收尾报告见会话{tag}")
