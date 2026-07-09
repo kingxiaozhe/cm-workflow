@@ -19,6 +19,20 @@
 - Edit 失败则重试直到成功
 - `/clear` 之前必须确认标记已写入
 
+## Git 提交（每任务一次）
+
+标记验证通过后，提交本任务全部变更（代码 + tasks.md 标记）：
+
+```bash
+git add -A && git commit -m "T-{编号} {feature名}: {任务标题}
+
+审查: 自审通过 | Codex {N}轮 采纳{N}条 忽略{N}条({一句话理由})"
+```
+
+- **commit message 必须含任务编号**——"任何一行代码回溯到任务"靠这一步实现（`git log --grep "T-003"` 即可验证）
+- 审查摘要来自 N4 的度量记录
+- N1 设定的 `NO_GIT` 模式 → 跳过本步，METRICS 行备注 `no-git`
+
 ## 度量落盘（METRICS.md）
 
 标记完成后，向 `{SPECS_DIR}/METRICS.md` 追加本任务一行（文件不存在则先创建表头）：
