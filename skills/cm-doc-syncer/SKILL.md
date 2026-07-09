@@ -69,6 +69,14 @@ description: 文档同步 Skill，开发完成后自动更新 README、.claude/ 
 
 只在确实有新模块时才新增，不过度生成。
 
+### 4.5 LESSONS.md 归档（防膨胀深井）
+
+LESSONS.md 超过 {50} 条时执行归档：
+
+- 与当前活跃 feature 无关的旧条目移入 `{SPECS_DIR}/LESSONS-archive.md`
+- 主文件为每条归档条目保留一行摘要索引（`- {日期} {标题} → archive`）
+- N1/N7 只加载主文件——上下文轮换的成本因此有上界；archive 仍在审计链内随时可查
+
 ### 5. 生成 specs CHANGELOG
 
 在 specs 文件夹下按日期命名创建 CHANGELOG 文件，如 `CHANGELOG-2026-04-12.md`：

@@ -57,7 +57,7 @@ description: 发布/运维工程师 Skill，执行 staging 部署、冒烟验证
 
 ```markdown
 ## {日期} — {feature 名} → {环境}
-- 版本: {commit sha}
+- 版本: {commit sha；NO_GIT 模式记 部署时间戳 + no-git 备注}
 - 迁移: {执行的 migration 列表，无则"无"}
 - 冒烟: {通过 / 第 N 轮通过}
 - 回滚预案: {位置/命令}
