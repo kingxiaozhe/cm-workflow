@@ -7,15 +7,18 @@
 5. 加载 `{SPECS_DIR}/LESSONS.md`（架构决策和踩坑记录，开发时必须参考）
 6. 验证各代码项目路径存在（存在 `0.bootstrap` 时允许为空目录）
 
-## Git 前置检查
+## Git 前置检查（字段优先，询问兜底）
 
-验证代码项目路径时同时检测 git 仓库：
+**先读 CLAUDE.md 的「版本控制」字段**（/cm:init 或 bootstrap 已确认并落盘）：
 
-- 已有仓库 → 继续
-- 无仓库但存在 `0.bootstrap/` 且其任务含脚手架/git init → **跳过询问**，git 初始化由 T-001 完成（实跑验证：此场景下询问是重复动作）
-- 无仓库且非上述情形 → **只问一次**："是否执行 git init？（推荐——每任务提交、审计链、版本保护依赖它）"
-  - 同意 → `git init` 后继续
-  - 拒绝 → 全程进入 **NO_GIT 降级模式**：N5 跳过 git 提交（METRICS 备注 `no-git`）、N8 的 doc-syncer 用文件扫描替代 git diff。**此后不再就 git 事宜打扰用户**
+- `remote` / `local` → 按常规执行每任务提交，不询问
+- `none` → 直接进入 **NO_GIT 降级模式**，不询问：N5 跳过 git 提交（METRICS 备注 `no-git`）、doc-syncer 用文件扫描替代 git diff、hook 不适用、审计链降级为 METRICS + tasks 勾选
+
+**字段不存在时**（项目未经 init 的兜底路径）：
+
+- 有 git 仓库 → 继续，并建议补跑 /cm:init
+- 无仓库但存在 `0.bootstrap/` 且任务含脚手架/git init → 跳过询问，交给 T-001
+- 无仓库且非上述 → 问一次"git init？（推荐）/ 不使用版本控制"，**答案由主流程回写 CLAUDE.md 版本控制字段**（决策落盘，任何后续运行不再询问）
 
 ## 0.bootstrap 优先规则
 

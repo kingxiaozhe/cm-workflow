@@ -12,6 +12,10 @@
 - 扫描目录结构（重点关注 `src/`、`app/`、`lib/`、`tests/`、`migrations/` 等）
 - 读取现有的 README、CI 配置、lint 配置、tsconfig 等，提取构建/测试/运行命令
 - 识别项目是否包含前端、后端 API、数据库等模块
+- **检测版本控制状态**（结果写入 CLAUDE.md 的「版本控制」字段，全流程据此降级）：
+  - 有 git 且有 remote → `remote`；有 git 无 remote → `local`（不询问，直接记录）
+  - **无 git → 询问用户一次**："初始化本地 git？（推荐——每任务提交与审计链依赖它）/ 不使用版本控制"
+  - 用户拒绝 → 记 `none`：不生成 git-workflow.md、后续 N5 跳过提交、doc-syncer 用文件扫描、hook 不适用、审计链降级为 METRICS + tasks 勾选
 
 ### 2. 生成文件结构
 
@@ -45,6 +49,7 @@ CLAUDE.md 必须包含以下部分，控制在 150 行以内：
 - 语言: {lang}
 - 框架: {framework}
 - 包管理: {pkg manager}
+- 版本控制: {remote | local | none}   # /cm:ai 各节点据此执行或降级 git 操作，不再重复询问
 
 ## 常用命令
 
@@ -93,7 +98,7 @@ globs: { 可选，如 "src/web/**" }
 - **coding-style.md**: 从 eslint/prettier/editorconfig/rustfmt 等配置推断命名风格、缩进、import 排序、注释规范。如无配置则根据语言社区惯例设定。
 - **testing.md**: 从测试框架配置和现有测试推断测试规范、文件命名、覆盖率要求。
 - **security.md**: 列出禁止硬编码密钥、环境变量处理、敏感文件 .gitignore 规则等。
-- **git-workflow.md**: 从 git 历史推断 commit 风格（conventional commits?），分支命名规范，PR 流程。
+- **git-workflow.md**: 从 git 历史推断 commit 风格（conventional commits?），分支命名规范，PR 流程。**按版本控制字段裁剪**：`none` → 不生成本文件；`local` → 裁掉 PR/远程/保护分支章节，只留 commit 规范。
 - **frontend.md**: 组件规范、状态管理、路由约定等（仅当项目有前端时创建）。
 - **miniprogram.md**: 小程序页面/组件规范、rpx 与 setData 约定、分包与授权处理等（仅当项目为微信小程序时创建，检测 project.config.json、app.json 等）。
 - **backend-api.md**: API 设计规范、错误处理、中间件约定等（仅当项目有后端 API 时创建）。

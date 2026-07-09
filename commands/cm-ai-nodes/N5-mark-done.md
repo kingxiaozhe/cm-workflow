@@ -32,7 +32,7 @@ git add -A && git commit -m "T-{编号} {feature名}: {任务标题}
 - **commit message 必须含任务编号**——"任何一行代码回溯到任务"靠这一步实现（`git log --grep "T-003"` 即可验证）
 - **一次实现天然覆盖多个任务时**（拆分过细的兜底）：message 必须列出全部编号（如 `T-005/T-006 ...`），各任务分别标记、METRICS 各记一行并备注"并入 T-xxx"——禁止只写其一导致审计链断点
 - 审查摘要来自 N4 的度量记录
-- N1 设定的 `NO_GIT` 模式 → 跳过本步，METRICS 行备注 `no-git`
+- **CLAUDE.md 版本控制字段 = `none`**（或 N1 兜底设定 NO_GIT）→ 跳过本步，METRICS 行备注 `no-git`，进度输出的 🔁 回读行中提交项写 `跳过(none)`
 
 ## 度量落盘（METRICS.md）
 
