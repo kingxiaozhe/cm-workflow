@@ -46,7 +46,16 @@ cp -r agents/*   ~/.claude/agents/
 
 ## 使用流程
 
+**存量项目：**
+
 1. 在代码项目中运行 `/cm:init`，生成 `.claude/CLAUDE.md` 和 `rules/` 规范
 2. 建一个 specs 文件夹，把需求文档放进 `docs/`，运行 `/cm:prd {specs路径}` 生成规格三件套
 3. 审查 specs 后运行 `/cm:ai {specs路径} {代码项目路径}` 开始自动开发
 4. 需求变更时用 `/cm:prd --change {N}.{feature} 变更描述`，已完成任务不受影响
+
+**0 到 1 新项目（无需先手动搭脚手架）：**
+
+1. 建 specs 文件夹放入需求文档，直接运行 `/cm:prd {specs路径}`——检测到空项目后自动进入 0→1 分支：先给出 2-3 套技术选型方案供人拍板，再生成 `0.bootstrap` feature（design.md 即架构决策记录 ADR，任务含脚手架 / 规范生成 / CI / 公共底座）
+2. 人审规格（审 `0.bootstrap` 就是审架构）后运行 `/cm:ai`——bootstrap 最优先执行，完成后业务 feature 在真实规范下照常开发
+3. 日后架构调整走 `/cm:prd --change 0.bootstrap 变更描述`，选型演进全程留痕
+4. 跳过 `/cm:init`——空项目没有可分析的对象，规范生成是 bootstrap 的任务之一
