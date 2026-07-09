@@ -63,6 +63,14 @@ cp -r agents/*   ~/.claude/agents/
 
 安装/修改框架后运行 `/cm:check` 做一致性自检（角色存在性、命名一致、引用有效、配套完整）。
 
+## 可视化看板
+
+```bash
+templates/dashboard/serve.sh {specs路径}   # 浏览器打开提示的地址,2 秒自动刷新
+```
+
+**纯只读、零侵入**——只消费 specs 落盘文件（tasks.md 勾选 / METRICS / LESSONS），执行引擎无感知。展示：四项汇总指标、每 feature 进度条与任务状态（▶ 当前任务高亮）、METRICS 全表、LESSONS 时间线。/cm:ai 跑长任务时开一个浏览器标签盯进度即可。
+
 ## 度量与双保险
 
 - **METRICS.md**（specs 目录，N5 自动落盘）：每任务记录审查轮次、Codex 拦截、QA 结果、人工介入次数——试点/灰度门槛的唯一数据源

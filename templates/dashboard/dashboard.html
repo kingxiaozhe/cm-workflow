@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>cm 工作流看板</title>
+<style>
+  :root{--bg:#f7f8f6;--card:#fff;--ink:#1e2628;--muted:#55646a;--line:#dde3e1;
+    --accent:#0e7a6b;--soft:#e3f0ed;--warn:#9a6a14;--warnbg:#f5eddc;--drop:#b4231f;
+    --num:ui-monospace,"SF Mono",Menlo,monospace}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;font-size:14px}
+  .wrap{max-width:980px;margin:0 auto;padding:28px 20px}
+  header{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px}
+  h1{font-size:20px;margin:0}
+  #meta{color:var(--muted);font-size:12px}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:18px 0}
+  .tile{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px}
+  .tile b{display:block;font-size:22px;font-family:var(--num)}
+  .tile span{color:var(--muted);font-size:12px}
+  .feature{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+  .fhead{display:flex;justify-content:space-between;align-items:center;gap:10px}
+  .fhead h2{font-size:15px;margin:0}
+  .bar{height:8px;background:var(--soft);border-radius:99px;margin:10px 0;overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--accent);border-radius:99px;transition:width .5s}
+  .task{display:flex;gap:8px;padding:3px 0;font-size:13px;align-items:baseline}
+  .task .id{font-family:var(--num);color:var(--muted);min-width:52px}
+  .done{color:var(--muted)}.done .title{text-decoration:line-through}
+  .current{background:var(--warnbg);border-radius:6px;padding:3px 8px;margin:2px -8px}
+  .current .st{color:var(--warn);font-weight:700}
+  .dropped{color:var(--drop);opacity:.7}.dropped .title{text-decoration:line-through}
+  .pct{font-family:var(--num);font-size:12px;color:var(--muted)}
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:8px;font-size:12.5px}
+  th,td{text-align:left;padding:7px 12px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600}
+  tr:last-child td{border-bottom:none}
+  td{font-family:var(--num)}
+  h3{font-size:14px;margin:24px 0 10px}
+  #lessons li{font-size:13px;color:var(--muted);margin:4px 0}
+  .empty{color:var(--muted);padding:30px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>cm 工作流看板 <span id="dot" style="color:var(--accent)">●</span></h1>
+    <div id="meta">加载中…</div>
+  </header>
+  <div class="tiles" id="tiles"></div>
+  <div id="features"><div class="empty">正在读取 specs…（确认由 serve.sh 启动且 specs 目录下有编号 feature）</div></div>
+  <h3>📊 METRICS（每任务度量）</h3>
+  <div id="metrics"><div class="empty">尚无 METRICS.md——执行到第一个 N5 后出现</div></div>
+  <h3>📝 LESSONS（经验库）</h3>
+  <ul id="lessons"><li>尚无记录</li></ul>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+async function txt(p){try{const r=await fetch(p+'?t='+Date.now());return r.ok?await r.text():null}catch{return null}}
+
+function parseTasks(md){
+  const out=[];if(!md)return out;
+  for(const m of md.matchAll(/^- \[( |x)\] (T-\d+):?\s*(.+)$/gm)){
+    const line=m[3];
+    out.push({id:m[2],done:m[1]==='x',dropped:/\[DROPPED/.test(line),changed:/\[CHANGED/.test(line),
+      title:line.replace(/`\[[^\]]*\]`?/g,'').replace(/~.*$/,'').trim().slice(0,60)});
+  }
+  return out;
+}
+
+async function load(){
+  const idx=await txt('./');if(!idx){$('meta').textContent='无法读取 specs 目录';return}
+  const dirs=[...new Set([...idx.matchAll(/href="(\d+\.[^"\/]+)\//g)].map(m=>decodeURIComponent(m[1])))]
+    .sort((a,b)=>parseInt(a)-parseInt(b));
+  let total=0,done=0,fh='';
+  for(const d of dirs){
+    const tasks=parseTasks(await txt(`./${d}/tasks.md`));
+    const act=tasks.filter(t=>!t.dropped);
+    const dn=act.filter(t=>t.done).length;
+    total+=act.length;done+=dn;
+    const cur=act.find(t=>!t.done);
+    const pct=act.length?Math.round(dn/act.length*100):0;
+    fh+=`<div class="feature"><div class="fhead"><h2>📂 ${d}</h2><span class="pct">${dn}/${act.length} · ${pct}%</span></div>
+      <div class="bar"><i style="width:${pct}%"></i></div>`+
+      tasks.map(t=>{
+        const cls=t.dropped?'dropped':t.done?'done':(t===cur?'current':'');
+        const st=t.dropped?'🚫':t.done?'✅':(t===cur?'▶':'⬜');
+        return `<div class="task ${cls}"><span class="st">${st}</span><span class="id">${t.id}</span><span class="title">${t.title}${t.changed?' 🔁':''}</span></div>`;
+      }).join('')+`</div>`;
+  }
+  $('features').innerHTML=fh||'<div class="empty">未发现编号 feature 目录</div>';
+
+  const met=await txt('./METRICS.md');
+  let rows=[],human=0,firstPass=0;
+  if(met){
+    rows=[...met.matchAll(/^\|\s*(T-\d+)\s*\|(.+)$/gm)].map(m=>[m[1],...m[2].split('|').map(s=>s.trim()).slice(0,7)]);
+    for(const r of rows){human+=parseInt(r[7])||0;if((r[4]||'')==='1')firstPass++}
+    if(rows.length){
+      $('metrics').innerHTML='<table><tr><th>任务</th><th>Feature</th><th>开始</th><th>结束</th><th>审查轮</th><th>Codex</th><th>QA</th><th>人工介入</th></tr>'+
+        rows.map(r=>'<tr>'+r.map(c=>`<td>${c}</td>`).join('')+'</tr>').join('')+'</table>';
+    }
+  }
+  const lessons=await txt('./LESSONS.md');
+  const ls=lessons?[...lessons.matchAll(/^## (.+)$/gm)].map(m=>m[1]):[];
+  $('lessons').innerHTML=ls.length?ls.slice(-8).reverse().map(l=>`<li>${l}</li>`).join(''):'<li>尚无记录</li>';
+
+  $('tiles').innerHTML=`
+    <div class="tile"><b>${done}/${total}</b><span>任务完成</span></div>
+    <div class="tile"><b>${rows.length?(human/rows.length).toFixed(1):'—'}</b><span>人工介入/任务</span></div>
+    <div class="tile"><b>${rows.length?Math.round(firstPass/rows.length*100)+'%':'—'}</b><span>一次通过率</span></div>
+    <div class="tile"><b>${ls.length}</b><span>LESSONS 条目</span></div>`;
+  $('meta').textContent=`数据源: specs 落盘文件 · 只读 · ${new Date().toLocaleTimeString()} 刷新`;
+  $('dot').style.color='var(--accent)';
+}
+load();setInterval(load,2000);
+</script>
+</body>
+</html>

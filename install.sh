@@ -46,6 +46,12 @@ if [ -f "$SRC_DIR/templates/arch-reference.md" ]; then
   cp "$SRC_DIR/templates/arch-reference.md" "$DEST/templates/arch-reference.md"
   echo "✓ 架构基准参考表已安装（G1 离线兜底,联网时自动校验刷新）"
 fi
+if [ -d "$SRC_DIR/templates/dashboard" ]; then
+  mkdir -p "$DEST/templates/cm-dashboard"
+  cp -R "$SRC_DIR/templates/dashboard/." "$DEST/templates/cm-dashboard/"
+  chmod +x "$DEST/templates/cm-dashboard/serve.sh"
+  echo "✓ 可视化看板已安装（启动: ~/.claude/templates/cm-dashboard/serve.sh {specs路径}）"
+fi
 
 echo
 echo "完成。建议在 Claude Code 中运行 /cm:check 校验安装一致性。"
