@@ -13,6 +13,7 @@
 
 - 前端 → `cm-frontend-engineer`
 - 微信小程序 → `cm-miniprogram-engineer`
+- 后端 API → `cm-backend-engineer`
 - 数据库 → `cm-database-engineer`
 - 合约 → `cm-contract-engineer`
 - QA/测试 → `cm-qa-engineer`
