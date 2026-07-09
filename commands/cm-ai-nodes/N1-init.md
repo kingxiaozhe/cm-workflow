@@ -5,7 +5,9 @@
 3. 每个 feature 目录须含 requirements.md、design.md、tasks.md
 4. 加载：代码项目的 `.claude/CLAUDE.md` + `.claude/rules/`（0→1 项目此时可能尚不存在，跳过不报错）
 5. 加载 `{SPECS_DIR}/LESSONS.md`（架构决策和踩坑记录，开发时必须参考）
-6. 验证各代码项目路径存在（存在 `0.bootstrap` 时允许为空目录）
+6. 验证各代码项目路径存在，**空目录按信号处理**：
+   - 空目录 + specs 含 `0.bootstrap` → 0→1 已在规格期人工确认，直接执行
+   - **空目录 + specs 无 `0.bootstrap` → 矛盾信号，必须暂停询问**：specs 是按存量项目生成的，但目录是空的——"需要先 clone 项目？（clone 完成后回复继续）还是这就是新项目？（specs 上下文有毒，需重跑 /cm:prd 走 0→1 分支）"两种回答都不得跳过：clone 场景等用户，重跑场景中止
 
 ## Git 前置检查（字段优先，询问兜底）
 
