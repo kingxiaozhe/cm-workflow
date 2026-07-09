@@ -60,5 +60,8 @@ git add -A && git commit -m "T-{编号} {feature名}: {任务标题}
 ```text
 ✅ Feature {F}/{总F} | 任务 {N}/{总数} — {标题}
 🔍 AI review: {结果} | 🤖 Codex review: {结果}
+🔁 回读: tasks.md T-{编号}[x]已确认 | commit {短sha}含T-{编号} | METRICS 行已写
 📊 Feature {done}/{total} | 总体 {done_f}/{total_f}
 ```
+
+**🔁 回读行是强制字段**——三项分别重新读取文件确认后才能输出；本行缺失即视为 N5 未完成，不得进入 N6。不可见的纪律等于没有纪律（实跑事故教训：静默失败只有回读能发现）。
