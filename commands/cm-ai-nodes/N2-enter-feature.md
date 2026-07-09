@@ -12,9 +12,9 @@
 | ---- | ---- |
 | 有显式依赖 | 无依赖 |
 | 会修改同一文件/模块 | 分属不同代码项目 |
-| 涉及共享状态定义（schema、API） | 天然隔离 |
+| 涉及共享状态定义（schema、API、design token） | 天然隔离 |
 
-并行时用 Agent 工具派发子 agent，**优先使用 `cm-*-agent` 预定义角色**（cm-frontend-agent / cm-miniprogram-agent / cm-backend-agent / cm-database-agent / cm-contract-agent，见 agents/ 目录）。派发指令必须包含：任务编号、该任务的 specs 摘录、design.md 中的接口契约。所有任务都有依赖时退化为全串行。
+并行时用 Agent 工具派发子 agent，**优先使用 `cm-*-agent` 预定义角色**（cm-frontend-agent / cm-ui-agent / cm-miniprogram-agent / cm-backend-agent / cm-database-agent / cm-contract-agent，见 agents/ 目录）。派发指令必须包含：任务编号、该任务的 specs 摘录、design.md 中的接口契约。所有任务都有依赖时退化为全串行。
 
 **分工原则**：并行干活的用 agent（agent 管纪律：只做指定任务、不碰界外文件、不自行标记、规范汇报）；串行把关的用 skill（QA、doc-syncer 不做 agent）。agent 产出返回后，仍逐个走 N4 → N5。
 

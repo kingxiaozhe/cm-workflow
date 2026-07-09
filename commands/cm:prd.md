@@ -153,6 +153,16 @@
 - {待确认事项}
 ```
 
+### Step 8.5: UI 设计基准（涉及 UI 的 feature）
+
+feature 涉及页面/界面时，在生成 design.md 前确定设计基准：
+
+- **有 Figma/设计稿** → 通过 MCP 导出截图 + token 提取物，落盘 `{SPECS_DIR}/{N}.{feature-name}/design-baseline/`（防链接失效与云端改版导致基准漂移）
+- **无设计稿且环境已安装 `huashu-design` skill** → 调用其生成高保真原型（**要求包含 hover/空态/错误态等交互态**），落盘同上；**人审规格时一并确认设计方向**（复用既有强制卡点，执行期零设计决策）
+- **两者皆无** → 不建基准、**不生成 UI 还原任务**，该 feature 的 UI 由前端任务按 design.md 自行实现；可提示用户 `npx skills add alchaincyf/huashu-design`
+
+有基准时，design.md 记录基准路径，且「接口契约」节须包含**组件契约**（组件名 / props / 事件）。
+
 ### Step 9: 生成 design.md
 
 **必须先读取项目 `.claude/CLAUDE.md` 和 `.claude/rules/` 下所有规范文件**，设计方案必须遵循项目已有的技术规范和约定。
@@ -226,10 +236,14 @@
 
 ## 任务列表
 
+### UI 还原（仅当存在 design-baseline 时生成本节）
+
+- [ ] T-001: 还原 {页面/组件} ~30min（基准: design-baseline/；本 feature 的前端功能任务依赖本任务）
+
 ### 功能 1: {功能名}
 
-- [ ] T-001: {任务描述} ~{预估时间}
 - [ ] T-002: {任务描述} ~{预估时间}
+- [ ] T-003: {任务描述} ~{预估时间}
 
 ### 功能 2: {功能名}
 

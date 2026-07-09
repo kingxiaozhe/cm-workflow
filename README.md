@@ -20,7 +20,8 @@ commands/                    # 斜杠命令（安装到 ~/.claude/commands/）
     └── N8-finish.md         # 调用 cm-doc-syncer、输出总结
 
 skills/                      # 工种 Skills（安装到 ~/.claude/skills/）—— skill 管技术
-├── cm-frontend-engineer/    # Web 前端（React/Vue/Svelte/Next 等自适配，设计稿还原 + BackstopJS 像素对比）
+├── cm-frontend-engineer/    # Web 前端（业务逻辑/状态/API，消费 UI 工程师的组件契约）
+├── cm-ui-engineer/          # UI 还原（design-baseline → token 先行 → 原子还原 → BackstopJS ≤1%）
 ├── cm-miniprogram-engineer/ # 微信小程序（原生/Taro/uni-app）
 ├── cm-backend-engineer/     # 后端 API（路由/鉴权/缓存/队列，契约三级协议）
 ├── cm-database-engineer/    # 数据库（migration、模型、查询优化）
@@ -33,13 +34,16 @@ skills/                      # 工种 Skills（安装到 ~/.claude/skills/）—
 
 agents/                      # 并行工种的子 agent 定义（安装到 ~/.claude/agents/）—— agent 管纪律
 ├── cm-frontend-agent.md     # 只做指定任务、不碰界外文件、不自行标记、规范汇报
+├── cm-ui-agent.md           # 只碰展示层白名单、基准只读、改既有 token 强制上报
 ├── cm-miniprogram-agent.md  # （每个 agent 内部加载同名工种 skill）
 ├── cm-backend-agent.md      # 范围外鉴权/权限改动强制上报
 ├── cm-database-agent.md     # 破坏性 migration 强制上报
 └── cm-contract-agent.md     # 不碰私钥、不执行主网部署
 ```
 
-**分工原则**：并行干活的做 agent（前端/小程序/后端/数据库/合约），串行把关的做 skill（产品/QA/doc-syncer）。
+**分工原则**：并行干活的做 agent（前端/UI/小程序/后端/数据库/合约），串行把关的做 skill（产品/金融/QA/运维/doc-syncer）。
+
+**可选外部依赖**：`npx skills add alchaincyf/huashu-design`（MIT）——无设计稿时在 /cm:prd 阶段生成高保真原型作为设计基准，未安装则 UI 走前端自行实现。
 
 ## 安装
 

@@ -11,6 +11,8 @@ description: 前端工程师 Skill，执行前端开发任务，自动适配项�
 
 由 `/cm:ai` 自动调用，当 task 涉及前端开发时触发。
 
+**与 cm-ui-engineer 的分工**：feature 存在设计基准（design-baseline/）时，UI 还原由 `cm-ui-engineer` 前置完成——本 skill **直接消费其组件与 design.md 组件契约，不重写其样式**；无基准时按下方 Step 0 现有行为处理。
+
 ## 工作流程
 
 ### 0. 设计稿检查

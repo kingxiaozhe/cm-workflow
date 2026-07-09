@@ -12,6 +12,7 @@
 根据任务涉及的工种，查看可用的 `cm-*` skills：
 
 - 前端 → `cm-frontend-engineer`
+- UI 还原（有 design-baseline） → `cm-ui-engineer`
 - 微信小程序 → `cm-miniprogram-engineer`
 - 后端 API → `cm-backend-engineer`
 - 数据库 → `cm-database-engineer`
