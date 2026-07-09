@@ -25,7 +25,8 @@ skills/                      # 工种 Skills（安装到 ~/.claude/skills/）—
 ├── cm-backend-engineer/     # 后端 API（路由/鉴权/缓存/队列，契约三级协议）
 ├── cm-database-engineer/    # 数据库（migration、模型、查询优化）
 ├── cm-contract-engineer/    # 智能合约（EVM/Solana/Move 多链）
-├── cm-qa-engineer/          # QA（测试补全、E2E、可视化回归、验收核验）
+├── cm-qa-engineer/          # QA（测试补全、E2E、可视化回归、技术验收）
+├── cm-product-manager/      # 产品（需求分析、歧义五问、变更影响、业务验收走查）
 └── cm-doc-syncer/           # 文档同步（README/CLAUDE.md/rules/CHANGELOG）
 
 agents/                      # 并行工种的子 agent 定义（安装到 ~/.claude/agents/）—— agent 管纪律
@@ -36,7 +37,7 @@ agents/                      # 并行工种的子 agent 定义（安装到 ~/.cl
 └── cm-contract-agent.md     # 不碰私钥、不执行主网部署
 ```
 
-**分工原则**：并行干活的做 agent（前端/小程序/后端/数据库/合约），串行把关的做 skill（QA/doc-syncer）。
+**分工原则**：并行干活的做 agent（前端/小程序/后端/数据库/合约），串行把关的做 skill（产品/QA/doc-syncer）。
 
 ## 安装
 
