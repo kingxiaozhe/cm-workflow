@@ -52,6 +52,12 @@ if [ -d "$SRC_DIR/templates/dashboard" ]; then
   chmod +x "$DEST/templates/cm-dashboard/serve.sh"
   echo "✓ 可视化看板已安装（启动: ~/.claude/templates/cm-dashboard/serve.sh {specs路径}）"
 fi
+if [ -f "$SRC_DIR/templates/statusline/cm-statusline.sh" ]; then
+  cp "$SRC_DIR/templates/statusline/cm-statusline.sh" "$DEST/templates/cm-statusline.sh"
+  chmod +x "$DEST/templates/cm-statusline.sh"
+  echo "✓ 终端状态条已安装。启用请在 ~/.claude/settings.json 加:"
+  echo '    "statusLine": {"type":"command","command":"~/.claude/templates/cm-statusline.sh"}'
+fi
 
 echo
 echo "完成。建议在 Claude Code 中运行 /cm:check 校验安装一致性。"

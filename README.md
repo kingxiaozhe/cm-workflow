@@ -63,7 +63,20 @@ cp -r agents/*   ~/.claude/agents/
 
 安装/修改框架后运行 `/cm:check` 做一致性自检（角色存在性、命名一致、引用有效、配套完整）。
 
-## 可视化看板
+## 执行可视化（终端原生优先）
+
+**① 终端状态条（推荐,Claude Code 底部常驻）**——官方 statusLine 机制,零外部依赖：
+
+```json
+// ~/.claude/settings.json
+"statusLine": {"type": "command", "command": "~/.claude/templates/cm-statusline.sh"}
+```
+
+效果：`⚙ ○○○●○○○○ N4 1.token-dashboard/T-005 · Codex复审第1轮`——八点节点条实时点亮；等人时整条变黄 `⏸ 等待人工`；数据来自 .cm-status.json（N1 写入 ~/.claude/cm-current-specs 指针定位）。
+
+**② 内置任务清单镜像**——N2 进 feature 时任务自动镜像到 Claude Code 原生任务清单,N3/N5 同步状态,终端直接看勾选进度（无需配置）。
+
+**③ 浏览器看板（备选,适合投屏/远程盯进度）**
 
 ```bash
 templates/dashboard/serve.sh {specs路径}   # 浏览器打开提示的地址,2 秒自动刷新
