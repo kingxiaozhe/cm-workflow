@@ -96,6 +96,7 @@ globs: { 可选，如 "src/web/**" }
 - **backend-api.md**: API 设计规范、错误处理、中间件约定等（仅当项目有后端 API 时创建）。
 - **database.md**: migration 规范、ORM 约定、查询规范等（仅当项目有数据库时创建）。
 - **smart-contract.md**: 合约安全规范、常见漏洞防范（重入攻击、整数溢出、权限控制）、审计检查清单、测试要求、部署流程等（仅当项目有智能合约时创建，检测 contracts/、hardhat.config、foundry.toml、truffle-config、anchor.toml 等）。
+- **finance.md**: 金融开发铁律（金额 decimal、幂等、审计日志、资金可追溯）及头部「法域」字段（仅当项目涉及交易/资产/支付/代币时创建，内容模板见 `cm-finance-expert` skill 第 4 节）。
 
 ## 重要约束
 
