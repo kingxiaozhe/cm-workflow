@@ -88,6 +88,8 @@ globs: { 可选，如 "src/web/**" }
 
 ### 5. 规则内容指引
 
+**生成方式**：每个 rules 文件优先以 `~/.claude/templates/cm-rules/{名称}.md` 的模板骨架为基础——遵守模板头部的四原则（可执行 / Bad-Good 对比 / 量化 / 现代实践），将所有 `{占位符}` 替换为从项目实际推断的内容，删除不适用章节。模板不存在时按下方各条目描述自行生成（老安装降级路径）。
+
 - **coding-style.md**: 从 eslint/prettier/editorconfig/rustfmt 等配置推断命名风格、缩进、import 排序、注释规范。如无配置则根据语言社区惯例设定。
 - **testing.md**: 从测试框架配置和现有测试推断测试规范、文件命名、覆盖率要求。
 - **security.md**: 列出禁止硬编码密钥、环境变量处理、敏感文件 .gitignore 规则等。

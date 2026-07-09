@@ -45,6 +45,8 @@ agents/                      # 并行工种的子 agent 定义（安装到 ~/.cl
 
 **可选外部依赖**：`npx skills add alchaincyf/huashu-design`（MIT）——无设计稿时在 /cm:prd 阶段生成高保真原型作为设计基准，未安装则 UI 走前端自行实现。
 
+**rules 模板层**（`templates/rules/`，install.sh 装到 `~/.claude/templates/cm-rules/`）：10 个规则骨架（coding-style / testing / security / git-workflow / frontend / miniprogram / backend-api / database / smart-contract / finance），/cm:init 以其为骨架 + 项目推断生成最终规则；模板头部统一四原则（可执行 / Bad-Good / 量化 / 现代实践）。**把公司规范沉淀进模板，所有项目 init 出的 rules 自动带公司基因**——这是团队定制的官方入口。
+
 ## 安装
 
 ```bash

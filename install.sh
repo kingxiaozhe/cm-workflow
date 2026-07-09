@@ -36,6 +36,13 @@ for part in commands skills agents; do
   echo "✓ $part 已安装（$(cd "$src" && find . -type f | wc -l | tr -d ' ') 个文件）"
 done
 
+# rules 模板骨架（cm:init 生成规则时的基础）
+if [ -d "$SRC_DIR/templates/rules" ]; then
+  mkdir -p "$DEST/templates/cm-rules"
+  cp -R "$SRC_DIR/templates/rules/." "$DEST/templates/cm-rules/"
+  echo "✓ rules 模板已安装 → $DEST/templates/cm-rules/（$(ls "$SRC_DIR/templates/rules" | wc -l | tr -d ' ') 个）"
+fi
+
 echo
 echo "完成。建议在 Claude Code 中运行 /cm:check 校验安装一致性。"
 echo "可选依赖（无设计稿时生成设计基准）: npx skills add alchaincyf/huashu-design"

@@ -28,6 +28,7 @@
 - README 中的角色计数、目录树条目与实际文件一致
 - cm:prd 任务模板引用的产物（design-baseline、METRICS.md、RELEASES.md）在对应节点/skill 中有生成方
 - **rules 引用有生成方**：任何 skill/命令中引用的 `rules/{名称}.md`，必须在 cm:init 的「规则内容指引」（或 bootstrap 模板）中有对应生成条目——skill 读一个永远不会被生成的规则文件即为断链
+- **规则指引与模板配对**：cm:init「规则内容指引」中的每个条目 ↔ `~/.claude/templates/cm-rules/{名称}.md` 模板文件一一对应；缺模板报告为降级项（可运行但生成质量不稳定），多出的孤儿模板报告为未接线
 
 ## 输出格式
 
