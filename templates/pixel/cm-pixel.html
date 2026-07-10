@@ -1,127 +1,191 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>cm 像素流水线</title>
+<!--
+  视觉方案依据 huashu-design「像素游戏横版叙事」条目 + 色彩推导协议:
+  · 分关卡换色: 8 工位映射一天工作周期——启动=清晨暖橘,开发=白昼天蓝,
+    质检=黄昏琥珀,发布=夜空绀紫。天空随流水线推进变色,色彩即进度的第二读数。
+  · 大面积天空压 chroma(印刷灰度),高饱和只给小面积点睛(路牌/金币/火箭尾焰)。
+  · 视差分层: 远山剪影 → 场景道具 → 工位前景;禁区规避: 不用均匀深底+荧光 glow。
+-->
 <style>
   :root { color-scheme: dark; }
-  body { margin:0; background:#0d120d; color:#d8e8d0; font:14px/1.5 ui-monospace,monospace;
-         display:flex; flex-direction:column; align-items:center; min-height:100vh; }
-  #hud { width:min(96vw,1040px); display:flex; align-items:baseline; gap:14px; padding:14px 4px 8px; }
-  #hud h1 { font-size:16px; margin:0; letter-spacing:2px; }
-  #phase { color:#8fd06a; font-weight:bold; }
-  #task  { color:#7f8f7f; font-size:12px; }
-  #stage { position:relative; width:min(96vw,1040px); }
-  canvas { width:100%; image-rendering:pixelated; display:block; border:2px solid #24301f; border-radius:6px; }
-  #bubble { position:absolute; transform:translate(-50%,-115%); max-width:340px; padding:7px 11px;
-            background:#f2f6e8; color:#22301c; border-radius:8px; font-size:13px; display:none;
-            box-shadow:0 3px 0 #00000055; }
+  body { margin:0; background:#12111a; color:#e8e2d0; display:flex; flex-direction:column;
+         align-items:center; min-height:100vh;
+         font:15px/1.5 VT323,"Press Start 2P",ui-monospace,Menlo,monospace; }
+  #hud { width:min(96vw,1080px); display:flex; align-items:center; gap:12px; padding:14px 2px 10px; }
+  #logo { background:#f0b03c; color:#2a1f10; font-weight:bold; padding:2px 10px; letter-spacing:3px;
+          border:3px solid #1c1a14; box-shadow:0 3px 0 #1c1a14; }
+  #phase { background:#241f2e; border:3px solid #1c1a14; box-shadow:0 3px 0 #1c1a14;
+           padding:2px 10px; color:#f0e8c8; }
+  #phase.paused { background:#f5d95c; color:#3a2f10; }
+  #task { color:#8a8496; font-size:13px; }
+  #coins { margin-left:auto; color:#f0b03c; letter-spacing:1px; }
+  #stage { position:relative; width:min(96vw,1080px); }
+  canvas { width:100%; image-rendering:pixelated; display:block;
+           border:3px solid #1c1a14; box-shadow:0 5px 0 #1c1a14; }
+  #bubble { position:absolute; transform:translate(-50%,-115%); max-width:380px; padding:8px 12px;
+            background:#f5f0e8; color:#26221a; border:3px solid #1c1a14; box-shadow:0 4px 0 #1c1a14;
+            font-size:15px; display:none; }
   #bubble.paused { background:#f5d95c; }
-  #bubble:after { content:""; position:absolute; left:50%; bottom:-7px; margin-left:-6px;
-                  border:7px solid transparent; border-top-color:inherit; border-bottom:0;
-                  border-top:7px solid #f2f6e8; }
-  #bubble.paused:after { border-top-color:#f5d95c; }
-  #foot { width:min(96vw,1040px); display:flex; align-items:center; gap:12px; padding:10px 4px 20px; }
-  #bar { flex:1; height:14px; background:#1a241a; border:2px solid #24301f; border-radius:4px; overflow:hidden; }
-  #fill { height:100%; width:0; background:repeating-linear-gradient(90deg,#6eaa50 0 8px,#8fd06a 8px 16px); transition:width .5s; }
-  #count { color:#8fd06a; font-weight:bold; }
-  #hint { color:#5a6a58; font-size:12px; }
+  #bubble:after { content:""; position:absolute; left:50%; bottom:-10px; margin-left:-5px;
+                  width:10px; height:10px; background:inherit;
+                  border-right:3px solid #1c1a14; border-bottom:3px solid #1c1a14;
+                  transform:rotate(45deg) translateY(-4px); }
+  #foot { width:min(96vw,1080px); display:flex; align-items:center; gap:12px; padding:12px 2px 22px; }
+  #bar { flex:1; height:16px; background:#241f2e; border:3px solid #1c1a14; box-shadow:0 3px 0 #1c1a14;
+         position:relative; overflow:hidden; }
+  #fill { height:100%; width:0; transition:width .5s;
+          background:repeating-linear-gradient(90deg,#d99a3c 0 10px,#f0b03c 10px 20px); }
+  #bar i { position:absolute; top:0; bottom:0; width:2px; background:#12111a55; }
+  #count { color:#f0b03c; font-weight:bold; min-width:3em; }
+  #hint { color:#6a6478; font-size:13px; }
 </style>
-<div id="hud"><h1>cm 像素流水线</h1><span id="phase">…</span><span id="task"></span></div>
-<div id="stage"><canvas id="cv" width="520" height="180"></canvas><div id="bubble"></div></div>
-<div id="foot"><div id="bar"><div id="fill"></div></div><span id="count"></span><span id="hint"></span></div>
+<div id="hud"><span id="logo">CM</span><span id="phase">…</span><span id="task"></span><span id="coins"></span></div>
+<div id="stage"><canvas id="cv" width="640" height="220"></canvas><div id="bubble"></div></div>
+<div id="foot"><div id="bar"><div id="fill"></div><i style="left:25%"></i><i style="left:50%"></i><i style="left:75%"></i></div><span id="count"></span><span id="hint"></span></div>
 <script>
 "use strict";
-// ---------- 调色板与精灵(字符串像素图) ----------
-const PAL = { k:"#181c18", g:"#306230", G:"#6eaa50", L:"#8fd06a", W:"#e0f0d0", y:"#f0c83c",
-              o:"#e68c3c", b:"#5a8cdc", B:"#3c64aa", r:"#d25050", c:"#64c8c8", C:"#2f8f8f",
-              d:"#3c423c", D:"#262b26", m:"#8c78c8", M:"#5f4f96", w:"#a08050", s:"#c8b478" };
-const S = a => a; // 精灵即字符串数组,"."为透明
-const DESK = S([".ccccc..", ".cCCCc..", ".ccccc..", "dddddddd", ".D....D.", ".D....D."]);
-const WORKER = [ // 敲键盘两帧
-  S(["..ooo.", "..ooo.", ".bbbb.", "bbBBbb", ".b..b.", ".d..d."]),
-  S(["..ooo.", "..ooo.", "bbbbb.", ".bBBbb", ".b..b.", ".d..d."])];
-const WORKER_UP = S(["..ooo.", "..ooo.", "obbbb.", ".bBBb.", ".b..b.", ".d..d."]); // 举手
+// ---------- 调色板(推导见文件头注释) ----------
+const PAL = {
+  // 天空四区 × 三段明度(上→下)
+  dawn:["#c98d78","#dba98a","#e8c49a"], day:["#7fa8c8","#93b9d4","#a9cbdd"],
+  dusk:["#8a5f7a","#b07a6a","#d0996a"], night:["#242138","#2e2a48","#3a3560"],
+  // 剪影(远山/城市,随区变暗)
+  sil:{dawn:"#9a6a64",day:"#5f7f9d",dusk:"#5a4260",night:"#171523"},
+  // 地面明度序列 + 沙色小路
+  g1:"#7fa055", g2:"#5f8044", g3:"#48633a", path:"#cbb478",
+  // 中性 + 点睛(高饱和只给小面积)
+  k:"#1c1a14", W:"#f5f0e8", y:"#f0b03c", o:"#e08a4a", r:"#d25050", R:"#f06a3c",
+  b:"#4a7ab0", B:"#31567f", c:"#63b8b0", m:"#8c78c8", M:"#5f4f96",
+  d:"#4a4038", D:"#2e2822", w:"#8a6a48", s:"#c8b478", G:"#6faa50", L:"#95c86a",
+  F:"#e8a878", // 肤色(单字符键——渲染器按字符读)
+};
+const S = a => a;
+// ---------- 精灵(带 k 描边,SNES 手感) ----------
+const DESK = S([
+  "..kkkkk...", ".kWccWk...", ".kWccWk...", "..kkkkk...",
+  "kddddddddk", "kwwwwwwwwk", ".kD....Dk.", ".kD....Dk."]);
+const WORKER_TYPE = [
+  S([".kkkk.", "kFFFFk", "kFFFFk", "kbbbbk", "kbBBbk", "obBBbo", "kbbbbk", ".kddk.", ".k..k."]),
+  S([".kkkk.", "kFFFFk", "kFFFFk", "kbbbbk", "obBBbk", "kbBBbo", "kbbbbk", ".kddk.", ".k..k."])];
 const WORKER_WALK = [
-  S(["..ooo.", "..ooo.", ".bbbb.", ".bBBb.", ".b..b.", "d....d"]),
-  S(["..ooo.", "..ooo.", ".bbbb.", ".bBBb.", ".b..b.", "..dd.."])];
-const ROBOT = S([".mmm.", ".mWm.", "mmmmm", "m.m.m", ".M.M."]);          // Codex 机器人(N4)
-const FLASK = S(["..W..", "..W..", ".WcW.", ".WcW.", "WcccW"]);          // 质检烧瓶(N6)
-const ROCKET = S(["..r..", ".rWr.", ".rWr.", "rrrrr", ".y.y."]);         // 发货火箭(N8)
-const BOX = S(["ssss", "swws", "ssss"]);                                  // 需求箱(N1)
-const FLAG = S(["..G", ".GG", "GGG"]);
+  S([".kkkk.", "kFFFFk", "kFFFFk", "kbbbbk", "kbBBbk", "kbBBbk", "kbbbbk", ".kd.dk", ".k...k"]),
+  S([".kkkk.", "kFFFFk", "kFFFFk", "kbbbbk", "kbBBbk", "kbBBbk", "kbbbbk", "kd.dk.", "k...k."])];
+const WORKER_UP = S([".kkkk.", "kFFFFk", "kFFFFk", "obbbbk", "kbBBbk", "kbBBbk", "kbbbbk", ".kddk.", ".k..k."]);
+const ROBOT = S([".kkkk.", "kmmmmk", "kmWWmk", "kmmmmk", "km.mk.", "kM.Mk."]);
+const FLASK = S(["..kWk..", "..kWk..", ".kWcWk.", ".kcccWk", "kcccccWk".slice(0,7), ".kkkkk."]);
+const ROCKET = S(["..kk..", ".kWWk.", ".kWrk.", "krrrrk", "krWWrk", "krrrrk", ".kyyk.", "ky..yk"]);
+const CRATE = S(["kkkkk", "kswsk", "kwswk", "kkkkk"]);
+const BOARD = S(["kkkkkk", "kWWWWk", "kWcbWk", "kWWWWk", ".k..k."]);
+const CABINET = S(["kkkkk", "kddyk", "kdddk", "kddyk", "kkkkk"]);
+const BROOM = S(["...k", "..k.", ".k..", "kyyk", "kyyk"]);
+const FLAG = S(["kG..", "kGG.", "kGGG", "k..."]);
+const CLOUD = S(["..WWW...", ".WWWWWW.", "WWWWWWWW"]);
 const NODES = ["N1","N2","N3","N4","N5","N6","N7","N8"];
 const PHASE = { N1:"启动准备", N2:"规划任务", N3:"开发中", N4:"检查代码",
                 N5:"保存进度", N6:"质量检测", N7:"整理现场", N8:"收尾总结" };
-const ICON = { N1:BOX, N4:ROBOT, N6:FLASK, N8:ROCKET };
+const PROP = { 0:CRATE, 1:BOARD, 3:ROBOT, 4:CABINET, 5:FLASK, 6:BROOM, 7:ROCKET };
+const ZONE = i => i<2 ? "dawn" : i<5 ? "day" : i<7 ? "dusk" : "night"; // 分关卡换色
 
 const cv = document.getElementById("cv"), cx = cv.getContext("2d");
-const W = cv.width, H = cv.height, GROUND = H - 34;
-const SLOT = W / 8; // 每工位宽 65px
+const W = cv.width, H = cv.height, GROUND = H - 46;
+const SLOT = W/8, stationX = i => i*SLOT + SLOT/2;
 
-function px(x, y, c) { cx.fillStyle = PAL[c]; cx.fillRect(x|0, y|0, 1, 1); }
-function blit(sp, x, y, scale=3) {
-  for (let r=0; r<sp.length; r++) for (let i=0; i<sp[r].length; i++) {
-    const ch = sp[r][i];
-    if (ch !== ".") { cx.fillStyle = PAL[ch]; cx.fillRect((x+i*scale)|0, (y+r*scale)|0, scale, scale); }
-  }
-}
-const spW = (sp,s=3)=>sp[0].length*s, spH=(sp,s=3)=>sp.length*s;
+function rect(x,y,w,h,c){ cx.fillStyle = PAL[c]||c; cx.fillRect(x|0,y|0,w,h); }
+function blit(sp,x,y,s=3){ for(let r=0;r<sp.length;r++) for(let i=0;i<sp[r].length;i++){
+  const ch=sp[r][i]; if(ch===".")continue;
+  cx.fillStyle = PAL[ch]||PAL.k; cx.fillRect((x+i*s)|0,(y+r*s)|0,s,s); } }
+const spW=(sp,s=3)=>sp[0].length*s, spH=(sp,s=3)=>sp.length*s;
+const seed = n => { let x = Math.sin(n*127.1)*43758.5; return x-Math.floor(x); };
 
-// ---------- 状态 ----------
 let cur = { node:"N1", state:"running", detail:"等待工作流启动…", feature:"", task:"" };
-let workerX = SLOT/2, targetX = workerX, frame = 0, fireworks = [];
-const stationX = i => i*SLOT + SLOT/2;
+let workerX = SLOT/2, frame = 0, fireworks = [], doneCount = 0;
 
-// ---------- 场景 ----------
+function sky() {
+  const bandH = (GROUND)/3;
+  for (let i=0;i<8;i++) {
+    const z = PAL[ZONE(i)];
+    for (let b=0;b<3;b++) rect(i*SLOT, b*bandH, SLOT, bandH+1, z[b]);
+    if (i<7 && ZONE(i)!==ZONE(i+1)) {           // 区界抖动过渡(dither)
+      const zn = PAL[ZONE(i+1)];
+      for (let b=0;b<3;b++) for (let yy=b*bandH; yy<(b+1)*bandH; yy+=4)
+        for (let xx=0; xx<12; xx+=4) if ((xx/4+yy/4)%2) rect((i+1)*SLOT-12+xx, yy, 4, 4, zn[b]);
+    }
+  }
+  // 天体: 白昼太阳 / 夜区月亮+星
+  rect(stationX(3)-8, 16, 16, 16, "#f5e8b0"); rect(stationX(3)-5, 13, 10, 22, "#f5e8b0");
+  rect(stationX(7)+14, 14, 10, 10, "#e8e2d0"); rect(stationX(7)+17, 14, 10, 7, PAL.night[0]);
+  for (let i=0;i<10;i++){ const sx=7*SLOT+6+seed(i)*(SLOT-12), sy=6+seed(i+40)*(GROUND-90);
+    if ((frame>>4)%5 !== i%5) rect(sx, sy, 2, 2, "#e8e2d0"); }
+  // 云(晨/昼区缓移)
+  for (let i=0;i<3;i++){ const cxp=((frame*0.15+i*150)% (5*SLOT+60))-60;
+    blit(CLOUD, cxp, 18+i*16, 2); }
+  // 远山剪影(视差两层,高低错落)
+  for (let i=0;i<32;i++){ const x=i*(W/32), z=ZONE(Math.min(7,Math.floor(x/SLOT)));
+    const h1 = 10+seed(i)*26, h2 = 6+seed(i+9)*12;
+    rect(x, GROUND-h1+6, W/32+1, h1, PAL.sil[z]);
+    cx.globalAlpha=.55; rect(x, GROUND-h1-h2+6, W/32+1, h2, PAL.sil[z]); cx.globalAlpha=1; }
+}
+
+function ground() {
+  rect(0,GROUND+6,W,H-GROUND-6,"g2");
+  rect(0,GROUND+6,W,4,"g1");
+  rect(0,GROUND+26,W,6,"g3");
+  rect(0,GROUND+16,W,5,"path");                      // 小路贯穿流水线
+  for (let i=0;i<40;i++) if (seed(i+7)>.5) rect(seed(i)*W, GROUND+8+seed(i+3)*6, 2, 2, "L");
+}
+
 function draw() {
   frame++;
-  cx.fillStyle = PAL.k; cx.fillRect(0,0,W,H);
-  // 星星背景
-  for (let i=0;i<28;i++){ const sx=(i*97)%W, sy=(i*53)%(GROUND-70);
-    if ((frame>>4)%7 !== i%7) px(sx,sy,"g"); }
-  // 地板
-  cx.fillStyle = PAL.g; cx.fillRect(0,GROUND+18,W,H-GROUND);
-  cx.fillStyle = PAL.D; cx.fillRect(0,GROUND+16,W,2);
-  const idx = NODES.indexOf(cur.node), paused = cur.state==="paused_for_human", done = cur.state==="done";
-  // 工位
+  sky(); ground();
+  const idx = Math.max(0,NODES.indexOf(cur.node)),
+        paused = cur.state==="paused_for_human", done = cur.state==="done";
   for (let i=0;i<8;i++) {
-    const x = stationX(i);
-    blit(DESK, x-spW(DESK)/2, GROUND-spH(DESK)+18);
-    const icon = ICON[NODES[i]];
-    if (icon) blit(icon, x+spW(DESK)/2-6, GROUND-spH(DESK)+18-spH(icon,2), 2);
-    cx.fillStyle = (i===idx&&!done) ? (paused?PAL.y:PAL.W) : (done||i<idx ? PAL.L : PAL.d);
-    cx.font = "bold 11px monospace"; cx.textAlign="center";
-    cx.fillText(NODES[i]+PHASE[NODES[i]].slice(0,2), x, H-8);
-    if (done || i<idx) blit(FLAG, x-spW(DESK)/2, GROUND-spH(DESK)+8, 2);
+    const x = stationX(i), z = ZONE(i);
+    // 路牌(区色点睛)
+    rect(x-16, GROUND-46, 32, 13, i===idx&&!done ? (paused?"y":"W") : "#00000033");
+    rect(x-16, GROUND-46, 32, 2, PAL.sil[z]); rect(x-2, GROUND-33, 3, 10, "d");
+    cx.fillStyle = i===idx&&!done ? PAL.k : (done||i<idx ? PAL.y : "#e8e2d099");
+    cx.font = "bold 10px ui-monospace,monospace"; cx.textAlign = "center";
+    cx.fillText(NODES[i]+PHASE[NODES[i]].slice(0,2), x, GROUND-36);
+    blit(DESK, x-spW(DESK)/2, GROUND-spH(DESK)+8);
+    const p = PROP[i]; if (p) blit(p, x+spW(DESK)/2-4, GROUND-spH(DESK)+8-spH(p,2), 2);
+    if (i===5) { if ((frame>>3)%3) rect(x+spW(DESK)/2+4, GROUND-spH(DESK)-6-(frame>>2)%8, 2,2,"c"); } // 烧瓶气泡
+    if (i===7 && (done||idx===7)) { const fy=(frame>>1)%6;                                            // 火箭尾焰
+      rect(x+spW(DESK)/2+2, GROUND-spH(DESK)+8, 4, 4+fy, "R"); }
+    if (done || i<idx) blit(FLAG, x-spW(DESK)/2-2, GROUND-spH(DESK)-4, 2);
   }
-  // 小人:走向当前工位,到位后敲键盘/举手
   if (!done) {
-    targetX = stationX(idx)-16;
-    const dx = targetX-workerX;
-    if (Math.abs(dx)>2) workerX += Math.sign(dx)*Math.min(2.2,Math.abs(dx));
+    const targetX = stationX(idx)-20, dx = targetX-workerX;
+    if (Math.abs(dx)>2) workerX += Math.sign(dx)*Math.min(2.4,Math.abs(dx));
     const walking = Math.abs(dx)>2;
-    const sp = paused ? WORKER_UP : walking ? WORKER_WALK[(frame>>3)%2] : WORKER[(frame>>4)%2];
-    blit(sp, workerX, GROUND-spH(sp)+18-spH(DESK));
-    if (paused && (frame>>4)%2) { cx.fillStyle=PAL.y; cx.fillRect(workerX+8, GROUND-spH(sp)-spH(DESK)+8, 4,4); }
+    const sp = paused ? WORKER_UP : walking ? WORKER_WALK[(frame>>3)%2] : WORKER_TYPE[(frame>>4)%2];
+    blit(sp, workerX, GROUND-spH(sp)+8-spH(DESK)+6);
+    if (paused && (frame>>4)%2) { cx.fillStyle=PAL.y; cx.font="bold 16px monospace";
+      cx.fillText("!", workerX+9, GROUND-spH(sp)-spH(DESK)+8); }
   } else {
-    // 完成:烟花
-    if (frame%9===0) fireworks.push({x:40+Math.random()*(W-80), y:20+Math.random()*(GROUND-90),
-      t:0, c:["y","W","r","c","L"][Math.random()*5|0]});
-    fireworks = fireworks.filter(f=>f.t<22);
-    for (const f of fireworks) { f.t++;
-      for (let a=0;a<8;a++){ const R=f.t*1.4;
-        px(f.x+Math.cos(a*Math.PI/4)*R, f.y+Math.sin(a*Math.PI/4)*R, f.c); } }
-    cx.fillStyle=PAL.L; cx.font="bold 18px monospace"; cx.textAlign="center";
-    cx.fillText("🎉 全部完成!", W/2, 40);
+    if (frame%8===0) fireworks.push({x:40+Math.random()*(W-80), y:16+Math.random()*(GROUND-100),
+      t:0, c:["y","W","R","c","L","m"][Math.random()*6|0]});
+    fireworks = fireworks.filter(f=>f.t<24);
+    for (const f of fireworks){ f.t++;
+      for (let a=0;a<8;a++){ const R=f.t*1.5;
+        rect(f.x+Math.cos(a*Math.PI/4)*R, f.y+Math.sin(a*Math.PI/4)*R, 2, 2, f.c); } }
+    rect(W/2-92, 26, 184, 30, "W"); rect(W/2-92, 26, 184, 3, "k"); rect(W/2-92, 53, 184, 3, "k");
+    rect(W/2-92, 26, 3, 30, "k"); rect(W/2+89, 26, 3, 30, "k");
+    cx.fillStyle=PAL.k; cx.font="bold 17px ui-monospace,monospace"; cx.textAlign="center";
+    cx.fillText("STAGE CLEAR!", W/2, 47);
   }
-  if (paused) { cx.fillStyle="rgba(10,12,10,.35)"; cx.fillRect(0,0,W,GROUND-40); }
+  if (paused) { cx.fillStyle="rgba(18,16,26,.38)"; cx.fillRect(0,0,W,GROUND-50); }
   requestAnimationFrame(draw);
 }
 
-// ---------- 气泡与 HUD ----------
 function hud() {
   const paused = cur.state==="paused_for_human", done = cur.state==="done";
-  document.getElementById("phase").textContent =
-    done ? "✅ 全部完成" : (paused?"🖐 等你确认":"") || PHASE[cur.node] || "运行中";
+  const ph = document.getElementById("phase");
+  ph.textContent = done ? "STAGE CLEAR — 全部完成" :
+    (paused ? "🖐 等你确认" : `STAGE ${cur.node} · ${PHASE[cur.node]||"运行中"}`);
+  ph.className = paused ? "paused" : "";
   document.getElementById("task").textContent =
     [cur.feature.replace(/^\d+\./,""), cur.task].filter(Boolean).join(" · ");
   const b = document.getElementById("bubble");
@@ -129,12 +193,11 @@ function hud() {
     b.style.display="block"; b.className = paused?"paused":"";
     b.textContent = (paused?"🖐 ":"")+cur.detail;
     const idx = Math.max(0,NODES.indexOf(cur.node));
-    b.style.left = ((idx*SLOT+SLOT/2)/W*100)+"%";
-    b.style.top = (GROUND-78)/H*100+"%";
+    b.style.left = (Math.min(86,Math.max(14,(idx*SLOT+SLOT/2)/W*100))+"%");
+    b.style.top = (GROUND-92)/H*100+"%";
   } else b.style.display="none";
 }
 
-// ---------- 数据源:真实轮询 或 demo 剧本 ----------
 const DEMO = [
   ["N1","running","正在检查项目环境和版本控制","",""],
   ["N2","running","正在读需求、排任务","1.market-board",""],
@@ -151,8 +214,7 @@ const isDemo = new URLSearchParams(location.search).has("demo");
 async function poll() {
   if (isDemo) {
     const [node,state,detail,feature,task] = DEMO[(Math.floor(Date.now()/2600))%DEMO.length];
-    cur = {node,state,detail,feature,task};
-    setBar(4,6);
+    cur = {node,state,detail,feature,task}; setBar(4,6);
   } else {
     try {
       const s = await (await fetch(".cm-status.json?ts="+Date.now())).json();
@@ -166,11 +228,12 @@ async function poll() {
       document.getElementById("hint").textContent = "";
     } catch { document.getElementById("hint").textContent = "⏳ 等待 /cm:ai 启动(未读到状态文件)"; }
   }
-  hud();
-  setTimeout(poll, isDemo?400:2000);
+  hud(); setTimeout(poll, isDemo?400:2000);
 }
-function setBar(d,t){ document.getElementById("fill").style.width = t? (100*d/t)+"%" : "0";
-  document.getElementById("count").textContent = t? `${d}/${t}` : ""; }
+function setBar(d,t){ doneCount = d;
+  document.getElementById("fill").style.width = t? (100*d/t)+"%" : "0";
+  document.getElementById("count").textContent = t? `${d}/${t}` : "";
+  document.getElementById("coins").textContent = d? `⛁ ${d}` : ""; }
 
 draw(); poll();
 </script>

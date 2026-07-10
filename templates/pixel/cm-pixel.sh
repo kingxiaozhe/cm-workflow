@@ -27,7 +27,10 @@ P = {
     "c": (100, 200, 200),    # 青(屏幕)
     "d": (60, 66, 60),       # 桌灰
     "m": (140, 120, 200),    # 紫(Codex机器人)
+    # 分关卡底色(huashu 像素横版:晨/昼/暮/夜,暗场压灰)
+    "A": (54, 42, 44), "B": (34, 44, 58), "C": (48, 38, 54), "D": (24, 24, 42),
 }
+ZONE = lambda i: "A" if i < 2 else ("B" if i < 5 else ("C" if i < 7 else "D"))
 
 PHASE = {
     "N1": "启动", "N2": "规划", "N3": "开发", "N4": "审查",
@@ -54,7 +57,14 @@ CW, CH = 78, 22  # 画布尺寸(像素);半块渲染后 = 78 x 11 行
 
 
 def blank():
-    return [["k"] * CW for _ in range(CH)]
+    cv = []
+    for y in range(CH):
+        row = []
+        for x in range(CW):
+            i = min(7, max(0, (x - 1) // 10))
+            row.append(ZONE(i))
+        cv.append(row)
+    return cv
 
 
 def blit(cv, sprite, x, y):
@@ -85,6 +95,13 @@ def scene(node, state, frame):
     for x in range(CW):
         cv[CH - 1][x] = "g"
         cv[CH - 2][x] = "g"
+    # 天体: 昼区太阳 / 夜区星星(隔帧闪烁)
+    for dx in range(3):
+        for dy in range(2):
+            cv[1 + dy][1 + 3 * 10 + 3 + dx] = "y"
+    for j, (sx, sy) in enumerate([(72, 1), (75, 3), (73, 6), (76, 8), (71, 4)]):
+        if (frame + j) % 4:
+            cv[sy][sx] = "W"
     idx = NODES.index(node) if node in NODES else 0
     done_all = state == "done"
     for i in range(8):
