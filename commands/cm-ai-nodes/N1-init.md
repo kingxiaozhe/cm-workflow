@@ -30,6 +30,17 @@
 - 无仓库但存在 `0.bootstrap/` 且任务含脚手架/git init → 跳过询问，交给 T-001
 - 无仓库且非上述 → 问一次"git init？（推荐）/ 不使用版本控制"，**答案由主流程回写 CLAUDE.md 版本控制字段**（决策落盘，任何后续运行不再询问）
 
+## 可视化入口提示（N1 输出末尾，一次性）
+
+N1 完成、进入 N2 之前，在输出末尾打印一行可视化入口（存在 `~/.claude/templates/cm-pixel/` 时才打印）：
+
+```text
+🎮 想看像素流水线？另开终端: ~/.claude/templates/cm-pixel/cm-pixel.sh
+   浏览器版: ~/.claude/templates/cm-pixel/serve.sh {SPECS_DIR} （地址加 ?demo 可先看演示）
+```
+
+只在 N1 打印一次，不重复——入口可发现性问题的修复（实测反馈：用户不知道要手动启动）。
+
 ## 0.bootstrap 优先规则
 
 存在 `0.bootstrap/` 且其中有未完成任务 → **无条件最优先执行**，完成前不进入任何业务 feature。它落地项目骨架和 `.claude/` 规范；完成后进入下一个 feature 时，N7 的重载机制会自然带上新生成的 CLAUDE.md 和 rules。
