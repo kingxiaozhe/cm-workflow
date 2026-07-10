@@ -1,6 +1,6 @@
 ---
 name: cm-ui-engineer
-description: UI 还原工程师 Skill，把已确认的设计基准像素级还原为生产代码（token 先行、原子顺序、BackstopJS 量化验收）；有基准才出场，不做业务逻辑
+description: UI 还原工程师 Skill，把已确认的设计基准像素级还原为生产代码（token 先行、原子顺序、按交付形态量化验收：Web 用 BackstopJS、App 用 Maestro+模拟器截图）；有基准才出场，不做业务逻辑
 ---
 
 # cm-ui-engineer — UI 还原工程师
@@ -53,7 +53,9 @@ token → 基础组件（按钮/输入框/标签）→ 组合组件（卡片/表
 - **品牌资产协议**：logo、品牌色、字体一律使用基准中的真实资产文件，**禁止凭记忆编造色值或找相似替代**
 - **反 AI slop 清单**（无基准细节可依时的兜底审美纪律）：不用紫蓝渐变默认色、不用 emoji 充当图标、不无脑圆角+阴影卡片、间距用 token 刻度不用随机值
 
-### 6. 量化验收
+### 6. 量化验收（按 CLAUDE.md 交付形态选链，二选一）
+
+**Web / 小程序等浏览器可渲染产物 —— BackstopJS 链：**
 
 ```bash
 npx backstop test   # reference = design-baseline 截图, test = 还原页面截图
@@ -63,7 +65,16 @@ npx backstop test   # reference = design-baseline 截图, test = 还原页面截
 - 特殊效果（复杂渐变、毛玻璃、动效帧）白名单制：列明白名单项及理由，其余差异修复后复测
 - 逐断点跑一遍；差异报告随任务汇报输出，供 N6 可视化回归复用
 - **像素基准档的交互验收**：按 design.md 提取的交互走查清单逐条 E2E 断言（跳转目标、状态切换、操作反馈）——**UI 像了但交互不 1:1，同样是验收失败**
-- **首个页面任务的汇报必须附"实现 vs 基准"并排截图**——人眼对照点前置到第一个页面完成时，不等全部做完（历史事故教训）
+
+**App（React Native / Expo）—— Maestro 链：**
+
+App 产物不在浏览器里，BackstopJS/Playwright 不适用；react-native-web 的浏览器渲染只可用于开发期快速目检，**不作为任何验收证据**。
+
+- **交互验收**：Maestro flow（YAML）逐条断言 design.md 的交互走查清单（跳转目标、状态切换、操作反馈），在 iOS/Android 模拟器上执行
+- **像素验收**：Maestro `takeScreenshot` 采集模拟器截图，与 design-baseline 截图分辨率对齐后逐屏对比（odiff/pixelmatch，默认 mismatch ≤ 1%，白名单制同上）
+- **环境降级**：本机无模拟器或装不上 Maestro → 上报并降级为 Expo Go 真机人工对照（并排截图发人确认），METRICS 备注"App 像素验收降级"——**不得静默改用浏览器截图充当验收**
+
+**两条链共同要求**：**首个页面任务的汇报必须附"实现 vs 基准"并排截图**（App 形态截图必须来自模拟器/真机）——人眼对照点前置到第一个页面完成时，不等全部做完（历史事故教训）
 
 ## 常见坑
 

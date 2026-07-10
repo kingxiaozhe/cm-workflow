@@ -24,8 +24,8 @@ description: 发布/运维工程师 Skill，执行 staging 部署、冒烟验证
 
 自动检测，不做硬编码假设：
 
-- **形态**：Docker/K8s / Serverless（Lambda/Workers/云函数）/ 静态托管（Vercel/CF Pages）/ 传统主机 / 小程序发布
-- **检测方式**：Dockerfile / serverless.yml / vercel.json / wrangler.toml / CI 配置 / 部署脚本
+- **形态**：Docker/K8s / Serverless（Lambda/Workers/云函数）/ 静态托管（Vercel/CF Pages）/ 传统主机 / 小程序发布 / **移动 App（EAS build/submit + OTA）**
+- **检测方式**：Dockerfile / serverless.yml / vercel.json / wrangler.toml / **app.json + eas.json、ios/ android/ 目录** / CI 配置 / 部署脚本
 - **CI/CD**：识别已有流水线（bootstrap T-003 所建），优先复用而非另建
 
 ### 2. 部署前检查（全部通过才执行）
@@ -58,10 +58,20 @@ description: 发布/运维工程师 Skill，执行 staging 部署、冒烟验证
 ```markdown
 ## {日期} — {feature 名} → {环境}
 - 版本: {commit sha；NO_GIT 模式记 部署时间戳 + no-git 备注}
+- 通道: {常规部署留空；App 形态必填: EAS build #N / OTA update-id + 选该通道的理由}
 - 迁移: {执行的 migration 列表，无则"无"}
 - 冒烟: {通过 / 第 N 轮通过}
 - 回滚预案: {位置/命令}
 ```
+
+## App 形态发布通道（RN/Expo 项目专用）
+
+App 没有"部署到服务器"，发布通道是另一套，对应关系如下：
+
+- **staging 对应物** = EAS internal distribution / TestFlight 内测 / Android internal testing——本 skill 的"staging 部署"任务在 App 项目里执行 `eas build` + 内测分发，冒烟改为在模拟器/内测包上走关键流程
+- **生产对应物** = 商店提审（`eas submit`）——**属硬闸 2 生产发布，强制人工确认**；提审后进入商店审核等待期，结果异步，作为待决项跟踪而非阻塞流程
+- **OTA 热更（`eas update`）**：仅 JS/资源变更可走 OTA；**改了原生依赖/权限/SDK 必须重新 build 提审**——每次发布记录必须写明走的是哪条道及理由，OTA 推生产同样过硬闸 2
+- **金融/web3 类 App 特别项**：商店审核资质（金融牌照证明、加密货币政策）是发布链上的最高风险节点，在待决清单中显式列出，不得默认"能过审"
 
 ## 生产发布待决清单（N8 调用，只编制不执行）
 
@@ -71,6 +81,8 @@ description: 发布/运维工程师 Skill，执行 staging 部署、冒烟验证
 - 生产迁移清单及执行顺序: {含备份点}
 - 新增环境变量: {key 列表，值由人在生产环境配置}
 - 回滚预案位置: {路径}
+- {App 形态追加} 提审材料与审核风险: {商店账号/截图/隐私声明就绪情况；金融/加密类资质风险评估}
+- {App 形态追加} 变更通道划分: {本批变更哪些可走 OTA、哪些必须重新 build 提审}
 ```
 
 生产发布由**人**决策触发；人下达指令后按本 skill 流程执行（硬闸 1 仍然生效）。

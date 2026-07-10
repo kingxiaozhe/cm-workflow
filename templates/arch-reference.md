@@ -25,6 +25,8 @@
 | UI 密集/像素一致性苛刻 | Flutter(Impeller) | `flutter create` | 渲染性能上限、跨端像素一致 |
 | 纯单平台且性能极致 | 原生 Swift/Kotlin | Xcode / Android Studio | 无跨端需求时最直接 |
 
+App 配套工具链（与 Web 不同,推荐时一并写入 ADR）：UI 验收 = Maestro + 模拟器截图对比（BackstopJS/Playwright 不适用）;发布 = EAS build/submit + OTA（`eas update` 仅限 JS/资源变更）。
+
 ## Web
 
 | 场景 | 推荐 | 脚手架 |
