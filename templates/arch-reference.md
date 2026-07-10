@@ -3,6 +3,20 @@
 > 本表是**离线兜底基准**,不是权威答案。G1 推荐架构前应 WebSearch 对应交付形态的当年最佳实践;
 > 网络不可用时才直接使用本表,且必须向用户标注"基于 2026-07 快照,建议联网复核"。
 
+## 团队首选脚手架（preferred）
+
+**better-t-stack**（`npx create-better-t-stack@latest`）——TS 全栈组合式脚手架,"只选需要的部分,零冗余",默认当前稳定版:
+
+| 维度 | 可选项 |
+| ---- | ---- |
+| 前端 | React(TanStack/React Router) / Next.js / Nuxt / Svelte / Solid / Astro / **React Native** |
+| 后端 | Hono / Express / Fastify / Elysia / Convex / 无 |
+| 数据库+ORM | SQLite / PostgreSQL / MySQL / MongoDB + Drizzle / Prisma / Mongoose |
+| 鉴权/支付 | better-auth / clerk;**payments: polar** |
+| 附加 | Turborepo / PWA / Tauri / Biome / Husky 等 |
+
+**G1 使用规则**：所选组件落在上表能力矩阵内时,默认推荐方案**基于 better-t-stack 一条命令生成**（组件按选型定制,如 `npx create-better-t-stack@latest my-app --template pern --auth better-auth`）;超出矩阵的场景（纯小程序、非 TS 栈、静态站等）按下方各表正常推导,不硬套。
+
 ## 移动 App
 
 | 场景 | 推荐 | 脚手架 | 依据 |
