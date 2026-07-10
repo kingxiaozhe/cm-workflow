@@ -58,6 +58,12 @@ if [ -f "$SRC_DIR/templates/statusline/cm-statusline.sh" ]; then
   echo "✓ 终端状态条已安装。启用请在 ~/.claude/settings.json 加:"
   echo '    "statusLine": {"type":"command","command":"~/.claude/templates/cm-statusline.sh"}'
 fi
+if [ -d "$SRC_DIR/templates/pixel" ]; then
+  mkdir -p "$DEST/templates/cm-pixel"
+  cp -R "$SRC_DIR/templates/pixel/." "$DEST/templates/cm-pixel/"
+  chmod +x "$DEST/templates/cm-pixel/cm-pixel.sh" "$DEST/templates/cm-pixel/serve.sh"
+  echo "✓ 像素流水线已安装（终端版: ~/.claude/templates/cm-pixel/cm-pixel.sh；浏览器版: 同目录 serve.sh {specs路径}）"
+fi
 
 echo
 echo "完成。建议在 Claude Code 中运行 /cm:check 校验安装一致性。"

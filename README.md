@@ -84,6 +84,15 @@ templates/dashboard/serve.sh {specs路径}   # 浏览器打开提示的地址,2 
 
 **纯只读、零侵入**——只消费 specs 落盘文件（tasks.md 勾选 / METRICS / LESSONS），执行引擎无感知。展示：四项汇总指标、每 feature 进度条与任务状态（▶ 当前任务高亮）、METRICS 全表、LESSONS 时间线。/cm:ai 跑长任务时开一个浏览器标签盯进度即可。
 
+**④ 像素流水线（2D 像素游戏视角,演示/氛围屏首选）**——8 个像素工位对应 N1–N8,小人走到哪一步流水线就跑到哪一步：N4 有 Codex 机器人,N6 是质检烧瓶,N8 是发货火箭；走过的工位插绿旗,暂停时小人举手+黄色气泡说大白话,全部完成放烟花。数据源与状态条同一个 .cm-status.json,零侵入。
+
+```bash
+templates/pixel/cm-pixel.sh            # 终端版(ANSI 像素,分屏挂一个 pane)
+templates/pixel/cm-pixel.sh --demo     # 终端版演示模式(不需要真实运行)
+templates/pixel/serve.sh {specs路径}   # 浏览器版(16-bit 风格,给老板演示/办公室大屏)
+# 浏览器版演示模式: 打开地址后加 ?demo
+```
+
 ## 度量与双保险
 
 - **METRICS.md**（specs 目录，N5 自动落盘）：每任务记录审查轮次、Codex 拦截、QA 结果、人工介入次数——试点/灰度门槛的唯一数据源

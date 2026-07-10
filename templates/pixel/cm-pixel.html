@@ -1,0 +1,176 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>cm 像素流水线</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; background:#0d120d; color:#d8e8d0; font:14px/1.5 ui-monospace,monospace;
+         display:flex; flex-direction:column; align-items:center; min-height:100vh; }
+  #hud { width:min(96vw,1040px); display:flex; align-items:baseline; gap:14px; padding:14px 4px 8px; }
+  #hud h1 { font-size:16px; margin:0; letter-spacing:2px; }
+  #phase { color:#8fd06a; font-weight:bold; }
+  #task  { color:#7f8f7f; font-size:12px; }
+  #stage { position:relative; width:min(96vw,1040px); }
+  canvas { width:100%; image-rendering:pixelated; display:block; border:2px solid #24301f; border-radius:6px; }
+  #bubble { position:absolute; transform:translate(-50%,-115%); max-width:340px; padding:7px 11px;
+            background:#f2f6e8; color:#22301c; border-radius:8px; font-size:13px; display:none;
+            box-shadow:0 3px 0 #00000055; }
+  #bubble.paused { background:#f5d95c; }
+  #bubble:after { content:""; position:absolute; left:50%; bottom:-7px; margin-left:-6px;
+                  border:7px solid transparent; border-top-color:inherit; border-bottom:0;
+                  border-top:7px solid #f2f6e8; }
+  #bubble.paused:after { border-top-color:#f5d95c; }
+  #foot { width:min(96vw,1040px); display:flex; align-items:center; gap:12px; padding:10px 4px 20px; }
+  #bar { flex:1; height:14px; background:#1a241a; border:2px solid #24301f; border-radius:4px; overflow:hidden; }
+  #fill { height:100%; width:0; background:repeating-linear-gradient(90deg,#6eaa50 0 8px,#8fd06a 8px 16px); transition:width .5s; }
+  #count { color:#8fd06a; font-weight:bold; }
+  #hint { color:#5a6a58; font-size:12px; }
+</style>
+<div id="hud"><h1>cm 像素流水线</h1><span id="phase">…</span><span id="task"></span></div>
+<div id="stage"><canvas id="cv" width="520" height="180"></canvas><div id="bubble"></div></div>
+<div id="foot"><div id="bar"><div id="fill"></div></div><span id="count"></span><span id="hint"></span></div>
+<script>
+"use strict";
+// ---------- 调色板与精灵(字符串像素图) ----------
+const PAL = { k:"#181c18", g:"#306230", G:"#6eaa50", L:"#8fd06a", W:"#e0f0d0", y:"#f0c83c",
+              o:"#e68c3c", b:"#5a8cdc", B:"#3c64aa", r:"#d25050", c:"#64c8c8", C:"#2f8f8f",
+              d:"#3c423c", D:"#262b26", m:"#8c78c8", M:"#5f4f96", w:"#a08050", s:"#c8b478" };
+const S = a => a; // 精灵即字符串数组,"."为透明
+const DESK = S([".ccccc..", ".cCCCc..", ".ccccc..", "dddddddd", ".D....D.", ".D....D."]);
+const WORKER = [ // 敲键盘两帧
+  S(["..ooo.", "..ooo.", ".bbbb.", "bbBBbb", ".b..b.", ".d..d."]),
+  S(["..ooo.", "..ooo.", "bbbbb.", ".bBBbb", ".b..b.", ".d..d."])];
+const WORKER_UP = S(["..ooo.", "..ooo.", "obbbb.", ".bBBb.", ".b..b.", ".d..d."]); // 举手
+const WORKER_WALK = [
+  S(["..ooo.", "..ooo.", ".bbbb.", ".bBBb.", ".b..b.", "d....d"]),
+  S(["..ooo.", "..ooo.", ".bbbb.", ".bBBb.", ".b..b.", "..dd.."])];
+const ROBOT = S([".mmm.", ".mWm.", "mmmmm", "m.m.m", ".M.M."]);          // Codex 机器人(N4)
+const FLASK = S(["..W..", "..W..", ".WcW.", ".WcW.", "WcccW"]);          // 质检烧瓶(N6)
+const ROCKET = S(["..r..", ".rWr.", ".rWr.", "rrrrr", ".y.y."]);         // 发货火箭(N8)
+const BOX = S(["ssss", "swws", "ssss"]);                                  // 需求箱(N1)
+const FLAG = S(["..G", ".GG", "GGG"]);
+const NODES = ["N1","N2","N3","N4","N5","N6","N7","N8"];
+const PHASE = { N1:"启动准备", N2:"规划任务", N3:"开发中", N4:"检查代码",
+                N5:"保存进度", N6:"质量检测", N7:"整理现场", N8:"收尾总结" };
+const ICON = { N1:BOX, N4:ROBOT, N6:FLASK, N8:ROCKET };
+
+const cv = document.getElementById("cv"), cx = cv.getContext("2d");
+const W = cv.width, H = cv.height, GROUND = H - 34;
+const SLOT = W / 8; // 每工位宽 65px
+
+function px(x, y, c) { cx.fillStyle = PAL[c]; cx.fillRect(x|0, y|0, 1, 1); }
+function blit(sp, x, y, scale=3) {
+  for (let r=0; r<sp.length; r++) for (let i=0; i<sp[r].length; i++) {
+    const ch = sp[r][i];
+    if (ch !== ".") { cx.fillStyle = PAL[ch]; cx.fillRect((x+i*scale)|0, (y+r*scale)|0, scale, scale); }
+  }
+}
+const spW = (sp,s=3)=>sp[0].length*s, spH=(sp,s=3)=>sp.length*s;
+
+// ---------- 状态 ----------
+let cur = { node:"N1", state:"running", detail:"等待工作流启动…", feature:"", task:"" };
+let workerX = SLOT/2, targetX = workerX, frame = 0, fireworks = [];
+const stationX = i => i*SLOT + SLOT/2;
+
+// ---------- 场景 ----------
+function draw() {
+  frame++;
+  cx.fillStyle = PAL.k; cx.fillRect(0,0,W,H);
+  // 星星背景
+  for (let i=0;i<28;i++){ const sx=(i*97)%W, sy=(i*53)%(GROUND-70);
+    if ((frame>>4)%7 !== i%7) px(sx,sy,"g"); }
+  // 地板
+  cx.fillStyle = PAL.g; cx.fillRect(0,GROUND+18,W,H-GROUND);
+  cx.fillStyle = PAL.D; cx.fillRect(0,GROUND+16,W,2);
+  const idx = NODES.indexOf(cur.node), paused = cur.state==="paused_for_human", done = cur.state==="done";
+  // 工位
+  for (let i=0;i<8;i++) {
+    const x = stationX(i);
+    blit(DESK, x-spW(DESK)/2, GROUND-spH(DESK)+18);
+    const icon = ICON[NODES[i]];
+    if (icon) blit(icon, x+spW(DESK)/2-6, GROUND-spH(DESK)+18-spH(icon,2), 2);
+    cx.fillStyle = (i===idx&&!done) ? (paused?PAL.y:PAL.W) : (done||i<idx ? PAL.L : PAL.d);
+    cx.font = "bold 11px monospace"; cx.textAlign="center";
+    cx.fillText(NODES[i]+PHASE[NODES[i]].slice(0,2), x, H-8);
+    if (done || i<idx) blit(FLAG, x-spW(DESK)/2, GROUND-spH(DESK)+8, 2);
+  }
+  // 小人:走向当前工位,到位后敲键盘/举手
+  if (!done) {
+    targetX = stationX(idx)-16;
+    const dx = targetX-workerX;
+    if (Math.abs(dx)>2) workerX += Math.sign(dx)*Math.min(2.2,Math.abs(dx));
+    const walking = Math.abs(dx)>2;
+    const sp = paused ? WORKER_UP : walking ? WORKER_WALK[(frame>>3)%2] : WORKER[(frame>>4)%2];
+    blit(sp, workerX, GROUND-spH(sp)+18-spH(DESK));
+    if (paused && (frame>>4)%2) { cx.fillStyle=PAL.y; cx.fillRect(workerX+8, GROUND-spH(sp)-spH(DESK)+8, 4,4); }
+  } else {
+    // 完成:烟花
+    if (frame%9===0) fireworks.push({x:40+Math.random()*(W-80), y:20+Math.random()*(GROUND-90),
+      t:0, c:["y","W","r","c","L"][Math.random()*5|0]});
+    fireworks = fireworks.filter(f=>f.t<22);
+    for (const f of fireworks) { f.t++;
+      for (let a=0;a<8;a++){ const R=f.t*1.4;
+        px(f.x+Math.cos(a*Math.PI/4)*R, f.y+Math.sin(a*Math.PI/4)*R, f.c); } }
+    cx.fillStyle=PAL.L; cx.font="bold 18px monospace"; cx.textAlign="center";
+    cx.fillText("🎉 全部完成!", W/2, 40);
+  }
+  if (paused) { cx.fillStyle="rgba(10,12,10,.35)"; cx.fillRect(0,0,W,GROUND-40); }
+  requestAnimationFrame(draw);
+}
+
+// ---------- 气泡与 HUD ----------
+function hud() {
+  const paused = cur.state==="paused_for_human", done = cur.state==="done";
+  document.getElementById("phase").textContent =
+    done ? "✅ 全部完成" : (paused?"🖐 等你确认":"") || PHASE[cur.node] || "运行中";
+  document.getElementById("task").textContent =
+    [cur.feature.replace(/^\d+\./,""), cur.task].filter(Boolean).join(" · ");
+  const b = document.getElementById("bubble");
+  if (cur.detail && !done) {
+    b.style.display="block"; b.className = paused?"paused":"";
+    b.textContent = (paused?"🖐 ":"")+cur.detail;
+    const idx = Math.max(0,NODES.indexOf(cur.node));
+    b.style.left = ((idx*SLOT+SLOT/2)/W*100)+"%";
+    b.style.top = (GROUND-78)/H*100+"%";
+  } else b.style.display="none";
+}
+
+// ---------- 数据源:真实轮询 或 demo 剧本 ----------
+const DEMO = [
+  ["N1","running","正在检查项目环境和版本控制","",""],
+  ["N2","running","正在读需求、排任务","1.market-board",""],
+  ["N3","running","正在开发行情数据接口","1.market-board","T-005"],
+  ["N4","running","第1轮代码审查进行中","1.market-board","T-005"],
+  ["N4","paused_for_human","确认一下:原型里有3个按钮点了没反应,要做吗?","1.market-board","T-006"],
+  ["N5","running","保存进度:行情页面完成","1.market-board","T-006"],
+  ["N6","running","质量检测和业务走查","1.market-board",""],
+  ["N7","running","整理现场,准备下一个任务","1.market-board",""],
+  ["N8","running","收尾:整理文档和发布清单","",""],
+  ["N8","done","全部完成","",""]];
+const isDemo = new URLSearchParams(location.search).has("demo");
+
+async function poll() {
+  if (isDemo) {
+    const [node,state,detail,feature,task] = DEMO[(Math.floor(Date.now()/2600))%DEMO.length];
+    cur = {node,state,detail,feature,task};
+    setBar(4,6);
+  } else {
+    try {
+      const s = await (await fetch(".cm-status.json?ts="+Date.now())).json();
+      cur = { node:s.node||"N1", state:s.state||"running", detail:s.detail||"",
+              feature:s.feature||"", task:s.task||"" };
+      if (cur.feature) {
+        const md = await (await fetch(cur.feature+"/tasks.md?ts="+Date.now())).text();
+        const items = md.match(/^- \[( |x)\] T-\d+/gm)||[];
+        setBar(items.filter(l=>l.includes("[x]")).length, items.length);
+      } else setBar(0,0);
+      document.getElementById("hint").textContent = "";
+    } catch { document.getElementById("hint").textContent = "⏳ 等待 /cm:ai 启动(未读到状态文件)"; }
+  }
+  hud();
+  setTimeout(poll, isDemo?400:2000);
+}
+function setBar(d,t){ document.getElementById("fill").style.width = t? (100*d/t)+"%" : "0";
+  document.getElementById("count").textContent = t? `${d}/${t}` : ""; }
+
+draw(); poll();
+</script>
