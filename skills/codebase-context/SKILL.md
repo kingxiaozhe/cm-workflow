@@ -27,7 +27,7 @@ metadata:
 3. 检查是否存在 `--full` 参数：
    - 存在且 mode=scan → 强制全量扫描
    - 存在且 mode=dev → 忽略该参数并提示"--full 仅 scan 模式有效"
-4. 设定文档目录 `DOC_DIR = ~/.claude/skills/codebase-context/reference/{project-name}/`
+4. 设定文档目录 `DOC_DIR = {PROJECT_ROOT}/docs/codebase-context/`（存于项目工程内,随 git 提交、团队共享、换机不丢）
 5. 设定项目根 `PROJECT_ROOT = 当前工作目录`
 
 ## 产物清单（固定 10 份文档 + 1 份元数据）

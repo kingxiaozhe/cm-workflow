@@ -13,7 +13,7 @@
 
 ## 1.5 代码库参考文档回写（存在时强制）
 
-`~/.claude/skills/codebase-context/reference/{项目名}/` 存在时，按 `codebase-context` skill dev 模式步骤 3 的「变更类型 → 需更新文档」映射表，把本次全部 feature 的变更回写进参考文档（09-changelog 类型标 `dev回写`）——**地图必须跟着代码走，否则下次二开按过期地图改**。
+`{项目根}/docs/codebase-context/` 存在时，按 `codebase-context` skill dev 模式步骤 3 的「变更类型 → 需更新文档」映射表，把本次全部 feature 的变更回写进参考文档（09-changelog 类型标 `dev回写`）——**地图必须跟着代码走，否则下次二开按过期地图改**。
 
 ## 2. 生产发布待决清单
 
