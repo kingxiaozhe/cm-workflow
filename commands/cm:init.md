@@ -25,6 +25,8 @@
 
 ### 1.5 代码库参考文档（自动判断，不询问）
 
+**前置**：`~/.claude/skills/codebase-context/` 未安装 → 跳过本步并提示"codebase-context skill 未安装(旧版包),业务地图功能不可用,建议用最新包重装"——不阻塞 init 其余步骤。
+
 按下列条件**自动决策**是否执行 `codebase-context` scan，不问用户，执行后在输出中汇报判断依据：
 
 - 源码文件 > 30 个 且 `{项目根}/docs/codebase-context/` **不存在** → 自动执行**全量 scan**（存量项目首扫，生成业务地图）

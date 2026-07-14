@@ -69,7 +69,7 @@
 - 读取各仓库的 `.claude/CLAUDE.md` 了解技术栈
 - 读取 `.claude/rules/` 下所有规则文件
 - 扫描目录结构，了解现有模块划分
-- **B1 加载代码库参考文档**：检查 `{项目根}/docs/codebase-context/`——存在 → 按 `codebase-context` skill dev 模式加载 10 份文档（后续步骤查重与波及面分析的数据源）；不存在 → 建议用户先执行 `/codebase-context scan`（用户明确跳过则直接读代码，成本更高且波及面分析降级为 grep 推断）
+- **B1 加载代码库参考文档**：检查 `{项目根}/docs/codebase-context/`——存在 → 按 `codebase-context` skill dev 模式加载 10 份文档（后续步骤查重与波及面分析的数据源）；文档不存在 → 建议用户先执行 `/codebase-context scan`；**skill 本身未安装** → 提示重装最新包，本次降级为直接读代码，波及面分析降级为 grep 推断（照常可跑，只是更贵更粗）
 
 **二开模式追加规则（GREENFIELD=false 且本次需求会修改存量代码时生效）**：
 
