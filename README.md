@@ -50,7 +50,11 @@ agents/                      # 并行工种的子 agent 定义（安装到 ~/.cl
 ## 安装
 
 ```bash
-./install.sh          # 一键安装（含覆盖确认），装完自动提示运行 /cm:check
+./install.sh          # macOS/Linux 一键安装（含覆盖确认），装完自动提示运行 /cm:check
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1   # Windows 版
 ```
 
 或手动：
@@ -61,7 +65,9 @@ cp -r skills/*   ~/.claude/skills/
 cp -r agents/*   ~/.claude/agents/
 ```
 
-安装/修改框架后运行 `/cm:check` 做一致性自检（角色存在性、命名一致、引用有效、配套完整）。
+安装/修改框架后运行 `/cm:check` 做一致性自检（角色存在性、命名一致、引用有效、配套完整、外部依赖 + **安装版本号**——反馈问题时请带上它）。
+
+**Windows 说明**：核心工作流（commands/skills/agents）是纯 Markdown，Windows 原生可用；状态条 / 终端像素版 / serve.sh 是 bash+python3 脚本，在 WSL 或 Git Bash 中使用（浏览器像素版页面双击加 `?demo` 即可预览，不依赖脚本）。
 
 ## 执行可视化（终端原生优先）
 

@@ -4,8 +4,9 @@ set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEST="${CLAUDE_HOME:-$HOME/.claude}"
+VERSION="$(cat "$SRC_DIR/VERSION" 2>/dev/null || echo 未知)"
 
-echo "cm 工作流安装"
+echo "cm 工作流安装  v$VERSION"
 echo "  来源: $SRC_DIR"
 echo "  目标: $DEST"
 echo
@@ -65,6 +66,10 @@ if [ -d "$SRC_DIR/templates/pixel" ]; then
   echo "✓ 像素流水线已安装（终端版: ~/.claude/templates/cm-pixel/cm-pixel.sh；浏览器版: 同目录 serve.sh {specs路径}）"
 fi
 
+mkdir -p "$DEST/templates"
+echo "$VERSION" > "$DEST/templates/cm-VERSION"
+
 echo
-echo "完成。建议在 Claude Code 中运行 /cm:check 校验安装一致性。"
+echo "完成（已安装版本: v$VERSION，/cm:check 会显示它——反馈问题时请带上版本号）。"
+echo "建议在 Claude Code 中运行 /cm:check 校验安装一致性。"
 echo "可选依赖（无设计稿时生成设计基准）: npx skills add alchaincyf/huashu-design"
