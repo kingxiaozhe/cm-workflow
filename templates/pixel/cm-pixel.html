@@ -2,11 +2,11 @@
 <meta charset="utf-8">
 <title>cm 像素流水线</title>
 <!--
-  视觉方案: huashu-design「像素游戏横版叙事」条目 + 色彩推导协议
-  · 分关卡换色换材质: 8 工位映射一天工作周期——启动=清晨(草地),开发=白昼(草地),
-    质检=黄昏(工业钢板),发布=夜空(工业钢板)。天空与地面材质都是进度的第二读数。
-  · 大面积天空压 chroma,高饱和只给小面积点睛(路牌/金币/警示灯/火箭)。
-  · 精灵素材: Kenney Pixel Platformer + Industrial Expansion (CC0,已内嵌 base64,单文件零依赖)
+  v4 像素办公室(参考 Star-Office-UI 的房间化状态设计,自研实现):
+  · 流水线搬进办公室:后墙一排窗户承载昼夜循环(晨→昼→暮→夜=进度第二读数),吊灯逐工位点亮
+  · 状态房间化: 空闲=沙发打盹 / 暂停=走到等候椅(落地灯变黄) / 疑似中断=红灯+挠头(Last-Modified 判龄)
+  · 昨日小记: 空闲/完成时展示上次运行的度量摘要(读 specs/度量汇总.md)
+  · 素材: Kenney Pixel Platformer + Industrial (CC0 内嵌,可商用);Star-Office-UI 的 LimeZu 素材禁商用,未采用
 -->
 <style>
   :root { color-scheme: dark; }
@@ -19,6 +19,7 @@
   #phase { background:#241f2e; border:3px solid #1c1a14; box-shadow:0 3px 0 #1c1a14;
            padding:2px 10px; color:#f0e8c8; }
   #phase.paused { background:#f5d95c; color:#3a2f10; }
+  #phase.stale { background:#d25050; color:#fff; }
   #task { color:#8a8496; font-size:13px; }
   #coins { margin-left:auto; color:#f0b03c; letter-spacing:1px; }
   #stage { position:relative; width:min(96vw,1080px); }
@@ -32,6 +33,10 @@
                   width:10px; height:10px; background:inherit;
                   border-right:3px solid #1c1a14; border-bottom:3px solid #1c1a14;
                   transform:rotate(45deg) translateY(-4px); }
+  #note { position:absolute; right:10px; bottom:10px; max-width:300px; padding:8px 12px;
+          background:#f5f0e8; color:#26221a; border:3px solid #1c1a14; box-shadow:0 4px 0 #1c1a14;
+          font-size:12.5px; line-height:1.5; display:none; white-space:pre-wrap; }
+  #note b { color:#8a5a14; }
   #foot { width:min(96vw,1080px); display:flex; align-items:center; gap:12px; padding:12px 2px 22px; }
   #bar { flex:1; height:16px; background:#241f2e; border:3px solid #1c1a14; box-shadow:0 3px 0 #1c1a14;
          position:relative; overflow:hidden; }
@@ -42,7 +47,7 @@
   #hint { color:#6a6478; font-size:13px; }
 </style>
 <div id="hud"><span id="logo">CM</span><span id="phase">…</span><span id="task"></span><span id="coins"></span></div>
-<div id="stage"><canvas id="cv" width="640" height="230"></canvas><div id="bubble"></div></div>
+<div id="stage"><canvas id="cv" width="640" height="230"></canvas><div id="bubble"></div><div id="note"></div></div>
 <div id="foot"><div id="bar"><div id="fill"></div><i style="left:25%"></i><i style="left:50%"></i><i style="left:75%"></i></div><span id="count"></span><span id="hint"></span></div>
 <script>
 "use strict";
@@ -55,8 +60,11 @@ for (const k in SRC){ IMG[k]=new Image(); IMG[k].onload=()=>loaded++; IMG[k].src
 const PAL = {
   dawn:["#c98d78","#dba98a","#e8c49a"], day:["#7fa8c8","#93b9d4","#a9cbdd"],
   dusk:["#8a5f7a","#b07a6a","#d0996a"], night:["#242138","#2e2a48","#3a3560"],
-  sil:{dawn:"#9a6a64",day:"#5f7f9d",dusk:"#5a4260",night:"#171523"},
-  k:"#1c1a14", W:"#f5f0e8", y:"#f0b03c", G:"#6faa50",
+  // 办公室内饰
+  wallUp:"#6b5f52", wall:"#5c5146", wains:"#463c31", base:"#2b251f",
+  floor:"#8a684a", floorD:"#775840", seam:"#5f4630", ceil:"#38322b",
+  k:"#1c1a14", W:"#f5f0e8", y:"#f0b03c", G:"#6faa50", r:"#d25050",
+  sofa:"#9a4a3c", sofaD:"#7c3a30", cushion:"#c8a06a",
 };
 const NODES = ["N1","N2","N3","N4","N5","N6","N7","N8"];
 const PHASE = { N1:"启动准备", N2:"规划任务", N3:"开发中", N4:"检查代码",
@@ -66,130 +74,175 @@ const ZONE = i => i<2 ? "dawn" : i<5 ? "day" : i<7 ? "dusk" : "night";
 const cv = document.getElementById("cv"), cx = cv.getContext("2d");
 cx.imageSmoothingEnabled = false;
 const W = cv.width, H = cv.height, GROUND = H - 40;
-const SLOT = W/8, stationX = i => i*SLOT + SLOT/2;
-const Z = 2; // 素材统一 2x
+const MARGIN = 56, SLOT = (W-MARGIN)/8, stationX = i => MARGIN + i*SLOT + SLOT/2;
+const Z = 2;
+const BENCH_X = 10; // 等候区(暂停时小人走到这)
 
 function rect(x,y,w,h,c){ cx.fillStyle = PAL[c]||c; cx.fillRect(x|0,y|0,w,h); }
 function tile(k,gx,gy,dx,dy,z=Z){ const s=TS[k];
   cx.drawImage(IMG[k], gx*s, gy*s, s, s, dx|0, dy|0, s*z, s*z); }
 const seed = n => { let x = Math.sin(n*127.1)*43758.5; return x-Math.floor(x); };
 
-let cur = { node:"N1", state:"running", detail:"等待工作流启动…", feature:"", task:"" };
-let workerX = SLOT/2, frame = 0, fireworks = [];
+let cur = { node:"N1", state:"running", detail:"", feature:"", task:"" };
+let mode = "wait"; // wait(空闲) | run | done
+let staleRun = false;
+let workerX = MARGIN + SLOT/2, frame = 0, fireworks = [];
 
-function sky() {
-  const bandH = GROUND/3;
+// ---------- 办公室内景 ----------
+function office() {
+  // 天花板 + 墙 + 护墙板 + 踢脚线
+  rect(0,0,W,10,"ceil");
+  rect(0,10,W,GROUND-10,"wall");
+  rect(0,10,W,26,"wallUp");
+  rect(0,GROUND-26,W,20,"wains");
+  rect(0,GROUND-8,W,8,"base");
+  // 木地板(横板+竖缝)
+  rect(0,GROUND,W,H-GROUND,"floor");
+  for (let y=GROUND+8; y<H; y+=10) rect(0,y,W,2,"floorD");
+  for (let i=0;i<16;i++) rect((i*47+((i%2)*20))%W, GROUND+(i%3)*10, 2, 8, "seam");
+  // 8 扇窗:昼夜循环在窗外(晨→昼→暮→夜 = 进度第二读数)
   for (let i=0;i<8;i++) {
-    const z = PAL[ZONE(i)];
-    for (let b=0;b<3;b++) rect(i*SLOT, b*bandH, SLOT, bandH+1, z[b]);
-    if (i<7 && ZONE(i)!==ZONE(i+1)) {
-      const zn = PAL[ZONE(i+1)];
-      for (let b=0;b<3;b++) for (let yy=b*bandH; yy<(b+1)*bandH; yy+=4)
-        for (let xx=0; xx<12; xx+=4) if ((xx/4+yy/4)%2) rect((i+1)*SLOT-12+xx, yy, 4, 4, zn[b]);
-    }
+    const x = stationX(i)-17, y = 22, w = 34, h = 40, z = PAL[ZONE(i)];
+    rect(x-3,y-3,w+6,h+6,"k");                       // 窗框
+    for (let b=0;b<3;b++) rect(x, y+b*(h/3), w, h/3+1, z[b]);
+    if (i===3) { rect(x+10,y+6,10,10,"#f5e8b0"); }   // 昼窗太阳
+    if (i===7) { rect(x+20,y+6,7,7,"#e8e2d0"); rect(x+22,y+6,7,5,PAL.night[0]); // 夜窗月牙+星
+      for (let s2=0;s2<4;s2++) if ((frame>>4+s2)%3) rect(x+4+seed(s2)*24, y+4+seed(s2+9)*30, 2,2,"#e8e2d0"); }
+    // 云飘过晨/昼窗(手动裁剪在窗内)
+    if (i<5) { const cxp = ((frame*0.2 + i*37) % (w+24)) - 12;
+      const cw = Math.min(14, w-Math.max(0,cxp)) - Math.max(0,-cxp);
+      if (cw>0) rect(x+Math.max(0,cxp), y+8+(i%3)*7, cw, 4, "#f5f0e8"); }
+    rect(x-3, y+h/2, w+6, 2, "k");                    // 窗棂
+    // 吊灯:进度指示(过=绿罩 当前=黄亮+光晕 未到=灭)
+    rect(stationX(i)-1, 0, 2, 8, "k");
+    const on = mode==="done" || i < NODES.indexOf(cur.node) ? "G"
+             : (i === NODES.indexOf(cur.node) && mode!=="done") ? (cur.state==="paused_for_human" ? "y" : staleRun ? "r" : "y") : "wains";
+    rect(stationX(i)-5, 8, 10, 5, "k"); rect(stationX(i)-4, 9, 8, 3, on);
+    if (on==="y" && cur.state!=="paused_for_human" && !staleRun) { cx.globalAlpha=.10;
+      rect(stationX(i)-16, 13, 32, 26, "#f0c83c"); cx.globalAlpha=1; }
   }
-  rect(stationX(3)-8, 16, 16, 16, "#f5e8b0"); rect(stationX(3)-5, 13, 10, 22, "#f5e8b0"); // 太阳
-  rect(stationX(7)+14, 14, 10, 10, "#e8e2d0"); rect(stationX(7)+17, 14, 10, 7, PAL.night[0]); // 月牙
-  for (let i=0;i<10;i++){ const sx=7*SLOT+6+seed(i)*(SLOT-12), sy=6+seed(i+40)*(GROUND-100);
-    if ((frame>>4)%5 !== i%5) rect(sx, sy, 2, 2, "#e8e2d0"); }
-  for (let i=0;i<3;i++){ const cxp=((frame*0.15+i*150)%(5*SLOT+80))-60;  // 云(码绘,素材包无云)
-    rect(cxp+4, 16+i*15, 16, 4, "#f5f0e8"); rect(cxp, 20+i*15, 26, 5, "#f5f0e8"); }
-  for (let i=0;i<32;i++){ const x=i*(W/32), z=ZONE(Math.min(7,Math.floor(x/SLOT)));
-    const h1 = 10+seed(i)*26, h2 = 6+seed(i+9)*12;
-    rect(x, GROUND-h1, W/32+1, h1, PAL.sil[z]);
-    cx.globalAlpha=.55; rect(x, GROUND-h1-h2, W/32+1, h2, PAL.sil[z]); cx.globalAlpha=1; }
+  rect(0, 70, W, 2, "wains");                             // 画轨线
+  for (let i=0;i<7;i+=2) {                                // 相框(挂在工位之间)
+    const fx = (stationX(i)+stationX(i+1))/2 - 9, fy = 84;
+    rect(fx-1, fy-1, 20, 26, "k"); rect(fx, fy, 18, 24, "#d8cdb8");
+    rect(fx+2, fy+2, 14, 20, PAL[ZONE(i)][1]);
+    rect(fx+2, fy+14, 14, 8, PAL[ZONE(i)][0]);
+  }
+  const ckx = W/2 - 8, cky = 82;                          // 挂钟
+  rect(ckx-2, cky-2, 20, 20, "k"); rect(ckx, cky, 16, 16, "#e8e2d0");
+  rect(ckx+7, cky+3, 2, 6, "k"); rect(ckx+8, cky+8, 5, 2, "k");
 }
 
-function ground() {
-  // 分区材质: 晨/昼=草地(t 1,0 / 2,0) 暮/夜=工业钢板(i 1,0 / 2,0)
-  for (let x=0; x<W; x+=36) {
-    const zi = Math.min(7, Math.floor(x/SLOT)), z = ZONE(zi);
-    const nat = (z==="dawn"||z==="day");
-    tile(nat?"t":"i", 1+((x/36)%2), 0, x, GROUND);
-    if (H-GROUND > 36) tile(nat?"t":"i", 1, 1, x, GROUND+36);
-  }
-  // 分区地面装饰: 松树/蘑菇/仙人掌/水晶
-  const DECO = { dawn:[6,6], day:[8,5], dusk:[7,6], night:[6,3] };
-  for (let i=0;i<8;i++) if (i%2===0) {
-    const z = ZONE(i); tile("t", DECO[z][0], DECO[z][1], i*SLOT+6, GROUND-36);
+// 等候区(左侧:长椅+落地灯) 暂停时点亮
+function waitingCorner(active) {
+  const x = BENCH_X, y = GROUND;
+  rect(x, y-14, 30, 4, "#8a6a48"); rect(x, y-10, 3, 10, "k"); rect(x+27, y-10, 3, 10, "k"); // 长椅
+  rect(x+36, y-34, 2, 34, "k"); rect(x+32, y-40, 10, 8, active?"y":"wains");                 // 落地灯
+  if (active) { cx.globalAlpha=.14; rect(x+22, y-32, 30, 30, "#f0c83c"); cx.globalAlpha=1; }
+}
+
+const PROPd = { 0:["t",6,1], 1:["i",10,2], 2:["i",12,1], 4:["i",13,0], 5:["i",1,4], 6:["i",9,0], 7:["c",8,1] };
+function stations() {
+  const idx = Math.max(0,NODES.indexOf(cur.node)), done = mode==="done";
+  for (let i=0;i<8;i++) {
+    const x = stationX(i), y = GROUND;
+    rect(x-30, y-14, 4, 14, "#4a3626"); rect(x+2, y-14, 4, 14, "#4a3626");   // 桌腿
+    rect(x-27, y-29, 30, 17, "#7c5c3e"); rect(x-27, y-29, 30, 3, "#6a4c32");  // 挡板
+    rect(x-32, y-34, 40, 6, "#96744e"); rect(x-32, y-34, 40, 2, "#b08c5e");   // 桌面
+    rect(x-26, y-42, 14, 8, "k");                                             // 笔记本
+    rect(x-25, y-41, 12, 6, (i===idx && !done) ? "#9fd8f0" : (done || i<idx ? "#4a7a58" : "#3a3630"));
+    if (i===3) { tile("c", 0, 2, x+8, y-48, 2); }                             // Codex 审查机器人
+    else { const p = PROPd[i]; if (p) tile(p[0], p[1], p[2], x+2, y-36-(p[0]==="c"?12:0)); }
+    // 桌牌
+    cx.fillStyle = (i===idx && !done) ? PAL.W : (done || i<idx ? PAL.G : "#8a8496");
+    cx.font = "bold 10px ui-monospace,monospace"; cx.textAlign = "center";
+    cx.fillText(NODES[i]+PHASE[NODES[i]].slice(0,2), x-12, y+14);
+    if (done || i<idx) { rect(x-30, y-42, 2, 8, "k"); rect(x-28, y-42, 5, 4, "G"); } // 小旗插在桌上
   }
 }
 
-// 每工位机器(Kenney 工业件组合)
-function station(i, active, done, paused) {
-  const x = stationX(i), y = GROUND;
-  switch (i) {
-    case 0: tile("t",6,1, x-18, y-36); break;                              // 需求箱(木箱)
-    case 1: tile("i",10,3, x-18, y-36); tile("i",10,2, x-18, y-72); break; // 规划(警示牌)
-    case 2: tile("i",12,2, x-18, y-36); tile("i",12,1, x-18, y-72); break; // 开发(控制台)
-    case 3: tile("i",0,6, x-26, y-36); tile("i",0,5, x-26, y-72);          // 审查(机械臂)
-            tile("c",0,2, x+2, y-48); break;                               // +Codex轮式机器人
-    case 4: tile("i",13,2, x-18, y-36); tile("i",13,0, x-18, y-72); break; // 保存(服务器机架)
-    case 5: tile("i",12,4, x-36, y-36); tile("i",13,4, x, y-36);           // 质检(齿轮机+蓝灯)
-            tile("i",1,4, x-18, y-72); break;
-    case 6: tile("i",9,1, x-18, y-36); tile("i",9,0, x-18, y-72); break;   // 整理(码好的物料桶)
-    case 7: tile("i",7,5, x-30, y-36); tile("i",8,5, x+6, y-36);           // 发布(警戒台+火箭)
-            tile("c",8,1, x-24, y-84);
-            if (active || done) rect(x-14, y-38, 6, 6+(frame>>1)%6, "#f06a3c"); break;
-  }
-  // 悬浮铭牌(高于所有机器)
-  const ly = 86;
-  rect(x-17, ly, 34, 14, active ? (paused?"y":"W") : "#00000038");
-  cx.fillStyle = active ? PAL.k : (done ? PAL.y : "#e8e2d0aa");
-  cx.font = "bold 10px ui-monospace,monospace"; cx.textAlign = "center";
-  cx.fillText(NODES[i]+PHASE[NODES[i]].slice(0,2), x, ly+10);
-  if (done) { rect(x-17, ly+16, 4, 4, "G"); rect(x-13, ly+16, 4, 4, "y"); } // 完成角标
+function drawIdle() { // 空闲:沙发打盹(参考 Star-Office 休息区概念)
+  office(); waitingCorner(false);
+  const sx = W/2-40, sy = GROUND-26;
+  rect(sx-6, sy-6, 92, 32, "sofaD"); rect(sx, sy, 80, 20, "sofa");
+  rect(sx+4, sy-2, 20, 10, "cushion"); rect(sx+56, sy-2, 20, 10, "cushion");
+  tile("c", (frame>>5)%2, 0, sx+28, sy-30);            // 打盹的值班小人(绿色同事)
+  cx.fillStyle = PAL.W; cx.font = "13px monospace"; cx.textAlign="left";
+  const zi = (frame>>4)%3;
+  cx.fillText("z".repeat(zi+1), sx+58, sy-26-zi*3);
+  tile("t", 6, 6, 70, GROUND-36);                       // 绿植
+  tile("t", 6, 6, W-60, GROUND-36);
 }
 
 function draw() {
   frame++;
   if (loaded < 3) { rect(0,0,W,H,"k"); requestAnimationFrame(draw); return; }
-  sky(); ground();
+  if (mode === "wait") { drawIdle(); requestAnimationFrame(draw); return; }
+  office(); stations();
   const idx = Math.max(0,NODES.indexOf(cur.node)),
-        paused = cur.state==="paused_for_human", done = cur.state==="done";
-  for (let i=0;i<8;i++) station(i, i===idx&&!done, done||i<idx, paused);
+        paused = cur.state==="paused_for_human", done = mode==="done";
+  if (paused) { cx.fillStyle="rgba(18,16,26,.34)"; cx.fillRect(0,0,W,H); }
+  waitingCorner(paused);
   if (!done) {
-    const targetX = stationX(idx)-52, dx = targetX-workerX;
+    const targetX = paused ? BENCH_X+4 : stationX(idx)-52;
+    const dx = targetX-workerX;
     if (Math.abs(dx)>2) workerX += Math.sign(dx)*Math.min(2.4,Math.abs(dx));
     const walking = Math.abs(dx)>2;
-    const f = walking ? (frame>>3)%2 : (frame>>5)%2;   // 走路快帧,伏案慢帧
-    tile("c", f, 1, workerX, GROUND-48);
-    if (paused && (frame>>4)%2) { cx.fillStyle=PAL.y; cx.font="bold 18px monospace";
+    const f = walking ? (frame>>3)%2 : (frame>>5)%2;
+    tile("c", f, 1, workerX, GROUND-48);                 // 工装小人
+    if (paused && !walking && (frame>>4)%2) { cx.fillStyle=PAL.y; cx.font="bold 18px monospace";
       cx.textAlign="center"; cx.fillText("!", workerX+24, GROUND-54); }
+    if (staleRun && (frame>>4)%2) { cx.fillStyle=PAL.r; cx.font="bold 18px monospace";
+      cx.textAlign="center"; cx.fillText("?", workerX+24, GROUND-54); }
   } else {
-    if (frame%8===0) fireworks.push({x:40+Math.random()*(W-80), y:16+Math.random()*(GROUND-110),
+    if (frame%8===0) fireworks.push({x:40+Math.random()*(W-80), y:20+Math.random()*(GROUND-90),
       t:0, c:["#f0b03c","#f5f0e8","#f06a3c","#63b8b0","#95c86a","#8c78c8"][Math.random()*6|0]});
     fireworks = fireworks.filter(f=>f.t<24);
     for (const f of fireworks){ f.t++;
       for (let a=0;a<8;a++){ const R=f.t*1.5;
         rect(f.x+Math.cos(a*Math.PI/4)*R, f.y+Math.sin(a*Math.PI/4)*R, 2, 2, f.c); } }
-    rect(W/2-92, 26, 184, 30, "W"); rect(W/2-92, 26, 184, 3, "k"); rect(W/2-92, 53, 184, 3, "k");
-    rect(W/2-92, 26, 3, 30, "k"); rect(W/2+89, 26, 3, 30, "k");
+    rect(W/2-92, 40, 184, 30, "W"); rect(W/2-92, 40, 184, 3, "k"); rect(W/2-92, 67, 184, 3, "k");
+    rect(W/2-92, 40, 3, 30, "k"); rect(W/2+89, 40, 3, 30, "k");
     cx.fillStyle=PAL.k; cx.font="bold 17px ui-monospace,monospace"; cx.textAlign="center";
-    cx.fillText("STAGE CLEAR!", W/2, 47);
-    tile("c", 7, 0, stationX(3), GROUND-48);   // 庆祝的伙伴们
+    cx.fillText("STAGE CLEAR!", W/2, 61);
+    tile("c", 7, 0, stationX(3), GROUND-48);
     tile("c", 4, 0, stationX(4), GROUND-48);
   }
-  if (paused) { cx.fillStyle="rgba(18,16,26,.38)"; cx.fillRect(0,0,W,82); }
   requestAnimationFrame(draw);
 }
 
 function hud() {
-  const paused = cur.state==="paused_for_human", done = cur.state==="done";
+  const paused = cur.state==="paused_for_human", done = mode==="done";
   const ph = document.getElementById("phase");
-  ph.textContent = done ? "STAGE CLEAR — 全部完成" :
-    (paused ? "🖐 等你确认" : `STAGE ${cur.node} · ${PHASE[cur.node]||"运行中"}`);
-  ph.className = paused ? "paused" : "";
+  if (mode==="wait") { ph.textContent = "😴 休息中(等 /cm:ai 启动)"; ph.className=""; }
+  else if (staleRun) { ph.textContent = "⚠ 可能已中断(去会话确认)"; ph.className="stale"; }
+  else { ph.textContent = done ? "STAGE CLEAR — 全部完成" :
+      (paused ? "🖐 等你确认" : `STAGE ${cur.node} · ${PHASE[cur.node]||"运行中"}`);
+    ph.className = paused ? "paused" : ""; }
   document.getElementById("task").textContent =
-    [cur.feature.replace(/^\d+\./,""), cur.task].filter(Boolean).join(" · ");
+    mode==="wait" ? "" : [cur.feature.replace(/^\d+\./,""), cur.task].filter(Boolean).join(" · ");
   const b = document.getElementById("bubble");
-  if (cur.detail && !done) {
+  if (mode==="run" && cur.detail) {
     b.style.display="block"; b.className = paused?"paused":"";
     b.textContent = (paused?"🖐 ":"")+cur.detail;
     const idx = Math.max(0,NODES.indexOf(cur.node));
-    b.style.left = (Math.min(86,Math.max(14,(idx*SLOT+SLOT/2)/W*100))+"%");
-    b.style.top = 70/H*100+"%";
+    b.style.left = paused ? "12%" : (Math.min(86,Math.max(14,stationX(idx)/W*100))+"%");
+    b.style.top = (GROUND-64)/H*100+"%";
   } else b.style.display="none";
+}
+
+// 昨日小记(参考 Star-Office 概念):空闲/完成时展示上次运行度量摘要
+async function loadNote() {
+  try {
+    const md = await (await fetch("度量汇总.md?ts="+Date.now())).text();
+    if (md.startsWith("<")) return; // 404 页面
+    const secs = md.trim().split(/\n(?=#)/); const last = secs[secs.length-1];
+    const lines = last.split("\n").filter(l=>l.trim().startsWith("-")).slice(0,4);
+    if (!lines.length) return;
+    const n = document.getElementById("note");
+    n.innerHTML = "<b>📋 上次收工小记</b>\n" + lines.join("\n").replace(/</g,"&lt;");
+    n.style.display = "block";
+  } catch {}
 }
 
 const DEMO = [
@@ -203,24 +256,36 @@ const DEMO = [
   ["N7","running","整理现场,准备下一个任务","1.market-board",""],
   ["N8","running","收尾:整理文档和发布清单","",""],
   ["N8","done","全部完成","",""]];
-const isDemo = new URLSearchParams(location.search).has("demo");
+const q = new URLSearchParams(location.search);
+const isDemo = q.has("demo"), isIdleDemo = q.has("idle");
 
 async function poll() {
+  if (isIdleDemo) { mode="wait"; hud(); loadNote(); return; }
   if (isDemo) {
     const [node,state,detail,feature,task] = DEMO[(Math.floor(Date.now()/2600))%DEMO.length];
-    cur = {node,state,detail,feature,task}; setBar(4,6);
+    cur = {node,state,detail,feature,task};
+    mode = state==="done" ? "done" : "run"; staleRun = false; setBar(4,6);
   } else {
     try {
-      const s = await (await fetch(".cm-status.json?ts="+Date.now())).json();
+      const res = await fetch(".cm-status.json?ts="+Date.now());
+      if (!res.ok) throw 0;
+      const s = await res.json();
       cur = { node:s.node||"N1", state:s.state||"running", detail:s.detail||"",
               feature:s.feature||"", task:s.task||"" };
-      if (cur.feature) {
+      mode = cur.state==="done" ? "done" : "run";
+      const lm = res.headers.get("last-modified");           // 中断检测(与终端版同阈值 10 分钟)
+      staleRun = !!(lm && mode==="run" && cur.state!=="paused_for_human"
+                    && (Date.now()-new Date(lm).getTime()) > 600_000);
+      if (cur.feature && mode!=="wait") {
         const md = await (await fetch(cur.feature+"/tasks.md?ts="+Date.now())).text();
         const items = md.match(/^- \[( |x)\] T-\d+/gm)||[];
         setBar(items.filter(l=>l.includes("[x]")).length, items.length);
       } else setBar(0,0);
       document.getElementById("hint").textContent = "";
-    } catch { document.getElementById("hint").textContent = "⏳ 等待 /cm:ai 启动(未读到状态文件)"; }
+      document.getElementById("note").style.display = mode==="done" ? "" : "none";
+      if (mode==="done") loadNote();
+    } catch { mode = "wait"; setBar(0,0); loadNote();
+      document.getElementById("hint").textContent = "😴 值班中"; }
   }
   hud(); setTimeout(poll, isDemo?400:2000);
 }
