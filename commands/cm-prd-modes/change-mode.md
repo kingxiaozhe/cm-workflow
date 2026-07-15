@@ -126,3 +126,5 @@
 /cm:prd --change 1.user-auth 新增微信扫码登录方式
 /cm:prd --change 2 ~/projects/my-app-specs
 ```
+
+**审批位重置**：变更落盘后，将 `{SPECS_DIR}/.cm-specs-status` 重置为 `awaiting_review`——改过的规格等于没审过，N1 入口闸将再次要求确认。
