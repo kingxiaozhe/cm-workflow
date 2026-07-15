@@ -8,7 +8,7 @@
   * { margin:0; padding:0; box-sizing:border-box; }
   body { background:#131120; color:#e8e2d0; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
          min-height:100vh; display:flex; flex-direction:column; align-items:center; padding:18px 12px; }
-  #wrap { width:min(1060px, 100%); }
+  #wrap { width:min(980px, 100%); }
   #hud { display:flex; align-items:center; gap:12px; padding:8px 2px; font-size:14px; }
   #logo { background:#f0b03c; color:#1c1a14; font-weight:800; padding:3px 9px; border-radius:3px;
           letter-spacing:2px; box-shadow:0 3px 0 #8a6210; }
@@ -22,7 +22,7 @@
   canvas { display:block; width:100%; image-rendering:pixelated; image-rendering:crisp-edges; }
   #bubble { position:absolute; transform:translate(-50%,-115%); max-width:380px; padding:8px 12px;
             background:#faf6ec; color:#1c1a14; border:2px solid #1c1a14; border-radius:6px;
-            font-size:13px; line-height:1.5; display:none; box-shadow:3px 4px 0 rgba(0,0,0,.4); }
+            font-size:13px; line-height:1.5; display:none; box-shadow:3px 4px 0 rgba(0,0,0,.4); z-index:2; }
   #bubble.paused { background:#f5d95c; transform:translate(-12%,-115%); }
   #bubble.paused:after { left:12%; }
   #bubble:after { content:""; position:absolute; left:50%; bottom:-10px; margin-left:-5px;
@@ -47,7 +47,7 @@
     <span id="task"></span><span id="coins"></span>
   </div>
   <div id="stage">
-    <canvas id="cv" width="744" height="272"></canvas>
+    <canvas id="cv" width="744" height="420"></canvas>
     <div id="bubble"></div>
     <div id="note"></div>
   </div>
@@ -64,126 +64,159 @@ const SKY = {
   dawn:["#c98d78","#dba98a","#e8c49a"], day:["#7fa8c8","#93b9d4","#a9cbdd"],
   dusk:["#8a5f7a","#b07a6a","#d0996a"], night:["#242138","#2e2a48","#3a3560"],
 };
+const TINT = { dawn:"rgba(230,150,100,.09)", day:"rgba(255,180,90,.05)",
+               dusk:"rgba(210,120,70,.12)", night:"rgba(30,34,90,.17)" };
 const NODES = ["N1","N2","N3","N4","N5","N6","N7","N8"];
 const PHASE = { N1:"启动准备", N2:"规划任务", N3:"开发中", N4:"检查代码",
                 N5:"保存进度", N6:"质量检测", N7:"整理现场", N8:"收尾总结" };
 const ZONE = i => i<2 ? "dawn" : i<5 ? "day" : i<7 ? "dusk" : "night";
-const PROPS = { 0:"plant2", 1:"shelfA", 2:"crate", 4:"dresser", 5:"fridge", 6:"shelfB", 7:"bin" };
+const PROPS = { 0:"plant2", 1:"crate", 2:"bin", 4:"dresser", 5:"fridge", 6:"shelfB", 7:"plant" };
 
 const cv = document.getElementById("cv"), cx = cv.getContext("2d");
 cx.imageSmoothingEnabled = false;
-const W = cv.width, H = cv.height, GROUND = 192, BASE = 246;   // BASE=家具落地线
-const MARGIN = 120, SLOT = (W - MARGIN - 16) / 8;
-const stationX = i => MARGIN + i*SLOT + SLOT/2;
-const BENCH = { x:64, cx:88 };                                  // 等候长椅
+const W = cv.width, H = cv.height, TOPW = 48;                   // 顶墙高度
+// 工位:两排四列,像真办公室
+const POD = []; for (let i=0;i<8;i++)
+  POD.push({ x: 128 + (i%4)*162, y: 168 + ((i/4)|0)*150 });
+const BENCH = { x:20, y:252, cx:44 };                           // 等候长椅(左墙)
+const LOUNGE = { x:W/2, y:252 };                                // 中央过道=休息区
 const seed = n => { let x = Math.sin(n*127.1)*43758.5; return x - Math.floor(x); };
 
 function rect(x,y,w,h,c){ cx.fillStyle = c; cx.fillRect(x|0, y|0, w, h); }
 function tile(n,dx,dy,z=3){ const [c,r] = T[n];
   cx.drawImage(IMG, c*16, r*16, 16, 16, dx|0, dy|0, 16*z, 16*z); }
-function shadow(x,y,rx,ry,a=.28){ cx.fillStyle = "rgba(12,8,20,"+a+")";
+function shadow(x,y,rx,ry,a=.26){ cx.fillStyle = "rgba(12,8,20,"+a+")";
   cx.beginPath(); cx.ellipse(x,y,rx,ry,0,0,7); cx.fill(); }
 
 let cur = { node:"N1", state:"running", detail:"", feature:"", task:"" };
-let mode = "wait", staleRun = false;
-let workerX = stationX(0)-40, frame = 0, confetti = [], firstSnap = true;
+let mode = "wait", staleRun = false, firstSnap = true;
+let wk = { x:POD[0].x-58, y:POD[0].y+18 };                      // 小人(2D 自由走动)
+let frame = 0, confetti = [];
 
-// ---------- 房间 ----------
-function room() {
-  for (let r=0; r<4; r++) for (let c=0; c<Math.ceil(W/48); c++)
-    tile(r===3 ? "wallB" : (seed(c*7+r)>.5 ? "wall" : "wall2"), c*48, r*48);
-  rect(0,0,W,10,"#171310");                                    // 顶檐
-  for (let r=0; r<2; r++) for (let c=0; c<Math.ceil(W/48); c++)
-    tile(seed(c*3+r*11)>.6 ? "flr2" : (seed(c*5+r)>.8 ? "flr3" : "flr"), c*48, GROUND + r*48);
-  rect(0,GROUND,W,5,"rgba(12,8,20,.35)");                      // 墙脚阴影
-  // 8 扇窗(位于工位之间):晨→昼→暮→夜 = 进度的第二读数
-  for (let i=0;i<8;i++) {
-    const wx = MARGIN + i*SLOT, x = wx-22, y = 32, w = 44, h = 64, p = SKY[ZONE(i)];
-    rect(x-4,y-4,w+8,h+8,"#241f1a");
+// ---------- 房间(俯视) ----------
+function room(zone) {
+  for (let r=0; r<Math.ceil((H-TOPW)/48); r++)                  // 暖木地板
+    for (let c=0; c<Math.ceil(W/48); c++)
+      tile(seed(c*3+r*11)>.62 ? "wood2" : (seed(c*5+r)>.85 ? "wood3" : "wood"), c*48, TOPW + r*48);
+  for (let c=0; c<Math.ceil(W/48); c++) tile("brick", c*48, 0); // 红砖顶墙
+  rect(0,0,W,6,"#171310");
+  rect(0,TOPW-7,W,7,"#4a3626"); rect(0,TOPW-7,W,2,"#5f4630");   // 木梁压边
+  rect(0,TOPW,W,5,"rgba(12,8,20,.35)");                         // 墙脚阴影
+  rect(0,TOPW,4,H-TOPW,"rgba(12,8,20,.30)");                    // 左右墙沿
+  rect(W-4,TOPW,4,H-TOPW,"rgba(12,8,20,.30)");
+  const p = SKY[zone];                                          // 4 扇窗,窗外=当前进度时辰
+  for (let i=0;i<4;i++) {
+    const x = 96 + i*168, y = 7, w = 52, h = 32;
+    rect(x-3,y-3,w+6,h+6,"#241f1a");
     for (let b=0;b<3;b++) rect(x, y+b*h/3, w, h/3+1, p[b]);
-    if (ZONE(i)==="day" && i===3) { rect(x+26,y+8,11,11,"#f5e8b0"); rect(x+29,y+11,5,5,"#fdf6d8"); }
-    if (ZONE(i)==="dawn" && i===0) { rect(x+6,y+h-22,10,6,"#f0c890"); }
-    if (ZONE(i)==="dusk" && i===5) { rect(x+24,y+h-26,12,8,"#e8a060"); }
-    if (ZONE(i)==="night") { rect(x+26,y+8,9,9,"#e8e2d0");
-      rect(x+26,y+8,1,1,p[0]); rect(x+34,y+8,1,1,p[0]); rect(x+26,y+16,1,1,p[0]); rect(x+34,y+16,1,1,p[0]);
-      rect(x+28,y+10,2,2,"#c8c2b0"); rect(x+31,y+13,2,2,"#c8c2b0");
-      for (let s2=0;s2<5;s2++) if ((frame>>4)%3 !== s2%3)
-        rect(x+4+seed(s2+i)*34, y+4+seed(s2+9)*40, 2,2,"#e8e2d0"); }
-    if (ZONE(i)==="day" || ZONE(i)==="dawn") {                 // 云飘过(裁剪在窗内)
+    if (zone==="day" && i===1) { rect(x+34,y+5,9,9,"#f5e8b0"); }
+    if (zone==="dawn" && i===0) { rect(x+8,y+h-12,10,5,"#f0c890"); }
+    if (zone==="dusk" && i===2) { rect(x+30,y+h-14,11,6,"#e8a060"); }
+    if (zone==="night") { if (i===1) { rect(x+34,y+5,8,8,"#e8e2d0");
+        rect(x+35,y+6,2,2,"#c8c2b0"); rect(x+38,y+9,2,2,"#c8c2b0"); }
+      for (let s2=0;s2<3;s2++) if ((frame>>4)%3 !== s2)
+        rect(x+4+seed(s2+i)*44, y+3+seed(s2+9)*24, 2,2,"#e8e2d0"); }
+    if (zone==="day" || zone==="dawn") {
       cx.save(); cx.beginPath(); cx.rect(x,y,w,h); cx.clip();
       const cxp = x + ((frame*0.22 + i*53) % (w+30)) - 15;
-      rect(cxp, y+10+(i%3)*9, 16, 5, "rgba(250,246,236,.85)");
-      rect(cxp+3, y+7+(i%3)*9, 9, 4, "rgba(250,246,236,.85)"); cx.restore(); }
-    rect(x-4, y+h/2-1, w+8, 3, "#241f1a");                     // 中棂
-    rect(x-7, y+h+4, w+14, 5, "#5c4c3a");                      // 窗台
+      rect(cxp, y+6+(i%2)*8, 14, 4, "rgba(250,246,236,.85)"); cx.restore(); }
+    rect(x-3, y+h/2-1, w+6, 2, "#241f1a");
+    if (i%2===0) tile("plant2", x+w-6, y+h-8, 1);               // 窗台盆栽
+    else tile("plant", x-12, y+h-8, 1);
   }
-  // 吊灯(位于工位正上方,与窗错开)
+  tile("art1", 40, 10, 2); tile("gold", 660, 8, 2);             // 顶墙挂画
+  const ckx = 24, cky = 12;                                     // 挂钟
+  rect(ckx-2,cky-2,16,16,"#241f1a"); rect(ckx,cky,12,12,"#e8e2d0");
+  rect(ckx+5,cky+2,2,5,"#241f1a"); rect(ckx+6,cky+6,4,2,"#241f1a");
+}
+
+// ---------- 深度排序渲染(y 小在后,y 大在前=离观众近) ----------
+function drawSorted(ents) {
+  ents.sort((a,b) => a.by - b.by);
+  for (const e of ents) e.f();
+}
+
+function podEnts(ents, idx, done) {
   for (let i=0;i<8;i++) {
-    rect(stationX(i)-1, 0, 2, 14, "#241f1a");
-    tile("lamp", stationX(i)-16, 12, 2);
-  }
-  // 墙饰
-  tile("mirror", 40, 106, 2);
-  tile("art1", stationX(0)+SLOT/2-26, 112, 2); tile("art2", stationX(0)+SLOT/2+2, 118, 1.6);
-  tile("gold", stationX(2)+SLOT/2-16, 110, 2);
-  tile("art3", stationX(4)+SLOT/2-16, 114, 2);
-  tile("art2", stationX(6)+SLOT/2-16, 112, 2);
-  const ckx = 32, cky = 44;                                    // 挂钟(等候区墙面)
-  rect(ckx-2,cky-2,24,24,"#241f1a"); rect(ckx,cky,20,20,"#e8e2d0");
-  rect(ckx+9,cky+4,2,8,"#241f1a"); rect(ckx+10,cky+10,6,2,"#241f1a");
-}
-
-// 等候区:自动售货机 + 长椅(暂停时小人来这坐)
-function waitingCorner() {
-  shadow(34, BASE+2, 24, 5);
-  tile("vend", 10, BASE-48);
-  shadow(BENCH.cx+8, BASE+2, 30, 5);
-  tile("sofaM", BENCH.x, BASE-32, 2); tile("sofaR", BENCH.x+32, BASE-32, 2);
-}
-
-function stations() {
-  const idx = Math.max(0, NODES.indexOf(cur.node)), done = mode==="done";
-  for (let i=0;i<8;i++) {
-    const x = stationX(i), active = i===idx && !done, passed = done || i<idx;
-    shadow(x, BASE+4, 30, 6);
-    if (i===3) { shadow(x+44, BASE+2, 14, 4); tile("codex", x+20, BASE-48); }  // Codex 审查员常驻 N4
-    else if (PROPS[i]) { shadow(x+38, BASE+2, 14, 4); tile(PROPS[i], x+24, BASE-32, 2); }
-    tile("chairL", x-52, BASE-32, 2);
-    tile("desk", x-24, BASE-48);
-    tile(active ? "mon" : "mon2", x-14, BASE-68, 1.75);        // 显示器
-    if (passed) { rect(x-11, BASE-65, 22, 17, "rgba(80,170,90,.85)");          // 通过=绿屏
-      cx.fillStyle="#eaf6ea"; cx.font="bold 11px monospace"; cx.textAlign="center";
-      cx.fillText("✓", x, BASE-52); }
-    else if (!active) rect(x-11, BASE-65, 22, 17, "rgba(24,20,34,.88)");       // 未到=熄屏
-    else if ((frame>>4)%4===0) rect(x-11, BASE-65, 22, 17, "rgba(159,216,240,.25)"); // 当前=闪烁
-    cx.fillStyle = active ? "#faf6ec" : passed ? "#7fbf6a" : "#6f6890";
-    cx.font = "bold 11px ui-monospace,monospace"; cx.textAlign = "center";
-    cx.fillText(NODES[i]+" "+PHASE[NODES[i]].slice(0,2), x, 266);
+    const P = POD[i], x = P.x, y = P.y,
+          active = i===idx && !done && mode==="run", passed = done || i<idx;
+    ents.push({ by: y+30, f: () => {
+      tile("rgA", x-32, y-14, 2); tile("rgB", x, y-14, 2);       // 奶油地垫
+      tile("rgC", x-32, y+18, 2); tile("rgD", x, y+18, 2);
+      shadow(x, y+30, 30, 6);
+      tile("desk", x-24, y-18);
+      tile("lamp2", x+13, y-30, 1.1);                            // 桌灯
+      tile(active ? "mon" : "mon2", x-14, y-38, 1.75);
+      if (passed) { rect(x-11, y-35, 22, 17, "rgba(80,170,90,.85)");
+        cx.fillStyle="#eaf6ea"; cx.font="bold 11px monospace"; cx.textAlign="center";
+        cx.fillText("✓", x, y-22); }
+      else if (!active) rect(x-11, y-35, 22, 17, "rgba(24,20,34,.88)");
+      else if ((frame>>4)%4===0) rect(x-11, y-35, 22, 17, "rgba(159,216,240,.25)");
+      tile("chairF", x-14, y+16, 1.75);                          // 桌前椅(背对观众)
+    }});
+    if (i===3) ents.push({ by: P.y+26, f: () => {               // Codex 审查员常驻 N4
+      shadow(P.x+44, P.y+26, 13, 4); tile("codex", P.x+22, P.y-22); }});
+    else if (i===5) ents.push({ by: P.y+28, f: () => {           // 服务器机架(CI/测试机)
+      shadow(P.x+46, P.y+28, 13, 4);
+      tile("mon2", P.x+30, P.y-36, 2); tile("mon2", P.x+30, P.y-4, 2);
+      for (let k=0;k<4;k++) if ((frame>>3)%4!==k)
+        rect(P.x+36+k*6, P.y-30+((k%2)*32), 3, 3, k%2?"#7fdc6a":"#63b8b0"); }});
+    else if (PROPS[i]) ents.push({ by: P.y+28, f: () => {
+      shadow(P.x+46, P.y+28, 13, 4); tile(PROPS[i], P.x+30, P.y-4, 2); }});
   }
 }
 
-function person(n, x, y, bob) {
-  shadow(x+24, y+50, 15, 4, .32);
-  tile(n, x, y + (bob ? ((frame>>3)%2) : 0));
+function furnitureEnts(ents) {
+  ents.push({ by: 96, f: () => {                                // 咖啡台(靠顶墙)
+    shadow(608, 98, 52, 6);
+    tile("cntL", 560, 64, 2); tile("cntM", 592, 64, 2); tile("cntR", 624, 64, 2); }});
+  ents.push({ by: 98, f: () => { shadow(40, 98, 20, 5); tile("shelfA", 16, 56, 2.5); }}); // 书架
+  ents.push({ by: BENCH.y+34, f: () => {                        // 等候区:售货机+长椅
+    shadow(36, BENCH.y-14, 18, 5); tile("vend", 16, BENCH.y-62, 2);
+    shadow(BENCH.cx+22, BENCH.y+32, 26, 5);
+    tile("sofaM", BENCH.x, BENCH.y, 2); tile("sofaR", BENCH.x+32, BENCH.y, 2); }});
+  ents.push({ by: H-8, f: () => {                               // 角落绿植
+    tile("plant", 12, H-56, 2); tile("plant2", W-46, H-58, 2); }});
 }
 
-function lighting(idx, paused, done) {
+function person(n, x, y, bob) {                                 // x,y = 脚底中心
+  return { by: y, f: () => { shadow(x, y+2, 14, 4, .32);
+    tile(n, x-24, y-46 + (bob ? ((frame>>3)%2) : 0)); } };
+}
+
+function lighting(idx, paused, done, zone) {
   const lit = [];
   if (mode==="run" && !done && !paused)
-    lit.push({x:stationX(idx), y:42, c: staleRun ? "255,95,80" : "255,205,120", a:.22});
-  if (paused) lit.push({x:BENCH.cx, y:46, c:"255,205,120", a:.24});
-  if (done || mode==="wait") for (let i=1;i<8;i+=3)
-    lit.push({x:stationX(i), y:42, c:"255,205,120", a:.08});
+    lit.push({x:POD[idx].x, y:POD[idx].y-10, c: staleRun ? "255,95,80" : "255,205,120", a:.26});
+  if (paused) lit.push({x:BENCH.cx+16, y:BENCH.y-10, c:"255,205,120", a:.24});
+  if (done || mode==="wait") lit.push({x:LOUNGE.x, y:LOUNGE.y, c:"255,205,120", a:.10});
   cx.globalCompositeOperation = "lighter";
   for (const L of lit) {
-    const g = cx.createRadialGradient(L.x,L.y,8, L.x,L.y,120);
+    const g = cx.createRadialGradient(L.x,L.y,10, L.x,L.y,130);
     g.addColorStop(0,"rgba("+L.c+","+L.a+")"); g.addColorStop(1,"rgba("+L.c+",0)");
-    cx.fillStyle = g; cx.fillRect(L.x-120, L.y-120, 240, 240);
+    cx.fillStyle = g; cx.fillRect(L.x-130, L.y-130, 260, 260);
   }
   cx.globalCompositeOperation = "source-over";
-  const v = cx.createRadialGradient(W/2, H*.40, H*.45, W/2, H*.55, W*.60);
-  v.addColorStop(0,"rgba(8,6,18,0)"); v.addColorStop(1,"rgba(8,6,18,.44)");
+  rect(0,0,W,H, TINT[zone]);                                    // 时辰环境色
+  const v = cx.createRadialGradient(W/2, H*.44, H*.42, W/2, H*.52, W*.62);
+  v.addColorStop(0,"rgba(8,6,18,0)"); v.addColorStop(1,"rgba(8,6,18,.48)");
   cx.fillStyle = v; cx.fillRect(0,0,W,H);
+}
+
+function labels(idx, done) {
+  cx.font = "bold 11px ui-monospace,monospace"; cx.textAlign = "center";
+  for (let i=0;i<8;i++) {
+    const P = POD[i], active = i===idx && !done && mode==="run", passed = done || i<idx;
+    const t = NODES[i]+" "+PHASE[NODES[i]].slice(0,2);
+    cx.fillStyle = "rgba(20,14,8,.75)"; cx.fillText(t, P.x+1, P.y+53);
+    cx.fillStyle = active ? "#faf6ec" : passed ? "#8fdc78" : "#b8a888";
+    cx.fillText(t, P.x, P.y+52);
+  }
+  const name = (cur.feature ? cur.feature.replace(/^\d+\./,"") : "cm 工作流") + " 的办公室";
+  cx.font = "bold 12px ui-monospace,monospace";
+  const tw = cx.measureText("★ "+name+" ★").width + 24;
+  rect(W/2-tw/2, H-24, tw, 19, "#241f1a"); rect(W/2-tw/2+2, H-22, tw-4, 15, "#3a2c1e");
+  cx.fillStyle = "#f0c05a"; cx.fillText("★ "+name+" ★", W/2, H-10);
 }
 
 function emote(ch, x, y, col) {
@@ -193,17 +226,18 @@ function emote(ch, x, y, col) {
 }
 
 function drawIdle() {
-  room(); waitingCorner();
-  const sx = W/2 - 72;
-  for (let i=0;i<5;i++) tile(i===0?"rugL":i===4?"rugR":"rugM", sx-8+i*32, BASE-12, 2);
-  shadow(W/2, BASE+4, 76, 7);
-  person("sleep", W/2-24, BASE-80, false);
-  tile("sofaL", sx, BASE-48); tile("sofaM", sx+48, BASE-48); tile("sofaR", sx+96, BASE-48);
-  tile("plant", sx-56, BASE-48); tile("plant2", sx+152, BASE-48);
+  room("night");
+  const ents = []; podEnts(ents, 0, false); furnitureEnts(ents);
+  ents.push({ by: LOUNGE.y+34, f: () => {                       // 中央沙发打盹
+    shadow(LOUNGE.x, LOUNGE.y+34, 66, 7);
+    tile("sofaL", LOUNGE.x-72, LOUNGE.y-6); tile("sofaM", LOUNGE.x-24, LOUNGE.y-6);
+    tile("sofaR", LOUNGE.x+24, LOUNGE.y-6); }});
+  ents.push(person("sleep", LOUNGE.x, LOUNGE.y+2, false));
+  drawSorted(ents); labels(0, false);
   const zi = (frame>>4)%3;
   cx.fillStyle="#cfc8e8"; cx.font="bold 13px monospace"; cx.textAlign="left";
-  cx.fillText("z".repeat(zi+1), W/2+10, BASE-86-zi*4);
-  lighting(0,false,false);
+  cx.fillText("z".repeat(zi+1), LOUNGE.x+26, LOUNGE.y-40-zi*4);
+  lighting(0,false,false,"night");
 }
 
 function draw() {
@@ -211,34 +245,51 @@ function draw() {
   if (!loaded) { rect(0,0,W,H,"#0d0b16"); requestAnimationFrame(draw); return; }
   if (mode==="wait") { drawIdle(); requestAnimationFrame(draw); return; }
   const idx = Math.max(0, NODES.indexOf(cur.node)),
-        paused = cur.state==="paused_for_human", done = mode==="done";
-  room(); waitingCorner(); stations();
-  if (paused) rect(0,0,W,H,"rgba(10,8,22,.34)");
+        paused = cur.state==="paused_for_human", done = mode==="done",
+        zone = done ? "night" : ZONE(idx);
+  room(zone);
+  const ents = []; podEnts(ents, idx, done); furnitureEnts(ents);
+  let sat = false;
   if (!done) {
-    const targetX = paused ? BENCH.x+8 : stationX(idx)-42;
-    const dx = targetX - workerX;
-    if (Math.abs(dx)>2) workerX += Math.sign(dx)*Math.min(isDemo?8:2.6, Math.abs(dx));
-    const walking = Math.abs(dx)>2;
-    person("worker", workerX, BASE-50, walking);
-    if (paused && !walking) { tile("sofaM", BENCH.x, BASE-32, 2);   // 补画椅面盖住腿=坐下
-      tile("sofaR", BENCH.x+32, BASE-32, 2);
-      emote("!", workerX+24, BASE-62, "#f5d95c"); }
-    if (staleRun) emote("?", workerX+24, BASE-58, "#f08a80");
+    const t = paused ? {x:BENCH.cx+16, y:BENCH.y+26} : {x:POD[idx].x-52, y:POD[idx].y+20};
+    const dx = t.x-wk.x, dy = t.y-wk.y, d = Math.hypot(dx,dy);
+    const spd = isDemo ? 8 : 2.6;
+    if (d>3) { wk.x += dx/d*Math.min(spd,d); wk.y += dy/d*Math.min(spd,d); }
+    const walking = d>3;
+    sat = paused && !walking;
+    ents.push(person("worker", wk.x, wk.y, walking));
+    if (sat) ents.push({ by: wk.y+1, f: () => {                  // 补画椅面盖腿=坐下
+      tile("sofaM", BENCH.x, BENCH.y, 2); tile("sofaR", BENCH.x+32, BENCH.y, 2); }});
   } else {
+    ents.push({ by: LOUNGE.y+18, f: () => { shadow(LOUNGE.x, LOUNGE.y+18, 34, 7);
+      tile("tblO1", LOUNGE.x-24, LOUNGE.y-54); tile("tblO2", LOUNGE.x-24, LOUNGE.y-8); }});
+    ents.push(person("worker", LOUNGE.x-64, LOUNGE.y+6, true));
+    ents.push(person("celA", LOUNGE.x+64, LOUNGE.y+6, true));
+    ents.push(person("celB", LOUNGE.x-40, LOUNGE.y+52, true));
+    ents.push(person("celC", LOUNGE.x+40, LOUNGE.y+52, true));
+  }
+  if (paused) { drawSorted(ents.filter(e=>true)); rect(0,0,W,H,"rgba(10,8,22,.32)");
+    const again = []; again.push(person("worker", wk.x, wk.y, false));
+    if (sat) again.push({ by: wk.y+1, f: () => {
+      tile("sofaM", BENCH.x, BENCH.y, 2); tile("sofaR", BENCH.x+32, BENCH.y, 2); }});
+    drawSorted(again);
+    if (sat) emote("!", wk.x, wk.y-56, "#f5d95c");
+  } else {
+    drawSorted(ents);
+    if (staleRun && !done) emote("?", wk.x, wk.y-56, "#f08a80");
+  }
+  labels(idx, done);
+  if (done) {
     if (frame%3===0) confetti.push({ x:Math.random()*W, y:-6, v:1+Math.random()*1.6,
       w:Math.random()>.5?4:3, c:["#f0b03c","#f06a3c","#63b8b0","#95c86a","#8c78c8","#faf6ec"][Math.random()*6|0] });
     confetti = confetti.filter(p => p.y < H-8);
     for (const p of confetti) { p.y += p.v; rect(p.x + Math.sin((p.y+p.x)/14)*5, p.y, p.w, p.w+2, p.c); }
-    person("worker", W/2-90, BASE-50, true);
-    person("celA", W/2-30, BASE-50, true);
-    person("celB", W/2+30, BASE-50, true);
-    person("celC", W/2+90, BASE-50, true);
-    rect(W/2-104, 34, 208, 34, "#faf6ec"); rect(W/2-104, 34, 208, 4, "#241f1a");
-    rect(W/2-104, 64, 208, 4, "#241f1a"); rect(W/2-104, 34, 4, 34, "#241f1a"); rect(W/2+100, 34, 4, 34, "#241f1a");
+    rect(W/2-104, 66, 208, 34, "#faf6ec"); rect(W/2-104, 66, 208, 4, "#241f1a");
+    rect(W/2-104, 96, 208, 4, "#241f1a"); rect(W/2-104, 66, 4, 34, "#241f1a"); rect(W/2+100, 66, 4, 34, "#241f1a");
     cx.fillStyle="#1c1a14"; cx.font="bold 19px ui-monospace,monospace"; cx.textAlign="center";
-    cx.fillText("STAGE CLEAR!", W/2, 58);
+    cx.fillText("STAGE CLEAR!", W/2, 90);
   }
-  lighting(idx, paused, done);
+  lighting(idx, paused, done, zone);
   requestAnimationFrame(draw);
 }
 
@@ -258,8 +309,8 @@ function hud() {
     b.textContent = (paused ? "🖐 " : "") + cur.detail;
     const idx = Math.max(0, NODES.indexOf(cur.node));
     b.style.left = paused ? (BENCH.cx/W*100+"%")
-                          : (Math.min(86, Math.max(14, stationX(idx)/W*100)) + "%");
-    b.style.top = (BASE-70)/H*100 + "%";
+                          : (Math.min(86, Math.max(14, POD[idx].x/W*100)) + "%");
+    b.style.top = paused ? ((BENCH.y-58)/H*100+"%") : ((POD[idx].y-34)/H*100 + "%");
   } else b.style.display = "none";
 }
 
@@ -306,9 +357,10 @@ async function poll() {
               feature:s.feature||"", task:s.task||"" };
       mode = cur.state==="done" ? "done" : "run";
       if (firstSnap && mode==="run") { firstSnap = false;
-        workerX = cur.state==="paused_for_human" ? BENCH.x+8
-                : stationX(Math.max(0,NODES.indexOf(cur.node)))-42; }
-      const lm = res.headers.get("last-modified");             // 中断检测(阈值 10 分钟)
+        if (cur.state==="paused_for_human") { wk.x = BENCH.cx+16; wk.y = BENCH.y+26; }
+        else { const P = POD[Math.max(0,NODES.indexOf(cur.node))];
+               wk.x = P.x-52; wk.y = P.y+20; } }
+      const lm = res.headers.get("last-modified");               // 中断检测(阈值 10 分钟)
       staleRun = !!(lm && mode==="run" && cur.state!=="paused_for_human"
                     && (Date.now()-new Date(lm).getTime()) > 600_000);
       if (cur.feature && mode!=="wait") {
