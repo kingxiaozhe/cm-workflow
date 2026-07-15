@@ -82,4 +82,4 @@
 ## 边界
 
 - **不承接**：新功能（走 /cm:prd）、需求变更（走 /cm:prd --change）、架构级返工（升级出口交人立项）
-- specs 目录没有 fixes/ 子目录时自动创建；没有 specs 目录的裸项目也可用（档案落在代码项目 `docs/fixes/`，METRICS 跳过）
+- specs 目录没有 fixes/ 子目录时自动创建；没有 specs 目录的裸项目也可用：档案落代码项目 `docs/fixes/`，**审查凭证落 `docs/fixes/.reviews/`**（第 5 步卡点同样生效），METRICS 跳过
