@@ -1,0 +1,342 @@
+<title>AI 自动开发流水线 · 汇报一页纸</title>
+<style>
+  :root {
+    --bg: #F7F8F6;
+    --surface: #FFFFFF;
+    --ink: #1E2628;
+    --ink-2: #55646A;
+    --line: #DDE3E1;
+    --accent: #0E7A6B;
+    --accent-soft: #E3F0ED;
+    --warn: #9A6A14;
+    --warn-soft: #F5EDDC;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141B1D;
+      --surface: #1B2426;
+      --ink: #E4EAE8;
+      --ink-2: #94A4A2;
+      --line: #2C3839;
+      --accent: #4CBCA8;
+      --accent-soft: #1B3330;
+      --warn: #D9A954;
+      --warn-soft: #2E2718;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141B1D;
+    --surface: #1B2426;
+    --ink: #E4EAE8;
+    --ink-2: #94A4A2;
+    --line: #2C3839;
+    --accent: #4CBCA8;
+    --accent-soft: #1B3330;
+    --warn: #D9A954;
+    --warn-soft: #2E2718;
+  }
+  :root[data-theme="light"] {
+    --bg: #F7F8F6;
+    --surface: #FFFFFF;
+    --ink: #1E2628;
+    --ink-2: #55646A;
+    --line: #DDE3E1;
+    --accent: #0E7A6B;
+    --accent-soft: #E3F0ED;
+    --warn: #9A6A14;
+    --warn-soft: #F5EDDC;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.75;
+  }
+  .page { max-width: 920px; margin: 0 auto; padding: 48px 28px 64px; }
+
+  /* ---------- header ---------- */
+  .eyebrow {
+    font-size: 12px; letter-spacing: .18em; color: var(--ink-2);
+    display: flex; align-items: center; gap: 12px; margin-bottom: 14px;
+  }
+  .eyebrow::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  h1 {
+    font-family: "Songti SC", "Noto Serif SC", "SimSun", serif;
+    font-size: 34px; line-height: 1.3; margin: 0 0 6px; font-weight: 700;
+    text-wrap: balance;
+  }
+  .lede {
+    font-size: 16.5px; color: var(--ink); max-width: 48em;
+    border-left: 3px solid var(--accent); padding: 4px 0 4px 16px; margin: 20px 0 0;
+  }
+  .lede strong { color: var(--accent); }
+
+  /* ---------- sections ---------- */
+  section { margin-top: 44px; }
+  h2 {
+    font-family: "Songti SC", "Noto Serif SC", "SimSun", serif;
+    font-size: 19px; font-weight: 700; margin: 0 0 16px;
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  h2 .no {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 13px; color: var(--accent); letter-spacing: .06em;
+  }
+  p { margin: 0 0 10px; max-width: 50em; }
+  .muted { color: var(--ink-2); }
+  .small { font-size: 13px; }
+
+  /* ---------- pipeline ---------- */
+  .flow { display: flex; gap: 0; align-items: stretch; margin: 18px 0 14px; }
+  .stage {
+    flex: 1; background: var(--surface); border: 1px solid var(--line);
+    border-radius: 8px; padding: 16px 18px;
+  }
+  .stage h3 { margin: 0 0 8px; font-size: 15px; }
+  .stage h3 span {
+    display: inline-block; background: var(--accent-soft); color: var(--accent);
+    font-size: 12px; padding: 1px 8px; border-radius: 99px; margin-right: 8px; vertical-align: 1px;
+  }
+  .stage ul { margin: 0; padding-left: 18px; }
+  .stage li { margin: 4px 0; font-size: 13.5px; color: var(--ink-2); }
+  .stage li b { color: var(--ink); font-weight: 600; }
+  .arrow {
+    align-self: center; padding: 0 8px; color: var(--accent);
+    font-size: 20px; flex: 0 0 auto; user-select: none;
+  }
+
+  /* ---------- mechanism cards ---------- */
+  .mechs { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 6px; }
+  .mech {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 18px;
+  }
+  .mech h3 { margin: 0 0 6px; font-size: 14.5px; }
+  .mech h3 code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px;
+    color: var(--accent); background: var(--accent-soft);
+    padding: 1px 7px; border-radius: 4px; margin-left: 8px; font-weight: 400;
+  }
+  .mech p { font-size: 13.5px; color: var(--ink-2); margin: 0; max-width: none; }
+  .mech p b { color: var(--ink); }
+  .mech.wide { grid-column: 1 / -1; }
+
+  /* ---------- table ---------- */
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 13.5px; }
+  th, td { text-align: left; padding: 10px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12.5px; letter-spacing: .08em; color: var(--ink-2); font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  td.us { background: var(--accent-soft); }
+  td .yes { color: var(--accent); font-weight: 600; }
+  td .no-x { color: var(--ink-2); }
+  td .phase { font-weight: 700; white-space: nowrap; }
+  td .gate { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+  .tablenote { margin-top: 10px; }
+
+  /* ---------- gaps ---------- */
+  .gaps { margin: 18px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+  .gaps li {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 16px; font-size: 13.5px;
+  }
+  .gaps li b { color: var(--warn); font-weight: 600; }
+  .gaps li .fix { color: var(--accent); }
+
+  .ask {
+    margin-top: 20px; background: var(--warn-soft); border: 1px solid var(--warn);
+    border-radius: 8px; padding: 14px 18px; font-size: 14.5px;
+  }
+  .ask b { color: var(--warn); }
+
+  /* ---------- Q&A ---------- */
+  .qa { border-top: 1px solid var(--line); margin-top: 44px; padding-top: 24px; }
+  .qa dl { margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 28px; }
+  .qa dt { font-weight: 600; font-size: 13.5px; margin-top: 12px; }
+  .qa dt::before { content: "问 · "; color: var(--accent); }
+  .qa dd { margin: 2px 0 0; font-size: 13px; color: var(--ink-2); }
+  .qa .pair { break-inside: avoid; }
+
+  footer { margin-top: 40px; font-size: 12px; color: var(--ink-2); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+  @media (max-width: 720px) {
+    .flow { flex-direction: column; }
+    .arrow { transform: rotate(90deg); padding: 2px 0; text-align: center; }
+    .mechs, .qa dl { grid-template-columns: 1fr; }
+    h1 { font-size: 27px; }
+  }
+</style>
+
+<div class="page">
+
+  <header>
+    <div class="eyebrow">内部汇报 · 2026-07-08</div>
+    <h1>AI 自动开发流水线</h1>
+    <p class="muted small">规格驱动的自动化开发工作流（cm 工作流） · 实现机制与投产路径</p>
+    <p class="lede">把需求文档丢进去，AI 自动拆成规格和任务清单，逐个开发、双重代码审查、动态触发测试、自动同步文档，<strong>全程状态落盘、可断点续跑、可审计</strong>。人只做两件事：<strong>审需求规格、拍业务决策</strong>。</p>
+  </header>
+
+  <section>
+    <h2><span class="no">01</span>为什么做</h2>
+    <p>直接让 AI 写代码，项目一大就失控：上下文装不下全部需求、会话中断即前功尽弃、质量无人把关、需求一变容易推翻已完成的工作。业界今年的共识方向是<b>「规格驱动开发」</b>（AWS Kiro、GitHub Spec Kit、开源 OpenSpec 均属此类）。我们做的是这个方向上<b>执行管控更严、可直接对接自己研发流程</b>的一套实现：基于 Claude Code 原生扩展机制（命令 + 技能 + 子代理），模块设计对齐 Google 发布的 Agent 设计模式（流水线 / 审查器 / 反问器等），无自研平台负担，随官方能力升级。</p>
+  </section>
+
+  <section>
+    <h2><span class="no">02</span>怎么工作 — 三个阶段</h2>
+    <div class="flow">
+      <div class="stage">
+        <h3><span>阶段一</span>规格化</h3>
+        <ul>
+          <li>需求文档 → 自动生成<b>需求 / 设计 / 任务清单</b>三件套（功能项、验收标准、任务均带编号，可追溯）</li>
+          <li>产品角色执行歧义五问：有歧义、涉及支付权限等敏感点，<b>强制停下来问人</b>，不自行假设</li>
+          <li>人审查规格后才进入开发</li>
+        </ul>
+      </div>
+      <div class="arrow">→</div>
+      <div class="stage">
+        <h3><span>阶段二</span>自动开发</h3>
+        <ul>
+          <li>按任务清单逐个执行，按类型自动派给<b>十一个专业角色</b>（产品 / 金融 / 前端 / UI 还原 / 小程序 / 后端 / 数据库 / 合约 / QA / 运维 / 文档），每个 feature 以 staging 部署冒烟收尾</li>
+          <li>每个任务过<b>两道审查门禁</b>，通过才算完成</li>
+          <li>按四维风险评分<b>动态触发 QA</b>，高危场景无条件触发</li>
+        </ul>
+      </div>
+      <div class="arrow">→</div>
+      <div class="stage">
+        <h3><span>阶段三</span>收尾</h3>
+        <ul>
+          <li>自动同步 README、项目规范、按日期生成变更日志</li>
+          <li>文档与代码<b>一致性校验</b>（命令、路径、环境变量逐项比对）</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="no">03</span>AI 实现的六个关键机制</h2>
+    <p class="muted small" style="margin-top:-6px">这是本方案与"让 AI 放开跑"的本质区别 —— 每一条都针对大模型的一个已知弱点。</p>
+    <div class="mechs">
+      <div class="mech">
+        <h3>状态外置<code>对抗上下文限制</code></h3>
+        <p>所有状态落磁盘：规格三件套、任务清单勾选状态、经验库、git 提交历史。AI 的记忆<b>随时可清空、随时可重建</b>——这是断点恢复的根，也是天然的审计链：每个任务做了什么、为什么这么做，全部有文件可查。</p>
+      </div>
+      <div class="mech">
+        <h3>上下文轮换<code>对抗长会话漂移</code></h3>
+        <p>每完成一个任务即<b>清空上下文、重新加载规格</b>。AI 永远以"新鲜大脑 + 完整规格"的状态执行下一个任务，不会因连续工作而注意力退化、偏离需求。这是拿算力成本换可靠性的核心取舍。</p>
+      </div>
+      <div class="mech">
+        <h3>双模型交叉审查<code>对抗单模型盲区</code></h3>
+        <p>执行模型自审后，<b>第二个模型独立复审单任务 diff</b>，互相挑错，审查不通过不得标记完成。复审设 <b>2 轮硬上限</b>——AI 互审没有尽头，超限后分歧留痕分流：安全类升级人工，风格类放行。外部模型不可用时自动降级并留痕。</p>
+      </div>
+      <div class="mech">
+        <h3>纪律与技术分层<code>对抗并行失控</code></h3>
+        <p>并行工种由预定义<b>子代理</b>执行：子代理只管纪律——只做指定编号任务、不碰界外文件、不自行标记完成、按固定格式汇报；技术规范由对应<b>技能文件</b>提供。两层分离，并行再多也不会互相踩踏。</p>
+      </div>
+      <div class="mech">
+        <h3>人机决策边界<code>对抗越权风险</code></h3>
+        <p>写死在流程里：技术选型 AI 自主（不打扰人）；<b>业务歧义、破坏性数据库变更、合约上线、支付 / 认证 / 权限逻辑强制暂停等人确认</b>。每类子代理还有领域硬闸（如数据库删表必上报、合约代理不碰私钥）。</p>
+      </div>
+      <div class="mech">
+        <h3>动态 QA + 量化验收<code>对抗测试成本与主观验收</code></h3>
+        <p>QA 按<b>四维风险评分</b>触发：改文案不跑全量测试，动支付必测。UI 还原不靠"看着像"，用<b>像素级对比工具</b>量化差异。跨仓库任务已接入官方多 agent 组队并行（实验特性，默认关闭）。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="no">04</span>投产路径 — 三阶段，每阶段有量化门槛</h2>
+    <p class="muted small" style="margin-top:-6px"><b>当前状态：</b>v0.9.11。已在真实小程序项目完成 <b>12 个 feature / 81 任务</b>实跑（从 MVP 到提审就绪）：<b>一次通过率 93%</b>、审查拦截 93 条（含 P0 级 4 条，如切纸错位 39.9mm、渲染空白）、81 任务计划外人工介入 0 次；另在同项目完成存量二开实测（防护网 184 用例前后全绿，<b>存量回归 0</b>）。唯一待补：单任务成本实测——试点第一指标。</p>
+    <div class="tablewrap">
+      <table>
+        <tr>
+          <th>阶段</th>
+          <th>内容</th>
+          <th>通过门槛（试点后校准）</th>
+          <th>时间</th>
+        </tr>
+        <tr>
+          <td class="us"><span class="phase">① 试点</span></td>
+          <td>1 个低风险小需求（3–5 个任务），全流程走通，全程记录数据</td>
+          <td><span class="gate">流程无人值守跑通 · 人工介入 ≤2 次/任务（业务确认除外）· 实测单任务成本</span></td>
+          <td>下周</td>
+        </tr>
+        <tr>
+          <td><span class="phase">② 灰度</span></td>
+          <td>2–3 个真实需求，覆盖不同类型（纯前端 / 前后端联动 / 含数据库变更）</td>
+          <td><span class="gate">任务一次通过率 ≥80% · 上线后严重缺陷逃逸 = 0 · 单任务成本低于对应人工工时</span></td>
+          <td>试点后 2–3 周</td>
+        </tr>
+        <tr>
+          <td><span class="phase">③ 投产</span></td>
+          <td>纳入正式研发流程：规格评审并入现有需求评审，产出并入现有 CR / 提测环节</td>
+          <td><span class="gate">团队使用规范与培训完成 · 与现有 CI/CD 及代码评审流程对接验证</span></td>
+          <td>灰度达标后</td>
+        </tr>
+      </table>
+    </div>
+
+    <p style="margin-top:18px"><b>距投产的已知缺口</b>（如实列出，均有对策）：</p>
+    <ul class="gaps">
+      <li><b>单任务成本尚未实测</b> —— 已实跑项目未采集费用数据（采集机制已内置于收尾节点），试点第一优先补齐。</li>
+      <li><b>断点恢复依赖任务标记的准确性</b> —— 已实现"写入后立即回读校验"；<span class="fix">灰度阶段追加 git hook 双保险</span>。</li>
+      <li><b>第二审查模型依赖外部 Codex</b> —— <span class="fix">降级逻辑已实现</span>：不可用时单模型审查并在记录中标注，不阻塞流程。</li>
+      <li><b>规格质量决定产出质量</b> —— 无技术方案可绕过，<span class="fix">制度保证：人审规格为强制环节</span>，并入现有需求评审。</li>
+    </ul>
+
+    <p class="muted small" style="margin-top:16px"><b>架构演进原则：</b>当前执行引擎为 Markdown 状态机——人人可读、人人可改、维护门槛低。确定性更强的 JS 编排引擎已完成评估，升级点已锁定（对抗式审查验证、大并行组编排），但<b>是否升级以试点数据为准</b>：人工介入若都发生在业务确认上，说明现有引擎够用；若发生在"流程失守"上，才把对应节点代码化。引擎升级看失败数据，不看技术潮流。</p>
+
+    <div class="ask"><b>需要的决策：</b>① 批准试点，从近期排期指定一个低风险小需求；② 认可三阶段门槛作为推广评判标准（数字可在试点后共同校准）。</div>
+  </section>
+
+  <section class="qa">
+    <h2><span class="no">附</span>备询要点</h2>
+    <dl>
+      <div class="pair">
+        <dt>成本结构是什么？</dt>
+        <dd>主要开销两块：每任务重载规格（可靠性代价）+ 双模型审查。比对话式开发贵，换来的是无人值守与质量门禁。单任务实测成本是试点第一指标，灰度门槛要求低于对应人工工时。</dd>
+      </div>
+      <div class="pair">
+        <dt>AI 产出怎么审计？</dt>
+        <dd>全程落盘：规格三件套 + 带编号的任务清单 + 每任务的审查记录 + 经验库 + git 提交历史，形成完整证据链。任何一行代码都能回溯到对应任务和需求编号。</dd>
+      </div>
+      <div class="pair">
+        <dt>代码质量怎么保证？</dt>
+        <dd>三道防线：双模型交叉审查（只看单任务 diff，审查面可控）、风险评分触发 QA、高危操作强制人工确认。审查不通过任务不得关闭。</dd>
+      </div>
+      <div class="pair">
+        <dt>和直接用 Cursor / Copilot 的区别？</dt>
+        <dd>那些是"人驾驶、AI 辅助"，效率上限受人的带宽限制；本方案是"AI 执行、人把关"，把人的投入集中到规格和决策两个杠杆点，且过程可无人值守。</dd>
+      </div>
+      <div class="pair">
+        <dt>市面上已有 OpenSpec 等开源方案，为什么自己做？</dt>
+        <dd>方向一致，正说明选型没错——OpenSpec（Fission AI）是 spec-driven 流派的代表，和我们独立收敛到<b>同一套规格三件套地基</b>（requirements/design/tasks + 先规格后编码），命令结构也几乎一一对应。差别在覆盖面：OpenSpec 自划边界为"规划+实现"就停，<b>明确不含代码审查闸门、QA、部署发布、角色分工</b>；而这四样正是本方案面向"可投产"多做的部分——双模型审查、动态 QA、发布待决清单、11 个工种 skill+ 领域举旗。一句话：OpenSpec 相当于本方案的前三个节点，我们把流水线延伸到了上线。它成熟的 CLI 工程化与跨团队协作（Stores）是我们后续演进的现成参照，非重复造轮。</dd>
+      </div>
+      <div class="pair">
+        <dt>需求中途变更怎么办？</dt>
+        <dd>有专门的变更模式：新旧需求自动对比，任务清单增量更新（新增 / 修改 / 作废分别标记），已完成的工作不推翻，重跑自动跳过。</dd>
+      </div>
+      <div class="pair">
+        <dt>最大的风险是？</dt>
+        <dd>规格错则做得快错得也快——所以"人审规格"是制度上的强制环节；其次是任务标记单点，已有回读校验 + 灰度阶段 git hook 双保险。</dd>
+      </div>
+      <div class="pair">
+        <dt>为什么不直接上更强的多 agent / JS 编排引擎？</dt>
+        <dd>都已评估并预留了接口：组队能力已接入但默认关闭，JS 引擎的定向升级点已锁定。原则是不在拿到试点失败数据前加架构——避免为技术而技术。</dd>
+      </div>
+      <div class="pair">
+        <dt>AI 之间会不会互相审查到失控？</dt>
+        <dd>会，这是业界已知失败模式（代码被无限改写到不可维护）。所以复审设 2 轮硬上限，超限分歧留痕：安全类升级人工，风格类放行。</dd>
+      </div>
+    </dl>
+  </section>
+
+  <footer>
+    <span>汇报人：____ · AI 自动开发流水线一页纸</span>
+    <span>试点数据出来后按门槛评审，再谈推广</span>
+  </footer>
+
+</div>
