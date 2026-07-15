@@ -23,7 +23,8 @@
   #bubble { position:absolute; transform:translate(-50%,-115%); max-width:380px; padding:8px 12px;
             background:#faf6ec; color:#1c1a14; border:2px solid #1c1a14; border-radius:6px;
             font-size:13px; line-height:1.5; display:none; box-shadow:3px 4px 0 rgba(0,0,0,.4); }
-  #bubble.paused { background:#f5d95c; }
+  #bubble.paused { background:#f5d95c; transform:translate(-12%,-115%); }
+  #bubble.paused:after { left:12%; }
   #bubble:after { content:""; position:absolute; left:50%; bottom:-10px; margin-left:-5px;
                   border:5px solid transparent; border-top-color:#1c1a14; }
   #note { position:absolute; right:14px; bottom:16px; width:250px; display:none;
@@ -216,7 +217,7 @@ function draw() {
   if (!done) {
     const targetX = paused ? BENCH.x+8 : stationX(idx)-42;
     const dx = targetX - workerX;
-    if (Math.abs(dx)>2) workerX += Math.sign(dx)*Math.min(2.6, Math.abs(dx));
+    if (Math.abs(dx)>2) workerX += Math.sign(dx)*Math.min(isDemo?8:2.6, Math.abs(dx));
     const walking = Math.abs(dx)>2;
     person("worker", workerX, BASE-50, walking);
     if (paused && !walking) { tile("sofaM", BENCH.x, BASE-32, 2);   // 补画椅面盖住腿=坐下

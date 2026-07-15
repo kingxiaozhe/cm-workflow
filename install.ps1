@@ -38,6 +38,7 @@ foreach ($pair in @(@("dashboard", "cm-dashboard"), @("pixel", "cm-pixel"))) {
     if (Test-Path $s) {
         New-Item -ItemType Directory -Force -Path "$tpl\$($pair[1])" | Out-Null
         Copy-Item "$s\*" "$tpl\$($pair[1])" -Recurse -Force
+        Remove-Item "$tpl\$($pair[1])\dev" -Recurse -Force -ErrorAction SilentlyContinue  # 构建工具不装进用户机器
         Write-Host "√ $($pair[1]) 已安装"
     }
 }

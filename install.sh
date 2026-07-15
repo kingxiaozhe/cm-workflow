@@ -62,6 +62,7 @@ fi
 if [ -d "$SRC_DIR/templates/pixel" ]; then
   mkdir -p "$DEST/templates/cm-pixel"
   cp -R "$SRC_DIR/templates/pixel/." "$DEST/templates/cm-pixel/"
+  rm -rf "$DEST/templates/cm-pixel/dev"   # 构建工具与素材原表不装进用户机器
   chmod +x "$DEST/templates/cm-pixel/cm-pixel.sh" "$DEST/templates/cm-pixel/serve.sh"
   echo "✓ 像素流水线已安装（终端版: ~/.claude/templates/cm-pixel/cm-pixel.sh；浏览器版: 同目录 serve.sh {specs路径}）"
 fi
