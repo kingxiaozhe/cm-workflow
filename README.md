@@ -10,6 +10,7 @@ commands/                    # 斜杠命令（安装到 ~/.claude/commands/）
 ├── cm:prd.md                # 需求文档 → specs 三件套（requirements/design/tasks），支持 --change 变更模式
 ├── cm:ai.md                 # 自动开发主循环（流程图状态机）
 ├── cm:fix.md                # 缺陷修复小闭环（复现→定位→防护网→最小修复→Codex审查→波及面回归→档案落盘）
+├── cm:idea.md               # 点子→PRD 访谈入口（加载 idea-to-prd 技能;流程上游,非 N1-N8 步骤）
 │
 │  # 独立工具 skill（不属于 N1-N8 流程,按需使用）
 │  skills/idea-to-prd/       # 点子→PRD 产品访谈搭档:一次一题把模糊想法聊成 L1→L3 规格,
