@@ -8,7 +8,7 @@
 
 - `~/.claude/commands/cm-ai-nodes/N3-execute-task.md` 匹配表中引用的每个 `cm-*-engineer` / `cm-*-expert` / `cm-*-manager` → `~/.claude/skills/{名称}/SKILL.md` 必须存在
 - `N2-enter-feature.md` 预定义角色列表中的每个 `cm-*-agent` → `~/.claude/agents/{名称}.md` 必须存在
-- 反向检查：skills/ 与 agents/ 下存在、但 N2/N3 均未引用的角色 → 报告为"孤儿角色"（建了没接线）。**检查范围限定 `cm-` 前缀**——非 cm- 前缀的 skill（如 codebase-context）是独立工具，不参与角色配对检查，但其被 cm:init/cm:prd/N8 的引用仍走第 3 组命令引用检查
+- 反向检查：skills/ 与 agents/ 下存在、但 `~/.claude/commands/` 下**任何文件**（命令 + cm-ai-nodes/ 节点 + cm-prd-modes/ 模式文件）均未引用的角色 → 报告为"孤儿角色"（建了没接线）。范围不得收窄到 N2/N3——把关型 skill（cm-doc-syncer/cm-finance-expert/cm-product-manager）按设计接在 cm:ai/N6/N8/cm:prd/模式文件上，只查派发路径会把它们误报成孤儿（v0.9.24 实跑教训：init 自举时靠人工甄别才排除三处假阳性）。**检查范围限定 `cm-` 前缀**——非 cm- 前缀的 skill（如 codebase-context）是独立工具，不参与角色配对检查，但其被 cm:init/cm:prd/N8 的引用仍走第 3 组命令引用检查
 
 ### 2. 命名一致性
 
@@ -39,7 +39,7 @@
 - **Codex（审查主通道）**：`codex --version` 探测。不可用报告为降级项并给出后果说明——N4 将落到对抗式子代理（次优），N1 开跑前还会再拦一次
 - 状态条已配置（settings.json 的 statusLine 指向 cm-statusline.sh）：未配置报告为提示项（不影响运行，仅少可视化）
 - **安装版本**：读取 `~/.claude/templates/cm-VERSION` 并显示在结论首行。文件缺失 → 显示"版本: 未知（旧版安装，建议用最新包重装）"——版本混乱是实测踩过的坑，反馈问题必带版本号
-- **版本一致性（防混装/旧装）**：本命令文件自带基线号 → **框架版本基线: 0.9.23**（发包时与 VERSION 文件同步递增）。比对规则：
+- **版本一致性（防混装/旧装）**：本命令文件自带基线号 → **框架版本基线: 0.9.24**（发包时与 VERSION 文件同步递增）。比对规则：
   - 基线 = cm-VERSION → 一致，正常
   - 基线 ≠ cm-VERSION 或 cm-VERSION 缺失 → **报"版本不一致/过旧"并建议重装**："命令文件 v{基线} / 安装标记 v{实际}——本机是混装或旧包，请用最新 zip 重跑 install.sh"（实测事故：公司机器旧包 + 家里新包，功能"消失"排查半天）
 
