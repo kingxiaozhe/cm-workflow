@@ -1,0 +1,81 @@
+---
+description: prompt 资产（Markdown）与 bash 脚本的写作与命名约定
+---
+
+# 编码风格
+
+本仓库的「代码」是给 AI 执行的 prompt。判断标准不是"读着优美"，而是**AI 照做不会产生歧义**。
+
+## 量化标准
+
+| 项 | 上限 |
+| ---- | ---- |
+| 单个 SKILL.md / 命令文件 | 400 行（超了拆按需加载的子文件，见 cm:ai → cm-ai-nodes/、cm:prd → cm-prd-modes/） |
+| 单条规则 | 3 行以内说清「做什么 + 为什么」 |
+| 标题层级 | 4 层（`####`） |
+| frontmatter description | 1 行 |
+
+## 命名（强制，`/cm:check` 第 2 组机器校验）
+
+| 对象 | 规则 | 示例 |
+| ---- | ---- | ---- |
+| 斜杠命令 | `commands/cm:{动词}.md`，冒号半角 | `cm:prd.md` |
+| 流程节点 | `commands/cm-ai-nodes/N{1-8}-{kebab}.md` | `N3-execute-task.md` |
+| 工种 skill | `skills/cm-{域}-{engineer\|expert\|manager}/SKILL.md` | `cm-backend-engineer/SKILL.md` |
+| 子 agent | `agents/cm-{域}-agent.md` | `cm-backend-agent.md` |
+| 独立工具 skill | 不带 `cm-` 前缀（不参与角色配对检查） | `codebase-context/` |
+
+- **skill 的 frontmatter `name` 必须等于目录名；agent 的 `name` 必须等于文件名去 `.md`**。改名要同时改 frontmatter、目录/文件、以及 N2/N3 匹配表——漏一处即断链。
+- 禁止残留旧前缀（`yd-`、`yd:`）。
+
+## frontmatter
+
+- `skills/*/SKILL.md` 与 `agents/*.md`：**必须**有 `name` + `description`。
+- `commands/*.md`：**不写** frontmatter，首行直接 `# /cm:xxx — 一句话`。
+
+```markdown
+<!-- Bad：description 写成用途分类，AI 无法据此判断该不该加载 -->
+description: 后端相关
+
+<!-- Good：说清「谁在什么时候派发、边界在哪」 -->
+description: 后端 API 开发子 agent。由 /cm:ai 在并行执行后端任务时派发，负责流程纪律（任务边界、上下文、汇报、退出），具体开发规范由 cm-backend-engineer skill 提供。
+```
+
+## prompt 写作
+
+- **可执行**：写具体指令，禁止「使用恰当的 XX」「合理处理」这类无法照做的话。
+- **量化**：用数字不用形容词——「≤200 个源文件按七轮执行，>200 个改 Grep 收签名」而不是「项目较大时简化」。
+- **分支穷举**：每个判断点把条件和结果显式列全，包括降级路径。
+  ```markdown
+  <!-- Bad：AI 得自己猜边界 -->
+  文档目录存在时做增量扫描。
+
+  <!-- Good：条件互斥且穷尽，含缺失元数据的兜底 -->
+  - DOC_DIR 不存在 → 全量扫描
+  - 带 --full 参数 → 全量扫描
+  - DOC_DIR 存在 且 有 .scan-meta.json 且 无 --full → 增量扫描
+  - DOC_DIR 存在 但 缺 .scan-meta.json → 全量扫描（元数据缺失视同首扫）
+  ```
+- **带实跑教训**：从 dogfood 得来的规则，用括号注明事故，别人才不会改掉它。例：「脏地图比没地图更危险（实跑教训：4 项目混装仓库靠人肉 cd 才扫对）」。
+- **占位符**统一 `{中文描述}`；模板骨架用 HTML 注释写生成指引，注释在生成时删除。
+
+## 排版
+
+- 中文正文用全角标点；**commit 主题与代码/路径周围用半角**。
+- 强调用 `**粗体**` 标关键约束，一节不超过 3 处——满篇加粗等于没加粗。
+- 表格优先于长列表：匹配关系、映射表、检查项一律用表。
+- 代码块必须标语言（`text` / `bash` / `markdown` / `json`）。
+
+## Bash 脚本
+
+- `#!/usr/bin/env bash` + `set -euo pipefail`。
+- **目标是 macOS 自带的 bash 3.2**：禁用 4.0+ 特性（关联数组 `declare -A`、`${var^^}`、`readarray`）。
+- **变量引用紧贴全角字符时必须加花括号**——这是真实事故（`fix: install.sh 变量名紧贴全角字符导致 bash 3.2 解析失败`）：
+  ```bash
+  # Bad：bash 3.2 把全角字符吃进变量名
+  echo "已安装版本: v$VERSION，请运行自检"
+
+  # Good
+  echo "已安装版本: v${VERSION}，请运行自检"
+  ```
+- 路径变量一律加引号：`cp -R "$SRC_DIR/." "$DEST/"`。
