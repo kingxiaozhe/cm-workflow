@@ -16,6 +16,9 @@ commands/                    # 斜杠命令（安装到 ~/.claude/commands/）
 │  skills/idea-to-prd/       # 点子→PRD 产品访谈搭档:一次一题把模糊想法聊成 L1→L3 规格,
 │                            # 含 trading/web3 领域包;产出的 PRD 交给 /cm:prd 拆 specs——
 │                            # 新项目从零想法起步时的前置工具,与 /cm:prd 互不依赖
+│  skills/darwin-skill/      # 技能优化器(达尔文,MIT 收编自 alchaincyf/darwin-skill):
+│                            # 9 维评分+受控进化+人类守关,用于给本仓库的 skill 体检与升级;
+│                            # 触发词"优化skill/skill打分/达尔文",详见该目录 NOTICE.md
 └── cm-ai-nodes/             # cm:ai 的 8 个流程节点，按需加载
     ├── N1-init.md           # 初始化：解析路径、扫描 features、加载上下文
     ├── N2-enter-feature.md  # 进入 feature：断点恢复、依赖分析、串/并行计划（跨项目并行可选 Agent Teams）
