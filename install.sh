@@ -14,7 +14,7 @@ echo
 for part in commands skills agents; do
   src="$SRC_DIR/$part"
   dst="$DEST/$part"
-  [ -d "$src" ] || { echo "跳过 $part（源目录不存在）"; continue; }
+  [ -d "$src" ] || { echo "跳过 ${part}（源目录不存在）"; continue; }
 
   mkdir -p "$dst"
 
@@ -26,7 +26,7 @@ for part in commands skills agents; do
   if [ -n "$conflicts" ]; then
     echo "⚠ $part 下以下文件已存在，将被覆盖："
     echo "$conflicts" | sed 's/^/    /'
-    read -r -p "  继续覆盖 $part？[y/N] " ans
+    read -r -p "  继续覆盖 ${part}？[y/N] " ans
     case "$ans" in
       y|Y) ;;
       *) echo "  跳过 $part"; continue ;;
@@ -71,6 +71,6 @@ mkdir -p "$DEST/templates"
 echo "$VERSION" > "$DEST/templates/cm-VERSION"
 
 echo
-echo "完成（已安装版本: v$VERSION，/cm:check 会显示它——反馈问题时请带上版本号）。"
+echo "完成（已安装版本: v${VERSION}，/cm:check 会显示它——反馈问题时请带上版本号）。"
 echo "建议在 Claude Code 中运行 /cm:check 校验安装一致性。"
 echo "可选依赖（无设计稿时生成设计基准）: npx skills add alchaincyf/huashu-design"
