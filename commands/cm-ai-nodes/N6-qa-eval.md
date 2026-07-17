@@ -14,7 +14,7 @@ AI 动态决策是否触发 `cm-qa-engineer`，不按固定间隔。
 ## 必须触发（无需打分）
 
 - 当前 feature 所有 task 完成
-- API 接口变更
+- API 接口变更（**收尾合并豁免**：下一个任务就是本 feature 最后一个任务时，可合并至 feature 级 QA 一次执行——避免背靠背双跑全量；合并决策记运行日志 `decision` 事件。实跑教训：后端 feature 几乎每任务都改 API,逐任务触发 QA 成本失衡）
 - 数据库 migration
 - 认证/授权/支付逻辑
 - 连续 5 个 task 未触发过 QA

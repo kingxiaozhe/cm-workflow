@@ -17,6 +17,8 @@
 
 ## 2. 生产发布待决清单
 
+**前置（与 cm:prd 的 T-012 生成条件同源）**：项目存在部署形态（Dockerfile / CI 配置 / 部署脚本，或 `{SPECS_DIR}/RELEASES.md` 已存在）才执行本步；**纯本地工具、库等无部署形态的项目 → 跳过**，总结中输出一行 `🚀 发布清单: 跳过(无部署形态)`——规格期没生成部署任务的项目，收尾也不该凭空编制发布清单（实跑教训：dogfood 中 RELEASES.md 不存在,数据源为空仍无条件调用）。
+
 调用 `cm-devops-engineer` skill **编制**（只编制，不执行生产发布）。**staging 验证状态的数据源是 `{SPECS_DIR}/RELEASES.md`**，不凭记忆：
 
 - 已通过 staging 验证的 feature 清单及版本（读 RELEASES.md）
