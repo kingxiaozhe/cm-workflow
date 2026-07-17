@@ -1,8 +1,9 @@
-# 重构流程总体设计(底稿,未定稿)
+# 重构流程总体设计
 
 综合 cm 小闭环纪律与 Anthropic 迁移方法论(claude.com/blog/ai-code-migration +
-anthropics/code-migration-kit)的重构流程设计图。**尚未实现为命令**——/cm:refactor
-的最终设计以维护者本人方案为准,本图是弹药不是决议。
+anthropics/code-migration-kit)的重构流程设计图。**已实现为 `commands/cm:refactor.md`**
+(v0.9.31 落地,v0.9.32 补齐完整融合)——图与命令互为对照,任何一侧修改必须同步另一侧,
+图与实现不得漂移。
 
 - `refactor-flow.png` — 静态图
 - `refactor-flow.mp4` — 动画版(演示用)
