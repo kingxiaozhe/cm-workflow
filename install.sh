@@ -71,6 +71,19 @@ if [ -f "$SRC_DIR/templates/hooks/pre-commit-cm-task-check" ]; then
   chmod +x "$DEST/templates/cm-task-check-hook"
   echo "✓ 任务标记双保险 hook 模板已安装（/cm:ai N1 会自动装进代码仓库,警告模式）"
 fi
+if [ -d "$SRC_DIR/templates/auto-update" ]; then
+  mkdir -p "$HOME/.cm-workflow"
+  for s in cm-update.sh cm-announce.sh; do
+    tmp="$HOME/.cm-workflow/.${s}.tmp.$$"
+    cp "$SRC_DIR/templates/auto-update/$s" "$tmp"
+    chmod +x "$tmp"
+    mv -f "$tmp" "$HOME/.cm-workflow/$s"   # 原子替换:更新器经本脚本更新自己,cp 直写会截断运行中的实例
+  done
+  echo "✓ 自动更新器已安装（含运行中工作流保护）。启用请在 ~/.claude/settings.json 的 hooks.SessionStart 加:"
+  echo '    {"type":"command","command":"~/.cm-workflow/cm-announce.sh","timeout":5},'
+  echo '    {"type":"command","command":"~/.cm-workflow/cm-update.sh","timeout":120,"async":true}'
+  echo "  (团队 fork 用环境变量 CM_UPDATE_REMOTE 指定仓库,不要改脚本——会被自愈还原)"
+fi
 
 mkdir -p "$DEST/templates"
 echo "$VERSION" > "$DEST/templates/cm-VERSION"

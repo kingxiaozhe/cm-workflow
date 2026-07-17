@@ -109,6 +109,15 @@ templates/pixel/serve.sh {specs路径}   # 浏览器版(16-bit 风格,给老板�
 # 浏览器版演示模式: 打开地址后加 ?demo
 ```
 
+## 自动更新（可选，macOS/Linux）
+
+`templates/auto-update/` 提供会话级自动更新链路，install.sh 装到 `~/.cm-workflow/`，按提示在 settings.json 的 `hooks.SessionStart` 挂两条即启用：
+
+- **cm-update.sh**：每次开会话异步检测上游新提交并自动重装；无新提交时做**逐文件字节级比对**，安装被改动/误删即自愈还原；**有工作流正在跑（.cm-status.json 为 running 且 30 分钟内活跃）则跳过本轮**——防中途换版混装（实证事故修复）。团队 fork 用 `CM_UPDATE_REMOTE` 环境变量指仓库，不要改脚本（会被自愈还原）
+- **cm-announce.sh**：下次开会话时播报更新/自愈结果，报完即删
+
+分工：更新器管"装的东西对不对"（机械，每会话），`/cm:check` 管"引用链断没断"（AI，改框架后跑），N1 预检管"这次运行环境行不行"（流程内）。
+
 ## 度量与双保险
 
 - **METRICS.md**（specs 目录，N5 自动落盘）：每任务记录审查轮次、Codex 拦截、QA 结果、人工介入次数——试点/灰度门槛的唯一数据源
