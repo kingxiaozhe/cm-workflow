@@ -129,6 +129,9 @@ build_pairs() {
   if [ -f "$REPO/templates/hooks/pre-commit-cm-task-check" ]; then
     echo "$REPO/templates/hooks/pre-commit-cm-task-check$TAB$DEST/templates/cm-task-check-hook"
   fi
+  if [ -f "$REPO/templates/refactor/cm-refactor-denies.json" ]; then
+    echo "$REPO/templates/refactor/cm-refactor-denies.json$TAB$DEST/templates/cm-refactor-denies.json"
+  fi
   # 更新器自身也纳入校验与自愈（安装走 tmp+mv 原子替换；清理循环有 $DEST 前缀守卫,不会误删这里）
   if [ -d "$REPO/templates/auto-update" ]; then
     echo "$REPO/templates/auto-update/cm-update.sh$TAB$ROOT/cm-update.sh"

@@ -71,6 +71,10 @@ if [ -f "$SRC_DIR/templates/hooks/pre-commit-cm-task-check" ]; then
   chmod +x "$DEST/templates/cm-task-check-hook"
   echo "✓ 任务标记双保险 hook 模板已安装（/cm:ai N1 会自动装进代码仓库,警告模式）"
 fi
+if [ -f "$SRC_DIR/templates/refactor/cm-refactor-denies.json" ]; then
+  cp "$SRC_DIR/templates/refactor/cm-refactor-denies.json" "$DEST/templates/cm-refactor-denies.json"
+  echo "✓ 重构批量道禁令模板已安装（/cm:refactor 批量扇出前验证,由人合并进项目 settings.json）"
+fi
 if [ -d "$SRC_DIR/templates/auto-update" ]; then
   mkdir -p "$HOME/.cm-workflow"
   for s in cm-update.sh cm-announce.sh; do

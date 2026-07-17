@@ -1,0 +1,14 @@
+{
+  "_comment": "cm:refactor 批量道循环内禁令模板。用法:把 permissions.deny 合并进代码项目 .claude/settings.json(人工安装,命令只验证);测试命令按项目实际替换;收口后撤销。这是防误触护栏,不是安全边界。",
+  "permissions": {
+    "deny": [
+      "Bash(git reset:*)",
+      "Bash(git checkout:*)",
+      "Bash(git clean:*)",
+      "Bash(git commit:*)",
+      "Bash(git rebase:*)",
+      "Bash(npm test:*)",
+      "Bash(npm run test:*)"
+    ]
+  }
+}
