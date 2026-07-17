@@ -1,0 +1,223 @@
+{
+  "layout": "graph",
+  "direction": "right",
+  "style": "default",
+  "animation": "flow",
+  "canvas": {
+    "fps": 20,
+    "frames": 60
+  },
+  "title": {
+    "prefix": "cm-workflow",
+    "highlight": "重构流程总体设计",
+    "subtitle": "小闭环纪律 × Anthropic 迁移方法论 —— 修规则,不修产物"
+  },
+  "nodes": [
+    {
+      "id": "req",
+      "label": "重构诉求",
+      "icon": "ingest",
+      "icon_style": "illustrated",
+      "color": "#48e0c2"
+    },
+    {
+      "id": "route",
+      "label": "分流门",
+      "kind": "decision"
+    },
+    {
+      "id": "fix",
+      "label": "/cm:fix",
+      "icon": "tool-call",
+      "body": "缺陷闭环(不夹带修复)",
+      "color": "#ff7ab6"
+    },
+    {
+      "id": "prd",
+      "label": "/cm:prd --change",
+      "kind": "terminal",
+      "accent": "muted"
+    },
+    {
+      "id": "g0",
+      "label": "G0 可行性",
+      "icon": "human",
+      "icon_style": "illustrated",
+      "body": "动机量化·不重构合法",
+      "color": "#f4b64e"
+    },
+    {
+      "id": "judge",
+      "label": "判官自验证",
+      "icon": "guardrail",
+      "icon_style": "hero",
+      "icon_size": "hero",
+      "body": "原码必绿·坏码必红",
+      "color": "#7bb8ff"
+    },
+    {
+      "id": "scale",
+      "label": "规模门",
+      "kind": "decision"
+    },
+    {
+      "id": "lite",
+      "label": "轻量道·小闭环",
+      "icon": "loop",
+      "icon_style": "illustrated",
+      "body": "基线→重构→等价 一次跑完",
+      "color": "#48e0c2"
+    },
+    {
+      "id": "rule",
+      "label": "规则手册",
+      "icon": "plan",
+      "icon_style": "hero",
+      "icon_size": "hero",
+      "body": "分歧即入册·依赖图定序",
+      "color": "#b78bff"
+    },
+    {
+      "id": "pilot",
+      "label": "压力测试",
+      "icon": "sandbox",
+      "icon_style": "illustrated",
+      "body": "试点产物可弃·只留修订",
+      "color": "#f4b64e"
+    },
+    {
+      "id": "fan",
+      "label": "批量执行",
+      "icon": "subagent",
+      "icon_style": "illustrated",
+      "body": "队列=磁盘·配置禁令",
+      "color": "#b78bff"
+    },
+    {
+      "id": "mech",
+      "label": "机械裁决",
+      "icon": "compare",
+      "icon_style": "illustrated",
+      "body": "裁判价格定位",
+      "color": "#7bb8ff"
+    },
+    {
+      "id": "eq",
+      "label": "行为等价",
+      "icon": "score",
+      "icon_style": "illustrated",
+      "body": "全绿+差分一致",
+      "color": "#48e0c2"
+    },
+    {
+      "id": "rev",
+      "label": "审查凭证",
+      "icon": "audit",
+      "icon_style": "illustrated",
+      "body": "对抗审查·凭证落盘",
+      "color": "#ff7ab6"
+    },
+    {
+      "id": "done",
+      "label": "收口",
+      "icon": "checkpoint",
+      "icon_style": "illustrated",
+      "body": "档案·METRICS·缺陷转/cm:fix",
+      "accent": "green"
+    }
+  ],
+  "edges": [
+    {
+      "from": "req",
+      "to": "route"
+    },
+    {
+      "from": "route",
+      "to": "fix",
+      "label": "有缺陷"
+    },
+    {
+      "from": "route",
+      "to": "prd",
+      "label": "要改行为"
+    },
+    {
+      "from": "route",
+      "to": "g0",
+      "label": "结构问题·行为保持"
+    },
+    {
+      "from": "g0",
+      "to": "judge",
+      "label": "人签核"
+    },
+    {
+      "from": "judge",
+      "to": "scale",
+      "label": "无判官不开工"
+    },
+    {
+      "from": "scale",
+      "to": "lite",
+      "label": "单文件"
+    },
+    {
+      "from": "scale",
+      "to": "rule",
+      "label": "跨模块批量"
+    },
+    {
+      "from": "lite",
+      "to": "rev",
+      "label": "同款审查纪律"
+    },
+    {
+      "from": "rule",
+      "to": "pilot"
+    },
+    {
+      "from": "pilot",
+      "to": "fan",
+      "label": "规则定稿·人签核"
+    },
+    {
+      "from": "fan",
+      "to": "mech"
+    },
+    {
+      "from": "mech",
+      "to": "eq"
+    },
+    {
+      "from": "eq",
+      "to": "rev"
+    },
+    {
+      "from": "rev",
+      "to": "done"
+    },
+    {
+      "from": "pilot",
+      "to": "rule",
+      "kind": "loop",
+      "label": "修订排队·批间应用",
+      "accent": "purple"
+    },
+    {
+      "from": "mech",
+      "to": "rule",
+      "kind": "loop",
+      "label": "三次重复=规则bug·重生成",
+      "accent": "amber"
+    },
+    {
+      "from": "eq",
+      "to": "fan",
+      "kind": "loop",
+      "label": "行为差异=回滚重做",
+      "accent": "pink"
+    }
+  ],
+  "footer": "门在阶段之间,签核=踢下一阶段 | 纪律写进配置,不写进请求 | 判官没被验证过,就不配当判官",
+  "signature": "@cm-workflow"
+}
