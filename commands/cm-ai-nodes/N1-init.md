@@ -15,7 +15,7 @@
 读取 `{SPECS_DIR}/.cm-specs-status`：
 
 - `approved` → 直接继续（断点续跑不重复问）
-- `awaiting_review` 或文件缺失（旧版 specs）→ 把规格摘要卡打给用户（specs 里没有摘要卡就现场汇总：feature 数/任务数/交付形态/风险点），**等用户明确回复"开始"**；回复后写 `{"status":"approved","at":"{时间}"}` 再继续
+- `awaiting_review` 或文件缺失（旧版 specs）→ 把规格摘要卡打给用户（specs 里没有摘要卡就现场汇总：feature 数/任务数/交付形态/风险点），**等用户明确回复"开始"**；回复后写 `{"status":"approved","at":"{时间}"}` 再继续。**泛化授权语不构成审批**（"按最优解处理""继续""你看着办"这类话授权的是执行方式，不是规格内容）——收到时必须回问一次："规格摘要卡确认开始吗？"（实跑失守：diff-lens 把"按照你分析的最优解去处理"直接视为审批通过）
 - 启动参数含 `--yes` → 跳过此问直接写 approved（适合刚人审完立刻开跑的场景）
 
 > 这是**入口授权门**（人把关方案端），不属于"暂停仅灾难级"约束的中途暂停，也不计入 METRICS 人工介入。实跑教训：没有这道闸，prd 生成完会被一句"继续"顺势带进开发，人审形同虚设。
@@ -31,7 +31,7 @@
 
 **先读 CLAUDE.md 的「版本控制」字段**（/cm:init 或 bootstrap 已确认并落盘）：
 
-- `remote` / `local` → 按常规执行每任务提交，不询问
+- `remote` / `local` → 按常规执行每任务提交，不询问；**顺手装双保险 hook**：`~/.claude/templates/cm-task-check-hook`（安装名，源 templates/hooks/pre-commit-cm-task-check）存在且代码仓库 `.git/hooks/pre-commit` 未装 → 复制安装（默认警告模式,不阻断），输出一行 `🪝 任务标记双保险已装(警告模式)`——纪律靠节点文字自我约束在长会话中必然漏（实跑失守：两个项目均未装 hook,N5 漏标/漏凭证无人拦）
 - `none` → 直接进入 **NO_GIT 降级模式**，不询问：N5 跳过 git 提交（METRICS 备注 `no-git`）、doc-syncer 用文件扫描替代 git diff、hook 不适用、审计链降级为 METRICS + tasks 勾选
 
 **字段不存在时**（项目未经 init 的兜底路径）：

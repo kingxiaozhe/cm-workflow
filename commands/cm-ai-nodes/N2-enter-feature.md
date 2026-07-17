@@ -1,7 +1,7 @@
 # N2: 进入 Feature
 
 1. 读取该 feature 的 requirements.md、design.md、tasks.md
-2. 断点恢复：`[x]` 已完成 → 跳过，`[DROPPED]` → 跳过，`[CHANGED]` → 按更新后描述执行
+2. 断点恢复：`[x]` 已完成 → 跳过，`[DROPPED]` → 跳过，`[CHANGED]` → 按更新后描述执行。**恢复时凭证对账**：每个已 `[x]` 任务 ↔ `{SPECS_DIR}/.reviews/*-{任务号}-r*.md` 配对，缺失项输出一行 `⚠ 凭证缺失: T-xxx,...（存量欠账,如实留档,恢复起严格执行）`——不阻塞恢复，但缺失不许无声混过（实跑失守：json-keeper 7 任务全无凭证,中断前无人发现）
 3. 如该 feature 所有任务已完成 → 跳过，进入下一个 feature
 
 ## 教训定向注入（防复发，两个动作）

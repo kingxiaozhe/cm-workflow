@@ -66,6 +66,11 @@ if [ -d "$SRC_DIR/templates/pixel" ]; then
   chmod +x "$DEST/templates/cm-pixel/cm-pixel.sh" "$DEST/templates/cm-pixel/serve.sh"
   echo "✓ 像素流水线已安装（终端版: ~/.claude/templates/cm-pixel/cm-pixel.sh；浏览器版: 同目录 serve.sh {specs路径}）"
 fi
+if [ -f "$SRC_DIR/templates/hooks/pre-commit-cm-task-check" ]; then
+  cp "$SRC_DIR/templates/hooks/pre-commit-cm-task-check" "$DEST/templates/cm-task-check-hook"
+  chmod +x "$DEST/templates/cm-task-check-hook"
+  echo "✓ 任务标记双保险 hook 模板已安装（/cm:ai N1 会自动装进代码仓库,警告模式）"
+fi
 
 mkdir -p "$DEST/templates"
 echo "$VERSION" > "$DEST/templates/cm-VERSION"
