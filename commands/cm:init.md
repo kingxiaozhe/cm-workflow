@@ -99,6 +99,16 @@ CLAUDE.md 必须包含以下部分，控制在 150 行以内：
 @rules/smart-contract.md
 ```
 
+### 3.5 生成即核验(机械,写入前执行)
+
+生成的 CLAUDE.md 与 rules 中**所有可执行断言逐条实证**,核验不过的条目不许静默写入(修正或显式标注「未验证」):
+
+- 命令类(install/dev/test/lint/build):验证脚本真实存在(读 manifest scripts / Makefile),可安全 dry 的实跑一次
+- globs 类:实测匹配非空——匹配零文件的 glob 是死规则
+- 文件引用类(@rules/xxx、路径):存在性检查
+
+> 依据:实跑事故——init 生成的 testing.md 写了 Node 24 下已失效的 `node --test tests/`,带病上岗直到任务踩上去才发现。能机械验的绝不靠嘴(凭证卡点同款基因)。
+
 ### 4. rules 文件格式
 
 每个 rules 文件使用以下格式：

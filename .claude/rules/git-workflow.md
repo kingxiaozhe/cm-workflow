@@ -56,6 +56,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 - [ ] 动过流程节点 → dogfood 实跑过
 - [ ] 动过 `install.sh` → 真装过一次
 - [ ] 升了 VERSION → `cm:check.md` 基线号已同步
+- [ ] 新增了跨文件配对(模板/凭证/落盘物的生成方↔消费方)→ cm:check 配套完整性已补检查项(检查者不自动进化,靠这一条)
 - [ ] 无真实密钥、无未脱敏的内部项目名
 
 ## PR
