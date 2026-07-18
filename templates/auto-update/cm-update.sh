@@ -129,6 +129,9 @@ build_pairs() {
   if [ -f "$REPO/templates/hooks/pre-commit-cm-task-check" ]; then
     echo "$REPO/templates/hooks/pre-commit-cm-task-check$TAB$DEST/templates/cm-task-check-hook"
   fi
+  if [ -f "$REPO/templates/ui-lens/cm-ui-lens-extract.mjs" ]; then
+    echo "$REPO/templates/ui-lens/cm-ui-lens-extract.mjs$TAB$DEST/templates/cm-ui-lens-extract.mjs"
+  fi
   if [ -f "$REPO/templates/refactor/cm-refactor-denies.json" ]; then
     echo "$REPO/templates/refactor/cm-refactor-denies.json$TAB$DEST/templates/cm-refactor-denies.json"
   fi

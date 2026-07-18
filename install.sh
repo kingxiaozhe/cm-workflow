@@ -75,6 +75,10 @@ if [ -f "$SRC_DIR/templates/refactor/cm-refactor-denies.json" ]; then
   cp "$SRC_DIR/templates/refactor/cm-refactor-denies.json" "$DEST/templates/cm-refactor-denies.json"
   echo "✓ 重构批量道禁令模板已安装（/cm:refactor 批量扇出前验证,由人合并进项目 settings.json）"
 fi
+if [ -f "$SRC_DIR/templates/ui-lens/cm-ui-lens-extract.mjs" ]; then
+  cp "$SRC_DIR/templates/ui-lens/cm-ui-lens-extract.mjs" "$DEST/templates/cm-ui-lens-extract.mjs"
+  echo "✓ UI 还原对表脚本已安装(基准/还原页双跑提取计算值,cm-ui-engineer 消费)"
+fi
 if [ -d "$SRC_DIR/templates/auto-update" ]; then
   mkdir -p "$HOME/.cm-workflow"
   for s in cm-update.sh cm-announce.sh; do
