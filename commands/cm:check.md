@@ -32,6 +32,7 @@
 - **独立工具 skill 存在性**：cm:init/cm:prd/N8 引用了 `codebase-context` → `~/.claude/skills/codebase-context/SKILL.md` 必须存在；缺失报告为断链（旧包安装，提示重装）
 - **独立工具 skill 存在性（idea-to-prd）**：cm:idea 引用 `idea-to-prd` → `~/.claude/skills/idea-to-prd/SKILL.md` 必须存在；缺失同样报断链
 - **凭证/审批位链路配对**：N4 落盘的 `.reviews/` 凭证 ↔ N5 卡点与 N8 对账所引用的路径一致；cm:prd 写入的 `.cm-specs-status` ↔ N1 入口闸读取的文件名一致——四处引用两两配对（防单边改名断链）
+- **UI 对表脚本四方配对**：cm-ui-engineer/cm:prd 引用的 `cm-ui-lens-extract.mjs` ↔ `templates/ui-lens/` 源文件 ↔ install.sh 安装行 ↔ auto-update build_pairs（v0.9.41 引入）
 - **规则指引与模板配对**：cm:init「规则内容指引」中的每个条目 ↔ `~/.claude/templates/cm-rules/{名称}.md` 模板文件一一对应；缺模板报告为降级项（可运行但生成质量不稳定），多出的孤儿模板报告为未接线
 
 ### 5. 外部依赖可用性
@@ -40,7 +41,7 @@
 - 状态条已配置（settings.json 的 statusLine 指向 cm-statusline.sh）：未配置报告为提示项（不影响运行，仅少可视化）
 - 自动更新器（`~/.cm-workflow/cm-update.sh` 存在且 settings.json 的 SessionStart 挂载）：未配置报告为提示项（可选；配置后安装一致性由它每会话机械保障,本命令的版本检查退居兜底）
 - **安装版本**：读取 `~/.claude/templates/cm-VERSION` 并显示在结论首行。文件缺失 → 显示"版本: 未知（旧版安装，建议用最新包重装）"——版本混乱是实测踩过的坑，反馈问题必带版本号
-- **版本一致性（防混装/旧装）**：本命令文件自带基线号 → **框架版本基线: 0.9.40**（发包时与 VERSION 文件同步递增）。比对规则：
+- **版本一致性（防混装/旧装）**：本命令文件自带基线号 → **框架版本基线: 0.9.41**（发包时与 VERSION 文件同步递增）。比对规则：
   - 基线 = cm-VERSION → 一致，正常
   - 基线 ≠ cm-VERSION 或 cm-VERSION 缺失 → **报"版本不一致/过旧"并建议重装**："命令文件 v{基线} / 安装标记 v{实际}——本机是混装或旧包，请用最新 zip 重跑 install.sh"（实测事故：公司机器旧包 + 家里新包，功能"消失"排查半天）
 
