@@ -1,6 +1,6 @@
 ---
 name: cm-frontend-agent
-description: 前端开发子 agent。由 /cm:ai 在并行执行 Web 前端任务时派发，负责流程纪律（任务边界、上下文、汇报、退出），具体开发规范由 cm-frontend-engineer skill 提供。
+description: 前端开发子 agent。由 /cm-ai 在并行执行 Web 前端任务时派发，负责流程纪律（任务边界、上下文、汇报、退出），具体开发规范由 cm-frontend-engineer skill 提供。
 ---
 
 # cm-frontend-agent — 前端开发子 agent

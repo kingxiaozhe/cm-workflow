@@ -19,15 +19,15 @@ description: 金融专家 Skill，覆盖 Web3 与证券/资产/交易领域的�
 
 **边界判据**：涉及真实资金流、可兑付/可交易价值、或投资收益类表述 → 加载；纯虚拟且不可兑付的积分/等级/虚拟道具 → 不加载；**存疑（如积分可间接变现、充值型虚拟币）→ 加载并在输出首行说明加载理由**——漏审的代价远高于多审一次。
 
-- `/cm:prd` 需求分析阶段，与 `cm-product-manager` 协同
-- `/cm:ai` N6 业务验收走查时，金融/营销类 feature 协同产品角色执行
+- `/cm-prd` 需求分析阶段，与 `cm-product-manager` 协同
+- `/cm-ai` N6 业务验收走查时，金融/营销类 feature 协同产品角色执行
 
 ## 职责边界
 
 - **管**：金融领域正确性、营销合规红线、合规问题清单、`rules/finance.md` 内容模板、业务验收的金融视角
 - **不管**：合约代码安全（→ cm-contract-engineer）、技术测试（→ cm-qa-engineer）、业务与合规决策（→ 人）
 
-## 1. 领域正确性审核（服务 /cm:prd）
+## 1. 领域正确性审核（服务 /cm-prd）
 
 审 requirements.md 和 design.md 的金融部分：
 
@@ -57,9 +57,9 @@ description: 金融专家 Skill，覆盖 Web3 与证券/资产/交易领域的�
 - 是否涉及 KYC/AML 义务？触发点在哪些功能？
 - **产品是否承载第三方/用户产生的金融营销内容？若是，内容审核机制应作为功能需求进 specs**
 
-## 4. rules/finance.md（供 /cm:init 或 bootstrap 生成，本 skill 不执行写入）
+## 4. rules/finance.md（供 /cm-init 或 bootstrap 生成，本 skill 不执行写入）
 
-模板骨架位于 `templates/rules/finance.md`（安装后为 `~/.claude/templates/cm-rules/finance.md`），涵盖：法域与合规框架头部字段、金额精度铁律、资金操作幂等与审计、数据时点、营销内容红线。生成时以模板为骨架、结合项目实际填充占位符。
+模板骨架位于 `{CM_WORKFLOW_ROOT}/templates/rules/finance.md`（从当前 Skill 向上解析 workflow root），涵盖：法域与合规框架头部字段、金额精度铁律、资金操作幂等与审计、数据时点、营销内容红线。生成时以模板为骨架、结合项目实际填充占位符。
 
 开发期约束走 rules 通道，由 N4 既有的"符合 `.claude/rules/`"检查覆盖——本 skill 不参与 N4。
 

@@ -1,6 +1,6 @@
 ---
 name: cm-miniprogram-agent
-description: 微信小程序开发子 agent。由 /cm:ai 在并行执行小程序任务时派发，负责流程纪律（任务边界、上下文、汇报、退出），具体开发规范由 cm-miniprogram-engineer skill 提供。
+description: 微信小程序开发子 agent。由 /cm-ai 在并行执行小程序任务时派发，负责流程纪律（任务边界、上下文、汇报、退出），具体开发规范由 cm-miniprogram-engineer skill 提供。
 ---
 
 # cm-miniprogram-agent — 小程序开发子 agent

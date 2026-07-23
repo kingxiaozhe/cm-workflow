@@ -4,13 +4,17 @@ description: 本仓库的安全红线——写用户机器、第三方许可、p
 
 # 安全规范
 
-本仓库不联网、不收数据、不处理用户凭证，OWASP 那套 Web 暴露面基本不适用。真实风险只有三类：**装到用户机器上会覆盖什么**、**收编的第三方素材许可**、**prompt 能指使 AI 干什么**。
+本仓库没有常驻服务、不收集遥测，也不需要用户凭证。Codex 安装和可选 Claude
+自动更新会访问本地插件命令或 Git 远端。主要风险是：**安装覆盖范围**、**第三方
+许可**、**prompt 授权边界**和**公开仓库敏感信息**。
 
 ## 一、写用户机器（最大红线）
 
 `install.sh` / `install.ps1` 直接 `cp -R` 进用户的 `~/.claude/`——那里有用户自己的命令和配置。
 
-- **只写自己的地盘**：`commands/cm*`、`skills/cm-*`、`agents/cm-*`、`templates/cm-*`。禁止碰 `~/.claude/settings.json`、`~/.claude/CLAUDE.md` 或任何非 cm 命名的文件。
+- **只写安装文档列出的地盘**：安装器可写 CM commands/skills/agents/runtime/scripts
+  与 workflow templates；每个目标树发现冲突时必须先列出并询问。禁止改
+  `~/.claude/settings.json`、`~/.claude/CLAUDE.md`。
 - **覆盖前必须先检测再问**：现有的 conflicts 检测 + `read -p` 确认必须保留。新增安装目标时照抄这个模式。
   ```bash
   # Bad：闷声覆盖用户已有文件
@@ -20,7 +24,7 @@ description: 本仓库的安全红线——写用户机器、第三方许可、p
   conflicts=$(cd "$src" && find . -type f | while read -r f; do [ -e "$dst/$f" ] && echo "$f"; done || true)
   [ -n "$conflicts" ] && { echo "$conflicts" | sed 's/^/    /'; read -r -p "  继续覆盖？[y/N] " ans; }
   ```
-- **`rm -rf` 只能作用于安装器刚创建的路径**，且必须是字面量拼接、不能是变量拼出来的用户路径。现存唯一一处（`rm -rf "$DEST/templates/cm-pixel/dev"`）是清理自己刚拷的构建目录——新增删除操作按同样标准审。
+- **`rm -rf` 只能作用于安装器命名的 stage/scaffold/backup 路径**，不能删除任意用户输入路径。
 - 设置类改动（如 statusLine）**只打印建议让用户自己加**，不代改 settings.json。
 
 ## 二、密钥与敏感内容
@@ -36,8 +40,8 @@ description: 本仓库的安全红线——写用户机器、第三方许可、p
 
 | 资产 | 许可 | 义务 |
 | ---- | ---- | ---- |
-| `skills/darwin-skill/` | MIT（alchaincyf/darwin-skill） | 保留 `NOTICE.md`，注明来源与改动点 |
-| `templates/pixel/` 精灵素材 | CC0（Kenney） | 注明来源，无强制义务但照做 |
+| `skills/darwin-skill/` | MIT（上游 README 明确声明） | 保留 `NOTICE.md` 和第三方总表 |
+| `templates/pixel/` 精灵素材 | CC0（Kenney 三个具体素材页） | 保留具体来源与 CC0 链接 |
 
 - **收编流程**：确认许可允许再分发 → 原文件尽量不改（改了在 NOTICE.md 逐条列出，如 darwin-skill 的 screenshot.mjs 路径与 macOS-only open 两处移植性修补）→ README 标注来源与许可 → 升一版（约定：每收编一个 skill 升一版）。
 - 许可不明或禁止再分发的资产，**只写「可选外部依赖 + 安装命令」**，不进仓库（huashu-design 即此模式）。

@@ -1,6 +1,6 @@
 ---
 name: cm-ui-agent
-description: UI 还原子 agent。由 /cm:ai 在并行执行 UI 还原任务时派发，负责流程纪律（任务边界、上下文、汇报、退出），具体还原方法由 cm-ui-engineer skill 提供。
+description: UI 还原子 agent。由 /cm-ai 在并行执行 UI 还原任务时派发，负责流程纪律（任务边界、上下文、汇报、退出），具体还原方法由 cm-ui-engineer skill 提供。
 ---
 
 # cm-ui-agent — UI 还原子 agent

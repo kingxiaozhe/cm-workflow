@@ -1,49 +1,56 @@
 # cm-workflow
 
-spec-driven 的 Claude Code 自动化开发工作流分发包：需求文档 → 开发规格 → 自动开发 → QA → 文档同步。本仓库的「源码」是 prompt 资产（Markdown），产物安装到 `~/.claude/`。
+Codex-native、spec-driven 的双运行时工作流分发包：需求文档 → 开发规格 →
+实现 → 独立审查 → QA → 文档同步。Codex Skills 与 `runtime/` 是权威流程，
+Claude Code 跨平台直接使用 `/cm-*` Skills；`compat/claude-commands/` 保存
+macOS/Linux 的历史 `/cm:*` 别名包装。
 
 ## 技术栈
 
-- 语言: Markdown（prompt 资产，占 60/68 源文件）+ Bash（安装与可视化脚本）+ PowerShell（Windows 安装器）
-- 框架: 无。Claude Code 原生扩展机制——commands / skills / agents / templates
-- 包管理: 无。分发靠 `install.sh` / `install.ps1` 拷贝到 `~/.claude/`
+- 语言: Markdown（prompt 资产主体）+ Bash（安装与可视化脚本）+ PowerShell（Windows 安装器）+ Python（公开包自检）
+- 框架: Codex plugin + Agent Skills；Claude Code commands/agents 兼容层
+- 包管理: 无。Codex 用 `install-codex.sh`；Claude Code 用 `install.sh` / `install.ps1`
 - 版本控制: remote
-- 交付形态: 开发者工具（Claude Code 插件包，纯 Markdown + bash，无构建产物）
-- 业务地图: 跳过（prompt 资产库，codebase-context 不适用——其七轮抓取目标 src/api/types/components/store 本项目均无；README 的带注释目录树即业务地图）
+- 交付形态: 开发者工具（Markdown + 本地脚本，无构建产物）
+- 业务地图: 本地扫描产物不提交；公开架构见 `docs/architecture.md`
 
 ## 常用命令
 
-- 安装到本机: `./install.sh`（含覆盖确认，装完提示跑 /cm:check）
+- Codex 安装: `./install-codex.sh`（装完新开会话跑 `$cm-check`）
+- Claude 安装: `./install.sh`（含覆盖确认，装完跑 `/cm-check`）
 - Windows 安装: `powershell -ExecutionPolicy Bypass -File install.ps1`
-- 一致性自检: `/cm:check`（**本仓库唯一的自动化测试，改任何框架文件后必跑**）
+- 一致性自检: `./scripts/cm-check-runtime.sh`
+- 公开包检查: `python3 scripts/validate-public-repo.py`
+- 安全扫描: `python3 scripts/scan-public-safety.py`
 - 查看版本: `cat VERSION`
 - 可视化预览: `templates/pixel/cm-pixel.sh --demo`、`templates/dashboard/serve.sh {specs路径}`
 
-无 build / lint / 单元测试——不存在构建产物，质量门是 `/cm:check` + dogfood 实跑。
+无 build / 单元测试。质量门是机械检查、插件验证、安装冒烟和相关路径 dogfood。
 
 ## 目录结构
 
 ```text
-commands/              # 斜杠命令 → ~/.claude/commands/
-├── cm:{init,prd,ai,fix,idea,check}.md
-├── cm-ai-nodes/       # cm:ai 的 N1–N8 节点，按需加载
-└── cm-prd-modes/      # cm:prd 的 greenfield/brownfield/change-mode
-skills/                # 工种能力 → ~/.claude/skills/{name}/SKILL.md —— skill 管技术
+compat/claude-commands/ # macOS/Linux 历史 /cm:* 三行别名包装
+skills/                # Codex 权威流程与工种能力
+├── cm-{idea,init,prd,ai,fix,refactor,check}/
 ├── cm-*-engineer/     # frontend/ui/miniprogram/backend/database/contract/qa/devops
 ├── cm-product-manager/、cm-finance-expert/、cm-doc-syncer/
 └── codebase-context/、idea-to-prd/、darwin-skill/   # 独立工具，不进 N1–N8
 agents/                # 并行子 agent → ~/.claude/agents/ —— agent 管纪律
+runtime/               # 双运行时共享上下文、调度、审查合同
 templates/             # rules 骨架 / hooks / statusline / dashboard / pixel
 docs/                  # 交付材料、示例 PRD 与 specs
-VERSION                # 单一版本源，与 cm:check 基线号双写
+.codex-plugin/         # Codex 插件清单
+VERSION                # 语义版本源，与 plugin manifest 基础版本一致
 ```
 
 ## 核心架构原则
 
 - **agent 管纪律，skill 管技术**：并行干活的做 agent（前端/UI/小程序/后端/数据库/合约），串行把关的做 skill（产品/金融/QA/运维/doc-syncer）。新增角色前先归到这两类之一。
-- **引用即契约**：本仓库历史缺陷全属「引用断链」——改名残留、匹配表缺项、死角色、失效命令引用。任何跨文件引用都由 `/cm:check` 机器化校验。
-- **模板层是团队定制入口**：公司规范沉淀进 `templates/rules/`，所有项目 `/cm:init` 出的 rules 自动带公司基因。
-- **命令间隔离（维护者确立,2026-07-18）**：修改任一 `cm:` 命令不得动到其他命令的流程文件；命令 A 需要命令 B 的东西,一律做成 A 读 B 的**落盘物**(档案/清单/备忘),不改 B 的文本(实例:fix 的转交进场读 refactor 档案与走查报告;refactor 的 G0 读 LESSONS 待触发备忘)。唯一豁免:发版时 cm:check.md 的版本基线行(双写记账,非流程)。
+- **引用即契约**：本仓库历史缺陷全属「引用断链」——改名残留、匹配表缺项、死角色、失效命令引用。任何跨文件引用都由 `/cm-check` 机器化校验。
+- **一份流程真相**：Codex Skill 是权威实现，Claude 旧别名只转发，不复制业务规则。
+- **模板层是团队定制入口**：公司规范沉淀进 `templates/rules/`，所有项目 `/cm-init` 出的 rules 自动带公司基因。
+- **流程间隔离（维护者确立,2026-07-18）**：修改任一 `cm-*` 流程不得顺带修改其他流程；流程 A 需要流程 B 的内容时读取 B 的落盘物，不复制或改写 B 的规则。发版版本只同步 `VERSION` 与 plugin manifest。
 
 ## 规则
 

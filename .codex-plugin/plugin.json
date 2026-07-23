@@ -1,0 +1,30 @@
+{
+  "name": "cm-workflow",
+  "version": "0.10.0",
+  "description": "Spec-driven product development workflow for Codex: PRD, implementation, review, QA, fixes, refactors, and documentation.",
+  "author": {
+    "name": "cm-workflow maintainers",
+    "url": "https://github.com/kingxiaozhe/cm-workflow"
+  },
+  "homepage": "https://github.com/kingxiaozhe/cm-workflow",
+  "repository": "https://github.com/kingxiaozhe/cm-workflow",
+  "keywords": [
+    "codex",
+    "spec-driven-development",
+    "code-review",
+    "qa"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "CM Workflow",
+    "shortDescription": "Run the CM spec-driven workflow in Codex.",
+    "longDescription": "Turn ideas and requirements into reviewed specs, implementation tasks, independent reviews, QA evidence, fixes, refactors, and synchronized documentation.",
+    "developerName": "cm-workflow maintainers",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": "Use CM Workflow to turn my requirements into reviewed specs and verified implementation."
+  }
+}

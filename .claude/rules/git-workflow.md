@@ -39,27 +39,27 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 
 ## 发版（升 VERSION 时的强制清单）
 
-版本号是**双写**的，两处必须同步递增——不同步会让用户的 `/cm:check` 误报"混装或旧包"，这是实测踩过的坑：
+版本号是**双写**的，两处基础版本必须同步递增：
 
 1. `VERSION` 文件
-2. `commands/cm:check.md` 的「**框架版本基线: X.Y.Z**」
+2. `.codex-plugin/plugin.json` 的 `version`（安装时可附加 `+codex.*` cachebuster）
 
 配套：
 
 - 收编一个新 skill → 升一个 patch 版（既有约定）
 - README 的目录树、角色计数、版本相关说明同步更新
-- 提交前跑 `/cm:check`，结论 PASSED（含"版本一致性: 一致"）才提交
+- 提交前跑 `./scripts/cm-check-runtime.sh` 与 `python3 scripts/validate-public-repo.py`
 
 ## 提交前
 
-- [ ] 动过 `commands/` `skills/` `agents/` → `/cm:check` PASSED
+- [ ] 动过 `compat/` `skills/` `agents/` → `cm-check-runtime.sh` PASSED
 - [ ] 动过流程节点 → dogfood 实跑过
 - [ ] 动过 `install.sh` → 真装过一次
-- [ ] 升了 VERSION → `cm:check.md` 基线号已同步
+- [ ] 升了 VERSION → plugin manifest 基础版本已同步
 - [ ] 新增了跨文件配对(模板/凭证/落盘物的生成方↔消费方)→ cm:check 配套完整性已补检查项(检查者不自动进化,靠这一条)
 - [ ] 无真实密钥、无未脱敏的内部项目名
 
 ## PR
 
 - 描述写清：改了哪个环节、为什么改（若来自 dogfood，附事故现象）、影响哪些角色文件
-- 合入前置：`/cm:check` PASSED + 至少一次相关路径的实跑记录
+- 合入前置：`/cm-check` PASSED + 至少一次相关路径的实跑记录

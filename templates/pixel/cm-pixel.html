@@ -296,7 +296,7 @@ function draw() {
 function hud() {
   const paused = cur.state==="paused_for_human", done = mode==="done";
   const ph = document.getElementById("phase");
-  if (mode==="wait") { ph.textContent = "😴 休息中(等 /cm:ai 启动)"; ph.className=""; }
+  if (mode==="wait") { ph.textContent = "😴 休息中(等 /cm-ai 启动)"; ph.className=""; }
   else if (staleRun) { ph.textContent = "⚠ 可能已中断(去会话确认)"; ph.className="stale"; }
   else { ph.textContent = done ? "STAGE CLEAR — 全部完成" :
       (paused ? "🖐 等你确认" : "STAGE "+cur.node+" · "+(PHASE[cur.node]||"运行中"));

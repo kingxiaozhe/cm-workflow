@@ -82,7 +82,7 @@ if [ "$CHECK_ONLY" = 1 ]; then
   exit 0
 fi
 
-# ---- 运行中工作流保护：/cm:ai 正在跑时不换安装文件（中途换版 = 混装风险）----
+# ---- 运行中工作流保护：/cm-ai 正在跑时不换安装文件（中途换版 = 混装风险）----
 # 实证事故：2026-07-17 10:06 自动更新 v0.9.27 恰逢 diff-lens 运行中(10:04–10:17)，
 # 节点文件被中途替换。状态新鲜(30分钟内有写入)才算真在跑；僵死的 running 不拦更新。
 PTR="$HOME/.claude/cm-current-specs"
@@ -102,13 +102,15 @@ fi
 TAB="$(printf '\t')"
 build_pairs() {
   local part
-  for part in commands skills agents; do
+  for part in commands skills agents runtime scripts; do
     if [ -d "$REPO/$part" ]; then
       ( cd "$REPO/$part" && find . -type f ) \
         | sed "s|^\./\(.*\)$|$REPO/$part/\1$TAB$DEST/$part/\1|"
     fi
   done
   if [ -d "$REPO/templates/rules" ]; then
+    ( cd "$REPO/templates/rules" && find . -type f ) \
+      | sed "s|^\./\(.*\)$|$REPO/templates/rules/\1$TAB$DEST/templates/rules/\1|"
     ( cd "$REPO/templates/rules" && find . -type f ) \
       | sed "s|^\./\(.*\)$|$REPO/templates/rules/\1$TAB$DEST/templates/cm-rules/\1|"
   fi
@@ -117,6 +119,8 @@ build_pairs() {
   fi
   if [ -d "$REPO/templates/dashboard" ]; then
     ( cd "$REPO/templates/dashboard" && find . -type f ) \
+      | sed "s|^\./\(.*\)$|$REPO/templates/dashboard/\1$TAB$DEST/templates/dashboard/\1|"
+    ( cd "$REPO/templates/dashboard" && find . -type f ) \
       | sed "s|^\./\(.*\)$|$REPO/templates/dashboard/\1$TAB$DEST/templates/cm-dashboard/\1|"
   fi
   if [ -f "$REPO/templates/statusline/cm-statusline.sh" ]; then
@@ -124,15 +128,20 @@ build_pairs() {
   fi
   if [ -d "$REPO/templates/pixel" ]; then
     ( cd "$REPO/templates/pixel" && find . -type f -not -path './dev/*' ) \
+      | sed "s|^\./\(.*\)$|$REPO/templates/pixel/\1$TAB$DEST/templates/pixel/\1|"
+    ( cd "$REPO/templates/pixel" && find . -type f -not -path './dev/*' ) \
       | sed "s|^\./\(.*\)$|$REPO/templates/pixel/\1$TAB$DEST/templates/cm-pixel/\1|"
   fi
   if [ -f "$REPO/templates/hooks/pre-commit-cm-task-check" ]; then
+    echo "$REPO/templates/hooks/pre-commit-cm-task-check$TAB$DEST/templates/hooks/pre-commit-cm-task-check"
     echo "$REPO/templates/hooks/pre-commit-cm-task-check$TAB$DEST/templates/cm-task-check-hook"
   fi
   if [ -f "$REPO/templates/ui-lens/cm-ui-lens-extract.mjs" ]; then
+    echo "$REPO/templates/ui-lens/cm-ui-lens-extract.mjs$TAB$DEST/templates/ui-lens/cm-ui-lens-extract.mjs"
     echo "$REPO/templates/ui-lens/cm-ui-lens-extract.mjs$TAB$DEST/templates/cm-ui-lens-extract.mjs"
   fi
   if [ -f "$REPO/templates/refactor/cm-refactor-denies.json" ]; then
+    echo "$REPO/templates/refactor/cm-refactor-denies.json$TAB$DEST/templates/refactor/cm-refactor-denies.json"
     echo "$REPO/templates/refactor/cm-refactor-denies.json$TAB$DEST/templates/cm-refactor-denies.json"
   fi
   # 更新器自身也纳入校验与自愈（安装走 tmp+mv 原子替换；清理循环有 $DEST 前缀守卫,不会误删这里）

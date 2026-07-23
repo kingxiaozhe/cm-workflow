@@ -1,141 +1,218 @@
-# My_skill — cm 系列 Claude Code 自动化开发工作流
+# CM Workflow
 
-一套 spec-driven 的 Claude Code 工作流：**需求文档 → 开发规格 → 自动开发 → QA → 文档同步**。
+[![CI](https://github.com/kingxiaozhe/cm-workflow/actions/workflows/ci.yml/badge.svg)](https://github.com/kingxiaozhe/cm-workflow/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Codex native](https://img.shields.io/badge/Codex-native-111827)](https://github.com/kingxiaozhe/cm-workflow)
+[![Claude Code compatible](https://img.shields.io/badge/Claude%20Code-compatible-D97757)](https://github.com/kingxiaozhe/cm-workflow)
 
-## 目录结构
+CM Workflow 是一套 Codex-native、spec-driven 的产品开发工作流：
+
+> 点子 / 需求文档 → requirements + design + tasks → 实现 → 独立审查 → QA → 文档同步
+
+Codex 是主运行时，Claude Code 是兼容运行时。两者共用 `skills/` 和
+`runtime/` 中的同一份流程真相，不再分别维护两套业务规则。
+
+- 一份规格真相：requirements、design、tasks。
+- 一份执行真相：`tasks.md` 与磁盘审计文件。
+- 每任务独立审查：无凭证不标记完成。
+- 可恢复：新会话从磁盘重建，不依赖聊天记忆。
+- 风险有边界：生产、资金、密钥、破坏性变更保留人工闸。
+
+[安装指南](docs/installation.md) · [架构说明](docs/architecture.md) ·
+[贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md)
+
+## Codex 安装
+
+需要当前版本的 Codex，并已完成登录。先把仓库克隆到
+`~/plugins/cm-workflow` **之外**的位置，再执行：
+
+```bash
+git clone https://github.com/kingxiaozhe/cm-workflow.git
+cd cm-workflow
+./install-codex.sh
+```
+
+脚本会：
+
+1. 用 Codex 自带的 plugin creator 验证源码。
+2. 在临时目录组装并再次验证完整插件。
+3. 原子更新个人本地 marketplace 插件。
+4. 添加 cachebuster 并执行 `codex plugin add`。
+
+安装后**新开一个 Codex 对话**，先运行：
 
 ```text
-commands/                    # 斜杠命令（安装到 ~/.claude/commands/）
-├── cm:init.md               # 项目 .claude/ 初始化（CLAUDE.md + rules/）
-├── cm:prd.md                # 需求文档 → specs 三件套（requirements/design/tasks），支持 --change 变更模式
-├── cm:ai.md                 # 自动开发主循环（流程图状态机）
-├── cm:fix.md                # 缺陷修复小闭环（复现→定位→防护网→最小修复→Codex审查→波及面回归→档案落盘）
-├── cm:refactor.md           # 重构闭环（行为保持:判官自验证→规模双轨→行为等价→规则毕业;设计见 docs/重构流程设计）
-├── cm:idea.md               # 点子→PRD 访谈入口（加载 idea-to-prd 技能;流程上游,非 N1-N8 步骤）
-│
-│  # 独立工具 skill（不属于 N1-N8 流程,按需使用）
-│  skills/idea-to-prd/       # 点子→PRD 产品访谈搭档:一次一题把模糊想法聊成 L1→L3 规格,
-│                            # 含 trading/web3 领域包;产出的 PRD 交给 /cm:prd 拆 specs——
-│                            # 新项目从零想法起步时的前置工具,与 /cm:prd 互不依赖
-│  skills/darwin-skill/      # 技能优化器(达尔文,MIT 收编自 alchaincyf/darwin-skill):
-│                            # 9 维评分+受控进化+人类守关,用于给本仓库的 skill 体检与升级;
-│                            # 触发词"优化skill/skill打分/达尔文",详见该目录 NOTICE.md
-└── cm-ai-nodes/             # cm:ai 的 8 个流程节点，按需加载
-    ├── N1-init.md           # 初始化：解析路径、扫描 features、加载上下文
-    ├── N2-enter-feature.md  # 进入 feature：断点恢复、依赖分析、串/并行计划（跨项目并行可选 Agent Teams）
-    ├── N3-execute-task.md   # 执行 task：按工种匹配 skill
-    ├── N4-review.md         # AI 自审 + Codex 复审（环境不可用时降级）
-    ├── N5-mark-done.md      # 标记 [x]、写 LESSONS.md
-    ├── N6-qa-eval.md        # QA 评分决定是否触发 cm-qa-engineer
-    ├── N7-context.md        # 每个 task 后 /clear 重载 specs
-    └── N8-finish.md         # 调用 cm-doc-syncer、输出总结
-
-skills/                      # 工种 Skills（安装到 ~/.claude/skills/）—— skill 管技术
-├── cm-frontend-engineer/    # Web 前端（业务逻辑/状态/API，消费 UI 工程师的组件契约）
-├── cm-ui-engineer/          # UI 还原（design-baseline → token 先行 → 原子还原 → BackstopJS ≤1%）
-├── cm-miniprogram-engineer/ # 微信小程序（原生/Taro/uni-app）
-├── cm-backend-engineer/     # 后端 API（路由/鉴权/缓存/队列，契约三级协议）
-├── cm-database-engineer/    # 数据库（migration、模型、查询优化）
-├── cm-contract-engineer/    # 智能合约（EVM/Solana/Move 多链）
-├── cm-qa-engineer/          # QA（测试补全、E2E、可视化回归、技术验收）
-├── cm-product-manager/      # 产品（需求分析、歧义五问、变更影响、业务验收走查）
-├── cm-finance-expert/       # 金融专家（Web3/证券领域把关、营销合规红线、只举旗不定性）
-├── cm-devops-engineer/      # 发布/运维（staging 部署+冒烟、发布记录、生产发布人工确认）
-└── cm-doc-syncer/           # 文档同步（README/CLAUDE.md/rules/CHANGELOG）
-
-agents/                      # 并行工种的子 agent 定义（安装到 ~/.claude/agents/）—— agent 管纪律
-├── cm-frontend-agent.md     # 只做指定任务、不碰界外文件、不自行标记、规范汇报
-├── cm-ui-agent.md           # 只碰展示层白名单、基准只读、改既有 token 强制上报
-├── cm-miniprogram-agent.md  # （每个 agent 内部加载同名工种 skill）
-├── cm-backend-agent.md      # 范围外鉴权/权限改动强制上报
-├── cm-database-agent.md     # 破坏性 migration 强制上报
-└── cm-contract-agent.md     # 不碰私钥、不执行主网部署
+$cm-check
 ```
 
-**分工原则**：并行干活的做 agent（前端/UI/小程序/后端/数据库/合约），串行把关的做 skill（产品/金融/QA/运维/doc-syncer）。
+然后可以显式调用：
 
-**可选外部依赖**：`npx skills add alchaincyf/huashu-design`（MIT）——无设计稿时在 /cm:prd 阶段生成高保真原型作为设计基准，未安装则 UI 走前端自行实现。
+```text
+$cm-idea 我想做一个记录宝宝辅食的小程序
+$cm-init
+$cm-prd ~/projects/my-app-specs
+$cm-ai ~/projects/my-app-specs ~/code/my-app
+$cm-fix ~/projects/my-app-specs ~/code/my-app 登录后首屏白屏
+$cm-refactor ~/projects/my-app-specs ~/code/my-app 拆分过大的订单服务
+```
 
-**rules 模板层**（`templates/rules/`，install.sh 装到 `~/.claude/templates/cm-rules/`）：10 个规则骨架（coding-style / testing / security / git-workflow / frontend / miniprogram / backend-api / database / smart-contract / finance），/cm:init 以其为骨架 + 项目推断生成最终规则；模板头部统一四原则（可执行 / Bad-Good / 量化 / 现代实践）。**把公司规范沉淀进模板，所有项目 init 出的 rules 自动带公司基因**——这是团队定制的官方入口。
+> 插件更新后也需要新开对话，已打开的对话不会热重载 Skills。
 
-## 安装
+## Claude Code 兼容安装
+
+macOS / Linux：
 
 ```bash
-./install.sh          # macOS/Linux 一键安装（含覆盖确认），装完自动提示运行 /cm:check
+./install.sh
 ```
+
+Windows：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1   # Windows 版
+powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-或手动：
+跨平台入口与 Skill 同名：`/cm-idea`、`/cm-init`、`/cm-prd`、`/cm-ai`、
+`/cm-fix`、`/cm-refactor`、`/cm-check`。macOS/Linux 安装器另外生成历史
+`/cm:*` 别名；Windows 文件系统不支持冒号文件名，因此只提供 `/cm-*`。
+
+## 兼容性矩阵
+
+| 能力 | Codex | Claude Code macOS/Linux | Claude Code Windows |
+| ---- | ---- | ---- | ---- |
+| 主入口 | `$cm-*` | `/cm-*`；兼容 `/cm:*` | `/cm-*` |
+| 权威流程 | `skills/` + `runtime/` | 同一份 | 同一份 |
+| 安装器 | `install-codex.sh` | `install.sh` | `install.ps1` |
+| 核心 Markdown 流程 | 支持 | 支持 | 支持 |
+| 独立审查 | 子代理/隔离 CLI/显式降级 | 可用运行时能力/显式降级 | 可用运行时能力/显式降级 |
+| Bash 状态条/看板 | macOS/Linux | 原生 | WSL 或 Git Bash |
+| 可选 OMX 镜像 | 自动探测，缺失不阻断 | 不作为依赖 | 不作为依赖 |
+
+覆盖策略、无人值守参数和可选自动更新见[完整安装指南](docs/installation.md)。
+
+## 核心流程
+
+| Skill | 用途 |
+| --- | --- |
+| `$cm-idea` | 把模糊想法访谈成 PRD |
+| `$cm-init` | 分析存量项目，生成 `AGENTS.md` 和 `.claude/` 兼容规则 |
+| `$cm-prd` | 生成 requirements/design/tasks 三件套，支持 greenfield、brownfield 和 change |
+| `$cm-ai` | 按 N1–N8 执行已审批 specs，支持断点恢复 |
+| `$cm-fix` | 复现 → 根因 → 红灯测试 → 最小修复 → 回归 |
+| `$cm-refactor` | 用行为判官保证重构前后等价 |
+| `$cm-check` | 检查插件、双运行时入口、引用、模板与版本 |
+
+`$cm-ai` 的执行状态机：
+
+```text
+N1 初始化
+ → N2 进入 Feature / 恢复断点
+ → N3 执行 Task
+ → N4 主执行者自审 + 新上下文独立审查
+ → N5 标记 tasks.md / 度量 / 提交
+ → N6 QA 评估
+ → N7 从磁盘重载上下文
+ → N8 文档与度量收口
+```
+
+## 架构
+
+```mermaid
+flowchart LR
+    Codex["Codex $cm-*"] --> Skills["skills/cm-*/SKILL.md"]
+    Claude["Claude Code /cm-*"] --> Skills
+    Legacy["macOS/Linux /cm:* alias"] --> Wrappers["compat/claude-commands/"]
+    Wrappers --> Skills
+    Skills --> Runtime["runtime/ 共享合同"]
+    Skills --> Refs["N1-N8 / PRD modes"]
+    Runtime --> Specs["requirements / design / tasks"]
+    Refs --> Specs
+    Specs --> Code["目标代码仓库"]
+    Check["cm-check-runtime.sh"] -. 验证 .-> Skills
+    Check -. 验证 .-> Wrappers
+```
+
+Codex 和 Claude Code 都直接发现同一组 Skills；只有 macOS/Linux 历史
+`/cm:*` 别名经过三行兼容包装。路径从当前 Skill 相对解析，不依赖某个用户的
+cache 或主目录。更多细节见
+[架构说明](docs/architecture.md)。
+
+## 持久化真相
+
+Codex 计划、OMX 状态、子代理线程和 Claude 任务面板都是可重建镜像。下列文件才是断点恢复与审计依据：
+
+- `tasks.md`：唯一权威任务源。
+- `.cm-specs-status`：规格是否已经人工审批。
+- `.cm-status.json`：当前节点快照。
+- `运行日志.jsonl`：可回放的事件记录。
+- `.reviews/`：每轮独立审查的原始凭证。
+- `METRICS.md` 和 `LESSONS.md`：度量与持久经验。
+
+## 审查与并行
+
+审查不依赖旧的 `codex:review` 伪调用。通道顺序为：
+
+1. fresh Codex 子代理/独立线程。
+2. 隔离的只读 Codex CLI 审查会话。
+3. 两者都不可用时才使用 `self-degraded`，并在凭证中如实标记。
+
+串行是默认。只有任务无依赖、文件边界不重叠、契约稳定且当前 Codex 确实支持时才派发子代理。子代理不写 specs、不标记完成、不提交；主执行者保留单写权。
+
+## 目录
+
+```text
+.codex-plugin/plugin.json       # Codex plugin manifest
+skills/
+├── cm-{idea,init,prd,ai,fix,refactor,check}/
+├── cm-*-engineer/           # 工种能力
+├── cm-{product-manager,finance-expert,doc-syncer}/
+└── idea-to-prd/              # 独立访谈 Skill
+runtime/                        # 项目上下文、调度、审查合同
+compat/claude-commands/         # macOS/Linux 历史 /cm:* 别名源
+agents/                         # Claude Code 兼容 agent 定义
+templates/                      # rules/hooks/refactor/UI/可视化资产
+scripts/cm-check-runtime.sh     # 机械一致性检查
+scripts/validate-public-repo.py # 公开包结构验证
+scripts/scan-public-safety.py   # 当前树敏感信息检查
+docs/                           # 安装、架构、示例与设计材料
+install-codex.sh                # Codex 个人 marketplace 安装
+install.sh / install.ps1        # Claude Code 兼容安装
+```
+
+## 可视化（可选）
 
 ```bash
-cp -r commands/* ~/.claude/commands/
-cp -r skills/*   ~/.claude/skills/
-cp -r agents/*   ~/.claude/agents/
+templates/dashboard/serve.sh {specs路径}
+templates/pixel/cm-pixel.sh --demo
+templates/pixel/serve.sh {specs路径}
 ```
 
-安装/修改框架后运行 `/cm:check` 做一致性自检（角色存在性、命名一致、引用有效、配套完整、外部依赖 + **安装版本号**——反馈问题时请带上它）。
+它们只读 specs 中的状态与度量文件，不参与执行。
 
-**Windows 说明**：核心工作流（commands/skills/agents）是纯 Markdown，Windows 原生可用；状态条 / 终端像素版 / serve.sh 是 bash+python3 脚本，在 WSL 或 Git Bash 中使用（浏览器像素版页面双击加 `?demo` 即可预览，不依赖脚本）。
+## 维护与验证
 
-## 执行可视化（终端原生优先）
-
-**① 终端状态条（推荐,Claude Code 底部常驻）**——官方 statusLine 机制,零外部依赖：
-
-```json
-// ~/.claude/settings.json
-"statusLine": {"type": "command", "command": "~/.claude/templates/cm-statusline.sh"}
-```
-
-效果：`⚙ ○○○●○○○○ N4 1.token-dashboard/T-005 · Codex复审第1轮`——八点节点条实时点亮；等人时整条变黄 `⏸ 等待人工`；数据来自 .cm-status.json（N1 写入 ~/.claude/cm-current-specs 指针定位）。
-
-**② 内置任务清单镜像**——N2 进 feature 时任务自动镜像到 Claude Code 原生任务清单,N3/N5 同步状态,终端直接看勾选进度（无需配置）。
-
-**③ 浏览器看板（备选,适合投屏/远程盯进度）**
+修改流程后执行：
 
 ```bash
-templates/dashboard/serve.sh {specs路径}   # 浏览器打开提示的地址,2 秒自动刷新
+./scripts/cm-check-runtime.sh
+python3 scripts/validate-public-repo.py
+python3 scripts/scan-public-safety.py
+python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .
 ```
 
-**纯只读、零侵入**——只消费 specs 落盘文件（tasks.md 勾选 / METRICS / LESSONS），执行引擎无感知。展示：四项汇总指标、每 feature 进度条与任务状态（▶ 当前任务高亮）、METRICS 全表、LESSONS 时间线。/cm:ai 跑长任务时开一个浏览器标签盯进度即可。
+基础版本同时写在 `VERSION` 和 `.codex-plugin/plugin.json`；安装副本可追加
+`+codex.*` cachebuster。
 
-**④ 像素流水线（2D 像素游戏视角,演示/氛围屏首选）**——8 个像素工位对应 N1–N8,小人走到哪一步流水线就跑到哪一步：需求箱→规划牌→控制台→审查机械臂(Codex 机器人)→服务器机架→质检齿轮机→物料桶→发射台。天空与地面材质随流水线推进从清晨草地渐变到夜晚工业区(分关卡换色,色彩即进度)；暂停时场景变暗+黄色对话框说大白话,全部完成打出 STAGE CLEAR+烟花。数据源与状态条同一个 .cm-status.json,零侵入。浏览器版精灵采用 Kenney Pixel Platformer 系列开源素材(CC0,已内嵌,单文件零依赖)。
+Windows 下 Markdown 核心流程可直接用于 Claude Code；Bash 状态条与可视化脚本建议在 WSL 或 Git Bash 中运行。
 
-```bash
-templates/pixel/cm-pixel.sh            # 终端版(ANSI 像素,分屏挂一个 pane)
-templates/pixel/cm-pixel.sh --demo     # 终端版演示模式(不需要真实运行)
-templates/pixel/serve.sh {specs路径}   # 浏览器版(16-bit 风格,给老板演示/办公室大屏)
-# 浏览器版演示模式: 打开地址后加 ?demo
-```
+## 安全与许可
 
-## 自动更新（可选，macOS/Linux）
+- 当前树检查常见密钥形态、个人绝对路径和私有端点。
+- CI 对完整 Git 历史运行 Gitleaks。
+- 安装器覆盖既有文件前列出冲突；无人值守参数必须显式传入。
+- Claude 自动更新器只会被复制，不会被自动启用。
+- 项目采用 [MIT License](LICENSE)。
+- Darwin Skill 和 Kenney CC0 素材的来源与许可见
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-`templates/auto-update/` 提供会话级自动更新链路，install.sh 装到 `~/.cm-workflow/`，按提示在 settings.json 的 `hooks.SessionStart` 挂两条即启用：
-
-- **cm-update.sh**：每次开会话异步检测上游新提交并自动重装；无新提交时做**逐文件字节级比对**，安装被改动/误删即自愈还原；**有工作流正在跑（.cm-status.json 为 running 且 30 分钟内活跃）则跳过本轮**——防中途换版混装（实证事故修复）。团队 fork 用 `CM_UPDATE_REMOTE` 环境变量指仓库，不要改脚本（会被自愈还原）
-- **cm-announce.sh**：下次开会话时播报更新/自愈结果，报完即删
-
-分工：更新器管"装的东西对不对"（机械，每会话），`/cm:check` 管"引用链断没断"（AI，改框架后跑），N1 预检管"这次运行环境行不行"（流程内）。
-
-## 度量与双保险
-
-- **METRICS.md**（specs 目录，N5 自动落盘）：每任务记录审查轮次、Codex 拦截、QA 结果、人工介入次数——试点/灰度门槛的唯一数据源
-- **templates/hooks/pre-commit-cm-task-check**：任务标记双保险 git hook（灰度阶段在代码仓库启用，防 N5 漏标记），默认仅警告，`CM_TASK_CHECK_STRICT=1` 时阻断
-
-## 使用流程
-
-**存量项目：**
-
-1. 在代码项目中运行 `/cm:init`，生成 `.claude/CLAUDE.md` 和 `rules/` 规范
-2. 建一个 specs 文件夹，把需求文档放进 `docs/`，运行 `/cm:prd {specs路径}` 生成规格三件套
-3. 审查 specs 后运行 `/cm:ai {specs路径} {代码项目路径}` 开始自动开发
-4. 需求变更时用 `/cm:prd --change {N}.{feature} 变更描述`，已完成任务不受影响
-
-**0 到 1 新项目（无需先手动搭脚手架）：**
-
-1. 建 specs 文件夹放入需求文档，直接运行 `/cm:prd {specs路径}`——检测到空项目后自动进入 0→1 分支：先给出 2-3 套技术选型方案供人拍板，再生成 `0.bootstrap` feature（design.md 即架构决策记录 ADR，任务含脚手架 / 规范生成 / CI / 公共底座）
-2. 人审规格（审 `0.bootstrap` 就是审架构）后运行 `/cm:ai`——bootstrap 最优先执行，完成后业务 feature 在真实规范下照常开发
-3. 日后架构调整走 `/cm:prd --change 0.bootstrap 变更描述`，选型演进全程留痕
-4. 跳过 `/cm:init`——空项目没有可分析的对象，规范生成是 bootstrap 的任务之一
+发现敏感问题请按 [SECURITY.md](SECURITY.md) 私下报告，不要在公开 Issue 粘贴凭证。
