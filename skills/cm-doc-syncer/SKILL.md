@@ -9,7 +9,7 @@ description: 文档同步 Skill，开发完成后自动更新 README、.claude/ 
 
 ## 触发条件
 
-由 `/cm:ai` 在所有 feature 开发完成后自动调用。
+由 `/cm-ai` 在所有 feature 开发完成后自动调用。
 
 ## 输入
 
@@ -75,7 +75,7 @@ description: 文档同步 Skill，开发完成后自动更新 README、.claude/ 
 | 仅模型/工具文件、无 ORM | 约定并入最近的既有 rules，不另建 |
 | 已有 rules 的 globs 与实际目录不符 | 更新 globs 路径 |
 
-新建 rules 一律用 `~/.claude/templates/cm-rules/{名称}.md` 骨架（frontmatter 含 description + globs），模板不存在则参照项目内既有 rules 的格式。
+新建 rules 一律从当前 Skill 向上解析 workflow root，使用 `{CM_WORKFLOW_ROOT}/templates/rules/{名称}.md` 骨架（frontmatter 含 description + globs），模板不存在则参照项目内既有 rules 的格式。
 
 本步完成后**回到步骤 3 回填** CLAUDE.md 的 rules 引用列表（步骤 3 执行时 rules 尚未定稿，引用列表以本步结果为准）。
 

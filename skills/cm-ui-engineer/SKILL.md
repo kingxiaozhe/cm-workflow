@@ -9,14 +9,14 @@ description: UI 还原工程师 Skill，把已确认的设计基准像素级还�
 
 ## 出场条件（有基准才出场）
 
-仅当 feature 存在**已确认的设计基准**（`specs/{N}.{feature}/design-baseline/`，由 /cm:prd 阶段生成并经人审规格确认）时，才生成和执行 UI 还原任务。无基准 → 本角色不出场，UI 由前端按现有行为实现。
+仅当 feature 存在**已确认的设计基准**（`specs/{N}.{feature}/design-baseline/`，由 /cm-prd 阶段生成并经人审规格确认）时，才生成和执行 UI 还原任务。无基准 → 本角色不出场，UI 由前端按现有行为实现。
 
 **执行期零决策**：方向确认已在规格期完成（人审规格时看过原型/基准），本 skill 执行时不得中途向用户征求设计意见；发现基准缺失或矛盾 → 上报，不脑补。
 
 ## 职责边界
 
 - **管**：design token、纯展示组件（props 驱动）、静态页面结构、样式、资产、像素级验收
-- **不管**：业务逻辑/状态/API（→ cm-frontend-engineer）、设计基准生成（→ /cm:prd 阶段）
+- **不管**：业务逻辑/状态/API（→ cm-frontend-engineer）、设计基准生成（→ /cm-prd 阶段）
 - **契约**：组件契约（组件名 / props / 事件）写在 design.md，与前端的交接以此为准，适用三级契约协议（只报不改）
 
 ## 工作流程
@@ -24,7 +24,7 @@ description: UI 还原工程师 Skill，把已确认的设计基准像素级还�
 ### 1. 读取基准
 
 - `specs/{N}.{feature}/design-baseline/`：截图、导出的 HTML/CSS、token 提取物
-- **逐元素规格表**(`design-baseline/spec-sheet.json`,prd 8.5 产出)——还原的对表依据,**没有规格表不许开工看图猜值**:基准可渲染(HTML/Stitch 导出)→ 现场用 `~/.claude/templates/cm-ui-lens-extract.mjs` 跑基准补一份;纯截图基准 → 色板精确采样、几何标「估算档」,汇报注明精度降级并建议人补设计源
+- **逐元素规格表**(`design-baseline/spec-sheet.json`,prd 8.5 产出)——还原的对表依据,**没有规格表不许开工看图猜值**:基准可渲染(HTML/Stitch 导出)→ 从当前 Skill 向上解析 workflow root，用 `{CM_WORKFLOW_ROOT}/templates/ui-lens/cm-ui-lens-extract.mjs` 跑基准补一份;纯截图基准 → 色板精确采样、几何标「估算档」,汇报注明精度降级并建议人补设计源
 - design.md 的组件契约与基准路径
 - **不得修改基准文件**；基准与需求矛盾 → 上报
 

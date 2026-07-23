@@ -158,7 +158,7 @@ def draw(frame):
             s = json.load(open(os.path.join(specs, ".cm-status.json")))
             age = time.time() - os.path.getmtime(os.path.join(specs, ".cm-status.json"))
         except Exception:
-            return ["", "  ⏳ 没有运行中的 cm 工作流(等待 /cm:ai 启动…)", ""]
+            return ["", "  ⏳ 没有运行中的 cm 工作流(等待 /cm-ai 启动…)", ""]
         node, state = s.get("node", "N1"), s.get("state", "running")
         detail, feature, task = s.get("detail", ""), s.get("feature", ""), s.get("task", "")
         prog = progress(specs, feature) if feature else None

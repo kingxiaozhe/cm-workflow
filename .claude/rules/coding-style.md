@@ -15,12 +15,12 @@ description: prompt 资产（Markdown）与 bash 脚本的写作与命名约定
 | 标题层级 | 4 层（`####`） |
 | frontmatter description | 1 行 |
 
-## 命名（强制，`/cm:check` 第 2 组机器校验）
+## 命名（强制，`/cm-check` 第 2 组机器校验）
 
 | 对象 | 规则 | 示例 |
 | ---- | ---- | ---- |
-| 斜杠命令 | `commands/cm:{动词}.md`，冒号半角 | `cm:prd.md` |
-| 流程节点 | `commands/cm-ai-nodes/N{1-8}-{kebab}.md` | `N3-execute-task.md` |
+| 历史斜杠别名源 | `compat/claude-commands/cm-{动词}.md` | `cm-prd.md` |
+| 流程节点 | `skills/cm-ai/references/N{1-8}-{kebab}.md` | `N3-execute-task.md` |
 | 工种 skill | `skills/cm-{域}-{engineer\|expert\|manager}/SKILL.md` | `cm-backend-engineer/SKILL.md` |
 | 子 agent | `agents/cm-{域}-agent.md` | `cm-backend-agent.md` |
 | 独立工具 skill | 不带 `cm-` 前缀（不参与角色配对检查） | `codebase-context/` |
@@ -31,14 +31,14 @@ description: prompt 资产（Markdown）与 bash 脚本的写作与命名约定
 ## frontmatter
 
 - `skills/*/SKILL.md` 与 `agents/*.md`：**必须**有 `name` + `description`。
-- `commands/*.md`：**不写** frontmatter，首行直接 `# /cm:xxx — 一句话`。
+- `compat/claude-commands/*.md`：**不写** frontmatter，保持 ≤8 行薄包装。
 
 ```markdown
 <!-- Bad：description 写成用途分类，AI 无法据此判断该不该加载 -->
 description: 后端相关
 
 <!-- Good：说清「谁在什么时候派发、边界在哪」 -->
-description: 后端 API 开发子 agent。由 /cm:ai 在并行执行后端任务时派发，负责流程纪律（任务边界、上下文、汇报、退出），具体开发规范由 cm-backend-engineer skill 提供。
+description: 后端 API 开发子 agent。由 /cm-ai 在并行执行后端任务时派发，负责流程纪律（任务边界、上下文、汇报、退出），具体开发规范由 cm-backend-engineer skill 提供。
 ```
 
 ## prompt 写作

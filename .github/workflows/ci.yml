@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate runtime contracts
+        run: ./scripts/cm-check-runtime.sh
+
+      - name: Validate public package
+        run: python3 scripts/validate-public-repo.py
+
+      - name: Scan current tree safety
+        run: python3 scripts/scan-public-safety.py
+
+      - name: Check Bash syntax
+        run: find . -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+
+      - name: Scan Git history with Gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  windows-install:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Smoke-test PowerShell installer
+        shell: pwsh
+        run: |
+          $env:CLAUDE_HOME = Join-Path $env:RUNNER_TEMP "cm-workflow-claude"
+          ./install.ps1 -Force
+          $required = @(
+            "skills/cm-check/SKILL.md",
+            "compat/claude-commands/cm-check.md",
+            "runtime/project-context.md",
+            "scripts/cm-check-runtime.sh",
+            "templates/cm-VERSION"
+          )
+          foreach ($relative in $required) {
+            $path = Join-Path $env:CLAUDE_HOME $relative
+            if (-not (Test-Path $path)) {
+              throw "Missing installed file: $relative"
+            }
+          }
+          $installedVersion = (Get-Content (Join-Path $env:CLAUDE_HOME "templates/cm-VERSION") -Raw).Trim()
+          $sourceVersion = (Get-Content VERSION -Raw).Trim()
+          if ($installedVersion -ne $sourceVersion) {
+            throw "Installed version $installedVersion != source version $sourceVersion"
+          }

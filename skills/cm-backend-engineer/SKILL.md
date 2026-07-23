@@ -14,7 +14,7 @@ description: 后端 API 工程师 Skill，执行服务端 API 层开发（路由
 
 ## 触发条件
 
-由 `/cm:ai` 自动调用，当 task 涉及后端 API 开发时触发。
+由 `/cm-ai` 自动调用，当 task 涉及后端 API 开发时触发。
 
 ## 工作流程
 

@@ -1,6 +1,6 @@
 ---
 name: cm-backend-agent
-description: 后端 API 开发子 agent。由 /cm:ai 在并行执行后端任务时派发，负责流程纪律（任务边界、上下文、汇报、退出），具体开发规范由 cm-backend-engineer skill 提供。
+description: 后端 API 开发子 agent。由 /cm-ai 在并行执行后端任务时派发，负责流程纪律（任务边界、上下文、汇报、退出），具体开发规范由 cm-backend-engineer skill 提供。
 ---
 
 # cm-backend-agent — 后端开发子 agent

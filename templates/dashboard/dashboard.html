@@ -131,7 +131,7 @@ async function load(){
     rows=[...met.matchAll(/^\|\s*(T-\d+)\s*\|(.+)$/gm)].map(m=>[m[1],...m[2].split('|').map(s=>s.trim()).slice(0,7)]);
     for(const r of rows){human+=parseInt(r[7])||0;if((r[4]||'')==='1')firstPass++}
     if(rows.length){
-      $('metrics').innerHTML='<table><tr><th>任务</th><th>Feature</th><th>开始</th><th>结束</th><th>审查轮</th><th>Codex</th><th>QA</th><th>人工介入</th></tr>'+
+      $('metrics').innerHTML='<table><tr><th>任务</th><th>Feature</th><th>开始</th><th>结束</th><th>审查轮</th><th>独立审查拦截</th><th>QA</th><th>人工介入</th></tr>'+
         rows.map(r=>'<tr>'+r.map(c=>`<td>${c}</td>`).join('')+'</tr>').join('')+'</table>';
     }
   }

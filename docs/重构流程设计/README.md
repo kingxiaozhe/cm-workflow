@@ -1,7 +1,9 @@
 # 重构流程总体设计
 
 综合 cm 小闭环纪律与 Anthropic 迁移方法论(claude.com/blog/ai-code-migration +
-anthropics/code-migration-kit)的重构流程设计图。**已实现为 `commands/cm:refactor.md`**
+anthropics/code-migration-kit)的重构流程设计图。**已实现为 `skills/cm-refactor/SKILL.md`**
+
+图中 `/cm:*` 为历史 macOS/Linux 别名；跨平台入口使用 `/cm-*`。
 (v0.9.31 落地,v0.9.32 补齐完整融合)——图与命令互为对照,任何一侧修改必须同步另一侧,
 图与实现不得漂移。
 

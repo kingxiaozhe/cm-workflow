@@ -9,7 +9,7 @@ description: 数据库工程师 Skill，执行数据模型设计、migration、�
 
 ## 触发条件
 
-由 `/cm:ai` 自动调用，当 task 涉及数据库开发时触发。
+由 `/cm-ai` 自动调用，当 task 涉及数据库开发时触发。
 
 ## 工作流程
 

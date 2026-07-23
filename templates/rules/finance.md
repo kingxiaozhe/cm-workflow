@@ -6,7 +6,7 @@ description: 金融项目开发铁律
 ---
 
 <!-- 模板骨架 · 生成时遵守四原则，{占位符} 结合项目填充。
-     本模板由 cm-finance-expert skill 定义维度，/cm:init 或 bootstrap 生成 -->
+     本模板由 cm-finance-expert skill 定义维度，/cm-init 或 bootstrap 生成 -->
 
 # 金融开发铁律
 

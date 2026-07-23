@@ -1,6 +1,7 @@
 ---
 name: idea-to-prd
-description: 把一个模糊的点子逐步展开成 PRD 产品文档。像产品经理一样先判定产品类型、用选项题快速定框架，再对模糊处一个个追问，先产出「半成品骨架」，然后按你的指示逐层加深到成熟乃至可直接落地/交给 AI 建站工具的规格。纯对话，不联网。Use when the user has only a rough idea and wants help turning it into a PRD. Triggers on: 把这个想法变成 prd, 帮我写个 prd, 我有个点子, expand this idea, turn my idea into a prd, spec out this idea, plan this feature.
+description: >-
+  把一个模糊的点子逐步展开成 PRD 产品文档。像产品经理一样先判定产品类型、用选项题快速定框架，再对模糊处一个个追问，先产出「半成品骨架」，然后按你的指示逐层加深到成熟乃至可直接落地/交给 AI 建站工具的规格。纯对话，不联网。Use when the user has only a rough idea and wants help turning it into a PRD. Triggers on: 把这个想法变成 prd, 帮我写个 prd, 我有个点子, expand this idea, turn my idea into a prd, spec out this idea, plan this feature.
 user-invocable: true
 allowed-tools: Read, Write, Edit, Bash, AskUserQuestion, Glob
 ---
