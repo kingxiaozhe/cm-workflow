@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SELF = Path(__file__).resolve()
-SKIP_DIRS = {".git"}
+SKIP_DIRS = {".git", ".omx"}
 SKIP_SUFFIXES = {".png", ".gif", ".jpg", ".jpeg", ".mp4", ".woff", ".woff2"}
 PATTERNS = {
     "private key": re.compile(r"-----BEGIN (?:RSA|EC|OPENSSH|DSA|PGP) PRIVATE KEY-----"),

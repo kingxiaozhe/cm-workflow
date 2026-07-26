@@ -12,7 +12,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - 包管理: 无。Codex 用 `install-codex.sh`；Claude Code 用 `install.sh` / `install.ps1`
 - 版本控制: remote
 - 交付形态: 开发者工具（Markdown + 本地脚本，无构建产物）
-- 业务地图: 本地扫描产物不提交；公开架构见 `docs/architecture.md`
+- 业务地图: 跳过（形态不适用，无项目描述文件且无 src/ 类源码结构）；公开架构见 `docs/architecture.md`，本地扫描产物不提交
 
 ## 常用命令
 
