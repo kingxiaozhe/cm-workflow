@@ -1,18 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
-  <title id="title">CM Workflow evidence ledger</title>
-  <desc id="desc">An editorial evidence ledger connecting approved specifications, implemented tasks, required task review, and recoverable disk records.</desc>
+  <title id="title">CM means Create More — CM Workflow</title>
+  <desc id="desc">An editorial evidence ledger showing how CM Workflow turns more ideas into reviewable, testable, and recoverable delivery.</desc>
 
   <rect width="1200" height="360" fill="#F4F0E8"/>
   <path d="M52 40H1148M52 320H1148M720 40V320" stroke="#151515" stroke-width="1.5"/>
 
   <text x="52" y="70" fill="#C44B32" font-size="18" font-weight="700"
-        font-family="ui-monospace, SFMono-Regular, Menlo, monospace" letter-spacing="2">SPEC-DRIVEN AI DEVELOPMENT</text>
+        font-family="ui-monospace, SFMono-Regular, Menlo, monospace" letter-spacing="2">CM = CREATE MORE</text>
 
   <g id="identity" transform="translate(52 92)">
     <text x="0" y="72" fill="#151515" font-size="72" font-weight="700"
           font-family="Georgia, Songti SC, serif">CM Workflow</text>
-    <text x="2" y="120" fill="#3E3A35" font-size="25" font-weight="550"
-          font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif">把需求变成可审查、可测试、可恢复的实现。</text>
+    <text x="2" y="120" fill="#3E3A35" font-size="23" font-weight="550"
+          font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif">让更多想法，成为可审查、可测试、可恢复的交付。</text>
 
     <g transform="translate(2 160)">
       <rect width="232" height="42" fill="#151515"/>

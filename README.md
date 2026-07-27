@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="CM Workflow 证据账本：把需求变成可审查、可测试、可恢复的实现">
+  <img src="./assets/readme/hero.svg" width="100%" alt="CM means Create More：CM Workflow 让更多想法成为可审查、可测试、可恢复的交付">
 </p>
 
 <p align="center">
@@ -10,7 +10,8 @@
 </p>
 
 <p align="center">
-  从点子或需求文档出发，生成 specs 与 AI 测试合同，逐任务实现、任务审查、QA，并把每一步交付依据留在磁盘。
+  <strong>CM means Create More.</strong><br>
+  这里的 More 不是生成更多代码，而是让更多想法通过规格确认、任务审查与测试证据，可靠地进入交付。
 </p>
 
 <p align="center">
@@ -37,6 +38,8 @@ CM Workflow 不把“AI 说完成了”当作完成。一次可交付的开发�
 > **No evidence → no completion.** `tasks.md` 是任务状态的唯一权威来源；聊天记录、任务面板和子代理状态都只是可重建的工作视图。
 
 ## 五分钟开始
+
+Create More 从一条经过验证的工作流开始。安装完成后新开会话，并先运行检查命令。
 
 ### Codex
 
