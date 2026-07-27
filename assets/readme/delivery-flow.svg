@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
   <title id="title">CM Workflow delivery case file</title>
-  <desc id="desc">A warm editorial case file showing a requirement becoming approved specifications, implementation, task review evidence, QA, and a closed delivery record.</desc>
+  <desc id="desc">A warm editorial case file showing how Create More is constrained by approved specifications, scoped implementation, task review evidence, and QA.</desc>
 
   <rect width="1200" height="360" fill="#F4F0E8"/>
   <path d="M48 38H1152M48 316H1152" stroke="#151515" stroke-width="1.5"/>
@@ -79,8 +79,8 @@
           font-family="ui-monospace, SFMono-Regular, Menlo, monospace">DELIVERABLE</text>
   </g>
 
-  <text x="48" y="298" fill="#777168" font-size="16"
-        font-family="ui-monospace, SFMono-Regular, Menlo, monospace">每一步留下记录 · 每一项完成都可以被复查</text>
+  <text x="48" y="298" fill="#C44B32" font-size="16" font-weight="800"
+        font-family="ui-monospace, SFMono-Regular, Menlo, monospace">CREATE MORE · EVIDENCE FIRST</text>
   <text x="1152" y="298" fill="#2E6655" font-size="16" font-weight="800" text-anchor="end"
         font-family="ui-monospace, SFMono-Regular, Menlo, monospace">FILED ✓</text>
 </svg>
