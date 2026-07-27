@@ -1,6 +1,6 @@
 ---
 name: cm-prd
-description: 将需求文档转换为 requirements、design、tasks 三件套，支持新项目、存量二开与需求变更；完成后停在人审规格，不启动开发。
+description: 将需求文档转换为 requirements、design、tasks 与可选 AI 测试合同，支持新项目、存量二开与需求变更；完成后停在人审规格。
 ---
 
 # cm-prd — 需求文档 → 开发规格生成
@@ -15,6 +15,7 @@ description: 将需求文档转换为 requirements、design、tasks 三件套，
 
 - **新建模式**：`$cm-prd {项目文件夹路径}`
 - **变更模式**：`$cm-prd --change {N}.{feature-name} 变更内容描述`
+- **可选用例输入**：追加 `--cases {json/md/txt路径}`，或在本轮消息直接粘贴用例
 
 用户提供一个项目文件夹路径，文件夹结构约定：
 
@@ -52,6 +53,8 @@ description: 将需求文档转换为 requirements、design、tasks 三件套，
 
   原型首先是需求，其次才是视觉候选。注意原型通病：只画理想态——异常态/空态/边界值靠 Step 5.5 歧义五问补齐
 - 如果 docs/ 下有多个文件，全部读取并综合分析
+- 输入含 `--cases` 或本轮粘贴了测试用例时，将其作为用户来源交给 Step 10.4；
+  JSON 先做语法校验，Markdown/文本在生成时归一化为测试合同
 - 如果 docs/ 不存在或为空，报错提示用户先在 docs/ 下放入需求文档
 
 ### Step 2: 获取项目名称
@@ -129,7 +132,8 @@ description: 将需求文档转换为 requirements、design、tasks 三件套，
 └── 2.{feature-name}/            ← 本次新建
     ├── requirements.md
     ├── design.md
-    └── tasks.md
+    ├── tasks.md
+    └── test-cases.json           ← 有可观察行为时生成
 ```
 
 ### Step 8: 生成 requirements.md
@@ -329,24 +333,16 @@ design.md 生成后，满足任一触发条件 → 按 `runtime/review.md` 交**
 - 预估完成时间（5min / 15min / 30min / 1h）
 - **粒度控制**：每个子 specs（feature 目录）不宜过大，单个 tasks.md 控制在 **10-15 个任务以内**。如果需求过大，应在 Step 6 之前拆成多个独立的 feature 目录（如 `2.user-auth-login`、`3.user-auth-register`），每个 feature 有自己的 requirements/design/tasks 三件套。这样 cm:ai 执行时上下文可控，不会因为 specs 太大导致丢失关键信息。
 
+### Step 10.4: 生成 AI 测试合同（条件触发）
+
+读取 `../../runtime/test-contract.md`，按其中的生成条件为适用 feature 写
+`test-cases.json`。用户或需求源提供的用例优先且标记 `origin: "user"`；其余根据
+AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注释/类型/无行为重构
+不生成空文件。写完执行 `scripts/validate-test-cases.py`。
+
 ### Step 10.5: 规格自检（机器项，AI 自查自修，人不参与）
 
-输出摘要卡之前，先对刚生成的三件套跑一遍机器可查项——**机器项 AI 自己清干净，人审只留业务意图**：
-
-**通用自检项（所有项目）：**
-
-- [ ] 任务依赖无环；单 feature ≤15 个任务；同一文件/组件的行为未拆散到多任务
-- [ ] 每条 AC 都能回答"怎么验证"（验证方式不明的 AC 视为不过）
-- [ ] 任务产物查重：不与项目已有资产重复造（有地图查 04/05/06，无地图用代码搜索核实）
-
-**二开附加项（存在业务地图时）：**
-
-- [ ] **引用真实性（治引用幻觉）**：specs 中提到的每个存量文件/函数/组件名，用代码搜索逐个核实真实存在——二开 spec 引用不存在的存量代码，人审查不出来、执行期才炸
-- [ ] **B5 合规**：feature 未跨多条 07 业务线路；跨模块任务已在描述中列模块清单
-- [ ] **B3 合规**：修改存量模块的 feature，第一个任务是防护网基线
-- [ ] **B2 完整**：design.md 含「波及面」段，且所列模块在地图/代码中真实存在
-
-**处置规则**：有不过项 → AI 自行修正 specs 后重跑自检，**最多 2 轮**；2 轮后仍不过的项不许静默放行，写入摘要卡「风险点」交人裁决。自检结果一行附在摘要卡底部。
+读取 `references/spec-self-check.md` 并逐项执行；测试合同必须调用 `scripts/validate-test-cases.py`，不得靠目测。
 
 ### Step 10.6: 独立规格审查
 
@@ -372,6 +368,7 @@ design.md 生成后，满足任一触发条件 → 按 `runtime/review.md` 交**
 │ 开放问题: {已答 N / 共 N}——{逐条一行: 问题→答案}
 │ 风险点: {金融/合规/破坏性操作等敏感项,无则"无"}
 │ UI 基准: {像素级/结构级/纯参考/无}
+│ 🧪 AI 测试合同: {N 条(user N/generated N) / 跳过(无可观察行为)}
 │ 🔎 规格自检: {N}/{N} 通过{（未过项已列入风险点）}
 │ 🧠 方案对抗审查: {通过 / {N}条已修 / 跳过(未触发)}
 │ 🤖 独立规格审查: {通过 / {N}条已修 / 降级自审}
@@ -396,19 +393,8 @@ design.md 生成后，满足任一触发条件 → 按 `runtime/review.md` 交**
 - [ ] **原型功能点覆盖 100%**（有交互原型时）：遍历记录中每个可交互元素都有对应 [F-xxx] 或死区标注，无静默丢弃
 ```
 
-**规格审批位落盘**：报告输出后，写入 `{SPECS_DIR}/.cm-specs-status` 单行 JSON：
-`{"status":"awaiting_review","at":"{时间}","features":["1.xxx",...]}`
+**规格审批位落盘**：报告输出后，按 `runtime/test-contract.md` 计算已生成
+`test-cases.json` 的 SHA-256，并写入 `{SPECS_DIR}/.cm-specs-status` 单行 JSON：
+`{"status":"awaiting_review","at":"{时间}","features":["1.xxx",...],"testCases":[{"path":"1.xxx/test-cases.json","sha256":"..."}]}`
 
 **硬停车（不可违反）**：本命令的终点就是摘要卡与审查清单——**任何情况下不得在本会话顺势启动开发**，对话里的"继续"不构成开发授权。提示用户：**逐项审查通过后，运行 `$cm-ai` 开始开发**（N1 有入口闸：未审批的 specs 会先要求确认摘要卡）
-
----
-
----
-
-## 模式文件（按需读取,勿全量加载）
-
-- 0→1 全新项目: `cm-prd-modes/greenfield.md`（G1 选型/G2 bootstrap/G3 业务生成/G4 架构变更处置）
-- 存量二开: `cm-prd-modes/brownfield.md`（B2–B5）
-- 需求变更: `cm-prd-modes/change-mode.md`（C1–C8）
-
-> 拆分目的: 主文件只承载通用流程,执行器按分支加载对应规则——注意力预算优先(v0.9.11 机械拆分,语义零变更)。

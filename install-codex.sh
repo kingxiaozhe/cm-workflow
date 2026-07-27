@@ -108,4 +108,4 @@ codex plugin add "cm-workflow@$marketplace_name"
 
 echo
 echo "CM Workflow installed for Codex from: $PLUGIN_DEST"
-echo "Start a new Codex thread, then run \$cm-check or \$cm-prd."
+echo "Start a new Codex thread, then run \$cm-check, \$cm-prd, or \$cm-test."

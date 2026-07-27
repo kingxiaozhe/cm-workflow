@@ -7,14 +7,15 @@
 
 CM Workflow 是一套 Codex-native、spec-driven 的产品开发工作流：
 
-> 点子 / 需求文档 → requirements + design + tasks → 实现 → 独立审查 → QA → 文档同步
+> 点子 / 需求文档 → specs + AI 测试合同 → 实现 → 独立审查 → QA → 文档同步
 
 Codex 是主运行时，Claude Code 是兼容运行时。两者共用 `skills/` 和
 `runtime/` 中的同一份流程真相，不再分别维护两套业务规则。
 
-- 一份规格真相：requirements、design、tasks。
+- 一份规格真相：requirements、design、tasks，以及适用时的 `test-cases.json`。
 - 一份执行真相：`tasks.md` 与磁盘审计文件。
 - 每任务独立审查：无凭证不标记完成。
+- 存量功能只读测试：逻辑核验、正式命令和浏览器模拟不自动改代码。
 - 可恢复：新会话从磁盘重建，不依赖聊天记忆。
 - 风险有边界：生产、资金、密钥、破坏性变更保留人工闸。
 
@@ -52,6 +53,8 @@ $cm-idea 我想做一个记录宝宝辅食的小程序
 $cm-init
 $cm-prd ~/projects/my-app-specs
 $cm-ai ~/projects/my-app-specs ~/code/my-app
+$cm-test ~/code/my-app 用户登录 --generate-cases
+$cm-test ~/code/my-app --specs ~/projects/my-app-specs --feature 2.user-login --all
 $cm-fix ~/projects/my-app-specs ~/code/my-app 登录后首屏白屏
 $cm-refactor ~/projects/my-app-specs ~/code/my-app 拆分过大的订单服务
 ```
@@ -73,7 +76,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
 跨平台入口与 Skill 同名：`/cm-idea`、`/cm-init`、`/cm-prd`、`/cm-ai`、
-`/cm-fix`、`/cm-refactor`、`/cm-check`。macOS/Linux 安装器另外生成历史
+`/cm-test`、`/cm-fix`、`/cm-refactor`、`/cm-check`。macOS/Linux 安装器另外生成历史
 `/cm:*` 别名；Windows 文件系统不支持冒号文件名，因此只提供 `/cm-*`。
 
 ## 兼容性矩阵
@@ -96,8 +99,9 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 | --- | --- |
 | `$cm-idea` | 把模糊想法访谈成 PRD |
 | `$cm-init` | 分析存量项目，生成 `AGENTS.md` 和 `.claude/` 兼容规则 |
-| `$cm-prd` | 生成 requirements/design/tasks 三件套，支持 greenfield、brownfield 和 change |
+| `$cm-prd` | 生成 requirements/design/tasks 与可选 `test-cases.json`，支持 greenfield、brownfield 和 change |
 | `$cm-ai` | 按 N1–N8 执行已审批 specs，支持断点恢复 |
+| `$cm-test` | 从已实现代码生成测试用例草稿，或做默认只读的逻辑、正式命令和浏览器测试 |
 | `$cm-fix` | 复现 → 根因 → 红灯测试 → 最小修复 → 回归 |
 | `$cm-refactor` | 用行为判官保证重构前后等价 |
 | `$cm-check` | 检查插件、双运行时入口、引用、模板与版本 |
@@ -125,7 +129,7 @@ flowchart LR
     Wrappers --> Skills
     Skills --> Runtime["runtime/ 共享合同"]
     Skills --> Refs["N1-N8 / PRD modes"]
-    Runtime --> Specs["requirements / design / tasks"]
+    Runtime --> Specs["requirements / design / tasks / optional test-cases"]
     Refs --> Specs
     Specs --> Code["目标代码仓库"]
     Check["cm-check-runtime.sh"] -. 验证 .-> Skills
@@ -142,6 +146,7 @@ cache 或主目录。更多细节见
 Codex 计划、OMX 状态、子代理线程和 Claude 任务面板都是可重建镜像。下列文件才是断点恢复与审计依据：
 
 - `tasks.md`：唯一权威任务源。
+- `test-cases.json`：适用 feature 的 AI 可读测试意图，不保存执行结果。
 - `.cm-specs-status`：规格是否已经人工审批。
 - `.cm-status.json`：当前节点快照。
 - `运行日志.jsonl`：可回放的事件记录。
@@ -163,15 +168,16 @@ Codex 计划、OMX 状态、子代理线程和 Claude 任务面板都是可重�
 ```text
 .codex-plugin/plugin.json       # Codex plugin manifest
 skills/
-├── cm-{idea,init,prd,ai,fix,refactor,check}/
+├── cm-{idea,init,prd,ai,test,fix,refactor,check}/
 ├── cm-*-engineer/           # 工种能力
 ├── cm-{product-manager,finance-expert,doc-syncer}/
 └── idea-to-prd/              # 独立访谈 Skill
-runtime/                        # 项目上下文、调度、审查合同
+runtime/                        # 项目上下文、调度、审查与 AI 测试合同
 compat/claude-commands/         # macOS/Linux 历史 /cm:* 别名源
 agents/                         # Claude Code 兼容 agent 定义
 templates/                      # rules/hooks/refactor/UI/可视化资产
 scripts/cm-check-runtime.sh     # 机械一致性检查
+scripts/validate-test-cases.py  # AI 测试合同结构校验
 scripts/validate-public-repo.py # 公开包结构验证
 scripts/scan-public-safety.py   # 当前树敏感信息检查
 docs/                           # 安装、架构、示例与设计材料

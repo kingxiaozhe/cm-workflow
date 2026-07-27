@@ -38,7 +38,10 @@ Existing installs require confirmation. For an intentional unattended upgrade:
 ./install-codex.sh --yes
 ```
 
-Start a new Codex thread after installation, then run `$cm-check`.
+Start a new Codex thread after installation, then run `$cm-check`. To derive a
+test-case draft from an implemented feature, use
+`$cm-test {project} {feature} --generate-cases`; to verify it without modifying
+source, use `$cm-test`.
 
 ## Claude Code on macOS/Linux
 
@@ -69,8 +72,8 @@ unattended install:
 powershell -ExecutionPolicy Bypass -File install.ps1 -Force
 ```
 
-Core Markdown workflows work natively and use `/cm-*` names such as `/cm-check`
-and `/cm-ai`. Windows cannot store the historic colon filenames used by
+Core Markdown workflows work natively and use `/cm-*` names such as `/cm-check`,
+`/cm-ai`, and `/cm-test`. Windows cannot store the historic colon filenames used by
 `/cm:*`, so those aliases are macOS/Linux only. Bash-based statusline and
 visualization helpers require WSL or Git Bash.
 

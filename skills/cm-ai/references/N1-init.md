@@ -3,6 +3,9 @@
 1. 从 `用户本轮输入` 提取 **specs 文件夹路径** 和 **代码项目路径**（可多个）
 2. 扫描 specs 下所有编号目录（`0.xxx/`、`1.xxx/`、`2.xxx/`），按编号排列
 3. 每个 feature 目录须含 requirements.md、design.md、tasks.md
+   - `test-cases.json` 为可选 AI 测试合同；存在时读取
+     `../../../runtime/test-contract.md`，运行 `scripts/validate-test-cases.py`，
+     并核对 `acIds`/`taskIds` 引用在本 feature 三件套中真实存在
 4. 按 `runtime/project-context.md` 加载项目上下文：Codex 的 `AGENTS.md` 指令链优先，再读兼容的 `.claude/CLAUDE.md` 与相关 `.claude/rules/`（0→1 项目可能都不存在，跳过不报错）
 5. 加载 `{SPECS_DIR}/LESSONS.md`（架构决策和踩坑记录，开发时必须参考）；**文件不存在（全新 specs 首次运行的常态）→ 按 0 条处理，不报错不中断**，首个任务的 N5 会创建它
 6. 验证各代码项目路径存在，**空目录按信号处理**：
@@ -15,8 +18,13 @@
 读取 `{SPECS_DIR}/.cm-specs-status`：
 
 - `approved` → 直接继续（断点续跑不重复问）
-- `awaiting_review` 或文件缺失（旧版 specs）→ 把规格摘要卡打给用户（specs 里没有摘要卡就现场汇总：feature 数/任务数/交付形态/风险点），**等用户明确回复"开始"**；回复后写 `{"status":"approved","at":"{时间}"}` 再继续。**泛化授权语不构成审批**（"按最优解处理""继续""你看着办"这类话授权的是执行方式，不是规格内容）——收到时必须回问一次："规格摘要卡确认开始吗？"（实跑失守：diff-lens 把"按照你分析的最优解去处理"直接视为审批通过）
-- 启动参数含 `--yes` → 跳过此问直接写 approved（适合刚人审完立刻开跑的场景）
+- `awaiting_review` 或文件缺失（旧版 specs）→ 把规格摘要卡打给用户（specs 里没有摘要卡就现场汇总：feature 数/任务数/交付形态/风险点），**等用户明确回复"开始"**；回复后把状态更新为 `approved` 并刷新 `at`，保留已有 `features`/`testCases` 字段；旧文件缺少 `testCases` 但 feature 已有测试合同时，现场计算并补入，再继续。**泛化授权语不构成审批**（"按最优解处理""继续""你看着办"这类话授权的是执行方式，不是规格内容）——收到时必须回问一次："规格摘要卡确认开始吗？"（实跑失守：diff-lens 把"按照你分析的最优解去处理"直接视为审批通过）
+- 启动参数含 `--yes` → 跳过此问直接更新为 approved，同样保留或补齐测试合同哈希（适合刚人审完立刻开跑的场景）
+
+批准前后还要核对 `.cm-specs-status.testCases` 中记录的 SHA-256。任一
+`test-cases.json` 哈希与审批位不一致 → 测试目标在审批后发生变化，将状态恢复为
+`awaiting_review` 并要求用 `$cm-prd --change` 说明变更；旧 specs 没有
+`testCases` 字段时保持兼容，只做 JSON 与引用校验。
 
 > 这是**入口授权门**（人把关方案端），不属于"暂停仅灾难级"约束的中途暂停，也不计入 METRICS 人工介入。实跑教训：没有这道闸，prd 生成完会被一句"继续"顺势带进开发，人审形同虚设。
 
