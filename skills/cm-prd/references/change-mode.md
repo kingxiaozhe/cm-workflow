@@ -21,6 +21,8 @@
 - `requirements.md` — 当前需求
 - `design.md` — 当前设计
 - `tasks.md` — 当前任务（注意哪些已完成 `[x]`）
+- `test-cases.json` — 可选 AI 测试合同；存在时按
+  `../../../runtime/test-contract.md` 读取
 
 ### Step C3: 解析变更内容
 
@@ -29,6 +31,7 @@
 - 纯文本描述变更
 - 文件路径（新的需求文档）
 - URL
+- `--cases {json/md/txt路径}` 或本轮直接粘贴的新测试用例
 
 ### Step C4: 对比分析
 
@@ -100,6 +103,13 @@
 - [ ] T-009: [NEW] 微信登录按钮组件 ~15min
 ```
 
+### Step C7.5: 更新 AI 测试合同
+
+C7 完成后先按 `runtime/test-contract.md` 更新 `test-cases.json`：保留未受影响
+用例，新增/修改受影响 AC 的用例，移除已删除需求对应的 generated 用例。变更会
+删除或弱化 `origin: "user"` 用例时，必须在 C4 暂停取得明确确认；未确认则保留
+需求与用例并将冲突列入摘要。最后重新校验 AC→TC→Task 引用和 JSON。
+
 ### Step C8: 输出变更摘要
 
 ```
@@ -109,6 +119,7 @@
 修改: 1 个功能需求, 1 个任务
 删除: 1 个功能需求, 1 个任务
 未受影响: 3 个已完成任务保持不动
+测试合同: 新增 2 / 修改 1 / 待删除 1
 
 请产品审查变更后，运行 $cm-ai 继续开发（会跳过已完成任务）
 ```
@@ -127,4 +138,6 @@ $cm-prd --change 1.user-auth 新增微信扫码登录方式
 $cm-prd --change 2 ~/projects/my-app-specs
 ```
 
-**审批位重置**：变更落盘后，将 `{SPECS_DIR}/.cm-specs-status` 重置为 `awaiting_review`——改过的规格等于没审过，N1 入口闸将再次要求确认。
+**审批位重置**：变更落盘后，将 `{SPECS_DIR}/.cm-specs-status` 重置为
+`awaiting_review`，并按 `runtime/test-contract.md` 重算 `testCases` 路径与
+SHA-256——改过的规格等于没审过，N1 入口闸将再次要求确认。

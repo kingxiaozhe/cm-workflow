@@ -10,7 +10,16 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-CORE_SKILLS = ("cm-idea", "cm-init", "cm-prd", "cm-ai", "cm-fix", "cm-refactor", "cm-check")
+CORE_SKILLS = (
+    "cm-idea",
+    "cm-init",
+    "cm-prd",
+    "cm-ai",
+    "cm-test",
+    "cm-fix",
+    "cm-refactor",
+    "cm-check",
+)
 REQUIRED = (
     ".codex-plugin/plugin.json",
     "AGENTS.md",
@@ -23,7 +32,9 @@ REQUIRED = (
     "runtime/project-context.md",
     "runtime/orchestration.md",
     "runtime/review.md",
+    "runtime/test-contract.md",
     "scripts/cm-check-runtime.sh",
+    "scripts/validate-test-cases.py",
 )
 
 
@@ -99,7 +110,7 @@ def main() -> int:
         if not (ROOT / "skills/cm-ai/references" / f"{node}.md").is_file():
             fail(f"missing cm-ai node: {node}", failures)
 
-    for mode in ("greenfield", "brownfield", "change-mode"):
+    for mode in ("greenfield", "brownfield", "change-mode", "spec-self-check"):
         if not (ROOT / "skills/cm-prd/references" / f"{mode}.md").is_file():
             fail(f"missing cm-prd mode: {mode}", failures)
 

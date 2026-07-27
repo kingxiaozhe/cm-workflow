@@ -55,9 +55,13 @@ jobs:
           ./install.ps1 -Force
           $required = @(
             "skills/cm-check/SKILL.md",
+            "skills/cm-test/SKILL.md",
             "compat/claude-commands/cm-check.md",
+            "compat/claude-commands/cm-test.md",
             "runtime/project-context.md",
+            "runtime/test-contract.md",
             "scripts/cm-check-runtime.sh",
+            "scripts/validate-test-cases.py",
             "templates/cm-VERSION"
           )
           foreach ($relative in $required) {

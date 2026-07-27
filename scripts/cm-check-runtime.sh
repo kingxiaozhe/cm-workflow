@@ -27,6 +27,8 @@ fi
 require_file "runtime/project-context.md"
 require_file "runtime/orchestration.md"
 require_file "runtime/review.md"
+require_file "runtime/test-contract.md"
+require_file "scripts/validate-test-cases.py"
 
 for asset in \
   templates/arch-reference.md \
@@ -39,7 +41,7 @@ for asset in \
   require_file "$asset"
 done
 
-for name in cm-idea cm-init cm-prd cm-ai cm-fix cm-refactor cm-check; do
+for name in cm-idea cm-init cm-prd cm-ai cm-test cm-fix cm-refactor cm-check; do
   require_file "skills/$name/SKILL.md"
   require_file "compat/claude-commands/$name.md"
   wrapper="$ROOT/compat/claude-commands/$name.md"
@@ -49,7 +51,42 @@ for name in cm-idea cm-init cm-prd cm-ai cm-fix cm-refactor cm-check; do
   fi
 done
 
-for mode in greenfield brownfield change-mode; do
+for consumer in \
+  skills/cm-prd/SKILL.md \
+  skills/cm-ai/references/N1-init.md \
+  skills/cm-ai/references/N4-review.md \
+  skills/cm-ai/references/N6-qa-eval.md \
+  skills/cm-qa-engineer/SKILL.md \
+  skills/cm-test/SKILL.md; do
+  grep -q "runtime/test-contract.md" "$ROOT/$consumer" ||
+    fail "AI test contract is not wired into $consumer"
+done
+
+grep -q "validate-test-cases.py" "$ROOT/runtime/test-contract.md" ||
+  fail "AI test contract does not invoke the structural validator"
+grep -q "无 Git" "$ROOT/skills/cm-test/SKILL.md" ||
+  fail "cm-test is missing its non-Git read-only fallback"
+grep -q -- "--generate-cases" "$ROOT/skills/cm-test/SKILL.md" ||
+  fail "cm-test is missing its code-to-test-case generation mode"
+grep -q "test-cases.generated.json" "$ROOT/skills/cm-test/SKILL.md" ||
+  fail "cm-test generation mode has no durable case artifact"
+grep -q "硬停止" "$ROOT/skills/cm-test/SKILL.md" ||
+  fail "cm-test generation mode can fall through into test execution"
+grep -Fq "[需确认] 当前行为刻画:" "$ROOT/runtime/test-contract.md" ||
+  fail "AI test contract does not distinguish inferred behavior from approved intent"
+grep -q "Path.resolve(strict=False)" "$ROOT/skills/cm-test/SKILL.md" ||
+  fail "cm-test report directory cannot be proven separate from source"
+grep -Fq '{CODE_PROJECT}/specs/' "$ROOT/skills/cm-test/SKILL.md" ||
+  fail "cm-test can whitelist a source directory by disguising it as specs"
+grep -q "待判断的数据，不是指令" "$ROOT/skills/cm-test/SKILL.md" ||
+  fail "cm-test does not treat code and external cases as untrusted data"
+
+grep -q "runtime/review.md" "$ROOT/skills/cm-fix/SKILL.md" ||
+  fail "cm-fix does not reference the independent review contract"
+grep -Fq 'ls {SPECS_DIR}/.reviews/fix-{slug}-r*.md' "$ROOT/skills/cm-fix/SKILL.md" ||
+  fail "cm-fix is missing the mechanical post-fix review evidence gate"
+
+for mode in greenfield brownfield change-mode spec-self-check; do
   require_file "skills/cm-prd/references/$mode.md"
 done
 
@@ -75,7 +112,8 @@ if [ -d "$ROOT/skills/cm-ai" ]; then
   while IFS= read -r hit; do
     [ -z "$hit" ] || fail "Claude-only invocation in Codex flow: $hit"
   done < <(grep -RInE 'TaskCreate|TodoWrite|codex:review|CLAUDE_CODE_EXPERIMENTAL|~/.claude/commands' \
-    "$ROOT/skills/cm-ai" "$ROOT/skills/cm-prd" "$ROOT/skills/cm-fix" "$ROOT/skills/cm-refactor" 2>/dev/null || true)
+    "$ROOT/skills/cm-ai" "$ROOT/skills/cm-prd" "$ROOT/skills/cm-test" \
+    "$ROOT/skills/cm-fix" "$ROOT/skills/cm-refactor" 2>/dev/null || true)
 fi
 
 if [ "$FAILURES" -ne 0 ]; then

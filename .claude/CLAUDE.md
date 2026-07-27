@@ -1,7 +1,8 @@
 # cm-workflow
 
 Codex-native、spec-driven 的双运行时工作流分发包：需求文档 → 开发规格 →
-实现 → 独立审查 → QA → 文档同步。Codex Skills 与 `runtime/` 是权威流程，
+实现 → 独立审查 → QA → 文档同步，并支持存量功能只读测试。Codex Skills 与
+`runtime/` 是权威流程，
 Claude Code 跨平台直接使用 `/cm-*` Skills；`compat/claude-commands/` 保存
 macOS/Linux 的历史 `/cm:*` 别名包装。
 
@@ -32,12 +33,12 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 ```text
 compat/claude-commands/ # macOS/Linux 历史 /cm:* 三行别名包装
 skills/                # Codex 权威流程与工种能力
-├── cm-{idea,init,prd,ai,fix,refactor,check}/
+├── cm-{idea,init,prd,ai,test,fix,refactor,check}/
 ├── cm-*-engineer/     # frontend/ui/miniprogram/backend/database/contract/qa/devops
 ├── cm-product-manager/、cm-finance-expert/、cm-doc-syncer/
 └── codebase-context/、idea-to-prd/、darwin-skill/   # 独立工具，不进 N1–N8
 agents/                # 并行子 agent → ~/.claude/agents/ —— agent 管纪律
-runtime/               # 双运行时共享上下文、调度、审查合同
+runtime/               # 双运行时共享上下文、调度、审查与 AI 测试合同
 templates/             # rules 骨架 / hooks / statusline / dashboard / pixel
 docs/                  # 交付材料、示例 PRD 与 specs
 .codex-plugin/         # Codex 插件清单

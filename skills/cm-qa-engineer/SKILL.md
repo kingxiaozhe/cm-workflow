@@ -7,9 +7,15 @@ description: QA 工程师 Skill，执行功能测试、E2E 测试、可视化回
 
 在开发任务完成后执行整体质量验证。自动识别项目测试框架。
 
-## 触发条件
+## 调用模式
 
-由 `/cm-ai` 自动调用，当 task 涉及测试或全部开发完成后触发。
+| 模式 | 调用方 | 写入权限 |
+| --- | --- | --- |
+| `implementation` | `$cm-ai` 的 N6 | 可按既有规范补测试并回写 AC |
+| `readonly` | `$cm-test` | 只运行与取证；禁止改源码、测试、依赖、快照和 specs |
+
+未显式指定时，只有 `$cm-ai` 自动调用可默认 `implementation`；`$cm-test` 必须显式
+传入 `readonly`，其只读边界优先于本 Skill 后续任何“补全/修复/回写”指令。
 
 ## 工作流程
 
@@ -20,16 +26,18 @@ description: QA 工程师 Skill，执行功能测试、E2E 测试、可视化回
 - **单元/组件测试**：Vitest / Jest / Mocha / pytest / Go testing / Rust cargo test
 - **E2E 测试**：Playwright / Cypress / Selenium / Puppeteer
 - **覆盖率工具**：c8 / istanbul / coverage.py / go cover
-- 如项目未配置测试框架，根据技术栈推荐并安装
+- implementation 模式如项目未配置测试框架，根据技术栈推荐并安装
+- readonly 模式缺少框架或依赖 → 记 `BLOCKED`，不得安装
 
 ### 2. 读取上下文
 
 - requirements.md 中的验收标准
 - design.md 了解功能模块和接口契约
+- test-cases.json（如存在）按 `../../runtime/test-contract.md` 读取
 - `.claude/rules/testing.md`（如存在）
 - 扫描现有测试文件了解测试模式和覆盖情况
 
-### 3. 补全测试
+### 3. 补全测试（仅 implementation）
 
 对开发阶段未写测试的代码补充：
 
@@ -39,6 +47,8 @@ description: QA 工程师 Skill，执行功能测试、E2E 测试、可视化回
 - **数据库层**：migration 可执行、查询结果正确
 
 遵循项目已有的测试文件命名和目录约定。
+
+readonly 模式跳过本节，不得创建、修改或修复任何测试。
 
 **二开回归范围跟波及面走**：design.md 存在「波及面」段时，回归测试范围 = 新功能 AC + 波及面清单上的存量功能逐项冒烟——新功能好不好是一半，老功能没坏才是另一半。
 
@@ -55,6 +65,9 @@ npx playwright test       # E2E
 
 收集：通过数/失败数/覆盖率。
 
+有 test-cases.json 时，正式命令证据与用例逐条关联；不能用静态 logic
+`SUPPORTED` 计入命令通过数。
+
 ### 5. 可视化回归（如涉及 UI）
 
 1. 启动开发服务器
@@ -65,6 +78,8 @@ npx playwright test       # E2E
    - 切换前输出：`🔄 切换到 Chrome DevTools MCP — 原因: {原因}，浏览器窗口将弹出`
 3. 截图保存
 4. 对比基准截图（如有）
+5. test-cases.json 中的 browser cases 逐条执行 steps、断言 expected，并记录
+   `PASS | FAIL | BLOCKED`；cleanup 失败时记 `BLOCKED`
 
 > **用户覆盖**：在 `.claude/rules/testing.md` 中添加 `browser_driver: playwright | chrome-mcp | ask` 可固定选择或设为每次询问。
 
@@ -79,14 +94,16 @@ npx playwright test       # E2E
 
 标注每条的验证方式（自动/手动/无法自动化）。
 
-**核验结果必须回写 requirements.md 的验收标准 checkbox**（`[x] [AC-001] → 已通过测试验证`），不得只留在会话输出中——验收状态和任务状态一样落盘。
+implementation 模式的核验结果必须回写 requirements.md 的验收标准 checkbox
+（`[x] [AC-001] → 已通过测试验证`）。readonly 模式只写测试报告，不改
+requirements.md。
 
 ### 7. 处理失败
 
-- 测试失败 → 判断是代码 bug 还是测试问题
-- 代码 bug → 汇报给主 agent，重新执行开发任务
-- 测试问题 → 修复测试，重新运行
-- 最多重试 3 轮
+- 测试失败 → 判断是代码 bug、测试问题还是环境阻塞
+- implementation：代码 bug 汇报主 agent，测试问题可修复后重跑，最多 3 轮
+- readonly：保留原始失败，只报告给 `$cm-test`；不得修测试或代码，不自动调用
+  `$cm-fix`
 
 ## 常见坑
 
@@ -104,6 +121,7 @@ npx playwright test       # E2E
 
 测试: {N} 通过 / {N} 失败 / 覆盖率 {N}%
 E2E: {状态}
+AI 测试合同: logic {N}/{N} 已核验 · browser {N}/{N} 已执行
 验收标准: {N}/{total} 通过, {N} 需手动验证
 安全扫描: {状态}
 结论: {PASSED / FAILED / NEEDS_MANUAL}

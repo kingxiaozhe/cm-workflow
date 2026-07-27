@@ -17,11 +17,11 @@ description: 检查 CM Workflow 的 Codex 插件、核心 Skills、Claude 兼容
 
 ## 语义检查
 
-1. **Codex 入口**：`.codex-plugin/plugin.json` 的 `skills` 指向 `./skills/`；`cm-idea/cm-init/cm-prd/cm-ai/cm-fix/cm-refactor/cm-check` 七个 Skill 均有合法 frontmatter。
-2. **共享真相**：七个核心 Skill 引用 `runtime/` 合同；`compat/claude-commands/cm-*.md` 只是 macOS/Linux 旧入口薄包装，不再复制业务规则。
-3. **流程链路**：`cm-ai` 的 N1–N8 引用全部存在；`cm-prd` 的 greenfield/brownfield/change-mode 全部存在；`cm-idea` 引用 `idea-to-prd`。
+1. **Codex 入口**：`.codex-plugin/plugin.json` 的 `skills` 指向 `./skills/`；`cm-idea/cm-init/cm-prd/cm-ai/cm-test/cm-fix/cm-refactor/cm-check` 八个 Skill 均有合法 frontmatter。
+2. **共享真相**：八个核心 Skill 引用 `runtime/` 合同；`compat/claude-commands/cm-*.md` 只是 macOS/Linux 旧入口薄包装，不再复制业务规则。
+3. **流程链路**：`cm-ai` 的 N1–N8 引用全部存在；`cm-prd` 的 greenfield/brownfield/change-mode 全部存在；`cm-idea` 引用 `idea-to-prd`；`cm-prd/cm-ai/cm-test/cm-qa-engineer` 共用 `runtime/test-contract.md`；`cm-test --generate-cases` 生成校验后的 inferred 草稿并硬停止。
 4. **角色链路**：N3 引用的 `cm-*-engineer/manager/expert` Skill 存在；Claude `agents/` 中每个兼容角色能找到对应工种 Skill。Codex 不依赖这些 `.md` agent 文件。
-5. **状态与审查**：`.cm-specs-status`、`.cm-status.json`、`tasks.md`、`METRICS.md`、`LESSONS.md`、`运行日志.jsonl` 及 `.reviews/` 的生成方与消费方配对；N4 凭证头包含 reviewer/independent/task/round/at/scope。
+5. **状态与审查**：`.cm-specs-status`、`.cm-status.json`、`tasks.md`、可选 `test-cases.json`、`METRICS.md`、`LESSONS.md`、`运行日志.jsonl` 及 `.reviews/` 的生成方与消费方配对；N4 凭证头包含 reviewer/independent/task/round/at/scope；`cm-fix` 收口前机械检查修后审查凭证。
 6. **模板路径**：所有 `{CM_WORKFLOW_ROOT}/templates/...` 引用都对应真实文件，重点核对 `templates/rules/`、`templates/ui-lens/`、`templates/hooks/`、`templates/refactor/`。
 7. **版本**：根 `VERSION` 与 plugin manifest 一致；README 不得宣称不存在的入口或安装路径。
 8. **私有调用清零**：Codex 核心 Skill 不得残留 `TaskCreate`、`TodoWrite`、`codex:review`、`~/.claude/commands`；兼容包装中出现 `/cm:*` 是合法的 macOS/Linux 旧入口。

@@ -29,6 +29,12 @@
 - 按严重度排序；每条必须说明「输入/状态 → 错误结果」
 - 找不到真实问题时明确写「零发现」，不凑数
 
+该 feature 存在 `test-cases.json` 时，把 `taskIds` 命中当前 task 的 logic cases
+加入 review package。逐例按 `runtime/test-contract.md` 输出
+`SUPPORTED | CONTRADICTED | INSUFFICIENT_EVIDENCE`；`SUPPORTED` 只是静态代码
+证据，**不得冒充单测或运行时 PASS**。`CONTRADICTED` 作为有效 finding 处置，
+`INSUFFICIENT_EVIDENCE` 转交 N6 的正式命令或运行时验证。
+
 核验类任务（脚手架、依赖、模板配置）也要过独立审查；输入改为关键产物、预期模板与构建/类型检查结果。
 
 ## 3. 处置与轮次上限
