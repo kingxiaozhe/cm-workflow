@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="380" viewBox="0 0 1200 380" role="img" aria-labelledby="title desc">
+  <title id="title">CM Workflow test evidence receipts</title>
+  <desc id="desc">Three editorial evidence receipts distinguish code logic review, actual project command execution, and browser-based user path testing.</desc>
+
+  <rect width="1200" height="380" fill="#F4F0E8"/>
+  <path d="M48 38H1152M48 336H1152" stroke="#151515" stroke-width="1.5"/>
+
+  <text x="48" y="70" fill="#C44B32" font-size="18" font-weight="800"
+        font-family="ui-monospace, SFMono-Regular, Menlo, monospace" letter-spacing="2">TEST EVIDENCE RECEIPTS</text>
+  <text x="48" y="108" fill="#151515" font-size="30" font-weight="700"
+        font-family="Georgia, Songti SC, serif">三种测试，三类凭证，不互相冒充</text>
+  <text x="1152" y="70" fill="#777168" font-size="17" text-anchor="end"
+        font-family="ui-monospace, SFMono-Regular, Menlo, monospace">READONLY BY DEFAULT</text>
+
+  <g transform="translate(48 136)">
+    <rect width="344" height="164" fill="#FAF8F2" stroke="#AAA399"/>
+    <text x="18" y="31" fill="#777168" font-size="15" font-weight="800"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace">RECEIPT 01</text>
+    <text x="18" y="70" fill="#151515" font-size="29" font-weight="700"
+          font-family="Georgia, Songti SC, serif">Logic</text>
+    <path d="M18 84H326" stroke="#AAA399"/>
+    <text x="18" y="111" fill="#151515" font-size="17"
+          font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">入口 · 分支 · 状态 · 输出</text>
+    <text x="18" y="143" fill="#C44B32" font-size="15" font-weight="800"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace">SUPPORTED ≠ EXECUTED</text>
+  </g>
+
+  <g transform="translate(428 136)">
+    <rect width="344" height="164" fill="#FAF8F2" stroke="#AAA399"/>
+    <text x="18" y="31" fill="#777168" font-size="15" font-weight="800"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace">RECEIPT 02</text>
+    <text x="18" y="70" fill="#151515" font-size="29" font-weight="700"
+          font-family="Georgia, Songti SC, serif">Commands</text>
+    <path d="M18 84H326" stroke="#AAA399"/>
+    <text x="18" y="111" fill="#151515" font-size="17"
+          font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">正式脚本 · 退出码 · 测试日志</text>
+    <g transform="translate(18 126)">
+      <rect width="118" height="24" fill="#2E6655"/>
+      <text x="59" y="17" fill="#F4F0E8" font-size="13" font-weight="800" text-anchor="middle"
+            font-family="ui-monospace, SFMono-Regular, Menlo, monospace">ACTUAL RUN</text>
+    </g>
+  </g>
+
+  <g transform="translate(808 136)">
+    <rect width="344" height="164" fill="#FAF8F2" stroke="#AAA399"/>
+    <text x="18" y="31" fill="#777168" font-size="15" font-weight="800"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace">RECEIPT 03</text>
+    <text x="18" y="70" fill="#151515" font-size="29" font-weight="700"
+          font-family="Georgia, Songti SC, serif">Browser</text>
+    <path d="M18 84H326" stroke="#AAA399"/>
+    <text x="18" y="111" fill="#151515" font-size="17"
+          font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">操作 · URL · 可观察结果 · 截图</text>
+    <g transform="translate(18 126)">
+      <rect width="104" height="24" fill="#151515"/>
+      <text x="52" y="17" fill="#F4F0E8" font-size="13" font-weight="800" text-anchor="middle"
+            font-family="ui-monospace, SFMono-Regular, Menlo, monospace">USER PATH</text>
+    </g>
+  </g>
+
+  <text x="48" y="326" fill="#C44B32" font-size="16" font-weight="800"
+        font-family="ui-monospace, SFMono-Regular, Menlo, monospace">NO SOURCE EDIT · NO DEPENDENCY INSTALL · NO WEAKENED ASSERTION</text>
+  <text x="1152" y="326" fill="#2E6655" font-size="16" font-weight="800" text-anchor="end"
+        font-family="ui-monospace, SFMono-Regular, Menlo, monospace">EVIDENCE ATTACHED ✓</text>
+</svg>
