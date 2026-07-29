@@ -7,6 +7,12 @@ description: 将需求文档转换为 requirements、design、tasks 与可选 AI
 
 执行前读取 `../../runtime/project-context.md` 与 `../../runtime/review.md`。Codex 入口为 `$cm-prd`；Claude Code 跨平台入口为 `/cm-prd`，macOS/Linux 另有历史别名 `/cm:prd`。
 
+用户明确要求外部专家，或为本次规格任务开启 AUTO 时，读取
+`../../runtime/external-expert.md` 并执行 `../external-expert/SKILL.md` 的任务路由。
+AUTO 可把复杂方案比较路由到 CONSULT、权威事实查证路由到 VERIFY，其余保持 LOCAL。
+外部结论属于需求/设计输入，必须在本地对照项目事实并进入正常规格人审；AUTO 不
+授权外发 docs 或代码内容。
+
 支持两种模式：新建需求和需求变更。
 
 ## 输入参数

@@ -10,6 +10,12 @@ description: 从已实现代码生成 AI 测试用例草稿，或执行默认只
 `readonly` 模式。Codex 入口为 `$cm-test`；Claude Code 跨平台入口为
 `/cm-test`，macOS/Linux 另有历史别名 `/cm:test`。
 
+用户明确要求外部专家，或为本次测试任务开启 AUTO 时，按
+`../../runtime/external-expert.md` 执行 `../external-expert/SKILL.md` 的任务路由。
+测试执行、浏览器模拟和结果判定保持 LOCAL；复杂测试设计可 CONSULT，权威测试方法
+可 VERIFY。外部只能产生候选用例和故障注入建议；纳入测试合同前仍按本 Skill 标记
+来源并校验，外部声称的执行结果不得计入 PASS。
+
 ## 用法
 
 ```text

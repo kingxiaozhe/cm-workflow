@@ -7,6 +7,12 @@ description: 对可复现缺陷执行红灯测试、根因定位、最小修复�
 
 执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md` 与 `../../runtime/review.md`。Codex 入口为 `$cm-fix`；Claude Code 跨平台入口为 `/cm-fix`，macOS/Linux 另有历史别名 `/cm:fix`。
 
+用户明确要求外部专家，或为本次修复开启 AUTO 时，仍必须先完成第 1 步本地复现，
+再按 `../../runtime/external-expert.md` 执行 `../external-expert/SKILL.md` 的任务
+路由。代码、修复、测试和审查保持 LOCAL；只有竞争根因或高风险事实查证可路由到
+CONSULT/VERIFY。外部假设必须回到本地证伪；咨询记录不能代替 2.5 或第 5 步独立
+审查。
+
 **用法**：`$cm-fix {specs路径} {代码项目路径} 缺陷描述（现象/报错/截图均可）`
 
 修 bug 专用的**轻量闭环**——不走 N1–N8 全链（那是 feature 流程），也不许脱离工作流裸改（裸改没防护网没审查，修一个坏三个）。

@@ -1,14 +1,14 @@
 # cm-workflow
 
 Codex-native、spec-driven 的双运行时工作流分发包：需求文档 → 开发规格 →
-实现 → 独立审查 → QA → 文档同步，并支持存量功能只读测试。Codex Skills 与
+实现 → 独立审查 → QA → 文档同步，并支持存量功能只读测试与可选外部专家研究。Codex Skills 与
 `runtime/` 是权威流程，
 Claude Code 跨平台直接使用 `/cm-*` Skills；`compat/claude-commands/` 保存
 macOS/Linux 的历史 `/cm:*` 别名包装。
 
 ## 技术栈
 
-- 语言: Markdown（prompt 资产主体）+ Bash（安装与可视化脚本）+ PowerShell（Windows 安装器）+ Python（公开包自检）
+- 语言: Markdown（prompt 资产主体）+ Bash（安装与可视化脚本）+ PowerShell（Windows 安装器与自检入口）+ Python（公开包自检）
 - 框架: Codex plugin + Agent Skills；Claude Code commands/agents 兼容层
 - 包管理: 无。Codex 用 `install-codex.sh`；Claude Code 用 `install.sh` / `install.ps1`
 - 版本控制: remote
@@ -36,11 +36,13 @@ skills/                # Codex 权威流程与工种能力
 ├── cm-{idea,init,prd,ai,test,fix,refactor,check}/
 ├── cm-*-engineer/     # frontend/ui/miniprogram/backend/database/contract/qa/devops
 ├── cm-product-manager/、cm-finance-expert/、cm-doc-syncer/
-└── codebase-context/、idea-to-prd/、darwin-skill/   # 独立工具，不进 N1–N8
+└── codebase-context/、idea-to-prd/、external-expert/、darwin-skill/ # 独立工具，不进 N1–N8
 agents/                # 并行子 agent → ~/.claude/agents/ —— agent 管纪律
-runtime/               # 双运行时共享上下文、调度、审查与 AI 测试合同
+runtime/               # 双运行时共享上下文、调度、审查、外部专家与 AI 测试合同
 templates/             # rules 骨架 / hooks / statusline / dashboard / pixel
-docs/                  # 交付材料、示例 PRD 与 specs
+docs/                  # 使用手册、安装架构、交付材料与示例 specs
+assets/                # README 与使用手册的本地视觉资产
+scripts/               # 双运行时机械检查、公开包校验与辅助脚本
 .codex-plugin/         # Codex 插件清单
 VERSION                # 语义版本源，与 plugin manifest 基础版本一致
 ```

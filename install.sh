@@ -79,6 +79,12 @@ for part in skills agents runtime scripts compat; do
   copy_tree "$SRC_DIR/$part" "$DEST/$part" "$part"
 done
 
+# Keep the user-facing manual in one CM-owned namespace instead of mixing it
+# into a user's existing Claude documentation.
+copy_tree "$SRC_DIR/docs" "$DEST/cm-workflow/docs" "cm-workflow/docs"
+copy_tree "$SRC_DIR/assets" "$DEST/cm-workflow/assets" "cm-workflow/assets"
+copy_file "$SRC_DIR/README.md" "$DEST/cm-workflow/README.md" "cm-workflow/README.md"
+
 # Claude Code now recommends Skills, so /cm-* works on every platform. Preserve
 # the historic /cm:* aliases on filesystems that allow ':' in filenames.
 for wrapper in "$SRC_DIR"/compat/claude-commands/cm-*.md; do
@@ -121,8 +127,10 @@ done
 
 mkdir -p "$DEST/templates"
 echo "$VERSION" > "$DEST/templates/cm-VERSION"
+"$DEST/scripts/cm-check-runtime.sh"
 
 echo
 echo "完成（已安装版本: v${VERSION}）。"
 echo "建议在 Claude Code 中运行 /cm-check 校验；macOS/Linux 也保留 /cm:check 别名。"
+echo "使用手册: $DEST/cm-workflow/docs/user-guide.md"
 echo "自动更新器未自动启用；按 docs/installation.md 手工配置 SessionStart hook。"

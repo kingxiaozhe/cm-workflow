@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="720" viewBox="0 0 720 720" role="img" aria-labelledby="title desc">
+  <title id="title">CM Workflow 使用手册移动版封面</title>
+  <desc id="desc">CM Workflow 的命令前缀和三条入门原则。</desc>
+  <rect width="720" height="720" rx="28" fill="#F4F0E8"/>
+  <path d="M0 28C0 12.536 12.536 0 28 0h664c15.464 0 28 12.536 28 28v22H0z" fill="#151515"/>
+  <circle cx="30" cy="25" r="5" fill="#C44B32"/>
+  <circle cx="49" cy="25" r="5" fill="#F4F0E8" opacity=".65"/>
+  <circle cx="68" cy="25" r="5" fill="#2E6655"/>
+
+  <text x="44" y="105" fill="#C44B32" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700" letter-spacing="2">CREATE MORE / START HERE</text>
+  <text x="44" y="163" fill="#151515" font-family="Georgia, 'Noto Serif SC', serif" font-size="43" font-weight="700">CM Workflow 使用手册</text>
+  <text x="44" y="204" fill="#5F5A52" font-family="system-ui, -apple-system, 'Noto Sans SC', sans-serif" font-size="23">从“我现在该用哪个命令”开始。</text>
+
+  <rect x="44" y="244" width="300" height="76" rx="11" fill="#151515"/>
+  <text x="66" y="271" fill="#A7C3B9" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="700" letter-spacing="1.5">CODEX</text>
+  <text x="66" y="302" fill="#F4F0E8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="24">$cm-*</text>
+  <rect x="360" y="244" width="316" height="76" rx="11" fill="#FFFFFF" stroke="#C9C1B5"/>
+  <text x="382" y="271" fill="#A3412D" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="700" letter-spacing="1.5">CLAUDE CODE</text>
+  <text x="382" y="302" fill="#151515" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="24">/cm-*</text>
+
+  <text x="44" y="382" fill="#777168" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="700" letter-spacing="2">THREE RULES</text>
+  <line x1="44" y1="403" x2="676" y2="403" stroke="#C9C1B5"/>
+
+  <text x="44" y="464" fill="#C44B32" font-family="Georgia, serif" font-size="34" font-weight="700">01</text>
+  <text x="112" y="458" fill="#151515" font-family="system-ui, -apple-system, 'Noto Sans SC', sans-serif" font-size="25" font-weight="650">每个项目只需初始化一次</text>
+  <text x="112" y="488" fill="#777168" font-family="system-ui, -apple-system, 'Noto Sans SC', sans-serif" font-size="17">INIT ONCE</text>
+
+  <text x="44" y="554" fill="#C44B32" font-family="Georgia, serif" font-size="34" font-weight="700">02</text>
+  <text x="112" y="548" fill="#151515" font-family="system-ui, -apple-system, 'Noto Sans SC', sans-serif" font-size="25" font-weight="650">先确认规格，再执行实现</text>
+  <text x="112" y="578" fill="#777168" font-family="system-ui, -apple-system, 'Noto Sans SC', sans-serif" font-size="17">PRD → REVIEW → AI</text>
+
+  <text x="44" y="644" fill="#C44B32" font-family="Georgia, serif" font-size="34" font-weight="700">03</text>
+  <text x="112" y="638" fill="#151515" font-family="system-ui, -apple-system, 'Noto Sans SC', sans-serif" font-size="25" font-weight="650">测试只报告，修复才改代码</text>
+  <text x="112" y="668" fill="#777168" font-family="system-ui, -apple-system, 'Noto Sans SC', sans-serif" font-size="17">TEST REPORTS · FIX CHANGES</text>
+</svg>

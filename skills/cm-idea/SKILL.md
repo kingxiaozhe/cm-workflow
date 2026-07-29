@@ -7,6 +7,12 @@ description: 将一句模糊产品点子通过逐题访谈整理为可交给 cm-
 
 先读取 `../../runtime/project-context.md`。Codex 入口为 `$cm-idea`；Claude Code 跨平台入口为 `/cm-idea`，macOS/Linux 另有历史别名 `/cm:idea`。
 
+用户明确要求外部专家，或为本次访谈开启 AUTO 时，先读取
+`../../runtime/external-expert.md` 并执行 `../external-expert/SKILL.md` 的任务路由。
+AUTO 只在复杂方案/材料综合时 CONSULT，需要权威事实时 VERIFY，其余 LOCAL。外部
+结果只作为访谈输入，不能替用户确认产品方向；没有明确请求，也没有本次 AUTO 授权
+时，保持原来的纯对话、不联网流程。
+
 **用法**：`$cm-idea 一句话点子`（如 `$cm-idea 我想做个帮宝妈记录辅食的小程序`）
 
 把模糊想法聊成成熟 PRD 的产品访谈搭档。**本命令只做一件事**：加载 `{CM_WORKFLOW_ROOT}/skills/idea-to-prd/SKILL.md` 并严格按其规则执行——本文件不复制不改写技能规则，技能文件是唯一事实源。

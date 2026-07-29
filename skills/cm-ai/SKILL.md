@@ -7,6 +7,12 @@ description: 执行已经人工审查的 CM specs，按 N1-N8 完成任务开发
 
 执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md` 与 `../../runtime/review.md`。Codex 入口为 `$cm-ai`；Claude Code 跨平台入口为 `/cm-ai`，macOS/Linux 另有历史别名 `/cm:ai`。
 
+用户明确要求外部专家，或为本次开发任务开启 AUTO 时，按
+`../../runtime/external-expert.md` 执行 `../external-expert/SKILL.md` 的任务路由。
+编码、命令、测试执行、页面 QA、Git 与 N4 永远 LOCAL；AUTO 只能把可分离的复杂
+研究、测试设计或方案批判路由到 CONSULT/VERIFY。外部建议由本地应用、测试与裁决，
+其 `.external/` 证据不得满足 N4/N5。
+
 `用户本轮输入` — specs 文件夹路径 + 代码项目路径。
 
 ```bash

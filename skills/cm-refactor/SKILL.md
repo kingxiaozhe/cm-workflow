@@ -7,6 +7,11 @@ description: 对不改变外部行为的代码结构调整执行分流、行为�
 
 执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md` 与 `../../runtime/review.md`。Codex 入口为 `$cm-refactor`；Claude Code 跨平台入口为 `/cm-refactor`，macOS/Linux 另有历史别名 `/cm:refactor`。
 
+用户明确要求外部专家，或为本次重构开启 AUTO 时，按
+`../../runtime/external-expert.md` 执行 `../external-expert/SKILL.md` 的任务路由。
+重构写入、行为判官与审查保持 LOCAL；复杂方案比较可 CONSULT，权威事实可 VERIFY。
+外部结果只进入候选方案和风险清单，不得修改行为基线、代跑判官或满足独立审查。
+
 **用法**:`$cm-refactor {specs路径} {代码项目路径} 重构目标描述(哪块代码/为什么难维护)`
 
 结构调整专用闭环。**前提:什么都没坏,行为一丝不变**——设计依据见 `docs/重构流程设计/`(cm 小闭环纪律 × Anthropic 迁移方法论,核心教义:修规则,不修产物)。
