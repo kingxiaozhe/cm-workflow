@@ -667,7 +667,7 @@ def main() -> int:
         "deduplicated": project_duplicate if project_log else global_duplicate,
         "degraded": degraded,
     }
-    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    print(json.dumps(result, ensure_ascii=True, separators=(",", ":")))
     return 0
 
 

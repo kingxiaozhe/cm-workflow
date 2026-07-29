@@ -21,9 +21,12 @@ def invoke(
     *,
     log_home: Path,
     expected_exit: int = 0,
+    python_io_encoding: Optional[str] = None,
 ) -> Tuple[subprocess.CompletedProcess, Optional[Dict[str, object]]]:
     env = os.environ.copy()
     env["CM_WORKFLOW_LOG_HOME"] = str(log_home)
+    if python_io_encoding is not None:
+        env["PYTHONIOENCODING"] = python_io_encoding
     result = subprocess.run(
         [sys.executable, str(WRITER), *args],
         cwd=ROOT,
@@ -99,6 +102,33 @@ def main() -> int:
         assert read_jsonl(project_log)[0]["feature"] == "1.login"
         assert read_jsonl(project_log)[0]["schema_version"] == 1
         assert read_jsonl(index)[0]["status"] == "running"
+
+        legacy_console_specs = root / "传统代码页-specs"
+        legacy_console_specs.mkdir()
+        legacy_console_process, legacy_console = invoke(
+            [
+                "--workflow",
+                "cm-test",
+                "--event",
+                "test_run",
+                "--runtime",
+                "codex",
+                "--project-root",
+                str(project),
+                "--specs-dir",
+                str(legacy_console_specs),
+                "--detail",
+                "Windows 传统代码页仍须返回机器可读结果",
+            ],
+            log_home=root / "legacy-console-logs",
+            python_io_encoding="cp1252",
+        )
+        assert legacy_console is not None
+        assert "\\u" in legacy_console_process.stdout
+        assert legacy_console["global_written"] is True
+        legacy_project_log = Path(str(legacy_console["project_log"]))
+        assert legacy_project_log.name == "运行日志.jsonl"
+        assert legacy_project_log.parent.name == "传统代码页-specs"
 
         _, routed = invoke(
             [
