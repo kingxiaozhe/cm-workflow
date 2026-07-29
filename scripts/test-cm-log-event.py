@@ -130,6 +130,432 @@ def main() -> int:
         assert legacy_project_log.name == "运行日志.jsonl"
         assert legacy_project_log.parent.name == "传统代码页-specs"
 
+        lifecycle_specs = root / "lifecycle-specs"
+        lifecycle_specs.mkdir()
+        lifecycle_home = root / "lifecycle-logs"
+        lifecycle_acquire_args = [
+            "--workflow",
+            "cm-ai",
+            "--event",
+            "resource",
+            "--phase",
+            "acquired",
+            "--runtime",
+            "codex",
+            "--project-root",
+            str(project),
+            "--specs-dir",
+            str(lifecycle_specs),
+            "--detail",
+            "一次性测试 profile 已创建",
+            "--data-json",
+            '{"resource_id":"profile-1","resource_kind":"test_profile",'
+            '"cleanup_required":true}',
+        ]
+        lifecycle_release_args = [
+            "--workflow",
+            "cm-ai",
+            "--event",
+            "resource",
+            "--phase",
+            "released",
+            "--runtime",
+            "codex",
+            "--project-root",
+            str(project),
+            "--specs-dir",
+            str(lifecycle_specs),
+            "--detail",
+            "一次性测试 profile 已清理",
+            "--data-json",
+            '{"resource_id":"profile-1","resource_kind":"test_profile"}',
+        ]
+        invoke(lifecycle_acquire_args, log_home=lifecycle_home)
+        _, exact_acquire_retry = invoke(
+            lifecycle_acquire_args,
+            log_home=lifecycle_home,
+        )
+        assert exact_acquire_retry is not None
+        assert exact_acquire_retry["deduplicated"] is True
+        distinct_live_acquire_args = lifecycle_acquire_args.copy()
+        distinct_live_acquire_args[
+            distinct_live_acquire_args.index("一次性测试 profile 已创建")
+        ] = "同一 ID 不能代表第二个仍存活的资源"
+        distinct_live_acquire_args[-1] = (
+            '{"resource_id":"profile-1","resource_kind":"test_profile",'
+            '"cleanup_required":true,"operation_id":"second-live-resource"}'
+        )
+        distinct_live_acquire, _ = invoke(
+            distinct_live_acquire_args,
+            log_home=lifecycle_home,
+            expected_exit=2,
+        )
+        assert "active resource_id already has an acquisition" in (
+            distinct_live_acquire.stderr
+        )
+        blocked_task, _ = invoke(
+            [
+                "--workflow",
+                "cm-ai",
+                "--event",
+                "task_done",
+                "--runtime",
+                "codex",
+                "--project-root",
+                str(project),
+                "--specs-dir",
+                str(lifecycle_specs),
+                "--detail",
+                "资源未释放时不能完成任务",
+            ],
+            log_home=lifecycle_home,
+            expected_exit=2,
+        )
+        assert "completion blocked by unclosed resources" in blocked_task.stderr
+        invoke(
+            [
+                "--workflow",
+                "cm-ai",
+                "--event",
+                "progress",
+                "--phase",
+                "checkpoint",
+                "--runtime",
+                "codex",
+                "--project-root",
+                str(project),
+                "--specs-dir",
+                str(lifecycle_specs),
+                "--detail",
+                "受管 Runtime 已就绪",
+                "--data-json",
+                '{"operation_id":"desktop-case-1",'
+                '"requested_model":"gpt-5.6-sol",'
+                '"effective_model":"qwen3:8b","provider":"local-ollama",'
+                '"purpose":"transport-smoke","model_equivalent":false}',
+            ],
+            log_home=lifecycle_home,
+        )
+        invoke(
+            [
+                "--workflow",
+                "cm-ai",
+                "--event",
+                "warning",
+                "--phase",
+                "retry",
+                "--runtime",
+                "codex",
+                "--project-root",
+                str(project),
+                "--specs-dir",
+                str(lifecycle_specs),
+                "--detail",
+                "首次检查失败后已重试成功",
+                "--data-json",
+                '{"severity":"warning","impact":"none","recovered":true,'
+                '"attempt":1,"outcome":"retried"}',
+            ],
+            log_home=lifecycle_home,
+        )
+        wrong_kind_release, _ = invoke(
+            [
+                "--workflow",
+                "cm-ai",
+                "--event",
+                "resource",
+                "--phase",
+                "released",
+                "--runtime",
+                "codex",
+                "--project-root",
+                str(project),
+                "--specs-dir",
+                str(lifecycle_specs),
+                "--detail",
+                "错误类型不能关闭资源",
+                "--data-json",
+                '{"resource_id":"profile-1","resource_kind":"process"}',
+            ],
+            log_home=lifecycle_home,
+            expected_exit=2,
+        )
+        assert "resource_kind does not match" in wrong_kind_release.stderr
+        invoke(lifecycle_release_args, log_home=lifecycle_home)
+        lifecycle_task_done_args = [
+            "--workflow",
+            "cm-ai",
+            "--event",
+            "task_done",
+            "--runtime",
+            "codex",
+            "--project-root",
+            str(project),
+            "--specs-dir",
+            str(lifecycle_specs),
+            "--detail",
+            "资源释放后允许完成任务",
+        ]
+        invoke(lifecycle_task_done_args, log_home=lifecycle_home)
+        _, closed_acquire_retry = invoke(
+            lifecycle_acquire_args,
+            log_home=lifecycle_home,
+        )
+        assert closed_acquire_retry is not None
+        assert closed_acquire_retry["deduplicated"] is True
+        reused_id, _ = invoke(
+            distinct_live_acquire_args,
+            log_home=lifecycle_home,
+            expected_exit=2,
+        )
+        assert "resource_id cannot be reused" in reused_id.stderr
+        second_acquire_args = [
+            value.replace("profile-1", "profile-2")
+            for value in lifecycle_acquire_args
+        ]
+        second_release_args = [
+            value.replace("profile-1", "profile-2")
+            for value in lifecycle_release_args
+        ]
+        invoke(second_acquire_args, log_home=lifecycle_home)
+        _, delayed_task_retry = invoke(
+            lifecycle_task_done_args,
+            log_home=lifecycle_home,
+        )
+        assert delayed_task_retry is not None
+        assert delayed_task_retry["deduplicated"] is True
+        invoke(lifecycle_release_args, log_home=lifecycle_home)
+        blocked_second_resource, _ = invoke(
+            [
+                "--workflow",
+                "cm-ai",
+                "--event",
+                "run_done",
+                "--runtime",
+                "codex",
+                "--project-root",
+                str(project),
+                "--specs-dir",
+                str(lifecycle_specs),
+                "--detail",
+                "旧清理重试不能关闭新资源",
+            ],
+            log_home=lifecycle_home,
+            expected_exit=2,
+        )
+        assert (
+            "completion blocked by unclosed resources"
+            in blocked_second_resource.stderr
+        )
+        invoke(second_release_args, log_home=lifecycle_home)
+        lifecycle_rows = read_jsonl(lifecycle_specs / "运行日志.jsonl")
+        assert [(row["event"], row.get("phase")) for row in lifecycle_rows] == [
+            ("resource", "acquired"),
+            ("progress", "checkpoint"),
+            ("warning", "retry"),
+            ("resource", "released"),
+            ("task_done", None),
+            ("resource", "acquired"),
+            ("resource", "released"),
+        ]
+        assert lifecycle_rows[0]["cleanup_required"] is True
+        assert lifecycle_rows[3]["resource_id"] == "profile-1"
+        assert lifecycle_rows[5]["resource_id"] == "profile-2"
+        assert "resource_occurrence" not in lifecycle_rows[0]
+        assert lifecycle_rows[1]["effective_model"] == "qwen3:8b"
+        assert lifecycle_rows[1]["model_equivalent"] is False
+        assert lifecycle_rows[2]["recovered"] is True
+        assert lifecycle_rows[2]["impact"] == "none"
+
+        malformed_home = root / "malformed-resource-logs"
+        malformed, _ = invoke(
+            [
+                "--workflow",
+                "cm-ai",
+                "--event",
+                "resource",
+                "--phase",
+                "acquired",
+                "--runtime",
+                "codex",
+                "--project-root",
+                str(project),
+                "--detail",
+                "缺少资源标识",
+                "--data-json",
+                '{"resource_kind":"process","cleanup_required":true}',
+            ],
+            log_home=malformed_home,
+            expected_exit=2,
+        )
+        assert "require a valid resource_id" in malformed.stderr
+        assert not malformed_home.exists()
+
+        uuid_specs = root / "uuid-resource-specs"
+        uuid_specs.mkdir()
+        uuid_home = root / "uuid-resource-logs"
+        uuid_resource_id = "9f5d70a2-9831-4a68-bfc9-6d6617ba55e9"
+        uuid_common_args = [
+            "--workflow",
+            "cm-ai",
+            "--event",
+            "resource",
+            "--runtime",
+            "codex",
+            "--project-root",
+            str(project),
+            "--specs-dir",
+            str(uuid_specs),
+        ]
+        uuid_acquire_args = uuid_common_args + [
+            "--phase",
+            "acquired",
+            "--detail",
+            "数字开头 UUID 资源已获取",
+            "--data-json",
+            json.dumps(
+                {
+                    "resource_id": uuid_resource_id,
+                    "resource_kind": "process",
+                    "cleanup_required": True,
+                },
+                separators=(",", ":"),
+            ),
+        ]
+        uuid_cleanup_failed_args = uuid_common_args + [
+            "--phase",
+            "cleanup_failed",
+            "--detail",
+            "数字开头 UUID 资源清理失败",
+            "--data-json",
+            json.dumps(
+                {
+                    "resource_id": uuid_resource_id,
+                    "resource_kind": "process",
+                },
+                separators=(",", ":"),
+            ),
+        ]
+        uuid_release_args = uuid_common_args + [
+            "--phase",
+            "released",
+            "--detail",
+            "数字开头 UUID 资源已释放",
+            "--data-json",
+            json.dumps(
+                {
+                    "resource_id": uuid_resource_id,
+                    "resource_kind": "process",
+                },
+                separators=(",", ":"),
+            ),
+        ]
+        invoke(uuid_acquire_args, log_home=uuid_home)
+        invoke(uuid_cleanup_failed_args, log_home=uuid_home)
+        invoke(uuid_release_args, log_home=uuid_home)
+        _, closed_cleanup_retry = invoke(
+            uuid_cleanup_failed_args,
+            log_home=uuid_home,
+        )
+        assert closed_cleanup_retry is not None
+        assert closed_cleanup_retry["deduplicated"] is True
+        uuid_rows = read_jsonl(uuid_specs / "运行日志.jsonl")
+        assert [row["resource_id"] for row in uuid_rows] == [
+            uuid_resource_id,
+            uuid_resource_id,
+            uuid_resource_id,
+        ]
+
+        orphan_specs = root / "orphan-resource-specs"
+        orphan_specs.mkdir()
+        orphan_run_id = "20260729T120000Z-orphan01"
+        orphan_row = {
+            "schema_version": 1,
+            "event_id": "orphan-fixture",
+            "run_id": orphan_run_id,
+            "at": "2026-07-29T12:00:00-07:00",
+            "workflow": "cm-ai",
+            "event": "resource",
+            "phase": "released",
+            "runtime": "codex",
+            "project": "project",
+            "detail": "没有前置获取的损坏记录",
+            "resource_id": "orphan-1",
+            "resource_kind": "process",
+        }
+        (orphan_specs / "运行日志.jsonl").write_text(
+            json.dumps(orphan_row, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        orphan_done, _ = invoke(
+            [
+                "--workflow",
+                "cm-ai",
+                "--event",
+                "run_done",
+                "--runtime",
+                "codex",
+                "--project-root",
+                str(project),
+                "--specs-dir",
+                str(orphan_specs),
+                "--detail",
+                "损坏状态不能完成",
+            ],
+            log_home=root / "orphan-resource-logs",
+            expected_exit=2,
+        )
+        assert "resource state cannot be verified" in orphan_done.stderr
+
+        if os.name != "nt":
+            unreadable_specs = root / "unreadable-resource-specs"
+            unreadable_specs.mkdir()
+            unreadable_home = root / "unreadable-resource-logs"
+            invoke(
+                [
+                    "--workflow",
+                    "cm-ai",
+                    "--event",
+                    "resource",
+                    "--phase",
+                    "acquired",
+                    "--runtime",
+                    "codex",
+                    "--project-root",
+                    str(project),
+                    "--specs-dir",
+                    str(unreadable_specs),
+                    "--detail",
+                    "待验证的临时进程",
+                    "--data-json",
+                    '{"resource_id":"process-1","resource_kind":"process",'
+                    '"cleanup_required":true}',
+                ],
+                log_home=unreadable_home,
+            )
+            unreadable_log = unreadable_specs / "运行日志.jsonl"
+            unreadable_log.chmod(0o200)
+            unreadable_done, _ = invoke(
+                [
+                    "--workflow",
+                    "cm-ai",
+                    "--event",
+                    "run_done",
+                    "--runtime",
+                    "codex",
+                    "--project-root",
+                    str(project),
+                    "--specs-dir",
+                    str(unreadable_specs),
+                    "--detail",
+                    "日志不可读时不能结束",
+                ],
+                log_home=unreadable_home,
+                expected_exit=2,
+            )
+            assert "resource state cannot be verified" in unreadable_done.stderr
+            unreadable_log.chmod(0o600)
+
         _, routed = invoke(
             [
                 "--workflow",
@@ -304,6 +730,60 @@ def main() -> int:
         assert pointer_restarted is not None
         assert pointer_restarted["run_id"] != pointer_failure_id
 
+        mirror_specs = root / "mirror-recovery-specs"
+        mirror_specs.mkdir()
+        mirror_home = root / "mirror-recovery-logs"
+        mirror_home.write_text("阻止首次全局镜像写入", encoding="utf-8")
+        mirror_args = [
+            "--workflow",
+            "cm-ai",
+            "--event",
+            "progress",
+            "--phase",
+            "checkpoint",
+            "--runtime",
+            "codex",
+            "--project-root",
+            str(project),
+            "--specs-dir",
+            str(mirror_specs),
+            "--detail",
+            "跨月镜像恢复必须保留原始事件时间",
+            "--data-json",
+            '{"operation_id":"mirror-recovery-1","attempt":1}',
+        ]
+        _, mirror_degraded = invoke(
+            [
+                *mirror_args,
+                "--at",
+                "2026-06-30T23:00:00-07:00",
+            ],
+            log_home=mirror_home,
+        )
+        assert mirror_degraded is not None
+        assert mirror_degraded["global_written"] is False
+        assert mirror_degraded["degraded"] is True
+        mirror_event_id = str(mirror_degraded["event_id"])
+        (mirror_specs / ".cm-run.json").unlink()
+        mirror_home.unlink()
+        mirror_home.mkdir()
+        _, mirror_recovered = invoke(
+            [
+                *mirror_args,
+                "--at",
+                "2026-07-31T23:00:00-07:00",
+            ],
+            log_home=mirror_home,
+        )
+        assert mirror_recovered is not None
+        assert mirror_recovered["event_id"] == mirror_event_id
+        assert mirror_recovered["deduplicated"] is True
+        recovered_global_log = Path(str(mirror_recovered["global_log"]))
+        assert recovered_global_log.parent.name == "2026-06"
+        recovered_rows = read_jsonl(recovered_global_log)
+        assert len(recovered_rows) == 1
+        assert recovered_rows[0]["at"] == "2026-06-30T23:00:00-07:00"
+
         standalone_home = root / "standalone-logs"
         _, standalone = invoke(
             [
@@ -325,6 +805,71 @@ def main() -> int:
         assert standalone is not None
         standalone_id = str(standalone["run_id"])
         assert standalone["project_log"] is None
+        invoke(
+            [
+                "--workflow",
+                "external-expert",
+                "--event",
+                "resource",
+                "--phase",
+                "acquired",
+                "--runtime",
+                "codex",
+                "--project-root",
+                str(project),
+                "--run-id",
+                standalone_id,
+                "--detail",
+                "临时浏览器进程已启动",
+                "--data-json",
+                '{"resource_id":"browser-1","resource_kind":"process",'
+                '"cleanup_required":true}',
+            ],
+            log_home=standalone_home,
+        )
+        blocked_run, _ = invoke(
+            [
+                "--workflow",
+                "external-expert",
+                "--event",
+                "run_done",
+                "--phase",
+                "done",
+                "--runtime",
+                "codex",
+                "--project-root",
+                str(project),
+                "--run-id",
+                standalone_id,
+                "--detail",
+                "资源未释放时不能结束",
+            ],
+            log_home=standalone_home,
+            expected_exit=2,
+        )
+        assert "completion blocked by unclosed resources" in blocked_run.stderr
+        invoke(
+            [
+                "--workflow",
+                "external-expert",
+                "--event",
+                "resource",
+                "--phase",
+                "released",
+                "--runtime",
+                "codex",
+                "--project-root",
+                str(project),
+                "--run-id",
+                standalone_id,
+                "--detail",
+                "临时浏览器进程已停止",
+                "--data-json",
+                '{"resource_id":"browser-1","resource_kind":"process",'
+                '"cleanup_required":true}',
+            ],
+            log_home=standalone_home,
+        )
         _, standalone_done = invoke(
             [
                 "--workflow",
@@ -346,7 +891,7 @@ def main() -> int:
         )
         assert standalone_done is not None
         assert standalone_done["run_id"] == standalone_id
-        assert len(read_jsonl(Path(str(standalone_done["global_log"])))) == 2
+        assert len(read_jsonl(Path(str(standalone_done["global_log"])))) == 4
 
         idempotent_home = root / "idempotent-logs"
         explicit_run_id = "20260729T120000Z-retry001"

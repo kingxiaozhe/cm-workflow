@@ -35,3 +35,19 @@
 - **依赖与工具链纪律**：新引入的依赖/构建工具必须**钉版本写进 manifest**（dependencies/devDependencies），禁止在脚本里临时 `npx` 拉 latest（不可复现，锁网 CI 直接挂）；工具链改动在提交信息中单独说明，不静默混入功能变更（实跑教训：防护网脚本裸 npx esbuild 被复审抓出）
 - **二开范围纪律：只改任务范围内的代码，禁止顺手重构**——顺手"优化"老代码是存量项目的事故之源；想重构的记入 LESSONS 待触发备忘，事后走 `$cm-refactor` 单独立项、单独审查，不许夹带。改老文件跟老文件风格走，新文件才按新规范写
 - **平台专属 API 首次引入必查社区已知问题**：用当前运行时的网络搜索能力查「{API 名} 已知问题/踩坑」。微信小程序、Taro、RN/Expo 这类平台 API 的不可靠组合官方文档未必覆盖；查证结论一行留在任务汇报里
+
+## 长步骤与临时资源留痕
+
+- 启动可能长时间占用的外部命令、桌面应用、浏览器用例或模型回合前，按
+  `../../../runtime/logging.md` 写 `progress/start`；只在真实观察到的启动完成、
+  Runtime Ready、页面到达或用例阶段变化时写 `progress/checkpoint`，结束写
+  `progress/complete`。**不启动后台定时心跳**。
+- 每个 blocking browser case 写 `test_run/case_start`，随后只允许一个
+  `case_complete` 或 `case_blocked`；同一步同步更新 `.cm-status.json` 的大白话
+  detail，避免进程仍运行但日志和状态长时间停住。
+- 临时 profile、进程、模型别名、worktree 或 fixture 在使用前写
+  `resource/acquired`，清理后用同一 `resource_id` 写 `resource/released`。
+  每次新获取使用新的 `resource_id`，释放后的 ID 不复用；`cleanup_failed`
+  立即把任务标为 BLOCKED，不得进入 N4。
+- 模型发生别名或路由时同时记录 `requested_model`、`effective_model`、`provider`、
+  `purpose` 与 `model_equivalent`；不得用别名冒充实际模型。

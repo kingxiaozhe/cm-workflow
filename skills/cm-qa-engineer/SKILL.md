@@ -56,6 +56,12 @@ readonly 模式跳过本节，不得创建、修改或修复任何测试。
 
 ### 4. 运行测试
 
+调用方 `$cm-ai` N6 或 `$cm-test` 负责 `test_run/start` 与 `test_run/complete`；
+本 Skill 不重复写调用级边界。存在 AI 测试合同时，本 Skill 在每个 blocking case
+实际执行前写 `test_run/case_start`，并以 `case_complete` 或 `case_blocked` 唯一
+收口；每次真实重试携带递增 `attempt`。仅当本轮存在 CM specs 时才在关键阶段同步
+更新 `.cm-status.json`，standalone `$cm-test` 不创建该文件，也不使用后台心跳。
+
 ```bash
 # 根据项目实际命令执行
 npm run test              # 或 pnpm test / cargo test / pytest
@@ -80,6 +86,9 @@ npx playwright test       # E2E
 4. 对比基准截图（如有）
 5. test-cases.json 中的 browser cases 逐条执行 steps、断言 expected，并记录
    `PASS | FAIL | BLOCKED`；cleanup 失败时记 `BLOCKED`
+6. 临时 profile、进程、模型别名或 fixture 使用前写 `resource/acquired`，清理后
+   用同一 `resource_id` 写 `resource/released`；每次新获取生成新的 ID，释放后的
+   ID 不复用。写入 `cleanup_failed` 后保持 `BLOCKED`，不得把断言通过当作整个用例通过
 
 > **用户覆盖**：在 `.claude/rules/testing.md` 中添加 `browser_driver: playwright | chrome-mcp | ask` 可固定选择或设为每次询问。
 

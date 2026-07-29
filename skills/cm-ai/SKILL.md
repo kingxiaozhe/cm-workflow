@@ -79,15 +79,17 @@ START
 **状态落盘（供状态条/看板实时点亮节点）：** 每进入一个节点（N1–N8），覆盖写入 `{SPECS_DIR}/.cm-status.json` 单行 JSON：
 `{"node":"N4","feature":"1.xxx","task":"T-005","detail":"一句话当前动作","state":"running","at":"HH:MM:SS"}`
 ——**detail 必须写大白话**，标准是"路过的非工程师扫一眼能懂"：写"正在开发数据接口"不写"cm-backend-engineer 执行 T-004"；写"第2轮代码审查"不写"对抗式子agent复审"；写"确认一下：原型里有3个按钮点了没反应,要做吗?"不写"原型死区待确认"。节点号/任务号由状态条自动放在行尾角标，detail 里不要再写。
-——暂停等人时 `state` 改为 `paused_for_human`（detail 写等什么），全部完成时 N8 写 `run_done`。N1 时可将 specs 绝对路径同步到当前运行时的状态镜像（Claude 兼容运行时为 `~/.claude/cm-current-specs`，Codex/OMX 为对应 session 状态），但 `{SPECS_DIR}/.cm-status.json` 始终是跨运行时真相。每节点一次写入，不得跳过。
+——暂停等人时 `state` 改为 `paused_for_human`（detail 写等什么），全部完成时 N8 写 `run_done`。N1 时可将 specs 绝对路径同步到当前运行时的状态镜像（Claude 兼容运行时为 `~/.claude/cm-current-specs`，Codex/OMX 为对应 session 状态），但 `{SPECS_DIR}/.cm-status.json` 始终是跨运行时真相。每节点至少写入一次；长步骤可在同一节点更新真实检查点，不得跳过。
 **运行日志（事后复盘与工作流优化的原始证据）：** 按
 `runtime/logging.md` 调用统一写入器；它先追加 `{SPECS_DIR}/运行日志.jsonl`，再把
 同一 `event_id` 镜像到 `~/.cm-workflow/logs/`。`at` 一律 ISO 8601 带时区偏移，
 detail 用一句大白话；不直接拼 JSON，避免跨会话格式漂移。
 **必记事件（event 取值固定）**：`run_start`、`node_enter`、`task_start` /
-`task_done`、`review`、`degrade`、`pause` / `resume`、`decision`、`error`、`qa`、
-`test_run`、`external_expert`、`spec_lifecycle`、`delivery`、`run_done`。写日志与状态
-落盘同节奏，不得跳过；详细测试/审查/外部回答只写专项凭证，不灌主日志。
+`task_done`、`review`、`degrade`、`pause` / `resume`、`decision`、`warning`、
+`error`、`progress`、`resource`、`qa`、`test_run`、`external_expert`、
+`spec_lifecycle`、`delivery`、`run_done`。写日志与状态落盘同节奏，不得跳过；详细
+测试/审查/外部回答只写专项凭证，不灌主日志。长步骤和临时资源严格按
+`runtime/logging.md` 配对，禁止用后台心跳制造虚假活跃。
 
 **任务状态镜像：** `tasks.md` 是唯一权威任务源。运行时支持任务面板时，可将未完成任务镜像到 Codex/OMX 计划或 Claude 任务清单；N3/N5 同步状态。断点恢复必须由磁盘重建镜像：`[x]` 跳过或标为 completed，`[DROPPED]` 不镜像，不得重复创建条目。
 

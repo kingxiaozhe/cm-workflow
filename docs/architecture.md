@@ -92,6 +92,12 @@ private owner-only permissions where the operating system supports POSIX modes.
 The envelope contains operational metadata only; prompts, responses, source
 content, external conversation links, and credentials stay out of it.
 
+Long-running desktop and browser work emits event-based progress checkpoints,
+not a timer-driven heartbeat. Temporary profiles, processes, aliases, worktrees,
+and fixtures use paired resource events; an unmatched acquisition blocks the
+next task or run completion. Each acquisition has a unique run-local resource
+id, so a delayed cleanup cannot close a later resource.
+
 ## Testing model
 
 `cm-prd` can generate one `test-cases.json` per behavior-bearing feature.

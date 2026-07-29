@@ -41,6 +41,11 @@
 
 **审查凭证对账**：tasks.md 全部 `[x]` 任务 ↔ `{SPECS_DIR}/.reviews/` 凭证一一对账，缺失项列入度量汇总（`⚠ 审查凭证缺失: T-xxx,...`，全齐则 `审查凭证: {N}/{N} 齐`）——中途漏网的审查，收尾必须暴露，不许无声混过。
 
+**临时资源对账**：读取当前 run 的项目权威日志，按 `resource_id` 对账
+`resource/acquired`、`resource/released` 与 `resource/cleanup_failed`。只有同一
+资源最后状态为 `released` 才算闭环；存在未释放或清理失败资源时输出清单、将状态
+改为 BLOCKED，并且**不得写 `run_done`**。没有 resource 事件的历史运行保持兼容。
+
 **运行日志收口**：按 `../../../runtime/logging.md` 写 `run_done` 终态事件，使项目日志与
 全局索引同时收口；然后报告 `运行日志.jsonl`、全局 run 文件路径与项目日志行数。
 提醒用户反馈问题时连同 METRICS.md 一起带回，只报告，不清理不截断。

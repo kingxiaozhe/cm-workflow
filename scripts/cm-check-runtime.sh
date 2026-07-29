@@ -333,6 +333,31 @@ grep -Fq "global-mirror failure" "$ROOT/runtime/logging.md" ||
   fail "global logging has no project-side degradation rule"
 grep -Fq "Never log:" "$ROOT/runtime/logging.md" ||
   fail "global logging contract has no privacy boundary"
+grep -Fq 'event-based. Do not add a background heartbeat' "$ROOT/runtime/logging.md" ||
+  fail "global logging contract can require a background heartbeat"
+grep -Fq '`resource/acquired`' "$ROOT/runtime/logging.md" &&
+  grep -Fq '`resource/released`' "$ROOT/runtime/logging.md" &&
+  grep -Fq '`resource/cleanup_failed`' "$ROOT/runtime/logging.md" ||
+  fail "temporary resource lifecycle is not fully paired"
+grep -Fq '`requested_model`, `effective_model`' "$ROOT/runtime/logging.md" ||
+  fail "model routing identity is not explicit in the logging contract"
+grep -Fq '`test_run/case_start`' "$ROOT/skills/cm-ai/references/N3-execute-task.md" &&
+  grep -Fq '`test_run/case_start`' "$ROOT/skills/cm-qa-engineer/SKILL.md" ||
+  fail "long-running test case checkpoints are not wired into N3 and QA"
+grep -Fq '`resource/acquired`' "$ROOT/skills/cm-ai/references/N8-finish.md" &&
+  grep -Fq '`resource/released`' "$ROOT/skills/cm-ai/references/N8-finish.md" &&
+  grep -Fq '不得写 `run_done`' "$ROOT/skills/cm-ai/references/N8-finish.md" ||
+  fail "N8 does not block completion on unreleased temporary resources"
+grep -Fq 'RESOURCE_GUARDED_EVENTS = TERMINAL_EVENTS | {"task_done"}' \
+  "$ROOT/scripts/cm-log-event.py" &&
+  grep -Fq 'completion blocked by unclosed resources' \
+    "$ROOT/scripts/cm-log-event.py" ||
+  fail "log writer does not enforce resource closure on completion"
+grep -Fq '本 Skill 不重复写调用级边界' \
+  "$ROOT/skills/cm-qa-engineer/SKILL.md" &&
+  grep -Fq 'standalone `$cm-test` 不创建该文件' \
+  "$ROOT/skills/cm-qa-engineer/SKILL.md" ||
+  fail "QA log ownership or standalone cm-test status boundary is not explicit"
 grep -Fq "sensitive log field is forbidden" "$ROOT/scripts/cm-log-event.py" ||
   fail "global log writer does not reject sensitive field names"
 grep -Fq -- "--log-fixtures" "$ROOT/scripts/cm-check-runtime.sh" ||
