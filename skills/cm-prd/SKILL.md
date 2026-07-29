@@ -5,7 +5,9 @@ description: 将需求文档转换为 requirements、design、tasks 与可选 AI
 
 # cm-prd — 需求文档 → 开发规格生成
 
-执行前读取 `../../runtime/project-context.md` 与 `../../runtime/review.md`。Codex 入口为 `$cm-prd`；Claude Code 跨平台入口为 `/cm-prd`，macOS/Linux 另有历史别名 `/cm:prd`。
+执行前读取 `../../runtime/project-context.md`、`../../runtime/review.md` 与
+`../../runtime/logging.md`。Codex 入口为 `$cm-prd`；Claude Code 跨平台入口为
+`/cm-prd`，macOS/Linux 另有历史别名 `/cm:prd`。
 
 用户明确要求外部专家，或为本次规格任务开启 AUTO 时，读取
 `../../runtime/external-expert.md` 并执行 `../external-expert/SKILL.md` 的任务路由。
@@ -32,6 +34,9 @@ AUTO 可把复杂方案比较路由到 CONSULT、权威事实查证路由到 VER
 ├── 2.xxx/          ← 本次生成的 specs
 └── ...
 ```
+
+项目/specs 路径验证通过后按 `runtime/logging.md` 写 `run_start`。生成规格、重置
+审批位或终止时分别写 `spec_lifecycle` 与 `run_done`；详细需求和设计内容不进入主日志。
 
 ## 模式判断
 
@@ -402,5 +407,7 @@ AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注�
 **规格审批位落盘**：报告输出后，按 `runtime/test-contract.md` 计算已生成
 `test-cases.json` 的 SHA-256，并写入 `{SPECS_DIR}/.cm-specs-status` 单行 JSON：
 `{"status":"awaiting_review","at":"{时间}","features":["1.xxx",...],"testCases":[{"path":"1.xxx/test-cases.json","sha256":"..."}]}`
+随后写 `spec_lifecycle/generated`、`spec_lifecycle/awaiting_review` 和 `run_done`，仅记录
+feature/task/case 数量、状态与 specs 路径。
 
 **硬停车（不可违反）**：本命令的终点就是摘要卡与审查清单——**任何情况下不得在本会话顺势启动开发**，对话里的"继续"不构成开发授权。提示用户：**逐项审查通过后，运行 `$cm-ai` 开始开发**（N1 有入口闸：未审批的 specs 会先要求确认摘要卡）

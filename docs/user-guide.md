@@ -68,6 +68,8 @@ CM Workflow 经常同时使用两个目录：
 │   └── test-cases.json        ← 可选，保存测试意图
 ├── .cm-specs-status
 ├── .cm-status.json
+├── .cm-run.json               ← 当前/最近一次运行标识
+├── .cm-run.lock               ← 并发写入锁（自动维护）
 └── 运行日志.jsonl
 ```
 
@@ -137,9 +139,42 @@ $cm-ai ~/projects/my-app-specs 前端在~/code/web，后端在~/code/api
 
 - `tasks.md`：任务是否真正完成；
 - `.reviews/`：每轮独立审查和测试证据；
+- `.cm-run.json`：当前会话是否复用同一次运行；
 - `运行日志.jsonl`：过程是否可回放；
 - `METRICS.md`、`LESSONS.md`：本次度量和沉淀；
 - 代码仓库中的 diff、测试与提交。
+
+### 7. 跨项目统一查看日志
+
+CM 会在首次记录事件时自动创建本机用户级日志目录：
+
+```text
+~/.cm-workflow/logs/
+├── index.jsonl                  ← 每次运行的开始/完成索引
+└── runs/
+    └── YYYY-MM/
+        └── {run_id}.jsonl       ← 这一轮的完整标准化事件
+```
+
+它汇总 `cm-prd`、`cm-ai`、`cm-test`、`cm-fix`、`cm-refactor` 和
+`external-expert` 的运行开始、规格状态、测试执行、修复/重构、外部专家路由以及
+提交交付等事件。常用查看方式：
+
+```bash
+tail -n 20 ~/.cm-workflow/logs/index.jsonl
+find ~/.cm-workflow/logs/runs -name '*.jsonl' -type f
+```
+
+如果希望写到其他本机目录，可在运行 Codex 或 Claude Code 前设置：
+
+```bash
+export CM_WORKFLOW_LOG_HOME="$HOME/my-cm-logs"
+```
+
+这不是云端遥测。项目 specs 中的 `运行日志.jsonl` 仍是权威记录，全局日志只是便于
+汇总分析的私有镜像；它不会记录 Prompt、模型原始回答、外部会话链接、源码正文或凭证。
+全局镜像写入失败时，带 specs 的工作流会在项目日志记录 `degrade` 后继续；没有项目
+日志可兜底的独立运行则会明确失败。
 
 ## 六条常见任务路线
 
@@ -334,7 +369,8 @@ $cm-test {代码项目} --explore {页面或用户流程}
 $cm-ai ~/projects/my-app-specs ~/code/my-app
 ```
 
-工作流会从 `tasks.md`、`.cm-status.json`、`.reviews/` 和 `运行日志.jsonl` 重建上下文，并从未完成位置继续。
+工作流会从 `tasks.md`、`.cm-status.json`、`.cm-run.json`、`.reviews/` 和
+`运行日志.jsonl` 重建上下文，并从未完成位置继续。
 
 ## 常见卡点
 

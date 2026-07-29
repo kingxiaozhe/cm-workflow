@@ -21,6 +21,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - Claude 安装: `./install.sh`（含覆盖确认，装完跑 `/cm-check`）
 - Windows 安装: `powershell -ExecutionPolicy Bypass -File install.ps1`
 - 一致性自检: `./scripts/cm-check-runtime.sh`
+- 全局日志夹具: `./scripts/cm-check-runtime.sh --log-fixtures`
 - 公开包检查: `python3 scripts/validate-public-repo.py`
 - 安全扫描: `python3 scripts/scan-public-safety.py`
 - 查看版本: `cat VERSION`
@@ -38,7 +39,7 @@ skills/                # Codex 权威流程与工种能力
 ├── cm-product-manager/、cm-finance-expert/、cm-doc-syncer/
 └── codebase-context/、idea-to-prd/、external-expert/、darwin-skill/ # 独立工具，不进 N1–N8
 agents/                # 并行子 agent → ~/.claude/agents/ —— agent 管纪律
-runtime/               # 双运行时共享上下文、调度、审查、外部专家与 AI 测试合同
+runtime/               # 双运行时共享上下文、调度、审查、日志、外部专家与 AI 测试合同
 templates/             # rules 骨架 / hooks / statusline / dashboard / pixel
 docs/                  # 使用手册、安装架构、交付材料与示例 specs
 assets/                # README 与使用手册的本地视觉资产

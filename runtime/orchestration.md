@@ -5,8 +5,11 @@ This contract governs `cm-ai`, `cm-fix`, and `cm-refactor` when they execute wor
 ## Sources of truth
 
 - The active feature `tasks.md` is the authoritative business-task state.
-- Specs, `.cm-status.json`, `运行日志.jsonl`, `.reviews/`, `METRICS.md`, and `LESSONS.md` are authoritative audit artifacts.
+- Specs, `.cm-status.json`, `.cm-run.json`, `运行日志.jsonl`, `.reviews/`, `METRICS.md`, and `LESSONS.md` are authoritative audit artifacts.
 - Codex plans, subagent threads, and OMX state are disposable mirrors. Rebuild them from disk after a restart; never let them silently reverse a checked task.
+- `~/.cm-workflow/logs/` (or `CM_WORKFLOW_LOG_HOME`) is a private,
+  reconstructable cross-project mirror. It helps operators inspect many runs,
+  but it never overrides the specs-local artifacts.
 
 Only the main agent may update `tasks.md`, audit artifacts, shared status, or Git history. A worker edits only the files assigned to its task and returns a structured handoff.
 

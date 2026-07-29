@@ -1,6 +1,6 @@
 {
   "name": "cm-workflow",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "description": "Spec-driven product development workflow for Codex: external research, PRD, implementation, read-only feature testing, review, QA, fixes, refactors, and documentation.",
   "author": {
     "name": "cm-workflow maintainers",

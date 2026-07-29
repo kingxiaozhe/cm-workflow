@@ -5,7 +5,9 @@ description: 对可复现缺陷执行红灯测试、根因定位、最小修复�
 
 # cm-fix — 缺陷修复小闭环
 
-执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md` 与 `../../runtime/review.md`。Codex 入口为 `$cm-fix`；Claude Code 跨平台入口为 `/cm-fix`，macOS/Linux 另有历史别名 `/cm:fix`。
+执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md`、
+`../../runtime/review.md` 与 `../../runtime/logging.md`。Codex 入口为
+`$cm-fix`；Claude Code 跨平台入口为 `/cm-fix`，macOS/Linux 另有历史别名 `/cm:fix`。
 
 用户明确要求外部专家，或为本次修复开启 AUTO 时，仍必须先完成第 1 步本地复现，
 再按 `../../runtime/external-expert.md` 执行 `../external-expert/SKILL.md` 的任务
@@ -14,6 +16,9 @@ CONSULT/VERIFY。外部假设必须回到本地证伪；咨询记录不能代替
 审查。
 
 **用法**：`$cm-fix {specs路径} {代码项目路径} 缺陷描述（现象/报错/截图均可）`
+
+两个路径校验通过后立即调用统一写入器记录 `run_start`；暂停/续跑沿用同一
+`.cm-run.json`，本次缺陷闭环或观测闭环退出时写 `run_done`。不得直接拼 JSON。
 
 修 bug 专用的**轻量闭环**——不走 N1–N8 全链（那是 feature 流程），也不许脱离工作流裸改（裸改没防护网没审查，修一个坏三个）。
 
@@ -31,7 +36,7 @@ CONSULT/VERIFY。外部假设必须回到本地证伪；咨询记录不能代替
 - 复现不了 → 不猜着修，走**观测闭环**（偶现 bug 专用，两段式）：
   ① 在可疑路径加观测点（日志/埋点——观测点本身按最小改动+审查纪律入库，**观测点不是修复尝试**）
   ② 缺陷档案先落半份，状态记 `观测中`，写清"等什么证据（哪个日志出现什么内容）"
-  ③ 本次命令正常收口退出，不挂着等——运行日志记 `done`,detail 写「观测中:等{什么证据}」;状态文件 state 复位,不留悬挂的 running
+  ③ 本次命令正常收口退出，不挂着等——运行日志记 `run_done`,detail 写「观测中:等{什么证据}」;状态文件 state 复位,不留悬挂的 running
   ④ 证据到手后再次运行 `$cm-fix` 附上证据，**按 slug 定位 `fixes/` 下的半份档案**,从第 2 步定位续跑,档案续写、状态改 `修复中`,运行日志记 `resume`(detail 注证据摘要)
   ——**"我改了点东西你再试试"依然被禁止**
 
@@ -80,7 +85,7 @@ CONSULT/VERIFY。外部假设必须回到本地证伪；咨询记录不能代替
 - **METRICS.md 追加一行**：Feature 列写 `fix`，任务列写档案文件名，其余列同口径（轮次/拦截数/人工介入）
 - 根因具普遍性（如"平台 API 返回结构变了"）→ 追记 LESSONS.md（[已结构化]/[仅记忆] 分级同 N5）
 - git commit：`fix: {一句话} (档案: fixes/xxx.md)`，审查摘要进 commit message（同 N4）
-- 运行日志事件：`task_start`/`review`/`task_done`/`done` 照记，node 字段写 `FIX`
+- 运行日志事件：`task_start`/`review`/`task_done`/`run_done` 照记，node 字段写 `FIX`
 
 ## 微缺陷快速通道（四个硬门槛全中才准走）
 

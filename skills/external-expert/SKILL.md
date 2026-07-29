@@ -6,8 +6,8 @@ description: 将产品讨论、问题研究、学术研究、根因假设、测�
 # External Expert
 
 执行前完整读取 `../../runtime/project-context.md` 与
-`../../runtime/external-expert.md`。这是独立思考/研究工具，不是 CM 工种
-Agent，也不接管 `tasks.md`、N1–N8、测试、Git 或源码写入。
+`../../runtime/external-expert.md`、`../../runtime/logging.md`。这是独立思考/研究
+工具，不是 CM 工种 Agent，也不接管 `tasks.md`、N1–N8、测试、Git 或源码写入。
 
 ## 用户入口
 
@@ -57,6 +57,10 @@ CM 流程。AUTO 选中 `CONSULT` 或 `VERIFY` 时，浏览器操作前只说明
 混合任务允许本地 lane 与 CONSULT/VERIFY lane 同时存在，只把可分离的讨论、研究
 或批判部分交给外部专家。代码读取与修改、命令、
 构建、测试执行、页面 QA、Git、状态落盘、最终验收和 N4 审查始终由本地执行。
+
+按 `runtime/logging.md` 写 `external_expert/route`。显式调用或 AUTO 选中 LOCAL
+也记录路由结果，但不启动浏览器；普通未启用 AUTO 的本地任务不产生此事件。独立
+调用先写 `run_start` 并保存返回的 run id，嵌入 CM 流程时复用当前 specs run。
 
 ### 1. 判断用途
 
@@ -164,6 +168,9 @@ LOCAL PATH MANIFEST
 放弃(可能漏发) / 到外部页面检查”之间裁决。没有事务性队列或外部幂等/查询能力
 时，不声称 exactly-once。
 
+每次可观察状态变化写 `external_expert/dispatch`：仅记录 transport、selected
+mode、fallback、dispatch state 与证据相对路径，不记录 prompt、回答或对话 URL。
+
 ### 5. 验收与纠错
 
 `HANDOFF` 只验证准确 prompt 已提交并保存对话 URL；不等待、不读取、不总结回答，
@@ -194,6 +201,9 @@ LOCAL PATH MANIFEST
 研究类至少独立打开支撑关键结论的主要来源；无法核验的链接和结论明确写
 `needs-verification`。方案和根因类给出下一步最小本地验证。代码建议只能由本地
 执行者应用，再走正式测试和现有 N4 审查。
+
+裁决完成后写 `external_expert/complete`，记录 rounds 以及 accepted、rejected、
+needs-verification 数量。独立调用随后写 `run_done`；嵌入 CM 流程时不得关闭父 run。
 
 ### 7. 证据与输出
 

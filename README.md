@@ -43,7 +43,7 @@ Create More 从一条经过验证的工作流开始。安装完成后新开会�
 
 ### Codex
 
-需要 Git、Python 3 和当前版本的 Codex。源码目录不能放在
+需要 Git、Python 3.9+ 和当前版本的 Codex。源码目录不能放在
 `~/plugins/cm-workflow`，该路径由安装器管理。
 
 ```bash
@@ -184,11 +184,25 @@ Medium 或 Instant。只有用户明确要求“必须 Pro”时，Pro 不可用
 | `.external/` | 外部专家请求、原始回答与本地裁决；不属于 N4 审查凭证 |
 | `.cm-specs-status` | specs 人工审批状态 |
 | `.cm-status.json` | 当前执行节点快照 |
+| `.cm-run.json` | 当前或最近一次运行的 `run_id` 指针 |
+| `.cm-run.lock` | 同一 specs 的并发写入锁 |
 | `运行日志.jsonl` | 可回放的事件记录 |
 | `.reviews/` | 每轮任务审查与测试凭证 |
 | `METRICS.md` / `LESSONS.md` | 度量与持久经验 |
 
 新会话从这些文件重建任务上下文，不依赖上一段聊天是否还在。
+
+同时，CM 会把标准化事件镜像到用户级目录，方便跨会话、跨项目统一查看：
+
+```text
+~/.cm-workflow/logs/
+├── index.jsonl
+└── runs/YYYY-MM/{run_id}.jsonl
+```
+
+项目内的 `运行日志.jsonl` 始终是权威来源；全局目录只是本机私有、可重建的分析镜像，
+不是遥测服务，也不保存 Prompt、模型回答、凭证或源码正文。需要自定义位置时设置
+`CM_WORKFLOW_LOG_HOME`。
 
 ## Codex 与 Claude Code
 
@@ -234,6 +248,7 @@ templates/pixel/serve.sh {specs路径}
 
 ```bash
 ./scripts/cm-check-runtime.sh
+./scripts/cm-check-runtime.sh --log-fixtures
 python3 scripts/validate-public-repo.py
 python3 scripts/scan-public-safety.py
 python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .

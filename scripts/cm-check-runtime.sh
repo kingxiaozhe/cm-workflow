@@ -13,6 +13,18 @@ require_file() {
   [ -f "$ROOT/$1" ] || fail "missing $1"
 }
 
+find_python() {
+  local candidate
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 &&
+      "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 9))' >/dev/null 2>&1; then
+      command -v "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 route_external_expert_mode() {
   local pro="$1"
   local extra_high="$2"
@@ -165,8 +177,16 @@ case "${1:-}" in
     print_external_expert_routing_fixtures
     exit 0
     ;;
+  --log-fixtures)
+    if python_bin="$(find_python)"; then
+      "$python_bin" "$ROOT/scripts/test-cm-log-event.py"
+      exit $?
+    fi
+    echo "cm global log fixture: FAILED (Python 3 not found)" >&2
+    exit 1
+    ;;
   *)
-    echo "Usage: $0 [--routing-fixtures]" >&2
+    echo "Usage: $0 [--routing-fixtures|--log-fixtures]" >&2
     exit 2
     ;;
 esac
@@ -184,11 +204,21 @@ else
 fi
 require_file "runtime/project-context.md"
 require_file "runtime/external-expert.md"
+require_file "runtime/logging.md"
 require_file "runtime/orchestration.md"
 require_file "runtime/review.md"
 require_file "runtime/test-contract.md"
 require_file "scripts/cm-check-runtime.ps1"
+require_file "scripts/cm-log-event.py"
+require_file "scripts/test-cm-log-event.py"
 require_file "scripts/validate-test-cases.py"
+
+if python_bin="$(find_python)"; then
+  "$python_bin" "$ROOT/scripts/test-cm-log-event.py" ||
+    fail "cm global log fixture failed"
+else
+  fail "Python 3 is required for CM global logging"
+fi
 
 if [ "$MODE" = "plugin" ]; then
   require_file "docs/user-guide.md"
@@ -247,7 +277,7 @@ grep -q "never satisfies N4" "$ROOT/runtime/external-expert.md" ||
   fail "external-expert can be mistaken for independent review"
 grep -Fq "Version 1 external-expert evidence never satisfies" "$ROOT/runtime/review.md" ||
   fail "independent review contract does not exclude external-expert evidence"
-tr '\n' ' ' < "$ROOT/runtime/review.md" |
+tr -d '\r' < "$ROOT/runtime/review.md" | tr '\n' ' ' |
   grep -Fq "A conversation that contributed to the plan, diagnosis, tests, or patch is an authoring channel" ||
   fail "independent review contract does not preserve all external authoring categories"
 grep -Fq '{SPECS_DIR}/.external/' "$ROOT/runtime/external-expert.md" ||
@@ -295,6 +325,39 @@ grep -Fq -- "--routing-fixtures" "$ROOT/scripts/cm-check-runtime.sh" ||
   fail "external-expert routing fixtures have no reproducible entry"
 grep -q "不因.*自动外发本地文件" "$ROOT/skills/external-expert/SKILL.md" ||
   fail "external-expert can silently send local files"
+grep -Fq '${CM_WORKFLOW_LOG_HOME:-~/.cm-workflow/logs}' "$ROOT/runtime/logging.md" ||
+  fail "global logging contract has no stable default root"
+grep -Fq "specs log is the portable recovery and audit source of truth" "$ROOT/runtime/logging.md" ||
+  fail "global logging can displace the project source of truth"
+grep -Fq "global-mirror failure" "$ROOT/runtime/logging.md" ||
+  fail "global logging has no project-side degradation rule"
+grep -Fq "Never log:" "$ROOT/runtime/logging.md" ||
+  fail "global logging contract has no privacy boundary"
+grep -Fq "sensitive log field is forbidden" "$ROOT/scripts/cm-log-event.py" ||
+  fail "global log writer does not reject sensitive field names"
+grep -Fq -- "--log-fixtures" "$ROOT/scripts/cm-check-runtime.sh" ||
+  fail "global logging fixtures have no reproducible entry"
+
+for consumer in \
+  skills/cm-prd/SKILL.md \
+  skills/cm-ai/SKILL.md \
+  skills/cm-fix/SKILL.md \
+  skills/cm-refactor/SKILL.md \
+  skills/cm-test/SKILL.md \
+  skills/external-expert/SKILL.md; do
+  grep -q "runtime/logging.md" "$ROOT/$consumer" ||
+    fail "global logging contract is not wired into $consumer"
+done
+for consumer in \
+  skills/cm-prd/SKILL.md \
+  skills/cm-ai/references/N8-finish.md \
+  skills/cm-fix/SKILL.md \
+  skills/cm-refactor/SKILL.md \
+  skills/cm-test/SKILL.md \
+  skills/external-expert/SKILL.md; do
+  grep -q "run_done" "$ROOT/$consumer" ||
+    fail "terminal run_done is not wired into $consumer"
+done
 
 assert_external_expert_route "selected=Pro|external_used=true|outcome=send" true true true false
 assert_external_expert_route "selected=Extra High|external_used=true|outcome=send" false true true false

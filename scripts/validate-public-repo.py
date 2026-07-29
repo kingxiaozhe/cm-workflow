@@ -31,11 +31,14 @@ REQUIRED = (
     "CONTRIBUTING.md",
     "runtime/project-context.md",
     "runtime/external-expert.md",
+    "runtime/logging.md",
     "runtime/orchestration.md",
     "runtime/review.md",
     "runtime/test-contract.md",
     "scripts/cm-check-runtime.sh",
     "scripts/cm-check-runtime.ps1",
+    "scripts/cm-log-event.py",
+    "scripts/test-cm-log-event.py",
     "scripts/validate-test-cases.py",
 )
 

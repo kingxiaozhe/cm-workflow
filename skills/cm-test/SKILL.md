@@ -5,7 +5,8 @@ description: 从已实现代码生成 AI 测试用例草稿，或执行默认只
 
 # cm-test — 存量功能只读测试
 
-执行前读取 `../../runtime/project-context.md` 与 `../../runtime/test-contract.md`。
+执行前读取 `../../runtime/project-context.md`、`../../runtime/test-contract.md` 与
+`../../runtime/logging.md`。
 需要复用 QA 纪律时读取相邻的 `../cm-qa-engineer/SKILL.md`，并强制使用其
 `readonly` 模式。Codex 入口为 `$cm-test`；Claude Code 跨平台入口为
 `/cm-test`，macOS/Linux 另有历史别名 `/cm:test`。
@@ -91,6 +92,11 @@ $cm-test {代码项目路径} --explore {页面或用户流程}
    `test-cases.generated.json` 或 `test-generation-report.md`。
 7. 结束时重建同口径快照。除本轮报告目录外出现任何内容变化 → `BLOCKED` 并列出
    差异；不自动回滚用户文件。
+
+输入、报告目录和安全边界确认后按 `runtime/logging.md` 写 `run_start` 与
+`test_run/start`。生成或执行的每个终态都写 `test_run/complete` 和 `run_done`，只记录
+模式、用例/通过/失败/阻塞数量、结论与报告路径。无 specs 时保存首次写入器返回的
+`run_id` 并在后续事件显式传回；源码、命令全文、截图和浏览器日志不进入主日志。
 
 ## 2. 生成用例模式
 

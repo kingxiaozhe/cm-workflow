@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Git and Python 3.
+- Git and Python 3.9 or newer.
 - For Codex: a current Codex installation with the bundled plugin creator
   helpers available under `CODEX_HOME`.
 - For Claude Code on macOS/Linux: Bash 3.2 or newer.
@@ -49,6 +49,22 @@ test-case draft from an implemented feature, use
 `$cm-test {project} {feature} --generate-cases`; to verify it without modifying
 source, use `$cm-test`. The installed manual is available at
 `~/plugins/cm-workflow/docs/user-guide.md`.
+
+## Local cross-project logs
+
+The installers do not create or upload logs. On the first logged workflow
+event, the shared writer creates:
+
+```text
+~/.cm-workflow/logs/index.jsonl
+~/.cm-workflow/logs/runs/YYYY-MM/{run_id}.jsonl
+```
+
+Set `CM_WORKFLOW_LOG_HOME` before starting Codex or Claude Code to choose a
+different local root. On POSIX systems these global directories and files are
+restricted to the current user. They contain normalized operational metadata,
+not prompts, model responses, source text, external conversation URLs, or
+credentials. A specs-local `运行日志.jsonl` remains the authoritative record.
 
 ## Claude Code on macOS/Linux
 
