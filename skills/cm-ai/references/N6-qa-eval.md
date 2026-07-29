@@ -36,6 +36,10 @@ AI 动态决策是否触发 `cm-qa-engineer`，不按固定间隔。
 
 QA 通过 → 继续。发现问题 → 修复后重新 QA，最多 3 轮。
 
+实际触发 QA 时按 `../../../runtime/logging.md` 写 `test_run/start` 与
+`test_run/complete`，只记录模式、用例/通过/失败/阻塞数量、结论和报告路径；
+测试输出、截图和浏览器日志仍留在 `.reviews/`。
+
 feature 存在 `test-cases.json` 时按 `runtime/test-contract.md` 消费：正式项目命令
 仍照常执行；browser cases 由 `cm-qa-engineer` 逐条模拟并保存截图/日志；
 N4 中的 `INSUFFICIENT_EVIDENCE` 必须在本节点补运行时证据或保持 `BLOCKED`。

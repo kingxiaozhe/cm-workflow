@@ -11,6 +11,7 @@ flowchart LR
     Skills --> Context["runtime/project-context.md"]
     Skills --> Orchestration["runtime/orchestration.md"]
     Skills --> Review["runtime/review.md"]
+    Skills --> Logging["runtime/logging.md"]
     Skills --> External["runtime/external-expert.md"]
     Skills --> References["flow references: N1-N8 / PRD modes"]
     Skills --> Templates["templates/"]
@@ -18,6 +19,9 @@ flowchart LR
     Specs --> Target["target code repository"]
     External --> Provider["optional external browser / manual handoff"]
     Provider --> ExternalEvidence["specs .external/"]
+    Logging --> Writer["scripts/cm-log-event.py"]
+    Writer --> ProjectLog["specs 运行日志.jsonl + .cm-run.json/.lock"]
+    Writer --> GlobalLog["~/.cm-workflow/logs private mirror"]
     Check["scripts/cm-check-runtime.sh"] -. validates .-> Skills
     Check -. validates .-> Wrappers
 ```
@@ -25,8 +29,10 @@ flowchart LR
 ## Sources of truth
 
 - `tasks.md` is the authoritative business-task state.
-- `.cm-specs-status`, `.cm-status.json`, `运行日志.jsonl`, `.reviews/`,
+- `.cm-specs-status`, `.cm-status.json`, `.cm-run.json`, `运行日志.jsonl`, `.reviews/`,
   `METRICS.md`, and `LESSONS.md` are the durable audit and recovery artifacts.
+- The user-global `~/.cm-workflow/logs/` tree is a reconstructable local mirror,
+  not an authoritative state store or telemetry endpoint.
 - Codex plans, OMX state, subagent threads, and Claude task panels are
   reconstructable mirrors.
 - Per-feature `test-cases.json` is the optional AI-readable test intent.
@@ -68,6 +74,23 @@ Medium and Instant are excluded. `SKIPPED` sends nothing and returns control to
 the local workflow. An explicit strict-Pro request blocks when Pro is missing.
 Task routing is a separate earlier gate; AUTO never authorizes local-file
 transmission and mixed-task implementation remains local.
+
+## Logging model
+
+`runtime/logging.md` defines one event envelope for Codex and Claude Code.
+`scripts/cm-log-event.py` writes the specs-local `运行日志.jsonl` first, mirrors
+the same event into a per-run global JSONL file, and maintains an append-only
+`index.jsonl`. `.cm-run.json` lets a new session reuse an active `run_id`; a
+completed run causes the next invocation to rotate to a new id. Project and
+global standard-library file locks serialize concurrent writers, while a
+deterministic event id deduplicates an otherwise identical retry.
+
+The project log is authoritative. If the global mirror fails, a specs-backed
+workflow records a `degrade` event locally and continues. A global-only utility
+has no safe fallback and fails explicitly. Global directories and files use
+private owner-only permissions where the operating system supports POSIX modes.
+The envelope contains operational metadata only; prompts, responses, source
+content, external conversation links, and credentials stay out of it.
 
 ## Testing model
 

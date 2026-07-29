@@ -48,6 +48,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
       - name: Smoke-test PowerShell installer
         shell: pwsh
         run: |
@@ -59,8 +64,11 @@ jobs:
             "compat/claude-commands/cm-check.md",
             "compat/claude-commands/cm-test.md",
             "runtime/project-context.md",
+            "runtime/logging.md",
             "runtime/test-contract.md",
             "scripts/cm-check-runtime.sh",
+            "scripts/cm-log-event.py",
+            "scripts/test-cm-log-event.py",
             "scripts/validate-test-cases.py",
             "templates/cm-VERSION"
           )
@@ -74,4 +82,8 @@ jobs:
           $sourceVersion = (Get-Content VERSION -Raw).Trim()
           if ($installedVersion -ne $sourceVersion) {
             throw "Installed version $installedVersion != source version $sourceVersion"
+          }
+          & (Join-Path $env:CLAUDE_HOME "scripts\cm-check-runtime.ps1") --log-fixtures
+          if ($LASTEXITCODE -ne 0) {
+            throw "CM global log fixture failed (exit $LASTEXITCODE)"
           }

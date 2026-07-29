@@ -13,6 +13,9 @@
    - **空目录 + specs 无 `0.bootstrap` → 矛盾信号，必须暂停询问**：specs 是按存量项目生成的，但目录是空的——"需要先 clone 项目？（clone 完成后回复继续）还是这就是新项目？（specs 上下文有毒，需重跑 $cm-prd 走 0→1 分支）"两种回答都不得跳过：clone 场景等用户，重跑场景中止
    - **非空目录 + `0.bootstrap` 存在且其脚手架任务（T-001）未完成 → 矛盾信号，必须暂停询问**：规格期确认的是 0→1，但目录里已有项目（用户事后 clone 了？）——"继续 0→1 会在现有项目上覆盖生成脚手架。是改用现有项目？（需重跑 $cm-prd 按存量项目生成规格）还是目录内容可弃、继续 0→1？"不确认不得执行 T-001
 
+路径验证通过后立即按 `../../../runtime/logging.md` 写 `run_start`；断点恢复会复用
+`{SPECS_DIR}/.cm-run.json` 中仍为 running 的 run id，不另开重复运行记录。
+
 ## 规格审批入口闸（先于一切预检）
 
 读取 `{SPECS_DIR}/.cm-specs-status`：
@@ -21,9 +24,13 @@
 - `awaiting_review` 或文件缺失（旧版 specs）→ 把规格摘要卡打给用户（specs 里没有摘要卡就现场汇总：feature 数/任务数/交付形态/风险点），**等用户明确回复"开始"**；回复后把状态更新为 `approved` 并刷新 `at`，保留已有 `features`/`testCases` 字段；旧文件缺少 `testCases` 但 feature 已有测试合同时，现场计算并补入，再继续。**泛化授权语不构成审批**（"按最优解处理""继续""你看着办"这类话授权的是执行方式，不是规格内容）——收到时必须回问一次："规格摘要卡确认开始吗？"（实跑失守：diff-lens 把"按照你分析的最优解去处理"直接视为审批通过）
 - 启动参数含 `--yes` → 跳过此问直接更新为 approved，同样保留或补齐测试合同哈希（适合刚人审完立刻开跑的场景）
 
+只有实际把状态从非 approved 改为 approved 时才写
+`spec_lifecycle/approved`；已有 approved 状态不重复伪造审批事件。
+
 批准前后还要核对 `.cm-specs-status.testCases` 中记录的 SHA-256。任一
 `test-cases.json` 哈希与审批位不一致 → 测试目标在审批后发生变化，将状态恢复为
-`awaiting_review` 并要求用 `$cm-prd --change` 说明变更；旧 specs 没有
+`awaiting_review`，写 `spec_lifecycle/changed` 并要求用 `$cm-prd --change`
+说明变更；旧 specs 没有
 `testCases` 字段时保持兼容，只做 JSON 与引用校验。
 
 > 这是**入口授权门**（人把关方案端），不属于"暂停仅灾难级"约束的中途暂停，也不计入 METRICS 人工介入。实跑教训：没有这道闸，prd 生成完会被一句"继续"顺势带进开发，人审形同虚设。

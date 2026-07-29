@@ -5,7 +5,9 @@ description: 对不改变外部行为的代码结构调整执行分流、行为�
 
 # cm-refactor — 重构闭环（行为保持）
 
-执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md` 与 `../../runtime/review.md`。Codex 入口为 `$cm-refactor`；Claude Code 跨平台入口为 `/cm-refactor`，macOS/Linux 另有历史别名 `/cm:refactor`。
+执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md`、
+`../../runtime/review.md` 与 `../../runtime/logging.md`。Codex 入口为
+`$cm-refactor`；Claude Code 跨平台入口为 `/cm-refactor`，macOS/Linux 另有历史别名 `/cm:refactor`。
 
 用户明确要求外部专家，或为本次重构开启 AUTO 时，按
 `../../runtime/external-expert.md` 执行 `../external-expert/SKILL.md` 的任务路由。
@@ -13,6 +15,9 @@ description: 对不改变外部行为的代码结构调整执行分流、行为�
 外部结果只进入候选方案和风险清单，不得修改行为基线、代跑判官或满足独立审查。
 
 **用法**:`$cm-refactor {specs路径} {代码项目路径} 重构目标描述(哪块代码/为什么难维护)`
+
+两个路径校验通过后立即调用统一写入器记录 `run_start`；暂停/续跑沿用同一
+`.cm-run.json`，完成收口人门后写 `run_done`。不得直接拼 JSON。
 
 结构调整专用闭环。**前提:什么都没坏,行为一丝不变**——设计依据见 `docs/重构流程设计/`(cm 小闭环纪律 × Anthropic 迁移方法论,核心教义:修规则,不修产物)。
 
@@ -25,7 +30,7 @@ description: 对不改变外部行为的代码结构调整执行分流、行为�
 
 **$cm-ai 全局规则同等生效**：灾难级才暂停、多方案自主决策留痕、状态落盘（node 写 `REFACTOR`）、运行日志照记、审查按 `runtime/review.md` 执行。
 
-**续跑检测(先于 G0)**:`{SPECS_DIR}/refactors/` 下存在未收口 slug(档案无收口节 / 运行日志该 slug 无 `done` 事件)→ **按磁盘状态定位续跑站点**(RULEBOOK 版本、batch-log 完成集、队列缺口),G0 不重问、判官按 G0.5 重验后继续;无在制状态才走全新 G0。"队列=磁盘"的可恢复性必须有恢复入口才算数(对照系:cm:ai 有 tasks 断点、fix 有 slug 续跑,最长时的批量重构反而没有——本条补齐)。
+**续跑检测(先于 G0)**:`{SPECS_DIR}/refactors/` 下存在未收口 slug(档案无收口节 / 运行日志该 slug 无 `run_done` 事件)→ **按磁盘状态定位续跑站点**(RULEBOOK 版本、batch-log 完成集、队列缺口),G0 不重问、判官按 G0.5 重验后继续;无在制状态才走全新 G0。"队列=磁盘"的可恢复性必须有恢复入口才算数(对照系:cm:ai 有 tasks 断点、fix 有 slug 续跑,最长时的批量重构反而没有——本条补齐)。
 
 ## G0: 可行性(人门)
 
@@ -121,7 +126,7 @@ description: 对不改变外部行为的代码结构调整执行分流、行为�
 - `decision`:规则修订采纳(修了哪条/为什么)、轨道选择、判官修复
 - `task_start` / `task_done`:轻量道按次;批量道按**批次**记,detail 必带数字(完成 N/总数 M · 差分通过率 · 动机指标现值)——单文件粒度不灌主日志,进明细层 batch-log(见下节)
 - `error`:判官假阳性排查、批次重生成(记明"第几次重复触发规则修订")、行为差异回滚
-- `done`:收口(双计数写进 detail)
+- `run_done`:收口(双计数与 slug 写进 detail/data)
 
 ## 重构专属明细日志(事件层之下的第二层,轻量道不豁免只减薄)
 

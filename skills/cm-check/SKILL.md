@@ -5,7 +5,7 @@ description: 检查 CM Workflow 的 Codex 插件、核心 Skills、Claude 兼容
 
 # cm-check — 双运行时一致性自检
 
-执行前读取 `../../runtime/project-context.md`。Codex 入口为 `$cm-check`；Claude Code 跨平台入口为 `/cm-check`，macOS/Linux 另有历史别名 `/cm:check`。
+执行前读取 `../../runtime/project-context.md` 与 `../../runtime/logging.md`。Codex 入口为 `$cm-check`；Claude Code 跨平台入口为 `/cm-check`，macOS/Linux 另有历史别名 `/cm:check`。
 
 从当前 Skill 路径解析 `{CM_WORKFLOW_ROOT}`。macOS、Linux、WSL 或 Git Bash
 先运行：
@@ -30,9 +30,9 @@ Bash 执行同一份检查；未找到时必须报告安装 Git for Windows 或�
 
 1. **Codex 入口**：`.codex-plugin/plugin.json` 的 `skills` 指向 `./skills/`；`cm-idea/cm-init/cm-prd/cm-ai/cm-test/cm-fix/cm-refactor/cm-check` 八个核心 Skill 与独立 `external-expert` Skill 均有合法 frontmatter。
 2. **共享真相**：八个核心 Skill 引用 `runtime/` 合同；`external-expert` 引用共享外部专家合同；`compat/claude-commands/cm-*.md` 只是 macOS/Linux 旧入口薄包装，不再复制业务规则。
-3. **流程链路**：`cm-ai` 的 N1–N8 引用全部存在；`cm-prd` 的 greenfield/brownfield/change-mode 全部存在；`cm-idea` 引用 `idea-to-prd`；`cm-prd/cm-ai/cm-test/cm-qa-engineer` 共用 `runtime/test-contract.md`；`cm-test --generate-cases` 生成校验后的 inferred 草稿并硬停止。
+3. **流程链路**：`cm-ai` 的 N1–N8 引用全部存在；`cm-prd` 的 greenfield/brownfield/change-mode 全部存在；`cm-idea` 引用 `idea-to-prd`；`cm-prd/cm-ai/cm-test/cm-qa-engineer` 共用 `runtime/test-contract.md`；`cm-prd/cm-ai/cm-test/cm-fix/cm-refactor/external-expert` 共用 `runtime/logging.md` 与统一 writer；`cm-test --generate-cases` 生成校验后的 inferred 草稿并硬停止。
 4. **角色链路**：N3 引用的 `cm-*-engineer/manager/expert` Skill 存在；Claude `agents/` 中每个兼容角色能找到对应工种 Skill。Codex 不依赖这些 `.md` agent 文件。
-5. **状态与审查**：`.cm-specs-status`、`.cm-status.json`、`tasks.md`、可选 `test-cases.json`、`METRICS.md`、`LESSONS.md`、`运行日志.jsonl` 及 `.reviews/` 的生成方与消费方配对；N4 凭证头包含 reviewer/independent/task/round/at/scope；`cm-fix` 收口前机械检查修后审查凭证；`.external/` 不得冒充 N4/N5 凭证。
+5. **状态与审查**：`.cm-specs-status`、`.cm-status.json`、`.cm-run.json`、`tasks.md`、可选 `test-cases.json`、`METRICS.md`、`LESSONS.md`、`运行日志.jsonl` 及 `.reviews/` 的生成方与消费方配对；项目日志保持权威，全局日志只是私有可重建镜像；N4 凭证头包含 reviewer/independent/task/round/at/scope；`cm-fix` 收口前机械检查修后审查凭证；`.external/` 不得冒充 N4/N5 凭证。
 6. **模板路径**：所有 `{CM_WORKFLOW_ROOT}/templates/...` 引用都对应真实文件，重点核对 `templates/rules/`、`templates/ui-lens/`、`templates/hooks/`、`templates/refactor/`。
 7. **版本**：根 `VERSION` 与 plugin manifest 一致；README 不得宣称不存在的入口或安装路径。
 8. **私有调用清零**：Codex 核心 Skill 不得残留 `TaskCreate`、`TodoWrite`、`codex:review`、`~/.claude/commands`；兼容包装中出现 `/cm:*` 是合法的 macOS/Linux 旧入口。

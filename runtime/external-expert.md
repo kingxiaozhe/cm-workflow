@@ -228,6 +228,23 @@ If the external conversation contributed to the plan, diagnosis, tests, or
 patch, it is an authoring channel and **cannot satisfy N4 independent review**.
 Version 1 external-expert evidence never satisfies N4, regardless of purpose.
 
+## Run-log projection
+
+Follow `runtime/logging.md`. For an explicit invocation or invocation-scoped
+AUTO decision, project the lifecycle into `external_expert` events:
+
+- `route`: routing mode/source/reason and primary purpose;
+- `dispatch`: transport, selected visible mode, fallback flag, dispatch state,
+  and relative evidence path;
+- `complete`: response/correction rounds and accepted/rejected/
+  needs-verification counts.
+
+Do not copy the packet, response, conversation URL, source/file content, or
+included local paths into the run log. Standalone use owns a `run_start` and
+terminal `run_done`; use inside an active CM specs flow reuses that run and must not
+close it. AUTO-selected LOCAL is logged only when AUTO or External Expert was
+explicitly invoked.
+
 ## Evidence
 
 When a specs directory exists, write raw evidence below

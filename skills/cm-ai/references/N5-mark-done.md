@@ -40,6 +40,10 @@ git commit -m "T-{编号} {feature名}: {任务标题}
 - **任务产物已在既有提交中**（典型：T-001 的产物就是脚手架自带的 initial commit）→ 用 `git commit --allow-empty` 打一条核验提交，message 照常规格式并指认产物所在的 commit sha——审计链"每任务一提交"不留空洞
 - **项目上下文的版本控制字段 = `none`**（或 N1 兜底设定 NO_GIT）→ 跳过本步，METRICS 行备注 `no-git`，进度输出的 🔁 回读行中提交项写 `跳过(none)`
 
+提交成功并回读 SHA 后，按 `../../../runtime/logging.md` 写
+`delivery/commit`，只记录 task、branch、commit SHA 和证据路径；提交失败或跳过时
+不得伪造 delivery 事件。
+
 ## 度量落盘（METRICS.md）
 
 标记完成后，向 `{SPECS_DIR}/METRICS.md` 追加本任务一行（文件不存在则先创建表头）：

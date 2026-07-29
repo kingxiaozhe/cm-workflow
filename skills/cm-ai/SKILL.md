@@ -5,7 +5,9 @@ description: 执行已经人工审查的 CM specs，按 N1-N8 完成任务开发
 
 # cm-ai — 自动开发
 
-执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md` 与 `../../runtime/review.md`。Codex 入口为 `$cm-ai`；Claude Code 跨平台入口为 `/cm-ai`，macOS/Linux 另有历史别名 `/cm:ai`。
+执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md`、
+`../../runtime/review.md` 与 `../../runtime/logging.md`。Codex 入口为 `$cm-ai`；
+Claude Code 跨平台入口为 `/cm-ai`，macOS/Linux 另有历史别名 `/cm:ai`。
 
 用户明确要求外部专家，或为本次开发任务开启 AUTO 时，按
 `../../runtime/external-expert.md` 执行 `../external-expert/SKILL.md` 的任务路由。
@@ -77,11 +79,15 @@ START
 **状态落盘（供状态条/看板实时点亮节点）：** 每进入一个节点（N1–N8），覆盖写入 `{SPECS_DIR}/.cm-status.json` 单行 JSON：
 `{"node":"N4","feature":"1.xxx","task":"T-005","detail":"一句话当前动作","state":"running","at":"HH:MM:SS"}`
 ——**detail 必须写大白话**，标准是"路过的非工程师扫一眼能懂"：写"正在开发数据接口"不写"cm-backend-engineer 执行 T-004"；写"第2轮代码审查"不写"对抗式子agent复审"；写"确认一下：原型里有3个按钮点了没反应,要做吗?"不写"原型死区待确认"。节点号/任务号由状态条自动放在行尾角标，detail 里不要再写。
-——暂停等人时 `state` 改为 `paused_for_human`（detail 写等什么），全部完成时 N8 写 `done`。N1 时可将 specs 绝对路径同步到当前运行时的状态镜像（Claude 兼容运行时为 `~/.claude/cm-current-specs`，Codex/OMX 为对应 session 状态），但 `{SPECS_DIR}/.cm-status.json` 始终是跨运行时真相。每节点一次写入，不得跳过。
-**运行日志（事后复盘与工作流优化的原始证据）：** 与状态落盘同节奏，把关键事件**追加**（不覆盖）到 `{SPECS_DIR}/运行日志.jsonl`，一行一个 JSON。**`at` 一律 ISO 8601 带时区偏移**（`date +%Y-%m-%dT%H:%M:%S%z` 风格，如 `2026-07-17T10:05:25+08:00`）——实跑发现三个项目分别用了无时区/`Z`/`+08:00` 三种格式，跨项目看板排序失真：
-`{"at":"2026-07-15T14:22:10","node":"N3","feature":"1.xxx","task":"T-005","event":"task_start","detail":"一句话大白话"}`
-**必记事件（event 取值固定）**：`node_enter`（每次进节点）、`task_start` / `task_done`（done 的 detail 记一次通过与否）、`review`（轮次+拦截数+通道: `codex-subagent`/`codex-cli`/`self-degraded`）、`degrade`（降级及失败原文）、`pause` / `resume`（等什么、人答了什么）、`decision`（多方案自主决策: 选了什么/为什么/放弃了什么）、`error`（执行报错与重试）、`qa`（N6 结论）、`done`（N8 收尾）。
-写日志与写 .cm-status.json 同时机同成本，不得跳过；只追加不清理不截断。**反馈工作流问题时，把这份文件连同 METRICS.md 一起带回**——它是定位流程卡点、优化节点设计的第一手依据。
+——暂停等人时 `state` 改为 `paused_for_human`（detail 写等什么），全部完成时 N8 写 `run_done`。N1 时可将 specs 绝对路径同步到当前运行时的状态镜像（Claude 兼容运行时为 `~/.claude/cm-current-specs`，Codex/OMX 为对应 session 状态），但 `{SPECS_DIR}/.cm-status.json` 始终是跨运行时真相。每节点一次写入，不得跳过。
+**运行日志（事后复盘与工作流优化的原始证据）：** 按
+`runtime/logging.md` 调用统一写入器；它先追加 `{SPECS_DIR}/运行日志.jsonl`，再把
+同一 `event_id` 镜像到 `~/.cm-workflow/logs/`。`at` 一律 ISO 8601 带时区偏移，
+detail 用一句大白话；不直接拼 JSON，避免跨会话格式漂移。
+**必记事件（event 取值固定）**：`run_start`、`node_enter`、`task_start` /
+`task_done`、`review`、`degrade`、`pause` / `resume`、`decision`、`error`、`qa`、
+`test_run`、`external_expert`、`spec_lifecycle`、`delivery`、`run_done`。写日志与状态
+落盘同节奏，不得跳过；详细测试/审查/外部回答只写专项凭证，不灌主日志。
 
 **任务状态镜像：** `tasks.md` 是唯一权威任务源。运行时支持任务面板时，可将未完成任务镜像到 Codex/OMX 计划或 Claude 任务清单；N3/N5 同步状态。断点恢复必须由磁盘重建镜像：`[x]` 跳过或标为 completed，`[DROPPED]` 不镜像，不得重复创建条目。
 
