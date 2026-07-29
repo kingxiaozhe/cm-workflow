@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -35,12 +36,33 @@ ALLOW_PRIVATE_ENDPOINT_FILES = {
 
 def main() -> int:
     findings: list[str] = []
+    tracked_result = subprocess.run(
+        ["git", "ls-files", "-z", "--", ".omx"],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    tracked_omx = None
+    if tracked_result.returncode == 0:
+        tracked_omx = {
+            Path(item.decode("utf-8"))
+            for item in tracked_result.stdout.split(b"\0")
+            if item
+        }
+
     for path in sorted(ROOT.rglob("*")):
         if path == SELF or not path.is_file() or any(part in SKIP_DIRS for part in path.parts):
             continue
+        relative = path.relative_to(ROOT)
+        # OMX execution state is machine-local and normally ignored. Skip only
+        # untracked state; an accidentally tracked `.omx` file remains public
+        # package content and must still be scanned. If Git lookup fails, scan
+        # everything rather than creating a blind spot.
+        if ".omx" in relative.parts and tracked_omx is not None and relative not in tracked_omx:
+            continue
         if path.suffix.lower() in SKIP_SUFFIXES:
             continue
-        relative = path.relative_to(ROOT)
         try:
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:

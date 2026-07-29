@@ -30,10 +30,12 @@ REQUIRED = (
     "SECURITY.md",
     "CONTRIBUTING.md",
     "runtime/project-context.md",
+    "runtime/external-expert.md",
     "runtime/orchestration.md",
     "runtime/review.md",
     "runtime/test-contract.md",
     "scripts/cm-check-runtime.sh",
+    "scripts/cm-check-runtime.ps1",
     "scripts/validate-test-cases.py",
 )
 
@@ -82,6 +84,9 @@ def main() -> int:
             fail(f"{skill_path.relative_to(ROOT)} declares name={metadata.get('name')!r}", failures)
         if not metadata.get("description"):
             fail(f"{skill_path.relative_to(ROOT)} has no description", failures)
+
+    if not (ROOT / "skills" / "external-expert" / "SKILL.md").is_file():
+        fail("missing independent skill: external-expert", failures)
 
     for name in CORE_SKILLS:
         skill = ROOT / "skills" / name / "SKILL.md"

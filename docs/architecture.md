@@ -11,10 +11,13 @@ flowchart LR
     Skills --> Context["runtime/project-context.md"]
     Skills --> Orchestration["runtime/orchestration.md"]
     Skills --> Review["runtime/review.md"]
+    Skills --> External["runtime/external-expert.md"]
     Skills --> References["flow references: N1-N8 / PRD modes"]
     Skills --> Templates["templates/"]
     Skills --> Specs["requirements / design / tasks / optional test-cases"]
     Specs --> Target["target code repository"]
+    External --> Provider["optional external browser / manual handoff"]
+    Provider --> ExternalEvidence["specs .external/"]
     Check["scripts/cm-check-runtime.sh"] -. validates .-> Skills
     Check -. validates .-> Wrappers
 ```
@@ -45,6 +48,26 @@ Implementation cannot be marked complete without task-scoped review evidence.
 The preferred channel is a fresh Codex subagent or independent thread, followed
 by an isolated read-only Codex CLI review. `self-degraded` is allowed only when
 independent channels are unavailable and must be recorded in the evidence.
+
+## External reasoning model
+
+`external-expert` is an independent utility Skill for product deliberation,
+problem or academic research, diagnosis, test design, and critique. CM defaults
+to EXPLICIT activation. A user can opt only the current invocation into AUTO,
+which routes to LOCAL, CONSULT, or VERIFY; HANDOFF is explicit-only. A global
+router cannot silently enable CM AUTO. The local main agent chooses outbound
+context, applies accepted changes, and runs verification.
+
+Requests and raw responses live under `.external/`; they cannot satisfy N4.
+If an external conversation contributed to a plan, diagnosis, tests, or patch,
+it is an authoring channel and is ineligible to review the same work.
+
+Before browser dispatch, the runtime routes visible modes through
+`Pro → Extra High → High → SKIPPED`. Fallback inside this chain is automatic;
+Medium and Instant are excluded. `SKIPPED` sends nothing and returns control to
+the local workflow. An explicit strict-Pro request blocks when Pro is missing.
+Task routing is a separate earlier gate; AUTO never authorizes local-file
+transmission and mixed-task implementation remains local.
 
 ## Testing model
 

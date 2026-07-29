@@ -72,8 +72,14 @@ Windows PowerShell：
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-安装后新开 Claude Code 会话并运行 `/cm-check`。覆盖策略、无人值守参数和可选自动更新见
-[安装指南](docs/installation.md)。
+Windows 安装与 `/cm-check` 需要 Git for Windows（Git Bash），也可以在 WSL
+内使用 Bash 安装入口。安装后新开 Claude Code 会话并运行 `/cm-check`。覆盖策略、
+无人值守参数和可选自动更新见 [安装指南](docs/installation.md)。
+
+> 不确定下一步该用哪个命令？从 [CM Workflow 使用手册](docs/user-guide.md) 的命令选择器开始。
+> 安装器也会把这份手册随运行时一起分发：Codex 位于
+> `~/plugins/cm-workflow/docs/user-guide.md`，Claude Code 位于
+> `~/.claude/cm-workflow/docs/user-guide.md`（可由对应 HOME 变量覆盖）。
 
 ## 从需求到交付
 
@@ -106,6 +112,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 | `$cm-fix` | 对可复现缺陷执行红灯测试、根因定位、最小修复与回归 |
 | `$cm-refactor` | 在行为等价约束下调整代码结构 |
 | `$cm-check` | 检查入口、角色、引用、模板、版本与双运行时一致性 |
+| `$external-expert` | 把产品讨论、问题研究、学术研究、测试设计或对抗审查交给外部高能力模型，本地负责核验与落地 |
 
 一个典型会话：
 
@@ -114,6 +121,8 @@ $cm-init
 $cm-prd ~/projects/my-app-specs
 $cm-ai ~/projects/my-app-specs ~/code/my-app
 $cm-test ~/code/my-app --specs ~/projects/my-app-specs --feature 2.user-login --all
+$external-expert 比较这两个技术方案，并给出可验证的取舍依据
+$external-expert --auto 判断这个问题应留在本地、咨询专家还是做权威核验
 ```
 
 从已有代码生成 AI 可读的测试用例草稿：
@@ -123,6 +132,19 @@ $cm-test ~/code/my-app 用户登录 --generate-cases
 ```
 
 生成模式只写草稿与证据报告，结构校验后停止；确认用例意图后，再显式执行测试。
+
+外部专家是可选的思考与研究通道，不是代码执行器。CM 默认 `EXPLICIT`；只有明确
+调用外部专家、选择外部模式，或为本次任务使用 `--auto` / “模式：AUTO”才进入
+任务路由。AUTO 可选 `LOCAL / CONSULT / VERIFY`，永不自动 HANDOFF，且任务结束
+即失效。编码、测试执行、页面 QA、Git 和 N4 始终留在本地。
+
+发送本地文件内容前，会逐个展示普通文件解析后的规范绝对路径，并要求用户在当前
+调用中紧随清单重新确认；AUTO 不代表文件授权。目录、glob、未解析符号链接、所有
+归档、编码归档与归档衍生批量上下文都禁止外发。只有存在可写的持久证据位置时才会
+启动浏览器发送；否则输出完整任务包供手工投喂。外部建议不会自动修改代码、代替
+正式测试或满足 N4 独立审查。浏览器发送前按 `Pro → Extra High → High` 选择第一
+个可用模式，无需再次确认；三者都不可用就跳过外部专家并继续本地流程，绝不降到
+Medium 或 Instant。只有用户明确要求“必须 Pro”时，Pro 不可用才阻塞。
 
 ## 审查与测试证据
 
@@ -159,6 +181,7 @@ $cm-test ~/code/my-app 用户登录 --generate-cases
 | --- | --- |
 | `tasks.md` | 唯一权威任务状态 |
 | `test-cases.json` | AI 可读的测试意图，不保存执行结果 |
+| `.external/` | 外部专家请求、原始回答与本地裁决；不属于 N4 审查凭证 |
 | `.cm-specs-status` | specs 人工审批状态 |
 | `.cm-status.json` | 当前执行节点快照 |
 | `运行日志.jsonl` | 可回放的事件记录 |
@@ -174,11 +197,15 @@ Codex 是主运行时，Claude Code 是兼容运行时。两者直接使用同�
 
 | 环境 | 入口 | 安装与差异 |
 | --- | --- | --- |
-| Codex | `$cm-*` | `install-codex.sh`；OMX 自动探测且缺失不阻断 |
+| Codex | `$cm-*` | `install-codex.sh`；PyYAML 可选，OMX 自动探测且缺失不阻断 |
 | Claude Code macOS/Linux | `/cm-*`，兼容 `/cm:*` | `install.sh`；Bash 辅助工具原生可用 |
-| Claude Code Windows | `/cm-*` | `install.ps1`；Bash 辅助工具需要 WSL 或 Git Bash |
+| Claude Code Windows | `/cm-*` | `install.ps1`；安装后自检与 Bash 辅助工具需要 Git Bash，WSL 可直接运行 Bash 入口 |
 
 三种入口共用同一份流程实现。运行时不具备独立审查通道时，必须在证据中明确记录降级。
+
+`$external-expert` 是同一 `skills/` 中的独立工具：Codex Desktop 可在用户已登录且
+明确授权后使用内置浏览器；其他环境会生成可复制的 handoff packet。网页中可见的
+订阅或模式标签只按观察值记录，不被当成后台精确模型证明。
 
 ## 人工边界
 

@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1180" viewBox="0 0 720 1180" role="img" aria-labelledby="title desc">
+  <title id="title">CM Workflow 移动版命令选择器</title>
+  <desc id="desc">在手机上按需求开发、验证维护两类目标选择八个 CM Workflow 入口。</desc>
+  <rect width="720" height="1180" rx="28" fill="#F4F0E8"/>
+  <text x="40" y="72" fill="#151515" font-family="Georgia, 'Noto Serif SC', serif" font-size="40" font-weight="700">你现在要做什么？</text>
+  <text x="680" y="108" text-anchor="end" fill="#777168" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" letter-spacing="1.5">COMMAND PICKER / 01</text>
+
+  <rect x="40" y="140" width="640" height="446" rx="18" fill="#FFFFFF" stroke="#D3CCC1"/>
+  <rect x="40" y="140" width="10" height="446" rx="5" fill="#C44B32"/>
+  <text x="78" y="190" fill="#A3412D" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700" letter-spacing="2">CREATE / 需求与开发</text>
+
+  <circle cx="85" cy="252" r="8" fill="#C44B32"/>
+  <text x="116" y="260" fill="#151515" font-family="system-ui, -apple-system, 'Noto Sans SC', sans-serif" font-size="24">只有一个模糊点子</text>
+  <text x="640" y="260" text-anchor="end" fill="#A3412D" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="700">$cm-idea</text>
+  <line x1="78" y1="291" x2="642" y2="291" stroke="#E2DDD4"/>
+
+  <circle cx="85" cy="348" r="8" fill="#C44B32"/>
+  <text x="116" y="356" fill="#151515" font-family="system-ui, -apple-system, 'Noto Sans SC', sans-serif" font-size="24">第一次接管代码项目</text>
+  <text x="640" y="356" text-anchor="end" fill="#A3412D" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="700">$cm-init</text>
+  <line x1="78" y1="387" x2="642" y2="387" stroke="#E2DDD4"/>
+
+  <circle cx="85" cy="444" r="8" fill="#C44B32"/>
+  <text x="116" y="452" fill="#151515" font-family="system-ui, -apple-system, 'Noto Sans SC', sans-serif" font-size="24">已有需求或要做变更</text>
+  <text x="640" y="452" text-anchor="end" fill="#A3412D" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="700">$cm-prd</text>
+  <line x1="78" y1="483" x2="642" y2="483" stroke="#E2DDD4"/>
+
+  <circle cx="85" cy="540" r="8" fill="#C44B32"/>
+  <text x="116" y="548" fill="#151515" font-family="system-ui, -apple-system, 'Noto Sans SC', sans-serif" font-size="24">规格已经人工确认</text>
+  <text x="640" y="548" text-anchor="end" fill="#A3412D" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="700">$cm-ai</text>
+
+  <rect x="40" y="618" width="640" height="446" rx="18" fill="#151515"/>
+  <rect x="40" y="618" width="10" height="446" rx="5" fill="#2E6655"/>
+  <text x="78" y="668" fill="#A7C3B9" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700" letter-spacing="2">VERIFY / 维护与验证</text>
+
+  <circle cx="85" cy="730" r="8" fill="#6D9A89"/>
+  <text x="116" y="738" fill="#F4F0E8" font-family="system-ui, -apple-system, 'Noto Sans SC', sans-serif" font-size="24">验证已经实现的功能</text>
+  <text x="640" y="738" text-anchor="end" fill="#A7C3B9" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="700">$cm-test</text>
+  <line x1="78" y1="769" x2="642" y2="769" stroke="#3A3A3A"/>
+
+  <circle cx="85" cy="826" r="8" fill="#6D9A89"/>
+  <text x="116" y="834" fill="#F4F0E8" font-family="system-ui, -apple-system, 'Noto Sans SC', sans-serif" font-size="24">确认是可复现缺陷</text>
+  <text x="640" y="834" text-anchor="end" fill="#A7C3B9" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="700">$cm-fix</text>
+  <line x1="78" y1="865" x2="642" y2="865" stroke="#3A3A3A"/>
+
+  <circle cx="85" cy="922" r="8" fill="#6D9A89"/>
+  <text x="116" y="930" fill="#F4F0E8" font-family="system-ui, -apple-system, 'Noto Sans SC', sans-serif" font-size="24">只改结构，不改行为</text>
+  <text x="640" y="930" text-anchor="end" fill="#A7C3B9" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="700">$cm-refactor</text>
+  <line x1="78" y1="961" x2="642" y2="961" stroke="#3A3A3A"/>
+
+  <circle cx="85" cy="1018" r="8" fill="#6D9A89"/>
+  <text x="116" y="1026" fill="#F4F0E8" font-family="system-ui, -apple-system, 'Noto Sans SC', sans-serif" font-size="24">安装或工作流入口异常</text>
+  <text x="640" y="1026" text-anchor="end" fill="#A7C3B9" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="700">$cm-check</text>
+
+  <text x="360" y="1118" text-anchor="middle" fill="#5F5A52" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">TEST DOES NOT FIX · FIX DOES NOT DESIGN</text>
+  <text x="360" y="1146" text-anchor="middle" fill="#5F5A52" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">REFACTOR DOES NOT CHANGE BEHAVIOR</text>
+</svg>

@@ -10,6 +10,21 @@ This contract governs `cm-ai`, `cm-fix`, and `cm-refactor` when they execute wor
 
 Only the main agent may update `tasks.md`, audit artifacts, shared status, or Git history. A worker edits only the files assigned to its task and returns a structured handoff.
 
+## Optional external reasoning
+
+CM is `EXPLICIT` by default. When the user asks for an external expert, selects
+an external route, or explicitly enables AUTO for the current task, read
+`runtime/external-expert.md`. AUTO may choose LOCAL, CONSULT, or VERIFY;
+HANDOFF is explicit-only. The external channel may discuss, research, diagnose,
+design tests, or critique, but it never becomes a code worker and never receives
+workflow write authority. The main agent selects and approves outbound context,
+implements accepted suggestions locally, and runs the normal verification.
+
+Version 1 external-expert evidence is advisory and cannot satisfy N4. A global
+router cannot silently enable CM AUTO. AUTO is invocation-scoped and never
+authorizes local-file content; do not enable it merely because the task is
+complex or the external service is already logged in.
+
 ## OMX enhancement
 
 At workflow start, detect `omx` with `command -v omx`.

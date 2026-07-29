@@ -102,12 +102,31 @@ fi
 TAB="$(printf '\t')"
 build_pairs() {
   local part
-  for part in commands skills agents runtime scripts; do
+  for part in skills agents runtime scripts compat; do
     if [ -d "$REPO/$part" ]; then
       ( cd "$REPO/$part" && find . -type f ) \
         | sed "s|^\./\(.*\)$|$REPO/$part/\1$TAB$DEST/$part/\1|"
     fi
   done
+  # install.sh also generates the historic /cm:* aliases from the thin
+  # compatibility wrappers on filesystems that allow ':' in filenames.
+  local wrapper name verb
+  for wrapper in "$REPO"/compat/claude-commands/cm-*.md; do
+    [ -f "$wrapper" ] || continue
+    name="$(basename "$wrapper" .md)"
+    verb="${name#cm-}"
+    echo "$wrapper$TAB$DEST/commands/cm:${verb}.md"
+  done
+  # User-facing documentation lives in a single CM-owned namespace.
+  for part in docs assets; do
+    if [ -d "$REPO/$part" ]; then
+      ( cd "$REPO/$part" && find . -type f ) \
+        | sed "s|^\./\(.*\)$|$REPO/$part/\1$TAB$DEST/cm-workflow/$part/\1|"
+    fi
+  done
+  if [ -f "$REPO/README.md" ]; then
+    echo "$REPO/README.md$TAB$DEST/cm-workflow/README.md"
+  fi
   if [ -d "$REPO/templates/rules" ]; then
     ( cd "$REPO/templates/rules" && find . -type f ) \
       | sed "s|^\./\(.*\)$|$REPO/templates/rules/\1$TAB$DEST/templates/rules/\1|"
@@ -225,7 +244,7 @@ fi
 mv "$NEW_MANIFEST" "$MANIFEST"
 
 # 清掉清理后可能残留的空目录
-find "$DEST/skills" "$DEST/commands" "$DEST/agents" "$DEST/templates" -type d -empty -delete 2>/dev/null || true
+find "$DEST/skills" "$DEST/commands" "$DEST/agents" "$DEST/templates" "$DEST/cm-workflow" -type d -empty -delete 2>/dev/null || true
 
 installed="$(cat "$DEST/templates/cm-VERSION" 2>/dev/null || echo "$VERSION")"
 if [ "$REPAIR" = 1 ]; then

@@ -2,6 +2,13 @@
 
 Every implementation task requires an independent review before it can be marked complete. The reviewer must not inherit the author's reasoning narrative.
 
+External-expert consultations follow `runtime/external-expert.md`. Their
+requests, responses, and adjudication belong under `.external/`, not the
+task-review filename domain. Version 1 external-expert evidence never satisfies
+this independent-review contract. A conversation that contributed to the plan,
+diagnosis, tests, or patch is an authoring channel and cannot review the same
+work independently.
+
 ## Review package
 
 At task start, record the existing working-tree status and the task's intended file scope. After implementation, build a task-scoped package containing:

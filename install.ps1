@@ -65,6 +65,10 @@ foreach ($part in "skills", "agents", "runtime", "scripts", "compat") {
     Copy-TreeSafely (Join-Path $Src $part) (Join-Path $Dest $part) $part
 }
 
+Copy-TreeSafely (Join-Path $Src "docs") (Join-Path $Dest "cm-workflow\docs") "cm-workflow/docs"
+Copy-TreeSafely (Join-Path $Src "assets") (Join-Path $Dest "cm-workflow\assets") "cm-workflow/assets"
+Copy-FileSafely (Join-Path $Src "README.md") (Join-Path $Dest "cm-workflow\README.md") "cm-workflow/README.md"
+
 $tpl = Join-Path $Dest "templates"
 New-Item -ItemType Directory -Force -Path $tpl | Out-Null
 foreach ($pair in @(@("dashboard", "dashboard"), @("dashboard", "cm-dashboard"), @("pixel", "pixel"), @("pixel", "cm-pixel"))) {
@@ -78,12 +82,18 @@ Copy-TreeSafely (Join-Path $Src "templates\rules") (Join-Path $tpl "cm-rules") "
 Copy-FileSafely "$Src\templates\arch-reference.md" "$tpl\arch-reference.md" "templates/arch-reference.md"
 Copy-FileSafely "$Src\templates\statusline\cm-statusline.sh" "$tpl\cm-statusline.sh" "templates/cm-statusline.sh"
 Set-Content -Path "$tpl\cm-VERSION" -Value $Version
+& (Join-Path $Dest "scripts\cm-check-runtime.ps1")
+if ($LASTEXITCODE -ne 0) {
+    throw "CM Workflow 安装后自检失败（退出码 $LASTEXITCODE）"
+}
 
 Write-Host "`n完成（已安装版本: v$Version）。请在 Claude Code 中运行 /cm-check 校验。"
+Write-Host "使用手册: $(Join-Path $Dest 'cm-workflow\docs\user-guide.md')"
 Write-Host @"
 
 Windows 注意事项:
-  · 核心工作流(skills/agents/runtime)是纯 Markdown,Windows 原生可用,无额外依赖
+  · 核心工作流是 Markdown；/cm-check 通过 Git for Windows 的 Bash 执行共享自检
+  · 也可在 WSL 内直接运行 scripts/cm-check-runtime.sh
   · 状态条 / 终端像素版 / 看板与像素 serve.sh 是 bash+python3 脚本:
       - 推荐在 WSL 或 Git Bash 中使用(Claude Code 终端选 Git Bash 即可)
       - 浏览器像素版页面本身(cm-pixel.html)双击即可打开看 ?demo,只有实时跟踪需要 serve.sh
