@@ -12,11 +12,12 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 SCHEMA_VERSION = 1
 IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
+RESOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
 SENSITIVE_KEY = re.compile(
     r"(api[_-]?key|authorization|cookie|password|passwd|private[_-]?key|"
@@ -38,6 +39,8 @@ RESERVED_FIELDS = {
     "detail",
 }
 TERMINAL_EVENTS = {"done", "run_done"}
+RESOURCE_GUARDED_EVENTS = TERMINAL_EVENTS | {"task_done"}
+RESOURCE_PHASES = {"acquired", "released", "cleanup_failed"}
 LOCK_HANDLES = []
 
 
@@ -125,6 +128,30 @@ def parse_data(raw: str) -> Dict[str, Any]:
         )
     reject_sensitive_keys(value)
     return value
+
+
+def validate_resource_event(
+    event: str,
+    phase: Optional[str],
+    data: Dict[str, Any],
+) -> None:
+    if event != "resource":
+        return
+    if phase not in RESOURCE_PHASES:
+        raise UsageError(
+            "resource events require phase acquired, released, or cleanup_failed"
+        )
+    resource_id = data.get("resource_id")
+    if not isinstance(resource_id, str) or not RESOURCE_ID.fullmatch(resource_id):
+        raise UsageError("resource events require a valid resource_id")
+    resource_kind = data.get("resource_kind")
+    if (
+        not isinstance(resource_kind, str)
+        or not IDENTIFIER.fullmatch(resource_kind)
+    ):
+        raise UsageError("resource events require a valid resource_kind")
+    if phase == "acquired" and data.get("cleanup_required") is not True:
+        raise UsageError("resource acquisition requires cleanup_required: true")
 
 
 def resolve_directory(label: str, raw: Optional[str]) -> Optional[Path]:
@@ -267,6 +294,85 @@ def find_jsonl_event(
 
 def jsonl_has_event(path: Path, event_id: str) -> bool:
     return find_jsonl_event(path, event_id) is not None
+
+
+def load_resource_states(
+    path: Path,
+    run_id: str,
+) -> Dict[str, Tuple[str, str]]:
+    if not path.is_file():
+        return {}
+    states: Dict[str, Tuple[str, str]] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise UsageError("resource state log contains invalid JSON") from exc
+            if (
+                not isinstance(value, dict)
+                or value.get("run_id") != run_id
+                or value.get("event") != "resource"
+            ):
+                continue
+            resource_id = value.get("resource_id")
+            resource_kind = value.get("resource_kind")
+            phase = value.get("phase")
+            if (
+                not isinstance(resource_id, str)
+                or not RESOURCE_ID.fullmatch(resource_id)
+                or not isinstance(resource_kind, str)
+                or not IDENTIFIER.fullmatch(resource_kind)
+                or phase not in RESOURCE_PHASES
+            ):
+                raise UsageError("resource state log contains a malformed event")
+            if phase == "acquired" and value.get("cleanup_required") is not True:
+                raise UsageError("resource acquisition is missing cleanup_required")
+            apply_resource_transition(
+                states,
+                resource_id,
+                resource_kind,
+                str(phase),
+            )
+    return states
+
+
+def apply_resource_transition(
+    states: Dict[str, Tuple[str, str]],
+    resource_id: str,
+    resource_kind: str,
+    phase: str,
+) -> None:
+    previous = states.get(resource_id)
+    if previous is None:
+        if phase != "acquired":
+            raise UsageError("resource terminal phase has no acquisition")
+        states[resource_id] = (phase, resource_kind)
+        return
+
+    previous_phase, previous_kind = previous
+    if previous_kind != resource_kind:
+        raise UsageError("resource_kind does not match its acquisition")
+    if phase == "acquired":
+        if previous_phase != "acquired":
+            raise UsageError(
+                "released resource_id cannot be reused; acquire a new resource_id"
+            )
+        raise UsageError(
+            "active resource_id already has an acquisition; "
+            "acquire a new resource_id"
+        )
+    elif phase == "cleanup_failed" and previous_phase == "released":
+        raise UsageError("released resource cannot fail cleanup")
+    states[resource_id] = (phase, resource_kind)
+
+
+def unclosed_resources(states: Dict[str, Tuple[str, str]]) -> List[str]:
+    return sorted(
+        resource_id
+        for resource_id, (phase, _) in states.items()
+        if phase in {"acquired", "cleanup_failed"}
+    )
 
 
 def index_has_status(path: Path, run_id: str, status: str) -> bool:
@@ -418,6 +524,7 @@ def main() -> int:
         runtime = str(validate_identifier("--runtime", args.runtime))
         detail = validate_detail(args.detail)
         data = parse_data(args.data_json)
+        validate_resource_event(event_name, phase, data)
         at, parsed_at = parse_timestamp(args.at)
         project_root = resolve_directory("--project-root", args.project_root)
         specs_dir = resolve_directory("--specs-dir", args.specs_dir)
@@ -468,6 +575,20 @@ def main() -> int:
         return 2
 
     terminal = event_name in TERMINAL_EVENTS
+
+    global_log: Optional[Path] = None
+    if project_log is None:
+        try:
+            global_log = select_global_log(
+                global_home=global_home,
+                run_id=run_id,
+                parsed_at=parsed_at,
+                pointer=pointer,
+            )
+        except UsageError as exc:
+            print(f"cm-log-event: {exc}", file=sys.stderr)
+            return 2
+
     event: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
@@ -487,6 +608,57 @@ def main() -> int:
     event.update(data)
     event_id = deterministic_event_id(event)
     event["event_id"] = event_id
+    authoritative_log = project_log if project_log else global_log
+    assert authoritative_log is not None
+    existing_authoritative_event = None
+    if event_name == "resource" or event_name in RESOURCE_GUARDED_EVENTS:
+        existing_authoritative_event = find_jsonl_event(
+            authoritative_log,
+            event_id,
+        )
+
+    resource_states: Dict[str, Tuple[str, str]] = {}
+    if (
+        event_name == "resource"
+        and existing_authoritative_event is None
+    ) or (
+        event_name in RESOURCE_GUARDED_EVENTS
+        and existing_authoritative_event is None
+    ):
+        try:
+            resource_states = load_resource_states(authoritative_log, run_id)
+        except (OSError, UsageError) as exc:
+            print(
+                "cm-log-event: resource state cannot be verified: "
+                f"{type(exc).__name__}",
+                file=sys.stderr,
+            )
+            return 2
+
+    if (
+        event_name in RESOURCE_GUARDED_EVENTS
+        and existing_authoritative_event is None
+    ):
+        pending_resources = unclosed_resources(resource_states)
+        if pending_resources:
+            print(
+                "cm-log-event: completion blocked by unclosed resources: "
+                + ", ".join(pending_resources),
+                file=sys.stderr,
+            )
+            return 2
+
+    if event_name == "resource" and existing_authoritative_event is None:
+        try:
+            apply_resource_transition(
+                resource_states,
+                str(data["resource_id"]),
+                str(data["resource_kind"]),
+                str(phase),
+            )
+        except UsageError as exc:
+            print(f"cm-log-event: {exc}", file=sys.stderr)
+            return 2
 
     project_duplicate = False
     if project_log:
@@ -506,16 +678,17 @@ def main() -> int:
             )
             return 1
 
-    try:
-        global_log = select_global_log(
-            global_home=global_home,
-            run_id=run_id,
-            parsed_at=parsed_at,
-            pointer=pointer,
-        )
-    except UsageError as exc:
-        print(f"cm-log-event: {exc}", file=sys.stderr)
-        return 2
+    if global_log is None:
+        try:
+            global_log = select_global_log(
+                global_home=global_home,
+                run_id=run_id,
+                parsed_at=parsed_at,
+                pointer=pointer,
+            )
+        except UsageError as exc:
+            print(f"cm-log-event: {exc}", file=sys.stderr)
+            return 2
 
     global_written = False
     degraded = False

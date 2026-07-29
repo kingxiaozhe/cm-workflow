@@ -223,6 +223,10 @@ N4 独立审查。完整边界见 [External Expert 合同](runtime/external-expe
 不是遥测服务，也不保存 Prompt、模型回答、凭证或源码正文。可通过
 `CM_WORKFLOW_LOG_HOME` 修改位置。
 
+从 v0.10.4 开始，长时间桌面与浏览器测试会在真实阶段变化时记录进度检查点；临时
+Profile、进程、模型别名和 fixture 必须成对记录获取与释放，未清理资源会阻止流程
+写入完成状态。该机制不使用后台心跳或常驻日志服务。
+
 ## 一份核心，两种入口
 
 Codex Skills 和 `runtime/` 是权威实现。Claude Code 直接使用同一组 Skills；历史
