@@ -1,6 +1,6 @@
 ---
 name: cm-check
-description: 检查 CM Workflow 的 Codex 插件、核心 Skills、Claude 兼容包装、版本与模板引用；只报告，不自动修复。
+description: 用户说“检查工作流是否安装正确”“为什么找不到 cm 命令”时使用。检查 CM 的 Codex 插件、核心 Skills、Claude 兼容包装、版本与模板引用；不测试业务功能、不自动修复。
 ---
 
 # cm-check — 双运行时一致性自检

@@ -413,6 +413,15 @@ for name in cm-idea cm-init cm-prd cm-ai cm-test cm-fix cm-refactor cm-check; do
   fi
 done
 
+for reference in \
+  skills/cm-idea/references/idea-to-prd.md \
+  skills/cm-idea/references/example-prd.md \
+  skills/cm-idea/references/domains/trading.md; do
+  require_file "$reference"
+done
+grep -q "references/idea-to-prd.md" "$ROOT/skills/cm-idea/SKILL.md" ||
+  fail "cm-idea does not delegate to its internal interview reference"
+
 for consumer in \
   skills/cm-prd/SKILL.md \
   skills/cm-ai/references/N1-init.md \
