@@ -7,7 +7,7 @@
 - 本地修改(仅 2 处,均为移植性修补,SKILL.md 未改一字):
   1. scripts/screenshot.mjs: playwright-core 改为标准解析(原版写死作者机器绝对路径)
   2. scripts/screenshot.mjs: open 命令加 macOS 平台判断(原版非跨平台)
-- 定位: 独立工具 skill(同 idea-to-prd/codebase-context),不属于 N1-N8 流程;
+- 定位: 独立工具 skill（同 codebase-context），不属于 N1-N8 流程;
   用途:对本仓库 skills/(含 cm-* 角色技能)做 9 维评分与受控优化,人类守关三层不可跳过
 
 # 本仓库使用注意(v0.9.25-26 实跑沉淀,SKILL.md 原样未改,以下为运行时补丁规则)

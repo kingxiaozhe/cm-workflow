@@ -91,6 +91,18 @@ def main() -> int:
     if not (ROOT / "skills" / "external-expert" / "SKILL.md").is_file():
         fail("missing independent skill: external-expert", failures)
 
+    for reference in (
+        "skills/cm-idea/references/idea-to-prd.md",
+        "skills/cm-idea/references/example-prd.md",
+        "skills/cm-idea/references/domains/trading.md",
+    ):
+        if not (ROOT / reference).is_file():
+            fail(f"missing cm-idea reference: {reference}", failures)
+
+    cm_idea_text = (ROOT / "skills/cm-idea/SKILL.md").read_text(encoding="utf-8")
+    if "references/idea-to-prd.md" not in cm_idea_text:
+        fail("cm-idea does not delegate to its internal interview reference", failures)
+
     for name in CORE_SKILLS:
         skill = ROOT / "skills" / name / "SKILL.md"
         wrapper = ROOT / "compat" / "claude-commands" / f"{name}.md"

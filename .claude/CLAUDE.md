@@ -37,7 +37,7 @@ skills/                # Codex 权威流程与工种能力
 ├── cm-{idea,init,prd,ai,test,fix,refactor,check}/
 ├── cm-*-engineer/     # frontend/ui/miniprogram/backend/database/contract/qa/devops
 ├── cm-product-manager/、cm-finance-expert/、cm-doc-syncer/
-└── codebase-context/、idea-to-prd/、external-expert/、darwin-skill/ # 独立工具，不进 N1–N8
+└── codebase-context/、external-expert/、darwin-skill/ # 独立工具；点子访谈引擎位于 cm-idea/references/
 agents/                # 并行子 agent → ~/.claude/agents/ —— agent 管纪律
 runtime/               # 双运行时共享上下文、调度、审查、日志、外部专家与 AI 测试合同
 templates/             # rules 骨架 / hooks / statusline / dashboard / pixel
