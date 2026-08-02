@@ -25,6 +25,26 @@ MARKETPLACE_BACKUP="$PLUGIN_PARENT/.cm-workflow.marketplace.backup.$$"
 FAILED_DEST="$PLUGIN_PARENT/.cm-workflow.failed.$$"
 FAILED_MARKETPLACE="$PLUGIN_PARENT/.cm-workflow.marketplace.failed.$$"
 
+find_python() {
+  local candidate
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 &&
+      "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 9))' >/dev/null 2>&1; then
+      command -v "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+PYTHON_BIN=""
+if PYTHON_BIN="$(find_python)"; then
+  :
+else
+  echo "Python 3.9+ not found. Install Python or expose it as python3/python, then rerun." >&2
+  exit 1
+fi
+
 case "${1:-}" in
   "") ;;
   --yes) ASSUME_YES=1 ;;
@@ -74,16 +94,16 @@ done
 
 run_official_validation() {
   target=$1
-  if python3 -c 'import yaml' >/dev/null 2>&1; then
-    python3 "$VALIDATE_PLUGIN" "$target"
+  if "$PYTHON_BIN" -c 'import yaml' >/dev/null 2>&1; then
+    "$PYTHON_BIN" "$VALIDATE_PLUGIN" "$target"
   else
     echo "Warning: PyYAML is unavailable; skipping Codex's optional YAML validator." >&2
     echo "The dependency-free repository validator and codex plugin add remain required." >&2
   fi
 }
 
-python3 "$SRC_DIR/scripts/validate-public-repo.py"
-"$SRC_DIR/scripts/cm-check-runtime.sh"
+"$PYTHON_BIN" "$SRC_DIR/scripts/validate-public-repo.py"
+"$SRC_DIR/scripts/cm-check-runtime.sh" --project "$SRC_DIR"
 run_official_validation "$SRC_DIR"
 mkdir -p "$PLUGIN_PARENT" "$MARKETPLACE_ROOT"
 
@@ -109,7 +129,7 @@ if [ -f "$MARKETPLACE_PATH" ]; then
   MARKETPLACE_EXISTED=1
 fi
 MARKETPLACE_TOUCHED=1
-python3 "$CREATE_PLUGIN" cm-workflow \
+"$PYTHON_BIN" "$CREATE_PLUGIN" cm-workflow \
   --path "$SCAFFOLD_PARENT" \
   --with-skills \
   --with-marketplace \
@@ -129,10 +149,10 @@ for file in VERSION README.md AGENTS.md LICENSE THIRD_PARTY_NOTICES.md SECURITY.
 done
 
 chmod +x "$STAGE/install-codex.sh" "$STAGE/install.sh" "$STAGE/scripts/cm-check-runtime.sh"
-python3 "$UPDATE_CACHEBUSTER" "$STAGE"
-python3 "$STAGE/scripts/validate-public-repo.py"
+"$PYTHON_BIN" "$UPDATE_CACHEBUSTER" "$STAGE"
+"$PYTHON_BIN" "$STAGE/scripts/validate-public-repo.py"
 run_official_validation "$STAGE"
-"$STAGE/scripts/cm-check-runtime.sh"
+"$STAGE/scripts/cm-check-runtime.sh" --project "$STAGE"
 
 if [ -e "$PLUGIN_DEST" ]; then
   mv "$PLUGIN_DEST" "$BACKUP"
@@ -140,7 +160,7 @@ fi
 mv "$STAGE" "$PLUGIN_DEST"
 DEST_REPLACED=1
 
-marketplace_name="$(python3 "$READ_MARKETPLACE" --marketplace-path "$MARKETPLACE_PATH")"
+marketplace_name="$("$PYTHON_BIN" "$READ_MARKETPLACE" --marketplace-path "$MARKETPLACE_PATH")"
 codex plugin add "cm-workflow@$marketplace_name"
 INSTALL_COMPLETE=1
 

@@ -34,12 +34,21 @@ REQUIRED = (
     "runtime/logging.md",
     "runtime/orchestration.md",
     "runtime/review.md",
+    "runtime/task-gates.md",
+    "runtime/task-handoff.schema.json",
     "runtime/test-contract.md",
+    "runtime/workflow-config.md",
+    "runtime/workflow-routing.md",
     "scripts/cm-check-runtime.sh",
     "scripts/cm-check-runtime.ps1",
     "scripts/cm-log-event.py",
+    "scripts/cm-task-gate.py",
     "scripts/test-cm-log-event.py",
+    "scripts/test-task-gate.py",
+    "scripts/cm_workflow_config.py",
+    "scripts/test-workflow-config.py",
     "scripts/validate-test-cases.py",
+    "templates/cm-workflow.yml",
 )
 
 
@@ -79,6 +88,40 @@ def main() -> int:
         fail("plugin name must be cm-workflow", failures)
     if manifest.get("skills") != "./skills/":
         fail("plugin skills must point to ./skills/", failures)
+
+    handoff_schema = json.loads(
+        (ROOT / "runtime/task-handoff.schema.json").read_text(encoding="utf-8")
+    )
+    if handoff_schema.get("$schema") != "https://json-schema.org/draft/2020-12/schema":
+        fail("task handoff schema must declare JSON Schema draft 2020-12", failures)
+    if handoff_schema.get("additionalProperties") is not False:
+        fail("task handoff schema must reject unknown fields", failures)
+    expected_handoff_fields = {
+        "schema_version",
+        "task_id",
+        "attempt",
+        "status",
+        "changed_files",
+        "verification",
+        "evidence",
+        "blockers",
+        "scope_deviation",
+    }
+    if set(handoff_schema.get("required", [])) != expected_handoff_fields:
+        fail("task handoff schema required fields drifted", failures)
+    handoff_properties = handoff_schema.get("properties", {})
+    if set(handoff_properties) != expected_handoff_fields:
+        fail("task handoff schema properties drifted", failures)
+    if set(handoff_properties.get("status", {}).get("enum", [])) != {
+        "ready_for_review",
+        "blocked",
+    }:
+        fail("task handoff status enum drifted", failures)
+    verification_properties = (
+        handoff_properties.get("verification", {}).get("items", {}).get("properties", {})
+    )
+    if set(verification_properties) != {"command", "status", "evidence"}:
+        fail("task handoff verification fields drifted", failures)
 
     for skill_path in sorted((ROOT / "skills").glob("*/SKILL.md")):
         metadata = frontmatter(skill_path)

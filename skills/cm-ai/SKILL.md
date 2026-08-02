@@ -6,7 +6,8 @@ description: 用户明确说“规格已确认，开始实现”或要求按已�
 # cm-ai — 自动开发
 
 执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md`、
-`../../runtime/review.md` 与 `../../runtime/logging.md`。Codex 入口为 `$cm-ai`；
+`../../runtime/task-gates.md`、`../../runtime/review.md` 与
+`../../runtime/logging.md`。Codex 入口为 `$cm-ai`；
 Claude Code 跨平台入口为 `/cm-ai`，macOS/Linux 另有历史别名 `/cm:ai`。
 
 用户明确要求外部专家，或为本次开发任务开启 AUTO 时，按
@@ -90,6 +91,20 @@ detail 用一句大白话；不直接拼 JSON，避免跨会话格式漂移。
 `spec_lifecycle`、`delivery`、`run_done`。写日志与状态落盘同节奏，不得跳过；详细
 测试/审查/外部回答只写专项凭证，不灌主日志。长步骤和临时资源严格按
 `runtime/logging.md` 配对，禁止用后台心跳制造虚假活跃。
+
+**角色路由投影：** N1 用代码项目根读取有效配置；N3 每个实现任务解析 `coder`，N3
+任务检查解析 `tester`，N4 解析 `reviewer`，并在 N6 QA 解析 `tester`。使用：
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
+  --project {CODE_PROJECT} --role coder --runtime {codex|claude} --print-role
+```
+
+把返回的 `adapter`、`model`、`source`、`route_state` 注入当前角色提示和任务摘要，
+并按 `runtime/workflow-routing.md` 写 `decision`/`phase: route`。每次 N7 恢复或进入
+新角色边界都从磁盘重读；配置缺失使用默认路由。`declared-adapter` 只表示项目请求了
+当前运行时未观察到的适配器，必须写 `warning`/`degrade`，不能声称该模型已执行；它
+也不能绕过本地编码、测试、Git 或 N4 独立审查。
 
 **任务状态镜像：** `tasks.md` 是唯一权威任务源。运行时支持任务面板时，可将未完成任务镜像到 Codex/OMX 计划或 Claude 任务清单；N3/N5 同步状态。断点恢复必须由磁盘重建镜像：`[x]` 跳过或标为 completed，`[DROPPED]` 不镜像，不得重复创建条目。
 

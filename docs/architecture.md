@@ -11,6 +11,7 @@ flowchart LR
     Skills --> Context["runtime/project-context.md"]
     Skills --> Orchestration["runtime/orchestration.md"]
     Skills --> Review["runtime/review.md"]
+    Skills --> TaskGates["runtime/task-gates.md"]
     Skills --> Logging["runtime/logging.md"]
     Skills --> External["runtime/external-expert.md"]
     Skills --> References["flow references: N1-N8 / PRD modes"]
@@ -22,6 +23,11 @@ flowchart LR
     Logging --> Writer["scripts/cm-log-event.py"]
     Writer --> ProjectLog["specs 运行日志.jsonl + .cm-run.json/.lock"]
     Writer --> GlobalLog["~/.cm-workflow/logs private mirror"]
+    Config["optional .cm-workflow.yml/.json"] --> ConfigCheck["scripts/cm_workflow_config.py"]
+    ConfigCheck --> Routing["runtime/workflow-routing.md"]
+    Routing --> Skills
+    TaskGates --> GateCheck["scripts/cm-task-gate.py"]
+    GateCheck --> Reviews["specs .reviews handoff + verdict evidence"]
     Check["scripts/cm-check-runtime.sh"] -. validates .-> Skills
     Check -. validates .-> Wrappers
 ```
@@ -29,6 +35,12 @@ flowchart LR
 ## Sources of truth
 
 - `tasks.md` is the authoritative business-task state.
+- An optional project `.cm-workflow.yml`/`.yaml`/`.json` selects finite workflow
+  profiles, role adapters, model aliases, and test/delivery policies. It is
+  configuration, not permission or task state; missing configuration means the
+  built-in defaults remain active. The contract lives in
+  `runtime/workflow-config.md`; node projection and route-state semantics live in
+  `runtime/workflow-routing.md`.
 - `.cm-specs-status`, `.cm-status.json`, `.cm-run.json`, `运行日志.jsonl`, `.reviews/`,
   `METRICS.md`, and `LESSONS.md` are the durable audit and recovery artifacts.
 - The user-global `~/.cm-workflow/logs/` tree is a reconstructable local mirror,
@@ -37,6 +49,9 @@ flowchart LR
   reconstructable mirrors.
 - Per-feature `test-cases.json` is the optional AI-readable test intent.
   Execution results stay in `.reviews/`; no competing result database is added.
+- N3 implementation handoffs and N4 verdicts also stay in `.reviews/` as
+  content-bound evidence. `runtime/task-gates.md` validates their transition; they
+  never replace the checkbox state in `tasks.md`.
 
 ## Runtime compatibility
 
@@ -54,6 +69,11 @@ Implementation cannot be marked complete without task-scoped review evidence.
 The preferred channel is a fresh Codex subagent or independent thread, followed
 by an isolated read-only Codex CLI review. `self-degraded` is allowed only when
 independent channels are unavailable and must be recorded in the evidence.
+N3 must first produce a schema-valid `ready_for_review` handoff. N4 owns the
+`approved | changes_requested | blocked` verdict, and N5 runs the shared gate
+instead of treating any matching filename as approval. At most two attempts are
+allowed. Parallel writers also pass the same gate tool with distinct registered
+worktrees and branches; failure downgrades execution to serial.
 
 ## External reasoning model
 

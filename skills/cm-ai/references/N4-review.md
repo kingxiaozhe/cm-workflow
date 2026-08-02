@@ -1,6 +1,10 @@
 # N4: Review
 
-每个 task 完成后必须执行，按**单个 task 粒度**审查。完整通道与凭证格式见 `../../../runtime/review.md`。
+每个 task 完成后必须执行，按**单个 task 粒度**审查。完整通道与凭证格式见 `../../../runtime/review.md`，入口 handoff 与状态转换见 `../../../runtime/task-gates.md`。N3 的 `check-n4` 未通过时不得开始审查。
+
+进入审查前解析 `reviewer` 角色并记录 `decision`/`phase: route`；角色配置只能描述请求
+的审查适配器和模型别名，不能替代本节要求的独立上下文。若 `route_state` 是
+`declared-adapter`，如实记录未观察到适配器，仍不得把作者模型或外部专家当作独立审查。
 
 ## 1. 主执行者自审
 
@@ -12,7 +16,8 @@
 - 性能：N+1 查询、重复计算、资源泄漏
 - 测试质量：断言是否验证行为，是否存在怎么改都会通过的安慰剂测试
 
-发现问题立即修复。多方案按全局规则自主决策并留痕；只有灾难级风险才暂停。
+发现问题先形成自审 finding；不要在 N4 修改实现文件。有效问题按本节第 3 步返回
+N3 生成下一次 handoff，避免已校验的证据与实际代码失配。
 
 ## 2. 独立审查（强制）
 
@@ -39,9 +44,11 @@
 
 ## 3. 处置与轮次上限
 
-- 有效发现 → 修复后用同一级别的新鲜上下文复审
+- 无阻塞发现 → 本轮写 `verdict: approved`，交给 N5 机械校验
+- 有效发现且当前为第 1 轮 → 写 `verdict: changes_requested`，返回 N3 生成 attempt 2 handoff，再用同一级别的新鲜上下文复审
+- 第 2 轮仍有阻塞发现 → 写 `verdict: blocked`，停止并进入人工处置，不得创建 attempt 3
 - 误报 → 记录理由后忽略
-- 最多 2 轮；第 2 轮后仍分歧，将双方理由写入 LESSONS.md
+- 最多 2 轮；偏好分歧若不阻塞，必须明确写 `approved` 并将双方理由写入 LESSONS.md
 - 分歧涉及安全、资金或数据正确性 → 暂停等人裁决；只涉及风格/偏好 → 保留当前实现并记录放行
 
 ## 4. 审查凭证（强制）
@@ -57,14 +64,26 @@
 reviewer: codex-subagent | codex-cli | self-degraded
 independent: true | false
 task: T-xxx
+attempt: 1
 round: 1
+verdict: approved | changes_requested | blocked
+blocking_findings: 0
+handoff: {feature}-T-xxx-a1-handoff.json
+handoff_sha256: <check-n4 JSON 返回值>
 at: 2026-07-22T10:00:00+08:00
 scope:
   - path/to/reviewed-file
 ---
 ```
 
-`scope` 可以是文件列表或可重现 task-scoped diff 的命令。`self-degraded` 必须写 `independent: false` 并记录前两个通道为何不可用。**无凭证文件 = 审查未发生**，N5 不得标记完成。
+`attempt` 必须等于 `round`，`handoff` 必须指向本轮 N3 的执行证据，
+`handoff_sha256` 必须逐字使用 `check-n4` 的输出。`scope` 必须逐项覆盖 handoff
+里的全部 `changed_files`；正文必须写实际 findings 或明确的「零发现」。
+`approved` 必须写 `blocking_findings: 0`；其他 verdict 至少为 1。
+`self-degraded` 必须写 `independent: false`，并用非空 `degraded_reason` 记录前两个
+通道为何不可用。
+**无凭证文件或 verdict 不是 approved = 不得完成**，N5 必须执行 `mark-done`，
+不能只检查文件存在或先校验再手工勾选。
 
 ## 5. 度量
 

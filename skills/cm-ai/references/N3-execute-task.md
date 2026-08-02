@@ -9,6 +9,11 @@
    Feature {F}/{总F} | 任务 {N}/{总数}
 ```
 
+本节点解析 `coder` 角色的有效路由，并把 `adapter`、`model`、`source`、`route_state`
+写入任务摘要和 `decision`/`phase: route` 事件。`route_state: declared-adapter` 只表示
+请求了当前运行时未观察到的适配器；不得虚构该模型已运行，必要时写
+`warning`/`degrade`，仍由本地执行者保持代码修改和验收边界。
+
 ## Skill 匹配
 
 根据任务涉及的工种，查看可用的 `cm-*` skills：
@@ -26,6 +31,10 @@
 有匹配的 skill → 调用该 skill 执行。
 
 **串行 / 并行的执行方式**：串行任务由主执行者直接按 skill 执行；并行任务按 `runtime/orchestration.md` 为子代理注入对应工种 skill 的角色约束。两种产出都必须由主执行者回收验证，再进入 N4。
+
+并行只读任务无需 worktree；两个及以上任务并行写代码前，主执行者必须按
+`runtime/orchestration.md` 执行 `cm-task-gate.py check-parallel-write`。非零结果立即
+降级串行，不得让多个执行者共享 checkout、分支或 detached worktree。
 
 ## 开发
 
@@ -51,3 +60,28 @@
   立即把任务标为 BLOCKED，不得进入 N4。
 - 模型发生别名或路由时同时记录 `requested_model`、`effective_model`、`provider`、
   `purpose` 与 `model_equivalent`；不得用别名冒充实际模型。
+
+## 结构化交接门禁
+
+实现和任务内验证结束后，主执行者依据真实 diff、命令输出和子代理汇报，写入：
+
+`{SPECS_DIR}/.reviews/{feature}-{任务号}-a{attempt}-handoff.json`
+
+格式严格遵守 `../../../runtime/task-handoff.schema.json` 与
+`../../../runtime/task-gates.md`。子代理只能返回候选字段；由主执行者核对并落盘，
+不得让子代理写 `.reviews/`。`ready_for_review` 必须所有 verification 都是 `passed`，
+且 blockers/scope_deviation 为空；`changed_files` 使用正斜杠分隔的项目相对路径。
+否则写 `blocked` 并停止，不进入 N4。
+
+进入 N4 前必须真跑：
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n4 \
+  --handoff {HANDOFF_PATH} \
+  --reviews-dir {SPECS_DIR}/.reviews \
+  --feature {FEATURE_SLUG} \
+  --task {T-xxx}
+```
+
+attempt 2 只有在第 1 轮凭证为 `changes_requested` 时才会通过。不得创建 attempt 3。
+保留命令 JSON 返回的 `handoff_sha256`，N4 写 Review 凭证时必须原样使用。

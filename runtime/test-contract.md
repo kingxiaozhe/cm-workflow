@@ -3,6 +3,12 @@
 CM feature 可以在三件套旁增加一个可选的 `test-cases.json`。它描述“要验证什么”，
 不保存执行结果；结果继续写入 `.reviews/`、`运行日志.jsonl` 和 `METRICS.md`。
 
+测试执行前，`cm-ai` 和 `$cm-test` 按
+`runtime/workflow-routing.md` 解析 `tester`；浏览器用例额外解析 `browser_qa`。
+路由只记录适配器、模型别名和 `route_state`，不替代正式命令、静态裁判或浏览器
+证据。配置未提供或适配器未被当前运行时观察到时，继续按本合同在本地执行并如实
+记录默认/降级状态，不把声明的模型当作测试结果。
+
 ## 文件位置与兼容性
 
 - 路径：`{SPECS_DIR}/{N}.{feature}/test-cases.json`

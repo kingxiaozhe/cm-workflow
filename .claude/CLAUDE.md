@@ -39,8 +39,8 @@ skills/                # Codex 权威流程与工种能力
 ├── cm-product-manager/、cm-finance-expert/、cm-doc-syncer/
 └── codebase-context/、external-expert/、darwin-skill/ # 独立工具；点子访谈引擎位于 cm-idea/references/
 agents/                # 并行子 agent → ~/.claude/agents/ —— agent 管纪律
-runtime/               # 双运行时共享上下文、调度、审查、日志、外部专家与 AI 测试合同
-templates/             # rules 骨架 / hooks / statusline / dashboard / pixel
+runtime/               # 双运行时共享上下文、调度、角色路由、审查、日志、外部专家与 AI 测试合同
+templates/             # workflow config / rules 骨架 / hooks / statusline / dashboard / pixel
 docs/                  # 使用手册、安装架构、交付材料与示例 specs
 assets/                # README 与使用手册的本地视觉资产
 scripts/               # 双运行时机械检查、公开包校验与辅助脚本

@@ -36,6 +36,13 @@ AUTO，结束后失效。也接受 `模式：LOCAL / CONSULT / VERIFY / HANDOFF`
 新确认。目录、glob、未解析的符号链接不能作为清单项；中间出现无关用户回合或清单/
 内容选择发生变化后，原确认立即失效。
 
+若当前代码项目存在 `.cm-workflow.yml`/`.yaml`/`.json`，先解析
+`external_expert` 角色并记录 `adapter`、模型别名、`source`、`model_policy` 和
+`route_state`。`enabled: false` 时只写本地跳过/降级事件，不启动浏览器；配置不能把
+`AUTO` 变成持久授权。resolver 返回非零或配置错误时立即 `BLOCKED`，不得启动浏览器
+或继续本次外部调用。其余路由仍遵守 `runtime/external-expert.md` 的显式/AUTO、
+Pro → Extra High → High → SKIPPED 和本地执行边界。
+
 ## 执行
 
 ### 0. 任务分流
