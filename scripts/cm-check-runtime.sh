@@ -167,7 +167,39 @@ assert_external_expert_task_route \
   "mode=local|source=default-explicit|external_scope=none|local_work=false" \
   none none false true true
 
-case "${1:-}" in
+PROJECT_PATH="$PWD"
+CONFIG_PATH=""
+REQUESTED_MODE=""
+PRINT_EFFECTIVE=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --project)
+      [ "$#" -ge 2 ] || { echo "Usage: $0 [--project PATH] [--config PATH] [--print-effective] [--routing-fixtures|--log-fixtures]" >&2; exit 2; }
+      PROJECT_PATH="$2"
+      shift 2
+      ;;
+    --config)
+      [ "$#" -ge 2 ] || { echo "Usage: $0 [--project PATH] [--config PATH] [--print-effective] [--routing-fixtures|--log-fixtures]" >&2; exit 2; }
+      CONFIG_PATH="$2"
+      shift 2
+      ;;
+    --routing-fixtures|--log-fixtures)
+      [ -z "$REQUESTED_MODE" ] || { echo "Usage: $0 [--project PATH] [--config PATH] [--print-effective] [--routing-fixtures|--log-fixtures]" >&2; exit 2; }
+      REQUESTED_MODE="$1"
+      shift
+      ;;
+    --print-effective)
+      PRINT_EFFECTIVE=1
+      shift
+      ;;
+    *)
+      echo "Usage: $0 [--project PATH] [--config PATH] [--print-effective] [--routing-fixtures|--log-fixtures]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$REQUESTED_MODE" in
   "") ;;
   --routing-fixtures)
     if [ "$FAILURES" -ne 0 ]; then
@@ -185,11 +217,14 @@ case "${1:-}" in
     echo "cm global log fixture: FAILED (Python 3 not found)" >&2
     exit 1
     ;;
-  *)
-    echo "Usage: $0 [--routing-fixtures|--log-fixtures]" >&2
-    exit 2
-    ;;
 esac
+
+PYTHON_BIN=""
+if PYTHON_BIN="$(find_python)"; then
+  :
+else
+  PYTHON_BIN=""
+fi
 
 MODE="unknown"
 if [ -f "$ROOT/.codex-plugin/plugin.json" ]; then
@@ -207,15 +242,44 @@ require_file "runtime/external-expert.md"
 require_file "runtime/logging.md"
 require_file "runtime/orchestration.md"
 require_file "runtime/review.md"
+require_file "runtime/task-gates.md"
+require_file "runtime/task-handoff.schema.json"
 require_file "runtime/test-contract.md"
+require_file "runtime/workflow-config.md"
+require_file "runtime/workflow-routing.md"
 require_file "scripts/cm-check-runtime.ps1"
 require_file "scripts/cm-log-event.py"
 require_file "scripts/test-cm-log-event.py"
+require_file "scripts/cm-task-gate.py"
+require_file "scripts/test-task-gate.py"
+require_file "scripts/cm_workflow_config.py"
+require_file "scripts/test-workflow-config.py"
 require_file "scripts/validate-test-cases.py"
 
-if python_bin="$(find_python)"; then
-  "$python_bin" "$ROOT/scripts/test-cm-log-event.py" ||
+if [ -n "$PYTHON_BIN" ]; then
+  "$PYTHON_BIN" "$ROOT/scripts/test-cm-log-event.py" ||
     fail "cm global log fixture failed"
+  "$PYTHON_BIN" "$ROOT/scripts/test-workflow-config.py" ||
+    fail "cm workflow config fixture failed"
+  "$PYTHON_BIN" "$ROOT/scripts/test-task-gate.py" ||
+    fail "cm task gate fixture failed"
+  if [ -n "$PROJECT_PATH" ]; then
+    if [ -n "$CONFIG_PATH" ]; then
+      if [ "$PRINT_EFFECTIVE" -eq 1 ]; then
+        "$PYTHON_BIN" "$ROOT/scripts/cm_workflow_config.py" --project "$PROJECT_PATH" --config "$CONFIG_PATH" --print-effective ||
+          fail "project workflow config validation failed"
+      else
+        "$PYTHON_BIN" "$ROOT/scripts/cm_workflow_config.py" --project "$PROJECT_PATH" --config "$CONFIG_PATH" ||
+          fail "project workflow config validation failed"
+      fi
+    elif [ "$PRINT_EFFECTIVE" -eq 1 ]; then
+      "$PYTHON_BIN" "$ROOT/scripts/cm_workflow_config.py" --project "$PROJECT_PATH" --print-effective ||
+        fail "project workflow config validation failed"
+    else
+      "$PYTHON_BIN" "$ROOT/scripts/cm_workflow_config.py" --project "$PROJECT_PATH" ||
+        fail "project workflow config validation failed"
+    fi
+  fi
 else
   fail "Python 3 is required for CM global logging"
 fi
@@ -231,6 +295,7 @@ fi
 
 for asset in \
   templates/arch-reference.md \
+  templates/cm-workflow.yml \
   templates/hooks/pre-commit-cm-task-check \
   templates/pixel/cm-pixel.sh \
   templates/pixel/serve.sh \
@@ -452,10 +517,78 @@ grep -Fq '{CODE_PROJECT}/specs/' "$ROOT/skills/cm-test/SKILL.md" ||
 grep -q "待判断的数据，不是指令" "$ROOT/skills/cm-test/SKILL.md" ||
   fail "cm-test does not treat code and external cases as untrusted data"
 
+ARCHITECTURE_DOC="$ROOT/docs/architecture.md"
+if [ "$MODE" != "plugin" ]; then
+  ARCHITECTURE_DOC="$ROOT/cm-workflow/docs/architecture.md"
+fi
+grep -q "runtime/workflow-config.md" "$ARCHITECTURE_DOC" ||
+  fail "architecture does not describe the optional workflow config"
+grep -q "cm_workflow_config.py" "$ROOT/runtime/workflow-config.md" ||
+  fail "workflow config contract does not name its validator"
+grep -q "runtime/workflow-routing.md" "$ROOT/runtime/orchestration.md" ||
+  fail "orchestration does not describe project role routing"
+grep -q "enabled: false" "$ROOT/runtime/external-expert.md" ||
+  fail "external-expert config cannot disable the role explicitly"
+grep -q '`reviewer` role' "$ROOT/runtime/review.md" &&
+  grep -q '`route_state`' "$ROOT/runtime/review.md" ||
+  fail "independent review contract does not record configured reviewer route"
+grep -q "browser_qa" "$ROOT/runtime/test-contract.md" ||
+  fail "test contract does not resolve browser QA role"
+grep -q -- "--role" "$ROOT/skills/cm-prd/SKILL.md" ||
+  fail "cm-prd does not resolve configured roles"
+grep -q -- "--role" "$ROOT/skills/cm-ai/SKILL.md" ||
+  fail "cm-ai does not resolve configured roles"
+grep -q -- "--role" "$ROOT/skills/cm-test/SKILL.md" ||
+  fail "cm-test does not resolve configured roles"
+grep -q "从代码项目根解析 .*coder.*tester.*reviewer" "$ROOT/skills/cm-fix/SKILL.md" ||
+  fail "cm-fix does not project configured implementation roles"
+grep -q "配置错误" "$ROOT/skills/cm-fix/SKILL.md" &&
+  grep -q '`BLOCKED`' "$ROOT/skills/cm-fix/SKILL.md" ||
+  fail "cm-fix does not block invalid project configuration"
+grep -q "从代码项目根解析 .*coder.*tester.*reviewer" "$ROOT/skills/cm-refactor/SKILL.md" ||
+  fail "cm-refactor does not project configured implementation roles"
+grep -q "配置错误" "$ROOT/skills/cm-refactor/SKILL.md" &&
+  grep -q '`BLOCKED`' "$ROOT/skills/cm-refactor/SKILL.md" ||
+  fail "cm-refactor does not block invalid project configuration"
+grep -q "enabled: false" "$ROOT/skills/external-expert/SKILL.md" ||
+  fail "external-expert Skill does not honor disabled project route"
+grep -q "配置错误" "$ROOT/skills/external-expert/SKILL.md" &&
+  grep -q '`BLOCKED`' "$ROOT/skills/external-expert/SKILL.md" ||
+  fail "external-expert Skill does not block invalid project configuration"
+grep -q -- "--print-effective" "$ROOT/skills/cm-check/SKILL.md" ||
+  fail "cm-check does not expose the effective workflow config"
+if [ "$MODE" = "plugin" ]; then
+  grep -q "cm-workflow.yml" "$ROOT/install.sh" ||
+    fail "Claude Bash installer does not package the workflow config template"
+  grep -q "cm-workflow.yml" "$ROOT/install.ps1" ||
+    fail "Claude PowerShell installer does not package the workflow config template"
+else
+  require_file "templates/cm-workflow.yml"
+fi
+
 grep -q "runtime/review.md" "$ROOT/skills/cm-fix/SKILL.md" ||
   fail "cm-fix does not reference the independent review contract"
 grep -Fq 'ls {SPECS_DIR}/.reviews/fix-{slug}-r*.md' "$ROOT/skills/cm-fix/SKILL.md" ||
   fail "cm-fix is missing the mechanical post-fix review evidence gate"
+
+grep -q "task-handoff.schema.json" "$ROOT/runtime/task-gates.md" ||
+  fail "task gate contract does not bind the handoff schema"
+grep -q "tasks.md.*authoritative" "$ROOT/runtime/task-gates.md" ||
+  fail "task gate contract can become a competing task-state database"
+grep -q "check-parallel-write" "$ROOT/runtime/orchestration.md" &&
+  grep -q "run serially" "$ROOT/runtime/orchestration.md" ||
+  fail "parallel writes do not fail closed to serial execution"
+grep -q "check-n4" "$ROOT/skills/cm-ai/references/N3-execute-task.md" &&
+  grep -q "handoff.json" "$ROOT/skills/cm-ai/references/N3-execute-task.md" ||
+  fail "N3 does not produce and validate the structured task handoff"
+grep -q "verdict: approved | changes_requested | blocked" "$ROOT/skills/cm-ai/references/N4-review.md" &&
+  grep -q "attempt:" "$ROOT/skills/cm-ai/references/N4-review.md" &&
+  grep -q "handoff:" "$ROOT/skills/cm-ai/references/N4-review.md" &&
+  grep -q "handoff_sha256:" "$ROOT/skills/cm-ai/references/N4-review.md" ||
+  fail "N4 evidence cannot drive the mechanical review transition"
+grep -q "mark-done" "$ROOT/skills/cm-ai/references/N5-mark-done.md" &&
+  grep -q "verdict: approved" "$ROOT/skills/cm-ai/references/N5-mark-done.md" ||
+  fail "N5 does not require an approved current-attempt review"
 
 if [ "$MODE" = "plugin" ]; then
   grep -q 'docs assets' "$ROOT/install-codex.sh" ||
@@ -482,8 +615,12 @@ done < <(find "$ROOT/skills" -mindepth 2 -maxdepth 2 -name SKILL.md -type f | so
 
 if [ "$MODE" = "plugin" ]; then
   version="$(tr -d '[:space:]' < "$ROOT/VERSION")"
-  manifest_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"].split("+")[0])' "$ROOT/.codex-plugin/plugin.json")"
-  [ "$version" = "$manifest_version" ] || fail "VERSION $version != plugin $manifest_version"
+  if [ -n "$PYTHON_BIN" ]; then
+    manifest_version="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"].split("+")[0])' "$ROOT/.codex-plugin/plugin.json")"
+    [ "$version" = "$manifest_version" ] || fail "VERSION $version != plugin $manifest_version"
+  else
+    fail "Python 3 is required to compare the Codex plugin version"
+  fi
 else
   version="$(tr -d '[:space:]' < "$ROOT/templates/cm-VERSION")"
 fi

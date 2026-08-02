@@ -2,12 +2,23 @@
 
 Every implementation task requires an independent review before it can be marked complete. The reviewer must not inherit the author's reasoning narrative.
 
+N4 accepts only a `ready_for_review` implementation handoff validated through
+`runtime/task-gates.md`. The handoff is author evidence, never an approval. The
+review file owns the disposition that controls whether N3 retries or N5 may mark
+the task complete.
+
 External-expert consultations follow `runtime/external-expert.md`. Their
 requests, responses, and adjudication belong under `.external/`, not the
 task-review filename domain. Version 1 external-expert evidence never satisfies
 this independent-review contract. A conversation that contributed to the plan,
 diagnosis, tests, or patch is an authoring channel and cannot review the same
 work independently.
+
+When a project configures a `reviewer` role, resolve it through
+`runtime/workflow-routing.md` before selecting the review channel. Record the
+requested adapter/model alias and `route_state` as decision metadata only.
+`declared-adapter` is not proof that a second backend reviewed the diff; the
+fresh-context and independence rules below still apply.
 
 ## Review package
 
@@ -31,16 +42,23 @@ The workflow may pause after two consecutive degraded tasks so the user can rest
 
 ## Review scope
 
-Review correctness, edge cases, error handling, security, performance regressions, contract compliance, and the tests themselves. Reject placebo tests, implementation-detail assertions that miss behavior, and tests whose inputs share the same hidden premise as the implementation.
+Review correctness, edge cases, error handling, security, performance regressions, contract compliance, and the tests themselves. Reject placebo tests, implementation-detail assertions that miss behavior, and tests whose inputs share the same hidden premise as the implementation. The `scope` list must include every project-relative path in the handoff's `changed_files`; the review body must contain the actual findings or an explicit zero-findings conclusion.
 
 Only report findings with a plausible input/state and an incorrect outcome. Style-only preferences do not block completion unless they conceal a defect or violate an explicit project rule.
 
 ## Rounds and disposition
 
 - Maximum two review rounds per task.
-- Accepted findings are fixed and re-reviewed.
+- Round 1 `changes_requested` returns to N3 and produces attempt 2 plus a new
+  handoff. Round 2 cannot create attempt 3.
+- Accepted findings are fixed and re-reviewed against the new attempt handoff.
 - Rejected findings record a short evidence-based reason.
-- After round two, safety or data-correctness disputes require human resolution; preference disputes may proceed with the disagreement recorded in `LESSONS.md`.
+- `approved` permits N5; `changes_requested` permits only the next attempt;
+  `blocked` permits neither N3 auto-retry nor N5.
+- After round two, any remaining blocking finding becomes `blocked`. Safety or
+  data-correctness disputes require human resolution; preference disputes may
+  proceed only when the reviewer records `approved` and the disagreement is
+  preserved in `LESSONS.md`.
 
 ## Evidence file
 
@@ -52,12 +70,23 @@ at: <ISO-8601 with timezone>
 reviewer: codex-subagent | codex-cli | self-degraded
 independent: true | false
 task: <T-xxx>
+attempt: <1 or 2>
 round: <1 or 2>
+verdict: approved | changes_requested | blocked
+blocking_findings: <non-negative integer; approved requires 0>
+handoff: <feature>-<task>-a<attempt>-handoff.json
+handoff_sha256: <lowercase SHA-256 from check-n4 output>
 scope:
   - <reviewed file>
 ---
 ```
 
-`self-degraded` 必须写 `independent: false`；其他两个通道只有在新上下文中执行时才可写 `true`。
+`attempt` 必须等于 `round`。`approved` 必须写 `blocking_findings: 0`，其他
+verdict 至少为 1。`self-degraded` 必须写 `independent: false` 并增加非空的
+`degraded_reason`；其他两个通道只有在新上下文中执行时才可写 `true`。
+`handoff_sha256` 将结论绑定到本轮 handoff 内容；handoff 改动后必须重新审查。
 
-No matching evidence file means review did not happen. The completion node must mechanically check for the evidence before updating `tasks.md`.
+No matching evidence file means review did not happen. File existence alone is
+not approval: the completion node must run `cm-task-gate.py mark-done`, which
+revalidates the current attempt's `verdict: approved` while atomically updating
+the exact task checkbox.

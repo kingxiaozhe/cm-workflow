@@ -16,6 +16,10 @@
 路径验证通过后立即按 `../../../runtime/logging.md` 写 `run_start`；断点恢复会复用
 `{SPECS_DIR}/.cm-run.json` 中仍为 running 的 run id，不另开重复运行记录。
 
+随后从代码项目根读取 `{CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py` 的有效配置，
+至少解析本轮会用到的角色和 `route_state`。配置缺失使用内置默认值；配置错误阻断
+本次运行并报告字段路径。这里只记录请求路由，不把模型别名当成已观测的后端模型。
+
 ## 规格审批入口闸（先于一切预检）
 
 读取 `{SPECS_DIR}/.cm-specs-status`：

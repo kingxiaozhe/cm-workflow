@@ -96,6 +96,7 @@ done
 copy_tree "$SRC_DIR/templates/rules" "$DEST/templates/rules" "templates/rules"
 copy_tree "$SRC_DIR/templates/rules" "$DEST/templates/cm-rules" "templates/cm-rules"
 copy_file "$SRC_DIR/templates/arch-reference.md" "$DEST/templates/arch-reference.md" "templates/arch-reference.md"
+copy_file "$SRC_DIR/templates/cm-workflow.yml" "$DEST/templates/cm-workflow.yml" "templates/cm-workflow.yml"
 copy_tree "$SRC_DIR/templates/dashboard" "$DEST/templates/dashboard" "templates/dashboard"
 copy_tree "$SRC_DIR/templates/dashboard" "$DEST/templates/cm-dashboard" "templates/cm-dashboard"
 copy_tree "$SRC_DIR/templates/pixel" "$DEST/templates/pixel" "templates/pixel"
@@ -127,7 +128,7 @@ done
 
 mkdir -p "$DEST/templates"
 echo "$VERSION" > "$DEST/templates/cm-VERSION"
-"$DEST/scripts/cm-check-runtime.sh"
+"$DEST/scripts/cm-check-runtime.sh" --project "$SRC_DIR"
 
 echo
 echo "完成（已安装版本: v${VERSION}）。"

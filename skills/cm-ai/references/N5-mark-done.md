@@ -4,10 +4,23 @@
 
 ## 步骤
 
-0. **审查凭证卡点（先于标记，必须真跑命令不许目测）**：执行 `ls {SPECS_DIR}/.reviews/*-{任务号}-r*.md`——命令无输出=**没有凭证不许标记**，退回 N4 补审。凭证是审查真实发生的唯一物理证据，METRICS 自填数字不算（实跑失守：两个项目 8 个任务在无凭证状态下被标记,文字卡点没拦住,故本步升级为强制命令执行,输出进回读行）
-1. 用当前运行时的文件编辑能力打开 tasks.md，找到当前任务对应的行
-2. 将 `- [ ]` 改为 `- [x]`，**仅改 checkbox，不改其他内容**
-3. **立即验证**：改完后重新读取 tasks.md，确认该任务确实已标记为 `[x]`
+0. **审查结论与标记原子卡点（必须真跑命令不许目测或手改）**：执行下列命令并保留 JSON 输出：
+
+   ```bash
+   python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py mark-done \
+     --handoff {SPECS_DIR}/.reviews/{feature}-{任务号}-a{attempt}-handoff.json \
+     --reviews-dir {SPECS_DIR}/.reviews \
+     --feature {FEATURE_SLUG} \
+     --task {T-xxx} \
+     --tasks {SPECS_DIR}/tasks.md
+   ```
+
+   非零退出或当前 Review 不是 `verdict: approved` = **不许标记**；成功 JSON 必须是
+   当前 attempt 且 `outcome` 为 `marked_done` 或幂等恢复时的 `already_done`。
+   `changes_requested` 回 N3；第 2 轮 `blocked` 停止等人工。门禁在同一进程重新校验
+   证据并原子替换 `tasks.md`，只改精确匹配的任务 checkbox。不得先跑 `check-n5`
+   再手工勾选，也不得只执行 `ls`。
+1. **立即验证**：命令成功后重新读取 tasks.md，确认该任务确实已标记为 `[x]`
 
 ```diff
 - - [ ] T-007: 安装依赖 ~5min
@@ -76,7 +89,7 @@ git commit -m "T-{编号} {feature名}: {任务标题}
 ```text
 ✅ Feature {F}/{总F} | 任务 {N}/{总数} — {标题}
 🔍 主执行者自审: {结果} | 🤖 独立审查({channel}): {结果}
-🔁 回读: tasks.md T-{编号}[x]已确认 | commit {短sha}含T-{编号} | METRICS 行已写 | 凭证 {ls 实际输出的文件名}
+🔁 回读: tasks.md T-{编号}[x]已确认 | commit {短sha}含T-{编号} | METRICS 行已写 | 门禁 {mark-done JSON 输出中的 review}
 📊 Feature {done}/{total} | 总体 {done_f}/{total_f}
 ```
 

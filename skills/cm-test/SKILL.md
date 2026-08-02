@@ -27,6 +27,24 @@ $cm-test {代码项目路径} --cases {用例文件路径} --browser
 $cm-test {代码项目路径} --explore {页面或用户流程}
 ```
 
+## 项目角色路由
+
+开始测试前从代码项目根读取有效配置：logic/commands 使用 `tester`，browser 使用
+`browser_qa`。例如：
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
+  --project {CODE_PROJECT} --role tester --runtime {codex|claude} --print-role
+python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
+  --project {CODE_PROJECT} --role browser_qa --runtime {codex|claude} --print-role
+```
+
+把返回的 `adapter`、`model`、`source`、`route_state` 写入 `decision`/`phase: route`；
+它们是请求路由元数据，不是测试执行或后端模型已生效的证明。正式命令、逻辑核验和
+浏览器模拟仍按本 Skill 与 `runtime/test-contract.md` 在本地执行。resolver 返回非零
+或配置错误时立即 `BLOCKED`，不得创建报告、运行正式命令或启动浏览器；配置缺失才
+使用内置默认路由。
+
 参数：
 
 | 参数 | 行为 |

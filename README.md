@@ -205,11 +205,23 @@ N4 独立审查。完整边界见 [External Expert 合同](runtime/external-expe
 | `test-cases.json` | 可选的 AI 可读测试意图 |
 | `.cm-specs-status` | specs 人工审批状态 |
 | `.cm-status.json` / `.cm-run.json` | 当前节点与运行恢复指针 |
-| `.reviews/` | 每轮任务审查与测试凭证；头部标明是否独立 |
+| `.reviews/` | N3 结构化 handoff、每轮 N4 verdict 与测试凭证；只作证据，不替代 `tasks.md` |
 | `运行日志.jsonl` | 项目内权威事件记录 |
 | `METRICS.md` / `LESSONS.md` | 度量与可复用经验 |
 
 新会话从这些文件重建上下文，不要求上一段聊天仍然存在。
+
+代码项目还可以按需添加 `.cm-workflow.yml`（也支持 `.yaml` / `.json`），配置有限的
+Workflow Profile、角色适配器、模型别名和测试/交付策略。它不是权限文件，也不保存
+API Key、Token、Cookie 或 Prompt；没有配置时保持当前默认行为。模板见
+`{CM_WORKFLOW_ROOT}/templates/cm-workflow.yml`，校验方式见
+`runtime/workflow-config.md`。
+角色如何投影到 `cm-prd`、`cm-ai`、`cm-test` 及日志，见
+`runtime/workflow-routing.md`。
+
+任务完成采用机器门禁：N3 的 handoff 必须通过 Schema 校验，N4 必须给出当前轮的
+`approved` 结论，N5 才能勾选任务。并行只读不受影响；并行写入只有不同 Worktree
+和分支通过检查时才启用，否则保持串行。合同见 `runtime/task-gates.md`。
 
 从 v0.10.3 开始，标准化事件还会镜像到本机用户级目录，方便跨会话、跨项目查看：
 
@@ -244,6 +256,10 @@ Codex Skills 和 `runtime/` 是权威实现。Claude Code 直接使用同一组 
 - 串行把关：产品、金融、QA、DevOps、文档同步；
 - 独立工具：项目上下文、外部专家、Skill 优化；点子转 PRD 是 `cm-idea` 的内置引擎。
 
+项目配置可以把 `analyst`、`planner`、`coder`、`tester`、`reviewer`、`browser_qa` 和
+`external_expert` 映射到有限的适配器和模型别名；`external-browser` 只允许给
+`external_expert`，不会改变 N1–N8 的顺序，也不会把外部专家变成编码执行器。
+
 没有匹配角色时由当前 AI 直接执行；角色不会取代项目自身的 `AGENTS.md`、测试命令或
 人工审批。
 
@@ -257,7 +273,8 @@ Codex Skills 和 `runtime/` 是权威实现。Claude Code 直接使用同一组 
 - 破坏性 migration；
 - 超出已审批任务范围的修改。
 
-安装器覆盖既有文件前会列出冲突；可选 Claude 自动更新器只复制，不自动启用。
+安装器覆盖既有文件前会列出冲突；macOS/Linux 的可选 Claude 自动更新器只复制、不自动启用，
+Windows PowerShell 安装器不复制这个 Bash 更新器。
 
 ## 可选可视化
 

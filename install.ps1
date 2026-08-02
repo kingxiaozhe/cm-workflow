@@ -80,9 +80,10 @@ foreach ($part in "rules", "hooks", "refactor", "ui-lens") {
 Copy-TreeSafely (Join-Path $Src "templates\rules") (Join-Path $tpl "cm-rules") "templates/cm-rules"
 
 Copy-FileSafely "$Src\templates\arch-reference.md" "$tpl\arch-reference.md" "templates/arch-reference.md"
+Copy-FileSafely "$Src\templates\cm-workflow.yml" "$tpl\cm-workflow.yml" "templates/cm-workflow.yml"
 Copy-FileSafely "$Src\templates\statusline\cm-statusline.sh" "$tpl\cm-statusline.sh" "templates/cm-statusline.sh"
 Set-Content -Path "$tpl\cm-VERSION" -Value $Version
-& (Join-Path $Dest "scripts\cm-check-runtime.ps1")
+& (Join-Path $Dest "scripts\cm-check-runtime.ps1") --project $Src
 if ($LASTEXITCODE -ne 0) {
     throw "CM Workflow 安装后自检失败（退出码 $LASTEXITCODE）"
 }

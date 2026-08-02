@@ -49,6 +49,8 @@ test-case draft from an implemented feature, use
 `$cm-test {project} {feature} --generate-cases`; to verify it without modifying
 source, use `$cm-test`. The installed manual is available at
 `~/plugins/cm-workflow/docs/user-guide.md`.
+The optional project configuration template is installed at
+`~/plugins/cm-workflow/templates/cm-workflow.yml`.
 
 ## Local cross-project logs
 
@@ -84,6 +86,8 @@ new Claude Code session, then run `/cm-check`. The installer also keeps the
 historic `/cm:check` alias on macOS/Linux. The installed manual is available at
 `~/.claude/cm-workflow/docs/user-guide.md` unless `CLAUDE_HOME` overrides the
 destination.
+The optional project configuration template is installed at
+`$CLAUDE_HOME/templates/cm-workflow.yml` (or `~/.claude/templates/cm-workflow.yml`).
 
 ## Claude Code on Windows
 
@@ -104,12 +108,16 @@ mechanical check to Git Bash; set `CLAUDE_CODE_GIT_BASH_PATH` if Bash is not on
 `PATH`. Windows cannot store the historic colon filenames used by `/cm:*`, so
 those aliases are macOS/Linux only. Bash-based statusline and visualization
 helpers likewise require WSL or Git Bash.
+The optional project configuration template is installed at
+`$CLAUDE_HOME/templates/cm-workflow.yml` (or `%USERPROFILE%\.claude\templates\cm-workflow.yml`).
 
-## Optional Claude auto-update
+## Optional Claude auto-update (macOS/Linux)
 
-The installer copies the updater but does not activate it. To enable it, add the
-following commands to Claude Code's `hooks.SessionStart` configuration after
-reviewing the scripts:
+The Bash installer copies the updater but does not activate it. The PowerShell
+installer intentionally does not copy this Bash-based updater; Windows users who
+want it must run the Bash installer from WSL or Git Bash. To enable it on a
+supported Bash environment, add the following commands to Claude Code's
+`hooks.SessionStart` configuration after reviewing the scripts:
 
 ```json
 [

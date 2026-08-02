@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cm-workflow.local/schemas/task-handoff-v1.json",
+  "title": "CM task implementation handoff",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_id",
+    "attempt",
+    "status",
+    "changed_files",
+    "verification",
+    "evidence",
+    "blockers",
+    "scope_deviation"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "task_id": {
+      "type": "string",
+      "pattern": "^T-[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "attempt": { "type": "integer", "minimum": 1, "maximum": 2 },
+    "status": {
+      "type": "string",
+      "enum": ["ready_for_review", "blocked"]
+    },
+    "changed_files": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "verification": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "status", "evidence"],
+        "properties": {
+          "command": { "type": "string", "minLength": 1 },
+          "status": {
+            "type": "string",
+            "enum": ["passed", "failed", "blocked", "not_run"]
+          },
+          "evidence": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "blockers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "scope_deviation": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "ready_for_review" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "verification": {
+            "items": {
+              "properties": { "status": { "const": "passed" } }
+            }
+          },
+          "blockers": { "maxItems": 0 },
+          "scope_deviation": { "maxItems": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "blocked" } },
+        "required": ["status"]
+      },
+      "then": {
+        "anyOf": [
+          { "properties": { "blockers": { "minItems": 1 } } },
+          { "properties": { "scope_deviation": { "minItems": 1 } } }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+# CM Workflow 项目级配置模板。
+# 复制到代码项目根目录的 .cm-workflow.yml 后按需修改。
+# 这里只写角色、适配器、模型别名和策略；不要写 API Key、Token、Cookie 或密码。
+version: 1
+
+project:
+  type: auto                         # auto | java-backend | web-frontend | custom
+  workflow: cm-default               # cm-default | java-backend | web-frontend
+
+roles:
+  analyst:
+    adapter: current-ai              # current-ai | claude-api | openai-compatible | ...
+    model: default
+    source: local                     # local | subscription | api | none (browser is external_expert-only)
+  planner:
+    adapter: current-ai
+    model: default
+    source: local
+  coder:
+    adapter: current-ai
+    model: default
+    source: local
+  tester:
+    adapter: local
+    model: none
+    source: local
+  reviewer:
+    adapter: current-ai
+    model: default
+    source: local
+  browser_qa:
+    adapter: browser
+    model: none
+    source: local
+  external_expert:
+    adapter: external-browser
+    model: chatgpt-pro
+    source: browser
+    enabled: true
+    activation: explicit             # persistent config is explicit only; AUTO is invocation-scoped
+    model_policy: pro-extra-high-high-skip
+
+policies:
+  tests:
+    - logic
+    - commands
+    - browser
+  generate_cases: true
+  auto_fix: explicit                 # explicit | never | auto
+  delivery: draft-mr                 # diff | branch | draft-mr

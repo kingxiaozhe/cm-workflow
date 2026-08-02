@@ -35,6 +35,25 @@ AUTO 可把复杂方案比较路由到 CONSULT、权威事实查证路由到 VER
 └── ...
 ```
 
+## 项目角色路由
+
+路径验证通过后，使用 `{CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py` 读取有效配置，
+分别解析 `analyst`（需求分析）和 `planner`（方案/任务拆分）：
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
+  --project {CODE_PROJECT} --role analyst --runtime {codex|claude} --print-role
+python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
+  --project {CODE_PROJECT} --role planner --runtime {codex|claude} --print-role
+```
+
+把返回的 `adapter`、`model`、`source` 和 `route_state` 当作本轮的请求路由元数据，
+在对应分析/规划提示中注明；`model` 是别名，不能声称为已观测的后端模型。每次角色
+边界按 `runtime/workflow-routing.md` 写一条 `decision`/`phase: route` 事件。配置未提供
+时使用内置默认值；resolver 返回非零或配置错误时立即 `BLOCKED` 并报告字段路径，
+不得进入分析/规划或生成规格。配置的适配器当前运行时不可用时记录 `warning`/`degrade`，
+不得伪造调用成功或把外部专家变成编码执行器。
+
 项目/specs 路径验证通过后按 `runtime/logging.md` 写 `run_start`。生成规格、重置
 审批位或终止时分别写 `spec_lifecycle` 与 `run_done`；详细需求和设计内容不进入主日志。
 

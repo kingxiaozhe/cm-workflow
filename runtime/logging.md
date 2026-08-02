@@ -81,6 +81,7 @@ and may not replace envelope fields.
 | any QA invocation | `test_run` | `start`, `case_start`, `case_complete`, `case_blocked`, `complete`; case counts, result, report |
 | temporary resource | `resource` | `acquired`, `released`, `cleanup_failed`; unique non-secret `resource_id` per acquisition and stable `resource_kind` |
 | External Expert | `external_expert` | `route`, `dispatch`, `complete`; route/mode/state/evidence metadata |
+| role routing | `decision` | `phase: route`; role, adapter, requested_model, source, purpose, route_state |
 | Git delivery | `delivery` | `commit`, `push`, `pull_request`; identifiers only after success |
 
 Do not invent `push` or `pull_request` events before the remote side effect

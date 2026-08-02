@@ -37,6 +37,13 @@ invocation or task; that opt-in expires afterward and is not a persistent
 project, repository, or account preference. A separately installed global
 router does not override this repository-local authorization boundary.
 
+If the active code project has a `.cm-workflow.yml`/`.yaml`/`.json`, resolve the
+`external_expert` role before routing. `enabled: false` is a hard local skip:
+write a `decision`/`phase: route` plus a `degrade` outcome and do not open the
+browser. `activation` remains `explicit` in version 1; project configuration
+may select `model_policy` (`pro-extra-high-high-skip` or `strict-pro`) but may
+not persistently enable `AUTO`. Include only the safe route metadata in logs.
+
 AUTO authorizes task classification, not local-file transmission. Do not infer
 AUTO or external use from task complexity, repeated failure, a model
 recommendation, a stored conversation URL, or an already logged-in browser.

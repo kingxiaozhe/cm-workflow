@@ -37,6 +37,15 @@ jobs:
       - name: Check Bash syntax
         run: find . -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
 
+      - name: Run shell compatibility fixtures
+        run: bash scripts/test-shell-compat.sh
+
+      - name: Run workflow config fixtures
+        run: python3 scripts/test-workflow-config.py
+
+      - name: Run task handoff and review gate fixtures
+        run: python3 scripts/test-task-gate.py
+
       - name: Scan Git history with Gitleaks
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
@@ -65,11 +74,20 @@ jobs:
             "compat/claude-commands/cm-test.md",
             "runtime/project-context.md",
             "runtime/logging.md",
+            "runtime/task-gates.md",
+            "runtime/task-handoff.schema.json",
+            "runtime/workflow-config.md",
+            "runtime/workflow-routing.md",
             "runtime/test-contract.md",
             "scripts/cm-check-runtime.sh",
             "scripts/cm-log-event.py",
+            "scripts/cm-task-gate.py",
+            "scripts/cm_workflow_config.py",
             "scripts/test-cm-log-event.py",
+            "scripts/test-task-gate.py",
+            "scripts/test-workflow-config.py",
             "scripts/validate-test-cases.py",
+            "templates/cm-workflow.yml",
             "templates/cm-VERSION"
           )
           foreach ($relative in $required) {
@@ -86,4 +104,12 @@ jobs:
           & (Join-Path $env:CLAUDE_HOME "scripts\cm-check-runtime.ps1") --log-fixtures
           if ($LASTEXITCODE -ne 0) {
             throw "CM global log fixture failed (exit $LASTEXITCODE)"
+          }
+          & (Join-Path $env:CLAUDE_HOME "scripts\cm-check-runtime.ps1") --routing-fixtures
+          if ($LASTEXITCODE -ne 0) {
+            throw "CM routing fixture failed (exit $LASTEXITCODE)"
+          }
+          python (Join-Path $env:CLAUDE_HOME "scripts\test-task-gate.py")
+          if ($LASTEXITCODE -ne 0) {
+            throw "CM task gate fixture failed (exit $LASTEXITCODE)"
           }

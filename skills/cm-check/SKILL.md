@@ -11,14 +11,17 @@ description: 用户说“检查工作流是否安装正确”“为什么找不�
 先运行：
 
 ```bash
-{CM_WORKFLOW_ROOT}/scripts/cm-check-runtime.sh
+{CM_WORKFLOW_ROOT}/scripts/cm-check-runtime.sh --project "$PWD" --print-effective
 ```
 
 Windows PowerShell 先运行：
 
 ```powershell
-& "{CM_WORKFLOW_ROOT}\scripts\cm-check-runtime.ps1"
+& "{CM_WORKFLOW_ROOT}\scripts\cm-check-runtime.ps1" --project (Get-Location).Path --print-effective
 ```
+
+如果配置文件不在项目根目录，可额外传 `--config {CONFIG_PATH}`；不传时会读取项目根
+目录的 `.cm-workflow.yml` / `.yaml` / `.json`。
 
 PowerShell 入口会优先使用 `CLAUDE_CODE_GIT_BASH_PATH` 或 Git for Windows 的
 Bash 执行同一份检查；未找到时必须报告安装 Git for Windows 或改在 WSL

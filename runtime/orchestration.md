@@ -11,7 +11,27 @@ This contract governs `cm-ai`, `cm-fix`, and `cm-refactor` when they execute wor
   reconstructable cross-project mirror. It helps operators inspect many runs,
   but it never overrides the specs-local artifacts.
 
-Only the main agent may update `tasks.md`, audit artifacts, shared status, or Git history. A worker edits only the files assigned to its task and returns a structured handoff.
+## Project role routing
+
+An optional project `.cm-workflow.yml`/`.yaml`/`.json` is loaded through
+`scripts/cm_workflow_config.py`; the shared contract is
+`runtime/workflow-routing.md`. The effective role mapping is projected into
+`cm-prd`, `cm-ai`, and `cm-test` as requested route metadata and stage
+instructions:
+
+- `cm-prd`: `analyst` → analysis, `planner` → design and task split;
+- `cm-ai`: `coder` → implementation, `tester` → task checks, `reviewer` → N4;
+- `cm-test`: `tester` → logic/commands, `browser_qa` → browser simulation;
+- `external_expert`: reasoning-only and still governed by
+  `runtime/external-expert.md`.
+
+The route resolver records the requested adapter/model alias without claiming
+an unobserved backend model. An unavailable non-local adapter is
+`declared-adapter`, not a silent success. Missing configuration keeps the
+built-in current-runtime/local-tool defaults. Role routing never changes task
+authority, N1–N8 order, N4 independence, or Git permissions.
+
+Only the main agent may update `tasks.md`, audit artifacts, shared status, or Git history. A worker edits only the files assigned to its task and returns a structured handoff. The main agent materializes and validates that evidence under `runtime/task-gates.md`; the worker response itself never advances workflow state.
 
 ## Optional external reasoning
 
@@ -48,6 +68,20 @@ Serial is the default. `cm-ai` is explicitly allowed to delegate to Codex subage
 
 If any condition is uncertain, run serially. Never parallelize destructive migrations, production operations, fund/key operations, or tasks that share an interface still under design.
 
+Read-only parallel work does not require a worktree. Before two or more tasks
+write code concurrently, assign each task a registered worktree and unique
+branch, then run:
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-parallel-write \
+  --repo {CODE_PROJECT} \
+  --assignment T-001={WORKTREE_ONE} \
+  --assignment T-002={WORKTREE_TWO}
+```
+
+Any nonzero result means **run serially**. Do not improvise a shared checkout,
+detached worktree, or same-branch parallel write.
+
 ## Worker payload
 
 Every delegated task includes:
@@ -58,7 +92,8 @@ Every delegated task includes:
 - applicable role skill and discipline reference;
 - verification command(s);
 - prohibition on editing specs, status, metrics, reviews, or Git state;
-- fixed handoff format: changed files, verification, contract deviations, follow-ups, lessons.
+- fixed handoff format from `runtime/task-gates.md`: task/attempt, status, changed
+  files, verification, evidence, blockers, and scope deviations.
 
 ## Resume behavior
 

@@ -13,6 +13,10 @@ when its producers, consumers, compatibility wrappers, and checks agree.
 
 ```bash
 ./scripts/cm-check-runtime.sh
+./scripts/cm-check-runtime.sh --routing-fixtures
+bash scripts/test-shell-compat.sh
+python3 scripts/test-workflow-config.py
+python3 scripts/test-task-gate.py
 python3 scripts/validate-public-repo.py
 python3 scripts/scan-public-safety.py
 find . -type f -name '*.sh' -print0 | xargs -0 -n1 /bin/bash -n

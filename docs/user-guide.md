@@ -88,12 +88,32 @@ CM Workflow 经常同时使用两个目录：
 ├── .cm-status.json
 ├── .cm-run.json               ← 当前/最近一次运行标识
 ├── .cm-run.lock               ← 并发写入锁（自动维护）
+├── .reviews/                  ← task handoff、独立 Review 与测试证据
 └── 运行日志.jsonl
 ```
 
 - **代码项目**回答“要修改什么”。
 - **specs 项目**回答“为什么改、准备怎么改、做到哪一步、证据在哪里”。
 - 两者可以在不同路径，也可以由你按项目习惯组织；命令里把路径说清楚即可。
+
+### 可选的项目角色与模型配置
+
+如果不同项目需要不同角色或模型，可以把
+`{CM_WORKFLOW_ROOT}/templates/cm-workflow.yml` 复制到代码项目根目录，命名为
+`.cm-workflow.yml` 后修改。它只配置角色、适配器、模型别名和测试策略，不保存任何
+凭据；配置缺失时仍使用当前默认流程。检查有效配置：
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py --project {代码项目路径}
+python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py --project {代码项目路径} --print-effective
+```
+
+常见的请求分工是：编码角色选择 Codex CLI/订阅，需求和方案角色选择 Claude/Fable 等
+兼容 API，测试和浏览器 QA 使用本地工具，外部专家继续通过显式浏览器调用和既有降级
+链运行。`route_state: declared-adapter` 只代表项目请求了该适配器，当前运行时没有
+观察到它实际执行；不要把配置别名当成后端模型或测试结果。
+角色到节点的映射、`route_state` 和日志字段见
+`{CM_WORKFLOW_ROOT}/runtime/workflow-routing.md`。
 
 ## 第一次完整开发
 
@@ -138,6 +158,14 @@ $cm-prd ~/projects/my-app-specs
 `$cm-ai` 遇到 `.cm-specs-status` 为 `awaiting_review` 时会暂停。你必须明确回复“开始”；普通的“继续”不算审批。
 
 ### 5. 执行实现
+
+每个任务实现后，CM 会先生成结构化 handoff，记录本轮修改文件、真实验证、证据、
+阻塞和范围偏差；它只是执行证据，不会自行勾选 `tasks.md`。随后独立 Review 写入
+`approved / changes_requested / blocked`。只有当前轮为 `approved` 时，N5 才能标记
+完成；第 1 轮要求修改会回到实现，第 2 轮仍阻塞则停止等待人工处理。
+
+默认仍是串行。只读探索可以并行；两个任务要同时修改代码时，必须位于同一仓库的
+不同 Git Worktree 和不同分支，否则工作流自动降级串行。
 
 ```text
 $cm-ai ~/projects/my-app-specs ~/code/my-app
