@@ -250,6 +250,8 @@ require_file "runtime/workflow-routing.md"
 require_file "scripts/cm-check-runtime.ps1"
 require_file "scripts/cm-log-event.py"
 require_file "scripts/test-cm-log-event.py"
+require_file "scripts/cm-prd-timing.py"
+require_file "scripts/test-cm-prd-timing.py"
 require_file "scripts/cm-task-gate.py"
 require_file "scripts/test-task-gate.py"
 require_file "scripts/cm_workflow_config.py"
@@ -259,6 +261,8 @@ require_file "scripts/validate-test-cases.py"
 if [ -n "$PYTHON_BIN" ]; then
   "$PYTHON_BIN" "$ROOT/scripts/test-cm-log-event.py" ||
     fail "cm global log fixture failed"
+  "$PYTHON_BIN" "$ROOT/scripts/test-cm-prd-timing.py" ||
+    fail "cm-prd timing fixture failed"
   "$PYTHON_BIN" "$ROOT/scripts/test-workflow-config.py" ||
     fail "cm workflow config fixture failed"
   "$PYTHON_BIN" "$ROOT/scripts/test-task-gate.py" ||

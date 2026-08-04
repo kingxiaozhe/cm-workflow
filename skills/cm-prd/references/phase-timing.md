@@ -55,5 +55,6 @@ start/complete；因此后续分析只汇总 active segments，不把人工等�
 
 ## 5. 最终报告
 
-最终摘要只说明“阶段耗时事件已记录”，不在没有分析器核算时手算或猜测耗时。跨项目
-分析读取 specs 权威日志或全局镜像，按 operation_id + segment 配对时间戳。
+最终摘要只说明“阶段耗时事件已记录”，不手算或猜测耗时。需要复盘时运行
+`python3 {CM_WORKFLOW_ROOT}/scripts/cm-prd-timing.py --last 5`；它只读全局镜像，按
+operation_id + phase_name + segment 配对时间戳，并明确显示未配对事件。

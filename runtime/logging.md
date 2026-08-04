@@ -100,6 +100,15 @@ paired envelope timestamps; callers do not write guessed `duration_ms`. A hard p
 active segment with `outcome: awaiting_input`, and resume uses a higher segment so human wait is
 not counted as active workflow time. Stages that did not run emit no timing pair.
 
+Use the dependency-free read-only report for recent `cm-prd` runs:
+
+```bash
+python3 "{CM_WORKFLOW_ROOT}/scripts/cm-prd-timing.py" --last 5
+```
+
+It reads only the local global mirror, reports paired active segments, and labels incomplete pairs
+instead of guessing their duration. It does not write logs or workflow state.
+
 1. Before a potentially long external command, desktop launch, browser case, or
    model turn, write `progress/start`; write `progress/checkpoint` only at an
    actually observed milestone, and `progress/complete` when it ends.
