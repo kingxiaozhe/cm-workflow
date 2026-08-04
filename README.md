@@ -235,6 +235,14 @@ API Key、Token、Cookie 或 Prompt；没有配置时保持当前默认行为。
 不是遥测服务，也不保存 Prompt、模型回答、凭证或源码正文。可通过
 `CM_WORKFLOW_LOG_HOME` 修改位置。
 
+需要查看最近 5 次 `$cm-prd` 的阶段耗时，可运行：
+
+```bash
+python3 /path/to/cm-workflow/scripts/cm-prd-timing.py --last 5
+```
+
+报告只读本机镜像，并把人工等待排除在活跃耗时之外。
+
 从 v0.10.4 开始，长时间桌面与浏览器测试会在真实阶段变化时记录进度检查点；临时
 Profile、进程、模型别名和 fixture 必须成对记录获取与释放，未清理资源会阻止流程
 写入完成状态。该机制不使用后台心跳或常驻日志服务。
