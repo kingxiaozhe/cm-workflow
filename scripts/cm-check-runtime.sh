@@ -487,6 +487,18 @@ done
 grep -q "references/idea-to-prd.md" "$ROOT/skills/cm-idea/SKILL.md" ||
   fail "cm-idea does not delegate to its internal interview reference"
 
+if grep -Fq '二开且修改存量模块（方案错误会伤及老功能）' \
+  "$ROOT/skills/cm-prd/SKILL.md"; then
+  fail "cm-prd still sends every brownfield edit through full design review"
+fi
+grep -Fq '仅修改存量模块不再单独触发本步' \
+  "$ROOT/skills/cm-prd/SKILL.md" &&
+  grep -Fq '独立规格审查（方案 + 任务拆分）' \
+    "$ROOT/skills/cm-prd/SKILL.md" &&
+  grep -Fq '跳过(低风险,并入独立规格审查)' \
+    "$ROOT/skills/cm-prd/SKILL.md" ||
+  fail "cm-prd low-risk design review merge is not fully wired"
+
 for consumer in \
   skills/cm-prd/SKILL.md \
   skills/cm-ai/references/N1-init.md \
