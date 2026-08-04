@@ -99,6 +99,11 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
 
 扫描项目根目录、配置文件、目录结构、依赖声明，自行判断架构类型（monorepo / 多仓库 / 单体应用 / Web3 等）。记录 `ARCH_TYPE`。
 
+交付形态为微信小程序，或项目存在原生 `project.config.json` + `app.json`、Taro/uni-app
+微信构建目标时，标记 `DELIVERY_SHAPE=wechat-miniprogram` 并读取
+`../cm-miniprogram-engineer/references/platform-readiness.md`。只出现“小程序”字样但
+形态证据不足时进入 Step 5.5 确认，不得根据仓库名猜测。
+
 **空项目检测**：代码项目不存在、或为空目录（无 package.json / Cargo.toml / go.mod 等项目描述文件，且无源码目录）→ **先问用户确认空目录的含义，不得自行假设**：
 
 > "代码目录为空——这是【全新项目】（走 0→1 分支，我来推荐架构和脚手架），还是【存量项目还没 clone】（请先 clone 到该目录，再重新运行 $cm-prd）？"
@@ -133,6 +138,11 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
 - 缺少关键信息（如目标平台、兼容性要求、第三方服务选型）
 - 业务逻辑有矛盾或不完整
 - 涉及权限、支付、敏感操作等需要明确确认的功能
+
+`DELIVERY_SHAPE=wechat-miniprogram` 时追加平台就绪检查：账号主体、服务类目/资质、
+变现路径、权限与隐私、后端/合法域名和发布通道。会改变功能可行性或范围但未确认的
+项目必须暂停；只影响后续提审的材料可记为发布待决，不阻塞本地规格与开发。平台政策
+结论须记录当前官方查证日期与来源，无法查证时保留开放问题。
 
 格式：
 
@@ -208,6 +218,11 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
 ## 依赖
 
 - {外部服务/库}
+
+## 平台就绪（仅微信小程序生成）
+
+{按 cm-miniprogram-engineer/references/platform-readiness.md 记录状态、证据与负责人；
+不写任何密钥、证件、Cookie 或测试账号密码}
 
 ## 开放问题
 
@@ -376,6 +391,11 @@ design.md 生成后，满足任一触发条件 → 按 `runtime/review.md` 交**
 AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注释/类型/无行为重构
 不生成空文件。写完执行 `scripts/validate-test-cases.py`。
 
+`DELIVERY_SHAPE=wechat-miniprogram` 时同时读取
+`../cm-miniprogram-engineer/references/release-checklist.md`，只为本 feature 实际使用的
+授权、平台 API、网络/云能力和真机差异生成用例；不用的能力不扩写。需要开发者工具、
+真机或后台才能证明的 expected 必须保留相应执行前提，不得改写成 Web 可替代验证。
+
 ### Step 10.5: 规格自检（机器项，AI 自查自修，人不参与）
 
 读取 `references/spec-self-check.md` 并逐项执行；测试合同必须调用 `scripts/validate-test-cases.py`，不得靠目测。
@@ -411,6 +431,7 @@ AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注�
 │ 功能点: {N} 个 | AC: {N} 条 | 任务: {N} 个(预估 {x}h)
 │ 开放问题: {已答 N / 共 N}——{逐条一行: 问题→答案}
 │ 风险点: {金融/合规/破坏性操作等敏感项,无则"无"}
+│ 平台就绪: {就绪/待官方核验 N 项/不适用}
 │ UI 基准: {像素级/结构级/纯参考/无}
 │ 🧪 AI 测试合同: {N 条(user N/generated N) / 跳过(无可观察行为)}
 │ 🔎 规格自检: {N}/{N} 通过{（未过项已列入风险点）}

@@ -98,6 +98,12 @@ python3 {CM_WORKFLOW_ROOT}/scripts/validate-test-cases.py {test-cases.json}
 纯文档、注释、类型声明或明确不改变行为的重构可以不生成。跳过时在规格摘要卡
 写 `AI 测试合同: 跳过(无可观察行为)`，不要创建空文件。
 
+微信小程序项目按
+`{CM_WORKFLOW_ROOT}/skills/cm-miniprogram-engineer/references/release-checklist.md` 选择
+形态专项：只覆盖 feature 实际使用的授权/隐私、网络与云能力、分享/保存/扫码等平台
+API、广告/支付测试环境和真机差异。`kind: "browser"` 在此表示用户可观察交互，执行器
+是微信开发者工具或真机，不是 Web 浏览器；H5/Web target 结果不得满足小程序用例。
+
 生成后必须自检：
 
 - 每条 AC 至少映射一个用例；无法验证的 AC 仍生成 blocking 用例并写清阻塞前提。
@@ -146,6 +152,10 @@ python3 {CM_WORKFLOW_ROOT}/scripts/validate-test-cases.py {test-cases.json}
 由 QA 通过 Playwright 模拟用户完成 steps，并逐条观察 expected。需要既有登录态、
 OAuth、第三方弹窗或真实浏览器状态时才升级到 Chrome CDP。单例结论为：
 `PASS | FAIL | BLOCKED`，并记录 URL、关键操作、断言与截图/日志路径。
+
+微信小程序例外：由微信开发者工具模拟器执行基础交互，平台 API 或设备差异由预览/
+体验版真机执行；报告记录页面路由、操作、可观察结果及截图/工具日志。所需工具、扫码
+或账号权限不可用时为 `BLOCKED`，不得启动 Web target 代替。
 
 ## 审批与变更
 

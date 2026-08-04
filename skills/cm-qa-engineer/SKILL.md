@@ -76,12 +76,17 @@ npx playwright test       # E2E
 
 ### 5. 可视化回归（如涉及 UI）
 
-1. 启动开发服务器
-2. 选择浏览器驱动（按优先级）：
+1. 识别交付形态并启动正式测试载体：Web 启动开发服务器；微信小程序执行正式构建并
+   打开微信开发者工具。小程序同时读取
+   `../cm-miniprogram-engineer/references/release-checklist.md`，不得用 H5/Web target
+   冒充小程序运行结果。
+2. Web 选择浏览器驱动（按优先级）：
    - **检查项目配置**：如 `.claude/rules/testing.md` 中指定了 `browser_driver`，使用用户指定的方式
    - **默认：Playwright CDP（无头模式）** — 不弹窗，适合截图对比、DOM 断言、样式回归等大多数场景
    - **自动升级：Chrome DevTools MCP** — 当检测到以下场景时切换：需要登录态/Cookie 持久化、OAuth/第三方弹窗交互、需要观察真实动画/过渡效果、用户明确要求实时调试
    - 切换前输出：`🔄 切换到 Chrome DevTools MCP — 原因: {原因}，浏览器窗口将弹出`
+   微信小程序不进入此浏览器驱动分支：基础交互走开发者工具模拟器，授权、设备差异和
+   平台 API 走预览/体验版真机；工具或账号不可用时对应 blocking case 为 `BLOCKED`。
 3. 截图保存
 4. 对比基准截图（如有）
 5. test-cases.json 中的 browser cases 逐条执行 steps、断言 expected，并记录

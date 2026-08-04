@@ -499,6 +499,43 @@ grep -Fq '仅修改存量模块不再单独触发本步' \
     "$ROOT/skills/cm-prd/SKILL.md" ||
   fail "cm-prd low-risk design review merge is not fully wired"
 
+for reference in \
+  skills/cm-miniprogram-engineer/references/platform-readiness.md \
+  skills/cm-miniprogram-engineer/references/release-checklist.md; do
+  require_file "$reference"
+done
+grep -q "references/platform-readiness.md" "$ROOT/skills/cm-miniprogram-engineer/SKILL.md" &&
+  grep -q "cm-miniprogram-engineer/references/platform-readiness.md" "$ROOT/skills/cm-prd/SKILL.md" ||
+  fail "miniprogram platform readiness is not wired into engineer and PRD"
+for consumer in \
+  runtime/test-contract.md \
+  skills/cm-prd/SKILL.md \
+  skills/cm-test/SKILL.md \
+  skills/cm-qa-engineer/SKILL.md \
+  skills/cm-ai/references/N6-qa-eval.md \
+  skills/cm-ai/references/N8-finish.md \
+  skills/cm-devops-engineer/SKILL.md; do
+  grep -q "cm-miniprogram-engineer/references/release-checklist.md\|references/release-checklist.md" "$ROOT/$consumer" ||
+    fail "miniprogram release checklist is not wired into $consumer"
+done
+grep -q "Web target" "$ROOT/runtime/test-contract.md" &&
+  grep -q 'BLOCKED' "$ROOT/skills/cm-miniprogram-engineer/references/release-checklist.md" ||
+  fail "miniprogram tests can silently substitute Web evidence"
+grep -Fq '{CM_WORKFLOW_ROOT}/skills/cm-miniprogram-engineer/references/release-checklist.md' \
+  "$ROOT/runtime/test-contract.md" ||
+  fail "miniprogram test reference is not anchored to CM_WORKFLOW_ROOT"
+grep -Fq '发布验证: {staging/体验版已验证 | 未执行/待人工 | 不适用}' \
+  "$ROOT/skills/cm-ai/references/N8-finish.md" ||
+  fail "N8 feature summary can overclaim staging verification"
+grep -Fq '远程平台上传' "$ROOT/skills/cm-devops-engineer/SKILL.md" &&
+  grep -Fq '必须由 task 明确写出目标与通道' "$ROOT/skills/cm-devops-engineer/SKILL.md" ||
+  fail "remote platform staging upload lacks explicit task authorization"
+if grep -Eq '≤ *2MB|超 *2MB' \
+  "$ROOT/skills/cm-miniprogram-engineer/SKILL.md" \
+  "$ROOT/templates/rules/miniprogram.md"; then
+  fail "miniprogram package limit is hardcoded instead of runtime-verified"
+fi
+
 for consumer in \
   skills/cm-prd/SKILL.md \
   skills/cm-ai/references/N1-init.md \

@@ -99,16 +99,19 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
 4. 非生成模式下，两者都没有时，根据功能描述与代码推导临时用例并标记
    `origin: "inferred"`；意图无法从代码或用户描述证明时，把对应 blocking 用例
    记为 `BLOCKED`，不要猜出一个方便通过的预期。
-5. 报告目录优先级：
+5. 检测到微信小程序交付形态时读取
+   `../cm-miniprogram-engineer/references/release-checklist.md`；仅补本功能实际使用的
+   平台专项，并把开发者工具/真机要求写进前置条件。Web target 不能满足这些用例。
+6. 报告目录优先级：
    `--report-dir` → `{SPECS_DIR}/.reviews/` →
    `{CODE_PROJECT}/docs/test-reports/{YYYYMMDD-HHMMSS}-{slug}/`。用 Python
    `Path.resolve(strict=False)` 解析真实路径；报告目录在代码项目内时，只允许位于
    `{CODE_PROJECT}/docs/test-reports/`，或在第 2 步验证通过的 `--specs` 下位于
    `{SPECS_DIR}/.reviews/`。等于/包含代码项目、指向其他源码子目录或经符号链接落到
    这些位置均 `BLOCKED`；快照只能排除本轮最终报告目录，不能排除其父目录。
-6. 默认目录发生同秒冲突时追加递增序号；生成模式不得覆盖已有
+7. 默认目录发生同秒冲突时追加递增序号；生成模式不得覆盖已有
    `test-cases.generated.json` 或 `test-generation-report.md`。
-7. 结束时重建同口径快照。除本轮报告目录外出现任何内容变化 → `BLOCKED` 并列出
+8. 结束时重建同口径快照。除本轮报告目录外出现任何内容变化 → `BLOCKED` 并列出
    差异；不自动回滚用户文件。
 
 输入、报告目录和安全边界确认后按 `runtime/logging.md` 写 `run_start` 与
@@ -197,12 +200,17 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
 
 ## 6. 浏览器人工模拟
 
-1. 使用项目正式启动命令启动本地/测试环境。
-2. 默认使用 Playwright；仅在需要登录态/Cookie、OAuth/第三方弹窗或用户明确要求
-   真实浏览器时升级 Chrome CDP。
+1. 先识别交付形态：Web 使用项目正式启动命令；微信小程序使用正式构建命令与微信
+   开发者工具，不为测试临时改成 H5/Web target。
+2. Web 默认使用 Playwright；仅在需要登录态/Cookie、OAuth/第三方弹窗或用户明确
+   要求真实浏览器时升级 Chrome CDP。微信小程序的基础交互使用开发者工具模拟器，
+   授权、设备和平台 API 按 reference 升级为预览/体验版真机。
 3. 逐条执行 browser case 的 steps，并逐项断言 expected。
-4. 证据至少包含目标 URL、关键操作、可观察结果和失败截图；不得只说“看起来正常”。
+4. Web 证据包含目标 URL；小程序证据包含页面路由与运行载体。两者都记录关键操作、
+   可观察结果和失败截图/工具日志，不得只说“看起来正常”。
 5. cleanup 失败时即使断言通过也记 `BLOCKED`，避免留下未知测试数据。
+6. 微信开发者工具、扫码、真机或账号权限缺失时，对应 blocking case 记 `BLOCKED`；
+   需要用户登录/验证码时暂停让用户本人完成，不索取凭证。
 
 `--explore` 允许从页面可交互元素发散异常态、空态和导航路径；结果使用
 `FINDING | NO_FINDING | BLOCKED`，其中 `NO_FINDING` 只表示本轮探索未发现问题。
