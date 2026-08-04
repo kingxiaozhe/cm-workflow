@@ -499,6 +499,27 @@ grep -Fq '仅修改存量模块不再单独触发本步' \
     "$ROOT/skills/cm-prd/SKILL.md" ||
   fail "cm-prd low-risk design review merge is not fully wired"
 
+require_file "skills/cm-prd/references/context-scope.md"
+grep -Fq 'references/context-scope.md' "$ROOT/skills/cm-prd/SKILL.md" &&
+  grep -Fq 'CONTEXT_SCOPE=targeted|full' "$ROOT/skills/cm-prd/SKILL.md" &&
+  grep -Fq 'decision/context_scope' "$ROOT/skills/cm-prd/SKILL.md" &&
+  grep -Fq 'targeted_to_full' "$ROOT/skills/cm-prd/references/context-scope.md" &&
+  grep -Fq 'Step 9.5 的任何方案对抗审查触发条件' \
+    "$ROOT/skills/cm-prd/references/context-scope.md" &&
+  grep -Fq '页面/UI、共享组件、Hook、Store' \
+    "$ROOT/skills/cm-prd/references/context-scope.md" &&
+  grep -Fq '00–09 全部 10 份' "$ROOT/skills/cm-prd/references/context-scope.md" &&
+  grep -Fq '上下文范围: {定向 / 完整 / 定向→完整（reason_code）}' \
+    "$ROOT/skills/cm-prd/SKILL.md" ||
+  fail "cm-prd progressive context routing is not fully wired"
+grep -Fq '禁止再次' "$ROOT/skills/cm-prd/SKILL.md" &&
+  grep -Fq '全量读取未变化的 CLAUDE/rules' "$ROOT/skills/cm-prd/SKILL.md" ||
+  fail "cm-prd can still reread all project rules before design"
+if grep -Fq '按 `codebase-context` skill dev 模式加载 10 份文档' \
+  "$ROOT/skills/cm-prd/SKILL.md"; then
+  fail "cm-prd still unconditionally loads all codebase-context documents"
+fi
+
 for reference in \
   skills/cm-miniprogram-engineer/references/platform-readiness.md \
   skills/cm-miniprogram-engineer/references/release-checklist.md; do

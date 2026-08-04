@@ -113,10 +113,15 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
 
 ### Step 4: 读取项目上下文（存量项目 = 二开模式，叠加 B 规则）
 
-- 读取各仓库的 `.claude/CLAUDE.md` 了解技术栈
-- 读取 `.claude/rules/` 下所有规则文件
-- 扫描目录结构，了解现有模块划分
-- **B1 加载代码库参考文档**：**先读代码项目根 CLAUDE.md 的「业务地图」字段**（多层仓库下以代码项目根为准，仓库根 CLAUDE.md 无此字段再看地图 00-index 头部；init 已判定过，不重复判断）：字段=已生成/已刷新 或 `docs/codebase-context/` 存在 → 按 `codebase-context` skill dev 模式加载 10 份文档（后续步骤查重与波及面分析的数据源）；字段=跳过(小项目) → **不建议 scan，直接读代码**（小项目全量读的成本本来就低）；字段缺失且文档不存在 → 建议先执行 `/codebase-context scan`；**skill 本身未安装** → 提示重装最新包，本次降级为直接读代码，波及面分析降级为 grep 推断（照常可跑，只是更贵更粗）
+- 按 `runtime/project-context.md` 读取项目约束和本需求相关规则，扫描两层目录了解模块划分
+- 读取 `references/context-scope.md`，先做定向代码搜索，再设置
+  `CONTEXT_SCOPE=targeted|full`、加载对应地图/代码，并写 `decision/context_scope` 日志
+- **B1 代码库参考文档判定**：先读代码项目根 CLAUDE.md 的「业务地图」字段（多层仓库
+  下以代码项目根为准，仓库根 CLAUDE.md 无此字段再看地图 00-index 头部；init 已判定过，
+  不重复判断）。字段=已生成/已刷新或目录存在 → 按 context-scope 清单渐进加载；字段=
+  跳过(小项目) → 不建议 scan，按范围直接读代码；字段缺失且文档不存在 → 建议先执行
+  `/codebase-context scan`，本轮按直接代码搜索继续；skill 未安装 → 提示重装最新包并按
+  直接代码搜索继续。任何路径都不得因追求 targeted 猜测波及面
 
 **二开模式追加规则**（GREENFIELD=false 且本次需求会修改存量代码时生效）→ **读取 `references/brownfield.md`** 执行 B2 波及面 / B3 防护网基线 / B4 增量 specs / B5 拆分锚定地图。
 
@@ -254,7 +259,8 @@ feature 涉及页面/界面时，在生成 design.md 前确定设计基准：
 
 ### Step 9: 生成 design.md
 
-**必须先读取项目 `.claude/CLAUDE.md` 和 `.claude/rules/` 下所有规范文件**，设计方案必须遵循项目已有的技术规范和约定。
+复用 Step 4 已加载的项目约束与规则；根据最终波及层补读新命中的相关规则，禁止再次
+全量读取未变化的 CLAUDE/rules。设计方案必须遵循项目已有的技术规范和约定。
 
 按功能模块设计，每个模块说明涉及哪些层（前端、后端、数据库、合约等），具体分层根据项目实际架构决定，不做硬编码限制。
 
@@ -431,6 +437,7 @@ AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注�
 │ 功能点: {N} 个 | AC: {N} 条 | 任务: {N} 个(预估 {x}h)
 │ 开放问题: {已答 N / 共 N}——{逐条一行: 问题→答案}
 │ 风险点: {金融/合规/破坏性操作等敏感项,无则"无"}
+│ 上下文范围: {定向 / 完整 / 定向→完整（reason_code）}
 │ 平台就绪: {就绪/待官方核验 N 项/不适用}
 │ UI 基准: {像素级/结构级/纯参考/无}
 │ 🧪 AI 测试合同: {N 条(user N/generated N) / 跳过(无可观察行为)}
