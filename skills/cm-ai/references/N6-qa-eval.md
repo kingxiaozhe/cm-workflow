@@ -49,6 +49,11 @@ feature 存在 `test-cases.json` 时按 `runtime/test-contract.md` 消费：正�
 N4 中的 `INSUFFICIENT_EVIDENCE` 必须在本节点补运行时证据或保持 `BLOCKED`。
 任一 blocking case 为 `FAIL`/`BLOCKED` 时不得宣称 QA 通过。
 
+交付形态为微信小程序时读取
+`../../cm-miniprogram-engineer/references/release-checklist.md`，按 feature 实际能力补
+开发者工具模拟器与真机专项。Web/H5 截图不计小程序证据；授权、设备差异或平台 API
+缺真机证据时保持 `BLOCKED`/待人工，不能用静态核验或模拟器推断通过。
+
 **QA 新补的测试须变异自证**(机械,非审查轮):种 1-2 处行为变异必须变红,不红的测试修到红再入库——QA 测试是未来所有回归的安全网,安慰剂 QA 测试 = 永久性假安心(实跑先例:dogfood 中 QA agent 自发做过「5 个变异全被抓」,本条把自觉变成规则)。
 
 触发 QA 后，回填 METRICS.md 中对应任务行的 QA 列：`通过(覆盖率{x}%)` / `{N}轮通过(覆盖率{x}%)` / `失败上报`——覆盖率随列落盘，不留在会话里。
