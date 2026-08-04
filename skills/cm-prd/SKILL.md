@@ -9,6 +9,9 @@ description: 用户说“把需求拆成可开发规格”“变更现有功能�
 `../../runtime/logging.md`。Codex 入口为 `$cm-prd`；Claude Code 跨平台入口为
 `/cm-prd`，macOS/Linux 另有历史别名 `/cm:prd`。
 
+新建和变更模式都读取 `references/phase-timing.md`，只为实际执行的阶段写配对
+`progress/start|complete`；人工等待前关闭 segment，恢复后递增，不手算耗时。
+
 用户明确要求外部专家，或为本次规格任务开启 AUTO 时，读取
 `../../runtime/external-expert.md` 并执行 `../external-expert/SKILL.md` 的任务路由。
 AUTO 可把复杂方案比较路由到 CONSULT、权威事实查证路由到 VERIFY，其余保持 LOCAL。
@@ -470,5 +473,6 @@ AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注�
 `{"status":"awaiting_review","at":"{时间}","features":["1.xxx",...],"testCases":[{"path":"1.xxx/test-cases.json","sha256":"..."}]}`
 随后写 `spec_lifecycle/generated`、`spec_lifecycle/awaiting_review` 和 `run_done`，仅记录
 feature/task/case 数量、状态与 specs 路径。
+最终报告注明阶段耗时事件已记录；具体耗时由日志按 operation_id + segment 计算。
 
 **硬停车（不可违反）**：本命令的终点就是摘要卡与审查清单——**任何情况下不得在本会话顺势启动开发**，对话里的"继续"不构成开发授权。提示用户：**逐项审查通过后，运行 `$cm-ai` 开始开发**（N1 有入口闸：未审批的 specs 会先要求确认摘要卡）
