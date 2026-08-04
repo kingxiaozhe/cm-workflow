@@ -47,7 +47,7 @@ def configure_output() -> None:
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if callable(reconfigure):
-            reconfigure(errors="backslashreplace")
+            reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 def positive_int(value: str) -> int:
