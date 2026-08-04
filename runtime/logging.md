@@ -76,6 +76,7 @@ and may not replace envelope fields.
 | --- | --- | --- |
 | each workflow run | `run_start` / `run_done` | start once; terminal result in detail/data |
 | PRD and approval | `spec_lifecycle` | `generated`, `awaiting_review`, `approved`, `changed` |
+| PRD phase timing | `progress` | paired `start`/`complete`; operation_id, phase_name, segment |
 | N1–N8 | existing node/task/review/degrade/pause/resume/decision/error/qa/done events | preserve existing semantics |
 | long external, desktop, or browser step | `progress` | `start`, `checkpoint`, `complete`; operation id and observable milestone |
 | any QA invocation | `test_run` | `start`, `case_start`, `case_complete`, `case_blocked`, `complete`; case counts, result, report |
@@ -93,6 +94,11 @@ invocation does not need an event.
 
 Keep progress event-based. Do not add a background heartbeat, timer, or polling
 service merely to make the log look active.
+
+`cm-prd` phase timing follows `skills/cm-prd/references/phase-timing.md`. Duration comes from
+paired envelope timestamps; callers do not write guessed `duration_ms`. A hard pause closes the
+active segment with `outcome: awaiting_input`, and resume uses a higher segment so human wait is
+not counted as active workflow time. Stages that did not run emit no timing pair.
 
 1. Before a potentially long external command, desktop launch, browser case, or
    model turn, write `progress/start`; write `progress/checkpoint` only at an

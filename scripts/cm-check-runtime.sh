@@ -520,6 +520,21 @@ if grep -Fq '按 `codebase-context` skill dev 模式加载 10 份文档' \
   fail "cm-prd still unconditionally loads all codebase-context documents"
 fi
 
+require_file "skills/cm-prd/references/phase-timing.md"
+grep -Fq 'references/phase-timing.md' "$ROOT/skills/cm-prd/SKILL.md" &&
+  grep -Fq 'prd-context' "$ROOT/skills/cm-prd/references/phase-timing.md" &&
+  grep -Fq 'prd-requirements' "$ROOT/skills/cm-prd/references/phase-timing.md" &&
+  grep -Fq 'prd-design-review' "$ROOT/skills/cm-prd/references/phase-timing.md" &&
+  grep -Fq 'prd-spec-validation' "$ROOT/skills/cm-prd/references/phase-timing.md" &&
+  grep -Fq 'prd-spec-review' "$ROOT/skills/cm-prd/references/phase-timing.md" &&
+  grep -Fq 'C1 定位 specs 前' "$ROOT/skills/cm-prd/references/phase-timing.md" &&
+  grep -Fq 'outcome: awaiting_input' "$ROOT/skills/cm-prd/references/phase-timing.md" &&
+  grep -Fq 'operation_id + segment' "$ROOT/skills/cm-prd/SKILL.md" ||
+  fail "cm-prd phase timing is not fully wired"
+grep -Fq 'PRD phase timing' "$ROOT/runtime/logging.md" &&
+  grep -Fq 'callers do not write guessed `duration_ms`' "$ROOT/runtime/logging.md" ||
+  fail "logging contract does not protect cm-prd timing semantics"
+
 for reference in \
   skills/cm-miniprogram-engineer/references/platform-readiness.md \
   skills/cm-miniprogram-engineer/references/release-checklist.md; do
