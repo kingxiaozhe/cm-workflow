@@ -6,13 +6,15 @@ This repository is the Codex-native source for a spec-driven development workflo
 
 - Mechanical consistency: `./scripts/cm-check-runtime.sh`
 - Global log fixture: `./scripts/cm-check-runtime.sh --log-fixtures`
+- Approved specs manifest: `python3 scripts/cm-spec-manifest.py <specs-dir>`
+- PRD review recovery fixture: `python3 scripts/test-cm-prd-review-gate.py`
 - Plugin validation: `python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .`
 - Codex local install: `./install-codex.sh`
 - Claude compatibility install: `./install.sh`
 
 ## Boundaries
 
-- Preserve `tasks.md` as the authoritative task state and keep `.cm-specs-status`, `.cm-status.json`, `.cm-run.json`, `.cm-run.lock`, `运行日志.jsonl`, `.reviews/`, `METRICS.md`, and `LESSONS.md` compatible.
+- Preserve feature-local `tasks.md` as the authoritative task state and keep `.cm-specs-status`, `.cm-status.json`, `.cm-run.json`, `.cm-run.lock`, `运行日志.jsonl`, `.reviews/`, `METRICS.md`, and `LESSONS.md` compatible.
 - Treat the specs-local `运行日志.jsonl` as authoritative. `~/.cm-workflow/logs/` is a private, reconstructable cross-project mirror, never telemetry or a competing task-state database.
 - Resolve plugin assets relative to the active Skill; never hardcode a Codex cache path.
 - Require independent review evidence before marking work complete. Degradation must be explicit in the evidence header.

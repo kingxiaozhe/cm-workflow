@@ -68,13 +68,16 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py mark-done \
   --reviews-dir {SPECS_DIR}/.reviews \
   --feature {FEATURE_SLUG} \
   --task {T-xxx} \
-  --tasks {SPECS_DIR}/tasks.md
+  --tasks {SPECS_DIR}/{FEATURE_DIR}/tasks.md
 ```
 
 Only the review for the same task, attempt, and handoff with
 `verdict: approved` and the same handoff SHA-256 passes. For attempt 2, N5 also
 revalidates the complete attempt-1 → changes-requested chain. The write is an
 atomic same-directory replacement and changes only the exact task checkbox.
+`FEATURE_DIR` is the exact numbered directory name (for example `1.login`), while
+`FEATURE_SLUG` is the evidence-name slug (`login`). The tasks file must be that
+direct feature-local authority; a specs-root or sibling feature file is rejected.
 File existence or a separate manual edit is not approval.
 
 ## Parallel-write guard

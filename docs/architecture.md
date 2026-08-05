@@ -34,14 +34,16 @@ flowchart LR
 
 ## Sources of truth
 
-- `tasks.md` is the authoritative business-task state.
+- Each numbered feature's `tasks.md` is the authoritative business-task state.
 - An optional project `.cm-workflow.yml`/`.yaml`/`.json` selects finite workflow
   profiles, role adapters, model aliases, and test/delivery policies. It is
   configuration, not permission or task state; missing configuration means the
   built-in defaults remain active. The contract lives in
   `runtime/workflow-config.md`; node projection and route-state semantics live in
   `runtime/workflow-routing.md`.
-- `.cm-specs-status`, `.cm-status.json`, `.cm-run.json`, `运行日志.jsonl`, `.reviews/`,
+- `.cm-specs-status` binds approval to a full requirements/design/tasks/test semantic manifest;
+  only N5/N6 task and AC completion markers are normalized so an interrupted run can resume;
+  `.cm-status.json`, `.cm-run.json`, `运行日志.jsonl`, `.reviews/`,
   `METRICS.md`, and `LESSONS.md` are the durable audit and recovery artifacts.
 - The user-global `~/.cm-workflow/logs/` tree is a reconstructable local mirror,
   not an authoritative state store or telemetry endpoint.

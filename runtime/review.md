@@ -48,6 +48,14 @@ Only report findings with a plausible input/state and an incorrect outcome. Styl
 
 ## Rounds and disposition
 
+The rules in this section apply to N4 reviews of implemented task diffs. **cm-prd Step 9.5/10.6 固定为一次审查调用**：它们是实现前的建议性审查，只复用独立通道、
+findings-first 纪律和 `reviewer/independent/at/scope` 四个证据字段，不进入 N3/N4 的 attempt/review 重试协议。主执行者采纳
+findings 后运行对应规格自检；未解决项进入摘要卡由人审，不得召回同一或新的 reviewer
+生成 PRD `r2` 凭证。
+两阶段必须用 `scripts/cm-prd-review-gate.py` 保存 disposition 回执：r1 已存在但回执
+缺失时只恢复 finding 处置，不得重新调用 reviewer；回执完成后不得重审。任何 r2 文件
+或 r1 内容哈希漂移都由门禁阻断。
+
 - Maximum two review rounds per task.
 - Round 1 `changes_requested` returns to N3 and produces attempt 2 plus a new
   handoff. Round 2 cannot create attempt 3.

@@ -79,7 +79,30 @@ CONSULT/VERIFY。外部假设必须回到本地证伪；咨询记录不能代替
 - 失败测试转绿 + 存量基线不退化后，按 `runtime/review.md` 审查本缺陷 diff（重点：根因是否真被修掉、有无只治症状、波及面有无遗漏）
 - **防护网测试本身是审查对象**(实测最大问题类:测试是戏台):红的原因是否=该缺陷、断言测的是根因还是症状、有无安慰剂/前提共谋;**核对第 3 步落档的红证据**——没有红过的记录,测试可信度按不成立处理
 - 所有缺陷零豁免；独立通道不可用时才记 `self-degraded`；≤2 轮上限同样生效
-- **审查凭证落盘**：输出全文 tee 到 `{SPECS_DIR}/.reviews/fix-{slug}-r{轮次}.md`（纪律同 N4）——进第 6 步前**必须真跑** `ls {SPECS_DIR}/.reviews/fix-{slug}-r*.md`,命令无输出=审查未发生,退回补审;凭证文件名写进第 7 步收口输出（文字卡点拦不住是实测结论,机械命令才算数）
+- `{slug}` 先规范成跨平台安全的 ASCII kebab；令 `REVIEW_FEATURE=fix-{slug}`、
+  `REVIEW_TASK=T-FIX-{slug}`。主执行者按真实 diff 写
+  `{SPECS_DIR}/.reviews/fix-{slug}-T-FIX-{slug}-a{attempt}-handoff.json`，格式与
+  `runtime/task-handoff.schema.json` 相同，并真跑：
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n4 \
+  --handoff {HANDOFF_PATH} --reviews-dir {SPECS_DIR}/.reviews \
+  --feature fix-{slug} --task T-FIX-{slug}
+```
+
+- 独立审查凭证严格落
+  `{SPECS_DIR}/.reviews/fix-{slug}-T-FIX-{slug}-r{attempt}.md`，包含当前 handoff
+  文件名和 SHA。审查完成后必须真跑下列命令；只有当前 attempt 的
+  `verdict: approved` 才能进入第 6 步：
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n5 \
+  --handoff {HANDOFF_PATH} --reviews-dir {SPECS_DIR}/.reviews \
+  --feature fix-{slug} --task T-FIX-{slug}
+```
+
+- `changes_requested` 后修改代码必须生成 attempt 2 handoff 并复审；第 2 轮仍有阻断项
+  写 `blocked` 并停止。文件存在、旧凭证或 `ls` 输出都不构成批准。
 
 ### 6. 回归（按波及面，不是只看 bug 消失）
 
@@ -92,7 +115,8 @@ CONSULT/VERIFY。外部假设必须回到本地证伪；咨询记录不能代替
 - **缺陷档案**：`{SPECS_DIR}/fixes/{YYYYMMDD}-{简短slug}.md`——现象 / 复现步骤 / 根因 / 修法（含放弃的方案）/ 波及面与回归结果 / 测试文件路径。这是缺陷知识库，同类 bug 再犯先查这里
 - **METRICS.md 追加一行**：Feature 列写 `fix`，任务列写档案文件名，其余列同口径（轮次/拦截数/人工介入）
 - 根因具普遍性（如"平台 API 返回结构变了"）→ 追记 LESSONS.md（[已结构化]/[仅记忆] 分级同 N5）
-- git commit：`fix: {一句话} (档案: fixes/xxx.md)`，审查摘要进 commit message（同 N4）
+- Git 按有效 `policies.delivery`：diff 不 stage/commit；branch/draft-mr 提交
+  `fix: {一句话} (档案: fixes/xxx.md)`，审查摘要进 commit message（同 N4）
 - 运行日志事件：`task_start`/`review`/`task_done`/`run_done` 照记，node 字段写 `FIX`
 
 ## 微缺陷快速通道（四个硬门槛全中才准走）

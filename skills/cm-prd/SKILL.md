@@ -41,13 +41,15 @@ AUTO 可把复杂方案比较路由到 CONSULT、权威事实查证路由到 VER
 ## 项目角色路由
 
 路径验证通过后，使用 `{CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py` 读取有效配置，
-分别解析 `analyst`（需求分析）和 `planner`（方案/任务拆分）：
+分别解析 `analyst`（需求分析）、`planner`（方案/任务拆分）及 `policies.generate_cases`：
 
 ```bash
 python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
   --project {CODE_PROJECT} --role analyst --runtime {codex|claude} --print-role
 python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
   --project {CODE_PROJECT} --role planner --runtime {codex|claude} --print-role
+python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
+  --project {CODE_PROJECT} --print-effective
 ```
 
 把返回的 `adapter`、`model`、`source` 和 `route_state` 当作本轮的请求路由元数据，
@@ -56,6 +58,9 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
 时使用内置默认值；resolver 返回非零或配置错误时立即 `BLOCKED` 并报告字段路径，
 不得进入分析/规划或生成规格。配置的适配器当前运行时不可用时记录 `warning`/`degrade`，
 不得伪造调用成功或把外部专家变成编码执行器。
+
+`generate_cases: false` 只关闭 CM 根据需求自动补生成的 `origin: generated` 用例；用户
+或需求源已提供的测试用例仍须保留、规范化并进入审批，不能用项目配置删除测试意图。
 
 项目/specs 路径验证通过后按 `runtime/logging.md` 写 `run_start`。生成规格、重置
 审批位或终止时分别写 `spec_lifecycle` 与 `run_done`；详细需求和设计内容不进入主日志。
@@ -329,7 +334,24 @@ design.md 生成后，满足任一触发条件 → 按 `runtime/review.md` 交**
 必须补做本步后再继续生成最终任务单。
 
 **投喂内容**：requirements.md + design.md 全文 + 项目上下文中的相关规范 +（二开）「波及面」段与被改存量模块现状代码。
-提示词要义："**这是隔壁同事做的方案，详细审查一下**"——重点查架构隔离、模块边界、与现有管线的耦合、数据流缺口；只报告有具体失败场景的问题，零发现明说（审查产出纪律同 N4）。**仅 1 轮**：采纳项修正 design.md 后进 Step 10；分歧项写入摘要卡「风险点」交人裁决。未命中上述风险信号的低风险 feature 不触发，零额外负担。
+提示词要义："**这是隔壁同事做的方案，详细审查一下**"——重点查架构隔离、模块边界、与现有管线的耦合、数据流缺口；只报告有具体失败场景的问题，零发现明说（审查产出纪律同 N4）。
+
+调 reviewer 前先真跑 `cm-prd-review-gate.py inspect --stage design`，证据固定为
+`prd-{feature}-design-r1.md`，处置回执固定为
+`prd-{feature}-design-disposition.json`：`dispatch_once` 才允许调用 reviewer；
+`resume_disposition` 表示 r1 已落盘，直接继续应用/升级现有 findings，禁止重审；
+`completed` 直接进入 Step 10。处置完成后真跑 `record --artifact {design.md}`，记录
+`applied|no_findings|escalated`、finding/unresolved 数量和 r1 SHA。进程在 r1 落盘后
+崩溃也只能恢复处置，不能再消耗一轮审查。
+
+**单轮硬边界（ROUND_LIMIT=1）**：每个 feature 在本阶段只允许一次 review attempt，
+独立 reviewer 与 `self-degraded` 复查二选一。零发现直接进 Step 10；
+采纳项由主执行者修正 design.md 后进 Step 10，并由后续 10.5 自检验证完整规格；分歧或
+无法机械确认的项写入摘要卡「风险点」交人裁决。**禁止 review → 修正 → 再 review**，
+也禁止换一个审查者变相开启第 2 轮；凭证只允许 `design-r1.md`，不得生成 `design-r2.md`。
+任何审查尝试（包括 `self-degraded`）均消耗唯一一轮；通道恢复后不得补审。
+（实跑教训：公共 CLI 契约的 3 轮方案复审耗时 11m59s，后两轮应由自检与人审承担。）
+未命中上述风险信号的低风险 feature 不触发，零额外负担。
 **凭证落盘**:审查原文 tee 到 `{SPECS_DIR}/.reviews/prd-{feature}-design-r1.md`——摘要卡「方案对抗审查」行必须与凭证对得上,无凭证的数字是自报(凭证教义全框架一体,规格期不豁免)。
 
 > 依据：代码有 N4 对抗、规格有 10.5 自检，唯独技术方案此前无第二模型把关——而方案错误是最贵的错误（行业重度实践的最大单笔收益正是方案期拦截架构缺陷）。
@@ -422,8 +444,19 @@ AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注�
   失败场景或与现有边界冲突，再检查拆分质量：①任务边界有无重叠/遗漏 ②依赖顺序
   会不会卡死 ③粒度是否适合单任务交付验证 ④二开：波及面有没有漏掉会被牵连的
   模块。只报有具体后果的问题，没有问题就明说。"
-- **处置**：采纳项修正 specs 后重跑一次 10.5 自检；分歧项写入摘要卡「风险点」交人裁决。**仅 1 轮**，不与 Codex 拉扯
+- **单轮硬边界（ROUND_LIMIT=1）**：每个 feature 在本阶段只允许一次 review attempt，
+  独立 reviewer 与 `self-degraded` 复查二选一。采纳项修正 specs 后
+  重跑一次 10.5 自检；分歧或自检不能证明的项写入摘要卡「风险点」交人裁决。
+  **禁止 review → 修正 → 再 review**，也禁止换审查者变相开启第 2 轮；凭证只允许
+  `split-r1.md`，不得生成 `split-r2.md`。（实跑教训：规格修正后的再次召回复审没有
+  新增独立决策层，却继续占用主流程时间。）
+  任何审查尝试（包括 `self-degraded`）均消耗唯一一轮；通道恢复后不得补审。
 - **凭证落盘**：原始审查结果写入 `{SPECS_DIR}/.reviews/prd-{feature}-split-r1.md`，文件头使用 review contract 的 `reviewer/independent/at/scope` 字段
+- 调 reviewer 前同样真跑 `cm-prd-review-gate.py inspect --stage split`；只在
+  `dispatch_once` 调用一次，`resume_disposition` 复用已有 r1，`completed` 不再审。
+  findings 处置并重跑一次 10.5 后，真跑 `record`，artifact 传 requirements.md、
+  design.md、tasks.md 及存在的 test-cases.json，生成
+  `prd-{feature}-split-disposition.json`。回执与 r1 SHA 不一致或发现 r2 时立即 BLOCKED。
 - **降级**：无法建立独立上下文时，由主执行者对抗式复查，凭证写 `self-degraded` / `independent: false`；这是增益层，不单独因降级停车
 
 > 依据：低风险小需求不值得额外支付一轮完整方案对抗，但仍需要第二双眼睛同时检查
@@ -468,9 +501,13 @@ AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注�
 - [ ] **原型功能点覆盖 100%**（有交互原型时）：遍历记录中每个可交互元素都有对应 [F-xxx] 或死区标注，无静默丢弃
 ```
 
-**规格审批位落盘**：报告输出后，按 `runtime/test-contract.md` 计算已生成
-`test-cases.json` 的 SHA-256，并写入 `{SPECS_DIR}/.cm-specs-status` 单行 JSON：
-`{"status":"awaiting_review","at":"{时间}","features":["1.xxx",...],"testCases":[{"path":"1.xxx/test-cases.json","sha256":"..."}]}`
+**规格审批位落盘**：报告输出后真跑
+`python3 {CM_WORKFLOW_ROOT}/scripts/cm-spec-manifest.py {SPECS_DIR}`，把返回的
+`specFiles`（每个 feature 的 requirements/design/tasks 及可选 test-cases 规格语义 SHA；
+任务/AC 的运行期 `[x]` 会规范化为 `[ ]`，其余内容不忽略）
+写入 `{SPECS_DIR}/.cm-specs-status` 单行 JSON；为旧版消费者同时保留由 manifest
+筛出的 `testCases`：
+`{"status":"awaiting_review","at":"{时间}","features":["1.xxx",...],"specFiles":[{"path":"1.xxx/requirements.md","sha256":"..."}],"testCases":[]}`
 随后写 `spec_lifecycle/generated`、`spec_lifecycle/awaiting_review` 和 `run_done`，仅记录
 feature/task/case 数量、状态与 specs 路径。
 最终报告注明阶段耗时事件已记录；具体耗时由日志按 operation_id + segment 计算。

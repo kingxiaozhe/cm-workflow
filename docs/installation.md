@@ -74,8 +74,10 @@ credentials. A specs-local `运行日志.jsonl` remains the authoritative record
 ./install.sh
 ```
 
-Every destination tree is checked for conflicts before copy. Use `--yes` only
-when you intentionally accept replacement of all listed CM files:
+All CM-owned destination files are checked before any copy. The bundle is
+all-or-nothing: declining a conflict changes nothing, and a failed post-install
+check restores the previous CM files. Use `--yes` only when you intentionally
+accept replacement of all listed CM files:
 
 ```bash
 ./install.sh --yes
@@ -95,8 +97,9 @@ The optional project configuration template is installed at
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-Existing files are listed before replacement. Use `-Force` for an intentional
-unattended install:
+Existing CM files are listed before replacement. Windows uses the same
+all-or-nothing transaction and restores the previous CM files if validation
+fails. Use `-Force` for an intentional unattended install:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1 -Force
@@ -113,7 +116,9 @@ The optional project configuration template is installed at
 
 ## Optional Claude auto-update (macOS/Linux)
 
-The Bash installer copies the updater but does not activate it. The PowerShell
+The Bash installer copies the updater on a best-effort basis but does not activate
+it. A copy failure is reported as a warning and does not invalidate a core runtime
+that already passed its installed self-check. The PowerShell
 installer intentionally does not copy this Bash-based updater; Windows users who
 want it must run the Bash installer from WSL or Git Bash. To enable it on a
 supported Bash environment, add the following commands to Claude Code's

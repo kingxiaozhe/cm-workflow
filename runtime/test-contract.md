@@ -88,6 +88,10 @@ python3 {CM_WORKFLOW_ROOT}/scripts/validate-test-cases.py {test-cases.json}
 
 ## 生成条件
 
+先读取有效配置的 `policies.generate_cases`：为 `false` 时不自动新增
+`origin: generated` 用例，但用户/需求文档已提供的用例仍必须规范化并保留；为 `true`
+时按下列条件补生成。该开关不能删除已有 blocking 用例。
+
 满足任一项时，`$cm-prd` 生成该 feature 的 `test-cases.json`：
 
 - 用户或需求文档已提供测试用例；
@@ -159,25 +163,36 @@ OAuth、第三方弹窗或真实浏览器状态时才升级到 Chrome CDP。单�
 
 ## 审批与变更
 
-`$cm-prd` 写 `.cm-specs-status` 时，将存在的测试合同记录为：
+`$cm-prd` 写 `.cm-specs-status` 时，通过 `scripts/cm-spec-manifest.py` 把三件套和
+可选测试合同的**规格语义**一起绑定；`testCases` 仅为兼容旧消费者的 manifest 子集：
 
 ```json
 {
   "status": "awaiting_review",
   "at": "<ISO-8601>",
   "features": ["1.user-login"],
+  "specFiles": [
+    {
+      "path": "1.user-login/requirements.md",
+      "sha256": "<审批规范化内容的 SHA-256>"
+    }
+  ],
   "testCases": [
     {
       "path": "1.user-login/test-cases.json",
-      "sha256": "<文件字节的 SHA-256>"
+      "sha256": "<审批规范化内容的 SHA-256>"
     }
   ]
 }
 ```
 
-`$cm-ai` 在审批后核对哈希。哈希不一致说明测试目标在审批后变化：不得静默继续，
-应将状态恢复为 `awaiting_review` 并提示通过 `$cm-prd --change` 解释变更。旧 specs
-没有 `testCases` 字段时保持兼容，只校验存在文件的 JSON 语法。
+`$cm-ai` 在审批后核对完整 manifest。计算哈希时，只把明确的任务完成行
+`- [x] T-...:` 和 AC 完成行 `- [x] [AC-...]` 规范化回未勾选状态；这是 N5/N6
+写入的运行结果，不改变已批准语义。任务/AC 文案、ID、`[DROPPED]`/`[CHANGED]`、
+普通 checklist、设计或测试合同的任何变化仍会导致不匹配，必须恢复
+`awaiting_review` 并通过 `$cm-prd --change` 解释；Markdown 代码示例也按原字节保护，
+不会被当成运行状态。旧审批位没有 `specFiles` 时需要
+一次重新确认，不能把当前文件静默补记成历史上已批准的内容。
 
 ## 结果归档
 

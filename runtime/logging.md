@@ -115,7 +115,9 @@ instead of guessing their duration. It does not write logs or workflow state.
 2. Every blocking browser case writes `test_run/case_start` followed by exactly
    one `case_complete` or `case_blocked`. When a specs directory exists, update
    `.cm-status.json` at the same checkpoints so live status and the audit log do
-   not disagree; standalone `$cm-test` runs do not create that file.
+   not disagree; standalone `$cm-test` runs do not create that file. A phased
+   `test_run/start` must end in `test_run/complete`; `task_done`/`run_done` are
+   mechanically rejected while the invocation or any case remains open.
 3. A temporary profile, process, model alias, worktree, or fixture writes
    `resource/acquired` before use with `cleanup_required: true`. Its cleanup
    writes `resource/released`; cleanup failure writes `resource/cleanup_failed`

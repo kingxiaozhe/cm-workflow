@@ -69,6 +69,19 @@ Codex 订阅、Codex API、Claude/Fable 等兼容 API 和浏览器账号由各�
 - `policies.tests` 只能包含 `logic`、`commands`、`browser`；`auto_fix` 只能是
   `explicit`、`never`、`auto`；`delivery` 只能是 `diff`、`branch`、`draft-mr`。
 
+## 策略消费点
+
+| 字段 | 实际消费点 |
+| --- | --- |
+| `project.workflow` | N1/N6 的测试优先级；不改变 N1–N8 |
+| `policies.tests` | N6 可选测试类型；审批合同里的 blocking case 仍必须执行或 BLOCKED |
+| `policies.generate_cases` | cm-prd 是否自动补生成 generated cases；不删除用户用例 |
+| `policies.auto_fix` | N6 失败后 never/explicit/auto 三分支 |
+| `policies.delivery` | N1 Git 准备、N5 commit 策略和 N8 diff/branch/draft MR 收口 |
+
+策略是执行选择，不是 Git 远端授权。`draft-mr` 到 N8 仍须取得本次明确授权后才能
+push 和创建 MR/PR；未授权时保留已验证的本地分支，不伪造 delivery 事件。
+
 配置只选择已有角色和策略，不增加 Agent 数量，不改变 N1–N8，也不改变外部专家的本地
 执行、人工审批和 N4 独立审查边界。
 

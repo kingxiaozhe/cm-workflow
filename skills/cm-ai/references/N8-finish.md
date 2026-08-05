@@ -15,6 +15,27 @@
 
 `{项目根}/docs/codebase-context/` 存在时（skill 未安装但文档在 → 按 skill 文内的回写映射表手动执行，映射表就在文档同目录项目里；两者都无 → 跳过本步），按 `codebase-context` skill dev 模式步骤 3 的「变更类型 → 需更新文档」映射表，把本次全部 feature 的变更回写进参考文档（09-changelog 类型标 `dev回写`）——**地图必须跟着代码走，否则下次二开按过期地图改**。
 
+## 1.7 最终工作树与交付策略
+
+对每个代码项目分别回读有效 `DELIVERY_MODE`，执行 `git diff --check` 并核对 N8 新变更：doc-syncer 只能
+产生文档/specs 元数据；若出现源码、配置或依赖变更，说明有修改绕过任务审查，立即
+`BLOCKED`。然后按唯一分支收口：
+
+- `diff`：不 commit、不 push、不创建 MR；输出基线 SHA、`git diff --stat` 和完整
+  diff 位置。工作树 dirty 是预期交付，但不得含开工前用户改动之外的范围外文件。
+- `branch`：显式 stage N8 生成的文档/specs 文件，`git diff --cached --check` 后补一条
+  `docs: sync CM workflow artifacts` 提交；确认工作树只剩开工前用户改动。停在本地分支。
+- `draft-mr`：先完成 branch 收口，再逐仓库展示 remote、branch、目标分支和将执行的 push/MR
+  命令，**取得本次明确授权**后才执行。GitHub 使用 `gh pr create --draft`，GitLab 使用
+  `glab mr create --draft`；CLI/remote/权限缺失则 `BLOCKED` 并保留本地分支。push 与
+  MR 各自成功后才写 `delivery/push`、`delivery/pull_request`，不得以配置代替授权或
+  伪造远端结果。
+
+branch/draft-mr 在写 `run_done` 前必须确认每个代码仓库的 CM 变更已全部进入可回溯
+commit；diff 模式则逐仓库确认没有新 commit。specs 位于代码仓库外时单独报告其落盘
+路径，不尝试从代码仓库 stage 跨仓库文件。该门禁防止 doc-syncer 在“全部完成”之后
+留下未交付变更。
+
 ## 2. 生产发布待决清单
 
 **前置**：项目存在部署或平台发布形态才执行本步。信号包括 Dockerfile / CI 配置 /
