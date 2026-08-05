@@ -139,7 +139,7 @@ $cm-prd --change 2 ~/projects/my-app-specs
 ```
 
 **审批位重置**：变更落盘后，将 `{SPECS_DIR}/.cm-specs-status` 重置为
-`awaiting_review`，并按 `runtime/test-contract.md` 重算 `testCases` 路径与
-SHA-256；按 `runtime/logging.md` 写 `spec_lifecycle/changed`、
+`awaiting_review`，运行 `scripts/cm-spec-manifest.py` 重算 requirements/design/tasks/
+test-cases 的完整 `specFiles`，并同步兼容字段 `testCases`；按 `runtime/logging.md` 写 `spec_lifecycle/changed`、
 `spec_lifecycle/awaiting_review` 和 `run_done`。改过的规格等于没审过，N1 入口闸将
 再次要求确认。

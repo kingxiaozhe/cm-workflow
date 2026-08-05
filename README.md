@@ -203,9 +203,9 @@ N4 独立审查。完整边界见 [External Expert 合同](runtime/external-expe
 | --- | --- |
 | `requirements.md` / `design.md` / `tasks.md` | 需求、方案与唯一权威任务状态 |
 | `test-cases.json` | 可选的 AI 可读测试意图 |
-| `.cm-specs-status` | specs 人工审批状态 |
+| `.cm-specs-status` | specs 人工审批状态 + requirements/design/tasks/test-cases 内容 manifest |
 | `.cm-status.json` / `.cm-run.json` | 当前节点与运行恢复指针 |
-| `.reviews/` | N3 结构化 handoff、每轮 N4 verdict 与测试凭证；只作证据，不替代 `tasks.md` |
+| `.reviews/` | N3 结构化 handoff、N4 verdict、PRD 单轮处置回执与测试凭证；只作证据，不替代 `tasks.md` |
 | `运行日志.jsonl` | 项目内权威事件记录 |
 | `METRICS.md` / `LESSONS.md` | 度量与可复用经验 |
 
@@ -281,7 +281,7 @@ Codex Skills 和 `runtime/` 是权威实现。Claude Code 直接使用同一组 
 - 破坏性 migration；
 - 超出已审批任务范围的修改。
 
-安装器覆盖既有文件前会列出冲突；macOS/Linux 的可选 Claude 自动更新器只复制、不自动启用，
+安装器覆盖既有 CM 文件前会列出冲突，并以失败回滚的原子事务更新核心运行时；macOS/Linux 的可选 Claude 自动更新器只做 best-effort 复制、不自动启用，复制失败会警告但不否定已通过自检的核心安装，
 Windows PowerShell 安装器不复制这个 Bash 更新器。
 
 ## 可选可视化

@@ -6,6 +6,12 @@ QA 开始前解析 `tester` 角色并记录 `decision`/`phase: route`；浏览�
 `browser_qa`。路由元数据只说明请求的工具/模型别名，正式命令、逻辑核验和浏览器
 证据仍必须由本地 QA 合同实际产生。
 
+同时读取有效配置的 workflow profile 与 `policies.tests`：`java-backend` 优先
+commands/logic 及 API、数据库回归；`web-frontend` 优先 commands/browser；
+`cm-default` 按 logic→commands→browser。`policies.tests` 只关闭未被规格要求的可选
+类型；`test-cases.json` 中 blocking case 即使类型未列出也必须执行，环境不可用则
+`BLOCKED`，不得把配置当作跳过已审批验收的许可。
+
 ## 评分（1-5 分，总分 ≥ 8 触发）
 
 | 维度     | 1 分                 | 5 分                  |
@@ -38,7 +44,17 @@ QA 开始前解析 `tester` 角色并记录 `decision`/`phase: route`；浏览�
    累积变更: {N} 个 task | 风险评估: {总分}
 ```
 
-QA 通过 → 继续。发现问题 → 修复后重新 QA，最多 3 轮。
+QA 通过 → 继续。发现问题时，**不得在 N6 直接修改**已由 N4 绑定并在 N5 提交的
+代码或测试；先保存失败报告，再按有效配置的 `policies.auto_fix` 走唯一分支：
+
+- auto_fix: `never` → 写 `BLOCKED` 并报告，不修改。
+- auto_fix: `explicit` → 展示缺陷摘要，取得本次修复授权后调用 `$cm-fix`。
+- auto_fix: `auto` → 直接调用 `$cm-fix`，不额外停车。
+
+`$cm-fix` 必须生成自己的结构化 handoff、通过独立审查门禁并按 delivery 策略落盘；
+QA 新增或修正测试也属于该 fix diff，不能在旁路写入。修复闭环后重新 QA，总计最多
+3 轮；仍失败则 `BLOCKED`。这样原 task 的审批 SHA 不被事后覆盖，QA 修复拥有独立
+审查、提交与日志证据。
 
 实际触发 QA 时按 `../../../runtime/logging.md` 写 `test_run/start` 与
 `test_run/complete`，只记录模式、用例/通过/失败/阻塞数量、结论和报告路径；

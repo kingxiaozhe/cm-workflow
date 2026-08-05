@@ -1,7 +1,10 @@
 # N1: 初始化
 
 1. 从 `用户本轮输入` 提取 **specs 文件夹路径** 和 **代码项目路径**（可多个）
-2. 扫描 specs 下所有编号目录（`0.xxx/`、`1.xxx/`、`2.xxx/`），按编号排列
+2. 扫描 specs 下所有编号目录（`0.xxx/`、`1.xxx/`、`2.xxx/`），按编号排列；进入
+   每个 feature 时保存完整目录名为 `FEATURE_DIR`（如 `1.login`），仅把去掉编号的
+   名称保存为 `FEATURE_SLUG`（如 `login`）。前者只用于规格文件路径，后者用于
+   handoff/review 证据名，二者不得混用
 3. 每个 feature 目录须含 requirements.md、design.md、tasks.md
    - `test-cases.json` 为可选 AI 测试合同；存在时读取
      `../../../runtime/test-contract.md`，运行 `scripts/validate-test-cases.py`，
@@ -17,25 +20,31 @@
 `{SPECS_DIR}/.cm-run.json` 中仍为 running 的 run id，不另开重复运行记录。
 
 随后从代码项目根读取 `{CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py` 的有效配置，
-至少解析本轮会用到的角色和 `route_state`。配置缺失使用内置默认值；配置错误阻断
-本次运行并报告字段路径。这里只记录请求路由，不把模型别名当成已观测的后端模型。
+至少解析本轮会用到的角色、`route_state`、workflow profile 与 `policies`。配置缺失
+使用内置默认值；配置错误阻断本次运行并报告字段路径。这里只记录请求路由，不把模型
+别名当成已观测的后端模型。Profile 只决定测试优先级，不改变 N1–N8：
+`java-backend` 优先命令/API/数据库回归，`web-frontend` 优先构建/交互/browser，
+`cm-default` 按通用顺序。
 
 ## 规格审批入口闸（先于一切预检）
 
 读取 `{SPECS_DIR}/.cm-specs-status`：
 
 - `approved` → 直接继续（断点续跑不重复问）
-- `awaiting_review` 或文件缺失（旧版 specs）→ 把规格摘要卡打给用户（specs 里没有摘要卡就现场汇总：feature 数/任务数/交付形态/风险点），**等用户明确回复"开始"**；回复后把状态更新为 `approved` 并刷新 `at`，保留已有 `features`/`testCases` 字段；旧文件缺少 `testCases` 但 feature 已有测试合同时，现场计算并补入，再继续。**泛化授权语不构成审批**（"按最优解处理""继续""你看着办"这类话授权的是执行方式，不是规格内容）——收到时必须回问一次："规格摘要卡确认开始吗？"（实跑失守：diff-lens 把"按照你分析的最优解去处理"直接视为审批通过）
-- 启动参数含 `--yes` → 跳过此问直接更新为 approved，同样保留或补齐测试合同哈希（适合刚人审完立刻开跑的场景）
+- `awaiting_review` 或文件缺失（旧版 specs）→ 把规格摘要卡打给用户（specs 里没有摘要卡就现场汇总：feature 数/任务数/交付形态/风险点），**等用户明确回复"开始"**；回复后运行 `cm-spec-manifest.py`，把当前 `specFiles` 写入状态并更新为 `approved`。**泛化授权语不构成审批**（"按最优解处理""继续""你看着办"这类话授权的是执行方式，不是规格内容）——收到时必须回问一次："规格摘要卡确认开始吗？"（实跑失守：diff-lens 把"按照你分析的最优解去处理"直接视为审批通过）
+- 已是 `approved` 但缺少 `specFiles`（旧版审批位）→ 无法证明批准的是当前三件套；展示一次摘要卡并重新取得明确“开始”，随后补全 manifest。不得静默背书。
+- 启动参数含 `--yes` → 跳过此问直接基于当前文件生成 manifest 并更新为 approved（只适合刚人审完立刻开跑的场景）
 
 只有实际把状态从非 approved 改为 approved 时才写
 `spec_lifecycle/approved`；已有 approved 状态不重复伪造审批事件。
 
-批准前后还要核对 `.cm-specs-status.testCases` 中记录的 SHA-256。任一
-`test-cases.json` 哈希与审批位不一致 → 测试目标在审批后发生变化，将状态恢复为
-`awaiting_review`，写 `spec_lifecycle/changed` 并要求用 `$cm-prd --change`
-说明变更；旧 specs 没有
-`testCases` 字段时保持兼容，只做 JSON 与引用校验。
+批准后真跑
+`python3 {CM_WORKFLOW_ROOT}/scripts/cm-spec-manifest.py {SPECS_DIR} --status-file {SPECS_DIR}/.cm-specs-status`。
+任一 requirements/design/tasks/test-cases 新增、删除或**规格语义哈希**变化 → 将状态
+恢复为 `awaiting_review`，写 `spec_lifecycle/changed` 并要求用 `$cm-prd --change`
+说明变更。N5/N6 将明确的任务与 AC checkbox 从 `[ ]` 改为 `[x]` 属于运行状态，
+`cm-spec-manifest.py` 会规范化后比较，不得把正常进度误判成规格漂移；文案、ID、
+`[DROPPED]`/`[CHANGED]`、普通 checklist、设计和测试合同仍须完整保护。
 
 > 这是**入口授权门**（人把关方案端），不属于"暂停仅灾难级"约束的中途暂停，也不计入 METRICS 人工介入。实跑教训：没有这道闸，prd 生成完会被一句"继续"顺势带进开发，人审形同虚设。
 
@@ -49,10 +58,17 @@
 
 ## Git 前置检查（字段优先，询问兜底）
 
+从有效配置保存 `DELIVERY_MODE=diff|branch|draft-mr`，其分支优先于历史默认行为：
+
+- `diff` → 串行执行，不安装提交 hook，不自动 commit/push/MR；N8 交付最终 diff。
+- `branch` / `draft-mr` → 使用任务级 commit。当前在 `main`/`master` 等保护分支时，
+  基于当前 HEAD 创建 `cm/{首个feature}-{run短id}` 本地分支；已在非保护分支则沿用，
+  不覆盖或切走用户已有改动。`draft-mr` 的远端动作留到 N8 再取得明确授权。
+
 **先按项目上下文合同读「版本控制」字段**（优先 `AGENTS.md`，兼容 `.claude/CLAUDE.md`；$cm-init 或 bootstrap 已确认并落盘）：
 
-- `remote` / `local` → 按常规执行每任务提交，不询问；**顺手装双保险 hook**：`{CM_WORKFLOW_ROOT}/templates/hooks/pre-commit-cm-task-check` 存在且代码仓库 `.git/hooks/pre-commit` 未装 → 复制安装（默认警告模式，不阻断），输出一行 `🪝 任务标记双保险已装(警告模式)`
-- `none` → 直接进入 **NO_GIT 降级模式**，不询问：N5 跳过 git 提交（METRICS 备注 `no-git`）、doc-syncer 用文件扫描替代 git diff、hook 不适用、审计链降级为 METRICS + tasks 勾选
+- `remote` / `local` → 按 `DELIVERY_MODE` 执行；仅 branch/draft-mr **顺手装双保险 hook**：`{CM_WORKFLOW_ROOT}/templates/hooks/pre-commit-cm-task-check` 存在且代码仓库 `.git/hooks/pre-commit` 未装 → 复制安装（默认警告模式，不阻断），输出一行 `🪝 任务标记双保险已装(警告模式)`
+- `none` → `delivery: diff` 时进入 **NO_GIT 降级模式**：N5 跳过 git、doc-syncer 用文件扫描、审计链降级为 METRICS + tasks 勾选；配置为 branch/draft-mr 时直接 `BLOCKED`，不得声称能交付分支或 MR
 
 **字段不存在时**（项目未经 init 的兜底路径）：
 

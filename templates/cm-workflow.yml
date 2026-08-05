@@ -47,4 +47,4 @@ policies:
     - browser
   generate_cases: true
   auto_fix: explicit                 # explicit | never | auto
-  delivery: draft-mr                 # diff | branch | draft-mr
+  delivery: draft-mr                 # diff | branch | draft-mr；push/MR 仍需本次明确授权

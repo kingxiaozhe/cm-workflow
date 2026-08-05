@@ -41,6 +41,8 @@ RESERVED_FIELDS = {
 TERMINAL_EVENTS = {"done", "run_done"}
 RESOURCE_GUARDED_EVENTS = TERMINAL_EVENTS | {"task_done"}
 RESOURCE_PHASES = {"acquired", "released", "cleanup_failed"}
+TEST_RUN_GUARDED_EVENTS = TERMINAL_EVENTS | {"task_done"}
+TEST_RUN_PHASES = {"start", "case_start", "case_complete", "case_blocked", "complete"}
 LOCK_HANDLES = []
 
 
@@ -152,6 +154,24 @@ def validate_resource_event(
         raise UsageError("resource events require a valid resource_kind")
     if phase == "acquired" and data.get("cleanup_required") is not True:
         raise UsageError("resource acquisition requires cleanup_required: true")
+
+
+def validate_test_run_event(
+    event: str,
+    phase: Optional[str],
+    data: Dict[str, Any],
+) -> None:
+    if event != "test_run" or phase is None:
+        return
+    if phase not in TEST_RUN_PHASES:
+        raise UsageError(
+            "test_run events require phase start, case_start, case_complete, "
+            "case_blocked, or complete"
+        )
+    if phase.startswith("case_"):
+        case_id = data.get("case_id")
+        if not isinstance(case_id, str) or not RESOURCE_ID.fullmatch(case_id):
+            raise UsageError("test_run case events require a valid case_id")
 
 
 def resolve_directory(label: str, raw: Optional[str]) -> Optional[Path]:
@@ -375,6 +395,82 @@ def unclosed_resources(states: Dict[str, Tuple[str, str]]) -> List[str]:
     )
 
 
+def apply_test_run_transition(
+    active: bool,
+    open_cases: set[str],
+    phase: str,
+    case_id: Optional[str],
+) -> bool:
+    if phase == "start":
+        if active:
+            raise UsageError("test_run start has no preceding complete")
+        if open_cases:
+            raise UsageError("test_run state contains cases without an active run")
+        return True
+    if phase == "case_start":
+        if not active:
+            raise UsageError("test_run case_start has no active test run")
+        assert case_id is not None
+        if case_id in open_cases:
+            raise UsageError("test_run case already has an active case_start")
+        open_cases.add(case_id)
+        return active
+    if phase in {"case_complete", "case_blocked"}:
+        if not active:
+            raise UsageError("test_run case terminal phase has no active test run")
+        assert case_id is not None
+        if case_id not in open_cases:
+            raise UsageError("test_run case terminal phase has no case_start")
+        open_cases.remove(case_id)
+        return active
+    if not active:
+        raise UsageError("test_run complete has no active test run")
+    if open_cases:
+        raise UsageError("test_run complete has unfinished cases")
+    return False
+
+
+def load_test_run_state(path: Path, run_id: str) -> Tuple[bool, set[str]]:
+    if not path.is_file():
+        return False, set()
+    active = False
+    open_cases: set[str] = set()
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise UsageError("test_run state log contains invalid JSON") from exc
+            if (
+                not isinstance(value, dict)
+                or value.get("run_id") != run_id
+                or value.get("event") != "test_run"
+                or value.get("phase") is None
+            ):
+                continue
+            phase = value.get("phase")
+            if phase not in TEST_RUN_PHASES:
+                raise UsageError("test_run state log contains a malformed event")
+            case_id = value.get("case_id")
+            if phase.startswith("case_") and (
+                not isinstance(case_id, str) or not RESOURCE_ID.fullmatch(case_id)
+            ):
+                raise UsageError("test_run state log contains a malformed case event")
+            # Before invocation-level pairing was introduced, phased test records
+            # could contain a standalone complete event. Treat that historical
+            # shape as already closed; candidate writes still pass through the
+            # strict transition validator below and cannot create new orphans.
+            if phase == "complete" and not active and not open_cases:
+                continue
+            active = apply_test_run_transition(
+                active,
+                open_cases,
+                str(phase),
+                str(case_id) if isinstance(case_id, str) else None,
+            )
+    return active, open_cases
+
+
 def index_has_status(path: Path, run_id: str, status: str) -> bool:
     if not path.is_file():
         return False
@@ -525,6 +621,7 @@ def main() -> int:
         detail = validate_detail(args.detail)
         data = parse_data(args.data_json)
         validate_resource_event(event_name, phase, data)
+        validate_test_run_event(event_name, phase, data)
         at, parsed_at = parse_timestamp(args.at)
         project_root = resolve_directory("--project-root", args.project_root)
         specs_dir = resolve_directory("--specs-dir", args.specs_dir)
@@ -611,7 +708,11 @@ def main() -> int:
     authoritative_log = project_log if project_log else global_log
     assert authoritative_log is not None
     existing_authoritative_event = None
-    if event_name == "resource" or event_name in RESOURCE_GUARDED_EVENTS:
+    if (
+        event_name in {"resource", "test_run"}
+        or event_name in RESOURCE_GUARDED_EVENTS
+        or event_name in TEST_RUN_GUARDED_EVENTS
+    ):
         existing_authoritative_event = find_jsonl_event(
             authoritative_log,
             event_id,
@@ -655,6 +756,58 @@ def main() -> int:
                 str(data["resource_id"]),
                 str(data["resource_kind"]),
                 str(phase),
+            )
+        except UsageError as exc:
+            print(f"cm-log-event: {exc}", file=sys.stderr)
+            return 2
+
+    test_run_active = False
+    open_test_cases: set[str] = set()
+    if (
+        (event_name == "test_run" and phase is not None)
+        or event_name in TEST_RUN_GUARDED_EVENTS
+    ) and existing_authoritative_event is None:
+        try:
+            test_run_active, open_test_cases = load_test_run_state(
+                authoritative_log,
+                run_id,
+            )
+        except (OSError, UsageError) as exc:
+            print(
+                "cm-log-event: test_run state cannot be verified: "
+                f"{type(exc).__name__}",
+                file=sys.stderr,
+            )
+            return 2
+
+    if (
+        event_name in TEST_RUN_GUARDED_EVENTS
+        and existing_authoritative_event is None
+        and (test_run_active or open_test_cases)
+    ):
+        detail_parts = []
+        if test_run_active:
+            detail_parts.append("active invocation")
+        if open_test_cases:
+            detail_parts.append("open cases: " + ", ".join(sorted(open_test_cases)))
+        print(
+            "cm-log-event: completion blocked by incomplete test_run: "
+            + "; ".join(detail_parts),
+            file=sys.stderr,
+        )
+        return 2
+
+    if (
+        event_name == "test_run"
+        and phase is not None
+        and existing_authoritative_event is None
+    ):
+        try:
+            apply_test_run_transition(
+                test_run_active,
+                open_test_cases,
+                str(phase),
+                str(data["case_id"]) if "case_id" in data else None,
             )
         except UsageError as exc:
             print(f"cm-log-event: {exc}", file=sys.stderr)

@@ -18,10 +18,12 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 ## 常用命令
 
 - Codex 安装: `./install-codex.sh`（装完新开会话跑 `$cm-check`）
-- Claude 安装: `./install.sh`（含覆盖确认，装完跑 `/cm-check`）
-- Windows 安装: `powershell -ExecutionPolicy Bypass -File install.ps1`
+- Claude 安装: `./install.sh`（核心运行时原子更新/失败回滚；可选更新器 best-effort，装完跑 `/cm-check`）
+- Windows 安装: `powershell -ExecutionPolicy Bypass -File install.ps1`（同样原子更新）
 - 一致性自检: `./scripts/cm-check-runtime.sh`
 - 全局日志夹具: `./scripts/cm-check-runtime.sh --log-fixtures`
+- 审批 manifest: `python3 scripts/cm-spec-manifest.py {specs}`
+- PRD 单轮恢复夹具: `python3 scripts/test-cm-prd-review-gate.py`
 - 公开包检查: `python3 scripts/validate-public-repo.py`
 - 安全扫描: `python3 scripts/scan-public-safety.py`
 - 查看版本: `cat VERSION`

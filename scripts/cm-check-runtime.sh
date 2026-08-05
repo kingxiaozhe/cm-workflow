@@ -257,6 +257,10 @@ require_file "scripts/test-task-gate.py"
 require_file "scripts/cm_workflow_config.py"
 require_file "scripts/test-workflow-config.py"
 require_file "scripts/validate-test-cases.py"
+require_file "scripts/cm-spec-manifest.py"
+require_file "scripts/test-spec-manifest.py"
+require_file "scripts/cm-prd-review-gate.py"
+require_file "scripts/test-cm-prd-review-gate.py"
 
 if [ -n "$PYTHON_BIN" ]; then
   "$PYTHON_BIN" "$ROOT/scripts/test-cm-log-event.py" ||
@@ -267,6 +271,10 @@ if [ -n "$PYTHON_BIN" ]; then
     fail "cm workflow config fixture failed"
   "$PYTHON_BIN" "$ROOT/scripts/test-task-gate.py" ||
     fail "cm task gate fixture failed"
+  "$PYTHON_BIN" "$ROOT/scripts/test-spec-manifest.py" ||
+    fail "cm spec manifest fixture failed"
+  "$PYTHON_BIN" "$ROOT/scripts/test-cm-prd-review-gate.py" ||
+    fail "cm-prd review recovery fixture failed"
   if [ -n "$PROJECT_PATH" ]; then
     if [ -n "$CONFIG_PATH" ]; then
       if [ "$PRINT_EFFECTIVE" -eq 1 ]; then
@@ -422,6 +430,11 @@ grep -Fq 'RESOURCE_GUARDED_EVENTS = TERMINAL_EVENTS | {"task_done"}' \
   grep -Fq 'completion blocked by unclosed resources' \
     "$ROOT/scripts/cm-log-event.py" ||
   fail "log writer does not enforce resource closure on completion"
+grep -Fq 'TEST_RUN_GUARDED_EVENTS = TERMINAL_EVENTS | {"task_done"}' \
+  "$ROOT/scripts/cm-log-event.py" &&
+  grep -Fq 'completion blocked by incomplete test_run' \
+    "$ROOT/scripts/cm-log-event.py" ||
+  fail "log writer does not enforce test_run closure on completion"
 grep -Fq '本 Skill 不重复写调用级边界' \
   "$ROOT/skills/cm-qa-engineer/SKILL.md" &&
   grep -Fq 'standalone `$cm-test` 不创建该文件' \
@@ -502,6 +515,34 @@ grep -Fq '仅修改存量模块不再单独触发本步' \
   grep -Fq '跳过(低风险,并入独立规格审查)' \
     "$ROOT/skills/cm-prd/SKILL.md" ||
   fail "cm-prd low-risk design review merge is not fully wired"
+
+prd_design_review_section=$(sed -n '/^### Step 9\.5:/,/^### Step 10:/p' \
+  "$ROOT/skills/cm-prd/SKILL.md")
+prd_spec_review_section=$(sed -n '/^### Step 10\.6:/,/^### Step 11:/p' \
+  "$ROOT/skills/cm-prd/SKILL.md")
+[ "$(printf '%s' "$prd_design_review_section" | grep -Fc 'ROUND_LIMIT=1')" -eq 1 ] &&
+  [ "$(printf '%s' "$prd_spec_review_section" | grep -Fc 'ROUND_LIMIT=1')" -eq 1 ] &&
+  printf '%s' "$prd_design_review_section" | grep -Fq '后续 10.5 自检' &&
+  printf '%s' "$prd_spec_review_section" | grep -Fq '重跑一次 10.5 自检' &&
+  printf '%s' "$prd_design_review_section" | grep -Fq '禁止 review → 修正 → 再 review' &&
+  printf '%s' "$prd_spec_review_section" | grep -Fq '禁止 review → 修正 → 再 review' &&
+  printf '%s' "$prd_design_review_section" | grep -Fq '包括 `self-degraded`' &&
+  printf '%s' "$prd_spec_review_section" | grep -Fq '包括 `self-degraded`' &&
+  printf '%s' "$prd_design_review_section" | grep -Fq '不得生成 `design-r2.md`' &&
+  printf '%s' "$prd_spec_review_section" | grep -Fq '不得生成 `split-r2.md`' &&
+  grep -Fq 'cm-prd Step 9.5/10.6 固定为一次审查调用' \
+    "$ROOT/runtime/review.md" &&
+  grep -Fq 'The rules in this section apply to N4 reviews of implemented task diffs.' \
+    "$ROOT/runtime/review.md" &&
+  grep -Fq 'Maximum two review rounds per task.' "$ROOT/runtime/review.md" &&
+  grep -Fq 'reviewer/independent/at/scope' "$ROOT/runtime/review.md" ||
+  fail "cm-prd pre-implementation reviews are not mechanically limited to one round"
+printf '%s' "$prd_design_review_section" | grep -Fq 'cm-prd-review-gate.py inspect --stage design' &&
+  printf '%s' "$prd_spec_review_section" | grep -Fq 'cm-prd-review-gate.py inspect --stage split' &&
+  printf '%s' "$prd_design_review_section" | grep -Fq 'resume_disposition' &&
+  printf '%s' "$prd_spec_review_section" | grep -Fq 'resume_disposition' &&
+  grep -Fq 'r1 内容哈希漂移' "$ROOT/runtime/review.md" ||
+  fail "cm-prd single-round reviews have no crash-safe disposition recovery gate"
 
 require_file "skills/cm-prd/references/context-scope.md"
 grep -Fq 'references/context-scope.md' "$ROOT/skills/cm-prd/SKILL.md" &&
@@ -646,6 +687,20 @@ grep -q "配置错误" "$ROOT/skills/external-expert/SKILL.md" &&
   fail "external-expert Skill does not block invalid project configuration"
 grep -q -- "--print-effective" "$ROOT/skills/cm-check/SKILL.md" ||
   fail "cm-check does not expose the effective workflow config"
+grep -Fq 'policies.generate_cases' "$ROOT/skills/cm-prd/SKILL.md" &&
+  grep -Fq 'policies.tests' "$ROOT/skills/cm-ai/references/N6-qa-eval.md" &&
+  grep -Fq 'policies.auto_fix' "$ROOT/skills/cm-ai/references/N6-qa-eval.md" &&
+  grep -Fq 'DELIVERY_MODE=diff|branch|draft-mr' "$ROOT/skills/cm-ai/references/N1-init.md" &&
+  grep -Fq 'delivery/pull_request' "$ROOT/skills/cm-ai/references/N8-finish.md" ||
+  fail "workflow policies are parsed but not consumed by their execution nodes"
+grep -Fq 'cm-spec-manifest.py' "$ROOT/skills/cm-prd/SKILL.md" &&
+  grep -Fq -- '--status-file' "$ROOT/skills/cm-ai/references/N1-init.md" &&
+  grep -Fq 'specFiles' "$ROOT/runtime/test-contract.md" ||
+  fail "spec approval does not bind the full requirements/design/tasks/test manifest"
+grep -Fq '已审批 design.md' "$ROOT/skills/cm-miniprogram-engineer/SKILL.md" &&
+  grep -Fq '不得重复询问' "$ROOT/skills/cm-miniprogram-engineer/SKILL.md" &&
+  grep -Fq '规格缺失或互相矛盾' "$ROOT/skills/cm-miniprogram-engineer/SKILL.md" ||
+  fail "miniprogram execution can reopen an approved design-baseline decision"
 if [ "$MODE" = "plugin" ]; then
   grep -q "cm-workflow.yml" "$ROOT/install.sh" ||
     fail "Claude Bash installer does not package the workflow config template"
@@ -657,8 +712,18 @@ fi
 
 grep -q "runtime/review.md" "$ROOT/skills/cm-fix/SKILL.md" ||
   fail "cm-fix does not reference the independent review contract"
-grep -Fq 'ls {SPECS_DIR}/.reviews/fix-{slug}-r*.md' "$ROOT/skills/cm-fix/SKILL.md" ||
-  fail "cm-fix is missing the mechanical post-fix review evidence gate"
+grep -Fq 'T-FIX-{slug}' "$ROOT/skills/cm-fix/SKILL.md" &&
+  grep -Fq 'cm-task-gate.py check-n4' "$ROOT/skills/cm-fix/SKILL.md" &&
+  grep -Fq 'cm-task-gate.py check-n5' "$ROOT/skills/cm-fix/SKILL.md" ||
+  fail "cm-fix is missing the content-bound post-fix review gate"
+grep -Fq 'T-REFACTOR-{slug}' "$ROOT/skills/cm-refactor/SKILL.md" &&
+  grep -Fq 'cm-task-gate.py check-n4' "$ROOT/skills/cm-refactor/SKILL.md" &&
+  grep -Fq 'cm-task-gate.py check-n5' "$ROOT/skills/cm-refactor/SKILL.md" ||
+  fail "cm-refactor is missing the content-bound review gate"
+grep -Fq 'auto_fix: `never`' "$ROOT/skills/cm-ai/references/N6-qa-eval.md" &&
+  grep -Fq '调用 `$cm-fix`' "$ROOT/skills/cm-ai/references/N6-qa-eval.md" &&
+  grep -Fq '不得在 N6 直接修改' "$ROOT/skills/cm-ai/references/N6-qa-eval.md" ||
+  fail "N6 QA repairs can bypass the structured fix review path"
 
 grep -q "task-handoff.schema.json" "$ROOT/runtime/task-gates.md" ||
   fail "task gate contract does not bind the handoff schema"
@@ -676,7 +741,11 @@ grep -q "verdict: approved | changes_requested | blocked" "$ROOT/skills/cm-ai/re
   grep -q "handoff_sha256:" "$ROOT/skills/cm-ai/references/N4-review.md" ||
   fail "N4 evidence cannot drive the mechanical review transition"
 grep -q "mark-done" "$ROOT/skills/cm-ai/references/N5-mark-done.md" &&
-  grep -q "verdict: approved" "$ROOT/skills/cm-ai/references/N5-mark-done.md" ||
+  grep -q "verdict: approved" "$ROOT/skills/cm-ai/references/N5-mark-done.md" &&
+  grep -Fq -- '--tasks {SPECS_DIR}/{FEATURE_DIR}/tasks.md' \
+    "$ROOT/skills/cm-ai/references/N5-mark-done.md" &&
+  grep -Fq -- '--tasks {SPECS_DIR}/{FEATURE_DIR}/tasks.md' \
+    "$ROOT/runtime/task-gates.md" ||
   fail "N5 does not require an approved current-attempt review"
 
 if [ "$MODE" = "plugin" ]; then

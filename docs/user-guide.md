@@ -88,7 +88,7 @@ CM Workflow 经常同时使用两个目录：
 ├── .cm-status.json
 ├── .cm-run.json               ← 当前/最近一次运行标识
 ├── .cm-run.lock               ← 并发写入锁（自动维护）
-├── .reviews/                  ← task handoff、独立 Review 与测试证据
+├── .reviews/                  ← task handoff、独立 Review、PRD 处置回执与测试证据
 └── 运行日志.jsonl
 ```
 
@@ -100,7 +100,7 @@ CM Workflow 经常同时使用两个目录：
 
 如果不同项目需要不同角色或模型，可以把
 `{CM_WORKFLOW_ROOT}/templates/cm-workflow.yml` 复制到代码项目根目录，命名为
-`.cm-workflow.yml` 后修改。它只配置角色、适配器、模型别名和测试策略，不保存任何
+`.cm-workflow.yml` 后修改。它只配置角色、适配器、模型别名和测试/交付策略，不保存任何
 凭据；配置缺失时仍使用当前默认流程。检查有效配置：
 
 ```bash
@@ -114,6 +114,10 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py --project {代码项目
 观察到它实际执行；不要把配置别名当成后端模型或测试结果。
 角色到节点的映射、`route_state` 和日志字段见
 `{CM_WORKFLOW_ROOT}/runtime/workflow-routing.md`。
+
+策略会实际投影到流程：`generate_cases` 控制自动补测试用例，`tests` 控制可选 QA
+类型，`auto_fix` 控制 QA 失败后的修复方式，`delivery` 选择 diff、本地 branch 或
+Draft MR。`draft-mr` 仍会在 push/MR 前询问一次明确授权，配置本身不是远端权限。
 
 ## 第一次完整开发
 
@@ -422,6 +426,8 @@ $cm-ai ~/projects/my-app-specs ~/code/my-app
 
 工作流会从 `tasks.md`、`.cm-status.json`、`.cm-run.json`、`.reviews/` 和
 `运行日志.jsonl` 重建上下文，并从未完成位置继续。
+任务和 AC 的正常 `[x]` 进度不会触发重新审批；如果任务/AC 文案、方案或测试合同
+发生变化，入口仍会恢复为 `awaiting_review`，要求重新审查规格。
 
 ## 常见卡点
 

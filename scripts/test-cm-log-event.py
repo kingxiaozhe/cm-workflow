@@ -367,6 +367,143 @@ def main() -> int:
         assert lifecycle_rows[2]["recovered"] is True
         assert lifecycle_rows[2]["impact"] == "none"
 
+        qa_specs = root / "qa-terminal-specs"
+        qa_specs.mkdir()
+        qa_home = root / "qa-terminal-logs"
+        qa_common = [
+            "--workflow",
+            "cm-ai",
+            "--runtime",
+            "codex",
+            "--project-root",
+            str(project),
+            "--specs-dir",
+            str(qa_specs),
+        ]
+        invoke(
+            [*qa_common, "--event", "run_start", "--detail", "开始 QA 终态夹具"],
+            log_home=qa_home,
+        )
+        invoke(
+            [
+                *qa_common,
+                "--event",
+                "test_run",
+                "--phase",
+                "start",
+                "--detail",
+                "开始浏览器 QA",
+            ],
+            log_home=qa_home,
+        )
+        invoke(
+            [
+                *qa_common,
+                "--event",
+                "test_run",
+                "--phase",
+                "case_start",
+                "--detail",
+                "开始阻断用例",
+                "--data-json",
+                '{"case_id":"TC-BROWSER-001","blocking":true}',
+            ],
+            log_home=qa_home,
+        )
+        unfinished_case, _ = invoke(
+            [*qa_common, "--event", "run_done", "--detail", "未闭合用例不能结束"],
+            log_home=qa_home,
+            expected_exit=2,
+        )
+        assert "completion blocked by incomplete test_run" in unfinished_case.stderr
+        invoke(
+            [
+                *qa_common,
+                "--event",
+                "test_run",
+                "--phase",
+                "case_complete",
+                "--detail",
+                "阻断用例已通过",
+                "--data-json",
+                '{"case_id":"TC-BROWSER-001","result":"PASS"}',
+            ],
+            log_home=qa_home,
+        )
+        unfinished_run, _ = invoke(
+            [*qa_common, "--event", "run_done", "--detail", "QA invocation 未闭合不能结束"],
+            log_home=qa_home,
+            expected_exit=2,
+        )
+        assert "completion blocked by incomplete test_run" in unfinished_run.stderr
+        invoke(
+            [
+                *qa_common,
+                "--event",
+                "test_run",
+                "--phase",
+                "complete",
+                "--detail",
+                "浏览器 QA 完成",
+                "--data-json",
+                '{"result":"PASS","cases":1,"passed":1,"failed":0,"blocked":0}',
+            ],
+            log_home=qa_home,
+        )
+        invoke(
+            [*qa_common, "--event", "run_done", "--detail", "QA 闭合后允许结束"],
+            log_home=qa_home,
+        )
+
+        legacy_complete_specs = root / "legacy-complete-specs"
+        legacy_complete_specs.mkdir()
+        legacy_complete_home = root / "legacy-complete-logs"
+        legacy_complete_common = [
+            "--workflow",
+            "cm-ai",
+            "--runtime",
+            "codex",
+            "--project-root",
+            str(project),
+            "--specs-dir",
+            str(legacy_complete_specs),
+        ]
+        _, legacy_complete_started = invoke(
+            [
+                *legacy_complete_common,
+                "--event",
+                "run_start",
+                "--detail",
+                "开始历史 complete 兼容夹具",
+            ],
+            log_home=legacy_complete_home,
+        )
+        assert legacy_complete_started is not None
+        legacy_complete_log = Path(str(legacy_complete_started["project_log"]))
+        with legacy_complete_log.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "run_id": legacy_complete_started["run_id"],
+                        "event": "test_run",
+                        "phase": "complete",
+                        "detail": "升级前写入的已完成测试记录",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+        invoke(
+            [
+                *legacy_complete_common,
+                "--event",
+                "run_done",
+                "--detail",
+                "历史 complete 不应阻塞终态",
+            ],
+            log_home=legacy_complete_home,
+        )
+
         malformed_home = root / "malformed-resource-logs"
         malformed, _ = invoke(
             [
@@ -988,6 +1125,25 @@ def main() -> int:
         broken_home.write_text("occupied", encoding="utf-8")
         degraded_specs = root / "degraded-specs"
         degraded_specs.mkdir()
+        invoke(
+            [
+                "--workflow",
+                "cm-test",
+                "--event",
+                "test_run",
+                "--phase",
+                "start",
+                "--runtime",
+                "codex",
+                "--project-root",
+                str(project),
+                "--specs-dir",
+                str(degraded_specs),
+                "--detail",
+                "开始降级镜像测试",
+            ],
+            log_home=broken_home,
+        )
         _, degraded = invoke(
             [
                 "--workflow",
@@ -1011,8 +1167,16 @@ def main() -> int:
         assert degraded["global_written"] is False
         assert degraded["degraded"] is True
         degraded_rows = read_jsonl(degraded_specs / "运行日志.jsonl")
-        assert [row["event"] for row in degraded_rows] == ["test_run", "degrade"]
-        assert degraded_rows[-1]["phase"] == "global_log"
+        degraded_events = [row["event"] for row in degraded_rows]
+        assert degraded_events == [
+            "test_run",
+            "degrade",
+            "test_run",
+        ], degraded_events
+        assert any(
+            row["event"] == "degrade" and row.get("phase") == "global_log"
+            for row in degraded_rows
+        )
 
         invoke(
             [

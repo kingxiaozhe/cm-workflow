@@ -432,9 +432,23 @@ def check_n5(args: argparse.Namespace) -> Mapping[str, object]:
 def mark_done(args: argparse.Namespace) -> Mapping[str, object]:
     approval = dict(check_n5(args))
     tasks_path = Path(args.tasks)
-    expected_tasks = Path(args.reviews_dir).parent / "tasks.md"
-    if tasks_path.resolve() != expected_tasks.resolve():
-        raise GateError(f"tasks file must be the specs-local authority: {expected_tasks}")
+    feature = require_feature(args.feature)
+    specs_root = Path(args.reviews_dir).parent.resolve()
+    resolved_tasks = tasks_path.resolve()
+    feature_dir = resolved_tasks.parent.name
+    feature_matches = feature_dir == feature or re.fullmatch(
+        rf"\d+\.{re.escape(feature)}",
+        feature_dir,
+    )
+    if (
+        resolved_tasks.name != "tasks.md"
+        or resolved_tasks.parent.parent != specs_root
+        or feature_matches is None
+    ):
+        raise GateError(
+            "tasks file must be the matching feature-local authority under "
+            f"{specs_root}"
+        )
     if tasks_path.is_symlink():
         raise GateError(f"tasks file must not be a symlink: {tasks_path}")
     try:

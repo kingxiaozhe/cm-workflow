@@ -184,7 +184,9 @@ def main() -> int:
         write_review(review2, attempt=2, round_number=2, verdict="approved", handoff=handoff2)
         invoke(["check-n5", "--handoff", str(handoff2), "--reviews-dir", str(reviews), "--feature", "login", "--task", "T-001"])
 
-        tasks = specs / "tasks.md"
+        feature_tasks_dir = specs / "1.login"
+        feature_tasks_dir.mkdir()
+        tasks = feature_tasks_dir / "tasks.md"
         tasks.write_text("- [ ] T-001: implement login\n- [ ] T-010: unrelated\n", encoding="utf-8")
         marked = invoke(["mark-done", "--handoff", str(handoff2), "--reviews-dir", str(reviews), "--feature", "login", "--task", "T-001", "--tasks", str(tasks)])
         assert json.loads(marked.stdout)["outcome"] == "marked_done"
@@ -259,6 +261,41 @@ def main() -> int:
             reviewer="self-degraded",
         )
         invoke(["check-n5", "--handoff", str(degraded_handoff), "--reviews-dir", str(reviews), "--feature", "login", "--task", "T-008"])
+
+        for feature_name, task_id in (
+            ("fix-session-timeout", "T-FIX-session-timeout"),
+            ("refactor-session-store", "T-REFACTOR-session-store"),
+        ):
+            synthetic_handoff = reviews / f"{feature_name}-{task_id}-a1-handoff.json"
+            synthetic_review = reviews / f"{feature_name}-{task_id}-r1.md"
+            write_handoff(synthetic_handoff, task_id=task_id)
+            invoke(
+                [
+                    "check-n4",
+                    "--handoff",
+                    str(synthetic_handoff),
+                    "--reviews-dir",
+                    str(reviews),
+                    "--feature",
+                    feature_name,
+                    "--task",
+                    task_id,
+                ]
+            )
+            write_review(synthetic_review, task_id=task_id, handoff=synthetic_handoff)
+            invoke(
+                [
+                    "check-n5",
+                    "--handoff",
+                    str(synthetic_handoff),
+                    "--reviews-dir",
+                    str(reviews),
+                    "--feature",
+                    feature_name,
+                    "--task",
+                    task_id,
+                ]
+            )
 
         tampered_handoff = reviews / "login-T-011-a1-handoff.json"
         tampered_review = reviews / "login-T-011-r1.md"

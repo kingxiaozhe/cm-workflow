@@ -71,9 +71,37 @@ description: 用户明确要求“只整理结构，不改变行为”时使用�
 
 1. **重构**:只动结构不动行为;**禁止顺手修 bug**(与 N3"禁止顺手重构"互为镜像)——发现缺陷 → 停下记录现象与位置进档案,收口后走 `$cm-fix`。夹带修复会毁掉差分判官:行为变了,是重构失手还是修复生效?无法归因
 2. **等价验证**:基线全绿 + 差分逐项一致;**任何行为差异 = 该步失败回滚**——"差异其实更合理"也不例外,那是行为变更,走 prd --change 立项后再做
-3. **审查**：按 N4 的独立审查通道，≤2 轮；**投喂**：全部 diff + RULEBOOK（批量道）+ 判官证据（judge-report/diff-report 摘要）。重点：有无夹带行为变更、结构是否真的改善、差分覆盖是否充分。凭证落到 `{SPECS_DIR}/.reviews/refactor-{slug}-r{轮次}.md`，**无凭证不许进第 4 步**
-4. **落盘**:档案 `{SPECS_DIR}/refactors/{YYYYMMDD}-{slug}.md`(动机指标改前改后对照 / 等价验证方式与结果 / 发现未修缺陷清单);METRICS 行 Feature 列写 `refactor`;commit `refactor: {一句话} (档案: refactors/xxx.md)`
+3. **审查**：执行下方「结构化审查门禁」；重点检查有无夹带行为变更、结构是否真的改善、差分覆盖是否充分
+4. **落盘**:档案 `{SPECS_DIR}/refactors/{YYYYMMDD}-{slug}.md`(动机指标改前改后对照 / 等价验证方式与结果 / 发现未修缺陷清单);METRICS 行 Feature 列写 `refactor`;delivery=diff 不提交，branch/draft-mr 才 commit `refactor: {一句话} (档案: refactors/xxx.md)`
 5. **规则毕业**:本次收敛出的持久约定(如"路由文件导出形态")→ 写进代码项目 `.claude/rules/` 对应文件——一次重构的规则,变成项目的永久基因;**项目无 `.claude/rules/`(未经 $cm-init)→ 降级记入 LESSONS `[仅记忆]` 并在档案注明,提示补跑 $cm-init 后迁入**(实跑 DEV-003:diff-lens 未 init,毕业规则无处可去)
+
+### 结构化审查门禁（两条轨道共用）
+
+`{slug}` 先规范成跨平台安全的 ASCII kebab；令
+`REVIEW_FEATURE=refactor-{slug}`、`REVIEW_TASK=T-REFACTOR-{slug}`。主执行者按真实
+diff 和判官证据写
+`{SPECS_DIR}/.reviews/refactor-{slug}-T-REFACTOR-{slug}-a{attempt}-handoff.json`，
+然后真跑：
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n4 \
+  --handoff {HANDOFF_PATH} --reviews-dir {SPECS_DIR}/.reviews \
+  --feature refactor-{slug} --task T-REFACTOR-{slug}
+```
+
+独立审查投喂全部 diff + RULEBOOK（批量道）+ judge-report/diff-report 摘要；凭证严格落
+`{SPECS_DIR}/.reviews/refactor-{slug}-T-REFACTOR-{slug}-r{attempt}.md` 并绑定当前
+handoff SHA。审查后必须真跑：
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n5 \
+  --handoff {HANDOFF_PATH} --reviews-dir {SPECS_DIR}/.reviews \
+  --feature refactor-{slug} --task T-REFACTOR-{slug}
+```
+
+只有当前 attempt 的 `verdict: approved` 才能落盘/提交；`changes_requested` 生成
+attempt 2 并复审，第 2 轮仍有阻断项写 `blocked`。旧凭证、空壳凭证或文件存在检查
+均不得放行。
 
 ## 批量道(五站 + 三条修上游回环)
 
@@ -119,7 +147,7 @@ description: 用户明确要求“只整理结构，不改变行为”时使用�
 
 ### 收口(同轻量道 3-5 + 追加)
 
-- 审查凭证、档案(落 `refactors/{slug}/` 目录,与 RULEBOOK 同处)、METRICS、规则毕业照常
+- 先通过「结构化审查门禁」，再写档案(落 `refactors/{slug}/` 目录,与 RULEBOOK 同处)、METRICS、规则毕业
 - **偏差日志**:跳过的环节、放宽的检查,一行一条记入档案 `DEV-{序号} | 日期 | 跳过了什么 | 谁批准`——没人记录的偏差就是没人批准的偏差
 - **结构同步**:重构天然改变文件结构——按 cm-doc-syncer 口径同步项目 README / CLAUDE.md 的目录与模块描述(调用 skill,不动其命令文件);收口清单含**波及物核对**:批内全部「需配合事项」逐条销账(实跑失误:U1 汇报的 README 同步在收口被漏,靠事后审计才发现)
 
@@ -154,7 +182,7 @@ description: 用户明确要求“只整理结构，不改变行为”时使用�
 | 明细层(判官/差分/批次/回滚) | `refactors/{slug}/` 下 judge-report.md · diff-report.md · batch-log.jsonl(批量道) |
 | 可行性摘要 + 档案 | `{SPECS_DIR}/refactors/{日期}-{slug}.md`(批量道为同名目录) |
 | RULEBOOK(批量道) | `refactors/{slug}/RULEBOOK.md` |
-| 审查凭证 | `{SPECS_DIR}/.reviews/refactor-{slug}-r{N}.md` |
+| 审查凭证 | `{SPECS_DIR}/.reviews/refactor-{slug}-T-REFACTOR-{slug}-r{N}.md` |
 | 度量 | METRICS.md 追加行,Feature 列 `refactor` |
 | 毕业规则 | 代码项目 `.claude/rules/` 对应文件 |
 | 备忘销账 | LESSONS.md 待触发备忘状态更新 |
