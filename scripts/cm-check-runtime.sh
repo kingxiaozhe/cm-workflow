@@ -211,7 +211,9 @@ case "$REQUESTED_MODE" in
     ;;
   --log-fixtures)
     if python_bin="$(find_python)"; then
-      "$python_bin" "$ROOT/scripts/test-cm-log-event.py"
+      "$python_bin" "$ROOT/scripts/test-cm-log-event.py" &&
+        "$python_bin" "$ROOT/scripts/test-cm-usage-report.py" &&
+        "$python_bin" "$ROOT/scripts/test-cm-openai-compatible-call.py"
       exit $?
     fi
     echo "cm global log fixture: FAILED (Python 3 not found)" >&2
@@ -240,6 +242,7 @@ fi
 require_file "runtime/project-context.md"
 require_file "runtime/external-expert.md"
 require_file "runtime/logging.md"
+require_file "runtime/model-efficiency.md"
 require_file "runtime/orchestration.md"
 require_file "runtime/review.md"
 require_file "runtime/task-gates.md"
@@ -252,6 +255,10 @@ require_file "scripts/cm-log-event.py"
 require_file "scripts/test-cm-log-event.py"
 require_file "scripts/cm-prd-timing.py"
 require_file "scripts/test-cm-prd-timing.py"
+require_file "scripts/cm-usage-report.py"
+require_file "scripts/test-cm-usage-report.py"
+require_file "scripts/cm-openai-compatible-call.py"
+require_file "scripts/test-cm-openai-compatible-call.py"
 require_file "scripts/cm-task-gate.py"
 require_file "scripts/test-task-gate.py"
 require_file "scripts/cm_workflow_config.py"
@@ -267,6 +274,10 @@ if [ -n "$PYTHON_BIN" ]; then
     fail "cm global log fixture failed"
   "$PYTHON_BIN" "$ROOT/scripts/test-cm-prd-timing.py" ||
     fail "cm-prd timing fixture failed"
+  "$PYTHON_BIN" "$ROOT/scripts/test-cm-usage-report.py" ||
+    fail "cm usage report fixture failed"
+  "$PYTHON_BIN" "$ROOT/scripts/test-cm-openai-compatible-call.py" ||
+    fail "cm openai-compatible adapter fixture failed"
   "$PYTHON_BIN" "$ROOT/scripts/test-workflow-config.py" ||
     fail "cm workflow config fixture failed"
   "$PYTHON_BIN" "$ROOT/scripts/test-task-gate.py" ||
@@ -444,6 +455,61 @@ grep -Fq "sensitive log field is forbidden" "$ROOT/scripts/cm-log-event.py" ||
   fail "global log writer does not reject sensitive field names"
 grep -Fq -- "--log-fixtures" "$ROOT/scripts/cm-check-runtime.sh" ||
   fail "global logging fixtures have no reproducible entry"
+grep -Fq 'missing_usage_policy": "unavailable-not-guessed"' \
+  "$ROOT/scripts/cm-usage-report.py" ||
+  fail "usage report can guess missing model usage"
+grep -Fq 'unresolved_claim_policy": "reported-not-counted"' \
+  "$ROOT/scripts/cm-usage-report.py" ||
+  fail "usage report silently drops unresolved model-call claims"
+grep -Fq 'model_usage contains unsupported fields' \
+  "$ROOT/scripts/cm-log-event.py" ||
+  fail "model usage logs have no strict field allowlist"
+grep -Fq 'model_usage requires a valid call_id' \
+  "$ROOT/scripts/cm-log-event.py" ||
+  fail "model usage calls have no stable idempotency key"
+grep -Fq 'call_id already claimed; use a new call_id' \
+  "$ROOT/scripts/cm-openai-compatible-call.py" &&
+  grep -Fq '"model_call"' "$ROOT/scripts/cm-openai-compatible-call.py" &&
+  grep -Fq 'model_call events require phase claimed' "$ROOT/scripts/cm-log-event.py" ||
+  fail "managed model calls are not atomically claimed before HTTP"
+grep -Fq 'API key contains unsupported characters' \
+  "$ROOT/scripts/cm-openai-compatible-call.py" &&
+  grep -Fq 'dynamic_packet.{field} must match --{field}' \
+  "$ROOT/scripts/cm-openai-compatible-call.py" &&
+  grep -Fq 'return 4' "$ROOT/scripts/cm-openai-compatible-call.py" ||
+  fail "managed model-call failure boundaries are incomplete"
+grep -Fq 'openai-compatible requires source api' \
+  "$ROOT/scripts/cm_workflow_config.py" ||
+  fail "openai-compatible routes can be mislabeled as local"
+grep -Fq 'CM_OPENAI_COMPATIBLE_ENABLED' \
+  "$ROOT/scripts/cm-openai-compatible-call.py" &&
+  grep -Fq 'NoRedirectHandler' "$ROOT/scripts/cm-openai-compatible-call.py" &&
+  grep -Fq 'ProxyHandler({})' "$ROOT/scripts/cm-openai-compatible-call.py" &&
+  grep -Fq 'managed-adapter' "$ROOT/runtime/workflow-routing.md" &&
+  grep -Fq 'adapter == "openai-compatible"' "$ROOT/scripts/cm_workflow_config.py" ||
+  fail "openai-compatible route is not wired to the managed call boundary"
+grep -Fq 'identifies a callable boundary, not proof that a call occurred' \
+  "$ROOT/runtime/review.md" ||
+  fail "managed adapter route metadata can be mistaken for call evidence"
+grep -Fq '"outcomes": {outcome: 0 for outcome in OUTCOME_ORDER}' \
+  "$ROOT/scripts/cm-usage-report.py" ||
+  fail "usage report does not aggregate call outcomes"
+grep -Fq 'reducing requirements, tests, independent review, approval, or evidence' \
+  "$ROOT/runtime/model-efficiency.md" ||
+  fail "model efficiency can weaken quality gates"
+grep -Fq 'A Skill that cannot see the call boundary' \
+  "$ROOT/runtime/model-efficiency.md" ||
+  fail "model efficiency can fabricate usage"
+
+for consumer in \
+  skills/cm-prd/SKILL.md \
+  skills/cm-ai/SKILL.md \
+  skills/cm-fix/SKILL.md \
+  skills/cm-refactor/SKILL.md \
+  skills/cm-test/SKILL.md; do
+  grep -q "runtime/model-efficiency.md" "$ROOT/$consumer" ||
+    fail "model efficiency contract is not wired into $consumer"
+done
 
 for consumer in \
   skills/cm-prd/SKILL.md \

@@ -43,6 +43,51 @@ RESOURCE_GUARDED_EVENTS = TERMINAL_EVENTS | {"task_done"}
 RESOURCE_PHASES = {"acquired", "released", "cleanup_failed"}
 TEST_RUN_GUARDED_EVENTS = TERMINAL_EVENTS | {"task_done"}
 TEST_RUN_PHASES = {"start", "case_start", "case_complete", "case_blocked", "complete"}
+MODEL_USAGE_TOKEN_FIELDS = {
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+}
+MODEL_USAGE_STATES = {"observed", "unavailable"}
+MODEL_USAGE_OUTCOMES = {"success", "error", "blocked", "cancelled"}
+MODEL_USAGE_ALLOWED_FIELDS = MODEL_USAGE_TOKEN_FIELDS | {
+    "call_id",
+    "role",
+    "adapter",
+    "requested_model",
+    "effective_model",
+    "provider",
+    "source",
+    "purpose",
+    "stage",
+    "node",
+    "feature",
+    "task",
+    "usage_state",
+    "duration_ms",
+    "outcome",
+    "attempt",
+}
+MODEL_CALL_ALLOWED_FIELDS = {
+    "call_id",
+    "stage",
+    "role",
+    "adapter",
+    "requested_model",
+    "source",
+    "purpose",
+}
+MODEL_CALL_IDENTITY_FIELDS = (
+    "workflow",
+    "runtime",
+    "stage",
+    "role",
+    "adapter",
+    "requested_model",
+    "source",
+    "purpose",
+)
 LOCK_HANDLES = []
 
 
@@ -100,20 +145,25 @@ def validate_detail(detail: str) -> str:
     return detail
 
 
-def reject_sensitive_keys(value: Any, path: str = "data") -> None:
+def reject_sensitive_keys(
+    value: Any,
+    path: str = "data",
+    allowed_sensitive_keys: Optional[set[str]] = None,
+) -> None:
+    allowed = allowed_sensitive_keys or set()
     if isinstance(value, dict):
         for key, child in value.items():
             if not isinstance(key, str):
                 raise UsageError(f"{path} keys must be strings")
-            if SENSITIVE_KEY.search(key):
+            if SENSITIVE_KEY.search(key) and not (path == "data" and key in allowed):
                 raise UsageError(f"sensitive log field is forbidden: {path}.{key}")
-            reject_sensitive_keys(child, f"{path}.{key}")
+            reject_sensitive_keys(child, f"{path}.{key}", allowed)
     elif isinstance(value, list):
         for index, child in enumerate(value):
-            reject_sensitive_keys(child, f"{path}[{index}]")
+            reject_sensitive_keys(child, f"{path}[{index}]", allowed)
 
 
-def parse_data(raw: str) -> Dict[str, Any]:
+def parse_data(raw: str, event: str) -> Dict[str, Any]:
     if len(raw.encode("utf-8")) > 8192:
         raise UsageError("--data-json cannot exceed 8192 UTF-8 bytes")
     try:
@@ -128,8 +178,117 @@ def parse_data(raw: str) -> Dict[str, Any]:
             "--data-json cannot override reserved fields: "
             + ", ".join(sorted(overlap))
         )
-    reject_sensitive_keys(value)
+    allowed = MODEL_USAGE_TOKEN_FIELDS if event == "model_usage" else set()
+    reject_sensitive_keys(value, allowed_sensitive_keys=allowed)
     return value
+
+
+def validate_short_text(label: str, value: Any, *, required: bool = False) -> None:
+    if value is None and not required:
+        return
+    if not isinstance(value, str) or not value.strip():
+        raise UsageError(f"model event requires a non-empty {label}")
+    if len(value) > 160 or any(character in value for character in ("\n", "\r", "\0")):
+        raise UsageError(f"model event {label} must be one line and at most 160 characters")
+
+
+def validate_model_usage_event(
+    event: str,
+    phase: Optional[str],
+    data: Dict[str, Any],
+) -> None:
+    if event != "model_usage":
+        return
+    unknown = set(data).difference(MODEL_USAGE_ALLOWED_FIELDS)
+    if unknown:
+        raise UsageError(
+            "model_usage contains unsupported fields: " + ", ".join(sorted(unknown))
+        )
+    if phase != "complete":
+        raise UsageError("model_usage events require phase complete")
+    call_id = data.get("call_id")
+    if not isinstance(call_id, str) or not RESOURCE_ID.fullmatch(call_id):
+        raise UsageError("model_usage requires a valid call_id")
+    role = data.get("role")
+    if not isinstance(role, str) or not IDENTIFIER.fullmatch(role):
+        raise UsageError("model_usage requires a valid role")
+    usage_state = data.get("usage_state")
+    if usage_state not in MODEL_USAGE_STATES:
+        raise UsageError("model_usage usage_state must be observed or unavailable")
+    outcome = data.get("outcome")
+    if outcome not in MODEL_USAGE_OUTCOMES:
+        raise UsageError(
+            "model_usage outcome must be success, error, blocked, or cancelled"
+        )
+    for field in (
+        "adapter",
+        "requested_model",
+        "source",
+        "purpose",
+        "stage",
+    ):
+        validate_short_text(field, data.get(field), required=True)
+    for field in (
+        "effective_model",
+        "provider",
+        "node",
+        "feature",
+        "task",
+    ):
+        validate_short_text(field, data.get(field))
+    attempt = data.get("attempt")
+    if attempt is not None and (
+        isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1
+    ):
+        raise UsageError("model_usage attempt must be a positive integer")
+    numeric_fields = MODEL_USAGE_TOKEN_FIELDS | {"duration_ms"}
+    present_numeric = numeric_fields.intersection(data)
+    if usage_state == "unavailable" and MODEL_USAGE_TOKEN_FIELDS.intersection(data):
+        raise UsageError("unavailable model_usage cannot contain token counts")
+    if usage_state == "observed":
+        for required_field in ("input_tokens", "output_tokens"):
+            if required_field not in data:
+                raise UsageError(
+                    f"observed model_usage requires {required_field}"
+                )
+    for field in present_numeric:
+        value = data[field]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise UsageError(f"model_usage {field} must be a non-negative integer")
+
+
+def validate_model_call_event(
+    event: str,
+    phase: Optional[str],
+    data: Dict[str, Any],
+) -> None:
+    if event != "model_call":
+        return
+    unknown = set(data).difference(MODEL_CALL_ALLOWED_FIELDS)
+    if unknown:
+        raise UsageError(
+            "model_call contains unsupported fields: " + ", ".join(sorted(unknown))
+        )
+    if phase != "claimed":
+        raise UsageError("model_call events require phase claimed")
+    call_id = data.get("call_id")
+    if not isinstance(call_id, str) or not RESOURCE_ID.fullmatch(call_id):
+        raise UsageError("model_call requires a valid call_id")
+    role = data.get("role")
+    if not isinstance(role, str) or not IDENTIFIER.fullmatch(role):
+        raise UsageError("model_call requires a valid role")
+    for field in (
+        "stage",
+        "adapter",
+        "requested_model",
+        "source",
+        "purpose",
+    ):
+        validate_short_text(field, data.get(field), required=True)
+
+
+def model_call_identity(event: Dict[str, Any]) -> Tuple[str, ...]:
+    return tuple(str(event.get(field, "")) for field in MODEL_CALL_IDENTITY_FIELDS)
 
 
 def validate_resource_event(
@@ -306,6 +465,59 @@ def find_jsonl_event(
                 except json.JSONDecodeError:
                     continue
                 if isinstance(value, dict) and value.get("event_id") == event_id:
+                    return value
+    except OSError:
+        return None
+    return None
+
+
+def find_model_usage_call(
+    path: Path,
+    run_id: str,
+    call_id: str,
+) -> Optional[Dict[str, Any]]:
+    if not path.is_file():
+        return None
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    isinstance(value, dict)
+                    and value.get("run_id") == run_id
+                    and value.get("event") == "model_usage"
+                    and value.get("call_id") == call_id
+                ):
+                    return value
+    except OSError:
+        return None
+    return None
+
+
+def find_model_call_claim(
+    path: Path,
+    run_id: str,
+    call_id: str,
+) -> Optional[Dict[str, Any]]:
+    if not path.is_file():
+        return None
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    isinstance(value, dict)
+                    and value.get("run_id") == run_id
+                    and value.get("event") == "model_call"
+                    and value.get("phase") == "claimed"
+                    and value.get("call_id") == call_id
+                ):
                     return value
     except OSError:
         return None
@@ -619,9 +831,11 @@ def main() -> int:
         phase = validate_identifier("--phase", args.phase)
         runtime = str(validate_identifier("--runtime", args.runtime))
         detail = validate_detail(args.detail)
-        data = parse_data(args.data_json)
+        data = parse_data(args.data_json, event_name)
         validate_resource_event(event_name, phase, data)
         validate_test_run_event(event_name, phase, data)
+        validate_model_usage_event(event_name, phase, data)
+        validate_model_call_event(event_name, phase, data)
         at, parsed_at = parse_timestamp(args.at)
         project_root = resolve_directory("--project-root", args.project_root)
         specs_dir = resolve_directory("--specs-dir", args.specs_dir)
@@ -707,6 +921,61 @@ def main() -> int:
     event["event_id"] = event_id
     authoritative_log = project_log if project_log else global_log
     assert authoritative_log is not None
+    if event_name == "model_usage":
+        existing_call = find_model_usage_call(
+            authoritative_log,
+            run_id,
+            str(data["call_id"]),
+        )
+        if existing_call is not None and existing_call.get("event_id") != event_id:
+            print(
+                "cm-log-event: model_usage call_id already used with different payload",
+                file=sys.stderr,
+            )
+            return 2
+        existing_claim = find_model_call_claim(
+            authoritative_log,
+            run_id,
+            str(data["call_id"]),
+        )
+        if data.get("adapter") == "openai-compatible" and existing_claim is None:
+            print(
+                "cm-log-event: managed model_usage requires a prior model_call claim",
+                file=sys.stderr,
+            )
+            return 2
+        if (
+            existing_claim is not None
+            and model_call_identity(existing_claim) != model_call_identity(event)
+        ):
+            print(
+                "cm-log-event: model_usage identity does not match model_call claim",
+                file=sys.stderr,
+            )
+            return 2
+    if event_name == "model_call":
+        existing_usage = find_model_usage_call(
+            authoritative_log,
+            run_id,
+            str(data["call_id"]),
+        )
+        if existing_usage is not None:
+            print(
+                "cm-log-event: model_call call_id already completed",
+                file=sys.stderr,
+            )
+            return 2
+        existing_claim = find_model_call_claim(
+            authoritative_log,
+            run_id,
+            str(data["call_id"]),
+        )
+        if existing_claim is not None and existing_claim.get("event_id") != event_id:
+            print(
+                "cm-log-event: model_call call_id already claimed with different payload",
+                file=sys.stderr,
+            )
+            return 2
     existing_authoritative_event = None
     if (
         event_name in {"resource", "test_run"}

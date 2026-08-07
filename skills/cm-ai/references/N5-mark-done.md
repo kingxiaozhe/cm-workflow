@@ -12,11 +12,13 @@
      --reviews-dir {SPECS_DIR}/.reviews \
      --feature {FEATURE_SLUG} \
      --task {T-xxx} \
-     --tasks {SPECS_DIR}/{FEATURE_DIR}/tasks.md
+     --tasks {SPECS_DIR}/{FEATURE_DIR}/tasks.md \
+     --project-root {CODE_PROJECT}
    ```
 
    非零退出或当前 Review 不是 `verdict: approved` = **不许标记**；成功 JSON 必须是
-   当前 attempt 且 `outcome` 为 `marked_done` 或幂等恢复时的 `already_done`。
+   当前 attempt 且 `outcome` 为 `marked_done` 或幂等恢复时的 `already_done`，并且
+   `content_bound: true`。
    `changes_requested` 回 N3；第 2 轮 `blocked` 停止等人工。门禁在同一进程重新校验
    证据并原子替换当前 feature 自己的 `tasks.md`，只改精确匹配的任务 checkbox；
    specs 根目录或其他 feature 的同名任务文件会被拒绝。不得先跑 `check-n5`

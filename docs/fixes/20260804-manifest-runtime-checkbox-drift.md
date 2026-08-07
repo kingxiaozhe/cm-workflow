@@ -26,11 +26,7 @@ manifest 漂移。
 2. 第一版简单正则会把 fenced code 和四空格缩进代码里的示例也归一化，导致
    示例内容变化错误地返回 matched。
 
-真实项目复现使用：
-
-```text
-/Users/zero/MyCode/cm-workflow-e2e-real/specs
-```
+真实项目复现使用隔离的 dogfood specs fixture；该临时路径不写入公开修复记录。
 
 ## 修法
 

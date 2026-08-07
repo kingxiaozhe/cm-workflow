@@ -6,8 +6,9 @@ description: 用户说“修复这个可复现 bug”或要求根据失败报告
 # cm-fix — 缺陷修复小闭环
 
 执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md`、
-`../../runtime/review.md` 与 `../../runtime/logging.md`。Codex 入口为
-`$cm-fix`；Claude Code 跨平台入口为 `/cm-fix`，macOS/Linux 另有历史别名 `/cm:fix`。
+`../../runtime/review.md`、`../../runtime/model-efficiency.md` 与
+`../../runtime/logging.md`。Codex 入口为 `$cm-fix`；Claude Code 跨平台入口为
+`/cm-fix`，macOS/Linux 另有历史别名 `/cm:fix`。
 
 用户明确要求外部专家，或为本次修复开启 AUTO 时，仍必须先完成第 1 步本地复现，
 再按 `../../runtime/external-expert.md` 执行 `../external-expert/SKILL.md` 的任务
@@ -27,6 +28,12 @@ CONSULT/VERIFY。外部假设必须回到本地证伪；咨询记录不能代替
 负责防护网/回归，`reviewer` 只描述独立审查候选通道；`declared-adapter` 必须记录为
 未观测适配器，不能伪造调用或绕过本地执行与独立审查。resolver 返回非零或配置错误
 时立即 `BLOCKED`，不得复现、修改或写入缺陷档案；配置不存在时保持当前默认行为。
+`managed-adapter` 按 `runtime/model-efficiency.md` 返回文本建议并自动记录真实 usage；
+复现、修复落盘、测试和独立审查仍由本地流程执行。
+
+角色调用按 `runtime/model-efficiency.md` 只传当前缺陷的复现证据、根因范围、修复
+diff、回归结果和对应规则；不重复投喂整仓、完整历史日志或其他缺陷上下文。失败输出
+保留首个可行动错误与证据路径，防护网、独立审查和回归要求不因精简而变化。
 
 修 bug 专用的**轻量闭环**——不走 N1–N8 全链（那是 feature 流程），也不许脱离工作流裸改（裸改没防护网没审查，修一个坏三个）。
 
@@ -82,12 +89,14 @@ CONSULT/VERIFY。外部假设必须回到本地证伪；咨询记录不能代替
 - `{slug}` 先规范成跨平台安全的 ASCII kebab；令 `REVIEW_FEATURE=fix-{slug}`、
   `REVIEW_TASK=T-FIX-{slug}`。主执行者按真实 diff 写
   `{SPECS_DIR}/.reviews/fix-{slug}-T-FIX-{slug}-a{attempt}-handoff.json`，格式与
-  `runtime/task-handoff.schema.json` 相同，并真跑：
+  `runtime/task-handoff.schema.json` 相同。先按 handoff 的完整 `changed_files` 运行
+  `cm-task-gate.py hash-implementation --project-root {CODE_PROJECT} --file ...`，把返回的
+  `implementation_sha256` 写入 handoff，再真跑：
 
 ```bash
 python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n4 \
   --handoff {HANDOFF_PATH} --reviews-dir {SPECS_DIR}/.reviews \
-  --feature fix-{slug} --task T-FIX-{slug}
+  --feature fix-{slug} --task T-FIX-{slug} --project-root {CODE_PROJECT}
 ```
 
 - 独立审查凭证严格落
@@ -98,7 +107,7 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n4 \
 ```bash
 python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n5 \
   --handoff {HANDOFF_PATH} --reviews-dir {SPECS_DIR}/.reviews \
-  --feature fix-{slug} --task T-FIX-{slug}
+  --feature fix-{slug} --task T-FIX-{slug} --project-root {CODE_PROJECT}
 ```
 
 - `changes_requested` 后修改代码必须生成 attempt 2 handoff 并复审；第 2 轮仍有阻断项

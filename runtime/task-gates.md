@@ -25,6 +25,21 @@ marks `tasks.md`, approves a review, writes metrics, or authorizes Git actions.
 Project paths use forward-slash, project-relative form so the evidence remains
 portable across macOS, Linux, and Windows.
 
+Before writing a new handoff, hash the exact `changed_files` set:
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py hash-implementation \
+  --project-root {CODE_PROJECT} \
+  --file path/one --file path/two
+```
+
+Copy the returned `implementation_sha256` into the handoff. `check-n4` and N5
+recompute it from the same project root, so any reviewed file change invalidates
+the approval. Deleted paths are represented by an explicit missing-file marker;
+symlinks and directories are rejected. Historical unbound handoffs require the
+explicit recovery flag `--allow-legacy-unbound` and return `content_bound: false`;
+new work must not use that flag.
+
 The gate validates declaration consistency; it does not reconstruct a task diff
 from an already-dirty or multi-repository working tree. N3 remains responsible
 for comparing `changed_files` with the task-scoped diff before writing handoff.
@@ -36,7 +51,8 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n4 \
   --handoff {HANDOFF_PATH} \
   --reviews-dir {SPECS_DIR}/.reviews \
   --feature {FEATURE_SLUG} \
-  --task {T-xxx}
+  --task {T-xxx} \
+  --project-root {CODE_PROJECT}
 ```
 
 Attempt 2 is valid only when round 1 exists and has
@@ -68,7 +84,8 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py mark-done \
   --reviews-dir {SPECS_DIR}/.reviews \
   --feature {FEATURE_SLUG} \
   --task {T-xxx} \
-  --tasks {SPECS_DIR}/{FEATURE_DIR}/tasks.md
+  --tasks {SPECS_DIR}/{FEATURE_DIR}/tasks.md \
+  --project-root {CODE_PROJECT}
 ```
 
 Only the review for the same task, attempt, and handoff with

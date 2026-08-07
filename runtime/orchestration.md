@@ -26,10 +26,21 @@ instructions:
   `runtime/external-expert.md`.
 
 The route resolver records the requested adapter/model alias without claiming
-an unobserved backend model. An unavailable non-local adapter is
-`declared-adapter`, not a silent success. Missing configuration keeps the
+an unobserved backend model. The bundled `openai-compatible` route is
+`managed-adapter`; other unavailable non-local adapters are `declared-adapter`,
+not a silent success. Missing configuration keeps the
 built-in current-runtime/local-tool defaults. Role routing never changes task
 authority, N1–N8 order, N4 independence, or Git permissions.
+The project validator rejects `openai-compatible` for `reviewer` until the N4
+evidence contract has a real managed-review channel; this prevents an advisory
+API call followed by a second gate-eligible review.
+
+At each model-backed role boundary, also apply `runtime/model-efficiency.md`:
+send the current role's minimal packet, retain the stable instruction prefix
+when the integration supports it, and request the compact role artifact. This
+changes context transport only; it does not remove ACs, tests, review evidence,
+or approval gates. Usage is logged only by a component that observes the actual
+call response.
 
 Only the main agent may update `tasks.md`, audit artifacts, shared status, or Git history. A worker edits only the files assigned to its task and returns a structured handoff. The main agent materializes and validates that evidence under `runtime/task-gates.md`; the worker response itself never advances workflow state.
 

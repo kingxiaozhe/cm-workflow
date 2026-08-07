@@ -15,7 +15,9 @@ description: 本仓库的验证方式——/cm-check 一致性自检 + dogfood �
 | 安全检查（机器） | `python3 scripts/scan-public-safety.py` | 当前树；CI 另跑 Gitleaks |
 | Shell 兼容夹具 | `bash scripts/test-shell-compat.sh` | Python 命令回退与提交 Hook |
 | Workflow 配置夹具 | `python3 scripts/test-workflow-config.py` | 默认值、角色来源与脱敏 |
-| 任务门禁夹具 | `python3 scripts/test-task-gate.py` | handoff、Review 状态转换与 Worktree 隔离 |
+| API 用量夹具 | `python3 scripts/test-cm-usage-report.py` | 严格计数字段、claim/usage 身份与顺序、缺失不猜测与聚合 |
+| API 调用边界夹具 | `python3 scripts/test-cm-openai-compatible-call.py` | 本地 HTTP、严格 JSON/URL、隐私、usage 与 exit 1–4 |
+| 任务门禁夹具 | `python3 scripts/test-task-gate.py` | handoff、实现内容绑定、Review 状态转换与 Worktree 隔离 |
 | 角色路由夹具 | `./scripts/cm-check-runtime.sh --routing-fixtures` | 外部专家路由与降级顺序 |
 | 插件验证（机器） | Codex plugin creator validator | 本机 Codex |
 | 端到端验证（人） | dogfood 实跑 | `/cm-prd` → `/cm-ai` 跑真实项目 |

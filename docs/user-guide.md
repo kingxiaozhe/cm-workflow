@@ -214,11 +214,32 @@ CM 会在首次记录事件时自动创建本机用户级日志目录：
 tail -n 20 ~/.cm-workflow/logs/index.jsonl
 find ~/.cm-workflow/logs/runs -name '*.jsonl' -type f
 python3 /path/to/cm-workflow/scripts/cm-prd-timing.py --last 5
+python3 /path/to/cm-workflow/scripts/cm-usage-report.py --last 10
 ```
 
-最后一条命令给出最近几次 `$cm-prd` 的阶段活跃耗时、最慢阶段、人工暂停次数和实际
+`cm-prd-timing.py` 给出最近几次 `$cm-prd` 的阶段活跃耗时、最慢阶段、人工暂停次数和实际
 触发的方案/规格审查次数。它是只读报告，不会修改项目状态；未配对事件只会标记，
 不会猜测耗时。将 `/path/to/cm-workflow` 替换为当前 CM Workflow 安装目录。
+
+`cm-usage-report.py` 只汇总适配器真实返回并写入日志的 API 用量：按流程、阶段、角色和模型
+分开显示 input/output/cache counts；拿不到 usage 的调用保持 `unavailable`，不会猜
+Token 或费用；同时区分 success/error/blocked/cancelled。已经 claim 但没有有效完成事件的
+调用会单列为 `unresolved`，不计入调用、结果或 Token。需要机器读取时追加 `--json`。
+
+项目角色使用 `adapter: openai-compatible` 时，CM 可在真实 HTTP 响应边界自动记录上述
+数据。启动 Codex/Claude 前显式配置本次调用环境（密钥不要写进项目文件）：
+
+```bash
+export CM_OPENAI_COMPATIBLE_ENABLED=true
+export CM_OPENAI_COMPATIBLE_BASE_URL="https://你的中转站/v1"
+export CM_OPENAI_COMPATIBLE_API_KEY="你的密钥"
+```
+
+然后在 `.cm-workflow.yml` 为需要的分析、规划或编码辅助角色配置
+`adapter: openai-compatible`、模型别名和 `source: api`。CM 会按
+`runtime/model-efficiency.md` 生成最小角色包并调用内置边界；Prompt 和回答会发给该配置
+API，但不会进入 CM 日志。远程地址必须使用 HTTPS。版本 1 不支持把该适配器配置给
+`reviewer`，因为文本 API 回答不能替代 N4 的独立审查凭证，配置校验会在调用前拒绝。
 
 如果希望写到其他本机目录，可在运行 Codex 或 Claude Code 前设置：
 

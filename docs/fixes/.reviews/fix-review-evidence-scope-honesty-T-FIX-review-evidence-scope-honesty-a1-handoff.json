@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "task_id": "T-FIX-review-evidence-scope-honesty",
+  "attempt": 1,
+  "status": "ready_for_review",
+  "changed_files": [
+    "docs/fixes/20260806-model-call-boundary-identity.md",
+    "docs/fixes/20260807-prelanding-integrity.md"
+  ],
+  "implementation_sha256": "37072fa0aec0fd4faa33724199ccfab845209f3d7d02102a3b59f52c3ec06007",
+  "verification": [
+    {
+      "command": "rg final-disposition and digest-boundary assertions in both archives",
+      "status": "passed",
+      "evidence": "The archives now identify r1 as historical, r2 as final blocked, the 40 pre-handoff paths as content-bound, and a2/r2 evidence as excluded to avoid self-reference."
+    },
+    {
+      "command": "./scripts/cm-check-runtime.sh",
+      "status": "passed",
+      "evidence": "All CM runtime and fixture groups passed for plugin v0.10.4."
+    },
+    {
+      "command": "python3 scripts/validate-public-repo.py && python3 scripts/scan-public-safety.py && git diff --check",
+      "status": "passed",
+      "evidence": "Public repository validation, safety scan and whitespace validation passed."
+    }
+  ],
+  "evidence": [
+    "independent round-2 finding: final disposition and self-referential digest boundary were described inaccurately",
+    "human disposition: open a separately scoped small fix rather than create attempt 3",
+    "the historical a2 handoff and blocked r2 review were not rewritten or disguised"
+  ],
+  "blockers": [],
+  "scope_deviation": []
+}

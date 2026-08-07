@@ -24,8 +24,7 @@ confirmed:
 - fenced and indented code examples, ordinary checklists, and task/AC text
   changes still produce a manifest mismatch;
 - backtick/tilde fences, tab indentation, CRLF, and non-UTF-8 bytes remain safe;
-- the completed real dogfood spec at
-  `/Users/zero/MyCode/cm-workflow-e2e-real/specs` returns `status: matched`;
+- the completed isolated dogfood specs fixture returns `status: matched`;
 - the focused fixture, runtime check, plugin validation, and `git diff --check`
   pass.
 

@@ -448,6 +448,18 @@ def _validate_effective(config: dict[str, Any]) -> None:
                 raise ConfigError(f"roles.{role}.source browser is reserved for external_expert")
         _require_string(role_data["model"], f"roles.{role}.model")
         _require_string(role_data["source"], f"roles.{role}.source", SOURCES)
+        if role == "reviewer" and role_data["adapter"] == "openai-compatible":
+            raise ConfigError(
+                "roles.reviewer.adapter openai-compatible cannot satisfy the N4 "
+                "review evidence contract"
+            )
+        if (
+            role_data["adapter"] == "openai-compatible"
+            and role_data["source"] != "api"
+        ):
+            raise ConfigError(
+                f"roles.{role}.adapter openai-compatible requires source api"
+            )
         if role == "external_expert":
             if role_data["adapter"] != "external-browser" or role_data["source"] != "browser":
                 raise ConfigError(
@@ -487,6 +499,8 @@ def _route_state(adapter: str, runtime: str) -> str:
         return "local-browser"
     if adapter == "external-browser":
         return "external-expert"
+    if adapter == "openai-compatible":
+        return "managed-adapter"
     if (runtime == "codex" and adapter == "codex-cli") or (
         runtime == "claude" and adapter == "claude-cli"
     ):

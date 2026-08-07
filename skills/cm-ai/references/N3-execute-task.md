@@ -71,7 +71,18 @@
 `../../../runtime/task-gates.md`。子代理只能返回候选字段；由主执行者核对并落盘，
 不得让子代理写 `.reviews/`。`ready_for_review` 必须所有 verification 都是 `passed`，
 且 blockers/scope_deviation 为空；`changed_files` 使用正斜杠分隔的项目相对路径。
-否则写 `blocked` 并停止，不进入 N4。
+否则写 `blocked` 并停止，不进入 N4。写 handoff 前，必须以完全相同的
+`changed_files` 计算实现内容摘要：
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py hash-implementation \
+  --project-root {CODE_PROJECT} \
+  --file path/to/changed-file \
+  --file path/to/another-file
+```
+
+把 JSON 返回的 `implementation_sha256` 原样写入 handoff；不得用 handoff 文件自身的
+SHA 替代它。后续若任一已审文件内容变化，必须生成下一 attempt 并重新审查。
 
 进入 N4 前必须真跑：
 
@@ -80,7 +91,8 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n4 \
   --handoff {HANDOFF_PATH} \
   --reviews-dir {SPECS_DIR}/.reviews \
   --feature {FEATURE_SLUG} \
-  --task {T-xxx}
+  --task {T-xxx} \
+  --project-root {CODE_PROJECT}
 ```
 
 attempt 2 只有在第 1 轮凭证为 `changes_requested` 时才会通过。不得创建 attempt 3。

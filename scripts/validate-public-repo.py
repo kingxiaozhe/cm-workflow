@@ -32,6 +32,7 @@ REQUIRED = (
     "runtime/project-context.md",
     "runtime/external-expert.md",
     "runtime/logging.md",
+    "runtime/model-efficiency.md",
     "runtime/orchestration.md",
     "runtime/review.md",
     "runtime/task-gates.md",
@@ -43,9 +44,13 @@ REQUIRED = (
     "scripts/cm-check-runtime.ps1",
     "scripts/cm-log-event.py",
     "scripts/cm-prd-timing.py",
+    "scripts/cm-usage-report.py",
+    "scripts/cm-openai-compatible-call.py",
     "scripts/cm-task-gate.py",
     "scripts/test-cm-log-event.py",
     "scripts/test-cm-prd-timing.py",
+    "scripts/test-cm-usage-report.py",
+    "scripts/test-cm-openai-compatible-call.py",
     "scripts/test-task-gate.py",
     "scripts/cm_workflow_config.py",
     "scripts/test-workflow-config.py",
@@ -112,8 +117,10 @@ def main() -> int:
     if set(handoff_schema.get("required", [])) != expected_handoff_fields:
         fail("task handoff schema required fields drifted", failures)
     handoff_properties = handoff_schema.get("properties", {})
-    if set(handoff_properties) != expected_handoff_fields:
+    if set(handoff_properties) != expected_handoff_fields | {"implementation_sha256"}:
         fail("task handoff schema properties drifted", failures)
+    if handoff_properties.get("implementation_sha256", {}).get("pattern") != "^[0-9a-f]{64}$":
+        fail("task handoff implementation digest contract drifted", failures)
     if set(handoff_properties.get("status", {}).get("enum", [])) != {
         "ready_for_review",
         "blocked",
