@@ -83,12 +83,26 @@ and may not replace envelope fields.
 | temporary resource | `resource` | `acquired`, `released`, `cleanup_failed`; unique non-secret `resource_id` per acquisition and stable `resource_kind` |
 | External Expert | `external_expert` | `route`, `dispatch`, `complete`; route/mode/state/evidence metadata |
 | role routing | `decision` | `phase: route`; role, adapter, requested_model, source, purpose, route_state |
+| managed model-call claim | `model_call` | `claimed`; unique call_id and complete safe route identity, atomically written before HTTP |
+| observed model call | `model_usage` | `complete`; the same route identity, usage_state, outcome, and verified counts when available |
 | Git delivery | `delivery` | `commit`, `push`, `pull_request`; identifiers only after success |
 
 Do not invent `push` or `pull_request` events before the remote side effect
 succeeds. External Expert `dispatch` records the observed dispatch state, not
 mere intent. `LOCAL` selected without AUTO or an explicit External Expert
 invocation does not need an event.
+
+Model-call usage follows `runtime/model-efficiency.md`. `model_call/claimed` is
+an idempotency claim, not proof of provider completion; the matching
+`model_usage/complete` records the observed outcome. The writer allows token
+*counts* only on the strict `model_usage` field allowlist; credential-like token
+fields remain forbidden. When a claim exists, completion must match its
+`workflow`, `runtime`, `stage`, `role`, `adapter`, `requested_model`, `source`,
+and `purpose`; a completed call id cannot later be claimed. A route decision is
+not a model call, and a requested model alias is not an observed effective model.
+The bundled `openai-compatible` completion is rejected unless its matching claim
+already exists; standalone usage events remain available only to other
+call-owning adapters.
 
 ## Progress, recovery, and cleanup
 
@@ -108,6 +122,17 @@ python3 "{CM_WORKFLOW_ROOT}/scripts/cm-prd-timing.py" --last 5
 
 It reads only the local global mirror, reports paired active segments, and labels incomplete pairs
 instead of guessing their duration. It does not write logs or workflow state.
+
+Use the dependency-free usage report for recent runs when call-owning adapters
+have emitted verified usage events:
+
+```bash
+python3 "{CM_WORKFLOW_ROOT}/scripts/cm-usage-report.py" --last 10
+```
+
+It keeps unavailable calls explicit and does not estimate missing tokens or cost.
+Claims without a matching valid usage completion are listed separately as
+unresolved and are not counted as calls, outcomes, or Token usage.
 
 1. Before a potentially long external command, desktop launch, browser case, or
    model turn, write `progress/start`; write `progress/checkpoint` only at an

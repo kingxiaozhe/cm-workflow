@@ -26,17 +26,19 @@ class GateError(ValueError):
     """Expected contract violation."""
 
 
-def load_schema_contract() -> Tuple[set[str], set[str], set[str], set[str]]:
+def load_schema_contract() -> Tuple[set[str], set[str], set[str], set[str], set[str]]:
     schema_path = Path(__file__).resolve().parents[1] / "runtime" / "task-handoff.schema.json"
     try:
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         properties = schema["properties"]
         verification_properties = properties["verification"]["items"]["properties"]
-        fields = set(schema["required"])
-        if fields != set(properties):
-            raise KeyError("required/properties mismatch")
+        required_fields = set(schema["required"])
+        allowed_fields = set(properties)
+        if not required_fields.issubset(allowed_fields):
+            raise KeyError("required fields are missing from properties")
         return (
-            fields,
+            allowed_fields,
+            required_fields,
             set(verification_properties),
             set(verification_properties["status"]["enum"]),
             set(properties["status"]["enum"]),
@@ -45,7 +47,13 @@ def load_schema_contract() -> Tuple[set[str], set[str], set[str], set[str]]:
         raise RuntimeError(f"invalid task handoff schema: {schema_path}: {exc}") from exc
 
 
-HANDOFF_FIELDS, VERIFICATION_FIELDS, VERIFICATION_STATUSES, HANDOFF_STATUSES = (
+(
+    HANDOFF_ALLOWED_FIELDS,
+    HANDOFF_REQUIRED_FIELDS,
+    VERIFICATION_FIELDS,
+    VERIFICATION_STATUSES,
+    HANDOFF_STATUSES,
+) = (
     load_schema_contract()
 )
 
@@ -120,8 +128,8 @@ def load_handoff(path: Path, *, task: str | None = None, attempt: int | None = N
     if not isinstance(payload, dict):
         raise GateError("handoff root must be an object")
     fields = set(payload)
-    missing = sorted(HANDOFF_FIELDS - fields)
-    unknown = sorted(fields - HANDOFF_FIELDS)
+    missing = sorted(HANDOFF_REQUIRED_FIELDS - fields)
+    unknown = sorted(fields - HANDOFF_ALLOWED_FIELDS)
     if missing:
         raise GateError(f"handoff missing fields: {', '.join(missing)}")
     if unknown:
@@ -138,6 +146,12 @@ def load_handoff(path: Path, *, task: str | None = None, attempt: int | None = N
         raise GateError("status must be ready_for_review or blocked")
 
     require_relative_files(payload["changed_files"])
+    implementation_sha256 = payload.get("implementation_sha256")
+    if implementation_sha256 is not None and (
+        not isinstance(implementation_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", implementation_sha256) is None
+    ):
+        raise GateError("implementation_sha256 must be a lowercase SHA-256 digest")
     evidence = require_string_list(payload["evidence"], "evidence", minimum=1)
     blockers = require_string_list(payload["blockers"], "blockers")
     scope_deviation = require_string_list(payload["scope_deviation"], "scope_deviation")
@@ -234,6 +248,65 @@ def file_sha256(path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError as exc:
         raise GateError(f"cannot hash evidence {path}: {exc}") from exc
+
+
+def implementation_sha256(project_root: Path, changed_files: Sequence[str]) -> str:
+    root = project_root.expanduser().resolve(strict=False)
+    if not root.is_dir():
+        raise GateError(f"project root is not an existing directory: {root}")
+    digest = hashlib.sha256()
+    digest.update(b"cm-implementation-v1\0")
+    for relative in sorted(require_relative_files(list(changed_files))):
+        unresolved = root / Path(PurePosixPath(relative))
+        if unresolved.is_symlink():
+            raise GateError(f"changed file must not be a symlink: {relative}")
+        candidate = unresolved.resolve(strict=False)
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise GateError(f"changed file resolves outside project root: {relative}") from exc
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        if not candidate.exists():
+            digest.update(b"missing\0")
+            continue
+        if not candidate.is_file():
+            raise GateError(f"changed file must be a regular file or deletion: {relative}")
+        try:
+            content = candidate.read_bytes()
+        except OSError as exc:
+            raise GateError(f"cannot read changed file {relative}: {exc}") from exc
+        digest.update(b"file\0")
+        digest.update(str(len(content)).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(content)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def verify_implementation_binding(
+    payload: Mapping[str, object],
+    project_root: str | None,
+    *,
+    allow_legacy_unbound: bool,
+) -> bool:
+    expected = payload.get("implementation_sha256")
+    if expected is None:
+        if allow_legacy_unbound:
+            return False
+        raise GateError(
+            "handoff is not content-bound; legacy recovery requires "
+            "--allow-legacy-unbound"
+        )
+    if project_root is None:
+        raise GateError("content-bound handoff requires --project-root")
+    actual = implementation_sha256(
+        Path(project_root),
+        payload["changed_files"],
+    )
+    if actual != expected:
+        raise GateError("implementation content changed after handoff")
+    return True
 
 
 def validate_review(
@@ -386,12 +459,18 @@ def check_n4(args: argparse.Namespace) -> Mapping[str, object]:
         attempt=attempt,
     )
     validate_attempt_chain(reviews_dir, args.feature, args.task, attempt)
+    content_bound = verify_implementation_binding(
+        payload,
+        args.project_root,
+        allow_legacy_unbound=args.allow_legacy_unbound,
+    )
     return {
         "gate": "n4",
         "task": args.task,
         "attempt": attempt,
         "outcome": "ready_for_review",
         "handoff_sha256": file_sha256(handoff_path),
+        "content_bound": content_bound,
     }
 
 
@@ -410,6 +489,11 @@ def check_n5(args: argparse.Namespace) -> Mapping[str, object]:
         attempt=attempt,
     )
     validate_attempt_chain(reviews_dir, args.feature, args.task, attempt)
+    content_bound = verify_implementation_binding(
+        payload,
+        args.project_root,
+        allow_legacy_unbound=args.allow_legacy_unbound,
+    )
     path = review_path(reviews_dir, args.feature, args.task, attempt)
     review = validate_review(
         path,
@@ -426,6 +510,19 @@ def check_n5(args: argparse.Namespace) -> Mapping[str, object]:
         "attempt": attempt,
         "outcome": "approved",
         "review": str(path.resolve()),
+        "content_bound": content_bound,
+    }
+
+
+def hash_implementation(args: argparse.Namespace) -> Mapping[str, object]:
+    files = require_relative_files(args.file)
+    return {
+        "gate": "implementation-hash",
+        "implementation_sha256": implementation_sha256(
+            Path(args.project_root),
+            files,
+        ),
+        "changed_files": sorted(files),
     }
 
 
@@ -607,6 +704,8 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--reviews-dir", required=True)
         command.add_argument("--feature", required=True)
         command.add_argument("--task", required=True)
+        command.add_argument("--project-root")
+        command.add_argument("--allow-legacy-unbound", action="store_true")
 
     mark = commands.add_parser("mark-done")
     mark.add_argument("--handoff", required=True)
@@ -614,6 +713,12 @@ def build_parser() -> argparse.ArgumentParser:
     mark.add_argument("--feature", required=True)
     mark.add_argument("--task", required=True)
     mark.add_argument("--tasks", required=True)
+    mark.add_argument("--project-root")
+    mark.add_argument("--allow-legacy-unbound", action="store_true")
+
+    implementation_hash = commands.add_parser("hash-implementation")
+    implementation_hash.add_argument("--project-root", required=True)
+    implementation_hash.add_argument("--file", action="append", required=True)
 
     parallel = commands.add_parser("check-parallel-write")
     parallel.add_argument("--repo", required=True)
@@ -634,6 +739,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "attempt": payload["attempt"],
                 "outcome": payload["status"],
             }
+        elif args.command == "hash-implementation":
+            result = hash_implementation(args)
         elif args.command == "check-n4":
             result = check_n4(args)
         elif args.command == "check-n5":

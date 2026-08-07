@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "task_id": "T-FIX-model-call-boundary-identity",
+  "attempt": 1,
+  "status": "ready_for_review",
+  "changed_files": [
+    ".claude/rules/security.md",
+    ".claude/rules/testing.md",
+    ".omx/logs/execution-ledger.md",
+    ".omx/plans/model-usage-adapter.md",
+    "README.md",
+    "docs/fixes/20260806-model-call-boundary-identity.md",
+    "runtime/logging.md",
+    "runtime/model-efficiency.md",
+    "scripts/cm-log-event.py",
+    "scripts/cm-openai-compatible-call.py",
+    "scripts/cm-usage-report.py",
+    "scripts/test-cm-openai-compatible-call.py",
+    "scripts/test-cm-usage-report.py"
+  ],
+  "verification": [
+    {
+      "command": "python3 scripts/test-cm-openai-compatible-call.py",
+      "status": "passed",
+      "evidence": "Strict JSON/URL/Unicode/depth, response error logging, exit 3/4, duplicate and completed call-id fixtures passed."
+    },
+    {
+      "command": "python3 scripts/test-cm-usage-report.py",
+      "status": "passed",
+      "evidence": "Writer identity matching plus reporter mismatch, conflicting-claim and usage-before-claim fixtures passed."
+    },
+    {
+      "command": "./scripts/cm-check-runtime.sh",
+      "status": "passed",
+      "evidence": "Runtime, logging, timing, routing, adapter, config, task-gate and manifest fixtures passed for plugin v0.10.4."
+    },
+    {
+      "command": "python3 scripts/validate-public-repo.py && python3 scripts/scan-public-safety.py",
+      "status": "passed",
+      "evidence": "Public repository validation and safety scan passed."
+    },
+    {
+      "command": "/bin/bash scripts/test-shell-compat.sh && plugin validator && git diff --check",
+      "status": "passed",
+      "evidence": "Shell compatibility, Codex plugin validation and whitespace validation passed."
+    }
+  ],
+  "evidence": [
+    "docs/fixes/20260806-model-call-boundary-identity.md",
+    "red: deep packet exited 1 with RecursionError before repair",
+    "red: mismatched usage counted success and resolved an unrelated claim before repair",
+    "green: mismatched writer event exits 2 and reporter keeps the claim unresolved"
+  ],
+  "blockers": [],
+  "scope_deviation": []
+}

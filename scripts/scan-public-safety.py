@@ -28,6 +28,7 @@ PATTERNS = {
     ),
 }
 ALLOW_PRIVATE_ENDPOINT_FILES = {
+    Path("scripts/test-cm-openai-compatible-call.py"),
     Path("templates/dashboard/serve.sh"),
     Path("templates/pixel/serve.sh"),
     Path("templates/pixel/dev/README.md"),

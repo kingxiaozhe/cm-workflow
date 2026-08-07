@@ -5,6 +5,12 @@
 进入审查前解析 `reviewer` 角色并记录 `decision`/`phase: route`；角色配置只能描述请求
 的审查适配器和模型别名，不能替代本节要求的独立上下文。若 `route_state` 是
 `declared-adapter`，如实记录未观察到适配器，仍不得把作者模型或外部专家当作独立审查。
+版本 1 不接受 `reviewer.adapter: openai-compatible`：该文本调用不能生成 N4 认可的
+独立凭证，配置校验会在调用前拒绝，避免白白消耗 API Token。
+
+开始审查前确认 N3 的 `check-n4` JSON 返回 `content_bound: true`。这表示 handoff 的
+`implementation_sha256` 已按项目根复算，审查结论不仅绑定文件名，也绑定被审文件内容。
+历史无摘要 handoff 只能在明确披露降级时用 `--allow-legacy-unbound` 恢复，不能作为新任务凭证。
 
 ## 1. 主执行者自审
 

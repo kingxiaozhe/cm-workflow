@@ -53,6 +53,14 @@ roles:
 
 Codex 订阅、Codex API、Claude/Fable 等兼容 API 和浏览器账号由各自运行时管理；项目配置只保存非敏感别名。`model_policy` 使用 `pro-extra-high-high-skip`；为兼容既有合同，`strict-Pro` 会在有效配置中规范化为 `strict-pro`。
 
+`openai-compatible` 是当前唯一内置的 API 调用边界。它从
+`CM_OPENAI_COMPATIBLE_ENABLED`、`CM_OPENAI_COMPATIBLE_BASE_URL` 和
+`CM_OPENAI_COMPATIBLE_API_KEY` 读取本次启用、地址与凭据；三者都不得写进项目配置。
+使用该适配器的角色必须显式写 `source: api`，不得继承或声明为 `local`/`subscription`。
+版本 1 暂不允许把它配置给 `reviewer`：managed 文本回答尚不能生成 N4 接受的独立审查
+凭证，提前调用只会增加一次无效 API 消耗。N4 继续使用共享审查合同列出的通道。
+其他 API 适配器仍只声明路由，不伪造已执行。
+
 ## 字段枚举与降级
 
 - `adapter`：`current-ai`、`codex-cli`、`claude-cli`、`claude-api`、

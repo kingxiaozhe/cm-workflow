@@ -19,8 +19,19 @@ When a project configures a `reviewer` role, resolve it through
 requested adapter/model alias and `route_state` as decision metadata only.
 `declared-adapter` is not proof that a second backend reviewed the diff; the
 fresh-context and independence rules below still apply.
+`managed-adapter` identifies a callable boundary, not proof that a call occurred.
+Only a matching `model_usage` event proves the observed call outcome, and its
+text response remains advisory unless materialized through an accepted N4
+channel and evidence schema below; the adapter call alone never marks approval.
+Project configuration therefore rejects `openai-compatible` for `reviewer` in
+version 1 instead of spending Tokens on a result that cannot satisfy N4.
 
 ## Review package
+
+Package transport also follows `runtime/model-efficiency.md`: keep the stable
+review instructions separate from this task's dynamic evidence and request a
+findings-first compact result. The minimum evidence below is never removed to
+save tokens.
 
 At task start, record the existing working-tree status and the task's intended file scope. After implementation, build a task-scoped package containing:
 
@@ -93,6 +104,9 @@ scope:
 verdict 至少为 1。`self-degraded` 必须写 `independent: false` 并增加非空的
 `degraded_reason`；其他两个通道只有在新上下文中执行时才可写 `true`。
 `handoff_sha256` 将结论绑定到本轮 handoff 内容；handoff 改动后必须重新审查。
+新 handoff 还必须包含 `implementation_sha256`，并让 N4/N5 使用
+`--project-root` 复算；否则文件内容在审查后变化时无法进入 N5。历史恢复显式使用
+`--allow-legacy-unbound` 时不属于内容绑定审查，必须在证据中披露。
 
 No matching evidence file means review did not happen. File existence alone is
 not approval: the completion node must run `cm-task-gate.py mark-done`, which

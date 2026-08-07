@@ -16,9 +16,22 @@ ROOT = Path(__file__).resolve().parents[1]
 GATE = ROOT / "scripts" / "cm-task-gate.py"
 
 
-def invoke(args: List[str], *, expected_exit: int = 0) -> subprocess.CompletedProcess[str]:
+def invoke(
+    args: List[str],
+    *,
+    expected_exit: int = 0,
+    legacy_compat: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    effective_args = list(args)
+    if (
+        legacy_compat
+        and effective_args
+        and effective_args[0] in {"check-n4", "check-n5", "mark-done"}
+        and "--project-root" not in effective_args
+    ):
+        effective_args.append("--allow-legacy-unbound")
     result = subprocess.run(
-        [sys.executable, str(GATE), *args],
+        [sys.executable, str(GATE), *effective_args],
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -27,7 +40,7 @@ def invoke(args: List[str], *, expected_exit: int = 0) -> subprocess.CompletedPr
     if result.returncode != expected_exit:
         raise AssertionError(
             f"expected exit {expected_exit}, got {result.returncode}\n"
-            f"command: {args}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            f"command: {effective_args}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
     return result
 
@@ -41,6 +54,7 @@ def write_handoff(
     verification_status: str = "passed",
     blockers: Optional[List[str]] = None,
     scope_deviation: Optional[List[str]] = None,
+    implementation_sha256: Optional[str] = None,
 ) -> None:
     payload: Dict[str, object] = {
         "schema_version": 1,
@@ -59,6 +73,8 @@ def write_handoff(
         "blockers": blockers or [],
         "scope_deviation": scope_deviation or [],
     }
+    if implementation_sha256 is not None:
+        payload["implementation_sha256"] = implementation_sha256
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
@@ -131,8 +147,70 @@ def main() -> int:
         write_handoff(handoff1)
 
         invoke(["validate-handoff", "--handoff", str(handoff1), "--task", "T-001", "--attempt", "1"])
+        unbound = invoke(
+            ["check-n4", "--handoff", str(handoff1), "--reviews-dir", str(reviews), "--feature", "login", "--task", "T-001"],
+            expected_exit=1,
+            legacy_compat=False,
+        )
+        assert "handoff is not content-bound" in unbound.stderr
         n4 = invoke(["check-n4", "--handoff", str(handoff1), "--reviews-dir", str(reviews), "--feature", "login", "--task", "T-001"])
         assert json.loads(n4.stdout)["handoff_sha256"] == hashlib.sha256(handoff1.read_bytes()).hexdigest()
+
+        project = temp / "project"
+        (project / "src").mkdir(parents=True)
+        implementation_file = project / "src/example.ts"
+        implementation_file.write_text("export const value = 1;\n", encoding="utf-8")
+        digest_result = invoke(
+            [
+                "hash-implementation",
+                "--project-root",
+                str(project),
+                "--file",
+                "src/example.ts",
+            ]
+        )
+        implementation_digest = json.loads(digest_result.stdout)["implementation_sha256"]
+        bound_handoff = reviews / "bound-T-022-a1-handoff.json"
+        bound_review = reviews / "bound-T-022-r1.md"
+        write_handoff(
+            bound_handoff,
+            task_id="T-022",
+            implementation_sha256=implementation_digest,
+        )
+        invoke(
+            [
+                "check-n4",
+                "--handoff",
+                str(bound_handoff),
+                "--reviews-dir",
+                str(reviews),
+                "--feature",
+                "bound",
+                "--task",
+                "T-022",
+                "--project-root",
+                str(project),
+            ]
+        )
+        write_review(bound_review, task_id="T-022", handoff=bound_handoff)
+        implementation_file.write_text("export const value = 2;\n", encoding="utf-8")
+        changed_implementation = invoke(
+            [
+                "check-n5",
+                "--handoff",
+                str(bound_handoff),
+                "--reviews-dir",
+                str(reviews),
+                "--feature",
+                "bound",
+                "--task",
+                "T-022",
+                "--project-root",
+                str(project),
+            ],
+            expected_exit=1,
+        )
+        assert "implementation content changed after handoff" in changed_implementation.stderr
 
         unicode_handoff = reviews / "用户登录-T-009-a1-handoff.json"
         write_handoff(unicode_handoff, task_id="T-009")

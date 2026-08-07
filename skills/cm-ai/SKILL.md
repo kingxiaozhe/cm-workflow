@@ -7,8 +7,8 @@ description: 用户明确说“规格已确认，开始实现”或要求按已�
 
 执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md`、
 `../../runtime/task-gates.md`、`../../runtime/review.md` 与
-`../../runtime/logging.md`。Codex 入口为 `$cm-ai`；
-Claude Code 跨平台入口为 `/cm-ai`，macOS/Linux 另有历史别名 `/cm:ai`。
+`../../runtime/model-efficiency.md`、`../../runtime/logging.md`。Codex 入口为
+`$cm-ai`；Claude Code 跨平台入口为 `/cm-ai`，macOS/Linux 另有历史别名 `/cm:ai`。
 
 用户明确要求外部专家，或为本次开发任务开启 AUTO 时，按
 `../../runtime/external-expert.md` 执行 `../external-expert/SKILL.md` 的任务路由。
@@ -105,6 +105,15 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
 新角色边界都从磁盘重读；配置缺失使用默认路由。`declared-adapter` 只表示项目请求了
 当前运行时未观察到的适配器，必须写 `warning`/`degrade`，不能声称该模型已执行；它
 也不能绕过本地编码、测试、Git 或 N4 独立审查。
+`managed-adapter` 只通过 `runtime/model-efficiency.md` 的内置调用边界返回文本角色结果；
+主执行者仍负责本地改码、命令与证据，适配器回答本身不得满足 N4。版本 1 因此拒绝
+`reviewer.adapter: openai-compatible`，N4 只使用 `runtime/review.md` 列出的本地审查通道。
+
+每个角色调用按 `runtime/model-efficiency.md` 重建当前任务的最小包：N3 coder 只接收
+当前 task/AC/相关设计与文件，tester 只接收测试合同和必要失败证据，N4 reviewer
+接收 task-only handoff/diff 与验证摘要。稳定规则前缀不混入动态 diff/日志；角色只返回
+既有 handoff、测试或 findings-first 结构，不复述输入。上下文缩小不得删减 N4 包的
+强制证据，也不得减少测试、审查轮次或人工门禁。
 
 **任务状态镜像：** `tasks.md` 是唯一权威任务源。运行时支持任务面板时，可将未完成任务镜像到 Codex/OMX 计划或 Claude 任务清单；N3/N5 同步状态。断点恢复必须由磁盘重建镜像：`[x]` 跳过或标为 completed，`[DROPPED]` 不镜像，不得重复创建条目。
 

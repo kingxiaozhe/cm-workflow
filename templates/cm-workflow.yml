@@ -16,6 +16,7 @@ roles:
     adapter: current-ai
     model: default
     source: local
+    # 使用 openai-compatible 时必须同时改为 source: api；地址/密钥/启用只从 CM_OPENAI_COMPATIBLE_* 环境变量读取。
   coder:
     adapter: current-ai
     model: default
@@ -28,6 +29,7 @@ roles:
     adapter: current-ai
     model: default
     source: local
+    # v1 不支持 reviewer 使用 openai-compatible；N4 必须走本地独立审查通道。
   browser_qa:
     adapter: browser
     model: none

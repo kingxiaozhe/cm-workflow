@@ -5,8 +5,8 @@ description: 用户说“测试已有功能”“根据代码生成用例”或�
 
 # cm-test — 存量功能只读测试
 
-执行前读取 `../../runtime/project-context.md`、`../../runtime/test-contract.md` 与
-`../../runtime/logging.md`。
+执行前读取 `../../runtime/project-context.md`、`../../runtime/test-contract.md`、
+`../../runtime/model-efficiency.md` 与 `../../runtime/logging.md`。
 需要复用 QA 纪律时读取相邻的 `../cm-qa-engineer/SKILL.md`，并强制使用其
 `readonly` 模式。Codex 入口为 `$cm-test`；Claude Code 跨平台入口为
 `/cm-test`，macOS/Linux 另有历史别名 `/cm:test`。
@@ -44,6 +44,12 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
 浏览器模拟仍按本 Skill 与 `runtime/test-contract.md` 在本地执行。resolver 返回非零
 或配置错误时立即 `BLOCKED`，不得创建报告、运行正式命令或启动浏览器；配置缺失才
 使用内置默认路由。
+`managed-adapter` 按 `runtime/model-efficiency.md` 仅返回逻辑分析或候选用例并自动记录
+真实 usage；正式命令和浏览器执行仍在本地，模型回答不计为 PASS。
+
+`tester` 与 `browser_qa` 按 `runtime/model-efficiency.md` 只接收本轮选中的用例、目标
+环境、声明命令和必要失败证据，输出逐例 verdict、计数与证据路径。不得为节省上下文
+省略 blocking case、错误分支或 cleanup，也不得把静态逻辑核验包装成实际执行。
 
 参数：
 

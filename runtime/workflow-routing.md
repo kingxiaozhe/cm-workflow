@@ -49,6 +49,10 @@ The resolver reports a conservative state:
 - `local-browser`: `browser_qa` uses the local/test browser;
 - `external-expert`: the existing explicit browser expert contract owns the
   reasoning-only consultation;
+- `managed-adapter`: the bundled `openai-compatible` HTTP boundary owns the
+  model call and verified usage event under `runtime/model-efficiency.md`;
+  version 1 rejects this route for `reviewer` before any API call because it
+  cannot satisfy the N4 independent-review evidence contract;
 - `disabled`: the project explicitly disabled this role; do not invoke it and
   record the local skip/degrade outcome;
 - `declared-adapter`: the project requested an adapter that this runtime did
@@ -69,3 +73,10 @@ credentials, prompts, responses, source text, or an unverified
 `effective_model`. Copy the resolver's `model` alias into
 `requested_model`; never treat that alias as an observed backend model. If a requested adapter is unavailable, also write a
 `warning` or `degrade` event with the explicit outcome.
+
+For model context/output and verified usage, follow
+`runtime/model-efficiency.md`. Route metadata never becomes usage evidence. A
+declared adapter may emit `model_usage` only at the actual response boundary;
+CM does not infer counts, cache hits, duration, provider, or effective model.
+The bundled `managed-adapter` emits this event itself; callers must not write a
+second copy.

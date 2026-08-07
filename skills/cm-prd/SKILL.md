@@ -5,9 +5,9 @@ description: 用户说“把需求拆成可开发规格”“变更现有功能�
 
 # cm-prd — 需求文档 → 开发规格生成
 
-执行前读取 `../../runtime/project-context.md`、`../../runtime/review.md` 与
-`../../runtime/logging.md`。Codex 入口为 `$cm-prd`；Claude Code 跨平台入口为
-`/cm-prd`，macOS/Linux 另有历史别名 `/cm:prd`。
+执行前读取 `../../runtime/project-context.md`、`../../runtime/review.md`、
+`../../runtime/model-efficiency.md` 与 `../../runtime/logging.md`。Codex 入口为
+`$cm-prd`；Claude Code 跨平台入口为 `/cm-prd`，macOS/Linux 另有历史别名 `/cm:prd`。
 
 新建和变更模式都读取 `references/phase-timing.md`，只为实际执行的阶段写配对
 `progress/start|complete`；人工等待前关闭 segment，恢复后递增，不手算耗时。
@@ -58,6 +58,12 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
 时使用内置默认值；resolver 返回非零或配置错误时立即 `BLOCKED` 并报告字段路径，
 不得进入分析/规划或生成规格。配置的适配器当前运行时不可用时记录 `warning`/`degrade`，
 不得伪造调用成功或把外部专家变成编码执行器。
+
+`analyst` 与 `planner` 的上下文和输出按 `runtime/model-efficiency.md` 分包：前者只取
+当前需求与相关业务地图，后者接收分析结论、波及模块、约束和 AC 候选。稳定规则前缀
+与动态需求分离；不得为方便而重复发送完整项目地图、全部源码或前序对话。只有真实
+适配器响应返回 usage 时才记录计数。`route_state: managed-adapter` 时按共享合同调用
+`cm-openai-compatible-call.py`，由它写唯一的 `model_usage`；不得由 Skill 重复写。
 
 `generate_cases: false` 只关闭 CM 根据需求自动补生成的 `origin: generated` 用例；用户
 或需求源已提供的测试用例仍须保留、规范化并进入审批，不能用项目配置删除测试意图。

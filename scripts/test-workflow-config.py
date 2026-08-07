@@ -116,6 +116,46 @@ def main() -> int:
             "declared-adapter",
             "unavailable adapter route is not claimed as current",
         )
+        managed_adapter = load_config(
+            root,
+            config_path=root / "managed-adapter.yml",
+            text=(
+                "version: 1\nroles:\n  planner:\n"
+                "    adapter: openai-compatible\n"
+                "    model: planner-default\n"
+                "    source: api\n"
+            ),
+        )
+        assert_equal(
+            resolve_role(managed_adapter, "planner", runtime="codex")["route_state"],
+            "managed-adapter",
+            "bundled openai-compatible adapter route",
+        )
+        assert_raises(
+            lambda: load_config(
+                root,
+                config_path=root / "managed-adapter-local-source.yml",
+                text=(
+                    "version: 1\nroles:\n  planner:\n"
+                    "    adapter: openai-compatible\n"
+                    "    model: planner-default\n"
+                ),
+            ),
+            "openai-compatible must not inherit the local source",
+        )
+        assert_raises(
+            lambda: load_config(
+                root,
+                config_path=root / "managed-reviewer.yml",
+                text=(
+                    "version: 1\nroles:\n  reviewer:\n"
+                    "    adapter: openai-compatible\n"
+                    "    model: reviewer-default\n"
+                    "    source: api\n"
+                ),
+            ),
+            "managed reviewer must be rejected until it can satisfy N4",
+        )
 
         json_path = root / ".cm-workflow.json"
         json_path.write_text(json.dumps({"version": 1, "project": {"type": "web-frontend"}}), encoding="utf-8")

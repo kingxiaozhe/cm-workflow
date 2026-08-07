@@ -6,8 +6,9 @@ description: 用户明确要求“只整理结构，不改变行为”时使用�
 # cm-refactor — 重构闭环（行为保持）
 
 执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md`、
-`../../runtime/review.md` 与 `../../runtime/logging.md`。Codex 入口为
-`$cm-refactor`；Claude Code 跨平台入口为 `/cm-refactor`，macOS/Linux 另有历史别名 `/cm:refactor`。
+`../../runtime/review.md`、`../../runtime/model-efficiency.md` 与
+`../../runtime/logging.md`。Codex 入口为 `$cm-refactor`；Claude Code 跨平台入口为
+`/cm-refactor`，macOS/Linux 另有历史别名 `/cm:refactor`。
 
 用户明确要求外部专家，或为本次重构开启 AUTO 时，按
 `../../runtime/external-expert.md` 执行 `../external-expert/SKILL.md` 的任务路由。
@@ -26,6 +27,12 @@ description: 用户明确要求“只整理结构，不改变行为”时使用�
 实现、等价验证和独立审查适配器/模型别名；它不允许子代理提交 Git、改变规则手册、
 跳过判官或把 `declared-adapter` 当成已执行。resolver 返回非零或配置错误时立即
 `BLOCKED`，不得进入 G0、扇出或修改代码；配置缺失时使用当前默认执行方式。
+`managed-adapter` 按 `runtime/model-efficiency.md` 返回文本建议并自动记录真实 usage；
+行为基线、代码改动与独立审查仍保持本地。
+
+角色调用按 `runtime/model-efficiency.md` 只传当前批次的行为基线、范围、diff、验证与
+审查证据；不得重复发送其他批次或完整历史。精简仅影响模型上下文与输出，不降低
+行为判官、独立审查或回归门禁。
 
 结构调整专用闭环。**前提:什么都没坏,行为一丝不变**——设计依据见 `docs/重构流程设计/`(cm 小闭环纪律 × Anthropic 迁移方法论,核心教义:修规则,不修产物)。
 
@@ -81,12 +88,14 @@ description: 用户明确要求“只整理结构，不改变行为”时使用�
 `REVIEW_FEATURE=refactor-{slug}`、`REVIEW_TASK=T-REFACTOR-{slug}`。主执行者按真实
 diff 和判官证据写
 `{SPECS_DIR}/.reviews/refactor-{slug}-T-REFACTOR-{slug}-a{attempt}-handoff.json`，
-然后真跑：
+先按完整 `changed_files` 运行
+`cm-task-gate.py hash-implementation --project-root {CODE_PROJECT} --file ...` 并把返回的
+`implementation_sha256` 写入 handoff，然后真跑：
 
 ```bash
 python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n4 \
   --handoff {HANDOFF_PATH} --reviews-dir {SPECS_DIR}/.reviews \
-  --feature refactor-{slug} --task T-REFACTOR-{slug}
+  --feature refactor-{slug} --task T-REFACTOR-{slug} --project-root {CODE_PROJECT}
 ```
 
 独立审查投喂全部 diff + RULEBOOK（批量道）+ judge-report/diff-report 摘要；凭证严格落
@@ -96,7 +105,7 @@ handoff SHA。审查后必须真跑：
 ```bash
 python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n5 \
   --handoff {HANDOFF_PATH} --reviews-dir {SPECS_DIR}/.reviews \
-  --feature refactor-{slug} --task T-REFACTOR-{slug}
+  --feature refactor-{slug} --task T-REFACTOR-{slug} --project-root {CODE_PROJECT}
 ```
 
 只有当前 attempt 的 `verdict: approved` 才能落盘/提交；`changes_requested` 生成

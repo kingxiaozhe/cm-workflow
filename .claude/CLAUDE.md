@@ -22,6 +22,8 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - Windows 安装: `powershell -ExecutionPolicy Bypass -File install.ps1`（同样原子更新）
 - 一致性自检: `./scripts/cm-check-runtime.sh`
 - 全局日志夹具: `./scripts/cm-check-runtime.sh --log-fixtures`
+- API 用量报告: `python3 scripts/cm-usage-report.py --last 10`
+- OpenAI 兼容调用夹具: `python3 scripts/test-cm-openai-compatible-call.py`
 - 审批 manifest: `python3 scripts/cm-spec-manifest.py {specs}`
 - PRD 单轮恢复夹具: `python3 scripts/test-cm-prd-review-gate.py`
 - 公开包检查: `python3 scripts/validate-public-repo.py`
@@ -41,7 +43,7 @@ skills/                # Codex 权威流程与工种能力
 ├── cm-product-manager/、cm-finance-expert/、cm-doc-syncer/
 └── codebase-context/、external-expert/、darwin-skill/ # 独立工具；点子访谈引擎位于 cm-idea/references/
 agents/                # 并行子 agent → ~/.claude/agents/ —— agent 管纪律
-runtime/               # 双运行时共享上下文、调度、角色路由、审查、日志、外部专家与 AI 测试合同
+runtime/               # 双运行时共享上下文、调度、角色路由、模型调用效率、审查、日志、外部专家与 AI 测试合同
 templates/             # workflow config / rules 骨架 / hooks / statusline / dashboard / pixel
 docs/                  # 使用手册、安装架构、交付材料与示例 specs
 assets/                # README 与使用手册的本地视觉资产
