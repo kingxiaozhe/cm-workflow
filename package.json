@@ -27,10 +27,17 @@
     "skills",
     "templates"
   ],
-  "pi": {
-    "skills": [
-      "./skills"
-    ],
+	"pi": {
+		"skills": [
+			"./skills/cm-ai",
+			"./skills/cm-check",
+			"./skills/cm-fix",
+			"./skills/cm-idea",
+			"./skills/cm-init",
+			"./skills/cm-prd",
+			"./skills/cm-refactor",
+			"./skills/cm-test"
+		],
     "prompts": [
       "./compat/claude-commands"
     ]
