@@ -61,6 +61,19 @@ CM Workflow 是一套安装在 **Codex** 或 **Claude Code** 中的本地、规�
 需要 Git、Python 3.9+，以及 Codex 或 Claude Code。源码不要克隆到
 `~/plugins/cm-workflow`，该路径由 Codex 安装器管理。
 
+### Pi / BYZ package
+
+仓库包含原生 Pi package manifest。直接作为 Pi package 使用时，不会运行
+`install.sh`、hook 或自动更新脚本：
+
+```bash
+pi install git:github.com/kingxiaozhe/cm-workflow
+```
+
+BYZ 可以把同一包固定到指定版本后随发行物提供，开发时仍可使用本地 package
+路径覆盖。包内 Skills 与 Prompts 由 Pi 资源加载器直接发现，不会复制到用户的
+Codex 或 Claude Code 全局目录。
+
 ### Codex
 
 ```bash
