@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "task_id": "T-FIX-openai-compatible-depth-fixture",
+  "attempt": 1,
+  "status": "ready_for_review",
+  "changed_files": [
+    "docs/fixes/20260826-openai-compatible-depth-fixture.md",
+    "scripts/test-cm-openai-compatible-call.py"
+  ],
+  "implementation_sha256": "1fca3ebade7f68d1e3d6a706f30499ef91f2e5c3431defdf0dad6b993250c7dd",
+  "verification": [
+    {
+      "command": "python3 scripts/test-cm-openai-compatible-call.py",
+      "status": "passed",
+      "evidence": "Python 3.9.6: cm openai-compatible adapter fixture: PASS"
+    },
+    {
+      "command": "python3.12 scripts/test-cm-openai-compatible-call.py",
+      "status": "passed",
+      "evidence": "Python 3.12: cm openai-compatible adapter fixture: PASS"
+    },
+    {
+      "command": "env PATH=<python-3.12-bin>:$PATH ./scripts/cm-check-runtime.sh",
+      "status": "passed",
+      "evidence": "Python 3.12 runtime contracts: cm runtime check: PASSED (plugin v0.10.4)"
+    },
+    {
+      "command": "CI-equivalent public, safety, Bash, shell, config, task-gate and diff checks",
+      "status": "passed",
+      "evidence": "All commands exited 0; shell compatibility fixtures: PASSED"
+    }
+  ],
+  "evidence": [
+    "Python 3.12 baseline failed at the deep request assertion used by Linux and Windows CI.",
+    "Python 3.9 classified 2000 levels as parser recursion failure; Python 3.12 reached the adapter depth guard.",
+    "Both request and provider-response fixtures now exercise the explicit 128-level product boundary."
+  ],
+  "blockers": [],
+  "scope_deviation": []
+}
