@@ -187,9 +187,9 @@ class DeepResponseHandler(BaseHTTPRequestHandler):
         encoded = (
             b'{"model":"deep-model","choices":[{"message":{"content":"DEEP"}}],'
             b'"extra":'
-            + b"[" * 2000
+            + b"[" * 256
             + b"0"
-            + b"]" * 2000
+            + b"]" * 256
             + b"}"
         )
         self.send_response(200)
@@ -744,7 +744,7 @@ def main() -> int:
             }
             deep_packet = json.dumps(deep_packet_template, sort_keys=True).replace(
                 '"context": null',
-                '"context": {"nested":' + "[" * 2000 + "0" + "]" * 2000 + "}",
+                '"context": {"nested":' + "[" * 256 + "0" + "]" * 256 + "}",
                 1,
             )
             deep = invoke_adapter(
@@ -757,7 +757,7 @@ def main() -> int:
                 raw_packet=deep_packet,
             )
             assert "Traceback" not in deep.stderr
-            assert "stdin is not valid strict UTF-8 JSON" in deep.stderr
+            assert "stdin exceeds the maximum JSON nesting depth" in deep.stderr
             for invalid_type_call, field, value, expected_error in (
                 (
                     "planner-invalid-identifiers",
@@ -1045,7 +1045,9 @@ def main() -> int:
             deep_response_thread.join(timeout=5)
         assert DeepResponseHandler.request_count == 1
         assert "Traceback" not in deep_response.stderr
-        assert "provider response is not valid strict UTF-8 JSON" in deep_response.stderr
+        assert "provider response exceeds the maximum JSON nesting depth" in (
+            deep_response.stderr
+        )
         deep_response_rows = [
             row
             for row in read_jsonl(project_log)
