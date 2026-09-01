@@ -8,15 +8,22 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 
 ## 技术栈
 
-- 语言: Markdown（prompt 资产主体）+ Bash（安装与可视化脚本）+ PowerShell（Windows 安装器与自检入口）+ Python（公开包自检）
-- 框架: Codex plugin + Agent Skills；Claude Code commands/agents 兼容层
-- 包管理: 无。Codex 用 `install-codex.sh`；Claude Code 用 `install.sh` / `install.ps1`
+- 语言: Markdown（prompt 资产主体）+ Bash（安装与可视化脚本）+ PowerShell（Windows 安装器与自检入口）+ Python（标准库校验/夹具）+ JavaScript（可选 Node.js/Playwright 工具）
+- 框架: Pi/BYZ 原生 package + Codex plugin + Agent Skills；Claude Code commands/agents 兼容层
+- 包管理: 根 `package.json` 仅作 Pi/BYZ package manifest，无 npm 依赖或 scripts；Codex 用 `install-codex.sh`，Claude Code 用 `install.sh` / `install.ps1`
 - 版本控制: remote
-- 交付形态: 开发者工具（Markdown + 本地脚本，无构建产物）
+- 交付形态: Pi/BYZ package + Codex/Claude Code 本地开发者工具（无构建产物）
 - 业务地图: 本地扫描产物不提交；公开架构见 `docs/architecture.md`
 
 ## 常用命令
 
+- 安装依赖: 无 npm 安装步骤（`package.json` 无依赖；可视化工具按需使用外部 Playwright）
+- 开发运行: 不适用（直接维护 Markdown 与脚本）
+- 构建: 不适用（无构建产物）
+- 测试: `./scripts/cm-check-runtime.sh`
+- Lint/安全: `python3 scripts/validate-public-repo.py && python3 scripts/scan-public-safety.py`
+- Bash 语法: `find . -type f -name '*.sh' -print0 | xargs -0 -n1 /bin/bash -n`
+- Pi/BYZ package: `pi install git:github.com/kingxiaozhe/cm-workflow`
 - Codex 安装: `./install-codex.sh`（装完新开会话跑 `$cm-check`）
 - Claude 安装: `./install.sh`（核心运行时原子更新/失败回滚；可选更新器 best-effort，装完跑 `/cm-check`）
 - Windows 安装: `powershell -ExecutionPolicy Bypass -File install.ps1`（同样原子更新）
@@ -28,10 +35,11 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - PRD 单轮恢复夹具: `python3 scripts/test-cm-prd-review-gate.py`
 - 公开包检查: `python3 scripts/validate-public-repo.py`
 - 安全扫描: `python3 scripts/scan-public-safety.py`
+- 插件验证: `python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .`
 - 查看版本: `cat VERSION`
 - 可视化预览: `templates/pixel/cm-pixel.sh --demo`、`templates/dashboard/serve.sh {specs路径}`
 
-无 build / 单元测试。质量门是机械检查、插件验证、安装冒烟和相关路径 dogfood。
+不使用第三方单元测试框架；Shell/Python 行为由可执行夹具覆盖，prompt 流程另需相关路径 dogfood。安装命令会写用户级目录，只在明确安装或隔离冒烟时执行。
 
 ## 目录结构
 

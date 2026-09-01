@@ -32,6 +32,7 @@ OpenAI-compatible 适配器只在用户明确启用时从本地环境变量读�
 ## 二、密钥与敏感内容
 
 - 仓库内禁止任何真实密钥、token、私钥、连接串、内网地址、真实客户名。
+- 仓库不加载 `.env` 文件；本地 API Key 只通过进程环境变量提供。未来若引入 `.env`，必须先加入 `.gitignore`，仅提交无真实值的 `.env.example`。
 - `docs/sample-prd/`、`docs/sample-specs/` 是公开示例——放进去前确认已脱敏（无公司内部项目名、真实业务数据）。
 - commit body 里的 `Claude-Session:` 链接是会话追溯，不含凭证，可以留。
 - `cm-contract-agent` 的「不碰私钥、不执行主网部署」约束不得放宽。

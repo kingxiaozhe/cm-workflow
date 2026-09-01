@@ -782,6 +782,24 @@ grep -Fq 'T-FIX-{slug}' "$ROOT/skills/cm-fix/SKILL.md" &&
   grep -Fq 'cm-task-gate.py check-n4' "$ROOT/skills/cm-fix/SKILL.md" &&
   grep -Fq 'cm-task-gate.py check-n5' "$ROOT/skills/cm-fix/SKILL.md" ||
   fail "cm-fix is missing the content-bound post-fix review gate"
+require_file "skills/cm-fix/references/cross-boundary-debugging.md"
+grep -q "references/cross-boundary-debugging.md" "$ROOT/skills/cm-fix/SKILL.md" ||
+  fail "cm-fix does not load its cross-boundary debugging reference"
+grep -q "最后正常边" "$ROOT/skills/cm-fix/SKILL.md" &&
+  grep -q "首个失败边" "$ROOT/skills/cm-fix/SKILL.md" ||
+  fail "cm-fix does not preserve the cross-boundary evidence chain"
+grep -q "不自动联网、不外发日志" "$ROOT/skills/cm-fix/SKILL.md" ||
+  fail "cm-fix does not keep cross-boundary debugging local and redacted"
+grep -Fq '| 边 | 预期证据 | 实际证据 | 结论 |' \
+  "$ROOT/skills/cm-fix/references/cross-boundary-debugging.md" &&
+  grep -q "最后一个正常边" "$ROOT/skills/cm-fix/references/cross-boundary-debugging.md" &&
+  grep -q "第一个失败边" "$ROOT/skills/cm-fix/references/cross-boundary-debugging.md" ||
+  fail "cross-boundary debugging reference is missing the evidence-chain contract"
+grep -q "一次只检验一个假设" "$ROOT/skills/cm-fix/references/cross-boundary-debugging.md" &&
+  grep -q "不自动联网、不外发日志" "$ROOT/skills/cm-fix/references/cross-boundary-debugging.md" &&
+  grep -q "已脱敏" "$ROOT/skills/cm-fix/references/cross-boundary-debugging.md" &&
+  grep -q "不记录 token、Cookie、密码、个人数据、完整请求体" "$ROOT/skills/cm-fix/references/cross-boundary-debugging.md" ||
+  fail "cross-boundary debugging reference is missing the local hypothesis-safety contract"
 grep -Fq 'T-REFACTOR-{slug}' "$ROOT/skills/cm-refactor/SKILL.md" &&
   grep -Fq 'cm-task-gate.py check-n4' "$ROOT/skills/cm-refactor/SKILL.md" &&
   grep -Fq 'cm-task-gate.py check-n5' "$ROOT/skills/cm-refactor/SKILL.md" ||

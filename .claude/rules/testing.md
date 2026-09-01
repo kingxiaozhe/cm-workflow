@@ -1,10 +1,10 @@
 ---
-description: 本仓库的验证方式——/cm-check 一致性自检 + dogfood 实跑，无单元测试框架
+description: 本仓库的验证方式——机械一致性、Shell/Python 夹具与相关流程 dogfood
 ---
 
 # 测试规范
 
-**本仓库没有单元测试框架，也不需要引入**——prompt 资产没有可断言的函数返回值。质量门是机械检查、安装冒烟和相关路径 dogfood。
+**本仓库不使用第三方单元测试框架**。Prompt 资产依靠机械一致性与 dogfood；Shell/Python 工具行为由仓库内可执行夹具覆盖。质量门是机械检查、夹具、安装冒烟和相关路径 dogfood。
 
 ## 框架与命令
 
