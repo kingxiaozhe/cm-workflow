@@ -29,7 +29,18 @@ python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .
 ```
 
 Changes to N1–N8, installers, or templates require the corresponding dogfood or
-isolated-install evidence described in `.claude/rules/testing.md`.
+isolated-install evidence described in `.claude/rules/testing.md`. A release or
+change to the Pi/BYZ or Codex distribution surface also requires, from a clean
+checkout:
+
+```bash
+./scripts/cm-release-smoke.sh
+```
+
+This command requires local BYZ and Codex installations. It validates the Pi
+manifest, checks the local workflow root through BYZ, and installs the Codex
+plugin under a disposable home; it does not modify the caller's normal Codex
+plugin state.
 
 ## Skill trigger diagnostics
 

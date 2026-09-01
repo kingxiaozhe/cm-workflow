@@ -144,7 +144,7 @@ for part in .codex-plugin skills runtime templates scripts agents compat docs as
   mkdir -p "$STAGE/$part"
   cp -R "$SRC_DIR/$part/." "$STAGE/$part/"
 done
-for file in VERSION README.md AGENTS.md LICENSE THIRD_PARTY_NOTICES.md SECURITY.md CONTRIBUTING.md install-codex.sh install.sh install.ps1; do
+for file in VERSION package.json README.md AGENTS.md LICENSE THIRD_PARTY_NOTICES.md SECURITY.md CONTRIBUTING.md install-codex.sh install.sh install.ps1; do
   [ -f "$SRC_DIR/$file" ] && cp "$SRC_DIR/$file" "$STAGE/$file"
 done
 

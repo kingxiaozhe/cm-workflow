@@ -20,6 +20,7 @@ description: 本仓库的验证方式——机械一致性、Shell/Python 夹具
 | 任务门禁夹具 | `python3 scripts/test-task-gate.py` | handoff、实现内容绑定、Review 状态转换与 Worktree 隔离 |
 | 角色路由夹具 | `./scripts/cm-check-runtime.sh --routing-fixtures` | 外部专家路由与降级顺序 |
 | 插件验证（机器） | Codex plugin creator validator | 本机 Codex |
+| 发版面冒烟（机器） | `./scripts/cm-release-smoke.sh` | 校验 Pi manifest；BYZ 检查本地 workflow root；一次性 HOME 安装并启用 Codex plugin |
 | 端到端验证（人） | dogfood 实跑 | `/cm-prd` → `/cm-ai` 跑真实项目 |
 | 安装冒烟 | 装完看输出无报错 | `./install.sh` |
 | 覆盖率 | **不适用** | — |
@@ -45,7 +46,8 @@ description: 本仓库的验证方式——机械一致性、Shell/Python 夹具
 | 改 N1–N8 节点 | `/cm-check`；跑一遍受影响节点的 dogfood |
 | 改 `templates/rules/` 骨架 | 在一个真实项目跑 `/cm-init`，确认生成的 rules 无残留 `{占位符}` 和模板注释 |
 | 改 `install.sh` / `install.ps1` | 真装一次；确认覆盖确认提示、`cm-VERSION` 落盘正确 |
-| 发版（升 VERSION） | 同步 `.codex-plugin/plugin.json` 基础版本；cachebuster 不算语义版本 |
+| 改 `package.json` / `.codex-plugin/` / `install-codex.sh` | 从干净 checkout 跑 `./scripts/cm-release-smoke.sh` |
+| 发版（升 VERSION） | 同步 `.codex-plugin/plugin.json` 基础版本；从干净 checkout 跑 `./scripts/cm-release-smoke.sh`；cachebuster 不算语义版本 |
 | 改 bash 脚本 | `bash scripts/test-shell-compat.sh`；并在 macOS 自带 bash 3.2 下实跑：`/bin/bash script.sh` |
 | 改可视化模板 | `cm-pixel.sh --demo` / 浏览器加 `?demo` 预览 |
 

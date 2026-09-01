@@ -324,6 +324,12 @@ python3 scripts/scan-public-safety.py
 python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .
 ```
 
+升版或修改 Pi/BYZ、Codex 分发面时，从干净 checkout 运行分发面冒烟；它校验 Pi manifest、用本机 BYZ 检查本地 workflow root，并把 Codex 安装隔离到一次性 HOME：
+
+```bash
+./scripts/cm-release-smoke.sh
+```
+
 基础版本同时保存在 `VERSION` 与 `.codex-plugin/plugin.json`；Codex 安装副本会追加
 `+codex.*` cachebuster。贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
