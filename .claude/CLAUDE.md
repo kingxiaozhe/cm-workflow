@@ -36,6 +36,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - 公开包检查: `python3 scripts/validate-public-repo.py`
 - 安全扫描: `python3 scripts/scan-public-safety.py`
 - 插件验证: `python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .`
+- 发版面冒烟: `./scripts/cm-release-smoke.sh`（本地 BYZ + Codex；Codex 装入一次性 HOME）
 - 查看版本: `cat VERSION`
 - 可视化预览: `templates/pixel/cm-pixel.sh --demo`、`templates/dashboard/serve.sh {specs路径}`
 
