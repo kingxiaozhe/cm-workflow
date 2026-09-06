@@ -1,19 +1,38 @@
 ---
 name: cm-idea
-description: 将一句模糊产品点子通过逐题访谈整理为可交给 cm-prd 的 PRD。仅在用户要从点子开始梳理产品时使用，不写代码、不拆开发任务。
+description: 用户说“我有个点子”“帮我梳理产品”或需要先聊清目标时使用。通过逐题访谈整理为可交给 cm-prd 的 PRD；已有明确需求文档时改用 cm-prd，不写代码、不拆开发任务。
 ---
 
 # cm-idea — 点子 → PRD（流程上游入口，非 N1–N8 步骤）
 
 先读取 `../../runtime/project-context.md`。Codex 入口为 `$cm-idea`；Claude Code 跨平台入口为 `/cm-idea`，macOS/Linux 另有历史别名 `/cm:idea`。
 
+用户明确要求外部专家，或为本次访谈开启 AUTO 时，先读取
+`../../runtime/external-expert.md` 并执行 `../external-expert/SKILL.md` 的任务路由。
+AUTO 只在复杂方案/材料综合时 CONSULT，需要权威事实时 VERIFY，其余 LOCAL。外部
+结果只作为访谈输入，不能替用户确认产品方向；没有明确请求，也没有本次 AUTO 授权
+时，保持原来的纯对话、不联网流程。
+
 **用法**：`$cm-idea 一句话点子`（如 `$cm-idea 我想做个帮宝妈记录辅食的小程序`）
 
-把模糊想法聊成成熟 PRD 的产品访谈搭档。**本命令只做一件事**：加载 `{CM_WORKFLOW_ROOT}/skills/idea-to-prd/SKILL.md` 并严格按其规则执行——本文件不复制不改写技能规则，技能文件是唯一事实源。
+## JS 只读准入
+
+在加载访谈引用、联网或探测保存目录之前，先执行：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-idea-entry.mjs" \
+  --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-idea"
+```
+
+只有 `ready / interview` 才继续加载下方引用。该结果不读取或回显点子内容，不调用外部专家，
+也不授权保存文件；保存前仍必须按访谈引用取得用户对完整路径的确认。本入口不把访谈规则改写
+成 JS，`references/idea-to-prd.md` 继续是唯一事实源。
+
+把模糊想法聊成成熟 PRD 的产品访谈搭档。**本命令只做一件事**：加载 `references/idea-to-prd.md` 并严格按其规则执行——本文件不复制不改写访谈规则，该引用文件是唯一事实源。
 
 ## 执行
 
-1. 读取 `{CM_WORKFLOW_ROOT}/skills/idea-to-prd/SKILL.md`，未安装则提示重装最新包后中止
+1. 读取 `references/idea-to-prd.md`，缺失则提示重装最新包后中止
 2. 把 `用户本轮输入` 作为用户点子，进入技能的访谈流程（判定产品类型 → 一次一题 → L1 骨架 → 按用户节奏加深；涉及交易/Web3 自动加载 `references/domains/trading.md` 领域包）
 3. 全程遵守技能自身纪律（一次一题、防诱导选项、狠收敛、纯对话不联网）
 

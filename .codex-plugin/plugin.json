@@ -1,7 +1,7 @@
 {
   "name": "cm-workflow",
-  "version": "0.10.0",
-  "description": "Spec-driven product development workflow for Codex: PRD, implementation, review, QA, fixes, refactors, and documentation.",
+  "version": "0.10.4",
+  "description": "Spec-driven product development workflow for Codex: external research, PRD, implementation, read-only feature testing, review, QA, fixes, refactors, and documentation.",
   "author": {
     "name": "cm-workflow maintainers",
     "url": "https://github.com/kingxiaozhe/cm-workflow"
@@ -18,7 +18,7 @@
   "interface": {
     "displayName": "CM Workflow",
     "shortDescription": "Run the CM spec-driven workflow in Codex.",
-    "longDescription": "Turn ideas and requirements into reviewed specs, implementation tasks, independent reviews, QA evidence, fixes, refactors, and synchronized documentation.",
+    "longDescription": "Use optional external reasoning for discussions and research, then turn ideas and requirements into reviewed specs, AI-readable test contracts, implementation tasks, independent reviews, read-only feature tests, QA evidence, fixes, refactors, and synchronized documentation.",
     "developerName": "cm-workflow maintainers",
     "category": "Productivity",
     "capabilities": [

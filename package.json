@@ -1,0 +1,45 @@
+{
+  "name": "@aibyzero/cm-workflow",
+  "version": "0.10.4",
+  "description": "Spec-driven business development workflow for Pi, Codex, and Claude Code",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kingxiaozhe/cm-workflow.git"
+  },
+  "keywords": [
+    "pi-package",
+    "coding-agent",
+    "workflow",
+    "skills"
+  ],
+  "files": [
+    "VERSION",
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md",
+    "agents",
+    "assets",
+    "compat",
+    "docs",
+    "runtime",
+    "scripts",
+    "skills",
+    "templates"
+  ],
+	"pi": {
+		"skills": [
+			"./skills/cm-ai",
+			"./skills/cm-check",
+			"./skills/cm-fix",
+			"./skills/cm-idea",
+			"./skills/cm-init",
+			"./skills/cm-prd",
+			"./skills/cm-refactor",
+			"./skills/cm-test"
+		],
+    "prompts": [
+      "./compat/claude-commands"
+    ]
+  }
+}

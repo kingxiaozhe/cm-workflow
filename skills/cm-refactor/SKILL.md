@@ -1,13 +1,58 @@
 ---
 name: cm-refactor
-description: 对不改变外部行为的代码结构调整执行分流、行为判官、分批重构、独立审查与规则沉淀；缺陷和需求变化必须转交其他流程。
+description: 用户明确要求“只整理结构，不改变行为”时使用。执行边界分流、行为判官、分批重构和独立审查；缺陷修复转交 cm-fix，新增或变化的业务行为转交 cm-prd。
 ---
 
 # cm-refactor — 重构闭环（行为保持）
 
-执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md` 与 `../../runtime/review.md`。Codex 入口为 `$cm-refactor`；Claude Code 跨平台入口为 `/cm-refactor`，macOS/Linux 另有历史别名 `/cm:refactor`。
+执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md`、
+`../../runtime/review.md`、`../../runtime/model-efficiency.md` 与
+`../../runtime/logging.md`。Codex 入口为 `$cm-refactor`；Claude Code 跨平台入口为
+`/cm-refactor`，macOS/Linux 另有历史别名 `/cm:refactor`。
+
+用户明确要求外部专家，或为本次重构开启 AUTO 时，按
+`../../runtime/external-expert.md` 执行 `../external-expert/SKILL.md` 的任务路由。
+重构写入、行为判官与审查保持 LOCAL；复杂方案比较可 CONSULT，权威事实可 VERIFY。
+外部结果只进入候选方案和风险清单，不得修改行为基线、代跑判官或满足独立审查。
 
 **用法**:`$cm-refactor {specs路径} {代码项目路径} 重构目标描述(哪块代码/为什么难维护)`
+
+## JS 只读分流
+
+在读取项目内容、解析角色、写 `run_start`、建立行为基线或修改代码前，先确认本轮有非空目标描述，
+并按下方“分流门”将意图归为 `defect`、`behavior-change`、`gradual-adoption` 或
+`structure-only`；不要把描述正文拼进 shell。随后执行：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-refactor-entry.mjs" \
+  --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-refactor" --project "{CODE_PROJECT}" \
+  [--specs "{SPECS_DIR}"] --intent "{四类意图之一}" [--target-present]
+```
+
+没有 specs 的裸项目省略 `--specs`；有非空描述才传 `--target-present`。缺描述时入口返回
+`blocked / target_required`。`defect`、`behavior-change`、`gradual-adoption` 分别只返回既有
+`$cm-fix`、`$cm-prd --change`、普通改动出口并停止本流程，出口不构成执行授权；只有
+`structure-only` 才继续校验项目/specs，`ready / g0_feasibility` 才进入 G0，且继续要求行为完全不变
+与 G0 人签核。返回的角色、日志和
+Learning 均为 `pending`，执行/写入权限为 false；入口不读取项目正文、不跑判官、不调用
+provider/browser/外部专家、不写日志/档案/RULEBOOK，也不替代后续轻量道或批量道。
+
+两个路径校验通过后立即调用统一写入器记录 `run_start`；暂停/续跑沿用同一
+`.cm-run.json`，完成收口人门后写 `run_done`。不得直接拼 JSON。
+
+## 项目角色路由
+
+从代码项目根解析 `coder`、`tester`、`reviewer`，并按
+`runtime/workflow-routing.md` 写 `decision`/`phase: route`。角色配置只选择请求的
+实现、等价验证和独立审查适配器/模型别名；它不允许子代理提交 Git、改变规则手册、
+跳过判官或把 `declared-adapter` 当成已执行。resolver 返回非零或配置错误时立即
+`BLOCKED`，不得进入 G0、扇出或修改代码；配置缺失时使用当前默认执行方式。
+`managed-adapter` 按 `runtime/model-efficiency.md` 返回文本建议并自动记录真实 usage；
+行为基线、代码改动与独立审查仍保持本地。
+
+角色调用按 `runtime/model-efficiency.md` 只传当前批次的行为基线、范围、diff、验证与
+审查证据；不得重复发送其他批次或完整历史。精简仅影响模型上下文与输出，不降低
+行为判官、独立审查或回归门禁。
 
 结构调整专用闭环。**前提:什么都没坏,行为一丝不变**——设计依据见 `docs/重构流程设计/`(cm 小闭环纪律 × Anthropic 迁移方法论,核心教义:修规则,不修产物)。
 
@@ -20,7 +65,7 @@ description: 对不改变外部行为的代码结构调整执行分流、行为�
 
 **$cm-ai 全局规则同等生效**：灾难级才暂停、多方案自主决策留痕、状态落盘（node 写 `REFACTOR`）、运行日志照记、审查按 `runtime/review.md` 执行。
 
-**续跑检测(先于 G0)**:`{SPECS_DIR}/refactors/` 下存在未收口 slug(档案无收口节 / 运行日志该 slug 无 `done` 事件)→ **按磁盘状态定位续跑站点**(RULEBOOK 版本、batch-log 完成集、队列缺口),G0 不重问、判官按 G0.5 重验后继续;无在制状态才走全新 G0。"队列=磁盘"的可恢复性必须有恢复入口才算数(对照系:cm:ai 有 tasks 断点、fix 有 slug 续跑,最长时的批量重构反而没有——本条补齐)。
+**续跑检测(先于 G0)**:`{SPECS_DIR}/refactors/` 下存在未收口 slug(档案无收口节 / 运行日志该 slug 无 `run_done` 事件)→ **按磁盘状态定位续跑站点**(RULEBOOK 版本、batch-log 完成集、队列缺口),G0 不重问、判官按 G0.5 重验后继续;无在制状态才走全新 G0。"队列=磁盘"的可恢复性必须有恢复入口才算数(对照系:cm:ai 有 tasks 断点、fix 有 slug 续跑,最长时的批量重构反而没有——本条补齐)。
 
 ## G0: 可行性(人门)
 
@@ -53,9 +98,39 @@ description: 对不改变外部行为的代码结构调整执行分流、行为�
 
 1. **重构**:只动结构不动行为;**禁止顺手修 bug**(与 N3"禁止顺手重构"互为镜像)——发现缺陷 → 停下记录现象与位置进档案,收口后走 `$cm-fix`。夹带修复会毁掉差分判官:行为变了,是重构失手还是修复生效?无法归因
 2. **等价验证**:基线全绿 + 差分逐项一致;**任何行为差异 = 该步失败回滚**——"差异其实更合理"也不例外,那是行为变更,走 prd --change 立项后再做
-3. **审查**：按 N4 的独立审查通道，≤2 轮；**投喂**：全部 diff + RULEBOOK（批量道）+ 判官证据（judge-report/diff-report 摘要）。重点：有无夹带行为变更、结构是否真的改善、差分覆盖是否充分。凭证落到 `{SPECS_DIR}/.reviews/refactor-{slug}-r{轮次}.md`，**无凭证不许进第 4 步**
-4. **落盘**:档案 `{SPECS_DIR}/refactors/{YYYYMMDD}-{slug}.md`(动机指标改前改后对照 / 等价验证方式与结果 / 发现未修缺陷清单);METRICS 行 Feature 列写 `refactor`;commit `refactor: {一句话} (档案: refactors/xxx.md)`
+3. **审查**：执行下方「结构化审查门禁」；重点检查有无夹带行为变更、结构是否真的改善、差分覆盖是否充分
+4. **落盘**:档案 `{SPECS_DIR}/refactors/{YYYYMMDD}-{slug}.md`(动机指标改前改后对照 / 等价验证方式与结果 / 发现未修缺陷清单);METRICS 行 Feature 列写 `refactor`;delivery=diff 不提交，branch/draft-mr 才 commit `refactor: {一句话} (档案: refactors/xxx.md)`
 5. **规则毕业**:本次收敛出的持久约定(如"路由文件导出形态")→ 写进代码项目 `.claude/rules/` 对应文件——一次重构的规则,变成项目的永久基因;**项目无 `.claude/rules/`(未经 $cm-init)→ 降级记入 LESSONS `[仅记忆]` 并在档案注明,提示补跑 $cm-init 后迁入**(实跑 DEV-003:diff-lens 未 init,毕业规则无处可去)
+
+### 结构化审查门禁（两条轨道共用）
+
+`{slug}` 先规范成跨平台安全的 ASCII kebab；令
+`REVIEW_FEATURE=refactor-{slug}`、`REVIEW_TASK=T-REFACTOR-{slug}`。主执行者按真实
+diff 和判官证据写
+`{SPECS_DIR}/.reviews/refactor-{slug}-T-REFACTOR-{slug}-a{attempt}-handoff.json`，
+先按完整 `changed_files` 运行
+`cm-task-gate.py hash-implementation --project-root {CODE_PROJECT} --file ...` 并把返回的
+`implementation_sha256` 写入 handoff，然后真跑：
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n4 \
+  --handoff {HANDOFF_PATH} --reviews-dir {SPECS_DIR}/.reviews \
+  --feature refactor-{slug} --task T-REFACTOR-{slug} --project-root {CODE_PROJECT}
+```
+
+独立审查投喂全部 diff + RULEBOOK（批量道）+ judge-report/diff-report 摘要；凭证严格落
+`{SPECS_DIR}/.reviews/refactor-{slug}-T-REFACTOR-{slug}-r{attempt}.md` 并绑定当前
+handoff SHA。审查后必须真跑：
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n5 \
+  --handoff {HANDOFF_PATH} --reviews-dir {SPECS_DIR}/.reviews \
+  --feature refactor-{slug} --task T-REFACTOR-{slug} --project-root {CODE_PROJECT}
+```
+
+只有当前 attempt 的 `verdict: approved` 才能落盘/提交；`changes_requested` 生成
+attempt 2 并复审，第 2 轮仍有阻断项写 `blocked`。旧凭证、空壳凭证或文件存在检查
+均不得放行。
 
 ## 批量道(五站 + 三条修上游回环)
 
@@ -101,7 +176,7 @@ description: 对不改变外部行为的代码结构调整执行分流、行为�
 
 ### 收口(同轻量道 3-5 + 追加)
 
-- 审查凭证、档案(落 `refactors/{slug}/` 目录,与 RULEBOOK 同处)、METRICS、规则毕业照常
+- 先通过「结构化审查门禁」，再写档案(落 `refactors/{slug}/` 目录,与 RULEBOOK 同处)、METRICS、规则毕业
 - **偏差日志**:跳过的环节、放宽的检查,一行一条记入档案 `DEV-{序号} | 日期 | 跳过了什么 | 谁批准`——没人记录的偏差就是没人批准的偏差
 - **结构同步**:重构天然改变文件结构——按 cm-doc-syncer 口径同步项目 README / CLAUDE.md 的目录与模块描述(调用 skill,不动其命令文件);收口清单含**波及物核对**:批内全部「需配合事项」逐条销账(实跑失误:U1 汇报的 README 同步在收口被漏,靠事后审计才发现)
 
@@ -116,7 +191,7 @@ description: 对不改变外部行为的代码结构调整执行分流、行为�
 - `decision`:规则修订采纳(修了哪条/为什么)、轨道选择、判官修复
 - `task_start` / `task_done`:轻量道按次;批量道按**批次**记,detail 必带数字(完成 N/总数 M · 差分通过率 · 动机指标现值)——单文件粒度不灌主日志,进明细层 batch-log(见下节)
 - `error`:判官假阳性排查、批次重生成(记明"第几次重复触发规则修订")、行为差异回滚
-- `done`:收口(双计数写进 detail)
+- `run_done`:收口(双计数与 slug 写进 detail/data)
 
 ## 重构专属明细日志(事件层之下的第二层,轻量道不豁免只减薄)
 
@@ -136,7 +211,7 @@ description: 对不改变外部行为的代码结构调整执行分流、行为�
 | 明细层(判官/差分/批次/回滚) | `refactors/{slug}/` 下 judge-report.md · diff-report.md · batch-log.jsonl(批量道) |
 | 可行性摘要 + 档案 | `{SPECS_DIR}/refactors/{日期}-{slug}.md`(批量道为同名目录) |
 | RULEBOOK(批量道) | `refactors/{slug}/RULEBOOK.md` |
-| 审查凭证 | `{SPECS_DIR}/.reviews/refactor-{slug}-r{N}.md` |
+| 审查凭证 | `{SPECS_DIR}/.reviews/refactor-{slug}-T-REFACTOR-{slug}-r{N}.md` |
 | 度量 | METRICS.md 追加行,Feature 列 `refactor` |
 | 毕业规则 | 代码项目 `.claude/rules/` 对应文件 |
 | 备忘销账 | LESSONS.md 待触发备忘状态更新 |

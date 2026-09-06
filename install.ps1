@@ -6,85 +6,201 @@ param(
 # Usage: powershell -ExecutionPolicy Bypass -File install.ps1 [-Force]
 $ErrorActionPreference = "Stop"
 
-$Src  = $PSScriptRoot
+$Src = $PSScriptRoot
 $Dest = if ($env:CLAUDE_HOME) { $env:CLAUDE_HOME } else { Join-Path $env:USERPROFILE ".claude" }
+$DestParent = Split-Path $Dest -Parent
 $Version = if (Test-Path "$Src\VERSION") { (Get-Content "$Src\VERSION" -Raw).Trim() } else { "未知" }
+$Stage = Join-Path $DestParent ".cm-claude.stage.$PID"
+$Backup = Join-Path $DestParent ".cm-claude.backup.$PID"
+$InstallComplete = $false
+$DestTouched = $false
+$ManagedFiles = @()
 
-Write-Host "cm 工作流安装  v$Version"
+$Node = Get-Command "node" -ErrorAction SilentlyContinue
+if (-not $Node) {
+    throw "CM Workflow 需要 Node.js 18+，但 PATH 中未找到 node。"
+}
+& node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)'
+if ($LASTEXITCODE -ne 0) {
+    throw "CM Workflow 需要 Node.js 18+。"
+}
+
+function Stage-Tree {
+    param([string]$Source, [string]$Relative)
+    if (-not (Test-Path $Source -PathType Container)) { return }
+    $target = Join-Path $Stage $Relative
+    New-Item -ItemType Directory -Force -Path $target | Out-Null
+    Get-ChildItem -LiteralPath $Source -Force | Copy-Item -Destination $target -Recurse -Force
+}
+
+function Stage-File {
+    param([string]$Source, [string]$Relative)
+    if (-not (Test-Path $Source -PathType Leaf)) { return }
+    $target = Join-Path $Stage $Relative
+    New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
+    Copy-Item -LiteralPath $Source -Destination $target -Force
+}
+
+function Restore-Install {
+    foreach ($relative in $ManagedFiles) {
+        $target = Join-Path $Dest $relative
+        $saved = Join-Path $Backup $relative
+        if (Test-Path $saved -PathType Leaf) {
+            New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
+            Copy-Item -LiteralPath $saved -Destination $target -Force
+        } elseif (Test-Path $target -PathType Leaf) {
+            Remove-Item -LiteralPath $target -Force
+        }
+    }
+}
+
+function Assert-SafeTarget {
+    param([string]$Relative)
+
+    if (Test-Path -LiteralPath $Dest) {
+        $destItem = Get-Item -LiteralPath $Dest -Force
+        if ($destItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "拒绝写入重解析点/符号链接安装目录: $Dest"
+        }
+        if (-not $destItem.PSIsContainer) {
+            throw "安装目录必须是普通目录: $Dest"
+        }
+    }
+
+    $parentRelative = Split-Path $Relative -Parent
+    $current = $Dest
+    if ($parentRelative) {
+        foreach ($component in ($parentRelative -split '[\\/]+')) {
+            if (-not $component) { continue }
+            $current = Join-Path $current $component
+            if (Test-Path -LiteralPath $current) {
+                $item = Get-Item -LiteralPath $current -Force
+                if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                    throw "拒绝写入重解析点/符号链接父目录: $current"
+                }
+                if (-not $item.PSIsContainer) {
+                    throw "安装目标父路径不是目录: $current"
+                }
+            }
+        }
+    }
+
+    $target = Join-Path $Dest $Relative
+    if (Test-Path -LiteralPath $target) {
+        $item = Get-Item -LiteralPath $target -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "拒绝覆盖重解析点/符号链接目标: $target"
+        }
+        if ($item.PSIsContainer) {
+            throw "安装目标必须是普通文件: $target"
+        }
+    }
+}
+
+Write-Host "CM Workflow Claude Code 兼容安装  v$Version"
 Write-Host "  来源: $Src"
 Write-Host "  目标: $Dest`n"
 
-function Copy-TreeSafely {
-    param([string]$Source, [string]$Target, [string]$Label)
+New-Item -ItemType Directory -Force -Path $DestParent, $Stage | Out-Null
 
-    if (-not (Test-Path $Source)) {
-        Write-Host "跳过 $Label（源目录不存在）"
-        return
+try {
+    foreach ($part in "skills", "agents", "runtime", "scripts", "compat") {
+        Stage-Tree (Join-Path $Src $part) $part
     }
+    Stage-Tree (Join-Path $Src "docs") "cm-workflow\docs"
+    Stage-Tree (Join-Path $Src "assets") "cm-workflow\assets"
+    Stage-File (Join-Path $Src "README.md") "cm-workflow\README.md"
 
-    New-Item -ItemType Directory -Force -Path $Target | Out-Null
-    $conflicts = @()
-    foreach ($file in Get-ChildItem $Source -Recurse -File) {
-        $relative = $file.FullName.Substring($Source.Length).TrimStart([char[]]"\/")
-        $candidate = Join-Path $Target $relative
-        if (Test-Path $candidate) { $conflicts += $relative }
+    foreach ($pair in @(
+        @("dashboard", "dashboard"),
+        @("dashboard", "cm-dashboard"),
+        @("pixel", "pixel"),
+        @("pixel", "cm-pixel"),
+        @("rules", "rules"),
+        @("rules", "cm-rules"),
+        @("hooks", "hooks"),
+        @("refactor", "refactor"),
+        @("ui-lens", "ui-lens")
+    )) {
+        Stage-Tree (Join-Path $Src "templates\$($pair[0])") "templates\$($pair[1])"
     }
+    Stage-File "$Src\templates\arch-reference.md" "templates\arch-reference.md"
+    Stage-File "$Src\templates\cm-workflow.yml" "templates\cm-workflow.yml"
+    Stage-File "$Src\templates\statusline\cm-statusline.sh" "templates\cm-statusline.sh"
+    Stage-File "$Src\templates\hooks\pre-commit-cm-task-check" "templates\cm-task-check-hook"
+    Stage-File "$Src\templates\refactor\cm-refactor-denies.json" "templates\cm-refactor-denies.json"
+    Stage-File "$Src\templates\ui-lens\cm-ui-lens-extract.mjs" "templates\cm-ui-lens-extract.mjs"
+    New-Item -ItemType Directory -Force -Path (Join-Path $Stage "templates") | Out-Null
+    Set-Content -Path (Join-Path $Stage "templates\cm-VERSION") -Value $Version
 
-    if ($conflicts.Count -gt 0 -and -not $Force) {
-        Write-Host "⚠ $Label 下以下文件已存在，将被覆盖："
-        $conflicts | ForEach-Object { Write-Host "    $_" }
-        $answer = Read-Host "继续覆盖 $Label？[y/N]"
+    $ManagedFiles = @(
+        Get-ChildItem $Stage -Recurse -File -Force | ForEach-Object {
+            $_.FullName.Substring($Stage.Length).TrimStart([char[]]"\/")
+        } | Sort-Object
+    )
+    $Conflicts = @()
+    foreach ($relative in $ManagedFiles) {
+        Assert-SafeTarget $relative
+        $target = Join-Path $Dest $relative
+        if (Test-Path $target) {
+            $Conflicts += $relative
+        }
+    }
+    if ($Conflicts.Count -gt 0 -and -not $Force) {
+        Write-Host "⚠ 以下 CM 文件已存在，将作为一个整体更新："
+        $Conflicts | ForEach-Object { Write-Host "    $_" }
+        $answer = Read-Host "继续原子更新全部 CM 文件？[y/N]"
         if ($answer -notin @("y", "Y")) {
-            Write-Host "跳过 $Label"
+            Write-Host "安装已取消，未修改现有运行时。"
             return
         }
     }
 
-    Copy-Item "$Source\*" $Target -Recurse -Force
-    $count = (Get-ChildItem $Source -Recurse -File).Count
-    Write-Host "√ $Label 已安装（$count 个文件）"
-}
-
-function Copy-FileSafely {
-    param([string]$Source, [string]$Target, [string]$Label)
-
-    if (-not (Test-Path $Source)) { return }
-    if ((Test-Path $Target) -and -not $Force) {
-        $answer = Read-Host "⚠ $Label 已存在，继续覆盖？[y/N]"
-        if ($answer -notin @("y", "Y")) {
-            Write-Host "跳过 $Label"
-            return
+    New-Item -ItemType Directory -Force -Path $Backup | Out-Null
+    foreach ($relative in $ManagedFiles) {
+        $target = Join-Path $Dest $relative
+        if (Test-Path $target -PathType Leaf) {
+            $saved = Join-Path $Backup $relative
+            New-Item -ItemType Directory -Force -Path (Split-Path $saved -Parent) | Out-Null
+            Copy-Item -LiteralPath $target -Destination $saved -Force
         }
     }
-    New-Item -ItemType Directory -Force -Path (Split-Path $Target -Parent) | Out-Null
-    Copy-Item $Source $Target -Force
-    Write-Host "√ $Label 已安装"
+
+    New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+    $DestTouched = $true
+    foreach ($relative in $ManagedFiles) {
+        $source = Join-Path $Stage $relative
+        $target = Join-Path $Dest $relative
+        New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
+        Copy-Item -LiteralPath $source -Destination $target -Force
+    }
+
+    & (Join-Path $Dest "scripts\cm-check-runtime.ps1") --project $Src
+    if ($LASTEXITCODE -ne 0) {
+        throw "CM Workflow 安装后自检失败（退出码 $LASTEXITCODE）"
+    }
+    $InstallComplete = $true
+} catch {
+    if ($DestTouched -and -not $InstallComplete) {
+        Restore-Install
+        Write-Error "安装失败，已回滚本次写入。$($_.Exception.Message)"
+    }
+    throw
+} finally {
+    Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $Backup -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-foreach ($part in "skills", "agents", "runtime", "scripts", "compat") {
-    Copy-TreeSafely (Join-Path $Src $part) (Join-Path $Dest $part) $part
-}
-
-$tpl = Join-Path $Dest "templates"
-New-Item -ItemType Directory -Force -Path $tpl | Out-Null
-foreach ($pair in @(@("dashboard", "dashboard"), @("dashboard", "cm-dashboard"), @("pixel", "pixel"), @("pixel", "cm-pixel"))) {
-    Copy-TreeSafely (Join-Path $Src "templates\$($pair[0])") (Join-Path $tpl $pair[1]) "templates/$($pair[1])"
-}
-foreach ($part in "rules", "hooks", "refactor", "ui-lens") {
-    Copy-TreeSafely (Join-Path $Src "templates\$part") (Join-Path $tpl $part) "templates/$part"
-}
-Copy-TreeSafely (Join-Path $Src "templates\rules") (Join-Path $tpl "cm-rules") "templates/cm-rules"
-
-Copy-FileSafely "$Src\templates\arch-reference.md" "$tpl\arch-reference.md" "templates/arch-reference.md"
-Copy-FileSafely "$Src\templates\statusline\cm-statusline.sh" "$tpl\cm-statusline.sh" "templates/cm-statusline.sh"
-Set-Content -Path "$tpl\cm-VERSION" -Value $Version
-
-Write-Host "`n完成（已安装版本: v$Version）。请在 Claude Code 中运行 /cm-check 校验。"
-Write-Host @"
+if ($InstallComplete) {
+    Write-Host "`n完成（已安装版本: v$Version）。请在 Claude Code 中运行 /cm-check 校验。"
+    Write-Host "使用手册: $(Join-Path $Dest 'cm-workflow\docs\user-guide.md')"
+    Write-Host @"
 
 Windows 注意事项:
-  · 核心工作流(skills/agents/runtime)是纯 Markdown,Windows 原生可用,无额外依赖
+  · 核心工作流是 Markdown；/cm-check 通过 Git for Windows 的 Bash 执行共享自检
+  · 也可在 WSL 内直接运行 scripts/cm-check-runtime.sh
   · 状态条 / 终端像素版 / 看板与像素 serve.sh 是 bash+python3 脚本:
       - 推荐在 WSL 或 Git Bash 中使用(Claude Code 终端选 Git Bash 即可)
       - 浏览器像素版页面本身(cm-pixel.html)双击即可打开看 ?demo,只有实时跟踪需要 serve.sh
 "@
+}

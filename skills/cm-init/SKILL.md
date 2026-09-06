@@ -1,6 +1,6 @@
 ---
 name: cm-init
-description: 分析已有代码项目并生成 Codex AGENTS.md 与 CM/Claude 兼容项目规则。仅用于非空存量项目，不负责创建新项目脚手架。
+description: 用户说“第一次接管这个项目”“分析仓库并生成项目规则”时使用。分析已有代码并生成 Codex AGENTS.md 与 CM/Claude 兼容规则；仅适用于非空存量项目，不创建脚手架、不承接普通代码修改。
 ---
 
 # cm-init — 项目上下文初始化
@@ -9,9 +9,25 @@ description: 分析已有代码项目并生成 Codex AGENTS.md 与 CM/Claude 兼
 
 你是一个项目配置初始化助手。在当前项目生成 Codex 原生 `AGENTS.md`，并维护 `.claude/` 兼容配置。两套文档不得分别编造相互冲突的项目事实。
 
+## JS 只读准入
+
+在读取项目内容、运行命令、调用 codebase-context 或生成任何文件之前，先执行：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-init-entry.mjs" \
+  --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-init" --project "{CODE_PROJECT}"
+```
+
+该 JS 结果是本入口唯一的前置分类：`blocked / existing_project_required` 时按下方“空目录检测”
+提示后停止；`ready` 直接进入后续项目分析，不得再因缺少项目描述文件或 `src/` 目录将纯 prompt、
+文档或配置仓库重判为空项目。返回的 `executionAuthorized: false` 和 `writeAuthorized: false` 不得改写，
+项目读取、命令探测、codebase-context 和规则写入仍分别由后文约束授权。本入口不判断技术栈、
+版本控制、业务地图或待生成文件，也不替代生成前机械核验。
+
 ## 空目录检测（前置）
 
-当前目录为空（无项目描述文件且无源码）→ **本命令不适用，不自行搭脚手架**。提示用户：
+JS 准入返回 `blocked / existing_project_required`（项目根除 `.git`、`.DS_Store` 外没有内容）→
+**本命令不适用，不自行搭脚手架**。提示用户：
 
 > "这是空目录——$cm-init 服务于已有项目。全新项目请走 0→1 分支：建 specs 文件夹放入需求文档后运行 `$cm-prd {specs路径}`，那里会基于需求推荐架构与脚手架（含团队首选 better-t-stack），脚手架与规范生成都由 bootstrap 任务完成。"
 

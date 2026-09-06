@@ -1,11 +1,24 @@
 ---
 name: cm-prd
-description: 将需求文档转换为 requirements、design、tasks 三件套，支持新项目、存量二开与需求变更；完成后停在人审规格，不启动开发。
+description: 用户说“把需求拆成可开发规格”“变更现有功能需求”或要求整理方案、任务和验收时使用。支持新项目、存量二开与需求变更；完成后停在人审规格，不直接编码。
 ---
 
 # cm-prd — 需求文档 → 开发规格生成
 
-执行前读取 `../../runtime/project-context.md` 与 `../../runtime/review.md`。Codex 入口为 `$cm-prd`；Claude Code 跨平台入口为 `/cm-prd`，macOS/Linux 另有历史别名 `/cm:prd`。
+执行前读取 `../../runtime/project-context.md`、`../../runtime/review.md`、
+`../../runtime/model-efficiency.md` 与 `../../runtime/logging.md`。在需求、方案或任务拆分
+命中重要歧义/对抗审查时，追加读取 `../../runtime/steelman-review.md`；它是推理合同，
+不增加审查轮次或审批状态。Codex 入口为 `$cm-prd`；Claude Code 跨平台入口为
+`/cm-prd`，macOS/Linux 另有历史别名 `/cm:prd`。
+
+新建和变更模式都读取 `references/phase-timing.md`，只为实际执行的阶段写配对
+`progress/start|complete`；人工等待前关闭 segment，恢复后递增，不手算耗时。
+
+用户明确要求外部专家，或为本次规格任务开启 AUTO 时，读取
+`../../runtime/external-expert.md` 并执行 `../external-expert/SKILL.md` 的任务路由。
+AUTO 可把复杂方案比较路由到 CONSULT、权威事实查证路由到 VERIFY，其余保持 LOCAL。
+外部结论属于需求/设计输入，必须在本地对照项目事实并进入正常规格人审；AUTO 不
+授权外发 docs 或代码内容。
 
 支持两种模式：新建需求和需求变更。
 
@@ -15,6 +28,7 @@ description: 将需求文档转换为 requirements、design、tasks 三件套，
 
 - **新建模式**：`$cm-prd {项目文件夹路径}`
 - **变更模式**：`$cm-prd --change {N}.{feature-name} 变更内容描述`
+- **可选用例输入**：追加 `--cases {json/md/txt路径}`，或在本轮消息直接粘贴用例
 
 用户提供一个项目文件夹路径，文件夹结构约定：
 
@@ -25,6 +39,56 @@ description: 将需求文档转换为 requirements、design、tasks 三件套，
 ├── 2.xxx/          ← 本次生成的 specs
 └── ...
 ```
+
+## JS 只读准入
+
+在读取需求正文、解析角色、写 `run_start`、创建或修改 specs 之前，把已解析路径和模式传给：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-prd-entry.mjs" \
+  --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-prd" \
+  --project "{CODE_PROJECT}" --specs "{SPECS_DIR}" \
+  [--change "{N 或 N.feature}"] [--cases "{用例文件路径}"]
+```
+
+新建模式只核对规范 `docs/` 至少有一个普通需求文件；变更模式只定位唯一已有 feature 并核对
+三件套。`selection_required` 时只请用户选择 feature，`blocked` 时按 `reason` 停止，只有 `ready`
+才进入下方角色路由或模式步骤。该结果不读取需求正文、不判断项目业务是否匹配、不解析角色、
+不写日志/specs/审批位，也不授权 provider、浏览器、项目写入或开发；这些行为继续由下方现有规则
+控制。变更描述和本轮粘贴用例仍由 Skill 保留，不传给该入口。
+
+## 项目角色路由
+
+路径验证通过后，使用 `{CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs` 读取有效配置，
+分别解析 `analyst`（需求分析）、`planner`（方案/任务拆分）及 `policies.generate_cases`：
+
+```bash
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
+  --project {CODE_PROJECT} --role analyst --runtime {codex|claude} --print-role
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
+  --project {CODE_PROJECT} --role planner --runtime {codex|claude} --print-role
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
+  --project {CODE_PROJECT} --print-effective
+```
+
+把返回的 `adapter`、`model`、`source` 和 `route_state` 当作本轮的请求路由元数据，
+在对应分析/规划提示中注明；`model` 是别名，不能声称为已观测的后端模型。每次角色
+边界按 `runtime/workflow-routing.md` 写一条 `decision`/`phase: route` 事件。配置未提供
+时使用内置默认值；resolver 返回非零或配置错误时立即 `BLOCKED` 并报告字段路径，
+不得进入分析/规划或生成规格。配置的适配器当前运行时不可用时记录 `warning`/`degrade`，
+不得伪造调用成功或把外部专家变成编码执行器。
+
+`analyst` 与 `planner` 的上下文和输出按 `runtime/model-efficiency.md` 分包：前者只取
+当前需求与相关业务地图，后者接收分析结论、波及模块、约束和 AC 候选。稳定规则前缀
+与动态需求分离；不得为方便而重复发送完整项目地图、全部源码或前序对话。只有真实
+适配器响应返回 usage 时才记录计数。`route_state: managed-adapter` 时按共享合同调用
+`cm-openai-compatible-call.py`，由它写唯一的 `model_usage`；不得由 Skill 重复写。
+
+`generate_cases: false` 只关闭 CM 根据需求自动补生成的 `origin: generated` 用例；用户
+或需求源已提供的测试用例仍须保留、规范化并进入审批，不能用项目配置删除测试意图。
+
+项目/specs 路径验证通过后按 `runtime/logging.md` 写 `run_start`。生成规格、重置
+审批位或终止时分别写 `spec_lifecycle` 与 `run_done`；详细需求和设计内容不进入主日志。
 
 ## 模式判断
 
@@ -52,6 +116,8 @@ description: 将需求文档转换为 requirements、design、tasks 三件套，
 
   原型首先是需求，其次才是视觉候选。注意原型通病：只画理想态——异常态/空态/边界值靠 Step 5.5 歧义五问补齐
 - 如果 docs/ 下有多个文件，全部读取并综合分析
+- 输入含 `--cases` 或本轮粘贴了测试用例时，将其作为用户来源交给 Step 10.4；
+  JSON 先做语法校验，Markdown/文本在生成时归一化为测试合同
 - 如果 docs/ 不存在或为空，报错提示用户先在 docs/ 下放入需求文档
 
 ### Step 2: 获取项目名称
@@ -66,6 +132,11 @@ description: 将需求文档转换为 requirements、design、tasks 三件套，
 
 扫描项目根目录、配置文件、目录结构、依赖声明，自行判断架构类型（monorepo / 多仓库 / 单体应用 / Web3 等）。记录 `ARCH_TYPE`。
 
+交付形态为微信小程序，或项目存在原生 `project.config.json` + `app.json`、Taro/uni-app
+微信构建目标时，标记 `DELIVERY_SHAPE=wechat-miniprogram` 并读取
+`../cm-miniprogram-engineer/references/platform-readiness.md`。只出现“小程序”字样但
+形态证据不足时进入 Step 5.5 确认，不得根据仓库名猜测。
+
 **空项目检测**：代码项目不存在、或为空目录（无 package.json / Cargo.toml / go.mod 等项目描述文件，且无源码目录）→ **先问用户确认空目录的含义，不得自行假设**：
 
 > "代码目录为空——这是【全新项目】（走 0→1 分支，我来推荐架构和脚手架），还是【存量项目还没 clone】（请先 clone 到该目录，再重新运行 $cm-prd）？"
@@ -75,10 +146,15 @@ description: 将需求文档转换为 requirements、design、tasks 三件套，
 
 ### Step 4: 读取项目上下文（存量项目 = 二开模式，叠加 B 规则）
 
-- 读取各仓库的 `.claude/CLAUDE.md` 了解技术栈
-- 读取 `.claude/rules/` 下所有规则文件
-- 扫描目录结构，了解现有模块划分
-- **B1 加载代码库参考文档**：**先读代码项目根 CLAUDE.md 的「业务地图」字段**（多层仓库下以代码项目根为准，仓库根 CLAUDE.md 无此字段再看地图 00-index 头部；init 已判定过，不重复判断）：字段=已生成/已刷新 或 `docs/codebase-context/` 存在 → 按 `codebase-context` skill dev 模式加载 10 份文档（后续步骤查重与波及面分析的数据源）；字段=跳过(小项目) → **不建议 scan，直接读代码**（小项目全量读的成本本来就低）；字段缺失且文档不存在 → 建议先执行 `/codebase-context scan`；**skill 本身未安装** → 提示重装最新包，本次降级为直接读代码，波及面分析降级为 grep 推断（照常可跑，只是更贵更粗）
+- 按 `runtime/project-context.md` 读取项目约束和本需求相关规则，扫描两层目录了解模块划分
+- 读取 `references/context-scope.md`，先做定向代码搜索，再设置
+  `CONTEXT_SCOPE=targeted|full`、加载对应地图/代码，并写 `decision/context_scope` 日志
+- **B1 代码库参考文档判定**：先读代码项目根 CLAUDE.md 的「业务地图」字段（多层仓库
+  下以代码项目根为准，仓库根 CLAUDE.md 无此字段再看地图 00-index 头部；init 已判定过，
+  不重复判断）。字段=已生成/已刷新或目录存在 → 按 context-scope 清单渐进加载；字段=
+  跳过(小项目) → 不建议 scan，按范围直接读代码；字段缺失且文档不存在 → 建议先执行
+  `/codebase-context scan`，本轮按直接代码搜索继续；skill 未安装 → 提示重装最新包并按
+  直接代码搜索继续。任何路径都不得因追求 targeted 猜测波及面
 
 **二开模式追加规则**（GREENFIELD=false 且本次需求会修改存量代码时生效）→ **读取 `references/brownfield.md`** 执行 B2 波及面 / B3 防护网基线 / B4 增量 specs / B5 拆分锚定地图。
 
@@ -91,6 +167,8 @@ description: 将需求文档转换为 requirements、design、tasks 三件套，
 
 从文档中提取功能目标、用户故事、验收标准、约束条件、依赖。
 
+命中重要歧义或方案分歧时，按 `../../runtime/steelman-review.md` 区分已观察事实、参与者主张、当前推断和未知项；“用户真正想要什么”只能写成可修正假设，不能替用户补全业务规则。
+
 ### Step 5.5: 开放问题确认
 
 分析需求后，如果存在以下情况，**必须暂停并与用户对话确认**，不要自行假设：
@@ -100,6 +178,11 @@ description: 将需求文档转换为 requirements、design、tasks 三件套，
 - 缺少关键信息（如目标平台、兼容性要求、第三方服务选型）
 - 业务逻辑有矛盾或不完整
 - 涉及权限、支付、敏感操作等需要明确确认的功能
+
+`DELIVERY_SHAPE=wechat-miniprogram` 时追加平台就绪检查：账号主体、服务类目/资质、
+变现路径、权限与隐私、后端/合法域名和发布通道。会改变功能可行性或范围但未确认的
+项目必须暂停；只影响后续提审的材料可记为发布待决，不阻塞本地规格与开发。平台政策
+结论须记录当前官方查证日期与来源，无法查证时保留开放问题。
 
 格式：
 
@@ -113,6 +196,8 @@ description: 将需求文档转换为 requirements、design、tasks 三件套，
 ```
 
 所有问题确认完毕后再进入 Step 6。
+
+双向钢人审查只用于暴露假设和失败场景：支持方与反方都取最强版本，但按证据质量加权；无法验证的反方写入开放问题，不强迫给确定结论。
 
 ### Step 6: 推断 feature 名称
 
@@ -129,7 +214,8 @@ description: 将需求文档转换为 requirements、design、tasks 三件套，
 └── 2.{feature-name}/            ← 本次新建
     ├── requirements.md
     ├── design.md
-    └── tasks.md
+    ├── tasks.md
+    └── test-cases.json           ← 有可观察行为时生成
 ```
 
 ### Step 8: 生成 requirements.md
@@ -175,6 +261,11 @@ description: 将需求文档转换为 requirements、design、tasks 三件套，
 
 - {外部服务/库}
 
+## 平台就绪（仅微信小程序生成）
+
+{按 cm-miniprogram-engineer/references/platform-readiness.md 记录状态、证据与负责人；
+不写任何密钥、证件、Cookie 或测试账号密码}
+
 ## 开放问题
 
 - {待确认事项}
@@ -205,7 +296,8 @@ feature 涉及页面/界面时，在生成 design.md 前确定设计基准：
 
 ### Step 9: 生成 design.md
 
-**必须先读取项目 `.claude/CLAUDE.md` 和 `.claude/rules/` 下所有规范文件**，设计方案必须遵循项目已有的技术规范和约定。
+复用 Step 4 已加载的项目约束与规则；根据最终波及层补读新命中的相关规则，禁止再次
+全量读取未变化的 CLAUDE/rules。设计方案必须遵循项目已有的技术规范和约定。
 
 按功能模块设计，每个模块说明涉及哪些层（前端、后端、数据库、合约等），具体分层根据项目实际架构决定，不做硬编码限制。
 
@@ -260,12 +352,38 @@ feature 涉及页面/界面时，在生成 design.md 前确定设计基准：
 design.md 生成后，满足任一触发条件 → 按 `runtime/review.md` 交**新上下文的独立审查者对抗审查一轮**：
 
 - GREENFIELD 的 ADR（架构选型是最贵决策）
-- 二开且修改存量模块（方案错误会伤及老功能）
-- design 含新模块、依赖方向变化或跨模块数据流
+- design 含新模块、架构边界或依赖方向变化、跨模块/跨仓库数据流
+- 新增第三方运行时依赖或改变核心工具链
+- 修改公开接口契约、数据模型/数据库迁移、认证授权、支付资产或其他安全敏感逻辑
 - 功能点 F ≥ 5 的大 feature
 
+**仅修改存量模块不再单独触发本步。** 单模块内部的文案、样式、小交互、校验、
+现有模式下的小型 CRUD、缺陷修复或补测试，在没有命中上述风险信号时跳过本步，
+并把关键方案检查合并到 Step 10.6。执行过程中一旦发现真实范围扩大并命中风险信号，
+必须补做本步后再继续生成最终任务单。
+
 **投喂内容**：requirements.md + design.md 全文 + 项目上下文中的相关规范 +（二开）「波及面」段与被改存量模块现状代码。
-提示词要义："**这是隔壁同事做的方案，详细审查一下**"——重点查架构隔离、模块边界、与现有管线的耦合、数据流缺口；只报告有具体失败场景的问题，零发现明说（审查产出纪律同 N4）。**仅 1 轮**：采纳项修正 design.md 后进 Step 10；分歧项写入摘要卡「风险点」交人裁决。小 feature 不触发，零额外负担。
+提示词要义：审查者同时读取 `../../runtime/steelman-review.md`，把当前方案当成可证伪假设：
+先列关键前提和最强支持，再重点检查架构隔离、模块边界、与现有管线的耦合、数据流缺口，
+给出“输入/状态 → 路径 → 错误结果”的最强反方失败场景，以及能区分双方的最小验证。
+支持与反方不等权；只报告有具体后果的问题，零发现明说（审查产出纪律同 N4）。
+
+调 reviewer 前先真跑 `cm-prd-review-gate.py inspect --stage design`，证据固定为
+`prd-{feature}-design-r1.md`，处置回执固定为
+`prd-{feature}-design-disposition.json`：`dispatch_once` 才允许调用 reviewer；
+`resume_disposition` 表示 r1 已落盘，直接继续应用/升级现有 findings，禁止重审；
+`completed` 直接进入 Step 10。处置完成后真跑 `record --artifact {design.md}`，记录
+`applied|no_findings|escalated`、finding/unresolved 数量和 r1 SHA。进程在 r1 落盘后
+崩溃也只能恢复处置，不能再消耗一轮审查。
+
+**单轮硬边界（ROUND_LIMIT=1）**：每个 feature 在本阶段只允许一次 review attempt，
+独立 reviewer 与 `self-degraded` 复查二选一。零发现直接进 Step 10；
+采纳项由主执行者修正 design.md 后进 Step 10，并由后续 10.5 自检验证完整规格；分歧或
+无法机械确认的项写入摘要卡「风险点」交人裁决。**禁止 review → 修正 → 再 review**，
+也禁止换一个审查者变相开启第 2 轮；凭证只允许 `design-r1.md`，不得生成 `design-r2.md`。
+任何审查尝试（包括 `self-degraded`）均消耗唯一一轮；通道恢复后不得补审。
+（实跑教训：公共 CLI 契约的 3 轮方案复审耗时 11m59s，后两轮应由自检与人审承担。）
+未命中上述风险信号的低风险 feature 不触发，零额外负担。
 **凭证落盘**:审查原文 tee 到 `{SPECS_DIR}/.reviews/prd-{feature}-design-r1.md`——摘要卡「方案对抗审查」行必须与凭证对得上,无凭证的数字是自报(凭证教义全框架一体,规格期不豁免)。
 
 > 依据：代码有 N4 对抗、规格有 10.5 自检，唯独技术方案此前无第二模型把关——而方案错误是最贵的错误（行业重度实践的最大单笔收益正是方案期拦截架构缺陷）。
@@ -329,36 +447,54 @@ design.md 生成后，满足任一触发条件 → 按 `runtime/review.md` 交**
 - 预估完成时间（5min / 15min / 30min / 1h）
 - **粒度控制**：每个子 specs（feature 目录）不宜过大，单个 tasks.md 控制在 **10-15 个任务以内**。如果需求过大，应在 Step 6 之前拆成多个独立的 feature 目录（如 `2.user-auth-login`、`3.user-auth-register`），每个 feature 有自己的 requirements/design/tasks 三件套。这样 cm:ai 执行时上下文可控，不会因为 specs 太大导致丢失关键信息。
 
+### Step 10.4: 生成 AI 测试合同（条件触发）
+
+读取 `../../runtime/test-contract.md`，按其中的生成条件为适用 feature 写
+`test-cases.json`。用户或需求源提供的用例优先且标记 `origin: "user"`；其余根据
+AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注释/类型/无行为重构
+不生成空文件。写完执行 `scripts/validate-test-cases.mjs`。
+
+`DELIVERY_SHAPE=wechat-miniprogram` 时同时读取
+`../cm-miniprogram-engineer/references/release-checklist.md`，只为本 feature 实际使用的
+授权、平台 API、网络/云能力和真机差异生成用例；不用的能力不扩写。需要开发者工具、
+真机或后台才能证明的 expected 必须保留相应执行前提，不得改写成 Web 可替代验证。
+
 ### Step 10.5: 规格自检（机器项，AI 自查自修，人不参与）
 
-输出摘要卡之前，先对刚生成的三件套跑一遍机器可查项——**机器项 AI 自己清干净，人审只留业务意图**：
+读取 `references/spec-self-check.md` 并逐项执行；测试合同必须调用 `scripts/validate-test-cases.mjs`，不得靠目测。
 
-**通用自检项（所有项目）：**
+### Step 10.6: 独立规格审查（方案 + 任务拆分）
 
-- [ ] 任务依赖无环；单 feature ≤15 个任务；同一文件/组件的行为未拆散到多任务
-- [ ] 每条 AC 都能回答"怎么验证"（验证方式不明的 AC 视为不过）
-- [ ] 任务产物查重：不与项目已有资产重复造（有地图查 04/05/06，无地图用代码搜索核实）
+10.5 自检是机器项，查不出「**方案是否明显错向、任务是否拆对**」。自检通过后，
+按 `runtime/review.md` 把精简的方案与拆分结果交给新上下文的独立审查者。Step 9.5
+已触发时不重复审完整方案；Step 9.5 因低风险跳过时，本步同时承担关键方案检查：
 
-**二开附加项（存在业务地图时）：**
-
-- [ ] **引用真实性（治引用幻觉）**：specs 中提到的每个存量文件/函数/组件名，用代码搜索逐个核实真实存在——二开 spec 引用不存在的存量代码，人审查不出来、执行期才炸
-- [ ] **B5 合规**：feature 未跨多条 07 业务线路；跨模块任务已在描述中列模块清单
-- [ ] **B3 合规**：修改存量模块的 feature，第一个任务是防护网基线
-- [ ] **B2 完整**：design.md 含「波及面」段，且所列模块在地图/代码中真实存在
-
-**处置规则**：有不过项 → AI 自行修正 specs 后重跑自检，**最多 2 轮**；2 轮后仍不过的项不许静默放行，写入摘要卡「风险点」交人裁决。自检结果一行附在摘要卡底部。
-
-### Step 10.6: 独立规格审查
-
-10.5 自检是机器项，查不出「**拆得对不对**」。自检通过后，按 `runtime/review.md` 把拆分结果交给新上下文的独立审查者：
-
-- **投喂内容**：requirements.md 功能点清单 + tasks.md 全文 + design.md「波及面」段（二开）——喂拆分结果，不喂三件套全文
-- **提示词要义**："这是隔壁同事拆的开发任务单，审查拆分质量：①任务边界有无重叠/遗漏 ②依赖顺序会不会卡死 ③粒度是否适合单任务交付验证 ④二开：波及面清单有没有漏掉会被牵连的模块。只报有具体后果的问题，没有问题就明说。"
-- **处置**：采纳项修正 specs 后重跑一次 10.5 自检；分歧项写入摘要卡「风险点」交人裁决。**仅 1 轮**，不与 Codex 拉扯
+- **投喂内容**：requirements.md 功能点清单 + tasks.md 全文 + design.md 的方案摘要、
+  关键技术决策、接口/数据契约与「波及面」段（二开）。不喂三件套全文；Step 9.5
+  已审过完整方案时，方案部分只用于核对任务有没有偏离已审设计。
+- **提示词要义**：审查者读取 `../../runtime/steelman-review.md`，把规格当成可证伪假设。
+  先检查方案有没有明显错向、遗漏的
+  失败场景或与现有边界冲突，再检查拆分质量：①任务边界有无重叠/遗漏 ②依赖顺序
+  会不会卡死 ③粒度是否适合单任务交付验证 ④二开：波及面有没有漏掉会被牵连的
+  模块。反方必须写成具体后果；不把正反意见当等权，不用推理替代测试或需求证据。
+  只报有具体后果的问题，没有问题就明说。
+- **单轮硬边界（ROUND_LIMIT=1）**：每个 feature 在本阶段只允许一次 review attempt，
+  独立 reviewer 与 `self-degraded` 复查二选一。采纳项修正 specs 后
+  重跑一次 10.5 自检；分歧或自检不能证明的项写入摘要卡「风险点」交人裁决。
+  **禁止 review → 修正 → 再 review**，也禁止换审查者变相开启第 2 轮；凭证只允许
+  `split-r1.md`，不得生成 `split-r2.md`。（实跑教训：规格修正后的再次召回复审没有
+  新增独立决策层，却继续占用主流程时间。）
+  任何审查尝试（包括 `self-degraded`）均消耗唯一一轮；通道恢复后不得补审。
 - **凭证落盘**：原始审查结果写入 `{SPECS_DIR}/.reviews/prd-{feature}-split-r1.md`，文件头使用 review contract 的 `reviewer/independent/at/scope` 字段
+- 调 reviewer 前同样真跑 `cm-prd-review-gate.py inspect --stage split`；只在
+  `dispatch_once` 调用一次，`resume_disposition` 复用已有 r1，`completed` 不再审。
+  findings 处置并重跑一次 10.5 后，真跑 `record`，artifact 传 requirements.md、
+  design.md、tasks.md 及存在的 test-cases.json，生成
+  `prd-{feature}-split-disposition.json`。回执与 r1 SHA 不一致或发现 r2 时立即 BLOCKED。
 - **降级**：无法建立独立上下文时，由主执行者对抗式复查，凭证写 `self-degraded` / `independent: false`；这是增益层，不单独因降级停车
 
-> 依据：拆分质量是二开乱改的最后闸门——10.5 只能查机器项（引用真实性、依赖环），"这个任务拆得会不会漏改关联模块"需要第二模型的判断力。
+> 依据：低风险小需求不值得额外支付一轮完整方案对抗，但仍需要第二双眼睛同时检查
+> 关键方案与任务拆分；高风险需求继续保留 Step 9.5 + 本步两层审查。
 
 ### Step 11: 输出总结（附规格摘要卡 + 审查清单）
 
@@ -371,10 +507,13 @@ design.md 生成后，满足任一触发条件 → 按 `runtime/review.md` 交**
 │ 功能点: {N} 个 | AC: {N} 条 | 任务: {N} 个(预估 {x}h)
 │ 开放问题: {已答 N / 共 N}——{逐条一行: 问题→答案}
 │ 风险点: {金融/合规/破坏性操作等敏感项,无则"无"}
+│ 上下文范围: {定向 / 完整 / 定向→完整（reason_code）}
+│ 平台就绪: {就绪/待官方核验 N 项/不适用}
 │ UI 基准: {像素级/结构级/纯参考/无}
+│ 🧪 AI 测试合同: {N 条(user N/generated N) / 跳过(无可观察行为)}
 │ 🔎 规格自检: {N}/{N} 通过{（未过项已列入风险点）}
-│ 🧠 方案对抗审查: {通过 / {N}条已修 / 跳过(未触发)}
-│ 🤖 独立规格审查: {通过 / {N}条已修 / 降级自审}
+│ 🧠 方案对抗审查: {通过 / {N}条已修 / 跳过(低风险,并入独立规格审查)}
+│ 🤖 独立规格审查(方案+拆分): {通过 / {N}条已修 / 降级自审}
 └────────────────────────────────────────────
 有疑问的行,点开对应文件细看;摘要卡没问题再走下面的审查清单。
 ```
@@ -396,19 +535,15 @@ design.md 生成后，满足任一触发条件 → 按 `runtime/review.md` 交**
 - [ ] **原型功能点覆盖 100%**（有交互原型时）：遍历记录中每个可交互元素都有对应 [F-xxx] 或死区标注，无静默丢弃
 ```
 
-**规格审批位落盘**：报告输出后，写入 `{SPECS_DIR}/.cm-specs-status` 单行 JSON：
-`{"status":"awaiting_review","at":"{时间}","features":["1.xxx",...]}`
+**规格审批位落盘**：报告输出后真跑
+`python3 {CM_WORKFLOW_ROOT}/scripts/cm-spec-manifest.py {SPECS_DIR}`，把返回的
+`specFiles`（每个 feature 的 requirements/design/tasks 及可选 test-cases 规格语义 SHA；
+任务/AC 的运行期 `[x]` 会规范化为 `[ ]`，其余内容不忽略）
+写入 `{SPECS_DIR}/.cm-specs-status` 单行 JSON；为旧版消费者同时保留由 manifest
+筛出的 `testCases`：
+`{"status":"awaiting_review","at":"{时间}","features":["1.xxx",...],"specFiles":[{"path":"1.xxx/requirements.md","sha256":"..."}],"testCases":[]}`
+随后写 `spec_lifecycle/generated`、`spec_lifecycle/awaiting_review` 和 `run_done`，仅记录
+feature/task/case 数量、状态与 specs 路径。
+最终报告注明阶段耗时事件已记录；具体耗时由日志按 operation_id + segment 计算。
 
 **硬停车（不可违反）**：本命令的终点就是摘要卡与审查清单——**任何情况下不得在本会话顺势启动开发**，对话里的"继续"不构成开发授权。提示用户：**逐项审查通过后，运行 `$cm-ai` 开始开发**（N1 有入口闸：未审批的 specs 会先要求确认摘要卡）
-
----
-
----
-
-## 模式文件（按需读取,勿全量加载）
-
-- 0→1 全新项目: `cm-prd-modes/greenfield.md`（G1 选型/G2 bootstrap/G3 业务生成/G4 架构变更处置）
-- 存量二开: `cm-prd-modes/brownfield.md`（B2–B5）
-- 需求变更: `cm-prd-modes/change-mode.md`（C1–C8）
-
-> 拆分目的: 主文件只承载通用流程,执行器按分支加载对应规则——注意力预算优先(v0.9.11 机械拆分,语义零变更)。

@@ -1,6 +1,16 @@
 # N4: Review
 
-每个 task 完成后必须执行，按**单个 task 粒度**审查。完整通道与凭证格式见 `../../../runtime/review.md`。
+每个 task 完成后必须执行，按**单个 task 粒度**审查。完整通道与凭证格式见 `../../../runtime/review.md`，入口 handoff 与状态转换见 `../../../runtime/task-gates.md`。N3 的 `check-n4` 未通过时不得开始审查。
+
+进入审查前解析 `reviewer` 角色并记录 `decision`/`phase: route`；角色配置只能描述请求
+的审查适配器和模型别名，不能替代本节要求的独立上下文。若 `route_state` 是
+`declared-adapter`，如实记录未观察到适配器，仍不得把作者模型或外部专家当作独立审查。
+版本 1 不接受 `reviewer.adapter: openai-compatible`：该文本调用不能生成 N4 认可的
+独立凭证，配置校验会在调用前拒绝，避免白白消耗 API Token。
+
+开始审查前确认 N3 的 `check-n4` JSON 返回 `content_bound: true`。这表示 handoff 的
+`implementation_sha256` 已按项目根复算，审查结论不仅绑定文件名，也绑定被审文件内容。
+历史无摘要 handoff 只能在明确披露降级时用 `--allow-legacy-unbound` 恢复，不能作为新任务凭证。
 
 ## 1. 主执行者自审
 
@@ -12,7 +22,8 @@
 - 性能：N+1 查询、重复计算、资源泄漏
 - 测试质量：断言是否验证行为，是否存在怎么改都会通过的安慰剂测试
 
-发现问题立即修复。多方案按全局规则自主决策并留痕；只有灾难级风险才暂停。
+发现问题先形成自审 finding；不要在 N4 修改实现文件。有效问题按本节第 3 步返回
+N3 生成下一次 handoff，避免已校验的证据与实际代码失配。
 
 ## 2. 独立审查（强制）
 
@@ -20,7 +31,10 @@
 
 1. `codex-subagent`：用当前运行时的 no-history/fresh-context 选项（如 `fork_turns: none`）新建独立 Codex 子代理/线程，只接收任务范围、验收标准、diff 和验证结果
 2. `codex-cli`：子代理不可用时，启动隔离的非交互 Codex CLI 审查会话；禁止它修改文件
-3. `self-degraded`：两者都不可用时，主执行者做第二遍对抗式审查并显式标记降级
+3. 两者都不可用：保持待审，记录通道失败原因，不进入 N5；`self-degraded` 只作诊断，不能批准完成
+
+通道故障不伪造代码 finding，也不消耗实现审查轮次；有效阻塞 finding 不能靠换
+审查者洗掉。当前 gate 只支持上述 Codex 通道，Claude-native 适配未验证前不得冒充。
 
 审查输入只包含**本 task 的 diff**，不得将整个未分类 working tree 当作任务 diff。审查者必须：
 
@@ -29,13 +43,21 @@
 - 按严重度排序；每条必须说明「输入/状态 → 错误结果」
 - 找不到真实问题时明确写「零发现」，不凑数
 
+该 feature 存在 `test-cases.json` 时，把 `taskIds` 命中当前 task 的 logic cases
+加入 review package。逐例按 `runtime/test-contract.md` 输出
+`SUPPORTED | CONTRADICTED | INSUFFICIENT_EVIDENCE`；`SUPPORTED` 只是静态代码
+证据，**不得冒充单测或运行时 PASS**。`CONTRADICTED` 作为有效 finding 处置，
+`INSUFFICIENT_EVIDENCE` 转交 N6 的正式命令或运行时验证。
+
 核验类任务（脚手架、依赖、模板配置）也要过独立审查；输入改为关键产物、预期模板与构建/类型检查结果。
 
 ## 3. 处置与轮次上限
 
-- 有效发现 → 修复后用同一级别的新鲜上下文复审
+- 独立审查完成且无阻塞发现 → 本轮写 `verdict: approved`、`independent: true`，交给 N5 机械校验
+- 有效发现且当前为第 1 轮 → 写 `verdict: changes_requested`，返回 N3 生成 attempt 2 handoff，再用同一级别的新鲜上下文复审
+- 第 2 轮仍有阻塞发现 → 写 `verdict: blocked`，停止并进入人工处置，不得创建 attempt 3
 - 误报 → 记录理由后忽略
-- 最多 2 轮；第 2 轮后仍分歧，将双方理由写入 LESSONS.md
+- 最多 2 轮；偏好分歧若不阻塞，必须明确写 `approved` 并将双方理由写入 LESSONS.md
 - 分歧涉及安全、资金或数据正确性 → 暂停等人裁决；只涉及风格/偏好 → 保留当前实现并记录放行
 
 ## 4. 审查凭证（强制）
@@ -51,14 +73,30 @@
 reviewer: codex-subagent | codex-cli | self-degraded
 independent: true | false
 task: T-xxx
+attempt: 1
 round: 1
+verdict: approved | changes_requested | blocked
+blocking_findings: 0
+handoff: {feature}-T-xxx-a1-handoff.json
+handoff_sha256: <check-n4 JSON 返回值>
 at: 2026-07-22T10:00:00+08:00
 scope:
   - path/to/reviewed-file
 ---
 ```
 
-`scope` 可以是文件列表或可重现 task-scoped diff 的命令。`self-degraded` 必须写 `independent: false` 并记录前两个通道为何不可用。**无凭证文件 = 审查未发生**，N5 不得标记完成。
+`attempt` 必须等于 `round`，`handoff` 必须指向本轮 N3 的执行证据，
+`handoff_sha256` 必须逐字使用 `check-n4` 的输出。`scope` 必须逐项覆盖 handoff
+里的全部 `changed_files`；正文必须写实际 findings 或明确的「零发现」。
+`approved` 必须写 `blocking_findings: 0`；其他 verdict 至少为 1。
+`self-degraded` 必须写 `independent: false`，并用非空 `degraded_reason` 记录前两个
+通道为何不可用。
+历史自审凭证可审计，但 `independent: false` 即使写了 approved 也不能授权新完成。
+**无有效独立凭证或 verdict 不是 approved = 不得完成**，N5 必须执行 `mark-done`，
+不能只检查文件存在或先校验再手工勾选。
+
+任何阶段修改被审代码、测试或执行指令后，原批准不覆盖新内容；按
+`runtime/review.md` 重新形成证据。已标记完成后的补正不得自动重开任务或重置轮次。
 
 ## 5. 度量
 

@@ -7,6 +7,11 @@ description: 微信小程序开发工程师 Skill，执行小程序开发任务�
 
 执行微信小程序开发任务。自动识别项目技术栈，遵循项目 `.claude/rules/` 中的规范。
 
+涉及账号主体、类目、支付/广告、权限、云能力或首次发布准备时，读取
+`references/platform-readiness.md`；执行 feature 完成 QA、真机走查或发布准备时，
+读取 `references/release-checklist.md`。平台规则属于易变外部事实，按参考文件在当前
+官方文档/后台查证，不把固定门槛或社区经验当作长期规则。
+
 ## 触发条件
 
 由 `/cm-ai` 自动调用，当 task 涉及微信小程序开发时触发。
@@ -15,18 +20,20 @@ description: 微信小程序开发工程师 Skill，执行小程序开发任务�
 
 ### 0. 设计稿检查
 
-开发前先询问是否先实现设计稿：
+开发前先读取已审批 design.md 的「设计基准」及 `design-baseline/`：
 
-- **没有设计稿** → **主动询问用户**是否有设计稿地址（Figma/Stitch 链接），等待用户回复后再继续；用户确认没有设计稿则跳过，直接进入开发
+- 已明确“无设计稿/无基准，按 design.md 自行实现” → 直接开发，**不得重复询问**
 - **有 Figma 链接** → 调用 figma mcp
 - **有 Stitch 项目** → 调用 stitch mcp
+- 只有设计基准字段缺失、链接与落盘基准不一致、或 specs 内信息**规格缺失或互相矛盾**
+  时才暂停询问；新输入会改变批准方案时停止并要求 `$cm-prd --change`，不在 N3 临时改规格
 
 **设计稿与业务的关系：**
 
 - 设计稿存在且完整 → 按设计稿还原
 - 设计稿存在但不是明显的缺失 → 自行补全功能
 - 设计稿存在但与业务需求有明显差距或缺失页面 → **主动询问用户**是否需要先还原设计稿再开发功能，等待用户回复后再继续
-- 没有设计稿 → 根据 design.md 和业务需求自行实现
+- 已审批为没有设计稿 → 根据 design.md 和业务需求自行实现
 
 ### 1. 识别技术栈
 
@@ -37,6 +44,10 @@ description: 微信小程序开发工程师 Skill，执行小程序开发任务�
 - `package.json`（如存在）→ 跨端框架（Taro / uni-app / mpvue / Remax...）、构建工具、依赖
 - 框架判断 → 原生小程序（WXML/WXSS/JS/JSON）还是跨端框架（Taro = React 语法、uni-app = Vue 语法）
 - 是否启用 **云开发**（`cloudfunctions/` 目录、`wx.cloud`）
+
+识别为微信小程序后记录 `DELIVERY_SHAPE=wechat-miniprogram`。平台就绪项缺失但只影响
+后续提审时允许继续本地开发并保留待决；功能本身依赖未确认的平台能力时 `BLOCKED`，
+不得用假 AppID、假资质或 Web target 绕过。
 
 ### 2. 读取上下文
 
@@ -103,7 +114,9 @@ npm run build:weapp   # Taro 示例；uni-app 为 npm run dev:mp-weixin
 
 - 原生小程序：在**微信开发者工具**中编译，确认无报错、页面渲染正常
 - 检查 **真机预览**（部分 API 与样式在真机和模拟器表现不同）
-- 关注 **包体积**：主包 ≤ 2MB，超限需配置分包
+- 读取项目配置与微信官方当前限制核对包体积；超限时配置分包、压缩资源或移至 CDN
+- 按 `references/release-checklist.md` 选择本 feature 相关专项；Web/H5 预览不得冒充
+  微信开发者工具或真机证据。工具、扫码或账号权限不可用时如实标记 `BLOCKED`/待人工
 
 ## 常见坑
 
@@ -112,7 +125,7 @@ npm run build:weapp   # Taro 示例；uni-app 为 npm run dev:mp-weixin
 | setData 频繁/数据量大导致卡顿          | 只 setData 变化字段，避免在循环/滚动中高频调用，长列表用虚拟列表         |
 | px 写死导致机型适配错乱                | 改用 rpx，必要时结合 `wx.getSystemInfo` 动态计算                         |
 | `getUserProfile` 不触发/拿不到信息     | 必须由用户点击事件直接调用，不能在 onLoad 等生命周期里自动调             |
-| 主包超 2MB 编译失败                    | 配置 `subpackages` 分包，图片走 CDN，移除未用资源                        |
+| 包体积超过当前平台限制                 | 核对官方当前限制，配置 `subpackages`，图片走 CDN，移除未用资源           |
 | WXSS 选择器不生效                      | 小程序不支持部分 CSS 选择器，改用 class；组件样式隔离用 `styleIsolation` |
 | 自定义组件样式被隔离 / 穿透失败        | 用 `externalClasses` 或 `:host`，跨组件样式用全局类并设置隔离选项        |
 | `wx.request` 域名报错                  | 在小程序后台配置合法域名（request/socket/uploadFile/downloadFile）       |

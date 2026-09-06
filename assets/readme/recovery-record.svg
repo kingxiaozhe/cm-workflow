@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="380" viewBox="0 0 1200 380" role="img" aria-labelledby="title desc">
+  <title id="title">CM Workflow recovery record</title>
+  <desc id="desc">A durable project file containing task state, test intent, review evidence, runtime status, and event logs is reopened by a new session to verify and continue work.</desc>
+
+  <rect width="1200" height="380" fill="#F4F0E8"/>
+  <path d="M48 38H1152M48 336H1152" stroke="#151515" stroke-width="1.5"/>
+
+  <text x="48" y="70" fill="#C44B32" font-size="18" font-weight="800"
+        font-family="ui-monospace, SFMono-Regular, Menlo, monospace" letter-spacing="2">RECOVERY RECORD</text>
+  <text x="48" y="108" fill="#151515" font-size="30" font-weight="700"
+        font-family="Georgia, Songti SC, serif">聊天会结束，项目记录仍然可以接管</text>
+  <text x="1152" y="70" fill="#777168" font-size="17" text-anchor="end"
+        font-family="ui-monospace, SFMono-Regular, Menlo, monospace">DISK IS THE TRUTH</text>
+
+  <g transform="translate(48 136)">
+    <rect width="474" height="164" fill="#FAF8F2" stroke="#AAA399"/>
+    <text x="18" y="30" fill="#151515" font-size="17" font-weight="800"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace">DURABLE PROJECT FILE</text>
+    <path d="M18 44H456" stroke="#AAA399"/>
+
+    <g transform="translate(18 61)">
+      <rect width="134" height="30" fill="#151515"/>
+      <text x="67" y="21" fill="#F4F0E8" font-size="14" font-weight="800" text-anchor="middle"
+            font-family="ui-monospace, SFMono-Regular, Menlo, monospace">tasks.md</text>
+      <rect x="144" width="148" height="30" fill="none" stroke="#151515"/>
+      <text x="218" y="21" fill="#151515" font-size="13" font-weight="800" text-anchor="middle"
+            font-family="ui-monospace, SFMono-Regular, Menlo, monospace">test-cases.json</text>
+      <rect x="302" width="136" height="30" fill="none" stroke="#151515"/>
+      <text x="370" y="21" fill="#151515" font-size="14" font-weight="800" text-anchor="middle"
+            font-family="ui-monospace, SFMono-Regular, Menlo, monospace">.reviews/</text>
+    </g>
+
+    <g transform="translate(18 103)">
+      <rect width="172" height="30" fill="none" stroke="#151515"/>
+      <text x="86" y="21" fill="#151515" font-size="13" font-weight="800" text-anchor="middle"
+            font-family="ui-monospace, SFMono-Regular, Menlo, monospace">.cm-status.json</text>
+      <rect x="182" width="166" height="30" fill="none" stroke="#151515"/>
+      <text x="265" y="21" fill="#151515" font-size="13" font-weight="800" text-anchor="middle"
+            font-family="ui-monospace, SFMono-Regular, Menlo, monospace">运行日志.jsonl</text>
+      <rect x="358" width="80" height="30" fill="#2E6655"/>
+      <text x="398" y="21" fill="#F4F0E8" font-size="13" font-weight="800" text-anchor="middle"
+            font-family="ui-monospace, SFMono-Regular, Menlo, monospace">READY</text>
+    </g>
+  </g>
+
+  <path d="M558 218H716" stroke="#C44B32" stroke-width="3"/>
+  <path d="M700 204l16 14-16 14" fill="none" stroke="#C44B32" stroke-width="3"/>
+  <text x="637" y="195" fill="#C44B32" font-size="15" font-weight="800" text-anchor="middle"
+        font-family="ui-monospace, SFMono-Regular, Menlo, monospace">HANDOFF</text>
+
+  <g transform="translate(752 136)">
+    <rect width="400" height="164" fill="#151515"/>
+    <text x="20" y="34" fill="#F4F0E8" font-size="18" font-weight="800"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace">NEW SESSION</text>
+    <path d="M20 48H380" stroke="#777168"/>
+
+    <text x="20" y="82" fill="#F4F0E8" font-size="18"
+          font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">01 · 读取任务和状态</text>
+    <text x="20" y="111" fill="#F4F0E8" font-size="18"
+          font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">02 · 核对审查与测试凭证</text>
+    <text x="20" y="140" fill="#F4F0E8" font-size="18"
+          font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">03 · 从未完成处继续</text>
+
+    <rect x="266" y="16" width="114" height="26" fill="#2E6655"/>
+    <text x="323" y="34" fill="#F4F0E8" font-size="13" font-weight="800" text-anchor="middle"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace">RESUMABLE</text>
+  </g>
+
+  <text x="48" y="326" fill="#777168" font-size="16"
+        font-family="ui-monospace, SFMono-Regular, Menlo, monospace">THREADS ARE WORKING VIEWS · FILES ARE RECOVERY EVIDENCE</text>
+  <text x="1152" y="326" fill="#2E6655" font-size="16" font-weight="800" text-anchor="end"
+        font-family="ui-monospace, SFMono-Regular, Menlo, monospace">CONTINUE ✓</text>
+</svg>

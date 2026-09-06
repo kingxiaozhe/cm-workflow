@@ -15,12 +15,46 @@ set -uo pipefail
 [ -z "${CM_SPECS_DIR:-}" ] && exit 0            # 未启用则直接放行
 [ -d "$CM_SPECS_DIR" ] || exit 0
 
+find_python() {
+  local candidate
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 &&
+      "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 9))' >/dev/null 2>&1; then
+      command -v "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # 本次提交是否包含源码变更（排除纯文档）
 changed=$(git diff --cached --name-only | grep -vE '\.(md|txt)$' || true)
 [ -z "$changed" ] && exit 0
 
 last_commit_ts=$(git log -1 --format=%ct 2>/dev/null || echo 0)
-fresh_tasks=$(find "$CM_SPECS_DIR" -name tasks.md -newermt "@$last_commit_ts" 2>/dev/null || true)
+python_bin="$(find_python 2>/dev/null || true)"
+fresh_tasks=""
+if [ -n "$python_bin" ]; then
+  # BSD find on macOS has no -newermt. Python keeps this timestamp check
+  # portable while preserving support for specs outside the code repository.
+  fresh_tasks="$("$python_bin" - "$CM_SPECS_DIR" "$last_commit_ts" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+cutoff = float(sys.argv[2])
+try:
+    for path in root.rglob("tasks.md"):
+        try:
+            if path.is_file() and path.stat().st_mtime > cutoff:
+                print(path)
+        except OSError:
+            continue
+except OSError:
+    pass
+PY
+  )"
+fi
 
 if [ -z "$fresh_tasks" ]; then
   echo "⚠ [cm] 本次提交含源码变更，但 $CM_SPECS_DIR 下没有新更新的 tasks.md。" >&2

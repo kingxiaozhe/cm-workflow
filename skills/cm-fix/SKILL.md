@@ -1,21 +1,71 @@
 ---
 name: cm-fix
-description: 对可复现缺陷执行红灯测试、根因定位、最小修复、独立审查、波及面回归和缺陷归档；不承接新功能或架构重设计。
+description: 用户说“修复这个可复现 bug”或要求根据失败报告修代码时使用。执行红灯测试、根因定位、最小修复、独立审查和回归；尚未确认的问题先用 cm-test，新功能和架构重设计转交 cm-prd。
 ---
 
 # cm-fix — 缺陷修复小闭环
 
-执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md` 与 `../../runtime/review.md`。Codex 入口为 `$cm-fix`；Claude Code 跨平台入口为 `/cm-fix`，macOS/Linux 另有历史别名 `/cm:fix`。
+执行前读取 `../../runtime/project-context.md`、`../../runtime/orchestration.md`、
+`../../runtime/review.md`、`../../runtime/model-efficiency.md` 与
+`../../runtime/logging.md`。Codex 入口为 `$cm-fix`；Claude Code 跨平台入口为
+`/cm-fix`，macOS/Linux 另有历史别名 `/cm:fix`。
+
+每个缺陷开始/恢复时按 `../../runtime/project-learning.md` 重读项目根 AGENTS.md，
+筛选相关教训辅助复现与定位；同一合同约束收尾写回，不以旧经验代替本次证据。
+
+用户明确要求外部专家，或为本次修复开启 AUTO 时，仍必须先完成第 1 步本地复现，
+再按 `../../runtime/external-expert.md` 执行 `../external-expert/SKILL.md` 的任务
+路由。代码、修复、测试和审查保持 LOCAL；只有竞争根因或高风险事实查证可路由到
+CONSULT/VERIFY。外部假设必须回到本地证伪；咨询记录不能代替 2.5 或第 5 步独立
+审查。
 
 **用法**：`$cm-fix {specs路径} {代码项目路径} 缺陷描述（现象/报错/截图均可）`
+
+## JS 只读准入
+
+在读取项目内容、解析角色、写 `run_start`、运行复现命令或创建档案前，先确认本轮包含非空缺陷
+描述，但不要把描述正文拼进 shell；随后执行：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-fix-entry.mjs" \
+  --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-fix" --project "{CODE_PROJECT}" \
+  [--specs "{SPECS_DIR}"] --defect-present
+```
+
+没有 specs 的裸项目省略 `--specs`。缺少描述时不传 `--defect-present`，入口返回
+`blocked / defect_required` 后只向用户补要描述。只有 `ready / reproduce` 才进入下方既有闭环；
+它不提前声称缺陷可复现、不可复现或属于设计问题，只声明复现失败仍走 `observation`、确认设计
+问题仍转 `$cm-prd --change`。返回的角色、日志和 Learning 均为 `pending`，执行/写入权限为 false；
+入口不运行命令、不调用 provider/browser/外部专家、不创建日志/测试/档案，也不替代七步流程。
+
+两个路径校验通过后立即调用统一写入器记录 `run_start`；暂停/续跑沿用同一
+`.cm-run.json`，本次缺陷闭环或观测闭环退出时写 `run_done`。不得直接拼 JSON。
+
+## 项目角色路由
+
+从代码项目根解析 `coder`、`tester`、`reviewer`（命令、参数和日志字段见
+`runtime/workflow-routing.md`）。`coder` 只作为最小修复的请求路由元数据，`tester`
+负责防护网/回归，`reviewer` 只描述独立审查候选通道；`declared-adapter` 必须记录为
+未观测适配器，不能伪造调用或绕过本地执行与独立审查。resolver 返回非零或配置错误
+时立即 `BLOCKED`，不得复现、修改或写入缺陷档案；配置不存在时保持当前默认行为。
+`managed-adapter` 按 `runtime/model-efficiency.md` 返回文本建议并自动记录真实 usage；
+复现、修复落盘、测试和独立审查仍由本地流程执行。
+
+角色调用按 `runtime/model-efficiency.md` 只传当前缺陷的复现证据、根因范围、修复
+diff、回归结果和对应规则；不重复投喂整仓、完整历史日志或其他缺陷上下文。失败输出
+保留首个可行动错误与证据路径，防护网、独立审查和回归要求不因精简而变化。
 
 修 bug 专用的**轻量闭环**——不走 N1–N8 全链（那是 feature 流程），也不许脱离工作流裸改（裸改没防护网没审查，修一个坏三个）。
 
 **多缺陷输入**：先对全部缺陷做第 1-2 步（复现+定位），**按根因聚类**——同根缺陷合并为一次修复（多个失败测试、一次改动、档案互链），修复顺序按严重度排,不按输入顺序。不聚类的代价：三个现象一个根因跑三个闭环,且第一个修复落地后,后两个的复现步骤可能已失效（第 1 步卡死）。
 
-**转交进场**（消费上游落盘物,不改上游流程）：缺陷描述可附上游档案引用——`$cm-refactor` 档案的未修缺陷清单、N6 业务走查报告的偏差项、观测闭环的半份档案（按 slug 在 `fixes/` 检索）。带引用进场的缺陷,第 1 步**采信上游已有证据**（位置/现象/日志原文）,仍须实际复现一次核实,但不从零摸排。
+**转交进场**（消费上游落盘物,不改上游流程）：缺陷描述可附上游档案引用——`$cm-test` 的只读测试报告、`$cm-refactor` 档案的未修缺陷清单、N6 业务走查报告的偏差项、观测闭环的半份档案（按 slug 在 `fixes/` 检索）。带引用进场的缺陷,第 1 步**采信上游已有证据**（位置/现象/日志原文）,仍须实际复现一次核实,但不从零摸排。
 
-**$cm-ai 全局规则在本流程内同等生效**：灾难级才暂停、多方案自主决策留痕、状态落盘（node 写 `FIX`）、运行日志照记、独立审查按 `runtime/review.md` 执行。
+**$cm-ai 全局规则在本流程内同等生效**：灾难级与节点显式卡点暂停、多方案自主决策留痕、状态落盘（node 写 `FIX`）、运行日志照记、独立审查按 `runtime/review.md` 执行。
+修改代码前预检 fresh 独立审查通道；无可用通道时暂停修复，已有改动保持待审。
+当前支持 Codex 子代理/隔离 CLI；未验证的 Claude-native 适配不能改名冒充 Codex。
+
+**跨边界证据（条件触发）**：缺陷涉及跨进程/跨服务、异步队列或流、路由目标、缓存/状态不一致或时序偶现时，读取 `references/cross-boundary-debugging.md`；它只补定位证据，不新增入口、状态或完成标准。普通可复现缺陷不补表，仍走以下七步。
 
 ## 闭环七步（每个缺陷）
 
@@ -23,9 +73,9 @@ description: 对可复现缺陷执行红灯测试、根因定位、最小修复�
 
 - 按描述实际操作/运行一次，拿到**失败证据**（报错原文、错误截图、错误返回值）;**证据要用严格裁判**——宽容裁判会把坏产物蒙混成功（实跑:补丁类缺陷 GNU patch 的 fuzz 容错险些吞掉复现,换 git apply --check 才拿到硬证据）
 - 复现不了 → 不猜着修，走**观测闭环**（偶现 bug 专用，两段式）：
-  ① 在可疑路径加观测点（日志/埋点——观测点本身按最小改动+审查纪律入库，**观测点不是修复尝试**）
+  ① 先判断是否命中跨边界证据条件；命中时按参考先列“边 → 预期证据 → 实际证据”，再在可疑路径加最小观测点（日志/埋点——观测点本身按最小改动+审查纪律入库，**观测点不是修复尝试**）
   ② 缺陷档案先落半份，状态记 `观测中`，写清"等什么证据（哪个日志出现什么内容）"
-  ③ 本次命令正常收口退出，不挂着等——运行日志记 `done`,detail 写「观测中:等{什么证据}」;状态文件 state 复位,不留悬挂的 running
+  ③ 本次命令正常收口退出，不挂着等——运行日志记 `run_done`,detail 写「观测中:等{什么证据}」;状态文件 state 复位,不留悬挂的 running
   ④ 证据到手后再次运行 `$cm-fix` 附上证据，**按 slug 定位 `fixes/` 下的半份档案**,从第 2 步定位续跑,档案续写、状态改 `修复中`,运行日志记 `resume`(detail 注证据摘要)
   ——**"我改了点东西你再试试"依然被禁止**
 
@@ -33,13 +83,14 @@ description: 对可复现缺陷执行红灯测试、根因定位、最小修复�
 
 - 有业务地图（`docs/codebase-context/`）→ 先查 07 业务线路定位所在链路，08 修改影响映射表查波及面
 - 无地图 → 从失败点向上追调用链，找到**根因层**（现象在 UI，根因可能在数据层）
+- 命中跨边界证据条件 → 将调用链、每条边的最小证据、**最后正常边**与**首个失败边**写入缺陷档案；同时写“假设 → 支持证据 → 反证试验 → 结果”，一次只检验一个假设。日志与试验必须本地且脱敏，**不自动联网、不外发日志、不安装依赖、不重启服务、不清理缓存**。
 - 输出一句话根因结论 + 波及面清单（本次修改会牵连哪些模块）——写进缺陷档案（第 7 步）
 
 ### 2.5 根因与修法对抗确认（条件触发；根因错误是本流程最贵的错误,必须在防护网之前拦）
 
 任一**客观条件**命中才触发(简单缺陷零负担,判断依据同"门槛是客观项不是判断题"):波及面 ≥3 个模块 / 根因层与现象层不同层 / 观测闭环续跑的缺陷 / 拟走升级出口。
 
-- 把根因结论 + 复现证据 + 波及面清单 + **拟采用修法（含放弃的备选）**交给新上下文的独立审查者，提示词要义：「**假设这个根因判断是错的，找出更深层的解释；再审修法：治本还是治症？有没有更小的改动？会不会引入新耦合？**」。通道与降级规则同 N4
+- 把根因结论 + 复现证据 + 波及面清单 + **拟采用修法（含放弃的备选）**交给新上下文的独立审查者；命中跨边界证据条件时一并交调用链、最后正常边、首个失败边和已完成的反证试验。提示词要义：「**假设这个根因判断是错的，找出更深层的解释；再审修法：治本还是治症？有没有更小的改动？会不会引入新耦合？**」。通道与降级规则同 N4
 - **仅 1 轮**:推翻 → 回第 2 步重定位;分歧 → 交人裁决;通过 → 进第 3 步
 - 凭证落 `{SPECS_DIR}/.reviews/fix-{slug}-cause-r1.md`——**命名带 `cause` 是有意的**:不落入第 5 步 `fix-{slug}-r*.md` 的匹配域,两个卡点各自独立,根因凭证不会误满足 diff 审查卡点
 
@@ -57,10 +108,37 @@ description: 对可复现缺陷执行红灯测试、根因定位、最小修复�
 
 ### 5. 审查（独立审查同 N4）
 
+- 审查前按 `../../runtime/project-learning.md` 复盘并完成必要的 AGENTS.md 增量写回，纳入本次审查 diff；无新增记入缺陷档案。微缺陷通道也必须复盘，新增 AGENTS.md 改动导致不再满足单文件门槛时走完整流程。
 - 失败测试转绿 + 存量基线不退化后，按 `runtime/review.md` 审查本缺陷 diff（重点：根因是否真被修掉、有无只治症状、波及面有无遗漏）
 - **防护网测试本身是审查对象**(实测最大问题类:测试是戏台):红的原因是否=该缺陷、断言测的是根因还是症状、有无安慰剂/前提共谋;**核对第 3 步落档的红证据**——没有红过的记录,测试可信度按不成立处理
-- 所有缺陷零豁免；独立通道不可用时才记 `self-degraded`；≤2 轮上限同样生效
-- **审查凭证落盘**：输出全文 tee 到 `{SPECS_DIR}/.reviews/fix-{slug}-r{轮次}.md`（纪律同 N4）——进第 6 步前**必须真跑** `ls {SPECS_DIR}/.reviews/fix-{slug}-r*.md`,命令无输出=审查未发生,退回补审;凭证文件名写进第 7 步收口输出（文字卡点拦不住是实测结论,机械命令才算数）
+- 所有缺陷零豁免；独立通道不可用则待审，`self-degraded` 仅作诊断，不得成功收口；通道故障不算代码 finding/实现审查轮次，有效 finding 不能靠换人消除；≤2 轮上限同样生效
+- `{slug}` 先规范成跨平台安全的 ASCII kebab；令 `REVIEW_FEATURE=fix-{slug}`、
+  `REVIEW_TASK=T-FIX-{slug}`。主执行者按真实 diff 写
+  `{SPECS_DIR}/.reviews/fix-{slug}-T-FIX-{slug}-a{attempt}-handoff.json`，格式与
+  `runtime/task-handoff.schema.json` 相同。先按 handoff 的完整 `changed_files` 运行
+  `cm-task-gate.py hash-implementation --project-root {CODE_PROJECT} --file ...`，把返回的
+  `implementation_sha256` 写入 handoff，再真跑：
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n4 \
+  --handoff {HANDOFF_PATH} --reviews-dir {SPECS_DIR}/.reviews \
+  --feature fix-{slug} --task T-FIX-{slug} --project-root {CODE_PROJECT}
+```
+
+- 独立审查凭证严格落
+  `{SPECS_DIR}/.reviews/fix-{slug}-T-FIX-{slug}-r{attempt}.md`，包含当前 handoff
+  文件名和 SHA。审查完成后必须真跑下列命令；只有当前 attempt 的
+  `independent: true` 且 `verdict: approved` 才能进入第 6 步：
+
+```bash
+python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n5 \
+  --handoff {HANDOFF_PATH} --reviews-dir {SPECS_DIR}/.reviews \
+  --feature fix-{slug} --task T-FIX-{slug} --project-root {CODE_PROJECT}
+```
+
+- `changes_requested` 后修改代码必须生成 attempt 2 handoff 并复审；第 2 轮仍有阻断项
+  写 `blocked` 并停止。文件存在、旧凭证或 `ls` 输出都不构成批准。
+- 后续回归、文档或经验整理如修改被审代码、测试或执行指令，原批准失效；重新形成证据并独立审查，不能重置轮次或在收口时顺手改实现
 
 ### 6. 回归（按波及面，不是只看 bug 消失）
 
@@ -70,11 +148,13 @@ description: 对可复现缺陷执行红灯测试、根因定位、最小修复�
 
 ### 7. 落盘（审计链闭合）
 
-- **缺陷档案**：`{SPECS_DIR}/fixes/{YYYYMMDD}-{简短slug}.md`——现象 / 复现步骤 / 根因 / 修法（含放弃的方案）/ 波及面与回归结果 / 测试文件路径。这是缺陷知识库，同类 bug 再犯先查这里
+- 收口前核对复盘记录、AGENTS.md 的审查范围与磁盘摘要；有新增则回读确认，无新增如实记录。缺记录、无法写回或批准后变化时不写成功 `task_done`，按学习合同与第 5 步处理。
+- **缺陷档案**：`{SPECS_DIR}/fixes/{YYYYMMDD}-{简短slug}.md`——现象 / 复现步骤 / 根因 / 修法（含放弃的方案）/ 波及面与回归结果 / 测试文件路径；命中跨边界证据条件时追加“证据链与假设”（调用链、边证据、最后正常边、首个失败边、反证结果）。这是缺陷知识库，同类 bug 再犯先查这里
 - **METRICS.md 追加一行**：Feature 列写 `fix`，任务列写档案文件名，其余列同口径（轮次/拦截数/人工介入）
 - 根因具普遍性（如"平台 API 返回结构变了"）→ 追记 LESSONS.md（[已结构化]/[仅记忆] 分级同 N5）
-- git commit：`fix: {一句话} (档案: fixes/xxx.md)`，审查摘要进 commit message（同 N4）
-- 运行日志事件：`task_start`/`review`/`task_done`/`done` 照记，node 字段写 `FIX`
+- Git 按有效 `policies.delivery`：diff 不 stage/commit；branch/draft-mr 提交
+  `fix: {一句话} (档案: fixes/xxx.md)`，审查摘要进 commit message（同 N4）
+- 运行日志事件：`task_start`/`review`/`task_done`/`run_done` 照记，node 字段写 `FIX`
 
 ## 微缺陷快速通道（四个硬门槛全中才准走）
 
@@ -99,6 +179,7 @@ description: 对可复现缺陷执行红灯测试、根因定位、最小修复�
 防护网: 新增 {测试文件}(红→绿) · 存量基线 {N} 项无退化
 审查: 独立审查({channel}) {通过/N轮N条} | 回归: 波及面 {N} 项通过
 档案: fixes/{文件名}   METRICS 已记
+学习: {AGENTS.md已写回并回读/已复盘，无新增}
 ```
 
 ## 边界
