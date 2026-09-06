@@ -16,6 +16,15 @@ $InstallComplete = $false
 $DestTouched = $false
 $ManagedFiles = @()
 
+$Node = Get-Command "node" -ErrorAction SilentlyContinue
+if (-not $Node) {
+    throw "CM Workflow 需要 Node.js 18+，但 PATH 中未找到 node。"
+}
+& node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)'
+if ($LASTEXITCODE -ne 0) {
+    throw "CM Workflow 需要 Node.js 18+。"
+}
+
 function Stage-Tree {
     param([string]$Source, [string]$Relative)
     if (-not (Test-Path $Source -PathType Container)) { return }

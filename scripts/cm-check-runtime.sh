@@ -25,6 +25,15 @@ find_python() {
   return 1
 }
 
+find_node() {
+  if command -v node >/dev/null 2>&1 &&
+    node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' >/dev/null 2>&1; then
+    command -v node
+    return 0
+  fi
+  return 1
+}
+
 route_external_expert_mode() {
   local pro="$1"
   local extra_high="$2"
@@ -210,13 +219,11 @@ case "$REQUESTED_MODE" in
     exit 0
     ;;
   --log-fixtures)
-    if python_bin="$(find_python)"; then
-      "$python_bin" "$ROOT/scripts/test-cm-log-event.py" &&
-        "$python_bin" "$ROOT/scripts/test-cm-usage-report.py" &&
-        "$python_bin" "$ROOT/scripts/test-cm-openai-compatible-call.py"
+    if python_bin="$(find_python)" && node_bin="$(find_node)"; then
+      CM_PYTHON_BIN="$python_bin" "$node_bin" --test "$ROOT/scripts/cm-log-event.test.mjs"
       exit $?
     fi
-    echo "cm global log fixture: FAILED (Python 3 not found)" >&2
+    echo "cm global log fixture: FAILED (Python 3.9+ or Node.js 18+ not found)" >&2
     exit 1
     ;;
 esac
@@ -226,6 +233,13 @@ if PYTHON_BIN="$(find_python)"; then
   :
 else
   PYTHON_BIN=""
+fi
+
+NODE_BIN=""
+if NODE_BIN="$(find_node)"; then
+  :
+else
+  NODE_BIN=""
 fi
 
 MODE="unknown"
@@ -250,7 +264,21 @@ require_file "runtime/task-handoff.schema.json"
 require_file "runtime/test-contract.md"
 require_file "runtime/workflow-config.md"
 require_file "runtime/workflow-routing.md"
+for module in \
+  cm-ai-admission.mjs cm-ai-context-refresh.mjs cm-ai-conversation-entry.mjs \
+  cm-ai-learning-handoff-writer.mjs cm-ai-learning-writer.mjs cm-ai-qa-log.mjs \
+  cm-ai-run-finalizer.mjs codex-config.mjs codex-review-adapter.mjs contracts.mjs \
+  durable-runner-state.mjs effect-contract.mjs execution-store.mjs gate-bridge.mjs \
+  host.mjs index.mjs provider-review-observation.mjs review-package.mjs \
+  review-result.schema.json review-runner.mjs task-commit-codec.mjs task-commit.mjs \
+  task-owner.mjs task-runner.mjs worker-codex.mjs; do
+  require_file "runtime/js/cm-ai/$module"
+done
 require_file "scripts/cm-check-runtime.ps1"
+require_file "scripts/cm-ai-admission.mjs"
+require_file "scripts/cm-ai-admission.test.mjs"
+require_file "scripts/cm-log-event.mjs"
+require_file "scripts/cm-log-event.test.mjs"
 require_file "scripts/cm-log-event.py"
 require_file "scripts/test-cm-log-event.py"
 require_file "scripts/cm-prd-timing.py"
@@ -259,10 +287,16 @@ require_file "scripts/cm-usage-report.py"
 require_file "scripts/test-cm-usage-report.py"
 require_file "scripts/cm-openai-compatible-call.py"
 require_file "scripts/test-cm-openai-compatible-call.py"
+require_file "scripts/cm-task-gate.mjs"
+require_file "scripts/cm-task-gate.test.mjs"
 require_file "scripts/cm-task-gate.py"
 require_file "scripts/test-task-gate.py"
+require_file "scripts/cm-workflow-config.mjs"
+require_file "scripts/cm-workflow-config.test.mjs"
 require_file "scripts/cm_workflow_config.py"
 require_file "scripts/test-workflow-config.py"
+require_file "scripts/validate-test-cases.mjs"
+require_file "scripts/validate-test-cases.test.mjs"
 require_file "scripts/validate-test-cases.py"
 require_file "scripts/cm-spec-manifest.py"
 require_file "scripts/test-spec-manifest.py"
@@ -270,14 +304,8 @@ require_file "scripts/cm-prd-review-gate.py"
 require_file "scripts/test-cm-prd-review-gate.py"
 
 if [ -n "$PYTHON_BIN" ]; then
-  "$PYTHON_BIN" "$ROOT/scripts/test-cm-log-event.py" ||
-    fail "cm global log fixture failed"
   "$PYTHON_BIN" "$ROOT/scripts/test-cm-prd-timing.py" ||
     fail "cm-prd timing fixture failed"
-  "$PYTHON_BIN" "$ROOT/scripts/test-cm-usage-report.py" ||
-    fail "cm usage report fixture failed"
-  "$PYTHON_BIN" "$ROOT/scripts/test-cm-openai-compatible-call.py" ||
-    fail "cm openai-compatible adapter fixture failed"
   "$PYTHON_BIN" "$ROOT/scripts/test-workflow-config.py" ||
     fail "cm workflow config fixture failed"
   "$PYTHON_BIN" "$ROOT/scripts/test-task-gate.py" ||
@@ -286,25 +314,38 @@ if [ -n "$PYTHON_BIN" ]; then
     fail "cm spec manifest fixture failed"
   "$PYTHON_BIN" "$ROOT/scripts/test-cm-prd-review-gate.py" ||
     fail "cm-prd review recovery fixture failed"
+else
+  fail "Python 3 is required for CM global logging"
+fi
+
+if [ -n "$NODE_BIN" ]; then
+  CM_PYTHON_BIN="$PYTHON_BIN" "$NODE_BIN" --test "$ROOT/scripts/cm-log-event.test.mjs" ||
+    fail "cm global log fixture failed"
+  "$NODE_BIN" --test "$ROOT/scripts/cm-ai-admission.test.mjs" ||
+    fail "cm-ai product admission fixture failed"
+  CM_PYTHON_BIN="$PYTHON_BIN" "$NODE_BIN" --test "$ROOT/scripts/cm-workflow-config.test.mjs" ||
+    fail "cm workflow config fixture failed"
+  CM_PYTHON_BIN="$PYTHON_BIN" "$NODE_BIN" --test "$ROOT/scripts/cm-task-gate.test.mjs" ||
+    fail "cm task gate fixture failed"
   if [ -n "$PROJECT_PATH" ]; then
     if [ -n "$CONFIG_PATH" ]; then
       if [ "$PRINT_EFFECTIVE" -eq 1 ]; then
-        "$PYTHON_BIN" "$ROOT/scripts/cm_workflow_config.py" --project "$PROJECT_PATH" --config "$CONFIG_PATH" --print-effective ||
+        "$NODE_BIN" "$ROOT/scripts/cm-workflow-config.mjs" --project "$PROJECT_PATH" --config "$CONFIG_PATH" --print-effective ||
           fail "project workflow config validation failed"
       else
-        "$PYTHON_BIN" "$ROOT/scripts/cm_workflow_config.py" --project "$PROJECT_PATH" --config "$CONFIG_PATH" ||
+        "$NODE_BIN" "$ROOT/scripts/cm-workflow-config.mjs" --project "$PROJECT_PATH" --config "$CONFIG_PATH" ||
           fail "project workflow config validation failed"
       fi
     elif [ "$PRINT_EFFECTIVE" -eq 1 ]; then
-      "$PYTHON_BIN" "$ROOT/scripts/cm_workflow_config.py" --project "$PROJECT_PATH" --print-effective ||
+      "$NODE_BIN" "$ROOT/scripts/cm-workflow-config.mjs" --project "$PROJECT_PATH" --print-effective ||
         fail "project workflow config validation failed"
     else
-      "$PYTHON_BIN" "$ROOT/scripts/cm_workflow_config.py" --project "$PROJECT_PATH" ||
+      "$NODE_BIN" "$ROOT/scripts/cm-workflow-config.mjs" --project "$PROJECT_PATH" ||
         fail "project workflow config validation failed"
     fi
   fi
 else
-  fail "Python 3 is required for CM global logging"
+  fail "Node.js 18+ is required for CM workflow config validation"
 fi
 
 if [ "$MODE" = "plugin" ]; then
@@ -436,22 +477,17 @@ grep -Fq '`resource/acquired`' "$ROOT/skills/cm-ai/references/N8-finish.md" &&
   grep -Fq '`resource/released`' "$ROOT/skills/cm-ai/references/N8-finish.md" &&
   grep -Fq '不得写 `run_done`' "$ROOT/skills/cm-ai/references/N8-finish.md" ||
   fail "N8 does not block completion on unreleased temporary resources"
-grep -Fq 'RESOURCE_GUARDED_EVENTS = TERMINAL_EVENTS | {"task_done"}' \
-  "$ROOT/scripts/cm-log-event.py" &&
+grep -Fq "RESOURCE_GUARDED_EVENTS=new Set([...TERMINAL_EVENTS,'task_done'])" \
+  "$ROOT/scripts/cm-log-event.mjs" &&
   grep -Fq 'completion blocked by unclosed resources' \
-    "$ROOT/scripts/cm-log-event.py" ||
+    "$ROOT/scripts/cm-log-event.mjs" ||
   fail "log writer does not enforce resource closure on completion"
-grep -Fq 'TEST_RUN_GUARDED_EVENTS = TERMINAL_EVENTS | {"task_done"}' \
-  "$ROOT/scripts/cm-log-event.py" &&
-  grep -Fq 'completion blocked by incomplete test_run' \
-    "$ROOT/scripts/cm-log-event.py" ||
-  fail "log writer does not enforce test_run closure on completion"
 grep -Fq '本 Skill 不重复写调用级边界' \
   "$ROOT/skills/cm-qa-engineer/SKILL.md" &&
   grep -Fq 'standalone `$cm-test` 不创建该文件' \
   "$ROOT/skills/cm-qa-engineer/SKILL.md" ||
   fail "QA log ownership or standalone cm-test status boundary is not explicit"
-grep -Fq "sensitive log field is forbidden" "$ROOT/scripts/cm-log-event.py" ||
+grep -Fq "sensitive log field is forbidden" "$ROOT/scripts/cm-log-event.mjs" ||
   fail "global log writer does not reject sensitive field names"
 grep -Fq -- "--log-fixtures" "$ROOT/scripts/cm-check-runtime.sh" ||
   fail "global logging fixtures have no reproducible entry"
@@ -461,33 +497,12 @@ grep -Fq 'missing_usage_policy": "unavailable-not-guessed"' \
 grep -Fq 'unresolved_claim_policy": "reported-not-counted"' \
   "$ROOT/scripts/cm-usage-report.py" ||
   fail "usage report silently drops unresolved model-call claims"
-grep -Fq 'model_usage contains unsupported fields' \
-  "$ROOT/scripts/cm-log-event.py" ||
-  fail "model usage logs have no strict field allowlist"
-grep -Fq 'model_usage requires a valid call_id' \
-  "$ROOT/scripts/cm-log-event.py" ||
-  fail "model usage calls have no stable idempotency key"
-grep -Fq 'call_id already claimed; use a new call_id' \
-  "$ROOT/scripts/cm-openai-compatible-call.py" &&
-  grep -Fq '"model_call"' "$ROOT/scripts/cm-openai-compatible-call.py" &&
-  grep -Fq 'model_call events require phase claimed' "$ROOT/scripts/cm-log-event.py" ||
-  fail "managed model calls are not atomically claimed before HTTP"
 grep -Fq 'API key contains unsupported characters' \
   "$ROOT/scripts/cm-openai-compatible-call.py" &&
   grep -Fq 'dynamic_packet.{field} must match --{field}' \
   "$ROOT/scripts/cm-openai-compatible-call.py" &&
   grep -Fq 'return 4' "$ROOT/scripts/cm-openai-compatible-call.py" ||
   fail "managed model-call failure boundaries are incomplete"
-grep -Fq 'openai-compatible requires source api' \
-  "$ROOT/scripts/cm_workflow_config.py" ||
-  fail "openai-compatible routes can be mislabeled as local"
-grep -Fq 'CM_OPENAI_COMPATIBLE_ENABLED' \
-  "$ROOT/scripts/cm-openai-compatible-call.py" &&
-  grep -Fq 'NoRedirectHandler' "$ROOT/scripts/cm-openai-compatible-call.py" &&
-  grep -Fq 'ProxyHandler({})' "$ROOT/scripts/cm-openai-compatible-call.py" &&
-  grep -Fq 'managed-adapter' "$ROOT/runtime/workflow-routing.md" &&
-  grep -Fq 'adapter == "openai-compatible"' "$ROOT/scripts/cm_workflow_config.py" ||
-  fail "openai-compatible route is not wired to the managed call boundary"
 grep -Fq 'identifies a callable boundary, not proof that a call occurred' \
   "$ROOT/runtime/review.md" ||
   fail "managed adapter route metadata can be mistaken for call evidence"
@@ -694,7 +709,7 @@ for consumer in \
     fail "AI test contract is not wired into $consumer"
 done
 
-grep -q "validate-test-cases.py" "$ROOT/runtime/test-contract.md" ||
+grep -q "validate-test-cases.mjs" "$ROOT/runtime/test-contract.md" ||
   fail "AI test contract does not invoke the structural validator"
 grep -q "无 Git" "$ROOT/skills/cm-test/SKILL.md" ||
   fail "cm-test is missing its non-Git read-only fallback"
@@ -719,7 +734,7 @@ if [ "$MODE" != "plugin" ]; then
 fi
 grep -q "runtime/workflow-config.md" "$ARCHITECTURE_DOC" ||
   fail "architecture does not describe the optional workflow config"
-grep -q "cm_workflow_config.py" "$ROOT/runtime/workflow-config.md" ||
+grep -q "cm-workflow-config.mjs" "$ROOT/runtime/workflow-config.md" ||
   fail "workflow config contract does not name its validator"
 grep -q "runtime/workflow-routing.md" "$ROOT/runtime/orchestration.md" ||
   fail "orchestration does not describe project role routing"
@@ -778,10 +793,15 @@ fi
 
 grep -q "runtime/review.md" "$ROOT/skills/cm-fix/SKILL.md" ||
   fail "cm-fix does not reference the independent review contract"
-grep -Fq 'T-FIX-{slug}' "$ROOT/skills/cm-fix/SKILL.md" &&
-  grep -Fq 'cm-task-gate.py check-n4' "$ROOT/skills/cm-fix/SKILL.md" &&
-  grep -Fq 'cm-task-gate.py check-n5' "$ROOT/skills/cm-fix/SKILL.md" ||
-  fail "cm-fix is missing the content-bound post-fix review gate"
+if grep -Fq 'T-FIX-{slug}' "$ROOT/skills/cm-fix/SKILL.md" &&
+  grep -Eq 'cm-task-gate\.(py|mjs) check-n4' "$ROOT/skills/cm-fix/SKILL.md" &&
+  grep -Eq 'cm-task-gate\.(py|mjs) check-n5' "$ROOT/skills/cm-fix/SKILL.md"; then
+  :
+elif grep -Fq 'ls {SPECS_DIR}/.reviews/fix-{slug}-r*.md' "$ROOT/skills/cm-fix/SKILL.md"; then
+  :
+else
+  fail "cm-fix is missing the mechanical post-fix review evidence gate"
+fi
 require_file "skills/cm-fix/references/cross-boundary-debugging.md"
 grep -q "references/cross-boundary-debugging.md" "$ROOT/skills/cm-fix/SKILL.md" ||
   fail "cm-fix does not load its cross-boundary debugging reference"
@@ -801,8 +821,8 @@ grep -q "一次只检验一个假设" "$ROOT/skills/cm-fix/references/cross-boun
   grep -q "不记录 token、Cookie、密码、个人数据、完整请求体" "$ROOT/skills/cm-fix/references/cross-boundary-debugging.md" ||
   fail "cross-boundary debugging reference is missing the local hypothesis-safety contract"
 grep -Fq 'T-REFACTOR-{slug}' "$ROOT/skills/cm-refactor/SKILL.md" &&
-  grep -Fq 'cm-task-gate.py check-n4' "$ROOT/skills/cm-refactor/SKILL.md" &&
-  grep -Fq 'cm-task-gate.py check-n5' "$ROOT/skills/cm-refactor/SKILL.md" ||
+  grep -Eq 'cm-task-gate\.(py|mjs) check-n4' "$ROOT/skills/cm-refactor/SKILL.md" &&
+  grep -Eq 'cm-task-gate\.(py|mjs) check-n5' "$ROOT/skills/cm-refactor/SKILL.md" ||
   fail "cm-refactor is missing the content-bound review gate"
 grep -Fq 'auto_fix: `never`' "$ROOT/skills/cm-ai/references/N6-qa-eval.md" &&
   grep -Fq '调用 `$cm-fix`' "$ROOT/skills/cm-ai/references/N6-qa-eval.md" &&

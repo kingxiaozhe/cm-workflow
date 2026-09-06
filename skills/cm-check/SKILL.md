@@ -7,11 +7,17 @@ description: 用户说“检查工作流是否安装正确”“为什么找不�
 
 执行前读取 `../../runtime/project-context.md` 与 `../../runtime/logging.md`。Codex 入口为 `$cm-check`；Claude Code 跨平台入口为 `/cm-check`，macOS/Linux 另有历史别名 `/cm:check`。
 
-从当前 Skill 路径解析 `{CM_WORKFLOW_ROOT}`。macOS、Linux、WSL 或 Git Bash
-先运行：
+从当前 Skill 路径解析 `{CM_WORKFLOW_ROOT}`。macOS、Linux 或 WSL 先运行：
 
 ```bash
-{CM_WORKFLOW_ROOT}/scripts/cm-check-runtime.sh --project "$PWD" --print-effective
+node "{CM_WORKFLOW_ROOT}/scripts/cm-check-entry.mjs" \
+  --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-check" --project "$PWD" --print-effective
+```
+
+Git Bash 暂时继续运行现有兼容入口：
+
+```bash
+"{CM_WORKFLOW_ROOT}/scripts/cm-check-runtime.sh" --project "$PWD" --print-effective
 ```
 
 Windows PowerShell 先运行：

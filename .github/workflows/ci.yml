@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - "agent/**"
+      - "codex/**"
   pull_request:
 
 permissions:
@@ -12,6 +13,27 @@ permissions:
   pull-requests: read
 
 jobs:
+  node18-authorities:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up minimum Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3aa1d7e6cbb # v4.4.0
+        with:
+          node-version: "18"
+
+      - name: Check shared JavaScript authorities
+        run: |
+          ./scripts/cm-check-runtime.sh
+          node --test scripts/cm-ai-admission.test.mjs scripts/cm-workflow-config.test.mjs scripts/cm-log-event.test.mjs scripts/cm-task-gate.test.mjs scripts/validate-test-cases.test.mjs
+
   validate:
     runs-on: ubuntu-latest
     steps:
@@ -24,6 +46,11 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3aa1d7e6cbb # v4.4.0
+        with:
+          node-version: "22"
 
       - name: Validate runtime contracts
         run: ./scripts/cm-check-runtime.sh
@@ -41,10 +68,22 @@ jobs:
         run: bash scripts/test-shell-compat.sh
 
       - name: Run workflow config fixtures
+        run: node --test scripts/cm-workflow-config.test.mjs
+
+      - name: Run cm-ai product admission fixtures
+        run: node --test scripts/cm-ai-admission.test.mjs
+
+      - name: Run JavaScript log writer fixtures
+        run: node --test scripts/cm-log-event.test.mjs
+
+      - name: Run JavaScript test contract fixtures
+        run: node --test scripts/validate-test-cases.test.mjs
+
+      - name: Check legacy workflow config harness
         run: python3 scripts/test-workflow-config.py
 
       - name: Run task handoff and review gate fixtures
-        run: python3 scripts/test-task-gate.py
+        run: node --test scripts/cm-task-gate.test.mjs && python3 scripts/test-task-gate.py
 
       - name: Scan Git history with Gitleaks
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
@@ -61,6 +100,14 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3aa1d7e6cbb # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Exercise Windows task completion lock
+        run: node --test scripts/cm-task-gate.test.mjs
 
       - name: Smoke-test PowerShell installer
         shell: pwsh
@@ -80,12 +127,22 @@ jobs:
             "runtime/workflow-routing.md",
             "runtime/test-contract.md",
             "scripts/cm-check-runtime.sh",
+            "scripts/cm-ai-admission.mjs",
+            "scripts/cm-ai-admission.test.mjs",
+            "scripts/cm-log-event.mjs",
+            "scripts/cm-log-event.test.mjs",
             "scripts/cm-log-event.py",
+            "scripts/cm-task-gate.mjs",
+            "scripts/cm-task-gate.test.mjs",
             "scripts/cm-task-gate.py",
+            "scripts/cm-workflow-config.mjs",
+            "scripts/cm-workflow-config.test.mjs",
             "scripts/cm_workflow_config.py",
             "scripts/test-cm-log-event.py",
             "scripts/test-task-gate.py",
             "scripts/test-workflow-config.py",
+            "scripts/validate-test-cases.mjs",
+            "scripts/validate-test-cases.test.mjs",
             "scripts/validate-test-cases.py",
             "templates/cm-workflow.yml",
             "templates/cm-VERSION"

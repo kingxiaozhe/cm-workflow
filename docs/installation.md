@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Git and Python 3.9 or newer.
+- Git, Python 3.9 or newer, and Node.js 18 or newer.
 - For Codex: a current Codex installation with the bundled plugin creator
   helpers available under `CODEX_HOME`.
 - For Claude Code on macOS/Linux: Bash 3.2 or newer.
@@ -88,8 +88,15 @@ new Claude Code session, then run `/cm-check`. The installer also keeps the
 historic `/cm:check` alias on macOS/Linux. The installed manual is available at
 `~/.claude/cm-workflow/docs/user-guide.md` unless `CLAUDE_HOME` overrides the
 destination.
+The two disabled-by-default auto-update helper scripts are copied to
+`~/.cm-workflow`; overriding `CLAUDE_HOME` alone therefore does not make an
+installer run fully isolated. Override both `HOME` and `CLAUDE_HOME` for an
+authorized temporary-directory smoke test.
 The optional project configuration template is installed at
 `$CLAUDE_HOME/templates/cm-workflow.yml` (or `~/.claude/templates/cm-workflow.yml`).
+The installed `/cm-ai` Skill invokes the same read-only
+`$CLAUDE_HOME/scripts/cm-ai-admission.mjs` N1/N2 authority used by Codex; no
+Claude-specific workflow fork is installed.
 
 ## Claude Code on Windows
 
@@ -113,6 +120,8 @@ those aliases are macOS/Linux only. Bash-based statusline and visualization
 helpers likewise require WSL or Git Bash.
 The optional project configuration template is installed at
 `$CLAUDE_HOME/templates/cm-workflow.yml` (or `%USERPROFILE%\.claude\templates\cm-workflow.yml`).
+The installed `/cm-ai` Skill uses the same Node.js admission entry as other
+platforms; any admitted task still uses the shared Review/N5 gates.
 
 ## Optional Claude auto-update (macOS/Linux)
 
@@ -144,6 +153,17 @@ Set `CM_UPDATE_REMOTE` when your team intentionally uses a fork.
 
 ## Uninstall
 
-This repository does not provide an automatic uninstall because user directories
-may contain modified copies. Remove only the CM-owned paths you have reviewed,
-or restore from your own backup.
+For a Codex install registered by the installer, remove the enabled plugin and
+its local cache with:
+
+```bash
+codex plugin remove cm-workflow@personal
+```
+
+This intentionally leaves the local `~/plugins/cm-workflow` source and the
+`personal` marketplace definition available for inspection or reinstall. Remove
+those separately only after reviewing that they are still CM-owned.
+
+Claude Code compatibility installs do not have an automatic uninstall because
+their destination directories may contain user-modified copies. Remove only the
+CM-owned paths you have reviewed, or restore from your own backup.

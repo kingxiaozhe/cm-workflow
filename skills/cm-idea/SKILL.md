@@ -15,6 +15,19 @@ AUTO 只在复杂方案/材料综合时 CONSULT，需要权威事实时 VERIFY�
 
 **用法**：`$cm-idea 一句话点子`（如 `$cm-idea 我想做个帮宝妈记录辅食的小程序`）
 
+## JS 只读准入
+
+在加载访谈引用、联网或探测保存目录之前，先执行：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-idea-entry.mjs" \
+  --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-idea"
+```
+
+只有 `ready / interview` 才继续加载下方引用。该结果不读取或回显点子内容，不调用外部专家，
+也不授权保存文件；保存前仍必须按访谈引用取得用户对完整路径的确认。本入口不把访谈规则改写
+成 JS，`references/idea-to-prd.md` 继续是唯一事实源。
+
 把模糊想法聊成成熟 PRD 的产品访谈搭档。**本命令只做一件事**：加载 `references/idea-to-prd.md` 并严格按其规则执行——本文件不复制不改写访谈规则，该引用文件是唯一事实源。
 
 ## 执行

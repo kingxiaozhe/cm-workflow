@@ -104,8 +104,8 @@ CM Workflow 经常同时使用两个目录：
 凭据；配置缺失时仍使用当前默认流程。检查有效配置：
 
 ```bash
-python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py --project {代码项目路径}
-python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py --project {代码项目路径} --print-effective
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs --project {代码项目路径}
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs --project {代码项目路径} --print-effective
 ```
 
 常见的请求分工是：编码角色选择 Codex CLI/订阅，需求和方案角色选择 Claude/Fable 等

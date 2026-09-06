@@ -10,6 +10,9 @@ description: 用户说“修复这个可复现 bug”或要求根据失败报告
 `../../runtime/logging.md`。Codex 入口为 `$cm-fix`；Claude Code 跨平台入口为
 `/cm-fix`，macOS/Linux 另有历史别名 `/cm:fix`。
 
+每个缺陷开始/恢复时按 `../../runtime/project-learning.md` 重读项目根 AGENTS.md，
+筛选相关教训辅助复现与定位；同一合同约束收尾写回，不以旧经验代替本次证据。
+
 用户明确要求外部专家，或为本次修复开启 AUTO 时，仍必须先完成第 1 步本地复现，
 再按 `../../runtime/external-expert.md` 执行 `../external-expert/SKILL.md` 的任务
 路由。代码、修复、测试和审查保持 LOCAL；只有竞争根因或高风险事实查证可路由到
@@ -17,6 +20,23 @@ CONSULT/VERIFY。外部假设必须回到本地证伪；咨询记录不能代替
 审查。
 
 **用法**：`$cm-fix {specs路径} {代码项目路径} 缺陷描述（现象/报错/截图均可）`
+
+## JS 只读准入
+
+在读取项目内容、解析角色、写 `run_start`、运行复现命令或创建档案前，先确认本轮包含非空缺陷
+描述，但不要把描述正文拼进 shell；随后执行：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-fix-entry.mjs" \
+  --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-fix" --project "{CODE_PROJECT}" \
+  [--specs "{SPECS_DIR}"] --defect-present
+```
+
+没有 specs 的裸项目省略 `--specs`。缺少描述时不传 `--defect-present`，入口返回
+`blocked / defect_required` 后只向用户补要描述。只有 `ready / reproduce` 才进入下方既有闭环；
+它不提前声称缺陷可复现、不可复现或属于设计问题，只声明复现失败仍走 `observation`、确认设计
+问题仍转 `$cm-prd --change`。返回的角色、日志和 Learning 均为 `pending`，执行/写入权限为 false；
+入口不运行命令、不调用 provider/browser/外部专家、不创建日志/测试/档案，也不替代七步流程。
 
 两个路径校验通过后立即调用统一写入器记录 `run_start`；暂停/续跑沿用同一
 `.cm-run.json`，本次缺陷闭环或观测闭环退出时写 `run_done`。不得直接拼 JSON。
@@ -41,7 +61,9 @@ diff、回归结果和对应规则；不重复投喂整仓、完整历史日志�
 
 **转交进场**（消费上游落盘物,不改上游流程）：缺陷描述可附上游档案引用——`$cm-test` 的只读测试报告、`$cm-refactor` 档案的未修缺陷清单、N6 业务走查报告的偏差项、观测闭环的半份档案（按 slug 在 `fixes/` 检索）。带引用进场的缺陷,第 1 步**采信上游已有证据**（位置/现象/日志原文）,仍须实际复现一次核实,但不从零摸排。
 
-**$cm-ai 全局规则在本流程内同等生效**：灾难级才暂停、多方案自主决策留痕、状态落盘（node 写 `FIX`）、运行日志照记、独立审查按 `runtime/review.md` 执行。
+**$cm-ai 全局规则在本流程内同等生效**：灾难级与节点显式卡点暂停、多方案自主决策留痕、状态落盘（node 写 `FIX`）、运行日志照记、独立审查按 `runtime/review.md` 执行。
+修改代码前预检 fresh 独立审查通道；无可用通道时暂停修复，已有改动保持待审。
+当前支持 Codex 子代理/隔离 CLI；未验证的 Claude-native 适配不能改名冒充 Codex。
 
 **跨边界证据（条件触发）**：缺陷涉及跨进程/跨服务、异步队列或流、路由目标、缓存/状态不一致或时序偶现时，读取 `references/cross-boundary-debugging.md`；它只补定位证据，不新增入口、状态或完成标准。普通可复现缺陷不补表，仍走以下七步。
 
@@ -86,9 +108,10 @@ diff、回归结果和对应规则；不重复投喂整仓、完整历史日志�
 
 ### 5. 审查（独立审查同 N4）
 
+- 审查前按 `../../runtime/project-learning.md` 复盘并完成必要的 AGENTS.md 增量写回，纳入本次审查 diff；无新增记入缺陷档案。微缺陷通道也必须复盘，新增 AGENTS.md 改动导致不再满足单文件门槛时走完整流程。
 - 失败测试转绿 + 存量基线不退化后，按 `runtime/review.md` 审查本缺陷 diff（重点：根因是否真被修掉、有无只治症状、波及面有无遗漏）
 - **防护网测试本身是审查对象**(实测最大问题类:测试是戏台):红的原因是否=该缺陷、断言测的是根因还是症状、有无安慰剂/前提共谋;**核对第 3 步落档的红证据**——没有红过的记录,测试可信度按不成立处理
-- 所有缺陷零豁免；独立通道不可用时才记 `self-degraded`；≤2 轮上限同样生效
+- 所有缺陷零豁免；独立通道不可用则待审，`self-degraded` 仅作诊断，不得成功收口；通道故障不算代码 finding/实现审查轮次，有效 finding 不能靠换人消除；≤2 轮上限同样生效
 - `{slug}` 先规范成跨平台安全的 ASCII kebab；令 `REVIEW_FEATURE=fix-{slug}`、
   `REVIEW_TASK=T-FIX-{slug}`。主执行者按真实 diff 写
   `{SPECS_DIR}/.reviews/fix-{slug}-T-FIX-{slug}-a{attempt}-handoff.json`，格式与
@@ -105,7 +128,7 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n4 \
 - 独立审查凭证严格落
   `{SPECS_DIR}/.reviews/fix-{slug}-T-FIX-{slug}-r{attempt}.md`，包含当前 handoff
   文件名和 SHA。审查完成后必须真跑下列命令；只有当前 attempt 的
-  `verdict: approved` 才能进入第 6 步：
+  `independent: true` 且 `verdict: approved` 才能进入第 6 步：
 
 ```bash
 python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n5 \
@@ -115,6 +138,7 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n5 \
 
 - `changes_requested` 后修改代码必须生成 attempt 2 handoff 并复审；第 2 轮仍有阻断项
   写 `blocked` 并停止。文件存在、旧凭证或 `ls` 输出都不构成批准。
+- 后续回归、文档或经验整理如修改被审代码、测试或执行指令，原批准失效；重新形成证据并独立审查，不能重置轮次或在收口时顺手改实现
 
 ### 6. 回归（按波及面，不是只看 bug 消失）
 
@@ -124,6 +148,7 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n5 \
 
 ### 7. 落盘（审计链闭合）
 
+- 收口前核对复盘记录、AGENTS.md 的审查范围与磁盘摘要；有新增则回读确认，无新增如实记录。缺记录、无法写回或批准后变化时不写成功 `task_done`，按学习合同与第 5 步处理。
 - **缺陷档案**：`{SPECS_DIR}/fixes/{YYYYMMDD}-{简短slug}.md`——现象 / 复现步骤 / 根因 / 修法（含放弃的方案）/ 波及面与回归结果 / 测试文件路径；命中跨边界证据条件时追加“证据链与假设”（调用链、边证据、最后正常边、首个失败边、反证结果）。这是缺陷知识库，同类 bug 再犯先查这里
 - **METRICS.md 追加一行**：Feature 列写 `fix`，任务列写档案文件名，其余列同口径（轮次/拦截数/人工介入）
 - 根因具普遍性（如"平台 API 返回结构变了"）→ 追记 LESSONS.md（[已结构化]/[仅记忆] 分级同 N5）
@@ -154,6 +179,7 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n5 \
 防护网: 新增 {测试文件}(红→绿) · 存量基线 {N} 项无退化
 审查: 独立审查({channel}) {通过/N轮N条} | 回归: 波及面 {N} 项通过
 档案: fixes/{文件名}   METRICS 已记
+学习: {AGENTS.md已写回并回读/已复盘，无新增}
 ```
 
 ## 边界

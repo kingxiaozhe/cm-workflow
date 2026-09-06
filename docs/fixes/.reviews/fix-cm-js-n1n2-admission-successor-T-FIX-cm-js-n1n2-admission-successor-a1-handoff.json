@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "task_id": "T-FIX-cm-js-n1n2-admission-successor",
+  "attempt": 1,
+  "status": "ready_for_review",
+  "changed_files": [
+    "experiments/js-orchestration/cm-ai-admission.mjs",
+    "experiments/js-orchestration/cm-ai-admission.test.mjs",
+    "experiments/js-orchestration/README.md",
+    "AGENTS.md",
+    "docs/fixes/20260903-cm-js-n1n2-admission-successor.md"
+  ],
+  "verification": [
+    {
+      "command": "node --test experiments/js-orchestration/cm-ai-admission.test.mjs",
+      "status": "passed",
+      "evidence": "Baseline 13/13; after adding five R2 reproductions, 13 passed and 5 failed with wrong ready/complete states; after the minimum repair, 18/18 passed."
+    },
+    {
+      "command": "node --check experiments/js-orchestration/cm-ai-admission.mjs",
+      "status": "passed",
+      "evidence": "Node syntax check exited 0 after the repair."
+    },
+    {
+      "command": "node --test experiments/js-orchestration/*.test.mjs",
+      "status": "passed",
+      "evidence": "982/982 tests passed with exit 0."
+    },
+    {
+      "command": "./scripts/cm-check-runtime.sh",
+      "status": "passed",
+      "evidence": "Runtime check passed, including log, workflow config, preparation, revision, ownership, and task-gate fixtures for plugin v0.10.4."
+    },
+    {
+      "command": "python3 scripts/validate-public-repo.py",
+      "status": "passed",
+      "evidence": "Public repository validation passed for v0.10.4 and 8 core skills."
+    },
+    {
+      "command": "git diff --check",
+      "status": "passed",
+      "evidence": "Tracked diff has no whitespace errors; new candidate files are separately bound by full-file SHA-256 and parsed by Node/tests."
+    }
+  ],
+  "evidence": [
+    "Human successor authorization and exact non-goals: .omx/plans/cm-js-n1n2-admission-successor.md",
+    "Independent R2 reproductions and blocked predecessor: .omx/research/cm-js-n1n2-admission-review-r2.md",
+    "Defect archive with red/green evidence: docs/fixes/20260903-cm-js-n1n2-admission-successor.md",
+    "Ordered five-file SHA-256 manifest digest: afa843a2226c32b06192ecb51b701660516b5e30349bf24ec2673c10e7ae8d30",
+    "Implementation SHA-256: 5c7af1310541e3091385d48c6a16da615581ec109d8610d68909b3cf44a9292e",
+    "Focused-test SHA-256: a8d28402f70bb1dfe034990430407f6386dd993fdd799af1da3f1c6595ea2ce3",
+    "README SHA-256: 72a37b7069c2a4fd524f8ec54a9ef247b51cb8202106eb64cf5c3eb9fff66d81",
+    "AGENTS.md SHA-256: 2c5f5395e4c2c2192bf80d7c6a1c58d0163df72bd274e71e61b5e7d8b9d36d11",
+    "Defect archive SHA-256: f78c74fe865fbd231988daf23502efd245c1732a3d0cce3dd9d42efd5d42e400",
+    "Public safety scan remains exit 1 with the exact five pre-existing findings in docs/marketing/wechat-draft-dry-run.json, tool-preview.mjs, and worker-codex.mjs; none is in successor scope and none is waived.",
+    "Pre-successor dirty-status hash: f0f7b07d8061a858e56204e95789e6fe580c3f9668bfbc527b18109f34e19626. Unrelated tracked and untracked user changes are excluded.",
+    "Source compatibility degradation: runtime/model-efficiency.md and the installed-Skill hash-implementation command are absent from this repository; the source v1 handoff schema and available check-n4 gate remain authoritative."
+  ],
+  "blockers": [],
+  "scope_deviation": []
+}

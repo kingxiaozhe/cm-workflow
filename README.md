@@ -58,7 +58,7 @@ CM Workflow 是一套安装在 **Codex** 或 **Claude Code** 中的本地、规�
 
 ## 安装
 
-需要 Git、Python 3.9+，以及 Codex 或 Claude Code。源码不要克隆到
+安装前需要 Git、Python 3.9+、Node.js 18+，并准备好 Codex 或 Claude Code。源码目录不要放在
 `~/plugins/cm-workflow`，该路径由 Codex 安装器管理。
 
 ### Pi / BYZ package
@@ -288,14 +288,20 @@ CM 不把聊天记录当数据库。每个 specs 项目都会留下可恢复记�
 
 ## Codex 与 Claude 共用同一核心
 
-| 环境 | 入口 | 安装方式 |
+Codex Skills 和 `runtime/` 是权威实现。`runtime/js/cm-ai/` 保存唯一 JS 源码；active
+`cm-ai` Skill 已通过 `scripts/cm-ai-admission.mjs` 使用正式 N1/N2 admission，配置、测试合同、
+日志和 N4/N5 也使用共享 JS 权威。完整 host API 仍未激活，源码随 runtime 分发不等于真实
+provider 或完整 N1–N8 runner 已验收。Claude Code 直接使用同一组 Skills 和 admission 入口；
+历史 `/cm:*` 只是在 macOS/Linux 上保留的轻量兼容别名。
+
+| 环境 | 入口 | 安装与差异 |
 | --- | --- | --- |
 | Codex | `$cm-*` | `./install-codex.sh` |
 | Claude Code macOS/Linux | `/cm-*`，兼容 `/cm:*` | `./install.sh` |
 | Claude Code Windows | `/cm-*` | `install.ps1` |
 
-Codex Skills 与 `runtime/` 是权威实现；Claude Code 使用同一组 Skills 和合同，兼容命令
-只负责入口映射，不维护第二套流程。
+Pi/BYZ、Codex 与 Claude Code 共用同一组 Skills 和合同；兼容命令只负责入口映射，
+不维护第二套流程。
 
 ## 人工与安全边界
 

@@ -15,8 +15,9 @@ Code. It is not telemetry and nothing is transmitted off the machine.
 
 ## Writer
 
-Resolve `scripts/cm-log-event.py` from the active CM Workflow root. It uses only
-the Python standard library:
+Resolve `scripts/cm-log-event.py` from the active CM Workflow root. It is the
+cross-platform lock adapter and forwards the held-lock write to the authoritative
+`scripts/cm-log-event.mjs` implementation; both use only bundled runtimes:
 
 ```bash
 python3 "{CM_WORKFLOW_ROOT}/scripts/cm-log-event.py" \
@@ -36,7 +37,7 @@ different effective model, record `requested_model`, `effective_model`,
 `provider`, `purpose`, and `model_equivalent`; never report an alias as the
 effective model.
 
-The writer prints one compact JSON result containing `event_id`, `run_id`,
+The JavaScript writer prints one compact JSON result containing `event_id`, `run_id`,
 project/global log paths, `global_written`, `pointer_written`, `deduplicated`,
 and `degraded`.
 Preserve the returned `run_id` for a standalone flow. With a specs directory,

@@ -86,15 +86,15 @@ description: 后端 API 开发子 agent。由 /cm-ai 在并行执行后端任务
 ## Python
 
 - 保持 Python 3.9+ 与标准库可运行；安装器、自检和夹具不得为便利引入 PyPI 依赖。
-- 使用 4 空格、`snake_case` 函数/变量、`PascalCase` 类、`UPPER_SNAKE_CASE` 常量；import 置于文件顶部。
-- 路径使用 `pathlib.Path`；测试脚本用临时目录隔离文件系统副作用。
+- 使用 4 空格、`snake_case` 函数/变量、`PascalCase` 类、`UPPER_SNAKE_CASE` 常量；import 按标准库模块分组并置于文件顶部。
+- 路径使用 `pathlib.Path`，合同违规抛出带上下文的明确异常；测试脚本必须用临时目录隔离文件系统副作用。
 
 ## PowerShell
 
 - 保留 `$ErrorActionPreference = "Stop"`；函数用 `Verb-Noun`，变量沿用现有 `PascalCase`。
-- Windows 路径通过 `Join-Path` 组合；调用外部命令后检查 `$LASTEXITCODE`。
+- Windows 路径通过 `Join-Path` 组合，不手拼用户目录；调用外部命令后检查 `$LASTEXITCODE`。
 
 ## Node.js 工具
 
-- 新工具使用 `.mjs` ESM 和 `node:` 内置模块前缀；根 `package.json` 是 Pi/BYZ package manifest，未经明确打包需求不得向其中增加 npm 依赖或 scripts。
-- Playwright 不可用时明确报错或走 Skill 声明的降级路径，禁止静默伪造截图或验收结果。
+- 新工具使用 `.mjs` ESM 和 `node:` 内置模块前缀；根 `package.json` 是 Pi/BYZ package manifest，未经明确打包需求不得向其中增加 npm 依赖或 scripts；Playwright 是按需外部能力。
+- Playwright 不可用时必须明确报错或走 Skill 声明的降级路径，禁止静默伪造截图/验收结果。

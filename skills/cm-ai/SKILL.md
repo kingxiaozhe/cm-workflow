@@ -96,7 +96,7 @@ detail 用一句大白话；不直接拼 JSON，避免跨会话格式漂移。
 任务检查解析 `tester`，N4 解析 `reviewer`，并在 N6 QA 解析 `tester`。使用：
 
 ```bash
-python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
   --project {CODE_PROJECT} --role coder --runtime {codex|claude} --print-role
 ```
 

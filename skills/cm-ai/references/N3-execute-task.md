@@ -2,6 +2,9 @@
 
 ## 开始标记
 
+按 `../../../runtime/project-learning.md` 从磁盘重读各目标项目的 `AGENTS.md`，
+在本任务计划中写明适用教训与验证动作；子 agent 只接收摘录、返回候选教训。
+
 改文件前先记录每个目标仓库的 `git status --short`、本任务预期文件集与已存 dirty 文件的 diff 指纹。这份快照供 N4 排除用户改动、N5 精确 stage；未记录就不得使用自动提交。
 
 ```text
@@ -33,7 +36,7 @@
 **串行 / 并行的执行方式**：串行任务由主执行者直接按 skill 执行；并行任务按 `runtime/orchestration.md` 为子代理注入对应工种 skill 的角色约束。两种产出都必须由主执行者回收验证，再进入 N4。
 
 并行只读任务无需 worktree；两个及以上任务并行写代码前，主执行者必须按
-`runtime/orchestration.md` 执行 `cm-task-gate.py check-parallel-write`。非零结果立即
+`runtime/orchestration.md` 执行 `cm-task-gate.mjs check-parallel-write`。非零结果立即
 降级串行，不得让多个执行者共享 checkout、分支或 detached worktree。
 
 ## 开发
@@ -63,6 +66,10 @@
 
 ## 结构化交接门禁
 
+写 handoff 前按 `../../../runtime/project-learning.md` 完成本任务复盘与必要的
+AGENTS.md 增量写回；将学习结果、文件摘要记入已有交接字段，变更文件进入
+`changed_files` 和 N4 审查范围。无新增明确记录，不把复盘推迟到整批任务结束。
+
 实现和任务内验证结束后，主执行者依据真实 diff、命令输出和子代理汇报，写入：
 
 `{SPECS_DIR}/.reviews/{feature}-{任务号}-a{attempt}-handoff.json`
@@ -87,7 +94,7 @@ SHA 替代它。后续若任一已审文件内容变化，必须生成下一 att
 进入 N4 前必须真跑：
 
 ```bash
-python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n4 \
+node {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs check-n4 \
   --handoff {HANDOFF_PATH} \
   --reviews-dir {SPECS_DIR}/.reviews \
   --feature {FEATURE_SLUG} \
