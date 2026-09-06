@@ -25,7 +25,7 @@ jobs:
           python-version: "3.12"
 
       - name: Set up minimum Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3aa1d7e6cbb # v4.4.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "18"
 
@@ -48,7 +48,7 @@ jobs:
           python-version: "3.12"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3aa1d7e6cbb # v4.4.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
 
@@ -102,7 +102,7 @@ jobs:
           python-version: "3.12"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3aa1d7e6cbb # v4.4.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
 
