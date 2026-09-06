@@ -145,7 +145,7 @@ test('Windows lock serializes two task completions without losing either checkbo
     const handoff=path.join(reviews,`login-${task}-a1-handoff.json`);
     writeHandoff(handoff,{task});writeReview(path.join(reviews,`login-${task}-r1.md`),{handoff,task});
     const child=spawn(process.env.CM_PYTHON_BIN||'python3',[pythonGate,'mark-done','--handoff',handoff,
-      '--reviews-dir',reviews,'--feature','login','--task',task,'--tasks',tasks],{stdio:['ignore','pipe','pipe']});
+      '--reviews-dir',reviews,'--feature','login','--task',task,'--tasks',tasks,'--allow-legacy-unbound'],{stdio:['ignore','pipe','pipe']});
     return new Promise((resolve,reject)=>{
       let stdout='',stderr='';child.stdout.on('data',chunk=>stdout+=chunk);child.stderr.on('data',chunk=>stderr+=chunk);
       child.on('error',reject);child.on('close',status=>resolve({status,stdout,stderr}));

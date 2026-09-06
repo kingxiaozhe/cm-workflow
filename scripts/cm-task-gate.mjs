@@ -611,8 +611,10 @@ function requireTaskLockAdapter(selectors,environment){
   const expected=process.platform==='win32'
     ?path.join(fs.realpathSync(selectors.reviewsDir),'.cm-task-write.lock')
     :path.join(fs.realpathSync(selectors.reviewsDir),'.execution','writer.sqlite');
+  let supplied='';
+  try{supplied=pathKey(fs.realpathSync.native(environment.CM_TASK_GATE_WRITER_LOCK));}catch{}
   if(environment.CM_TASK_GATE_LOCK_ADAPTER!=='1'||Number(environment.CM_TASK_GATE_LOCK_PARENT_PID)!==process.ppid
-    ||environment.CM_TASK_GATE_WRITER_LOCK!==expected)
+    ||supplied!==pathKey(fs.realpathSync.native(expected)))
     throw new GateError('mark-done requires the existing task ownership lock adapter');
 }
 
@@ -659,9 +661,14 @@ function runGit(directory,...arguments_){
   return result.stdout.trim();
 }
 
+function pathKey(value){
+  const normalized=path.normalize(value);
+  return process.platform==='win32'?normalized.toLowerCase():normalized;
+}
+
 function commonGitDir(directory){
   const raw=runGit(directory,'rev-parse','--git-common-dir');
-  return fs.realpathSync(path.resolve(directory,raw));
+  return pathKey(fs.realpathSync.native(path.resolve(directory,raw)));
 }
 
 function registeredWorktrees(repo){
@@ -670,7 +677,7 @@ function registeredWorktrees(repo){
   for(const line of lines){
     if(line.startsWith('worktree ')){
       if(current!==null)entries.set(current,{branch,detached});
-      current=fs.realpathSync(line.slice('worktree '.length));branch='';detached=false;
+      current=pathKey(fs.realpathSync.native(line.slice('worktree '.length)));branch='';detached=false;
     }else if(line.startsWith('branch ')){
       branch=line.startsWith('branch refs/heads/')?line.slice('branch refs/heads/'.length):line.slice('branch '.length);
     }else if(line==='detached')detached=true;
@@ -685,13 +692,13 @@ function parseAssignment(raw){
   const task=raw.slice(0,separator),rawPath=raw.slice(separator+1);
   requireTaskId(task,'assignment task');requireString(rawPath,'assignment path');
   if(!path.isAbsolute(rawPath))throw new GateError('assignment path must be absolute');
-  try{return {task,worktree:fs.realpathSync(rawPath)};}
+  try{return {task,worktree:fs.realpathSync.native(rawPath)};}
   catch(error){throw new GateError(`cannot resolve assignment path ${rawPath}: ${error.message}`);}
 }
 
 export function checkParallelWrite({repo,assignment}){
   let repository;
-  try{repository=fs.realpathSync(repo);}
+  try{repository=fs.realpathSync.native(repo);}
   catch(error){throw new GateError(`cannot resolve repository ${repo}: ${error.message}`);}
   if(!Array.isArray(assignment)||assignment.length<2)
     throw new GateError('parallel write guard requires at least two assignments');
@@ -699,11 +706,11 @@ export function checkParallelWrite({repo,assignment}){
   const assignments=assignment.map(parseAssignment);
   if(new Set(assignments.map(item=>item.task)).size!==assignments.length)
     throw new GateError('parallel write assignments must use unique task ids');
-  if(new Set(assignments.map(item=>item.worktree)).size!==assignments.length)
+  if(new Set(assignments.map(item=>pathKey(item.worktree))).size!==assignments.length)
     throw new GateError('parallel write assignments must use distinct worktree paths');
   const result=[];
   for(const item of assignments){
-    const metadata=registered.get(item.worktree);
+    const metadata=registered.get(pathKey(item.worktree));
     if(!metadata)throw new GateError(`${item.task} path is not a registered worktree: ${item.worktree}`);
     if(commonGitDir(item.worktree)!==baseCommon)
       throw new GateError(`${item.task} worktree belongs to a different repository`);
