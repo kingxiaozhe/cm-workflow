@@ -272,12 +272,22 @@ function degradeEvent({runId,at,workflow,runtime,project,projectRoot,specsDir,ph
   value.event_id=deterministicEventId(value);return value;
 }
 
+function samePhysicalPath(left,right){
+  try{
+    const key=value=>{
+      const resolved=path.normalize(fs.realpathSync.native(value));
+      return process.platform==='win32'?resolved.toLowerCase():resolved;
+    };
+    return typeof left==='string'&&typeof right==='string'&&key(left)===key(right);
+  }catch{return false;}
+}
+
 function requireLockAdapter({specsDir,globalHome},environment){
   if(environment.CM_LOG_LOCK_ADAPTER!=='1'||Number(environment.CM_LOG_LOCK_PARENT_PID)!==process.ppid)
     throw new UsageError('cm-log-event writes require the platform lock adapter');
-  if(specsDir&&environment.CM_LOG_PROJECT_LOCK!==path.join(specsDir,'.cm-run.lock'))
+  if(specsDir&&!samePhysicalPath(environment.CM_LOG_PROJECT_LOCK,path.join(specsDir,'.cm-run.lock')))
     throw new UsageError('project log lock is not held for this specs directory');
-  if(environment.CM_LOG_GLOBAL_LOCKED==='1'&&environment.CM_LOG_GLOBAL_LOCK!==path.join(globalHome,'.cm-write.lock'))
+  if(environment.CM_LOG_GLOBAL_LOCKED==='1'&&!samePhysicalPath(environment.CM_LOG_GLOBAL_LOCK,path.join(globalHome,'.cm-write.lock')))
     throw new UsageError('global log lock is not held for this log home');
 }
 
