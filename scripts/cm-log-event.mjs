@@ -14,6 +14,15 @@ const RESERVED_FIELDS=new Set(['schema_version','event_id','run_id','at','workfl
 export const TERMINAL_EVENTS=new Set(['done','run_done']);
 export const RESOURCE_GUARDED_EVENTS=new Set([...TERMINAL_EVENTS,'task_done']);
 const RESOURCE_PHASES=new Set(['acquired','released','cleanup_failed']);
+const TEST_RUN_GUARDED_EVENTS=new Set([...TERMINAL_EVENTS,'task_done']);
+const TEST_RUN_PHASES=new Set(['start','case_start','case_complete','case_blocked','complete']);
+const MODEL_USAGE_TOKEN_FIELDS=new Set(['input_tokens','output_tokens','cache_read_tokens','cache_write_tokens']);
+const MODEL_USAGE_STATES=new Set(['observed','unavailable']);
+const MODEL_USAGE_OUTCOMES=new Set(['success','error','blocked','cancelled']);
+const MODEL_USAGE_ALLOWED_FIELDS=new Set([...MODEL_USAGE_TOKEN_FIELDS,'call_id','role','adapter','requested_model',
+  'effective_model','provider','source','purpose','stage','node','feature','task','usage_state','duration_ms','outcome','attempt']);
+const MODEL_CALL_ALLOWED_FIELDS=new Set(['call_id','stage','role','adapter','requested_model','source','purpose']);
+const MODEL_CALL_IDENTITY_FIELDS=['workflow','runtime','stage','role','adapter','requested_model','source','purpose'];
 
 export class UsageError extends Error {
   constructor(message){super(message);this.name='UsageError';}
@@ -33,22 +42,64 @@ function validateDetail(detail){
   return detail;
 }
 
-function rejectSensitiveKeys(value,location='data'){
-  if(Array.isArray(value))value.forEach((child,index)=>rejectSensitiveKeys(child,`${location}[${index}]`));
+function rejectSensitiveKeys(value,location='data',allowedSensitiveKeys=new Set()){
+  if(Array.isArray(value))value.forEach((child,index)=>rejectSensitiveKeys(child,`${location}[${index}]`,allowedSensitiveKeys));
   else if(value!==null&&typeof value==='object')for(const [key,child] of Object.entries(value)){
-    if(SENSITIVE_KEY.test(key))throw new UsageError(`sensitive log field is forbidden: ${location}.${key}`);
-    rejectSensitiveKeys(child,`${location}.${key}`);
+    if(SENSITIVE_KEY.test(key)&&!(location==='data'&&allowedSensitiveKeys.has(key)))
+      throw new UsageError(`sensitive log field is forbidden: ${location}.${key}`);
+    rejectSensitiveKeys(child,`${location}.${key}`,allowedSensitiveKeys);
   }
 }
 
-export function parseData(raw){
+export function parseData(raw,event=null){
   if(typeof raw!=='string'||Buffer.byteLength(raw)>8192)throw new UsageError('--data-json cannot exceed 8192 UTF-8 bytes');
   let value;
   try{value=JSON.parse(raw);}catch{throw new UsageError('--data-json must be a JSON object');}
   if(value===null||typeof value!=='object'||Array.isArray(value))throw new UsageError('--data-json must be a JSON object');
   const overlap=Object.keys(value).filter(key=>RESERVED_FIELDS.has(key)).sort();
   if(overlap.length)throw new UsageError(`--data-json cannot override reserved fields: ${overlap.join(', ')}`);
-  rejectSensitiveKeys(value);return value;
+  rejectSensitiveKeys(value,'data',event==='model_usage'?MODEL_USAGE_TOKEN_FIELDS:new Set());return value;
+}
+
+function validateShortText(label,value,{required=false}={}){
+  if((value===null||value===undefined)&&!required)return;
+  if(typeof value!=='string'||!value.trim())throw new UsageError(`model event requires a non-empty ${label}`);
+  if([...value].length>160||/[\n\r\0]/.test(value))
+    throw new UsageError(`model event ${label} must be one line and at most 160 characters`);
+}
+
+function validateModelUsageEvent(event,phase,data){
+  if(event!=='model_usage')return;
+  const unknown=Object.keys(data).filter(key=>!MODEL_USAGE_ALLOWED_FIELDS.has(key)).sort();
+  if(unknown.length)throw new UsageError(`model_usage contains unsupported fields: ${unknown.join(', ')}`);
+  if(phase!=='complete')throw new UsageError('model_usage events require phase complete');
+  if(typeof data.call_id!=='string'||!RESOURCE_ID.test(data.call_id))throw new UsageError('model_usage requires a valid call_id');
+  if(typeof data.role!=='string'||!IDENTIFIER.test(data.role))throw new UsageError('model_usage requires a valid role');
+  if(!MODEL_USAGE_STATES.has(data.usage_state))throw new UsageError('model_usage usage_state must be observed or unavailable');
+  if(!MODEL_USAGE_OUTCOMES.has(data.outcome))
+    throw new UsageError('model_usage outcome must be success, error, blocked, or cancelled');
+  for(const field of ['adapter','requested_model','source','purpose','stage'])validateShortText(field,data[field],{required:true});
+  for(const field of ['effective_model','provider','node','feature','task'])validateShortText(field,data[field]);
+  if(data.attempt!==undefined&&(!Number.isInteger(data.attempt)||data.attempt<1))
+    throw new UsageError('model_usage attempt must be a positive integer');
+  if(data.usage_state==='unavailable'&&[...MODEL_USAGE_TOKEN_FIELDS].some(field=>Object.hasOwn(data,field)))
+    throw new UsageError('unavailable model_usage cannot contain token counts');
+  if(data.usage_state==='observed')for(const field of ['input_tokens','output_tokens'])
+    if(!Object.hasOwn(data,field))throw new UsageError(`observed model_usage requires ${field}`);
+  for(const field of [...MODEL_USAGE_TOKEN_FIELDS,'duration_ms'])if(Object.hasOwn(data,field)){
+    const value=data[field];
+    if(!Number.isInteger(value)||value<0)throw new UsageError(`model_usage ${field} must be a non-negative integer`);
+  }
+}
+
+function validateModelCallEvent(event,phase,data){
+  if(event!=='model_call')return;
+  const unknown=Object.keys(data).filter(key=>!MODEL_CALL_ALLOWED_FIELDS.has(key)).sort();
+  if(unknown.length)throw new UsageError(`model_call contains unsupported fields: ${unknown.join(', ')}`);
+  if(phase!=='claimed')throw new UsageError('model_call events require phase claimed');
+  if(typeof data.call_id!=='string'||!RESOURCE_ID.test(data.call_id))throw new UsageError('model_call requires a valid call_id');
+  if(typeof data.role!=='string'||!IDENTIFIER.test(data.role))throw new UsageError('model_call requires a valid role');
+  for(const field of ['stage','adapter','requested_model','source','purpose'])validateShortText(field,data[field],{required:true});
 }
 
 export function validateResourceEvent(event,phase,data){
@@ -60,6 +111,14 @@ export function validateResourceEvent(event,phase,data){
     throw new UsageError('resource events require a valid resource_kind');
   if(phase==='acquired'&&data.cleanup_required!==true)
     throw new UsageError('resource acquisition requires cleanup_required: true');
+}
+
+function validateTestRunEvent(event,phase,data){
+  if(event!=='test_run'||phase===null||phase===undefined)return;
+  if(!TEST_RUN_PHASES.has(phase))
+    throw new UsageError('test_run events require phase start, case_start, case_complete, case_blocked, or complete');
+  if(phase.startsWith('case_')&&(typeof data.case_id!=='string'||!RESOURCE_ID.test(data.case_id)))
+    throw new UsageError('test_run case events require a valid case_id');
 }
 
 function localIsoSeconds(date){
@@ -135,13 +194,35 @@ export function unclosedResources(states){
   return [...states].filter(([,value])=>['acquired','cleanup_failed'].includes(value[0])).map(([key])=>key).sort();
 }
 
+function applyTestRunTransition(active,openCases,phase,caseId){
+  if(phase==='start'){
+    if(active)throw new UsageError('test_run start has no preceding complete');
+    if(openCases.size)throw new UsageError('test_run state contains cases without an active run');
+    return true;
+  }
+  if(phase==='case_start'){
+    if(!active)throw new UsageError('test_run case_start has no active test run');
+    if(openCases.has(caseId))throw new UsageError('test_run case already has an active case_start');
+    openCases.add(caseId);return active;
+  }
+  if(phase==='case_complete'||phase==='case_blocked'){
+    if(!active)throw new UsageError('test_run case terminal phase has no active test run');
+    if(!openCases.has(caseId))throw new UsageError('test_run case terminal phase has no case_start');
+    openCases.delete(caseId);return active;
+  }
+  if(!active)throw new UsageError('test_run complete has no active test run');
+  if(openCases.size)throw new UsageError('test_run complete has unfinished cases');
+  return false;
+}
+
 export function buildEvent(input,state={}){
   const workflow=validateIdentifier('--workflow',input.workflow);
   const event=validateIdentifier('--event',input.event);
   const phase=validateIdentifier('--phase',input.phase??null,{optional:true});
   const runtime=validateIdentifier('--runtime',input.runtime);
-  const detail=validateDetail(input.detail),data=parseData(input.dataJson??'{}');
+  const detail=validateDetail(input.detail),data=parseData(input.dataJson??'{}',event);
   validateResourceEvent(event,phase,data);
+  validateTestRunEvent(event,phase,data);validateModelUsageEvent(event,phase,data);validateModelCallEvent(event,phase,data);
   const {at,parsedAt}=parseTimestamp(input.at??null,state.now);
   const projectRoot=input.projectRoot?path.resolve(input.projectRoot):null;
   const specsDir=input.specsDir?path.resolve(input.specsDir):null;
@@ -212,6 +293,14 @@ function findJsonlEvent(file,eventId){
   catch{return null;}
 }
 
+function findModelEvent(file,runId,event,callId){
+  try{return readJsonLines(file).find(value=>value&&typeof value==='object'&&value.run_id===runId
+    &&value.event===event&&value.call_id===callId&&(event!=='model_call'||value.phase==='claimed'))??null;}
+  catch{return null;}
+}
+
+function modelCallIdentity(event){return MODEL_CALL_IDENTITY_FIELDS.map(field=>String(event[field]??''));}
+
 function loadResourceStates(file,runId){
   const states=new Map();
   for(const value of readJsonLines(file,{strict:true})){
@@ -224,6 +313,20 @@ function loadResourceStates(file,runId){
     applyResourceTransition(states,value.resource_id,value.resource_kind,value.phase);
   }
   return states;
+}
+
+function loadTestRunState(file,runId){
+  let active=false;const openCases=new Set();
+  for(const value of readJsonLines(file,{strict:true})){
+    if(!value||typeof value!=='object'||value.run_id!==runId||value.event!=='test_run'||value.phase===null||value.phase===undefined)continue;
+    const phase=value.phase,caseId=value.case_id;
+    if(!TEST_RUN_PHASES.has(phase))throw new UsageError('test_run state log contains a malformed event');
+    if(phase.startsWith('case_')&&(typeof caseId!=='string'||!RESOURCE_ID.test(caseId)))
+      throw new UsageError('test_run state log contains a malformed case event');
+    if(phase==='complete'&&!active&&!openCases.size)continue;
+    active=applyTestRunTransition(active,openCases,phase,typeof caseId==='string'?caseId:null);
+  }
+  return {active,openCases};
 }
 
 function compactJson(value){return `${JSON.stringify(value)}\n`;}
@@ -308,7 +411,25 @@ export function writeLogEvent(rawInput,{environment=process.env,now=new Date(),u
   const terminal=TERMINAL_EVENTS.has(event.event),globalLocked=environment.CM_LOG_GLOBAL_LOCKED==='1';
   let globalLog=projectLog?null:selectGlobalLog({globalHome,runId:built.runId,at,pointer});
   const authoritativeLog=projectLog??globalLog;
-  let existing=['resource',...RESOURCE_GUARDED_EVENTS].includes(event.event)?findJsonlEvent(authoritativeLog,event.event_id):null;
+  if(event.event==='model_usage'){
+    const existingUsage=findModelEvent(authoritativeLog,built.runId,'model_usage',event.call_id);
+    if(existingUsage!==null&&existingUsage.event_id!==event.event_id)
+      throw new UsageError('model_usage call_id already used with different payload');
+    const existingClaim=findModelEvent(authoritativeLog,built.runId,'model_call',event.call_id);
+    if(event.adapter==='openai-compatible'&&existingClaim===null)
+      throw new UsageError('managed model_usage requires a prior model_call claim');
+    if(existingClaim!==null&&modelCallIdentity(existingClaim).some((value,index)=>value!==modelCallIdentity(event)[index]))
+      throw new UsageError('model_usage identity does not match model_call claim');
+  }
+  if(event.event==='model_call'){
+    if(findModelEvent(authoritativeLog,built.runId,'model_usage',event.call_id)!==null)
+      throw new UsageError('model_call call_id already completed');
+    const existingClaim=findModelEvent(authoritativeLog,built.runId,'model_call',event.call_id);
+    if(existingClaim!==null&&existingClaim.event_id!==event.event_id)
+      throw new UsageError('model_call call_id already claimed with different payload');
+  }
+  let existing=['resource','test_run',...RESOURCE_GUARDED_EVENTS,...TEST_RUN_GUARDED_EVENTS].includes(event.event)
+    ?findJsonlEvent(authoritativeLog,event.event_id):null;
   let resourceStates=new Map();
   if(existing===null&&(event.event==='resource'||RESOURCE_GUARDED_EVENTS.has(event.event)))try{
     resourceStates=loadResourceStates(authoritativeLog,built.runId);
@@ -318,6 +439,19 @@ export function writeLogEvent(rawInput,{environment=process.env,now=new Date(),u
     if(pending.length)throw new UsageError(`completion blocked by unclosed resources: ${pending.join(', ')}`);
   }
   if(existing===null&&event.event==='resource')applyResourceTransition(resourceStates,event.resource_id,event.resource_kind,event.phase);
+
+  let testRun={active:false,openCases:new Set()};
+  if(existing===null&&((event.event==='test_run'&&event.phase!==undefined)||TEST_RUN_GUARDED_EVENTS.has(event.event)))try{
+    testRun=loadTestRunState(authoritativeLog,built.runId);
+  }catch(error){throw new UsageError(`test_run state cannot be verified: ${error.name}`);}
+  if(existing===null&&TEST_RUN_GUARDED_EVENTS.has(event.event)&&(testRun.active||testRun.openCases.size)){
+    const detail=[];
+    if(testRun.active)detail.push('active invocation');
+    if(testRun.openCases.size)detail.push(`open cases: ${[...testRun.openCases].sort().join(', ')}`);
+    throw new UsageError(`completion blocked by incomplete test_run: ${detail.join('; ')}`);
+  }
+  if(existing===null&&event.event==='test_run'&&event.phase!==undefined)
+    applyTestRunTransition(testRun.active,testRun.openCases,event.phase,event.case_id??null);
 
   let projectDuplicate=false;
   if(projectLog){
