@@ -16,6 +16,26 @@ description: 用户明确要求“只整理结构，不改变行为”时使用�
 
 **用法**:`$cm-refactor {specs路径} {代码项目路径} 重构目标描述(哪块代码/为什么难维护)`
 
+## JS 只读分流
+
+在读取项目内容、解析角色、写 `run_start`、建立行为基线或修改代码前，先确认本轮有非空目标描述，
+并按下方“分流门”将意图归为 `defect`、`behavior-change`、`gradual-adoption` 或
+`structure-only`；不要把描述正文拼进 shell。随后执行：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-refactor-entry.mjs" \
+  --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-refactor" --project "{CODE_PROJECT}" \
+  [--specs "{SPECS_DIR}"] --intent "{四类意图之一}" [--target-present]
+```
+
+没有 specs 的裸项目省略 `--specs`；有非空描述才传 `--target-present`。缺描述时入口返回
+`blocked / target_required`。`defect`、`behavior-change`、`gradual-adoption` 分别只返回既有
+`$cm-fix`、`$cm-prd --change`、普通改动出口并停止本流程，出口不构成执行授权；只有
+`structure-only` 才继续校验项目/specs，`ready / g0_feasibility` 才进入 G0，且继续要求行为完全不变
+与 G0 人签核。返回的角色、日志和
+Learning 均为 `pending`，执行/写入权限为 false；入口不读取项目正文、不跑判官、不调用
+provider/browser/外部专家、不写日志/档案/RULEBOOK，也不替代后续轻量道或批量道。
+
 两个路径校验通过后立即调用统一写入器记录 `run_start`；暂停/续跑沿用同一
 `.cm-run.json`，完成收口人门后写 `run_done`。不得直接拼 JSON。
 

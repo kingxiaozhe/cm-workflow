@@ -6,7 +6,8 @@ description: 用户说“把需求拆成可开发规格”“变更现有功能�
 # cm-prd — 需求文档 → 开发规格生成
 
 执行前读取 `../../runtime/project-context.md`、`../../runtime/review.md` 与
-`../../runtime/logging.md`。Codex 入口为 `$cm-prd`；Claude Code 跨平台入口为
+`../../runtime/logging.md`。在需求、方案或任务拆分命中重要歧义/对抗审查时，追加读取
+`../../runtime/steelman-review.md`；它是推理合同，不增加审查轮次或审批状态。Codex 入口为 `$cm-prd`；Claude Code 跨平台入口为
 `/cm-prd`，macOS/Linux 另有历史别名 `/cm:prd`。
 
 用户明确要求外部专家，或为本次规格任务开启 AUTO 时，读取
@@ -35,15 +36,32 @@ AUTO 可把复杂方案比较路由到 CONSULT、权威事实查证路由到 VER
 └── ...
 ```
 
+## JS 只读准入
+
+在读取需求正文、解析角色、写 `run_start`、创建或修改 specs 之前，把已解析路径和模式传给：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-prd-entry.mjs" \
+  --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-prd" \
+  --project "{CODE_PROJECT}" --specs "{SPECS_DIR}" \
+  [--change "{N 或 N.feature}"] [--cases "{用例文件路径}"]
+```
+
+新建模式只核对规范 `docs/` 至少有一个普通需求文件；变更模式只定位唯一已有 feature 并核对
+三件套。`selection_required` 时只请用户选择 feature，`blocked` 时按 `reason` 停止，只有 `ready`
+才进入下方角色路由或模式步骤。该结果不读取需求正文、不判断项目业务是否匹配、不解析角色、
+不写日志/specs/审批位，也不授权 provider、浏览器、项目写入或开发；这些行为继续由下方现有规则
+控制。变更描述和本轮粘贴用例仍由 Skill 保留，不传给该入口。
+
 ## 项目角色路由
 
-路径验证通过后，使用 `{CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py` 读取有效配置，
+路径验证通过后，使用 `{CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs` 读取有效配置，
 分别解析 `analyst`（需求分析）和 `planner`（方案/任务拆分）：
 
 ```bash
-python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
   --project {CODE_PROJECT} --role analyst --runtime {codex|claude} --print-role
-python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
   --project {CODE_PROJECT} --role planner --runtime {codex|claude} --print-role
 ```
 
@@ -129,6 +147,8 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
 
 从文档中提取功能目标、用户故事、验收标准、约束条件、依赖。
 
+命中重要歧义或方案分歧时，按 `../../runtime/steelman-review.md` 区分已观察事实、参与者主张、当前推断和未知项；“用户真正想要什么”只能写成可修正假设，不能替用户补全业务规则。
+
 ### Step 5.5: 开放问题确认
 
 分析需求后，如果存在以下情况，**必须暂停并与用户对话确认**，不要自行假设：
@@ -156,6 +176,8 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
 ```
 
 所有问题确认完毕后再进入 Step 6。
+
+双向钢人审查只用于暴露假设和失败场景：支持方与反方都取最强版本，但按证据质量加权；无法验证的反方写入开放问题，不强迫给确定结论。
 
 ### Step 6: 推断 feature 名称
 
@@ -320,7 +342,7 @@ design.md 生成后，满足任一触发条件 → 按 `runtime/review.md` 交**
 必须补做本步后再继续生成最终任务单。
 
 **投喂内容**：requirements.md + design.md 全文 + 项目上下文中的相关规范 +（二开）「波及面」段与被改存量模块现状代码。
-提示词要义："**这是隔壁同事做的方案，详细审查一下**"——重点查架构隔离、模块边界、与现有管线的耦合、数据流缺口；只报告有具体失败场景的问题，零发现明说（审查产出纪律同 N4）。**仅 1 轮**：采纳项修正 design.md 后进 Step 10；分歧项写入摘要卡「风险点」交人裁决。未命中上述风险信号的低风险 feature 不触发，零额外负担。
+审查者同时读取 `../../runtime/steelman-review.md`，把当前方案当成可证伪假设：先列关键前提和最强支持，再给出“输入/状态 → 路径 → 错误结果”的最强反方失败场景，以及能区分双方的最小验证。支持与反方不等权；只报告有具体后果的问题，零发现明说（审查产出纪律同 N4）。**仅 1 轮**：采纳项修正 design.md 后进 Step 10；分歧项写入摘要卡「风险点」交人裁决。未命中上述风险信号的低风险 feature 不触发，零额外负担。
 **凭证落盘**:审查原文 tee 到 `{SPECS_DIR}/.reviews/prd-{feature}-design-r1.md`——摘要卡「方案对抗审查」行必须与凭证对得上,无凭证的数字是自报(凭证教义全框架一体,规格期不豁免)。
 
 > 依据：代码有 N4 对抗、规格有 10.5 自检，唯独技术方案此前无第二模型把关——而方案错误是最贵的错误（行业重度实践的最大单笔收益正是方案期拦截架构缺陷）。
@@ -389,7 +411,7 @@ design.md 生成后，满足任一触发条件 → 按 `runtime/review.md` 交**
 读取 `../../runtime/test-contract.md`，按其中的生成条件为适用 feature 写
 `test-cases.json`。用户或需求源提供的用例优先且标记 `origin: "user"`；其余根据
 AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注释/类型/无行为重构
-不生成空文件。写完执行 `scripts/validate-test-cases.py`。
+不生成空文件。写完执行 `scripts/validate-test-cases.mjs`。
 
 `DELIVERY_SHAPE=wechat-miniprogram` 时同时读取
 `../cm-miniprogram-engineer/references/release-checklist.md`，只为本 feature 实际使用的
@@ -398,7 +420,7 @@ AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注�
 
 ### Step 10.5: 规格自检（机器项，AI 自查自修，人不参与）
 
-读取 `references/spec-self-check.md` 并逐项执行；测试合同必须调用 `scripts/validate-test-cases.py`，不得靠目测。
+读取 `references/spec-self-check.md` 并逐项执行；测试合同必须调用 `scripts/validate-test-cases.mjs`，不得靠目测。
 
 ### Step 10.6: 独立规格审查（方案 + 任务拆分）
 
@@ -409,10 +431,7 @@ AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注�
 - **投喂内容**：requirements.md 功能点清单 + tasks.md 全文 + design.md 的方案摘要、
   关键技术决策、接口/数据契约与「波及面」段（二开）。不喂三件套全文；Step 9.5
   已审过完整方案时，方案部分只用于核对任务有没有偏离已审设计。
-- **提示词要义**："这是隔壁同事整理的开发规格。先检查方案有没有明显错向、遗漏的
-  失败场景或与现有边界冲突，再检查拆分质量：①任务边界有无重叠/遗漏 ②依赖顺序
-  会不会卡死 ③粒度是否适合单任务交付验证 ④二开：波及面有没有漏掉会被牵连的
-  模块。只报有具体后果的问题，没有问题就明说。"
+- **提示词要义**：审查者读取 `../../runtime/steelman-review.md`，把规格当成可证伪假设：先检查方案有没有明显错向、遗漏的失败场景或与现有边界冲突，再检查拆分质量：①任务边界有无重叠/遗漏 ②依赖顺序会不会卡死 ③粒度是否适合单任务交付验证 ④二开：波及面有没有漏掉会被牵连的模块。反方必须写成具体后果；不把正反意见当等权，不用推理替代测试或需求证据。只报有具体后果的问题，没有问题就明说。"
 - **处置**：采纳项修正 specs 后重跑一次 10.5 自检；分歧项写入摘要卡「风险点」交人裁决。**仅 1 轮**，不与 Codex 拉扯
 - **凭证落盘**：原始审查结果写入 `{SPECS_DIR}/.reviews/prd-{feature}-split-r1.md`，文件头使用 review contract 的 `reviewer/independent/at/scope` 字段
 - **降级**：无法建立独立上下文时，由主执行者对抗式复查，凭证写 `self-degraded` / `independent: false`；这是增益层，不单独因降级停车

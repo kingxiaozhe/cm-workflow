@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "task_id": "T-FIX-cancel-throw",
+  "attempt": 1,
+  "status": "ready_for_review",
+  "changed_files": [
+    "experiments/js-orchestration/review-invocation-v3.test.mjs",
+    "experiments/js-orchestration/task-runner.mjs"
+  ],
+  "implementation_sha256": "e6406c088aef3795145c74c39a644a214da414b9fa44d7260ab85f46f9ec3100",
+  "verification": [
+    {
+      "command": "node --test experiments/js-orchestration/review-invocation-v3.test.mjs",
+      "status": "passed",
+      "evidence": "Pre-fix 29/30 with only cancel-then-throw actual unknown vs expected cancelled; post-fix 30/30 passed."
+    },
+    {
+      "command": "node --test experiments/js-orchestration/*.test.mjs",
+      "status": "passed",
+      "evidence": "964/964 passed after the correction."
+    },
+    {
+      "command": "./scripts/cm-check-runtime.sh",
+      "status": "passed",
+      "evidence": "Runtime check passed, including global log, workflow config, readonly preparation, task gate, and ownership fixtures."
+    },
+    {
+      "command": "python3 scripts/validate-public-repo.py",
+      "status": "passed",
+      "evidence": "Public repository validation passed for v0.10.4."
+    },
+    {
+      "command": "find . -type f -name '*.sh' -print0 | xargs -0 -n1 /bin/bash -n",
+      "status": "passed",
+      "evidence": "All shell files passed syntax validation."
+    },
+    {
+      "command": "git diff --check",
+      "status": "passed",
+      "evidence": "No whitespace errors."
+    }
+  ],
+  "evidence": [
+    "Human authorization and exact scope: .omx/plans/cm-js-s4c1b-v3-cancel-throw-fix.md",
+    "Independent reproduction and minimum correction: .omx/research/s4c1b-v3/implementation-review-r2.md",
+    "Defect archive with red evidence and root cause: docs/fixes/20260903-s4c1b-v3-cancel-throw.md",
+    "Predecessor task-runner SHA-256: 37dd02f6143697bbdc6e807ca6af11cebd147d4eea951994c4f963fcfbaf8dd7",
+    "Predecessor focused-test SHA-256: 954699ee3f38dcdf2e2078b6b4fec20b711d7b11469e93e6477f43434d836e2b",
+    "Current task-runner SHA-256: 9224a6007142f44b1f624cd76bc3848e7441ad97bda03c75ffeae46bf2baf626",
+    "Current focused-test SHA-256: 8450d76555adff7dc84b03d873a447f1ef96dd06a05c1c1c2ce5580c9aa20dcb",
+    "Task-only behavior delta: preserve cancelled/aborted in the authorize catch; add one cancel-then-throw recovery regression.",
+    "Public safety scan remained exit 1 with the exact five pre-existing findings in docs/marketing/wechat-draft-dry-run.json, tool-preview.mjs, and worker-codex.mjs; none is in this task scope and none is waived.",
+    "Pre-task dirty status hash: 46777ce1f47b86d7086766d30372046334de6d181b933263751fde4c8e01ee73. All unrelated tracked and untracked user changes are excluded."
+  ],
+  "blockers": [],
+  "scope_deviation": []
+}

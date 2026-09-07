@@ -1,10 +1,23 @@
 # N1: 初始化
 
-1. 从 `用户本轮输入` 提取 **specs 文件夹路径** 和 **代码项目路径**（可多个）
-2. 扫描 specs 下所有编号目录（`0.xxx/`、`1.xxx/`、`2.xxx/`），按编号排列
+1. 从 `用户本轮输入` 提取 **specs 文件夹路径** 和 **代码项目路径**（可多个），立即运行正式
+   JS admission（纯只读）：
+
+   ```bash
+   node {CM_WORKFLOW_ROOT}/scripts/cm-ai-admission.mjs \
+     --specs-dir {SPECS_DIR} \
+     --code-project {CODE_PROJECT_ONE} \
+     [--code-project {CODE_PROJECT_TWO} ...]
+   ```
+
+   只接受其结构化 `state`、`reason`、`features`、`nextTask` 作为 N1/N2 选择结果；非零退出或
+   `state: blocked` 必须停止，不能退回人工目测放行。多个代码项目逐一经过同一 admission，
+   任一项目阻断或下一任务不一致时整体阻断。若规格尚待审批，先按下方入口闸取得真实
+   人工决定并更新 `.cm-specs-status`，然后重新运行本命令；普通“继续”不得改写审批状态。
+2. 使用 admission 返回的编号 feature 顺序，不再另写一套扫描/依赖选择规则
 3. 每个 feature 目录须含 requirements.md、design.md、tasks.md
    - `test-cases.json` 为可选 AI 测试合同；存在时读取
-     `../../../runtime/test-contract.md`，运行 `scripts/validate-test-cases.py`，
+     `../../../runtime/test-contract.md`，运行 `scripts/validate-test-cases.mjs`，
      并核对 `acIds`/`taskIds` 引用在本 feature 三件套中真实存在
 4. 按 `runtime/project-context.md` 加载项目上下文：Codex 的 `AGENTS.md` 指令链优先，再读兼容的 `.claude/CLAUDE.md` 与相关 `.claude/rules/`（0→1 项目可能都不存在，跳过不报错）
 5. 加载 `{SPECS_DIR}/LESSONS.md`（架构决策和踩坑记录，开发时必须参考）；**文件不存在（全新 specs 首次运行的常态）→ 按 0 条处理，不报错不中断**，首个任务的 N5 会创建它
@@ -16,7 +29,7 @@
 路径验证通过后立即按 `../../../runtime/logging.md` 写 `run_start`；断点恢复会复用
 `{SPECS_DIR}/.cm-run.json` 中仍为 running 的 run id，不另开重复运行记录。
 
-随后从代码项目根读取 `{CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py` 的有效配置，
+随后从代码项目根读取 `{CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs` 的有效配置，
 至少解析本轮会用到的角色和 `route_state`。配置缺失使用内置默认值；配置错误阻断
 本次运行并报告字段路径。这里只记录请求路由，不把模型别名当成已观测的后端模型。
 
@@ -45,7 +58,10 @@
 
 - 可创建 fresh Codex 子代理/独立线程 → 作为主通道
 - 子代理不可用，但可以安全启动隔离的 `codex` CLI 审查会话 → 作为备用通道
-- 两者都不可用 → 进入 `self-degraded`，在 N4 凭证与 METRICS 如实标注；只有安全/资金/数据正确性等高风险任务才需要暂停要求用户补齐独立审查通道
+- 两者都不可用 → 暂停新开发，已有实现保持待审并说明通道失败原因；不论任务风险高低，都不能用 `self-degraded` 诊断代替独立审查或进入成功收尾
+
+当前 gate 支持的是上述 Codex 通道；未来 Claude-native 适配须单独验证，不能把
+Claude 结果标成 Codex 通过门禁。通道不可用不算代码 finding，不消耗实现审查轮次。
 
 ## Git 前置检查（字段优先，询问兜底）
 

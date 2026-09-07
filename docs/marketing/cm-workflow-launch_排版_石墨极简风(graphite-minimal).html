@@ -1,0 +1,250 @@
+<section style="max-width:677px;margin:0 auto;background:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;color:#52525B;line-height:1.8;letter-spacing:0.3px;overflow-x:hidden;">
+  <section style="margin:10px 10px 40px;padding:32px 24px 24px;border-top:1px solid #E4E4E7;border-bottom:1px solid #E4E4E7;background:#FFFFFF;">
+    <p style="font-size:11px;color:#A1A1AA;letter-spacing:2px;margin:0 0 18px;font-weight:400;"><span leaf="">QUOTE</span></p>
+    <p style="font-size:18px;font-weight:700;color:#27272A;margin:0 0 8px;line-height:1.7;letter-spacing:0.5px;">
+      <span leaf="">AI 写代码的能力已经很强，但它说的</span><span style="border-bottom:2px solid #F97316;"><span leaf="">“已经完成”</span></span><span leaf="">，仍然需要证据。</span>
+    </p>
+  </section>
+
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">不知道你用 </span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">Codex、Claude Code</span></span><span leaf=""> 写代码时，有没有遇到过这种情况。</span></p>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">你把需求发给它。它分析了一会儿，开始疯狂修改文件。过了十几分钟，它告诉你：</span></p>
+  </section>
+
+  <section style="border-left:3px solid #52525B;padding:16px 0 16px 24px;margin:0 10px 28px;">
+    <p style="font-size:16px;font-weight:700;color:#27272A;margin:0;line-height:1.7;letter-spacing:0.5px;"><span leaf="">“已完成，测试通过，可以提交。”</span></p>
+  </section>
+
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">你挺高兴。结果打开页面一看，</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">按钮点不了</span></span><span leaf="">。再看测试，根本没真正跑起来。换一个新会话追问，它又完全不知道上一个会话做了什么。</span></p>
+    <p style="margin-bottom:28px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">最让人难受的，不是 AI 不会写代码，而是你不知道它说的</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">“完成”到底完成到了哪一步</span></span><span leaf="">。</span></p>
+  </section>
+
+  <section style="padding:0 10px 40px;">
+    <p style="font-size:11px;color:#A1A1AA;margin:0 0 16px;letter-spacing:2px;"><span leaf="">本文看点</span></p>
+    <section style="display:flex;justify-content:space-between;">
+      <section style="flex:1;background:#FAFAFA;border-top:1px solid #E4E4E7;padding:18px 12px 16px;margin-right:8px;">
+        <p style="font-size:11px;color:#A1A1AA;font-weight:500;margin:0 0 8px;letter-spacing:1px;"><span leaf="">01</span></p>
+        <p style="font-size:13px;font-weight:700;color:#27272A;margin:0;line-height:1.5;"><span leaf="">为什么 AI 的完成不可信</span></p>
+      </section>
+      <section style="flex:1;background:#FAFAFA;border-top:1px solid #E4E4E7;padding:18px 12px 16px;margin-right:8px;">
+        <p style="font-size:11px;color:#A1A1AA;font-weight:500;margin:0 0 8px;letter-spacing:1px;"><span leaf="">02</span></p>
+        <p style="font-size:13px;font-weight:700;color:#27272A;margin:0;line-height:1.5;"><span leaf="">五条可验证的开发规矩</span></p>
+      </section>
+      <section style="flex:1;background:#FAFAFA;border-top:1px solid #E4E4E7;padding:18px 12px 16px;">
+        <p style="font-size:11px;color:#A1A1AA;font-weight:500;margin:0 0 8px;letter-spacing:1px;"><span leaf="">03</span></p>
+        <p style="font-size:13px;font-weight:700;color:#27272A;margin:0;line-height:1.5;"><span leaf="">CM Workflow 如何落地</span></p>
+      </section>
+    </section>
+  </section>
+
+  <section style="margin-top:16px;margin-bottom:32px;padding:0 10px;">
+    <section style="position:relative;padding-bottom:20px;border-bottom:1px solid #E4E4E7;">
+      <p style="font-size:48px;font-weight:900;color:#E4E4E7;margin:0;line-height:1;letter-spacing:-2px;"><span leaf="">01</span></p>
+      <section style="margin-top:-8px;">
+        <p style="font-size:10px;color:#A1A1AA;font-weight:500;letter-spacing:3px;margin:0 0 6px;text-transform:uppercase;"><span leaf="">CASE STUDY</span></p>
+        <h3 style="font-size:20px;font-weight:800;color:#27272A;margin:0;letter-spacing:0.5px;line-height:1.4;"><span leaf="">有一次，我差点把“没跑的测试”当成通过</span></h3>
+      </section>
+    </section>
+  </section>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">前段时间，我让 AI 接管一个已有项目。它完成了代码扫描，也执行了一部分检查，</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">表面上看结果不错</span></span><span leaf="">。</span></p>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">但往下追才发现：依赖安装那一步就已经被构建审批卡住了，后面的</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">正式测试命令根本没有进入测试工具</span></span><span leaf="">。</span></p>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">它补跑了一些底层检查。这些检查确实通过了，但</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">底层检查通过，不能等于项目正式命令通过</span></span><span leaf="">。</span></p>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">还有一次，我让 AI 做页面测试。测试走到一半，电脑锁屏了。前面的操作有记录，后面的最终结果没有。</span></p>
+  </section>
+  <section style="background:#FAFAFA;border-top:2px solid #27272A;padding:18px 22px;margin:0 10px 24px;">
+    <p style="font-size:11px;color:#A1A1AA;margin:0 0 10px;letter-spacing:2px;font-weight:500;"><span leaf="">NOTE</span></p>
+    <p style="font-size:14px;color:#52525B;margin:0;line-height:1.8;"><span leaf="">如果只看聊天总结，很容易得到一句“页面基本正常”。但它可能只代表页面打开了，不代表登录成功、关键按钮点过或完整业务路径得到验证。</span></p>
+  </section>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">“基本正常”到底是什么意思？是登录成功了？页面打开了？关键按钮点过了？还是只是看见页面没报错？这些事情，</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">如果没有证据，谁也说不清楚</span></span><span leaf="">。</span></p>
+    <p style="margin-bottom:28px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">我就是从这里开始意识到：AI 写代码的能力已经很强了，但 </span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">AI 完成一项开发任务的能力</span></span><span leaf="">，仍然需要流程约束。</span></p>
+  </section>
+
+  <section style="padding:0 10px;"><section style="height:1px;background:#E4E4E7;margin:0;"><span leaf=""><br></span></section></section>
+  <section style="margin-top:56px;margin-bottom:32px;padding:0 10px;">
+    <section style="position:relative;padding-bottom:20px;border-bottom:1px solid #E4E4E7;">
+      <p style="font-size:48px;font-weight:900;color:#E4E4E7;margin:0;line-height:1;letter-spacing:-2px;"><span leaf="">02</span></p>
+      <section style="margin-top:-8px;">
+        <p style="font-size:10px;color:#A1A1AA;font-weight:500;letter-spacing:3px;margin:0 0 6px;text-transform:uppercase;"><span leaf="">THE PROBLEM</span></p>
+        <h3 style="font-size:20px;font-weight:800;color:#27272A;margin:0;letter-spacing:0.5px;line-height:1.4;"><span leaf="">AI 更像一个能力很强、但非常健忘的新员工</span></h3>
+      </section>
+    </section>
+  </section>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">现在很多人使用 AI 写代码，还是把任务拆成几句临时指令。</span></p>
+    <section style="margin:0 0 20px;border-radius:8px;overflow:hidden;background:#1E293B;box-shadow:0 4px 16px -8px rgba(15,23,42,0.4);">
+      <section style="display:flex;align-items:center;padding:9px 14px;background:#0F172A;">
+        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FF5F56;margin-right:7px;font-size:0;line-height:0;overflow:hidden;"><span leaf="">.</span></span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FFBD2E;margin-right:7px;font-size:0;line-height:0;overflow:hidden;"><span leaf="">.</span></span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#27C93F;font-size:0;line-height:0;overflow:hidden;"><span leaf="">.</span></span>
+        <span style="margin-left:12px;font-size:12px;color:#64748B;font-family:Consolas,Monaco,monospace;letter-spacing:1px;"><span leaf="">chat</span></span>
+      </section>
+      <section style="padding:11px 14px;">
+        <p style="margin:0;font-family:'SF Mono',Consolas,Monaco,monospace;font-size:13px;line-height:1.6;color:#E2E8F0;"><span leaf="">帮我实现这个功能。</span></p>
+        <p style="margin:0;font-family:'SF Mono',Consolas,Monaco,monospace;font-size:13px;line-height:1.6;color:#E2E8F0;"><span leaf="">帮我检查一下。</span></p>
+        <p style="margin:0;font-family:'SF Mono',Consolas,Monaco,monospace;font-size:13px;line-height:1.6;color:#E2E8F0;"><span leaf="">没问题就提交。</span></p>
+      </section>
+    </section>
+    <p style="margin-bottom:18px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">整个过程看起来很顺，但里面其实有几个问题：</span></p>
+  </section>
+  <section style="margin:0 10px 24px;">
+    <section style="margin-bottom:14px;"><p style="margin:0 0 6px;"><span style="display:inline-block;font-size:14px;font-weight:700;color:#27272A;background:#F4F4F5;padding:3px 10px;border-radius:999px;"><span leaf="">需求没有真正拆清楚</span></span></p><p style="font-size:14px;color:#71717A;margin:0;line-height:1.7;text-align:justify;"><span leaf="">AI 一边理解需求，一边自行决定方案。</span></p></section>
+    <section style="margin-bottom:14px;"><p style="margin:0 0 6px;"><span style="display:inline-block;font-size:14px;font-weight:700;color:#27272A;background:#F4F4F5;padding:3px 10px;border-radius:999px;"><span leaf="">缺少独立审查</span></span></p><p style="font-size:14px;color:#71717A;margin:0;line-height:1.7;text-align:justify;"><span leaf="">写代码的人和审代码的人处于同一个上下文。</span></p></section>
+    <section style="margin-bottom:14px;"><p style="margin:0 0 6px;"><span style="display:inline-block;font-size:14px;font-weight:700;color:#27272A;background:#F4F4F5;padding:3px 10px;border-radius:999px;"><span leaf="">状态只存在聊天里</span></span></p><p style="font-size:14px;color:#71717A;margin:0;line-height:1.7;text-align:justify;"><span leaf="">对话一旦中断，任务状态也跟着丢失，“看过代码”还很容易被说成“测试通过”。</span></p></section>
+  </section>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">这就像招了一个能力非常强的新员工。但你没有给他岗位职责，没有验收标准，没有测试流程，也没有交接文档。</span></p>
+    <p style="margin-bottom:28px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">最后项目出问题，</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">不能只怪员工，流程本身就没有建立起来</span></span><span leaf="">。</span></p>
+  </section>
+
+  <section style="padding:0 10px;"><section style="height:1px;background:#E4E4E7;margin:0;"><span leaf=""><br></span></section></section>
+  <section style="margin-top:56px;margin-bottom:32px;padding:0 10px;">
+    <section style="position:relative;padding-bottom:20px;border-bottom:1px solid #E4E4E7;">
+      <p style="font-size:48px;font-weight:900;color:#E4E4E7;margin:0;line-height:1;letter-spacing:-2px;"><span leaf="">03</span></p>
+      <section style="margin-top:-8px;">
+        <p style="font-size:10px;color:#A1A1AA;font-weight:500;letter-spacing:3px;margin:0 0 6px;text-transform:uppercase;"><span leaf="">FIVE RULES</span></p>
+        <h3 style="font-size:20px;font-weight:800;color:#27272A;margin:0;letter-spacing:0.5px;line-height:1.4;"><span leaf="">后来，我给 AI 定了五条规矩</span></h3>
+      </section>
+    </section>
+  </section>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">我没有一开始就想做一个多 Agent 平台。我只是想让自己每天使用 Codex 和 Claude Code 时，少踩几次坑。所以我先给 AI 定了</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">五条很简单的规矩</span></span><span leaf="">。</span></p>
+    <p style="font-size:15px;font-weight:800;color:#27272A;margin:28px 0 14px;padding-left:12px;border-left:3px solid #52525B;line-height:1.4;"><span leaf="">第一条：不要拿到需求就开始写代码</span></p>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">先把需求整理成：到底要解决什么问题；准备怎么实现；会影响哪些已有功能；具体拆成哪些任务；</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">什么结果才算完成</span></span><span leaf="">。</span></p>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">这些内容先写进文件。我看过并明确确认以后，才能开始编码。普通的一句“继续”，不能算批准。</span></p>
+    <p style="font-size:15px;font-weight:800;color:#27272A;margin:28px 0 14px;padding-left:12px;border-left:3px solid #52525B;line-height:1.4;"><span leaf="">第二条：一次只完成一个明确任务</span></p>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">AI 很容易在实现登录功能时，顺手重构用户模块，再顺手修改权限设计。最后改动看起来很多，但没人说得清哪些是需求，哪些是临时发挥。</span></p>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">所以</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">每次只做当前任务</span></span><span leaf="">。超出范围的想法，可以记录，但不能偷偷塞进代码。</span></p>
+    <p style="font-size:15px;font-weight:800;color:#27272A;margin:28px 0 14px;padding-left:12px;border-left:3px solid #52525B;line-height:1.4;"><span leaf="">第三条：写代码的人，不能直接宣布自己审查通过</span></p>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">AI 自己审自己写的代码，很容易沿着原来的思路再走一遍。真正有价值的 Review，应该尽量</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">换一个新上下文</span></span><span leaf="">。</span></p>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">让另一个 Codex 子代理，或者一个隔离的只读 Codex 会话，从头检查这次修改。没有独立审查条件时，也必须明确写出来：“这次只是自审，不是独立 Review。”</span></p>
+    <p style="font-size:15px;font-weight:800;color:#27272A;margin:28px 0 14px;padding-left:12px;border-left:3px solid #52525B;line-height:1.4;"><span leaf="">第四条：测试必须区分“看代码”和“真的跑过”</span></p>
+    <p style="margin-bottom:16px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">我把测试分成三种：</span></p>
+  </section>
+  <section style="display:flex;margin:0 10px 28px;">
+    <section style="flex:1;border-top:2px solid #27272A;padding:18px 12px 16px;margin-right:8px;"><p style="font-size:11px;color:#A1A1AA;margin:0 0 8px;letter-spacing:1px;font-weight:500;"><span leaf="">01</span></p><p style="font-size:13px;font-weight:700;color:#27272A;margin:0 0 6px;line-height:1.4;"><span leaf="">看代码逻辑</span></p><p style="font-size:12px;color:#71717A;margin:0;line-height:1.6;"><span leaf="">能判断分支是否存在，但不能叫测试通过。</span></p></section>
+    <section style="flex:1;border-top:2px solid #27272A;padding:18px 12px 16px;margin-right:8px;"><p style="font-size:11px;color:#A1A1AA;margin:0 0 8px;letter-spacing:1px;font-weight:500;"><span leaf="">02</span></p><p style="font-size:13px;font-weight:700;color:#27272A;margin:0 0 6px;line-height:1.4;"><span leaf="">正式命令</span></p><p style="font-size:12px;color:#71717A;margin:0;line-height:1.6;"><span leaf="">运行单元测试、类型检查和生产构建。</span></p></section>
+    <section style="flex:1;border-top:2px solid #27272A;padding:18px 12px 16px;"><p style="font-size:11px;color:#A1A1AA;margin:0 0 8px;letter-spacing:1px;font-weight:500;"><span leaf="">03</span></p><p style="font-size:13px;font-weight:700;color:#27272A;margin:0 0 6px;line-height:1.4;"><span leaf="">浏览器实测</span></p><p style="font-size:12px;color:#71717A;margin:0;line-height:1.6;"><span leaf="">像真实用户一样点击并操作关键路径。</span></p></section>
+  </section>
+  <section style="padding:0 10px;">
+    <p style="font-size:15px;font-weight:800;color:#27272A;margin:28px 0 14px;padding-left:12px;border-left:3px solid #52525B;line-height:1.4;"><span leaf="">第五条：没有证据，就不能说完成</span></p>
+    <p style="margin-bottom:18px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">这是整套流程最重要的一句话：</span></p>
+  </section>
+  <section style="border-left:3px solid #F97316;padding:16px 0 16px 24px;margin:0 10px 28px;">
+    <p style="font-size:16px;font-weight:700;color:#27272A;margin:0;line-height:1.7;letter-spacing:0.5px;"><span leaf="">“No evidence，no completion。”</span></p>
+  </section>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:16px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">任务有没有完成，不看聊天里说了什么，只看磁盘上留下了什么：</span></p>
+  </section>
+  <section style="margin:0 10px 24px;">
+    <section style="margin-bottom:14px;"><p style="margin:0 0 6px;"><span style="display:inline-block;font-size:14px;font-weight:700;color:#27272A;background:#F4F4F5;padding:3px 10px;border-radius:999px;"><span leaf="">规格与任务</span></span></p><p style="font-size:14px;color:#71717A;margin:0;line-height:1.7;text-align:justify;"><span leaf="">需求、技术方案、任务状态，以及当前执行节点。</span></p></section>
+    <section style="margin-bottom:14px;"><p style="margin:0 0 6px;"><span style="display:inline-block;font-size:14px;font-weight:700;color:#27272A;background:#F4F4F5;padding:3px 10px;border-radius:999px;"><span leaf="">测试与审查</span></span></p><p style="font-size:14px;color:#71717A;margin:0;line-height:1.7;text-align:justify;"><span leaf="">正式命令结果、浏览器操作证据和独立 Review 记录。</span></p></section>
+    <section style="margin-bottom:14px;"><p style="margin:0 0 6px;"><span style="display:inline-block;font-size:14px;font-weight:700;color:#27272A;background:#F4F4F5;padding:3px 10px;border-radius:999px;"><span leaf="">阻塞与恢复</span></span></p><p style="font-size:14px;color:#71717A;margin:0;line-height:1.7;text-align:justify;"><span leaf="">哪些问题仍然被阻塞，以及新会话从哪里继续。</span></p></section>
+  </section>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:28px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">这样即使换一个新会话，AI 也能重新读取这些文件，</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">从中断的位置继续</span></span><span leaf="">。</span></p>
+  </section>
+
+  <section style="padding:0 10px;"><section style="height:1px;background:#E4E4E7;margin:0;"><span leaf=""><br></span></section></section>
+  <section style="margin-top:56px;margin-bottom:32px;padding:0 10px;">
+    <section style="position:relative;padding-bottom:20px;border-bottom:1px solid #E4E4E7;">
+      <p style="font-size:48px;font-weight:900;color:#E4E4E7;margin:0;line-height:1;letter-spacing:-2px;"><span leaf="">04</span></p>
+      <section style="margin-top:-8px;"><p style="font-size:10px;color:#A1A1AA;font-weight:500;letter-spacing:3px;margin:0 0 6px;text-transform:uppercase;"><span leaf="">WORKFLOW</span></p><h3 style="font-size:20px;font-weight:800;color:#27272A;margin:0;letter-spacing:0.5px;line-height:1.4;"><span leaf="">我把这五条规矩，做成了 CM Workflow</span></h3></section>
+    </section>
+  </section>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">最开始，它只是我自己使用的一组规则。后来规则越来越完整，我就把它整理成了一套可以安装的工作流。我把它叫作 </span><span style="background:#F4F4F5;color:#27272A;padding:2px 7px;border-radius:3px;font-weight:700;font-size:14px;"><span leaf="">CM Workflow</span></span><span leaf="">。</span></p>
+  </section>
+  <p style="font-size:15px;margin:0 10px 24px;text-align:center;color:#27272A;font-weight:700;letter-spacing:1px;border-top:1px solid #E4E4E7;border-bottom:1px solid #E4E4E7;padding:14px 10px;"><span leaf="">CM 的意思很简单：Create More。</span></p>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">不是让 AI 多生成几段代码，而是让更多想法，最后真的能变成</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">可以检查、可以测试、可以继续迭代的东西</span></span><span leaf="">。</span></p>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">它目前支持 Codex，也兼容 Claude Code。你可以从一句模糊的想法开始：</span></p>
+    <section style="margin:0 0 20px;border-radius:8px;overflow:hidden;background:#1E293B;box-shadow:0 4px 16px -8px rgba(15,23,42,0.4);"><section style="padding:11px 14px;"><p style="margin:0;font-family:'SF Mono',Consolas,Monaco,monospace;font-size:13px;line-height:1.6;color:#E2E8F0;"><span leaf="">我有个产品点子，先帮我梳理清楚。</span></p></section></section>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">AI 会先陪你把想法整理成 PRD。然后你可以说：</span></p>
+    <section style="margin:0 0 20px;border-radius:8px;overflow:hidden;background:#1E293B;box-shadow:0 4px 16px -8px rgba(15,23,42,0.4);"><section style="padding:11px 14px;"><p style="margin:0;font-family:'SF Mono',Consolas,Monaco,monospace;font-size:13px;line-height:1.6;color:#E2E8F0;"><span leaf="">把这份需求拆成技术方案、开发任务和验收标准。</span></p></section></section>
+    <p style="margin-bottom:28px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">规格写完后，流程会停下来等你确认。你确认以后，它才开始逐个任务编码。每个任务完成后进行 Review，再运行测试，最后留下</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">完整的交付记录</span></span><span leaf="">。</span></p>
+  </section>
+
+  <section style="padding:0 10px;"><section style="height:1px;background:#E4E4E7;margin:0;"><span leaf=""><br></span></section></section>
+  <section style="margin-top:56px;margin-bottom:32px;padding:0 10px;">
+    <section style="position:relative;padding-bottom:20px;border-bottom:1px solid #E4E4E7;"><p style="font-size:48px;font-weight:900;color:#E4E4E7;margin:0;line-height:1;letter-spacing:-2px;"><span leaf="">05</span></p><section style="margin-top:-8px;"><p style="font-size:10px;color:#A1A1AA;font-weight:500;letter-spacing:3px;margin:0 0 6px;text-transform:uppercase;"><span leaf="">TESTING</span></p><h3 style="font-size:20px;font-weight:800;color:#27272A;margin:0;letter-spacing:0.5px;line-height:1.4;"><span leaf="">已经做完的功能，也可以重新交给它测试</span></h3></section></section>
+  </section>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">这也是我自己非常需要的一个功能。很多老项目已经运行了很久，但没有完整测试用例。你甚至不知道某个功能当初是怎么设计的。</span></p>
+    <p style="margin-bottom:16px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">这时候可以让 CM Workflow：</span></p>
+  </section>
+  <section style="margin:0 10px 24px;">
+    <section style="display:flex;align-items:flex-start;gap:10px;margin-bottom:12px;"><span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;background:#27272A;color:#fff;font-size:12px;font-weight:700;border-radius:50%;flex-shrink:0;margin-top:2px;"><span leaf="">1</span></span><p style="font-size:15px;color:#52525B;margin:0;line-height:1.8;flex:1;"><span leaf="">读取现有代码，还原主要业务路径。</span></p></section>
+    <section style="display:flex;align-items:flex-start;gap:10px;margin-bottom:12px;"><span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;background:#27272A;color:#fff;font-size:12px;font-weight:700;border-radius:50%;flex-shrink:0;margin-top:2px;"><span leaf="">2</span></span><p style="font-size:15px;color:#52525B;margin:0;line-height:1.8;flex:1;"><span leaf="">生成给 AI 使用的测试用例，检查代码逻辑。</span></p></section>
+    <section style="display:flex;align-items:flex-start;gap:10px;margin-bottom:12px;"><span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;background:#27272A;color:#fff;font-size:12px;font-weight:700;border-radius:50%;flex-shrink:0;margin-top:2px;"><span leaf="">3</span></span><p style="font-size:15px;color:#52525B;margin:0;line-height:1.8;flex:1;"><span leaf="">运行项目正式测试命令。</span></p></section>
+    <section style="display:flex;align-items:flex-start;gap:10px;margin-bottom:12px;"><span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;background:#27272A;color:#fff;font-size:12px;font-weight:700;border-radius:50%;flex-shrink:0;margin-top:2px;"><span leaf="">4</span></span><p style="font-size:15px;color:#52525B;margin:0;line-height:1.8;flex:1;"><span leaf="">用浏览器模拟用户操作，留下执行证据。</span></p></section>
+  </section>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">发现问题以后，它不会在测试过程中偷偷修改代码。它会先留下失败证据，确认问题能够复现后，再进入单独的修复流程。</span></p>
+    <p style="margin-bottom:28px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">测试的人负责找问题，修复的人负责改代码</span></span><span leaf="">。两件事不会混在一起。</span></p>
+  </section>
+
+  <section style="padding:0 10px;"><section style="height:1px;background:#E4E4E7;margin:0;"><span leaf=""><br></span></section></section>
+  <section style="margin-top:56px;margin-bottom:32px;padding:0 10px;">
+    <section style="position:relative;padding-bottom:20px;border-bottom:1px solid #E4E4E7;"><p style="font-size:48px;font-weight:900;color:#E4E4E7;margin:0;line-height:1;letter-spacing:-2px;"><span leaf="">06</span></p><section style="margin-top:-8px;"><p style="font-size:10px;color:#A1A1AA;font-weight:500;letter-spacing:3px;margin:0 0 6px;text-transform:uppercase;"><span leaf="">ROLE BOUNDARIES</span></p><h3 style="font-size:20px;font-weight:800;color:#27272A;margin:0;letter-spacing:0.5px;line-height:1.4;"><span leaf="">不同的 AI，负责不同的事情</span></h3></section></section>
+  </section>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">我平时主要使用 Codex 编码。需求拆分、方案讨论和复杂研究，可以使用 Claude、ChatGPT 或其他模型。</span></p>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">但我不希望某个外部模型拿到项目以后，既负责出方案，又负责写代码，又负责测试，最后再告诉我一切正常。</span></p>
+    <p style="margin-bottom:16px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">所以在 CM Workflow 里：</span></p>
+  </section>
+  <section style="margin:0 10px 24px;">
+    <section style="margin-bottom:14px;"><p style="margin:0 0 6px;"><span style="display:inline-block;font-size:14px;font-weight:700;color:#27272A;background:#F4F4F5;padding:3px 10px;border-radius:999px;"><span leaf="">分析与实现</span></span></p><p style="font-size:14px;color:#71717A;margin:0;line-height:1.7;text-align:justify;"><span leaf="">外部专家负责分析和建议；Codex 或 Claude Code 负责本地开发。</span></p></section>
+    <section style="margin-bottom:14px;"><p style="margin:0 0 6px;"><span style="display:inline-block;font-size:14px;font-weight:700;color:#27272A;background:#F4F4F5;padding:3px 10px;border-radius:999px;"><span leaf="">测试与审查</span></span></p><p style="font-size:14px;color:#71717A;margin:0;line-height:1.7;text-align:justify;"><span leaf="">项目命令负责测试；浏览器验证真实路径；新上下文进行独立审查。</span></p></section>
+    <section style="margin-bottom:14px;"><p style="margin:0 0 6px;"><span style="display:inline-block;font-size:14px;font-weight:700;color:#27272A;background:#F4F4F5;padding:3px 10px;border-radius:999px;"><span leaf="">人的判断</span></span></p><p style="font-size:14px;color:#71717A;margin:0;line-height:1.7;text-align:justify;"><span leaf="">规格批准、生产发布、真实资金操作、权限和密钥变更，仍然必须由人决定。</span></p></section>
+  </section>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:28px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">AI 可以做很多执行工作，但</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">关键权限不能因为模型建议而自动扩大</span></span><span leaf="">。</span></p>
+  </section>
+
+  <section style="padding:0 10px;"><section style="height:1px;background:#E4E4E7;margin:0;"><span leaf=""><br></span></section></section>
+  <section style="margin-top:56px;margin-bottom:32px;padding:0 10px;">
+    <section style="position:relative;padding-bottom:20px;border-bottom:1px solid #E4E4E7;"><p style="font-size:48px;font-weight:900;color:#E4E4E7;margin:0;line-height:1;letter-spacing:-2px;"><span leaf="">07</span></p><section style="margin-top:-8px;"><p style="font-size:10px;color:#A1A1AA;font-weight:500;letter-spacing:3px;margin:0 0 6px;text-transform:uppercase;"><span leaf="">POSITIONING</span></p><h3 style="font-size:20px;font-weight:800;color:#27272A;margin:0;letter-spacing:0.5px;line-height:1.4;"><span leaf="">它目前没有那么“宏大”</span></h3></section></section>
+  </section>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">CM Workflow 现在还不是一个完整的企业研发平台。没有多租户，没有复杂的组织权限，也没有几十个 Agent 自动组建一家公司的故事。</span></p>
+    <p style="margin-bottom:16px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">它目前更适合：</span></p>
+  </section>
+  <section style="margin:0 10px 24px;">
+    <section style="margin-bottom:14px;"><p style="margin:0 0 6px;"><span style="display:inline-block;font-size:14px;font-weight:700;color:#27272A;background:#F4F4F5;padding:3px 10px;border-radius:999px;"><span leaf="">AI 开发者</span></span></p><p style="font-size:14px;color:#71717A;margin:0;line-height:1.7;text-align:justify;"><span leaf="">经常使用 Codex 或 Claude Code 开发真实项目的人。</span></p></section>
+    <section style="margin-bottom:14px;"><p style="margin:0 0 6px;"><span style="display:inline-block;font-size:14px;font-weight:700;color:#27272A;background:#F4F4F5;padding:3px 10px;border-radius:999px;"><span leaf="">一人公司</span></span></p><p style="font-size:14px;color:#71717A;margin:0;line-height:1.7;text-align:justify;"><span leaf="">想做产品，或同时维护多个小项目的独立开发者。</span></p></section>
+    <section style="margin-bottom:14px;"><p style="margin:0 0 6px;"><span style="display:inline-block;font-size:14px;font-weight:700;color:#27272A;background:#F4F4F5;padding:3px 10px;border-radius:999px;"><span leaf="">中小团队</span></span></p><p style="font-size:14px;color:#71717A;margin:0;line-height:1.7;text-align:justify;"><span leaf="">希望尝试 AI 开发，但又不敢完全相信 AI 总结的团队。</span></p></section>
+  </section>
+  <section style="border-left:3px solid #52525B;padding:16px 0 16px 24px;margin:0 10px 28px;"><p style="font-size:16px;font-weight:700;color:#27272A;margin:0;line-height:1.7;letter-spacing:0.5px;"><span leaf="">“一个需求交给 AI 以后，怎么知道它到底有没有真正完成？”</span></p></section>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:28px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">它首先解决的就是这个非常具体的问题。如果这个问题都没有解决，</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">再多 Agent 也只是看起来热闹</span></span><span leaf="">。</span></p>
+  </section>
+
+  <section style="padding:0 10px;"><section style="height:1px;background:#E4E4E7;margin:0;"><span leaf=""><br></span></section></section>
+  <section style="margin-top:56px;margin-bottom:32px;padding:0 10px;">
+    <section style="position:relative;padding-bottom:20px;border-bottom:1px solid #E4E4E7;"><p style="font-size:48px;font-weight:900;color:#E4E4E7;margin:0;line-height:1;letter-spacing:-2px;"><span leaf="">∞</span></p><section style="margin-top:-8px;"><p style="font-size:10px;color:#A1A1AA;font-weight:500;letter-spacing:3px;margin:0 0 6px;text-transform:uppercase;"><span leaf="">THE END</span></p><h3 style="font-size:20px;font-weight:800;color:#27272A;margin:0;letter-spacing:0.5px;line-height:1.4;"><span leaf="">我把它开源了</span></h3></section></section>
+  </section>
+  <section style="padding:0 10px;">
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">CM Workflow 目前采用 MIT License。仓库在 GitHub，Codex 和 Claude Code 用户都可以安装使用。</span></p>
+    <section style="margin:0 0 20px;border-radius:8px;overflow:hidden;background:#1E293B;box-shadow:0 4px 16px -8px rgba(15,23,42,0.4);"><section style="padding:11px 14px;"><p style="margin:0;font-family:'SF Mono',Consolas,Monaco,monospace;font-size:13px;line-height:1.6;color:#E2E8F0;"><span leaf="">https://github.com/kingxiaozhe/cm-workflow</span></p></section></section>
+    <p style="font-size:15px;font-weight:800;color:#27272A;margin:28px 0 14px;padding-left:12px;border-left:3px solid #52525B;line-height:1.4;"><span leaf="">Codex 用户安装</span></p>
+    <section style="margin:0 0 20px;border-radius:8px;overflow:hidden;background:#1E293B;box-shadow:0 4px 16px -8px rgba(15,23,42,0.4);"><section style="padding:11px 14px;"><p style="margin:0;font-family:'SF Mono',Consolas,Monaco,monospace;font-size:13px;line-height:1.6;color:#E2E8F0;"><span leaf="">git clone https://github.com/kingxiaozhe/cm-workflow.git</span></p><p style="margin:0;font-family:'SF Mono',Consolas,Monaco,monospace;font-size:13px;line-height:1.6;color:#E2E8F0;"><span leaf="">cd cm-workflow</span></p><p style="margin:0;font-family:'SF Mono',Consolas,Monaco,monospace;font-size:13px;line-height:1.6;color:#E2E8F0;"><span leaf="">./install-codex.sh</span></p></section></section>
+    <p style="font-size:15px;font-weight:800;color:#27272A;margin:28px 0 14px;padding-left:12px;border-left:3px solid #52525B;line-height:1.4;"><span leaf="">Claude Code 用户安装</span></p>
+    <section style="margin:0 0 20px;border-radius:8px;overflow:hidden;background:#1E293B;box-shadow:0 4px 16px -8px rgba(15,23,42,0.4);"><section style="padding:11px 14px;"><p style="margin:0;font-family:'SF Mono',Consolas,Monaco,monospace;font-size:13px;line-height:1.6;color:#E2E8F0;"><span leaf="">./install.sh</span></p></section></section>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">安装以后，新开一个会话，运行：</span></p>
+    <section style="margin:0 0 20px;border-radius:8px;overflow:hidden;background:#1E293B;box-shadow:0 4px 16px -8px rgba(15,23,42,0.4);"><section style="padding:11px 14px;"><p style="margin:0;font-family:'SF Mono',Consolas,Monaco,monospace;font-size:13px;line-height:1.6;color:#E2E8F0;"><span leaf="">$cm-check</span></p></section></section>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">它会检查工作流入口、角色、版本和相关文件是否正确安装。如果你也在用 AI 开发真实项目，欢迎试试。</span></p>
+    <p style="margin-bottom:22px;font-size:15px;line-height:1.8;text-align:justify;color:#52525B;letter-spacing:0.3px;"><span leaf="">我很想知道：你最不相信 AI 的哪一句话？是“测试已经通过”？是“页面已经验证”？还是“代码已经可以提交”？因为这套工作流接下来要解决的，正是这些</span><span style="border-bottom:2px solid #52525B;font-weight:600;color:#27272A;"><span leaf="">真实的不信任</span></span><span leaf="">。</span></p>
+  </section>
+  <p style="font-size:15px;margin:0 10px 36px;text-align:center;color:#27272A;font-weight:700;letter-spacing:1px;border-top:1px solid #E4E4E7;border-bottom:1px solid #E4E4E7;padding:14px 10px;"><span leaf="">CM means Create More。但在 Create More 之前，我们得先让每一次“完成”，都经得起检查。</span></p>
+
+  <section style="padding:0 10px;">
+    <section style="text-align:center;margin:0 0 36px;"><section style="display:flex;align-items:center;justify-content:center;"><span style="height:1px;width:48px;background:#E4E4E7;margin-right:16px;"><span leaf=""><br></span></span><span style="font-size:10px;color:#A1A1AA;letter-spacing:4px;font-weight:500;"><span leaf="">END</span></span><span style="height:1px;width:48px;background:#E4E4E7;margin-left:16px;"><span leaf=""><br></span></span></section></section>
+  </section>
+  <section style="padding:0 10px 24px;">
+    <section style="border-top:1px solid #E4E4E7;padding-top:28px;">
+      <p style="margin-bottom:16px;font-size:15px;line-height:1.8;color:#52525B;text-align:justify;"><span leaf="">我是 {{作者名}}，{{简介}}。</span></p>
+      <p style="margin-bottom:0;font-size:15px;line-height:1.8;color:#52525B;text-align:justify;"><span leaf="">如果你觉得今天这篇有收获，欢迎</span><strong style="color:#27272A;"><span leaf="">点赞、在看、转发</span></strong><span leaf="">三连，我们下篇见。</span></p>
+    </section>
+  </section>
+</section>

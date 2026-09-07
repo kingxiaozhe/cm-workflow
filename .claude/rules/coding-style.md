@@ -1,5 +1,5 @@
 ---
-description: prompt 资产（Markdown）与 bash 脚本的写作与命名约定
+description: Markdown prompt 与 Bash、Python、PowerShell、Node.js 工具的写作和命名约定
 ---
 
 # 编码风格
@@ -10,7 +10,9 @@ description: prompt 资产（Markdown）与 bash 脚本的写作与命名约定
 
 | 项 | 上限 |
 | ---- | ---- |
-| 单个 SKILL.md / 命令文件 | 400 行（超了拆按需加载的子文件，见 cm:ai → cm-ai-nodes/、cm:prd → cm-prd-modes/） |
+| 单个 `SKILL.md` | 500 行（接近上限时拆到 `references/` 按需加载；当前文件均未超过） |
+| `compat/claude-commands/*.md` | 8 行（仅保留历史别名转发；当前均为 3 行） |
+| `.claude/CLAUDE.md` | 150 行 |
 | 单条规则 | 3 行以内说清「做什么 + 为什么」 |
 | 标题层级 | 4 层（`####`） |
 | frontmatter description | 1 行 |
@@ -79,3 +81,19 @@ description: 后端 API 开发子 agent。由 /cm-ai 在并行执行后端任务
   echo "已安装版本: v${VERSION}，请运行自检"
   ```
 - 路径变量一律加引号：`cp -R "$SRC_DIR/." "$DEST/"`。
+
+## Python
+
+- 保持 Python 3.9+ 与标准库可运行；安装器、自检和夹具不得为便利引入 PyPI 依赖。
+- 使用 4 空格、`snake_case` 函数/变量、`PascalCase` 类、`UPPER_SNAKE_CASE` 常量；import 按标准库模块分组并置于文件顶部。
+- 路径使用 `pathlib.Path`，合同违规抛出带上下文的明确异常；测试脚本必须用临时目录隔离文件系统副作用。
+
+## PowerShell
+
+- 保留 `$ErrorActionPreference = "Stop"`；函数用 `Verb-Noun`，变量沿用现有 `PascalCase`。
+- Windows 路径通过 `Join-Path` 组合，不手拼用户目录；调用外部命令后检查 `$LASTEXITCODE`。
+
+## Node.js 工具
+
+- 新工具使用 `.mjs` ESM 和 `node:` 内置模块前缀；Playwright 是按需外部能力，不新增仓库级 `package.json`。
+- Playwright 不可用时必须明确报错或走 Skill 声明的降级路径，禁止静默伪造截图/验收结果。

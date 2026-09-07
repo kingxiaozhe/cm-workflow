@@ -13,6 +13,12 @@ case "${1:-}" in
   *) echo "用法: $0 [--yes]" >&2; exit 2 ;;
 esac
 
+if ! command -v node >/dev/null 2>&1 ||
+  ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' >/dev/null 2>&1; then
+  echo "Node.js 18+ 未找到。请安装 Node.js 并确保 node 在 PATH 中，然后重试。" >&2
+  exit 1
+fi
+
 confirm_conflicts() {
   label=$1
   conflicts=$2

@@ -10,6 +10,15 @@ $Src  = $PSScriptRoot
 $Dest = if ($env:CLAUDE_HOME) { $env:CLAUDE_HOME } else { Join-Path $env:USERPROFILE ".claude" }
 $Version = if (Test-Path "$Src\VERSION") { (Get-Content "$Src\VERSION" -Raw).Trim() } else { "未知" }
 
+$Node = Get-Command "node" -ErrorAction SilentlyContinue
+if (-not $Node) {
+    throw "CM Workflow 需要 Node.js 18+，但 PATH 中未找到 node。"
+}
+& node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)'
+if ($LASTEXITCODE -ne 0) {
+    throw "CM Workflow 需要 Node.js 18+。"
+}
+
 Write-Host "cm 工作流安装  v$Version"
 Write-Host "  来源: $Src"
 Write-Host "  目标: $Dest`n"

@@ -1,10 +1,10 @@
 ---
-description: 本仓库的验证方式——/cm-check 一致性自检 + dogfood 实跑，无单元测试框架
+description: 本仓库的验证方式——机械一致性、Shell/Python 夹具与相关流程 dogfood
 ---
 
 # 测试规范
 
-**本仓库没有单元测试框架，也不需要引入**——prompt 资产没有可断言的函数返回值。质量门是机械检查、安装冒烟和相关路径 dogfood。
+**本仓库不使用第三方单元测试框架**。Prompt 资产依靠机械一致性与 dogfood；Shell、Python 与 Node.js 工具行为由仓库内可执行夹具覆盖。质量门是机械检查、夹具、安装冒烟和相关路径 dogfood。
 
 ## 框架与命令
 
@@ -14,8 +14,9 @@ description: 本仓库的验证方式——/cm-check 一致性自检 + dogfood �
 | 公开包检查（机器） | `python3 scripts/validate-public-repo.py` | 文档、manifest、frontmatter |
 | 安全检查（机器） | `python3 scripts/scan-public-safety.py` | 当前树；CI 另跑 Gitleaks |
 | Shell 兼容夹具 | `bash scripts/test-shell-compat.sh` | Python 命令回退与提交 Hook |
-| Workflow 配置夹具 | `python3 scripts/test-workflow-config.py` | 默认值、角色来源与脱敏 |
-| 任务门禁夹具 | `python3 scripts/test-task-gate.py` | handoff、Review 状态转换与 Worktree 隔离 |
+| Workflow 配置夹具 | `node --test scripts/cm-workflow-config.test.mjs` | 默认值、角色来源、脱敏与旧 CLI 兼容；Python harness 仅作兼容入口检查 |
+| 任务门禁夹具 | `node --test scripts/cm-task-gate.test.mjs` | handoff、Review、完成写入与 Worktree 隔离 |
+| Python 门禁兼容层 | `python3 scripts/test-task-gate.py` | 锁适配器保持薄层，不复制 JS 业务规则 |
 | 角色路由夹具 | `./scripts/cm-check-runtime.sh --routing-fixtures` | 外部专家路由与降级顺序 |
 | 插件验证（机器） | Codex plugin creator validator | 本机 Codex |
 | 端到端验证（人） | dogfood 实跑 | `/cm-prd` → `/cm-ai` 跑真实项目 |

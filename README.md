@@ -46,7 +46,7 @@ CM Workflow 不是另一个会“声称已经完成”的编码 Prompt。它为 
 
 ## 五分钟开始
 
-安装前需要 Git、Python 3.9+，并准备好 Codex 或 Claude Code。源码目录不要放在
+安装前需要 Git、Python 3.9+、Node.js 18+，并准备好 Codex 或 Claude Code。源码目录不要放在
 `~/plugins/cm-workflow`，该路径由 Codex 安装器管理。
 
 ### Codex
@@ -241,8 +241,11 @@ Profile、进程、模型别名和 fixture 必须成对记录获取与释放，�
 
 ## 一份核心，两种入口
 
-Codex Skills 和 `runtime/` 是权威实现。Claude Code 直接使用同一组 Skills；历史
-`/cm:*` 只是在 macOS/Linux 上保留的轻量兼容别名。
+Codex Skills 和 `runtime/` 是权威实现。`runtime/js/cm-ai/` 保存唯一 JS 源码；active
+`cm-ai` Skill 已通过 `scripts/cm-ai-admission.mjs` 使用正式 N1/N2 admission，配置、测试合同、
+日志和 N4/N5 也使用共享 JS 权威。完整 host API 仍未激活，源码随 runtime 分发不等于真实
+provider 或完整 N1–N8 runner 已验收。Claude Code 直接使用同一组 Skills 和 admission 入口；
+历史 `/cm:*` 只是在 macOS/Linux 上保留的轻量兼容别名。
 
 | 环境 | 入口 | 安装与差异 |
 | --- | --- | --- |

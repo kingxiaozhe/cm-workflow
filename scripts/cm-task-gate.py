@@ -1,635 +1,305 @@
 #!/usr/bin/env python3
-"""Validate CM task handoffs, review transitions, and parallel write isolation."""
+"""Compatibility lock adapter for the JavaScript CM task gate."""
 
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
+from pathlib import Path
 import re
+import sqlite3
 import stat
 import subprocess
 import sys
-import tempfile
-from datetime import datetime
-from pathlib import Path, PurePosixPath
-from typing import Dict, List, Mapping, Sequence, Tuple
-
-
-TASK_RE = re.compile(r"^T-[A-Za-z0-9][A-Za-z0-9._-]*$")
-REVIEWERS = {"codex-subagent", "codex-cli", "self-degraded"}
-VERDICTS = {"approved", "changes_requested", "blocked"}
+from typing import Iterator, Mapping, Sequence
 
 
 class GateError(ValueError):
-    """Expected contract violation."""
+    """Expected lock-adapter failure."""
 
 
-def load_schema_contract() -> Tuple[set[str], set[str], set[str], set[str]]:
-    schema_path = Path(__file__).resolve().parents[1] / "runtime" / "task-handoff.schema.json"
+def sync_control_path(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
-        properties = schema["properties"]
-        verification_properties = properties["verification"]["items"]["properties"]
-        fields = set(schema["required"])
-        if fields != set(properties):
-            raise KeyError("required/properties mismatch")
-        return (
-            fields,
-            set(verification_properties),
-            set(verification_properties["status"]["enum"]),
-            set(properties["status"]["enum"]),
-        )
-    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
-        raise RuntimeError(f"invalid task handoff schema: {schema_path}: {exc}") from exc
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
-HANDOFF_FIELDS, VERIFICATION_FIELDS, VERIFICATION_STATUSES, HANDOFF_STATUSES = (
-    load_schema_contract()
-)
+def control_directory(path: Path, *, create: bool = False, private: bool = False) -> os.stat_result:
+    if create:
+        try:
+            path.mkdir(mode=0o700)
+            sync_control_path(path)
+            sync_control_path(path.parent)
+        except FileExistsError:
+            pass
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or (private and info.st_mode & 0o077):
+        raise GateError(f"unsupported control directory: {path}")
+    return info
 
 
-def require_task_id(value: object, field: str = "task_id") -> str:
-    if not isinstance(value, str) or not TASK_RE.fullmatch(value):
-        raise GateError(f"{field} must match T-<id>")
-    return value
+def private_control_file(path: Path, limit: int) -> os.stat_result:
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > limit:
+        raise GateError(f"unsupported private control file: {path}")
+    return info
 
 
-def require_string(value: object, field: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise GateError(f"{field} must be a non-empty string")
-    return value
+def file_revision(path: Path) -> tuple[tuple[int, ...], bytes]:
+    def identity(info: os.stat_result) -> tuple[int, ...]:
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise GateError(f"revision source must be a regular non-symlink file: {path}")
+    with path.open("rb") as handle:
+        opened = os.fstat(handle.fileno())
+        content = handle.read()
+        after = os.fstat(handle.fileno())
+    if not identity(before) == identity(opened) == identity(after) == identity(path.lstat()):
+        raise GateError(f"revision changed while reading: {path}")
+    return identity(after), content
 
 
-def require_string_list(value: object, field: str, *, minimum: int = 0) -> List[str]:
-    if not isinstance(value, list) or len(value) < minimum:
-        raise GateError(f"{field} must be a list with at least {minimum} item(s)")
-    items: List[str] = []
-    for index, item in enumerate(value):
-        items.append(require_string(item, f"{field}[{index}]"))
-    if len(set(items)) != len(items):
-        raise GateError(f"{field} must not contain duplicates")
-    return items
-
-
-def require_feature(value: str) -> str:
-    if not value or value in {".", ".."} or value[-1:] in {" ", "."}:
-        raise GateError("feature must be a safe filename slug")
-    if any(ord(char) < 32 or char in '<>:"/\\|?*' for char in value):
-        raise GateError("feature must be a safe cross-platform filename slug")
-    return value
-
-
-def require_relative_files(value: object) -> List[str]:
-    files = require_string_list(value, "changed_files")
-    for item in files:
-        path = PurePosixPath(item)
-        if (
-            item.startswith(("/", "\\"))
-            or re.match(r"^[A-Za-z]:[\\/]", item)
-            or "\\" in item
-            or ".." in path.parts
-            or item in {".", ".."}
-        ):
-            raise GateError(f"changed_files entry must be a safe relative path: {item}")
-    return files
-
-
-def reject_duplicate_keys(pairs: List[Tuple[str, object]]) -> Dict[str, object]:
-    result: Dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise GateError(f"JSON contains duplicate key: {key}")
-        result[key] = value
-    return result
-
-
-def load_handoff(path: Path, *, task: str | None = None, attempt: int | None = None) -> Dict[str, object]:
-    if path.is_symlink():
-        raise GateError(f"handoff evidence must not be a symlink: {path}")
+def bind_task_owner(tasks: Path, root: Path, feature: str) -> tuple[Path, tuple[tuple[int, ...], bytes]]:
+    tasks = tasks.resolve()
+    info = tasks.lstat()
+    if tasks.name != "tasks.md" or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise GateError("task owner requires regular non-hardlinked tasks.md")
+    parent = tasks.parent
+    suffix = "." + feature
+    numbered = parent.name.endswith(suffix) and re.fullmatch(r"[0-9]+", parent.name[: -len(suffix)])
+    if parent != root and not (parent.parent == root and (parent.name == feature or numbered)):
+        raise GateError("unsupported owner layout (numbered prefixes require ASCII digits)")
+    reviews = parent / ".reviews"
+    control_directory(reviews, create=True)
+    binding = reviews / ".cm-task-owner.json"
+    expected = (json.dumps({"version": 1, "tasksPath": str(tasks), "specsRoot": str(root)}, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+    if len(expected) > 16384:
+        raise GateError("task owner binding exceeds limit")
     try:
-        payload = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys
-        )
-    except FileNotFoundError as exc:
-        raise GateError(f"handoff not found: {path}") from exc
-    except (OSError, json.JSONDecodeError) as exc:
-        raise GateError(f"cannot read handoff {path}: {exc}") from exc
-
-    if not isinstance(payload, dict):
-        raise GateError("handoff root must be an object")
-    fields = set(payload)
-    missing = sorted(HANDOFF_FIELDS - fields)
-    unknown = sorted(fields - HANDOFF_FIELDS)
-    if missing:
-        raise GateError(f"handoff missing fields: {', '.join(missing)}")
-    if unknown:
-        raise GateError(f"handoff has unknown fields: {', '.join(unknown)}")
-
-    if payload["schema_version"] != 1 or isinstance(payload["schema_version"], bool):
-        raise GateError("schema_version must be 1")
-    task_id = require_task_id(payload["task_id"])
-    raw_attempt = payload["attempt"]
-    if isinstance(raw_attempt, bool) or not isinstance(raw_attempt, int) or raw_attempt not in {1, 2}:
-        raise GateError("attempt must be 1 or 2")
-    status = payload["status"]
-    if status not in HANDOFF_STATUSES:
-        raise GateError("status must be ready_for_review or blocked")
-
-    require_relative_files(payload["changed_files"])
-    evidence = require_string_list(payload["evidence"], "evidence", minimum=1)
-    blockers = require_string_list(payload["blockers"], "blockers")
-    scope_deviation = require_string_list(payload["scope_deviation"], "scope_deviation")
-    del evidence
-
-    verification = payload["verification"]
-    if not isinstance(verification, list) or not verification:
-        raise GateError("verification must contain at least one result")
-    verification_statuses: List[str] = []
-    for index, item in enumerate(verification):
-        if not isinstance(item, dict):
-            raise GateError(f"verification[{index}] must be an object")
-        fields = set(item)
-        if fields != VERIFICATION_FIELDS:
-            raise GateError(f"verification[{index}] must contain command, status, and evidence only")
-        require_string(item["command"], f"verification[{index}].command")
-        require_string(item["evidence"], f"verification[{index}].evidence")
-        verification_status = item["status"]
-        if verification_status not in VERIFICATION_STATUSES:
-            raise GateError(f"verification[{index}].status is invalid")
-        verification_statuses.append(str(verification_status))
-
-    if status == "ready_for_review":
-        if blockers:
-            raise GateError("ready_for_review handoff must not contain blockers")
-        if scope_deviation:
-            raise GateError("ready_for_review handoff must not contain scope_deviation")
-        if any(item != "passed" for item in verification_statuses):
-            raise GateError("ready_for_review handoff requires every verification result to pass")
-    elif not blockers and not scope_deviation:
-        raise GateError("blocked handoff must explain a blocker or scope deviation")
-
-    if task is not None and task_id != task:
-        raise GateError(f"handoff task {task_id} does not match requested task {task}")
-    if attempt is not None and raw_attempt != attempt:
-        raise GateError(f"handoff attempt {raw_attempt} does not match requested attempt {attempt}")
-    return payload
-
-
-def parse_review(path: Path) -> Tuple[Dict[str, str], List[str], str]:
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError as exc:
-        raise GateError(f"review evidence not found: {path}") from exc
-    except OSError as exc:
-        raise GateError(f"cannot read review evidence {path}: {exc}") from exc
-    if not lines or lines[0].strip() != "---":
-        raise GateError(f"review evidence has no YAML header: {path}")
-    try:
-        end = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
-    except StopIteration as exc:
-        raise GateError(f"review evidence header is not closed: {path}") from exc
-
-    scalars: Dict[str, str] = {}
-    scalar_seen: set[str] = set()
-    scope_items: List[str] = []
-    in_scope = False
-    scope_seen = False
-    for line in lines[1:end]:
-        if line.strip() == "scope:":
-            if scope_seen or "scope" in scalar_seen:
-                raise GateError("review header contains duplicate field: scope")
-            scope_seen = True
-            in_scope = True
-            continue
-        if in_scope and line.startswith((" ", "\t")):
-            stripped = line.strip()
-            if stripped.startswith("- ") and stripped[2:].strip():
-                scope_items.append(stripped[2:].strip())
-            continue
-        in_scope = False
-        if line.startswith((" ", "\t")) or ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        key = key.strip()
-        if key in scalar_seen or (key == "scope" and scope_seen):
-            raise GateError(f"review header contains duplicate field: {key}")
-        scalar_seen.add(key)
-        value = value.strip()
-        if value:
-            scalars[key] = value.strip('"\'')
-    if not scope_items:
-        raise GateError(f"review evidence scope must contain at least one entry: {path}")
-    if len(set(scope_items)) != len(scope_items):
-        raise GateError(f"review evidence scope must not contain duplicates: {path}")
-    body = "\n".join(lines[end + 1 :]).strip()
-    if not body:
-        raise GateError(f"review evidence body must not be empty: {path}")
-    return scalars, scope_items, body
-
-
-def file_sha256(path: Path) -> str:
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError as exc:
-        raise GateError(f"cannot hash evidence {path}: {exc}") from exc
-
-
-def validate_review(
-    path: Path,
-    *,
-    task: str,
-    attempt: int,
-    handoff: Path,
-    changed_files: Sequence[str],
-) -> Dict[str, str]:
-    if path.is_symlink():
-        raise GateError(f"review evidence must not be a symlink: {path}")
-    header, scope_items, body = parse_review(path)
-    required = {
-        "at",
-        "reviewer",
-        "independent",
-        "task",
-        "attempt",
-        "round",
-        "verdict",
-        "handoff",
-        "handoff_sha256",
-        "blocking_findings",
-    }
-    missing = sorted(required - set(header))
-    if missing:
-        raise GateError(f"review header missing fields: {', '.join(missing)}")
-    if header["task"] != task:
-        raise GateError(f"review task {header['task']} does not match {task}")
-    try:
-        timestamp = datetime.fromisoformat(header["at"].replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise GateError("review at must be an ISO-8601 timestamp") from exc
-    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
-        raise GateError("review at must include a timezone")
-    try:
-        review_attempt = int(header["attempt"])
-        review_round = int(header["round"])
-    except ValueError as exc:
-        raise GateError("review attempt and round must be integers") from exc
-    if review_attempt != attempt or review_round != attempt:
-        raise GateError("review attempt and round must match the handoff attempt")
-    reviewer = header["reviewer"]
-    if reviewer not in REVIEWERS:
-        raise GateError(f"unsupported reviewer channel: {reviewer}")
-    independent = header["independent"].lower()
-    if independent not in {"true", "false"}:
-        raise GateError("review independent must be true or false")
-    if reviewer == "self-degraded" and independent != "false":
-        raise GateError("self-degraded review must declare independent: false")
-    if reviewer != "self-degraded" and independent != "true":
-        raise GateError("independent review channel must declare independent: true")
-    if header["verdict"] not in VERDICTS:
-        raise GateError(f"unsupported review verdict: {header['verdict']}")
-    try:
-        blocking_findings = int(header["blocking_findings"])
-    except ValueError as exc:
-        raise GateError("review blocking_findings must be an integer") from exc
-    if blocking_findings < 0:
-        raise GateError("review blocking_findings must not be negative")
-    if header["verdict"] == "approved" and blocking_findings != 0:
-        raise GateError("approved review must declare blocking_findings: 0")
-    if header["verdict"] != "approved" and blocking_findings == 0:
-        raise GateError("non-approved review must declare at least one blocking finding")
-    if reviewer == "self-degraded" and not header.get("degraded_reason", "").strip():
-        raise GateError("self-degraded review must include degraded_reason")
-    if header["verdict"] == "approved" and re.search(
-        r"零发现|无阻塞发现|未发现阻塞|zero findings|no findings|no blocking findings",
-        body,
-        flags=re.IGNORECASE,
-    ) is None:
-        raise GateError("approved review body must explicitly state zero blocking findings")
-    if attempt == 2 and header["verdict"] == "changes_requested":
-        raise GateError("round 2 blocking findings must use verdict: blocked")
-
-    if header["handoff"] != handoff.name:
-        raise GateError("review handoff does not match the current implementation evidence")
-    if not re.fullmatch(r"[0-9a-f]{64}", header["handoff_sha256"]):
-        raise GateError("review handoff_sha256 must be a lowercase SHA-256 digest")
-    if header["handoff_sha256"] != file_sha256(handoff):
-        raise GateError("review handoff digest does not match the current implementation evidence")
-    missing_scope = sorted(set(changed_files) - set(scope_items))
-    if missing_scope:
-        raise GateError(f"review scope does not cover changed files: {', '.join(missing_scope)}")
-    return header
-
-
-def review_path(reviews_dir: Path, feature: str, task: str, attempt: int) -> Path:
-    require_feature(feature)
-    return reviews_dir / f"{feature}-{task}-r{attempt}.md"
-
-
-def require_expected_handoff_path(
-    handoff: Path,
-    *,
-    reviews_dir: Path,
-    feature: str,
-    task: str,
-    attempt: int,
-) -> None:
-    require_feature(feature)
-    expected = reviews_dir / f"{feature}-{task}-a{attempt}-handoff.json"
-    if reviews_dir.is_symlink():
-        raise GateError(f"reviews directory must not be a symlink: {reviews_dir}")
-    if handoff.is_symlink():
-        raise GateError(f"handoff evidence must not be a symlink: {handoff}")
-    if handoff.parent.resolve() != reviews_dir.resolve() or handoff.name != expected.name:
-        raise GateError(f"handoff must use the task evidence path: {expected}")
-
-
-def validate_attempt_chain(reviews_dir: Path, feature: str, task: str, attempt: int) -> None:
-    if attempt != 2:
-        return
-    prior_handoff = reviews_dir / f"{feature}-{task}-a1-handoff.json"
-    require_expected_handoff_path(
-        prior_handoff,
-        reviews_dir=reviews_dir,
-        feature=feature,
-        task=task,
-        attempt=1,
-    )
-    prior_payload = load_handoff(prior_handoff, task=task, attempt=1)
-    if prior_payload["status"] != "ready_for_review":
-        raise GateError("attempt 2 requires a ready_for_review attempt 1 handoff")
-    prior_path = review_path(reviews_dir, feature, task, 1)
-    prior = validate_review(
-        prior_path,
-        task=task,
-        attempt=1,
-        handoff=prior_handoff,
-        changed_files=prior_payload["changed_files"],
-    )
-    if prior["verdict"] != "changes_requested":
-        raise GateError("attempt 2 requires round 1 verdict: changes_requested")
-
-
-def check_n4(args: argparse.Namespace) -> Mapping[str, object]:
-    handoff_path = Path(args.handoff)
-    payload = load_handoff(handoff_path, task=args.task)
-    if payload["status"] != "ready_for_review":
-        raise GateError("N4 requires a ready_for_review handoff")
-    attempt = int(payload["attempt"])
-    reviews_dir = Path(args.reviews_dir)
-    require_expected_handoff_path(
-        handoff_path,
-        reviews_dir=reviews_dir,
-        feature=args.feature,
-        task=args.task,
-        attempt=attempt,
-    )
-    validate_attempt_chain(reviews_dir, args.feature, args.task, attempt)
-    return {
-        "gate": "n4",
-        "task": args.task,
-        "attempt": attempt,
-        "outcome": "ready_for_review",
-        "handoff_sha256": file_sha256(handoff_path),
-    }
-
-
-def check_n5(args: argparse.Namespace) -> Mapping[str, object]:
-    handoff_path = Path(args.handoff)
-    payload = load_handoff(handoff_path, task=args.task)
-    if payload["status"] != "ready_for_review":
-        raise GateError("N5 requires a ready_for_review handoff")
-    attempt = int(payload["attempt"])
-    reviews_dir = Path(args.reviews_dir)
-    require_expected_handoff_path(
-        handoff_path,
-        reviews_dir=reviews_dir,
-        feature=args.feature,
-        task=args.task,
-        attempt=attempt,
-    )
-    validate_attempt_chain(reviews_dir, args.feature, args.task, attempt)
-    path = review_path(reviews_dir, args.feature, args.task, attempt)
-    review = validate_review(
-        path,
-        task=args.task,
-        attempt=attempt,
-        handoff=handoff_path,
-        changed_files=payload["changed_files"],
-    )
-    if review["verdict"] != "approved":
-        raise GateError(f"N5 requires verdict: approved, got {review['verdict']}")
-    return {
-        "gate": "n5",
-        "task": args.task,
-        "attempt": attempt,
-        "outcome": "approved",
-        "review": str(path.resolve()),
-    }
-
-
-def mark_done(args: argparse.Namespace) -> Mapping[str, object]:
-    approval = dict(check_n5(args))
-    tasks_path = Path(args.tasks)
-    expected_tasks = Path(args.reviews_dir).parent / "tasks.md"
-    if tasks_path.resolve() != expected_tasks.resolve():
-        raise GateError(f"tasks file must be the specs-local authority: {expected_tasks}")
-    if tasks_path.is_symlink():
-        raise GateError(f"tasks file must not be a symlink: {tasks_path}")
-    try:
-        text = tasks_path.read_text(encoding="utf-8")
-        mode = tasks_path.stat().st_mode
-    except (FileNotFoundError, OSError) as exc:
-        raise GateError(f"cannot read tasks file {tasks_path}: {exc}") from exc
-
-    task_pattern = re.compile(
-        rf"^(?P<prefix>\s*-\s*)\[(?P<state>[ xX])\](?P<suffix>\s+{re.escape(args.task)}(?=[:\s]|$).*)$"
-    )
-    lines = text.splitlines(keepends=True)
-    matches: List[Tuple[int, re.Match[str]]] = []
-    for index, line in enumerate(lines):
-        match = task_pattern.match(line.rstrip("\r\n"))
-        if match:
-            matches.append((index, match))
-    if len(matches) != 1:
-        raise GateError(f"tasks file must contain exactly one checkbox for {args.task}")
-
-    index, match = matches[0]
-    if match.group("state").lower() == "x":
-        approval["outcome"] = "already_done"
-        approval["tasks"] = str(tasks_path.resolve())
-        return approval
-
-    newline = "\r\n" if lines[index].endswith("\r\n") else "\n" if lines[index].endswith("\n") else ""
-    lines[index] = f"{match.group('prefix')}[x]{match.group('suffix')}{newline}"
-    tasks_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        descriptor, raw_temp = tempfile.mkstemp(
-            prefix=f".{tasks_path.name}.", suffix=".tmp", dir=str(tasks_path.parent)
-        )
-        temp_path = Path(raw_temp)
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
-            handle.write("".join(lines))
+        descriptor = os.open(binding, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(expected)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temp_path, stat.S_IMODE(mode))
-        os.replace(temp_path, tasks_path)
-    except OSError as exc:
-        raise GateError(f"cannot atomically update tasks file {tasks_path}: {exc}") from exc
+    except FileExistsError:
+        pass
+    private_control_file(binding, 16384)
+    revision = file_revision(binding)
+    if revision[1] != expected:
+        raise GateError("task owner mismatch or corrupt binding; refusing rebind")
+    sync_control_path(binding)
+    sync_control_path(reviews)
+    sync_control_path(parent)
+    if file_revision(binding) != revision:
+        raise GateError("task owner binding changed")
+    return binding, revision
+
+
+def writer_database_digest(lock: Path, descriptor: int) -> str:
+    before = private_control_file(lock, 65536)
+    opened = os.fstat(descriptor)
+    content = os.pread(descriptor, 65537, 0)
+    after = os.fstat(descriptor)
+    current = lock.lstat()
+    key = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+    if not key(before) == key(opened) == key(after) == key(current) or len(content) != before.st_size:
+        raise GateError("writer database changed")
+    return hashlib.sha256(content).hexdigest()
+
+
+def writer_ready(lock: Path, descriptor: int) -> tuple[Path, tuple[tuple[int, ...], bytes]]:
+    marker = lock.parent / "writer-ready.json"
+    private_control_file(marker, 1024)
+    revision = file_revision(marker)
+    expected = (json.dumps({"version": 1, "protocol": "cm-writer-ready", "databaseDigest": writer_database_digest(lock, descriptor)}, separators=(",", ":")) + "\n").encode("utf-8")
+    if revision[1] != expected:
+        raise GateError("invalid writer readiness; refusing recovery/adoption")
+    if file_revision(marker) != revision:
+        raise GateError("writer readiness changed")
+    return marker, revision
+
+
+def publish_writer_ready(lock: Path, descriptor: int) -> None:
+    if os.path.lexists(str(lock) + "-journal"):
+        raise GateError("retained initialization journal")
+    private_control_file(lock, 65536)
+    payload = (json.dumps({"version": 1, "protocol": "cm-writer-ready", "databaseDigest": writer_database_digest(lock, descriptor)}, separators=(",", ":")) + "\n").encode("utf-8")
+    descriptor_out = os.open(lock.parent / "writer-ready.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(descriptor_out, "wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    sync_control_path(lock.parent)
+
+
+@contextmanager
+def posix_writer(reviews: Path, tasks: Path, feature: str) -> Iterator[Path]:
+    root = reviews.resolve().parent
+    execution = reviews / ".execution"
+    database = None
+    inspection_fd = None
+    try:
+        if reviews.name != ".reviews":
+            raise GateError("task ownership requires the canonical .reviews directory")
+        control_directory(reviews)
+        binding, binding_revision = bind_task_owner(tasks, root, feature)
+        control_directory(execution, create=True, private=True)
+        for item in execution.iterdir():
+            if item.name not in {"writer.sqlite", "writer-ready.json"}:
+                raise GateError("retained journal, JS run or unknown evidence blocks compatibility writer")
+            private_control_file(item, 65536)
+        lock = execution / "writer.sqlite"
+        created = False
+        if not os.path.lexists(lock):
+            if list(execution.iterdir()):
+                raise GateError("missing writer database with retained execution evidence")
+            try:
+                descriptor = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                os.fsync(descriptor)
+                os.close(descriptor)
+                sync_control_path(execution)
+                created = True
+            except FileExistsError:
+                pass
+        info = private_control_file(lock, 65536)
+        if not created and info.st_size == 0:
+            raise GateError("incomplete writer database")
+        inspection_fd = os.open(lock, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        prior_ready = None
+        if os.path.lexists(str(lock) + "-journal"):
+            raise GateError("retained initialization journal")
+        if not created:
+            marker, prior_ready = writer_ready(lock, inspection_fd)
+            os.fsync(inspection_fd)
+            sync_control_path(marker)
+            sync_control_path(execution)
+        database = sqlite3.connect(str(lock), timeout=0, isolation_level=None)
+        database.executescript("PRAGMA busy_timeout=0; PRAGMA trusted_schema=OFF; PRAGMA synchronous=EXTRA; PRAGMA fullfsync=ON;")
+        protocol_sql = "CREATE TABLE protocol(version INTEGER NOT NULL CHECK(version=1))"
+        if created:
+            database.executescript("BEGIN IMMEDIATE; PRAGMA application_id=1129142321; PRAGMA user_version=1; " + protocol_sql + "; INSERT INTO protocol VALUES(1); COMMIT;")
+            os.fsync(inspection_fd)
+            sync_control_path(execution)
+        database.execute("BEGIN IMMEDIATE")
+        if (database.execute("PRAGMA application_id").fetchone() != (0x434D5831,) or database.execute("PRAGMA user_version").fetchone() != (1,) or database.execute("PRAGMA journal_mode").fetchone() != ("delete",) or database.execute("SELECT name,type,tbl_name,sql FROM sqlite_master").fetchall() != [("protocol", "table", "protocol", protocol_sql)] or database.execute("SELECT version FROM protocol").fetchall() != [(1,)]):
+            raise GateError("unknown writer protocol; refusing reset")
+        if created:
+            publish_writer_ready(lock, inspection_fd)
+        marker, current_ready = writer_ready(lock, inspection_fd)
+        if prior_ready is not None and prior_ready != current_ready:
+            raise GateError("writer readiness changed")
+        if file_revision(binding) != binding_revision or file_revision(marker) != current_ready:
+            raise GateError("task ownership evidence changed")
+        yield lock.resolve()
+    except (OSError, sqlite3.Error) as error:
+        raise GateError(f"task writer unavailable: {error}") from error
     finally:
-        if temp_path is not None and temp_path.exists():
-            temp_path.unlink()
-
-    approval["outcome"] = "marked_done"
-    approval["tasks"] = str(tasks_path.resolve())
-    return approval
+        if database is not None:
+            database.close()
+        if inspection_fd is not None:
+            os.close(inspection_fd)
 
 
-def run_git(path: Path, *arguments: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(path), *arguments],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+@contextmanager
+def windows_writer(reviews: Path) -> Iterator[Path]:
+    import msvcrt
+
+    if reviews.name != ".reviews" or not reviews.is_dir() or reviews.is_symlink():
+        raise GateError("task ownership requires the canonical .reviews directory")
+    lock = reviews / ".cm-task-write.lock"
+    descriptor = os.open(lock, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        if os.fstat(descriptor).st_size == 0:
+            os.write(descriptor, b"0")
+            os.fsync(descriptor)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+        yield lock.resolve()
+    except OSError as error:
+        raise GateError(f"task writer unavailable: {error}") from error
+    finally:
+        try:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        os.close(descriptor)
+
+
+@contextmanager
+def task_writer(reviews: Path, tasks: Path, feature: str) -> Iterator[Path]:
+    if os.name == "nt":
+        with windows_writer(reviews) as lock:
+            yield lock
+    else:
+        with posix_writer(reviews, tasks, feature) as lock:
+            yield lock
+
+
+def run_js(arguments: Sequence[str], *, environment: Mapping[str, str] | None = None, capture: bool = False):
+    entry = Path(__file__).resolve().with_name("cm-task-gate.mjs")
+    return subprocess.run(["node", str(entry), *arguments], check=False, text=True, capture_output=capture, env=dict(environment) if environment is not None else None)
+
+
+def read_js_object(arguments: Sequence[str], *, environment: Mapping[str, str] | None = None) -> dict[str, object]:
+    result = run_js(arguments, environment=environment, capture=True)
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "git command failed"
-        raise GateError(f"git -C {path} {' '.join(arguments)}: {detail}")
-    return result.stdout.strip()
+        detail = result.stderr.strip() or result.stdout.strip() or "JavaScript task gate failed"
+        raise GateError(detail.removeprefix("ERROR: "))
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise GateError("JavaScript task gate returned invalid JSON") from error
+    if not isinstance(value, dict):
+        raise GateError("JavaScript task gate returned a non-object result")
+    return value
 
 
-def common_git_dir(path: Path) -> Path:
-    raw = Path(run_git(path, "rev-parse", "--git-common-dir"))
-    return (path / raw).resolve() if not raw.is_absolute() else raw.resolve()
-
-
-def registered_worktrees(repo: Path) -> Dict[Path, Tuple[str, bool]]:
-    output = run_git(repo, "worktree", "list", "--porcelain")
-    entries: Dict[Path, Tuple[str, bool]] = {}
-    current_path: Path | None = None
-    branch = ""
-    detached = False
-    for line in [*output.splitlines(), ""]:
-        if line.startswith("worktree "):
-            if current_path is not None:
-                entries[current_path] = (branch, detached)
-            current_path = Path(line[len("worktree ") :]).resolve()
-            branch = ""
-            detached = False
-        elif line.startswith("branch "):
-            branch = line[len("branch refs/heads/") :] if line.startswith("branch refs/heads/") else line[7:]
-        elif line == "detached":
-            detached = True
-        elif not line and current_path is not None:
-            entries[current_path] = (branch, detached)
-            current_path = None
-    return entries
-
-
-def parse_assignment(raw: str) -> Tuple[str, Path]:
-    if "=" not in raw:
-        raise GateError("assignment must use T-xxx=/absolute/worktree/path")
-    task, raw_path = raw.split("=", 1)
-    require_task_id(task, "assignment task")
-    path = Path(require_string(raw_path, "assignment path"))
-    if not path.is_absolute():
-        raise GateError("assignment path must be absolute")
-    return task, path.resolve()
-
-
-def check_parallel_write(args: argparse.Namespace) -> Mapping[str, object]:
-    repo = Path(args.repo).resolve()
-    if len(args.assignment) < 2:
-        raise GateError("parallel write guard requires at least two assignments")
-    base_common = common_git_dir(repo)
-    registered = registered_worktrees(repo)
-    assignments = [parse_assignment(raw) for raw in args.assignment]
-    tasks = [item[0] for item in assignments]
-    paths = [item[1] for item in assignments]
-    if len(set(tasks)) != len(tasks):
-        raise GateError("parallel write assignments must use unique task ids")
-    if len(set(paths)) != len(paths):
-        raise GateError("parallel write assignments must use distinct worktree paths")
-
-    branches: List[str] = []
-    for task, path in assignments:
-        if path not in registered:
-            raise GateError(f"{task} path is not a registered worktree: {path}")
-        if common_git_dir(path) != base_common:
-            raise GateError(f"{task} worktree belongs to a different repository")
-        branch, detached = registered[path]
-        observed_branch = run_git(path, "branch", "--show-current")
-        if detached or not branch or not observed_branch:
-            raise GateError(f"{task} worktree must use a non-detached branch")
-        if branch != observed_branch:
-            raise GateError(f"{task} branch metadata does not match the worktree")
-        branches.append(branch)
-    if len(set(branches)) != len(branches):
-        raise GateError("parallel write assignments must use distinct branches")
-    return {
-        "gate": "parallel-write",
-        "outcome": "isolated",
-        "assignments": [
-            {"task": task, "worktree": str(path), "branch": branch}
-            for (task, path), branch in zip(assignments, branches)
-        ],
-    }
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-
-    validate = commands.add_parser("validate-handoff")
-    validate.add_argument("--handoff", required=True)
-    validate.add_argument("--task", required=True)
-    validate.add_argument("--attempt", required=True, type=int)
-
-    for name in ("check-n4", "check-n5"):
-        command = commands.add_parser(name)
-        command.add_argument("--handoff", required=True)
-        command.add_argument("--reviews-dir", required=True)
-        command.add_argument("--feature", required=True)
-        command.add_argument("--task", required=True)
-
-    mark = commands.add_parser("mark-done")
-    mark.add_argument("--handoff", required=True)
-    mark.add_argument("--reviews-dir", required=True)
-    mark.add_argument("--feature", required=True)
-    mark.add_argument("--task", required=True)
-    mark.add_argument("--tasks", required=True)
-
-    parallel = commands.add_parser("check-parallel-write")
-    parallel.add_argument("--repo", required=True)
-    parallel.add_argument("--assignment", action="append", default=[], required=True)
+def mark_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="cm-task-gate.py")
+    parser.add_argument("command", choices=["mark-done"])
+    parser.add_argument("--handoff", required=True)
+    parser.add_argument("--reviews-dir", required=True)
+    parser.add_argument("--feature", required=True)
+    parser.add_argument("--task", required=True)
+    parser.add_argument("--tasks", required=True)
     return parser
 
 
+def mark_done(raw_arguments: Sequence[str]) -> dict[str, object]:
+    args = mark_parser().parse_args(raw_arguments)
+    prepare_arguments = ["prepare-mark-done", *raw_arguments[1:]]
+    initial = read_js_object(prepare_arguments)
+    tasks = Path(str(initial.get("tasksPath", "")))
+    if not tasks.is_absolute():
+        raise GateError("JavaScript task gate returned an invalid completion plan")
+    reviews = Path(args.reviews_dir).resolve()
+    with task_writer(reviews, tasks, args.feature) as lock:
+        plan = read_js_object(prepare_arguments)
+        plan_digest = str(plan.get("planDigest", ""))
+        if Path(str(plan.get("tasksPath", ""))) != tasks or not re.fullmatch(r"[0-9a-f]{64}", plan_digest):
+            raise GateError("JavaScript task gate returned an invalid completion plan")
+        environment = os.environ.copy()
+        environment.update({"CM_TASK_GATE_LOCK_ADAPTER": "1", "CM_TASK_GATE_LOCK_PARENT_PID": str(os.getpid()), "CM_TASK_GATE_WRITER_LOCK": str(lock)})
+        return read_js_object(["mark-done-locked", *raw_arguments[1:], "--expected-plan-digest", plan_digest], environment=environment)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    raw_arguments = list(argv) if argv is not None else sys.argv[1:]
+    if not raw_arguments or raw_arguments[0] != "mark-done":
+        result = run_js(raw_arguments)
+        return result.returncode if result.returncode >= 0 else 128 - result.returncode
     try:
-        if hasattr(args, "task"):
-            require_task_id(args.task, "task")
-        if args.command == "validate-handoff":
-            payload = load_handoff(Path(args.handoff), task=args.task, attempt=args.attempt)
-            result: Mapping[str, object] = {
-                "gate": "handoff",
-                "task": payload["task_id"],
-                "attempt": payload["attempt"],
-                "outcome": payload["status"],
-            }
-        elif args.command == "check-n4":
-            result = check_n4(args)
-        elif args.command == "check-n5":
-            result = check_n5(args)
-        elif args.command == "mark-done":
-            result = mark_done(args)
-        else:
-            result = check_parallel_write(args)
-    except GateError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        result = mark_done(raw_arguments)
+    except GateError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     return 0

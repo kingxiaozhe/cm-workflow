@@ -104,8 +104,8 @@ CM Workflow 经常同时使用两个目录：
 凭据；配置缺失时仍使用当前默认流程。检查有效配置：
 
 ```bash
-python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py --project {代码项目路径}
-python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py --project {代码项目路径} --print-effective
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs --project {代码项目路径}
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs --project {代码项目路径} --print-effective
 ```
 
 常见的请求分工是：编码角色选择 Codex CLI/订阅，需求和方案角色选择 Claude/Fable 等
@@ -298,7 +298,7 @@ $cm-test ~/code/my-app 用户登录
 $cm-fix ~/projects/my-app-specs ~/code/my-app 登录成功后仍然停留在登录页
 ```
 
-`$cm-fix` 会先建立可复现的红灯测试，再定位根因、做最小修复、回归并审查。若调查发现实际需要新增行为或改变契约，应退出修复流，改走 `$cm-prd --change`。
+`$cm-fix` 会先建立可复现的红灯测试，再定位根因、做最小修复、回归并审查。跨服务、异步或偶现问题会在本地记录最小观测、调用链和假设；仅在无法稳定复现时才进入“观测中”，证据到手后按原 slug 续跑。已可复现的问题则带着证据链走正常七步。若调查发现实际需要新增行为或改变契约，应退出修复流，改走 `$cm-prd --change`。
 
 </details>
 

@@ -7,14 +7,14 @@ role permission to edit files.
 ## Load and resolve
 
 1. N1 loads the effective config with
-   `scripts/cm_workflow_config.py --project {CODE_PROJECT}`. A missing config uses
+   `scripts/cm-workflow-config.mjs --project {CODE_PROJECT}`. A missing config uses
    the built-in defaults.
 2. N7/resume and every role boundary reread the file. A changed or invalid file
    is recorded as `warning`/`error` and never silently treated as the old route.
 3. Resolve one role with:
 
    ```bash
-   python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
+   node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
      --project {CODE_PROJECT} --role planner --runtime codex --print-role
    ```
 

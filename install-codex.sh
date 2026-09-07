@@ -37,11 +37,25 @@ find_python() {
   return 1
 }
 
+find_node() {
+  if command -v node >/dev/null 2>&1 &&
+    node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' >/dev/null 2>&1; then
+    command -v node
+    return 0
+  fi
+  return 1
+}
+
 PYTHON_BIN=""
 if PYTHON_BIN="$(find_python)"; then
   :
 else
   echo "Python 3.9+ not found. Install Python or expose it as python3/python, then rerun." >&2
+  exit 1
+fi
+
+if ! NODE_BIN="$(find_node)"; then
+  echo "Node.js 18+ not found. Install Node.js or expose it as node, then rerun." >&2
   exit 1
 fi
 

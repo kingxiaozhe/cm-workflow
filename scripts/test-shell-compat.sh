@@ -26,33 +26,60 @@ if [ -z "$REAL_PYTHON" ]; then
   exit 2
 fi
 
+REAL_NODE=""
+if command -v node >/dev/null 2>&1 &&
+  node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' >/dev/null 2>&1; then
+  REAL_NODE="$(command -v node)"
+fi
+if [ -z "$REAL_NODE" ]; then
+  echo "shell compatibility fixtures: BLOCKED (Node.js 18+ not found)" >&2
+  exit 2
+fi
+
 # The runtime checker must continue to work when a platform exposes only
-# `python`, even though `python3` is unavailable on PATH.
-FAKE_BIN="$TMP_ROOT/python-only-bin"
+# `python`, even though `python3` is unavailable on PATH. Node.js remains a
+# declared runtime requirement for the JavaScript config authority.
+FAKE_BIN="$TMP_ROOT/compat-bin"
 mkdir -p "$FAKE_BIN"
 printf '%s\n' '#!/usr/bin/env bash' "exec \"$REAL_PYTHON\" \"\$@\"" > "$FAKE_BIN/python"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 127' > "$FAKE_BIN/python3"
-chmod +x "$FAKE_BIN/python" "$FAKE_BIN/python3"
+printf '%s\n' '#!/usr/bin/env bash' "exec \"$REAL_NODE\" \"\$@\"" > "$FAKE_BIN/node"
+chmod +x "$FAKE_BIN/python" "$FAKE_BIN/python3" "$FAKE_BIN/node"
 
 if PATH="$FAKE_BIN:/usr/bin:/bin" "$ROOT/scripts/cm-check-runtime.sh" \
-  >"$TMP_ROOT/python-only.out" 2>&1; then
+  >"$TMP_ROOT/python-fallback.out" 2>&1; then
   :
 else
-  cat "$TMP_ROOT/python-only.out" >&2
-  fail "runtime checker must support a python-only PATH"
+  cat "$TMP_ROOT/python-fallback.out" >&2
+  fail "runtime checker must support the python fallback with Node.js present"
 fi
 
 # The Codex installer performs the same fallback before it validates its
 # arguments. An invalid option gives us a side-effect-free smoke check.
 if PATH="$FAKE_BIN:/usr/bin:/bin" "$ROOT/install-codex.sh" --invalid \
-  >"$TMP_ROOT/installer-python-only.out" 2>&1; then
+  >"$TMP_ROOT/installer-python-fallback.out" 2>&1; then
   fail "Codex installer must reject an invalid option"
-elif grep -q 'Usage:' "$TMP_ROOT/installer-python-only.out" &&
-  ! grep -q 'Python 3.9+ not found' "$TMP_ROOT/installer-python-only.out"; then
+elif grep -q 'Usage:' "$TMP_ROOT/installer-python-fallback.out" &&
+  ! grep -q 'Python 3.9+ not found' "$TMP_ROOT/installer-python-fallback.out"; then
   :
 else
-  cat "$TMP_ROOT/installer-python-only.out" >&2
-  fail "Codex installer must support a python-only PATH"
+  cat "$TMP_ROOT/installer-python-fallback.out" >&2
+  fail "Codex installer must support the python fallback with Node.js present"
+fi
+
+# Missing Node.js must fail before an installer can mutate user directories.
+NO_NODE_BIN="$TMP_ROOT/no-node-bin"
+mkdir -p "$NO_NODE_BIN"
+cp "$FAKE_BIN/python" "$NO_NODE_BIN/python"
+cp "$FAKE_BIN/python3" "$NO_NODE_BIN/python3"
+if PATH="$NO_NODE_BIN:/usr/bin:/bin" "$ROOT/install-codex.sh" --yes \
+  >"$TMP_ROOT/installer-no-node.out" 2>&1; then
+  fail "Codex installer must reject a PATH without Node.js"
+elif grep -q 'Node.js 18+ not found' "$TMP_ROOT/installer-no-node.out"; then
+  :
+else
+  cat "$TMP_ROOT/installer-no-node.out" >&2
+  fail "Codex installer must explain the Node.js requirement"
 fi
 
 make_git_fixture() {

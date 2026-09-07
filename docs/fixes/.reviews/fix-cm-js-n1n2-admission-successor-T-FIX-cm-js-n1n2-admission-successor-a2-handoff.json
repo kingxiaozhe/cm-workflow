@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "task_id": "T-FIX-cm-js-n1n2-admission-successor",
+  "attempt": 2,
+  "status": "ready_for_review",
+  "changed_files": [
+    "experiments/js-orchestration/cm-ai-admission.mjs",
+    "experiments/js-orchestration/cm-ai-admission.test.mjs",
+    "experiments/js-orchestration/README.md",
+    "AGENTS.md",
+    "docs/fixes/20260903-cm-js-n1n2-admission-successor.md"
+  ],
+  "verification": [
+    {
+      "command": "node --test experiments/js-orchestration/cm-ai-admission.test.mjs",
+      "status": "passed",
+      "evidence": "Successor R1 cross-alias reproduction failed red with 18 passed/1 failed and actual complete versus blocked; after one-line match-key uniqueness repair, 19/19 passed."
+    },
+    {
+      "command": "node --check experiments/js-orchestration/cm-ai-admission.mjs",
+      "status": "passed",
+      "evidence": "Node syntax check exited 0 for attempt 2."
+    },
+    {
+      "command": "node --test experiments/js-orchestration/*.test.mjs",
+      "status": "passed",
+      "evidence": "983/983 tests passed with exit 0 after the R1 correction."
+    },
+    {
+      "command": "./scripts/cm-check-runtime.sh",
+      "status": "passed",
+      "evidence": "Runtime check passed for plugin v0.10.4 after the R1 correction."
+    },
+    {
+      "command": "python3 scripts/validate-public-repo.py",
+      "status": "passed",
+      "evidence": "Public repository validation passed for v0.10.4 and 8 core skills."
+    },
+    {
+      "command": "git diff --check",
+      "status": "passed",
+      "evidence": "Tracked diff has no whitespace errors; new candidate files are separately bound by full-file SHA-256 and parsed by Node/tests."
+    }
+  ],
+  "evidence": [
+    "Human successor authorization and exact non-goals: .omx/plans/cm-js-n1n2-admission-successor.md",
+    "Blocked predecessor R2: .omx/research/cm-js-n1n2-admission-review-r2.md",
+    "Successor attempt1 handoff: docs/fixes/.reviews/fix-cm-js-n1n2-admission-successor-T-FIX-cm-js-n1n2-admission-successor-a1-handoff.json",
+    "Successor R1 changes_requested evidence: docs/fixes/.reviews/fix-cm-js-n1n2-admission-successor-T-FIX-cm-js-n1n2-admission-successor-r1.md",
+    "Defect archive with both red-green cycles: docs/fixes/20260903-cm-js-n1n2-admission-successor.md",
+    "Ordered five-file SHA-256 manifest digest: e856aa0e470b535b4cf3bebcb5b7cddbde2bbe6e84833ddc2c1939b9e47830ea",
+    "Implementation SHA-256: 4f3255ef5a8e225d336096a0a4cb519ec25ec8251bc82fb3e4885f786231eecf",
+    "Focused-test SHA-256: 9ca76c3cfd87ea6b81851a27c176a980f94e03416ecf6e011fb10008bebae003",
+    "README SHA-256: 5aac78e5e74a653fdd09fe2888af1d94d459a91f2b8123bfeb11a5e0d8c95cdc",
+    "AGENTS.md SHA-256: 4f435c1e34088df7dd4f5a77936f14456f0099e72f173a2cd7f4384495463528",
+    "Defect archive SHA-256: 08aea6a285bac5dfac62407bf9700e5fdf17ad3050be9307d29299dd7355214e",
+    "Public safety scan remains exit 1 with the exact five pre-existing findings; none is in successor scope and none is waived.",
+    "Pre-successor dirty-status hash: f0f7b07d8061a858e56204e95789e6fe580c3f9668bfbc527b18109f34e19626. Unrelated user changes remain excluded.",
+    "Source compatibility degradation remains unchanged: no runtime/model-efficiency.md or hash-implementation command was invented."
+  ],
+  "blockers": [],
+  "scope_deviation": []
+}

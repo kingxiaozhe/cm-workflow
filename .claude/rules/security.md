@@ -31,6 +31,7 @@ description: 本仓库的安全红线——写用户机器、第三方许可、p
 ## 二、密钥与敏感内容
 
 - 仓库内禁止任何真实密钥、token、私钥、连接串、内网地址、真实客户名。
+- 本项目不读取 `.env`；本地凭证或测试秘密必须放在仓库外的临时环境中。未来若引入 `.env`，必须先加入 `.gitignore`，仅提交无真实值的 `.env.example`。
 - `docs/sample-prd/`、`docs/sample-specs/` 是公开示例——放进去前确认已脱敏（无公司内部项目名、真实业务数据）。
 - commit body 里的 `Claude-Session:` 链接是会话追溯，不含凭证，可以留。
 - `cm-contract-agent` 的「不碰私钥、不执行主网部署」约束不得放宽。
