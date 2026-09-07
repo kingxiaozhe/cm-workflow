@@ -405,10 +405,31 @@ function validateAttemptChain(reviewsDir,feature,task,attempt){
     throw new GateError('attempt 2 requires round 1 verdict: changes_requested');
 }
 
-export function checkN4({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false}){
+function verifyLearningRecord(payload,projectRoot){
+  const applications=payload.evidence.filter(item=>item.startsWith('learning: applied ')||item==='learning: no_relevant_lesson');
+  const outcomes=payload.evidence.filter(item=>item.startsWith('learning: retrospective '));
+  if(applications.length!==1||outcomes.length!==1)
+    throw new GateError('Learning requires exactly one application and one retrospective record');
+  if(applications[0].startsWith('learning: applied ')&&!applications[0].slice(18).trim())
+    throw new GateError('Learning applied record requires a concrete lesson and action');
+  if(!['learning: retrospective no_new_lesson','learning: retrospective written AGENTS.md'].includes(outcomes[0]))
+    throw new GateError('Learning retrospective must be complete; pending writeback cannot pass');
+  if(outcomes[0]==='learning: retrospective written AGENTS.md'){
+    if(!projectRoot||!payload.changed_files.includes('AGENTS.md'))
+      throw new GateError('Learning writeback requires AGENTS.md in the reviewed implementation');
+    const target=path.join(projectRoot,'AGENTS.md');
+    const info=fs.lstatSync(target);
+    if(!info.isFile()||info.isSymbolicLink())throw new GateError('Learning AGENTS.md must be a regular file');
+  }
+  if(!payload.implementation_sha256||!projectRoot)
+    throw new GateError('Learning requires a content-bound handoff');
+}
+
+export function checkN4({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false}){
   requireTaskId(task,'task');
   const payload=loadHandoff(handoff,{task});
   if(payload.status!=='ready_for_review')throw new GateError('N4 requires a ready_for_review handoff');
+  if(requireLearning)verifyLearningRecord(payload,projectRoot);
   const attempt=payload.attempt;
   requireExpectedHandoff(handoff,{reviewsDir,feature,task,attempt});
   validateAttemptChain(reviewsDir,feature,task,attempt);
@@ -416,10 +437,11 @@ export function checkN4({handoff,reviewsDir,feature,task,projectRoot=null,allowL
   return {gate:'n4',task,attempt,outcome:'ready_for_review',handoff_sha256:sha256(handoff),content_bound:contentBound};
 }
 
-export function checkN5({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false}){
+export function checkN5({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false}){
   requireTaskId(task,'task');
   const payload=loadHandoff(handoff,{task});
   if(payload.status!=='ready_for_review')throw new GateError('N5 requires a ready_for_review handoff');
+  if(requireLearning)verifyLearningRecord(payload,projectRoot);
   const attempt=payload.attempt;
   requireExpectedHandoff(handoff,{reviewsDir,feature,task,attempt});
   validateAttemptChain(reviewsDir,feature,task,attempt);
@@ -735,7 +757,7 @@ function parseCli(argv){
   const allowed=command==='validate-handoff'?new Set(['--handoff','--task','--attempt'])
     :command==='hash-implementation'?new Set(['--project-root','--file'])
     :command==='check-parallel-write'?new Set(['--repo','--assignment'])
-    :new Set(['--handoff','--reviews-dir','--feature','--task','--project-root','--allow-legacy-unbound',
+    :new Set(['--handoff','--reviews-dir','--feature','--task','--project-root','--allow-legacy-unbound','--require-learning',
       ...(['prepare-mark-done','verify-mark-done-plan','mark-done-locked'].includes(command)?['--tasks']:[]),
       ...(['verify-mark-done-plan','mark-done-locked'].includes(command)?['--expected-plan-digest']:[])]);
   const required=command==='validate-handoff'?new Set(['--handoff','--task','--attempt'])
@@ -748,9 +770,10 @@ function parseCli(argv){
   for(let index=1;index<argv.length;){
     const flag=argv[index];
     if(!allowed.has(flag))throw new GateError('invalid arguments');
-    if(flag==='--allow-legacy-unbound'){
-      if(Object.hasOwn(values,'allowLegacyUnbound'))throw new GateError(`duplicate argument: ${flag}`);
-      values.allowLegacyUnbound=true;index++;continue;
+    if(flag==='--allow-legacy-unbound'||flag==='--require-learning'){
+      const key=flag==='--require-learning'?'requireLearning':'allowLegacyUnbound';
+      if(Object.hasOwn(values,key))throw new GateError(`duplicate argument: ${flag}`);
+      values[key]=true;index++;continue;
     }
     const value=argv[index+1];if(value===undefined)throw new GateError('invalid arguments');
     const key={'--handoff':'handoff','--reviews-dir':'reviewsDir','--feature':'feature','--task':'task','--attempt':'attempt',

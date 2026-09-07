@@ -7,6 +7,14 @@ existing `{SPECS_DIR}/.reviews/` domain.
 
 ## Implementation handoff
 
+The active cm-ai Skill passes `--require-learning` to `check-n4` and the existing
+Python lock adapter's `mark-done`. The same JS N5/prepare/locked completion path
+requires application and retrospective strings defined in `project-learning.md`.
+Written AGENTS.md must be included in the content-bound implementation and review.
+The flag checks record completeness, not the truth of an agent's statement; independent
+review still verifies the actual work. Legacy callers remain compatible without this
+flag, and the persistent runner retains its existing structured Learning checks.
+
 For attempt 1 or 2, N3 writes:
 
 ```text

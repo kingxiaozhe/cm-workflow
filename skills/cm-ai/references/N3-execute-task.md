@@ -94,7 +94,7 @@ SHA 替代它。后续若任一已审文件内容变化，必须生成下一 att
 进入 N4 前必须真跑：
 
 ```bash
-node {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs check-n4 \
+node {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs check-n4 --require-learning \
   --handoff {HANDOFF_PATH} \
   --reviews-dir {SPECS_DIR}/.reviews \
   --feature {FEATURE_SLUG} \

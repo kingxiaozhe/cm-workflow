@@ -1,3 +1,4 @@
+import {writeHandoff,writeReview} from './native-gate-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -275,9 +276,7 @@ test('real V3/store composition completes through the existing owner and blocks 
   fs.writeFileSync(path.join(codeProject,'requirements.md'),'fixture\n');
   const tasksPath=path.join(specsDir,'1.login','tasks.md'),taskBefore=fs.readFileSync(tasksPath);
   const handoffs=[1,2].map(attempt=>path.join(reviewsDir,`login-T-001-a${attempt}-handoff.json`));
-  const py=`import runpy,sys\nfrom pathlib import Path\nm=runpy.run_path(sys.argv[1]);r=Path(sys.argv[2])\nh=r/'login-T-001-a1-handoff.json'\nm['write_handoff'](h,attempt=1)`;
-  const made=spawnSync('python3',['-c',py,path.resolve(import.meta.dirname,'../../scripts/test-task-gate.py'),reviewsDir],{encoding:'utf8'});
-  assert.equal(made.status,0,made.stderr);
+  writeHandoff(handoffs[0],codeProject,['code.js']);
   const owner={tasksPath,feature:'login',specsRoot:specsDir,
     identity:{repositoryId:identity.repositoryId,runId:identity.runId},
     fingerprints:{workflow:digest('conversation'),config:digest('fixture'),inputs:digest('original')},create:true};
@@ -287,6 +286,7 @@ test('real V3/store composition completes through the existing owner and blocks 
       excludedContexts:['main'],timeoutMs:1000,
       developer:{provider:'codex',requestedModel:'fixture',contextId:'developer-logical',run:request=>{
         developerCalls++;fs.writeFileSync(path.join(codeProject,'code.js'),'new\n');
+        writeHandoff(handoffs[0],codeProject,['code.js']);
         const learning=request.payload.learningInput;
         const application=createCmAiTaskLearningApplication({feature:learning.feature,identity:request.identity,
           learningDigest:learning.learningDigest,status:'no_relevant_lesson',note:null});
@@ -297,9 +297,7 @@ test('real V3/store composition completes through the existing owner and blocks 
       }},
       reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',allowed:true,
         available:true,contexts:['review-logical-1','review-logical-2'],run:(request,{onEvent})=>{
-          const reviewPy=`import runpy,sys\nfrom pathlib import Path\nm=runpy.run_path(sys.argv[1]);r=Path(sys.argv[2])\nh=r/'login-T-001-a1-handoff.json'\nm['write_review'](r/'login-T-001-r1.md',handoff=h,attempt=1,round_number=1,verdict='approved')`;
-          const written=spawnSync('python3',['-c',reviewPy,path.resolve(import.meta.dirname,'../../scripts/test-task-gate.py'),reviewsDir],{encoding:'utf8'});
-          assert.equal(written.status,0,written.stderr);
+          writeReview(path.join(reviewsDir,'login-T-001-r1.md'),handoffs[0]);
           reviewerCalls++;onEvent({event:'thread.started',provider_thread:'actual-review'});
           onEvent({event:'turn.started',item_type:null});onEvent({event:'item.completed',item_type:'agent_message'});
           onEvent({event:'turn.completed',item_type:null});onEvent({event:'process_closed',exit_code:0,signal:null,timed_out:false});
@@ -556,13 +554,20 @@ test('QA result rejects incomplete, contradictory, or out-of-root evidence',asyn
     fs.writeFileSync(path.join(specsDir,'outside.md'),'outside\n');
     const binding={node:'N6',feature:'1.login',task:'T-001',attempt:1,repository_id:'fixture',
       package_digest:packageDigest,qa_decision_id:'qa-triggered',operation_id:testRunId,mode:'commands'};
-    if(kind!=='missing_start')writeTestRun({specsDir,codeProject,logHome,phase:'start',
+    writeTestRun({specsDir,codeProject,logHome,phase:'start',
       at:'2026-09-04T13:21:00-07:00',data:{...binding,case_count:2}});
-    if(kind==='blocking_case')writeTestRun({specsDir,codeProject,logHome,phase:'case_blocked',
-      at:'2026-09-04T13:21:30-07:00',data:{...binding,case_id:'B-001',result:'BLOCKED'}});
     writeTestRun({specsDir,codeProject,logHome,phase:'complete',at:'2026-09-04T13:22:00-07:00',
-      data:{...binding,case_count:2,passed:kind==='contradictory_pass'?1:2,failed:0,blocked:0,result:'PASS',
+      data:{...binding,case_count:2,passed:2,failed:0,blocked:0,result:'PASS',
         report:kind==='outside_report'?'outside.md':'.reviews/qa.md'}});
+    // Corrupt an otherwise valid local fixture after production logging, so the
+    // consumer's negative cases do not stop at the producer's own safeguards.
+    const log=path.join(specsDir,'运行日志.jsonl');
+    let rows=fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse);
+    if(kind==='missing_start')rows=rows.filter(row=>!(row.event==='test_run'&&row.phase==='start'));
+    if(kind==='contradictory_pass')rows.at(-1).passed=1;
+    if(kind==='blocking_case')rows.splice(rows.length-1,0,{...rows.at(-1),phase:'case_blocked',
+      event_id:'synthetic-blocked-case',at:'2026-09-04T13:21:30-07:00',case_id:'B-001',result:'BLOCKED'});
+    fs.writeFileSync(log,rows.map(row=>JSON.stringify(row)).join('\n')+'\n');
     const result=await createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner})
       .handle(operation('qa_result',{packageDigest,testRunId}));
     assert.equal(result.outcome,'rejected');assert.equal(result.pendingAction,'none');

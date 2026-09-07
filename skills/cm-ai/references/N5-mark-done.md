@@ -11,7 +11,7 @@ AGENTS.md 已写入、被本次独立审查覆盖且磁盘摘要未变化；无�
 0. **审查结论与标记原子卡点（必须真跑命令不许目测或手改）**：执行下列命令并保留 JSON 输出：
 
    ```bash
-   python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py mark-done \
+   python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py mark-done --require-learning \
      --handoff {SPECS_DIR}/.reviews/{feature}-{任务号}-a{attempt}-handoff.json \
      --reviews-dir {SPECS_DIR}/.reviews \
      --feature {FEATURE_SLUG} \

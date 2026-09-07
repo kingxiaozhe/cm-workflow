@@ -32,5 +32,18 @@ task 复用证据，不能宣称完整端到端验收。
 
 ## 验收边界
 
+### 当前 cm-ai Skill 的机械检查
+
+N3 的 handoff `evidence[]` 在 Review 前包含恰好一条应用记录和一条复盘记录：
+
+- 应用：`learning: no_relevant_lesson`，或 `learning: applied {来源教训及本任务采用的具体动作}`。
+- 复盘：`learning: retrospective no_new_lesson`，或 `learning: retrospective written AGENTS.md`。
+
+N3 的 `check-n4` 和 N5 的 `mark-done` 必须传 `--require-learning`。此选项由现有 JS 门禁
+检查记录完整性；写回分支要求真实 AGENTS.md 进入 `changed_files`、实现摘要和独立 Review。
+待写回不得伪装成已写回。记录真实性由独立 Review 核实，门禁不会从一句文字推断动作真实发生。
+旧调用方及持久 runner 保持原协议；runner 已有更严格的 task-bound application/retrospective
+校验，不转换其既有记录，也不因新增 Skill 检查阻断旧 checkpoint 恢复。
+
 检查有新增、无新增、重复恢复、文件不存在、无法写入、批准后变化六个分支。
 源文件的引用检查和人工走查不等于真实项目端到端验证；安装与真实任务试跑仍需既有授权。

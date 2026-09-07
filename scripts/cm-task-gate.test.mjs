@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 
 import {
   GateError,checkN4,checkN5,implementationSha256,loadHandoff,prepareMarkDone,verifyMarkDonePlan,
-  checkParallelWrite,
+  checkParallelWrite,markDoneLocked,
 } from './cm-task-gate.mjs';
 
 const scriptsRoot=fileURLToPath(new URL('.',import.meta.url));
@@ -59,6 +59,51 @@ scope:
 ${body}
 `);
 }
+
+test('Skill Learning gate rejects missing or pending records and binds reviewed writeback',()=>fixture(root=>{
+  const reviews=path.join(root,'.reviews');fs.mkdirSync(reviews);
+  fs.mkdirSync(path.join(root,'src'));fs.writeFileSync(path.join(root,'src/example.ts'),'fixture');
+  const handoff=path.join(reviews,'login-T-001-a1-handoff.json'),review=path.join(reviews,'login-T-001-r1.md');
+  const tasks=path.join(root,'tasks.md');fs.writeFileSync(tasks,'- [ ] T-001: fixture\n');
+  writeHandoff(handoff,{implementation:implementationSha256(root,['src/example.ts'])});
+  const options={handoff,reviewsDir:reviews,feature:'login',task:'T-001',projectRoot:root,requireLearning:true};
+  assert.throws(()=>checkN4(options),/Learning/);
+  const payload=JSON.parse(fs.readFileSync(handoff));
+  const save=()=>{fs.writeFileSync(handoff,JSON.stringify(payload));writeReview(review,{handoff});};
+  payload.evidence=['learning: no_relevant_lesson','learning: retrospective writeback_pending'];save();
+  assert.throws(()=>checkN5(options),/Learning/);
+  payload.evidence[1]='learning: retrospective no_new_lesson';save();
+  assert.equal(checkN4(options).outcome,'ready_for_review');
+  assert.equal(checkN5(options).outcome,'approved');
+  payload.evidence[1]='learning: retrospective written AGENTS.md';save();
+  assert.throws(()=>checkN5(options),/AGENTS/);
+  fs.writeFileSync(path.join(root,'AGENTS.md'),'# A reviewed lesson\n');payload.changed_files.push('AGENTS.md');
+  payload.implementation_sha256=implementationSha256(root,payload.changed_files);save();
+  fs.writeFileSync(review,fs.readFileSync(review,'utf8').replace('  - src/example.ts','  - src/example.ts\n  - AGENTS.md'));
+  assert.equal(checkN5(options).outcome,'approved');
+  fs.appendFileSync(path.join(root,'AGENTS.md'),'unreviewed');
+  assert.throws(()=>checkN5(options),/content changed/);
+  payload.evidence=['learning: no_relevant_lesson','learning: retrospective no_new_lesson'];
+  payload.changed_files=['src/example.ts'];payload.implementation_sha256=implementationSha256(root,payload.changed_files);save();
+  const args=['mark-done','--require-learning','--handoff',handoff,'--reviews-dir',reviews,'--feature','login','--task','T-001','--tasks',tasks,'--project-root',root];
+  payload.evidence=['synthetic implementation check passed'];save();
+  assert.equal(checkN5({...options,requireLearning:false}).outcome,'approved');
+  const blocked=spawnSync('python3',[pythonGate,...args],{encoding:'utf8'});
+  assert.notEqual(blocked.status,0);assert.match(blocked.stderr,/Learning/);
+  assert.match(fs.readFileSync(tasks,'utf8'),/\[ \]/);
+  // Exercise the locked JS entry independently of Python's earlier prepare rejection.
+  const selectors={...options,tasksPath:tasks},legacyPlan=prepareMarkDone({...selectors,requireLearning:false});
+  const lock=process.platform==='win32'?path.join(reviews,'.cm-task-write.lock'):path.join(reviews,'.execution','writer.sqlite');
+  fs.mkdirSync(path.dirname(lock),{recursive:true,mode:0o700});const madeLock=!fs.existsSync(lock);
+  if(madeLock)fs.writeFileSync(lock,'');
+  try{assert.throws(()=>markDoneLocked(selectors,legacyPlan.planDigest,{
+    CM_TASK_GATE_LOCK_ADAPTER:'1',CM_TASK_GATE_LOCK_PARENT_PID:String(process.ppid),CM_TASK_GATE_WRITER_LOCK:lock}),/Learning/);
+  }finally{if(madeLock)fs.unlinkSync(lock);}
+  assert.match(fs.readFileSync(tasks,'utf8'),/\[ \]/);
+  payload.evidence=['learning: no_relevant_lesson','learning: retrospective no_new_lesson'];save();
+  const done=spawnSync('python3',[pythonGate,...args],{encoding:'utf8'});
+  assert.equal(done.status,0,done.stderr);assert.match(fs.readFileSync(tasks,'utf8'),/\[x\]/);
+}));
 
 test('JS read-only task gate handles the full attempt-2 N4/N5 chain',()=>fixture(root=>{
   const reviews=path.join(root,'.reviews');fs.mkdirSync(reviews);

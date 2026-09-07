@@ -1,3 +1,4 @@
+import {writeHandoff,writeReview} from './native-gate-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
@@ -5,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync,spawn } from 'node:child_process';
-import { createTaskRunner } from './task-runner.mjs';
+import {registerHooks} from 'node:module';
 import { checkCompletion } from './gate-bridge.mjs';
 import { digest,json } from './effect-contract.mjs';
 import { openTaskExecutionStore } from './task-owner.mjs';
@@ -13,14 +14,30 @@ import { readRunnerHistory } from './durable-runner-state.mjs';
 import { createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective } from './cm-ai-context-refresh.mjs';
 import childProcess from 'node:child_process';
 
+// Intercept only the native writer's gate imports, after the real functions run.
+// Tests remain serial and clear their callbacks in finally blocks.
+async function installGateHooks(writerURL,gateURL){
+  const source=`import {prepareMarkDone as prepare,verifyMarkDonePlan as verify} from ${JSON.stringify(gateURL)};
+    export const after={};
+    export function prepareMarkDone(...args){const result=prepare(...args);after.prepare?.();return result;}
+    export function verifyMarkDonePlan(...args){const result=verify(...args);after.verify?.();return result;}`;
+  const wrapper='data:text/javascript,'+encodeURIComponent(source);
+  registerHooks({resolve(specifier,context,next){
+    if(context.parentURL===writerURL&&specifier==='../../../scripts/cm-task-gate.mjs')return {url:wrapper,shortCircuit:true};
+    return next(specifier,context);
+  }});
+  return (await import(wrapper)).after;
+}
+const gateAfter=await installGateHooks(new URL('../../runtime/js/cm-ai/task-commit.mjs',import.meta.url).href,
+  new URL('../../scripts/cm-task-gate.mjs',import.meta.url).href);
+const {createTaskRunner}=await import('./task-runner.mjs');
+
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const applicationFor=(request,status='no_relevant_lesson',note=null)=>createCmAiTaskLearningApplication({
   feature:request.payload.learningInput.feature,identity:request.identity,
   learningDigest:request.payload.learningInput.learningDigest,status,note});
 function writeFixtureReview(reviewsDir,handoff,{attempt=1,verdict='approved'}={}) {
-  const source=`import runpy,sys\nfrom pathlib import Path\nm=runpy.run_path(sys.argv[1]);h=Path(sys.argv[2]);r=Path(sys.argv[3])\nm['write_review'](r/f'login-T-001-r${attempt}.md',handoff=h,attempt=${attempt},round_number=${attempt},verdict='${verdict}')`;
-  const result=spawnSync('python3',['-c',source,path.resolve(import.meta.dirname,'../../scripts/test-task-gate.py'),handoff,reviewsDir],{encoding:'utf8'});
-  assert.equal(result.status,0,result.stderr);
+  writeReview(path.join(reviewsDir,`login-T-001-r${attempt}.md`),handoff,attempt,verdict);
 }
 function rewriteRunnerState(f,mutate) {
   f.getStore().close();
@@ -42,14 +59,16 @@ async function composedFixture(fn,{twoAttempts=false}={}) {
   fs.writeFileSync(path.join(root,'a.js'),'old\n');fs.writeFileSync(path.join(root,'requirements.md'),'fixture\n');
   const identity={repositoryId:'fixture',runId:'composed',taskId:'T-001',attempt:1};
   const handoffs=[1,2].map(a=>path.join(reviewsDir,`login-T-001-a${a}-handoff.json`));
-  const py=`import runpy,sys\nfrom pathlib import Path\nm=runpy.run_path(sys.argv[1]);r=Path(sys.argv[2]);a=int(sys.argv[3])\nfor n in range(1,a+1):\n h=r/f'login-T-001-a{n}-handoff.json'\n m['write_handoff'](h,attempt=n)\n m['write_review'](r/f'login-T-001-r{n}.md',handoff=h,attempt=n,round_number=n,verdict='approved' if n==a else 'changes_requested')`;
-  const made=spawnSync('python3',['-c',py,path.resolve(import.meta.dirname,'../../scripts/test-task-gate.py'),reviewsDir,twoAttempts?'2':'1'],{encoding:'utf8'});
-  assert.equal(made.status,0,made.stderr);
+  for(let a=1;a<=(twoAttempts?2:1);a++){
+    writeHandoff(handoffs[a-1],root,['a.js'],a);
+    writeReview(path.join(reviewsDir,`login-T-001-r${a}.md`),handoffs[a-1],a,twoAttempts&&a===1?'changes_requested':'approved');
+  }
   const ownerOptions={tasksPath,feature:'login',specsRoot,identity:{repositoryId:identity.repositoryId,runId:identity.runId},
     fingerprints:{workflow:digest('composed-v2'),config:digest('fixture'),inputs:digest('original')},create:true};
   const calls=[];let store=openTaskExecutionStore(ownerOptions);
   const options={root,identity,scope:['a.js'],requirements:['requirements.md'],excludedContexts:['main'],timeoutMs:1000,
     developer:{provider:'codex',requestedModel:'fixture',contextId:'dev',run:r=>{calls.push(r);fs.writeFileSync(path.join(root,'a.js'),`new ${r.identity.attempt}\n`);
+      writeHandoff(handoffs[r.identity.attempt-1],root,['a.js'],r.identity.attempt);
       const result={outcome:'implemented'};
       if(Object.hasOwn(r.payload,'learningInput')){
         result.application=applicationFor(r);
@@ -58,6 +77,7 @@ async function composedFixture(fn,{twoAttempts=false}={}) {
           status:'no_new_lesson',candidates:[],reason:null});}
       return terminal(r,result);}},
     reviewers:[{id:'review',provider:'claude',requestedModel:'fixture',allowed:true,available:true,contexts:['r1','r2'],run:r=>{
+      writeReview(path.join(reviewsDir,`login-T-001-r${r.identity.attempt}.md`),handoffs[r.identity.attempt-1],r.identity.attempt,twoAttempts&&r.identity.attempt===1?'changes_requested':'approved');
       calls.push(r);return terminal(r,twoAttempts&&r.identity.attempt===1?changeRequest(r):approved(r));}}],
     check:()=>checks,taskCompletion:{reviewsDir,handoffs}};
   const effect=(kind,attempt=1)=>({version:1,id:`${kind}-${attempt}`,identity:{...identity,attempt},kind});
@@ -314,7 +334,7 @@ test('F05 valid replacement during final handoff validation stops before checks 
   const py=childProcess.spawnSync;let validations=0,replaced=false;
   try{
     childProcess.spawnSync=(command,args,options)=>{const result=py(command,args,options);
-      if(command==='python3'&&args?.[1]==='validate-handoff'&&++validations===2){
+      if(command===process.execPath&&args?.[1]==='validate-handoff'&&++validations===2){
         const replacement=`${handoff}.replacement`;fs.writeFileSync(replacement,original);
         fs.renameSync(replacement,handoff);replaced=true;
       }
@@ -421,6 +441,7 @@ test('C3b V3 host-authorized receipt enters the existing completion owner once',
   let dispatches=0;
   const reviewers=[{id:'review',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',
     allowed:true,available:true,contexts:['r1','r2'],run:(request,{onEvent})=>{
+      writeFixtureReview(f.reviewsDir,f.options.taskCompletion.handoffs[request.identity.attempt-1],{attempt:request.identity.attempt});
       dispatches++;onEvent({event:'thread.started',provider_thread:'actual-review'});
       onEvent({event:'turn.started',item_type:null});onEvent({event:'item.completed',item_type:'agent_message'});
       onEvent({event:'turn.completed',item_type:null});onEvent({event:'process_closed',exit_code:0,signal:null,timed_out:false});
@@ -533,11 +554,11 @@ test('C3b post-commit unknown survives workflow error without new effect authori
 
 for(const point of ['prepare','verify','rename','result-gap'])test(`C3b late cancel at ${point} shares cursor and preserves cached history`,()=>composedFixture(async f=>{
   const r=f.create();const developed=await r.executeEffect(f.effect('develop'));await r.executeEffect(f.effect('review'));
-  const py=childProcess.spawnSync,rename=fs.renameSync;let hit=false;
+  const rename=fs.renameSync;let hit=false;
   const cancel=()=>{hit=true;const s=r.cancel();assert.equal(s.cancellationRequested,true);};
   try{
-    childProcess.spawnSync=(cmd,args,...rest)=>{const result=py(cmd,args,...rest);
-      if(point==='prepare'&&args.includes('prepare-mark-done')||point==='verify'&&args.includes('verify-mark-done-plan'))cancel();return result;};
+    gateAfter.prepare=()=>{if(point==='prepare')cancel();};
+    gateAfter.verify=()=>{if(point==='verify')cancel();};
     fs.renameSync=(a,b)=>{const result=rename(a,b);if(point==='rename'&&b===f.tasksPath)cancel();
       if(point==='result-gap'&&String(b).endsWith('/state.json')){
         const last=JSON.parse(fs.readFileSync(b)).records.at(-1);if(last.payload.type==='task-commit-result')queueMicrotask(cancel);
@@ -545,40 +566,39 @@ for(const point of ['prepare','verify','rename','result-gap'])test(`C3b late can
     const done=await r.executeEffect(f.effect('complete'));assert(hit);assert.equal(done.state,'fixture_completed');assert.equal(done.cancelAfterCommit,true);
     assert.deepEqual(await r.executeEffect(f.effect('develop')),developed);assert.equal(developed.cancellationRequested,false);
     assert.deepEqual(f.reopen().status(),done);
-  }finally{childProcess.spawnSync=py;fs.renameSync=rename;}
+  }finally{delete gateAfter.prepare;delete gateAfter.verify;fs.renameSync=rename;}
 }));
 
 for(const changed of ['source','evidence','tasks','temp'])test(`C3b native ${changed} change preserves exact unknown checkpoint`,()=>composedFixture(async f=>{
   const r=f.create();await r.executeEffect(f.effect('develop'));await r.executeEffect(f.effect('review'));
-  const py=childProcess.spawnSync;let hit=false;
-  try{childProcess.spawnSync=(cmd,args,...rest)=>{const result=py(cmd,args,...rest);
-    if(args.includes('verify-mark-done-plan')){hit=true;
+  let hit=false;
+  try{gateAfter.verify=()=>{hit=true;
       const file=changed==='source'?path.join(f.root,'a.js'):changed==='evidence'?f.options.taskCompletion.handoffs[0]:
         changed==='tasks'?f.tasksPath:path.join(f.dir,fs.readdirSync(f.dir).find(n=>n.startsWith('.cm-task.')));
-      fs.appendFileSync(file,'changed\n');}return result;};
+      fs.appendFileSync(file,'changed\n');};
     const end=await r.executeEffect(f.effect('complete'));assert(hit);assert.equal(end.state,'unknown');assert.equal(end.code,'commit_unknown');
     assert(end.taskCommit.intentDigest);assert.equal(end.taskCommit.resultDigest,null);assert.match(fs.readFileSync(f.tasksPath,'utf8'),/\[ \]/);
     assert.deepEqual(f.reopen().status(),end);
-  }finally{childProcess.spawnSync=py;}
+  }finally{delete gateAfter.verify;}
 }));
 
 test('C3b foreign revision during native verification poisons instead of adopting newest cursor',()=>composedFixture(async f=>{
   const r=f.create();await r.executeEffect(f.effect('develop'));await r.executeEffect(f.effect('review'));
-  const py=childProcess.spawnSync;let before;
-  try{childProcess.spawnSync=(cmd,args,...rest)=>{const result=py(cmd,args,...rest);if(args.includes('verify-mark-done-plan')){
-    const store=f.getStore();store.append({id:'foreign',kind:'cancel',payload:{},expectedRevision:store.snapshot().revision});before=store.snapshot();}return result;};
-    const end=await r.executeEffect(f.effect('complete'));assert.equal(end.code,'store_failure');assert.equal(end.state,'unknown');
+  let before,hit=false;
+  try{gateAfter.verify=()=>{hit=true;
+    const store=f.getStore();store.append({id:'foreign',kind:'cancel',payload:{},expectedRevision:store.snapshot().revision});before=store.snapshot();};
+    const end=await r.executeEffect(f.effect('complete'));assert(hit);assert.equal(end.code,'store_failure');assert.equal(end.state,'unknown');
     assert.deepEqual(f.getStore().snapshot(),before);assert.match(fs.readFileSync(f.tasksPath,'utf8'),/\[ \]/);
     assert.equal((await r.executeEffect(f.effect('complete'))).code,'store_failure');
-  }finally{childProcess.spawnSync=py;}
+  }finally{delete gateAfter.verify;}
 }));
 
 for(const phase of ['guard','append','readback'])test(`C3b caught reentry at ${phase} latches poison and refuses publication`,()=>composedFixture(async f=>{
   const r=f.create();await r.executeEffect(f.effect('develop'));await r.executeEffect(f.effect('review'));
-  const py=childProcess.spawnSync,read=fs.readFileSync,rename=fs.renameSync;let armed=false,hit=false,before,intentInstalled=false;
+  const read=fs.readFileSync,rename=fs.renameSync;let armed=false,hit=false,before,intentInstalled=false;
   const reenter=()=>{if(!armed||hit)return;hit=true;const s=r.cancel();assert.equal(s.code,'store_failure');};
   try{
-    childProcess.spawnSync=(cmd,args,...rest)=>{const result=py(cmd,args,...rest);if(args.includes('prepare-mark-done')){before=f.getStore().snapshot();armed=true;}return result;};
+    gateAfter.prepare=()=>{before=f.getStore().snapshot();armed=true;};
     fs.readFileSync=(p,...rest)=>{const result=read(p,...rest);
       if(phase==='guard'&&String(p).endsWith('/.cm-task-owner.json'))reenter();
       if(phase==='readback'&&intentInstalled)reenter();return result;};
@@ -588,7 +608,7 @@ for(const phase of ['guard','append','readback'])test(`C3b caught reentry at ${p
     assert.match(fs.readFileSync(f.tasksPath,'utf8'),/\[ \]/);assert.equal((await r.executeEffect(f.effect('complete'))).code,'store_failure');
     const saved=f.getStore().snapshot();assert.equal(saved.records.length,before.records.length+(phase==='guard'?0:1));
     assert(!saved.records.some(x=>x.payload.type==='control'));assert.equal(end.cancellationRequested,false);
-  }finally{childProcess.spawnSync=py;fs.readFileSync=read;fs.renameSync=rename;}
+  }finally{delete gateAfter.prepare;fs.readFileSync=read;fs.renameSync=rename;}
 }));
 
 for(const mode of ['success','native-failure'])test(`C3b private capability lifetime ${mode} delegates to real native writer`,()=>composedFixture(async f=>{
@@ -619,19 +639,20 @@ for(const mode of ['success','native-failure'])test(`C3b private capability life
         assert.throws(()=>resolve(token,store,'append-result',{}),{code:'commit_phase_invalid'});return result;
       }catch(e){assert.equal(resolve(token,store,'guard').phase,'intent');throw e;}
     }`;
-  const source=`import assert from 'node:assert/strict';import fs from 'node:fs';import cp from 'node:child_process';
+  const source=`import assert from 'node:assert/strict';import fs from 'node:fs';
     import {registerHooks} from 'node:module';
     import {openTaskExecutionStore} from ${JSON.stringify(new URL('./task-owner.mjs',import.meta.url).href)};
     const runnerURL=${JSON.stringify(runnerURL)},wrapper=${JSON.stringify('data:text/javascript,'+encodeURIComponent(wrapper))};
     registerHooks({resolve(specifier,context,next){if(context.parentURL===runnerURL&&specifier==='./task-commit.mjs')return {url:wrapper,shortCircuit:true};return next(specifier,context);}});
+    const gateAfter=await (${installGateHooks.toString()})(${JSON.stringify(writerURL)},${JSON.stringify(new URL('../../scripts/cm-task-gate.mjs',import.meta.url).href)});
     const {createTaskRunner,resolveFixtureCommit}=await import(runnerURL),[rawOptions,rawOwner,mode]=process.argv.slice(1);
     const options=JSON.parse(rawOptions),store=openTaskExecutionStore({...JSON.parse(rawOwner),create:false});
     options.developer.run=()=>assert.fail('no redispatch');options.reviewers.forEach(r=>r.run=()=>assert.fail('no redispatch'));
     options.check=()=>${JSON.stringify(checks)};options.persistence={store,mode:'resume',version:2};
-    const py=cp.spawnSync;cp.spawnSync=(cmd,args,...rest)=>{const result=py(cmd,args,...rest);
-      if(mode==='native-failure'&&args.includes('verify-mark-done-plan'))fs.appendFileSync(options.taskCompletion.handoffs[0],'changed');return result;};
+    let hit=false;gateAfter.verify=()=>{hit=true;
+      if(mode==='native-failure')fs.appendFileSync(options.taskCompletion.handoffs[0],'changed');};
     const runner=createTaskRunner(options),end=await runner.executeEffect({version:1,id:'complete-1',identity:options.identity,kind:'complete'});
-    assert.equal(end.state,mode==='success'?'fixture_completed':'unknown');assert(globalThis.revoked);
+    assert(hit);assert.equal(end.state,mode==='success'?'fixture_completed':'unknown');assert(globalThis.revoked);
     const {token}=globalThis.captured;assert.throws(()=>resolveFixtureCommit(token,store,'guard'),{code:'commit_capability_invalid'});
     assert(!Object.values(runner).includes(token));store.close();console.log('capability verified');`;
   const child=spawnSync(process.execPath,['--unhandled-rejections=strict','--input-type=module','-e',source,JSON.stringify(f.options),JSON.stringify(f.ownerOptions),mode],{encoding:'utf8',timeout:10000});
