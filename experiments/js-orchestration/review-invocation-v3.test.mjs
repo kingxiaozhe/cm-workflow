@@ -9,10 +9,12 @@ import {digest} from './effect-contract.mjs';
 import {readRunnerHistory,runnerPayload,runnerStatus} from './durable-runner-state.mjs';
 import {reviewPaths} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
+import {createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective} from './cm-ai-context-refresh.mjs';
+import {createClaudeReviewRun} from '../../runtime/js/cm-ai/claude-review-adapter.mjs';
 
 const checks=[{id:'check',command:['synthetic'],outcome:'passed',exitCode:0,evidence:'fixture'}];
 const grantFor=(request,authorizationAt,change=grant=>grant)=>{
-  const body={version:1,kind:'cm-review-dispatch-grant',grantId:'grant-1',adapterId:'codex-review-adapter',
+  const body={version:1,kind:'cm-review-dispatch-grant',grantId:'grant-1',adapterId:`${request.provider}-review-adapter`,
     invocationId:request.invocationId,requestDigest:request.requestDigest,identity:request.identity,
     reviewerId:'reviewer',logicalContextId:request.contextId,packageDigest:request.payload.reviewPackage.packageDigest,
     hostContextId:'actual-main',decisionId:'decision-1',decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
@@ -26,7 +28,7 @@ const events=(onEvent,thread='actual-review')=>{
   onEvent({event:'process_closed',exit_code:0,signal:null,timed_out:false});
 };
 
-async function fixture(fn,{reviewRun,authorize,times,timeoutMs=1000}={}) {
+async function fixture(fn,{reviewRun,authorize,times,timeoutMs=1000,provider='codex'}={}) {
   const temp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-review-v3-')));
   const root=path.join(temp,'code'),specsRoot=path.join(temp,'specs'),reviewsDir=path.join(specsRoot,'.reviews');
   fs.mkdirSync(root);fs.mkdirSync(reviewsDir,{recursive:true});
@@ -40,11 +42,11 @@ async function fixture(fn,{reviewRun,authorize,times,timeoutMs=1000}={}) {
     return {status:'succeeded',value:{verdict:'approved',packageDigest:request.payload.reviewPackage.packageDigest,
       examinedPaths:reviewPaths(request.payload.reviewPackage),findings:[],summary:'Synthetic review'}};};
   const options={root,identity,scope:['code.js'],requirements:['requirements.md'],excludedContexts:['main'],timeoutMs,
-    developer:{provider:'codex',requestedModel:'fixture',contextId:'developer-logical',run:request=>{
+    developer:{provider,requestedModel:'fixture',contextId:'developer-logical',run:request=>{
       fs.writeFileSync(path.join(root,'code.js'),'new\n');return {version:1,invocationId:request.invocationId,
         contextId:request.contextId,provider:request.provider,effectiveModel:'fixture',status:'succeeded',accepted:true,
         result:{outcome:'implemented'}};}},
-    reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',allowed:true,
+    reviewers:[{id:'reviewer',adapterId:`${provider}-review-adapter`,provider,requestedModel:'fixture',allowed:true,
       available:true,contexts:['review-logical-1','review-logical-2'],run:(request,control)=>{
         dispatches++;lateEvent=control.onEvent;return (reviewRun??defaultRun)(request,control);
       }}],check:()=>checks,
@@ -68,6 +70,112 @@ async function fixture(fn,{reviewRun,authorize,times,timeoutMs=1000}={}) {
     dispatches:()=>dispatches,lateEvent:()=>lateEvent});}
   finally{store.close();fs.rmSync(temp,{recursive:true,force:true});}
 }
+
+for(const provider of ['codex','claude'])
+for(const [conflict,verdict] of [[false,'approved'],[true,'approved'],[false,'changes_requested'],[false,'blocked']])
+test(`P2 V3 ${provider} publishes registered review and resumes sole completion conflict=${conflict} verdict=${verdict}`,()=>fixture(async f=>{
+  f.options.taskLearning={feature:'1.feature',hostHandoff:true};
+  const dir=f.options.taskCompletion.reviewsDir;
+  f.options.taskCompletion.handoffs=[1,2].map(n=>path.join(dir,`feature-T-001-a${n}-handoff.json`));
+  const run=f.options.developer.run;
+  f.options.developer.run=request=>{
+    const terminal=run(request),input=request.payload.learningInput;
+    const fields={feature:input.feature,identity:input.identity,learningDigest:input.learningDigest};
+    terminal.result.application=createCmAiTaskLearningApplication({...fields,status:'no_relevant_lesson',note:null});
+    terminal.result.retrospective=createCmAiTaskLearningRetrospective({...fields,status:'no_new_lesson',candidates:[],reason:null});
+    return terminal;
+  };
+  const learningInput={version:1,workflow:'cm-ai',phase:'task_learning_input',feature:'1.feature',
+    identity:f.options.identity,learningFiles:[]};
+  learningInput.learningDigest=digest({version:1,feature:'1.feature',identity:f.options.identity,files:[]});
+  const reviewRun=f.options.reviewers[0].run;
+  f.options.reviewers[0].run=(request,control)=>{
+    const result=provider==='claude'?createClaudeReviewRun(({prompt},workerControl)=>{
+      assert(prompt.includes(request.payload.reviewPackage.packageDigest));
+      return reviewRun(request,workerControl);
+    })(request,control):reviewRun(request,control);
+    result.value.verdict=verdict;
+    if(verdict==='changes_requested')result.value.findings=[{id:'F1',severity:'P2',path:'code.js',
+      message:'Synthetic defect',evidence:'Synthetic reproduction'}];
+    return result;
+  };
+  const runner=f.make();
+  assert.equal((await runner.executeEffect({...f.effect('develop'),learningInput})).state,'awaiting_review');
+  const target=path.join(dir,'feature-T-001-r1.md');
+  if(conflict)fs.writeFileSync(target,'existing human evidence\n');
+  const reviewed=await runner.executeEffect(f.effect('review'));
+  assert.equal(reviewed.state,verdict==='approved'?'approved':verdict);
+  assert.equal(reviewed.code,conflict?'review_publication_required':verdict==='blocked'?'review_blocked':null);
+  assert.equal(f.dispatches(),1);
+  if(conflict){
+    assert.equal(fs.readFileSync(target,'utf8'),'existing human evidence\n');
+    assert.equal(runner.status().code,'review_publication_required');
+    const recovered=f.reopen();
+    assert.equal(recovered.status().code,'review_publication_required');
+    assert.deepEqual(await recovered.executeEffect(f.effect('complete')),
+      {outcome:'rejected',code:'review_publication_required'});
+    assert.equal(fs.readFileSync(target,'utf8'),'existing human evidence\n');
+    // Simulate the human moving the conflicting evidence aside, never overwrite it.
+    fs.renameSync(target,target+'.saved');
+    assert.equal((await recovered.executeEffect(f.effect('review'))).code,null);
+    assert.equal(recovered.status().code,null);assert.equal(f.dispatches(),1);
+    assert.equal((await recovered.executeEffect(f.effect('complete'))).state,'fixture_completed');return;
+  }
+  const bytes=fs.readFileSync(target);
+  assert.match(bytes.toString(),new RegExp(`reviewer: ${provider}-cli`));
+  assert.equal(reviewed.receipt.execution.provider,provider);
+  assert.equal(reviewed.reviewInvocation.result.inspection.provider,provider);
+  assert.match(bytes.toString(),new RegExp(reviewed.receipt.receiptDigest));
+  if(verdict!=='approved'){
+    assert.match(bytes.toString(),new RegExp(`verdict: ${verdict}`));
+    assert.equal(f.reopen().status().state,verdict);
+    assert.equal(fs.readFileSync(f.tasksPath,'utf8'),'- [ ] T-001: fixture\n');return;
+  }
+  // Simulate losing only the reconstructable file after durable review acceptance.
+  fs.unlinkSync(target);
+  const resumed=f.reopen();
+  assert.equal(resumed.status().code,'review_publication_required');
+  assert.equal(fs.existsSync(target),false); // status is read-only
+  assert.equal((await resumed.executeEffect(f.effect('review'))).state,'approved');
+  assert.deepEqual(fs.readFileSync(target),bytes);assert.equal(f.dispatches(),1);
+  assert.equal((await resumed.executeEffect(f.effect('complete'))).state,'fixture_completed');
+  assert.equal(fs.readFileSync(f.tasksPath,'utf8'),'- [x] T-001: fixture\n');
+},{provider}));
+
+for(const prefix of ['review-invocation-registered','review-invocation-started','review-invocation-result'])
+test(`Claude V3 ${prefix} crash prefix never redispatches`,()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
+  const resumed=f.resumePrefix(prefix);
+  assert.notEqual(resumed.status().state,'approved');
+  await resumed.executeEffect(f.effect('review'));assert.equal(f.dispatches(),1);
+},{provider:'claude'}));
+
+test('Claude V3 cannot reuse author identity or a Codex adapter grant',async()=>{
+  await fixture(async f=>{
+    const runner=f.make();await runner.executeEffect(f.effect('develop'));
+    const result=await runner.executeEffect(f.effect('review'));
+    assert.notEqual(result.state,'approved');assert.equal(f.reopen().status().state,result.state);
+  },{provider:'claude',reviewRun:(_request,{onEvent})=>{events(onEvent,'actual-developer');return {status:'failed',code:'failed'};}});
+  await fixture(async f=>{
+    const runner=f.make();await runner.executeEffect(f.effect('develop'));
+    const result=await runner.executeEffect(f.effect('review'));
+    assert.equal(result.code,'authorization_invalid');assert.equal(f.dispatches(),0);
+  },{provider:'claude',authorize:(request,{authorizationAt})=>grantFor(request,authorizationAt,g=>{g.adapterId='codex-review-adapter';})});
+});
+
+for(const sameThread of [false,true])test(`P2 real developer thread survives replay with full host exclusions and excludes author ${sameThread}`,()=>fixture(async f=>{
+  f.options.reviewInvocation.excludedThreadIds=['actual-main',...Array.from({length:31},(_,i)=>`excluded-${i}`)];
+  const run=f.options.developer.run;
+  f.options.developer.run=request=>({...run(request),providerThreadId:sameThread?'actual-review':'actual-coder'});
+  const developed=await f.make().executeEffect(f.effect('develop'));
+  assert.equal(developed.state,'awaiting_review');
+  assert.equal(developed.calls[0].providerThreadId,sameThread?'actual-review':'actual-coder');
+  const resumed=f.reopen();assert.deepEqual(resumed.status(),developed);
+  const reviewed=await resumed.executeEffect(f.effect('review'));
+  assert.equal(reviewed.state,sameThread?'unknown':'approved');
+  assert.deepEqual(f.reopen().status(),reviewed);
+  assert.equal(reviewed.receipts.length,sameThread?0:1);
+}));
 
 test('V3 registers a completed host-authorized review as a durable receipt without completing the task',()=>fixture(async f=>{
   let runner=f.make();await runner.executeEffect(f.effect('develop'));const end=await runner.executeEffect(f.effect('review'));

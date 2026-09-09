@@ -2,8 +2,8 @@
 import {createHash,randomUUID} from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import {digest,freeze,hex,json,need,shape,text,validTaskLearningInput} from './effect-contract.mjs';
-import {encodeCmAiTaskLearningEvidence} from './cm-ai-context-refresh.mjs';
+import {digest,freeze,hex,json,need,shape,text,validIdentity,validTaskLearningInput} from './effect-contract.mjs';
+import {encodeCmAiTaskLearningEvidence,readLearningRetrospectiveContent} from './cm-ai-context-refresh.mjs';
 
 const LIMIT=256*1024,PREFIX='cm-learning-retrospective-v1:';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -47,7 +47,7 @@ function renderedCandidates(retrospective) {
   });
 }
 
-function mergeLessons(source,retrospective) {
+export function mergeLessons(source,retrospective) {
   const candidates=renderedCandidates(retrospective).filter(candidate=>!source.includes(candidate.marker));
   if(candidates.length===0)return source;
   const newline=source.includes('\r\n')?'\r\n':'\n',block=candidates.map(candidate=>candidate.line).join(newline);
@@ -99,7 +99,7 @@ export function readCmAiProjectLearningWriteback(raw,{learningInput,retrospectiv
   return freeze(value);
 }
 
-export function writeCmAiProjectLearning(raw) {
+export function writeCmAiProjectLearning(raw,bootstrapAgentsSha256=null) {
   const input=json(raw,256*1024);shape(input,['codeProject','learningInput','retrospective']);
   text(input.codeProject);need(path.isAbsolute(input.codeProject)&&path.resolve(input.codeProject)===input.codeProject);
   validTaskLearningInput(input.learningInput,input.learningInput.identity,input.learningInput.feature);
@@ -107,7 +107,35 @@ export function writeCmAiProjectLearning(raw) {
   need(retrospective.feature===input.learningInput.feature
     &&digest(retrospective.identity)===digest(input.learningInput.identity)
     &&retrospective.learningDigest===input.learningInput.learningDigest,'identity_mismatch');
-  const expected=input.learningInput.learningFiles.find(file=>file.scope==='project'&&file.path==='AGENTS.md')??null;
+  // Only the runner supplies a hash from its validated host bootstrap result.
+  // The Learning identity/digest still describes the original task-start read.
+  if(bootstrapAgentsSha256!==null){need(input.learningInput.feature==='0.bootstrap','bootstrap_task_required');hex(bootstrapAgentsSha256);}
+  const expected=bootstrapAgentsSha256===null
+    ?input.learningInput.learningFiles.find(file=>file.scope==='project'&&file.path==='AGENTS.md')??null
+    :{scope:'project',path:'AGENTS.md',sha256:bootstrapAgentsSha256};
+  if(retrospective.status==='no_new_lesson')return result(retrospective,'no_new_lesson',false,
+    input.learningInput.learningFiles.find(file=>file.scope==='project'&&file.path==='AGENTS.md')??null,null);
+  return writeLearningContent(input.codeProject,expected,retrospective,
+    (outcome,changed,agentsFile,reason)=>result(retrospective,outcome,changed,agentsFile,reason));
+}
+
+// Shared file operation only. Callers retain workflow identity, authorization,
+// registration, evidence binding and completion ownership.
+export function writeProjectLearningContent(raw){
+  const input=json(raw,64*1024);shape(input,['codeProject','expected','identity','feature','content']);
+  text(input.codeProject);need(path.isAbsolute(input.codeProject)&&path.resolve(input.codeProject)===input.codeProject);
+  validIdentity(input.identity);text(input.feature);
+  need(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(input.feature),'invalid_feature');
+  if(input.expected!==null){shape(input.expected,['scope','path','sha256']);
+    need(input.expected.scope==='project'&&input.expected.path==='AGENTS.md');hex(input.expected.sha256);}
+  const content=readLearningRetrospectiveContent(input.content);
+  return writeLearningContent(input.codeProject,input.expected,{...content,identity:input.identity,feature:input.feature},
+    (outcome,changed,agentsFile,reason)=>freeze({outcome,changed,agentsFile,reason}));
+}
+
+function writeLearningContent(codeProject,expected,retrospective,makeResult){
+  const input={codeProject};
+  const result=(_retrospective,...fields)=>makeResult(...fields);
   if(retrospective.status==='no_new_lesson')return result(retrospective,'no_new_lesson',false,expected,null);
   if(retrospective.status==='writeback_pending')return result(retrospective,'writeback_pending',null,expected,retrospective.reason);
   let root,target,before;

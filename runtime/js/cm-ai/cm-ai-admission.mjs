@@ -12,6 +12,54 @@ const ACCEPTANCE=/^\s*[-*]\s+(?:\[[ xX]\]\s+)?(?:\[(AC-\d{3,})\]|(AC-\d{3,}))(?=
 const FEATURE=/^(\d+)\.(.+)$/;
 const TEST_CASE_VALIDATOR=fileURLToPath(new URL('../../../scripts/validate-test-cases.mjs',import.meta.url));
 
+// Greenfield's T-001 scaffolds; its subsequent instruction task (normally
+// T-002) owns init-equivalent rules. Use the existing parser and approval gate.
+export function inspectCmAiBootstrapTask({specsDir,codeProject,taskId},inProgress=false) {
+  const admission=admissionFor({specsDir,codeProject},inProgress?taskId:null);
+  const fail=code=>{throw Object.assign(new Error(code),{code});};
+  if(!['ready','complete'].includes(admission.state))fail(admission.reason);
+  const parsed=readFeature(admission.specsDir,'0.bootstrap');if(parsed.error)fail(parsed.error);
+  const task=parsed.tasks.find(item=>item.id===taskId&&!item.dropped);
+  const mode=task?.id==='T-001'&&/(?:脚手架|骨架|scaffold)/i.test(task.description)?'scaffold':'instructions';
+  if(!task||mode==='instructions'&&(!/(?:cm-init|\.claude\/|AGENTS\.md)/i.test(task.description)
+    ||!/(?:生成|规范|规则|instruction|rules|generate)/i.test(task.description)))fail('bootstrap_task_required');
+  return frozen({task,mode,admission});
+}
+
+// Read N6 task counts with the original task parser, including later features.
+export function inspectCmAiQaTaskContext({specsDir,codeProject,feature,taskId}) {
+  const admission=inspectCmAiAdmission({specsDir,codeProject});
+  const fail=code=>{throw Object.assign(new Error(code),{code});};
+  if(!['ready','complete'].includes(admission.state))fail(admission.reason);
+  const discovered=discoverFeatures(admission.specsDir);if(discovered.error)fail(discovered.error);
+  const completed=[];let selected=null;
+  for(const name of discovered.names){
+    const parsed=readFeature(admission.specsDir,name);if(parsed.error)fail(parsed.error);
+    if(name===feature)selected=parsed.tasks;
+    for(const task of parsed.tasks)if(task.completed&&!task.dropped)completed.push({feature:name,id:task.id});
+  }
+  if(!selected?.some(task=>task.id===taskId&&task.completed&&!task.dropped))fail('qa_not_ready');
+  const pending=selected.filter(task=>!task.completed&&!task.dropped).length;
+  return frozen({completed,pending,mergeEligible:pending===1&&admission.nextTask?.feature===feature});
+}
+
+// Admission's public feature summary stops at the selected feature. Count all
+// approved features with the same parser before treating a task as the last one.
+export function isFinalCmAiTask({specsDir,codeProject,feature,taskId}) {
+  const admission=inspectCmAiAdmission({specsDir,codeProject});
+  if(admission.state!=='ready'||admission.nextTask.feature!==feature||admission.nextTask.id!==taskId)
+    throw Object.assign(new Error('documentation_admission_required'),{code:'documentation_admission_required'});
+  const discovered=discoverFeatures(admission.specsDir);
+  if(discovered.error)throw Object.assign(new Error(discovered.error),{code:discovered.error});
+  let pending=0;
+  for(const name of discovered.names){
+    const parsed=readFeature(admission.specsDir,name);
+    if(parsed.error)throw Object.assign(new Error(parsed.error),{code:parsed.error});
+    pending+=parsed.tasks.filter(task=>!task.completed&&!task.dropped).length;
+  }
+  return pending===1;
+}
+
 function frozen(value){
   if(value && typeof value==='object'){for(const item of Object.values(value))frozen(item);Object.freeze(value);}
   return value;
@@ -152,7 +200,15 @@ function validateTestCases(specsDir,status,names){
 }
 
 function readFeature(specsDir,name){
-  const lines=fs.readFileSync(path.join(specsDir,name,'tasks.md'),'utf8').split(/\r?\n/);
+  return parseFeatureTaskText(fs.readFileSync(path.join(specsDir,name,'tasks.md'),'utf8'));
+}
+
+export function declaredAcceptanceIds(source){
+  return new Set(source.split(/\r?\n/).map(line=>line.match(ACCEPTANCE)).filter(Boolean).map(match=>match[1]||match[2]));
+}
+
+export function parseFeatureTaskText(source){
+  const lines=source.split(/\r?\n/);
   const tasks=[];
   const taskIds=new Set();
   const dependencies=new Map();
@@ -182,7 +238,7 @@ function readFeature(specsDir,name){
   return {tasks,dependencies};
 }
 
-function validDependencies(tasks,dependencies){
+export function validDependencies(tasks,dependencies){
   const ids=new Set(tasks.map(task=>task.id));
   for(const [taskId,required] of dependencies){
     if(!ids.has(taskId)||required.some(id=>id===taskId||!ids.has(id)))return false;
@@ -264,6 +320,10 @@ function selectTask(specsDir,names){
 }
 
 export function inspectCmAiAdmission(options){
+  return admissionFor(options);
+}
+
+function admissionFor(options,inProgressBootstrap=null){
   const input=options&&typeof options==='object'&&!Array.isArray(options)?options:{};
   const specsDir=directory(input.specsDir),codeProject=directory(input.codeProject);
   const base={version:1,workflow:'cm-ai',phase:'admission',approvalIntent:approvalIntent(input.approvalResponse,input.assumeYes),specsDir,codeProject};
@@ -284,7 +344,8 @@ export function inspectCmAiAdmission(options){
   if(testCasesProblem==='test_cases_changed')return result(base,'awaiting_spec_approval',testCasesProblem);
   if(testCasesProblem)return result(base,'blocked',testCasesProblem);
   const bootstrapProblem=validateBootstrap(codeProject,specsDir,discovered.names);
-  if(bootstrapProblem)return result(base,'blocked',bootstrapProblem);
+  if(bootstrapProblem&&!(bootstrapProblem==='bootstrap_conflict'&&inProgressBootstrap==='T-001'))
+    return result(base,'blocked',bootstrapProblem);
   const selection=selectTask(specsDir,discovered.names);
   if(selection.error)return result(base,'blocked',selection.error,{features:selection.features,warnings:selection.warnings});
   if(!selection.nextTask)return result(base,'complete','all_tasks_terminal',{features:selection.features,warnings:selection.warnings});

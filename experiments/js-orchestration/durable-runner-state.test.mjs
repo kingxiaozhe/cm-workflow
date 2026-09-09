@@ -306,10 +306,18 @@ test('C3a V2 metadata refuses extra top-level configuration fields',()=>v2Histor
   assert.throws(()=>readRunnerHistory(chain(rows.slice(0,1)),config,2));
 }));
 
+test('P1 restored baseline cannot invent a specs exclusion different from the task owner',()=>v2History(v=>{
+  const init=structuredClone(v.records[0]);
+  const {baselineDigest,...body}=init.payload.baseline;
+  body.specsPath='invented-specs';
+  init.payload.baseline={...body,baselineDigest:digest(body)};
+  assert.throws(()=>readRunnerHistory(chain([init]),v.config,2),{code:'runner_history_mismatch'});
+}));
+
 const invalidInitialization={
   'initial attempt2':c=>{c.identity.attempt=2;},
   'zero timeout':c=>{c.timeoutMs=0;},
-  'large timeout':c=>{c.timeoutMs=60001;},
+  'large timeout':c=>{c.timeoutMs=3600001;},
   'fraction timeout':c=>{c.timeoutMs=1.5;},
   'empty exclusions':c=>{c.excludedContexts=[];},
   'bad exclusion ID':c=>{c.excludedContexts=['bad id'];},

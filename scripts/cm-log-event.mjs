@@ -280,7 +280,7 @@ function loadProjectRunState(file){
     for(const value of readJsonLines(file)){
       if(!value||typeof value!=='object'||typeof value.run_id!=='string'||!RUN_ID.test(value.run_id)||typeof value.event!=='string')continue;
       latestProjectRun=value.run_id;
-      if(value.event==='run_start')projectStates[value.run_id]='running';
+      if(value.event==='run_start'||value.event==='resume')projectStates[value.run_id]='running';
       else if(TERMINAL_EVENTS.has(value.event))projectStates[value.run_id]='done';
       else if(!Object.hasOwn(projectStates,value.run_id))projectStates[value.run_id]='running';
     }
@@ -327,6 +327,13 @@ function loadTestRunState(file,runId){
     active=applyTestRunTransition(active,openCases,phase,typeof caseId==='string'?caseId:null);
   }
   return {active,openCases};
+}
+
+// Read-only reuse of the writer's existing resource/test lifecycle guards by
+// the batch coordinator. No new terminal event or task completion authority.
+export function inspectRunClosure(file,runId){
+  const resources=unclosedResources(loadResourceStates(file,runId)),tests=loadTestRunState(file,runId);
+  return {closed:resources.length===0&&!tests.active&&tests.openCases.size===0};
 }
 
 function compactJson(value){return `${JSON.stringify(value)}\n`;}
@@ -485,7 +492,8 @@ export function writeLogEvent(rawInput,{environment=process.env,now=new Date(),u
   let pointerWritten=null;
   if(pointerPath){
     try{
-      writePointer(pointerPath,{schema_version:1,run_id:built.runId,workflow:event.workflow,status:terminal?'done':'running',
+      const currentStatus=loadProjectRunState(projectLog).projectStates[built.runId]??(terminal?'done':'running');
+      writePointer(pointerPath,{schema_version:1,run_id:built.runId,workflow:event.workflow,status:currentStatus,
         global_log:globalLog,global_written:globalWritten,updated_at:at});pointerWritten=true;
     }catch(error){
       pointerWritten=false;degraded=true;

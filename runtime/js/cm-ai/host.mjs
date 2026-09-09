@@ -6,9 +6,15 @@ import {createTaskRunner} from './task-runner.mjs';
 export function createCmAiHost(options) {
   need(arguments.length===1,'invalid_input');
   shape(options,['runner','entry']);
-  const entryOptions=json(options.entry);
+  const keys=Object.keys(options.entry);shape(options.entry,keys);
+  const {hostDecisionProvider,qaDecisionProvider,qaExecutor,documentationProvider,...data}=options.entry;
+  const entryOptions=json(data);
   need(!Object.hasOwn(entryOptions,'runner'),'invalid_input');
   const runner=createTaskRunner(options.runner);
-  const entry=createCmAiConversationEntry({...entryOptions,runner});
-  return Object.freeze({handle:entry.handle});
+  const entry=createCmAiConversationEntry({...entryOptions,runner,
+    ...(hostDecisionProvider===undefined?{}:{hostDecisionProvider}),
+    ...(qaExecutor===undefined?{}:{qaExecutor}),
+    ...(documentationProvider===undefined?{}:{documentationProvider}),
+    ...(qaDecisionProvider===undefined?{}:{qaDecisionProvider})});
+  return Object.freeze({handle:entry.handle,inspectFixAssociation:runner.inspectFixAssociation,acceptCompletedFix:runner.acceptCompletedFix});
 }

@@ -21,6 +21,13 @@ const identity={repositoryId:'fixture',runId:'conversation',taskId:'T-001',attem
 const operation=(name,extra={})=>({version:1,operation:name,requestId:`${name}-1`,identity,...extra});
 const qaDecision=(status,packageDigest,{reason,score,at,decisionId=`qa-${status}`})=>({decisionId,identity,
   packageDigest,status,reason,score,at});
+// Downstream N7/N8 compatibility fixtures consume already-recorded historical
+// skip evidence. New N6 decisions cannot skip a feature that is now complete.
+async function seedLegacyQaSkip({specsDir,codeProject,packageDigest,logHome,at}){
+  const {recordCmAiQaDecision}=await import('./cm-ai-qa-log.mjs');
+  recordCmAiQaDecision({specsDir,codeProject,feature:'1.login',identity,packageDigest,logHome,
+    decision:qaDecision('skipped',packageDigest,{reason:'docs_only',score:4,at})});
+}
 const documentationResult=(status,packageDigest,contextDigest,{reason='documentation synced',
   at='2026-09-04T15:00:00-07:00',syncId=`docs-${status}`}={})=>({syncId,identity,packageDigest,
   contextDigest,status,reason,at});
@@ -122,6 +129,24 @@ test('start reports specification approval as pending without touching the runne
   assert.equal(result.pendingAction,'spec_approval');assert.equal(reads,0);assert.equal(effects,0);
 }));
 
+test('blocked admission preserves the current repair attempt and rejects an invented attempt',()=>fixture(async({specsDir,codeProject})=>{
+  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'awaiting_review',features:['1.login']}));
+  const attemptTwo={...identity,attempt:2};let reads=0,effects=0;
+  let current={state:'changes_requested',code:null,identity:attemptTwo,packageDigest:'a'.repeat(64)};
+  const runner={status:()=>{reads++;return current;},executeEffect:async()=>{effects++;return current;},
+    cancel:()=>current,run:async()=>current};
+  const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
+  const entry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner});
+  assert.equal((await entry.handle(operation('resume'))).code,'spec_approval_required');assert.equal(reads,0);
+  for(const name of ['start','resume','advance']){
+    const result=await entry.handle({...operation(name),identity:attemptTwo});
+    assert.equal(result.code,'spec_approval_required');assert.deepEqual(result.identity,attemptTwo);
+  }
+  current={...current,identity};
+  assert.equal((await entry.handle({...operation('resume'),identity:attemptTwo})).code,'identity_mismatch');
+  assert.equal(effects,0);
+}));
+
 test('decision without trusted host input waits, and message self-approval is rejected',()=>fixture(async({specsDir,codeProject})=>{
   let effects=0;
   const waiting={state:'awaiting_review',code:null,identity,packageDigest:'c'.repeat(64)};
@@ -214,16 +239,24 @@ test('strict input, feature identity, and stale decisions reject before runner e
   assert.equal(effects,0);
 }));
 
-test('resume uses the runner current attempt for changes-requested work',()=>fixture(async({specsDir,codeProject})=>{
+for(const originalIdentity of [true,false])
+test(`resume uses the runner current attempt for changes-requested work original=${originalIdentity}`,()=>fixture(async({specsDir,codeProject})=>{
   const attemptTwo={...identity,attempt:2},effects=[];
   const changed={state:'changes_requested',code:null,identity:attemptTwo,packageDigest:'a'.repeat(64)};
   const developed={state:'awaiting_review',code:null,identity:attemptTwo,packageDigest:'b'.repeat(64)};
   const runner={status:()=>changed,executeEffect:async effect=>{effects.push(effect);return developed;},
     cancel:()=>changed,run:async()=>changed};
   const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
-  const entry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity:attemptTwo,runner});
+  const entryIdentity=originalIdentity?identity:attemptTwo;
+  const entry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity:entryIdentity,runner});
 
-  const result=await entry.handle({...operation('resume'),identity:attemptTwo});
+  if(originalIdentity){
+    const status=await entry.handle(operation('status'));
+    assert.deepEqual(status.identity,attemptTwo);assert.equal(status.pendingAction,'resume');
+    const stale=await entry.handle(operation('decision',{packageDigest:changed.packageDigest}));
+    assert.equal(stale.code,'identity_mismatch');assert.equal(effects.length,0);
+  }
+  const result=await entry.handle({...operation('resume'),identity:entryIdentity});
 
   assert.equal(effects.length,1);assert.equal(effects[0].id,'develop-2');
   assert.deepEqual(effects[0].identity,attemptTwo);assert.equal(effects[0].kind,'develop');
@@ -370,6 +403,160 @@ test('real V3/store composition completes through the existing owner and blocks 
     const restored=await replay.handle(operation('status',{requestId:'status-correction-restored'}));
     assert.equal(restored.state,'fixture_completed');assert.equal(restored.code,null);
   }finally{store.close();}
+}));
+
+for(const mode of ['missing','skipped','triggered','blocked','correction'])
+test(`advance continues from task completion through the existing QA boundary: ${mode}`,()=>fixture(async({root,specsDir,codeProject})=>{
+  const packageDigest='a'.repeat(64),log=path.join(specsDir,'运行日志.jsonl');
+  fs.writeFileSync(path.join(specsDir,'1.login','tasks.md'),'- [x] T-001: implement login\n'+
+    (mode==='skipped'?'- [ ] T-002: next task\n':''));
+  const completed={state:'fixture_completed',code:mode==='correction'?'correction_review_required':null,identity,packageDigest};
+  const runner={status:()=>completed,executeEffect:async()=>assert.fail('completed task must not redispatch'),
+    cancel:()=>completed,run:async()=>completed};
+  const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
+  const options={specsDir,codeProject,feature:'1.login',identity,runner,applicableAgentFiles:[],qaLogHome:path.join(root,'logs')};
+  if(!['missing','correction'].includes(mode))options.qaDecision=qaDecision(mode,packageDigest,
+    {reason:'synthetic',score:mode==='skipped'?4:null,at:'2026-09-04T19:00:00Z'});
+  const entry=createCmAiConversationEntry(options),result=await entry.handle(operation('advance'));
+  const expected={missing:'qa_decision_required',skipped:'context_refreshed',triggered:'qa_triggered',
+    blocked:'qa_blocked',correction:'correction_review_required'};
+  assert.equal(result.code,expected[mode]);assert.equal(result.operation,'advance');
+  if(mode==='skipped')assert.equal(result.pendingAction,'start_next_task');
+  if(mode==='triggered')assert.equal(result.pendingAction,'qa_execution');
+  if(['missing','correction'].includes(mode))assert(!fs.existsSync(log));
+  else{
+    const before=fs.readFileSync(log);
+    const resumed=await createCmAiConversationEntry(options).handle(operation('advance'));
+    assert.equal(resumed.code,expected[mode]);assert.deepEqual(fs.readFileSync(log),before);
+    assert.equal(before.toString().trim().split('\n').length,1);
+  }
+}));
+
+test('cancelling advance between stages prevents QA start and dispatch',()=>fixture(async({root,specsDir,codeProject})=>{
+  const packageDigest='a'.repeat(64),completed={state:'fixture_completed',code:null,identity,packageDigest};
+  const runner={status:()=>completed,executeEffect:async()=>assert.fail('no dispatch'),cancel:()=>completed,run:async()=>completed};
+  const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
+  const entry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
+    qaLogHome:path.join(root,'logs'),qaDecision:qaDecision('triggered',packageDigest,
+      {reason:'synthetic',score:null,at:'2026-09-04T19:00:00Z'}),
+    qaExecutor:{mode:'commands',caseCount:1,timeoutMs:1000,run:()=>assert.fail('cancelled before QA')}});
+  const pending=entry.handle(operation('advance'));
+  assert.equal((await entry.handle(operation('cancel'))).outcome,'cancelled');
+  assert.equal((await pending).code,'cancelled');
+  assert(!fs.existsSync(path.join(specsDir,'运行日志.jsonl')));
+}));
+
+for(const mode of ['PASS','FAIL','BLOCKED','cancel','timeout','invalid'])
+test(`QA host execution records results and never redispatches on recovery: ${mode}`,()=>fixture(async({root,specsDir,codeProject})=>{
+  const packageDigest='a'.repeat(64),log=path.join(specsDir,'运行日志.jsonl');
+  const completed={state:'fixture_completed',code:null,identity,packageDigest};
+  const runner={status:()=>completed,executeEffect:async()=>assert.fail('no developer dispatch'),cancel:()=>completed,run:async()=>completed};
+  let calls=0,release,started;const began=new Promise(resolve=>{started=resolve;});
+  const options={specsDir,codeProject,feature:'1.login',identity,runner,qaLogHome:path.join(root,'logs'),
+    qaDecision:qaDecision('triggered',packageDigest,{reason:'synthetic',score:null,at:'2026-09-04T19:00:00Z'}),
+    qaExecutor:{mode:'commands',caseCount:1,timeoutMs:mode==='timeout'?10:1000,run:async(request,signal)=>{
+      calls++;assert.equal(request.packageDigest,packageDigest);assert.equal(signal.aborted,false);
+      assert.equal(JSON.parse(fs.readFileSync(log,'utf8').trim().split('\n').at(-1)).phase,'start');started();
+      if(['cancel','timeout'].includes(mode))await new Promise(resolve=>{release=resolve;});
+      const report=path.join(specsDir,'.reviews','qa-execution.md');fs.mkdirSync(path.dirname(report),{recursive:true});
+      fs.writeFileSync(report,'# Isolated QA evidence\n');
+      return {result:mode==='invalid'?'PASS':mode,passed:mode==='PASS'?1:0,failed:mode==='FAIL'?1:0,
+        blocked:mode==='BLOCKED'?1:0,report};
+    }}};
+  const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
+  const entry=createCmAiConversationEntry(options),pending=entry.handle(operation('advance'));await began;
+  if(mode==='cancel')await entry.handle(operation('cancel'));
+  const result=await pending;
+  assert.equal(result.code,{PASS:'qa_passed',FAIL:'qa_failed',BLOCKED:'qa_result_blocked',cancel:'cancelled',
+    timeout:'qa_execution_timeout',invalid:'qa_result_invalid'}[mode]);
+  release?.();await new Promise(resolve=>setImmediate(resolve));
+  const before=fs.readFileSync(log),resumed=await createCmAiConversationEntry(options).handle(operation('advance'));
+  assert.equal(resumed.code,['PASS','FAIL','BLOCKED'].includes(mode)?result.code:'qa_execution_unknown');
+  assert.equal(calls,1);assert.deepEqual(fs.readFileSync(log),before);
+}));
+
+for(const mode of ['completed','blocked','mismatch','cancel','timeout'])
+test(`documentation inspection drives the existing finalizer: ${mode}`,()=>fixture(async({root,specsDir,codeProject})=>{
+  const packageDigest='a'.repeat(64),logHome=path.join(root,'logs'),log=path.join(specsDir,'运行日志.jsonl');
+  fs.writeFileSync(path.join(specsDir,'1.login','tasks.md'),'- [x] T-001: implement login\n');
+  await seedLegacyQaSkip({specsDir,codeProject,packageDigest,logHome,at:'2026-09-04T19:00:00Z'});
+  const completed={state:'fixture_completed',code:null,identity,packageDigest};
+  const runner={status:()=>completed,executeEffect:async()=>assert.fail('no dispatch'),cancel:()=>completed,run:async()=>completed};
+  let started,release,calls=0;const began=new Promise(resolve=>{started=resolve;});
+  const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
+  const entry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
+    applicableAgentFiles:[],qaLogHome:logHome,qaDecisionProvider:{timeoutMs:1000,decide:()=>assert.fail('historical QA')},
+    documentationProvider:{timeoutMs:mode==='timeout'?10:1000,inspect:async binding=>{
+      calls++;started();if(['cancel','timeout'].includes(mode))await new Promise(resolve=>{release=resolve;});
+      return {syncId:binding.syncId,identity,packageDigest,contextDigest:mode==='mismatch'?'b'.repeat(64):binding.contextDigest,
+        status:mode==='blocked'?'blocked':'completed',reason:'synthetic inspection',at:'2026-09-07T20:00:00Z'};
+    }}});
+  const pending=entry.handle(operation('advance'));await began;
+  if(mode==='cancel')await entry.handle(operation('cancel'));
+  const result=await pending;release?.();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(result.code,{completed:'run_done',blocked:'documentation_sync_blocked',mismatch:'stale_documentation',
+    cancel:'cancelled',timeout:'documentation_timeout'}[mode]);
+  assert.equal(calls,1);
+  const rows=fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(rows.filter(row=>row.event==='run_done').length,mode==='completed'?1:0);
+}));
+
+test('dynamic host QA resumes historical skip without rejudging or rewriting it',()=>fixture(async({root,specsDir,codeProject})=>{
+  const packageDigest='a'.repeat(64),log=path.join(specsDir,'运行日志.jsonl'),logHome=path.join(root,'logs');
+  fs.writeFileSync(path.join(specsDir,'1.login','tasks.md'),'- [x] T-001: implement login\n');
+  await seedLegacyQaSkip({specsDir,codeProject,packageDigest,logHome,at:'2026-09-04T19:00:00Z'});
+  const before=fs.readFileSync(log),completed={state:'fixture_completed',code:null,identity,packageDigest};
+  const runner={status:()=>completed,executeEffect:async()=>assert.fail('no dispatch'),cancel:()=>completed,run:async()=>completed};
+  const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
+  const entry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
+    applicableAgentFiles:[],qaLogHome:logHome,qaDecisionProvider:{timeoutMs:1000,decide:()=>assert.fail('do not re-ask')}});
+  const result=await entry.handle(operation('advance'));
+  assert.equal(result.code,'documentation_sync_required');assert.equal(result.pendingAction,'documentation_sync');
+  assert.deepEqual(fs.readFileSync(log),before);
+}));
+
+for(const mode of ['record','cancel','timeout','mismatch'])
+test(`dynamic host QA decision binds the generated package: ${mode}`,()=>fixture(async({root,specsDir,codeProject})=>{
+  const packageDigest='a'.repeat(64),log=path.join(specsDir,'运行日志.jsonl');
+  const completed={state:'fixture_completed',code:null,identity,packageDigest};
+  const runner={status:()=>completed,executeEffect:async()=>assert.fail('no dispatch'),cancel:()=>completed,run:async()=>completed};
+  let calls=0,release,started;
+  const began=new Promise(resolve=>{started=resolve;});
+  const options={specsDir,codeProject,feature:'1.login',identity,runner,qaLogHome:path.join(root,'logs'),
+    qaDecisionProvider:{timeoutMs:mode==='timeout'?10:1000,decide:async(request,signal)=>{
+      calls++;assert.deepEqual(request,{specsDir,codeProject,feature:'1.login',identity,packageDigest});
+      assert(Object.isFrozen(request.identity));assert.equal(signal.aborted,false);started();
+      if(['cancel','timeout'].includes(mode))await new Promise(resolve=>{release=resolve;});
+      return qaDecision('triggered',mode==='mismatch'?'b'.repeat(64):packageDigest,
+        {reason:'feature_complete',score:null,at:'2026-09-04T19:00:00Z'});
+    }}};
+  const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
+  const entry=createCmAiConversationEntry(options),pending=entry.handle(operation('advance'));
+  await began;
+  if(mode==='cancel')await entry.handle(operation('cancel'));
+  const result=await pending;
+  assert.equal(result.code,{record:'qa_triggered',cancel:'cancelled',timeout:'qa_decision_timeout',mismatch:'qa_decision_mismatch'}[mode]);
+  if(mode==='record'){
+    const before=fs.readFileSync(log);
+    assert.equal((await createCmAiConversationEntry(options).handle(operation('advance'))).code,'qa_triggered');
+    assert.deepEqual(fs.readFileSync(log),before);assert.equal(calls,1);
+  }else{release?.();await new Promise(resolve=>setImmediate(resolve));assert(!fs.existsSync(log));}
+}));
+
+test('feature completion requires QA even when the host proposes a low-score skip',()=>fixture(async({root,specsDir,codeProject})=>{
+  const packageDigest='a'.repeat(64);
+  fs.writeFileSync(path.join(specsDir,'1.login','tasks.md'),'- [x] T-001: implement login\n');
+  const completed={state:'fixture_completed',code:null,identity,packageDigest};
+  const runner={status:()=>completed,executeEffect:async()=>assert.fail('no dispatch'),cancel:()=>completed,run:async()=>completed};
+  const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
+  const entry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
+    qaLogHome:path.join(root,'logs'),qaDecision:qaDecision('skipped',packageDigest,
+      {reason:'docs_only',score:4,at:'2026-09-04T19:00:00Z'})});
+  for(const name of ['qa','advance']){
+    const result=await entry.handle(operation(name,name==='qa'?{packageDigest}:{}));
+    assert.equal(result.code,'qa_mandatory_required');assert.equal(result.outcome,'awaiting');
+  }
+  assert(!fs.existsSync(path.join(specsDir,'运行日志.jsonl')));
 }));
 
 test('QA trigger records one existing-log event and stops before QA execution',()=>fixture(async({root,specsDir,codeProject})=>{
@@ -537,7 +724,40 @@ test('QA FAIL and BLOCKED results stop without runner effects',async()=>{
       data:{...binding,...counts,result:rawResult,report:'.reviews/qa.md'}});
     const result=await createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner})
       .handle(operation('qa_result',{packageDigest,testRunId}));
-    assert.equal(result.code,expected);assert.equal(result.pendingAction,'none');
+    assert.equal(result.code,expected);assert.equal(result.pendingAction,rawResult==='FAILED'?'fix_authorization':'none');
+    const {inspectCmAiQaFailure}=await import('./cm-ai-qa-log.mjs');
+    const source={specsDir,feature:'1.login',identity,packageDigest,testRunId};
+    if(rawResult==='FAILED'){
+      const before=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'));
+      assert.deepEqual(inspectCmAiQaFailure(source),{identity,packageDigest,testRunId,
+        qaDecisionId:'qa-triggered',qaRound:1,report:path.join(reviews,'qa.md'),
+        counts:{total:2,passed:1,failed:1,blocked:0}});
+      const reportBytes=fs.readFileSync(path.join(reviews,'qa.md'));
+      for(const [policy,pending,status] of [['never','none','blocked'],['explicit','fix_authorization','authorization_required'],['auto','fix_dispatch','dispatch_required']]){
+        fs.writeFileSync(path.join(codeProject,'.cm-workflow.json'),JSON.stringify({version:1,policies:{auto_fix:policy}}));
+        const next=await createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner})
+          .handle(operation('qa_result',{packageDigest,testRunId}));
+        assert.equal(next.code,'qa_failed');assert.equal(next.pendingAction,pending);
+        assert.equal(next.fixHandoff.status,status);assert.equal(next.fixHandoff.policy,policy);
+        assert.equal(next.fixHandoff.execution,'not_started');assert.equal(next.fixHandoff.source.qaRound,1);
+        assert.equal(next.fixHandoff.source.reportEvidence.path,'.reviews/qa.md');
+        assert.match(next.fixHandoff.source.reportEvidence.sha256,/^[a-f0-9]{64}$/);
+        assert.equal(next.fixHandoff.source.reportEvidence.contentBase64,undefined);
+      }
+      assert.deepEqual(fs.readFileSync(path.join(reviews,'qa.md')),reportBytes);
+      assert.deepEqual(fs.readFileSync(path.join(specsDir,'运行日志.jsonl')),before);
+      for(const round of [2,3]){
+        const currentId=`qa-retest-${round}`;
+        const current={...binding,attempt:round,operation_id:currentId};
+        writeTestRun({specsDir,codeProject,logHome,phase:'start',at:`2026-09-04T13:${round+20}:00-07:00`,data:{...current,case_count:2}});
+        writeTestRun({specsDir,codeProject,logHome,phase:'complete',at:`2026-09-04T13:${round+20}:01-07:00`,data:{...current,...counts,result:rawResult,report:'.reviews/qa.md'}});
+        const next=await createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner})
+          .handle(operation('qa_result',{packageDigest,testRunId:currentId}));
+        assert.equal(next.fixHandoff.source.qaRound,round);
+        assert.equal(next.pendingAction,round===3?'none':'fix_dispatch');
+        if(round===3)assert.equal(next.fixHandoff.reason,'qa_round_limit');
+      }
+    }else assert.throws(()=>inspectCmAiQaFailure(source),{code:'qa_failure_required'});
   });
 });
 
@@ -627,7 +847,14 @@ test('only the latest QA round can decide whether the workflow advances',async()
     const latest=await entry.handle(operation('qa_result',{requestId:`${scenario.name}-new`,packageDigest,testRunId:secondId}));
     assert.equal(old.code,'qa_result_stale',scenario.name);assert.equal(old.pendingAction,'none',scenario.name);
     assert.equal(latest.code,scenario.newCode,scenario.name);
-    assert.equal(latest.pendingAction,scenario.newCode==='qa_passed'?'context_refresh':'none',scenario.name);
+    assert.equal(latest.pendingAction,scenario.newCode==='qa_passed'?'context_refresh':
+      scenario.newCode==='qa_failed'?'fix_authorization':'none',scenario.name);
+    const {inspectCmAiQaFailure}=await import('./cm-ai-qa-log.mjs');
+    const source={specsDir,feature:'1.login',identity,packageDigest};
+    assert.throws(()=>inspectCmAiQaFailure({...source,testRunId:firstId}),{code:'qa_result_stale'});
+    if(scenario.second==='FAIL')assert.equal(inspectCmAiQaFailure({...source,testRunId:secondId}).qaRound,2);
+    else assert.throws(()=>inspectCmAiQaFailure({...source,testRunId:secondId}),
+      {code:scenario.secondComplete?'qa_failure_required':'qa_result_incomplete'});
   });
 });
 
@@ -913,9 +1140,7 @@ test('N7 refresh routes all-terminal disk state to N8 without running it',()=>fi
   const runner={status:()=>completed,executeEffect:async()=>assert.fail('runner effect'),cancel:()=>completed,run:async()=>completed};
   fs.writeFileSync(path.join(specsDir,'1.login','tasks.md'),'- [x] T-001: implement login\n');
   const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
-  await createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,qaLogHome:logHome,
-    qaDecision:qaDecision('skipped',packageDigest,{reason:'docs_only',score:4,
-      at:'2026-09-04T14:30:00-07:00'})}).handle(operation('qa',{packageDigest}));
+await seedLegacyQaSkip({specsDir,codeProject,packageDigest,logHome,at:"2026-09-04T14:30:00-07:00"});
   const result=await createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
     applicableAgentFiles:[]})
     .handle(operation('context_refresh',{packageDigest,testRunId:null}));
@@ -928,9 +1153,7 @@ test('N7 refresh preserves renewed approval and blocked admission stops',()=>fix
   const completed={state:'fixture_completed',code:null,identity,packageDigest};
   const runner={status:()=>completed,executeEffect:async()=>assert.fail('runner effect'),cancel:()=>completed,run:async()=>completed};
   const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
-  await createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,qaLogHome:logHome,
-    qaDecision:qaDecision('skipped',packageDigest,{reason:'docs_only',score:4,
-      at:'2026-09-04T14:40:00-07:00'})}).handle(operation('qa',{packageDigest}));
+await seedLegacyQaSkip({specsDir,codeProject,packageDigest,logHome,at:"2026-09-04T14:40:00-07:00"});
   const entry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
     applicableAgentFiles:[]});
 
@@ -952,9 +1175,7 @@ test('N7 refresh rejects an applicable AGENTS path outside the project',()=>fixt
   const runner={status:()=>completed,executeEffect:async()=>assert.fail('runner effect'),cancel:()=>completed,run:async()=>completed};
   fs.mkdirSync(path.join(root,'outside'));fs.writeFileSync(path.join(root,'outside','AGENTS.md'),'# Outside\n');
   const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
-  await createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,qaLogHome:logHome,
-    qaDecision:qaDecision('skipped',packageDigest,{reason:'docs_only',score:4,
-      at:'2026-09-04T14:50:00-07:00'})}).handle(operation('qa',{packageDigest}));
+await seedLegacyQaSkip({specsDir,codeProject,packageDigest,logHome,at:"2026-09-04T14:50:00-07:00"});
   const result=await createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
     applicableAgentFiles:['../outside/AGENTS.md']})
     .handle(operation('context_refresh',{packageDigest,testRunId:null}));
@@ -969,9 +1190,7 @@ test('N8 finish requires documentation sync after all tasks are terminal without
   const runner={status:()=>completed,executeEffect:async()=>{effects++;return completed;},cancel:()=>completed,run:async()=>completed};
   fs.writeFileSync(path.join(specsDir,'1.login','tasks.md'),'- [x] T-001: implement login\n');
   const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
-  await createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,qaLogHome:logHome,
-    qaDecision:qaDecision('skipped',packageDigest,{reason:'docs_only',score:4,
-      at:'2026-09-04T15:01:00-07:00'})}).handle(operation('qa',{packageDigest}));
+await seedLegacyQaSkip({specsDir,codeProject,packageDigest,logHome,at:"2026-09-04T15:01:00-07:00"});
   const entry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
     applicableAgentFiles:[]});
   const before=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'));
@@ -995,9 +1214,7 @@ test('N8 finish accepts one current trusted documentation result but only advanc
   fs.writeFileSync(path.join(second,'tasks.md'),'- [x] T-002: implement profile\n');
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.login','2.profile']}));
   const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
-  await createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,qaLogHome:logHome,
-    qaDecision:qaDecision('skipped',packageDigest,{reason:'docs_only',score:4,
-      at:'2026-09-04T15:02:00-07:00'})}).handle(operation('qa',{packageDigest}));
+await seedLegacyQaSkip({specsDir,codeProject,packageDigest,logHome,at:"2026-09-04T15:02:00-07:00"});
   const refreshEntry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
     applicableAgentFiles:[]});
   const refresh=await refreshEntry.handle(operation('context_refresh',{packageDigest,testRunId:null}));
@@ -1026,9 +1243,7 @@ test('N8 finish preserves a trusted documentation block and refuses pending task
   const runner={status:()=>completed,executeEffect:async()=>assert.fail('runner effect'),cancel:()=>completed,run:async()=>completed};
   fs.writeFileSync(path.join(specsDir,'1.login','tasks.md'),'- [x] T-001: implement login\n');
   const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
-  await createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,qaLogHome:logHome,
-    qaDecision:qaDecision('skipped',packageDigest,{reason:'docs_only',score:4,
-      at:'2026-09-04T15:03:00-07:00'})}).handle(operation('qa',{packageDigest}));
+await seedLegacyQaSkip({specsDir,codeProject,packageDigest,logHome,at:"2026-09-04T15:03:00-07:00"});
   const refreshEntry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
     applicableAgentFiles:[]});
   const refresh=await refreshEntry.handle(operation('context_refresh',{packageDigest,testRunId:null}));
@@ -1050,9 +1265,7 @@ async function finalizationEntry({root,specsDir,codeProject,packageDigest}) {
   const runner={status:()=>completed,executeEffect:async()=>assert.fail('runner effect'),cancel:()=>completed,run:async()=>completed};
   fs.writeFileSync(path.join(specsDir,'1.login','tasks.md'),'- [x] T-001: implement login\n');
   const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
-  await createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,qaLogHome:logHome,
-    qaDecision:qaDecision('skipped',packageDigest,{reason:'docs_only',score:4,
-      at:'2026-09-04T15:10:00-07:00'})}).handle(operation('qa',{packageDigest}));
+await seedLegacyQaSkip({specsDir,codeProject,packageDigest,logHome,at:"2026-09-04T15:10:00-07:00"});
   const refreshEntry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
     applicableAgentFiles:[]});
   const refresh=await refreshEntry.handle(operation('context_refresh',{packageDigest,testRunId:null}));

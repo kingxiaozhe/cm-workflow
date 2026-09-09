@@ -10,7 +10,7 @@ const MiB=1024*1024;
 
 const sameIdentity=(left,right)=>['repositoryId','runId','taskId','attempt'].every(key=>left[key]===right[key]);
 
-function readDecision(raw,identity,packageDigest) {
+export function readDecision(raw,identity,packageDigest) {
   const decision=json(raw);shape(decision,['decisionId','identity','packageDigest','status','reason','score','at']);
   id(decision.decisionId);validIdentity(decision.identity);hex(decision.packageDigest);
   need(sameIdentity(decision.identity,identity)&&decision.packageDigest===packageDigest,'qa_decision_mismatch');
@@ -25,7 +25,7 @@ function readDecision(raw,identity,packageDigest) {
   return json({...decision,at:decision.at.endsWith('Z')?`${decision.at.slice(0,-1)}+00:00`:decision.at});
 }
 
-function scanRows(log,visit) {
+export function scanRows(log,visit) {
   let descriptor;
   try {
     const stat=fs.lstatSync(log);need(stat.isFile()&&!stat.isSymbolicLink(),'qa_log_failed');
@@ -89,6 +89,17 @@ export function recordCmAiQaDecision(input) {
     '--data-json',JSON.stringify(data)];
   const options={timeout:10000,maxBuffer:MiB,killSignal:'SIGKILL'};
   if(Object.hasOwn(input,'logHome')){text(input.logHome);options.env={...process.env,CM_WORKFLOW_LOG_HOME:input.logHome};}
+  if(decision.status==='skipped'&&decision.reason==='merged_to_feature_qa'){
+    // N6 requires an explicit merge decision as well as the per-task QA row.
+    // Write first: a crash may repeat this same idempotent log operation, never QA.
+    const mergeArgs=[...args];mergeArgs[mergeArgs.indexOf('--event')+1]='decision';
+    mergeArgs[mergeArgs.indexOf('--detail')+1]='合并至feature级QA';
+    mergeArgs.push('--phase','qa_merge');
+    let merged;
+    try{merged=childProcess.spawnSync('python3',mergeArgs,options);}catch{need(false,'qa_log_failed');}
+    need(!merged.error&&merged.status===0&&merged.signal===null&&Buffer.isBuffer(merged.stdout),'qa_log_failed');
+    readResult(merged.stdout,input.identity,input.specsDir);
+  }
   let result;
   try{result=childProcess.spawnSync('python3',args,options);}
   catch{need(false,'qa_log_failed');}
@@ -97,24 +108,36 @@ export function recordCmAiQaDecision(input) {
   return readResult(result.stdout,input.identity,input.specsDir);
 }
 
-export function inspectCmAiQaDecision(input) {
+function findDecisionRow(input) {
   shape(input,['specsDir','feature','identity','packageDigest']);
   text(input.specsDir);text(input.feature);validIdentity(input.identity);hex(input.packageDigest);
   const log=path.join(path.resolve(input.specsDir),'运行日志.jsonl');
-  need(fs.existsSync(log),'context_not_ready');
+  if(!fs.existsSync(log))return null;
   const matches=[];
   try {scanRows(log,row=>{if(row?.schema_version===1&&row.workflow==='cm-ai'&&row.event==='qa'&&row.node==='N6'
     &&row.repository_id===input.identity.repositoryId&&row.run_id===input.identity.runId
     &&row.feature===input.feature&&row.task===input.identity.taskId&&row.attempt===input.identity.attempt
     &&row.package_digest===input.packageDigest)matches.push(row);});}
   catch{need(false,'context_not_ready');}
+  if(matches.length===0)return null;
   need(matches.length===1,'context_not_ready');
   const row=matches[0];id(row.decision_id);
   need(['triggered','skipped','blocked'].includes(row.status),'context_not_ready');
+  return row;
+}
+
+export function findCmAiQaDecision(input) {
+  const row=findDecisionRow(input);if(row===null)return null;
+  return readDecision({status:row.status,decisionId:row.decision_id,identity:input.identity,
+    packageDigest:input.packageDigest,reason:row.reason,score:row.score,at:row.at},input.identity,input.packageDigest);
+}
+
+export function inspectCmAiQaDecision(input) {
+  const row=findDecisionRow(input);need(row,'context_not_ready');
   return Object.freeze({status:row.status,decisionId:row.decision_id});
 }
 
-function reportFile(specsDir,raw) {
+export function reportFile(specsDir,raw) {
   text(raw);need(!raw.includes('\0'),'qa_report_invalid');
   try {
     const specs=fs.realpathSync(specsDir),reviews=path.join(specs,'.reviews'),reviewsStat=fs.lstatSync(reviews);
@@ -132,7 +155,107 @@ function reportFile(specsDir,raw) {
   }
 }
 
+// Discover the latest invocation from the authoritative log, never a second
+// checkpoint. A started invocation without a valid result must not be resent.
+export function latestCmAiQaRun(input) {
+  const decision=findCmAiQaDecision(input);need(decision?.status==='triggered','qa_not_triggered');
+  const rows=[];
+  try{scanRows(path.join(input.specsDir,'运行日志.jsonl'),row=>{
+    if(row?.schema_version===1&&row.workflow==='cm-ai'&&row.event==='test_run'
+      &&row.node==='N6'&&row.repository_id===input.identity.repositoryId&&row.run_id===input.identity.runId
+      &&row.feature===input.feature&&row.task===input.identity.taskId&&row.package_digest===input.packageDigest
+      &&row.qa_decision_id===decision.decisionId)rows.push(row);
+  });}catch{need(false,'qa_result_invalid');}
+  if(rows.length===0)return null;
+  const starts=rows.filter(row=>row.phase==='start');need(starts.length>0,'qa_result_invalid');
+  const testRunId=starts.at(-1).operation_id;id(testRunId);
+  return {testRunId,...inspectCmAiQaResult({...input,testRunId})};
+}
+
+export function recordCmAiQaRun(input) {
+  const keys=['specsDir','codeProject','feature','identity','packageDigest','testRunId','mode','caseCount','phase'];
+  if(Object.hasOwn(input,'result'))keys.push('result');
+  if(Object.hasOwn(input,'logHome'))keys.push('logHome');
+  if(Object.hasOwn(input,'qaRound'))keys.push('qaRound');
+  shape(input,keys);validIdentity(input.identity);id(input.testRunId);hex(input.packageDigest);
+  text(input.specsDir);text(input.codeProject);text(input.feature);
+  need(['commands','browser','all'].includes(input.mode));
+  need(Number.isSafeInteger(input.caseCount)&&input.caseCount>0);
+  need(['start','complete'].includes(input.phase));
+  const qaRound=input.qaRound??1;
+  need(Number.isSafeInteger(qaRound)&&qaRound>=1&&qaRound<=3,'qa_round_invalid');
+  const binding={specsDir:input.specsDir,feature:input.feature,identity:input.identity,packageDigest:input.packageDigest};
+  if(input.phase==='start'){
+    const previous=latestCmAiQaRun(binding);
+    scanRows(path.join(input.specsDir,'运行日志.jsonl'),row=>{
+      need(!(row.event==='test_run'&&row.operation_id===input.testRunId),'qa_round_invalid');
+    });
+    if(previous===null)need(qaRound===1,'qa_round_invalid');
+    else{
+      const failure=inspectCmAiQaFailure({...binding,testRunId:previous.testRunId});
+      need(qaRound===failure.qaRound+1&&input.testRunId!==previous.testRunId,'qa_round_invalid');
+    }
+  }else need(readCmAiQaRunRound({...binding,testRunId:input.testRunId})===qaRound,'qa_round_invalid');
+  const decision=findCmAiQaDecision({specsDir:input.specsDir,feature:input.feature,identity:input.identity,
+    packageDigest:input.packageDigest});need(decision?.status==='triggered','qa_not_triggered');
+  const data={node:'N6',repository_id:input.identity.repositoryId,feature:input.feature,task:input.identity.taskId,
+    package_digest:input.packageDigest,qa_decision_id:decision.decisionId,operation_id:input.testRunId,
+    attempt:qaRound,mode:input.mode,case_count:input.caseCount};
+  if(input.phase==='complete'){
+    const result=json(input.result);shape(result,['result','passed','failed','blocked','report']);
+    for(const key of ['passed','failed','blocked'])need(Number.isSafeInteger(result[key])&&result[key]>=0,'qa_result_invalid');
+    need(result.passed+result.failed+result.blocked===input.caseCount,'qa_result_invalid');
+    need((result.result==='PASS'&&result.passed===input.caseCount)
+      ||(result.result==='FAIL'&&result.failed>0)||(result.result==='BLOCKED'&&result.blocked>0),'qa_result_invalid');
+    reportFile(input.specsDir,result.report);Object.assign(data,result);
+  }else need(!Object.hasOwn(input,'result'));
+  const args=[writer,'--workflow','cm-ai','--event','test_run','--phase',input.phase,'--runtime','codex',
+    '--project-root',input.codeProject,'--specs-dir',input.specsDir,'--run-id',input.identity.runId,
+    '--detail',`QA ${input.phase}`,'--data-json',JSON.stringify(data)];
+  const options={timeout:10000,maxBuffer:MiB,killSignal:'SIGKILL'};
+  if(Object.hasOwn(input,'logHome')){text(input.logHome);options.env={...process.env,CM_WORKFLOW_LOG_HOME:input.logHome};}
+  const result=childProcess.spawnSync('python3',args,options);
+  need(!result.error&&result.status===0&&result.signal===null,'qa_log_failed');
+  return readResult(result.stdout,input.identity,input.specsDir);
+}
+
+// Read the registered round before executing cases or publishing their result.
+// Task attempt remains bound by the QA decision; it is not the QA round.
+export function readCmAiQaRunRound(input){
+  shape(input,['specsDir','feature','identity','packageDigest','testRunId']);
+  const {testRunId,...binding}=input;id(testRunId);
+  const decision=findCmAiQaDecision(binding);need(decision?.status==='triggered','qa_not_triggered');
+  const rows=[];
+  scanRows(path.join(input.specsDir,'运行日志.jsonl'),row=>{
+    if(row.workflow==='cm-ai'&&row.event==='test_run'&&row.run_id===input.identity.runId
+      &&row.node==='N6'&&row.repository_id===input.identity.repositoryId&&row.feature===input.feature
+      &&row.task===input.identity.taskId&&row.package_digest===input.packageDigest
+      &&row.qa_decision_id===decision.decisionId)rows.push(row);
+  });
+  const starts=rows.filter(row=>row.phase==='start');
+  need(starts.length>0&&starts.length<=3&&starts.every((row,index)=>row.attempt===index+1)
+    &&new Set(starts.map(row=>row.operation_id)).size===starts.length,'qa_round_invalid');
+  const start=starts.at(-1);
+  need(start.operation_id===testRunId&&!rows.some(row=>row.operation_id===testRunId&&row.phase==='complete'),'qa_round_invalid');
+  return start.attempt;
+}
+
 export function inspectCmAiQaResult(input) {
+  return inspectQaResult(input,false);
+}
+
+// Input to the separate cm-fix lifecycle, not permission to modify or rerun QA.
+// Shares the exact latest-round validator; never lets callers select an old FAIL.
+export function inspectCmAiQaFailure(input) {
+  return inspectQaResult(input,true);
+}
+
+// Historical evidence only. Never use this to select a new repair or QA action.
+export function readCmAiQaFailureHistory(input) {
+  return inspectQaResult(input,true,true);
+}
+
+function inspectQaResult(input,failureSource,historical=false) {
   shape(input,['specsDir','feature','identity','packageDigest','testRunId']);
   text(input.specsDir);text(input.feature);validIdentity(input.identity);hex(input.packageDigest);id(input.testRunId);
   const log=path.join(path.resolve(input.specsDir),'运行日志.jsonl');
@@ -164,7 +287,7 @@ export function inspectCmAiQaResult(input) {
   need(latestStarts.length>0,'qa_result_incomplete');
   need(latestStarts.every((item,index)=>item.row.attempt===index+1),'qa_result_invalid');
   const latestStart=latestStarts.at(-1);
-  need(latestStart.row.operation_id===input.testRunId,'qa_result_stale');
+  if(!historical)need(latestStart.row.operation_id===input.testRunId,'qa_result_stale');
   const runs=candidates.filter(item=>item.row.operation_id===input.testRunId);
   need(runs.length>0,'qa_result_invalid');
   const starts=runs.filter(item=>item.row.phase==='start'),completes=runs.filter(item=>item.row.phase==='complete');
@@ -186,6 +309,12 @@ export function inspectCmAiQaResult(input) {
   }else if(['BLOCKED','NEEDS_MANUAL'].includes(result)){
     need(complete.blocked>0,'qa_result_invalid');status='blocked';
   }else need(false,'qa_result_invalid');
-  reportFile(input.specsDir,complete.report);
+  const report=reportFile(input.specsDir,complete.report);
+  if(failureSource){
+    need(status==='failed','qa_failure_required');
+    return json({identity:input.identity,packageDigest:input.packageDigest,testRunId:input.testRunId,
+      qaDecisionId:decisionId,qaRound:start.attempt,report,
+      counts:{total:complete.case_count,passed:complete.passed,failed:complete.failed,blocked:complete.blocked}});
+  }
   return Object.freeze({status});
 }

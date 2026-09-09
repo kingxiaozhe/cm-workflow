@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomUUID,createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { need,shape,id,hex,json,digest,freeze } from './effect-contract.mjs';
+import { isSupportedExecutionPlatform } from './execution-platform.mjs';
 
 const MiB=1024*1024,STATE_LIMIT=16*MiB,PHYSICAL_LIMIT=32*MiB,APP_ID=0x434d5831;
 const PROTOCOL_SQL='CREATE TABLE protocol(version INTEGER NOT NULL CHECK(version=1))';
@@ -135,7 +136,10 @@ function acquireWriter(p,create) {
       certificate=readiness(p,inspectionFd);fs.fsyncSync(inspectionFd);syncPath(readyPath(p));syncPath(path.dirname(p));
     }
     db=new DatabaseSync(p,{timeout:0,allowExtension:false});
-    db.exec('PRAGMA busy_timeout=0; PRAGMA trusted_schema=OFF; PRAGMA synchronous=EXTRA; PRAGMA fullfsync=ON');
+    db.exec('PRAGMA busy_timeout=0; PRAGMA trusted_schema=OFF; PRAGMA synchronous=EXTRA');
+    // F_FULLFSYNC is macOS-specific. Linux keeps SQLite's native sync plus the
+    // mandatory file/parent fsync below; unsupported sync must still fail closed.
+    if(process.platform==='darwin')db.exec('PRAGMA fullfsync=ON');
     if(created) {
       db.exec(`BEGIN IMMEDIATE; PRAGMA application_id=${APP_ID}; PRAGMA user_version=1;
         ${PROTOCOL_SQL}; INSERT INTO protocol VALUES(1); COMMIT;`);
@@ -162,8 +166,7 @@ export function openExecutionStore(input) {
   shape(options.fingerprints,['workflow','config','inputs']);Object.values(options.fingerprints).forEach(hex);
   need(typeof options.create==='boolean' && typeof options.specsRoot==='string'
     && path.isAbsolute(options.specsRoot) && path.resolve(options.specsRoot)===options.specsRoot,'unsupported_path');
-  const [major,minor]=process.versions.node.split('.').map(Number);
-  need(process.platform==='darwin' && (major>24 || (major===24 && minor>=14)),'unsupported_platform');
+  need(isSupportedExecutionPlatform(),'unsupported_platform');
   need(!fs.lstatSync(options.specsRoot).isSymbolicLink(),'unsupported_path');
   const root=fs.realpathSync(options.specsRoot);directory(root,false,false);
   const reviews=path.join(root,'.reviews'),execution=path.join(reviews,'.execution');

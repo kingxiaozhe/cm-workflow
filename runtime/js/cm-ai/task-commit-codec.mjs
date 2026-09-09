@@ -2,6 +2,7 @@
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {need,shape,hex,json,digest,validIdentity} from './effect-contract.mjs';
+import {reviewSpecsPath} from './review-package.mjs';
 const FILE_LIMIT=256*1024,sha=b=>createHash('sha256').update(b).digest('hex');
 const same=(a,b)=>need(digest(a)===digest(b),'commit_history_invalid');
 const absolute=p=>need(typeof p==='string'&&!p.includes('\0')&&path.isAbsolute(p)&&path.resolve(p)===p,'unsupported_path');
@@ -38,7 +39,7 @@ export function readCommitIntent(raw,{owner,identity,fingerprints}){
     &&p.plan.taskId===p.identity.taskId&&p.plan.attempt===p.identity.attempt,'commit_history_invalid');
   shape(p.proof,['root','baselineDigest','packageDigest','receiptDigest','checksDigest']);absolute(p.proof.root);
   for(const k of ['baselineDigest','packageDigest','receiptDigest','checksDigest'])hex(p.proof[k]);
-  const a=p.proof.root,b=owner.specsRoot;need(a!==b&&!a.startsWith(b+path.sep)&&!b.startsWith(a+path.sep),'overlapping_roots');
+  reviewSpecsPath(p.proof.root,owner.specsRoot);
   shape(p.parent,['path','dev','ino','mode']);need(p.parent.path===path.dirname(owner.tasksPath)
     &&[p.parent.dev,p.parent.ino].every(n=>typeof n==='string'&&/^(0|[1-9][0-9]*)$/.test(n))
     &&Number.isInteger(p.parent.mode)&&p.parent.mode>=0&&p.parent.mode<=0o7777,'commit_history_invalid');

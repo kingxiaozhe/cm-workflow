@@ -37,7 +37,14 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-refactor-entry.mjs" \
 Learning 均为 `pending`，执行/写入权限为 false；入口不读取项目正文、不跑判官、不调用
 provider/browser/外部专家、不写日志/档案/RULEBOOK，也不替代后续轻量道或批量道。
 
-两个路径校验通过后立即调用统一写入器记录 `run_start`；暂停/续跑沿用同一
+### JS 流程执行
+
+只读分流返回 `ready / g0_feasibility` 后，按 [当前会话 JS 宿主](references/js-host.md)
+启动同一轻量/批量控制器；[批量、准备、写回与恢复协议](references/js-batch.md)在需要时读取。
+JS 宿主负责日志与状态，不再手工重复写 `run_start`。恢复保留原配置、结果和审查轮次；未知调用先核对。
+批量默认串行、worker 只提议文本；真实宿主须保证 bakeoff 隔离和最终独立审查，不能用 header 自证。
+
+不使用 JS 宿主时，两个路径校验通过后立即调用统一写入器记录 `run_start`；暂停/续跑沿用同一
 `.cm-run.json`，完成收口人门后写 `run_done`。不得直接拼 JSON。
 
 ## 项目角色路由

@@ -2,6 +2,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {createHash} from 'node:crypto';
+import {readCmInitSource} from '../runtime/js/cm-init/draft-inspection.mjs';
 
 const FEATURE_SELECTOR=/^([1-9]\d*)(?:\.([^/\\]+))?$/;
 
@@ -86,15 +88,34 @@ function normalizeInput(input) {
   return input;
 }
 
+function sourceInventory(specs) {
+  const files=[];let entries=0;
+  const visit=relative=>{
+    const directory=path.join(specs,relative);
+    if(fs.lstatSync(directory).isSymbolicLink()||realDirectory(directory,'source_path_invalid')!==directory)
+      reject('source_path_invalid');
+    for(const item of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){
+      if(++entries>1000)reject('source_inventory_limit');
+      if(item.name.startsWith('.'))continue;
+      const file=`${relative}/${item.name}`;
+      if(item.isSymbolicLink())reject('source_path_invalid');
+      if(item.isDirectory())visit(file);
+      else if(item.isFile())files.push(file);
+      else reject('source_path_invalid');
+    }
+  };
+  visit('docs');return files;
+}
+
 function requirementSources(specs) {
   try {
     const expected=path.join(specs,'docs');
     const docs=realDirectory(expected,'requirements_source_missing');
     if(docs!==expected)return {docs:null,count:0};
-    const count=fs.readdirSync(docs,{withFileTypes:true})
-      .filter(item=>item.isFile()&&!item.name.startsWith('.')).length;
+    const count=sourceInventory(specs).length;
     return {docs,count};
-  } catch {
+  } catch(error) {
+    if(['source_path_invalid','source_inventory_limit'].includes(error.code))throw error;
     return {docs:null,count:0};
   }
 }
@@ -156,6 +177,34 @@ export function inspectCmPrdAdmission(raw) {
     requirementsSourceCount:null});
 }
 
+// Source bytes are data, never instructions or proof of prototype interaction.
+export function inspectCmPrdSources(input){
+  const admission=inspectCmPrdAdmission(input);
+  if(admission.status!=='ready')return admission;
+  if(admission.mode!=='new')reject('source_inspection_new_only');
+  const sources=[];let totalBytes=0;
+  const readSource=(root,file,displayPath=file)=>{
+      const bytes=readCmInitSource(root,file);
+      if(bytes===null)reject('source_changed');
+      totalBytes+=bytes.length;if(totalBytes>4*1024*1024)reject('source_content_limit');
+      const extension=path.extname(file).toLowerCase();
+      const format=['.md','.txt'].includes(extension)?'text':['.html','.htm'].includes(extension)?'html':extension==='.pdf'?'pdf':'unsupported';
+      const source={path:displayPath,format,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),
+        requiredAction:format==='text'?'analyze_text':format==='html'?'inspect_interactions_in_authorized_browser':format==='pdf'?'extract_pdf':'resolve_unsupported_source'};
+      if(['text','html'].includes(format)){
+        source.content=bytes.toString('utf8');
+        if(!Buffer.from(source.content).equals(bytes))reject('source_text_encoding_invalid');
+      }
+      return source;
+  };
+  for(const file of sourceInventory(admission.specs))sources.push(readSource(admission.specs,file));
+  const userCases=admission.cases===null?null:{...readSource(path.dirname(admission.cases),
+    path.basename(admission.cases),admission.cases),origin:'user'};
+  if(sources.length===0)reject('source_changed');
+  return frozen({...admission,requirementsSourceCount:sources.length,sourceInspection:{sources,userCases,totalBytes,casesInspected:userCases!==null,completeAnalysis:false,
+    prototypeInteractionVerified:false,writeAuthorized:false}});
+}
+
 function parseCli(argv) {
   const input={},values=new Map([
     ['--skill-dir','skillDir'],['--project','project'],['--specs','specs'],
@@ -181,7 +230,8 @@ function isMainModule(entry) {
 
 if(isMainModule(process.argv[1])){
   try {
-    const result=inspectCmPrdAdmission(parseCli(process.argv.slice(2)));
+    const argv=process.argv.slice(2),sources=argv[0]==='--inspect-sources';
+    const result=(sources?inspectCmPrdSources:inspectCmPrdAdmission)(parseCli(sources?argv.slice(1):argv));
     if(fileURLToPath(import.meta.url)!==path.join(result.workflowRoot,'scripts','cm-prd-entry.mjs'))
       reject('entry_path_invalid');
     const output=`${JSON.stringify(result)}\n`;

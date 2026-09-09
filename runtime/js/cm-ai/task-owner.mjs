@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { need,shape,id,hex,json } from './effect-contract.mjs';
 import { openExecutionStore } from './execution-store.mjs';
+import { isSupportedExecutionPlatform } from './execution-platform.mjs';
 
 const same=(a,b)=>a.dev===b.dev && a.ino===b.ino;
 const taskOwners=new WeakMap();
@@ -24,8 +25,7 @@ function validate(input) {
   shape(v.identity,['repositoryId','runId']);Object.values(v.identity).forEach(id);
   shape(v.fingerprints,['workflow','config','inputs']);Object.values(v.fingerprints).forEach(hex);
   need(typeof v.create==='boolean');
-  const [major,minor]=process.versions.node.split('.').map(Number);
-  need(process.platform==='darwin' && (major>24 || (major===24 && minor>=14)),'unsupported_platform');
+  need(isSupportedExecutionPlatform(),'unsupported_platform');
   for(const p of [v.tasksPath,v.specsRoot])need(typeof p==='string' && path.isAbsolute(p)
     && path.resolve(p)===p,'unsupported_path');
   need(typeof v.feature==='string' && v.feature.length>0 && !['.','..'].includes(v.feature)

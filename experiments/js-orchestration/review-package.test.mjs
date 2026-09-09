@@ -26,11 +26,69 @@ function fixture(fn) {
 }
 const capture = (root,extra={}) => captureReviewBaseline({root,identity,scope:['src/a.js','src/new.js'],requirements:['requirements.md'],...extra});
 const resign = (obj,field) => { const {[field]:ignored,...data}=obj; return {...data,[field]:digest(data)}; };
+test('P2 review package seals external handoff bytes and rejects changed or missing binding',()=>fixture(root=>{
+  const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-handoff-binding-')));
+  try {
+    const handoffPath=path.join(dir,'task-a1-handoff.json');
+    fs.writeFileSync(handoffPath,'{"status":"ready_for_review"}\n');
+    const baseline=capture(root);write(root,'src/a.js','changed\n');
+    const pkg=createReviewPackage({root,baseline,checks,handoffPath});
+    assert.equal(pkg.handoff.sha256,sha(fs.readFileSync(handoffPath)));
+    assert.deepEqual(readReviewPackage(pkg),pkg);
+    const options={root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest};
+    assert.throws(()=>verifyReviewPackage(options),{code:'package_mismatch'});
+    assert.equal(verifyReviewPackage({...options,handoffPath}).outcome,'matched');
+    fs.appendFileSync(handoffPath,'\n');
+    assert.throws(()=>verifyReviewPackage({...options,handoffPath}),{code:'package_mismatch'});
+    const tampered=structuredClone(pkg);tampered.handoff.contentBase64='e30=';
+    assert.throws(()=>readReviewPackage(tampered),{code:'invalid_package'});
+  } finally {fs.rmSync(dir,{recursive:true,force:true});}
+}));
 function prepared(root,extra={}) {
   const baseline=capture(root,extra); write(root,'src/a.js','changed\n');
   const reviewPackage=createReviewPackage({root,baseline,checks});
   return {root,baseline,checks,reviewPackage,expectedDigest:reviewPackage.packageDigest};
 }
+
+test('P1 nested specs binding survives host evidence changes but rejects business scope and root substitution',()=>fixture(root=>{
+  root=fs.realpathSync(root);
+  const specsRoot=path.join(root,'specs');
+  write(root,'specs/tasks.md','- [ ] T-001: synthetic\n');
+  const baseline=captureReviewBaseline({root,specsRoot,identity,scope:['src/a.js'],requirements:['requirements.md']});
+  assert.equal(baseline.specsPath,'specs');assert(!baseline.files.some(f=>f.path.startsWith('specs/')));
+  assert.deepEqual(readReviewBaseline(baseline),baseline);
+  write(root,'src/a.js','changed\n');
+  const pkg=createReviewPackage({root,baseline,checks});
+  write(root,'specs/.reviews/host.json','host-owned changing evidence\n');
+  assert.equal(verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
+  for(const scope of [['specs/tasks.md'],['SPECS/new.md']])
+    assert.throws(()=>captureReviewBaseline({root,specsRoot,identity,scope,requirements:['requirements.md']}),{code:'protected_specs'});
+  assert.throws(()=>captureReviewBaseline({root,specsRoot:root,identity,scope:['src/a.js'],requirements:['requirements.md']}),{code:'overlapping_roots'});
+  fs.renameSync(specsRoot,path.join(root,'saved-specs'));
+  fs.symlinkSync('saved-specs',specsRoot);
+  assert.throws(()=>createReviewPackage({root,baseline,checks}),{code:'unsupported_path'});
+}));
+
+test('P1 linked-worktree metadata is excluded without reading its target or permitting metadata scope',t=>fixture(root=>{
+  write(root,'.git','gitdir: /nonexistent/cm-synthetic-worktree-metadata\n');
+  const opened=[],original=fs.openSync;
+  t.mock.method(fs,'openSync',(...args)=>{opened.push(args[0]);return original(...args);});
+  const baseline=capture(root);
+  assert(!baseline.files.some(file=>file.path==='.git'));
+  write(root,'src/a.js','task change\n');
+  const reviewPackage=createReviewPackage({root,baseline,checks});
+  assert.equal(verifyReviewPackage({root,baseline,checks,reviewPackage,
+    expectedDigest:reviewPackage.packageDigest}).outcome,'matched');
+  assert.throws(()=>capture(root,{scope:['.git']}),{code:'unsupported_path'});
+  assert.throws(()=>capture(root,{requirements:['.git']}),{code:'unsupported_path'});
+  fs.unlinkSync(path.join(root,'.git'));
+  fs.symlinkSync('requirements.md',path.join(root,'.git'));
+  assert.throws(()=>capture(root),{code:'unsupported_path'});
+  fs.unlinkSync(path.join(root,'.git'));
+  fs.linkSync(path.join(root,'requirements.md'),path.join(root,'.git'));
+  assert.throws(()=>capture(root),{code:'unsupported_path'});
+  assert(!opened.some(p=>path.basename(p)==='.git'));
+}));
 
 test('S3b2b offline readers retain validated original bytes despite later edits',()=>fixture(root=>{
   const {baseline,reviewPackage}=prepared(root);write(root,'src/a.js','edited after checkpoint');
@@ -167,14 +225,13 @@ test('S2a duplicate/case aliases, directories, empty fields and non-JSON inputs 
   assert.throws(()=>captureReviewBaseline(options)); assert.equal(invoked,false);
 }));
 
-for(const kind of ['leaf-link','directory-link','hardlink','fifo','nested-git','git-file','git-link','sensitive']) {
+for(const kind of ['leaf-link','directory-link','hardlink','fifo','nested-git','git-link','sensitive']) {
   test(`S2a physical unsupported ${kind} never follows the target`,t=>fixture(root=>{
     if(kind==='leaf-link')fs.symlinkSync('requirements.md',path.join(root,'link'));
     if(kind==='directory-link')fs.symlinkSync('src',path.join(root,'dir-link'));
     if(kind==='hardlink')fs.linkSync(path.join(root,'src/a.js'),path.join(root,'hard'));
     if(kind==='fifo')execFileSync('mkfifo',[path.join(root,'pipe')]);
     if(kind==='nested-git')fs.mkdirSync(path.join(root,'src/.git'));
-    if(kind==='git-file')write(root,'.git','gitdir: elsewhere');
     if(kind==='git-link')fs.symlinkSync('src',path.join(root,'.git'));
     if(kind==='sensitive')write(root,'.env','synthetic only');
     const opened=[],original=fs.openSync;

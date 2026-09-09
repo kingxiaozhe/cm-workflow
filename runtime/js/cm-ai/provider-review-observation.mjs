@@ -1,23 +1,26 @@
 // Offline data inspection only: never authenticates, dispatches or grants completion.
 import {digest,need,shape,id,text,hex,json,validIdentity} from './effect-contract.mjs';
 import {readReviewPackage} from './review-package.mjs';
-import {reviewResult} from './review-runner.mjs';
+import {reviewResult,reviewResultForPaths} from './review-runner.mjs';
+import {MAX_REVIEW_EXCLUSIONS} from './effect-contract.mjs';
+import {readFixCausePackage,causeReviewPaths} from '../cm-fix/cause-package.mjs';
 
 function decode(raw,limit) {
   need(typeof raw==='string');need(Buffer.byteLength(raw,'utf8')<=limit,'limit_exceeded');
   return json(JSON.parse(raw),limit);
 }
-function expectation(v) {
+function expectation(v,cause=false) {
   shape(v,['request','developerThreadId','excludedThreadIds']);
-  id(v.developerThreadId);need(Array.isArray(v.excludedThreadIds)&&v.excludedThreadIds.length<=32);
+  id(v.developerThreadId);need(Array.isArray(v.excludedThreadIds)&&v.excludedThreadIds.length<=MAX_REVIEW_EXCLUSIONS);
   v.excludedThreadIds.forEach(id);
   const r=v.request;
   shape(r,['version','invocationId','identity','role','provider','requestedModel','contextId','payload','requestDigest']);
-  need(r.version===1&&r.role==='reviewer'&&r.provider==='codex');
+  need(r.version===1&&r.role==='reviewer'&&['codex','claude'].includes(r.provider));
   id(r.invocationId);id(r.contextId);validIdentity(r.identity);text(r.requestedModel);hex(r.requestDigest);
   const {requestDigest,...body}=r;need(digest(body)===requestDigest,'observation_binding');
   shape(r.payload,['reviewPackage','priorReview']);
-  const pkg=readReviewPackage(r.payload.reviewPackage);
+  const pkg=(cause?readFixCausePackage:readReviewPackage)(r.payload.reviewPackage);
+  if(cause)need(r.payload.priorReview===null,'observation_binding');
   need(digest(pkg.identity)===digest(r.identity),'observation_binding');
   return {request:r,pkg,excluded:new Set([v.developerThreadId,...v.excludedThreadIds])};
 }
@@ -47,9 +50,16 @@ function eventStream(events,excluded) {
   return {thread,terminal,close};
 }
 export function inspectProviderReview(observationText,expectationText) {
+  need(arguments.length===2);
+  return inspect(observationText,expectationText,false);
+}
+export function inspectProviderCauseReview(observationText,expectationText){
+  need(arguments.length===2);
+  return inspect(observationText,expectationText,true);
+}
+function inspect(observationText,expectationText,cause) {
   try {
-    need(arguments.length===2);
-    const observation=decode(observationText,1024*1024),expected=expectation(decode(expectationText,10*1024*1024));
+    const observation=decode(observationText,1024*1024),expected=expectation(decode(expectationText,10*1024*1024),cause);
     shape(observation,['version','kind','requestDigest','events','result']);
     need(observation.version===1&&observation.kind==='cm-provider-review-observation');
     hex(observation.requestDigest);need(observation.requestDigest===expected.request.requestDigest,'observation_binding');
@@ -60,11 +70,12 @@ export function inspectProviderReview(observationText,expectationText) {
     if(close?.timed_out===true||r.code==='timeout')code='transport_timeout';
     else if(r.status==='cancelled'||r.code==='cancelled'){observationStatus='cancelled';code='transport_cancelled';}
     else if(close?.exit_code===0&&close.signal===null&&terminal==='turn.completed'&&r.status==='succeeded'){
-      review=reviewResult(r.value,expected.pkg);observationStatus='completed';code=null;
+      review=cause?reviewResultForPaths(r.value,expected.pkg,causeReviewPaths(expected.pkg)):reviewResult(r.value,expected.pkg);
+      observationStatus='completed';code=null;
     }
-    return json({version:1,kind:'cm-provider-review-inspection',requestDigest:expected.request.requestDigest,
+    return json({version:1,kind:cause?'cm-provider-cause-review-inspection':'cm-provider-review-inspection',requestDigest:expected.request.requestDigest,
       observationDigest:digest(observation),identity:expected.request.identity,logicalContextId:expected.request.contextId,
-      provider:'codex',requestedModel:expected.request.requestedModel,effectiveModel:null,providerThreadId:thread,
+      provider:expected.request.provider,requestedModel:expected.request.requestedModel,effectiveModel:null,providerThreadId:thread,
       observationStatus,code,review,completionEligible:false});
   }catch(error){
     const allowed=['limit_exceeded','observation_binding','observation_context','invalid_package',

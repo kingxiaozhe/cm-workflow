@@ -2,6 +2,9 @@
 import { digest } from './contracts.mjs';
 export { digest };
 export const need=(ok,code='invalid_input')=>{if(!ok){const e=new Error(code);e.code=code;throw e;}};
+// Explicit host call budget, shared by live initialization and journal replay.
+// This is not the short-lived authorization grant expiry.
+export const validCallTimeout=value=>need(Number.isInteger(value)&&value>=1&&value<=3600000);
 const failureCodes=new Set(['invalid_input','limit_exceeded','call_timeout','cancelled','terminal_mismatch','invalid_result',
   'review_package_mismatch','missing_material','contradictory_verdict','execution_mismatch','receipt_version',
   'unregistered_receipt','invalid_receipt','receipt_identity','receipt_package_mismatch','review_not_approved',
@@ -76,7 +79,9 @@ export function requestFor({invocationId,identity,role,provider,requestedModel,c
 }
 export function terminalFor(raw,request) {
   const v=json(raw);
-  shape(v,['version','invocationId','contextId','provider','effectiveModel','status','accepted','result']);
+  shape(v,['version','invocationId','contextId','provider','effectiveModel','status','accepted','result',
+    ...(Object.hasOwn(v,'providerThreadId')?['providerThreadId']:[])]);
+  if(Object.hasOwn(v,'providerThreadId')){need(request.role==='developer');id(v.providerThreadId);}
   need(v.version===1 && v.invocationId===request.invocationId && v.contextId===request.contextId
     && v.provider===request.provider,'terminal_mismatch');text(v.effectiveModel);
   if(v.status==='succeeded')need(v.accepted===true && v.result!==null);
@@ -84,3 +89,14 @@ export function terminalFor(raw,request) {
   else need(['unavailable','auth_required','permission_denied'].includes(v.status) && v.accepted===false && v.result===null);
   return v;
 }
+
+export function reviewExclusions(invocation,calls,developerContextId){
+  return [...new Set([...invocation.excludedThreadIds,...calls
+    .filter(call=>call.contextId===developerContextId&&Object.hasOwn(call,'providerThreadId'))
+    .map(call=>call.providerThreadId)])];
+}
+
+// Host configuration allows 32 exclusions. FIX second-round review additionally
+// excludes the cause reviewer, first implementation reviewer and logical context.
+// Preserve that full union; ordinary two-author-attempt callers still fit.
+export const MAX_REVIEW_EXCLUSIONS=35;

@@ -7,33 +7,19 @@ description: 用户说“检查工作流是否安装正确”“为什么找不�
 
 执行前读取 `../../runtime/project-context.md` 与 `../../runtime/logging.md`。Codex 入口为 `$cm-check`；Claude Code 跨平台入口为 `/cm-check`，macOS/Linux 另有历史别名 `/cm:check`。
 
-从当前 Skill 路径解析 `{CM_WORKFLOW_ROOT}`。macOS、Linux 或 WSL 先运行：
+从当前 Skill 路径解析 `{CM_WORKFLOW_ROOT}`，按[JS 会话入口](references/js-host.md)启动控制器：
 
 ```bash
-node "{CM_WORKFLOW_ROOT}/scripts/cm-check-entry.mjs" \
-  --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-check" --project "$PWD" --print-effective
-```
-
-Git Bash 暂时继续运行现有兼容入口：
-
-```bash
-"{CM_WORKFLOW_ROOT}/scripts/cm-check-runtime.sh" --project "$PWD" --print-effective
-```
-
-Windows PowerShell 先运行：
-
-```powershell
-& "{CM_WORKFLOW_ROOT}\scripts\cm-check-runtime.ps1" --project (Get-Location).Path --print-effective
+node "{CM_WORKFLOW_ROOT}/scripts/cm-check-host.mjs" serve \
+  --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-check" --project "$PWD"
 ```
 
 如果配置文件不在项目根目录，可额外传 `--config {CONFIG_PATH}`；不传时会读取项目根
 目录的 `.cm-workflow.yml` / `.yaml` / `.json`。
 
-PowerShell 入口会优先使用 `CLAUDE_CODE_GIT_BASH_PATH` 或 Git for Windows 的
-Bash 执行同一份检查；未找到时必须报告安装 Git for Windows 或改在 WSL
-运行，不能跳过机械检查。
-
-机械检查失败时，原样报告失败项并停止；通过后再做以下语义检查。
+不要启动前另跑一遍机械检查。收到check_runtime时按原平台入口执行一次：macOS/Linux/WSL和Git Bash用cm-check-runtime.sh，Windows PowerShell用cm-check-runtime.ps1；原cm-check-entry.mjs仍保留为单独机械检查入口。PowerShell仍依赖CLAUDE_CODE_GIT_BASH_PATH或Git for Windows Bash，缺失如实阻断，不跳过、不自动安装。
+`invocation.args` 已包含 `--print-effective`，宿主须原样执行，以保留有效配置检查；不要把此参数加到 `serve` 命令上。
+原实际结果回传后，JS在机械失败时保留输出并停止；通过才发check_semantic，在该请求内执行以下八组检查，再由JS校验覆盖和汇总。
 
 ## 语义检查
 

@@ -40,7 +40,7 @@ AUTO 可把复杂方案比较路由到 CONSULT、权威事实查证路由到 VER
 └── ...
 ```
 
-## JS 只读准入
+## JS 准入与当前会话执行
 
 在读取需求正文、解析角色、写 `run_start`、创建或修改 specs 之前，把已解析路径和模式传给：
 
@@ -51,11 +51,10 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-prd-entry.mjs" \
   [--change "{N 或 N.feature}"] [--cases "{用例文件路径}"]
 ```
 
-新建模式只核对规范 `docs/` 至少有一个普通需求文件；变更模式只定位唯一已有 feature 并核对
-三件套。`selection_required` 时只请用户选择 feature，`blocked` 时按 `reason` 停止，只有 `ready`
-才进入下方角色路由或模式步骤。该结果不读取需求正文、不判断项目业务是否匹配、不解析角色、
-不写日志/specs/审批位，也不授权 provider、浏览器、项目写入或开发；这些行为继续由下方现有规则
-控制。变更描述和本轮粘贴用例仍由 Skill 保留，不传给该入口。
+准入只核对路径/清单，不读正文或授权写入；selection_required请用户选feature，blocked按reason停。
+两种模式ready后读取`references/js-host.md`，以当前会话连接JS宿主；下方步骤提供业务约束，不再手写日志/规格/审批位。
+变更/已审修订及恢复追加`references/js-change-recovery.md`；所需能力不可用时报告实际缺口，不静默切旧流程。
+两条路径均保留原Step 0–11和人审停点；变更描述、粘贴用例由Skill保留，不能当成工具授权。
 
 ## 项目角色路由
 

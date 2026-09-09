@@ -55,8 +55,17 @@ the actual channel failure without inventing a verdict. Do not switch reviewers
 to erase a valid blocking finding.
 
 The shared-JS target supports a fresh reviewer on whichever provider is available.
-The current gate supports only the Codex channels above; Claude-native review
-needs a separately verified adapter and must not be relabeled as Codex.
+The shared V3 runner now also accepts Claude-bound normalized review invocations,
+using the same grant, registration, independent identity, replay and completion checks.
+Its registered result is published as `claude-cli`, never relabeled as Codex.
+The single-task host connects the Claude worker only with a matching diagnostic and
+separately authorized attempt. Claude preflight uses a macOS loopback-only sandbox,
+synthetic credentials and a rejecting local sink; it does not obtain a model review.
+The producer permits one empty startup health probe and rejects model requests locally.
+Installed CLI has passed this local request-surface probe. It uses the same bounded temporary
+directory for CLAUDE_CODE_TMPDIR and stops after the first valid message request. Probe-induced
+termination is not user cancellation or a successful review; real model review remains unverified.
+Do not handcraft a passing diagnostic or approval to bypass readiness evidence.
 
 ## Review scope
 
@@ -99,7 +108,7 @@ Write each raw result to `{SPECS_DIR}/.reviews/{feature}-{task}-r{round}.md` wit
 ```yaml
 ---
 at: <ISO-8601 with timezone>
-reviewer: codex-subagent | codex-cli | self-degraded
+reviewer: codex-subagent | codex-cli | claude-cli | self-degraded
 independent: true | false
 task: <T-xxx>
 attempt: <1 or 2>
@@ -115,7 +124,7 @@ scope:
 
 `attempt` 必须等于 `round`。`approved` 必须写 `blocking_findings: 0`，其他
 verdict 至少为 1。`self-degraded` 必须写 `independent: false` 并增加非空的
-`degraded_reason`；其他两个通道只有在新上下文中执行时才可写 `true`。
+`degraded_reason`；其他独立通道只有在新上下文中实际执行时才可写 `true`。
 `handoff_sha256` 将结论绑定到本轮 handoff 内容；handoff 改动后必须重新审查。
 新 handoff 还必须包含 `implementation_sha256`，并让 N4/N5 使用
 `--project-root` 复算；否则文件内容在审查后变化时无法进入 N5。历史恢复显式使用

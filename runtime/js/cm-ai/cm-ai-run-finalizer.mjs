@@ -26,9 +26,9 @@ function statusTarget(specsDir) {
   }
 }
 
-function prepareStatus({specs,target},feature,identity) {
+function prepareStatus({specs,target},feature,identity,progress=null) {
   const temporary=path.join(specs,`.cm-status.json.tmp.${process.pid}.${randomUUID()}`);
-  const value={node:'N8',feature,task:identity.taskId,detail:'全部任务和文档同步已完成',
+  const value=progress??{node:'N8',feature,task:identity.taskId,detail:'全部任务和文档同步已完成',
     state:'run_done',at:new Date().toTimeString().slice(0,8)};
   let descriptor;
   try {
@@ -40,6 +40,22 @@ function prepareStatus({specs,target},feature,identity) {
   } catch {
     if(descriptor!==undefined)try{fs.closeSync(descriptor);}catch{}
     try{fs.unlinkSync(temporary);}catch{}
+    need(false,'status_write_failed');
+  }
+}
+
+// Existing status file is only the current log projection, not a task store.
+export function writeCmAiQaStatus({specsDir,feature,identity,caseId,phase}) {
+  validIdentity(identity);text(feature);id(caseId);
+  need(['case_start','case_complete','case_blocked'].includes(phase));
+  const prepared=prepareStatus(statusTarget(specsDir),feature,identity,{node:'N6',feature,task:identity.taskId,
+    detail:`QA ${caseId}: ${phase}`,state:'qa_running',at:new Date().toTimeString().slice(0,8)});
+  try{
+    fs.renameSync(prepared.temporary,prepared.target);
+    const directory=fs.openSync(prepared.specs,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+    try{fs.fsyncSync(directory);}finally{fs.closeSync(directory);}
+  }catch{
+    try{fs.unlinkSync(prepared.temporary);}catch{}
     need(false,'status_write_failed');
   }
 }

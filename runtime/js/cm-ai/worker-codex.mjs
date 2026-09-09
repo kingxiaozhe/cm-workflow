@@ -1,6 +1,11 @@
 import { spawn } from 'node:child_process';
 import { commonArgs, cleanEnvironment, configFingerprint } from './codex-config.mjs';
 
+// CLI 0.153.4 emits this notice even with Code Mode explicitly disabled.
+// commonArgs keeps its host disabled; the offline sink confirmed tools remain
+// empty and the turn continues. Match only this exact, pre-turn notice once.
+const disabledCodeModeNotice = 'Code Mode is unavailable because code-mode host is disabled. Code mode will fail closed; enable `features.code_mode_host` and install `codex-code-mode-host`.';
+
 // A preflight receipt is diagnostic evidence, not a human approval token.
 export function preflightMatches(receipt, options) {
   const promptTransport=options.promptTransport??'argument';
@@ -42,8 +47,8 @@ export function codexWorker({ cwd, model, schemaPath, preflight,
         cwd, env: cleanEnvironment(), stdio: [promptTransport==='stdin'?'pipe':'ignore', 'pipe', 'pipe'],
       });
       let buffer = '', outputBytes = 0, value, completion = false, failure, settled = false;
-      let failureTerminal = false;
-      let providerThread, timedOut = false, killTimer;
+      let failureTerminal = false, startupNoticeSeen = false;
+      let providerThread, turnStarted = false, timedOut = false, killTimer;
       const stop = code => {
         failure ??= code;
         if (!child.killed) child.kill('SIGTERM');
@@ -61,6 +66,24 @@ export function codexWorker({ cwd, model, schemaPath, preflight,
         let message;
         try { message = JSON.parse(line); } catch { stop('invalid_event'); return; }
         if (!validEventShape(message)) { stop('invalid_event'); return; }
+        if (message.type === 'item.completed' && message.item.type === 'error'
+          && message.item.message === disabledCodeModeNotice
+          && providerThread && !turnStarted && !startupNoticeSeen
+          && !completion && !failureTerminal && !failure && value === undefined) {
+          startupNoticeSeen = true;
+          return;
+        }
+        // Normalize known non-result progress at the provider boundary. The
+        // shared observer still requires one final message and one terminal.
+        const progress = ['item.started', 'item.updated', 'item.completed'].includes(message.type)
+          && (message.item.type === 'reasoning'
+            || message.item.type === 'agent_message' && message.type !== 'item.completed');
+        if (progress) {
+          if (!providerThread || !turnStarted || completion || failureTerminal || failure || value !== undefined)
+            stop('invalid_event');
+          return;
+        }
+        if (message.type === 'turn.started') turnStarted = true;
         const isFailureTerminal = message.type === 'turn.failed' || message.type === 'error';
         if (failureTerminal && isFailureTerminal) { stop('provider_failed'); return; }
         if (isFailureTerminal) failureTerminal = true;

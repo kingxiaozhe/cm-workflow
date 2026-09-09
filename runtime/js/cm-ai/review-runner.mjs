@@ -1,13 +1,18 @@
 // Pure review data functions. Only task-runner owns invocation/registration.
 import { digest,need,shape,id,text,json,freeze } from './effect-contract.mjs';
 export function reviewPaths(pkg) {
-  return [...new Set([...pkg.changes.map(c=>c.path),...pkg.requirements.map(f=>f.path)])].sort();
+  return [...new Set([...pkg.changes.map(c=>c.path),...pkg.requirements.map(f=>f.path),
+    ...(pkg.instructions??[]).map(file=>file.path),
+    ...(pkg.bootstrapRequirements?.files??[]).map(file=>'specs:'+file.path)])].sort();
 }
 export function reviewResult(raw,pkg) {
+  return reviewResultForPaths(raw,pkg,reviewPaths(pkg));
+}
+export function reviewResultForPaths(raw,pkg,paths) {
   const r=json(raw);shape(r,['verdict','packageDigest','examinedPaths','findings','summary']);
   need(['approved','changes_requested','blocked'].includes(r.verdict));text(r.summary);
   need(r.packageDigest===pkg.packageDigest,'review_package_mismatch');
-  const paths=reviewPaths(pkg);need(digest(r.examinedPaths)===digest(paths),'missing_material');
+  need(digest(r.examinedPaths)===digest(paths),'missing_material');
   need(Array.isArray(r.findings) && r.findings.length<=100);const ids=new Set();
   for(const f of r.findings) {
     shape(f,['id','severity','path','message','evidence']);id(f.id);need(!ids.has(f.id));ids.add(f.id);

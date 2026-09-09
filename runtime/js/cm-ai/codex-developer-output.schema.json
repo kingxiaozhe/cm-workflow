@@ -1,0 +1,37 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "application", "retrospective"],
+  "properties": {
+    "outcome": {"type": "string", "enum": ["implemented", "blocked"]},
+    "application": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "note"],
+      "properties": {
+        "status": {"type": "string", "enum": ["applied", "no_relevant_lesson"]},
+        "note": {"type": ["string", "null"]}
+      }
+    },
+    "retrospective": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "candidates", "reason"],
+      "properties": {
+        "status": {"type": "string", "enum": ["no_new_lesson", "lesson_candidate", "writeback_pending"]},
+        "reason": {"type": ["string", "null"]},
+        "candidates": {
+          "type": "array", "maxItems": 3,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["classification", "trigger", "action", "evidence"],
+            "properties": {
+              "classification": {"type": "string", "enum": ["structured", "memory_only"]},
+              "trigger": {"type": "string"},
+              "action": {"type": "string"},
+              "evidence": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    }
+  }
+}

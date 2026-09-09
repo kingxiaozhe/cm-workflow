@@ -88,7 +88,7 @@ test('Skill Learning gate rejects missing or pending records and binds reviewed 
   const args=['mark-done','--require-learning','--handoff',handoff,'--reviews-dir',reviews,'--feature','login','--task','T-001','--tasks',tasks,'--project-root',root];
   payload.evidence=['synthetic implementation check passed'];save();
   assert.equal(checkN5({...options,requireLearning:false}).outcome,'approved');
-  const blocked=spawnSync('python3',[pythonGate,...args],{encoding:'utf8'});
+  const blocked=spawnSync(process.env.CM_PYTHON_BIN||'python3',[pythonGate,...args],{encoding:'utf8'});
   assert.notEqual(blocked.status,0);assert.match(blocked.stderr,/Learning/);
   assert.match(fs.readFileSync(tasks,'utf8'),/\[ \]/);
   // Exercise the locked JS entry independently of Python's earlier prepare rejection.
@@ -101,7 +101,7 @@ test('Skill Learning gate rejects missing or pending records and binds reviewed 
   }finally{if(madeLock)fs.unlinkSync(lock);}
   assert.match(fs.readFileSync(tasks,'utf8'),/\[ \]/);
   payload.evidence=['learning: no_relevant_lesson','learning: retrospective no_new_lesson'];save();
-  const done=spawnSync('python3',[pythonGate,...args],{encoding:'utf8'});
+  const done=spawnSync(process.env.CM_PYTHON_BIN||'python3',[pythonGate,...args],{encoding:'utf8'});
   assert.equal(done.status,0,done.stderr);assert.match(fs.readFileSync(tasks,'utf8'),/\[x\]/);
 }));
 

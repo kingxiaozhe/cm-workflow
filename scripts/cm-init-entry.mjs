@@ -2,6 +2,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {inspectCmInitProjectScan} from '../runtime/js/cm-init/project-scan.mjs';
+import {inspectCmInitProjectAnalysis} from '../runtime/js/cm-init/project-analysis.mjs';
+import {inspectCmInitDraft} from '../runtime/js/cm-init/draft-inspection.mjs';
+import {generateCmInitDraft} from '../runtime/js/cm-init/draft-generation.mjs';
+import {inspectCmInitRecovery} from '../runtime/js/cm-init/review-evidence.mjs';
 
 const IGNORED_ROOT_ENTRIES=new Set(['.git','.DS_Store']);
 
@@ -94,6 +99,25 @@ export function inspectCmInitAdmission(raw) {
   });
 }
 
+export function inspectCmInitProject(input){
+  const admission=inspectCmInitAdmission(input);
+  if(admission.status!=='ready')return admission;
+  return frozen({...admission,projectScan:inspectCmInitProjectScan({project:admission.project,workflowRoot:admission.workflowRoot})});
+}
+
+export function analyzeCmInitProject(input){
+  const admission=inspectCmInitAdmission(input);
+  if(admission.status!=='ready')return admission;
+  return frozen({...admission,projectAnalysis:inspectCmInitProjectAnalysis({project:admission.project})});
+}
+
+// In-process host adapter only: CLI JSON cannot nominate code/modules or a provider.
+export async function generateCmInitRules(input,selection,host){
+  const admission=inspectCmInitAdmission(input);
+  if(admission.status!=='ready')return admission;
+  return generateCmInitDraft({project:admission.project,workflowRoot:admission.workflowRoot,selection},host);
+}
+
 function parseCli(argv) {
   const input={};
   for(let index=0;index<argv.length;index+=1){
@@ -119,7 +143,20 @@ function isMainModule(entry) {
 
 if(isMainModule(process.argv[1])){
   try {
-    const result=inspectCmInitAdmission(parseCli(process.argv.slice(2)));
+    const argv=process.argv.slice(2);
+    const draft=argv[0]==='--inspect-draft';
+    const recovery=argv[0]==='--inspect-recovery';
+    const operation=argv[0]==='--inspect-project'?inspectCmInitProject:
+      argv[0]==='--analyze-project'?analyzeCmInitProject:inspectCmInitAdmission;
+    let result=operation(parseCli(recovery?argv.slice(2):operation===inspectCmInitAdmission&&!draft?argv:argv.slice(1)));
+    if(recovery&&result.status==='ready')result=frozen({...result,
+      recoveryInspection:inspectCmInitRecovery({project:result.project,packageDigest:argv[1]})});
+    if(draft&&result.status==='ready'){
+      const chunks=[];let size=0;
+      for await(const chunk of process.stdin){size+=chunk.length;if(size>1048576)reject('init_draft_input_limit');chunks.push(chunk);}
+      const documents=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      result=frozen({...result,draftInspection:inspectCmInitDraft({project:result.project,documents})});
+    }
     if(fileURLToPath(import.meta.url)!==path.join(result.workflowRoot,'scripts','cm-init-entry.mjs'))
       reject('entry_path_invalid');
     const output=`${JSON.stringify(result)}\n`;

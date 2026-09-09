@@ -44,6 +44,10 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-test-entry.mjs" \
 和 `writeAuthorized: false` 不得改写；报告目录、角色、用例和执行权限仍由后文逐项验证。
 `hardStopAfterGeneration: true` 表示生成并校验草稿后必须硬停止，不能进入执行分支。
 
+准入 `ready` 后，按 [JS 会话入口](references/js-host.md) 启动共享控制器执行下文业务，
+不再由主会话手工串联状态、写报告或拼接日志。缺少宿主能力时如实 `BLOCKED`，
+不能静默退回未受控旧路径；本页各模式、只读边界和确认要求仍有效。
+
 ## 项目角色路由
 
 开始测试前从代码项目根读取有效配置：logic/commands 使用 `tester`，browser 使用
@@ -89,8 +93,12 @@ node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
 
 - 有 Git HEAD：记录 `git status --short`，并对 HEAD→工作区完整 diff 和已有
   untracked 文件内容计算 SHA-256，防止同一路径继续被改却因状态字母不变而漏检；
+  已初始化子模块递归核对实际 HEAD、index、工作区及文件内容，未初始化则阻断，不自动拉取；
 - 无 Git 或仓库尚无 HEAD：用 Python 标准库对项目文件生成路径+SHA-256 清单，排除
   `.git`、依赖、build/cache 目录和本轮报告目录；快照失败则测试前即 `BLOCKED`。
+
+需跨会话续跑时，按[JS 会话入口](references/js-host.md#中断执行续接)显式保留私有执行记录。
+已有结果不重跑；未知动作须核对原结果与清理，不因缺少完成日志而重新执行。
 
 禁止：
 
@@ -228,8 +236,9 @@ node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
 
 1. 先识别交付形态：Web 使用项目正式启动命令；微信小程序使用正式构建命令与微信
    开发者工具，不为测试临时改成 H5/Web target。
-2. Web 默认使用 Playwright；仅在需要登录态/Cookie、OAuth/第三方弹窗或用户明确
-   要求真实浏览器时升级 Chrome CDP。微信小程序的基础交互使用开发者工具模拟器，
+2. 浏览器工具服从当前宿主与项目政策；Codex 使用内置浏览器，不启动本机浏览器或
+   CDP。仓库正式 headless 测试命令仅按其已授权测试范围运行，不代替探索性浏览。
+   微信小程序的基础交互使用开发者工具模拟器，
    授权、设备和平台 API 按 reference 升级为预览/体验版真机。
 3. 逐条执行 browser case 的 steps，并逐项断言 expected。
 4. Web 证据包含目标 URL；小程序证据包含页面路由与运行载体。两者都记录关键操作、

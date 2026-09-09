@@ -20,6 +20,29 @@ test('JS log decision core builds a stable event and reuses the active run',()=>
   assert.equal(first.event.event_id,second.event.event_id);
 });
 
+test('resume restores the original run from the authoritative log and duplicate old events do not change its state',()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-log-resume-')));
+  try{
+    const project=path.join(root,'project'),specs=path.join(root,'specs');fs.mkdirSync(project);fs.mkdirSync(specs);
+    const runId='fixture-resume-run',env={...process.env,CM_WORKFLOW_LOG_HOME:path.join(root,'logs')};
+    const write=(event,explicit=true)=>{
+      const result=spawnSync(process.env.CM_PYTHON_BIN||'python3',[pythonWriter,'--workflow','cm-fix','--event',event,'--runtime','codex',
+        '--project-root',project,'--specs-dir',specs,...(explicit?['--run-id',runId]:[]),'--detail',event],{encoding:'utf8',env});
+      assert.equal(result.status,0,result.stderr);return JSON.parse(result.stdout);
+    };
+    write('run_start');write('run_done');write('resume');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(specs,'.cm-run.json'))).status,'running');
+    write('run_done'); // duplicate old terminal event, not a new exit
+    assert.equal(JSON.parse(fs.readFileSync(path.join(specs,'.cm-run.json'))).status,'running');
+    fs.renameSync(path.join(specs,'.cm-run.json'),path.join(root,'saved-pointer.json'));
+    assert.equal(write('progress',false).run_id,runId);
+    const log=fs.readFileSync(path.join(specs,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(log.map(row=>row.event),['run_start','run_done','resume','progress']);
+    write('done');write('resume'); // duplicate old resume must not reopen a later completed run
+    assert.equal(JSON.parse(fs.readFileSync(path.join(specs,'.cm-run.json'))).status,'done');
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
 test('JS log decision core rejects secrets and blocks completion with live resources',()=>{
   assert.throws(()=>parseData('{"nested":{"api_token":"secret"}}'),UsageError);
   const states=new Map();applyResourceTransition(states,'profile-1','test_profile','acquired');

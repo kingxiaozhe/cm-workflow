@@ -269,13 +269,15 @@ for module in \
   cm-ai-learning-handoff-writer.mjs cm-ai-learning-writer.mjs cm-ai-qa-log.mjs \
   cm-ai-run-finalizer.mjs codex-config.mjs codex-review-adapter.mjs contracts.mjs \
   durable-runner-state.mjs effect-contract.mjs execution-store.mjs gate-bridge.mjs \
-  host.mjs index.mjs provider-review-observation.mjs review-package.mjs \
+  host.mjs host-session.mjs index.mjs provider-review-observation.mjs review-package.mjs \
   review-result.schema.json review-runner.mjs task-commit-codec.mjs task-commit.mjs \
   task-owner.mjs task-runner.mjs worker-codex.mjs; do
   require_file "runtime/js/cm-ai/$module"
 done
 require_file "scripts/cm-check-runtime.ps1"
 require_file "scripts/cm-ai-admission.mjs"
+require_file "scripts/cm-ai-run.mjs"
+require_file "scripts/cm-ai-run.test.mjs"
 require_file "scripts/cm-ai-admission.test.mjs"
 require_file "scripts/cm-log-event.mjs"
 require_file "scripts/cm-log-event.test.mjs"
@@ -299,8 +301,12 @@ require_file "scripts/validate-test-cases.mjs"
 require_file "scripts/validate-test-cases.test.mjs"
 require_file "scripts/validate-test-cases.py"
 require_file "scripts/cm-spec-manifest.py"
+require_file "scripts/cm-spec-manifest.mjs"
+require_file "scripts/fixtures/spec-manifest-python-oracle.py"
 require_file "scripts/test-spec-manifest.py"
 require_file "scripts/cm-prd-review-gate.py"
+require_file "scripts/cm-prd-review-gate.mjs"
+require_file "scripts/fixtures/prd-review-gate-python-oracle.py"
 require_file "scripts/test-cm-prd-review-gate.py"
 
 if [ -n "$PYTHON_BIN" ]; then

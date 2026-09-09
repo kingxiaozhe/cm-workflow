@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createRequire} from 'node:module';
 import { captureReviewBaseline, createReviewPackage, verifyReviewPackage } from './review-package.mjs';
-import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,requestFor,terminalFor,failureCode } from './effect-contract.mjs';
+import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,validCallTimeout,requestFor,terminalFor,failureCode } from './effect-contract.mjs';
 import { reviewResult,reviewReceipt } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
@@ -16,6 +16,15 @@ import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence
   readCmAiTaskLearningApplication} from './cm-ai-context-refresh.mjs';
 import {readCmAiProjectLearningWriteback,writeCmAiProjectLearning} from './cm-ai-learning-writer.mjs';
 import {verifyCmAiTaskLearningHandoff,writeCmAiTaskLearningHandoff} from './cm-ai-learning-handoff-writer.mjs';
+import {createHostHandoff} from './host-handoff.mjs';
+import {inspectFixCodeAssociation} from './fix-code-association.mjs';
+import {validateAcceptedFix} from './accepted-fix.mjs';
+import {inspectCmAiQaFailure} from './cm-ai-qa-log.mjs';
+import {readHostQaFixHistory} from './host-qa-fix.mjs';
+import {publishHostReview} from './host-review-file.mjs';
+import {reviewExclusions} from './effect-contract.mjs';
+import {bootstrapConfiguration,readBootstrapEvidence} from './host-bootstrap.mjs';
+import {validateCodeProjectPaths,assertCodeProjectSelections} from './code-projects.mjs';
 
 // Keep default V1 imports free of SQLite initialization/warnings. Native ownership
 // is loaded synchronously only at the explicit V2 boundary (Node24.14+).
@@ -78,14 +87,18 @@ export function createTaskRunner(options) {
   if(options && Object.hasOwn(options,'timeoutMs'))optionKeys.push('timeoutMs');
   if(options && Object.hasOwn(options,'persistence'))optionKeys.push('persistence');
   if(options && Object.hasOwn(options,'taskLearning'))optionKeys.push('taskLearning');
+  if(options && Object.hasOwn(options,'bootstrap'))optionKeys.push('bootstrap');
+  if(options && Object.hasOwn(options,'codeProjectPaths'))optionKeys.push('codeProjectPaths');
   if(invocationMode)optionKeys.push('reviewInvocation');
   shape(options,optionKeys);
   const {check,commit}=options;need(typeof check==='function' && (taskMode||typeof commit==='function'));
   if(taskMode)need(Object.hasOwn(options,'persistence'),'runner_completion');
   const config=json({root:options.root,identity:options.identity,scope:options.scope,requirements:options.requirements,
+    ...(Object.hasOwn(options,'codeProjectPaths')?{codeProjectPaths:validateCodeProjectPaths(options.codeProjectPaths)}:{}),
     excludedContexts:options.excludedContexts,timeoutMs:Object.hasOwn(options,'timeoutMs')?options.timeoutMs:1000});
+  if(config.codeProjectPaths)assertCodeProjectSelections(config.codeProjectPaths,[...config.scope,...config.requirements]);
   validIdentity(config.identity);need(config.identity.attempt===1);
-  need(Number.isInteger(config.timeoutMs) && config.timeoutMs>=1 && config.timeoutMs<=60000);
+  validCallTimeout(config.timeoutMs);
   need(Array.isArray(config.excludedContexts) && config.excludedContexts.length>0);config.excludedContexts.forEach(id);
   shape(options.developer,['provider','requestedModel','contextId','run']);
   const developer={...json({provider:options.developer.provider,requestedModel:options.developer.requestedModel,
@@ -105,7 +118,7 @@ export function createTaskRunner(options) {
   });
   let invocationConfig=null,authorize=null;
   if(invocationMode){
-    need(reviewers.length===1&&reviewers[0].provider==='codex'&&reviewers[0].allowed&&reviewers[0].available,'runner_invocation');
+    need(reviewers.length===1&&['codex','claude'].includes(reviewers[0].provider)&&reviewers[0].allowed&&reviewers[0].available,'runner_invocation');
     shape(options.reviewInvocation,['developerThreadId','excludedThreadIds','authorize']);
     authorize=options.reviewInvocation.authorize;need(typeof authorize==='function','runner_invocation');
     invocationConfig=json({developerThreadId:options.reviewInvocation.developerThreadId,
@@ -119,7 +132,15 @@ export function createTaskRunner(options) {
     reviewers:reviewers.map(({run,...r})=>r),...(invocationMode?{reviewInvocation:invocationConfig}:{}),
     ...(Object.hasOwn(options,'taskLearning')?{taskLearning:json(options.taskLearning)}:{})});
   const taskLearning=metadata.taskLearning??null;
-  if(taskLearning!==null){need(taskMode,'runner_learning');shape(taskLearning,['feature']);text(taskLearning.feature);}
+  if(taskLearning!==null){need(taskMode,'runner_learning');
+    shape(taskLearning,['feature',...(Object.hasOwn(taskLearning,'hostHandoff')?['hostHandoff']:[])]);
+    text(taskLearning.feature);if(Object.hasOwn(taskLearning,'hostHandoff'))need(taskLearning.hostHandoff===true,'runner_learning');}
+  const bootstrap=options.bootstrap??null;
+  if(bootstrap!==null){
+    need(taskMode&&taskLearning?.hostHandoff===true,'bootstrap_task_required');
+    metadata=json({...metadata,bootstrap:bootstrapConfiguration(bootstrap,{root:config.root,identity:config.identity,
+      scope:config.scope,feature:taskLearning.feature})});
+  }
   let store=null,journal=null,restored=null,storeRevision=null,poisoned=false;
   let completion=null,storeIdentity=null,storeOperating=false,liveToken=null,completeEffect=null,taskCommit=null;
   const version=taskMode?(invocationMode?3:2):1;
@@ -155,16 +176,40 @@ export function createTaskRunner(options) {
   let busy=false,pending=null,sequence=0,base=original,reviewPackage=null,currentChecks=null,workflowRunning=false;
   let receipt=null,priorReview=null,cancelAfterCommit=false,workflowError=null,cancellationRequested=false,reviewInvocation=null;
   let learningResult=null;
+  const acceptedFixes=structuredClone(restored?.acceptedFixes??[]);
+  const handoffBinding=(pkg=reviewPackage)=>pkg&&Object.hasOwn(pkg,'handoff')
+    ?{handoffPath:completion.handoffs[pkg.identity.attempt-1]}:{};
+  function publishRegisteredReview(inspectOnly=false){
+    if(!invocationMode||taskLearning?.hostHandoff!==true||!receipt||!reviewPackage?.handoff)return;
+    need(inspectOnly||!busy,'busy');
+    publishHostReview({reviewsDir:completion.reviewsDir,feature:completion.owner.feature,inspectOnly,
+      ...handoffBinding(),reviewPackage,receipt,registered:registered.get(receipt.id),
+      at:reviewInvocation.registration.registeredAt});
+  }
   const privateStatus=()=>json({state,code,identity:{...config.identity,attempt},packageDigest:reviewPackage?.packageDigest??null,
     receipt,receipts,calls,cancelAfterCommit,workflowError,...(store?{cancellationRequested}:{}),...(taskMode?{taskCommit}:{}),
     ...(invocationMode?{reviewInvocation}:{}),...(taskLearning!==null?{learningWriteback:learningResult?.writeback??null}:{})},16*1024*1024);
   let publication;
   const status=()=>{
     const current=store?publication:privateStatus();
+    if(!busy&&!poisoned)try{publishRegisteredReview(true);}
+    catch{return freeze({...current,code:'review_publication_required'});}
     if(current.state!=='fixture_completed')return current;
     try {
+      if(acceptedFixes.length){
+        for(const item of acceptedFixes){
+          const {handoffDigest,...binding}=item.evidence.qaSource;
+          const history=readHostQaFixHistory({...binding,specsDir:completion.owner.specsRoot,codeProject:config.root});
+          need(history.handoffDigest===handoffDigest,'fix_qa_source_changed');
+        }
+        inspectFixCodeAssociation({root:config.root,specsRoot:completion.owner.specsRoot,baseline:base,
+          parentPackage:reviewPackage,fixPackages:acceptedFixes.map(item=>item.evidence.reviewPackage)});
+        const last=acceptedFixes.at(-1);
+        return freeze({...current,acceptedQaFix:{qaRound:last.qaRound,testRunId:last.evidence.qaSource.testRunId,
+          evidenceDigest:digest(last)}});
+      }
       verifyReviewPackage({root:config.root,baseline:base,checks:currentChecks,
-        reviewPackage,expectedDigest:reviewPackage.packageDigest});
+        reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
       return current;
     } catch {return freeze({...current,code:'correction_review_required'});}
   };
@@ -189,7 +234,8 @@ export function createTaskRunner(options) {
     const basic={id:`runner.${String(journal.length+1).padStart(6,'0')}`,
       kind:{init:'result','effect-intent':'intent','effect-checkpoint':'result',control:'cancel',
         'task-commit-intent':'commit-intent','task-commit-result':'commit-result',
-        'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result'}[type],
+        'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
+        'qa-fix-accepted':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
     const record={...body,digest:digest(body)};boundRunnerRecord(record,body.seq);
@@ -313,13 +359,14 @@ export function createTaskRunner(options) {
     try {
       const response=terminalFor(await bounded(adapter.run,request),request);active();
       call.terminal=response.status;call.effectiveModel=response.effectiveModel;call.resultDigest=digest(response.result);
+      if(Object.hasOwn(response,'providerThreadId'))call.providerThreadId=response.providerThreadId;
       return {request,response,call};
     } catch(error){call.terminal=state==='cancelled'?'cancelled':'unknown';throw error;}
   }
   function acceptReview(request,call,rawResult,fallbackReasons=[]) {
     const result=reviewResult(rawResult,reviewPackage);
     verifyReviewPackage({root:config.root,baseline:base,checks:currentChecks,
-      reviewPackage,expectedDigest:reviewPackage.packageDigest});
+      reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
     receipt=reviewReceipt({request,call,result,reviewPackage,developerProvider:developer.provider,fallbackReasons});
     registered.set(receipt.id,receipt);receipts.push(receipt);priorReview=result;
     if(result.verdict==='approved'){state='approved';code=null;}
@@ -370,7 +417,7 @@ export function createTaskRunner(options) {
     sequence=nextSequence;
     const registration=json({reviewerId:adapter.id,adapterId:adapter.adapterId,requestDigest:request.requestDigest,
       authorizationAt,registeredAt,grant});
-    const call={invocationId:request.invocationId,contextId,provider:'codex',requestedModel:adapter.requestedModel,
+    const call={invocationId:request.invocationId,contextId,provider:request.provider,requestedModel:adapter.requestedModel,
       effectiveModel:'unknown',channel:'host-authorized',started:false,terminal:'running',requestDigest:request.requestDigest,
       resultDigest:null,providerThreadId:null};
     calls.push(call);
@@ -386,7 +433,8 @@ export function createTaskRunner(options) {
       reviewInvocation=json({registration,started:null,result});halt('pending_review',notDispatched);return;
     }
     call.started=true;
-    const expectation={request,developerThreadId:invocationConfig.developerThreadId,excludedThreadIds:invocationConfig.excludedThreadIds};
+    const expectation={request,developerThreadId:invocationConfig.developerThreadId,
+      excludedThreadIds:reviewExclusions(invocationConfig,calls,developer.contextId)};
     const events=[];let started=null,sealed=false,invalid=false,invalidReject;
     const localController=new AbortController();
     const abort=()=>localController.abort();controller.signal.addEventListener('abort',abort,{once:true});
@@ -494,37 +542,53 @@ export function createTaskRunner(options) {
   async function perform(v) {
     if(v.kind==='develop') {
       need(['ready','changes_requested'].includes(state),'stage_mismatch');state='developing';receipt=null;
+      const previousBootstrap=learningResult?.bootstrap??null;
+      const previousWriteback=learningResult?.writeback??null;
       if(taskLearning!==null)learningResult=null;
-      const result=await invoke(developer,'developer',developer.contextId,{scope:config.scope,
+      const adapter=bootstrap===null?developer:{...developer,run:(request,control)=>
+        bootstrap.run(request,control,developer.run,{previous:previousBootstrap,previousWriteback,baseline:original})};
+      const result=await invoke(adapter,'developer',developer.contextId,{scope:config.scope,
         requirements:original.files.filter(f=>config.requirements.includes(f.path)),priorReview,
         ...(Object.hasOwn(v,'learningInput')?{learningInput:v.learningInput}:{})});
       if(result.response.status!=='succeeded'){halt(result.response.status==='unknown'?'unknown':'blocked',result.response.status);return;}
       if(taskLearning===null)shape(result.response.result,['outcome']);
       else {
-        shape(result.response.result,['outcome','application','retrospective']);
+        const instructionBootstrap=metadata.bootstrap?.mode==='instructions';
+        shape(result.response.result,['outcome','application','retrospective',...(instructionBootstrap?['bootstrap']:[])]);
         need(result.response.result.outcome==='implemented','invalid_result');
+        const instructionEvidence=instructionBootstrap?readBootstrapEvidence(result.response.result.bootstrap,
+          metadata.bootstrap,v.identity):null;
+        if(instructionEvidence)need(instructionEvidence.invocationId===result.request.invocationId,'identity_mismatch');
         const application=readCmAiTaskLearningApplication(result.response.result.application);
         need(application.feature===v.learningInput.feature
           &&digest(application.identity)===digest(v.learningInput.identity)
           &&application.learningDigest===v.learningInput.learningDigest,'identity_mismatch');
         const retrospective=json(result.response.result.retrospective,16*1024);
         const writeback=readCmAiProjectLearningWriteback(writeCmAiProjectLearning({codeProject:config.root,
-          learningInput:v.learningInput,retrospective}),{learningInput:v.learningInput,retrospective});
-        learningResult=freeze({application,retrospective,writeback});
+          learningInput:v.learningInput,retrospective},instructionEvidence?.files.find(file=>file.path==='AGENTS.md').afterSha256??null),
+        {learningInput:v.learningInput,retrospective});
+        learningResult=freeze({application,retrospective,writeback,...(instructionEvidence?{bootstrap:instructionEvidence}:{})});
         if(writeback.outcome==='writeback_pending'){halt('blocked','learning_writeback_pending');return;}
+        if(taskLearning.hostHandoff===true){
+          currentChecks=await collectChecks();active();
+          createHostHandoff({root:config.root,baseline:base,checks:currentChecks,
+            handoffPath:completion.handoffs[attempt-1]});
+        }
         writeCmAiTaskLearningHandoff({handoffPath:completion.handoffs[attempt-1],feature:taskLearning.feature,
           identity:{...config.identity,attempt},learningInput:v.learningInput,application,retrospective,writeback});
       }
       need(result.response.result.outcome==='implemented','invalid_result');
-      currentChecks=await collectChecks();active();
-      const nextPackage=createReviewPackage({root:config.root,baseline:base,checks:currentChecks});
-      if(taskLearning!==null)validateTaskLearningReviewPackage(nextPackage,learningResult.writeback,v.learningInput);
+      if(taskLearning?.hostHandoff!==true)currentChecks=await collectChecks();active();
+      const nextPackage=createReviewPackage({root:config.root,baseline:base,checks:currentChecks,
+        ...(taskLearning?.hostHandoff===true?{handoffPath:completion.handoffs[attempt-1]}:{})});
+      if(taskLearning!==null)validateTaskLearningReviewPackage(nextPackage,learningResult.writeback,v.learningInput,
+        learningResult.bootstrap??null,metadata.bootstrap??null);
       reviewPackage=nextPackage;
       state='awaiting_review';return;
     }
     if(v.kind==='review') {
       state='reviewing';verifyReviewPackage({root:config.root,baseline:base,checks:currentChecks,
-        reviewPackage,expectedDigest:reviewPackage.packageDigest});
+        reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
       if(invocationMode){await invokeObserved(reviewers[0],reviewers[0].contexts[attempt-1],{reviewPackage,priorReview},v.id);return;}
       const fallbackReasons=[];
       for(const candidate of reviewers) {
@@ -543,7 +607,7 @@ export function createTaskRunner(options) {
     if(v.kind==='complete') {
       const fresh=await collectChecks();active();
       try {
-        verifyReviewPackage({root:config.root,baseline:base,checks:fresh,reviewPackage,expectedDigest:reviewPackage.packageDigest});
+        verifyReviewPackage({root:config.root,baseline:base,checks:fresh,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
       } catch(error){halt('blocked',failureCode(error));return;}
       if(taskLearning!==null)try {
         const learningInput=currentLearningInput();
@@ -577,18 +641,25 @@ export function createTaskRunner(options) {
       if(Object.hasOwn(v,'learningInput')){need(v.kind==='develop'&&taskLearning!==null,'runner_learning');
         validTaskLearningInput(v.learningInput,v.identity,taskLearning.feature);}
       for(const k of ['repositoryId','runId','taskId'])need(v.identity[k]===config.identity[k],'identity_mismatch');
+      // Publication is retryable local projection, never a provider redispatch.
+      // Recovered/cached reviews can repair a missing file from the same receipt.
+      try{publishRegisteredReview();}catch(error){
+        if(error.code==='busy')throw error;
+        need(false,'review_publication_required');
+      }
       const old=cache.get(v.id);
       if(old){need(old.digest===digest(v),'intent_conflict');return Promise.resolve(old.result);}
       if(restored?.pending?.id===v.id){need(digest(restored.pending)===digest(v),'intent_conflict');return Promise.resolve(status());}
       need(!busy,'busy');need(v.identity.attempt===attempt,'attempt_mismatch');
       const allowed={develop:['ready','changes_requested'],review:['awaiting_review'],complete:['approved']};
       need(allowed[v.kind].includes(state),'stage_mismatch');need(cache.size<6,'limit_exceeded');
+      if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
     } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input'}));}
     if(store) {
       try {
         if(state==='ready')need(digest(captureReviewBaseline(configToBaseline(metadata)))===digest(original),'package_mismatch');
         else verifyReviewPackage({root:config.root,baseline:state==='changes_requested'?attemptBaseline(original,attempt-1):base,
-          checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest});
+          checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
       } catch {return Promise.resolve(freeze({outcome:'rejected',code:'package_mismatch'}));}
       try{const record=persist('effect-intent',{effect:v});
         if(taskMode&&v.kind==='complete')completeEffect={effect:v,digest:record.digest};
@@ -602,7 +673,11 @@ export function createTaskRunner(options) {
       const result=privateStatus();cache.set(v.id,{effect:v,digest:digest(v),result});
       try{persist('effect-checkpoint',{effectId:v.id,checkpoint:frame()});publication=result;return result;}
       catch{return poison();}
-    })().finally(()=>{busy=false;pending=null;completeEffect=null;});
+    })().finally(()=>{busy=false;pending=null;completeEffect=null;}).then(result=>{
+      if(poisoned)return result;
+      try{publishRegisteredReview();return result;}
+      catch{return freeze({...result,code:'review_publication_required'});}
+    });
     return pending;
   }
   function attachLearningEvidence(raw) {
@@ -652,11 +727,40 @@ export function createTaskRunner(options) {
     }
     return status();
   }
-  const api={executeEffect,status,cancel,run};
+  // Read-only content comparison, not completion authority or a JSON operation.
+  const inspectFixAssociation=fixPackage=>{
+    need(!busy&&!poisoned,'host_busy');
+    const current=status();
+    need(current.state==='fixture_completed'&&current.code!=='review_publication_required','qa_fix_parent_not_completed');
+    return inspectFixCodeAssociation({root:config.root,
+      ...(completion?{specsRoot:completion.owner.specsRoot}:{}),
+      baseline:base,parentPackage:reviewPackage,
+      fixPackages:acceptedFixes.some(item=>item.evidence.reviewPackage.packageDigest===fixPackage.packageDigest)
+        ?acceptedFixes.map(item=>item.evidence.reviewPackage)
+        :[...acceptedFixes.map(item=>item.evidence.reviewPackage),fixPackage]});
+  };
+  const acceptCompletedFix=raw=>{
+    need(invocationMode&&store&&!busy&&!poisoned,'fix_accept_unavailable');
+    const evidence=json(raw,12*1024*1024),association=inspectFixAssociation(evidence.reviewPackage);
+    const existing=acceptedFixes.find(item=>item.evidence.qaSource.testRunId===evidence.qaSource.testRunId);
+    if(existing){need(digest(existing.evidence)===digest(evidence),'fix_evidence_changed');return json(existing,12*1024*1024);}
+    const source=evidence.qaSource;
+    const failure=inspectCmAiQaFailure({specsDir:completion.owner.specsRoot,feature:source.feature,
+      identity:source.identity,packageDigest:source.packageDigest,testRunId:source.testRunId});
+    const record=validateAcceptedFix({record:{evidence,association,qaRound:failure.qaRound},previous:acceptedFixes,
+      baseline:base,parentPackage:reviewPackage,feature:taskLearning?.feature});
+    persist('qa-fix-accepted',{record});acceptedFixes.push(record);
+    return json(record,12*1024*1024);
+  };
+  const api={executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix};
+  if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   return Object.freeze(api);
 }
 function configToBaseline(c){
   const scope=Object.hasOwn(c,'taskLearning')&&!c.scope.includes('AGENTS.md')?[...c.scope,'AGENTS.md']:c.scope;
-  return {root:c.root,identity:c.identity,scope,requirements:c.requirements};
+  return {root:c.root,identity:c.identity,scope,requirements:c.requirements,
+    ...(c.codeProjectPaths?{codeProjectPaths:c.codeProjectPaths}:{}),
+    ...(c.bootstrap?{bootstrapRequirements:c.bootstrap.bootstrapRequirements}:{}),
+    ...(c.completion?{specsRoot:c.completion.owner.specsRoot}:{})};
 }

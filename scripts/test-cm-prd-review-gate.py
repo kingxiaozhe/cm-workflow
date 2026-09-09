@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -12,11 +13,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "cm-prd-review-gate.py"
+if os.environ.get("CM_PRD_REVIEW_GATE_IMPL") == "js":
+    SCRIPT = SCRIPT.with_suffix(".mjs")
+elif os.environ.get("CM_PRD_REVIEW_GATE_IMPL") == "oracle":
+    SCRIPT = ROOT / "scripts" / "fixtures" / "prd-review-gate-python-oracle.py"
 
 
 def invoke(*args: str, expected_exit: int = 0) -> dict[str, object]:
     result = subprocess.run(
-        [sys.executable, str(SCRIPT), *args],
+        [os.environ.get("CM_NODE_BIN", "node") if SCRIPT.suffix == ".mjs" else sys.executable, str(SCRIPT), *args],
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -27,6 +32,18 @@ def invoke(*args: str, expected_exit: int = 0) -> dict[str, object]:
             f"expected exit {expected_exit}, got {result.returncode}\n"
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
+    if result.returncode == 0 and args[0] == "record":
+        # Cross-read the actual persisted receipt with the other implementation.
+        # Do not record twice into one tree and call the second result a diff.
+        other = (ROOT / "scripts" / "fixtures" / "prd-review-gate-python-oracle.py"
+                 if SCRIPT.name != "prd-review-gate-python-oracle.py"
+                 else ROOT / "scripts" / "cm-prd-review-gate.mjs")
+        command = [sys.executable if other.suffix == ".py" else os.environ.get("CM_NODE_BIN", "node"), str(other), "inspect"]
+        for flag in ("--stage", "--feature", "--evidence", "--receipt"):
+            command.extend([flag, args[args.index(flag) + 1]])
+        checked = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+        if checked.returncode != 0 or json.loads(checked.stdout).get("outcome") != "completed":
+            raise AssertionError(f"cross-runtime receipt rejected: {checked.stderr}")
     return json.loads(result.stdout) if result.stdout.strip() else {"stderr": result.stderr}
 
 
@@ -116,6 +133,18 @@ def main() -> int:
             "发现一项边界问题。\n"
         )
         evidence.write_text(evidence_body, encoding="utf-8")
+        inspect_args = ["inspect", "--stage", "design", "--feature", "1.login",
+                        "--evidence", str(evidence), "--receipt", str(receipt)]
+        for invalid in ("\ufeff" + evidence_body,
+                        evidence_body.replace("2026-08-04T12:00:00-07:00", "2026-09-07Z10:00:00Z")):
+            evidence.write_text(invalid, encoding="utf-8")
+            invoke(*inspect_args, expected_exit=1)
+        evidence.write_text(evidence_body, encoding="utf-8")
+        aliases = root / "aliases"
+        aliases.mkdir()
+        receipt_link = aliases / receipt.name
+        receipt_link.symlink_to(receipt)  # absolute target does not exist yet
+        assert invoke(*inspect_args[:-1], str(receipt_link))["outcome"] == "resume_disposition"
         recovering = invoke(
             "inspect",
             "--stage",
@@ -138,7 +167,7 @@ def main() -> int:
             "--evidence",
             str(evidence),
             "--receipt",
-            str(receipt),
+            str(receipt_link),
             "--artifact",
             str(artifact),
             "--disposition",

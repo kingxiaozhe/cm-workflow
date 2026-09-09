@@ -50,10 +50,20 @@ function projectFiles(codeProject,applicableAgentFiles) {
   return files;
 }
 
-export function inspectCmAiContextRefresh(input) {
+// Shared local instruction reader for workflows without cm-ai feature admission.
+export function readProjectInstructionContext(codeProject,applicableAgentFiles=[]){
+  const files=projectFiles(codeProject,applicableAgentFiles);
+  need(files.reduce((sum,file)=>sum+file.bytes.length,0)<=256*1024,'context_too_large');
+  return freeze(files.map(file=>({...file.metadata,
+    content:new TextDecoder('utf-8',{fatal:true}).decode(file.bytes)})));
+}
+
+export function inspectCmAiContextRefresh(input,{admission:trustedAdmission=null}={}) {
   shape(input,['specsDir','codeProject','feature','applicableAgentFiles']);
   text(input.specsDir);text(input.codeProject);text(input.feature);
-  const admission=inspectCmAiAdmission({specsDir:input.specsDir,codeProject:input.codeProject});
+  const admission=trustedAdmission??inspectCmAiAdmission({specsDir:input.specsDir,codeProject:input.codeProject});
+  if(trustedAdmission!==null)need(input.feature==='0.bootstrap'
+    &&admission.specsDir===input.specsDir&&admission.codeProject===input.codeProject,'context_invalid');
   if(!['ready','complete'].includes(admission.state))return freeze({state:admission.state,reason:admission.reason,
     nextTask:null,contextDigest:null,contextFiles:[]});
   need(admission.features.some(item=>item.name===input.feature),'context_invalid');
@@ -68,11 +78,11 @@ export function inspectCmAiContextRefresh(input) {
     contextDigest:digest({version:1,files:contextFiles}),contextFiles});
 }
 
-export function inspectCmAiTaskLearningInput(input) {
+export function inspectCmAiTaskLearningInput(input,authority={}) {
   shape(input,['specsDir','codeProject','feature','identity','applicableAgentFiles']);
   text(input.feature);const identity=json(input.identity);validIdentity(identity);
   const refresh=inspectCmAiContextRefresh({specsDir:input.specsDir,codeProject:input.codeProject,
-    feature:input.feature,applicableAgentFiles:input.applicableAgentFiles});
+    feature:input.feature,applicableAgentFiles:input.applicableAgentFiles},authority);
   need(refresh.state==='ready'&&refresh.nextTask?.feature===input.feature
     &&refresh.nextTask.id===identity.taskId,'learning_context_invalid');
   const agentPaths=new Set(['AGENTS.md',...arrayItems(input.applicableAgentFiles)]);
@@ -148,16 +158,22 @@ function learningCandidates(raw) {
     action:candidate.action,evidence:[...candidate.evidence]}));
 }
 
-function readTaskLearningRetrospective(raw) {
-  const value=json(raw,16*1024);
-  shape(value,['version','workflow','phase','feature','identity','learningDigest','status','candidates','reason','retrospectiveDigest']);
-  need(value.version===1&&value.workflow==='cm-ai'&&value.phase==='task_learning_retrospective');
-  oneLine(value.feature,128);validIdentity(value.identity);hex(value.learningDigest);hex(value.retrospectiveDigest);
+export function readLearningRetrospectiveContent(raw){
+  const value=json(raw,16*1024);shape(value,['status','candidates','reason']);
   const candidates=learningCandidates(value.candidates);
   need(['no_new_lesson','lesson_candidate','writeback_pending'].includes(value.status));
   if(value.status==='no_new_lesson')need(candidates.length===0&&value.reason===null);
   else if(value.status==='lesson_candidate')need(candidates.length>=1&&value.reason===null);
   else {need(candidates.length>=1);oneLine(value.reason);}
+  return freeze({status:value.status,candidates,reason:value.reason});
+}
+
+function readTaskLearningRetrospective(raw) {
+  const value=json(raw,16*1024);
+  shape(value,['version','workflow','phase','feature','identity','learningDigest','status','candidates','reason','retrospectiveDigest']);
+  need(value.version===1&&value.workflow==='cm-ai'&&value.phase==='task_learning_retrospective');
+  oneLine(value.feature,128);validIdentity(value.identity);hex(value.learningDigest);hex(value.retrospectiveDigest);
+  const {candidates}=readLearningRetrospectiveContent({status:value.status,candidates:value.candidates,reason:value.reason});
   const identity={repositoryId:value.identity.repositoryId,runId:value.identity.runId,
     taskId:value.identity.taskId,attempt:value.identity.attempt};
   const body={version:1,workflow:'cm-ai',phase:'task_learning_retrospective',feature:value.feature,
@@ -169,11 +185,7 @@ export function createCmAiTaskLearningRetrospective(raw) {
   const input=json(raw,16*1024);
   shape(input,['feature','identity','learningDigest','status','candidates','reason']);
   oneLine(input.feature,128);validIdentity(input.identity);hex(input.learningDigest);
-  const candidates=learningCandidates(input.candidates);
-  need(['no_new_lesson','lesson_candidate','writeback_pending'].includes(input.status));
-  if(input.status==='no_new_lesson')need(candidates.length===0&&input.reason===null);
-  else if(input.status==='lesson_candidate')need(candidates.length>=1&&input.reason===null);
-  else {need(candidates.length>=1);oneLine(input.reason);}
+  const {candidates}=readLearningRetrospectiveContent({status:input.status,candidates:input.candidates,reason:input.reason});
   const body={version:1,workflow:'cm-ai',phase:'task_learning_retrospective',feature:input.feature,
     identity:input.identity,learningDigest:input.learningDigest,status:input.status,candidates,reason:input.reason};
   return readTaskLearningRetrospective({...body,retrospectiveDigest:digest(body)});

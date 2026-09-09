@@ -1,5 +1,21 @@
 // Experimental B1 only; no global configuration changes and no provider fallback.
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+
+// Native profile, not an outer sandbox. Keep the built-in workspace protections.
+// Reference: https://learn.chatgpt.com/docs/permissions (beta, checked locally).
+export function specsPermissionArgs({cwd,specsRoot}) {
+  for(const p of [cwd,specsRoot])if(typeof p!=='string'||!path.isAbsolute(p)
+    ||path.resolve(p)!==p||fs.realpathSync(p)!==p||!fs.lstatSync(p).isDirectory())
+    throw Object.assign(new Error('unsupported_path'),{code:'unsupported_path'});
+  if(cwd===specsRoot||cwd.startsWith(specsRoot+path.sep))
+    throw Object.assign(new Error('overlapping_roots'),{code:'overlapping_roots'});
+  const q=JSON.stringify;
+  const filesystem=`{${q(specsRoot)}="read",":workspace_roots"={"AGENTS.md"="read","CLAUDE.md"="read",".claude"="read"}}`;
+  return ['-c','default_permissions="cm-specs"','-c',
+    `permissions.cm-specs={extends=":workspace",filesystem=${filesystem},network={enabled=false}}`];
+}
 
 export const disabledFeatures = Object.freeze([
   'apps', 'browser_use', 'browser_use_external', 'browser_use_full_cdp_access',

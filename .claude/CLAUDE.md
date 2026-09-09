@@ -17,6 +17,8 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 
 ## 常用命令
 
+- JS 修复入口: `node scripts/cm-fix-host.mjs --help`；同仓specs可显式配置`protectSpecs:true`，原权限/审查不变，宿主只回文本提案，由固定沙箱写入；QA子配置复用，详见`docs/js-workflow-control.md`
+
 - 安装依赖: 无 npm 安装步骤（`package.json` 无依赖；可视化工具按需使用外部 Playwright）
 - 开发运行: 不适用（直接维护 Markdown 与脚本）
 - 构建: 不适用（无构建产物）
@@ -27,15 +29,20 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - Codex 安装: `./install-codex.sh`（装完新开会话跑 `$cm-check`）
 - Claude 安装: `./install.sh`（核心运行时原子更新/失败回滚；可选更新器 best-effort，装完跑 `/cm-check`）
 - Windows 安装: `powershell -ExecutionPolicy Bypass -File install.ps1`（同样原子更新）
-- 一致性自检: `./scripts/cm-check-runtime.sh`
+- 一致性自检: `./scripts/cm-check-runtime.sh`；完整当前会话机械/语义接线：`node scripts/cm-check-host.mjs --help`
 - 全局日志夹具: `./scripts/cm-check-runtime.sh --log-fixtures`
 - API 用量报告: `python3 scripts/cm-usage-report.py --last 10`
 - OpenAI 兼容调用夹具: `python3 scripts/test-cm-openai-compatible-call.py`
 - 审批 manifest: `python3 scripts/cm-spec-manifest.py {specs}`
 - PRD 单轮恢复夹具: `python3 scripts/test-cm-prd-review-gate.py`
+- PRD JS 变更/会话恢复: `node scripts/cm-prd-host.mjs --help`；定点夹具 `node --test scripts/cm-prd-completion.test.mjs`
 - 公开包检查: `python3 scripts/validate-public-repo.py`
 - 安全扫描: `python3 scripts/scan-public-safety.py`
 - JS runtime 兼容夹具: `node --test experiments/js-orchestration/*.test.mjs`（当前完整套件要求 macOS + Node.js 24.14+，含原生 SQLite；源码随 runtime 分发不等于 host 已激活）
+- JS 单任务入口: `node scripts/cm-ai-host.mjs --help`；默认当前会话，Codex同仓specs可显式选`--protected-config`并按轮授权真实开发/审查，原workflow配置接受保护QA与审前文档；限制见`docs/js-workflow-control.md`，安装与真实模型验收另验
+- JS 多任务入口: `node scripts/cm-ai-batch-host.mjs --help`；复用原batch/单任务宿主，Codex/Claude可选`--protected-conversation-config`同仓文本提案/沙箱，Review按feature/task/轮次授权
+- JS 重构: `node scripts/cm-refactor-host.mjs --help`；协议见 `skills/cm-refactor/references/js-host.md`，轻量/批量、判官准备、恢复、Learning/规则/备忘共用原门禁；真实双端使用与Git交付另验
+- Claude JS 接线: 单/批任务 `--runtime claude` 已接原开发/Review/QA链，已安装CLI通过本机回环配置诊断；真实模型Review及Skill实装仍缺，不等于双端验收
 - 只读任务提案: `scripts/cm-task-gate.mjs` 的 `prepare-mark-done` / `verify-mark-done-plan`；参数与私有输出契约见 `runtime/task-gates.md`，不是完成授权
 - 插件验证: `python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .`
 - 查看版本: `cat VERSION`
@@ -53,7 +60,7 @@ skills/                # Codex 权威流程与工种能力
 ├── cm-product-manager/、cm-finance-expert/、cm-doc-syncer/
 └── codebase-context/、external-expert/、darwin-skill/ # 独立工具；点子访谈引擎位于 cm-idea/references/
 agents/                # 并行子 agent → ~/.claude/agents/ —— agent 管纪律
-runtime/               # 双运行时共享合同；含上下文、调度、路由、审查、日志、测试，以及 runtime/js/cm-ai 唯一 JS 源码和未激活 host API
+runtime/               # 双运行时共享合同；runtime/js/cm-ai 唯一 JS 源码，当前会话开发/检查可显式接入，完整 Skill host 未激活
 templates/             # workflow config / rules 骨架 / hooks / statusline / dashboard / pixel
 docs/                  # 使用手册、安装架构、交付材料与示例 specs
 assets/                # README 与使用手册的本地视觉资产

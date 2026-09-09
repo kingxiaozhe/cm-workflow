@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createHash,randomUUID } from 'node:crypto';
 import { types } from 'node:util';
 import {createRequire} from 'node:module';
-import { verifyReviewPackage } from './review-package.mjs';
+import { verifyReviewPackage,reviewSpecsPath } from './review-package.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { need,shape,json,digest,validIdentity } from './effect-contract.mjs';
 import {planBytes,readCommitIntent,readCommitResult} from './task-commit-codec.mjs';
@@ -27,7 +27,6 @@ const sameStat=(a,b)=>statFields(a).join(':')===statFields(b).join(':');
 const sameInode=(a,b)=>a.dev===b.dev && a.ino===b.ino;
 function pathString(p) {need(typeof p==='string' && !p.includes('\0') && path.isAbsolute(p) && path.resolve(p)===p,'unsupported_path');}
 function canonicalPath(p) {pathString(p);need(fs.realpathSync(p)===p,'unsupported_path');return p;}
-function disjoint(a,b) {need(a!==b && !a.startsWith(b+path.sep) && !b.startsWith(a+path.sep),'overlapping_roots');}
 function cancellation(signal) {
   let value=false;
   if(signal!==undefined)try{
@@ -65,7 +64,8 @@ function readFile(p) {
 function nativeRevision(p,f) {return digest({path:p,stat:statFields(f.stat),sha256:sha(f.bytes)});}
 function completionSelectors(selectors,identity,projectRoot){return {...selectors,task:identity.taskId,projectRoot};}
 function verifyProof(v) {
-  verifyReviewPackage({root:v.root,baseline:v.baseline,checks:v.checks,reviewPackage:v.reviewPackage,expectedDigest:v.reviewPackage.packageDigest});
+  verifyReviewPackage({root:v.root,baseline:v.baseline,checks:v.checks,reviewPackage:v.reviewPackage,expectedDigest:v.reviewPackage.packageDigest,
+    ...(Object.hasOwn(v.reviewPackage,'handoff')?{handoffPath:v.selectors.handoff}:{})});
   checkCompletion({receipt:v.receipt,registered:v.registered,execution:v.execution,reviewPackage:v.reviewPackage,identity:v.identity});
 }
 function ownerMatch(store,owner,initial,revision) {
@@ -122,7 +122,8 @@ function commitCore(input,signal,owner,initial,guard,appendIntent,appendResult) 
   for(const p of [v.root,selectors.tasksPath,selectors.reviewsDir,selectors.handoff])canonicalPath(p);
   need([path.join(owner.specsRoot,'.reviews'),path.join(path.dirname(owner.tasksPath),'.reviews')].includes(selectors.reviewsDir)
     && path.dirname(selectors.handoff)===selectors.reviewsDir,'unsupported_path');
-  disjoint(v.root,owner.specsRoot);const parent=parentRevision(path.dirname(owner.tasksPath));
+  need((v.baseline.specsPath??null)===reviewSpecsPath(v.root,owner.specsRoot),'overlapping_roots');
+  const parent=parentRevision(path.dirname(owner.tasksPath));
   let plan;
   try{plan=json(prepareMarkDone(completionSelectors(selectors,v.identity,v.root)),MiB);}
   catch{need(false,'preparation_failed');}

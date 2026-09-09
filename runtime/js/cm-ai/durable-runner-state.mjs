@@ -1,6 +1,6 @@
 // Host-only S3b2b journal grammar. Data validation grants no provider authority.
-import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,requestFor} from './effect-contract.mjs';
-import {readReviewBaseline,readReviewPackage} from './review-package.mjs';
+import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,requestFor} from './effect-contract.mjs';
+import {readReviewBaseline,readReviewPackage,reviewSpecsPath} from './review-package.mjs';
 import {reviewResult,reviewReceipt} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
 import path from 'node:path';
@@ -8,6 +8,10 @@ import {readCommitIntent,readCommitResult} from './task-commit-codec.mjs';
 import {inspectProviderReview} from './provider-review-observation.mjs';
 import {readCmAiProjectLearningWriteback} from './cm-ai-learning-writer.mjs';
 import {readCmAiTaskLearningApplication} from './cm-ai-context-refresh.mjs';
+import {reviewExclusions} from './effect-contract.mjs';
+import {validateAcceptedFix} from './accepted-fix.mjs';
+import {readBootstrapEvidence,validateBootstrapReviewPackage} from './host-bootstrap.mjs';
+import {validateCodeProjectPaths,assertCodeProjectSelections} from './code-projects.mjs';
 
 const LIMIT=16*1024*1024;
 const same=(a,b)=>need(digest(a)===digest(b),'runner_history_mismatch');
@@ -15,10 +19,15 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state)=>({develop:['ready','changes_requested'],review:['awaiting_review'],complete:['approved']})[kind]?.includes(state)===true;
-export function validateTaskLearningReviewPackage(rawPackage,writeback,learningInput) {
+export function validateTaskLearningReviewPackage(rawPackage,writeback,learningInput,bootstrap=null,configuration=null) {
   validTaskLearningInput(learningInput,learningInput.identity,learningInput.feature);
   const reviewPackage=readReviewPackage(rawPackage);
   const agents=reviewPackage.changes.find(change=>change.path==='AGENTS.md')??null;
+  if(bootstrap!==null){
+    need(configuration?.mode==='instructions'&&learningInput.feature==='0.bootstrap','runner_learning');
+    validateBootstrapReviewPackage(reviewPackage,bootstrap,configuration,learningInput.identity,writeback);
+    if(writeback.outcome==='no_new_lesson'||writeback.outcome==='deduplicated')return true;
+  }
   if(writeback.outcome==='written')need(agents?.after?.sha256===writeback.agentsFile.sha256,'runner_learning');
   else if(writeback.outcome==='no_new_lesson'){
     const expected=learningInput.learningFiles.find(file=>file.scope==='project'&&file.path==='AGENTS.md')??null;
@@ -69,9 +78,15 @@ function packageLink(pkg,original,attempt,checks) {
   const files=new Map(b.files.map(f=>[f.path,f]));
   for(const c of p.changes){same(c.before,files.get(c.path)??null);if(c.after===null)files.delete(c.path);else files.set(c.path,c.after);}
   same(p.requirements,b.requirements.map(path=>files.get(path)??null));
+  same(p.codeProjectPaths??null,b.codeProjectPaths??null);
+  if(Object.hasOwn(b,'bootstrapRequirements'))same(p.bootstrapRequirements,{feature:'0.bootstrap',
+    rootDigest:digestRoot(b.bootstrapRequirements.specsRoot),files:b.bootstrapRequirements.files});
+  else need(!Object.hasOwn(p,'bootstrapRequirements'),'runner_package');
 }
 function callRequest(call,adapter,contextId,role,payload,identity,session,index) {
-  shape(call,['invocationId','contextId','provider','requestedModel','effectiveModel','channel','started','terminal','requestDigest','resultDigest']);
+  shape(call,['invocationId','contextId','provider','requestedModel','effectiveModel','channel','started','terminal','requestDigest','resultDigest',
+    ...(Object.hasOwn(call,'providerThreadId')?['providerThreadId']:[])]);
+  if(Object.hasOwn(call,'providerThreadId')){need(role==='developer','runner_call');id(call.providerThreadId);}
   need(call.invocationId===`${session}.${index}` && call.contextId===contextId && call.provider===adapter.provider
     && call.requestedModel===adapter.requestedModel && call.channel==='fixture' && call.started===true,'runner_call');
   text(call.effectiveModel);hex(call.requestDigest);
@@ -167,7 +182,7 @@ function readInvocationResult(p,registration,started,effect,config) {
 function invocationCall(call,registration,started,result,before) {
   shape(call,['invocationId','contextId','provider','requestedModel','effectiveModel','channel','started','terminal','requestDigest','resultDigest','providerThreadId']);
   const request=registration.request;need(call.invocationId===request.invocationId&&call.contextId===request.contextId
-    &&call.provider==='codex'&&call.requestedModel===request.requestedModel&&call.effectiveModel==='unknown'
+    &&call.provider===request.provider&&call.requestedModel===request.requestedModel&&call.effectiveModel==='unknown'
     &&call.channel==='host-authorized'&&call.requestDigest===request.requestDigest
     &&call.providerThreadId===started,'runner_call');
   const expectedTerminal=result.outcome==='observed'?'succeeded':result.outcome==='cancelled'?'cancelled':
@@ -211,7 +226,19 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     if(Object.hasOwn(config,'taskLearning')){
       if(s.learningResult!==null){
         const hasApplication=Object.hasOwn(s.learningResult,'application');
-        shape(s.learningResult,[...(hasApplication?['application']:[]),'retrospective','writeback']);
+        const hasBootstrap=Object.hasOwn(s.learningResult,'bootstrap');
+        need(hasBootstrap===(config.bootstrap?.mode==='instructions'),'runner_learning');
+        shape(s.learningResult,[...(hasApplication?['application']:[]),'retrospective','writeback',...(hasBootstrap?['bootstrap']:[])]);
+        if(hasBootstrap){
+          const evidence=readBootstrapEvidence(s.learningResult.bootstrap,config.bootstrap,identity);
+          need(evidence.invocationId===added[0]?.invocationId,'runner_learning');
+          for(const file of evidence.files){
+            const previous=before.learningResult?.bootstrap?.files.find(item=>item.path===file.path);
+            const expected=file.path==='AGENTS.md'&&previous&&before.learningResult.writeback.outcome==='written'
+              ?before.learningResult.writeback.agentsFile.sha256:previous?.afterSha256??null;
+            need(file.beforeSha256===expected,'runner_learning');
+          }
+        }
         let application=null;
         if(hasApplication){application=readCmAiTaskLearningApplication(s.learningResult.application);
           need(application.feature===effect.learningInput.feature
@@ -221,7 +248,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
           {learningInput:effect.learningInput,retrospective:s.learningResult.retrospective});
         need(added.length===1&&added[0].terminal==='succeeded','runner_learning');
         same(added[0].resultDigest,digest({outcome:'implemented',...(hasApplication?{application}:{}),
-          retrospective:s.learningResult.retrospective}));
+          retrospective:s.learningResult.retrospective,...(hasBootstrap?{bootstrap:s.learningResult.bootstrap}:{})}));
         if(writeback.outcome==='writeback_pending'){
           expectedState='blocked';expectedCode='learning_writeback_pending';
         }
@@ -231,13 +258,14 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     if(digest(s.reviewPackage)!==digest(before.reviewPackage)) {
       const developerResult=Object.hasOwn(config,'taskLearning')
         ?{outcome:'implemented',...(s.learningResult&&Object.hasOwn(s.learningResult,'application')
-          ?{application:s.learningResult.application}:{}),retrospective:s.learningResult?.retrospective}:{outcome:'implemented'};
+          ?{application:s.learningResult.application}:{}),retrospective:s.learningResult?.retrospective,
+          ...(s.learningResult?.bootstrap?{bootstrap:s.learningResult.bootstrap}:{})}:{outcome:'implemented'};
       need(added.length===1 && added[0].terminal==='succeeded' && added[0].resultDigest===digest(developerResult),'runner_develop');
       if(Object.hasOwn(config,'taskLearning'))need(s.learningResult!==null
         &&s.learningResult.writeback.outcome!=='writeback_pending','runner_learning');
       packageLink(s.reviewPackage,original,before.attempt,s.currentChecks);
       if(Object.hasOwn(config,'taskLearning'))validateTaskLearningReviewPackage(s.reviewPackage,
-        s.learningResult.writeback,effect.learningInput);
+        s.learningResult.writeback,effect.learningInput,s.learningResult.bootstrap??null,config.bootstrap??null);
       expectedState='awaiting_review';
     }
     if(added[0] && ['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal)) {
@@ -321,11 +349,21 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
 
 function completionConfig(config,version){
   shape(config,['root','identity','scope','requirements','excludedContexts','timeoutMs','developer','reviewers','completion',
-    ...(version===3?['reviewInvocation']:[]),...(Object.hasOwn(config,'taskLearning')?['taskLearning']:[])]);
+    ...(version===3?['reviewInvocation']:[]),...(Object.hasOwn(config,'taskLearning')?['taskLearning']:[]),
+    ...['bootstrap','codeProjectPaths'].filter(key=>Object.hasOwn(config,key))]);
+  if(Object.hasOwn(config,'codeProjectPaths')){
+    same(config.codeProjectPaths,validateCodeProjectPaths(config.codeProjectPaths));
+    assertCodeProjectSelections(config.codeProjectPaths,[...config.scope,...config.requirements]);
+  }
+  if(Object.hasOwn(config,'bootstrap')){
+    need(config.taskLearning?.feature==='0.bootstrap'&&config.bootstrap.feature==='0.bootstrap','bootstrap_task_required');
+    same(config.bootstrap.identity,config.identity);same(config.bootstrap.scope,config.scope);
+    need(config.bootstrap.codeProject===config.root,'bootstrap_binding_changed');
+  }
   // V1 gets these data constraints from createTaskRunner before reading history.
   // The new standalone V2 reader must enforce them before exposing initial state.
   validIdentity(config.identity);need(config.identity.attempt===1);
-  need(Number.isInteger(config.timeoutMs)&&config.timeoutMs>=1&&config.timeoutMs<=60000);
+  validCallTimeout(config.timeoutMs);
   need(Array.isArray(config.excludedContexts)&&config.excludedContexts.length>0);config.excludedContexts.forEach(id);
   shape(config.developer,['provider','requestedModel','contextId']);
   id(config.developer.contextId);text(config.developer.requestedModel);need(['codex','claude'].includes(config.developer.provider));
@@ -345,15 +383,17 @@ function completionConfig(config,version){
   const absolute=p=>need(typeof p==='string'&&!p.includes('\0')&&path.isAbsolute(p)&&path.resolve(p)===p,'runner_completion');
   [config.root,c.owner.tasksPath,c.owner.specsRoot,c.reviewsDir].forEach(absolute);
   need(c.owner.tasksPath.startsWith(c.owner.specsRoot+path.sep),'runner_completion');
-  if(Object.hasOwn(config,'taskLearning')){shape(config.taskLearning,['feature']);text(config.taskLearning.feature);
+  if(Object.hasOwn(config,'taskLearning')){
+    shape(config.taskLearning,['feature',...(Object.hasOwn(config.taskLearning,'hostHandoff')?['hostHandoff']:[])]);
+    text(config.taskLearning.feature);
+    if(Object.hasOwn(config.taskLearning,'hostHandoff'))need(config.taskLearning.hostHandoff===true,'runner_learning');
   }
-  need(config.root!==c.owner.specsRoot&&!config.root.startsWith(c.owner.specsRoot+path.sep)
-    &&!c.owner.specsRoot.startsWith(config.root+path.sep),'runner_completion');
+  reviewSpecsPath(config.root,c.owner.specsRoot);
   need([path.join(c.owner.specsRoot,'.reviews'),path.join(path.dirname(c.owner.tasksPath),'.reviews')].includes(c.reviewsDir),'runner_completion');
   need(Array.isArray(c.handoffs)&&c.handoffs.length===2&&c.handoffs[0]!==c.handoffs[1],'runner_completion');
   for(const p of c.handoffs){absolute(p);need(path.dirname(p)===c.reviewsDir,'runner_completion');}
   if(version===3){
-    need(config.reviewers.length===1&&config.reviewers[0].provider==='codex'
+    need(config.reviewers.length===1&&['codex','claude'].includes(config.reviewers[0].provider)
       &&config.reviewers[0].allowed&&config.reviewers[0].available,'runner_invocation');
     const v=config.reviewInvocation;shape(v,['developerThreadId','excludedThreadIds']);id(v.developerThreadId);
     need(Array.isArray(v.excludedThreadIds)&&v.excludedThreadIds.length>0&&v.excludedThreadIds.length<=32,'runner_invocation');
@@ -374,6 +414,7 @@ export function readRunnerHistory(raw,config,version=1) {
   const completion=version>=2?completionConfig(config,version):null;
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
   let invocation={registration:null,started:null,result:null};
+  const acceptedFixes=[];
   for(const [index,r] of records.entries()) {
     boundRunnerRecord(r,index+1);
     if(version>=2)fullEnvelope(r,index,index?records[index-1].digest:null);
@@ -386,6 +427,9 @@ export function readRunnerHistory(raw,config,version=1) {
       const reviewScope=Object.hasOwn(config,'taskLearning')&&!config.scope.includes('AGENTS.md')
         ?[...config.scope,'AGENTS.md']:[...config.scope];
       same(original.identity,config.identity);same(original.scope,reviewScope.sort());same(original.requirements,[...config.requirements].sort());
+      same(original.codeProjectPaths??null,config.codeProjectPaths??null);
+      same(original.bootstrapRequirements??null,config.bootstrap?.bootstrapRequirements??null);
+      same(original.specsPath??null,completion?reviewSpecsPath(config.root,completion.owner.specsRoot):null);
       same(original.rootDigest,digestRoot(config.root));state=initialRunnerState(config,session,version);continue;
     }
     if(p.type==='effect-intent') {
@@ -404,10 +448,12 @@ export function readRunnerHistory(raw,config,version=1) {
       invocation.registration=readRegistration(p,beforeIntent,pending,config,session);
     } else if(version===3&&p.type==='review-invocation-started') {
       need(r.kind==='result'&&invocation.registration&&!invocation.started&&!invocation.result,'runner_invocation');
-      invocation.started=readStarted(p,invocation.registration,pending,config);
+      invocation.started=readStarted(p,invocation.registration,pending,{...config,reviewInvocation:{...config.reviewInvocation,
+        excludedThreadIds:reviewExclusions(config.reviewInvocation,beforeIntent.calls,config.developer.contextId)}});
     } else if(version===3&&p.type==='review-invocation-result') {
       need(r.kind==='result'&&invocation.registration&&!invocation.result,'runner_invocation');
-      invocation.result=readInvocationResult(p,invocation.registration,invocation.started,pending,config);
+      invocation.result=readInvocationResult(p,invocation.registration,invocation.started,pending,{...config,reviewInvocation:{...config.reviewInvocation,
+        excludedThreadIds:reviewExclusions(config.reviewInvocation,beforeIntent.calls,config.developer.contextId)}});
       if(invocation.result.outcome==='cancelled')need(controls.cancelled===true,'runner_control');
     } else if(p.type==='effect-checkpoint') {
       shape(p,[...common,'effectId','checkpoint']);need(r.kind==='result' && pending && p.effectId===pending.id,'runner_checkpoint');
@@ -433,6 +479,10 @@ export function readRunnerHistory(raw,config,version=1) {
         readCommitResult(p.commit,{intentDigest:transaction.intentRecord.digest,planDigest:state.taskCommit.planDigest});
         transaction.resultRecord=r;state.taskCommit={...state.taskCommit,resultDigest:r.digest,outcome:'fixture_committed'};
       }
+    } else if(version===3&&p.type==='qa-fix-accepted') {
+      shape(p,[...common,'record']);need(r.kind==='result'&&pending===null&&state.state==='fixture_completed','fix_parent_not_completed');
+      acceptedFixes.push(validateAcceptedFix({record:p.record,previous:acceptedFixes,
+        baseline:attemptBaseline(original,state.attempt),parentPackage:state.reviewPackage,feature:config.taskLearning?.feature}));
     } else if(p.type==='control') {
       shape(p,[...common,'event']);need(r.kind==='cancel' && ++controlCount<=16,'runner_control');
       if(p.event==='late-cancel')need(state.state==='fixture_completed' || pending?.kind==='complete','runner_control');
@@ -446,7 +496,7 @@ export function readRunnerHistory(raw,config,version=1) {
   if(pending){state.state='unknown';state.code='reconciliation_required';
     if(version===3&&invocation.registration)state.reviewInvocation={registration:invocation.registration.record,
       started:invocation.started,result:invocation.result};}
-  return {original,session,state,pending,...(version>=2?{transaction}:{})};
+  return {original,session,state,pending,acceptedFixes,...(version>=2?{transaction}:{})};
 }
 // Baseline rootDigest uses bytes of the canonical root, not JSON string encoding.
 import {createHash} from 'node:crypto';

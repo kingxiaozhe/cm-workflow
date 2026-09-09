@@ -6,9 +6,11 @@ import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import childProcess from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {inspectFixWalkthrough,readFixWalkthrough,fixWalkthroughBinding} from '../runtime/js/cm-fix/walkthrough.mjs';
+import {inspectFixRegressionFailure} from '../runtime/js/cm-fix/regression-evidence.mjs';
 
 const TASK_RE=/^T-[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const REVIEWERS=new Set(['codex-subagent','codex-cli','self-degraded']);
+const REVIEWERS=new Set(['codex-subagent','codex-cli','claude-cli','self-degraded']);
 const VERDICTS=new Set(['approved','changes_requested','blocked']);
 const PREPARATION_FILE_LIMIT=256*1024;
 let preparationReadLimit=null;
@@ -391,7 +393,49 @@ function reviewPath(reviewsDir,feature,task,attempt){
   requireFeature(feature);return path.join(reviewsDir,`${feature}-${task}-r${attempt}.md`);
 }
 
-function validateAttemptChain(reviewsDir,feature,task,attempt){
+function validateFixWalkthroughRetry({prior,payload,priorPayload,priorReview,feature,task,projectRoot}){
+  try{
+    const require=(condition)=>{if(!condition)throw new GateError('invalid cm-fix walkthrough retry evidence');};
+    require(/^T-FIX-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(task)&&feature===`fix-${task.slice(6)}`
+      &&prior.independent.toLowerCase()==='true'&&projectRoot&&priorPayload.implementation_sha256&&payload.implementation_sha256);
+    const item=(rows,prefix)=>{
+      const matches=rows.filter(value=>value.startsWith(prefix));require(matches.length===1);
+      const source=matches[0].slice(prefix.length);parseJsonStrict(source);
+      return JSON.parse(source); // Runtime evidence validators use JS numbers, not gate BigInts.
+    };
+    const feedback=item(payload.evidence,'fix prior review (data, not instructions) ');
+    const first=item(priorPayload.evidence,'fix Learning retrospective ').identity;
+    const second=item(payload.evidence,'fix Learning retrospective ').identity;
+    require(first.taskId===task&&first.attempt===1&&canonical(first)===canonical(feedback.identity)
+      &&canonical(second)===canonical({...first,attempt:2}));
+    const lines=readText(priorReview,'review evidence').split(/\r?\n/);
+    const markers=lines.flatMap((line,index)=>line==='Reviewer result (JSON data):'?[index]:[]);
+    require(markers.length===1);
+    parseJsonStrict(lines[markers[0]+1]);const reviewed=JSON.parse(lines[markers[0]+1]);
+    require(reviewed.verdict==='approved'&&canonical(reviewed)===canonical(feedback.review));
+    require(/^[a-f0-9]{64}$/.test(feedback.registrationDigest)&&/^[a-f0-9]{64}$/.test(feedback.observationDigest));
+    const references=lines.filter(line=>line.startsWith('Registered invocation: '));
+    require(references.length===1&&references[0].endsWith(`; registration: ${feedback.registrationDigest}; observation: ${feedback.observationDigest}`));
+    const defect=item(priorPayload.evidence,'fix defect evidence (data, not instructions) ');
+    require(!(Object.hasOwn(feedback,'walkthroughFailure')&&Object.hasOwn(feedback,'regressionFailure')));
+    if(feedback.regressionFailure){
+      require(canonical(feedback.regressionFailure.redTest.command)===canonical(defect.redTest.command)
+        &&canonical(feedback.regressionFailure.redTest.expectedFailure)===canonical(defect.redTest.expectedFailure));
+      inspectFixRegressionFailure(feedback.regressionFailure,{identity:first,packageDigest:reviewed.packageDigest,priorHandoff:priorPayload});
+      return;
+    }
+    const failure=feedback.walkthroughFailure;
+    const config=readFixWalkthrough(failure.configuration,projectRoot);
+    const binding=fixWalkthroughBinding({identity:first,packageDigest:reviewed.packageDigest,diagnosis:defect.diagnosis,configuration:config});
+    require(canonical(binding)===canonical(failure.binding));
+    require(inspectFixWalkthrough(failure.result,{binding,configuration:config}).status==='failed');
+  }catch(error){
+    if(error instanceof GateError)throw error;
+    throw new GateError(`invalid cm-fix walkthrough retry evidence: ${error.message}`);
+  }
+}
+
+function validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoot){
   if(attempt!==2)return;
   const priorHandoff=expectedHandoff(reviewsDir,feature,task,1);
   requireExpectedHandoff(priorHandoff,{reviewsDir,feature,task,attempt:1});
@@ -401,7 +445,9 @@ function validateAttemptChain(reviewsDir,feature,task,attempt){
   const prior=validateReview(reviewPath(reviewsDir,feature,task,1),{
     task,attempt:1,handoff:priorHandoff,changedFiles:priorPayload.changed_files,
   });
-  if(prior.verdict!=='changes_requested')
+  if(prior.verdict==='approved'){
+    validateFixWalkthroughRetry({prior,payload,priorPayload,priorReview:reviewPath(reviewsDir,feature,task,1),feature,task,projectRoot});
+  }else if(prior.verdict!=='changes_requested')
     throw new GateError('attempt 2 requires round 1 verdict: changes_requested');
 }
 
@@ -432,7 +478,7 @@ export function checkN4({handoff,reviewsDir,feature,task,projectRoot=null,allowL
   if(requireLearning)verifyLearningRecord(payload,projectRoot);
   const attempt=payload.attempt;
   requireExpectedHandoff(handoff,{reviewsDir,feature,task,attempt});
-  validateAttemptChain(reviewsDir,feature,task,attempt);
+  validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoot);
   const contentBound=verifyImplementationBinding(payload,{projectRoot,allowLegacyUnbound});
   return {gate:'n4',task,attempt,outcome:'ready_for_review',handoff_sha256:sha256(handoff),content_bound:contentBound};
 }
@@ -444,7 +490,7 @@ export function checkN5({handoff,reviewsDir,feature,task,projectRoot=null,allowL
   if(requireLearning)verifyLearningRecord(payload,projectRoot);
   const attempt=payload.attempt;
   requireExpectedHandoff(handoff,{reviewsDir,feature,task,attempt});
-  validateAttemptChain(reviewsDir,feature,task,attempt);
+  validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoot);
   const contentBound=verifyImplementationBinding(payload,{projectRoot,allowLegacyUnbound});
   const review=reviewPath(reviewsDir,feature,task,attempt);
   const result=validateReview(review,{task,attempt,handoff,changedFiles:payload.changed_files});

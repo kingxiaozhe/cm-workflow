@@ -13,6 +13,7 @@ import { openTaskExecutionStore } from './task-owner.mjs';
 import { readRunnerHistory } from './durable-runner-state.mjs';
 import { createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective } from './cm-ai-context-refresh.mjs';
 import childProcess from 'node:child_process';
+import {createHostCheck} from '../../runtime/js/cm-ai/host-check.mjs';
 
 // Intercept only the native writer's gate imports, after the real functions run.
 // Tests remain serial and clear their callbacks in finally blocks.
@@ -104,6 +105,44 @@ for(const twoAttempts of [false,true])test(`C3b one-owner composed completion wi
   runner=f.reopen();assert.deepEqual(runner.status(),done);assert.deepEqual(await runner.executeEffect(f.effect('complete',twoAttempts?2:1)),done);
   assert.deepEqual(f.getStore().snapshot(),saved);assert.equal(f.calls.length,twoAttempts?4:2);
 },{twoAttempts}));
+
+for(const drift of [false,true])test(`P2 host creates checked Learning handoff and resumes through sole completion drift=${drift}`,()=>composedFixture(async f=>{
+  f.options.taskLearning={feature:'1.login',hostHandoff:true};
+  fs.unlinkSync(f.options.taskCompletion.handoffs[0]);
+  f.options.developer.run=r=>{
+    fs.writeFileSync(path.join(f.root,'a.js'),'host implementation\n');
+    return terminal(r,{outcome:'implemented',application:applicationFor(r),
+      retrospective:createCmAiTaskLearningRetrospective({feature:'1.login',identity:r.identity,
+        learningDigest:r.payload.learningInput.learningDigest,status:'no_new_lesson',candidates:[],reason:null})});
+  };
+  f.options.check=createHostCheck({cwd:f.root,commands:[{id:'content',command:[process.execPath,'-e',
+    "require('node:assert/strict').equal(require('node:fs').readFileSync('a.js','utf8'),'host implementation\\n')"]}]});
+  const learningFiles=[],learningDigest=digest({version:1,feature:'1.login',identity:f.options.identity,files:learningFiles});
+  const learningInput={version:1,workflow:'cm-ai',phase:'task_learning_input',feature:'1.login',
+    identity:f.options.identity,learningDigest,learningFiles};
+  const state=await f.create().executeEffect({...f.effect('develop'),learningInput});
+  assert.equal(state.state,'awaiting_review',JSON.stringify(state));
+  const handoff=JSON.parse(fs.readFileSync(f.options.taskCompletion.handoffs[0]));
+  assert.equal(handoff.verification[0].status,'passed');
+  assert.equal(handoff.evidence.filter(x=>x.startsWith('cm-learning-')).length,2);
+  const resumed=f.reopen();assert.equal(resumed.status().state,'awaiting_review');
+  const handoffPath=f.options.taskCompletion.handoffs[0],bytes=fs.readFileSync(handoffPath);
+  if(drift){
+    fs.appendFileSync(handoffPath,'\n');
+    assert.deepEqual(await resumed.executeEffect(f.effect('review')),{outcome:'rejected',code:'package_mismatch'});
+    assert.equal(f.reopen().status().state,'awaiting_review');
+    assert.equal(fs.readFileSync(f.tasksPath,'utf8'),'- [ ] T-001: fixture\r\n');return;
+  }
+  const prior=f.options.reviewers[0].run;
+  f.options.reviewers[0].run=(request,...args)=>{
+    assert.equal(Buffer.from(request.payload.reviewPackage.handoff.contentBase64,'base64').toString(),bytes.toString());
+    return prior(request,...args);
+  };
+  const ready=f.reopen();
+  assert.equal((await ready.executeEffect(f.effect('review'))).state,'approved');
+  assert.equal((await ready.executeEffect(f.effect('complete'))).state,'fixture_completed');
+  assert.equal(fs.readFileSync(f.tasksPath,'utf8'),'- [x] T-001: fixture\r\n');
+}));
 
 test('F05 develop persists and replays one task-bound Learning input in the existing journal',()=>composedFixture(async f=>{
   f.options.taskLearning={feature:'1.login'};
@@ -1256,6 +1295,24 @@ test('S2b workflow throw revokes facade and unawaited complete does not bypass c
 test('S2b workflow throw after committed preserves outcome',()=>fixture(async({runner,marker})=>{
   const r=await runner.run(async ctx=>{for(const kind of ['develop','review','complete'])await ctx.executeEffect(intent(kind));throw Error('post-commit');});
   assert.equal(r.state,'fixture_completed');assert.equal(r.workflowError,'workflow_error');assert.equal(marker.length,1);
+}));
+
+test('P1 explicit development budget survives durable resume and cancellation',()=>composedFixture(async f=>{
+  f.options.timeoutMs=3600000;
+  const runner=f.create();
+  assert.equal((await runner.executeEffect(f.effect('develop'))).state,'awaiting_review');
+  const restored=f.reopen();
+  assert.equal(restored.status().state,'awaiting_review');
+  assert.equal(restored.cancel().state,'cancelled');
+  assert.equal(f.reopen().status().state,'cancelled');
+}));
+
+test('P1 invalid development budgets reject before journal initialization',()=>composedFixture(async f=>{
+  for(const timeoutMs of [0,-1,1.5,3600001,Infinity,null]){
+    f.options.timeoutMs=timeoutMs;
+    assert.throws(()=>f.create());
+    assert.equal(f.getStore().snapshot().records.length,0);
+  }
 }));
 
 test('S2b omitted timeout uses default without changing strict option keys',()=>fixture(async({runner})=>{

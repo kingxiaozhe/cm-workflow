@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,22 @@ def invoke(*args: str, expected_exit: int = 0) -> subprocess.CompletedProcess[st
         capture_output=True,
         check=False,
     )
+    # The compatibility CLI and JS are checked against the frozen old algorithm,
+    # not against two entrypoints which now execute the same implementation.
+    oracle = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "fixtures" / "spec-manifest-python-oracle.py"), *args],
+        cwd=ROOT, text=True, capture_output=True, check=False,
+    )
+    javascript = subprocess.run(
+        [os.environ.get("CM_NODE_BIN", "node"), str(ROOT / "scripts" / "cm-spec-manifest.mjs"), *args],
+        cwd=ROOT, text=True, capture_output=True, check=False,
+    )
+    if javascript.returncode != result.returncode or oracle.returncode != result.returncode:
+        raise AssertionError(f"JS/Python exit mismatch: {javascript.stderr} / {result.stderr}")
+    if result.returncode == 0 and not (
+        json.loads(javascript.stdout) == json.loads(result.stdout) == json.loads(oracle.stdout)
+    ):
+        raise AssertionError("JS/Python semantic manifest mismatch")
     if result.returncode != expected_exit:
         raise AssertionError(
             f"expected exit {expected_exit}, got {result.returncode}\n"
@@ -74,6 +91,14 @@ def main() -> int:
             (feature / name).write_text(body, encoding="utf-8")
 
         generated = invoke(str(specs))
+        # A symlink must be followed before consuming '..', as pathlib does.
+        alias = root / "feature-link"
+        alias.symlink_to(feature, target_is_directory=True)
+        assert json.loads(invoke(str(alias) + "/..").stdout) == json.loads(generated.stdout)
+        unusual_feature = specs / "2.line\u2028separator"
+        unusual_feature.mkdir()
+        invoke(str(specs), expected_exit=1)  # cannot silently omit an incomplete feature
+        unusual_feature.rmdir()
         payload = json.loads(generated.stdout)
         assert payload["schema_version"] == 1
         assert [row["path"] for row in payload["specFiles"]] == [
@@ -83,6 +108,13 @@ def main() -> int:
             "1.login/test-cases.json",
         ]
         generated_rows = {row["path"]: row["sha256"] for row in payload["specFiles"]}
+        invalid_status = specs / "invalid-status.json"
+        valid_status_bytes = json.dumps({"status": "approved", "specFiles": payload["specFiles"],
+                                       "note": "INVALID"}).encode("utf-8")
+        invalid_status.write_bytes(valid_status_bytes.replace(b"INVALID", b"\xff"))
+        invoke(str(specs), "--status-file", str(invalid_status), expected_exit=1)
+        invalid_status.write_bytes(b"\xef\xbb\xbf" + valid_status_bytes)
+        invoke(str(specs), "--status-file", str(invalid_status), expected_exit=1)
         assert generated_rows["1.login/design.md"] == digest(feature / "design.md")
         assert generated_rows["1.login/requirements.md"] == digest(
             feature / "requirements.md"
@@ -104,6 +136,8 @@ def main() -> int:
             encoding="utf-8",
         )
         checked = invoke(str(specs), "--status-file", str(status))
+        assert json.loads(invoke("--status-file", str(status), str(specs)).stdout) == json.loads(checked.stdout)
+        assert json.loads(invoke("--status-file=" + str(status), str(specs)).stdout) == json.loads(checked.stdout)
         assert json.loads(checked.stdout)["status"] == "matched"
 
         (feature / "tasks.md").write_text(tasks_completed, encoding="utf-8")

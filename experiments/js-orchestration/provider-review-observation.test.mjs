@@ -112,7 +112,7 @@ test('logical context cannot replace actual provider thread provenance',()=>{
   f.observation.events[0].provider_thread='actual-developer';assert.throws(()=>inspect(f));
 });
 for(const [name,change] of Object.entries({
-  developer_role:r=>r.role='developer',claude_not_yet_supported:r=>r.provider='claude',
+  developer_role:r=>r.role='developer',unsupported_provider:r=>r.provider='unsupported',
   missing_model:r=>r.requestedModel=null,wrong_request_version:r=>r.version=2,
   task_package_mismatch:r=>r.identity.taskId='T-999',extra_payload:r=>r.payload.authorized=true,
   malformed_package:r=>r.payload.reviewPackage.changes[0].after.contentBase64='Zm9yZ2Vk',
