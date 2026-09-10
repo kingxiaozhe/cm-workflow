@@ -1,80 +1,50 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="CM means Create More：CM Workflow 让想法成为可审查、可测试、可恢复的代码交付">
+  <img src="./assets/readme/hero.svg" width="100%" alt="CM means Create More：把需求变成有规格、测试和审查记录的代码交付">
 </p>
 
-<p align="center">
+# CM Workflow
+
+**安装在 Codex 或 Claude Code 中的规格驱动开发工作流。** 从明确需求、人工确认，到实现、独立审查与测试，让每项交付都有可检查的依据。
+
+<p>
   <a href="https://github.com/kingxiaozhe/cm-workflow/actions/workflows/ci.yml"><img src="https://github.com/kingxiaozhe/cm-workflow/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-151515" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/Codex-native-2E6655" alt="Codex native">
   <img src="https://img.shields.io/badge/Claude%20Code-compatible-C44B32" alt="Claude Code compatible">
 </p>
 
-<p align="center">
-  <strong>CM means Create More.</strong><br>
-  从一句需求开始，留下规格、代码、测试、审查与可恢复的交付记录。
-</p>
+[快速开始](#快速开始codex) · [升级旧版本](#升级旧版本) · [选择命令](#选择命令) · [支持范围](#支持范围) · [使用手册](docs/user-guide.md)
 
-<p align="center">
-  <a href="#安装">安装</a> ·
-  <a href="#我现在该用哪个命令">选择命令</a> ·
-  <a href="#跑通第一条开发流程">完整流程</a> ·
-  <a href="docs/user-guide.md">使用手册</a> ·
-  <a href="docs/architecture.md">架构说明</a>
-</p>
+## 从需求到交付
 
-## 它解决什么问题
-
-AI 可以很快写代码，但“写完”不等于“可以交付”。需求有没有理解错、修改是否越界、
-测试是否真的执行、换一个会话能不能继续，这些问题仍然需要一套明确流程。
-
-CM Workflow 是一套安装在 **Codex** 或 **Claude Code** 中的本地、规格驱动开发工作流：
+AI 写完代码以后，你还需要知道：需求是否对齐、测试是否真正执行、修改是否经过独立审查，以及中断后该从哪里继续。CM Workflow 把这些要求放进同一条开发流程。
 
 ```text
-需求 → 规格 → 人工确认 → 实现 → 独立审查 → 测试与 QA → 分支 / Draft MR
+需求 → 可开发规格 → 人工确认 → 实现 → 独立审查 → 测试与 QA → 交付
 ```
 
-它不替你决定产品方向，也不自动获得远端权限。它做的是把 AI 开发从一次聊天，变成
-有边界、有证据、可以暂停和恢复的工程过程。
+在 Codex 中，一次典型使用是：
 
-> **No evidence → no completion.** `tasks.md` 是任务状态的唯一权威来源；聊天进度、
-> Agent 状态和界面提示都不能替代磁盘中的任务、审查与测试凭证。
-
-## 我现在该用哪个命令
-
-第一次使用，只需要记住下面这张表：
-
-| 你现在想做什么 | 从这里开始 | 接下来 |
-| --- | --- | --- |
-| 只有一个模糊点子 | `$cm-idea` | 形成 PRD 后进入 `$cm-prd` |
-| 开发一个明确的新需求 | `$cm-prd {specs路径}` | 人工确认后运行 `$cm-ai` |
-| 第一次接管已有仓库 | `$cm-init` | 再运行 `$cm-prd` |
-| 测试已经存在的功能 | `$cm-test {项目路径} {功能} --generate-cases` | 检查用例后运行 `$cm-test --all` |
-| 修复可复现 Bug | `$cm-fix {specs路径} {项目路径} {问题}` | 红灯测试 → 最小修复 → 回归 |
-| 只整理代码结构 | `$cm-refactor` | 在行为等价约束下分批重构 |
-| 不确定是否安装正确 | `$cm-check` | 按检查结果修复环境 |
-| 讨论方案或研究复杂问题 | `$external-expert` | 外部研究，本地核验，不负责编码 |
-
-完整参数和更多场景见 [使用手册：我现在该用哪个命令？](docs/user-guide.md#我现在该用哪个命令)。
-
-## 安装
-
-安装前需要 Git、Python 3.9+、Node.js 18+，并准备好 Codex 或 Claude Code。源码目录不要放在
-`~/plugins/cm-workflow`，该路径由 Codex 安装器管理。
-
-### Pi / BYZ package
-
-仓库包含原生 Pi package manifest。直接作为 Pi package 使用时，不会运行
-`install.sh`、hook 或自动更新脚本：
-
-```bash
-pi install git:github.com/kingxiaozhe/cm-workflow
+```text
+$cm-prd ~/projects/my-app-specs
 ```
 
-BYZ 可以把同一包固定到指定版本后随发行物提供，开发时仍可使用本地 package
-路径覆盖。包内 Skills 与 Prompts 由 Pi 资源加载器直接发现，不会复制到用户的
-Codex 或 Claude Code 全局目录。
+审阅生成的需求、设计和任务，明确确认后：
 
-### Codex
+```text
+规格已确认，开始实现。
+$cm-ai ~/projects/my-app-specs ~/code/my-app
+```
+
+**新任务默认进入 JS workflow，无需再指定“使用改造后的 JS workflow”。** Skills 提供业务规则与工种能力，JS 运行器管理执行阶段和证据门禁，当前 Codex 或 Claude Code 会话执行实际工具请求。
+
+> `tasks.md` 是任务状态的权威来源。聊天里的“完成了”、静态分析和界面进度，不能替代真实测试、独立审查与完成凭证。
+
+## 快速开始：Codex
+
+准备好 **Git、Python 3.9+、Node.js 24.14+**，以及带有内置插件创建辅助工具的当前 Codex。安装器和部分共享工具的最低要求是 Node 18；默认 JS 开发流程需要 Node 24.14+。
+
+以下主路径以 macOS 为准；其他环境先看[支持范围](#支持范围)。将源码克隆到独立目录，**不要放在 `~/plugins/cm-workflow`**，该目录由安装器管理。
 
 ```bash
 git clone https://github.com/kingxiaozhe/cm-workflow.git
@@ -82,258 +52,210 @@ cd cm-workflow
 ./install-codex.sh
 ```
 
-新开一个 Codex 任务，验证安装：
+安装后新开一个 Codex 任务，运行：
 
 ```text
 $cm-check
 ```
 
-### Claude Code
+自检用于检查安装和工作流合同。具体项目的功能测试与真实模型审查，在后续开发流程中分别执行。
 
-macOS / Linux：
+仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-```bash
-./install.sh
-```
+## 升级旧版本
 
-Windows PowerShell：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
-```
-
-新开 Claude Code 会话并运行 `/cm-check`。macOS/Linux 同时保留历史 `/cm:*` 别名；
-Windows 需要 Git for Windows（Git Bash），也可以在 WSL 中使用 Bash 入口。
-
-覆盖安装、无人值守模式和可选更新器见 [安装指南](docs/installation.md)。
-
-## 跑通第一条开发流程
-
-<p align="center">
-  <img src="./assets/readme/delivery-flow.svg" width="100%" alt="CM Workflow 从需求登记、规格成档、人工确认、逐任务实现、独立审查到 QA 归档的交付流程">
-</p>
-
-假设代码位于 `~/code/my-app`，规格准备放在 `~/projects/my-app-specs`。
-
-### 1. 接管已有项目
+升级仍然使用同一个安装器。在原来的**源码 checkout** 中先检查本地修改：
 
 ```bash
-cd ~/code/my-app
+git status --short
 ```
 
-```text
-$cm-init
+有未提交修改时先保存或处理；工作区干净后执行：
+
+```bash
+git switch main
+git pull --ff-only origin main
+./install-codex.sh
 ```
 
-全新空项目跳过 `$cm-init`，直接从下一步开始。
+安装器会列出覆盖内容并要求确认。明确接受无人值守覆盖时，可以使用 `./install-codex.sh --yes`。升级 Node 到 24.14+ 后，安装与运行都应使用该版本。
 
-### 2. 生成可开发规格
+完成后新开 Codex 任务，运行 `$cm-check`，再使用 `$cm-ai`。只更新 Git 源码不会更新已安装插件；已打开的任务也可能仍加载旧版 Skill。
 
-把 PRD、需求说明、原型或测试意图放入 specs 的 `docs/`，然后运行：
+升级后的执行规则：
+
+- **新任务**默认走 JS；不支持的宿主、环境或配置会明确阻断，不会静默切回旧流程。
+- **已有 JS 运行**按原身份、配置和恢复约束续接；不能通过更换运行标识绕过阻断。
+- **已确认的旧兼容任务**继续沿原流程恢复，不会因升级自动迁移。记录缺失或归属冲突时先只读核对；新任务只有在用户明确选择时才使用旧兼容流程。
+
+## 选择命令
+
+以下是八个核心入口。Codex 使用 `$cm-*`，Claude Code 使用 `/cm-*`。
+
+| 你想做什么 | Codex 入口 | 产出或下一步 |
+| --- | --- | --- |
+| 把模糊点子变成需求 | `$cm-idea` | 形成 PRD，进入规格阶段 |
+| 第一次接管已有仓库 | `$cm-init` | 建立项目上下文与规范 |
+| 把需求拆成可开发任务 | `$cm-prd {specs路径}` | 需求、设计、任务和审批材料 |
+| 执行已经确认的规格 | `$cm-ai {specs路径} {项目路径}` | 实现、审查、QA 与交付记录 |
+| 测试已有功能 | `$cm-test {项目路径}` | 分层测试结果与证据 |
+| 修复可复现缺陷 | `$cm-fix {specs路径} {项目路径} {问题}` | 红灯测试、最小修复、回归验证 |
+| 整理结构并保持行为 | `$cm-refactor` | 按行为等价约束分批重构 |
+| 检查安装与工作流 | `$cm-check` | 环境、引用和合同检查结果 |
+
+需要单独讨论方案或研究复杂问题时，可显式使用可选工具 `$external-expert`。外部建议由本地核验，不能代替独立代码审查或测试证据。详见[使用手册](docs/user-guide.md)与[外部专家合同](runtime/external-expert.md)。
+
+## 跑通第一个项目
+
+### 1. 准备代码与需求
+
+假设代码在 `~/code/my-app`，规格放在独立的 `~/projects/my-app-specs`。将 PRD、需求说明或原型材料放入 specs 的 `docs/`。
+
+已有代码仓库可先在代码目录中运行 `$cm-init`；全新项目直接从 `$cm-prd` 开始，由规格确定项目形态与初始化任务。
+
+### 2. 生成并确认规格
 
 ```text
 $cm-prd ~/projects/my-app-specs
 ```
 
-它会生成每个 Feature 的：
+每个 Feature 会形成：
 
 ```text
 requirements.md   # 用户故事与验收条件
-design.md         # 技术方案与边界
-tasks.md          # 可执行任务，也是唯一权威任务状态
-test-cases.json   # 可选的 AI 可读测试合同
+design.md         # 技术方案与修改边界
+tasks.md          # 可执行任务与权威任务状态
+test-cases.json   # 可选的结构化测试合同
 ```
 
-CM PRD 的方案审查与任务拆分审查各自最多调用一次独立 reviewer。中断后会复用已生成的
-审查凭证和处置回执，不会因为恢复流程而重复发起同一轮对抗审查。
+检查需求、方案、任务和验收条件后，明确确认规格。审批绑定完整规格清单；需求、设计或测试目标变化后需要重新确认，正常勾选任务不会被当成需求变更。
 
-### 3. 人工确认后开始实现
-
-先检查规格摘要、技术方案、任务和验收条件。确认无误后运行：
+### 3. 执行与检查交付
 
 ```text
+规格已确认，开始实现。
 $cm-ai ~/projects/my-app-specs ~/code/my-app
 ```
 
-规格批准会绑定 requirements、design、tasks 与测试合同的语义 manifest。N5/N6 正常
-勾选任务和 AC 不会被误判为规格变化；文案、ID、方案或测试目标变化仍会要求重新审批。
+<p align="center">
+  <img src="./assets/readme/delivery-flow.svg" width="100%" alt="需求登记、规格成档、人工确认、逐任务实现、独立审查与 QA 归档">
+</p>
 
-### 4. 获得可审查交付
+JS 运行器按 N1–N8 管理初始化、Feature、开发、审查、任务完成、QA、上下文重载和收尾。任务完成与整轮运行完成分别检查；必需 QA 或文档核验未通过时，不能宣布整轮交付完成。
 
-根据项目 `.cm-workflow.yml` 中的 `delivery`，流程可以交付：
-
-- `diff`：只留下本地修改和验证结果；
-- `branch`：提交到本地任务分支；
-- `draft-mr`：在你明确授权 push 和创建 MR/PR 后，提交 GitHub 或 GitLab Draft MR。
-
-配置不会自动授予远端权限，生产发布也始终保留人工确认。
+交付策略可以是本地 `diff`、本地 `branch` 或 `draft-mr`。实际 Git 操作仍受宿主能力和当前授权约束；配置 `draft-mr` 本身不会授予 push 或创建 PR/MR 的权限。生产发布保留人工确认。
 
 ## 测试已有功能
 
-已有功能没有测试用例时，可以先让 CM 读取代码路径和分支逻辑，生成 AI 可读用例草稿：
+没有测试合同时，先从已有代码生成用例草稿：
 
 ```text
 $cm-test ~/code/my-app 用户登录 --generate-cases
 ```
 
-确认用例后，按需执行全部测试层：
+生成草稿后流程停止，并返回 `test-cases.generated.json` 的实际路径；这一步不会执行用例。审阅预期行为，把已确认用例的 `origin` 改为 `user`，并删除对应的 `[需确认]` 标记，再运行：
 
 ```text
-$cm-test ~/code/my-app --specs ~/projects/my-app-specs --feature 2.user-login --all
+$cm-test ~/code/my-app --cases {生成结果返回的用例文件路径} --all
 ```
 
-<p align="center">
-  <img src="./assets/readme/test-evidence.svg" width="100%" alt="CM Workflow 分别记录逻辑检查、正式命令和浏览器用户路径三类测试证据">
-</p>
+将占位符替换为那份已确认草稿的实际路径。已有 specs 测试合同时，也可以用 `--specs {specs路径} --feature {Feature完整名称}` 选择相应用例。
 
-三类证据不会互相冒充：
+| 证据层 | 能说明什么 |
+| --- | --- |
+| `logic` | 代码入口、分支与状态逻辑是否支持预期；属于静态检查 |
+| `commands` | 项目声明的测试、类型检查或构建命令是否真实运行并通过 |
+| `browser` | 在可用且获准的浏览器环境中，用户操作是否产生预期结果 |
 
-- **logic**：读取代码入口、分支、状态变化与输出，只能说明逻辑是否支持；
-- **commands**：真实运行项目声明的测试、类型检查和构建命令，保存退出结果；
-- **browser**：按照测试用例模拟用户操作，记录动作、URL、可观察结果、截图与日志。
+`cm-test` 默认不修改业务源码，但会写测试报告与证据。缺少环境或工具时会报告缺口，不把静态检查算作浏览器通过；需要修复时明确进入 `cm-fix`。
 
-`$cm-test` 默认只读：不改源码、不自动安装依赖、不降低断言，也不会把静态分析写成
-“测试已通过”。需要修复时，再明确进入 `$cm-fix`。
+## 中断后如何继续
 
-## 一条核心，八个节点
+CM 从磁盘记录恢复上下文，而不是只依赖聊天历史。
 
-`$cm-ai` 始终按 N1–N8 执行。角色和模型可以配置，流程责任不随模型变化。
+| 记录 | 用途 |
+| --- | --- |
+| `requirements.md`、`design.md`、`tasks.md` | 规格与任务状态 |
+| `.cm-specs-status` | 人工审批与规格清单 |
+| `.cm-status.json`、`.cm-run.json` | 当前状态与恢复指针 |
+| `.reviews/` | 交接、独立审查和相关凭证 |
+| `运行日志.jsonl` | specs 内的权威事件日志 |
+| `METRICS.md`、`LESSONS.md` | 执行度量与复盘经验 |
 
-| 节点 | 责任 | 完成证据 |
+再次调用 `cm-ai` 时，先核对已有运行的归属和恢复条件。恢复受原配置、内容和会话身份约束；不满足时明确阻断。已登记但结果未知的审查不会自动重发，必须先核对并按规定处理。
+
+跨项目日志位于本机 `~/.cm-workflow/logs/`，是可重建的私有镜像，不是遥测。它只保存规范化运行元数据，不收集源码、Prompt、模型回答或凭证。详见[日志合同](runtime/logging.md)。
+
+## 支持范围
+
+安装成功、共享工具通过 CI 和完整 JS 开发实测是不同的验证范围。
+
+| 环境 | 安装 / 入口 | JS 开发流程的当前边界 |
 | --- | --- | --- |
-| N1 初始化 | 读取规格、审批状态、项目配置和恢复指针 | 规格已明确批准 |
-| N2 Feature | 加载任务、测试合同、依赖与历史经验 | 当前范围清晰 |
-| N3 Task | 由匹配工种修改当前任务范围内的代码 | 结构化 handoff |
-| N4 Review | 新上下文独立审查修改与测试覆盖 | `.reviews/` verdict |
-| N5 完成 | 回读证据、勾选任务并按策略提交 | `tasks.md` 与提交记录 |
-| N6 QA | 运行逻辑、正式命令和可选浏览器路径 | 真实 QA 结果 |
-| N7 重载 | 从磁盘重新建立上下文 | 不依赖旧聊天记忆 |
-| N8 收尾 | 同步文档、对账凭证、汇总日志并交付 | diff / branch / Draft MR |
+| Codex · macOS | `./install-codex.sh`；`$cm-*` | 默认 JS 入口已接入，有本地安装与工具执行证据；不等于所有业务场景、真实模型审查都已验收 |
+| Claude Code · macOS | `./install.sh`；`/cm-*` | 使用同一 JS 核心，当前会话入口已接入；完整真实双宿主业务验收仍待补齐 |
+| Linux / WSL2 | 对应 Bash 安装器 | runner 已有平台准入；尚缺目标环境端到端实测，Claude 隔离配置诊断目前限 macOS |
+| Claude Code · 原生 Windows | `install.ps1`；`/cm-*` | PowerShell 安装和共享工具有 CI 覆盖；原生 Windows JS runner 尚不支持 |
+| Pi / BYZ | Pi package | 分发同一组 Skills 与 Prompts；包加载不代表已具备 Codex/Claude 的 JS 工具宿主 |
 
-默认串行执行。只有依赖、文件边界、契约和 Worktree 隔离都满足时才允许并行写入；
-specs、任务状态、审查、度量与 Git 始终保持单写权。
+所有 JS 开发入口要求 Node 24.14+。同仓 specs、多代码根、批次、受保护写入与审查授权的具体条件见 [JS workflow 控制与当前会话入口](docs/js-workflow-control.md)及 [cm-ai 宿主接入](skills/cm-ai/references/js-host.md)。
 
-## 角色与模型可以配置
+<details>
+<summary>其他安装方式：Claude Code 与 Pi / BYZ</summary>
 
-复制模板到代码项目根目录：
+先按快速开始克隆仓库。Claude Code 在 macOS / Linux 中运行：
 
 ```bash
-cp /path/to/cm-workflow/templates/cm-workflow.yml .cm-workflow.yml
+./install.sh
 ```
 
-项目可以配置这些流程角色：
+Windows 需要 PowerShell 5.1+ 和 Git for Windows（Git Bash）：
 
-```text
-analyst · planner · coder · tester · reviewer · browser_qa · external_expert
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-以及有限的执行策略：
+安装后新开 Claude Code 会话，运行 `/cm-check`。macOS / Linux 还保留历史 `/cm:*` 别名；Windows 使用 `/cm-*`。
 
-```yaml
-policies:
-  generate_cases: true
-  tests: [logic, commands, browser]
-  auto_fix: explicit
-  delivery: draft-mr
+Pi package 安装：
+
+```bash
+pi install git:github.com/kingxiaozhe/cm-workflow
 ```
 
-角色可以声明本地、订阅或 API 模型适配器；配置只记录请求路由，不保存 API Key、
-Token、Cookie 或 Prompt，也不会改变 N1–N8 的顺序。当前运行时没有接入某个适配器时，
-只记录 `declared-adapter`，不会声称对应模型已经执行；没有匹配角色时，由当前 AI 在
-相同合同下直接执行。内置 `openai-compatible` 可用于分析、规划和编码辅助，但版本 1
-不允许配置为 `reviewer`；N4 仍需新上下文的本地独立审查凭证。
+Pi 资源加载器直接发现 Skills 与 Prompts，不运行上述安装器，也不会把文件复制到 Codex 或 Claude Code 的全局目录。详细行为见[安装指南](docs/installation.md)。
 
-配置字段与运行时投影见 [Workflow 配置合同](runtime/workflow-config.md) 和
-[角色路由合同](runtime/workflow-routing.md)。
+</details>
 
-## 外部专家负责思考，不接管代码
+## 配置与深入阅读
 
-`$external-expert` 适合产品讨论、技术方案、问题研究、学术研究、测试设计和对抗核验。
-它可以使用外部高能力模型，但始终是可选的研究通道：
+项目配置放在代码根目录的 `.cm-workflow.yml`，可从[配置模板](templates/cm-workflow.yml)开始。角色路由和执行策略必须落在实际宿主已支持的能力内；声明模型或适配器不等于已实际调用。
 
-- 编码、命令、浏览器 QA、Git 和 N4 审查仍由本地流程负责；
-- `.env`、密钥、Token、Cookie、客户数据和数据库禁止外发；
-- 外部回答是待核验材料，不能直接成为测试或完成证据；
-- Pro 路由不可用时按既定策略降级，所有等级不可用就回到本地流程。
-
-完整边界见 [External Expert 合同](runtime/external-expert.md)。
-
-## 换一个会话，也能继续
-
-<p align="center">
-  <img src="./assets/readme/recovery-record.svg" width="100%" alt="新会话从任务、测试意图、审查证据、状态和运行日志恢复 CM Workflow">
-</p>
-
-CM 不把聊天记录当数据库。每个 specs 项目都会留下可恢复记录：
-
-| 文件 | 作用 |
+| 文档 | 内容 |
 | --- | --- |
-| `requirements.md` / `design.md` / `tasks.md` | 需求、方案和唯一权威任务状态 |
-| `test-cases.json` | 可选的 AI 可读测试意图 |
-| `.cm-specs-status` | 人工审批状态与完整规格语义 manifest |
-| `.cm-status.json` / `.cm-run.json` | 当前节点和运行恢复指针 |
-| `.reviews/` | task handoff、独立 verdict、PRD 处置回执与测试凭证 |
-| `运行日志.jsonl` | 项目内权威事件日志 |
-| `METRICS.md` / `LESSONS.md` | 执行度量与可复用经验 |
-
-跨项目查看日志时，可以读取本机私有镜像：
-
-```text
-~/.cm-workflow/logs/
-├── index.jsonl
-└── runs/YYYY-MM/{run_id}.jsonl
-```
-
-它只是可重建的本机分析镜像，不是遥测服务，也不保存源码、Prompt、模型回答或凭证。
-
-## Codex 与 Claude 共用同一核心
-
-Codex Skills 和 `runtime/` 是权威实现。`runtime/js/cm-ai/` 保存唯一 JS 源码；active
-`cm-ai` Skill 已通过 `scripts/cm-ai-admission.mjs` 使用正式 N1/N2 admission，配置、测试合同、
-日志和 N4/N5 也使用共享 JS 权威。完整 host API 仍未激活，源码随 runtime 分发不等于真实
-provider 或完整 N1–N8 runner 已验收。Claude Code 直接使用同一组 Skills 和 admission 入口；
-历史 `/cm:*` 只是在 macOS/Linux 上保留的轻量兼容别名。
-
-| 环境 | 入口 | 安装与差异 |
-| --- | --- | --- |
-| Codex | `$cm-*` | `./install-codex.sh` |
-| Claude Code macOS/Linux | `/cm-*`，兼容 `/cm:*` | `./install.sh` |
-| Claude Code Windows | `/cm-*` | `install.ps1` |
-
-Pi/BYZ、Codex 与 Claude Code 共用同一组 Skills 和合同；兼容命令只负责入口映射，
-不维护第二套流程。
-
-## 人工与安全边界
-
-以下动作不会因为流程自动化而被默认授权：
-
-- 规格进入编码前的最终批准；
-- push、创建 MR/PR 和生产发布；
-- 密钥、凭证或权限变更；
-- 破坏性 migration 与真实资金操作；
-- 超出已审批任务范围的修改。
-
-仓库不运行常驻服务、不收集遥测，也不保存你的模型凭证。仅在你主动启用可选
-OpenAI-compatible 适配器时，本地进程会从环境变量读取 API Key。CI 会验证运行时合同、安装器、
-公开包内容、Shell/PowerShell 兼容性与 Git 历史密钥扫描。安全问题请按
-[SECURITY.md](SECURITY.md) 私下报告。
+| [使用手册](docs/user-guide.md) | 命令参数、场景和完整流程 |
+| [安装指南](docs/installation.md) | 覆盖安装、可选更新器与卸载 |
+| [JS workflow 控制](docs/js-workflow-control.md) | 当前宿主、恢复、QA 与能力限制 |
+| [Workflow 配置](runtime/workflow-config.md) | 角色与策略字段 |
+| [任务门禁](runtime/task-gates.md) | 交接、Review 与完成校验 |
+| [公开示例规格](docs/sample-specs/) | 规格文件的组织方式 |
 
 ## 维护与贡献
 
-修改工作流后运行：
+`skills/` 保存工作流与角色规则，`runtime/js/cm-ai/` 保存共享 JS 实现，`scripts/` 提供入口与验证工具。`compat/claude-commands/` 只做历史命令转发；根 `package.json` 是 Pi/BYZ 包元数据，无 npm 依赖或构建脚本。
+
+基础检查：
 
 ```bash
 ./scripts/cm-check-runtime.sh
-bash scripts/test-shell-compat.sh
 python3 scripts/validate-public-repo.py
 python3 scripts/scan-public-safety.py
-python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .
 ```
 
-基础版本同时保存在 `VERSION` 与 `.codex-plugin/plugin.json`；Codex 安装副本会追加
-`+codex.*` cachebuster。贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+按改动范围补充对应夹具与实跑，详见 [CONTRIBUTING.md](CONTRIBUTING.md)。版本以 `VERSION` 与插件 manifest 的基础版本为准；安装副本的 `+codex.*` 后缀用于刷新缓存。
+
+安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
 
 ## License
 
-[MIT License](LICENSE)。Darwin Skill 与 Kenney CC0 素材来源见
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+[MIT License](LICENSE)。Darwin Skill 与 Kenney CC0 素材的来源和许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
