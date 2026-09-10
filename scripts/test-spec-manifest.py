@@ -91,10 +91,19 @@ def main() -> int:
             (feature / name).write_text(body, encoding="utf-8")
 
         generated = invoke(str(specs))
-        # A symlink must be followed before consuming '..', as pathlib does.
+        # POSIX follows the link before '..'; Win32 normalizes '..' first.
+        # Keep all three CLIs bound to the frozen platform-native oracle.
         alias = root / "feature-link"
         alias.symlink_to(feature, target_is_directory=True)
-        assert json.loads(invoke(str(alias) + "/..").stdout) == json.loads(generated.stdout)
+        if os.name == "nt":
+            rejected = invoke(str(alias) + "/..", expected_exit=1)
+            assert "no numbered feature directories" in rejected.stderr
+        else:
+            assert json.loads(invoke(str(alias) + "/..").stdout) == json.loads(generated.stdout)
+        # A direct directory alias works on both platforms; it is not skipped.
+        specs_alias = root / "specs-link"
+        specs_alias.symlink_to(specs, target_is_directory=True)
+        assert json.loads(invoke(str(specs_alias)).stdout) == json.loads(generated.stdout)
         unusual_feature = specs / "2.line\u2028separator"
         unusual_feature.mkdir()
         invoke(str(specs), expected_exit=1)  # cannot silently omit an incomplete feature
