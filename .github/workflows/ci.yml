@@ -61,6 +61,9 @@ jobs:
       - name: Scan current tree safety
         run: python3 scripts/scan-public-safety.py
 
+      - name: Test public safety scanner boundaries
+        run: python3 scripts/test-scan-public-safety.py
+
       - name: Check Bash syntax
         run: find . -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
 

@@ -59,6 +59,7 @@ Read the relevant files under `.claude/rules/` when modifying shell scripts, doc
 
 ## 项目教训
 
+- **扫描例外必须同时绑定文件与具体命中**：为已审查的本地测试或诊断地址设置例外时，只放行该文件中的精确回环 authority，不跳过整类私有地址检测；同文件中的内网地址、凭证和个人路径仍须失败，并用独立 CLI 夹具验证。来源：PR 22 CI 阻塞修复；证据：`scripts/scan-public-safety.py`、`scripts/test-scan-public-safety.py` 的 RFC1918、伪装 authority 与混合命中用例。[已结构化]
 - **进程退出信号不等于用户取消**：判断 provider 中断时检查显式取消与超时证据；仅收到 SIGTERM 不能记作用户取消，因为错误清理也会发送它。来源：C1a；证据：`experiments/js-orchestration/worker-codex.mjs`、`experiments/js-orchestration/provider-review-observation.test.mjs` 的 signal/timeout 用例。[已结构化]
 - **观测到 approved 不等于允许完成**：review 观察器的结构化结果不能充当可信调用登记或完成凭证；保留独立审查与任务门禁，不因文本通过就勾选任务。来源：C1a；证据：`experiments/js-orchestration/provider-review-observation.test.mjs` 的 runner 拒绝观察结果用例。[已结构化]
 - **批准快照必须绑定完整清单**：核对审批状态时同时比较已批准 feature 清单与磁盘发现结果；只验已登记条目的哈希会漏掉后来新增的未审批内容。来源：N1–N2 R1；证据：`experiments/js-orchestration/cm-ai-admission.test.mjs` 的 approved feature inventory 用例。[已结构化]

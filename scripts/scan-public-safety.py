@@ -27,12 +27,40 @@ PATTERNS = {
         r"https?://(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)"
     ),
 }
-ALLOW_PRIVATE_ENDPOINT_FILES = {
+# Only these reviewed local-server fixtures, diagnostic sinks and examples may
+# contain loopback URLs. Other private endpoints and all secret/path patterns
+# remain checked even inside these files.
+ALLOW_LOOPBACK_ENDPOINT_FILES = {
     Path("scripts/test-cm-openai-compatible-call.py"),
     Path("templates/dashboard/serve.sh"),
     Path("templates/pixel/serve.sh"),
     Path("templates/pixel/dev/README.md"),
+    Path("docs/js-workflow-control.md"),
+    Path("runtime/js/cm-ai/claude-tool-preview.mjs"),
+    Path("scripts/cm-ai-batch-host.test.mjs"),
+    Path("scripts/cm-ai-host.test.mjs"),
+    Path("scripts/cm-ai-multi-root.test.mjs"),
+    Path("scripts/cm-ai-nested-execution.test.mjs"),
+    Path("scripts/cm-claude-probe.test.mjs"),
+    Path("scripts/cm-fix-visual-bare.test.mjs"),
+    Path("scripts/cm-fix-walkthrough.test.mjs"),
+    Path("scripts/cm-host-qa-executor.test.mjs"),
+    Path("scripts/cm-test-host.test.mjs"),
+    Path("scripts/cm-test-session.test.mjs"),
 }
+URL_AUTHORITY = re.compile(r"https?://([^/\s?#'\"`<>]+)")
+LOOPBACK_AUTHORITY = re.compile(
+    r"(?:localhost|127\.0\.0\.1)"
+    r"(?::(?:[0-9]+|\$[A-Z_][A-Z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|"
+    r"\{[A-Za-z_][A-Za-z0-9_.]*\}))?"
+)
+
+
+def reviewed_loopback(relative: Path, text: str, offset: int) -> bool:
+    if relative not in ALLOW_LOOPBACK_ENDPOINT_FILES:
+        return False
+    authority = URL_AUTHORITY.match(text, offset)
+    return authority is not None and LOOPBACK_AUTHORITY.fullmatch(authority[1]) is not None
 
 
 def main() -> int:
@@ -69,9 +97,9 @@ def main() -> int:
         except UnicodeDecodeError:
             continue
         for label, pattern in PATTERNS.items():
-            if label == "private endpoint" and relative in ALLOW_PRIVATE_ENDPOINT_FILES:
-                continue
             for match in pattern.finditer(text):
+                if label == "private endpoint" and reviewed_loopback(relative, text, match.start()):
+                    continue
                 line = text.count("\n", 0, match.start()) + 1
                 findings.append(f"{relative}:{line}: {label}")
 
