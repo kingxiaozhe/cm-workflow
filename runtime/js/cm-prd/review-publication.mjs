@@ -21,7 +21,14 @@ export function publishPrdReview({specs,reviewPackage,packageDigest,authorContex
   need(gate.package_sha256===packageDigest&&['dispatch_unknown','resume_disposition','completed'].includes(gate.outcome),
     'prd_review_unclaimed');
   const degraded=response.reviewer==='self-degraded';
-  shape(response,['reviewer','contextId','independent','at','result',...(degraded?['degradedReason']:[])]);id(response.contextId);
+  shape(response,['reviewer','contextId','independent','at','result',...(degraded?['degradedReason']:[])]);
+  // Native subagents return canonical context identities, not filesystem paths.
+  // Preserve their exact spelling; shared effect/path IDs keep their existing grammar.
+  const context=response.contextId;
+  need(typeof context==='string'&&context.length<=128&&!/\s/.test(context));
+  if(response.reviewer==='codex-subagent'&&context.startsWith('/')){
+    need(/^\/root(?:\/[a-z0-9_]+)+$/.test(context));
+  }else id(context);
   need(degraded?response.independent===false&&response.contextId===authorContextId
     &&typeof response.degradedReason==='string'&&response.degradedReason.trim().length>0
     &&!/[\r\n\v\f\x1c-\x1e\x85\u2028\u2029\0]/.test(response.degradedReason):
