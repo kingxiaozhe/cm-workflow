@@ -9,7 +9,8 @@
 - For Claude Code on Windows: Windows PowerShell 5.1 or newer, plus Git for
   Windows (Git Bash). WSL users can install and run the Bash entry inside WSL.
 
-Clone the repository somewhere other than `~/plugins/cm-workflow`:
+For macOS Codex, npm installation below does not require a source checkout.
+For source installation, clone the repository somewhere other than `~/plugins/cm-workflow`:
 
 ```bash
 git clone https://github.com/kingxiaozhe/cm-workflow.git
@@ -52,13 +53,21 @@ source, use `$cm-test`. The installed manual is available at
 The optional project configuration template is installed at
 `~/plugins/cm-workflow/templates/cm-workflow.yml`.
 
-## npm candidate (macOS Codex)
+## npm installation (macOS Codex)
 
-The source includes a dependency-free `cm-workflow install [--yes]` command.
-This change has not yet been published to npm. Until a release is verified,
-continue using the source installation above; do not assume `@latest` includes
-this command. The npm entry requires macOS and Node.js 24.14+, plus the same
-Python and Codex plugin helpers as the source installer.
+Install or upgrade with the same command:
+
+```bash
+npx @aibyzero/cm-workflow@latest install
+```
+
+To pin a version, use `npx @aibyzero/cm-workflow@0.10.5 install` from outside
+the CM Workflow source checkout (for example, your home directory). Inside a
+checkout with the same package name and version, npm can select the local
+uninstalled package and report `cm-workflow: command not found`.
+The dependency-free npm entry requires macOS and Node.js 24.14+, plus the same
+Python 3.9+ and Codex plugin helpers as the source installer. It does not remove
+these prerequisites or add Windows/Linux support to the npm command.
 
 Maintainers can inspect and try the actual local package:
 
@@ -68,14 +77,15 @@ npm pack --ignore-scripts
 npm exec --yes --package ./PACKAGE.tgz -- cm-workflow --help
 ```
 
-Explicitly running `cm-workflow install` through that package installs into the
+Running `cm-workflow install` through npm installs into the
 same `~/plugins/cm-workflow` directory and personal marketplace as the source
 installer. Existing installations require confirmation; `install --yes` accepts
 replacement. The npm `--yes` before `--package` only accepts npm's package-fetch
 prompt; it does not accept plugin replacement. Direct edits to the managed
 plugin are overwritten; source checkouts, project code and specs remain outside
 the managed destination. Installing older source afterward can downgrade it.
-Start a new Codex task after an upgrade.
+Start a new Codex task after an upgrade. `npx --yes` accepts npm's download
+prompt only; `install --yes` separately accepts replacing the managed plugin.
 
 The isolated fixture is `python3 scripts/test-npm-install.py`. It packs the
 candidate, exercises the npm command, then relocates only installer path
