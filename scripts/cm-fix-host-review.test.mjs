@@ -199,7 +199,9 @@ test(`${runtime} CLI stages independently authorize writes and synthetic final r
       assert.equal(await main([...args,'--allow-walkthrough'],{input:walkInput,output:walkOutput,error:walkOutput,reviewWorkerFactory}),0);
       const walked=walkRows.find(row=>row.requestId==='walk').result;assert.equal(walked.walkthrough.status,'passed');assert.equal(walked.completionEligible,false);
       owner=openFixExecution({specsRoot,identity:saved.identity,configuration:saved.configuration,create:false});
-      assert.deepEqual(await owner.runWalkthrough({authorized:true}),walked);
+      // executionActive is host-local, not persisted with the completed walk.
+      assert.equal(owner.status().executionActive,false);
+      assert.deepEqual(await owner.runWalkthrough({authorized:true}),{...walked,executionActive:false});
       const archived=owner.publishDossier();assert.equal(archived.stage,'closeout_required');assert.equal(archived.completionEligible,false);
       const dossierBytes=fs.readFileSync(archived.dossier.path);
       assert.equal(fs.statSync(archived.dossier.path).mode&0o777,0o600);
