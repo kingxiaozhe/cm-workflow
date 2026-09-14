@@ -62,6 +62,8 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
+macOS Codex 的 npm 安装入口已加入源码，仍处于本地打包验证阶段，尚未通过本次变更发布到 npm。它复用上述安装器；源码安装用户升级时会替换同一个插件，无需先卸载。候选包验证方法见[安装指南](docs/installation.md#npm-candidate-macos-codex)。
+
 ## 升级旧版本
 
 升级仍然使用同一个安装器。在原来的**源码 checkout** 中先检查本地修改：
@@ -242,7 +244,7 @@ Pi 资源加载器直接发现 Skills 与 Prompts，不运行上述安装器，�
 
 ## 维护与贡献
 
-`skills/` 保存工作流与角色规则，`runtime/js/cm-ai/` 保存共享 JS 实现，`scripts/` 提供入口与验证工具。`compat/claude-commands/` 只做历史命令转发；根 `package.json` 是 Pi/BYZ 包元数据，无 npm 依赖或构建脚本。
+`skills/` 保存工作流与角色规则，`runtime/js/cm-ai/` 保存共享 JS 实现，`scripts/` 提供入口与验证工具。`compat/claude-commands/` 只做历史命令转发；根 `package.json` 保存 Pi/BYZ 包元数据和 npm 安装命令入口，无 npm 依赖或构建脚本。
 
 基础检查：
 

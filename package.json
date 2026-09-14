@@ -1,8 +1,14 @@
 {
   "name": "@aibyzero/cm-workflow",
-  "version": "0.10.4",
+  "version": "0.10.5",
   "description": "Spec-driven business development workflow for Pi, Codex, and Claude Code",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "cm-workflow": "scripts/cm-workflow.mjs"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kingxiaozhe/cm-workflow.git"
@@ -14,6 +20,13 @@
     "skills"
   ],
   "files": [
+    ".codex-plugin",
+    "AGENTS.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "install-codex.sh",
+    "install.sh",
+    "install.ps1",
     "VERSION",
     "LICENSE",
     "README.md",

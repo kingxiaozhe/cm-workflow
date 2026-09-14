@@ -52,6 +52,39 @@ source, use `$cm-test`. The installed manual is available at
 The optional project configuration template is installed at
 `~/plugins/cm-workflow/templates/cm-workflow.yml`.
 
+## npm candidate (macOS Codex)
+
+The source includes a dependency-free `cm-workflow install [--yes]` command.
+This change has not yet been published to npm. Until a release is verified,
+continue using the source installation above; do not assume `@latest` includes
+this command. The npm entry requires macOS and Node.js 24.14+, plus the same
+Python and Codex plugin helpers as the source installer.
+
+Maintainers can inspect and try the actual local package:
+
+```bash
+npm pack --ignore-scripts
+# Substitute the exact .tgz filename printed by npm pack:
+npm exec --yes --package ./PACKAGE.tgz -- cm-workflow --help
+```
+
+Explicitly running `cm-workflow install` through that package installs into the
+same `~/plugins/cm-workflow` directory and personal marketplace as the source
+installer. Existing installations require confirmation; `install --yes` accepts
+replacement. The npm `--yes` before `--package` only accepts npm's package-fetch
+prompt; it does not accept plugin replacement. Direct edits to the managed
+plugin are overwritten; source checkouts, project code and specs remain outside
+the managed destination. Installing older source afterward can downgrade it.
+Start a new Codex task after an upgrade.
+
+The isolated fixture is `python3 scripts/test-npm-install.py`. It packs the
+candidate, exercises the npm command, then relocates only installer path
+assignments into a temporary directory. The actual file transaction and bundled
+Codex helper programs execute; the final `codex plugin add` is a test double.
+It covers fresh install, source-to-package upgrade, declined replacement and
+failed registration rollback. It does not prove live registry installation,
+real Codex cache ingestion or a fresh-machine setup.
+
 ## Local cross-project logs
 
 The installers do not create or upload logs. On the first logged workflow

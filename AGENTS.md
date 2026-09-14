@@ -6,7 +6,7 @@ This repository is the Codex-native source for a spec-driven development workflo
 
 - Stack: Markdown prompts, Bash 3.2-compatible scripts, Python 3 standard-library tooling, PowerShell installers/checks, and Node.js 18+ `.mjs` utilities (Playwright remains optional).
 - Framework: native Pi/BYZ package plus Codex plugin and Agent Skills, with Claude Code compatibility surfaces.
-- Manifest: root `package.json` is Pi/BYZ package metadata only; it declares no npm dependencies or scripts, so there is no repository-wide dependency install or build artifact.
+- Manifest: root `package.json` declares Pi/BYZ metadata and a thin npm installation command; it has no npm dependencies or lifecycle scripts, so no repository-wide dependency install or build is required.
 - Version control: `remote` (`origin`). Delivery targets Pi/BYZ package loading and local Codex/Claude Code installation.
 - Business map: local scan artifacts are not committed; use `docs/architecture.md` as the public architecture map.
 
