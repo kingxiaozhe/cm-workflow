@@ -138,7 +138,7 @@ test('generate_cases false retains unchanged existing generated cases, forbids n
 });
 for(const recoveryMode of ['process-loss','mode-mismatch','publication-conflict'])test(`new draft/original review recovery: ${recoveryMode}`, {timeout:25000},async t=>{
   const dir=fixture(t);let original,calls=0;
-  const reviewResult=payload=>({reviewer:'codex-subagent',contextId:'synthetic-independent',independent:true,at:'2026-09-08T00:00:00.000Z',
+  const reviewResult=payload=>({reviewer:'codex-subagent',contextId:recoveryMode==='publication-conflict'?'/root/synthetic_independent':'synthetic-independent',independent:true,at:'2026-09-08T00:00:00.000Z',
     result:{verdict:'approved',packageDigest:payload.package.packageDigest,examinedPaths:payload.examinedPaths,findings:[],summary:'Synthetic no findings'}});
   const respond=message=>{
     calls++;const {kind,payload}=message;
@@ -179,6 +179,7 @@ for(const recoveryMode of ['process-loss','mode-mismatch','publication-conflict'
   }
   assert.equal(reply.result.reviewState.status,'review_recorded',JSON.stringify(reply));
   const evidence=fs.readFileSync(path.join(dir,'.reviews/prd-new-guide-split-r1.md'));
+  assert.ok(evidence.toString().includes(JSON.stringify(result)), 'Recovery preserves the original response unchanged');
   const findings=(await c.request('review_findings',{stage:'split',feature:'2.new-guide'})).result;
   reply=await c.request('review_disposition',{stage:'split',feature:'2.new-guide',packageDigest:findings.packageDigest,decisions:[],artifacts:findings.reviewedArtifacts});
   assert.equal(reply.result.status,'disposition_recorded');

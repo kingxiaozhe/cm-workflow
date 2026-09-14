@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {prepareFixRepair} from '../runtime/js/cm-fix/repair.mjs';
+import {captureReviewBaseline} from '../runtime/js/cm-ai/review-package.mjs';
+import {prepareFixRepair,verifyFixRepair} from '../runtime/js/cm-fix/repair.mjs';
 import {createFixRedTest} from '../runtime/js/cm-fix/red-test.mjs';
 import {createFixBaseline} from '../runtime/js/cm-fix/baseline.mjs';
 import {createFixRegression} from '../runtime/js/cm-fix/regression.mjs';
@@ -48,4 +49,20 @@ test('host minimal repair preserves tests and real red-to-green regression, reje
       }
     }finally{bridge.close();fs.rmSync(root,{recursive:true,force:true});}
   }
+});
+
+for(const version of [1,2])test(`restored V${version} repair validates unchanged outside files and rejects drift`,()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fix-repair-format-')));
+  const codeProject=path.join(root,'code'),specsRoot=path.join(root,'specs');fs.mkdirSync(codeProject);fs.mkdirSync(specsRoot);
+  const write=(p,body)=>fs.writeFileSync(path.join(codeProject,p),body);
+  try{
+    write('code.js','before');write('requirements.md','fixture');write('outside.txt','unchanged');
+    const options={root:codeProject,specsRoot,identity:{repositoryId:'fixture',runId:'legacy',taskId:'T-FIX-old',attempt:1},
+      scope:['code.js'],requirements:['requirements.md'],version};
+    const baseline=captureReviewBaseline(options);write('code.js','after');
+    const files=captureReviewBaseline(options).files.filter(f=>f.path==='code.js').map(({contentBase64,...metadata})=>metadata);
+    const result={outcome:'repaired',baselineDigest:baseline.baselineDigest,changedFiles:['code.js'],files,completionEligible:false};
+    verifyFixRepair({codeProject,specsRoot,baseline,result});
+    write('outside.txt','different');assert.throws(()=>verifyFixRepair({codeProject,specsRoot,baseline,result}),{code:'out_of_scope'});
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });

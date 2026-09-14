@@ -378,7 +378,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         for(const change of finalRegistration.request.payload.reviewPackage.changes){
           if(change.after===null)reviewedFiles.delete(change.path);else reviewedFiles.set(change.path,change.after);
         }
-        need(digest([...reviewedFiles.values()].sort((a,b)=>a.path.localeCompare(b.path)))===digest([...revisionBaseline.files].sort((a,b)=>a.path.localeCompare(b.path))),'fix_revision_source_mismatch');
+        const inventory=files=>files.map(({contentBase64,...metadata})=>metadata).sort((a,b)=>a.path.localeCompare(b.path));
+        need(digest(inventory([...reviewedFiles.values()]))===digest(inventory(revisionBaseline.files)),'fix_revision_source_mismatch');
         stage='unknown';pending='revision_repair';continue;
       }
       if(record.id==='fix-revision-repair-result'){

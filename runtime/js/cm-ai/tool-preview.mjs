@@ -54,7 +54,12 @@ export function skillContext(parsed) {
     if (alias && aliases.has(alias[1])) file = path.join(aliases.get(alias[1]), alias[2]);
     if (path.isAbsolute(file)) folders.add(path.dirname(file));
   }
-  const sections = texts.flatMap(text => [...text.matchAll(/### Available skills[^\n]*\n([\s\S]*?)(?=\n### |\n<\/skills_instructions>|$)/g)].map(m => m[1].trim()));
+  // CLI 0.153.4 retains this exact introduction even when every skill is disabled.
+  // Unknown prose and unresolved entries still count as a catalog.
+  const introduction = 'Each entry includes a name, description, and location for its `SKILL.md`. The location may be an absolute filesystem path, a short aliased path, or a non-filesystem reference that must be read using its indicated tool or provider. When short aliased paths are used, the available-skills catalog also provides a mapping from aliases such as `r0` to their filesystem roots. Expand the alias before accessing the skill.';
+  const usagePreamble = introduction + "\n\nThe user's instructions take precedence over guidelines provided in a skill. If explicit user instructions conflict with a skill's instructions, prioritize the user's instructions. \n\nThe first time in a conversation that you decide to apply a skill, inform the user in the commentary channel.\n\nIf a skill causes you to ask for permission or confirmation, pause, or leave requested work unfinished, name and link to the exact SKILL.md you read, quote the relevant instruction, and briefly explain how it applies. Distinguish explicit skill requirements from your interpretation. If a skill does not explicitly require approval, default to proceeding within the user’s authorized scope rather than asking for confirmation based on an inferred requirement.";
+  const sections = texts.flatMap(text => [...text.matchAll(/### Available skills[^\n]*\n([\s\S]*?)(?=\n#{1,3} |\n<\/skills_instructions>|$)/g)]
+    .map(m => m[1].trim()).map(section => section === introduction || section === usagePreamble ? '' : section));
   const hasMarker = texts.some(text => /### Available skills|<skills_instructions>/.test(text));
   return { present: folders.size > 0 || (hasMarker && (!sections.length || sections.some(section => section.length > 0))),
     section_lengths: sections.map(s => s.length), folders: [...folders].sort() };

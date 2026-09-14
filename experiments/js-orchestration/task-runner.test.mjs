@@ -13,6 +13,7 @@ import { openTaskExecutionStore } from './task-owner.mjs';
 import { readRunnerHistory } from './durable-runner-state.mjs';
 import { createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective } from './cm-ai-context-refresh.mjs';
 import childProcess from 'node:child_process';
+import {captureReviewBaseline} from './review-package.mjs';
 import {createHostCheck} from '../../runtime/js/cm-ai/host-check.mjs';
 
 // Intercept only the native writer's gate imports, after the real functions run.
@@ -87,6 +88,29 @@ async function composedFixture(fn,{twoAttempts=false}={}) {
   try{return await fn({temp,root,dir,specsRoot,tasksPath,reviewsDir,ownerOptions,options,calls,effect,create,reopen,getStore:()=>store});}
   finally{store.close();fs.rmSync(temp,{recursive:true,force:true});}
 }
+
+for(const version of [1,2])test(`inventory V${version} journal resumes ready through reviewed completion`,()=>composedFixture(async f=>{
+  if(version===2){
+    for(let i=0;i<510;i++)fs.writeFileSync(path.join(f.root,`asset-${i}`),'fixture');
+    fs.writeFileSync(path.join(f.root,'large.bin'),Buffer.alloc(3*1024*1024));
+  }else fs.writeFileSync(path.join(f.root,'outside.txt'),'legacy full body');
+  f.create();
+  if(version===1){
+    // Model an upgrade from the old full-content persisted init record.
+    const legacy=captureReviewBaseline({root:f.root,identity:f.options.identity,scope:f.options.scope,
+      requirements:f.options.requirements,specsRoot:f.specsRoot,version:1});
+    rewriteRunnerState(f,state=>{state.records[0].payload.baseline=legacy;});
+  }
+  let runner=f.reopen();assert.equal(runner.status().state,'ready');
+  const initial=f.getStore().snapshot().records[0].payload.baseline;
+  assert.equal(initial.version,version);
+  assert.equal((await runner.executeEffect(f.effect('develop'))).state,'awaiting_review');
+  runner=f.reopen();assert.equal((await runner.executeEffect(f.effect('review'))).state,'approved');
+  runner=f.reopen();assert.equal((await runner.executeEffect(f.effect('complete'))).state,'fixture_completed');
+  assert.equal(f.reopen().status().state,'fixture_completed');assert.equal(f.calls.length,2);
+  assert.deepEqual(f.getStore().snapshot().records[0].payload.baseline,initial);
+  assert.match(fs.readFileSync(f.tasksPath,'utf8'),/\[x\]/);
+}));
 
 for(const twoAttempts of [false,true])test(`C3b one-owner composed completion with restart attempt${twoAttempts?2:1}`,()=>composedFixture(async f=>{
   let runner=f.create();const original=f.getStore().snapshot().records[0].payload.baseline;

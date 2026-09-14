@@ -370,7 +370,12 @@ test(`observation recovery: ${mode}`,async()=>{
       if(mode==='lost')throw Object.assign(new Error('Synthetic host disconnected'),{code:'host_disconnected'});
       return {status:mode==='needs_evidence'?'needs_evidence':'diagnosed',rootCause:'Observed trigger',affectedPaths:['value.mjs'],affectedModules:['one'],plan:'Repair bounded trigger',crossLayer:false,investigation:{discardedAlternatives:[],boundaryAnalysis:null}};
     }}});
-    const diagnosed=await owner.advance({authorized:true});
+    const diagnosing=owner.advance({authorized:true});
+    assert.equal(owner.status().executionActive,true);
+    const response=await diagnosing;
+    // Compare settled state with recovery, not the snapshot taken before cleanup.
+    const diagnosed=owner.status();assert.equal(diagnosed.executionActive,false);
+    assert.deepEqual(diagnosed,{...response,executionActive:false});
     if(mode==='needs_evidence'){assert.equal(diagnosed.stage,'observation_needs_evidence');finishWaiting();return;}
     assert.equal(diagnosed.stage,mode==='lost'?'unknown':'cause_review_required');assert.equal(diagnosed.identity.attempt,1);
     if(mode==='lost')assert.equal(diagnosed.pending,'observation_diagnose');

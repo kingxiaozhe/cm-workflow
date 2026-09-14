@@ -37,6 +37,27 @@ test('unclaimed or non-independent self-report cannot publish independent r1',t=
   response.contextId='reviewer-context';response.result.examinedPaths=[];assert.throws(publish,/missing_material/);
   assert.equal(inspectPrdReview(prepared.paths).outcome,'dispatch_unknown');
 });
+test('canonical native subagent identity is preserved without granting completion',t=>{
+  const {prepared,response,claim,publish}=fixture(t);claim();
+  response.contextId='/root/reviewer_1/nested_review';
+  const original=JSON.stringify(response),result=publish();
+  assert.equal(result.independent,true);assert.equal(result.completionAuthorized,false);
+  assert.ok(fs.readFileSync(prepared.paths.evidence,'utf8').includes(original));
+  assert.equal(fs.existsSync(prepared.paths.receipt),false);
+});
+test('invalid identities and canonical IDs from other channels cannot publish',t=>{
+  const {prepared,response,claim,publish}=fixture(t);claim();
+  for(const context of ['/root','/root/../reviewer','/root//reviewer','/root/reviewer/','/other/reviewer',
+    '/root/Reviewer','/root/reviewer-name','/root/reviewer\n','/root/reviewer\0',
+    '/root/'+ 'x'.repeat(123),'reviewer\n','/root/with space']){
+    response.contextId=context;assert.throws(publish,/invalid_input/);
+    assert.equal(fs.existsSync(prepared.paths.evidence),false);
+  }
+  response.contextId='/root/reviewer';response.independent=false;
+  assert.throws(publish,/prd_review_independence_invalid/);
+  response.independent=true;response.reviewer='codex-cli';assert.throws(publish,/invalid_input/);
+  assert.equal(inspectPrdReview(prepared.paths).outcome,'dispatch_unknown');
+});
 test('changes and explicit self-degradation stay findings, not completion or independent approval',t=>{
   const {prepared,response,claim,publish}=fixture(t);claim();
   response.reviewer='self-degraded';response.contextId='author-context';response.independent=false;

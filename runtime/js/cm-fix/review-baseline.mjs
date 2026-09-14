@@ -23,16 +23,24 @@ export function composeFixReviewBaseline(options){
   need(result.outcome==='authored'&&digest(author.identity)===digest(repair.identity)
     &&author.rootDigest===repair.rootDigest&&(author.specsPath??null)===(repair.specsPath??null),'fix_review_baseline_mismatch');
   need(author.scope.every(file=>!repair.scope.some(other=>other.toLowerCase()===file.toLowerCase())),'fix_review_scope_overlap');
+  const metadata=file=>{if(file===null)return null;const {contentBase64,...rest}=file;return rest;};
   const before=new Map(author.files.map(file=>[file.path,file])),after=new Map(repair.files.map(file=>[file.path,file]));
   for(const file of new Set([...before.keys(),...after.keys()])){
     if(author.scope.includes(file))continue;
-    need(digest(before.get(file)??null)===digest(after.get(file)??null),'fix_review_interstage_drift');
+    need(digest(metadata(before.get(file)??null))===digest(metadata(after.get(file)??null)),'fix_review_interstage_drift');
   }
   const authoredFiles=repair.files.filter(file=>author.scope.includes(file.path)).map(({contentBase64,...metadata})=>metadata);
   need(digest(authoredFiles)===digest(result.testFiles),'fix_review_interstage_drift');
   const {baselineDigest,...body}=author;
   body.scope=[...new Set([...author.scope,...repair.scope])].sort();
   body.requirements=[...new Set([...author.requirements,...repair.requirements])].sort();
+  // Promote only unchanged, hash-verified material from the repair baseline.
+  // The original authoring scope keeps its original before bodies (or absence).
+  if(body.version===2)body.files=body.files.map(file=>{
+    if(Object.hasOwn(file,'contentBase64')||![...body.scope,...body.requirements].includes(file.path))return file;
+    const material=after.get(file.path);need(material&&Object.hasOwn(material,'contentBase64'),'fix_review_interstage_drift');
+    return material;
+  });
   // Preserve exact pre-authoring files. Never reconstruct an old version from
   // today's tree or copy the post-authoring tests into their own before image.
   return readReviewBaseline({...body,baselineDigest:digest(body)});

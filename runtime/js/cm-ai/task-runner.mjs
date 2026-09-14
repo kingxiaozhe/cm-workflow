@@ -657,7 +657,7 @@ export function createTaskRunner(options) {
     } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input'}));}
     if(store) {
       try {
-        if(state==='ready')need(digest(captureReviewBaseline(configToBaseline(metadata)))===digest(original),'package_mismatch');
+        if(state==='ready')need(digest(captureReviewBaseline({...configToBaseline(metadata),version:original.version}))===digest(original),'package_mismatch');
         else verifyReviewPackage({root:config.root,baseline:state==='changes_requested'?attemptBaseline(original,attempt-1):base,
           checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
       } catch {return Promise.resolve(freeze({outcome:'rejected',code:'package_mismatch'}));}

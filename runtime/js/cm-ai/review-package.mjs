@@ -8,6 +8,9 @@ import {resolveCodeProjects,validateCodeProjectPaths,
   codeProjectInstructionPaths,assertCodeProjectSelections} from './code-projects.mjs';
 
 const FILE_LIMIT=1024*1024, SNAPSHOT_LIMIT=2*1024*1024, FILE_COUNT=256;
+// Inventory budgets bound scanning, independently of the much smaller review body.
+const INVENTORY_COUNT=10000, INVENTORY_LIMIT=1024*1024*1024;
+const materialPath=(p,selected)=>selected.has(p)||p.split('/').at(-1)==='AGENTS.md';
 // Fixed dependency/cache directories, not caller-controlled business exclusions.
 // Keep this narrower than the discovery scanner: dist/build may be authored files.
 const dependencyDirectories=new Set(['.venv','node_modules','__pycache__','.pytest_cache','.ruff_cache']);
@@ -67,25 +70,29 @@ function rootPath(root) {
   catch(error) { if(error.code==='unsupported_file')throw error; fail('read_failed'); }
 }
 const statKey = s => [s.dev,s.ino,s.mode,s.nlink,s.size,s.mtimeNs,s.ctimeNs].join(':');
-function readFile(root,p) {
+function readFile(root,p,includeContent=true,limit=FILE_LIMIT) {
   let fd;
   try {
     const abs=path.join(root,p),before=fs.lstatSync(abs,{bigint:true});
     need(before.isFile() && before.nlink===1n,'unsupported_file');
-    need(before.size<=BigInt(FILE_LIMIT),'limit_exceeded');
+    need(before.size<=BigInt(limit),'limit_exceeded');
     fd=fs.openSync(abs,fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW??0));
     const opened=fs.fstatSync(fd,{bigint:true});
     need(statKey(before)===statKey(opened),'snapshot_changed');
-    const buf=Buffer.alloc(Number(before.size)+1); let offset=0;
-    while(offset<buf.length) {
-      const count=fs.readSync(fd,buf,offset,buf.length-offset,null); if(!count)break; offset+=count;
+    const buf=Buffer.alloc(Math.min(Number(before.size)+1,64*1024)),hash=createHash('sha256'),chunks=[];
+    let offset=0;
+    while(offset<=Number(before.size)) {
+      const count=fs.readSync(fd,buf,0,Math.min(buf.length,Number(before.size)+1-offset),null);
+      if(!count)break;
+      hash.update(buf.subarray(0,count));
+      if(includeContent)chunks.push(Buffer.from(buf.subarray(0,count)));
+      offset+=count;
     }
     const after=fs.fstatSync(fd,{bigint:true}),last=fs.lstatSync(abs,{bigint:true});
     need(statKey(before)===statKey(after) && statKey(before)===statKey(last)
       && offset===Number(before.size),'snapshot_changed');
-    const bytes=buf.subarray(0,offset);
     return {path:p,type:'file',mode:Number(before.mode & 0o7777n),size:offset,
-      sha256:sha(bytes),contentBase64:bytes.toString('base64')};
+      sha256:hash.digest('hex'),...(includeContent?{contentBase64:Buffer.concat(chunks).toString('base64')}:{})};
   } catch(error) {
     if(['unsupported_file','limit_exceeded','snapshot_changed'].includes(error.code))throw error;
     fail('read_failed');
@@ -98,16 +105,23 @@ export function reviewSpecsPath(root,specsRoot) {
   need(root!==specsRoot&&!root.startsWith(specsRoot+path.sep),'overlapping_roots');
   return specsRoot.startsWith(root+path.sep)?filePath(path.relative(root,specsRoot).split(path.sep).join('/')):null;
 }
-function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[]) {
+function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selected=null) {
   if(specsPath!==null){
     const target=path.join(root,specsPath);
     need(fs.realpathSync(target)===target&&fs.lstatSync(target).isDirectory(),'unsupported_path');
   }
-  const files=[],seen=new Set(); let total=0;
+  const files=[],seen=new Set(); let total=0,materialBytes=0,materialCount=0;
   function add(p,s){
     need(s.isFile()&&!s.isSymbolicLink()&&s.nlink===1,'unsupported_file');
-    need(files.length<FILE_COUNT&&total+s.size<=SNAPSHOT_LIMIT,'limit_exceeded');
-    const f=readFile(root,p);total+=f.size;files.push(f);
+    const includeContent=selected===null||materialPath(p,selected);
+    const countLimit=selected===null?FILE_COUNT:INVENTORY_COUNT;
+    const byteLimit=selected===null?SNAPSHOT_LIMIT:INVENTORY_LIMIT;
+    need(files.length<countLimit&&total+s.size<=byteLimit,'limit_exceeded');
+    if(includeContent)need(materialCount<FILE_COUNT&&materialBytes+s.size<=SNAPSHOT_LIMIT,'limit_exceeded');
+    const f=readFile(root,p,includeContent,includeContent?Math.min(FILE_LIMIT,SNAPSHOT_LIMIT-materialBytes):byteLimit-total);
+    total+=f.size;
+    if(includeContent){materialBytes+=f.size;materialCount++;}
+    files.push(f);
   }
   function walk(rel='',depth=0,codeRoot='') {
     need(depth<=32,'limit_exceeded');
@@ -153,7 +167,8 @@ const sealed = (data,key) => {
 };
 export function captureReviewBaseline(options) {
   const v=plain(options); keys(v,['root','identity','scope','requirements',
-    ...['specsRoot','codeProjectPaths','bootstrapRequirements'].filter(key=>Object.hasOwn(v,key))]); identityCheck(v.identity);
+    ...['specsRoot','codeProjectPaths','bootstrapRequirements','version'].filter(key=>Object.hasOwn(v,key))]); identityCheck(v.identity);
+  const version=v.version??2;need([1,2].includes(version));
   const bootstrap=Object.hasOwn(v,'bootstrapRequirements')?v.bootstrapRequirements:null;
   if(bootstrap!==null){
     validBootstrapRequirements(bootstrap);
@@ -170,13 +185,13 @@ export function captureReviewBaseline(options) {
     if(specsPath!==null)validateProjectSpecs(specsPath,projectPaths);
     assertCodeProjectSelections(projectPaths,[...scope,...requirements],{allowInstructions:true});
   }
-  const files=snapshot(root,specsPath,projectPaths);
+  const files=snapshot(root,specsPath,projectPaths,[],version===1?null:new Set([...scope,...requirements]));
   need(requirements.every(p=>files.some(f=>f.path===p)),'read_failed');
   for(const p of scope) {
     const absolute=path.join(root,p);
     if(fs.existsSync(absolute)) need(fs.lstatSync(absolute).isFile(),'unsupported_file');
   }
-  return sealed({version:1,kind:'cm-review-baseline',identity:v.identity,rootDigest:sha(root),
+  return sealed({version,kind:'cm-review-baseline',identity:v.identity,rootDigest:sha(root),
     scope,requirements,files,...(specsPath===null?{}:{specsPath}),
     ...(projectPaths===null?{}:{codeProjectPaths:projectPaths}),
     ...(bootstrap===null?{}:{bootstrapRequirements:bootstrap})},'baselineDigest');
@@ -225,6 +240,26 @@ function fileList(files) {
   const names=files.map(f=>f.path); need(digest(names)===digest(paths(names)));
   need(files.reduce((sum,f)=>sum+f.size,0)<=SNAPSHOT_LIMIT,'limit_exceeded');
 }
+// V2 keeps exact records for review material and digest-only records elsewhere.
+// V1 validation stays unchanged for existing journals and their fixed digests.
+function inventoryList(b) {
+  const files=b.files,selected=new Set([...b.scope,...b.requirements]);
+  need(Array.isArray(files)&&files.length<=INVENTORY_COUNT);
+  const material=[];let total=0,previous=null;const aliases=new Set();
+  for(const f of files){
+    if(materialPath(f.path,selected)){fileRecord(f);material.push(f);}
+    else{
+      keys(f,['path','type','mode','size','sha256']);filePath(f.path);
+      need(f.type==='file'&&Number.isInteger(f.mode)&&f.mode>=0&&f.mode<=0o7777);
+      need(Number.isSafeInteger(f.size)&&f.size>=0&&f.size<=INVENTORY_LIMIT);hex(f.sha256);
+    }
+    need(previous===null||previous<f.path);previous=f.path;
+    need(!aliases.has(f.path.toLowerCase()));aliases.add(f.path.toLowerCase());
+    total+=f.size;need(total<=INVENTORY_LIMIT);
+  }
+  if(material.length)fileList(material);
+  need(Buffer.byteLength(JSON.stringify(b))<=8*1024*1024,'limit_exceeded');
+}
 const bootstrapPaths=['0.bootstrap/design.md','0.bootstrap/requirements.md'];
 function validBootstrapRequirements(value,published=false){
   keys(value,['feature','files',published?'rootDigest':'specsRoot']);
@@ -249,10 +284,11 @@ function validBaseline(b) {
   try {
     keys(b,['version','kind','identity','rootDigest','scope','requirements','files','baselineDigest',
       ...['specsPath','codeProjectPaths','bootstrapRequirements'].filter(key=>Object.hasOwn(b,key))]);
-    need(b.version===1 && b.kind==='cm-review-baseline'); identityCheck(b.identity); hex(b.rootDigest);
+    need([1,2].includes(b.version) && b.kind==='cm-review-baseline'); identityCheck(b.identity); hex(b.rootDigest);
     const bootstrap=Object.hasOwn(b,'bootstrapRequirements');if(bootstrap)validBootstrapRequirements(b.bootstrapRequirements);
     need(digest(b.scope)===digest(paths(b.scope)) && digest(b.requirements)===digest(requirementPaths(b.requirements,bootstrap)));
-    if(!bootstrap||b.files.length)fileList(b.files);else need(Array.isArray(b.files));
+    if(b.version===2)inventoryList(b);
+    else if(!bootstrap||b.files.length)fileList(b.files);else need(Array.isArray(b.files));
     need(b.requirements.every(p=>b.files.some(f=>f.path===p)));
     if(Object.hasOwn(b,'specsPath'))validateSpecsSelection(b.specsPath,[...b.scope,...b.requirements,...b.files.map(f=>f.path)]);
     if(Object.hasOwn(b,'codeProjectPaths')){
@@ -297,7 +333,7 @@ export function createReviewPackage(options) {
   const root=rootPath(v.root); need(sha(root)===b.rootDigest,'invalid_baseline');
   const bootstrap=Object.hasOwn(b,'bootstrapRequirements')?currentBootstrapRequirements(b.bootstrapRequirements):null;
   if(bootstrap!==null)need(reviewSpecsPath(root,b.bootstrapRequirements.specsRoot)===(b.specsPath??null),'bootstrap_requirements_mismatch');
-  const files=snapshot(root,b.specsPath??null,b.codeProjectPaths??null,b.files.map(f=>f.path)),before=new Map(b.files.map(f=>[f.path,f])),after=new Map(files.map(f=>[f.path,f]));
+  const files=snapshot(root,b.specsPath??null,b.codeProjectPaths??null,b.files.map(f=>f.path),b.version===1?null:new Set([...b.scope,...b.requirements])),before=new Map(b.files.map(f=>[f.path,f])),after=new Map(files.map(f=>[f.path,f]));
   const changes=[];
   for(const p of [...new Set([...before.keys(),...after.keys()])].sort()) {
     const old=before.get(p)??null,current=after.get(p)??null;

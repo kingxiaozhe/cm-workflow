@@ -31,7 +31,7 @@ export function inspectFixRepair(raw,baselineRaw){
 
 export function verifyFixRepair({codeProject,specsRoot,baseline,result}){
   const checked=inspectFixRepair(result,baseline);
-  const after=captureReviewBaseline({root:codeProject,specsRoot,identity:baseline.identity,scope:baseline.scope,requirements:baseline.requirements});
+  const after=captureReviewBaseline({root:codeProject,specsRoot,identity:baseline.identity,version:baseline.version,scope:baseline.scope,requirements:baseline.requirements});
   const previous=new Map(baseline.files.map(file=>[file.path,file])),current=new Map(after.files.map(file=>[file.path,file]));
   for(const file of new Set([...previous.keys(),...current.keys()])){
     if(!baseline.scope.includes(file))need(digest(previous.get(file)??null)===digest(current.get(file)??null),'out_of_scope');
