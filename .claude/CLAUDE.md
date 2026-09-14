@@ -10,7 +10,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 
 - 语言: Markdown（prompt 资产主体）+ Bash（安装与可视化脚本）+ PowerShell（Windows 安装器与自检入口）+ Python（标准库校验/夹具）+ JavaScript（Node.js 18+；Playwright 可选）
 - 框架: Pi/BYZ 原生 package + Codex plugin + Agent Skills；Claude Code commands/agents 兼容层
-- 包管理: 根 `package.json` 仅作 Pi/BYZ package manifest，无 npm 依赖或 scripts；Codex 用 `install-codex.sh`，Claude Code 用 `install.sh` / `install.ps1`
+- 包管理: 根 `package.json` 保存 Pi/BYZ manifest 和 npm 安装命令入口，无 npm 依赖或 lifecycle scripts；Codex npm 入口复用 `install-codex.sh`，Claude Code 用 `install.sh` / `install.ps1`
 - 版本控制: remote
 - 交付形态: Pi/BYZ package + Codex/Claude Code 本地开发者工具（无构建产物）
 - 业务地图: 跳过（开发者工具分发仓库，不是 `src/` 风格业务应用）；本地扫描产物不提交，公开架构见 `docs/architecture.md`
