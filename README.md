@@ -44,7 +44,15 @@ $cm-ai ~/projects/my-app-specs ~/code/my-app
 
 准备好 **Git、Python 3.9+、Node.js 24.14+**，以及带有内置插件创建辅助工具的当前 Codex。安装器和部分共享工具的最低要求是 Node 18；默认 JS 开发流程需要 Node 24.14+。
 
-以下主路径以 macOS 为准；其他环境先看[支持范围](#支持范围)。将源码克隆到独立目录，**不要放在 `~/plugins/cm-workflow`**，该目录由安装器管理。
+以下主路径以 macOS 为准；其他环境先看[支持范围](#支持范围)。安装与升级使用同一条命令：
+
+```bash
+npx @aibyzero/cm-workflow@latest install
+```
+
+已有源码安装可以直接使用这条命令升级，无需先卸载；仍更新同一个 Codex 插件。首次安装可能出现 npm 下载确认，已有插件会另外询问是否覆盖。
+
+需要从 GitHub 源码安装时，将仓库克隆到独立目录，**不要放在 `~/plugins/cm-workflow`**，该目录由安装器管理：
 
 ```bash
 git clone https://github.com/kingxiaozhe/cm-workflow.git
@@ -62,11 +70,13 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-macOS Codex 的 npm 安装入口已加入源码，仍处于本地打包验证阶段，尚未通过本次变更发布到 npm。它复用上述安装器；源码安装用户升级时会替换同一个插件，无需先卸载。候选包验证方法见[安装指南](docs/installation.md#npm-candidate-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.10.5 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
-升级仍然使用同一个安装器。在原来的**源码 checkout** 中先检查本地修改：
+推荐直接执行 `npx @aibyzero/cm-workflow@latest install`。升级仍然使用同一个安装器：替换其管理的插件目录，保留独立源码仓库、项目代码与规格。直接修改已安装插件的内容会被覆盖；之后再运行旧源码的安装器可能降级。
+
+继续使用源码升级时，在原来的 **源码 checkout** 中先检查本地修改：
 
 ```bash
 git status --short
@@ -194,7 +204,7 @@ CM 从磁盘记录恢复上下文，而不是只依赖聊天历史。
 
 | 环境 | 安装 / 入口 | JS 开发流程的当前边界 |
 | --- | --- | --- |
-| Codex · macOS | `./install-codex.sh`；`$cm-*` | 默认 JS 入口已接入，有本地安装与工具执行证据；不等于所有业务场景、真实模型审查都已验收 |
+| Codex · macOS | `npx @aibyzero/cm-workflow@latest install` 或 `./install-codex.sh`；`$cm-*` | 默认 JS 入口已接入，有本地安装与工具执行证据；不等于所有业务场景、真实模型审查都已验收 |
 | Claude Code · macOS | `./install.sh`；`/cm-*` | 使用同一 JS 核心，当前会话入口已接入；完整真实双宿主业务验收仍待补齐 |
 | Linux / WSL2 | 对应 Bash 安装器 | runner 已有平台准入；尚缺目标环境端到端实测，Claude 隔离配置诊断目前限 macOS |
 | Claude Code · 原生 Windows | `install.ps1`；`/cm-*` | PowerShell 安装和共享工具有 CI 覆盖；原生 Windows JS runner 尚不支持 |
