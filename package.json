@@ -1,6 +1,6 @@
 {
   "name": "@aibyzero/cm-workflow",
-  "version": "0.10.5",
+  "version": "0.10.6",
   "description": "Spec-driven business development workflow for Pi, Codex, and Claude Code",
   "license": "MIT",
   "publishConfig": {
