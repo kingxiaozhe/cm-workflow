@@ -82,6 +82,20 @@ test('empty catalog shell is not a personal catalog; unresolved entries still bl
   assert.equal(context('### Available skills\n- x (file: r99/x/SKILL.md)').present, true);
   assert.equal(context('- x (file: /synthetic/x/SKILL.md)').present, true);
 });
+test('CLI empty catalog introduction does not absorb following lower-level instructions', () => {
+  const context = text => skillContext({ input: [{ content: [{ text }] }] });
+  const introduction = 'Each entry includes a name, description, and location for its `SKILL.md`. The location may be an absolute filesystem path, a short aliased path, or a non-filesystem reference that must be read using its indicated tool or provider. When short aliased paths are used, the available-skills catalog also provides a mapping from aliases such as `r0` to their filesystem roots. Expand the alias before accessing the skill.';
+  const usagePreamble = introduction + "\n\nThe user's instructions take precedence over guidelines provided in a skill. If explicit user instructions conflict with a skill's instructions, prioritize the user's instructions. \n\nThe first time in a conversation that you decide to apply a skill, inform the user in the commentary channel.\n\nIf a skill causes you to ask for permission or confirmation, pause, or leave requested work unfinished, name and link to the exact SKILL.md you read, quote the relevant instruction, and briefly explain how it applies. Distinguish explicit skill requirements from your interpretation. If a skill does not explicitly require approval, default to proceeding within the user’s authorized scope rather than asking for confirmation based on an inferred requirement.";
+  const shell = `### Available skills\n${introduction}\n\n## When to use a skill\nGeneric usage instructions\n# Apps (Connectors)\nGeneric app instructions`;
+  assert.equal(context(shell).present, false);
+  assert.equal(context(shell.replace(introduction, usagePreamble)).present, false);
+  assert.equal(context(shell.replace(introduction, usagePreamble+"\n- hidden (file: r99/x/SKILL.md)")).present, true);
+  assert.equal(context(shell.replace(introduction, introduction+'\n- unresolved (file: r99/x/SKILL.md)')).present, true);
+  assert.equal(context(shell.replace(introduction, introduction+'\nUnrecognized catalog content')).present, true);
+  assert.equal(context(shell.replace(introduction, introduction.replace('Each entry', 'Every entry'))).present, true);
+  assert.equal(context(shell+'\n- actual (file: /synthetic/actual/SKILL.md)').present, true);
+  assert.equal(context(shell+'\n### Available skills\n- unresolved entry').present, true);
+});
 test('tool preview transport keeps argument mode and moves opt-in stdin prompts off argv', () => {
   assert.deepEqual(previewPromptTransport('argument', 'preview prompt'), {
     argument: 'preview prompt', stdin: null, stdio: ['ignore', 'pipe', 'pipe'],
