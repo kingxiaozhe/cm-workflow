@@ -6,7 +6,7 @@ import path from 'node:path';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {captureReviewBaseline} from '../runtime/js/cm-ai/review-package.mjs';
 import {createHostHandoff} from '../runtime/js/cm-ai/host-handoff.mjs';
-import {loadHandoff} from './cm-task-gate.mjs';
+import {loadHandoff,checkN4,checkN5} from './cm-task-gate.mjs';
 import {developerArgs} from '../runtime/js/cm-ai/worker-codex-developer.mjs';
 const identity={repositoryId:'test',runId:'run',taskId:'T-001',attempt:1};
 const control=()=>({signal:new AbortController().signal});
@@ -39,6 +39,47 @@ test('nonzero exit stops subsequent commands and does not report pass',()=>fixtu
   const results=await check({identity},control());assert.equal(results.length,1);
   assert.equal(results[0].outcome,'failed');assert.equal(results[0].exitCode,3);
   assert.equal(fs.existsSync(path.join(cwd,'unexpected')),false);
+}));
+
+// Synthetic project scanner contract, not evidence of any real scanner's coverage.
+for(const scenario of [
+  {name:'clean',code:0,outcome:'passed',exitCode:0},
+  {name:'finding',code:1,outcome:'failed',exitCode:1},
+  {name:'scanner-error',code:2,outcome:'failed',exitCode:2},
+  {name:'missing-tool',outcome:'unavailable',exitCode:null},
+  {name:'timeout',outcome:'unavailable',exitCode:null},
+])test(`project security check ${scenario.name} reaches the existing review gate`,()=>fixture(async temp=>{
+  const cwd=path.join(temp,'code'),reviewsDir=path.join(temp,'reviews');
+  fs.mkdirSync(cwd);fs.mkdirSync(reviewsDir);
+  fs.writeFileSync(path.join(cwd,'app.txt'),'before');
+  fs.writeFileSync(path.join(cwd,'requirements.md'),'Run the declared project security check');
+  const baseline=captureReviewBaseline({root:cwd,identity,scope:['app.txt'],requirements:['requirements.md']});
+  fs.writeFileSync(path.join(cwd,'app.txt'),'after');
+  const security=scenario.name==='missing-tool'?{id:'security',command:[path.join(temp,'absent-scanner')]}:
+    command('security',scenario.name==='timeout'?'setInterval(()=>{},1000)':
+      // Misleading success text must never override a nonzero exit code.
+      `console.log('PASS synthetic private scanner output');process.exit(${scenario.code})`);
+  const check=createHostCheck({cwd,timeoutMs:scenario.name==='timeout'?1000:5000,
+    commands:[command('unit','process.exit(0)'),security,command('later','process.exit(0)')]});
+  const checks=await check({identity},control());
+  assert.equal(checks[0].outcome,'passed');
+  assert.equal(checks[1].outcome,scenario.outcome);assert.equal(checks[1].exitCode,scenario.exitCode);
+  const passed=scenario.outcome==='passed';assert.equal(checks.length,passed?3:2);
+  const handoff=path.join(reviewsDir,'work-T-001-a1-handoff.json');
+  createHostHandoff({root:cwd,baseline,checks,handoffPath:handoff,
+    evidence:['learning: no_relevant_lesson','learning: retrospective no_new_lesson']});
+  const payload=loadHandoff(handoff);
+  assert.equal(payload.status,passed?'ready_for_review':'blocked');
+  assert(payload.verification.every(row=>!row.evidence.includes('synthetic private scanner output')));
+  const selectors={handoff,reviewsDir,feature:'work',task:identity.taskId,projectRoot:cwd,requireLearning:true};
+  if(passed){
+    assert.equal(checkN4(selectors).content_bound,true);
+    assert.throws(()=>checkN5(selectors)); // Passing scans still requires independent Review.
+  }else{
+    assert(payload.blockers.some(value=>value.includes('security')));
+    assert.throws(()=>checkN4(selectors),/N4 requires a ready_for_review handoff/);
+    assert.throws(()=>checkN5(selectors),/N5 requires a ready_for_review handoff/);
+  }
 }));
 test('native Codex profile allows business writes but protects specs for project checks',
   {skip:process.platform!=='darwin'},()=>fixture(async cwd=>{
