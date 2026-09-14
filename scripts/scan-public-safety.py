@@ -11,10 +11,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SELF = Path(__file__).resolve()
-SKIP_DIRS = {".git", ".omx"}
+SKIP_DIRS = {".git"}
 SKIP_SUFFIXES = {".png", ".gif", ".jpg", ".jpeg", ".mp4", ".woff", ".woff2"}
 PATTERNS = {
-    "private key": re.compile(r"-----BEGIN (?:RSA|EC|OPENSSH|DSA|PGP) PRIVATE KEY-----"),
+    "private key": re.compile(r"-----BEGIN (?:(?:RSA|EC|OPENSSH|DSA|PGP|ENCRYPTED) )?PRIVATE KEY-----"),
     "AWS access key": re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     "GitHub token": re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
     "OpenAI-style key": re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
@@ -66,7 +66,7 @@ def reviewed_loopback(relative: Path, text: str, offset: int) -> bool:
 def main() -> int:
     findings: list[str] = []
     tracked_result = subprocess.run(
-        ["git", "ls-files", "-z", "--", ".omx"],
+        ["git", "ls-files", "-z"],
         cwd=ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -81,9 +81,9 @@ def main() -> int:
         }
 
     for path in sorted(ROOT.rglob("*")):
-        if path == SELF or not path.is_file() or any(part in SKIP_DIRS for part in path.parts):
-            continue
         relative = path.relative_to(ROOT)
+        if path == SELF or not path.is_file() or any(part in SKIP_DIRS for part in relative.parts):
+            continue
         # OMX execution state is machine-local and normally ignored. Skip only
         # untracked state; an accidentally tracked `.omx` file remains public
         # package content and must still be scanned. If Git lookup fails, scan

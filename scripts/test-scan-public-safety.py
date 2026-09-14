@@ -19,16 +19,23 @@ LEGACY = "scripts/test-cm-openai-compatible-call.py"
 
 
 class PublicSafetyTests(unittest.TestCase):
-    def scan(self, files):
+    def scan(self, files, *, git_repo=False, tracked=()):
         with tempfile.TemporaryDirectory(prefix="cm-safety-") as raw:
             root = Path(raw)
             script = root / "scripts" / SCANNER.name
             script.parent.mkdir()
             shutil.copyfile(SCANNER, script)
+            if git_repo:
+                subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
             for name, text in files.items():
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(text, encoding="utf-8")
+            if tracked:
+                subprocess.run(
+                    ["git", "-C", str(root), "add", "-f", "--", *tracked],
+                    check=True, capture_output=True,
+                )
             return subprocess.run(
                 [sys.executable, str(script)], cwd=root,
                 capture_output=True, text=True, check=False,
@@ -70,6 +77,57 @@ class PublicSafetyTests(unittest.TestCase):
         for expected in [":2: private endpoint", ":3: OpenAI-style key", ":4: personal macOS path"]:
             self.assertIn(APPROVED + expected, result.stderr)
         self.assertNotIn(APPROVED + ":1:", result.stderr)
+
+    def test_tracked_omx_files_are_scanned_at_root_and_nested_paths(self):
+        for name in [".omx/sample.txt", "module/.omx/sample.txt"]:
+            with self.subTest(name=name):
+                result = self.scan(
+                    {".gitignore": ".omx/\n", name: "sk-" + "x" * 24},
+                    git_repo=True, tracked=[name],
+                )
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(name + ":1: OpenAI-style key", result.stderr)
+
+    def test_untracked_omx_state_remains_private(self):
+        result = self.scan(
+            {".gitignore": ".omx/\n", ".omx/local.txt": "sk-" + "x" * 24,
+             "module/.omx/local.txt": "sk-" + "y" * 24},
+            git_repo=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_omx_exclusion_is_per_file_not_per_directory(self):
+        result = self.scan(
+            {".omx/tracked.txt": "sk-" + "x" * 24,
+             ".omx/untracked.txt": "sk-" + "y" * 24,
+             "docs/ordinary.txt": "sk-" + "z" * 24},
+            git_repo=True, tracked=[".omx/tracked.txt"],
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(".omx/tracked.txt:1: OpenAI-style key", result.stderr)
+        self.assertIn("docs/ordinary.txt:1: OpenAI-style key", result.stderr)
+        self.assertNotIn(".omx/untracked.txt:", result.stderr)
+
+    def test_git_query_failure_scans_omx_conservatively(self):
+        # No Git repository: ls-files fails instead of returning an empty inventory.
+        result = self.scan({".omx/sample.txt": "sk-" + "x" * 24})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(".omx/sample.txt:1: OpenAI-style key", result.stderr)
+
+    def test_private_key_header_formats_are_detected(self):
+        for label in ["PRIVATE KEY", "ENCRYPTED PRIVATE KEY", "RSA PRIVATE KEY",
+                      "EC PRIVATE KEY", "OPENSSH PRIVATE KEY", "DSA PRIVATE KEY"]:
+            with self.subTest(label=label):
+                # Construct marker only; the body is not a usable private key.
+                result = self.scan({"docs/example.pem": "-----BEGIN " + label + "-----\nSYNTHETIC\n"})
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("docs/example.pem:1: private key", result.stderr)
+
+    def test_public_key_headers_are_not_private_keys(self):
+        for label in ["PUBLIC KEY", "RSA PUBLIC KEY", "CERTIFICATE"]:
+            with self.subTest(label=label):
+                result = self.scan({"docs/example.pem": "-----BEGIN " + label + "-----\nSYNTHETIC\n"})
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
