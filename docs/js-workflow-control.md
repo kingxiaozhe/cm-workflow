@@ -181,6 +181,12 @@ const result = await generateCmInitRules(
   当前会话直接写文件的入口不因此获得物理隔离，也不自动切换为外部开发调用。
 - 代码根支持常规 `.git` 目录或 worktree 的普通 `.git` 文件；快照不读取或跟随该元数据，
   `.git` 仍不得进入任务 scope/requirements，符号链接与多硬链接文件仍拒绝。这不是 Git 写入隔离。
+- 新任务使用 V2 代码基线：现有扫描边界内的每个文件都记录路径、权限、大小和 SHA-256；
+  仅 scope、requirements 及 AGENTS.md 保存正文。范围外图片或视频也逐块计算摘要，新增、删除、
+  改名、改权限和正文变化仍阻断审查。正文保持每文件 1 MiB、合计 2 MiB、最多 256 文件；
+  摘要清单最多 10,000 文件、累计扫描 1 GiB，序列化基线最多 8 MiB，超限明确失败。
+  宿主现有单条持久记录 1 MiB 等门限仍适用；这不是任意规模仓库保证。
+  已保存 V1 基线继续按原格式、容量和摘要核验，不迁移或重写历史审查凭据。
 - 不读取凭证，不加载任意 JS 模块，不接受 shell command、host grant 或自报审批字段。
 - 已有 tasks.md、Review 和 Learning 文件不被控制入口直接修改；`serve` 会创建运行控制记录与锁。
 - 同一配置及 runId 才能 `resume`；运行身份和配置固定。此阶段记录是明确的 control-only 运行，

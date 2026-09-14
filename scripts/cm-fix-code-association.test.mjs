@@ -36,3 +36,20 @@ for(const mode of ['matched','unexplained file','before mismatch'])test(`fix cod
     }else assert.throws(inspect,{code:mode==='before mismatch'?'fix_before_mismatch':'fix_current_code_unexplained'});
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+
+for(const version of [1,2])test(`fix scope expansion from V${version} parent preserves inventory association`,()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-fix-inventory-')));
+  const write=(file,value)=>fs.writeFileSync(path.join(root,file),value);
+  const identity={repositoryId:'fixture',runId:'parent',taskId:'T-001',attempt:1};
+  const checks=[{id:'unit',command:['node','fixture.mjs'],outcome:'passed',exitCode:0,evidence:'synthetic'}];
+  try{
+    write('parent.js','before');write('fix.js','before');write('untouched.js','before');write('requirements.md','fixture');
+    const baseline=captureReviewBaseline({root,identity,scope:['parent.js'],requirements:['requirements.md'],version});
+    write('parent.js','after');const parentPackage=createReviewPackage({root,baseline,checks});
+    const child=captureReviewBaseline({root,identity:{...identity,runId:'child'},scope:['fix.js','untouched.js'],requirements:['requirements.md']});
+    write('fix.js','fixed');const fixPackage=createReviewPackage({root,baseline:child,checks});
+    const inspect=()=>inspectFixCodeAssociation({root,baseline,parentPackage,fixPackage});
+    assert.equal(inspect().fixPackageDigest,fixPackage.packageDigest);
+    write('untouched.js','unexplained');assert.throws(inspect,{code:'fix_current_code_unexplained'});
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});

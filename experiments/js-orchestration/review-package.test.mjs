@@ -104,7 +104,7 @@ test('S2a baseline binds exact bytes, root and initial dirty state without mutat
   const saved=structuredClone(options),base=captureReviewBaseline(options);
   assert.deepEqual(options,saved);
   assert.equal(base.kind,'cm-review-baseline');
-  assert.equal(base.version,1);
+  assert.equal(base.version,2);
   assert.equal(base.rootDigest,sha(fs.realpathSync(root)));
   assert.deepEqual(base.scope,['src/a.js','src/new.js']);
   assert.equal(base.files.length,3);
@@ -267,13 +267,13 @@ test('S2a file and total byte limits include raw Unicode bytes, not characters',
   fs.unlinkSync(path.join(root,'unrelated.txt'));write(root,'requirements.md','r');
   write(root,'src/a.js',Buffer.alloc(1024*1024)); write(root,'src/new.js',Buffer.alloc(1024*1024-1));
   assert.equal(capture(root).files.reduce((n,f)=>n+f.size,0),2*1024*1024);
-  write(root,'extra','x');assert.throws(()=>capture(root),{code:'limit_exceeded'});fs.unlinkSync(path.join(root,'extra'));
+  write(root,'extra','x');assert.throws(()=>capture(root,{scope:['src/a.js','src/new.js','extra']}),{code:'limit_exceeded'});fs.unlinkSync(path.join(root,'extra'));
   write(root,'src/a.js','中'.repeat(350000)); assert.throws(()=>capture(root),{code:'limit_exceeded'});
 }));
 
 test('S2a file count and directory depth limits reject instead of omitting records',()=>fixture(root=>{
-  for(let i=0;i<253;i++)write(root,`empty-${i}`,''); assert.equal(capture(root).files.length,256);
-  write(root,'one-more','');assert.throws(()=>capture(root),{code:'limit_exceeded'});
+  for(let i=0;i<253;i++)write(root,`empty-${i}`,''); assert.equal(capture(root,{version:1}).files.length,256);
+  write(root,'one-more','');assert.throws(()=>capture(root,{version:1}),{code:'limit_exceeded'});
   fs.unlinkSync(path.join(root,'one-more')); for(let i=0;i<253;i++)fs.unlinkSync(path.join(root,`empty-${i}`));
   const dirs=Array.from({length:32},()=> 'd').join('/');write(root,dirs+'/f','');capture(root);
   write(root,dirs+'/d/f','');assert.throws(()=>capture(root),{code:'limit_exceeded'});
@@ -302,7 +302,7 @@ test('S2a complete package size bound rejects before returning oversized base64 
 
 test('S2a malformed baseline/package or self-consistent forgery cannot match fixed expected digest',()=>fixture(root=>{
   const r=prepared(root);
-  for(const edit of [b=>{b.version=2;},b=>{b.extra=true;},b=>{delete b.rootDigest;},b=>{b.files[0].sha256='0'.repeat(64);},b=>{b.files[0].contentBase64+='!';}]) {
+  for(const edit of [b=>{b.version=3;},b=>{b.extra=true;},b=>{delete b.rootDigest;},b=>{b.files[0].sha256='0'.repeat(64);},b=>{b.files[0].contentBase64+='!';}]) {
     const b=structuredClone(r.baseline);edit(b);
     assert.throws(()=>createReviewPackage({root,baseline:resign(b,'baselineDigest'),checks}),{code:'invalid_baseline'});
   }

@@ -10,6 +10,7 @@ import {createCauseReviewRun} from '../runtime/js/cm-ai/codex-review-adapter.mjs
 import {openExecutionStore} from '../runtime/js/cm-ai/execution-store.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {loadHandoff,implementationSha256} from './cm-task-gate.mjs';
+import {captureReviewBaseline} from '../runtime/js/cm-ai/review-package.mjs';
 import {createHostHandoff} from '../runtime/js/cm-ai/host-handoff.mjs';
 import {fixHandoffEvidence} from '../runtime/js/cm-fix/handoff.mjs';
 import {fixFinalReviewConfiguration} from '../runtime/js/cm-fix/final-review.mjs';
@@ -72,6 +73,9 @@ test('durable repair registers before write, preserves cause approval history an
       bridge.accept({type:'host_result',sessionId:row.sessionId,callId:row.callId,requestDigest:row.requestDigest,result});
     });
     let owner=openFixExecution(options,{bridge,prepare,causeReview,assertReviewReady(){}});
+    // Calls return a snapshot taken before their finally clears executionActive.
+    // Compare settled state with reopened state when checking durable recovery.
+    const settled=async pending=>{await pending;return owner.status();};
     try{
       if(mode==='revision-approved')startFixRun({specsRoot,identity,configuration:options.configuration});
       await owner.advance({authorized:true});
@@ -81,7 +85,22 @@ test('durable repair registers before write, preserves cause approval history an
       }
       await owner.runRedTest({authorized:true});assert.equal((await owner.captureBaseline({authorized:true})).stage,'repair_required');
       await assert.rejects(owner.repair(),{code:'repair_authorization_required'});assert.equal(writes,0);
-      const result=await owner.repair({authorized:true});assert.equal(result.stage,mode==='lost'?'unknown':'regression_required');
+      const legacy=mode==='revision'?captureReviewBaseline({root:cwd,specsRoot,identity,...options.configuration.repair,version:1}):null;
+      let result=await settled(owner.repair({authorized:true}));assert.equal(result.stage,mode==='lost'?'unknown':'regression_required');
+      if(legacy){
+        // Seed an old V1 repair checkpoint before any regression/review references it.
+        owner.close();const file=path.join(specsRoot,'.reviews','.execution',identity.runId,'state.json');
+        const saved=JSON.parse(fs.readFileSync(file));
+        saved.records.find(r=>r.id==='fix-repair-intent').payload.baseline=legacy;
+        saved.records.find(r=>r.id==='fix-repair-result').payload.baselineDigest=legacy.baselineDigest;
+        let previousDigest=null;
+        saved.records=saved.records.map(({digest:old,...record})=>{
+          const body={...record,previousDigest},row={...body,digest:digest(body)};previousDigest=row.digest;return row;
+        });
+        const {revision,...data}=saved;fs.writeFileSync(file,JSON.stringify({...data,revision:digest(data)})+'\n');
+        owner=openFixExecution({...options,create:false},{bridge,prepare,causeReview,assertReviewReady(){}});
+        result=owner.status();assert.equal(result.stage,'regression_required');
+      }
       assert.equal(result.completionEligible,false);if(mode==='cause')assert.equal(result.causeReview.review.verdict,'approved');
       owner.close();
       assert.throws(()=>openFixExecution({...options,create:false,configuration:{...options.configuration,
@@ -98,7 +117,7 @@ test('durable repair registers before write, preserves cause approval history an
           owner=openFixExecution({...options,create:false});
           assert.equal((await owner.runRegression({authorized:true})).stage,'unknown');assert.equal(owner.status().pending,'regression');continue;
         }
-        const checked=await owner.runRegression({authorized:true});
+        const checked=await settled(owner.runRegression({authorized:true}));
         assert.equal(checked.stage,mode==='unfixed'?'regression_blocked':'handoff_required');
         assert.equal(checked.regression.status,mode==='unfixed'?'defect_remaining':'passed');
         assert.equal(checked.completionEligible,false);owner.close();owner=openFixExecution({...options,create:false});
@@ -110,7 +129,7 @@ test('durable repair registers before write, preserves cause approval history an
           assert.deepEqual(pkg.checks.map(check=>check.id),['red-test','baseline.1']);
           assert.deepEqual(pkg.checks[1].command,options.configuration.baseline.commands[0].command);
           owner.close();owner=openFixExecution({...options,create:false},{bridge,prepare});
-          const retrospective=await owner.retrospect();
+          const retrospective=await settled(owner.retrospect());
           assert.equal(retrospective.stage,mode==='retrospective-lost'?'unknown':mode.startsWith('lesson')||mode==='revision-approved'?'learning_writeback_required':'handoff_ready');
           assert.equal(retrospective.completionEligible,false);assert.equal(retrospectives,1);
           owner.close();owner=openFixExecution({...options,create:false},{bridge,prepare});
@@ -198,7 +217,7 @@ test('durable repair registers before write, preserves cause approval history an
             assert.equal(owner.status().stage,'final_review_changes_requested');
             assert.deepEqual(JSON.parse(fs.readFileSync(path.join(specsRoot,'.reviews','.execution',identity.runId,'state.json'))).records,before);
             preparationMode='normal';
-            const revised=await owner.prepareRevision({authorized:true});assert.equal(revised.stage,'revision_prepared');
+            const revised=await settled(owner.prepareRevision({authorized:true}));assert.equal(revised.stage,'revision_prepared');
             assert.equal(revised.identity.attempt,1);assert.equal(revised.revision.nextIdentity.attempt,2);assert.equal(revised.completionEligible,false);
             assert.equal(preparations,2);assert.equal(calls,1);assert.deepEqual(fs.readFileSync(handoffPath),handoffBytes);
             const after=JSON.parse(fs.readFileSync(path.join(specsRoot,'.reviews','.execution',identity.runId,'state.json'))).records;
@@ -207,15 +226,20 @@ test('durable repair registers before write, preserves cause approval history an
             assert.deepEqual(await owner.prepareRevision({authorized:true}),revised);assert.equal(calls,1);
             owner.close();owner=openFixExecution({...options,create:false},{bridge,prepare,assertReviewReady(){}});
             await assert.rejects(owner.repair(),{code:'repair_authorization_required'});
-            const repairedAgain=await owner.repair({authorized:true});assert.equal(writes,2);assert.equal(calls,1);
+            const repairedAgain=await settled(owner.repair({authorized:true}));assert.equal(writes,2);assert.equal(calls,1);
             assert.equal(repairedAgain.stage,mode==='revision-lost'?'unknown':'revision_regression_required');
+            if(legacy){
+              const state=JSON.parse(fs.readFileSync(path.join(specsRoot,'.reviews','.execution',identity.runId,'state.json')));
+              assert.equal(state.records.find(r=>r.id==='fix-repair-intent').payload.baseline.version,1);
+              assert.equal(state.records.find(r=>r.id==='fix-revision-repair-intent').payload.baseline.version,2);
+            }
             assert.equal(repairedAgain.completionEligible,false);assert.deepEqual(fs.readFileSync(handoffPath),handoffBytes);
             assert.deepEqual(repairedAgain.repair,revised.repair);
             owner.close();owner=openFixExecution({...options,create:false});assert.deepEqual(owner.status(),repairedAgain);
             assert.deepEqual(await owner.repair({authorized:true}),repairedAgain);assert.equal(writes,2);
             if(mode==='revision-lost'){assert.equal(owner.status().pending,'revision_repair');continue;}
             await assert.rejects(owner.runRegression(),{code:'regression_authorization_required'});
-            const regressedAgain=await owner.runRegression({authorized:true});assert.equal(regressedAgain.stage,'revision_handoff_required');
+            const regressedAgain=await settled(owner.runRegression({authorized:true}));assert.equal(regressedAgain.stage,'revision_handoff_required');
             assert.equal(regressedAgain.revisionRegression.status,'passed');assert.equal(regressedAgain.completionEligible,false);
             assert.equal(fs.existsSync(path.join(specsRoot,'.reviews','fix-owner-a2-red-output.md')),false);
             owner.close();owner=openFixExecution({...options,create:false});assert.deepEqual(owner.status(),regressedAgain);
@@ -223,7 +247,7 @@ test('durable repair registers before write, preserves cause approval history an
             const cumulative=owner.implementationPackage();assert.equal(cumulative.identity.attempt,2);
             assert.equal(Buffer.from(cumulative.changes.find(change=>change.path==='value.mjs').before.contentBase64,'base64').toString(),'export const value=1;');
             owner.close();owner=openFixExecution({...options,create:false},{bridge,prepare});
-            const reflectedAgain=await owner.retrospect();assert.equal(reflectedAgain.stage,mode==='revision-approved'?'revision_learning_writeback_required':'revision_handoff_ready');
+            const reflectedAgain=await settled(owner.retrospect());assert.equal(reflectedAgain.stage,mode==='revision-approved'?'revision_learning_writeback_required':'revision_handoff_ready');
             assert.equal(reflectedAgain.revisionRetrospective.identity.attempt,2);assert.equal(retrospectives,2);
             assert.equal(reflectedAgain.revisionRetrospective.packageDigest,cumulative.packageDigest);assert.equal(reflectedAgain.completionEligible,false);
             owner.close();owner=openFixExecution({...options,create:false});assert.deepEqual(owner.status(),reflectedAgain);
@@ -279,12 +303,12 @@ test('durable repair registers before write, preserves cause approval history an
               fs.appendFileSync(reviewPath,' conflict');assert.equal(owner.status().stage,'revision_final_review_evidence_required');
               assert.throws(()=>owner.publishReview(),{code:'review_file_conflict'});fs.writeFileSync(reviewPath,reviewBytes);
               await assert.rejects(owner.runRegression({postReview:true}),{code:'regression_authorization_required'});
-              const post=await owner.runRegression({postReview:true,authorized:true});assert.equal(post.stage,'revision_closeout_required');
+              const post=await settled(owner.runRegression({postReview:true,authorized:true}));assert.equal(post.stage,'revision_closeout_required');
               assert.equal(post.revisionPostRegression.status,'passed');assert.equal(post.completionEligible,false);
               owner.close();owner=openFixExecution({...options,create:false});assert.deepEqual(owner.status(),post);
               assert.deepEqual(await owner.runRegression({postReview:true,authorized:true}),post);assert.equal(calls,2);
               await assert.rejects(owner.runWalkthrough(),{code:'walkthrough_authorization_required'});
-              const walked=await owner.runWalkthrough({authorized:true});assert.equal(walked.stage,'revision_closeout_required');
+              const walked=await settled(owner.runWalkthrough({authorized:true}));assert.equal(walked.stage,'revision_closeout_required');
               assert.equal(walked.revisionWalkthrough.status,'passed');assert.equal(walked.completionEligible,false);
               const stored=JSON.parse(fs.readFileSync(path.join(specsRoot,'.reviews','.execution',identity.runId,'state.json')));
               const intent=stored.records.find(row=>row.id==='fix-revision-walkthrough-intent');
@@ -327,7 +351,7 @@ test('durable repair registers before write, preserves cause approval history an
             }};
             await authority.hostDecisionProvider.decide({identity,packageDigest:owner.finalReviewPackage().packageDigest},new AbortController().signal);
             owner.close();owner=openFixExecution({...options,create:false},{finalReview,assertReviewReady(){}});
-            const interrupted=await owner.reviewFinal();assert.equal(interrupted.stage,'unknown');assert.equal(interrupted.pending,'final_review');
+            const interrupted=await settled(owner.reviewFinal());assert.equal(interrupted.stage,'unknown');assert.equal(interrupted.pending,'final_review');
             owner.close();owner=openFixExecution({...options,create:false},{finalReview,assertReviewReady(){}});
             assert.deepEqual(await owner.reviewFinal(),interrupted);assert.equal(calls,1);continue;
           }

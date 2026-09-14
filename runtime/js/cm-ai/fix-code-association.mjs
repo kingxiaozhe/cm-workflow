@@ -2,6 +2,9 @@
 import {captureReviewBaseline,readReviewBaseline,readReviewPackage} from './review-package.mjs';
 import {digest,json,need} from './effect-contract.mjs';
 
+const inventoryFile=({contentBase64,...metadata})=>metadata;
+const sameFile=(a,b)=>digest(a===null?null:inventoryFile(a))===digest(b===null?null:inventoryFile(b));
+
 export function composeFixCode({baseline,parentPackage,fixPackages}){
   const base=readReviewBaseline(baseline),parent=readReviewPackage(parentPackage);
   need(Array.isArray(fixPackages)&&fixPackages.length>0&&fixPackages.length<=2,'fix_chain_invalid');
@@ -14,21 +17,24 @@ export function composeFixCode({baseline,parentPackage,fixPackages}){
   const expected=new Map(base.files.map(file=>[file.path,file]));
   const apply=pkg=>{
     for(const change of pkg.changes){
-      need(digest(expected.get(change.path)??null)===digest(change.before),'fix_before_mismatch');
+      need(sameFile(expected.get(change.path)??null,change.before),'fix_before_mismatch');
       if(change.after===null)expected.delete(change.path);else expected.set(change.path,change.after);
     }
   };
   apply(parent);fixes.forEach(apply);
   const files=[...expected.values()].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
-  return {base,parent,fixes,files};
+  // Use the same canonical inventory for live association and journal replay.
+  return {base,parent,fixes,files:base.version===1?files:files.map(inventoryFile)};
 }
 
 export function inspectFixCodeAssociation({root,specsRoot,baseline,parentPackage,fixPackage,fixPackages}){
   const {base,parent,fixes,files}=composeFixCode({baseline,parentPackage,fixPackages:fixPackages??[fixPackage]});
-  const current=captureReviewBaseline({root,...(specsRoot===undefined?{}:{specsRoot}),identity:parent.identity,
+  const current=captureReviewBaseline({root,...(specsRoot===undefined?{}:{specsRoot}),identity:parent.identity,version:base.version,
+    ...(base.codeProjectPaths?{codeProjectPaths:base.codeProjectPaths}:{}),
     scope:[...new Set([...parent.scope,...fixes.flatMap(fix=>fix.scope)])],requirements:base.requirements});
   need(current.rootDigest===base.rootDigest,'fix_parent_binding_mismatch');
-  need(digest(current.files)===digest(files),'fix_current_code_unexplained');
+  const compared=base.version===1?current.files:current.files.map(inventoryFile);
+  need(digest(compared)===digest(files),'fix_current_code_unexplained');
   return json({version:1,kind:'cm-fix-code-association',parentPackageDigest:parent.packageDigest,
-    fixPackageDigest:fixes.at(-1).packageDigest,currentFilesDigest:digest(current.files)});
+    fixPackageDigest:fixes.at(-1).packageDigest,currentFilesDigest:digest(compared)});
 }

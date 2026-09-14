@@ -14,8 +14,9 @@ test('one original review baseline includes authored test and business repair, r
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fix-review-baseline-')));
   const cwd=path.join(root,'code'),specsRoot=path.join(root,'specs');fs.mkdirSync(cwd);fs.mkdirSync(specsRoot);
   fs.writeFileSync(path.join(cwd,'value.mjs'),'export const value=1;');
+  fs.writeFileSync(path.join(cwd,'requirements.md'),'fixture');
   const identity={repositoryId:'fixture',runId:'combined-review',taskId:'T-FIX-demo',attempt:1};
-  const options={codeProject:cwd,specsRoot,identity,testFiles:['red.mjs'],requirements:['value.mjs'],defect:'Constant bug',diagnosis:{},reproduction:{}};
+  const options={codeProject:cwd,specsRoot,identity,testFiles:['red.mjs'],requirements:['requirements.md'],defect:'Constant bug',diagnosis:{},reproduction:{}};
   try{
     const author=prepareFixTestAuthor(options,{assertReviewReady(){},bridge:{async call(){
       fs.writeFileSync(path.join(cwd,'red.mjs'),"import {value} from './value.mjs';if(value!==2)process.exit(1)");return {outcome:'authored'};
