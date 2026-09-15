@@ -50,6 +50,7 @@ CM_AI_RUNTIME = (
 )
 REQUIRED = (
     ".codex-plugin/plugin.json",
+    "package.json",
     "AGENTS.md",
     "README.md",
     "VERSION",
@@ -75,6 +76,7 @@ REQUIRED = (
     "scripts/cm-ai-admission.test.mjs",
     "scripts/cm-check-runtime.sh",
     "scripts/cm-check-runtime.ps1",
+    "scripts/cm-release-smoke.sh",
     "scripts/cm-log-event.mjs",
     "scripts/cm-log-event.test.mjs",
     "scripts/cm-log-event.py",
@@ -140,6 +142,29 @@ def main() -> int:
         fail("plugin name must be cm-workflow", failures)
     if manifest.get("skills") != "./skills/":
         fail("plugin skills must point to ./skills/", failures)
+
+    package_path = ROOT / "package.json"
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"package.json is not valid readable JSON: {error}", failures)
+        package = {}
+    if package.get("name") != "@aibyzero/cm-workflow":
+        fail("Pi package name must be @aibyzero/cm-workflow", failures)
+    if package.get("version") != version:
+        fail(f"Pi package version {package.get('version')} != VERSION {version}", failures)
+    keywords = package.get("keywords", [])
+    if not isinstance(keywords, list) or "pi-package" not in keywords:
+        fail("Pi package keywords must include pi-package", failures)
+    pi_manifest = package.get("pi", {})
+    if not isinstance(pi_manifest, dict):
+        fail("Pi package manifest must be an object", failures)
+        pi_manifest = {}
+    expected_pi_skills = [f"./skills/{name}" for name in sorted(CORE_SKILLS)]
+    if pi_manifest.get("skills") != expected_pi_skills:
+        fail("Pi package skills must expose exactly the eight core Skills", failures)
+    if pi_manifest.get("prompts") != ["./compat/claude-commands"]:
+        fail("Pi package prompts must point to ./compat/claude-commands", failures)
 
     handoff_schema = json.loads(
         (ROOT / "runtime/task-handoff.schema.json").read_text(encoding="utf-8")

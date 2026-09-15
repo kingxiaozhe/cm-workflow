@@ -275,6 +275,7 @@ for module in \
   require_file "runtime/js/cm-ai/$module"
 done
 require_file "scripts/cm-check-runtime.ps1"
+require_file "scripts/cm-release-smoke.sh"
 require_file "scripts/cm-ai-admission.mjs"
 require_file "scripts/cm-ai-run.mjs"
 require_file "scripts/cm-ai-run.test.mjs"

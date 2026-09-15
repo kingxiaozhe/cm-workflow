@@ -20,6 +20,7 @@ This repository is the Codex-native source for a spec-driven development workflo
 - PRD review recovery fixture: `python3 scripts/test-cm-prd-review-gate.py`
 - Lint/safety: `python3 scripts/validate-public-repo.py`, `python3 scripts/scan-public-safety.py`, and `find . -type f -name '*.sh' -print0 | xargs -0 -n1 /bin/bash -n`
 - Plugin validation: `python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .`
+- Release surface smoke: `./scripts/cm-release-smoke.sh` (requires local BYZ and Codex; uses a disposable HOME for Codex installation)
 - Pi/BYZ package install: `pi install git:github.com/kingxiaozhe/cm-workflow`
 - Codex local install: `./install-codex.sh`
 - Claude compatibility install: `./install.sh` (Windows: `powershell -ExecutionPolicy Bypass -File install.ps1`)

@@ -49,12 +49,14 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 - 收编一个新 skill → 升一个 patch 版（既有约定）
 - README 的目录树、角色计数、版本相关说明同步更新
 - 提交前跑 `./scripts/cm-check-runtime.sh` 与 `python3 scripts/validate-public-repo.py`
+- 从干净 checkout 升版或修改 `package.json`、`.codex-plugin/`、`install-codex.sh` 时，运行 `./scripts/cm-release-smoke.sh`；它校验 Pi manifest、用 BYZ 检查本地 workflow root，并在一次性 HOME 中真实安装 Codex plugin
 
 ## 提交前
 
 - [ ] 动过 `compat/` `skills/` `agents/` → `cm-check-runtime.sh` PASSED
 - [ ] 动过流程节点 → dogfood 实跑过
 - [ ] 动过 `install.sh` → 真装过一次
+- [ ] 动过 Pi/BYZ 或 Codex 分发面，或升了 VERSION → `cm-release-smoke.sh` PASSED；缺 BYZ/Codex 时记为 BLOCKED，不得拿源码检查冒充安装证据
 - [ ] 升了 VERSION → plugin manifest 基础版本已同步
 - [ ] 新增了跨文件配对(模板/凭证/落盘物的生成方↔消费方)→ cm:check 配套完整性已补检查项(检查者不自动进化,靠这一条)
 - [ ] 无真实密钥、无未脱敏的内部项目名

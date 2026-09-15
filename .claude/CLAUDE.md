@@ -45,6 +45,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - Claude JS 接线: 单/批任务 `--runtime claude` 已接原开发/Review/QA链，已安装CLI通过本机回环配置诊断；真实模型Review及Skill实装仍缺，不等于双端验收
 - 只读任务提案: `scripts/cm-task-gate.mjs` 的 `prepare-mark-done` / `verify-mark-done-plan`；参数与私有输出契约见 `runtime/task-gates.md`，不是完成授权
 - 插件验证: `python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .`
+- 发版面冒烟: `./scripts/cm-release-smoke.sh`（本地 BYZ + Codex；Codex 装入一次性 HOME）
 - 查看版本: `cat VERSION`
 - 可视化预览: `templates/pixel/cm-pixel.sh --demo`、`templates/dashboard/serve.sh {specs路径}`
 

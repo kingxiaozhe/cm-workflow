@@ -264,6 +264,12 @@ python3 scripts/validate-public-repo.py
 python3 scripts/scan-public-safety.py
 ```
 
+升版或修改 Pi/BYZ、Codex 分发面时，从干净 checkout 运行分发面冒烟；它校验 Pi manifest、用本机 BYZ 检查本地 workflow root，并把 Codex 安装隔离到一次性 HOME：
+
+```bash
+./scripts/cm-release-smoke.sh
+```
+
 按改动范围补充对应夹具与实跑，详见 [CONTRIBUTING.md](CONTRIBUTING.md)。版本以 `VERSION` 与插件 manifest 的基础版本为准；安装副本的 `+codex.*` 后缀用于刷新缓存。
 
 安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
