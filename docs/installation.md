@@ -2,14 +2,15 @@
 
 ## Requirements
 
-- Git and Python 3.9 or newer.
+- Git, Python 3.9 or newer, and Node.js 18 or newer.
 - For Codex: a current Codex installation with the bundled plugin creator
   helpers available under `CODEX_HOME`.
 - For Claude Code on macOS/Linux: Bash 3.2 or newer.
 - For Claude Code on Windows: Windows PowerShell 5.1 or newer, plus Git for
   Windows (Git Bash). WSL users can install and run the Bash entry inside WSL.
 
-Clone the repository somewhere other than `~/plugins/cm-workflow`:
+For macOS Codex, npm installation below does not require a source checkout.
+For source installation, clone the repository somewhere other than `~/plugins/cm-workflow`:
 
 ```bash
 git clone https://github.com/kingxiaozhe/cm-workflow.git
@@ -52,6 +53,48 @@ source, use `$cm-test`. The installed manual is available at
 The optional project configuration template is installed at
 `~/plugins/cm-workflow/templates/cm-workflow.yml`.
 
+## npm installation (macOS Codex)
+
+Install or upgrade with the same command:
+
+```bash
+npx @aibyzero/cm-workflow@latest install
+```
+
+To pin a version, use `npx @aibyzero/cm-workflow@0.10.6 install` from outside
+the CM Workflow source checkout (for example, your home directory). Inside a
+checkout with the same package name and version, npm can select the local
+uninstalled package and report `cm-workflow: command not found`.
+The dependency-free npm entry requires macOS and Node.js 24.14+, plus the same
+Python 3.9+ and Codex plugin helpers as the source installer. It does not remove
+these prerequisites or add Windows/Linux support to the npm command.
+
+Maintainers can inspect and try the actual local package:
+
+```bash
+npm pack --ignore-scripts
+# Substitute the exact .tgz filename printed by npm pack:
+npm exec --yes --package ./PACKAGE.tgz -- cm-workflow --help
+```
+
+Running `cm-workflow install` through npm installs into the
+same `~/plugins/cm-workflow` directory and personal marketplace as the source
+installer. Existing installations require confirmation; `install --yes` accepts
+replacement. The npm `--yes` before `--package` only accepts npm's package-fetch
+prompt; it does not accept plugin replacement. Direct edits to the managed
+plugin are overwritten; source checkouts, project code and specs remain outside
+the managed destination. Installing older source afterward can downgrade it.
+Start a new Codex task after an upgrade. `npx --yes` accepts npm's download
+prompt only; `install --yes` separately accepts replacing the managed plugin.
+
+The isolated fixture is `python3 scripts/test-npm-install.py`. It packs the
+candidate, exercises the npm command, then relocates only installer path
+assignments into a temporary directory. The actual file transaction and bundled
+Codex helper programs execute; the final `codex plugin add` is a test double.
+It covers fresh install, source-to-package upgrade, declined replacement and
+failed registration rollback. It does not prove live registry installation,
+real Codex cache ingestion or a fresh-machine setup.
+
 ## Local cross-project logs
 
 The installers do not create or upload logs. On the first logged workflow
@@ -88,8 +131,15 @@ new Claude Code session, then run `/cm-check`. The installer also keeps the
 historic `/cm:check` alias on macOS/Linux. The installed manual is available at
 `~/.claude/cm-workflow/docs/user-guide.md` unless `CLAUDE_HOME` overrides the
 destination.
+The two disabled-by-default auto-update helper scripts are copied to
+`~/.cm-workflow`; overriding `CLAUDE_HOME` alone therefore does not make an
+installer run fully isolated. Override both `HOME` and `CLAUDE_HOME` for an
+authorized temporary-directory smoke test.
 The optional project configuration template is installed at
 `$CLAUDE_HOME/templates/cm-workflow.yml` (or `~/.claude/templates/cm-workflow.yml`).
+The installed `/cm-ai` Skill invokes the same read-only
+`$CLAUDE_HOME/scripts/cm-ai-admission.mjs` N1/N2 authority used by Codex; no
+Claude-specific workflow fork is installed.
 
 ## Claude Code on Windows
 
@@ -113,6 +163,8 @@ those aliases are macOS/Linux only. Bash-based statusline and visualization
 helpers likewise require WSL or Git Bash.
 The optional project configuration template is installed at
 `$CLAUDE_HOME/templates/cm-workflow.yml` (or `%USERPROFILE%\.claude\templates\cm-workflow.yml`).
+The installed `/cm-ai` Skill uses the same Node.js admission entry as other
+platforms; any admitted task still uses the shared Review/N5 gates.
 
 ## Optional Claude auto-update (macOS/Linux)
 
@@ -144,6 +196,17 @@ Set `CM_UPDATE_REMOTE` when your team intentionally uses a fork.
 
 ## Uninstall
 
-This repository does not provide an automatic uninstall because user directories
-may contain modified copies. Remove only the CM-owned paths you have reviewed,
-or restore from your own backup.
+For a Codex install registered by the installer, remove the enabled plugin and
+its local cache with:
+
+```bash
+codex plugin remove cm-workflow@personal
+```
+
+This intentionally leaves the local `~/plugins/cm-workflow` source and the
+`personal` marketplace definition available for inspection or reinstall. Remove
+those separately only after reviewing that they are still CM-owned.
+
+Claude Code compatibility installs do not have an automatic uninstall because
+their destination directories may contain user-modified copies. Remove only the
+CM-owned paths you have reviewed, or restore from your own backup.

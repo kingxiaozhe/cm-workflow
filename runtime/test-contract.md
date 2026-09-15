@@ -68,7 +68,7 @@ CM feature 可以在三件套旁增加一个可选的 `test-cases.json`。它描
 借额外字段绕过必需字段。统一执行：
 
 ```bash
-python3 {CM_WORKFLOW_ROOT}/scripts/validate-test-cases.py {test-cases.json}
+node {CM_WORKFLOW_ROOT}/scripts/validate-test-cases.mjs {test-cases.json}
 ```
 
 非零退出即 `BLOCKED`，不得继续建立执行清单。

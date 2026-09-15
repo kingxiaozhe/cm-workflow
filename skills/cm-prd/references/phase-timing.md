@@ -58,3 +58,11 @@ start/complete；因此后续分析只汇总 active segments，不把人工等�
 最终摘要只说明“阶段耗时事件已记录”，不手算或猜测耗时。需要复盘时运行
 `python3 {CM_WORKFLOW_ROOT}/scripts/cm-prd-timing.py --last 5`；它只读全局镜像，按
 operation_id + phase_name + segment 配对时间戳，并明确显示未配对事件。
+
+## JS 宿主的合并调用
+
+JS按实际上下文读取、分析/生成/保存/处置请求记录活动segment；返回问题时关闭，回答后另开，
+进程意外终止的未配对start保留为中断证据。C模式的需求/设计/任务生成分阶段请求。
+已验收的新建full_draft为节省调用将需求/设计/任务合并生成，其三个阶段记录同一实际调用的重叠区间，
+标记`timing_scope: combined_host_call`。这不是三次模型调用，也不能相加为总耗时或宣称测到了模型内部逐节耗时。
+日志只有事件字段/计数，不写正文、问题或回答。

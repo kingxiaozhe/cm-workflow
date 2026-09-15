@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "task_id": "T-FIX-f01-dual-failure-terminal",
+  "attempt": 1,
+  "status": "ready_for_review",
+  "changed_files": [
+    ".omx/research/f01-codex-review-live/smoke.mjs",
+    ".omx/research/f01-codex-review-live/smoke.test.mjs",
+    "AGENTS.md",
+    "docs/fixes/20260904-f01-codex-dual-failure-terminal.md",
+    "experiments/js-orchestration/codex-review-adapter.test.mjs",
+    "experiments/js-orchestration/smoke.test.mjs",
+    "experiments/js-orchestration/worker-codex.mjs"
+  ],
+  "verification": [
+    {
+      "command": "node --test --test-name-pattern='duplicate provider failure|error then turn.failed|one observed non-authoritative' experiments/js-orchestration/smoke.test.mjs experiments/js-orchestration/codex-review-adapter.test.mjs .omx/research/f01-codex-review-live/smoke.test.mjs",
+      "status": "passed",
+      "evidence": "Before the repair all 3 selected tests failed for duplicate terminal forwarding, observation_invalid, and provider_thread_invalid; after the repair all 3 passed."
+    },
+    {
+      "command": "node --test experiments/js-orchestration/smoke.test.mjs experiments/js-orchestration/codex-review-adapter.test.mjs .omx/research/f01-codex-review-live/smoke.test.mjs",
+      "status": "passed",
+      "evidence": "84/84 related worker, adapter, V3 wiring, and live harness tests passed."
+    },
+    {
+      "command": "node --test experiments/js-orchestration/*.test.mjs",
+      "status": "passed",
+      "evidence": "996/996 tests passed; the observer duplicate_terminal rejection canary remained green."
+    },
+    {
+      "command": "./scripts/cm-check-runtime.sh",
+      "status": "passed",
+      "evidence": "Runtime consistency and bundled fixtures passed for plugin v0.10.4."
+    },
+    {
+      "command": "bash scripts/test-shell-compat.sh && python3 scripts/test-workflow-config.py && python3 scripts/test-task-gate.py",
+      "status": "passed",
+      "evidence": "Shell compatibility, workflow config, readonly preparation, final revision, ownership, and task-gate fixtures passed."
+    },
+    {
+      "command": "python3 scripts/validate-public-repo.py",
+      "status": "passed",
+      "evidence": "Public repository validation passed for v0.10.4."
+    },
+    {
+      "command": "node --check experiments/js-orchestration/worker-codex.mjs && node --check .omx/research/f01-codex-review-live/smoke.mjs && find . -type f -name '*.sh' -print0 | xargs -0 -n1 /bin/bash -n && git diff --check",
+      "status": "passed",
+      "evidence": "Scoped JavaScript syntax, repository shell syntax, and whitespace checks passed."
+    }
+  ],
+  "evidence": [
+    "Authorized scope: offline-only normalization of the observed error then turn.failed sequence plus correction of string-valued reviewInvocation.started reporting; no provider retry or new live attempt.",
+    "Root cause and red-to-green evidence: docs/fixes/20260904-f01-codex-dual-failure-terminal.md.",
+    "Pre-task file SHA-256: worker-codex e6a17da264c231443c9dd7a1ae13336947d334999c0e08a5caa712efc3b476cd; smoke.test c912ef6ae1ad0f39e7801d57856b889a3b7e4f5be10fedc83d013d3297233deb; codex-review-adapter.test 22b5a6c5fa09cfa84c7ec68a5e56d2883223e8ce0872ac98e4bc904ae2595152; live smoke 962c187f27558b6c83642297434c644525199c999a2c704acd07f80198173f7f; live smoke.test 1eed100e355e4c3c5cb7806ae1ef11fb6714d31e313dab7e64aa8ac9c78c1c77.",
+    "Review candidate SHA-256: AGENTS.md 1c80191e54ae286582f6c884a01a150e05a160646d3e4a750cdf240be15fd36a; worker-codex 2407e3aa80bca3566247dd609d32cdb3e1919c7cb4ea0b01e6d05c47a6d9e420; smoke.test 0be4d60710f62fe2b4bbe0d3173b2648f9a32e3be49f80919eb781545ecfc282; codex-review-adapter.test 92bf6205ea758adbcdaf4b596d4be475342ff1fa8bf8ffd7f06dcd7847f76729; live smoke 0b755785789bc1fcb835b3dd0cfda1da3c0911808e0f9bfe3c4b83c8cdad9ff5; live smoke.test 9d78d8c95ccea07e36e33bfeba8cdb555dced7225e9146be2cad6f9593fa9701; defect archive e7f92380db7afb1b39c33e915454c37798fd9cafeefb41459b1e84a189021cd1.",
+    "Behavior after repair: thread.started then turn.started then error then turn.failed is normalized to one error terminal plus process_closed and persists as unknown/transport_incomplete with the provider thread retained, one spawn, no redispatch, null receipt, null taskCommit, and unchanged tasks bytes.",
+    "Observer contract was not changed; its duplicate_terminal rejection test still passes.",
+    "Public safety scan remains exit 1 with the exact five pre-existing findings in docs/marketing/wechat-draft-dry-run.json, tool-preview.mjs, and worker-codex.mjs; none was introduced, fixed, or waived by this task.",
+    "Current dirty status hash is ca05fa9c1904c04587bdc3b81bbcb5c568fb4c2d9ea01850caf41271b2eb26e7. All unrelated tracked and untracked user changes remain excluded.",
+    "No preflight, live/provider invocation, retry, F01 checkbox, F01 third item, F02, F05 product wiring, installation, Git, push, release, receipt, completion, or real project task write occurred."
+  ],
+  "blockers": [],
+  "scope_deviation": []
+}

@@ -31,7 +31,10 @@ N3 生成下一次 handoff，避免已校验的证据与实际代码失配。
 
 1. `codex-subagent`：用当前运行时的 no-history/fresh-context 选项（如 `fork_turns: none`）新建独立 Codex 子代理/线程，只接收任务范围、验收标准、diff 和验证结果
 2. `codex-cli`：子代理不可用时，启动隔离的非交互 Codex CLI 审查会话；禁止它修改文件
-3. `self-degraded`：两者都不可用时，主执行者做第二遍对抗式审查并显式标记降级
+3. 两者都不可用：保持待审，记录通道失败原因，不进入 N5；`self-degraded` 只作诊断，不能批准完成
+
+通道故障不伪造代码 finding，也不消耗实现审查轮次；有效阻塞 finding 不能靠换
+审查者洗掉。当前 gate 只支持上述 Codex 通道，Claude-native 适配未验证前不得冒充。
 
 审查输入只包含**本 task 的 diff**，不得将整个未分类 working tree 当作任务 diff。审查者必须：
 
@@ -50,7 +53,7 @@ N3 生成下一次 handoff，避免已校验的证据与实际代码失配。
 
 ## 3. 处置与轮次上限
 
-- 无阻塞发现 → 本轮写 `verdict: approved`，交给 N5 机械校验
+- 独立审查完成且无阻塞发现 → 本轮写 `verdict: approved`、`independent: true`，交给 N5 机械校验
 - 有效发现且当前为第 1 轮 → 写 `verdict: changes_requested`，返回 N3 生成 attempt 2 handoff，再用同一级别的新鲜上下文复审
 - 第 2 轮仍有阻塞发现 → 写 `verdict: blocked`，停止并进入人工处置，不得创建 attempt 3
 - 误报 → 记录理由后忽略
@@ -88,8 +91,12 @@ scope:
 `approved` 必须写 `blocking_findings: 0`；其他 verdict 至少为 1。
 `self-degraded` 必须写 `independent: false`，并用非空 `degraded_reason` 记录前两个
 通道为何不可用。
-**无凭证文件或 verdict 不是 approved = 不得完成**，N5 必须执行 `mark-done`，
+历史自审凭证可审计，但 `independent: false` 即使写了 approved 也不能授权新完成。
+**无有效独立凭证或 verdict 不是 approved = 不得完成**，N5 必须执行 `mark-done`，
 不能只检查文件存在或先校验再手工勾选。
+
+任何阶段修改被审代码、测试或执行指令后，原批准不覆盖新内容；按
+`runtime/review.md` 重新形成证据。已标记完成后的补正不得自动重开任务或重置轮次。
 
 ## 5. 度量
 

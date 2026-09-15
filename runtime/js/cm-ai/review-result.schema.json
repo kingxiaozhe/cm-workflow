@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cm-workflow.local/schemas/codex-review-result-v1.json",
+  "title": "CM Codex reviewer result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "packageDigest", "examinedPaths", "findings", "summary"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["approved", "changes_requested", "blocked"]
+    },
+    "packageDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "examinedPaths": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "severity", "path", "message", "evidence"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+          "severity": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+          "path": { "type": "string", "minLength": 1 },
+          "message": { "type": "string", "minLength": 1 },
+          "evidence": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "summary": { "type": "string", "minLength": 1 }
+  }
+}

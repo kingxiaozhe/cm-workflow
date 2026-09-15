@@ -20,6 +20,34 @@ CORE_SKILLS = (
     "cm-refactor",
     "cm-check",
 )
+CM_AI_RUNTIME = (
+    "cm-ai-admission.mjs",
+    "cm-ai-context-refresh.mjs",
+    "cm-ai-conversation-entry.mjs",
+    "cm-ai-learning-handoff-writer.mjs",
+    "cm-ai-learning-writer.mjs",
+    "cm-ai-qa-log.mjs",
+    "cm-ai-run-finalizer.mjs",
+    "codex-config.mjs",
+    "codex-review-adapter.mjs",
+    "contracts.mjs",
+    "durable-runner-state.mjs",
+    "effect-contract.mjs",
+    "execution-store.mjs",
+    "gate-bridge.mjs",
+    "host.mjs",
+    "host-session.mjs",
+    "index.mjs",
+    "provider-review-observation.mjs",
+    "review-package.mjs",
+    "review-result.schema.json",
+    "review-runner.mjs",
+    "task-commit-codec.mjs",
+    "task-commit.mjs",
+    "task-owner.mjs",
+    "task-runner.mjs",
+    "worker-codex.mjs",
+)
 REQUIRED = (
     ".codex-plugin/plugin.json",
     "package.json",
@@ -41,21 +69,34 @@ REQUIRED = (
     "runtime/test-contract.md",
     "runtime/workflow-config.md",
     "runtime/workflow-routing.md",
+    "scripts/cm-ai-admission.mjs",
+    "scripts/cm-ai-run.mjs",
+    "scripts/cm-ai-run.test.mjs",
+    "docs/js-workflow-control.md",
+    "scripts/cm-ai-admission.test.mjs",
     "scripts/cm-check-runtime.sh",
     "scripts/cm-check-runtime.ps1",
     "scripts/cm-release-smoke.sh",
+    "scripts/cm-log-event.mjs",
+    "scripts/cm-log-event.test.mjs",
     "scripts/cm-log-event.py",
     "scripts/cm-prd-timing.py",
     "scripts/cm-usage-report.py",
     "scripts/cm-openai-compatible-call.py",
+    "scripts/cm-task-gate.mjs",
+    "scripts/cm-task-gate.test.mjs",
     "scripts/cm-task-gate.py",
     "scripts/test-cm-log-event.py",
     "scripts/test-cm-prd-timing.py",
     "scripts/test-cm-usage-report.py",
     "scripts/test-cm-openai-compatible-call.py",
     "scripts/test-task-gate.py",
+    "scripts/cm-workflow-config.mjs",
+    "scripts/cm-workflow-config.test.mjs",
     "scripts/cm_workflow_config.py",
     "scripts/test-workflow-config.py",
+    "scripts/validate-test-cases.mjs",
+    "scripts/validate-test-cases.test.mjs",
     "scripts/validate-test-cases.py",
     "templates/cm-workflow.yml",
 )
@@ -82,6 +123,10 @@ def frontmatter(path: Path) -> dict[str, str]:
 def main() -> int:
     failures: list[str] = []
     for relative in REQUIRED:
+        if not (ROOT / relative).is_file():
+            fail(f"missing required file: {relative}", failures)
+    for name in CM_AI_RUNTIME:
+        relative = f"runtime/js/cm-ai/{name}"
         if not (ROOT / relative).is_file():
             fail(f"missing required file: {relative}", failures)
 

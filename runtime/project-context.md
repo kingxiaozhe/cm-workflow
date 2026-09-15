@@ -23,6 +23,12 @@ Read context in this order:
 
 When `AGENTS.md` and `.claude/CLAUDE.md` disagree, follow the more specific instruction that applies to the current path, unless it weakens a safety boundary. Record material conflicts in the task report.
 
+For each authorized development task or bug fix, also read `project-learning.md`.
+Re-read the target project's root `AGENTS.md` from disk at task start and resume,
+including outside Codex; a context copy loaded at session start may be stale.
+Select applicable lessons before implementation or diagnosis. Read-only work does
+not authorize learning writeback.
+
 ## `cm-init` output
 
 For an existing project, `cm-init` maintains both surfaces:

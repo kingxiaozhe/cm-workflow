@@ -2,6 +2,9 @@
 
 ## 开始标记
 
+按 `../../../runtime/project-learning.md` 从磁盘重读各目标项目的 `AGENTS.md`，
+在本任务计划中写明适用教训与验证动作；子 agent 只接收摘录、返回候选教训。
+
 改文件前先记录每个目标仓库的 `git status --short`、本任务预期文件集与已存 dirty 文件的 diff 指纹。这份快照供 N4 排除用户改动、N5 精确 stage；未记录就不得使用自动提交。
 
 ```text
@@ -33,7 +36,7 @@
 **串行 / 并行的执行方式**：串行任务由主执行者直接按 skill 执行；并行任务按 `runtime/orchestration.md` 为子代理注入对应工种 skill 的角色约束。两种产出都必须由主执行者回收验证，再进入 N4。
 
 并行只读任务无需 worktree；两个及以上任务并行写代码前，主执行者必须按
-`runtime/orchestration.md` 执行 `cm-task-gate.py check-parallel-write`。非零结果立即
+`runtime/orchestration.md` 执行 `cm-task-gate.mjs check-parallel-write`。非零结果立即
 降级串行，不得让多个执行者共享 checkout、分支或 detached worktree。
 
 ## 开发
@@ -61,7 +64,28 @@
 - 模型发生别名或路由时同时记录 `requested_model`、`effective_model`、`provider`、
   `purpose` 与 `model_equivalent`；不得用别名冒充实际模型。
 
+## 项目安全检查
+
+- 开发前读取项目已声明的安全检查命令（项目规则、CI 或现有脚本），确认适用于本次任务；优先复用上线扫描口径，不自行安装扫描器或外发源码。
+- 已适用的安全检查与任务测试一起在交接前执行。JS 受保护宿主把命令加入现有 `checkCommands`，保留原测试；普通宿主按原 check 协议回报真实执行结果，不新增安全节点。
+- 扫描命令只有完成检查且无项目定义的阻断问题时才能退出 0。非零、工具缺失或超时均阻止交接；不得用 `|| true`、删除检查或忽略规则来换取通过。
+- 有问题先在已批准范围内修复并重跑；修复超范围或无法执行则按原 blocked/恢复流程处理，不重置 attempt 或覆盖已有 handoff。
+- 未配置时如实说明“未执行安全扫描”；项目或本次任务要求扫描却缺命令时保持阻塞，不用 AI Review 代替。无扫描要求的项目沿用原流程，不自动宣称安全通过。
+
+接入示例和退出码约定见 [项目安全检查接入](../../../docs/js-workflow-control.md#项目安全检查接入)。扫描结果进入已有 verification；原始敏感输出不复制进 Review。
+
 ## 结构化交接门禁
+
+若这是全部 feature 的最后一个待完成任务，在定稿 handoff 前调用 `cm-doc-syncer`
+同步项目文档及已有 codebase-context 参考文档；仅修改本任务事先批准的文档范围，
+缺范围先走规格变更批准，不自动扩 scope。文档与代码一起检查、定稿并交给 N4 审查。
+项目指令仍由主执行者按原权限及 Learning 合同处理，不向开发子 agent 开放受保护目录。
+JS 宿主可通过 `execution.documentationSync` 接入此步骤，写入处于原持久开发调用内；
+重启中的未知调用不得重发。最后任务是否成立必须核对所有 feature，不能只看当前 feature。
+
+写 handoff 前按 `../../../runtime/project-learning.md` 完成本任务复盘与必要的
+AGENTS.md 增量写回；将学习结果、文件摘要记入已有交接字段，变更文件进入
+`changed_files` 和 N4 审查范围。无新增明确记录，不把复盘推迟到整批任务结束。
 
 实现和任务内验证结束后，主执行者依据真实 diff、命令输出和子代理汇报，写入：
 
@@ -87,7 +111,7 @@ SHA 替代它。后续若任一已审文件内容变化，必须生成下一 att
 进入 N4 前必须真跑：
 
 ```bash
-python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n4 \
+node {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs check-n4 --require-learning \
   --handoff {HANDOFF_PATH} \
   --reviews-dir {SPECS_DIR}/.reviews \
   --feature {FEATURE_SLUG} \

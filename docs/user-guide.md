@@ -31,6 +31,11 @@
 
 安装后必须新开会话，再运行 `$cm-check`。如果检查通过，就不需要每次任务都重复执行它。
 
+`cm-ai` 的新任务默认使用 JS Workflow，无需额外指定执行方式。它要求 Node.js 24.14+；
+macOS 已有本地验证，Linux 尚缺目标环境验证，原生 Windows 尚不支持。
+已有运行按原执行方式续接，升级不自动迁移旧任务；新任务只有明确选择旧兼容流程才走兼容入口。
+JS 缺少运行条件时会报告缺口，不会静默切回旧流程。默认选择不替代规格审批与各项调用授权。
+
 ## 我现在该用哪个命令？
 
 <p align="center">
@@ -104,8 +109,8 @@ CM Workflow 经常同时使用两个目录：
 凭据；配置缺失时仍使用当前默认流程。检查有效配置：
 
 ```bash
-python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py --project {代码项目路径}
-python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py --project {代码项目路径} --print-effective
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs --project {代码项目路径}
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs --project {代码项目路径} --print-effective
 ```
 
 常见的请求分工是：编码角色选择 Codex CLI/订阅，需求和方案角色选择 Claude/Fable 等

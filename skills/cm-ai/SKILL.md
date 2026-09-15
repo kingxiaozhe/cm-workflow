@@ -1,6 +1,6 @@
 ---
 name: cm-ai
-description: 用户明确说“规格已确认，开始实现”或要求按已审批 CM specs 开发时使用。按 N1-N8 完成开发、独立审查、QA 与文档同步；模糊点子、未审规格和单独一句“继续”不能触发编码批准。
+description: 用户明确说“规格已确认，开始实现”或要求按已审批 CM specs 开发时使用。新任务默认由 JS workflow 驱动 N1-N8，完成开发、独立审查、QA 与文档同步；模糊点子、未审规格和单独一句“继续”不能触发编码批准。
 ---
 
 # cm-ai — 自动开发
@@ -25,7 +25,24 @@ $cm-ai ~/projects/specs 前端~/code/fe 后端~/code/api
 
 ## 流程图
 
-按此流程执行，到达每个节点时读取 `references/` 下对应的节点文件获取详细规则。
+### 执行路由（新任务默认 JS）
+
+先按下列顺序选择执行方式；用户无需额外说“使用 JS workflow”。路由选择不替代规格审批或实际调用授权。
+
+1. **恢复已有运行**：先读取原运行记录。已有 JS host/batch 沿原身份与配置恢复；
+   已确认的旧兼容任务沿原流程续接，不因升级迁移状态。记录缺失、冲突或无法确定归属时只读核对，不能猜测或另开运行绕过历史。
+2. **新任务**：默认读取 `references/js-host.md`，由共享 JS 入口驱动阶段；当前会话只执行其工具请求。
+   只有用户明确选择旧兼容流程、且确认不是已有 JS 运行时，才进入下文兼容执行步骤；不新增 CLI 参数。
+3. **JS 准入失败或不支持**：报告具体宿主、Node 版本、目录、配置或业务能力缺口并停止依赖该能力的执行；
+   不静默回退兼容流程，不改 runId、runtime 或手工完成路径规避阻断。原生 Windows 尚不支持，Linux 支持声明不等于实机验收。
+
+JS 路由中的状态、日志、handoff、Review 凭证与任务勾选由原 JS owner 和唯一完成门禁负责；
+不得执行下文兼容步骤中的同类手工写入。节点参考的业务约束仍适用，默认路由不扩大开发、审查、QA、Git 或发布权限。
+
+### N1–N8 业务概览与兼容执行步骤
+
+下列流程图说明共同业务顺序；JS 的执行操作以 `references/js-host.md` 为准。
+仅已选定兼容流程时，按下文及 `references/` 节点执行手工步骤；入口更新不代表已安装副本或全阶段实机验收。
 
 ```text
 START
@@ -96,7 +113,7 @@ detail 用一句大白话；不直接拼 JSON，避免跨会话格式漂移。
 任务检查解析 `tester`，N4 解析 `reviewer`，并在 N6 QA 解析 `tester`。使用：
 
 ```bash
-python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
   --project {CODE_PROJECT} --role coder --runtime {codex|claude} --print-role
 ```
 

@@ -14,22 +14,26 @@ flowchart LR
     Skills --> TaskGates["runtime/task-gates.md"]
     Skills --> Logging["runtime/logging.md"]
     Skills --> External["runtime/external-expert.md"]
+    RuntimeJS["runtime/js/cm-ai: shipped source + active N1/N2 admission"]
     Skills --> References["flow references: N1-N8 / PRD modes"]
     Skills --> Templates["templates/"]
     Skills --> Specs["requirements / design / tasks / optional test-cases"]
     Specs --> Target["target code repository"]
     External --> Provider["optional external browser / manual handoff"]
     Provider --> ExternalEvidence["specs .external/"]
-    Logging --> Writer["scripts/cm-log-event.py"]
+    Logging --> Writer["scripts/cm-log-event.mjs JS authority"]
+    Writer --> LockAdapter["cm-log-event.py platform lock adapter"]
     Writer --> ProjectLog["specs 运行日志.jsonl + .cm-run.json/.lock"]
     Writer --> GlobalLog["~/.cm-workflow/logs private mirror"]
-    Config["optional .cm-workflow.yml/.json"] --> ConfigCheck["scripts/cm_workflow_config.py"]
+    Config["optional .cm-workflow.yml/.json"] --> ConfigCheck["scripts/cm-workflow-config.mjs"]
     ConfigCheck --> Routing["runtime/workflow-routing.md"]
     Routing --> Skills
-    TaskGates --> GateCheck["scripts/cm-task-gate.py"]
+    TaskGates --> GateCheck["scripts/cm-task-gate.mjs JS authority"]
+    GateCheck --> GateLock["cm-task-gate.py completion lock adapter"]
     GateCheck --> Reviews["specs .reviews handoff + verdict evidence"]
     Check["scripts/cm-check-runtime.sh"] -. validates .-> Skills
     Check -. validates .-> Wrappers
+    Check -. validates .-> RuntimeJS
 ```
 
 ## Sources of truth
@@ -65,17 +69,37 @@ native filenames. Workflow assets resolve relative to the active Skill; no flow
 may hardcode a Codex cache path or treat `~/.claude` as the universal source
 root.
 
+`runtime/js/cm-ai/` is the sole source root for the accepted JS orchestration
+modules. `experiments/js-orchestration/` keeps thin re-exports plus historical
+fixtures so prior evidence paths remain readable. The active `cm-ai` Skill owns
+conversation/tool orchestration and invokes the shared JS gates directly; the
+dormant full-host factory is not a prerequisite and Claude does not need a second
+adapter protocol. Platform installation evidence and real task dogfood remain
+separate F09 work.
+
 ## Review model
 
 Implementation cannot be marked complete without task-scoped review evidence.
 The preferred channel is a fresh Codex subagent or independent thread, followed
-by an isolated read-only Codex CLI review. `self-degraded` is allowed only when
-independent channels are unavailable and must be recorded in the evidence.
+by an isolated read-only Codex CLI review. If both are unavailable, new
+implementation pauses and existing work remains pending review. `self-degraded`
+is diagnostic/historical evidence only; it cannot authorize new completion.
 N3 must first produce a schema-valid `ready_for_review` handoff. N4 owns the
 `approved | changes_requested | blocked` verdict, and N5 runs the shared gate
 instead of treating any matching filename as approval. At most two attempts are
-allowed. Parallel writers also pass the same gate tool with distinct registered
+allowed. N5 requires both `approved` and `independent: true`, preserves task-file
+line endings, and changes only the target checkbox. Post-review changes to code,
+tests, or execution instructions need new evidence, including suggestions made
+during N5 lesson recording; N5 itself records suggestions rather than implementing
+them. Historical completed tasks are not automatically reopened.
+Parallel writers also pass the same gate tool with distinct registered
 worktrees and branches; failure downgrades execution to serial.
+
+This gate checks declarations and content-bound review evidence; it does not make
+one provider's result evidence for another provider. Codex and Claude both keep
+conversation orchestration in the active Skill and use the same JS gates, while a
+fresh context supplies independent review. Real durable N1–N8 dogfood and authorized
+installation evidence remain later work; no Claude-native adapter is required.
 
 ## External reasoning model
 
@@ -100,11 +124,12 @@ transmission and mixed-task implementation remains local.
 ## Logging model
 
 `runtime/logging.md` defines one event envelope for Codex and Claude Code.
-`scripts/cm-log-event.py` writes the specs-local `运行日志.jsonl` first, mirrors
+`scripts/cm-log-event.mjs` writes the specs-local `运行日志.jsonl` first, mirrors
 the same event into a per-run global JSONL file, and maintains an append-only
 `index.jsonl`. `.cm-run.json` lets a new session reuse an active `run_id`; a
 completed run causes the next invocation to rotate to a new id. Project and
-global standard-library file locks serialize concurrent writers, while a
+global standard-library file locks held by the thin Python platform adapter
+serialize concurrent writers, while a
 deterministic event id deduplicates an otherwise identical retry.
 
 The project log is authoritative. If the global mirror fails, a specs-backed

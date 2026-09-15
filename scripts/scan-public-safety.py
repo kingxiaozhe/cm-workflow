@@ -14,7 +14,7 @@ SELF = Path(__file__).resolve()
 SKIP_DIRS = {".git"}
 SKIP_SUFFIXES = {".png", ".gif", ".jpg", ".jpeg", ".mp4", ".woff", ".woff2"}
 PATTERNS = {
-    "private key": re.compile(r"-----BEGIN (?:RSA|EC|OPENSSH|DSA|PGP) PRIVATE KEY-----"),
+    "private key": re.compile(r"-----BEGIN (?:(?:RSA|EC|OPENSSH|DSA|PGP|ENCRYPTED) )?PRIVATE KEY-----"),
     "AWS access key": re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     "GitHub token": re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
     "OpenAI-style key": re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
@@ -27,18 +27,46 @@ PATTERNS = {
         r"https?://(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)"
     ),
 }
-ALLOW_PRIVATE_ENDPOINT_FILES = {
+# Only these reviewed local-server fixtures, diagnostic sinks and examples may
+# contain loopback URLs. Other private endpoints and all secret/path patterns
+# remain checked even inside these files.
+ALLOW_LOOPBACK_ENDPOINT_FILES = {
     Path("scripts/test-cm-openai-compatible-call.py"),
     Path("templates/dashboard/serve.sh"),
     Path("templates/pixel/serve.sh"),
     Path("templates/pixel/dev/README.md"),
+    Path("docs/js-workflow-control.md"),
+    Path("runtime/js/cm-ai/claude-tool-preview.mjs"),
+    Path("scripts/cm-ai-batch-host.test.mjs"),
+    Path("scripts/cm-ai-host.test.mjs"),
+    Path("scripts/cm-ai-multi-root.test.mjs"),
+    Path("scripts/cm-ai-nested-execution.test.mjs"),
+    Path("scripts/cm-claude-probe.test.mjs"),
+    Path("scripts/cm-fix-visual-bare.test.mjs"),
+    Path("scripts/cm-fix-walkthrough.test.mjs"),
+    Path("scripts/cm-host-qa-executor.test.mjs"),
+    Path("scripts/cm-test-host.test.mjs"),
+    Path("scripts/cm-test-session.test.mjs"),
 }
+URL_AUTHORITY = re.compile(r"https?://([^/\s?#'\"`<>]+)")
+LOOPBACK_AUTHORITY = re.compile(
+    r"(?:localhost|127\.0\.0\.1)"
+    r"(?::(?:[0-9]+|\$[A-Z_][A-Z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|"
+    r"\{[A-Za-z_][A-Za-z0-9_.]*\}))?"
+)
+
+
+def reviewed_loopback(relative: Path, text: str, offset: int) -> bool:
+    if relative not in ALLOW_LOOPBACK_ENDPOINT_FILES:
+        return False
+    authority = URL_AUTHORITY.match(text, offset)
+    return authority is not None and LOOPBACK_AUTHORITY.fullmatch(authority[1]) is not None
 
 
 def main() -> int:
     findings: list[str] = []
     tracked_result = subprocess.run(
-        ["git", "ls-files", "-z", "--", ".omx"],
+        ["git", "ls-files", "-z"],
         cwd=ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -53,9 +81,9 @@ def main() -> int:
         }
 
     for path in sorted(ROOT.rglob("*")):
-        if path == SELF or not path.is_file() or any(part in SKIP_DIRS for part in path.parts):
-            continue
         relative = path.relative_to(ROOT)
+        if path == SELF or not path.is_file() or any(part in SKIP_DIRS for part in relative.parts):
+            continue
         # OMX execution state is machine-local and normally ignored. Skip only
         # untracked state; an accidentally tracked `.omx` file remains public
         # package content and must still be scanned. If Git lookup fails, scan
@@ -69,9 +97,9 @@ def main() -> int:
         except UnicodeDecodeError:
             continue
         for label, pattern in PATTERNS.items():
-            if label == "private endpoint" and relative in ALLOW_PRIVATE_ENDPOINT_FILES:
-                continue
             for match in pattern.finditer(text):
+                if label == "private endpoint" and reviewed_loopback(relative, text, match.start()):
+                    continue
                 line = text.count("\n", 0, match.start()) + 1
                 findings.append(f"{relative}:{line}: {label}")
 

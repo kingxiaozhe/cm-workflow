@@ -14,7 +14,7 @@ This contract governs `cm-ai`, `cm-fix`, and `cm-refactor` when they execute wor
 ## Project role routing
 
 An optional project `.cm-workflow.yml`/`.yaml`/`.json` is loaded through
-`scripts/cm_workflow_config.py`; the shared contract is
+`scripts/cm-workflow-config.mjs`; the shared contract is
 `runtime/workflow-routing.md`. The effective role mapping is projected into
 `cm-prd`, `cm-ai`, and `cm-test` as requested route metadata and stage
 instructions:
@@ -84,7 +84,7 @@ write code concurrently, assign each task a registered worktree and unique
 branch, then run:
 
 ```bash
-python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-parallel-write \
+node {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs check-parallel-write \
   --repo {CODE_PROJECT} \
   --assignment T-001={WORKTREE_ONE} \
   --assignment T-002={WORKTREE_TWO}

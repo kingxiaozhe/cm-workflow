@@ -15,7 +15,11 @@ when its producers, consumers, compatibility wrappers, and checks agree.
 ./scripts/cm-check-runtime.sh
 ./scripts/cm-check-runtime.sh --routing-fixtures
 bash scripts/test-shell-compat.sh
-python3 scripts/test-workflow-config.py
+node --test scripts/cm-workflow-config.test.mjs
+node --test scripts/cm-log-event.test.mjs
+node --test scripts/validate-test-cases.test.mjs
+python3 scripts/test-workflow-config.py  # legacy harness compatibility
+node --test scripts/cm-task-gate.test.mjs
 python3 scripts/test-task-gate.py
 python3 scripts/validate-public-repo.py
 python3 scripts/scan-public-safety.py

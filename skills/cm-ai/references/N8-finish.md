@@ -2,23 +2,29 @@
 
 所有 feature 的所有任务完成后：
 
-## 1. 调用 cm-doc-syncer
+## 1. 核验文档同步
 
-调用 `cm-doc-syncer` skill 完成文档同步：
+项目文档已在最后任务的 N3、定稿 handoff 和 N4 Review 前通过 `cm-doc-syncer`
+同步。此处只核验，不在已完成任务后改写项目文件：
 
 - README 精炼更新（架构 + 业务 + 快速开始）
 - `AGENTS.md` 与 `.claude/CLAUDE.md` / rules 兼容文档同步
-- specs CHANGELOG 按日期生成
+- specs CHANGELOG 等收口元数据按日期生成，不改 requirements/design/tasks
 - 文档一致性验证
 
-## 1.5 代码库参考文档回写（存在时强制）
+文档仍需修改时保持 BLOCKED，经规格变更批准回到正常任务路径；不重开旧任务、
+不扩大已批准范围、不覆盖旧 Review。生产发布和 Git 交付权限不由同步结果产生。
 
-`{项目根}/docs/codebase-context/` 存在时（skill 未安装但文档在 → 按 skill 文内的回写映射表手动执行，映射表就在文档同目录项目里；两者都无 → 跳过本步），按 `codebase-context` skill dev 模式步骤 3 的「变更类型 → 需更新文档」映射表，把本次全部 feature 的变更回写进参考文档（09-changelog 类型标 `dev回写`）——**地图必须跟着代码走，否则下次二开按过期地图改**。
+## 1.5 核验代码库参考文档回写（存在时强制）
+
+`{项目根}/docs/codebase-context/` 存在时，按 `codebase-context` 的回写映射核验本次
+全部 feature 已在 N3 回写，09-changelog 类型标 `dev回写`；不存在则跳过。
+缺项保持 BLOCKED，不在此处绕过已审查的项目文件快照。
 
 ## 1.7 最终工作树与交付策略
 
 对每个代码项目分别回读有效 `DELIVERY_MODE`，执行 `git diff --check` 并核对 N8 新变更：doc-syncer 只能
-产生文档/specs 元数据；若出现源码、配置或依赖变更，说明有修改绕过任务审查，立即
+产生 specs 收口元数据；若出现新的项目文档、源码、配置或依赖变更，说明有修改绕过任务审查，立即
 `BLOCKED`。然后按唯一分支收口：
 
 - `diff`：不 commit、不 push、不创建 MR；输出基线 SHA、`git diff --stat` 和完整

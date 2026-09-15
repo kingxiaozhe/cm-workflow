@@ -95,12 +95,15 @@ push 和创建 MR/PR；未授权时保留已验证的本地分支，不伪造 de
 
 ## 校验
 
-使用标准库校验配置，不要求安装 PyYAML：
+使用 Node.js 内置能力校验配置，不要求安装第三方依赖：
 
 ```bash
-python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py --project {CODE_PROJECT}
-python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py --project {CODE_PROJECT} --print-effective
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs --project {CODE_PROJECT}
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs --project {CODE_PROJECT} --print-effective
 ```
+
+`scripts/cm_workflow_config.py` 仅保留为旧调用方的兼容转发入口；配置解析、合并、校验与
+角色路由的唯一实现位于 `scripts/cm-workflow-config.mjs`。
 
 配置错误时，入口必须停止并报告字段路径；配置正确时，`--print-effective` 输出合并默认值后的脱敏 JSON。
 `cm-check` 会在验证项目配置时使用该输出模式，便于确认实际生效的角色和默认值；它不把
@@ -110,6 +113,6 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py --project {CODE_PROJECT
 角色的安全路由元数据：
 
 ```bash
-python3 {CM_WORKFLOW_ROOT}/scripts/cm_workflow_config.py \
+node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
   --project {CODE_PROJECT} --role coder --runtime codex --print-role
 ```
