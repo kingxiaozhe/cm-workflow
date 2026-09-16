@@ -17,6 +17,8 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 
 ## 常用命令
 
+- 分支影响分析：直接 `$cm-test` / `/cm-test`；默认比较当前提交与主分支，输出业务影响和回归重点，再检查单测覆盖率；“补齐单测”连续补测、重跑、审查。显式目标保留原模式。
+
 - JS 修复入口: `node scripts/cm-fix-host.mjs --help`；同仓specs可显式配置`protectSpecs:true`，原权限/审查不变，宿主只回文本提案，由固定沙箱写入；QA子配置复用，详见`docs/js-workflow-control.md`
 
 - 安装依赖: 无 npm 安装步骤（`package.json` 无依赖；可视化工具按需使用外部 Playwright）
@@ -69,6 +71,7 @@ scripts/               # 双运行时机械检查、公开包校验与辅助脚�
 experiments/js-orchestration/ # JS 兼容转发、历史实验与本地夹具；不保存第二份 cm-ai 实现
 .codex-plugin/         # Codex 插件清单
 VERSION                # 语义版本源，与 plugin manifest 基础版本一致
+CHANGELOG.md           # 用户可感知的版本变化；未发布改动单独记录
 ```
 
 ## 核心架构原则
@@ -76,6 +79,7 @@ VERSION                # 语义版本源，与 plugin manifest 基础版本一�
 - **agent 管纪律，skill 管技术**：并行干活的做 agent（前端/UI/小程序/后端/数据库/合约），串行把关的做 skill（产品/金融/QA/运维/doc-syncer）。新增角色前先归到这两类之一。
 - **引用即契约**：本仓库历史缺陷全属「引用断链」——改名残留、匹配表缺项、死角色、失效命令引用。任何跨文件引用都由 `/cm-check` 机器化校验。
 - **一份流程真相**：Codex Skill 是权威实现，Claude 旧别名只转发，不复制业务规则。
+- **业务地图回写**：需求与修复共用 `skills/codebase-context/references/writeback.md`，只增量更新、审前定稿；缺失建局部地图，项目指定文档优先，固定写入范围不自动扩大。
 - **任务级 Learning loop**：开发/排错先重读根 `AGENTS.md`；每 task 收尾按 `runtime/project-learning.md` 提炼写回、随任务审查并回读，无新增明确记录。JS 源码接通不等于真实下一 task 复用已验收。
 - **源码分发不等于激活**：正式 JS 源码、本地测试或独立审查不等于 host 已接入、真实 provider 执行、任务完成、跨平台验证或发布；真实项目写入仍需明确授权。
 - **模板层是团队定制入口**：公司规范沉淀进 `templates/rules/`，所有项目 `/cm-init` 出的 rules 自动带公司基因。

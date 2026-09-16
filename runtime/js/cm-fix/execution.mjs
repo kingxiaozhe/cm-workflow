@@ -16,7 +16,7 @@ import {createFixRedTest,inspectFixRedTest,verifyFixRedEvidence,redTestFiles} fr
 import {createFixBaseline,inspectFixBaseline,fixBaselineFiles} from './baseline.mjs';
 import {prepareFixTestAuthor,inspectFixTestAuthor} from './test-author.mjs';
 import {readReviewBaseline,readReviewPackage,reviewSpecsPath,createReviewPackage,readReviewSourceFiles} from '../cm-ai/review-package.mjs';
-import {prepareFixRepair,inspectFixRepair,verifyFixRepair} from './repair.mjs';
+import {prepareFixRepair,inspectFixRepair,verifyFixRepair,isFixMapPath} from './repair.mjs';
 import {validateDeveloperScope} from '../cm-ai/developer-adapter.mjs';
 import {createFixRegression,inspectFixRegression} from './regression.mjs';
 import {composeFixReviewBaseline,continueFixReviewBaseline} from './review-baseline.mjs';
@@ -627,7 +627,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           &&digest(repairBaseline.scope)===digest([...configuration.repair.scope].sort())
           &&digest(repairBaseline.requirements)===digest([...configuration.repair.requirements].sort())
           &&record.payload.redDigest===digest(red)&&record.payload.testBaselineDigest===digest(baseline),'repair_binding_mismatch');
-        need(repairBaseline.scope.every(file=>diagnosed.affectedPaths.includes(file)
+        need(repairBaseline.scope.every(file=>(diagnosed.affectedPaths.includes(file)||isFixMapPath(file))
           &&![...configuration.redTest.testFiles,...configuration.baseline.testFiles].some(test=>test.toLowerCase()===file.toLowerCase())),'repair_scope_mismatch');
         stage='unknown';pending='repair';continue;
       }

@@ -69,5 +69,8 @@ HOME="$TEMP_HOME" CODEX_HOME="$TEMP_CODEX_HOME" \
   "$TEMP_HOME/plugins/cm-workflow/scripts/cm-check-runtime.sh" \
   --project "$TEMP_HOME/plugins/cm-workflow"
 
+[ -f "$TEMP_HOME/plugins/cm-workflow/CHANGELOG.md" ] || fail "installed changelog missing"
+cmp -s "$ROOT/CHANGELOG.md" "$TEMP_HOME/plugins/cm-workflow/CHANGELOG.md" || fail "installed changelog differs from source"
+
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 echo "cm release surface smoke: PASSED (v${VERSION})"

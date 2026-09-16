@@ -17,6 +17,10 @@
    可选 `redTest`、`baseline`、`testAuthor`、`repair`、`walkthrough`、`applicableAgentFiles`
    必须先按 `../../../runtime/js/cm-fix/` 中对应模块的实际合同配置，不能临场发明字段。
    首次启动前固定所需配置；持久运行不支持通过改配置文件解除阻断。
+   地图同步按 `../../codebase-context/references/writeback.md` 在启动前确定文档路径并纳入
+   已批准的 `repair.scope`；`fix_repair` 内完成回写，缺范围不在宿主外补写。
+   本次参考且保留路径的现有地图加入 `repair.requirements` 作为只读审核材料；新建或已批准删除/改名
+   的地图只进写 scope，由真实 diff 的 after/before 携带；不能为审核把只读材料变成写权限。
 4. 根因/最终 reviewer 配置及诊断沿用 `../../../scripts/cm-ai-host.mjs` 的
    `readConversationReviewConfiguration` 和对应 runtime preflight 合同；诊断输入是该脚本
    所要求的 cm-ai 配置，不把 fix 配置直接当作诊断配置。诊断不等于真实模型可用或外发批准。

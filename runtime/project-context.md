@@ -21,6 +21,12 @@ Read context in this order:
 3. Only the `.claude/rules/*.md` files relevant to the current task, plus `coding-style.md`, `testing.md`, and `security.md` when present.
 4. The target specs files named by the active workflow.
 
+Before business-code implementation or repair, apply the read-only freshness check in
+`../skills/codebase-context/references/writeback.md`: verify the relevant map against
+current code, including uncommitted changes. A missing, old, partial or wrong-project
+map does not trigger a full scan; establish the affected chain before editing code.
+Map writes remain within approved scope and happen before independent Review.
+
 When `AGENTS.md` and `.claude/CLAUDE.md` disagree, follow the more specific instruction that applies to the current path, unless it weakens a safety boundary. Record material conflicts in the task report.
 
 For each authorized development task or bug fix, also read `project-learning.md`.

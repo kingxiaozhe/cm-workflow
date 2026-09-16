@@ -15,6 +15,9 @@ test('one original review baseline includes authored test and business repair, r
   const cwd=path.join(root,'code'),specsRoot=path.join(root,'specs');fs.mkdirSync(cwd);fs.mkdirSync(specsRoot);
   fs.writeFileSync(path.join(cwd,'value.mjs'),'export const value=1;');
   fs.writeFileSync(path.join(cwd,'requirements.md'),'fixture');
+  fs.mkdirSync(path.join(cwd,'docs'));
+  const mapPath='docs/map.md',mapBody='# Map\nA caller reads the numeric value; the relationship is unchanged.\n';
+  fs.writeFileSync(path.join(cwd,mapPath),mapBody);
   const identity={repositoryId:'fixture',runId:'combined-review',taskId:'T-FIX-demo',attempt:1};
   const options={codeProject:cwd,specsRoot,identity,testFiles:['red.mjs'],requirements:['requirements.md'],defect:'Constant bug',diagnosis:{},reproduction:{}};
   try{
@@ -22,7 +25,7 @@ test('one original review baseline includes authored test and business repair, r
       fs.writeFileSync(path.join(cwd,'red.mjs'),"import {value} from './value.mjs';if(value!==2)process.exit(1)");return {outcome:'authored'};
     }}});
     const authorResult=await author.execute({authorized:true,signal:new AbortController().signal,register(){}});
-    const capture=()=>captureReviewBaseline({root:cwd,specsRoot,identity,scope:['value.mjs'],requirements:['value.mjs']});
+    const capture=()=>captureReviewBaseline({root:cwd,specsRoot,identity,scope:['value.mjs'],requirements:['value.mjs',mapPath]});
     const repairBaseline=capture();
     const input={authorBaseline:author.baseline,authorResult,repairBaseline};
     const combined=composeFixReviewBaseline(input);
@@ -32,6 +35,13 @@ test('one original review baseline includes authored test and business repair, r
     const checks=await createHostCheck({cwd,commands:[{id:'target',command:[process.execPath,'red.mjs']}]})({identity},{signal:new AbortController().signal});
     assert.equal(checks[0].outcome,'passed');
     const pkg=createReviewPackage({root:cwd,baseline:combined,checks});
+    const map=pkg.requirements.find(file=>file.path===mapPath);
+    assert(map,'unchanged referenced maps must reach independent Review as read-only material');
+    assert.equal(Buffer.from(map.contentBase64,'base64').toString(),mapBody);
+    assert(!pkg.scope.includes(mapPath));assert(!pkg.changes.some(change=>change.path===mapPath));
+    fs.writeFileSync(path.join(cwd,mapPath),'unapproved rewrite');
+    assert.throws(()=>createReviewPackage({root:cwd,baseline:combined,checks}),{code:'out_of_scope'});
+    fs.writeFileSync(path.join(cwd,mapPath),mapBody);
     assert.deepEqual(pkg.changes.map(change=>change.path),['red.mjs','value.mjs']);
     assert.equal(pkg.changes[0].before,null);assert.equal(pkg.changes[1].before.contentBase64,Buffer.from('export const value=1;').toString('base64'));
     assert.throws(()=>composeFixReviewBaseline({...input,repairBaseline:capture()}),{code:'fix_review_interstage_drift'});
@@ -43,6 +53,7 @@ test('one original review baseline includes authored test and business repair, r
     const continued=continueFixReviewBaseline(expanded,nextIdentity);
     assert.deepEqual(continued.files,expanded.files);assert.deepEqual(continued.scope,expanded.scope);
     const cumulative=createReviewPackage({root:cwd,baseline:continued,checks});
+    assert.equal(Buffer.from(cumulative.requirements.find(file=>file.path===mapPath).contentBase64,'base64').toString(),mapBody);
     assert.equal(cumulative.identity.attempt,2);
     assert.deepEqual(cumulative.changes.map(change=>change.path),['AGENTS.md','red.mjs','value.mjs']);
     assert.equal(cumulative.changes[0].before,null);assert.equal(cumulative.changes[1].before,null);
@@ -50,5 +61,12 @@ test('one original review baseline includes authored test and business repair, r
     assert.match(Buffer.from(cumulative.changes[2].after.contentBase64,'base64').toString(),/second repair/);
     assert.throws(()=>continueFixReviewBaseline(expanded,{...nextIdentity,runId:'different'}),{code:'fix_review_baseline_mismatch'});
     assert.throws(()=>continueFixReviewBaseline(continued,nextIdentity),{code:'fix_review_baseline_mismatch'});
+    // An approved map deletion needs its before image, not an after-file requirement.
+    const deletionBaseline=captureReviewBaseline({root:cwd,specsRoot,identity,scope:[mapPath],requirements:['value.mjs']});
+    fs.unlinkSync(path.join(cwd,mapPath));
+    const deleted=createReviewPackage({root:cwd,baseline:deletionBaseline,checks});
+    assert.equal(deleted.changes.length,1);assert.equal(deleted.changes[0].after,null);
+    assert.equal(Buffer.from(deleted.changes[0].before.contentBase64,'base64').toString(),mapBody);
+    assert(!deleted.requirements.some(file=>file.path===mapPath));
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });

@@ -11,7 +11,7 @@ import {createFixRegression} from '../runtime/js/cm-fix/regression.mjs';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 
 test('host minimal repair preserves tests and real red-to-green regression, rejecting unauthorized/no-op/test edits',async()=>{
-  for(const mode of ['repaired','test-edit','no-op','not-ready']){
+  for(const mode of ['repaired','test-edit','map-outside','no-op','not-ready']){
     const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fix-repair-')));
     const cwd=path.join(root,'code'),specsRoot=path.join(root,'specs');fs.mkdirSync(cwd);fs.mkdirSync(specsRoot);fs.mkdirSync(path.join(specsRoot,'.reviews'));
     fs.writeFileSync(path.join(cwd,'value.mjs'),'export const value=1;');
@@ -26,6 +26,10 @@ test('host minimal repair preserves tests and real red-to-green regression, reje
       writes++;
       if(mode!=='no-op')fs.writeFileSync(path.join(cwd,'value.mjs'),'export const value=2;');
       if(mode==='test-edit')fs.writeFileSync(path.join(cwd,'red.mjs'),'// fake passing test');
+      if(mode==='map-outside'){
+        fs.mkdirSync(path.join(cwd,'docs/codebase-context'),{recursive:true});
+        fs.writeFileSync(path.join(cwd,'docs/codebase-context/00-index.md'),'# Unapproved map');
+      }
       bridge.accept({type:'host_result',sessionId:row.sessionId,callId:row.callId,requestDigest:row.requestDigest,result:{outcome:'repaired'}});
     });
     try{
@@ -35,6 +39,9 @@ test('host minimal repair preserves tests and real red-to-green regression, reje
         diagnosis:{status:'diagnosed',affectedPaths:['value.mjs','red.mjs'],rootCause:'Wrong constant'},redTest,baseline,redEvidence,beforeBaseline};
       const capabilities={bridge,assertReviewReady(){ready++;if(mode==='not-ready')throw Object.assign(new Error('not ready'),{code:'review_unavailable'});}};
       assert.throws(()=>prepareFixRepair({...options,scope:['red.mjs']},capabilities),{code:'repair_test_scope_forbidden'});
+      for(const file of ['docs/unrelated.md','docs/codebase-context/extra.md','docs/codebase-context/.scan-meta.json']){
+        assert.throws(()=>prepareFixRepair({...options,scope:['value.mjs',file]},capabilities),{code:'repair_scope_mismatch'});
+      }
       const repair=prepareFixRepair(options,capabilities);
       const control={authorized:true,signal,register(value){registered++;assert.equal(value.baselineDigest,repair.baseline.baselineDigest);}};
       await assert.rejects(repair.execute({...control,authorized:false}),{code:'repair_authorization_required'});
@@ -44,7 +51,7 @@ test('host minimal repair preserves tests and real red-to-green regression, reje
         assert.equal(regression.status,'passed');assert.equal(regression.completionEligible,false);
         await assert.rejects(repair.execute(control),{code:'repair_already_attempted'});
       }else{
-        await assert.rejects(repair.execute(control),{code:mode==='test-edit'?'red_test_files_changed':mode==='no-op'?'repair_no_changes':'review_unavailable'});
+        await assert.rejects(repair.execute(control),{code:mode==='test-edit'?'red_test_files_changed':mode==='map-outside'?'out_of_scope':mode==='no-op'?'repair_no_changes':'review_unavailable'});
         if(mode==='not-ready'){assert.equal(writes,0);assert.equal(registered,0);}
       }
     }finally{bridge.close();fs.rmSync(root,{recursive:true,force:true});}

@@ -1,6 +1,6 @@
 # cm-test：共享 JS 会话入口
 
-用于本 Skill 原有 generate / logic / commands / browser / all / explore 分支。
+用于本 Skill impact / generate / logic / commands / browser / all / explore 分支。
 控制器负责只读快照、用例校验、模式顺序、裁决、不可覆盖报告和原日志收尾；
 当前宿主负责语义判断和实际浏览器工具。没有 provider、安装或自动修复能力。
 
@@ -22,6 +22,10 @@
      "logHome": "{现有私有日志目录绝对路径}"
    }
    ```
+
+   无目标默认分析：`arguments:{}`、`commands:[]`、`environment:null`；`sources` 仅列调用方和测试路径；项目自定地图由宿主填可选 `mapPaths`。
+   控制器自动加入改动前后代码及常用地图，按锁定提交读 Git blob，拒绝混入工作区文本。
+   业务取数、缺口及摘要格式见 [分支影响分析](branch-impact.md)。
 
    `runtime` 可为 `codex|claude`；`arguments` 是准入已有 camelCase 参数，不含
    skillDir/project。`sources` 是项目相对路径，最多 64 个文件/总计 512 KiB，
@@ -56,6 +60,7 @@
 
 | kind | 宿主工作及输出 |
 | --- | --- |
+| `change_impact` | 逐项业务影响分析，按 [分支影响分析](branch-impact.md) 返回 summary、mapStatus、mapEvidence、results、gaps。每个变更必须有一行；引用区分 base/head，材料不足显式 unknown。不能执行测试或声称 PASS。 |
 | `test_cases` | 按主 Skill 生成或归一化用例，返回 `{contract,report}`；逐例核对用户输入不丢失、不弱化预期。生成报告列目标、读取文件、expected 证据映射、已有覆盖、开放问题与未覆盖风险。 |
 | `qa_logic` | 由独立分析者读取选中源码与用例，返回 `{contractDigest,results:[{id,verdict,evidence:[{path,line}],explanation}]}`；只用原三种静态结论，反证说明输入→路径→错误结果。静态证据真实性仍由分析者负责，JS 校验引用文件/行号及完整覆盖，不证明推断正确。 |
 | `qa_browser` | 当前宿主实际执行工具并观察，返回 `{verdict,evidence:[绝对路径],environment,cleanup}`。证据文件只写本轮 reportDir；逐项断言及操作记录不可省。普通 PASS/FAIL/BLOCKED；explore 用 FINDING/NO_FINDING/BLOCKED。cleanup 为 completed/not_needed/failed。 |
@@ -68,6 +73,7 @@ Codex 浏览器只用内置工具；不可用返回 BLOCKED，不转本机 Playw
 ## 报告与收尾
 
 - 无既定用例时，生成/推导预期保守标记 `[需确认]`；不把实现自身当需求审批。
+- impact 返回 ANALYZED/PARTIAL/NO_CHANGES，固定提交、主分支选择、未提交修改和缺口写入原报告；测试执行数为 0。
 - generate 成功只返回 GENERATED 和两份草稿文件，硬停止；不运行逻辑/命令/浏览器。
 - logic 成功最多 REVIEWED；执行通过数不包含 SUPPORTED。commands 模式需真实
   用例映射，命令退出 0 本身不证明所有业务已通过。未确认预期不得成为 PASS。
@@ -111,8 +117,14 @@ Codex 浏览器只用内置工具；不可用返回 BLOCKED，不转本机 Playw
 {"requestId":"resume-2","operation":"resume","resolution":{"key":"pending原值","requestDigest":"pending原值","result":{},"evidence":"原执行输出和清理证据引用","cleanup":"completed"}}
 ```
 
-host的result填原`test_cases/qa_logic/qa_browser`完整结果。command填原`{observed:{id,command,outcome,exitCode,evidence},output:[原stdout/stderr片段]}`，
+host的result填原`change_impact/test_cases/qa_logic/qa_browser`完整结果。command填原`{observed:{id,command,outcome,exitCode,evidence},output:[原stdout/stderr片段]}`，
 outcome为passed/failed/unavailable，必须与原命令、实际退出码及清理记录一致；身份字符串和cleanup字段本身不能证明动作真实发生。
 原回执的key/requestDigest/evidence/cleanup作为reconciliation来源随结果保留，区分正常返回与核对后恢复；已记录结果不能更换。
 最终评估在发布报告前记录，收尾中断消费原评估和日志，不把本次合法审计写入误作源码变化。unknown log/audit/publish写入不接受该信封，不猜同字节归属、不删除记录重试；报告缺口并人工核对原权威日志/文件。
 旧版本没有记录的调用不可凭空迁移。既有inspect始终只读，不创建、修复或修改执行记录。
+
+## 覆盖率及授权补测续接
+
+impact 的 start 完成并关闭原日志后，按 [单测覆盖率与补测](unit-coverage.md) 调用共享覆盖率工具。
+这不是控制器内的自动修复或未知动作重放。明确补测授权只对原基线绑定的测试文件生效，
+verify 仅返回 REVIEW_REQUIRED；最终 diff 仍须独立审查。原历史结果保持不变。

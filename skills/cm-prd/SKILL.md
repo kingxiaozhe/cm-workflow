@@ -150,9 +150,9 @@ node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
   `CONTEXT_SCOPE=targeted|full`、加载对应地图/代码，并写 `decision/context_scope` 日志
 - **B1 代码库参考文档判定**：先读代码项目根 CLAUDE.md 的「业务地图」字段（多层仓库
   下以代码项目根为准，仓库根 CLAUDE.md 无此字段再看地图 00-index 头部；init 已判定过，
-  不重复判断）。字段=已生成/已刷新或目录存在 → 按 context-scope 清单渐进加载；字段=
-  跳过(小项目) → 不建议 scan，按范围直接读代码；字段缺失且文档不存在 → 建议先执行
-  `/codebase-context scan`，本轮按直接代码搜索继续；skill 未安装 → 提示重装最新包并按
+  仍须核对相关内容与当前代码）。字段=已生成/已刷新或目录存在 → 按 context-scope 渐进加载并核实；字段=
+  跳过(小项目) → 不建议 scan，按范围直接读代码；字段缺失且文档不存在 → 按共享回写合同
+  定向还原本次链路，将必要地图文档纳入后续任务范围，不强制先全量 scan；skill 未安装 → 提示重装最新包并按
   直接代码搜索继续。任何路径都不得因追求 targeted 猜测波及面
 
 **二开模式追加规则**（GREENFIELD=false 且本次需求会修改存量代码时生效）→ **读取 `references/brownfield.md`** 执行 B2 波及面 / B3 防护网基线 / B4 增量 specs / B5 拆分锚定地图。

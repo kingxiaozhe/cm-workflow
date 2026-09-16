@@ -77,7 +77,29 @@ dormant full-host factory is not a prerequisite and Claude does not need a secon
 adapter protocol. Platform installation evidence and real task dogfood remain
 separate F09 work.
 
+The npm package includes root release notes through the `package.json` files
+allowlist. The Codex installer copies `CHANGELOG.md` alongside `README.md` and
+`VERSION`; `scripts/cm-release-smoke.sh` checks that the installed changelog
+matches the source bytes in a disposable installation.
+
 ## Review model
+
+Business-map maintenance shares `skills/codebase-context/references/writeback.md`.
+Feature development synchronizes maps in the final task before N4; bug fixes do so
+before their independent review. Both reuse the current diff and investigation,
+update only affected sections, and verify the reviewed bytes at closeout. A missing
+map gets explicitly partial coverage, unless project policy selects an existing
+architecture document or prohibits persistence. No full scan is triggered. The
+map paths stay inside approved write scope (including fixed JS repair scope);
+semantic completeness is checked by the Skill/reviewer, not inferred by JS gates.
+At task entry, the shared context contract checks the relevant map against current
+code and working-tree changes. Age alone does not trigger a rescan; missing or
+stale coverage is rebuilt only for the affected chain before business-code edits.
+Existing maps retained at the same path travel as read-only review requirements;
+new or deleted map paths travel in the actual diff. Final documentation sync aggregates all tasks
+in the active specs batch, including earlier uncommitted changes, without granting
+write access to those earlier tasks. Map gaps trigger targeted investigation first;
+broader loading follows demonstrated impact or unresolved boundaries, not file count.
 
 Implementation cannot be marked complete without task-scoped review evidence.
 The preferred channel is a fresh Codex subagent or independent thread, followed
@@ -150,6 +172,23 @@ id, so a delayed cleanup cannot close a later resource.
 `cm-prd` can generate one `test-cases.json` per behavior-bearing feature.
 `cm-ai` consumes logic cases during task review and browser cases during QA.
 `cm-test` is a separate, default-read-only entry for already implemented
-features. Its `--generate-cases` mode reads existing code and writes a validated
+features. Bare `cm-test` compares committed HEAD with the detected main branch
+through `runtime/js/cm-test/branch-impact.mjs`, then the shared test host requests
+read-only business impact and regression analysis. It pins both commits, inventories
+all tree differences (including main-only changes), reads committed maps/source,
+and discloses missing coverage and unfetched tracking refs. Empty differences skip
+semantic work; ANALYZED/PARTIAL/NO_CHANGES never mean execution PASS. Explicit
+targets retain the existing test modes. Its `--generate-cases` mode reads existing code and writes a validated
 inferred draft, then stops before execution. Test failures can be handed to
 `cm-fix` only by an explicit user decision.
+
+## Incremental unit coverage
+
+After the immutable branch-impact run, cm-test invokes `scripts/cm-unit-coverage.mjs`
+with a trusted project command. `runtime/js/cm-test/unit-coverage.mjs` intersects
+fresh LCOV/Istanbul evidence with committed changed lines, or an approved task
+working-tree scope before review. Missing material never becomes 100% coverage.
+Explicit test supplementation uses prepare/verify source snapshots and exact
+test paths; verification returns REVIEW_REQUIRED, with independent review still
+required. N3 and cm-fix reuse this check before their final handoff. No coverage
+tool installation, product repair, commit or release is implied.

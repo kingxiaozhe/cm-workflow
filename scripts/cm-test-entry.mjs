@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {inspectBranchComparison} from '../runtime/js/cm-test/branch-impact.mjs';
 
 const FEATURE=/^(\d+)\.(.+)$/;
 const OPTIONAL=new Set(['description','specs','feature','cases','reportDir','generateCases',
@@ -167,6 +168,8 @@ export function inspectCmTestAdmission(raw) {
     operation='generate_cases';modes=[];hardStopAfterGeneration=true;
   }else if(explore){
     operation='explore';modes=['browser'];
+  }else if(description===null&&specs===null&&cases===null&&!explicitExecution){
+    operation='impact';modes=[];
   }else{
     if(description===null&&specs===null&&cases===null)reject('test_target_required');
     operation='execute';
@@ -174,12 +177,14 @@ export function inspectCmTestAdmission(raw) {
       ['logic','commands','browser'].filter(mode=>flags[mode]);
   }
   const requiredRoles=[];
+  if(operation==='impact')requiredRoles.push('tester');
   if(modes.includes('logic')||modes.includes('commands'))requiredRoles.push('tester');
   if(modes.includes('browser'))requiredRoles.push('browser_qa');
   return frozen({
     schemaVersion:1,workflow:'cm-test',status:'ready',reason:null,operation,modes,requiredRoles,
     workflowRoot:root,skillDir:skill,runtimeLayout:layout,project,specs,feature,features,cases,requestedReportDir,
-    reportDirBoundary:'pending',hardStopAfterGeneration,executionAuthorized:false,writeAuthorized:false
+    reportDirBoundary:'pending',hardStopAfterGeneration,executionAuthorized:false,writeAuthorized:false,
+    ...(operation==='impact'?{comparison:inspectBranchComparison(project)}:{})
   });
 }
 
