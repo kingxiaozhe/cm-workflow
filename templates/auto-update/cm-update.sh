@@ -17,7 +17,7 @@ REMOTE="${CM_UPDATE_REMOTE:-git@github.com:kingxiaozhe/cm-workflow.git}"   # 团
 BRANCH="${CM_UPDATE_BRANCH:-main}"
 THROTTLE_SECS=900   # --throttle 模式下两次 fetch 的最小间隔
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH="${PATH:+$PATH:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export GIT_TERMINAL_PROMPT=0
 export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
 
