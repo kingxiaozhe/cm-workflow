@@ -73,3 +73,5 @@ Read the relevant files under `.claude/rules/` when modifying shell scripts, doc
 - **审查范围不能反向扩大执行权限**：为让 Learning 写回进入 review package，可以扩展 review baseline，但 developer request 必须继续使用原业务 scope；否则审查所需的可见性会意外变成修改项目指令的授权。来源：F05 runner Learning writeback；证据：`experiments/js-orchestration/task-runner.mjs`、`experiments/js-orchestration/task-runner.test.mjs` 的 review-scope/developer-scope 分离与 no-new 夹带拒绝用例。[已结构化]
 - **Handoff 定稿必须早于独立 Review**：`handoff_sha256` 绑定交接文件的精确字节；补写 Learning evidence 或 `changed_files` 后，先前生成的 Review 必须失效并在最终 handoff 上重做，不能复用旧批准。来源：F05 runner-owned Learning handoff；证据：`experiments/js-orchestration/cm-ai-conversation-entry.test.mjs` 的 handoff 后置 Review 组合用例。[已结构化]
 - **持久格式新增必填证据要保留在途恢复**：给 journal/checkpoint 增加新必填证据时，必须区分新记录与升级前合法历史，并用迁移回归证明旧状态仍能沿唯一完成路径走完；不能只让 replay 解析成功，却在后续门禁永久阻断。来源：F05 task-start Learning 应用记录；证据：`experiments/js-orchestration/task-runner.test.mjs` 的 pre-application checkpoint 恢复完成用例。[已结构化]
+
+- **Git 只读命令仍可能执行目标配置**：对不执行目标代码的安全扫描，Git 程序本身也须限定为项目外可信路径，并关闭 fsmonitor 与全部 clean/process/required filter；不能仅靠 no-ext-diff/no-textconv。来源：cm-security 独立 Review；证据：`scripts/cm-security.test.mjs` 的过滤器及项目内 Git marker 夹具。[已结构化]

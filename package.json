@@ -1,6 +1,6 @@
 {
   "name": "@aibyzero/cm-workflow",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Spec-driven business development workflow for Pi, Codex, and Claude Code",
   "license": "MIT",
   "publishConfig": {
@@ -50,6 +50,7 @@
 			"./skills/cm-init",
 			"./skills/cm-prd",
 			"./skills/cm-refactor",
+			"./skills/cm-security",
 			"./skills/cm-test"
 		],
     "prompts": [

@@ -4,6 +4,9 @@
 
 ## 启动
 
+完整 Skill 先执行 `cm-check-update.mjs` 的默认更新步骤，再从返回的根目录启动此控制器。
+更新不在控制器会话内进行，避免基线在检查中漂移；低层控制器单独调用保持只读。
+
 按主Skill启动`cm-check-host.mjs serve --skill-dir PATH --project PATH [--config PATH]`，保持stdin/stdout双向。
 Windows PowerShell使用`node "{CM_WORKFLOW_ROOT}\scripts\cm-check-host.mjs" serve --skill-dir "{CM_WORKFLOW_ROOT}\skills\cm-check" --project (Get-Location).Path`。
 host_ready后发送`{"requestId":"check-1","operation":"start"}`；状态用status，取消用cancel，最后发送`{type:"host_close",sessionId:"原值"}`。
@@ -41,4 +44,4 @@ optional固定statusline/updater/subagents/isolated_review/external_browser；st
 
 JS拒绝漏组、重复组、错摘要、越界引用或检查期间源/配置漂移。核心failed→FAILED，否则有blocked→BLOCKED，否则PASSED；optional不会推翻核心结果。
 以最终result.checks/findingsCount/optional及mechanical原输出填主Skill的中文汇报，不重新猜总结果。BLOCKED明确指出未检查完，不写成PASSED。
-source为current_host_semantic_report，不是独立Review、真实后端模型证明或任务完成。报告只在会话输出，不擅自写文件或更新安装。
+source为current_host_semantic_report，不是独立Review、真实后端模型证明或任务完成。报告只在会话输出，控制器不写文件或更新安装；完整Skill的前置更新结果另列，不能由PASSED推断版本已更新。

@@ -61,6 +61,18 @@ flowchart LR
 
 ## Runtime compatibility
 
+Full `cm-check` first runs `scripts/cm-check-update.mjs`: query the fixed public
+npm package, compare stable versions, download the exact version with lifecycle
+scripts disabled into a temporary directory, and reuse the existing installer.
+It recognizes the Codex personal managed installation/cache and the Claude managed
+root, checks the installed version, then selects that root for mechanical and
+semantic checks. Source checkouts and other package managers are not overwritten;
+offline results retain an explicit freshness gap. Supported automatic writes are
+macOS Codex and POSIX Claude; other platforms report the installation limitation.
+The update lock serializes this preflight only; callers must finish other active
+CM tasks before upgrading. The host and low-level checkers stay read-only, so
+installer/CI checks cannot trigger a recursive update or drift their snapshot.
+
 Codex discovers the plugin through `.codex-plugin/plugin.json` and calls Skills
 directly. Claude Code invokes the same Skills as `/cm-*` on every platform.
 The macOS/Linux installer also maps the three-line compatibility wrappers to
@@ -192,3 +204,13 @@ Explicit test supplementation uses prepare/verify source snapshots and exact
 test paths; verification returns REVIEW_REQUIRED, with independent review still
 required. N3 and cm-fix reuse this check before their final handoff. No coverage
 tool installation, product repair, commit or release is implied.
+
+## Security scan entry
+
+`skills/cm-security` delegates bounded snapshot scanning to `scripts/cm-security.mjs`
+and `runtime/js/cm-security/scan.mjs`. It reuses cm-test main-ref selection without
+fetching, includes tracked working/index changes, and keeps optional Gitleaks,
+Semgrep local rules and OSV offline scanning behind an adapter. Source and project
+scanner configuration are never executed. Symlinks/protected paths/limits are explicit
+gaps. The current host reviews business boundaries and checks the source digest again;
+scanner output is candidate evidence, never a task-completion or release gate.

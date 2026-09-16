@@ -15,6 +15,19 @@
 
 [快速开始](#快速开始codex) · [升级旧版本](#升级旧版本) · [选择命令](#选择命令) · [支持范围](#支持范围) · [使用手册](docs/user-guide.md) · [更新日志](CHANGELOG.md)
 
+## 最近更新
+
+**0.12.0**
+
+- **安全扫描**：新增 `cm-security`，结合业务地图检查代码改动，输出漏洞候选、业务影响和未检查范围。
+- **自动升级**：`cm-check` 默认检查新版并升级受支持的已管理安装；离线或不支持自动升级时明确提示。
+
+**0.11.0**
+
+- **影响分析与单测**：`cm-test` 自动分析分支差异和单测覆盖率；明确要求“补齐单测”后，继续补测、重跑与审查。
+
+[查看完整更新日志 →](CHANGELOG.md)
+
 ## 从需求到交付
 
 AI 写完代码以后，你还需要知道：需求是否对齐、测试是否真正执行、修改是否经过独立审查，以及中断后该从哪里继续。CM Workflow 把这些要求放进同一条开发流程。
@@ -70,7 +83,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.11.0 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.12.0 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
@@ -102,7 +115,7 @@ git pull --ff-only origin main
 
 ## 选择命令
 
-以下是八个核心入口。Codex 使用 `$cm-*`，Claude Code 使用 `/cm-*`。
+以下是九个核心入口。Codex 使用 `$cm-*`，Claude Code 使用 `/cm-*`。
 
 | 你想做什么 | Codex 入口 | 产出或下一步 |
 | --- | --- | --- |
@@ -110,6 +123,7 @@ git pull --ff-only origin main
 | 第一次接管已有仓库 | `$cm-init` | 建立项目上下文与规范 |
 | 把需求拆成可开发任务 | `$cm-prd {specs路径}` | 需求、设计、任务和审批材料 |
 | 执行已经确认的规格 | `$cm-ai {specs路径} {项目路径}` | 实现、审查、QA 与交付记录 |
+| 安全扫描与业务复核 | `$cm-security`（全量用 `--all`） | 漏洞候选、业务影响与未检查范围 |
 | 测试已有功能 | `$cm-test {项目路径}` | 分层测试结果与证据 |
 | 修复可复现缺陷 | `$cm-fix {specs路径} {项目路径} {问题}` | 红灯测试、最小修复、回归验证 |
 | 整理结构并保持行为 | `$cm-refactor` | 按行为等价约束分批重构 |
