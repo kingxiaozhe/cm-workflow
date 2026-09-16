@@ -330,6 +330,8 @@ if [ -n "$NODE_BIN" ]; then
     fail "cm global log fixture failed"
   "$NODE_BIN" --test "$ROOT/scripts/cm-ai-admission.test.mjs" ||
     fail "cm-ai product admission fixture failed"
+  "$NODE_BIN" --test "$ROOT/scripts/cm-review-schema.test.mjs" ||
+    fail "review provider schema compatibility fixture failed"
   CM_PYTHON_BIN="$PYTHON_BIN" "$NODE_BIN" --test "$ROOT/scripts/cm-workflow-config.test.mjs" ||
     fail "cm workflow config fixture failed"
   CM_PYTHON_BIN="$PYTHON_BIN" "$NODE_BIN" --test "$ROOT/scripts/cm-task-gate.test.mjs" ||
@@ -651,6 +653,21 @@ grep -Fq '禁止再次' "$ROOT/skills/cm-prd/SKILL.md" &&
 if grep -Fq '按 `codebase-context` skill dev 模式加载 10 份文档' \
   "$ROOT/skills/cm-prd/SKILL.md"; then
   fail "cm-prd still unconditionally loads all codebase-context documents"
+fi
+
+require_file "skills/codebase-context/references/writeback.md"
+for consumer in \
+  skills/codebase-context/SKILL.md \
+  skills/cm-fix/SKILL.md \
+  skills/cm-fix/references/js-host.md \
+  skills/cm-doc-syncer/SKILL.md \
+  skills/cm-ai/references/N3-execute-task.md \
+  skills/cm-ai/references/N8-finish.md; do
+  grep -Fq 'references/writeback.md' "$ROOT/$consumer" ||
+    fail "business map writeback contract is not wired into $consumer"
+done
+if grep -Fq '不存在则跳过' "$ROOT/skills/cm-ai/references/N8-finish.md"; then
+  fail "N8 still silently skips missing business maps"
 fi
 
 require_file "skills/cm-prd/references/phase-timing.md"

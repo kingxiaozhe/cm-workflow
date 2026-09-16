@@ -114,7 +114,7 @@ find {projectRoot}/src -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.js" 
 ```
 
 3. 将结果与 `02-directory.md` 记录的文件清单对比，推断**新增文件**（结果里有、文档里无）与**删除文件**（文档里有、磁盘上无——用 Bash `test -f` 验证）
-4. 若变更文件数为 0 且无新增/删除 → 输出 `📭 自上次扫描({lastScanTime})以来无变更，文档已是最新` 并**结束**
+4. mtime 检测未命中不证明地图最新（可能遗漏 src 外文件、其他语言或分支切换）。补查项目实际源码/配置路径及 Git 工作树变化；无可信历史基线时明确本次检测范围与限制，不能输出“全仓无变更/文档已是最新”
 
 #### 步骤 3b：确定受影响轮次（映射表）
 
@@ -145,7 +145,7 @@ find {projectRoot}/src -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.js" 
 
 1. 用 Edit 更新 `00-index.md` 的"最后更新"日期
 2. 用 Edit 在 `09-changelog.md` 追加本次条目（日期/类型 incremental/变更摘要/涉及文档）
-3. 用 Bash 取 UTC 时间，用 Write 更新 `.scan-meta.json`（`scanType: "incremental"`）
+3. 仅在变更检测覆盖项目实际源码/配置且基线可信时更新 `.scan-meta.json`（`scanType: "incremental"`）；否则保留原元数据，在索引/日志标明本次局部核实范围，不用新时间掩盖未知区域
 
 #### 步骤 6b：输出变更检测摘要
 
@@ -163,14 +163,14 @@ find {projectRoot}/src -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.js" 
 
 1. 按参数解析规则推导 project-name，设定 DOC_DIR
 2. 分支判断：
-   - DOC_DIR 不存在 或 缺少 00-index.md → 输出 `⚠ 未找到 {project-name} 的参考文档。请先执行: /codebase-context scan {project-name}` 并**结束**
-   - 文档齐全 → 继续
-3. 按 00 → 09 顺序用 Read 读取全部 10 份文档进上下文
-4. 输出已加载确认（一句话概要从 01-overview.md 的"项目定位"提取）：
+   - DOC_DIR 不存在或缺少索引 → 按 `references/writeback.md` 先查项目指定地图，否则从代码定向建立本次链路；任务目标缺失时先补问目标，不盲扫全仓
+   - 有索引 → 按索引读取本次任务相关且实际存在的文档；局部地图只代表标注的覆盖范围
+3. 按 `references/writeback.md` 核实地图与当前代码；过期、错误或缺少相关链路时定向补查，确认本次影响范围后才能改业务代码。授权范围内审前回写，不强制全量 scan
+4. 输出已加载确认（项目概要从已读资料提取，缺失则不猜）：
 
 ```text
-📚 已加载 {project-name} 参考文档（10 份，最后更新 {日期}）
-📌 项目概要: {01-overview 提取的一句话}
+📚 已加载 {project-name} 参考文档（{实际数量} 份，覆盖 {相关模块}，最后更新 {日期}）
+📌 项目概要: {已核实的一句话或待核实}
 ```
 
 ### 步骤 2：辅助开发
@@ -185,21 +185,8 @@ find {projectRoot}/src -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.js" 
 
 ### 步骤 3：开发完成后强制评估回写
 
-开发结束时**必须**执行本步骤，按下表评估本次变更需要更新哪些文档：
-
-| 变更类型 | 需更新文档 |
-| ---- | ---- |
-| 新增/修改/删除 API 调用 | 04-api-routes |
-| 新增/修改/删除 类型・实体・枚举 | 05-data-models |
-| 新增/修改 组件・Hook・Store 模块 | 06-core-modules |
-| 修改业务流程・新增业务规则 | 07-business-logic |
-| 新增/删除 目录或文件结构变化 | 02-directory |
-| 架构调整（新模块/依赖方向变化/新分层） | 03-architecture |
-| 新增依赖/修改构建配置/新增环境变量 | 01-overview |
-| 引入新的编码约定/常量/工具函数 | 08-conventions |
-| （任何以上更新发生时，无条件） | 09-changelog 追加条目、00-index 更新日期 |
-
-更新方式：用 Edit 直接编辑对应文档的对应章节（新增追加/修改替换/删除移除），随后用 Edit 在 09-changelog 追加条目（类型标 `dev回写`）、更新 00-index 日期。若评估结果为"无需更新任何文档"，在回复中显式说明"本次变更不影响参考文档"。
+开发结束、独立审查前**必须**按 [业务地图增量回写](references/writeback.md) 评估并更新受影响章节；
+无需更新时说明依据。需求开发和缺陷修复复用同一判据，不重复扫描或在批准后回写。
 
 ---
 
@@ -486,4 +473,4 @@ src/
 1. **无 package.json**：项目根不存在 package.json → 输出 `⚠ 当前目录未发现 package.json，请确认 {PROJECT_ROOT} 是正确的项目目录（回复继续则按非 npm 项目扫描）`，等用户确认后再继续。
 2. **某轮目标目录不存在**（如无 `api/`）：跳过该轮，在对应文档的相应章节标注"本项目未发现此类文件"，不报错不中断。
 3. **超大文件（>1000 行）**：不复制全文，只用 Grep/Read 提取关键导出（export 的函数/类/类型签名），并在文档条目备注 `(大文件,仅提取签名)`。
-4. **dev 模式文档不存在**：明确引导 `请先执行: /codebase-context scan {project-name}`，不猜测、不凭记忆辅助开发。
+4. **dev 模式文档缺失或陈旧**：按 `references/writeback.md` 定向核实/补齐；证据不足暂停相关修改，不猜测，不强制全量 scan。

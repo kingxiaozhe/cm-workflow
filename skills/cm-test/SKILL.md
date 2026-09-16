@@ -1,9 +1,9 @@
 ---
 name: cm-test
-description: 用户说“测试已有功能”“根据代码生成用例”或“用浏览器走查”时使用。从已实现代码生成 AI 测试用例，或执行只读逻辑核验、正式命令和人工模拟；只报告证据，不自动修代码。
+description: 用户直接运行 cm-test、要求分析当前分支相对主分支的业务影响，或说“测试已有功能”“根据代码生成用例”“用浏览器走查”时使用。无参数分析已提交差异、单测覆盖率与回归重点；明确说“补齐单测”时连续补测并重跑、审查。显式目标保留原模式，不擅自修产品代码。
 ---
 
-# cm-test — 存量功能只读测试
+# cm-test — 分支影响分析与存量功能只读测试
 
 执行前读取 `../../runtime/project-context.md`、`../../runtime/test-contract.md`、
 `../../runtime/model-efficiency.md` 与 `../../runtime/logging.md`。使用 `--generate-cases`
@@ -22,12 +22,25 @@ description: 用户说“测试已有功能”“根据代码生成用例”或�
 ## 用法
 
 ```text
+$cm-test
+$cm-test {代码项目路径}
 $cm-test {代码项目路径} {功能描述}
 $cm-test {代码项目路径} {功能描述} --generate-cases
 $cm-test {代码项目路径} --specs {specs路径} --feature {N.feature} --all
 $cm-test {代码项目路径} --cases {用例文件路径} --browser
 $cm-test {代码项目路径} --explore {页面或用户流程}
 ```
+
+## 默认：分析当前分支
+
+直接运行 `$cm-test`，以当前工作目录所属 Git 仓库根为项目；只给项目路径也一样。
+没有功能描述、specs、cases 或模式时，走 `impact`，不用用户填写提交号或范围。
+具体取数与输出按 [分支影响分析](references/branch-impact.md)，仍经下方准入和共享控制器。
+先读业务地图，再按固定提交核验改动、调用方、共用状态与相邻流程，列出回归重点。
+impact 阶段只分析已提交代码，未提交修改单独提示；后续只运行项目已声明的本地单测覆盖率命令。
+没有差异返回 `NO_CHANGES`；`ANALYZED/PARTIAL` 都不表示测试通过。
+原 impact 完成后自动按 [单测覆盖率与补测](references/unit-coverage.md) 接续真实覆盖率检查。
+用户说“补齐单测”则在同一任务继续；已有明确补测授权不再询问，不要求新的命令或提交号。
 
 ## JS 只读准入
 
@@ -80,7 +93,7 @@ node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
 | `--logic` | 只做代码逻辑核验 |
 | `--commands` | 只运行项目声明的正式测试、类型检查和构建命令 |
 | `--browser` | 只执行 browser 用例 |
-| `--all` | logic + commands + browser；未指定模式时的默认值 |
+| `--all` | logic + commands + browser；有明确测试目标而未指定模式时的默认值 |
 | `--explore` | 无既定用例时做浏览器探索，只报告发现，不认证需求完整通过 |
 | `--specs {路径}` | 读取 CM specs 和测试合同 |
 | `--feature {目录名}` | 限定一个 feature；有多个候选却未指定时才询问 |
@@ -89,7 +102,8 @@ node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
 
 ## 硬边界：默认只读
 
-本命令只验证，不修复。开始前建立源码快照，结束前再次对比：
+默认只验证，不修产品代码；明确授权补单测时，原只读控制器结束后进入上述受限补测步骤。
+开始前建立源码快照，结束前再次对比：
 
 - 有 Git HEAD：记录 `git status --short`，并对 HEAD→工作区完整 diff 和已有
   untracked 文件内容计算 SHA-256，防止同一路径继续被改却因状态字母不变而漏检；
@@ -100,14 +114,16 @@ node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
 需跨会话续跑时，按[JS 会话入口](references/js-host.md#中断执行续接)显式保留私有执行记录。
 已有结果不重跑；未知动作须核对原结果与清理，不因缺少完成日志而重新执行。
 
+以下禁令适用于默认检查阶段；明确授权补测仅放行已绑定测试文件，其余边界不变。
+
 禁止：
 
 - 修改产品源码、测试代码、快照基准、requirements/design/tasks 或验收预期；
-- 安装依赖、升级包、改 lockfile、自动补测试；
+- 安装依赖、升级包、改 lockfile、未经授权补测试；
 - 为让失败变绿而降低断言、改 mock 或绕过正式命令；
 - 自动调用 `$cm-fix`。
 
-唯一允许的新文件是报告、生成的测试用例草稿、截图和浏览器日志，且只能写到本节
+默认检查阶段唯一允许的新文件是报告、生成的测试用例草稿、截图和浏览器日志，且只能写到本节
 规定的报告目录。这些是审计产物，不计为产品源码修改；最终状态对比必须将它们
 单独列出。
 正式命令意外产生新的 tracked diff 时，不替用户回滚；结论记 `BLOCKED` 并列出文件。
@@ -116,7 +132,8 @@ node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
 
 ## 1. 确定输入与报告目录
 
-1. 从输入解析唯一的 `CODE_PROJECT`，验证路径存在并读取项目上下文。
+1. 从输入解析唯一的 `CODE_PROJECT`，省略时取当前 Git 仓库根；验证路径存在并读取项目上下文。
+   准入为 `impact` 时走分支分析参考，不生成临时用例或进入第 2–6 节执行分支。
 2. 有 `--specs` 时先解析真实路径，并验证目标 `{N}.{feature}` 目录同时含
    requirements/design/tasks；缺任一文件即 `BLOCKED`，不能把任意目录伪装成
    specs。`SPECS_DIR` 位于代码项目内时只接受 `{CODE_PROJECT}/specs/` 这个直接

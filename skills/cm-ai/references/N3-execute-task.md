@@ -74,14 +74,25 @@
 
 接入示例和退出码约定见 [项目安全检查接入](../../../docs/js-workflow-control.md#项目安全检查接入)。扫描结果进入已有 verification；原始敏感输出不复制进 Review。
 
+## 单测覆盖缺口
+
+开发期间同步补本任务已授权的单测；在最终 handoff 前按
+`../../cm-test/references/unit-coverage.md` 检查本 task working-tree scope 的增量覆盖率，
+补关键正常/异常/边界场景并重跑，测试与代码一起交 N4。复用现有框架/命令；
+工具或分支证据缺失如实记未测得，不估算、不为 100% 弱化断言，保留既有项目门禁。
+
 ## 结构化交接门禁
 
 若这是全部 feature 的最后一个待完成任务，在定稿 handoff 前调用 `cm-doc-syncer`
-同步项目文档及已有 codebase-context 参考文档；仅修改本任务事先批准的文档范围，
+同步项目文档，并按 `../../codebase-context/references/writeback.md` 增量更新业务地图
+（不存在时建最小局部地图，项目指定文档优先）；仅修改本任务事先批准的文档范围，
 缺范围先走规格变更批准，不自动扩 scope。文档与代码一起检查、定稿并交给 N4 审查。
 项目指令仍由主执行者按原权限及 Learning 合同处理，不向开发子 agent 开放受保护目录。
 JS 宿主可通过 `execution.documentationSync` 接入此步骤，写入处于原持久开发调用内；
 重启中的未知调用不得重发。最后任务是否成立必须核对所有 feature，不能只看当前 feature。
+同步输入汇总本 specs 批次所有 feature/task 的变更证据（包括前面任务仍未提交的修改），
+不只看最后任务；只读汇总不扩大最后任务的文档写 scope。JS 启动前按共享回写合同把参考的
+现有地图加入 run definition 的 `requirements`；新建/删除/改名改由 diff 携带，未改地图仍须正文可见。
 
 写 handoff 前按 `../../../runtime/project-learning.md` 完成本任务复盘与必要的
 AGENTS.md 增量写回；将学习结果、文件摘要记入已有交接字段，变更文件进入

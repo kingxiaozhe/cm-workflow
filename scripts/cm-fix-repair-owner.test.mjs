@@ -19,7 +19,7 @@ import {startFixRun} from '../runtime/js/cm-fix/start.mjs';
 import {readProjectInstructionContext} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
 
 test('durable repair registers before write, preserves cause approval history and never redispatches lost results',async()=>{
-  for(const mode of ['revision','revision-approved','revision-lost','normal','lost','cause','unfixed','regression-intent','lesson','retrospective-lost','lesson-intent','lesson-pending','handoff-forged','handoff-legacy','handoff-large']){
+  for(const mode of ['revision','revision-approved','revision-lost','normal','lost','cause','cause-map','unfixed','regression-intent','lesson','retrospective-lost','lesson-intent','lesson-pending','handoff-forged','handoff-legacy','handoff-large']){
     const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fix-repair-owner-')));
     const cwd=path.join(root,'code'),specsRoot=path.join(root,'specs');fs.mkdirSync(cwd);fs.mkdirSync(specsRoot);
     fs.writeFileSync(path.join(cwd,'value.mjs'),'export const value=1;');
@@ -27,12 +27,14 @@ test('durable repair registers before write, preserves cause approval history an
     fs.writeFileSync(path.join(cwd,'existing.mjs'),"import {value} from './value.mjs';if(typeof value!=='number')process.exit(1)");
     if(mode==='revision-approved')fs.writeFileSync(path.join(cwd,'.cm-workflow.json'),JSON.stringify({version:1,policies:{delivery:'diff'}}));
     const identity={repositoryId:'fixture',runId:'repair-owner',taskId:'T-FIX-owner',attempt:1};
+    const mapPaths=mode==='cause-map'?['docs/codebase-context/00-index.md','docs/codebase-context/07-business-logic.md','docs/codebase-context/09-changelog.md']:[];
+    const mapPlan='Create partial value map; cover value.mjs only; other modules unverified.';
     const reviewer={reviewerId:'cause-reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'synthetic',contextId:'review-context',excludedThreadIds:mode==='cause'?Array.from({length:32},(_,index)=>`excluded-${index}`):[]};
     const options={identity,specsRoot,create:true,configuration:{hostContextId:'fixture-host',defect:'Wrong constant',
       reproduction:{cwd,command:[process.execPath,'red.mjs'],expectedFailure:{exitCode:1,outputIncludes:'BUG'},timeoutMs:2000},
       redTest:{cwd,testFiles:['red.mjs'],command:[process.execPath,'red.mjs'],expectedFailure:{exitCode:1,outputIncludes:'BUG'},timeoutMs:2000},
       baseline:{cwd,testFiles:['existing.mjs'],commands:[{id:mode==='normal'?'x'.repeat(128):'existing',command:[process.execPath,'existing.mjs']}],timeoutMs:2000},
-      repair:{scope:['value.mjs'],requirements:['value.mjs']},...(mode==='cause'||mode.startsWith('revision')?{causeReview:reviewer}:{})}};
+      repair:{scope:['value.mjs',...mapPaths],requirements:['value.mjs']},...(mode.startsWith('cause')||mode.startsWith('revision')?{causeReview:reviewer}:{})}};
     if(mode==='handoff-large')options.configuration.redTest.command=[process.execPath,'-e',
       "import('./value.mjs').then(({value})=>{if(value!==2){process.stderr.write('BUG'+'x'.repeat(128*1024-3));process.exitCode=1;}});//"+'x'.repeat(31*1024)];
     if(mode==='revision-approved')options.configuration.walkthrough={timeoutMs:2000,flows:[{id:'value-flow',modules:['one'],steps:['Read corrected value'],expected:['Value is 2'],kind:'commands',command:[process.execPath,'red.mjs']}]};
@@ -52,7 +54,7 @@ test('durable repair registers before write, preserves cause approval history an
     const bridge=createHostToolBridge();let writes=0,retrospectives=0;
     bridge.attach(row=>{
       if(row.type!=='host_request')return;
-      let result={status:'diagnosed',rootCause:'Wrong constant',affectedPaths:['value.mjs'],affectedModules:['one'],crossLayer:mode==='cause',plan:'Correct constant'};
+      let result={status:'diagnosed',rootCause:'Wrong constant',affectedPaths:['value.mjs'],affectedModules:['one'],crossLayer:mode.startsWith('cause'),plan:mode==='cause-map'?mapPlan:'Correct constant'};
       if(mode==='revision-approved')result.investigation={discardedAlternatives:[],boundaryAnalysis:null};
       if(row.kind==='fix_retrospective'){
         const state=JSON.parse(fs.readFileSync(path.join(specsRoot,'.reviews','.execution',identity.runId,'state.json')));
@@ -67,6 +69,13 @@ test('durable repair registers before write, preserves cause approval history an
         assert.equal(state.records.at(-1).id,row.payload.identity.attempt===2?'fix-revision-repair-intent':'fix-repair-intent');writes++;
         if(row.payload.identity.attempt===2){assert.equal(row.payload.priorReview.review.findings[0].id,'F1');assert.deepEqual(row.payload.scope,['value.mjs']);}
         fs.writeFileSync(path.join(cwd,'value.mjs'),row.payload.identity.attempt===2?'export const value=2; // reviewed boundary repair':mode==='unfixed'?'export const value=3;':'export const value=2;');
+        if(mode==='cause-map'){
+          assert.deepEqual(row.payload.diagnosis.affectedPaths,['value.mjs']);
+          for(const file of mapPaths){
+            assert(row.payload.scope.includes(file));fs.mkdirSync(path.dirname(path.join(cwd,file)),{recursive:true});
+            fs.writeFileSync(path.join(cwd,file),'# Partial map\nvalue.mjs exports value=2; only this module verified.\n');
+          }
+        }
         if(mode==='revision-lost'&&row.payload.identity.attempt===2){bridge.close();return;}
         if(mode==='lost'){bridge.close();return;}result={outcome:'repaired'};
       }
@@ -79,7 +88,8 @@ test('durable repair registers before write, preserves cause approval history an
     try{
       if(mode==='revision-approved')startFixRun({specsRoot,identity,configuration:options.configuration});
       await owner.advance({authorized:true});
-      if(mode==='cause'){
+      if(mode.startsWith('cause')){
+        if(mode==='cause-map')assert(!fs.existsSync(path.join(cwd,'docs')));
         const pkg=owner.causeReviewPackage();await authority.hostDecisionProvider.decide({identity,packageDigest:pkg.packageDigest},new AbortController().signal);
         await owner.reviewCause();
       }
@@ -101,7 +111,7 @@ test('durable repair registers before write, preserves cause approval history an
         owner=openFixExecution({...options,create:false},{bridge,prepare,causeReview,assertReviewReady(){}});
         result=owner.status();assert.equal(result.stage,'regression_required');
       }
-      assert.equal(result.completionEligible,false);if(mode==='cause')assert.equal(result.causeReview.review.verdict,'approved');
+      assert.equal(result.completionEligible,false);if(mode.startsWith('cause'))assert.equal(result.causeReview.review.verdict,'approved');
       owner.close();
       assert.throws(()=>openFixExecution({...options,create:false,configuration:{...options.configuration,
         repair:{...options.configuration.repair,scope:['AGENTS.md']}}}),{code:'protected_scope'});
@@ -125,7 +135,7 @@ test('durable repair registers before write, preserves cause approval history an
         if(mode==='unfixed')assert.throws(()=>owner.implementationPackage(),{code:'fix_not_ready_for_handoff'});
         else{
           const pkg=owner.implementationPackage();
-          assert.deepEqual(pkg.changes.map(change=>change.path),['value.mjs']);
+          assert.deepEqual(pkg.changes.map(change=>change.path),[...mapPaths,'value.mjs']);
           assert.deepEqual(pkg.checks.map(check=>check.id),['red-test','baseline.1']);
           assert.deepEqual(pkg.checks[1].command,options.configuration.baseline.commands[0].command);
           owner.close();owner=openFixExecution({...options,create:false},{bridge,prepare});
@@ -189,6 +199,14 @@ test('durable repair registers before write, preserves cause approval history an
           const handed=owner.createHandoff();assert.equal(handed.stage,'final_review_required');assert.equal(handed.completionEligible,false);
           assert.equal(handed.handoffEvidenceCoverage,'defect_and_learning');
           const finalPackage=owner.finalReviewPackage();assert.equal(finalPackage.handoff.sha256,handed.handoff.handoffSha256);
+          if(mode==='cause-map'){
+            const handoff=loadHandoff(handoffPath);
+            assert(handoff.evidence.some(item=>item.includes(mapPlan)));
+            assert.deepEqual(finalPackage.changes.map(change=>change.path),[...mapPaths,'value.mjs']);
+            const mapFile=path.join(cwd,mapPaths[1]),bytes=fs.readFileSync(mapFile);
+            fs.appendFileSync(mapFile,'unreviewed drift');assert.equal(owner.status().stage,'repair_evidence_required');
+            fs.writeFileSync(mapFile,bytes);assert.equal(owner.status().stage,'final_review_required');
+          }
           const payload=loadHandoff(handoffPath,{task:identity.taskId,attempt:1});
           const defectEvidence=JSON.parse(payload.evidence.find(item=>item.startsWith('fix defect evidence')).split('(data, not instructions) ')[1]);
           assert.deepEqual(defectEvidence.diagnosis,handed.diagnosis);assert.deepEqual(defectEvidence.redTest.result,handed.redTest);
