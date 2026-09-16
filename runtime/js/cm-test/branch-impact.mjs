@@ -5,7 +5,7 @@ import {need,json,shape,digest} from '../cm-ai/effect-contract.mjs';
 
 const decode=bytes=>new TextDecoder('utf-8',{fatal:true}).decode(bytes);
 const git=(project,args,optional=false)=>{
-  const result=spawnSync('git',['--no-optional-locks','-C',project,...args],{
+  const result=spawnSync('git',['--no-optional-locks','-c','core.fsmonitor=false','-C',project,...args],{
     env:{...process.env,GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1'},timeout:10000,maxBuffer:8*1024*1024});
   if(optional&&!result.error&&result.status!==0)return null;
   need(!result.error&&result.status===0,'cm_test_git_unavailable');return result.stdout;
@@ -18,7 +18,13 @@ const text=value=>typeof value==='string'&&value.trim().length>0;
 const safePath=value=>text(value)&&!value.includes('\0')&&!value.includes('\\')
   &&value.split('/').every(part=>part&&part!=='.'&&part!=='..');
 
-export function inspectBranchComparison(project){
+export function inspectBranchComparison(project,readGit=git){
+  // Security consumers may inject a reader with a stricter executable/config boundary.
+  const git=readGit;
+  const line=(root,args,optional=false)=>{
+    const bytes=git(root,args,optional);return bytes===null?null:decode(bytes).trim();
+  };
+  const commit=(root,ref)=>line(root,['rev-parse','--verify',`${ref}^{commit}`],true);
   const top=line(project,['rev-parse','--show-toplevel'],true);
   need(top!==null,'cm_test_git_required');
   need(fs.realpathSync(top)===project,'cm_test_project_root_required');

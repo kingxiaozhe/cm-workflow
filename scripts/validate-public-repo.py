@@ -16,6 +16,7 @@ CORE_SKILLS = (
     "cm-prd",
     "cm-ai",
     "cm-test",
+    "cm-security",
     "cm-fix",
     "cm-refactor",
     "cm-check",
@@ -162,7 +163,7 @@ def main() -> int:
         pi_manifest = {}
     expected_pi_skills = [f"./skills/{name}" for name in sorted(CORE_SKILLS)]
     if pi_manifest.get("skills") != expected_pi_skills:
-        fail("Pi package skills must expose exactly the eight core Skills", failures)
+        fail("Pi package skills must expose exactly the registered core Skills", failures)
     if pi_manifest.get("prompts") != ["./compat/claude-commands"]:
         fail("Pi package prompts must point to ./compat/claude-commands", failures)
 

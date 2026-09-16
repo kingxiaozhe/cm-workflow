@@ -275,6 +275,11 @@ for module in \
   require_file "runtime/js/cm-ai/$module"
 done
 require_file "scripts/cm-check-runtime.ps1"
+require_file "scripts/cm-security.mjs"
+require_file "scripts/cm-security.test.mjs"
+require_file "runtime/js/cm-security/scan.mjs"
+require_file "scripts/cm-check-update.mjs"
+require_file "scripts/cm-check-update.test.mjs"
 require_file "scripts/cm-release-smoke.sh"
 require_file "scripts/cm-ai-admission.mjs"
 require_file "scripts/cm-ai-run.mjs"
@@ -575,7 +580,7 @@ for consumer in \
     fail "external-expert AUTO routing is not wired into $consumer"
 done
 
-for name in cm-idea cm-init cm-prd cm-ai cm-test cm-fix cm-refactor cm-check; do
+for name in cm-idea cm-init cm-prd cm-ai cm-test cm-security cm-fix cm-refactor cm-check; do
   require_file "skills/$name/SKILL.md"
   require_file "compat/claude-commands/$name.md"
   wrapper="$ROOT/compat/claude-commands/$name.md"

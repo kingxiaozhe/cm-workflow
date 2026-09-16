@@ -17,6 +17,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 
 ## 常用命令
 
+- 安全扫描：`$cm-security` / `/cm-security`，分支差异加已跟踪未提交修改；`--all` 扫全部已跟踪文件。工具缺失保留缺口，不自动修复或安装；定点验证 `node --test scripts/cm-security.test.mjs`。
 - 分支影响分析：直接 `$cm-test` / `/cm-test`；默认比较当前提交与主分支，输出业务影响和回归重点，再检查单测覆盖率；“补齐单测”连续补测、重跑、审查。显式目标保留原模式。
 
 - JS 修复入口: `node scripts/cm-fix-host.mjs --help`；同仓specs可显式配置`protectSpecs:true`，原权限/审查不变，宿主只回文本提案，由固定沙箱写入；QA子配置复用，详见`docs/js-workflow-control.md`
@@ -32,6 +33,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - Claude 安装: `./install.sh`（核心运行时原子更新/失败回滚；可选更新器 best-effort，装完跑 `/cm-check`）
 - Windows 安装: `powershell -ExecutionPolicy Bypass -File install.ps1`（同样原子更新）
 - 一致性自检: `./scripts/cm-check-runtime.sh`；完整当前会话机械/语义接线：`node scripts/cm-check-host.mjs --help`
+- 完整 `cm-check` 默认先调用 `scripts/cm-check-update.mjs` 查询并升级已管理安装，再检查返回目录；低层检查仍只读。定点测试：`node --test scripts/cm-check-update.test.mjs scripts/cm-check-host.test.mjs`。
 - 全局日志夹具: `./scripts/cm-check-runtime.sh --log-fixtures`
 - API 用量报告: `python3 scripts/cm-usage-report.py --last 10`
 - OpenAI 兼容调用夹具: `python3 scripts/test-cm-openai-compatible-call.py`

@@ -45,7 +45,19 @@ Existing installs require confirmation. For an intentional unattended upgrade:
 ./install-codex.sh --yes
 ```
 
-Start a new Codex thread after installation, then run `$cm-check`. To derive a
+Start a new Codex thread after installation, then run `$cm-check`. Full `cm-check`
+queries npm's stable `latest` and automatically upgrades a supported managed
+installation before checking the returned root. It reuses the existing installer
+with `--yes`; no additional upgrade flag or confirmation is needed. Other Skills
+load the new version in a new session. Finish other active CM tasks before updating.
+Offline checks explicitly leave the latest version unknown. Source checkouts and
+other package managers (including Pi/BYZ) retain their installation method; they
+are not overwritten. Automatic installation supports macOS Codex's personal local
+marketplace and macOS/Linux Claude. Other platforms report the limitation and use
+their documented installer. A request to check without upgrading skips this step.
+The low-level runtime checker and JS check host remain read-only for CI/install use.
+
+To derive a
 test-case draft from an implemented feature, use
 `$cm-test {project} {feature} --generate-cases`; to verify it without modifying
 source, use `$cm-test`. The installed manual is available at
@@ -61,7 +73,7 @@ Install or upgrade with the same command:
 npx @aibyzero/cm-workflow@latest install
 ```
 
-To pin a version, use `npx @aibyzero/cm-workflow@0.11.0 install` from outside
+To pin a version, use `npx @aibyzero/cm-workflow@0.12.0 install` from outside
 the CM Workflow source checkout (for example, your home directory). Inside a
 checkout with the same package name and version, npm can select the local
 uninstalled package and report `cm-workflow: command not found`.
