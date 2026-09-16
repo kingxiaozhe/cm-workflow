@@ -49,6 +49,12 @@ JS 准入返回 `blocked / existing_project_required`（项目根除 `.git`、`.
   - 有 git 且有 remote → `remote`；有 git 无 remote → `local`（不询问，直接记录）
   - **无 git → 询问用户一次**："初始化本地 git？（推荐——每任务提交与审计链依赖它）/ 不使用版本控制"
   - 用户拒绝 → 记 `none`：不生成 git-workflow.md、后续 N5 跳过提交、doc-syncer 用文件扫描、hook 不适用、审计链降级为 METRICS + tasks 勾选
+- **检测运行时声明**（答案作为 `selection.runtimes` 传给宿主，配置文件作为目标之一生成并核验，再经确认与独立审查写入；不在会话里直接写文件。运行时同步到 AGENTS.md/CLAUDE.md；用户自报比 CLI 探测更能反映可用配额）：
+  - 项目根已有 `.cm-workflow.yml/.yaml/.json` 且含 `runtimes.available` → selection 不带 `runtimes`，目标清单不含配置文件；不问、不写、只记录
+  - 无配置或缺该字段 → **询问用户一次**："你手上有哪个工具？Codex / Claude / 两个都有"；答"两个都有"再问一次："谁写代码？Codex（推荐，另一家审）/ Claude"
+  - 按答案选预设：只有 Codex → `codex-only`；只有 Claude → `claude-only`；都有且 Codex 写 → `codex-codes`；都有且 Claude 写 → `claude-codes`。预设→adapter 映射以 `{CM_WORKFLOW_ROOT}/templates/cm-workflow.yml` 注释为准，不在此复制
+  - 传入 `selection.runtimes: {available: "codex|claude|both", preset: "对应预设"}`；无配置时宿主以模板为骨架生成 `.cm-workflow.yml`，已有配置沿用原文件名及原文。只填 `runtimes.available` 与 `roles.coder/reviewer` 的 `adapter`、`source`，保留其余原值
+  - 该声明只决定自动派发偏好，**不拦用户在任一工具里敲命令**；声明了另一家不等于会自动调用它
 
 ### 1.5 代码库参考文档（自动判断，不询问）
 
@@ -84,6 +90,7 @@ JS 按下列现有条件选择 `codebase-context` scan；执行后在输出中�
 
 ```
 AGENTS.md                         # Codex 原生项目指令，简洁、可执行
+.cm-workflow.yml                  # 运行时声明与角色路由（第1节询问结果；无声明则不创建）
 .claude/
 ├── CLAUDE.md                    # Claude Code 兼容门面，≤150 行
 ├── rules/
@@ -114,6 +121,7 @@ CLAUDE.md 作为 Claude Code 兼容入口，必须包含以下部分，控制在
 - 框架: {framework}
 - 包管理: {pkg manager}
 - 版本控制: {remote | local | none}   # $cm-ai 各节点据此执行或降级 git 操作，不再重复询问
+- 运行时: {codex | claude | both}（预设 {codex-only | claude-only | codex-codes | claude-codes}）   # 只决定自动派发偏好，不拦交互式使用；未声明写「未声明」
 - 交付形态: {Web | iOS | Android | 小程序 | 桌面 | 多端}   # 架构第一分叉，涉形态的需求变更必须过人工确认
 - 业务地图: {已全量生成 {日期} | 跳过(小项目,{N}文件) | 未初始化}   # codebase-context 判定结果，$cm-prd 据此行动不再重复询问
 
@@ -149,6 +157,7 @@ CLAUDE.md 作为 Claude Code 兼容入口，必须包含以下部分，控制在
 - 命令类(install/dev/test/lint/build):验证脚本真实存在(读 manifest scripts / Makefile),可安全 dry 的实跑一次
 - globs 类:实测匹配非空——匹配零文件的 glob 是死规则
 - 文件引用类(@rules/xxx、路径):存在性检查
+- 运行时声明类：宿主用共享配置解析器核验配置草稿；`workflow_config_invalid / runtimes_declaration_missing / existing_config_fields_changed` 任一出现即不许写，修正后重新核验（单家指向另一家、两家写审同家或改动无关配置均阻塞）
 
 > 依据:实跑事故——init 生成的 testing.md 写了 Node 24 下已失效的 `node --test tests/`,带病上岗直到任务踩上去才发现。能机械验的绝不靠嘴(凭证卡点同款基因)。
 

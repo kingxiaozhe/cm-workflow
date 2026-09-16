@@ -120,3 +120,53 @@ test('private recovery refuses anonymous authors before revision or checkpoint w
   assert.equal((await c.request('prepare_revision',{documents})).result.stage,'draft_generated');await c.close();
   assert.deepEqual(JSON.parse(fs.readFileSync(f.file,'utf8')).checkpoint.authorContexts,['author-a','author-b']);
 });
+
+test('runtime selection survives analysis and draft restart; existing JSON requires confirmation and review before write',{timeout:10000},async t=>{
+  const f=fixture(t),calls=[];
+  const runtimes={available:'both',preset:'codex-codes'},configFile=path.join(f.project,'.cm-workflow.json');
+  const original=JSON.stringify({version:1,policies:{generate_cases:false}});
+  const content=JSON.stringify({version:1,policies:{generate_cases:false},runtimes:{available:'both'},
+    roles:{coder:{adapter:'codex-cli',source:'subscription'},reviewer:{adapter:'claude-cli',source:'subscription'}}});
+  fs.writeFileSync(configFile,original);
+  const respond=message=>{
+    calls.push(message.kind);
+    if(message.kind==='init_analyze')return {...analyzed,selection:{...analyzed.selection,runtimes}};
+    if(message.kind==='init_generate'){
+      assert.deepEqual(message.payload.selection.runtimes,runtimes);
+      assert.equal(message.payload.existing.at(-1).content,original);
+      return {status:'generated',documents:message.payload.targets.map(file=>({path:file,
+        content:file==='.cm-workflow.json'?content:'# Synthetic rules\n'}))};
+    }
+    if(message.kind==='init_verify')return {...checks('verified'),constraintChanges:['.cm-workflow.json']};
+    if(message.kind==='init_confirm'){
+      assert.deepEqual(message.payload.changes,[{path:'.cm-workflow.json',before:original,after:content}]);
+    }
+    if(message.kind==='init_review'){
+      assert.ok(message.payload.package.examinedPaths.includes('.cm-workflow.json'));
+      assert.deepEqual(message.payload.package.selection.runtimes,runtimes);
+    }
+    if(message.kind==='init_write'){
+      assert.equal(fs.readFileSync(configFile,'utf8'),original);
+      for(const document of message.payload.documents){
+        const file=path.join(f.project,document.path);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,document.content);
+      }
+      return {status:'written'};
+    }
+    return reply(message);
+  };
+  let c=await client(t,f,respond);
+  assert.equal((await c.request('start')).result.stage,'analysis_ready');await c.close();
+  c=await client(t,f,respond);
+  assert.deepEqual((await c.request('status')).result.analysisResult.selection.runtimes,runtimes);
+  const generated=(await c.request('advance')).result;
+  assert.equal(generated.inspection.status,'structurally_checked');await c.close();
+  c=await client(t,f,respond,{allowWrite:true});
+  assert.equal(fs.readFileSync(configFile,'utf8'),original);
+  assert.equal((await c.request('advance')).result.stage,'confirmation_required');
+  assert.equal((await c.request('advance')).result.stage,'review_required');
+  assert.equal((await c.request('advance')).result.stage,'reviewed_draft');
+  assert.equal(fs.readFileSync(configFile,'utf8'),original);
+  assert.equal((await c.request('advance')).result.stage,'rules_written');await c.close();
+  assert.equal(fs.readFileSync(configFile,'utf8'),content);
+  assert.deepEqual(calls,['init_analyze','init_generate','init_verify','init_confirm','init_review','init_write']);
+});

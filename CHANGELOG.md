@@ -5,6 +5,11 @@
 
 ## 未发布
 
+- `cm-ai` protected host 按项目声明派发 coder/reviewer CLI，支持 Claude 只读文本提案经宿主校验后落盘；保留逐轮授权和跨家独立审查，实际启动进程后记录 `cli-dispatch`，审查凭证如实标注 `claude-cli`。已覆盖本机假进程夹具，真实模型双向验收待执行。
+
+- 修复 `cm-init` 运行时声明无法进入宿主草稿的问题：可选 `selection.runtimes` 按预设追加配置目标，沿用已有文件名，核验声明并保护无关配置，接续原确认、审查与写入流程；直接导入 `scripts/cm-workflow-config.mjs` 复用唯一解析器（现有规则未禁止该方向，避免为下沉实现越过本次 cm-init 修改边界）。
+- 新增运行时声明：`.cm-workflow.yml` 增加 `runtimes.available`（codex/claude/both），`cm-init` 首次初始化询问一次并按四个预设写入 coder/reviewer；配置校验拦截「单家声明却指向另一家」与「两家都有却写审同家」；`cm-check --project` 输出声明与本机 CLI 的对照及 coder/reviewer 的 `route_state`；`--failover` 改为声明优先、探测校验。声明不等于跨运行时派发。
+- 新增双运行时容灾两层能力。`scripts/cm-failover.mjs` 只读推导 CM 断点（N3/N4/N5/N6）并生成另一端的续跑简报，不写 `tasks.md`、不标记完成、不授权发布；`cm-ai-host.mjs serve --failover` 在构造 execution 前按角色主从（developer 主 codex、reviewer 主 claude）探测选路，只决定起跑运行时，切换必播报，两端都不可解析时以 `no_runtime_available` 阻塞而非回退到不可用一端。不传 `--failover` 行为完全不变；与 `--protected-config` 互斥。边界与限制见 `docs/runtime-failover.md`。
 - 修复自动更新器 `cm-update.sh` 硬编码 PATH 覆盖 launchd 环境变量的问题：改为保留继承的 PATH 再追加兜底目录，非 Homebrew 安装的 Node.js 不再导致定时更新一直报「Node.js 18+ 未找到」。
 
 ## 0.12.0 — 2026-09-16

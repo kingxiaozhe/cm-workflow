@@ -366,3 +366,88 @@ for(const runtime of ['codex','claude'])for(const workflow of [false,true])test(
     }
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
+
+// Real local child processes with synthetic provider output. Only `codex sandbox`
+// delegates to the installed CLI; no real model is ever requested.
+function installDispatchFakes(f){
+  const bin=path.join(f.root,'bin');fs.mkdirSync(bin);
+  const located=spawnSync('/usr/bin/which',['codex'],{encoding:'utf8'});assert.equal(located.status,0);
+  for(const provider of ['codex','claude']){
+    const reviewFixture=fileURLToPath(new URL(`./fixtures/${provider}-review-process.mjs`,import.meta.url));
+    fs.writeFileSync(path.join(bin,provider),String.raw`#!${process.execPath}
+const fs=require('node:fs'),cp=require('node:child_process'),a=require('node:assert/strict');
+const provider=${JSON.stringify(provider)},args=process.argv.slice(2),real=${JSON.stringify(located.stdout.trim())};
+if(args[0]==='sandbox'){const r=cp.spawnSync(real,args,{stdio:'inherit'});process.exit(r.status??1);}
+let prompt='';process.stdin.on('data',s=>prompt+=s);process.stdin.on('end',()=>{
+  if(!prompt.includes('<cm-developer-data-json>')){
+    const r=cp.spawnSync(process.execPath,[${JSON.stringify(reviewFixture)},...args],{input:prompt,encoding:'utf8'});
+    process.stdout.write(r.stdout??'');process.stderr.write(r.stderr??'');process.exit(r.status??1);
+  }
+  const content='export const value = 42;\n';
+  const value={outcome:'implemented',application:{status:'no_relevant_lesson',note:null},retrospective:{status:'no_new_lesson',candidates:[],reason:null}};
+  let events;
+  if(provider==='codex'){
+    const profile=[];for(let i=0;i<args.length;i++)if(args[i]==='-c'&&/^(default_permissions=|permissions.cm-specs=)/.test(args[i+1]))profile.push(args[i],args[i+1]);
+    a.equal(profile.length,4);
+    const r=cp.spawnSync(real,['sandbox','-P','cm-specs','--include-managed-config','-C',process.cwd(),...profile,'--',process.execPath,'-e',"require('node:fs').writeFileSync('target.mjs',"+JSON.stringify(content)+")"],{encoding:'utf8'});
+    if(r.status!==0){process.stderr.write(r.stderr??'');process.exit(1);}
+    events=[{type:'thread.started',thread_id:'synthetic-coder-codex'},{type:'turn.started'},
+      {type:'item.completed',item:{type:'agent_message',text:JSON.stringify(value)}},{type:'turn.completed'}];
+  }else{
+    a.equal(args[args.indexOf('--tools')+1],'Read,Grep,Glob');a.equal(args[args.indexOf('--allowedTools')+1],'Read,Grep,Glob');
+    a.equal(args[args.indexOf('--permission-mode')+1],'dontAsk');a(args.includes('--no-session-persistence'));
+    a(prompt.includes('Protected current-host mode: do not write files'));
+    a.equal(fs.existsSync('target.mjs'),false);
+    const expected=JSON.parse(prompt.trim().split('\n').at(-1)).expected;
+    const proposal={status:'succeeded',value,edits:[{path:'target.mjs',beforeSha256:expected['target.mjs'],content}]};
+    const session_id='synthetic-coder-claude';
+    events=[{type:'system',subtype:'init',session_id},{type:'assistant',session_id,parent_tool_use_id:null,message:{role:'assistant',content:[{type:'text',text:'proposal'}]}},
+      {type:'result',session_id,subtype:'success',is_error:false,num_turns:1,result:JSON.stringify(proposal)}];
+  }
+  for(const event of events)process.stdout.write(JSON.stringify(event)+'\n');
+});
+`,{mode:0o700});
+  }
+  f.env={...process.env,PATH:bin+path.delimiter+process.env.PATH,CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')};
+}
+for(const [available,coder,reviewer,runtime] of [
+  ['codex','codex','codex','claude'],['claude','claude','claude','codex'],
+  ['both','codex','claude','claude'],['both','claude','codex','codex'],
+])test(`protected dispatch ${available}: ${runtime} host -> ${coder} coder -> ${reviewer} reviewer`,async()=>{
+  const f=fixture();
+  try{
+    installDispatchFakes(f);
+    fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.json'),JSON.stringify({version:1,runtimes:{available},
+      roles:{coder:{adapter:`${coder}-cli`},reviewer:{adapter:`${reviewer}-cli`}}}));
+    const preview=spawnSync(process.execPath,[cli,'preflight','--config',f.config,'--review-model','fixture','--runtime',reviewer],
+      {encoding:'utf8',env:f.env,timeout:5000});assert.equal(preview.status,0,preview.stderr);
+    const reviewFile=path.join(f.root,'review.json'),protectedFile=path.join(f.root,'protected.json');
+    fs.writeFileSync(reviewFile,preview.stdout);
+    fs.writeFileSync(protectedFile,JSON.stringify({model:'fixture',timeoutMs:5000,
+      checkCommands:[{id:'syntax',command:[process.execPath,'--check','target.mjs']}]}));
+    f.args.push('--runtime',runtime,'--review-config',reviewFile,'--protected-config',protectedFile);
+    const denied=await runCli(f,'normal');assert.equal(denied.code,1);assert.match(denied.stderr,/provider_development_authorization_required/);
+    assert(!fs.existsSync(path.join(f.codeProject,'target.mjs')));assert(!fs.existsSync(path.join(f.specsDir,'.reviews')));
+    f.args.push('--allow-provider-development-attempt','1');
+    const first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
+    assert.equal(first.rows.find(row=>row.requestId==='advance').result.code,'decision_required');assert.deepEqual(first.calls,[]);
+    assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 42;\n');
+    const readRoutes=()=>fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse)
+      .filter(row=>row.phase==='route'&&row.event==='decision');
+    assert.equal(readRoutes().filter(row=>row.data.role==='coder'&&row.data.route_state==='cli-dispatch').length,1);
+    assert.equal(readRoutes().filter(row=>row.data.role==='reviewer').length,0);
+    f.args.push('--allow-review-attempt','2');
+    const wrong=await runCli(f,'normal','resume');assert.equal(wrong.rows.find(row=>row.requestId==='advance').result.code,'decision_required');
+    assert.equal(readRoutes().filter(row=>row.data.role==='reviewer').length,0);
+    f.args[f.args.length-1]='1';
+    const reviewed=await runCli(f,'normal','resume');assert.equal(reviewed.code,0,reviewed.stderr);
+    assert.equal(reviewed.rows.find(row=>row.requestId==='advance').result.state,'fixture_completed',JSON.stringify(reviewed.rows));
+    const route=readRoutes().find(row=>row.data.role==='reviewer');assert(route);
+    assert.equal(route.data.adapter,`${reviewer}-cli`);assert.equal(route.data.route_state,reviewer===runtime?'current-runtime':'cli-dispatch');
+    const receipt=fs.readFileSync(path.join(f.specsDir,'.reviews','work-T-001-r1.md'),'utf8');
+    assert.match(receipt,new RegExp(`reviewer: ${reviewer}-cli`));assert.match(receipt,/independent: true/);
+    const gate=spawnSync(process.execPath,[fileURLToPath(new URL('./cm-task-gate.mjs',import.meta.url)),'check-n4',
+      '--specs-dir',f.specsDir,'--feature','1.work','--task','T-001','--project-root',f.codeProject],{encoding:'utf8'});
+    assert.equal(gate.status,0,gate.stderr);assert.equal(JSON.parse(gate.stdout).content_bound,true);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});

@@ -179,3 +179,91 @@ test('frozen Python authority vectors preserve numeric token and equals-form beh
   assert.equal(emptyProject.status,0);
   assert.equal(JSON.parse(emptyProject.stdout).version,1);
 }));
+
+// --- runtimes.available 声明 ---
+const withRuntimes=(available,coder,reviewer)=>`version: 1
+runtimes:
+  available: ${available}
+roles:
+  coder:
+    adapter: ${coder}
+    model: default
+    source: subscription
+  reviewer:
+    adapter: ${reviewer}
+    model: default
+    source: subscription`;
+
+test('runtimes.available 缺省为 unknown，四个预设都能通过校验',()=>fixture(async root=>{
+  const {loadConfig,declaredRuntimes}=await import('./cm-workflow-config.mjs');
+  const none=loadConfig({projectRoot:root,text:'version: 1'});
+  assert.equal(none.runtimes.available,'unknown');
+  assert.deepEqual(declaredRuntimes(none),{available:'unknown',allowed:['codex','claude']});
+  for(const [available,coder,reviewer] of [['codex','codex-cli','codex-cli'],['claude','claude-cli','claude-cli'],
+    ['both','codex-cli','claude-cli'],['both','claude-cli','codex-cli']]){
+    const config=loadConfig({projectRoot:root,text:withRuntimes(available,coder,reviewer)});
+    assert.equal(config.runtimes.available,available);
+    assert.equal(config.roles.coder.adapter,coder);
+  }
+  assert.deepEqual(declaredRuntimes(loadConfig({projectRoot:root,text:withRuntimes('codex','codex-cli','codex-cli')})),
+    {available:'codex',allowed:['codex']});
+}));
+
+test('声明只有一家时，角色不能指向另一家',()=>fixture(async root=>{
+  const {loadConfig}=await import('./cm-workflow-config.mjs');
+  assert.throws(()=>loadConfig({projectRoot:root,text:withRuntimes('codex','codex-cli','claude-cli')}),
+    /roles\.reviewer\.adapter claude-cli needs the claude runtime, but runtimes\.available declares codex/);
+  assert.throws(()=>loadConfig({projectRoot:root,text:withRuntimes('claude','codex-cli','claude-cli')}),
+    /roles\.coder\.adapter codex-cli needs the codex runtime/);
+}));
+
+test('声明两家都有时，写代码和审代码不能落在同一家',()=>fixture(async root=>{
+  const {loadConfig}=await import('./cm-workflow-config.mjs');
+  assert.throws(()=>loadConfig({projectRoot:root,text:withRuntimes('both','codex-cli','codex-cli')}),
+    /roles\.coder and roles\.reviewer both resolve to codex/);
+  // current-ai 表示「我所在的工具」，无法判定归属，不参与该检查。
+  assert.doesNotThrow(()=>loadConfig({projectRoot:root,text:withRuntimes('both','codex-cli','current-ai')}));
+  assert.doesNotThrow(()=>loadConfig({projectRoot:root,text:'version: 1\nruntimes:\n  available: both'}));
+}));
+
+test('runtimes 字段只接受 available，取值只接受 codex/claude/both',()=>fixture(async root=>{
+  const {loadConfig,runtimeForAdapter}=await import('./cm-workflow-config.mjs');
+  assert.throws(()=>loadConfig({projectRoot:root,text:'version: 1\nruntimes:\n  available: unknown'}),/must be one of: both, claude, codex/);
+  assert.throws(()=>loadConfig({projectRoot:root,text:'version: 1\nruntimes:\n  available: gemini'}),/must be one of/);
+  assert.throws(()=>loadConfig({projectRoot:root,text:'version: 1\nruntimes:\n  preset: codex-codes'}),/config\.runtimes has unknown field\(s\): preset/);
+  assert.throws(()=>loadConfig({projectRoot:root,text:'version: 1\nruntimes: both'}),/config\.runtimes must be a mapping/);
+  assert.equal(runtimeForAdapter('codex-cli'),'codex');assert.equal(runtimeForAdapter('claude-api'),'claude');
+  assert.equal(runtimeForAdapter('current-ai'),null);
+}));
+
+test('--print-effective 输出包含 runtimes 声明，CLI 拒绝矛盾配置并给出字段路径',()=>fixture(async root=>{
+  fs.writeFileSync(path.join(root,'.cm-workflow.yml'),withRuntimes('both','codex-cli','claude-cli'));
+  const ok=spawnSync(process.execPath,[entryPath,'--project',root,'--print-effective'],{encoding:'utf8'});
+  assert.equal(ok.status,0,ok.stderr);
+  assert.equal(JSON.parse(ok.stdout).runtimes.available,'both');
+  fs.writeFileSync(path.join(root,'.cm-workflow.yml'),withRuntimes('codex','codex-cli','claude-cli'));
+  const bad=spawnSync(process.execPath,[entryPath,'--project',root],{encoding:'utf8'});
+  assert.notEqual(bad.status,0);
+  assert.match(bad.stderr+bad.stdout,/roles\.reviewer\.adapter/);
+}));
+
+test('protected runtime selection obeys all declarations without claiming process dispatch',async()=>{
+  const {loadConfig,resolveRole,resolveProtectedRuntimes}=await import('./cm-workflow-config.mjs');
+  for(const [available,coder,reviewer] of [['codex','codex','codex'],['claude','claude','claude'],['both','codex','claude'],['both','claude','codex']]){
+    const config=loadConfig({projectRoot:scriptsRoot,configPath:'fixture.json',text:JSON.stringify({version:1,runtimes:{available},
+      roles:{coder:{adapter:`${coder}-cli`},reviewer:{adapter:`${reviewer}-cli`}}})});
+    for(const runtime of ['codex','claude']){
+      assert.deepEqual(resolveProtectedRuntimes(config,runtime),{coderRuntime:coder,reviewerRuntime:reviewer});
+      assert.equal(resolveRole(config,'coder',runtime).route_state,coder===runtime?'current-runtime':'declared-adapter');
+    }
+  }
+  // Defense in depth for the late-bound current-ai and unvalidated input cases.
+  const config=loadConfig({projectRoot:scriptsRoot,configPath:'fixture.json',text:JSON.stringify({version:1,runtimes:{available:'both'},
+    roles:{coder:{adapter:'current-ai'},reviewer:{adapter:'codex-cli'}}})});
+  assert.throws(()=>resolveProtectedRuntimes(config,'codex'),/cross_runtime_review_required/);
+  assert.deepEqual(resolveProtectedRuntimes(config,'claude'),{coderRuntime:'claude',reviewerRuntime:'codex'});
+  config.runtimes.available='claude';
+  assert.throws(()=>resolveProtectedRuntimes(config,'claude'),/runtime_not_declared/);
+  config.roles.reviewer.adapter='current-ai';
+  assert.deepEqual(resolveProtectedRuntimes(config,'claude'),{coderRuntime:'claude',reviewerRuntime:'claude'});
+});

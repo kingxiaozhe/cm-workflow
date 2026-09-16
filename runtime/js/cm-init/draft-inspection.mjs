@@ -2,13 +2,25 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import {isDeepStrictEqual} from 'node:util';
 import {freeze,need} from '../cm-ai/effect-contract.mjs';
+import {CONFIG_FILENAMES,ConfigError,findConfig,loadConfig} from '../../../scripts/cm-workflow-config.mjs';
 
 const rules=new Set(['coding-style','testing','security','git-workflow','frontend','miniprogram',
   'backend-api','database','smart-contract','finance']);
 const allowed=file=>file==='AGENTS.md'||file==='.claude/CLAUDE.md'
+  ||CONFIG_FILENAMES.includes(file)
   ||(/^\.claude\/rules\/([a-z-]+)\.md$/.test(file)&&rules.has(file.slice(14,-3)));
 const sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
+const preservedConfig=config=>{
+  const preserved=structuredClone(config);
+  delete preserved.runtimes;
+  for(const role of ['coder','reviewer']){
+    delete preserved.roles[role].adapter;
+    delete preserved.roles[role].source;
+  }
+  return preserved;
+};
 
 export function readCmInitSource(root,file){
   need(typeof file==='string'&&file.split('/').every(part=>part&&part!=='.'&&part!=='..')
@@ -37,7 +49,7 @@ export function inspectCmInitDraft({project,documents}){
   need(typeof project==='string'&&path.isAbsolute(project),'init_project_path_invalid');
   const root=fs.realpathSync(project);
   need(fs.statSync(root).isDirectory(),'init_project_path_invalid');
-  need(Array.isArray(documents)&&documents.length>=2&&documents.length<=12,'init_draft_invalid');
+  need(Array.isArray(documents)&&documents.length>=2&&documents.length<=13,'init_draft_invalid');
   const byPath=new Map();
   for(const document of documents){
     need(document&&typeof document==='object'&&!Array.isArray(document)
@@ -52,6 +64,22 @@ export function inspectCmInitDraft({project,documents}){
     const before=readCmInitSource(root,file),after=Buffer.from(content);
     changes.push({path:file,action:before===null?'create':before.equals(after)?'unchanged':'modify',
       beforeSha256:before===null?null:sha(before),afterSha256:sha(after)});
+    if(CONFIG_FILENAMES.includes(file)){
+      try{
+        findConfig(root); // Preserve the shared ambiguity check even for a proposed new target.
+        const parse=text=>loadConfig({projectRoot:root,configPath:path.join(root,file),text});
+        const config=parse(content);
+        if(config.runtimes.available==='unknown')issues.push({path:file,code:'runtimes_declaration_missing'});
+        if(before!==null){
+          const previous=parse(before.toString('utf8'));
+          if(!isDeepStrictEqual(preservedConfig(previous),preservedConfig(config)))
+            issues.push({path:file,code:'existing_config_fields_changed'});
+        }
+      }catch(error){
+        if(!(error instanceof ConfigError))throw error;
+        issues.push({path:file,code:'workflow_config_invalid',message:error.message});
+      }
+    }
     if(file==='.claude/CLAUDE.md'&&content.replace(/\r\n/g,'\n').replace(/\n$/,'').split('\n').length>150)
       issues.push({path:file,code:'claude_line_limit'});
     // Only the compatibility entry's standalone @rules imports are covered here.

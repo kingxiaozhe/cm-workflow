@@ -14,7 +14,7 @@ export function claudeReviewFingerprint({cwd,model,cli='claude'}) {
   return createHash('sha256').update(JSON.stringify({cwd,cli,args:claudeReviewArgs(model),
     environmentPolicy:1,promptTransport:'stdin'})).digest('hex');
 }
-function environment() {
+export function claudeEnvironment() {
   const allowed=['PATH','HOME','USER','LOGNAME','TMPDIR','LANG','LC_ALL','ANTHROPIC_API_KEY'];
   return {...Object.fromEntries(Object.entries(process.env).filter(([key])=>allowed.includes(key))),
     CLAUDE_CODE_MAX_RETRIES:'0',CLAUDE_CODE_RETRY_WATCHDOG:'0'};
@@ -42,7 +42,7 @@ export function claudeWorker({cwd,model,preflight,cli='claude',timeoutMs=60000,s
     used=true;
     return new Promise(resolve=>{
       let child;
-      try { child=spawnProcess(cli,args,{cwd,env:environment(),stdio:['pipe','pipe','pipe'],detached:true}); }
+      try { child=spawnProcess(cli,args,{cwd,env:claudeEnvironment(),stdio:['pipe','pipe','pipe'],detached:true}); }
       catch { resolve({status:'failed',code:'spawn_failed'});return; }
       let buffer='', bytes=0, failure=null, settled=false, timedOut=false, killTimer, pendingClose;
       const stream=createClaudeReviewStream(onEvent);

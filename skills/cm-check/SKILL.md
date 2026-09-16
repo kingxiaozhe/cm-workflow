@@ -64,6 +64,10 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-check-host.mjs" serve \
 7. **版本**：根 `VERSION` 与 plugin manifest 一致；README 不得宣称不存在的入口或安装路径。
 8. **私有调用清零**：Codex 核心 Skill 不得残留 `TaskCreate`、`TodoWrite`、`codex:review`、`~/.claude/commands`；兼容包装中出现 `/cm:*` 是合法的 macOS/Linux 旧入口。
 
+传入 `--project` 时机械检查额外输出「运行时声明对照」：读 `.cm-workflow.yml` 的
+`runtimes.available`，声明的一家若本机 CLI 不可解析只打 `WARN`（可解析≠配额可用，不算失败）；
+并逐行打印 coder/reviewer 的 `route_state`，`declared-adapter` 标「已声明未派发」。这是诊断，不是授权。
+
 外部能力只做降级提示，不应导致插件自检失败：状态条、后台定时更新器、子代理、隔离 CLI
 审查通道与 external-expert 浏览器 transport 都是可选增强。浏览器不可用时必须能输出
 手工 handoff packet，不能把可选通道缺失报成核心运行时失败。

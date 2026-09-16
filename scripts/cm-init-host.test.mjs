@@ -10,7 +10,7 @@ import {once} from 'node:events';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {publishCmInitReviewEvidence} from '../runtime/js/cm-init/review-evidence.mjs';
 const repository=fileURLToPath(new URL('..',import.meta.url));
-for(const mode of ['generate','cancel','verify','unverified','verify-drift','confirm','confirm-approve','confirm-reject','confirm-drift','review-package','review-package-drift','review-package-encoding','review-result-approved','review-result-changes','review-result-self','review-result-digest','write-success','write-partial','write-denied','write-drift','write-evidence-conflict','write-evidence-permissions'])test(`init host actual JSONL CLI: ${mode}`,{timeout:5000},async()=>{
+for(const mode of ['generate','generate-runtime','cancel','verify','unverified','verify-drift','confirm','confirm-approve','confirm-reject','confirm-drift','review-package','review-package-drift','review-package-encoding','review-result-approved','review-result-changes','review-result-self','review-result-digest','write-success','write-partial','write-denied','write-drift','write-evidence-conflict','write-evidence-permissions'])test(`init host actual JSONL CLI: ${mode}`,{timeout:5000},async()=>{
   const project=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-init-host-')));
   fs.writeFileSync(path.join(project,'AGENTS.md'),mode==='review-package-encoding'?Buffer.from([0xff,0x42]):'Preserve original rule');
   const child=spawn(process.execPath,[path.join(repository,'scripts/cm-init-host.mjs'),'serve',
@@ -23,7 +23,8 @@ for(const mode of ['generate','cancel','verify','unverified','verify-drift','con
     for await(const line of lines){
       const message=JSON.parse(line);messages.push(message);
       if(message.type==='host_ready'){
-        sessionId=message.sessionId;send({requestId:'generate',operation:'advance',selection:{versionControl:'none',modules:[],analysis:'Synthetic fixture'}});
+        sessionId=message.sessionId;send({requestId:'generate',operation:'advance',selection:{versionControl:'none',modules:[],analysis:'Synthetic fixture',
+          ...(mode==='generate-runtime'?{runtimes:{available:'codex',preset:'codex-only'}}:{})}});
       }else if(message.type==='host_request'){
         calls++;
         if(message.kind==='init_write'){
@@ -65,9 +66,9 @@ for(const mode of ['generate','cancel','verify','unverified','verify-drift','con
           assert.equal(message.kind,'init_generate');
           if(mode==='cancel')send({requestId:'cancel',operation:'cancel'});
           else send({type:'host_result',sessionId,callId:message.callId,requestDigest:message.requestDigest,
-            result:{status:'generated',documents:message.payload.targets.map(file=>({path:file,content:'# Fixture\nPreserve original rule\n'}))}});
+            result:{status:'generated',documents:message.payload.targets.map(file=>({path:file,content:file==='.cm-workflow.yml'?'version: 1\nruntimes:\n  available: codex\n':'# Fixture\nPreserve original rule\n'}))}});
         }
-      }else if(message.requestId==='generate')send(['generate','cancel'].includes(mode)
+      }else if(message.requestId==='generate')send(['generate','generate-runtime','cancel'].includes(mode)
         ?{requestId:'status',operation:'status'}:{requestId:'verify',operation:'advance'});
       else if(message.requestId==='verify'){
         if(mode==='review-package-drift')fs.writeFileSync(path.join(project,'AGENTS.md'),'Concurrent user change');
@@ -94,10 +95,10 @@ for(const mode of ['generate','cancel','verify','unverified','verify-drift','con
       else if(message.requestId==='status')send({type:'host_close',sessionId});
     }
     const [code]=await closed;assert.equal(code,0,stderr);assert.equal(calls,
-      ['write-success','write-partial'].includes(mode)?4:['generate','cancel'].includes(mode)?1:
+      ['write-success','write-partial'].includes(mode)?4:['generate','generate-runtime','cancel'].includes(mode)?1:
         mode.startsWith('confirm-')||mode.startsWith('review-result')||mode.startsWith('write-')?3:2);
     const status=messages.find(message=>message.requestId==='status').result;
-    assert.equal(status.stage,{generate:'draft_generated',cancel:'cancelled',verify:'review_required',
+    assert.equal(status.stage,{generate:'draft_generated','generate-runtime':'draft_generated',cancel:'cancelled',verify:'review_required',
       unverified:'verification_blocked','verify-drift':'failed',confirm:'confirmation_required',
       'confirm-approve':'review_required','confirm-reject':'confirmation_rejected','confirm-drift':'failed',
       'review-package':'review_required','review-package-drift':'review_required','review-package-encoding':'review_required',
@@ -164,7 +165,11 @@ for(const mode of ['generate','cancel','verify','unverified','verify-drift','con
       assert.equal(status.verification.source,'current_host_report');assert.equal(status.writeAuthorized,false);
     }
     if(mode==='verify-drift')assert.equal(status.verification,null);
-    if(mode==='generate')assert.equal(status.result.inspection.status,'structurally_checked');
+    if(mode.startsWith('generate'))assert.equal(status.result.inspection.status,'structurally_checked');
+    if(mode==='generate-runtime'){
+      assert.ok(status.result.documents.some(document=>document.path==='.cm-workflow.yml'));
+      assert.equal(fs.existsSync(path.join(project,'.cm-workflow.yml')),false);
+    }
     if(mode==='review-package-encoding')assert.deepEqual(fs.readFileSync(path.join(project,'AGENTS.md')),Buffer.from([0xff,0x42]));
     else assert.equal(fs.readFileSync(path.join(project,'AGENTS.md'),'utf8'),mode.endsWith('-drift')?'Concurrent user change':
       ['write-success','write-partial'].includes(mode)?'# Fixture\nPreserve original rule\n':'Preserve original rule');

@@ -7,6 +7,22 @@ project:
   type: auto                         # auto | java-backend | web-frontend | custom
   workflow: cm-default               # cm-default | java-backend | web-frontend
 
+# 你手上有哪个工具？cm-init 会问一次并填在这里；之后随时可改。
+# codex | claude | both。不写 = 未声明，工作流按当前所在工具运行，不做交叉检查。
+runtimes:
+  available: both
+
+# 四个预设（按 available 选一个，把下面 coder / reviewer 两块覆盖到 roles 里）。
+# 预设只决定「自动派发时想用谁」；你在哪个工具里敲命令，永远不会被拦。
+# 注意：声明了另一端不等于会自动调用它——当前运行时之外的 adapter 只记为
+# declared-adapter，cm-check 会把这类角色标出来。
+#
+# codex-only ：coder codex-cli / reviewer codex-cli（审查用同一工具的全新上下文，仍是独立审查）
+# claude-only：coder claude-cli / reviewer claude-cli（同上）
+# codex-codes：coder codex-cli / reviewer claude-cli（大额度写代码，另一家审）
+# claude-codes：coder claude-cli / reviewer codex-cli（反过来）
+# both 时 coder 与 reviewer 不能落在同一家，否则 cm-check 报错。
+
 roles:
   analyst:
     adapter: current-ai              # current-ai | claude-api | openai-compatible | ...
