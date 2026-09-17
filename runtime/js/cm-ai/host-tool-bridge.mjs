@@ -6,8 +6,8 @@ import {digest,json,need,shape} from './effect-contract.mjs';
 export function createHostToolBridge({responseLimit=64*1024}={}){
   need(Number.isSafeInteger(responseLimit)&&responseLimit>=64*1024&&responseLimit<=4*1024*1024,'host_response_limit_invalid');
   const sessionId=randomUUID();let send=null,pending=null,closed=false;
-  const stop=code=>{
-    const call=pending;if(!call)return;pending=null;
+  const stop=(code,call=pending)=>{
+    if(!call||pending!==call)return;pending=null;clearTimeout(call.timer);
     call.signal.removeEventListener('abort',call.abort);
     call.reject(Object.assign(new Error(code),{code}));
   };
@@ -16,22 +16,25 @@ export function createHostToolBridge({responseLimit=64*1024}={}){
       need(send===null&&typeof sender==='function'&&!closed,'host_bridge_unavailable');send=sender;
       Promise.resolve(send({type:'host_ready',sessionId})).catch(()=>{closed=true;stop('host_disconnected');});
     },
-    call(kind,payload,signal){
+    call(kind,payload,signal,{timeoutMs=null}={}){
       need(send!==null&&!closed,'host_bridge_unavailable');need(pending===null,'host_bridge_busy');
       need(['develop','check','check_runtime','check_semantic','qa_assess','qa_logic','qa_browser','change_impact','test_cases','refactor_analyze','refactor_confirm','refactor_apply','refactor_review','refactor_batch','refactor_prepare_tests','refactor_retrospective','refactor_recover','documentation_sync','documentation_inspect','fix_diagnose','fix_learning','fix_test_author','fix_repair','fix_retrospective','init_analyze','init_generate','init_verify','init_confirm','init_review','init_write','idea_interview','idea_confirm_save','prd_analyze','prd_materials','prd_generate','prd_self_check','prd_review','prd_correct','prd_summary']
         .includes(kind),'host_operation_invalid');need(!signal.aborted,'cancelled');
       const data=json({kind,payload},12*1024*1024);
       const request={type:'host_request',sessionId,callId:randomUUID(),requestDigest:digest(data),...data};
+      need(timeoutMs===null||Number.isSafeInteger(timeoutMs)&&timeoutMs>0&&timeoutMs<=3600000,'host_request_timeout_invalid');
       return new Promise((resolve,reject)=>{
         const abort=()=>{
-          stop('cancelled');
+          stop('cancelled',call);
           Promise.resolve(send({type:'host_call_cancelled',sessionId,callId:request.callId})).catch(()=>{});
         };
-        pending={request,signal,abort,resolve,reject};signal.addEventListener('abort',abort,{once:true});
+        const call={request,signal,abort,resolve,reject,timer:null};pending=call;
+        if(timeoutMs!==null)call.timer=setTimeout(()=>stop('host_request_timeout',call),timeoutMs);
+        signal.addEventListener('abort',abort,{once:true});
         if(signal.aborted){abort();return;}
         Promise.resolve().then(()=>{
           if(pending?.request===request&&!closed&&!signal.aborted)return send(request);
-        }).catch(()=>stop('host_disconnected'));
+        }).catch(()=>stop('host_disconnected',call));
       });
     },
     accept(raw){
@@ -45,7 +48,7 @@ export function createHostToolBridge({responseLimit=64*1024}={}){
         need(reply.type==='host_result'&&pending!==null&&!closed,'host_response_mismatch');
         for(const key of ['sessionId','callId','requestDigest'])need(reply[key]===pending.request[key],'host_response_mismatch');
       }catch{return {accepted:false,code:'host_response_mismatch'};}
-      const call=pending;pending=null;call.signal.removeEventListener('abort',call.abort);
+      const call=pending;pending=null;clearTimeout(call.timer);call.signal.removeEventListener('abort',call.abort);
       call.resolve(reply.result);return {accepted:true,callId:reply.callId};
     },
     close(){closed=true;stop('host_disconnected');},

@@ -111,6 +111,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Protected current-session invalid_result means local value/Learning validation failed before file writes. Fix the reply, keep the same configuration, host identity and runId, restart with --mode resume and advance: blocked/developer_result_invalid retries develop at the same attempt. no_new_lesson requires reason:null (dogfood incident: nonempty reason previously wrote files then stranded the run as unknown). Already-applied proposals must match expected disk hashes; conflicts block as protected_edit_stale. Worker exceptions/timeouts and old unknown history are not retryable.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('New cm-ai runs carry approved specification data in developer requests and review packages: task/verification, all AC lines, design (64 KiB UTF-8 maximum, truncated:true above it), task-related test cases and manifest hashes. Sources must match .cm-specs-status.specFiles or spec_drift blocks. requirements may be [] or additional code-project files; specs never become writable scope. Legacy runs/packages retain their original representation. Dogfood: separate specs/code roots previously left developers and reviewers without task/interface contracts.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Completed fixture_completed runs originally without QA may explicitly attach N6 once on --mode resume with --workflow-config (non-null qa) and --allow-qa. Original definition, scope, requirements, identity and non-workflow configuration must match. The immutable qa-attached journal record binds the full resumed config fingerprint; later resumes require that same configuration and fresh --allow-qa. qa still requests qa_assess; no automatic decision or repeated development/Review. Dogfood: missing workflow at create previously stranded mandatory feature QA.\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--rerun-unknown-qa requires --mode resume and fresh --allow-qa with the original workflow config. Only an unfinished QA invocation without case results or an execution report may be abandoned and rerun under a new testRunId at the same qaRound. Partial results and unclosed resources remain blocked; no complete is fabricated.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\n');return 0;}
   let run,bridge;
   try{
@@ -138,8 +139,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const extra=new Map();
     for(let index=8;index<argv.length;index++){
       const name=argv[index];need(!extra.has(name),'invalid_arguments');
-      need(['--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--workflow-config','--allow-qa','--runtime','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments');
-      if(['--allow-bootstrap-write','--allow-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
+      need(['--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--workflow-config','--allow-qa','--rerun-unknown-qa','--runtime','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments');
+      if(['--allow-bootstrap-write','--allow-qa','--rerun-unknown-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
       else{need(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments');extra.set(name,argv[++index]);}
     }
     const review=extra.has('--review-config')?reviewConfiguration(extra.get('--review-config')):null;
@@ -147,6 +148,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     let allowedAttempt=null;
     if(extra.has('--allow-review-attempt')){need(['1','2'].includes(extra.get('--allow-review-attempt')),'invalid_arguments');allowedAttempt=Number(extra.get('--allow-review-attempt'));}
     need(!extra.has('--allow-qa')||workflow?.qa!=null,'invalid_arguments');
+    need(!extra.has('--rerun-unknown-qa')||(argv[4]==='resume'&&extra.has('--allow-qa')),'qa_recovery_authorization_required');
     const hasFix=extra.has('--qa-fix-owner-config')||extra.has('--qa-fix-template-config');
     need(!(extra.has('--qa-fix-owner-config')&&extra.has('--qa-fix-template-config')),'invalid_fix_config');
     need(!extra.has('--allow-qa-fix-start')||hasFix,'qa_fix_source_required');
@@ -191,7 +193,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     if(argv[4]==='resume'&&extra.has('--protected-config')&&canResumeLegacyProtected(definition,runtime)){
       try{
         execution=await legacyProtectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap);
-        run=await openControlRun(definition,argv[4],execution);
+        run=await openControlRun(definition,argv[4],execution,{rerunUnknownQa:extra.has('--rerun-unknown-qa')});
         error.write('cm-ai-host: resumed original Codex protected execution after exact fingerprint validation.\n');
       }catch(cause){
         if(!['fingerprint_mismatch','tool_preflight_missing'].includes(cause.code))throw cause;
@@ -203,7 +205,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap)
         :executionFor(definition,argv[6],bridge,review,allowedAttempt,workflow,extra.has('--allow-qa'),runtime,
           {...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{})});
-      run=await openControlRun(definition,argv[4],execution);
+      run=await openControlRun(definition,argv[4],execution,{rerunUnknownQa:extra.has('--rerun-unknown-qa')});
     }
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}
     if(hasFix){

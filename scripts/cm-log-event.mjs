@@ -15,7 +15,7 @@ export const TERMINAL_EVENTS=new Set(['done','run_done']);
 export const RESOURCE_GUARDED_EVENTS=new Set([...TERMINAL_EVENTS,'task_done']);
 const RESOURCE_PHASES=new Set(['acquired','released','cleanup_failed']);
 const TEST_RUN_GUARDED_EVENTS=new Set([...TERMINAL_EVENTS,'task_done']);
-const TEST_RUN_PHASES=new Set(['start','case_start','case_complete','case_blocked','complete']);
+const TEST_RUN_PHASES=new Set(['start','case_start','case_complete','case_blocked','complete','abandoned']);
 const MODEL_USAGE_TOKEN_FIELDS=new Set(['input_tokens','output_tokens','cache_read_tokens','cache_write_tokens']);
 const MODEL_USAGE_STATES=new Set(['observed','unavailable']);
 const MODEL_USAGE_OUTCOMES=new Set(['success','error','blocked','cancelled']);
@@ -210,6 +210,10 @@ function applyTestRunTransition(active,openCases,phase,caseId){
     if(!openCases.has(caseId))throw new UsageError('test_run case terminal phase has no case_start');
     openCases.delete(caseId);return active;
   }
+  if(phase==='abandoned'){
+    if(!active)throw new UsageError('test_run abandoned has no active test run');
+    openCases.clear();return false;
+  }
   if(!active)throw new UsageError('test_run complete has no active test run');
   if(openCases.size)throw new UsageError('test_run complete has unfinished cases');
   return false;
@@ -315,8 +319,17 @@ function loadResourceStates(file,runId){
   return states;
 }
 
+function validateQaAbandonment(state,event){
+  const start=state.start;
+  if(!state.active||state.hasResult||!start||event.workflow!=='cm-ai'||event.node!=='N6'
+    ||event.reason!=='host_terminated'||event.previous_test_run_id!==start.operation_id
+    ||!['repository_id','run_id','feature','task','package_digest','qa_decision_id','operation_id','attempt','mode','case_count']
+      .every(key=>event[key]!==undefined&&event[key]===start[key]))
+    throw new UsageError('QA abandonment requires the matching active invocation without results');
+}
+
 function loadTestRunState(file,runId){
-  let active=false;const openCases=new Set();
+  let active=false,start=null,hasResult=false,abandoned=false;const openCases=new Set();
   for(const value of readJsonLines(file,{strict:true})){
     if(!value||typeof value!=='object'||value.run_id!==runId||value.event!=='test_run'||value.phase===null||value.phase===undefined)continue;
     const phase=value.phase,caseId=value.case_id;
@@ -324,16 +337,20 @@ function loadTestRunState(file,runId){
     if(phase.startsWith('case_')&&(typeof caseId!=='string'||!RESOURCE_ID.test(caseId)))
       throw new UsageError('test_run state log contains a malformed case event');
     if(phase==='complete'&&!active&&!openCases.size)continue;
+    if(phase==='abandoned')validateQaAbandonment({active,start,hasResult},value);
     active=applyTestRunTransition(active,openCases,phase,typeof caseId==='string'?caseId:null);
+    if(phase==='start'){start=value;hasResult=false;abandoned=false;}
+    if(phase==='case_complete')hasResult=true;
+    if(phase==='abandoned')abandoned=true;
   }
-  return {active,openCases};
+  return {active,openCases,start,hasResult,abandoned};
 }
 
 // Read-only reuse of the writer's existing resource/test lifecycle guards by
 // the batch coordinator. No new terminal event or task completion authority.
 export function inspectRunClosure(file,runId){
   const resources=unclosedResources(loadResourceStates(file,runId)),tests=loadTestRunState(file,runId);
-  return {closed:resources.length===0&&!tests.active&&tests.openCases.size===0};
+  return {closed:resources.length===0&&!tests.active&&!tests.abandoned&&tests.openCases.size===0};
 }
 
 function compactJson(value){return `${JSON.stringify(value)}\n`;}
@@ -451,11 +468,16 @@ export function writeLogEvent(rawInput,{environment=process.env,now=new Date(),u
   if(existing===null&&((event.event==='test_run'&&event.phase!==undefined)||TEST_RUN_GUARDED_EVENTS.has(event.event)))try{
     testRun=loadTestRunState(authoritativeLog,built.runId);
   }catch(error){throw new UsageError(`test_run state cannot be verified: ${error.name}`);}
-  if(existing===null&&TEST_RUN_GUARDED_EVENTS.has(event.event)&&(testRun.active||testRun.openCases.size)){
+  if(existing===null&&TEST_RUN_GUARDED_EVENTS.has(event.event)&&(testRun.active||testRun.abandoned||testRun.openCases.size)){
     const detail=[];
     if(testRun.active)detail.push('active invocation');
     if(testRun.openCases.size)detail.push(`open cases: ${[...testRun.openCases].sort().join(', ')}`);
     throw new UsageError(`completion blocked by incomplete test_run: ${detail.join('; ')}`);
+  }
+  if(existing===null&&event.event==='test_run'&&event.phase==='abandoned'){
+    validateQaAbandonment(testRun,event);
+    if(unclosedResources(loadResourceStates(authoritativeLog,built.runId)).length)
+      throw new UsageError('QA abandonment blocked by unclosed resources');
   }
   if(existing===null&&event.event==='test_run'&&event.phase!==undefined)
     applyTestRunTransition(testRun.active,testRun.openCases,event.phase,event.case_id??null);
