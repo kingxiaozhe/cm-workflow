@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,6 +10,12 @@ import {fileURLToPath} from 'node:url';
 import {inspectPrdChangeSnapshot,inspectPrdChangeProposal,applyPrdChange} from '../runtime/js/cm-prd/change.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
 import {recordPrdReview} from './cm-prd-review-gate.mjs';
+
+// Keep runtime declarations and log mirrors independent of the invoking user's home.
+const isolatedWorkflowHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-completion-home-'));
+process.env.CM_WORKFLOW_HOME=path.join(isolatedWorkflowHome,'user');
+process.env.CM_WORKFLOW_LOG_HOME=path.join(isolatedWorkflowHome,'logs');
+after(()=>fs.rmSync(isolatedWorkflowHome,{recursive:true,force:true}));
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const version='\n| 日期 | 版本 | 说明 |\n| --- | --- | --- |\n| 2026-09-08 | v1 | original |\n';
 const docs=()=>[

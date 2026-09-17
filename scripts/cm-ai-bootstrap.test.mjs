@@ -1,5 +1,5 @@
 import {buildManifest} from './cm-spec-manifest.mjs';
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -16,6 +16,12 @@ import {inspectCmAiContextRefresh,inspectCmAiTaskLearningInput} from '../runtime
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
+
+// Keep runtime declarations and log mirrors independent of the invoking user's home.
+const isolatedWorkflowHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-ai-bootstrap-home-'));
+process.env.CM_WORKFLOW_HOME=path.join(isolatedWorkflowHome,'user');
+process.env.CM_WORKFLOW_LOG_HOME=path.join(isolatedWorkflowHome,'logs');
+after(()=>fs.rmSync(isolatedWorkflowHome,{recursive:true,force:true}));
 
 const workflowRoot=fileURLToPath(new URL('..',import.meta.url)).replace(/\/$/,'');
 const selection={versionControl:'none',modules:['frontend'],analysis:'Approved synthetic JavaScript project'};
