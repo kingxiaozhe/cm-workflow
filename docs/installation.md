@@ -73,7 +73,7 @@ Install or upgrade with the same command:
 npx @aibyzero/cm-workflow@latest install
 ```
 
-To pin a version, use `npx @aibyzero/cm-workflow@0.13.2 install` from outside
+To pin a version, use `npx @aibyzero/cm-workflow@0.13.3 install` from outside
 the CM Workflow source checkout (for example, your home directory). Inside a
 checkout with the same package name and version, npm can select the local
 uninstalled package and report `cm-workflow: command not found`.

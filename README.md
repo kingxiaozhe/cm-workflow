@@ -17,6 +17,11 @@
 
 ## 最近更新
 
+**0.13.3**
+
+- **`cm-runtime` 直接敲就是向导**：不带参数运行时按编号三问——改哪一层（当前项目 / 用户级默认）→ 手上有哪个 AI（只有 Codex / 只有 Claude / 两个都有）→ 谁写代码，预览后确认才写入，然后回显有效配置；非终端环境只打印用法并退出 2，脚本化仍用 `show` / `set` / `unset --user`。
+- **中英文提示跟随系统语言**：安装器、向导与人类可读诊断按 `CM_WORKFLOW_LANG` > `LC_ALL` > `LC_MESSAGES` > `LANG` > Node Intl 判定中文或英文（Windows 安装器传 `Get-Culture`）；预设名、机器字段与退出码不变。
+
 **0.13.2**
 
 - **安装时声明单/双 AI 与谁写代码**：`install.sh` / `install.ps1` / `install-codex.sh` 装完后问一次"只有 Codex / 只有 Claude / 两个都有→谁写代码"，保存为用户级默认 `~/.cm-workflow/runtimes.yml`（`--yes` 或非终端跳过）；配置解析顺序改为 项目 > 用户默认 > 未声明，`cm-init` 有默认时不再重复询问。
@@ -96,7 +101,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.13.2 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.13.3 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
