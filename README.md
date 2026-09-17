@@ -17,6 +17,10 @@
 
 ## 最近更新
 
+**0.13.1**
+
+- **真项目 dogfood 修复**：在 specs 与代码分离的真实项目上把 `cm-init → cm-prd → cm-ai` 跑到 `run_done`（Codex 写码、Claude CLI 独立审查、N6 QA），修复沿路暴露的 11 处运行时缺陷——cm-prd 摘要门禁与会话恢复死锁、cm-ai 准入标点、开发结果校验顺序、会话模式审查超时、Claude CLI 新事件与心跳上限、开发/审查包携带已批准规格、已完成 run 事后附加 QA 与中断 QA 重跑；详见[更新日志](CHANGELOG.md)。
+
 **0.13.0**
 
 - **双运行时协作与容灾**：`runtimes.available` 声明可用运行时，protected host 按 coder/reviewer 配置跨家派发（2026-09-17 已完成真实模型双向单文件小任务验收各一次，均停在 N6 QA 待决；QA/N8 不在验收范围、仍未验收）；`--failover` 仅在启动前探测选路，`scripts/cm-failover.mjs` 提供只读断点交接，详见[能力边界](docs/runtime-failover.md)。
@@ -87,7 +91,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.13.0 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.13.1 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
