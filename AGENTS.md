@@ -75,3 +75,4 @@ Read the relevant files under `.claude/rules/` when modifying shell scripts, doc
 - **持久格式新增必填证据要保留在途恢复**：给 journal/checkpoint 增加新必填证据时，必须区分新记录与升级前合法历史，并用迁移回归证明旧状态仍能沿唯一完成路径走完；不能只让 replay 解析成功，却在后续门禁永久阻断。来源：F05 task-start Learning 应用记录；证据：`experiments/js-orchestration/task-runner.test.mjs` 的 pre-application checkpoint 恢复完成用例。[已结构化]
 
 - **Git 只读命令仍可能执行目标配置**：对不执行目标代码的安全扫描，Git 程序本身也须限定为项目外可信路径，并关闭 fsmonitor 与全部 clean/process/required filter；不能仅靠 no-ext-diff/no-textconv。来源：cm-security 独立 Review；证据：`scripts/cm-security.test.mjs` 的过滤器及项目内 Git marker 夹具。[已结构化]
+- **诊断来源不得改变配置数据合同**：给共享配置增加来源提示时，来源留在对象外并只在诊断 CLI 显式输出；可枚举字段会污染配置保留比较，不可枚举字段也会被严格 JSON 边界拒绝。用真实宿主 JSON 校验及已有项目继承用户默认的草稿检查锁定兼容性，不为诊断信息放宽宿主校验。来源：第 27 步运行时声明；证据：`scripts/cm-runtime.test.mjs` 的 strict host JSON 与 `scripts/cm-init-draft-inspection.test.mjs` 的 user preset 用例。[已结构化]

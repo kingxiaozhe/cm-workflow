@@ -232,6 +232,11 @@ done < "$STAGE/.cm-managed-files"
 "$DEST/scripts/cm-check-runtime.sh" --project "$SRC_DIR"
 INSTALL_COMPLETE=1
 
+# User runtimes.yml: only after the verified core install, before updater prompts.
+if [ "$ASSUME_YES" -ne 1 ] && [ -t 0 ] && [ -t 1 ]; then
+  node "$DEST/scripts/cm-runtime-install.mjs"
+fi
+
 copy_file_atomic "$SRC_DIR/templates/auto-update/cm-update.sh" "$HOME/.cm-workflow/cm-update.sh" "~/.cm-workflow/cm-update.sh" ||
   echo "⚠ 可选更新器安装跳过: ~/.cm-workflow/cm-update.sh" >&2
 copy_file_atomic "$SRC_DIR/templates/auto-update/cm-announce.sh" "$HOME/.cm-workflow/cm-announce.sh" "~/.cm-workflow/cm-announce.sh" ||

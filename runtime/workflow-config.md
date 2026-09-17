@@ -1,7 +1,7 @@
 # CM Workflow 项目配置合同
 
 CM 支持一个可选的项目根配置文件：`.cm-workflow.yml`、`.cm-workflow.yaml` 或
-`.cm-workflow.json`。配置缺失时使用内置默认值，旧项目不需要修改即可继续执行。
+`.cm-workflow.json`。项目缺少运行时声明时读取用户级默认，两级均缺失才使用内置默认值。
 
 ## 配置边界
 
@@ -11,7 +11,7 @@ CM 支持一个可选的项目根配置文件：`.cm-workflow.yml`、`.cm-workfl
 - `source` 表示订阅、API、本地或浏览器等执行来源；它不等于模型身份。
 - `model` 是用户可读的模型别名。CM 不根据订阅名推断后端模型版本。
 - 外部专家的项目级 `activation` 只能是 `explicit`；`AUTO` 仍是单次调用的显式选择，不能由仓库配置永久打开。
-- 第一版只读取显式 `--config` 或项目根配置，不读取隐式用户级配置。
+- 显式 `--config` 或项目根配置优先；仅缺少 `runtimes.available` 时回退用户级 `~/.cm-workflow/runtimes.yml`（`CM_WORKFLOW_HOME` 覆盖目录）。
 
 ## 角色
 
@@ -30,7 +30,7 @@ CM 支持一个可选的项目根配置文件：`.cm-workflow.yml`、`.cm-workfl
 ## 运行时声明
 
 `runtimes.available` 记录用户自报的可用运行时：`codex`、`claude` 或 `both`。缺省为
-`unknown`（未声明，不做交叉检查）。`cm-init` 询问一次后写入；随时可改。
+`unknown`（两级均未声明，不做交叉检查）。安装器可写用户默认，`cm-init` 优先继承且不再询问；`cm-runtime` 随时切换。
 
 | 预设 | `runtimes.available` | `roles.coder.adapter` | `roles.reviewer.adapter` |
 | --- | --- | --- | --- |
@@ -133,3 +133,23 @@ node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs --project {CODE_PROJECT} 
 node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
   --project {CODE_PROJECT} --role coder --runtime codex --print-role
 ```
+
+## 用户默认与切换
+
+```yaml
+# 用 cm-runtime set --user <preset> 修改用户级默认。
+runtimes: {available: both}
+preset: codex-codes
+```
+
+只接受上述两个字段；预设与 available 必须一致。优先级为项目 > 用户 > 未声明；
+项目已声明时完全不读用户文件。用户预设给 coder/reviewer 的 adapter/source 提供默认值，
+显式项目角色字段继续优先，模型和其他字段保留；合并结果仍须通过同一校验。
+生效的用户文件非法时报告字段路径并阻断。`--print-effective` / `--print-role` 包含
+`runtimes_source: project|user|none`，不将这个诊断字段写回项目配置。
+
+`cm-runtime show [--project PATH]` 只读；`set <preset> [--project PATH]` 原子改项目；
+`set --user <preset>` 改用户默认；`unset --user` 删除用户默认但不删除项目声明。
+新建项目配置使用模板，已有配置只改五个字段，其余原文保留。已创建的 run 绑定原配置，切换不改 run。
+`set` 通过 cm-log-event.mjs 的 Python 锁适配器写独立的 `decision/route` 全局日志，
+仅附 preset、source、项目路径；没有 specs 指针或业务任务状态写入。日志失败明确报告配置已保存。

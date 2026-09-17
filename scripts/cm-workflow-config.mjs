@@ -7,6 +7,9 @@ import {fileURLToPath} from 'node:url';
 
 export const CONFIG_FILENAMES=Object.freeze(['.cm-workflow.yml','.cm-workflow.yaml','.cm-workflow.json']);
 export const MAX_CONFIG_BYTES=64*1024;
+// Out-of-band provenance keeps persisted config/role JSON contracts unchanged.
+const RUNTIME_SOURCES=new WeakMap();
+export const runtimesSource=config=>RUNTIME_SOURCES.get(config)??'none';
 
 const PROJECT_TYPES=new Set(['auto','java-backend','web-frontend','custom']);
 const WORKFLOWS=new Set(['cm-default','java-backend','web-frontend']);
@@ -407,13 +410,62 @@ export function findConfig(projectRoot){
   return candidates[0]??null;
 }
 
+// One preset contract for installers, the runtime tool and user defaults.
+export const RUNTIME_PRESETS=deepFreeze({
+  'codex-only':{available:'codex',coder:'codex-cli',reviewer:'codex-cli'},
+  'claude-only':{available:'claude',coder:'claude-cli',reviewer:'claude-cli'},
+  'codex-codes':{available:'both',coder:'codex-cli',reviewer:'claude-cli'},
+  'claude-codes':{available:'both',coder:'claude-cli',reviewer:'codex-cli'},
+});
+export function runtimePreset(preset){
+  if(!Object.hasOwn(RUNTIME_PRESETS,preset))throw new ConfigError('preset must be one of: '+Object.keys(RUNTIME_PRESETS).join(', '));
+  const value=RUNTIME_PRESETS[preset];
+  return {runtimes:{available:value.available},roles:{
+    coder:{adapter:value.coder,source:'subscription'},reviewer:{adapter:value.reviewer,source:'subscription'},
+  }};
+}
+export function userRuntimesPath(){
+  return path.join(path.resolve(expandUser(process.env.CM_WORKFLOW_HOME||path.join(os.homedir(),'.cm-workflow'))),'runtimes.yml');
+}
+export function readConfigText(file){
+  try{
+    const stat=fs.statSync(file);
+    if(!stat.isFile())throw new ConfigError('configuration must be a regular file');
+    if(stat.size>MAX_CONFIG_BYTES)throw new ConfigError(`configuration exceeds ${MAX_CONFIG_BYTES} bytes`);
+    return new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(fs.readFileSync(file));
+  }catch(error){throw new ConfigError(`${file}: ${error.message}`);}
+}
+export function parseUserRuntimes(text){
+  try{
+    if(Buffer.byteLength(text)>MAX_CONFIG_BYTES)throw new ConfigError('file exceeds configuration size limit');
+    if(SECRET_VALUE.test(text))throw new ConfigError('secret-like value is forbidden');
+    const raw=requireMapping(parseDocument('runtimes.yml',text),'user');
+    walkForSecrets(raw,'user');rejectUnknown(raw,new Set(['runtimes','preset']),'user');
+    const runtimes=requireMapping(raw.runtimes,'user.runtimes');
+    rejectUnknown(runtimes,new Set(['available']),'user.runtimes');
+    requireString(runtimes.available,'user.runtimes.available',DECLARABLE_RUNTIMES);
+    requireString(raw.preset,'user.preset',new Set(Object.keys(RUNTIME_PRESETS)));
+    if(runtimePreset(raw.preset).runtimes.available!==runtimes.available)
+      throw new ConfigError('user.runtimes.available conflicts with user.preset');
+    return raw;
+  }catch(error){throw new ConfigError(`runtimes.yml: ${error.message}`);}
+}
+export function loadUserRuntimes(){
+  const file=userRuntimesPath();
+  try{fs.lstatSync(file);}catch(error){
+    if(error.code==='ENOENT'||error.code==='ENOTDIR')return null;
+    throw new ConfigError(`user.runtimes: ${error.message}`);
+  }
+  return parseUserRuntimes(readConfigText(file));
+}
+
 export function loadConfig(input){
   if(!object(input)||!Object.hasOwn(input,'projectRoot')
     ||Object.keys(input).some(key=>!['projectRoot','configPath','text'].includes(key)))throw new ConfigError('invalid config input');
   const root=realDirectory(input.projectRoot,'project root');
   let configPath=Object.hasOwn(input,'configPath')?path.resolve(expandUser(input.configPath)):findConfig(root);
   let text=Object.hasOwn(input,'text')?input.text:null;
-  if(text===null&&configPath===null)return clone(DEFAULT_CONFIG);
+  if(text===null&&configPath===null){text='version: 1';configPath='.cm-workflow.yml';}
   if(text===null){
     try{
       const stat=fs.statSync(configPath);if(!stat.isFile())throw new Error('not-file');
@@ -422,13 +474,18 @@ export function loadConfig(input){
     }catch(error){if(error instanceof ConfigError)throw error;throw new ConfigError(`cannot read configuration ${configPath}: ${error.message}`);}
   }else{
     if(typeof text!=='string')throw new ConfigError('configuration text must be a string');
+    if(Buffer.byteLength(text)>MAX_CONFIG_BYTES)throw new ConfigError(`configuration text exceeds ${MAX_CONFIG_BYTES} bytes`);
     configPath??='.cm-workflow.yml';
   }
   if(SECRET_VALUE.test(text))throw new ConfigError('configuration contains a secret-like value');
   try{
     const raw=parseDocument(configPath,text);walkForSecrets(raw);validateRaw(raw);
     const normalizedRaw={...raw,version:Number(raw.version)};
-    const effective=deepMerge(DEFAULT_CONFIG,normalizedRaw),policy=effective.roles.external_expert.model_policy;
+    const projectDeclared=raw.runtimes?.available!==undefined;
+    const user=projectDeclared?null:loadUserRuntimes();
+    const defaults=user?deepMerge(DEFAULT_CONFIG,runtimePreset(user.preset)):DEFAULT_CONFIG;
+    const effective=deepMerge(defaults,normalizedRaw),policy=effective.roles.external_expert.model_policy;
+    RUNTIME_SOURCES.set(effective,projectDeclared?'project':user?'user':'none');
     if(Object.hasOwn(MODEL_POLICY_ALIASES,policy))effective.roles.external_expert.model_policy=MODEL_POLICY_ALIASES[policy];
     validateEffective(effective);return effective;
   }catch(error){if(error instanceof ConfigError)throw error;if(error instanceof RangeError)throw new ConfigError('configuration nesting is too deep');throw error;}
@@ -500,9 +557,9 @@ export function main(argv=process.argv.slice(2)){
   catch(error){process.stderr.write(`FAIL: ${error.message}\n`);return 1;}
   if(args.printRole&&!args.role){process.stderr.write('FAIL: --print-role requires --role\n');return 2;}
   if(args.role){
-    const role=resolveRole(config,args.role,args.runtime),body=stableJson(role);
+    const role=resolveRole(config,args.role,args.runtime),body=stableJson({...role,runtimes_source:runtimesSource(config)});
     process.stdout.write(args.printRole?`${body}\n`:`workflow role: ${body}\n`);
-  }else if(args.printEffective)process.stdout.write(`${stableJson(config)}\n`);
+  }else if(args.printEffective)process.stdout.write(`${stableJson({...config,runtimes_source:runtimesSource(config)})}\n`);
   else process.stdout.write('workflow config: PASSED\n');
   return 0;
 }

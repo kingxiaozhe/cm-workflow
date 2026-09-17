@@ -178,6 +178,11 @@ marketplace_name="$("$PYTHON_BIN" "$READ_MARKETPLACE" --marketplace-path "$MARKE
 codex plugin add "cm-workflow@$marketplace_name"
 INSTALL_COMPLETE=1
 
+# User runtimes.yml: only after the verified core install, before updater prompts.
+if [ "$ASSUME_YES" -ne 1 ] && [ -t 0 ] && [ -t 1 ]; then
+  node "$PLUGIN_DEST/scripts/cm-runtime-install.mjs"
+fi
+
 echo
 echo "CM Workflow installed for Codex from: $PLUGIN_DEST"
 echo "User guide: $PLUGIN_DEST/docs/user-guide.md"

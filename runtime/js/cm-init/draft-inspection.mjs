@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {freeze,need} from '../cm-ai/effect-contract.mjs';
-import {CONFIG_FILENAMES,ConfigError,findConfig,loadConfig} from '../../../scripts/cm-workflow-config.mjs';
+import {CONFIG_FILENAMES,ConfigError,findConfig,loadConfig,runtimesSource} from '../../../scripts/cm-workflow-config.mjs';
 
 const rules=new Set(['coding-style','testing','security','git-workflow','frontend','miniprogram',
   'backend-api','database','smart-contract','finance']);
@@ -69,7 +69,7 @@ export function inspectCmInitDraft({project,documents}){
         findConfig(root); // Preserve the shared ambiguity check even for a proposed new target.
         const parse=text=>loadConfig({projectRoot:root,configPath:path.join(root,file),text});
         const config=parse(content);
-        if(config.runtimes.available==='unknown')issues.push({path:file,code:'runtimes_declaration_missing'});
+        if(runtimesSource(config)!=='project')issues.push({path:file,code:'runtimes_declaration_missing'});
         if(before!==null){
           const previous=parse(before.toString('utf8'));
           if(!isDeepStrictEqual(preservedConfig(previous),preservedConfig(config)))
