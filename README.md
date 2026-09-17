@@ -17,6 +17,11 @@
 
 ## 最近更新
 
+**0.13.2**
+
+- **安装时声明单/双 AI 与谁写代码**：`install.sh` / `install.ps1` / `install-codex.sh` 装完后问一次"只有 Codex / 只有 Claude / 两个都有→谁写代码"，保存为用户级默认 `~/.cm-workflow/runtimes.yml`（`--yes` 或非终端跳过）；配置解析顺序改为 项目 > 用户默认 > 未声明，`cm-init` 有默认时不再重复询问。
+- **新增 `cm-runtime`**：`show` 查看当前有效声明与来源，`set <preset>` 切换当前项目，`set --user` / `unset --user` 管理用户默认；只改派发偏好，不影响已创建的任务运行。
+
 **0.13.1**
 
 - **真项目 dogfood 修复**：在 specs 与代码分离的真实项目上把 `cm-init → cm-prd → cm-ai` 跑到 `run_done`（Codex 写码、Claude CLI 独立审查、N6 QA），修复沿路暴露的 11 处运行时缺陷——cm-prd 摘要门禁与会话恢复死锁、cm-ai 准入标点、开发结果校验顺序、会话模式审查超时、Claude CLI 新事件与心跳上限、开发/审查包携带已批准规格、已完成 run 事后附加 QA 与中断 QA 重跑；详见[更新日志](CHANGELOG.md)。
@@ -91,7 +96,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.13.1 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.13.2 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
