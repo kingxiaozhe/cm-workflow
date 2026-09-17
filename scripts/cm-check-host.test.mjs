@@ -12,7 +12,7 @@ const root=fileURLToPath(new URL('..',import.meta.url));
 function fixture(t,exitCode=0){
   const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-check-host-'))),project=path.join(dir,'project');fs.mkdirSync(project);
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
-  for(const file of ['scripts/cm-check-entry.mjs','scripts/cm-check-host.mjs','runtime/js/cm-check/host.mjs',
+  for(const file of ['scripts/cm-check-entry.mjs','scripts/cm-check-host.mjs','scripts/cm-workflow-config.mjs','runtime/js/cm-check/host.mjs',
     'runtime/js/cm-ai/host-tool-bridge.mjs','runtime/js/cm-ai/host-session.mjs','runtime/js/cm-ai/effect-contract.mjs',
     'runtime/js/cm-ai/contracts.mjs','runtime/js/cm-init/draft-inspection.mjs','scripts/cm-workflow-config.mjs','skills/cm-check/SKILL.md']){
     fs.mkdirSync(path.dirname(path.join(dir,file)),{recursive:true});fs.copyFileSync(path.join(root,file),path.join(dir,file));

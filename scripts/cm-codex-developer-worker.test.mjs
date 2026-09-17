@@ -45,6 +45,20 @@ test('coding argv enables tools without weakening reviewer argv',()=>{
   assert.equal(coding.at(-1),'-');assert(!coding.includes('--dangerously-bypass-approvals-and-sandbox'));
 });
 
+test('coding and review argv both suppress the user skills catalog (2026-09-16: 18249 -> 11706 input tokens)',()=>{
+  const options={cwd:'/fixture',model:'fixture',schemaPath:'/schema.json'};
+  for(const args of [developerArgs(options),commonArgs(options)]){
+    const i=args.indexOf('skills.include_instructions=false');
+    assert(i>0,'skills.include_instructions=false missing');assert.equal(args[i-1],'-c');
+    assert.equal(args.filter(arg=>arg==='skills.include_instructions=false').length,1);
+    // Per-folder disables stay as the second defence; the catalog switch must precede them.
+    const config=args.findIndex(arg=>arg.startsWith('skills.config='));
+    assert(config>i);assert.equal(args[config-1],'-c');
+    assert(!args.some(arg=>/^skills\.max_context_tokens=/.test(arg)));
+    assert(!args.includes('skip_host_skill_discovery'));assert(!args.includes('--ignore-rules'));
+  }
+});
+
 test('coding tool channel preserves the specs read-only permission profile',()=>fixture(async temp=>{
   const cwd=fs.realpathSync(temp),specsRoot=path.join(cwd,'specs');fs.mkdirSync(specsRoot);
   const args=developerArgs({cwd,specsRoot,model:'fixture',schemaPath:'/schema.json'});
