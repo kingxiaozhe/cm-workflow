@@ -140,7 +140,7 @@ git pull --ff-only origin main
 | 测试已有功能 | `$cm-test {项目路径}` | 分层测试结果与证据 |
 | 修复可复现缺陷 | `$cm-fix {specs路径} {项目路径} {问题}` | 红灯测试、最小修复、回归验证 |
 | 整理结构并保持行为 | `$cm-refactor` | 按行为等价约束分批重构 |
-| 查看/切换运行时声明 | `$cm-runtime show` / `set codex-codes` / `set --user claude-only` / `unset --user` | 有效声明、来源与新 run 的派发偏好 |
+| 查看/切换运行时声明 | `$cm-runtime` 三问向导；支持 `show` / `set` / `unset --user` | 会话随对话语言、终端随系统语言中英提示；仅影响新 run |
 | 检查安装与工作流 | `$cm-check` | 环境、引用和合同检查结果 |
 
 需要单独讨论方案或研究复杂问题时，可显式使用可选工具 `$external-expert`。外部建议由本地核验，不能代替独立代码审查或测试证据。详见[使用手册](docs/user-guide.md)与[外部专家合同](runtime/external-expert.md)。

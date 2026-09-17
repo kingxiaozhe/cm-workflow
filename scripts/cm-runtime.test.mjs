@@ -115,3 +115,104 @@ test('candidate over the shared file size limit is rejected before atomic replac
   assert.throws(()=>setProjectRuntime(root,'codex-codes'),/exceeds/);
   assert.equal(fs.readFileSync(file,'utf8'),original);
 }));
+
+// Pseudo TTY streams still use the production node:readline implementation.
+async function wizardFixture(fn){
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-runtime-wizard-')));
+  const previous={CM_WORKFLOW_HOME:process.env.CM_WORKFLOW_HOME,CM_WORKFLOW_LOG_HOME:process.env.CM_WORKFLOW_LOG_HOME};
+  process.env.CM_WORKFLOW_HOME=path.join(root,'user');process.env.CM_WORKFLOW_LOG_HOME=path.join(root,'logs');
+  try{await fn(root);}finally{
+    for(const [key,value] of Object.entries(previous)){if(value===undefined)delete process.env[key];else process.env[key]=value;}
+    fs.rmSync(root,{recursive:true,force:true});
+  }
+}
+import {PassThrough} from 'node:stream';
+import {main,askRuntimePreset as wizardPreset} from './cm-runtime.mjs';
+import {askRuntimePreset as installerPreset,promptRuntime} from './cm-runtime-install.mjs';
+import {runtimeLanguage} from './cm-runtime-i18n.mjs';
+function tty(){
+  const input=new PassThrough(),output=new PassThrough();input.isTTY=output.isTTY=true;
+  let text='';output.on('data',chunk=>{text+=chunk;});
+  return {input,output,text:()=>text};
+}
+async function wizard(root,answers,lang='en'){
+  const io=tty();const running=main(['--project',root],{...io,lang});
+  io.input.end(answers);const code=await running;return {code,text:io.text()};
+}
+test('wizard and installer share the same preset question function',()=>assert.equal(wizardPreset,installerPreset));
+test('language priority, explicit overrides, locales, Intl and English fallback',()=>{
+  for(const [env,expected] of [
+    [{CM_WORKFLOW_LANG:'en',LC_ALL:'zh_CN.UTF-8'},'en'],
+    [{CM_WORKFLOW_LANG:'zh',LC_ALL:'en_US.UTF-8'},'zh'],
+    [{LC_ALL:'en_US.UTF-8',LC_MESSAGES:'zh_CN.UTF-8'},'en'],
+    [{LC_MESSAGES:'zh_CN.UTF-8',LANG:'en_US.UTF-8'},'zh'],
+    [{LANG:'zh_CN.UTF-8'},'zh'],[{LANG:'en_US.UTF-8'},'en'],
+    [{LANG:'C'},'en'],[{},'en'],
+  ])assert.equal(runtimeLanguage(env,()=>undefined),expected);
+  assert.equal(runtimeLanguage({},()=> 'zh-TW'),'zh');
+  assert.equal(runtimeLanguage({},()=>{throw new Error('Intl unavailable');}),'en');
+});
+test('TTY project wizard changes exactly five fields, logs decision and shows result',()=>wizardFixture(async root=>{
+  const file=path.join(root,'.cm-workflow.yml');
+  const before='\ufeff# keep\r\nversion: 1\r\nruntimes: {available: codex}\r\nroles:\r\n  coder: {adapter: current-ai, source: local, model: default} # keep coder\r\n  reviewer: {adapter: current-ai, source: local, model: default}\r\n';
+  const initial=before;
+  fs.writeFileSync(file,initial);
+  const result=await wizard(root,'1\n3\n1\nY\n');assert.equal(result.code,0,result.text);
+  assert.equal(fs.readFileSync(file,'utf8'),initial.replace('available: codex','available: both').replace('adapter: current-ai','adapter: codex-cli').replace('adapter: current-ai','adapter: claude-cli').replaceAll('source: local','source: subscription'));
+  assert.match(result.text,/Which AI tools do you have/);assert.match(result.text,/Who writes code/);
+  assert.match(result.text,/preset: codex-codes/);assert.match(result.text,/runtimes_source: project/);
+  const logs=fs.readdirSync(path.join(root,'logs','runs'),{recursive:true}).filter(x=>x.endsWith('.jsonl'));
+  assert.equal(logs.length,1);const event=JSON.parse(fs.readFileSync(path.join(root,'logs','runs',logs[0]),'utf8'));
+  assert.equal(event.event,'decision');assert.equal(event.preset,'codex-codes');
+}));
+test('missing project defaults to user scope and Chinese preset/comment/output',()=>wizardFixture(async root=>{
+  const result=await wizard(root,'\n2\nY\n','zh');assert.equal(result.code,0);
+  assert(!fs.existsSync(path.join(root,'.cm-workflow.yml')));
+  assert.match(fs.readFileSync(path.join(root,'user','runtimes.yml'),'utf8'),/# 用 cm-runtime.*\npreset: claude-only/s);
+  assert.match(result.text,/你手上有哪个 AI 工具/);assert.match(result.text,/确认？/);assert.match(result.text,/runtimes_source: user/);
+}));
+test('three empty mandatory answers, refusal, EOF and SIGINT do not write',()=>wizardFixture(async root=>{
+  for(const answers of ['2\n\n\n\n','2\n1\nn\n','2\n']){
+    const result=await wizard(root,answers);assert.equal(result.code,0);assert.match(result.text,/Cancelled/);assert.deepEqual(fs.readdirSync(root),[]);
+  }
+  const io=tty(),running=main(['--project',root],io);process.emit('SIGINT');
+  assert.equal(await running,0);assert.match(io.text(),/Cancelled/);assert.deepEqual(fs.readdirSync(root),[]);
+}));
+test('explicit project creation, existing-project scope default and invalid choice retry',()=>wizardFixture(async root=>{
+  const created=await wizard(root,'1\nwrong\n1\ny\n');assert.equal(created.code,0);assert.match(created.text,/Will create project configuration/);
+  const changed=await wizard(root,'\n3\n2\n\n');assert.equal(changed.code,0);assert.match(changed.text,/preset: claude-codes/);
+  assert.equal(loadConfig({projectRoot:root}).roles.coder.adapter,'claude-cli');
+}));
+test('non-TTY no command exits 2 with usage and no writes',()=>fixture((root,run)=>{
+  const result=run();assert.equal(result.status,2);assert.match(result.stdout,/cm-runtime/);assert.deepEqual(fs.readdirSync(root),[]);
+}));
+test('installer yes skips even TTY; culture selects shared English or Chinese text',()=>wizardFixture(async root=>{
+  for(const culture of ['en-US','zh-CN']){
+    const io=tty();await promptRuntime(['--yes','--lang',culture],io.input,io.output);
+    assert.equal(io.text(),'');assert.deepEqual(fs.readdirSync(root),[]);
+  }
+}));
+test('human diagnostics translate while structured fields and user file data stay identical',()=>wizardFixture(async root=>{
+  writeUserRuntime('codex-codes',{lang:'en'});
+  const options={probe:()=>[{runtime:'codex',available:true},{runtime:'claude',available:false}]};
+  const en=showRuntime(root,{...options,lang:'en'}),zh=showRuntime(root,{...options,lang:'zh'});
+  assert.equal(en.split('\n').slice(0,3).join('\n'),zh.split('\n').slice(0,3).join('\n'));
+  assert.match(en,/declared, not dispatched/);assert.match(zh,/已声明未派发/);
+  assert.match(en,/presence does not prove quota/);assert.match(zh,/可解析≠配额可用/);
+  assert.match(fs.readFileSync(path.join(root,'user','runtimes.yml'),'utf8'),/# Use cm-runtime/);
+}));
+test('installer culture reaches shared prompts and comments; explicit override wins',()=>wizardFixture(async root=>{
+  const keys=['CM_WORKFLOW_LANG','LC_ALL','LC_MESSAGES','LANG'];
+  const saved=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
+  try{
+    for(const key of keys)delete process.env[key];
+    for(const [culture,override,expected] of [['zh-CN',undefined,'zh'],['en-US',undefined,'en'],['zh-CN','en','en']]){
+      if(override)process.env.CM_WORKFLOW_LANG=override;else delete process.env.CM_WORKFLOW_LANG;
+      const io=tty(),running=promptRuntime(['--lang',culture],io.input,io.output);
+      io.input.end('3\n2\n');await running;
+      assert.match(io.text(),expected==='zh'?/你手上有哪个 AI 工具/:/Which AI tools do you have/);
+      const file=path.join(root,'user','runtimes.yml');assert.match(fs.readFileSync(file,'utf8'),expected==='zh'?/# 用 cm-runtime/:/# Use cm-runtime/);
+      fs.unlinkSync(file);
+    }
+  }finally{for(const [key,value] of Object.entries(saved)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
+}));

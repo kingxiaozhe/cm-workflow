@@ -230,7 +230,7 @@ ask which tools you have: Codex only, Claude only, or both. When both are select
 choose the coder (Codex recommended, Claude reviews; or the reverse).
 The shared prompt writes only `~/.cm-workflow/runtimes.yml` using a temporary file
 and atomic rename. It never changes settings.json or CLAUDE.md.
-An existing declaration is displayed and “保留？[Y/n]” defaults to keeping it.
+An existing declaration is displayed and “Keep it? [Y/n]” (or “保留？[Y/n]”) defaults to keeping it.
 `--yes` (Bash), `-Yes` (PowerShell, also implies the existing `-Force`), `-Force`,
 or non-TTY input/output skips this prompt without creating or changing the file.
 
@@ -247,7 +247,22 @@ The preset supplies coder/reviewer adapter/source defaults; explicit project rol
 fields still take precedence and conflicts fail validation. `cm-init` inherits the
 user default without asking again and reports `来源: 用户级默认`.
 
-Use `$cm-runtime` in Codex, `/cm-runtime` in Claude Code, or `/cm:runtime` on macOS/Linux:
+Run `$cm-runtime` in Codex, `/cm-runtime` in Claude Code, or `/cm:runtime` on macOS/Linux
+without arguments for three questions in your current conversation language:
+`[1] Current project / [2] User default` → `[1] Codex only / [2] Claude only / [3] Both`
+(with `[1] Codex writes, Claude reviews (recommended) / [2] Claude writes, Codex reviews`
+when both are selected) → preview the preset/current value and confirm `[Y/n]`.
+In a terminal, `node <workflow-root>/scripts/cm-runtime.mjs [--project PATH]` opens the same wizard.
+Scope defaults to 1 with an existing project config, otherwise 2. Choosing 1 without a config
+announces creation from the template. The tool question has no default. Ctrl+C, three consecutive
+empty answers to that required question, or declining confirmation cancels without writing.
+Without a TTY, no command prints usage and exits 2.
+
+Installer prompts, terminal wizard, diagnostics and the user-file comment use Chinese or English:
+`CM_WORKFLOW_LANG=zh|en` > `LC_ALL` > `LC_MESSAGES` > `LANG` > Node Intl locale > English fallback.
+A locale starting with `zh` selects Chinese; other locales select English. Windows `install.ps1`
+passes `(Get-Culture).Name` as the locale. Machine keys, preset/adapter names and exit codes stay unchanged.
+For scripting, use explicit commands:
 
 ```text
 cm-runtime show [--project PATH]
