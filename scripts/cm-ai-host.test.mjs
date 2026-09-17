@@ -120,7 +120,7 @@ function runCli(f,mode,action='create'){
       }
     });
     child.once('close',code=>{clearTimeout(timer);resolve({code,stderr,rows,calls});});
-    send(request('advance'));
+    send(f.request??request('advance'));
   });
 }
 
@@ -311,7 +311,8 @@ let input='';process.stdin.on('data',s=>input+=s);process.stdin.on('end',()=>{
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
-for(const runtime of ['codex','claude'])for(const workflow of [false,true])test(`configured ${runtime} CLI waits for the authorized attempt and resumes via the original review worker/gate workflow=${workflow}`,async()=>{
+for(const runtime of ['codex','claude'])for(const initialWorkflow of ['absent','qa-null','qa'])test(`configured ${runtime} CLI waits for the authorized attempt and resumes via the original review worker/gate workflow=${initialWorkflow}`,async()=>{
+  const workflow=initialWorkflow==='qa';
   const f=fixture();
   try{
     f.workflow=workflow;
@@ -353,8 +354,31 @@ for(const runtime of ['codex','claude'])for(const workflow of [false,true])test(
       assert(!fs.existsSync(path.join(f.specsDir,'.reviews')));
       f.args.push('--allow-qa');
     }
+    if(!workflow)fs.writeFileSync(path.join(f.codeProject,'README.md'),'# Fixture value 42\n');
+    const attachmentFile=path.join(f.root,'attachment.json');
+    const attachmentConfig={documentationPaths:[],applicableAgentFiles:[],
+      qa:{commands:[{id:'syntax',command:[process.execPath,'--check','target.mjs'],caseIds:[]}],
+        environment:{kind:'web',carrier:'browser',target:'http://127.0.0.1',scope:'local'}}};
+    if(initialWorkflow==='qa-null'){
+      fs.writeFileSync(attachmentFile,JSON.stringify({...attachmentConfig,qa:null}));
+      f.args.push('--workflow-config',attachmentFile);
+    }
     const first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
     assert.equal(first.rows.find(row=>row.requestId==='advance').result.code,'decision_required');
+    const initialArgs=[...f.args];
+    const attemptAttachment=()=>{
+      fs.writeFileSync(attachmentFile,JSON.stringify(attachmentConfig));
+      if(initialWorkflow==='absent')f.args.push('--workflow-config',attachmentFile);
+      f.args.push('--allow-qa');
+    };
+    if(!workflow){
+      attemptAttachment();
+      const early=await runCli(f,'normal','resume');
+      assert.equal(early.code,1);assert.match(early.stderr,/qa_attach_not_completed/);assert.deepEqual(early.calls,[]);
+      f.args=[...initialArgs];
+      if(initialWorkflow==='qa-null')fs.writeFileSync(attachmentFile,JSON.stringify({...attachmentConfig,qa:null}));
+    }
+
     assert(fs.readFileSync(path.join(f.specsDir,'1.work','tasks.md'),'utf8').includes('[ ] T-001'));
     // An approved different round cannot authorize this pending round.
     f.args.push('--allow-review-attempt','2');
@@ -369,7 +393,78 @@ for(const runtime of ['codex','claude'])for(const workflow of [false,true])test(
     const reopened=await runCli(f,'normal','resume');assert.equal(reopened.code,0,reopened.stderr);
     assert.deepEqual(reopened.calls,workflow?['documentation_inspect']:[]);
     assert.equal(reopened.rows.find(row=>row.requestId==='advance').result.code,workflow?'run_done':'qa_decision_required');
+    if(!workflow){
+      const stateFile=path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json');
+      const before=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+      attemptAttachment();
+      // Explicit QA permission is still required, even though task work is done.
+      f.args.pop();
+      const denied=await runCli(f,'normal','resume');assert.equal(denied.code,1);
+      assert.match(denied.stderr,/qa_authorization_required/);assert.deepEqual(denied.calls,[]);
+      assert.deepEqual(JSON.parse(fs.readFileSync(stateFile,'utf8')),before);
+      f.args.push('--allow-qa');
+      // No hidden host-context or definition changes can ride the attachment.
+      const originalHost=f.args[6];f.args[6]='different-host';
+      const changedHost=await runCli(f,'normal','resume');assert.equal(changedHost.code,1);
+      assert.match(changedHost.stderr,/fingerprint_mismatch/);f.args[6]=originalHost;
+      const originalDefinition=fs.readFileSync(f.config,'utf8');
+      for(const field of ['scope','requirements']){
+        const changed=JSON.parse(originalDefinition);changed[field].push('extra.md');
+        fs.writeFileSync(f.config,JSON.stringify(changed));
+        const rejected=await runCli(f,'normal','resume');assert.equal(rejected.code,1);
+        assert.match(rejected.stderr,/fingerprint_mismatch/);fs.writeFileSync(f.config,originalDefinition);
+      }
+      f.workflow=true;
+      const {readRunnerHistory}=await import('../runtime/js/cm-ai/durable-runner-state.mjs');
+      const {digest}=await import('../runtime/js/cm-ai/effect-contract.mjs');
+      const history=readRunnerHistory(before.records,before.records[0].payload.config,3);
+      f.request={...request('qa','advance'),packageDigest:history.state.reviewPackage.packageDigest};
+      const attached=await runCli(f,'authorized-review','resume');assert.equal(attached.code,0,attached.stderr);
+      assert.deepEqual(attached.calls,['qa_assess']);
+      assert.equal(attached.rows.find(row=>row.requestId==='advance').result.code,'qa_triggered');
+      delete f.request;
+      const finished=await runCli(f,'normal','resume');assert.equal(finished.code,0,finished.stderr);
+      assert.deepEqual(finished.calls,['documentation_inspect']);
+      assert.equal(finished.rows.find(row=>row.requestId==='advance').result.state,'run_done');
+      const after=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+      assert.deepEqual(after.fingerprints,before.fingerprints);
+      assert.deepEqual(after.records.slice(0,before.records.length),before.records);
+      const records=after.records.filter(row=>row.payload.type==='qa-attached');assert.equal(records.length,1);
+      assert.deepEqual(Object.keys(records[0].payload.record).sort(),['attachedAt','hostContextId','qaFingerprint','version']);
+      assert.equal(records[0].payload.record.hostContextId,'native-host-fixture');
+      // Replay rejects a duplicate even with a correctly recalculated hash chain.
+      const last=records[0],body={...last,seq:after.records.length+1,
+        id:`runner.${String(after.records.length+1).padStart(6,'0')}`,previousDigest:after.records.at(-1).digest};
+      delete body.digest;
+      assert.throws(()=>readRunnerHistory([...after.records,{...body,digest:digest(body)}],
+        after.records[0].payload.config,3),{code:'qa_attachment_duplicate'});
+      assert.equal(readRunnerHistory(after.records,after.records[0].payload.config,3).state.state,'fixture_completed');
+      // Crash prefix: attachment durable, audit row absent. Resume repairs it.
+      const log=path.join(f.specsDir,'运行日志.jsonl');
+      fs.writeFileSync(log,fs.readFileSync(log,'utf8').trim().split('\n')
+        .filter(line=>JSON.parse(line).phase!=='qa_attach').join('\n')+'\n');
+      const again=await runCli(f,'normal','resume');assert.equal(again.code,0,again.stderr);
+      assert.deepEqual(again.calls,['documentation_inspect']);
+      assert.deepEqual(JSON.parse(fs.readFileSync(stateFile,'utf8')),after);
+      const logs=fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+      const attachLogs=logs.filter(row=>row.event==='decision'&&row.phase==='qa_attach');assert.equal(attachLogs.length,1);
+      assert.equal(attachLogs[0].qaFingerprint,records[0].payload.record.qaFingerprint);
+      assert.equal(logs.filter(row=>row.event==='test_run'&&row.phase==='start').length,1);
+      // Removing QA after it was bound cannot fall back to the original config.
+      const attachedArgs=[...f.args];f.args=[...initialArgs];
+      if(initialWorkflow==='qa-null')fs.writeFileSync(attachmentFile,JSON.stringify({...attachmentConfig,qa:null}));
+      const removed=await runCli(f,'normal','resume');assert.equal(removed.code,1);assert.match(removed.stderr,/fingerprint_mismatch/);
+      f.args=attachedArgs;
+      fs.writeFileSync(attachmentFile,JSON.stringify({...attachmentConfig,qa:{...attachmentConfig.qa,
+        commands:[{id:'different',command:[process.execPath,'--version'],caseIds:[]}]}}));
+      const changed=await runCli(f,'normal','resume');assert.equal(changed.code,1);assert.match(changed.stderr,/fingerprint_mismatch/);
+      assert.deepEqual(changed.calls,[]);assert.deepEqual(JSON.parse(fs.readFileSync(stateFile,'utf8')),after);
+    }
     if(workflow){
+      const file=f.args[f.args.indexOf('--workflow-config')+1];
+      const config=JSON.parse(fs.readFileSync(file,'utf8'));config.qa.commands[0].id='different';
+      fs.writeFileSync(file,JSON.stringify(config));
+      const changed=await runCli(f,'normal','resume');assert.equal(changed.code,1);assert.match(changed.stderr,/fingerprint_mismatch/);
       const rows=fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
       assert.equal(rows.filter(row=>row.event==='run_done').length,1);
       assert.equal(rows.filter(row=>row.event==='test_run'&&row.phase==='start').length,1);

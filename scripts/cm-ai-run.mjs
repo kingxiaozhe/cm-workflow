@@ -6,6 +6,8 @@ import {fileURLToPath} from 'node:url';
 import {serveCmAiHost} from '../runtime/js/cm-ai/host-session.mjs';
 import {digest as sha} from '../runtime/js/cm-ai/contracts.mjs';
 import {resolveCodeProjects,codeProjectPaths,assertCodeProjectSelections} from '../runtime/js/cm-ai/code-projects.mjs';
+import {preQaConfigurations,readQaAttachment} from '../runtime/js/cm-ai/qa-attachment.mjs';
+import {recordCmAiQaAttachment} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
 
 const usage='cm-ai-run.mjs serve --config PATH --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
@@ -223,10 +225,7 @@ export async function openControlRun(definition,mode,execution=null){
     ...(selectedRoots?{codeProjectPaths:selectedRoots}:{})};
   if(mode==='create')captureReviewBaseline(baselineOptions);
   // Definition is data, never an import path, command, grant or executable callback.
-  const store=openTaskExecutionStore({tasksPath,feature:featureSlug,specsRoot:specsDir,
-    identity:{repositoryId:identity.repositoryId,runId:identity.runId},
-    fingerprints:{workflow:sha(execution===null?'cm-ai-control-v1':'cm-ai-host-execution-v1'),
-      config:sha(execution===null?definition:{definition,execution:execution.configuration,
+  const configMaterial=execution===null?definition:{definition,execution:execution.configuration,
         ...(bootstrapConfig?{bootstrap:bootstrapConfig}:{}),
         ...(Object.hasOwn(execution,'developmentAttempt')?{developmentAuthorization:'per-attempt-v1'}:{}),
         ...(execution.hostDecisionProvider?{hostDecisionProvider:{version:1,timeoutMs:execution.hostDecisionProvider.timeoutMs}}:{}),
@@ -237,9 +236,28 @@ export async function openControlRun(definition,mode,execution=null){
         ...(execution.applicableAgentFiles?{applicableAgentFiles:execution.applicableAgentFiles}:{}),
         ...(execution.documentationProvider?{documentationProvider:{version:1,timeoutMs:execution.documentationProvider.timeoutMs}}:{}),
         ...(execution.documentationResult?{documentationResult:execution.documentationResult}:{}),
-        ...(execution.documentationSync?{documentationSync:{version:1,paths:execution.documentationSync.paths}}:{})}),inputs:sha({feature,task:identity.taskId})},
-    create:mode==='create'});
+        ...(execution.documentationSync?{documentationSync:{version:1,paths:execution.documentationSync.paths}}:{})};
+  const fingerprints={workflow:sha(execution===null?'cm-ai-control-v1':'cm-ai-host-execution-v1'),
+    config:sha(configMaterial),inputs:sha({feature,task:identity.taskId})};
+  const storeOptions={tasksPath,feature:featureSlug,specsRoot:specsDir,
+    identity:{repositoryId:identity.repositoryId,runId:identity.runId},fingerprints,create:mode==='create'};
+  let store,attaching=false;
+  try{store=openTaskExecutionStore(storeOptions);}
+  catch(error){
+    if(mode!=='resume'||error.code!=='fingerprint_mismatch')throw error;
+    for(const previous of preQaConfigurations(configMaterial)){
+      try{store=openTaskExecutionStore({...storeOptions,fingerprints:{...fingerprints,config:sha(previous)}});break;}
+      catch(cause){if(cause.code!=='fingerprint_mismatch')throw cause;}
+    }
+    if(!store)throw error;
+    attaching=true;
+  }
   try{
+    const attachments=store.snapshot().records.filter(row=>row.payload.type==='qa-attached');
+    if(attachments.length>1)fail('qa_attachment_duplicate');
+    const attached=attachments.length?readQaAttachment(attachments[0].payload.record):null;
+    if(attached&&attached.qaFingerprint!==fingerprints.config)fail('fingerprint_mismatch');
+    if(attaching&&store.snapshot().records.length===0)fail('qa_attach_not_completed');
     let runnerMode=mode;
     if(mode==='resume'&&store.snapshot().records.length===0){
       // Only the genuine, fingerprint-matching empty initializer can be finished.
@@ -263,6 +281,14 @@ export async function openControlRun(definition,mode,execution=null){
       entry:{specsDir,codeProject,feature,identity,...(execution===null?{}:{hostDecision:execution.hostDecision,
         ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
+    if(attaching||attached){
+      const record=host.attachQa(attached??{version:1,qaFingerprint:fingerprints.config,
+        attachedAt:new Date().toISOString().replace(/\.\d{3}Z$/,'Z'),hostContextId:execution.configuration.hostContextId});
+      // Repeating this deterministic log write also repairs a crash after the
+      // journal append; neither the attachment nor QA dispatch is repeated.
+      recordCmAiQaAttachment({specsDir,codeProject,feature,identity,record,
+        ...(execution.qaLogHome?{logHome:execution.qaLogHome}:{})});
+    }
     return {host:{async handle(request){
       if(execution===null&&!['status','cancel'].includes(request.operation)){
         // Do not imply an unavailable execution adapter was dispatched.

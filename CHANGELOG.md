@@ -5,6 +5,8 @@
 
 ## 未发布
 
+- 修复 `cm-ai` 已完成且原无 QA 的 run 无法补做强制 N6：resume 显式提供含 QA 的 `--workflow-config` 与 `--allow-qa` 后一次性追加不可变 `qa-attached` 和 `decision/qa_attach` 日志；保留原指纹及任务完成证据，绑定完整恢复配置，重复恢复去重，换配置或未完成附加拒绝。QA 仍走原宿主请求、执行、结果及收尾门禁，不重跑开发/审查。
+
 - 修复 `cm-ai` 双根布局下开发进程与审查者看不到已批准任务及接口契约：开发请求和审查包新增绑定摘要的只读 `specification`（任务/验证要求、AC、设计摘录、相关用例、来源哈希）；复用审批 manifest，规格漂移以 `spec_drift` 阻断，设计超 64 KiB 标记截断。代码根 `requirements` 可选，旧包、journal 与 receipt 按原规则兼容，规格不进入可写 scope。补齐全量夹具的真实批准清单、运行时声明及模块复制依赖；旧 baseline 已记录的依赖文件保留完整内容与漂移检查，batch 开发/审查均验证规格传递。
 
 - 修复 Claude 长审查被第 65 条 `thinking_tokens` 心跳误杀：审查上限放宽为 4096 条，保留 worker 总输出 1,000,000 字节及独立的 32 条通知限制；审查包新增绑定摘要的 `unchangedScope` 路径/哈希清单，允许其进入 examinedPaths 和 finding 路径但不要求改动，旧包与历史 receipt 按原规则验证。

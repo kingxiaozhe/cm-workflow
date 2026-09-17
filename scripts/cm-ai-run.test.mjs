@@ -13,6 +13,39 @@ const cli=fileURLToPath(new URL('./cm-ai-run.mjs',import.meta.url));
 const identity={repositoryId:'control-fixture',runId:'control-run',taskId:'T-001',attempt:1};
 const request=(operation,requestId=operation)=>({version:1,operation,requestId,identity});
 const platform=process.platform==='darwin'&&Number(process.versions.node.split('.')[0])>=24;
+test('QA attachment projections preserve every non-workflow fingerprint input and validate the immutable record',async()=>{
+  const {preQaConfigurations,readQaAttachment}=await import('../runtime/js/cm-ai/qa-attachment.mjs');
+  const material={definition:{identity,scope:['a.js'],requirements:['requirements.md']},
+    execution:{kind:'cm-current-conversation-v1',hostContextId:'host',review:{model:'fixture'},
+      workflow:{qa:{commands:[],environment:{}},documentationPaths:['README.md'],applicableAgentFiles:[]}},
+    qaExecutor:{version:1,mode:'commands'},qaDecisionProvider:'host-v1',qaTimeoutMs:60000,
+    applicableAgentFiles:[],documentationProvider:{version:1,timeoutMs:60000},documentationSync:{version:1,paths:['README.md']},
+    hostDecisionProvider:{version:1,timeoutMs:60000},developmentAuthorization:'per-attempt-v1'};
+  const original=structuredClone(material),[withoutQa,withoutWorkflow]=preQaConfigurations(material);
+  assert.deepEqual(material,original);
+  assert.equal(withoutQa.execution.workflow.qa,null);
+  assert.deepEqual(withoutQa.documentationSync,material.documentationSync);
+  assert(!Object.hasOwn(withoutWorkflow.execution,'workflow'));
+  assert(!Object.hasOwn(withoutWorkflow,'documentationSync'));
+  for(const projection of [withoutQa,withoutWorkflow]){
+    assert.deepEqual(projection.definition,material.definition);
+    assert.deepEqual(projection.execution.review,material.execution.review);
+    assert.equal(projection.execution.hostContextId,'host');
+    assert.deepEqual(projection.hostDecisionProvider,material.hostDecisionProvider);
+    assert.equal(projection.developmentAuthorization,material.developmentAuthorization);
+    assert(!Object.hasOwn(projection,'qaExecutor'));
+  }
+  const legacy=structuredClone(material);
+  legacy.execution={codeProject:'/fixture',workflow:{definition:material.definition,configuration:material.execution.workflow}};
+  const [legacyNull,legacyAbsent]=preQaConfigurations(legacy);
+  assert.equal(legacyNull.execution.workflow.configuration.qa,null);
+  assert(!Object.hasOwn(legacyAbsent,'applicableAgentFiles'));
+  assert.deepEqual(preQaConfigurations({definition:material.definition}),[]);
+  const record={version:1,qaFingerprint:'a'.repeat(64),attachedAt:'2026-09-17T00:00:00Z',hostContextId:'host'};
+  assert.deepEqual(readQaAttachment(record),record);
+  for(const invalid of [{...record,version:2},{...record,qaFingerprint:'invalid'},
+    {...record,attachedAt:'invalid'},{...record,extra:true}])assert.throws(()=>readQaAttachment(invalid));
+});
 test('fixed Codex assembly requires review preflight and denies developer dispatch without host approval',()=>fixture(async f=>{
   const {createCodexExecution}=await import('./cm-ai-run.mjs');
   const {configFingerprint}=await import('../runtime/js/cm-ai/codex-config.mjs');

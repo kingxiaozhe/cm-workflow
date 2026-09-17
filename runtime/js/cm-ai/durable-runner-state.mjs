@@ -461,7 +461,7 @@ export function readRunnerHistory(raw,config,version=1) {
   const completion=version>=2?completionConfig(config,version):null;
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
   let invocation={registration:null,started:null,result:null};
-  const acceptedFixes=[];
+  const acceptedFixes=[];let qaAttachment=null;
   for(const [index,r] of records.entries()) {
     boundRunnerRecord(r,index+1);
     if(version>=2)fullEnvelope(r,index,index?records[index-1].digest:null);
@@ -531,6 +531,10 @@ export function readRunnerHistory(raw,config,version=1) {
         readCommitResult(p.commit,{intentDigest:transaction.intentRecord.digest,planDigest:state.taskCommit.planDigest});
         transaction.resultRecord=r;state.taskCommit={...state.taskCommit,resultDigest:r.digest,outcome:'fixture_committed'};
       }
+    } else if(version===3&&p.type==='qa-attached') {
+      shape(p,[...common,'record']);
+      need(r.kind==='result'&&pending===null&&state.state==='fixture_completed','qa_attach_not_completed');
+      need(qaAttachment===null,'qa_attachment_duplicate');qaAttachment=readQaAttachment(p.record);
     } else if(version===3&&p.type==='qa-fix-accepted') {
       shape(p,[...common,'record']);need(r.kind==='result'&&pending===null&&state.state==='fixture_completed','fix_parent_not_completed');
       acceptedFixes.push(validateAcceptedFix({record:p.record,previous:acceptedFixes,
@@ -548,9 +552,10 @@ export function readRunnerHistory(raw,config,version=1) {
   if(pending){state.state='unknown';state.code='reconciliation_required';
     if(version===3&&invocation.registration)state.reviewInvocation={registration:invocation.registration.record,
       started:invocation.started,result:invocation.result};}
-  return {original,session,state,pending,acceptedFixes,...(version>=2?{transaction}:{})};
+  return {original,session,state,pending,acceptedFixes,qaAttachment,...(version>=2?{transaction}:{})};
 }
 // Baseline rootDigest uses bytes of the canonical root, not JSON string encoding.
 import {createHash} from 'node:crypto';
+import {readQaAttachment} from './qa-attachment.mjs';
 import fs from 'node:fs';
 const digestRoot=root=>createHash('sha256').update(fs.realpathSync(root)).digest('hex');

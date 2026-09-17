@@ -1,3 +1,4 @@
+import {readQaAttachment} from './qa-attachment.mjs';
 // Trusted synthetic fixture host; explicit V2 supports isolated task-file writes.
 import { randomUUID } from 'node:crypto';
 import { types } from 'node:util';
@@ -187,6 +188,7 @@ export function createTaskRunner(options) {
   let receipt=null,priorReview=null,cancelAfterCommit=false,workflowError=null,cancellationRequested=false,reviewInvocation=null;
   let learningResult=null;
   const acceptedFixes=structuredClone(restored?.acceptedFixes??[]);
+  let qaAttachment=restored?.qaAttachment??null;
   const handoffBinding=(pkg=reviewPackage)=>pkg&&Object.hasOwn(pkg,'handoff')
     ?{handoffPath:completion.handoffs[pkg.identity.attempt-1]}:{};
   function publishRegisteredReview(inspectOnly=false){
@@ -245,7 +247,7 @@ export function createTaskRunner(options) {
       kind:{init:'result','effect-intent':'intent','effect-checkpoint':'result',control:'cancel',
         'task-commit-intent':'commit-intent','task-commit-result':'commit-result',
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
-        'qa-fix-accepted':'result'}[type],
+        'qa-fix-accepted':'result','qa-attached':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
     const record={...body,digest:digest(body)};boundRunnerRecord(record,body.seq);
@@ -780,7 +782,14 @@ export function createTaskRunner(options) {
     persist('qa-fix-accepted',{record});acceptedFixes.push(record);
     return json(record,12*1024*1024);
   };
-  const api={executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix};
+  const attachQa=raw=>{
+    need(invocationMode&&store&&!busy&&!poisoned,'qa_attach_unavailable');
+    const record=readQaAttachment(raw);
+    if(qaAttachment){need(digest(record)===digest(qaAttachment),'fingerprint_mismatch');return json(qaAttachment);}
+    need(state==='fixture_completed','qa_attach_not_completed');
+    persist('qa-attached',{record});qaAttachment=record;return json(record);
+  };
+  const api={executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   return Object.freeze(api);
