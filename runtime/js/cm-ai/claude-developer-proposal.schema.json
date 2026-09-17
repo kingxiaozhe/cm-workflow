@@ -1,0 +1,151 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "succeeded",
+        "failed"
+      ]
+    },
+    "code": {
+      "type": "string",
+      "minLength": 1
+    },
+    "value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome"
+      ],
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "implemented",
+            "blocked"
+          ]
+        },
+        "application": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "note"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "applied",
+                "no_relevant_lesson"
+              ]
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "retrospective": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "candidates",
+            "reason"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "no_new_lesson",
+                "lesson_candidate",
+                "writeback_pending"
+              ]
+            },
+            "candidates": {
+              "type": "array",
+              "maxItems": 3,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "classification",
+                  "trigger",
+                  "action",
+                  "evidence"
+                ],
+                "properties": {
+                  "classification": {
+                    "type": "string",
+                    "enum": [
+                      "structured",
+                      "memory_only"
+                    ]
+                  },
+                  "trigger": {
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string"
+                  },
+                  "evidence": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "edits": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "beforeSha256",
+          "content"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "beforeSha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

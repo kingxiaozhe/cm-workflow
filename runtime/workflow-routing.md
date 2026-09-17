@@ -41,7 +41,7 @@ N1–N8, mark tasks complete, approve specs, or replace the independent N4 gate.
 
 ## Route states
 
-The resolver reports a conservative state:
+The resolver reports a conservative state; only the protected host can record actual CLI dispatch:
 
 - `current-runtime`: the active Codex/Claude runtime or `current-ai` owns the
   step;
@@ -55,6 +55,11 @@ The resolver reports a conservative state:
   cannot satisfy the N4 independent-review evidence contract;
 - `disabled`: the project explicitly disabled this role; do not invoke it and
   record the local skip/degrade outcome;
+- `cli-dispatch`: the adapter is `codex-cli` or `claude-cli`, differs from the
+  active runtime, and the protected host actually created that provider process.
+  The host writes this state in the route `decision` event after spawn;
+  `resolveRole` remains pure and never infers dispatch from declarations.
+  This proves dispatch only, not quota availability, success or independent review;
 - `declared-adapter`: the project requested an adapter that this runtime did
   not observe. CM records the requested route, but must not claim that model or
   provider actually ran. Adapter-specific invocation remains an integration

@@ -146,11 +146,11 @@ function fakeProcess(events, { exitCode = 0, pending = false, error = false, fin
     return child;
   };
 }
-function makeWorker(events, fakeOptions) {
+function makeWorker(events, fakeOptions, workerOptions = {}) {
   const options = { cwd: '/fixture', model: 'fixture-model' };
   return codexWorker({ ...options, schemaPath: '/fixture/schema', timeoutMs: 10,
     preflight: { passed: true, cli_model: options.model, config_fingerprint: configFingerprint(options) },
-    spawnProcess: fakeProcess(events, fakeOptions) });
+    spawnProcess: fakeProcess(events, fakeOptions), ...workerOptions });
 }
 function capturedProcess(events,seen) {
   return (cli,args,options)=>{
@@ -217,9 +217,13 @@ test('stdin write failure stops one process without argv fallback or redispatch'
   assert.equal(spawns,1);assert.equal(args.at(-1),'-');assert(!args.includes('review package'));
   assert.equal((await worker({prompt:'review package'},context())).code,'worker_dispatch_limit');assert.equal(spawns,1);
 });
-test('CLI diagnostic is classified and never silently ignored', async () => {
-  const result = await makeWorker([...start, { type: 'item.completed', item: { type: 'error', message: 'synthetic diagnostic' } }])({}, context());
-  assert.equal(result.code, 'cli_diagnostic');
+test('CLI notice is reported but does not substitute for completion', async () => {
+  const events=[],notices=[];
+  const result = await makeWorker([...start, { type: 'item.completed', item: { type: 'error', message: 'synthetic diagnostic' } }],
+    {},{onNotice:message=>notices.push(message)})({}, {...context(),onEvent:event=>events.push(event)});
+  assert.deepEqual(result,{status:'failed',code:'incomplete_result'});
+  assert.deepEqual(notices,['synthetic diagnostic']);
+  assert.deepEqual(events.filter(e=>e.item_type==='error'),[]);
 });
 test('unexpected tool event remains blocked', async () => {
   const result = await makeWorker([...start, { type: 'item.started', item: { type: 'command_execution' } }])({}, context());
@@ -275,4 +279,58 @@ test('spawn failure settles without a second event after closure', async () => {
   const events = [];
   const result = await makeWorker([], { error: true })({}, { ...context(), onEvent: e => events.push(e) });
   assert.equal(result.code, 'spawn_failed'); assert.equal(events.length, 0);
+});
+
+test('review worker reports both startup notices through onNotice without changing result shape',async()=>{
+  const messages=[
+    'Code Mode is unavailable because code-mode host is disabled. Code mode will fail closed; enable `features.code_mode_host` and install `codex-code-mode-host`.',
+    'Skill descriptions were shortened to fit the skills context budget. '+'x'.repeat(200),
+  ];
+  const notice=text=>({type:'item.completed',item:{type:'error',message:text,extra:'not retained'}});
+  const events=[],notices=[];
+  const result=await makeWorker([start[0],notice(messages[0]),start[1],notice(messages[1]),message,{type:'turn.completed'}],
+    {},{onNotice:message=>notices.push(message)})({},
+    {...context(),onEvent:event=>events.push(event)});
+  assert.deepEqual(result,{status:'succeeded',value:{greeting:'你好'}});
+  assert.deepEqual(notices,messages.map(text=>text.slice(0,200)));
+  assert.deepEqual(events.filter(e=>e.item_type==='error'),[]);
+  assert(!JSON.stringify(result).includes('not retained'));
+  assert.deepEqual(events.map(x=>x.event),['thread.started','turn.started','item.completed','turn.completed','process_closed']);
+  assert(!JSON.stringify(events).includes(messages[0]));
+});
+for(const mode of ['omitted','non-function','throwing'])test(`review notice callback: ${mode}`,async()=>{
+  let calls=0;
+  const callbacks={omitted:{},'non-function':{onNotice:'ignored'},throwing:{onNotice(){calls++;throw Error('diagnostic sink failed');}}};
+  const notice={type:'item.completed',item:{type:'error',message:'synthetic diagnostic'}};
+  const events=[];
+  const result=await makeWorker([start[0],notice,start[1],notice,message,{type:'turn.completed'}],{},callbacks[mode])({},
+    {...context(),onEvent:event=>events.push(event)});
+  assert.deepEqual(result,{status:'succeeded',value:{greeting:'你好'}});
+  assert.equal(calls,mode==='throwing'?2:0);
+  assert.deepEqual(events.filter(e=>e.item_type==='error'),[]);
+});
+for(const terminal of ['error','turn.failed','turn.completed'])test(`review notice after ${terminal} stays failed`,async()=>{
+  const notices=[],events=[];
+  const notice={type:'item.completed',item:{type:'error',message:'late diagnostic'}};
+  const result=await makeWorker([...start,message,{type:terminal},notice],{}, {onNotice:text=>notices.push(text)})({},
+    {...context(),onEvent:event=>events.push(event)});
+  assert.deepEqual(result,{status:'failed',code:terminal==='turn.completed'?'invalid_event':'provider_failed'});
+  assert.deepEqual(notices,[]);assert.deepEqual(events.filter(e=>e.item_type==='error'),[]);
+});
+test('review notices cannot hide a nonzero exit',async()=>{
+  const notices=[];
+  const notice={type:'item.completed',item:{type:'error',message:'synthetic diagnostic'}};
+  const result=await makeWorker([...start,notice,message,{type:'turn.completed'}],{exitCode:1},
+    {onNotice:text=>notices.push(text)})({},context());
+  assert.deepEqual(result,{status:'failed',code:'incomplete_result'});
+  assert.deepEqual(notices,['synthetic diagnostic']);
+});
+for(const [event,code] of [
+  [{type:'error',message:'fatal'},'provider_failed'],
+  [{type:'turn.failed'},'provider_failed'],
+  [{type:'item.completed',item:{type:'future_item'}},'unexpected_tool_or_item'],
+  [{type:'item.started',item:{type:'error',message:'unfinished'}},'cli_diagnostic'],
+])test(`review worker notice boundary: ${event.type}/${event.item?.type??''}`,async()=>{
+  const result=await makeWorker([...start,event,message,{type:'turn.completed'}])({},context());
+  assert.deepEqual(result,{status:'failed',code});
 });

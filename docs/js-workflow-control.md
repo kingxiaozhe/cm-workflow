@@ -280,19 +280,20 @@ Claude 单任务 Review 已接入原 V3：不带审查配置或对应轮次授�
 本机服务最多响应一次空 GET/HEAD `/api/hello` 健康检查，消息请求始终拒绝且不转发模型；
 凭证只证明工具列表/模型/传输配置，不授权 Review。不支持隔离条件时拒绝运行，禁止手造凭证。
 已安装 Claude CLI 的本机诊断已通过：设置 `CLAUDE_CODE_TMPDIR` 到同一受限临时目录，
-捕获第一条合规消息请求后主动终止，防止 CLI 内部修复/重试发出第二条请求；
+捕获第一条合规消息请求后主动终止；CLI 仍可能在停止前重发，诊断只接受 1–2 条消息请求，且每条都须通过模型、传输和工具列表检查（空工具列表或唯一的 `StructuredOutput`）。第三条请求或任一不合规请求均失败；结果保留 `message_requests`，并以 `message_requests_expected:'1-2'` 标明范围。
 `stopped_by_probe:true` 是诊断主动停止，不是用户取消，也不是 Review 成功。
-当前证据只有本机配置/工具表验证，没有真实模型审查结果；换模型或目录须重新诊断。
+2026-09-17 已完成 Claude 宿主→Codex 写→Claude 审的真实模型单文件小任务验收一次，凭证为 `reviewer: claude-cli / independent: true / approved`；停在 N6 QA 待决，QA/N8 不在验收范围、仍未验收。换模型或目录须重新诊断。
 隔离测试使用合成凭证和合成 Claude 进程，验证 Review→QA→文档核验→原 run_done/恢复，
 不证明真实模型或完整双端交付。
 批次 CLI 也支持显式 `--runtime claude`，每个子任务继续使用原独立轮次授权；
 恢复时更换 runtime 被拒绝。完整 Skill 激活和真实双端 N1–N8 验收仍未完成。
-本地合成会话已验证实际文件/检查及断联、取消、恢复，尚未在真实 Claude 会话运行。
+本地合成会话已验证实际文件/检查及断联、取消、恢复；2026-09-17 反向路径 Codex 宿主→Claude 只读提案→宿主沙箱落盘→Codex 审也已完成真实模型单文件小任务验收一次，凭证为 `reviewer: codex-cli / independent: true / approved`，同样停在 N6 QA 待决，QA/N8 不在验收范围、仍未验收。
 
 共享 V3 核心已能按实际登记的 Claude request 校验规范化审查事件、生成 Claude receipt、
 发布 `claude-cli` Review 并沿原唯一门禁完成；实时与恢复共用相同 provider 绑定。
 `claude-review-adapter.mjs` 复用原审查包/prompt 合同，只转交受信 worker，不自行调用进程。
-`worker-claude.mjs` 已接入该 adapter，使用 stdin、工具关闭、单次派发和 POSIX 进程组清理。
+`worker-claude.mjs` 已接入该 adapter，使用 stdin、除 CLI 内部 `StructuredOutput` 外零工具、单次派发和 POSIX 进程组清理；任何其他工具执行成功即失败并立即 SIGKILL。
+审查通过 `--json-schema` 传入去除 `$schema`/`$id` 的结果 schema；该参数改变配置指纹，旧凭证须重跑 preflight。诊断只接受空工具列表或唯一的 `StructuredOutput`。
 Windows 明确拒绝此 worker；CLI help 和合成协议验证不证明真实 Claude 进程兼容或物理隔离。
 
 ```bash

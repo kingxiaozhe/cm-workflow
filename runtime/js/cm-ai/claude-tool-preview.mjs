@@ -62,7 +62,8 @@ export async function previewClaudeTools({cwd,model,cli='claude',spawnProcess=sp
         const checks={json:true,post:request.method==='POST',
           messages_endpoint:new URL(request.url,'http://127.0.0.1').pathname==='/v1/messages',
           model_matches:data.model===model,messages_array:Array.isArray(data.messages),
-          tools_empty:Array.isArray(tools)&&tools.length===0,
+          tools_allowed:Array.isArray(tools)&&(tools.length===0
+            ||(tools.length===1&&tools[0]?.name==='StructuredOutput')),
           synthetic_auth:request.headers['x-api-key']==='cm-synthetic-local-probe'};
         safe={valid:Object.values(checks).every(Boolean),checks};
       }catch{}
@@ -70,7 +71,7 @@ export async function previewClaudeTools({cwd,model,cli='claude',spawnProcess=sp
       if(index<8)observations[index]=safe;
       response.writeHead(400,{'Content-Type':'application/json'});
       response.end(JSON.stringify({type:'error',error:{type:'invalid_request_error',message:'CM_LOCAL_PROBE_STOP'}}));
-      // Inspection is finished; do not let CLI-internal repair/retry issue another model request.
+      // Stop after the first valid request; a CLI retry may already be in flight.
       if(safe.valid){stoppedByProbe=true;controller.abort();}
     });
   });
@@ -99,9 +100,10 @@ export async function previewClaudeTools({cwd,model,cli='claude',spawnProcess=sp
   }
   const messages=observations.filter(item=>item.startup!==true);
   return {model,disabledSkills:[],preflight:{provider:'claude',prompt_transport:'stdin',
-    config_fingerprint:fingerprint,passed:messages.length===1&&messages[0].valid
+    config_fingerprint:fingerprint,passed:messages.length>=1&&messages.length<=2&&messages.every(message=>message.valid)
       &&stoppedByProbe&&result?.status==='cancelled'&&closeEvidence!==null&&!closeEvidence.timed_out,
-    local_requests:observations.length,message_requests:messages.length,listener_closed:closed,isolation:'macos-loopback-sandbox',
+    local_requests:observations.length,message_requests:messages.length,message_requests_expected:'1-2',
+    listener_closed:closed,isolation:'macos-loopback-sandbox',
     process_code:result?.code??'unknown',stopped_by_probe:stoppedByProbe,exit_code:closeEvidence?.exit_code??null,
     request_checks:observations.map(item=>item.startup?{startup:true}:item.checks??{complete:false})}};
 }

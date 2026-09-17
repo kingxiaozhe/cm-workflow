@@ -27,6 +27,23 @@ CM 支持一个可选的项目根配置文件：`.cm-workflow.yml`、`.cm-workfl
 
 角色配置只改变“谁负责、用哪个适配器和模型别名”，不改变 N1–N8 顺序。未配置角色继续使用当前 AI 和既有默认行为。
 
+## 运行时声明
+
+`runtimes.available` 记录用户自报的可用运行时：`codex`、`claude` 或 `both`。缺省为
+`unknown`（未声明，不做交叉检查）。`cm-init` 询问一次后写入；随时可改。
+
+| 预设 | `runtimes.available` | `roles.coder.adapter` | `roles.reviewer.adapter` |
+| --- | --- | --- | --- |
+| `codex-only` | `codex` | `codex-cli` | `codex-cli`（全新上下文，仍是独立审查） |
+| `claude-only` | `claude` | `claude-cli` | `claude-cli`（同上） |
+| `codex-codes` | `both` | `codex-cli` | `claude-cli` |
+| `claude-codes` | `both` | `claude-cli` | `codex-cli` |
+
+校验规则：单家声明时任何角色不得指向另一家；`both` 时 `coder` 与 `reviewer` 不得同家。
+`current-ai` 表示「当前所在工具」，不参与判定。**声明不等于派发**：与当前运行时不同的
+adapter 仍解析为 `declared-adapter`，只记录、不调用；`cm-check --project` 会把这类角色标为
+「已声明未派发」。声明也不拦用户在任一工具里交互式执行。
+
 ## 有限 Workflow Profile
 
 | Profile | 适用项目 | 额外策略 |

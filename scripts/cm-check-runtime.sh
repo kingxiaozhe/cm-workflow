@@ -9,6 +9,10 @@ fail() {
   FAILURES=$((FAILURES + 1))
 }
 
+warn() {
+  echo "WARN: $*" >&2
+}
+
 require_file() {
   [ -f "$ROOT/$1" ] || fail "missing $1"
 }
@@ -356,6 +360,35 @@ if [ -n "$NODE_BIN" ]; then
     else
       "$NODE_BIN" "$ROOT/scripts/cm-workflow-config.mjs" --project "$PROJECT_PATH" ||
         fail "project workflow config validation failed"
+    fi
+    # Runtime declaration vs. this machine. The declaration is the user's word;
+    # the probe only says whether a CLI resolves (never whether quota is usable).
+    # Roles whose adapter names the other runtime are declared, not dispatched.
+    effective_json=""
+    if [ -n "$CONFIG_PATH" ]; then
+      effective_json=$("$NODE_BIN" "$ROOT/scripts/cm-workflow-config.mjs" --project "$PROJECT_PATH" --config "$CONFIG_PATH" --print-effective 2>/dev/null || true)
+    else
+      effective_json=$("$NODE_BIN" "$ROOT/scripts/cm-workflow-config.mjs" --project "$PROJECT_PATH" --print-effective 2>/dev/null || true)
+    fi
+    if [ -n "$effective_json" ]; then
+      declared=$(printf '%s' "$effective_json" | "$NODE_BIN" -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const j=JSON.parse(d);process.stdout.write(String(j.runtimes&&j.runtimes.available||"unknown"));})' 2>/dev/null || echo unknown)
+      if [ "$declared" != "unknown" ]; then
+        probe_json=$("$NODE_BIN" "$ROOT/scripts/cm-failover.mjs" probe --json 2>/dev/null || true)
+        missing=$(printf '%s' "$probe_json" | "$NODE_BIN" -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{let j={runtimes:[]};try{j=JSON.parse(d);}catch{}const want=process.argv[1]==="both"?["codex","claude"]:[process.argv[1]];const ok=new Set(j.runtimes.filter(r=>r.available).map(r=>r.runtime));process.stdout.write(want.filter(r=>!ok.has(r)).join(" "));})' "$declared" 2>/dev/null || true)
+        for rt in $missing; do
+          warn "runtimes.available 声明 ${declared}，但本机 ${rt} CLI 不可解析（可解析≠配额可用）"
+        done
+        current_runtime="${CM_RUNTIME:-codex}"
+        for role in coder reviewer; do
+          if [ -n "$CONFIG_PATH" ]; then
+            role_json=$("$NODE_BIN" "$ROOT/scripts/cm-workflow-config.mjs" --project "$PROJECT_PATH" --config "$CONFIG_PATH" --role "$role" --runtime "$current_runtime" --print-role 2>/dev/null || true)
+          else
+            role_json=$("$NODE_BIN" "$ROOT/scripts/cm-workflow-config.mjs" --project "$PROJECT_PATH" --role "$role" --runtime "$current_runtime" --print-role 2>/dev/null || true)
+          fi
+          role_line=$(printf '%s' "$role_json" | "$NODE_BIN" -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{let j={};try{j=JSON.parse(d);}catch{}const tag=j.route_state==="declared-adapter"?"（已声明未派发）":"";process.stdout.write(`${j.role||"?"}: adapter=${j.adapter||"?"} route_state=${j.route_state||"?"}${tag}`);})' 2>/dev/null || true)
+          [ -n "$role_line" ] && echo "runtime declaration [${declared}] ${role_line}"
+        done
+      fi
     fi
   fi
 else

@@ -17,6 +17,7 @@ work independently.
 When a project configures a `reviewer` role, resolve it through
 `runtime/workflow-routing.md` before selecting the review channel. Record the
 requested adapter/model alias and `route_state` as decision metadata only.
+`cli-dispatch` proves a process was created, not a successful independent review.
 `declared-adapter` is not proof that a second backend reviewed the diff; the
 fresh-context and independence rules below still apply.
 `managed-adapter` identifies a callable boundary, not proof that a call occurred.
@@ -47,7 +48,8 @@ Do not send the whole working tree merely because it is convenient.
 
 1. `codex-subagent`: spawn a fresh reviewer/subagent with the runtime's no-history/fresh-context option (for example `fork_turns: none`) and provide only the review package. Ask for concrete failure scenarios, ordered by severity, and require an explicit zero-findings result when applicable.
 2. `codex-cli`: if subagents are unavailable, run `codex review` only when the task changes are isolated from unrelated dirty work (clean pre-task tree or isolated worktree/commit).
-3. Neither independent path is safe: pause new implementation or leave existing work pending review. `self-degraded` is diagnostic only; it cannot authorize N5 or successful completion, even if its legacy verdict says `approved`.
+3. `claude-cli`: when selected by the project declaration, the protected host must actually spawn a fresh Claude reviewer and recover its registered V3 receipt before recording `independent: true`. A two-provider declaration requires coder and reviewer on different providers; a single-provider declaration uses a fresh context on that provider.
+4. The selected independent path is unavailable: pause new implementation or leave existing work pending review. `self-degraded` is diagnostic only; it cannot authorize N5 or successful completion, even if its legacy verdict says `approved`.
 
 Do not wait for two degraded tasks or limit this pause to high-risk work. Channel
 unavailability is not a code finding or an implementation review round; record

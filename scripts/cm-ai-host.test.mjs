@@ -222,7 +222,7 @@ for(const variant of ['codex','claude','protected'])test(`automatic fix ${varian
     const definition=JSON.parse(fs.readFileSync(f.config,'utf8'));definition.scope.push('README.md');
     if(f.protected){const nested=path.join(f.codeProject,'specs');fs.renameSync(f.specsDir,nested);f.specsDir=nested;definition.specsDir=nested;}
     fs.writeFileSync(f.config,JSON.stringify(definition));
-    fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.json'),JSON.stringify({version:1,policies:{auto_fix:'auto',delivery:'diff'}}));
+    fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.json'),JSON.stringify({version:1,...(f.protected?{runtimes:{available:'codex'}}:{}),policies:{auto_fix:'auto',delivery:'diff'}}));
     fs.writeFileSync(path.join(f.codeProject,'red.mjs'),"import {value} from './target.mjs';if(value!==43){console.error('BUG');process.exit(1)}");
     fs.writeFileSync(path.join(f.codeProject,'baseline.mjs'),"import {value} from './target.mjs';if(typeof value!=='number')process.exit(1)");
     const bin=path.join(f.root,'bin');fs.mkdirSync(bin);
@@ -364,5 +364,143 @@ for(const runtime of ['codex','claude'])for(const workflow of [false,true])test(
       assert.equal(rows.filter(row=>row.event==='run_done').length,1);
       assert.equal(rows.filter(row=>row.event==='test_run'&&row.phase==='start').length,1);
     }
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// Real local child processes with synthetic provider output. Only `codex sandbox`
+// delegates to the installed CLI; no real model is ever requested.
+function installDispatchFakes(f){
+  const bin=path.join(f.root,'bin');fs.mkdirSync(bin);
+  const located=spawnSync('/usr/bin/which',['codex'],{encoding:'utf8'});assert.equal(located.status,0);
+  for(const provider of ['codex','claude']){
+    const reviewFixture=fileURLToPath(new URL(`./fixtures/${provider}-review-process.mjs`,import.meta.url));
+    fs.writeFileSync(path.join(bin,provider),String.raw`#!${process.execPath}
+const fs=require('node:fs'),cp=require('node:child_process'),a=require('node:assert/strict');
+const provider=${JSON.stringify(provider)},args=process.argv.slice(2),real=${JSON.stringify(located.stdout.trim())};
+if(args[0]==='sandbox'){const r=cp.spawnSync(real,args,{stdio:'inherit'});process.exit(r.status??1);}
+let prompt='';process.stdin.on('data',s=>prompt+=s);process.stdin.on('end',()=>{
+  if(!prompt.includes('<cm-developer-data-json>')){
+    const r=cp.spawnSync(process.execPath,[${JSON.stringify(reviewFixture)},...args],{input:prompt,encoding:'utf8'});
+    process.stdout.write(r.stdout??'');process.stderr.write(r.stderr??'');process.exit(r.status??1);
+  }
+  const content='export const value = 42;\n';
+  const value={outcome:'implemented',application:{status:'no_relevant_lesson',note:null},retrospective:{status:'no_new_lesson',candidates:[],reason:null}};
+  let events;
+  if(provider==='codex'){
+    const profile=[];for(let i=0;i<args.length;i++)if(args[i]==='-c'&&/^(default_permissions=|permissions.cm-specs=)/.test(args[i+1]))profile.push(args[i],args[i+1]);
+    a.equal(profile.length,4);
+    const r=cp.spawnSync(real,['sandbox','-P','cm-specs','--include-managed-config','-C',process.cwd(),...profile,'--',process.execPath,'-e',"require('node:fs').writeFileSync('target.mjs',"+JSON.stringify(content)+")"],{encoding:'utf8'});
+    if(r.status!==0){process.stderr.write(r.stderr??'');process.exit(1);}
+    events=[{type:'thread.started',thread_id:'synthetic-coder-codex'},{type:'turn.started'},
+      {type:'item.completed',item:{type:'agent_message',text:JSON.stringify(value)}},{type:'turn.completed'}];
+  }else{
+    a.equal(args[args.indexOf('--tools')+1],'Read,Grep,Glob');a.equal(args[args.indexOf('--allowedTools')+1],'Read,Grep,Glob');
+    a.equal(args[args.indexOf('--permission-mode')+1],'dontAsk');a(args.includes('--no-session-persistence'));
+    a(args.includes('--json-schema'));const schema=JSON.parse(args[args.indexOf('--json-schema')+1]);
+    a.equal(Object.hasOwn(schema,'$schema'),false);a.equal(Object.hasOwn(schema,'$id'),false);
+    a.deepEqual(schema.properties.status.enum,['succeeded','failed']);
+    a(prompt.includes('Protected current-host mode: do not write files'));
+    a.equal(fs.existsSync('target.mjs'),false);
+    const expected=JSON.parse(prompt.trim().split('\n').at(-1)).expected;
+    const proposal={status:'succeeded',value,edits:[{path:'target.mjs',beforeSha256:expected['target.mjs'],content}]};
+    const session_id='synthetic-coder-claude';
+    events=[{type:'system',subtype:'init',session_id},{type:'assistant',session_id,parent_tool_use_id:null,message:{role:'assistant',content:[{type:'text',text:'proposal'}]}},
+      {type:'result',session_id,subtype:'success',is_error:false,num_turns:1,result:'',structured_output:proposal}];
+  }
+  for(const event of events)process.stdout.write(JSON.stringify(event)+'\n');
+});
+`,{mode:0o700});
+  }
+  f.env={...process.env,PATH:bin+path.delimiter+process.env.PATH,CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')};
+}
+for(const [available,coder,reviewer,runtime] of [
+  ['codex','codex','codex','codex'],['codex','codex','codex','claude'],['claude','claude','claude','codex'],
+  ['both','codex','claude','claude'],['both','claude','codex','codex'],
+])test(`protected dispatch ${available}: ${runtime} host -> ${coder} coder -> ${reviewer} reviewer`,async()=>{
+  const f=fixture();
+  try{
+    installDispatchFakes(f);
+    fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.json'),JSON.stringify({version:1,runtimes:{available},
+      roles:{coder:{adapter:`${coder}-cli`},reviewer:{adapter:`${reviewer}-cli`}}}));
+    const preview=spawnSync(process.execPath,[cli,'preflight','--config',f.config,'--review-model','fixture','--runtime',reviewer],
+      {encoding:'utf8',env:f.env,timeout:5000});assert.equal(preview.status,0,preview.stderr);
+    const reviewFile=path.join(f.root,'review.json'),protectedFile=path.join(f.root,'protected.json');
+    fs.writeFileSync(reviewFile,preview.stdout);
+    fs.writeFileSync(protectedFile,JSON.stringify({model:'fixture',timeoutMs:5000,
+      checkCommands:[{id:'syntax',command:[process.execPath,'--check','target.mjs']}]}));
+    f.args.push('--runtime',runtime,'--review-config',reviewFile,'--protected-config',protectedFile);
+    const denied=await runCli(f,'normal');assert.equal(denied.code,1);assert.match(denied.stderr,/provider_development_authorization_required/);
+    assert(!fs.existsSync(path.join(f.codeProject,'target.mjs')));assert(!fs.existsSync(path.join(f.specsDir,'.reviews')));
+    f.args.push('--allow-provider-development-attempt','1');
+    const first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
+    assert.equal(first.rows.find(row=>row.requestId==='advance').result.code,'decision_required');assert.deepEqual(first.calls,[]);
+    assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 42;\n');
+    const readRoutes=()=>fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse)
+      .filter(row=>row.phase==='route'&&row.event==='decision');
+    assert.equal(readRoutes().filter(row=>row.role==='coder'&&row.route_state===(coder===runtime?'current-runtime':'cli-dispatch')).length,1);
+    assert.equal(readRoutes().filter(row=>row.role==='reviewer').length,0);
+    f.args.push('--allow-review-attempt','2');
+    const wrong=await runCli(f,'normal','resume');assert.equal(wrong.rows.find(row=>row.requestId==='advance').result.code,'decision_required');
+    assert.equal(readRoutes().filter(row=>row.role==='reviewer').length,0);
+    f.args[f.args.length-1]='1';
+    const reviewed=await runCli(f,'normal','resume');assert.equal(reviewed.code,0,reviewed.stderr);
+    assert.equal(reviewed.rows.find(row=>row.requestId==='advance').result.state,'fixture_completed',JSON.stringify(reviewed.rows));
+    const route=readRoutes().find(row=>row.role==='reviewer');assert(route);
+    assert.equal(route.adapter,`${reviewer}-cli`);assert.equal(route.route_state,reviewer===runtime?'current-runtime':'cli-dispatch');
+    const receipt=fs.readFileSync(path.join(f.specsDir,'.reviews','work-T-001-r1.md'),'utf8');
+    assert.match(receipt,new RegExp(`reviewer: ${reviewer}-cli`));assert.match(receipt,/independent: true/);
+    const gate=spawnSync(process.execPath,[fileURLToPath(new URL('./cm-task-gate.mjs',import.meta.url)),'check-n4',
+      '--handoff',path.join(f.specsDir,'.reviews','work-T-001-a1-handoff.json'),
+      '--reviews-dir',path.join(f.specsDir,'.reviews'),'--feature','work','--task','T-001','--project-root',f.codeProject],{encoding:'utf8'});
+    assert.equal(gate.status,0,gate.stderr);assert.equal(JSON.parse(gate.stdout).content_bound,true);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+for(const available of ['unknown','codex'])test(`legacy protected ${available} run resumes with its original fingerprint and contexts`,async()=>{
+  const f=fixture();
+  try{
+    installDispatchFakes(f);
+    const projectConfig=path.join(f.codeProject,'.cm-workflow.json');
+    const declaration={version:1,...(available==='codex'?{runtimes:{available}}:{})};
+    fs.writeFileSync(projectConfig,JSON.stringify(declaration));
+    const preview=spawnSync(process.execPath,[cli,'preflight','--config',f.config,'--review-model','fixture'],
+      {encoding:'utf8',env:f.env,timeout:5000});assert.equal(preview.status,0,preview.stderr);
+    const reviewFile=path.join(f.root,'review.json'),protectedFile=path.join(f.root,'protected.json');
+    fs.writeFileSync(reviewFile,preview.stdout);
+    fs.writeFileSync(protectedFile,JSON.stringify({model:'fixture',timeoutMs:5000,
+      checkCommands:[{id:'syntax',command:[process.execPath,'--check','target.mjs']}]}));
+    // The original unmodified createCodexExecution constructs a genuine old run;
+    // no hand-written fingerprints, journals or approval receipts.
+    const initializer=path.join(f.root,'old-host.mjs');
+    fs.writeFileSync(initializer,`
+import fs from 'node:fs';
+import {readRunDefinition,createCodexExecution,openControlRun} from ${JSON.stringify(new URL('./cm-ai-run.mjs',import.meta.url).href)};
+import {createHostReviewAuthority} from ${JSON.stringify(new URL('../runtime/js/cm-ai/host-review-authority.mjs',import.meta.url).href)};
+const definition=readRunDefinition(${JSON.stringify(f.config)}),review=JSON.parse(fs.readFileSync(${JSON.stringify(reviewFile)}));
+const config=JSON.parse(fs.readFileSync(${JSON.stringify(protectedFile)}));
+const authority=createHostReviewAuthority({hostContextId:'native-host-fixture',reviewerId:'reviewer',adapterId:'codex-review-adapter',decide:async()=>null});
+const execution=await createCodexExecution({codeProject:definition.codeProject,specsRoot:definition.specsDir,
+ developerModel:config.model,checkCommands:config.checkCommands,timeoutMs:config.timeoutMs,
+ hostContextId:'native-host-fixture',developerContextId:'cm-protected-author',reviewerModel:review.model,
+ reviewerPreflight:review.preflight,disabledSkills:review.disabledSkills},
+ {hostDecision:null,developmentAttempt:1,hostDecisionProvider:authority.hostDecisionProvider,authorizeReview:authority.authorize,
+ authorizeDevelopment:()=>({status:'approved'})});
+const run=await openControlRun(definition,'create',execution);
+try{console.log(JSON.stringify(await run.host.handle(${JSON.stringify(request('advance'))})));}finally{run.close();}
+`);
+    const old=spawnSync(process.execPath,[initializer],{encoding:'utf8',env:f.env,timeout:10000});
+    assert.equal(old.status,0,old.stderr);assert.equal(JSON.parse(old.stdout).code,'decision_required');
+    f.args.push('--protected-config',protectedFile,'--allow-provider-development-attempt','1','--review-config',reviewFile,'--allow-review-attempt','1');
+    // A changed two-provider declaration cannot recover through Codex-only compatibility.
+    fs.writeFileSync(projectConfig,JSON.stringify({version:1,runtimes:{available:'both'},
+      roles:{coder:{adapter:'claude-cli'},reviewer:{adapter:'codex-cli'}}}));
+    const mismatch=await runCli(f,'normal','resume');assert.equal(mismatch.code,1);assert.match(mismatch.stderr,/fingerprint_mismatch/);
+    assert(!fs.readFileSync(path.join(f.specsDir,'1.work','tasks.md'),'utf8').includes('[x]'));
+    fs.writeFileSync(projectConfig,JSON.stringify(declaration));
+    const resumed=await runCli(f,'normal','resume');assert.equal(resumed.code,0,resumed.stderr);
+    assert.match(resumed.stderr,/resumed original Codex protected execution after exact fingerprint validation/);
+    assert.equal(resumed.rows.find(row=>row.requestId==='advance').result.state,'fixture_completed');
+    assert.deepEqual(resumed.calls,[]);
+    assert.match(fs.readFileSync(path.join(f.specsDir,'.reviews','work-T-001-r1.md'),'utf8'),/reviewer: codex-cli/);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });

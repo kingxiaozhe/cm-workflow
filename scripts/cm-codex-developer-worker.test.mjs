@@ -33,9 +33,26 @@ test('coding argv enables tools without weakening reviewer argv',()=>{
   const coding=developerArgs(options),review=commonArgs(options);
   assert.equal(coding[coding.indexOf('--sandbox')+1],'workspace-write');
   assert.equal(review[review.indexOf('--sandbox')+1],'read-only');
-  assert(review.includes('shell_tool'));assert(coding.includes('sandbox_workspace_write.network_access=false'));
+  const values=(args,flag)=>args.flatMap((arg,i)=>arg===flag?[args[i+1]]:[]);
+  const reviewDisabled=values(review,'--disable'),codingDisabled=values(coding,'--disable');
+  for(const name of ['shell_tool','unified_exec','code_mode_host']){
+    assert(reviewDisabled.includes(name));assert(!codingDisabled.includes(name));
+  }
+  assert.deepEqual(codingDisabled,reviewDisabled.filter(name=>!['shell_tool','unified_exec','code_mode_host'].includes(name)));
+  assert.deepEqual(values(coding,'--enable'),['shell_tool','unified_exec']);
+  assert(!coding.includes('code_mode'));assert(!coding.includes('code_mode_host'));
+  assert(coding.includes('sandbox_workspace_write.network_access=false'));
   assert.equal(coding.at(-1),'-');assert(!coding.includes('--dangerously-bypass-approvals-and-sandbox'));
 });
+
+test('coding tool channel preserves the specs read-only permission profile',()=>fixture(async temp=>{
+  const cwd=fs.realpathSync(temp),specsRoot=path.join(cwd,'specs');fs.mkdirSync(specsRoot);
+  const args=developerArgs({cwd,specsRoot,model:'fixture',schemaPath:'/schema.json'});
+  assert(!args.includes('code_mode_host'));assert(!args.includes('code_mode'));
+  assert(!args.includes('--sandbox'));assert(args.includes('default_permissions="cm-specs"'));
+  assert(args.includes(`permissions.cm-specs={extends=":workspace",filesystem={${JSON.stringify(specsRoot)}="read",":workspace_roots"={"AGENTS.md"="read","CLAUDE.md"="read",".claude"="read"}},network={enabled=false}}`));
+  assert.deepEqual(args.flatMap((arg,i)=>arg==='--enable'?[args[i+1]]:[]),['shell_tool','unified_exec']);
+}));
 
 test('protected worker refuses a specs symlink substituted while awaiting dispatch',()=>fixture(async temp=>{
   const cwd=fs.realpathSync(temp),specsRoot=path.join(cwd,'specs');fs.mkdirSync(specsRoot);
@@ -125,4 +142,56 @@ test('cancellation kills a TERM-resistant descendant inheriting output pipes',()
     assert.equal(result.status,'unknown');assert.equal(result.code,'cancelled');
     assert.equal(fs.existsSync(path.join(cwd,'leaked.txt')),false);
   }finally{try{process.kill(-child.pid,'SIGKILL');}catch{}}
+}));
+
+const startupNotices=[
+  'Code Mode is unavailable because code-mode host is disabled. Code mode will fail closed; enable `features.code_mode_host` and install `codex-code-mode-host`.',
+  'Skill descriptions were shortened to fit the skills context budget. '+ 'x'.repeat(200),
+];
+const noticeEvent=message=>({type:'item.completed',item:{type:'error',message,extra:'not retained'}});
+const noticeStream=[{type:'thread.started',thread_id:'notice-fixture'},noticeEvent(startupNotices[0]),
+  {type:'turn.started'},noticeEvent(startupNotices[1])];
+const completedStream=[{type:'item.completed',item:{type:'agent_message',text:'{"outcome":"implemented"}'}},
+  {type:'turn.completed'}];
+for(const [name,events,code,expectedNotices=startupNotices,exitCode=0] of [
+  ['startup notices',[...noticeStream,...completedStream],null],
+  ['no notices',[noticeStream[0],noticeStream[2],...completedStream],null,[]],
+  ['duplicate notice',[...noticeStream,noticeEvent(startupNotices[0]),...completedStream],null,[...startupNotices,startupNotices[0]]],
+  ['changed notice',[...noticeStream,noticeEvent('different diagnostic'),...completedStream],null,[...startupNotices,'different diagnostic']],
+  ['eight notices',[...noticeStream,...Array.from({length:6},()=>noticeEvent('extra')),...completedStream],null,[...startupNotices,...Array(6).fill('extra')]],
+  ['ninth notice',[...noticeStream,...Array.from({length:7},()=>noticeEvent('extra')),...completedStream],'invalid_event',[...startupNotices,...Array(6).fill('extra')]],
+  ['nonzero exit',[...noticeStream,...completedStream],'incomplete_result',startupNotices,1],
+  ['top-level error',[...noticeStream,{type:'error',message:'fatal'},...completedStream],'provider_failed'],
+  ['turn failed',[...noticeStream,{type:'turn.failed',error:{message:'fatal'}},...completedStream],'provider_failed'],
+  ['unknown item',[...noticeStream,{type:'item.completed',item:{type:'future_item'}},...completedStream],'unexpected_tool_or_item'],
+  ['unfinished error item',[...noticeStream,{type:'item.started',item:{type:'error',message:'unfinished'}},...completedStream],'unexpected_tool_or_item'],
+  ['malformed notice',[...noticeStream,noticeEvent(null),...completedStream],'invalid_event'],
+  ['notice before thread',[noticeEvent('early'),...noticeStream,...completedStream],'thread_missing',[]],
+  ['notice after terminal',[...noticeStream,...completedStream,noticeEvent('late')],'invalid_event'],
+  ['notice after failure',[...noticeStream,{type:'turn.failed'},noticeEvent('late'),...completedStream],'provider_failed'],
+  ['notices without result',noticeStream,'incomplete_result'],
+])test(`developer notice stream: ${name}`,()=>fixture(async cwd=>{
+  const emit=`process.stdin.resume();for(const row of ${JSON.stringify(events)})process.stdout.write(JSON.stringify(row)+'\\n');process.exitCode=${exitCode};`;
+  const notices=[];
+  const worker=codexDeveloperWorker({cwd,model:'fixture',learning:false,onNotice:message=>notices.push(message),
+    spawnProcess:(_,__,options)=>spawn(process.execPath,['-e',emit],options)});
+  const result=await worker({prompt:'synthetic'},{signal:new AbortController().signal});
+  if(code)assert.deepEqual(result,{status:'unknown',code});
+  else assert.deepEqual(result,{status:'succeeded',value:{outcome:'implemented'},providerThread:'notice-fixture'});
+  assert.deepEqual(notices,expectedNotices.map(x=>x.slice(0,200)));
+  assert(!JSON.stringify(result).includes('not retained'));
+}));
+
+for(const mode of ['omitted','non-function','throwing'])test(`developer notice callback: ${mode}`,()=>fixture(async cwd=>{
+  let calls=0;
+  const callbacks={omitted:{},'non-function':{onNotice:'ignored'},throwing:{onNotice(){calls++;throw Error('diagnostic sink failed');}}};
+  const events=[...noticeStream,...completedStream];
+  const emit=`process.stdin.resume();for(const row of ${JSON.stringify(events)})process.stdout.write(JSON.stringify(row)+'\\n');`;
+  const worker=codexDeveloperWorker({cwd,model:'fixture',learning:false,...callbacks[mode],
+    spawnProcess:(_,__,options)=>spawn(process.execPath,['-e',emit],options)});
+  assert.deepEqual(await worker({prompt:'synthetic'},{signal:new AbortController().signal}),
+    {status:'succeeded',value:{outcome:'implemented'},providerThread:'notice-fixture'});
+  assert.equal(calls,mode==='throwing'?2:0);
+  assert.deepEqual(await worker({prompt:'synthetic'},{signal:new AbortController().signal}),
+    {status:'unavailable',code:'worker_dispatch_limit'});
 }));

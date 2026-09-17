@@ -22,6 +22,10 @@ const MODEL_POLICY_ALIASES=Object.freeze({'strict-Pro':'strict-pro'});
 const AUTO_FIX_POLICIES=new Set(['explicit','never','auto']);
 const DELIVERY_MODES=new Set(['diff','branch','draft-mr']);
 const RUNTIMES=new Set(['codex','claude','unknown']);
+// Declared runtime availability. `unknown` is only the default for configs that
+// never declared it; raw configs must pick codex, claude or both.
+const DECLARABLE_RUNTIMES=new Set(['codex','claude','both']);
+const CLI_ADAPTER_RUNTIME=Object.freeze({'codex-cli':'codex','claude-cli':'claude','claude-api':'claude'});
 const SECRET_KEY=/(?:api[_-]?key|access[_-]?token|secret|cookie|password|private[_-]?key|credential|authorization)/i;
 const SECRET_VALUE=/(?:-----BEGIN [^-]+ PRIVATE KEY-----|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\bAIza[0-9A-Za-z_-]{20,}\b|\bsk[-_](?:ant-api\d{2}[-_])?[A-Za-z0-9_-]{12,}\b|\b(?:ghp|gho|ghu|ghs|ghr|github_pat)[-_][A-Za-z0-9_-]{8,}\b|\bxox[baprs][-_][A-Za-z0-9_-]{8,}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b)/i;
 const IDENTIFIER=/^[A-Za-z0-9][A-Za-z0-9._:/+@-]{0,127}$/;
@@ -33,6 +37,7 @@ export class ConfigError extends Error {
 const rawDefault={
   version:1,
   project:{type:'auto',workflow:'cm-default'},
+  runtimes:{available:'unknown'},
   roles:{
     analyst:{adapter:'current-ai',model:'default',source:'local'},
     planner:{adapter:'current-ai',model:'default',source:'local'},
@@ -276,12 +281,16 @@ function requireString(value,location,choices=null){
 }
 
 function validateRaw(value){
-  const root=requireMapping(value,'config');rejectUnknown(root,new Set(['version','project','roles','policies']),'config');
+  const root=requireMapping(value,'config');rejectUnknown(root,new Set(['version','project','runtimes','roles','policies']),'config');
   if(typeof root.version!=='bigint'||root.version!==1n)throw new ConfigError('config.version must equal integer 1');
   if(Object.hasOwn(root,'project')){
     const project=requireMapping(root.project,'config.project');rejectUnknown(project,new Set(['type','workflow']),'config.project');
     if(Object.hasOwn(project,'type'))requireString(project.type,'config.project.type',PROJECT_TYPES);
     if(Object.hasOwn(project,'workflow'))requireString(project.workflow,'config.project.workflow',WORKFLOWS);
+  }
+  if(Object.hasOwn(root,'runtimes')){
+    const runtimes=requireMapping(root.runtimes,'config.runtimes');rejectUnknown(runtimes,new Set(['available']),'config.runtimes');
+    if(Object.hasOwn(runtimes,'available'))requireString(runtimes.available,'config.runtimes.available',DECLARABLE_RUNTIMES);
   }
   if(Object.hasOwn(root,'roles')){
     const roles=requireMapping(root.roles,'config.roles');rejectUnknown(roles,ROLE_NAMES,'config.roles');
@@ -330,11 +339,53 @@ function validateEffective(config){
       requireString(roleData.model_policy,'roles.external_expert.model_policy',MODEL_POLICIES);
     }
   }
+  validateRuntimeDeclaration(config);
   if(!Array.isArray(config.policies.tests)||config.policies.tests.length===0)throw new ConfigError('policies.tests must be a non-empty list');
   if(config.policies.tests.some(item=>typeof item!=='string'||!TEST_KINDS.has(item)))throw new ConfigError('policies.tests contains an unsupported test kind');
   if(typeof config.policies.generate_cases!=='boolean')throw new ConfigError('policies.generate_cases must be boolean');
   requireString(config.policies.auto_fix,'policies.auto_fix',AUTO_FIX_POLICIES);
   requireString(config.policies.delivery,'policies.delivery',DELIVERY_MODES);
+}
+
+// A declared availability only constrains roles that name a concrete runtime.
+// `current-ai` means "whatever tool I am sitting in" and is never judged here,
+// so single-runtime users with default roles stay valid. This validates the
+// declaration; it does not dispatch across runtimes (see workflow-routing.md).
+function validateRuntimeDeclaration(config){
+  const available=config.runtimes?.available;
+  if(available===undefined||available==='unknown')return;
+  requireString(available,'runtimes.available',DECLARABLE_RUNTIMES);
+  for(const [role,roleData] of Object.entries(config.roles)){
+    const runtime=CLI_ADAPTER_RUNTIME[roleData.adapter];
+    if(runtime&&available!=='both'&&runtime!==available)
+      throw new ConfigError(`roles.${role}.adapter ${roleData.adapter} needs the ${runtime} runtime, but runtimes.available declares ${available}`);
+  }
+  const coder=CLI_ADAPTER_RUNTIME[config.roles.coder.adapter],reviewer=CLI_ADAPTER_RUNTIME[config.roles.reviewer.adapter];
+  if(available==='both'&&coder&&reviewer&&coder===reviewer)
+    throw new ConfigError(`roles.coder and roles.reviewer both resolve to ${coder}; with runtimes.available both, review must run on the other runtime`);
+}
+
+// Runtimes a caller may start a role on, derived from the declaration. Unknown
+// declarations permit both so undeclared projects keep today's behavior.
+export function declaredRuntimes(config){
+  const available=config?.runtimes?.available??'unknown';
+  if(available==='codex'||available==='claude')return Object.freeze({available,allowed:Object.freeze([available])});
+  return Object.freeze({available,allowed:Object.freeze(['codex','claude'])});
+}
+export function runtimeForAdapter(adapter){return CLI_ADAPTER_RUNTIME[adapter]??null;}
+
+// Pure selection only. The host records cli-dispatch after process creation.
+export function resolveProtectedRuntimes(config,runtime){
+  if(!['codex','claude'].includes(runtime))throw new ConfigError('invalid_runtime');
+  const declared=declaredRuntimes(config);
+  const coderRuntime=runtimeForAdapter(config.roles.coder.adapter)??runtime;
+  const reviewerRuntime=runtimeForAdapter(config.roles.reviewer.adapter)
+    ??(declared.allowed.length===1?declared.allowed[0]:coderRuntime==='codex'?'claude':'codex');
+  if(!declared.allowed.includes(coderRuntime)||!declared.allowed.includes(reviewerRuntime))
+    throw new ConfigError('runtime_not_declared');
+  if(declared.available==='both'&&coderRuntime===reviewerRuntime)
+    throw new ConfigError('cross_runtime_review_required');
+  return {coderRuntime,reviewerRuntime};
 }
 
 function expandUser(raw){

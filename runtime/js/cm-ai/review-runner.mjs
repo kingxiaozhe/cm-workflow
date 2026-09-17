@@ -5,6 +5,9 @@ export function reviewPaths(pkg) {
     ...(pkg.instructions??[]).map(file=>file.path),
     ...(pkg.bootstrapRequirements?.files??[]).map(file=>'specs:'+file.path)])].sort();
 }
+export function allowedFindingPaths(pkg,paths=reviewPaths(pkg)) {
+  return [...paths,pkg.handoff?.path].filter(Boolean);
+}
 export function reviewResult(raw,pkg) {
   return reviewResultForPaths(raw,pkg,reviewPaths(pkg));
 }
@@ -13,10 +16,18 @@ export function reviewResultForPaths(raw,pkg,paths) {
   need(['approved','changes_requested','blocked'].includes(r.verdict));text(r.summary);
   need(r.packageDigest===pkg.packageDigest,'review_package_mismatch');
   need(digest(r.examinedPaths)===digest(paths),'missing_material');
-  need(Array.isArray(r.findings) && r.findings.length<=100);const ids=new Set();
+  need(Array.isArray(r.findings) && r.findings.length<=100,'invalid_finding_shape');
+  const ids=new Set(),findingPaths=allowedFindingPaths(pkg,paths);
   for(const f of r.findings) {
-    shape(f,['id','severity','path','message','evidence']);id(f.id);need(!ids.has(f.id));ids.add(f.id);
-    need(['P0','P1','P2','P3'].includes(f.severity) && paths.includes(f.path));text(f.message);text(f.evidence);
+    try {shape(f,['id','severity','path','message','evidence']);}
+    catch {need(false,'invalid_finding_shape');}
+    try {id(f.id);}
+    catch {need(false,'invalid_finding_id');}
+    need(!ids.has(f.id),'invalid_finding_shape');ids.add(f.id);
+    need(['P0','P1','P2','P3'].includes(f.severity),'invalid_finding_severity');
+    need(findingPaths.includes(f.path),'invalid_finding_path');
+    try {text(f.message);text(f.evidence);}
+    catch {need(false,'invalid_finding_shape');}
   }
   const blocking=r.findings.filter(f=>f.severity!=='P3').length;
   need(r.verdict!=='approved'||blocking===0,'contradictory_verdict');

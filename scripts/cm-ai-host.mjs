@@ -12,6 +12,7 @@ import {createQaFixOwnerHost} from '../runtime/js/cm-ai/host-qa-fix-owner.mjs';
 import {createFixLearningPreparation} from '../runtime/js/cm-fix/learning.mjs';
 import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
 import {createHostReviewAuthority} from '../runtime/js/cm-ai/host-review-authority.mjs';
+import {loadConfig,declaredRuntimes,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
 import {readHostWorkflowConfiguration} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {digest,json,need,shape} from '../runtime/js/cm-ai/effect-contract.mjs';
 export {executionFor as createConversationExecution,reviewConfiguration as readConversationReviewConfiguration};
@@ -28,7 +29,7 @@ const fixLocalPermissions=new Map(['red-test','baseline','regression','learning-
   'test-author','repair','cause-review','final-review']
   .map(name=>[`--allow-qa-fix-${name}`,`--allow-${name}`]));
 
-const usage='cm-ai-host.mjs serve --config PATH --mode create|resume --host-context ID --allow-development [--runtime codex|claude] [--review-config PATH] [--allow-review-attempt 1|2] [--workflow-config PATH] [--allow-qa]\ncm-ai-host.mjs preflight --config PATH --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
+const usage='cm-ai-host.mjs serve --config PATH --mode create|resume --host-context ID --allow-development [--runtime codex|claude] [--failover] [--review-config PATH] [--allow-review-attempt 1|2] [--workflow-config PATH] [--allow-qa]\ncm-ai-host.mjs preflight --config PATH --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
 
 function reviewConfiguration(file){
   const info=fs.lstatSync(file);
@@ -43,6 +44,30 @@ function reviewConfiguration(file){
 }
 
 async function protectedExecutionFor(definition,hostContextId,extra,review,mode,workflow,bridge,bootstrap=null){
+  const runtime=extra.get('--runtime')??'codex';
+  const selected=resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),runtime);
+  need(review!==null,'review_configuration_required');
+  need(['1','2'].includes(extra.get('--allow-provider-development-attempt')),'provider_development_authorization_required');
+  const attempt=Number(extra.get('--allow-provider-development-attempt'));
+  need(mode!=='create'||attempt===1,'invalid_development_attempt');
+  // Child fix configuration is checked before opening the parent store below.
+  const file=extra.get('--protected-config'),info=fs.lstatSync(file);
+  need(info.isFile()&&!info.isSymbolicLink()&&info.size<=64*1024,'invalid_protected_config');
+  const config=json(JSON.parse(fs.readFileSync(file,'utf8')));shape(config,['model','checkCommands','timeoutMs']);
+  return executionFor(definition,hostContextId,bridge,review,
+    extra.has('--allow-review-attempt')?Number(extra.get('--allow-review-attempt')):null,
+    workflow,extra.has('--allow-qa'),runtime,{
+      protection:{checkCommands:config.checkCommands,timeoutMs:config.timeoutMs},
+      providerDevelopment:{model:config.model,attempt,...selected},
+      ...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{}),
+    });
+}
+
+
+// Existing Codex-only runs retain their exact configuration/context identities.
+// A successful original fingerprint check is the sole authority for this path;
+// no migration, journal rewrite, or in-flight provider switch is permitted.
+async function legacyProtectedExecutionFor(definition,hostContextId,extra,review,mode,workflow,bridge,bootstrap=null){
   need((extra.get('--runtime')??'codex')==='codex','protected_runtime_unsupported');
   need(review!==null,'review_configuration_required');
   need(['1','2'].includes(extra.get('--allow-provider-development-attempt')),'provider_development_authorization_required');
@@ -66,12 +91,17 @@ async function protectedExecutionFor(definition,hostContextId,extra,review,mode,
     authorizeDevelopment:request=>({status:request.identity.attempt===attempt
       &&digest({...request.identity,attempt:1})===digest(definition.identity)?'approved':'denied'})});
 }
-
+function canResumeLegacyProtected(definition,runtime){
+  if(runtime!=='codex')return false;
+  const config=loadConfig({projectRoot:definition.codeProject});
+  return ['unknown','codex'].includes(declaredRuntimes(config).available)
+    &&['coder','reviewer'].every(role=>['current-ai','codex-cli'].includes(config.roles[role].adapter));
+}
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Approved 0.bootstrap only: --bootstrap-config PATH {selection:null for scaffold, or original cm-init selection for rules} and --allow-bootstrap-write. Original scope must include fixed instruction targets; they are host-written inside the original task effect, checked/reviewed and reloaded. No Git/install/network grant. Optional codeProjects selects disjoint real roots below codeProject; prefix scope/requirements and use protected current-session checks with a declared codeProject per command.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Protected current-session mode (Codex or Claude; also batch): --protected-conversation-config PATH with {checkCommands,timeoutMs}. No extra model call. The current host returns scoped UTF-8 edits; native Codex sandbox applies them and runs the declared checks. Original author runtime, per-attempt Review and QA permissions remain required. Do not combine with --protected-config. Same original 64KiB transport limit; unavailable/binary changes stop, never switch to direct writes.\n');
-  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Protected single-task Codex mode: add --protected-config PATH --allow-provider-development-attempt 1|2 and --review-config PATH. Protected config is {model,checkCommands,timeoutMs}; roots and host identity come from the original run definition and launch. This explicitly permits one task attempt of real developer execution and its declared native-sandbox checks; --allow-development alone does not. Review separately requires --allow-review-attempt 1|2. Diagnostics are required but are not review authorization. Optional original --workflow-config PATH and --allow-qa connect protected QA commands and documentation within the same developer invocation before Review; host semantic/browser/inspection requests retain their original contracts, not arbitrary writes. Default current-session mode is unchanged. Protected parent mode rejects Claude; original QA-fix options require child configuration.protectSpecs=true and all original child action permissions. Protected fix writes use text proposals, not direct host edits. The original QA/documentation/finalizer gates remain required. No installation or Git authority.\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Protected single-task CLI mode: add --protected-config PATH --allow-provider-development-attempt 1|2 and --review-config PATH. Protected config is {model,checkCommands,timeoutMs}; roots and host identity come from the original run definition and launch. This explicitly permits one task attempt of real developer execution and its declared native-sandbox checks; --allow-development alone does not. Review separately requires --allow-review-attempt 1|2. Diagnostics are required but are not review authorization. Optional original --workflow-config PATH and --allow-qa connect protected QA commands and documentation within the same developer invocation before Review; host semantic/browser/inspection requests retain their original contracts, not arbitrary writes. Default current-session mode is unchanged. Protected parent mode selects coder/reviewer CLIs from the project declaration; Claude returns protected-text-v1 proposals for host validation and sandbox application; original QA-fix options require child configuration.protectSpecs=true and all original child action permissions. Protected fix writes use text proposals, not direct host edits. The original QA/documentation/finalizer gates remain required. No installation or Git authority.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--auto-qa-fix optionally connects parent advance -> fix_run -> re-QA. Requires --qa-fix-template-config, --allow-qa-fix-start, original action permissions and project policies.auto_fix=auto. Explicit/never policies stop. Unknown, blocked or incomplete repair stops; status/cancel remain available and no fourth QA round is dispatched.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--qa-fix-template-config PATH is an alternative to --qa-fix-owner-config. Supply {specsRoot, feature, identity: parent identity, configuration: original fix configuration without qaSource}. Each fix request binds it to the latest completed QA failure; identity/digests are generated, commands/scope/permissions are not. Existing child configuration remains immutable.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('fix_run continuously executes normal stages of the fixed QA child using the same binding as fix_advance. Requires --allow-qa-fix-start and every original per-action permission/configuration. Stops on unknown, blocked, observation, revision-required or unchanged state. It does not auto-switch child configuration or run parent QA.\n');
@@ -105,8 +135,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const extra=new Map();
     for(let index=8;index<argv.length;index++){
       const name=argv[index];need(!extra.has(name),'invalid_arguments');
-      need(['--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--workflow-config','--allow-qa','--runtime','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments');
-      if(['--allow-bootstrap-write','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
+      need(['--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--workflow-config','--allow-qa','--runtime','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments');
+      if(['--allow-bootstrap-write','--allow-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
       else{need(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments');extra.set(name,argv[++index]);}
     }
     const review=extra.has('--review-config')?reviewConfiguration(extra.get('--review-config')):null;
@@ -125,7 +155,28 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const protection=extra.has('--protected-conversation-config')?readConversationProtection(extra.get('--protected-conversation-config')):null;
     const bootstrap=extra.has('--bootstrap-config')?readBootstrapConfiguration(extra.get('--bootstrap-config')):null;
     need(!extra.has('--allow-bootstrap-write')||bootstrap!==null,'bootstrap_configuration_required');
+    // Checked before the definition is read so the conflict is reported on its own.
+    need(!(extra.has('--failover')&&extra.has('--protected-config')),'failover_unsupported_in_protected_mode');
     const definition=readRunDefinition(argv[2]);bridge=createHostToolBridge();
+    // Startup-only role failover. The project's runtimes.available declaration is
+    // primary: it fixes which runtimes may be chosen and, via roles.coder, the
+    // requested start runtime. The CLI probe only confirms reachability. It never
+    // switches an in-flight task; a switch is always announced, never silent.
+    // Protected mode binds both roles before dispatch; startup failover remains a separate path.
+    let runtime=extra.get('--runtime')??'codex';
+    if(extra.has('--failover')){
+      const {selectRuntime,describeSelection}=await import('../runtime/js/cm-ai/runtime-failover.mjs');
+      const {probeRuntimes}=await import('./cm-failover.mjs');
+      const {loadConfig,declaredRuntimes,runtimeForAdapter}=await import('./cm-workflow-config.mjs');
+      const config=loadConfig({projectRoot:definition.codeProject}),declared=declaredRuntimes(config);
+      const requested=extra.get('--runtime')??runtimeForAdapter(config.roles.coder.adapter);
+      const reach=new Map(probeRuntimes().map(result=>[result.runtime,result.available]));
+      const selection=selectRuntime({role:'developer',requested,allowed:[...declared.allowed],
+        probe:(candidate)=>reach.get(candidate)===true});
+      runtime=selection.runtime;
+      error.write(`cm-ai-host failover: 声明 runtimes.available=${declared.available}; ${describeSelection(selection)}\n`);
+      if(selection.switched)error.write('cm-ai-host failover: CLI 可解析不等于配额可用；本次切换只决定起跑运行时。\n');
+    }
     const templated=extra.has('--qa-fix-template-config');let fix=null;
     if(hasFix){
       const file=extra.get(templated?'--qa-fix-template-config':'--qa-fix-owner-config'),info=fs.lstatSync(file);
@@ -133,11 +184,24 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       fix=json(JSON.parse(fs.readFileSync(file,'utf8')),64*1024);
       if(extra.has('--protected-config')||protection)need(fix.configuration?.protectSpecs===true,'protected_fix_required');
     }
-    const execution=extra.has('--protected-config')
-      ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap)
-      :executionFor(definition,argv[6],bridge,review,allowedAttempt,workflow,extra.has('--allow-qa'),extra.get('--runtime')??'codex',
-        {...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{})});
-    run=await openControlRun(definition,argv[4],execution);
+    let execution;
+    if(argv[4]==='resume'&&extra.has('--protected-config')&&canResumeLegacyProtected(definition,runtime)){
+      try{
+        execution=await legacyProtectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap);
+        run=await openControlRun(definition,argv[4],execution);
+        error.write('cm-ai-host: resumed original Codex protected execution after exact fingerprint validation.\n');
+      }catch(cause){
+        if(!['fingerprint_mismatch','tool_preflight_missing'].includes(cause.code))throw cause;
+        execution=undefined;
+      }
+    }
+    if(!run){
+      execution=extra.has('--protected-config')
+        ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap)
+        :executionFor(definition,argv[6],bridge,review,allowedAttempt,workflow,extra.has('--allow-qa'),runtime,
+          {...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{})});
+      run=await openControlRun(definition,argv[4],execution);
+    }
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}
     if(hasFix){
       need(fs.realpathSync(fix.specsRoot)===fs.realpathSync(definition.specsDir)
@@ -145,7 +209,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         &&(templated?fix.feature:fix.configuration.qaSource.feature)===definition.feature,'qa_fix_source_mismatch');
       if(templated)need(digest(fix.identity)===digest(definition.identity),'qa_fix_source_mismatch');
       if(extra.has('--allow-qa-fix-start'))need(fix.configuration.hostContextId===argv[6]
-        &&(fix.configuration.runtime??'codex')===(extra.get('--runtime')??'codex'),'qa_fix_host_mismatch');
+        &&(fix.configuration.runtime??'codex')===runtime,'qa_fix_host_mismatch');
       const fixPermissions=[...fixLocalPermissions].filter(([flag])=>extra.has(flag)).map(([,permission])=>permission);
       const fixReview=extra.has('--qa-fix-review-config')?reviewConfiguration(extra.get('--qa-fix-review-config')):null;
       need(!fixPermissions.includes('--allow-test-author')||(fix.configuration.testAuthor&&fixReview),'test_author_configuration_required');

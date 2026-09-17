@@ -22,6 +22,8 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 
 - JS 修复入口: `node scripts/cm-fix-host.mjs --help`；同仓specs可显式配置`protectSpecs:true`，原权限/审查不变，宿主只回文本提案，由固定沙箱写入；QA子配置复用，详见`docs/js-workflow-control.md`
 
+- 双运行时容灾: 断点交接 `node scripts/cm-failover.mjs status|handoff|probe --specs {SPECS_DIR}`（只读，不标记完成）；启动前选路 `cm-ai-host.mjs serve ... --failover`（显式 opt-in，只定起跑运行时，切换必播报）。运行时声明 `runtimes.available` 与四个预设见 `templates/cm-workflow.yml`、`runtime/workflow-config.md`（声明不等于派发）。主从与边界见 `docs/runtime-failover.md`；定点测试 `node --test scripts/cm-failover.test.mjs scripts/cm-runtime-failover.test.mjs`。
+
 - 安装依赖: 无 npm 安装步骤（`package.json` 无依赖；可视化工具按需使用外部 Playwright）
 - 开发运行: 不适用（直接维护 Markdown 与脚本）
 - 构建: 不适用（无构建产物）
@@ -84,6 +86,7 @@ CHANGELOG.md           # 用户可感知的版本变化；未发布改动单独�
 - **业务地图回写**：需求与修复共用 `skills/codebase-context/references/writeback.md`，只增量更新、审前定稿；缺失建局部地图，项目指定文档优先，固定写入范围不自动扩大。
 - **任务级 Learning loop**：开发/排错先重读根 `AGENTS.md`；每 task 收尾按 `runtime/project-learning.md` 提炼写回、随任务审查并回读，无新增明确记录。JS 源码接通不等于真实下一 task 复用已验收。
 - **源码分发不等于激活**：正式 JS 源码、本地测试或独立审查不等于 host 已接入、真实 provider 执行、任务完成、跨平台验证或发布；真实项目写入仍需明确授权。
+- **容灾只在边界切换**：角色主从（developer 主 codex / reviewer 主 claude）只决定起跑运行时；任务中途失效靠落盘断点在另一端续跑，状态机不做 in-flight 切换。探测到 CLI 可解析不等于配额可用。
 - **模板层是团队定制入口**：公司规范沉淀进 `templates/rules/`，所有项目 `/cm-init` 出的 rules 自动带公司基因。
 - **流程间隔离（维护者确立,2026-07-18）**：修改任一 `cm-*` 流程不得顺带修改其他流程；流程 A 需要流程 B 的内容时读取 B 的落盘物，不复制或改写 B 的规则。发版版本只同步 `VERSION` 与 plugin manifest。
 
