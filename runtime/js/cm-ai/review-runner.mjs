@@ -2,6 +2,7 @@
 import { digest,need,shape,id,text,json,freeze } from './effect-contract.mjs';
 export function reviewPaths(pkg) {
   return [...new Set([...pkg.changes.map(c=>c.path),...pkg.requirements.map(f=>f.path),
+    ...(pkg.unchangedScope??[]).map(file=>file.path),
     ...(pkg.instructions??[]).map(file=>file.path),
     ...(pkg.bootstrapRequirements?.files??[]).map(file=>'specs:'+file.path)])].sort();
 }

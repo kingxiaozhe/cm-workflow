@@ -8,7 +8,7 @@ import {digest as sha} from '../runtime/js/cm-ai/contracts.mjs';
 import {resolveCodeProjects,codeProjectPaths,assertCodeProjectSelections} from '../runtime/js/cm-ai/code-projects.mjs';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
 
-const usage='cm-ai-run.mjs serve --config PATH --mode create|resume (no provider dispatch)';
+const usage='cm-ai-run.mjs serve --config PATH --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
 const fail=code=>{throw Object.assign(new Error(code),{code});};
 // In-process provenance only; a config flag cannot certify protected callbacks.
 const protectedExecutions=new WeakMap();
@@ -145,7 +145,7 @@ export function validateRunDefinition(input){
     if(typeof value.identity[key]!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.identity[key]))fail('invalid_identity');
   }
   for(const key of ['scope','requirements']){
-    if(!Array.isArray(value[key])||(!value[key].length&&!(key==='requirements'&&value.feature==='0.bootstrap'))||value[key].length>256
+    if(!Array.isArray(value[key])||(!value[key].length&&!(key==='requirements'))||value[key].length>256
       ||value[key].some(p=>typeof p!=='string'||!p||p.includes('\\')||p.includes('\0')
         ||path.isAbsolute(p)||p.split('/').some(x=>!x||x==='.'||x==='..')))fail('invalid_paths');
   }
@@ -196,7 +196,6 @@ export async function openControlRun(definition,mode,execution=null){
     const {bootstrapConfiguration}=await import('../runtime/js/cm-ai/host-bootstrap.mjs');
     bootstrapConfig=bootstrapConfiguration(execution.bootstrap,{root:codeProject,identity,scope,feature});
   }
-  if(requirements.length===0&&!bootstrapConfig)fail('bootstrap_capability_required');
   const selectedRoots=definition.codeProjects?codeProjectPaths(codeProject,resolveCodeProjects(codeProject,definition.codeProjects)):null;
   if(selectedRoots){
     if(!execution||conversationProtection(execution)===null)fail('multi_root_protection_required');
@@ -218,7 +217,8 @@ export async function openControlRun(definition,mode,execution=null){
   const handoffs=[1,2].map(attempt=>path.join(reviewsDir,`${featureSlug}-${identity.taskId}-a${attempt}-handoff.json`));
   // Reuse the runner's real validator before creating durable state. A failed
   // baseline must not strand an otherwise unused run ID.
-  const baselineOptions={root:codeProject,specsRoot:specsDir,identity,scope,requirements,
+  const specification={specsRoot:specsDir,feature};
+  const baselineOptions={root:codeProject,specsRoot:specsDir,identity,scope,requirements,specification,
     ...(bootstrapConfig?{bootstrapRequirements:bootstrapConfig.bootstrapRequirements}:{}),
     ...(selectedRoots?{codeProjectPaths:selectedRoots}:{})};
   if(mode==='create')captureReviewBaseline(baselineOptions);
@@ -251,7 +251,7 @@ export async function openControlRun(definition,mode,execution=null){
     }
     const unavailable=()=>fail('execution_adapter_required');
     const host=createCmAiHost({
-      runner:{root:codeProject,identity,scope,requirements,...(selectedRoots?{codeProjectPaths:selectedRoots}:{}),excludedContexts:['control-host'],
+      runner:{root:codeProject,identity,scope,requirements,specification,...(selectedRoots?{codeProjectPaths:selectedRoots}:{}),excludedContexts:['control-host'],
         developer:{provider:'codex',requestedModel:'unconfigured',contextId:'control-developer',run:unavailable},
         reviewers:[],check:unavailable,taskCompletion:{reviewsDir,handoffs},taskLearning:{feature},
         persistence:{store,mode:runnerMode,version:execution===null?2:3},

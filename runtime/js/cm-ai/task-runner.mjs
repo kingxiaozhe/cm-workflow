@@ -4,14 +4,15 @@ import { types } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
 import {createRequire} from 'node:module';
+import {verifySpecificationMaterial} from './specification-material.mjs';
 import { captureReviewBaseline, createReviewPackage, verifyReviewPackage } from './review-package.mjs';
 import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,validCallTimeout,requestFor,terminalFor,failureCode } from './effect-contract.mjs';
 import { reviewResult,reviewReceipt } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
-  controlledState,validateReviewDispatchGrant,validateTaskLearningReviewPackage } from './durable-runner-state.mjs';
+  controlledState,stageAllowed,completedEffectCount,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage } from './durable-runner-state.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
-import {inspectProviderReview} from './provider-review-observation.mjs';
+import {inspectProviderReview,hasProviderReviewResult} from './provider-review-observation.mjs';
 import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence,
   readCmAiTaskLearningApplication} from './cm-ai-context-refresh.mjs';
 import {readCmAiProjectLearningWriteback,writeCmAiProjectLearning} from './cm-ai-learning-writer.mjs';
@@ -87,6 +88,7 @@ export function createTaskRunner(options) {
   if(options && Object.hasOwn(options,'timeoutMs'))optionKeys.push('timeoutMs');
   if(options && Object.hasOwn(options,'persistence'))optionKeys.push('persistence');
   if(options && Object.hasOwn(options,'taskLearning'))optionKeys.push('taskLearning');
+  if(options && Object.hasOwn(options,'specification'))optionKeys.push('specification');
   if(options && Object.hasOwn(options,'bootstrap'))optionKeys.push('bootstrap');
   if(options && Object.hasOwn(options,'codeProjectPaths'))optionKeys.push('codeProjectPaths');
   if(invocationMode)optionKeys.push('reviewInvocation');
@@ -170,7 +172,15 @@ export function createTaskRunner(options) {
     if(options.persistence.mode==='resume')restored=readRunnerHistory(journal,metadata,version);
     else need(journal.length===0,'runner_exists');
   }
-  const original=restored?.original??captureReviewBaseline(configToBaseline(metadata));
+  const specificationSelection=options.specification??null;
+  if(specificationSelection!==null){
+    shape(specificationSelection,['specsRoot','feature']);
+    need(completion&&specificationSelection.specsRoot===completion.owner.specsRoot
+      &&specificationSelection.feature===taskLearning?.feature,'spec_drift');
+  }
+  const baselineOptions=()=>({...configToBaseline(metadata),
+    ...(specificationSelection===null?{}:{specification:specificationSelection})});
+  const original=restored?.original??captureReviewBaseline(baselineOptions());
   const controller=new AbortController(),calls=[],cache=new Map(),session=restored?.session??randomUUID(),registered=new Map(),receipts=[];
   let state=reviewers.some(r=>r.allowed&&r.available)?'ready':'pending_review',code=null,attempt=1;
   let busy=false,pending=null,sequence=0,base=original,reviewPackage=null,currentChecks=null,workflowRunning=false;
@@ -359,6 +369,7 @@ export function createTaskRunner(options) {
     try {
       const response=terminalFor(await bounded(adapter.run,request),request);active();
       call.terminal=response.status;call.effectiveModel=response.effectiveModel;call.resultDigest=digest(response.result);
+      if(role==='developer'&&response.status==='failed'&&response.result!==null)call.failureResult=response.result;
       if(Object.hasOwn(response,'providerThreadId'))call.providerThreadId=response.providerThreadId;
       return {request,response,call};
     } catch(error){call.terminal=state==='cancelled'?'cancelled':'unknown';throw error;}
@@ -492,8 +503,12 @@ export function createTaskRunner(options) {
         sealed=true;
         let fields;
         if(invalid){fields=invalidFields();}
-        else if(timedOut){fields={effectId,invocationId:request.invocationId,dispatchAt,outcome:'timed_out',
-          observation:observation({status:'failed',code:'timeout'}),inspection:null,reconciliationRequired:true};}
+        else if(timedOut){
+          const recorded=observation({status:'failed',code:'timeout'});
+          fields={effectId,invocationId:request.invocationId,dispatchAt,outcome:'timed_out',
+            observation:recorded,inspection:inspectProviderReview(JSON.stringify(recorded),JSON.stringify(expectation)),
+            reconciliationRequired:hasProviderReviewResult(recorded.events)};
+        }
         else if(state==='cancelled'){fields={effectId,invocationId:request.invocationId,dispatchAt,outcome:'cancelled',
           observation:observation({status:'cancelled',code:'cancelled'}),inspection:null,reconciliationRequired:true};}
         else {
@@ -501,9 +516,11 @@ export function createTaskRunner(options) {
           fields={effectId,invocationId:request.invocationId,dispatchAt,outcome:'unknown',observation:recorded,inspection,reconciliationRequired:true};
         }
         persist('review-invocation-result',fields);const result=resultView(fields);
-        Object.assign(call,{terminal:fields.outcome==='cancelled'?'cancelled':'unknown',resultDigest:digest(result)});
+        const retry=reviewTimeoutTransition(result,[...cache.values()],attempt);
+        Object.assign(call,{terminal:fields.outcome==='cancelled'?'cancelled':retry?'failed':'unknown',resultDigest:digest(result)});
         reviewInvocation=json({registration,started,result});
         if(fields.outcome==='cancelled')halt('cancelled','cancelled');
+        else if(retry)halt(retry.state,retry.code);
         else halt('unknown',fields.reason??fields.inspection?.code??'reconciliation_required');return;
       }
       sealed=true;
@@ -528,12 +545,15 @@ export function createTaskRunner(options) {
         halt('unknown','observation_invalid');return;
       }
       const observed=inspection.observationStatus==='completed';
-      const fields={effectId,invocationId:request.invocationId,dispatchAt,outcome:observed?'observed':'unknown',
-        observation:recorded,inspection,reconciliationRequired:!observed};
+      const fields={effectId,invocationId:request.invocationId,dispatchAt,outcome:observed?'observed':inspection.code==='transport_timeout'?'timed_out':'unknown',
+        observation:recorded,inspection,reconciliationRequired:!observed
+          &&(inspection.code!=='transport_timeout'||hasProviderReviewResult(recorded.events))};
       persist('review-invocation-result',fields);const result=resultView(fields);
-      Object.assign(call,{terminal:observed?'succeeded':'unknown',resultDigest:digest(observed?inspection.review:result)});
+      const retry=reviewTimeoutTransition(result,[...cache.values()],attempt);
+      Object.assign(call,{terminal:observed?'succeeded':retry?'failed':'unknown',resultDigest:digest(observed?inspection.review:result)});
       reviewInvocation=json({registration,started,result});
       if(observed)acceptReview(request,call,inspection.review);
+      else if(retry)halt(retry.state,retry.code);
       else halt('unknown',inspection.code??'reconciliation_required');
     }finally{sealed=true;clearTimeout(timer);controller.signal.removeEventListener('abort',abort);
       if(cancelReject)controller.signal.removeEventListener('abort',cancelReject);}
@@ -541,7 +561,7 @@ export function createTaskRunner(options) {
   async function collectChecks(){return json(await bounded(check,json({identity:{...config.identity,attempt}})));}
   async function perform(v) {
     if(v.kind==='develop') {
-      need(['ready','changes_requested'].includes(state),'stage_mismatch');state='developing';receipt=null;
+      need(stageAllowed('develop',state,code),'stage_mismatch');state='developing';code=null;receipt=null;
       const previousBootstrap=learningResult?.bootstrap??null;
       const previousWriteback=learningResult?.writeback??null;
       if(taskLearning!==null)learningResult=null;
@@ -549,8 +569,15 @@ export function createTaskRunner(options) {
         bootstrap.run(request,control,developer.run,{previous:previousBootstrap,previousWriteback,baseline:original})};
       const result=await invoke(adapter,'developer',developer.contextId,{scope:config.scope,
         requirements:original.files.filter(f=>config.requirements.includes(f.path)),priorReview,
+        ...(Object.hasOwn(original,'specification')?{specification:verifySpecificationMaterial(original)}:{}),
         ...(Object.hasOwn(v,'learningInput')?{learningInput:v.learningInput}:{})});
-      if(result.response.status!=='succeeded'){halt(result.response.status==='unknown'?'unknown':'blocked',result.response.status);return;}
+      if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
+      if(result.response.status!=='succeeded'){
+        const failure=result.response.result?.code;
+        halt(result.response.status==='unknown'?'unknown':'blocked',
+          failure==='invalid_result'&&result.response.result.retryable===true?'developer_result_invalid':
+            failure==='protected_edit_stale'?failure:result.response.status);return;
+      }
       if(taskLearning===null)shape(result.response.result,['outcome']);
       else {
         const instructionBootstrap=metadata.bootstrap?.mode==='instructions';
@@ -651,24 +678,25 @@ export function createTaskRunner(options) {
       if(old){need(old.digest===digest(v),'intent_conflict');return Promise.resolve(old.result);}
       if(restored?.pending?.id===v.id){need(digest(restored.pending)===digest(v),'intent_conflict');return Promise.resolve(status());}
       need(!busy,'busy');need(v.identity.attempt===attempt,'attempt_mismatch');
-      const allowed={develop:['ready','changes_requested'],review:['awaiting_review'],complete:['approved']};
-      need(allowed[v.kind].includes(state),'stage_mismatch');need(cache.size<6,'limit_exceeded');
+      need(stageAllowed(v.kind,state,code),'stage_mismatch');need(completedEffectCount([...cache.values()])<6,'limit_exceeded');
+      if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
     } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input'}));}
     if(store) {
       try {
-        if(state==='ready')need(digest(captureReviewBaseline({...configToBaseline(metadata),version:original.version}))===digest(original),'package_mismatch');
-        else verifyReviewPackage({root:config.root,baseline:state==='changes_requested'?attemptBaseline(original,attempt-1):base,
+        if(state==='ready')need(digest(captureReviewBaseline({...configToBaseline(metadata),version:original.version,
+          ...(Object.hasOwn(original,'specification')?{specification:{specsRoot:original.specificationRoot,feature:original.specification.feature}}:{})}))===digest(original),'package_mismatch');
+        else if(!(v.kind==='develop'&&state==='blocked'&&code==='developer_result_invalid'))verifyReviewPackage({root:config.root,baseline:state==='changes_requested'?attemptBaseline(original,attempt-1):base,
           checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
       } catch {return Promise.resolve(freeze({outcome:'rejected',code:'package_mismatch'}));}
       try{const record=persist('effect-intent',{effect:v});
         if(taskMode&&v.kind==='complete')completeEffect={effect:v,digest:record.digest};
       }catch{return Promise.resolve(poison());}
     }
-    busy=true;code=null;
+    busy=true;if(v.kind!=='develop')code=null;
     pending=(async()=>{
       try {await perform(v);}
-      catch(error){if(state!=='cancelled')halt('unknown',failureCode(error));}
+      catch(error){if(state!=='cancelled')halt(error.code==='spec_drift'?'blocked':'unknown',failureCode(error));}
       if(poisoned)return status();
       const result=privateStatus();cache.set(v.id,{effect:v,digest:digest(v),result});
       try{persist('effect-checkpoint',{effectId:v.id,checkpoint:frame()});publication=result;return result;}
@@ -693,7 +721,7 @@ export function createTaskRunner(options) {
   function currentLearningInput() {
     const currentIdentity={...config.identity,attempt};
     const develop=[...cache.values()].filter(entry=>entry.effect.kind==='develop'
-      &&digest(entry.effect.identity)===digest(currentIdentity));
+      &&digest(entry.effect.identity)===digest(currentIdentity)&&entry.result.state==='awaiting_review');
     need(develop.length===1&&Object.hasOwn(develop[0].effect,'learningInput'),'runner_learning');
     return develop[0].effect.learningInput;
   }

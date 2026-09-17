@@ -503,6 +503,7 @@ AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注�
 ┌─ 📋 规格摘要卡 ────────────────────────────
 │ 交付形态: {Web/App/小程序…}   ← 第一分叉,看错全错
 │ Feature: {N 个}: {名称列表}
+│ 历史 feature：{N} 个已登记，{M} 个含旧版归档说明
 │ 功能点: {N} 个 | AC: {N} 条 | 任务: {N} 个(预估 {x}h)
 │ 开放问题: {已答 N / 共 N}——{逐条一行: 问题→答案}
 │ 风险点: {金融/合规/破坏性操作等敏感项,无则"无"}
@@ -517,7 +518,7 @@ AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注�
 有疑问的行,点开对应文件细看;摘要卡没问题再走下面的审查清单。
 ```
 
-完成后报告：
+完成后报告（范围与历史说明见 [摘要范围规则](references/summary-card.md)）：
 
 - Feature 名称和序号、Specs 路径、涉及的技术层、总任务数和预估总时间
 
@@ -534,8 +535,7 @@ AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注�
 - [ ] **原型功能点覆盖 100%**（有交互原型时）：遍历记录中每个可交互元素都有对应 [F-xxx] 或死区标注，无静默丢弃
 ```
 
-**规格审批位落盘**：报告输出后真跑
-`python3 {CM_WORKFLOW_ROOT}/scripts/cm-spec-manifest.py {SPECS_DIR}`，把返回的
+**规格审批位落盘**：报告输出后真跑 `python3 {CM_WORKFLOW_ROOT}/scripts/cm-spec-manifest.py {SPECS_DIR}`，把返回的
 `specFiles`（每个 feature 的 requirements/design/tasks 及可选 test-cases 规格语义 SHA；
 任务/AC 的运行期 `[x]` 会规范化为 `[ ]`，其余内容不忽略）
 写入 `{SPECS_DIR}/.cm-specs-status` 单行 JSON；为旧版消费者同时保留由 manifest

@@ -1,3 +1,4 @@
+import {buildManifest} from './cm-spec-manifest.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -18,7 +19,7 @@ test(`real multi-task runner keeps QA and recovery authoritative: ${mode}`,async
     fs.mkdirSync(path.join(specsDir,feature),{recursive:true});fs.mkdirSync(codeProject);
     for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(specsDir,feature,name),'# Fixture\n');
     fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: first\n- [ ] T-002: second\n');
-    fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature]}));
+    fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
     fs.writeFileSync(path.join(codeProject,'requirements.md'),'# Fixture\n');
     const config={version:1,repositoryId:'batch-fixture',batchId:'batch-fixture',specsDir,codeProject,
       tasks:['T-001','T-002'].map((taskId,index)=>({feature,taskId,scope:[`file${index}.js`],requirements:['requirements.md']}))};
@@ -28,6 +29,9 @@ test(`real multi-task runner keeps QA and recovery authoritative: ${mode}`,async
       excludedContexts:['host'],hostDecision:{status:'approved'},applicableAgentFiles:[],
       developer:{provider:'codex',requestedModel:'fixture',contextId:'author',run:createCodexDeveloperRun({requestedModel:'fixture',
         worker:async({prompt},{signal})=>{
+          const material=JSON.parse(prompt.split('<cm-developer-data-json>\n')[1]).specification;
+          assert.equal(material.task.id,definition.identity.taskId);
+          assert.deepEqual(material.sources,buildManifest(specsDir));
           calls.push(definition.identity.taskId);fs.writeFileSync(path.join(codeProject,definition.scope[0]),'implemented\n');
           if(mode==='cancel'){started();await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true}));}
           const application={status:'no_relevant_lesson',note:null};
@@ -46,6 +50,8 @@ test(`real multi-task runner keeps QA and recovery authoritative: ${mode}`,async
       check:async()=>[{id:'fixture',command:['fixture'],outcome:'passed',exitCode:0,evidence:'Synthetic task check'}],
       reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',allowed:true,available:true,
         contexts:['review-1','review-2'],run:(request,{onEvent})=>{
+          assert.equal(request.payload.reviewPackage.specification.task.id,definition.identity.taskId);
+          assert.deepEqual(request.payload.reviewPackage.specification.sources,buildManifest(specsDir));
           if(mode==='learning'&&request.identity.taskId==='T-001')
             assert(request.payload.reviewPackage.changes.some(change=>change.path==='AGENTS.md'));
           for(const event of [{event:'thread.started',provider_thread:`review-${request.identity.taskId}`},

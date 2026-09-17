@@ -44,6 +44,10 @@ At task start, record the existing working-tree status and the task's intended f
 
 Do not send the whole working tree merely because it is convenient.
 
+New `cm-review-package` version 1 packages include `unchangedScope`: sorted `{path, sha256}` entries for existing, unchanged scope files, bound into `packageDigest` without adding their bodies. These paths belong in `examinedPaths` and may receive evidence-backed findings, but must not be used to require changes to unchanged files or infer contents from hashes. Legacy packages without this field retain their original digest, path set and receipt verification.
+
+New cm-ai runs additionally bind `specification` into the baseline, developer request and `packageDigest`: feature, task description/verification, all acceptance criteria, design excerpt (up to 64 KiB UTF-8, `truncated:true` above that), task-related test cases and approved source hashes. Review implementation against these ACs and interface contracts. Source paths are relative to the specs root, not writable code scope or extra examinedPaths. Hashes use the existing manifest normalization for runtime task/AC checkboxes. Missing optional test-cases.json yields an empty list and three sources. Live source/approval drift blocks as `spec_drift`, including reapproval of a different contract during a run; material is never silently refreshed. Historical baselines/packages without specification retain their original digest and receipt/completion rules. (Dogfood: separate specs/code roots previously hid the task and interface contracts from both developer and reviewer.)
+
 ## Channel order
 
 1. `codex-subagent`: spawn a fresh reviewer/subagent with the runtime's no-history/fresh-context option (for example `fork_turns: none`) and provide only the review package. Ask for concrete failure scenarios, ordered by severity, and require an explicit zero-findings result when applicable.
@@ -68,6 +72,8 @@ Installed CLI has passed this local request-surface probe. It uses the same boun
 directory for CLAUDE_CODE_TMPDIR and stops after the first valid message request. Probe-induced
 termination is not user cancellation or a successful review; real model review remains unverified.
 Do not handcraft a passing diagnostic or approval to bypass readiness evidence.
+Claude review streams accept `system/api_retry`, `hook_started`, `hook_response` and `commands_changed` only as `onNotice` summaries, sharing a 32-notice limit with `rate_limit_event`; they never enter observation or advance the verdict stage, and unknown system subtypes still fail closed (2026-09-17 dogfood: a transient API retry was misclassified as `unexpected_event`).
+`system/thinking_tokens` has a separate 4096-event budget and remains subject to the worker's total 1,000,000-byte output cap; it emits no observation or notice and never advances the verdict stage (2026-09-17 dogfood: an 88-heartbeat review exceeded the former 64-event cap). The 4097th heartbeat fails with `unexpected_event`; output overflow retains `output_limit`.
 
 ## Review scope
 
@@ -84,6 +90,8 @@ findings 后运行对应规格自检；未解决项进入摘要卡由人审，�
 两阶段必须用 `scripts/cm-prd-review-gate.py` 保存 disposition 回执：r1 已存在但回执
 缺失时只恢复 finding 处置，不得重新调用 reviewer；回执完成后不得重审。任何 r2 文件
 或 r1 内容哈希漂移都由门禁阻断。
+PRD artifact 回执先比对原始字节，仅 Markdown 中 `tasks.md` 的任务、`requirements.md` 的 AC 运行期 `[x]`/`[X]` 可复用规格清单规则规范化为 `[ ]` 后匹配；代码块、其他正文与 JSON 仍精确比对。
+命中时只读返回 `runtimeMarksNormalized:true`，经摘要 `reviews[stage].gate` 透传；当前草稿处置与摘要发布快照仍绑定原始字节（2026-09-17 真实项目 dogfood：已开发 specs 目录新增 feature 时摘要被历史 `[x]` 阻断）。
 
 - Maximum two review rounds per task.
 - Round 1 `changes_requested` returns to N3 and produces attempt 2 plus a new

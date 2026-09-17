@@ -1,4 +1,5 @@
-# Test-only frozen pre-migration implementation; never a production fallback.
+# Test-only pre-migration oracle; runtime-mark fallback reuses the manifest oracle.
+# Never a production fallback.
 #!/usr/bin/env python3
 """Guard one-attempt PRD review dispatch and crash-safe finding disposition."""
 
@@ -6,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -14,6 +16,13 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+
+_manifest_spec = importlib.util.spec_from_file_location(
+    "prd_manifest_oracle", Path(__file__).with_name("spec-manifest-python-oracle.py")
+)
+_manifest = importlib.util.module_from_spec(_manifest_spec)
+_manifest_spec.loader.exec_module(_manifest)
 
 
 FEATURE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+$")
@@ -208,7 +217,13 @@ def load_receipt(path: Path, *, stage: str, feature: str, evidence: Path) -> dic
         if not artifact.is_file():
             raise GateError(f"PRD review artifact is missing or unsafe: {relative}")
         if digest(artifact) != item["sha256"]:
-            raise GateError(f"PRD review artifact changed after disposition: {relative}")
+            try:
+                artifact.read_bytes().decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise GateError(f"PRD review artifact changed after disposition: {relative}") from exc
+            if artifact.suffix != ".md" or _manifest.file_digest(artifact) != item["sha256"]:
+                raise GateError(f"PRD review artifact changed after disposition: {relative}")
+            value["runtimeMarksNormalized"] = True
     return value
 
 
@@ -227,6 +242,7 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
         "feature": args.feature,
         "outcome": "completed",
         "disposition": value["disposition"],
+        **({"runtimeMarksNormalized": True} if value.get("runtimeMarksNormalized") else {}),
     }
 
 

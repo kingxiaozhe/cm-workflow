@@ -1,3 +1,4 @@
+import {buildManifest} from './cm-spec-manifest.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -34,7 +35,7 @@ for(const mode of ['history','retest','unknown','failed-retest','double-pass','d
     ...(automatic?{auto_fix:mode==='automatic-explicit'?'explicit':'auto'}:{})}}));
   for(const name of ['requirements','design'])fs.writeFileSync(path.join(specsDir,feature,`${name}.md`),'# Synthetic fixture');
   fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: implement value\n');
-  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature]}));
+  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
   let developers=0,parentReviews=0,childReviews=0,repairs=0,qaRuns=0,parent=null,serial=null;
   const events=(onEvent,thread)=>{
     for(const event of [{event:'thread.started',provider_thread:thread},{event:'turn.started',item_type:null},

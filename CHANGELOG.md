@@ -5,6 +5,22 @@
 
 ## 未发布
 
+- 修复 `cm-ai` 双根布局下开发进程与审查者看不到已批准任务及接口契约：开发请求和审查包新增绑定摘要的只读 `specification`（任务/验证要求、AC、设计摘录、相关用例、来源哈希）；复用审批 manifest，规格漂移以 `spec_drift` 阻断，设计超 64 KiB 标记截断。代码根 `requirements` 可选，旧包、journal 与 receipt 按原规则兼容，规格不进入可写 scope。补齐全量夹具的真实批准清单、运行时声明及模块复制依赖；旧 baseline 已记录的依赖文件保留完整内容与漂移检查，batch 开发/审查均验证规格传递。
+
+- 修复 Claude 长审查被第 65 条 `thinking_tokens` 心跳误杀：审查上限放宽为 4096 条，保留 worker 总输出 1,000,000 字节及独立的 32 条通知限制；审查包新增绑定摘要的 `unchangedScope` 路径/哈希清单，允许其进入 examinedPaths 和 finding 路径但不要求改动，旧包与历史 receipt 按原规则验证。
+
+- 修复 Claude 审查流将 `system/api_retry`、`hook_started`、`hook_response`、`commands_changed` 通知误判为失败：与 `rate_limit_event` 共用 32 条上限，经 `onNotice` 仅上报白名单摘要，不转发 hook/commands 正文或生成 observation；未知 system 子类型仍拒绝，重试后的失败结果仍按 `provider_failed` 处理。
+
+- 修复 `cm-ai` 受保护当前会话审查误用 60 秒默认超时：Codex/Claude reviewer 共用配置的 `timeoutMs`；没有结果事件的审查传输超时可在同一 attempt 经新授权重派一次，第二次超时阻断。保留 observation/inspection，含结果的超时及旧 unknown 历史仍须 reconcile。
+
+- 修复 `cm-ai` 受保护当前会话开发结果先落盘后校验的问题：本地 value/Learning 校验失败记录 `failed/invalid_result`，保留原原因并以 `developer_result_invalid` 阻断；修正后可沿同一 runId、同一 attempt resume。已应用提案仅在磁盘哈希一致时继续，冲突返回 `protected_edit_stale`；worker 异常与超时仍保留 unknown，不重置旧历史。
+
+- 修复 `cm-ai` 准入被历史依赖行尾随句末标点阻断：依赖 ID 容忍末尾的 `。．.；;、` 与空白，内部非法字符仍拒绝；任务或依赖解析失败返回 feature、行号及最多 120 字符原文，并保留已解析 feature 状态，任务选择顺序不变。
+
+- 修复 `cm-prd` 会话恢复错误码被宿主脱敏隐藏及 cancel 留下 active 导致的死锁：会话状态错误返回明确 blocked 原因，cancel 同时落盘终态并清空 active；resume 支持带证据的 abandon，回到操作前 checkpoint 后可重新发起，含 `prd_review` 的操作仍只能按原审查合同恢复。
+
+- 修复 `cm-prd` 新增 feature 时，历史 specs 的任务/AC 运行期完成标记导致摘要回执门禁误报篡改：复用规格清单规范化规则并透传只读标记，其他内容、JSON、当前草稿处置与发布快照仍严格比对。摘要只裁决当前会话 feature，历史 feature 的旧版归档、缺失回执与已完成任务只登记为说明，完整规格哈希仍全部发布；无草稿从当前会话恢复范围，无法确定时明确阻断。
+
 - 修复 `cm-ai` Codex 开发与审查子进程仍加载用户全部个人 skills 的问题：`--ignore-user-config`、`skills.config=[]`、`--disable plugins` 都拦不住 `<skills_instructions>` 目录注入，现在两条路径统一追加 `-c skills.include_instructions=false`。2026-09-16 空目录空操作提示词实测：input_tokens 18249 → 11706（−36%），“Skill descriptions were shortened to fit the skills context budget” 提示消失，模型不再看到 skill 工具；sandbox、审批与登录不受影响。实测无效的候选：`skills.config` 按根目录禁用、`skills.bundled.enabled=false`、`--enable skip_host_skill_discovery`（开发中特性，只多一条警告）、`--ignore-rules`、`--disable skill_search`；`skills.max_context_tokens=1` 虽降到 11813 但仍报预算超限提示，`=0` 直接拒绝启动。审查参数指纹已改变，旧凭证须重跑 preflight。已知剩余缺口：`~/.codex/AGENTS.md` 用户全局指令（本机 11.7KB）仍被注入，`project_doc_max_bytes=0`、`instructions`、`developer_instructions` 均不能移除（后者还会顶掉权限说明），唯一手段是隔离 `CODEX_HOME`，但登录态同样从该目录读取，复制或软链 auth.json 属凭据外放，本次不实施。
 
 ## 0.13.0 — 2026-09-17

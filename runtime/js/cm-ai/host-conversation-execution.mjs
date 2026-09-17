@@ -1,13 +1,15 @@
 // Fixed current-conversation factory, separate from CLI top-level execution.
 import fs from 'node:fs';
 import {spawn} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {loadConfig,resolveProtectedRuntimes} from '../../../scripts/cm-workflow-config.mjs';
 import {claudeDeveloperWorker,validateClaudeProposal} from './worker-claude-developer.mjs';
 import {codexDeveloperWorker} from './worker-codex-developer.mjs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createCodexDeveloperRun,readCodexDeveloperRequest} from './codex-developer-adapter.mjs';
-import {createClaudeDeveloperRun,readClaudeDeveloperRequest} from './claude-developer-adapter.mjs';
+import {readCodexDeveloperRequest} from './codex-developer-adapter.mjs';
+import {readClaudeDeveloperRequest} from './claude-developer-adapter.mjs';
+import {createDeveloperRun,validateDeveloperValue} from './developer-adapter.mjs';
 import {createCodexReviewRun} from './codex-review-adapter.mjs';
 import {createClaudeReviewRun} from './claude-review-adapter.mjs';
 import {claudeWorker,claudePreflightMatches} from './worker-claude.mjs';
@@ -20,9 +22,10 @@ import {createProjectExecution} from './host-project-execution.mjs';
 import {codeProjectPaths,codeProjectInstructionPaths,resolveCodeProjects} from './code-projects.mjs';
 import {readProjectInstructionContext} from './cm-ai-context-refresh.mjs';
 import {validateDocumentationPaths} from './host-documentation.mjs';
+import {verifySpecificationMaterial} from './specification-material.mjs';
 import {isFinalCmAiTask} from './cm-ai-admission.mjs';
 import {createHostBootstrap} from './host-bootstrap.mjs';
-import {digest,id,json,need,shape,freeze} from './effect-contract.mjs';
+import {digest,id,hex,json,need,shape,freeze} from './effect-contract.mjs';
 export const protectedTextInstructions='\nProtected current-host mode: do not write files or run commands. Return {status,value,edits} on success; '
   +'value retains the original implementation/Learning contract. edits is [{path,beforeSha256,content}], complete UTF-8 text or null for deletion. '
   +'Only the supplied scope and expected hashes are allowed. The fixed sandbox applies these edits. On failure return {status,code} without edits. '
@@ -73,7 +76,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     ...(workflow?{workflow}: {})};
   const reviewOptions={cwd:definition.codeProject,model:review?.model??'unconfigured',preflight:review?.preflight??null,
     disabledSkills:review?.disabledSkills??[],
-    ...(provider?{timeoutMs:protection.timeoutMs}:{}),
+    ...(protection?{timeoutMs:protection.timeoutMs}:{}),
     promptTransport:'stdin',schemaPath:fileURLToPath(new URL('./review-result.schema.json',import.meta.url))};
   need(!allowedAttempts.length||review!==null,'review_configuration_required');
   if(allowedAttempts.length||provider)need((reviewerRuntime==='codex'?preflightMatches:claudePreflightMatches)(reviewOptions.preflight,reviewOptions),'tool_preflight_missing');
@@ -131,13 +134,44 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
             projectInstructions:definition.codeProjects.map(root=>({codeProject:root,files:readProjectInstructionContext(root)}))}:{}),
           ...(protection?{editMode:'protected-text-v1',expected}: {})},control.signal));
         if(response.status==='succeeded'){
-          shape(response,['status','value',...(protection?['edits']:[]),...(provider?['providerThread']:[])]);
-          if(provider){const {providerThread,...proposal}=response;id(providerThread);validateClaudeProposal(proposal);}
-          if(protection){
-            need(Array.isArray(response.edits),'protected_edit_invalid');
-            if(response.value?.outcome==='blocked')need(response.edits.length===0,'protected_edit_invalid');
-            else await projectExecution.commit({scope:bound.payload.scope,
-              edits:response.edits,expected,identity:bound.identity,signal:control.signal});
+          const edits=[];
+          try{
+            shape(response,['status','value',...(protection?['edits']:[]),...(provider?['providerThread']:[])]);
+            if(provider){const {providerThread,...proposal}=response;id(providerThread);validateClaudeProposal(proposal);}
+            if(protection){
+              // Complete local validation precedes every protected write.
+              validateDeveloperValue(response.value,bound);
+              need(Array.isArray(response.edits),'protected_edit_invalid');
+              if(response.value.outcome==='blocked')need(response.edits.length===0,'protected_edit_invalid');
+              const seen=new Set();
+              for(const edit of response.edits){
+                shape(edit,['path','beforeSha256','content']);
+                need(bound.payload.scope.includes(edit.path)&&!seen.has(edit.path),'out_of_scope');seen.add(edit.path);
+                if(edit.beforeSha256!==null)hex(edit.beforeSha256);
+                need(edit.content===null||typeof edit.content==='string','protected_edit_invalid');
+                need(edit.content===null||Buffer.byteLength(edit.content)<=1024*1024,'limit_exceeded');
+                need(edit.content!==null||edit.beforeSha256!==null,'protected_edit_invalid');
+                // Reuse a previous proposal only when its exact output is
+                // already present. A stale proposal never overwrites drift.
+                if(edit.beforeSha256!==expected[edit.path]){
+                  const after=edit.content===null?null:createHash('sha256').update(edit.content).digest('hex');
+                  need(after===expected[edit.path],'protected_edit_stale');
+                }else edits.push(edit);
+              }
+            }
+          }catch(error){return {status:'failed',code:error.code==='protected_edit_stale'?'protected_edit_stale':'invalid_result',
+            reason:error.code??'invalid_input'};}
+          if(protection&&response.value.outcome!=='blocked'){
+            if(bound.payload.specification)verifySpecificationMaterial({specificationRoot:definition.specsDir,
+              specification:bound.payload.specification,identity:bound.identity});
+            try{await projectExecution.commit({scope:bound.payload.scope,
+              edits,expected,identity:bound.identity,signal:control.signal});}
+            catch(error){
+              // This code is emitted by the pre-write expected-hash check.
+              // Sandbox execution/partial-write failures stay ambiguous.
+              if(error.code==='protected_edit_stale')return {status:'failed',code:'protected_edit_stale'};
+              throw error;
+            }
           }
           // CLI session identity comes from the observed process stream; current
           // conversation responses retain the trusted host identity.
@@ -146,7 +180,8 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
         if(provider){const {providerThread,...failure}=response;shape(failure,['status','code']);return failure;}
         shape(response,['status','code']);return response;
       };
-      return (coderRuntime==='codex'?createCodexDeveloperRun:createClaudeDeveloperRun)({worker,requestedModel:provider?.model??'current-session'})(bound,control);
+      return createDeveloperRun({worker,provider:coderRuntime,requestedModel:provider?.model??'current-session',
+        protectedCurrentSession:protection!==null&&provider===null})(bound,control);
     }},
     check:check??((request,control)=>{
       const route=resolveHostRole({definition,identity:request.identity,role:'tester',signal:control.signal,runtime});

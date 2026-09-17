@@ -1,5 +1,6 @@
 // Content composition only. This does not authenticate a review or clear a gate.
 import {captureReviewBaseline,readReviewBaseline,readReviewPackage} from './review-package.mjs';
+import {verifySpecificationMaterial} from './specification-material.mjs';
 import {digest,json,need} from './effect-contract.mjs';
 
 const inventoryFile=({contentBase64,...metadata})=>metadata;
@@ -29,7 +30,9 @@ export function composeFixCode({baseline,parentPackage,fixPackages}){
 
 export function inspectFixCodeAssociation({root,specsRoot,baseline,parentPackage,fixPackage,fixPackages}){
   const {base,parent,fixes,files}=composeFixCode({baseline,parentPackage,fixPackages:fixPackages??[fixPackage]});
-  const current=captureReviewBaseline({root,...(specsRoot===undefined?{}:{specsRoot}),identity:parent.identity,version:base.version,
+  if(base.specification)verifySpecificationMaterial(base);
+  const current=captureReviewBaseline({root,
+    ...(base.specification?{specification:{specsRoot:base.specificationRoot,feature:base.specification.feature}}:{}),...(specsRoot===undefined?{}:{specsRoot}),identity:parent.identity,version:base.version,
     ...(base.codeProjectPaths?{codeProjectPaths:base.codeProjectPaths}:{}),
     scope:[...new Set([...parent.scope,...fixes.flatMap(fix=>fix.scope)])],requirements:base.requirements});
   need(current.rootDigest===base.rootDigest,'fix_parent_binding_mismatch');

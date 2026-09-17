@@ -47,11 +47,41 @@ def invoke(*args: str, expected_exit: int = 0) -> dict[str, object]:
     return json.loads(result.stdout) if result.stdout.strip() else {"stderr": result.stderr}
 
 
+def runtime_mark_fixtures(root: Path) -> None:
+    evidence = root / ".reviews" / "prd-marks-split-r1.md"
+    receipt = evidence.with_name("prd-marks-split-disposition.json")
+    evidence.write_text(
+        "---\nat: 2026-09-08T00:00:00Z\nreviewer: codex-subagent\n"
+        "independent: true\nscope:\n  - tasks.md\n---\nSynthetic review\n", encoding="utf-8"
+    )
+    originals = {"tasks.md": "- [ ] T-001: Guide\n", "requirements.md": "- [ ] [AC-001] Guide\n",
+                 "test-cases.json": '{"cases":[]}\n'}
+    for name, content in originals.items():
+        (root / name).write_text(content, encoding="utf-8")
+    flags = ["--stage", "split", "--feature", "marks", "--evidence", str(evidence), "--receipt", str(receipt)]
+    artifacts = [value for name in originals for value in ("--artifact", str(root / name))]
+    invoke("record", *flags, *artifacts, "--disposition", "no_findings", "--finding-count", "0", "--unresolved-count", "0")
+    receipt_bytes = receipt.read_bytes()
+    assert "runtimeMarksNormalized" not in invoke("inspect", *flags)
+    for mark in ("x", "X"):
+        for name in ("tasks.md", "requirements.md"):
+            (root / name).write_text(originals[name].replace("[ ]", f"[{mark}]"), encoding="utf-8")
+        result = invoke("inspect", *flags)
+        assert result["outcome"] == "completed" and result["runtimeMarksNormalized"] is True
+    for name in originals:
+        saved = (root / name).read_bytes()
+        (root / name).write_bytes(saved + b" ")
+        assert "changed after disposition" in invoke("inspect", *flags, expected_exit=1)["stderr"]
+        (root / name).write_bytes(saved)
+    assert receipt.read_bytes() == receipt_bytes
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="cm-prd-review-gate-") as raw:
         root = Path(raw)
         reviews = root / ".reviews"
         reviews.mkdir()
+        runtime_mark_fixtures(root)
         artifact = root / "design.md"
         artifact.write_text("# design v1\n", encoding="utf-8")
         evidence = reviews / "prd-1.login-design-r1.md"

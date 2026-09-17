@@ -20,11 +20,16 @@ import {openPrdSession} from '../runtime/js/cm-prd/session.mjs';
 import {createPrdChange,assertPrdReviewsSettled} from '../runtime/js/cm-prd/change.mjs';
 import {publishPrdReview} from '../runtime/js/cm-prd/review-publication.mjs';
 
+const sessionFailureCodes=new Set(['prd_operation_recovery_required','prd_host_result_unknown','prd_nothing_to_resume',
+  'prd_recovery_binding','prd_recovery_evidence_required','prd_replay_inputs_changed','cancelled','prd_turn_not_ready',
+  'prd_review_recovery_required']);
+
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
   let bridge,analysis,session,change=null,started=false,closed=false,record;
   try{
     if(argv.length===1&&argv[0]==='--help'){
       output.write('New and --change SELECTOR share this host. --session prd-ID resumes a durable local conversation; obtain runId from status. resume {requestId,operation,resolution:null|{callId,requestDigest,result,evidence}} consumes only the original host result, never re-dispatches an unknown call. decision {requestId,operation,proposalDigest,approved,allowUserCaseChanges} confirms an exact change proposal; save_draft archives and writes awaiting_review. prepare_revision {requestId,operation,reason} revises the saved current batch with original review history retained; no review counters reset.\n');
+      output.write('resume also accepts resolution:{callId,requestDigest,abandon:true,evidence} with result absent: discard the entire pending operation and restore its before checkpoint, only if no call is prd_review. Explicit cancel is terminal: checkpoint cancelled and active cleared; resume cannot continue it. Session failures return {status:blocked,reason,recovery,completionAuthorized:false} (2026-09-17 dogfood: cancelled checkpoint retained active and hid recovery errors).\n');
       output.write('promote_design {requestId,operation,draftDigest,reason} moves an unreviewed full draft to design while preserving draft and self-check rounds. Saved drafts require complete exact original bytes with private permissions; partial/conflicting saves, prior review and exhausted rounds are rejected. Saved task revisions archive both versions before replacement; no approval is implied.\n');
       output.write('select_design_reviews {requestId,operation,draftDigest,risks:[{feature,signals,evidence}]} at design_ready freezes host-reported Step 9.5 risks for every feature. Only high-risk features may request design review; low-risk exact saved designs continue without it. Not approval; existing attempts cannot be downgraded.\n');
       output.write('plan_design {requestId,operation,text} generates requirements/design only. design_ready permits save_design with --allow-spec-write and original design review. After original design disposition, advance generates tasks from the exact current design, then original self-check/save_draft. No approval is implied.\n');
@@ -102,6 +107,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     restore(cancelled?stored.checkpoint:stored.active?.before??stored.checkpoint);
     const contextCompletedAt=new Date().toISOString();let contextLogged=false;
     const checkpoint=()=>({analysis:analysis?.checkpoint()??null,change:change?.checkpoint()??null,started,routeTurn,reviewState,summaryState,publishedSummary});
+    // Repair older cancelled checkpoints without replaying their retained call.
+    if(cancelled){reviewController.abort();session.commit(checkpoint());}
     const status=()=>({...change?.status()??analysis.status(),runId,logWriteEnabled:true,reviewState,summaryState,publishedSummary,
       recovery:session.state.active?{request:session.state.active.request,calls:session.state.active.calls.map(({callId,requestDigest,kind,result})=>
         ({callId,requestDigest,kind,status:result===undefined?'unknown':'recorded'}))}:null});
@@ -140,7 +147,22 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       if(request.operation==='resume_correction')return resumePrdCorrection({specs:admission.specs,stage:request.stage,
         feature:request.feature,writeEnabled:specWriteEnabled&&reviewEnabled},reviewController.signal);
       if(request.operation==='prepare_summary'){
-        need(started,'prd_turn_not_ready');summaryState=await summarize(admission.specs,reviewController.signal);return summaryState;
+        need(started,'prd_turn_not_ready');
+        // The open session is bound to this run under .reviews/prd-sessions.
+        // Never infer its scope from the directory inventory or another session.
+        const saved=session.state.active?.before??session.state.checkpoint;
+        const currentFeatures=analysis.status().draft?.features.map(feature=>feature.directory)
+          ??saved?.analysis?.draft?.features.map(feature=>feature.directory)??saved?.summaryState?.currentFeatures;
+        summaryState=null;
+        try{
+          need(Array.isArray(currentFeatures)&&currentFeatures.length>0,'prd_summary_scope_unknown');
+          summaryState=await summarize(admission.specs,{currentFeatures},reviewController.signal);return summaryState;
+        }catch(cause){
+          // The shared transport redacts thrown errors. Keep this recoverable
+          // scope failure visible without changing that transport contract.
+          if(cause.code==='prd_summary_scope_unknown')return {status:'blocked',reason:cause.code,completionAuthorized:false};
+          throw cause;
+        }
       }
       if(request.operation==='publish_summary'){
         need(summaryState!==null&&summaryState.summaryDigest===request.summaryDigest,'prd_summary_not_ready');
@@ -200,15 +222,21 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       if(['draft_ready','change_check'].includes(stage))return ['prd-spec-validation','spec_validation'];
       return ['prd-task-split','task_split'];
     };
-    const host={handle:async request=>{
+    const dispatch=async request=>{
       if(request.operation==='status')return status();
-      if(request.operation==='cancel'){const value=await handle(request);session.checkpoint(checkpoint());return value;}
+      if(request.operation==='cancel'){await handle(request);session.commit(checkpoint());return status();}
       if(request.operation==='inspect_correction')return handle(request);
+      need(!reviewController.signal.aborted,'cancelled');
       let operation=request;
       if(request.operation==='resume'){
         shape(request,['requestId','operation','resolution']);
         need(!reviewController.signal.aborted&&session.state.checkpoint?.analysis?.stage!=='cancelled'
           &&session.state.checkpoint?.change?.stage!=='cancelled','cancelled');
+        if(request.resolution?.abandon===true){
+          const decision=session.abandon(request.resolution);
+          restore(session.state.checkpoint);replaying=false;
+          record({event:'decision',phase:'recovery',data:decision});return status();
+        }
         if(request.resolution!==null)session.resolve(request.resolution);
         const active=session.replay();
         need(active.calls.every(call=>Object.hasOwn(call,'result')),'prd_host_result_unknown');
@@ -254,6 +282,14 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         if(reviewController.signal.aborted)return status();
         if(!session.state.active.calls.some(call=>!Object.hasOwn(call,'result'))&&session.state.active.calls.length===0)
           session.commit(checkpoint());
+        throw cause;
+      }
+    };
+    const host={handle:async request=>{
+      try{return await dispatch(request);}
+      catch(cause){
+        if(sessionFailureCodes.has(cause?.code))return {status:'blocked',reason:cause.code,
+          recovery:status().recovery,completionAuthorized:false};
         throw cause;
       }
     }};
