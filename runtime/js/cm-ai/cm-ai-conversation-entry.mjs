@@ -2,7 +2,7 @@
 import {inspectCmAiAdmission} from './cm-ai-admission.mjs';
 import {inspectCmAiContextRefresh,inspectCmAiTaskLearningInput} from './cm-ai-context-refresh.mjs';
 import {findCmAiQaDecision,inspectCmAiQaDecision,inspectCmAiQaResult,recordCmAiQaDecision,
-  latestCmAiQaRun,recordCmAiQaRun} from './cm-ai-qa-log.mjs';
+  latestCmAiQaRun,recordCmAiQaRun,inspectCmAiQaRecovery} from './cm-ai-qa-log.mjs';
 import {recordCmAiRunDone} from './cm-ai-run-finalizer.mjs';
 import {readHostQaFixHandoff} from './host-qa-fix.mjs';
 import {digest,freeze,hex,id,json,need,shape,text,validIdentity} from './effect-contract.mjs';
@@ -125,6 +125,7 @@ export function createCmAiConversationEntry(options) {
   if(options&&Object.hasOwn(options,'qaDecision'))optionKeys.push('qaDecision');
   if(options&&Object.hasOwn(options,'qaDecisionProvider'))optionKeys.push('qaDecisionProvider');
   if(options&&Object.hasOwn(options,'qaExecutor'))optionKeys.push('qaExecutor');
+  if(options&&Object.hasOwn(options,'rerunUnknownQa'))optionKeys.push('rerunUnknownQa');
   if(options&&Object.hasOwn(options,'qaLogHome'))optionKeys.push('qaLogHome');
   if(options&&Object.hasOwn(options,'applicableAgentFiles'))optionKeys.push('applicableAgentFiles');
   if(options&&Object.hasOwn(options,'documentationResult'))optionKeys.push('documentationResult');
@@ -167,6 +168,7 @@ export function createCmAiConversationEntry(options) {
   const decideQa=qaProvider?.decide,qaTimeout=qaProvider?.timeoutMs;
   let pendingQa=null;
   let qaExecutor=null,pendingExecution=null,cancellationEpoch=0;
+  let rerunUnknownQa=options.rerunUnknownQa??false;need(typeof rerunUnknownQa==='boolean');
   if(Object.hasOwn(options,'qaExecutor')){
     shape(options.qaExecutor,['mode','caseCount','timeoutMs','run',
       ...(Object.hasOwn(options.qaExecutor,'configuration')?['configuration']:[])]);
@@ -267,11 +269,16 @@ export function createCmAiConversationEntry(options) {
           notCancelled();
           need(pendingExecution===null,'qa_execution_pending');
           const binding={specsDir:options.specsDir,feature:options.feature,identity:result.identity,packageDigest:result.packageDigest};
-          let previous;
+          let previous,recovery=null;
           try{previous=latestCmAiQaRun(binding);}
           catch(error){
-            if(error.code==='qa_result_incomplete')return summary(operation,{...runner.status(),code:'qa_execution_unknown'},'blocked');
-            throw error;
+            if(error.code!=='qa_result_incomplete')throw error;
+            if(rerunUnknownQa){
+              try{recovery=inspectCmAiQaRecovery(binding);}
+              catch(error){if(error.code!=='qa_execution_unknown')throw error;}
+            }
+            if(recovery===null)return summary(operation,{...runner.status(),code:'qa_execution_unknown'},'blocked');
+            previous=null;
           }
           let testRunId=previous?.testRunId;
           const accepted=runner.status().acceptedQaFix;
@@ -279,14 +286,20 @@ export function createCmAiConversationEntry(options) {
           if(previous===null||repaired){
             // Later rounds require an original completed child accepted by the
             // parent journal. Unknown executions and unrepaired failures stop.
-            const qaRound=repaired?accepted.qaRound+1:1;
+            const qaRound=recovery?.qaRound??(repaired?accepted.qaRound+1:1);
             need(qaRound>=1&&qaRound<=3,'qa_round_invalid');
-            testRunId=`qa-${digest(repaired?{...binding,qaRound,repair:accepted.evidenceDigest}:binding).slice(0,48)}`;
+            testRunId=`qa-${digest(recovery?{...binding,previousTestRunId:recovery.testRunId}:
+              repaired?{...binding,qaRound,repair:accepted.evidenceDigest}:binding).slice(0,48)}`;
             const invocation={...binding,codeProject:options.codeProject,testRunId,mode:qaExecutor.mode,caseCount:qaExecutor.caseCount,
-              ...(repaired?{qaRound}: {})};
+              ...(repaired||recovery?{qaRound}: {})};
             const logInput={...invocation,...(Object.hasOwn(options,'qaLogHome')?{logHome:options.qaLogHome}:{})};
             notCancelled();
-            recordCmAiQaRun({...logInput,phase:'start'});
+            if(recovery){
+              need(qaExecutor.mode===recovery.mode&&qaExecutor.caseCount===recovery.caseCount,'qa_execution_mismatch');
+              recordCmAiQaRun({...logInput,testRunId:recovery.testRunId,phase:'abandoned'});
+              rerunUnknownQa=false;
+            }
+            recordCmAiQaRun({...logInput,phase:'start',...(recovery?{previousTestRunId:recovery.testRunId}:{})});
             const controller=new AbortController();pendingExecution=controller;
             let timer,timedOut=false;
             try{
@@ -408,7 +421,9 @@ export function createCmAiConversationEntry(options) {
             const interrupted=new Promise((_,reject)=>{
               controller.signal.addEventListener('abort',()=>reject(Object.assign(new Error('QA decision interrupted'),
                 {code:timedOut?'qa_decision_timeout':'cancelled'})),{once:true});
-              timer=setTimeout(()=>{timedOut=true;controller.abort();},qaTimeout);
+              // Allow the request watchdog to publish its BLOCKED decision at
+              // the same configured deadline before the outer cancellation.
+              timer=setTimeout(()=>{timedOut=true;controller.abort();},qaTimeout+1000);
             });
             decision=json(await Promise.race([
               Promise.resolve().then(()=>{need(!controller.signal.aborted,'cancelled');

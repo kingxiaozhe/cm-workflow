@@ -423,9 +423,24 @@ for(const runtime of ['codex','claude'])for(const initialWorkflow of ['absent','
       assert.deepEqual(attached.calls,['qa_assess']);
       assert.equal(attached.rows.find(row=>row.requestId==='advance').result.code,'qa_triggered');
       delete f.request;
+      // A killed no-result N6 run needs a fresh, explicit resume permission.
+      // The option is transport authority, never part of the stored fingerprint.
+      const {recordCmAiQaRun}=await import('../runtime/js/cm-ai/cm-ai-qa-log.mjs');
+      recordCmAiQaRun({specsDir:f.specsDir,codeProject:f.codeProject,feature:'1.work',identity,
+        packageDigest:history.state.reviewPackage.packageDigest,testRunId:'interrupted-qa',mode:'commands',caseCount:1,
+        phase:'start',logHome:path.join(f.root,'logs')});
+      const unknown=await runCli(f,'normal','resume');assert.equal(unknown.code,0,unknown.stderr);
+      assert.equal(unknown.rows.find(row=>row.requestId==='advance').result.code,'qa_execution_unknown');
+      assert.deepEqual(unknown.calls,[]);
+      f.args.push('--rerun-unknown-qa');
       const finished=await runCli(f,'normal','resume');assert.equal(finished.code,0,finished.stderr);
+      f.args.pop();
       assert.deepEqual(finished.calls,['documentation_inspect']);
       assert.equal(finished.rows.find(row=>row.requestId==='advance').result.state,'run_done');
+      const qaRows=fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse)
+        .filter(row=>row.event==='test_run');
+      assert.deepEqual(qaRows.filter(row=>row.phase==='start').map(row=>row.attempt),[1,1]);
+      assert.equal(qaRows.filter(row=>row.phase==='abandoned').length,1);
       const after=JSON.parse(fs.readFileSync(stateFile,'utf8'));
       assert.deepEqual(after.fingerprints,before.fingerprints);
       assert.deepEqual(after.records.slice(0,before.records.length),before.records);
@@ -449,7 +464,7 @@ for(const runtime of ['codex','claude'])for(const initialWorkflow of ['absent','
       const logs=fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
       const attachLogs=logs.filter(row=>row.event==='decision'&&row.phase==='qa_attach');assert.equal(attachLogs.length,1);
       assert.equal(attachLogs[0].qaFingerprint,records[0].payload.record.qaFingerprint);
-      assert.equal(logs.filter(row=>row.event==='test_run'&&row.phase==='start').length,1);
+      assert.equal(logs.filter(row=>row.event==='test_run'&&row.phase==='start').length,2);
       // Removing QA after it was bound cannot fall back to the original config.
       const attachedArgs=[...f.args];f.args=[...initialArgs];
       if(initialWorkflow==='qa-null')fs.writeFileSync(attachmentFile,JSON.stringify({...attachmentConfig,qa:null}));
@@ -848,5 +863,21 @@ test('protected proposal cannot write after specification drifts during develope
     assert.equal(lastCheckpoint(f).code,'spec_drift');
     const resumed=await runCli(f,'normal','resume');assert.equal(resumed.code,0,resumed.stderr);
     assert.deepEqual(resumed.calls,[]);assert.equal(resumed.rows.find(row=>row.requestId==='advance').result.code,'spec_drift');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('unknown QA rerun requires resume and separate QA permission before opening the owner',()=>{
+  const f=fixture();
+  try{
+    const workflow=path.join(f.root,'workflow.json');
+    fs.writeFileSync(workflow,JSON.stringify({documentationPaths:[],applicableAgentFiles:[],qa:{commands:[],
+      environment:{kind:'web',carrier:'browser',target:'http://127.0.0.1',scope:'local'}}}));
+    for(const mode of ['create','resume']){
+      const args=[...f.args];args[4]=mode;
+      const result=spawnSync(process.execPath,[cli,...args,'--workflow-config',workflow,'--rerun-unknown-qa',
+        ...(mode==='create'?['--allow-qa']:[])],{encoding:'utf8',timeout:3000});
+      assert.equal(result.status,1);assert.match(result.stderr,/qa_recovery_authorization_required/);
+      assert(!fs.existsSync(path.join(f.specsDir,'.reviews')));
+    }
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });

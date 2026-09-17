@@ -184,17 +184,27 @@ export function createHostQaExecutor(options) {
           notCancelled();
           const request=freeze({...binding,case:item,route:routed,environment,...(roots?{codeProjects:roots}:{})});
           if(stage==='logic'){
-            const observed=logic===null?{verdict:'INSUFFICIENT_EVIDENCE',evidence:['Logic host unavailable']}:json(await logic(request,signal));
+            let observed,hostRequestTimeout=false;
+            try{observed=logic===null?{verdict:'INSUFFICIENT_EVIDENCE',evidence:['Logic host unavailable']}:json(await logic(request,signal));}
+            catch(error){
+              if(error.code!=='host_request_timeout')throw error;
+              hostRequestTimeout=true;observed={verdict:'INSUFFICIENT_EVIDENCE',evidence:['host_request_timeout']};
+            }
             notCancelled();shape(observed,['verdict','evidence']);
             need(['SUPPORTED','CONTRADICTED','INSUFFICIENT_EVIDENCE'].includes(observed.verdict),'qa_verdict_invalid');
             rows.push({id:item.id,kind:'logic',origin:item.origin,blocking:item.blocking,
-              staticVerdict:observed.verdict,verdict:'BLOCKED',evidence:evidence(observed.evidence)});
+              staticVerdict:observed.verdict,verdict:'BLOCKED',evidence:evidence(observed.evidence),
+              ...(hostRequestTimeout?{hostRequestTimeout:true}:{})});
           }else{
             logStep(configuration,binding,'test_run','case_start',{case_id:item.id},'QA browser case started');
             let observed;
             if(browser===null||item.expected.some(value=>value.includes('[需确认]')))
               observed={verdict:'BLOCKED',evidence:[],environment,cleanup:'not_needed'};
-            else observed=json(await browser(request,signal));
+            else try{observed=json(await browser(request,signal));}
+            catch(error){
+              if(error.code!=='host_request_timeout')throw error;
+              observed={verdict:'BLOCKED',evidence:['host_request_timeout'],environment,cleanup:'failed'};
+            }
             notCancelled();shape(observed,['verdict','evidence','environment','cleanup']);
             need(['PASS','FAIL','BLOCKED'].includes(observed.verdict),'qa_verdict_invalid');
             need(['completed','not_needed','failed'].includes(observed.cleanup),'qa_cleanup_required');
@@ -226,6 +236,7 @@ export function createHostQaExecutor(options) {
         row.commandEvidence=mappings.map(item=>item.id);
         const item=plan.cases.find(item=>item.id===row.id);
         if(item.expected.some(value=>value.includes('[需确认]')))row.verdict='BLOCKED';
+        if(row.hostRequestTimeout)row.verdict='BLOCKED';
       }
       if(rows.length===0)rows.push({id:'qa-unavailable',kind:'commands',verdict:'BLOCKED',evidence:['No executable QA contract']});
       const drift=digest(before.files)!==digest(snapshot().files);

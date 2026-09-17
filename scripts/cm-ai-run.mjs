@@ -160,11 +160,12 @@ export function validateRunDefinition(input){
   return value;
 }
 
-export async function openControlRun(definition,mode,execution=null){
+export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false}={}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
   if(!['create','resume'].includes(mode))fail('invalid_mode');
+  if(typeof rerunUnknownQa!=='boolean'||rerunUnknownQa&&(mode!=='resume'||!execution?.qaExecutor))fail('qa_recovery_authorization_required');
   const {openTaskExecutionStore}=await import('../runtime/js/cm-ai/task-owner.mjs');
   const {createCmAiHost}=await import('../runtime/js/cm-ai/host.mjs');
   const {inspectCmAiAdmission}=await import('../runtime/js/cm-ai/cm-ai-admission.mjs');
@@ -278,7 +279,7 @@ export async function openControlRun(definition,mode,execution=null){
           reviewInvocation:execution.reviewInvocation,check:execution.check,
           excludedContexts:execution.excludedContexts,timeoutMs:execution.timeoutMs,
           taskLearning:{feature,hostHandoff:true}})},
-      entry:{specsDir,codeProject,feature,identity,...(execution===null?{}:{hostDecision:execution.hostDecision,
+      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,...(execution===null?{}:{hostDecision:execution.hostDecision,
         ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
     if(attaching||attached){

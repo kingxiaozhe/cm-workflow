@@ -169,8 +169,74 @@ export function reportFile(specsDir,raw) {
   }
 }
 
-// Discover the latest invocation from the authoritative log, never a second
-// checkpoint. A started invocation without a valid result must not be resent.
+function partialPassCases(items,code){
+  need(!items.some(({row})=>row.phase==='complete'||row.phase==='case_blocked'
+    ||(row.phase==='case_complete'&&row.result!=='PASS')),code);
+  const cases=items.filter(({row})=>row.phase==='case_complete').map(({row})=>row.case_id);
+  for(const caseId of cases)id(caseId);
+  return [...new Set(cases)].sort();
+}
+
+// An abandoned invocation is history, never a result. Only its explicit
+// successor may reuse a round; completed FAIL retries still advance 1..3.
+function validateRunSequence(items,code='qa_round_invalid'){
+  const starts=[],ids=new Set();let current=null,abandoned=false;
+  for(const item of items){
+    const row=item.row;
+    if(row.phase==='start'){
+      id(row.operation_id);need(!ids.has(row.operation_id),code);ids.add(row.operation_id);
+      need(row.attempt===(current?current.attempt+(abandoned?0:1):1)&&row.attempt<=3,code);
+      if(abandoned)need(row.mode===current.mode&&row.case_count===current.case_count,code);
+      current=row;abandoned=false;starts.push(item);
+    }else{
+      need(current&&row.operation_id===current.operation_id&&row.attempt===current.attempt&&!abandoned,code);
+      if(row.phase==='abandoned'){
+        need(row.previous_test_run_id===current.operation_id&&row.reason==='host_terminated'
+          &&row.mode===current.mode&&row.case_count===current.case_count,code);
+        const prior=items.filter(entry=>entry.position<item.position&&entry.row.operation_id===row.operation_id);
+        const passed=partialPassCases(prior,code);
+        // Step 26 records omitted this field and could only abandon empty runs.
+        need(JSON.stringify(row.partial_pass_cases===undefined?[]:row.partial_pass_cases)===JSON.stringify(passed)
+          &&(row.partial_pass_cases!==undefined||passed.length===0),code);
+        abandoned=true;
+      }
+    }
+  }
+  need(starts.length>0,code);return starts;
+}
+
+function qaRunRows(input){
+  const decision=findCmAiQaDecision(input);need(decision?.status==='triggered','qa_not_triggered');
+  const rows=[];let position=0;
+  scanRows(path.join(input.specsDir,'运行日志.jsonl'),row=>{
+    const index=position++;
+    if(row?.schema_version===1&&row.workflow==='cm-ai'&&row.event==='test_run'
+      &&row.node==='N6'&&row.repository_id===input.identity.repositoryId&&row.run_id===input.identity.runId
+      &&row.feature===input.feature&&row.task===input.identity.taskId&&row.package_digest===input.packageDigest
+      &&row.qa_decision_id===decision.decisionId)rows.push({row,position:index});
+  });
+  return rows;
+}
+
+// Only a trusted resumed owner calls this after fresh explicit authorization.
+// Retain unknown for non-PASS results, even if their evidence files vanished.
+export function inspectCmAiQaRecovery(input){
+  const rows=qaRunRows(input),starts=validateRunSequence(rows),start=starts.at(-1).row;
+  const runs=rows.filter(item=>item.row.operation_id===start.operation_id);
+  const passed=partialPassCases(runs,'qa_execution_unknown');
+  const report=path.join(input.specsDir,'.reviews',`${start.operation_id}-execution.md`);
+  let exists=false;try{fs.lstatSync(report);exists=true;}catch(error){if(error.code!=='ENOENT')throw error;}
+  need(!exists,'qa_execution_unknown');
+  // Reject an operation ID reused under another decision, identity or package.
+  scanRows(path.join(input.specsDir,'运行日志.jsonl'),row=>{
+    if(row.event==='test_run'&&row.operation_id===start.operation_id)
+      need(rows.some(item=>JSON.stringify(item.row)===JSON.stringify(row)),'qa_result_mismatch');
+  });
+  return {testRunId:start.operation_id,qaRound:start.attempt,mode:start.mode,caseCount:start.case_count,
+    partialPassCases:passed,abandoned:runs.some(({row})=>row.phase==='abandoned')};
+}
+
+// Discover the latest invocation from the authoritative log, never a second checkpoint.
 export function latestCmAiQaRun(input) {
   const decision=findCmAiQaDecision(input);need(decision?.status==='triggered','qa_not_triggered');
   const rows=[];
@@ -191,21 +257,34 @@ export function recordCmAiQaRun(input) {
   if(Object.hasOwn(input,'result'))keys.push('result');
   if(Object.hasOwn(input,'logHome'))keys.push('logHome');
   if(Object.hasOwn(input,'qaRound'))keys.push('qaRound');
+  if(Object.hasOwn(input,'previousTestRunId'))keys.push('previousTestRunId');
   shape(input,keys);validIdentity(input.identity);id(input.testRunId);hex(input.packageDigest);
   text(input.specsDir);text(input.codeProject);text(input.feature);
   need(['commands','browser','all'].includes(input.mode));
   need(Number.isSafeInteger(input.caseCount)&&input.caseCount>0);
-  need(['start','complete'].includes(input.phase));
+  need(['start','complete','abandoned'].includes(input.phase));
   const qaRound=input.qaRound??1;
   need(Number.isSafeInteger(qaRound)&&qaRound>=1&&qaRound<=3,'qa_round_invalid');
   const binding={specsDir:input.specsDir,feature:input.feature,identity:input.identity,packageDigest:input.packageDigest};
-  if(input.phase==='start'){
-    const previous=latestCmAiQaRun(binding);
+  let passed=[];
+  if(input.phase==='abandoned'){
+    const previous=inspectCmAiQaRecovery(binding);
+    passed=previous.partialPassCases;
+    need(previous.testRunId===input.testRunId&&previous.qaRound===qaRound
+      &&previous.mode===input.mode&&previous.caseCount===input.caseCount,'qa_round_invalid');
+    if(previous.abandoned)return;
+  }else if(input.phase==='start'){
+    let previous;
+    if(Object.hasOwn(input,'previousTestRunId')){
+      previous=inspectCmAiQaRecovery(binding);
+      need(previous.abandoned&&previous.testRunId===input.previousTestRunId&&previous.qaRound===qaRound
+        &&previous.mode===input.mode&&previous.caseCount===input.caseCount,'qa_round_invalid');
+    }else previous=latestCmAiQaRun(binding);
     scanRows(path.join(input.specsDir,'运行日志.jsonl'),row=>{
       need(!(row.event==='test_run'&&row.operation_id===input.testRunId),'qa_round_invalid');
     });
     if(previous===null)need(qaRound===1,'qa_round_invalid');
-    else{
+    else if(!Object.hasOwn(input,'previousTestRunId')){
       const failure=inspectCmAiQaFailure({...binding,testRunId:previous.testRunId});
       need(qaRound===failure.qaRound+1&&input.testRunId!==previous.testRunId,'qa_round_invalid');
     }
@@ -215,6 +294,7 @@ export function recordCmAiQaRun(input) {
   const data={node:'N6',repository_id:input.identity.repositoryId,feature:input.feature,task:input.identity.taskId,
     package_digest:input.packageDigest,qa_decision_id:decision.decisionId,operation_id:input.testRunId,
     attempt:qaRound,mode:input.mode,case_count:input.caseCount};
+  if(input.phase==='abandoned')Object.assign(data,{previous_test_run_id:input.testRunId,reason:'host_terminated',partial_pass_cases:passed});
   if(input.phase==='complete'){
     const result=json(input.result);shape(result,['result','passed','failed','blocked','report']);
     for(const key of ['passed','failed','blocked'])need(Number.isSafeInteger(result[key])&&result[key]>=0,'qa_result_invalid');
@@ -246,11 +326,10 @@ export function readCmAiQaRunRound(input){
       &&row.task===input.identity.taskId&&row.package_digest===input.packageDigest
       &&row.qa_decision_id===decision.decisionId)rows.push(row);
   });
-  const starts=rows.filter(row=>row.phase==='start');
-  need(starts.length>0&&starts.length<=3&&starts.every((row,index)=>row.attempt===index+1)
-    &&new Set(starts.map(row=>row.operation_id)).size===starts.length,'qa_round_invalid');
-  const start=starts.at(-1);
-  need(start.operation_id===testRunId&&!rows.some(row=>row.operation_id===testRunId&&row.phase==='complete'),'qa_round_invalid');
+  const starts=validateRunSequence(rows.map((row,position)=>({row,position})));
+  const start=starts.at(-1).row;
+  need(start.operation_id===testRunId&&!rows.some(row=>row.operation_id===testRunId
+    &&['complete','abandoned'].includes(row.phase)),'qa_round_invalid');
   return start.attempt;
 }
 
@@ -299,7 +378,7 @@ function inspectQaResult(input,failureSource,historical=false) {
     &&Number.isSafeInteger(row.attempt)&&row.attempt>=1&&row.attempt<=3,'qa_result_invalid');
   const latestStarts=candidates.filter(item=>item.row.phase==='start');
   need(latestStarts.length>0,'qa_result_incomplete');
-  need(latestStarts.every((item,index)=>item.row.attempt===index+1),'qa_result_invalid');
+  validateRunSequence(candidates,'qa_result_invalid');
   const latestStart=latestStarts.at(-1);
   if(!historical)need(latestStart.row.operation_id===input.testRunId,'qa_result_stale');
   const runs=candidates.filter(item=>item.row.operation_id===input.testRunId);

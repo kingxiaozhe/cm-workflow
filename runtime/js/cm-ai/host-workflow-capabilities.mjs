@@ -16,7 +16,11 @@ export function validateHostWorkflowConfiguration(raw){
   shape(config,['qa','documentationPaths','applicableAgentFiles']);
   for(const key of ['documentationPaths','applicableAgentFiles'])
     need(Array.isArray(config[key])&&config[key].length<=256&&config[key].every(item=>typeof item==='string'),'invalid_workflow_config');
-  if(config.qa!==null)shape(config.qa,['commands','environment']);
+  if(config.qa!==null){
+    shape(config.qa,['commands','environment',...(Object.hasOwn(config.qa,'timeoutMs')?['timeoutMs']:[])]);
+    if(Object.hasOwn(config.qa,'timeoutMs'))need(Number.isSafeInteger(config.qa.timeoutMs)
+      &&config.qa.timeoutMs>0&&config.qa.timeoutMs<=60000,'invalid_workflow_config');
+  }
   return config;
 }
 
@@ -31,15 +35,16 @@ export function createHostWorkflowCapabilities({definition,configuration,bridge,
   if(configuration.qa!==null){
     need(allowQa===true,'qa_authorization_required');
     result.qaLogHome=logHome;
+    const requestTimeout={timeoutMs:configuration.qa.timeoutMs??60000};
     result.qaDecisionProvider=createHostQaDecisionProvider({timeoutMs:60000,
-      assess:(request,signal)=>bridge.call('qa_assess',request,signal)});
+      assess:(request,signal)=>bridge.call('qa_assess',request,signal,requestTimeout)});
     result.qaExecutor=createHostQaExecutor({specsDir,codeProject,feature,requirements,runtime,
       ...(definition.codeProjects?{codeProjects:definition.codeProjects}:{}),
       ...(bootstrap?{bootstrap:{requirements:bootstrap.configuration.bootstrapRequirements,scope:definition.scope}}:{}),
       ...configuration.qa,timeoutMs:1800000,logHome,
       ...(protectedExecution?{specsRoot:specsDir}:{}),
-      logic:(request,signal)=>bridge.call('qa_logic',request,signal),
-      browser:(request,signal)=>bridge.call('qa_browser',request,signal)});
+      logic:(request,signal)=>bridge.call('qa_logic',request,signal,requestTimeout),
+      browser:(request,signal)=>bridge.call('qa_browser',request,signal,requestTimeout)});
   }
   return result;
 }

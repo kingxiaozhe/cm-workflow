@@ -56,14 +56,17 @@ export function createHostQaDecisionProvider({assess,timeoutMs}) {
     const context=inspectCmAiQaTaskContext({...binding,taskId:binding.identity.taskId});
     const unassessedTasks=history(binding,context);
     need(!signal.aborted,'cancelled');
-    const assessment=await assess(freeze({...binding,pending:context.pending,mergeEligible:context.mergeEligible,
-      unassessedTasks}),signal);
+    let assessment,timedOut=false;
+    try{assessment=await assess(freeze({...binding,pending:context.pending,mergeEligible:context.mergeEligible,
+      unassessedTasks}),signal);}
+    catch(error){if(error.code!=='host_request_timeout')throw error;timedOut=true;}
     need(!signal.aborted,'cancelled');
     // Assessment is read-only. A task/log change while it was pending requires
     // another decision; do not bind an answer to different policy inputs.
     const current=inspectCmAiQaTaskContext({...binding,taskId:binding.identity.taskId});
     need(digest(current)===digest(context)&&history(binding,current)===unassessedTasks,'stale_qa');
-    const result=decideHostQaPolicy({assessment,pending:context.pending,mergeEligible:context.mergeEligible,unassessedTasks});
+    const result=timedOut?{status:'blocked',score:null,reason:'host_request_timeout'}:
+      decideHostQaPolicy({assessment,pending:context.pending,mergeEligible:context.mergeEligible,unassessedTasks});
     return freeze({...result,decisionId:`qa-${digest({identity:binding.identity,packageDigest:binding.packageDigest}).slice(0,48)}`,
       identity:binding.identity,packageDigest:binding.packageDigest,at:new Date().toISOString().replace(/\.\d{3}Z$/,'Z')});
   }});
