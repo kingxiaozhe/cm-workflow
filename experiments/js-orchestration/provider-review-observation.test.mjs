@@ -10,15 +10,17 @@ import {reviewPaths} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
 import {createTaskRunner} from './task-runner.mjs';
 
-function fixture(){
+function fixture({provider='codex',handoff=false}={}){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-observation-')));
   try{
     fs.writeFileSync(path.join(root,'code.js'),'old');fs.writeFileSync(path.join(root,'requirements.md'),'synthetic requirement');
+    const handoffPath=path.join(root,'work-T-001-a1-handoff.json');
+    if(handoff)fs.writeFileSync(handoffPath,'{"evidence":"synthetic handoff"}');
     const identity={repositoryId:'synthetic',runId:'run',taskId:'T-001',attempt:1};
     const baseline=captureReviewBaseline({root,identity,scope:['code.js'],requirements:['requirements.md']});
     fs.writeFileSync(path.join(root,'code.js'),'new');
-    const pkg=createReviewPackage({root,baseline,checks:[{id:'check',command:['synthetic'],outcome:'passed',exitCode:0,evidence:'fixture'}]});
-    const request=requestFor({invocationId:'invocation-1',identity,role:'reviewer',provider:'codex',requestedModel:'synthetic-model',contextId:'logical-review',payload:{reviewPackage:pkg,priorReview:null}});
+    const pkg=createReviewPackage({root,baseline,...(handoff?{handoffPath}:{}),checks:[{id:'check',command:['synthetic'],outcome:'passed',exitCode:0,evidence:'fixture'}]});
+    const request=requestFor({invocationId:'invocation-1',identity,role:'reviewer',provider,requestedModel:'synthetic-model',contextId:'logical-review',payload:{reviewPackage:pkg,priorReview:null}});
     const expectation={request,developerThreadId:'actual-developer',excludedThreadIds:['actual-main']};
     const observation={version:1,kind:'cm-provider-review-observation',requestDigest:request.requestDigest,events:[
       {event:'thread.started',provider_thread:'actual-review'}, {event:'turn.started',item_type:null},
@@ -164,3 +166,33 @@ test('existing task runner cannot complete by consuming an inspected provider re
     assert.equal(out.receipts.length,0);assert.equal(fs.readFileSync(path.join(root,'tasks.md'),'utf8'),'- [ ] T-001\n');
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+
+for(const provider of ['codex','claude']){
+  test(`${provider} handoff finding completes inspection without completion authority`,()=>{
+    const f=fixture({provider,handoff:true}),pkg=f.expectation.request.payload.reviewPackage;
+    assert.equal(pkg.handoff.path,'work-T-001-a1-handoff.json');
+    f.observation.result.value.findings=[{id:'handoff-digest-mismatch',severity:'P3',path:pkg.handoff.path,
+      message:'Handoff evidence disagrees',evidence:'Synthetic handoff comparison'}];
+    const value=inspect(f);
+    assert.equal(value.observationStatus,'completed');assert.equal(value.code,null);
+    assert.equal(value.review.findings[0].path,pkg.handoff.path);assert.equal(value.completionEligible,false);
+    f.observation.result.value.examinedPaths.push(pkg.handoff.path);
+    assert.throws(()=>inspect(f),{code:'missing_material'});
+  });
+  for(const [change,code] of [
+    [f=>f.path='outside.js','invalid_finding_path'],
+    [f=>f.id='id with spaces','invalid_finding_id'],
+    [f=>f.severity='P4','invalid_finding_severity'],
+    [f=>f.extra=true,'invalid_finding_shape'],
+  ])test(`${provider} inspector preserves ${code}`,()=>{
+    const f=fixture({provider,handoff:true});
+    const finding={id:'F1',severity:'P3',path:'code.js',message:'Synthetic finding',evidence:'Fixture'};
+    change(finding);f.observation.result.value.findings=[finding];
+    assert.throws(()=>inspect(f),{code});
+  });
+  test(`${provider} inspector names duplicate finding ids`,()=>{
+    const f=fixture({provider});
+    f.observation.result.value.findings=Array.from({length:2},()=>({id:'F1',severity:'P3',path:'code.js',message:'Finding',evidence:'Fixture'}));
+    assert.throws(()=>inspect(f),{code:'invalid_finding_shape'});
+  });
+}

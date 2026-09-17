@@ -79,7 +79,8 @@ function inspect(observationText,expectationText,cause) {
       observationStatus,code,review,completionEligible:false});
   }catch(error){
     const allowed=['limit_exceeded','observation_binding','observation_context','invalid_package',
-      'review_package_mismatch','missing_material','contradictory_verdict'];
+      'review_package_mismatch','missing_material','contradictory_verdict',
+      'invalid_finding_path','invalid_finding_id','invalid_finding_severity','invalid_finding_shape'];
     const code=allowed.includes(error?.code)?error.code:'observation_invalid';
     throw Object.assign(new Error(code),{code});
   }

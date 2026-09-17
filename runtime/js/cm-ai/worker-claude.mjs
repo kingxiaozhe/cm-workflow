@@ -1,14 +1,22 @@
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
 import {createClaudeReviewStream} from './claude-review-stream.mjs';
 
-export function claudeReviewArgs(model) {
+export function claudeBaseArgs(model) {
   if (typeof model !== 'string' || !/^[a-zA-Z0-9._-]+$/.test(model)) throw new Error('invalid_model');
   return ['--print','--input-format','text','--output-format','stream-json','--verbose',
     '--model',model,'--safe-mode','--setting-sources','','--tools','',
     '--disable-slash-commands','--strict-mcp-config','--mcp-config','{"mcpServers":{}}',
     '--permission-mode','dontAsk','--no-chrome','--no-session-persistence',
     '--prompt-suggestions','false'];
+}
+export function claudeReviewArgs(model) {
+  const args=claudeBaseArgs(model);
+  const schema=JSON.parse(readFileSync(new URL('./review-result.schema.json',import.meta.url),'utf8'));
+  // Claude's schema engine does not accept the draft-2020-12 metadata.
+  delete schema.$schema;delete schema.$id;
+  return [...args,'--json-schema',JSON.stringify(schema)];
 }
 export function claudeReviewFingerprint({cwd,model,cli='claude'}) {
   return createHash('sha256').update(JSON.stringify({cwd,cli,args:claudeReviewArgs(model),
@@ -27,7 +35,7 @@ export function claudePreflightMatches(receipt,options) {
 // Diagnostic receipt is NOT authorization. Only the original V3 owner may dispatch this worker.
 // A matching diagnostic receipt remains required separately from the V3 grant.
 export function claudeWorker({cwd,model,preflight,cli='claude',timeoutMs=60000,spawnProcess=spawn,
-  killProcess=(pid,signal)=>process.kill(pid,signal)}) {
+  killProcess=(pid,signal)=>process.kill(pid,signal),onNotice=null}) {
   const args=claudeReviewArgs(model);
   if (!Number.isSafeInteger(timeoutMs)||timeoutMs<1) throw new Error('invalid_timeout');
   let used=false;
@@ -45,9 +53,14 @@ export function claudeWorker({cwd,model,preflight,cli='claude',timeoutMs=60000,s
       try { child=spawnProcess(cli,args,{cwd,env:claudeEnvironment(),stdio:['pipe','pipe','pipe'],detached:true}); }
       catch { resolve({status:'failed',code:'spawn_failed'});return; }
       let buffer='', bytes=0, failure=null, settled=false, timedOut=false, killTimer, pendingClose;
-      const stream=createClaudeReviewStream(onEvent);
+      const stream=createClaudeReviewStream(onEvent,onNotice);
       const stop=code=>{
         failure??=code;
+        if (code==='unexpected_tool_or_content') {
+          // A successful non-StructuredOutput tool breaks the review boundary: kill now.
+          try {killProcess(-child.pid,'SIGKILL');} catch {}
+          return;
+        }
         try { killProcess(-child.pid,'SIGTERM'); } catch { /* close remains the authority */ }
         killTimer??=setTimeout(()=>{
           try {killProcess(-child.pid,'SIGKILL');} catch {}

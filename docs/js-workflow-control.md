@@ -280,7 +280,7 @@ Claude 单任务 Review 已接入原 V3：不带审查配置或对应轮次授�
 本机服务最多响应一次空 GET/HEAD `/api/hello` 健康检查，消息请求始终拒绝且不转发模型；
 凭证只证明工具列表/模型/传输配置，不授权 Review。不支持隔离条件时拒绝运行，禁止手造凭证。
 已安装 Claude CLI 的本机诊断已通过：设置 `CLAUDE_CODE_TMPDIR` 到同一受限临时目录，
-捕获第一条合规消息请求后主动终止，防止 CLI 内部修复/重试发出第二条请求；
+捕获第一条合规消息请求后主动终止；CLI 仍可能在停止前重发，诊断只接受 1–2 条消息请求，且每条都须通过模型、传输和工具列表检查（空工具列表或唯一的 `StructuredOutput`）。第三条请求或任一不合规请求均失败；结果保留 `message_requests`，并以 `message_requests_expected:'1-2'` 标明范围。
 `stopped_by_probe:true` 是诊断主动停止，不是用户取消，也不是 Review 成功。
 当前证据只有本机配置/工具表验证，没有真实模型审查结果；换模型或目录须重新诊断。
 隔离测试使用合成凭证和合成 Claude 进程，验证 Review→QA→文档核验→原 run_done/恢复，
@@ -292,7 +292,8 @@ Claude 单任务 Review 已接入原 V3：不带审查配置或对应轮次授�
 共享 V3 核心已能按实际登记的 Claude request 校验规范化审查事件、生成 Claude receipt、
 发布 `claude-cli` Review 并沿原唯一门禁完成；实时与恢复共用相同 provider 绑定。
 `claude-review-adapter.mjs` 复用原审查包/prompt 合同，只转交受信 worker，不自行调用进程。
-`worker-claude.mjs` 已接入该 adapter，使用 stdin、工具关闭、单次派发和 POSIX 进程组清理。
+`worker-claude.mjs` 已接入该 adapter，使用 stdin、除 CLI 内部 `StructuredOutput` 外零工具、单次派发和 POSIX 进程组清理；任何其他工具执行成功即失败并立即 SIGKILL。
+审查通过 `--json-schema` 传入去除 `$schema`/`$id` 的结果 schema；该参数改变配置指纹，旧凭证须重跑 preflight。诊断只接受空工具列表或唯一的 `StructuredOutput`。
 Windows 明确拒绝此 worker；CLI help 和合成协议验证不证明真实 Claude 进程兼容或物理隔离。
 
 ```bash

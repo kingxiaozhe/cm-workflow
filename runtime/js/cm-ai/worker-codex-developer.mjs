@@ -11,7 +11,9 @@ export function developerArgs({cwd,model,schemaPath,disabledSkills=[],specsRoot=
   const result=[];
   for(let i=0;i<args.length;i++){
     if(specsRoot!==null&&args[i]==='--sandbox'){i++;continue;}
-    if(args[i]==='--disable'&&coding.has(args[i+1])){i++;continue;}
+    // Codex 0.153.4 uses code_mode_host for tool execution; keep its default
+    // on the coding path without enabling the separate code_mode feature.
+    if(args[i]==='--disable'&&(coding.has(args[i+1])||args[i+1]==='code_mode_host')){i++;continue;}
     result.push(args[i]==='read-only'&&args[i-1]==='--sandbox'?'workspace-write':args[i]);
   }
   return [...result,...[...coding].flatMap(name=>['--enable',name]),
@@ -22,7 +24,7 @@ export function developerArgs({cwd,model,schemaPath,disabledSkills=[],specsRoot=
 export function codexDeveloperWorker({cwd,model,learning=true,specsRoot=null,
   schemaPath=fileURLToPath(new URL(learning?'./codex-developer-output.schema.json':'./codex-developer-basic-output.schema.json',import.meta.url)),
   disabledSkills=[],cli='codex',
-  timeoutMs=1800000,spawnProcess=spawn}) {
+  timeoutMs=1800000,spawnProcess=spawn,onNotice=null}) {
   validCallTimeout(timeoutMs);
   const args=developerArgs({cwd,model,schemaPath,disabledSkills,specsRoot});
   let used=false;
@@ -44,7 +46,7 @@ export function codexDeveloperWorker({cwd,model,learning=true,specsRoot=null,
       try{child=spawnProcess(cli,args,{cwd,env:cleanEnvironment(),stdio:['pipe','pipe','pipe'],shell:false,detached:true});}
       catch{resolve({status:'unavailable',code:'spawn_failed'});return;}
       let buffer='',bytes=0,thread=null,turnStarted=false,completed=false,lastMessage=null;
-      let failure=null,closed=false,timer,cleanup;
+      let failure=null,closed=false,timer,cleanup,noticeCount=0;
       const signalGroup=signalName=>{
         if(!Number.isInteger(child.pid)||child.pid<=0)return false;
         try{process.kill(-child.pid,signalName);return true;}
@@ -71,12 +73,21 @@ export function codexDeveloperWorker({cwd,model,learning=true,specsRoot=null,
         let event;try{event=JSON.parse(line);}catch{stop('invalid_event');return;}
         if(!event||Array.isArray(event)||typeof event.type!=='string'){stop('invalid_event');return;}
         if(event.type==='error'||event.type==='turn.failed'){stop('provider_failed');return;}
-        if(completed){stop('event_after_terminal');return;}
+        if(completed){
+          stop(event.type==='item.completed'&&event.item?.type==='error'?'invalid_event':'event_after_terminal');return;
+        }
         if(event.type==='thread.started'){
           if(thread!==null||typeof event.thread_id!=='string'||!event.thread_id.trim()){stop('thread_mismatch');return;}
           thread=event.thread_id;return;
         }
         if(!thread){stop('thread_missing');return;}
+        // CLI notices may precede turn.started; report only bounded message text.
+        if(event.type==='item.completed'&&event.item?.type==='error'){
+          if(typeof event.item.message!=='string'||noticeCount>=8){stop('invalid_event');return;}
+          noticeCount++;
+          try{if(typeof onNotice==='function')onNotice(event.item.message.slice(0,200));}catch{}
+          return;
+        }
         if(event.type==='turn.started'){
           if(turnStarted){stop('duplicate_turn');return;}turnStarted=true;return;
         }

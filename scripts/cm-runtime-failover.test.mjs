@@ -49,7 +49,7 @@ test('显式请求的运行时不可用时，切换以请求端为起点',()=>{
   assert.equal(dev.runtime,'codex');assert.equal(dev.from,'claude');assert.equal(dev.switched,true);
 });
 
-test('allowed 收窄时不越界选路（protected 模式只允许 codex）',()=>{
+test('allowed 收窄时不越界选路（单家声明只允许 codex）',()=>{
   const review=selectRuntime({role:'reviewer',allowed:['codex'],probe:all});
   assert.equal(review.runtime,'codex');
   assert.equal(review.switched,true);
@@ -102,7 +102,7 @@ function runHost(argv){
 const base=['serve','--config','/nonexistent.json','--mode','create',
   '--host-context','h1','--allow-development'];
 
-test('--failover 与 --protected-config 互斥（protected 只支持 codex，无备端可选）',async()=>{
+test('--failover 与 --protected-config 互斥（protected 预先绑定两家角色）',async()=>{
   const {code,text}=await runHost([...base,'--failover','--protected-config','/nonexistent2.json']);
   assert.equal(code,1);
   assert.match(text,/failover_unsupported_in_protected_mode/);

@@ -8,7 +8,69 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {previewClaudeTools,claudeProbeSandbox} from '../runtime/js/cm-ai/claude-tool-preview.mjs';
 
-test('diagnostic stops the process after exactly one tool-free local request',
+test('probe accepts only empty tools or one internal StructuredOutput tool',
+  {skip:process.platform!=='darwin'},async()=>{
+    for(const [tools,passed] of [[[],true],[[{name:'StructuredOutput'}],true],[[{name:'Bash'}],false],
+      [[{name:'StructuredOutput'},{name:'Bash'}],false],[[{name:'StructuredOutput'},{name:'StructuredOutput'}],false],
+      [[null],false],['StructuredOutput',false]]){
+      const source=`let input='';process.stdin.on('data',s=>input+=s);process.stdin.on('end',async()=>{
+        const response=await fetch(process.env.ANTHROPIC_BASE_URL+'/v1/messages',{method:'POST',
+          headers:{'x-api-key':'cm-synthetic-local-probe'},
+          body:JSON.stringify({model:'fixture',messages:[{role:'user',content:input}],tools:${JSON.stringify(tools)}})});
+        await response.text();process.exit(1);
+      });`;
+      const result=await previewClaudeTools({cwd:process.cwd(),model:'fixture',
+        spawnProcess:(command,args,options)=>spawn(command,[...args.slice(0,2),process.execPath,'-e',source],options)});
+      assert.equal(result.preflight.passed,passed,JSON.stringify(tools));
+      assert.equal(result.preflight.message_requests,1);
+      assert.equal(result.preflight.message_requests_expected,'1-2');
+      assert.equal(result.preflight.listener_closed,true);
+      assert.equal(result.preflight.request_checks[0].tools_allowed,passed);
+      assert.equal('tools_empty' in result.preflight.request_checks[0],false);
+    }
+  });
+
+test('probe accepts at most two compliant requests and validates every request',
+  {skip:process.platform!=='darwin'},async t=>{
+    const empty={model:'fixture',tools:[]};
+    const structured={model:'fixture',tools:[{name:'StructuredOutput'}]};
+    const cases=[
+      ['two empty tool lists',[empty,empty],true],
+      ['two StructuredOutput tool lists',[structured,structured],true],
+      ['empty and StructuredOutput tool lists',[empty,structured],true],
+      ['second request includes Bash',[structured,{...empty,tools:[{name:'Bash'}]}],false],
+      ['second request changes model',[empty,{...empty,model:'different-model'}],false],
+      ['three compliant requests',[empty,structured,empty],false],
+    ];
+    for(const [name,requests,passed] of cases)await t.test(name,async()=>{
+      // Keep the fixture alive after SIGTERM so the worker's real cleanup captures
+      // the entire sequence deterministically, without delaying the probe's abort.
+      const source=`process.on('SIGTERM',()=>{});setInterval(()=>{},1000);
+        let input='';process.stdin.on('data',s=>input+=s);process.stdin.on('end',async()=>{
+          for(const request of ${JSON.stringify(requests)}){
+            const response=await fetch(process.env.ANTHROPIC_BASE_URL+'/v1/messages',{method:'POST',
+              headers:{'x-api-key':'cm-synthetic-local-probe'},
+              body:JSON.stringify({...request,messages:[{role:'user',content:input}]})});
+            await response.text();
+          }
+        });`;
+      const {preflight}=await previewClaudeTools({cwd:process.cwd(),model:'fixture',
+        spawnProcess:(command,args,options)=>spawn(command,[...args.slice(0,2),process.execPath,'-e',source],options)});
+      assert.equal(preflight.message_requests,requests.length);
+      assert.equal(preflight.local_requests,requests.length);
+      assert.equal(preflight.message_requests_expected,'1-2');
+      assert.equal(preflight.passed,passed);
+      assert.equal(preflight.stopped_by_probe,true);
+      assert.equal(preflight.process_code,'cancelled');
+      assert.equal(preflight.listener_closed,true);
+      assert.deepEqual(preflight.request_checks.map(checks=>checks.tools_allowed),
+        requests.map(request=>request.tools.every(tool=>tool.name==='StructuredOutput')));
+      assert.deepEqual(preflight.request_checks.map(checks=>checks.model_matches),
+        requests.map(request=>request.model==='fixture'));
+    });
+  });
+
+test('diagnostic still accepts one tool-free message request from an older CLI',
   {skip:process.platform!=='darwin'},async()=>{
     const fixture=fileURLToPath(new URL('./fixtures/claude-review-process.mjs',import.meta.url));
     const result=await previewClaudeTools({cwd:process.cwd(),model:'fixture-plain-error',
@@ -19,6 +81,7 @@ test('diagnostic stops the process after exactly one tool-free local request',
       }});
     assert.equal(result.preflight.passed,true);assert.equal(result.preflight.local_requests,2);
     assert.equal(result.preflight.message_requests,1);
+    assert.equal(result.preflight.message_requests_expected,'1-2');
     assert.equal(result.preflight.stopped_by_probe,true);assert.equal(result.preflight.listener_closed,true);
   });
 test('probe sandbox denies sibling writes and connections to a different loopback port',

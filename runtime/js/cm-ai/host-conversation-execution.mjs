@@ -25,7 +25,8 @@ import {createHostBootstrap} from './host-bootstrap.mjs';
 import {digest,id,json,need,shape,freeze} from './effect-contract.mjs';
 export const protectedTextInstructions='\nProtected current-host mode: do not write files or run commands. Return {status,value,edits} on success; '
   +'value retains the original implementation/Learning contract. edits is [{path,beforeSha256,content}], complete UTF-8 text or null for deletion. '
-  +'Only the supplied scope and expected hashes are allowed. The fixed sandbox applies these edits. On failure return {status,code} without edits.';
+  +'Only the supplied scope and expected hashes are allowed. The fixed sandbox applies these edits. On failure return {status,code} without edits. '
+  +'status must be exactly "succeeded" on success (with value and edits) or "failed" (with code). Return the object through the structured output schema; never wrap it in markdown fences.';
 const protectedConversations=new WeakMap();
 export const conversationProtection=execution=>protectedConversations.get(execution)??null;
 export function createConversationExecution(definition,hostContextId,bridge,review=null,allowedAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
@@ -131,15 +132,15 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
           ...(protection?{editMode:'protected-text-v1',expected}: {})},control.signal));
         if(response.status==='succeeded'){
           shape(response,['status','value',...(protection?['edits']:[]),...(provider?['providerThread']:[])]);
-          if(provider){const {providerThread,...proposal}=response;validateClaudeProposal(proposal);}
+          if(provider){const {providerThread,...proposal}=response;id(providerThread);validateClaudeProposal(proposal);}
           if(protection){
             need(Array.isArray(response.edits),'protected_edit_invalid');
             if(response.value?.outcome==='blocked')need(response.edits.length===0,'protected_edit_invalid');
             else await projectExecution.commit({scope:bound.payload.scope,
               edits:response.edits,expected,identity:bound.identity,signal:control.signal});
           }
-          // This execution surface is the current trusted host, not a thread ID
-          // invented by a model response. Exclude it from independent Review.
+          // CLI session identity comes from the observed process stream; current
+          // conversation responses retain the trusted host identity.
           return {status:response.status,value:response.value,providerThread:provider?response.providerThread:hostContextId};
         }
         if(provider){const {providerThread,...failure}=response;shape(failure,['status','code']);return failure;}

@@ -5,6 +5,20 @@
 
 ## 未发布
 
+- 修复 Claude 开发提案依赖自由文本 JSON 的问题：传入专用结构化输出 schema，配对内部 `StructuredOutput` 并优先读取 `structured_output`；无结构化结果时保留 JSON 回退，解析失败明确返回 `invalid_output_json`，严格校验成功/失败字面值与提案形状，原只读工具权限不变。
+
+- 修复审查 finding 指向交接文件时被拒绝的问题：Codex 与 Claude 共享提示词明确允许包内 handoff 路径，保留 examinedPaths 精确匹配；非法 finding 路径、标识、严重度及形状分别返回具名错误码，便于诊断。
+
+- 修复 Claude 回环预检将新版 CLI 的两次合规请求误判为失败：允许 1–2 次且逐条验证模型、传输与工具列表（空列表或唯一的 `StructuredOutput`），第三次请求或任一违规仍拒绝；结果新增 `message_requests_expected:'1-2'`，保留首次合规即停止、不转发模型与进程清理检查。
+
+- 修复 Claude CLI 思考事件与审查结构化输出兼容：开发与审查流各容忍最多 64 条 `thinking_tokens`，思考块不推进状态；审查传入去除 `$schema`/`$id` 的结果 schema，配对 CLI 内部 `StructuredOutput`，最多容忍 16 次明确被拒的其他工具尝试，任何其他工具执行成功立即失败并终止进程组。开发流保留原只读工具与提案校验；审查参数指纹已改变，旧凭证须重跑 preflight。
+
+- 修复 Claude CLI 回答前的 `rate_limit_event` 导致 `cm-ai` 开发与审查流失败的问题：同一会话终态前最多容忍 8 条，通过可选 `onNotice({kind:'rate_limit',info})` 仅上报标量字段；保持状态、观察事件及返回值形状不变，会话不匹配、超限和未知事件仍拒绝。
+
+- 修复 Codex CLI 0.153.4 起 `cm-ai` 开发子进程禁用 `code_mode_host` 导致工具执行失败的问题：开发路径保留该工具通道，不启用 `code_mode` 特性；workspace-write、网络关闭和 specs 只读沙箱边界不变，审查路径仍禁用 `code_mode_host`，参数保持不变。
+
+- 修复 `cm-ai` 开发与审查 worker 将 Codex CLI 0.153.4 启动提示误判为失败的问题：终态前最多容忍 8 条 `item.completed/error`，两类 worker 均通过独立 `onNotice` 回调上报 message 前 200 字符，回调异常不影响流程，保持事件流与返回值形状不变；超限或终态后提示仍拒绝，顶层 `error`、`turn.failed`、非零退出、缺结果与未知条目的失败判定保持不变。
+
 - `cm-ai` protected host 按项目声明派发 coder/reviewer CLI，支持 Claude 只读文本提案经宿主校验后落盘；保留逐轮授权和跨家独立审查，实际启动进程后记录 `cli-dispatch`，审查凭证如实标注 `claude-cli`。已覆盖本机假进程夹具，真实模型双向验收待执行。
 
 - 修复 `cm-init` 运行时声明无法进入宿主草稿的问题：可选 `selection.runtimes` 按预设追加配置目标，沿用已有文件名，核验声明并保护无关配置，接续原确认、审查与写入流程；直接导入 `scripts/cm-workflow-config.mjs` 复用唯一解析器（现有规则未禁止该方向，避免为下沉实现越过本次 cm-init 修改边界）。

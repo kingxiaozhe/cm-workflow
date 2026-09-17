@@ -4,14 +4,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readRunDefinition,openControlRun} from './cm-ai-run.mjs';
+import {readRunDefinition,openControlRun,createCodexExecution} from './cm-ai-run.mjs';
 import {createConversationExecution as executionFor} from '../runtime/js/cm-ai/host-conversation-execution.mjs';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {serveCmAiHost} from '../runtime/js/cm-ai/host-session.mjs';
 import {createQaFixOwnerHost} from '../runtime/js/cm-ai/host-qa-fix-owner.mjs';
 import {createFixLearningPreparation} from '../runtime/js/cm-fix/learning.mjs';
 import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
-import {loadConfig,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
+import {createHostReviewAuthority} from '../runtime/js/cm-ai/host-review-authority.mjs';
+import {loadConfig,declaredRuntimes,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
 import {readHostWorkflowConfiguration} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {digest,json,need,shape} from '../runtime/js/cm-ai/effect-contract.mjs';
 export {executionFor as createConversationExecution,reviewConfiguration as readConversationReviewConfiguration};
@@ -62,6 +63,40 @@ async function protectedExecutionFor(definition,hostContextId,extra,review,mode,
     });
 }
 
+
+// Existing Codex-only runs retain their exact configuration/context identities.
+// A successful original fingerprint check is the sole authority for this path;
+// no migration, journal rewrite, or in-flight provider switch is permitted.
+async function legacyProtectedExecutionFor(definition,hostContextId,extra,review,mode,workflow,bridge,bootstrap=null){
+  need((extra.get('--runtime')??'codex')==='codex','protected_runtime_unsupported');
+  need(review!==null,'review_configuration_required');
+  need(['1','2'].includes(extra.get('--allow-provider-development-attempt')),'provider_development_authorization_required');
+  const attempt=Number(extra.get('--allow-provider-development-attempt'));
+  need(mode!=='create'||attempt===1,'invalid_development_attempt');
+  // Child fix configuration is checked before opening the parent store below.
+  const file=extra.get('--protected-config'),info=fs.lstatSync(file);
+  need(info.isFile()&&!info.isSymbolicLink()&&info.size<=64*1024,'invalid_protected_config');
+  const config=json(JSON.parse(fs.readFileSync(file,'utf8')));shape(config,['model','checkCommands','timeoutMs']);
+  const authority=createHostReviewAuthority({hostContextId,reviewerId:'reviewer',adapterId:'codex-review-adapter',
+    decide:async binding=>String(binding.identity.attempt)===extra.get('--allow-review-attempt')?{status:'approved'}:null});
+  return createCodexExecution({codeProject:definition.codeProject,specsRoot:definition.specsDir,
+    developerModel:config.model,checkCommands:config.checkCommands,timeoutMs:config.timeoutMs,
+    hostContextId,developerContextId:'cm-protected-author',reviewerModel:review.model,
+    reviewerPreflight:review.preflight,disabledSkills:review.disabledSkills,
+    ...(workflow?{workflow:{definition,configuration:workflow}}:{}),
+    ...(bootstrap?{bootstrap:{definition,selection:bootstrap.selection}}:{})},
+  {hostDecision:null,developmentAttempt:attempt,hostDecisionProvider:authority.hostDecisionProvider,authorizeReview:authority.authorize,
+    ...(workflow?{workflow:{bridge,allowQa:extra.has('--allow-qa')}}:{}),
+    ...(bootstrap?{bootstrap:{bridge,allowWrite:extra.has('--allow-bootstrap-write')}}:{}),
+    authorizeDevelopment:request=>({status:request.identity.attempt===attempt
+      &&digest({...request.identity,attempt:1})===digest(definition.identity)?'approved':'denied'})});
+}
+function canResumeLegacyProtected(definition,runtime){
+  if(runtime!=='codex')return false;
+  const config=loadConfig({projectRoot:definition.codeProject});
+  return ['unknown','codex'].includes(declaredRuntimes(config).available)
+    &&['coder','reviewer'].every(role=>['current-ai','codex-cli'].includes(config.roles[role].adapter));
+}
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Approved 0.bootstrap only: --bootstrap-config PATH {selection:null for scaffold, or original cm-init selection for rules} and --allow-bootstrap-write. Original scope must include fixed instruction targets; they are host-written inside the original task effect, checked/reviewed and reloaded. No Git/install/network grant. Optional codeProjects selects disjoint real roots below codeProject; prefix scope/requirements and use protected current-session checks with a declared codeProject per command.\n');
@@ -149,11 +184,24 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       fix=json(JSON.parse(fs.readFileSync(file,'utf8')),64*1024);
       if(extra.has('--protected-config')||protection)need(fix.configuration?.protectSpecs===true,'protected_fix_required');
     }
-    const execution=extra.has('--protected-config')
-      ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap)
-      :executionFor(definition,argv[6],bridge,review,allowedAttempt,workflow,extra.has('--allow-qa'),runtime,
-        {...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{})});
-    run=await openControlRun(definition,argv[4],execution);
+    let execution;
+    if(argv[4]==='resume'&&extra.has('--protected-config')&&canResumeLegacyProtected(definition,runtime)){
+      try{
+        execution=await legacyProtectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap);
+        run=await openControlRun(definition,argv[4],execution);
+        error.write('cm-ai-host: resumed original Codex protected execution after exact fingerprint validation.\n');
+      }catch(cause){
+        if(!['fingerprint_mismatch','tool_preflight_missing'].includes(cause.code))throw cause;
+        execution=undefined;
+      }
+    }
+    if(!run){
+      execution=extra.has('--protected-config')
+        ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap)
+        :executionFor(definition,argv[6],bridge,review,allowedAttempt,workflow,extra.has('--allow-qa'),runtime,
+          {...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{})});
+      run=await openControlRun(definition,argv[4],execution);
+    }
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}
     if(hasFix){
       need(fs.realpathSync(fix.specsRoot)===fs.realpathSync(definition.specsDir)

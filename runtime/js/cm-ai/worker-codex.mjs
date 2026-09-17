@@ -1,11 +1,6 @@
 import { spawn } from 'node:child_process';
 import { commonArgs, cleanEnvironment, configFingerprint } from './codex-config.mjs';
 
-// CLI 0.153.4 emits this notice even with Code Mode explicitly disabled.
-// commonArgs keeps its host disabled; the offline sink confirmed tools remain
-// empty and the turn continues. Match only this exact, pre-turn notice once.
-const disabledCodeModeNotice = 'Code Mode is unavailable because code-mode host is disabled. Code mode will fail closed; enable `features.code_mode_host` and install `codex-code-mode-host`.';
-
 // A preflight receipt is diagnostic evidence, not a human approval token.
 export function preflightMatches(receipt, options) {
   const promptTransport=options.promptTransport??'argument';
@@ -33,7 +28,7 @@ function validEventShape(message) {
 
 export function codexWorker({ cwd, model, schemaPath, preflight,
   disabledSkills = [], cli = 'codex', timeoutMs = 60000,
-  promptTransport = 'argument', spawnProcess = spawn }) {
+  promptTransport = 'argument', spawnProcess = spawn, onNotice = null }) {
   if (!['argument','stdin'].includes(promptTransport)) throw new Error('invalid prompt transport');
   let used = false;
   return async (request, { signal, onEvent }) => {
@@ -47,7 +42,7 @@ export function codexWorker({ cwd, model, schemaPath, preflight,
         cwd, env: cleanEnvironment(), stdio: [promptTransport==='stdin'?'pipe':'ignore', 'pipe', 'pipe'],
       });
       let buffer = '', outputBytes = 0, value, completion = false, failure, settled = false;
-      let failureTerminal = false, startupNoticeSeen = false;
+      let failureTerminal = false, noticeCount = 0;
       let providerThread, turnStarted = false, timedOut = false, killTimer;
       const stop = code => {
         failure ??= code;
@@ -66,11 +61,12 @@ export function codexWorker({ cwd, model, schemaPath, preflight,
         let message;
         try { message = JSON.parse(line); } catch { stop('invalid_event'); return; }
         if (!validEventShape(message)) { stop('invalid_event'); return; }
-        if (message.type === 'item.completed' && message.item.type === 'error'
-          && message.item.message === disabledCodeModeNotice
-          && providerThread && !turnStarted && !startupNoticeSeen
-          && !completion && !failureTerminal && !failure && value === undefined) {
-          startupNoticeSeen = true;
+        // Notices stay outside the observer protocol and result contract.
+        if (message.type === 'item.completed' && message.item.type === 'error') {
+          if (typeof message.item.message !== 'string' || !providerThread
+            || completion || failureTerminal || failure || noticeCount >= 8) { stop('invalid_event'); return; }
+          noticeCount++;
+          try { if (typeof onNotice === 'function') onNotice(message.item.message.slice(0, 200)); } catch {}
           return;
         }
         // Normalize known non-result progress at the provider boundary. The

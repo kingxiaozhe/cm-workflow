@@ -16,7 +16,8 @@ import {createFixFinalReview} from '../runtime/js/cm-fix/final-review.mjs';
 // Synthetic raw CLI stream through the actual worker/adapter/fix observer.
 // No provider process, real project, credentials or completion writes.
 for(const mode of ['progress','tool','late-progress','early-progress','missing-result','wrong-digest','private-event','private-error',
-  'startup-notice','early-notice','late-notice','duplicate-notice','changed-notice','notice-only']){
+  'startup-notice','early-notice','late-notice','duplicate-notice','changed-notice','notice-only',
+  'two-notices','eight-notices','ninth-notice','terminal-notice','malformed-notice','unfinished-notice','top-error','turn-failed','duplicate-failure','unknown-item']){
   test(`fix final review raw Codex stream: ${mode}`,async t=>{
     const temp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-review-progress-')));
     t.after(()=>fs.rmSync(temp,{recursive:true,force:true}));
@@ -34,9 +35,10 @@ for(const mode of ['progress','tool','late-progress','early-progress','missing-r
     const authority=createHostReviewAuthority({hostContextId:'author',reviewerId:reviewer.reviewerId,adapterId:reviewer.adapterId,decide:async()=>({status:'approved'})});
     const signal=new AbortController().signal;
     await authority.hostDecisionProvider.decide({identity,packageDigest:pkg.packageDigest},signal);
-    let registered=null,started=null,spawns=0;const events=[];
+    let registered=null,started=null,spawns=0,workerResult;const events=[],notices=[];
     const options={cwd:root,model:'fixture'};
     const worker=codexWorker({...options,schemaPath:'/unused',cli:'/must-not-run',timeoutMs:1000,
+      onNotice:message=>notices.push(message),
       preflight:{passed:true,cli_model:options.model,config_fingerprint:configFingerprint(options)},
       spawnProcess(){
         spawns++;assert(registered);
@@ -52,20 +54,27 @@ for(const mode of ['progress','tool','late-progress','early-progress','missing-r
           const rows=mode==='notice-only'?[{type:'thread.started',thread_id:'fresh-provider'},notice]:[
             ...(mode==='early-progress'?progress:[]),...(mode==='early-notice'?[notice]:[]),
             {type:'thread.started',thread_id:'fresh-provider'},
-            ...(['startup-notice','duplicate-notice'].includes(mode)?[notice]:[]),
+            ...(['startup-notice','duplicate-notice','two-notices'].includes(mode)?[notice]:[]),
             ...(mode==='duplicate-notice'?[notice]:[]),
             ...(mode==='changed-notice'?[{...notice,item:{...notice.item,message:notice.item.message+' synthetic unknown diagnostic'}}]:[]),
             {type:'turn.started'},...(mode==='late-notice'?[notice]:[]),
+            ...(['eight-notices','ninth-notice'].includes(mode)?Array.from({length:mode==='eight-notices'?8:9},()=>notice):[]),
+            ...(mode==='two-notices'?[{...notice,item:{type:'error',message:'Skill descriptions were shortened to fit the skills context budget. '+'x'.repeat(200),extra:'not retained'}}]:[]),
+            ...(mode==='malformed-notice'?[{...notice,item:{type:'error',message:null}}]:[]),
+            ...(mode==='unfinished-notice'?[{...notice,type:'item.started'}]:[]),
+            ...(['top-error','duplicate-failure'].includes(mode)?[{type:'error',message:'fatal'}]:[]),
+            ...(['turn-failed','duplicate-failure'].includes(mode)?[{type:'turn.failed'}]:[]),
+            ...(mode==='unknown-item'?[{type:'item.completed',item:{type:'future_item'}}]:[]),
             ...progress,...(mode==='tool'?[{type:'item.started',item:{type:'command_execution'}}]:[]),
             ...(mode==='private-event'?[{type:'private-provider-text',item:{type:'private-item-text'}}]:[]),
             ...(mode==='missing-result'?[]:[{type:'item.completed',item:{type:'agent_message',text:JSON.stringify(result)}}]),
-            {type:'turn.completed'},...(mode==='late-progress'?progress:[])];
+            {type:'turn.completed'},...(mode==='terminal-notice'?[notice]:[]),...(mode==='late-progress'?progress:[])];
           for(const row of rows){if(child.killed)break;child.stdout.write(JSON.stringify(row)+'\n');}
           if(!child.killed)close(0);
         });
         return child;
       }});
-    const adapter=createCodexReviewRun(worker);
+    const adapter=createCodexReviewRun(async (...args)=>(workerResult=await worker(...args)));
     let errorGetterCalls=0;
     const run=(request,control)=>{
       if(mode==='private-error')throw Object.defineProperty(new Error('private-provider-text'),'code',
@@ -74,12 +83,28 @@ for(const mode of ['progress','tool','late-progress','early-progress','missing-r
     };
     const review=createFixFinalReview({reviewPackage:pkg,configuration,timeoutMs:2000},{authorize:authority.authorize,run});
     const result=await review({signal,register:r=>{registered=r;},onStarted:id=>{started=id;}});
-    const success=['progress','startup-notice'].includes(mode);
+    const success=['progress','startup-notice','late-notice','duplicate-notice','changed-notice','two-notices','eight-notices'].includes(mode);
     if(success)assert.equal(result.outcome,'observed');
     else if(result.outcome==='observed'){
       assert.equal(result.inspection.observationStatus,'unknown');
       assert.equal(result.inspection.review,null);
     }else assert.equal(result.outcome,'unknown');
+    if(mode==='two-notices'){
+      assert.equal(workerResult.status,'succeeded');
+      assert.deepEqual(Object.keys(workerResult).sort(),['status','value']);
+      assert.equal(notices.length,2);assert.equal(notices[1].length,200);
+      assert(!JSON.stringify(workerResult).includes('not retained'));
+    }
+    if(mode==='progress'){
+      assert.deepEqual(Object.keys(workerResult).sort(),['status','value']);
+      assert.deepEqual(events.filter(e=>e.item_type==='error'),[]);
+    }
+    if(['top-error','turn-failed','duplicate-failure'].includes(mode))assert.equal(workerResult.code,'provider_failed');
+    if(['terminal-notice','ninth-notice'].includes(mode))assert.deepEqual(workerResult,{status:'failed',code:'invalid_event'});
+    if(mode==='ninth-notice')assert.equal(notices.length,8);
+    if(mode==='terminal-notice')assert.equal(notices.length,0);
+    if(mode!=='unfinished-notice')assert.deepEqual(events.filter(e=>e.item_type==='error'),[]);
+    if(mode==='unknown-item')assert.deepEqual(result.diagnostic,{phase:'event',code:'observation_invalid',event:'item.completed',itemType:'other'});
     if(mode==='tool')assert.deepEqual(result.diagnostic,{phase:'event',code:'observation_invalid',event:'item.started',itemType:'command_execution'});
     if(mode==='wrong-digest')assert.deepEqual(result.diagnostic,{phase:'result',code:'review_package_mismatch'});
     if(mode==='private-event')assert.deepEqual(result.diagnostic,{phase:'event',code:'observation_invalid',event:'other',itemType:'other'});
@@ -88,6 +113,9 @@ for(const mode of ['progress','tool','late-progress','early-progress','missing-r
     assert.equal(result.completionEligible,false);assert.equal(spawns,mode==='private-error'?0:1);
     if(success){
       assert.equal(started,'fresh-provider');assert.equal(result.inspection.review.verdict,'approved');
+      const noticeCount=mode==='eight-notices'?8:['duplicate-notice','two-notices'].includes(mode)?2:mode==='progress'?0:1;
+      assert.equal(notices.length,noticeCount);
+      assert.deepEqual(Object.keys(workerResult).sort(),['status','value']);
       assert.deepEqual(events.map(e=>e.event),['thread.started','turn.started','item.completed','turn.completed','process_closed']);
     }
     await assert.rejects(review({signal,register(){},onStarted(){}}),{code:'final_review_already_attempted'});
