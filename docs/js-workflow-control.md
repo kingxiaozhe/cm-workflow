@@ -362,6 +362,28 @@ QA、文档可显式接入下述固定能力，多任务使用下文批次 CLI�
 原业务 scope 内，AGENTS/CLAUDE 等保护指令仍不能从此写入。applicableAgentFiles 沿原 N7
 相对路径合同，须列出实际适用的子目录指令；空数组不是跳过项目根指令或免除宿主读取义务。
 
+已完成任务的一次性 QA 附加：原无 workflow 或 `qa:null` 的 run，仅在 `--mode resume`、
+state 为 `fixture_completed` 时，可显式同时传入含 QA 的 `--workflow-config PATH` 和
+`--allow-qa`。缺授权返回 `qa_authorization_required`；未完成返回 `qa_attach_not_completed`；
+原本已有 QA 的 run 换配置仍返回 `fingerprint_mismatch`。definition、scope、requirements、
+identity、host-context、模型、保护模式、检查及其他配置保持原指纹约束。原无 workflow 时可
+带入原 scope 内的 documentationPaths 和 applicableAgentFiles；已有 `qa:null` workflow
+须保留这两项原值，历史只存摘要，不能猜测旧配置。附加不执行审后文档写入。
+
+store 的 `fingerprints.config` 不覆盖，旧 journal/完成凭证保持原字节。先匹配完整原指纹，
+或严格匹配去掉 QA 的原配置指纹，再绑定新增配置：`qaFingerprint` 是原 config 摘要算法
+对完整恢复配置材料（含 definition、execution、QA provider/executor 与文档能力）的 SHA-256。
+runner journal 使用原哈希链 envelope，新增 `kind:"result"`、
+`payload:{version:3,protocol:"cm-task-runner",type:"qa-attached",record:{version:1,qaFingerprint,attachedAt,hostContextId}}`；
+attachedAt 是 UTC 秒级 ISO 时间。仅允许一条，回放验证完成状态、无 pending effect 及精确格式。
+后续须同时匹配原指纹和已记录的 qaFingerprint，不允许移除或替换 QA；每次启动仍须重新授权。
+日志复用原 writer 写 `event:decision`、`phase:qa_attach`，业务 data 只有 feature/task/qaFingerprint；
+重复恢复去重，journal 成功后日志失败可在同配置恢复时补写。
+
+附加只连接原 N6 能力，`qa` 仍请求 `qa_assess`，QA 执行、qa_result、context_refresh、finish
+沿用原门禁，不自动决定，不重跑 develop/review/complete，不清除 correction 阻断。
+（2026-09-17 dogfood 事故：create 漏传 workflow 导致已完成 feature 的强制 QA 永久卡在恢复指纹校验。）
+
 JS 通过现有通道发出固定请求，结果由原组件校验：
 
 | kind | 当前会话的职责 | JS 的职责 |
@@ -530,7 +552,7 @@ QA命令复用原native specs只读profile，日志/报告仍由原JS宿主写�
 
 进程内factory的可选configuration.workflow为`{definition,configuration}`，分别为完整原run定义与原workflow配置；
 authority.workflow为`{bridge,allowQa}`，只用于组装上述固定能力，不接受任意QA/doc写入callback。
-整个定义和配置绑定原恢复指纹；QA许可不作为持久批准，启动须重新提供。旧运行未配置workflow不能恢复时临时添加。
+整个定义和配置绑定原恢复指纹；QA许可不作为持久批准，启动须重新提供。原无QA的已完成run可按上文的一次性附加规则恢复；未完成run仍不能临时添加。
 默认会话/批次不变；受保护父模式仍不接受Claude，但允许原QA-fix参数且子配置必须protectSpecs:true（见下节）。它不授权Git、安装或发布，
 也不代表全部N1–N8分支已完成。切换模式、模型、根路径或host-context不能复用旧运行。
 

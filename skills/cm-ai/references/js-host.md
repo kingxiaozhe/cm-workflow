@@ -77,6 +77,11 @@ R1要求修改但尚未授权第2轮时保留changes_requested，不登记开发
 当前会话不重复处理develop/check或手写凭证。补授权后沿原mode resume，不换runId。
 
 首次create可同时提供原`--workflow-config`；有QA配置须另带`--allow-qa`，恢复保持原配置与授权。
+原无workflow或`qa:null`且任务已为`fixture_completed`时，可在`--mode resume`显式提供
+含QA的`--workflow-config`与`--allow-qa`，一次性附加N6；原definition/scope/requirements/identity、
+host-context、开发/审查配置仍须匹配。journal追加不可重复/修改的`qa-attached`，运行日志写
+`decision/qa_attach`；后续恢复须保持已绑定配置及重新授权，`qa`仍要求`qa_assess`等原宿主请求。
+不重跑开发/审查，不将任务完成当作QA通过（事故：create漏配workflow曾使feature强制QA无法补做）。
 QA命令复用同一specs只读沙箱。最终任务的documentationPaths必须已在批准scope内，
 在同一次受保护开发调用中同步，随后进入原检查/handoff/Review；不派发宿主documentation_sync，也不增加模型轮次。
 宿主仍处理qa_assess/qa_logic/qa_browser及只读documentation_inspect；不得借这些请求改代码、规格或指令。

@@ -4,11 +4,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {hex,id,json,need,shape,text,validIdentity} from './effect-contract.mjs';
+import {readQaAttachment} from './qa-attachment.mjs';
 
 const writer=fileURLToPath(new URL('../../../scripts/cm-log-event.py',import.meta.url));
 const MiB=1024*1024;
 
 const sameIdentity=(left,right)=>['repositoryId','runId','taskId','attempt'].every(key=>left[key]===right[key]);
+
+export function recordCmAiQaAttachment({specsDir,codeProject,feature,identity,record,logHome}){
+  record=readQaAttachment(record);validIdentity(identity);text(feature);
+  const args=[writer,'--workflow','cm-ai','--event','decision','--phase','qa_attach','--runtime','codex',
+    '--project-root',codeProject,'--specs-dir',specsDir,'--run-id',identity.runId,'--at',record.attachedAt,
+    '--detail','附加 N6 QA','--data-json',JSON.stringify({feature,task:identity.taskId,qaFingerprint:record.qaFingerprint})];
+  let result;
+  try{result=childProcess.spawnSync('python3',args,{timeout:10000,maxBuffer:MiB,killSignal:'SIGKILL',
+    ...(logHome?{env:{...process.env,CM_WORKFLOW_LOG_HOME:logHome}}:{})});}
+  catch{need(false,'qa_log_failed');}
+  need(!result.error&&result.status===0&&result.signal===null&&Buffer.isBuffer(result.stdout),'qa_log_failed');
+  return readResult(result.stdout,identity,specsDir);
+}
 
 export function readDecision(raw,identity,packageDigest) {
   const decision=json(raw);shape(decision,['decisionId','identity','packageDigest','status','reason','score','at']);

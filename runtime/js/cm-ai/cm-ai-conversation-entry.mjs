@@ -138,12 +138,14 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'attachLearningEvidence'))runnerKeys.push('attachLearningEvidence');
   if(runner&&Object.hasOwn(runner,'inspectFixAssociation'))runnerKeys.push('inspectFixAssociation');
   if(runner&&Object.hasOwn(runner,'acceptCompletedFix'))runnerKeys.push('acceptCompletedFix');
+  if(runner&&Object.hasOwn(runner,'attachQa'))runnerKeys.push('attachQa');
   if(runner&&Object.hasOwn(runner,'inspectBootstrapAdmission'))runnerKeys.push('inspectBootstrapAdmission');
   shape(runner,runnerKeys);
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');
   if(Object.hasOwn(runner,'attachLearningEvidence'))need(typeof runner.attachLearningEvidence==='function');
   if(Object.hasOwn(runner,'inspectFixAssociation'))need(typeof runner.inspectFixAssociation==='function');
   if(Object.hasOwn(runner,'acceptCompletedFix'))need(typeof runner.acceptCompletedFix==='function');
+  if(Object.hasOwn(runner,'attachQa'))need(typeof runner.attachQa==='function');
   if(Object.hasOwn(runner,'inspectBootstrapAdmission'))need(typeof runner.inspectBootstrapAdmission==='function');
 
   const hostDecision=Object.hasOwn(options,'hostDecision')?json(options.hostDecision):null;
