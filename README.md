@@ -17,6 +17,10 @@
 
 ## 最近更新
 
+**0.13.0**
+
+- **双运行时协作与容灾**：`runtimes.available` 声明可用运行时，protected host 按 coder/reviewer 配置跨家派发（2026-09-17 已完成真实模型双向单文件小任务验收各一次，均停在 N6 QA 待决；QA/N8 不在验收范围、仍未验收）；`--failover` 仅在启动前探测选路，`scripts/cm-failover.mjs` 提供只读断点交接，详见[能力边界](docs/runtime-failover.md)。
+
 **0.12.0**
 
 - **安全扫描**：新增 `cm-security`，结合业务地图检查代码改动，输出漏洞候选、业务影响和未检查范围。
@@ -83,7 +87,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.12.0 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.13.0 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
@@ -219,7 +223,7 @@ CM 从磁盘记录恢复上下文，而不是只依赖聊天历史。
 | 环境 | 安装 / 入口 | JS 开发流程的当前边界 |
 | --- | --- | --- |
 | Codex · macOS | `npx @aibyzero/cm-workflow@latest install` 或 `./install-codex.sh`；`$cm-*` | 默认 JS 入口已接入，有本地安装与工具执行证据；不等于所有业务场景、真实模型审查都已验收 |
-| Claude Code · macOS | `./install.sh`；`/cm-*` | 使用同一 JS 核心，当前会话入口已接入；完整真实双宿主业务验收仍待补齐 |
+| Claude Code · macOS | `./install.sh`；`/cm-*` | 使用同一 JS 核心，当前会话入口已接入；2026-09-17 真实模型双向单文件小任务验收各一次，均停在 N6 QA 待决；QA/N8 不在验收范围、仍未验收 |
 | Linux / WSL2 | 对应 Bash 安装器 | runner 已有平台准入；尚缺目标环境端到端实测，Claude 隔离配置诊断目前限 macOS |
 | Claude Code · 原生 Windows | `install.ps1`；`/cm-*` | PowerShell 安装和共享工具有 CI 覆盖；原生 Windows JS runner 尚不支持 |
 | Pi / BYZ | Pi package | 分发同一组 Skills 与 Prompts；包加载不代表已具备 Codex/Claude 的 JS 工具宿主 |
