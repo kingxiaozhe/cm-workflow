@@ -305,6 +305,23 @@ require_file "scripts/cm-task-gate.py"
 require_file "scripts/test-task-gate.py"
 require_file "scripts/cm-workflow-config.mjs"
 require_file "scripts/cm-workflow-config.test.mjs"
+# Group 4: user runtimes.yml producers <-> authoritative consumer.
+for asset in scripts/cm-runtime.mjs scripts/cm-runtime-edit.mjs scripts/cm-runtime-install.mjs scripts/cm-runtime.test.mjs skills/cm-init/references/runtime-declaration.md; do
+  require_file "$asset"
+done
+grep -Fq 'userRuntimesPath' "$ROOT/scripts/cm-runtime.mjs" &&
+  grep -Fq 'writeUserRuntime' "$ROOT/scripts/cm-runtime-install.mjs" &&
+  grep -Fq 'runtimes.yml' "$ROOT/scripts/cm-workflow-config.mjs" &&
+  grep -Fq 'loadUserRuntimes()' "$ROOT/scripts/cm-workflow-config.mjs" &&
+  grep -Fq 'runtimes_source' "$ROOT/skills/cm-init/references/runtime-declaration.md" ||
+  fail "user runtimes.yml producer/consumer pairing is incomplete"
+if [ "$MODE" = "plugin" ]; then
+  for installer in install.sh install.ps1 install-codex.sh; do
+    grep -Fq 'scripts/cm-runtime-install.mjs' "$ROOT/$installer" ||
+      fail "user runtimes.yml prompt not wired in $installer"
+  done
+fi
+
 require_file "scripts/cm_workflow_config.py"
 require_file "scripts/test-workflow-config.py"
 require_file "scripts/validate-test-cases.mjs"
@@ -613,7 +630,7 @@ for consumer in \
     fail "external-expert AUTO routing is not wired into $consumer"
 done
 
-for name in cm-idea cm-init cm-prd cm-ai cm-test cm-security cm-fix cm-refactor cm-check; do
+for name in cm-idea cm-init cm-prd cm-ai cm-test cm-security cm-fix cm-refactor cm-check cm-runtime; do
   require_file "skills/$name/SKILL.md"
   require_file "compat/claude-commands/$name.md"
   wrapper="$ROOT/compat/claude-commands/$name.md"

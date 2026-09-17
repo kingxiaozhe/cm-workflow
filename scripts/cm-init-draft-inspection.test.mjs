@@ -94,3 +94,24 @@ test('init draft: config is root-only, links rejected, maximum 13 documents and 
     assert.throws(()=>inspectCmInitDraft({project,documents}),/init_draft_link/);
   }finally{fs.rmSync(project,{recursive:true,force:true});}
 });
+
+
+test('init draft inherits user preset without treating an inherited value as a written project declaration',()=>{
+  const project=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-init-user-')));
+  const oldHome=process.env.CM_WORKFLOW_HOME;
+  try{
+    process.env.CM_WORKFLOW_HOME=path.join(project,'user');fs.mkdirSync(process.env.CM_WORKFLOW_HOME);
+    fs.writeFileSync(path.join(process.env.CM_WORKFLOW_HOME,'runtimes.yml'),'runtimes: {available: both}\npreset: codex-codes\n');
+    fs.writeFileSync(path.join(project,'.cm-workflow.yml'),'version: 1\npolicies: {generate_cases: false}\n');
+    const inspect=content=>inspectCmInitDraft({project,documents:[...draft(),{path:'.cm-workflow.yml',content}]});
+    const missing=inspect('version: 1\npolicies: {generate_cases: false}\n');
+    assert.equal(missing.status,'blocked');assert.equal(missing.issues[0].code,'runtimes_declaration_missing');
+    const declared=inspect('version: 1\npolicies: {generate_cases: false}\nruntimes: {available: both}\nroles: {coder: {adapter: codex-cli, source: subscription}, reviewer: {adapter: claude-cli, source: subscription}}\n');
+    assert.equal(declared.status,'structurally_checked');assert.equal(declared.writeAuthorized,false);
+    assert(declared.existingChangeReviewRequired.includes('.cm-workflow.yml'));
+    assert.equal(fs.readFileSync(path.join(project,'.cm-workflow.yml'),'utf8'),'version: 1\npolicies: {generate_cases: false}\n');
+  }finally{
+    if(oldHome===undefined)delete process.env.CM_WORKFLOW_HOME;else process.env.CM_WORKFLOW_HOME=oldHome;
+    fs.rmSync(project,{recursive:true,force:true});
+  }
+});

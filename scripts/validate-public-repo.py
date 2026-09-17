@@ -20,6 +20,7 @@ CORE_SKILLS = (
     "cm-fix",
     "cm-refactor",
     "cm-check",
+    "cm-runtime",
 )
 CM_AI_RUNTIME = (
     "cm-ai-admission.mjs",
@@ -92,6 +93,10 @@ REQUIRED = (
     "scripts/test-cm-usage-report.py",
     "scripts/test-cm-openai-compatible-call.py",
     "scripts/test-task-gate.py",
+    "scripts/cm-runtime.mjs",
+    "scripts/cm-runtime-edit.mjs",
+    "scripts/cm-runtime-install.mjs",
+    "scripts/cm-runtime.test.mjs",
     "scripts/cm-workflow-config.mjs",
     "scripts/cm-workflow-config.test.mjs",
     "scripts/cm_workflow_config.py",

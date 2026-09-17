@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/cm-shell-compat.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT HUP INT TERM
 FAILURES=0
+export CM_WORKFLOW_HOME="$TMP_ROOT/user-config"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -174,6 +175,35 @@ else
   cat "$TMP_ROOT/claude-success.out" >&2
   fail "Claude Bash installer must complete an isolated atomic install"
 fi
+
+# Runtime declaration must never be inferred or overwritten in non-interactive installs.
+runtime_config_home="$claude_success/home"
+if [ -e "${runtime_config_home}/.cm-workflow/runtimes.yml" ] ||
+  grep -q '你手上有哪个 AI 工具' "$TMP_ROOT/claude-success.out"; then
+  fail "--yes must skip runtime declaration without writing"
+fi
+claude_noninteractive="$TMP_ROOT/claude-noninteractive"
+runtime_config_home="$claude_noninteractive/home"
+mkdir -p "${runtime_config_home}/.cm-workflow"
+printf '%s\n' 'runtimes: {available: both}' 'preset: codex-codes' > "${runtime_config_home}/.cm-workflow/runtimes.yml"
+cp "${runtime_config_home}/.cm-workflow/runtimes.yml" "$TMP_ROOT/runtime-before.yml"
+if HOME="$runtime_config_home" CLAUDE_HOME="$claude_noninteractive/.claude" \
+  CM_WORKFLOW_HOME="${runtime_config_home}/.cm-workflow" \
+  /bin/bash "$ROOT/install.sh" </dev/null > "$TMP_ROOT/claude-noninteractive.out" 2>&1 &&
+  cmp -s "$TMP_ROOT/runtime-before.yml" "${runtime_config_home}/.cm-workflow/runtimes.yml" &&
+  ! grep -q '保留？' "$TMP_ROOT/claude-noninteractive.out"; then
+  :
+else
+  cat "$TMP_ROOT/claude-noninteractive.out" >&2
+  fail "non-TTY install must preserve the existing user runtime declaration"
+fi
+for prompt_arg in '' '--yes'; do
+  HOME="$runtime_config_home" CM_WORKFLOW_HOME="${runtime_config_home}/.cm-workflow" \
+    "$REAL_NODE" "$ROOT/scripts/cm-runtime-install.mjs" $prompt_arg </dev/null > "$TMP_ROOT/runtime-prompt.out" 2>&1 ||
+    fail "shared installer prompt must skip without a TTY"
+  cmp -s "$TMP_ROOT/runtime-before.yml" "${runtime_config_home}/.cm-workflow/runtimes.yml" ||
+    fail "shared skipped installer prompt must preserve user declaration bytes"
+done
 
 claude_optional_blocked="$TMP_ROOT/claude-optional-blocked"
 mkdir -p "$claude_optional_blocked/home"
@@ -355,6 +385,10 @@ if command -v pwsh >/dev/null 2>&1; then
     cat "$TMP_ROOT/powershell-symlink.out" >&2
     fail "Claude PowerShell installer must not write through a managed ancestor symlink"
   fi
+fi
+
+if ! command -v pwsh >/dev/null 2>&1; then
+  echo "PowerShell runtime declaration fixtures: SKIPPED (pwsh unavailable)"
 fi
 
 if [ "$FAILURES" -ne 0 ]; then

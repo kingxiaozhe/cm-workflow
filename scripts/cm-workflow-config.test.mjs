@@ -38,7 +38,12 @@ policies:
 
 const fixture=async fn=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-workflow-config-js-')));
-  try{return await fn(root);}finally{fs.rmSync(root,{recursive:true,force:true});}
+  const old=process.env.CM_WORKFLOW_HOME;
+  process.env.CM_WORKFLOW_HOME=path.join(root,'user');
+  try{return await fn(root);}finally{
+    if(old===undefined)delete process.env.CM_WORKFLOW_HOME;else process.env.CM_WORKFLOW_HOME=old;
+    fs.rmSync(root,{recursive:true,force:true});
+  }
 };
 
 test('JS config authority preserves defaults, YAML merge, canonical aliases, and route states',()=>fixture(async root=>{
@@ -267,3 +272,33 @@ test('protected runtime selection obeys all declarations without claiming proces
   config.roles.reviewer.adapter='current-ai';
   assert.deepEqual(resolveProtectedRuntimes(config,'claude'),{coderRuntime:'claude',reviewerRuntime:'claude'});
 });
+
+
+test('user defaults supply preset roles, project fields win, declarations bypass user file',()=>fixture(async root=>{
+  const {loadConfig,resolveRole,runtimesSource}=await import('./cm-workflow-config.mjs');
+  fs.mkdirSync(process.env.CM_WORKFLOW_HOME);
+  const file=path.join(process.env.CM_WORKFLOW_HOME,'runtimes.yml');
+  fs.writeFileSync(file,'runtimes: {available: both}\npreset: claude-codes\n');
+  const inherited=loadConfig({projectRoot:root});
+  assert.equal(runtimesSource(inherited),'user');assert.equal(inherited.runtimes.available,'both');
+  assert.equal(inherited.roles.coder.adapter,'claude-cli');assert.equal(inherited.roles.reviewer.adapter,'codex-cli');
+  assert.equal(runtimesSource(inherited),'user');
+  const partial=loadConfig({projectRoot:root,text:'version: 1\nroles: {coder: {model: custom}}\n'});
+  assert.equal(partial.roles.coder.model,'custom');assert.equal(partial.roles.coder.source,'subscription');
+  assert.throws(()=>loadConfig({projectRoot:root,text:'version: 1\nroles: {coder: {adapter: codex-cli}}'}),/both resolve to codex/);
+  fs.writeFileSync(file,'runtimes: {available: nope}\npreset: invalid\n');
+  assert.throws(()=>loadConfig({projectRoot:root}),/user.runtimes.available/);
+  const project=loadConfig({projectRoot:root,text:'version: 1\nruntimes: {available: codex}'});
+  assert.equal(runtimesSource(project),'project');assert.equal(project.roles.coder.adapter,'current-ai');
+  for(const text of ['runtimes: {available: both}\npreset: invalid',
+    'runtimes: {available: codex}\npreset: claude-only','runtimes: {available: both}\npreset: codex-codes\nroles: {}',
+    'preset: codex-only','runtimes: {available: codex}']){
+    fs.writeFileSync(file,text);assert.throws(()=>loadConfig({projectRoot:root}),/runtimes.yml:.*user/);
+  }
+  fs.writeFileSync(file,'runtimes: {available: codex}\npreset: codex-only');
+  for(const args of [['--print-effective'],['--role','coder','--print-role']]){
+    const result=spawnSync(process.execPath,[entryPath,'--project',root,...args],{encoding:'utf8'});
+    assert.equal(result.status,0,result.stderr);assert.equal(JSON.parse(result.stdout).runtimes_source,'user');
+  }
+  fs.unlinkSync(file);assert.equal(runtimesSource(loadConfig({projectRoot:root})),'none');
+}));

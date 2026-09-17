@@ -62,6 +62,7 @@ JS 缺少运行条件时会报告缺口，不会静默切回旧流程。默认�
 | 已确认是缺陷 | `$cm-fix …` | **是** | 查看红灯测试、修复和回归结果 |
 | 只想改善代码结构 | `$cm-refactor …` | **是**，但不得改变行为 | 查看等价性验证和审查结果 |
 | 想讨论方案、研究问题或查论文 | `$external-expert …` | 否 | 查看外部原始回答、本地裁决与待验证项 |
+| 查看/切换单双 AI、谁写谁审 | `$cm-runtime` | 仅明确 set/unset 时写声明 | 查看来源与预设 |
 | 安装或入口不正常 | `$cm-check` | 自动升级 CM 安装，不改业务代码 | 查看升级与自检结果 |
 
 ### 不想记命令，也可以直接描述目标
@@ -80,6 +81,7 @@ Codex 与 Claude Code 会先根据 Skill 的 `description` 判断入口。自然
 | `cm-test` | `$cm-test …` | “验证一下现有登录功能，再用浏览器走查” | 用户只说“好像有问题” → 先测试，不自动修 |
 | `cm-fix` | `$cm-fix …` | “这个 bug 已经能复现，请按失败报告修复” | 尚未复现 → `cm-test`；新增需求 → `cm-prd` |
 | `cm-refactor` | `$cm-refactor …` | “只整理这段代码结构，不改变行为” | 要改变功能或修 bug → 转交对应流程 |
+| `cm-runtime` | `$cm-runtime show` | “两个工具都有，改为 Claude 写、Codex 审” | 不安装、不改当前 run |
 | `cm-check` | `$cm-check` | “检查一下 CM 是否安装正确，为什么没有命令” | 测试业务功能 → `cm-test` |
 
 ## 两个目录不要混淆
@@ -354,10 +356,11 @@ $cm-refactor ~/projects/my-app-specs ~/code/my-app 拆分过大的订单服务�
 
 </details>
 
-## 九个入口速查
+## 十个入口速查
 
 | 入口 | 主要输入 | 主要产出 | 关键边界 |
 | --- | --- | --- | --- |
+| `$cm-runtime` | 预设与项目/用户范围 | 声明、来源与原子配置写入 | 不进入 N1–N8；仅影响新 run |
 | `$cm-check` | 当前安装 | 版本更新 + 机械与语义检查报告 | 默认升级已管理插件，不自动修业务或配置 |
 | `$cm-idea` | 一句话点子 | 可交付 PRD | 不自动进入 `$cm-prd` |
 | `$cm-init` | 当前代码项目 | `AGENTS.md`、兼容规则、代码库上下文 | 不实现业务功能 |
@@ -552,3 +555,36 @@ $cm-security {项目路径} --semgrep-rules {外部本地规则文件} --osv-db 
 结果明确标记部分覆盖。未跟踪文件、受保护路径、Git 历史不在默认扫描范围。
 报告给出位置、业务影响、证据、修复建议与未检查项。工具结果不等于安全保证；
 需要修复时再明确交给 cm-fix。详细参数见 `skills/cm-security/references/scan-contract.md`。
+
+## 运行时默认与切换
+
+交互安装在核心成功后询问“只有 Codex / 只有 Claude / 两个都有”，两家都有再问谁写代码。
+结果保存为 `~/.cm-workflow/runtimes.yml`；已有文件显示当前值并默认保留。
+`--yes` / `-Yes` 或非 TTY 跳过提问且不写文件。测试时可用 `CM_WORKFLOW_HOME` 覆盖目录。
+
+优先级：**项目 > 用户级默认 > 未声明**。项目没有 `runtimes.available` 才读取用户文件；
+显式项目角色字段覆盖用户预设的角色默认值，矛盾配置报字段路径并阻断。
+`cm-init` 遇到用户默认直接继承、报告 `来源: 用户级默认`，两级都没有才询问。
+
+| 预设 | 写代码 | 审代码 |
+| --- | --- | --- |
+| `codex-only` | Codex | Codex 的独立新上下文 |
+| `claude-only` | Claude | Claude 的独立新上下文 |
+| `codex-codes` | Codex | Claude |
+| `claude-codes` | Claude | Codex |
+
+```text
+$cm-runtime show
+$cm-runtime set claude-codes --project /path/to/project
+$cm-runtime set --user codex-codes
+$cm-runtime unset --user
+```
+
+Claude Code 用 `/cm-runtime`，macOS/Linux 兼容 `/cm:runtime`；终端入口为
+`node <workflow-root>/scripts/cm-runtime.mjs`。`show` 显示 `runtimes_source: project|user|none`、
+有效预设（无法精确匹配时为 custom）、coder/reviewer adapter/source。CLI 缺失只 WARN，不代表配额检测。
+
+`set` 只改声明和 coder/reviewer 的 adapter/source，保留模型、策略、注释、格式等其他原文；
+新配置从模板生成。`set --user` 改全局默认，`unset --user` 只删除用户默认，不清项目声明。
+这些操作不修改正在运行的 run；run 创建时已绑定配置。`set` 记录独立的 `decision/route` 日志，
+不借用业务 run 指针；若日志失败会明确提示“配置已写、日志失败”。`show` 不写日志。

@@ -222,3 +222,45 @@ those separately only after reviewing that they are still CM-owned.
 Claude Code compatibility installs do not have an automatic uninstall because
 their destination directories may contain user-modified copies. Remove only the
 CM-owned paths you have reviewed, or restore from your own backup.
+
+## Runtime declaration at installation
+
+After a successful core install, `install.sh`, `install-codex.sh`, and `install.ps1`
+ask which tools you have: Codex only, Claude only, or both. When both are selected,
+choose the coder (Codex recommended, Claude reviews; or the reverse).
+The shared prompt writes only `~/.cm-workflow/runtimes.yml` using a temporary file
+and atomic rename. It never changes settings.json or CLAUDE.md.
+An existing declaration is displayed and “保留？[Y/n]” defaults to keeping it.
+`--yes` (Bash), `-Yes` (PowerShell, also implies the existing `-Force`), `-Force`,
+or non-TTY input/output skips this prompt without creating or changing the file.
+
+```yaml
+# 用 cm-runtime set --user <preset> 修改用户级默认。
+runtimes: {available: both}
+preset: codex-codes
+```
+
+`CM_WORKFLOW_HOME` overrides the `.cm-workflow` directory for isolated testing.
+Priority: project declaration > user default > undeclared. An invalid user default
+blocks parsing when consulted; an explicit project declaration bypasses it.
+The preset supplies coder/reviewer adapter/source defaults; explicit project role
+fields still take precedence and conflicts fail validation. `cm-init` inherits the
+user default without asking again and reports `来源: 用户级默认`.
+
+Use `$cm-runtime` in Codex, `/cm-runtime` in Claude Code, or `/cm:runtime` on macOS/Linux:
+
+```text
+cm-runtime show [--project PATH]
+cm-runtime set codex-codes [--project PATH]
+cm-runtime set --user claude-codes
+cm-runtime unset --user
+```
+
+Presets: `codex-only`, `claude-only`, `codex-codes`, `claude-codes`.
+For the literal terminal entry, use `node <workflow-root>/scripts/cm-runtime.mjs`.
+A project set preserves every unrelated byte in an existing config; a new config
+uses the distributed template. Unsetting the user file preserves project declarations.
+Changes affect new runs only; existing runs retain their bound configuration.
+`show` is read-only and missing CLIs only produce WARN (presence does not prove quota).
+Successful `set` records a private `decision/route` through the existing log writer;
+Python 3.9+ is required for its platform lock adapter. No installation or network access occurs.

@@ -50,6 +50,7 @@
 			"./skills/cm-init",
 			"./skills/cm-prd",
 			"./skills/cm-refactor",
+			"./skills/cm-runtime",
 			"./skills/cm-security",
 			"./skills/cm-test"
 		],

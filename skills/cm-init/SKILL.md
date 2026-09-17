@@ -49,12 +49,7 @@ JS 准入返回 `blocked / existing_project_required`（项目根除 `.git`、`.
   - 有 git 且有 remote → `remote`；有 git 无 remote → `local`（不询问，直接记录）
   - **无 git → 询问用户一次**："初始化本地 git？（推荐——每任务提交与审计链依赖它）/ 不使用版本控制"
   - 用户拒绝 → 记 `none`：不生成 git-workflow.md、后续 N5 跳过提交、doc-syncer 用文件扫描、hook 不适用、审计链降级为 METRICS + tasks 勾选
-- **检测运行时声明**（答案作为 `selection.runtimes` 传给宿主，配置文件作为目标之一生成并核验，再经确认与独立审查写入；不在会话里直接写文件。运行时同步到 AGENTS.md/CLAUDE.md；用户自报比 CLI 探测更能反映可用配额）：
-  - 项目根已有 `.cm-workflow.yml/.yaml/.json` 且含 `runtimes.available` → selection 不带 `runtimes`，目标清单不含配置文件；不问、不写、只记录
-  - 无配置或缺该字段 → **询问用户一次**："你手上有哪个工具？Codex / Claude / 两个都有"；答"两个都有"再问一次："谁写代码？Codex（推荐，另一家审）/ Claude"
-  - 按答案选预设：只有 Codex → `codex-only`；只有 Claude → `claude-only`；都有且 Codex 写 → `codex-codes`；都有且 Claude 写 → `claude-codes`。预设→adapter 映射以 `{CM_WORKFLOW_ROOT}/templates/cm-workflow.yml` 注释为准，不在此复制
-  - 传入 `selection.runtimes: {available: "codex|claude|both", preset: "对应预设"}`；无配置时宿主以模板为骨架生成 `.cm-workflow.yml`，已有配置沿用原文件名及原文。只填 `runtimes.available` 与 `roles.coder/reviewer` 的 `adapter`、`source`，保留其余原值
-  - 该声明只决定自动派发偏好，**不拦用户在任一工具里敲命令**；声明了另一家不等于会自动调用它
+- **检测运行时声明**：按 [声明来源与生成](references/runtime-declaration.md) 读取项目 > 用户级默认 > 未声明；项目已声明不改，用户默认存在不再问并报告 `来源: 用户级默认`，两者都没有才问。通过 `selection.runtimes` 交宿主生成、核验与独立审查，不直接写文件。
 
 ### 1.5 代码库参考文档（自动判断，不询问）
 
@@ -90,7 +85,7 @@ JS 按下列现有条件选择 `codebase-context` scan；执行后在输出中�
 
 ```
 AGENTS.md                         # Codex 原生项目指令，简洁、可执行
-.cm-workflow.yml                  # 运行时声明与角色路由（第1节询问结果；无声明则不创建）
+.cm-workflow.yml                  # 运行时声明与角色路由（第1节声明结果；无声明则不创建）
 .claude/
 ├── CLAUDE.md                    # Claude Code 兼容门面，≤150 行
 ├── rules/

@@ -1,10 +1,12 @@
 param(
-    [switch]$Force
+    [switch]$Force,
+    [switch]$Yes
 )
 
 # CM Workflow Claude Code compatibility installer for Windows.
-# Usage: powershell -ExecutionPolicy Bypass -File install.ps1 [-Force]
+# Usage: powershell -ExecutionPolicy Bypass -File install.ps1 [-Force] [-Yes]
 $ErrorActionPreference = "Stop"
+if ($Yes) { $Force = $true }
 
 $Src = $PSScriptRoot
 $Dest = if ($env:CLAUDE_HOME) { $env:CLAUDE_HOME } else { Join-Path $env:USERPROFILE ".claude" }
@@ -192,6 +194,12 @@ try {
 }
 
 if ($InstallComplete) {
+    # User runtimes.yml: same JS authority and atomic writer as Bash/Codex.
+    if (-not $Yes -and -not $Force -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
+        & node (Join-Path $Dest "scripts/cm-runtime-install.mjs")
+        if ($LASTEXITCODE -ne 0) { throw "运行时声明未完成（核心安装已成功）" }
+    }
+
     Write-Host "`n完成（已安装版本: v$Version）。请在 Claude Code 中运行 /cm-check 校验。"
     Write-Host "使用手册: $(Join-Path $Dest 'cm-workflow\docs\user-guide.md')"
     Write-Host @"

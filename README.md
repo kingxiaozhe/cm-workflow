@@ -123,7 +123,7 @@ git pull --ff-only origin main
 
 ## 选择命令
 
-以下是九个核心入口。Codex 使用 `$cm-*`，Claude Code 使用 `/cm-*`。
+以下是十个核心入口（含独立配置工具 cm-runtime）。Codex 使用 `$cm-*`，Claude Code 使用 `/cm-*`。
 
 | 你想做什么 | Codex 入口 | 产出或下一步 |
 | --- | --- | --- |
@@ -135,6 +135,7 @@ git pull --ff-only origin main
 | 测试已有功能 | `$cm-test {项目路径}` | 分层测试结果与证据 |
 | 修复可复现缺陷 | `$cm-fix {specs路径} {项目路径} {问题}` | 红灯测试、最小修复、回归验证 |
 | 整理结构并保持行为 | `$cm-refactor` | 按行为等价约束分批重构 |
+| 查看/切换运行时声明 | `$cm-runtime show` / `set codex-codes` / `set --user claude-only` / `unset --user` | 有效声明、来源与新 run 的派发偏好 |
 | 检查安装与工作流 | `$cm-check` | 环境、引用和合同检查结果 |
 
 需要单独讨论方案或研究复杂问题时，可显式使用可选工具 `$external-expert`。外部建议由本地核验，不能代替独立代码审查或测试证据。详见[使用手册](docs/user-guide.md)与[外部专家合同](runtime/external-expert.md)。
@@ -263,6 +264,8 @@ Pi 资源加载器直接发现 Skills 与 Prompts，不运行上述安装器，�
 
 ## 配置与深入阅读
 
+交互安装会询问单/双 AI 与谁写代码，保存到 `~/.cm-workflow/runtimes.yml`；`--yes` / `-Yes` 或非 TTY 跳过且不写。运行时声明按 **项目 > 用户级默认 > 未声明** 解析。`$cm-runtime` 可查看/切换，已创建 run 保留原配置。
+
 项目配置放在代码根目录的 `.cm-workflow.yml`，可从[配置模板](templates/cm-workflow.yml)开始。角色路由和执行策略必须落在实际宿主已支持的能力内；声明模型或适配器不等于已实际调用。
 
 | 文档 | 内容 |
@@ -277,6 +280,18 @@ Pi 资源加载器直接发现 Skills 与 Prompts，不运行上述安装器，�
 ## 维护与贡献
 
 `skills/` 保存工作流与角色规则，`runtime/js/cm-ai/` 保存共享 JS 实现，`scripts/` 提供入口与验证工具。`compat/claude-commands/` 只做历史命令转发；根 `package.json` 保存 Pi/BYZ 包元数据和 npm 安装命令入口，无 npm 依赖或构建脚本。
+
+入口目录与计数：10 个核心入口（包括独立工具 `cm-runtime`），11 个工种 Skill 与 6 个兼容 agent；独立工具不参与工种配对。
+
+```text
+skills/
+├── cm-{idea,init,prd,ai,test,security,fix,refactor,check}/
+├── cm-runtime/                  # 独立声明工具，不进入 N1–N8
+├── cm-*-engineer/、cm-*-expert/、cm-*-manager/、cm-doc-syncer/
+└── codebase-context/、external-expert/、darwin-skill/
+compat/claude-commands/cm-runtime.md  # macOS/Linux /cm:runtime 别名
+scripts/cm-runtime.mjs           # 原子配置写入与共享诊断
+```
 
 基础检查：
 
