@@ -321,15 +321,18 @@ function loadResourceStates(file,runId){
 
 function validateQaAbandonment(state,event){
   const start=state.start;
-  if(!state.active||state.hasResult||!start||event.workflow!=='cm-ai'||event.node!=='N6'
+  if(!state.active||state.hasNonPassResult||!start||event.workflow!=='cm-ai'||event.node!=='N6'
+    ||JSON.stringify(event.partial_pass_cases===undefined?[]:event.partial_pass_cases)!==JSON.stringify([...state.partialPassCases].sort())
+    ||(event.partial_pass_cases===undefined&&state.partialPassCases.size>0)
     ||event.reason!=='host_terminated'||event.previous_test_run_id!==start.operation_id
     ||!['repository_id','run_id','feature','task','package_digest','qa_decision_id','operation_id','attempt','mode','case_count']
       .every(key=>event[key]!==undefined&&event[key]===start[key]))
-    throw new UsageError('QA abandonment requires the matching active invocation without results');
+    throw new UsageError('QA abandonment requires the matching active invocation with only PASS results and matching partial_pass_cases');
 }
 
 function loadTestRunState(file,runId){
-  let active=false,start=null,hasResult=false,abandoned=false;const openCases=new Set();
+  let active=false,start=null,hasNonPassResult=false,abandoned=false;
+  const openCases=new Set(),partialPassCases=new Set();
   for(const value of readJsonLines(file,{strict:true})){
     if(!value||typeof value!=='object'||value.run_id!==runId||value.event!=='test_run'||value.phase===null||value.phase===undefined)continue;
     const phase=value.phase,caseId=value.case_id;
@@ -337,13 +340,17 @@ function loadTestRunState(file,runId){
     if(phase.startsWith('case_')&&(typeof caseId!=='string'||!RESOURCE_ID.test(caseId)))
       throw new UsageError('test_run state log contains a malformed case event');
     if(phase==='complete'&&!active&&!openCases.size)continue;
-    if(phase==='abandoned')validateQaAbandonment({active,start,hasResult},value);
+    if(phase==='abandoned')validateQaAbandonment({active,start,hasNonPassResult,partialPassCases},value);
     active=applyTestRunTransition(active,openCases,phase,typeof caseId==='string'?caseId:null);
-    if(phase==='start'){start=value;hasResult=false;abandoned=false;}
-    if(phase==='case_complete')hasResult=true;
+    if(phase==='start'){start=value;hasNonPassResult=false;partialPassCases.clear();abandoned=false;}
+    if(phase==='case_complete'){
+      if(value.result==='PASS')partialPassCases.add(caseId);
+      else hasNonPassResult=true;
+    }
+    if(phase==='case_blocked')hasNonPassResult=true;
     if(phase==='abandoned')abandoned=true;
   }
-  return {active,openCases,start,hasResult,abandoned};
+  return {active,openCases,start,hasNonPassResult,partialPassCases,abandoned};
 }
 
 // Read-only reuse of the writer's existing resource/test lifecycle guards by

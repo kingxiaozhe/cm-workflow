@@ -703,7 +703,7 @@ workflow 配置的 `qa` 在 `commands/environment` 之外可选 `timeoutMs`（1�
 为 failed，不能宣称资源已清理。执行器生成真实报告，整轮按原 complete/qa_result 门禁返回 BLOCKED。
 评估超时记录 blocked 决策，不启动 QA。取消、断连与超时保留各自原因，迟到答复不会被采纳。
 
-若上一调用只有 `test_run start` 而没有 complete，默认仍是 `qa_execution_unknown`。
+若上一调用已有 `test_run start` 但没有 complete，默认仍是 `qa_execution_unknown`。
 确认旧宿主已退出后，单任务宿主可用原配置、原身份和新授权显式恢复：
 
 ```bash
@@ -714,12 +714,15 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
 
 保留原运行需要的 runtime、保护及审查配置选项；收到 host_ready 后发送原 advance。
 `--rerun-unknown-qa` 是本次恢复授权，不改变持久配置指纹；create、缺少 allow-qa 或配置漂移拒绝。
-仅最新调用无任何 case_complete、无 `{testRunId}-execution.md`，且原资源门禁确认无清理欠账时可重跑。
-日志先写 `test_run/abandoned`（`previous_test_run_id` 为旧 ID，`reason: host_terminated`），
+仅最新调用无 complete、已记录 case_complete 的 result 全为 PASS（允许零条）、无 case_blocked、
+无固定报告 `{testRunId}-execution.md`，且原资源门禁确认无清理欠账时可重跑。
+日志先写 `test_run/abandoned`（`previous_test_run_id` 为旧 ID，`reason: host_terminated`、
+`partial_pass_cases: [caseId…]` 记录旧 PASS 用例，零条时为空数组），
 再以新 testRunId、同一 qaRound 执行整轮；不复用部分用例，也不重跑开发、Review 或改变任务 attempt。
 写 abandoned 后、写新 start 前崩溃可再次显式 resume；旧调用永远不能成为 complete 或 QA 通过证据。
 新轮完整结果仍须满足原报告文件、cleanup、context_refresh 和 finalizer 合同。
-部分 PASS/FAIL 即使文件后来消失也不重跑；原事故已有三个浏览器 PASS，因此仍需人工处置。
+任一 FAIL/BLOCKED 即使证据文件后来消失仍拒绝重跑；旧 PASS 证据文件只作历史保留。
+原事故已有三个浏览器 PASS，可经显式授权重跑全部用例，不能跳过这三个用例。
 
 宿主 JSONL 驱动必须排空一个数据块内所有完整行（通常用 continue 处理下一行），
 不能在 host_response 分支提前 return。合成验证显示同步 accept 本身正常；提前 return

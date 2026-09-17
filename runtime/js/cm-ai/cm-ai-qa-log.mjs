@@ -169,6 +169,14 @@ export function reportFile(specsDir,raw) {
   }
 }
 
+function partialPassCases(items,code){
+  need(!items.some(({row})=>row.phase==='complete'||row.phase==='case_blocked'
+    ||(row.phase==='case_complete'&&row.result!=='PASS')),code);
+  const cases=items.filter(({row})=>row.phase==='case_complete').map(({row})=>row.case_id);
+  for(const caseId of cases)id(caseId);
+  return [...new Set(cases)].sort();
+}
+
 // An abandoned invocation is history, never a result. Only its explicit
 // successor may reuse a round; completed FAIL retries still advance 1..3.
 function validateRunSequence(items,code='qa_round_invalid'){
@@ -186,7 +194,10 @@ function validateRunSequence(items,code='qa_round_invalid'){
         need(row.previous_test_run_id===current.operation_id&&row.reason==='host_terminated'
           &&row.mode===current.mode&&row.case_count===current.case_count,code);
         const prior=items.filter(entry=>entry.position<item.position&&entry.row.operation_id===row.operation_id);
-        need(!prior.some(entry=>entry.row.phase==='complete'||entry.row.phase==='case_complete'),code);
+        const passed=partialPassCases(prior,code);
+        // Step 26 records omitted this field and could only abandon empty runs.
+        need(JSON.stringify(row.partial_pass_cases===undefined?[]:row.partial_pass_cases)===JSON.stringify(passed)
+          &&(row.partial_pass_cases!==undefined||passed.length===0),code);
         abandoned=true;
       }
     }
@@ -208,11 +219,11 @@ function qaRunRows(input){
 }
 
 // Only a trusted resumed owner calls this after fresh explicit authorization.
-// Conservatively retain unknown for any case result, even if its file vanished.
+// Retain unknown for non-PASS results, even if their evidence files vanished.
 export function inspectCmAiQaRecovery(input){
   const rows=qaRunRows(input),starts=validateRunSequence(rows),start=starts.at(-1).row;
   const runs=rows.filter(item=>item.row.operation_id===start.operation_id);
-  need(!runs.some(({row})=>row.phase==='complete'||row.phase==='case_complete'),'qa_execution_unknown');
+  const passed=partialPassCases(runs,'qa_execution_unknown');
   const report=path.join(input.specsDir,'.reviews',`${start.operation_id}-execution.md`);
   let exists=false;try{fs.lstatSync(report);exists=true;}catch(error){if(error.code!=='ENOENT')throw error;}
   need(!exists,'qa_execution_unknown');
@@ -222,7 +233,7 @@ export function inspectCmAiQaRecovery(input){
       need(rows.some(item=>JSON.stringify(item.row)===JSON.stringify(row)),'qa_result_mismatch');
   });
   return {testRunId:start.operation_id,qaRound:start.attempt,mode:start.mode,caseCount:start.case_count,
-    abandoned:runs.some(({row})=>row.phase==='abandoned')};
+    partialPassCases:passed,abandoned:runs.some(({row})=>row.phase==='abandoned')};
 }
 
 // Discover the latest invocation from the authoritative log, never a second checkpoint.
@@ -255,8 +266,10 @@ export function recordCmAiQaRun(input) {
   const qaRound=input.qaRound??1;
   need(Number.isSafeInteger(qaRound)&&qaRound>=1&&qaRound<=3,'qa_round_invalid');
   const binding={specsDir:input.specsDir,feature:input.feature,identity:input.identity,packageDigest:input.packageDigest};
+  let passed=[];
   if(input.phase==='abandoned'){
     const previous=inspectCmAiQaRecovery(binding);
+    passed=previous.partialPassCases;
     need(previous.testRunId===input.testRunId&&previous.qaRound===qaRound
       &&previous.mode===input.mode&&previous.caseCount===input.caseCount,'qa_round_invalid');
     if(previous.abandoned)return;
@@ -281,7 +294,7 @@ export function recordCmAiQaRun(input) {
   const data={node:'N6',repository_id:input.identity.repositoryId,feature:input.feature,task:input.identity.taskId,
     package_digest:input.packageDigest,qa_decision_id:decision.decisionId,operation_id:input.testRunId,
     attempt:qaRound,mode:input.mode,case_count:input.caseCount};
-  if(input.phase==='abandoned')Object.assign(data,{previous_test_run_id:input.testRunId,reason:'host_terminated'});
+  if(input.phase==='abandoned')Object.assign(data,{previous_test_run_id:input.testRunId,reason:'host_terminated',partial_pass_cases:passed});
   if(input.phase==='complete'){
     const result=json(input.result);shape(result,['result','passed','failed','blocked','report']);
     for(const key of ['passed','failed','blocked'])need(Number.isSafeInteger(result[key])&&result[key]>=0,'qa_result_invalid');

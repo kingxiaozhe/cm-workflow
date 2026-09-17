@@ -6,6 +6,7 @@
 ## 未发布
 
 - 修复 `cm-ai` N6 宿主请求可无限等待的问题：QA 请求按 workflow QA `timeoutMs`（默认 60 秒）独立超时并记 BLOCKED，迟到应答与旧发送失败不能污染下一请求；resume 可显式以 `--rerun-unknown-qa --allow-qa` 将无结果调用记为 abandoned，以新 testRunId 在原 qaRound 重跑，部分结果及清理欠账仍阻断。合成宿主确认同步应答本身正常；事故驱动的 JSONL 循环提前 return 会漏读同一数据块中的下一请求，宿主必须排空完整行。
+- 第 26b 步放宽 `--rerun-unknown-qa`：无 complete、已记录结果全为 PASS 且无固定执行报告时可显式重跑，abandoned 新增 `partial_pass_cases`；全部用例仍重新执行，旧 PASS 仅作历史，FAIL/BLOCKED 与清理欠账继续阻断。
 
 - 修复 `cm-ai` 已完成且原无 QA 的 run 无法补做强制 N6：resume 显式提供含 QA 的 `--workflow-config` 与 `--allow-qa` 后一次性追加不可变 `qa-attached` 和 `decision/qa_attach` 日志；保留原指纹及任务完成证据，绑定完整恢复配置，重复恢复去重，换配置或未完成附加拒绝。QA 仍走原宿主请求、执行、结果及收尾门禁，不重跑开发/审查。
 

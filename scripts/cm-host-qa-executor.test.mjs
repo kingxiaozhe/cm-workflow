@@ -256,7 +256,8 @@ for(const kind of ['qa_logic','qa_browser','qa_assess'])test(`QA request watchdo
   }finally{bridge.close();f.cleanup();}
 });
 
-for(const mode of ['empty','abandoned-crash','no-authorization','PASS','FAIL','report','resource'])
+for(const mode of ['empty','abandoned-crash','partial-abandoned-crash','no-authorization','partial-no-authorization',
+  'PASS','FAIL','BLOCKED','case-blocked','report','partial-report','resource','partial-resource'])
 test(`explicit QA recovery: ${mode}`,async()=>{
   const {createCmAiConversationEntry}=await import('../runtime/js/cm-ai/cm-ai-conversation-entry.mjs');
   const {inspectCmAiQaRecovery,latestCmAiQaRun}=await import('../runtime/js/cm-ai/cm-ai-qa-log.mjs');
@@ -268,13 +269,14 @@ test(`explicit QA recovery: ${mode}`,async()=>{
     const log=path.join(f.binding.specsDir,'运行日志.jsonl');
     const rows=()=>fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse);
     const row=rows().at(-1),append=value=>fs.appendFileSync(log,JSON.stringify(value)+'\n');
-    if(['PASS','FAIL'].includes(mode)){
+    if(['PASS','FAIL','BLOCKED','case-blocked'].includes(mode)||mode.startsWith('partial-')){
       append({...row,phase:'case_start',case_id:'TC-001'});
-      append({...row,phase:'case_complete',case_id:'TC-001',result:mode});
+      append({...row,phase:mode==='case-blocked'?'case_blocked':'case_complete',case_id:'TC-001',
+        result:mode.startsWith('partial-')?'PASS':mode==='case-blocked'?'BLOCKED':mode});
     }
-    if(mode==='report')fs.writeFileSync(path.join(f.binding.specsDir,'.reviews',`${f.binding.testRunId}-execution.md`),'Result before complete');
-    if(mode==='resource')append({...row,event:'resource',phase:'acquired',resource_id:'live-command',resource_kind:'qa_command',cleanup_required:true});
-    if(mode==='abandoned-crash'){
+    if(['report','partial-report'].includes(mode))fs.writeFileSync(path.join(f.binding.specsDir,'.reviews',`${f.binding.testRunId}-execution.md`),'Result before complete');
+    if(['resource','partial-resource'].includes(mode))append({...row,event:'resource',phase:'acquired',resource_id:'live-command',resource_kind:'qa_command',cleanup_required:true});
+    if(['abandoned-crash','partial-abandoned-crash'].includes(mode)){
       // Persist abandonment, crash before the successor start, then resume.
       recordCmAiQaRun({...start,phase:'abandoned'});
       assert.equal(inspectRunClosure(log,f.binding.identity.runId).closed,false);
@@ -285,7 +287,7 @@ test(`explicit QA recovery: ${mode}`,async()=>{
     const options={specsDir:f.binding.specsDir,codeProject:f.binding.codeProject,feature:f.binding.feature,
       identity:f.binding.identity,runner:{status:()=>completed,executeEffect:async()=>assert.fail('no development/review replay'),
         cancel:()=>completed,run:async()=>completed},
-      qaLogHome:f.configuration.logHome,rerunUnknownQa:mode!=='no-authorization',
+      qaLogHome:f.configuration.logHome,rerunUnknownQa:!mode.endsWith('no-authorization'),
       qaDecisionProvider:{timeoutMs:1000,decide:()=>assert.fail('existing QA decision must be reused')},
       qaExecutor:{mode:'commands',caseCount:1,timeoutMs:1000,run:async binding=>{
         calls++;invocation=binding;
@@ -296,11 +298,13 @@ test(`explicit QA recovery: ${mode}`,async()=>{
     const before=fs.readFileSync(log);
     const operation={version:1,operation:'advance',requestId:'resume-qa',identity:f.binding.identity};
     const result=await createCmAiConversationEntry(options).handle(operation);
-    if(['empty','abandoned-crash'].includes(mode)){
+    if(['empty','abandoned-crash','partial-abandoned-crash','PASS'].includes(mode)){
       assert.equal(result.code,'qa_passed',JSON.stringify(result));assert.equal(calls,1);
       assert.notEqual(invocation.testRunId,f.binding.testRunId);assert.equal(invocation.qaRound,1);
       assert.equal(rows().filter(row=>row.phase==='abandoned').length,1);
       assert.equal(rows().find(row=>row.phase==='abandoned').previous_test_run_id,f.binding.testRunId);
+      assert.deepEqual(rows().find(row=>row.phase==='abandoned').partial_pass_cases,
+        ['PASS','partial-abandoned-crash'].includes(mode)?['TC-001']:[]);
       assert.deepEqual(rows().filter(row=>row.phase==='start').map(row=>row.attempt),[1,1]);
       assert.equal(rows().filter(row=>row.phase==='complete').length,1);
       const {codeProject,testRunId,...query}=f.binding;
@@ -311,7 +315,7 @@ test(`explicit QA recovery: ${mode}`,async()=>{
       assert.equal((await createCmAiConversationEntry(options).handle(operation)).code,'qa_passed');
       assert.equal(calls,1);assert.deepEqual(fs.readFileSync(log),after);
     }else{
-      assert.equal(result.code,mode==='resource'?'qa_log_failed':'qa_execution_unknown',JSON.stringify(result));
+      assert.equal(result.code,mode.endsWith('resource')?'qa_log_failed':'qa_execution_unknown',JSON.stringify(result));
       assert.equal(calls,0);assert.deepEqual(fs.readFileSync(log),before);
     }
   }finally{f.cleanup();}
@@ -340,7 +344,10 @@ test('same-round successors require bound abandonment; repaired FAIL rounds stil
       fs.writeFileSync(log,rows.map(row=>JSON.stringify(row)).join('\n')+'\n');
       assert.throws(()=>readCmAiQaRunRound({...query,testRunId:'retry-1'}),undefined,variant);
     }
-    fs.writeFileSync(log,valid);
+    const legacy=valid.trim().split('\n').map(JSON.parse);
+    delete legacy.find(row=>row.phase==='abandoned').partial_pass_cases;
+    fs.writeFileSync(log,legacy.map(JSON.stringify).join('\n')+'\n');
+    assert.equal(readCmAiQaRunRound({...query,testRunId:'retry-1'}),1);
     for(let qaRound=1;qaRound<=3;qaRound++){
       const id=`retry-${qaRound}`;
       if(qaRound>1)recordCmAiQaRun({...base,testRunId:id,qaRound,phase:'start'});
@@ -349,5 +356,78 @@ test('same-round successors require bound abandonment; repaired FAIL rounds stil
       assert.equal(latestCmAiQaRun(query).status,'failed');
     }
     assert.throws(()=>recordCmAiQaRun({...base,testRunId:'retry-4',qaRound:4,phase:'start'}));
+  }finally{f.cleanup();}
+});
+
+for(const interruptedAfterAbandonment of [false,true])
+test(`partial PASS recovery reruns the full real executor plan; abandoned crash=${interruptedAfterAbandonment}`,async()=>{
+  const {createCmAiConversationEntry}=await import('../runtime/js/cm-ai/cm-ai-conversation-entry.mjs');
+  const {readCmAiQaRunRound}=await import('../runtime/js/cm-ai/cm-ai-qa-log.mjs');
+  const {inspectRunClosure}=await import('./cm-log-event.mjs');
+  const f=fixture();
+  try{
+    fs.writeFileSync(path.join(f.configuration.codeProject,'.cm-workflow.json'),JSON.stringify({version:1,
+      project:{workflow:'web-frontend'},policies:{tests:['commands','browser','logic']}}));
+    const seen=[],executor=createHostQaExecutor({...f.configuration,
+      logic:async request=>{seen.push(request.case.id);return {verdict:'SUPPORTED',evidence:['Synthetic static observation']};},
+      browser:async request=>{
+        seen.push(request.case.id);
+        const file=path.join(f.binding.specsDir,'.reviews',`${request.testRunId}-${request.case.id}.txt`);
+        fs.writeFileSync(file,'Fresh synthetic browser evidence');
+        return {verdict:'PASS',evidence:[file],environment:request.environment,cleanup:'completed'};
+      }});
+    assert.equal(executor.caseCount,4);
+    const start=begin(f,executor),log=path.join(f.binding.specsDir,'运行日志.jsonl');
+    const rows=()=>fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse);
+    const seed=rows().at(-1),oldEvidence=path.join(f.binding.specsDir,'.reviews','old-browser-pass.txt');
+    fs.writeFileSync(oldEvidence,'Historical PASS evidence');
+    for(const caseId of ['TC-002','TC-003'])for(const phase of ['case_start','case_complete'])
+      fs.appendFileSync(log,JSON.stringify({...seed,phase,case_id:caseId,
+        ...(phase==='case_complete'?{result:'PASS',evidence:[oldEvidence]}:{})})+'\n');
+    const history=fs.readFileSync(log,'utf8');
+    if(interruptedAfterAbandonment)recordCmAiQaRun({...start,phase:'abandoned',logHome:f.configuration.logHome});
+    const completed={state:'fixture_completed',code:null,identity:f.binding.identity,packageDigest:f.binding.packageDigest};
+    const options={specsDir:f.binding.specsDir,codeProject:f.binding.codeProject,feature:f.binding.feature,
+      identity:f.binding.identity,runner:{status:()=>completed,executeEffect:async()=>assert.fail('no development/review replay'),
+        cancel:()=>completed,run:async()=>completed},qaLogHome:f.configuration.logHome,rerunUnknownQa:true,
+      qaDecisionProvider:{timeoutMs:1000,decide:()=>assert.fail('reuse existing decision')},qaExecutor:executor};
+    const result=await createCmAiConversationEntry(options).handle({version:1,operation:'advance',
+      requestId:'partial-rerun',identity:f.binding.identity});
+    assert.equal(result.code,'qa_passed',JSON.stringify(result));
+    assert.deepEqual(seen,['TC-002','TC-003','TC-001']);
+    assert.equal(fs.readFileSync(oldEvidence,'utf8'),'Historical PASS evidence');
+    assert(fs.readFileSync(log,'utf8').startsWith(history));
+    assert(!fs.existsSync(path.join(f.binding.specsDir,'.reviews',`${f.binding.testRunId}-execution.md`)));
+    const abandoned=rows().filter(row=>row.phase==='abandoned');
+    assert.equal(abandoned.length,1);assert.deepEqual(abandoned[0].partial_pass_cases,['TC-002','TC-003']);
+    const successor=rows().filter(row=>row.phase==='start').at(-1);
+    assert.notEqual(successor.operation_id,f.binding.testRunId);assert.equal(successor.attempt,1);
+    const fresh=rows().filter(row=>row.operation_id===successor.operation_id);
+    assert.deepEqual(fresh.filter(row=>row.phase==='case_complete').map(row=>row.case_id),['TC-002','TC-003']);
+    assert.equal(fresh.find(row=>row.phase==='complete').passed,4);
+    // A real command resource release proves the commands stage also ran again.
+    assert(fresh.some(row=>row.event==='resource'&&row.resource_kind==='qa_command'&&row.phase==='released'));
+    assert.equal(inspectRunClosure(log,f.binding.identity.runId).closed,true);
+    const valid=fs.readFileSync(log,'utf8');
+    for(const badResult of ['FAIL','BLOCKED','case_blocked']){
+      const invalid=rows(),prior=invalid.find(row=>row.operation_id===f.binding.testRunId&&row.phase==='case_complete');
+      prior.result=badResult==='case_blocked'?'BLOCKED':badResult;
+      if(badResult==='case_blocked')prior.phase='case_blocked';
+      fs.writeFileSync(log,invalid.map(JSON.stringify).join('\n')+'\n');
+      const {codeProject,testRunId,...query}=f.binding;
+      assert.throws(()=>readCmAiQaRunRound({...query,testRunId:successor.operation_id}));
+      assert.throws(()=>inspectRunClosure(log,f.binding.identity.runId));
+      fs.writeFileSync(log,valid);
+    }
+    for(const partial of [undefined,null,[],['TC-002'],['TC-002','TC-003','TC-999']]){
+      const invalid=rows(),abandonment=invalid.find(row=>row.phase==='abandoned');
+      if(partial===undefined)delete abandonment.partial_pass_cases;
+      else abandonment.partial_pass_cases=partial;
+      fs.writeFileSync(log,invalid.map(JSON.stringify).join('\n')+'\n');
+      const {codeProject,testRunId,...query}=f.binding;
+      assert.throws(()=>readCmAiQaRunRound({...query,testRunId:successor.operation_id}));
+      assert.throws(()=>inspectRunClosure(log,f.binding.identity.runId));
+      fs.writeFileSync(log,valid);
+    }
   }finally{f.cleanup();}
 });
