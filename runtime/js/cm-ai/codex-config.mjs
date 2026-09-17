@@ -34,6 +34,12 @@ export function commonArgs({ cwd, model, disabledSkills = [] }) {
     '-c', 'project_doc_max_bytes=0', '-c', 'mcp_servers={}',
     '-c', 'check_for_update_on_startup=false', '-c', 'analytics.enabled=false',
     '-c', `model="${model}"`, '-c', 'model_reasoning_effort="high"',
+    // Codex 0.153.4 injects a <skills_instructions> catalog built from every skill root
+    // (~/.codex/skills, ~/.agents/skills, ...) even with --ignore-user-config, skills.config
+    // disables, skip_host_skill_discovery or --ignore-rules. Only this key removes the block.
+    // Measured 2026-09-16 (empty cwd, no-op prompt): 18249 -> 11706 input tokens and no
+    // "skills context budget" notice. skills.config stays as the per-folder defence.
+    '-c', 'skills.include_instructions=false',
     '-c', `skills.config=[${[...disabledSkills].sort().map(folder =>
       `{path=${JSON.stringify(folder)},enabled=false}`).join(',')}]`];
 }
