@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -11,6 +11,12 @@ import {openFixExecution} from '../runtime/js/cm-fix/execution.mjs';
 import {checkN4} from './cm-task-gate.mjs';
 import {fixCompletionProjection} from '../runtime/js/cm-fix/finish.mjs';
 import {loadConfig,resolveRole} from './cm-workflow-config.mjs';
+
+// Keep runtime declarations and log mirrors independent of the invoking user's home.
+const isolatedWorkflowHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-fix-host-review-home-'));
+process.env.CM_WORKFLOW_HOME=path.join(isolatedWorkflowHome,'user');
+process.env.CM_WORKFLOW_LOG_HOME=path.join(isolatedWorkflowHome,'logs');
+after(()=>fs.rmSync(isolatedWorkflowHome,{recursive:true,force:true}));
 
 for(const runtime of ['codex','claude']){
 test(`${runtime} CLI cause review requires opt-in and matching diagnostic, then resumes without dispatch`,async()=>{

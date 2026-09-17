@@ -1,5 +1,5 @@
 import {buildManifest} from './cm-spec-manifest.mjs';
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,6 +13,12 @@ import {codeProjectPaths,resolveCodeProjects,groupCodeProjectPaths,codeProjectIn
 import {applyProtectedEdits,captureProtectedEdits,commitProtectedEdits} from '../runtime/js/cm-fix/protected-edits.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {reviewResult,reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
+
+// Keep runtime declarations and log mirrors independent of the invoking user's home.
+const isolatedWorkflowHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-ai-multi-root-home-'));
+process.env.CM_WORKFLOW_HOME=path.join(isolatedWorkflowHome,'user');
+process.env.CM_WORKFLOW_LOG_HOME=path.join(isolatedWorkflowHome,'logs');
+after(()=>fs.rmSync(isolatedWorkflowHome,{recursive:true,force:true}));
 
 const identity={repositoryId:'multi-root-fixture',runId:'r3-fixture',taskId:'T-001',attempt:1};
 const checks=[{id:'aggregate',command:['node','check.mjs'],outcome:'passed',exitCode:0,evidence:'Synthetic aggregate check'}];

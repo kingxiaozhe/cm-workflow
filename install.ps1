@@ -196,7 +196,7 @@ try {
 if ($InstallComplete) {
     # User runtimes.yml: same JS authority and atomic writer as Bash/Codex.
     if (-not $Yes -and -not $Force -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
-        & node (Join-Path $Dest "scripts/cm-runtime-install.mjs")
+        & node (Join-Path $Dest "scripts/cm-runtime-install.mjs") --lang (Get-Culture).Name
         if ($LASTEXITCODE -ne 0) { throw "运行时声明未完成（核心安装已成功）" }
     }
 

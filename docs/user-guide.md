@@ -573,6 +573,19 @@ $cm-security {项目路径} --semgrep-rules {外部本地规则文件} --osv-db 
 | `codex-codes` | Codex | Claude |
 | `claude-codes` | Claude | Codex |
 
+直接输入 `$cm-runtime`（Claude Code 为 `/cm-runtime`）即可由会话按当前对话语言三问：
+`[1] 当前项目 / [2] 用户级默认` → `[1] 只有 Codex / [2] 只有 Claude / [3] 两个都有`
+（选 3 再选 `[1] Codex 写、Claude 审（推荐） / [2] Claude 写、Codex 审`）→ 显示预设和当前值并确认。
+终端无参数运行 `node <workflow-root>/scripts/cm-runtime.mjs [--project PATH]` 进入同一向导。
+有项目配置时范围默认 1，否则默认 2；无配置选 1 会提示从模板新建。工具问题必须选择；
+Ctrl+C、必选问题连续三次空输入或拒绝确认均不写。非 TTY 无参数打印用法并退出 2。
+
+安装器、终端向导与人类可读诊断按系统语言显示中文或英文：
+`CM_WORKFLOW_LANG=zh|en` > `LC_ALL` > `LC_MESSAGES` > `LANG` > Node Intl > 英文兜底；
+locale 以 `zh` 开头用中文，其他用英文。Windows 安装器传入 `Get-Culture` 作为 locale。
+机器字段、预设名和退出码保持不变；用户默认文件的注释也随语言切换。
+自动化可继续使用显式子命令：
+
 ```text
 $cm-runtime show
 $cm-runtime set claude-codes --project /path/to/project

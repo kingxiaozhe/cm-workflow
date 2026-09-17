@@ -8,6 +8,9 @@ import {fileURLToPath} from 'node:url';
 import {ConfigError,findConfig,loadConfig,readConfigText,parseUserRuntimes,
   userRuntimesPath,runtimePreset,RUNTIME_PRESETS,resolveRole,runtimesSource} from './cm-workflow-config.mjs';
 import {editRuntimeDeclaration} from './cm-runtime-edit.mjs';
+import {runtimeLanguage,runtimeText as t} from './cm-runtime-i18n.mjs';
+import {askRuntimePreset,runtimeQuestions,PromptCancelled} from './cm-runtime-install.mjs';
+export {askRuntimePreset} from './cm-runtime-install.mjs';
 import {probeRuntimes} from './cm-failover.mjs';
 
 const scripts=path.dirname(fileURLToPath(import.meta.url));
@@ -29,10 +32,10 @@ export function atomicRuntimeWrite(file,text,{before=null,privateFile=false}={})
     fs.renameSync(temporary,file);
   }finally{if(stat(temporary))fs.unlinkSync(temporary);}
 }
-export function writeUserRuntime(preset){
+export function writeUserRuntime(preset,{lang=runtimeLanguage()}={}){
   const declaration=runtimePreset(preset),file=userRuntimesPath();
   safeTarget(file);
-  const text=`# 用 cm-runtime set --user <preset> 修改用户级默认。\nruntimes: {available: ${declaration.runtimes.available}}\npreset: ${preset}\n`;
+  const text=`# ${t('comment',lang)}\nruntimes: {available: ${declaration.runtimes.available}}\npreset: ${preset}\n`;
   parseUserRuntimes(text);
   atomicRuntimeWrite(file,text,{before:stat(file)?fs.readFileSync(file):null,privateFile:true});
   return file;
@@ -54,7 +57,7 @@ export function setProjectRuntime(project,preset){
   loadConfig({projectRoot:root,configPath:file,text});
   atomicRuntimeWrite(file,text,{before});return file;
 }
-export function showRuntime(project,{runtime=process.env.CM_RUNTIME||'codex',probe=probeRuntimes}={}){
+export function showRuntime(project,{runtime=process.env.CM_RUNTIME||'codex',probe=probeRuntimes,lang=runtimeLanguage()}={}){
   const config=loadConfig({projectRoot:project});
   const preset=Object.keys(RUNTIME_PRESETS).find(name=>{
     const value=runtimePreset(name);
@@ -64,12 +67,12 @@ export function showRuntime(project,{runtime=process.env.CM_RUNTIME||'codex',pro
   const lines=[`runtimes.available: ${config.runtimes.available}`,`preset: ${preset}`,`runtimes_source: ${runtimesSource(config)}`];
   for(const role of ['coder','reviewer']){
     const resolved=resolveRole(config,role,runtime);
-    lines.push(`${role}: adapter=${resolved.adapter} source=${resolved.source} route_state=${resolved.route_state}${resolved.route_state==='declared-adapter'?'（已声明未派发）':''}`);
+    lines.push(`${role}: adapter=${resolved.adapter} source=${resolved.source} route_state=${resolved.route_state}${resolved.route_state==='declared-adapter'?t('declared',lang):''}`);
   }
   const wanted=config.runtimes.available==='both'?['codex','claude']:config.runtimes.available==='unknown'?[]:[config.runtimes.available];
   for(const result of probe(wanted))lines.push(result.available
-    ?`${result.runtime} CLI: 可解析（可解析≠配额可用）`
-    :`WARN: runtimes.available 声明 ${config.runtimes.available}，但本机 ${result.runtime} CLI 不可解析（可解析≠配额可用）`);
+    ?t('cli',lang,{runtime:result.runtime})
+    :t('warning',lang,{available:config.runtimes.available,runtime:result.runtime}));
   return lines.join('\n');
 }
 function logSet(preset,source,project){
@@ -87,11 +90,38 @@ function logSet(preset,source,project){
   }
   throw new ConfigError('preference saved, decision log failed: Python 3.9+ lock adapter unavailable');
 }
-const USAGE='cm-runtime show [--project PATH]\ncm-runtime set <preset> [--project PATH]\ncm-runtime set --user <preset>\ncm-runtime unset --user';
-export function main(argv=process.argv.slice(2)){
+const COMMANDS='cm-runtime show [--project PATH]\ncm-runtime set <preset> [--project PATH]\ncm-runtime set --user <preset>\ncm-runtime unset --user';
+export async function interactiveRuntime(project,{input=process.stdin,output=process.stdout,lang=runtimeLanguage()}={}){
+  const root=projectDirectory(project),existing=findConfig(root),file=existing??path.join(root,'.cm-workflow.yml');
+  const questions=runtimeQuestions(input,output,lang),ask=questions.ask;
   try{
-    if(argv.length===1&&['--help','-h'].includes(argv[0])){console.log(USAGE);return 0;}
-    const [command,...args]=argv;let project=process.cwd(),user=false,preset=null,projectSeen=false;
+    const fallback=existing?'1':'2';let scope;
+    do{scope=await ask(t('scope',lang,{project:file,user:userRuntimesPath(),default:fallback}));scope=scope||fallback;}while(!['1','2'].includes(scope));
+    const user=scope==='2';
+    if(!user&&!existing)output.write(t('create',lang,{file}));
+    const preset=await askRuntimePreset(ask,lang);
+    const target=user?userRuntimesPath():file;
+    const current=user?(stat(target)?readConfigText(target):t('absent',lang)):showRuntime(root,{lang,probe:()=>[]});
+    output.write(t('preview',lang,{file:target,preset,current}));
+    let confirm;
+    do{confirm=(await ask(t('confirm',lang))).toLowerCase();}while(!['','y','n'].includes(confirm));
+    if(confirm==='n')throw new PromptCancelled();
+    saveRuntime(root,preset,user,lang,output);
+    output.write(showRuntime(root,{lang})+'\n');return 0;
+  }catch(error){if(error instanceof PromptCancelled){output.write(t('cancelled',lang));return 0;}throw error;}
+  finally{questions.close();}
+}
+function saveRuntime(project,preset,user,lang,output){
+  runtimePreset(preset);project=projectDirectory(project);
+  const file=user?writeUserRuntime(preset,{lang}):setProjectRuntime(project,preset);
+  logSet(preset,user?'user':'project',project);
+  output.write(t('saved',lang,{file,preset,source:user?'user':'project'})+'\n');
+}
+export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,lang=runtimeLanguage()}={}){
+  const USAGE=t('help',lang)+'\n'+COMMANDS;
+  try{
+    if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(USAGE+'\n');return 0;}
+    const command=argv[0]?.startsWith('--')?undefined:argv[0];const args=command?argv.slice(1):argv;let project=process.cwd(),user=false,preset=null,projectSeen=false;
     for(let i=0;i<args.length;i++){
       if(args[i]==='--user'&&!user){user=true;continue;}
       if(args[i]==='--project'&&!projectSeen&&args[i+1]&&!args[i+1].startsWith('--')){project=args[++i];projectSeen=true;continue;}
@@ -99,15 +129,13 @@ export function main(argv=process.argv.slice(2)){
       throw new ConfigError(USAGE);
     }
     if(user&&projectSeen)throw new ConfigError('--user cannot be combined with --project');
-    if(command==='show'&&!user){console.log(showRuntime(project));return 0;}
+    if(!command&&!user){if(!input.isTTY||!output.isTTY){output.write(USAGE+'\n');return 2;}return await interactiveRuntime(project,{input,output,lang});}
+    if(command==='show'&&!user){output.write(showRuntime(project,{lang})+'\n');return 0;}
     if(command==='set'&&preset){
-      runtimePreset(preset);project=projectDirectory(project);
-      const file=user?writeUserRuntime(preset):setProjectRuntime(project,preset);
-      logSet(preset,user?'user':'project',project);
-      console.log(`Saved ${file}: ${preset} (${user?'user':'project'}); existing runs unchanged`);return 0;
+      saveRuntime(project,preset,user,lang,output);return 0;
     }
-    if(command==='unset'&&user){const file=userRuntimesPath();safeTarget(file);if(stat(file))fs.unlinkSync(file);console.log(`Removed user default: ${file}; project declarations still take precedence`);return 0;}
+    if(command==='unset'&&user){const file=userRuntimesPath();safeTarget(file);if(stat(file))fs.unlinkSync(file);output.write(t('removed',lang,{file})+'\n');return 0;}
     throw new ConfigError(USAGE);
   }catch(error){console.error(`cm-runtime: ${error.message}`);return 1;}
 }
-if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))process.exitCode=main();
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))process.exitCode=await main();

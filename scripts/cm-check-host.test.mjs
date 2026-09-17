@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,6 +8,12 @@ import {once} from 'node:events';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {createCmCheckHost} from '../runtime/js/cm-check/host.mjs';
+
+// Keep runtime declarations and log mirrors independent of the invoking user's home.
+const isolatedWorkflowHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-check-host-home-'));
+process.env.CM_WORKFLOW_HOME=path.join(isolatedWorkflowHome,'user');
+process.env.CM_WORKFLOW_LOG_HOME=path.join(isolatedWorkflowHome,'logs');
+after(()=>fs.rmSync(isolatedWorkflowHome,{recursive:true,force:true}));
 const root=fileURLToPath(new URL('..',import.meta.url));
 function fixture(t,exitCode=0){
   const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-check-host-'))),project=path.join(dir,'project');fs.mkdirSync(project);
