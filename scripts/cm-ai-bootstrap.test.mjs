@@ -1,3 +1,4 @@
+import {buildManifest} from './cm-spec-manifest.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -28,7 +29,7 @@ function fixture(t){
   fs.writeFileSync(path.join(specsDir,'0.bootstrap','requirements.md'),'# Requirements\nSynthetic approved scaffold and project instructions.\n');
   fs.writeFileSync(path.join(specsDir,'0.bootstrap','design.md'),'# Design\nJavaScript; no Git; frontend module.\n');
   fs.writeFileSync(path.join(specsDir,'0.bootstrap','tasks.md'),'- [ ] T-001: 生成项目骨架 scaffold\n- [ ] T-002: 生成 .claude/ 规范（cm-init）\n');
-  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['0.bootstrap']}));
+  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['0.bootstrap'],specFiles:buildManifest(specsDir)}));
   return {root,codeProject,specsDir,calls:[],reviews:[],businessCalls:0};
 }
 function definition(f,taskId){

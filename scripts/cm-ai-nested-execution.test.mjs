@@ -8,6 +8,8 @@ import {fileURLToPath} from 'node:url';
 import {createCodexExecution,openControlRun} from './cm-ai-run.mjs';
 import {createConversationExecution,conversationProtection} from './cm-ai-host.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
+import {buildManifest} from './cm-spec-manifest.mjs';
+import {loadConfig,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
 
 const supported=process.platform==='darwin'&&Number(process.versions.node.split('.')[0])>=24;
 const identity={repositoryId:'fixture',runId:'nested-run',taskId:'T-001',attempt:1};
@@ -54,10 +56,11 @@ async function fixture(fn){
   fs.mkdirSync(path.join(specsDir,feature),{recursive:true});
   fs.writeFileSync(path.join(codeProject,'a.js'),'old\n');
   fs.writeFileSync(path.join(codeProject,'requirements.md'),'Synthetic requirement\n');
+  fs.writeFileSync(path.join(codeProject,'.cm-workflow.json'),JSON.stringify({version:1,runtimes:{available:'codex'}}));
   fs.writeFileSync(path.join(specsDir,feature,'requirements.md'),'# Requirements\n');
   fs.writeFileSync(path.join(specsDir,feature,'design.md'),'# Design\n');
   fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: implement\n');
-  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature]}));
+  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
   const definition={version:1,codeProject,specsDir,feature,identity,scope:['a.js'],requirements:['requirements.md']};
   const config={codeProject,specsRoot:specsDir,developerModel:'synthetic',reviewerModel:'synthetic',hostContextId:'host',
     developerContextId:'author',timeoutMs:5000,
@@ -127,7 +130,7 @@ for(const launch of ['factory','host','revision','workflow'])test(`${launch}: sy
   {skip:!supported},()=>fixture(async({root,definition,config,authority})=>{
     if(launch==='workflow'){
       definition.scope.push('README.md');fs.writeFileSync(path.join(definition.codeProject,'README.md'),'# Old\n');
-      fs.writeFileSync(path.join(definition.codeProject,'.cm-workflow.json'),JSON.stringify({version:1,policies:{delivery:'diff'}}));
+      fs.writeFileSync(path.join(definition.codeProject,'.cm-workflow.json'),JSON.stringify({version:1,runtimes:{available:'codex'},policies:{delivery:'diff'}}));
     }
     // Never execute real `codex exec`: the shim emits synthetic provider events.
     // It forwards only sandbox commands to the installed native sandbox.
@@ -172,7 +175,7 @@ let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end'
     emit({type:'turn.completed'});return;
   }
   a(input.includes('<cm-developer-data-json>'));fs.appendFileSync(${JSON.stringify(calls)},'developer\n');
-  if(${launch==='workflow'}){a(input.includes('synchronize these already-approved ordinary documentation paths'));a(input.includes('["README.md"]'));}
+  if(${launch==='workflow'}){a(input.includes('Synchronize approved documentation inside this invocation:'));a(input.includes('["README.md"]'));}
   const run=cp.spawnSync(real,['sandbox','-P','cm-specs','--include-managed-config','-C',process.cwd(),...profile,'--',${JSON.stringify(process.execPath)},'-e',${JSON.stringify(code)}],{encoding:'utf8'});
   if(run.status!==0){process.stderr.write(run.stderr??'');process.exit(1);}
   emit({type:'thread.started',thread_id:'synthetic-protected-author'});emit({type:'turn.started'});
@@ -297,10 +300,14 @@ test('ordinary protected entry rejects missing authority and unsupported combina
     fs.writeFileSync(protectedFile,JSON.stringify({model:config.developerModel,checkCommands:config.checkCommands,timeoutMs:config.timeoutMs}));
     fs.writeFileSync(reviewFile,JSON.stringify({model:config.reviewerModel,preflight:config.reviewerPreflight}));
     const protectedArgs=['--protected-config',protectedFile],authorization=['--allow-provider-development-attempt','1'];
+    // Claude hosts are supported; this fixture's Codex-only declaration rejects
+    // a current-ai Claude coder. The CLI intentionally sanitizes ConfigError.
+    assert.throws(()=>resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),'claude'),
+      {message:'runtime_not_declared'});
     const unsafeFix=path.join(root,'unsafe-fix.json');fs.writeFileSync(unsafeFix,JSON.stringify({configuration:{}}));
     for(const [flags,code] of [[protectedArgs,'provider_development_authorization_required'],
       [authorization,'protected_configuration_required'],
-      [[...protectedArgs,...authorization,'--runtime','claude'],'protected_runtime_unsupported'],
+      [[...protectedArgs,...authorization,'--runtime','claude'],'host_launch_failed'],
       [[...protectedArgs,'--allow-provider-development-attempt','2'],'invalid_development_attempt'],
       [[...protectedArgs,...authorization,'--qa-fix-owner-config',unsafeFix],'protected_fix_required'],
       [[], 'nested_specs_protection_required']]){

@@ -43,7 +43,7 @@
 不进入全局镜像正文。`--allow-log-write`包含该必要本地执行记录，规格/审查写仍分别授权。
 
 以原项目/specs/mode/runtime/--cases参数和`--session {runId}`重连。无pending时按原stage继续advance；
-有pending时只允许`resume {resolution:null}`消费已经记录的返回，禁止再次发送advance跳过去。
+有pending时先走resume：`resume {resolution:null}`消费已经记录的返回，禁止直接发送advance跳过去。
 未知调用先从原宿主找回**实际原输出**，再传：
 
 ```json
@@ -51,7 +51,28 @@
 ```
 
 result必须是原返回，不可填空占位。信封只做绑定，宿主必须核实引用与实际执行，不得由模型自报批准。
-找不到原返回就保持unknown/人工恢复，不补调、不推断未执行。审查恢复仍由原claim/r1发布器验原包与独立身份；
+找不到原返回时保持unknown，或对**不含任何prd_review调用**的操作显式放弃；不自动补调、不推断未执行。
+审查恢复仍由原claim/r1发布器验原包与独立身份；
 修正自检复用原start与result，保存中断只补归档提案缺失部分，第三种文件内容不覆盖。
-显式cancel不可恢复为继续执行；断连不等于取消。旧版本没有checkpoint的会话无法还原未记录对话，明确报告。
+显式cancel同时写cancelled checkpoint并清空active，是不可恢复为继续执行的终态；断连不等于取消。
+旧版cancelled checkpoint残留active时，重连清空残留并保持终态（2026-09-17事故：cancel只写checkpoint，active拦住新操作而cancelled又拦住resume，形成死锁）。
+旧版本没有checkpoint的会话无法还原未记录对话，明确报告。
 状态/原材料或配置漂移不得解释为新成功；历史完成与当前执行资格分开。
+
+### 放弃未知调用
+
+非审查操作无法取得原输出时，可显式发送以下形态；`result`必须缺省，不能和`abandon`共存。
+
+```json
+{"requestId":"abandon-1","operation":"resume","resolution":{"callId":"status原值","requestDigest":"status原值","abandon":true,"evidence":"放弃原调用的工具/消息引用与原因"}}
+```
+
+callId/requestDigest必须绑定active中的未知调用，evidence不能为空；整个active只要含prd_review，就以`prd_review_recovery_required`阻断，不能借放弃规避claim-first单轮审查。
+成功后丢弃整个active、不写result，checkpoint还原为active.before；decision/recovery日志只含operation、kind、callId与evidence的哈希/长度摘要，不含payload或证据正文。
+随后可重新发起同一操作并收到新host_request；这只回退会话状态，不撤销已经发生的文件写入，原保存/修正冲突检查仍生效（2026-09-17事故：prepare_summary断连后缺少放弃未知调用的入口）。
+
+### 可见的会话阻断
+
+宿主返回`{status:'blocked',reason:<code>,recovery:<当前recovery>,completionAuthorized:false}`，调用方先读reason与recovery，再选择原输出恢复、显式放弃或取消。
+可见code为`prd_operation_recovery_required`、`prd_host_result_unknown`、`prd_nothing_to_resume`、`prd_recovery_binding`、`prd_recovery_evidence_required`、`prd_replay_inputs_changed`、`cancelled`、`prd_turn_not_ready`及上述审查放弃阻断。
+其他异常沿用共享transport脱敏；blocked不是完成授权（2026-09-17事故：真实恢复原因被统一host_request_failed隐藏，导致多轮误排查）。

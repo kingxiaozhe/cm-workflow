@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { digest } from './contracts.mjs';
+import {captureSpecificationMaterial,readSpecificationMaterial,verifySpecificationMaterial} from './specification-material.mjs';
 import {resolveCodeProjects,validateCodeProjectPaths,
   codeProjectInstructionPaths,assertCodeProjectSelections} from './code-projects.mjs';
 
@@ -70,7 +71,7 @@ function rootPath(root) {
   catch(error) { if(error.code==='unsupported_file')throw error; fail('read_failed'); }
 }
 const statKey = s => [s.dev,s.ino,s.mode,s.nlink,s.size,s.mtimeNs,s.ctimeNs].join(':');
-function readFile(root,p,includeContent=true,limit=FILE_LIMIT) {
+function readFile(root,p,includeContent=true,limit=FILE_LIMIT,contentLimit=limit) {
   let fd;
   try {
     const abs=path.join(root,p),before=fs.lstatSync(abs,{bigint:true});
@@ -85,7 +86,7 @@ function readFile(root,p,includeContent=true,limit=FILE_LIMIT) {
       const count=fs.readSync(fd,buf,0,Math.min(buf.length,Number(before.size)+1-offset),null);
       if(!count)break;
       hash.update(buf.subarray(0,count));
-      if(includeContent)chunks.push(Buffer.from(buf.subarray(0,count)));
+      if(includeContent&&offset<contentLimit)chunks.push(Buffer.from(buf.subarray(0,Math.min(count,contentLimit-offset))));
       offset+=count;
     }
     const after=fs.fstatSync(fd,{bigint:true}),last=fs.lstatSync(abs,{bigint:true});
@@ -167,7 +168,7 @@ const sealed = (data,key) => {
 };
 export function captureReviewBaseline(options) {
   const v=plain(options); keys(v,['root','identity','scope','requirements',
-    ...['specsRoot','codeProjectPaths','bootstrapRequirements','version'].filter(key=>Object.hasOwn(v,key))]); identityCheck(v.identity);
+    ...['specsRoot','codeProjectPaths','bootstrapRequirements','specification','version'].filter(key=>Object.hasOwn(v,key))]); identityCheck(v.identity);
   const version=v.version??2;need([1,2].includes(version));
   const bootstrap=Object.hasOwn(v,'bootstrapRequirements')?v.bootstrapRequirements:null;
   if(bootstrap!==null){
@@ -175,7 +176,13 @@ export function captureReviewBaseline(options) {
     need(Object.hasOwn(v,'specsRoot')&&bootstrap.specsRoot===v.specsRoot,'bootstrap_requirements_mismatch');
     currentBootstrapRequirements(bootstrap);
   }
-  const scope=paths(v.scope), requirements=requirementPaths(v.requirements,bootstrap!==null),root=rootPath(v.root);
+  let specification=null;
+  if(Object.hasOwn(v,'specification')){
+    keys(v.specification,['specsRoot','feature']);
+    need(v.specification.specsRoot===v.specsRoot,'spec_drift');
+    specification=captureSpecificationMaterial({...v.specification,taskId:v.identity.taskId});
+  }
+  const scope=paths(v.scope), requirements=requirementPaths(v.requirements,bootstrap!==null||specification!==null),root=rootPath(v.root);
   need(![...scope,...requirements].some(inDependencyDirectory),'excluded_snapshot_path');
   const projectPaths=Object.hasOwn(v,'codeProjectPaths')?validateCodeProjectPaths(v.codeProjectPaths):null;
   if(projectPaths!==null)resolveCodeProjects(v.root,projectPaths.map(prefix=>path.join(root,prefix)));
@@ -194,22 +201,36 @@ export function captureReviewBaseline(options) {
   return sealed({version,kind:'cm-review-baseline',identity:v.identity,rootDigest:sha(root),
     scope,requirements,files,...(specsPath===null?{}:{specsPath}),
     ...(projectPaths===null?{}:{codeProjectPaths:projectPaths}),
-    ...(bootstrap===null?{}:{bootstrapRequirements:bootstrap})},'baselineDigest');
+    ...(bootstrap===null?{}:{bootstrapRequirements:bootstrap}),
+    ...(specification===null?{}:{specification,specificationRoot:v.specification.specsRoot})},'baselineDigest');
 }
 
 // Bounded selected-file material for pre-implementation reviews; no whole-tree scan.
 export function readReviewSourceFiles(root,selected){
   let total=0;
   const real=rootPath(root),files=paths(selected).map(p=>{
-    const parts=p.split('/');let parent=real;
-    for(const part of parts.slice(0,-1)){
-      parent=path.join(parent,part);
-      const stat=fs.lstatSync(parent);
-      need(stat.isDirectory()&&!stat.isSymbolicLink()&&fs.realpathSync(parent)===parent,'unsupported_path');
-    }
+    sourceParent(real,p);
     const file=readFile(real,p);total+=file.size;need(total<=SNAPSHOT_LIMIT,'limit_exceeded');return file;
   });
   return freeze(files);
+}
+function sourceParent(root,p){
+  let parent=root;
+  for(const part of p.split('/').slice(0,-1)){
+    parent=path.join(parent,part);
+    const stat=fs.lstatSync(parent);
+    need(stat.isDirectory()&&!stat.isSymbolicLink()&&fs.realpathSync(parent)===parent,'unsupported_path');
+  }
+}
+// Retain only a UTF-8 prefix while hashing the entire design, including files
+// larger than the ordinary 1 MiB review-body budget. Never publish a partial file record.
+export function readReviewSourceExcerpt(root,selected,maxBytes){
+  need(Number.isSafeInteger(maxBytes)&&maxBytes>0&&maxBytes<=64*1024);
+  const real=rootPath(root),p=filePath(selected);sourceParent(real,p);
+  const file=readFile(real,p,true,INVENTORY_LIMIT,maxBytes+1);
+  const bytes=Buffer.from(file.contentBase64,'base64');let end=Math.min(bytes.length,maxBytes);
+  if(file.size>maxBytes)while((bytes[end]&0xc0)===0x80)end--;
+  return freeze({path:p,sha256:file.sha256,excerpt:bytes.subarray(0,end).toString('utf8'),truncated:file.size>maxBytes});
 }
 function validateSpecsSelection(specsPath,selections) {
   filePath(specsPath);
@@ -247,7 +268,10 @@ function inventoryList(b) {
   need(Array.isArray(files)&&files.length<=INVENTORY_COUNT);
   const material=[];let total=0,previous=null;const aliases=new Set();
   for(const f of files){
-    if(materialPath(f.path,selected)){fileRecord(f);material.push(f);}
+    // Legacy dependency records retain their original full bytes and drift checks.
+    // Ordinary sparse inventory entries still reject unsolicited bodies.
+    const legacyDependency=!Object.hasOwn(b,'specification')&&inDependencyDirectory(f.path)&&Object.hasOwn(f,'contentBase64');
+    if(materialPath(f.path,selected)||legacyDependency){fileRecord(f);material.push(f);}
     else{
       keys(f,['path','type','mode','size','sha256']);filePath(f.path);
       need(f.type==='file'&&Number.isInteger(f.mode)&&f.mode>=0&&f.mode<=0o7777);
@@ -283,10 +307,16 @@ export function readReviewSourceRecords(raw){
 function validBaseline(b) {
   try {
     keys(b,['version','kind','identity','rootDigest','scope','requirements','files','baselineDigest',
-      ...['specsPath','codeProjectPaths','bootstrapRequirements'].filter(key=>Object.hasOwn(b,key))]);
+      ...['specsPath','codeProjectPaths','bootstrapRequirements','specification','specificationRoot'].filter(key=>Object.hasOwn(b,key))]);
     need([1,2].includes(b.version) && b.kind==='cm-review-baseline'); identityCheck(b.identity); hex(b.rootDigest);
+    need(Object.hasOwn(b,'specification')===Object.hasOwn(b,'specificationRoot'));
+    if(Object.hasOwn(b,'specification')){
+      readSpecificationMaterial(b.specification,b.identity.taskId);
+      need(typeof b.specificationRoot==='string'&&path.isAbsolute(b.specificationRoot)
+        &&path.resolve(b.specificationRoot)===b.specificationRoot&&!b.specificationRoot.includes('\0'));
+    }
     const bootstrap=Object.hasOwn(b,'bootstrapRequirements');if(bootstrap)validBootstrapRequirements(b.bootstrapRequirements);
-    need(digest(b.scope)===digest(paths(b.scope)) && digest(b.requirements)===digest(requirementPaths(b.requirements,bootstrap)));
+    need(digest(b.scope)===digest(paths(b.scope)) && digest(b.requirements)===digest(requirementPaths(b.requirements,bootstrap||Object.hasOwn(b,'specification'))));
     if(b.version===2)inventoryList(b);
     else if(!bootstrap||b.files.length)fileList(b.files);else need(Array.isArray(b.files));
     need(b.requirements.every(p=>b.files.some(f=>f.path===p)));
@@ -330,10 +360,13 @@ function validChecks(checks) {
 export function createReviewPackage(options) {
   const v=plain(options); keys(v,['root','baseline','checks',...(Object.hasOwn(v,'handoffPath')?['handoffPath']:[])]); const b=v.baseline;
   validBaseline(b); validChecks(v.checks);
+  const specification=Object.hasOwn(b,'specification')?verifySpecificationMaterial(b):null;
   const root=rootPath(v.root); need(sha(root)===b.rootDigest,'invalid_baseline');
   const bootstrap=Object.hasOwn(b,'bootstrapRequirements')?currentBootstrapRequirements(b.bootstrapRequirements):null;
   if(bootstrap!==null)need(reviewSpecsPath(root,b.bootstrapRequirements.specsRoot)===(b.specsPath??null),'bootstrap_requirements_mismatch');
-  const files=snapshot(root,b.specsPath??null,b.codeProjectPaths??null,b.files.map(f=>f.path),b.version===1?null:new Set([...b.scope,...b.requirements])),before=new Map(b.files.map(f=>[f.path,f])),after=new Map(files.map(f=>[f.path,f]));
+  const selected=b.version===1?null:new Set([...b.scope,...b.requirements,
+    ...b.files.filter(f=>Object.hasOwn(f,'contentBase64')).map(f=>f.path)]);
+  const files=snapshot(root,b.specsPath??null,b.codeProjectPaths??null,b.files.map(f=>f.path),selected),before=new Map(b.files.map(f=>[f.path,f])),after=new Map(files.map(f=>[f.path,f]));
   const changes=[];
   for(const p of [...new Set([...before.keys(),...after.keys()])].sort()) {
     const old=before.get(p)??null,current=after.get(p)??null;
@@ -341,12 +374,16 @@ export function createReviewPackage(options) {
     need(b.scope.includes(p),'out_of_scope'); changes.push({path:p,before:old,after:current});
   }
   need(changes.length>0,'empty_changes');
+  const changedPaths=new Set(changes.map(change=>change.path));
+  const unchangedScope=b.scope.filter(p=>!changedPaths.has(p)&&after.has(p))
+    .map(p=>({path:p,sha256:after.get(p).sha256}));
   const requirements=b.requirements.map(p=>{ need(after.has(p),'read_failed'); return after.get(p); });
   const pkg=sealed({version:1,kind:'cm-review-package',identity:b.identity,rootDigest:b.rootDigest,
-    baseIdentity:b.baselineDigest,scope:b.scope,changes,requirements,checks:v.checks,
+    baseIdentity:b.baselineDigest,scope:b.scope,changes,unchangedScope,requirements,checks:v.checks,
     ...(Object.hasOwn(b,'codeProjectPaths')?{codeProjectPaths:b.codeProjectPaths,
       instructions:files.filter(file=>file.path.split('/').at(-1)==='AGENTS.md')}:{}),
     ...(bootstrap===null?{}:{bootstrapRequirements:bootstrap}),
+    ...(specification===null?{}:{specification}),
     ...(Object.hasOwn(v,'handoffPath')?{handoff:readHandoffSnapshot(v.handoffPath)}:{}),
     artifactDigest:digest(changes),requirementsDigest:digest(requirements),checksDigest:digest(v.checks)},'packageDigest');
   need(Buffer.byteLength(JSON.stringify(pkg))<=8*1024*1024,'limit_exceeded');
@@ -356,6 +393,8 @@ function validPackage(p) {
   try {
     keys(p,['version','kind','identity','rootDigest','baseIdentity','scope','changes','requirements',
       'checks','artifactDigest','requirementsDigest','checksDigest','packageDigest',
+      ...(Object.hasOwn(p,'unchangedScope')?['unchangedScope']:[]),
+      ...(Object.hasOwn(p,'specification')?['specification']:[]),
       ...(Object.hasOwn(p,'handoff')?['handoff']:[]),
       ...(Object.hasOwn(p,'codeProjectPaths')?['codeProjectPaths','instructions']:[]),
       ...(Object.hasOwn(p,'bootstrapRequirements')?['bootstrapRequirements']:[])]);
@@ -363,6 +402,7 @@ function validPackage(p) {
       fileRecord(p.handoff);need(!p.handoff.path.includes('/')&&p.handoff.size<=256*1024);
     }
     need(p.version===1 && p.kind==='cm-review-package'); identityCheck(p.identity);
+    if(Object.hasOwn(p,'specification'))readSpecificationMaterial(p.specification,p.identity.taskId);
     [p.rootDigest,p.baseIdentity,p.artifactDigest,p.requirementsDigest,p.checksDigest,p.packageDigest].forEach(hex);
     need(digest(p.scope)===digest(paths(p.scope)));
     need(Array.isArray(p.changes) && p.changes.length>0 && p.changes.length<=FILE_COUNT);
@@ -377,7 +417,19 @@ function validPackage(p) {
     if(Object.hasOwn(p,'bootstrapRequirements')){
       validBootstrapRequirements(p.bootstrapRequirements,true);
       if(p.requirements.length)fileList(p.requirements);else need(Array.isArray(p.requirements));
-    }else fileList(p.requirements);
+    }else if(p.requirements.length||!Object.hasOwn(p,'specification'))fileList(p.requirements);
+    else need(Array.isArray(p.requirements));
+    if(Object.hasOwn(p,'unchangedScope')){
+      need(Array.isArray(p.unchangedScope)&&p.unchangedScope.length<=FILE_COUNT);
+      for(const file of p.unchangedScope){
+        keys(file,['path','sha256']);filePath(file.path);hex(file.sha256);
+        need(p.scope.includes(file.path)&&!names.includes(file.path));
+        for(const material of [...p.requirements,...(p.instructions??[])])
+          if(material.path===file.path)need(material.sha256===file.sha256);
+      }
+      const unchangedNames=p.unchangedScope.map(file=>file.path);
+      if(unchangedNames.length)need(digest(unchangedNames)===digest(paths(unchangedNames)));
+    }
     validChecks(p.checks);
     if(Object.hasOwn(p,'codeProjectPaths')){
       need(digest(p.codeProjectPaths)===digest(validateCodeProjectPaths(p.codeProjectPaths)));
@@ -401,9 +453,15 @@ export function verifyReviewPackage(options) {
     ...(Object.hasOwn(v,'handoffPath')?['handoffPath']:[])]);
   hex(v.expectedDigest); validBaseline(v.baseline); validPackage(v.reviewPackage);
   need(v.reviewPackage.packageDigest===v.expectedDigest,'package_mismatch');
+  need(Object.hasOwn(v.reviewPackage,'specification')===Object.hasOwn(v.baseline,'specification'),'package_mismatch');
   need(Object.hasOwn(v.reviewPackage,'handoff')===Object.hasOwn(v,'handoffPath'),'package_mismatch');
-  const current=createReviewPackage({root:v.root,baseline:v.baseline,checks:v.checks,
+  let current=createReviewPackage({root:v.root,baseline:v.baseline,checks:v.checks,
     ...(Object.hasOwn(v,'handoffPath')?{handoffPath:v.handoffPath}:{})});
+  // Rebuild the historical representation for legacy receipts, without rewriting them.
+  if(!Object.hasOwn(v.reviewPackage,'unchangedScope')){
+    const {unchangedScope,packageDigest,...legacy}=current;
+    current=sealed(legacy,'packageDigest');
+  }
   need(current.packageDigest===v.expectedDigest,'package_mismatch');
   return freeze({outcome:'matched',packageDigest:current.packageDigest});
 }

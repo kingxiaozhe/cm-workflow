@@ -7,6 +7,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {claudeReviewFingerprint} from '../runtime/js/cm-ai/worker-claude.mjs';
+import {buildManifest} from './cm-spec-manifest.mjs';
 
 const cli=fileURLToPath(new URL('./cm-ai-batch-host.mjs',import.meta.url));
 function fixture(runtime='codex'){
@@ -15,7 +16,7 @@ function fixture(runtime='codex'){
   fs.mkdirSync(path.join(specsDir,feature),{recursive:true});fs.mkdirSync(codeProject);fs.mkdirSync(bin);
   for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(specsDir,feature,name),'# Synthetic batch\n');
   fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: first\n- [ ] T-002: second\n');
-  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature]}));
+  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
   fs.writeFileSync(path.join(codeProject,'requirements.md'),'# Two synthetic exports and README\n');
   const batch={version:1,repositoryId:'batch-host',batchId:'batch-host-run',specsDir,codeProject,
     tasks:[1,2].map(n=>({feature,taskId:`T-00${n}`,scope:[`task${n}.mjs`,...(n===2?['README.md']:[])],requirements:['requirements.md']}))};
@@ -59,6 +60,8 @@ function execute(f,approvals,{cancel=false}={}){
               assert.equal(payload.request.provider,f.runtime);
               const n=Number(identity.taskId.slice(-1));
               assert.deepEqual(payload.request.payload.scope,f.batch.tasks[n-1].scope);
+              assert.equal(payload.request.payload.specification.task.id,identity.taskId);
+              assert.deepEqual(payload.request.payload.specification.sources,buildManifest(f.specsDir));
               const content=`export const value = ${40+n};\n`;
               if(!f.protected)fs.writeFileSync(path.join(f.codeProject,`task${n}.mjs`),content);
               respond(row,{status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},

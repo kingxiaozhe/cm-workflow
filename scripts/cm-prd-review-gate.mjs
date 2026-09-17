@@ -6,6 +6,7 @@ import os from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
 import {TextDecoder} from 'node:util';
 import {fileURLToPath} from 'node:url';
+import {normalizeRuntimeMarks} from './cm-spec-manifest.mjs';
 
 const fail=message=>{throw new Error(message);};
 const need=(ok,message)=>{if(!ok)fail(message);};
@@ -103,7 +104,14 @@ function loadReceipt(file,args,evidence){
     const raw=path.join(root,item.path);need(!link(raw),'PRD review artifact is missing or unsafe');
     const artifact=resolve(raw);need(within(root,artifact),'PRD review artifact escapes the specs directory');
     need(stat(artifact)?.isFile(),'PRD review artifact is missing or unsafe');
-    need(hash(artifact)===item.sha256,'PRD review artifact changed after disposition');
+    const bytes=fs.readFileSync(artifact);
+    if(createHash('sha256').update(bytes).digest('hex')!==item.sha256){
+      const text=bytes.toString('utf8');
+      need(path.extname(artifact)==='.md'&&Buffer.from(text,'utf8').equals(bytes)
+        &&createHash('sha256').update(normalizeRuntimeMarks(text,path.basename(artifact))).digest('hex')===item.sha256,
+        'PRD review artifact changed after disposition');
+      value.runtimeMarksNormalized=true;
+    }
   }
   return value;
 }
@@ -150,7 +158,8 @@ export function inspectPrdReview(args){
   if(!stat(evidence))return dispatch?{...base,outcome:'dispatch_unknown',package_sha256:dispatch.package_sha256}:
     {...base,outcome:'dispatch_once'};
   evidenceHeader(evidence);if(!stat(receipt))return {...base,outcome:'resume_disposition'};
-  const value=loadReceipt(receipt,args,evidence);return {...base,outcome:'completed',disposition:value.disposition};
+  const value=loadReceipt(receipt,args,evidence);return {...base,outcome:'completed',disposition:value.disposition,
+    ...(value.runtimeMarksNormalized?{runtimeMarksNormalized:true}:{})};
 }
 export function recordPrdReview(args){
   counts(args.disposition,args.finding_count,args.unresolved_count);

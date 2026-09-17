@@ -15,28 +15,31 @@ const record=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
 const compare=(a,b)=>Buffer.compare(Buffer.from(a),Buffer.from(b));
 const exists=p=>{try{fs.statSync(p);return true;}catch(e){if(['ENOENT','ENOTDIR'].includes(e.code))return false;throw e;}};
 
+// Only actual task/AC declarations are runtime state; other files and code stay exact.
+export function normalizeRuntimeMarks(text,name){
+  if(!['tasks.md','requirements.md'].includes(name))return text;
+  const marker=name==='tasks.md'?/^([ ]{0,3}-[ \t]+)\[[xX]\]([ \t]+T-[A-Za-z0-9][A-Za-z0-9._-]*[ \t]*:)/
+    :/^([ ]{0,3}-[ \t]+)\[[xX]\]([ \t]+\[AC-[A-Za-z0-9][A-Za-z0-9._-]*\])/;
+  let fenceChar=null,width=0;
+  const lines=text.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g)??[];
+  return lines.map(line=>{
+    const fence=/^[ ]{0,3}(`{3,}|~{3,})/.exec(line);
+    if(fenceChar!==null){
+      if(fence&&fence[1][0]===fenceChar&&fence[1].length>=width
+        &&/^[\t\n\v\f\r ]*$/.test(line.slice(fence[0].length))){fenceChar=null;width=0;}
+      return line;
+    }
+    if(fence){fenceChar=fence[1][0];width=fence[1].length;return line;}
+    if(line.startsWith('    ')||line.startsWith('\t'))return line;
+    return line.replace(marker,'$1[ ]$2');
+  }).join('');
+}
+
 export function semanticDigest(file){
-  let bytes=fs.readFileSync(file);
-  const name=path.basename(file);
-  if(['tasks.md','requirements.md'].includes(name)){
-    const marker=name==='tasks.md'?/^([ ]{0,3}-[ \t]+)\[[xX]\]([ \t]+T-[A-Za-z0-9][A-Za-z0-9._-]*[ \t]*:)/
-      :/^([ ]{0,3}-[ \t]+)\[[xX]\]([ \t]+\[AC-[A-Za-z0-9][A-Za-z0-9._-]*\])/;
-    let fenceChar=null,width=0;
-    // Latin-1 is a reversible byte view, including invalid UTF-8 and CRLF.
-    const lines=bytes.toString('latin1').match(/[^\r\n]*(?:\r\n|\r|\n|$)/g)??[];
-    bytes=Buffer.from(lines.map(line=>{
-      const fence=/^[ ]{0,3}(`{3,}|~{3,})/.exec(line);
-      if(fenceChar!==null){
-        if(fence&&fence[1][0]===fenceChar&&fence[1].length>=width
-          &&/^[\t\n\v\f\r ]*$/.test(line.slice(fence[0].length))){fenceChar=null;width=0;}
-        return line;
-      }
-      if(fence){fenceChar=fence[1][0];width=fence[1].length;return line;}
-      if(line.startsWith('    ')||line.startsWith('\t'))return line;
-      return line.replace(marker,'$1[ ]$2');
-    }).join(''),'latin1');
-  }
-  return createHash('sha256').update(bytes).digest('hex');
+  const bytes=fs.readFileSync(file);
+  // Latin-1 is a reversible byte view, including invalid UTF-8 and CRLF.
+  const normalized=Buffer.from(normalizeRuntimeMarks(bytes.toString('latin1'),path.basename(file)),'latin1');
+  return createHash('sha256').update(normalized).digest('hex');
 }
 
 export function buildManifest(specsDir){

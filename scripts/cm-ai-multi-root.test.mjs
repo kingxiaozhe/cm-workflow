@@ -1,3 +1,4 @@
+import {buildManifest} from './cm-spec-manifest.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -141,14 +142,15 @@ test('a selected root may contain protected specs but specs cannot be a selected
   assert.throws(()=>captureReviewBaseline({...options,specsRoot,codeProjectPaths:['apps/api/specs']}),{code:'protected_specs'});
 });
 
-test('original single-root baseline and package keep their exact default fields and digest shape',t=>{
+test('single-root baseline stays unchanged and new package binds an empty unchanged scope',t=>{
   const {root}=fixture(t),single=path.join(root,'apps/api');
   const baseline=captureReviewBaseline({root:single,identity,scope:['source.mjs'],requirements:['requirement.md']});
   assert.deepEqual(Object.keys(baseline).sort(),['version','kind','identity','rootDigest','scope','requirements','files','baselineDigest'].sort());
   assert.deepEqual(baseline,resign(baseline,'baselineDigest'));
   write(single,'source.mjs','changed\n');const pkg=createReviewPackage({root:single,baseline,checks});
-  assert.deepEqual(Object.keys(pkg).sort(),['version','kind','identity','rootDigest','baseIdentity','scope','changes','requirements','checks',
+  assert.deepEqual(Object.keys(pkg).sort(),['version','kind','identity','rootDigest','baseIdentity','scope','changes','unchangedScope','requirements','checks',
     'artifactDigest','requirementsDigest','checksDigest','packageDigest'].sort());
+  assert.deepEqual(pkg.unchangedScope,[]);
   assert.equal(verifyReviewPackage({root:single,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
 });
 
@@ -206,7 +208,7 @@ test('integrated original multi-root conversation completes one task and resumes
   {skip:process.platform!=='darwin'||Number(process.versions.node.split('.')[0])<24,timeout:45000},t=>{
     const {root,codeProjects,options}=fixture(t),specsDir=options.specsRoot;
     for(const name of ['requirements.md','design.md'])write(specsDir,`1.feature/${name}`,'# Approved synthetic two-root task\n');
-    write(specsDir,'.cm-specs-status',JSON.stringify({status:'approved',features:['1.feature']}));
+    write(specsDir,'.cm-specs-status',JSON.stringify({status:'approved',features:['1.feature'],specFiles:buildManifest(specsDir)}));
     write(root,'.cm-workflow.json',JSON.stringify({version:1,policies:{delivery:'diff'}}));
     const selected=resolveCodeProjects(root,codeProjects),definition={version:1,specsDir,codeProject:root,
       codeProjects:selected,feature:'1.feature',identity,scope:options.scope,requirements:options.requirements};
@@ -230,6 +232,8 @@ test('integrated original multi-root conversation completes one task and resumes
       const bridge={async call(kind,payload){calls.push(kind);
         if(kind==='develop'){
           assert.equal(mode,'create');assert.deepEqual(payload.request.identity,definition.identity);
+          assert.equal(payload.request.payload.specification.feature,definition.feature);
+          assert.equal(payload.request.payload.specification.task.id,definition.identity.taskId);
           assert.equal(payload.codeProject,definition.codeProject);assert.deepEqual(payload.codeProjects,definition.codeProjects);
           assert.deepEqual(payload.request.payload.scope,definition.scope);assert.equal(payload.editMode,'protected-text-v1');
           assert.deepEqual(payload.projectInstructions.map(row=>row.codeProject),definition.codeProjects);
@@ -266,6 +270,8 @@ test('integrated original multi-root conversation completes one task and resumes
     };
     const initialPackages=packages(state());assert(initialPackages.length>0);
     const pkg=initialPackages.at(-1);
+    assert.equal(pkg.specification.task.id,identity.taskId);
+    assert.deepEqual(pkg.specification.sources,buildManifest(specsDir));
     assert.deepEqual(pkg.identity,identity);assert.deepEqual(pkg.codeProjectPaths,['apps/api','apps/web']);
     assert.deepEqual(pkg.changes.map(row=>row.path),options.scope);assert.equal(pkg.checks.length,2);
     for(const [index,codeProject] of selected.entries())assert(pkg.checks[index].evidence.includes(`cwd=${codeProject};`));

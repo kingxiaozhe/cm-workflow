@@ -26,13 +26,15 @@ export function withHostDocumentation({developer,documentationSync,specsDir,code
     need(!control.signal.aborted,'cancelled');
     if(!isFinalCmAiTask({specsDir,codeProject,feature,taskId:request.identity.taskId}))return response;
     const baseline=captureReviewBaseline({root:codeProject,specsRoot:specsDir,identity:request.identity,
-      scope:paths,requirements:request.payload.requirements.map(file=>file.path)});
+      scope:paths,requirements:request.payload.requirements.map(file=>file.path),
+      ...(request.payload.specification?{specification:{specsRoot:specsDir,feature}}:{})});
     const result=json(await run(json({identity:request.identity,invocationId:request.invocationId,
       specsDir,codeProject,feature,paths}),control.signal));
     need(!control.signal.aborted,'cancelled');shape(result,['status']);
     need(result.status==='completed','documentation_sync_blocked');
     const after=captureReviewBaseline({root:codeProject,specsRoot:specsDir,identity:request.identity,
-      scope:paths,requirements:request.payload.requirements.map(file=>file.path)});
+      scope:paths,requirements:request.payload.requirements.map(file=>file.path),
+      ...(request.payload.specification?{specification:{specsRoot:specsDir,feature}}:{})});
     need(digest(baseline.files.filter(file=>!paths.includes(file.path)))===
       digest(after.files.filter(file=>!paths.includes(file.path))),'out_of_scope');
     return response;

@@ -30,14 +30,28 @@ export function createClaudeReviewStream(onEvent, onNotice = null) {
         return;
       }
       if (message.type === 'rate_limit_event') {
-        if (noticeCount >= 8) reject('unexpected_event');
+        if (noticeCount >= 32) reject('unexpected_event');
         noticeCount++;
         reportClaudeRateLimitNotice(message.rate_limit_info, onNotice);
         return;
       }
       if (message.type === 'system') {
-        if (message.subtype !== 'thinking_tokens' || thinkingCount >= 64) reject('unexpected_event');
-        thinkingCount++;
+        if (message.subtype === 'thinking_tokens') {
+          // Long reviews emit usage heartbeats; worker-claude also caps total output at 1 MB.
+          if (thinkingCount >= 4096) reject('unexpected_event');
+          thinkingCount++;
+          return;
+        }
+        if (!['api_retry','hook_started','hook_response','commands_changed'].includes(message.subtype)
+          || noticeCount >= 32) reject('unexpected_event');
+        noticeCount++;
+        // CLI notifications carry no verdict; never forward hook output or command bodies.
+        const notice = {kind:'claude_system_notice', subtype:message.subtype};
+        for (const key of ['attempt','max_retries','error_status']) {
+          if (typeof message[key] === 'number' && Number.isFinite(message[key])) notice[key] = message[key];
+        }
+        if (typeof message.hook_name === 'string') notice.hook_name = message.hook_name;
+        try { if (typeof onNotice === 'function') onNotice(notice); } catch {}
         return;
       }
       if (message.type === 'assistant') {

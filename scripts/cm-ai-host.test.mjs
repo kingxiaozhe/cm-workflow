@@ -1,3 +1,4 @@
+import {buildManifest} from './cm-spec-manifest.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -18,7 +19,7 @@ function fixture(){
   fs.mkdirSync(codeProject);fs.mkdirSync(path.join(specsDir,feature),{recursive:true});
   for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(specsDir,feature,name),'# Fixture\n');
   fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: fixture\n');
-  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature]}));
+  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
   fs.writeFileSync(path.join(codeProject,'requirements.md'),'# Fixture\n');
   fs.writeFileSync(config,JSON.stringify({version:1,specsDir,codeProject,feature,identity,scope:['target.mjs'],requirements:['requirements.md']}));
   return {root,specsDir,codeProject,config,args:['serve','--config',config,'--mode','create','--host-context','native-host-fixture','--allow-development']};
@@ -45,7 +46,14 @@ function runCli(f,mode,action='create'){
           if(row.type==='host_ready')sessionId=row.sessionId;
           if(row.type==='host_request'){
             calls.push(row.kind);
-            if(action!=='create')assert((mode==='authorized-review'&&['check','qa_assess','documentation_inspect'].includes(row.kind))
+            if(row.kind==='develop'){
+              const material=row.payload.request.payload.specification;
+              assert.equal(material.task.id,'T-001');assert.equal(material.task.description,'fixture');
+              assert.deepEqual(material.sources,buildManifest(f.specsDir));
+              assert.equal(material.designExcerpt,fs.readFileSync(path.join(f.specsDir,'1.work','design.md'),'utf8'));
+              assert.deepEqual(row.payload.request.payload.scope,JSON.parse(fs.readFileSync(f.config)).scope);
+            }
+            if(action!=='create')assert((f.develop&&row.kind==='develop')||(mode==='authorized-review'&&['check','qa_assess','documentation_inspect'].includes(row.kind))
               ||(f.workflow&&row.kind==='documentation_inspect'),'resume must not resend development');
             if(mode==='disconnect'){child.stdin.end();continue;}
             if(mode==='cancel'){send(request('status'));send(request('cancel'));continue;}
@@ -68,6 +76,8 @@ function runCli(f,mode,action='create'){
               send(response(row,{outcome:'repaired'}));
             }else if(f.fix&&row.kind==='fix_retrospective'){
               send(response(row,{status:'no_new_lesson',candidates:[],reason:null}));
+            }else if(row.kind==='develop'&&f.develop){
+              send(response(row,f.develop(row.payload)));
             }else if(row.kind==='develop'){
               assert.equal(row.payload.request.provider,f.runtime??'codex');
               assert.equal(row.payload.route.runtime,f.runtime??'codex');
@@ -380,9 +390,15 @@ const provider=${JSON.stringify(provider)},args=process.argv.slice(2),real=${JSO
 if(args[0]==='sandbox'){const r=cp.spawnSync(real,args,{stdio:'inherit'});process.exit(r.status??1);}
 let prompt='';process.stdin.on('data',s=>prompt+=s);process.stdin.on('end',()=>{
   if(!prompt.includes('<cm-developer-data-json>')){
+    if(prompt.includes('<cm-review-data-json>')){
+      const material=JSON.parse(prompt.split('<cm-review-data-json>\n')[1]).reviewPackage.specification;
+      a.equal(material.feature,'1.work');a.equal(material.task.id,'T-001');a.equal(material.sources.length,3);
+    }
     const r=cp.spawnSync(process.execPath,[${JSON.stringify(reviewFixture)},...args],{input:prompt,encoding:'utf8'});
     process.stdout.write(r.stdout??'');process.stderr.write(r.stderr??'');process.exit(r.status??1);
   }
+  const material=JSON.parse(prompt.split('<cm-developer-data-json>\n')[1].split('\n')[0]).specification;
+  a.equal(material.feature,'1.work');a.equal(material.task.description,'fixture');a.equal(material.sources.length,3);
   const content='export const value = 42;\n';
   const value={outcome:'implemented',application:{status:'no_relevant_lesson',note:null},retrospective:{status:'no_new_lesson',candidates:[],reason:null}};
   let events;
@@ -502,5 +518,240 @@ try{console.log(JSON.stringify(await run.host.handle(${JSON.stringify(request('a
     assert.equal(resumed.rows.find(row=>row.requestId==='advance').result.state,'fixture_completed');
     assert.deepEqual(resumed.calls,[]);
     assert.match(fs.readFileSync(path.join(f.specsDir,'.reviews','work-T-001-r1.md'),'utf8'),/reviewer: codex-cli/);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+function protectedResultFixture(){
+  const f=fixture(),definition=JSON.parse(fs.readFileSync(f.config));
+  const nested=path.join(f.codeProject,'specs');fs.renameSync(f.specsDir,nested);
+  f.specsDir=nested;definition.specsDir=nested;fs.writeFileSync(f.config,JSON.stringify(definition));
+  const config=path.join(f.root,'conversation-protection.json');
+  fs.writeFileSync(config,JSON.stringify({timeoutMs:5000,
+    checkCommands:[{id:'syntax',command:[process.execPath,'--check','target.mjs']}]}));
+  f.args.push('--protected-conversation-config',config);
+  f.env={...process.env,CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')};
+  return f;
+}
+const implementedValue=()=>({outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
+  retrospective:{status:'no_new_lesson',candidates:[],reason:null}});
+const lastCheckpoint=f=>JSON.parse(fs.readFileSync(path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json')))
+  .records.filter(row=>row.payload.type==='effect-checkpoint').at(-1).payload.checkpoint;
+
+test('protected local invalid_result writes nothing and corrected CLI resume keeps run and attempt',async()=>{
+  const f=protectedResultFixture(),target=path.join(f.codeProject,'target.mjs');
+  try{
+    f.develop=payload=>{
+      assert.equal(payload.editMode,'protected-text-v1');assert.equal(payload.expected['target.mjs'],null);
+      return {status:'succeeded',value:{...implementedValue(),
+        retrospective:{status:'no_new_lesson',candidates:[],reason:'No new lesson'}},
+      edits:[{path:'target.mjs',beforeSha256:null,content:'export const value = 42;\n'}]};
+    };
+    for(const mode of ['create',...Array(6).fill('resume')]){
+      const rejected=await runCli(f,'normal',mode);assert.equal(rejected.code,0,rejected.stderr);
+      const result=rejected.rows.find(row=>row.requestId==='advance').result;
+      assert.equal(result.state,'blocked');assert.equal(result.code,'developer_result_invalid');
+      assert.equal(result.pendingAction,'resume');assert.deepEqual(result.identity,identity);
+      assert(!fs.existsSync(target));
+      const checkpoint=lastCheckpoint(f);assert.equal(checkpoint.calls.at(-1).terminal,'failed');
+      assert.deepEqual(checkpoint.calls.at(-1).failureResult,{code:'invalid_result',reason:'invalid_input',retryable:true});
+    }
+    f.develop=payload=>({status:'succeeded',value:implementedValue(),
+      edits:[{path:'target.mjs',beforeSha256:payload.expected['target.mjs'],content:'export const value = 42;\n'}]});
+    const resumed=await runCli(f,'normal','resume');assert.equal(resumed.code,0,resumed.stderr);
+    const result=resumed.rows.find(row=>row.requestId==='advance').result;
+    assert.equal(result.state,'awaiting_review');assert.equal(result.code,'decision_required');
+    assert.deepEqual(result.identity,identity);assert.equal(fs.readFileSync(target,'utf8'),'export const value = 42;\n');
+    assert.deepEqual(lastCheckpoint(f).calls.map(call=>call.terminal),[...Array(7).fill('failed'),'succeeded']);
+    const reopened=await runCli(f,'normal','resume');assert.equal(reopened.code,0,reopened.stderr);
+    assert.deepEqual(reopened.calls,[]);assert.equal(reopened.rows.find(row=>row.requestId==='advance').result.code,'decision_required');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+for(const matches of [true,false])test(`protected old proposal compares exact output with expected disk hashes: matches=${matches}`,async()=>{
+  const f=protectedResultFixture(),target=path.join(f.codeProject,'target.mjs');
+  try{
+    // Simulate a proposal already applied before this invocation was rejected.
+    const content='export const value = 42;\n';
+    f.develop=()=>({status:'succeeded',value:{...implementedValue(),
+      retrospective:{status:'no_new_lesson',candidates:[],reason:'invalid'}},edits:[]});
+    const failed=await runCli(f,'normal');assert.equal(failed.code,0,failed.stderr);
+    assert.equal(failed.rows.find(row=>row.requestId==='advance').result.code,'developer_result_invalid');
+    fs.writeFileSync(target,matches?content:'export const value = 99;\n');
+    const before=fs.readFileSync(target);
+    f.develop=()=>({status:'succeeded',value:implementedValue(),
+      edits:[{path:'target.mjs',beforeSha256:null,content}]});
+    const run=await runCli(f,'normal','resume');assert.equal(run.code,0,run.stderr);
+    const result=run.rows.find(row=>row.requestId==='advance').result;
+    assert.equal(result.state,matches?'awaiting_review':'blocked');
+    assert.equal(result.code,matches?'decision_required':'protected_edit_stale');
+    assert.deepEqual(fs.readFileSync(target),before);
+    const resumed=await runCli(f,'normal','resume');assert.equal(resumed.code,0,resumed.stderr);
+    assert.deepEqual(resumed.calls,[]);
+    assert.equal(resumed.rows.find(row=>row.requestId==='advance').result.code,result.code);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+for(const mode of ['blocked','disconnect'])test(`protected ${mode} cannot use the local invalid-result retry entry`,async()=>{
+  const f=protectedResultFixture();
+  try{
+    f.develop=()=>({status:'succeeded',value:{...implementedValue(),outcome:'blocked'},edits:[]});
+    const result=await runCli(f,mode==='disconnect'?'disconnect':'normal');assert.equal(result.code,0,result.stderr);
+    const status=result.rows.find(row=>row.requestId==='advance').result;
+    assert.equal(status.state,mode==='blocked'?'blocked':'unknown');
+    assert.equal(status.code,mode==='blocked'?'failed':'unknown');
+    const resumed=await runCli(f,'normal','resume');assert.equal(resumed.code,0,resumed.stderr);
+    assert.deepEqual(resumed.calls,[]);
+    assert.equal(resumed.rows.find(row=>row.requestId==='advance').result.state,status.state);
+    assert(!fs.existsSync(path.join(f.codeProject,'target.mjs')));
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+for(const variant of ['delete-absent','missing-edits','extra-field'])test(`protected malformed proposal ${variant} fails before sandbox writes`,async()=>{
+  const f=protectedResultFixture();
+  try{
+    f.develop=()=>({status:'succeeded',value:implementedValue(),
+      ...(variant==='missing-edits'?{}:{edits:[{path:'target.mjs',beforeSha256:null,
+        content:variant==='delete-absent'?null:'export const value = 42;\n'}]}),
+      ...(variant==='extra-field'?{extra:true}:{})});
+    const result=await runCli(f,'normal');assert.equal(result.code,0,result.stderr);
+    const status=result.rows.find(row=>row.requestId==='advance').result;
+    assert.equal(status.state,'blocked');assert.equal(status.code,'developer_result_invalid');
+    assert.equal(lastCheckpoint(f).calls.at(-1).terminal,'failed');
+    assert(!fs.existsSync(path.join(f.codeProject,'target.mjs')));
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// Step 21: exercise actual worker timers/cleanup and durable CLI restart, with
+// synthetic providers only. The installed Codex is used solely for sandbox checks.
+function installTimeoutReviewer(f,runtime){
+  installDispatchFakes(f);
+  const fake=path.join(f.root,'bin',runtime),delegate=fake+'-delegate';
+  fs.renameSync(fake,delegate);
+  const modeFile=path.join(f.root,'review-mode.json');
+  fs.writeFileSync(modeFile,JSON.stringify('approved'));
+  fs.writeFileSync(fake,String.raw`#!${process.execPath}
+const fs=require('node:fs'),cp=require('node:child_process'),crypto=require('node:crypto');
+const args=process.argv.slice(2),runtime=${JSON.stringify(runtime)},modeFile=${JSON.stringify(modeFile)};
+if(args[0]==='sandbox'){const r=cp.spawnSync(${JSON.stringify(delegate)},args,{stdio:'inherit'});process.exit(r.status??1);}
+let prompt='';process.stdin.on('data',s=>prompt+=s);process.stdin.on('end',()=>{
+ const mode=JSON.parse(fs.readFileSync(modeFile));
+ if(mode==='approved'||!prompt.includes('<cm-review-data-json>')){
+  const r=cp.spawnSync(${JSON.stringify(delegate)},args,{input:prompt,encoding:'utf8'});
+  process.stdout.write(r.stdout??'');process.stderr.write(r.stderr??'');process.exit(r.status??1);
+ }
+ const thread=crypto.randomUUID(),send=e=>process.stdout.write(JSON.stringify(e)+'\n');
+ if(runtime==='codex'){
+  send({type:'thread.started',thread_id:thread});send({type:'turn.started'});
+  if(mode==='result')send({type:'item.completed',item:{type:'agent_message',text:'{"verdict":"approved"}'}});
+ }else{
+  send({type:'system',subtype:'init',session_id:thread});
+  if(mode==='result'){
+   send({type:'assistant',session_id:thread,parent_tool_use_id:null,
+    message:{role:'assistant',content:[{type:'text',text:'{"verdict":"approved"}'}]}});
+   send({type:'result',subtype:'success',session_id:thread,is_error:false,num_turns:1,result:'{"verdict":"approved"}'});
+  }
+ }
+ setInterval(()=>{},1000);
+});
+`,{mode:0o700});
+  return mode=>fs.writeFileSync(modeFile,JSON.stringify(mode));
+}
+for(const [runtime,second] of [['codex','approved'],['claude','approved'],['codex','timeout'],['codex','result'],['claude','result']])
+test(`protected conversation review timeout ${runtime} -> ${second}`,async()=>{
+  const f=protectedResultFixture();
+  try{
+    f.runtime=runtime;f.args.push('--runtime',runtime);
+    const setMode=installTimeoutReviewer(f,runtime);
+    const preview=spawnSync(process.execPath,[cli,'preflight','--config',f.config,'--review-model','fixture','--runtime',runtime],
+      {encoding:'utf8',env:f.env,timeout:5000});assert.equal(preview.status,0,preview.stderr);
+    const config=path.join(f.root,'review.json');fs.writeFileSync(config,preview.stdout);
+    f.args.push('--review-config',config,'--allow-review-attempt','1');
+    f.develop=payload=>({status:'succeeded',value:implementedValue(),
+      edits:[{path:'target.mjs',beforeSha256:payload.expected['target.mjs'],content:'export const value = 42;\n'}]});
+    setMode(second==='result'?'result':'timeout');
+    const start=Date.now(),first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
+    const result=first.rows.find(row=>row.requestId==='advance').result;
+    // A 60s default would hit runCli's 15s watchdog instead of returning here.
+    assert(Date.now()-start>=4900);assert(Date.now()-start<14000);
+    assert.equal(result.state,second==='result'?'unknown':'pending_review');
+    assert.equal(result.code,second==='result'?'transport_timeout':'review_transport_timeout');
+    assert.equal(result.pendingAction,second==='result'?'reconcile':'resume');
+    const before=lastCheckpoint(f),original=before.reviewInvocation;
+    assert.equal(before.calls.at(-1).terminal,second==='result'?'unknown':'failed');
+    assert.equal(original.result.outcome,'timed_out');
+    assert.equal(original.result.reconciliationRequired,second==='result');
+    assert.equal(original.result.inspection.code,'transport_timeout');
+    assert.equal(original.result.observation.events.at(-1).event,'process_closed');
+    assert.equal(original.result.observation.events.at(-1).timed_out,true);
+    const snapshot=()=>JSON.parse(fs.readFileSync(path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json')));
+    const {readRunnerHistory}=await import('../runtime/js/cm-ai/durable-runner-state.mjs');
+    const history=snapshot(),configuration=history.records[0].payload.config;
+    assert.equal(readRunnerHistory(history.records,configuration,3).state.state,result.state);
+    // Prefix recovery never redispatches an invocation whose checkpoint is absent.
+    for(const type of ['review-invocation-registered','review-invocation-started','review-invocation-result']){
+      const index=history.records.findIndex(row=>row.payload.type===type);
+      const recovered=readRunnerHistory(history.records.slice(0,index+1),configuration,3);
+      assert.equal(recovered.state.state,'unknown');assert.equal(recovered.state.code,'reconciliation_required');
+    }
+    setMode(second==='result'?'approved':second);
+    const resumed=await runCli(f,'normal','resume');assert.equal(resumed.code,0,resumed.stderr);
+    const end=resumed.rows.find(row=>row.requestId==='advance').result,after=lastCheckpoint(f);
+    assert.deepEqual(end.identity,identity);assert.deepEqual(resumed.calls,[]);
+    if(second==='result'){
+      assert.equal(end.state,'unknown');assert.deepEqual(after,before);
+    }else{
+      assert.equal(end.state,second==='approved'?'fixture_completed':'blocked');
+      assert.equal(end.code,second==='approved'?'qa_decision_required':'review_transport_timeout');
+      assert.equal(after.cache.find(entry=>entry.effect.id==='review-1-retry-1').effect.identity.attempt,1);
+      assert.notEqual(after.reviewInvocation.registration.grant.invocationId,original.registration.grant.invocationId);
+      assert.notEqual(after.reviewInvocation.registration.grant.grantId,original.registration.grant.grantId);
+      assert.notEqual(after.reviewInvocation.started,original.started);
+      assert.deepEqual(after.calls.slice(0,before.calls.length),before.calls);
+      assert.deepEqual(after.cache.slice(0,before.cache.length),before.cache);
+      if(second==='timeout'){
+        const blocked=await runCli(f,'normal','resume');assert.equal(blocked.code,0,blocked.stderr);
+        assert.equal(blocked.rows.find(row=>row.requestId==='advance').result.state,'blocked');
+        assert.deepEqual(lastCheckpoint(f),after);
+      }else assert(fs.readFileSync(path.join(f.specsDir,'1.work','tasks.md'),'utf8').includes('[x] T-001'));
+    }
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('new host refuses unapproved manifest bytes before any developer call',async()=>{
+  const f=fixture();
+  try{
+    fs.appendFileSync(path.join(f.specsDir,'1.work','design.md'),'changed interface');
+    const result=await runCli(f,'normal');
+    assert.deepEqual(result.calls,[]);
+    assert.match(JSON.stringify(result.rows)+result.stderr,/spec_drift/);
+    assert(!fs.existsSync(path.join(f.codeProject,'target.mjs')));
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('host develops from specification with no code requirements and replays identical material',async()=>{
+  const f=fixture();
+  try{
+    const definition=JSON.parse(fs.readFileSync(f.config));definition.requirements=[];
+    fs.writeFileSync(f.config,JSON.stringify(definition));
+    const first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
+    assert.equal(first.rows.find(row=>row.requestId==='advance').result.state,'awaiting_review');
+    const resumed=await runCli(f,'normal','resume');assert.equal(resumed.code,0,resumed.stderr);assert.deepEqual(resumed.calls,[]);
+    assert.equal(resumed.rows.find(row=>row.requestId==='advance').result.code,'decision_required');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('protected proposal cannot write after specification drifts during developer call; blocked history resumes',async()=>{
+  const f=protectedResultFixture(),target=path.join(f.codeProject,'target.mjs');
+  try{
+    f.develop=()=>{
+      fs.appendFileSync(path.join(f.specsDir,'1.work','design.md'),'changed while provider was running');
+      return {status:'succeeded',value:implementedValue(),edits:[{path:'target.mjs',beforeSha256:null,content:'export const value = 42;\n'}]};
+    };
+    const first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
+    const result=first.rows.find(row=>row.requestId==='advance').result;
+    assert.equal(result.state,'blocked',JSON.stringify(result));assert.equal(result.code,'spec_drift');assert(!fs.existsSync(target));
+    assert.equal(lastCheckpoint(f).code,'spec_drift');
+    const resumed=await runCli(f,'normal','resume');assert.equal(resumed.code,0,resumed.stderr);
+    assert.deepEqual(resumed.calls,[]);assert.equal(resumed.rows.find(row=>row.requestId==='advance').result.code,'spec_drift');
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });

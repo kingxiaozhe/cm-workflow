@@ -1,3 +1,4 @@
+import {buildManifest} from './cm-spec-manifest.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -30,7 +31,7 @@ test('fixed Codex assembly requires review preflight and denies developer dispat
   assert.equal(decisions,1);assert.equal(fs.readFileSync(path.join(f.codeProject,'a.js'),'utf8'),'old\n');
   assert.equal(execution.reviewInvocation.authorize,authority.authorizeReview);
 }));
-for(const [mode,nested] of [...['manual','approved','denied','awaiting','blocked','repair','review_limit'].map(mode=>[mode,false]),['approved',true],['blocked',true]])
+for(const [mode,nested] of [...['manual','approved','denied','awaiting','blocked','repair','review_limit','spec_drift'].map(mode=>[mode,false]),['approved',true],['blocked',true]])
 test(`trusted host execution uses the same entry and sole gate: ${mode} nested=${nested}`,
   {skip:!platform},()=>fixture(async f=>{
     const {main}=await import('./cm-ai-run.mjs');
@@ -51,7 +52,7 @@ test(`trusted host execution uses the same entry and sole gate: ${mode} nested=$
       }})},
       reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',
         allowed:true,available:true,contexts:['review-1','review-2'],run:(request,{onEvent})=>{
-          assert(['approved','blocked','repair','review_limit'].includes(mode));reviews++;
+          assert(['approved','blocked','repair','review_limit','spec_drift'].includes(mode));reviews++;
           assert(!JSON.stringify(request.payload.reviewPackage).includes('cm-synthetic-worktree-metadata'));
           if(mode==='approved'&&!nested){
             assert(request.payload.reviewPackage.changes.some(change=>change.path==='README.md'));
@@ -63,21 +64,22 @@ test(`trusted host execution uses the same entry and sole gate: ${mode} nested=$
           onEvent({event:'turn.completed',item_type:null});
           onEvent({event:'process_closed',exit_code:0,signal:null,timed_out:false});
           const verdict=mode==='review_limit'||(mode==='repair'&&request.identity.attempt===1)?'changes_requested':
-            mode==='repair'?'approved':mode;
+            ['repair','spec_drift'].includes(mode)?'approved':mode;
+          if(mode==='spec_drift')fs.appendFileSync(path.join(f.specsDir,'1.login','design.md'),'changed while review was running');
           return {status:'succeeded',value:{verdict,packageDigest:request.payload.reviewPackage.packageDigest,
             examinedPaths:reviewPaths(request.payload.reviewPackage),findings:verdict==='changes_requested'
               ?[{id:'F1',severity:'P2',path:'a.js',message:'Synthetic repair required',evidence:'First implementation'}]:[],summary:'Synthetic review'}};
         }}],
       reviewInvocation:{developerThreadId:'host-author',excludedThreadIds:['main'],
         authorize:(request,{authorizationAt})=>{
-          assert(['approved','blocked','repair','review_limit'].includes(mode));
+          assert(['approved','blocked','repair','review_limit','spec_drift'].includes(mode));
           const body={version:1,kind:'cm-review-dispatch-grant',grantId:`grant-${request.identity.attempt}`,adapterId:'codex-review-adapter',
             invocationId:request.invocationId,requestDigest:request.requestDigest,identity:request.identity,
             reviewerId:'reviewer',logicalContextId:request.contextId,packageDigest:request.payload.reviewPackage.packageDigest,
             hostContextId:'main',decisionId:`decision-${request.identity.attempt}`,decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
           return {...body,grantDigest:digest(body)};
         }},
-      hostDecision:mode==='awaiting'?null:['approved','blocked','repair','review_limit'].includes(mode)?{status:'approved'}:{status:'denied',code:'permission_denied'},
+      hostDecision:mode==='awaiting'?null:['approved','blocked','repair','review_limit','spec_drift'].includes(mode)?{status:'approved'}:{status:'denied',code:'permission_denied'},
       check:createHostCheck({cwd:f.codeProject,commands:[{id:'content',command:[process.execPath,'-e',
         "require('node:assert/strict').equal(require('node:fs').readFileSync('a.js','utf8'),'new\\n')"]}]})};
     let qaCalls=0,qaRuns=0,docInspections=0,docWrites=0,reviewDecisions=0;
@@ -142,14 +144,15 @@ test(`trusted host execution uses the same entry and sole gate: ${mode} nested=$
     }
     assert.equal(await main(['serve','--config',f.config,'--mode','create'],{input,output,error,execution}),0,stderr);
     const repaired=['repair','review_limit'].includes(mode),completed=['approved','repair'].includes(mode);
-    const expected=dynamicQa?'run_done':completed?'fixture_completed':['blocked','review_limit'].includes(mode)?'blocked':'awaiting_review';
+    const expected=dynamicQa?'run_done':completed?'fixture_completed':['blocked','review_limit','spec_drift'].includes(mode)?'blocked':'awaiting_review';
     assert.equal(JSON.parse(stdout).result.state,expected,stdout);assert.equal(calls,repaired?2:1);
     if(completed){
       assert.equal(JSON.parse(stdout).result.code,dynamicQa?'run_done':'qa_decision_required');
       assert.equal(JSON.parse(stdout).result.outcome,dynamicQa?'finalized':'awaiting');
     }
-    assert.equal(reviews,repaired?2:['approved','blocked'].includes(mode)?1:0);
+    assert.equal(reviews,repaired?2:['approved','blocked','spec_drift'].includes(mode)?1:0);
     if(repaired)assert.equal(JSON.parse(stdout).result.identity.attempt,2);
+    if(mode==='spec_drift')assert.equal(JSON.parse(stdout).result.code,'spec_drift');
     if(mode==='review_limit')assert.equal(JSON.parse(stdout).result.code,'review_limit');
     if(mode==='denied')assert.equal(JSON.parse(stdout).result.outcome,'denied');
     if(mode==='awaiting')assert.equal(JSON.parse(stdout).result.code,'decision_required');
@@ -162,7 +165,7 @@ test(`trusted host execution uses the same entry and sole gate: ${mode} nested=$
       assert.equal(await main(['serve','--config',f.config,'--mode','resume'],
         {input:resumedInput,output:resumedOutput,error,execution}),0,stderr);
       assert.equal(JSON.parse(resumed).result.state,expected,resumed);
-      assert.equal(calls,repaired?2:1);assert.equal(reviews,repaired?2:['approved','blocked'].includes(mode)?1:0);
+      assert.equal(calls,repaired?2:1);assert.equal(reviews,repaired?2:['approved','blocked','spec_drift'].includes(mode)?1:0);
       if(dynamicReview)assert.equal(reviewDecisions,repaired?2:1,'reopen must not reauthorize completed review');
       if(dynamicQa){
         assert.equal(qaCalls,1);assert.equal(qaRuns,1);assert.equal(docInspections,2);assert.equal(docWrites,1);
@@ -181,7 +184,7 @@ async function fixture(fn,{nested=false}={}){
   fs.writeFileSync(path.join(specsDir,feature,'requirements.md'),'# Requirements\n');
   fs.writeFileSync(path.join(specsDir,feature,'design.md'),'# Design\n');
   fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: implement\n');
-  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature]}));
+  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
   const definition={version:1,specsDir,codeProject,feature,identity,scope:['a.js'],requirements:['requirements.md']};
   const config=path.join(root,'run.json');fs.writeFileSync(config,JSON.stringify(definition));
   const invoke=(mode,requests)=>{

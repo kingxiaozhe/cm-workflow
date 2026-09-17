@@ -141,7 +141,9 @@ export function createHostQaExecutor(options) {
       const unchanged=()=>need(digest(readPlan(configuration))===digest(plan),'qa_plan_changed');
       const notCancelled=()=>need(!signal.aborted,'cancelled');notCancelled();unchanged();
       const snapshot=()=>captureReviewBaseline({root:configuration.codeProject,specsRoot:configuration.specsDir,
-        identity:binding.identity,scope:configuration.bootstrap?.scope??configuration.requirements,requirements:configuration.requirements,
+        identity:binding.identity,scope:configuration.bootstrap?.scope??(configuration.requirements.length?configuration.requirements:['AGENTS.md']),requirements:configuration.requirements,
+        ...(!configuration.bootstrap&&!configuration.requirements.length
+          ?{specification:{specsRoot:configuration.specsDir,feature:configuration.feature}}:{}),
         ...(configuration.bootstrap?{bootstrapRequirements:configuration.bootstrap.requirements}:{}),
         ...(roots?{codeProjectPaths:codeProjectPaths(configuration.codeProject,resolveCodeProjects(configuration.codeProject,roots))}:{})});
       const before=snapshot(),rows=[],commandResults=new Map();

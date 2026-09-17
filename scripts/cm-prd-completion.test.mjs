@@ -85,8 +85,8 @@ test('unknown host generation resumes only its exact original receipt, no repeat
   });await c.request('start',{text:'Add example'});const runId=(await c.request('status')).result.runId;
   const crashed=await c.request('advance',{text:'Requirements'});assert.equal(crashed.closed,null);
   c=await client(t,dir,()=>assert.fail('unknown call may not be dispatched again'),{session:runId});
-  assert.ok((await c.request('advance',{text:'Try again'})).error);
-  assert.ok((await c.request('resume',{resolution:null})).error);
+  assert.equal((await c.request('advance',{text:'Try again'})).result.reason,'prd_operation_recovery_required');
+  assert.equal((await c.request('resume',{resolution:null})).result.reason,'prd_host_result_unknown');
   const recovery=original.payload.recovery;
   const result=await c.request('resume',{resolution:{callId:recovery.callId,requestDigest:recovery.requestDigest,
     result:changeResponse(original),evidence:'Synthetic original host saved output, not a new generation'}});

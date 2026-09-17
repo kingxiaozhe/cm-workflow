@@ -62,6 +62,16 @@ test('legacy baselines retain already-recorded dependency files and their drift 
   const baseline={...body,baselineDigest:digest(body)};
   fs.writeFileSync(path.join(root,'src/main.py'),'after');
   assert.equal(createReviewPackage({root,baseline,checks}).changes.length,1);
+  const pkg=createReviewPackage({root,baseline,checks});
+  assert.equal(verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
+  const {unchangedScope,packageDigest,...legacyBody}=pkg;
+  const legacyPackage={...legacyBody,packageDigest:digest(legacyBody)};
+  assert.equal(verifyReviewPackage({root,baseline,checks,reviewPackage:legacyPackage,expectedDigest:legacyPackage.packageDigest}).outcome,'matched');
+  const corrupt=structuredClone(body);
+  corrupt.files.find(file=>file.path==='.venv/recorded.txt').contentBase64=Buffer.from('forged').toString('base64');
+  assert.throws(()=>createReviewPackage({root,baseline:{...corrupt,baselineDigest:digest(corrupt)},checks}),{code:'invalid_baseline'});
   fs.writeFileSync(path.join(root,'.venv','recorded.txt'),'changed');
+  assert.throws(()=>createReviewPackage({root,baseline,checks}),{code:'out_of_scope'});
+  fs.unlinkSync(path.join(root,'.venv','recorded.txt'));
   assert.throws(()=>createReviewPackage({root,baseline,checks}),{code:'out_of_scope'});
 });

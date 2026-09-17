@@ -52,17 +52,34 @@ export function openPrdSession({specs,sessionId,identity}){
     replay(){need(state.active!==null,'prd_nothing_to_resume');cursor=0;return json(state.active,12*1024*1024);},
     commit(checkpoint){state.checkpoint=checkpoint;state.active=null;save();},
     checkpoint(checkpoint){state.checkpoint=checkpoint;save();},
+    abandon(resolution){
+      need(resolution!==null&&typeof resolution==='object'&&!Array.isArray(resolution)
+        &&resolution.abandon===true&&!Object.hasOwn(resolution,'result')
+        &&Object.keys(resolution).every(key=>['callId','requestDigest','abandon','evidence'].includes(key)),'prd_recovery_binding');
+      need(typeof resolution.evidence==='string'&&resolution.evidence.trim(),'prd_recovery_evidence_required');
+      const active=state.active,call=active?.calls.find(item=>item.callId===resolution.callId);
+      need(call&&call.requestDigest===resolution.requestDigest&&!Object.hasOwn(call,'result'),'prd_recovery_binding');
+      need(!active.calls.some(item=>item.kind==='prd_review'),'prd_review_recovery_required');
+      const decision={operation:active.request.operation,kind:call.kind,callId:call.callId,
+        evidence:{sha256:digest(resolution.evidence),length:resolution.evidence.length}};
+      state.checkpoint=active.before;state.active=null;cursor=0;save();return decision;
+    },
     async call(kind,payload,signal,perform){
       need(state.active!==null,'prd_operation_required');const index=cursor++,input=json({kind,payload},12*1024*1024);
+      const active=state.active;
       const previous=state.active.calls[index];
       if(previous){need(previous.requestDigest===digest(input),'prd_replay_inputs_changed');
         need(Object.hasOwn(previous,'result'),'prd_host_result_unknown');return previous.result;}
       need(!state.active.calls.some(call=>!Object.hasOwn(call,'result')),'prd_host_result_unknown');
       const call={callId:randomUUID(),requestDigest:digest(input),...input};state.active.calls.push(call);save();
-      const result=json(await perform({...payload,recovery:{sessionId,callId:call.callId,requestDigest:call.requestDigest}},signal),1024*1024);
+      const response=await perform({...payload,recovery:{sessionId,callId:call.callId,requestDigest:call.requestDigest}},signal);
+      need(!signal.aborted&&state.active===active,'cancelled');
+      const result=json(response,1024*1024);
       call.result=result;save();return result;
     },
-    resolve({callId,requestDigest,result,evidence}){
+    resolve(resolution){
+      need(resolution!==null&&typeof resolution==='object'&&!Object.hasOwn(resolution,'abandon'),'prd_recovery_binding');
+      const {callId,requestDigest,result,evidence}=resolution;
       need(typeof evidence==='string'&&evidence.trim(),'prd_recovery_evidence_required');
       const call=state.active?.calls.find(item=>item.callId===callId);
       need(call&&call.requestDigest===requestDigest&&!Object.hasOwn(call,'result'),'prd_recovery_binding');

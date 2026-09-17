@@ -11,8 +11,10 @@ const sameIdentity=(left,right)=>['repositoryId','runId','taskId','attempt'].eve
 const sameTask=(left,right)=>['repositoryId','runId','taskId'].every(key=>left[key]===right[key]);
 const boundStatus=(status,identity)=>{validIdentity(status?.identity);
   need(sameIdentity(status.identity,identity),'identity_mismatch');return status;};
+const retryReview=status=>status.state==='pending_review'&&status.code==='review_transport_timeout';
+const retryDeveloper=status=>status.state==='blocked'&&status.code==='developer_result_invalid';
 const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approval':
-  status.state==='changes_requested'?'resume':
+  status.state==='changes_requested'||retryDeveloper(status)||retryReview(status)?'resume':
   status.state==='awaiting_review'?'decision':status.state==='unknown'?'reconcile':
   status.state==='pending_review'&&status.code==='provider_review_observed'?'review_evidence':
   status.state==='pending_review'?'decision':status.state==='approved'?'complete':
@@ -241,13 +243,13 @@ export function createCmAiConversationEntry(options) {
       const notCancelled=()=>{const current=runner.status();
         need(startedEpoch===cancellationEpoch&&!current.cancellationRequested&&!current.cancelAfterCommit,'cancelled');};
       // Reuse the runner's two-attempt lifecycle, including its fresh review
-      // identity and review_limit. Never retry unknown/provider failures.
+      // identity and review_limit. Only no-result transport timeouts may redispatch.
       const call=(name,packageDigest,extra={})=>route({version:1,operation:name,
         requestId:operation.requestId,identity:runner.status().identity,...(packageDigest===undefined?{}:{packageDigest}),...extra});
       let result=await call('status');
       for(let round=identity.attempt;round<=2;round++){
-        if(result.code===null&&['ready','changes_requested'].includes(result.state))result=await call('start');
-        if(['reported','advanced'].includes(result.outcome)&&result.code===null&&result.state==='awaiting_review')
+        if(result.code===null&&['ready','changes_requested'].includes(result.state)||retryDeveloper(result))result=await call('start');
+        if(['reported','advanced'].includes(result.outcome)&&(result.code===null&&result.state==='awaiting_review'||retryReview(result)))
           result=await call('decision',result.packageDigest);
         if(result.outcome==='advanced'&&result.code===null&&result.state==='changes_requested'
           &&result.identity.attempt===round+1)continue;
@@ -344,7 +346,7 @@ export function createCmAiConversationEntry(options) {
       if(hostDecisionProvider!==null){
         // A historical terminal or outstanding invocation is owned by the runner;
         // never ask for fresh authorization to replay or reopen it.
-        if(status.state!=='awaiting_review'||status.code!==null)return summary(operation,status,'reported');
+        if(!(status.state==='awaiting_review'&&status.code===null)&&!retryReview(status))return summary(operation,status,'reported');
         need(pendingReviewDecision===null,'review_decision_pending');
         need(!status.cancellationRequested&&!status.cancelAfterCommit,'cancelled');
         const controller=new AbortController();pendingReviewDecision=controller;
@@ -370,7 +372,10 @@ export function createCmAiConversationEntry(options) {
       if(decision===null)return summary(operation,{...status,code:'decision_required'},'awaiting');
       if(validateHostDecision(decision,status)==='denied')
         return summary(operation,{...status,code:'permission_denied'},'denied');
-      const result=await runner.executeEffect({version:1,id:`review-${identity.attempt}`,identity,kind:'review'});
+      const retries=retryReview(status)?status.calls.filter(call=>call.channel==='host-authorized'
+        &&call.terminal==='failed'&&call.contextId===status.reviewInvocation.registration.grant.logicalContextId).length:0;
+      const effectId=`review-${identity.attempt}${retries?`-retry-${retries}`:''}`;
+      const result=await runner.executeEffect({version:1,id:effectId,identity,kind:'review'});
       return effectSummary(operation,result,runner,identity);
     }
     if(operation.operation==='complete'){
@@ -519,7 +524,7 @@ export function createCmAiConversationEntry(options) {
     need(admission.state==='ready'&&admission.nextTask?.feature===options.feature
       &&admission.nextTask.id===identity.taskId,'task_mismatch');
     const status=boundStatus(runner.status(),identity);
-    const developable=['ready','changes_requested'].includes(status.state);
+    const developable=['ready','changes_requested'].includes(status.state)||retryDeveloper(status);
     const repeatable=operation.operation==='start'&&status.state==='awaiting_review';
     if(!developable&&!repeatable)
       return summary(operation,status,'reported');
@@ -530,7 +535,12 @@ export function createCmAiConversationEntry(options) {
     const learningInput=inspectCmAiTaskLearningInput({specsDir:options.specsDir,codeProject:options.codeProject,
       feature:options.feature,identity,applicableAgentFiles:applicableAgentFiles??[]},
     {admission:runner.inspectBootstrapAdmission?.()??null});
-    const result=await runner.executeEffect({version:1,id:`develop-${identity.attempt}`,identity,kind:'develop',learningInput});
+    // Keep rejected effects immutable. A run-wide rejection count gives each
+    // corrected result a new effect id without changing the provider attempt.
+    const rejectedValues=status.calls.filter(call=>call.terminal==='failed'
+      &&call.failureResult?.code==='invalid_result'&&call.failureResult.retryable===true).length;
+    const effectId=`develop-${identity.attempt}${rejectedValues?`-retry-${rejectedValues}`:''}`;
+    const result=await runner.executeEffect({version:1,id:effectId,identity,kind:'develop',learningInput});
     return effectSummary(operation,result,runner,identity);
   }
   const handle=async raw=>{try{return await route(raw);}catch(error){return rejected(ownerIdentity,error);}};

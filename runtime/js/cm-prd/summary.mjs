@@ -12,13 +12,17 @@ import {need,json,shape,digest} from '../cm-ai/effect-contract.mjs';
 import {prdDesignRiskSignals} from './design-risk.mjs';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 
-export function inspectPrdSummaryEvidence(specs){
+export function inspectPrdSummaryEvidence(specs,{currentFeatures}={}){
   need(path.isAbsolute(specs)&&fs.realpathSync(specs)===specs,'prd_summary_root_invalid');
   const specFiles=buildManifest(specs),names=[...new Set(specFiles.map(item=>item.path.split('/')[0]))];
+  need(currentFeatures===undefined||(Array.isArray(currentFeatures)&&currentFeatures.length>0
+    &&new Set(currentFeatures).size===currentFeatures.length&&currentFeatures.every(name=>names.includes(name))),
+    'prd_summary_scope_unknown');
   const slugs=new Set(),features=[],documents=[],evidenceFiles=[];
   const statusBytes=readCmInitSource(specs,'.cm-specs-status');
   if(statusBytes!==null)evidenceFiles.push({path:'.cm-specs-status',sha256:sha(statusBytes)});
   for(const directory of names){
+    const historical=currentFeatures!==undefined&&!currentFeatures.includes(directory);
     need(/^[1-9]\d*\.[a-z0-9]+(?:-[a-z0-9]+)*$/.test(directory),'prd_summary_feature_invalid');
     const slug=directory.replace(/^\d+\./,'');need(!slugs.has(slug),'prd_summary_slug_collision');slugs.add(slug);
     const files=specFiles.filter(item=>item.path.startsWith(directory+'/')).map(item=>{
@@ -36,32 +40,45 @@ export function inspectPrdSummaryEvidence(specs){
       }
       const args={stage,feature:slug,evidence:path.join(specs,prefix+'-r1.md'),receipt:path.join(specs,prefix+'-disposition.json')};
       const gate=inspectPrdReview(args);
-      let findings=null;
-      if(['resume_disposition','completed'].includes(gate.outcome))findings=inspectPrdFindings({specs,stage,feature:directory});
-      if(gate.outcome==='completed'){
-        const receipt=JSON.parse(readCmInitSource(specs,prefix+'-disposition.json').toString('utf8'));
-        const expected=stage==='design'?[`${directory}/design.md`]:files.map(item=>`${directory}/${item.path}`).sort();
-        need(digest(receipt.artifacts.map(item=>item.path).sort())===digest(expected),'prd_summary_receipt_coverage');
+      let findings=null,archiveIssue={};
+      try{
+        if(['resume_disposition','completed'].includes(gate.outcome))findings=inspectPrdFindings({specs,stage,feature:directory});
+        if(gate.outcome==='completed'){
+          const receipt=JSON.parse(readCmInitSource(specs,prefix+'-disposition.json').toString('utf8'));
+          const expected=stage==='design'?[`${directory}/design.md`]:files.map(item=>`${directory}/${item.path}`).sort();
+          need(digest(receipt.artifacts.map(item=>item.path).sort())===digest(expected),'prd_summary_receipt_coverage');
+        }
+      }catch(error){
+        if(!historical)throw error;
+        const original=readCmInitSource(specs,prefix+'-r1.md');
+        archiveIssue={archive:original!==null&&!/\n```json\n[^\n]+\n```\n$/.test(original.toString('utf8'))?'legacy_format':'unavailable',
+          reason:error.message};
       }
+      if(historical&&gate.outcome!=='completed'&&(stage==='split'||gate.outcome!=='dispatch_once'))
+        archiveIssue={archive:archiveIssue.archive??'receipt_missing',
+          reason:[archiveIssue.reason,'prd_summary_receipt_missing'].filter(Boolean).join('; ')};
       reviews[stage]={gate,independent:findings?.independent??null,verdict:findings?.verdict??null,
-        findings:findings?.findings??[],source:findings?.source??null};
+        findings:findings?.findings??[],source:findings?.source??null,...archiveIssue};
     }
     let cases={total:0,user:0,generated:0};
     const contract=files.find(item=>item.path==='test-cases.json');
     if(contract){const data=JSON.parse(contract.content);need(Array.isArray(data.cases),'prd_summary_cases_invalid');
       cases={total:data.cases.length,user:data.cases.filter(item=>item.origin==='user').length,
         generated:data.cases.filter(item=>item.origin==='generated').length};}
-    features.push({directory,reviews,cases});
+    features.push({directory,reviews,cases,...(currentFeatures===undefined?{}:{historical})});
   }
-  const mechanical=checkPrdDraftMechanics({draftDigest:digest(evidenceFiles),features:documents});
-  return json({specs,specFiles,features,documents,mechanical,evidenceFiles},1024*1024);
+  const mechanical=checkPrdDraftMechanics({draftDigest:digest(evidenceFiles),
+    features:documents.filter(item=>currentFeatures===undefined||currentFeatures.includes(item.directory))});
+  return json({specs,specFiles,features,documents,mechanical,evidenceFiles,
+    ...(currentFeatures===undefined?{}:{currentFeatures})},1024*1024);
 }
 
 export function publishPrdAwaitingReview({specs,summary,writeEnabled,recover=false}){
   need(writeEnabled===true,'prd_summary_write_not_enabled');
   need(summary.status==='human_summary_prepared'&&summary.readyForAwaitingReview===true
     &&summary.blockers.length===0,'prd_summary_not_ready');
-  const before=inspectPrdSummaryEvidence(specs);
+  const scope={currentFeatures:summary.currentFeatures};
+  const before=inspectPrdSummaryEvidence(specs,scope);
   const existing=readCmInitSource(specs,'.cm-specs-status');
   if(recover&&existing!==null){
     const value=JSON.parse(existing);
@@ -81,7 +98,7 @@ export function publishPrdAwaitingReview({specs,summary,writeEnabled,recover=fal
   const temporary=path.join(specs,`.cm-prd-status-${randomUUID()}`);let fd;
   try{
     fd=fs.openSync(temporary,'wx',0o600);fs.writeFileSync(fd,bytes);fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;
-    need(digest(inspectPrdSummaryEvidence(specs))===summary.evidenceDigest,'prd_summary_inputs_changed');
+    need(digest(inspectPrdSummaryEvidence(specs,scope))===summary.evidenceDigest,'prd_summary_inputs_changed');
     fs.renameSync(temporary,target);
     const dir=fs.openSync(specs,'r');try{fs.fsyncSync(dir);}finally{fs.closeSync(dir);}
     need(readCmInitSource(specs,'.cm-specs-status')?.equals(bytes),'prd_summary_status_unknown');
@@ -95,20 +112,27 @@ export function publishPrdAwaitingReview({specs,summary,writeEnabled,recover=fal
 const requiredSignals=prdDesignRiskSignals;
 export function createPrdSummaryOwner({summarize}){
   need(typeof summarize==='function','prd_summary_host_required');
-  return async(specs,signal)=>{
-    need(!signal.aborted,'cancelled');const evidence=inspectPrdSummaryEvidence(specs),evidenceDigest=digest(evidence);
+  return async(specs,options={},signal=new AbortController().signal)=>{
+    // Preserve the original (specs, signal) API for existing consumers.
+    if(typeof options.aborted==='boolean'){signal=options;options={};}
+    const scope={currentFeatures:Array.isArray(options.currentFeatures)?options.currentFeatures.slice():options.currentFeatures};
+    need(!signal.aborted,'cancelled');const evidence=inspectPrdSummaryEvidence(specs,scope),evidenceDigest=digest(evidence);
     const details=json(await summarize({evidence,evidenceDigest,
-      instructions:'Prepare original cm-prd Step 11 human summary. Read actual source/context as needed. Return {evidenceDigest,deliveryForm,estimatedTime,openQuestions,risks,contextScope,platformReadiness,uiBaseline,designRisk:[{feature,signals:{greenfieldAdr,architectureOrDataFlow,newRuntimeDependencyOrToolchain,publicContractDataOrSecurity,fiveOrMoreFunctions},evidence:[specific references]}]}. Signals are booleans and must cover original Step 9.5 criteria; unknown facts must remain explicit in openQuestions/risks, never infer approval. All descriptive fields are non-empty strings. Do not claim review or tests beyond supplied evidence, write files, dispatch reviewers/providers, approve specs or start development.'},signal),64*1024);
+      instructions:'Prepare original cm-prd Step 11 human summary. Read actual source/context as needed. Return {evidenceDigest,deliveryForm,estimatedTime,openQuestions,risks,contextScope,platformReadiness,uiBaseline,designRisk:[{feature,signals:{greenfieldAdr,architectureOrDataFlow,newRuntimeDependencyOrToolchain,publicContractDataOrSecurity,fiveOrMoreFunctions},evidence:[specific references]}]}. designRisk must cover exactly the current features (historical !== true); historical reviews are registration notes only, never new blockers. Signals are booleans and must cover original Step 9.5 criteria; unknown facts must remain explicit in openQuestions/risks, never infer approval. All descriptive fields are non-empty strings. Do not claim review or tests beyond supplied evidence, write files, dispatch reviewers/providers, approve specs or start development.'},signal),64*1024);
     need(!signal.aborted,'cancelled');
     shape(details,['evidenceDigest','deliveryForm','estimatedTime','openQuestions','risks','contextScope','platformReadiness','uiBaseline','designRisk']);
     need(details.evidenceDigest===evidenceDigest,'prd_summary_binding');
     for(const field of ['deliveryForm','estimatedTime','openQuestions','risks','contextScope','platformReadiness','uiBaseline'])
       need(typeof details[field]==='string'&&details[field].trim(),'prd_summary_details_invalid');
-    need(Array.isArray(details.designRisk)&&details.designRisk.length===evidence.features.length,'prd_summary_risk_coverage');
-    const seen=new Set(),blockers=[];
+    const current=evidence.features.filter(item=>!item.historical),historical=evidence.features.filter(item=>item.historical);
+    need(Array.isArray(details.designRisk)&&details.designRisk.length===current.length,'prd_summary_risk_coverage');
+    const seen=new Set(),blockers=[],notes=[];
+    for(const feature of historical)for(const [stage,review] of Object.entries(feature.reviews)){
+      if(review.archive)notes.push(`历史 feature ${feature.directory}：${stage} 审查${review.archive==='legacy_format'?'为旧版归档':review.archive==='receipt_missing'?'缺少处置回执':'归档不可用'}${review.reason.includes('prd_summary_receipt_missing')&&review.archive!=='receipt_missing'?'，无处置回执':''}，已登记未重审（${review.reason}）`);
+    }
     for(const risk of details.designRisk){
       shape(risk,['feature','signals','evidence']);shape(risk.signals,requiredSignals);
-      const feature=evidence.features.find(item=>item.directory===risk.feature);
+      const feature=current.find(item=>item.directory===risk.feature);
       need(feature&&!seen.has(risk.feature)&&requiredSignals.every(key=>typeof risk.signals[key]==='boolean')
         &&Array.isArray(risk.evidence)&&risk.evidence.length&&risk.evidence.every(item=>typeof item==='string'&&item.trim()),'prd_summary_risk_invalid');seen.add(risk.feature);
       const {design,split}=feature.reviews;
@@ -119,12 +143,14 @@ export function createPrdSummaryOwner({summarize}){
         blockers.push(`${risk.feature}: existing_design_attempt_unresolved`);
     }
     if(evidence.mechanical.status==='failed')blockers.push('mechanical_self_check_failed');
-    need(digest(inspectPrdSummaryEvidence(specs))===evidenceDigest,'prd_summary_inputs_changed');
+    need(digest(inspectPrdSummaryEvidence(specs,scope))===evidenceDigest,'prd_summary_inputs_changed');
     const checklist=['跨feature产物不重复','依赖完整且无环','AC可验证','功能粒度合规且每feature≤15任务',
       '开放问题和敏感决策已经人工确认','交付形态符合需求','存在原型时功能与交互覆盖完整'];
     const totals=evidence.mechanical.features.reduce((sum,item)=>({tasks:sum.tasks+item.tasks,
       acceptanceCriteria:sum.acceptanceCriteria+item.acceptanceCriteria}),{tasks:0,acceptanceCriteria:0});
     const summary=json({status:'human_summary_prepared',evidenceDigest,details,features:evidence.features,totals,
+      ...(evidence.currentFeatures===undefined?{}:{currentFeatures:evidence.currentFeatures}),
+      notes,historicalSummary:`历史 feature：${historical.length} 个已登记，${historical.filter(item=>Object.values(item.reviews).some(review=>review.archive)).length} 个含旧版归档说明`,
       mechanicalSelfCheck:evidence.mechanical,blockers,checklist:checklist.map(text=>({text,checked:false})),
       specFiles:evidence.specFiles,publicationInput:evidence.evidenceFiles,readyForAwaitingReview:blockers.length===0,
       next:'human_review_then_explicit_cm_ai',completionAuthorized:false},1024*1024);

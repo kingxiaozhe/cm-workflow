@@ -26,7 +26,7 @@ function expectation(v,cause=false) {
 }
 function eventStream(events,excluded) {
   need(Array.isArray(events)&&events.length<=64);
-  let stage=0,thread=null,terminal=null,close=null;
+  let stage=0,thread=null,terminal=null,close=null,hasResult=false;
   for(const e of events) {
     need(close===null);
     if(e?.event==='process_closed') {
@@ -42,13 +42,16 @@ function eventStream(events,excluded) {
     }else {
       shape(e,['event','item_type']);
       if(e.event==='turn.started'){need(stage===1&&e.item_type===null);stage=2;}
-      else if(e.event==='item.completed'){need(stage===2&&e.item_type==='agent_message');stage=3;}
+      else if(e.event==='item.completed'){need(stage===2&&e.item_type==='agent_message');stage=3;hasResult=true;}
       else if(e.event==='turn.completed'){need(stage===3&&e.item_type===null);terminal=e.event;}
       else {need(['error','turn.failed'].includes(e.event)&&e.item_type===null);terminal=e.event;}
     }
   }
-  return {thread,terminal,close};
+  return {thread,terminal,close,hasResult};
 }
+// Reuse the validated normalized stream; a final message counts even if its
+// value was truncated or the process never reached turn.completed.
+export const hasProviderReviewResult=events=>eventStream(events,new Set()).hasResult;
 export function inspectProviderReview(observationText,expectationText) {
   need(arguments.length===2);
   return inspect(observationText,expectationText,false);

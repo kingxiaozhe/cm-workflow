@@ -7,6 +7,8 @@ import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
+import {createCmPrdAnalysis} from '../runtime/js/cm-prd/analysis.mjs';
+import {openPrdSession} from '../runtime/js/cm-prd/session.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 for(const mode of ['codex','claude','cancel','cases','materials','draft','self-check'])test(`PRD actual CLI and original log adapter: ${mode}`,{timeout:15000},async()=>{
   const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-host-')));
@@ -131,9 +133,16 @@ for(const mode of ['codex','claude','cancel','cases','materials','draft','self-c
         assert.equal(message.result.status,'disposition_recorded');
         assert.equal(message.result.gate.disposition,'applied');assert.equal(checks,3);
         assert.equal(message.result.completionAuthorized,false);
+        fs.mkdirSync(path.join(dir,'2.history'));
+        for(const file of ['requirements.md','design.md','tasks.md'])fs.writeFileSync(path.join(dir,'2.history',file),
+          fs.readFileSync(path.join(dir,'1.guide',file),'utf8').replaceAll('[ ]','[x]'),{mode:0o600});
+        fs.writeFileSync(path.join(dir,'.reviews/prd-history-split-r1.md'),
+          fs.readFileSync(path.join(dir,'.reviews/prd-guide-split-r1.md'),'utf8').replace(/\n```json\n[^\n]+\n```\n$/,''),{mode:0o600});
         send({requestId:'summary',operation:'prepare_summary'});
       }else if(message.requestId==='summary'){
         assert.equal(message.result.status,'human_summary_prepared');assert.equal(message.result.readyForAwaitingReview,true);
+        assert.deepEqual(message.result.currentFeatures,['1.guide']);
+        assert.match(message.result.notes.join('\n'),/历史 feature 2.history.*旧版归档/);
         assert.equal(message.result.totals.tasks,1);assert.equal(message.result.checklist.every(item=>!item.checked),true);
         firstSummary=message.result;send({requestId:'summary-again',operation:'prepare_summary'});
       }else if(message.requestId==='summary-again'){
@@ -148,6 +157,7 @@ for(const mode of ['codex','claude','cancel','cases','materials','draft','self-c
       }else if(message.requestId==='publish-summary'){
         assert.equal(message.result.status,'awaiting_review');assert.equal(message.result.completionAuthorized,false);
         assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'.cm-specs-status'))).status,'awaiting_review');
+        assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir,'.cm-specs-status'))).features,['1.guide','2.history']);
         send({requestId:'status',operation:'status'});
       }else if(message.requestId==='status'){status=message.result;send({type:'host_close',sessionId});}
     }
@@ -166,4 +176,46 @@ for(const mode of ['codex','claude','cancel','cases','materials','draft','self-c
     assert.equal(fs.existsSync(path.join(dir,'.cm-specs-status')),mode==='self-check');
     assert.equal(status.completionAuthorized,false);
   }finally{child.kill();lines.close();await closed;fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+for(const known of [true,false])test(`summary without draft uses only current durable session scope: ${known}`,{timeout:15000},async t=>{
+  const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-summary-session-')));
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  for(const name of ['docs','mirror','1.history','2.current'])fs.mkdirSync(path.join(dir,name));
+  fs.writeFileSync(path.join(dir,'docs/input.md'),'Synthetic request');
+  for(const feature of ['1.history','2.current'])for(const [file,content] of Object.entries({
+    'requirements.md':'- [ ] [AC-001] Read guide','tasks.md':'- [ ] T-001: Guide','design.md':'# Design'}))
+    fs.writeFileSync(path.join(dir,feature,file),feature==='1.history'?content.replace('[ ]','[x]'):content,{mode:0o600});
+  const entry={skillDir:path.join(root,'skills/cm-prd'),project:dir,specs:dir};
+  const analysis=createCmPrdAnalysis({input:entry,runtime:'codex',record:()=>{},analyze:async()=>({
+    status:'analyzed',summary:'Synthetic request',sourcePaths:['docs/input.md'],openQuestions:[]})});
+  await analysis.advance('Analyze');
+  const checkpoint={analysis:analysis.checkpoint(),started:true,summaryState:known?{currentFeatures:['2.current']}:null};
+  for(const [sessionId,state] of [['prd-current',checkpoint],['prd-other',{...checkpoint,summaryState:{currentFeatures:['1.history']}}]]){
+    const session=openPrdSession({specs:dir,sessionId,identity:{entry,runtime:'codex'}});session.checkpoint(state);session.close();
+  }
+  const child=spawn(process.execPath,[path.join(root,'scripts/cm-prd-host.mjs'),'serve','--skill-dir',entry.skillDir,
+    '--project',dir,'--specs',dir,'--runtime','codex','--allow-log-write','--session','prd-current'],
+  {env:{...process.env,CM_WORKFLOW_LOG_HOME:path.join(dir,'mirror')},stdio:['pipe','pipe','pipe']});
+  const closed=once(child,'close'),lines=createInterface({input:child.stdout});let sessionId,calls=0,result,stderr='';
+  child.stderr.on('data',chunk=>{stderr+=chunk;});const send=value=>child.stdin.write(JSON.stringify(value)+'\n');
+  try{
+    for await(const line of lines){
+      const message=JSON.parse(line);
+      if(message.type==='host_ready'){sessionId=message.sessionId;send({requestId:'summary',operation:'prepare_summary'});}
+      else if(message.type==='host_request'){
+        calls++;assert.equal(known,true);assert.equal(message.kind,'prd_summary');
+        assert.deepEqual(message.payload.evidence.currentFeatures,['2.current']);
+        send({type:'host_result',sessionId,callId:message.callId,requestDigest:message.requestDigest,result:{
+          evidenceDigest:message.payload.evidenceDigest,deliveryForm:'Docs',estimatedTime:'Unknown',openQuestions:'None',risks:'Synthetic',
+          contextScope:'Targeted',platformReadiness:'None',uiBaseline:'None',designRisk:[{feature:'2.current',
+            signals:{greenfieldAdr:false,architectureOrDataFlow:false,newRuntimeDependencyOrToolchain:false,
+              publicContractDataOrSecurity:false,fiveOrMoreFunctions:false},evidence:['Synthetic fixture']}]}});
+      }else if(message.requestId==='summary'){result=message;send({type:'host_close',sessionId});}
+    }
+    assert.equal((await closed)[0],0,stderr);assert.ok(result);
+    if(known){assert.equal(calls,1);assert.equal(result.result.status,'human_summary_prepared');
+      assert.deepEqual(result.result.blockers,['2.current: split_review_disposition_required']);}
+    else{assert.equal(calls,0);assert.equal(result.result.status,'blocked');assert.equal(result.result.reason,'prd_summary_scope_unknown');}
+  }finally{child.kill();lines.close();await closed;}
 });

@@ -5,7 +5,7 @@ import {reviewResult,reviewReceipt} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
 import path from 'node:path';
 import {readCommitIntent,readCommitResult} from './task-commit-codec.mjs';
-import {inspectProviderReview} from './provider-review-observation.mjs';
+import {inspectProviderReview,hasProviderReviewResult} from './provider-review-observation.mjs';
 import {readCmAiProjectLearningWriteback} from './cm-ai-learning-writer.mjs';
 import {readCmAiTaskLearningApplication} from './cm-ai-context-refresh.mjs';
 import {reviewExclusions} from './effect-contract.mjs';
@@ -18,7 +18,23 @@ const same=(a,b)=>need(digest(a)===digest(b),'runner_history_mismatch');
 const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b.slice(0,a.length));};
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
-export const stageAllowed=(kind,state)=>({develop:['ready','changes_requested'],review:['awaiting_review'],complete:['approved']})[kind]?.includes(state)===true;
+export const stageAllowed=(kind,state,code=null)=>
+  kind==='develop'&&state==='blocked'&&code==='developer_result_invalid'
+  ||kind==='review'&&state==='pending_review'&&code==='review_transport_timeout'
+  ||({develop:['ready','changes_requested'],review:['awaiting_review'],complete:['approved']})[kind]?.includes(state)===true;
+// Local rejected values keep audit records but do not consume provider rounds.
+export const invalidDeveloperCall=call=>call.terminal==='failed'&&call.failureResult?.code==='invalid_result'&&call.failureResult.retryable===true;
+// reconciliationRequired=false is an explicit new result, not a reinterpretation
+// of historical unknown/timed_out records which retain reconciliationRequired=true.
+export const reviewTransportTimeout=result=>result?.outcome==='timed_out'&&result.reconciliationRequired===false
+  &&!hasProviderReviewResult(result.observation.events);
+const timeoutEffect=entry=>entry.effect.kind==='review'&&entry.result.code==='review_transport_timeout'
+  &&reviewTransportTimeout(entry.result.reviewInvocation?.result);
+export const reviewTimeoutTransition=(result,cache,attempt)=>reviewTransportTimeout(result)?{
+  state:cache.some(entry=>entry.effect.identity.attempt===attempt&&timeoutEffect(entry))?'blocked':'pending_review',
+  code:'review_transport_timeout'}:null;
+export const completedEffectCount=cache=>cache.filter(entry=>!(entry.effect.kind==='develop'
+  &&entry.result.state==='blocked'&&entry.result.code==='developer_result_invalid')&&!timeoutEffect(entry)).length;
 export function validateTaskLearningReviewPackage(rawPackage,writeback,learningInput,bootstrap=null,configuration=null) {
   validTaskLearningInput(learningInput,learningInput.identity,learningInput.feature);
   const reviewPackage=readReviewPackage(rawPackage);
@@ -77,6 +93,12 @@ function packageLink(pkg,original,attempt,checks) {
   need(p.baseIdentity===b.baselineDigest && p.rootDigest===b.rootDigest,'runner_package');
   const files=new Map(b.files.map(f=>[f.path,f]));
   for(const c of p.changes){same(c.before,files.get(c.path)??null);if(c.after===null)files.delete(c.path);else files.set(c.path,c.after);}
+  if(Object.hasOwn(p,'unchangedScope')){
+    const changed=new Set(p.changes.map(c=>c.path));
+    same(p.unchangedScope,b.scope.filter(path=>!changed.has(path)&&files.has(path))
+      .map(path=>({path,sha256:files.get(path).sha256})));
+  }
+  same(p.specification??null,b.specification??null);
   same(p.requirements,b.requirements.map(path=>files.get(path)??null));
   same(p.codeProjectPaths??null,b.codeProjectPaths??null);
   if(Object.hasOwn(b,'bootstrapRequirements'))same(p.bootstrapRequirements,{feature:'0.bootstrap',
@@ -85,14 +107,22 @@ function packageLink(pkg,original,attempt,checks) {
 }
 function callRequest(call,adapter,contextId,role,payload,identity,session,index) {
   shape(call,['invocationId','contextId','provider','requestedModel','effectiveModel','channel','started','terminal','requestDigest','resultDigest',
-    ...(Object.hasOwn(call,'providerThreadId')?['providerThreadId']:[])]);
+    ...(Object.hasOwn(call,'providerThreadId')?['providerThreadId']:[]),
+    ...(Object.hasOwn(call,'failureResult')?['failureResult']:[])]);
   if(Object.hasOwn(call,'providerThreadId')){need(role==='developer','runner_call');id(call.providerThreadId);}
   need(call.invocationId===`${session}.${index}` && call.contextId===contextId && call.provider===adapter.provider
     && call.requestedModel===adapter.requestedModel && call.channel==='fixture' && call.started===true,'runner_call');
   text(call.effectiveModel);hex(call.requestDigest);
   need(['succeeded','failed','unknown','cancelled','unavailable','auth_required','permission_denied'].includes(call.terminal),'runner_call');
   if(call.resultDigest!==null)hex(call.resultDigest);
-  if(['failed','unavailable','auth_required','permission_denied'].includes(call.terminal))same(call.resultDigest,digest(null));
+  if(Object.hasOwn(call,'failureResult')){
+    need(role==='developer'&&call.terminal==='failed','runner_call');
+    shape(call.failureResult,['code','reason',...(Object.hasOwn(call.failureResult,'retryable')?['retryable']:[])]);
+    if(Object.hasOwn(call.failureResult,'retryable'))need(call.failureResult.retryable===true
+      &&call.failureResult.code==='invalid_result'&&adapter.requestedModel==='current-session','runner_call');
+    need(['invalid_result','protected_edit_stale'].includes(call.failureResult.code),'runner_call');id(call.failureResult.reason);
+    same(call.resultDigest,digest(call.failureResult));
+  }else if(['failed','unavailable','auth_required','permission_denied'].includes(call.terminal))same(call.resultDigest,digest(null));
   const request=requestFor({invocationId:call.invocationId,identity,role,provider:adapter.provider,
     requestedModel:adapter.requestedModel,contextId,payload});
   need(call.requestDigest===request.requestDigest,'runner_request');return request;
@@ -167,8 +197,13 @@ function readInvocationResult(p,registration,started,effect,config) {
       registration.request.contextId].includes(first),'runner_invocation');
     else need(first===started,'runner_invocation');
   } else if(['cancelled','timed_out'].includes(p.outcome)) {
-    shape(p,common);need(p.inspection===null&&p.reconciliationRequired===true,'runner_invocation');
+    shape(p,common);
     const observation=json(p.observation,512*1024),check=inspectProviderReview(JSON.stringify(observation),JSON.stringify(expectation));
+    if(p.inspection===null)need(p.reconciliationRequired===true,'runner_invocation'); // legacy result
+    else {
+      same(p.inspection,check);need(p.outcome==='timed_out','runner_invocation');
+      need(p.reconciliationRequired===hasProviderReviewResult(observation.events),'runner_invocation');
+    }
     need(check.providerThreadId===started,'runner_invocation');
     need(p.outcome==='cancelled'?check.observationStatus==='cancelled':check.code==='transport_timeout','runner_invocation');
   } else if(p.outcome==='not_dispatched') {
@@ -186,7 +221,7 @@ function invocationCall(call,registration,started,result,before) {
     &&call.channel==='host-authorized'&&call.requestDigest===request.requestDigest
     &&call.providerThreadId===started,'runner_call');
   const expectedTerminal=result.outcome==='observed'?'succeeded':result.outcome==='cancelled'?'cancelled':
-    result.outcome==='not_dispatched'?'not_dispatched':'unknown';
+    result.outcome==='not_dispatched'?'not_dispatched':reviewTransportTimeout(result)?'failed':'unknown';
   need(call.started===(result.outcome!=='not_dispatched')&&call.terminal===expectedTerminal
     &&call.resultDigest===digest(result.outcome==='observed'?result.inspection.review:result)
     &&before.sequence+1===Number(request.invocationId.split('.').at(-1)),'runner_call');
@@ -208,8 +243,8 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
   need(s.code===null || typeof s.code==='string' && s.code.length<=128,'runner_state');
   need(typeof s.cancelAfterCommit==='boolean' && [null,'workflow_error'].includes(s.workflowError),'runner_state');
   need(typeof s.cancellationRequested==='boolean','runner_state');
-  need(Array.isArray(s.calls) && s.calls.length<=6 && s.sequence===s.calls.length,'runner_calls');
-  need(Array.isArray(s.receipts) && s.receipts.length<=2 && Array.isArray(s.cache) && s.cache.length<=6,'runner_limits');
+  need(Array.isArray(s.calls) && s.calls.filter(call=>!invalidDeveloperCall(call)).length-s.cache.filter(timeoutEffect).length<=6 && s.sequence===s.calls.length,'runner_calls');
+  need(Array.isArray(s.receipts) && s.receipts.length<=2 && Array.isArray(s.cache) && completedEffectCount(s.cache)<=6,'runner_limits');
   prefix(before.calls,s.calls);prefix(before.receipts,s.receipts);prefix(before.cache,s.cache);
   need(s.cache.length===before.cache.length+1,'runner_cache');
   const entry=s.cache.at(-1);shape(entry,['effect','digest','result']);same(entry.effect,effect);same(entry.digest,digest(effect));
@@ -221,6 +256,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     need(added.length<=1 && s.receipts.length===before.receipts.length,'runner_develop');same(s.receipt,null);same(s.priorReview,before.priorReview);
     if(added.length)callRequest(added[0],config.developer,config.developer.contextId,'developer',{
       scope:config.scope,requirements:original.files.filter(f=>config.requirements.includes(f.path)),priorReview:before.priorReview,
+      ...(Object.hasOwn(original,'specification')?{specification:original.specification}:{}),
       ...(Object.hasOwn(effect,'learningInput')?{learningInput:effect.learningInput}:{})
     },identity,session,before.calls.length+1);
     if(Object.hasOwn(config,'taskLearning')){
@@ -253,6 +289,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
           expectedState='blocked';expectedCode='learning_writeback_pending';
         }
       }else need(s.state==='unknown'||s.state==='cancelled'
+        ||Object.hasOwn(original,'specification')&&s.state==='blocked'&&s.code==='spec_drift'
         ||added[0]&&['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal),'runner_learning');
     }
     if(digest(s.reviewPackage)!==digest(before.reviewPackage)) {
@@ -269,7 +306,8 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
       expectedState='awaiting_review';
     }
     if(added[0] && ['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal)) {
-      expectedState='blocked';expectedCode=added[0].terminal;
+      expectedState='blocked';expectedCode=invalidDeveloperCall(added[0])
+        ?'developer_result_invalid':added[0].failureResult?.code==='protected_edit_stale'?'protected_edit_stale':added[0].terminal;
     }
   } else if(effect.kind==='review'&&version===3) {
     same(s.reviewPackage,before.reviewPackage);same(s.currentChecks,before.currentChecks);
@@ -278,6 +316,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
       same(s.reviewInvocation,before.reviewInvocation);same(s.receipt,before.receipt);same(s.receipts,before.receipts);same(s.priorReview,before.priorReview);
       if(controls.cancelled===true){expectedState='cancelled';expectedCode='cancelled';}
       else if(s.code==='permission_denied')expectedState='pending_review';
+      else if(Object.hasOwn(original,'specification')&&s.code==='spec_drift')expectedState='blocked';
       else {need(['authorization_invalid','clock_invalid'].includes(s.code),'runner_invocation');expectedState='unknown';}
       expectedCode??=s.code;
     } else {
@@ -285,7 +324,10 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     invocationCall(added[0],invocation.registration,invocation.started,invocation.result,before);
     const diagnostic={registration:invocation.registration.record,started:invocation.started,result:invocation.result};
     same(s.reviewInvocation,diagnostic);
-    if(invocation.result.outcome==='observed'){
+    if(invocation.result.outcome==='observed'&&Object.hasOwn(original,'specification')&&s.code==='spec_drift'){
+      same(s.receipt,before.receipt);same(s.receipts,before.receipts);same(s.priorReview,before.priorReview);
+      expectedState='blocked';expectedCode='spec_drift';
+    }else if(invocation.result.outcome==='observed'){
       need(s.receipts.length===before.receipts.length+1,'runner_receipt');
       const rawReceipt=s.receipts.at(-1),result=reviewResult(invocation.result.inspection.review,before.reviewPackage);
       accepted=reviewReceipt({request:invocation.registration.request,call:added[0],result,
@@ -297,7 +339,8 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     }
     else if(invocation.result.outcome==='cancelled'){need(controls.cancelled===true,'runner_control');expectedState='cancelled';expectedCode='cancelled';}
     else if(invocation.result.outcome==='not_dispatched'){expectedState='pending_review';expectedCode=invocation.result.reason;}
-    else {expectedState='unknown';expectedCode=invocation.result.reason??invocation.result.inspection?.code??'reconciliation_required';}
+    else {const retry=reviewTimeoutTransition(invocation.result,before.cache,before.attempt);
+      expectedState=retry?.state??'unknown';expectedCode=retry?.code??invocation.result.reason??invocation.result.inspection?.code??'reconciliation_required';}
     if(invocation.result.outcome!=='observed'){
       same(s.receipt,before.receipt);same(s.receipts,before.receipts);same(s.priorReview,before.priorReview);
     }
@@ -332,6 +375,10 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
       checkCompletion({receipt:s.receipt,registered:before.receipt,execution:s.calls.find(c=>c.invocationId===s.receipt?.id),
         reviewPackage:s.reviewPackage,identity});expectedState='fixture_completed';
     } else if(s.state==='blocked')expectedState='blocked';
+  }
+  if(Object.hasOwn(original,'specification')&&s.state==='blocked'&&s.code==='spec_drift'){
+    need(s.receipts.length===before.receipts.length,'runner_receipt');
+    same(s.reviewPackage,before.reviewPackage);expectedState='blocked';expectedCode='spec_drift';
   }
   need(s.attempt===expectedAttempt,'runner_attempt');
   // Terminal failure may retain materials; it cannot confer a new dispatch capability.
@@ -429,6 +476,11 @@ export function readRunnerHistory(raw,config,version=1) {
       same(original.identity,config.identity);same(original.scope,reviewScope.sort());same(original.requirements,[...config.requirements].sort());
       same(original.codeProjectPaths??null,config.codeProjectPaths??null);
       same(original.bootstrapRequirements??null,config.bootstrap?.bootstrapRequirements??null);
+      if(Object.hasOwn(original,'specification')){
+        need(completion&&config.taskLearning,'runner_package');
+        same(original.specificationRoot,completion.owner.specsRoot);
+        same(original.specification.feature,config.taskLearning.feature);
+      }
       same(original.specsPath??null,completion?reviewSpecsPath(config.root,completion.owner.specsRoot):null);
       same(original.rootDigest,digestRoot(config.root));state=initialRunnerState(config,session,version);continue;
     }
@@ -439,8 +491,8 @@ export function readRunnerHistory(raw,config,version=1) {
       if(e.kind==='develop'&&Object.hasOwn(config,'taskLearning'))need(Object.hasOwn(e,'learningInput'),'runner_learning');
       if(Object.hasOwn(e,'learningInput')){need(e.kind==='develop'&&Object.hasOwn(config,'taskLearning'),'runner_learning');
         validTaskLearningInput(e.learningInput,e.identity,config.taskLearning.feature);}
-      same(e.identity,{...config.identity,attempt:state.attempt});need(e.version===1 && stageAllowed(e.kind,state.state),'runner_stage');
-      need(state.cache.length<6 && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
+      same(e.identity,{...config.identity,attempt:state.attempt});need(e.version===1 && stageAllowed(e.kind,state.state,state.code),'runner_stage');
+      need(completedEffectCount(state.cache)<6 && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
       pending=e;beforeIntent=structuredClone(state);controls={};completeIntentDigest=e.kind==='complete'?r.digest:null;
       invocation={registration:null,started:null,result:null};
     } else if(version===3&&p.type==='review-invocation-registered') {

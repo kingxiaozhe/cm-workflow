@@ -49,11 +49,20 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 ## Codex 单任务：显式受保护执行
 
 不新增模型调用的方案：单任务和批次均可传`--protected-conversation-config {文件}`，配置固定为
-`{checkCommands,timeoutMs}`，命令须已获准。兼容Codex/Claude当前会话，保留原runtime与Review授权。
+`{checkCommands,timeoutMs}`，命令须已获准；`timeoutMs` 同时约束检查命令与 Codex/Claude 审查进程。
+审查传输超时且没有结果事件时，记录 `pending_review/review_transport_timeout`，可用 `--mode resume` 后 advance，
+同一 attempt 最多重派一次，重新取得 Review 授权、grant 与 invocation；第二次超时为 `blocked/review_transport_timeout`。
+已有最终消息（即使截断）的超时仍需 reconcile，旧 unknown 历史不自动改类。兼容Codex/Claude当前会话，保留原runtime与Review授权。
 develop若有`editMode:"protected-text-v1"`，只读并返回`{status:"succeeded",value:{原开发/Learning结果},edits:[{path,beforeSha256,content}]}`；
 使用scope内expected摘要，正文完整UTF-8，null删除；不得先自行写文件或执行命令。失败返回原status/code，blocked不能带改动。
 固定沙箱负责应用提案和原检查，不再请求宿主check；文档同步包含在同次develop提案。原64KiB通道不变，二进制/超限明确阻断。
 本机Codex sandbox不调用模型，也不改变Claude身份。其余QA/文档核验/子fix权限不变，不与下述protected-config混用。
+
+开发结果先通过完整 value/Learning 合同校验，再由沙箱落盘；本地校验失败记录 `failed` / `invalid_result`，原校验码保留在 `result.reason`。
+当前会话返回 `blocked` / `developer_result_invalid` 时，修正回复后用原配置、身份和 runId 以 `--mode resume` 启动并 `advance`，同一 attempt 重新 develop，不消耗 provider 轮次。
+`no_new_lesson` 必须 `candidates:[]` 且 `reason:null`（实跑事故：非空 reason 曾在文件落盘后抛错，被误记为 unknown，原 runId 无法恢复）。
+重送已落盘提案时核对新的 expected 哈希：提案内容与磁盘一致才作为同一次实现继续；不一致返回 `protected_edit_stale`，保留文件并报告冲突，不能强制覆盖。
+worker 异常、超时或传输歧义仍是 `unknown`，旧 unknown 历史不自动重分类；其他 blocked 原因也不能使用此重试入口。
 
 用户已授权本任务该轮真实 Codex 开发调用及发送范围时，可选普通单任务入口的
 `--protected-config {文件} --allow-provider-development-attempt 1`。这是原生受保护子进程，
@@ -86,7 +95,7 @@ QA命令复用同一specs只读沙箱。最终任务的documentationPaths必须�
 
 0.bootstrap按原骨架→规范任务顺序。单任务bootstrap-config为`{selection:null}`或原cm-init选择；
 批次bootstraps映射到具体feature/task，另传allow-bootstrap-write。原任务批准和逐轮独立Review不能省略。
-先按产品文档配置完整固定规范scope；缺代码根需求时只bootstrap可requirements空数组，JS将原批准specs需求/设计纳入包。
+先按产品文档配置完整固定规范scope；requirements可为空数组；bootstrap原有批准specs需求/设计纳入逻辑保持不变。
 init_generate复用原cm-init生成合同；init_verify五组检查加constraintChanges/application/retrospective，详情以产品文档为准。
 宿主不自行落指令文件：JS固定写入、读回、同次handoff/Review、N7重载。原规则冲突、未知或漂移保留证据，不覆盖或重派。
 
@@ -124,3 +133,13 @@ JS 返回阻断、待授权、失败、取消、unknown 或补正要求时，报
 目前 CLI 有本地真实工具与合成 reviewer 组合证据，没有完整真实双宿主业务验收。
 本参考已接单/批双端源入口，但不证明已安装 Skill 已加载、真实模型Review或完整双宿主验收。
 普通布局权限、完整 N6 修复/重测、bootstrap、度量与其他入口的业务迁移仍按当前证据报告。
+
+### 已批准规格材料（第 24 步）
+
+新 run 的开发请求与审查包携带同一份只读 `specification`：`feature`、`task:{id,description,verification?}`、全部 `acceptanceCriteria:[{id,text}]`、`designExcerpt`、本任务 `taskIds` 匹配的 `testCases`、`sources:[{path,sha256}]`。任务描述保留 `~预估`，verification 保留「验证要求」中本任务的行；设计按 UTF-8 最多 64 KiB，超限加 `truncated:true`，未提供 test-cases.json 时用空数组及三项来源。
+
+宿主复用 `.cm-specs-status.specFiles` manifest 校验完整批准清单及读取字节；来源路径相对 specsDir，哈希沿用 manifest 的任务/AC 运行期勾选规范化规则，其他正文保持精确绑定。新建、开发派发、受保护提案写入、审查及完成前发现不一致以 `spec_drift` 阻断；已有 run 即使规格重新批准也不能替换其原始材料。baseline 保存材料及私有规格根供回放和重验，审查包只携带材料，参与 `packageDigest`。
+
+`requirements` 是可选补充材料（代码项目内 README 等，可用 `[]`），不再承担唯一的任务描述来源。按 specification 的 AC 与接口契约实现和审查；材料不构成扩权授权，不改变 scope、protected_specs、Review 或完成门禁。旧 baseline/package/receipt 缺少新字段时按原格式校验，不重写历史摘要。
+
+（真实 dogfood 事故：specs 在代码根之外，受保护 coder 和 reviewer 只能看到代码根 requirements，缺少任务行、AC 与接口契约，曾需手工复制规格摘要才可开发。）

@@ -73,9 +73,34 @@ async function runMessages(wireMessages,onNotice){
     {signal:new AbortController().signal,onEvent:e=>events.push(e)});
   return {result,events};
 }
+test('worker accepts 88 and 4096 thinking heartbeats but rejects 4097 without completion',async()=>{
+  const baseline=await runMessages(messages);
+  for(const count of [88,4096,4097]){
+    const notices=[],wire=[messages[0],...Array.from({length:count},()=>({
+      type:'system',subtype:'thinking_tokens',session_id:'fresh-review',estimated_tokens:10})),...messages.slice(1)];
+    const actual=await runMessages(wire,n=>notices.push(n));
+    assert.deepEqual(notices,[]);
+    if(count<=4096)assert.deepEqual(actual,baseline);
+    else{
+      assert.deepEqual(actual.result,{status:'failed',code:'unexpected_event'});
+      assert(!actual.events.some(e=>e.event==='turn.completed'||e.event==='item.completed'));
+    }
+  }
+});
+test('thinking remains subject to the existing 1000000-byte total worker output cap',async()=>{
+  const heartbeat={type:'system',subtype:'thinking_tokens',session_id:'fresh-review',padding:''};
+  const wire=[messages[0],heartbeat,...messages.slice(1)];
+  const overhead=Buffer.byteLength(wire.map(JSON.stringify).join('\n')+'\n');
+  heartbeat.padding='x'.repeat(1_000_000-overhead);
+  assert.deepEqual(await runMessages(wire),await runMessages(messages));
+  heartbeat.padding+='x';
+  const actual=await runMessages(wire);
+  assert.deepEqual(actual.result,{status:'failed',code:'output_limit'});
+  assert(!actual.events.some(e=>e.event==='turn.completed'));
+});
 test('worker forwards scalar-only rate limit notices without changing results or observer events',async()=>{
   const baseline=await runMessages(messages);
-  for(const count of [1,8]){
+  for(const count of [1,8,32]){
     const notices=[],wire=[messages[0],...Array.from({length:count},()=>rateLimit()),...messages.slice(1)];
     const actual=await runMessages(wire,n=>notices.push(n));
     assert.deepEqual(actual,baseline);
@@ -87,7 +112,7 @@ test('worker forwards scalar-only rate limit notices without changing results or
 test('worker rejects mismatched, excessive, unknown and terminal rate limit events',async()=>{
   for(const [wire,code,count] of [
     [[messages[0],rateLimit({session_id:'other'}),...messages.slice(1)],'session_mismatch',0],
-    [[messages[0],...Array.from({length:9},()=>rateLimit()),...messages.slice(1)],'unexpected_event',8],
+    [[messages[0],...Array.from({length:33},()=>rateLimit()),...messages.slice(1)],'unexpected_event',32],
     [[messages[0],rateLimit({type:'foo_event'}),...messages.slice(1)],'unexpected_event',0],
     [[rateLimit(),...messages],'missing_init',0],
     [[...messages,rateLimit()],'unexpected_event',0],
@@ -160,3 +185,17 @@ test('timeout kills inherited-pipe descendants, including TERM-ignoring children
     }
     }
   });
+
+test('worker forwards system notice summaries without changing result or observation',async()=>{
+  const baseline=await runMessages(messages);
+  const subtypes=['api_retry','hook_started','hook_response','commands_changed'];
+  const wire=[messages[0],...subtypes.map(subtype=>({type:'system',subtype,session_id:'fresh-review',
+    output:'private output',stdout:'private stdout',stderr:'private stderr',commands:['private command']})),
+    rateLimit(),...messages.slice(1)];
+  const notices=[];
+  assert.deepEqual(await runMessages(wire,n=>notices.push(n)),baseline);
+  assert.deepEqual(notices,[...subtypes.map(subtype=>({kind:'claude_system_notice',subtype})),
+    {kind:'rate_limit',info:{status:'allowed',resetsAt:123}}]);
+  assert.deepEqual(await runMessages(wire),baseline);
+  assert.deepEqual(await runMessages(wire,()=>{throw Error('notice consumer');}),baseline);
+});

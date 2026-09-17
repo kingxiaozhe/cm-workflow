@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import {buildManifest,verifyManifest} from '../../../scripts/cm-spec-manifest.mjs';
 
 const TASK=/^\s*-\s*\[([ xX])\]\s+(?:~~)?(T-[A-Za-z0-9][A-Za-z0-9._-]*)(?=[:\s])[:\s]*(.*)$/;
 const DEPENDENCY=/^\s*-\s*(T-[A-Za-z0-9][A-Za-z0-9._-]*)\s+依赖\s+(.+)$/;
@@ -200,22 +201,27 @@ function validateTestCases(specsDir,status,names){
 }
 
 function readFeature(specsDir,name){
-  return parseFeatureTaskText(fs.readFileSync(path.join(specsDir,name,'tasks.md'),'utf8'));
+  const parsed=parseFeatureTaskText(fs.readFileSync(path.join(specsDir,name,'tasks.md'),'utf8'),{allowDependencyPunctuation:true});
+  if(parsed.error)parsed.detail={feature:name,...parsed.detail};
+  return parsed;
 }
 
 export function declaredAcceptanceIds(source){
   return new Set(source.split(/\r?\n/).map(line=>line.match(ACCEPTANCE)).filter(Boolean).map(match=>match[1]||match[2]));
 }
 
-export function parseFeatureTaskText(source){
+export function parseFeatureTaskText(source,{allowDependencyPunctuation=false}={}){
   const lines=source.split(/\r?\n/);
   const tasks=[];
   const taskIds=new Set();
   const dependencies=new Map();
-  for(const line of lines){
+  const dependencyLocations=new Map();
+  const location=index=>({line:index+1,text:lines[index].slice(0,120)});
+  const invalid=(error,index)=>({error,detail:location(index)});
+  for(const [index,line] of lines.entries()){
     const task=line.match(TASK);
     if(task){
-      if(taskIds.has(task[2]))return {error:'tasks_invalid'};
+      if(taskIds.has(task[2]))return invalid('tasks_invalid',index);
       taskIds.add(task[2]);
       const dropped=/\[DROPPED(?:\s[^\]]*)?\]/.test(task[3]);
       tasks.push({
@@ -228,30 +234,39 @@ export function parseFeatureTaskText(source){
     }
     const dependency=line.match(DEPENDENCY);
     if(dependency){
-      if(dependencies.has(dependency[1]))return {error:'dependencies_invalid'};
-      const required=dependency[2].split(/[,，]/).map(value=>value.trim()).filter(Boolean);
-      if(!required.length||required.some(id=>!TASK_ID.test(id)))return {error:'dependencies_invalid'};
+      if(dependencies.has(dependency[1]))return invalid('dependencies_invalid',index);
+      // Only cm-ai admission opts in; cm-prd self-check retains strict parsing.
+      const required=dependency[2].split(/[,，]/).map(value=>value.trim()).filter(Boolean)
+        .map(value=>allowDependencyPunctuation?value.replace(/[。．.；;、\s]+$/u,''):value);
+      if(!required.length||required.some(id=>!TASK_ID.test(id)))return invalid('dependencies_invalid',index);
       dependencies.set(dependency[1],required);
+      dependencyLocations.set(dependency[1],location(index));
     }
   }
-  if(!tasks.length)return {error:'tasks_invalid'};
-  return {tasks,dependencies};
+  if(!tasks.length)return invalid('tasks_invalid',Math.max(0,lines.findIndex(line=>line.trim())));
+  return {tasks,dependencies,dependencyLocations};
 }
 
 export function validDependencies(tasks,dependencies){
+  return invalidDependency(tasks,dependencies)===null;
+}
+
+function invalidDependency(tasks,dependencies){
   const ids=new Set(tasks.map(task=>task.id));
   for(const [taskId,required] of dependencies){
-    if(!ids.has(taskId)||required.some(id=>id===taskId||!ids.has(id)))return false;
+    if(!ids.has(taskId)||required.some(id=>id===taskId||!ids.has(id)))return taskId;
   }
   const visiting=new Set(),visited=new Set();
+  let cycleTask=null;
   const visit=id=>{
-    if(visiting.has(id))return false;
+    if(visiting.has(id)){cycleTask=id;return false;}
     if(visited.has(id))return true;
     visiting.add(id);
     for(const dependency of dependencies.get(id)||[])if(!visit(dependency))return false;
     visiting.delete(id);visited.add(id);return true;
   };
-  return tasks.every(task=>visit(task.id));
+  tasks.every(task=>visit(task.id));
+  return cycleTask;
 }
 
 function validateBootstrap(codeProject,specsDir,names){
@@ -260,7 +275,7 @@ function validateBootstrap(codeProject,specsDir,names){
   if(empty&&!hasBootstrap)return 'bootstrap_required';
   if(!empty&&hasBootstrap){
     const parsed=readFeature(specsDir,'0.bootstrap');
-    if(parsed.error)return parsed.error;
+    if(parsed.error)return null; // Let selection retain the parser's location and feature summaries.
     const bootstrapTask=parsed.tasks.find(task=>task.id==='T-001');
     if(bootstrapTask&&!bootstrapTask.completed&&!bootstrapTask.dropped)return 'bootstrap_conflict';
   }
@@ -295,8 +310,10 @@ function selectTask(specsDir,names){
   const evidenceNames=evidence.names;
   for(const name of names){
     const parsed=readFeature(specsDir,name);
-    if(parsed.error)return {error:parsed.error,features,warnings};
-    if(!validDependencies(parsed.tasks,parsed.dependencies))return {error:'dependencies_invalid',features,warnings};
+    if(parsed.error)return {error:parsed.error,detail:parsed.detail,features,warnings};
+    const invalidId=invalidDependency(parsed.tasks,parsed.dependencies);
+    if(invalidId!==null)return {error:'dependencies_invalid',
+      detail:{feature:name,...parsed.dependencyLocations.get(invalidId)},features,warnings};
     const byId=new Map(parsed.tasks.map(task=>[task.id,task]));
     const pending=parsed.tasks.filter(task=>!task.completed&&!task.dropped);
     const missing=missingReviewIds(name,parsed.tasks,evidenceNames);
@@ -340,6 +357,10 @@ function admissionFor(options,inProgressBootstrap=null){
   const featuresProblem=approvedFeaturesProblem(status.value,discovered.names);
   if(featuresProblem==='spec_features_changed')return result(base,'awaiting_spec_approval',featuresProblem);
   if(featuresProblem)return result(base,'blocked',featuresProblem);
+  if(Object.hasOwn(status.value,'specFiles')){
+    try{verifyManifest(buildManifest(specsDir),path.join(specsDir,'.cm-specs-status'));}
+    catch{return result(base,'blocked','spec_drift');}
+  }
   const testCasesProblem=validateTestCases(specsDir,status.value,discovered.names);
   if(testCasesProblem==='test_cases_changed')return result(base,'awaiting_spec_approval',testCasesProblem);
   if(testCasesProblem)return result(base,'blocked',testCasesProblem);
@@ -347,7 +368,8 @@ function admissionFor(options,inProgressBootstrap=null){
   if(bootstrapProblem&&!(bootstrapProblem==='bootstrap_conflict'&&inProgressBootstrap==='T-001'))
     return result(base,'blocked',bootstrapProblem);
   const selection=selectTask(specsDir,discovered.names);
-  if(selection.error)return result(base,'blocked',selection.error,{features:selection.features,warnings:selection.warnings});
+  if(selection.error)return result(base,'blocked',selection.error,{features:selection.features,warnings:selection.warnings,
+    ...(selection.detail?{detail:selection.detail}:{})});
   if(!selection.nextTask)return result(base,'complete','all_tasks_terminal',{features:selection.features,warnings:selection.warnings});
   return result(base,'ready','task_selected',{features:selection.features,nextTask:selection.nextTask,warnings:selection.warnings});
 }

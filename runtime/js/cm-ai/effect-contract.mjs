@@ -9,7 +9,7 @@ const failureCodes=new Set(['invalid_input','limit_exceeded','call_timeout','can
   'review_package_mismatch','missing_material','contradictory_verdict','execution_mismatch','receipt_version',
   'unregistered_receipt','invalid_receipt','receipt_identity','receipt_package_mismatch','review_not_approved',
   'checks_not_passed','async_commit','commit_unknown','unsupported_path','unsupported_file','read_failed',
-  'snapshot_changed','invalid_baseline','out_of_scope','empty_changes','invalid_package','package_mismatch']);
+  'snapshot_changed','spec_drift','invalid_baseline','out_of_scope','empty_changes','invalid_package','package_mismatch']);
 export function failureCode(error) {
   try {
     const d=Object.getOwnPropertyDescriptor(error,'code');
@@ -85,6 +85,15 @@ export function terminalFor(raw,request) {
   need(v.version===1 && v.invocationId===request.invocationId && v.contextId===request.contextId
     && v.provider===request.provider,'terminal_mismatch');text(v.effectiveModel);
   if(v.status==='succeeded')need(v.accepted===true && v.result!==null);
+  else if(v.status==='failed'&&v.result!==null){
+    // Only developer-local validation has a determinate, structured failure.
+    // Reviewer and unknown terminal contracts remain unchanged.
+    need(request.role==='developer'&&v.accepted===true);
+    shape(v.result,['code','reason',...(Object.hasOwn(v.result,'retryable')?['retryable']:[])]);
+    need(['invalid_result','protected_edit_stale'].includes(v.result.code));id(v.result.reason);
+    if(Object.hasOwn(v.result,'retryable'))need(v.result.retryable===true
+      &&v.result.code==='invalid_result'&&request.requestedModel==='current-session');
+  }
   else if(['failed','unknown'].includes(v.status))need(v.accepted===true && v.result===null);
   else need(['unavailable','auth_required','permission_denied'].includes(v.status) && v.accepted===false && v.result===null);
   return v;
