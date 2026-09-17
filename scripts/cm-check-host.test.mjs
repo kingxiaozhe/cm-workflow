@@ -14,7 +14,7 @@ function fixture(t,exitCode=0){
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
   for(const file of ['scripts/cm-check-entry.mjs','scripts/cm-check-host.mjs','scripts/cm-workflow-config.mjs','runtime/js/cm-check/host.mjs',
     'runtime/js/cm-ai/host-tool-bridge.mjs','runtime/js/cm-ai/host-session.mjs','runtime/js/cm-ai/effect-contract.mjs',
-    'runtime/js/cm-ai/contracts.mjs','runtime/js/cm-init/draft-inspection.mjs','scripts/cm-workflow-config.mjs','skills/cm-check/SKILL.md']){
+    'runtime/js/cm-ai/contracts.mjs','runtime/js/cm-init/draft-inspection.mjs','skills/cm-check/SKILL.md']){
     fs.mkdirSync(path.dirname(path.join(dir,file)),{recursive:true});fs.copyFileSync(path.join(root,file),path.join(dir,file));
   }
   fs.writeFileSync(path.join(dir,'VERSION'),'0.0.0\n');fs.writeFileSync(path.join(dir,'README.md'),'# Synthetic fixture\n');
