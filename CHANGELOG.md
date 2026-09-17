@@ -5,6 +5,12 @@
 
 ## 未发布
 
+（暂无）
+
+## 0.13.1 — 2026-09-17
+
+真项目 dogfood（`cm-init → cm-prd → cm-ai`，Codex 写码、Claude CLI 独立审查，首次跑到 `run_done`）暴露并修复的 11 处运行时缺陷，全部由真实事故触发：
+
 - 修复 `cm-ai` N6 宿主请求可无限等待的问题：QA 请求按 workflow QA `timeoutMs`（默认 60 秒）独立超时并记 BLOCKED，迟到应答与旧发送失败不能污染下一请求；resume 可显式以 `--rerun-unknown-qa --allow-qa` 将无结果调用记为 abandoned，以新 testRunId 在原 qaRound 重跑，部分结果及清理欠账仍阻断。合成宿主确认同步应答本身正常；事故驱动的 JSONL 循环提前 return 会漏读同一数据块中的下一请求，宿主必须排空完整行。
 - 第 26b 步放宽 `--rerun-unknown-qa`：无 complete、已记录结果全为 PASS 且无固定执行报告时可显式重跑，abandoned 新增 `partial_pass_cases`；全部用例仍重新执行，旧 PASS 仅作历史，FAIL/BLOCKED 与清理欠账继续阻断。
 
