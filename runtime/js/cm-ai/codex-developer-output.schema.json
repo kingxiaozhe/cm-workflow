@@ -1,9 +1,10 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["outcome", "application", "retrospective"],
+  "required": ["outcome", "application", "retrospective", "reason"],
   "properties": {
     "outcome": {"type": "string", "enum": ["implemented", "blocked"]},
+    "reason": {"type": ["string", "null"]},
     "application": {
       "type": "object", "additionalProperties": false,
       "required": ["status", "note"],

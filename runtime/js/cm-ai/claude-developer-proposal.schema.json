@@ -30,6 +30,7 @@
             "blocked"
           ]
         },
+        "reason": {"type": ["string", "null"]},
         "application": {
           "type": "object",
           "additionalProperties": false,
