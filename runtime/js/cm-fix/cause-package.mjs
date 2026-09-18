@@ -3,6 +3,7 @@ import {readReviewSourceFiles,readReviewSourceRecords,readReviewPackage} from '.
 import {digest,id,json,need,shape,text,validIdentity} from '../cm-ai/effect-contract.mjs';
 import {inspectFixLearning} from './learning.mjs';
 import {inspectFixInvestigation} from './investigation.mjs';
+import {inspectFixReproductionAttempts} from './reproduce.mjs';
 import {inspectVisualCarrier} from './visual.mjs';
 
 export function createFixCausePackage({codeProject,defect,status}){
@@ -50,7 +51,8 @@ export function readFixCausePackage(raw){
   text(d.rootCause);text(d.plan);need(Array.isArray(d.affectedModules)&&d.affectedModules.length>0,'invalid_package');
   d.affectedModules.forEach(text);
   need(Array.isArray(d.affectedPaths)&&digest([...d.affectedPaths].sort())===digest(files.map(file=>file.path)),'invalid_package');
-  shape(r,['status','next','observation']);need(r.status==='reproduced'&&r.next==='diagnose','invalid_package');
+  shape(r,['status','next','observation',...(Object.hasOwn(r,'attempts')?['attempts']:[])]);
+  need(r.status==='reproduced'&&r.next==='diagnose','invalid_package');inspectFixReproductionAttempts(r);
   const o=r.observation;
   if(o.kind==='visual'){
     shape(o,['kind','phase','carrier','environment','reason']);need(o.phase==='before','invalid_package');

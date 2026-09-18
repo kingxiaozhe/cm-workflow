@@ -5,9 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import {openFixExecution} from '../runtime/js/cm-fix/execution.mjs';
 import {readReviewSourceFiles} from '../runtime/js/cm-ai/review-package.mjs';
-import {requestFor} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {requestFor,digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {buildCauseReviewPrompt,buildReviewPrompt} from '../runtime/js/cm-ai/codex-review-adapter.mjs';
 import {inspectProviderCauseReview,inspectProviderReview} from '../runtime/js/cm-ai/provider-review-observation.mjs';
+import {readFixCausePackage} from '../runtime/js/cm-fix/cause-package.mjs';
 import {inspectFixInvestigation} from '../runtime/js/cm-fix/investigation.mjs';
 
 test('cause package binds only selected current source and never advances the fix',async()=>{
@@ -32,6 +33,22 @@ test('cause package binds only selected current source and never advances the fi
     assert.equal((await owner.advance({authorized:true})).stage,'cause_review_required');
     const first=owner.causeReviewPackage();assert.equal(first.files.length,1);
     assert.deepEqual(first.diagnosis.investigation,investigation);
+    const withReproduction=reproduction=>{const {packageDigest,...body}=first;
+      const value={...body,reproduction};return {...value,packageDigest:digest(value)};};
+    const visual={status:'reproduced',next:'diagnose',observation:{kind:'visual',phase:'before',
+      carrier:{path:path.join(root,'before.png'),sha256:'a'.repeat(64),kind:'screenshot',description:'Synthetic carrier metadata'},
+      environment:{scope:'local',kind:'web',carrier:'browser',target:'fixture'},reason:'Synthetic visual fixture'},
+      attempts:[{scenario:'Inspect fixture',dimension:'按描述',outcome:'reproduced'}]};
+    for(const reproduction of [first.reproduction,visual]){
+      assert.equal(readFixCausePackage(withReproduction(reproduction)).reproduction.attempts.at(-1).outcome,'reproduced');
+      const {attempts,...legacy}=reproduction;
+      assert.deepEqual(readFixCausePackage(withReproduction(legacy)).reproduction,legacy);
+      for(const outcome of ['not_reproduced','unsupported','invalid']){
+        const attempt={...attempts[0],outcome};
+        assert.throws(()=>readFixCausePackage(withReproduction({...legacy,attempts:[attempt]})),
+          {code:outcome==='invalid'?'invalid_fix_reproduction_attempts':'fix_reproduction_attempts_mismatch'});
+      }
+    }
     assert.equal(Buffer.from(first.files[0].contentBase64,'base64').toString(),'export const value=1;');
     assert.equal(JSON.stringify(first).includes('SYNTHETIC_NOT_FOR_PACKAGE'),false);
     for(const provider of ['codex','claude']){

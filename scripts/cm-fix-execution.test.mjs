@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {openFixExecution} from '../runtime/js/cm-fix/execution.mjs';
+import {createFixReproduction} from '../runtime/js/cm-fix/reproduce.mjs';
+import {startFixRun} from '../runtime/js/cm-fix/start.mjs';
 import {openExecutionStore} from '../runtime/js/cm-ai/execution-store.mjs';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 const identity={repositoryId:'fix-fixture',runId:'fix-demo',taskId:'T-FIX-demo',attempt:1};
@@ -60,4 +62,33 @@ test('cancel remains durable and changed host configuration cannot reopen',()=>f
   owner=openFixExecution({...options,create:false});
   try{assert.equal((await owner.advance({authorized:true})).stage,'cancelled');}
   finally{owner.close();}
+}));
+
+test('legacy observation without attempts can publish, finish and resume without rewriting its archive',()=>fixture(async(options,cwd)=>{
+  options.configuration.reproduction.command=[process.execPath,'-e',"require('node:fs').appendFileSync('visits','1')"];
+  let owner=openFixExecution(options);owner.close();
+  // The old producer's exact shape, backed by a real command observation.
+  const run=createFixReproduction(options.configuration.reproduction);
+  const {attempts,...legacy}=await run({identity},{signal:new AbortController().signal,authorized:true});
+  assert.equal(legacy.status,'not_reproduced');
+  const state=JSON.parse(fs.readFileSync(path.join(options.specsRoot,'.reviews','.execution',identity.runId,'state.json')));
+  const store=openExecutionStore({specsRoot:options.specsRoot,identity:state.identity,fingerprints:state.fingerprints,create:false});
+  try{
+    store.append({id:'fix-reproduce-intent',kind:'intent',payload:{stage:'reproduce'},expectedRevision:store.snapshot().revision});
+    store.append({id:'fix-reproduce-result',kind:'result',payload:{stage:'reproduce',value:legacy},expectedRevision:store.snapshot().revision});
+  }finally{store.close();}
+  owner=openFixExecution({...options,create:false});
+  try{
+    assert.equal(owner.status().stage,'observation');assert.equal(owner.status().reproduction.attempts,undefined);
+    const published=owner.publishDossier(),bytes=fs.readFileSync(published.dossier.path);
+    assert.doesNotMatch(bytes.toString(),/复现尝试/);
+    startFixRun(options);
+    assert.equal(owner.finish({authorized:true}).observationRunEnded,true);
+    owner.close();owner=openFixExecution({...options,create:false});
+    assert.deepEqual(fs.readFileSync(owner.publishDossier().dossier.path),bytes);
+    fs.writeFileSync(path.join(options.specsRoot,'failure.txt'),'Observed new failure evidence');
+    assert.equal(owner.resume({authorized:true,evidenceFiles:['failure.txt']}).stage,'observation_resume_prepared');
+    assert.deepEqual(fs.readFileSync(published.dossier.path),bytes);
+    assert.equal(fs.readFileSync(path.join(cwd,'visits'),'utf8'),'1');
+  }finally{owner.close();}
 }));

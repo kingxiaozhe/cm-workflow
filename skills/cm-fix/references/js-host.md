@@ -137,3 +137,16 @@ handoff → 最终独立 Review/发布 → 原 N5 → 审后回归/走查 → �
 
 本接线是源 Skill 指令，不证明安装副本已加载或真实双宿主验收。保持原输出格式，
 同时报告已做、剩余、阻断和下一步；完整 JS workflow 的其余缺口不降为可选项。
+
+### 复现尝试记录
+
+复现结果可带 `attempts: [{scenario, dimension, outcome}]`，`outcome` 仅为
+`reproduced|not_reproduced|unsupported`；非空时末条必须分别与总体
+`reproduced|not_reproduced|blocked` 一致，不能代替命令退出码与失败签名证据。
+旧结果缺省此字段仍可读取并沿原流程恢复，旧档案保持原字节，不伪造补齐历史。
+新结果由原 producer 记录至少一条；观测档案发布（含恢复后继续观测）对显式空数组
+报 `fix_reproduction_attempts_required`，缺省仅保留旧记录兼容。
+当前 JS owner 仍只执行配置中已授权的固定复现命令，并据真实结果记录一次尝试；
+本次未新增多场景调度、配置入口或执行权限，不把这一条记录当作已完成探索的证据。
+Skill 第 1 步的单维度探索与 3 个场景/15 分钟上限仍适用；需要改变命令/环境而当前
+owner 配置不能表达时，报告接线缺口，保持原运行身份与权限边界，不在 owner 外补跑或改 journal。
