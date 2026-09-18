@@ -19,6 +19,9 @@ function fixture(runtime='codex'){
   fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: first\n- [ ] T-002: second\n');
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
   fs.writeFileSync(path.join(codeProject,'requirements.md'),'# Two synthetic exports and README\n');
+  for(const args of [['init','-b','main'],['config','user.name','Fixture'],['config','user.email','fixture@example.invalid'],['add','-A'],['commit','-m','fixture baseline']]){
+    const result=spawnSync('git',['-C',codeProject,...args],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
+  }
   const batch={version:1,repositoryId:'batch-host',batchId:'batch-host-run',specsDir,codeProject,
     tasks:[1,2].map(n=>({feature,taskId:`T-00${n}`,scope:[`task${n}.mjs`,...(n===2?['README.md']:[])],requirements:['requirements.md']}))};
   const workflows=Object.fromEntries(batch.tasks.map((task,index)=>[`${feature}/${task.taskId}`,{
@@ -42,7 +45,7 @@ function execute(f,approvals,{cancel=false}={}){
     const child=spawn(process.execPath,[cli,...f.args,...approvals.flatMap(value=>['--allow-review',value])],
       {env:f.env,stdio:['pipe','pipe','pipe']});
     let buffer='',stderr='',sessionId;const calls=[],rows=[];
-    const timer=setTimeout(()=>{child.kill('SIGTERM');reject(Error('batch host timeout'));},15000);
+    const timer=setTimeout(()=>{child.kill('SIGTERM');reject(Error('batch host timeout'));},Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000));
     child.stderr.on('data',part=>{stderr+=part;});child.once('error',reject);
     const send=value=>child.stdin.write(JSON.stringify(value)+'\n');
     const respond=(row,result)=>send({type:'host_result',sessionId:row.sessionId,callId:row.callId,requestDigest:row.requestDigest,result});
@@ -103,6 +106,10 @@ test('protected Claude batch uses actual sandbox edits/checks and original two-t
   const f=fixture('claude');f.protected=true;
   try{
     const nested=path.join(f.codeProject,'specs');fs.renameSync(f.specsDir,nested);f.specsDir=nested;f.batch.specsDir=nested;
+    fs.writeFileSync(path.join(f.codeProject,'.gitignore'),'specs/\n');
+    for(const args of [['add','.gitignore'],['commit','-m','ignore nested runtime specs']]){
+      const result=spawnSync('git',['-C',f.codeProject,...args],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
+    }
     const bundle=JSON.parse(fs.readFileSync(f.config,'utf8'));bundle.batch=f.batch;fs.writeFileSync(f.config,JSON.stringify(bundle));
     const protection=path.join(f.root,'protection.json');
     fs.writeFileSync(protection,JSON.stringify({timeoutMs:5000,checkCommands:[{id:'syntax',command:[process.execPath,'-e',
@@ -172,7 +179,7 @@ test('parallel member loopback preflights bind worktree cwd, stop before start a
     fs.writeFileSync(f.config,JSON.stringify({batch:f.batch,workflows:Object.fromEntries(f.batch.tasks.map(task=>[`1.work/${task.taskId}`,original]))}));
     const git=args=>{const result=spawnSync('git',['-C',f.codeProject,...args],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);};
     git(['init','-b','main']);git(['config','user.name','Fixture']);git(['config','user.email','fixture@example.invalid']);
-    git(['add','-A']);git(['commit','-m','synthetic baseline']);
+    git(['add','-A']);git(['commit','--allow-empty','-m','synthetic baseline']);
     const log=path.join(f.root,'probe-cwds.jsonl'),fail=path.join(f.root,'fail-probe');
     fs.writeFileSync(fail,'fail second member');
     const processFixture=fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url));

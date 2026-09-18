@@ -32,6 +32,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     plans.set(key(task),definition);
   }
   const groups=validateGroups(config,plans),membership=new Map(groups.flatMap(group=>group.map(key=>[key,group])));
+  const originalMembership=new Map(membership),originalPlans=new Map(plans);
   const first=plans.keys().next().value,planDigest=digest(config),log=path.join(config.specsDir,'运行日志.jsonl');
   let active=null,busy=false,cancelled=false,liveKey=first;
   const executions=new Map(),members=new Map();
@@ -51,7 +52,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const rows=[];
     if(fs.existsSync(log))scanRows(log,row=>{
       if(row?.workflow==='cm-ai'&&row.event==='decision'&&row.run_id===config.batchId
-        &&['batch_start','batch_handoff','batch_cancel','batch_member_ready','batch_merge_conflict','batch_merge_started','batch_merge_blocked'].includes(row.phase))rows.push(row);
+        &&['batch_start','batch_task_committed','batch_handoff','batch_cancel','batch_member_ready','batch_member_blocked','batch_merge_conflict','batch_merge_started','batch_merge_blocked'].includes(row.phase))rows.push(row);
     });
     if(groups.length)return parallelProgress(rows);
     let current=first,stopped=false;const seen=new Set();
@@ -61,6 +62,9 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       need(!stopped&&row.from_key===current,'batch_history_invalid');
       if(row.phase==='batch_start'){need(index===0,'batch_history_invalid');continue;}
       need(index>0&&rows[0].phase==='batch_start','batch_history_invalid');
+      if(row.phase==='batch_task_committed'){
+        need(typeof row.task_commit==='string'&&/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(row.task_commit),'batch_history_invalid');continue;
+      }
       if(row.phase==='batch_cancel'){stopped=true;continue;}
       need(plans.has(row.to_key)&&!seen.has(row.to_key)&&row.to_key!==current,'batch_history_invalid');
       hex(row.checkpoint);hex(row.package_digest);seen.add(current);current=row.to_key;
@@ -71,7 +75,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const result=spawnSync('python3',[writer,'--workflow','cm-ai','--event','decision','--phase',phase,
       '--runtime',runtime,'--project-root',config.codeProject,'--specs-dir',config.specsDir,'--run-id',config.batchId,
       '--detail',phase==='batch_handoff'?'Task QA and context completed; advance to next task':
-        phase==='batch_start'?'Approved task batch started':'Batch cancelled',
+        phase==='batch_start'?'Approved task batch started':phase==='batch_member_blocked'?'Preserve member WIP and reschedule serial generation 2':phase,
       '--data-json',JSON.stringify({repository_id:config.repositoryId,plan_digest:planDigest,...data})],
     {timeout:10000,maxBuffer:1024*1024,encoding:'utf8',env:{...process.env,CM_WORKFLOW_LOG_HOME:logHome}});
     need(!result.error&&result.status===0&&result.signal===null,'batch_log_failed');
@@ -83,27 +87,45 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       membership.has(taskKey)?{parallelSelection:{version:1,group:membership.get(taskKey).map(key=>plans.get(key).identity.taskId)}}:{});
   }
   function parallelProgress(rows){
-    const done=new Set(),ready=new Map(),merging=new Map();let stopped=false,code=null;
+    const done=new Set(),ready=new Map(),merging=new Map(),blocked=new Map();let stopped=false,code=null;
     for(const [index,row] of rows.entries()){
       need(row.schema_version===1&&row.repository_id===config.repositoryId&&row.plan_digest===planDigest,'batch_plan_mismatch');
       need(!stopped&&plans.has(row.from_key),'batch_history_invalid');
       if(row.phase==='batch_start'){need(index===0,'batch_history_invalid');continue;}
       need(index>0&&rows[0].phase==='batch_start','batch_history_invalid');
+      if(row.phase==='batch_task_committed'){
+        need(typeof row.task_commit==='string'&&/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(row.task_commit),'batch_history_invalid');continue;
+      }
       if(row.phase==='batch_cancel'){stopped=true;code='cancelled';continue;}
       if(['batch_merge_conflict','batch_merge_blocked'].includes(row.phase)){stopped=true;code=row.code;continue;}
+      if(row.phase==='batch_member_blocked'){
+        need(originalMembership.has(row.from_key)&&!done.has(row.from_key)&&!ready.has(row.from_key)
+          &&!blocked.has(row.from_key)&&row.generation===2,'batch_history_invalid');
+        const expected=location(row.from_key);
+        need(row.worktree===expected.worktree&&row.branch===expected.branch
+          &&typeof row.code==='string'&&row.code.length>0&&typeof row.reason==='string','batch_history_invalid');
+        blocked.set(row.from_key,row);continue;
+      }
       if(row.phase==='batch_member_ready'){
-        need(membership.has(row.from_key)&&!ready.has(row.from_key),'batch_history_invalid');
+        need(originalMembership.has(row.from_key)&&!blocked.has(row.from_key)&&!ready.has(row.from_key),'batch_history_invalid');
         hex(row.checkpoint);hex(row.package_digest);ready.set(row.from_key,row);continue;
       }
       if(row.phase==='batch_merge_started'){
         need(ready.has(row.from_key)&&!merging.has(row.from_key),'batch_history_invalid');merging.set(row.from_key,row);continue;
       }
       need(!done.has(row.from_key),'batch_history_invalid');hex(row.checkpoint);hex(row.package_digest);
-      if(membership.has(row.from_key))need(ready.has(row.from_key)&&merging.has(row.from_key),'batch_history_invalid');
+      if(originalMembership.has(row.from_key)&&!blocked.has(row.from_key))need(ready.has(row.from_key)&&merging.has(row.from_key),'batch_history_invalid');
       done.add(row.from_key);
       need(row.to_key===[...plans.keys()].find(key=>!done.has(key)),'batch_history_invalid');
     }
-    return {rows,current:[...plans.keys()].find(key=>!done.has(key)),stopped,code,done,ready,merging};
+    // The durable decision is authoritative for both the live driver and resume.
+    for(const key of blocked.keys())if(membership.has(key)){
+      const definition=originalPlans.get(key);
+      plans.set(key,validateRunDefinition({...definition,identity:{...definition.identity,
+        runId:`task-${digest({batchId:config.batchId,task:key,generation:2}).slice(0,48)}`}}));
+      membership.delete(key);executions.delete(key);
+    }
+    return {rows,current:[...plans.keys()].find(key=>!done.has(key)),stopped,code,done,ready,merging,blocked};
   }
   const location=key=>{const definition=plans.get(key);return {
     worktree:path.resolve(config.codeProject,'..','.cm-worktrees',config.batchId.slice(0,8),definition.identity.taskId),
@@ -117,7 +139,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     git(config.codeProject,['merge-base','--is-ancestor',row.merge_commit,'HEAD'],'batch_merge_history_changed');
   }
   function prepareGroup(group){
-    const state=progress(),remaining=group.filter(key=>!state.done.has(key));
+    const state=progress(),remaining=group.filter(key=>membership.has(key)&&!state.done.has(key));
     for(const key of remaining){
       const {worktree,branch}=location(key);
       if(!fs.existsSync(worktree)){
@@ -134,6 +156,16 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const assignments=remaining.map(key=>`${plans.get(key).identity.taskId}=${location(key).worktree}`);
     if(assignments.length===1)assignments.push(`T-batch-main=${config.codeProject}`);
     if(assignments.length)checkParallelWrite({repo:config.codeProject,assignment:assignments});
+  }
+  function preserveBlockedMember(row){
+    const {worktree,branch}=location(row.from_key);
+    need(row.worktree===worktree&&row.branch===branch,'batch_worktree_mismatch');
+    git(config.codeProject,['rev-parse','--verify',`refs/heads/${branch}`],'batch_worktree_missing');
+    if(!fs.existsSync(worktree))return;
+    need(git(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
+    commitChanges(worktree,`WIP ${plans.get(row.from_key).identity.taskId}: blocked (${row.code})`);
+    git(config.codeProject,['worktree','remove',worktree]);
+    // Keep the branch: its WIP is evidence, not approved code to merge.
   }
   async function driveMember(key,request){
     const run=await open(key);if(run.blocked)return {outcome:'blocked',code:run.blocked.reason};
@@ -233,7 +265,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     if(request.operation==='cancel'){record('batch_cancel',{from_key:liveKey});return {outcome:'cancelled',code:'cancelled',batchId:config.batchId};}
     prepareGroup(group);
     // Resolve every member's actual worktree preflight before any start dispatch.
-    for(const key of group.filter(key=>!initial.done.has(key))){
+    for(const key of group.filter(key=>membership.has(key)&&!initial.done.has(key))){
       try{await executionForKey(key);}catch(cause){
         if(cause.code!=='review_preflight_failed')throw cause;
         return {outcome:'blocked',state:'blocked',code:'review_preflight_failed',batchId:config.batchId,
@@ -241,12 +273,31 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       }
     }
     need(!cancelled,'cancelled');
-    const results=await Promise.allSettled(group.filter(key=>!initial.ready.has(key)&&!initial.done.has(key)).map(key=>driveMember(key,request)));
-    for(const result of results){if(result.status==='rejected')throw result.reason;if(result.value)return {...result.value,batchId:config.batchId};}
+    const pending=group.filter(key=>membership.has(key)&&!initial.ready.has(key)&&!initial.done.has(key));
+    const results=await Promise.allSettled(pending.map(key=>driveMember(key,request)));
+    if(cancelled)return {outcome:'cancelled',code:'cancelled',batchId:config.batchId};
     for(const row of progress().ready.values()){
       if(!group.includes(row.from_key)||progress().done.has(row.from_key))continue;
       const result=await mergeMember(row);if(result)return result;
     }
+    let waiting=null,rejected=null;
+    for(const [index,result] of results.entries()){
+      if(result.status==='rejected'){rejected??=result.reason;continue;}
+      const status=result.value;if(!status)continue;
+      // Retryable validation, review transport and completed-task QA stay on
+      // their existing recovery path; a new run must not bypass those gates.
+      const terminal=['blocked','failed','unknown'].includes(status.state)
+        &&status.code!=='developer_result_invalid'
+        ||status.state==='pending_review'&&status.code!==null&&status.code!=='review_transport_timeout';
+      if(!terminal){waiting??=status;continue;}
+      const key=pending[index];
+      record('batch_member_blocked',{from_key:key,code:status.code??status.state,
+        reason:status.reason??status.code??status.state,...location(key),generation:2});
+    }
+    // Log before Git mutation so a crash during WIP commit/removal is resumable.
+    for(const row of progress().blocked.values())preserveBlockedMember(row);
+    if(rejected)throw rejected;
+    if(waiting)return {...waiting,batchId:config.batchId};
     return null;
   }
   return Object.freeze({async handle(raw){
@@ -270,6 +321,12 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       releaseLock=acquireBatchLock(config);
       const initial=progress();liveKey=initial.current;
       if(initial.stopped)return {outcome:'blocked',code:initial.code??'cancelled',batchId:config.batchId};
+      if(request.operation==='advance'&&!initial.rows.length){
+        const dirty=git(config.codeProject,['status','--porcelain']);
+        if(dirty)return {outcome:'blocked',code:'batch_main_dirty',batchId:config.batchId,
+          reason:`batch_main_dirty\n${dirty}`,files:dirty.split('\n')};
+      }
+      if(request.operation==='advance')for(const row of initial.blocked?.values()??[])preserveBlockedMember(row);
       // Validate durable checkpoints, not old live snapshots: later approved
       // tasks may legitimately change the same code paths.
       for(const row of initial.rows.filter(row=>row.phase==='batch_handoff')){
@@ -288,7 +345,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         }
         finally{previous.close();}
       }
-      for(let count=0;count<plans.size;count++){
+      for(let count=0;count<plans.size+groups.length;count++){
         if(membership.has(liveKey)){
           const result=await parallelGroup(membership.get(liveKey),request);
           if(result)return result;liveKey=progress().current;continue;
@@ -307,10 +364,16 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         if(cancelled)return {outcome:'cancelled',code:'cancelled',batchId:config.batchId};
         if(result.state==='run_done'||result.pendingAction==='start_next_task')
           need(inspectRunClosure(log,plans.get(liveKey).identity.runId).closed,'batch_resources_open');
-        if(result.outcome!=='refreshed'||result.pendingAction!=='start_next_task')return {...result,batchId:config.batchId};
-        const next=`${result.nextTask.feature}/${result.nextTask.id}`;
-        need(plans.has(next),'batch_task_scope_required');
-        record('batch_handoff',{from_key:liveKey,to_key:next,checkpoint:active.checkpoint(),package_digest:result.packageDigest});
+        const finished=result.state==='run_done'&&['run_done','run_done_degraded'].includes(result.code);
+        const handoff=result.outcome==='refreshed'&&result.pendingAction==='start_next_task';
+        if(request.operation!=='advance'||(!finished&&!handoff))return {...result,batchId:config.batchId};
+        const next=handoff?`${result.nextTask.feature}/${result.nextTask.id}`:null;
+        if(handoff)need(plans.has(next),'batch_task_scope_required');
+        let task_commit=commitChanges(config.codeProject,`${plans.get(liveKey).identity.taskId}: ${taskDescription(config,plans.get(liveKey))}`);
+        if(task_commit)record('batch_task_committed',{from_key:liveKey,task_commit});
+        else task_commit=progress().rows.filter(row=>row.phase==='batch_task_committed'&&row.from_key===liveKey).at(-1)?.task_commit??null;
+        if(finished)return {...result,batchId:config.batchId,task_commit};
+        record('batch_handoff',{from_key:liveKey,to_key:next,checkpoint:active.checkpoint(),package_digest:result.packageDigest,task_commit});
         active.close();active=null;liveKey=next;
       }
       need(false,'batch_limit');
@@ -322,6 +385,11 @@ function gitOptions(){return {encoding:'utf8',timeout:60000,maxBuffer:4*1024*102
 function git(cwd,args,code='batch_git_failed'){
   const result=spawnSync('git',['-C',cwd,...args],gitOptions());
   need(!result.error&&result.status===0&&result.signal===null,code);return result.stdout.trim();
+}
+function commitChanges(cwd,message){
+  if(!git(cwd,['status','--porcelain']))return null;
+  git(cwd,['add','-A']);git(cwd,['commit','-m',message]);
+  return git(cwd,['rev-parse','HEAD']);
 }
 function taskDescription(config,definition){
   const parsed=parseFeatureTaskText(fs.readFileSync(path.join(config.specsDir,definition.feature,'tasks.md'),'utf8'),{allowDependencyPunctuation:true});

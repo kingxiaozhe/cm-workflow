@@ -19,8 +19,18 @@ test(`real multi-task runner keeps QA and recovery authoritative: ${mode}`,()=>b
 for(const mode of ['parallel','parallel-retry','parallel-conflict','parallel-resume'])
 test(`parallel batch runs real isolated members: ${mode}`,()=>batchFixture(mode));
 
-async function batchFixture(mode){
+test('ready member merges before blocked member preserves WIP and falls back only once',()=>
+  batchFixture('parallel-recovery',{terminalAgain:true}));
+test('serial fallback resumes from log and automatically commits its completed task',async()=>{
+  for(const options of [{crashAt:'cleanup'},{crashAt:'serial'},
+    {blockedIds:['T-001']},{blockedIds:['T-001','T-002']}])await batchFixture('parallel-recovery',options);
+});
+test('final serial task commits durably and commit information survives resume',()=>batchFixture('final-commit'));
+test('dirty batch entry lists files and creates no member worktrees',()=>batchFixture('parallel-dirty'));
+
+async function batchFixture(mode,options={}){
   const parallel=mode.startsWith('parallel');
+  const recovery=mode==='parallel-recovery',blockedIds=options.blockedIds??['T-002'];
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-batch-')));
   try{
     const specsDir=path.join(root,'specs'),codeProject=path.join(root,'code'),feature='1.work';
@@ -30,7 +40,7 @@ async function batchFixture(mode){
     fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
     fs.writeFileSync(path.join(codeProject,'requirements.md'),'# Fixture\n');
     const git=(cwd,args)=>{const result=spawnSync('git',['-C',cwd,...args],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);return result.stdout.trim();};
-    if(parallel){git(codeProject,['init','-b','main']);git(codeProject,['config','user.name','Fixture']);git(codeProject,['config','user.email','fixture@example.invalid']);
+    {git(codeProject,['init','-b','main']);git(codeProject,['config','user.name','Fixture']);git(codeProject,['config','user.email','fixture@example.invalid']);
       fs.writeFileSync(path.join(codeProject,'file0.js'),'base\n');git(codeProject,['add','-A']);git(codeProject,['commit','-m','fixture baseline']);}
     const config={version:1,repositoryId:'batch-fixture',batchId:'batch-fixture',specsDir,codeProject,
       ...(parallel?{parallel:[[`${feature}/T-001`,`${feature}/T-002`]]}:{}),
@@ -45,7 +55,25 @@ async function batchFixture(mode){
           const material=JSON.parse(prompt.split('<cm-developer-data-json>\n')[1]).specification;
           assert.equal(material.task.id,definition.identity.taskId);
           assert.deepEqual(material.sources,buildManifest(specsDir));
+          if(recovery&&!parallelMember&&blockedIds.includes(definition.identity.taskId)){
+            const key=`${feature}/${definition.identity.taskId}`;
+            assert.equal(definition.codeProject,codeProject);
+            assert.equal(definition.identity.runId,`task-${digest({batchId:config.batchId,task:key,generation:2}).slice(0,48)}`);
+            const rows=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+            const blocked=rows.find(row=>row.phase==='batch_member_blocked'&&row.from_key===key);
+            assert(blocked);assert.equal(blocked.generation,2);assert.equal(blocked.code,'failed');assert.equal(blocked.reason,'failed');
+            assert(!fs.existsSync(blocked.worktree));
+            assert.match(git(codeProject,['log','-1','--format=%s',blocked.branch]),/^WIP .*: blocked \(failed\)$/);
+            assert.equal(git(codeProject,['show',`${blocked.branch}:${definition.scope[0]}`]),'implemented');
+            for(const id of ['T-001','T-002'].filter(id=>!blockedIds.includes(id))){
+              const merged=rows.find(row=>row.phase==='batch_handoff'&&row.from_key===`${feature}/${id}`);
+              assert(merged);assert(rows.indexOf(merged)<rows.indexOf(blocked));
+              assert.equal(fs.readFileSync(path.join(codeProject,config.tasks.find(task=>task.taskId===id).scope[0]),'utf8'),'implemented\n');
+            }
+          }
           calls.push(definition.identity.taskId);fs.writeFileSync(path.join(definition.codeProject,definition.scope[0]),'implemented\n');
+          if(recovery&&blockedIds.includes(definition.identity.taskId)&&(parallelMember||options.terminalAgain))
+            return {status:'succeeded',value:{outcome:'blocked',reason:'Expected stub throws; waiting for peer'}};
           if(parallel&&definition.identity.taskId==='T-002')await new Promise(resolve=>setTimeout(resolve,50));
           if(mode==='parallel-conflict'&&definition.identity.taskId==='T-002'){
             fs.writeFileSync(path.join(codeProject,'file0.js'),'main conflict\n');git(codeProject,['add','file0.js']);git(codeProject,['commit','-m','concurrent main change']);conflictHead=git(codeProject,['rev-parse','HEAD']);
@@ -111,8 +139,24 @@ async function batchFixture(mode){
         packageDigest:binding.packageDigest,contextDigest:binding.contextDigest,status:'completed',reason:'Synthetic docs',at:'2026-09-08T01:00:00Z'})},
     });
     const open=()=>createCmAiBatch({configuration:config,executionFor,logHome:path.join(root,'logs')});
+    if(mode==='parallel-dirty'){
+      fs.writeFileSync(path.join(codeProject,'dirty.txt'),'user-owned\n');
+      const result=await open().handle({operation:'advance',requestId:'dirty'});
+      assert.equal(result.code,'batch_main_dirty');assert.match(result.reason,/dirty\.txt/);assert.deepEqual(result.files,['?? dirty.txt']);
+      assert.deepEqual(calls,[]);assert(!fs.existsSync(path.join(root,'.cm-worktrees')));
+      assert(!fs.existsSync(path.join(specsDir,'运行日志.jsonl')));
+      assert.equal(git(codeProject,['status','--porcelain']),'?? dirty.txt');return;
+    }
     const originalRead=fs.readFileSync,originalExists=fs.existsSync;
-    if(mode==='parallel-resume')fs.existsSync=function(file,...args){
+    if(recovery&&options.crashAt)fs.existsSync=function(file,...args){
+      if(!interrupted&&(options.crashAt==='serial'?String(file).endsWith('state.json'):String(file).endsWith('T-002'))){
+        const logfile=path.join(specsDir,'运行日志.jsonl');
+        if(originalExists(logfile)&&originalRead(logfile,'utf8').split('\n').filter(Boolean).map(JSON.parse).some(row=>row.phase==='batch_member_blocked')){
+          interrupted=true;throw Object.assign(new Error('simulated interrupt'),{code:'simulated_interrupt'});
+        }
+      }return originalExists.call(fs,file,...args);
+    };
+    if(mode==='parallel-resume'||mode==='final-commit')fs.existsSync=function(file,...args){
       if(!interrupted&&String(file).endsWith('state.json')){
         const logfile=path.join(specsDir,'运行日志.jsonl');
         if(originalExists(logfile)&&originalRead(logfile,'utf8').split('\n').filter(Boolean).map(JSON.parse).some(row=>row.phase==='batch_handoff')){
@@ -128,7 +172,39 @@ async function batchFixture(mode){
       assert.deepEqual(calls,['T-001']);return;
     }
     let result;
-    try{result=await pending;}catch(error){if(mode!=='parallel-resume'||error.code!=='simulated_interrupt')throw error;}finally{fs.existsSync=originalExists;}
+    try{result=await pending;}catch(error){if(!(mode==='parallel-resume'||mode==='final-commit'||recovery&&options.crashAt)||error.code!=='simulated_interrupt')throw error;}finally{fs.existsSync=originalExists;}
+    if(mode==='final-commit'){
+      assert(interrupted);
+      const logfile=path.join(specsDir,'运行日志.jsonl');
+      const rows=fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
+      const commit=rows.find(row=>row.phase==='batch_task_committed');assert(commit);
+      // Restore the crash prefix before handoff; the next task has not started.
+      fs.writeFileSync(logfile,rows.filter(row=>row.phase!=='batch_handoff').map(row=>JSON.stringify(row)+'\n').join(''));
+      result=await open().handle({operation:'advance',requestId:'resume-commit-prefix'});
+      const recovered=fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(recovered.find(row=>row.phase==='batch_handoff').task_commit,commit.task_commit);
+    }
+    if(recovery&&options.crashAt){assert(interrupted);result=await open().handle({operation:'advance',requestId:'resume-recovery'});}
+    if(recovery){
+      assert.equal(result.code,options.terminalAgain?'failed':'run_done',JSON.stringify(result));
+      const before=[...calls];
+      const resumed=await open().handle({operation:'advance',requestId:'resume-recovery-done'});
+      assert.equal(resumed.code,result.code);assert.deepEqual(calls,before);
+      const rows=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(rows.filter(row=>row.phase==='batch_member_blocked').length,blockedIds.length);
+      for(const id of blockedIds){
+        assert.equal(calls.filter(task=>task===id).length,2);
+        const key=`${feature}/${id}`,row=rows.find(row=>row.phase==='batch_handoff'&&row.from_key===key);
+        if(options.terminalAgain){assert.equal(row,undefined);continue;}
+        assert.match(row.task_commit,/^[a-f0-9]{40}$/);
+        assert.equal(git(codeProject,['show',`${row.task_commit}:${config.tasks.find(task=>task.taskId===id).scope[0]}`]),'implemented');
+        assert.equal(git(codeProject,['show','-s','--format=%s',row.task_commit]),`${id}: ${id==='T-001'?'first':'second'}`);
+        const runId=`task-${digest({batchId:config.batchId,task:key,generation:2}).slice(0,48)}`;
+        const state=JSON.parse(fs.readFileSync(path.join(specsDir,'.reviews','.execution',runId,'state.json'),'utf8'));
+        assert.equal(state.revision,row.checkpoint);
+      }
+      return;
+    }
     if(mode==='parallel-resume'){assert(interrupted);const before=[...calls];result=await open().handle({operation:'advance',requestId:'resume-parallel'});assert.deepEqual(calls.slice(0,before.length),before);}
     if(mode==='parallel-conflict'){
       assert.equal(result.code,'merge_conflict',JSON.stringify(result));assert.equal(git(codeProject,['rev-parse','HEAD']),conflictHead);
@@ -158,9 +234,31 @@ async function batchFixture(mode){
       const handoff=JSON.parse(fs.readFileSync(path.join(specsDir,'.reviews','work-T-002-a1-handoff.json'),'utf8'));
       assert(handoff.evidence.some(item=>typeof item==='string'&&item.includes('"status":"applied"')));
     }
+    if(mode==='final-commit'){
+      const rows=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+      const commits=rows.filter(row=>row.phase==='batch_task_committed');
+      assert.deepEqual(commits.map(row=>row.from_key),[`${feature}/T-001`,`${feature}/T-002`]);
+      assert(rows.indexOf(commits[0])<rows.findIndex(row=>row.phase==='batch_handoff'));
+      assert.equal(result.task_commit,commits[1].task_commit);
+      assert.equal(result.task_commit,git(codeProject,['rev-parse','HEAD']));
+      assert.equal(git(codeProject,['show','-s','--format=%s',result.task_commit]),'T-002: second');
+      assert.equal(git(codeProject,['show',`${result.task_commit}:file1.js`]),'implemented');
+      assert.equal(git(codeProject,['status','--porcelain']),'');
+      const resumedFinal=await open().handle({operation:'advance',requestId:'resume-final-commit'});
+      assert.equal(resumedFinal.code,result.code);assert.equal(resumedFinal.task_commit,result.task_commit);
+      assert.equal(fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n')
+        .map(JSON.parse).filter(row=>row.phase==='batch_task_committed').length,2);
+
+    }
     const before=[...calls],qaBefore=[...qaCalls];
     const resumed=await open().handle({operation:'advance',requestId:'resume'});
     assert.equal(resumed.code,result.code);assert.deepEqual(calls,before);assert.deepEqual(qaCalls,qaBefore);
+    if(mode==='final-commit'){
+      const rows=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+      const commit=rows.find(row=>row.phase==='batch_task_committed');
+      assert.equal(rows.find(row=>row.phase==='batch_handoff').task_commit,commit.task_commit);
+      assert.equal(git(codeProject,['status','--porcelain']),'');
+    }
     if(mode==='executor'){
       assert.deepEqual(qaCalls,['T-002']);
       const reports=fs.readdirSync(path.join(specsDir,'.reviews')).filter(name=>name.endsWith('-execution.md'));

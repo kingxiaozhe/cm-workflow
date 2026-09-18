@@ -4,6 +4,31 @@ import {requestFor,terminalFor,digest} from '../runtime/js/cm-ai/effect-contract
 import * as codex from '../runtime/js/cm-ai/codex-developer-adapter.mjs';
 import * as claude from '../runtime/js/cm-ai/claude-developer-adapter.mjs';
 import {validateDeveloperValue} from '../runtime/js/cm-ai/developer-adapter.mjs';
+import {invalidDeveloperCall} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+
+test('blocked reason is bounded for both providers while durable failure stays non-retryable',async()=>{
+  for(const [provider,create,build] of [
+    ['codex',codex.createCodexDeveloperRun,codex.buildCodexDeveloperPrompt],
+    ['claude',claude.createClaudeDeveloperRun,claude.buildClaudeDeveloperPrompt],
+  ])for(const learning of [false,true]){
+    const identity={repositoryId:'test',runId:'run',taskId:'T-001',attempt:1},feature='1.fixture',learningFiles=[];
+    const r=requestFor({invocationId:'dev-1',identity,role:'developer',provider,requestedModel:'fixture',contextId:'developer',
+      payload:{scope:['src/a.mjs'],requirements:[],priorReview:null,...(learning?{learningInput:{version:1,workflow:'cm-ai',
+        phase:'task_learning_input',feature,identity,learningFiles,learningDigest:digest({version:1,feature,identity,files:learningFiles})}}:{})}});
+    const value={outcome:'blocked',reason:'等待契约\nExpected stub throws'};
+    assert.equal(validateDeveloperValue(value,r).reason,value.reason);
+    assert(build(r).includes('A blocked result may include reason'));
+    for(const reason of ['x'.repeat(1000),'界'.repeat(333)+'x',''])validateDeveloperValue({...value,reason},r);
+    for(const reason of ['x'.repeat(1001),'界'.repeat(334),'NUL\0',null,12])assert.throws(()=>validateDeveloperValue({...value,reason},r));
+    assert.throws(()=>validateDeveloperValue({...value,extra:true},r));
+    assert.throws(()=>validateDeveloperValue({...value,outcome:'implemented'},r));
+    const run=create({requestedModel:'fixture',worker:async()=>({status:'succeeded',value})});
+    const result=await run(r,{signal:new AbortController().signal});
+    assert.equal(result.status,'failed');assert.equal(result.result,null);
+    assert.equal(invalidDeveloperCall({terminal:result.status}),false);
+    assert.throws(()=>terminalFor({...result,result:{code:'developer_blocked',reason:value.reason}},r));
+  }
+});
 for(const [provider,createCodexDeveloperRun,buildCodexDeveloperPrompt] of [
   ['codex',codex.createCodexDeveloperRun,codex.buildCodexDeveloperPrompt],
   ['claude',claude.createClaudeDeveloperRun,claude.buildClaudeDeveloperPrompt],

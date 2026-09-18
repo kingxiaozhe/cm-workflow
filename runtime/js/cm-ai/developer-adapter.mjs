@@ -19,7 +19,7 @@ Application status is applied (note explains the lesson and action) or no_releva
 Retrospective status is no_new_lesson (candidates empty and reason null), lesson_candidate (1-3 candidates and reason null),
 or writeback_pending (1-3 candidates and a reason). Each candidate has classification (structured or memory_only),
 trigger, action and evidence (relative file paths). The host binds identities and computes digests; do not invent hashes.
-Without learningInput, return only {"outcome":"implemented"} or {"outcome":"blocked"}.
+Without learningInput, return only {"outcome":"implemented"} or {"outcome":"blocked"}. A blocked result may include reason explaining why implementation is impossible (string, at most 1000 UTF-8 bytes, no NUL); application and retrospective are optional when blocked.
 Use outcome blocked when implementation is not possible. Do not claim implementation if no implementation was made.`;
 
 export function validateDeveloperScope(scope){
@@ -62,9 +62,14 @@ export function buildDeveloperPrompt(raw,provider) {
 // allowed in no_new_lesson.reason (the September 2026 dogfood failure).
 export function validateDeveloperValue(value,request) {
   const learning=Object.hasOwn(request.payload,'learningInput');
-  shape(value,['outcome',...(learning?['application','retrospective']:[])]);
+  const blocked=value?.outcome==='blocked';
+  shape(value,['outcome',...(learning?(blocked?['application','retrospective'].filter(key=>Object.hasOwn(value,key)):['application','retrospective']):[]),
+    ...(blocked&&Object.hasOwn(value,'reason')?['reason']:[])]);
   need(['implemented','blocked'].includes(value.outcome),'invalid_result');
-  if(value.outcome==='blocked')return value;
+  if(blocked){
+    if(Object.hasOwn(value,'reason'))need(typeof value.reason==='string'&&Buffer.byteLength(value.reason,'utf8')<=1000&&!value.reason.includes('\0'),'invalid_result');
+    return value;
+  }
   if(!learning)return value;
   const input=request.payload.learningInput;
   validTaskLearningInput(input,request.identity,input.feature);
@@ -106,6 +111,8 @@ export function createDeveloperRun({worker,requestedModel,provider,protectedCurr
       try{
         if(Object.hasOwn(response,'providerThread')){id(response.providerThread);providerThreadId=response.providerThread;}
         const result=validateDeveloperValue(response.value,r);
+        // Durable failureResult accepts only invalid_result/protected_edit_stale.
+        // Keep blocked non-retryable and checkpoint-compatible until that contract changes.
         return result.outcome==='blocked'?envelope('failed'):envelope('succeeded',result);
       }catch(error){return failed('invalid_result',error.code??'invalid_input');}
     }
