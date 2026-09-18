@@ -176,3 +176,12 @@ test('three punctuated historical features admit the new feature without changin
   assert.deepEqual(result.nextTask,{feature:'2.profile',id:'T-002',description:'second'});
   assert.deepEqual(result.features.map(item=>item.name),names.slice(0,2));
 }));
+
+test('parallel eligibility preserves nextTask and returns only dependency-ready members',()=>fixture(({specs,code})=>{
+  fs.writeFileSync(path.join(specs,'1.login','tasks.md'),'- [ ] T-001: first\n- [ ] T-002: second\n- [ ] T-003: final\n\n- T-003 依赖 T-001, T-002\n');
+  fs.writeFileSync(path.join(specs,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.login']}));
+  const result=spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code],{encoding:'utf8'});
+  assert.equal(result.status,0,result.stderr);const admission=JSON.parse(result.stdout);
+  assert.equal(admission.nextTask.id,'T-001');
+  assert.deepEqual(admission.eligibleTasks,[{feature:'1.login',id:'T-001'},{feature:'1.login',id:'T-002'}]);
+}));

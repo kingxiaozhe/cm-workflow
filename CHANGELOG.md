@@ -5,6 +5,7 @@
 
 ## 未发布
 
+- 批次入口支持 `bundle.batch.parallel`：通过 `eligibleTasks` / 受信 `parallelSelection` 绑定并行准入与恢复，`parallelMember` 将成员 QA 延后到主分支串行末任务；成员工作树逐个执行审查预检并缓存，恢复时仅复用匹配凭证，预检失败则整组在 start 前阻断。
 - 执行存储锁改为运行级，不同 runId 可独立持锁；创建新运行时先探测旧布局锁，成功释放后继续，失败返回 `store_busy`，旧文件不迁移、不改写。
   恢复已有运行时，缺少本运行 `writer.sqlite` 返回 `store_layout_legacy`，须用旧版本收尾或退休该 runId；已有运行级锁则正常恢复。
 

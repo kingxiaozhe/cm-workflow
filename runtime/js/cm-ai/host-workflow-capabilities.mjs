@@ -1,7 +1,7 @@
 // Fixed current-conversation capabilities over the existing N6/N8 adapters.
 import fs from 'node:fs';
 import path from 'node:path';
-import {json,need,shape} from './effect-contract.mjs';
+import {digest,json,need,shape,validIdentity,hex} from './effect-contract.mjs';
 import {createHostQaDecisionProvider} from './host-qa-policy.mjs';
 import {createHostQaExecutor} from './host-qa-executor.mjs';
 
@@ -24,7 +24,7 @@ export function validateHostWorkflowConfiguration(raw){
   return config;
 }
 
-export function createHostWorkflowCapabilities({definition,configuration,bridge,allowQa,runtime='codex',protectedExecution=false,bootstrap=null}){
+export function createHostWorkflowCapabilities({definition,configuration,bridge,allowQa,runtime='codex',protectedExecution=false,bootstrap=null,parallelMember=false}){
   need(['codex','claude'].includes(runtime),'invalid_runtime');
   const {specsDir,codeProject,feature,requirements}=definition;
   const logHome=path.join(specsDir,'.reviews','host-log-mirror');
@@ -36,7 +36,7 @@ export function createHostWorkflowCapabilities({definition,configuration,bridge,
     need(allowQa===true,'qa_authorization_required');
     result.qaLogHome=logHome;
     const requestTimeout={timeoutMs:configuration.qa.timeoutMs??60000};
-    result.qaDecisionProvider=createHostQaDecisionProvider({timeoutMs:60000,
+    result.qaDecisionProvider=parallelMember?createParallelMemberQaDecisionProvider():createHostQaDecisionProvider({timeoutMs:60000,
       assess:(request,signal)=>bridge.call('qa_assess',request,signal,requestTimeout)});
     result.qaExecutor=createHostQaExecutor({specsDir,codeProject,feature,requirements,runtime,
       ...(definition.codeProjects?{codeProjects:definition.codeProjects}:{}),
@@ -47,4 +47,14 @@ export function createHostWorkflowCapabilities({definition,configuration,bridge,
       browser:(request,signal)=>bridge.call('qa_browser',request,signal,requestTimeout)});
   }
   return result;
+}
+
+export function createParallelMemberQaDecisionProvider(){
+  return Object.freeze({timeoutMs:60000,async decide(raw,signal){
+    const binding=json(raw);shape(binding,['specsDir','codeProject','feature','identity','packageDigest']);
+    validIdentity(binding.identity);hex(binding.packageDigest);need(!signal.aborted,'cancelled');
+    return {decisionId:`qa-${digest({identity:binding.identity,packageDigest:binding.packageDigest}).slice(0,48)}`,
+      identity:binding.identity,packageDigest:binding.packageDigest,status:'skipped',
+      reason:'parallel_member_deferred',score:4,at:new Date().toISOString().replace(/\.\d{3}Z$/,'Z')};
+  }});
 }

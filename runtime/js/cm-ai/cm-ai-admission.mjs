@@ -48,9 +48,9 @@ export function inspectCmAiQaTaskContext({specsDir,codeProject,feature,taskId}) 
 
 // Admission's public feature summary stops at the selected feature. Count all
 // approved features with the same parser before treating a task as the last one.
-export function isFinalCmAiTask({specsDir,codeProject,feature,taskId}) {
+export function isFinalCmAiTask({specsDir,codeProject,feature,taskId,parallelSelection=null}) {
   const admission=inspectCmAiAdmission({specsDir,codeProject});
-  if(admission.state!=='ready'||admission.nextTask.feature!==feature||admission.nextTask.id!==taskId)
+  if(!matchesCmAiTaskSelection(admission,feature,taskId,parallelSelection))
     throw Object.assign(new Error('documentation_admission_required'),{code:'documentation_admission_required'});
   const discovered=discoverFeatures(admission.specsDir);
   if(discovered.error)throw Object.assign(new Error(discovered.error),{code:discovered.error});
@@ -69,7 +69,7 @@ function frozen(value){
 }
 
 function result(base,state,reason,extra={}){
-  return frozen({...base,state,reason,features:[],nextTask:null,warnings:[],...extra});
+  return frozen({...base,state,reason,features:[],nextTask:null,eligibleTasks:[],warnings:[],...extra});
 }
 
 function directory(value){
@@ -333,7 +333,9 @@ function selectTask(specsDir,names){
       return dependency&&(dependency.completed||dependency.dropped);
     }));
     if(!eligible)return {error:'dependencies_not_ready',features,warnings};
-    return {features,warnings,nextTask:{feature:name,id:eligible.id,description:eligible.description}};
+    return {features,warnings,nextTask:{feature:name,id:eligible.id,description:eligible.description},
+      eligibleTasks:pending.filter(task=>(parsed.dependencies.get(task.id)||[]).every(id=>byId.get(id)?.completed))
+        .map(task=>({feature:name,id:task.id}))};
   }
   return {features,warnings,nextTask:null};
 }
@@ -373,5 +375,17 @@ function admissionFor(options,inProgressBootstrap=null){
   if(selection.error)return result(base,'blocked',selection.error,{features:selection.features,warnings:selection.warnings,
     ...(selection.detail?{detail:selection.detail}:{})});
   if(!selection.nextTask)return result(base,'complete','all_tasks_terminal',{features:selection.features,warnings:selection.warnings});
-  return result(base,'ready','task_selected',{features:selection.features,nextTask:selection.nextTask,warnings:selection.warnings});
+  return result(base,'ready','task_selected',{features:selection.features,nextTask:selection.nextTask,eligibleTasks:selection.eligibleTasks,warnings:selection.warnings});
+}
+
+// Trusted caller selection is data bound by openControlRun, never message authority.
+export function matchesCmAiTaskSelection(admission,feature,taskId,parallelSelection=null){
+  if(parallelSelection===null)return admission.state==='ready'
+    &&admission.nextTask?.feature===feature&&admission.nextTask.id===taskId;
+  const value=parallelSelection;
+  return admission.state==='ready'&&value?.version===1
+    &&Object.keys(value).sort().join(',')==='group,version'&&Array.isArray(value.group)
+    &&value.group.length>=2&&new Set(value.group).size===value.group.length
+    &&value.group.every(id=>typeof id==='string'&&TASK_ID.test(id))&&value.group.includes(taskId)
+    &&admission.eligibleTasks?.some(task=>task.feature===feature&&task.id===taskId)===true;
 }

@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createCmAiBatch} from './cm-ai-batch-run.mjs';
-import {createConversationExecution,readConversationReviewConfiguration,readConversationProtection} from './cm-ai-host.mjs';
+import {createConversationExecution,readConversationReviewConfiguration,readConversationProtection,runReviewPreflight} from './cm-ai-host.mjs';
+import {preflightMatches} from '../runtime/js/cm-ai/worker-codex.mjs';
+import {claudePreflightMatches} from '../runtime/js/cm-ai/worker-claude.mjs';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {serveCmAiHost} from '../runtime/js/cm-ai/host-session.mjs';
 import {validateHostWorkflowConfiguration} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
@@ -12,6 +14,30 @@ import {digest,json,need,shape} from '../runtime/js/cm-ai/effect-contract.mjs';
 
 const usage='cm-ai-batch-host.mjs serve --config PATH --host-context ID --allow-development [--runtime codex|claude] [--review-config PATH] [--allow-review FEATURE/TASK:1|2]... [--allow-qa]';
 const safeCode=error=>typeof error?.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(error.code)?error.code:'batch_host_failed';
+
+async function memberReviewConfiguration(batch,definition,review,runtime){
+  try{
+    need(review!==null,'review_configuration_required');
+    const options={cwd:definition.codeProject,model:review.model,disabledSkills:review.disabledSkills,promptTransport:'stdin'};
+    const matches=config=>config.model===review.model&&digest(config.disabledSkills)===digest(review.disabledSkills)
+      &&(runtime==='claude'?claudePreflightMatches:preflightMatches)(config.preflight,options);
+    const directory=path.join(batch.specsDir,'.reviews','.execution',batch.batchId);
+    fs.mkdirSync(directory,{recursive:true,mode:0o700});
+    need(fs.realpathSync(directory)===directory,'invalid_preflight_cache');
+    const file=path.join(directory,`preflight-${definition.identity.taskId}.json`);
+    if(fs.existsSync(file)){
+      const info=fs.lstatSync(file);need(info.isFile()&&!info.isSymbolicLink(),'invalid_preflight_cache');
+      try{const cached=readConversationReviewConfiguration(file);if(matches(cached))return cached;}
+      catch{/* Invalid or obsolete diagnostics require a fresh loopback, never a rewritten fingerprint. */}
+    }
+    const config=await runReviewPreflight(definition,{model:review.model,runtime,disabledSkills:review.disabledSkills});
+    need(matches(config),'review_preflight_failed');
+    const temporary=`${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary,JSON.stringify(config)+'\n',{flag:'wx',mode:0o600});
+    try{fs.renameSync(temporary,file);}finally{if(fs.existsSync(temporary))fs.unlinkSync(temporary);}
+    return config;
+  }catch{need(false,'review_preflight_failed');}
+}
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
   if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\nOptional --protected-conversation-config PATH uses the shared current-host scoped text proposals and native sandbox checks; {checkCommands,timeoutMs}. No extra model call, same Codex/Claude runtime and per-task Review permissions. Optional bundle.bootstraps maps approved bootstrap task keys to {selection}; --allow-bootstrap-write grants only those fixed instruction/scaffold steps. Optional batch.codeProjects uses prefixed paths and checks with codeProject per command; one task remains one completion gate.\n');return 0;}
@@ -53,12 +79,21 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(!approvals.size||review!==null,'review_configuration_required');
     need(allowQa||!Object.values(workflows).some(item=>item?.qa!=null),'qa_authorization_required');
     bridge=createHostToolBridge();
+    // The current conversation transport accepts one outstanding host call.
+    // Queue those calls only; member runners and independent Review stay concurrent.
+    let hostCallTail=Promise.resolve();
+    const memberBridge={call(...args){
+      const pending=hostCallTail.then(()=>bridge.call(...args));
+      hostCallTail=pending.then(()=>{},()=>{});return pending;
+    }};
     const driver=createCmAiBatch({configuration:batch,logHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
-      executionFor:definition=>{
+      runtime:runtime??'codex',checkCommands:protection?.checkCommands??null,checkTimeoutMs:protection?.timeoutMs??60000,
+      executionFor:async(definition,{parallelMember=false}={})=>{
         const key=`${definition.feature}/${definition.identity.taskId}`;
         const attempts=[1,2].filter(attempt=>approvals.has(`${key}:${attempt}`));
-        const execution=createConversationExecution(definition,argv[4],bridge,review,attempts,workflows[key],allowQa,runtime??'codex',
-          {batchWorkflowsDigest:digest(bootstraps?{workflows,bootstraps}:workflows),qaLogHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
+        const memberReview=parallelMember?await memberReviewConfiguration(batch,definition,review,runtime??'codex'):review;
+        const execution=createConversationExecution(definition,argv[4],parallelMember?memberBridge:bridge,memberReview,attempts,workflows[key],allowQa,runtime??'codex',
+          {parallelMember,batchWorkflowsDigest:digest(bootstraps?{workflows,bootstraps}:workflows),qaLogHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
             ...(protection?{protection}:{}),...(bootstraps?.[key]?{bootstrap:{...bootstraps[key],allowWrite:allowBootstrap}}:{})});
         // Bind the entire approved capability map before the first task starts,
         // so a later task's commands/scope cannot silently change during resume.

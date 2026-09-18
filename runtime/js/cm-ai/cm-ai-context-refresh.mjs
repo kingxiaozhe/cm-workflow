@@ -2,7 +2,7 @@
 import {createHash} from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import {inspectCmAiAdmission} from './cm-ai-admission.mjs';
+import {inspectCmAiAdmission,matchesCmAiTaskSelection} from './cm-ai-admission.mjs';
 import {arrayItems,digest,freeze,hex,json,need,shape,text,validIdentity,validTaskLearningInput} from './effect-contract.mjs';
 
 const BASELINE_RULES=['coding-style.md','testing.md','security.md'];
@@ -65,7 +65,7 @@ export function inspectCmAiContextRefresh(input,{admission:trustedAdmission=null
   if(trustedAdmission!==null)need(input.feature==='0.bootstrap'
     &&admission.specsDir===input.specsDir&&admission.codeProject===input.codeProject,'context_invalid');
   if(!['ready','complete'].includes(admission.state))return freeze({state:admission.state,reason:admission.reason,
-    nextTask:null,contextDigest:null,contextFiles:[]});
+    nextTask:null,eligibleTasks:[],contextDigest:null,contextFiles:[]});
   need(admission.features.some(item=>item.name===input.feature),'context_invalid');
   const featureNames=admission.state==='complete'?admission.features.map(item=>item.name):[input.feature];
   const files=featureNames.flatMap(feature=>['requirements.md','design.md','tasks.md'].map(name=>
@@ -74,7 +74,7 @@ export function inspectCmAiContextRefresh(input,{admission:trustedAdmission=null
   files.push(...projectFiles(input.codeProject,input.applicableAgentFiles));
   const contextFiles=files.map(file=>file.metadata).sort((left,right)=>
     left.scope.localeCompare(right.scope)||left.path.localeCompare(right.path));
-  return freeze({state:admission.state,reason:admission.reason,nextTask:admission.nextTask,
+  return freeze({state:admission.state,reason:admission.reason,nextTask:admission.nextTask,eligibleTasks:admission.eligibleTasks??[],
     contextDigest:digest({version:1,files:contextFiles}),contextFiles});
 }
 
@@ -83,8 +83,7 @@ export function inspectCmAiTaskLearningInput(input,authority={}) {
   text(input.feature);const identity=json(input.identity);validIdentity(identity);
   const refresh=inspectCmAiContextRefresh({specsDir:input.specsDir,codeProject:input.codeProject,
     feature:input.feature,applicableAgentFiles:input.applicableAgentFiles},authority);
-  need(refresh.state==='ready'&&refresh.nextTask?.feature===input.feature
-    &&refresh.nextTask.id===identity.taskId,'learning_context_invalid');
+  need(matchesCmAiTaskSelection(refresh,input.feature,identity.taskId,authority.parallelSelection??null),'learning_context_invalid');
   const agentPaths=new Set(['AGENTS.md',...arrayItems(input.applicableAgentFiles)]);
   const selected=refresh.contextFiles.filter(file=>file.scope==='specs'?file.path==='LESSONS.md':
     file.scope==='project'&&agentPaths.has(file.path));

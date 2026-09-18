@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {preflightMatches} from '../runtime/js/cm-ai/worker-codex.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {claudeReviewFingerprint} from '../runtime/js/cm-ai/worker-claude.mjs';
 import {buildManifest} from './cm-spec-manifest.mjs';
@@ -54,6 +55,8 @@ function execute(f,approvals,{cancel=false}={}){
           if(row.type==='host_ready')sessionId=row.sessionId;
           if(row.type==='host_request'){
             const payload=row.payload,identity=payload.identity??payload.request.identity;
+            const cwd=f.parallel&&identity.taskId!=='T-003'
+              ?path.join(f.root,'.cm-worktrees',f.batch.batchId.slice(0,8),identity.taskId):f.codeProject;
             calls.push(`${identity.taskId}:${row.kind}`);
             if(cancel){send({operation:'status',requestId:'status'});send({operation:'cancel',requestId:'cancel'});continue;}
             if(row.kind==='develop'){
@@ -63,14 +66,14 @@ function execute(f,approvals,{cancel=false}={}){
               assert.equal(payload.request.payload.specification.task.id,identity.taskId);
               assert.deepEqual(payload.request.payload.specification.sources,buildManifest(f.specsDir));
               const content=`export const value = ${40+n};\n`;
-              if(!f.protected)fs.writeFileSync(path.join(f.codeProject,`task${n}.mjs`),content);
+              if(!f.protected)fs.writeFileSync(path.join(cwd,`task${n}.mjs`),content);
               respond(row,{status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
                 retrospective:{status:'no_new_lesson',candidates:[],reason:null}},...(f.protected?{edits:
                   payload.request.payload.scope.map(file=>({path:file,beforeSha256:payload.expected[file],
                     content:file==='README.md'?'# Exports 41 and 42\n':content}))}:{})});
             }else if(row.kind==='check'){
               const checks=payload.scope.filter(file=>file.endsWith('.mjs')).map(file=>{
-                const command=[process.execPath,'--check',path.join(f.codeProject,file)];
+                const command=[process.execPath,'--check',path.join(cwd,file)];
                 const result=spawnSync(command[0],command.slice(1));assert.equal(result.status,0);
                 return {id:'syntax',command,outcome:'passed',exitCode:0,evidence:'Actual Node syntax check exited 0'};
               });respond(row,checks);
@@ -154,5 +157,60 @@ for(const runtime of ['codex','claude'])test(`${runtime} batch CLI cancellation 
     assert.equal(stopped.result.code,'cancelled');assert.equal(stopped.calls.length,1);
     assert(stopped.rows.some(row=>row.requestId==='status'));
     const reopened=await execute(f,[]);assert.equal(reopened.result.code,'cancelled');assert.deepEqual(reopened.calls,[]);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+
+test('parallel member loopback preflights bind worktree cwd, stop before start and reuse on resume',async()=>{
+  const f=fixture();f.parallel=true;
+  try{
+    f.batch.tasks=[1,2,3].map(n=>({feature:'1.work',taskId:`T-00${n}`,scope:[`task${n}.mjs`],requirements:['requirements.md']}));
+    f.batch.parallel=[['1.work/T-001','1.work/T-002']];
+    fs.writeFileSync(path.join(f.specsDir,'1.work','tasks.md'),'- [ ] T-001: first\n- [ ] T-002: second\n- [ ] T-003: final\n\n- T-003 依赖 T-001, T-002\n');
+    fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(f.specsDir)}));
+    const original=JSON.parse(fs.readFileSync(f.config,'utf8')).workflows['1.work/T-001'];
+    fs.writeFileSync(f.config,JSON.stringify({batch:f.batch,workflows:Object.fromEntries(f.batch.tasks.map(task=>[`1.work/${task.taskId}`,original]))}));
+    const git=args=>{const result=spawnSync('git',['-C',f.codeProject,...args],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);};
+    git(['init','-b','main']);git(['config','user.name','Fixture']);git(['config','user.email','fixture@example.invalid']);
+    git(['add','-A']);git(['commit','-m','synthetic baseline']);
+    const log=path.join(f.root,'probe-cwds.jsonl'),fail=path.join(f.root,'fail-probe');
+    fs.writeFileSync(fail,'fail second member');
+    const processFixture=fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url));
+    fs.writeFileSync(path.join(f.root,'bin','codex'),`#!${process.execPath}
+const fs=require('node:fs'),cp=require('node:child_process');
+const args=process.argv.slice(2),cwd=args[args.indexOf('--cd')+1];
+fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(cwd)+'\\n');
+if(cwd.endsWith('T-002')&&fs.existsSync(${JSON.stringify(fail)}))process.exit(1);
+let input='';process.stdin.on('data',part=>input+=part);process.stdin.on('end',()=>{
+  const result=cp.spawnSync(process.execPath,[${JSON.stringify(processFixture)},...args],{input,encoding:'utf8'});
+  process.stdout.write(result.stdout??'');process.stderr.write(result.stderr??'');process.exit(result.status??1);
+});
+`,{mode:0o700});
+    const probes=()=>fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse);
+    const failed=await execute(f,['1.work/T-001:1','1.work/T-002:1']);
+    assert.equal(failed.result.code,'review_preflight_failed',JSON.stringify(failed));
+    assert.equal(failed.result.currentTask,'1.work/T-002');assert.deepEqual(failed.calls,[]);
+    assert.equal(probes().length,2);
+    fs.unlinkSync(fail);
+    const first=await execute(f,[]);assert.equal(first.result.code,'decision_required',JSON.stringify(first));
+    assert.equal(first.calls.filter(call=>call.endsWith(':develop')).length,2,JSON.stringify(first));
+    const directory=path.join(f.specsDir,'.reviews','.execution',f.batch.batchId);
+    const receipts=[1,2].map(n=>fs.readFileSync(path.join(directory,`preflight-T-00${n}.json`),'utf8'));
+    for(const [index,bytes] of receipts.entries()){
+      const config=JSON.parse(bytes),cwd=path.join(f.root,'.cm-worktrees',f.batch.batchId.slice(0,8),`T-00${index+1}`);
+      assert(preflightMatches(config.preflight,{cwd,model:'fixture',disabledSkills:[],promptTransport:'stdin'}));
+      assert(!preflightMatches(config.preflight,{cwd:f.codeProject,model:'fixture',disabledSkills:[],promptTransport:'stdin'}));
+      assert.equal(config.preflight.real_model_requests,0);assert.equal(config.preflight.listener_closed,true);
+      assert(probes().includes(cwd));
+    }
+    assert.equal(probes().length,3);
+    const resumed=await execute(f,[]);assert.equal(resumed.result.code,'decision_required');assert.deepEqual(resumed.calls,[]);
+    assert.equal(probes().length,3);
+    assert.deepEqual([1,2].map(n=>fs.readFileSync(path.join(directory,`preflight-T-00${n}.json`),'utf8')),receipts);
+    const stale=JSON.parse(receipts[1]);stale.preflight.config_fingerprint='0'.repeat(64);
+    fs.writeFileSync(path.join(directory,'preflight-T-002.json'),JSON.stringify(stale));
+    const refreshed=await execute(f,[]);assert.equal(refreshed.result.code,'decision_required');assert.deepEqual(refreshed.calls,[]);
+    assert.equal(probes().length,4);
+    assert.equal(fs.readFileSync(path.join(directory,'preflight-T-002.json'),'utf8'),receipts[1]);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
