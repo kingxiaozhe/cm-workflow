@@ -33,15 +33,17 @@ export function inspectCmAiQaTaskContext({specsDir,codeProject,feature,taskId}) 
   const fail=code=>{throw Object.assign(new Error(code),{code});};
   if(!['ready','complete'].includes(admission.state))fail(admission.reason);
   const discovered=discoverFeatures(admission.specsDir);if(discovered.error)fail(discovered.error);
-  const completed=[];let selected=null;
+  const completed=[],pendingFeatures=[];let selected=null;
   for(const name of discovered.names){
     const parsed=readFeature(admission.specsDir,name);if(parsed.error)fail(parsed.error);
     if(name===feature)selected=parsed.tasks;
+    if(parsed.tasks.some(task=>!task.completed&&!task.dropped))pendingFeatures.push(name);
     for(const task of parsed.tasks)if(task.completed&&!task.dropped)completed.push({feature:name,id:task.id});
   }
-  if(!selected?.some(task=>task.id===taskId&&task.completed&&!task.dropped))fail('qa_not_ready');
+  // Plan construction happens before task completion; decisions still bind a completed task.
+  if(!selected||(taskId!==undefined&&!selected.some(task=>task.id===taskId&&task.completed&&!task.dropped)))fail('qa_not_ready');
   const pending=selected.filter(task=>!task.completed&&!task.dropped).length;
-  return frozen({completed,pending,mergeEligible:pending===1&&admission.nextTask?.feature===feature});
+  return frozen({completed,pendingFeatures,pending,mergeEligible:pending===1&&admission.nextTask?.feature===feature});
 }
 
 // Admission's public feature summary stops at the selected feature. Count all

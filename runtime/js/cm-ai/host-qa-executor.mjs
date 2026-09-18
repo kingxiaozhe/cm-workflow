@@ -6,7 +6,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {loadConfig,resolveRole} from '../../../scripts/cm-workflow-config.mjs';
 import {validateTestCases} from '../../../scripts/validate-test-cases.mjs';
-import {inspectCmAiAdmission} from './cm-ai-admission.mjs';
+import {inspectCmAiAdmission,inspectCmAiQaTaskContext} from './cm-ai-admission.mjs';
 import {createHostCheck} from './host-check.mjs';
 import {specsPermissionArgs} from './codex-config.mjs';
 import {resolveCodeProjects,codeProjectPaths} from './code-projects.mjs';
@@ -19,7 +19,7 @@ const writer=fileURLToPath(new URL('../../../scripts/cm-log-event.py',import.met
 const order={ 'cm-default':['logic','commands','browser'],
   'java-backend':['commands','logic','browser'],'web-frontend':['commands','browser','logic'] };
 
-function readPlan(configuration) {
+function readPlan(configuration,selectCompleted=true) {
   const {codeProject,specsDir,feature,commands}=configuration;
   const admission=inspectCmAiAdmission({specsDir,codeProject});
   need(['ready','complete'].includes(admission.state),admission.reason??'qa_admission_required');
@@ -35,15 +35,25 @@ function readPlan(configuration) {
     need(validateTestCases(contract).length===0&&contract.feature===feature.replace(/^\d+\./,''),'test_cases_invalid');
     cases=contract.cases;
   }
-  const selected=cases.filter(item=>item.blocking||config.policies.tests.includes(item.kind));
+  const context=selectCompleted?inspectCmAiQaTaskContext({specsDir,codeProject,feature}):{completed:[],pending:0};
+  const completed=new Set(context.completed.filter(task=>task.feature===feature).map(task=>task.id));
+  const applicable=cases.filter(item=>item.blocking||config.policies.tests.includes(item.kind));
+  const deferred=context.pending===0?[]:applicable.map(item=>({id:item.id,
+    taskIds:item.taskIds.filter(taskId=>!completed.has(taskId))})).filter(item=>item.taskIds.length>0);
+  const deferredIds=new Set(deferred.map(item=>item.id));
+  const selected=applicable.filter(item=>!deferredIds.has(item.id));
   const wanted=new Set(selected.filter(item=>item.kind==='logic').map(item=>item.id));
-  const scheduled=commands.filter(item=>config.policies.tests.includes('commands')
-    ||item.caseIds.some(caseId=>wanted.has(caseId)));
+  const scheduled=commands.filter(item=>(config.policies.tests.includes('commands')
+    &&(context.pending===0||item.caseIds.length===0))||item.caseIds.some(caseId=>wanted.has(caseId)));
   for(const item of commands)for(const caseId of item.caseIds)
     need(cases.some(candidate=>candidate.id===caseId&&candidate.kind==='logic'),'qa_command_mapping_invalid');
   const modes=order[config.project.workflow].filter(mode=>mode==='commands'
-    ?scheduled.length>0||config.policies.tests.includes('commands'):selected.some(item=>item.kind===mode));
-  return json({config,cases:selected,commands:scheduled,modes});
+    ?scheduled.length>0||(config.policies.tests.includes('commands')&&(context.pending===0||commands.length===0))
+    :selected.some(item=>item.kind===mode));
+  const noApplicableCases=context.pending>0&&selected.length===0&&scheduled.length===0;
+  if(noApplicableCases)modes.splice(0,modes.length,'commands');
+  return json({config,cases:selected,...(selectCompleted?{deferred_cases:deferred}:{}),commands:scheduled,modes,
+    ...(noApplicableCases?{no_applicable_cases:true}:{})});
 }
 
 function logStep(configuration,binding,event,phase,data,detail) {
@@ -73,13 +83,14 @@ function evidence(raw) {
   return result;
 }
 
-function saveReport(configuration,binding,rows,summary) {
+function saveReport(configuration,binding,rows,summary,deferred) {
   const reviews=path.join(configuration.specsDir,'.reviews'),stat=fs.lstatSync(reviews);
   need(stat.isDirectory()&&!stat.isSymbolicLink()&&fs.realpathSync(reviews)===reviews,'qa_report_invalid');
   const target=path.join(reviews,`${binding.testRunId}-execution.md`);
   const body=Buffer.from(`# CM QA execution report\n\nOverall: ${summary.result}\n\n`
     +'Counts are declared command checks plus selected cases, not framework test totals.\n'
     +'Static verdicts are retained separately; only observed command/browser evidence counts as PASS.\n\n'
+    +`## deferred_cases\n\n${JSON.stringify(deferred,null,2)}\n\n`
     +rows.map(row=>`## ${row.id}\n\n${JSON.stringify(row,null,2)}\n`).join('\n'));
   need(body.length<=1024*1024,'limit_exceeded');
   const fd=fs.openSync(target,fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_WRONLY|fs.constants.O_NOFOLLOW,0o600);
@@ -118,16 +129,22 @@ export function createHostQaExecutor(options) {
   need(['local','test'].includes(environment.scope),'qa_environment_required');text(environment.target);
   const carriers={web:['browser'],app:['ios-simulator','android-emulator','device'],miniprogram:['wechat-devtools','device']};
   need(carriers[environment.kind]?.includes(environment.carrier),'qa_environment_required');
-  const plan=readPlan(configuration);
-  need(!plan.cases.some(item=>ids.has(item.id)),'qa_id_conflict');
-  // One missing-command item keeps an empty invocation from passing as zero tests.
-  const commandCount=plan.modes.includes('commands')?Math.max(1,plan.commands.length):0;
-  const caseCount=Math.max(1,commandCount+plan.cases.length);
-  const mode=plan.modes.length===1&&['commands','browser'].includes(plan.modes[0])?plan.modes[0]:'all';
-  const metadata=json({kind:'cm-host-qa-executor-v1',...configuration,plan,
-    capabilities:{logic:logic!==null,browser:browser!==null}});
-  return Object.freeze({mode,caseCount,timeoutMs:configuration.timeoutMs,configuration:metadata,
+  const describe=plan=>{
+    need(!plan.cases.some(item=>ids.has(item.id)),'qa_id_conflict');
+    // One missing-command item keeps an empty invocation from passing as zero tests.
+    const commandCount=plan.modes.includes('commands')?Math.max(1,plan.commands.length):0;
+    const caseCount=Math.max(1,commandCount+plan.cases.length);
+    const mode=plan.modes.length===1&&['commands','browser'].includes(plan.modes[0])?plan.modes[0]:'all';
+    return json({mode,caseCount,configuration:{kind:'cm-host-qa-executor-v1',...configuration,plan,
+      capabilities:{logic:logic!==null,browser:browser!==null}}});
+  };
+  // Preserve the historical configuration fingerprint across N5 and old-run
+  // resume. Selection is invocation data, frozen by prepare at N6 instead.
+  const initial=describe(readPlan(configuration,false));let prepared=null;
+  const prepare=()=>{prepared=describe(readPlan(configuration));return freeze(prepared);};
+  return Object.freeze({...initial,timeoutMs:configuration.timeoutMs,prepare,
     async run(rawBinding,signal){
+      const {mode,caseCount,configuration:{plan}}=prepared??prepare();
       let binding=json(rawBinding);
       shape(binding,['specsDir','codeProject','feature','identity','packageDigest','testRunId','mode','caseCount',
         ...(Object.hasOwn(binding,'qaRound')?['qaRound']:[])]);
@@ -159,7 +176,10 @@ export function createHostQaExecutor(options) {
       for(const stage of plan.modes){
         const routed=route(stage==='browser'?'browser_qa':'tester');
         if(stage==='commands'){
-          if(!plan.commands.length)rows.push({id:'commands-unavailable',kind:'commands',verdict:'BLOCKED',evidence:['No declared project test command']});
+          if(plan.no_applicable_cases)rows.push({id:'no-applicable-cases',kind:'commands',verdict:'BLOCKED',
+            evidence:['all applicable cases are bound to unfinished tasks; deferred to feature completion',
+              ...plan.deferred_cases.map(item=>`${item.id}: ${item.taskIds.join(', ')}`)]});
+          else if(!plan.commands.length)rows.push({id:'commands-unavailable',kind:'commands',verdict:'BLOCKED',evidence:['No declared project test command']});
           for(const command of plan.commands){
             notCancelled();
             const check=createHostCheck({cwd:roots?command.codeProject:configuration.codeProject,commands:[{id:command.id,command:command.command}],
@@ -245,7 +265,7 @@ export function createHostQaExecutor(options) {
         blocked=rows.filter(item=>item.verdict==='BLOCKED').length;
       need(passed+failed+blocked===caseCount,'qa_result_invalid');
       const summary={result:failed>0?'FAIL':blocked>0?'BLOCKED':'PASS',passed,failed,blocked};
-      const report=saveReport(configuration,binding,rows,summary);
+      const report=saveReport(configuration,binding,rows,summary,plan.deferred_cases);
       return json({...summary,report});
     }});
 }

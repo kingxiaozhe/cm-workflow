@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {inspectCmAiQaTaskContext} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {createHostQaDecisionProvider,decideHostQaPolicy} from '../runtime/js/cm-ai/host-qa-policy.mjs';
 
 const low=()=>({scores:{scope:1,risk:1,accumulation:1,boundary:1},
@@ -55,5 +56,38 @@ test('N6 derives consecutive work from original task inventory and QA log withou
     const stale=createHostQaDecisionProvider({timeoutMs:1000,assess:async()=>{
       fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [x] T-005: task\n');return low();}});
     await assert.rejects(stale.decide(binding,new AbortController().signal),{code:'stale_qa'});
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('step30 unseen excludes closed features, includes other open features, and preserves since-trigger skips',async()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-qa-policy-')));
+  try{
+    const specsDir=path.join(root,'specs'),codeProject=path.join(root,'code');fs.mkdirSync(codeProject);
+    fs.writeFileSync(path.join(codeProject,'source.js'),'// fixture\n');
+    const features=['1.closed-a','2.closed-b','3.closed-c','4.current','5.later'];
+    for(const [index,feature] of features.entries()){
+      const dir=path.join(specsDir,feature);fs.mkdirSync(dir,{recursive:true});
+      for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(dir,name),'# Fixture\n');
+      const count=index<2?4:index===2?3:index===3?4:1;
+      fs.writeFileSync(path.join(dir,'tasks.md'),Array.from({length:count},(_,i)=>
+        `- [${index<3||index===3&&i===0?'x':' '}] T-00${i+1}: task`).join('\n')+'\n');
+    }
+    fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features}));
+    const log=path.join(specsDir,'运行日志.jsonl');fs.writeFileSync(log,'');
+    const binding={specsDir,codeProject,feature:'4.current',identity:{repositoryId:'fixture',runId:'run-current',taskId:'T-001',attempt:1},packageDigest:'a'.repeat(64)};
+    const seen=[],provider=createHostQaDecisionProvider({timeoutMs:1000,assess:async input=>{seen.push(input.unassessedTasks);return low();}});
+    const decide=()=>provider.decide(binding,new AbortController().signal);
+    assert.equal((await decide()).status,'skipped');assert.equal(seen.at(-1),1);
+    const legacyCompletedWithoutQa=inspectCmAiQaTaskContext({...binding,taskId:binding.identity.taskId}).completed.length;
+    assert.equal(legacyCompletedWithoutQa,12);
+    console.log('STEP30 history',JSON.stringify({legacyCompletedWithoutQa,unassessedTasks:seen.at(-1),closedFeatures:3}));
+    fs.writeFileSync(path.join(specsDir,'5.later','tasks.md'),'- [x] T-001: done\n- [ ] T-002: pending\n');
+    await decide();assert.equal(seen.at(-1),2);
+    const row={schema_version:1,workflow:'cm-ai',event:'qa',node:'N6',feature:'1.closed-a',task:'T-001',
+      repository_id:'fixture',run_id:'historical',attempt:1,package_digest:'b'.repeat(64),decision_id:'old-decision',
+      status:'skipped',reason:'fixture',score:4,at:'2026-09-07T01:00:00Z'};
+    fs.writeFileSync(log,JSON.stringify(row)+'\n');await decide();assert.equal(seen.at(-1),3);
+    fs.appendFileSync(log,JSON.stringify({...row,feature:'2.closed-b',status:'triggered',score:null})+'\n');
+    await decide();assert.equal(seen.at(-1),2);
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });

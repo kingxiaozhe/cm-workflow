@@ -186,7 +186,11 @@ function validateRunSequence(items,code='qa_round_invalid'){
     if(row.phase==='start'){
       id(row.operation_id);need(!ids.has(row.operation_id),code);ids.add(row.operation_id);
       need(row.attempt===(current?current.attempt+(abandoned?0:1):1)&&row.attempt<=3,code);
-      if(abandoned)need(row.mode===current.mode&&row.case_count===current.case_count,code);
+      if(abandoned){
+        // Legacy successors retain their plan; explicit links may bind a fresh plan.
+        if(row.previous_test_run_id===undefined)need(row.mode===current.mode&&row.case_count===current.case_count,code);
+        else need(row.previous_test_run_id===current.operation_id,code);
+      }else need(row.previous_test_run_id===undefined,code);
       current=row;abandoned=false;starts.push(item);
     }else{
       need(current&&row.operation_id===current.operation_id&&row.attempt===current.attempt&&!abandoned,code);
@@ -258,6 +262,7 @@ export function recordCmAiQaRun(input) {
   if(Object.hasOwn(input,'logHome'))keys.push('logHome');
   if(Object.hasOwn(input,'qaRound'))keys.push('qaRound');
   if(Object.hasOwn(input,'previousTestRunId'))keys.push('previousTestRunId');
+  if(Object.hasOwn(input,'deferredCases'))keys.push('deferredCases');
   shape(input,keys);validIdentity(input.identity);id(input.testRunId);hex(input.packageDigest);
   text(input.specsDir);text(input.codeProject);text(input.feature);
   need(['commands','browser','all'].includes(input.mode));
@@ -277,8 +282,7 @@ export function recordCmAiQaRun(input) {
     let previous;
     if(Object.hasOwn(input,'previousTestRunId')){
       previous=inspectCmAiQaRecovery(binding);
-      need(previous.abandoned&&previous.testRunId===input.previousTestRunId&&previous.qaRound===qaRound
-        &&previous.mode===input.mode&&previous.caseCount===input.caseCount,'qa_round_invalid');
+      need(previous.abandoned&&previous.testRunId===input.previousTestRunId&&previous.qaRound===qaRound,'qa_round_invalid');
     }else previous=latestCmAiQaRun(binding);
     scanRows(path.join(input.specsDir,'运行日志.jsonl'),row=>{
       need(!(row.event==='test_run'&&row.operation_id===input.testRunId),'qa_round_invalid');
@@ -294,6 +298,16 @@ export function recordCmAiQaRun(input) {
   const data={node:'N6',repository_id:input.identity.repositoryId,feature:input.feature,task:input.identity.taskId,
     package_digest:input.packageDigest,qa_decision_id:decision.decisionId,operation_id:input.testRunId,
     attempt:qaRound,mode:input.mode,case_count:input.caseCount};
+  if(input.phase==='start'){
+    if(Object.hasOwn(input,'previousTestRunId'))data.previous_test_run_id=input.previousTestRunId;
+    const deferred=json(input.deferredCases??[]);need(Array.isArray(deferred),'qa_plan_invalid');
+    for(const item of deferred){
+      shape(item,['id','taskIds']);id(item.id);
+      need(Array.isArray(item.taskIds)&&item.taskIds.length>0,'qa_plan_invalid');
+      for(const taskId of item.taskIds)id(taskId);
+    }
+    data.deferred_cases=deferred;
+  }
   if(input.phase==='abandoned')Object.assign(data,{previous_test_run_id:input.testRunId,reason:'host_terminated',partial_pass_cases:passed});
   if(input.phase==='complete'){
     const result=json(input.result);shape(result,['result','passed','failed','blocked','report']);

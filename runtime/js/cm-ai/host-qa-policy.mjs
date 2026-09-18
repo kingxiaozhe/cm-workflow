@@ -9,7 +9,9 @@ const key=(feature,task)=>`${feature}/${task}`;
 
 function history(binding,context) {
   const completed=new Set(context.completed.map(task=>key(task.feature,task.id)));
-  const unseen=new Set(completed),since=new Set();
+  const pendingFeatures=new Set(context.pendingFeatures);
+  const unseen=new Set(context.completed.filter(task=>pendingFeatures.has(task.feature))
+    .map(task=>key(task.feature,task.id))),since=new Set();
   const log=path.join(binding.specsDir,'运行日志.jsonl');
   if(fs.existsSync(log))scanRows(log,row=>{
     if(row?.schema_version!==1||row.workflow!=='cm-ai'||row.event!=='qa'||row.node!=='N6'

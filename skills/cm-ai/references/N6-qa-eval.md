@@ -12,6 +12,8 @@ commands/logic 及 API、数据库回归；`web-frontend` 优先 commands/browse
 类型；`test-cases.json` 中 blocking case 即使类型未列出也必须执行，环境不可用则
 `BLOCKED`，不得把配置当作跳过已审批验收的许可。
 
+feature 未完成时，只执行 taskIds 全部已完成且未 dropped 的用例，其余记入 `deferred_cases`，延后到 feature 收尾；延后用例不计入执行数量，也不派发宿主请求。feature 中途无可执行项时产生一条显式 `BLOCKED` 行，id 为 `no-applicable-cases`，不得以零测试宣称通过。
+
 ## 评分（1-5 分，总分 ≥ 8 触发）
 
 | 维度     | 1 分                 | 5 分                  |
@@ -27,7 +29,7 @@ commands/logic 及 API、数据库回归；`web-frontend` 优先 commands/browse
 - API 接口变更（**收尾合并豁免**：下一个任务就是本 feature 最后一个任务时，可合并至 feature 级 QA 一次执行——避免背靠背双跑全量；合并决策记运行日志 `decision` 事件。实跑教训：后端 feature 几乎每任务都改 API,逐任务触发 QA 成本失衡）
 - 数据库 migration
 - 认证/授权/支付逻辑
-- 连续 5 个 task 未触发过 QA
+- 连续 5 个 task 未触发过 QA（缺少 N6 历史行的计数仅含尚未完成 feature 的已完成任务；自上次 triggered 以来的 skipped 任务语义不变）
 
 ## 跳过
 
@@ -57,11 +59,12 @@ QA 新增或修正测试也属于该 fix diff，不能在旁路写入。修复�
 审查、提交与日志证据。
 
 实际触发 QA 时按 `../../../runtime/logging.md` 写 `test_run/start` 与
-`test_run/complete`，只记录模式、用例/通过/失败/阻塞数量、结论和报告路径；
+`test_run/complete`，记录模式、用例/通过/失败/阻塞数量、结论和报告路径；start 与固定执行报告另列 `deferred_cases`（id 与未完成 taskIds）；
 测试输出、截图和浏览器日志仍留在 `.reviews/`。
 
-feature 存在 `test-cases.json` 时按 `runtime/test-contract.md` 消费：正式项目命令
-仍照常执行；browser cases 由 `cm-qa-engineer` 逐条模拟并保存截图/日志；
+feature 存在 `test-cases.json` 时按 `runtime/test-contract.md` 消费：中途 QA 的命令按
+选中 logic 用例映射，无用例映射的独立命令沿用配置策略；browser cases 由
+`cm-qa-engineer` 逐条模拟并保存截图/日志；
 N4 中的 `INSUFFICIENT_EVIDENCE` 必须在本节点补运行时证据或保持 `BLOCKED`。
 任一 blocking case 为 `FAIL`/`BLOCKED` 时不得宣称 QA 通过。
 

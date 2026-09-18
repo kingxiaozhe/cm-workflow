@@ -39,8 +39,9 @@ function fixture() {
 }
 
 function begin(f,executor) {
+  if(executor.prepare)executor={...executor,...executor.prepare()};
   const input={...f.binding,mode:executor.mode,caseCount:executor.caseCount};
-  recordCmAiQaRun({...input,phase:'start',logHome:f.configuration.logHome});
+  recordCmAiQaRun({...input,phase:'start',deferredCases:executor.configuration.plan.deferred_cases,logHome:f.configuration.logHome});
   return input;
 }
 
@@ -340,7 +341,7 @@ test('same-round successors require bound abandonment; repaired FAIL rounds stil
       if(variant==='wrong-id')rows[index].previous_test_run_id='wrong';
       if(variant==='duplicate')rows.splice(index,0,rows[index]);
       if(variant==='reset')rows.at(-1).attempt=2;
-      if(variant==='changed-mode')rows.at(-1).mode='browser';
+      if(variant==='changed-mode'){rows.at(-1).mode='browser';delete rows.at(-1).previous_test_run_id;}
       fs.writeFileSync(log,rows.map(row=>JSON.stringify(row)).join('\n')+'\n');
       assert.throws(()=>readCmAiQaRunRound({...query,testRunId:'retry-1'}),undefined,variant);
     }
@@ -430,4 +431,207 @@ test(`partial PASS recovery reruns the full real executor plan; abandoned crash=
       fs.writeFileSync(log,valid);
     }
   }finally{f.cleanup();}
+});
+
+function plannedExecutor(options) {
+  const executor=createHostQaExecutor(options);
+  return {...executor,...executor.prepare()};
+}
+
+function midFeature(f,{complete=false,empty=false}={}) {
+  const root=path.join(f.configuration.specsDir,f.configuration.feature);
+  fs.writeFileSync(path.join(root,'tasks.md'),Array.from({length:4},(_,i)=>
+    `- [${complete||i===0?'x':' '}] T-00${i+1}: fixture`).join('\n')+'\n');
+  const contract=JSON.parse(fs.readFileSync(path.join(root,'test-cases.json')));
+  contract.cases=Array.from({length:9},(_,i)=>({...contract.cases[0],id:`TC-00${i+1}`,
+    kind:[0,1,7].includes(i)?'logic':'browser',blocking:true,
+    taskIds:i===7&&!empty?['T-001']:i===2?['T-003','T-004']:['T-001','T-002']}));
+  fs.writeFileSync(path.join(root,'test-cases.json'),JSON.stringify(contract));
+  f.configuration.commands=[{...f.configuration.commands[0],id:'npm-test',caseIds:['TC-008']},
+    {...f.configuration.commands[0],id:'deferred-test',caseIds:['TC-001','TC-002']}];
+  return contract;
+}
+
+for(const complete of [false,true])test(`step30 four tasks / nine cases; feature complete=${complete}`,async()=>{
+  const f=fixture();
+  try{
+    const contract=midFeature(f,{complete}),seen=[];
+    const executor=plannedExecutor({...f.configuration,
+      logic:async request=>{seen.push(request.case.id);return {verdict:'SUPPORTED',evidence:['Synthetic source check']};},
+      browser:async request=>{
+        seen.push(request.case.id);
+        const artifact=path.join(f.configuration.specsDir,'.reviews',`${request.case.id}.txt`);
+        fs.writeFileSync(artifact,'Synthetic browser observation');
+        return {verdict:'PASS',evidence:[artifact],environment:request.environment,cleanup:'completed'};
+      }});
+    const plan=executor.configuration.plan;
+    const selected=complete?contract.cases.map(item=>item.id):['TC-008'];
+    const deferred=complete?[]:contract.cases.filter(item=>item.id!=='TC-008')
+      .map(item=>({id:item.id,taskIds:item.taskIds.filter(taskId=>taskId!=='T-001')}));
+    assert.deepEqual(plan.cases.map(item=>item.id),selected);
+    assert.deepEqual(plan.deferred_cases,deferred);
+    assert.deepEqual(plan.commands.map(item=>item.id),complete?['npm-test','deferred-test']:['npm-test']);
+    assert.equal(executor.caseCount,complete?11:2);
+    const binding=begin(f,executor);
+    await assert.rejects(executor.run({...binding,caseCount:executor.caseCount+1},new AbortController().signal),{code:'qa_execution_mismatch'});
+    const result=await executor.run(binding,new AbortController().signal);
+    assert.equal(result.result,'PASS');assert.equal(result.passed,executor.caseCount);assert.equal(result.blocked,0);
+    assert.deepEqual(seen.sort(),selected);
+    const report=fs.readFileSync(result.report,'utf8');assert(report.includes(JSON.stringify(deferred,null,2)));
+    const rows=fs.readFileSync(path.join(f.configuration.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(rows.find(row=>row.phase==='start').deferred_cases,deferred);
+    assert(!rows.some(row=>deferred.some(item=>item.id===row.case_id)));
+    console.log('STEP30 selection',JSON.stringify({complete,selected,deferred,commands:plan.commands.map(item=>item.id),caseCount:executor.caseCount,result:result.result}));
+  }finally{f.cleanup();}
+});
+
+test('step30 no applicable case or command remains explicitly BLOCKED',async()=>{
+  const f=fixture();
+  try{
+    midFeature(f,{empty:true});
+    fs.writeFileSync(path.join(f.configuration.codeProject,'.cm-workflow.json'),JSON.stringify({version:1,policies:{tests:['logic']}}));
+    const executor=plannedExecutor({...f.configuration,logic:()=>assert.fail('no deferred host request'),
+      browser:()=>assert.fail('no deferred browser request')});
+    assert.equal(executor.configuration.plan.cases.length,0);assert.equal(executor.configuration.plan.commands.length,0);
+    assert.equal(executor.configuration.plan.deferred_cases.length,9);
+    const binding=begin(f,executor),result=await executor.run(binding,new AbortController().signal);
+    assert.equal(result.result,'BLOCKED');assert.equal(result.passed,0);assert.equal(result.blocked,1);
+    assert.match(fs.readFileSync(result.report,'utf8'),/no-applicable-cases/);
+    recordCmAiQaRun({...binding,phase:'complete',result,logHome:f.configuration.logHome});
+    const {codeProject,mode,caseCount,...query}=binding;
+    assert.equal(inspectCmAiQaResult(query).status,'blocked');
+  }finally{f.cleanup();}
+});
+
+for(const afterAbandonment of [false,true])test(`step30 resume old ten-item QA into fresh two-item plan; abandoned=${afterAbandonment}`,async()=>{
+  const {createCmAiConversationEntry}=await import('../runtime/js/cm-ai/cm-ai-conversation-entry.mjs');
+  const {readCmAiQaRunRound}=await import('../runtime/js/cm-ai/cm-ai-qa-log.mjs');
+  const {inspectRunClosure}=await import('./cm-log-event.mjs');
+  const f=fixture();
+  try{
+    midFeature(f);
+    const log=path.join(f.configuration.specsDir,'运行日志.jsonl');
+    const old={...f.binding,mode:'all',caseCount:10,logHome:f.configuration.logHome};
+    recordCmAiQaRun({...old,phase:'start'});
+    const rows=()=>fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse);
+    fs.appendFileSync(log,JSON.stringify({...rows().at(-1),phase:'case_start',case_id:'TC-003'})+'\n');
+    if(afterAbandonment)recordCmAiQaRun({...old,phase:'abandoned'});
+    const before=fs.readFileSync(log,'utf8'),seen=[];
+    // Host construction precedes N5. Its plan must be refreshed after completion.
+    const tasks=path.join(f.configuration.specsDir,f.configuration.feature,'tasks.md');
+    const completedTasks=fs.readFileSync(tasks,'utf8');fs.writeFileSync(tasks,completedTasks.replace('[x]','[ ]'));
+    const executor=plannedExecutor({...f.configuration,
+      logic:async request=>{seen.push(request.case.id);return {verdict:'SUPPORTED',evidence:['Synthetic static observation']};},
+      browser:()=>assert.fail('unfinished browser case must never dispatch')});
+    assert.equal(executor.configuration.plan.cases.length,0);
+    fs.writeFileSync(tasks,completedTasks);
+    const completed={state:'fixture_completed',code:null,identity:f.binding.identity,packageDigest:f.binding.packageDigest};
+    const entry=createCmAiConversationEntry({specsDir:f.binding.specsDir,codeProject:f.binding.codeProject,
+      feature:f.binding.feature,identity:f.binding.identity,runner:{status:()=>completed,
+        executeEffect:async()=>assert.fail('no developer/reviewer replay'),cancel:()=>completed,run:async()=>completed},
+      qaLogHome:f.configuration.logHome,rerunUnknownQa:true,
+      qaDecisionProvider:{timeoutMs:1000,decide:()=>assert.fail('reuse historical decision')},qaExecutor:executor});
+    const operation={version:1,operation:'advance',requestId:'step30-resume',identity:f.binding.identity};
+    const result=await entry.handle(operation);assert.equal(result.code,'qa_passed',JSON.stringify(result));
+    assert.deepEqual(seen,['TC-008']);assert(fs.readFileSync(log,'utf8').startsWith(before));
+    const starts=rows().filter(row=>row.phase==='start'),fresh=starts.at(-1);
+    assert.equal(starts.length,2);assert.notEqual(fresh.operation_id,f.binding.testRunId);
+    assert.equal(fresh.previous_test_run_id,f.binding.testRunId);assert.equal(fresh.case_count,2);
+    assert.equal(fresh.deferred_cases.length,8);assert.equal(fresh.attempt,1);
+    assert.equal(rows().find(row=>row.phase==='abandoned').case_count,10);
+    assert.equal(inspectRunClosure(log,f.binding.identity.runId).closed,true);
+    const valid=fs.readFileSync(log,'utf8');
+    assert.equal((await entry.handle(operation)).code,'qa_passed');assert.deepEqual(seen,['TC-008']);
+    assert.equal(fs.readFileSync(log,'utf8'),valid);
+    const {codeProject,testRunId,...query}=f.binding;
+    for(const previous of [undefined,'wrong-predecessor']){
+      const invalid=rows();const start=invalid.filter(row=>row.phase==='start').at(-1);
+      if(previous===undefined)delete start.previous_test_run_id;else start.previous_test_run_id=previous;
+      fs.writeFileSync(log,invalid.map(JSON.stringify).join('\n')+'\n');
+      assert.throws(()=>readCmAiQaRunRound({...query,testRunId:fresh.operation_id}));
+      fs.writeFileSync(log,valid);
+    }
+  }finally{f.cleanup();}
+});
+
+test('step30 completed-but-dropped task does not make a mid-feature case applicable',()=>{
+  const f=fixture();
+  try{
+    midFeature(f);
+    const tasks=path.join(f.configuration.specsDir,f.configuration.feature,'tasks.md');
+    fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('- [ ] T-002: fixture','- [x] ~~T-002: fixture~~ [DROPPED v2]'));
+    const executor=plannedExecutor(f.configuration);
+    assert.deepEqual(executor.configuration.plan.cases.map(item=>item.id),['TC-008']);
+    assert.deepEqual(executor.configuration.plan.deferred_cases.find(item=>item.id==='TC-001'),{id:'TC-001',taskIds:['T-002']});
+  }finally{f.cleanup();}
+});
+
+test('step30 deferred-only command mappings do not block applicable browser cases',async()=>{
+  const f=fixture();
+  try{
+    const contract=midFeature(f),source=path.join(f.configuration.specsDir,f.configuration.feature,'test-cases.json');
+    contract.cases.find(item=>item.id==='TC-008').kind='browser';fs.writeFileSync(source,JSON.stringify(contract));
+    f.configuration.commands=f.configuration.commands.filter(item=>item.id==='deferred-test');
+    const executor=plannedExecutor({...f.configuration,browser:async request=>{
+      const artifact=path.join(f.configuration.specsDir,'.reviews','browser.txt');fs.writeFileSync(artifact,'Synthetic observation');
+      return {verdict:'PASS',evidence:[artifact],environment:request.environment,cleanup:'completed'};
+    }});
+    assert.deepEqual(executor.configuration.plan.modes,['browser']);assert.equal(executor.caseCount,1);
+    const result=await executor.run(begin(f,executor),new AbortController().signal);
+    assert.equal(result.result,'PASS');assert.equal(result.blocked,0);
+  }finally{f.cleanup();}
+});
+
+test('step30 invocation selection does not change the legacy persisted executor configuration',()=>{
+  const f=fixture();
+  try{
+    midFeature(f);
+    const before=createHostQaExecutor(f.configuration),selected=before.prepare();
+    assert.equal(selected.caseCount,2);assert.equal(before.caseCount,11);
+    assert.equal(Object.hasOwn(before.configuration.plan,'deferred_cases'),false);
+    const tasks=path.join(f.configuration.specsDir,f.configuration.feature,'tasks.md');
+    fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replaceAll('[ ]','[x]'));
+    const after=createHostQaExecutor(f.configuration);
+    assert.deepEqual(after.configuration,before.configuration);
+    assert.equal(after.mode,before.mode);assert.equal(after.caseCount,before.caseCount);
+    assert.equal(after.prepare().caseCount,11);
+    assert.deepEqual(selected.configuration.plan.cases.map(item=>item.id),['TC-008']);
+  }finally{f.cleanup();}
+});
+
+test('step30b empty mid-feature plan emits one explicit deferred BLOCKED row',async()=>{
+  const f=fixture();
+  try{
+    const contract=midFeature(f,{empty:true});
+    const executor=plannedExecutor({...f.configuration,logic:()=>assert.fail('no deferred logic request'),
+      browser:()=>assert.fail('no deferred browser request')});
+    const plan=executor.configuration.plan;
+    const deferred=contract.cases.map(item=>({id:item.id,taskIds:item.taskIds.filter(id=>id!=='T-001')}));
+    assert.deepEqual(plan.cases,[]);assert.deepEqual(plan.commands,[]);
+    assert.deepEqual(plan.modes,['commands']);assert.equal(executor.mode,'commands');
+    assert.equal(executor.caseCount,1);assert.deepEqual(plan.deferred_cases,deferred);
+    const binding=begin(f,executor);
+    const tasks=path.join(f.configuration.specsDir,f.configuration.feature,'tasks.md');
+    const original=fs.readFileSync(tasks,'utf8');
+    fs.writeFileSync(tasks,original.replace('- [ ] T-002','- [x] T-002'));
+    await assert.rejects(executor.run(binding,new AbortController().signal),{code:'qa_plan_changed'});
+    fs.writeFileSync(tasks,original);
+    const result=await executor.run(binding,new AbortController().signal);
+    assert.equal(result.result,'BLOCKED');assert.equal(result.passed,0);
+    assert.equal(result.failed,0);assert.equal(result.blocked,1);
+    const report=fs.readFileSync(result.report,'utf8');
+    const rows=report.split(/^## /m).slice(2).map(section=>JSON.parse(section.slice(section.indexOf('\n')).trim()));
+    assert.deepEqual(rows,[{id:'no-applicable-cases',kind:'commands',verdict:'BLOCKED',
+      evidence:['all applicable cases are bound to unfinished tasks; deferred to feature completion',
+        ...deferred.map(item=>`${item.id}: ${item.taskIds.join(', ')}`)]}]);
+    assert(report.includes(JSON.stringify(deferred,null,2)));
+    const log=fs.readFileSync(path.join(f.configuration.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(log.find(row=>row.event==='test_run'&&row.phase==='start').deferred_cases,deferred);
+    assert(!log.some(row=>row.event==='resource'||row.phase?.startsWith('case_')));
+    recordCmAiQaRun({...binding,phase:'complete',result,logHome:f.configuration.logHome});
+    const {codeProject,mode,caseCount,...query}=binding;
+    assert.equal(inspectCmAiQaResult(query).status,'blocked');
+    console.log('STEP30B reproduction',JSON.stringify({selected:plan.cases,deferred:plan.deferred_cases,
+      commands:plan.commands,caseCount:executor.caseCount,result,rows}));
+  }finally{f.cleanup();assert.equal(fs.existsSync(f.root),false);}
 });
