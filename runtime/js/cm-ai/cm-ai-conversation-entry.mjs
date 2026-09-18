@@ -171,9 +171,11 @@ export function createCmAiConversationEntry(options) {
   let rerunUnknownQa=options.rerunUnknownQa??false;need(typeof rerunUnknownQa==='boolean');
   if(Object.hasOwn(options,'qaExecutor')){
     shape(options.qaExecutor,['mode','caseCount','timeoutMs','run',
-      ...(Object.hasOwn(options.qaExecutor,'configuration')?['configuration']:[])]);
-    const {run,...config}=options.qaExecutor;
-    need(typeof run==='function');qaExecutor={...json(config),run};
+      ...(Object.hasOwn(options.qaExecutor,'configuration')?['configuration']:[]),
+      ...(Object.hasOwn(options.qaExecutor,'prepare')?['prepare']:[])]);
+    const {run,prepare,...config}=options.qaExecutor;
+    need(typeof run==='function'&&(prepare===undefined||typeof prepare==='function'));
+    qaExecutor={...json(config),run,...(prepare?{prepare}:{})};
     need(['commands','browser','all'].includes(config.mode)&&Number.isSafeInteger(config.caseCount)&&config.caseCount>0);
     need(Number.isInteger(config.timeoutMs)&&config.timeoutMs>=1&&config.timeoutMs<=3600000);
   }
@@ -266,6 +268,14 @@ export function createCmAiConversationEntry(options) {
         notCancelled();
         result=await call('qa',result.packageDigest);
         if(result.outcome==='recorded'&&result.code==='qa_triggered'&&qaExecutor!==null){
+          // The host is constructed before N5 marks the task complete. Freeze the
+          // execution plan only now, then retain it throughout this invocation.
+          if(qaExecutor.prepare){
+            const prepared=json(qaExecutor.prepare());shape(prepared,['mode','caseCount','configuration']);
+            need(['commands','browser','all'].includes(prepared.mode)
+              &&Number.isSafeInteger(prepared.caseCount)&&prepared.caseCount>0,'qa_plan_invalid');
+            qaExecutor={...qaExecutor,...prepared};
+          }
           notCancelled();
           need(pendingExecution===null,'qa_execution_pending');
           const binding={specsDir:options.specsDir,feature:options.feature,identity:result.identity,packageDigest:result.packageDigest};
@@ -295,11 +305,13 @@ export function createCmAiConversationEntry(options) {
             const logInput={...invocation,...(Object.hasOwn(options,'qaLogHome')?{logHome:options.qaLogHome}:{})};
             notCancelled();
             if(recovery){
-              need(qaExecutor.mode===recovery.mode&&qaExecutor.caseCount===recovery.caseCount,'qa_execution_mismatch');
-              recordCmAiQaRun({...logInput,testRunId:recovery.testRunId,phase:'abandoned'});
+              recordCmAiQaRun({...logInput,testRunId:recovery.testRunId,mode:recovery.mode,
+                caseCount:recovery.caseCount,phase:'abandoned'});
               rerunUnknownQa=false;
             }
-            recordCmAiQaRun({...logInput,phase:'start',...(recovery?{previousTestRunId:recovery.testRunId}:{})});
+            recordCmAiQaRun({...logInput,phase:'start',
+              deferredCases:qaExecutor.configuration?.plan?.deferred_cases??[],
+              ...(recovery?{previousTestRunId:recovery.testRunId}:{})});
             const controller=new AbortController();pendingExecution=controller;
             let timer,timedOut=false;
             try{
