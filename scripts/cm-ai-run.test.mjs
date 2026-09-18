@@ -267,6 +267,22 @@ test('control config does not accept executable callbacks or self-reported autho
   assert(!fs.existsSync(path.join(f.specsDir,'.reviews')));
 }));
 
+test('run definition errors identify unexpected and missing fields through the CLI',()=>fixture(async f=>{
+  const {validateRunDefinition}=await import('./cm-ai-run.mjs');
+  const missing={...f.definition};delete missing.requirements;
+  for(const [definition,code] of [
+    [{...f.definition,runtime:'codex'},'invalid_config: unexpected keys runtime'],
+    [missing,'invalid_config: missing keys requirements'],
+  ]){
+    assert.throws(()=>validateRunDefinition(definition),error=>error.code===code);
+    fs.writeFileSync(f.config,JSON.stringify(definition));
+    const result=f.invoke('create',[]);
+    assert.equal(result.status,1);
+    assert.deepEqual(JSON.parse(result.stderr),{error:{code}});
+    assert(!fs.existsSync(path.join(f.specsDir,'.reviews')));
+  }
+}));
+
 for(const operation of ['start','advance'])
 test(`JSONL status and cancel bypass an in-flight real runner effect: ${operation}`, {skip:!platform},()=>fixture(async f=>{
   const {openTaskExecutionStore}=await import('../runtime/js/cm-ai/task-owner.mjs');

@@ -29,7 +29,7 @@ const fixLocalPermissions=new Map(['red-test','baseline','regression','learning-
   'test-author','repair','cause-review','final-review']
   .map(name=>[`--allow-qa-fix-${name}`,`--allow-${name}`]));
 
-const usage='cm-ai-host.mjs serve --config PATH --mode create|resume --host-context ID --allow-development [--runtime codex|claude] [--failover] [--review-config PATH] [--allow-review-attempt 1|2] [--workflow-config PATH] [--allow-qa]\ncm-ai-host.mjs preflight --config PATH --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
+const usage='cm-ai-host.mjs serve --config RUN_DEFINITION.json --mode create|resume --host-context ID --allow-development [--runtime codex|claude] [--failover] [--review-config PATH] [--allow-review-attempt 1|2] [--workflow-config PATH] [--allow-qa]\ncm-ai-host.mjs preflight --config RUN_DEFINITION.json --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
 
 function reviewConfiguration(file){
   const info=fs.lstatSync(file);
@@ -239,7 +239,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     finally{if(rawMode)input.setRawMode(false);}
     return 0;
   }catch(cause){
-    const code=typeof cause?.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(cause.code)?cause.code:'host_launch_failed';
+    const code=typeof cause?.code==='string'&&(/^[a-z][a-z0-9_]{0,63}$/.test(cause.code)
+      ||cause.code.startsWith('invalid_config: '))?cause.code:'host_launch_failed';
     error.write(JSON.stringify({error:{code}})+'\n');return 1;
   }finally{bridge?.close();run?.close();}
 }

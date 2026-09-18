@@ -10,7 +10,7 @@ import {preQaConfigurations,readQaAttachment} from '../runtime/js/cm-ai/qa-attac
 import {recordCmAiQaAttachment} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
 
-const usage='cm-ai-run.mjs serve --config PATH --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
+const usage='cm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
 const fail=code=>{throw Object.assign(new Error(code),{code});};
 // In-process provenance only; a config flag cannot certify protected callbacks.
 const protectedExecutions=new WeakMap();
@@ -126,15 +126,22 @@ export async function createCodexExecution(configuration,authority){
 
 export function readRunDefinition(file){
   const info=fs.lstatSync(file);
-  if(!info.isFile()||info.isSymbolicLink()||info.size>64*1024)fail('invalid_config');
+  if(!info.isFile()||info.isSymbolicLink())fail('invalid_config: not a regular file');
+  if(info.size>64*1024)fail('invalid_config: file exceeds 64KiB');
   return validateRunDefinition(JSON.parse(fs.readFileSync(file,'utf8')));
 }
 export function validateRunDefinition(input){
   const value=structuredClone(input);
   const keys=['version','specsDir','codeProject','feature','identity','scope','requirements'];
   if(value&&Object.hasOwn(value,'codeProjects'))keys.push('codeProjects');
-  if(!value||typeof value!=='object'||Object.keys(value).sort().join()!==keys.sort().join()
-    ||value.version!==1)fail('invalid_config');
+  if(!value||typeof value!=='object')fail('invalid_config: expected an object');
+  const unexpected=Object.keys(value).filter(key=>!keys.includes(key));
+  const missing=keys.filter(key=>!Object.hasOwn(value,key));
+  if(unexpected.length||missing.length)fail('invalid_config: '+[
+    ...(unexpected.length?[`unexpected keys ${unexpected.join(',')}`]:[]),
+    ...(missing.length?[`missing keys ${missing.join(',')}`]:[]),
+  ].join('; '));
+  if(value.version!==1)fail('invalid_config: version must be 1');
   if(typeof value.feature!=='string'||!/^\d+\.[^/\\]+$/.test(value.feature))fail('invalid_feature');
   for(const key of ['specsDir','codeProject']){
     if(typeof value[key]!=='string'||!path.isAbsolute(value[key]))fail('invalid_path');
@@ -313,8 +320,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}
     await serveCmAiHost({host:run.host,input,output});return 0;
   }catch(cause){
-    // No raw config/source/provider text in protocol errors.
-    const code=typeof cause.code==='string'&&/^[a-z_]+$/.test(cause.code)?cause.code:'control_failed';
+    // Config diagnostics contain field names/reasons, never field values or provider text.
+    const code=typeof cause.code==='string'&&(/^[a-z_]+$/.test(cause.code)
+      ||cause.code.startsWith('invalid_config: '))?cause.code:'control_failed';
     error.write(JSON.stringify({error:{code}})+'\n');return 1;
   }finally{run?.close();}
 }

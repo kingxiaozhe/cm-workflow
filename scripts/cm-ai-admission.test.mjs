@@ -6,6 +6,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {parseFeatureTaskText,validDependencies} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
+import {validateRunDefinition} from './cm-ai-run.mjs';
 
 const entry=fileURLToPath(new URL('./cm-ai-admission.mjs',import.meta.url));
 function fixture(run){
@@ -36,6 +37,46 @@ test('product admission reports generic continuation without approving or writin
   assert.equal(result.status,0,result.stderr);assert.equal(JSON.parse(result.stdout).reason,'spec_approval_required');
   assert.deepEqual(fs.readFileSync(path.join(specs,'.cm-specs-status')),before);
   assert.equal(fs.readdirSync(root).length,2);
+}));
+
+test('ready admission prints a directly valid run definition without writing the project',()=>fixture(({root,specs,code})=>{
+  fs.writeFileSync(path.join(specs,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.login'],testCases:[]}));
+  fs.writeFileSync(path.join(code,'package.json'),JSON.stringify({name:'login-app'}));
+  const before=fs.readFileSync(path.join(specs,'.cm-specs-status'));
+  const result=spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,
+    '--print-run-definition','--scope','src/a.js'],{encoding:'utf8'});
+  assert.equal(result.status,0,result.stderr);assert.equal(result.stderr,'');
+  assert.equal(result.stdout.trim().split('\n').length,1);
+  const definition=JSON.parse(result.stdout);
+  assert.deepEqual(validateRunDefinition(definition),definition);
+  assert.deepEqual(definition,{version:1,specsDir:specs,codeProject:code,feature:'1.login',
+    identity:{repositoryId:'login-app',runId:'login-T-001',taskId:'T-001',attempt:1},scope:['src/a.js'],requirements:[]});
+  assert.deepEqual(fs.readFileSync(path.join(specs,'.cm-specs-status')),before);
+  assert.deepEqual(fs.readdirSync(root).sort(),['code','specs']);
+  assert.deepEqual(fs.readdirSync(code).sort(),['README.md','package.json']);
+  assert.deepEqual(fs.readdirSync(specs).sort(),['.cm-specs-status','1.login']);
+}));
+
+test('print-run-definition requires explicit scope and emits no draft when omitted',()=>fixture(({specs,code})=>{
+  fs.writeFileSync(path.join(specs,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.login'],testCases:[]}));
+  const result=spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,
+    '--print-run-definition'],{encoding:'utf8'});
+  assert.equal(result.status,2);
+  assert.equal(result.stdout,'');
+  assert.equal(result.stderr,'--print-run-definition 需要 --scope：本任务允许修改的文件，相对代码根，逗号分隔（例：--scope src/todos.js,test/todos.test.js）\n');
+}));
+
+test('print-run-definition preserves non-ready admission output and exit status',()=>fixture(({specs,code})=>{
+  const args=[entry,'--specs-dir',specs,'--code-project',code];
+  for(const status of ['awaiting_review','invalid']){
+    fs.writeFileSync(path.join(specs,'.cm-specs-status'),JSON.stringify({status,features:['1.login'],testCases:[]}));
+    const original=spawnSync(process.execPath,args,{encoding:'utf8'});
+    const printed=spawnSync(process.execPath,[...args,'--print-run-definition','--scope','src/a.js'],{encoding:'utf8'});
+    assert.notEqual(JSON.parse(printed.stdout).state,'ready');
+    assert.equal(printed.status,original.status);
+    assert.equal(printed.stdout,original.stdout);assert.equal(printed.stderr,original.stderr);
+    assert(!Object.hasOwn(JSON.parse(printed.stdout),'identity'));
+  }
 }));
 
 function writeFeature(specs,name,source){

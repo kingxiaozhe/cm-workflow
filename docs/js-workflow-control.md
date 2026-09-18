@@ -239,6 +239,8 @@ constraintChanges必须空；application/retrospective沿原Learning字段。此
 ```
 
 scope 和 requirements 是相对代码根的已有 runner 输入，不是额外写入授权。
+键必须恰好如示例，不得新增字段（已声明的多代码根模式仅允许原有可选 `codeProjects`）；定义参与摘要绑定，擅加字段会使同一次 run 的摘要漂移并导致 resume 失败。
+用准入生成器产出定义（`--scope` 必填，填写相对代码根、逗号分隔的允许修改文件；`--requirements` 可选，省略时为空数组）：`node scripts/cm-ai-admission.mjs --specs-dir /absolute/specs --code-project /absolute/code --print-run-definition --scope src/login.js --requirements requirements.md > run.json`。
 
 ```bash
 node scripts/cm-ai-run.mjs serve --config /absolute/run.json --mode create
