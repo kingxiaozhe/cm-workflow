@@ -26,6 +26,8 @@ export function shape(value,names) {
 }
 export const id=v=>need(typeof v==='string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(v));
 export const text=v=>need(typeof v==='string' && v.trim().length>0);
+export const validBlockedReason=v=>need(typeof v==='string'&&v.trim().length>0
+  &&Buffer.byteLength(v,'utf8')<=1000&&!/[\x00-\x08\x0b-\x1f]/.test(v));
 export const hex=v=>need(typeof v==='string' && /^[a-f0-9]{64}$/.test(v));
 export const freeze=v=>{if(v && typeof v==='object'){Object.values(v).forEach(freeze);Object.freeze(v);}return v;};
 export function arrayItems(value) {
@@ -80,7 +82,12 @@ export function requestFor({invocationId,identity,role,provider,requestedModel,c
 export function terminalFor(raw,request) {
   const v=json(raw);
   shape(v,['version','invocationId','contextId','provider','effectiveModel','status','accepted','result',
-    ...(Object.hasOwn(v,'providerThreadId')?['providerThreadId']:[])]);
+    ...(Object.hasOwn(v,'providerThreadId')?['providerThreadId']:[]),
+    ...(Object.hasOwn(v,'blockedReason')?['blockedReason']:[])]);
+  if(Object.hasOwn(v,'blockedReason')){
+    need(request.role==='developer'&&v.status==='failed'&&v.result===null);
+    validBlockedReason(v.blockedReason);
+  }
   if(Object.hasOwn(v,'providerThreadId')){need(request.role==='developer');id(v.providerThreadId);}
   need(v.version===1 && v.invocationId===request.invocationId && v.contextId===request.contextId
     && v.provider===request.provider,'terminal_mismatch');text(v.effectiveModel);

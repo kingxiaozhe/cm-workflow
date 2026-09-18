@@ -19,8 +19,9 @@ test(`real multi-task runner keeps QA and recovery authoritative: ${mode}`,()=>b
 for(const mode of ['parallel','parallel-retry','parallel-conflict','parallel-resume'])
 test(`parallel batch runs real isolated members: ${mode}`,()=>batchFixture(mode));
 
-test('ready member merges before blocked member preserves WIP and falls back only once',()=>
-  batchFixture('parallel-recovery',{terminalAgain:true}));
+test('ready member merges before blocked member preserves reason in log and WIP and falls back only once',async()=>{
+  for(const withReason of [true,false])await batchFixture('parallel-recovery',{terminalAgain:true,withReason});
+});
 test('serial fallback resumes from log and automatically commits its completed task',async()=>{
   for(const options of [{crashAt:'cleanup'},{crashAt:'serial'},
     {blockedIds:['T-001']},{blockedIds:['T-001','T-002']}])await batchFixture('parallel-recovery',options);
@@ -70,7 +71,7 @@ async function batchFixture(mode,options={}){
     const config={version:1,repositoryId:'batch-fixture',batchId:'batch-fixture',specsDir,codeProject,
       ...(parallel?{parallel:[[`${feature}/T-001`,`${feature}/T-002`]]}:{}),
       tasks:(parallel?['T-001','T-002','T-003']:['T-001','T-002']).map((taskId,index)=>({feature,taskId,scope:[`file${index}.js`],requirements:['requirements.md']}))};
-    const calls=[],qaCalls=[],assessments=[];let qaReady=mode!=='qa-resume',started;
+    const calls=[],qaCalls=[],assessments=[],blockedEvidence=[];let qaReady=mode!=='qa-resume',started;
     const began=new Promise(resolve=>{started=resolve;});
     let conflictHead=null,interrupted=false;
     const executionFor=async(definition,{parallelMember=false}={})=>({configuration:{kind:'batch-fixture-v1',...(parallelMember?{parallelMember:true}:{})},timeoutMs:3000,
@@ -86,10 +87,12 @@ async function batchFixture(mode,options={}){
             assert.equal(definition.identity.runId,`task-${digest({batchId:config.batchId,task:key,generation:2}).slice(0,48)}`);
             const rows=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
             const blocked=rows.find(row=>row.phase==='batch_member_blocked'&&row.from_key===key);
-            assert(blocked);assert.equal(blocked.generation,2);assert.equal(blocked.code,'failed');assert.equal(blocked.reason,'failed');
+            const expectedReason=options.withReason?'Expected stub throws; waiting for peer':'failed';
+            assert(blocked);assert.equal(blocked.generation,2);assert.equal(blocked.code,'failed');
             assert(!fs.existsSync(blocked.worktree));
             assert.match(git(codeProject,['log','-1','--format=%s',blocked.branch]),/^WIP .*: blocked \(failed\)$/);
-            assert.equal(git(codeProject,['log','-1','--format=%b',blocked.branch]),definition.identity.taskId==='T-001'?'first':'second');
+            blockedEvidence.push({reason:blocked.reason,body:git(codeProject,['log','-1','--format=%b',blocked.branch]),
+              expectedReason,description:definition.identity.taskId==='T-001'?'first':'second'});
             assert.equal(git(codeProject,['show',`${blocked.branch}:${definition.scope[0]}`]),'implemented');
             for(const id of ['T-001','T-002'].filter(id=>!blockedIds.includes(id))){
               const merged=rows.find(row=>row.phase==='batch_handoff'&&row.from_key===`${feature}/${id}`);
@@ -99,7 +102,7 @@ async function batchFixture(mode,options={}){
           }
           calls.push(definition.identity.taskId);fs.writeFileSync(path.join(definition.codeProject,definition.scope[0]),'implemented\n');
           if(recovery&&blockedIds.includes(definition.identity.taskId)&&(parallelMember||options.terminalAgain))
-            return {status:'succeeded',value:{outcome:'blocked',reason:'Expected stub throws; waiting for peer'}};
+            return {status:'succeeded',value:{outcome:'blocked',...(options.withReason?{reason:'Expected stub throws; waiting for peer'}:{})}};
           if(parallel&&definition.identity.taskId==='T-002')await new Promise(resolve=>setTimeout(resolve,50));
           if(mode==='parallel-conflict'&&definition.identity.taskId==='T-002'){
             fs.writeFileSync(path.join(codeProject,'file0.js'),'main conflict\n');git(codeProject,['add','file0.js']);git(codeProject,['commit','-m','concurrent main change']);conflictHead=git(codeProject,['rev-parse','HEAD']);
@@ -212,6 +215,12 @@ async function batchFixture(mode,options={}){
     }
     if(recovery&&options.crashAt){assert(interrupted);result=await open().handle({operation:'advance',requestId:'resume-recovery'});}
     if(recovery){
+      // Assert outside the worker: worker exceptions intentionally become unknown terminals.
+      assert(blockedEvidence.length>0);
+      for(const evidence of blockedEvidence){
+        assert.equal(evidence.reason,evidence.expectedReason);
+        assert.equal(evidence.body,evidence.description+'\n\n'+evidence.expectedReason);
+      }
       assert.equal(result.code,options.terminalAgain?'failed':'run_done',JSON.stringify(result));
       const before=[...calls];
       const resumed=await open().handle({operation:'advance',requestId:'resume-recovery-done'});

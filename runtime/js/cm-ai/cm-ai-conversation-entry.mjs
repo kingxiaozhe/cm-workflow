@@ -31,7 +31,9 @@ const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approv
   status.state==='fixture_completed'?'qa':'none';
 const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',operation:operation.operation,
   requestDigest:digest(operation),identity:status.identity,outcome,state:status.state,code:status.code??null,
-  packageDigest:status.packageDigest??null,pendingAction:pendingAction(status)});
+  packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),
+  ...(status.state==='blocked'&&status.calls?.at(-1)?.blockedReason!==undefined
+    ?{blockedReason:status.calls.at(-1).blockedReason}:{})});
 const correctionSummary=(operation,status)=>status.code==='correction_review_required'
   ?summary(operation,status,'blocked'):null;
 

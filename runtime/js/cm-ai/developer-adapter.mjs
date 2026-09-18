@@ -89,9 +89,10 @@ export function createDeveloperRun({worker,requestedModel,provider,protectedCurr
     need(r.requestedModel===requestedModel,'invalid_input');
     need(control?.signal&&typeof control.signal.aborted==='boolean','invalid_input');
     let providerThreadId;
-    const envelope=(status,result=null)=>terminalFor({version:1,invocationId:r.invocationId,
+    const envelope=(status,result=null,blockedReason=undefined)=>terminalFor({version:1,invocationId:r.invocationId,
       contextId:r.contextId,provider,effectiveModel:'unknown',status,
       accepted:!['unavailable','auth_required','permission_denied'].includes(status),result,
+      ...(blockedReason===undefined?{}:{blockedReason}),
       ...(providerThreadId===undefined?{}:{providerThreadId})},r);
     const failed=(code,reason)=>envelope('failed',{code,reason,
       ...(protectedCurrentSession&&code==='invalid_result'?{retryable:true}:{})});
@@ -111,9 +112,8 @@ export function createDeveloperRun({worker,requestedModel,provider,protectedCurr
       try{
         if(Object.hasOwn(response,'providerThread')){id(response.providerThread);providerThreadId=response.providerThread;}
         const result=validateDeveloperValue(response.value,r);
-        // Durable failureResult accepts only invalid_result/protected_edit_stale.
-        // Keep blocked non-retryable and checkpoint-compatible until that contract changes.
-        return result.outcome==='blocked'?envelope('failed'):envelope('succeeded',result);
+        // Preserve the null failure result; the explanation is diagnostic only.
+        return result.outcome==='blocked'?envelope('failed',null,result.reason):envelope('succeeded',result);
       }catch(error){return failed('invalid_result',error.code??'invalid_input');}
     }
     if(response.status==='failed'&&['invalid_result','protected_edit_stale'].includes(response.code))
