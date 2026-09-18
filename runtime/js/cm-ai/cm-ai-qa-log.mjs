@@ -3,8 +3,9 @@ import childProcess from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {hex,id,json,need,shape,text,validIdentity} from './effect-contract.mjs';
+import {digest,hex,id,json,need,shape,text,validIdentity} from './effect-contract.mjs';
 import {readQaAttachment} from './qa-attachment.mjs';
+import {writeCmAiQaStatus} from './cm-ai-run-finalizer.mjs';
 
 const writer=fileURLToPath(new URL('../../../scripts/cm-log-event.py',import.meta.url));
 const MiB=1024*1024;
@@ -177,10 +178,43 @@ function partialPassCases(items,code){
   return [...new Set(cases)].sort();
 }
 
-// An abandoned invocation is history, never a result. Only its explicit
-// successor may reuse a round; completed FAIL retries still advance 1..3.
-function validateRunSequence(items,code='qa_round_invalid'){
-  const starts=[],ids=new Set();let current=null,abandoned=false;
+// Read the executor's existing report format, including pre-recovery reports.
+// Summary counts alone cannot distinguish product failures from host evidence gaps.
+function blockedEvidenceCases(items,specsDir,environment,code='qa_rerun_not_blocked_by_evidence'){
+  const completes=items.filter(({row})=>row.phase==='complete');
+  need(completes.length===1,code);
+  const complete=completes[0].row,start=items[0]?.row;
+  need(start?.phase==='start'&&complete.result==='BLOCKED'&&complete.failed===0&&complete.blocked>0
+    &&complete.mode===start.mode&&complete.case_count===start.case_count
+    &&['case_count','passed','failed','blocked'].every(key=>Number.isSafeInteger(complete[key])&&complete[key]>=0)
+    &&complete.passed+complete.blocked===start.case_count
+    &&!items.some(({row})=>row.phase==='case_complete'&&row.result!=='PASS'),code);
+  let cases;
+  try{
+    const file=reportFile(specsDir,complete.report);need(fs.statSync(file).size<=MiB,code);
+    const sections=fs.readFileSync(file,'utf8').split(/^## /m).slice(1);
+    cases=sections.flatMap(section=>{
+      const split=section.indexOf('\n'),name=section.slice(0,split);
+      const row=JSON.parse(section.slice(split+1));
+      if(name==='deferred_cases'&&Array.isArray(row))return [];
+      need(row.id===name&&['commands','logic','browser'].includes(row.kind),code);id(row.id);return [row];
+    });
+  }catch{need(false,code);}
+  need(cases.length===start.case_count&&new Set(cases.map(row=>row.id)).size===cases.length
+    &&cases.filter(row=>row.verdict==='PASS').length===complete.passed
+    &&cases.filter(row=>row.verdict==='BLOCKED').length===complete.blocked,code);
+  const blocked=cases.filter(row=>row.verdict==='BLOCKED');
+  for(const row of blocked)need(!row.sourceChanged&&(
+    row.kind==='logic'&&row.staticVerdict==='INSUFFICIENT_EVIDENCE'
+    ||row.kind==='browser'&&(typeof row.evidenceProblem==='string'&&row.evidenceProblem.length>0
+      ||row.cleanup==='failed'||row.hostRequestTimeout===true
+      ||environment!=null&&row.environment!=null&&digest(row.environment)!==digest(environment))),code);
+  return blocked.map(row=>row.id).sort();
+}
+
+// Abandonment reuses a round; superseded completed evidence advances it.
+function validateRunSequence(items,code='qa_round_invalid',specsDir){
+  const starts=[],ids=new Set();let current=null,abandoned=false,superseded=false;
   for(const item of items){
     const row=item.row;
     if(row.phase==='start'){
@@ -190,10 +224,22 @@ function validateRunSequence(items,code='qa_round_invalid'){
         // Legacy successors retain their plan; explicit links may bind a fresh plan.
         if(row.previous_test_run_id===undefined)need(row.mode===current.mode&&row.case_count===current.case_count,code);
         else need(row.previous_test_run_id===current.operation_id,code);
-      }else need(row.previous_test_run_id===undefined,code);
-      current=row;abandoned=false;starts.push(item);
+      }else if(superseded)need(row.previous_test_run_id===current.operation_id,code);
+      else {
+        need(row.previous_test_run_id===undefined,code);
+        if(current)need(!items.some(entry=>entry.position<item.position&&entry.row.operation_id===current.operation_id
+          &&entry.row.phase==='complete'&&['BLOCKED','NEEDS_MANUAL'].includes(entry.row.result)),code);
+      }
+      current=row;abandoned=false;superseded=false;starts.push(item);
     }else{
-      need(current&&row.operation_id===current.operation_id&&row.attempt===current.attempt&&!abandoned,code);
+      need(current&&row.operation_id===current.operation_id&&row.attempt===current.attempt&&!abandoned&&!superseded,code);
+      if(row.phase==='superseded'){
+        need(current.attempt<3&&row.previous_test_run_id===current.operation_id&&row.reason==='host_evidence_problem'
+          &&row.mode===current.mode&&row.case_count===current.case_count,code);
+        const prior=items.filter(entry=>entry.position<item.position&&entry.row.operation_id===row.operation_id);
+        const blocked=blockedEvidenceCases(prior,specsDir,row.expected_environment,code);
+        need(JSON.stringify(row.blocked_cases)===JSON.stringify(blocked),code);superseded=true;
+      }
       if(row.phase==='abandoned'){
         need(row.previous_test_run_id===current.operation_id&&row.reason==='host_terminated'
           &&row.mode===current.mode&&row.case_count===current.case_count,code);
@@ -224,18 +270,24 @@ function qaRunRows(input){
 
 // Only a trusted resumed owner calls this after fresh explicit authorization.
 // Retain unknown for non-PASS results, even if their evidence files vanished.
-export function inspectCmAiQaRecovery(input){
-  const rows=qaRunRows(input),starts=validateRunSequence(rows),start=starts.at(-1).row;
+export function inspectCmAiQaRecovery(input,{blocked=false,environment=null}={}){
+  const rows=qaRunRows(input),starts=validateRunSequence(rows,'qa_round_invalid',input.specsDir),start=starts.at(-1).row;
   const runs=rows.filter(item=>item.row.operation_id===start.operation_id);
-  const passed=partialPassCases(runs,'qa_execution_unknown');
-  const report=path.join(input.specsDir,'.reviews',`${start.operation_id}-execution.md`);
-  let exists=false;try{fs.lstatSync(report);exists=true;}catch(error){if(error.code!=='ENOENT')throw error;}
-  need(!exists,'qa_execution_unknown');
   // Reject an operation ID reused under another decision, identity or package.
   scanRows(path.join(input.specsDir,'运行日志.jsonl'),row=>{
     if(row.event==='test_run'&&row.operation_id===start.operation_id)
       need(rows.some(item=>JSON.stringify(item.row)===JSON.stringify(row)),'qa_result_mismatch');
   });
+  if(blocked){
+    const blockedCases=blockedEvidenceCases(runs,input.specsDir,environment);
+    need(start.attempt<3,'qa_round_invalid');
+    return {testRunId:start.operation_id,qaRound:start.attempt,mode:start.mode,caseCount:start.case_count,
+      blockedCases,superseded:runs.some(({row})=>row.phase==='superseded')};
+  }
+  const passed=partialPassCases(runs,'qa_execution_unknown');
+  const report=path.join(input.specsDir,'.reviews',`${start.operation_id}-execution.md`);
+  let exists=false;try{fs.lstatSync(report);exists=true;}catch(error){if(error.code!=='ENOENT')throw error;}
+  need(!exists,'qa_execution_unknown');
   return {testRunId:start.operation_id,qaRound:start.attempt,mode:start.mode,caseCount:start.case_count,
     partialPassCases:passed,abandoned:runs.some(({row})=>row.phase==='abandoned')};
 }
@@ -263,16 +315,23 @@ export function recordCmAiQaRun(input) {
   if(Object.hasOwn(input,'qaRound'))keys.push('qaRound');
   if(Object.hasOwn(input,'previousTestRunId'))keys.push('previousTestRunId');
   if(Object.hasOwn(input,'deferredCases'))keys.push('deferredCases');
+  if(Object.hasOwn(input,'expectedEnvironment'))keys.push('expectedEnvironment');
   shape(input,keys);validIdentity(input.identity);id(input.testRunId);hex(input.packageDigest);
   text(input.specsDir);text(input.codeProject);text(input.feature);
   need(['commands','browser','all'].includes(input.mode));
   need(Number.isSafeInteger(input.caseCount)&&input.caseCount>0);
-  need(['start','complete','abandoned'].includes(input.phase));
+  need(['start','complete','abandoned','superseded'].includes(input.phase));
   const qaRound=input.qaRound??1;
   need(Number.isSafeInteger(qaRound)&&qaRound>=1&&qaRound<=3,'qa_round_invalid');
   const binding={specsDir:input.specsDir,feature:input.feature,identity:input.identity,packageDigest:input.packageDigest};
-  let passed=[];
-  if(input.phase==='abandoned'){
+  let passed=[],blockedCases=[];
+  if(input.phase==='superseded'){
+    const previous=inspectCmAiQaRecovery(binding,{blocked:true,environment:input.expectedEnvironment});
+    blockedCases=previous.blockedCases;
+    need(previous.testRunId===input.testRunId&&previous.qaRound===qaRound
+      &&previous.mode===input.mode&&previous.caseCount===input.caseCount,'qa_round_invalid');
+    if(previous.superseded)return;
+  }else if(input.phase==='abandoned'){
     const previous=inspectCmAiQaRecovery(binding);
     passed=previous.partialPassCases;
     need(previous.testRunId===input.testRunId&&previous.qaRound===qaRound
@@ -281,8 +340,10 @@ export function recordCmAiQaRun(input) {
   }else if(input.phase==='start'){
     let previous;
     if(Object.hasOwn(input,'previousTestRunId')){
-      previous=inspectCmAiQaRecovery(binding);
-      need(previous.abandoned&&previous.testRunId===input.previousTestRunId&&previous.qaRound===qaRound,'qa_round_invalid');
+      const rows=qaRunRows(binding),superseded=rows.at(-1)?.row.phase==='superseded';
+      previous=inspectCmAiQaRecovery(binding,{blocked:superseded,environment:rows.at(-1)?.row.expected_environment});
+      need((previous.abandoned||previous.superseded)&&previous.testRunId===input.previousTestRunId
+        &&previous.qaRound+(superseded?1:0)===qaRound,'qa_round_invalid');
     }else previous=latestCmAiQaRun(binding);
     scanRows(path.join(input.specsDir,'运行日志.jsonl'),row=>{
       need(!(row.event==='test_run'&&row.operation_id===input.testRunId),'qa_round_invalid');
@@ -309,6 +370,8 @@ export function recordCmAiQaRun(input) {
     data.deferred_cases=deferred;
   }
   if(input.phase==='abandoned')Object.assign(data,{previous_test_run_id:input.testRunId,reason:'host_terminated',partial_pass_cases:passed});
+  if(input.phase==='superseded')Object.assign(data,{previous_test_run_id:input.testRunId,
+    reason:'host_evidence_problem',blocked_cases:blockedCases,expected_environment:input.expectedEnvironment??null});
   if(input.phase==='complete'){
     const result=json(input.result);shape(result,['result','passed','failed','blocked','report']);
     for(const key of ['passed','failed','blocked'])need(Number.isSafeInteger(result[key])&&result[key]>=0,'qa_result_invalid');
@@ -324,7 +387,10 @@ export function recordCmAiQaRun(input) {
   if(Object.hasOwn(input,'logHome')){text(input.logHome);options.env={...process.env,CM_WORKFLOW_LOG_HOME:input.logHome};}
   const result=childProcess.spawnSync('python3',args,options);
   need(!result.error&&result.status===0&&result.signal===null,'qa_log_failed');
-  return readResult(result.stdout,input.identity,input.specsDir);
+  const logged=readResult(result.stdout,input.identity,input.specsDir);
+  if(input.phase==='complete')writeCmAiQaStatus({specsDir:input.specsDir,feature:input.feature,
+    identity:input.identity,phase:'complete',result:input.result});
+  return logged;
 }
 
 // Read the registered round before executing cases or publishing their result.
@@ -340,7 +406,7 @@ export function readCmAiQaRunRound(input){
       &&row.task===input.identity.taskId&&row.package_digest===input.packageDigest
       &&row.qa_decision_id===decision.decisionId)rows.push(row);
   });
-  const starts=validateRunSequence(rows.map((row,position)=>({row,position})));
+  const starts=validateRunSequence(rows.map((row,position)=>({row,position})),'qa_round_invalid',input.specsDir);
   const start=starts.at(-1).row;
   need(start.operation_id===testRunId&&!rows.some(row=>row.operation_id===testRunId
     &&['complete','abandoned'].includes(row.phase)),'qa_round_invalid');
@@ -392,7 +458,7 @@ function inspectQaResult(input,failureSource,historical=false) {
     &&Number.isSafeInteger(row.attempt)&&row.attempt>=1&&row.attempt<=3,'qa_result_invalid');
   const latestStarts=candidates.filter(item=>item.row.phase==='start');
   need(latestStarts.length>0,'qa_result_incomplete');
-  validateRunSequence(candidates,'qa_result_invalid');
+  validateRunSequence(candidates,'qa_result_invalid',input.specsDir);
   const latestStart=latestStarts.at(-1);
   if(!historical)need(latestStart.row.operation_id===input.testRunId,'qa_result_stale');
   const runs=candidates.filter(item=>item.row.operation_id===input.testRunId);

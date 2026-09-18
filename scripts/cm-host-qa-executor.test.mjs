@@ -174,7 +174,8 @@ test('host QA runs a declared command, retains blocking disabled modes and archi
     assert.equal(rows.filter(row=>row.event==='resource'&&row.phase==='acquired').length,1);
     assert.equal(rows.filter(row=>row.event==='resource'&&row.phase==='released').length,1);
     const status=JSON.parse(fs.readFileSync(path.join(input.specsDir,'.cm-status.json'),'utf8'));
-    assert.equal(status.node,'N6');assert(status.detail.includes('TC-002: case_complete'));
+    assert.equal(status.node,'N6');assert.equal(status.state,'qa_passed');
+    assert.equal(status.detail,'QA 结果 PASS（通过 3 / 失败 0 / 阻断 0）');
   }finally{f.cleanup();}
 });
 
@@ -634,4 +635,98 @@ test('step30b empty mid-feature plan emits one explicit deferred BLOCKED row',as
     console.log('STEP30B reproduction',JSON.stringify({selected:plan.cases,deferred:plan.deferred_cases,
       commands:plan.commands,caseCount:executor.caseCount,result,rows}));
   }finally{f.cleanup();assert.equal(fs.existsSync(f.root),false);}
+});
+
+for(const scenario of ['evidence','cleanup','environment','timeout','logic','commands','product-blocked',
+  'source-drift','FAIL','mixed-failure','round-limit','incomplete','superseded-crash','one-shot','metadata-command'])
+test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
+  const {createCmAiConversationEntry}=await import('../runtime/js/cm-ai/cm-ai-conversation-entry.mjs');
+  const {inspectCmAiQaRecovery}=await import('../runtime/js/cm-ai/cm-ai-qa-log.mjs');
+  const {inspectRunClosure}=await import('./cm-log-event.mjs');
+  const f=fixture();
+  try{
+    const artifact=path.join(f.binding.specsDir,'.reviews','browser.txt');fs.writeFileSync(artifact,'Synthetic observation');
+    if(scenario==='logic')f.configuration.commands[0].caseIds=[];
+    if(scenario==='metadata-command')f.configuration.commands[0].id='deferred_cases';
+    if(scenario==='commands')f.configuration.commands=[];
+    let repaired=false,browserCalls=0,logicCalls=0;
+    const executor=createHostQaExecutor({...f.configuration,
+      logic:async()=>{logicCalls++;return {verdict:scenario==='mixed-failure'?'CONTRADICTED':
+        scenario==='logic'?'INSUFFICIENT_EVIDENCE':'SUPPORTED',evidence:['Synthetic static observation']};},
+      browser:async request=>{
+        browserCalls++;
+        if(!repaired&&scenario==='source-drift')fs.appendFileSync(path.join(f.configuration.codeProject,'source.mjs'),'// drift\n');
+        if(!repaired&&scenario==='timeout')throw Object.assign(new Error('timeout'),{code:'host_request_timeout'});
+        return {verdict:!repaired&&scenario==='FAIL'?'FAIL':!repaired&&scenario==='product-blocked'?'BLOCKED':'PASS',
+          evidence:!repaired&&['evidence','source-drift','round-limit','incomplete','superseded-crash','one-shot','mixed-failure','metadata-command'].includes(scenario)
+            ?['not-an-evidence-file']: [artifact],
+          environment:!repaired&&scenario==='environment'?{...request.environment,target:'different-target'}:request.environment,
+          cleanup:!repaired&&scenario==='cleanup'?'failed':'completed'};
+      }});
+    const binding=begin(f,executor),result=await executor.run(binding,new AbortController().signal);
+    const {codeProject,testRunId,mode,caseCount,...query}=binding;
+    const base={...binding,logHome:f.configuration.logHome};
+    if(scenario!=='incomplete')recordCmAiQaRun({...base,phase:'complete',result});
+    if(scenario!=='incomplete'){
+      const state=JSON.parse(fs.readFileSync(path.join(binding.specsDir,'.cm-status.json')));
+      assert.equal(state.state,result.failed?'qa_failed':'qa_blocked');assert.equal(state.node,'N6');
+      assert.equal(state.detail,`QA 结果 ${result.result}（通过 ${result.passed} / 失败 ${result.failed} / 阻断 ${result.blocked}）`);
+    }
+    const log=path.join(binding.specsDir,'运行日志.jsonl'),rows=()=>fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse);
+    if(scenario==='round-limit')for(let round=1;round<3;round++){
+      const previous=round===1?testRunId:`blocked-${round}`;
+      recordCmAiQaRun({...base,testRunId:previous,qaRound:round,phase:'superseded'});
+      recordCmAiQaRun({...base,testRunId:`blocked-${round+1}`,qaRound:round+1,previousTestRunId:previous,phase:'start'});
+      recordCmAiQaRun({...base,testRunId:`blocked-${round+1}`,qaRound:round+1,phase:'complete',result});
+    }
+    if(scenario==='superseded-crash'){
+      recordCmAiQaRun({...base,phase:'superseded'});
+      assert.equal(inspectRunClosure(log,binding.identity.runId).closed,false);
+      assert.throws(()=>recordCmAiQaRun({...base,testRunId:'bad-link',qaRound:2,previousTestRunId:'wrong',phase:'start'}));
+    }
+    const completed={state:'fixture_completed',code:null,identity:binding.identity,packageDigest:binding.packageDigest};
+    const options={specsDir:query.specsDir,feature:query.feature,identity:query.identity,codeProject,runner:{status:()=>completed,executeEffect:()=>assert.fail('no development/Review replay'),
+      cancel:()=>completed,run:()=>assert.fail('no task replay')},qaExecutor:executor,qaLogHome:f.configuration.logHome,
+      qaDecisionProvider:{timeoutMs:1000,decide:()=>assert.fail('no repeated QA decision')}};
+    const operation={version:1,operation:'advance',requestId:'rerun-blocked',identity:binding.identity};
+    const before=fs.readFileSync(log);
+    const without=await createCmAiConversationEntry(options).handle(operation);
+    assert.equal(without.code,scenario==='incomplete'?'qa_execution_unknown':result.failed?'qa_failed':'qa_result_blocked');
+    if(!result.failed&&scenario!=='incomplete')assert.equal(without.pendingAction,'none');
+    assert.deepEqual(fs.readFileSync(log),before);
+    const entry=createCmAiConversationEntry({...options,rerunBlockedQa:true});
+    if(['commands','product-blocked','source-drift','FAIL','mixed-failure','round-limit','incomplete'].includes(scenario)){
+      const rejected=await entry.handle(operation);
+      assert.equal(rejected.code,scenario==='round-limit'?'qa_round_invalid':scenario==='incomplete'?'qa_execution_unknown':'qa_rerun_not_blocked_by_evidence');
+      assert.deepEqual(fs.readFileSync(log),before);assert.equal(browserCalls,1);
+    }else{
+      const queried=await entry.handle({...operation,operation:'qa_result',packageDigest:binding.packageDigest,testRunId});
+      assert.equal(queried.pendingAction,'qa');
+      repaired=scenario!=='one-shot';
+      const rerun=await entry.handle(operation);
+      assert.equal(rerun.code,['logic','one-shot'].includes(scenario)?'qa_result_blocked':'qa_passed',JSON.stringify(rerun));
+      assert.equal(browserCalls,2);assert.equal(logicCalls,2);
+      assert.equal(rows().filter(row=>row.phase==='superseded').length,1);
+      const starts=rows().filter(row=>row.phase==='start');assert.deepEqual(starts.map(row=>row.attempt),[1,2]);
+      assert.equal(starts[1].previous_test_run_id,testRunId);assert.notEqual(starts[1].operation_id,testRunId);
+      assert.equal(rows().filter(row=>row.phase==='complete').length,2);
+      assert.equal(rows().filter(row=>row.event==='qa').length,1);
+      assert.equal(inspectRunClosure(log,binding.identity.runId).closed,true);
+      assert.throws(()=>inspectCmAiQaResult({...query,testRunId}),{code:'qa_result_stale'});
+      const after=fs.readFileSync(log);await entry.handle(operation);
+      assert.equal(browserCalls,2);assert.deepEqual(fs.readFileSync(log),after);
+      // Replay checks the predecessor's evidence and exact blocked case set.
+      for(const tamper of [
+        rows=>{rows.find(row=>row.phase==='superseded').blocked_cases=['invented'];},
+        rows=>{rows.find(row=>row.phase==='complete').mode='browser';},
+        rows=>{rows.find(row=>row.phase==='complete').passed=String(result.passed);},
+        rows=>{rows.splice(rows.findIndex(row=>row.phase==='superseded'),1);
+          delete rows.filter(row=>row.phase==='start')[1].previous_test_run_id;},
+      ]){
+        const corrupt=rows();tamper(corrupt);
+        fs.writeFileSync(log,corrupt.map(JSON.stringify).join('\n')+'\n');
+        assert.throws(()=>inspectCmAiQaRecovery(query,{blocked:true}));fs.writeFileSync(log,after);
+      }
+    }
+  }finally{f.cleanup();}
 });

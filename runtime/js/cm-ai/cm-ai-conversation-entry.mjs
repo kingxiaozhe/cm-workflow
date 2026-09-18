@@ -126,6 +126,7 @@ export function createCmAiConversationEntry(options) {
   if(options&&Object.hasOwn(options,'qaDecisionProvider'))optionKeys.push('qaDecisionProvider');
   if(options&&Object.hasOwn(options,'qaExecutor'))optionKeys.push('qaExecutor');
   if(options&&Object.hasOwn(options,'rerunUnknownQa'))optionKeys.push('rerunUnknownQa');
+  if(options&&Object.hasOwn(options,'rerunBlockedQa'))optionKeys.push('rerunBlockedQa');
   if(options&&Object.hasOwn(options,'qaLogHome'))optionKeys.push('qaLogHome');
   if(options&&Object.hasOwn(options,'applicableAgentFiles'))optionKeys.push('applicableAgentFiles');
   if(options&&Object.hasOwn(options,'documentationResult'))optionKeys.push('documentationResult');
@@ -169,6 +170,8 @@ export function createCmAiConversationEntry(options) {
   let pendingQa=null;
   let qaExecutor=null,pendingExecution=null,cancellationEpoch=0;
   let rerunUnknownQa=options.rerunUnknownQa??false;need(typeof rerunUnknownQa==='boolean');
+  let rerunBlockedQa=options.rerunBlockedQa??false;need(typeof rerunBlockedQa==='boolean');
+  need(!(rerunUnknownQa&&rerunBlockedQa),'qa_recovery_authorization_required');
   if(Object.hasOwn(options,'qaExecutor')){
     shape(options.qaExecutor,['mode','caseCount','timeoutMs','run',
       ...(Object.hasOwn(options.qaExecutor,'configuration')?['configuration']:[]),
@@ -290,13 +293,17 @@ export function createCmAiConversationEntry(options) {
             if(recovery===null)return summary(operation,{...runner.status(),code:'qa_execution_unknown'},'blocked');
             previous=null;
           }
+          if(rerunBlockedQa){
+            need(previous!==null,'qa_rerun_not_blocked_by_evidence');
+            recovery=inspectCmAiQaRecovery(binding,{blocked:true,environment:qaExecutor.configuration?.environment});
+          }
           let testRunId=previous?.testRunId;
           const accepted=runner.status().acceptedQaFix;
           const repaired=previous?.status==='failed'&&accepted?.testRunId===previous.testRunId;
-          if(previous===null||repaired){
-            // Later rounds require an original completed child accepted by the
-            // parent journal. Unknown executions and unrepaired failures stop.
-            const qaRound=recovery?.qaRound??(repaired?accepted.qaRound+1:1);
+          if(previous===null||repaired||rerunBlockedQa){
+            // Later rounds require an accepted completed repair or explicit
+            // evidence-only BLOCKED recovery. Unknown and unrepaired FAIL stop.
+            const qaRound=recovery?recovery.qaRound+(rerunBlockedQa?1:0):(repaired?accepted.qaRound+1:1);
             need(qaRound>=1&&qaRound<=3,'qa_round_invalid');
             testRunId=`qa-${digest(recovery?{...binding,previousTestRunId:recovery.testRunId}:
               repaired?{...binding,qaRound,repair:accepted.evidenceDigest}:binding).slice(0,48)}`;
@@ -306,8 +313,9 @@ export function createCmAiConversationEntry(options) {
             notCancelled();
             if(recovery){
               recordCmAiQaRun({...logInput,testRunId:recovery.testRunId,mode:recovery.mode,
-                caseCount:recovery.caseCount,phase:'abandoned'});
-              rerunUnknownQa=false;
+                caseCount:recovery.caseCount,qaRound:recovery.qaRound,phase:rerunBlockedQa?'superseded':'abandoned',
+                ...(rerunBlockedQa?{expectedEnvironment:qaExecutor.configuration?.environment??null}:{})});
+              rerunUnknownQa=false;rerunBlockedQa=false;
             }
             recordCmAiQaRun({...logInput,phase:'start',
               deferredCases:qaExecutor.configuration?.plan?.deferred_cases??[],
@@ -478,7 +486,8 @@ export function createCmAiConversationEntry(options) {
           pendingAction:fixHandoff.status==='authorization_required'?'fix_authorization':
             fixHandoff.status==='dispatch_required'?'fix_dispatch':'none'});
       }
-      return summary(operation,{...status,code},'verified');
+      return freeze({...summary(operation,{...status,code},'verified'),
+        ...(code==='qa_result_blocked'&&rerunBlockedQa?{pendingAction:'qa'}:{})});
     }
     if(operation.operation==='context_refresh'){
       const status=boundStatus(runner.status(),identity);

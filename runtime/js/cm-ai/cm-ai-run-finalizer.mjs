@@ -45,11 +45,15 @@ function prepareStatus({specs,target},feature,identity,progress=null) {
 }
 
 // Existing status file is only the current log projection, not a task store.
-export function writeCmAiQaStatus({specsDir,feature,identity,caseId,phase}) {
-  validIdentity(identity);text(feature);id(caseId);
-  need(['case_start','case_complete','case_blocked'].includes(phase));
+export function writeCmAiQaStatus({specsDir,feature,identity,caseId,phase,result}) {
+  validIdentity(identity);text(feature);
+  need(['case_start','case_complete','case_blocked','complete'].includes(phase));
+  if(phase!=='complete')id(caseId);
+  else need(['PASS','FAIL','BLOCKED'].includes(result?.result),'qa_result_invalid');
   const prepared=prepareStatus(statusTarget(specsDir),feature,identity,{node:'N6',feature,task:identity.taskId,
-    detail:`QA ${caseId}: ${phase}`,state:'qa_running',at:new Date().toTimeString().slice(0,8)});
+    detail:phase==='complete'?`QA 结果 ${result.result}（通过 ${result.passed} / 失败 ${result.failed} / 阻断 ${result.blocked}）`:`QA ${caseId}: ${phase}`,
+    state:phase==='complete'?{PASS:'qa_passed',FAIL:'qa_failed',BLOCKED:'qa_blocked'}[result.result]:'qa_running',
+    at:new Date().toTimeString().slice(0,8)});
   try{
     fs.renameSync(prepared.temporary,prepared.target);
     const directory=fs.openSync(prepared.specs,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);

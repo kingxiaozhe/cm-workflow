@@ -92,6 +92,15 @@ QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.tim
 所有用例仍全部重跑，旧 PASS 证据文件只作历史保留。任一 FAIL/BLOCKED、固定报告
 `{testRunId}-execution.md` 或未清理资源都不满足恢复条件；保留 unknown/阻断供人工核对，
 不删报告或日志来获得重跑资格，不伪造 complete。仅写了 abandoned 后再中断可沿同一授权入口恢复。
+已 complete 的宿主证据阻断可用单任务 `--mode resume --workflow-config {原配置} --allow-qa --rerun-blocked-qa`，
+再 `advance`：仅最新结果为 BLOCKED、failed=0、qaRound<3，且每条 BLOCKED 都是 browser 的 evidenceProblem、
+cleanup=failed、环境摘要不一致或 hostRequestTimeout，或 logic 的 INSUFFICIENT_EVIDENCE 时允许。
+commands 阻断（含 commands-unavailable/no-applicable-cases）、产品 FAIL、源码漂移和未 complete 不适用。
+先写 `test_run/superseded`（previous_test_run_id、reason=host_evidence_problem、blocked_cases），再以新 testRunId、
+qaRound+1 写带 previous_test_run_id 的 start，全部用例重跑；旧 PASS 仅保留历史，最多三轮，不重做 QA 决策、
+开发或审查，不改 tasks。开关一次性消费且不持久化，不与 --rerun-unknown-qa 合用；仅写 superseded 后中断，
+须重新显式授权恢复。complete 同步 N6 状态镜像为 qa_passed/qa_failed/qa_blocked，并显示本轮通过/失败/阻断数量。
+（事故：宿主把非文件说明混入 browser evidence，导致已完成任务的收尾 QA 无法恢复。）
 QA命令复用同一specs只读沙箱。最终任务的documentationPaths必须已在批准scope内，
 在同一次受保护开发调用中同步，随后进入原检查/handoff/Review；不派发宿主documentation_sync，也不增加模型轮次。
 宿主仍处理qa_assess/qa_logic/qa_browser及只读documentation_inspect；不得借这些请求改代码、规格或指令。
