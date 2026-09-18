@@ -5,6 +5,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createCmAiBatch} from './cm-ai-batch-run.mjs';
 import {createConversationExecution,readConversationReviewConfiguration,readConversationProtection,runReviewPreflight} from './cm-ai-host.mjs';
+import {loadConfig,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
 import {preflightMatches} from '../runtime/js/cm-ai/worker-codex.mjs';
 import {claudePreflightMatches} from '../runtime/js/cm-ai/worker-claude.mjs';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
@@ -12,7 +13,7 @@ import {serveCmAiHost} from '../runtime/js/cm-ai/host-session.mjs';
 import {validateHostWorkflowConfiguration} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {digest,json,need,shape} from '../runtime/js/cm-ai/effect-contract.mjs';
 
-const usage='cm-ai-batch-host.mjs serve --config PATH --host-context ID --allow-development [--runtime codex|claude] [--review-config PATH] [--allow-review FEATURE/TASK:1|2]... [--allow-qa]';
+const usage='cm-ai-batch-host.mjs serve --config PATH --host-context ID --allow-development [--runtime codex|claude] [--review-config PATH] [--allow-review FEATURE/TASK:1|2]... [--allow-qa] [--protected-conversation-config PATH | --protected-config PATH] [--allow-provider-development FEATURE/TASK:1|2]...';
 const safeCode=error=>typeof error?.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(error.code)?error.code:'batch_host_failed';
 
 async function memberReviewConfiguration(batch,definition,review,runtime){
@@ -40,7 +41,7 @@ async function memberReviewConfiguration(batch,definition,review,runtime){
 }
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
-  if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\nOptional --protected-conversation-config PATH uses the shared current-host scoped text proposals and native sandbox checks; {checkCommands,timeoutMs}. No extra model call, same Codex/Claude runtime and per-task Review permissions. Optional bundle.bootstraps maps approved bootstrap task keys to {selection}; --allow-bootstrap-write grants only those fixed instruction/scaffold steps. Optional batch.codeProjects uses prefixed paths and checks with codeProject per command; one task remains one completion gate.\n');return 0;}
+  if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\nOptional --protected-conversation-config PATH uses the shared current-host scoped text proposals and native sandbox checks; {checkCommands,timeoutMs}. No extra model call, same Codex/Claude runtime and per-task Review permissions. Optional --protected-config PATH {model,checkCommands,timeoutMs} enables CLI development only for per-task --allow-provider-development FEATURE/TASK:1|2 grants; mutually exclusive with --protected-conversation-config. Optional bundle.bootstraps maps approved bootstrap task keys to {selection}; --allow-bootstrap-write grants only those fixed instruction/scaffold steps. Optional batch.codeProjects uses prefixed paths and checks with codeProject per command; one task remains one completion gate.\n');return 0;}
   let bridge;
   try{
     need(argv.length>=6&&argv[0]==='serve'&&argv[1]==='--config'&&argv[3]==='--host-context'
@@ -58,13 +59,25 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     }
     need(keys.length===Object.keys(workflows).length&&keys.every(key=>Object.hasOwn(workflows,key)),'workflow_task_mismatch');
     for(const key of keys)if(workflows[key]!==null)validateHostWorkflowConfiguration(workflows[key]);
-    let review=null,allowQa=false,allowBootstrap=false,runtime=null,protection=null;const approvals=new Set();
+    let review=null,allowQa=false,allowBootstrap=false,runtime=null,protection=null,providerConfig=null;const approvals=new Set(),developments=new Map();
     for(let index=6;index<argv.length;index++){
       const name=argv[index];
       if(name==='--allow-qa'){need(!allowQa,'invalid_arguments');allowQa=true;}
       else if(name==='--allow-bootstrap-write'){need(!allowBootstrap&&bootstraps!==null,'invalid_arguments');allowBootstrap=true;}
       else if(name==='--protected-conversation-config'){
-        need(protection===null&&typeof argv[index+1]==='string','invalid_arguments');protection=readConversationProtection(argv[++index]);
+        need(protection===null&&providerConfig===null&&typeof argv[index+1]==='string','invalid_arguments');protection=readConversationProtection(argv[++index]);
+      }
+      else if(name==='--protected-config'){
+        need(protection===null&&providerConfig===null&&typeof argv[index+1]==='string','invalid_arguments');
+        const file=argv[++index],info=fs.lstatSync(file);
+        need(info.isFile()&&!info.isSymbolicLink()&&info.size<=64*1024,'invalid_protected_config');
+        providerConfig=json(JSON.parse(fs.readFileSync(file,'utf8')));shape(providerConfig,['model','checkCommands','timeoutMs']);
+      }
+      else if(name==='--allow-provider-development'){
+        const approval=argv[++index];need(typeof approval==='string','invalid_arguments');
+        const split=approval.lastIndexOf(':'),key=approval.slice(0,split),attempt=approval.slice(split+1);
+        need(keys.includes(key)&&['1','2'].includes(attempt),'invalid_arguments');
+        need(!developments.has(key),'invalid_arguments');developments.set(key,Number(attempt));
       }
       else if(name==='--runtime'){
         need(runtime===null&&['codex','claude'].includes(argv[index+1]),'invalid_runtime');runtime=argv[++index];
@@ -76,6 +89,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         need(keys.includes(key)&&['1','2'].includes(attempt),'review_task_mismatch');approvals.add(approval);
       }else need(false,'invalid_arguments');
     }
+    need(!developments.size||providerConfig!==null,'protected_configuration_required');
     need(!approvals.size||review!==null,'review_configuration_required');
     need(allowQa||!Object.values(workflows).some(item=>item?.qa!=null),'qa_authorization_required');
     bridge=createHostToolBridge();
@@ -87,14 +101,20 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       hostCallTail=pending.then(()=>{},()=>{});return pending;
     }};
     const driver=createCmAiBatch({configuration:batch,logHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
-      runtime:runtime??'codex',checkCommands:protection?.checkCommands??null,checkTimeoutMs:protection?.timeoutMs??60000,
+      runtime:runtime??'codex',checkCommands:(providerConfig??protection)?.checkCommands??null,checkTimeoutMs:(providerConfig??protection)?.timeoutMs??60000,
       executionFor:async(definition,{parallelMember=false}={})=>{
         const key=`${definition.feature}/${definition.identity.taskId}`;
         const attempts=[1,2].filter(attempt=>approvals.has(`${key}:${attempt}`));
         const memberReview=parallelMember?await memberReviewConfiguration(batch,definition,review,runtime??'codex'):review;
         const execution=createConversationExecution(definition,argv[4],parallelMember?memberBridge:bridge,memberReview,attempts,workflows[key],allowQa,runtime??'codex',
           {parallelMember,batchWorkflowsDigest:digest(bootstraps?{workflows,bootstraps}:workflows),qaLogHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
-            ...(protection?{protection}:{}),...(bootstraps?.[key]?{bootstrap:{...bootstraps[key],allowWrite:allowBootstrap}}:{})});
+            // A protected CLI config also protects unauthorized tasks: they stay on the
+            // current-session transport but with the same sandbox checks (protected-text edits).
+            ...(protection?{protection}:providerConfig?{protection:{checkCommands:providerConfig.checkCommands,timeoutMs:providerConfig.timeoutMs}}:{}),
+            ...(developments.has(key)?{
+              providerDevelopment:{model:providerConfig.model,attempt:developments.get(key),
+                ...resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),runtime??'codex')},
+            }:{}),...(bootstraps?.[key]?{bootstrap:{...bootstraps[key],allowWrite:allowBootstrap}}:{})});
         // Bind the entire approved capability map before the first task starts,
         // so a later task's commands/scope cannot silently change during resume.
         return execution;

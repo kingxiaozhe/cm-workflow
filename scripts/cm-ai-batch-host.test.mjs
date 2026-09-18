@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {preflightMatches} from '../runtime/js/cm-ai/worker-codex.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {claudeReviewFingerprint} from '../runtime/js/cm-ai/worker-claude.mjs';
@@ -212,5 +212,64 @@ let input='';process.stdin.on('data',part=>input+=part);process.stdin.on('end',(
     const refreshed=await execute(f,[]);assert.equal(refreshed.result.code,'decision_required');assert.deepEqual(refreshed.calls,[]);
     assert.equal(probes().length,4);
     assert.equal(fs.readFileSync(path.join(directory,'preflight-T-002.json'),'utf8'),receipts[1]);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('provider development grants select worktree runtimes and keep the serial task on protected conversation transport',async()=>{
+  const f=fixture();
+  try{
+    const worktree=path.join(f.root,'member');fs.mkdirSync(worktree);
+    fs.writeFileSync(path.join(worktree,'.cm-workflow.yml'),
+      'version: 1\nruntimes:\n  available: both\nroles:\n  coder:\n    adapter: claude-cli\n  reviewer:\n    adapter: codex-cli\n');
+    fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.yml'),'version: 1\nruntimes:\n  available: codex\n');
+    const protection={model:'fixture-coder',checkCommands:[{id:'syntax',command:[process.execPath,'--check','task1.mjs']}],timeoutMs:12345};
+    const protectedFile=path.join(f.root,'protected.json');fs.writeFileSync(protectedFile,JSON.stringify(protection));
+    const stub=path.join(f.root,'stub.mjs'),host=path.join(f.root,'batch-host.mjs');
+    const hostModule=new URL('./cm-ai-host.mjs',import.meta.url).href;
+    const workerModule=new URL('../runtime/js/cm-ai/codex-config.mjs',import.meta.url).href;
+    fs.writeFileSync(stub,`
+import {configFingerprint} from ${JSON.stringify(workerModule)};
+export {readConversationReviewConfiguration,readConversationProtection} from ${JSON.stringify(hostModule)};
+export const calls=[];export let scheduler;
+export function createConversationExecution(...args){calls.push(args);return {};}
+export async function runReviewPreflight(definition,{model}){return {model,disabledSkills:[],preflight:{passed:true,
+  cli_model:model,prompt_transport:'stdin',config_fingerprint:configFingerprint({cwd:definition.codeProject,model})}};}
+export function createCmAiBatch(options){scheduler=options;return {async handle(){
+  for(const [index,task] of options.configuration.tasks.entries())await options.executionFor({feature:task.feature,
+    identity:{taskId:task.taskId},codeProject:index===0?${JSON.stringify(worktree)}:options.configuration.codeProject},
+    {parallelMember:index===0});return {};}};}
+export async function serveCmAiHost({host}){await host.handle({});}
+`);
+    // Keep production parsing and executionFor intact; capture the factory boundary without launching a CLI.
+    const stubUrl=pathToFileURL(stub).href;
+    const source=fs.readFileSync(cli,'utf8').replace(/from '([^']+)'/g,(match,specifier)=>{
+      if(['./cm-ai-batch-run.mjs','./cm-ai-host.mjs','../runtime/js/cm-ai/host-session.mjs'].includes(specifier))return `from '${stubUrl}'`;
+      return specifier.startsWith('.')?`from '${new URL(specifier,new URL('./cm-ai-batch-host.mjs',import.meta.url)).href}'`:match;
+    });
+    fs.writeFileSync(host,source);
+    const {main}=await import(pathToFileURL(host).href),capture=await import(stubUrl);
+    let stderr='';const io={input:{},output:{write(){}},error:{write(value){stderr+=value;}}};
+    const args=[...f.args,'--protected-config',protectedFile,'--allow-provider-development','1.work/T-001:2'];
+    assert.equal(await main(args,io),0,stderr);
+    assert.equal(capture.calls.length,2);
+    const member=capture.calls[0][8],serial=capture.calls[1][8];
+    assert.equal(member.parallelMember,true);
+    assert.deepEqual(member.protection,{checkCommands:protection.checkCommands,timeoutMs:12345});
+    assert.deepEqual(member.providerDevelopment,{model:'fixture-coder',attempt:2,coderRuntime:'claude',reviewerRuntime:'codex'});
+    assert.equal(serial.parallelMember,false);
+    assert.deepEqual(serial.protection,{checkCommands:protection.checkCommands,timeoutMs:12345});
+    assert.equal(Object.hasOwn(serial,'providerDevelopment'),false);
+    assert.deepEqual(capture.scheduler.checkCommands,protection.checkCommands);
+    assert.equal(capture.scheduler.checkTimeoutMs,12345);
+    for(const extra of [
+      ['--allow-provider-development','1.work/T-001:1'],
+      ['--allow-provider-development','1.work/T-999:1'],
+      ['--allow-provider-development','1.work/T-002:3'],
+      ['--protected-conversation-config',protectedFile],
+    ]){
+      stderr='';assert.equal(await main([...args,...extra],io),1);
+      assert.equal(JSON.parse(stderr).error.code,'invalid_arguments');
+      assert.equal(capture.calls.length,2);
+    }
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
