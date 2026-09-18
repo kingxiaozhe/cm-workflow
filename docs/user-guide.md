@@ -565,6 +565,7 @@ $cm-security {项目路径} --semgrep-rules {外部本地规则文件} --osv-db 
 优先级：**项目 > 用户级默认 > 未声明**。项目没有 `runtimes.available` 才读取用户文件；
 显式项目角色字段覆盖用户预设的角色默认值，矛盾配置报字段路径并阻断。
 `cm-init` 遇到用户默认直接继承、报告 `来源: 用户级默认`，两级都没有才询问。
+配置草稿的运行时五字段必须与所选预设一致；新建配置时还按项目事实裁剪 delivery/tests（local/none 用 branch 或 diff，无 frontend/miniprogram 去掉 browser，未裁剪则给出非阻塞 warning），已有配置只更新运行时五字段。
 
 | 预设 | 写代码 | 审代码 |
 | --- | --- | --- |

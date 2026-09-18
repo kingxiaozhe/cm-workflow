@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {freeze,need} from '../cm-ai/effect-contract.mjs';
-import {CONFIG_FILENAMES,ConfigError,findConfig,loadConfig,runtimesSource} from '../../../scripts/cm-workflow-config.mjs';
+import {CONFIG_FILENAMES,ConfigError,findConfig,loadConfig,runtimePreset,runtimesSource} from '../../../scripts/cm-workflow-config.mjs';
 
 const rules=new Set(['coding-style','testing','security','git-workflow','frontend','miniprogram',
   'backend-api','database','smart-contract','finance']);
@@ -45,7 +45,7 @@ export function readCmInitSource(root,file){
   }
 }
 
-export function inspectCmInitDraft({project,documents}){
+export function inspectCmInitDraft({project,documents,selection}){
   need(typeof project==='string'&&path.isAbsolute(project),'init_project_path_invalid');
   const root=fs.realpathSync(project);
   need(fs.statSync(root).isDirectory(),'init_project_path_invalid');
@@ -70,6 +70,20 @@ export function inspectCmInitDraft({project,documents}){
         const parse=text=>loadConfig({projectRoot:root,configPath:path.join(root,file),text});
         const config=parse(content);
         if(runtimesSource(config)!=='project')issues.push({path:file,code:'runtimes_declaration_missing'});
+        if(selection?.runtimes){
+          const expected=runtimePreset(selection.runtimes.preset);
+          const actual={runtimes:{available:config.runtimes.available},roles:Object.fromEntries(
+            ['coder','reviewer'].map(role=>[role,{adapter:config.roles[role].adapter,source:config.roles[role].source}]))};
+          if(!isDeepStrictEqual(expected,actual))
+            issues.push({path:file,code:'runtimes_preset_mismatch',expected,actual});
+        }
+        if(before===null&&selection){
+          if(['local','none'].includes(selection.versionControl)&&config.policies.delivery==='draft-mr')
+            issues.push({path:file,code:'delivery_requires_remote',severity:'warning'});
+          if(Array.isArray(selection.modules)&&!selection.modules.some(name=>['frontend','miniprogram'].includes(name))
+            &&config.policies.tests.includes('browser'))
+            issues.push({path:file,code:'browser_tests_without_ui',severity:'warning'});
+        }
         if(before!==null){
           const previous=parse(before.toString('utf8'));
           if(!isDeepStrictEqual(preservedConfig(previous),preservedConfig(config)))
@@ -90,7 +104,7 @@ export function inspectCmInitDraft({project,documents}){
     }
   }
   return freeze({version:1,workflow:'cm-init',phase:'draft_inspection',project:root,
-    status:issues.length?'blocked':'structurally_checked',issues,changes,
+    status:issues.some(issue=>issue.severity!=='warning')?'blocked':'structurally_checked',issues,changes,
     existingChangeReviewRequired:changes.filter(change=>change.action==='modify').map(change=>change.path),
     remainingChecks:['semantic_constraint_preservation','commands_and_globs','other_file_references',
       'applicable_rules_and_version_control','independent_review','current_files_before_write'],

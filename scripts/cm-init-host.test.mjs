@@ -9,6 +9,8 @@ import {createInterface} from 'node:readline';
 import {once} from 'node:events';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {publishCmInitReviewEvidence} from '../runtime/js/cm-init/review-evidence.mjs';
+import {runtimePreset} from './cm-workflow-config.mjs';
+import {editRuntimeDeclaration} from './cm-runtime-edit.mjs';
 const repository=fileURLToPath(new URL('..',import.meta.url));
 for(const mode of ['generate','generate-runtime','cancel','verify','unverified','verify-drift','confirm','confirm-approve','confirm-reject','confirm-drift','review-package','review-package-drift','review-package-encoding','review-result-approved','review-result-changes','review-result-self','review-result-digest','write-success','write-partial','write-denied','write-drift','write-evidence-conflict','write-evidence-permissions'])test(`init host actual JSONL CLI: ${mode}`,{timeout:5000},async()=>{
   const project=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-init-host-')));
@@ -66,7 +68,7 @@ for(const mode of ['generate','generate-runtime','cancel','verify','unverified',
           assert.equal(message.kind,'init_generate');
           if(mode==='cancel')send({requestId:'cancel',operation:'cancel'});
           else send({type:'host_result',sessionId,callId:message.callId,requestDigest:message.requestDigest,
-            result:{status:'generated',documents:message.payload.targets.map(file=>({path:file,content:file==='.cm-workflow.yml'?'version: 1\nruntimes:\n  available: codex\n':'# Fixture\nPreserve original rule\n'}))}});
+            result:{status:'generated',documents:message.payload.targets.map(file=>({path:file,content:file==='.cm-workflow.yml'?editRuntimeDeclaration('version: 1\n',file,runtimePreset('codex-only')):'# Fixture\nPreserve original rule\n'}))}});
         }
       }else if(message.requestId==='generate')send(['generate','generate-runtime','cancel'].includes(mode)
         ?{requestId:'status',operation:'status'}:{requestId:'verify',operation:'advance'});

@@ -22,5 +22,7 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs" --project "{CODE_PROJEC
 用户默认只提供默认值，已有项目的显式角色字段优先；若其 adapter/source 与所选预设不同，
 按已有宿主规则核验草稿，只填声明及 coder/reviewer adapter/source，保留其他原文。
 无配置时从模板生成 `.cm-workflow.yml`；已有配置沿用 `.yml/.yaml/.json` 原文件名。
+本次提供 `selection.runtimes` 时，草稿中的运行时五字段必须与其 `preset` 一致，否则以 `runtimes_preset_mismatch` 阻断。
+新建配置还须按已分析事实裁剪：`versionControl` 为 `local`/`none` 时将 `policies.delivery` 改为 `branch` 或 `diff`，不用 `draft-mr`；`modules` 不含 `frontend`/`miniprogram` 时从 `policies.tests` 去掉 `browser`。机械检查对此给出非阻塞 warning；已有配置仍只改运行时五字段。
 答案/默认值经宿主生成、共享解析器核验、必要确认和独立审查后写入，不在会话直接写配置。
 声明同步到 AGENTS.md/CLAUDE.md，并注明来源。只决定自动派发偏好，不拦交互式使用；声明不等于派发。

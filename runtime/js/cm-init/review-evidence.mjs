@@ -61,7 +61,7 @@ export function loadCmInitRecoveryDraft({project,packageDigest}){
   need(archiveBytes({project,reviewPackage:saved.reviewPackage,review:saved.review}).equals(bytes),'init_archive_invalid');
   const pkg=saved.reviewPackage;
   need(pkg.kind==='cm-init-draft-review-package'&&pkg.version===1,'init_archive_invalid');
-  const inspection=inspectCmInitDraft({project,documents:pkg.documents});
+  const inspection=inspectCmInitDraft({project,documents:pkg.documents,selection:pkg.selection});
   need(Array.isArray(pkg.originals)&&pkg.originals.length===pkg.documents.length,'init_archive_invalid');
   const sha=value=>createHash('sha256').update(value).digest('hex');
   const files=inspection.changes.map((change,index)=>{
