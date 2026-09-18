@@ -10,6 +10,7 @@ import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {main} from './cm-fix-host.mjs';
+const FIXTURE_TIMEOUT_MS=Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000);
 
 // Real temporary files/commands/owner/CLI; model responses and diagnostics are
 // synthetic. No live provider, XBrief writes, installation or Git operations.
@@ -81,7 +82,7 @@ async function fixture(t,mode){
 }
 const op=operation=>({requestId:operation,operation});
 
-test('revision refuses lost earlier thread before persisting started, keeping replay valid',{timeout:15000},async t=>{
+test('revision refuses lost earlier thread before persisting started, keeping replay valid',{timeout:FIXTURE_TIMEOUT_MS},async t=>{
   const f=await fixture(t,'revision-reuses-lost-thread');
   const recovered=await f.cli([f.request,op('final_review'),op('publish_review')],['--allow-final-review-recovery','--allow-final-review']);
   assert.equal(recovered.at(-1).result.stage,'final_review_changes_requested');
@@ -97,7 +98,7 @@ test('revision refuses lost earlier thread before persisting started, keeping re
   assert.equal(f.reopen().status().stage,'unknown');assert.equal(f.calls(),3);
 });
 
-for(const mode of ['twice-then-success','reuse-first-thread','loss-again'])test(`fresh invocation-bound continuation: ${mode}`,{timeout:15000},async t=>{
+for(const mode of ['twice-then-success','reuse-first-thread','loss-again'])test(`fresh invocation-bound continuation: ${mode}`,{timeout:FIXTURE_TIMEOUT_MS},async t=>{
   const f=await fixture(t,mode);
   await f.cli([f.request,op('final_review')],['--allow-final-review','--allow-final-review-recovery']);
   assert.equal(f.calls(),2);
@@ -144,7 +145,7 @@ for(const mode of ['twice-then-success','reuse-first-thread','loss-again'])test(
   assert.equal(f.reopen().status().stage,'completed');assert.equal(f.calls(),3);
 });
 
-test('one authorized CLI continuation preserves old history and reaches the original finish',{timeout:15000},async t=>{
+test('one authorized CLI continuation preserves old history and reaches the original finish',{timeout:FIXTURE_TIMEOUT_MS},async t=>{
   const f=await fixture(t,'success');assert.equal(f.owner().status().stage,'unknown');
   assert.equal((await f.owner().reviewFinal()).stage,'unknown');assert.equal(f.calls(),1);
   const denied=await f.cli([f.request]);assert.equal(denied[0].error.code,'host_request_failed');

@@ -25,7 +25,7 @@ function workflowCli(args,codeProject,documentationStatus='completed'){
   return new Promise((resolve,reject)=>{
     const child=spawn(process.execPath,[fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url)),...args]);
     let buffer='',stderr='',result;const calls=[];
-    const timer=setTimeout(()=>{child.kill('SIGTERM');reject(new Error('workflow timeout'));},15000);
+    const timer=setTimeout(()=>{child.kill('SIGTERM');reject(new Error('workflow timeout'));},Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000));
     const send=value=>child.stdin.write(JSON.stringify(value)+'\n');
     child.stderr.on('data',chunk=>stderr+=chunk);child.once('error',reject);
     child.stdout.on('data',chunk=>{

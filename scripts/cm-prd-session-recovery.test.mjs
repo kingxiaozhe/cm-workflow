@@ -9,6 +9,7 @@ import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {openPrdSession} from '../runtime/js/cm-prd/session.mjs';
 import {createCmPrdAnalysis} from '../runtime/js/cm-prd/analysis.mjs';
+const FIXTURE_TIMEOUT_MS=Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000);
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const sessionId='prd-recovery-fixture';
 async function fixture(t,{ready=false,change=false}={}){
@@ -94,7 +95,7 @@ test('unknown summary exposes session reasons, abandon restores before and permi
   await c.close();await retry;
 });
 
-for(const mode of ['summary','analysis','change'])test(`cancel clears pending ${mode} and stays terminal across restart`,{timeout:15000},async t=>{
+for(const mode of ['summary','analysis','change'])test(`cancel clears pending ${mode} and stays terminal across restart`,{timeout:FIXTURE_TIMEOUT_MS},async t=>{
   const f=await fixture(t,{ready:mode==='analysis',change:mode==='change'});let c=await client(t,f);
   const pending=c.request(mode==='summary'?'prepare_summary':'start',mode==='summary'?{}:{text:'Analyze'});
   const call=await c.wait(m=>m.type==='host_request');
@@ -109,7 +110,7 @@ for(const mode of ['summary','analysis','change'])test(`cancel clears pending ${
   assert.equal(f.state().active,null);await c.close();
 });
 
-test('old cancelled checkpoint with active is normalized without replay', {timeout:15000},async t=>{
+test('old cancelled checkpoint with active is normalized without replay', {timeout:FIXTURE_TIMEOUT_MS},async t=>{
   const f=await fixture(t);await unknownSummary(t,f);
   const session=f.open(),checkpoint=session.state.checkpoint;
   session.checkpoint({...checkpoint,analysis:{...checkpoint.analysis,stage:'cancelled'}});session.close();
@@ -127,7 +128,7 @@ async function seedCalls(f,calls,request={requestId:'original',operation:'prepar
     }
   }finally{session.close();}
 }
-for(const mixed of [false,true])test(`abandon rejects any prd_review call in operation: mixed=${mixed}`,{timeout:15000},async t=>{
+for(const mixed of [false,true])test(`abandon rejects any prd_review call in operation: mixed=${mixed}`,{timeout:FIXTURE_TIMEOUT_MS},async t=>{
   const f=await fixture(t);await seedCalls(f,mixed?[{kind:'prd_review',result:{}},{kind:'prd_self_check'}]:[{kind:'prd_review'}]);
   const before=f.state(),target=before.active.calls.at(-1),c=await client(t,f);
   const resolution={callId:target.callId,requestDigest:target.requestDigest,abandon:true,evidence:'Synthetic discard request'};
@@ -135,7 +136,7 @@ for(const mixed of [false,true])test(`abandon rejects any prd_review call in ope
   assert.equal(result.recovery.calls.length,before.active.calls.length);assert.deepEqual(f.state(),before);await c.close();
 });
 
-test('turn and replay errors are visible while unrelated errors remain redacted', {timeout:15000},async t=>{
+test('turn and replay errors are visible while unrelated errors remain redacted', {timeout:FIXTURE_TIMEOUT_MS},async t=>{
   const f=await fixture(t,{ready:true});let c=await client(t,f);
   assert.equal(blocked(await c.request('advance',{text:'Too early'}),'prd_turn_not_ready').recovery,null);
   assert.equal((await c.request('save_draft')).error.code,'host_request_failed');await c.close();

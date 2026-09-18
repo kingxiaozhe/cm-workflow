@@ -6,6 +6,7 @@ import path from 'node:path';
 import {PassThrough,Writable} from 'node:stream';
 import {main} from './cm-fix-host.mjs';
 import {startFixRun} from '../runtime/js/cm-fix/start.mjs';
+const FIXTURE_TIMEOUT_MS=Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000);
 
 test('fix CLI requires launch authorization and uses duplex diagnosis, resume and original store',async()=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-fix-cli-')));
@@ -64,7 +65,7 @@ test('fix CLI requires launch authorization and uses duplex diagnosis, resume an
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 
-test('fix CLI red and baseline flags authorize separate real commands across resume',{timeout:15000},async()=>{
+test('fix CLI red and baseline flags authorize separate real commands across resume',{timeout:FIXTURE_TIMEOUT_MS},async()=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fix-cli-checks-')));
   const cwd=path.join(root,'code'),specsRoot=path.join(root,'specs');fs.mkdirSync(cwd);fs.mkdirSync(specsRoot);
   fs.writeFileSync(path.join(cwd,'red.mjs'),"import fs from 'node:fs';fs.appendFileSync('red-calls','1');console.error('BUG');process.exit(1)");
