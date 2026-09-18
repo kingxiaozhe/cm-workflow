@@ -538,14 +538,12 @@ AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注�
 - [ ] **原型功能点覆盖 100%**（有交互原型时）：遍历记录中每个可交互元素都有对应 [F-xxx] 或死区标注，无静默丢弃
 ```
 
-**规格审批位落盘**：报告输出后真跑 `python3 {CM_WORKFLOW_ROOT}/scripts/cm-spec-manifest.py {SPECS_DIR}`，把返回的
-`specFiles`（每个 feature 的 requirements/design/tasks 及可选 test-cases 规格语义 SHA；
-任务/AC 的运行期 `[x]` 会规范化为 `[ ]`，其余内容不忽略）
-写入 `{SPECS_DIR}/.cm-specs-status` 单行 JSON；为旧版消费者同时保留由 manifest
-筛出的 `testCases`：
-`{"status":"awaiting_review","at":"{时间}","features":["1.xxx",...],"specFiles":[{"path":"1.xxx/requirements.md","sha256":"..."}],"testCases":[]}`
-随后写 `spec_lifecycle/generated`、`spec_lifecycle/awaiting_review` 和 `run_done`，仅记录
-feature/task/case 数量、状态与 specs 路径。
+**规格审批位落盘**：按 [当前会话接线](references/js-host.md) 执行 `prepare_summary`，展示返回的摘要卡与审查清单；
+再以刚展示的 `summaryDigest` 调用 `publish_summary`。宿主校验 digest，JS 通过共享
+`runtime/js/specs-status.mjs` 原子写入 `awaiting_review`、完整 manifest 和 `approval:null`；模型不得自行拼写该文件。
+manifest 复用 `cm-spec-manifest.py` 对应的 JS 计算器，旧 CLI 仍可只读核验，不负责写审批位。
+原有摘要证据比对与 `prd_summary_inputs_changed` 检查保持生效；摘要未就绪不得发布，更不能改写为 approved。
+JS 记录 `spec_lifecycle/generated`、`spec_lifecycle/awaiting_review` 和 `run_done`，仅记录 feature/task/case 数量、状态与 specs 路径。
 最终报告注明阶段耗时事件已记录；具体耗时由日志按 operation_id + segment 计算。
 
 **硬停车（不可违反）**：本命令的终点就是摘要卡与审查清单——**任何情况下不得在本会话顺势启动开发**，对话里的"继续"不构成开发授权。提示用户：**逐项审查通过后，运行 `$cm-ai` 开始开发**（N1 有入口闸：未审批的 specs 会先要求确认摘要卡）

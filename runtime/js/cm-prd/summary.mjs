@@ -1,8 +1,9 @@
 // Evidence-backed human handoff. No specification approval or development.
 import fs from 'node:fs';
 import path from 'node:path';
-import {createHash,randomUUID} from 'node:crypto';
+import {createHash} from 'node:crypto';
 import {TextDecoder} from 'node:util';
+import {writeSpecsStatus} from '../specs-status.mjs';
 import {buildManifest} from '../../../scripts/cm-spec-manifest.mjs';
 import {inspectPrdReview} from '../../../scripts/cm-prd-review-gate.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
@@ -93,20 +94,17 @@ export function publishPrdAwaitingReview({specs,summary,writeEnabled,recover=fal
   }
   need(digest(before)===summary.evidenceDigest,'prd_summary_inputs_changed');
   const status={status:'awaiting_review',summaryDigest:summary.summaryDigest,at:new Date().toISOString(),features:before.features.map(item=>item.directory),
-    specFiles:before.specFiles,testCases:before.specFiles.filter(item=>item.path.endsWith('/test-cases.json'))};
+    specFiles:before.specFiles,testCases:before.specFiles.filter(item=>item.path.endsWith('/test-cases.json')),approval:null};
   const bytes=Buffer.from(JSON.stringify(status)+'\n'),target=path.join(specs,'.cm-specs-status');
-  const temporary=path.join(specs,`.cm-prd-status-${randomUUID()}`);let fd;
   try{
-    fd=fs.openSync(temporary,'wx',0o600);fs.writeFileSync(fd,bytes);fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;
-    need(digest(inspectPrdSummaryEvidence(specs,scope))===summary.evidenceDigest,'prd_summary_inputs_changed');
-    fs.renameSync(temporary,target);
-    const dir=fs.openSync(specs,'r');try{fs.fsyncSync(dir);}finally{fs.closeSync(dir);}
+    writeSpecsStatus(specs,status,{beforeRename:()=>{
+      need(digest(inspectPrdSummaryEvidence(specs,scope))===summary.evidenceDigest,'prd_summary_inputs_changed');
+    }});
     need(readCmInitSource(specs,'.cm-specs-status')?.equals(bytes),'prd_summary_status_unknown');
     need(digest(buildManifest(specs))===digest(before.specFiles),'prd_summary_inputs_changed');
     return json({status:'awaiting_review',path:target,features:status.features,completionAuthorized:false,
       next:'human_review_then_explicit_cm_ai'});
   }catch{return json({status:'awaiting_review_write_unknown',next:'inspect_status_and_specs_without_automatic_retry',completionAuthorized:false});}
-  finally{if(fd!==undefined)fs.closeSync(fd);try{fs.unlinkSync(temporary);}catch(error){if(error.code!=='ENOENT')throw error;}}
 }
 
 const requiredSignals=prdDesignRiskSignals;

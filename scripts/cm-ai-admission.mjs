@@ -1,18 +1,22 @@
 #!/usr/bin/env node
-// Product CLI for the shipped read-only cm-ai N1/N2 admission authority.
+// Product CLI for cm-ai N1/N2 inspection and explicit human approval.
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {inspectCmAiAdmission} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
+import {inspectCmAiAdmission,approveCmAiSpecs} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {validateRunDefinition} from './cm-ai-run.mjs';
 
-const usage='usage: cm-ai-admission.mjs --specs-dir PATH --code-project PATH [--code-project PATH ...] [--approval-response TEXT | --yes] [--print-run-definition --scope a,b [--requirements c,d] [--run-id X] [--repository-id Y]]';
+const usage='usage: cm-ai-admission.mjs --specs-dir PATH --code-project PATH [--code-project PATH ...] [--approval-response TEXT | --yes] [--approve --approval-response TEXT (no --yes)] [--print-run-definition --scope a,b [--requirements c,d] [--run-id X] [--repository-id Y]]';
 
 function parse(argv){
   const result={codeProjects:[]};
   for(let index=0;index<argv.length;index++){
     const flag=argv[index];
     if(flag==='--help'||flag==='-h')return {help:true};
+    if(flag==='--approve'){
+      if(result.approve)throw new Error('invalid arguments');
+      result.approve=true;continue;
+    }
     if(flag==='--print-run-definition'){
       if(result.printRunDefinition)throw new Error('invalid arguments');
       result.printRunDefinition=true;continue;
@@ -60,21 +64,22 @@ export function main(argv=process.argv.slice(2)){
     process.stderr.write('--print-run-definition 需要 --scope：本任务允许修改的文件，相对代码根，逗号分隔（例：--scope src/todos.js,test/todos.test.js）\n');
     return 2;
   }
-  const projectResults=input.codeProjects.map(codeProject=>inspectCmAiAdmission({...input,codeProject}));
+  const approval=input.approve?approveCmAiSpecs(input):null;
+  const projectResults=approval?.projectResults??input.codeProjects.map(codeProject=>inspectCmAiAdmission({...input,codeProject}));
   const firstBlocked=projectResults.find(item=>item.state==='blocked');
   const reference=firstBlocked??projectResults[0];
   const decision=JSON.stringify({state:reference.state,reason:reference.reason,features:reference.features,nextTask:reference.nextTask});
   const mismatch=!firstBlocked&&projectResults.some(item=>JSON.stringify({state:item.state,reason:item.reason,features:item.features,nextTask:item.nextTask})!==decision);
   const selected=mismatch?{...reference,state:'blocked',reason:'project_admission_mismatch',nextTask:null}:reference;
-  const result={...selected,codeProject:input.codeProjects.length===1?selected.codeProject:null,
+  const result={...selected,...(approval?.approveRefused?{approveRefused:approval.approveRefused}:{}),codeProject:input.codeProjects.length===1?selected.codeProject:null,
     codeProjects:projectResults.map(item=>item.codeProject),
     projectAdmissions:projectResults.map(item=>({codeProject:item.codeProject,state:item.state,reason:item.reason}))};
-  if(input.printRunDefinition&&result.state==='ready'){
+  if(input.printRunDefinition&&!result.approveRefused&&result.state==='ready'){
     try{process.stdout.write(`${JSON.stringify(buildRunDefinition(result,input))}\n`);return 0;}
     catch(error){process.stderr.write(`${JSON.stringify({error:{code:error.code??error.message}})}\n`);return 1;}
   }
   process.stdout.write(`${JSON.stringify(result)}\n`);
-  return result.state==='blocked'?1:0;
+  return result.state==='blocked'||result.approveRefused?1:0;
 }
 
 function isMain(entry){

@@ -13,7 +13,7 @@
    只接受其结构化 `state`、`reason`、`features`、`nextTask` 作为 N1/N2 选择结果；非零退出或
    `state: blocked` 必须停止，不能退回人工目测放行。多个代码项目逐一经过同一 admission，
    任一项目阻断或下一任务不一致时整体阻断。若规格尚待审批，先按下方入口闸取得真实
-   人工决定并更新 `.cm-specs-status`，然后重新运行本命令；普通“继续”不得改写审批状态。
+   人工决定并调用下方 `--approve` 写入口（内部会重跑准入）；普通“继续”不得改写审批状态。
 2. 使用 admission 返回的编号 feature 顺序，不再另写一套扫描/依赖选择规则；进入
    每个 feature 时保存完整目录名为 `FEATURE_DIR`（如 `1.login`），仅把去掉编号的
    名称保存为 `FEATURE_SLUG`（如 `login`）。前者只用于规格文件路径，后者用于
@@ -41,23 +41,28 @@
 
 ## 规格审批入口闸（先于一切预检）
 
-读取 `{SPECS_DIR}/.cm-specs-status`：
+以 JS admission 的结果为准；模型不得自行拼写或修改 `.cm-specs-status`：
 
-- `approved` → 直接继续（断点续跑不重复问）
-- `awaiting_review` 或文件缺失（旧版 specs）→ 把规格摘要卡打给用户（specs 里没有摘要卡就现场汇总：feature 数/任务数/交付形态/风险点），**等用户明确回复"开始"**；回复后运行 `cm-spec-manifest.py`，把当前 `specFiles` 写入状态并更新为 `approved`。**泛化授权语不构成审批**（"按最优解处理""继续""你看着办"这类话授权的是执行方式，不是规格内容）——收到时必须回问一次："规格摘要卡确认开始吗？"（实跑失守：diff-lens 把"按照你分析的最优解去处理"直接视为审批通过）
-- 已是 `approved` 但缺少 `specFiles`（旧版审批位）→ 无法证明批准的是当前三件套；展示一次摘要卡并重新取得明确“开始”，随后补全 manifest。不得静默背书。
-- 启动参数含 `--yes` → 跳过此问直接基于当前文件生成 manifest 并更新为 approved（只适合刚人审完立刻开跑的场景）
+- `ready` / `complete` → 沿用现有准入结果；旧版无 `specFiles` 的文件仍可读取，不在本节点自行补造批准证据。
+- `awaiting_spec_approval` → 展示规格摘要卡（无卡时可现场汇总，但不得据此生成或替换 `summaryDigest`），等用户明确回复“开始”。泛化授权语（“继续”“按最优解处理”“你看着办”）不构成审批，须回问“规格摘要卡确认开始吗？”（实跑失守：泛化授权曾被误视为审批通过）。
+- 取得明确回复后运行以下写入口，`--approval-response` 传用户原话；多个代码项目全部传入：
 
-只有实际把状态从非 approved 改为 approved 时才写
-`spec_lifecycle/approved`；已有 approved 状态不重复伪造审批事件。
+  ```bash
+  node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-admission.mjs" \
+    --specs-dir "{SPECS_DIR}" --code-project "{CODE_PROJECT_ONE}" \
+    [--code-project "{CODE_PROJECT_TWO}" ...] \
+    --approve --approval-response "{用户原话}"
+  ```
 
-批准后真跑
-`python3 {CM_WORKFLOW_ROOT}/scripts/cm-spec-manifest.py {SPECS_DIR} --status-file {SPECS_DIR}/.cm-specs-status`。
-任一 requirements/design/tasks/test-cases 新增、删除或**规格语义哈希**变化 → 将状态
-恢复为 `awaiting_review`，写 `spec_lifecycle/changed` 并要求用 `$cm-prd --change`
-说明变更。N5/N6 将明确的任务与 AC checkbox 从 `[ ]` 改为 `[x]` 属于运行状态，
-`cm-spec-manifest.py` 会规范化后比较，不得把正常进度误判成规格漂移；文案、ID、
-`[DROPPED]`/`[CHANGED]`、普通 checklist、设计和测试合同仍须完整保护。
+- `--approve` 不接受 `--yes`；只读调用的 `--yes` 也不写审批位。
+- 只有 `awaiting_spec_approval` + `explicit` 且 reason 为 `approval_write_required`、`spec_features_changed` 或 `test_cases_changed` 才写；其余返回原准入结果及 `approveRefused`，不得手改 JSON 绕过。
+- `blocked/spec_drift` → 保留原状态，要求用 `$cm-prd --change` 说明变更并重新发布摘要；不得自动改成 `awaiting_review` 或刷新 manifest。manifest 先于测试合同校验，测试合同修改也可能先触发 `spec_drift`。
+
+共享 JS writer 生成 `features`、`specFiles`、`testCases` 和审批记录，原样沿用旧 `summaryDigest`，缺失时写 `null`。
+写完返回重跑准入的结果；只有 `ready` 才进入开发，写成 approved 不代表其他检查已通过。
+只有本次审批写入成功才记录 `spec_lifecycle/approved`；拒绝或只读查询不伪造审批事件。
+需要单独核验批准 manifest 时，可只读运行 `python3 {CM_WORKFLOW_ROOT}/scripts/cm-spec-manifest.py {SPECS_DIR} --status-file {SPECS_DIR}/.cm-specs-status`；失败不授权改写。
+N5/N6 的任务与 AC checkbox 变化仍由现有 manifest 规范化处理，文案、ID、设计和测试合同变化继续受准入保护。
 
 > 这是**入口授权门**（人把关方案端），不属于"暂停仅灾难级"约束的中途暂停，也不计入 METRICS 人工介入。实跑教训：没有这道闸，prd 生成完会被一句"继续"顺势带进开发，人审形同虚设。
 
