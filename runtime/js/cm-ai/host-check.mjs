@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {types} from 'node:util';
+import {StringDecoder} from 'node:string_decoder';
 import {cleanEnvironment,specsPermissionArgs} from './codex-config.mjs';
 import {json,shape,need,id,text,validCallTimeout,validIdentity} from './effect-contract.mjs';
 
@@ -38,6 +39,11 @@ export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,out
         }
         catch{resolve({outcome:'unavailable',exitCode:null,evidence:'host check: spawn_failed'});return;}
         let failure=null,cleanup,bytes=0;
+        const counts=new Map();
+        const collect=line=>{
+          const match=line.trim().match(/^[^0-9A-Za-z]*(tests|suites|pass|passed|passing|fail|failed|failing|skipped|todo)\s*[:=]?\s*(\d+)\s*$/i);
+          if(match&&counts.size<8&&!counts.has(match[1].toLowerCase()))counts.set(match[1].toLowerCase(),match[2]);
+        };
         const kill=name=>{
           if(!Number.isInteger(child.pid)||child.pid<=0)return false;
           try{process.kill(-child.pid,name);return true;}
@@ -52,6 +58,7 @@ export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,out
         if(signal.aborted)abort();
         for(const [streamName,stream] of [['stdout',child.stdout],['stderr',child.stderr]]){
           let tail=Buffer.alloc(0);
+          const decoder=new StringDecoder('utf8');let pending='';
           stream.on('data',chunk=>{
             bytes+=chunk.length;if(bytes>4*1024*1024){stop('output_limit');return;}
             if(onOutput){
@@ -66,7 +73,10 @@ export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,out
               const joined=Buffer.concat([tail,chunk]);signatureMatched=joined.includes(signature);
               tail=joined.subarray(Math.max(0,joined.length-signature.length+1));
             }
+            const lines=(pending+decoder.write(chunk)).split('\n');pending=lines.pop();
+            for(const line of lines)collect(line);
           });
+          stream.on('end',()=>collect(pending+decoder.end()));
           stream.on('error',()=>stop('output_read_failed'));
         }
         child.once('error',()=>{failure??='spawn_failed';});
@@ -77,7 +87,16 @@ export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,out
           // credentials and nondeterministic timing; do not put it in review data.
           if(failure||exitSignal||!Number.isInteger(code))resolve({outcome:'unavailable',exitCode:null,
             evidence:`host check: ${failure??'signal_exit'}`});
-          else resolve({outcome:code===0?'passed':'failed',exitCode:code,evidence:`host check exited ${code}`});
+          else{
+            const prefix=`host check exited ${code}`,summary=[];
+            for(const [label,count] of counts){
+              const item=`${label} ${count}`;
+              if(`${prefix} (${[...summary,item].join(', ')})`.length>200)break;
+              summary.push(item);
+            }
+            resolve({outcome:code===0?'passed':'failed',exitCode:code,
+              evidence:prefix+(summary.length?` (${summary.join(', ')})`:'')});
+          }
         });
       });
       need(!signal.aborted,'cancelled');
