@@ -23,7 +23,7 @@
 快照与原始临时结果在 finally 清理，报告需由宿主单独保存在项目外本次目录。
 
 工具退出 0 不代表完整：解析 JSON、检查错误与已扫描文件，保留所有未覆盖项。
-CLI 退出码：0=帮助/无改动；1=存在候选发现（仍可能部分覆盖）；2=阻断；3=没有候选但 AI/工具覆盖仍待核验。
+CLI 退出码：0=帮助/无改动；1=存在候选发现（仍可能部分覆盖）；2=阻断；3=没有候选但检查仍待复核，或最终 REVIEWED_PARTIAL（包括 FULL 覆盖）。
 不把错误退出、超时、缺工具、空/畸形输出、过期数据库当作无漏洞。
 
 ## AI 复核与边界
@@ -33,6 +33,50 @@ CLI 退出码：0=帮助/无改动；1=存在候选发现（仍可能部分覆�
 默认使用当前宿主模型，只读检查相关入口和上下游；不默认开多 agent 或调用第三方云扫描。
 每项发现记录：来源、revision、位置、攻击者能力、路径、现有防护、业务后果、置信度与建议；未经执行的场景标记静态推断。
 真正的动态利用、部署环境测试、自动修复另需明确授权和隔离环境。
+
+## finalize 报告门禁
+
+扫描与复核结果必须是项目外普通 JSON 文件（拒绝最终路径符号链接、目录、项目内路径或指向项目内的路径），各至多 32 MiB。`--finalize --scan {外部扫描报告.json} --review {外部复核结果.json}` 与 `--all`、`--inventory`、扫描器配置参数互斥；范围仅从扫描报告重绑。扫描报告须为完整 scan 输出，不能用 inventory-only 输出代替。
+
+复核输入只接受以下键集；多余键、重复路径、范围外路径或 digest 不匹配均拒绝：
+
+```json
+{
+  "version": 1,
+  "scanDigest": "扫描报告的 64 位十六进制 digest",
+  "paths": [
+    {"path": "src/a.js", "status": "reviewed", "findings": [
+      {"severity": "high", "location": "src/a.js:42", "attacker": "攻击者能力",
+       "vector": "攻击路径", "existingControls": "现有防护", "impact": "业务后果",
+       "confidence": "static-inference", "recommendation": "建议"}
+    ]},
+    {"path": "src/b.js", "status": "not_reviewed", "reason": "未复核原因"}
+  ]
+}
+```
+
+`reviewed` 必须带 findings 且不得带 reason；`not_reviewed` 必须带 reason 且不得带 findings。
+字符串 trim 后非空、至多 1000 UTF-8 字节，禁止 NUL 及除换行/制表符外的 C0；paths 至多 2000，每路径 findings 至多 200，总 findings 至多 2000。
+severity 只取 high/medium/low，confidence 只取 static-inference/observed，location 必须绑定本路径及正整数行号。
+漏报路径补为 not_reviewed / not_reported；范围外路径报 review_path_unknown。
+
+宿主复用 inventory 重新解析原范围；comparison 身份参与 digest，源码、暂存或基准变化均不能沿用旧结论。
+此为第二个窗口：`sourceWindows.scan.sourceUnchanged` 保留扫描时结果，`sourceWindows.review` 记录复核后 digest 及一致性；顶层 sourceUnchanged 为两段均一致。
+复核期间漂移追加 source_changed_during_review，扫描时 source_changed 缺口保留。
+只有全部路径 reviewed、无 gaps、全部工具为 FINDINGS/NO_FINDINGS 且无 reason 时 coverage 才为 FULL。
+
+| 优先级 / 输入 | result | 退出码 |
+| --- | --- | --- |
+| 原扫描 BLOCKED 或复核窗口漂移 | BLOCKED | 2 |
+| 任一扫描或复核 finding | FINDINGS | 1 |
+| selected 为空且无漂移 | NO_CHANGES | 0 |
+| 其余，包括无发现且 FULL | REVIEWED_PARTIAL | 3 |
+
+aiReview 由宿主固定为 completed，表示复核输入已经处理，未复核项仍在 gaps 中；不证明模型真的读过源码。
+stdout 仅返回 result、coverage、reportPath、gaps、findingsCount、sourceUnchanged，不含自由描述（gaps 中用户提供的 reason 仅在 stdout 遮蔽）；输入拒绝返回脱敏 BLOCKED 错误码。
+最终 JSON 保留扫描元数据、规范化 review 及机械判定；校验通过的 attacker、vector、existingControls、impact、recommendation 与未复核 reason 原样保留，宿主生成的 not_reported 保留。脱敏针对扫描器原始 stdout/stderr、密钥原文与源码片段；模型不得把这些内容粘进分析字段，JS 无法验证这项语义义务。扫描报告未知字段拒绝，不透传源文件 bytes 或工具原始消息。
+报告使用项目外 mkdtemp 私有目录与 0600 文件。输入文件不会被删除或复制；调用者负责在输入阶段也遵守脱敏纪律。
+本门禁验证覆盖声明与本地证据的一致性，不为输入扫描报告提供签名认证，也不能证明漏洞不存在。
 
 ## 复用来源
 
