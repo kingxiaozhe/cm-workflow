@@ -60,7 +60,7 @@ function runCli(f,mode,action='create'){
               assert.deepEqual(row.payload.request.payload.scope,JSON.parse(fs.readFileSync(f.config)).scope);
             }
             if(action!=='create')assert((f.develop&&row.kind==='develop')||(mode==='authorized-review'&&['check','qa_assess','documentation_inspect'].includes(row.kind))
-              ||(f.workflow&&row.kind==='documentation_inspect'),'resume must not resend development');
+              ||(f.workflow&&row.kind==='documentation_inspect')||(f.qaBrowser&&row.kind==='qa_browser'),'resume must not resend development');
             if(mode==='disconnect'){child.stdin.end();continue;}
             if(mode==='cancel'){send(request('status'));send(request('cancel'));continue;}
             if(f.fix&&row.kind==='fix_learning'){
@@ -104,6 +104,8 @@ function runCli(f,mode,action='create'){
               assert(f.workflow);assert.equal(row.payload.pending,0);
               send(response(row,{scores:{scope:1,risk:1,accumulation:1,boundary:1},
                 changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}}));
+            }else if(row.kind==='qa_browser'&&f.qaBrowser){
+              send(response(row,f.qaBrowser(row.payload)));
             }else if(row.kind==='documentation_inspect'){
               assert(f.workflow);assert(fs.readFileSync(path.join(f.codeProject,'README.md'),'utf8').includes(f.fix?'43':'42'));
               const {syncId,identity,packageDigest,contextDigest}=row.payload;
@@ -872,7 +874,7 @@ test('protected proposal cannot write after specification drifts during develope
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
-test('unknown QA rerun requires resume and separate QA permission before opening the owner',()=>{
+for(const flag of ['--rerun-unknown-qa','--rerun-blocked-qa'])test(`${flag} requires resume and separate QA permission before opening the owner`,()=>{
   const f=fixture();
   try{
     const workflow=path.join(f.root,'workflow.json');
@@ -880,10 +882,72 @@ test('unknown QA rerun requires resume and separate QA permission before opening
       environment:{kind:'web',carrier:'browser',target:'http://127.0.0.1',scope:'local'}}}));
     for(const mode of ['create','resume']){
       const args=[...f.args];args[4]=mode;
-      const result=spawnSync(process.execPath,[cli,...args,'--workflow-config',workflow,'--rerun-unknown-qa',
+      const result=spawnSync(process.execPath,[cli,...args,'--workflow-config',workflow,flag,
         ...(mode==='create'?['--allow-qa']:[])],{encoding:'utf8',timeout:3000});
       assert.equal(result.status,1);assert.match(result.stderr,/qa_recovery_authorization_required/);
       assert(!fs.existsSync(path.join(f.specsDir,'.reviews')));
+    }
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('step31 CLI resumes completed evidence BLOCKED QA and reaches the original finalizer',async()=>{
+  const f=fixture();f.workflow=true;
+  try{
+    const definition=JSON.parse(fs.readFileSync(f.config));definition.scope.push('README.md');
+    fs.writeFileSync(f.config,JSON.stringify(definition));
+    fs.writeFileSync(path.join(f.codeProject,'README.md'),'# Fixture value 42\n');
+    fs.writeFileSync(path.join(f.specsDir,'1.work','requirements.md'),'- [AC-001]: fixture\n');
+    fs.writeFileSync(path.join(f.specsDir,'1.work','test-cases.json'),JSON.stringify({schemaVersion:'1.0',feature:'work',
+      cases:[{id:'TC-001',kind:'browser',blocking:true,origin:'user',acIds:['AC-001'],taskIds:['T-001'],
+        title:'Synthetic browser',preconditions:[],steps:['Observe fixture'],expected:['Fixture works'],cleanup:[]}]}));
+    fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(f.specsDir)}));
+    const bin=path.join(f.root,'bin');fs.mkdirSync(bin);
+    const fake=path.join(bin,'codex');fs.copyFileSync(fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url)),fake);fs.chmodSync(fake,0o700);
+    f.env={...process.env,PATH:bin+path.delimiter+process.env.PATH};
+    const preview=spawnSync(process.execPath,[cli,'preflight','--config',f.config,'--review-model','fixture'],{encoding:'utf8',env:f.env,timeout:5000});
+    assert.equal(preview.status,0,preview.stderr);
+    const review=path.join(f.root,'review.json');fs.writeFileSync(review,preview.stdout);
+    const workflow=path.join(f.root,'workflow.json');
+    fs.writeFileSync(workflow,JSON.stringify({documentationPaths:['README.md'],applicableAgentFiles:[],qa:{
+      commands:[{id:'value-check',command:[process.execPath,'-e',"import('./target.mjs').then(m=>{if(m.value!==42)process.exit(1)})"],caseIds:[]}],
+      environment:{kind:'web',carrier:'browser',target:'http://127.0.0.1',scope:'local'}}}));
+    f.args.push('--review-config',review,'--allow-review-attempt','1','--workflow-config',workflow,'--allow-qa');
+    let corrected=false;
+    f.qaBrowser=payload=>{
+      const file=path.join(f.specsDir,'.reviews','browser-evidence.txt');fs.writeFileSync(file,'Synthetic observed browser evidence');
+      return {verdict:'PASS',evidence:corrected?[file]:[file,'docs/browser-qa.md（T-001）'],environment:payload.environment,cleanup:'completed'};
+    };
+    const first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
+    assert.equal(first.rows.find(row=>row.requestId==='advance').result.code,'qa_result_blocked');
+    const tasks=fs.readFileSync(path.join(f.specsDir,'1.work','tasks.md'));
+    const checkpoint=fs.readFileSync(path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json'));
+    const status=JSON.parse(fs.readFileSync(path.join(f.specsDir,'.cm-status.json')));assert.equal(status.state,'qa_blocked');
+    corrected=true;
+    const without=await runCli(f,'normal','resume');assert.equal(without.code,0,without.stderr);assert.deepEqual(without.calls,[]);
+    const unchanged=without.rows.find(row=>row.requestId==='advance').result;
+    assert.equal(unchanged.pendingAction,'none');assert.equal(unchanged.code,'qa_result_blocked');
+    f.args.push('--rerun-blocked-qa');
+    const resumed=await runCli(f,'normal','resume');assert.equal(resumed.code,0,resumed.stderr);
+    assert.deepEqual(resumed.calls,['qa_browser','documentation_inspect']);
+    assert.equal(resumed.rows.find(row=>row.requestId==='advance').result.state,'run_done');
+    f.args.pop();
+    const again=await runCli(f,'normal','resume');assert.equal(again.code,0,again.stderr);
+    assert.deepEqual(again.calls,['documentation_inspect']);
+    const rows=fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+    const qa=rows.filter(row=>row.event==='test_run');
+    const starts=qa.filter(row=>row.phase==='start');assert.deepEqual(starts.map(row=>row.attempt),[1,2]);
+    assert.equal(starts[1].previous_test_run_id,starts[0].operation_id);
+    const superseded=qa.find(row=>row.phase==='superseded');assert.deepEqual(superseded.blocked_cases,['TC-001']);
+    assert.equal(superseded.reason,'host_evidence_problem');
+    assert.deepEqual(qa.filter(row=>row.phase==='complete').map(row=>row.result),['BLOCKED','PASS']);
+    assert.equal(rows.filter(row=>row.event==='qa').length,1);
+    assert.deepEqual(fs.readFileSync(path.join(f.specsDir,'1.work','tasks.md')),tasks);
+    assert.deepEqual(fs.readFileSync(path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json')),checkpoint);
+    if(process.env.CM_STEP31_REPRO==='1'){
+      console.log('STEP31 without flag',JSON.stringify(unchanged));
+      console.log('STEP31 initial status mirror',JSON.stringify(status));
+      for(const row of qa.filter(row=>['start','superseded','complete'].includes(row.phase)))console.log(JSON.stringify(row));
+      console.log('STEP31 resumed',JSON.stringify(resumed.rows.find(row=>row.requestId==='advance').result));
     }
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });

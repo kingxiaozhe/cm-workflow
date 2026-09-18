@@ -217,12 +217,13 @@ export function createHostQaExecutor(options) {
               ...(hostRequestTimeout?{hostRequestTimeout:true}:{})});
           }else{
             logStep(configuration,binding,'test_run','case_start',{case_id:item.id},'QA browser case started');
-            let observed;
+            let observed,hostRequestTimeout=false;
             if(browser===null||item.expected.some(value=>value.includes('[需确认]')))
               observed={verdict:'BLOCKED',evidence:[],environment,cleanup:'not_needed'};
             else try{observed=json(await browser(request,signal));}
             catch(error){
               if(error.code!=='host_request_timeout')throw error;
+              hostRequestTimeout=true;
               observed={verdict:'BLOCKED',evidence:['host_request_timeout'],environment,cleanup:'failed'};
             }
             notCancelled();shape(observed,['verdict','evidence','environment','cleanup']);
@@ -238,7 +239,8 @@ export function createHostQaExecutor(options) {
             const verdict=evidenceProblem!==null||digest(observed.environment)!==digest(environment)||observed.cleanup==='failed'
               ||(item.cleanup.length>0&&observed.cleanup!=='completed')?'BLOCKED':observed.verdict;
             rows.push({id:item.id,kind:'browser',origin:item.origin,blocking:item.blocking,verdict,
-              evidence:observed.evidence,evidenceProblem,environment:observed.environment,cleanup:observed.cleanup});
+              evidence:observed.evidence,evidenceProblem,environment:observed.environment,cleanup:observed.cleanup,
+              ...(hostRequestTimeout?{hostRequestTimeout:true}:{})});
             logStep(configuration,binding,'test_run',verdict==='BLOCKED'?'case_blocked':'case_complete',
               {case_id:item.id,result:verdict},'QA browser case finished');
           }

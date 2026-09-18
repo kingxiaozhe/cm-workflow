@@ -15,7 +15,7 @@ export const TERMINAL_EVENTS=new Set(['done','run_done']);
 export const RESOURCE_GUARDED_EVENTS=new Set([...TERMINAL_EVENTS,'task_done']);
 const RESOURCE_PHASES=new Set(['acquired','released','cleanup_failed']);
 const TEST_RUN_GUARDED_EVENTS=new Set([...TERMINAL_EVENTS,'task_done']);
-const TEST_RUN_PHASES=new Set(['start','case_start','case_complete','case_blocked','complete','abandoned']);
+const TEST_RUN_PHASES=new Set(['start','case_start','case_complete','case_blocked','complete','abandoned','superseded']);
 const MODEL_USAGE_TOKEN_FIELDS=new Set(['input_tokens','output_tokens','cache_read_tokens','cache_write_tokens']);
 const MODEL_USAGE_STATES=new Set(['observed','unavailable']);
 const MODEL_USAGE_OUTCOMES=new Set(['success','error','blocked','cancelled']);
@@ -116,7 +116,7 @@ export function validateResourceEvent(event,phase,data){
 function validateTestRunEvent(event,phase,data){
   if(event!=='test_run'||phase===null||phase===undefined)return;
   if(!TEST_RUN_PHASES.has(phase))
-    throw new UsageError('test_run events require phase start, case_start, case_complete, case_blocked, or complete');
+    throw new UsageError('test_run events require phase start, case_start, case_complete, case_blocked, complete, abandoned, or superseded');
   if(phase.startsWith('case_')&&(typeof data.case_id!=='string'||!RESOURCE_ID.test(data.case_id)))
     throw new UsageError('test_run case events require a valid case_id');
 }
@@ -195,6 +195,10 @@ export function unclosedResources(states){
 }
 
 function applyTestRunTransition(active,openCases,phase,caseId){
+  if(phase==='superseded'){
+    if(active||openCases.size)throw new UsageError('QA superseded requires a completed invocation');
+    return false;
+  }
   if(phase==='start'){
     if(active)throw new UsageError('test_run start has no preceding complete');
     if(openCases.size)throw new UsageError('test_run state contains cases without an active run');
@@ -330,8 +334,21 @@ function validateQaAbandonment(state,event){
     throw new UsageError('QA abandonment requires the matching active invocation with only PASS results and matching partial_pass_cases');
 }
 
+function validateQaSupersession(state,event){
+  const {start,complete}=state;
+  if(state.active||state.superseded||!start||!complete||complete.result!=='BLOCKED'||complete.failed!==0
+    ||complete.blocked<=0||start.attempt>=3||event.workflow!=='cm-ai'||event.node!=='N6'
+    ||event.reason!=='host_evidence_problem'||event.previous_test_run_id!==start.operation_id
+    ||!Array.isArray(event.blocked_cases)||event.blocked_cases.length!==complete.blocked
+    ||new Set(event.blocked_cases).size!==event.blocked_cases.length
+    ||!event.blocked_cases.every(value=>typeof value==='string'&&RESOURCE_ID.test(value))
+    ||!['repository_id','run_id','feature','task','package_digest','qa_decision_id','operation_id','attempt','mode','case_count']
+      .every(key=>event[key]!==undefined&&event[key]===start[key]&&event[key]===complete[key]))
+    throw new UsageError('QA superseded requires the matching completed BLOCKED invocation and blocked_cases');
+}
+
 function loadTestRunState(file,runId){
-  let active=false,start=null,hasNonPassResult=false,abandoned=false;
+  let active=false,start=null,complete=null,hasNonPassResult=false,abandoned=false,superseded=false;
   const openCases=new Set(),partialPassCases=new Set();
   for(const value of readJsonLines(file,{strict:true})){
     if(!value||typeof value!=='object'||value.run_id!==runId||value.event!=='test_run'||value.phase===null||value.phase===undefined)continue;
@@ -341,23 +358,26 @@ function loadTestRunState(file,runId){
       throw new UsageError('test_run state log contains a malformed case event');
     if(phase==='complete'&&!active&&!openCases.size)continue;
     if(phase==='abandoned')validateQaAbandonment({active,start,hasNonPassResult,partialPassCases},value);
+    if(phase==='superseded')validateQaSupersession({active,start,complete,superseded},value);
     active=applyTestRunTransition(active,openCases,phase,typeof caseId==='string'?caseId:null);
-    if(phase==='start'){start=value;hasNonPassResult=false;partialPassCases.clear();abandoned=false;}
+    if(phase==='start'){start=value;complete=null;hasNonPassResult=false;partialPassCases.clear();abandoned=false;superseded=false;}
+    if(phase==='complete')complete=value;
     if(phase==='case_complete'){
       if(value.result==='PASS')partialPassCases.add(caseId);
       else hasNonPassResult=true;
     }
     if(phase==='case_blocked')hasNonPassResult=true;
     if(phase==='abandoned')abandoned=true;
+    if(phase==='superseded')superseded=true;
   }
-  return {active,openCases,start,hasNonPassResult,partialPassCases,abandoned};
+  return {active,openCases,start,complete,hasNonPassResult,partialPassCases,abandoned,superseded};
 }
 
 // Read-only reuse of the writer's existing resource/test lifecycle guards by
 // the batch coordinator. No new terminal event or task completion authority.
 export function inspectRunClosure(file,runId){
   const resources=unclosedResources(loadResourceStates(file,runId)),tests=loadTestRunState(file,runId);
-  return {closed:resources.length===0&&!tests.active&&!tests.abandoned&&tests.openCases.size===0};
+  return {closed:resources.length===0&&!tests.active&&!tests.abandoned&&!tests.superseded&&tests.openCases.size===0};
 }
 
 function compactJson(value){return `${JSON.stringify(value)}\n`;}
@@ -475,7 +495,7 @@ export function writeLogEvent(rawInput,{environment=process.env,now=new Date(),u
   if(existing===null&&((event.event==='test_run'&&event.phase!==undefined)||TEST_RUN_GUARDED_EVENTS.has(event.event)))try{
     testRun=loadTestRunState(authoritativeLog,built.runId);
   }catch(error){throw new UsageError(`test_run state cannot be verified: ${error.name}`);}
-  if(existing===null&&TEST_RUN_GUARDED_EVENTS.has(event.event)&&(testRun.active||testRun.abandoned||testRun.openCases.size)){
+  if(existing===null&&TEST_RUN_GUARDED_EVENTS.has(event.event)&&(testRun.active||testRun.abandoned||testRun.superseded||testRun.openCases.size)){
     const detail=[];
     if(testRun.active)detail.push('active invocation');
     if(testRun.openCases.size)detail.push(`open cases: ${[...testRun.openCases].sort().join(', ')}`);
@@ -486,6 +506,7 @@ export function writeLogEvent(rawInput,{environment=process.env,now=new Date(),u
     if(unclosedResources(loadResourceStates(authoritativeLog,built.runId)).length)
       throw new UsageError('QA abandonment blocked by unclosed resources');
   }
+  if(existing===null&&event.event==='test_run'&&event.phase==='superseded')validateQaSupersession(testRun,event);
   if(existing===null&&event.event==='test_run'&&event.phase!==undefined)
     applyTestRunTransition(testRun.active,testRun.openCases,event.phase,event.case_id??null);
 
