@@ -5,12 +5,34 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {generateCmInitRules} from './cm-init-entry.mjs';
+import {runtimePreset} from './cm-workflow-config.mjs';
+import {editRuntimeDeclaration} from './cm-runtime-edit.mjs';
 
 const repository=fileURLToPath(new URL('..',import.meta.url));
 const selection={versionControl:'none',modules:['frontend'],analysis:'Synthetic web project; commands remain unverified.'};
 function documents(request){return request.targets.map(file=>({path:file,content:file==='AGENTS.md'
   ?'# Fixture\nKeep original restriction.\n':file==='.claude/CLAUDE.md'
     ?'# Fixture\n@rules/testing.md\n':`# ${file}\nFixture rule.\n`}));}
+test('init generation: selected preset reaches inspection for raw and corrected template drafts',async()=>{
+  const project=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-init-generate-')));
+  try{
+    fs.writeFileSync(path.join(project,'README.md'),'# Synthetic library\n');
+    for(const corrected of [false,true]){
+      const result=await generateCmInitRules({project,skillDir:path.join(repository,'skills/cm-init')},
+        {...selection,modules:[],runtimes:{available:'both',preset:'codex-codes'}},{generate:async request=>{
+          const template=request.templates.find(item=>item.target==='.cm-workflow.yml').content;
+          const content=corrected?editRuntimeDeclaration(template,'.cm-workflow.yml',runtimePreset('codex-codes')):template;
+          assert.ok(request.constraints.some(item=>item.startsWith('New config only:')));
+          return {status:'generated',documents:documents(request).map(document=>document.path==='.cm-workflow.yml'
+            ?{...document,content}:document)};
+        }});
+      assert.equal(result.inspection.status,corrected?'structurally_checked':'blocked');
+      assert.equal(result.inspection.issues.some(issue=>issue.code==='runtimes_preset_mismatch'),!corrected);
+      assert.equal(result.inspection.issues.filter(issue=>issue.severity==='warning').length,2);
+      assert.equal(fs.existsSync(path.join(project,'.cm-workflow.yml')),false);
+    }
+  }finally{fs.rmSync(project,{recursive:true,force:true});}
+});
 test('init generation: real repository templates feed host draft and existing inspection without writes',async()=>{
   const project=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-init-generate-')));
   try{
@@ -56,8 +78,7 @@ for(const filename of [null,'.cm-workflow.yml','.cm-workflow.yaml','.cm-workflow
   const project=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-init-runtime-')));
   const target=filename??'.cm-workflow.yml';
   const prior=filename?.endsWith('.json')?'{"version":1,"project":{"type":"custom"}}':'version: 1\nproject:\n  type: custom\n';
-  const content=target.endsWith('.json')?'{"version":1,"project":{"type":"custom"},"runtimes":{"available":"codex"}}'
-    :'version: 1\nproject:\n  type: custom\nruntimes:\n  available: codex\n';
+  const content=editRuntimeDeclaration(prior,target,runtimePreset('codex-only'));
   try{
     fs.writeFileSync(path.join(project,'README.md'),'# Fixture\n');
     if(filename)fs.writeFileSync(path.join(project,filename),prior);
@@ -70,7 +91,7 @@ for(const filename of [null,'.cm-workflow.yml','.cm-workflow.yaml','.cm-workflow
         assert.equal(template.fallbackRequired,false);
         assert.equal(request.existing.at(-1).content,filename?prior:null);
         assert.deepEqual(request.selection.runtimes,{available:'codex',preset:'codex-only'});
-        assert.ok(request.constraints.includes('Config file: fill only runtimes.available and roles.coder/reviewer adapter+source per preset; keep every other existing value; no secrets.'));
+        assert.ok(request.constraints.includes('Config file: fill runtimes.available and roles.coder/reviewer adapter+source per preset; for existing configs keep every other value; no secrets.'));
         return {status:'generated',documents:documents(request).map(document=>document.path===target?{path:target,content}:document)};
       }});
     assert.equal(result.status,'draft_generated');assert.equal(result.inspection.status,'structurally_checked');

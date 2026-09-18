@@ -7,6 +7,8 @@ import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {once} from 'node:events';
 import {fileURLToPath} from 'node:url';
+import {runtimePreset} from './cm-workflow-config.mjs';
+import {editRuntimeDeclaration} from './cm-runtime-edit.mjs';
 const root=fileURLToPath(new URL('..',import.meta.url));
 const analyzed={status:'analyzed',selection:{versionControl:'none',modules:[],analysis:'Synthetic local project'},
   evidence:'Synthetic source observation',noGitDecision:'explicit_user_refusal'};
@@ -48,6 +50,41 @@ function reply(message){
     result:{verdict:'approved',packageDigest:message.payload.package.packageDigest,examinedPaths:message.payload.package.examinedPaths,findings:[],summary:'Synthetic independent review'}};
   assert.fail('unexpected host call '+message.kind);
 }
+test('runtime preset mismatch blocks verification after restart and cannot enter through revision',{timeout:10000},async t=>{
+  const f=fixture(t),calls=[];
+  const selection={...analyzed.selection,runtimes:{available:'both',preset:'codex-codes'}};
+  const template=fs.readFileSync(path.join(root,'templates/cm-workflow.yml'),'utf8');
+  let corrected=false;
+  const respond=message=>{
+    calls.push(message.kind);
+    if(message.kind==='init_generate')return {status:'generated',documents:message.payload.targets.map(file=>({path:file,
+      content:file==='.cm-workflow.yml'?(corrected?editRuntimeDeclaration(template,file,runtimePreset('codex-codes')):template):'# Synthetic rules\n'}))};
+    if(message.kind==='init_verify')return checks('unverified');
+    return reply(message);
+  };
+  let c=await client(t,f,respond);
+  const generated=(await c.request('advance',{selection})).result;
+  assert.equal(generated.inspection.status,'blocked');
+  assert.ok(generated.inspection.issues.some(issue=>issue.code==='runtimes_preset_mismatch'));await c.close();
+  c=await client(t,f,respond);
+  assert.equal((await c.request('advance')).error.code,'host_request_failed');
+  const blocked=(await c.request('status')).result;
+  assert.equal(blocked.stage,'draft_generated'); // A rejected operation restores the persisted checkpoint.
+  assert.equal(blocked.result.inspection.status,'blocked');await c.close();
+  assert.deepEqual(calls,['init_generate']);
+  // Start a separate fixture session; a failed structural check does not authorize recovery or writes.
+  const revised=fixture(t);corrected=true;
+  c=await client(t,revised,respond);
+  const valid=(await c.request('advance',{selection})).result;
+  assert.equal(valid.inspection.status,'structurally_checked');
+  assert.equal(valid.inspection.issues.filter(issue=>issue.severity==='warning').length,2);
+  assert.equal((await c.request('advance')).result.stage,'verification_blocked');
+  const documents=valid.documents.map(document=>document.path==='.cm-workflow.yml'?{...document,content:template}:document);
+  assert.equal((await c.request('prepare_revision',{documents})).error.code,'host_request_failed');
+  assert.deepEqual((await c.request('status')).result.result.documents,valid.documents);await c.close();
+  assert.equal(fs.existsSync(path.join(f.project,'.cm-workflow.yml')),false);
+  assert.equal(fs.existsSync(path.join(revised.project,'.cm-workflow.yml')),false);
+});
 test('new CLI processes retain analysis, draft, blocked verification and revision; no recovered write permission',{timeout:10000},async t=>{
   const f=fixture(t),calls=[];let verifyCount=0;
   fs.writeFileSync(path.join(f.project,'AGENTS.md'),'# Original constraint\n');

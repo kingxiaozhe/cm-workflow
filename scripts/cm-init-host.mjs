@@ -71,7 +71,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       stage=restored.report.status==='matches_reviewed_draft'?'rules_present':'draft_generated';
     }
     const current=()=>{
-      const inspection=inspectCmInitDraft({project:admission.project,documents:result.documents});
+      const inspection=inspectCmInitDraft({project:admission.project,documents:result.documents,selection});
       need(inspection.status==='structurally_checked','init_draft_structural_failure');
       need(digest(inspection.changes)===digest(result.inspection.changes),'init_verification_project_changed');
     };
@@ -86,7 +86,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         const documents=message.documents;
         need(Array.isArray(documents)&&documents.length===result.documents.length
           &&documents.every(document=>result.documents.some(prior=>prior.path===document?.path)),'init_revision_scope_changed');
-        const inspection=inspectCmInitDraft({project:admission.project,documents});
+        const inspection=inspectCmInitDraft({project:admission.project,documents,selection});
         need(inspection.status==='structurally_checked','init_draft_structural_failure');
         revisionHistory.push({draftDigest:digest(result.documents),verification,confirmation,review});
         result={...result,documents,inspection,status:'draft_generated'};

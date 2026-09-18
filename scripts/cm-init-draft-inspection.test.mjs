@@ -6,10 +6,90 @@ import os from 'node:os';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {inspectCmInitDraft} from '../runtime/js/cm-init/draft-inspection.mjs';
+import {loadConfig,runtimePreset,runtimesSource} from './cm-workflow-config.mjs';
+import {editRuntimeDeclaration} from './cm-runtime-edit.mjs';
 const repository=fileURLToPath(new URL('..',import.meta.url));
 const draft=()=>[{path:'AGENTS.md',content:'# Project\n'},
   {path:'.claude/CLAUDE.md',content:'# Project\n@rules/testing.md\n'},
   {path:'.claude/rules/testing.md',content:'# Testing\n'}];
+test('init draft: inherited preset rejects raw template, accepts all edited presets and leaves declared projects unchanged',()=>{
+  const project=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-init-preset-')));
+  const oldHome=process.env.CM_WORKFLOW_HOME;
+  try{
+    process.env.CM_WORKFLOW_HOME=path.join(project,'user');fs.mkdirSync(process.env.CM_WORKFLOW_HOME);
+    fs.writeFileSync(path.join(process.env.CM_WORKFLOW_HOME,'runtimes.yml'),'runtimes: {available: both}\npreset: codex-codes\n');
+    const inherited=loadConfig({projectRoot:project});
+    assert.equal(runtimesSource(inherited),'user');
+    assert.equal(inherited.runtimes.available,'both');
+    const template=fs.readFileSync(path.join(repository,'templates/cm-workflow.yml'),'utf8');
+    const selection={versionControl:'remote',modules:['frontend'],analysis:'Synthetic fixture',
+      runtimes:{available:'both',preset:'codex-codes'}};
+    const inspect=(content,choice=selection)=>inspectCmInitDraft({project,selection:choice,
+      documents:[...draft(),{path:'.cm-workflow.yml',content}]});
+    const rejected=inspect(template);
+    assert.equal(rejected.status,'blocked');
+    assert.deepEqual(rejected.issues,[{path:'.cm-workflow.yml',code:'runtimes_preset_mismatch',
+      expected:runtimePreset('codex-codes'),actual:{runtimes:{available:'both'},roles:{
+        coder:{adapter:'current-ai',source:'local'},reviewer:{adapter:'current-ai',source:'local'}}}}]);
+    for(const preset of ['codex-only','claude-only','codex-codes','claude-codes']){
+      const expected=runtimePreset(preset);
+      const accepted=inspect(editRuntimeDeclaration(template,'.cm-workflow.yml',expected),
+        {...selection,runtimes:{available:expected.runtimes.available,preset}});
+      assert.equal(accepted.status,'structurally_checked');assert.deepEqual(accepted.issues,[]);
+    }
+    assert.equal(fs.existsSync(path.join(project,'.cm-workflow.yml')),false);
+    fs.writeFileSync(path.join(project,'.cm-workflow.yml'),template);
+    const {runtimes,...existingSelection}=selection;
+    assert.equal(inspect(template,existingSelection).status,'structurally_checked');
+    assert.deepEqual(inspect(template,existingSelection).issues,[]);
+    assert.equal(inspect(template).status,'blocked'); // A supplied selection also applies to existing targets.
+    assert.equal(fs.readFileSync(path.join(project,'.cm-workflow.yml'),'utf8'),template);
+  }finally{
+    if(oldHome===undefined)delete process.env.CM_WORKFLOW_HOME;else process.env.CM_WORKFLOW_HOME=oldHome;
+    fs.rmSync(project,{recursive:true,force:true});
+  }
+});
+
+test('init draft: compares available and both role adapter/source fields separately',()=>{
+  const project=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-init-preset-')));
+  try{
+    for(const [role,field,value] of [['coder','adapter','current-ai'],['reviewer','adapter','current-ai'],
+      ['coder','source','local'],['reviewer','source','local'],[null,'available','both']]){
+      const expected=runtimePreset('codex-only'),actual=structuredClone(expected);
+      if(role)actual.roles[role][field]=value;else actual.runtimes.available=value;
+      // both + current-ai avoids the shared parser's independent same-provider rule.
+      if(!role){actual.roles.coder.adapter='current-ai';actual.roles.reviewer.adapter='current-ai';}
+      const result=inspectCmInitDraft({project,selection:{runtimes:{available:'codex',preset:'codex-only'}},
+        documents:[...draft(),{path:'.cm-workflow.json',content:JSON.stringify({version:1,...actual})}]});
+      assert.equal(result.status,'blocked');
+      assert.deepEqual(result.issues,[{path:'.cm-workflow.json',code:'runtimes_preset_mismatch',expected,actual}]);
+    }
+  }finally{fs.rmSync(project,{recursive:true,force:true});}
+});
+
+test('init draft: project policy warnings apply only to new configs and never hide blocking issues',()=>{
+  const project=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-init-policy-')));
+  const value={version:1,...runtimePreset('codex-codes'),policies:{delivery:'draft-mr',tests:['logic','browser']}};
+  const inspect=(selection,config=value)=>inspectCmInitDraft({project,selection,
+    documents:[...draft(),{path:'.cm-workflow.json',content:JSON.stringify(config)}]});
+  try{
+    for(const versionControl of ['local','none','remote'])for(const modules of [[],['backend-api'],['frontend'],['miniprogram']]){
+      const result=inspect({versionControl,modules});
+      const codes=[...(versionControl==='remote'?[]:['delivery_requires_remote']),
+        ...(modules.some(name=>['frontend','miniprogram'].includes(name))?[]:['browser_tests_without_ui'])];
+      assert.equal(result.status,'structurally_checked');
+      assert.deepEqual(result.issues,codes.map(code=>({path:'.cm-workflow.json',code,severity:'warning'})));
+    }
+    for(const delivery of ['branch','diff'])assert.deepEqual(inspect({versionControl:'local',modules:[]},
+      {...value,policies:{delivery,tests:['logic']}}).issues,[]);
+    const mismatch=inspect({versionControl:'local',modules:[],runtimes:{available:'both',preset:'claude-codes'}});
+    assert.equal(mismatch.status,'blocked');assert.equal(mismatch.issues.length,3);
+    fs.writeFileSync(path.join(project,'.cm-workflow.json'),JSON.stringify(value));
+    assert.deepEqual(inspect({versionControl:'local',modules:[]}).issues,[]);
+    const changed=inspect({versionControl:'local',modules:[]},{...value,policies:{delivery:'diff',tests:['logic']}});
+    assert.equal(changed.status,'blocked');assert.equal(changed.issues[0].code,'existing_config_fields_changed');
+  }finally{fs.rmSync(project,{recursive:true,force:true});}
+});
 test('init draft CLI: proposals reference each other; existing changes remain review-required and unwritten',()=>{
   const project=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-init-draft-')));
   try{
