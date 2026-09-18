@@ -17,6 +17,14 @@
 
 ## 最近更新
 
+**0.14.0**
+
+- **运行定义不再手写**：`cm-ai` 准入新增只读 `--print-run-definition`，把它已经解析出的 specs/代码根、feature 与任务直接生成为合法运行定义（`--scope` 必填，因为"本任务允许改哪些文件"是框架推不出来的唯一一项）；`invalid_config` 改为点名多余/缺失字段、版本与文件类型。
+- **N6 QA 更贴合实际进度**：feature 未完成时只执行已完成任务的用例，其余记入 `deferred_cases` 延后到 feature 收尾；`five_tasks_without_qa` 不再把已收尾 feature 的历史计为积压；QA 因宿主或环境证据问题整体 BLOCKED 时可用 `--rerun-blocked-qa` 显式重跑一轮，QA 结束同步写回状态镜像。
+- **审查证据更可判**：受保护检查的证据追加测试计数（`host check exited 0 (tests 27, pass 27, fail 0)`），原始输出仍不进入审查数据。
+- **cm-fix 先复现再修**：按描述未复现时不直接进观测闭环，先沿输入值、前置状态、时序、环境、规模五个维度单维度构造场景，上限 3 个场景或 15 分钟，命中即作为红灯测试骨架；缺陷档案新增复现尝试记录。
+- **cm-init 配置核验**：机械核验配置草稿与所选运行时预设一致，并按版本控制与 UI 模块事实裁剪新建配置的 delivery/tests。
+
 **0.13.4**
 
 - **第二轮真项目 dogfood 修复**：在 specs 与代码分离的真实项目上再跑一遍 `cm-init → cm-prd → cm-ai`（Codex 写码、Claude CLI 独立审查、feature 收尾 QA）并修复沿路暴露的 3 处运行时缺陷——`cm-init` 现在机械核验配置草稿与所选运行时预设一致并按项目事实裁剪新建配置的 delivery/tests；`cm-ai` 的 N6 在 feature 未完成时只执行已完成任务的用例、其余记入 `deferred_cases`，`five_tasks_without_qa` 不再把已收尾 feature 的历史计为积压；QA 因宿主/环境证据问题整体 BLOCKED 时可用 `--rerun-blocked-qa` 显式重跑一轮，QA 结束同步写回状态镜像。详见[更新日志](CHANGELOG.md)。
@@ -105,7 +113,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.13.4 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.14.0 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
