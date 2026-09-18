@@ -34,7 +34,8 @@ const protectedConversations=new WeakMap();
 export const conversationProtection=execution=>protectedConversations.get(execution)??null;
 export function createConversationExecution(definition,hostContextId,bridge,review=null,allowedAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
   definition=json(definition);workflow=workflow===null?null:json(workflow);options=json(options);
-  shape(options,[...['protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment'].filter(key=>Object.hasOwn(options,key))]);
+  shape(options,[...['protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','parallelMember'].filter(key=>Object.hasOwn(options,key))]);
+  const parallelMember=options.parallelMember??false;need(typeof parallelMember==='boolean','invalid_input');
   const provider=options.providerDevelopment??null;
   if(provider){
     shape(provider,['model','attempt','coderRuntime','reviewerRuntime']);
@@ -66,7 +67,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   // Keep the unverified native permissions boundary intact for this first host
   // slice too. A transport is not physical protection of nested specs.
   need(protection||!definition.specsDir.startsWith(definition.codeProject+path.sep),'nested_specs_protection_required');
-  const configuration={kind:'cm-current-conversation-v1',definitionDigest:digest(definition),hostContextId,
+  const configuration={kind:'cm-current-conversation-v1',...(parallelMember?{parallelMember}:{}),definitionDigest:digest(definition),hostContextId,
     ...(runtime==='claude'?{runtime}:{}),
     ...(provider?{providerDevelopment:{model:provider.model,coderRuntime,reviewerRuntime}}:{}),
     ...(protection?{protection}:{}),
@@ -104,7 +105,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   const execution={configuration,timeoutMs:provider?protection.timeoutMs:1800000,excludedContexts:[hostContextId],hostDecision:null,applicableAgentFiles:[],
     ...(bootstrap?{bootstrap}:{}),
     ...(provider?{developmentAttempt:provider.attempt}:{}),
-    ...(workflow?createHostWorkflowCapabilities({definition,configuration:workflow,bridge,allowQa,runtime,protectedExecution:protection!==null,bootstrap}):{}),
+    ...(workflow?createHostWorkflowCapabilities({definition,configuration:workflow,bridge,allowQa,runtime,protectedExecution:protection!==null,bootstrap,parallelMember}):{}),
     ...(options.qaLogHome?{qaLogHome:options.qaLogHome}:{}),
     ...(authority?{hostDecisionProvider:authority.hostDecisionProvider}:{}),
     developer:{provider:coderRuntime,requestedModel:provider?.model??'current-session',contextId:author,run:async(request,control)=>{
@@ -126,7 +127,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
         const expected=projectExecution?projectExecution.expected(bound.payload.scope):null;
         if(protection){
           prompt+=protectedTextInstructions;
-          if(documentationPaths.length&&isFinalCmAiTask({specsDir:definition.specsDir,codeProject:definition.codeProject,
+          if(!parallelMember&&documentationPaths.length&&isFinalCmAiTask({specsDir:definition.specsDir,codeProject:definition.codeProject,
             feature:definition.feature,taskId:bound.identity.taskId}))prompt+=' Include necessary documentation synchronization in the same edits: '+JSON.stringify(documentationPaths);
         }
         const response=provider?await processWorker({prompt:prompt+'\n'+JSON.stringify({editMode:'protected-text-v1',expected})},control):json(await bridge.call('develop',{request:bound,prompt,codeProject:definition.codeProject,route,

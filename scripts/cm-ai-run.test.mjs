@@ -386,3 +386,35 @@ test('stalled response backlog is bounded and fails explicitly',async()=>{
   input.end(Array.from({length:70},(_,i)=>JSON.stringify(request('status',`status-${i}`))).join('\n')+'\n');
   await rejected;
 });
+
+test('trusted parallel selection binds admission, Learning, start and resume fingerprints', {skip:!platform},()=>fixture(async f=>{
+  const {openControlRun}=await import('./cm-ai-run.mjs');
+  const {inspectCmAiTaskLearningInput}=await import('../runtime/js/cm-ai/cm-ai-context-refresh.mjs');
+  const {createCodexDeveloperRun}=await import('../runtime/js/cm-ai/codex-developer-adapter.mjs');
+  const {createCmAiHost}=await import('../runtime/js/cm-ai/host.mjs');
+  fs.writeFileSync(path.join(f.specsDir,'1.login','tasks.md'),'- [ ] T-001: first\n- [ ] T-002: second\n- [ ] T-003: final\n\n- T-003 依赖 T-001, T-002\n');
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.login'],specFiles:buildManifest(f.specsDir)}));
+  const definition={...f.definition,identity:{...identity,taskId:'T-002'}},parallelSelection={version:1,group:['T-001','T-002']};
+  const learning={specsDir:f.specsDir,codeProject:f.codeProject,feature:'1.login',identity:definition.identity,applicableAgentFiles:[]};
+  assert.throws(()=>inspectCmAiTaskLearningInput(learning),{code:'learning_context_invalid'});
+  assert.equal(inspectCmAiTaskLearningInput(learning,{parallelSelection}).identity.taskId,'T-002');
+  const execution={configuration:{kind:'selection-fixture'},timeoutMs:2000,excludedContexts:['host'],hostDecision:null,
+    developer:{provider:'codex',requestedModel:'fixture',contextId:'author',run:createCodexDeveloperRun({requestedModel:'fixture',worker:async()=>{fs.writeFileSync(path.join(f.codeProject,'a.js'),'selected implementation\n');return {status:'succeeded',value:{outcome:'implemented',
+      application:{status:'no_relevant_lesson',note:null},retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};}})},
+    check:async()=>[{id:'check',command:['fixture'],outcome:'passed',exitCode:0,evidence:'fixture'}],reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',
+      requestedModel:'fixture',allowed:true,available:true,contexts:['review-1','review-2'],
+      run:async()=>{throw new Error('no review');}}],
+    reviewInvocation:{developerThreadId:'author',excludedThreadIds:['host'],authorize:()=>{throw new Error('no review');}}};
+  await assert.rejects(openControlRun(definition,'create',execution),{code:'task_selection_mismatch'});
+  await assert.rejects(openControlRun(definition,'create',execution,{parallelSelection:{version:1,group:['T-001','T-003']}}),{code:'task_selection_mismatch'});
+  const direct=createCmAiHost({runner:{root:f.codeProject,identity:definition.identity,scope:['a.js'],requirements:['requirements.md'],
+    developer:execution.developer,check:execution.check,commit:async()=>{throw new Error('no commit');},reviewers:[],excludedContexts:['host']},
+    entry:{specsDir:f.specsDir,codeProject:f.codeProject,feature:'1.login',identity:definition.identity}});
+  assert.equal((await direct.handle({version:1,operation:'start',requestId:'ordinary',identity:definition.identity})).code,'task_mismatch');
+  let run=await openControlRun(definition,'create',execution,{parallelSelection});
+  const result=await run.host.handle({version:1,operation:'start',requestId:'selected',identity:definition.identity});
+  assert.equal(result.state,'awaiting_review',JSON.stringify(result));run.close();
+  await assert.rejects(openControlRun(definition,'resume',execution),{code:'fingerprint_mismatch'});
+  await assert.rejects(openControlRun(definition,'resume',execution,{parallelSelection:{version:1,group:['T-002','T-003']}}),{code:'fingerprint_mismatch'});
+  run=await openControlRun(definition,'resume',execution,{parallelSelection});run.close();
+}));

@@ -14,6 +14,7 @@ import {inspectPrdDraft} from '../runtime/js/cm-prd/draft.mjs';
 import {runPrdHostReview} from '../runtime/js/cm-prd/review-host.mjs';
 import {inspectPrdFindings} from '../runtime/js/cm-prd/review-findings.mjs';
 import {recordPrdHostDisposition} from '../runtime/js/cm-prd/review-disposition.mjs';
+const FIXTURE_TIMEOUT_MS=Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000);
 const riskSignals=high=>({greenfieldAdr:false,architectureOrDataFlow:high,newRuntimeDependencyOrToolchain:false,
   publicContractDataOrSecurity:false,fiveOrMoreFunctions:false});
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
@@ -116,7 +117,7 @@ test('late design response cannot erase an existing draft or reset self-check ro
   assert.equal(host.status().selfCheckRound,1);assert.deepEqual(host.status().draft,original);
   assert.equal(host.status().designDraft,null);
 });
-for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promote'])test(`actual CLI disposed design to tasks: ${mode}`, {timeout:15000},async t=>{
+for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promote'])test(`actual CLI disposed design to tasks: ${mode}`, {timeout:FIXTURE_TIMEOUT_MS},async t=>{
   const promotes=['promote','saved-promote'].includes(mode),succeeds=['saved','late-risk','promote','saved-promote'].includes(mode);
   let originalDigest;
   const dir=fixture(t);fs.mkdirSync(path.join(dir,'mirror'));

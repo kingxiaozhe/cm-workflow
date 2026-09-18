@@ -61,6 +61,9 @@ function validateState(raw,options) {
 function runBytes(dir) {
   let total=0;
   for(const name of fs.readdirSync(dir)) {
+    if(name==='writer.sqlite' || name==='writer-ready.json') {
+      total+=regular(path.join(dir,name),name==='writer.sqlite'?64*1024:1024).size;continue;
+    }
     need(name==='state.json' || /^\.state\.[a-f0-9-]{36}\.tmp$/.test(name),'store_unknown_file');
     total+=regular(path.join(dir,name),STATE_LIMIT).size;
   }
@@ -125,6 +128,8 @@ function acquireWriter(p,create) {
       }catch(error){if(error.code!=='EEXIST')throw error;}
     }
     const inode=regular(p,64*1024);need(created || inode.size>0,'store_incomplete');
+    // Each run now owns its database. Retain inode keys so pathname aliases
+    // cannot open/close a second descriptor and drop this process's locks.
     const candidateKey=`${inode.dev}:${inode.ino}`;need(!activeWriters.has(candidateKey),'store_busy');
     key=candidateKey;activeWriters.add(key);
     // POSIX close(any fd on this DB) drops ALL process locks. Keep this one
@@ -171,13 +176,28 @@ export function openExecutionStore(input) {
   const root=fs.realpathSync(options.specsRoot);directory(root,false,false);
   const reviews=path.join(root,'.reviews'),execution=path.join(reviews,'.execution');
   directory(reviews,options.create,false);directory(execution,options.create);
-  const lockPath=path.join(execution,'writer.sqlite'),{db,inode,certificate,inspectionFd,release}=acquireWriter(lockPath,options.create);
-  let closed=false,poisoned=false,dir;
+  const dir=path.join(execution,options.identity.runId),lockPath=path.join(dir,'writer.sqlite');
+  if(options.create) {
+    const legacyPath=path.join(execution,'writer.sqlite');let legacy=false;
+    try{fs.lstatSync(legacyPath);legacy=true;}catch(error){if(error.code!=='ENOENT')throw error;}
+    if(legacy) {
+      // Probe with the full existing protocol; never create or migrate old files.
+      // release closes SQLite before its inspection fd and removes the inode key.
+      let probe;
+      try{probe=acquireWriter(legacyPath,false);}catch{need(false,'store_busy');}
+      probe.release();
+    }
+  }
+  const existed=fs.existsSync(dir);
+  directory(dir,options.create);
+  // Legacy records must be finished by an old runtime or their runId retired.
+  if(!options.create)need(fs.existsSync(lockPath),'store_layout_legacy');
+  const directories=[reviews,execution,dir].map(p=>({p,inode:directory(p,false,p!==reviews)}));
+  const {db,inode,certificate,inspectionFd,release}=acquireWriter(lockPath,options.create);
+  let closed=false,poisoned=false;
   const close=()=>{if(!closed){closed=true;release();}};
   try {
-    dir=path.join(execution,options.identity.runId);
-    if(options.create) {need(!fs.existsSync(dir),'store_exists');fs.mkdirSync(dir,{mode:0o700});syncPath(dir);syncPath(execution);}
-    const directories=[reviews,execution,dir].map(p=>({p,inode:directory(p,false,p!==reviews)}));
+    if(options.create)need(!existed,'store_exists');
     const guard=()=>{
       need(!closed,'store_closed');need(!poisoned,'store_poisoned');
       for(const d of directories)need(sameInode(d.inode,directory(d.p,false,d.p!==reviews)),'snapshot_changed');

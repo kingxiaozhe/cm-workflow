@@ -1,5 +1,5 @@
 // Fixed Codex-host entry for the existing cm-ai admission and V3 task runner.
-import {inspectCmAiAdmission} from './cm-ai-admission.mjs';
+import {inspectCmAiAdmission,matchesCmAiTaskSelection} from './cm-ai-admission.mjs';
 import {inspectCmAiContextRefresh,inspectCmAiTaskLearningInput} from './cm-ai-context-refresh.mjs';
 import {findCmAiQaDecision,inspectCmAiQaDecision,inspectCmAiQaResult,recordCmAiQaDecision,
   latestCmAiQaRun,recordCmAiQaRun,inspectCmAiQaRecovery} from './cm-ai-qa-log.mjs';
@@ -131,6 +131,7 @@ export function createCmAiConversationEntry(options) {
   if(options&&Object.hasOwn(options,'applicableAgentFiles'))optionKeys.push('applicableAgentFiles');
   if(options&&Object.hasOwn(options,'documentationResult'))optionKeys.push('documentationResult');
   if(options&&Object.hasOwn(options,'documentationProvider'))optionKeys.push('documentationProvider');
+  if(options&&Object.hasOwn(options,'parallelSelection'))optionKeys.push('parallelSelection');
   shape(options,optionKeys);
   if(Object.hasOwn(options,'developmentAttempt'))need([1,2].includes(options.developmentAttempt),'invalid_development_attempt');
   text(options.specsDir);text(options.codeProject);text(options.feature);
@@ -559,8 +560,7 @@ export function createCmAiConversationEntry(options) {
         deduplicated:result.deduplicated,degraded:result.degraded});
     }
     need(['start','resume'].includes(operation.operation),'invalid_input');
-    need(admission.state==='ready'&&admission.nextTask?.feature===options.feature
-      &&admission.nextTask.id===identity.taskId,'task_mismatch');
+    need(matchesCmAiTaskSelection(admission,options.feature,identity.taskId,options.parallelSelection??null),'task_mismatch');
     const status=boundStatus(runner.status(),identity);
     const developable=['ready','changes_requested'].includes(status.state)||retryDeveloper(status);
     const repeatable=operation.operation==='start'&&status.state==='awaiting_review';
@@ -572,7 +572,7 @@ export function createCmAiConversationEntry(options) {
       return summary(operation,{...status,code:'provider_development_authorization_required'},'awaiting');
     const learningInput=inspectCmAiTaskLearningInput({specsDir:options.specsDir,codeProject:options.codeProject,
       feature:options.feature,identity,applicableAgentFiles:applicableAgentFiles??[]},
-    {admission:runner.inspectBootstrapAdmission?.()??null});
+    {admission:runner.inspectBootstrapAdmission?.()??null,parallelSelection:options.parallelSelection??null});
     // Keep rejected effects immutable. A run-wide rejection count gives each
     // corrected result a new effect id without changing the provider attempt.
     const rejectedValues=status.calls.filter(call=>call.terminal==='failed'

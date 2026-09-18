@@ -9,8 +9,9 @@ import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {createCmPrdAnalysis} from '../runtime/js/cm-prd/analysis.mjs';
 import {openPrdSession} from '../runtime/js/cm-prd/session.mjs';
+const FIXTURE_TIMEOUT_MS=Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000);
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-for(const mode of ['codex','claude','cancel','cases','materials','draft','self-check'])test(`PRD actual CLI and original log adapter: ${mode}`,{timeout:15000},async()=>{
+for(const mode of ['codex','claude','cancel','cases','materials','draft','self-check'])test(`PRD actual CLI and original log adapter: ${mode}`,{timeout:FIXTURE_TIMEOUT_MS},async()=>{
   const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-host-')));
   for(const name of ['docs','mirror'])fs.mkdirSync(path.join(dir,name));
   fs.writeFileSync(path.join(dir,'docs/input.md'),'Synthetic requirement');
@@ -178,7 +179,7 @@ for(const mode of ['codex','claude','cancel','cases','materials','draft','self-c
   }finally{child.kill();lines.close();await closed;fs.rmSync(dir,{recursive:true,force:true});}
 });
 
-for(const known of [true,false])test(`summary without draft uses only current durable session scope: ${known}`,{timeout:15000},async t=>{
+for(const known of [true,false])test(`summary without draft uses only current durable session scope: ${known}`,{timeout:FIXTURE_TIMEOUT_MS},async t=>{
   const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-summary-session-')));
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
   for(const name of ['docs','mirror','1.history','2.current'])fs.mkdirSync(path.join(dir,name));

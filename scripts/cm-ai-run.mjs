@@ -167,7 +167,7 @@ export function validateRunDefinition(input){
   return value;
 }
 
-export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false}={}){
+export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,parallelSelection=null}={}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
@@ -176,7 +176,7 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
     ||(rerunUnknownQa||rerunBlockedQa)&&(mode!=='resume'||!execution?.qaExecutor))fail('qa_recovery_authorization_required');
   const {openTaskExecutionStore}=await import('../runtime/js/cm-ai/task-owner.mjs');
   const {createCmAiHost}=await import('../runtime/js/cm-ai/host.mjs');
-  const {inspectCmAiAdmission}=await import('../runtime/js/cm-ai/cm-ai-admission.mjs');
+  const {inspectCmAiAdmission,matchesCmAiTaskSelection}=await import('../runtime/js/cm-ai/cm-ai-admission.mjs');
   const {captureReviewBaseline}=await import('../runtime/js/cm-ai/review-package.mjs');
   if(execution!==null){
     const {shape,json,validCallTimeout}=await import('../runtime/js/cm-ai/effect-contract.mjs');
@@ -207,21 +207,22 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
     const {bootstrapConfiguration}=await import('../runtime/js/cm-ai/host-bootstrap.mjs');
     bootstrapConfig=bootstrapConfiguration(execution.bootstrap,{root:codeProject,identity,scope,feature});
   }
+  if(parallelSelection!==null)parallelSelection=JSON.parse(JSON.stringify(parallelSelection));
   const selectedRoots=definition.codeProjects?codeProjectPaths(codeProject,resolveCodeProjects(codeProject,definition.codeProjects)):null;
   if(selectedRoots){
     if(!execution||conversationProtection(execution)===null)fail('multi_root_protection_required');
     for(const root of definition.codeProjects){
       const selected=inspectCmAiAdmission({specsDir,codeProject:root});
-      if(mode==='create'&&(selected.state!=='ready'||selected.nextTask.feature!==feature||selected.nextTask.id!==identity.taskId))
+      if(mode==='create'&&!matchesCmAiTaskSelection(selected,feature,identity.taskId,parallelSelection))
         return {blocked:selected,close:()=>{}};
     }
   }
   const developer=execution?.documentationSync
     ?(await import('../runtime/js/cm-ai/host-documentation.mjs')).withHostDocumentation({developer:execution.developer,
-      documentationSync:execution.documentationSync,specsDir,codeProject,feature,scope}):execution?.developer;
+      documentationSync:execution.documentationSync,specsDir,codeProject,feature,scope,parallelSelection}):execution?.developer;
   const admission=inspectCmAiAdmission({specsDir,codeProject});
   if(mode==='create'&&admission.state!=='ready')return {blocked:admission,close:()=>{}};
-  if(mode==='create'&&(admission.nextTask.feature!==feature||admission.nextTask.id!==identity.taskId))fail('task_selection_mismatch');
+  if(mode==='create'&&!matchesCmAiTaskSelection(admission,feature,identity.taskId,parallelSelection))fail('task_selection_mismatch');
   const tasksPath=path.join(specsDir,feature,'tasks.md');
   const featureSlug=feature.replace(/^\d+\./,'');
   const reviewsDir=path.join(specsDir,'.reviews');
@@ -234,7 +235,7 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
     ...(selectedRoots?{codeProjectPaths:selectedRoots}:{})};
   if(mode==='create')captureReviewBaseline(baselineOptions);
   // Definition is data, never an import path, command, grant or executable callback.
-  const configMaterial=execution===null?definition:{definition,execution:execution.configuration,
+  const configMaterial=execution===null?(parallelSelection===null?definition:{definition,parallelSelection}):{definition,...(parallelSelection===null?{}:{parallelSelection}),execution:execution.configuration,
         ...(bootstrapConfig?{bootstrap:bootstrapConfig}:{}),
         ...(Object.hasOwn(execution,'developmentAttempt')?{developmentAuthorization:'per-attempt-v1'}:{}),
         ...(execution.hostDecisionProvider?{hostDecisionProvider:{version:1,timeoutMs:execution.hostDecisionProvider.timeoutMs}}:{}),
@@ -271,7 +272,7 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
     if(mode==='resume'&&store.snapshot().records.length===0){
       // Only the genuine, fingerprint-matching empty initializer can be finished.
       // Never reset/recreate a journal that contains any event.
-      if(admission.state!=='ready'||admission.nextTask.feature!==feature||admission.nextTask.id!==identity.taskId)
+      if(!matchesCmAiTaskSelection(admission,feature,identity.taskId,parallelSelection))
         fail('initialization_admission_required');
       captureReviewBaseline(baselineOptions);
       runnerMode='create';
@@ -287,7 +288,7 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
           reviewInvocation:execution.reviewInvocation,check:execution.check,
           excludedContexts:execution.excludedContexts,timeoutMs:execution.timeoutMs,
           taskLearning:{feature,hostHandoff:true}})},
-      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,...(execution===null?{}:{hostDecision:execution.hostDecision,
+      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,...(parallelSelection===null?{}:{parallelSelection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
         ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
     if(attaching||attached){

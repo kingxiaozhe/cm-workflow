@@ -43,6 +43,24 @@ function reviewConfiguration(file){
   return json({...config,disabledSkills});
 }
 
+// Shared synthetic loopback diagnostic; a receipt never grants Review permission.
+export async function runReviewPreflight(definition,{model,runtime='codex',disabledSkills}={}){
+  need(['codex','claude'].includes(runtime),'invalid_runtime');
+  if(runtime==='claude'){
+    const {previewClaudeTools}=await import('../runtime/js/cm-ai/claude-tool-preview.mjs');
+    const config=await previewClaudeTools({cwd:definition.codeProject,model});
+    return config;
+  }
+  const {previewIsolated,previewTools}=await import('../runtime/js/cm-ai/tool-preview.mjs');
+  const preview=disabledSkills===undefined?previewIsolated:previewTools;
+  const receipt=await preview({cwd:definition.codeProject,model,allowCodeProject:true,promptTransport:'stdin',
+    ...(disabledSkills===undefined?{}:{disabledSkills})});
+  // No raw startup diagnostics, headers, prompt or discovered content.
+  return {model,disabledSkills:receipt.disabledSkillFolders,preflight:{passed:receipt.passed,
+    cli_model:receipt.cli_model,config_fingerprint:receipt.config_fingerprint,prompt_transport:receipt.prompt_transport,
+    real_model_requests:receipt.real_model_requests,listener_closed:receipt.listener_closed}};
+}
+
 async function protectedExecutionFor(definition,hostContextId,extra,review,mode,workflow,bridge,bootstrap=null){
   const runtime=extra.get('--runtime')??'codex';
   const selected=resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),runtime);
@@ -122,18 +140,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       need(argv.length===5||argv[5]==='--runtime','invalid_arguments');
       need(['codex','claude'].includes(runtime),'invalid_runtime');
       const definition=readRunDefinition(argv[2]);
-      if(runtime==='claude'){
-        const {previewClaudeTools}=await import('../runtime/js/cm-ai/claude-tool-preview.mjs');
-        const config=await previewClaudeTools({cwd:definition.codeProject,model:argv[4]});
-        output.write(JSON.stringify(config)+'\n');return config.preflight.passed?0:1;
-      }
-      const {previewIsolated}=await import('../runtime/js/cm-ai/tool-preview.mjs');
-      const receipt=await previewIsolated({cwd:definition.codeProject,model:argv[4],allowCodeProject:true,promptTransport:'stdin'});
-      // No raw startup diagnostics, headers, prompt or discovered content.
-      output.write(JSON.stringify({model:argv[4],disabledSkills:receipt.disabledSkillFolders,preflight:{passed:receipt.passed,
-        cli_model:receipt.cli_model,config_fingerprint:receipt.config_fingerprint,prompt_transport:receipt.prompt_transport,
-        real_model_requests:receipt.real_model_requests,listener_closed:receipt.listener_closed}})+'\n');
-      return receipt.passed?0:1;
+      const config=await runReviewPreflight(definition,{model:argv[4],runtime});
+      output.write(JSON.stringify(config)+'\n');return config.preflight.passed?0:1;
     }
     need(argv.length>=8&&argv[0]==='serve'&&argv[1]==='--config'&&argv[3]==='--mode'
       &&argv[5]==='--host-context'&&argv[7]==='--allow-development','host_launch_authorization_required');

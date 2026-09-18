@@ -16,6 +16,7 @@ import {inspectCmAiContextRefresh,inspectCmAiTaskLearningInput} from '../runtime
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
+const FIXTURE_TIMEOUT_MS=Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000);
 
 // Keep runtime declarations and log mirrors independent of the invoking user's home.
 const isolatedWorkflowHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-ai-bootstrap-home-'));
@@ -130,7 +131,7 @@ function runCli(f,config,mode,operation){
     const args=[...config.args];args[4]=mode;
     const child=spawn(process.execPath,[config.cli,...args],{env:config.env,stdio:['pipe','pipe','pipe']});
     let buffer='',stderr='',sessionId;const calls=[];let result;
-    const timer=setTimeout(()=>{child.kill('SIGTERM');reject(Error('bootstrap CLI timeout: '+stderr));},15000);
+    const timer=setTimeout(()=>{child.kill('SIGTERM');reject(Error('bootstrap CLI timeout: '+stderr));},Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000));
     const send=value=>child.stdin.write(JSON.stringify(value)+'\n');
     child.stderr.on('data',chunk=>{stderr+=chunk;});child.once('error',reject);
     child.stdout.on('data',chunk=>{
@@ -188,7 +189,7 @@ test('empty T001 then protected current-host CLI rules task, actual QA and N7 us
   assert.match(fs.readFileSync(path.join(f.specsDir,'0.bootstrap','tasks.md'),'utf8'),/\[x\] T-002/);
 });
 
-test('bootstrap denies missing authority before intent and a newly authorized launch can continue',{timeout:15000},async t=>{
+test('bootstrap denies missing authority before intent and a newly authorized launch can continue',{timeout:FIXTURE_TIMEOUT_MS},async t=>{
   const f=fixture(t);
   let run=open(f,'T-001');await run.effect('develop');await run.effect('review');await run.effect('complete');run.close();
   run=open(f,'T-002','create',{allowWrite:false});

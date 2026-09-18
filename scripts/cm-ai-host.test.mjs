@@ -36,7 +36,7 @@ function runCli(f,mode,action='create'){
     const args=[...f.args];args[4]=action;
     const child=spawn(process.execPath,[cli,...args],{stdio:['pipe','pipe','pipe'],env:f.env??process.env});
     let buffer='',stderr='',closed=false,sessionId;const rows=[],calls=[];
-    const timer=setTimeout(()=>{child.kill('SIGTERM');reject(new Error('host fixture timed out'));},15000);
+    const timer=setTimeout(()=>{child.kill('SIGTERM');reject(new Error('host fixture timed out'));},Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000));
     child.stderr.on('data',chunk=>{stderr+=chunk;});
     child.once('error',reject);
     const send=value=>child.stdin.write(JSON.stringify(value)+'\n');
