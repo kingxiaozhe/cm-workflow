@@ -163,7 +163,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     git(config.codeProject,['rev-parse','--verify',`refs/heads/${branch}`],'batch_worktree_missing');
     if(!fs.existsSync(worktree))return;
     need(git(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
-    commitChanges(worktree,`WIP ${plans.get(row.from_key).identity.taskId}: blocked (${row.code})`);
+    commitChanges(worktree,taskCommitArgs(plans.get(row.from_key).identity.taskId,taskDescription(config,plans.get(row.from_key)),row.code));
     git(config.codeProject,['worktree','remove',worktree]);
     // Keep the branch: its WIP is evidence, not approved code to merge.
   }
@@ -216,7 +216,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     let intent=progress().merging.get(key);
     if(!intent){
       git(worktree,['add','-A']);
-      if(git(worktree,['status','--porcelain']))git(worktree,['commit','-m',`${plans.get(key).identity.taskId}: ${taskDescription(config,plans.get(key))}`]);
+      if(git(worktree,['status','--porcelain']))git(worktree,['commit',...taskCommitArgs(plans.get(key).identity.taskId,taskDescription(config,plans.get(key)))]);
       need(git(config.codeProject,['status','--porcelain'])==='','batch_main_dirty');
       intent={from_key:key,expected_old:git(config.codeProject,['rev-parse','HEAD']),member_commit:git(worktree,['rev-parse','HEAD'])};
       record('batch_merge_started',intent);
@@ -369,7 +369,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         if(request.operation!=='advance'||(!finished&&!handoff))return {...result,batchId:config.batchId};
         const next=handoff?`${result.nextTask.feature}/${result.nextTask.id}`:null;
         if(handoff)need(plans.has(next),'batch_task_scope_required');
-        let task_commit=commitChanges(config.codeProject,`${plans.get(liveKey).identity.taskId}: ${taskDescription(config,plans.get(liveKey))}`);
+        let task_commit=commitChanges(config.codeProject,taskCommitArgs(plans.get(liveKey).identity.taskId,taskDescription(config,plans.get(liveKey))));
         if(task_commit)record('batch_task_committed',{from_key:liveKey,task_commit});
         else task_commit=progress().rows.filter(row=>row.phase==='batch_task_committed'&&row.from_key===liveKey).at(-1)?.task_commit??null;
         if(finished)return {...result,batchId:config.batchId,task_commit};
@@ -386,10 +386,29 @@ function git(cwd,args,code='batch_git_failed'){
   const result=spawnSync('git',['-C',cwd,...args],gitOptions());
   need(!result.error&&result.status===0&&result.signal===null,code);return result.stdout.trim();
 }
-function commitChanges(cwd,message){
+function commitChanges(cwd,messageArgs){
   if(!git(cwd,['status','--porcelain']))return null;
-  git(cwd,['add','-A']);git(cwd,['commit','-m',message]);
+  git(cwd,['add','-A']);git(cwd,['commit',...messageArgs]);
   return git(cwd,['rev-parse','HEAD']);
+}
+// Keep the original description in the body; only the subject is summarized.
+export function taskCommitArgs(taskId,description,blockedCode=null){
+  let summary=description.split(/[；。\r\n\u2028\u2029]/u,1)[0].trim()
+    .replace(/^~\d+min\s*/u,'').replace(/\s*~\d+min$/u,'').trim();
+  summary=summary.replace(/\s+/gu,' ');
+  let subject=blockedCode===null?`${taskId}: ${summary||taskId}`:`WIP ${taskId}: blocked (${blockedCode})`;
+  // Count ASCII as one column and non-ASCII conservatively as two.
+  const width=character=>character.codePointAt(0)<=0x7f?1:2;
+  const characters=Array.from(subject);
+  if(blockedCode===null&&characters.reduce((sum,character)=>sum+width(character),0)>72){
+    subject='';let columns=0;
+    for(const character of characters){
+      if(columns+width(character)>70)break;
+      subject+=character;columns+=width(character);
+    }
+    subject=subject.trimEnd()+'…';
+  }
+  return ['-m',subject,'-m',description];
 }
 function taskDescription(config,definition){
   const parsed=parseFeatureTaskText(fs.readFileSync(path.join(config.specsDir,definition.feature,'tasks.md'),'utf8'),{allowDependencyPunctuation:true});

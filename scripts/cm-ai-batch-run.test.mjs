@@ -6,7 +6,7 @@ import os from 'node:os';
 import {spawnSync} from 'node:child_process';
 import {createParallelMemberQaDecisionProvider} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import path from 'node:path';
-import {createCmAiBatch} from './cm-ai-batch-run.mjs';
+import {createCmAiBatch,taskCommitArgs} from './cm-ai-batch-run.mjs';
 import {createCodexDeveloperRun} from '../runtime/js/cm-ai/codex-developer-adapter.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
@@ -27,6 +27,31 @@ test('serial fallback resumes from log and automatically commits its completed t
 });
 test('final serial task commits durably and commit information survives resume',()=>batchFixture('final-commit'));
 test('dirty batch entry lists files and creates no member worktrees',()=>batchFixture('parallel-dirty'));
+
+test('task commit subjects are single-line and bounded while bodies preserve descriptions',()=>{
+  const cases=[
+    ['简短任务','T-001: 简短任务'],
+    ['完成 `接口` **实现** ~15min；保留后续。\n完整正文','T-001: 完成 `接口` **实现**'],
+    ['首句。后续 ~20min','T-001: 首句'],
+    ['首行\n第二行 ~10min','T-001: 首行'],
+    ['~20min 开头估算','T-001: 开头估算'],
+    ['~20min','T-001: T-001'],
+    ['ASCII task ~5min','T-001: ASCII task'],
+    ['x'.repeat(65),'T-001: '+'x'.repeat(65)],
+    ['x'.repeat(66),'T-001: '+'x'.repeat(63)+'…'],
+    ['中文任务'.repeat(30)+' ~25min',null],
+    ['A'.repeat(100)+' ~30min',null],
+  ];
+  for(const [description,expected] of cases){
+    const args=taskCommitArgs('T-001',description);
+    assert.equal(args.length,4);assert.equal(args[0],'-m');assert.equal(args[2],'-m');
+    assert.doesNotMatch(args[1],/[\r\n\u2028\u2029]/u);
+    assert(Array.from(args[1]).reduce((sum,char)=>sum+(char.codePointAt(0)<=127?1:2),0)<=72);
+    assert.doesNotMatch(args[1],/~\d+min/u);assert.equal(args[3],description);
+    if(expected!==null)assert.equal(args[1],expected);else assert(args[1].endsWith('…'));
+    assert.deepEqual(taskCommitArgs('T-001',description,'failed'),['-m','WIP T-001: blocked (failed)','-m',description]);
+  }
+});
 
 async function batchFixture(mode,options={}){
   const parallel=mode.startsWith('parallel');
@@ -64,6 +89,7 @@ async function batchFixture(mode,options={}){
             assert(blocked);assert.equal(blocked.generation,2);assert.equal(blocked.code,'failed');assert.equal(blocked.reason,'failed');
             assert(!fs.existsSync(blocked.worktree));
             assert.match(git(codeProject,['log','-1','--format=%s',blocked.branch]),/^WIP .*: blocked \(failed\)$/);
+            assert.equal(git(codeProject,['log','-1','--format=%b',blocked.branch]),definition.identity.taskId==='T-001'?'first':'second');
             assert.equal(git(codeProject,['show',`${blocked.branch}:${definition.scope[0]}`]),'implemented');
             for(const id of ['T-001','T-002'].filter(id=>!blockedIds.includes(id))){
               const merged=rows.find(row=>row.phase==='batch_handoff'&&row.from_key===`${feature}/${id}`);
@@ -242,6 +268,7 @@ async function batchFixture(mode,options={}){
       assert.equal(result.task_commit,commits[1].task_commit);
       assert.equal(result.task_commit,git(codeProject,['rev-parse','HEAD']));
       assert.equal(git(codeProject,['show','-s','--format=%s',result.task_commit]),'T-002: second');
+      assert.equal(git(codeProject,['show','-s','--format=%b',result.task_commit]),'second');
       assert.equal(git(codeProject,['show',`${result.task_commit}:file1.js`]),'implemented');
       assert.equal(git(codeProject,['status','--porcelain']),'');
       const resumedFinal=await open().handle({operation:'advance',requestId:'resume-final-commit'});
