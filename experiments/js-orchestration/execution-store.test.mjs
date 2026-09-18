@@ -6,6 +6,7 @@ import os from 'node:os';
 import { spawn,spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 import { openExecutionStore } from './execution-store.mjs';
 import { digest } from './effect-contract.mjs';
 
@@ -16,7 +17,7 @@ function fixture(fn) {
   const options={specsRoot,identity,fingerprints,create:true};
   const directory=path.join(specsRoot,'.reviews','.execution',identity.runId);
   const stateFile=path.join(directory,'state.json');
-  const lockFile=path.join(specsRoot,'.reviews','.execution','writer.sqlite');
+  const lockFile=path.join(directory,'writer.sqlite');
   const cleanup=()=>fs.rmSync(specsRoot,{recursive:true,force:true});
   try {const result=fn({options,specsRoot,directory,stateFile,lockFile});
     if(result && typeof result.then==='function')return result.finally(cleanup);
@@ -24,6 +25,62 @@ function fixture(fn) {
   }catch(error){cleanup();throw error;}
 }
 const entry=(store,id='effect-1',payload={value:'fixture'})=>({id,kind:'intent',payload,expectedRevision:store.snapshot().revision});
+
+test('run-scoped stores open, write and close independently under one specs directory',()=>fixture(({options})=>{
+  const first=openExecutionStore(options);let second;
+  try {
+    second=openExecutionStore({...options,identity:{...identity,runId:'second-run'}});
+    first.append(entry(first,'first-intent',{run:identity.runId}));
+    second.append(entry(second,'second-intent',{run:'second-run'}));
+    assert.deepEqual(first.snapshot().records.map(r=>r.payload),[{run:identity.runId}]);
+    assert.deepEqual(second.snapshot().records.map(r=>r.payload),[{run:'second-run'}]);
+    first.close();
+    second.append(entry(second,'after-first-close'));
+    assert.equal(second.snapshot().records.length,2);
+    second.close();
+    assert.throws(()=>first.snapshot(),{code:'store_closed'});
+    assert.throws(()=>second.snapshot(),{code:'store_closed'});
+  }finally{second?.close();first.close();}
+}));
+
+test('a second open of the same run remains store_busy',()=>fixture(({options})=>{
+  const owner=openExecutionStore(options);
+  try {
+    for(const create of [true,false])assert.throws(()=>openExecutionStore({...options,create}),{code:'store_busy'});
+    assert.equal(owner.append(entry(owner)).records.length,1);
+  }finally{owner.close();}
+}));
+
+test('legacy lock is probed without changing bytes for new runs, while legacy resume is rejected',()=>fixture(({options,directory})=>{
+  const execution=path.dirname(directory),legacyLock=path.join(execution,'writer.sqlite');
+  const legacyReady=path.join(execution,'writer-ready.json');
+  fs.mkdirSync(execution,{recursive:true,mode:0o700});fs.writeFileSync(legacyLock,'',{mode:0o600});
+  const db=new DatabaseSync(legacyLock);
+  try{db.exec('PRAGMA application_id=1129142321; PRAGMA user_version=1; CREATE TABLE protocol(version INTEGER NOT NULL CHECK(version=1)); INSERT INTO protocol VALUES(1)');}
+  finally{db.close();}
+  const lockBytes=fs.readFileSync(legacyLock);
+  const readyBytes=Buffer.from(JSON.stringify({version:1,protocol:'cm-writer-ready',
+    databaseDigest:createHash('sha256').update(lockBytes).digest('hex')})+'\n');
+  fs.writeFileSync(legacyReady,readyBytes,{mode:0o600});
+  // A second create probes the same inode again, detecting leaked activeWriters keys.
+  for(const runId of [identity.runId,'second-run']) {
+    const store=openExecutionStore({...options,identity:{...identity,runId}});
+    try{assert.equal(store.snapshot().identity.runId,runId);
+      assert(fs.existsSync(path.join(execution,runId,'writer.sqlite')));
+    }finally{store.close();}
+    assert.deepEqual(fs.readFileSync(legacyLock),lockBytes);
+    assert.deepEqual(fs.readFileSync(legacyReady),readyBytes);
+  }
+  const legacyIdentity={...identity,runId:'legacy-run'},legacyDir=path.join(execution,legacyIdentity.runId);
+  const state={version:1,identity:legacyIdentity,fingerprints,records:[]};
+  const stateBytes=Buffer.from(JSON.stringify({...state,revision:digest(state)})+'\n');
+  fs.mkdirSync(legacyDir,{mode:0o700});fs.writeFileSync(path.join(legacyDir,'state.json'),stateBytes,{mode:0o600});
+  assert.throws(()=>openExecutionStore({...options,identity:legacyIdentity,create:false}),{code:'store_layout_legacy'});
+  assert.deepEqual(fs.readdirSync(legacyDir),['state.json']);
+  assert.deepEqual(fs.readFileSync(path.join(legacyDir,'state.json')),stateBytes);
+  assert.deepEqual(fs.readFileSync(legacyLock),lockBytes);
+  assert.deepEqual(fs.readFileSync(legacyReady),readyBytes);
+}));
 
 test('S3b2 raw store refuses a fully initialized but uncertified database',()=>fixture(({options,lockFile})=>{
   fs.mkdirSync(path.dirname(lockFile),{recursive:true,mode:0o700});fs.writeFileSync(lockFile,'',{mode:0o600});
@@ -106,6 +163,7 @@ finally:
 test('S3a SIGKILL releases process ownership but retains committed facts',()=>fixture(async({options})=>{
   const child=spawn(process.execPath,['--input-type=module','-e',childSource(options)+`
     const s=openExecutionStore(options);s.append({id:'intent',kind:'intent',payload:{state:'started'},expectedRevision:s.snapshot().revision});
+    process.on('exit',()=>s.close());
     fs.writeSync(1,'ready');process.stdin.resume();`],{stdio:['pipe','pipe','pipe']});
   const exited=once(child,'exit');let timer;
   try {
@@ -150,7 +208,7 @@ test('S3a post-rename sync failure is unknown and poisons read/write until reope
   assert.throws(()=>store.append(value),{code:'store_poisoned'});store.close();
   const reopened=openExecutionStore({...options,create:false});
   try{assert.equal(reopened.snapshot().records.length,1);assert.deepEqual(reopened.append(value),reopened.snapshot());
-    assert.equal(fs.readdirSync(directory).length,1);}finally{reopened.close();}
+    assert.deepEqual(fs.readdirSync(directory).sort(),['state.json','writer-ready.json','writer.sqlite']);}finally{reopened.close();}
 }));
 
 test('S3a mandatory synchronization order is file, rename, parent',()=>fixture(({options})=>{
@@ -304,9 +362,9 @@ test('S3a different task identity and protocol permission changes cannot resume'
   fs.chmodSync(lockFile,0o644);assert.throws(()=>openExecutionStore({...options,create:false}),{code:'store_permissions'});
 }));
 
-test('S3a create cannot silently replace a lost lock for existing runs',()=>fixture(({options,lockFile})=>{
+test('S3a create cannot silently replace a lost lock for the existing run',()=>fixture(({options,lockFile})=>{
   const store=openExecutionStore(options);store.close();fs.unlinkSync(lockFile);
-  assert.throws(()=>openExecutionStore({...options,identity:{...identity,runId:'new-run'}}),{code:'store_missing'});
+  assert.throws(()=>openExecutionStore(options),{code:'store_missing'});
   assert(!fs.existsSync(lockFile));
 }));
 

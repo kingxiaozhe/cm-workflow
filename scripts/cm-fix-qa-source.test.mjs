@@ -15,7 +15,7 @@ import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {bindQaFixDefinition} from '../runtime/js/cm-ai/qa-fix-definition.mjs';
 
 for(const mode of ['normal','diagnosis drift','parent dispatch','parent cancel','parent observation'])
-test(`QA child uses original owner lock, bound failure and explicit CLI authority: ${mode}`,async()=>{
+test(`QA child owns its run lock, bound failure and explicit CLI authority: ${mode}`,async()=>{
   const drift=mode==='diagnosis drift';
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fix-qa-source-')));
   const specsRoot=path.join(root,'specs'),cwd=path.join(root,'code'),logHome=path.join(root,'logs');
@@ -62,8 +62,6 @@ test(`QA child uses original owner lock, bound failure and explicit CLI authorit
     assert.throws(()=>openFixExecution({...options,identity:{...identity,runId:'replacement'}}),{code:'fix_qa_identity_mismatch'});
     parentOwner=openExecutionStore({specsRoot,identity:{repositoryId:parent.repositoryId,runId:parent.runId},create:true,
       fingerprints:{workflow:'a'.repeat(64),config:'b'.repeat(64),inputs:'c'.repeat(64)}});
-    assert.throws(()=>openFixExecution(options));
-    assert.equal(fs.existsSync(path.join(specsRoot,'.reviews','.execution',identity.runId)),false);
     parentOwner.close();parentOwner=null;
     const file=path.join(root,'fix.json');
     const {hostContextId,...data}=configuration;fs.writeFileSync(file,JSON.stringify({specsRoot,identity,...data}));
