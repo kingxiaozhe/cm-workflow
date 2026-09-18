@@ -163,7 +163,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     git(config.codeProject,['rev-parse','--verify',`refs/heads/${branch}`],'batch_worktree_missing');
     if(!fs.existsSync(worktree))return;
     need(git(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
-    commitChanges(worktree,taskCommitArgs(plans.get(row.from_key).identity.taskId,taskDescription(config,plans.get(row.from_key)),row.code));
+    commitChanges(worktree,taskCommitArgs(plans.get(row.from_key).identity.taskId,taskDescription(config,plans.get(row.from_key)),row.code,row.reason));
     git(config.codeProject,['worktree','remove',worktree]);
     // Keep the branch: its WIP is evidence, not approved code to merge.
   }
@@ -292,7 +292,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       if(!terminal){waiting??=status;continue;}
       const key=pending[index];
       record('batch_member_blocked',{from_key:key,code:status.code??status.state,
-        reason:status.reason??status.code??status.state,...location(key),generation:2});
+        reason:status.blockedReason??status.reason??status.code??status.state,...location(key),generation:2});
     }
     // Log before Git mutation so a crash during WIP commit/removal is resumable.
     for(const row of progress().blocked.values())preserveBlockedMember(row);
@@ -392,7 +392,7 @@ function commitChanges(cwd,messageArgs){
   return git(cwd,['rev-parse','HEAD']);
 }
 // Keep the original description in the body; only the subject is summarized.
-export function taskCommitArgs(taskId,description,blockedCode=null){
+export function taskCommitArgs(taskId,description,blockedCode=null,blockedReason=null){
   let summary=description.split(/[；。\r\n\u2028\u2029]/u,1)[0].trim()
     .replace(/^~\d+min\s*/u,'').replace(/\s*~\d+min$/u,'').trim();
   summary=summary.replace(/\s+/gu,' ');
@@ -408,7 +408,7 @@ export function taskCommitArgs(taskId,description,blockedCode=null){
     }
     subject=subject.trimEnd()+'…';
   }
-  return ['-m',subject,'-m',description];
+  return ['-m',subject,'-m',description+(blockedCode!==null&&blockedReason!==null?`\n\n${blockedReason}`:'')];
 }
 function taskDescription(config,definition){
   const parsed=parseFeatureTaskText(fs.readFileSync(path.join(config.specsDir,definition.feature,'tasks.md'),'utf8'),{allowDependencyPunctuation:true});

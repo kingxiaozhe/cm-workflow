@@ -1,5 +1,5 @@
 // Host-only S3b2b journal grammar. Data validation grants no provider authority.
-import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,requestFor} from './effect-contract.mjs';
+import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,requestFor} from './effect-contract.mjs';
 import {readReviewBaseline,readReviewPackage,reviewSpecsPath} from './review-package.mjs';
 import {reviewResult,reviewReceipt} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
@@ -108,7 +108,12 @@ function packageLink(pkg,original,attempt,checks) {
 function callRequest(call,adapter,contextId,role,payload,identity,session,index) {
   shape(call,['invocationId','contextId','provider','requestedModel','effectiveModel','channel','started','terminal','requestDigest','resultDigest',
     ...(Object.hasOwn(call,'providerThreadId')?['providerThreadId']:[]),
-    ...(Object.hasOwn(call,'failureResult')?['failureResult']:[])]);
+    ...(Object.hasOwn(call,'failureResult')?['failureResult']:[]),
+    ...(Object.hasOwn(call,'blockedReason')?['blockedReason']:[])]);
+  if(Object.hasOwn(call,'blockedReason')){
+    need(role==='developer'&&call.terminal==='failed'&&!Object.hasOwn(call,'failureResult'),'runner_call');
+    validBlockedReason(call.blockedReason);
+  }
   if(Object.hasOwn(call,'providerThreadId')){need(role==='developer','runner_call');id(call.providerThreadId);}
   need(call.invocationId===`${session}.${index}` && call.contextId===contextId && call.provider===adapter.provider
     && call.requestedModel===adapter.requestedModel && call.channel==='fixture' && call.started===true,'runner_call');
