@@ -50,6 +50,8 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-idea-entry.mjs" \
 
 ## 边界
 
+cm-idea 位于 specs 上游，按设计不读写规格审批位 `.cm-specs-status`；这是职责边界，不是遗漏。
+
 - 不写代码、不拆任务、不调 $cm-prd——想法阶段结束就交棒
 - 已有现成需求文档的项目不需要本命令，直接 `$cm-prd`
 - 触发词自然唤起（"我有个点子…"）与本命令等效，习惯哪个用哪个

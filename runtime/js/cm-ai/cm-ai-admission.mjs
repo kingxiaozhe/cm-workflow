@@ -1,9 +1,10 @@
-// Read-only N1/N2 admission for the fixed cm-ai workflow. It never writes project state.
+// N1/N2 inspection is read-only; explicit approval uses the shared status writer.
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import {readSpecsStatus,writeSpecsStatus} from '../specs-status.mjs';
 import {buildManifest,verifyManifest} from '../../../scripts/cm-spec-manifest.mjs';
 
 const TASK=/^\s*-\s*\[([ xX])\]\s+(?:~~)?(T-[A-Za-z0-9][A-Za-z0-9._-]*)(?=[:\s])[:\s]*(.*)$/;
@@ -84,18 +85,6 @@ function approvalIntent(response,assumeYes){
   return typeof response==='string'&&response.trim()==='开始'?'explicit':'not_approval';
 }
 
-function readStatus(specsDir){
-  const target=path.join(specsDir,'.cm-specs-status');
-  if(!fs.existsSync(target))return {kind:'missing'};
-  try{
-    const specsRoot=fs.realpathSync(specsDir),realTarget=fs.realpathSync(target);
-    if(!contained(specsRoot,realTarget))return {kind:'invalid'};
-    const value=JSON.parse(fs.readFileSync(realTarget,'utf8'));
-    if(value===null||typeof value!=='object'||Array.isArray(value)||!['approved','awaiting_review'].includes(value.status))
-      return {kind:'invalid'};
-    return {kind:'valid',value};
-  }catch{return {kind:'invalid'};}
-}
 
 function contained(root,target){
   const relative=path.relative(root,target);
@@ -344,6 +333,32 @@ export function inspectCmAiAdmission(options){
   return admissionFor(options);
 }
 
+// The CLI supplies every code project so no project can be skipped before writing.
+export function approveCmAiSpecs(options){
+  const projects=options.codeProjects??[options.codeProject];
+  const inspect=()=>projects.map(codeProject=>inspectCmAiAdmission({...options,codeProject}));
+  const projectResults=inspect();
+  const refuse=approveRefused=>({projectResults,approveRefused});
+  if(options.assumeYes)return refuse('assume_yes_not_allowed');
+  if(typeof options.approvalResponse!=='string'||!options.approvalResponse.trim())
+    return refuse('approval_response_required');
+  const allowed=new Set(['approval_write_required','spec_features_changed','test_cases_changed']);
+  const rejected=projectResults.find(item=>item.state!=='awaiting_spec_approval'
+    ||item.approvalIntent!=='explicit'||!allowed.has(item.reason));
+  if(rejected)return refuse(rejected.approvalIntent!=='explicit'?'explicit_approval_required':rejected.reason);
+  const specsDir=projectResults[0].specsDir,status=readSpecsStatus(specsDir);
+  if(status.kind==='invalid')return refuse('spec_status_invalid');
+  try{
+    const discovered=discoverFeatures(specsDir);
+    if(discovered.error)return refuse(discovered.error);
+    const specFiles=buildManifest(specsDir),at=new Date().toISOString();
+    writeSpecsStatus(specsDir,{status:'approved',summaryDigest:status.value?.summaryDigest??null,at,
+      features:discovered.names,specFiles,testCases:specFiles.filter(item=>item.path.endsWith('/test-cases.json')),
+      approval:{response:options.approvalResponse,at}});
+  }catch(error){return refuse(error.code??error.message);}
+  return {projectResults:inspect()};
+}
+
 function admissionFor(options,inProgressBootstrap=null){
   const input=options&&typeof options==='object'&&!Array.isArray(options)?options:{};
   const specsDir=directory(input.specsDir),codeProject=directory(input.codeProject);
@@ -352,7 +367,7 @@ function admissionFor(options,inProgressBootstrap=null){
   if(!codeProject)return result(base,'blocked','code_project_missing');
   const discovered=discoverFeatures(specsDir);
   if(discovered.error)return result(base,'blocked',discovered.error);
-  const status=readStatus(specsDir);
+  const status=readSpecsStatus(specsDir);
   if(status.kind==='invalid')return result(base,'blocked','spec_status_invalid');
   if(status.kind==='missing'||status.value.status==='awaiting_review'){
     const reason=base.approvalIntent==='explicit'?'approval_write_required':'spec_approval_required';

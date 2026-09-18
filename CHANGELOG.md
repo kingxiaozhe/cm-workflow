@@ -5,6 +5,8 @@
 
 ## 未发布
 
+- 统一 `.cm-specs-status` 读写：cm-prd 使用共享原子 writer；cm-ai 新增 `--approve --approval-response`，只放行指定准入原因，禁止 `--yes` 写审批位，写后重跑准入。审批沿用原 `summaryDigest`（缺失为 null），兼容读取旧文件并在下次写入去掉 `via` 等自由字段；cm-idea 明确保持在 specs 上游。
+
 - `cm-security` 新增报告门禁 `--finalize --scan ... --review ...`：严格校验逐路径复核输入，机械补齐漏报、重验复核窗口漂移并保留扫描窗口证据，统一在项目外生成报告并给出四种结论之一。无发现且覆盖为 FULL 仍是 `REVIEWED_PARTIAL`，不存在「干净」的结论词；模型不能传入 `result`、`coverage` 或 `aiReview`。报告原样保留通过校验的分析结论与修复建议，stdout 只含摘要字段。
 - 批次首次推进要求 Git 主工作区干净（含未跟踪文件）；否则以 `batch_main_dirty` 列出脏文件，在任务启动及创建工作树之前阻断。串行任务在 `start_next_task` 交接前自动提交，`batch_handoff.task_commit` 记录 SHA（无改动为 null）。并行组先合并 ready 成员，再保存终态成员 WIP、移除工作树并保留分支；通过 `batch_member_blocked` 日志恢复一次性的 generation 2 串行降级。
 - 开发者结构化输出模式（Codex 两个 schema 与 Claude 提案 schema）新增可空 `reason`，`validateClaudeProposal` 同步放行该键：此前模式为 `additionalProperties:false` 且不含该键，CLI 派发下模型无法给出 blocked 原因，落盘功能在真实路径上等同未生效。`validateDeveloperValue` 将任意 outcome 下的 `reason: null` 归一为缺省，`implemented` 带非空 reason 仍按 `invalid_result` 拒绝。
