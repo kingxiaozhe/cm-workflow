@@ -201,3 +201,112 @@ test('empty initial scope never overrides concurrent source drift with NO_CHANGE
   try{const r=scan(f.project);assert.equal(r.sourceUnchanged,false);assert.equal(r.result,'BLOCKED');}
   finally{fs.mkdtempSync=original;}
 });
+
+// Controlled scanner metadata makes FULL reachable without installed scanners or
+// pretending that the real OSV freshness/coverage gap has been resolved.
+function finalizeFixture(t,{all=true}={}){
+  const f=fixture(t);isolatedPath(t,f);
+  f.put('other.py','other\n');f.git('add','.');f.git('commit','-m','second path');
+  if(!all){f.git('switch','main');}
+  const report=scan(f.project,{all});
+  report.tools=report.tools.map(row=>({...row,status:'NO_FINDINGS',reason:null}));
+  const review={version:1,scanDigest:report.digest,paths:report.selected.map(file=>({path:file,status:'reviewed',findings:[]}))};
+  const scanFile=path.join(f.base,'scan.json'),reviewFile=path.join(f.base,'review.json');
+  const run=(r=review,s=report,{cli=false}={})=>{
+    fs.writeFileSync(scanFile,JSON.stringify(s));fs.writeFileSync(reviewFile,JSON.stringify(r));
+    const args=['--project',f.project,'--finalize','--scan',scanFile,'--review',reviewFile];
+    let value,code,stdout;
+    if(cli){const child=spawnSync(process.execPath,[path.join(root,'scripts/cm-security.mjs'),...args],{encoding:'utf8'});
+      code=child.status;stdout=child.stdout;value=JSON.parse(stdout);
+    }else value=main(args);
+    const output=value.reportPath?JSON.parse(fs.readFileSync(value.reportPath,'utf8')):null;
+    if(value.reportPath)t.after(()=>fs.rmSync(path.dirname(value.reportPath),{recursive:true,force:true}));
+    return {value,output,code,stdout};
+  };
+  return {...f,report,review,run,scanFile,reviewFile};
+}
+
+test('finalize coverage requires every selected path and rejects unknown or malformed review input',t=>{
+  const f=finalizeFixture(t);
+  assert.equal(f.run().value.coverage,'FULL');
+  const missing={...f.review,paths:f.review.paths.slice(1)};
+  let r=f.run(missing);assert.equal(r.value.coverage,'PARTIAL');
+  assert.ok(r.value.gaps.some(row=>row.path==='app.py'&&row.reason==='not_reported'));
+  assert.equal(r.output.aiReview,'completed');
+  r=f.run({...f.review,paths:[{path:'app.py',status:'not_reviewed',reason:'SOURCE_OR_SECRET_SENTINEL'},f.review.paths[1]]});
+  assert.equal(r.value.coverage,'PARTIAL');assert.ok(!JSON.stringify(r.value).includes('SOURCE_OR_SECRET_SENTINEL'));assert.equal(r.output.review.paths[0].reason,'SOURCE_OR_SECRET_SENTINEL');
+  for(const mutate of [
+    r=>r.paths.push({path:'unknown.py',status:'reviewed',findings:[]}),
+    r=>r.paths.push(r.paths[0]),r=>{r.result='NO_CHANGES';},r=>{r.aiReview='completed';},
+    r=>{r.scanDigest='0'.repeat(64);},r=>{r.paths[0].reason='not allowed';},
+    r=>{r.paths[0]={path:'app.py',status:'not_reviewed'};},
+    r=>{r.paths[0]={path:'app.py',status:'not_reviewed',reason:'\0'};},
+    r=>{r.paths[0]={path:'app.py',status:'not_reviewed',reason:'界'.repeat(334)};},
+    r=>{r.paths=Array(2001).fill(r.paths[0]);},
+  ]){
+    const input=structuredClone(f.review);mutate(input);
+    assert.throws(()=>f.run(input),/review_path_unknown|review_path_duplicate|invalid_report_shape|review_digest_mismatch|invalid_review_string|report_array_limit/);
+  }
+  const unknown=f.run({...f.review,paths:[{path:'unknown.py',status:'reviewed',findings:[]}]},f.report,{cli:true});
+  assert.equal(unknown.code,2);assert.equal(unknown.value.reason,'review_path_unknown');
+  for(const update of [s=>{s.gaps.push({path:'app.py',reason:'index_oversize'});},
+    s=>{s.tools[0].reason='unscanned_files';},s=>{s.tools[0].status='ERROR';}]){
+    const s=structuredClone(f.report);update(s);assert.equal(f.run(f.review,s).value.coverage,'PARTIAL');
+  }
+  assert.throws(()=>f.run(f.review,{...f.report,rawOutput:'SOURCE_OR_SECRET_SENTINEL'}),/invalid_report_shape/);
+  f.run();f.put('inside.json',JSON.stringify(f.review));
+  assert.throws(()=>main(['--project',f.project,'--finalize','--scan',f.scanFile,'--review',path.join(f.project,'inside.json')]),/external_regular/);
+  const link=path.join(f.base,'linked.json');fs.symlinkSync(f.reviewFile,link);
+  assert.throws(()=>main(['--project',f.project,'--finalize','--scan',f.scanFile,'--review',link]),/external_regular/);
+  assert.throws(()=>main(['--project',f.project,'--finalize','--scan',f.scanFile,'--review',f.base]),/external_regular/);
+  assert.throws(()=>main(['--finalize','--all','--scan',f.scanFile,'--review',f.reviewFile]),/mode_conflict/);
+  assert.throws(()=>main(['--finalize']),/inputs_required/);
+  assert.throws(()=>main(['--scan',f.scanFile]),/mode_required/);
+});
+
+test('finalize detects the second drift window and retains the original scan window',t=>{
+  const f=finalizeFixture(t);f.put('app.py','changed after scan\n');
+  let r=f.run(f.review,f.report,{cli:true});
+  assert.equal(r.code,2);assert.equal(r.value.result,'BLOCKED');assert.equal(r.value.coverage,'PARTIAL');
+  assert.equal(r.value.sourceUnchanged,false);assert.ok(r.value.gaps.some(g=>g.reason==='source_changed_during_review'));
+  assert.equal(r.output.sourceWindows.scan.sourceUnchanged,true);assert.equal(r.output.sourceWindows.review.sourceUnchanged,false);
+  f.put('app.py','print("base")\n');
+  const blocked={...f.report,result:'BLOCKED',sourceUnchanged:false,gaps:[{reason:'source_changed'}]};
+  r=f.run(f.review,blocked,{cli:true});assert.equal(r.code,2);
+  assert.equal(r.output.sourceWindows.scan.sourceUnchanged,false);assert.equal(r.output.sourceWindows.review.sourceUnchanged,true);
+  assert.equal(r.value.sourceUnchanged,false);assert.ok(r.value.gaps.some(g=>g.reason==='source_changed'));
+  f.git('branch','-m','renamed-feature');
+  // all-tracked binds HEAD, not branch name. Default scope binds its comparison too.
+  const defaultScan=scan(f.project),review={version:1,scanDigest:defaultScan.digest,paths:defaultScan.selected.map(file=>({path:file,status:'reviewed',findings:[]}))};
+  f.git('branch','-m','another-feature');r=f.run(review,defaultScan,{cli:true});assert.equal(r.code,2);
+  assert.ok(r.value.gaps.some(g=>g.reason==='source_changed_during_review'));
+});
+
+test('finalize verdicts stay conservative, finding prose stays in the private report, and empty scope is NO_CHANGES',t=>{
+  const f=finalizeFixture(t);let r=f.run(f.review,f.report,{cli:true});
+  assert.equal(r.code,3);assert.equal(r.value.result,'REVIEWED_PARTIAL');assert.equal(r.value.coverage,'FULL');
+  assert.deepEqual(Object.keys(r.value).sort(),['result','coverage','reportPath','gaps','findingsCount','sourceUnchanged'].sort());
+  assert.ok(path.relative(f.project,r.value.reportPath).startsWith('..'+path.sep));
+  if(process.platform!=='win32')assert.equal(fs.statSync(r.value.reportPath).mode&0o777,0o600);
+  const finding={severity:'high',location:'app.py:1',attacker:'SOURCE_OR_SECRET_SENTINEL',vector:'SOURCE_OR_SECRET_SENTINEL',
+    existingControls:'SOURCE_OR_SECRET_SENTINEL',impact:'SOURCE_OR_SECRET_SENTINEL',confidence:'static-inference',recommendation:'SOURCE_OR_SECRET_SENTINEL'};
+  const review=structuredClone(f.review);review.paths[0].findings=[finding];
+  r=f.run(review,f.report,{cli:true});assert.equal(r.code,1);assert.equal(r.value.result,'FINDINGS');assert.equal(r.value.findingsCount,1);
+  assert.ok(!r.stdout.includes('SOURCE_OR_SECRET_SENTINEL'));assert.deepEqual(r.output.review.paths[0].findings[0],finding);
+  for(const patch of [{extra:'secret'},{severity:'critical'},{confidence:'guessed'},{location:'other.py:1'},{impact:'\u0001'},{impact:' '}]){
+    const bad=structuredClone(review);Object.assign(bad.paths[0].findings[0],patch);assert.throws(()=>f.run(bad));
+  }
+  const many=structuredClone(review);many.paths[0].findings=Array(201).fill(finding);assert.throws(()=>f.run(many),/report_array_limit/);
+  const toolFinding={path:'app.py',revision:'worktree',line:1,tool:'gitleaks',rule:'fixture-rule',severity:'high',verification:'candidate'};
+  r=f.run(f.review,{...f.report,result:'FINDINGS',findings:[toolFinding]},{cli:true});assert.equal(r.code,1);assert.equal(r.value.findingsCount,1);
+  for(let i=0;i<9;i++)f.put(`extra${i}.py`,'fixture\n');
+  f.git('add','.');f.git('commit','-m','finding count fixture');
+  const largeScan=scan(f.project,{all:true});
+  const tooMany={version:1,scanDigest:largeScan.digest,paths:largeScan.selected.map(file=>({path:file,status:'reviewed',
+    findings:Array.from({length:182},()=>({...finding,location:`${file}:1`}))}))};
+  assert.throws(()=>f.run(tooMany,largeScan),/review_findings_limit/);
+  f.git('switch','main');const empty=scan(f.project),emptyReview={version:1,scanDigest:empty.digest,paths:[]};
+  r=f.run(emptyReview,empty,{cli:true});assert.equal(r.code,0);assert.equal(r.value.result,'NO_CHANGES');
+  assert.equal(r.value.coverage,'PARTIAL');assert.equal(r.output.aiReview,'completed');
+  f.put('app.py','drift from empty scope\n');r=f.run(emptyReview,empty,{cli:true});assert.equal(r.code,2);assert.equal(r.value.result,'BLOCKED');
+});

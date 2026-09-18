@@ -5,6 +5,7 @@
 
 ## 未发布
 
+- `cm-security` 新增报告门禁 `--finalize --scan ... --review ...`：严格校验逐路径复核输入，机械补齐漏报、重验复核窗口漂移并保留扫描窗口证据，统一在项目外生成报告并给出四种结论之一。无发现且覆盖为 FULL 仍是 `REVIEWED_PARTIAL`，不存在「干净」的结论词；模型不能传入 `result`、`coverage` 或 `aiReview`。报告原样保留通过校验的分析结论与修复建议，stdout 只含摘要字段。
 - 批次首次推进要求 Git 主工作区干净（含未跟踪文件）；否则以 `batch_main_dirty` 列出脏文件，在任务启动及创建工作树之前阻断。串行任务在 `start_next_task` 交接前自动提交，`batch_handoff.task_commit` 记录 SHA（无改动为 null）。并行组先合并 ready 成员，再保存终态成员 WIP、移除工作树并保留分支；通过 `batch_member_blocked` 日志恢复一次性的 generation 2 串行降级。
 - 开发者结构化输出模式（Codex 两个 schema 与 Claude 提案 schema）新增可空 `reason`，`validateClaudeProposal` 同步放行该键：此前模式为 `additionalProperties:false` 且不含该键，CLI 派发下模型无法给出 blocked 原因，落盘功能在真实路径上等同未生效。`validateDeveloperValue` 将任意 outcome 下的 `reason: null` 归一为缺省，`implemented` 带非空 reason 仍按 `invalid_result` 拒绝。
 - 开发结果 `blocked` 的可选 `reason` 以 `blockedReason` 持久化到开发调用记录：字符串 trim 后非空、至多 1000 UTF-8 字节，禁止 NUL 及除换行、制表符外的 C0 控制字符。终态仍为 `failed/result:null`，入口仍为 `blocked/failed`，重试与结果摘要语义不变；并行成员日志及 WIP 提交正文保留原因。旧日志无该字段照常回放；含新字段的日志会被旧运行时按未知键拒绝，不做版本协商。契约拆分明确告知调用方与实现方：抛错占位体是预期状态，不应等待或据此 blocked。
