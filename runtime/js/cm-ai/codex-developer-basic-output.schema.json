@@ -1,6 +1,9 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["outcome"],
-  "properties": {"outcome": {"type": "string", "enum": ["implemented", "blocked"]}}
+  "required": ["outcome", "reason"],
+  "properties": {
+    "outcome": {"type": "string", "enum": ["implemented", "blocked"]},
+    "reason": {"type": ["string", "null"]}
+  }
 }

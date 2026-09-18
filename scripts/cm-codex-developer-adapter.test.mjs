@@ -1,4 +1,6 @@
 import test from 'node:test';
+import {readFileSync} from 'node:fs';
+import {validateClaudeProposal} from '../runtime/js/cm-ai/worker-claude-developer.mjs';
 import assert from 'node:assert/strict';
 import {requestFor,terminalFor,digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import * as codex from '../runtime/js/cm-ai/codex-developer-adapter.mjs';
@@ -19,7 +21,7 @@ test('blocked reason is bounded for both providers while durable failure stays n
     assert.equal(validateDeveloperValue(value,r).reason,value.reason);
     assert(build(r).includes('A blocked result may include reason'));
     for(const reason of ['x'.repeat(1000),'界'.repeat(333)+'x',''])validateDeveloperValue({...value,reason},r);
-    for(const reason of ['x'.repeat(1001),'界'.repeat(334),'NUL\0',null,12])assert.throws(()=>validateDeveloperValue({...value,reason},r));
+    for(const reason of ['x'.repeat(1001),'界'.repeat(334),'NUL\0',12])assert.throws(()=>validateDeveloperValue({...value,reason},r));
     assert.throws(()=>validateDeveloperValue({...value,extra:true},r));
     assert.throws(()=>validateDeveloperValue({...value,outcome:'implemented'},r));
     const run=create({requestedModel:'fixture',worker:async()=>({status:'succeeded',value})});
@@ -155,4 +157,47 @@ test('structured developer failures cannot broaden reviewer or unknown envelopes
   assert.throws(()=>terminalFor({...raw,status:'unknown'},dev));
   assert.throws(()=>terminalFor({...raw,result:{...raw.result,retryable:true}},dev));
   assert.throws(()=>terminalFor({...raw,result:{code:'made_up',reason:'invalid_input'}},dev));
+});
+
+
+test('nullable developer reason preserves outcome semantics with and without Learning',async()=>{
+  for(const learning of [false,true])for(const provider of ['codex','claude']){
+    const identity={repositoryId:'test',runId:'run',taskId:'T-001',attempt:1},feature='1.fixture',learningFiles=[];
+    const r=requestFor({invocationId:'dev-1',identity,role:'developer',provider,requestedModel:'fixture',contextId:'developer',
+      payload:{scope:['src/a.mjs'],requirements:[],priorReview:null,...(learning?{learningInput:{version:1,workflow:'cm-ai',
+        phase:'task_learning_input',feature,identity,learningFiles,learningDigest:digest({version:1,feature,identity,files:learningFiles})}}:{})}});
+    for(const outcome of ['implemented','blocked'])for(const reason of [null,'Required module is missing']){
+      const value={outcome,reason,...(learning?{application:{status:'no_relevant_lesson',note:null},
+        retrospective:{status:'no_new_lesson',candidates:[],reason:null}}:{})};
+      const transported=provider==='claude'?validateClaudeProposal({status:'succeeded',value,edits:[]}).value:value;
+      assert.deepEqual(transported,value);
+      const invalid=outcome==='implemented'&&reason!==null;
+      if(invalid)assert.throws(()=>validateDeveloperValue(transported,r));
+      else if(reason===null){
+        const {reason:omitted,...withoutReason}=value;
+        assert.deepEqual(validateDeveloperValue(transported,r),validateDeveloperValue(withoutReason,r));
+        assert.equal(value.reason,null); // Validation does not mutate worker output.
+      }else assert.equal(validateDeveloperValue(transported,r).reason,reason);
+      const create=provider==='codex'?codex.createCodexDeveloperRun:claude.createClaudeDeveloperRun;
+      const result=await create({requestedModel:'fixture',worker:async()=>({status:'succeeded',value:transported})})(r,{signal:new AbortController().signal});
+      assert.equal(result.status,outcome==='implemented'&&!invalid?'succeeded':'failed');
+      if(invalid)assert.equal(result.result.code,'invalid_result');
+      else if(outcome==='blocked'){
+        assert.equal(result.result,null);
+        assert.equal(result.blockedReason,reason===null?undefined:reason);
+      }
+    }
+  }
+});
+
+test('developer schemas expose nullable reason without relaxing strict object shapes',()=>{
+  for(const name of ['codex-developer-basic-output','codex-developer-output','claude-developer-proposal']){
+    const schema=JSON.parse(readFileSync(new URL(`../runtime/js/cm-ai/${name}.schema.json`,import.meta.url),'utf8'));
+    const value=name.startsWith('claude')?schema.properties.value:schema;
+    assert.deepEqual(value.properties.reason,{type:['string','null']});
+    assert.equal(schema.additionalProperties,false);
+    assert.equal(value.additionalProperties,false);
+    if(name.startsWith('codex'))assert.deepEqual([...value.required].sort(),Object.keys(value.properties).sort());
+    else assert.deepEqual(value.required,['outcome']);
+  }
 });
