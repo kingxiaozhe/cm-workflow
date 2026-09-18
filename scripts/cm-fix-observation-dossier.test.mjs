@@ -234,6 +234,8 @@ test(`observation recovery: ${mode}`,async()=>{
     assert.equal((fs.statSync(archived.dossier.path).mode&0o777),0o600);
     assert.match(bytes.toString(),/观测中/);assert.match(bytes.toString(),/not_reproduced/);assert.match(bytes.toString(),/等待证据/);
     assert.equal(archived.diagnosis,null);
+    assert.match(bytes.toString(),/## 复现尝试/);
+    assert.equal(archived.reproduction.attempts.at(-1).outcome,'not_reproduced');
     owner.close();owner=openFixExecution({...options,create:false});assert.deepEqual(owner.publishDossier(),archived);
     await owner.advance({authorized:true});assert.equal(fs.readFileSync(path.join(cwd,'visits'),'utf8'),'1');
     assert.throws(()=>owner.finish(),{code:'fix_finish_authorization_required'});
