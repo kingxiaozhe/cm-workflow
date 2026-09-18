@@ -14,6 +14,28 @@ const command=(id,code)=>({id,command:[process.execPath,'-e',code]});
 async function fixture(fn){const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-check-')));
   try{await fn(root);}finally{fs.rmSync(root,{recursive:true,force:true});}}
 
+test('host check evidence retains bounded deterministic test counts',()=>fixture(async cwd=>{
+  for(const [output,expected] of [
+    ['ℹ tests 20\nℹ pass 20\nℹ fail 0\n',' (tests 20, pass 20, fail 0)'],
+    ['  ℹ TESTS: 20\r\n tests=99\nPASS = 20\nfail 0',' (tests 20, pass 20, fail 0)'],
+    ['tests 1\nsuites 2\npass 3\npassed 4\npassing 5\nfail 6\nfailed 7\nfailing 8\nskipped 9\ntodo 10',
+      ' (tests 1, suites 2, pass 3, passed 4, passing 5, fail 6, failed 7, failing 8)'],
+    [`tests 20\npass ${'9'.repeat(180)}\nfail 0`,' (tests 20)'],
+  ]){
+    const check=createHostCheck({cwd,commands:[command('counts',`process.stdout.write(${JSON.stringify(output)})`)]});
+    const [result]=await check({identity},control());
+    assert.equal(result.outcome,'passed');assert.equal(result.evidence,`host check exited 0${expected}`);
+    assert(result.evidence.length<=200);
+  }
+}));
+
+test('host check evidence excludes credentials paths and timing output',()=>fixture(async cwd=>{
+  const output='token: abc123\nduration_ms 155.8\nat /srv/app/secret.js:12\ntests 20 token: abc123\npass 20.5\n';
+  const check=createHostCheck({cwd,commands:[command('private',`process.stderr.write(${JSON.stringify(output)})`)]});
+  const [result]=await check({identity},control());
+  assert.equal(result.outcome,'passed');assert.equal(result.evidence,'host check exited 0');
+}));
+
 test('async output capture rejects safely and waits for process cleanup',()=>fixture(async cwd=>{
   const check=createHostCheck({cwd,commands:[command('capture',
     "require('node:fs').writeFileSync('pid',String(process.pid));process.on('SIGTERM',()=>{});console.log('fixture');setInterval(()=>{},1000)")],
