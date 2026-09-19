@@ -5,7 +5,7 @@ description: 用户运行 cm-security，或要求代码安全扫描、漏洞检�
 
 # cm-security — 代码安全扫描与业务复核
 
-先读 `../../runtime/project-context.md` 和 [执行合同](references/scan-contract.md)。
+先读 `../../runtime/project-context.md`、`../../runtime/logging.md` 和 [执行合同](references/scan-contract.md)。
 本 Skill 是独立只读安全入口；不改变 cm-test、任务完成门禁或发布授权。
 Codex 用 `$cm-security`，Claude Code 用 `/cm-security`；macOS/Linux 兼容 `/cm:security`。
 
@@ -40,6 +40,8 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-security.mjs" --project "{项目根}" --fina
 ```
 
 9. 以 `--finalize` 返回的 `result`、`coverage`、`gaps` 与 `reportPath` 输出简短结论，模型不再自行决定结论词。宿主在项目外创建私有报告目录；BLOCKED 时报告证据过期或输入错误，不替用户回滚。最终 JSON 原样保留校验通过的分析结论及未复核 reason，按路径列出未复核项；stdout 仅含六个摘要字段，不含自由描述。脱敏针对工具原始 stdout/stderr、密钥原文与源码片段；模型不得把这些内容粘进复核字段，JS 无法验证这项语义义务。默认扫描不自动修复、不安装、不提交、不上传给额外服务；需要修复时将证据交给用户决定。
+
+范围、业务地图与安全边界确认后按 `runtime/logging.md` 写 `run_start`；`--finalize` 返回终态后写 `run_done`，只记录扫描范围、结论词、发现数量、覆盖率与报告路径。本 Skill 通常在没有 specs 目录的项目上独立运行，保存首次写入器返回的 `run_id` 并在后续事件显式传回。工具原始 stdout/stderr、密钥原文、源码片段与 findings 正文不进日志；`BLOCKED` 同样写 `run_done`，detail 只写阻断原因。写日志不改变本 Skill 的只读边界。
 
 ## 报告
 
