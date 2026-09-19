@@ -95,8 +95,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(!developments.size||providerConfig!==null,'protected_configuration_required');
     // Same launch-time assertion as the single-task host, evaluated across every
     // task whose approved contract can select a browser case.
-    const browserQa=readBrowserCapability(browserQaFlag,keys.some(key=>workflows[key]?.qa!=null
-      &&featureHasBrowserCases(batch.specsDir,key.slice(0,key.lastIndexOf('/')))));
+    readBrowserCapability(browserQaFlag,keys.some(key=>workflows[key]?.qa!=null
+      &&featureHasBrowserCases(batch.specsDir,key.slice(0,key.lastIndexOf('/')),batch.codeProject)));
     need(!approvals.size||review!==null,'review_configuration_required');
     need(allowQa||!Object.values(workflows).some(item=>item?.qa!=null),'qa_authorization_required');
     bridge=createHostToolBridge();

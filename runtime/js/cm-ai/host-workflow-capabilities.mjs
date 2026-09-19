@@ -4,20 +4,25 @@ import path from 'node:path';
 import {digest,json,need,shape,validIdentity,hex} from './effect-contract.mjs';
 import {createHostQaDecisionProvider} from './host-qa-policy.mjs';
 import {createHostQaExecutor} from './host-qa-executor.mjs';
+import {loadConfig} from '../../../scripts/cm-workflow-config.mjs';
 import {validateTestCases} from '../../../scripts/validate-test-cases.mjs';
 
 // Browser capability is a property of the launching session, not of the project.
 // The host cannot probe whether this session can drive a browser; it can only
-// require an explicit assertion and bind it, so a mismatch surfaces at launch
+// require a fresh explicit assertion, so a mismatch surfaces at launch
 // instead of at the last QA step. Declaration, not detection.
-export function featureHasBrowserCases(specsDir,feature){
+export function featureHasBrowserCases(specsDir,feature,codeProject){
   const source=path.join(specsDir,feature,'test-cases.json');
   if(!fs.existsSync(source))return false;
   const stat=fs.lstatSync(source);
   need(stat.isFile()&&!stat.isSymbolicLink()&&stat.size<=1024*1024,'test_cases_invalid');
-  const contract=json(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(fs.readFileSync(source))));
+  const bytes=fs.readFileSync(source);let contract;
+  try{contract=json(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)));}
+  catch{need(false,'test_cases_invalid');}
   need(validateTestCases(contract).length===0,'test_cases_invalid');
-  return contract.cases.some(item=>item.kind==='browser');
+  const config=loadConfig({projectRoot:codeProject});
+  // Match QA applicability before pending tasks defer execution.
+  return contract.cases.some(item=>item.kind==='browser'&&(item.blocking||config.policies.tests.includes('browser')));
 }
 
 export function readBrowserCapability(value,applicable){
