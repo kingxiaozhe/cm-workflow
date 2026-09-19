@@ -911,7 +911,7 @@ test('step31 CLI resumes completed evidence BLOCKED QA and reaches the original 
     fs.writeFileSync(workflow,JSON.stringify({documentationPaths:['README.md'],applicableAgentFiles:[],qa:{
       commands:[{id:'value-check',command:[process.execPath,'-e',"import('./target.mjs').then(m=>{if(m.value!==42)process.exit(1)})"],caseIds:[]}],
       environment:{kind:'web',carrier:'browser',target:'http://127.0.0.1',scope:'local'}}}));
-    f.args.push('--review-config',review,'--allow-review-attempt','1','--workflow-config',workflow,'--allow-qa');
+    f.args.push('--review-config',review,'--allow-review-attempt','1','--workflow-config',workflow,'--allow-qa','--browser-qa','available');
     let corrected=false;
     f.qaBrowser=payload=>{
       const file=path.join(f.specsDir,'.reviews','browser-evidence.txt');fs.writeFileSync(file,'Synthetic observed browser evidence');
