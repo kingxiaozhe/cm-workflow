@@ -345,6 +345,10 @@ function validateEffective(config){
   validateRuntimeDeclaration(config);
   if(!Array.isArray(config.policies.tests)||config.policies.tests.length===0)throw new ConfigError('policies.tests must be a non-empty list');
   if(config.policies.tests.some(item=>typeof item!=='string'||!TEST_KINDS.has(item)))throw new ConfigError('policies.tests contains an unsupported test kind');
+  // Reverse coherence: declaring browser tests requires the role that serves them.
+  // The existing rule only prevents other roles from claiming the browser adapter.
+  if(config.policies.tests.includes('browser')&&config.roles.browser_qa?.adapter!=='browser')
+    throw new ConfigError('policies.tests includes browser but roles.browser_qa.adapter is not browser');
   if(typeof config.policies.generate_cases!=='boolean')throw new ConfigError('policies.generate_cases must be boolean');
   requireString(config.policies.auto_fix,'policies.auto_fix',AUTO_FIX_POLICIES);
   requireString(config.policies.delivery,'policies.delivery',DELIVERY_MODES);

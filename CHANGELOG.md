@@ -5,6 +5,7 @@
 
 ## 未发布
 
+- 浏览器验收能力改为启动时断言：规格里含浏览器用例且开启 QA 时，`cm-ai-host` 与 `cm-ai-batch-host` 必须显式给 `--browser-qa available|unavailable`，`unavailable` 直接拒绝启动并给出两条出路，不命中时给该参数报 `invalid_arguments`。这是**声明不是探测**：宿主无法验证会话真能开浏览器，断言也不持久化，创建与恢复都要各自声明。配置层补反向自洽：`policies.tests` 含 `browser` 时必须有 `roles.browser_qa` 且适配器为 `browser`。此前只有一句给模型看的「用不了就 BLOCKED」，要跑到 N6 才暴露，等于一个特性的开发与审查全部白做。
 - 统一 `.cm-specs-status` 读写：cm-prd 使用共享原子 writer；cm-ai 新增 `--approve --approval-response`，只放行指定准入原因，禁止 `--yes` 写审批位，写后重跑准入。审批沿用原 `summaryDigest`（缺失为 null），兼容读取旧文件并在下次写入去掉 `via` 等自由字段；cm-idea 明确保持在 specs 上游。
 
 - `cm-security` 新增报告门禁 `--finalize --scan ... --review ...`：严格校验逐路径复核输入，机械补齐漏报、重验复核窗口漂移并保留扫描窗口证据，统一在项目外生成报告并给出四种结论之一。无发现且覆盖为 FULL 仍是 `REVIEWED_PARTIAL`，不存在「干净」的结论词；模型不能传入 `result`、`coverage` 或 `aiReview`。报告原样保留通过校验的分析结论与修复建议，stdout 只含摘要字段。

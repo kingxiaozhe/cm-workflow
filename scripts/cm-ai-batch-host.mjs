@@ -10,10 +10,10 @@ import {preflightMatches} from '../runtime/js/cm-ai/worker-codex.mjs';
 import {claudePreflightMatches} from '../runtime/js/cm-ai/worker-claude.mjs';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {serveCmAiHost} from '../runtime/js/cm-ai/host-session.mjs';
-import {validateHostWorkflowConfiguration} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
+import {validateHostWorkflowConfiguration,featureHasBrowserCases,readBrowserCapability} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {digest,json,need,shape} from '../runtime/js/cm-ai/effect-contract.mjs';
 
-const usage='cm-ai-batch-host.mjs serve --config PATH --host-context ID --allow-development [--runtime codex|claude] [--review-config PATH] [--allow-review FEATURE/TASK:1|2]... [--allow-qa] [--protected-conversation-config PATH | --protected-config PATH] [--allow-provider-development FEATURE/TASK:1|2]...';
+const usage='cm-ai-batch-host.mjs serve --config PATH --host-context ID --allow-development [--runtime codex|claude] [--review-config PATH] [--allow-review FEATURE/TASK:1|2]... [--allow-qa] [--browser-qa available|unavailable] [--protected-conversation-config PATH | --protected-config PATH] [--allow-provider-development FEATURE/TASK:1|2]...';
 const safeCode=error=>typeof error?.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(error.code)?error.code:'batch_host_failed';
 
 async function memberReviewConfiguration(batch,definition,review,runtime){
@@ -59,10 +59,13 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     }
     need(keys.length===Object.keys(workflows).length&&keys.every(key=>Object.hasOwn(workflows,key)),'workflow_task_mismatch');
     for(const key of keys)if(workflows[key]!==null)validateHostWorkflowConfiguration(workflows[key]);
-    let review=null,allowQa=false,allowBootstrap=false,runtime=null,protection=null,providerConfig=null;const approvals=new Set(),developments=new Map();
+    let review=null,allowQa=false,allowBootstrap=false,runtime=null,protection=null,providerConfig=null,browserQaFlag;const approvals=new Set(),developments=new Map();
     for(let index=6;index<argv.length;index++){
       const name=argv[index];
       if(name==='--allow-qa'){need(!allowQa,'invalid_arguments');allowQa=true;}
+      else if(name==='--browser-qa'){
+        need(browserQaFlag===undefined&&typeof argv[index+1]==='string','invalid_arguments');browserQaFlag=argv[++index];
+      }
       else if(name==='--allow-bootstrap-write'){need(!allowBootstrap&&bootstraps!==null,'invalid_arguments');allowBootstrap=true;}
       else if(name==='--protected-conversation-config'){
         need(protection===null&&providerConfig===null&&typeof argv[index+1]==='string','invalid_arguments');protection=readConversationProtection(argv[++index]);
@@ -90,6 +93,10 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       }else need(false,'invalid_arguments');
     }
     need(!developments.size||providerConfig!==null,'protected_configuration_required');
+    // Same launch-time assertion as the single-task host, evaluated across every
+    // task whose approved contract can select a browser case.
+    const browserQa=readBrowserCapability(browserQaFlag,keys.some(key=>workflows[key]?.qa!=null
+      &&featureHasBrowserCases(batch.specsDir,key.slice(0,key.lastIndexOf('/')))));
     need(!approvals.size||review!==null,'review_configuration_required');
     need(allowQa||!Object.values(workflows).some(item=>item?.qa!=null),'qa_authorization_required');
     bridge=createHostToolBridge();
