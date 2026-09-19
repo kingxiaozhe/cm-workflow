@@ -5,6 +5,10 @@
 
 ## 未发布
 
+（暂无）
+
+## 0.15.0 — 2026-09-19
+
 - 浏览器验收能力改为启动时断言：开启 QA，且规格含阻塞 browser 用例或被 `policies.tests` 选中的 browser 用例时，`cm-ai-host` 与 `cm-ai-batch-host` 必须显式给 `--browser-qa available|unavailable`；因任务未完成而延后的适用用例也计入。`unavailable` 以 `browser_capability_unavailable` 拒绝启动，错误 JSON 仍只输出 code；使用者需换到具备浏览器能力的会话，或调整验收范围并重新审批规格。不命中时给该参数报 `invalid_arguments`。这是**声明不是探测**，声明不持久化，创建与恢复均须重新声明。
 - **配置兼容性变更**：共享配置加载器现在要求 `policies.tests` 含 `browser` 时，`roles.browser_qa.adapter` 必须为 `browser`。此前可用的显式 `browser_qa: {adapter: local, model: none, source: local}` 配合默认测试策略（包含 browser），升级后会被拒绝，影响所有使用共享配置加载器的入口。需要浏览器 QA 的使用者应将适配器改为 `browser`（保留 `model: none, source: local`），或删除该角色覆盖以继承默认 browser 角色；不需要浏览器 QA 时，应将 `policies.tests` 显式设为如 `[logic, commands]`。省略整个 browser_qa 角色仍可继承默认值；移除策略中的 browser 不会排除阻塞 browser 用例，相关验收范围仍需明确处理。
 - 统一 `.cm-specs-status` 读写：cm-prd 使用共享原子 writer；cm-ai 新增 `--approve --approval-response`，只放行指定准入原因，禁止 `--yes` 写审批位，写后重跑准入。审批沿用原 `summaryDigest`（缺失为 null），兼容读取旧文件并在下次写入去掉 `via` 等自由字段；cm-idea 明确保持在 specs 上游。
