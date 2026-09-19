@@ -17,6 +17,15 @@
 
 ## 最近更新
 
+**0.15.0**
+
+- **兼容性变更（升级前必读）**：旧布局执行存储恢复时返回 `store_layout_legacy`，请用旧版本收尾或退休该 `runId`，旧文件不会自动迁移；显式将 `roles.browser_qa.adapter` 设为非 `browser` 却沿用含 `browser` 的默认测试策略会被拒绝，需要浏览器 QA 时请改为 `browser`（保留 `model: none, source: local`）或删除角色覆盖以继承默认值，不需要时请显式将 `policies.tests` 设为如 `[logic, commands]`，阻塞 browser 用例仍须另行处理验收范围并重新审批；含新字段的运行日志会被旧版本按未知键拒绝，请用 0.15.0 或兼容该字段的后续版本继续运行，不要用旧版本回放这类日志。
+- **同 feature 并行开发**：无依赖任务可在各自工作树中并行开发，再串行合并到主分支，成员 QA 延后到末任务统一执行；批次会自动提交与合并，首次推进前请保持 Git 主工作区干净（含未跟踪文件），被阻塞成员的 WIP 与原因会保留。
+- **规格审批位统一写入**：`cm-prd` 与 `cm-ai` 共用 `.cm-specs-status` 原子写入入口，模型不再手拼审批文件；`cm-ai` 新增 `--approve --approval-response`，记录审批后重新核验准入，`--yes` 不能代替审批。
+- **cm-security 报告门禁**：新增 `--finalize --scan ... --review ...`，由代码校验逐路径复核、补齐漏报并判定报告结论，模型不再自述最终状态；无发现且扫描覆盖为 FULL 时仍为 `REVIEWED_PARTIAL`，报告保留通过校验的分析与修复建议。
+- **浏览器验收能力提前声明**：开启 QA 且规格需要浏览器验收时，单任务与批次入口在启动或恢复时要求显式传入 `--browser-qa available|unavailable`，不再等到最后一步才暴露能力缺失；不可用时请换到具备浏览器能力的会话，或调整验收范围并重新审批规格，这是能力声明，并非自动探测。
+- **开发阻塞原因可追溯**：开发结果 `blocked` 的可选 `reason` 现在能从 CLI 结构化输出落盘为 `blockedReason`，并保留在并行成员日志和 WIP 提交正文中，恢复排查时可查看具体原因。
+
 **0.14.0**
 
 - **运行定义不再手写**：`cm-ai` 准入新增只读 `--print-run-definition`，把它已经解析出的 specs/代码根、feature 与任务直接生成为合法运行定义（`--scope` 必填，因为"本任务允许改哪些文件"是框架推不出来的唯一一项）；`invalid_config` 改为点名多余/缺失字段、版本与文件类型。
@@ -113,7 +122,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.14.0 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.15.0 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
