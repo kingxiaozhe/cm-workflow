@@ -87,6 +87,27 @@ test('source checkout and unknown package managers are never overwritten', async
   assert.equal(f.calls.length, 0);
 });
 
+test('an unrelated root VERSION never overrides the Claude installation marker', async t => {
+  const f = fixture(t, 'claude');
+  // ~/.claude is Claude Code's own home; a foreign VERSION file there is not the CM version.
+  f.write(path.join(f.root, 'VERSION'), '2.1.274\n');
+  const report = await updateInstallation(f.input, f.options);
+  assert.equal(report.current, '0.10.6');
+  assert.equal(report.status, 'updated');
+  assert.equal(report.installed, '0.11.0');
+});
+
+test('a Claude source checkout without templates/cm-VERSION still reads the root VERSION', async t => {
+  const f = fixture(t, 'claude');
+  fs.rmSync(path.join(f.root, 'templates'), {recursive: true});
+  f.write(path.join(f.root, 'VERSION'), '0.10.6\n');
+  const moved = path.join(f.home, 'source'); fs.renameSync(f.root, moved);
+  const report = await updateInstallation({...f.input, skillDir: path.join(moved, 'skills/cm-check')}, f.options);
+  assert.equal(report.current, '0.10.6');
+  assert.equal(report.status, 'unmanaged');
+  assert.equal(f.calls.length, 0);
+});
+
 test('old active cache checks newer managed installation without reinstalling or downgrading', async t => {
   const f = fixture(t);
   const cache = path.join(f.home, '.codex/plugins/cache/personal/cm-workflow/old');

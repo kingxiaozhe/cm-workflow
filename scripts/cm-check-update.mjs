@@ -90,8 +90,11 @@ export async function updateInstallation({skillDir, runtime}, {
     root = fs.realpathSync(path.resolve(skillDir, '../..'));
     if (fs.realpathSync(skillDir) !== path.join(root, 'skills/cm-check')) throw new Error('Invalid Skill root');
     regularFile(path.join(root, 'skills/cm-check/SKILL.md'));
-    // Source checkouts use VERSION even when invoked from Claude.
-    const versionRuntime = fs.existsSync(path.join(root, 'VERSION')) ? 'codex' : runtime;
+    // Prefer this runtime's own marker. Only a source checkout or tarball, which has no
+    // templates/cm-VERSION, falls back to the root VERSION: a Claude installation root is
+    // ~/.claude, where an unrelated VERSION file must not be mistaken for the CM version.
+    const runtimeVersionFile = runtime === 'claude' ? 'templates/cm-VERSION' : 'VERSION';
+    const versionRuntime = fs.existsSync(path.join(root, runtimeVersionFile)) ? runtime : 'codex';
     current = versionAt(root, versionRuntime);
     try { latest = await query(); compareVersions(latest, latest); }
     catch { return result('offline', 'Cannot confirm the latest npm version; continue local checks with this limitation.'); }
