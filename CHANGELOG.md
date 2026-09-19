@@ -7,6 +7,11 @@
 
 （暂无）
 
+## 0.15.1 — 2026-09-19
+
+- **cm-security 接入统一运行日志合同**：`cm-security` 此前从未引用 `runtime/logging.md`，cm-check 第 3 组「共用运行日志与统一 writer」因此判 failed。该断链自 0.12.0 引入安全扫描时就存在——同一个 commit 把 `cm-security` 写进了检查清单，却没给新建的 Skill 加上引用。现补齐引用，并明确落盘时机：范围与安全边界确认后写 `run_start`，`--finalize` 返回终态后写 `run_done`，只记录扫描范围、结论词、发现数量、覆盖率与报告路径；工具原始输出、密钥原文、源码片段与 findings 正文不进日志，`BLOCKED` 同样收尾。这是文本约定补齐，扫描逻辑与报告门禁未变，只读边界不变。无 specs 目录时仍按既有设计只写全局镜像。
+- **版本标志按安装模式解析**：`cm-check-update.mjs` 此前只看根目录有没有 `VERSION` 文件就判定「这是源码仓库」。Claude 兼容安装的根目录就是 `~/.claude`，那里任何与 CM 无关的 `VERSION` 都会顶替 `templates/cm-VERSION` 成为当前版本；若其版本号更高，降级守卫会抛错并让整个 cm-check 返回 `blocked`。现改为优先读当前 runtime 自己的标志，仅在该标志缺失时（源码仓库与 tarball 没有 `templates/cm-VERSION`）才回退到根 `VERSION`，Codex 路径行为不变。同时对齐 `runtime/project-context.md` 的工作流根校验——`install.sh` 只写 `templates/cm-VERSION`，从不往安装目录写根 `VERSION`，原先要求根 `VERSION` 的规则在所有 claude-compat 安装上都无法满足。
+
 ## 0.15.0 — 2026-09-19
 
 - 浏览器验收能力改为启动时断言：开启 QA，且规格含阻塞 browser 用例或被 `policies.tests` 选中的 browser 用例时，`cm-ai-host` 与 `cm-ai-batch-host` 必须显式给 `--browser-qa available|unavailable`；因任务未完成而延后的适用用例也计入。`unavailable` 以 `browser_capability_unavailable` 拒绝启动，错误 JSON 仍只输出 code；使用者需换到具备浏览器能力的会话，或调整验收范围并重新审批规格。不命中时给该参数报 `invalid_arguments`。这是**声明不是探测**，声明不持久化，创建与恢复均须重新声明。
