@@ -6,7 +6,10 @@ This contract is shared by every CM workflow skill. Resolve paths from the activ
 
 1. Let `SKILL_DIR` be the directory containing the active CM `SKILL.md`.
 2. The workflow root is normally `SKILL_DIR/../..`.
-3. Verify the candidate root contains `VERSION`, `templates/`, and `runtime/` before using it.
+3. Verify the candidate root contains `templates/` and `runtime/`, plus the version marker of its
+   installation mode: `VERSION` for a Codex plugin or a source checkout, `templates/cm-VERSION` for a
+   Claude-compatible installation. `install.sh` writes only the latter, so a Claude installation root
+   has no `VERSION`; a file with that name there does not belong to CM.
 4. If a user explicitly provides `CM_WORKFLOW_HOME`, prefer it after the same verification.
 5. Do not hardcode `~/.codex/plugins/cache`, `~/.agents/skills`, or `~/.claude` as the workflow root.
 
