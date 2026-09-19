@@ -17,6 +17,11 @@
 
 ## 最近更新
 
+**0.15.1**
+
+- **cm-security 现在会记运行日志**：安全扫描开跑与收尾各写一条运行日志（范围、结论词、发现数量、覆盖率、报告路径），与其余主流程命令一致；扫描逻辑、报告门禁与只读边界均未改动。此前 `cm-security` 是唯一没接入运行日志合同的主流程命令，`cm-check` 会因此报一处断链。
+- **修复 Claude 安装下的版本号误判**：`~/.claude` 是 Claude Code 自己的主目录，那里出现与 CM 无关的 `VERSION` 文件时，`cm-check` 会把它当成 CM 版本——轻则版本号报错，该文件版本号更高时 `cm-check` 会直接返回 `blocked` 跑不下去。现按安装模式读取版本标志，Claude 安装认 `templates/cm-VERSION`，源码仓库仍认根 `VERSION`。
+
 **0.15.0**
 
 - **兼容性变更（升级前必读）**：旧布局执行存储恢复时返回 `store_layout_legacy`，请用旧版本收尾或退休该 `runId`，旧文件不会自动迁移；显式将 `roles.browser_qa.adapter` 设为非 `browser` 却沿用含 `browser` 的默认测试策略会被拒绝，需要浏览器 QA 时请改为 `browser`（保留 `model: none, source: local`）或删除角色覆盖以继承默认值，不需要时请显式将 `policies.tests` 设为如 `[logic, commands]`，阻塞 browser 用例仍须另行处理验收范围并重新审批；含新字段的运行日志会被旧版本按未知键拒绝，请用 0.15.0 或兼容该字段的后续版本继续运行，不要用旧版本回放这类日志。
@@ -122,7 +127,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.15.0 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.15.1 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
