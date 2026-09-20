@@ -7,6 +7,16 @@
 
 （暂无）
 
+## 0.15.2 — 2026-09-19
+
+- **同 feature 并行开发现在可用**：`parallel` 字段此前只存在于代码，没有任何文档或 Skill 提过它，而执行规则要求「不发明字段」，功能因此从入口够不着。现补齐 `docs/js-workflow-control.md` 的「并行组」一节（字段形状、五条约束与失败码、工作树与分支命名、串行合并、QA 延后、review 前置），并在 `cm-ai` N1 增加提议规则：只对 scope 全为新建文件、互不重叠、无依赖路径的同 feature 任务成组，组不起来就串行，不为组而组。
+- **并行提速的真实范围**：当前会话模式下成员的开发请求逐个应答，重叠的是 runner 推进与各自的独立审查进程，不是写代码本身。文档与规则均写明这一点，避免按成倍提速预期使用。
+- **修复链式依赖被并发执行**：并行组的依赖校验此前只看直接边，`A → B → C` 时 `{A, C}` 会被放行并发开发。两者在各自工作树基于 `HEAD` 创建、看不到彼此产物，而组内 scope 本就不重叠，Git 也不会报冲突，错误不会暴露。改为按依赖图的传递闭包判定。
+- **修复保留的 WIP 分支挡住后续批次**（**升级注意**）：成员被阻断时会有意保留分支作为证据，但分支名不含 `batchId`，那个名字被永久占住，同一任务的任何后续批次都在 `git worktree add -b` 处报 `batch_worktree_failed`，换 `batchId` 也绕不开，只能手工删分支。分支名改为 `cm/{batchId 前 8 字符}/{feature}/{taskId}`。**升级前创建、尚未收口的并行批次恢复时会报 `batch_worktree_mismatch`，请用旧版本收尾该批次**；`parallel` 此前无文档，预期不存在这类在途批次。
+- **QA 环境补齐桌面与后端/CLI/库形态**：`kind`/`carrier` 此前只有 web/app/miniprogram，而 cm-prd 与用户确认的交付形态包含桌面与多端，并另行承认「纯本地工具、库等无部署形态的项目」。这些项目要开 QA 只能谎报 `web`+`browser`，而该字段会进 QA 执行配置并随每个用例请求下发。新增 `desktop`→`app-window`、`service`→`cli`/`http-api`、`library`→`none`。同一张取值表原本在四个模块里逐字重复，现抽为 `runtime/js/cm-ai/qa-environment.mjs` 单一来源，并修掉四份拷贝共有的隐患：`kind` 传 `__proto__` 时解析到 `Object.prototype` 而抛 TypeError，现用 `Object.hasOwn` 判否。
+- **METRICS 增加「执行方式」列**：记录该任务是串行执行还是并行组成员（`并行:组内{N}个`），否则无法区分耗时变化来自并行还是任务本身。看板模板同步适配列位。
+- **文档补两处契约坑**：`preflight --review-model` 必须是 CLI 实际写进请求体的完整模型 id，别名会以 `model_matches:false` 判失败而回执不给期望值；`check` 回复的 `result` 就是检查数组本身，不套 `{status,value}`，用错会以 `invalid_input` 停在 `reconcile` 且重试无效。
+
 ## 0.15.1 — 2026-09-19
 
 - **cm-security 接入统一运行日志合同**：`cm-security` 此前从未引用 `runtime/logging.md`，cm-check 第 3 组「共用运行日志与统一 writer」因此判 failed。该断链自 0.12.0 引入安全扫描时就存在——同一个 commit 把 `cm-security` 写进了检查清单，却没给新建的 Skill 加上引用。现补齐引用，并明确落盘时机：范围与安全边界确认后写 `run_start`，`--finalize` 返回终态后写 `run_done`，只记录扫描范围、结论词、发现数量、覆盖率与报告路径；工具原始输出、密钥原文、源码片段与 findings 正文不进日志，`BLOCKED` 同样收尾。这是文本约定补齐，扫描逻辑与报告门禁未变，只读边界不变。无 specs 目录时仍按既有设计只写全局镜像。
