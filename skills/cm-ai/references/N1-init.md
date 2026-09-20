@@ -64,6 +64,8 @@
 需要单独核验批准 manifest 时，可只读运行 `python3 {CM_WORKFLOW_ROOT}/scripts/cm-spec-manifest.py {SPECS_DIR} --status-file {SPECS_DIR}/.cm-specs-status`；失败不授权改写。
 N5/N6 的任务与 AC checkbox 变化仍由现有 manifest 规范化处理，文案、ID、设计和测试合同变化继续受准入保护。
 
+多任务批次的并行组提议规则见 `js-host.md` 第 3.1 条；本兼容流程不自行发明并行判定。
+
 > 这是**入口授权门**（人把关方案端），不属于"暂停仅灾难级"约束的中途暂停，也不计入 METRICS 人工介入。实跑教训：没有这道闸，prd 生成完会被一句"继续"顺势带进开发，人审形同虚设。
 
 ## 独立审查通道预检
