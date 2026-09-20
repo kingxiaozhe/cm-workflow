@@ -106,6 +106,16 @@ AGENTS.md 增量写回；将学习结果、文件摘要记入已有交接字段�
 `../../../runtime/task-gates.md`。子代理只能返回候选字段；由主执行者核对并落盘，
 不得让子代理写 `.reviews/`。`ready_for_review` 必须所有 verification 都是 `passed`，
 且 blockers/scope_deviation 为空；`changed_files` 使用正斜杠分隔的项目相对路径。
+
+**交付前逐条核对任务的 `verification`**：开发请求的 `specification.task.verification`
+来自 `tasks.md` 的「验证要求」段（由 `runtime/js/cm-ai/specification-material.mjs` 提取）。
+把它当检查清单，**逐条**写出满足它的证据位置——哪个文件哪一行、哪次命令的哪段输出。
+有一条对不上就补做，补不了就写 `blocked` 说明缺口，不得交付。要求里写「分别记录
+A、B、C 三种状态」就必须三种都在，写「在 X 路径上走查」就必须是 X 而不是等价替代；
+用了替身（命令桩、脚本派发事件、非指定服务器）时，在证据里显式标注边界，不要让
+结论读起来像端到端验证过。这一步不是形式：本仓库实跑统计显示末任务
+（承担 feature 级走查与证据文档的那个）第一轮审查通过率仅 1/5，被打回的 P2 全部是
+「证据没满足任务里已写明的验证要求」——不是代码缺陷，是本可在此自查掉的遗漏。
 否则写 `blocked` 并停止，不进入 N4。写 handoff 前，必须以完全相同的
 `changed_files` 计算实现内容摘要：
 
