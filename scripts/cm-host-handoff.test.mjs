@@ -28,8 +28,9 @@ test('host handoff uses existing gate and binds actual changed bytes',()=>fixtur
   const handoff=loadHandoff(input.handoffPath,{task:'T-001',attempt:1});
   assert.deepEqual(handoff.changed_files,['a.mjs']);
   assert.equal(handoff.implementation_sha256,implementationSha256(input.root,['a.mjs']));
+  // Republishing the same bytes is the crash-after-link case: already published.
   const before=fs.readFileSync(input.handoffPath);
-  assert.throws(()=>createHostHandoff(input),{code:'EEXIST'});
+  assert.equal(createHostHandoff(input).status,'ready_for_review');
   assert.deepEqual(fs.readFileSync(input.handoffPath),before);
 }));
 test('failed host check produces blocked handoff rather than invented success',()=>fixture(input=>{
@@ -55,4 +56,56 @@ test('new host handoff feeds existing Learning writer and verifier',()=>fixture(
   writeCmAiTaskLearningHandoff(args);verifyCmAiTaskLearningHandoff(args);
   const evidence=loadHandoff(input.handoffPath).evidence;
   assert.equal(evidence.filter(x=>x.startsWith('cm-learning-')).length,2);
+}));
+
+// A run that dies before review leaves a handoff behind. Refusing to replace it
+// blocks every later attempt of that task forever, which is what #81 reported.
+// Approval evidence still must never be overwritten, so the receipt decides.
+function collisionFixture(fn){
+  const temp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-handoff-collision-')));
+  const root=path.join(temp,'code'),reviews=path.join(temp,'reviews');fs.mkdirSync(root);fs.mkdirSync(reviews);
+  fs.writeFileSync(path.join(root,'a.mjs'),'old');fs.writeFileSync(path.join(root,'requirements.md'),'synthetic task');
+  const handoffPath=path.join(reviews,'9.demo-T-001-a1-handoff.json');
+  const build=body=>{
+    fs.writeFileSync(path.join(root,'a.mjs'),'old');
+    const baseline=captureReviewBaseline({root,identity:{repositoryId:'test',runId:'run',taskId:'T-001',attempt:1},
+      scope:['a.mjs'],requirements:['requirements.md']});
+    fs.writeFileSync(path.join(root,'a.mjs'),body);
+    return {root,baseline,handoffPath,
+      checks:[{id:'unit',command:['node','--test'],outcome:'passed',exitCode:0,evidence:'host fixture check'}]};
+  };
+  try{fn({reviews,handoffPath,build});}finally{fs.rmSync(temp,{recursive:true,force:true});}
+}
+
+test('an unreviewed handoff from a dead run is archived so the retry can publish',()=>collisionFixture(f=>{
+  createHostHandoff(f.build('first attempt'));
+  const stale=fs.readFileSync(f.handoffPath);
+  assert.equal(createHostHandoff(f.build('second attempt')).status,'ready_for_review');
+  const republished=fs.readFileSync(f.handoffPath);
+  assert.notDeepEqual(republished,stale);
+  const archive=path.join(f.reviews,'.superseded');
+  const archived=fs.readdirSync(archive);
+  assert.equal(archived.length,1);
+  assert.match(archived[0],/^9\.demo-T-001-a1-handoff\.json\.[0-9a-f]{16}$/);
+  assert.deepEqual(fs.readFileSync(path.join(archive,archived[0])),stale);
+}));
+
+test('a handoff the matching receipt names is never replaced',()=>collisionFixture(f=>{
+  createHostHandoff(f.build('first attempt'));
+  const reviewed=fs.readFileSync(f.handoffPath);
+  fs.writeFileSync(path.join(f.reviews,'9.demo-T-001-r1.md'),
+    ['---','at: 2026-01-01T00:00:00.000Z','reviewer: claude-cli','independent: true','task: T-001',
+     'attempt: 1','round: 1','verdict: approved','handoff: 9.demo-T-001-a1-handoff.json',
+     'handoff_sha256: '+'0'.repeat(64),'blocking_findings: 0','---',''].join('\n'));
+  assert.throws(()=>createHostHandoff(f.build('second attempt')),error=>error.code==='handoff_exists');
+  assert.deepEqual(fs.readFileSync(f.handoffPath),reviewed);
+  assert.equal(fs.existsSync(path.join(f.reviews,'.superseded')),false);
+}));
+
+test('a receipt for another handoff does not protect this one',()=>collisionFixture(f=>{
+  createHostHandoff(f.build('first attempt'));
+  fs.writeFileSync(path.join(f.reviews,'9.demo-T-001-r1.md'),
+    ['---','verdict: approved','handoff: 9.demo-T-002-a1-handoff.json','---',''].join('\n'));
+  assert.equal(createHostHandoff(f.build('second attempt')).status,'ready_for_review');
+  assert.equal(fs.readdirSync(path.join(f.reviews,'.superseded')).length,1);
 }));

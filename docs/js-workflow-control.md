@@ -340,7 +340,19 @@ host-context 必须是真实当前会话身份；宿主将其排除出独立审�
 原结果合同，不谎报无新增。检查的 `result` 是数组，不是上述开发结果。错绑定回复被拒绝，
 不会解除当前等待。正常 `status/cancel` 仍可随时发送，JS 一次只发一项工具工作。
 开发返回后，原 runner 完成检查、Learning 写回与 handoff 定稿；随后返回
-`awaiting_review / decision_required`。不能通过回复 `approved` 打开 V3 授权或完成任务；
+`awaiting_review / decision_required`。
+
+交接文件 `{SPECS_DIR}/.reviews/{feature}-{任务}-a{轮次}-handoff.json` 以不覆盖方式发布。
+撞名时按「这份旧交接有没有被审查用过」分流，判据是同轮次回执 `{feature}-{任务}-r{轮次}.md`
+里的 `handoff:` 行是否指名它：
+
+- **字节完全相同**：视为已发布（链接后崩溃的情形），直接成功，不重写文件。
+- **内容不同且没有回执指名它**：这份交接属于一个在审查前就死掉的运行，会被归档到
+  `.reviews/.superseded/{原文件名}.{内容摘要前16位}`（先硬链接再删除，中途崩溃不丢字节），
+  然后发布新交接。归档目录是子目录，不进入 `{feature}-{任务}-r{N}.md` 的证据文件名匹配。
+- **内容不同且回执指名它**：这是审查已经消费过的证据，绝不覆盖，返回 `handoff_exists`。
+
+因此同一任务失败一次后不再需要人工去 `.reviews/` 删文件才能重跑；已批准的交接仍然不可覆盖。不能通过回复 `approved` 打开 V3 授权或完成任务；
 需要审查时使用下方可信启动选项，不能据此宣称 N1–N8 已跑完。
 
 结束发送 `{"type":"host_close","sessionId":"from-host-ready"}`，进程确认后退出；

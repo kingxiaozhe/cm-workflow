@@ -9,7 +9,8 @@ const failureCodes=new Set(['invalid_input','limit_exceeded','call_timeout','can
   'review_package_mismatch','missing_material','contradictory_verdict','execution_mismatch','receipt_version',
   'unregistered_receipt','invalid_receipt','receipt_identity','receipt_package_mismatch','review_not_approved',
   'checks_not_passed','async_commit','commit_unknown','unsupported_path','unsupported_file','read_failed',
-  'snapshot_changed','spec_drift','invalid_baseline','out_of_scope','empty_changes','invalid_package','package_mismatch']);
+  'snapshot_changed','spec_drift','invalid_baseline','out_of_scope','empty_changes','invalid_package','package_mismatch',
+  'handoff_exists']);
 export function failureCode(error) {
   try {
     const d=Object.getOwnPropertyDescriptor(error,'code');
