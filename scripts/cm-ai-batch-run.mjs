@@ -127,9 +127,17 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     }
     return {rows,current:[...plans.keys()].find(key=>!done.has(key)),stopped,code,done,ready,merging,blocked};
   }
+  // The batch prefix goes into the branch as well, not only into the worktree path.
+  // A blocked member keeps its branch on purpose (its WIP is evidence), and without a
+  // per-batch segment that name would block every later batch touching the same task.
+  // It is the second segment rather than a suffix: refs/heads/cm/work/T-001 and
+  // refs/heads/cm/work/T-001/<batch> cannot coexist, so a suffix would still collide
+  // with branches left by earlier versions. Git rejects ".." and a trailing dot in a
+  // ref component while batchId allows dots, so the segment normalises them.
+  const batchSegment=config.batchId.slice(0,8).replace(/\./g,'-');
   const location=key=>{const definition=plans.get(key);return {
     worktree:path.resolve(config.codeProject,'..','.cm-worktrees',config.batchId.slice(0,8),definition.identity.taskId),
-    branch:`cm/${definition.feature.replace(/^\d+\./,'')}/${definition.identity.taskId}`};};
+    branch:`cm/${batchSegment}/${definition.feature.replace(/^\d+\./,'')}/${definition.identity.taskId}`};};
   function verifyMerged(row){
     const definition=plans.get(row.from_key),state=JSON.parse(fs.readFileSync(path.join(config.specsDir,'.reviews','.execution',definition.identity.runId,'state.json'),'utf8'));
     const {revision,...body}=state;

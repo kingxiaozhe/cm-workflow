@@ -267,7 +267,15 @@ async function batchFixture(mode,options={}){
     if(mode==='parallel-resume'){assert(interrupted);const before=[...calls];result=await open().handle({operation:'advance',requestId:'resume-parallel'});assert.deepEqual(calls.slice(0,before.length),before);}
     if(mode==='parallel-conflict'){
       assert.equal(result.code,'merge_conflict',JSON.stringify(result));assert.equal(git(codeProject,['rev-parse','HEAD']),conflictHead);
-      for(const task of ['T-001','T-002'])assert(fs.existsSync(path.join(root,'.cm-worktrees',config.batchId.slice(0,8),task)));return;
+      for(const task of ['T-001','T-002'])assert(fs.existsSync(path.join(root,'.cm-worktrees',config.batchId.slice(0,8),task)));
+      // Kept member branches are namespaced per batch, so a later batch of the same
+      // tasks does not collide with the WIP branches this one leaves behind.
+      const segment=config.batchId.slice(0,8).replace(/\./g,'-');
+      const heads=git(codeProject,['for-each-ref','--format=%(refname:short)','refs/heads/cm']).split('\n').filter(Boolean);
+      assert.deepEqual(heads.sort(),[`cm/${segment}/work/T-001`,`cm/${segment}/work/T-002`]);
+      for(const name of heads)git(codeProject,['check-ref-format','--branch',name]);
+      for(const task of ['T-001','T-002'])assert.throws(()=>git(codeProject,['rev-parse','--verify',`refs/heads/cm/work/${task}`]));
+      return;
     }
     if(mode==='qa-resume'){
       assert.equal(result.code,'qa_decision_required');assert.deepEqual(calls,['T-001']);
