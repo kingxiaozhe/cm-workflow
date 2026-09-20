@@ -7,6 +7,10 @@
 
 （暂无）
 
+## 0.15.4 — 2026-09-20
+
+- **`cm-check --quick`：约 12 秒收口的快速检查**。完整检查耗时拆分为查更新 0.7 秒、机械检查 12.4 秒，其余几乎全在八组语义检查上——那不是程序在跑，而是执行者逐个文件读取并取证行号，且控制器强制八组齐全、passed 必须附真实行号，慢是设计换来的。日常「装没装对、版本对不对」这类问题机械检查已能回答，`--quick` 让更新与机械检查照常跑、机械通过后直接收口，不进语义检查。结论为 `MECHANICAL_ONLY` 而**不是 PASSED**：八组一组没读，不得据此宣称安装完整无断链；结果带 `semanticChecked:false` 与 `reason:quick_mode_semantic_not_run`。机械失败仍照常报 FAILED/BLOCKED，快速模式不跳过任何失败。默认不带该参数时行为不变。
+
 ## 0.15.3 — 2026-09-20
 
 - **cm-check 在 Claude 安装上可以拿到 PASSED**：第 1 组查 `.codex-plugin/plugin.json`、第 7 组查根 `VERSION` 与根 `README.md`，三者都是 Codex 插件模式的产物，claude-compat 安装本就不该有（`install.sh` 只写 `templates/cm-VERSION`）。此前这两组只能判 blocked，健康的 Claude 安装永远停在 BLOCKED。现按安装模式分流：控制器推出 `installMode` 并下发给语义检查，语义结果新增 `not_applicable` 状态，仅第 1、7 组可用且必须写明缺的是哪个产物、为何本模式不该有；汇总时它既不算失败也不算阻塞。本模式确实拥有的产物证据不足仍记 blocked，不得借它放行。
