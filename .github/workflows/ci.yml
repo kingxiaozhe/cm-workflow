@@ -88,6 +88,9 @@ jobs:
       - name: Run QA budget and recovery argument fixtures
         run: node --test scripts/cm-ai-qa-recovery-args.test.mjs
 
+      - name: Run verification precheck gate fixtures
+        run: node --test scripts/cm-ai-verification-gate.test.mjs
+
       - name: Run execution collapse diagnostic fixtures
         run: node --test scripts/cm-ai-execution-diagnostic.test.mjs
 

@@ -25,7 +25,7 @@ import {validateDocumentationPaths} from './host-documentation.mjs';
 import {verifySpecificationMaterial} from './specification-material.mjs';
 import {isFinalCmAiTask} from './cm-ai-admission.mjs';
 import {createHostBootstrap} from './host-bootstrap.mjs';
-import {digest,id,hex,json,need,shape,freeze} from './effect-contract.mjs';
+import {digest,id,hex,json,need,shape,freeze,arrayItems} from './effect-contract.mjs';
 export const protectedTextInstructions='\nProtected current-host mode: do not write files or run commands. Return {status,value,edits} on success; '
   +'value retains the original implementation/Learning contract. edits is [{path,beforeSha256,content}], complete UTF-8 text or null for deletion. '
   +'Only the supplied scope and expected hashes are allowed. The fixed sandbox applies these edits. On failure return {status,code} without edits. '
@@ -36,6 +36,32 @@ export const conversationProtection=execution=>protectedConversations.get(execut
 // narrower knob, and raising it must not require switching development mode.
 // Absent both, the worker default applies. Returns a spread-ready fragment so
 // an unset budget never plants an undefined timeoutMs on the worker options.
+// Between the task's own checks and the independent review. It may only block:
+// passing it is not an approval, produces no receipt and consumes no review
+// round. A satisfied gate still leaves the full independent review ahead.
+//
+// One deliberate limit, stated rather than papered over: a task's verification
+// is free text, so JS cannot prove every requirement in it was enumerated. What
+// is enforced mechanically is the shape, that each returned requirement cites a
+// nonempty evidence location, and that the gate passes only when every returned
+// requirement is satisfied. Mechanical shape is not semantic coverage.
+export function readVerificationPrecheck(raw){
+  const value=json(raw,256*1024);shape(value,['items']);
+  const items=arrayItems(value.items);
+  need(items.length>0&&items.length<=64,'verification_precheck_invalid');
+  for(const item of items){
+    shape(item,['requirement','satisfied','evidence']);
+    need(typeof item.satisfied==='boolean','verification_precheck_invalid');
+    for(const field of ['requirement','evidence']){
+      const text=item[field];
+      need(typeof text==='string'&&text.trim().length>0&&Buffer.byteLength(text,'utf8')<=2000
+        &&!/[\x00-\x08\x0b-\x1f]/.test(text),'verification_precheck_invalid');
+    }
+  }
+  return freeze({satisfied:items.every(item=>item.satisfied===true),
+    unsatisfied:items.filter(item=>item.satisfied!==true).map(item=>item.requirement)});
+}
+
 export function resolveReviewTimeout(review,protection){
   if(review?.timeoutMs!=null)return {timeoutMs:review.timeoutMs};
   if(protection)return {timeoutMs:protection.timeoutMs};
@@ -43,7 +69,8 @@ export function resolveReviewTimeout(review,protection){
 }
 export function createConversationExecution(definition,hostContextId,bridge,review=null,allowedAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
   definition=json(definition);workflow=workflow===null?null:json(workflow);options=json(options);
-  shape(options,[...['protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','parallelMember'].filter(key=>Object.hasOwn(options,key))]);
+  shape(options,[...['protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','parallelMember','verificationPrecheck'].filter(key=>Object.hasOwn(options,key))]);
+  need(!Object.hasOwn(options,'verificationPrecheck')||typeof options.verificationPrecheck==='boolean','invalid_input');
   const parallelMember=options.parallelMember??false;need(typeof parallelMember==='boolean','invalid_input');
   const provider=options.providerDevelopment??null;
   if(provider){
@@ -111,7 +138,13 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     };
   };
   const used=new Set();
+  // The gate is opt-in: without it the flow is byte-for-byte what it was.
+  const verificationGate=options.verificationPrecheck===true?async(request,control)=>
+    readVerificationPrecheck(await bridge.call('verification_precheck',
+      {...request,codeProject:definition.codeProject,feature:definition.feature,
+        scope:definition.scope},control.signal)):null;
   const execution={configuration,timeoutMs:provider?protection.timeoutMs:1800000,excludedContexts:[hostContextId],hostDecision:null,applicableAgentFiles:[],
+    ...(verificationGate?{verificationGate}:{}),
     ...(bootstrap?{bootstrap}:{}),
     ...(provider?{developmentAttempt:provider.attempt}:{}),
     ...(workflow?createHostWorkflowCapabilities({definition,configuration:workflow,bridge,allowQa,runtime,protectedExecution:protection!==null,bootstrap,parallelMember}):{}),

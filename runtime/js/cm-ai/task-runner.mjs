@@ -92,9 +92,14 @@ export function createTaskRunner(options) {
   if(options && Object.hasOwn(options,'specification'))optionKeys.push('specification');
   if(options && Object.hasOwn(options,'bootstrap'))optionKeys.push('bootstrap');
   if(options && Object.hasOwn(options,'codeProjectPaths'))optionKeys.push('codeProjectPaths');
+  if(options && Object.hasOwn(options,'verificationGate'))optionKeys.push('verificationGate');
   if(invocationMode)optionKeys.push('reviewInvocation');
   shape(options,optionKeys);
   const {check,commit}=options;need(typeof check==='function' && (taskMode||typeof commit==='function'));
+  // Opt-in gate between the task's own checks and the independent review. It may
+  // only block: passing it grants nothing and never substitutes for that review.
+  const verificationGate=options.verificationGate??null;
+  need(verificationGate===null||typeof verificationGate==='function');
   if(taskMode)need(Object.hasOwn(options,'persistence'),'runner_completion');
   const config=json({root:options.root,identity:options.identity,scope:options.scope,requirements:options.requirements,
     ...(Object.hasOwn(options,'codeProjectPaths')?{codeProjectPaths:validateCodeProjectPaths(options.codeProjectPaths)}:{}),
@@ -562,6 +567,21 @@ export function createTaskRunner(options) {
       if(cancelReject)controller.signal.removeEventListener('abort',cancelReject);}
   }
   async function collectChecks(){return json(await bounded(check,json({identity:{...config.identity,attempt}})));}
+  // Runs on the checks just collected, before any handoff or review package is
+  // built, so a deliverable that does not satisfy the task's own written
+  // verification never spends an independent review round.
+  async function verificationSatisfied(checks) {
+    if(verificationGate===null)return true;
+    // No written verification means nothing to check against; the gate stays out
+    // of the way rather than inventing requirements of its own.
+    const specification=Object.hasOwn(original,'specification')?verifySpecificationMaterial(original):null;
+    const verification=specification?.task?.verification??null;
+    if(typeof verification!=='string'||verification.trim().length===0)return true;
+    const verdict=json(await bounded(verificationGate,
+      json({identity:{...config.identity,attempt},verification,checks})));
+    shape(verdict,['satisfied']);need(typeof verdict.satisfied==='boolean','invalid_result');
+    return verdict.satisfied;
+  }
   async function perform(v) {
     if(v.kind==='develop') {
       need(stageAllowed('develop',state,code),'stage_mismatch');state='developing';code=null;receipt=null;
@@ -601,6 +621,8 @@ export function createTaskRunner(options) {
         if(writeback.outcome==='writeback_pending'){halt('blocked','learning_writeback_pending');return;}
         if(taskLearning.hostHandoff===true){
           currentChecks=await collectChecks();active();
+          if(!await verificationSatisfied(currentChecks)){halt('blocked','verification_precheck_failed');return;}
+          active();
           createHostHandoff({root:config.root,baseline:base,checks:currentChecks,
             handoffPath:completion.handoffs[attempt-1]});
         }
@@ -608,7 +630,11 @@ export function createTaskRunner(options) {
           identity:{...config.identity,attempt},learningInput:v.learningInput,application,retrospective,writeback});
       }
       need(result.response.result.outcome==='implemented','invalid_result');
-      if(taskLearning?.hostHandoff!==true)currentChecks=await collectChecks();active();
+      if(taskLearning?.hostHandoff!==true){
+        currentChecks=await collectChecks();active();
+        if(!await verificationSatisfied(currentChecks)){halt('blocked','verification_precheck_failed');return;}
+      }
+      active();
       const nextPackage=createReviewPackage({root:config.root,baseline:base,checks:currentChecks,
         ...(taskLearning?.hostHandoff===true?{handoffPath:completion.handoffs[attempt-1]}:{})});
       if(taskLearning!==null)validateTaskLearningReviewPackage(nextPackage,learningResult.writeback,v.learningInput,
