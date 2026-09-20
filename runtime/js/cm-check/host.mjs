@@ -9,6 +9,10 @@ import {need,shape,json,digest} from '../cm-ai/effect-contract.mjs';
 const directories=['skills','runtime','agents','compat/claude-commands','templates','scripts','.codex-plugin'];
 const topFiles=['VERSION','README.md','package.json','install.sh','install.ps1','install-codex.sh','install-codex.ps1'];
 const optionalIds=['statusline','updater','subagents','isolated_review','external_browser'];
+// Groups 1 and 7 inspect the Codex plugin manifest, the root VERSION and the root README.
+// A Claude-compatible installation legitimately owns none of them, so only these two may be
+// waived as not_applicable; every other group must still reach a real verdict.
+const modeScopedChecks=new Set([1,7]);
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;
 function snapshot(root){
   need(fs.realpathSync(root)===root,'check_source_path_changed');
@@ -51,6 +55,9 @@ export function createCmCheckHost(raw,{call}){
       const baseline=capture(),skill=readCmInitSource(root,'skills/cm-check/SKILL.md').toString('utf8');
       const checklist=skill.split('\n').filter(line=>/^[1-8]\. \*\*/.test(line));
       need(checklist.length===8&&checklist.every((line,index)=>line.startsWith(`${index+1}. `)),'check_checklist_invalid');
+      // The mechanical checker already distinguishes the installation mode; derive it from the
+      // same marker so the assessor is told which mode it is in instead of inferring it.
+      const installMode=fs.existsSync(path.join(root,'.codex-plugin/plugin.json'))?'plugin':'claude-compat';
       const windows=path.join(root,'scripts/cm-check-runtime.ps1');
       const response=json(await call('check_runtime',{invocation,
         windows:{script:windows,args:invocation.args},
@@ -63,16 +70,19 @@ export function createCmCheckHost(raw,{call}){
         semanticChecked:false,completionAuthorized:false};return status();}
       stage='semantic';
       const assessment=json(await call('check_semantic',{workflowRoot:root,project:invocation.project,sourceDigest:baseline.digest,
-        scope:{directories,files:topFiles},checklist,optionalIds,
-        instructions:'Read the original eight cm-check semantic groups and relevant local files in this scope. Reuse actual mechanical findings; do not rerun it or its tests. No business testing, file writes, installs, provider calls, private directories or secrets. Return {sourceDigest,checks:[{id:1..8,status:passed|failed|blocked,evidence:[{path:workflow-relative,line:positive integer}],findings:[specific reproducible issue or evidence gap]}],optional:[{id,status:configured|degraded|unknown,reason}]}. Cover every group and optional id exactly once. Passed requires actual cited evidence and no findings; failed requires cited reproducible defects. Missing ability/evidence is blocked, not passed. Optional tools may be degraded, never core failures. No invented executions. Evidence refers to existing local text; missing targets are described with their referring file/line. Compatibility aliases are not private Codex calls. This is current-host semantic assessment, not independent review or completion approval.'},controller.signal));
+        scope:{directories,files:topFiles},checklist,optionalIds,installMode,
+        instructions:'Read the original eight cm-check semantic groups and relevant local files in this scope. Reuse actual mechanical findings; do not rerun it or its tests. No business testing, file writes, installs, provider calls, private directories or secrets. Return {sourceDigest,checks:[{id:1..8,status:passed|failed|blocked|not_applicable,evidence:[{path:workflow-relative,line:positive integer}],findings:[specific reproducible issue or evidence gap]}],optional:[{id,status:configured|degraded|unknown,reason}]}. installMode names this installation: only a group the checklist itself splits by mode may be not_applicable, and only for the artefacts the other mode owns; state in findings which artefact does not exist in this mode and why. not_applicable never covers an artefact this mode does own, and never substitutes for blocked when evidence is merely missing. Cover every group and optional id exactly once. Passed requires actual cited evidence and no findings; failed requires cited reproducible defects. Missing ability/evidence is blocked, not passed. Optional tools may be degraded, never core failures. No invented executions. Evidence refers to existing local text; missing targets are described with their referring file/line. Compatibility aliases are not private Codex calls. This is current-host semantic assessment, not independent review or completion approval.'},controller.signal));
       need(!controller.signal.aborted,'cancelled');current(baseline);
       shape(assessment,['sourceDigest','checks','optional']);need(assessment.sourceDigest===baseline.digest,'check_assessment_stale');
       need(Array.isArray(assessment.checks)&&assessment.checks.length===8&&new Set(assessment.checks.map(row=>row.id)).size===8,'check_coverage_incomplete');
       for(const row of assessment.checks){
         shape(row,['id','status','evidence','findings']);
-        need(Number.isInteger(row.id)&&row.id>=1&&row.id<=8&&['passed','failed','blocked'].includes(row.status)
+        need(Number.isInteger(row.id)&&row.id>=1&&row.id<=8&&['passed','failed','blocked','not_applicable'].includes(row.status)
           &&Array.isArray(row.evidence)&&Array.isArray(row.findings)&&row.findings.every(nonempty),'check_result_invalid');
         need(row.status==='passed'?row.findings.length===0&&row.evidence.length>0:row.findings.length>0,'check_result_invalid');
+        // Only the groups the checklist splits by installation mode may be waived, so a
+        // missing artefact elsewhere still has to be reported as blocked.
+        need(row.status!=='not_applicable'||modeScopedChecks.has(row.id),'check_result_invalid');
         if(row.status==='failed')need(row.evidence.length>0,'check_evidence_required');
         for(const evidence of row.evidence){
           shape(evidence,['path','line']);const file=baseline.files[evidence.path];
@@ -85,7 +95,8 @@ export function createCmCheckHost(raw,{call}){
       for(const row of assessment.optional){shape(row,['id','status','reason']);
         need(optionalIds.includes(row.id)&&['configured','degraded','unknown'].includes(row.status)&&nonempty(row.reason),'check_optional_invalid');}
       result={overall:assessment.checks.some(row=>row.status==='failed')?'FAILED':assessment.checks.some(row=>row.status==='blocked')?'BLOCKED':'PASSED',
-        version:readCmInitSource(root,'VERSION')?.toString('utf8').trim()??null,mechanical,
+        version:(readCmInitSource(root,installMode==='plugin'?'VERSION':'templates/cm-VERSION')
+          ?.toString('utf8').trim())??null,installMode,mechanical,
         source:'current_host_semantic_report',sourceDigest:baseline.digest,checks:[...assessment.checks].sort((a,b)=>a.id-b.id),optional:assessment.optional,
         findingsCount:assessment.checks.filter(row=>row.status==='failed').reduce((sum,row)=>sum+row.findings.length,0),
         semanticChecked:true,completionAuthorized:false};
