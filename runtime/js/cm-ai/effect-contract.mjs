@@ -11,11 +11,35 @@ const failureCodes=new Set(['invalid_input','limit_exceeded','call_timeout','can
   'checks_not_passed','async_commit','commit_unknown','unsupported_path','unsupported_file','read_failed',
   'snapshot_changed','spec_drift','invalid_baseline','out_of_scope','empty_changes','invalid_package','package_mismatch',
   'handoff_exists']);
+// An unlisted code becomes execution_error, which on its own is not actionable.
+// The EEXIST that blocked every retry of a task in #81 stayed invisible in the
+// log, the state and stderr until a temporary print was added by hand. Emit one
+// structured line at the point of collapse, with named fields only: never
+// error.message, which can carry arbitrary provider output or source text.
+const diagnosticText=value=>typeof value==='string'&&value.length>0&&value.length<=1024
+  &&!/[\x00-\x08\x0b-\x1f]/.test(value);
+export function executionDiagnostic(error) {
+  const detail={};
+  for(const name of ['code','syscall','path','dest']) {
+    const d=Object.getOwnPropertyDescriptor(error,name);
+    if(d && Object.hasOwn(d,'value') && diagnosticText(d.value))detail[name]=d.value;
+  }
+  return Object.keys(detail).length>0?detail:null;
+}
+export function reportExecutionCollapse(error,write=value=>process.stderr.write(value)) {
+  // Diagnostics never change the failure path: a broken stream stays silent.
+  try{
+    const detail=executionDiagnostic(error);
+    write(JSON.stringify({diagnostic:'execution_error',...(detail??{detail:'unavailable'})})+'\n');
+  }catch{/* ignore */}
+}
 export function failureCode(error) {
   try {
     const d=Object.getOwnPropertyDescriptor(error,'code');
-    return d && Object.hasOwn(d,'value') && failureCodes.has(d.value)?d.value:'execution_error';
-  } catch {return 'execution_error';}
+    if(d && Object.hasOwn(d,'value') && failureCodes.has(d.value))return d.value;
+  } catch {/* an error that cannot be inspected collapses like any other */}
+  reportExecutionCollapse(error);
+  return 'execution_error';
 }
 export function shape(value,names) {
   need(value!==null && typeof value==='object' && !Array.isArray(value)
