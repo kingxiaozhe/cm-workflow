@@ -246,4 +246,15 @@ echo
 echo "完成（已安装版本: v${VERSION}）。"
 echo "建议在 Claude Code 中运行 /cm-check 校验；macOS/Linux 也保留 /cm:check 别名。"
 echo "使用手册: $DEST/cm-workflow/docs/user-guide.md"
-echo "自动更新器未自动启用；按 docs/installation.md 手工配置 SessionStart hook。"
+# 播报 hook 的实际状态由脚本判断后再说话：此前这行无条件打印，对已启用的人是错的，
+# 对未启用的人又读着像普通说明，两边都没起作用。仅在交互安装时询问，且只加播报 hook。
+if [ -x "$DEST/scripts/cm-announce-hook.mjs" ] || [ -f "$DEST/scripts/cm-announce-hook.mjs" ]; then
+  if [ "$ASSUME_YES" -ne 1 ] && [ -t 0 ] && [ -t 1 ]; then
+    node "$DEST/scripts/cm-announce-hook.mjs" || true
+  else
+    CM_NONINTERACTIVE=1 node "$DEST/scripts/cm-announce-hook.mjs" </dev/null || true
+  fi
+else
+  echo "自动更新器未自动启用；按 docs/installation.md 手工配置 SessionStart hook。"
+fi
+echo "后台自动升级仍需另行开启，见 docs/installation.md。"
