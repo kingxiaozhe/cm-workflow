@@ -1127,6 +1127,33 @@ PDF/HTML现通过同一CLI的`prd_materials`宿主请求处理，先于prd_analy
 收到host_ready后发`{"requestId":"prd-1","operation":"start","text":"当前真实用户请求"}`；宿主按prd_analyze的原Skill参考执行分析，通过原host_result信封回question/analyzed/blocked。有澄清时传`advance`及真实用户回答；status/cancel沿原通信协议。首次start写一次run_start，每轮分析先写带analysis_turn的route decision；正文不写日志。关闭/EOF记录run_done的incomplete、blocked或cancelled，不记录成功、不改审批位。分析就绪不是工作流完成。终态日志异常不自动重试。
 这是真实CLI及原日志接线；目前无跨会话分析恢复、规格落盘或普通Skill激活，关闭会话后不能续接内存中的澄清/草稿。下文模块层描述的回调由本CLI接入，模块本身仍不拥有日志文件。
 
+#### 调用契约中容易踩空的几处
+
+控制请求的字段集是**严格**的：`cm-prd-host.mjs` 对每个 operation 逐一 `shape` 校验，
+**少给必填字段和多给不属于该 operation 的字段一样会被拒**。被拒时错误通道统一返回
+`host_request_failed`（只有宿主主动暴露的失败才带 reason 走 blocked 结果），
+因此无法从返回值分辨是哪种问题，照下列逐条核对可省掉一次排查：
+
+- `advance` / `start` / `plan_design` **必须带 `text`**，且非空。
+- `save_draft` / `prepare_summary` 等**不接受 `draftDigest`**；只有
+  `promote_design` 与 `select_design_reviews` 带 `draftDigest`，`publish_summary` 带
+  `summaryDigest`。多给一个字段即被拒。
+- 用 `--session prd-ID` 恢复既有会话时**不要再发 `start`**，否则 `prd_turn_not_ready`；
+  先 `status` 读回当前 stage 再继续。
+- `prd_analyze` 回复的 `analyzed.sourcePaths` 必须**覆盖 `sources` 的全部条目**，
+  用与之相同的相对路径；只列本轮相关的那几份会以
+  `prd_source_coverage_invalid` 拒绝。提供 `--cases` 时另含其绝对路径。
+- 每条验收标准都要被至少一条测试用例的 `acIds` 覆盖，否则机械自检
+  `acceptance_test_coverage_missing`。
+
+split 审查对文档章节标题有硬要求，不满足时 `final_review_package` 只返回
+`host_request_failed`（真实原因是 `prd_review_sections_missing`）：
+
+- `requirements.md` 必须有匹配 `^##\s+(功能需求|Functional requirements)\s*$` 的章节——
+  写成「## 功能要求」不匹配。
+- `design.md` 必须有方案摘要/概述/架构/功能模块/技术/接口/数据/波及/安全一类的
+  `##` 章节，`split` 阶段另单独校验一次摘要类标题。
+
 `runtime/js/cm-prd/analysis.mjs` 提供 `createCmPrdAnalysis({input,runtime,analyze,record})` 会话分析控制层；input沿用来源入口参数。先准入、解析analyst/planner配置，再读取正文。`advance(text)` 接真实当前用户输入，回调 `analyze(payload,signal)` 执行当前宿主分析；`status()`/`cancel()` 提供状态与取消。
 `record(event)` 必须由宿主接原规格日志写入器，失败阻止派发；此模块不自行创建run_start/run_done或日志文件。非current-runtime analyst明确blocked/degrade，不自动换provider。question进入awaiting_user，analyzed含summary/sourcePaths/openQuestions；来源路径必须完整，开放问题非空仍awaiting_user。PDF/HTML（含用例文件）必须先经上方材料宿主处理；未提供processMaterials的旧模块调用方仍阻断非文本材料。未知格式继续阻断。
 
