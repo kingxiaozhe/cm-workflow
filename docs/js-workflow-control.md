@@ -888,6 +888,7 @@ JS 只校验声明及身份一致性，不证明测试目录已全面调查；�
 
 `scripts/cm-ai-batch-run.mjs` 导出 `createCmAiBatch({configuration, executionFor, logHome})`。
 configuration 固定为 `{version:1, repositoryId, batchId, specsDir, codeProject, tasks}`，
+另有可选 `parallel`（见下节「并行组」）和可选 `codeProjects`。
 tasks 每项为 `{feature, taskId, scope, requirements}`；首项是本批次起点，之后按原
 admission 返回的下一任务推进。根路径须规范绝对路径，未列入批准清单的下一任务停止，
 不推测 scope。`executionFor` 只由可信宿主提供，负责零副作用地组装每任务执行适配器，
@@ -904,6 +905,48 @@ admission 返回的下一任务推进。根路径须规范绝对路径，未列�
 保留实际子任务identity并附batchId。最终run_done仍属于最后任务的原finalizer，
 不伪造一条父run_done，也不把这项本地接线当作完整产品宿主/真实provider验收。
 当前实现仍要求Node24.14+与原执行/平台能力；Linux准入已适配但缺原生端到端证据，原生Windows未接，独立CLI见下文。
+
+### 并行组
+
+可选 `parallel` 是「任务 key 数组」的数组，每个内层数组是一组同时开发的任务，
+key 形如 `1.work/T-001`，与 `tasks` 的 `feature/taskId` 一致。省略该字段即全部串行。
+
+每组必须同时满足，任一不满足整批拒绝启动：
+
+| 约束 | 失败码 |
+| --- | --- |
+| 每组 2–4 个任务，成员不重复、不跨组复用 | `invalid_parallel_group` |
+| 组内全部任务属于同一 feature | `parallel_feature_mismatch` |
+| 组内任意两任务之间不存在依赖路径（按 `tasks.md` 依赖图的传递闭包判定） | `parallel_dependency_conflict` |
+| 组内各任务 `scope` 两两不含相同路径 | `parallel_scope_overlap` |
+| 该 feature 最后一个未 DROPPED 的任务不得进组，且必须在 `tasks` 内 | `parallel_final_task_excluded` |
+
+末任务被排除，是因为成员 QA 会延后到它那里统一执行。
+
+**执行方式。** 每个成员分到一个 Git 工作树与独立分支，由调度器创建：
+
+- 工作树：`{codeProject}/../.cm-worktrees/{batchId 前 8 个字符}/{taskId}`
+- 分支：`cm/{feature 去掉数字前缀}/{taskId}`，从 `HEAD` 创建
+
+启动前对整组跑一次 `check-parallel-write`。成员各自完成开发、检查与审查后在自己
+分支提交，再由调度器按任务顺序逐个 `git merge --no-ff` 合回主 checkout——**合并是串行的**，
+合并完成后移除该成员工作树。首次推进前主工作区必须干净（含未跟踪文件），否则整批停止
+并列出文件；被阻断的成员保留其 WIP 提交与原因，不自动丢弃。
+
+**QA 延后。** 成员的 N6 自动记为 `skipped`（`reason: parallel_member_deferred`，固定评分 4），
+不逐任务跑 QA；整个 feature 的 QA 在末任务触发一次，覆盖合并后的结果。
+
+**并行的边界。** 当前会话通道一次只接一个工具调用，成员的开发请求按序排队，
+第二个成员的 `develop` 只在第一个被应答之后才发出。真正重叠的是成员 runner 的状态推进
+与各自的独立审查进程，**不是写代码本身**；使用者不应据此预期成倍提速。要让编码真正并发，
+需要为成员配置各自的 provider 开发派发，而不是依赖当前会话。
+
+**前置条件。** 并行成员会在各自工作树里单独跑一次 review preflight，因此 `--review-config`
+是并行的硬前置：缺它整批立即以 `review_preflight_failed` 停止，一行代码都不会开发。
+串行批次没有这个要求。
+
+**提议方。** 由 N1 决定哪些任务成组，规则见 `skills/cm-ai/references/js-host.md` 第 3.1 条。
+组不起来就省略该字段，正常串行；不为组而组。
 
 ### 当前会话多任务 CLI
 
