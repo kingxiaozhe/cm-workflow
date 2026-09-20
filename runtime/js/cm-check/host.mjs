@@ -38,7 +38,10 @@ function snapshot(root){
   return {files,digest:digest(files)};
 }
 export function createCmCheckHost(raw,{call}){
-  const invocation=createCmCheckInvocation(raw),root=invocation.workflowRoot;
+  // --quick is a host launch choice, not part of the checker invocation contract.
+  const {quick=false,...invocationInput}=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw:{};
+  need(typeof quick==='boolean','invalid_input');
+  const invocation=createCmCheckInvocation(invocationInput),root=invocation.workflowRoot;
   need(typeof call==='function','check_host_required');
   const controller=new AbortController();let stage='ready',mechanical=null,result=null;
   const capture=()=>{
@@ -68,6 +71,12 @@ export function createCmCheckHost(raw,{call}){
       mechanical={source:'current_host_execution_report',...response};current(baseline);
       if(response.exitCode!==0){stage='reported';result={overall:response.exitCode===null?'BLOCKED':'FAILED',mechanical,checks:[],optional:[],
         semanticChecked:false,completionAuthorized:false};return status();}
+      // Quick mode stops here. MECHANICAL_ONLY is deliberately not PASSED: the eight
+      // semantic groups were never read, so the verdict must not be quotable as a full pass.
+      if(quick){stage='reported';result={overall:'MECHANICAL_ONLY',installMode,
+        version:(readCmInitSource(root,installMode==='plugin'?'VERSION':'templates/cm-VERSION')?.toString('utf8').trim())??null,
+        mechanical,checks:[],optional:[],semanticChecked:false,
+        reason:'quick_mode_semantic_not_run',completionAuthorized:false};return status();}
       stage='semantic';
       const assessment=json(await call('check_semantic',{workflowRoot:root,project:invocation.project,sourceDigest:baseline.digest,
         scope:{directories,files:topFiles},checklist,optionalIds,installMode,
