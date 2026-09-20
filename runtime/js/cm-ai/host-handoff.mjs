@@ -47,6 +47,53 @@ export function verifyHostHandoff(raw){
   return {outcome:'matched',handoffSha256:bound.handoff.sha256,packageDigest:reviewPackage.packageDigest};
 }
 
+// A handoff a review already consumed is approval evidence and is never replaced.
+// One left by a run that died before review is not: it must not block every retry
+// of the same task forever. The receipt names the handoff it reviewed, so the two
+// cases are distinguishable without guessing from timestamps or run identity.
+function reviewConsumedHandoff(parent,name,attempt){
+  const suffix=`-a${attempt}-handoff.json`;
+  if(!name.endsWith(suffix))return true;
+  const receipt=path.join(parent,`${name.slice(0,-suffix.length)}-r${attempt}.md`);
+  let body;
+  try{
+    const info=fs.lstatSync(receipt);
+    if(!info.isFile()||info.isSymbolicLink())return true;
+    body=fs.readFileSync(receipt,'utf8');
+  }catch(error){
+    if(error.code==='ENOENT')return false;
+    throw error;
+  }
+  return body.split('\n',24).some(line=>line.trim()===`handoff: ${name}`);
+}
+
+// Archive by link-then-unlink so the bytes survive a crash between the two steps.
+function supersedeHandoff(parent,handoffPath,existing){
+  const archive=path.join(parent,'.superseded');
+  fs.mkdirSync(archive,{recursive:true,mode:0o700});
+  const stamp=createHash('sha256').update(existing).digest('hex').slice(0,16);
+  const target=path.join(archive,`${path.basename(handoffPath)}.${stamp}`);
+  try{fs.linkSync(handoffPath,target);}catch(error){if(error.code!=='EEXIST')throw error;}
+  fs.unlinkSync(handoffPath);
+  const dir=fs.openSync(archive,fs.constants.O_RDONLY);
+  try{fs.fsyncSync(dir);}finally{fs.closeSync(dir);}
+}
+
+// Publish with no-replace semantics, resolving only the collisions that are
+// provably safe to resolve. Returns nothing; throws on a conflict it may not touch.
+function publishHandoff(parent,handoffPath,temp,bytes,attempt){
+  try{fs.linkSync(temp,handoffPath);return;}
+  catch(error){if(error.code!=='EEXIST')throw error;}
+  const info=fs.lstatSync(handoffPath);
+  need(info.isFile()&&!info.isSymbolicLink(),'handoff_exists');
+  const existing=fs.readFileSync(handoffPath);
+  // Republishing identical bytes is the crash-after-link case, already published.
+  if(existing.equals(bytes))return;
+  need(!reviewConsumedHandoff(parent,path.basename(handoffPath),attempt),'handoff_exists');
+  supersedeHandoff(parent,handoffPath,existing);
+  fs.linkSync(temp,handoffPath);
+}
+
 export function createHostHandoff(raw){
   const {root,baseline,checks,handoffPath,parent,reviewPackage,changedFiles,payload,bytes}=prepareHostHandoff(raw);
   const temp=path.join(parent,`.cm-initial-handoff-${randomUUID()}`);
@@ -58,7 +105,7 @@ export function createHostHandoff(raw){
     verifyReviewPackage({root,baseline,checks,reviewPackage,expectedDigest:reviewPackage.packageDigest});
     need(payload.implementation_sha256===implementationSha256(root,changedFiles),'snapshot_changed');
     // Atomic no-replace publication, unlike rename which could overwrite approval.
-    fs.linkSync(temp,handoffPath);
+    publishHandoff(parent,handoffPath,temp,bytes,baseline.identity.attempt);
     fs.unlinkSync(temp);
     const dir=fs.openSync(parent,fs.constants.O_RDONLY);
     try{fs.fsyncSync(dir);}finally{fs.closeSync(dir);}
