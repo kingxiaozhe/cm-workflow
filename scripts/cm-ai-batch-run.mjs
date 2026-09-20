@@ -425,7 +425,14 @@ function validateGroups(config,plans){
     need(!parsed.error,'parallel_task_invalid');
     const ids=new Set(group.map(key=>plans.get(key).identity.taskId));
     need([...ids].every(id=>parsed.tasks.some(task=>task.id===id&&!task.dropped)),'parallel_task_invalid');
-    need([...ids].every(id=>(parsed.dependencies.get(id)??[]).every(dep=>!ids.has(dep))),'parallel_dependency_conflict');
+    // Direct edges are not enough: with A -> B -> C, a group of {A, C} has no direct edge
+    // between its members while A still needs C. Walk the whole prerequisite closure.
+    const reaches=(from,target,seen=new Set())=>{
+      if(seen.has(from))return false;seen.add(from);
+      const deps=parsed.dependencies.get(from)??[];
+      return deps.includes(target)||deps.some(dep=>reaches(dep,target,seen));
+    };
+    need([...ids].every(id=>[...ids].every(other=>other===id||!reaches(id,other))),'parallel_dependency_conflict');
     const ordered=parsed.tasks.filter(task=>!task.dropped),last=ordered.at(-1);
     need(last&&!ids.has(last.id)&&plans.has(`${feature}/${last.id}`),'parallel_final_task_excluded');
     const paths=new Set();
