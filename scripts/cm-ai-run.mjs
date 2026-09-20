@@ -287,6 +287,7 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
           ...(execution.bootstrap?{bootstrap:execution.bootstrap}:{}),
           reviewInvocation:execution.reviewInvocation,check:execution.check,
           excludedContexts:execution.excludedContexts,timeoutMs:execution.timeoutMs,
+          ...(Object.hasOwn(execution,'verificationGate')?{verificationGate:execution.verificationGate}:{}),
           taskLearning:{feature,hostHandoff:true}})},
       entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,...(parallelSelection===null?{}:{parallelSelection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
         ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
