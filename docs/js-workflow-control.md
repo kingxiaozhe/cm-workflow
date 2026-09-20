@@ -315,6 +315,13 @@ host-context 必须是真实当前会话身份；宿主将其排除出独立审�
   宿主读取适用指令并用真实工具修改获准文件，再返回原开发输出。
 - `check`：payload 包含代码根、任务身份、scope、requirements；宿主实际执行检查，
   返回原检查数组 `[{id,command,outcome,exitCode,evidence}]`，不能用静态判断填通过。
+  该数组**就是 host_result 的 `result` 本身**，不套 `{status,value}`——那是 develop 的形状，
+  用错会以 `invalid_input` 停在 `reconcile` 且重试无效。审查包另外要求数组非空、且每条
+  `outcome` 为 `passed` 并且 `exitCode` 为 0，否则以 `checks_not_passed` 判未通过：
+
+```json
+{"type":"host_result","sessionId":"from-request","callId":"from-request","requestDigest":"from-request","result":[{"id":"test","command":["npm","test"],"outcome":"passed","exitCode":0,"evidence":"实际输出摘要"}]}
+```
 
 这两类请求现在附带原配置解析器产生的 `route`（coder / tester）。每次实际角色边界
 重新读代码项目配置，并通过原日志写入器记录 `decision/route`；配置错误记录脱敏 error，
@@ -412,6 +419,9 @@ JS 通过现有通道发出固定请求，结果由原组件校验：
 
 ```bash
 # 只启动本机合成 sink 和只读 CLI 探测，不请求真实模型；输出保存为 review.json。
+# --review-model 必须是 CLI 实际写进请求体的完整模型 id，不能用 sonnet 这类别名：
+# 探测按字面比对，别名会以 request_checks 里的 model_matches:false 判失败，
+# 而回执只给布尔值、不给期望值，仅看输出无法推断该填什么。
 node scripts/cm-ai-host.mjs preflight --config /absolute/run.json --review-model model-name
 # 携带配置但不授权审查：开发和检查完成后等待授权。
 node scripts/cm-ai-host.mjs serve --config /absolute/run.json --mode create \
