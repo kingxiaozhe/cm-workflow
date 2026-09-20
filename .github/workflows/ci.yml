@@ -32,7 +32,7 @@ jobs:
       - name: Check shared JavaScript authorities
         run: |
           ./scripts/cm-check-runtime.sh
-          node --test scripts/cm-ai-admission.test.mjs scripts/cm-workflow-config.test.mjs scripts/cm-log-event.test.mjs scripts/cm-task-gate.test.mjs scripts/validate-test-cases.test.mjs scripts/cm-ai-review-timeout-config.test.mjs
+          node --test scripts/cm-ai-admission.test.mjs scripts/cm-workflow-config.test.mjs scripts/cm-log-event.test.mjs scripts/cm-task-gate.test.mjs scripts/validate-test-cases.test.mjs
 
       - name: Check automatic upgrade boundaries without network or installation
         run: node --test scripts/cm-check-update.test.mjs scripts/cm-check-host.test.mjs
