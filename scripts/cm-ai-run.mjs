@@ -181,7 +181,7 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
   if(execution!==null){
     const {shape,json,validCallTimeout}=await import('../runtime/js/cm-ai/effect-contract.mjs');
     shape(execution,['configuration','developer','reviewers','reviewInvocation','check','hostDecision','excludedContexts','timeoutMs',
-      ...['bootstrap','developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult','documentationSync'].filter(key=>Object.hasOwn(execution,key))]);
+      ...['bootstrap','developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult','documentationSync','verificationGate'].filter(key=>Object.hasOwn(execution,key))]);
     json(execution.configuration);validCallTimeout(execution.timeoutMs);
     if(Object.hasOwn(execution.configuration,'codeProject'))
       if(execution.configuration.codeProject!==definition.codeProject)fail('execution_root_mismatch');

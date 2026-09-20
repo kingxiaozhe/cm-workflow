@@ -203,6 +203,12 @@ export function createTaskRunner(options) {
       ...handoffBinding(),reviewPackage,receipt,registered:registered.get(receipt.id),
       at:reviewInvocation.registration.registeredAt});
   }
+  // A develop effect the host gate blocked keeps its audit entry like any other,
+  // so the next corrected delivery needs a new effect id or it would just read
+  // the blocked result back out of the cache. Counting them here keeps that
+  // derivation in one place, next to the cache it is derived from.
+  const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
+    &&entry.result?.state==='blocked'&&entry.result?.code==='verification_precheck_failed').length;
   const privateStatus=()=>json({state,code,identity:{...config.identity,attempt},packageDigest:reviewPackage?.packageDigest??null,
     receipt,receipts,calls,cancelAfterCommit,workflowError,...(store?{cancellationRequested}:{}),...(taskMode?{taskCommit}:{}),
     ...(invocationMode?{reviewInvocation}:{}),...(taskLearning!==null?{learningWriteback:learningResult?.writeback??null}:{})},16*1024*1024);
@@ -715,7 +721,10 @@ export function createTaskRunner(options) {
       try {
         if(state==='ready')need(digest(captureReviewBaseline({...configToBaseline(metadata),version:original.version,
           ...(Object.hasOwn(original,'specification')?{specification:{specsRoot:original.specificationRoot,feature:original.specification.feature}}:{})}))===digest(original),'package_mismatch');
-        else if(!(v.kind==='develop'&&state==='blocked'&&code==='developer_result_invalid'))verifyReviewPackage({root:config.root,baseline:state==='changes_requested'?attemptBaseline(original,attempt-1):base,
+        // A develop restarted from a locally rejected delivery has no review package
+        // to verify yet: the invalid result never built one, and the host gate blocks
+        // before one is built.
+        else if(!(v.kind==='develop'&&stageAllowed('develop',state,code)))verifyReviewPackage({root:config.root,baseline:state==='changes_requested'?attemptBaseline(original,attempt-1):base,
           checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
       } catch {return Promise.resolve(freeze({outcome:'rejected',code:'package_mismatch'}));}
       try{const record=persist('effect-intent',{effect:v});
@@ -816,7 +825,7 @@ export function createTaskRunner(options) {
     need(state==='fixture_completed','qa_attach_not_completed');
     persist('qa-attached',{record});qaAttachment=record;return json(record);
   };
-  const api={executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa};
+  const api={executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   return Object.freeze(api);
