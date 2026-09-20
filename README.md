@@ -17,6 +17,10 @@
 
 ## 最近更新
 
+**0.15.4**
+
+- **`/cm-check` 新增快速模式**：日常只想确认「装没装对、版本对不对」时，跑快速检查约 12 秒出结果，不再等十几分钟。完整检查的时间几乎全花在逐个文件核对引用关系上，快速模式跳过这一段。结论会明确标为「仅机械检查」而不是「通过」——跳过的部分不会被说成检查过了。机械检查本身发现的问题照常报错，不会被跳过。
+
 **0.15.3**
 
 - **`/cm-check` 在 Claude 版安装上不再假报 BLOCKED**：有两组检查查的是 Codex 插件专属文件，Claude 版安装本来就没有，此前只能算「查不了」，于是健康的安装也永远拿不到 PASSED。现在按安装方式区分：不属于本安装方式的产物记为「不适用」，而真正证据不足的仍然照常阻塞——不是靠放水换来的通过。
@@ -139,7 +143,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.15.3 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.15.4 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
