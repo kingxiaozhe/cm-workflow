@@ -986,6 +986,26 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 重开不自动恢复；整个 workflows map 绑定原 child 配置指纹，未来任务配置漂移也不能悄悄采纳。
 本地双任务 CLI/真实命令与文档/合成 reviewer 的恢复组合已通过，不是实际模型或双宿主验收。
 
+#### 启动与推进的前置条件
+
+下列四项不满足时，现象都不易从返回值直接看出，逐条核对可省掉一次排查：
+
+- **每个任务都要有 `qa` 配置，不只是末任务。** `workflows[key].qa` 为 `null` 时
+  `createHostWorkflowCapabilities` 不装 `qaDecisionProvider`，该任务开发与检查完成后
+  QA 决策恒为空，状态停在 `fixture_completed / qa_decision_required`，**批次不会自行推进，
+  再发 advance 也没有反应**。需要某个任务不跑 QA 时，仍给它 `qa` 配置，由评估结果决定跳过。
+- **QA 环境声明 `carrier: "browser"` 时必须显式传 `--browser-qa available|unavailable`**，
+  否则启动即 `browser_capability_required`。这是声明不是探测，创建与恢复都要重新给。
+- **首次推进前主工作区必须干净，含未跟踪文件**，否则 `batch_main_dirty` 并列出文件。
+  上一批次的产出未提交即会触发。
+- **`batch.tasks` 的首项必须等于准入的 `nextTask`**，否则 `task_selection_mismatch`。
+  上一轮已把某任务标完成时，新批次要从下一个未完成任务起，不能沿用旧任务清单。
+  `--allow-review` 列出的条目也必须落在本批次任务集合内，否则启动即 `review_task_mismatch`。
+
+`review_transport_timeout` 且无结果返回时，状态会带 `pendingAction: "resume"`。
+此时应按该提示走恢复并重新给出审查授权；继续发 `advance` 会消耗掉这次机会，
+随后状态转为 `blocked / pendingAction: none`，只能换新 `batchId` 重来。
+
 `node --test scripts/cm-ai-run.test.mjs` 验证真实 store 创建/取消/恢复和零 provider 调用；
 另用真实 host/runner + 隔离假 developer 验证长任务期间的控制可达性。
 这不是实际 provider 运行、跨平台完整支持或 P1/P2 总验收。
