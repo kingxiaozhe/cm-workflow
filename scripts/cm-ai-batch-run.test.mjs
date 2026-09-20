@@ -29,6 +29,30 @@ test('serial fallback resumes from log and automatically commits its completed t
 test('final serial task commits durably and commit information survives resume',()=>batchFixture('final-commit'));
 test('dirty batch entry lists files and creates no member worktrees',()=>batchFixture('parallel-dirty'));
 
+test('parallel groups reject transitive prerequisites, not just direct edges',()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-batch-transitive-')));
+  const specs=path.join(root,'specs'),code=path.join(root,'code'),feature='1.work';
+  fs.mkdirSync(path.join(specs,feature),{recursive:true});fs.mkdirSync(code);
+  fs.writeFileSync(path.join(code,'req.md'),'# r\n');
+  // T-009 <- T-005 <- T-003 <- T-001; T-007 is unrelated.
+  fs.writeFileSync(path.join(specs,feature,'tasks.md'),
+    '- [ ] T-001: a\n- [ ] T-003: b\n- [ ] T-005: c\n- [ ] T-007: d\n- [ ] T-009: final\n\n'+
+    '- T-003 依赖 T-001\n- T-005 依赖 T-003\n- T-009 依赖 T-005\n');
+  const task=(taskId,scope)=>({feature,taskId,scope:[scope],requirements:['req.md']});
+  const tasks=[task('T-001','a.js'),task('T-003','b.js'),task('T-005','c.js'),task('T-007','e.js'),task('T-009','d.js')];
+  let batchId=0;
+  const build=group=>createCmAiBatch({configuration:{version:1,repositoryId:'r',batchId:`transitive-${++batchId}`,
+    specsDir:specs,codeProject:code,parallel:[group],tasks},executionFor:async()=>({}),logHome:path.join(root,'log')});
+  for(const group of [[`${feature}/T-003`,`${feature}/T-001`],   // direct edge
+                      [`${feature}/T-005`,`${feature}/T-001`],   // one hop away
+                      [`${feature}/T-009`,`${feature}/T-001`]]){ // two hops away
+    assert.throws(()=>build(group),error=>error.code==='parallel_dependency_conflict',group.join(' + '));
+  }
+  // An unrelated pair still forms a group.
+  assert.ok(build([`${feature}/T-007`,`${feature}/T-001`]));
+  fs.rmSync(root,{recursive:true,force:true});
+});
+
 test('task commit subjects are single-line and bounded while bodies preserve descriptions',()=>{
   const cases=[
     ['简短任务','T-001: 简短任务'],
