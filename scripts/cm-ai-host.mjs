@@ -29,17 +29,22 @@ const fixLocalPermissions=new Map(['red-test','baseline','regression','learning-
   'test-author','repair','cause-review','final-review']
   .map(name=>[`--allow-qa-fix-${name}`,`--allow-${name}`]));
 
-const usage='cm-ai-host.mjs serve --config RUN_DEFINITION.json --mode create|resume --host-context ID --allow-development [--runtime codex|claude] [--failover] [--review-config PATH] [--allow-review-attempt 1|2] [--workflow-config PATH] [--allow-qa] [--browser-qa available|unavailable]\ncm-ai-host.mjs preflight --config RUN_DEFINITION.json --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
+const usage='cm-ai-host.mjs serve --config RUN_DEFINITION.json --mode create|resume --host-context ID --allow-development [--runtime codex|claude] [--failover] [--review-config PATH] [--allow-review-attempt 1|2] [--workflow-config PATH] [--allow-qa] [--browser-qa available|unavailable]\nReview config is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 60000), independent of protected mode and outside the authorized configuration digest.\ncm-ai-host.mjs preflight --config RUN_DEFINITION.json --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
 
 function reviewConfiguration(file){
   const info=fs.lstatSync(file);
   need(info.isFile()&&!info.isSymbolicLink()&&info.size<=64*1024,'invalid_review_config');
   const config=json(JSON.parse(fs.readFileSync(file,'utf8')));
-  shape(config,['model','preflight',...(Object.hasOwn(config,'disabledSkills')?['disabledSkills']:[])]);
+  shape(config,['model','preflight',...(Object.hasOwn(config,'disabledSkills')?['disabledSkills']:[]),
+    ...(Object.hasOwn(config,'timeoutMs')?['timeoutMs']:[])]);
   need(typeof config.model==='string'&&/^[a-zA-Z0-9._-]+$/.test(config.model),'invalid_review_config');
   const disabledSkills=config.disabledSkills??[];
   need(Array.isArray(disabledSkills)&&disabledSkills.length<=4096
     &&disabledSkills.every(item=>typeof item==='string'&&path.isAbsolute(item)&&!/[\n\r\0]/.test(item)),'invalid_review_config');
+  // Reviewer transport budget only. It is not part of the authorized configuration
+  // digest, so a resumed run may raise it after a transport timeout.
+  if(Object.hasOwn(config,'timeoutMs'))need(Number.isInteger(config.timeoutMs)
+    &&config.timeoutMs>=1&&config.timeoutMs<=3600000,'invalid_review_config');
   return json({...config,disabledSkills});
 }
 

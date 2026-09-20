@@ -26,9 +26,12 @@ async function memberReviewConfiguration(batch,definition,review,runtime){
     fs.mkdirSync(directory,{recursive:true,mode:0o700});
     need(fs.realpathSync(directory)===directory,'invalid_preflight_cache');
     const file=path.join(directory,`preflight-${definition.identity.taskId}.json`);
+    // The cached file stays a pure preflight diagnostic. The reviewer budget is a
+    // launch argument, so it is applied on return and never written to the cache.
+    const withTimeout=config=>review.timeoutMs==null?config:{...config,timeoutMs:review.timeoutMs};
     if(fs.existsSync(file)){
       const info=fs.lstatSync(file);need(info.isFile()&&!info.isSymbolicLink(),'invalid_preflight_cache');
-      try{const cached=readConversationReviewConfiguration(file);if(matches(cached))return cached;}
+      try{const cached=readConversationReviewConfiguration(file);if(matches(cached))return withTimeout(cached);}
       catch{/* Invalid or obsolete diagnostics require a fresh loopback, never a rewritten fingerprint. */}
     }
     const config=await runReviewPreflight(definition,{model:review.model,runtime,disabledSkills:review.disabledSkills});
@@ -36,12 +39,12 @@ async function memberReviewConfiguration(batch,definition,review,runtime){
     const temporary=`${file}.${process.pid}.tmp`;
     fs.writeFileSync(temporary,JSON.stringify(config)+'\n',{flag:'wx',mode:0o600});
     try{fs.renameSync(temporary,file);}finally{if(fs.existsSync(temporary))fs.unlinkSync(temporary);}
-    return config;
+    return withTimeout(config);
   }catch{need(false,'review_preflight_failed');}
 }
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
-  if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\nOptional --protected-conversation-config PATH uses the shared current-host scoped text proposals and native sandbox checks; {checkCommands,timeoutMs}. No extra model call, same Codex/Claude runtime and per-task Review permissions. Optional --protected-config PATH {model,checkCommands,timeoutMs} enables CLI development only for per-task --allow-provider-development FEATURE/TASK:1|2 grants; mutually exclusive with --protected-conversation-config. Optional bundle.bootstraps maps approved bootstrap task keys to {selection}; --allow-bootstrap-write grants only those fixed instruction/scaffold steps. Optional batch.codeProjects uses prefixed paths and checks with codeProject per command; one task remains one completion gate.\nBatch entry requires a clean Git main checkout (including untracked files); batch_main_dirty lists dirty files before any task or worktree starts. Serial tasks are committed automatically before batch_handoff, with task_commit recording the SHA (null if unchanged). Terminal parallel members preserve WIP on their retained branches and fall back once to serial generation 2 after ready members merge.\n');return 0;}
+  if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\nOptional --protected-conversation-config PATH uses the shared current-host scoped text proposals and native sandbox checks; {checkCommands,timeoutMs}. No extra model call, same Codex/Claude runtime and per-task Review permissions. Optional --protected-config PATH {model,checkCommands,timeoutMs} enables CLI development only for per-task --allow-provider-development FEATURE/TASK:1|2 grants; mutually exclusive with --protected-conversation-config. Optional bundle.bootstraps maps approved bootstrap task keys to {selection}; --allow-bootstrap-write grants only those fixed instruction/scaffold steps. Optional batch.codeProjects uses prefixed paths and checks with codeProject per command; one task remains one completion gate.\nOptional --review-config PATH is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 60000). It is independent of --protected-conversation-config/--protected-config and wins over their timeoutMs for the reviewer, so a review that exceeds the default can be raised without switching development mode. It is not part of the authorized configuration digest, so a resumed run may raise it after review_transport_timeout.\nBatch entry requires a clean Git main checkout (including untracked files); batch_main_dirty lists dirty files before any task or worktree starts. Serial tasks are committed automatically before batch_handoff, with task_commit recording the SHA (null if unchanged). Terminal parallel members preserve WIP on their retained branches and fall back once to serial generation 2 after ready members merge.\n');return 0;}
   let bridge;
   try{
     need(argv.length>=6&&argv[0]==='serve'&&argv[1]==='--config'&&argv[3]==='--host-context'
