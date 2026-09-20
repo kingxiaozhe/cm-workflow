@@ -32,6 +32,15 @@ export const protectedTextInstructions='\nProtected current-host mode: do not wr
   +'status must be exactly "succeeded" on success (with value and edits) or "failed" (with code). Return the object through the structured output schema; never wrap it in markdown fences.';
 const protectedConversations=new WeakMap();
 export const conversationProtection=execution=>protectedConversations.get(execution)??null;
+// An explicit reviewer budget wins over the protected-mode budget: it is the
+// narrower knob, and raising it must not require switching development mode.
+// Absent both, the worker default applies. Returns a spread-ready fragment so
+// an unset budget never plants an undefined timeoutMs on the worker options.
+export function resolveReviewTimeout(review,protection){
+  if(review?.timeoutMs!=null)return {timeoutMs:review.timeoutMs};
+  if(protection)return {timeoutMs:protection.timeoutMs};
+  return {};
+}
 export function createConversationExecution(definition,hostContextId,bridge,review=null,allowedAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
   definition=json(definition);workflow=workflow===null?null:json(workflow);options=json(options);
   shape(options,[...['protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','parallelMember'].filter(key=>Object.hasOwn(options,key))]);
@@ -77,7 +86,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     ...(workflow?{workflow}: {})};
   const reviewOptions={cwd:definition.codeProject,model:review?.model??'unconfigured',preflight:review?.preflight??null,
     disabledSkills:review?.disabledSkills??[],
-    ...(protection?{timeoutMs:protection.timeoutMs}:{}),
+    ...resolveReviewTimeout(review,protection),
     promptTransport:'stdin',schemaPath:fileURLToPath(new URL('./review-result.schema.json',import.meta.url))};
   need(!allowedAttempts.length||review!==null,'review_configuration_required');
   if(allowedAttempts.length||provider)need((reviewerRuntime==='codex'?preflightMatches:claudePreflightMatches)(reviewOptions.preflight,reviewOptions),'tool_preflight_missing');

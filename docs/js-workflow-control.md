@@ -432,10 +432,16 @@ node scripts/cm-ai-host.mjs serve --config /absolute/run.json --mode resume \
   --allow-review-attempt 1
 ```
 
-review.json 仅含 `{model, disabledSkills, preflight}`；disabledSkills 是本机探测实际发现并
+review.json 含 `{model, disabledSkills, preflight}`，另有可选 `timeoutMs`；disabledSkills 是本机探测实际发现并
 禁用的 Skill 路径，preflight 沿原配置指纹/模型/stdin 合同。探测输出不包含原始诊断、
 凭证或请求正文；旧实验路径仅兼容转发到共享 runtime。通过探测不等于获准调用或模型可用。
 更换 CLI/安装配置后应重新本机探测；模型和 disabledSkills 必须与运行绑定的配置一致。
+
+`timeoutMs` 是 reviewer 进程的传输预算，单位毫秒，必须是 1 到 3600000 之间的整数，
+不填时沿用 worker 默认的 60000。它与 `--protected-conversation-config`/`--protected-config`
+互不依赖：两者都给出时 reviewer 取 review.json 里的值，因此**调大审查超时不需要切换开发模式**。
+它不进入已授权配置的摘要，所以 `review_transport_timeout` 之后可以在恢复时调大再续跑；
+它只管 reviewer，不改变开发、检查或 QA 的任何超时。
 
 `--allow-review-attempt` 只能为1或2，只传递可信启动会话已经取得的那一轮授权，
 不能为了让流程继续而擅自添加。不会自动批准后续轮次、换模型或重试失败；若第一轮要求

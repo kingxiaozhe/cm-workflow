@@ -82,6 +82,9 @@ jobs:
       - name: Run cm-ai product admission fixtures
         run: node --test scripts/cm-ai-admission.test.mjs
 
+      - name: Run reviewer transport budget fixtures
+        run: node --test scripts/cm-ai-review-timeout-config.test.mjs
+
       - name: Run JavaScript log writer fixtures
         run: node --test scripts/cm-log-event.test.mjs
 
