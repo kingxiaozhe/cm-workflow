@@ -46,8 +46,11 @@ export function validateHostWorkflowConfiguration(raw){
     need(Array.isArray(config[key])&&config[key].length<=256&&config[key].every(item=>typeof item==='string'),'invalid_workflow_config');
   if(config.qa!==null){
     shape(config.qa,['commands','environment',...(Object.hasOwn(config.qa,'timeoutMs')?['timeoutMs']:[])]);
+    // A real browser walkthrough of one blocking case runs for minutes, so this
+    // follows the shared call-timeout range rather than a fixed minute. The
+    // default below is unchanged; only an explicit configuration may raise it.
     if(Object.hasOwn(config.qa,'timeoutMs'))need(Number.isSafeInteger(config.qa.timeoutMs)
-      &&config.qa.timeoutMs>0&&config.qa.timeoutMs<=60000,'invalid_workflow_config');
+      &&config.qa.timeoutMs>0&&config.qa.timeoutMs<=3600000,'invalid_workflow_config');
   }
   return config;
 }
