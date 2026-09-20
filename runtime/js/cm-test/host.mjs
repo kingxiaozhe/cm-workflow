@@ -15,6 +15,7 @@ import {inspectDeclaredTestCommand} from './declared-command.mjs';
 import {inspectCmTestRecovery} from './recovery.mjs';
 import {collectBranchImpact,assertBranchComparison,inspectImpactAnalysis} from './branch-impact.mjs';
 import {inside,canonicalFuture,selectReportDirectory,snapshotSource,sourceChanges,readSourceFiles,checkSourceEvidence} from './source-snapshot.mjs';
+import {isQaEnvironmentCarrier} from '../cm-ai/qa-environment.mjs';
 
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;
 const read=file=>{
@@ -41,8 +42,7 @@ export function createCmTestHost(raw,{call,session=null}){
   const runId=session?.context?.runId??`test-${randomUUID()}`,reportDir=selectReportDirectory(admission,runId);
   if(config.environment!==null){
     shape(config.environment,['scope','kind','carrier','target']);
-    const carriers={web:['browser'],app:['ios-simulator','android-emulator','device'],miniprogram:['wechat-devtools','device']};
-    need(carriers[config.environment.kind]?.includes(config.environment.carrier)&&nonempty(config.environment.target),
+    need(isQaEnvironmentCarrier(config.environment.kind,config.environment.carrier)&&nonempty(config.environment.target),
       'cm_test_environment_invalid');
   }
   const controller=new AbortController();let stage='ready',result=null,reason=null,logFile=null;

@@ -14,6 +14,7 @@ import {findCmAiQaDecision,readCmAiQaRunRound,reportFile} from './cm-ai-qa-log.m
 import {captureReviewBaseline} from './review-package.mjs';
 import {writeCmAiQaStatus} from './cm-ai-run-finalizer.mjs';
 import {digest,freeze,hex,id,json,need,shape,text,validCallTimeout,validIdentity} from './effect-contract.mjs';
+import {isQaEnvironmentCarrier,QA_ENVIRONMENT_SCOPES} from './qa-environment.mjs';
 
 const writer=fileURLToPath(new URL('../../../scripts/cm-log-event.py',import.meta.url));
 const order={ 'cm-default':['logic','commands','browser'],
@@ -126,9 +127,8 @@ export function createHostQaExecutor(options) {
   }
   shape(configuration.environment,['kind','carrier','target','scope']);
   const environment=configuration.environment;
-  need(['local','test'].includes(environment.scope),'qa_environment_required');text(environment.target);
-  const carriers={web:['browser'],app:['ios-simulator','android-emulator','device'],miniprogram:['wechat-devtools','device']};
-  need(carriers[environment.kind]?.includes(environment.carrier),'qa_environment_required');
+  need(QA_ENVIRONMENT_SCOPES.includes(environment.scope),'qa_environment_required');text(environment.target);
+  need(isQaEnvironmentCarrier(environment.kind,environment.carrier),'qa_environment_required');
   const describe=plan=>{
     need(!plan.cases.some(item=>ids.has(item.id)),'qa_id_conflict');
     // One missing-command item keeps an empty invocation from passing as zero tests.
