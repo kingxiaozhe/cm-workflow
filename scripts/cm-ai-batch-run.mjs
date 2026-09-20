@@ -5,6 +5,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {openControlRun,validateRunDefinition} from './cm-ai-run.mjs';
+import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {digest,json,shape,need,id,hex} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {scanRows,findCmAiQaDecision,latestCmAiQaRun} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {checkParallelWrite} from './cm-task-gate.mjs';
@@ -195,7 +196,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       };
       for(let round=status.identity.attempt;round<=2;round++){
         if(status.code===null&&['ready','changes_requested'].includes(status.state)
-          ||status.state==='blocked'&&status.code==='developer_result_invalid')await call('start');
+          ||developmentRetryable(status))await call('start');
         if(['reported','advanced'].includes(status.outcome)&&(status.code===null&&status.state==='awaiting_review'
           ||status.state==='pending_review'&&status.code==='review_transport_timeout'))await call('decision');
         if(status.outcome==='advanced'&&status.code===null&&status.state==='changes_requested'&&status.identity.attempt===round+1)continue;
