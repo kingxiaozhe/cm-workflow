@@ -11,7 +11,7 @@ import {validateHostWorkflowConfiguration} from '../runtime/js/cm-ai/host-workfl
 const cli=fileURLToPath(new URL('./cm-ai-batch-host.mjs',import.meta.url));
 
 const qa=timeoutMs=>({commands:[{id:'unit',command:['npm','test'],caseIds:[]}],
-  environment:{kind:'web',carrier:'browser',target:'http://127.0.0.1:4173',scope:'local'},
+  environment:{kind:'web',carrier:'browser',target:'fixture-command-only',scope:'local'},
   ...(timeoutMs===undefined?{}:{timeoutMs})});
 const workflow=timeoutMs=>({qa:qa(timeoutMs),documentationPaths:[],applicableAgentFiles:[]});
 
