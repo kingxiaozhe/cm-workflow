@@ -17,6 +17,11 @@
 
 ## 最近更新
 
+**0.15.3**
+
+- **`/cm-check` 在 Claude 版安装上不再假报 BLOCKED**：有两组检查查的是 Codex 插件专属文件，Claude 版安装本来就没有，此前只能算「查不了」，于是健康的安装也永远拿不到 PASSED。现在按安装方式区分：不属于本安装方式的产物记为「不适用」，而真正证据不足的仍然照常阻塞——不是靠放水换来的通过。
+- 顺带修掉 cm-check 报告里的版本号在 Claude 版安装上总是空的问题。
+
 **0.15.2**
 
 - **同 feature 并行开发现在可用**：无依赖、改动文件互不重叠的任务可分组，各自在独立 Git 工作树开发，再串行合并回主分支，成员 QA 延后到该 feature 最后一个任务统一执行。此前这个能力只存在于代码里、没有文档，从正常入口用不到。需要注意的是：当前会话模式下写代码仍是逐个进行，并行重叠的是审查与流程开销，不要按成倍提速预期。
@@ -134,7 +139,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.15.2 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.15.3 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 

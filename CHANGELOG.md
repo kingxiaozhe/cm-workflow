@@ -7,6 +7,11 @@
 
 （暂无）
 
+## 0.15.3 — 2026-09-20
+
+- **cm-check 在 Claude 安装上可以拿到 PASSED**：第 1 组查 `.codex-plugin/plugin.json`、第 7 组查根 `VERSION` 与根 `README.md`，三者都是 Codex 插件模式的产物，claude-compat 安装本就不该有（`install.sh` 只写 `templates/cm-VERSION`）。此前这两组只能判 blocked，健康的 Claude 安装永远停在 BLOCKED。现按安装模式分流：控制器推出 `installMode` 并下发给语义检查，语义结果新增 `not_applicable` 状态，仅第 1、7 组可用且必须写明缺的是哪个产物、为何本模式不该有；汇总时它既不算失败也不算阻塞。本模式确实拥有的产物证据不足仍记 blocked，不得借它放行。
+- **修复 cm-check 报告的版本号在 Claude 安装上恒为 null**：结果中的 `version` 此前固定读根 `VERSION`，而 claude-compat 安装没有该文件。现按模式读取，claude-compat 读 `templates/cm-VERSION`。报告另附 `installMode`。
+
 ## 0.15.2 — 2026-09-19
 
 - **同 feature 并行开发现在可用**：`parallel` 字段此前只存在于代码，没有任何文档或 Skill 提过它，而执行规则要求「不发明字段」，功能因此从入口够不着。现补齐 `docs/js-workflow-control.md` 的「并行组」一节（字段形状、五条约束与失败码、工作树与分支命名、串行合并、QA 延后、review 前置），并在 `cm-ai` N1 增加提议规则：只对 scope 全为新建文件、互不重叠、无依赖路径的同 feature 任务成组，组不起来就串行，不为组而组。
