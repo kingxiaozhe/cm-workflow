@@ -133,3 +133,34 @@ test('a plugin installation keeps reporting the root VERSION', {timeout:5000}, a
   assert.equal(report.result.version,'0.0.0');
   assert.equal(report.result.overall,'PASSED');
 });
+
+test('quick mode stops after the mechanical checker and never claims PASSED',{timeout:5000},async t=>{
+  const f=fixture(t);
+  fs.mkdirSync(path.join(f.dir,'templates'),{recursive:true});
+  fs.writeFileSync(path.join(f.dir,'templates/cm-VERSION'),'7.7.7\n');
+  const kinds=[];
+  const host=createCmCheckHost({...f.input,quick:true},{call:async(kind,payload)=>{
+    kinds.push(kind);
+    if(kind==='check_runtime')return mechanical(payload);
+    throw Error('quick mode must not request the semantic groups');
+  }});
+  const report=await host.handle({requestId:'q-1',operation:'start'});
+  assert.deepEqual(kinds,['check_runtime'],'the eight groups must never be requested');
+  assert.equal(report.result.overall,'MECHANICAL_ONLY');
+  assert.notEqual(report.result.overall,'PASSED','a quick run must not be quotable as a full pass');
+  assert.equal(report.result.semanticChecked,false);
+  assert.equal(report.result.reason,'quick_mode_semantic_not_run');
+  assert.equal(report.result.version,'7.7.7');
+  assert.deepEqual(report.result.checks,[]);
+  assert.equal(report.result.completionAuthorized,false);
+});
+
+test('quick mode still reports an actual mechanical failure',{timeout:5000},async t=>{
+  const f=fixture(t,3);
+  const host=createCmCheckHost({...f.input,quick:true},{call:async(kind,payload)=>{
+    assert.equal(kind,'check_runtime');return mechanical(payload);
+  }});
+  const report=await host.handle({requestId:'q-2',operation:'start'});
+  assert.equal(report.result.overall,'FAILED','quick mode must not swallow a failing checker');
+  assert.equal(report.result.semanticChecked,false);
+});

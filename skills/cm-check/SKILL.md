@@ -46,6 +46,12 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-check-host.mjs" serve \
   --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-check" --project "$PWD"
 ```
 
+用户说「快速检查」「只看装没装对」「别跑全套」时追加 `--quick`：更新与机械检查照常跑，
+机械通过后直接收口，不进八组语义检查。结论为 `MECHANICAL_ONLY`，**不是 PASSED**——
+语义八组一组没读，不得据此宣称安装完整无断链。机械失败仍照常报 FAILED/BLOCKED，
+快速模式不跳过任何失败。默认（不带该参数）仍是完整检查。
+耗时差别很大：更新约 1 秒、机械检查约 12 秒，其余时间几乎全在语义八组逐文件取证上。
+
 如果配置文件不在项目根目录，可额外传 `--config {CONFIG_PATH}`；不传时会读取项目根
 目录的 `.cm-workflow.yml` / `.yaml` / `.json`。
 
@@ -83,7 +89,7 @@ Claude 兼容: {通过/失败}
 状态与审查: {通过/断链清单}
 模板与版本: {通过/不一致清单}
 可选增强: {已配置/降级项}
-结论: PASSED / FAILED ({N} 处) / BLOCKED（附未查完的组）
+结论: PASSED / FAILED ({N} 处) / BLOCKED（附未查完的组） / MECHANICAL_ONLY（--quick，未做语义检查）
 ```
 
 第 1、7 组的 `not_applicable` 只适用于另一种安装模式独有的产物，且必须写明缺的是哪个文件、为何本模式不该有；
