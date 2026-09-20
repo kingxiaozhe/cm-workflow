@@ -1059,6 +1059,40 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 此时应按该提示走恢复并重新给出审查授权；继续发 `advance` 会消耗掉这次机会，
 随后状态转为 `blocked / pendingAction: none`，只能换新 `batchId` 重来。
 
+### `pendingAction: "reconcile"` 时该做什么
+
+`reconcile` 的意思是**这一步的结果未知**——不是失败，也不是成功，JS 拒绝替你猜。
+它只有两个来源：
+
+| 状态 | 含义 | 恢复路径 |
+| --- | --- | --- |
+| `state: "unknown"` | 某个有副作用的步骤抛了异常或返回了无法判定的终态，做没做成不确定 | 无协议级恢复，见下 |
+| `state: "fixture_completed"` + `code: "qa_execution_unknown"` | 一次 QA 调用没拿到终态，工具可能还在跑或已被中断 | `--rerun-unknown-qa` |
+
+**`reconcile` 不是一个可以发送的操作。** 三件事都不管用，而且会让情况更糟：
+
+- 带 `identity` 发 `advance` → `invalid_input`；
+- 不带 `identity` 发 `advance` → 原样重放同一个 `reconcile` 状态。这两者交替出现，
+  按「同一个响应码连续出现才算卡住」做的空转检测会被交替清零，驱动可能空转到上限。
+  **判定卡住应当只看 `pendingAction`，不要看错误码。**
+- 换 `batchId` 也不一定管用：批次任务的 `runId` 是 `task-{digest({batchId, task})}`，
+  换批次号确实会换 runId、拿到全新日志，但如果真正的阻塞物在批次外（例如
+  `.reviews/` 下上一次运行留下的文件），换号无济于事。
+
+**`state: "unknown"` 的处理顺序**：
+
+1. 先看宿主进程的 stderr。被塌缩成 `execution_error` 的失败会在那里留下一行
+   `{"diagnostic":"execution_error","code":…}`，多数情况足以定位（例如 `EEXIST` 会
+   带上冲突的 `path` 与 `dest`）。
+2. 按诊断处理掉真实原因，**再**用新的 `batchId` 重跑该任务。旧的未知状态已经写进该
+   runId 的执行日志，同一个 runId 重开只会原样重放它。
+3. 不要手工改写执行日志或伪造一个终态。已完成的提交、已登记的审查记录都不因此作废，
+   重跑是从该任务重新开始，不是从整个 feature 重新开始。
+
+**`qa_execution_unknown` 的处理**：按上文 `--rerun-unknown-qa` 的条件恢复。
+它只接受「已记录的用例结果全部 PASS 且没有定稿执行报告」的未完成调用，
+FAIL/BLOCKED 或资源未关闭的仍然拒绝，不会伪造通过。
+
 `node --test scripts/cm-ai-run.test.mjs` 验证真实 store 创建/取消/恢复和零 provider 调用；
 另用真实 host/runner + 隔离假 developer 验证长任务期间的控制可达性。
 这不是实际 provider 运行、跨平台完整支持或 P1/P2 总验收。
