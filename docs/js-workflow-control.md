@@ -352,8 +352,21 @@ host-context 必须是真实当前会话身份；宿主将其排除出独立审�
   然后发布新交接。归档目录是子目录，不进入 `{feature}-{任务}-r{N}.md` 的证据文件名匹配。
 - **内容不同且回执指名它**：这是审查已经消费过的证据，绝不覆盖，返回 `handoff_exists`。
 
-因此同一任务失败一次后不再需要人工去 `.reviews/` 删文件才能重跑；已批准的交接仍然不可覆盖。不能通过回复 `approved` 打开 V3 授权或完成任务；
-需要审查时使用下方可信启动选项，不能据此宣称 N1–N8 已跑完。
+因此同一任务失败一次后不再需要人工去 `.reviews/` 删文件才能重跑；已批准的交接仍然不可覆盖。
+
+失败码不在白名单内时会塌缩成 `execution_error`。塌缩的同时，宿主进程的 stderr 会输出
+一行结构化诊断，便于定位真实原因：
+
+```json
+{"diagnostic":"execution_error","code":"EEXIST","syscall":"link","path":"…","dest":"…"}
+```
+
+只输出 `code`、`syscall`、`path`、`dest` 四个具名字段，且每个字段须为 1–1024 字节、
+不含控制字符，否则丢弃；一个都没有时输出 `{"diagnostic":"execution_error","detail":"unavailable"}`。
+**不输出 `error.message`**——它可能夹带 provider 输出或源码片段。诊断只走 stderr，
+不进日志镜像、不进运行状态、不进任何摘要或 digest，也不改变失败路径本身；
+写 stderr 失败时静默忽略。白名单内的失败码按原样返回，不输出诊断。
+不能通过回复 `approved` 打开 V3 授权或完成任务；需要审查时使用下方可信启动选项，不能据此宣称 N1–N8 已跑完。
 
 结束发送 `{"type":"host_close","sessionId":"from-host-ready"}`，进程确认后退出；
 PTY 会关闭本进程输入回显并恢复原终端模式，须用上述消息结束，而非依赖 Ctrl-D。
