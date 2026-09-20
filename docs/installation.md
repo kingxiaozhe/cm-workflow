@@ -181,7 +181,14 @@ platforms; any admitted task still uses the shared Review/N5 gates.
 ## Optional Claude auto-update (macOS/Linux)
 
 The Bash installer copies the updater on a best-effort basis but does not activate
-it. A copy failure is reported as a warning and does not invalidate a core runtime
+it. An interactive install now asks once whether to enable the **announcement** hook
+and, on yes, adds that single `hooks.SessionStart` entry for you; it never adds the
+background updater, and it never edits `settings.json` without that yes. A refusal is
+remembered in `~/.cm-workflow/announce-hook-declined`; delete that file and reinstall
+to be asked again. `--yes` and non-interactive installs write nothing and print the
+exact entry to add. Announcing a new version and letting the tool replace itself are
+separate decisions, so enabling the announcement alone leaves the updater off: with no
+updater scheduled there is nothing to announce, so enable it below if you want both. A copy failure is reported as a warning and does not invalidate a core runtime
 that already passed its installed self-check. The PowerShell
 installer intentionally does not copy this Bash-based updater; Windows users who
 want it must run the Bash installer from WSL or Git Bash. To enable it on a
