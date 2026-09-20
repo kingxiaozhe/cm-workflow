@@ -75,3 +75,61 @@ test('coverage, evidence, stale source/config, core findings and cancellation pr
     if(mode==='failed')assert.equal(value.result.findingsCount,1);
   }
 });
+
+test('a Claude-compatible installation waives only the Codex-owned halves and still reaches PASSED',{timeout:5000},async t=>{
+  const f=fixture(t);
+  // A claude-compat installation: no .codex-plugin manifest, the version marker is templates/cm-VERSION.
+  fs.mkdirSync(path.join(f.dir,'templates'),{recursive:true});
+  fs.writeFileSync(path.join(f.dir,'templates/cm-VERSION'),'9.9.9\n');
+  let seenMode=null;
+  const host=createCmCheckHost(f.input,{call:async(kind,payload)=>{
+    if(kind==='check_runtime')return mechanical(payload);
+    seenMode=payload.installMode;
+    const value=assessment(payload);
+    for(const id of [1,7]){
+      const row=value.checks.find(check=>check.id===id);
+      row.status='not_applicable';row.evidence=[];
+      row.findings=[`installMode=${payload.installMode}: the Codex-owned artefact is absent by install mode`];
+    }
+    return value;
+  }});
+  const report=await host.handle({requestId:'na-1',operation:'start'});
+  assert.equal(seenMode,'claude-compat','the assessor must be told the mode, not left to guess');
+  assert.equal(report.result.overall,'PASSED',JSON.stringify(report.result));
+  assert.equal(report.result.installMode,'claude-compat');
+  assert.equal(report.result.version,'9.9.9','claude-compat reports templates/cm-VERSION, not the root VERSION');
+  assert.equal(report.result.findingsCount,0);
+  assert.deepEqual(report.result.checks.filter(row=>row.status==='not_applicable').map(row=>row.id),[1,7]);
+});
+
+test('not_applicable is refused outside the mode-scoped groups and when findings are missing',{timeout:5000},async t=>{
+  for(const mutate of [
+    value=>{const row=value.checks.find(check=>check.id===3);row.status='not_applicable';row.evidence=[];row.findings=['not a mode-scoped group'];},
+    value=>{const row=value.checks.find(check=>check.id===1);row.status='not_applicable';row.evidence=[];row.findings=[];},
+  ]){
+    const f=fixture(t);
+    const host=createCmCheckHost(f.input,{call:async(kind,payload)=>{
+      if(kind==='check_runtime')return mechanical(payload);
+      const value=assessment(payload);mutate(value);return value;
+    }});
+    const report=await host.handle({requestId:'na-2',operation:'start'});
+    assert.equal(report.result.overall,'BLOCKED',JSON.stringify(report.result));
+    assert.equal(report.result.reason,'check_result_invalid');
+  }
+});
+
+test('a plugin installation keeps reporting the root VERSION', {timeout:5000}, async t=>{
+  const f=fixture(t);
+  fs.mkdirSync(path.join(f.dir,'.codex-plugin'),{recursive:true});
+  fs.writeFileSync(path.join(f.dir,'.codex-plugin/plugin.json'),JSON.stringify({name:'cm-workflow',version:'0.0.0'}));
+  let seenMode=null;
+  const host=createCmCheckHost(f.input,{call:async(kind,payload)=>{
+    if(kind==='check_runtime')return mechanical(payload);
+    seenMode=payload.installMode;return assessment(payload);
+  }});
+  const report=await host.handle({requestId:'na-3',operation:'start'});
+  assert.equal(seenMode,'plugin');
+  assert.equal(report.result.installMode,'plugin');
+  assert.equal(report.result.version,'0.0.0');
+  assert.equal(report.result.overall,'PASSED');
+});
