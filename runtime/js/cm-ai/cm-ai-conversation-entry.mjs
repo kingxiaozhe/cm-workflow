@@ -13,9 +13,12 @@ const boundStatus=(status,identity)=>{validIdentity(status?.identity);
   need(sameIdentity(status.identity,identity),'identity_mismatch');return status;};
 const retryReview=status=>status.state==='pending_review'&&status.code==='review_transport_timeout';
 // Both mean the delivery itself must be redone: an invalid developer result, or
-// one that does not satisfy the task's own written verification.
-const retryDeveloper=status=>status.state==='blocked'
+// one that does not satisfy the task's own written verification. Exported so the
+// batch driver decides retryability from the same predicate instead of keeping a
+// second copy of the code list that silently drifts.
+export const developmentRetryable=status=>status.state==='blocked'
   &&['developer_result_invalid','verification_precheck_failed'].includes(status.code);
+const retryDeveloper=developmentRetryable;
 const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approval':
   status.state==='changes_requested'||retryDeveloper(status)||retryReview(status)?'resume':
   status.state==='awaiting_review'?'decision':status.state==='unknown'?'reconcile':

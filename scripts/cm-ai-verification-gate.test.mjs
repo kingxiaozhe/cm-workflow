@@ -66,12 +66,11 @@ test('the verdict is frozen so a caller cannot flip it after validation', () => 
 // leaves the task unrecoverable would cost more than the rework it prevents.
 test('a blocked delivery is reported as resumable, not as an unknown state', async () => {
   const {default:fs}=await import('node:fs');
-  const source=fs.readFileSync(new URL('../runtime/js/cm-ai/cm-ai-conversation-entry.mjs',import.meta.url),'utf8');
-  const retry=/const retryDeveloper=status=>([\s\S]*?);\n/.exec(source);
-  assert.notEqual(retry,null,'retryDeveloper predicate not found');
-  assert.match(retry[1],/verification_precheck_failed/);
-  assert.match(retry[1],/state==='blocked'/);
+  const {developmentRetryable}=await import('../runtime/js/cm-ai/cm-ai-conversation-entry.mjs');
+  assert.equal(developmentRetryable({state:'blocked',code:'verification_precheck_failed'}),true);
+  assert.equal(developmentRetryable({state:'unknown',code:'verification_precheck_failed'}),false);
   // resume is the action that predicate maps to.
+  const source=fs.readFileSync(new URL('../runtime/js/cm-ai/cm-ai-conversation-entry.mjs',import.meta.url),'utf8');
   assert.match(source,/retryDeveloper\(status\)\|\|retryReview\(status\)\?'resume'/);
 });
 
@@ -79,4 +78,21 @@ test('the failure code survives redaction instead of collapsing to execution_err
   const {failureCode}=await import('../runtime/js/cm-ai/effect-contract.mjs');
   assert.equal(failureCode(Object.assign(new Error('x'),{code:'verification_precheck_failed'})),
     'verification_precheck_failed');
+});
+
+// The serial entry and the parallel batch driver must agree on what is
+// retryable. They used to keep separate code lists; a gate code added to one
+// and not the other would stall every parallel member that hits it.
+test('the batch driver decides retryability from the shared predicate', async () => {
+  const {default:fs}=await import('node:fs');
+  const {developmentRetryable}=await import('../runtime/js/cm-ai/cm-ai-conversation-entry.mjs');
+  const source=fs.readFileSync(new URL('./cm-ai-batch-run.mjs',import.meta.url),'utf8');
+  assert.match(source,/import \{developmentRetryable\}/);
+  assert.match(source,/\|\|developmentRetryable\(status\)\)await call\('start'\)/);
+  assert.equal(/status\.code==='developer_result_invalid'/.test(source),false,
+    'batch driver still carries its own copy of the retryable code list');
+  for(const code of ['developer_result_invalid','verification_precheck_failed'])
+    assert.equal(developmentRetryable({state:'blocked',code}),true,code);
+  assert.equal(developmentRetryable({state:'blocked',code:'package_mismatch'}),false);
+  assert.equal(developmentRetryable({state:'unknown',code:'verification_precheck_failed'}),false);
 });
