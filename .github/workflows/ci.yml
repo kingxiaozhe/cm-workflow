@@ -32,7 +32,7 @@ jobs:
       - name: Check shared JavaScript authorities
         run: |
           ./scripts/cm-check-runtime.sh
-          node --test scripts/cm-ai-admission.test.mjs scripts/cm-workflow-config.test.mjs scripts/cm-log-event.test.mjs scripts/cm-task-gate.test.mjs scripts/validate-test-cases.test.mjs scripts/cm-ai-execution-diagnostic.test.mjs
+          node --test scripts/cm-ai-admission.test.mjs scripts/cm-workflow-config.test.mjs scripts/cm-log-event.test.mjs scripts/cm-task-gate.test.mjs scripts/validate-test-cases.test.mjs scripts/cm-ai-execution-diagnostic.test.mjs scripts/cm-host-session-diagnostic.test.mjs
 
       - name: Check automatic upgrade boundaries without network or installation
         run: node --test scripts/cm-check-update.test.mjs scripts/cm-check-host.test.mjs
@@ -90,6 +90,9 @@ jobs:
 
       - name: Run execution collapse diagnostic fixtures
         run: node --test scripts/cm-ai-execution-diagnostic.test.mjs
+
+      - name: Run host request failure diagnostic fixtures
+        run: node --test scripts/cm-host-session-diagnostic.test.mjs
 
       - name: Run JavaScript log writer fixtures
         run: node --test scripts/cm-log-event.test.mjs

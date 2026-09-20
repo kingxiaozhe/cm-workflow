@@ -354,6 +354,17 @@ host-context 必须是真实当前会话身份；宿主将其排除出独立审�
 
 因此同一任务失败一次后不再需要人工去 `.reviews/` 删文件才能重跑；已批准的交接仍然不可覆盖。
 
+宿主请求在协议层被遮蔽成 `host_request_failed` 时同样如此。哪些契约码可以透给对端
+是刻意划定的边界——宿主选择暴露的走 blocked 结果带 `reason`，其余统一遮蔽——这条边界
+不变；缺的只是被遮蔽的那些错误连运维也看不到。现在会在宿主进程的 stderr 输出：
+
+```json
+{"diagnostic":"host_request_failed","operation":"save_draft","code":"prd_review_sections_missing"}
+```
+
+`operation` 是对端自己发的操作名。字段取舍、脱敏规则与下述 `execution_error` 诊断一致。
+协议回复一个字节未变，写 stderr 抛错也不影响回复。
+
 失败码不在白名单内时会塌缩成 `execution_error`。塌缩的同时，宿主进程的 stderr 会输出
 一行结构化诊断，便于定位真实原因：
 

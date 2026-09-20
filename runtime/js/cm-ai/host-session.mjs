@@ -1,10 +1,26 @@
 // JSONL transport only. The existing host/runner owns decisions and durable state.
+import {executionDiagnostic} from './effect-contract.mjs';
 
 const LIMIT=64*1024;
 const operationNames=new Set(['recover_final_review','advance','start','plan_design','promote_design','select_design_reviews','status','fix_status','fix_advance','fix_action','fix_run','decision','complete','qa','qa_result','prepare_revision','prepare_save',
   'context_refresh','finish','completion_evidence','run_finalize','review_findings','review_disposition','save_draft','save_design','correct_findings','prepare_summary','publish_summary','inspect_correction','resume_correction','cancel','resume','cause_review_package','cause_review','red_test','baseline','author_tests','repair','regression','retrospective','learning_writeback','handoff','final_review_package','final_review','publish_review','check_n5','post_review_regression','publish_dossier','walkthrough']);
 
-export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimit=LIMIT}){
+// Which contract codes may reach the peer is a deliberate boundary: the host
+// exposes chosen ones as a blocked result with a reason and redacts the rest to
+// host_request_failed. That boundary is kept exactly as is. What was missing is
+// that the redacted ones vanished entirely, leaving the operator with no way to
+// tell a missing field from a wrong one. The real code now goes to this
+// process's own stderr and nowhere else: not to the peer, not to any log or
+// state. Named fields only, never error.message.
+function reportRequestFailure(errorOutput,operation,error){
+  try{
+    const detail=executionDiagnostic(error);
+    errorOutput.write(JSON.stringify({diagnostic:'host_request_failed',operation,
+      ...(detail??{detail:'unavailable'})})+'\n');
+  }catch{/* diagnostics never change the reply */}
+}
+
+export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimit=LIMIT,errorOutput=process.stderr}){
   if(!Number.isSafeInteger(inputLimit)||inputLimit<LIMIT||inputLimit>4*1024*1024)throw Error('input_limit_invalid');
   let pending=null,buffer=Buffer.alloc(0),failure=null,closeRequested=false;
   let writing=Promise.resolve();
@@ -47,7 +63,10 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
     const requestId=request.requestId;
     const invoke=async()=>{
       try{await reply({requestId,result:await host.handle(request)});}
-      catch{await reply({requestId,error:{code:'host_request_failed'}});}
+      catch(error){
+        reportRequestFailure(errorOutput,request.operation,error);
+        await reply({requestId,error:{code:'host_request_failed'}});
+      }
     };
     // Never queue cancel/status behind a long developer or reviewer call.
     if(request.operation==='status'||request.operation==='cancel'){
