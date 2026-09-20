@@ -3,6 +3,7 @@
 import {createHostCheck} from '../cm-ai/host-check.mjs';
 import {readReviewSourceFiles} from '../cm-ai/review-package.mjs';
 import {digest,hex,id,json,need,shape,text,validCallTimeout,validIdentity} from '../cm-ai/effect-contract.mjs';
+import {isQaEnvironmentCarrier,QA_ENVIRONMENT_SCOPES} from '../cm-ai/qa-environment.mjs';
 
 export function readFixWalkthrough(raw,cwd){
   const config=json(raw,64*1024);
@@ -22,7 +23,7 @@ export function readFixWalkthrough(raw,cwd){
     if(flow.kind==='browser'){
       shape(config.environment,['kind','carrier','target','scope']);
       const {kind,carrier,target,scope}=config.environment;text(target);
-      need(['local','test'].includes(scope)&&({web:['browser'],app:['ios-simulator','android-emulator','device'],miniprogram:['wechat-devtools','device']})[kind]?.includes(carrier),'walkthrough_environment_required');
+      need(QA_ENVIRONMENT_SCOPES.includes(scope)&&isQaEnvironmentCarrier(kind,carrier),'walkthrough_environment_required');
     }
   }
   return config;

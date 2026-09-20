@@ -44,9 +44,10 @@
    不改 argv、不用底层二进制回退；workspace/prefix/if-present 等变体不静默放行。
    禁止安装/升级、自动改快照或代码，以及生产操作；执行前由宿主核对命令行为。
 4. commands/browser 需要明确的 `environment`：
-   `{scope:"local"|"test",kind:"web"|"app"|"miniprogram",carrier,target}`；
-   carrier 使用 browser、ios-simulator、android-emulator、wechat-devtools 或 device，
-   与形态匹配。目标必须真实是本地/测试环境，不能只把生产 URL 标成 test。
+   `{scope:"local"|"test",kind,carrier,target}`；kind 与 carrier 的合法组合以
+   `runtime/js/cm-ai/qa-environment.mjs` 的 `QA_ENVIRONMENT_CARRIERS` 为准：
+   web→browser，app→ios-simulator/android-emulator/device，miniprogram→wechat-devtools/device，
+   desktop→app-window，service→cli/http-api，library→none。按真实交付形态填写，不得借用不符的形态。目标必须真实是本地/测试环境，不能只把生产 URL 标成 test。
    浏览器有副作用时确认可执行 cleanup；权限不足、工具缺失或无法清理时阻断。
 5. 启动 `node "{CM_WORKFLOW_ROOT}/scripts/cm-test-host.mjs" serve --config "{配置路径}"`，
    保持 stdin/stdout 双向连接。收到 host_ready 后发送

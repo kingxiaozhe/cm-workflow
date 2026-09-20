@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {digest,json,need,shape,text,validCallTimeout} from '../cm-ai/effect-contract.mjs';
+import {isQaEnvironmentCarrier,QA_ENVIRONMENT_SCOPES} from '../cm-ai/qa-environment.mjs';
 
 export const isVisual=config=>config?.kind==='visual';
 export function visualConfiguration(config){
@@ -12,8 +13,8 @@ export function visualConfiguration(config){
   need(path.isAbsolute(config.cwd)&&fs.realpathSync(config.cwd)===config.cwd,'unsupported_path');
   if(config.testFiles)need(Array.isArray(config.testFiles)&&config.testFiles.length===0,'fix_visual_test_files_invalid');
   shape(config.environment,['scope','kind','carrier','target']);
-  need(['local','test'].includes(config.environment.scope)&&({web:['browser'],app:['ios-simulator','android-emulator','device'],
-    miniprogram:['wechat-devtools','device']})[config.environment.kind]?.includes(config.environment.carrier),'fix_visual_environment_required');text(config.environment.target);
+  need(QA_ENVIRONMENT_SCOPES.includes(config.environment.scope)
+    &&isQaEnvironmentCarrier(config.environment.kind,config.environment.carrier),'fix_visual_environment_required');text(config.environment.target);
   for(const list of [config.steps,config.expected]){need(Array.isArray(list)&&list.length>0&&list.length<=32,'fix_visual_steps_required');list.forEach(text);}
   need(config.expected.every(value=>!value.includes('[需确认]')),'fix_visual_expectation_unconfirmed');
   inspectVisualCarrier(config.before);return config;
