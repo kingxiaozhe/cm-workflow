@@ -14,7 +14,8 @@ import {inspectRunClosure} from './cm-log-event.mjs';
 
 const writer=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
 const key=task=>`${task.feature}/${task.taskId}`;
-export function createCmAiBatch({configuration,executionFor,logHome,runtime='codex',checkCommands=null,checkTimeoutMs=60000}){
+export function createCmAiBatch({configuration,executionFor,logHome,runtime='codex',checkCommands=null,checkTimeoutMs=60000,
+  rerunUnknownQa=false,rerunBlockedQa=false}){
   const config=json(configuration);
   shape(config,['version','repositoryId','batchId','specsDir','codeProject','tasks',...['codeProjects','parallel'].filter(name=>Object.hasOwn(config,name))]);
   need(config.version===1);id(config.repositoryId);id(config.batchId);need(config.batchId.length>=8);
@@ -83,8 +84,14 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   }
   async function open(taskKey){
     const definition=plans.get(taskKey),state=path.join(config.specsDir,'.reviews','.execution',definition.identity.runId,'state.json');
-    return openControlRun(definition,fs.existsSync(state)?'resume':'create',await executionForKey(taskKey),
-      membership.has(taskKey)?{parallelSelection:{version:1,group:membership.get(taskKey).map(key=>plans.get(key).identity.taskId)}}:{});
+    const mode=fs.existsSync(state)?'resume':'create',execution=await executionForKey(taskKey);
+    // QA recovery is rejected outright for a created run or one without a QA
+    // executor. Passing it to every task would take down the unrelated ones, so
+    // only the tasks the flag can legally apply to receive it.
+    const recovery=mode==='resume'&&execution?.qaExecutor&&(rerunUnknownQa||rerunBlockedQa)
+      ? {rerunUnknownQa,rerunBlockedQa} : {};
+    return openControlRun(definition,mode,execution,{...recovery,
+      ...(membership.has(taskKey)?{parallelSelection:{version:1,group:membership.get(taskKey).map(key=>plans.get(key).identity.taskId)}}:{})});
   }
   function parallelProgress(rows){
     const done=new Set(),ready=new Map(),merging=new Map(),blocked=new Map();let stopped=false,code=null;

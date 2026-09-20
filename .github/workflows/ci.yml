@@ -85,6 +85,9 @@ jobs:
       - name: Run reviewer transport budget fixtures
         run: node --test scripts/cm-ai-review-timeout-config.test.mjs
 
+      - name: Run QA budget and recovery argument fixtures
+        run: node --test scripts/cm-ai-qa-recovery-args.test.mjs
+
       - name: Run JavaScript log writer fixtures
         run: node --test scripts/cm-log-event.test.mjs
 

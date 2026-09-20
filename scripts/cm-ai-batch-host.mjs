@@ -13,7 +13,7 @@ import {serveCmAiHost} from '../runtime/js/cm-ai/host-session.mjs';
 import {validateHostWorkflowConfiguration,featureHasBrowserCases,readBrowserCapability} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {digest,json,need,shape} from '../runtime/js/cm-ai/effect-contract.mjs';
 
-const usage='cm-ai-batch-host.mjs serve --config PATH --host-context ID --allow-development [--runtime codex|claude] [--review-config PATH] [--allow-review FEATURE/TASK:1|2]... [--allow-qa] [--browser-qa available|unavailable] [--protected-conversation-config PATH | --protected-config PATH] [--allow-provider-development FEATURE/TASK:1|2]...';
+const usage='cm-ai-batch-host.mjs serve --config PATH --host-context ID --allow-development [--runtime codex|claude] [--review-config PATH] [--allow-review FEATURE/TASK:1|2]... [--allow-qa] [--rerun-unknown-qa | --rerun-blocked-qa] [--browser-qa available|unavailable] [--protected-conversation-config PATH | --protected-config PATH] [--allow-provider-development FEATURE/TASK:1|2]...';
 const safeCode=error=>typeof error?.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(error.code)?error.code:'batch_host_failed';
 
 async function memberReviewConfiguration(batch,definition,review,runtime){
@@ -44,7 +44,7 @@ async function memberReviewConfiguration(batch,definition,review,runtime){
 }
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
-  if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\nOptional --protected-conversation-config PATH uses the shared current-host scoped text proposals and native sandbox checks; {checkCommands,timeoutMs}. No extra model call, same Codex/Claude runtime and per-task Review permissions. Optional --protected-config PATH {model,checkCommands,timeoutMs} enables CLI development only for per-task --allow-provider-development FEATURE/TASK:1|2 grants; mutually exclusive with --protected-conversation-config. Optional bundle.bootstraps maps approved bootstrap task keys to {selection}; --allow-bootstrap-write grants only those fixed instruction/scaffold steps. Optional batch.codeProjects uses prefixed paths and checks with codeProject per command; one task remains one completion gate.\nOptional --review-config PATH is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 60000). It is independent of --protected-conversation-config/--protected-config and wins over their timeoutMs for the reviewer, so a review that exceeds the default can be raised without switching development mode. It is not part of the authorized configuration digest, so a resumed run may raise it after review_transport_timeout.\nBatch entry requires a clean Git main checkout (including untracked files); batch_main_dirty lists dirty files before any task or worktree starts. Serial tasks are committed automatically before batch_handoff, with task_commit recording the SHA (null if unchanged). Terminal parallel members preserve WIP on their retained branches and fall back once to serial generation 2 after ready members merge.\n');return 0;}
+  if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\nOptional --protected-conversation-config PATH uses the shared current-host scoped text proposals and native sandbox checks; {checkCommands,timeoutMs}. No extra model call, same Codex/Claude runtime and per-task Review permissions. Optional --protected-config PATH {model,checkCommands,timeoutMs} enables CLI development only for per-task --allow-provider-development FEATURE/TASK:1|2 grants; mutually exclusive with --protected-conversation-config. Optional bundle.bootstraps maps approved bootstrap task keys to {selection}; --allow-bootstrap-write grants only those fixed instruction/scaffold steps. Optional batch.codeProjects uses prefixed paths and checks with codeProject per command; one task remains one completion gate.\nOptional --review-config PATH is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 60000). It is independent of --protected-conversation-config/--protected-config and wins over their timeoutMs for the reviewer, so a review that exceeds the default can be raised without switching development mode. It is not part of the authorized configuration digest, so a resumed run may raise it after review_transport_timeout.\nOptional --rerun-unknown-qa / --rerun-blocked-qa carry the same single-task QA recovery into a batch and require --allow-qa; they are mutually exclusive. A batch has no --mode, so each task applies the flag only when it resumes an existing run and has a QA executor; a created run or a task without QA ignores it rather than failing the whole batch. Semantics, limits and the qaRound cap are the single-task ones, unchanged.\nBatch entry requires a clean Git main checkout (including untracked files); batch_main_dirty lists dirty files before any task or worktree starts. Serial tasks are committed automatically before batch_handoff, with task_commit recording the SHA (null if unchanged). Terminal parallel members preserve WIP on their retained branches and fall back once to serial generation 2 after ready members merge.\n');return 0;}
   let bridge;
   try{
     need(argv.length>=6&&argv[0]==='serve'&&argv[1]==='--config'&&argv[3]==='--host-context'
@@ -62,10 +62,13 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     }
     need(keys.length===Object.keys(workflows).length&&keys.every(key=>Object.hasOwn(workflows,key)),'workflow_task_mismatch');
     for(const key of keys)if(workflows[key]!==null)validateHostWorkflowConfiguration(workflows[key]);
-    let review=null,allowQa=false,allowBootstrap=false,runtime=null,protection=null,providerConfig=null,browserQaFlag;const approvals=new Set(),developments=new Map();
+    let review=null,allowQa=false,allowBootstrap=false,runtime=null,protection=null,providerConfig=null,browserQaFlag;
+    let rerunUnknownQa=false,rerunBlockedQa=false;const approvals=new Set(),developments=new Map();
     for(let index=6;index<argv.length;index++){
       const name=argv[index];
       if(name==='--allow-qa'){need(!allowQa,'invalid_arguments');allowQa=true;}
+      else if(name==='--rerun-unknown-qa'){need(!rerunUnknownQa,'invalid_arguments');rerunUnknownQa=true;}
+      else if(name==='--rerun-blocked-qa'){need(!rerunBlockedQa,'invalid_arguments');rerunBlockedQa=true;}
       else if(name==='--browser-qa'){
         need(browserQaFlag===undefined&&typeof argv[index+1]==='string','invalid_arguments');browserQaFlag=argv[++index];
       }
@@ -101,6 +104,10 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     readBrowserCapability(browserQaFlag,keys.some(key=>workflows[key]?.qa!=null
       &&featureHasBrowserCases(batch.specsDir,key.slice(0,key.lastIndexOf('/')),batch.codeProject)));
     need(!approvals.size||review!==null,'review_configuration_required');
+    // Same two guards as the single-task host. A batch has no --mode, so the
+    // per-task resume check lives in createCmAiBatch rather than here.
+    need(!(rerunUnknownQa&&rerunBlockedQa),'qa_recovery_authorization_required');
+    need(!(rerunUnknownQa||rerunBlockedQa)||allowQa,'qa_recovery_authorization_required');
     need(allowQa||!Object.values(workflows).some(item=>item?.qa!=null),'qa_authorization_required');
     bridge=createHostToolBridge();
     // The current conversation transport accepts one outstanding host call.
@@ -112,6 +119,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     }};
     const driver=createCmAiBatch({configuration:batch,logHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
       runtime:runtime??'codex',checkCommands:(providerConfig??protection)?.checkCommands??null,checkTimeoutMs:(providerConfig??protection)?.timeoutMs??60000,
+      rerunUnknownQa,rerunBlockedQa,
       executionFor:async(definition,{parallelMember=false}={})=>{
         const key=`${definition.feature}/${definition.identity.taskId}`;
         const attempts=[1,2].filter(attempt=>approvals.has(`${key}:${attempt}`));

@@ -670,6 +670,17 @@ unassessedTasks；只返回语义评估：`scores`含scope/risk/accumulation/bou
 `{result: "PASS"|"FAIL"|"BLOCKED", passed, failed, blocked, report}`，报告必须实际位于
 specs `.reviews/` 内。宿主只能写获准报告，不能修产品代码或独立写 start/complete。
 
+工作流配置的 `qa.timeoutMs` 是单条 QA 用例给宿主的应答窗口，整数 1–3600000 毫秒，
+不填仍为 60000。一轮真实浏览器走查（造数据、逐步点击、每步读 DOM 与存储）按分钟计，
+60 秒内做不完；超时的用例会被标记 `hostRequestTimeout` 并判 `BLOCKED`，拖垮整轮 QA。
+需要真实走查时按实际耗时调大它。
+
+被阻断的 QA 可以单独重跑，不必重做任务：批次宿主接受 `--rerun-unknown-qa` 与
+`--rerun-blocked-qa`，语义、限制与 qaRound 上限沿用单任务宿主，两者互斥且都要求
+`--allow-qa`。批次没有 `--mode`，所以是否生效逐任务判定——只有「已有运行记录可恢复
+且该任务配了 QA 执行器」的任务才会收到这个开关，新建的运行或没有 QA 的任务直接忽略，
+不会因此让整个批次启动失败。
+
 JS 在 dispatch 前用原 writer 写 `test_run/start`（首轮），返回后重新检查任务包、
 报告路径和计数，再写 `complete`，最后由原 `inspectCmAiQaResult` 裁决。
 PASS 且提供 `execution.applicableAgentFiles` 时继续原上下文刷新；FAIL/BLOCKED 停止。
