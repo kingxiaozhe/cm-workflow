@@ -146,6 +146,7 @@ export function createCmAiConversationEntry(options) {
   const ownerIdentity=json(options.identity);validIdentity(ownerIdentity);
   const runner=options.runner;
   const runnerKeys=['executeEffect','status','cancel','run'];
+  if(runner&&Object.hasOwn(runner,'verificationBlocks'))runnerKeys.push('verificationBlocks');
   if(runner&&Object.hasOwn(runner,'attachLearningEvidence'))runnerKeys.push('attachLearningEvidence');
   if(runner&&Object.hasOwn(runner,'inspectFixAssociation'))runnerKeys.push('inspectFixAssociation');
   if(runner&&Object.hasOwn(runner,'acceptCompletedFix'))runnerKeys.push('acceptCompletedFix');
@@ -585,7 +586,10 @@ export function createCmAiConversationEntry(options) {
     // corrected result a new effect id without changing the provider attempt.
     const rejectedValues=status.calls.filter(call=>call.terminal==='failed'
       &&call.failureResult?.code==='invalid_result'&&call.failureResult.retryable===true).length;
-    const effectId=`develop-${identity.attempt}${rejectedValues?`-retry-${rejectedValues}`:''}`;
+    // Both kinds of local rejection need a fresh effect id: an invalid developer
+    // result, and one the host gate blocked before the review package existed.
+    const retries=rejectedValues+(runner.verificationBlocks?.()??0);
+    const effectId=`develop-${identity.attempt}${retries?`-retry-${retries}`:''}`;
     const result=await runner.executeEffect({version:1,id:effectId,identity,kind:'develop',learningInput});
     return effectSummary(operation,result,runner,identity);
   }

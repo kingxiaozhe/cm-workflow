@@ -19,7 +19,7 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null)=>
-  kind==='develop'&&state==='blocked'&&code==='developer_result_invalid'
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed'].includes(code)
   ||kind==='review'&&state==='pending_review'&&code==='review_transport_timeout'
   ||({develop:['ready','changes_requested'],review:['awaiting_review'],complete:['approved']})[kind]?.includes(state)===true;
 // Local rejected values keep audit records but do not consume provider rounds.
@@ -295,6 +295,9 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
         }
       }else need(s.state==='unknown'||s.state==='cancelled'
         ||Object.hasOwn(original,'specification')&&s.state==='blocked'&&s.code==='spec_drift'
+        // The host gate rejected the delivery after Learning was already written
+        // back: the writeback stands, only the review package was not built.
+        ||s.state==='blocked'&&s.code==='verification_precheck_failed'
         ||added[0]&&['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal),'runner_learning');
     }
     if(digest(s.reviewPackage)!==digest(before.reviewPackage)) {
@@ -309,6 +312,14 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
       if(Object.hasOwn(config,'taskLearning'))validateTaskLearningReviewPackage(s.reviewPackage,
         s.learningResult.writeback,effect.learningInput,s.learningResult.bootstrap??null,config.bootstrap??null);
       expectedState='awaiting_review';
+    }
+    // The developer call succeeded and is never retried, but the host gate blocked
+    // between the checks and the review package. No package exists, so no review
+    // round was spent; the attempt counter does not move either.
+    if(added[0]?.terminal==='succeeded'&&s.code==='verification_precheck_failed') {
+      need(digest(s.reviewPackage)===digest(before.reviewPackage),'runner_develop');
+      same(s.receipt,before.receipt);same(s.receipts,before.receipts);
+      expectedState='blocked';expectedCode='verification_precheck_failed';
     }
     if(added[0] && ['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal)) {
       expectedState='blocked';expectedCode=invalidDeveloperCall(added[0])

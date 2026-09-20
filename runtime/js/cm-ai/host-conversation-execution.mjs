@@ -139,10 +139,20 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   };
   const used=new Set();
   // The gate is opt-in: without it the flow is byte-for-byte what it was.
-  const verificationGate=options.verificationPrecheck===true?async(request,control)=>
-    readVerificationPrecheck(await bridge.call('verification_precheck',
+  // The runner contract is exactly {satisfied}. Which requirements failed is
+  // what the operator needs to act on, so it goes to this process's stderr the
+  // same way other host diagnostics do, not into the runner state.
+  const verificationGate=options.verificationPrecheck===true?async(request,control)=>{
+    const verdict=readVerificationPrecheck(await bridge.call('verification_precheck',
       {...request,codeProject:definition.codeProject,feature:definition.feature,
-        scope:definition.scope},control.signal)):null;
+        scope:definition.scope},control.signal));
+    if(!verdict.satisfied)try{
+      process.stderr.write(JSON.stringify({diagnostic:'verification_precheck_failed',
+        task:request.identity.taskId,attempt:request.identity.attempt,
+        unsatisfied:verdict.unsatisfied})+'\n');
+    }catch{/* diagnostics never change the verdict */}
+    return {satisfied:verdict.satisfied};
+  }:null;
   const execution={configuration,timeoutMs:provider?protection.timeoutMs:1800000,excludedContexts:[hostContextId],hostDecision:null,applicableAgentFiles:[],
     ...(verificationGate?{verificationGate}:{}),
     ...(bootstrap?{bootstrap}:{}),
