@@ -11,6 +11,7 @@ import {writeImmutableWorkflowFile} from '../cm-ai/review-evidence-file.mjs';
 import {mergeLessons} from '../cm-ai/cm-ai-learning-writer.mjs';
 import {readLearningRetrospectiveContent} from '../cm-ai/cm-ai-context-refresh.mjs';
 import {need,shape,json,digest} from '../cm-ai/effect-contract.mjs';
+import {METRICS_HEADER,hasMetricsHeader} from '../cm-ai/metrics-table.mjs';
 import {inside,canonicalFuture,snapshotSource} from '../cm-test/source-snapshot.mjs';
 import {openRefactorRecords,readText,replaceText,sha} from './records.mjs';
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;
@@ -431,8 +432,8 @@ export function createCmRefactorHost(raw,{call}){
     await publish('dossier',dossierPath(),'# Refactor dossier\n\n'+markdown({analysis,metricAfter:proposal.metricAfter,changed:proposal.changed,reports,
       delivery:'diff',hostCalls,commandCount,baselineCount:config.baselineCommands.length,differentialCount:judgeBefore.cases.length,
       learning:proposal.learning,unfixedDefects:proposal.unfixedDefects,deviations:[],usage}));
-    if(specs){const header='| 任务 | Feature | 开始 | 结束 | 审查轮次 | 独立审查拦截 | QA | 人工介入(次:原因) |',old=context.metrics;
-      need(!old||old.split(/\r?\n/).includes(header),'refactor_metrics_format');
+    if(specs){const header=METRICS_HEADER,old=context.metrics;
+      need(!old||hasMetricsHeader(old),'refactor_metrics_format');
       const at=await records.effect('finish-time','clock',{},()=>new Date().toISOString());
       const line=`| ${task} | refactor | ${context.startedAt} | ${at} | ${attempt} | ${interceptions} | 等价通过 | ${calls.filter(entry=>entry.input.kind==='refactor_confirm').length}:人门; delivery-diff; agents=${usage.agentCalls}; host_ms=${usage.hostDurationMs}; estimate_tokens=${usage.estimatedTokens??'unavailable'}; actual_tokens=unavailable; commands=${commandCount} |\n`;
       await write('metrics',path.join(specs,'METRICS.md'),old,(old??`${header}\n| --- | --- | --- | --- | --- | --- | --- | --- |\n`)+(old&&!old.endsWith('\n')?'\n':'')+line,context.metricsMode);}
