@@ -66,3 +66,28 @@ test('an error whose code cannot be read still collapses without throwing', () =
   try{assert.equal(failureCode(hostile),'execution_error');}
   finally{process.stderr.write=original;}
 });
+
+// 光有失败码不够用：像 fix_closeout_unavailable 这种，同一个码在四个地方都会抛，
+// 而对端只看得到一句笼统的 host_request_failed。诊断里得说清是哪一处拦的，
+// 否则只能把宿主复制一份、自己加打印去找——这正是今天实际发生过的事。
+test('a contract refusal names where it was raised, as a runtime-relative location', async () => {
+  const {validateCauseReviewer}=await import('../runtime/js/cm-fix/cause-invocation.mjs');
+  let raised;
+  try{ validateCauseReviewer({reviewerId:'r',adapterId:'a',provider:'codex',
+    requestedModel:'m',contextId:'same-host',excludedThreadIds:[]},'same-host'); }
+  catch(error){ raised=error; }
+  assert.equal(raised.code,'invalid_cause_reviewer');
+  const detail=executionDiagnostic(raised);
+  assert.equal(detail.code,'invalid_cause_reviewer');
+  // 指到真正的现场，而不是 need 自己所在的 effect-contract
+  assert.match(detail.origin,/^cm-fix\/cause-invocation\.mjs:\d+$/);
+  // 相对 runtime 根，不带绝对路径，免得把用户名之类带出去
+  assert.equal(detail.origin.includes('/Users/'),false);
+  // 塌缩那条 stderr 诊断同样带上
+  assert.match(collapse(raised),/"origin":"cm-fix\/cause-invocation\.mjs:\d+"/);
+});
+
+test('a location is only reported for our own runtime, never a caller file', () => {
+  // 测试文件不在 runtime 下，构造出来的错误不该被安上位置。
+  assert.deepEqual(executionDiagnostic(named('x',{code:'EBADF'})),{code:'EBADF'});
+});

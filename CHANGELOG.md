@@ -5,6 +5,13 @@
 
 ## 未发布
 
+**出了错查不出是哪一步拦的**
+
+- runtime 里有 1032 种不同的失败码（光 cm-fix 就 204 种），但同一个码常常在好几处抛出——`fix_closeout_unavailable` 就有四处——而对端只看得到一句笼统的 `host_request_failed`。真实的码虽然写到了 stderr，却不说位置。实测代价：为了定位一次收尾失败，只能把整个宿主脚本复制一份、自己包一层打印调用栈才找到，普通使用者做不到这个。
+- 现在 `need()` 在造错误时就把现场记成一个普通字段，诊断行多出 `origin`，例如 `{"diagnostic":"host_request_failed","operation":"finish","code":"fix_finish_authorization_required","origin":"cm-fix/execution.mjs:1003"}`。
+- 两条边界没动：位置按 runtime 根取相对路径，不会带出绝对路径和用户名；只报这套 runtime 里的帧，不报调用方文件，更不会输出 `error.message`。读取方式也仍然是「只看自有数据属性」——`stack` 是访问器属性，只在 `need` 内部对刚造出来的原生 Error 上读，绝不去碰外来对象的访问器。
+- 协议回复、日志、运行状态、任何摘要都逐字节不变：`origin` 只走 stderr。
+
 **CI 只跑了 118 份自动检查里的 15 份**
 
 - 其余 103 份从来没在 CI 跑过，包括 cm-fix 的整个持久化核心。本轮修的四个缺陷，本地跑全套都能暴露，CI 一个都发现不了。根因是那份逐个点名的清单：新写的检查不会自动进去，攒着攒着就成了这样。
