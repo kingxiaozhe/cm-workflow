@@ -144,3 +144,25 @@ test('a run whose evidence filenames are already taken is refused before anythin
   fs.writeFileSync(path.join(reviews,'fix-demo-two-T-FIX-demo-two-r1.md'),'its own evidence');
   openFixExecution({...renamed,create:false}).close();
 }));
+
+// 走查声明的模块必须和诊断结论对得上。这条规矩一直有，但原来只在走查那一步才查
+// ——那已经在花钱做完独立审查之后，整轮白跑。诊断一落盘就判得出来。
+test('a walkthrough that does not line up with the diagnosis stops right after diagnosis',async()=>{
+  for(const [modules,expected] of [[['value','not-diagnosed'],'walkthrough_configuration_mismatch'],
+    [['value'],'red_test_required']])
+    await fixture(async(options)=>{
+      const bridge=createHostToolBridge();
+      bridge.attach(row=>{if(row.type==='host_request')bridge.accept({type:'host_result',sessionId:row.sessionId,
+        callId:row.callId,requestDigest:row.requestDigest,result:cause});});
+      const configuration={...options.configuration,walkthrough:{timeoutMs:2000,
+        flows:[{id:'value-flow',modules,steps:['Exercise the repaired value'],expected:['Value is 2'],
+          kind:'commands',command:[process.execPath,'-e','0']}]}};
+      const owner=openFixExecution({...options,configuration},{bridge});
+      try{
+        const status=await owner.advance({authorized:true});
+        assert.equal(status.stage,expected,JSON.stringify(modules));
+        // 诊断照常留底，停住不等于把证据弄丢
+        assert.equal(status.diagnosis.status,'diagnosed');
+      }finally{owner.close();bridge.close();}
+    });
+});
