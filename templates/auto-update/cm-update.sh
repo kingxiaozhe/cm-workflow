@@ -12,6 +12,7 @@ MANIFEST="$ROOT/manifest.txt"
 LOG="$ROOT/update.log"
 STAMP="$ROOT/.last-check"
 LOCK="$ROOT/.lock"
+DISCARDED="$ROOT/discarded"   # reset 前抢救出来的本地改动补丁
 ANNOUNCE="$ROOT/pending-announce"   # 下次 Claude Code 启动时播报，由 cm-announce.sh 消费
 REMOTE="${CM_UPDATE_REMOTE:-git@github.com:kingxiaozhe/cm-workflow.git}"   # 团队 fork 用环境变量覆盖,别改文件(会被自愈还原)
 BRANCH="${CM_UPDATE_BRANCH:-main}"
@@ -22,6 +23,35 @@ export GIT_TERMINAL_PROMPT=0
 export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
 
 mkdir -p "$ROOT"
+
+# repo/ 是更新器的缓存，不是给人开发的克隆：每次更新都会 reset --hard + clean -fd。
+# 说明文件放在缓存目录之外，否则会被 clean 掉。
+if [ ! -f "$ROOT/README.md" ]; then
+  cat >"$ROOT/README.md" <<'CMREADME'
+# ~/.cm-workflow 是 CM Workflow 的私有工作目录
+
+## repo/ 是缓存，不要在里面改代码
+
+`repo/` 由自动更新器管理。每次更新都会执行：
+
+    git reset --hard origin/<分支>
+    git clean -qfd
+
+**它里面任何未提交的改动和未跟踪的新文件都会被丢弃，不另行询问。**
+它看起来是个正常的 git 克隆（remote 指向真仓库、`git log` 正常），
+但不要拿它当开发目录——请另外 `git clone` 一份。
+
+更新器在丢弃前会做两件事：把改动存成补丁放到 `discarded/`，并在
+`update.log` 里记一行、同时发一条系统通知。补丁可以用
+`git apply` 打回你自己的克隆。
+
+## 其他内容
+
+- `update.log`：更新日志
+- `logs/`：各工作流的运行日志（本机私有，不外发）
+- `discarded/`：被更新器丢弃的本地改动补丁
+CMREADME
+fi
 
 log()    { printf '%s  %s\n' "$(date '+%F %T')" "$*" >>"$LOG"; }
 notify() { osascript -e "display notification \"$2\" with title \"$1\"" >/dev/null 2>&1 || true; }
@@ -199,6 +229,27 @@ if [ "$local_sha" = "$remote_sha" ] && [ -f "$MANIFEST" ] && [ "$FORCE" = 0 ]; t
 fi
 
 new_commits="$(git log --oneline "HEAD..origin/$BRANCH" 2>/dev/null | head -5)"
+
+# 缓存目录里不该有人工改动，但确实发生过。丢弃之前先存一份补丁并明确告警，
+# 不要让它无声消失。抢救失败不阻塞更新——缓存与远端一致才是这里的第一要务。
+dirty="$(git status --porcelain 2>/dev/null)"
+if [ -n "$dirty" ]; then
+  dirty_n="$(printf '%s\n' "$dirty" | wc -l | tr -d ' ')"
+  mkdir -p "$DISCARDED"
+  patch="$DISCARDED/$(date '+%Y%m%dT%H%M%S').patch"
+  {
+    printf '# 更新器在 %s 丢弃的本地改动（%s 个条目）\n' "$(date '+%F %T')" "$dirty_n"
+    printf '# 已跟踪文件的改动可用 git apply 打回自己的克隆；未跟踪文件只列出路径。\n\n'
+    git diff HEAD 2>/dev/null
+    printf '\n# 未跟踪文件（内容未保存）:\n'
+    git ls-files --others --exclude-standard 2>/dev/null | sed 's|^|#   |'
+  } >"$patch" 2>/dev/null || patch=""
+  log "⚠ repo/ 有 $dirty_n 处本地改动，将被更新丢弃："
+  log "$(printf '%s\n' "$dirty" | head -20 | sed 's|^|    |')"
+  [ -n "$patch" ] && log "  已存补丁：$patch"
+  notify "CM Workflow 更新" "repo/ 的 $dirty_n 处本地改动已被丢弃，补丁见 discarded/"
+fi
+
 git reset --hard --quiet "origin/$BRANCH" || die "reset 到 origin/$BRANCH 失败"
 git clean -qfd
 VERSION="$(cat "$REPO/VERSION" 2>/dev/null || echo 未知)"
