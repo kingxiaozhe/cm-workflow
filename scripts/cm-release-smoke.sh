@@ -43,6 +43,20 @@ for candidate in python3 python; do
 done
 [ -n "$PYTHON_BIN" ] || blocked "Python 3.9+ not found"
 
+# CI 覆盖不到的那一批：它们要启动 Codex 沙箱，而在 GitHub 托管机器上 bubblewrap
+# 建不了网络隔离（bwrap: loopback: Failed RTM_NEWADDR），装上 codex 也没用。
+# 这个脚本上面已经要求本机装了 codex，所以这里是它们唯一稳定的落点——发版必过。
+# 名单要和 .github/workflows/ci.yml 的 js-tests 排除名单保持一致。
+printf '%s\n' '==> Running the Codex-sandbox tests that CI cannot host'
+( cd "$ROOT" && node --test \
+  scripts/cm-ai-batch-host.test.mjs \
+  scripts/cm-ai-bootstrap.test.mjs \
+  scripts/cm-ai-host.test.mjs \
+  scripts/cm-ai-multi-root.test.mjs \
+  scripts/cm-ai-nested-execution.test.mjs \
+  scripts/cm-fix-protected-edits.test.mjs \
+  scripts/cm-host-check.test.mjs )
+
 printf '%s\n' '==> Validating the public Pi/BYZ package manifest'
 "$PYTHON_BIN" "$ROOT/scripts/validate-public-repo.py"
 
