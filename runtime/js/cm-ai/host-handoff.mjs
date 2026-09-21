@@ -58,13 +58,24 @@ function reviewConsumedHandoff(parent,name,attempt){
   let body;
   try{
     const info=fs.lstatSync(receipt);
-    if(!info.isFile()||info.isSymbolicLink())return true;
+    // Receipts are written under a 256 KiB cap. Anything larger is not one, and
+    // guessing about it must not license replacing approval evidence.
+    if(!info.isFile()||info.isSymbolicLink()||info.size>256*1024)return true;
     body=fs.readFileSync(receipt,'utf8');
   }catch(error){
     if(error.code==='ENOENT')return false;
     throw error;
   }
-  return body.split('\n',24).some(line=>line.trim()===`handoff: ${name}`);
+  // Search the real front matter rather than a fixed line count: the scope list
+  // after handoff: is as long as the task's changed file list, so any reordering
+  // of these fields would silently push handoff: out of a fixed window and turn
+  // reviewed evidence into a supersedable leftover. Unterminated or unrecognised
+  // front matter fails closed.
+  const lines=body.split('\n');
+  if(lines[0]?.trim()!=='---')return true;
+  const end=lines.findIndex((line,index)=>index>0&&line.trim()==='---');
+  if(end===-1)return true;
+  return lines.slice(1,end).some(line=>line.trim()===`handoff: ${name}`);
 }
 
 // Archive by link-then-unlink so the bytes survive a crash between the two steps.
