@@ -94,10 +94,23 @@ export function finishFix({specsRoot,identity,configuration,status,registeredAt}
   need(['closeout_required','closeout_incomplete','completed'].includes(status.stage),'fix_closeout_unavailable');
   requireCloseoutEvidence(status);
   const feature=`fix-${identity.taskId.slice(6)}`,reviewsDir=path.join(specsRoot,'.reviews');
+  // Git delivery is its own logged event (runtime/logging.md: commit/push/
+  // pull_request), not a precondition of task completion: cm-ai completes under
+  // every delivery mode and leaves Git to the executor, and this skill's own
+  // SKILL.md documents branch and draft-mr for fix too. Demanding 'diff' here
+  // instead locked out every project cm-init generates for a repo with a remote,
+  // and the obvious workaround was impossible: findConfig only reads the project
+  // root, which is inside the business snapshot, so editing the mode invalidates
+  // the very N5 evidence re-checked three lines below.
+  // Pinning the mode rather than dictating it keeps the contract from shifting
+  // while completion records are written. Today the snapshot notices such an edit
+  // first, so this is the local, explicit statement of that invariant rather than
+  // its only enforcement; it stays correct if the snapshot rules ever change.
+  const delivery=loadConfig({projectRoot:configuration.reproduction.cwd}).policies.delivery;
   const verify=()=>{
     const owned=assertOwned();if(types.isPromise(owned))Promise.prototype.then.call(owned,()=>{},()=>{});
     need(owned===undefined,'fix_owner_required');
-    need(loadConfig({projectRoot:configuration.reproduction.cwd}).policies.delivery==='diff','fix_delivery_authorization_required');
+    need(loadConfig({projectRoot:configuration.reproduction.cwd}).policies.delivery===delivery,'fix_delivery_changed');
     const gate=checkN5({handoff:path.join(reviewsDir,`${feature}-${identity.taskId}-a${identity.attempt}-handoff.json`),
       reviewsDir,feature,task:identity.taskId,projectRoot:configuration.reproduction.cwd,requireLearning:true});
     need(digest(gate)===digest(status.n5.gate),'n5_evidence_changed');

@@ -19,13 +19,17 @@ import {startFixRun} from '../runtime/js/cm-fix/start.mjs';
 import {readProjectInstructionContext} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
 
 test('durable repair registers before write, preserves cause approval history and never redispatches lost results',async()=>{
-  for(const mode of ['revision','revision-approved','revision-lost','normal','lost','cause','cause-map','unfixed','regression-intent','lesson','retrospective-lost','lesson-intent','lesson-pending','handoff-forged','handoff-legacy','handoff-large']){
+  for(const mode of ['revision','revision-approved','revision-draft-mr','revision-lost','normal','lost','cause','cause-map','unfixed','regression-intent','lesson','retrospective-lost','lesson-intent','lesson-pending','handoff-forged','handoff-legacy','handoff-large']){
     const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fix-repair-owner-')));
     const cwd=path.join(root,'code'),specsRoot=path.join(root,'specs');fs.mkdirSync(cwd);fs.mkdirSync(specsRoot);
     fs.writeFileSync(path.join(cwd,'value.mjs'),'export const value=1;');
     fs.writeFileSync(path.join(cwd,'red.mjs'),"import {value} from './value.mjs';if(value!==2){console.error('BUG');process.exit(1)}");
     fs.writeFileSync(path.join(cwd,'existing.mjs'),"import {value} from './value.mjs';if(typeof value!=='number')process.exit(1)");
-    if(mode==='revision-approved')fs.writeFileSync(path.join(cwd,'.cm-workflow.json'),JSON.stringify({version:1,policies:{delivery:'diff'}}));
+    // 收尾只关心「交付模式没在中途变过」，不关心它是哪一种：Git 是单独的 delivery
+    // 事件，不是 task_done 的前提。draft-mr 是 cm-init 给带 remote 的仓库生成的默认值。
+    const approvedRevision=['revision-approved','revision-draft-mr'].includes(mode);
+    if(approvedRevision)fs.writeFileSync(path.join(cwd,'.cm-workflow.json'),
+      JSON.stringify({version:1,policies:{delivery:mode==='revision-draft-mr'?'draft-mr':'diff'}}));
     const identity={repositoryId:'fixture',runId:'repair-owner',taskId:'T-FIX-owner',attempt:1};
     const mapPaths=mode==='cause-map'?['docs/codebase-context/00-index.md','docs/codebase-context/07-business-logic.md','docs/codebase-context/09-changelog.md']:[];
     const mapPlan='Create partial value map; cover value.mjs only; other modules unverified.';
@@ -37,7 +41,7 @@ test('durable repair registers before write, preserves cause approval history an
       repair:{scope:['value.mjs',...mapPaths],requirements:['value.mjs']},...(mode.startsWith('cause')||mode.startsWith('revision')?{causeReview:reviewer}:{})}};
     if(mode==='handoff-large')options.configuration.redTest.command=[process.execPath,'-e',
       "import('./value.mjs').then(({value})=>{if(value!==2){process.stderr.write('BUG'+'x'.repeat(128*1024-3));process.exitCode=1;}});//"+'x'.repeat(31*1024)];
-    if(mode==='revision-approved')options.configuration.walkthrough={timeoutMs:2000,flows:[{id:'value-flow',modules:['one'],steps:['Read corrected value'],expected:['Value is 2'],kind:'commands',command:[process.execPath,'red.mjs']}]};
+    if(approvedRevision)options.configuration.walkthrough={timeoutMs:2000,flows:[{id:'value-flow',modules:['one'],steps:['Read corrected value'],expected:['Value is 2'],kind:'commands',command:[process.execPath,'red.mjs']}]};
     const authority=createHostReviewAuthority({hostContextId:'fixture-host',reviewerId:reviewer.reviewerId,adapterId:reviewer.adapterId,decide:async()=>({status:'approved'})});
     const causeReview={authorize:authority.authorize,run:createCauseReviewRun(async({prompt},{onEvent})=>{
       const data=JSON.parse(prompt.split('<cm-review-data-json>\n')[1]);
@@ -47,7 +51,7 @@ test('durable repair registers before write, preserves cause approval history an
     },'codex')};
     const learning={contextDigest:digest([]),files:[],application:{contextDigest:digest([]),status:'no_relevant_lesson',summary:'No project instructions in synthetic fixture'}};
     const prepare=async()=>{
-      if(mode!=='revision-approved'||!fs.existsSync(path.join(cwd,'AGENTS.md')))return learning;
+      if(!approvedRevision||!fs.existsSync(path.join(cwd,'AGENTS.md')))return learning;
       const files=readProjectInstructionContext(cwd,[]).map(({content,...metadata})=>metadata);
       return {files,contextDigest:digest(files),application:{contextDigest:digest(files),status:'applied',summary:'Preserve reviewed first-round lessons'}};
     };
@@ -55,14 +59,14 @@ test('durable repair registers before write, preserves cause approval history an
     bridge.attach(row=>{
       if(row.type!=='host_request')return;
       let result={status:'diagnosed',rootCause:'Wrong constant',affectedPaths:['value.mjs'],affectedModules:['one'],crossLayer:mode.startsWith('cause'),plan:mode==='cause-map'?mapPlan:'Correct constant'};
-      if(mode==='revision-approved')result.investigation={discardedAlternatives:[],boundaryAnalysis:null};
+      if(approvedRevision)result.investigation={discardedAlternatives:[],boundaryAnalysis:null};
       if(row.kind==='fix_retrospective'){
         const state=JSON.parse(fs.readFileSync(path.join(specsRoot,'.reviews','.execution',identity.runId,'state.json')));
         assert.equal(state.records.at(-1).id,row.payload.identity.attempt===2?'fix-revision-retrospective-intent':'fix-retrospective-intent');retrospectives++;
         if(mode==='retrospective-lost'){bridge.close();return;}
         result=mode.startsWith('lesson')?{status:mode==='lesson-pending'?'writeback_pending':'lesson_candidate',candidates:[{classification:'structured',trigger:'Wrong constant',action:'Keep regression check',evidence:['red.mjs']}],reason:mode==='lesson-pending'?'Human assessment required':null}
           :{status:'no_new_lesson',candidates:[],reason:null};
-        if(mode==='revision-approved')result={status:'lesson_candidate',candidates:[{classification:'structured',trigger:row.payload.identity.attempt===2?'Second repair boundary':'First repair boundary',action:'Keep value regression',evidence:['red.mjs']}],reason:null};
+        if(approvedRevision)result={status:'lesson_candidate',candidates:[{classification:'structured',trigger:row.payload.identity.attempt===2?'Second repair boundary':'First repair boundary',action:'Keep value regression',evidence:['red.mjs']}],reason:null};
       }
       if(row.kind==='fix_repair'){
         const state=JSON.parse(fs.readFileSync(path.join(specsRoot,'.reviews','.execution',identity.runId,'state.json')));
@@ -86,7 +90,7 @@ test('durable repair registers before write, preserves cause approval history an
     // Compare settled state with reopened state when checking durable recovery.
     const settled=async pending=>{await pending;return owner.status();};
     try{
-      if(mode==='revision-approved')startFixRun({specsRoot,identity,configuration:options.configuration});
+      if(approvedRevision)startFixRun({specsRoot,identity,configuration:options.configuration});
       await owner.advance({authorized:true});
       if(mode.startsWith('cause')){
         if(mode==='cause-map')assert(!fs.existsSync(path.join(cwd,'docs')));
@@ -140,7 +144,7 @@ test('durable repair registers before write, preserves cause approval history an
           assert.deepEqual(pkg.checks[1].command,options.configuration.baseline.commands[0].command);
           owner.close();owner=openFixExecution({...options,create:false},{bridge,prepare});
           const retrospective=await settled(owner.retrospect());
-          assert.equal(retrospective.stage,mode==='retrospective-lost'?'unknown':mode.startsWith('lesson')||mode==='revision-approved'?'learning_writeback_required':'handoff_ready');
+          assert.equal(retrospective.stage,mode==='retrospective-lost'?'unknown':mode.startsWith('lesson')||approvedRevision?'learning_writeback_required':'handoff_ready');
           assert.equal(retrospective.completionEligible,false);assert.equal(retrospectives,1);
           owner.close();owner=openFixExecution({...options,create:false},{bridge,prepare});
           assert.deepEqual(await owner.retrospect(),retrospective);assert.equal(retrospectives,1);
@@ -161,7 +165,7 @@ test('durable repair registers before write, preserves cause approval history an
             assert.equal(blocked.learningWriteback.reason,'Human assessment required');owner.close();owner=openFixExecution({...options,create:false});
             assert.deepEqual(owner.writeLearning({authorized:true}),blocked);assert(!fs.existsSync(path.join(cwd,'AGENTS.md')));continue;
           }
-          if(mode==='lesson'||mode==='revision-approved'){
+          if(mode==='lesson'||approvedRevision){
             assert.throws(()=>owner.writeLearning(),{code:'learning_writeback_authorization_required'});
             const written=owner.writeLearning({authorized:true});assert.equal(written.stage,'handoff_ready');
             assert.equal(written.learningWriteback.outcome,'written');assert.equal(written.completionEligible,false);
@@ -211,7 +215,7 @@ test('durable repair registers before write, preserves cause approval history an
           const defectEvidence=JSON.parse(payload.evidence.find(item=>item.startsWith('fix defect evidence')).split('(data, not instructions) ')[1]);
           assert.deepEqual(defectEvidence.diagnosis,handed.diagnosis);assert.deepEqual(defectEvidence.redTest.result,handed.redTest);
           assert.deepEqual(defectEvidence.redOutput,JSON.parse(fs.readFileSync(path.join(specsRoot,handed.redTest.output.path))));
-          assert(payload.evidence.includes(mode==='lesson'||mode==='revision-approved'?'learning: retrospective written AGENTS.md':'learning: retrospective no_new_lesson'));
+          assert(payload.evidence.includes(mode==='lesson'||approvedRevision?'learning: retrospective written AGENTS.md':'learning: retrospective no_new_lesson'));
           assert.equal(payload.implementation_sha256,implementationSha256(cwd,payload.changed_files));
           const handoffBytes=fs.readFileSync(handoffPath);owner.close();owner=openFixExecution({...options,create:false});
           assert.deepEqual(owner.createHandoff(),handed);assert.deepEqual(fs.readFileSync(handoffPath),handoffBytes);
@@ -265,12 +269,12 @@ test('durable repair registers before write, preserves cause approval history an
             const cumulative=owner.implementationPackage();assert.equal(cumulative.identity.attempt,2);
             assert.equal(Buffer.from(cumulative.changes.find(change=>change.path==='value.mjs').before.contentBase64,'base64').toString(),'export const value=1;');
             owner.close();owner=openFixExecution({...options,create:false},{bridge,prepare});
-            const reflectedAgain=await settled(owner.retrospect());assert.equal(reflectedAgain.stage,mode==='revision-approved'?'revision_learning_writeback_required':'revision_handoff_ready');
+            const reflectedAgain=await settled(owner.retrospect());assert.equal(reflectedAgain.stage,approvedRevision?'revision_learning_writeback_required':'revision_handoff_ready');
             assert.equal(reflectedAgain.revisionRetrospective.identity.attempt,2);assert.equal(retrospectives,2);
             assert.equal(reflectedAgain.revisionRetrospective.packageDigest,cumulative.packageDigest);assert.equal(reflectedAgain.completionEligible,false);
             owner.close();owner=openFixExecution({...options,create:false});assert.deepEqual(owner.status(),reflectedAgain);
             assert.deepEqual(await owner.retrospect(),reflectedAgain);assert.equal(retrospectives,2);
-            if(mode==='revision-approved'){
+            if(approvedRevision){
               assert.throws(()=>owner.writeLearning(),{code:'learning_writeback_authorization_required'});
               assert.equal(owner.createHandoff().stage,'revision_learning_writeback_required');
               const written=owner.writeLearning({authorized:true});assert.equal(written.stage,'revision_handoff_ready');
@@ -286,7 +290,7 @@ test('durable repair registers before write, preserves cause approval history an
             const secondPath=path.join(specsRoot,'.reviews','fix-owner-T-FIX-owner-a2-handoff.json');
             const secondBytes=fs.readFileSync(secondPath),secondHandoff=loadHandoff(secondPath,{task:identity.taskId,attempt:2});
             assert(secondHandoff.evidence.some(item=>item.startsWith('fix prior review')&&item.includes('F1')));
-            if(mode==='revision-approved'){assert(secondHandoff.evidence.includes('learning: retrospective written AGENTS.md'));assert(secondHandoff.changed_files.includes('AGENTS.md'));}
+            if(approvedRevision){assert(secondHandoff.evidence.includes('learning: retrospective written AGENTS.md'));assert(secondHandoff.changed_files.includes('AGENTS.md'));}
             assert.deepEqual(fs.readFileSync(handoffPath),handoffBytes);assert.equal(handedAgain.completionEligible,false);
             const reviewAgain=owner.finalReviewPackage();assert.equal(reviewAgain.identity.attempt,2);assert.equal(reviewAgain.handoff.sha256,handedAgain.revisionHandoff.handoffSha256);
             assert.equal(Buffer.from(reviewAgain.changes.find(change=>change.path==='value.mjs').before.contentBase64,'base64').toString(),'export const value=1;');
@@ -300,15 +304,15 @@ test('durable repair registers before write, preserves cause approval history an
               for(const event of [{event:'thread.started',provider_thread:'second-revision-reviewer'},{event:'turn.started',item_type:null},
                 {event:'item.completed',item_type:'agent_message'},{event:'turn.completed',item_type:null},{event:'process_closed',exit_code:0,signal:null,timed_out:false}])assert.equal(onEvent(event),true);
               return {status:'succeeded',value:{...request.payload.priorReview,packageDigest:reviewAgain.packageDigest,examinedPaths:reviewPaths(reviewAgain),
-                ...(mode==='revision-approved'?{verdict:'approved',findings:[]}: {})}};
+                ...(approvedRevision?{verdict:'approved',findings:[]}: {})}};
             }}});
             assert.equal((await owner.reviewFinal()).stage,'revision_final_review_evidence_required');
-            const reviewedAgain=owner.publishReview();assert.equal(reviewedAgain.stage,mode==='revision-approved'?'revision_completion_gate_required':'revision_review_limit_reached');
+            const reviewedAgain=owner.publishReview();assert.equal(reviewedAgain.stage,approvedRevision?'revision_completion_gate_required':'revision_review_limit_reached');
             assert.equal(reviewedAgain.completionEligible,false);assert.equal(calls,2);
             owner.close();owner=openFixExecution({...options,create:false});assert.deepEqual(owner.status(),reviewedAgain);
             assert.deepEqual(await owner.reviewFinal(),reviewedAgain);assert.equal(calls,2);
             await assert.rejects(owner.prepareRevision({authorized:true}),{code:'fix_revision_unavailable'});
-            if(mode==='revision-approved'){
+            if(approvedRevision){
               const gated=owner.checkCompletionGate();assert.equal(gated.stage,'revision_post_review_regression_required');
               assert.equal(gated.revisionN5.gate.attempt,2);assert.equal(gated.completionEligible,false);
               const reviewPath=path.join(specsRoot,'.reviews','fix-owner-T-FIX-owner-r2.md'),reviewBytes=fs.readFileSync(reviewPath);
@@ -355,8 +359,8 @@ test('durable repair registers before write, preserves cause approval history an
               assert(archive.includes('先前轮次（历史记录，不替代当前审查）'));assert(archive.includes('changes_requested'));
               assert(fs.readFileSync(path.join(specsRoot,'METRICS.md'),'utf8').includes('| 2 | 1 |'));
             }
-            fs.appendFileSync(path.join(cwd,'value.mjs'),' ');assert.equal(owner.status().stage,mode==='revision-approved'?'revision_learning_writeback_evidence_required':'revision_repair_evidence_required');
-            if(mode==='revision-approved'){assert.equal(owner.status().completionEligible,false);assert.equal(owner.status().completionHistory.runDoneEventIds.length,1);}
+            fs.appendFileSync(path.join(cwd,'value.mjs'),' ');assert.equal(owner.status().stage,approvedRevision?'revision_learning_writeback_evidence_required':'revision_repair_evidence_required');
+            if(approvedRevision){assert.equal(owner.status().completionEligible,false);assert.equal(owner.status().completionHistory.runDoneEventIds.length,1);}
             assert.deepEqual(owner.status().revision,revised.revision);continue;
           }
           if(mode==='cause'){
