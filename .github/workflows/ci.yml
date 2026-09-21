@@ -94,6 +94,9 @@ jobs:
       - name: Exercise checklist coverage reminder
         run: node --test scripts/cm-ai-checklist-coverage.test.mjs
 
+      - name: Exercise cross-session fix host identities
+        run: node --test scripts/cm-fix-cross-session-host.test.mjs
+
       - name: Run execution collapse diagnostic fixtures
         run: node --test scripts/cm-ai-execution-diagnostic.test.mjs
 

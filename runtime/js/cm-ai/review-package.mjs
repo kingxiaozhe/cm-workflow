@@ -16,6 +16,28 @@ const materialPath=(p,selected)=>selected.has(p)||p.split('/').at(-1)==='AGENTS.
 // Keep this narrower than the discovery scanner: dist/build may be authored files.
 const dependencyDirectories=new Set(['.venv','node_modules','__pycache__','.pytest_cache','.ruff_cache']);
 const inDependencyDirectory=p=>p.split('/').slice(0,-1).some(part=>dependencyDirectories.has(part.toLowerCase()));
+// CocoaPods installs ios/Pods as a generated tree whose headers are symlinks.
+// It is a dependency root like node_modules, but every other dependency root
+// here is a fixed name, while this one is recognised from the filesystem. That
+// makes the predicate itself a security boundary: whatever it accepts leaves
+// the snapshot silently, so both the traversal and the scope guard must ask
+// exactly this one function, and it must be expensive to satisfy by accident
+// or on purpose. Four independent CocoaPods artefacts are required — the name,
+// the two generated entries inside, and the Podfile.lock beside it — so an
+// authored directory called pods/ still enters the snapshot and its symlinks
+// still fail closed.
+function isCocoaPodsRoot(absolute) {
+  if(path.basename(absolute).toLowerCase()!=='pods')return false;
+  try {
+    return fs.lstatSync(path.join(absolute,'Manifest.lock')).isFile()
+      && fs.lstatSync(path.join(absolute,'Pods.xcodeproj')).isDirectory()
+      && fs.lstatSync(path.join(path.dirname(absolute),'Podfile.lock')).isFile();
+  } catch { return false; }
+}
+const inCocoaPodsTree=(root,p)=>{
+  const parts=p.split('/');
+  return parts.slice(0,-1).some((part,index)=>isCocoaPodsRoot(path.join(root,...parts.slice(0,index+1))));
+};
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const fail = code => { const error=new Error(code); error.code=code; throw error; };
 const need = (condition,code='invalid_input') => { if(!condition) fail(code); };
@@ -145,7 +167,7 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
       if(p===specsPath){need(s.isDirectory()&&!s.isSymbolicLink(),'unsupported_path');continue;}
       // Never follow a dependency-root symlink. Old baselines that captured
       // these files still verify their original material instead of dropping it.
-      if(s.isDirectory()&&dependencyDirectories.has(name)
+      if(s.isDirectory()&&(dependencyDirectories.has(name.toLowerCase())||isCocoaPodsRoot(path.join(root,p)))
         &&!retainedPaths.some(file=>file.startsWith(p+'/')))continue;
       if(s.isDirectory()) walk(p,depth+1,codeRoot);
       else add(p,s);
@@ -187,7 +209,7 @@ export function captureReviewBaseline(options) {
     specification=captureSpecificationMaterial({...v.specification,taskId:v.identity.taskId});
   }
   const scope=paths(v.scope), requirements=requirementPaths(v.requirements,bootstrap!==null||specification!==null),root=rootPath(v.root);
-  need(![...scope,...requirements].some(inDependencyDirectory),'excluded_snapshot_path');
+  need(![...scope,...requirements].some(p=>inDependencyDirectory(p)||inCocoaPodsTree(root,p)),'excluded_snapshot_path');
   const projectPaths=Object.hasOwn(v,'codeProjectPaths')?validateCodeProjectPaths(v.codeProjectPaths):null;
   if(projectPaths!==null)resolveCodeProjects(v.root,projectPaths.map(prefix=>path.join(root,prefix)));
   const specsPath=Object.hasOwn(v,'specsRoot')?reviewSpecsPath(root,v.specsRoot):null;

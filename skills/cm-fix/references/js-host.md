@@ -11,6 +11,10 @@
    纯视觉替代、裸项目走下文原owner分支，不能伪造命令或specs跨过。
 2. 从当前真实宿主确定 `--runtime codex|claude`，不能让模型选择另一端规避失败。
    用真实会话身份作为 `--host-context`；恢复必须保留原身份、配置与 runtime，不冒用旧会话。
+   换会话恢复时，`--host-context` 填当前真实会话，另加 `--original-host-context` 填创建这次运行的旧会话 ID
+   （取自 `specs/.reviews/.execution/<runId>/state.json` 首条 `fix-configuration` 记录的
+   `configuration.hostContextId`）。durable 配置与指纹保持原样、旧记录一字不改；填错只会 `fingerprint_mismatch`
+   失败退出。两个会话身份都算宿主：授权凭据两者皆可，reviewer 必须同时独立于两者。同会话重开不带此参数。
 3. 配置是数据文件，不是脚本模块。读取 `../../../scripts/cm-fix-host.mjs` 的配置解析与
    `--help`，按已批准范围填写 `specsRoot`、`identity`、`defect`、`reproduction`；后者为
    `{cwd, command, expectedFailure:{exitCode,outputIncludes}, timeoutMs}`，命令使用 argv 数组。

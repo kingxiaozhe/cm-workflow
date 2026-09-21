@@ -6,22 +6,25 @@ import {digest,json,need,shape,requestFor,validIdentity,failureCode} from '../cm
 import {readReviewPackage} from '../cm-ai/review-package.mjs';
 import {validateReviewDispatchGrant} from '../cm-ai/durable-runner-state.mjs';
 import {inspectProviderReview} from '../cm-ai/provider-review-observation.mjs';
-import {validateCauseReviewer} from './cause-invocation.mjs';
+import {validateCauseReviewer,fixHostContexts} from './cause-invocation.mjs';
 import {inspectFixWalkthrough} from './walkthrough.mjs';
 import {inspectFixRegressionFailure} from './regression-evidence.mjs';
 
 // Preserve old persisted configuration bytes: reuse its reviewer model settings,
 // never its cause-review authority or actual provider thread.
 export function fixFinalReviewConfiguration(configuration,causeThread=null){
-  const base=validateCauseReviewer(configuration.causeReview,configuration.hostContextId);
-  return {hostContextId:configuration.hostContextId,reviewer:{...base,reviewerId:'fix-final-reviewer',
+  const hosts=fixHostContexts(configuration);
+  const base=validateCauseReviewer(configuration.causeReview,hosts);
+  return {hostContextId:configuration.hostContextId,...(hosts.length>1?{hostContextIds:hosts}:{}),
+    reviewer:{...base,reviewerId:'fix-final-reviewer',
     adapterId:`${base.provider}-review-adapter`,contextId:'fix-final-review-context',
     excludedThreadIds:[...new Set([...base.excludedThreadIds,...(causeThread?[causeThread]:[])])]}};
 }
 
 function expectation(request,configuration){
-  return {request,developerThreadId:configuration.hostContextId,
-    excludedThreadIds:[...configuration.reviewer.excludedThreadIds,request.contextId]};
+  const hosts=fixHostContexts(configuration);
+  return {request,developerThreadId:hosts[0],
+    excludedThreadIds:[...configuration.reviewer.excludedThreadIds,...hosts.slice(1),request.contextId]};
 }
 
 // Immediate diagnostics only, never approval or replay evidence. Do not expose
@@ -43,14 +46,14 @@ function reviewDiagnostic(phase,error,event=null){
 }
 export function inspectFixFinalRegistration(raw,configuration){
   const value=json(raw,12*1024*1024);shape(value,['request','authorizationAt','registeredAt','grant']);
-  const reviewer=validateCauseReviewer(configuration.reviewer,configuration.hostContextId,configuration.reviewFeedback?34:33),request=value.request;
+  const reviewer=validateCauseReviewer(configuration.reviewer,fixHostContexts(configuration),configuration.reviewFeedback?34:33),request=value.request;
   need(request.provider===reviewer.provider&&request.requestedModel===reviewer.requestedModel&&request.contextId===reviewer.contextId,'final_registration_mismatch');
   const pkg=readReviewPackage(request.payload.reviewPackage);
   const previous=configuration.reviewFeedback?inspectFixRepairReview(configuration.reviewFeedback,pkg.identity):null;
   need(pkg.handoff&&digest(request.payload.priorReview)===digest(previous?.review??null),'final_handoff_required');
   if(previous)need(reviewer.excludedThreadIds.includes(previous.providerThreadId),'final_context_mismatch');
   validateReviewDispatchGrant(value.grant,{request,reviewerId:reviewer.reviewerId,adapterId:reviewer.adapterId,
-    packageDigest:pkg.packageDigest,hostContextIds:[configuration.hostContextId],authorizationAt:value.authorizationAt,registeredAt:value.registeredAt});
+    packageDigest:pkg.packageDigest,hostContextIds:fixHostContexts(configuration),authorizationAt:value.authorizationAt,registeredAt:value.registeredAt});
   inspectProviderReview(JSON.stringify({version:1,kind:'cm-provider-review-observation',requestDigest:request.requestDigest,
     events:[],result:{status:'failed',code:'in_progress'}}),JSON.stringify(expectation(request,configuration)));
   return value;
@@ -96,16 +99,20 @@ export function inspectFixRepairReview(raw,nextIdentity){
     ...(value.regressionFailure?{regressionFailure:value.regressionFailure}:{})});
 }
 
-export function fixRevisionReviewConfiguration(feedback,nextIdentity){
+// The persisted feedback carries the configuration of the session that recorded
+// it. A later session passes its own host contexts so its grants are accepted too.
+export function fixRevisionReviewConfiguration(feedback,nextIdentity,hostContextIds=null){
   const previous=inspectFixRepairReview(feedback,nextIdentity),config=json(feedback.configuration);
-  return {...config,reviewer:{...config.reviewer,excludedThreadIds:[...new Set([...config.reviewer.excludedThreadIds,previous.providerThreadId])]},reviewFeedback:feedback};
+  return {...config,...(hostContextIds&&hostContextIds.length>1?{hostContextIds}:{}),reviewer:{...config.reviewer,excludedThreadIds:[...new Set([...config.reviewer.excludedThreadIds,previous.providerThreadId])]},reviewFeedback:feedback};
 }
 
 export function createFixFinalReview({reviewPackage,configuration,timeoutMs},{authorize,run}){
   const pkg=readReviewPackage(reviewPackage);need(pkg.handoff,'final_handoff_required');
-  const config=json(configuration,12*1024*1024);shape(config,['hostContextId','reviewer',...(Object.hasOwn(config,'reviewFeedback')?['reviewFeedback']:[])]);
+  const config=json(configuration,12*1024*1024);shape(config,['hostContextId','reviewer',
+    ...(Object.hasOwn(config,'hostContextIds')?['hostContextIds']:[]),
+    ...(Object.hasOwn(config,'reviewFeedback')?['reviewFeedback']:[])]);
   const previous=config.reviewFeedback?inspectFixRepairReview(config.reviewFeedback,pkg.identity):null;
-  const reviewer=validateCauseReviewer(config.reviewer,config.hostContextId,previous?34:33);
+  const reviewer=validateCauseReviewer(config.reviewer,fixHostContexts(config),previous?34:33);
   if(previous)need(reviewer.excludedThreadIds.includes(previous.providerThreadId),'final_context_mismatch');
   need(Number.isInteger(timeoutMs)&&timeoutMs>0&&timeoutMs<=3600000,'invalid_timeout');
   need(typeof authorize==='function'&&typeof run==='function','final_review_unavailable');

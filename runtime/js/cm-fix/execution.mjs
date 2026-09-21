@@ -9,7 +9,7 @@ import {digest,id,json,need,shape,text,validIdentity,requestFor,failureCode} fro
 import {createFixReproduction,inspectFixReproduction} from './reproduce.mjs';
 import {inspectFixLearning} from './learning.mjs';
 import {createFixCausePackage} from './cause-package.mjs';
-import {validateCauseReviewer,inspectCauseRegistration,inspectCauseResult,causeExpectation} from './cause-invocation.mjs';
+import {validateCauseReviewer,inspectCauseRegistration,inspectCauseResult,causeExpectation,fixHostContexts} from './cause-invocation.mjs';
 import {inspectProviderCauseReview} from '../cm-ai/provider-review-observation.mjs';
 import {publishCauseEvidence} from './cause-evidence.mjs';
 import {createFixRedTest,inspectFixRedTest,verifyFixRedEvidence,redTestFiles} from './red-test.mjs';
@@ -60,7 +60,8 @@ function diagnosis(raw){
 }
 
 export function openFixExecution(options,{bridge=null,prepare=null,causeReview=null,finalReview=null,assertReviewReady=null}={}){
-  shape(options,['identity','configuration','create',...(Object.hasOwn(options,'specsRoot')?['specsRoot']:[])]);
+  shape(options,['identity','configuration','create',...(Object.hasOwn(options,'hostContextId')?['hostContextId']:[]),
+    ...(Object.hasOwn(options,'specsRoot')?['specsRoot']:[])]);
   const {identity,configuration:originalConfiguration,create}=json(options,64*1024);validIdentity(identity);
   const bare=options.specsRoot==null;
   need(!Object.hasOwn(originalConfiguration,'archiveMode'),'invalid_fix_config');
@@ -90,7 +91,14 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     need(digest(identity)===digest(qaFixIdentity(configuration.qaSource)),'fix_qa_identity_mismatch');
   if(Object.hasOwn(configuration,'runtime'))need(configuration.runtime==='claude'
     &&(!configuration.causeReview||configuration.causeReview.provider==='claude'),'invalid_runtime');
-  if(configuration.causeReview)validateCauseReviewer(configuration.causeReview,configuration.hostContextId);
+  // configuration is the durable run record: its hostContextId stays the session
+  // that created the run, so stored bytes and the store fingerprint never move.
+  // options.hostContextId is the live session; reviewConfiguration carries both so
+  // a resumed run keeps issuing and replaying grants without impersonating either.
+  const liveHostContextId=options.hostContextId??configuration.hostContextId;id(liveHostContextId);
+  const hostContextIds=[...new Set([configuration.hostContextId,liveHostContextId])];
+  const reviewConfiguration=hostContextIds.length>1?{...configuration,hostContextIds}:configuration;
+  if(configuration.causeReview)validateCauseReviewer(configuration.causeReview,hostContextIds);
   if(Object.hasOwn(configuration,'applicableAgentFiles')){
     need(Array.isArray(configuration.applicableAgentFiles),'invalid_input');
     for(const file of configuration.applicableAgentFiles){
@@ -134,14 +142,14 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
   const finalCycleRecord=(row,suffix)=>new RegExp(`^fix-final-(?:recovery-(?:[1-9]\\d*-)?)?${suffix}$`).test(row.id);
   const publishCause=(inspectOnly=false)=>{
     const records=store.snapshot().records;
-    return publishCauseEvidence({specsRoot:evidenceSpecsRoot,configuration,inspectOnly,
+    return publishCauseEvidence({specsRoot:evidenceSpecsRoot,configuration:reviewConfiguration,inspectOnly,
       registration:records.find(record=>record.id==='fix-cause-registered')?.payload,
       started:records.find(record=>record.id==='fix-cause-started')?.payload.providerThreadId??null,
       result:records.find(record=>record.id==='fix-cause-result')?.payload});
   };
   const publishFinal=(inspectOnly=false)=>{
     const records=store.snapshot().records;
-    return publishFixFinalEvidence({specsRoot:evidenceSpecsRoot,configuration,inspectOnly,
+    return publishFixFinalEvidence({specsRoot:evidenceSpecsRoot,configuration:reviewConfiguration,inspectOnly,
       causeThread:records.find(record=>record.id==='fix-cause-started')?.payload.providerThreadId??null,
       registration:finalRecord(records,'registered')?.payload,
       started:finalRecord(records,'started')?.payload.providerThreadId??null,
@@ -151,7 +159,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     const records=store.snapshot().records;
     const failed=records.find(row=>row.id==='fix-walkthrough-result')?.payload;
     const regression=records.find(row=>row.id==='fix-post-regression-result')?.payload;
-    return {configuration:fixFinalReviewConfiguration(configuration,records.find(row=>row.id==='fix-cause-started')?.payload.providerThreadId??null),
+    return {configuration:fixFinalReviewConfiguration(reviewConfiguration,records.find(row=>row.id==='fix-cause-started')?.payload.providerThreadId??null),
       registration:finalRecord(records,'registered')?.payload,
       started:finalRecord(records,'started')?.payload.providerThreadId??null,
       result:finalRecord(records,'result')?.payload,
@@ -164,7 +172,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
   };
   const publishRevisionFinal=(inspectOnly=false)=>{
     const records=store.snapshot().records;
-    return publishFixFinalEvidence({specsRoot:evidenceSpecsRoot,configuration,inspectOnly,reviewFeedback:revisionFeedback(),
+    return publishFixFinalEvidence({specsRoot:evidenceSpecsRoot,configuration:reviewConfiguration,inspectOnly,reviewFeedback:revisionFeedback(),
       registration:records.find(row=>row.id==='fix-revision-final-registered')?.payload,
       started:records.find(row=>row.id==='fix-revision-final-started')?.payload.providerThreadId??null,
       result:records.find(row=>row.id==='fix-revision-final-result')?.payload});
@@ -448,7 +456,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       if(record.id==='fix-revision-final-registered'){
         need(revision&&stage==='revision_final_review_required'&&record.kind==='intent','fix_history_invalid');
-        revisionFinalRegistration=inspectFixFinalRegistration(record.payload,fixRevisionReviewConfiguration(revisionFeedback(),revision.nextIdentity));
+        revisionFinalRegistration=inspectFixFinalRegistration(record.payload,fixRevisionReviewConfiguration(revisionFeedback(),revision.nextIdentity,hostContextIds));
         const {handoff:boundHandoff,packageDigest,...body}=revisionFinalRegistration.request.payload.reviewPackage;
         need(digest(body)===(revisionLearningPackage??revisionRetrospectivePackage).packageDigest&&boundHandoff.sha256===revisionHandoff.handoffSha256
           &&boundHandoff.path===path.basename(revisionHandoffPath()),'final_package_mismatch');
@@ -458,13 +466,13 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(revision&&pending==='revision_final_review'&&revisionFinalStarted===null&&record.kind==='result','fix_history_invalid');
         need(record.payload.providerThreadId!==finalRecovery?.providerThreadId,'final_context_mismatch');
         shape(record.payload,['providerThreadId']);id(record.payload.providerThreadId);
-        const config=fixRevisionReviewConfiguration(revisionFeedback(),revision.nextIdentity);
-        need(![config.hostContextId,config.reviewer.contextId,...config.reviewer.excludedThreadIds].includes(record.payload.providerThreadId),'final_context_mismatch');
+        const config=fixRevisionReviewConfiguration(revisionFeedback(),revision.nextIdentity,hostContextIds);
+        need(![...fixHostContexts(config),config.reviewer.contextId,...config.reviewer.excludedThreadIds].includes(record.payload.providerThreadId),'final_context_mismatch');
         revisionFinalStarted=record.payload.providerThreadId;continue;
       }
       if(record.id==='fix-revision-final-result'){
         need(revision&&pending==='revision_final_review'&&record.kind==='result','fix_history_invalid');
-        revisionFinalResult=inspectFixFinalResult(record.payload,revisionFinalRegistration,fixRevisionReviewConfiguration(revisionFeedback(),revision.nextIdentity),revisionFinalStarted);
+        revisionFinalResult=inspectFixFinalResult(record.payload,revisionFinalRegistration,fixRevisionReviewConfiguration(revisionFeedback(),revision.nextIdentity,hostContextIds),revisionFinalStarted);
         pending=null;stage=revisionFinalResult.observationStatus==='completed'
           ?revisionFinalResult.review.verdict==='approved'?'revision_final_review_evidence_required':revisionFinalResult.review.verdict==='changes_requested'?'revision_review_limit_reached':'revision_final_review_blocked':'unknown';continue;
       }
@@ -528,7 +536,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       if(record.id==='fix-final-registered'){
         need(stage==='final_review_required'&&record.kind==='intent','fix_history_invalid');
-        finalRegistration=inspectFixFinalRegistration(record.payload,fixFinalReviewConfiguration(configuration,started));
+        finalRegistration=inspectFixFinalRegistration(record.payload,fixFinalReviewConfiguration(reviewConfiguration,started));
         need(!finalInvocations.has(finalRegistration.request.invocationId),'fix_review_recovery_mismatch');
         finalInvocations.add(finalRegistration.request.invocationId);
         if(finalRecovery)need(finalRegistration.request.invocationId!==finalRecovery.invocationId
@@ -541,14 +549,14 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(record.id==='fix-final-started'){
         need(pending==='final_review'&&finalStarted===null&&record.kind==='result','fix_history_invalid');
         shape(record.payload,['providerThreadId']);id(record.payload.providerThreadId);
-        const config=fixFinalReviewConfiguration(configuration,started);
+        const config=fixFinalReviewConfiguration(reviewConfiguration,started);
         need(!finalThreads.has(record.payload.providerThreadId),'final_context_mismatch');
-        need(![config.hostContextId,config.reviewer.contextId,...config.reviewer.excludedThreadIds].includes(record.payload.providerThreadId),'final_context_mismatch');
+        need(![...fixHostContexts(config),config.reviewer.contextId,...config.reviewer.excludedThreadIds].includes(record.payload.providerThreadId),'final_context_mismatch');
         finalStarted=record.payload.providerThreadId;finalThreads.add(finalStarted);continue;
       }
       if(record.id==='fix-final-result'){
         need(pending==='final_review'&&record.kind==='result','fix_history_invalid');
-        finalResult=inspectFixFinalResult(record.payload,finalRegistration,fixFinalReviewConfiguration(configuration,started),finalStarted);
+        finalResult=inspectFixFinalResult(record.payload,finalRegistration,fixFinalReviewConfiguration(reviewConfiguration,started),finalStarted);
         pending=null;stage=finalResult.observationStatus==='completed'
           ?finalResult.review.verdict==='approved'?'final_review_evidence_required':finalResult.review.verdict==='changes_requested'?'final_review_changes_requested':'final_review_blocked':'unknown';
         continue;
@@ -682,7 +690,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need((stage==='cause_review_required'||late&&pending===null&&(!finalRegistration||prior)
           &&correctionStages.includes(resumeStage))
           &&cause===null&&record.kind==='intent','fix_history_invalid');
-        cause=inspectCauseRegistration(record.payload,configuration);
+        cause=inspectCauseRegistration(record.payload,reviewConfiguration);
         const pkg=cause.request.payload.reviewPackage;
         if(late){
           let repairPackage=null;
@@ -720,11 +728,11 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(record.id==='fix-cause-started'){
         need(pending==='cause_review'&&started===null&&record.kind==='result','fix_history_invalid');
         shape(record.payload,['providerThreadId']);id(record.payload.providerThreadId);started=record.payload.providerThreadId;
-        need(![configuration.hostContextId,configuration.causeReview.contextId,finalStarted,...configuration.causeReview.excludedThreadIds].includes(started),'cause_registration_mismatch');continue;
+        need(![...hostContextIds,configuration.causeReview.contextId,finalStarted,...configuration.causeReview.excludedThreadIds].includes(started),'cause_registration_mismatch');continue;
       }
       if(record.id==='fix-cause-result'){
         need(pending==='cause_review'&&record.kind==='result','fix_history_invalid');
-        causeResult=inspectCauseResult(record.payload,cause,configuration,started);pending=null;
+        causeResult=inspectCauseResult(record.payload,cause,reviewConfiguration,started);pending=null;
         stage=causeResult.observationStatus!=='completed'?'unknown':causeResult.review.verdict==='approved'
           ?(causeResumeStage??(diagnosed.status==='design_change'?'design_change_required':'red_test_required'))
           :causeResult.review.verdict==='changes_requested'?'rediagnosis_required':'cause_review_blocked';continue;
@@ -1110,7 +1118,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const checks=reviewChecks(revising?start.revisionRegression:start.regression),selectedHandoff=revising?revisionHandoffPath():handoffPath();
       const pkg=createReviewPackage({root:configuration.reproduction.cwd,baseline,checks,handoffPath:selectedHandoff});
       if(start.finalReviewRecovery&&!revising)need(pkg.packageDigest===start.finalReviewRecovery.packageDigest,'fix_review_recovery_drift');
-      const run=createFixFinalReview({reviewPackage:pkg,configuration:revising?fixRevisionReviewConfiguration(revisionFeedback(),start.revision.nextIdentity):fixFinalReviewConfiguration(configuration,start.causeReview?.providerThreadId??null),
+      const run=createFixFinalReview({reviewPackage:pkg,configuration:revising?fixRevisionReviewConfiguration(revisionFeedback(),start.revision.nextIdentity,hostContextIds):fixFinalReviewConfiguration(reviewConfiguration,start.causeReview?.providerThreadId??null),
         timeoutMs:configuration.reproduction.timeoutMs},finalReview);
       const controller=new AbortController();active=controller;let registered=false;
       try{
@@ -1403,7 +1411,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         if(types.isPromise(grant)){grant.catch(()=>{});need(false,'cause_authorization_invalid');}
         need(!controller.signal.aborted,'cancelled');
         if(digest(grant)===digest({status:'denied',code:'permission_denied'}))return {...project(),reason:'permission_denied'};
-        const registration=inspectCauseRegistration({request,authorizationAt,registeredAt:Date.now(),grant},configuration);
+        const registration=inspectCauseRegistration({request,authorizationAt,registeredAt:Date.now(),grant},reviewConfiguration);
         append('fix-cause-registered','intent',registration);
         registered=true;
         const dispatchAt=Date.now();need(dispatchAt>=registration.registeredAt&&dispatchAt<grant.expiresAt,'grant_expired');
@@ -1414,7 +1422,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           try{
             const event=json(raw,64*1024);
             inspectProviderCauseReview(JSON.stringify({...observation({status:'failed',code:'in_progress'}),events:[...events,event]}),
-              JSON.stringify(causeExpectation(request,configuration)));
+              JSON.stringify(causeExpectation(request,reviewConfiguration)));
             if(event.event==='thread.started'){
               append('fix-cause-started','result',{providerThreadId:event.provider_thread});started=event.provider_thread;
             }
@@ -1434,7 +1442,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         }finally{sealed=true;controller.signal.removeEventListener('abort',rejectAbort);}
         if(invalid||controller.signal.aborted)return project();
         const value={dispatchAt,observation:observation(timedOut?{status:'failed',code:'timeout'}:result)};
-        inspectCauseResult(value,registration,configuration,started);
+        inspectCauseResult(value,registration,reviewConfiguration,started);
         append('fix-cause-result','result',value);
         if(project().causeReview?.observationStatus==='completed')publishCause();
         return project();

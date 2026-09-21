@@ -140,4 +140,6 @@ export function reviewExclusions(invocation,calls,developerContextId){
 // Host configuration allows 32 exclusions. FIX second-round review additionally
 // excludes the cause reviewer, first implementation reviewer and logical context.
 // Preserve that full union; ordinary two-author-attempt callers still fit.
-export const MAX_REVIEW_EXCLUSIONS=35;
+// A run resumed in a new session adds that session's host context to the union,
+// so the bound carries one entry more than a single-session run ever needs.
+export const MAX_REVIEW_EXCLUSIONS=36;
