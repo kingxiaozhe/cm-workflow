@@ -96,3 +96,21 @@ test('the batch driver decides retryability from the shared predicate', async ()
   assert.equal(developmentRetryable({state:'blocked',code:'package_mismatch'}),false);
   assert.equal(developmentRetryable({state:'unknown',code:'verification_precheck_failed'}),false);
 });
+
+// The gate is fed by task-runner, and the previous version sent only the
+// verification section. Unit tests on the validator alone could not see that,
+// which is exactly how the description requirements slipped through to the
+// independent review. Assert the payload the runner actually builds.
+test('the gate receives both the task description and the verification section', async () => {
+  const {default:fs}=await import('node:fs');
+  const source=fs.readFileSync(new URL('../runtime/js/cm-ai/task-runner.mjs',import.meta.url),'utf8');
+  const body=/async function verificationSatisfied\(checks\) \{([\s\S]*?)\n  \}/.exec(source);
+  assert.notEqual(body,null,'verificationSatisfied not found');
+  assert.match(body[1],/specification\?\.task\?\.description/);
+  assert.match(body[1],/specification\?\.task\?\.verification/);
+  // Both must reach the payload, each only when actually written.
+  assert.match(body[1],/written\(description\)\?\{description\}/);
+  assert.match(body[1],/written\(verification\)\?\{verification\}/);
+  // The gate steps aside only when neither exists.
+  assert.match(body[1],/if\(!written\(verification\)&&!written\(description\)\)return true;/);
+});

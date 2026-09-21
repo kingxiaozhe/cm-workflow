@@ -578,13 +578,19 @@ export function createTaskRunner(options) {
   // verification never spends an independent review round.
   async function verificationSatisfied(checks) {
     if(verificationGate===null)return true;
-    // No written verification means nothing to check against; the gate stays out
-    // of the way rather than inventing requirements of its own.
+    // The description carries hard requirements too ("also confirm X/Y/Z do not
+    // regress", "do not modify A"), and a gate that reads only the verification
+    // section lets exactly those through to the independent review. Both are
+    // sent; neither is required to exist.
     const specification=Object.hasOwn(original,'specification')?verifySpecificationMaterial(original):null;
     const verification=specification?.task?.verification??null;
-    if(typeof verification!=='string'||verification.trim().length===0)return true;
+    const description=specification?.task?.description??null;
+    const written=value=>typeof value==='string'&&value.trim().length>0;
+    if(!written(verification)&&!written(description))return true;
     const verdict=json(await bounded(verificationGate,
-      json({identity:{...config.identity,attempt},verification,checks})));
+      json({identity:{...config.identity,attempt},
+        ...(written(description)?{description}:{}),
+        ...(written(verification)?{verification}:{}),checks})));
     shape(verdict,['satisfied']);need(typeof verdict.satisfied==='boolean','invalid_result');
     return verdict.satisfied;
   }
