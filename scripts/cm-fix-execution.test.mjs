@@ -125,3 +125,22 @@ test('resuming never rewrites the durable host or accepts a reviewer-shaped sess
     hostContextId:reviewer.contextId}),{code:'invalid_cause_reviewer'});
   openFixExecution({...options,configuration,create:false,hostContextId:'actual-resumed-host'}).close();
 }));
+
+// 证据文件名由任务 slug 和轮次拼出来，跟 runId 无关，所以两次运行用同一个 taskId
+// 就会写同一批文件。这个冲突原本要等红灯测试去发布输出时才炸——那时候 intent
+// 已经登记，运行直接留在 unknown 且不可重派。名字在建运行时全都算得出来。
+test('a run whose evidence filenames are already taken is refused before anything is recorded',()=>fixture(async(options)=>{
+  const reviews=path.join(options.specsRoot,'.reviews');
+  fs.mkdirSync(reviews,{recursive:true,mode:0o700});
+  const taken=path.join(reviews,`fix-demo-${identity.taskId}-r1.md`);
+  fs.writeFileSync(taken,'another run already published under this task id');
+  assert.throws(()=>openFixExecution(options),{code:'fix_evidence_name_taken'});
+  // 拒绝发生在任何记录之前：没有留下半个运行
+  assert.equal(fs.existsSync(path.join(reviews,'.execution',identity.runId)),false);
+  // 换一个任务编号就能正常建起来，说明拦的是重名而不是别的
+  const renamed={...options,identity:{...identity,taskId:'T-FIX-demo-two'}};
+  openFixExecution(renamed).close();
+  // 已经建起来的运行，恢复时不会被自己写下的证据挡住
+  fs.writeFileSync(path.join(reviews,'fix-demo-two-T-FIX-demo-two-r1.md'),'its own evidence');
+  openFixExecution({...renamed,create:false}).close();
+}));
