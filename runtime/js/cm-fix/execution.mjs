@@ -35,7 +35,7 @@ import {inspectFixInvestigation,fixInvestigationRequest} from './investigation.m
 import {finishFix,fixCompletionProjection,eventsAt,isFixObservationExit} from './finish.mjs';
 import {specsPermissionArgs} from '../cm-ai/codex-config.mjs';
 import {protectedFixBridge} from './protected-edits.mjs';
-import {fixArchiveRoot,fixDossierRelative} from './layout.mjs';
+import {fixArchiveRoot,fixDossierRelative,assertFixEvidenceNamesFree} from './layout.mjs';
 import {isVisual,verifyVisualCarrier} from './visual.mjs';
 
 const observationId=(kind,cycle)=>`fix-observation-${cycle===1?'':cycle+'-'}${kind}`;
@@ -129,6 +129,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     shape(configuration.repair,['scope','requirements']);need(runBaseline,'baseline_configuration_required');
     validateDeveloperScope(configuration.repair.scope);
   }
+  if(create)assertFixEvidenceNamesFree(evidenceSpecsRoot,identity,configuration);
   if(create&&Object.hasOwn(configuration,'qaSource'))inspectFixQaSource({specsRoot,identity,configuration});
   const store=openExecutionStore({specsRoot,identity:{repositoryId:identity.repositoryId,runId:identity.runId},create,
     fingerprints:{workflow:digest('cm-fix-stages-v1'),config:digest(configuration),inputs:digest(identity)}});
