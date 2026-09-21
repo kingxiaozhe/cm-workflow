@@ -56,7 +56,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "22"
+          node-version: "24.14"
 
       - name: Validate runtime contracts
         run: ./scripts/cm-check-runtime.sh
@@ -76,49 +76,68 @@ jobs:
       - name: Run shell compatibility fixtures
         run: bash scripts/test-shell-compat.sh
 
-      - name: Run workflow config fixtures
-        run: node --test scripts/cm-workflow-config.test.mjs
 
-      - name: Run cm-ai product admission fixtures
-        run: node --test scripts/cm-ai-admission.test.mjs
 
-      - name: Run reviewer transport budget fixtures
-        run: node --test scripts/cm-ai-review-timeout-config.test.mjs
 
-      - name: Run QA budget and recovery argument fixtures
-        run: node --test scripts/cm-ai-qa-recovery-args.test.mjs
 
-      - name: Run verification precheck gate fixtures
-        run: node --test scripts/cm-ai-verification-gate.test.mjs
 
-      - name: Exercise checklist coverage reminder
-        run: node --test scripts/cm-ai-checklist-coverage.test.mjs
 
-      - name: Exercise cross-session fix host identities
-        run: node --test scripts/cm-fix-cross-session-host.test.mjs
 
-      - name: Run execution collapse diagnostic fixtures
-        run: node --test scripts/cm-ai-execution-diagnostic.test.mjs
 
-      - name: Run host request failure diagnostic fixtures
-        run: node --test scripts/cm-host-session-diagnostic.test.mjs
 
-      - name: Run JavaScript log writer fixtures
-        run: node --test scripts/cm-log-event.test.mjs
 
-      - name: Run JavaScript test contract fixtures
-        run: node --test scripts/validate-test-cases.test.mjs
 
       - name: Check legacy workflow config harness
         run: python3 scripts/test-workflow-config.py
 
       - name: Run task handoff and review gate fixtures
-        run: node --test scripts/cm-task-gate.test.mjs && python3 scripts/test-task-gate.py
+        run: python3 scripts/test-task-gate.py
 
       - name: Scan Git history with Gitleaks
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 之前这里是一份手写的 15 个测试文件清单，而仓库里有 118 份——103 份从来没在 CI 跑过，
+  # 包括 cm-fix 的持久化核心。本次修的四个缺陷本地跑全套都能发现，CI 一个都发现不了。
+  # 改成通配符跑全部，新写的测试自动被覆盖，清单不会再漂。
+  #
+  # EXCLUDED 里那几份要启动 Codex 沙箱，而它在 Linux 上靠 bubblewrap 建网络隔离，
+  # GitHub 托管机器不给这个权限（bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted），
+  # 跟登录无关，装上 codex 也没用。它们改由 scripts/cm-release-smoke.sh 在发版时覆盖——
+  # 那个脚本本来就要求本机装了 codex 和 byz，是天然的落点。
+  # 下面第一步会断言排除名单正好是这几份：想往里加东西就得改这句，改动会出现在评审里。
+  js-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      # 持久化存储要求 Node >= 24.14，低于它整批核心测试会被平台闸门当场挡掉。
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.14"
+
+      - name: Pin the excluded set
+        run: |
+          expected='cm-ai-batch-host cm-ai-bootstrap cm-ai-host cm-ai-multi-root cm-ai-nested-execution cm-fix-protected-edits cm-host-check'
+          [ "$(echo $expected)" = "$EXCLUDED" ] || { echo "排除名单变了，请在评审中说明理由"; exit 1; }
+        env:
+          EXCLUDED: cm-ai-batch-host cm-ai-bootstrap cm-ai-host cm-ai-multi-root cm-ai-nested-execution cm-fix-protected-edits cm-host-check
+
+      - name: Run every JavaScript test except the Codex-sandbox set
+        run: |
+          set -o pipefail
+          pattern="scripts/(cm-ai-batch-host|cm-ai-bootstrap|cm-ai-host|cm-ai-multi-root|cm-ai-nested-execution|cm-fix-protected-edits|cm-host-check)\.test\.mjs$"
+          mapfile -t files < <(ls scripts/*.test.mjs | grep -vE "$pattern")
+          echo "running ${#files[@]} test files"
+          node --test "${files[@]}"
 
   windows-install:
     runs-on: windows-latest
