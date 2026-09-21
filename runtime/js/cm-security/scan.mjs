@@ -45,7 +45,13 @@ const git=(project,args,optional=false)=>{
   need(!result.error&&result.status===0,'git_read_failed');return result.stdout;
 };
 const paths=bytes=>decode(bytes).split('\0').filter(Boolean);
-const protectedPath=file=>/(^|\/)(?:\.env(?:\..*)?|credentials[^/]*|id_rsa|id_ed25519)(\/|$)|\.(?:pem|key|p12|pfx)$/i.test(file);
+// `.env` 家族默认按真实密钥保护、不读取。但 .env.example / .env.sample /
+// .env.template / .env.dist 是提交进仓库、给人照抄的占位文件，恰恰需要被扫到——
+// 真密钥误写进示例文件是常见事故。这里只放行这四种明确的示例后缀，
+// 其余 .env.* （.env.local、.env.production 等）保持保护。
+const exampleEnv=/(^|\/)\.env\.(?:example|sample|template|dist)$/i;
+const protectedPath=file=>!exampleEnv.test(file)
+  &&/(^|\/)(?:\.env(?:\..*)?|credentials[^/]*|id_rsa|id_ed25519)(\/|$)|\.(?:pem|key|p12|pfx)$/i.test(file);
 const controlPath=file=>/(^|\/)(?:\.gitignore|\.gitleaks[^/]*|\.semgrep[^/]*|osv-scanner\.toml|\.gitmodules)$/.test(file);
 const maps=['docs/architecture.md','docs/codebase-context/00-index.md','docs/codebase-context/07-business-logic.md'];
 const locks=/(^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|poetry\.lock|Pipfile\.lock|requirements[^/]*\.txt|Cargo\.lock|go\.sum|Gemfile\.lock|composer\.lock|packages\.lock\.json)$/;

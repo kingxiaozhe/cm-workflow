@@ -58,6 +58,30 @@ test('no change is distinct from partial and missing tools do not pass',t=>{
   assert.ok(r.tools.every(v=>v.reason==='tool_missing'));assert.equal(r.aiReview,'pending');
 });
 
+// .env.example and friends are committed placeholder files meant to be copied.
+// Treating them as real secret files hid exactly the case worth scanning: a real
+// key pasted into the example. Only these four explicit suffixes are readable.
+test('committed env examples are scanned while real env files stay protected',t=>{
+  const f=fixture(t);
+  for(const name of ['.env.example','.env.sample','.env.template','.env.dist'])f.put(name,'API_KEY=replace-me\n');
+  f.put('nested/.env.example','TOKEN=replace-me\n');
+  for(const name of ['.env','.env.local','.env.production','.env.example.bak'])f.put(name,'API_KEY=real\n');
+  f.git('add','.');
+  const r=inventory(f.project,{all:true});
+  const gap=name=>r.gaps.some(v=>v.path===name&&v.reason==='protected_path_not_read');
+  const read=name=>r.files.some(v=>v.path===name);
+  for(const name of ['.env.example','.env.sample','.env.template','.env.dist','nested/.env.example']){
+    assert.equal(read(name),true,`${name} 应当被扫描`);
+    assert.equal(gap(name),false,`${name} 不应记为受保护跳过`);
+  }
+  // Real secret files keep their existing protection, including a suffix that
+  // merely contains "example" rather than ending with it.
+  for(const name of ['.env','.env.local','.env.production','.env.example.bak']){
+    assert.equal(gap(name),true,`${name} 应当仍被保护`);
+    assert.equal(read(name),false,`${name} 不应被读取`);
+  }
+});
+
 test('symlink ancestor, protected files and scanner controls are visible gaps',t=>{
   const f=fixture(t);f.put('dir/file.py','ok');f.put('.env','private fixture');f.put('.gitleaks.toml','malicious rule');f.git('add','.');
   fs.renameSync(path.join(f.project,'dir'),path.join(f.base,'outside'));
