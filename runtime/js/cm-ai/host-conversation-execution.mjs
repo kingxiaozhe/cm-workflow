@@ -17,6 +17,7 @@ import {codexWorker,preflightMatches} from './worker-codex.mjs';
 import {createHostReviewAuthority} from './host-review-authority.mjs';
 import {createHostWorkflowCapabilities} from './host-workflow-capabilities.mjs';
 import {resolveHostRole} from './host-role-routing.mjs';
+import {checklistGaps} from './checklist-coverage.mjs';
 import {specsPermissionArgs} from './codex-config.mjs';
 import {createProjectExecution} from './host-project-execution.mjs';
 import {codeProjectPaths,codeProjectInstructionPaths,resolveCodeProjects} from './code-projects.mjs';
@@ -59,7 +60,30 @@ export function readVerificationPrecheck(raw){
     }
   }
   return freeze({satisfied:items.every(item=>item.satisfied===true),
-    unsatisfied:items.filter(item=>item.satisfied!==true).map(item=>item.requirement)});
+    unsatisfied:items.filter(item=>item.satisfied!==true).map(item=>item.requirement),
+    evidence:items.map(item=>item.evidence).join('\n')});
+}
+
+// The delivered evidence usually lives in the scope files (a walkthrough
+// document, a baseline note), not in the gate answers, so the coverage
+// reminder reads both. Unreadable, oversized, symlinked or binary entries are
+// skipped: a file this reminder cannot read is the review's problem, not its
+// own, and it must never turn a readable delivery into a failure.
+const COVERAGE_FILE_LIMIT=256*1024;
+export function deliveredText(codeProject,scope){
+  if(typeof codeProject!=='string'||!Array.isArray(scope))return '';
+  const parts=[];
+  for(const entry of scope.slice(0,64)){
+    if(typeof entry!=='string'||entry.length===0)continue;
+    try{
+      const file=path.join(codeProject,entry);
+      const info=fs.lstatSync(file);
+      if(!info.isFile()||info.isSymbolicLink()||info.size>COVERAGE_FILE_LIMIT)continue;
+      const body=fs.readFileSync(file,'utf8');
+      if(!body.includes('\u0000'))parts.push(body);
+    }catch{/* a file the reminder cannot read simply contributes nothing */}
+  }
+  return parts.join('\n');
 }
 
 export function resolveReviewTimeout(review,protection){
@@ -150,6 +174,18 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
       process.stderr.write(JSON.stringify({diagnostic:'verification_precheck_failed',
         task:request.identity.taskId,attempt:request.identity.attempt,
         unsatisfied:verdict.unsatisfied})+'\n');
+    }catch{/* diagnostics never change the verdict */}
+    // Advisory only. An enumerated list in the task text whose entries are not
+    // all present in the delivery is the cheapest rejection to catch, but
+    // wording differs legitimately ("列表为空" vs "空列表"), so this reports and
+    // never rejects: the verdict below is the gate's, untouched.
+    try{
+      const gaps=checklistGaps([request.description,request.verification]
+        .filter(text=>typeof text==='string').join('\n'),
+        [verdict.evidence,deliveredText(definition.codeProject,definition.scope)].join('\n'));
+      if(gaps.length>0)process.stderr.write(JSON.stringify({diagnostic:'checklist_coverage',
+        task:request.identity.taskId,attempt:request.identity.attempt,advisory:true,
+        gaps:gaps.map(gap=>({total:gap.total,missing:gap.missing}))})+'\n');
     }catch{/* diagnostics never change the verdict */}
     return {satisfied:verdict.satisfied};
   }:null;
