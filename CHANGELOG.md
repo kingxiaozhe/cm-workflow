@@ -5,6 +5,10 @@
 
 ## 未发布
 
+（暂无）
+
+## 0.17.0 — 2026-09-21
+
 **cm-fix 收尾只认 delivery:diff，把 cm-init 自己生成的默认配置锁在门外**
 
 - `finish` 原本硬要求 `policies.delivery === 'diff'`，否则 `fix_delivery_authorization_required`。而 `cm-init` 给任何带 remote 的仓库生成的就是 `draft-mr`，于是这类项目的 JS 运行**永远走不到收尾**，档案、METRICS、`task_done` 一样都写不成。这条限制原本写在 `js-host.md` 里，但它和同一套体系的其它约定互相矛盾：`runtime/logging.md` 把 Git 交付定义成独立的 `delivery` 事件（`commit`/`push`/`pull_request`），cm-ai 在任何交付模式下都照常完成任务，cm-fix 自己的 SKILL 第 7 步也明写 branch/draft-mr 怎么提交。
