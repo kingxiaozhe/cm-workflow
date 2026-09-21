@@ -5,9 +5,7 @@ import path from 'node:path';
 import {types} from 'node:util';
 import {readReviewSourceFiles} from '../cm-ai/review-package.mjs';
 import {id,need,validIdentity} from '../cm-ai/effect-contract.mjs';
-
-const header='| 任务 | Feature | 开始 | 结束 | 审查轮次 | 独立审查拦截 | QA | 人工介入(次:原因) |';
-const separator='| --- | --- | --- | --- | --- | --- | --- | --- |';
+import {METRICS_HEADER as header,METRICS_SEPARATOR as separator,hasMetricsHeader} from '../cm-ai/metrics-table.mjs';
 const cell=value=>String(value).replaceAll('|','&#124;').replace(/[\r\n]+/g,' ');
 const same=(event,identity)=>event.workflow==='cm-fix'&&event.node==='FIX'&&event.run_id===identity.runId
   &&event.repository_id===identity.repositoryId&&event.task===identity.taskId;
@@ -62,7 +60,7 @@ export function appendFixMetrics({specsRoot,identity,dossierFile},{assertOwned})
       const current=fs.lstatSync(target);need(!current.isSymbolicLink()&&current.dev===stat.dev&&current.ino===stat.ino&&current.size===stat.size,'metrics_file_changed');
       owned();return {...record,path:target,deduplicated:true};
     }
-    if(before.length)need(content.split(/\r?\n/).includes(header),'metrics_table_invalid');
+    if(before.length)need(hasMetricsHeader(content),'metrics_table_invalid');
     const bytes=Buffer.from((before.length?(content.endsWith('\n')?'':'\n'):`${header}\n${separator}\n`)+record.line+'\n');
     need(before.length+bytes.length<=1024*1024,'limit_exceeded');owned();
     const current=fs.lstatSync(target);need(!current.isSymbolicLink()&&current.dev===stat.dev&&current.ino===stat.ino&&current.size===stat.size,'metrics_file_changed');

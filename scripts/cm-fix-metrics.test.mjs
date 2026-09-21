@@ -56,3 +56,35 @@ test('FIX metrics projects completed log evidence, preserves content, deduplicat
     assert.throws(()=>appendFixMetrics(options,control));assert.equal(fs.readFileSync(path.join(root,'fixes',dossierFile),'utf8'),body);
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+
+// 「Codex拦截」在 N4-review.md 里被明确记为「保持原列顺序，语义升级为独立审查拦截」，
+// 也就是同一列改个名。但表头是整行精确匹配，于是任何改名前就存在的 METRICS.md 都会被
+// 硬拒，收尾整个走不完，而且没有迁移路径。
+test('FIX metrics appends under the renamed legacy header instead of refusing the file',()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fix-metrics-legacy-')));
+  try{
+    fs.mkdirSync(path.join(root,'fixes'));
+    const dossierFile='20260907-value.md',body='Synthetic completed dossier, fixture only.\n';
+    fs.writeFileSync(path.join(root,'fixes',dossierFile),body);
+    const identity={repositoryId:'fixture',runId:'metrics-legacy',taskId:'T-FIX-value',attempt:1};
+    const common={workflow:'cm-fix',node:'FIX',repository_id:identity.repositoryId,run_id:identity.runId,task:identity.taskId,attempt:1};
+    const events=[{...common,event:'task_start',at:'2026-09-07T01:00:00Z',event_id:'start'},
+      {...common,event:'review',phase:'complete',review_kind:'implementation',round:1,result:'approved',finding_count:0,package_digest:'a'.repeat(64),event_id:'review'},
+      {...common,event:'task_done',at:'2026-09-07T01:01:00Z',event_id:'done',result:'completed',dossier_file:`fixes/${dossierFile}`,
+        dossier_sha256:createHash('sha256').update(body).digest('hex'),package_digest:'a'.repeat(64),walkthrough_result:'passed'}];
+    fs.writeFileSync(path.join(root,'运行日志.jsonl'),events.map(row=>JSON.stringify(row)).join('\n')+'\n');
+    const legacy='| 任务 | Feature | 开始 | 结束 | 审查轮次 | Codex拦截 | QA | 人工介入(次:原因) |';
+    const existing=`User notes stay.\n\n${legacy}\n| --- | --- | --- | --- | --- | --- | --- | --- |\n| T-other | other | a | b | 1 | 0 | — | 0 |\n`;
+    fs.writeFileSync(path.join(root,'METRICS.md'),existing);
+    const options={specsRoot:root,identity,dossierFile},control={assertOwned(){}};
+    const written=appendFixMetrics(options,control);
+    const bytes=fs.readFileSync(written.path,'utf8');
+    assert(bytes.startsWith(existing),'用户原有内容必须一字不动');
+    assert(bytes.includes(written.line),'新行要追加进同一张表');
+    assert(!bytes.includes('独立审查拦截'),'不擅自改写用户文件里的表头');
+    assert.equal(appendFixMetrics(options,control).deduplicated,true);
+    // 认得出的旧表头才放行；真正不是这张表的文件照旧拒绝。
+    fs.writeFileSync(path.join(root,'METRICS.md'),'User custom table, not recognized.\n');
+    assert.throws(()=>appendFixMetrics(options,control),{code:'metrics_table_invalid'});
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
