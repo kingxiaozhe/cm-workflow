@@ -92,3 +92,36 @@ test('legacy observation without attempts can publish, finish and resume without
     assert.equal(fs.readFileSync(path.join(cwd,'visits'),'utf8'),'1');
   }finally{owner.close();}
 }));
+
+const reviewer={reviewerId:'fix-cause-reviewer',adapterId:'codex-cause-review-adapter',provider:'codex',
+  requestedModel:'gpt-6-astra',contextId:'fix-cause-review-context',excludedThreadIds:[]};
+const statePath=options=>path.join(options.specsRoot,'.reviews','.execution',identity.runId,'state.json');
+
+test('a later session resumes the original run without rewriting its records',()=>fixture(async(options,cwd)=>{
+  const bridge=createHostToolBridge();
+  bridge.attach(row=>{if(row.type==='host_request')bridge.accept({type:'host_result',sessionId:row.sessionId,
+    callId:row.callId,requestDigest:row.requestDigest,result:cause});});
+  let owner=openFixExecution(options,{bridge});
+  try{assert.equal((await owner.advance({authorized:true})).stage,'red_test_required');}finally{owner.close();}
+  const before=fs.readFileSync(statePath(options));
+  // The chat session that created the run is gone; the durable record keeps it.
+  owner=openFixExecution({...options,create:false,hostContextId:'actual-resumed-host'},{bridge});
+  try{
+    assert.equal((await owner.advance()).stage,'red_test_required');
+    assert.equal(fs.readFileSync(path.join(cwd,'visits'),'utf8'),'1');
+  }finally{owner.close();bridge.close();}
+  assert.deepEqual(fs.readFileSync(statePath(options)),before);
+  assert.equal(JSON.parse(before).records[0].payload.configuration.hostContextId,'actual-fixture-host');
+}));
+
+test('resuming never rewrites the durable host or accepts a reviewer-shaped session',()=>fixture(async(options)=>{
+  const configuration={...options.configuration,causeReview:reviewer};
+  openFixExecution({...options,configuration}).close();
+  // Moving the durable host is still a different run configuration.
+  assert.throws(()=>openFixExecution({...options,configuration,create:false,
+    configuration:{...configuration,hostContextId:'other-host'}}),{code:'fingerprint_mismatch'});
+  // A resumed session is still a host, so it cannot be the independent reviewer.
+  assert.throws(()=>openFixExecution({...options,configuration,create:false,
+    hostContextId:reviewer.contextId}),{code:'invalid_cause_reviewer'});
+  openFixExecution({...options,configuration,create:false,hostContextId:'actual-resumed-host'}).close();
+}));
