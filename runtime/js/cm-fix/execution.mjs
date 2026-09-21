@@ -29,7 +29,7 @@ import {publishFixFinalEvidence} from './final-review-evidence.mjs';
 import {checkN5} from '../../../scripts/cm-task-gate.mjs';
 import {readProjectInstructionContext} from '../cm-ai/cm-ai-context-refresh.mjs';
 import {publishFixDossier,publishFixObservationDossier,readFixObservationArchive} from './dossier.mjs';
-import {readFixWalkthrough,fixWalkthroughBinding,createFixWalkthrough,inspectFixWalkthrough,verifyFixWalkthroughEvidence} from './walkthrough.mjs';
+import {readFixWalkthrough,fixWalkthroughBinding,createFixWalkthrough,inspectFixWalkthrough,verifyFixWalkthroughEvidence,walkthroughCoversDiagnosis} from './walkthrough.mjs';
 import {logFixEvent} from './start.mjs';
 import {inspectFixInvestigation,fixInvestigationRequest} from './investigation.mjs';
 import {finishFix,fixCompletionProjection,eventsAt,isFixObservationExit} from './finish.mjs';
@@ -761,9 +761,17 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           diagnosed=diagnosis(record.payload.value);
           stage=diagnosed.status==='needs_evidence'?'observation':diagnosed.status==='design_change'?'cause_review_required':
             diagnosed.crossLayer||diagnosed.affectedModules.length>=3?'cause_review_required':'red_test_required';
+
         }
       }
     }
+    // 走查声明的模块和诊断对不上，这一轮无论如何走不到收尾。原来要等走查那一步才
+    // 发现，而那已经在花钱做完独立审查之后——整轮白跑。诊断一落盘就判得出来。
+    // 只在「刚诊断完、还没往下走」时改阶段：已经跑过头的旧记录保持原样。回放循环
+    // 会拿当前阶段去校验下一条记录，所以这个判断必须放在循环之后，不能插在循环里。
+    if(configuration.walkthrough&&diagnosed?.status==='diagnosed'
+      &&['red_test_required','cause_review_required'].includes(stage)
+      &&!walkthroughCoversDiagnosis(configuration.walkthrough,diagnosed))stage='walkthrough_configuration_mismatch';
     if(causeResult?.review?.verdict==='approved'&&stage!=='cancelled'&&repairBaseline===null){
       try{
         const current=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,

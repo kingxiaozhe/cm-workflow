@@ -29,10 +29,16 @@ export function readFixWalkthrough(raw,cwd){
   return config;
 }
 
+// 走查声明的模块要和诊断结论一一对上。抽成单独的判定，好让诊断刚落盘时就能问一次
+// ——原来只有走查那一步会问，而那已经在花钱做完独立审查之后了。
+export function walkthroughCoversDiagnosis(configuration,diagnosis){
+  const covered=new Set(configuration.flows.flatMap(flow=>flow.modules));
+  return diagnosis.affectedModules.length===covered.size
+    &&diagnosis.affectedModules.every(module=>covered.has(module));
+}
 export function fixWalkthroughBinding({identity,packageDigest,diagnosis,configuration}){
   validIdentity(identity);hex(packageDigest);
-  const covered=new Set(configuration.flows.flatMap(flow=>flow.modules));
-  need(diagnosis.affectedModules.length===covered.size&&diagnosis.affectedModules.every(module=>covered.has(module)),'walkthrough_module_mismatch');
+  need(walkthroughCoversDiagnosis(configuration,diagnosis),'walkthrough_module_mismatch');
   return json({identity,packageDigest,diagnosisDigest:digest(diagnosis),configurationDigest:digest(configuration)});
 }
 
