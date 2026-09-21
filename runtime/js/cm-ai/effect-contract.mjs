@@ -1,7 +1,9 @@
 // Shared strict data boundary for S2b. No dispatch or approval authority.
 import { digest } from './contracts.mjs';
 export { digest };
-export const need=(ok,code='invalid_input')=>{if(!ok){const e=new Error(code);e.code=code;throw e;}};
+export const need=(ok,code='invalid_input')=>{
+  if(!ok){const e=new Error(code);e.code=code;const at=raisedAt(e);if(at!==null)e.origin=at;throw e;}
+};
 // Explicit host call budget, shared by live initialization and journal replay.
 // This is not the short-lived authorization grant expiry.
 export const validCallTimeout=value=>need(Number.isInteger(value)&&value>=1&&value<=3600000);
@@ -18,9 +20,39 @@ const failureCodes=new Set(['invalid_input','limit_exceeded','call_timeout','can
 // error.message, which can carry arbitrary provider output or source text.
 const diagnosticText=value=>typeof value==='string'&&value.length>0&&value.length<=1024
   &&!/[\x00-\x08\x0b-\x1f]/.test(value);
+// The code alone is often not actionable: fix_closeout_unavailable is raised in
+// four different places and the peer only ever sees host_request_failed, so the
+// only way to tell them apart was to copy the host and add prints by hand. Name
+// the call site as well. Two boundaries hold: the location is rendered relative
+// to the runtime root, so no absolute path (and no username) is emitted, and only
+// frames inside this runtime are reported — never a caller's file, and never
+// error.message, which can carry arbitrary provider output.
+const runtimeRoot=new URL('../',import.meta.url).href;
+const frameLocation=/(?:\(|\bat )(file:\/\/\S*?):(\d+):\d+\)?$/;
+// Only ever called from need(), on an Error this module just constructed, so
+// reading .stack cannot run a foreign getter. executionDiagnostic below still
+// reads origin the same way as every other field: as an own data property,
+// never by dereferencing an accessor on an object someone else made.
+function raisedAt(error) {
+  try {
+    const stack=error.stack;
+    if(typeof stack!=='string')return null;
+    for(const line of stack.split('\n')) {
+      const match=frameLocation.exec(line.trim());
+      if(!match || !match[1].startsWith(runtimeRoot))continue;
+      const relative=decodeURIComponent(match[1].slice(runtimeRoot.length));
+      // need() lives here, so its own frame is never the scene; the first frame
+      // outside this file is the contract that actually refused.
+      if(relative==='cm-ai/effect-contract.mjs')continue;
+      const origin=`${relative}:${match[2]}`;
+      return diagnosticText(origin)?origin:null;
+    }
+  } catch {/* diagnostics never change the failure path */}
+  return null;
+}
 export function executionDiagnostic(error) {
   const detail={};
-  for(const name of ['code','syscall','path','dest']) {
+  for(const name of ['code','syscall','path','dest','origin']) {
     const d=Object.getOwnPropertyDescriptor(error,name);
     if(d && Object.hasOwn(d,'value') && diagnosticText(d.value))detail[name]=d.value;
   }
