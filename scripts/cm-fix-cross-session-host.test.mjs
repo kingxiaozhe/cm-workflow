@@ -87,8 +87,13 @@ test('--original-host-context is refused when creating a run', () => {
     };
     assert.match(run(['--mode', 'create', '--host-context', LIVE, '--allow-reproduction',
       '--original-host-context', DURABLE]), /fix_original_host_context_unavailable/);
-    // Creating without it still works, which is what proves the refusal is the flag.
-    assert.match(run(['--mode', 'create', '--host-context', LIVE, '--allow-reproduction']), /host_ready/);
+    // Creating without it gets past that refusal, which is what proves the refusal is
+    // the flag and not the rest of the launch. How far past depends on the host: the
+    // durable store needs Node >= 24.14, and CI validates on 22, where the platform
+    // gate stops the launch later in openFixExecution. Either outcome clears the flag
+    // check above it; only fix_original_host_context_unavailable would not.
+    assert.match(run(['--mode', 'create', '--host-context', LIVE, '--allow-reproduction']),
+      /host_ready|unsupported_platform/);
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });
 
