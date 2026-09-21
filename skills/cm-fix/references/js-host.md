@@ -50,6 +50,17 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-fix-host.mjs" serve \
 复现/红测/存量基线/修后及审后回归/命令走查使用同一原生specs只读沙箱；日志、证据和Learning仍由原owner负责。
 固定命令执行器使用本机Codex sandbox，不调用模型；Claude宿主的推理和Review仍属Claude，不借用Codex身份或诊断。
 
+沙箱里 `network={enabled=false}`，而这个开关同时管着 unix domain socket 的 listen。于是**凡是要开本地
+IPC socket 的命令都会失败**，典型的是 `tsx` CLI（启动时在 TMPDIR 建 `<pid>.pipe`，报
+`Error: listen EPERM`），`vitest` 等同理；写 TMPDIR 文件本身不受影响。这不是配置能绕开的：放开它就等于
+给测试命令放开整个外网。配 `baseline.commands` / `redTest` / `walkthrough` 时请避开这类命令，例如把
+`npm test`（内部串联 12 个 `tsx xxx.test.ts`）换成逐文件的
+`node --import ./node_modules/tsx/dist/loader.mjs <file>`，覆盖面不变而沙箱能跑。
+
+沙箱内失败只会留下 `outcome:"failed"` 和 `host check exited N`——原始输出**有意**不进证据（可能含密钥、
+且不稳定）。要看真实原因，手工重放 `specsPermissionArgs` 拼出的那条 `codex sandbox ... -- <命令>`。
+配置里留了跑不了的命令，代价是修复前后都失败、回归判 `unresolved_failure`，整轮卡在 `regression_blocked`。
+
 `fix_test_author`/`fix_repair`请求若有`editMode:"protected-text-v1"`，当前会话只读取和生成提案，**不直接修改文件**。
 按请求scope和expected返回`{outcome,edits:[{path,beforeSha256,content}]}`，content为完整UTF-8正文，null删除已有文件，
 beforeSha256严格复制expected中该路径的摘要（原不存在则null）；不能改路径范围或先自行落盘。blocked须edits为空数组。
@@ -136,7 +147,9 @@ handoff → 最终独立 Review/发布 → 原 N5 → 审后回归/走查 → �
 第二次修复仍需 fresh 独立 Review；不得重置 ≤2 轮上限。unknown 不重派。
 
 修复完成仅认原 `finish` 的当前结果与证据；待授权、失败、漂移、缺证据如实报告，
-不手工补成功。当前 finish 仅支持 delivery:diff；Git/发布/安装不在这些开关的权限内。
+不手工补成功。finish 接受 `policies.delivery` 的任一取值，只要求它在收尾写记录期间不变；
+它写档案/METRICS/task_done，**不执行 Git**——branch/draft-mr 的提交、推送、开 MR 仍由执行者按
+SKILL 第 7 步单独完成并记 `delivery` 事件。Git/发布/安装都不在这些开关的权限内。
 退出通道用 `host_close` 或 EOF；只有用户明确取消才发 `cancel`。
 
 本接线是源 Skill 指令，不证明安装副本已加载或真实双宿主验收。保持原输出格式，

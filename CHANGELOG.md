@@ -5,6 +5,17 @@
 
 ## 未发布
 
+**cm-fix 收尾只认 delivery:diff，把 cm-init 自己生成的默认配置锁在门外**
+
+- `finish` 原本硬要求 `policies.delivery === 'diff'`，否则 `fix_delivery_authorization_required`。而 `cm-init` 给任何带 remote 的仓库生成的就是 `draft-mr`，于是这类项目的 JS 运行**永远走不到收尾**，档案、METRICS、`task_done` 一样都写不成。这条限制原本写在 `js-host.md` 里，但它和同一套体系的其它约定互相矛盾：`runtime/logging.md` 把 Git 交付定义成独立的 `delivery` 事件（`commit`/`push`/`pull_request`），cm-ai 在任何交付模式下都照常完成任务，cm-fix 自己的 SKILL 第 7 步也明写 branch/draft-mr 怎么提交。
+- 更要命的是它无法绕开：`findConfig` 只读项目根，而项目根在业务快照范围内，所以临时把 delivery 改成 `diff` 这个动作本身就改了快照，阶段立刻从 `closeout_required` 掉成 `learning_writeback_evidence_required`，收尾照样过不去；改回来又变回 `draft-mr`。两头堵，唯一出路是重跑整轮。
+- 现在 finish 接受任一合法取值，只要求它在写完成记录期间**不变**（`fix_delivery_changed`）。写的还是档案/METRICS/`task_done`，**依然不执行 Git**：branch/draft-mr 的提交、推送、开 MR 仍由执行者单独完成并记 `delivery` 事件。
+
+**受保护模式跑不了任何需要本地 IPC 的测试命令（无代码修复，只补文档）**
+
+- 受保护模式的沙箱 `network={enabled=false}`，而这个开关同时管着 unix domain socket 的 `listen`。于是 `tsx` CLI（启动时在 TMPDIR 建 `<pid>.pipe`）、`vitest` 之类一律 `Error: listen EPERM`；写 TMPDIR 文件本身不受影响。实测确认过两者的差别。
+- **没有安全的代码修法**：放开它就等于给所有受保护测试命令放开整个外网，那是比问题本身更大的倒退。`js-host.md` 改为写清这条约束、症状、以及可用的替代写法（把 `npm test` 串联的 `tsx xxx.test.ts` 换成逐文件 `node --import .../tsx/dist/loader.mjs <file>`，覆盖面不变），并说明沙箱内失败为什么只留 `host check exited N`（原始输出有意不进证据）以及怎么手工重放看真实原因。
+
 **cm-fix 两处让修复跑不下去的阻断**
 
 - **换一个会话就再也打不开自己的运行**。`--mode resume` 一直存在，但 durable 配置里存着创建这次运行的会话 ID，指纹又是整份配置的摘要，于是新会话换上自己的 `--host-context` 必然 `fingerprint_mismatch`，而沿用旧 ID 又正是文档禁止的冒用旧会话——两条路都堵死，跨会话恢复实际上从来没能用过。现在把「这次运行绑定的宿主」和「此刻在跑的会话」分开：durable 配置与旧记录一字不改，恢复时用 `--original-host-context` 报上原会话，`--host-context` 仍是当前真实会话。两个身份都算宿主，授权凭据两者皆可、重放旧凭据不受影响，reviewer 必须同时独立于两者；改动 durable 宿主仍然 `fingerprint_mismatch` 关闭。
