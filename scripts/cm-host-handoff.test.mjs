@@ -109,3 +109,65 @@ test('a receipt for another handoff does not protect this one',()=>collisionFixt
   assert.equal(createHostHandoff(f.build('second attempt')).status,'ready_for_review');
   assert.equal(fs.readdirSync(path.join(f.reviews,'.superseded')).length,1);
 }));
+
+// The receipt names the handoff it reviewed inside its front matter, and the
+// scope list after that line is as long as the task's changed file list. Reading
+// a fixed number of lines made the decision depend on field order; a reordering
+// would silently turn reviewed evidence into a supersedable leftover.
+const receipt=(handoffName,scopeLength,{order='handoff-first',terminated=true}={})=>{
+  const head=['---','at: 2026-01-01T00:00:00.000Z','reviewer: claude-cli','independent: true',
+    'task: T-001','attempt: 1','round: 1','verdict: approved'];
+  const bound=[`handoff: ${handoffName}`,'handoff_sha256: '+'0'.repeat(64),'blocking_findings: 0'];
+  const scope=['scope:',...Array.from({length:scopeLength},(_,i)=>`  - src/file${i}.mjs`)];
+  return [...head,...(order==='handoff-first'?[...bound,...scope]:[...scope,...bound]),
+    ...(terminated?['---','','No blocking findings.']:[])].join('\n');
+};
+
+test('a reviewed handoff stays protected however long the scope list is',()=>collisionFixture(f=>{
+  createHostHandoff(f.build('first attempt'));
+  const reviewed=fs.readFileSync(f.handoffPath);
+  // 200 scope entries push the handoff line far past any fixed window.
+  fs.writeFileSync(path.join(f.reviews,'9.demo-T-001-r1.md'),
+    receipt('9.demo-T-001-a1-handoff.json',200));
+  assert.throws(()=>createHostHandoff(f.build('second attempt')),error=>error.code==='handoff_exists');
+  assert.deepEqual(fs.readFileSync(f.handoffPath),reviewed);
+}));
+
+test('a reviewed handoff stays protected if the front matter is reordered',()=>collisionFixture(f=>{
+  createHostHandoff(f.build('first attempt'));
+  const reviewed=fs.readFileSync(f.handoffPath);
+  fs.writeFileSync(path.join(f.reviews,'9.demo-T-001-r1.md'),
+    receipt('9.demo-T-001-a1-handoff.json',40,{order:'scope-first'}));
+  assert.throws(()=>createHostHandoff(f.build('second attempt')),error=>error.code==='handoff_exists');
+  assert.deepEqual(fs.readFileSync(f.handoffPath),reviewed);
+}));
+
+test('a receipt that is not recognisable front matter fails closed',()=>collisionFixture(f=>{
+  createHostHandoff(f.build('first attempt'));
+  const reviewed=fs.readFileSync(f.handoffPath);
+  for(const body of [
+    receipt('9.demo-T-001-a1-handoff.json',3,{terminated:false}),   // 未闭合
+    'no front matter at all\nhandoff: 9.demo-T-001-a1-handoff.json\n', // 没有起始 ---
+  ]){
+    fs.writeFileSync(path.join(f.reviews,'9.demo-T-001-r1.md'),body);
+    assert.throws(()=>createHostHandoff(f.build('second attempt')),error=>error.code==='handoff_exists');
+    assert.deepEqual(fs.readFileSync(f.handoffPath),reviewed);
+  }
+}));
+
+test('a handoff line in the body rather than the front matter does not protect',()=>collisionFixture(f=>{
+  // Only the front matter binds a receipt to a handoff; prose must not.
+  createHostHandoff(f.build('first attempt'));
+  fs.writeFileSync(path.join(f.reviews,'9.demo-T-001-r1.md'),
+    ['---','verdict: approved','---','','handoff: 9.demo-T-001-a1-handoff.json'].join('\n'));
+  assert.equal(createHostHandoff(f.build('second attempt')).status,'ready_for_review');
+  assert.equal(fs.readdirSync(path.join(f.reviews,'.superseded')).length,1);
+}));
+
+test('an oversized receipt fails closed instead of being parsed',()=>collisionFixture(f=>{
+  createHostHandoff(f.build('first attempt'));
+  const reviewed=fs.readFileSync(f.handoffPath);
+  fs.writeFileSync(path.join(f.reviews,'9.demo-T-001-r1.md'),'x'.repeat(256*1024+1));
+  assert.throws(()=>createHostHandoff(f.build('second attempt')),error=>error.code==='handoff_exists');
+  assert.deepEqual(fs.readFileSync(f.handoffPath),reviewed);
+}));
