@@ -296,3 +296,45 @@ test('new specification and legacy packages both retain receipt completion eligi
     assert.equal(verifyReviewPackage({root:f.code,baseline:pkg===current?baseline:legacyBaseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
   }
 });
+
+// A repository that merely contains mobile/.env.example used to be impossible
+// to review: walk() validates every discovered path, so the placeholder aborted
+// the whole baseline capture rather than being skipped. Committed placeholders
+// are ordinary source; the real secret files must still be refused.
+test('committed environment placeholders are inventoried while real secret files stay refused',()=>fixture(root=>{
+  fs.mkdirSync(path.join(root,'mobile'));
+  write(root,'mobile/.env.example','API_URL=https://example.invalid\n');
+  write(root,'.env.sample','TOKEN=replace-me\n');
+  const baseline=capture(root);
+  const inventoried=baseline.files.map(f=>f.path);
+  assert.ok(inventoried.includes('mobile/.env.example'),'placeholder missing from the inventory');
+  assert.ok(inventoried.includes('.env.sample'),'placeholder missing from the inventory');
+  // Inventoried means hashed, not disclosed: only selected scope carries a body.
+  const placeholder=baseline.files.find(f=>f.path==='mobile/.env.example');
+  assert.equal(placeholder.contentBase64,undefined);
+  assert.equal(typeof placeholder.sha256,'string');
+
+  // Selecting a placeholder as ordinary source is allowed too.
+  const selected=captureReviewBaseline({root,identity,scope:['mobile/.env.example'],
+    requirements:['requirements.md']}).files.find(f=>f.path==='mobile/.env.example');
+  assert.equal(Buffer.from(selected.contentBase64,'base64').toString(),
+    'API_URL=https://example.invalid\n');
+
+  for(const secret of ['.env','.env.local','.env.production','.env.example.bak']){
+    write(root,secret,'SECRET=1\n');
+    assert.throws(()=>capture(root),{code:'unsupported_path'},`${secret} was not refused`);
+    assert.throws(()=>captureReviewBaseline({root,identity,scope:[secret],
+      requirements:['requirements.md']}),{code:'unsupported_path'},`${secret} was selectable`);
+    fs.rmSync(path.join(root,secret));
+  }
+
+  // The placeholder name must not become a way to smuggle a real secret in.
+  fs.writeFileSync(path.join(root,'.env'),'SECRET=real\n');
+  fs.symlinkSync('.env',path.join(root,'.env.disguise'));
+  fs.renameSync(path.join(root,'.env.disguise'),path.join(root,'.env.template'));
+  assert.throws(()=>capture(root),{code:'unsupported_path'},'the .env sibling was not refused');
+  fs.rmSync(path.join(root,'.env'));
+  assert.throws(()=>capture(root),/unsupported_file|unsupported_path|read_failed/,
+    'a symlink wearing a placeholder name was captured');
+  fs.rmSync(path.join(root,'.env.template'));
+}));

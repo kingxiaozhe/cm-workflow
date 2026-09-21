@@ -55,8 +55,12 @@ function filePath(p) {
     && p.normalize('NFC')===p,'unsupported_path');
   const parts=p.split('/');
   need(parts.every(s=>s && s!=='.' && s!=='..'),'unsupported_path');
+  // Committed placeholder files are ordinary source: .env.example and friends
+  // exist to be copied, and a repository that contains one must still be able to
+  // capture a baseline at all. Only these four explicit suffixes are allowed, so
+  // .env, .env.local and even .env.example.bak stay rejected as before.
   need(parts.every(s=>!['.git','.ssh','.aws','.gnupg'].includes(s.toLowerCase())
-    && !/^\.env(?:\.|$)/i.test(s)),'unsupported_path');
+    && (!/^\.env(?:\.|$)/i.test(s) || /^\.env\.(?:example|sample|template|dist)$/i.test(s))),'unsupported_path');
   return p;
 }
 function paths(input) {
