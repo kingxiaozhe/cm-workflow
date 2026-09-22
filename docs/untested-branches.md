@@ -14,8 +14,8 @@
 一次实跑再撞。
 
 `scripts/audit-untested-enums.mjs` 扫 `runtime/js` 里 `['a','b'].includes(x)` 形式的枚举，
-逐个看 `scripts/*.test.mjs` 里有没有出现过。写这份文档时的结果：**51 个取值缺覆盖，
-分布在 49 处**。
+逐个看 `scripts/*.test.mjs` 里有没有出现过。写这份文档时的结果是 51 个取值缺覆盖；补掉 A 类前两条之后现在是
+**49 个，分布在 46 处**。
 
 脚本输出的是**候选，不是待办**——内部记录类型和 `typeof` 判断也会被匹配到。下面是人工
 分好的类。改完代码后重跑脚本对照。
@@ -28,8 +28,8 @@
 
 | 取值 | 位置 | 承诺在哪 | 补测试前要先弄清 |
 | --- | --- | --- | --- |
-| `auto_fix: never` | `cm-ai/host-qa-fix.mjs:21` | `templates/cm-workflow.yml` 写着 `explicit \| never \| auto`；`runtime/workflow-config.md` 说它决定「N6 失败后的三分支」 | `never` 下 QA 失败到底该停在哪、和 `explicit` 的差别是什么 |
-| 视觉证据 `kind: video` | `cm-ai/review-package.mjs:371` | `cm-fix-host.mjs --help` 明写 `before:{path,sha256,kind:screenshot\|video,...}` | 录屏载体的校验和取证跟截图有没有实质差别 |
+| ~~`auto_fix: never`~~ | `cm-ai/host-qa-fix.mjs:21` | 同上 | **已补**：`cm-ai-qa-fix-policy.test.mjs` 钉死三取值各自的去向，并覆盖「轮次耗尽压过策略」这条优先级 |
+| ~~视觉证据 `kind: video`~~ | `cm-ai/review-package.mjs:371` | 同上 | **已补**：`cm-fix-visual-carrier.test.mjs` 验录屏容器格式、声明与字节必须双向一致、哈希绑定 |
 | 诊断 `design_change` | `cm-fix/cause-package.mjs` | cm-fix SKILL 第 4 步「升级出口」：停止硬修、转 `$cm-prd --change` 立项 | 这条出口下红灯测试要保留、档案要记「升级立项」，这些有没有真发生 |
 | cm-check `configured` | `cm-check/host.mjs:105` | 三态之一（`configured\|degraded\|unknown`） | 什么条件算 configured，和 degraded 的边界 |
 | cm-test `snapshot` / `evaluation` | `cm-test/session.mjs:47` | 两种模式**都**没被测过 | 两种模式各自的输入和产物 |
@@ -39,6 +39,9 @@
 **建议按模块分批**，不要一次全开。cm-prd、cm-refactor、cm-test、cm-check 这四块各自
 独立，给一条从没走过的分支补测试，得先读懂那条分支本来该是什么行为——读浅了会写出
 「形状对但没验到点上」的测试，那比没有更糟：它让人以为测过了。
+
+补完的两条都做了**变异验证**——故意把被测代码改坏，确认测试会红。补测试时这一步不能省：
+新写的测试本来就该过，过了不代表验到了点上。后面几条照办。
 
 ## B 类：内部协议分支，值得测但不紧急
 
