@@ -166,3 +166,29 @@ test('a walkthrough that does not line up with the diagnosis stops right after d
       }finally{owner.close();bridge.close();}
     });
 });
+
+// 「重名当场拦下」（建运行时检查）原本一刀切：名字被占就永久不能再用，而且没有
+// 释放的办法——cancel 只标记状态，证据文件照样留着。这跟 host-handoff 早就定下的
+// 规则不一致：那边是「被审查消费过的证据绝不动，其余归档让路」。照同一条规则来。
+test('a dead run releases its name by archiving, but a reviewed one keeps it',()=>fixture(async(options)=>{
+  const reviews=path.join(options.specsRoot,'.reviews');
+  fs.mkdirSync(reviews,{recursive:true,mode:0o700});
+
+  // 半路死掉的运行只留下红灯输出，没有任何审查结论 —— 让路
+  const redOutput=path.join(reviews,'fix-demo-a1-red-output.md');
+  const leftover='{"stdoutBase64":"","stderrBase64":"ZGVhZCBydW4="}';
+  fs.writeFileSync(redOutput,leftover);
+  const configuration={...options.configuration,
+    redTest:{cwd:options.configuration.reproduction.cwd,testFiles:['red.mjs'],
+      command:[process.execPath,'-e','process.stderr.write("BUG");process.exit(1)'],
+      expectedFailure:{exitCode:1,outputIncludes:'BUG'},timeoutMs:2000}};
+  openFixExecution({...options,configuration}).close();
+  assert.equal(fs.existsSync(redOutput),false,'占位的红灯输出该让开');
+  const archived=fs.readdirSync(path.join(reviews,'.superseded'));
+  assert.equal(archived.length,1,'让开不等于删掉');
+  assert.equal(fs.readFileSync(path.join(reviews,'.superseded',archived[0]),'utf8'),leftover,'原字节要留着');
+
+  // 真做过审查的名字仍然占住：那份结论不许被挪开
+  fs.writeFileSync(path.join(reviews,`fix-demo-${identity.taskId}-r1.md`),'verdict: approved');
+  assert.throws(()=>openFixExecution({...options,configuration,create:true}),{code:'fix_evidence_name_taken'});
+}));

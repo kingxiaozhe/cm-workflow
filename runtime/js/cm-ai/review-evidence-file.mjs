@@ -1,7 +1,7 @@
 // Immutable file projection shared by review publishers, not an approval issuer.
 import fs from 'node:fs';
 import path from 'node:path';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {need} from './effect-contract.mjs';
 
 export function writeReviewEvidence({reviewsDir,name,bytes,validate=()=>{},inspectOnly=false,exclusive=false}){
@@ -35,4 +35,23 @@ export function writeImmutableWorkflowFile({reviewsDir,name,bytes,validate=()=>{
     if(fd!==undefined)fs.closeSync(fd);
     try{fs.unlinkSync(temp);}catch(error){if(error.code!=='ENOENT')throw error;}
   }
+}
+
+// Move a workflow file aside without ever deleting its bytes: link into
+// .superseded/ under a content-hash stamp, then unlink the original, so a crash
+// between the two steps leaves both copies rather than neither. Same shape as
+// host-handoff's supersedeHandoff; shared here so cm-fix does not grow a second
+// crash-safety pattern. Callers decide *whether* a file may be superseded — this
+// only knows how.
+export function supersedeWorkflowFile(dir,name){
+  const source=path.join(dir,name),archive=path.join(dir,'.superseded');
+  const existing=fs.readFileSync(source);
+  fs.mkdirSync(archive,{recursive:true,mode:0o700});
+  const stamp=createHash('sha256').update(existing).digest('hex').slice(0,16);
+  const target=path.join(archive,`${name}.${stamp}`);
+  try{fs.linkSync(source,target);}catch(error){if(error.code!=='EEXIST')throw error;}
+  fs.unlinkSync(source);
+  const fd=fs.openSync(archive,fs.constants.O_RDONLY);
+  try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+  return target;
 }
