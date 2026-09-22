@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {canonicalFuture} from '../cm-test/source-snapshot.mjs';
 import {need} from '../cm-ai/effect-contract.mjs';
+import {supersedeWorkflowFile} from '../cm-ai/review-evidence-file.mjs';
 
 export function fixArchiveRoot(specsRoot,cwd,create=false){
   if(specsRoot!=null)return fs.realpathSync(specsRoot);
@@ -32,12 +33,19 @@ export function fixEvidenceNames(identity,configuration){
   if(configuration.causeReview)names.push(`fix-${slug}-cause-r1.md`);
   return names;
 }
+// 名字被占时分两种：审查结论（-r{n}.md / -cause-r{n}.md）是别人签过字的证据，绝不
+// 挪动，名字就此占住；红灯输出和交接文件只是半路死掉的运行留下的，归档让路。
+// 这条界线和 host-handoff 对交接文件的规则是同一条：被审查消费过的不动，其余
+// 让路但不删。交接文件不需要单独查回执——回执就是那份 -r{n}.md，它在就先被拦了。
+const reviewEvidence=name=>/-(?:cause-)?r\d+\.md$/.test(name);
 export function assertFixEvidenceNamesFree(archiveRoot,identity,configuration){
   const reviews=path.join(archiveRoot,'.reviews');
-  for(const name of fixEvidenceNames(identity,configuration)){
-    let taken=false;
-    try{taken=fs.lstatSync(path.join(reviews,name))!==undefined;}
-    catch(error){if(error.code!=='ENOENT'&&error.code!=='ENOTDIR')throw error;}
-    need(!taken,'fix_evidence_name_taken');
-  }
+  const names=fixEvidenceNames(identity,configuration);
+  const present=name=>{
+    try{const stat=fs.lstatSync(path.join(reviews,name));need(stat.isFile()&&!stat.isSymbolicLink(),'unsupported_file');return true;}
+    catch(error){if(error.code==='ENOENT'||error.code==='ENOTDIR')return false;throw error;}
+  };
+  // 先整体判定再动手：只要有一份审查结论在，什么都不挪，免得半做半停。
+  for(const name of names)if(reviewEvidence(name))need(!present(name),'fix_evidence_name_taken');
+  for(const name of names)if(!reviewEvidence(name)&&present(name))supersedeWorkflowFile(reviews,name);
 }
