@@ -6,7 +6,8 @@ import {createFixHost} from '../cm-fix/host.mjs';
 import {bindQaFixDefinition} from './qa-fix-definition.mjs';
 import {digest,id,json,need,shape,validIdentity,hex} from './effect-contract.mjs';
 
-export function createQaFixOwnerHost({parent,reopenParent,fix=null,template=null,allowStart=false,autoFix=false,fixExecution={},fixPermissions=[],fixAuthorities={}}){
+export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHostContextId,fix=null,template=null,allowStart=false,autoFix=false,fixExecution={},fixPermissions=[],fixAuthorities={}}){
+  id(hostContextId);id(parentHostContextId);
   need((fix===null)!==(template===null),'invalid_fix_config');
   let definition=null;
   const fixedTemplate=template===null?null:json(template,64*1024);
@@ -63,7 +64,10 @@ export function createQaFixOwnerHost({parent,reopenParent,fix=null,template=null
           &&digest(status.identity)===digest(value.identity),'qa_fix_parent_not_completed');
         switching=true;current.close();current=null;released=true;
         const existing=fs.existsSync(path.join(definition.specsRoot,'.reviews','.execution',definition.identity.runId));
-        child=openFixExecution({...definition,create:advancing&&!existing},advancing||acting?fixExecution:{});
+        // Only a new store needs a creator check. Existing configuration is
+        // immutable and checked against its own stored fingerprint by cm-fix.
+        if(advancing&&!existing)need([hostContextId,parentHostContextId].includes(definition.configuration.hostContextId),'qa_fix_host_mismatch');
+        child=openFixExecution({...definition,hostContextId,create:advancing&&!existing},advancing||acting?fixExecution:{});
         activeChild=child;
         let actionResult;
         if(advancing||acting){

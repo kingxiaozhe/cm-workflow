@@ -79,11 +79,11 @@ test(`QA child owns its run lock, bound failure and explicit CLI authority: ${mo
       };
       const request={version:1,requestId:'start-fix',operation:'fix_advance',identity:parent,
         packageDigest:binding.packageDigest,testRunId:qa.testRunId};
-      const denied=createQaFixOwnerHost({parent:openParent(),reopenParent:openParent,fix:{specsRoot,identity,configuration}});
+      const denied=createQaFixOwnerHost({parent:openParent(),hostContextId:configuration.hostContextId,parentHostContextId:configuration.hostContextId,reopenParent:openParent,fix:{specsRoot,identity,configuration}});
       await assert.rejects(denied.handle(request),{code:'qa_fix_start_authorization_required'});
       assert.equal(fs.existsSync(path.join(specsRoot,'.reviews','.execution',identity.runId)),false);
       denied.close();parentOwner=null;
-      const serial=createQaFixOwnerHost({parent:openParent(),reopenParent:()=>{reopens++;return openParent();},
+      const serial=createQaFixOwnerHost({parent:openParent(),hostContextId:configuration.hostContextId,parentHostContextId:configuration.hostContextId,reopenParent:()=>{reopens++;return openParent();},
         fix:{specsRoot,identity,configuration},allowStart:true,fixPermissions:['--allow-red-test','--allow-baseline','--allow-finish'],fixExecution:{
           prepare:async()=>({files:[],contextDigest:digest([]),application:{contextDigest:digest([]),status:'no_relevant_lesson',summary:'Fixture'}}),
           bridge:{async call(kind,payload){
@@ -167,7 +167,7 @@ test(`QA child owns its run lock, bound failure and explicit CLI authority: ${mo
       // Synthetic parent status; both writer locks and child owner are real.
       return {host:{handle:async()=>({state:'fixture_completed',identity:parent,packageDigest:binding.packageDigest})},close:()=>store.close()};
     };
-    const serial=createQaFixOwnerHost({parent:openParent(),fix:{specsRoot,identity,configuration},
+    const serial=createQaFixOwnerHost({parent:openParent(),hostContextId:configuration.hostContextId,parentHostContextId:configuration.hostContextId,fix:{specsRoot,identity,configuration},
       reopenParent:()=>{reopens++;return openParent();}});
     const check={version:1,requestId:'fix-status',operation:'fix_status',identity:parent,
       packageDigest:binding.packageDigest,testRunId:qa.testRunId};

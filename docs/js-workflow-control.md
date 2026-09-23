@@ -872,7 +872,10 @@ hostContextId、qaSource 及已配置的复现/修复/审查选项；不能通�
 
 增加 `--allow-qa-fix-start` 后可发送同一绑定格式的 `fix_advance`。它在释放父锁后为固定
 子身份自动选择 create/resume，复用原 Learning、复现及诊断，不新增派发状态库。
-子配置 hostContextId/runtime 须匹配当前宿主；仅配置文件或 auto_fix 策略不能替代此授权。
+子 runtime 须匹配当前宿主。新建子运行时，配置 hostContextId 只能是当前真实会话或已通过父运行指纹校验的创建会话；
+已有子运行沿用存档配置并校验指纹。打开子运行（含 fix_status）和签审查授权都使用当前真实会话，
+首次签授权前由 cm-fix 追加 fix-host-joined-N；只读打开不写接手记录，原因审查员不能是当前会话。
+父运行换会话恢复仍须提供 --original-host-context；仅配置文件或 auto_fix 策略不能替代原逐项授权。
 重复调用继续原状态，不重做已结束步骤或重发 unknown。执行期间 status/cancel 交给原子
 owner，操作结束后恢复父 owner。该入口只接到原 red_test_required 等后续阶段，不授权
 测试编写、修复写码、provider Review 或 finish；后续动作使用下述独立权限，自动重测仍待接线。
