@@ -117,3 +117,21 @@ inspect_correction / resume_correction，只认归档的原字节或提案字节
 
 混合风险批次也按 feature 校验。低风险项没有设计审查回执时，以原设计草稿中的需求、设计为基准，
 只接受绑定同一整稿和原 split 包的补正计划或已完成回执，不补建空的设计审查。A 完成补正后可继续 B 的审查与整批汇总。
+
+
+### 修正自检失败后交人裁决
+
+`review_disposition` 的单次修正自检有明确失败结果时，返回 `disposition_recorded`，回执的
+`disposition` 为 `self_check_failed`。它表示「修正已保存、处置已登记、自检失败待人工裁决」，不是通过。
+回执保留原检查输入（含逐项决定与文档）、结果摘要绑定；原 correction 归档、check-start 和 check-result 不覆盖。
+全部 finding 计入待裁决数，不把已经改过的 finding 强改成不允许文件变化的 `escalated`。
+
+下一步是 `prepare_summary`，展示 `riskCard` 和摘要「风险点」中由程序附入的失败项目及证据，
+再以刚展示的摘要调用 `publish_summary`，进入 `awaiting_review`。发布不是批准；人仍可批准或拒绝整批。
+已记录的机械失败也以失败原样展示；未被该回执覆盖的新失败仍阻断。此状态只能由宿主读取真实失败记录后产生，
+不能用普通 gate CLI 的一个 disposition 参数声明失败；design 阶段、缺记录或实际通过均拒绝。
+
+`self_check_failed` 也是完整的 split 回执，因此同批其他 feature、保存、汇总和 `prepare_revision`
+可读取它绑定的 requirements.md / design.md 新字节。这只是确认当前文档身份，不能推导质量通过或开发授权。
+如需下一版，说明原因后走受控修订；旧失败留在历史中。结果 unknown 仍阻断，只恢复原返回；
+不再独立审查、不自动修复、不重跑检查、不用新会话或改决定绕过一次检查限制。

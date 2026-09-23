@@ -482,7 +482,7 @@ AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注�
   只报有具体后果的问题，没有问题就明说。
 - **单轮硬边界（ROUND_LIMIT=1）**：每个 feature 在本阶段只允许一次 review attempt，
   独立 reviewer 与 `self-degraded` 复查二选一。采纳项修正 specs 后
-  重跑一次 10.5 自检；分歧或自检不能证明的项写入摘要卡「风险点」交人裁决。
+  重跑一次 10.5 自检；失败记 `self_check_failed` 回执，保留失败与决定，写入摘要卡「风险点」交人裁决。
   **禁止 review → 修正 → 再 review**，也禁止换审查者变相开启第 2 轮；凭证只允许
   `split-r1.md`，不得生成 `split-r2.md`。（实跑教训：规格修正后的再次召回复审没有
   新增独立决策层，却继续占用主流程时间。）
@@ -490,8 +490,8 @@ AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注�
 - **凭证落盘**：原始审查结果写入 `{SPECS_DIR}/.reviews/prd-{feature}-split-r1.md`，文件头使用 review contract 的 `reviewer/independent/at/scope` 字段
 - 调 reviewer 前同样真跑 `cm-prd-review-gate.py inspect --stage split`；只在
   `dispatch_once` 调用一次，`resume_disposition` 复用已有 r1，`completed` 不再审。
-  split 处置可修正 requirements.md、design.md 及任务文件；先按原发现登记并保存，任何改动都须通过一次 10.5 自检。
-  再 `record` 全部三件套及已有 test-cases.json，生成 `prd-{feature}-split-disposition.json`；其中新 SHA 成为该 feature 已接受的需求与设计。
+  split 处置可修正 requirements.md、design.md 及任务文件；先按原发现登记并保存，任何改动都须执行一次 10.5 自检，失败不重试、不冒充通过。
+  再 `record` 全部三件套及已有 test-cases.json，生成 `prd-{feature}-split-disposition.json`；其中新 SHA 成为后续读取的版本；失败回执只表示处置完成，仍待人裁决（见 `references/js-host.md`）。
   待登记时仅原包、完整处置计划与磁盘 SHA 匹配的补正可继续；回执后再改、跨 feature 借用或出现 r2 均阻断。
 - **降级**：无法建立独立上下文时，由主执行者对抗式复查，凭证写 `self-degraded` / `independent: false`；这是增益层，不单独因降级停车
 

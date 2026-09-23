@@ -1209,11 +1209,16 @@ evidenceDigest绑定完整feature清单、原状态文件和精确规格/审查�
 宿主可发`{requestId,operation:"review_findings",stage:"design"|"split",feature:"1.slug"}`只读原r1的结论、findings、原产物摘要及门禁状态，不需要内存草稿或重新派发。读取复用原publisher的完整校验与精确字节比较，缺失/损坏/身份错配直接拒绝，不修复文件。此入口只支持当前JS宿主归档；旧自由文本r1仍沿原门禁人工处置，不自动转换。返回review_findings_ready不是处置完成，未授权落盘、审批或任务完成。
 
 显式`--allow-disposition-write`启用`{requestId,operation:"review_disposition",stage,feature,packageDigest,decisions,artifacts}`。decisions逐一覆盖原finding：`{id,status:"applied"|"escalated",evidence:[说明],changedPaths:[原包路径]}`；artifacts是原包完整文件清单与当前精确sha256。所有文件必须已经安全落盘；未解释的变化、未实改的applied、blocked审查、包身份不符均拒绝。design仅允许修改design.md；split采纳修正通过下述owner重跑原10.5，不接受JSON布尔值跳过。
-`createPrdDispositionOwner`先核对原包/逐项处置/已存文件，读取当前规格运行原mechanics，再经现有prd_self_check请求宿主按原spec-self-check.md核对代码、用户用例及所有pending项。完整回包绑定冻结后的当前draft摘要；写原receipt前重读原r1及当前artifact哈希。机械/上下文失败返回disposition_self_check_failed，取消或漂移拒绝写入，不自动修复或重试。上下文仍是host报告，不是独立review。
-修正自检的开始/结果保存为原.reviews中的固定`prd-{slug}-split-correction-check-start.json`与`...-result.json`，复用不可覆盖0600发布。绑定原package、当前规格正文/摘要、逐项决定与原review投影；先占用再请求宿主，先存结果再写原处置回执。相同输入的已存结果经原validator验证后复用：通过继续原门禁、失败仍失败；只有开始没有结果则disposition_self_check_unknown，不重发。损坏、权限异常或输入变化直接拒绝；这两份文件不是任务状态库或独立Review凭证。
+`createPrdDispositionOwner`先核对原包/逐项处置/已存文件，读取当前规格运行原mechanics，再经现有prd_self_check请求宿主按原spec-self-check.md核对代码、用户用例及所有pending项。完整回包绑定冻结后的当前draft摘要；写原receipt前重读原r1及当前artifact哈希。机械/上下文明确失败仍写处置回执，返回disposition_recorded和self_check_failed；取消或漂移拒绝写入，不自动修复或重试。上下文仍是host报告，不是独立review。
+修正自检的开始/结果保存为原.reviews中的固定`prd-{slug}-split-correction-check-start.json`与`...-result.json`，复用不可覆盖0600发布。绑定原package、当前规格正文/摘要、逐项决定与原review投影；先占用再请求宿主，先存结果再写原处置回执。相同输入的已存结果经原validator验证后复用：通过继续原门禁；失败保留原结果，记录待人工裁决回执；只有开始没有结果则disposition_self_check_unknown，不重发。损坏、权限异常或输入变化直接拒绝；这两份文件不是任务状态库或独立Review凭证。
 新进程已验证通过/失败/中断前缀恢复且零宿主重调；覆盖的是这套新记录，升级前未留记录的在途调用不能据此推断未调用，仍需人工核对。记录不捕获整个业务代码工作树，宿主上下文语义仍是报告证据，不能把规格输入一致扩称完整项目无变化。无结果时的真实调用追踪和完整会话恢复仍待收口。
-既有回执只有汇总计数，无法证明重入时每条finding仍分配相同处置。有findings的恢复返回disposition_details_need_verification及全部原findings，不把本次输入作为已保存决定、不输出未经核实的未决子集；需核对原逐项处置。零finding原样恢复可沿原already_recorded返回。
-`review-disposition.mjs`调用原record/inspect，design回执绑定design.md，split绑定完整规格文件；无发现/全采纳/仍有分歧分别记录no_findings/applied/escalated。门禁的completed仅表示原处置记录完成，不是规格审批或任务完成；escalated仍返回原未决findings供摘要卡人工判断。处置依据是当前宿主报告，JS检查文件与覆盖，不证明语义修复；逐项说明随响应返回，原回执仅持久保存原合同计数及哈希。摘要与awaiting_review使用上方入口，人工批准仍在既有流程。
+既有三类回执只有汇总计数，无法证明重入时每条finding仍分配相同处置。有findings的恢复返回disposition_details_need_verification及全部原findings，不把本次输入作为已保存决定、不输出未经核实的未决子集；需核对原逐项处置。零finding原样恢复可沿原already_recorded返回。
+`review-disposition.mjs`调用原record/inspect，design回执绑定design.md，split绑定完整规格文件；无发现/全采纳/仍有分歧分别记录no_findings/applied/escalated；修正单次自检失败记录self_check_failed。门禁的completed仅表示原处置记录完成，不是规格审批或任务完成；escalated仍返回原未决findings供摘要卡人工判断。处置依据是当前宿主报告，JS检查文件与覆盖，不证明语义修复；逐项说明随响应返回，旧三类回执仍仅持久保存原合同计数及哈希。新失败回执另保存correction_check，绑定原检查输入、决定和结果摘要；共享门禁必须核验真实失败记录，design或实际通过不接受该值。摘要与awaiting_review使用上方入口，人工批准仍在既有流程。
+
+拆分补正的 `self_check_failed` 只表示处置完成，不能推导检查通过。`prepare_summary` 强制把失败项目和证据
+加入 `riskCard` 及摘要风险点，允许 `publish_summary` 发布待审；已记录的机械失败保留失败状态，
+损坏的测试合同只显示计数未知，不编造零用例。未登记的新失败仍阻断。后续需求／设计读取沿用完整 split 回执的
+文件身份规则，`prepare_revision` 可进入受控修订；修订快照同时绑定失败检查文件，历史不覆盖，不补审或重试。
 
 同时启用--allow-spec-write和--allow-review-write时，`{requestId,operation:"correct_findings",stage,feature}`把原r1 findings与原版本规格交给prd_correct宿主请求。返回完整原路径清单与逐项decisions；主宿主复用disposition-plan检查对应关系，再跑原mechanics，拒绝越界、漏项、未解释修改、勾选任务或编码损失。design只修改design.md，不发第二次review。
 在改规格前写不可覆盖的`.reviews/prd-{slug}-{stage}-correction.md`，保存原文件正文、原包身份和逐项提案；它是私有host报告，不是批准或处置回执。每次替换前核对原r1精确SHA、原gate仍待处置及全部文件当前hash，0600临时文件替换后fsync/回读；失败保留correction_save_unknown现场，不回滚或重新生成。既有归档返回correction_recovery_required，须走下方显式恢复入口。correction_saved返回decisions/artifacts供上方原自检与处置，不完成审批。当前仅证明临时CLI产品代码完成原稿保存→修订写入→自检→原处置，宿主提案/自检/review仍为合成响应，未做真实语义验收。

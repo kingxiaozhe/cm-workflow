@@ -10,6 +10,7 @@ import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {inspectPrdFindings} from './review-findings.mjs';
 import {checkPrdDraftMechanics} from './self-check.mjs';
 import {need,json,shape,digest} from '../cm-ai/effect-contract.mjs';
+import {inspectPrdFailedCorrection} from './failed-correction.mjs';
 import {prdDesignRiskSignals} from './design-risk.mjs';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 
@@ -41,11 +42,17 @@ export function inspectPrdSummaryEvidence(specs,{currentFeatures}={}){
       }
       const args={stage,feature:slug,evidence:path.join(specs,prefix+'-r1.md'),receipt:path.join(specs,prefix+'-disposition.json')};
       const gate=inspectPrdReview(args);
-      let findings=null,archiveIssue={};
+      let findings=null,archiveIssue={},correctionSelfCheck=null;
       try{
         if(['resume_disposition','completed'].includes(gate.outcome))findings=inspectPrdFindings({specs,stage,feature:directory});
         if(gate.outcome==='completed'){
           const receipt=JSON.parse(readCmInitSource(specs,prefix+'-disposition.json').toString('utf8'));
+          if(receipt.disposition==='self_check_failed'){
+            correctionSelfCheck=inspectPrdFailedCorrection({specs,receipt});
+            for(const suffix of ['-correction-check-start.json','-correction-check-result.json']){
+              const file=prefix+suffix; evidenceFiles.push({path:file,sha256:sha(readCmInitSource(specs,file))});
+            }
+          }
           const expected=stage==='design'?[`${directory}/design.md`]:files.map(item=>`${directory}/${item.path}`).sort();
           need(digest(receipt.artifacts.map(item=>item.path).sort())===digest(expected),'prd_summary_receipt_coverage');
         }
@@ -59,13 +66,21 @@ export function inspectPrdSummaryEvidence(specs,{currentFeatures}={}){
         archiveIssue={archive:archiveIssue.archive??'receipt_missing',
           reason:[archiveIssue.reason,'prd_summary_receipt_missing'].filter(Boolean).join('; ')};
       reviews[stage]={gate,independent:findings?.independent??null,verdict:findings?.verdict??null,
-        findings:findings?.findings??[],source:findings?.source??null,...archiveIssue};
+        findings:findings?.findings??[],source:findings?.source??null,
+        ...(correctionSelfCheck?{correctionSelfCheck}:{}),...archiveIssue};
     }
     let cases={total:0,user:0,generated:0};
     const contract=files.find(item=>item.path==='test-cases.json');
-    if(contract){const data=JSON.parse(contract.content);need(Array.isArray(data.cases),'prd_summary_cases_invalid');
-      cases={total:data.cases.length,user:data.cases.filter(item=>item.origin==='user').length,
-        generated:data.cases.filter(item=>item.origin==='generated').length};}
+    if(contract){
+      try{
+        const data=JSON.parse(contract.content);need(Array.isArray(data.cases),'prd_summary_cases_invalid');
+        cases={total:data.cases.length,user:data.cases.filter(item=>item.origin==='user').length,
+          generated:data.cases.filter(item=>item.origin==='generated').length};
+      }catch(error){
+        if(!reviews.split.correctionSelfCheck?.failedChecks.some(item=>item.code==='test_cases_invalid'))throw error;
+        cases={total:null,user:null,generated:null,status:'invalid',reason:'test_cases_invalid'};
+      }
+    }
     features.push({directory,reviews,cases,...(currentFeatures===undefined?{}:{historical})});
   }
   const mechanical=checkPrdDraftMechanics({draftDigest:digest(evidenceFiles),
@@ -140,13 +155,23 @@ export function createPrdSummaryOwner({summarize}){
       }else if(!['dispatch_once','completed'].includes(design.gate.outcome)||design.verdict==='blocked')
         blockers.push(`${risk.feature}: existing_design_attempt_unresolved`);
     }
-    if(evidence.mechanical.status==='failed')blockers.push('mechanical_self_check_failed');
+    const riskCard=evidence.features.filter(feature=>feature.reviews.split.correctionSelfCheck).map(feature=>({
+      feature:feature.directory,disposition:'self_check_failed',status:'awaiting_human_ruling',
+      failedChecks:feature.reviews.split.correctionSelfCheck.failedChecks}));
+    // Only the exact mechanically failed items already disposed for human ruling
+    // cease to block publication. Unrelated/new failures keep the original gate.
+    const unrecorded=evidence.mechanical.findings.filter(finding=>!riskCard.some(risk=>
+      risk.feature===finding.feature&&risk.failedChecks.some(check=>digest(check)===digest(finding))));
+    if(evidence.mechanical.status==='failed'&&unrecorded.length)blockers.push('mechanical_self_check_failed');
     need(digest(inspectPrdSummaryEvidence(specs,scope))===evidenceDigest,'prd_summary_inputs_changed');
     const checklist=['跨feature产物不重复','依赖完整且无环','AC可验证','功能粒度合规且每feature≤15任务',
       '开放问题和敏感决策已经人工确认','交付形态符合需求','存在原型时功能与交互覆盖完整'];
     const totals=evidence.mechanical.features.reduce((sum,item)=>({tasks:sum.tasks+item.tasks,
       acceptanceCriteria:sum.acceptanceCriteria+item.acceptanceCriteria}),{tasks:0,acceptanceCriteria:0});
-    const summary=json({status:'human_summary_prepared',evidenceDigest,details,features:evidence.features,totals,
+    const humanDetails=riskCard.length?{...details,risks:[...riskCard.map(risk=>
+      `${risk.feature}：修正自检失败，待人工裁决；${JSON.stringify(risk.failedChecks)}`),details.risks].join('\n')}:details;
+    const summary=json({status:'human_summary_prepared',evidenceDigest,details:humanDetails,features:evidence.features,totals,
+      ...(riskCard.length?{riskCard}:{}),
       ...(evidence.currentFeatures===undefined?{}:{currentFeatures:evidence.currentFeatures}),
       notes,historicalSummary:`历史 feature：${historical.length} 个已登记，${historical.filter(item=>Object.values(item.reviews).some(review=>review.archive)).length} 个含旧版归档说明`,
       mechanicalSelfCheck:evidence.mechanical,blockers,checklist:checklist.map(text=>({text,checked:false})),

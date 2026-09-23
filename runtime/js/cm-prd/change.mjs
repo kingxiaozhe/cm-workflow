@@ -35,6 +35,15 @@ export function inspectPrdChangeSnapshot(specs){
     const file=`.reviews/prd-${directory.replace(/^\d+\./,'')}-${stage}${suffix}`,bytes=readCmInitSource(specs,file);
     if(bytes!==null)reviews[file]=sha(bytes);
   }
+  // Only the new failure outcome adds bindings; legacy snapshots stay identical.
+  for(const directory of directories){
+    const prefix=`.reviews/prd-${directory.replace(/^\d+\./,'')}-split`;
+    const receipt=JSON.parse(read(specs,prefix+'-disposition.json')??'null');
+    if(receipt?.disposition==='self_check_failed')for(const suffix of ['-correction-check-start.json','-correction-check-result.json']){
+      const file=prefix+suffix,bytes=readCmInitSource(specs,file);
+      need(bytes!==null,'prd_failed_check_evidence_required');reviews[file]=sha(bytes);
+    }
+  }
   const status=read(specs,'.cm-specs-status');
   return json({directories,files,trees,reviews,status},4*1024*1024);
 }
@@ -198,7 +207,11 @@ export function assertPrdReviewsSettled(specs,selected,{requireSplit=false}={}){
     const feature=directory.replace(/^\d+\./,''),prefix=`prd-${feature}-${stage}`;
     for(const suffix of ['-dispatch.json','-r1.md','-r2.md','-disposition.json'])readCmInitSource(specs,`.reviews/${prefix}${suffix}`);
     const evidencePath=`.reviews/${prefix}-r1.md`,receiptPath=`.reviews/${prefix}-disposition.json`;
-    if(historical?.[evidencePath]&&historical?.[receiptPath]&&[evidencePath,receiptPath].every(file=>sha(readCmInitSource(specs,file))===historical[file]))continue;
+    if(historical?.[evidencePath]&&historical?.[receiptPath]&&[evidencePath,receiptPath].every(file=>sha(readCmInitSource(specs,file))===historical[file])){
+      for(const [file,hash] of Object.entries(historical).filter(([file])=>file.startsWith(`.reviews/${prefix}-correction-check-`)))
+        need(sha(readCmInitSource(specs,file))===hash,'prd_change_review_changed');
+      continue;
+    }
     const gate=inspectPrdReview({stage,feature,evidence:path.join(reviews,`${prefix}-r1.md`),receipt:path.join(reviews,`${prefix}-disposition.json`)});
     need(['dispatch_once','completed'].includes(gate.outcome),'prd_revision_prior_review_unresolved');
     if(requireSplit&&stage==='split')need(gate.outcome==='completed','prd_revision_original_split_required');
