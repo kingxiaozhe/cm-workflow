@@ -1,5 +1,6 @@
 // Current-host analysis controller. No provider, specification writer or approval authority.
 import path from 'node:path';
+import {createPrdSelfCheckRevision,inspectPrdSelfCheckRevision,readPrdSelfCheckRevision} from './self-check-revision.mjs';
 import fs from 'node:fs';
 import {inspectCmPrdAdmission,inspectCmPrdSources} from '../../../scripts/cm-prd-entry.mjs';
 import {loadConfig,resolveRole} from '../../../scripts/cm-workflow-config.mjs';
@@ -26,17 +27,33 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
   let selfCheckRound=0,contextCheck=null;const selfCheckHistory=[];
   let designDraft=null,designPlanning=false;
   let acceptedDesign=null;
+  let selfCheckRevision=null,selfCheckRevisionSaved=false;
   let designRiskSelection=null;
   let designPromotion=null;
   let promotionOriginal=null;
   const materials=[...snapshot.sourceInspection.sources,
     ...(snapshot.sourceInspection.userCases?[snapshot.sourceInspection.userCases]:[])];
   const nonempty=value=>typeof value==='string'&&value.trim().length>0;
-  const current=(pendingSplit=null)=>{
+  const current=(pendingSplit=null,selfCheckRevisionSave=false)=>{
     need(digest(inspectCmPrdSources(input))===sourceDigest
       &&digest(loadConfig({projectRoot:admission.project}))===digest(config),'prd_inputs_changed');
     if(acceptedDesign!==null){
-      const observed=inspectAcceptedPrdDesign(admission.specs,designDraft,designRiskSelection,{draftDigest:draft?.draftDigest,pendingSplit});
+      if(selfCheckRevision!==null){
+        inspectPrdSelfCheckRevision(selfCheckRevision);
+        need(selfCheckRevision.acceptedDesignDigest===acceptedDesign.bindingDigest
+          &&selfCheckRevision.designDraftDigest===designDraft.draftDigest
+          &&selfCheckRevision.draftDigest===draft.draftDigest&&selfCheckRevision.round===selfCheckRound
+          &&digest(selfCheckHistory.find(item=>item.round===selfCheckRevision.failedSelfCheck.round))===selfCheckRevision.failedSelfCheckDigest,
+          'prd_self_check_revision_binding_changed');
+      }
+      for(const feature of acceptedDesign.features){
+        const saved=readPrdSelfCheckRevision(admission.specs,feature.directory);
+        const changed=selfCheckRevision?.features.find(f=>f.directory===feature.directory)?.changedFiles.length;
+        need(changed?((saved===null&&!selfCheckRevisionSaved)||digest(saved)===digest(selfCheckRevision)):saved===null,
+          'prd_self_check_revision_binding_changed');
+      }
+      const observed=inspectAcceptedPrdDesign(admission.specs,designDraft,designRiskSelection,{draftDigest:draft?.draftDigest,pendingSplit,selfCheckRevision,
+        pendingSelfCheckSave:selfCheckRevisionSave&&!selfCheckRevisionSaved});
       // Validate new bytes above, then compare all original binding fields. Only
       // the authorized requirements/design content is projected back to the saved baseline.
       const features=observed.features.map(feature=>({...feature,documents:feature.documents.map(doc=>['requirements.md','design.md'].includes(doc.path)?
@@ -49,13 +66,15 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
     need(restored.sourceDigest===sourceDigest&&restored.configDigest===digest(config),'prd_inputs_changed');
     ({stage,result,materialEvidence,draft,selfCheckRound,contextCheck,designDraft,designPlanning,
       acceptedDesign,designRiskSelection,designPromotion,promotionOriginal}=restored);
+    selfCheckRevision=restored.selfCheckRevision??null;selfCheckRevisionSaved=restored.selfCheckRevisionSaved??false;
     messages.push(...restored.messages);planning.push(...restored.planning);selfCheckHistory.push(...restored.selfCheckHistory);
     if(stage==='cancelled')controller.abort();
   }
   return Object.freeze({
     validateCurrent:pendingSplit=>current(pendingSplit),
     checkpoint:()=>json({stage,result,sourceDigest,configDigest:digest(config),materialEvidence,draft,designDraft,designPlanning,
-      acceptedDesign,designRiskSelection,designPromotion,promotionOriginal,selfCheckRound,contextCheck,selfCheckHistory,messages,planning},4*1024*1024),
+      acceptedDesign,designRiskSelection,designPromotion,promotionOriginal,selfCheckRound,contextCheck,selfCheckHistory,messages,planning,
+      ...(selfCheckRevision===null?{}:{selfCheckRevision,selfCheckRevisionSaved})},4*1024*1024),
     status:()=>json({stage,result,sourceDigest,materialEvidence,draft,designDraft,designRiskSelection,designPromotion,selfCheckRound,contextCheck,selfCheckHistory,writeAuthorized:false,completionAuthorized:false}),
     cancel(){controller.abort();stage='cancelled';},
     promoteDesign(value){
@@ -98,13 +117,17 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
     },
     prepareReview(reviewStage,feature){
       need(stage==='self_check_reported_passed'||(stage==='design_ready'&&reviewStage==='design'),'prd_review_not_ready');current();
+      if(reviewStage==='split'&&selfCheckRevision!==null)need(selfCheckRevisionSaved,'prd_self_check_revision_save_required');
       if(reviewStage==='design'&&designRiskSelection!==null)
         need(Object.values(designRiskSelection.risks.find(item=>item.feature===feature)?.signals??{}).some(Boolean),
           'prd_low_risk_design_review_not_required');
       return preparePrdReview({specs:admission.specs,draft:stage==='design_ready'?designDraft:draft,stage:reviewStage,feature});
     },
-    currentDraftForSave(){
-      need(stage==='self_check_reported_passed','prd_spec_save_not_ready');current();return acceptedPrdDraftForSave(admission.specs,draft);
+    currentDraftForSave({selfCheckRevisionSave=false}={}){
+      need(stage==='self_check_reported_passed','prd_spec_save_not_ready');current(null,selfCheckRevisionSave);return acceptedPrdDraftForSave(admission.specs,draft);
+    },
+    acceptSelfCheckRevisionSave(){
+      need(selfCheckRevision!==null,'prd_self_check_revision_required');current();selfCheckRevisionSaved=true;
     },
     originalPromotedDraft(){
       need(designPromotion?.saved===true&&stage==='self_check_reported_passed','prd_saved_promotion_not_ready');
@@ -133,6 +156,8 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
         &&typeof generate==='function','prd_planning_not_ready');
       need(selfCheckRound<2,'prd_self_check_round_limit');
       current();
+      const canRevise=acceptedDesign!==null&&draft!==null
+        &&(draft.mechanicalSelfCheck.status==='failed'||contextCheck?.status==='failed');
       if(stage==='design_ready')acceptedDesign=inspectAcceptedPrdDesign(admission.specs,designDraft,designRiskSelection);
       const inventory=prdFeatureInventory(admission.specs),nextIndex=acceptedDesign===null?nextPrdFeatureIndex(inventory):
         Number(acceptedDesign.features[0].directory.split('.')[0]);
@@ -151,6 +176,8 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
           userAnswers:messages.filter(message=>message.role==='user'),messages:next,role:roles.planner,nextIndex,
           phase:designOnly?'design':acceptedDesign!==null?'tasks_after_design':'full_draft',
           acceptedDesign,
+          ...(canRevise?{selfCheckRevision:{failedDraftDigest:draft.draftDigest,round:selfCheckRound+1,
+            instructions:'The whole-draft self-check failed. You may revise requirements.md/design.md content within the exact existing feature and file inventory. If changed, return a non-empty top-level selfCheckRevisionReason explaining the failed check addressed. Preserve user intent. These changes go to the original split review, not another design review. The two-round limit is unchanged.'}}:{}),
           riskDiscovery:acceptedDesign===null&&draft===null?{
             instructions:'If original Step 9.5 risk is discovered before producing the first full draft, stop before tasks. Return {status:design,summary:actual risk and basis,features:[{name,documents:[{path:requirements.md|design.md,content}]}]} preserving the complete feature scope. This transfers the same conversation to design review; do not generate tasks, call reviewers, write files or claim approval.'}:null,
           sourcePaths:materials.map(source=>({path:source.path,sha256:source.sha256})),
@@ -158,7 +185,8 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
           revision:draft===null?null:{draft,contextCheck,round:selfCheckRound+1,
             instructions:'Correct findings only within these existing feature names/directories. Do not add, remove or rename features; retain user intent and tests. No review invocation. Two self-check rounds maximum.'},
           reference:path.join(admission.skillDir,'SKILL.md'),testContract:path.join(admission.workflowRoot,'runtime/test-contract.md'),
-          instructions:acceptedDesign!==null?
+          instructions:canRevise?
+            'Correct the failed whole-draft self-check in the existing draft schema. Keep exactly the same ordered features and file inventory. Requirements/design changes require selfCheckRevisionReason. Return question or blocked if needed. No writes, review dispatch, invented approval or extra rounds.':acceptedDesign!==null?
             'Follow original cm-prd Step 10 and 10.4 on acceptedDesign. Return the existing draft schema with the exact same ordered features and exact requirements.md/design.md bytes supplied there; generate tasks.md and applicable test-cases.json only. Do not regenerate or revise accepted requirements/design, change scope or call a reviewer. Preserve original user cases and unresolved design findings for human review. Ask material questions with {status:question,question}; no invented user decisions. No writes, provider calls, installation, development or approval. Subsequent original self-check and split review remain required.':designOnly?
             'Follow cm-prd Steps 6-9 only, before original Step 9.5 design review. Read required references and actual relevant project context. Preserve user cases and requirements. No tasks or test-contract generation yet, even embedded in another document. Resolve material or human UI baseline decisions with {status:question,question}; never infer consent. Return {status:design,summary,features:[{name:kebab_slug,documents:[{path:requirements.md|design.md,content:string}]}]} with exactly both documents per feature, or {status:blocked,reason}. No writes, provider calls, browser launch, installation, review claims or development. These are unreviewed memory drafts, not authority to generate tasks.':
             'Follow cm-prd Steps 6-10 for in-memory DRAFTS ONLY. Read required references and relevant project context. Resolve material questions and human UI baseline choices before design: return {status:question,question} and wait, never infer consent. No writes, provider calls, browser launch, installation, review claims or development. Return {status:draft,summary,features:[{name:kebab_slug,documents:[{path:requirements.md|design.md|tasks.md|test-cases.json,content:string}],testCasesReason:null|no_observable_behavior|generation_disabled}]} or {status:blocked,reason}. Each feature needs the triad. Apply functional task granularity <=15, AC/Task references, applicable test contract and original user-case intent; generateCases false forbids generated cases only. This draft is unreviewed; original conditional design review, split review, self-check and human approval remain pending.'},controller.signal),64*1024);
@@ -172,14 +200,23 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
           need(draft===null&&acceptedDesign===null&&selfCheckRound===0,'prd_late_design_transition_not_ready');
           designDraft=inspectPrdDesignDraft(reply,{nextIndex});designPlanning=true;stage='design_ready';
         }else{
-          const inspected=inspectPrdDraft(reply,{nextIndex,generateCases:config.policies.generate_cases,
+          const {selfCheckRevisionReason,...draftReply}=reply;
+          if(acceptedDesign!==null&&draft!==null){
+            const inventory=features=>features.map(f=>({name:f.name,files:f.documents.map(d=>d.path).sort()}));
+            need(digest(inventory(reply.features))===digest(inventory(draft.features)),'prd_accepted_design_scope_changed');
+          }
+          const inspected=inspectPrdDraft(draftReply,{nextIndex,generateCases:config.policies.generate_cases,
             userCasesProvided:snapshot.sourceInspection.userCases!==null});
           if(acceptedDesign!==null){
             need(digest(inspected.features.map(item=>item.directory))===digest(acceptedDesign.features.map(item=>item.directory)),
               'prd_accepted_design_scope_changed');
-            for(const feature of acceptedDesign.features)for(const doc of feature.documents)
-              need(inspected.features.find(item=>item.directory===feature.directory).documents
-                .find(item=>item.path===doc.path)?.content===doc.content,'prd_accepted_design_rewritten');
+            const changed=acceptedDesign.features.some(feature=>feature.documents.some(doc=>
+              inspected.features.find(item=>item.directory===feature.directory).documents.find(item=>item.path===doc.path)?.content!==doc.content));
+            if(changed){
+              need(canRevise,'prd_accepted_design_rewritten');
+              selfCheckRevision=createPrdSelfCheckRevision({designDraft,acceptedDesign,draft,contextCheck,round:selfCheckRound,
+                revised:inspected,reason:selfCheckRevisionReason});
+            }
           }
           if(draft!==null){
             need(digest(inspected.features.map(item=>item.directory))===digest(draft.features.map(item=>item.directory)),

@@ -54,7 +54,7 @@ result必须填真实结果，不留空对象。不同kind的合同见当前请�
 | --- | --- |
 | prd_analyze | 按原Step 0–5分析与提问；保留用户用例、形态、平台与范围约束。question交给用户，不能代答。 |
 | prd_materials | 用已可用、已授权的实际工具处理材料；HTML交互只走Codex内置浏览器，PDF逐页覆盖，不伪造截图/页数/证据。能力不足返回blocked。 |
-| prd_generate | 按payload.phase执行：design只做Step6–9的需求/设计；tasks_after_design保留acceptedDesign原feature及正文，只补任务/测试合同；full_draft走原Step6–10。保留UI基准与原粒度约束，只回正文不写文件。 |
+| prd_generate | 按payload.phase执行：design只做Step6–9的需求/设计；tasks_after_design默认保留acceptedDesign原feature及正文；整稿自检失败时按下文登记同清单修订；full_draft走原Step6–10。保留UI基准与原粒度约束，只回正文不写文件。 |
 | prd_self_check | 读取spec-self-check.md与相关真实代码/地图/用例，逐项返回有依据的结果；机械通过不等于语义通过，不能用自检冒充独立审查。 |
 | prd_review | 按原9.5或10.6，使用实际授权的新上下文独立审查，核实作者/审查者身份并原样回传。无法独立时只允许预先选定的显式self-degraded；开始后不换模式或补审。 |
 | prd_correct | 对原findings提出完整原路径清单与逐项采纳/升级决定；不自行写规格，不新增范围/勾任务/再次review。 |
@@ -90,6 +90,20 @@ JS拥有日志、草稿保存、修订写入、自检轮次、审查记录、处
    blockers未清不能publish_summary。保存使用刚展示的summaryDigest，不能用旧稿或evidenceDigest替代。
 5. 仅awaiting_review后报告等待人工审查，展示具体specs路径。不能自动将状态写approved，
    不能因为用户说“继续”在本命令内启动开发；明确提示审查通过后单独运行$cm-ai。
+
+### 设计接受后的整稿自检修订
+
+仅 `draft_self_check_failed` / `self_check_failed` 的重生成可改已有需求/设计；问题澄清后仍须绑定原失败。
+`prd_generate` 的 `payload.selfCheckRevision` 非空时，返回原 draft 格式并增加非空
+`selfCheckRevisionReason`，说明修订回应的失败；feature 顺序、编号、文件清单全部保留，不增删。
+JS 在 checkpoint 的 `selfCheckRevision` 记录原失败及其摘要、轮次、原因和各文件前后 SHA；
+失败仍在 `selfCheckHistory`，总计最多两轮。未失败、缺原因、范围变化或任意磁盘漂移均不放行。
+通过自检后用 `save_draft`：先写不可覆盖的 `.reviews/prd-{feature}-self-check-revision.json`，
+再保存记录的新版；部分写入只允许同会话显式恢复原版本，不接受第三种内容。
+保存后 `selfCheckRevisionSaved` 为 true，不能恢复成旧稿；再继续原 split，不发第二次设计审查。
+后续接受顺序是已完成 split 回执、自检修订、原设计基线；split 包必须绑定修订后的需求/设计 SHA。
+摘要风险信息逐 feature 自动注明原因、文件、轮次及“拆分审查已审、未另做设计审查”，说明本身不阻断。
+未使用此路径的运行不产生新字段或档案，旧 checkpoint 仍可恢复。
 
 ## 恢复与退出
 

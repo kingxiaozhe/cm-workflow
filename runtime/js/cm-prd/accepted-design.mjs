@@ -1,4 +1,5 @@
 // Read requirements/design through the original baseline or bound split disposition.
+import {readPrdSelfCheckRevision} from './self-check-revision.mjs';
 import {inspectPrdSplitDesign} from './split-design.mjs';
 import {TextDecoder} from 'node:util';
 import {createHash} from 'node:crypto';
@@ -8,17 +9,24 @@ import {prdFeatureInventory} from './draft.mjs';
 import {inspectPrdDesignRiskSelection,requireUnreviewedPrdDesign} from './design-risk.mjs';
 import {need,json,digest} from '../cm-ai/effect-contract.mjs';
 const sha=value=>createHash('sha256').update(value).digest('hex');
-export function inspectAcceptedPrdDesign(specs,original,selection=null,{draftDigest,pendingSplit=null}={}){
+export function inspectAcceptedPrdDesign(specs,original,selection=null,{draftDigest,pendingSplit=null,selfCheckRevision=null,pendingSelfCheckSave=false}={}){
   if(selection!==null)inspectPrdDesignRiskSelection(specs,original,{draftDigest:selection.draftDigest,risks:selection.risks});
   const evidence=[],features=original.features.map(feature=>{
     const risk=selection?.risks.find(item=>item.feature===feature.directory);
     const requirements=feature.documents.find(doc=>doc.path==='requirements.md');
     const requirementsSha=sha(Buffer.from(requirements.content));
+    const revision=readPrdSelfCheckRevision(specs,feature.directory,{designDraftDigest:original.draftDigest});
+    need(revision===null||draftDigest===undefined||revision.draftDigest===draftDigest,'prd_self_check_revision_binding_changed');
+    const revised=revision?.features.find(f=>f.directory===feature.directory);
+    const pending=pendingSelfCheckSave&&selfCheckRevision?.features.find(f=>f.directory===feature.directory);
     const acceptedDocument=(doc,originalSha,designSha,error)=>{
       const bytes=readCmInitSource(specs,`${feature.directory}/${doc.path}`);
       need(bytes!==null,'prd_design_file_missing');
       const completed=readCmInitSource(specs,`.reviews/prd-${feature.name}-split-disposition.json`)!==null;
-      need((!completed&&sha(bytes)===originalSha)||sha(bytes)===inspectPrdSplitDesign({
+      const revisedDoc=revised?.documents.find(d=>d.path===doc.path);
+      need(!revisedDoc||revisedDoc.beforeSha256===originalSha,'prd_self_check_revision_binding_changed');
+      const acceptedSha=revisedDoc?.sha256??originalSha;
+      need((!completed&&(sha(bytes)===acceptedSha||(pending&&sha(bytes)===originalSha)))||sha(bytes)===inspectPrdSplitDesign({
         specs,feature:feature.directory,originalSha:designSha,requirementsSha,draftDigest,pendingSplit,document:doc.path}),error);
       return {path:doc.path,content:new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes)};
     };

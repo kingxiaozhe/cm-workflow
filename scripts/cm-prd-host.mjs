@@ -177,8 +177,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
           record({event:'spec_lifecycle',phase,data:{feature_count:result.features.length,task_count:summaryState.totals.tasks}});
         return result;
       }
-      if(request.operation==='save_draft')return (analysis.status().designPromotion?.saved===true?savePrdPromotedDraft:savePrdDraft)({specs:admission.specs,
-        writeEnabled:specWriteEnabled,getDraft:()=>analysis.currentDraftForSave(),getOriginal:()=>analysis.originalPromotedDraft()});
+      if(request.operation==='save_draft')return (analysis.checkpoint().selfCheckRevision?savePrdDraft:analysis.status().designPromotion?.saved===true?savePrdPromotedDraft:savePrdDraft)({specs:admission.specs,
+        writeEnabled:specWriteEnabled,getDraft:()=>analysis.currentDraftForSave({selfCheckRevisionSave:true}),getOriginal:()=>analysis.originalPromotedDraft(),
+        getSelfCheckRevision:()=>analysis.checkpoint().selfCheckRevision??null,onSelfCheckRevisionSaved:()=>analysis.acceptSelfCheckRevisionSave()});
       if(request.operation==='save_design')return savePrdDesign({specs:admission.specs,
         writeEnabled:specWriteEnabled,getDraft:()=>analysis.currentDesignForSave()});
       if(request.operation==='correct_findings'){

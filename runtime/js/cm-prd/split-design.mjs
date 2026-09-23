@@ -1,5 +1,6 @@
 // A split may supersede only the requirements/design bytes it actually reviewed. The original
 // design receipt and review package remain immutable; no second review or grant.
+import {prdSelfCheckRevisionBaseline} from './self-check-revision.mjs';
 import {createHash} from 'node:crypto';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {inspectPrdFindings} from './review-findings.mjs';
@@ -15,6 +16,9 @@ export function inspectPrdSplitDesign({specs,feature,originalSha,requirementsSha
   if(readCmInitSource(specs,prefix+'-r1.md')===null)return null;
   const review=inspectPrdFindings({specs,stage:'split',feature});
   const designPath=`${feature}/design.md`,requirementsPath=`${feature}/requirements.md`;
+  const baseline=prdSelfCheckRevisionBaseline(specs,feature,{originalSha,requirementsSha,draftDigest});
+  need(draftDigest===undefined||draftDigest===baseline.draftDigest,'prd_split_design_binding_changed');
+  ({originalSha,requirementsSha,draftDigest}=baseline);
   need(review.verdict!=='blocked'
     &&(draftDigest===undefined||review.draftDigest===draftDigest)
     &&review.reviewedArtifacts.find(item=>item.path===designPath)?.sha256===originalSha
@@ -55,5 +59,9 @@ export function acceptsPrdSplitDesign({specs,evidence,receipt,item,currentSha,pe
   // The split gate checks its artifacts, preserving the existing task/AC mark
   // normalization for historical consumers. Active analysis requires the exact
   // accepted requirements/design bytes; pending plans require exact saved hashes.
-  return inspectPrdSplitDesign({specs,feature:pkg.feature,originalSha:item.sha256,requirementsSha,pendingSplit})===currentSha;
+  const baseline=prdSelfCheckRevisionBaseline(specs,pkg.feature,{designDraftDigest:pkg.draftDigest,originalSha:item.sha256,requirementsSha});
+  const splitSha=inspectPrdSplitDesign({specs,feature:pkg.feature,originalSha:item.sha256,requirementsSha,
+    pendingSplit:currentSha===baseline.originalSha?null:pendingSplit});
+  const completed=readCmInitSource(specs,`.reviews/prd-${receipt.feature}-split-disposition.json`)!==null;
+  return (completed||splitSha!==null?splitSha:baseline.originalSha)===currentSha;
 }

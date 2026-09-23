@@ -1,5 +1,6 @@
 // Save the current self-checked draft; never issue specification approval.
 import fs from 'node:fs';
+import {inspectPrdSelfCheckRevision,readPrdSelfCheckRevision,prdSelfCheckRevisionPath} from './self-check-revision.mjs';
 import path from 'node:path';
 import {TextDecoder} from 'node:util';
 import {createHash} from 'node:crypto';
@@ -9,8 +10,9 @@ import {need,json,digest} from '../cm-ai/effect-contract.mjs';
 import {inspectPrdFindings} from './review-findings.mjs';
 import {replacePrdDocument} from './review-correction.mjs';
 
-export function savePrdDraft({specs,writeEnabled,getDraft}){
-  return saveDocuments({specs,writeEnabled,getDraft},false);
+export function savePrdDraft(input){
+  if(input.getSelfCheckRevision?.())return saveSelfCheckRevision(input);
+  return saveDocuments(input,false);
 }
 export function savePrdDesign({specs,writeEnabled,getDraft}){
   return saveDocuments({specs,writeEnabled,getDraft},true);
@@ -157,4 +159,54 @@ export function acceptedPrdDraftForSave(specs,draft){
     changed=true;return {...feature,documents};
   });
   return changed?json({...draft,features,draftDigest:digest({summary:draft.summary,features})},256*1024):draft;
+}
+
+// Save only the owner-recorded self-check revision. The immutable record precedes
+// replacement, so a partial write can resume against exactly the same two versions.
+function saveSelfCheckRevision({specs,writeEnabled,getDraft,getSelfCheckRevision,onSelfCheckRevisionSaved}){
+  need(writeEnabled===true&&typeof onSelfCheckRevisionSaved==='function','prd_spec_save_not_enabled');
+  const revision=inspectPrdSelfCheckRevision(getSelfCheckRevision()),draft=json(getDraft(),256*1024);
+  const changed=revision.features.filter(f=>f.changedFiles.length);
+  const existing=changed.map(f=>readPrdSelfCheckRevision(specs,f.directory));
+  need(existing.every(value=>value===null||digest(value)===digest(revision)),'prd_self_check_revision_binding_changed');
+  const files=changed.flatMap(f=>f.documents.filter(d=>f.changedFiles.includes(d.path)).map(d=>({...d,relative:`${f.directory}/${d.path}`})));
+  const current=()=>{
+    need(digest(getSelfCheckRevision())===digest(revision),'prd_self_check_revision_binding_changed');
+    // The owner validates sources, original review bindings, exact revision and
+    // partial-save tolerance. Unrelated disk edits still stop the operation.
+    need(getDraft().draftDigest===draft.draftDigest,'prd_spec_save_draft_changed');
+    for(const file of files){
+      const bytes=readCmInitSource(specs,file.relative),observed=bytes===null?null:createHash('sha256').update(bytes).digest('hex');
+      need([file.beforeSha256,file.sha256].includes(observed)
+        &&(fs.lstatSync(path.join(specs,file.relative)).mode&0o777)===0o600,'prd_spec_save_conflict');
+    }
+  };
+  // Completed split receipts own the latest saved version. Never roll them back.
+  if(draft.features.some(f=>readCmInitSource(specs,`.reviews/prd-${f.name}-split-disposition.json`)!==null))
+    return saveDocuments({specs,writeEnabled,getDraft},false);
+  current();
+  need(draft.draftDigest===revision.draftDigest,'prd_self_check_revision_binding_changed');
+  for(const feature of draft.features)for(const suffix of ['-r1.md','-r2.md','-dispatch.json','-disposition.json'])
+    need(readCmInitSource(specs,`.reviews/prd-${feature.name}-split${suffix}`)===null,'prd_self_check_revision_split_started');
+  // Preflight tasks/contracts as well, before replacing accepted documents.
+  for(const feature of draft.features)for(const doc of feature.documents){
+    const relative=`${feature.directory}/${doc.path}`;if(files.some(f=>f.relative===relative))continue;
+    const before=readCmInitSource(specs,relative);
+    need(before===null||before.equals(Buffer.from(doc.content)),'prd_spec_save_conflict');
+  }
+  const reviews=path.join(specs,'.reviews');
+  try{fs.mkdirSync(reviews,{mode:0o700});}catch(error){if(error.code!=='EEXIST')throw error;}
+  need(fs.realpathSync(reviews)===reviews&&fs.lstatSync(reviews).isDirectory(),'prd_review_path_invalid');
+  for(const feature of changed)writeImmutableWorkflowFile({reviewsDir:reviews,
+    name:path.basename(prdSelfCheckRevisionPath(feature.directory)),bytes:Buffer.from(JSON.stringify(revision)+'\n'),
+    validate:file=>need((fs.lstatSync(file).mode&0o777)===0o600,'prd_spec_save_permissions')});
+  try{
+    for(const file of files){
+      current();if(readCmInitSource(specs,file.relative).equals(Buffer.from(file.content)))continue;
+      replacePrdDocument({specs,relative:file.relative,content:file.content,current});
+    }
+    const result=saveDocuments({specs,writeEnabled,getDraft},false);
+    if(result.status==='draft_saved')onSelfCheckRevisionSaved();return result;
+  }catch{return json({status:'draft_save_unknown',draftDigest:draft.draftDigest,
+    next:'inspect_recorded_self_check_revision_before_explicit_resume',completionAuthorized:false});}
 }

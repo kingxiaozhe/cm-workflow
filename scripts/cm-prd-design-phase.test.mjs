@@ -124,8 +124,8 @@ test('late design response cannot erase an existing draft or reset self-check ro
   assert.equal(host.status().selfCheckRound,1);assert.deepEqual(host.status().draft,original);
   assert.equal(host.status().designDraft,null);
 });
-for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements','split-failed-design','split-failed-requirements'])test(`actual CLI disposed design to tasks: ${mode}`, {timeout:FIXTURE_TIMEOUT_MS},async t=>{
-  const promotes=['promote','saved-promote'].includes(mode),succeeds=['saved','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements','split-failed-design','split-failed-requirements'].includes(mode);
+for(const mode of ['self-check-revision','saved','rewrite','drift','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements','split-failed-design','split-failed-requirements'])test(`actual CLI disposed design to tasks: ${mode}`, {timeout:FIXTURE_TIMEOUT_MS},async t=>{
+  const promotes=['promote','saved-promote'].includes(mode),succeeds=['self-check-revision','saved','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements','split-failed-design','split-failed-requirements'].includes(mode);
   const revisesSplit=mode.startsWith('split-');let splitPackage,pendingSplit,checks=0;
   let originalDigest;
   const dir=fixture(t);fs.mkdirSync(path.join(dir,'mirror'));
@@ -160,13 +160,18 @@ for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promot
             assert.ok(message.payload.acceptedDesign.features[0].documents[1].content.includes('Corrected architecture'));
             result={status:'draft',summary:'Tasks from disposed design',features:message.payload.acceptedDesign.features.map(feature=>({
               name:feature.name,testCasesReason:'no_observable_behavior',documents:[...feature.documents,{path:'tasks.md',content:'- [ ] T-001: Update guide'}]}))};
+            if(mode==='self-check-revision'&&message.payload.selfCheckRevision){
+              result.selfCheckRevisionReason='AC setup needs a concrete observable result';
+              result.features[0].documents[0].content+='\nAC setup: run the documented command and verify output.';
+              result.features[0].documents[1].content+='\nDocument exact command and result.';
+            }
             if(mode==='rewrite')result.features[0].documents.find(doc=>doc.path==='design.md').content+=' Rewritten';
             if(mode==='drift')fs.writeFileSync(path.join(dir,'1.guide/design.md'),'User changed design');
           }
         }else if(message.kind==='prd_self_check'){
           checks++;const draft=message.payload.draft;
           result={draftDigest:draft.draftDigest,features:draft.features.map(feature=>({directory:feature.directory,
-            checks:draft.mechanicalSelfCheck.pending.map((id,i)=>({id,status:mode.startsWith('split-failed')&&checks===2&&i===0?'failed':'passed',evidence:['Synthetic contextual check']}))}))};
+            checks:draft.mechanicalSelfCheck.pending.map((id,i)=>({id,status:((mode==='self-check-revision'&&checks===1)||mode.startsWith('split-failed')&&checks===2)&&i===0?'failed':'passed',evidence:['Synthetic contextual check']}))}))};
         }
         else if(message.kind==='prd_correct'){
           const correctionPath=['split-requirements','split-failed-requirements'].includes(mode)&&message.payload.review.stage==='split'?'1.guide/requirements.md':'1.guide/design.md';
@@ -232,6 +237,9 @@ for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promot
         }
         assert.equal(message.result.stage,'draft_ready');send({requestId:'check',operation:'advance',text:'Check tasks'});
       }else if(message.requestId==='check'){
+        if(mode==='self-check-revision'&&checks===1){
+          assert.equal(message.result.stage,'self_check_failed');send({requestId:'tasks',operation:'advance',text:'Fix unverifiable AC'});continue;
+        }
         assert.equal(message.result.stage,'self_check_reported_passed');send({requestId:'save-tasks',operation:'save_draft'});
       }else if(message.requestId==='save-tasks'){
         assert.equal(message.result.status,'draft_saved');
@@ -266,6 +274,7 @@ for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promot
         send({requestId:'summary',operation:'prepare_summary'});
       }else if(message.requestId==='summary'){
         assert.equal(message.result.readyForAwaitingReview,true);
+        if(mode==='self-check-revision')assert.match(message.result.details.risks,/整稿自检失败.*未另做设计审查/);
         assert.deepEqual(message.result.blockers,[]);
         if(mode.startsWith('split-failed')){
           assert.equal(message.result.features[0].reviews.split.correctionSelfCheck.status,'failed');
@@ -277,7 +286,7 @@ for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promot
         send({requestId:'publish',operation:'publish_summary',summaryDigest:message.result.summaryDigest});
       }else if(message.requestId==='publish'){
         assert.equal(message.result.status,'awaiting_review');assert.equal(message.result.completionAuthorized,false);
-        if(revisesSplit)send({requestId:'revision-ready',operation:'prepare_revision',reason:'Explicit next revision'});else send({type:'host_close',sessionId});
+        if(revisesSplit||mode==='self-check-revision')send({requestId:'revision-ready',operation:'prepare_revision',reason:'Explicit next revision'});else send({type:'host_close',sessionId});
       }else if(message.requestId==='revision-ready'){
         assert.equal(message.result.mode,'change');assert.equal(message.result.stage,'ready');send({type:'host_close',sessionId});
       }
