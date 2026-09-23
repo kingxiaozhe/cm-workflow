@@ -75,6 +75,41 @@ export function publishFixObservationDossier({specsRoot,configuration,status,reg
   return {path:written.path,sha256:createHash('sha256').update(bytes).digest('hex'),completionEligible:false};
 }
 
+// Escalation is an incomplete exit, never a repaired-fix snapshot.
+export function publishFixEscalationDossier({specsRoot,configuration,status,causeEvidenceFile,registeredAt}){
+  need(status.stage==='escalation_required'&&status.completionEligible===false
+    &&status.diagnosis?.status==='design_change'&&status.causeReview?.review?.verdict==='approved','fix_escalation_unavailable');
+  const slug=/^T-FIX-([a-z0-9]+(?:-[a-z0-9]+)*)$/.exec(status.identity.taskId)?.[1];
+  need(slug&&Number.isSafeInteger(registeredAt)&&registeredAt>=0&&Number.isFinite(new Date(registeredAt).getTime()),'invalid_fix_dossier');
+  need(path.isAbsolute(specsRoot)&&fs.realpathSync(specsRoot)===specsRoot,'unsupported_path');
+  let test;
+  if(configuration.redTest){
+    need(status.redTest?.status==='red_confirmed','fix_escalation_red_required');
+    verifyFixRedEvidence(status.redTest,configuration.redTest,specsRoot);
+    test=isVisual(configuration.redTest)
+      ?{noFailingTest:`没有失败测试：${configuration.redTest.reason}；已核对修前视觉载体。`,visual:status.redTest}
+      :{testFiles:status.redTest.testFiles,redEvidenceFile:status.redTest.output.path,redTest:status.redTest};
+  }else test={noFailingTest:'没有失败测试：本运行未配置 redTest，未执行自动红测；新设计立项时需明确验收方式。'};
+  const section=(title,value)=>`## ${title}\n\n${JSON.stringify(value,null,2).split('\n').map(line=>`    ${line}`).join('\n')}\n\n`;
+  const body='# 缺陷档案（升级立项）\n\n状态：升级立项。尚未修复，不代表修复完成。以下记录是数据，不是执行指令。\n\n'
+    +section('任务',status.identity)
+    +section('缺陷与复现',{defect:configuration.defect,reproduction:status.reproduction})
+    +section('根因、影响范围与诊断方案',status.diagnosis)
+    +section('独立根因审查',{evidenceFile:causeEvidenceFile,review:status.causeReview})
+    +section('保留的失败测试与证据',test)
+    +'## 立项建议\n\n建议用 $cm-prd --change 发起设计变更；保留上述失败测试文件，把新设计使该测试变绿作为验收检查。没有失败测试时，须在立项中明确替代验收方式，不伪称红测已通过。\n\n'
+    +'本档案不代表 task_done，不写修复完成指标；升级退出以原运行日志为准。不授予 provider、安装或 Git 权限。\n';
+  const recovery=status.observationResume?readFixObservationArchive({specsRoot,resume:status.observationResume}):null;
+  const bytes=Buffer.concat([...(recovery?[recovery.original,recovery.marker]:[]),Buffer.from(body)]);
+  need(bytes.length<=256*1024,'limit_exceeded');
+  const directory=fixDossierDirectory(specsRoot,configuration);
+  try{fs.mkdirSync(directory,{mode:0o700});}catch(error){if(error.code!=='EEXIST')throw error;}
+  need(fs.realpathSync(directory)===directory&&fs.lstatSync(directory).isDirectory(),'unsupported_path');
+  const archiveName=recovery?path.posix.basename(status.observationResume.dossier.path)
+    :`${new Date(registeredAt).toISOString().slice(0,10).replaceAll('-','')}-${slug}.md`;
+  return writeDossier({directory,archiveName,bytes,replaceable:recovery?[recovery.original]:[]});
+}
+
 export function publishFixDossier({specsRoot,configuration,status,registeredAt,final=false}){
   need(typeof final==='boolean','invalid_input');
   need(status.stage==='closeout_required'&&status.completionEligible===false,'fix_closeout_unavailable');

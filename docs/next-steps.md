@@ -19,14 +19,14 @@
 
 ---
 
-## 第一档：补测试（清单里的 A 类，剩 4 条）
+## 第一档：补测试（清单里的 A 类，剩 3 条）
 
-详细清单在 `docs/untested-branches.md`。cm-check 已补，剩下的 4 条在 cm-fix、cm-test、cm-refactor 三块代码里，按模块一块一块来，不要一次全开。
+详细清单在 `docs/untested-branches.md`。cm-check 和 cm-fix 已补，剩下的 3 条在 cm-test、cm-refactor 两块代码里，按模块一块一块来，不要一次全开。
 
 | 顺序 | 模块 | 要补的 | 为什么排这里 |
 | --- | --- | --- | --- |
 | 已完成 | cm-check | ~~`configured` 状态~~ | **已补**：`scripts/cm-check-host.test.mjs`，含三态、核心判定、非法报告及变异验证 |
-| 1 | cm-fix | 诊断结论 `design_change` | 在已熟悉的地盘；它是 SKILL 承诺的「升级出口」，从没走过 |
+| 已完成 | cm-fix | ~~诊断结论 `design_change`~~ | **已补**：`scripts/cm-fix-escalation.test.mjs`，含真实红测、升级归档、恢复幂等、QA 父子退出及变异验证 |
 | 2 | cm-test | `snapshot` / `evaluation` 两种模式 | 两个**都**没测过 |
 | 3 | cm-refactor | 规则判定三态 | 模块最大（47KB），留到后面 |
 | 4 | cm-refactor | 四个失败码 | 同上，和第 3 条一起做 |

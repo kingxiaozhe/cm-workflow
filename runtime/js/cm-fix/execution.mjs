@@ -28,7 +28,7 @@ import {createFixFinalReview,fixFinalReviewConfiguration,inspectFixFinalRegistra
 import {publishFixFinalEvidence} from './final-review-evidence.mjs';
 import {checkN5} from '../../../scripts/cm-task-gate.mjs';
 import {readProjectInstructionContext} from '../cm-ai/cm-ai-context-refresh.mjs';
-import {publishFixDossier,publishFixObservationDossier,readFixObservationArchive} from './dossier.mjs';
+import {publishFixDossier,publishFixObservationDossier,publishFixEscalationDossier,readFixObservationArchive} from './dossier.mjs';
 import {readFixWalkthrough,fixWalkthroughBinding,createFixWalkthrough,inspectFixWalkthrough,verifyFixWalkthroughEvidence,walkthroughCoversDiagnosis} from './walkthrough.mjs';
 import {logFixEvent} from './start.mjs';
 import {inspectFixInvestigation,fixInvestigationRequest} from './investigation.mjs';
@@ -277,6 +277,16 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     need(digest(observationFiles(value.files.map(file=>file.path)))===digest(value.files),'fix_observation_resume_mismatch');
     readFixObservationArchive({specsRoot:evidenceSpecsRoot,resume:value});
   };
+  function escalationEvents(status,dossier){
+    const prior=eventsAt(evidenceSpecsRoot,configuration).filter(row=>row.workflow==='cm-fix'&&row.node==='FIX'&&row.run_id===identity.runId
+      &&row.repository_id===identity.repositoryId&&row.task===identity.taskId&&row.attempt===identity.attempt&&row.event==='run_done');
+    const resumeIndex=status.observationResume?prior.findIndex(row=>row.event_id===status.observationResume.eventId):-1;
+    need(!status.observationResume||resumeIndex>=0,'fix_escalation_exit_conflict');
+    const current=status.observationResume?prior.slice(resumeIndex+1):prior;
+    need(current.length<=1&&current.every(row=>row.phase==='escalation'&&row.result==='escalated'
+      &&row.dossier_file===dossier.path&&row.dossier_sha256===dossier.sha256),'fix_escalation_exit_conflict');
+    return current;
+  }
   function project(){
     const snapshot=store.snapshot();
     need(snapshot.records.length>0,'fix_history_invalid');
@@ -302,7 +312,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     };
     need(first.id==='fix-configuration'&&first.kind==='intent'&&digest(first.payload)===digest(initial),'fix_history_invalid');
     let stage='reproduce',pending=null,reproduction=null,diagnosed=null,learning=null,cause=null,started=null,causeResult=null,red=null,redFiles=null,baseline=null,baselineFiles=null;
-    let authorBaseline=null,authored=null;
+    let authorBaseline=null,authored=null,escalationIntent=null,escalation=null;
+    const redStage=()=>diagnosed?.status==='design_change'?'design_change_required':'red_test_required';
     let repairBaseline=null,repaired=null;
     let regression=null,retrospective=null,retrospectivePackage=null,writeback=null,learningPackage=null,handoff=null;
     let finalRegistration=null,finalStarted=null,finalResult=null,finalRecovery=null,finalRecoveryCount=0;
@@ -343,7 +354,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(cycle>0&&record.id===observationId(observed[2],cycle),'fix_history_invalid');
         record={...record,id:`fix-observation-${observed[2]}`};
       }
-      need(stage!=='cancelled','fix_history_invalid');
+      need(stage!=='cancelled'&&stage!=='escalated','fix_history_invalid');
       const joined=joinedRecord.exec(record.id);
       if(joined){
         need(Number(joined[1])===++joinedCount&&record.kind==='result'&&pending===null,'fix_history_invalid');
@@ -358,6 +369,21 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(['fix-cause-registered','fix-final-registered','fix-revision-final-registered'].includes(record.id)){
         const signer=record.payload.grant?.hostContextId;
         need(signer===configuration.hostContextId||seenJoined.has(signer)||signer===liveHostContextId,'fix_host_not_joined');
+      }
+      if(record.id==='fix-escalation-dossier-intent'){
+        need((stage==='escalation_required'||stage==='design_change_required'&&!runRed)
+          &&pending===null&&record.kind==='intent'&&!escalationIntent,'fix_history_invalid');
+        shape(record.payload,['registeredAt']);
+        need(Number.isSafeInteger(record.payload.registeredAt)&&record.payload.registeredAt>=0
+          &&Number.isFinite(new Date(record.payload.registeredAt).getTime()),'invalid_fix_dossier');
+        escalationIntent=record.payload;stage='escalation_required';continue;
+      }
+      if(record.id==='fix-escalation-result'){
+        need(escalationIntent&&stage==='escalation_required'&&record.kind==='result','fix_history_invalid');
+        shape(record.payload,['dossier','eventId']);shape(record.payload.dossier,['path','sha256']);
+        need(record.payload.dossier.path===fixDossierRelative(configuration,path.posix.basename(record.payload.dossier.path))
+          &&/^[a-f0-9]{64}$/.test(record.payload.dossier.sha256),'invalid_fix_dossier');id(record.payload.eventId);
+        escalation=record.payload;stage='escalated';continue;
       }
       if(record.id==='fix-observation-dossier-intent'){
         need(stage==='observation'&&pending===null&&record.kind==='intent','fix_history_invalid');
@@ -681,7 +707,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         stage=repaired.outcome==='repaired'?'regression_required':'repair_blocked';continue;
       }
       if(record.id==='fix-test-author-intent'){
-        need(configuration.testAuthor&&stage==='red_test_required'&&authorBaseline===null&&record.kind==='intent','fix_history_invalid');
+        need(configuration.testAuthor&&stage===redStage()&&authorBaseline===null&&record.kind==='intent','fix_history_invalid');
         authorBaseline=readReviewBaseline(record.payload);
         const codeRoot=fs.realpathSync(configuration.reproduction.cwd);
         need(authorBaseline.rootDigest===createHash('sha256').update(codeRoot).digest('hex')
@@ -693,7 +719,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(record.id==='fix-test-author-result'){
         need(pending==='test_author'&&record.kind==='result','fix_history_invalid');
         authored=inspectFixTestAuthor(record.payload,authorBaseline);pending=null;
-        stage=authored.outcome==='authored'?'red_test_required':'test_author_blocked';continue;
+        stage=authored.outcome==='authored'?redStage():'test_author_blocked';continue;
       }
       if(record.id==='fix-baseline-intent'){
         need(stage==='baseline_required'&&runBaseline&&record.kind==='intent','fix_history_invalid');
@@ -708,7 +734,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         stage=baseline.status==='recorded'?'repair_required':'baseline_blocked';continue;
       }
       if(record.id==='fix-red-test-intent'){
-        need(stage==='red_test_required'&&runRed&&record.kind==='intent','fix_history_invalid');
+        need(stage===redStage()&&runRed&&record.kind==='intent','fix_history_invalid');
         need(!configuration.testAuthor||authored?.outcome==='authored','test_author_required');
         shape(record.payload,['testFiles']);redFiles=record.payload.testFiles;
         need(Array.isArray(redFiles)&&digest(redFiles.map(file=>file.path))===digest([...configuration.redTest.testFiles].sort()),'red_test_mismatch');
@@ -717,7 +743,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(record.id==='fix-red-test-result'){
         need(pending==='red_test'&&record.kind==='result','fix_history_invalid');
         red=inspectFixRedTest(record.payload,configuration.redTest,identity,redFiles);pending=null;
-        stage=red.status==='red_confirmed'?'baseline_required':red.status==='blocked'?'red_test_blocked':'red_test_not_confirmed';continue;
+        stage=red.status==='red_confirmed'?(diagnosed.status==='design_change'?'escalation_required':'baseline_required'):red.status==='blocked'?'red_test_blocked':'red_test_not_confirmed';continue;
       }
       if(record.id==='fix-cause-registered'){
         const late=observationResume&&legacyObservationBypass;
@@ -800,8 +826,16 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         }
       }
     }
-    // 走查声明的模块和诊断对不上，这一轮无论如何走不到收尾。原来要等走查那一步才
-    // 发现，而那已经在花钱做完独立审查之后——整轮白跑。诊断一落盘就判得出来。
+    // A later design project may change source files. Preserve the terminal exit, not a fresh fix claim.
+    if(escalation){
+      const status=json({identity,stage:'escalated',pending:null,executionActive:false,reproduction,diagnosis:diagnosed,
+        learning,causeReview:causeResult,...(runRed?{redTest:red}:{}),
+        ...(observationResume?{observationResume}:{}),escalation,completionEligible:false});
+      const prior=escalationEvents(status,escalation.dossier);
+      need(prior.length===1&&prior[0].event_id===escalation.eventId,'fix_escalation_exit_conflict');
+      return status;
+    }
+    // 走查声明与诊断不符应尽早阻断，避免完成独立审查后才发现。
     // 只在「刚诊断完、还没往下走」时改阶段：已经跑过头的旧记录保持原样。回放循环
     // 会拿当前阶段去校验下一条记录，所以这个判断必须放在循环之后，不能插在循环里。
     if(configuration.walkthrough&&diagnosed?.status==='diagnosed'
@@ -825,8 +859,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       try{need(digest(fixBaselineFiles(configuration.baseline))===digest(baseline.testFiles),'baseline_files_changed');}
       catch{stage='baseline_evidence_required';}
     }
-    if(stage==='red_test_required'&&configuration.testAuthor&&!authored)stage='test_author_required';
-    if(stage==='red_test_required'&&authored){
+    if(stage===redStage()&&configuration.testAuthor&&!authored)stage='test_author_required';
+    if(stage===redStage()&&authored){
       try{need(digest(redTestFiles(configuration.redTest))===digest(authored.testFiles),'test_author_drift');}
       catch{stage='test_author_evidence_required';}
     }
@@ -916,6 +950,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         if(observed?.red.after)verifyVisualCarrier(observed.red.after);}
       catch{stage='visual_evidence_required';}
     }
+    if(stage==='design_change_required'&&!runRed)stage='escalation_required';
     const status=json({identity,stage,pending,executionActive:active!==null,reproduction,diagnosis:diagnosed,learning,causeReview:causeResult,
       ...(causeReviewCorrection?{causeReviewCorrection}:{}),
       ...(observationResume?{observationResume,observationCycle}:{}),
@@ -1046,6 +1081,18 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     finish({authorized=false}={}){
       need(!closed&&active===null,'fix_busy');need(authorized===true,'fix_finish_authorization_required');
       const status=project();
+      if(status.stage==='escalation_required'||status.stage==='escalated'){
+        const archived=this.publishDossier();
+        const dossier={path:fixDossierRelative(configuration,path.basename(archived.dossier.path)),sha256:archived.dossier.sha256};
+        const prior=escalationEvents(status,dossier);
+        if(!prior.length)logFixEvent({specsRoot:evidenceSpecsRoot,identity,configuration,event:'run_done',phase:'escalation',
+          detail:'升级立项：保留复现证据，建议 $cm-prd --change',
+          data:{result:'escalated',dossier_file:dossier.path,dossier_sha256:dossier.sha256}});
+        const ended=escalationEvents(status,dossier);need(ended.length===1,'fix_escalation_exit_conflict');
+        if(!status.escalation)append('fix-escalation-result','result',{dossier,eventId:ended[0].event_id});
+        const result={...project(),dossier:archived.dossier,escalationRunEnded:true};
+        closed=true;store.close();return result;
+      }
       if(['observation','observation_not_reproduced','observation_needs_evidence'].includes(status.stage)){
         const archived=this.publishDossier();
         const data={result:'observing',dossier_file:fixDossierRelative(configuration,path.basename(archived.dossier.path)),dossier_sha256:archived.dossier.sha256,
@@ -1102,6 +1149,19 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     },
     publishDossier(){
       need(!closed&&active===null,'fix_busy');const current=project();
+      if(current.stage==='escalated'){
+        const [file]=readReviewSourceFiles(evidenceSpecsRoot,[current.escalation.dossier.path]);
+        need(file.sha256===current.escalation.dossier.sha256&&file.mode===0o600,'fix_escalation_exit_conflict');
+        return {...current,dossier:{path:path.join(evidenceSpecsRoot,file.path),sha256:file.sha256,completionEligible:false}};
+      }
+      if(current.stage==='escalation_required'){
+        let registration=store.snapshot().records.find(row=>row.id==='fix-escalation-dossier-intent');
+        if(!registration){append('fix-escalation-dossier-intent','intent',{registeredAt:Date.now()});registration=store.snapshot().records.at(-1);}
+        const causeEvidence=publishCause(true);
+        const dossier=publishFixEscalationDossier({specsRoot:evidenceSpecsRoot,configuration,status:current,
+          causeEvidenceFile:`.reviews/${path.basename(causeEvidence.path)}`,registeredAt:registration.payload.registeredAt});
+        return {...project(),dossier};
+      }
       if(['observation','observation_not_reproduced','observation_needs_evidence'].includes(current.stage)){
         let registration=store.snapshot().records.find(row=>row.id==='fix-observation-dossier-intent');
         if(!registration){append('fix-observation-dossier-intent','intent',{registeredAt:Date.now()});registration=store.snapshot().records.at(-1);}
@@ -1408,7 +1468,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     },
     async runRedTest({authorized=false}={}){
       need(!closed&&active===null,'fix_busy');const start=project();
-      if(start.stage!=='red_test_required')return start;
+      if(!['red_test_required','design_change_required'].includes(start.stage))return start;
       need(authorized===true,'red_test_authorization_required');need(runRed,'red_test_unavailable');
       const controller=new AbortController();active=controller;let registered=false,timer,preparationTimedOut=false;
       try{
@@ -1420,7 +1480,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           need(digest(learning)===digest(start.learning),'fix_learning_context_changed');clearTimeout(timer);
         }
         need(!controller.signal.aborted,'cancelled');
-        need(project().stage==='red_test_required','fix_evidence_changed');
+        need(project().stage===start.stage,'fix_evidence_changed');
         const testFiles=redTestFiles(configuration.redTest);
         append('fix-red-test-intent','intent',{testFiles});registered=true;
         const result=await runRed({identity},{signal:controller.signal,authorized:true});
@@ -1593,7 +1653,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }finally{active=null;}
     },
     cancel(){
-      const current=project();if(current.stage==='cancelled')return current;
+      const current=project();if(current.stage==='cancelled'||current.stage==='escalated')return current;
       append('fix-cancel','cancel',{reason:'user_cancelled'});active?.abort();return project();
     },
     close(){need(active===null,'fix_busy');closed=true;store.close();},

@@ -33,8 +33,19 @@ export function fixProgress(status,config={},authorization={}){
     blocker:null,nextAction:null,requiresUser:false,finished:done,
     evidenceScope:'recorded_history_not_fresh_execution',remainingScope:'current_path_not_future_revisions'};
   if(done){result.remaining=[];return result;}
+  if(stage==='escalated')return {...result,current:'已升级立项，修复未完成',remaining:[],nextAction:null};
   if(stage==='cancelled')return {...result,current:'任务已取消',blocker:'cancelled',nextAction:'保留历史，不自动恢复。',requiresUser:true};
   if(status.executionActive===true)return {...result,current:'当前操作正在执行',nextAction:'等待当前操作结果，不重发或申请续审。'};
+  if(status.diagnosis?.status==='design_change'){
+    const actions={cause_review_required:['原因审查','cause_review'],test_author_required:['准备失败测试','author_tests'],design_change_required:['确认设计缺陷的失败测试','red_test'],
+      escalation_required:['保存升级档案并退出','finish']};
+    if(actions[stage]){
+      const [current,nextAction]=actions[stage];
+      return {...result,current,nextAction,remaining:[current,...(stage==='cause_review_required'&&config.testAuthor?['准备失败测试']:[]),
+        ...(['cause_review_required','test_author_required'].includes(stage)&&config.redTest?['确认设计缺陷的失败测试']:[]),
+        ...(stage!=='escalation_required'?['保存升级档案并退出']:[])]};
+    }
+  }
   const invocation=status.finalReviewInvocation;
   if(stage==='unknown'){
     const finalPending=!revision&&invocation&&(!review||review.observationStatus==='unknown');

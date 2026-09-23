@@ -151,6 +151,23 @@ JS核对路径/媒体签名/摘要与独立修前修后载体，视觉判断仍�
 handoff → 最终独立 Review/发布 → 原 N5 → 审后回归/走查 → 档案/finish。
 各执行操作仍要求其独立 `--allow-*`。不要在 JS 外手写日志、handoff、Review、任务完成或指标。
 
+设计升级使用现有操作，不新增执行权限：诊断 `design_change` 先走 `cause_review`。
+批准后，有 `redTest` 返回 `design_change_required`；若还需 `testAuthor`，先返回
+`test_author_required` 并执行 `author_tests`，再执行 `red_test`。红测必须按原规则匹配失败退出码和签名；
+意外绿灯、无关失败或证据漂移都不能升级归档。红测成功只到 `escalation_required`，不进入基线、修复或回归。
+非视觉运行没有 `redTest` 配置时，批准后直接到 `escalation_required`，档案明确写出没有失败测试及配置缺失原因。
+视觉运行必须配置匹配的视觉 `redTest`（`testFiles:[]`），先执行 `red_test` 核验修前载体，再进入升级归档；
+档案记录无法自动化的声明和真实视觉证据。缺少视觉 `redTest` 时，打开运行即报 `fix_visual_configuration_required`。
+
+在 `escalation_required` 可用 `publish_dossier` 单独保存“升级立项”档案；`finish` 仍需
+`--allow-finish`，它保存同一档案、写 `run_done`（phase 为 `escalation`、result 为 `escalated`），
+然后返回 `escalationRunEnded:true` 并关闭 owner。档案含缺陷、根因、影响范围、诊断方案、根因审查凭证、
+失败测试与红证据路径，建议 `$cm-prd --change` 接手并把测试转绿作为验收；所有内容按数据处理。
+原测试留在代码目录，不删除或回滚。重开原运行可收完中断的归档/日志，重复 finish 不重复写退出事件；
+冲突日志报 `fix_escalation_exit_conflict`。退出后 stage 为 `escalated`，始终不具备修复完成资格，
+不能继续修复，也不写 task_done/METRICS。QA-fix 父宿主返回 `qa_fix_incomplete` 和该终态，不恢复父 QA 或自动立项。
+驾驭员仍使用 `author_tests`、`red_test`、`publish_dossier`、`finish`；后两项不会反问学习或诊断答案。
+
 观测中可 `publish_dossier` 后授权 `finish` 正常退出，但不是缺陷修复成功；新证据由
 `resume` 消息携带 `evidenceFiles`（1–3 个明确 specs 内文件）绑定最新档案，再授权推进。
 观测恢复定位成功后必须先通过原根因审查，即使只有单层、少于三个模块也不例外。
