@@ -1,3 +1,4 @@
+import {assertPrdBatchActive} from './inputs-replaced.mjs';
 // Host-owned disposition; the existing PRD receipt remains the only gate.
 import path from 'node:path';
 import {createHash} from 'node:crypto';
@@ -14,6 +15,7 @@ const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 export function recordPrdHostDisposition(input){return disposition(input);}
 
 function disposition({specs,stage,feature,packageDigest,decisions,artifacts,writeEnabled},{validateOnly=false,checked=false,failedCheck=null}={}){
+  assertPrdBatchActive(specs,[feature]);
   need(writeEnabled===true,'prd_disposition_not_enabled');
   const review=inspectPrdFindings({specs,stage,feature});
   need(review.packageDigest===packageDigest,'prd_disposition_package_changed');
@@ -68,6 +70,7 @@ function disposition({specs,stage,feature,packageDigest,decisions,artifacts,writ
 export function createPrdDispositionOwner({checkContext,canRecoverRecorded=()=>false,validateCurrent=()=>{}}){
   need(typeof checkContext==='function','prd_disposition_checker_required');
   return async(input,signal)=>{
+    assertPrdBatchActive(input.specs,[input.feature]);
     need(!signal.aborted,'cancelled');
     input=json(input,256*1024);
     validateCurrent(input);

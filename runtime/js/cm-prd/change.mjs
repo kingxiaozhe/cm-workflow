@@ -1,3 +1,4 @@
+import {assertPrdBatchActive} from './inputs-replaced.mjs';
 // Original C1–C8, also used for explicitly confirmed revisions of saved drafts.
 // Proposals are not writes; old review evidence and completed work stay history.
 import fs from 'node:fs';
@@ -118,6 +119,7 @@ export function inspectPrdChangeProposal(before,raw,selected,config){
 }
 
 export function createPrdChange({admission,runtime,call,restored=null,selected=[admission.feature],reason=null}){
+  assertPrdBatchActive(admission.specs,selected);
   const config=loadConfig({projectRoot:admission.project}),configDigest=digest(config);
   const readUserCases=()=>admission.cases===null?null:{path:admission.cases,
     content:new TextDecoder('utf8',{fatal:true}).decode(readCmInitSource(path.dirname(admission.cases),path.basename(admission.cases)))};

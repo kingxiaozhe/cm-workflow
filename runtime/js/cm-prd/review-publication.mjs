@@ -1,5 +1,6 @@
 // Publish an unchanged host-attested r1. Not a provider receipt or completion issuer.
 import fs from 'node:fs';
+import {assertPrdBatchActive} from './inputs-replaced.mjs';
 import path from 'node:path';
 import {inspectPrdReview} from '../../../scripts/cm-prd-review-gate.mjs';
 import {writeReviewEvidence} from '../cm-ai/review-evidence-file.mjs';
@@ -7,6 +8,7 @@ import {reviewResultForPaths} from '../cm-ai/review-runner.mjs';
 import {need,shape,json,digest,id} from '../cm-ai/effect-contract.mjs';
 
 export function publishPrdReview({specs,reviewPackage,packageDigest,authorContextId,response,inspectOnly=false,pendingSplit=null}){
+  if(!inspectOnly)assertPrdBatchActive(specs,[reviewPackage.feature]);
   reviewPackage=json(reviewPackage,256*1024);response=json(response,64*1024);id(authorContextId);
   need(digest(reviewPackage)===packageDigest&&reviewPackage.workflow==='cm-prd'
     &&['design','split'].includes(reviewPackage.stage),'prd_review_package_invalid');

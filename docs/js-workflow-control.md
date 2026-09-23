@@ -1142,6 +1142,8 @@ FAIL/BLOCKED 或资源未关闭的仍然拒绝，不会伪造通过。
 
 ## cm-prd：规格生成、需求变更与恢复
 
+原材料在审查中途真正改变时，可经用户明确授权执行 `replace_inputs`，保留不可覆盖的旧批次记录并终止它；以 `--predecessor` 关联独立的新 specs 目录，从分析开始全量重审。旧批次只读，不继承旧批准；具体参数、恢复方式和限制见 `skills/cm-prd/references/js-change-recovery.md` 的“原材料改变”章节。
+
 当前同一宿主支持新建、原C1–C8变更和已审整稿受控修订。操作及返回合同以
 `skills/cm-prd/references/js-host.md`、`js-change-recovery.md`和CLI帮助为准。
 `--change`后分析→需求→设计→任务/测试合同→自检→展示精确提案→当前用户decision→save_draft；

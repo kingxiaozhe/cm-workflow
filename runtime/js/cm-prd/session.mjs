@@ -5,22 +5,22 @@ import {randomUUID} from 'node:crypto';
 import {need,json,digest} from '../cm-ai/effect-contract.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 
-function readState(root,relative){
-  if(relative!=='state.json')return readCmInitSource(root,relative)?.toString('utf8')??null;
+export function readPrdSessionFile(root,relative){
+  if(!['state.json','inputs-replaced.json'].includes(relative))return readCmInitSource(root,relative)?.toString('utf8')??null;
   const file=path.join(root,relative);let stat;try{stat=fs.lstatSync(file);}catch(e){if(e.code==='ENOENT')return null;throw e;}
   need(stat.isFile()&&!stat.isSymbolicLink()&&stat.nlink===1&&stat.size<=16*1024*1024&&(stat.mode&0o777)===0o600,'prd_session_file_invalid');
   return new TextDecoder('utf8',{fatal:true}).decode(fs.readFileSync(file));
 }
 
 export function replaceSessionFile(root,relative,before,after){
-  need(readState(root,relative)===before,'prd_write_conflict');
+  need(readPrdSessionFile(root,relative)===before,'prd_write_conflict');
   need(typeof after==='string'&&Buffer.byteLength(after)<=16*1024*1024&&Buffer.from(after).toString('utf8')===after,'prd_write_limit');
   const target=path.join(root,relative),dir=path.dirname(target);
   need(fs.realpathSync(dir)===dir,'prd_write_path_invalid');
   const tmp=path.join(dir,`.prd-${randomUUID()}`);let fd;
   try{
     fd=fs.openSync(tmp,'wx',0o600);fs.writeFileSync(fd,after);fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;
-    need(readState(root,relative)===before,'prd_write_conflict');
+    need(readPrdSessionFile(root,relative)===before,'prd_write_conflict');
     if(before===null)fs.linkSync(tmp,target);else fs.renameSync(tmp,target);
     const d=fs.openSync(dir,'r');try{fs.fsyncSync(d);}finally{fs.closeSync(d);}
   }finally{if(fd!==undefined)fs.closeSync(fd);try{fs.unlinkSync(tmp);}catch(e){if(e.code!=='ENOENT')throw e;}}
@@ -32,7 +32,7 @@ export function openPrdSession({specs,sessionId,identity}){
     need(fs.realpathSync(dir)===dir&&fs.lstatSync(dir).isDirectory(),'prd_session_path_invalid');
   }
   const directory=path.join(specs,'.reviews/prd-sessions',sessionId),lock=path.join(directory,'writer.json');
-  const read=()=>readState(directory,'state.json');
+  const read=()=>readPrdSessionFile(directory,'state.json');
   if(fs.existsSync(lock)){
     const bytes=readCmInitSource(directory,'writer.json'),old=JSON.parse(bytes);
     need(Number.isSafeInteger(old.pid)&&old.pid>0,'prd_session_lock_invalid');

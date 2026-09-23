@@ -1,5 +1,6 @@
 // One current-host attempt, owned durably by the original PRD review gate.
 import fs from 'node:fs';
+import {assertPrdBatchActive} from './inputs-replaced.mjs';
 import path from 'node:path';
 import {claimPrdReview,inspectPrdReview} from '../../../scripts/cm-prd-review-gate.mjs';
 import {publishPrdReview} from './review-publication.mjs';
@@ -11,6 +12,7 @@ export function validatePrdReviewMode(mode,response){
 }
 
 export async function runPrdHostReview({specs,prepared,authorContextId,writeEnabled,mode,review,revalidate,signal}){
+  assertPrdBatchActive(specs,[prepared.reviewPackage.feature]);
   need(writeEnabled===true&&['independent','self-degraded'].includes(mode)
     &&typeof review==='function'&&typeof revalidate==='function','prd_review_not_enabled');id(authorContextId);
   need(!signal.aborted,'cancelled');
