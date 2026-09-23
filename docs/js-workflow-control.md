@@ -1191,7 +1191,12 @@ design_ready 可用 `{requestId,operation:"save_design"}` 配合原 --allow-spec
 advance 从每个原 feature 的 design-r1 和已完成原 receipt 读取当前设计，要求需求正文仍等于原稿，
 design 精确匹配处置哈希；冻结当前清单和证据，在生成、自检、保存边界重查。未处置或漂移不派生任务。
 prd_generate phase=tasks_after_design 携 acceptedDesign，只允许增加 tasks/适用测试合同，feature顺序、编号、
-需求和设计正文必须保留。任务草稿进入原最多两轮自检与 save_draft，再继续原 split 审查和人审停点。
+需求和设计正文默认保留。仅整稿自检明确失败后，原重生成可附非空 selfCheckRevisionReason 修订
+同清单内的需求/设计正文；不增删 feature 或文件。checkpoint 记录 selfCheckRevision，将原因、
+前后 SHA、轮次与原失败记录绑定，保留历史和两轮上限。自检通过后 save_draft 先归档修订证据，
+再保存新版；部分写入显式恢复，额外漂移仍拒绝。后续优先接受已完成 split 回执，其次已保存自检修订，
+最后原设计基线。split 审修订版，不另发设计审查；摘要风险信息逐项说明原因、改动文件及审查边界。
+未走该路径不新增 checkpoint 字段、绑定或回执。任务草稿继续原 split 审查和人审停点。
 升级项仍留在原 finding/receipt 供摘要卡，不因生成任务变成已批准；语义判断仍是宿主报告。
 Skill 已分流全部低风险与含高风险的批次（包括混合风险），设计后登记完整风险选择，仅高风险消耗design Review；
 风险选择跨进程恢复与生成中新风险升级仍待收口。

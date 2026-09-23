@@ -1,5 +1,7 @@
 // Evidence-backed human handoff. No specification approval or development.
 import fs from 'node:fs';
+import {readPrdSelfCheckRevision,prdSelfCheckRevisionPath} from './self-check-revision.mjs';
+import {inspectPrdSplitDesign} from './split-design.mjs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {TextDecoder} from 'node:util';
@@ -81,7 +83,17 @@ export function inspectPrdSummaryEvidence(specs,{currentFeatures}={}){
         cases={total:null,user:null,generated:null,status:'invalid',reason:'test_cases_invalid'};
       }
     }
-    features.push({directory,reviews,cases,...(currentFeatures===undefined?{}:{historical})});
+    const revision=readPrdSelfCheckRevision(specs,directory);
+    if(revision!==null){
+      const target=revision.features.find(f=>f.directory===directory);
+      evidenceFiles.push({path:prdSelfCheckRevisionPath(directory),sha256:sha(readCmInitSource(specs,prdSelfCheckRevisionPath(directory)))});
+      // The note is about exactly the revision reviewed by this split, including low-risk designs.
+      inspectPrdSplitDesign({specs,feature:directory,draftDigest:revision.draftDigest,
+        originalSha:target.documents.find(d=>d.path==='design.md').beforeSha256,
+        requirementsSha:target.documents.find(d=>d.path==='requirements.md').beforeSha256});
+    }
+    features.push({directory,reviews,cases,...(revision?{selfCheckRevision:{reason:revision.reason,round:revision.round,
+      changedFiles:revision.features.find(f=>f.directory===directory).changedFiles}}:{}),...(currentFeatures===undefined?{}:{historical})});
   }
   const mechanical=checkPrdDraftMechanics({draftDigest:digest(evidenceFiles),
     features:documents.filter(item=>currentFeatures===undefined||currentFeatures.includes(item.directory))});
@@ -168,8 +180,10 @@ export function createPrdSummaryOwner({summarize}){
       '开放问题和敏感决策已经人工确认','交付形态符合需求','存在原型时功能与交互覆盖完整'];
     const totals=evidence.mechanical.features.reduce((sum,item)=>({tasks:sum.tasks+item.tasks,
       acceptanceCriteria:sum.acceptanceCriteria+item.acceptanceCriteria}),{tasks:0,acceptanceCriteria:0});
-    const humanDetails=riskCard.length?{...details,risks:[...riskCard.map(risk=>
-      `${risk.feature}：修正自检失败，待人工裁决；${JSON.stringify(risk.failedChecks)}`),details.risks].join('\n')}:details;
+    const revisionNotes=current.filter(feature=>feature.selfCheckRevision).map(feature=>
+      `${feature.directory}：整稿自检失败后，在设计审查后修订了 ${feature.selfCheckRevision.changedFiles.join('、')}；原因：${feature.selfCheckRevision.reason}；第 ${feature.selfCheckRevision.round} 轮；${feature.reviews.split.gate.outcome==='completed'?'这些改动已由拆分审查审阅':'这些改动待拆分审查审阅'}，未另做设计审查。`);
+    const humanDetails=riskCard.length||revisionNotes.length?{...details,risks:[...riskCard.map(risk=>
+      `${risk.feature}：修正自检失败，待人工裁决；${JSON.stringify(risk.failedChecks)}`),...revisionNotes,details.risks].join('\n')}:details;
     const summary=json({status:'human_summary_prepared',evidenceDigest,details:humanDetails,features:evidence.features,totals,
       ...(riskCard.length?{riskCard}:{}),
       ...(evidence.currentFeatures===undefined?{}:{currentFeatures:evidence.currentFeatures}),

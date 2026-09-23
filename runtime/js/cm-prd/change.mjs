@@ -1,6 +1,7 @@
 // Original C1–C8, also used for explicitly confirmed revisions of saved drafts.
 // Proposals are not writes; old review evidence and completed work stay history.
 import fs from 'node:fs';
+import {prdSelfCheckRevisionPath} from './self-check-revision.mjs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {loadConfig,resolveRole} from '../../../scripts/cm-workflow-config.mjs';
@@ -43,6 +44,10 @@ export function inspectPrdChangeSnapshot(specs){
       const file=prefix+suffix,bytes=readCmInitSource(specs,file);
       need(bytes!==null,'prd_failed_check_evidence_required');reviews[file]=sha(bytes);
     }
+  }
+  for(const directory of directories){
+    const file=prdSelfCheckRevisionPath(directory),bytes=readCmInitSource(specs,file);
+    if(bytes!==null)reviews[file]=sha(bytes);
   }
   const status=read(specs,'.cm-specs-status');
   return json({directories,files,trees,reviews,status},4*1024*1024);
@@ -208,7 +213,7 @@ export function assertPrdReviewsSettled(specs,selected,{requireSplit=false}={}){
     for(const suffix of ['-dispatch.json','-r1.md','-r2.md','-disposition.json'])readCmInitSource(specs,`.reviews/${prefix}${suffix}`);
     const evidencePath=`.reviews/${prefix}-r1.md`,receiptPath=`.reviews/${prefix}-disposition.json`;
     if(historical?.[evidencePath]&&historical?.[receiptPath]&&[evidencePath,receiptPath].every(file=>sha(readCmInitSource(specs,file))===historical[file])){
-      for(const [file,hash] of Object.entries(historical).filter(([file])=>file.startsWith(`.reviews/${prefix}-correction-check-`)))
+      for(const [file,hash] of Object.entries(historical).filter(([file])=>file.startsWith(`.reviews/${prefix}-correction-check-`)||file===prdSelfCheckRevisionPath(directory)))
         need(sha(readCmInitSource(specs,file))===hash,'prd_change_review_changed');
       continue;
     }

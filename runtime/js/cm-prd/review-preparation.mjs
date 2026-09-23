@@ -1,5 +1,6 @@
 // Read-only preparation around the original single-attempt PRD review gate.
 import fs from 'node:fs';
+import {readPrdSelfCheckRevision} from './self-check-revision.mjs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {inspectPrdReview} from '../../../scripts/cm-prd-review-gate.mjs';
@@ -58,9 +59,14 @@ export function preparePrdReview({specs,draft,stage,feature}){
     requirementsFunctions:sections(requirements,/^##\s+(功能需求|Functional requirements)\s*$/i),
     tasks:files.get('tasks.md'),designSummary:sections(design,/^##\s+.*(方案摘要|概述|架构|功能模块|技术|接口|数据|波及|安全|summary|overview|architecture|decision|contract|data|impact|security)/i)};
   need(Object.values(content).every(value=>typeof value==='string'&&value.trim()),'prd_review_sections_missing');
+  const revision=stage==='split'?readPrdSelfCheckRevision(specs,feature):null;
+  const revised=revision?.features.find(f=>f.directory===feature);
   const reviewPackage=json({workflow:'cm-prd',stage,feature,draftDigest:draft.draftDigest,content,
     artifacts:target.documents.map(document=>({path:`${feature}/${document.path}`,sha256:sha(document.content)})),
+    ...(revision?{selfCheckRevision:{reason:revision.reason,round:revision.round,changedFiles:revised.changedFiles,
+      documents:target.documents.filter(doc=>revised.changedFiles.includes(doc.path))}}:{}),
     instructions:stage==='design'?'Apply original Step 9.5 only when its risk triggers were established. Read relevant project rules and changed-module context plus steelman-review. No second attempt.':
+      revision?'Apply original Step 10.6 to the current requirements, design and tasks. Review the included self-check revision documents and reason: these changes followed a failed whole-draft self-check and have not had a separate design review. Review these changes in this split attempt; do not dispatch another design review. No second attempt.':
       'Apply original Step 10.6 to the functional requirements, complete task list and selected design sections. Respect prior design review and do not repeat it. No second attempt.'});
   if(gate.package_sha256!==undefined)need(gate.package_sha256===digest(reviewPackage),'prd_review_dispatch_package_changed');
   return json({gate,paths:args,reviewPackage,packageDigest:digest(reviewPackage),
