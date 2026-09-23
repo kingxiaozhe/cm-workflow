@@ -289,8 +289,10 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     let causeResumeStage=null,causeReviewCorrection=null;
     const correctionStages=['red_test_required','baseline_required','repair_required','regression_required','handoff_required',
       'learning_writeback_required','handoff_ready','final_review_required','completion_gate_required','post_review_regression_required','closeout_required'];
+    // Joins can survive a failed registration append. Exclude them on both
+    // package creation and replay, including joins left by an earlier attempt.
     const correctionFor=(history,resume,resumeStage,repairPackage=null,handoff=null,finalReview=null)=>({reason:'observation_cause_review_omitted',
-      resumeDigest:digest(resume),historyDigest:digest(history),resumeStage,...(repairPackage?{repairPackage}:{}),
+      resumeDigest:digest(resume),historyDigest:digest(history.filter(record=>!joinedRecord.test(record.id))),resumeStage,...(repairPackage?{repairPackage}:{}),
       ...(handoff?{handoffSha256:handoff.handoffSha256}:{}),...(finalReview?{finalReview}:{})});
     const priorFinal=(registration,result)=>registration&&result?.observationStatus==='completed'&&result.review.verdict==='approved'
       ?{registrationDigest:digest(registration),observationDigest:result.observationDigest,providerThreadId:result.providerThreadId}:null;
@@ -349,6 +351,13 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(record.payload.hostContextId!==configuration.hostContextId
           &&!seenJoined.has(record.payload.hostContextId),'fix_history_invalid');
         seenJoined.add(record.payload.hostContextId);continue;
+      }
+      // The full host union remains authoritative for reviewer independence,
+      // but a later join cannot authorize an earlier grant. Legacy grants without
+      // a join remain readable from the session that signed them.
+      if(['fix-cause-registered','fix-final-registered','fix-revision-final-registered'].includes(record.id)){
+        const signer=record.payload.grant?.hostContextId;
+        need(signer===configuration.hostContextId||seenJoined.has(signer)||signer===liveHostContextId,'fix_host_not_joined');
       }
       if(record.id==='fix-observation-dossier-intent'){
         need(stage==='observation'&&pending===null&&record.kind==='intent','fix_history_invalid');
@@ -1481,8 +1490,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         append('fix-cause-result','result',value);
         if(project().causeReview?.observationStatus==='completed')publishCause();
         return project();
-      }catch{
-        if(!registered&&!controller.signal.aborted)need(false,'cause_authorization_invalid');
+      }catch(error){
+        if(!registered&&!controller.signal.aborted)need(false,error?.code==='fix_host_limit'?'fix_host_limit':'cause_authorization_invalid');
         return project();
       }
       finally{clearTimeout(timer);active=null;}

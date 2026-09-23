@@ -11,9 +11,10 @@ import {createHostReviewAuthority} from '../runtime/js/cm-ai/host-review-authori
 import {fixFinalReviewConfiguration} from '../runtime/js/cm-fix/final-review.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {checkN4} from './cm-task-gate.mjs';
+import {openExecutionStore} from '../runtime/js/cm-ai/execution-store.mjs';
 import {causeExpectation} from '../runtime/js/cm-fix/cause-invocation.mjs';
 
-for(const mode of ['normal','late-final','late-repair','late-retrospective','late-learning','late-handoff','lost','unreproduced','needs_evidence','walk-failure','regression-failure'])
+for(const mode of ['normal','late-session','late-joined-retry','late-final','late-repair','late-retrospective','late-learning','late-handoff','lost','unreproduced','needs_evidence','walk-failure','regression-failure'])
 test(`observation recovery: ${mode}`,async()=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fix-observation-')));
   const cwd=path.join(root,'code'),specsRoot=path.join(root,'specs');fs.mkdirSync(cwd);fs.mkdirSync(specsRoot);
@@ -34,7 +35,7 @@ test(`observation recovery: ${mode}`,async()=>{
   if(mode==='walk-failure')options.configuration.walkthrough.flows[0].command=[process.execPath,'-e',"if(!require('node:fs').readFileSync('value.mjs','utf8').includes('second-pass'))process.exit(1)"];
   const learning={files:[],contextDigest:digest([]),application:{contextDigest:digest([]),status:'no_relevant_lesson',summary:'Fixture'}};
   let owner;
-  const reviewRecoveredCause=async(correction=false)=>{
+  const reviewRecoveredCause=async(correction=false,hostContextId=options.configuration.hostContextId)=>{
     const required=correction?'observation_cause_review_correction_required':'cause_review_required';
     const resumed=typeof correction==='string'?correction:correction?'repair_required':'red_test_required';
     assert.equal(owner.status().stage,required);
@@ -42,7 +43,7 @@ test(`observation recovery: ${mode}`,async()=>{
     const pkg=owner.causeReviewPackage(),reviewer=options.configuration.causeReview;
     const priorHandoff=resumed==='final_review_required'?fs.readFileSync(path.join(specsRoot,'.reviews','fix-intermittent-T-FIX-intermittent-a1-handoff.json')):null;
     if(priorHandoff)assert.equal(pkg.correction.handoffSha256,owner.status().handoff.handoffSha256);
-    const authority=createHostReviewAuthority({hostContextId:options.configuration.hostContextId,
+    const authority=createHostReviewAuthority({hostContextId,
       reviewerId:reviewer.reviewerId,adapterId:reviewer.adapterId,decide:async()=>({status:'approved'})});
     if(correction){assert.equal(pkg.correction.reason,'observation_cause_review_omitted');assert.equal(pkg.correction.resumeStage,resumed);}
     if(resumed==='regression_required'){
@@ -69,14 +70,14 @@ test(`observation recovery: ${mode}`,async()=>{
       return {status:'succeeded',value:{verdict:'approved',packageDigest:pkg.packageDigest,
         examinedPaths:['value.mjs'],findings:[],summary:'Synthetic recovered cause review'}};
     }};
-    owner.close();owner=openFixExecution({...options,create:false},{causeReview});
+    owner.close();owner=openFixExecution({...options,create:false,hostContextId},{causeReview});
     if(correction){
       assert.equal((await owner.reviewCause()).reason,'permission_denied');assert.equal(calls,0);
       assert.equal(owner.status().stage,required);
     }
     await authority.hostDecisionProvider.decide({identity:options.identity,packageDigest:pkg.packageDigest},new AbortController().signal);
     assert.equal((await owner.reviewCause()).stage,resumed);
-    owner.close();owner=openFixExecution({...options,create:false},{causeReview});
+    owner.close();owner=openFixExecution({...options,create:false,hostContextId},{causeReview});
     assert.equal((await owner.reviewCause()).stage,resumed);assert.equal(calls,1);
     if(priorHandoff)assert.deepEqual(fs.readFileSync(path.join(specsRoot,'.reviews','fix-intermittent-T-FIX-intermittent-a1-handoff.json')),priorHandoff);
   };
@@ -389,7 +390,7 @@ test(`observation recovery: ${mode}`,async()=>{
     assert.equal(resumes[0].observation_exit_event_id,event.event_id);assert.equal(resumes[0].resume_digest,digest(prepared.observationResume));
     assert(recoveredLog.indexOf(resumes[0])>recoveredLog.findIndex(row=>row.event_id===event.event_id));
     assert.equal(recoveredLog.filter(row=>row.event==='task_start').length,1);assert(!recoveredLog.some(row=>row.event==='task_done'));
-    if(['normal','late-final','late-repair','late-retrospective','late-learning','late-handoff','walk-failure','regression-failure'].includes(mode)){
+    if(['normal','late-session','late-joined-retry','late-final','late-repair','late-retrospective','late-learning','late-handoff','walk-failure','regression-failure'].includes(mode)){
       await reviewRecoveredCause();
       owner.close();owner=openFixExecution({...options,create:false},{prepare:async()=>learning,assertReviewReady(){},bridge:{async call(kind,payload){
         if(kind==='fix_repair'){assert.deepEqual(payload.scope,['value.mjs']);fs.writeFileSync(path.join(cwd,'value.mjs'),'export const value=2;');return {outcome:'repaired'};}
@@ -398,8 +399,8 @@ test(`observation recovery: ${mode}`,async()=>{
           :{status:'no_new_lesson',candidates:[],reason:null};
       }}});
       await owner.runRedTest({authorized:true});await owner.captureBaseline({authorized:true});
-      if(['normal','late-repair','late-retrospective','late-learning','late-handoff'].includes(mode)){
-        if(mode!=='normal')assert.equal((await owner.repair({authorized:true})).stage,'regression_required');
+      if(['normal','late-session','late-joined-retry','late-repair','late-retrospective','late-learning','late-handoff'].includes(mode)){
+        if(!['normal','late-session','late-joined-retry'].includes(mode))assert.equal((await owner.repair({authorized:true})).stage,'regression_required');
         if(['late-retrospective','late-learning','late-handoff'].includes(mode)){
           await owner.runRegression({authorized:true});await owner.retrospect();
           if(mode==='late-learning')owner.writeLearning({authorized:true});
@@ -424,8 +425,32 @@ test(`observation recovery: ${mode}`,async()=>{
         assert.equal((await owner.repair({authorized:true})).stage,correction.stage);
         owner.close();assert.deepEqual(JSON.parse(fs.readFileSync(stateFile)),old);
         fs.unlinkSync(path.join(specsRoot,'.reviews','fix-intermittent-cause-r1.md')); // Absent in the old omitted-review fixture.
+        if(mode==='late-joined-retry'){
+          // Crash prefix: join persisted, but the following cause registration
+          // did not. Retrying as B must reuse the join already in the store.
+          const store=openExecutionStore({specsRoot,identity:old.identity,fingerprints:old.fingerprints,create:false});
+          try{store.append({id:'fix-host-joined-1',kind:'result',payload:{hostContextId:'session-B'},
+            expectedRevision:store.snapshot().revision});}finally{store.close();}
+          const crashed=JSON.parse(fs.readFileSync(stateFile)).records;
+          assert.equal(crashed.at(-1).id,'fix-host-joined-1');
+          assert(!crashed.some(row=>row.id==='fix-cause-registered'));
+        }
         owner=openFixExecution({...options,create:false});
-        await reviewRecoveredCause(mode==='late-repair'?'regression_required':mode==='normal'?true:mode==='late-handoff'?'final_review_required':'handoff_ready');
+        await reviewRecoveredCause(mode==='late-repair'?'regression_required':['normal','late-session','late-joined-retry'].includes(mode)?true:mode==='late-handoff'?'final_review_required':'handoff_ready',
+          ['late-session','late-joined-retry'].includes(mode)?'session-B':options.configuration.hostContextId);
+        if(['late-session','late-joined-retry'].includes(mode)){
+          const bytes=fs.readFileSync(stateFile);
+          const registration=JSON.parse(bytes).records.find(row=>row.id==='fix-cause-registered');
+          assert.equal(registration.payload.grant.hostContextId,'session-B');
+          const records=JSON.parse(bytes).records;
+          assert.equal(records.filter(row=>/^fix-host-joined-/.test(row.id)).length,1);
+          assert.equal(registration.payload.request.payload.reviewPackage.correction.historyDigest,digest(old.records));
+          for(const hostContextId of [options.configuration.hostContextId,'session-B','session-C']){
+            owner.close();owner=openFixExecution({...options,create:false,hostContextId});
+            assert.equal(owner.status().stage,'repair_required');
+            assert.deepEqual(fs.readFileSync(stateFile),bytes);
+          }
+        }
         const corrected=JSON.parse(fs.readFileSync(stateFile));
         assert.deepEqual(corrected.records.slice(0,old.records.length),old.records);
         assert.match(fs.readFileSync(path.join(specsRoot,'.reviews','fix-intermittent-cause-r1.md'),'utf8'),/Late observation cause review/);
