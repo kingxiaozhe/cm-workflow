@@ -7,6 +7,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {TextDecoder} from 'node:util';
 import {fileURLToPath} from 'node:url';
 import {acceptsPrdSplitDesign} from '../runtime/js/cm-prd/split-design.mjs';
+import {inspectPrdFailedCorrection} from '../runtime/js/cm-prd/failed-correction.mjs';
 import {normalizeRuntimeMarks} from './cm-spec-manifest.mjs';
 
 const fail=message=>{throw new Error(message);};
@@ -16,7 +17,7 @@ const hash=p=>createHash('sha256').update(fs.readFileSync(p)).digest('hex');
 const stat=p=>{try{return fs.statSync(p);}catch(e){if(e.code==='ENOENT'||e.code==='ENOTDIR')return null;throw e;}};
 const link=p=>{try{return fs.lstatSync(p).isSymbolicLink();}catch(e){if(e.code==='ENOENT')return false;throw e;}};
 const keys=(v,names)=>v!==null&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join('|')===[...names].sort().join('|');
-const dispositions=['applied','escalated','no_findings'];
+const dispositions=['applied','escalated','no_findings','self_check_failed'];
 // Python str.strip/re \s exclude BOM and include these Unicode whitespace chars.
 const whitespace='[\\x09-\\x0d\\x1c-\\x20\\x85\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]';
 const strip=value=>value.replace(new RegExp(`^${whitespace}+|${whitespace}+$`,'g'),'');
@@ -38,6 +39,7 @@ function counts(disposition,total,unresolved){
   need(unresolved<=total,'unresolved_count cannot exceed finding_count');
   need(!['applied','no_findings'].includes(disposition)||unresolved===0,'completed disposition cannot retain unresolved findings');
   need(disposition!=='no_findings'||total===0,'no_findings disposition requires finding_count 0');
+  need(disposition!=='self_check_failed'||total>0&&unresolved===total,'failed check requires all findings pending human ruling');
   need(disposition!=='escalated'||unresolved>0,'escalated disposition requires unresolved findings');
 }
 function timestamp(value){
@@ -91,10 +93,11 @@ function loadReceipt(file,args,evidence){
   need(!link(file),'PRD review receipt must not be a symlink');
   const value=JSON.parse(read(file));
   need(keys(value,['schema_version','stage','feature','status','disposition','finding_count','unresolved_count',
-    'evidence','evidence_sha256','artifacts','at']),'PRD review receipt fields do not match the contract');
+    'evidence','evidence_sha256','artifacts','at',...(value.disposition==='self_check_failed'?['correction_check']:[])]),'PRD review receipt fields do not match the contract');
   need(value.schema_version===1&&value.stage===args.stage&&value.feature===args.feature&&value.status==='completed'
     &&value.evidence===path.basename(evidence)&&value.evidence_sha256===hash(evidence),'PRD review receipt does not match current evidence');
   counts(value.disposition,value.finding_count,value.unresolved_count);timestamp(value.at);
+  if(value.disposition==='self_check_failed')need(value.stage==='split','prd_failed_check_split_only');
   need(Array.isArray(value.artifacts)&&value.artifacts.length>0,'PRD review receipt must contain artifact hashes');
   const root=resolve(path.dirname(path.dirname(file))),seen=new Set();
   for(const item of value.artifacts){
@@ -122,6 +125,7 @@ function loadReceipt(file,args,evidence){
       value.runtimeMarksNormalized=true;
     }
   }
+  if(value.disposition==='self_check_failed')inspectPrdFailedCorrection({specs:root,receipt:value});
   return value;
 }
 function dispatchFile(evidence){return evidence.replace(/-r1\.md$/,'-dispatch.json');}
@@ -172,6 +176,10 @@ export function inspectPrdReview(args){
 }
 export function recordPrdReview(args){
   counts(args.disposition,args.finding_count,args.unresolved_count);
+  if(args.disposition==='self_check_failed'){
+    need(args.stage==='split','prd_failed_check_split_only');
+    need(args.correction_check,'prd_failed_check_evidence_required');
+  }
   const {evidence,receipt}=paths(args),base={stage:args.stage,feature:args.feature};evidenceHeader(evidence);
   if(stat(receipt)){loadReceipt(receipt,args,evidence);return {...base,outcome:'already_recorded'};}
   const root=resolve(path.dirname(path.dirname(receipt))),seen=new Set();
@@ -184,7 +192,9 @@ export function recordPrdReview(args){
   });
   const value={schema_version:1,...base,status:'completed',disposition:args.disposition,finding_count:args.finding_count,
     unresolved_count:args.unresolved_count,evidence:path.basename(evidence),evidence_sha256:hash(evidence),artifacts,
-    at:new Date().toISOString().replace(/\.\d{3}Z$/,'+00:00')};
+    at:new Date().toISOString().replace(/\.\d{3}Z$/,'+00:00'),
+    ...(args.disposition==='self_check_failed'?{correction_check:args.correction_check}:{})};
+  if(value.disposition==='self_check_failed')inspectPrdFailedCorrection({specs:root,receipt:value});
   const temp=path.join(path.dirname(receipt),`.${path.basename(receipt)}.${randomUUID()}`);let fd;
   try{
     fd=fs.openSync(temp,'wx',0o600);fs.writeFileSync(fd,JSON.stringify(value)+'\n');fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;

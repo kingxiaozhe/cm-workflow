@@ -124,8 +124,8 @@ test('late design response cannot erase an existing draft or reset self-check ro
   assert.equal(host.status().selfCheckRound,1);assert.deepEqual(host.status().draft,original);
   assert.equal(host.status().designDraft,null);
 });
-for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements'])test(`actual CLI disposed design to tasks: ${mode}`, {timeout:FIXTURE_TIMEOUT_MS},async t=>{
-  const promotes=['promote','saved-promote'].includes(mode),succeeds=['saved','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements'].includes(mode);
+for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements','split-failed-design','split-failed-requirements'])test(`actual CLI disposed design to tasks: ${mode}`, {timeout:FIXTURE_TIMEOUT_MS},async t=>{
+  const promotes=['promote','saved-promote'].includes(mode),succeeds=['saved','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements','split-failed-design','split-failed-requirements'].includes(mode);
   const revisesSplit=mode.startsWith('split-');let splitPackage,pendingSplit,checks=0;
   let originalDigest;
   const dir=fixture(t);fs.mkdirSync(path.join(dir,'mirror'));
@@ -166,10 +166,10 @@ for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promot
         }else if(message.kind==='prd_self_check'){
           checks++;const draft=message.payload.draft;
           result={draftDigest:draft.draftDigest,features:draft.features.map(feature=>({directory:feature.directory,
-            checks:draft.mechanicalSelfCheck.pending.map(id=>({id,status:'passed',evidence:['Synthetic contextual check']}))}))};
+            checks:draft.mechanicalSelfCheck.pending.map((id,i)=>({id,status:mode.startsWith('split-failed')&&checks===2&&i===0?'failed':'passed',evidence:['Synthetic contextual check']}))}))};
         }
         else if(message.kind==='prd_correct'){
-          const correctionPath=mode==='split-requirements'&&message.payload.review.stage==='split'?'1.guide/requirements.md':'1.guide/design.md';
+          const correctionPath=['split-requirements','split-failed-requirements'].includes(mode)&&message.payload.review.stage==='split'?'1.guide/requirements.md':'1.guide/design.md';
           result={decisions:[{id:'R1',status:'applied',evidence:['Clarified boundary'],changedPaths:[correctionPath]}],
             documents:message.payload.documents.map(item=>({path:item.path,content:item.path===correctionPath?
               (correctionPath.endsWith('/requirements.md')?item.content+'\nFailure scenario: explain invalid setup.':`## 方案摘要\nCorrected architecture boundary${message.payload.review.stage==='split'?' after split':''}`):item.content}))};
@@ -245,7 +245,7 @@ for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promot
         }
         send({requestId:'split-findings',operation:'review_findings',stage:'split',feature:'1.guide',...(pendingSplit??{})});
       }else if(message.requestId==='split-findings'){
-        if(mode==='split-correct'||mode==='split-requirements'){
+        if(mode==='split-correct'||mode==='split-requirements'||mode.startsWith('split-failed')){
           send({requestId:'split-corrected',operation:'correct_findings',stage:'split',feature:'1.guide'});continue;
         }
         if(!revisesSplit)assert.deepEqual(message.result.findings,[]);
@@ -259,6 +259,7 @@ for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promot
         send({requestId:'split-dispose',operation:'review_disposition',stage:'split',feature:'1.guide',...pendingSplit});
       }else if(message.requestId==='split-dispose'){
         assert.equal(message.result.gate.outcome,'completed');
+        if(mode.startsWith('split-failed'))assert.equal(message.result.gate.disposition,'self_check_failed');
         send(revisesSplit?{requestId:'split-resaved',operation:'save_draft'}:{requestId:'summary',operation:'prepare_summary'});
       }else if(message.requestId==='split-resaved'){
         assert.equal(message.result.status,'draft_saved');assert.equal(checks,2);
@@ -266,6 +267,10 @@ for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promot
       }else if(message.requestId==='summary'){
         assert.equal(message.result.readyForAwaitingReview,true);
         assert.deepEqual(message.result.blockers,[]);
+        if(mode.startsWith('split-failed')){
+          assert.equal(message.result.features[0].reviews.split.correctionSelfCheck.status,'failed');
+          assert.match(message.result.details.risks,/自检失败.*待人工裁决/);
+        }
         assert.equal(message.result.features[0].reviews.design.gate.outcome,'completed');
         assert.equal(message.result.features[0].reviews.split.gate.outcome,'completed');
         assert.ok(message.result.checklist.every(item=>item.checked===false));
@@ -457,8 +462,8 @@ for(const mode of ['failed','drift'])test(`disposed-design split self-check cann
     return result;
   }});
   if(mode==='drift')await assert.rejects(owner(f.args,new AbortController().signal),/prd_disposition_artifacts_not_saved/);
-  else assert.equal((await owner(f.args,new AbortController().signal)).status,'disposition_self_check_failed');
-  assert.equal(checks,1);assert.equal(fs.existsSync(path.join(f.specs,'.reviews/prd-guide-split-disposition.json')),false);
+  else assert.equal((await owner(f.args,new AbortController().signal)).gate.disposition,'self_check_failed');
+  assert.equal(checks,1);assert.equal(fs.existsSync(path.join(f.specs,'.reviews/prd-guide-split-disposition.json')),mode==='failed');
 });
 test('unchanged split disposition preserves legacy accepted binding and both receipt bytes',async t=>{
   const f=await splitDesignFixture(t),args=structuredClone(f.args);
@@ -539,8 +544,10 @@ for(const lowRisk of [false,true])test(`requirements pending tolerance and refus
   const failed=await createPrdDispositionOwner({validateCurrent:input=>f.host.validateCurrent(input),checkContext:async payload=>{
     const result=checked(payload);result.features[0].checks[0].status='failed';return result;
   }})(f.args,new AbortController().signal);
-  assert.equal(failed.status,'disposition_self_check_failed');
-  assert.equal(fs.existsSync(path.join(f.specs,'.reviews/prd-guide-split-disposition.json')),false);
+  assert.equal(failed.gate.disposition,'self_check_failed');
+  assert.equal(fs.existsSync(path.join(f.specs,'.reviews/prd-guide-split-disposition.json')),true);
+  assert.doesNotThrow(()=>f.host.currentDraftForSave());
+  if(lowRisk)assert.doesNotThrow(()=>f.host.prepareReview('split','2.second'));
   const before=await splitDesignFixture(t,{split:false,document:'requirements.md',batch:lowRisk,lowRisk});before.edit();
   assert.throws(()=>before.host.currentDraftForSave(),/prd_design_requirements_changed/);
   assert.throws(()=>before.host.prepareReview('split',before.feature));
