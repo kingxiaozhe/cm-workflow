@@ -99,7 +99,7 @@ for(const mode of ['history','retest','unknown','failed-retest','double-pass','d
       baseline:{cwd:codeProject,testFiles:['existing.mjs'],commands:[{id:'existing',command:[process.execPath,'existing.mjs']}],timeoutMs:2000},
       repair:{scope:['value.mjs'],requirements:['requirements.md']},
       walkthrough:{timeoutMs:2000,flows:[{id:'value',modules:['value'],steps:['Read value'],expected:['2'],kind:'commands',command:[process.execPath,'red.mjs']}]}};
-    const makeSerial=(parent,childIdentity,configuration,repairValue)=>createQaFixOwnerHost({parent,reopenParent:()=>openControlRun(definition,'resume',execution),
+    const makeSerial=(parent,childIdentity,configuration,repairValue)=>createQaFixOwnerHost({parent,hostContextId:'parent-host',parentHostContextId:'parent-host',reopenParent:()=>openControlRun(definition,'resume',execution),
       ...(double||automatic?{template:{specsRoot:specsDir,feature,identity,configuration:Object.fromEntries(Object.entries(configuration).filter(([key])=>key!=='qaSource'))}}
         :{fix:{specsRoot:specsDir,identity:childIdentity,configuration}}),allowStart:true,autoFix:automatic,fixPermissions:permissions,
       fixAuthorities:{authority:reviewHost.authority,finalAuthority:reviewHost.finalAuthority},fixExecution:{...reviewHost.execution,
