@@ -121,6 +121,123 @@ test('unknown command accepts only bound original result after cleanup; it never
   const saved=fs.readFileSync(path.join(f.directory,'execution.jsonl'),'utf8').trim().split('\n').map(JSON.parse).find(row=>row.type==='result');
   assert.deepEqual(saved.result.reconciliation,{source:'trusted_host_original_result',key:pending.key,requestDigest:pending.requestDigest,evidence:receipt.evidence,cleanup:'completed'});
 });
+function recoveryFixture(t){
+  const f=fixture(t),source=snapshotSource(f.project,path.join(f.temp,'reports')),binding={fixture:'interrupted-step'};
+  let session=openTestSession(f.directory,f.config);
+  session.initialize({runId:'test-00000000-0000-0000-0000-000000000002',binding,source,inputs:[]});
+  session.begin(source,null);
+  const journal=()=>fs.readFileSync(path.join(f.directory,'execution.jsonl'),'utf8');
+  const events=()=>journal().trim().split('\n').map(JSON.parse);
+  return {
+    source,journal,events,
+    get session(){return session;},
+    reopen(){session.close();session=openTestSession(f.directory,f.config);session.validate(binding);},
+    close(){session.close();},
+    async interrupt(kind,input){
+      let calls=0;
+      const crash=new Error('synthetic crash after durable intent, before result');
+      // As in the command fixture above, throw inside perform: the real store
+      // has fsynced the intent, but cannot append a result. Reopen, do not seed
+      // or truncate journal rows. Closing only releases this process's lock.
+      await assert.rejects(()=>session.effect(kind,input,()=>{
+        calls++;
+        assert.equal(events().filter(row=>row.type==='intent'&&row.kind===kind).length,1);
+        assert.equal(events().filter(row=>row.type==='result').length,0);
+        throw crash;
+      },()=>source),error=>error===crash);
+      assert.equal(calls,1);
+      const pending=session.pending;
+      assert.equal(pending.kind,kind);
+      const bytes=journal();
+      this.reopen();
+      assert.equal(journal(),bytes);
+      assert.deepEqual(session.pending,pending);
+      return pending;
+    }
+  };
+}
+for(const kind of ['snapshot','evaluation'])test(`interrupted ${kind} reruns without receipt and records an unreconciled result`,async t=>{
+  const f=recoveryFixture(t),input={fixture:kind},result={observed:kind,attempt:2};
+  try{
+    const pending=await f.interrupt(kind,input);let calls=0;
+    f.session.begin(f.source,null);
+    assert.deepEqual(await f.session.effect(kind,input,()=>{calls++;return result;},()=>f.source),result);
+    assert.equal(calls,1);assert.equal(f.session.pending,null);
+    assert.equal(f.events().filter(row=>row.type==='intent').length,1);
+    const saved=f.events().filter(row=>row.type==='result');
+    assert.equal(saved.length,1);assert.equal(saved[0].key,pending.key);
+    assert.deepEqual(saved[0].result,{value:result,source:f.source});
+    assert.equal(Object.hasOwn(saved[0].result,'reconciliation'),false);
+    f.reopen();f.session.begin(f.source,null);
+    const bytes=f.journal();
+    assert.deepEqual(await f.session.effect(kind,input,()=>{calls++;return null;},()=>assert.fail('replay must not snapshot')),result);
+    assert.equal(calls,1);assert.equal(f.journal(),bytes);
+  }finally{f.close();}
+});
+for(const kind of ['command','host']){
+  for(const resolution of ['none','matching','wrong_key','wrong_digest'])test(`interrupted ${kind} with ${resolution} receipt never reruns`,async t=>{
+    const f=recoveryFixture(t),input={fixture:kind},result={original:kind,exitCode:0};
+    try{
+      const pending=await f.interrupt(kind,input),bytes=f.journal();let calls=0;
+      const perform=()=>{calls++;return {unexpected:'redispatch'};};
+      const receipt={key:pending.key,requestDigest:pending.requestDigest,result,
+        evidence:'Synthetic original result and cleanup receipt',cleanup:'completed'};
+      if(resolution==='none'){
+        f.session.begin(f.source,null);
+        await assert.rejects(()=>f.session.effect(kind,input,perform,()=>f.source),{code:'cm_test_outcome_unknown'});
+      }else if(resolution==='wrong_key'||resolution==='wrong_digest'){
+        const invalid=resolution==='wrong_key'?{...receipt,key:'999'}:{...receipt,requestDigest:'0'.repeat(64)};
+        assert.throws(()=>f.session.begin(f.source,invalid),{code:'cm_test_resolution_invalid'});
+        f.session.begin(f.source,null);
+        await assert.rejects(()=>f.session.effect(kind,input,perform,()=>f.source),{code:'cm_test_outcome_unknown'});
+      }else{
+        f.session.begin(f.source,receipt);
+        assert.deepEqual(await f.session.effect(kind,input,perform,()=>f.source),result);
+        assert.equal(f.session.pending,null);
+        const saved=f.events().filter(row=>row.type==='result');
+        assert.equal(saved.length,1);assert.equal(saved[0].key,pending.key);
+        const {result:original,...provenance}=receipt;
+        assert.deepEqual(saved[0].result,{value:original,source:f.source,
+          reconciliation:{source:'trusted_host_original_result',...provenance}});
+        f.reopen();f.session.begin(f.source,null);
+        const completed=f.journal();
+        assert.deepEqual(await f.session.effect(kind,input,perform,()=>assert.fail('replay must not snapshot')),result);
+        assert.equal(f.journal(),completed);
+      }
+      assert.equal(calls,0);
+      if(resolution!=='matching'){
+        assert.equal(f.journal(),bytes);assert.deepEqual(f.session.pending,pending);
+        f.reopen();assert.deepEqual(f.session.pending,pending);
+      }
+    }finally{f.close();}
+  });
+}
+for(const kind of ['log','publish','audit'])test(`interrupted ${kind} without receipt stays unknown and never reruns`,async t=>{
+  const f=recoveryFixture(t),input={fixture:kind};
+  try{
+    const pending=await f.interrupt(kind,input),bytes=f.journal();let calls=0;
+    f.session.begin(f.source,null);
+    await assert.rejects(()=>f.session.effect(kind,input,()=>{calls++;return {};},()=>f.source),{code:'cm_test_outcome_unknown'});
+    assert.equal(calls,0);assert.equal(f.journal(),bytes);assert.deepEqual(f.session.pending,pending);
+    f.reopen();assert.deepEqual(f.session.pending,pending);
+  }finally{f.close();}
+});
+test('completed steps of every kind replay recorded results without perform or new records',async t=>{
+  const f=recoveryFixture(t),kinds=['snapshot','evaluation','command','host','log','publish','audit'];
+  const results=kinds.map((kind,index)=>({kind,index,original:true}));let calls=0;
+  try{
+    for(const [index,kind] of kinds.entries())assert.deepEqual(await f.session.effect(kind,{index},()=>{
+      calls++;return results[index];
+    },()=>f.source),results[index]);
+    assert.equal(calls,kinds.length);assert.equal(f.session.pending,null);
+    assert.equal(f.events().filter(row=>row.type==='result').length,kinds.length);
+    const bytes=f.journal();f.reopen();f.session.begin(f.source,null);
+    for(const [index,kind] of kinds.entries())assert.deepEqual(await f.session.effect(kind,{index},()=>{
+      calls++;return {unexpected:'rerun'};
+    },()=>assert.fail('completed replay must not snapshot')),results[index]);
+    assert.equal(calls,kinds.length);assert.equal(f.session.pending,null);assert.equal(f.journal(),bytes);
+  }finally{f.close();}
+});
 test('recorded report and closed specs log survive interruption immediately before final progress save',{timeout:12000},async t=>{
   const f=fixture(t,{specs:true});f.config.arguments={...f.config.arguments,all:false,logic:true};
   // Use the same original config on both launches; only execution progress is interrupted.
