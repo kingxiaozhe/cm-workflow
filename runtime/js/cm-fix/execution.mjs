@@ -9,7 +9,7 @@ import {digest,id,json,need,shape,text,validIdentity,requestFor,failureCode} fro
 import {createFixReproduction,inspectFixReproduction} from './reproduce.mjs';
 import {inspectFixLearning} from './learning.mjs';
 import {createFixCausePackage} from './cause-package.mjs';
-import {validateCauseReviewer,inspectCauseRegistration,inspectCauseResult,causeExpectation,fixHostContexts} from './cause-invocation.mjs';
+import {validateCauseReviewer,inspectCauseRegistration,inspectCauseResult,causeExpectation,fixHostContexts,MAX_FIX_JOINED_HOSTS} from './cause-invocation.mjs';
 import {inspectProviderCauseReview} from '../cm-ai/provider-review-observation.mjs';
 import {publishCauseEvidence} from './cause-evidence.mjs';
 import {createFixRedTest,inspectFixRedTest,verifyFixRedEvidence,redTestFiles} from './red-test.mjs';
@@ -93,12 +93,10 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     &&(!configuration.causeReview||configuration.causeReview.provider==='claude'),'invalid_runtime');
   // configuration is the durable run record: its hostContextId stays the session
   // that created the run, so stored bytes and the store fingerprint never move.
-  // options.hostContextId is the live session; reviewConfiguration carries both so
-  // a resumed run keeps issuing and replaying grants without impersonating either.
+  // options.hostContextId is the live session. The sessions that joined in
+  // between are read from the history once the store is open, below.
   const liveHostContextId=options.hostContextId??configuration.hostContextId;id(liveHostContextId);
-  const hostContextIds=[...new Set([configuration.hostContextId,liveHostContextId])];
-  const reviewConfiguration=hostContextIds.length>1?{...configuration,hostContextIds}:configuration;
-  if(configuration.causeReview)validateCauseReviewer(configuration.causeReview,hostContextIds);
+  if(configuration.causeReview)validateCauseReviewer(configuration.causeReview,[...new Set([configuration.hostContextId,liveHostContextId])]);
   if(Object.hasOwn(configuration,'applicableAgentFiles')){
     need(Array.isArray(configuration.applicableAgentFiles),'invalid_input');
     for(const file of configuration.applicableAgentFiles){
@@ -135,6 +133,25 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     fingerprints:{workflow:digest('cm-fix-stages-v1'),config:digest(configuration),inputs:digest(identity)}});
   let active=null,closed=false;
   const append=(recordId,kind,payload)=>store.append({id:recordId,kind,payload,expectedRevision:store.snapshot().revision});
+  // Every host the run has had: the creating session, each session that joined
+  // before signing a grant, and the live one. reviewConfiguration carries them all
+  // so grants signed by any of them replay, and no reviewer may be any of them.
+  const joinedRecord=/^fix-host-joined-([1-9]\d*)$/;
+  const joinedHosts=()=>store.snapshot().records.filter(row=>joinedRecord.test(row.id)).map(row=>row.payload.hostContextId);
+  const hostContextIds=(()=>{
+    const joined=joinedHosts();need(joined.length<=MAX_FIX_JOINED_HOSTS,'fix_host_limit');
+    return [...new Set([configuration.hostContextId,...joined,liveHostContextId])];
+  })();
+  const reviewConfiguration=hostContextIds.length>1?{...configuration,hostContextIds}:configuration;
+  if(configuration.causeReview)validateCauseReviewer(configuration.causeReview,hostContextIds);
+  // Written just before the live session signs its first grant, never on a mere
+  // open, so looking at a run from a new session leaves its history untouched.
+  const joinLiveHost=()=>{
+    const joined=joinedHosts();
+    if(liveHostContextId===configuration.hostContextId||joined.includes(liveHostContextId))return;
+    need(joined.length<MAX_FIX_JOINED_HOSTS,'fix_host_limit');
+    append(`fix-host-joined-${joined.length+1}`,'result',{hostContextId:liveHostContextId});
+  };
   // Preserve legacy first-cycle IDs; later cycles require a fresh invocation-
   // bound human decision. Selection never falls back to an older result.
   const recoveryPrefix=cycle=>cycle===0?'fix-final':cycle===1?'fix-final-recovery':`fix-final-recovery-${cycle}`;
@@ -288,6 +305,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     let regression=null,retrospective=null,retrospectivePackage=null,writeback=null,learningPackage=null,handoff=null;
     let finalRegistration=null,finalStarted=null,finalResult=null,finalRecovery=null,finalRecoveryCount=0;
     const finalInvocations=new Set(),finalThreads=new Set();
+    let joinedCount=0;const seenJoined=new Set();
     let n5=null,postReviewRegression=null,walkthrough=null,revision=null,revisionBaseline=null,revisionRepair=null,revisionRegression=null;
     let revisionRetrospectivePackage=null,revisionRetrospective=null,revisionHandoff=null;
     let revisionWriteback=null,revisionLearningPackage=null;
@@ -324,6 +342,14 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         record={...record,id:`fix-observation-${observed[2]}`};
       }
       need(stage!=='cancelled','fix_history_invalid');
+      const joined=joinedRecord.exec(record.id);
+      if(joined){
+        need(Number(joined[1])===++joinedCount&&record.kind==='result'&&pending===null,'fix_history_invalid');
+        shape(record.payload,['hostContextId']);id(record.payload.hostContextId);
+        need(record.payload.hostContextId!==configuration.hostContextId
+          &&!seenJoined.has(record.payload.hostContextId),'fix_history_invalid');
+        seenJoined.add(record.payload.hostContextId);continue;
+      }
       if(record.id==='fix-observation-dossier-intent'){
         need(stage==='observation'&&pending===null&&record.kind==='intent','fix_history_invalid');
         shape(record.payload,['registeredAt']);
@@ -1137,7 +1163,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
             &&row.payload.request.invocationId===value.request.invocationId),'fix_review_recovery_mismatch');
           const current=createReviewPackage({root:configuration.reproduction.cwd,baseline,checks,handoffPath:selectedHandoff});
           need(current.packageDigest===pkg.packageDigest,'final_package_mismatch');
-          append(`${prefix}-registered`,'intent',value);registered=true;
+          joinLiveHost();append(`${prefix}-registered`,'intent',value);registered=true;
         },onStarted(providerThreadId){
           need(providerThreadId!==start.finalReviewRecovery?.providerThreadId,'final_context_mismatch');
           if(!revising)need(!store.snapshot().records.some(row=>finalCycleRecord(row,'started')
@@ -1421,7 +1447,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(!controller.signal.aborted,'cancelled');
         if(digest(grant)===digest({status:'denied',code:'permission_denied'}))return {...project(),reason:'permission_denied'};
         const registration=inspectCauseRegistration({request,authorizationAt,registeredAt:Date.now(),grant},reviewConfiguration);
-        append('fix-cause-registered','intent',registration);
+        joinLiveHost();append('fix-cause-registered','intent',registration);
         registered=true;
         const dispatchAt=Date.now();need(dispatchAt>=registration.registeredAt&&dispatchAt<grant.expiresAt,'grant_expired');
         const events=[];let invalid=false,sealed=false,timedOut=false,started=null;

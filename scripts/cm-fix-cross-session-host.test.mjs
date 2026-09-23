@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import {fixHostContexts, validateCauseReviewer} from '../runtime/js/cm-fix/cause-invocation.mjs';
+import {fixHostContexts, validateCauseReviewer, MAX_FIX_JOINED_HOSTS} from '../runtime/js/cm-fix/cause-invocation.mjs';
 import {validateReviewDispatchGrant} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 
@@ -14,14 +14,22 @@ const LIVE = '01a0c2b5-c2e2-7af1-8831-d6702c9a0d16';
 const reviewer = {reviewerId: 'fix-cause-reviewer', adapterId: 'codex-cause-review-adapter', provider: 'codex',
   requestedModel: 'gpt-6-astra', contextId: 'fix-cause-review-context', excludedThreadIds: []};
 
-test('the durable host always comes first and a second one is optional', () => {
+// Sessions that joined in between sit after the durable one, and the live one on
+// top; the whole list stays bounded so it cannot grow without limit.
+const joined = Array.from({length: MAX_FIX_JOINED_HOSTS}, (_, index) => `joined-${index + 1}`);
+test('the durable host always comes first and later ones are optional but bounded', () => {
   assert.deepEqual(fixHostContexts({hostContextId: DURABLE}), [DURABLE]);
   assert.deepEqual(fixHostContexts({hostContextId: DURABLE, hostContextIds: [DURABLE, LIVE]}), [DURABLE, LIVE]);
+  assert.deepEqual(fixHostContexts({hostContextId: DURABLE, hostContextIds: [DURABLE, 'joined-1', LIVE]}),
+    [DURABLE, 'joined-1', LIVE]);
+  assert.deepEqual(fixHostContexts({hostContextId: DURABLE, hostContextIds: [DURABLE, ...joined, LIVE]}),
+    [DURABLE, ...joined, LIVE]);
   // The resumed session can never displace the session the run is bound to.
   // A malformed id is refused by the shared id() validator, a malformed set by
   // this function's own bound; both are refusals, so accept either code.
   const refused = error => ['invalid_host_context', 'invalid_input'].includes(error.code);
-  for (const hosts of [[LIVE, DURABLE], [LIVE], [DURABLE, DURABLE], [DURABLE, LIVE, 'third'], [],
+  for (const hosts of [[LIVE, DURABLE], [LIVE], [DURABLE, DURABLE], [DURABLE, ...joined, LIVE, 'one-too-many'], [],
+    [DURABLE, LIVE, DURABLE],
     [DURABLE, ''], [DURABLE, null], 'not-an-array'])
     assert.throws(() => fixHostContexts({hostContextId: DURABLE, hostContextIds: hosts}),
       refused, JSON.stringify(hosts));
@@ -35,7 +43,11 @@ test('a resumed session is a host, so it cannot also be the reviewer', () => {
   // Excluding a host does not launder it into an acceptable reviewer either.
   assert.throws(() => validateCauseReviewer({...reviewer, contextId: LIVE, excludedThreadIds: [LIVE]},
     [DURABLE, LIVE]), {code: 'invalid_cause_reviewer'});
-  assert.throws(() => validateCauseReviewer(reviewer, [DURABLE, LIVE, 'third']), {code: 'invalid_cause_reviewer'});
+  // Every joined session is a host as well, not only the first and the live one.
+  assert.throws(() => validateCauseReviewer({...reviewer, contextId: 'joined-1'}, [DURABLE, 'joined-1', LIVE]),
+    {code: 'invalid_cause_reviewer'});
+  assert.throws(() => validateCauseReviewer(reviewer, [DURABLE, ...joined, LIVE, 'one-too-many']),
+    {code: 'invalid_cause_reviewer'});
 });
 
 // This is the claim the whole change rests on: the live session signs new grants
