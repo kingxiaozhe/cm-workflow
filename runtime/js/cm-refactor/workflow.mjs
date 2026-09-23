@@ -184,15 +184,48 @@ export function createCmRefactorHost(raw,{call}){
   }
   async function restore(key,before){for(const [name,value] of Object.entries(before))if(!name.startsWith('__')&&files[name]!==value)
     await write(`${key}/${name}`,absolute(name),files[name],value,context.modes[name]??0o644);}
-  async function prepareJudges(){
-    if(setup.paths.some(name=>files[name]===null)){
+  async function restoreBusiness(key,before){for(const name of config.scope)if(files[name]!==before[name])
+    await write(`${key}/${name}`,absolute(name),files[name],before[name],context.modes[name]??0o644);}
+  function checkJudgeRevision(revision){
+    need(revision&&Array.isArray(revision.paths)&&revision.paths.length>0&&nonempty(revision.reason)
+      &&new Set(revision.paths).size===revision.paths.length&&revision.paths.every(name=>setup.paths.includes(name)),
+    'refactor_judge_revision_scope');
+    shape(revision,['paths','reason']);
+  }
+  const saveJudgeRegistration=input=>records.effect('judge-revision-registration','checkpoint',input,
+    ()=>({prepared:true}),()=>({prepared:true}));
+  async function prepareJudgeRevision(revision){
+    checkJudgeRevision(revision);
+    const existing=records.effects.get('judge-revision-registration');
+    if(existing){
+      need(digest(existing.input.revision)===digest(revision),'refactor_judge_revision_conflict');
+      await saveJudgeRegistration(existing.input);return status();
+    }
+    need(!unknown(),'refactor_unknown_effect');
+    const first=records.effects.get('host/a1/review');
+    need(first?.result?.value&&!Object.hasOwn(first.result.value,'judgeRevision'),'refactor_judge_revision_unavailable');
+    const review=path.join(reviews,`${feature}-${task}-r1.md`),content=readText(review);
+    need(content===first.result.value.markdown,'refactor_judge_revision_unavailable');
+    const checked=validateReview(review,{task,attempt:1,handoff:first.input.payload.handoff,
+      changedFiles:first.input.payload.files.map(file=>file.path)});
+    need(checked.verdict==='changes_requested','refactor_judge_revision_unavailable');
+    // Only an unconsumed round 2 can be extended. A rejected text-only proposal is historical, not a write.
+    const consumed=[...records.effects].some(([key])=>/^(host|write|command|publish)\/a2(?:[/-]|$)/.test(key)&&key!=='host/a2/apply');
+    need(!consumed,'refactor_judge_revision_unavailable');
+    const old=records.effects.get('host/a2/apply');
+    await saveJudgeRegistration({revision,review,reviewSha256:sha(content),reviewResultDigest:digest(first.result),
+      supersededApply:old?{key:'host/a2/apply',inputDigest:digest(old.input),resultDigest:digest(old.result)}:null});
+    attempt=2;progress('judge_revision_prepared');return status();
+  }
+  async function prepareJudges(prefix='',maxRevisions=3){
+    if(!prefix&&setup.paths.some(name=>files[name]===null)){
       const result=await invoke('judge-prepare','refactor_prepare_tests',{target:config.target,files:source(config.scope),assets:source(setup.paths),
         baselineCommands:config.baselineCommands,judgeCommand:config.judgeCommand,route:routes.tester,
         instructions:'Return {files:[{path,beforeDigest,content}]} only for declared test assets. Lock current behavior including bugs and boundary cases; preserve original environment resolution. No direct writes or commands, no new dependencies.'});
       await apply('judge-prepare',result.files,setup.paths);
     }
-    for(let revision=1;revision<=3;revision++){
-      const key=`judge-${revision}`;let failure=null;const mutations=[];
+    for(let revision=1;revision<=maxRevisions;revision++){
+      const key=`${prefix}judge-${revision}`;let failure=null;const mutations=[];
       try{
         await baseline(`${key}/baseline`);judgeBefore=await judge(`${key}/original`);
         for(let n=0;n<config.mutations.length;n++){
@@ -202,7 +235,8 @@ export function createCmRefactorHost(raw,{call}){
           const old=files[mutation.path];need(typeof old==='string'&&old.split(mutation.find).length===2,'refactor_mutation_not_unique');
           await write(`${key}-mutant-${n}`,absolute(mutation.path),old,old.replace(mutation.find,mutation.replace),context.modes[mutation.path]);
           let observed;try{observed=await judge(`${key}/mutant-${n}`);}finally{
-            await write(`${key}-restore-${n}`,absolute(mutation.path),files[mutation.path],old,context.modes[mutation.path]);}
+            // New revision commands with unknown outcomes must keep their execution source for reconciliation.
+            if(!prefix||!unknown())await write(`${key}-restore-${n}`,absolute(mutation.path),files[mutation.path],old,context.modes[mutation.path]);}
           const inputs=value=>value.cases.map(({id,input})=>({id,input}));
           const detected=digest(inputs(observed))===digest(inputs(judgeBefore))&&digest(observed)!==digest(judgeBefore);
           mutations.push({mutation,detected,observed});need(detected,'refactor_judge_missed_mutation');
@@ -210,11 +244,31 @@ export function createCmRefactorHost(raw,{call}){
       }catch(error){if(unknown())throw error;failure=error.code??error.message;}
       await publish(key,path.join(directory,`${key}-report.md`),markdown({judgeBefore,mutations,failure}));
       if(!failure)return;
-      need(!controller.signal.aborted,'cancelled');need(setup.paths.length&&revision<3,failure);
+      need(!controller.signal.aborted,'cancelled');need(setup.paths.length&&revision<maxRevisions,failure);
       const result=await invoke(`${key}-repair`,'refactor_prepare_tests',{failure,mutations,files:source(config.scope),assets:source(setup.paths),
         baselineCommands:config.baselineCommands,judgeCommand:config.judgeCommand,route:routes.tester,
         instructions:'Diagnose judge first; correct only declared test harness, never production behavior or configured mutations. Return {files:[{path,beforeDigest,content}]}. No commands or direct writes.'});
       await apply(`${key}-repair`,result.files,setup.paths);await event(`${key}-repair`,'decision','judge_repair',{reason:failure});
+    }
+  }
+  async function reviseJudges(revision){
+    const key='a2/judge-revision';
+    const result=await invoke(key,'refactor_revise_tests',{attempt:2,findings:reviewResult,revision,
+      files:source(config.scope),assets:source(revision.paths),baselineCommands:config.baselineCommands,
+      judgeCommand:config.judgeCommand,route:routes.tester,
+      instructions:'Address the round-1 test/judge findings. Return {files:[{path,beforeDigest,content}]} only within assets. Preserve original behavior including bugs; the owner will validate against the startup business snapshot and the revised candidate. No direct writes, commands, dependencies, configuration or business edits.'});
+    need(Array.isArray(result.files)&&result.files.some(item=>item.content!==(files[item.path]??null)),'refactor_judge_revision_empty');
+    await publish('a2-judge-revision',path.join(directory,'a2-judge-revision.md'),markdown({
+      review:path.join(reviews,`${feature}-${task}-r1.md`),reviewSha256:sha(reviewResult.markdown),revision,files:result.files,
+      ...(records.effects.has('judge-revision-registration')?{registration:records.effects.get('judge-revision-registration').input}:{})}));
+    await apply(key,result.files,revision.paths);
+    const candidate=Object.fromEntries(config.scope.map(name=>[name,files[name]]));
+    try{
+      await restoreBusiness('a2-judge-original',context.original);
+      // Rebuild answers and self-validation on the ORIGINAL business version, never on the candidate.
+      await prepareJudges('a2-',1);
+    }finally{
+      if(!unknown())await restoreBusiness('a2-judge-candidate',candidate);
     }
   }
   async function defineRules(key,previous=null,findings=null){
@@ -228,7 +282,9 @@ export function createCmRefactorHost(raw,{call}){
       &&plan.sample.every(name=>config.scope.includes(name)&&files[name]!==null),'refactor_sample_invalid');
     return {...plan,units};
   }
-  async function batchFlow(prefix,findings){
+  async function batchFlow(prefix,findings,revisedJudges=false){
+    // The new path restores only business text; durable batch logs must remain append-only.
+    const restoreBatch=revisedJudges?restoreBusiness:restore;
     const denies=JSON.parse(readText(path.join(workflowRoot,'templates/refactor/cm-refactor-denies.json')));
     let plan=prefix==='a1'?{...initialPlan}:await defineRules(`${prefix}/plan`,rulebook,findings),revision=1;
     const trial={};
@@ -251,8 +307,8 @@ export function createCmRefactorHost(raw,{call}){
     // Pilot uses the same generation/cheap checks/assembly/equivalence pipeline; discard its products.
     let pilotPassed=false;
     for(let cycle=1;cycle<=3;cycle++){
-      const pilotBefore={...files},trialResult=await runBatch(`${prefix}/pilot-${cycle}`,plan.sample,plan.rulebook,revision,[],true);
-      await restore(`${prefix}/pilot-discard-${cycle}`,pilotBefore);files.__needs=pilotBefore.__needs??[];
+      const pilotBefore={...files},trialResult=await runBatch(`${prefix}/pilot-${cycle}`,plan.sample,plan.rulebook,revision,[],true,revisedJudges);
+      await restoreBatch(`${prefix}/pilot-discard-${cycle}`,pilotBefore);files.__needs=pilotBefore.__needs??[];
       if(trialResult.passed){pilotPassed=true;break;}
       if(cycle<3){const revised=await defineRules(`${prefix}/pilot-revise-${cycle}`,plan.rulebook,trialResult);
         need(digest(revised.units)===digest(plan.units),'refactor_revision_scope_changed');plan.rulebook=revised.rulebook;}
@@ -270,9 +326,9 @@ export function createCmRefactorHost(raw,{call}){
       for(let cycle=1;cycle<=batch.maxPasses;cycle++){
         const key=`${prefix}/batch-${index+1}-${cycle}`,before={...files};
         await event(`${key}-start`,'task_start',null,{batch:index+1,total:plan.units.length,cycle});
-        const result=await runBatch(key,unit.files,rulebook,revision,[],false);
+        const result=await runBatch(key,unit.files,rulebook,revision,[],false,revisedJudges);
         if(result.passed){passed=true;await event(`${key}-done`,'task_done',null,{batch:index+1,total:plan.units.length,differential_groups:judgeBefore.cases.length});break;}
-        await restore(`${key}-rollback`,before);await publish(`${key}-rollback`,path.join(directory,`${key.replaceAll('/','-')}-rollback.md`),markdown({unit,cycle,failure:result.failure,baselineHead:context.baseline.gitState?.head??null}));
+        await restoreBatch(`${key}-rollback`,before);await publish(`${key}-rollback`,path.join(directory,`${key.replaceAll('/','-')}-rollback.md`),markdown({unit,cycle,failure:result.failure,baselineHead:context.baseline.gitState?.head??null}));
         await event(`${key}-rollback`,'error','rollback',{batch:index+1,cycle,reason:result.failure});
         const diagnosed=await invoke(`${key}-diagnose`,'refactor_batch',{action:'diagnose',failure:result.failure,output:result.output,rulebook,
           instructions:'Return {errorClass,reason}; identify root error category, not individual filename/line; judge-wide anomalies must be treated as judge faults first. No writes.'});
@@ -290,7 +346,7 @@ export function createCmRefactorHost(raw,{call}){
     }
     files.__rulebook=readVirtualRulebook;return true;
   }
-  async function runBatch(key,names,rules,revision,needs=[],pilot=false){
+  async function runBatch(key,names,rules,revision,needs=[],pilot=false,revisedJudges=false){
     const before={...files},rows=[];let output=null;
     try{
       for(const name of names){
@@ -324,7 +380,8 @@ export function createCmRefactorHost(raw,{call}){
       return {passed:true};
     }catch(error){
       if(unknown()||controller.signal.aborted||['refactor_unknown_effect','refactor_source_changed','refactor_out_of_scope_change','refactor_write_conflict'].includes(error.code))throw error;
-      await restore(`${key}/failed-restore`,Object.fromEntries(Object.entries(before).filter(([name])=>!name.startsWith('__'))));
+      if(revisedJudges)await restoreBusiness(`${key}/failed-restore`,before);
+      else await restore(`${key}/failed-restore`,Object.fromEntries(Object.entries(before).filter(([name])=>!name.startsWith('__'))));
       const failure=error.code??error.message;await publish(`${key}-failure`,path.join(directory,`${key.replaceAll('/','-')}-failure.md`),markdown({failure,output,rows,pilot}));
       return {passed:false,failure,output};
     }
@@ -367,6 +424,8 @@ export function createCmRefactorHost(raw,{call}){
   const dossierPath=()=>context.batch?path.join(directory,'dossier.md'):path.join(archiveRoot,`${context.startedAt.slice(0,10).replaceAll('-','')}-${config.slug}.md`);
   async function flow(){
     files={...context.original};reports=[];commandCount=0;hostCalls=0;humanCalls=0;interceptions=0;rulebook=null;reviewResult=null;proposal=null;judgeBefore=null;attempt=1;
+    let judgeRevision=null;const registration=records.effects.get('judge-revision-registration');
+    if(registration?.input.supersededApply)hostCalls++;
     await event('start','run_start',null);await event('g0','node_enter',null);
     for(const [role,route] of Object.entries(routes))await event(`route-${role}`,'decision','route',{role,adapter:route.adapter,requested_model:route.model,source:route.source,route_state:route.route_state});
     analysis=await invoke('analysis','refactor_analyze',{target:config.target,project,scope:config.scope,
@@ -383,14 +442,18 @@ export function createCmRefactorHost(raw,{call}){
       await event('rejected','run_done',null,{result:'rejected'});progress('rejected');return false;}
     await event('judge','node_enter',null);await prepareJudges();
     for(attempt=1;attempt<=2;attempt++){
+      if(attempt===2&&judgeRevision)await reviseJudges(judgeRevision);
       const prefix=`a${attempt}`;await event(`${prefix}-execute`,'node_enter',null);progress('implementing');
       if(!context.batch)await event(`${prefix}-task`,'task_start',null,{attempt});
-      if(context.batch){if(!await batchFlow(prefix,reviewResult)){progress('rulebook_rejected');return false;}}
+      if(context.batch){if(!await batchFlow(prefix,reviewResult,Boolean(judgeRevision))){progress('rulebook_rejected');return false;}}
       else{
-        proposal=await invoke(`${prefix}/apply`,'refactor_apply',{target:config.target,analysis,attempt,files:source(config.scope),findings:reviewResult,route:routes.coder,
+        const applyKey=attempt===2&&registration?'a2-after-judge-revision/apply':`${prefix}/apply`;
+        proposal=await invoke(applyKey,'refactor_apply',{target:config.target,analysis,attempt,files:source(config.scope),findings:reviewResult,route:routes.coder,
           instructions:'Propose structure-only replacements, no file writes/commands/bug fixes. Return {files:[{path,beforeDigest,content}],summary,metricAfter,unfixedDefects:[],conventions:[],learningApplication,learningRetrospective}. New lessons must be reported, not hidden.'});
-        need(proposal.files.every(item=>item.content!==null),'refactor_deletion_requires_batch');await apply(`${prefix}/apply`,proposal.files,config.scope);
-        try{await equivalents(prefix);}catch(error){if(!unknown())await restore(`${prefix}/rollback`,Object.fromEntries(config.scope.map(name=>[name,context.original[name]])));throw error;}
+        need(proposal.files.every(item=>item.content!==null),'refactor_deletion_requires_batch');await apply(applyKey,proposal.files,config.scope);
+        try{await equivalents(prefix);}catch(error){if(!unknown()){
+          if(judgeRevision)await restoreBusiness(`${prefix}/rollback`,context.original);
+          else await restore(`${prefix}/rollback`,Object.fromEntries(config.scope.map(name=>[name,context.original[name]])));}throw error;}
       }
       const retrospective=await writeback(prefix);
       const changed=managedNames.filter(name=>(files[name]??null)!==context.original[name]);
@@ -412,6 +475,18 @@ export function createCmRefactorHost(raw,{call}){
         instructions:'Fresh independent reviewer per runtime/review.md, no author history. Review ALL diff including tests/Learning/rules/docs/LESSONS and judge coverage. Return {markdown} with original N4 header binding exact handoff SHA, attempt=round, scope, findings. No writes or unapproved provider. Missing channel is blocked, never invent approval.'});
       const review=await publish(`${prefix}-review`,path.join(reviews,`${feature}-${task}-r${attempt}.md`),reviewed.markdown);
       reviewResult=validateReview(review,{task,attempt,handoff,changedFiles:changed});interceptions+=Number(reviewResult.blocking_findings);
+      if(Object.hasOwn(reviewed,'judgeRevision')){
+        need(attempt===1&&reviewResult.verdict==='changes_requested','refactor_judge_revision_unavailable');
+        checkJudgeRevision(reviewed.judgeRevision);judgeRevision=reviewed.judgeRevision;
+      }
+      if(attempt===1&&registration){
+        need(!judgeRevision&&reviewResult.verdict==='changes_requested'
+          &&registration.input.reviewSha256===sha(reviewed.markdown)
+          &&registration.input.reviewResultDigest===digest(records.effects.get('host/a1/review').result),
+        'refactor_judge_revision_binding');
+        checkJudgeRevision(registration.input.revision);await saveJudgeRegistration(registration.input);
+        judgeRevision=registration.input.revision;
+      }
       await event(`${prefix}-review-complete`,'review','complete',{attempt,verdict:reviewResult.verdict,blocking_findings:Number(reviewResult.blocking_findings)});
       if(reviewResult.verdict==='changes_requested'&&attempt===1){reviewResult={...reviewResult,markdown:reviewed.markdown};continue;}
       guard();checkN5(options);proposal={...retrospective,changed,options};progress('awaiting_finish');return true;
@@ -451,7 +526,8 @@ export function createCmRefactorHost(raw,{call}){
     if(request.operation==='cancel'){controller.abort();return {...status(),stage:'cancelled'};}
     need(!active,'refactor_busy');active=true;controller=new AbortController();
     try{
-      need(['start','resume','finish'].includes(request.operation),'invalid_request');records.acquire();
+      need(['start','resume','finish','prepare_judge_revision'].includes(request.operation),'invalid_request');
+      need(request.operation!=='prepare_judge_revision'||context,'refactor_not_started');records.acquire();
       if(!context){
         need(request.operation==='start','refactor_not_started');
         need(fs.readdirSync(directory).every(name=>name==='.writer.json'),'refactor_legacy_recovery_required');
@@ -463,7 +539,8 @@ export function createCmRefactorHost(raw,{call}){
           modes:Object.fromEntries(managedNames.map(name=>[name,original[name]===null?0o644:fs.statSync(absolute(name)).mode&0o777])),
           baseline:baselineSnapshot,batch:batchTrack,lessons:readText(lessons),lessonsMode:fs.existsSync(lessons)?fs.statSync(lessons).mode&0o777:0o644,
           metrics:specs?readText(path.join(specs,'METRICS.md')):null,metricsMode:specs&&fs.existsSync(path.join(specs,'METRICS.md'))?fs.statSync(path.join(specs,'METRICS.md')).mode&0o777:0o600};records.initialize(context);
-      }else{guard();if(view.stage==='done')return status();need(request.operation!=='start','refactor_resume_required');}
+      }else{guard();if(request.operation==='prepare_judge_revision')return await prepareJudgeRevision(request.judgeRevision);
+        if(view.stage==='done')return status();need(request.operation!=='start','refactor_resume_required');}
       if(await flow()){
         if(request.operation==='resume'){
           const rounds=[...records.effects.keys()].map(key=>/^command\/resume-check\/(\d+)\//.exec(key)).filter(Boolean).map(match=>Number(match[1]));

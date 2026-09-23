@@ -58,12 +58,56 @@ JS 每次变异后恢复自己写入的精确内容；检测到并发修改时�
 | `refactor_confirm` | 向当前用户展示 payload 的范围、命令/变异或收口证据，取得本次明确决定，返回 `{decision:approved或rejected}`；不得因以前“继续”而伪造批准。 |
 | `refactor_apply` | 返回 `{files:[{path,beforeDigest,content}],summary,metricAfter,unfixedDefects:[],conventions:[],learningApplication,learningRetrospective}`。digest 取请求值；只提供文本，不写文件、不运行命令。无新教训时 retrospective 为 `no_new_lesson`，新增则使用扩展协议的 learning 结构。 |
 | `refactor_review` | 依 `runtime/review.md` 使用真正独立通道，传当前完整 handoff、差分/自验证报告、范围前后内容及命令。返回 `{markdown}`，保留原头部、精确 handoff SHA、attempt=round 和 scope。无法取得独立审查则停止；不得自写 approved、复用旧批准或发起未授权 provider。 |
+| `refactor_revise_tests` | 仅第一轮审查明确要求补测试时调用。读取 `findings` 和 `assets`，返回 `{files:[{path,beforeDigest,content}]}`；只改本次列出的测试文件，摘要沿用请求值。不得直接写盘、运行命令或改业务文件。 |
 
 审查 round 1 的 changes_requested 会在同一配置内修订一次；round 2 仍有阻塞则停止。
 模型质量、行为覆盖充分性、角色执行来源与审查独立性由真实宿主保证，结构化 header 本身不能证明。
 返回 `awaiting_finish` 后发送 `{"requestId":"finish","operation":"finish"}`，控制器再次核对原 N5、
 询问当前用户收口决定并归档。收口拒绝只停在原位置，不重做修改或审查。
 `status` 只读状态；`resume` 同配置接回原记录；`cancel` 中止在途工作；退出用 `{type:host_close,sessionId}`。
+
+## 第二轮判官修订
+
+启动前把允许维护的现有或待建测试文件逐个列入 `testSetup.paths`，并在 G0 展示；它与业务
+`scope` 必须分离。第一轮审查若要求改这些文件，返回如下结果，正文也须说明对应发现：
+
+```json
+{"markdown":"带完整头部的 changes_requested 审查正文","judgeRevision":{"paths":["test/value-judge.mjs"],"reason":"补齐遗漏的边界输入"}}
+```
+
+`paths` 必须非空、不重复且全部属于原配置的 `testSetup.paths`，`reason` 必须非空。
+未声明的文件不能临时加入；不能修改配置、命令、变异清单，或换 slug 重置轮次。
+没有此字段的审查默认沿用原业务修订路径；可信宿主可在交回第一轮结果前整理该声明，
+已经归档的纯文字发现则走下方追加登记。批准结果及第二轮审查均不能启动测试修订。
+
+控制器只接受一次有实际变化的文本提案，沿用文件摘要、路径保护、原子写入与并发检查。
+提案和原审查绑定另存 `a2-judge-revision.md`；每次写入追加日志，旧报告、回执不覆盖。
+随后临时恢复**启动时记录的业务原稿**（包括启动前已有改动），用新版测试跑基线、采集答案，
+并重新执行原变异清单自验证，另存 `a2-judge-1-report.md`。不能只对重构稿生成预期答案。
+
+自验证通过后恢复待修的重构稿，再执行第二轮业务修改和行为比较；轻量、批量均走此顺序。
+测试差分、新旧报告一并进入第二轮交接与独立审查。新判官暴露的行为变化必须在原业务范围
+内纠正，比较不等则阻断。原稿基线失败或判官漏检变异也阻断，不增加测试提案或审查轮次。
+
+中断后保持原配置执行 `resume`；控制器按记录接续测试写入、原稿切换、自验证和候选稿恢复。
+未知宿主或命令结果须按原恢复协议核对并确认资源清理，不能自动重跑或把当前盘面当新原稿。
+不要手工恢复临时原稿或覆盖测试文件；外部写入、路径或权限变化仍按原守卫阻断。
+
+### 旧审查的追加登记
+
+旧运行已归档的第一轮审查要求补测试，却没有 `judgeRevision` 字段时，可信宿主核对原发现后发送：
+
+```json
+{"requestId":"prepare-judge","operation":"prepare_judge_revision","judgeRevision":{"paths":["test/value-judge.mjs"],"reason":"处置第一轮已记录的边界测试缺口"}}
+```
+
+仅接受原第一轮合法 `changes_requested`，且第二轮尚未受控写入、执行验证或派发审查。
+已缓存但被范围检查拒绝的 `a2/apply` 文本提案可以保留；在途未知调用须先核对，不能借此重跑。
+登记绑定原审查文件、宿主结果以及被取代提案的摘要，返回 `judge_revision_prepared`，随后用原配置 `resume`。
+
+原审查、旧提案和日志字节不变；新业务提案使用 `a2-after-judge-revision/apply`，attempt 仍为 2。
+登记仅一次，相同请求幂等，不能更换范围或原因；已声明新版修订或已消费第二轮的运行拒绝登记。
+这不是任意阶段回退、换配置或增加审查轮次的入口。
 
 ## 结果与验收边界
 

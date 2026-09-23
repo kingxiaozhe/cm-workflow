@@ -139,6 +139,10 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n5 \
 attempt 2 并复审，第 2 轮仍有阻断项写 `blocked`。旧凭证、空壳凭证或文件存在检查
 均不得放行。
 
+第一轮要求补判官或测试时，审查返回 `judgeRevision:{paths,reason}`，只列启动时
+`testSetup.paths` 内的文件；第二轮由宿主提议文本、控制器登记写入。先在启动时的业务原稿上
+重建答案并重做判官自验证，再与第二轮重构稿比较；详见 [判官修订与恢复](references/js-host.md#第二轮判官修订)。
+
 ## 批量道(五站 + 三条修上游回环)
 
 > 教义:个别失败交给循环烧掉,**重复失败控诉的是规则**——修规则重新生成,不修产物。
