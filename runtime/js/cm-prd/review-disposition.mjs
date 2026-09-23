@@ -24,6 +24,9 @@ function disposition({specs,stage,feature,packageDigest,decisions,artifacts,writ
     const bytes=readCmInitSource(specs,item.path);
     need(bytes!==null&&sha(bytes)===item.sha256,'prd_disposition_artifacts_not_saved');
   }
+  // A design-stage receipt remains frozen except for this exact saved split plan.
+  if(stage==='split'&&readCmInitSource(specs,`.reviews/prd-${feature.replace(/^\d+\./,'')}-design-r1.md`)!==null)
+    inspectPrdFindings({specs,stage:'design',feature,pendingSplit:{stage,feature,packageDigest,decisions,artifacts}});
   const disposition=unresolved?'escalated':decisions.length?'applied':'no_findings';
   const evidence=path.join(specs,review.evidence),receipt=evidence.replace(/-r1\.md$/,'-disposition.json');
   const args={stage,feature:feature.replace(/^\d+\./,''),evidence,receipt};
@@ -54,11 +57,12 @@ function disposition({specs,stage,feature,packageDigest,decisions,artifacts,writ
 
 // One durably recorded correction check per original package. No caller-provided
 // "passed" boolean, second reviewer, automatic repair, or automatic retry.
-export function createPrdDispositionOwner({checkContext,canRecoverRecorded=()=>false}){
+export function createPrdDispositionOwner({checkContext,canRecoverRecorded=()=>false,validateCurrent=()=>{}}){
   need(typeof checkContext==='function','prd_disposition_checker_required');
   return async(input,signal)=>{
     need(!signal.aborted,'cancelled');
     input=json(input,256*1024);
+    validateCurrent(input);
     const preflight=disposition(input,{validateOnly:true});
     if(preflight.status!=='disposition_prepared')return preflight;
     if(!preflight.requiresSelfCheck)return disposition(input);
@@ -87,6 +91,7 @@ export function createPrdDispositionOwner({checkContext,canRecoverRecorded=()=>f
     const contextCheck=inspectPrdContextCheck(response,draft);
     need(!signal.aborted,'cancelled');
     // Recheck original r1, exact artifacts and decisions after the host yields.
+    validateCurrent(input);
     disposition(input,{validateOnly:true});
     if(['claimed','unknown'].includes(claim.status))store.record('context_result',json(response,64*1024));
     if(contextCheck.status!=='host_reported_passed')return json({status:'disposition_self_check_failed',contextCheck,

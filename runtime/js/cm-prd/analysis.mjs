@@ -7,6 +7,7 @@ import {need,shape,json,digest} from '../cm-ai/effect-contract.mjs';
 import {inspectPrdMaterialResults} from './materials.mjs';
 import {prdFeatureInventory,nextPrdFeatureIndex,inspectPrdDraft,inspectPrdDesignDraft} from './draft.mjs';
 import {checkPrdDraftMechanics,inspectPrdContextCheck} from './self-check.mjs';
+import {acceptedPrdDraftForSave} from './draft-save.mjs';
 import {preparePrdReview} from './review-preparation.mjs';
 import {inspectAcceptedPrdDesign} from './accepted-design.mjs';
 import {inspectPrdDesignRiskSelection} from './design-risk.mjs';
@@ -31,11 +32,18 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
   const materials=[...snapshot.sourceInspection.sources,
     ...(snapshot.sourceInspection.userCases?[snapshot.sourceInspection.userCases]:[])];
   const nonempty=value=>typeof value==='string'&&value.trim().length>0;
-  const current=()=>{
+  const current=(pendingSplit=null)=>{
     need(digest(inspectCmPrdSources(input))===sourceDigest
       &&digest(loadConfig({projectRoot:admission.project}))===digest(config),'prd_inputs_changed');
-    if(acceptedDesign!==null)need(inspectAcceptedPrdDesign(admission.specs,designDraft,designRiskSelection).bindingDigest===acceptedDesign.bindingDigest,
-      'prd_accepted_design_changed');
+    if(acceptedDesign!==null){
+      const observed=inspectAcceptedPrdDesign(admission.specs,designDraft,designRiskSelection,{draftDigest:draft?.draftDigest,pendingSplit});
+      // Validate new bytes above, then compare all original binding fields. Only
+      // the authorized requirements/design content is projected back to the saved baseline.
+      const features=observed.features.map(feature=>({...feature,documents:feature.documents.map(doc=>['requirements.md','design.md'].includes(doc.path)?
+        acceptedDesign.features.find(item=>item.directory===feature.directory).documents.find(item=>item.path===doc.path):doc)}));
+      const {bindingDigest,...binding}=observed;
+      need(digest({...binding,features})===acceptedDesign.bindingDigest,'prd_accepted_design_changed');
+    }
   };
   if(restored!==null){
     need(restored.sourceDigest===sourceDigest&&restored.configDigest===digest(config),'prd_inputs_changed');
@@ -45,6 +53,7 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
     if(stage==='cancelled')controller.abort();
   }
   return Object.freeze({
+    validateCurrent:pendingSplit=>current(pendingSplit),
     checkpoint:()=>json({stage,result,sourceDigest,configDigest:digest(config),materialEvidence,draft,designDraft,designPlanning,
       acceptedDesign,designRiskSelection,designPromotion,promotionOriginal,selfCheckRound,contextCheck,selfCheckHistory,messages,planning},4*1024*1024),
     status:()=>json({stage,result,sourceDigest,materialEvidence,draft,designDraft,designRiskSelection,designPromotion,selfCheckRound,contextCheck,selfCheckHistory,writeAuthorized:false,completionAuthorized:false}),
@@ -95,7 +104,7 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
       return preparePrdReview({specs:admission.specs,draft:stage==='design_ready'?designDraft:draft,stage:reviewStage,feature});
     },
     currentDraftForSave(){
-      need(stage==='self_check_reported_passed','prd_spec_save_not_ready');current();return draft;
+      need(stage==='self_check_reported_passed','prd_spec_save_not_ready');current();return acceptedPrdDraftForSave(admission.specs,draft);
     },
     originalPromotedDraft(){
       need(designPromotion?.saved===true&&stage==='self_check_reported_passed','prd_saved_promotion_not_ready');

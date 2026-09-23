@@ -6,6 +6,7 @@ import os from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
 import {TextDecoder} from 'node:util';
 import {fileURLToPath} from 'node:url';
+import {acceptsPrdSplitDesign} from '../runtime/js/cm-prd/split-design.mjs';
 import {normalizeRuntimeMarks} from './cm-spec-manifest.mjs';
 
 const fail=message=>{throw new Error(message);};
@@ -105,7 +106,15 @@ function loadReceipt(file,args,evidence){
     const artifact=resolve(raw);need(within(root,artifact),'PRD review artifact escapes the specs directory');
     need(stat(artifact)?.isFile(),'PRD review artifact is missing or unsafe');
     const bytes=fs.readFileSync(artifact);
-    if(createHash('sha256').update(bytes).digest('hex')!==item.sha256){
+    const currentSha=createHash('sha256').update(bytes).digest('hex');
+    const completedSplit=value.stage==='design'&&item.path.endsWith('/design.md')
+      &&stat(path.join(path.dirname(file),`prd-${value.feature}-split-disposition.json`));
+    if(currentSha!==item.sha256||completedSplit){
+      const accepted=acceptsPrdSplitDesign({specs:root,evidence:path.relative(root,evidence).split(path.sep).join('/'),
+        receipt:value,item,currentSha,pendingSplit:args.pendingSplit??null});
+      if(accepted===true)continue;
+      if(completedSplit&&accepted!==null)need(false,'prd_design_receipt_changed');
+      if(currentSha===item.sha256)continue;
       const text=bytes.toString('utf8');
       need(path.extname(artifact)==='.md'&&Buffer.from(text,'utf8').equals(bytes)
         &&createHash('sha256').update(normalizeRuntimeMarks(text,path.basename(artifact))).digest('hex')===item.sha256,

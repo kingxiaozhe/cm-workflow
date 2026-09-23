@@ -4,6 +4,8 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {inspectPrdReview} from '../../../scripts/cm-prd-review-gate.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
+import {inspectPrdFindings} from './review-findings.mjs';
+import {inspectPrdSplitDesign} from './split-design.mjs';
 import {need,json,digest} from '../cm-ai/effect-contract.mjs';
 const sha=text=>createHash('sha256').update(text).digest('hex');
 function sections(text,pattern){
@@ -29,7 +31,24 @@ export function preparePrdReview({specs,draft,stage,feature}){
   const gate=inspectPrdReview(args);
   if(['resume_disposition','completed'].includes(gate.outcome))for(const document of target.documents){
     const current=readCmInitSource(specs,`${feature}/${document.path}`);
-    need(current!==null&&current.equals(Buffer.from(document.content)),'prd_review_draft_disk_mismatch');
+    let accepted=current!==null&&current.equals(Buffer.from(document.content));
+    if(!accepted&&current!==null&&gate.outcome==='completed'){
+      let review;
+      try{review=inspectPrdFindings({specs,stage,feature});}catch(error){
+        // Legacy r1 has no host archive to prove a superseding split. Keep its
+        // original stale-draft refusal, including the public error code.
+        if(error.code==='prd_review_archive_unavailable')need(false,'prd_review_draft_disk_mismatch');
+        throw error;
+      }
+      need(review.draftDigest===draft.draftDigest,'prd_review_dispatch_package_changed');
+      const receipt=JSON.parse(readCmInitSource(specs,`.reviews/${prefix}-disposition.json`).toString('utf8'));
+      const recorded=receipt.artifacts.find(item=>item.path===`${feature}/${document.path}`)?.sha256;
+      accepted=sha(current)===recorded;
+      if(!accepted&&stage==='design'&&['requirements.md','design.md'].includes(document.path))accepted=sha(current)===inspectPrdSplitDesign({
+        specs,feature,document:document.path,originalSha:receipt.artifacts.find(item=>item.path===`${feature}/design.md`)?.sha256,
+        requirementsSha:sha(target.documents.find(doc=>doc.path==='requirements.md').content)});
+    }
+    need(accepted,'prd_review_draft_disk_mismatch');
   }
   const files=new Map(target.documents.map(document=>[document.path,document.content]));
   const requirements=files.get('requirements.md'),design=files.get('design.md');

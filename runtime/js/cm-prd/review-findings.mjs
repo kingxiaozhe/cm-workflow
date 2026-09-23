@@ -5,7 +5,7 @@ import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {publishPrdReview} from './review-publication.mjs';
 import {need,shape,json,digest} from '../cm-ai/effect-contract.mjs';
 
-export function inspectPrdFindings({specs,stage,feature}){
+export function inspectPrdFindings({specs,stage,feature,pendingSplit=null}){
   need(typeof specs==='string'&&fs.realpathSync(specs)===specs,'prd_review_root_invalid');
   need(['design','split'].includes(stage),'prd_review_stage_invalid');
   const match=typeof feature==='string'&&feature.match(/^([1-9]\d*)\.([a-z0-9]+(?:-[a-z0-9]+)*)$/);
@@ -23,7 +23,7 @@ export function inspectPrdFindings({specs,stage,feature}){
   const packageDigest=digest(archive.reviewPackage);
   // Reuse the publisher's complete validation and exact-byte projection, but
   // inspect only: never repair, recreate, overwrite or dispatch from this read.
-  const verified=publishPrdReview({specs,...archive,packageDigest,inspectOnly:true});
+  const verified=publishPrdReview({specs,...archive,packageDigest,inspectOnly:true,pendingSplit});
   const result=archive.response.result;
   return json({status:'review_findings_ready',stage,feature,packageDigest,
     draftDigest:archive.reviewPackage.draftDigest,evidence:relative,gate:verified.gate,

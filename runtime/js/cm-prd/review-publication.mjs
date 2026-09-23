@@ -6,7 +6,7 @@ import {writeReviewEvidence} from '../cm-ai/review-evidence-file.mjs';
 import {reviewResultForPaths} from '../cm-ai/review-runner.mjs';
 import {need,shape,json,digest,id} from '../cm-ai/effect-contract.mjs';
 
-export function publishPrdReview({specs,reviewPackage,packageDigest,authorContextId,response,inspectOnly=false}){
+export function publishPrdReview({specs,reviewPackage,packageDigest,authorContextId,response,inspectOnly=false,pendingSplit=null}){
   reviewPackage=json(reviewPackage,256*1024);response=json(response,64*1024);id(authorContextId);
   need(digest(reviewPackage)===packageDigest&&reviewPackage.workflow==='cm-prd'
     &&['design','split'].includes(reviewPackage.stage),'prd_review_package_invalid');
@@ -16,7 +16,7 @@ export function publishPrdReview({specs,reviewPackage,packageDigest,authorContex
   const reviews=path.join(specs,'.reviews');
   need(fs.realpathSync(reviews)===reviews&&fs.lstatSync(reviews).isDirectory(),'prd_review_path_invalid');
   const stage=reviewPackage.stage,feature=match[2],prefix=`prd-${feature}-${stage}`;
-  const args={stage,feature,evidence:path.join(reviews,`${prefix}-r1.md`),receipt:path.join(reviews,`${prefix}-disposition.json`)};
+  const args={stage,feature,pendingSplit,evidence:path.join(reviews,`${prefix}-r1.md`),receipt:path.join(reviews,`${prefix}-disposition.json`)};
   const gate=inspectPrdReview(args);
   need(gate.package_sha256===packageDigest&&['dispatch_unknown','resume_disposition','completed'].includes(gate.outcome),
     'prd_review_unclaimed');
