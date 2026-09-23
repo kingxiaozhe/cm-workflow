@@ -76,9 +76,9 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
           actionResult=running?await host.run(value.requestId)
             :await host.handle({requestId:value.requestId,operation:advancing?'advance':value.fixOperation});
         }
-        // Original observing finish intentionally closes its owner. Preserve
+        // Original observation/escalation finish intentionally closes its owner. Preserve
         // that successful incomplete exit without reading a closed store.
-        if(acting&&value.fixOperation==='finish'&&actionResult?.observationRunEnded===true)
+        if(actionResult?.observationRunEnded===true||actionResult?.escalationRunEnded===true)
           return json({outcome:'blocked',code:'qa_fix_incomplete',fixStage:actionResult.stage,actionResult},12*1024*1024);
         const observed=child.status();
         result=observed.stage==='completed'&&observed.completionEligible===true

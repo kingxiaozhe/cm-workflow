@@ -42,6 +42,8 @@ const HOST=path.join(here,'cm-fix-host.mjs');
 
 // 每个步骤会反问什么。宿主的规矩是「一步做了一半就永远卡住不能重试」，所以答案
 // 必须在发指令之前查齐，缺一个都不发——这是驾驶员最要紧的一条护栏。
+// design_change_required uses red_test (or test_author_required/author_tests).
+// escalation_required uses publish_dossier/finish: neither requests answers.
 const ASKS={
   advance:['learning','diagnosis'],
   author_tests:['learning','test-edits'],

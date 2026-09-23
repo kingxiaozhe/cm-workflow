@@ -75,7 +75,7 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
   host.run=async requestId=>{
     need(extra.has('--allow-reproduction'),'fix_execution_authorization_required');
     if(config.qaSource)inspectFixQaSource({specsRoot:config.specsRoot,identity:config.identity,configuration:config});
-    const actions={reproduce:'advance',diagnose:'advance',red_test_required:'red_test',
+    const actions={reproduce:'advance',diagnose:'advance',red_test_required:'red_test',design_change_required:'red_test',escalation_required:'finish',
       test_author_required:'author_tests',baseline_required:'baseline',repair_required:'repair',
       regression_required:'regression',handoff_required:'retrospective',learning_writeback_required:'learning_writeback',
       handoff_ready:'handoff',final_review_required:'final_review',final_review_evidence_required:'publish_review',
@@ -86,7 +86,7 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
         ?(config.walkthrough&&before.walkthrough?.status!=='passed'?'walkthrough':'finish'):actions[before.stage];
       if(!operation)return before;
       const result=await host.handle({requestId,operation});
-      if(result?.observationRunEnded===true)return result;
+      if(result?.observationRunEnded===true||result?.escalationRunEnded===true)return result;
       const after=owner.status();
       if(digest(after)===digest(before))return after;
     }
