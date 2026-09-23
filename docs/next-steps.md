@@ -13,23 +13,23 @@
   - #118 + #120 cm-fix 在签授权前记下每个接手会话，并修好交叉审查发现的两处缺陷
   - #119 cm-ai 父运行可以换会话接着跑
   - #121 QA 修复子运行也能换会话接着跑
-  - 已补齐 cm-check 可选能力三态测试；本次补齐 cm-test 中断步骤恢复测试，并纠正这两份清单中的“用户模式”描述
-- 自动检查：每个 PR 跑 117 份，发版时跑满 124 份。
-- 盘点脚本 `scripts/audit-untested-enums.mjs` 报告：**45 个取值缺覆盖，分布在 42 处**。
+  - 已补齐 cm-check 可选能力三态、cm-test 中断步骤恢复；本次补齐 cm-refactor 规则三态和四个停机码，A 类清单已完成
+- 自动检查：每个 PR 跑 119 份，发版时跑满 126 份。
+- 盘点脚本 `scripts/audit-untested-enums.mjs` 报告：**38 个取值缺覆盖，分布在 40 处**（本次由 45 个、42 处降下）。
 
 ---
 
-## 第一档：补测试（清单里的 A 类，剩 2 条）
+## 第一档：补测试（清单里的 A 类，剩 0 条，已完成）
 
-详细清单在 `docs/untested-branches.md`。cm-check、cm-fix 和 cm-test 已补，剩下的 2 条都在 cm-refactor 里，按条补齐。
+详细清单在 `docs/untested-branches.md`。cm-refactor 最后两条已补，A 类清单全部完成；这不代表 B 类或脚本未识别的分支已有覆盖。
 
 | 顺序 | 模块 | 要补的 | 为什么排这里 |
 | --- | --- | --- | --- |
 | 已完成 | cm-check | ~~`configured` 状态~~ | **已补**：`scripts/cm-check-host.test.mjs`，含三态、核心判定、非法报告及变异验证 |
 | 已完成 | cm-fix | ~~诊断结论 `design_change`~~ | **已补**：`scripts/cm-fix-escalation.test.mjs`，含真实红测、升级归档、恢复幂等、QA 父子退出及变异验证 |
 | 已完成 | cm-test | ~~中断后允许重做的 `snapshot` / `evaluation` 两种纯读步骤~~ | **已补**：`scripts/cm-test-session.test.mjs`，含重做与禁止重做、原结果回执校验、已完成步骤回放及变异验证；这两种是步骤种类，不是用户模式 |
-| 3 | cm-refactor | 规则判定三态 | 模块最大（47KB），留到后面 |
-| 4 | cm-refactor | 四个失败码 | 同上，和第 3 条一起做 |
+| 已完成 | cm-refactor | ~~规则判定三态~~ | **已补**：`scripts/cm-refactor-gaps.test.mjs`，含三态及混合裁决、拒绝码、报告和规则传递、变异验证 |
+| 已完成 | cm-refactor | ~~四个失败码~~ | **已补**：`scripts/cm-refactor-gaps.test.mjs`，含真实冲突与恢复、保留外来字节、不重试，及普通失败恢复对照；unknown-effect 列表成员的变异由源码合同检查捕获，详见缺口清单 |
 
 **每一条都要做到的**：
 
@@ -92,7 +92,7 @@ cm-ai 的 V3 会话父运行用 `--original-host-context` 恢复后，QA 修复�
 
 - **受保护模式跑不了 `tsx` / `vitest` 这类命令**。它们要开本地 socket，而沙箱把这个和「联网」放在同一个开关下。放开就等于给测试命令开整个外网，不划算。替代写法见 `skills/cm-fix/references/js-host.md`。驾驶员在建运行前会预警。
 - **有 7 份测试只在发版时跑**。它们要启动 Codex 沙箱，GitHub 的机器不给这个权限。已接进 `cm-release-smoke.sh`，发版必过；CI 里有一句断言钉死这 7 份的名单，不会悄悄变多。
-- **盘点脚本只认一种写法**（`['a','b'].includes(x)`），`switch`、对象查表、`Set.has` 都漏掉了。所以「45」是下限。
+- **盘点脚本只认一种写法**（`['a','b'].includes(x)`），`switch`、对象查表、`Set.has` 都漏掉了。所以「38」是下限。
 - **读代码找不到所有问题**。0.16.1 修的四个缺陷全是跑真实项目跑出来的。拿工作流去跑真实项目，仍然是发现问题最有效的办法。
 
 ---
