@@ -1,3 +1,4 @@
+import {readQaConfigRevision} from './qa-config-revision.mjs';
 // Host-only S3b2b journal grammar. Data validation grants no provider authority.
 import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,requestFor} from './effect-contract.mjs';
 import {readReviewBaseline,readReviewPackage,reviewSpecsPath} from './review-package.mjs';
@@ -478,7 +479,7 @@ export function readRunnerHistory(raw,config,version=1) {
   const completion=version>=2?completionConfig(config,version):null;
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
   let invocation={registration:null,started:null,result:null};
-  const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,joinedForInvocation=false;
+  const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false;
   const reviewConfig=(calls=[])=>({...config,reviewInvocation:{...config.reviewInvocation,
     excludedThreadIds:reviewExclusions({excludedThreadIds:[...config.reviewInvocation.excludedThreadIds,...joinedHosts]},
       calls,config.developer.contextId)}});
@@ -565,7 +566,18 @@ export function readRunnerHistory(raw,config,version=1) {
     } else if(version===3&&p.type==='qa-attached') {
       shape(p,[...common,'record']);
       need(r.kind==='result'&&pending===null&&state.state==='fixture_completed','qa_attach_not_completed');
+      need(qaRevision===null,'qa_revision_chain_invalid');
       need(qaAttachment===null,'qa_attachment_duplicate');qaAttachment=readQaAttachment(p.record);
+    } else if(version===3&&p.type==='qa-config-revised') {
+      shape(p,[...common,'record']);
+      need(r.kind==='result'&&pending===null&&state.state==='fixture_completed','qa_revision_not_completed');
+      const revision=readQaConfigRevision(p.record);
+      need(revision.packageDigest===state.reviewPackage.packageDigest&&revision.taskAttempt===state.attempt,'package_mismatch');
+      if(qaRevision)need(revision.fromFingerprint===qaRevision.toFingerprint
+        &&revision.invariantDigest===qaRevision.invariantDigest
+        &&revision.previousQaDigest===qaRevision.qaDigest&&revision.qaRound>qaRevision.qaRound,'qa_revision_chain_invalid');
+      else need(revision.fromFingerprint===(qaAttachment?.qaFingerprint??completion.fingerprints.config),'qa_revision_chain_invalid');
+      qaRevision=revision;
     } else if(version===3&&p.type==='qa-fix-accepted') {
       shape(p,[...common,'record']);need(r.kind==='result'&&pending===null&&state.state==='fixture_completed','fix_parent_not_completed');
       acceptedFixes.push(validateAcceptedFix({record:p.record,previous:acceptedFixes,

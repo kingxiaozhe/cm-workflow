@@ -47,12 +47,12 @@ function prepareStatus({specs,target},feature,identity,progress=null) {
 // Existing status file is only the current log projection, not a task store.
 export function writeCmAiQaStatus({specsDir,feature,identity,caseId,phase,result}) {
   validIdentity(identity);text(feature);
-  need(['case_start','case_complete','case_blocked','complete'].includes(phase));
-  if(phase!=='complete')id(caseId);
-  else need(['PASS','FAIL','BLOCKED'].includes(result?.result),'qa_result_invalid');
+  need(['case_start','case_complete','case_blocked','complete','configuration_revised'].includes(phase));
+  if(phase!=='complete'&&phase!=='configuration_revised')id(caseId);
+  if(phase==='complete')need(['PASS','FAIL','BLOCKED'].includes(result?.result),'qa_result_invalid');
   const prepared=prepareStatus(statusTarget(specsDir),feature,identity,{node:'N6',feature,task:identity.taskId,
-    detail:phase==='complete'?`QA 结果 ${result.result}（通过 ${result.passed} / 失败 ${result.failed} / 阻断 ${result.blocked}）`:`QA ${caseId}: ${phase}`,
-    state:phase==='complete'?{PASS:'qa_passed',FAIL:'qa_failed',BLOCKED:'qa_blocked'}[result.result]:'qa_running',
+    detail:phase==='configuration_revised'?'QA 配置已修订，旧结果仅作历史，等待下一轮':phase==='complete'?`QA 结果 ${result.result}（通过 ${result.passed} / 失败 ${result.failed} / 阻断 ${result.blocked}）`:`QA ${caseId}: ${phase}`,
+    state:phase==='configuration_revised'?'qa_pending':phase==='complete'?{PASS:'qa_passed',FAIL:'qa_failed',BLOCKED:'qa_blocked'}[result.result]:'qa_running',
     at:new Date().toTimeString().slice(0,8)});
   try{
     fs.renameSync(prepared.temporary,prepared.target);
