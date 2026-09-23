@@ -33,7 +33,7 @@
 | ~~诊断 `design_change`~~ | `cm-fix/cause-package.mjs` | cm-fix SKILL 第 4 步「升级出口」：停止硬修、转 `$cm-prd --change` 立项 | **已补**：`scripts/cm-fix-escalation.test.mjs` 覆盖保留真实红测、升级档案、终态、崩溃恢复与冲突、普通记录兼容及 QA 父子退出，并做变异验证 |
 | ~~cm-check `configured`~~ | `cm-check/host.mjs:105` | 三态之一（`configured\|degraded\|unknown`） | **已补**：`scripts/cm-check-host.test.mjs` 钉死三态及混合报告原样回传、不改变核心判定，以及非法报告的精确阻断原因 |
 | ~~cm-test `snapshot` / `evaluation`~~ | `cm-test/session.mjs:47` | 中断后允许重做的两种纯读步骤，不是用户模式 | **已补**：`scripts/cm-test-session.test.mjs` 覆盖纯读步骤重做、其它步骤不重做、command/host 原结果回执的身份校验与来源记录，以及全部七种已完成步骤的回放，并做变异验证 |
-| ~~cm-refactor 规则三态~~ | `cm-refactor/workflow.mjs:244` | `rule_correct\|rule_missing\|rule_wrong` | **已补**：`scripts/cm-refactor-gaps.test.mjs` 覆盖三态、混合裁决、逐文件覆盖、拒绝原因码、隔离通道、报告及裁决后规则传递 |
+| ~~cm-refactor 规则三态~~ | `cm-refactor/workflow.mjs` | `rule_correct\|rule_missing\|rule_wrong` | **已补**：`scripts/cm-refactor-gaps.test.mjs` 覆盖三态、混合裁决、逐文件覆盖、拒绝原因码、隔离通道、报告及裁决后规则传递；规则缺失或错误必须伴随手册修订，仅改行尾空白、换行符及首尾空行也会在报告和试点前拒绝，修订效果仍待独立审查 |
 | ~~cm-refactor 四个失败码~~ | `cm-refactor/workflow.mjs:322` | 冲突或结果不明时停机，不能覆盖别人改动 | **已补**：`scripts/cm-refactor-gaps.test.mjs` 用真实恢复、磁盘改动和原子写入冲突验证四码停机，普通失败则恢复并重试；变异验证限制见下文 |
 
 **建议按模块分批**，不要一次全开。cm-prd、cm-refactor、cm-test、cm-check 这四块各自

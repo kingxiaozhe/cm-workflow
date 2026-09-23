@@ -28,7 +28,7 @@
 | 已完成 | cm-check | ~~`configured` 状态~~ | **已补**：`scripts/cm-check-host.test.mjs`，含三态、核心判定、非法报告及变异验证 |
 | 已完成 | cm-fix | ~~诊断结论 `design_change`~~ | **已补**：`scripts/cm-fix-escalation.test.mjs`，含真实红测、升级归档、恢复幂等、QA 父子退出及变异验证 |
 | 已完成 | cm-test | ~~中断后允许重做的 `snapshot` / `evaluation` 两种纯读步骤~~ | **已补**：`scripts/cm-test-session.test.mjs`，含重做与禁止重做、原结果回执校验、已完成步骤回放及变异验证；这两种是步骤种类，不是用户模式 |
-| 已完成 | cm-refactor | ~~规则判定三态~~ | **已补**：`scripts/cm-refactor-gaps.test.mjs`，含三态及混合裁决、拒绝码、报告和规则传递、变异验证 |
+| 已完成 | cm-refactor | ~~规则判定三态~~ | **已补**：`scripts/cm-refactor-gaps.test.mjs`，含三态及混合裁决、拒绝码、报告和规则传递、变异验证；规则缺失或错误却不修订手册（含仅改行尾空白、换行符及首尾空行）时，在报告发布及试点前拒绝，修订效果仍待独立审查 |
 | 已完成 | cm-refactor | ~~四个失败码~~ | **已补**：`scripts/cm-refactor-gaps.test.mjs`，含真实冲突与恢复、保留外来字节、不重试，及普通失败恢复对照；unknown-effect 列表成员的变异由源码合同检查捕获，详见缺口清单 |
 
 **每一条都要做到的**：
