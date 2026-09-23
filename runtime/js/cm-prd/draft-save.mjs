@@ -1,10 +1,12 @@
 // Save the current self-checked draft; never issue specification approval.
 import fs from 'node:fs';
 import path from 'node:path';
+import {TextDecoder} from 'node:util';
 import {createHash} from 'node:crypto';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {writeImmutableWorkflowFile} from '../cm-ai/review-evidence-file.mjs';
 import {need,json,digest} from '../cm-ai/effect-contract.mjs';
+import {inspectPrdFindings} from './review-findings.mjs';
 import {replacePrdDocument} from './review-correction.mjs';
 
 export function savePrdDraft({specs,writeEnabled,getDraft}){
@@ -20,6 +22,11 @@ export function savePrdPromotedDraft({specs,writeEnabled,getDraft,getOriginal}){
   const draft=json(getDraft(),256*1024),original=json(getOriginal(),256*1024);
   const inventory=value=>value.features.map(feature=>feature.directory);
   need(digest(inventory(draft))===digest(inventory(original)),'prd_promoted_save_scope_changed');
+  if(draft.features.every(feature=>readCmInitSource(specs,`.reviews/prd-${feature.name}-split-disposition.json`)!==null)){
+    for(const feature of draft.features)need(inspectPrdFindings({specs,stage:'split',feature:feature.directory}).gate.outcome==='completed',
+      'prd_spec_save_split_disposition_required');
+    return savePrdDraft({specs,writeEnabled,getDraft});
+  }
   const files=[];
   for(const feature of draft.features){
     const prior=original.features.find(item=>item.directory===feature.directory);
@@ -119,4 +126,35 @@ function saveDocuments({specs,writeEnabled,getDraft},designOnly){
     return json({status:designOnly?'design_save_unknown':'draft_save_unknown',draftDigest:draft.draftDigest,observedSaved:saved,
       next:'inspect_current_files_before_explicit_resume',completionAuthorized:false});
   }
+}
+
+// Re-save a completed split's exact on-disk result without overwriting it with
+// the pre-review memory draft. Unchanged runs return the identical original.
+export function acceptedPrdDraftForSave(specs,draft){
+  let changed=false;
+  const features=draft.features.map(feature=>{
+    const differs=feature.documents.some(doc=>{
+      const bytes=readCmInitSource(specs,`${feature.directory}/${doc.path}`);
+      return bytes!==null&&!bytes.equals(Buffer.from(doc.content));
+    });
+    if(!differs||readCmInitSource(specs,`.reviews/prd-${feature.name}-split-disposition.json`)===null)return feature;
+    const review=inspectPrdFindings({specs,stage:'split',feature:feature.directory});
+    need(review.gate.outcome==='completed'&&review.verdict!=='blocked'&&review.draftDigest===draft.draftDigest,
+      'prd_spec_save_split_disposition_required');
+    const originals=feature.documents.map(doc=>({path:`${feature.directory}/${doc.path}`,
+      sha256:createHash('sha256').update(doc.content).digest('hex')}));
+    const order=items=>[...items].sort((a,b)=>a.path.localeCompare(b.path));
+    need(digest(order(originals))===digest(order(review.reviewedArtifacts)),'prd_spec_save_split_binding_changed');
+    const receipt=JSON.parse(readCmInitSource(specs,review.evidence.replace(/-r1\.md$/,'-disposition.json')).toString('utf8'));
+    need(digest(receipt.artifacts.map(item=>item.path).sort())===digest(originals.map(item=>item.path).sort()),
+      'prd_spec_save_split_binding_changed');
+    const documents=feature.documents.map(doc=>{
+      const relative=`${feature.directory}/${doc.path}`,bytes=readCmInitSource(specs,relative);
+      need(bytes!==null&&createHash('sha256').update(bytes).digest('hex')===receipt.artifacts.find(item=>item.path===relative)?.sha256,
+        'prd_spec_save_split_artifact_changed');
+      return {path:doc.path,content:new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes)};
+    });
+    changed=true;return {...feature,documents};
+  });
+  return changed?json({...draft,features,draftDigest:digest({summary:draft.summary,features})},256*1024):draft;
 }

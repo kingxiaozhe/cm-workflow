@@ -83,7 +83,9 @@ JS拥有日志、草稿保存、修订写入、自检轮次、审查记录、处
    处置未完成、blocked或漂移不能生成任务；升级项保留到摘要供人裁决，不补审。
 3. split为原10.6必需审查；每feature每stage只一轮。用review_findings读取原结果，
    correct_findings让JS归档并保存提案，再将返回的packageDigest/decisions/artifacts交review_disposition。
-   split修正由JS重跑原自检，失败或unknown不能重调；无发现也须原处置回执。
+   split可按原发现修改requirements.md、design.md及任务文件；先保存，再由JS重跑原自检，失败或unknown不能重调。
+   review_disposition须包含原packageDigest、逐项decisions和完整artifacts（含新requirements.md、design.md的SHA），无发现也须原回执。
+   回执完成后，其需求与设计的新SHA成为已接受版本；save_draft复用已保存的新稿，不把内存旧稿写回。
 4. 全部feature处置后prepare_summary。展示返回的事实计数、宿主说明、风险/阻断和未勾选清单；
    blockers未清不能publish_summary。保存使用刚展示的summaryDigest，不能用旧稿或evidenceDigest替代。
 5. 仅awaiting_review后报告等待人工审查，展示具体specs路径。不能自动将状态写approved，
@@ -96,3 +98,22 @@ status只读查询；只有用户明确取消才cancel，断连不等于取消�
 会话、未保存草稿、风险与轮次自动私有持久化。新进程用原--session/runId和参数继续；待定操作只能resume原记录。
 未知审查/自检不得重发；凭原宿主真实回执恢复，旧无记录调用保留人工恢复。不能重新登记、改false或换session重置尝试。
 真实provider、安装后加载、完整跨平台和真实需求验收均不得借源码fixture宣称完成。
+
+### 拆分审查要求补正需求或设计
+
+设计阶段回执不改写。拆分审查已经返回且尚未处置时，可在同一 feature 的原发现中列明 requirements.md 或 design.md 改动，
+由 correct_findings 归档并保存；随后直接 review_disposition，内置原 10.5 自检。补正保存有中断仍用
+inspect_correction / resume_correction，只认归档的原字节或提案字节，不接受第三种内容。
+
+已经手工编辑而卡住的旧会话，无须重建：准备原 split 包的 packageDigest、完整 decisions 和 artifacts，
+逐项列出 changedPaths，并使每个 SHA 与磁盘一致，再调用 review_disposition。
+需要先读 review_findings 时可一并传这三个字段；correct_findings 已保存的场景可省略，宿主从原补正归档读取计划。
+只有这些带计划的读取、处置及其自检可以暂时接受已列明的需求或设计变化；save_draft、final_review_package、普通生成和原自检不放行待处置漂移。
+底层归档读取器仅核验原审查记录，不替代宿主对当前会话与文件的校验。
+
+完成后使用同一 feature、同一原设计和需求字节、原 split 包及其回执；会话还须匹配原整稿摘要。
+汇总、发布待审状态和 prepare_revision 共用该校验。回执完成后再次修改需求或设计（包括改回旧版本）、
+漏列或错列 SHA、借用其他 feature／其他包均拒绝。拆分审查前的需求与设计仍须匹配原基准；原发现以外的需求变更仍走变更流程。
+
+混合风险批次也按 feature 校验。低风险项没有设计审查回执时，以原设计草稿中的需求、设计为基准，
+只接受绑定同一整稿和原 split 包的补正计划或已完成回执，不补建空的设计审查。A 完成补正后可继续 B 的审查与整批汇总。

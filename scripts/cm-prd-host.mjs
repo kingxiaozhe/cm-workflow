@@ -2,6 +2,7 @@
 // Current conversation transport; original platform adapter owns log locking.
 import fs from 'node:fs';
 import path from 'node:path';
+import {readCmInitSource} from '../runtime/js/cm-init/draft-inspection.mjs';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
@@ -91,7 +92,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       ...payload,project:admission.project,specs:admission.specs,
       reference:path.join(admission.workflowRoot,'skills/cm-prd/SKILL.md')},signal)});
     let correct=makeCorrect(),replaying=false;
-    const dispose=createPrdDispositionOwner({canRecoverRecorded:()=>replaying&&session.state.active.calls.some(call=>call.kind==='prd_self_check'&&Object.hasOwn(call,'result')),
+    const dispose=createPrdDispositionOwner({validateCurrent:input=>{if(input.stage==='split')analysis.validateCurrent(input);},canRecoverRecorded:()=>replaying&&session.state.active.calls.some(call=>call.kind==='prd_self_check'&&Object.hasOwn(call,'result')),
       checkContext:(payload,signal)=>call('prd_self_check',{
       ...payload,project:admission.project,specs:admission.specs,
       reference:path.join(admission.workflowRoot,'skills/cm-prd/references/spec-self-check.md')},signal)});
@@ -116,7 +117,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       const request=json(raw);
       need(['start','advance','plan_design','promote_design','select_design_reviews','status','cancel','final_review_package','final_review','review_findings','review_disposition','save_draft','save_design','correct_findings','prepare_summary','publish_summary','inspect_correction','resume_correction','prepare_revision','decision'].includes(request.operation),'host_operation_invalid');
       shape(request,['requestId','operation',...(['start','advance','plan_design'].includes(request.operation)?['text']:
-        ['final_review_package','review_findings','correct_findings','inspect_correction','resume_correction'].includes(request.operation)?['stage','feature']:
+        ['final_review_package','review_findings','correct_findings','inspect_correction','resume_correction'].includes(request.operation)?['stage','feature',...(request.operation==='review_findings'&&Object.hasOwn(request,'packageDigest')?['packageDigest','decisions','artifacts']:[])]:
           request.operation==='review_disposition'?['stage','feature','packageDigest','decisions','artifacts']:
           request.operation==='publish_summary'?['summaryDigest']:request.operation==='select_design_reviews'?['draftDigest','risks']:
           request.operation==='promote_design'?['draftDigest','reason']:request.operation==='prepare_revision'?['reason']:
@@ -128,7 +129,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       if(request.operation==='prepare_revision'){
         need(change===null&&analysis!==null&&typeof request.reason==='string'&&request.reason.trim(),'prd_revision_not_ready');
         const selected=analysis.status().draft?.features.map(feature=>feature.directory);need(selected?.length,'prd_revision_no_saved_draft');
-        assertPrdReviewsSettled(admission.specs,selected,{requireSplit:true});change=restoreChange(null,selected,request.reason);
+        analysis.validateCurrent();assertPrdReviewsSettled(admission.specs,selected,{requireSplit:true});change=restoreChange(null,selected,request.reason);
         publishedSummary=false;summaryState=null;return status();
       }
       if(change!==null){
@@ -147,6 +148,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       if(request.operation==='resume_correction')return resumePrdCorrection({specs:admission.specs,stage:request.stage,
         feature:request.feature,writeEnabled:specWriteEnabled&&reviewEnabled},reviewController.signal);
       if(request.operation==='prepare_summary'){
+        analysis.validateCurrent();
         need(started,'prd_turn_not_ready');
         // The open session is bound to this run under .reviews/prd-sessions.
         // Never infer its scope from the directory inventory or another session.
@@ -165,6 +167,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         }
       }
       if(request.operation==='publish_summary'){
+        analysis.validateCurrent();
         need(summaryState!==null&&summaryState.summaryDigest===request.summaryDigest,'prd_summary_not_ready');
         need(!reviewController.signal.aborted,'cancelled');
         const result=publishPrdAwaitingReview({specs:admission.specs,summary:summaryState,writeEnabled:specWriteEnabled,recover:replaying});
@@ -183,7 +186,16 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
           return resumePrdCorrection({specs:admission.specs,stage:request.stage,feature:request.feature,writeEnabled:specWriteEnabled&&reviewEnabled},reviewController.signal);
         return correct({specs:admission.specs,stage:request.stage,feature:request.feature,writeEnabled:specWriteEnabled&&reviewEnabled},reviewController.signal);
       }
-      if(request.operation==='review_findings')return inspectPrdFindings({specs:admission.specs,stage:request.stage,feature:request.feature});
+      if(request.operation==='review_findings'){
+        if(request.stage==='split'){
+          let pendingSplit=Object.hasOwn(request,'packageDigest')?request:null;
+          const archive=`.reviews/prd-${request.feature.replace(/^\d+\./,'')}-split-correction.md`;
+          if(pendingSplit===null&&readCmInitSource(admission.specs,archive)!==null)
+            pendingSplit={stage:'split',feature:request.feature,...inspectPrdCorrectionRecovery({specs:admission.specs,stage:'split',feature:request.feature})};
+          analysis.validateCurrent(pendingSplit);
+        }
+        return inspectPrdFindings({specs:admission.specs,stage:request.stage,feature:request.feature});
+      }
       if(request.operation==='review_disposition')return dispose({specs:admission.specs,
         stage:request.stage,feature:request.feature,packageDigest:request.packageDigest,
         decisions:request.decisions,artifacts:request.artifacts,writeEnabled:dispositionEnabled},reviewController.signal);

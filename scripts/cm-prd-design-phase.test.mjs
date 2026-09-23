@@ -3,17 +3,24 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
+import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {inspectPrdDesignDraft} from '../runtime/js/cm-prd/draft.mjs';
 import {createCmPrdAnalysis} from '../runtime/js/cm-prd/analysis.mjs';
 import {savePrdDesign,savePrdDraft,savePrdPromotedDraft} from '../runtime/js/cm-prd/draft-save.mjs';
 import {inspectPrdDraft} from '../runtime/js/cm-prd/draft.mjs';
 import {runPrdHostReview} from '../runtime/js/cm-prd/review-host.mjs';
 import {inspectPrdFindings} from '../runtime/js/cm-prd/review-findings.mjs';
-import {recordPrdHostDisposition} from '../runtime/js/cm-prd/review-disposition.mjs';
+import {inspectPrdSplitDesign} from '../runtime/js/cm-prd/split-design.mjs';
+import {preparePrdReview} from '../runtime/js/cm-prd/review-preparation.mjs';
+import {inspectAcceptedPrdDesign} from '../runtime/js/cm-prd/accepted-design.mjs';
+import {createPrdSummaryOwner,inspectPrdSummaryEvidence,publishPrdAwaitingReview} from '../runtime/js/cm-prd/summary.mjs';
+import {assertPrdReviewsSettled} from '../runtime/js/cm-prd/change.mjs';
+import {recordPrdHostDisposition,createPrdDispositionOwner} from '../runtime/js/cm-prd/review-disposition.mjs';
 const FIXTURE_TIMEOUT_MS=Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000);
 const riskSignals=high=>({greenfieldAdr:false,architectureOrDataFlow:high,newRuntimeDependencyOrToolchain:false,
   publicContractDataOrSecurity:false,fiveOrMoreFunctions:false});
@@ -117,8 +124,9 @@ test('late design response cannot erase an existing draft or reset self-check ro
   assert.equal(host.status().selfCheckRound,1);assert.deepEqual(host.status().draft,original);
   assert.equal(host.status().designDraft,null);
 });
-for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promote'])test(`actual CLI disposed design to tasks: ${mode}`, {timeout:FIXTURE_TIMEOUT_MS},async t=>{
-  const promotes=['promote','saved-promote'].includes(mode),succeeds=['saved','late-risk','promote','saved-promote'].includes(mode);
+for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements'])test(`actual CLI disposed design to tasks: ${mode}`, {timeout:FIXTURE_TIMEOUT_MS},async t=>{
+  const promotes=['promote','saved-promote'].includes(mode),succeeds=['saved','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements'].includes(mode);
+  const revisesSplit=mode.startsWith('split-');let splitPackage,pendingSplit,checks=0;
   let originalDigest;
   const dir=fixture(t);fs.mkdirSync(path.join(dir,'mirror'));
   const child=spawn(process.execPath,[path.join(root,'scripts/cm-prd-host.mjs'),'serve',
@@ -156,14 +164,15 @@ for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promot
             if(mode==='drift')fs.writeFileSync(path.join(dir,'1.guide/design.md'),'User changed design');
           }
         }else if(message.kind==='prd_self_check'){
-          const draft=message.payload.draft;
+          checks++;const draft=message.payload.draft;
           result={draftDigest:draft.draftDigest,features:draft.features.map(feature=>({directory:feature.directory,
             checks:draft.mechanicalSelfCheck.pending.map(id=>({id,status:'passed',evidence:['Synthetic contextual check']}))}))};
         }
         else if(message.kind==='prd_correct'){
-          result={decisions:[{id:'R1',status:'applied',evidence:['Clarified boundary'],changedPaths:['1.guide/design.md']}],
-            documents:message.payload.documents.map(item=>({path:item.path,content:item.path==='1.guide/design.md'?
-              '## 方案摘要\nCorrected architecture boundary':item.content}))};
+          const correctionPath=mode==='split-requirements'&&message.payload.review.stage==='split'?'1.guide/requirements.md':'1.guide/design.md';
+          result={decisions:[{id:'R1',status:'applied',evidence:['Clarified boundary'],changedPaths:[correctionPath]}],
+            documents:message.payload.documents.map(item=>({path:item.path,content:item.path===correctionPath?
+              (correctionPath.endsWith('/requirements.md')?item.content+'\nFailure scenario: explain invalid setup.':`## 方案摘要\nCorrected architecture boundary${message.payload.review.stage==='split'?' after split':''}`):item.content}))};
         }else if(message.kind==='prd_summary'){
           result={evidenceDigest:message.payload.evidenceDigest,deliveryForm:'Synthetic architecture documentation',
             estimatedTime:'Needs human review',openQuestions:'None in fixture',risks:'Synthetic host responses only',
@@ -174,11 +183,12 @@ for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promot
         }else{
           assert.equal(message.kind,'prd_review');reviews++;
           const isDesign=message.payload.package.stage==='design';
+          if(!isDesign)splitPackage=message.payload.package;
           assert.equal(message.payload.package.stage,reviews===1?'design':'split');
           assert.equal(message.payload.package.artifacts.length,isDesign?2:3);
           result={reviewer:'codex-subagent',contextId:`independent-reviewer-${reviews}`,independent:true,at:'2026-09-08T00:00:00.000Z',
-            result:{verdict:isDesign?'changes_requested':'approved',packageDigest:message.payload.package.packageDigest,
-              examinedPaths:message.payload.examinedPaths,findings:isDesign?[{id:'R1',severity:'P2',message:'Clarify boundary',
+            result:{verdict:isDesign||revisesSplit?'changes_requested':'approved',packageDigest:message.payload.package.packageDigest,
+              examinedPaths:message.payload.examinedPaths,findings:isDesign||revisesSplit?[{id:'R1',severity:'P2',message:'Clarify boundary',
                 evidence:'Synthetic boundary needs clarification',path:'1.guide/design.md'}]:[],summary:'Synthetic stage review'}};
         }
         send({type:'host_result',sessionId,callId:message.callId,requestDigest:message.requestDigest,result});
@@ -228,13 +238,31 @@ for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promot
         send({requestId:'split',operation:'final_review',stage:'split',feature:'1.guide',mode:'independent'});
       }else if(message.requestId==='split'){
         assert.equal(message.result.reviewState.status,'review_recorded');
-        send({requestId:'split-findings',operation:'review_findings',stage:'split',feature:'1.guide'});
+        if(mode==='split-manual'){
+          const content='## 方案摘要\nManual split architecture correction';fs.writeFileSync(path.join(dir,'1.guide/design.md'),content);
+          pendingSplit={packageDigest:splitPackage.packageDigest,decisions:[{id:'R1',status:'applied',evidence:['Manual saved correction'],changedPaths:['1.guide/design.md']}],
+            artifacts:splitPackage.artifacts.map(a=>a.path==='1.guide/design.md'?{...a,sha256:sha(content)}:a)};
+        }
+        send({requestId:'split-findings',operation:'review_findings',stage:'split',feature:'1.guide',...(pendingSplit??{})});
       }else if(message.requestId==='split-findings'){
-        assert.deepEqual(message.result.findings,[]);
+        if(mode==='split-correct'||mode==='split-requirements'){
+          send({requestId:'split-corrected',operation:'correct_findings',stage:'split',feature:'1.guide'});continue;
+        }
+        if(!revisesSplit)assert.deepEqual(message.result.findings,[]);
         send({requestId:'split-dispose',operation:'review_disposition',stage:'split',feature:'1.guide',
-          packageDigest:message.result.packageDigest,decisions:[],artifacts:message.result.reviewedArtifacts});
+          packageDigest:message.result.packageDigest,decisions:[],artifacts:message.result.reviewedArtifacts,...(pendingSplit??{})});
+      }else if(message.requestId==='split-corrected'){
+        assert.equal(message.result.status,'correction_saved');pendingSplit={packageDigest:message.result.packageDigest,decisions:message.result.decisions,artifacts:message.result.artifacts};
+        send({requestId:'split-reread',operation:'review_findings',stage:'split',feature:'1.guide'});
+      }else if(message.requestId==='split-reread'){
+        assert.equal(message.result.status,'review_findings_ready');
+        send({requestId:'split-dispose',operation:'review_disposition',stage:'split',feature:'1.guide',...pendingSplit});
       }else if(message.requestId==='split-dispose'){
-        assert.equal(message.result.gate.outcome,'completed');send({requestId:'summary',operation:'prepare_summary'});
+        assert.equal(message.result.gate.outcome,'completed');
+        send(revisesSplit?{requestId:'split-resaved',operation:'save_draft'}:{requestId:'summary',operation:'prepare_summary'});
+      }else if(message.requestId==='split-resaved'){
+        assert.equal(message.result.status,'draft_saved');assert.equal(checks,2);
+        send({requestId:'summary',operation:'prepare_summary'});
       }else if(message.requestId==='summary'){
         assert.equal(message.result.readyForAwaitingReview,true);
         assert.deepEqual(message.result.blockers,[]);
@@ -244,7 +272,9 @@ for(const mode of ['saved','rewrite','drift','late-risk','promote','saved-promot
         send({requestId:'publish',operation:'publish_summary',summaryDigest:message.result.summaryDigest});
       }else if(message.requestId==='publish'){
         assert.equal(message.result.status,'awaiting_review');assert.equal(message.result.completionAuthorized,false);
-        send({type:'host_close',sessionId});
+        if(revisesSplit)send({requestId:'revision-ready',operation:'prepare_revision',reason:'Explicit next revision'});else send({type:'host_close',sessionId});
+      }else if(message.requestId==='revision-ready'){
+        assert.equal(message.result.mode,'change');assert.equal(message.result.stage,'ready');send({type:'host_close',sessionId});
       }
     }
     const [code]=await closed;assert.equal(code,0,stderr);assert.equal(reviews,succeeds?2:1);
@@ -295,3 +325,297 @@ test('mixed-risk features keep one batch and dispatch design only for high risk'
   assert.equal(fs.existsSync(path.join(dir,'.reviews/prd-copy-design-dispatch.json')),false);
   assert.equal(fs.existsSync(path.join(dir,'.reviews/prd-copy-design-r1.md')),false);
 });
+
+// Real design receipt -> full draft -> split finding, unlike split-only fixtures.
+const sha=content=>createHash('sha256').update(content).digest('hex');
+const checked=({draft})=>({draftDigest:draft.draftDigest,features:draft.features.map(feature=>({directory:feature.directory,
+  checks:draft.mechanicalSelfCheck.pending.map(id=>({id,status:'passed',evidence:['Synthetic context check']}))}))});
+async function splitDesignFixture(t,{split=true,featureName='guide',document='design.md',batch=false,lowRisk=false}={}){
+  const specs=fixture(t),input={skillDir:path.join(root,'skills/cm-prd'),project:specs,specs};
+  const options={input,runtime:'codex',record:async()=>{},checkContext:async payload=>checked(payload),
+    analyze:async()=>({status:'analyzed',summary:'Fixture',sourcePaths:['docs/input.md'],openQuestions:[]}),
+    generate:async payload=>payload.phase==='design'?{...design(),features:[{...design().features[0],name:featureName},...(batch?[{...design().features[0],name:'second'}]:[])]}:
+      {status:'draft',summary:'Accepted tasks',features:payload.acceptedDesign.features.map(f=>({name:f.name,
+        testCasesReason:'no_observable_behavior',documents:[...f.documents,{path:'tasks.md',content:'- [ ] T-001: Update guide'}]}))}};
+  let host=createCmPrdAnalysis(options);const feature=`1.${featureName}`;
+  const review=async(stage,target=feature)=>{
+    const prepare=()=>host.prepareReview(stage,target);
+    await runPrdHostReview({specs,prepared:prepare(),authorContextId:'author',writeEnabled:true,mode:'independent',
+      revalidate:prepare,signal:new AbortController().signal,review:async payload=>({reviewer:'codex-subagent',
+        contextId:'reviewer',independent:true,at:'2026-09-08T00:00:00.000Z',result:{verdict:stage==='split'?'changes_requested':'approved',
+          packageDigest:payload.package.packageDigest,examinedPaths:payload.examinedPaths,summary:'Synthetic review',
+          findings:stage==='split'?[{id:'R1',severity:'P2',path:`${target}/${document}`,message:'Clarify specification',evidence:'Synthetic boundary'}]:[]}})});
+    return inspectPrdFindings({specs,stage,feature:target});
+  };
+  await host.advance('Analyze');await host.plan('Design',{designOnly:true});
+  savePrdDesign({specs,writeEnabled:true,getDraft:()=>host.currentDesignForSave()});
+  if(lowRisk)host.selectDesignReviews({draftDigest:host.status().designDraft.draftDigest,risks:host.status().designDraft.features.map(f=>({feature:f.directory,signals:riskSignals(f.directory!==feature),evidence:['Fixture risk basis']}))});
+  for(const f of host.status().designDraft.features){
+    if(lowRisk&&f.directory===feature)continue;
+    const designReview=await review('design',f.directory);
+    recordPrdHostDisposition({specs,stage:'design',feature:f.directory,packageDigest:designReview.packageDigest,
+      decisions:[],artifacts:designReview.reviewedArtifacts,writeEnabled:true});
+  }
+  await host.plan('Tasks');await host.verify();
+  savePrdDraft({specs,writeEnabled:true,getDraft:()=>host.currentDraftForSave()});
+  const baseline=host.checkpoint();const findings=split?await review('split'):null;
+  const content=document==='design.md'?'## 方案摘要\nSplit correction of architecture':design().features[0].documents[0].content+'\nFailure scenario: explain invalid setup.';
+  const args=findings?{specs,stage:'split',feature,packageDigest:findings.packageDigest,writeEnabled:true,
+    decisions:[{id:'R1',status:'applied',evidence:['Corrected original split finding'],changedPaths:[`${feature}/${document}`]}],
+    artifacts:findings.reviewedArtifacts.map(item=>item.path===`${feature}/${document}`?{...item,sha256:sha(content)}:{...item})}:null;
+  return {specs,host,baseline,args,content,feature,review,edit:()=>fs.writeFileSync(path.join(specs,feature,document),content),
+    restore:()=>createCmPrdAnalysis({...options,restored:baseline})};
+}
+test('split design correction recovers an already edited run and reaches save summary publication and revision',async t=>{
+  const f=await splitDesignFixture(t);f.edit();
+  // Existing checkpoint predates the manual edit; no new state migration or regeneration.
+  const host=f.restore();
+  assert.throws(()=>host.currentDraftForSave(),/prd_design_receipt_changed|PRD review artifact changed after disposition/);
+  assert.throws(()=>recordPrdHostDisposition(f.args),/prd_disposition_split_self_check_required/);
+  let checks=0;
+  const dispose=createPrdDispositionOwner({checkContext:async payload=>{checks++;return checked(payload);}});
+  assert.equal((await dispose(f.args,new AbortController().signal)).status,'disposition_recorded');assert.equal(checks,1);
+  const receipt=JSON.parse(fs.readFileSync(path.join(f.specs,'.reviews/prd-guide-split-disposition.json')));
+  assert.equal(receipt.artifacts.find(a=>a.path.endsWith('/design.md')).sha256,sha(f.content));
+  assert.equal(savePrdDraft({specs:f.specs,writeEnabled:true,getDraft:()=>host.currentDraftForSave()}).status,'draft_saved');
+  assert.doesNotThrow(()=>inspectAcceptedPrdDesign(f.specs,f.baseline.designDraft));
+  assert.equal(host.prepareReview('split',f.feature).packageDigest,f.args.packageDigest);
+  assert.deepEqual(host.checkpoint(),f.baseline);
+  assert.doesNotThrow(()=>inspectPrdFindings({specs:f.specs,stage:'design',feature:f.feature}));
+  const owner=createPrdSummaryOwner({summarize:async({evidenceDigest})=>({evidenceDigest,deliveryForm:'Guide',estimatedTime:'Unknown',
+    openQuestions:'None',risks:'Synthetic',contextScope:'One feature',platformReadiness:'Fixture',uiBaseline:'None',
+    designRisk:[{feature:f.feature,signals:riskSignals(true),evidence:['Architecture']} ]})});
+  const summary=await owner(f.specs,{currentFeatures:[f.feature]},new AbortController().signal);
+  assert.equal(summary.readyForAwaitingReview,true);
+  assert.equal(publishPrdAwaitingReview({specs:f.specs,summary,writeEnabled:true}).status,'awaiting_review');
+  assert.doesNotThrow(()=>assertPrdReviewsSettled(f.specs,[f.feature],{requireSplit:true}));
+  // Even reverting to the old design receipt is drift after the split receipt.
+  fs.writeFileSync(path.join(f.specs,f.feature,'design.md'),f.baseline.acceptedDesign.features[0].documents[1].content);
+  assert.throws(()=>host.currentDraftForSave());
+  fs.writeFileSync(path.join(f.specs,f.feature,'design.md'),f.content+'\nUnrecorded change');
+  assert.throws(()=>host.currentDraftForSave());assert.throws(()=>inspectPrdSummaryEvidence(f.specs));
+  assert.throws(()=>assertPrdReviewsSettled(f.specs,[f.feature],{requireSplit:true}));
+});
+test('split plan rejects undeclared design and incorrect hashes before checking or recording',async t=>{
+  for(const mode of ['undeclared','wrong-sha']){
+    const f=await splitDesignFixture(t);f.edit();let checks=0;
+    if(mode==='undeclared'){f.args.decisions[0].status='escalated';f.args.decisions[0].changedPaths=[];
+      f.args.artifacts.find(a=>a.path.endsWith('/design.md')).sha256=sha(f.baseline.acceptedDesign.features[0].documents[1].content);}
+    if(mode==='wrong-sha')f.args.artifacts.find(a=>a.path.endsWith('/design.md')).sha256='0'.repeat(64);
+    const owner=createPrdDispositionOwner({checkContext:async payload=>{checks++;return checked(payload);}});
+    await assert.rejects(owner(f.args,new AbortController().signal),/prd_disposition_artifacts_not_saved/);
+    assert.equal(checks,0);assert.equal(fs.existsSync(path.join(f.specs,'.reviews/prd-guide-split-disposition.json')),false);
+  }
+});
+test('design drift before split remains refused and unchanged binding and receipts stay byte identical',async t=>{
+  const f=await splitDesignFixture(t,{split:false});
+  const file=path.join(f.specs,'.reviews/prd-guide-design-disposition.json'),before=fs.readFileSync(file);
+  assert.deepEqual(inspectAcceptedPrdDesign(f.specs,f.baseline.designDraft),f.baseline.acceptedDesign);
+  assert.deepEqual(f.restore().checkpoint(),f.baseline);
+  assert.equal(savePrdDraft({specs:f.specs,writeEnabled:true,getDraft:()=>f.host.currentDraftForSave()}).status,'draft_saved');
+  assert.deepEqual(fs.readFileSync(file),before);
+  f.edit();assert.throws(()=>f.host.currentDraftForSave(),/prd_design_receipt_changed|PRD review artifact changed after disposition/);
+  assert.throws(()=>f.host.prepareReview('split',f.feature));
+});
+test('another feature split receipt cannot authorize design bytes',async t=>{
+  const f=await splitDesignFixture(t),other=await splitDesignFixture(t,{featureName:'other'});
+  other.edit();await createPrdDispositionOwner({checkContext:async payload=>checked(payload)})(other.args,new AbortController().signal);
+  f.edit();
+  for(const suffix of ['-r1.md','-dispatch.json','-disposition.json'])fs.copyFileSync(
+    path.join(other.specs,`.reviews/prd-other-split${suffix}`),path.join(f.specs,`.reviews/prd-guide-split${suffix}`));
+  assert.throws(()=>inspectAcceptedPrdDesign(f.specs,f.baseline.designDraft));
+  assert.throws(()=>f.host.currentDraftForSave());assert.throws(()=>inspectPrdSummaryEvidence(f.specs));
+});
+
+test('pending split tolerance is limited to the exact declared saved plan and original draft',async t=>{
+  const f=await splitDesignFixture(t);f.edit();
+  assert.doesNotThrow(()=>f.host.validateCurrent(f.args));
+  assert.throws(()=>f.host.validateCurrent(),/changed/);
+  assert.throws(()=>f.host.prepareReview('split',f.feature),/changed/);
+  assert.throws(()=>inspectPrdSummaryEvidence(f.specs),/changed/);
+  for(const mode of ['undeclared','missing','sha','package','feature']){
+    const pending=structuredClone(f.args);
+    if(mode==='undeclared'){pending.decisions[0].changedPaths=[];pending.decisions[0].status='escalated';
+      pending.artifacts.find(a=>a.path.endsWith('/design.md')).sha256=sha(f.baseline.acceptedDesign.features[0].documents[1].content);}
+    if(mode==='missing')pending.artifacts=pending.artifacts.filter(a=>!a.path.endsWith('/design.md'));
+    if(mode==='sha')pending.artifacts.find(a=>a.path.endsWith('/design.md')).sha256='0'.repeat(64);
+    if(mode==='package')pending.packageDigest='0'.repeat(64);
+    if(mode==='feature')pending.feature='2.guide';
+    assert.throws(()=>f.host.validateCurrent(pending),undefined,mode);
+  }
+  assert.throws(()=>inspectAcceptedPrdDesign(f.specs,f.baseline.designDraft,null,{draftDigest:'0'.repeat(64),pendingSplit:f.args}),
+    /prd_split_design_binding_changed/);
+  fs.appendFileSync(path.join(f.specs,f.feature,'design.md'),'\nUnplanned edit');
+  assert.throws(()=>f.host.validateCurrent(f.args),/prd_disposition_artifacts_not_saved/);
+});
+for(const mode of ['failed','drift'])test(`disposed-design split self-check cannot be bypassed: ${mode}`,async t=>{
+  const f=await splitDesignFixture(t);f.edit();let checks=0;
+  const owner=createPrdDispositionOwner({validateCurrent:input=>f.host.validateCurrent(input),checkContext:async payload=>{
+    checks++;const result=checked(payload);
+    if(mode==='failed')result.features[0].checks[0].status='failed';
+    else fs.appendFileSync(path.join(f.specs,f.feature,'design.md'),'\nConcurrent change');
+    return result;
+  }});
+  if(mode==='drift')await assert.rejects(owner(f.args,new AbortController().signal),/prd_disposition_artifacts_not_saved/);
+  else assert.equal((await owner(f.args,new AbortController().signal)).status,'disposition_self_check_failed');
+  assert.equal(checks,1);assert.equal(fs.existsSync(path.join(f.specs,'.reviews/prd-guide-split-disposition.json')),false);
+});
+test('unchanged split disposition preserves legacy accepted binding and both receipt bytes',async t=>{
+  const f=await splitDesignFixture(t),args=structuredClone(f.args);
+  args.decisions[0].status='escalated';args.decisions[0].changedPaths=[];
+  args.artifacts.find(a=>a.path.endsWith('/design.md')).sha256=sha(f.baseline.acceptedDesign.features[0].documents[1].content);
+  recordPrdHostDisposition(args);
+  const paths=['design','split'].map(stage=>path.join(f.specs,`.reviews/prd-guide-${stage}-disposition.json`));
+  const before=paths.map(p=>fs.readFileSync(p));
+  assert.deepEqual(inspectAcceptedPrdDesign(f.specs,f.baseline.designDraft),f.baseline.acceptedDesign);
+  assert.deepEqual(f.host.currentDraftForSave(),f.baseline.draft);
+  assert.deepEqual(f.restore().checkpoint(),f.baseline);
+  assert.equal(recordPrdHostDisposition(args).status,'disposition_details_need_verification');
+  paths.forEach((p,i)=>assert.deepEqual(fs.readFileSync(p),before[i]));
+  const requirements=path.join(f.specs,f.feature,'requirements.md');
+  fs.writeFileSync(requirements,fs.readFileSync(requirements,'utf8').replace('[ ] [AC-001]','[x] [AC-001]'));
+  // Historical summary keeps its original runtime-mark normalization; active
+  // design ownership still rejects requirements bytes absent from the receipt.
+  assert.equal(inspectPrdSummaryEvidence(f.specs).features[0].reviews.split.gate.runtimeMarksNormalized,true);
+  assert.throws(()=>f.host.currentDraftForSave(),/prd_design_requirements_changed/);
+});
+
+for(const [label,options] of [
+  ['single requirements',{document:'requirements.md'}],
+  ['batch requirements',{document:'requirements.md',batch:true}],
+  ['mixed-risk low requirements',{document:'requirements.md',batch:true,lowRisk:true}],
+  ['mixed-risk low design',{document:'design.md',batch:true,lowRisk:true}],
+])test(`split document correction continues ${label}`,async t=>{
+  const f=await splitDesignFixture(t,options);f.edit();
+  // A saved correction and the original checkpoint also model an already stuck run.
+  let checks=0;
+  const dispose=createPrdDispositionOwner({checkContext:async payload=>{checks++;return checked(payload);}});
+  assert.equal((await dispose(f.args,new AbortController().signal)).status,'disposition_recorded');
+  assert.equal(checks,1);
+  const receipt=JSON.parse(fs.readFileSync(path.join(f.specs,`.reviews/prd-${f.feature.replace(/^\d+\./,'')}-split-disposition.json`)));
+  assert.equal(receipt.artifacts.find(a=>a.path===`${f.feature}/${options.document}`).sha256,sha(f.content));
+  if(options.batch){
+    // F1: current main disposes A, then this preparation fails for B.
+    const second=await f.review('split','2.second');
+    recordPrdHostDisposition({specs:f.specs,stage:'split',feature:'2.second',packageDigest:second.packageDigest,
+      decisions:[{id:'R1',status:'escalated',changedPaths:[],evidence:['Retain for human decision']}],
+      artifacts:second.reviewedArtifacts,writeEnabled:true});
+  }
+  assert.equal(savePrdDraft({specs:f.specs,writeEnabled:true,getDraft:()=>f.restore().currentDraftForSave()}).status,'draft_saved');
+  assert.equal(f.host.prepareReview('split',f.feature).packageDigest,f.args.packageDigest);
+  assert.deepEqual(f.host.checkpoint(),f.baseline);
+  if(!options.lowRisk)assert.equal(preparePrdReview({specs:f.specs,draft:f.baseline.designDraft,stage:'design',feature:f.feature}).gate.outcome,'completed');
+  const features=f.baseline.draft.features.map(f=>f.directory);
+  const summary=await createPrdSummaryOwner({summarize:async({evidenceDigest})=>({evidenceDigest,deliveryForm:'Guide',
+    estimatedTime:'Unknown',openQuestions:'See retained finding',risks:'Fixture',contextScope:'Whole batch',
+    platformReadiness:'Fixture',uiBaseline:'None',designRisk:features.map(feature=>({feature,
+      signals:riskSignals(!(options.lowRisk&&feature===f.feature)),evidence:['Fixture risk basis']}))})})(f.specs,{currentFeatures:features},new AbortController().signal);
+  assert.equal(summary.readyForAwaitingReview,true);
+  assert.equal(publishPrdAwaitingReview({specs:f.specs,summary,writeEnabled:true}).status,'awaiting_review');
+  assert.doesNotThrow(()=>assertPrdReviewsSettled(f.specs,features,{requireSplit:true}));
+  if(options.lowRisk)assert.equal(fs.existsSync(path.join(f.specs,'.reviews/prd-guide-design-r1.md')),false);
+  const correctedFile=path.join(f.specs,f.feature,options.document);
+  fs.writeFileSync(correctedFile,f.baseline.acceptedDesign.features[0].documents.find(doc=>doc.path===options.document).content);
+  assert.throws(()=>f.host.currentDraftForSave());
+  fs.writeFileSync(correctedFile,f.content+'\nUnrecorded change');
+  assert.throws(()=>f.host.currentDraftForSave());
+  assert.throws(()=>inspectPrdSummaryEvidence(f.specs));
+});
+for(const lowRisk of [false,true])test(`requirements pending tolerance and refusals (low risk ${lowRisk})`,async t=>{
+  const f=await splitDesignFixture(t,{document:'requirements.md',batch:lowRisk,lowRisk});f.edit();
+  assert.doesNotThrow(()=>f.host.validateCurrent(f.args));
+  assert.throws(()=>f.host.validateCurrent(),/prd_design_requirements_changed/);
+  assert.throws(()=>f.host.currentDraftForSave());assert.throws(()=>f.host.prepareReview('split',f.feature));
+  for(const mode of ['undeclared','sha','package','feature']){
+    const pending=structuredClone(f.args);
+    if(mode==='undeclared'){pending.decisions[0].status='escalated';pending.decisions[0].changedPaths=[];
+      pending.artifacts.find(a=>a.path.endsWith('/requirements.md')).sha256=sha(design().features[0].documents[0].content);}
+    if(mode==='sha')pending.artifacts.find(a=>a.path.endsWith('/requirements.md')).sha256='0'.repeat(64);
+    if(mode==='package')pending.packageDigest='0'.repeat(64);
+    if(mode==='feature')pending.feature='2.second';
+    assert.throws(()=>f.host.validateCurrent(pending),undefined,mode);
+  }
+  assert.throws(()=>recordPrdHostDisposition(f.args),/prd_disposition_split_self_check_required/);
+  const failed=await createPrdDispositionOwner({validateCurrent:input=>f.host.validateCurrent(input),checkContext:async payload=>{
+    const result=checked(payload);result.features[0].checks[0].status='failed';return result;
+  }})(f.args,new AbortController().signal);
+  assert.equal(failed.status,'disposition_self_check_failed');
+  assert.equal(fs.existsSync(path.join(f.specs,'.reviews/prd-guide-split-disposition.json')),false);
+  const before=await splitDesignFixture(t,{split:false,document:'requirements.md',batch:lowRisk,lowRisk});before.edit();
+  assert.throws(()=>before.host.currentDraftForSave(),/prd_design_requirements_changed/);
+  assert.throws(()=>before.host.prepareReview('split',before.feature));
+});
+test('another feature split receipt cannot authorize requirements bytes',async t=>{
+  const f=await splitDesignFixture(t,{document:'requirements.md'}),other=await splitDesignFixture(t,{featureName:'other',document:'requirements.md'});
+  other.edit();await createPrdDispositionOwner({checkContext:async payload=>checked(payload)})(other.args,new AbortController().signal);
+  f.edit();
+  for(const suffix of ['-r1.md','-dispatch.json','-disposition.json'])fs.copyFileSync(
+    path.join(other.specs,`.reviews/prd-other-split${suffix}`),path.join(f.specs,`.reviews/prd-guide-split${suffix}`));
+  assert.throws(()=>inspectPrdSplitDesign({specs:f.specs,feature:f.feature,document:'requirements.md',
+    originalSha:sha(f.baseline.acceptedDesign.features[0].documents.find(doc=>doc.path==='design.md').content),
+    requirementsSha:sha(design().features[0].documents[0].content),draftDigest:f.baseline.draft.draftDigest}));
+  assert.throws(()=>f.host.currentDraftForSave());
+  assert.throws(()=>inspectAcceptedPrdDesign(f.specs,f.baseline.designDraft));
+  assert.throws(()=>inspectPrdSummaryEvidence(f.specs));
+});
+
+for(const state of ['completed','pending'])for(const document of ['design.md','requirements.md'])
+  test(`same-feature split baseline binding rejects ${document} in ${state} disposition`,async t=>{
+    const f=await splitDesignFixture(t,{document});f.edit();
+    if(state==='completed')assert.equal((await createPrdDispositionOwner({checkContext:async payload=>checked(payload)})(
+      f.args,new AbortController().signal)).status,'disposition_recorded');
+    const accepted=f.baseline.acceptedDesign.features[0].documents;
+    const input={specs:f.specs,feature:f.feature,document,draftDigest:f.baseline.draft.draftDigest,
+      originalSha:sha(accepted.find(doc=>doc.path==='design.md').content),
+      requirementsSha:sha(accepted.find(doc=>doc.path==='requirements.md').content),
+      pendingSplit:state==='pending'?f.args:null};
+    assert.equal(inspectPrdSplitDesign(input),sha(f.content));
+    assert.doesNotThrow(()=>f.host.validateCurrent(input.pendingSplit));
+
+    // Only this temporary fixture's split record is rebound to earlier document
+    // bytes. Keep feature and draft identity equal, and recompute package/evidence
+    // hashes so neither a foreign-feature guard nor a corrupt archive masks the
+    // specific reviewed-bytes-to-accepted-baseline check under test.
+    const prefix=path.join(f.specs,'.reviews/prd-guide-split');
+    const evidence=fs.readFileSync(prefix+'-r1.md','utf8');
+    const archive=JSON.parse(evidence.match(/\n```json\n([^\n]+)\n```\n$/)[1]);
+    const oldContent=accepted.find(doc=>doc.path===document).content+'\nEarlier run specification.';
+    archive.reviewPackage.artifacts.find(item=>item.path===`${f.feature}/${document}`).sha256=sha(oldContent);
+    archive.reviewPackage.content[document==='design.md'?'designSummary':'requirementsFunctions']=oldContent;
+    const packageDigest=digest(archive.reviewPackage);
+    archive.response.result.packageDigest=packageDigest;
+    const rebound=evidence.replace(/^package_sha256: .*$/m,`package_sha256: ${packageDigest}`)
+      .replace(/\n```json\n[^\n]+\n```\n$/,()=>`\n\`\`\`json\n${JSON.stringify(archive)}\n\`\`\`\n`);
+    fs.writeFileSync(prefix+'-r1.md',rebound);
+    const dispatch=JSON.parse(fs.readFileSync(prefix+'-dispatch.json','utf8'));
+    dispatch.package_sha256=packageDigest;fs.writeFileSync(prefix+'-dispatch.json',JSON.stringify(dispatch)+'\n');
+    if(state==='completed'){
+      const receipt=JSON.parse(fs.readFileSync(prefix+'-disposition.json','utf8'));
+      receipt.evidence_sha256=sha(rebound);fs.writeFileSync(prefix+'-disposition.json',JSON.stringify(receipt)+'\n');
+    }
+    const pending={...f.args,packageDigest};
+    input.pendingSplit=state==='pending'?pending:null;
+    const review=inspectPrdFindings({specs:f.specs,stage:'split',feature:f.feature});
+    assert.equal(review.gate.outcome,state==='completed'?'completed':'resume_disposition');
+    assert.equal(review.packageDigest,packageDigest);assert.equal(review.draftDigest,input.draftDigest);
+    for(const doc of accepted)assert.equal(review.reviewedArtifacts.find(item=>item.path===`${f.feature}/${doc.path}`).sha256,
+      doc.path===document?sha(oldContent):sha(doc.content));
+    assert.notEqual(sha(oldContent),document==='design.md'?input.originalSha:input.requirementsSha);
+
+    const files=[...fs.readdirSync(path.join(f.specs,f.feature)).map(file=>path.join(f.specs,f.feature,file)),
+      ...fs.readdirSync(path.join(f.specs,'.reviews')).map(file=>path.join(f.specs,'.reviews',file))];
+    const before=files.map(file=>fs.readFileSync(file));
+    const mismatch={code:'prd_split_design_binding_changed'};
+    assert.throws(()=>inspectPrdSplitDesign(input),mismatch);
+    assert.throws(()=>f.host.validateCurrent(input.pendingSplit),mismatch);
+    assert.throws(()=>savePrdDraft({specs:f.specs,writeEnabled:true,getDraft:()=>f.host.currentDraftForSave()}),mismatch);
+    let checks=0;
+    await assert.rejects(createPrdDispositionOwner({validateCurrent:plan=>f.host.validateCurrent(plan),
+      checkContext:async payload=>{checks++;return checked(payload);}})(pending,new AbortController().signal),mismatch);
+    assert.equal(checks,0);assert.equal(fs.existsSync(prefix+'-disposition.json'),state==='completed');
+    assert.equal(fs.existsSync(path.join(f.specs,'.cm-specs-status')),false);
+    assert.deepEqual(f.host.checkpoint(),f.baseline);
+    files.forEach((file,index)=>assert.deepEqual(fs.readFileSync(file),before[index]));
+    assert.deepEqual(fs.readdirSync(path.join(f.specs,'.reviews')).sort(),
+      files.filter(file=>path.dirname(file)===path.join(f.specs,'.reviews')).map(file=>path.basename(file)).sort());
+  });
