@@ -54,6 +54,53 @@ test('mechanical failure stops semantics, repeated start never retries',async t=
   const value=await host.handle({requestId:'start',operation:'start'});assert.equal(value.result.overall,'FAILED');assert.equal(value.result.semanticChecked,false);
   assert.match(value.mechanical.output,/original stderr/);await assert.rejects(()=>host.handle({requestId:'again',operation:'start'}),/check_already_started/);assert.equal(calls,1);
 });
+for(const {name,statuses,core,overall} of [
+  {name:'all configured',statuses:['configured'],core:'passed',overall:'PASSED'},
+  {name:'all degraded',statuses:['degraded'],core:'passed',overall:'PASSED'},
+  {name:'all unknown',statuses:['unknown'],core:'passed',overall:'PASSED'},
+  {name:'mixed statuses',statuses:['unknown','configured','degraded'],core:'passed',overall:'PASSED'},
+  {name:'configured cannot mask a failed check',statuses:['configured'],core:'failed',overall:'FAILED'},
+])test(`optional report preserves order and reasons without changing core: ${name}`,async t=>{
+  const f=fixture(t);let expectedOptional;
+  const host=createCmCheckHost(f.input,{call:async(kind,payload)=>{
+    if(kind==='check_runtime')return mechanical(payload);
+    const value=assessment(payload);
+    // Deliberately report a different order and distinct reasons, including surrounding whitespace.
+    value.optional.reverse().forEach((row,i)=>{
+      row.status=statuses[i%statuses.length];row.reason=`  Synthetic ${row.id}: ${row.status} (${i})  `;
+    });
+    expectedOptional=structuredClone(value.optional);
+    if(core==='failed'){value.checks[1].status='failed';value.checks[1].findings=['Synthetic reproducible broken link'];}
+    return value;
+  }});
+  const report=await host.handle({requestId:'optional',operation:'start'});
+  assert.equal(report.result.overall,overall,JSON.stringify(report.result));
+  assert.equal(report.result.semanticChecked,true);
+  assert.deepEqual(report.result.optional,expectedOptional);
+  assert.equal(report.result.checks[1].status,core);
+  assert.equal(report.result.findingsCount,core==='failed'?1:0);
+});
+
+for(const {name,mutate,reason} of [
+  {name:'unknown status enabled',mutate:rows=>{rows[0].status='enabled';},reason:'check_optional_invalid'},
+  {name:'uppercase status CONFIGURED',mutate:rows=>{rows[0].status='CONFIGURED';},reason:'check_optional_invalid'},
+  {name:'empty reason',mutate:rows=>{rows[0].reason='';},reason:'check_optional_invalid'},
+  {name:'whitespace reason',mutate:rows=>{rows[0].reason=' \t\n ';},reason:'check_optional_invalid'},
+  {name:'missing id',mutate:rows=>{rows.pop();},reason:'check_optional_incomplete'},
+  {name:'duplicate id at unchanged length',mutate:rows=>{rows[1].id=rows[0].id;},reason:'check_optional_incomplete'},
+  {name:'extra id',mutate:rows=>{rows.push({id:'unrecognized_tool',status:'configured',reason:'Synthetic extra tool'});},reason:'check_optional_incomplete'},
+  {name:'unknown id at unchanged length',mutate:rows=>{rows[0].id='unrecognized_tool';},reason:'check_optional_invalid'},
+])test(`invalid optional report blocks with exact reason: ${name}`,async t=>{
+  const f=fixture(t);
+  const host=createCmCheckHost(f.input,{call:async(kind,payload)=>{
+    if(kind==='check_runtime')return mechanical(payload);
+    const value=assessment(payload);mutate(value.optional);return value;
+  }});
+  const report=await host.handle({requestId:'optional-invalid',operation:'start'});
+  assert.equal(report.result.overall,'BLOCKED',JSON.stringify(report.result));
+  assert.equal(report.result.reason,reason);
+});
+
 test('coverage, evidence, stale source/config, core findings and cancellation preserve honest verdicts',async t=>{
   for(const mode of ['missing','bad-line','stale','source-drift','config-drift','failed','blocked','cancel']){
     const f=fixture(t);let host;host=createCmCheckHost(f.input,{call:async(kind,payload)=>{
