@@ -15,6 +15,7 @@ import {METRICS_HEADER,hasMetricsHeader} from '../cm-ai/metrics-table.mjs';
 import {inside,canonicalFuture,snapshotSource} from '../cm-test/source-snapshot.mjs';
 import {openRefactorRecords,readText,replaceText,sha} from './records.mjs';
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;
+const normalizedRulebook=value=>value.replace(/\r\n?/g,'\n').split('\n').map(line=>line.trimEnd()).join('\n').replace(/^\n+|\n+$/g,'');
 const markdown=value=>'```json\n'+JSON.stringify(value,null,2)+'\n```\n';
 const relative=name=>typeof name==='string'&&!path.isAbsolute(name)&&!name.includes('\\')
   &&name.split('/').every(part=>part&&part!=='.'&&part!=='..');
@@ -242,6 +243,9 @@ export function createCmRefactorHost(raw,{call}){
     for(const name of plan.sample){const a=trial.guided.files.find(item=>item.path===name),b=trial.blind.files.find(item=>item.path===name);
       need(a&&b,'refactor_bakeoff_coverage');if(digest(a.content)!==digest(b.content))need(adjudication.decisions.some(row=>row.path===name
         &&['rule_correct','rule_missing','rule_wrong'].includes(row.verdict)&&nonempty(row.reason)),'refactor_bakeoff_coverage');}
+    // Require a textual revision; whether it fixes the problem remains for later independent review.
+    if(adjudication.decisions.some(row=>['rule_missing','rule_wrong'].includes(row?.verdict)))
+      need(normalizedRulebook(adjudication.rulebook)!==normalizedRulebook(plan.rulebook),'refactor_rule_revision_required');
     plan.rulebook=adjudication.rulebook;
     await publish(`${prefix}-bakeoff`,path.join(directory,`${prefix}-bakeoff.md`),markdown({trial,adjudication}));
     // Pilot uses the same generation/cheap checks/assembly/equivalence pipeline; discard its products.

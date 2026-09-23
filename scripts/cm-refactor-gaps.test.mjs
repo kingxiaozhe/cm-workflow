@@ -63,6 +63,55 @@ for(const verdicts of [['rule_correct'],['rule_missing'],['rule_wrong'],['rule_c
   });
 }
 
+const revisionRefusals=[
+  {name:'rule_missing with unchanged rules',verdicts:['rule_missing']},
+  {name:'rule_wrong with unchanged rules',verdicts:['rule_wrong']},
+  {name:'mixed verdicts with unchanged rules',verdicts:['rule_correct','rule_missing']},
+  {name:'rule_missing with trailing whitespace only',transform:rules=>rules.split('\n').map(line=>line+' \t').join('\n')},
+  {name:'rule_missing with CRLF only',transform:rules=>rules.replaceAll('\n','\r\n')},
+  {name:'rule_missing with outer blank lines only',transform:rules=>'\n\n'+rules+'\n\n'},
+  {name:'rule_missing with combined whitespace only',transform:rules=>' \t\r\n\r\n'+rules.replaceAll('\n',' \t\r\n')+' \t\r\n\r\n'}
+];
+for(const scenario of revisionRefusals)test(`bakeoff refuses ${scenario.name} with refactor_rule_revision_required`,async t=>{
+  const verdicts=scenario.verdicts??['rule_missing'];
+  const names=['input.mjs','helper.mjs'].slice(0,verdicts.length);
+  const {config,project,directory}=batchFixture(t,names),calls=[];
+  const rules=initialRules+'\nKeep boundary behavior.';
+  const host=createCmRefactorHost(config,{call:async(kind,payload)=>{
+    calls.push({kind,payload});const value=answer(kind,payload);
+    if(payload.action==='plan')Object.assign(value,{sample:names,rulebook:rules});
+    if(payload.action==='bakeoff'&&payload.variant==='blind')value.files.forEach(file=>{file.content+='// different\n';});
+    if(payload.action==='adjudicate')Object.assign(value,{rulebook:scenario.transform?.(rules)??rules,
+      decisions:names.map((name,i)=>({path:name,verdict:verdicts[i],reason:'Check negative bounds'}))});
+    return value;
+  }});
+  const result=await host.handle({operation:'start'});
+  assert.equal(result.reason,'refactor_rule_revision_required');assert.equal(result.stage,'blocked');
+  assert.equal(fs.existsSync(path.join(directory,'a1-bakeoff.md')),false);
+  assert.equal(result.reports.some(file=>file.endsWith('a1-bakeoff.md')),false);
+  assert.equal(calls.some(row=>row.payload.action==='generate'),false,'no pilot request');
+  const rows=journal(directory);
+  assert.equal(rows.some(row=>row.key?.includes('/pilot-')),false);
+  assert.equal(rows.some(row=>row.key==='publish/a1-bakeoff'),false);
+  assert.equal(fs.readFileSync(path.join(project,'input.mjs'),'utf8'),original);
+});
+
+test('bakeoff accepts all rule_correct with unchanged rules',async t=>{
+  const {config,directory}=batchFixture(t),calls=[];
+  const host=createCmRefactorHost(config,{call:async(kind,payload)=>{
+    calls.push({kind,payload});const value=answer(kind,payload);
+    if(payload.action==='bakeoff'&&payload.variant==='blind')value.files[0].content+='// different\n';
+    if(payload.action==='adjudicate')Object.assign(value,{rulebook:initialRules,
+      decisions:[{path:'input.mjs',verdict:'rule_correct',reason:'Keep existing guard order'}]});
+    return value;
+  }});
+  const result=await host.handle({operation:'start'});
+  assert.equal(result.stage,'awaiting_finish',JSON.stringify(result));
+  assert.equal(report(directory,'a1-bakeoff.md').adjudication.rulebook,initialRules);
+  assert.ok(calls.some(row=>row.payload.action==='generate'));
+  assert.ok(calls.filter(row=>Object.hasOwn(row.payload,'rulebook')).every(row=>row.payload.rulebook===initialRules));
+});
+
 const refusals=[
   {name:'fourth verdict',code:'refactor_bakeoff_coverage',judge:value=>{value.decisions[0].verdict='rule_ok';}},
   {name:'uppercase verdict',code:'refactor_bakeoff_coverage',judge:value=>{value.decisions[0].verdict='RULE_CORRECT';}},
@@ -104,6 +153,7 @@ test('bakeoff identical outputs require no decision',async t=>{
   const result=await host.handle({operation:'start'});assert.equal(result.stage,'awaiting_finish',JSON.stringify(result));
   const value=report(directory,'a1-bakeoff.md');
   assert.deepEqual(value.trial.guided.files,value.trial.blind.files);assert.deepEqual(value.adjudication.decisions,[]);
+  assert.equal(value.adjudication.rulebook,initialRules);
 });
 
 function assertHalted(result,directory,code,target,calls){
