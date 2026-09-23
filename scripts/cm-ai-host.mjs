@@ -14,7 +14,7 @@ import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
 import {createHostReviewAuthority} from '../runtime/js/cm-ai/host-review-authority.mjs';
 import {loadConfig,declaredRuntimes,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
 import {readHostWorkflowConfiguration,featureHasBrowserCases,readBrowserCapability} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
-import {digest,json,need,shape} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {digest,json,need,shape,id} from '../runtime/js/cm-ai/effect-contract.mjs';
 export {executionFor as createConversationExecution,reviewConfiguration as readConversationReviewConfiguration};
 export {conversationProtection} from '../runtime/js/cm-ai/host-conversation-execution.mjs';
 export function readConversationProtection(file){
@@ -29,7 +29,7 @@ const fixLocalPermissions=new Map(['red-test','baseline','regression','learning-
   'test-author','repair','cause-review','final-review']
   .map(name=>[`--allow-qa-fix-${name}`,`--allow-${name}`]));
 
-const usage='cm-ai-host.mjs serve --config RUN_DEFINITION.json --mode create|resume --host-context ID --allow-development [--runtime codex|claude] [--failover] [--review-config PATH] [--allow-review-attempt 1|2] [--workflow-config PATH] [--allow-qa] [--browser-qa available|unavailable]\nReview config is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 60000), independent of protected mode and outside the authorized configuration digest.\ncm-ai-host.mjs preflight --config RUN_DEFINITION.json --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
+const usage='cm-ai-host.mjs serve --config RUN_DEFINITION.json --mode create|resume --host-context ID --allow-development [--original-host-context ID] [--runtime codex|claude] [--failover] [--review-config PATH] [--allow-review-attempt 1|2] [--workflow-config PATH] [--allow-qa] [--browser-qa available|unavailable]\nReview config is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 60000), independent of protected mode and outside the authorized configuration digest.\ncm-ai-host.mjs preflight --config RUN_DEFINITION.json --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
 
 function reviewConfiguration(file){
   const info=fs.lstatSync(file);
@@ -80,6 +80,7 @@ async function protectedExecutionFor(definition,hostContextId,extra,review,mode,
   return executionFor(definition,hostContextId,bridge,review,
     extra.has('--allow-review-attempt')?Number(extra.get('--allow-review-attempt')):null,
     workflow,extra.has('--allow-qa'),runtime,{
+      ...(extra.has('--original-host-context')?{originalHostContextId:extra.get('--original-host-context')}:{}),
       protection:{checkCommands:config.checkCommands,timeoutMs:config.timeoutMs},
       providerDevelopment:{model:config.model,attempt,...selected},
       ...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{}),
@@ -122,6 +123,7 @@ function canResumeLegacyProtected(definition,runtime){
 }
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--original-host-context ID is resume-only: keep the creating session in durable configuration while --host-context remains the real live session. Equal IDs mean a same-session reopen. Parent conversation runs only; legacy protected runs, batch and QA-fix children are unchanged.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Approved 0.bootstrap only: --bootstrap-config PATH {selection:null for scaffold, or original cm-init selection for rules} and --allow-bootstrap-write. Original scope must include fixed instruction targets; they are host-written inside the original task effect, checked/reviewed and reloaded. No Git/install/network grant. Optional codeProjects selects disjoint real roots below codeProject; prefix scope/requirements and use protected current-session checks with a declared codeProject per command.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Protected current-session mode (Codex or Claude; also batch): --protected-conversation-config PATH with {checkCommands,timeoutMs}; timeoutMs bounds both check commands and the reviewer process. A review transport timeout with no result can resume once per attempt with fresh review authorization; a result-bearing timeout still requires reconciliation. No extra model call. The current host returns scoped UTF-8 edits; native Codex sandbox applies them and runs the declared checks. Original author runtime, per-attempt Review and QA permissions remain required. Do not combine with --protected-config. Same original 64KiB transport limit; unavailable/binary changes stop, never switch to direct writes.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Protected single-task CLI mode: add --protected-config PATH --allow-provider-development-attempt 1|2 and --review-config PATH. Protected config is {model,checkCommands,timeoutMs}; roots and host identity come from the original run definition and launch. This explicitly permits one task attempt of real developer execution and its declared native-sandbox checks; --allow-development alone does not. Review separately requires --allow-review-attempt 1|2. Diagnostics are required but are not review authorization. Optional original --workflow-config PATH and --allow-qa connect protected QA commands and documentation within the same developer invocation before Review; host semantic/browser/inspection requests retain their original contracts, not arbitrary writes. Default current-session mode is unchanged. Protected parent mode selects coder/reviewer CLIs from the project declaration; Claude returns protected-text-v1 proposals for host validation and sandbox application; original QA-fix options require child configuration.protectSpecs=true and all original child action permissions. Protected fix writes use text proposals, not direct host edits. The original QA/documentation/finalizer gates remain required. No installation or Git authority.\n');
@@ -154,10 +156,13 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const extra=new Map();
     for(let index=8;index<argv.length;index++){
       const name=argv[index];need(!extra.has(name),'invalid_arguments');
-      need(['--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments');
+      need(['--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments');
       if(['--allow-bootstrap-write','--allow-qa','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
       else{need(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments');extra.set(name,argv[++index]);}
     }
+    const originalHostContextId=extra.get('--original-host-context')??null;
+    if(originalHostContextId!==null){need(argv[4]==='resume','original_host_context_unavailable');id(originalHostContextId);}
+    if(originalHostContextId===argv[6])extra.delete('--original-host-context');
     const review=extra.has('--review-config')?reviewConfiguration(extra.get('--review-config')):null;
     const workflow=extra.has('--workflow-config')?readHostWorkflowConfiguration(extra.get('--workflow-config')):null;
     let allowedAttempt=null;
@@ -211,7 +216,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       if(extra.has('--protected-config')||protection)need(fix.configuration?.protectSpecs===true,'protected_fix_required');
     }
     let execution;
-    if(argv[4]==='resume'&&extra.has('--protected-config')&&canResumeLegacyProtected(definition,runtime)){
+    if(argv[4]==='resume'&&!extra.has('--original-host-context')&&extra.has('--protected-config')&&canResumeLegacyProtected(definition,runtime)){
       try{
         execution=await legacyProtectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap);
         run=await openControlRun(definition,argv[4],execution,{rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa')});
@@ -225,7 +230,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       execution=extra.has('--protected-config')
         ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap)
         :executionFor(definition,argv[6],bridge,review,allowedAttempt,workflow,extra.has('--allow-qa'),runtime,
-          {...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{})});
+          {...(extra.has('--original-host-context')?{originalHostContextId:extra.get('--original-host-context')}:{}),...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{})});
       run=await openControlRun(definition,argv[4],execution,{rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa')});
     }
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}

@@ -11,7 +11,7 @@ import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTas
 import { reviewResult,reviewReceipt } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
-  controlledState,stageAllowed,completedEffectCount,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage } from './durable-runner-state.mjs';
+  MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,completedEffectCount,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage } from './durable-runner-state.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
 import {inspectProviderReview,hasProviderReviewResult} from './provider-review-observation.mjs';
 import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence,
@@ -124,10 +124,14 @@ export function createTaskRunner(options) {
     if(invocationMode)id(r.adapterId);
     return {...v,...(invocationMode?{adapterId:r.adapterId}:{}),run};
   });
-  let invocationConfig=null,authorize=null;
+  let invocationConfig=null,authorize=null,liveHostContextId=null;
   if(invocationMode){
     need(reviewers.length===1&&['codex','claude'].includes(reviewers[0].provider)&&reviewers[0].allowed&&reviewers[0].available,'runner_invocation');
-    shape(options.reviewInvocation,['developerThreadId','excludedThreadIds','authorize']);
+    shape(options.reviewInvocation,['developerThreadId','excludedThreadIds','authorize',
+      ...(Object.hasOwn(options.reviewInvocation,'hostContextId')?['hostContextId']:[])]);
+    liveHostContextId=options.reviewInvocation.hostContextId??null;
+    if(liveHostContextId!==null){id(liveHostContextId);
+      need(![developer.contextId,...reviewers.flatMap(r=>r.contexts)].includes(liveHostContextId),'not_independent');}
     authorize=options.reviewInvocation.authorize;need(typeof authorize==='function','runner_invocation');
     invocationConfig=json({developerThreadId:options.reviewInvocation.developerThreadId,
       excludedThreadIds:options.reviewInvocation.excludedThreadIds});
@@ -178,6 +182,11 @@ export function createTaskRunner(options) {
     if(options.persistence.mode==='resume')restored=readRunnerHistory(journal,metadata,version);
     else need(journal.length===0,'runner_exists');
   }
+  // Transient live identity is deliberately absent from metadata/init bytes.
+  const joinedHosts=[...(restored?.joinedHosts??[])];
+  if(liveHostContextId!==null)need(!restored?.reviewerThreads.includes(liveHostContextId),'not_independent');
+  const liveInvocation=()=>({...invocationConfig,excludedThreadIds:[...new Set([
+    ...invocationConfig.excludedThreadIds,...joinedHosts,...(liveHostContextId===null?[]:[liveHostContextId])])]});
   const specificationSelection=options.specification??null;
   if(specificationSelection!==null){
     shape(specificationSelection,['specsRoot','feature']);
@@ -258,7 +267,7 @@ export function createTaskRunner(options) {
       kind:{init:'result','effect-intent':'intent','effect-checkpoint':'result',control:'cancel',
         'task-commit-intent':'commit-intent','task-commit-result':'commit-result',
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
-        'qa-fix-accepted':'result','qa-attached':'result'}[type],
+        'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
     const record={...body,digest:digest(body)};boundRunnerRecord(record,body.seq);
@@ -433,11 +442,17 @@ export function createTaskRunner(options) {
     try{registeredAt=safeTime();}catch{halt('unknown','clock_invalid');return;}
     if(registeredAt<authorizationAt){halt('unknown','clock_invalid');return;}
     try{grant=validateReviewDispatchGrant(grant,{request,reviewerId:adapter.id,adapterId:adapter.adapterId,
-      packageDigest:reviewPackage.packageDigest,hostContextIds:[invocationConfig.developerThreadId,...invocationConfig.excludedThreadIds],
+      packageDigest:reviewPackage.packageDigest,hostContextIds:[invocationConfig.developerThreadId,...liveInvocation().excludedThreadIds],
       authorizationAt,registeredAt});}
     catch{halt('unknown','authorization_invalid');return;}
     const registrationFields={effectId,reviewerId:adapter.id,adapterId:adapter.adapterId,requestDigest:request.requestDigest,
       authorizationAt,registeredAt,grant};
+    // Validate first, then journal the signer immediately before registration.
+    // Durable host lists and prior joiners already have replayable authority.
+    if(![invocationConfig.developerThreadId,...invocationConfig.excludedThreadIds,...joinedHosts].includes(grant.hostContextId)){
+      need(joinedHosts.length<MAX_AI_JOINED_HOSTS,'host_limit');
+      persist('host-joined',{hostContextId:grant.hostContextId});joinedHosts.push(grant.hostContextId);
+    }
     persist('review-invocation-registered',registrationFields);
     sequence=nextSequence;
     const registration=json({reviewerId:adapter.id,adapterId:adapter.adapterId,requestDigest:request.requestDigest,
@@ -459,7 +474,7 @@ export function createTaskRunner(options) {
     }
     call.started=true;
     const expectation={request,developerThreadId:invocationConfig.developerThreadId,
-      excludedThreadIds:reviewExclusions(invocationConfig,calls,developer.contextId)};
+      excludedThreadIds:reviewExclusions(liveInvocation(),calls,developer.contextId)};
     const events=[];let started=null,sealed=false,invalid=false,invalidReject;
     const localController=new AbortController();
     const abort=()=>localController.abort();controller.signal.addEventListener('abort',abort,{once:true});
