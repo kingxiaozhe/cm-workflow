@@ -14,6 +14,7 @@ import {readBootstrapEvidence,validateBootstrapReviewPackage} from './host-boots
 import {validateCodeProjectPaths,assertCodeProjectSelections} from './code-projects.mjs';
 
 const LIMIT=16*1024*1024;
+export const MAX_AI_JOINED_HOSTS=16;
 const same=(a,b)=>need(digest(a)===digest(b),'runner_history_mismatch');
 const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b.slice(0,a.length));};
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
@@ -477,7 +478,10 @@ export function readRunnerHistory(raw,config,version=1) {
   const completion=version>=2?completionConfig(config,version):null;
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
   let invocation={registration:null,started:null,result:null};
-  const acceptedFixes=[];let qaAttachment=null;
+  const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,joinedForInvocation=false;
+  const reviewConfig=(calls=[])=>({...config,reviewInvocation:{...config.reviewInvocation,
+    excludedThreadIds:reviewExclusions({excludedThreadIds:[...config.reviewInvocation.excludedThreadIds,...joinedHosts]},
+      calls,config.developer.contextId)}});
   for(const [index,r] of records.entries()) {
     boundRunnerRecord(r,index+1);
     if(version>=2)fullEnvelope(r,index,index?records[index-1].digest:null);
@@ -510,18 +514,29 @@ export function readRunnerHistory(raw,config,version=1) {
       same(e.identity,{...config.identity,attempt:state.attempt});need(e.version===1 && stageAllowed(e.kind,state.state,state.code),'runner_stage');
       need(completedEffectCount(state.cache)<6 && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
       pending=e;beforeIntent=structuredClone(state);controls={};completeIntentDigest=e.kind==='complete'?r.digest:null;
-      invocation={registration:null,started:null,result:null};
+      invocation={registration:null,started:null,result:null};joinedForInvocation=false;
+    } else if(version===3&&p.type==='host-joined') {
+      shape(p,[...common,'hostContextId']);id(p.hostContextId);
+      // Only one join in a pending review effect, before registration. A crash
+      // after this record is a valid unknown prefix; opening never adds a join.
+      need(r.kind==='result'&&pending?.kind==='review'&&!invocation.registration&&!joinedForInvocation
+        &&!controls.cancelled&&!controls.workflowError,'runner_invocation');
+      need(![config.reviewInvocation.developerThreadId,...config.reviewInvocation.excludedThreadIds,
+        ...joinedHosts].includes(p.hostContextId),'runner_invocation');
+      need(![config.developer.contextId,...config.reviewers.flatMap(r=>r.contexts),...reviewerThreads]
+        .includes(p.hostContextId),'not_independent');
+      need(joinedHosts.length<MAX_AI_JOINED_HOSTS,'host_limit');
+      joinedHosts.push(p.hostContextId);joinedForInvocation=true;
     } else if(version===3&&p.type==='review-invocation-registered') {
       need(r.kind==='intent'&&pending?.kind==='review'&&!invocation.registration,'runner_invocation');
-      invocation.registration=readRegistration(p,beforeIntent,pending,config,session);
+      invocation.registration=readRegistration(p,beforeIntent,pending,reviewConfig(),session);
     } else if(version===3&&p.type==='review-invocation-started') {
       need(r.kind==='result'&&invocation.registration&&!invocation.started&&!invocation.result,'runner_invocation');
-      invocation.started=readStarted(p,invocation.registration,pending,{...config,reviewInvocation:{...config.reviewInvocation,
-        excludedThreadIds:reviewExclusions(config.reviewInvocation,beforeIntent.calls,config.developer.contextId)}});
+      invocation.started=readStarted(p,invocation.registration,pending,reviewConfig(beforeIntent.calls));
+      reviewerThreads.push(invocation.started);
     } else if(version===3&&p.type==='review-invocation-result') {
       need(r.kind==='result'&&invocation.registration&&!invocation.result,'runner_invocation');
-      invocation.result=readInvocationResult(p,invocation.registration,invocation.started,pending,{...config,reviewInvocation:{...config.reviewInvocation,
-        excludedThreadIds:reviewExclusions(config.reviewInvocation,beforeIntent.calls,config.developer.contextId)}});
+      invocation.result=readInvocationResult(p,invocation.registration,invocation.started,pending,reviewConfig(beforeIntent.calls));
       if(invocation.result.outcome==='cancelled')need(controls.cancelled===true,'runner_control');
     } else if(p.type==='effect-checkpoint') {
       shape(p,[...common,'effectId','checkpoint']);need(r.kind==='result' && pending && p.effectId===pending.id,'runner_checkpoint');
@@ -568,7 +583,7 @@ export function readRunnerHistory(raw,config,version=1) {
   if(pending){state.state='unknown';state.code='reconciliation_required';
     if(version===3&&invocation.registration)state.reviewInvocation={registration:invocation.registration.record,
       started:invocation.started,result:invocation.result};}
-  return {original,session,state,pending,acceptedFixes,qaAttachment,...(version>=2?{transaction}:{})};
+  return {original,session,state,pending,acceptedFixes,qaAttachment,...(version===3?{joinedHosts,reviewerThreads}:{}),...(version>=2?{transaction}:{})};
 }
 // Baseline rootDigest uses bytes of the canonical root, not JSON string encoding.
 import {createHash} from 'node:crypto';

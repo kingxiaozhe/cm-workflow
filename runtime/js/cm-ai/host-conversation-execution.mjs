@@ -93,7 +93,7 @@ export function resolveReviewTimeout(review,protection){
 }
 export function createConversationExecution(definition,hostContextId,bridge,review=null,allowedAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
   definition=json(definition);workflow=workflow===null?null:json(workflow);options=json(options);
-  shape(options,[...['protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','parallelMember','verificationPrecheck'].filter(key=>Object.hasOwn(options,key))]);
+  shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','parallelMember','verificationPrecheck'].filter(key=>Object.hasOwn(options,key))]);
   need(!Object.hasOwn(options,'verificationPrecheck')||typeof options.verificationPrecheck==='boolean','invalid_input');
   const parallelMember=options.parallelMember??false;need(typeof parallelMember==='boolean','invalid_input');
   const provider=options.providerDevelopment??null;
@@ -123,11 +123,14 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   need(allowedAttempts.length<=2&&new Set(allowedAttempts).size===allowedAttempts.length
     &&allowedAttempts.every(value=>value===1||value===2),'invalid_review_attempt');
   const author='cm-conversation-author',reviewContexts=['cm-conversation-review-1','cm-conversation-review-2'];
-  id(hostContextId);need(![author,...reviewContexts].includes(hostContextId),'not_independent');
+  const durableHostContextId=options.originalHostContextId??hostContextId;
+  for(const context of [hostContextId,durableHostContextId]){
+    id(context);need(![author,...reviewContexts].includes(context),'not_independent');
+  }
   // Keep the unverified native permissions boundary intact for this first host
   // slice too. A transport is not physical protection of nested specs.
   need(protection||!definition.specsDir.startsWith(definition.codeProject+path.sep),'nested_specs_protection_required');
-  const configuration={kind:'cm-current-conversation-v1',...(parallelMember?{parallelMember}:{}),definitionDigest:digest(definition),hostContextId,
+  const configuration={kind:'cm-current-conversation-v1',...(parallelMember?{parallelMember}:{}),definitionDigest:digest(definition),hostContextId:durableHostContextId,
     ...(runtime==='claude'?{runtime}:{}),
     ...(provider?{providerDevelopment:{model:provider.model,coderRuntime,reviewerRuntime}}:{}),
     ...(protection?{protection}:{}),
@@ -189,7 +192,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     }catch{/* diagnostics never change the verdict */}
     return {satisfied:verdict.satisfied};
   }:null;
-  const execution={configuration,timeoutMs:provider?protection.timeoutMs:1800000,excludedContexts:[hostContextId],hostDecision:null,applicableAgentFiles:[],
+  const execution={configuration,timeoutMs:provider?protection.timeoutMs:1800000,excludedContexts:[durableHostContextId],hostDecision:null,applicableAgentFiles:[],
     ...(verificationGate?{verificationGate}:{}),
     ...(bootstrap?{bootstrap}:{}),
     ...(provider?{developmentAttempt:provider.attempt}:{}),
@@ -287,7 +290,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
         return reviewerRuntime==='codex'?createCodexReviewRun(codexWorker(selectedOptions))(request,control)
           :createClaudeReviewRun(claudeWorker(selectedOptions))(request,control);
       }}],
-    reviewInvocation:{developerThreadId:author,excludedThreadIds:[hostContextId],
+    reviewInvocation:{developerThreadId:author,excludedThreadIds:[durableHostContextId],hostContextId,
       authorize:authority?.authorize??(()=>({status:'denied',code:'permission_denied'}))},
   };
   if(definition.codeProjects)execution.applicableAgentFiles=[...new Set([...execution.applicableAgentFiles,

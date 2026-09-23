@@ -22,7 +22,12 @@
    单代码根用 `cm-ai-admission.mjs --print-run-definition --scope ...` 生成运行定义，不要手写；`--scope` 必填（相对代码根、逗号分隔），`--requirements` 可选；完整命令见产品文档。
    单任务用 `cm-ai-host.mjs`；多任务用 `cm-ai-batch-host.mjs` 的原 batch/workflows 配置。
    任务列表只包含该运行计划内的任务；恢复必须使用原身份、配置和真实当前会话身份，
-   会话不同导致不能恢复时报告阻断，不能冒用旧 host-context。
+   单任务换会话恢复用 `--mode resume --host-context {当前真实会话ID} --original-host-context {创建运行的会话ID}`；
+   两个 ID 相同等同未传新参数，create 传它报 `original_host_context_unavailable`。不能冒用旧 host-context。
+   原配置指纹和 init 元数据仍绑定创建会话，旧记录不改；开发结果和审查授权使用当前真实会话。
+   新会话首次签审查授权前追加 `host-joined`，仅打开或 status 不写；创建会话、已加入会话和当前会话
+   都排除为审查员，当过审查员的线程不能回来当宿主。最多记录 16 个接手会话。
+   仅支持 V3 会话父运行；旧 protected 兼容分支、batch 和 QA-fix 子任务不支持此跨会话入口，原授权仍须逐项提供。
 3.1 多任务批次可提议并行组，写进 batch 配置的可选 `parallel`（任务 key 的数组的数组）。
    只提议同时满足以下全部条件的任务，任一不满足就不进组；一个组都成立不了就**不写该字段**，正常串行：
    - **纯新建文件**：该任务 scope 的每个路径在 `HEAD` 上都不存在（`git cat-file -e HEAD:{path}`
@@ -95,7 +100,7 @@ R1要求修改但尚未授权第2轮时保留changes_requested，不登记开发
 首次create可同时提供原`--workflow-config`；有QA配置须另带`--allow-qa`，恢复保持原配置与授权。
 原无workflow或`qa:null`且任务已为`fixture_completed`时，可在`--mode resume`显式提供
 含QA的`--workflow-config`与`--allow-qa`，一次性附加N6；原definition/scope/requirements/identity、
-host-context、开发/审查配置仍须匹配。journal追加不可重复/修改的`qa-attached`，运行日志写
+创建运行的 host-context（换会话时由 `--original-host-context` 声明）、开发/审查配置仍须匹配。journal追加不可重复/修改的`qa-attached`，运行日志写
 `decision/qa_attach`；后续恢复须保持已绑定配置及重新授权，`qa`仍要求`qa_assess`等原宿主请求。
 不重跑开发/审查，不将任务完成当作QA通过（事故：create漏配workflow曾使feature强制QA无法补做）。
 QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.timeoutMs` 可设 1–60000 毫秒，
