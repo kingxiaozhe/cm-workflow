@@ -1,10 +1,13 @@
 // Shared read-only regression evidence checks; no execution or review authority.
+import {currentTestFiles,inspectExtensionCheck} from './test-extension.mjs';
 import {inspectFixBaseline} from './baseline.mjs';
 import {digest,json,need,shape,text} from '../cm-ai/effect-contract.mjs';
 import {isVisual,inspectVisualAfter} from './visual.mjs';
 
-export function inspectFixRegression(raw,{redTest,baseline,beforeBaseline}){
-  const value=json(raw);shape(value,['status','red','baseline','comparison','completionEligible']);
+export function inspectFixRegression(raw,{redTest,baseline,beforeBaseline,testExtension=null}){
+  const value=json(raw);shape(value,['status','red','baseline','comparison','completionEligible',...(testExtension?['testExtension']:[])]);
+  beforeBaseline={...beforeBaseline,testFiles:currentTestFiles(beforeBaseline.testFiles,testExtension)};
+  const extra=testExtension?inspectExtensionCheck(value.testExtension,{redTest},testExtension.plan,testExtension.files):null;
   if(isVisual(redTest)){
     const observed=inspectVisualAfter(value.red,redTest),comparison=compareFixBaseline(beforeBaseline,value.baseline,baseline);
     const status=observed.verdict==='BLOCKED'?'blocked':observed.verdict==='FAIL'?'defect_remaining':comparison.status;
@@ -15,7 +18,7 @@ export function inspectFixRegression(raw,{redTest,baseline,beforeBaseline}){
   need(red.outcome==='unavailable'?red.exitCode===null:Number.isInteger(red.exitCode)&&red.exitCode>=0&&red.exitCode<=255
     &&red.outcome===(red.exitCode===0?'passed':'failed'),'regression_mismatch');
   const comparison=compareFixBaseline(beforeBaseline,value.baseline,baseline);
-  const status=red.outcome==='unavailable'?'blocked':red.outcome!=='passed'?'defect_remaining':comparison.status;
+  const status=extra&&extra.observations[0].outcome!=='passed'?(extra.status==='blocked'?'blocked':'defect_remaining'):red.outcome==='unavailable'?'blocked':red.outcome!=='passed'?'defect_remaining':comparison.status;
   need(value.status===status&&digest(value.comparison)===digest(comparison)&&value.completionEligible===false,'regression_mismatch');
   return value;
 }

@@ -33,9 +33,9 @@ export function inspectFixRedTest(raw,config,identity,registeredFiles){
   return value;
 }
 
-export function verifyFixRedEvidence(value,config,specsRoot){
+export function verifyFixRedEvidence(value,config,specsRoot,currentFiles=value.testFiles){
   if(isVisual(config)){inspectVisualBefore(value.observation,config);return {visual:verifyVisualCarrier(value.observation.carrier)};}
-  need(digest(redTestFiles(config))===digest(value.testFiles),'red_test_files_changed');
+  need(digest(redTestFiles(config))===digest(currentFiles),'red_test_files_changed');
   const [file]=readReviewSourceFiles(specsRoot,[value.output.path]);
   need(file.mode===0o600&&file.size<=256*1024&&file.sha256===value.output.sha256,'red_output_changed');
   const raw=JSON.parse(Buffer.from(file.contentBase64,'base64').toString('utf8'));

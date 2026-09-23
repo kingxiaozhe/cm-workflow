@@ -82,7 +82,7 @@ export function protectedFixBridge({bridge,cwd,specsRoot,timeoutMs}){
     need(['blocked',kind==='fix_repair'?'repaired':'authored'].includes(result.outcome),'protected_edit_invalid');
     need(Array.isArray(result.edits),'protected_edit_invalid');
     if(result.outcome==='blocked'){need(result.edits.length===0,'protected_edit_invalid');return {outcome:'blocked'};}
-    need(result.edits.length>0,'protected_edit_invalid');
+    need(result.edits.length>0||kind==='fix_repair'&&payload.allowUnchanged===true,'protected_edit_invalid');
     await commitProtectedEdits({cwd,specsRoot,scope:payload.scope,edits:result.edits,expected,
       identity:payload.identity,timeoutMs,signal});
     return {outcome:result.outcome};

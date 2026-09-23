@@ -59,6 +59,9 @@ export function fixProgress(status,config={},authorization={}){
         needsFreshInvocationBinding:(status.finalReviewRecoveryCount??0)>0,
         knownThread:Boolean(invocation.providerThreadId),authorizationGranted:false}}:{})};
   }
+  if(revision&&['revision_test_author_required','revision_test_check_required','revision_prepared'].includes(stage))
+    return {...result,current:stage==='revision_test_author_required'?'补充审查要求的测试':stage==='revision_test_check_required'?'记录覆盖补充实跑结果':'准备第二轮修复',
+      nextAction:stage==='revision_test_author_required'?'author_tests':stage==='revision_test_check_required'?'revision_test_check':'repair'};
   const steps=flow.filter(([key])=>(key!=='cause_review_required'||config.causeReview||status.causeReview)
     &&(key!=='test_author_required'||config.testAuthor)
     &&(key!=='learning_writeback_required'||['learning_writeback_required','learning_writeback_blocked'].includes(currentStage)));

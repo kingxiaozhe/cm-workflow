@@ -184,6 +184,9 @@ handoff → 最终独立 Review/发布 → 原 N5 → 审后回归/走查 → �
 等待 N5、审后回归或收口的旧记录也可补审：绑定原最终登记/观察摘要，排除原最终审查线程，
 保留原批准与交接字节，补审批准后继续原门禁。进行中、unknown、未批准或已开始完成写入的
 旧记录不在此恢复范围，不自动重试或重开。
+第一轮最终审查要求增加或完善测试时，先读 [第二轮补测接续](test-extension.md)：`prepare_revision` 可附 `tests`，
+再走 `author_tests` → `revision_test_check` → 原修复和审查链；已准备但未修复的旧第二轮也能追加计划。
+
 首轮 changes_requested 或已批准后的明确回归/走查失败走 `prepare_revision`，保留历史，
 第二次修复仍需 fresh 独立 Review；不得重置 ≤2 轮上限。unknown 不重派。
 

@@ -4,6 +4,8 @@ import {digest,id,json,need,shape,text,validIdentity} from '../cm-ai/effect-cont
 import {inspectFixLearning} from './learning.mjs';
 import {inspectFixInvestigation} from './investigation.mjs';
 import {inspectFixReproductionAttempts} from './reproduce.mjs';
+import {inspectFixTestAuthor} from './test-author.mjs';
+import {inventory} from './test-extension.mjs';
 import {inspectVisualCarrier} from './visual.mjs';
 
 export function createFixCausePackage({codeProject,defect,status}){
@@ -68,3 +70,22 @@ export function readFixCausePackage(raw){
 }
 
 export const causeReviewPaths=pkg=>pkg.files.map(file=>file.path);
+
+// Validate the original package, then admit only the exact registered test transition.
+export function verifyFixCauseTransition(original,current,authorBaseline,authorResult){
+  const reviewed=readFixCausePackage(original),now=readFixCausePackage(current);
+  const expected=new Map(reviewed.files.map(file=>[file.path,file]));
+  if(authorBaseline&&authorResult){
+    const authored=inspectFixTestAuthor(authorResult,authorBaseline);
+    need(authored.outcome==='authored','cause_review_drift');
+    const before=new Map(authorBaseline.files.map(file=>[file.path,file]));
+    for(const file of authored.testFiles){
+      if(!expected.has(file.path))continue;
+      need(digest(inventory([before.get(file.path)]))===digest(inventory([expected.get(file.path)])),'cause_review_drift');
+      expected.set(file.path,file);
+    }
+  }
+  need(digest(inventory(now.files))===digest(inventory([...expected.values()])),'cause_review_drift');
+  const {packageDigest,...body}=now;
+  need(digest({...body,files:reviewed.files})===reviewed.packageDigest,'cause_review_drift');
+}

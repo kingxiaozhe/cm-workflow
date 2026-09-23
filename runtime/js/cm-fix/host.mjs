@@ -9,6 +9,7 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
   const extra=new Set(permissions);
     const host={async handle(request){
       shape(request,['requestId','operation',...(request.operation==='resume'?['evidenceFiles']:[]),
+        ...(request.operation==='prepare_revision'&&Object.hasOwn(request,'tests')?['tests']:[]),
         ...(request.operation==='recover_final_review'?['invocationId','packageDigest','previousInvocationStopped','reason']:[])]);
       if(config.qaSource&&!['status','cancel','completion_evidence'].includes(request.operation))
         inspectFixQaSource({specsRoot:config.specsRoot,identity:config.identity,configuration:config});
@@ -28,13 +29,14 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
       if(request.operation==='finish')return owner.finish({authorized:extra.has('--allow-finish')});
       if(request.operation==='author_tests')return owner.authorTests({authorized:extra.has('--allow-test-author')});
       if(request.operation==='repair')return owner.repair({authorized:extra.has('--allow-repair')});
+      if(request.operation==='revision_test_check')return owner.runRevisionTests({authorized:extra.has('--allow-regression')});
       if(request.operation==='regression')return owner.runRegression({authorized:extra.has('--allow-regression')});
       if(request.operation==='retrospective')return owner.retrospect();
       if(request.operation==='learning_writeback')return owner.writeLearning({authorized:extra.has('--allow-learning-writeback')});
       if(request.operation==='handoff')return owner.createHandoff();
       if(request.operation==='final_review_package')return owner.finalReviewPackage();
       if(request.operation==='publish_review')return owner.publishReview();
-      if(request.operation==='prepare_revision')return owner.prepareRevision({authorized:extra.has('--allow-repair')});
+      if(request.operation==='prepare_revision')return owner.prepareRevision({authorized:extra.has('--allow-repair'),...(Object.hasOwn(request,'tests')?{tests:request.tests}:{})});
       if(request.operation==='check_n5')return owner.checkCompletionGate();
       if(request.operation==='publish_dossier')return owner.publishDossier();
       if(request.operation==='walkthrough')return owner.runWalkthrough({authorized:extra.has('--allow-walkthrough')});

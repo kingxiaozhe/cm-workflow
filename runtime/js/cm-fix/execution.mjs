@@ -1,4 +1,5 @@
 // Fixed initial cm-fix stages over the shared durable store; no task completion authority.
+import {inventory,readTestExtensionPlan,extensionConfig,inspectExtensionCheck,currentTestFiles,verifyExtensionFiles,extendRevisionReviewBaseline} from './test-extension.mjs';
 import path from 'node:path';
 import fs from 'node:fs';
 import {randomUUID,createHash} from 'node:crypto';
@@ -8,14 +9,14 @@ import {inspectFixQaSource,readFixQaSourceHistory,qaFixIdentity,fixQaDiagnosisEv
 import {digest,id,json,need,shape,text,validIdentity,requestFor,failureCode} from '../cm-ai/effect-contract.mjs';
 import {createFixReproduction,inspectFixReproduction} from './reproduce.mjs';
 import {inspectFixLearning} from './learning.mjs';
-import {createFixCausePackage} from './cause-package.mjs';
+import {createFixCausePackage,verifyFixCauseTransition} from './cause-package.mjs';
 import {validateCauseReviewer,inspectCauseRegistration,inspectCauseResult,causeExpectation,fixHostContexts,MAX_FIX_JOINED_HOSTS} from './cause-invocation.mjs';
 import {inspectProviderCauseReview} from '../cm-ai/provider-review-observation.mjs';
 import {publishCauseEvidence} from './cause-evidence.mjs';
 import {createFixRedTest,inspectFixRedTest,verifyFixRedEvidence,redTestFiles} from './red-test.mjs';
 import {createFixBaseline,inspectFixBaseline,fixBaselineFiles} from './baseline.mjs';
 import {prepareFixTestAuthor,inspectFixTestAuthor} from './test-author.mjs';
-import {readReviewBaseline,readReviewPackage,reviewSpecsPath,createReviewPackage,readReviewSourceFiles} from '../cm-ai/review-package.mjs';
+import {captureReviewBaseline,readReviewBaseline,readReviewPackage,reviewSpecsPath,createReviewPackage,readReviewSourceFiles} from '../cm-ai/review-package.mjs';
 import {prepareFixRepair,inspectFixRepair,verifyFixRepair,isFixMapPath} from './repair.mjs';
 import {validateDeveloperScope} from '../cm-ai/developer-adapter.mjs';
 import {createFixRegression,inspectFixRegression} from './regression.mjs';
@@ -201,17 +202,25 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       authorResult:records.find(r=>r.id==='fix-test-author-result')?.payload??null,
       repairBaseline:records.find(r=>r.id==='fix-repair-intent').payload.baseline});
   };
+  const testExtension=()=>{
+    const records=store.snapshot().records,revision=records.find(row=>row.id==='fix-revision-prepared')?.payload;
+    const authored=records.find(row=>row.id==='fix-revision-test-author-result')?.payload;
+    const plan=revision?.tests??records.find(row=>row.id==='fix-revision-tests-prepared')?.payload.tests;
+    return plan&&authored?.outcome==='authored'?{plan,files:authored.testFiles}:null;
+  };
   const reviewChecks=regression=>[...(isVisual(configuration.redTest)?[{id:'visual-fix',kind:'visual',
     outcome:regression.red.verdict==='PASS'?'passed':regression.red.verdict==='FAIL'?'failed':'unavailable',
     evidence:regression.red.explanation,before:regression.red.before,after:regression.red.after}]:[regression.red]),
-    ...regression.baseline.observations.map((row,index)=>({...row,id:`baseline.${index+1}`}))];
+    ...regression.baseline.observations.map((row,index)=>({...row,id:`baseline.${index+1}`})),
+    ...(regression.testExtension?.observations??[])];
   const implementationPackage=(regression,withLearning=false)=>createReviewPackage({root:configuration.reproduction.cwd,
     baseline:withLearning?fixLearningReviewBaseline(reviewBaseline()):reviewBaseline(),checks:reviewChecks(regression)});
   const revisionReviewBaseline=(withLearning=true)=>{
     const records=store.snapshot().records,revision=records.find(row=>row.id==='fix-revision-prepared').payload;
     const written=records.find(row=>row.id==='fix-learning-writeback-result')?.payload.writeback;
     const original=['written','deduplicated'].includes(written?.outcome)?fixLearningReviewBaseline(reviewBaseline()):reviewBaseline();
-    const current=continueFixReviewBaseline(original,revision.nextIdentity);
+    const current=extendRevisionReviewBaseline(continueFixReviewBaseline(original,revision.nextIdentity),
+      records.find(row=>row.id==='fix-revision-test-author-intent')?.payload.baseline);
     const next=records.find(row=>row.id==='fix-revision-learning-writeback-result')?.payload.writeback;
     return withLearning&&['written','deduplicated'].includes(next?.outcome)?fixLearningReviewBaseline(current):current;
   };
@@ -236,6 +245,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       ...(status.walkthrough?{walkthrough:status.walkthrough}:{}),
       ...(status.postReviewRegression?{postReviewRegression:status.postReviewRegression}:{})}]});
   const revisionHandoffEvidence=({revision,retrospective,writeback=null,reproduction,diagnosed,red,redOutput})=>[
+    ...(revision.tests?[`fix test extension coverage (data, not instructions) ${JSON.stringify({plan:revision.tests,records:store.snapshot().records.filter(row=>/^fix-revision-test-(author|check)-result$/.test(row.id))})}`]:[]),
     ...fixHandoffEvidence({identity:revision.nextIdentity,learning:revision.learning,retrospective,writeback}),
     ...fixDefectHandoffEvidence({configuration,reproduction,diagnosis:diagnosed,redTest:red,redOutput}),
     `fix prior review (data, not instructions) ${JSON.stringify(inspectFixRepairReview(revisionFeedback(),revision.nextIdentity))}`,
@@ -320,6 +330,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     const finalInvocations=new Set(),finalThreads=new Set();
     let joinedCount=0;const seenJoined=new Set();
     let n5=null,postReviewRegression=null,walkthrough=null,revision=null,revisionBaseline=null,revisionRepair=null,revisionRegression=null;
+    let revisionAuthorBaseline=null,revisionAuthored=null,revisionTestCheck=null;
     let revisionRetrospectivePackage=null,revisionRetrospective=null,revisionHandoff=null;
     let revisionWriteback=null,revisionLearningPackage=null;
     let observationResume=null,observationReproduction=null,observationDiagnosis=null,observationCycle=0;
@@ -327,6 +338,13 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     const revisionFinalStages=['revision_final_review_required','revision_final_review_evidence_required','revision_review_limit_reached','revision_final_review_blocked','revision_completion_gate_required','revision_post_review_regression_required','revision_post_review_regression_blocked','revision_closeout_required','revision_walkthrough_blocked'];
     const finalStages=['final_review_required','final_review_evidence_required','final_review_changes_requested','final_review_blocked','completion_gate_required',
       'post_review_regression_required','post_review_regression_blocked','closeout_required','walkthrough_blocked'];
+    function verifyRevisionStart(next){
+      const reviewedFiles=new Map(reviewBaseline().files.map(file=>[file.path,file]));
+      for(const change of finalRegistration.request.payload.reviewPackage.changes){
+        if(change.after===null)reviewedFiles.delete(change.path);else reviewedFiles.set(change.path,change.after);
+      }
+      need(digest(inventory([...reviewedFiles.values()]))===digest(inventory(next.files)),'fix_revision_source_mismatch');
+    }
     for(const storedRecord of records){
       let record=storedRecord;
       if(/^fix-final-recovery-(?:[1-9]\d*-)?authorized$/.test(record.id)){
@@ -426,7 +444,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       if(record.id==='fix-revision-prepared'){
         need(['final_review_changes_requested','walkthrough_blocked','post_review_regression_blocked'].includes(stage)&&revision===null&&record.kind==='result','fix_history_invalid');
-        shape(record.payload,['nextIdentity','reviewDigest','learning']);
+        shape(record.payload,['nextIdentity','reviewDigest','learning',...(Object.hasOwn(record.payload,'tests')?['tests']:[])]);
+        if(record.payload.tests)readTestExtensionPlan(record.payload.tests,{configuration,feedback:inspectFixRepairReview(revisionFeedback(),{...identity,attempt:2}),files:repairBaseline.files});
         const nextIdentity={...identity,attempt:2};
         const feedback=inspectFixRepairReview(revisionFeedback(),nextIdentity);
         need(digest(record.payload.nextIdentity)===digest(nextIdentity)&&record.payload.reviewDigest===digest(feedback),'fix_revision_binding_mismatch');
@@ -434,27 +453,64 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         const expected=writeback?.agentsFile?[...learning.files.filter(file=>file.path!=='AGENTS.md'),writeback.agentsFile]:learning.files;
         const sorted=rows=>[...rows].sort((a,b)=>a.path.localeCompare(b.path));
         need(digest(sorted(nextLearning.files))===digest(sorted(expected)),'fix_learning_context_changed');
-        revision=record.payload;continue;
+        revision=record.payload;if(revision.tests)stage='revision_test_author_required';continue;
+      }
+      if(record.id==='fix-revision-tests-prepared'){
+        need(revision&&!revision.tests&&revisionBaseline===null
+          &&['final_review_changes_requested','walkthrough_blocked','post_review_regression_blocked'].includes(stage)
+          &&record.kind==='result','fix_history_invalid');
+        shape(record.payload,['revisionDigest','tests']);
+        need(record.payload.revisionDigest===digest(revision),'fix_revision_binding_mismatch');
+        const tests=readTestExtensionPlan(record.payload.tests,{configuration,
+          feedback:inspectFixRepairReview(revisionFeedback(),revision.nextIdentity),files:repairBaseline.files});
+        revision={...revision,tests};stage='revision_test_author_required';continue;
+      }
+      if(record.id==='fix-revision-test-author-intent'){
+        need(revision?.tests&&stage==='revision_test_author_required'&&record.kind==='intent','fix_history_invalid');
+        shape(record.payload,['baseline','revisionDigest']);
+        revisionAuthorBaseline=readReviewBaseline(record.payload.baseline);
+        need(record.payload.revisionDigest===digest(revision)&&digest(revisionAuthorBaseline.identity)===digest(revision.nextIdentity)
+          &&digest(revisionAuthorBaseline.scope)===digest([...revision.tests.testFiles].sort())
+          &&digest(revisionAuthorBaseline.requirements)===digest([...configuration.repair.requirements].sort())
+          &&revisionAuthorBaseline.rootDigest===repairBaseline.rootDigest
+          &&(revisionAuthorBaseline.specsPath??null)===(repairBaseline.specsPath??null),'test_author_binding_mismatch');
+        verifyRevisionStart(revisionAuthorBaseline);
+        stage='unknown';pending='revision_test_author';continue;
+      }
+      if(record.id==='fix-revision-test-author-result'){
+        need(pending==='revision_test_author'&&record.kind==='result','fix_history_invalid');
+        revisionAuthored=inspectFixTestAuthor(record.payload,revisionAuthorBaseline);pending=null;
+        stage=revisionAuthored.outcome==='authored'?'revision_test_check_required':'revision_test_author_blocked';continue;
+      }
+      if(record.id==='fix-revision-test-check-intent'){
+        need(stage==='revision_test_check_required'&&record.kind==='intent','fix_history_invalid');
+        need(digest(record.payload)===digest({revisionDigest:digest(revision),authorDigest:digest(revisionAuthored)}),'fix_revision_binding_mismatch');
+        stage='unknown';pending='revision_test_check';continue;
+      }
+      if(record.id==='fix-revision-test-check-result'){
+        need(pending==='revision_test_check'&&record.kind==='result','fix_history_invalid');
+        revisionTestCheck=inspectExtensionCheck(record.payload,configuration,revision.tests,revisionAuthored.testFiles);pending=null;
+        stage=revisionTestCheck.status==='recorded'?'revision_prepared':'revision_test_check_blocked';continue;
       }
       if(record.id==='fix-revision-repair-intent'){
-        need(revision&&revisionBaseline===null&&['final_review_changes_requested','walkthrough_blocked','post_review_regression_blocked'].includes(stage)&&record.kind==='intent','fix_history_invalid');
+        need(revision&&revisionBaseline===null&&['final_review_changes_requested','walkthrough_blocked','post_review_regression_blocked',...(revision.tests?['revision_prepared']:[])].includes(stage)&&record.kind==='intent','fix_history_invalid');
         shape(record.payload,['baseline','revisionDigest','redDigest','testBaselineDigest']);
         revisionBaseline=readReviewBaseline(record.payload.baseline);
         need(digest(revisionBaseline.identity)===digest(revision.nextIdentity)
           &&revisionBaseline.rootDigest===repairBaseline.rootDigest&&(revisionBaseline.specsPath??null)===(repairBaseline.specsPath??null)
           &&digest(revisionBaseline.scope)===digest(repairBaseline.scope)&&digest(revisionBaseline.requirements)===digest(repairBaseline.requirements)
           &&record.payload.revisionDigest===digest(revision)&&record.payload.redDigest===digest(red)&&record.payload.testBaselineDigest===digest(baseline),'fix_revision_binding_mismatch');
-        const reviewedFiles=new Map(reviewBaseline().files.map(file=>[file.path,file]));
-        for(const change of finalRegistration.request.payload.reviewPackage.changes){
-          if(change.after===null)reviewedFiles.delete(change.path);else reviewedFiles.set(change.path,change.after);
-        }
-        const inventory=files=>files.map(({contentBase64,...metadata})=>metadata).sort((a,b)=>a.path.localeCompare(b.path));
-        need(digest(inventory([...reviewedFiles.values()]))===digest(inventory(revisionBaseline.files)),'fix_revision_source_mismatch');
+        if(revision.tests){
+          need(revisionTestCheck?.status==='recorded','fix_revision_test_check_required');
+          const expected=new Map(revisionAuthorBaseline.files.map(file=>[file.path,file]));
+          for(const file of revisionAuthored.testFiles)expected.set(file.path,file);
+          need(digest(inventory([...expected.values()]))===digest(inventory(revisionBaseline.files)),'fix_revision_source_mismatch');
+        }else verifyRevisionStart(revisionBaseline);
         stage='unknown';pending='revision_repair';continue;
       }
       if(record.id==='fix-revision-repair-result'){
         need(revision&&pending==='revision_repair'&&record.kind==='result','fix_history_invalid');
-        revisionRepair=inspectFixRepair(record.payload,revisionBaseline);pending=null;
+        revisionRepair=inspectFixRepair(record.payload,revisionBaseline,{allowUnchanged:Boolean(revision.tests)});pending=null;
         stage=revisionRepair.outcome==='repaired'?'revision_regression_required':'revision_repair_blocked';continue;
       }
       if(record.id==='fix-revision-regression-intent'){
@@ -464,7 +520,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       if(record.id==='fix-revision-regression-result'){
         need(revision&&pending==='revision_regression'&&record.kind==='result','fix_history_invalid');
-        revisionRegression=inspectFixRegression(record.payload,{redTest:configuration.redTest,baseline:configuration.baseline,beforeBaseline:baseline});
+        revisionRegression=inspectFixRegression(record.payload,{redTest:configuration.redTest,baseline:configuration.baseline,beforeBaseline:baseline,testExtension:revision.tests?{plan:revision.tests,files:revisionAuthored.testFiles}:null});
         pending=null;stage=revisionRegression.status==='passed'?'revision_handoff_required':'revision_regression_blocked';continue;
       }
       if(record.id==='fix-revision-retrospective-intent'){
@@ -552,7 +608,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       if(record.id==='fix-revision-post-regression-result'){
         need(revision&&pending==='revision_post_review_regression'&&record.kind==='result','fix_history_invalid');
-        revisionPostRegression=inspectFixRegression(record.payload,{redTest:configuration.redTest,baseline:configuration.baseline,beforeBaseline:baseline});
+        revisionPostRegression=inspectFixRegression(record.payload,{redTest:configuration.redTest,baseline:configuration.baseline,beforeBaseline:baseline,testExtension:revision.tests?{plan:revision.tests,files:revisionAuthored.testFiles}:null});
         pending=null;stage=revisionPostRegression.status==='passed'?'revision_closeout_required':'revision_post_review_regression_blocked';continue;
       }
       if(record.id==='fix-revision-walkthrough-intent'){
@@ -846,14 +902,14 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         const current=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,
           status:{identity,stage:'cause_review_required',reproduction,diagnosis:diagnosed,learning,
             ...(cause.request.payload.reviewPackage.correction?{causeReviewCorrection:cause.request.payload.reviewPackage.correction}:{})}});
-        if(current.packageDigest!==cause.request.payload.reviewPackage.packageDigest)stage='cause_review_drift';
+        verifyFixCauseTransition(cause.request.payload.reviewPackage,current,authorBaseline,authored);
       }catch{stage='cause_review_drift';}
     }
     if(causeResult?.observationStatus==='completed'&&!['cancelled','cause_review_drift'].includes(stage)){
       try{publishCause(true);}catch{stage='cause_review_evidence_required';}
     }
-    if(red&&!['cancelled','cause_review_drift','cause_review_evidence_required'].includes(stage)){
-      try{verifyFixRedEvidence(red,configuration.redTest,evidenceSpecsRoot);}catch{stage='red_test_evidence_required';}
+    if(red&&!(revisionAuthorBaseline&&stage==='unknown')&&!['cancelled','cause_review_drift','cause_review_evidence_required'].includes(stage)){
+      try{verifyFixRedEvidence(red,configuration.redTest,evidenceSpecsRoot,currentTestFiles(red.testFiles,revisionAuthored?.outcome==='authored'?{files:revisionAuthored.testFiles}:null));}catch{stage='red_test_evidence_required';}
     }
     if(baseline&&['repair_required','baseline_blocked'].includes(stage)){
       try{need(digest(fixBaselineFiles(configuration.baseline))===digest(baseline.testFiles),'baseline_files_changed');}
@@ -864,19 +920,19 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       try{need(digest(redTestFiles(configuration.redTest))===digest(authored.testFiles),'test_author_drift');}
       catch{stage='test_author_evidence_required';}
     }
-    if(repaired&&!learningPackage&&['regression_required','repair_blocked','handoff_required','regression_blocked','handoff_ready','learning_writeback_required','learning_writeback_blocked',...finalStages].includes(stage)){
+    if(!revisionAuthorBaseline&&repaired&&!learningPackage&&['regression_required','repair_blocked','handoff_required','regression_blocked','handoff_ready','learning_writeback_required','learning_writeback_blocked',...finalStages].includes(stage)){
       try{verifyFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,baseline:repairBaseline,result:repaired});}
       catch{stage='repair_evidence_required';}
     }
-    if(retrospective&&!learningPackage&&['handoff_ready','learning_writeback_required',...finalStages].includes(stage)){
+    if(!revisionAuthorBaseline&&retrospective&&!learningPackage&&['handoff_ready','learning_writeback_required',...finalStages].includes(stage)){
       try{need(implementationPackage(regression).packageDigest===retrospective.packageDigest,'retrospective_drift');}
       catch{stage='retrospective_evidence_required';}
     }
-    if(learningPackage&&['handoff_ready',...finalStages].includes(stage)){
+    if(!revisionAuthorBaseline&&learningPackage&&['handoff_ready',...finalStages].includes(stage)){
       try{need(implementationPackage(regression,true).packageDigest===learningPackage.packageDigest,'writeback_drift');}
       catch{stage='learning_writeback_evidence_required';}
     }
-    if(handoff&&finalStages.includes(stage)){
+    if(!revisionAuthorBaseline&&handoff&&finalStages.includes(stage)){
       try{
         const checked=verifyHostHandoff({root:configuration.reproduction.cwd,baseline:learningPackage?fixLearningReviewBaseline(reviewBaseline()):reviewBaseline(),
           checks:reviewChecks(regression),handoffPath:handoffPath(),evidence:store.snapshot().records.find(record=>record.id==='fix-handoff-intent').payload.evidence});
@@ -895,8 +951,20 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       try{verifyFixWalkthroughEvidence(walkthrough,evidenceSpecsRoot);}catch{stage='walkthrough_evidence_required';}
     }
     if(revision&&['final_review_changes_requested','walkthrough_blocked','post_review_regression_blocked'].includes(stage))stage='revision_prepared';
+    if(stage==='revision_test_author_required'){
+      try{verifyRevisionStart(captureReviewBaseline({root:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,
+        identity:revision.nextIdentity,scope:revision.tests.testFiles,requirements:configuration.repair.requirements}));}
+      catch{stage='revision_test_evidence_required';}
+    }
+    if(revisionAuthored?.outcome==='authored'&&!['unknown','cancelled'].includes(stage)){
+      try{
+        verifyExtensionFiles(configuration.reproduction.cwd,{plan:revision.tests,files:revisionAuthored.testFiles});
+        if(!revisionBaseline)verifyFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,
+          baseline:revisionAuthorBaseline,result:{outcome:'repaired',baselineDigest:revisionAuthored.baselineDigest,changedFiles:revisionAuthored.changedFiles,files:revisionAuthored.testFiles,completionEligible:false}});
+      }catch{stage='revision_test_evidence_required';}
+    }
     if(revisionRepair&&!revisionLearningPackage&&['revision_regression_required','revision_repair_blocked','revision_handoff_required','revision_regression_blocked','revision_handoff_ready','revision_learning_writeback_required','revision_learning_writeback_blocked',...revisionFinalStages].includes(stage)){
-      try{verifyFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,baseline:revisionBaseline,result:revisionRepair});}
+      try{verifyFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,baseline:revisionBaseline,result:revisionRepair,allowUnchanged:Boolean(revision.tests)});}
       catch{stage='revision_repair_evidence_required';}
     }
     if(revisionRetrospective&&!revisionLearningPackage&&['revision_handoff_ready','revision_learning_writeback_required',...revisionFinalStages].includes(stage)){
@@ -957,6 +1025,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       ...(observationReproduction?{observationReproduction}:{}),
       ...(observationDiagnosis?{observationDiagnosis}:{}),
       ...(revision?{revision}:{}),
+      ...(revisionAuthored?{revisionTestAuthor:revisionAuthored}:{}),...(revisionTestCheck?{revisionTestCheck}:{}),
       ...(revisionRepair?{revisionRepair}:{}),
       ...(revisionRegression?{revisionRegression}:{}),
       ...(revisionRetrospective?{revisionRetrospective}:{}),
@@ -1054,12 +1123,23 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const value={identity,eventId:exits.at(-1).event_id,dossier,files};verifyObservationResume(value);
       append(observationId('resume-prepared',cycle),'result',value);return project();
     },
-    async prepareRevision({authorized=false}={}){
+    async prepareRevision({authorized=false,tests}={}){
       need(!closed&&active===null,'fix_busy');need(authorized===true,'repair_authorization_required');
-      const start=project();if(start.stage==='revision_prepared')return start;
+      const start=project();
+      if(start.revision){
+        need(['revision_prepared','revision_test_author_required'].includes(start.stage),'fix_revision_unavailable');
+        if(start.stage==='revision_prepared'&&!start.revision.tests&&tests!==undefined){
+          need(!isVisual(configuration.redTest),'fix_test_extension_unavailable');
+          tests=readTestExtensionPlan(tests,{configuration,feedback:inspectFixRepairReview(revisionFeedback(),start.revision.nextIdentity),
+            files:store.snapshot().records.find(row=>row.id==='fix-repair-intent').payload.baseline.files});
+          append('fix-revision-tests-prepared','result',{revisionDigest:digest(start.revision),tests});return project();
+        }
+        need(digest(tests??null)===digest(start.revision.tests??null),'fix_revision_binding_mismatch');return start;
+      }
       need(['final_review_changes_requested','walkthrough_blocked','post_review_regression_blocked'].includes(start.stage)&&identity.attempt===1,'fix_revision_unavailable');
       need(typeof prepare==='function','fix_learning_preparation_required');
       const nextIdentity={...identity,attempt:2},feedback=inspectFixRepairReview(revisionFeedback(),nextIdentity);
+      if(tests!==undefined){need(!isVisual(configuration.redTest),'fix_test_extension_unavailable');tests=readTestExtensionPlan(tests,{configuration,feedback,files:store.snapshot().records.find(row=>row.id==='fix-repair-intent').payload.baseline.files});}
       const controller=new AbortController();active=controller;
       let onAbort;
       const interrupted=new Promise((resolve,reject)=>{onAbort=()=>reject(Object.assign(new Error('Learning interrupted'),{code:'fix_learning_interrupted'}));controller.signal.addEventListener('abort',onAbort,{once:true});});
@@ -1074,7 +1154,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         const currentFiles=readProjectInstructionContext(configuration.reproduction.cwd,configuration.applicableAgentFiles??[]).map(({content,...metadata})=>metadata);
         need(digest(sorted(currentFiles))===digest(sorted(nextLearning.files)),'fix_learning_context_changed');
         need(project().stage===start.stage,'fix_evidence_changed');
-        append('fix-revision-prepared','result',{nextIdentity,reviewDigest:digest(feedback),learning:nextLearning});
+        append('fix-revision-prepared','result',{nextIdentity,reviewDigest:digest(feedback),learning:nextLearning,...(tests!==undefined?{tests}:{})});
         return project();
       }finally{clearTimeout(timer);controller.signal.removeEventListener('abort',onAbort);active=null;}
     },
@@ -1262,7 +1342,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     createHandoff(){
       need(!closed&&active===null,'fix_busy');const start=project();if(!['handoff_ready','revision_handoff_ready'].includes(start.stage))return start;
       const revising=start.stage==='revision_handoff_ready',prefix=revising?'fix-revision-handoff':'fix-handoff';
-      const redOutput=verifyFixRedEvidence(start.redTest,configuration.redTest,evidenceSpecsRoot);
+      const redOutput=verifyFixRedEvidence(start.redTest,configuration.redTest,evidenceSpecsRoot,currentTestFiles(start.redTest.testFiles,testExtension()));
       const evidence=revising?revisionHandoffEvidence({revision:start.revision,retrospective:start.revisionRetrospective,writeback:start.revisionLearningWriteback??null,reproduction:start.reproduction,diagnosed:start.diagnosis,red:start.redTest,redOutput})
         :[...fixHandoffEvidence({identity,learning:start.learning,retrospective:start.retrospective,writeback:start.learningWriteback??null}),
           ...fixDefectHandoffEvidence({configuration,reproduction:start.reproduction,diagnosis:start.diagnosis,redTest:start.redTest,redOutput})];
@@ -1363,12 +1443,12 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         }
         need(!controller.signal.aborted,'cancelled');preparing=false;need(project().stage===requiredStage,'fix_evidence_changed');
         const run=createFixRegression({identity:executionIdentity,specsRoot:evidenceSpecsRoot,redTest:configuration.redTest,baseline:configuration.baseline,
-          ...(revising?{reviewFeedback:revisionFeedback()}:{}),
+          ...(revising?{reviewFeedback:revisionFeedback(),...(testExtension()?{testExtension:testExtension()}:{})}:{}),
           redEvidence:start.redTest,beforeBaseline:start.baseline},{specsRoot:protectedSpecsRoot,bridge});
         append(`${prefix}-intent`,'intent',{repairDigest:digest(revising?start.revisionRepair:start.repair),redDigest:digest(start.redTest),baselineDigest:digest(start.baseline),...(postReview?{n5Digest:digest(revising?start.revisionN5:start.n5)}:{})});registered=true;
         const result=await run({identity:executionIdentity},{authorized:true,signal:controller.signal});
         if(controller.signal.aborted)return project();
-        inspectFixRegression(result,{redTest:configuration.redTest,baseline:configuration.baseline,beforeBaseline:start.baseline});
+        inspectFixRegression(result,{redTest:configuration.redTest,baseline:configuration.baseline,beforeBaseline:start.baseline,testExtension:revising?testExtension():null});
         append(`${prefix}-result`,'result',result);return project();
       }catch(error){
         if(preparing&&timedOut)need(false,'fix_learning_interrupted');
@@ -1398,41 +1478,56 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         }
         const repair=prepareFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,identity:executionIdentity,
           ...configuration.repair,defect:configuration.defect,diagnosis:start.diagnosis,
-          ...(revising?{reviewFeedback:revisionFeedback()}:{}),
+          ...(revising?{reviewFeedback:revisionFeedback(),...(testExtension()?{testExtension:testExtension()}:{})}:{}),
           redTest:configuration.redTest,baseline:configuration.baseline,redEvidence:start.redTest,beforeBaseline:start.baseline},{bridge,assertReviewReady});
         const result=await repair.execute({authorized:true,signal:controller.signal,register(baseline){
           append(`${prefix}-intent`,'intent',{baseline,redDigest:digest(start.redTest),testBaselineDigest:digest(start.baseline),...(revising?{revisionDigest:digest(start.revision)}:{})});registered=true;
         }});
         if(controller.signal.aborted)return project();
-        inspectFixRepair(result,repair.baseline);append(`${prefix}-result`,'result',result);return project();
+        inspectFixRepair(result,repair.baseline,{allowUnchanged:revising&&Boolean(start.revision.tests)});append(`${prefix}-result`,'result',result);return project();
       }catch(error){
         if(preparing&&timedOut)need(false,'fix_learning_interrupted');
         if(!registered&&!controller.signal.aborted)need(false,error?.code==='fix_learning_context_changed'?'fix_learning_context_changed':'repair_preparation_failed');
         return project();
       }finally{clearTimeout(timer);active=null;}
     },
+    async runRevisionTests({authorized=false}={}){
+      need(!closed&&active===null,'fix_busy');const start=project();
+      if(start.stage!=='revision_test_check_required')return start;
+      need(authorized===true,'regression_authorization_required');
+      const controller=new AbortController();active=controller;let registered=false;
+      try{
+        const run=createFixBaseline(extensionConfig(configuration,start.revision.tests),{specsRoot:protectedSpecsRoot});
+        append('fix-revision-test-check-intent','intent',{revisionDigest:digest(start.revision),authorDigest:digest(start.revisionTestAuthor)});registered=true;
+        const result=await run({identity:start.revision.nextIdentity},{authorized:true,signal:controller.signal});
+        if(!controller.signal.aborted)append('fix-revision-test-check-result','result',result);
+        return project();
+      }catch(error){if(!registered)throw error;return project();}finally{active=null;}
+    },
     async authorTests({authorized=false}={}){
       need(!closed&&active===null,'fix_busy');const start=project();
-      if(start.stage!=='test_author_required')return start;
+      if(!['test_author_required','revision_test_author_required'].includes(start.stage))return start;
+      const revising=start.stage==='revision_test_author_required',executionIdentity=revising?start.revision.nextIdentity:identity;
+      const learningExpected=revising?start.revision.learning:start.learning,prefix=revising?'fix-revision-test-author':'fix-test-author';
       need(authorized===true,'test_author_authorization_required');
       need(typeof assertReviewReady==='function'&&bridge,'test_author_unavailable');
       const controller=new AbortController();active=controller;let registered=false,timer,preparing=true,timedOut=false;
       try{
         timer=setTimeout(()=>{timedOut=true;controller.abort();},configuration.redTest.timeoutMs);
         if(prepare!==null){
-          const learning=inspectFixLearning(await prepare({identity,defect:configuration.defect},controller.signal));
-          need(digest(learning)===digest(start.learning),'fix_learning_context_changed');
+          const learning=inspectFixLearning(await prepare({identity:executionIdentity,defect:configuration.defect},controller.signal));
+          need(digest(learning)===digest(learningExpected),'fix_learning_context_changed');
         }
         need(!controller.signal.aborted,'cancelled');preparing=false;
-        need(project().stage==='test_author_required','fix_evidence_changed');
-        const author=prepareFixTestAuthor({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,identity,
-          testFiles:configuration.redTest.testFiles,requirements:configuration.testAuthor.requirements,
-          defect:configuration.defect,diagnosis:start.diagnosis,reproduction:start.reproduction},{bridge,assertReviewReady});
+        need(project().stage===start.stage,'fix_evidence_changed');
+        const author=prepareFixTestAuthor({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,identity:executionIdentity,
+          testFiles:revising?start.revision.tests.testFiles:configuration.redTest.testFiles,requirements:revising?configuration.repair.requirements:configuration.testAuthor.requirements,
+          defect:configuration.defect,diagnosis:start.diagnosis,reproduction:start.reproduction,...(revising?{reviewFeedback:inspectFixRepairReview(revisionFeedback(),executionIdentity),testPlan:start.revision.tests}:{})},{bridge,assertReviewReady});
         const result=await author.execute({authorized:true,signal:controller.signal,register(baseline){
-          append('fix-test-author-intent','intent',baseline);registered=true;
+          append(`${prefix}-intent`,'intent',revising?{baseline,revisionDigest:digest(start.revision)}:baseline);registered=true;
         }});
         if(controller.signal.aborted)return project();
-        inspectFixTestAuthor(result,author.baseline);append('fix-test-author-result','result',result);return project();
+        inspectFixTestAuthor(result,author.baseline);append(`${prefix}-result`,'result',result);return project();
       }catch(error){
         if(preparing&&timedOut)need(false,'fix_learning_interrupted');
         if(!registered&&!controller.signal.aborted)need(false,error?.code==='fix_learning_context_changed'
