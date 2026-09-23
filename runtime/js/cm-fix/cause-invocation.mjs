@@ -4,18 +4,22 @@ import {inspectProviderCauseReview} from '../cm-ai/provider-review-observation.m
 import {digest,id,json,need,shape,text,hex} from '../cm-ai/effect-contract.mjs';
 
 // A run outlives the session that created it. Its durable configuration keeps the
-// original hostContextId, so stored records and fingerprints stay byte-identical;
-// a resumed session declares its own next to it. Both are host identities: a grant
-// may carry either, and the reviewer stays independent of both.
+// original hostContextId, so stored records and fingerprints stay byte-identical.
+// Every later session that signs a grant is first written into the run's own
+// history (fix-host-joined-N), and the session running now is added on top. All
+// of them are host identities: a grant may carry any, and the reviewer stays
+// independent of every one. The history is what lets a third session accept a
+// grant the second one signed.
+export const MAX_FIX_JOINED_HOSTS=16;
 export function fixHostContexts(configuration){
   const hosts=configuration.hostContextIds??[configuration.hostContextId];
-  need(Array.isArray(hosts)&&hosts.length>=1&&hosts.length<=2&&new Set(hosts).size===hosts.length
+  need(Array.isArray(hosts)&&hosts.length>=1&&hosts.length<=MAX_FIX_JOINED_HOSTS+2&&new Set(hosts).size===hosts.length
     &&hosts[0]===configuration.hostContextId,'invalid_host_context');
   hosts.forEach(id);return hosts;
 }
 export function validateCauseReviewer(raw,hostContextId,maxExclusions=32){
   const hosts=Array.isArray(hostContextId)?hostContextId:[hostContextId];
-  need(hosts.length>=1&&hosts.length<=2,'invalid_cause_reviewer');hosts.forEach(id);
+  need(hosts.length>=1&&hosts.length<=MAX_FIX_JOINED_HOSTS+2,'invalid_cause_reviewer');hosts.forEach(id);
   need([32,33,34].includes(maxExclusions),'invalid_cause_reviewer');
   const value=json(raw);shape(value,['reviewerId','adapterId','provider','requestedModel','contextId','excludedThreadIds',
     ...(Object.hasOwn(value,'workerConfigurationDigest')?['workerConfigurationDigest']:[])]);

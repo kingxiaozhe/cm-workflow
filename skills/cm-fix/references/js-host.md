@@ -14,7 +14,10 @@
    换会话恢复时，`--host-context` 填当前真实会话，另加 `--original-host-context` 填创建这次运行的旧会话 ID
    （取自 `specs/.reviews/.execution/<runId>/state.json` 首条 `fix-configuration` 记录的
    `configuration.hostContextId`）。durable 配置与指纹保持原样、旧记录一字不改；填错只会 `fingerprint_mismatch`
-   失败退出。两个会话身份都算宿主：授权凭据两者皆可，reviewer 必须同时独立于两者。同会话重开不带此参数。
+   失败退出。同会话重开不带此参数。换过几次会话都只填最初那个：新会话第一次签审查授权前，会先在存档里追加一条
+   `fix-host-joined-N` 记下自己，所以之后任何会话都认得它签过的授权。只打开看状态不会写这一条。
+   创建会话、记下的接手会话、当前会话都算宿主，reviewer 必须独立于其中每一个；接手会话最多记 16 个。
+   0.16.1、0.16.2 期间换会话签过授权的旧运行没有这条记录，只能由当时签授权的那个会话继续。
 3. 配置是数据文件，不是脚本模块。读取 `../../../scripts/cm-fix-host.mjs` 的配置解析与
    `--help`，按已批准范围填写 `specsRoot`、`identity`、`defect`、`reproduction`；后者为
    `{cwd, command, expectedFailure:{exitCode,outputIncludes}, timeoutMs}`，命令使用 argv 数组。
