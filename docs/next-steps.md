@@ -63,9 +63,9 @@ cm-ai 的 V3 会话父运行用 `--original-host-context` 恢复后，QA 修复�
 
 ### 3. 驾驶员推广到其它工作流
 
-**现状**：cm-fix、cm-ai、cm-ai-batch、cm-check、cm-idea、cm-init、cm-refactor 与 cm-test 已有单步驾驶员，共用 JSONL 传输核心。还剩 1 个宿主：`cm-prd-host`（驾驶员已写好，等补齐一条预检测试后合入）。cm-test 的浏览器执行缺少驾驶员 runner，会在发送前拒绝。cm-check 宿主无持久会话，驾驶员只能重新开始或只读 status，不能跨进程 resume。
+**现状**：九个 JSONL 宿主（cm-fix、cm-ai、cm-ai-batch、cm-check、cm-idea、cm-init、cm-prd、cm-refactor、cm-test）都已有单步驾驶员，共用 JSONL 传输核心。剩余缺口：cm-prd 的 PDF/HTML 材料执行器与 cm-test 的浏览器执行仍缺驾驶员 runner，会在发送前拒绝；cm-check 宿主无持久会话，驾驶员只能重新开始或只读 status，不能跨进程 resume。
 
-**下一步**：逐个从各宿主的操作路由和能力接线推导「这一步会问什么」，为人工答案做发送前预检；执行证据必须来自实际 runner。不能照搬 cm-fix 或 cm-ai 的表。
+**下一步**：补齐上述执行证据类 runner（PDF/HTML 读取、浏览器执行），证据必须来自实际运行；驾驶员的预检表仍须从各宿主的操作路由推导，不能照搬。
 
 ### 4. 两份「归档让路」的实现收拢成一份
 
