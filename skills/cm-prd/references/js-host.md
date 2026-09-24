@@ -6,6 +6,14 @@
 
 ## 启动与权限
 
+单步操作可用随仓库的 `scripts/cm-prd-drive.mjs`：`node "{CM_WORKFLOW_ROOT}/scripts/cm-prd-drive.mjs" --plan PLAN.json <operation>`。
+PLAN 填 `project`、`specs`、`request`，继续时填状态中的 `runId` 为 `session`；变更模式填 `change`，
+人工内容放 `answers/analyze.json`、`generate.json`、`review.json`、`correct.json` 或 `summary.json`。
+路径相对 PLAN 文件。驾驶员先校验答案、范围、当前会话和恢复绑定，再启动宿主；缺少 PDF/HTML 的真实读取或浏览器执行器时，
+`prd_materials` 会在启动前拒绝。`prd_self_check` 需要 PLAN 的 `contextChecks` 命令和逐项 `contextJudgements`，
+由驾驶员实际运行命令并附上退出证据；静态 `materials.json`、`self-check.json` 不能作为执行证据。
+用 `--help` 查看格式。审查、处置和发布仍受宿主原权限与门禁约束。
+
 核对真实代码根、specs根、docs材料、可选用例文件和真实runtime（codex或claude）。
 根据原Step 0–5完成交付形态、目录用途、代码地图/平台约束的理解；需要创建项目指令、基准资产、
 ADR或其他当前JS未提供的写入能力时，先报告具体缺口，不能跳过该业务要求或旁路手写。
