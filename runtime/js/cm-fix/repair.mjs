@@ -4,7 +4,7 @@ import {currentTestFiles,verifyExtensionFiles} from './test-extension.mjs';
 import {types} from 'node:util';
 import {captureReviewBaseline,readReviewBaseline} from '../cm-ai/review-package.mjs';
 import {validateDeveloperScope} from '../cm-ai/developer-adapter.mjs';
-import {inspectFixRedTest,verifyFixRedEvidence} from './red-test.mjs';
+import {inspectFixRedTest,verifyFixRedEvidence,redEvidenceRetry} from './red-test.mjs';
 import {inspectFixBaseline,fixBaselineFiles} from './baseline.mjs';
 import {digest,json,need,shape,validIdentity} from '../cm-ai/effect-contract.mjs';
 import {inspectFixRepairReview} from './final-review.mjs';
@@ -55,9 +55,9 @@ export function prepareFixRepair(options,{bridge,assertReviewReady}){
   need(config.codeProject===config.redTest.cwd&&config.codeProject===config.baseline.cwd,'repair_project_mismatch');
   // A findings repair may retain the original failing test evidence; it must
   // not rerun an already-green test and fabricate a new red observation.
-  const redIdentity=priorReview&&config.redEvidence.output?.path===`.reviews/fix-${config.identity.taskId.slice(6)}-a1-red-output.md`
+  const redIdentity=priorReview&&config.redEvidence.output?.path?.startsWith(`.reviews/fix-${config.identity.taskId.slice(6)}-a1-red-output`)
     ?priorReview.identity:config.identity;
-  const red=inspectFixRedTest(config.redEvidence,config.redTest,redIdentity,config.redEvidence.testFiles);
+  const red=inspectFixRedTest(config.redEvidence,config.redTest,redIdentity,config.redEvidence.testFiles,redEvidenceRetry(config.redEvidence));
   const previous=inspectFixBaseline(config.beforeBaseline,config.baseline,config.beforeBaseline.testFiles);
   need(red.status==='red_confirmed'&&previous.status==='recorded','repair_evidence_required');
   const protectedTests=new Set([...config.redTest.testFiles,...config.baseline.testFiles,...(config.testExtension?.plan.testFiles??[])].map(file=>file.toLowerCase()));

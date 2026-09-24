@@ -21,7 +21,8 @@
 //     "runtime": "codex" | "claude",        缺省 codex
 //     "reviewConfig": "review.json",         可选
 //     "permissions": ["--allow-red-test", ...],   原样传给宿主，不另造一套词
-//     "answers": "answers"                   答案目录
+//     "answers": "answers",                  答案目录；abandon_step 可省略
+//     "reason": "旧本地步骤结果丢失"           abandon_step 必填，并需 --allow-abandon
 //   }
 //
 // answers/ 里按反问种类放文件，一种一个：
@@ -40,8 +41,8 @@ import {fixEvidenceNames} from '../runtime/js/cm-fix/layout.mjs';
 const here=path.dirname(fileURLToPath(import.meta.url));
 const HOST=path.join(here,'cm-fix-host.mjs');
 
-// 每个步骤会反问什么。宿主的规矩是「一步做了一半就永远卡住不能重试」，所以答案
-// 必须在发指令之前查齐，缺一个都不发——这是驾驶员最要紧的一条护栏。
+// 每个步骤会反问什么。unknown 默认不重派；仅显式授权的本地 abandon_step 可重做。
+// 答案必须在发原步骤前查齐，缺一个都不发——这是驾驶员最要紧的一条护栏。
 // design_change_required uses red_test (or test_author_required/author_tests).
 // escalation_required uses publish_dossier/finish: neither requests answers.
 const ASKS={
@@ -55,7 +56,7 @@ const ASKS={
 const READ_ONLY=new Set(['status','final_review_package','completion_evidence','cause_review_package']);
 const KNOWN=new Set([...Object.keys(ASKS),...READ_ONLY,'cancel','handoff','publish_review','check_n5',
   'publish_dossier','learning_writeback','walkthrough','finish','final_review','cause_review',
-  'recover_final_review','resume','revision_test_check']);
+  'recover_final_review','abandon_step','resume','revision_test_check']);
 
 const stderr=line=>process.stderr.write(`[drive] ${line}\n`);
 const stop=(code,line)=>{stderr(line);process.exit(code);};
@@ -69,14 +70,17 @@ function loadPlan(){
   const planPath=path.resolve(argv[at+1]),base=path.dirname(planPath);
   let plan;
   try{plan=JSON.parse(fs.readFileSync(planPath,'utf8'));}catch(error){stop(2,`读不了 ${planPath}: ${error.code??error.message}`);}
-  for(const key of ['config','cwd','mode','hostContext','permissions','answers'])
+  for(const key of ['config','cwd','mode','hostContext','permissions',...(operation==='abandon_step'?[]:['answers'])])
     if(!Object.hasOwn(plan,key))stop(2,`PLAN 缺少字段 ${key}`);
   if(!['create','resume'].includes(plan.mode))stop(2,'mode 只能是 create 或 resume');
   if(!Array.isArray(plan.permissions)||plan.permissions.some(p=>!/^--allow-[a-z-]+$/.test(p)))
     stop(2,'permissions 必须是 --allow-xxx 形式的数组，原样传给宿主');
+  if(operation==='abandon_step'&&(!plan.permissions.includes('--allow-abandon')||typeof plan.reason!=='string'
+    ||!plan.reason.trim().length||Buffer.byteLength(plan.reason,'utf8')>1000||/[\r\n\0\u0085\u2028\u2029]/.test(plan.reason)))
+    stop(2,'abandon_step 需要 PLAN.reason（单行，最多 1000 字节）和 --allow-abandon');
   if(plan.originalHostContext&&plan.mode!=='resume')stop(2,'originalHostContext 只在 resume 时有意义');
   const resolve=p=>path.resolve(base,p);
-  return {operation,plan,paths:{config:resolve(plan.config),answers:resolve(plan.answers),
+  return {operation,plan,paths:{config:resolve(plan.config),answers:plan.answers?resolve(plan.answers):null,
     review:plan.reviewConfig?resolve(plan.reviewConfig):null}};
 }
 
@@ -181,7 +185,8 @@ function main(){
   let done=false;
   readline.createInterface({input:child.stdout}).on('line',line=>{
     let row;try{row=JSON.parse(line);}catch{process.stdout.write(line+'\n');return;}
-    if(row.type==='host_ready'){send({requestId:'drive',operation,...(operation==='prepare_revision'&&Object.hasOwn(plan,'revisionTests')?{tests:plan.revisionTests}:{})});return;}
+    if(row.type==='host_ready'){send({requestId:'drive',operation,...(operation==='abandon_step'?{reason:plan.reason}:{}),
+      ...(operation==='prepare_revision'&&Object.hasOwn(plan,'revisionTests')?{tests:plan.revisionTests}:{})});return;}
     if(row.type==='host_request'){
       const result=answerFor(row,answers,paths);
       if(result===null){

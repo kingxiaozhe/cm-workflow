@@ -11,9 +11,10 @@ import {inspectFixReproduction} from './reproduce.mjs';
 import {isVisual,visualConfiguration,visualBefore,inspectVisualBefore,verifyVisualCarrier} from './visual.mjs';
 
 export const redTestFiles=config=>isVisual(config)?(visualConfiguration(config),[]):readReviewSourceFiles(config.cwd,config.testFiles).map(({contentBase64,...metadata})=>metadata);
+export const redEvidenceRetry=value=>Number(/-red-output-retry-([1-8])\.md$/.exec(value?.output?.path??'')?.[1]??0);
 
 // History validation is separate from current disk checks: drift must not erase a past run.
-export function inspectFixRedTest(raw,config,identity,registeredFiles){
+export function inspectFixRedTest(raw,config,identity,registeredFiles,retry=0){
   if(isVisual(config)){
     const value=json(raw);shape(value,['status','observation','testFiles','completionEligible']);inspectVisualBefore(value.observation,config);
     need(value.status==='red_confirmed'&&value.completionEligible===false&&digest(value.testFiles)===digest([])
@@ -28,7 +29,7 @@ export function inspectFixRedTest(raw,config,identity,registeredFiles){
     next:status==='blocked'?'resolve_execution':reproduced?'diagnose':'observation',observation:{...observed,id:'reproduce'}},config);
   need(value.status===status&&value.completionEligible===false&&digest(value.testFiles)===digest(registeredFiles),'red_test_mismatch');
   shape(value.output,['path','sha256','complete']);
-  need(value.output.path===`.reviews/fix-${identity.taskId.slice(6)}-a${identity.attempt}-red-output.md`
+  need(value.output.path===`.reviews/fix-${identity.taskId.slice(6)}-a${identity.attempt}-red-output${retry?`-retry-${retry}`:''}.md`
     &&/^[a-f0-9]{64}$/.test(value.output.sha256)&&value.output.complete===(observed.outcome!=='unavailable'),'red_test_mismatch');
   return value;
 }
@@ -50,7 +51,7 @@ export function verifyFixRedEvidence(value,config,specsRoot,currentFiles=value.t
   return raw;
 }
 
-export function createFixRedTest(config,{specsRoot,identity,protectedSpecsRoot=null}){
+export function createFixRedTest(config,{specsRoot,identity,protectedSpecsRoot=null,retry=0}){
   if(isVisual(config)){
     visualConfiguration(config);let used=false;
     return async(request,{signal,authorized})=>{
@@ -65,7 +66,7 @@ export function createFixRedTest(config,{specsRoot,identity,protectedSpecsRoot=n
   need(Number.isInteger(config.expectedFailure.exitCode)&&config.expectedFailure.exitCode>0&&config.expectedFailure.exitCode<=255,'invalid_failure_signature');
   need(typeof config.expectedFailure.outputIncludes==='string','invalid_failure_signature');
   const slug=/^T-FIX-([a-z0-9]+(?:-[a-z0-9]+)*)$/.exec(identity.taskId)?.[1];need(slug,'invalid_fix_slug');
-  const outputName=`fix-${slug}-a${identity.attempt}-red-output.md`;
+  const outputName=`fix-${slug}-a${identity.attempt}-red-output${retry?`-retry-${retry}`:''}.md`;
   let used=false,total=0;const stdout=[],stderr=[];
   const run=createHostCheck({cwd:config.cwd,specsRoot:protectedSpecsRoot,commands:[{id:'red-test',command:config.command}],timeoutMs:config.timeoutMs,
     outputIncludes:config.expectedFailure.outputIncludes,onOutput:({stream,chunk})=>{
