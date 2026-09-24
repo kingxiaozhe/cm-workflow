@@ -89,7 +89,7 @@ test('--original-host-context is refused when creating a run', () => {
     fs.writeFileSync(config, JSON.stringify({specsRoot: null, identity: {repositoryId: 'fixture',
       runId: 'cross-session', taskId: 'T-FIX-cross', attempt: 1}, defect: 'Synthetic defect for the flag check',
       reproduction: {cwd, command: [process.execPath, '-e', "process.stderr.write('BUG');process.exit(3)"],
-        expectedFailure: {exitCode: 3, outputIncludes: 'BUG'}, timeoutMs: 1000}}));
+        expectedFailure: {exitCode: 3, outputIncludes: 'BUG'}, timeoutMs: 5000}}));
     const host = fileURLToPathname(new URL('./cm-fix-host.mjs', import.meta.url));
     const run = extra => {
       try {

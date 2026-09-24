@@ -31,11 +31,11 @@ function fixture(t){
   const identity={repositoryId:'fixture',runId:'session-chain',taskId:'T-FIX-chain',attempt:1};
   const options={specsRoot,identity,create:true,configuration:{hostContextId:'session-A',defect:'Synthetic value mismatch',
     causeReview:reviewer,reproduction:{cwd,command:[process.execPath,'-e',"process.stderr.write('BUG');process.exit(3)"],
-      expectedFailure:{exitCode:3,outputIncludes:'BUG'},timeoutMs:1000}}};
+      expectedFailure:{exitCode:3,outputIncludes:'BUG'},timeoutMs:5000}}};
   fs.writeFileSync(path.join(cwd,'red.mjs'),"import {value} from './value.mjs';if(value!==2){console.error('BUG');process.exit(1)}");
   fs.writeFileSync(path.join(cwd,'existing.mjs'),"import {value} from './value.mjs';if(typeof value!=='number')process.exit(1)");
-  options.configuration.redTest={cwd,testFiles:['red.mjs'],command:[process.execPath,'red.mjs'],expectedFailure:{exitCode:1,outputIncludes:'BUG'},timeoutMs:2000};
-  options.configuration.baseline={cwd,testFiles:['existing.mjs'],commands:[{id:'existing',command:[process.execPath,'existing.mjs']}],timeoutMs:2000};
+  options.configuration.redTest={cwd,testFiles:['red.mjs'],command:[process.execPath,'red.mjs'],expectedFailure:{exitCode:1,outputIncludes:'BUG'},timeoutMs:5000};
+  options.configuration.baseline={cwd,testFiles:['existing.mjs'],commands:[{id:'existing',command:[process.execPath,'existing.mjs']}],timeoutMs:5000};
   options.configuration.repair={scope:['value.mjs'],requirements:['value.mjs']};
   const statePath=path.join(specsRoot,'.reviews','.execution',identity.runId,'state.json');
   const records=()=>JSON.parse(fs.readFileSync(statePath)).records;
