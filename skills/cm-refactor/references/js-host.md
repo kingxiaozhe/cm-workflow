@@ -7,6 +7,11 @@
 
 ## 准备与启动
 
+单步调用可用 `node scripts/cm-refactor-drive.mjs --plan PLAN.json <start|resume|finish|status|cancel|prepare_judge_revision>`。
+PLAN 写 `{ "config":"config.json", "answers":"answers" }`，路径相对 PLAN；答案按驾驶员 `--help` 与文件头准备。
+驾驶员发送前核对配置、scope、内容文件、人工分析/审查/确认和恢复记录；缺项退出 2，不启动宿主。
+基线、判官、变异及批量语法命令仍由宿主实际执行；结果不从答案文件读取。未知执行结果需原回执，驾驶员拒绝静态补写。
+
 先完成主 Skill 的只读意图分流和路径准入。可信当前会话读取适用 AGENTS/调用方，核对原有
 测试命令覆盖所有存量测试、判官覆盖目标入口及边界输入。只传启动前核实的 argv，不能执行模型
 回复里临时出现的命令。需要新建测试资产时，由宿主在配置中声明 testSetup.paths 和执行命令，G0 批准后准备。
