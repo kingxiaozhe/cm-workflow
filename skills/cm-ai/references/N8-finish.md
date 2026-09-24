@@ -76,6 +76,7 @@ staging/体验版验证。
 ```
 
 **审查凭证对账**：tasks.md 全部 `[x]` 任务 ↔ `{SPECS_DIR}/.reviews/` 凭证一一对账，缺失项列入度量汇总（`⚠ 审查凭证缺失: T-xxx,...`，全齐则 `审查凭证: {N}/{N} 齐`）——中途漏网的审查，收尾必须暴露，不许无声混过。
+显式重跑后的旧凭证位于 `.reviews/.superseded/`，仅作历史；对账只认当前文件名下的新凭证，不能用归档回执补齐当前任务。
 
 **临时资源对账**：读取当前 run 的项目权威日志，按 `resource_id` 对账
 `resource/acquired`、`resource/released` 与 `resource/cleanup_failed`。只有同一

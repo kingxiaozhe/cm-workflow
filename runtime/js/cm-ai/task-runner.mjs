@@ -28,6 +28,7 @@ import {publishHostReview} from './host-review-file.mjs';
 import {reviewExclusions} from './effect-contract.mjs';
 import {bootstrapConfiguration,readBootstrapEvidence} from './host-bootstrap.mjs';
 import {validateCodeProjectPaths,assertCodeProjectSelections} from './code-projects.mjs';
+import {readEvidenceSupersession} from './reviewed-evidence-supersession-record.mjs';
 
 // Keep default V1 imports free of SQLite initialization/warnings. Native ownership
 // is loaded synchronously only at the explicit V2 boundary (Node24.14+).
@@ -268,7 +269,8 @@ export function createTaskRunner(options) {
       kind:{init:'result','effect-intent':'intent','effect-checkpoint':'result',control:'cancel',
         'task-commit-intent':'commit-intent','task-commit-result':'commit-result',
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
-        'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result'}[type],
+        'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
+        'evidence-superseded':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
     const record={...body,digest:digest(body)};boundRunnerRecord(record,body.seq);
@@ -854,7 +856,15 @@ export function createTaskRunner(options) {
     need(current.packageDigest===record.packageDigest,'package_mismatch');
     persist('qa-config-revised',{record});return json(record);
   };
-  const api={reviseQa,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks};
+  const supersedeEvidence=raw=>{
+    need(invocationMode&&store&&!busy&&!poisoned,'supersede_unavailable');
+    const record=readEvidenceSupersession(raw,{feature:taskLearning.feature,
+      taskId:config.identity.taskId,newRunId:config.identity.runId});
+    if(restored?.supersession){need(digest(restored.supersession)===digest(record),'supersede_record_invalid');return json(record);}
+    need(journal.length===1&&state==='ready','supersede_unavailable');
+    persist('evidence-superseded',{record});return json(record);
+  };
+  const api={reviseQa,supersedeEvidence,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   return Object.freeze(api);

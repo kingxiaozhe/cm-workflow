@@ -117,6 +117,21 @@ test('resume requires originalHostContext before host launch',t=>{
   const run=f.drive(f.plan({mode:'resume'}),'advance');assert.equal(run.status,2);
   assert.match(run.stderr,/originalHostContext/);assert.equal(fs.existsSync(f.store),false);
 });
+test('supersession flags reach create and incomplete or resume pairs stop before host launch',t=>{
+  const f=fixture(t);prepared(f);
+  const both=['--supersede-reviewed-evidence','--supersede-reason','operator restart'];
+  const create=f.drive(f.plan({permissions:both}),'advance');
+  assert.equal(create.status,1,create.stderr);
+  assert.match(create.stderr,/supersede_unavailable/);
+  for(const permissions of [['--supersede-reviewed-evidence'],['--supersede-reason','operator restart']]){
+    const refused=f.drive(f.plan({permissions}),'advance');
+    assert.equal(refused.status,2,refused.stderr);
+    assert.match(refused.stderr,/supersede-reviewed-evidence.*supersede-reason/);
+  }
+  const resumed=f.drive(f.plan({mode:'resume',originalHostContext:'drive-host-a',permissions:both}),'status');
+  assert.equal(resumed.status,2,resumed.stderr);
+  assert.match(resumed.stderr,/supersede.*create/);
+});
 test('status reads the existing run without answer files or checks',t=>{
   const f=fixture(t);prepared(f);assert.equal(f.drive(f.plan(),'advance').status,0);
   const before=fs.readFileSync(f.store);

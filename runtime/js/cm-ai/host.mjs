@@ -16,5 +16,5 @@ export function createCmAiHost(options) {
     ...(qaExecutor===undefined?{}:{qaExecutor}),
     ...(documentationProvider===undefined?{}:{documentationProvider}),
     ...(qaDecisionProvider===undefined?{}:{qaDecisionProvider})});
-  return Object.freeze({handle:entry.handle,inspectFixAssociation:runner.inspectFixAssociation,acceptCompletedFix:runner.acceptCompletedFix,attachQa:runner.attachQa,reviseQa:runner.reviseQa});
+  return Object.freeze({handle:entry.handle,inspectFixAssociation:runner.inspectFixAssociation,acceptCompletedFix:runner.acceptCompletedFix,attachQa:runner.attachQa,reviseQa:runner.reviseQa,supersedeEvidence:runner.supersedeEvidence});
 }

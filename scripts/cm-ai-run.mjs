@@ -12,6 +12,7 @@ import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platfo
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {previousQaMaterial,qaConfigurationSlice,qaInvariantDigest,qaRevisionChain,verifyQaRevisionMaterial} from '../runtime/js/cm-ai/qa-config-revision.mjs';
 import {inspectCmAiQaRevisionTarget,recordCmAiQaConfigurationRevision} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
+import {prepareReviewedEvidenceSupersession,archiveReviewedEvidence,recordEvidenceSupersession} from '../runtime/js/cm-ai/reviewed-evidence-supersede.mjs';
 
 const usage='cm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
 const fail=code=>{throw Object.assign(new Error(code),{code});};
@@ -170,11 +171,12 @@ export function validateRunDefinition(input){
   return value;
 }
 
-export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,parallelSelection=null,qaConfigRevision=null}={}){
+export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,parallelSelection=null,qaConfigRevision=null,supersedeReason=null}={}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
   if(!['create','resume'].includes(mode))fail('invalid_mode');
+  if(supersedeReason!==null&&mode!=='create')fail('supersede_unavailable');
   if(qaConfigRevision!==null&&(mode!=='resume'||!execution?.qaExecutor||rerunUnknownQa||rerunBlockedQa
     ||typeof qaConfigRevision.reason!=='string'||!qaConfigRevision.reason.trim()||qaConfigRevision.reason.length>500
     ||/[\r\n\0]/.test(qaConfigRevision.reason)||!qaConfigRevision.previousWorkflow))fail('qa_revision_authorization_required');
@@ -208,6 +210,11 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
       &&definition.specsDir.startsWith(definition.codeProject+path.sep)&&!protection)fail('nested_specs_protection_required');
   }
   const {specsDir,codeProject,feature,identity,scope,requirements}=definition;
+  const tasksPath=path.join(specsDir,feature,'tasks.md');
+  const featureSlug=feature.replace(/^\d+\./,'');
+  const reviewsDir=path.join(specsDir,'.reviews');
+  const supersession=mode==='create'&&supersedeReason!==null
+    ?prepareReviewedEvidenceSupersession({specsDir,codeProject,feature,identity,reason:supersedeReason,tasksPath}):null;
   let bootstrapConfig=null;
   if(execution?.bootstrap){
     const {bootstrapConfiguration}=await import('../runtime/js/cm-ai/host-bootstrap.mjs');
@@ -229,9 +236,6 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
   const admission=inspectCmAiAdmission({specsDir,codeProject});
   if(mode==='create'&&admission.state!=='ready')return {blocked:admission,close:()=>{}};
   if(mode==='create'&&!matchesCmAiTaskSelection(admission,feature,identity.taskId,parallelSelection))fail('task_selection_mismatch');
-  const tasksPath=path.join(specsDir,feature,'tasks.md');
-  const featureSlug=feature.replace(/^\d+\./,'');
-  const reviewsDir=path.join(specsDir,'.reviews');
   const handoffs=[1,2].map(attempt=>path.join(reviewsDir,`${featureSlug}-${identity.taskId}-a${attempt}-handoff.json`));
   // Reuse the runner's real validator before creating durable state. A failed
   // baseline must not strand an otherwise unused run ID.
@@ -312,6 +316,13 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
       entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,...(parallelSelection===null?{}:{parallelSelection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
         ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
+    const recorded=store.snapshot().records.find(row=>row.payload.type==='evidence-superseded')?.payload.record??null;
+    if(supersession!==null||recorded!==null){
+      const record=host.supersedeEvidence(supersession??recorded);
+      archiveReviewedEvidence(reviewsDir,record);
+      recordEvidenceSupersession({specsDir,codeProject,identity,record,
+        ...(execution?.qaLogHome?{logHome:execution.qaLogHome}:{})});
+    }
     if(attaching||attached){
       const record=host.attachQa(attached??{version:1,qaFingerprint:fingerprints.config,
         attachedAt:new Date().toISOString().replace(/\.\d{3}Z$/,'Z'),hostContextId:execution.configuration.hostContextId});

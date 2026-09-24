@@ -4,6 +4,7 @@ import {inspectCmAiContextRefresh,inspectCmAiTaskLearningInput} from './cm-ai-co
 import {findCmAiQaDecision,inspectCmAiQaDecision,inspectCmAiQaResult,recordCmAiQaDecision,
   latestCmAiQaRun,recordCmAiQaRun,inspectCmAiQaRecovery,inspectCmAiQaConfigurationRecovery} from './cm-ai-qa-log.mjs';
 import {recordCmAiRunDone} from './cm-ai-run-finalizer.mjs';
+import {REVIEWED_HANDOFF_HINT} from './host-handoff.mjs';
 import {readHostQaFixHandoff} from './host-qa-fix.mjs';
 import {digest,freeze,hex,id,json,need,shape,text,validIdentity} from './effect-contract.mjs';
 
@@ -38,6 +39,7 @@ const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approv
 const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',operation:operation.operation,
   requestDigest:digest(operation),identity:status.identity,outcome,state:status.state,code:status.code??null,
   packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),
+  ...(status.code==='handoff_exists'?{reason:REVIEWED_HANDOFF_HINT}:{}),
   ...(status.state==='blocked'&&status.calls?.at(-1)?.blockedReason!==undefined
     ?{blockedReason:status.calls.at(-1).blockedReason}:{})});
 const correctionSummary=(operation,status)=>status.code==='correction_review_required'
@@ -89,7 +91,7 @@ function effectSummary(operation,result,runner,identity) {
     boundStatus(runner.status(),next);
     return summary(operation,boundStatus(result,next),'advanced');
   }
-  return summary(operation,boundStatus(result,identity),'advanced');
+  return summary(operation,boundStatus(result,identity),result?.code==='handoff_exists'?'blocked':'advanced');
 }
 
 function contextEvidence(options,identity,operation) {
@@ -152,6 +154,7 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'acceptCompletedFix'))runnerKeys.push('acceptCompletedFix');
   if(runner&&Object.hasOwn(runner,'attachQa'))runnerKeys.push('attachQa');
   if(runner&&Object.hasOwn(runner,'reviseQa'))runnerKeys.push('reviseQa');
+  if(runner&&Object.hasOwn(runner,'supersedeEvidence'))runnerKeys.push('supersedeEvidence');
   if(runner&&Object.hasOwn(runner,'inspectBootstrapAdmission'))runnerKeys.push('inspectBootstrapAdmission');
   shape(runner,runnerKeys);
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');

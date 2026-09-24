@@ -6,6 +6,11 @@ import {createReviewPackage,verifyReviewPackage} from './review-package.mjs';
 import {implementationSha256,loadHandoff} from '../../../scripts/cm-task-gate.mjs';
 import {digest,json,shape,text,need} from './effect-contract.mjs';
 
+export const REVIEWED_HANDOFF_HINT='仅 QA 卡住时，配置错误用 --revise-qa-config PREVIOUS.json --qa-config-revision-reason … 恢复原运行，宿主或环境证据不足用 --rerun-blocked-qa。确需重跑任务时，用 --supersede-reviewed-evidence --supersede-reason … 新建运行。';
+function reviewedHandoffConflict(){
+  const error=new Error('handoff_exists');error.code='handoff_exists';error.reason=REVIEWED_HANDOFF_HINT;throw error;
+}
+
 function prepareHostHandoff(raw){
   const input=json(raw,16*1024*1024);
   shape(input,['root','baseline','checks','handoffPath',...(Object.hasOwn(input,'evidence')?['evidence']:[])]);
@@ -100,7 +105,7 @@ function publishHandoff(parent,handoffPath,temp,bytes,attempt){
   const existing=fs.readFileSync(handoffPath);
   // Republishing identical bytes is the crash-after-link case, already published.
   if(existing.equals(bytes))return;
-  need(!reviewConsumedHandoff(parent,path.basename(handoffPath),attempt),'handoff_exists');
+  if(reviewConsumedHandoff(parent,path.basename(handoffPath),attempt))reviewedHandoffConflict();
   supersedeHandoff(parent,handoffPath,existing);
   fs.linkSync(temp,handoffPath);
 }

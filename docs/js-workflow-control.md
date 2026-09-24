@@ -408,6 +408,8 @@ host-context 必须是真实当前会话身份；宿主将其排除出独立审�
   然后发布新交接。归档目录是子目录，不进入 `{feature}-{任务}-r{N}.md` 的证据文件名匹配。
 - **内容不同且回执指名它**：这是审查已经消费过的证据，绝不覆盖，返回 `handoff_exists`。
 
+此时 blocked 结果的 `reason` 和宿主 stderr 的 `[host]` 提示先恢复原运行的 QA：配置填错用 `--revise-qa-config PREVIOUS.json --qa-config-revision-reason …`，宿主／环境证据不足用 `--rerun-blocked-qa`。确需重跑任务时，注意 N5 已在 N6 前把任务勾为 `[x]`；先在 `tasks.md` 将该任务改回 `- [ ]`，再在新的 runId 上显式提供 `--supersede-reviewed-evidence --supersede-reason "…"`；原因限单行、500 UTF-8 字节。宿主要求 `tasks.md` 未勾选该任务，所有同 feature、task 的旧 V3 journal 均无在途操作且处于 blocked、cancelled、unknown，或 fixture_completed 且 QA 为 BLOCKED／未结束；旧 writer 仍被进程持有、正常完成或无旧证据均拒绝 `supersede_unavailable`。新 journal 先追加 `evidence-superseded`，记录旧 runId、文件名、SHA-256 和原因，再归档同名 handoff／回执／具名 correction、QA 文件并写 `supersede` 事件；恢复会按记录幂等补齐。旧 journal 不改写，旧 QA UUID 报告仍留原位供旧日志引用；新运行随后按原名发布自己的证据。未使用旗标的运行维持原 journal 格式和摘要。
+
 判据只认回执 **front matter 内**（首个 `---` 到下一个 `---` 之间）的 `handoff:` 行，不按固定行数截取——`handoff:` 之后的 `scope` 列表长度等于该任务的改动文件数，按行数截取会让判定依赖字段顺序。正文里出现的 `handoff:` 不算数。回执缺失视为未被消费；front matter 未闭合、起始不是 `---`、文件非普通文件或为符号链接、超过 256 KiB，一律按「已消费」处理（失败关闭），绝不因为读不懂就去覆盖审查证据。
 
 因此同一任务失败一次后不再需要人工去 `.reviews/` 删文件才能重跑；已批准的交接仍然不可覆盖。

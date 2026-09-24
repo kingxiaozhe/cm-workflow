@@ -5,6 +5,13 @@
 
 ## 未发布
 
+**cm-ai 已审 handoff 后任务重跑出口**
+
+- 旧运行的 review 已消费 handoff、随后 QA blocked 时，新运行再发布同名 handoff 会报 `handoff_exists`；现在 blocked 结果和 `[host]` 诊断提示先按 QA 问题恢复原运行，确需重跑则显式授权并说明原因。
+- N5 会先于 N6 把任务勾为 `[x]`；QA BLOCKED 后若确需重做开发，先在 `tasks.md` 将该任务改回 `- [ ]`，再用新 runId 带 `--supersede-reviewed-evidence --supersede-reason` 创建运行。只在任务未勾选、全部旧运行终止且旧 writer 已关闭后，先记新 journal，再按文件 SHA-256 归档旧交接与审查凭证并写 `supersede` 日志；中断恢复补齐归档，旧 journal 原字节保留。正常完成、活动运行或无旧证据拒绝。
+- 单步驾驶员接受这对创建参数，缺项或用于恢复时在启动宿主前拒绝；旧 writer 检查允许 `lsof: WARNING:` 提示，但其他诊断仍拒绝归档。
+- 临时项目夹具先复现缺少提示的红灯，再验证归档、拒绝和中途恢复；旧 QA 的 UUID 报告仍留原位，受保护模式和真实项目 QA 尚需独立验收。
+
 **cm-ai 单步驾驶员与 cm-fix 共用传输核心**
 
 - 新增 `cm-prd-drive.mjs`，按新建、变更和会话恢复状态预检人工答案、文件范围与绑定字段；自检命令由驾驶员实际执行并记录退出证据，PDF/HTML 材料缺执行器时在启动前拒绝。只读状态、审查、处置、摘要与发布仍走原宿主门禁。
