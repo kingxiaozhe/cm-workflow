@@ -63,9 +63,9 @@ cm-ai 的 V3 会话父运行用 `--original-host-context` 恢复后，QA 修复�
 
 ### 3. 驾驶员推广到其它工作流
 
-**现状**：驾驶员只管 cm-fix。另外 8 个工作流的宿主（`cm-ai-host`、`cm-ai-batch-host`、`cm-check-host`、`cm-idea-host`、`cm-init-host`、`cm-prd-host`、`cm-refactor-host`、`cm-test-host`）结构相同，用的人一样要临场手搓中间人。
+**现状**：cm-fix 与 cm-ai 已有单步驾驶员，共用 JSONL 传输核心。还剩 7 个宿主：`cm-ai-batch-host`、`cm-check-host`、`cm-idea-host`、`cm-init-host`、`cm-prd-host`、`cm-refactor-host`、`cm-test-host`。
 
-**做法方向**：先挑用得最多的 cm-ai。每个宿主会反问的问题种类不同，「这一步会问什么」那张表要逐个从代码里核出来，不能照搬 cm-fix 的。
+**下一步**：逐个从各宿主的操作路由和能力接线推导「这一步会问什么」，为人工答案做发送前预检；执行证据必须来自实际 runner。不能照搬 cm-fix 或 cm-ai 的表。
 
 ### 4. 两份「归档让路」的实现收拢成一份
 

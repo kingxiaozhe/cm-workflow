@@ -33,10 +33,9 @@
 //   repair-edits.json   同上
 import fs from 'node:fs';
 import path from 'node:path';
-import {spawn} from 'node:child_process';
-import readline from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {fixEvidenceNames} from '../runtime/js/cm-fix/layout.mjs';
+import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 const HOST=path.join(here,'cm-fix-host.mjs');
@@ -58,20 +57,9 @@ const KNOWN=new Set([...Object.keys(ASKS),...READ_ONLY,'cancel','handoff','publi
   'publish_dossier','learning_writeback','walkthrough','finish','final_review','cause_review',
   'recover_final_review','abandon_step','resume','revision_test_check']);
 
-const stderr=line=>process.stderr.write(`[drive] ${line}\n`);
-const stop=(code,line)=>{stderr(line);process.exit(code);};
-
 function loadPlan(){
-  const argv=process.argv.slice(2);
-  const at=argv.indexOf('--plan');
-  const operation=argv.find((arg,index)=>index!==at&&index!==at+1&&!arg.startsWith('--'));
-  if(at===-1||!argv[at+1]||!operation)stop(2,'用法: cm-fix-drive.mjs --plan PLAN.json <operation>');
-  if(!KNOWN.has(operation))stop(2,`不认识的步骤 ${operation}；宿主支持的见 cm-fix-host.mjs --help`);
-  const planPath=path.resolve(argv[at+1]),base=path.dirname(planPath);
-  let plan;
-  try{plan=JSON.parse(fs.readFileSync(planPath,'utf8'));}catch(error){stop(2,`读不了 ${planPath}: ${error.code??error.message}`);}
-  for(const key of ['config','cwd','mode','hostContext','permissions',...(operation==='abandon_step'?[]:['answers'])])
-    if(!Object.hasOwn(plan,key))stop(2,`PLAN 缺少字段 ${key}`);
+  const {operation,plan,base}=loadPlanFile({name:'cm-fix-drive.mjs',known:KNOWN});
+  requireFields(plan,['config','cwd','mode','hostContext','permissions',...(operation==='abandon_step'?[]:['answers'])]);
   if(!['create','resume'].includes(plan.mode))stop(2,'mode 只能是 create 或 resume');
   if(!Array.isArray(plan.permissions)||plan.permissions.some(p=>!/^--allow-[a-z-]+$/.test(p)))
     stop(2,'permissions 必须是 --allow-xxx 形式的数组，原样传给宿主');
@@ -82,11 +70,6 @@ function loadPlan(){
   const resolve=p=>path.resolve(base,p);
   return {operation,plan,paths:{config:resolve(plan.config),answers:plan.answers?resolve(plan.answers):null,
     review:plan.reviewConfig?resolve(plan.reviewConfig):null}};
-}
-
-function readJson(file,label){
-  try{return JSON.parse(fs.readFileSync(file,'utf8'));}
-  catch(error){if(error.code==='ENOENT')return undefined;stop(2,`${label} 不是合法 JSON: ${file}`);}
 }
 
 // 恢复时宿主要求学习记录和上次一字不差；从存档里读上次记的那份，省掉一个必踩的坑。
@@ -104,27 +87,24 @@ function preflight({operation,plan,paths}){
   if(config===undefined)stop(2,`宿主配置不存在: ${paths.config}`);
   if(path.resolve(plan.cwd)!==path.resolve(config.reproduction?.cwd??''))
     stop(2,`PLAN.cwd 与 config.reproduction.cwd 不一致`);
-  const answers={};
   const need=(kind,file)=>{const value=readJson(path.join(paths.answers,file),kind);
     if(value===undefined)stop(2,`步骤 ${operation} 会反问「${kind}」，但答案文件不存在: ${path.join(paths.answers,file)}\n        先把它写好，再来调驾驱员。缺答案而硬发指令，会把这次运行做死。`);
     return value;};
-  for(const kind of ASKS[operation]??[]){
+  const answers=preflightAnswers(ASKS[operation]??[],kind=>{
     if(kind==='learning'){
       const recorded=plan.mode==='resume'?recordedLearning(config,plan.cwd):null;
-      if(recorded){answers.learning=recorded;stderr(`恢复：复用存档里已记的学习记录（${recorded.status}）`);}
-      else answers.learning=need('学习记录','learning.json');
+      if(recorded){stderr(`恢复：复用存档里已记的学习记录（${recorded.status}）`);return recorded;}
+      return need('学习记录','learning.json');
     }
-    else if(kind==='diagnosis')answers.diagnosis=need('诊断','diagnosis.json');
-    else if(kind==='retrospective')answers.retrospective=need('复盘','retrospective.json');
-    else{
-      const map=need(kind==='test-edits'?'测试内容':'修复内容',`${kind}.json`);
-      for(const [target,local] of Object.entries(map)){
-        const file=path.join(paths.answers,local);
-        if(!fs.existsSync(file))stop(2,`${kind}.json 把 ${target} 指向 ${file}，但那个文件不存在`);
-      }
-      answers[kind]=map;
+    if(kind==='diagnosis')return need('诊断','diagnosis.json');
+    if(kind==='retrospective')return need('复盘','retrospective.json');
+    const map=need(kind==='test-edits'?'测试内容':'修复内容',`${kind}.json`);
+    for(const [target,local] of Object.entries(map)){
+      const file=path.join(paths.answers,local);
+      if(!fs.existsSync(file))stop(2,`${kind}.json 把 ${target} 指向 ${file}，但那个文件不存在`);
     }
-  }
+    return map;
+  });
   if(plan.mode==='create'){
     // 建运行前的体检：宿主也会查，但这里把「是哪个文件」提前说清。
     const cwd=path.resolve(plan.cwd);
@@ -179,36 +159,10 @@ function main(){
   const loaded=loadPlan();
   const {answers}=preflight(loaded);
   const {operation,plan,paths}=loaded;
-  const child=spawn(process.execPath,hostArgs(loaded),{cwd:path.resolve(plan.cwd),stdio:['pipe','pipe','pipe']});
-  child.stderr.on('data',chunk=>process.stderr.write(chunk));
-  const send=value=>child.stdin.write(JSON.stringify(value)+'\n');
-  let done=false;
-  readline.createInterface({input:child.stdout}).on('line',line=>{
-    let row;try{row=JSON.parse(line);}catch{process.stdout.write(line+'\n');return;}
-    if(row.type==='host_ready'){send({requestId:'drive',operation,...(operation==='abandon_step'?{reason:plan.reason}:{}),
-      ...(operation==='prepare_revision'&&Object.hasOwn(plan,'revisionTests')?{tests:plan.revisionTests}:{})});return;}
-    if(row.type==='host_request'){
-      const result=answerFor(row,answers,paths);
-      if(result===null){
-        // 预检没覆盖到的反问：没有安全的应答，只能明说。宿主会把这一步记成 unknown。
-        stderr(`宿主问了预检没覆盖的问题 ${row.kind}，无法应答；这一步会留在 unknown`);
-        send({type:'host_close',sessionId:row.sessionId});return;
-      }
-      stderr(`应答 ${row.kind}`);
-      send({type:'host_result',sessionId:row.sessionId,callId:row.callId,requestDigest:row.requestDigest,result});
-      return;
-    }
-    if(row.type==='host_response')return;
-    if(row.requestId==='drive'){
-      done=true;
-      process.stdout.write(JSON.stringify(row,null,2)+'\n');
-      if(row.result?.stage)stderr(`stage = ${row.result.stage}`);
-      if(row.error)stderr(`宿主拒绝：${row.error.code}（真实原因和位置在上面 [host] 那行 diagnostic 里）`);
-      process.exitCode=row.error?1:0;
-      child.stdin.end();
-    }
-  });
-  child.on('exit',code=>{if(!done){stderr(`宿主在给出结果前退出了，exit ${code}`);process.exitCode=1;}});
+  driveHost({host:HOST,args:hostArgs(loaded).slice(1),cwd:path.resolve(plan.cwd),operation,
+    request:{...(operation==='abandon_step'?{reason:plan.reason}:{}),
+      ...(operation==='prepare_revision'&&Object.hasOwn(plan,'revisionTests')?{tests:plan.revisionTests}:{})},
+    answers,paths,answerFor});
 }
 
 main();
