@@ -43,7 +43,7 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
         busy=true;try{return await current.host.handle(request);}finally{busy=false;}
       }
       const value=json(request);shape(value,['version','requestId','operation','identity','packageDigest','testRunId',
-        ...(request.operation==='fix_action'?['fixOperation']:[])]);
+        ...(request.operation==='fix_action'?['fixOperation',...(request.fixOperation==='abandon_step'&&Object.hasOwn(request,'reason')?['reason']:[])]:[])]);
       need(value.version===1,'invalid_input');id(value.requestId);validIdentity(value.identity);hex(value.packageDigest);id(value.testRunId);
       if(fixedTemplate)definition=bindQaFixDefinition({template:fixedTemplate,identity:value.identity,
         packageDigest:value.packageDigest,testRunId:value.testRunId});
@@ -55,7 +55,7 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
       const acting=value.operation==='fix_action';
       if(acting)need(['red_test','baseline','author_tests','repair','regression','retrospective','learning_writeback',
         'handoff','final_review_package','final_review','publish_review','check_n5','post_review_regression',
-        'publish_dossier','walkthrough','finish','prepare_revision','cause_review_package','cause_review'].includes(value.fixOperation),'fix_operation_unavailable');
+        'publish_dossier','walkthrough','finish','prepare_revision','cause_review_package','cause_review','abandon_step'].includes(value.fixOperation),'fix_operation_unavailable');
       need(!(advancing||acting)||allowStart,'qa_fix_start_authorization_required');
       busy=true;let child=null,released=false,result;
       try{
@@ -74,7 +74,8 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
           const host=createFixHost({owner:child,config:{...definition.configuration,specsRoot:definition.specsRoot,identity:definition.identity},
             runtime:definition.configuration.runtime??'codex',permissions:[...permissions,'--allow-reproduction'],...fixAuthorities});
           actionResult=running?await host.run(value.requestId)
-            :await host.handle({requestId:value.requestId,operation:advancing?'advance':value.fixOperation});
+            :await host.handle({requestId:value.requestId,operation:advancing?'advance':value.fixOperation,
+              ...(value.fixOperation==='abandon_step'?{reason:value.reason}:{})});
         }
         // Original observation/escalation finish intentionally closes its owner. Preserve
         // that successful incomplete exit without reading a closed store.

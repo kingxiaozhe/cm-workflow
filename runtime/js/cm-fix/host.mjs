@@ -9,6 +9,7 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
   const extra=new Set(permissions);
     const host={async handle(request){
       shape(request,['requestId','operation',...(request.operation==='resume'?['evidenceFiles']:[]),
+        ...(request.operation==='abandon_step'&&Object.hasOwn(request,'reason')?['reason']:[]),
         ...(request.operation==='prepare_revision'&&Object.hasOwn(request,'tests')?['tests']:[]),
         ...(request.operation==='recover_final_review'?['invocationId','packageDigest','previousInvocationStopped','reason']:[])]);
       if(config.qaSource&&!['status','cancel','completion_evidence'].includes(request.operation))
@@ -25,6 +26,7 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
       if(request.operation==='recover_final_review')return owner.recoverFinalReview({
         authorized:extra.has('--allow-final-review-recovery'),recoveryInvocationId,invocationId:request.invocationId,
         packageDigest:request.packageDigest,previousInvocationStopped:request.previousInvocationStopped,reason:request.reason});
+      if(request.operation==='abandon_step')return owner.abandonStep({authorized:extra.has('--allow-abandon'),reason:request.reason});
       if(request.operation==='completion_evidence')return owner.completionEvidence();
       if(request.operation==='finish')return owner.finish({authorized:extra.has('--allow-finish')});
       if(request.operation==='author_tests')return owner.authorTests({authorized:extra.has('--allow-test-author')});

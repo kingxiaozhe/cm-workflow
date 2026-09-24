@@ -60,8 +60,9 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-fix-drive.mjs" --plan "{PLAN}" advance
 （学习记录、诊断、测试内容、修复内容、复盘）从答案目录里按种类读文件——**你的工作是把内容
 写进文件，再调一次驾驭员**；它绝不替你编任何一份。恢复时学习记录自动复用存档里已记的那份。
 
-它最要紧的一条护栏：按「这一步会反问什么」**先查齐答案文件，再发指令**。宿主的规矩是一步
-做了一半就永远卡住不能重试，缺答案硬发会把整轮做死。建运行前它还会预告：任务编号是否已被
+它最要紧的一条护栏：按「这一步会反问什么」**先查齐答案文件，再发指令**。宿主默认不重派
+结果不明的步骤；只有下文列出的本地步骤可经显式授权、说明原因后放弃并重做。缺答案硬发仍会让
+整轮停在 `unknown`，不能靠普通 `advance` 解除。建运行前它还会预告：任务编号是否已被
 审查结论占住、配置引用的文件是否存在、受保护模式下有没有沙箱跑不了的 tsx/vitest 类命令。
 
 它只是方便，不是放权：能做什么仍由宿主的开关说了算。
@@ -92,6 +93,26 @@ beforeSha256严格复制expected中该路径的摘要（原不存在则null）�
 固定子进程校验整组路径/原摘要后在沙箱内写入；符号链接、硬链接或漂移拒绝。保留原diff检查、Review和门禁。
 这是同一次原已登记操作，不新增provider调用或作者身份；中途失败可能留下部分改动，原owner保留unknown，不能自动重试或回滚。
 恢复必须保持原配置，旧运行不能临时开启/关闭保护。宿主本身仍是受信执行者，语义/浏览器请求不授权修改项目文件。
+
+### 本地 unknown 步骤的显式放弃与重做
+
+先核对旧进程已停止、检查可能留下的本地改动和测试输出。仅在原运行 `stage=unknown` 且决定重做该本地步骤时，
+以 `--allow-abandon` 启动 cm-fix 宿主，再发送 `{"requestId":"abandon-1","operation":"abandon_step","reason":"本次放弃的具体原因"}`。
+原因须为非空单行、至多 1000 UTF-8 字节；每个运行最多 8 次。QA-fix 子宿主使用 `--allow-qa-fix-abandon`，
+其 `fix_action` 请求带 `fixOperation:"abandon_step"` 和 `reason`。驾驶员从 PLAN 的 `reason` 读取原因，
+`permissions` 须含 `--allow-abandon`，此操作不需要答案文件。
+
+允许的 `pending`：`reproduce`、`diagnose`、`observation_reproduce`、`observation_diagnose`、
+`test_author`、`red_test`、`baseline`、`repair`、`regression`、`retrospective`、`walkthrough`、
+`post_review_regression`，以及 `revision_test_author`、`revision_test_check`、`revision_repair`、
+`revision_regression`、`revision_retrospective`、`revision_walkthrough`、`revision_post_review_regression`。
+拒绝 `cause_review`、`final_review`、`revision_final_review`、`learning_writeback`、
+`revision_learning_writeback`、`handoff`、`revision_handoff`；最终审查仍只走既有人工续审。
+
+成功放弃只追加 `fix-abandoned-N` 和 `abandon` 日志，`status.abandoned` 列出步骤、原因、时间；
+旧 intent 和部分结果保留。下一次单独执行原步骤，新 intent/result 使用 `-retry-N-` ID，
+红灯原始输出另存 `-retry-N.md`，不覆盖旧输出。`advance`/`run` 遇到 `unknown` 仍停下，
+且放弃本身不证明旧操作没有产生部分本地改动。未经显式授权或不在上表的步骤返回 `fix_abandon_unavailable`。
 
 ### 无specs普通项目
 
@@ -188,7 +209,7 @@ handoff → 最终独立 Review/发布 → 原 N5 → 审后回归/走查 → �
 再走 `author_tests` → `revision_test_check` → 原修复和审查链；已准备但未修复的旧第二轮也能追加计划。
 
 首轮 changes_requested 或已批准后的明确回归/走查失败走 `prepare_revision`，保留历史，
-第二次修复仍需 fresh 独立 Review；不得重置 ≤2 轮上限。unknown 不重派。
+第二次修复仍需 fresh 独立 Review；不得重置 ≤2 轮上限。unknown 不自动重派；上表中的本地步骤只在显式放弃后重做。
 
 修复完成仅认原 `finish` 的当前结果与证据；待授权、失败、漂移、缺证据如实报告，
 不手工补成功。finish 接受 `policies.delivery` 的任一取值，只要求它在收尾写记录期间不变；

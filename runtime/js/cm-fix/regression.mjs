@@ -3,7 +3,7 @@
 import {currentTestFiles,verifyExtensionFiles,extensionConfig} from './test-extension.mjs';
 import {createHostCheck} from '../cm-ai/host-check.mjs';
 import {createFixBaseline,inspectFixBaseline,fixBaselineFiles} from './baseline.mjs';
-import {inspectFixRedTest,verifyFixRedEvidence} from './red-test.mjs';
+import {inspectFixRedTest,verifyFixRedEvidence,redEvidenceRetry} from './red-test.mjs';
 import {digest,json,need,shape,validIdentity} from '../cm-ai/effect-contract.mjs';
 import {inspectFixRepairReview} from './final-review.mjs';
 import {inspectFixRegression,compareFixBaseline} from './regression-evidence.mjs';
@@ -16,8 +16,8 @@ export function createFixRegression(options,{specsRoot:protectedSpecsRoot=null,b
   const {identity,specsRoot,redTest,baseline,redEvidence,beforeBaseline}=json(options);
   validIdentity(identity);
   const priorReview=Object.hasOwn(options,'reviewFeedback')?inspectFixRepairReview(options.reviewFeedback,identity):null;
-  const redIdentity=priorReview&&redEvidence.output?.path===`.reviews/fix-${identity.taskId.slice(6)}-a1-red-output.md`?priorReview.identity:identity;
-  const originalRed=inspectFixRedTest(redEvidence,redTest,redIdentity,redEvidence.testFiles);
+  const redIdentity=priorReview&&redEvidence.output?.path?.startsWith(`.reviews/fix-${identity.taskId.slice(6)}-a1-red-output`)?priorReview.identity:identity;
+  const originalRed=inspectFixRedTest(redEvidence,redTest,redIdentity,redEvidence.testFiles,redEvidenceRetry(redEvidence));
   need(originalRed.status==='red_confirmed','red_test_not_confirmed');
   const originalBaseline=inspectFixBaseline(beforeBaseline,baseline,beforeBaseline.testFiles);
   const extension=options.testExtension,comparisonBaseline={...originalBaseline,testFiles:currentTestFiles(originalBaseline.testFiles,extension)};

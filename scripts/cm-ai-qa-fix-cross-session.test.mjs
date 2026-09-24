@@ -93,7 +93,7 @@ async function fixture(t,{childHost=A,causeContext=null}={}){
   const childDir=path.join(specsDir,'.reviews','.execution',fix.identity.runId),statePath=path.join(childDir,'state.json');
   const bound=operation=>({...request(operation),packageDigest:failed.packageDigest,testRunId:qaSource.testRunId});
   const close=()=>{owner?.close();owner=null;};
-  const open=async(live,{allowStart=true,template=false}={})=>{
+  const open=async(live,{allowStart=true,template=false,allowAbandon=false,lostDiagnosis=false}={})=>{
     close();const execution=executionFor(live);assert.equal(execution.configuration.hostContextId,A);
     parent=await openControlRun(definition,'resume',execution);
     const rh=reviewHost(live);
@@ -101,8 +101,10 @@ async function fixture(t,{childHost=A,causeContext=null}={}){
     owner=createQaFixOwnerHost({parent,hostContextId:live,parentHostContextId:execution.configuration.hostContextId,
       reopenParent:()=>openControlRun(definition,'resume',execution),allowStart,
       ...(template?{template:{specsRoot:specsDir,feature,identity,configuration:templateConfiguration}}:{fix}),
-      fixPermissions:permissions,fixAuthorities:{authority:rh.authority,finalAuthority:rh.finalAuthority},
-      fixExecution:{...rh.execution,prepare,bridge:{async call(kind){assert.equal(kind,'fix_diagnose');return diagnosis;}}}});
+      fixPermissions:allowAbandon?[...permissions,'--allow-abandon']:permissions,
+      fixAuthorities:{authority:rh.authority,finalAuthority:rh.finalAuthority},
+      fixExecution:{...rh.execution,prepare,bridge:{async call(kind){assert.equal(kind,'fix_diagnose');
+        if(lostDiagnosis)throw Error('Synthetic lost diagnosis');return diagnosis;}}}});
     parent=null;return owner;
   };
   const records=()=>JSON.parse(fs.readFileSync(statePath)).records;
@@ -114,12 +116,12 @@ async function fixture(t,{childHost=A,causeContext=null}={}){
 
 // Exercise the actual CLI assembly as well as the direct owner. The CLI only
 // resumes/status/reviews here: these operations do not require a native sandbox.
-async function cli(f,live,operation,{runtime='codex'}={}){
+async function cli(f,live,operation,{runtime='codex',flags=[]}={}){
   f.close();fs.writeFileSync(path.join(f.root,'fix.json'),JSON.stringify(f.fix));
   const args=['serve','--config',path.join(f.root,'run.json'),'--mode','resume','--host-context',live,'--allow-development',
     '--original-host-context',A,'--review-config',path.join(f.root,'review.json'),'--workflow-config',path.join(f.root,'workflow.json'),'--allow-qa',
     '--qa-fix-owner-config',path.join(f.root,'fix.json'),'--allow-qa-fix-start','--runtime',runtime,
-    '--qa-fix-review-config',path.join(f.root,'review.json'),'--allow-qa-fix-cause-review'];
+    '--qa-fix-review-config',path.join(f.root,'review.json'),'--allow-qa-fix-cause-review',...flags];
   return new Promise((resolve,reject)=>{
     const child=spawn(process.execPath,[fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url)),...args],
       {env:{...process.env,PATH:f.bin+path.delimiter+process.env.PATH},stdio:['pipe','pipe','pipe']});
@@ -230,4 +232,24 @@ test('existing child creator B is accepted by C, but configuration drift is refu
   await assert.rejects(owner.handle(f.bound('fix_status')),{code:'fingerprint_mismatch'});
   assert.equal((await owner.handle(f.request('status'))).state,'fixture_completed');f.close();
   assert.deepEqual(fs.readFileSync(f.statePath),bytes);
+});
+
+test('QA-fix child abandons a lost local diagnosis only with its dedicated CLI flag',async t=>{
+  const f=await fixture(t);
+  let owner=await f.open(A,{lostDiagnosis:true});
+  assert.equal((await owner.handle(f.bound('fix_advance'))).fixStage,'unknown');
+  assert.equal(f.records().at(-1).id,'fix-diagnose-intent');
+  f.close();
+  const request={...f.bound('fix_action'),fixOperation:'abandon_step',reason:'Child diagnosis response lost'};
+  const before=fs.readFileSync(f.statePath);
+  const denied=await cli(f,A,request);
+  assert.match(denied.stderr,/fix_abandon_unavailable/);
+  assert.deepEqual(fs.readFileSync(f.statePath),before);
+  const allowed=await cli(f,A,request,{flags:['--allow-qa-fix-abandon']});
+  assert.equal(allowed.code,0,allowed.stderr);
+  assert.equal(allowed.result?.fixStage,'diagnose');
+  assert(f.records().some(row=>row.id==='fix-abandoned-1'));
+  owner=await f.open(A);
+  assert.equal((await owner.handle(f.bound('fix_advance'))).fixStage,'cause_review_required');
+  assert(f.records().some(row=>row.id==='fix-diagnose-retry-1-result'));
 });

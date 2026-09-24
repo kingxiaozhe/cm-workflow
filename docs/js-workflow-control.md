@@ -1,5 +1,26 @@
 # JS workflow 控制与当前会话入口
 
+## cm-fix 本地 unknown 步骤的人工放弃
+
+`stage=unknown` 时，原 intent 不自动重派。宿主先检查旧进程已停止及可能留下的本地改动；
+明确决定重做后，以 `--allow-abandon` 启动 cm-fix 宿主，发送
+`{"requestId":"abandon-1","operation":"abandon_step","reason":"具体原因"}`。
+原因必须是非空单行，最多 1000 UTF-8 字节；每个运行最多 8 次。QA-fix 子宿主使用
+`--allow-qa-fix-abandon`，在 `fix_action` 中传 `fixOperation:"abandon_step"` 及 `reason`。
+驾驶员的 PLAN 提供 `reason` 和 `--allow-abandon`，不需要答案文件。
+
+允许的 `pending` 为 `reproduce`、`diagnose`、`observation_reproduce`、`observation_diagnose`、
+`test_author`、`red_test`、`baseline`、`repair`、`regression`、`retrospective`、`walkthrough`、
+`post_review_regression`、`revision_test_author`、`revision_test_check`、`revision_repair`、
+`revision_regression`、`revision_retrospective`、`revision_walkthrough`、`revision_post_review_regression`。
+`cause_review`、`final_review`、`revision_final_review`、`learning_writeback`、
+`revision_learning_writeback`、`handoff`、`revision_handoff` 一律拒绝本操作，返回 `fix_abandon_unavailable`。
+最终审查的既有人工续审仍是唯一出口。
+
+放弃追加 `fix-abandoned-N` 记录和 `abandon` 日志；记录绑定旧 intent 摘要，`status.abandoned` 显示步骤、原因和时间。
+重做回到原待执行阶段，intent/result 用 `-retry-N-` ID；红灯输出加 `-retry-N.md`，旧记录和输出保留。
+`advance`/`run` 不自行放弃，放弃不跳过原阶段的校验、授权和独立审查。
+
 ## cm-fix 最终 Review 未知结果的人工续审
 
 attempt 1 的最终 Review 已登记、已记录实际线程但结果为 unknown 时，可以在原任务中人工续审。
@@ -845,7 +866,7 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
 原 `fix_diagnose` 回调现在收到 `qaFailure`，包含绑定交接与报告精确字节（contentBase64）；
 读取沿用 no-follow 有界证据读取器并复核摘要。首次与观测恢复诊断都带这些材料，并明确
 标为证据数据而非执行指令。诊断返回后再次复核来源；期间报告或策略漂移不登记成功结果，
-原未完成 intent 保持 unknown，不重发诊断。
+原未完成 intent 保持 unknown，不自动重发诊断；本地诊断可按上文显式放弃并重做。
 
 当前接通的是子运行创建/恢复和原修复入口；父 host 的自动暂停/恢复、已完成修复证据消费、
 修复后的代码批准关联与自动重测仍未实现。来源失效后本入口拒绝 reopen，不删除旧快照或

@@ -6,6 +6,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
+import {openFixExecution} from '../runtime/js/cm-fix/execution.mjs';
+import {openExecutionStore} from '../runtime/js/cm-ai/execution-store.mjs';
+import {startFixRun} from '../runtime/js/cm-fix/start.mjs';
 
 // 驾驭员是宿主的中间人：开进程、发一条指令、代答反问、打结果。它的价值有两条要
 // 拿真宿主验：确实能把一轮开起来并走下去；答案没备齐时停在发指令之前，不把运行做死。
@@ -93,4 +96,22 @@ test('the driver refuses unknown operations and malformed plans without touching
   assert.equal(bad.status,2);
   assert.match(bad.stderr,/permissions/);
   assert.equal(fs.existsSync(path.join(f.archive,'.reviews')),false);
+});
+
+test('the driver abandons a local unknown step using only plan reason and flag',{skip},t=>{
+  const f=fixture(t),config=JSON.parse(fs.readFileSync(path.join(f.root,'fix-config.json')));
+  const {identity,...definition}=config;
+  const owner=openFixExecution({specsRoot:null,identity:config.identity,
+    configuration:{...definition,hostContextId:'drive-fixture-host'},create:true});
+  owner.close();
+  startFixRun({specsRoot:f.archive,identity,configuration:{...definition,hostContextId:'drive-fixture-host',archiveMode:'bare'}});
+  const statePath=path.join(f.archive,'.reviews','.execution',config.identity.runId,'state.json');
+  const state=JSON.parse(fs.readFileSync(statePath));
+  const store=openExecutionStore({specsRoot:f.archive,identity:state.identity,fingerprints:state.fingerprints,create:false});
+  store.append({id:'fix-reproduce-intent',kind:'intent',payload:{stage:'reproduce'},expectedRevision:store.snapshot().revision});store.close();
+  const plan=f.plan({mode:'resume',permissions:['--allow-abandon'],reason:'Lost local reproduction result',answers:undefined});
+  const result=drive(plan,'abandon_step');
+  assert.equal(result.status,0,JSON.stringify(result));
+  assert.equal(JSON.parse(result.stdout).result.stage,'reproduce');
+  assert(JSON.parse(fs.readFileSync(statePath)).records.some(row=>row.id==='fix-abandoned-1'));
 });
