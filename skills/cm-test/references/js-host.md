@@ -1,5 +1,10 @@
 # cm-test：共享 JS 会话入口
 
+单步调用可用 `node scripts/cm-test-drive.mjs --plan PLAN.json <start|resume|status|cancel>`。
+PLAN 写 `{ "config":"config.json", "answers":"answers", "sessionDir":"session" }`，路径相对 PLAN；恢复另写 `"resolution":null`。
+驾驶员先核对配置、判断答案和会话绑定，缺项退出 2 且不启动宿主。项目声明命令仍由宿主实际执行；
+浏览器/设备观察没有驾驶员 runner，包含 `qa_browser` 的步骤会在发送前拒绝，不能用静态文件冒充执行证据。
+
 用于本 Skill impact / generate / logic / commands / browser / all / explore 分支。
 控制器负责只读快照、用例校验、模式顺序、裁决、不可覆盖报告和原日志收尾；
 当前宿主负责语义判断和实际浏览器工具。没有 provider、安装或自动修复能力。
