@@ -59,9 +59,10 @@ const FILES={develop:'develop.json',qa_assess:'qa-assess.json',documentation_ins
 const PAIR_FLAGS=new Set(['--allow-review-attempt','--review-config','--workflow-config',
   '--protected-conversation-config','--protected-config','--revise-qa-config','--qa-config-revision-reason',
   '--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--browser-qa',
-  '--bootstrap-config','--allow-provider-development-attempt']);
+  '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason']);
 const FLAG_FLAGS=new Set(['--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
   '--allow-bootstrap-write','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
+  '--supersede-reviewed-evidence',
   ...['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon',
     'test-author','repair','cause-review','final-review'].map(name=>`--allow-qa-fix-${name}`)]);
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
@@ -151,6 +152,11 @@ function load(){
     else if(PAIR_FLAGS.has(flag)&&nonempty(plan.permissions[i+1]))permissions.push(flag,plan.permissions[++i]);
     else stop(2,`permissions 无效或缺少参数: ${flag}`);
   }
+  const supersedeFlag=permissions.includes('--supersede-reviewed-evidence');
+  const supersedeReason=permissions.includes('--supersede-reason');
+  if(supersedeFlag!==supersedeReason)
+    stop(2,'--supersede-reviewed-evidence 与 --supersede-reason 必须同时提供');
+  if(supersedeFlag&&plan.mode!=='create')stop(2,'supersede 只允许 mode create');
   const config=path.resolve(base,plan.config),answers=plan.answers?path.resolve(base,plan.answers):null;
   if(!fs.existsSync(config))stop(2,`运行定义不存在: ${config}`);
   let definition;
@@ -165,7 +171,8 @@ function load(){
   }
   for(let i=0;i<permissions.length;i++)if(PAIR_FLAGS.has(permissions[i])
     &&permissions[i]!=='--allow-review-attempt'&&permissions[i]!=='--browser-qa'
-    &&permissions[i]!=='--qa-config-revision-reason'&&permissions[i]!=='--allow-provider-development-attempt'){
+    &&permissions[i]!=='--qa-config-revision-reason'&&permissions[i]!=='--allow-provider-development-attempt'
+    &&permissions[i]!=='--supersede-reason'){
     const file=path.resolve(base,permissions[i+1]);if(!fs.existsSync(file))stop(2,`${permissions[i]} 文件不存在: ${file}`);
     permissions[i+1]=file;i++;
   }

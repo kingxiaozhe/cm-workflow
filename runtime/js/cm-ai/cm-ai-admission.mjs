@@ -14,6 +14,11 @@ const ACCEPTANCE=/^\s*[-*]\s+(?:\[[ xX]\]\s+)?(?:\[(AC-\d{3,})\]|(AC-\d{3,}))(?=
 const FEATURE=/^(\d+)\.(.+)$/;
 const TEST_CASE_VALIDATOR=fileURLToPath(new URL('../../../scripts/validate-test-cases.mjs',import.meta.url));
 
+export function parseCmAiTaskLine(line){
+  const match=line.match(TASK);
+  return match?{id:match[2],completed:match[1].toLowerCase()==='x'}:null;
+}
+
 // Greenfield's T-001 scaffolds; its subsequent instruction task (normally
 // T-002) owns init-equivalent rules. Use the existing parser and approval gate.
 export function inspectCmAiBootstrapTask({specsDir,codeProject,taskId},inProgress=false) {

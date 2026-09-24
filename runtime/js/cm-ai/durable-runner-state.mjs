@@ -479,7 +479,7 @@ export function readRunnerHistory(raw,config,version=1) {
   const completion=version>=2?completionConfig(config,version):null;
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
   let invocation={registration:null,started:null,result:null};
-  const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false;
+  const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false,supersession=null;
   const reviewConfig=(calls=[])=>({...config,reviewInvocation:{...config.reviewInvocation,
     excludedThreadIds:reviewExclusions({excludedThreadIds:[...config.reviewInvocation.excludedThreadIds,...joinedHosts]},
       calls,config.developer.contextId)}});
@@ -505,7 +505,12 @@ export function readRunnerHistory(raw,config,version=1) {
       same(original.specsPath??null,completion?reviewSpecsPath(config.root,completion.owner.specsRoot):null);
       same(original.rootDigest,digestRoot(config.root));state=initialRunnerState(config,session,version);continue;
     }
-    if(p.type==='effect-intent') {
+    if(version===3&&p.type==='evidence-superseded') {
+      shape(p,[...common,'record']);
+      need(r.kind==='result'&&index===1&&pending===null&&state.state==='ready'&&supersession===null,'supersede_record_invalid');
+      supersession=readEvidenceSupersession(p.record,{feature:config.taskLearning.feature,
+        taskId:config.identity.taskId,newRunId:config.identity.runId});
+    } else if(p.type==='effect-intent') {
       shape(p,[...common,'effect']);need(r.kind==='intent' && pending===null,'runner_intent');
       const e=p.effect;shape(e,['version','id','identity','kind',...(Object.hasOwn(e,'learningInput')?['learningInput']:[])]);
       validIdentity(e.identity);id(e.id);
@@ -595,10 +600,11 @@ export function readRunnerHistory(raw,config,version=1) {
   if(pending){state.state='unknown';state.code='reconciliation_required';
     if(version===3&&invocation.registration)state.reviewInvocation={registration:invocation.registration.record,
       started:invocation.started,result:invocation.result};}
-  return {original,session,state,pending,acceptedFixes,qaAttachment,...(version===3?{joinedHosts,reviewerThreads}:{}),...(version>=2?{transaction}:{})};
+  return {original,session,state,pending,acceptedFixes,qaAttachment,...(version===3?{joinedHosts,reviewerThreads,supersession}:{}),...(version>=2?{transaction}:{})};
 }
 // Baseline rootDigest uses bytes of the canonical root, not JSON string encoding.
 import {createHash} from 'node:crypto';
 import {readQaAttachment} from './qa-attachment.mjs';
+import {readEvidenceSupersession} from './reviewed-evidence-supersession-record.mjs';
 import fs from 'node:fs';
 const digestRoot=root=>createHash('sha256').update(fs.realpathSync(root)).digest('hex');

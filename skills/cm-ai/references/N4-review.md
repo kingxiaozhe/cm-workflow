@@ -67,6 +67,8 @@ N3 生成下一次 handoff，避免已校验的证据与实际代码失配。
 
 `{SPECS_DIR}/.reviews/{feature}-{task}-r{轮次}.md`
 
+显式重跑会先把旧运行同名 handoff／回执按 SHA-256 归档到 `.reviews/.superseded/`，再让新 runId 使用这些原文件名。审查时只消费当前运行新发布的 handoff，不把归档文件或旧 journal 当作本轮批准。
+
 文件顶部必须包含：
 
 ```yaml

@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {REVIEWED_HANDOFF_HINT} from '../runtime/js/cm-ai/host-handoff.mjs';
 import {readRunDefinition,openControlRun,createCodexExecution} from './cm-ai-run.mjs';
 import {createConversationExecution as executionFor} from '../runtime/js/cm-ai/host-conversation-execution.mjs';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
@@ -16,6 +17,13 @@ import {loadConfig,declaredRuntimes,resolveProtectedRuntimes} from './cm-workflo
 import {readHostWorkflowConfiguration,featureHasBrowserCases,readBrowserCapability} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {digest,json,need,shape,id} from '../runtime/js/cm-ai/effect-contract.mjs';
 export {executionFor as createConversationExecution,reviewConfiguration as readConversationReviewConfiguration};
+export function withHandoffDiagnostic(host,error){
+  return {...host,async handle(request){
+    const result=await host.handle(request);
+    if(result?.code==='handoff_exists')error.write(`[host] ${REVIEWED_HANDOFF_HINT}\n`);
+    return result;
+  }};
+}
 export {conversationProtection} from '../runtime/js/cm-ai/host-conversation-execution.mjs';
 export function readConversationProtection(file){
   const stat=fs.lstatSync(file);need(stat.isFile()&&!stat.isSymbolicLink()&&stat.size<=64*1024,'invalid_protected_config');
@@ -140,6 +148,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Completed fixture_completed runs originally without QA may explicitly attach N6 once on --mode resume with --workflow-config (non-null qa) and --allow-qa. Original definition, scope, requirements, identity and non-workflow configuration must match. The immutable qa-attached journal record binds the full resumed config fingerprint; later resumes require that same configuration and fresh --allow-qa. qa still requests qa_assess; no automatic decision or repeated development/Review. Dogfood: missing workflow at create previously stranded mandatory feature QA.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--rerun-unknown-qa requires --mode resume and fresh --allow-qa with the original workflow config. Only an unfinished QA invocation whose recorded case results are all PASS and which has no fixed execution report may be abandoned and rerun under a new testRunId at the same qaRound. The abandoned record lists partial_pass_cases; every case is rerun and old PASS evidence is history only. FAIL/BLOCKED results and unclosed resources remain blocked; no complete is fabricated.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--rerun-blocked-qa requires --mode resume, the original --workflow-config and fresh --allow-qa. Only the latest completed BLOCKED invocation with zero failures and exclusively host/environment evidence gaps can be superseded: browser evidenceProblem, failed cleanup, environment mismatch or host timeout; logic INSUFFICIENT_EVIDENCE. Commands BLOCKED and source drift are excluded. A new testRunId reruns every case at qaRound+1 (maximum 3); superseded and start link previous_test_run_id. The flag is consumed once, never persisted; no development/Review/task replay or new QA decision. Do not combine with --rerun-unknown-qa.\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--supersede-reviewed-evidence --supersede-reason REASON：仅新建同任务运行；旧运行都已终止且 tasks.md 未勾选时，先在新 journal 记授权，再归档旧审查证据。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\n');return 0;}
   let run,bridge;
   try{
@@ -157,11 +166,14 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const extra=new Map();
     for(let index=8;index<argv.length;index++){
       const name=argv[index];need(!extra.has(name),'invalid_arguments');
-      need(['--revise-qa-config','--qa-config-revision-reason','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments');
-      if(['--allow-bootstrap-write','--allow-qa','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
+      need(['--revise-qa-config','--qa-config-revision-reason','--supersede-reviewed-evidence','--supersede-reason','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments');
+      if(['--supersede-reviewed-evidence','--allow-bootstrap-write','--allow-qa','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
       else{need(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments');extra.set(name,argv[++index]);}
     }
     const revisionRequested=extra.has('--revise-qa-config')||extra.has('--qa-config-revision-reason');
+    need(!extra.has('--supersede-reviewed-evidence')&&!extra.has('--supersede-reason')
+      ||(argv[4]==='create'&&extra.has('--supersede-reviewed-evidence')&&extra.has('--supersede-reason')),
+    'supersede_unavailable');
     need(!revisionRequested||(argv[4]==='resume'&&extra.has('--allow-qa')&&extra.has('--revise-qa-config')
       &&extra.has('--qa-config-revision-reason')&&!extra.has('--rerun-unknown-qa')&&!extra.has('--rerun-blocked-qa')),'qa_revision_authorization_required');
     const qaConfigRevision=revisionRequested?{previousWorkflow:readHostWorkflowConfiguration(extra.get('--revise-qa-config')),
@@ -225,7 +237,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     if(argv[4]==='resume'&&!extra.has('--original-host-context')&&extra.has('--protected-config')&&canResumeLegacyProtected(definition,runtime)){
       try{
         execution=await legacyProtectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap);
-        run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa')});
+        run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),supersedeReason:extra.get('--supersede-reason')??null});
         error.write('cm-ai-host: resumed original Codex protected execution after exact fingerprint validation.\n');
       }catch(cause){
         if(!['fingerprint_mismatch','tool_preflight_missing'].includes(cause.code))throw cause;
@@ -237,7 +249,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap)
         :executionFor(definition,argv[6],bridge,review,allowedAttempt,workflow,extra.has('--allow-qa'),runtime,
           {...(extra.has('--original-host-context')?{originalHostContextId:extra.get('--original-host-context')}:{}),...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{})});
-      run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa')});
+      run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),supersedeReason:extra.get('--supersede-reason')??null});
     }
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}
     if(hasFix){
@@ -264,13 +276,14 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     // PTY sessions are used by desktop tool hosts. Disable echo only on this
     // process's own terminal so tool results are not mistaken for output frames.
     const rawMode=input.isTTY&&typeof input.setRawMode==='function';if(rawMode)input.setRawMode(true);
-    try{await serveCmAiHost({host:run.host,input,output,toolBridge:bridge});}
+    const diagnosticHost=withHandoffDiagnostic(run.host,error);
+    try{await serveCmAiHost({host:diagnosticHost,input,output,toolBridge:bridge,errorOutput:error});}
     finally{if(rawMode)input.setRawMode(false);}
     return 0;
   }catch(cause){
     const code=typeof cause?.code==='string'&&(/^[a-z][a-z0-9_]{0,63}$/.test(cause.code)
       ||cause.code.startsWith('invalid_config: '))?cause.code:'host_launch_failed';
-    error.write(JSON.stringify({error:{code}})+'\n');return 1;
+    error.write(JSON.stringify({error:{code,...(code==='supersede_unavailable'&&typeof cause.reason==='string'?{reason:cause.reason}:{})}})+'\n');return 1;
   }finally{bridge?.close();run?.close();}
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))process.exitCode=await main();

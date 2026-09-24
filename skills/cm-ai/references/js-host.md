@@ -177,6 +177,22 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
 
 本次仅支持单任务宿主；批量宿主未接入该选项。临时夹具覆盖漏命令死锁、正常续跑、连续修订与三轮上限、旧证据拒绝及中断回放；不代表真实模型或浏览器验收。
 
+### 已审交接后的任务重跑
+
+同名 handoff 已被审查回执消费时，宿主保留 `handoff_exists`，blocked 结果的 `reason` 与 `[host]` 诊断会提示两个出口：QA 配置错误用上述 `--revise-qa-config` 恢复原运行；宿主或环境证据不足用 `--rerun-blocked-qa` 恢复原运行。确需重新开发同一任务时，使用新的 runId 和下列显式授权：
+
+```bash
+node scripts/cm-ai-host.mjs serve --config run-new.json --mode create \
+  --host-context {本次宿主身份} --allow-development \
+  --supersede-reviewed-evidence --supersede-reason "说明为什么要重跑任务"
+```
+
+原因必须为单行、非空、最多 500 UTF-8 字节。N5 会在 N6 前把任务勾为 `[x]`：若 QA BLOCKED 后确需重新开发，先在 `tasks.md` 将该任务改回 `- [ ]`，再用新 runId 和上述两个旗标创建运行；仍可恢复原 QA 时优先走原运行。只接受同 feature、task 的新运行：`tasks.md` 未勾选该任务，且每个旧运行的 V3 journal 已是无在途操作的 blocked、cancelled、unknown，或 fixture_completed 且 QA 为 BLOCKED／尚未结束；旧 writer 仍被进程持有也拒绝。已完成或仍可继续的旧运行、没有旧运行或可归档文件同样拒绝。旧运行的 journal 不改写、不以新运行身份重开。
+
+使用 `cm-ai-drive.mjs` 时，将这两个参数放入新运行 PLAN 的 `permissions`；缺少其中一个或 `mode: "resume"` 时，驾驶员在启动宿主前拒绝。
+
+新运行先在自己的 journal 追加 `evidence-superseded`，绑定原因、旧 runId、文件名和 SHA-256，然后用先硬链接再解除原链接的方式把该任务同名 handoff、review 及具名 correction／QA 文件移至 `.reviews/.superseded/{原文件名}.{摘要前16位}`，并写 `supersede` 运行日志。归档中断后以同一新 runId 执行 `resume` 会按记录补齐；未用此旗标的运行不增加记录或改动旧证据。历史 QA 的 UUID 报告仍由旧 runId 日志引用，保持原位。新 handoff 和 review 使用原文件名，旧证据只在归档中留史。
+
 QA命令复用同一specs只读沙箱。最终任务的documentationPaths必须已在批准scope内，
 在同一次受保护开发调用中同步，随后进入原检查/handoff/Review；不派发宿主documentation_sync，也不增加模型轮次。
 宿主仍处理qa_assess/qa_logic/qa_browser及只读documentation_inspect；不得借这些请求改代码、规格或指令。
