@@ -1,5 +1,7 @@
 # 当前会话访谈与保存
 
+单步调用可用 `node scripts/cm-idea-drive.mjs --plan PLAN.json <start|advance|status|finish|resume>`。计划写 `project`、获准保存的私有 `sessionFile`、`mode:create|resume`、用户本轮 `text`，升档时写 `maturity`；`answers/interview.json` 存本轮人工问题或草稿。保存时写规范 `saveRoot`、安全 `filename`，`answers/confirm-save.json` 只记录本次用户对精确路径和正文的真实决定。驾驶员预检后发一条操作；实际创建文件及回读仍由宿主完成。`status` 只读，未知调用只凭原结果回执恢复。
+
 本文件只接线，访谈内容、领域包和L1/L2/L3模板仍以idea-to-prd.md为准。默认不联网、不安装、不调用额外provider，不执行cm-prd或开发。无法维持双向宿主会话时明确报告缺口，不伪造已走JS。
 
 ## 启动与逐轮访谈
