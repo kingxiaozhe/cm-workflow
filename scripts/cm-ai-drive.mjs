@@ -79,7 +79,7 @@ function edits(value,root,label){
       &&fs.realpathSync(file).startsWith(fs.realpathSync(root)+path.sep),`${label} 缺少安全的内容文件 ${file}`);
   }
 }
-function validate(kind,value,root){
+export function validateCmAiAnswer(kind,value,root){
   if(kind==='develop'){
     requireShape(object(value)&&['succeeded','failed'].includes(value.status),'develop.json.status');
     if(value.status==='succeeded'){
@@ -207,7 +207,7 @@ function load(){
   const answer=preflightAnswers(unique,kind=>{
     const file=answerPath(answers??'',FILES[kind]);
     if(!answers||!fs.existsSync(file))stop(2,`步骤 ${operation} 会反问 ${kind}，但答案文件不存在: ${file}`);
-    const value=readJson(file,kind);validate(kind,value,answers);return value;
+    const value=readJson(file,kind);validateCmAiAnswer(kind,value,answers);return value;
   });
   if(answer.develop?.status==='succeeded')for(const target of Object.keys(answer.develop.edits))
     if(!definition.scope.includes(target))stop(2,`develop.json.edits 越过批准 scope: ${target}`);
