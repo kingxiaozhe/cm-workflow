@@ -47,15 +47,16 @@ cm-refactor 的 `refactor_unknown_effect` 列表成员是冗余防线：`unknown
 
 ## B 类：内部协议分支，值得测但不紧急
 
-- `cm-ai/claude-tool-preview.mjs:51` —— `gzip` / `zstd` 传输编码，只测过 `identity`
-- `cm-ai/tool-preview.mjs` —— `argument` 提示词传输方式，全部现有用例走 `stdin`
-- `cm-ai/contracts.mjs` —— 状态机取值 `waiting_user` / `deny` / `revoked` / `active`
-- `cm-ai/durable-runner-state.mjs:215,336` —— `grant_expired` / `clock_invalid`
-- `cm-ai/cm-ai-conversation-entry.mjs:48-56` —— `context_refresh` / `run_finalize`
-- `cm-prd/correction-check.mjs:28,45` —— `mechanical_failed` / `context_result`
+清单已清空。六项都在 CI 执行的 `scripts/*.test.mjs` 里有了测试，每条都做过变异验证：
 
-这些不在用户配置面上，踩中的路径更窄。但 `grant_expired` 和 `clock_invalid` 关系到授权
-凭据的过期判定，真出问题代价不小，排在 B 类的前面。
+| 分支 | 测试文件 |
+| --- | --- |
+| `cm-ai/durable-runner-state.mjs` 的 `grant_expired` / `clock_invalid` | `scripts/cm-ai-review-timeout.test.mjs` |
+| `cm-ai/cm-ai-conversation-entry.mjs` 的 `context_refresh` / `run_finalize` | `scripts/cm-ai-conversation-entry-ops.test.mjs` |
+| `cm-ai/contracts.mjs` 的 `waiting_user` / `deny` / `revoked` / `active` | `scripts/cm-ai-contracts.test.mjs` |
+| `cm-ai/tool-preview.mjs` 的 `argument` | `scripts/cm-claude-probe.test.mjs` |
+| `cm-ai/claude-tool-preview.mjs` 的 `gzip` / `zstd` 与未声明编码 | `scripts/cm-claude-probe.test.mjs`（真实回环监听器；只在 macOS 运行，Linux CI 跳过） |
+| `cm-prd/correction-check.mjs` 的 `mechanical_failed` / `context_result` | `scripts/correction-check.test.mjs` |
 
 ## C 类：噪声，不必单独补
 

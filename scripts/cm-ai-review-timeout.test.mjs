@@ -79,6 +79,36 @@ const timeoutRun=(request,{onEvent})=>{
 };
 const retryEffect=(f,attempt=1)=>({...f.effect('review',attempt),id:`review-${attempt}-retry-1`});
 
+test('V3 expired dispatch grant is journaled as grant_expired without adapter dispatch',()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));
+  const end=await runner.executeEffect(f.effect('review'));
+  assert.equal(end.state,'pending_review');assert.equal(end.code,'grant_expired');assert.equal(f.dispatches(),0);
+  assert.equal(end.reviewInvocation.result.outcome,'not_dispatched');
+  assert.equal(end.reviewInvocation.result.reason,'grant_expired');
+  assert.equal(end.reviewInvocation.result.dispatchAt,200);
+  assert.equal(end.reviewInvocation.registration.grant.expiresAt,150);
+  assert.equal(end.calls.at(-1).terminal,'not_dispatched');assert.equal(end.receipt,null);
+  const saved=f.getStore().snapshot();
+  assert.equal(readRunnerHistory(saved.records,saved.records[0].payload.config,3).state.code,'grant_expired');
+  assert.deepEqual(saved.records.slice(-3).map(record=>record.payload.type),
+    ['review-invocation-registered','review-invocation-result','effect-checkpoint']);
+  assert.deepEqual(f.reopen().status(),end);
+},{times:[100,101,200],authorize:(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{grant.expiresAt=150;})}));
+
+test('V3 non-monotonic dispatch clock is journaled as clock_invalid without adapter dispatch',()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));
+  const end=await runner.executeEffect(f.effect('review'));
+  assert.equal(end.state,'pending_review');assert.equal(end.code,'clock_invalid');assert.equal(f.dispatches(),0);
+  assert.equal(end.reviewInvocation.result.outcome,'not_dispatched');
+  assert.equal(end.reviewInvocation.result.reason,'clock_invalid');
+  assert.equal(end.reviewInvocation.result.dispatchAt,99);
+  assert.equal(end.reviewInvocation.registration.registeredAt,101);
+  assert.equal(end.calls.at(-1).terminal,'not_dispatched');assert.equal(end.receipt,null);
+  const saved=f.getStore().snapshot();
+  assert.equal(readRunnerHistory(saved.records,saved.records[0].payload.config,3).state.code,'clock_invalid');
+  assert.deepEqual(f.reopen().status(),end);
+},{times:[100,101,99]}));
+
 test('runner timer without a result shares pending/blocked timeout transitions and replay',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));
   const end=await runner.executeEffect(f.effect('review'));
