@@ -8,7 +8,8 @@ import {readReviewSourceFiles} from '../runtime/js/cm-ai/review-package.mjs';
 import {requestFor,digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {buildCauseReviewPrompt,buildReviewPrompt} from '../runtime/js/cm-ai/codex-review-adapter.mjs';
 import {inspectProviderCauseReview,inspectProviderReview} from '../runtime/js/cm-ai/provider-review-observation.mjs';
-import {readFixCausePackage} from '../runtime/js/cm-fix/cause-package.mjs';
+import {createFixCausePackage,readFixCausePackage,verifyFixCauseTransition} from '../runtime/js/cm-fix/cause-package.mjs';
+import {prepareFixTestAuthor} from '../runtime/js/cm-fix/test-author.mjs';
 import {inspectFixInvestigation} from '../runtime/js/cm-fix/investigation.mjs';
 
 test('cause package binds only selected current source and never advances the fix',async()=>{
@@ -82,4 +83,33 @@ test('cause package binds only selected current source and never advances the fi
     assert.throws(()=>readReviewSourceFiles(cwd,['linked/file.mjs']),{code:'unsupported_path'});
     assert.throws(()=>readReviewSourceFiles(cwd,['.env']),{code:'unsupported_path'});
   }finally{owner?.close();fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('F56 M1 cause transition rejects hidden drift beneath a registered test-author result',async t=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fix-cause-transition-')));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const cwd=path.join(root,'code'),specsRoot=path.join(root,'specs');fs.mkdirSync(cwd);fs.mkdirSync(specsRoot);
+  const source='export const value=1;',testBody="import {value} from './value.mjs';if(value!==2)throw Error('BUG');";
+  fs.writeFileSync(path.join(cwd,'value.mjs'),source);fs.writeFileSync(path.join(cwd,'regression.mjs'),testBody);
+  const status={stage:'cause_review_required',identity:{repositoryId:'fixture',runId:'transition',taskId:'T-FIX-cause',attempt:1},
+    learning:null,reproduction:{status:'reproduced',next:'diagnose',observation:{id:'reproduce',command:['node','regression.mjs'],
+      outcome:'failed',exitCode:1,evidence:'Synthetic BUG',signatureMatched:true}},
+    diagnosis:{status:'diagnosed',rootCause:'Wrong value',plan:'Correct value',crossLayer:false,
+      affectedPaths:['regression.mjs','value.mjs'],affectedModules:['value']}};
+  const capture=()=>createFixCausePackage({codeProject:cwd,defect:'Wrong value',status});
+  const reviewed=readFixCausePackage(capture()),reviewedBytes=JSON.stringify(reviewed);
+  for(const hiddenDrift of [false,true]){
+    fs.writeFileSync(path.join(cwd,'regression.mjs'),testBody+(hiddenDrift?'\n// unregistered edit after cause review':''));
+    let registered;
+    const author=prepareFixTestAuthor({codeProject:cwd,specsRoot,identity:status.identity,testFiles:['regression.mjs'],
+      requirements:['value.mjs'],defect:'Wrong value',diagnosis:status.diagnosis,reproduction:status.reproduction},
+    {assertReviewReady(){},bridge:{async call(){fs.appendFileSync(path.join(cwd,'regression.mjs'),'\nif(!Number.isInteger(value))throw Error("boundary");');return {outcome:'authored'};}}});
+    const result=await author.execute({authorized:true,signal:new AbortController().signal,register(baseline){registered=baseline;}});
+    assert.equal(result.outcome,'authored');assert.equal(result.baselineDigest,registered.baselineDigest);
+    const verify=()=>verifyFixCauseTransition(reviewed,capture(),registered,result);
+    if(hiddenDrift)assert.throws(verify,{code:'cause_review_drift'});
+    else assert.doesNotThrow(verify);
+    assert.equal(fs.readFileSync(path.join(cwd,'value.mjs'),'utf8'),source);
+    assert.equal(JSON.stringify(reviewed),reviewedBytes);
+  }
 });

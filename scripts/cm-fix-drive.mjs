@@ -55,7 +55,7 @@ const ASKS={
 const READ_ONLY=new Set(['status','final_review_package','completion_evidence','cause_review_package']);
 const KNOWN=new Set([...Object.keys(ASKS),...READ_ONLY,'cancel','handoff','publish_review','check_n5',
   'publish_dossier','learning_writeback','walkthrough','finish','final_review','cause_review',
-  'recover_final_review','resume']);
+  'recover_final_review','resume','revision_test_check']);
 
 const stderr=line=>process.stderr.write(`[drive] ${line}\n`);
 const stop=(code,line)=>{stderr(line);process.exit(code);};
@@ -181,7 +181,7 @@ function main(){
   let done=false;
   readline.createInterface({input:child.stdout}).on('line',line=>{
     let row;try{row=JSON.parse(line);}catch{process.stdout.write(line+'\n');return;}
-    if(row.type==='host_ready'){send({requestId:'drive',operation});return;}
+    if(row.type==='host_ready'){send({requestId:'drive',operation,...(operation==='prepare_revision'&&Object.hasOwn(plan,'revisionTests')?{tests:plan.revisionTests}:{})});return;}
     if(row.type==='host_request'){
       const result=answerFor(row,answers,paths);
       if(result===null){

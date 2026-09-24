@@ -81,8 +81,8 @@
 - cm-ai N3：以本 task 已批准代码路径作为 `scope`，`target:"working-tree"`，包含尚未提交的新文件；
   本任务已授权的测试在开发期间补好，缺口检查和重跑发生在最终 handoff / N4 前。
 - cm-fix：先保留原复现失败测试，再修复；补齐影响面测试并检查覆盖率，纳入原第 5 步独立审查。
-  JS owner 所需补测须在原获准 test-author 阶段、红测及基线固定前完成；修后才发现测试缺口时，
-  明确报告「补测接线受阻」，按原受控流程处理，不在 owner 外改冻结测试或重建基线。
+  JS owner 首轮补测在原 test-author 阶段完成；第一轮最终审查要求补测时，按
+  `../../cm-fix/references/test-extension.md` 登记第二轮编写和实跑，不在 owner 外改测试或重建原证据。
 - target working-tree 的 scope 是本任务边界；不把别的任务或用户原有修改并入本次补测。
   覆盖率只是验证的一部分，既有 Review、QA、红绿证据和测试门禁都保留。
 - 工作流 owner 的快照不会自动忽略 coverage 目录。cm-ai 启动前须将要生成的原始/汇总报告精确路径
