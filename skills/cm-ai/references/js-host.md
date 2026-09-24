@@ -1,5 +1,27 @@
 # 当前会话作为 JS workflow 工具宿主
 
+## 单步驾驶员
+
+仓库自带 `../../../scripts/cm-ai-drive.mjs`，一次启动宿主、发送一个 operation、回答这一轮的反问并打印结果：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
+```
+
+`PLAN.json` 与 cm-fix 驾驶员一样，以自身目录解析相对路径；填写 `config`（已批准的运行定义）、
+`mode`、当前真实 `hostContext`、`runtime`、原样传给宿主的 `permissions`、`answers` 和
+`checks: [{"id":"syntax","command":["node","--check","target.mjs"]}]`。换会话恢复还要填
+`originalHostContext`，且运行存档必须已存在。人工写好的开发结果放 `answers/develop.json`，
+其中 `edits` 把批准 scope 内路径映射到答案目录里的 UTF-8 内容文件。其余人工文件为
+`qa-assess.json`、`documentation-inspect.json`、`documentation-sync.json`；QA 修复子运行沿用
+cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edits.json` 和
+`retrospective.json`。缺答案、结构错误、路径或存档无效会在启动宿主前退出 2。
+
+`check` 只运行计划里的真实命令；原始输出打印到驾驶员 stderr，宿主只保存实际退出码和精简证据；静态 `check.json` 不会被读取。
+`qa_logic`、`qa_browser`、`verification_precheck` 没有可信本地 runner，涉及这些反问的步骤会在发送前拒绝。
+受保护执行由原宿主处理检查；驾驶员不把人工填写的结果冒充执行证据。一次 `advance` 可能走过多个阶段，
+驾驶员会按该宿主的请求路径提前检查本次可能用到的全部答案；只读 `status` 不需要答案。
+
 本参考只负责接入已有 runner，不复制 N1–N8 状态机。相对路径从本文件解析；
 插件根是 `../../..`，不得硬编码安装缓存。先读
 `../../../docs/js-workflow-control.md` 的当前支持、会话入口、QA/文档、审查授权与批次章节，
