@@ -9,6 +9,9 @@ import {resolveCodeProjects,codeProjectPaths,assertCodeProjectSelections} from '
 import {preQaConfigurations,readQaAttachment} from '../runtime/js/cm-ai/qa-attachment.mjs';
 import {recordCmAiQaAttachment} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
+import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
+import {previousQaMaterial,qaConfigurationSlice,qaInvariantDigest,qaRevisionChain,verifyQaRevisionMaterial} from '../runtime/js/cm-ai/qa-config-revision.mjs';
+import {inspectCmAiQaRevisionTarget,recordCmAiQaConfigurationRevision} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 
 const usage='cm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
 const fail=code=>{throw Object.assign(new Error(code),{code});};
@@ -167,11 +170,14 @@ export function validateRunDefinition(input){
   return value;
 }
 
-export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,parallelSelection=null}={}){
+export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,parallelSelection=null,qaConfigRevision=null}={}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
   if(!['create','resume'].includes(mode))fail('invalid_mode');
+  if(qaConfigRevision!==null&&(mode!=='resume'||!execution?.qaExecutor||rerunUnknownQa||rerunBlockedQa
+    ||typeof qaConfigRevision.reason!=='string'||!qaConfigRevision.reason.trim()||qaConfigRevision.reason.length>500
+    ||/[\r\n\0]/.test(qaConfigRevision.reason)||!qaConfigRevision.previousWorkflow))fail('qa_revision_authorization_required');
   if(typeof rerunUnknownQa!=='boolean'||typeof rerunBlockedQa!=='boolean'||rerunUnknownQa&&rerunBlockedQa
     ||(rerunUnknownQa||rerunBlockedQa)&&(mode!=='resume'||!execution?.qaExecutor))fail('qa_recovery_authorization_required');
   const {openTaskExecutionStore}=await import('../runtime/js/cm-ai/task-owner.mjs');
@@ -251,22 +257,36 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
     config:sha(configMaterial),inputs:sha({feature,task:identity.taskId})};
   const storeOptions={tasksPath,feature:featureSlug,specsRoot:specsDir,
     identity:{repositoryId:identity.repositoryId,runId:identity.runId},fingerprints,create:mode==='create'};
-  let store,attaching=false;
+  let store,attaching=false,priorMaterial=null;
+  if(qaConfigRevision!==null)priorMaterial=previousQaMaterial(configMaterial,qaConfigRevision.previousWorkflow);
   try{store=openTaskExecutionStore(storeOptions);}
   catch(error){
     if(mode!=='resume'||error.code!=='fingerprint_mismatch')throw error;
-    for(const previous of preQaConfigurations(configMaterial)){
-      try{store=openTaskExecutionStore({...storeOptions,fingerprints:{...fingerprints,config:sha(previous)}});break;}
-      catch(cause){if(cause.code!=='fingerprint_mismatch')throw cause;}
+    const snapshot=readExecutionSnapshot({specsRoot:specsDir,identity:storeOptions.identity});
+    const last=qaRevisionChain(snapshot).revisions.at(-1);
+    if(priorMaterial&&last?.toFingerprint===fingerprints.config&&last.fromFingerprint===sha(priorMaterial)
+      &&last.reason===qaConfigRevision.reason)priorMaterial=null;
+    if(priorMaterial||snapshot.records.some(row=>row.payload.type==='qa-config-revised')){
+      verifyQaRevisionMaterial(snapshot,configMaterial,priorMaterial);
+      store=openTaskExecutionStore({...storeOptions,fingerprints:{...fingerprints,config:snapshot.fingerprints.config}});
     }
-    if(!store)throw error;
-    attaching=true;
+    if(!store){
+      for(const previous of preQaConfigurations(configMaterial)){
+        try{store=openTaskExecutionStore({...storeOptions,fingerprints:{...fingerprints,config:sha(previous)}});break;}
+        catch(cause){if(cause.code!=='fingerprint_mismatch')throw cause;}
+      }
+      if(!store)throw error;
+      attaching=true;
+    }
   }
   try{
+    const chain=qaRevisionChain(store.snapshot());
+    if(chain.revisions.length&&chain.fingerprint!==fingerprints.config&&!priorMaterial)fail('fingerprint_mismatch');
+    if(chain.revisions.length||priorMaterial)verifyQaRevisionMaterial(store.snapshot(),configMaterial,priorMaterial);
     const attachments=store.snapshot().records.filter(row=>row.payload.type==='qa-attached');
     if(attachments.length>1)fail('qa_attachment_duplicate');
     const attached=attachments.length?readQaAttachment(attachments[0].payload.record):null;
-    if(attached&&attached.qaFingerprint!==fingerprints.config)fail('fingerprint_mismatch');
+    if(attached&&!chain.revisions.length&&!priorMaterial&&attached.qaFingerprint!==fingerprints.config)fail('fingerprint_mismatch');
     if(attaching&&store.snapshot().records.length===0)fail('qa_attach_not_completed');
     let runnerMode=mode;
     if(mode==='resume'&&store.snapshot().records.length===0){
@@ -299,6 +319,23 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
       // journal append; neither the attachment nor QA dispatch is repeated.
       recordCmAiQaAttachment({specsDir,codeProject,feature,identity,record,
         ...(execution.qaLogHome?{logHome:execution.qaLogHome}:{})});
+    }
+    const qaBinding={specsDir,codeProject,feature,identity,
+      ...(execution?.qaLogHome?{logHome:execution.qaLogHome}:{})};
+    // Repair a crash after the journal append, before the log supersession.
+    for(const record of chain.revisions)recordCmAiQaConfigurationRevision({...qaBinding,identity:{...identity,attempt:record.taskAttempt},packageDigest:record.packageDigest},record);
+    if(priorMaterial){
+      if(sha(priorMaterial)===fingerprints.config)fail('qa_revision_unchanged');
+      const current=await host.handle({version:1,operation:'status',requestId:'qa-revision-status',identity});
+      if(current.state!=='fixture_completed'||current.code!==null)fail('qa_revision_not_completed');
+      const binding={...qaBinding,identity:current.identity,packageDigest:current.packageDigest};
+      const target=inspectCmAiQaRevisionTarget(binding);
+      const record=host.reviseQa({version:1,fromFingerprint:sha(priorMaterial),toFingerprint:fingerprints.config,
+        invariantDigest:qaInvariantDigest(configMaterial),previousQaDigest:sha(qaConfigurationSlice(priorMaterial)),qaDigest:sha(qaConfigurationSlice(configMaterial)),
+        reason:qaConfigRevision.reason,hostContextId:execution.configuration.hostContextId,
+        revisedAt:new Date().toISOString().replace(/\.\d{3}Z$/,'Z'),packageDigest:current.packageDigest,
+        testRunId:target.testRunId,qaRound:target.qaRound,taskAttempt:current.identity.attempt});
+      recordCmAiQaConfigurationRevision(binding,record);
     }
     return {host:{async handle(request){
       if(execution===null&&!['status','cancel'].includes(request.operation)){

@@ -6,6 +6,8 @@ import {fileURLToPath} from 'node:url';
 import {digest,hex,id,json,need,shape,text,validIdentity} from './effect-contract.mjs';
 import {readQaAttachment} from './qa-attachment.mjs';
 import {writeCmAiQaStatus} from './cm-ai-run-finalizer.mjs';
+import {readExecutionSnapshot} from './execution-snapshot.mjs';
+import {qaRevisionChain,readQaConfigRevision} from './qa-config-revision.mjs';
 
 const writer=fileURLToPath(new URL('../../../scripts/cm-log-event.py',import.meta.url));
 const MiB=1024*1024;
@@ -212,6 +214,15 @@ function blockedEvidenceCases(items,specsDir,environment,code='qa_rerun_not_bloc
   return blocked.map(row=>row.id).sort();
 }
 
+// Supersession is authorized by the owner journal, never a self-reported log digest.
+function validateConfigurationSupersession(row,specsDir,code){
+  const snapshot=readExecutionSnapshot({specsRoot:specsDir,identity:{repositoryId:row.repository_id,runId:row.run_id}});
+  const {revisions}=qaRevisionChain(snapshot);
+  const record=revisions.find(r=>digest(r)===row.qa_revision_digest),config=snapshot.records[0]?.payload?.config;
+  need(record&&record.testRunId===row.operation_id&&record.qaRound===row.attempt
+    &&record.packageDigest===row.package_digest&&config?.identity?.taskId===row.task&&config?.taskLearning?.feature===row.feature,code);
+}
+
 // Abandonment reuses a round; superseded completed evidence advances it.
 function validateRunSequence(items,code='qa_round_invalid',specsDir){
   const starts=[],ids=new Set();let current=null,abandoned=false,superseded=false;
@@ -234,11 +245,18 @@ function validateRunSequence(items,code='qa_round_invalid',specsDir){
     }else{
       need(current&&row.operation_id===current.operation_id&&row.attempt===current.attempt&&!abandoned&&!superseded,code);
       if(row.phase==='superseded'){
-        need(current.attempt<3&&row.previous_test_run_id===current.operation_id&&row.reason==='host_evidence_problem'
+        need(current.attempt<3&&row.previous_test_run_id===current.operation_id
           &&row.mode===current.mode&&row.case_count===current.case_count,code);
         const prior=items.filter(entry=>entry.position<item.position&&entry.row.operation_id===row.operation_id);
-        const blocked=blockedEvidenceCases(prior,specsDir,row.expected_environment,code);
-        need(JSON.stringify(row.blocked_cases)===JSON.stringify(blocked),code);superseded=true;
+        if(row.reason==='qa_configuration_revision'){
+          need(prior.filter(entry=>entry.row.phase==='complete').length===1,code);
+          validateConfigurationSupersession(row,specsDir,code);
+        }else{
+          need(row.reason==='host_evidence_problem',code);
+          const blocked=blockedEvidenceCases(prior,specsDir,row.expected_environment,code);
+          need(JSON.stringify(row.blocked_cases)===JSON.stringify(blocked),code);
+        }
+        superseded=true;
       }
       if(row.phase==='abandoned'){
         need(row.previous_test_run_id===current.operation_id&&row.reason==='host_terminated'
@@ -308,6 +326,41 @@ export function latestCmAiQaRun(input) {
   return {testRunId,...inspectCmAiQaResult({...input,testRunId})};
 }
 
+// Configuration revision consumes another round. Unknown in-flight QA must be
+// reconciled separately; changing its configuration is not cancellation proof.
+export function inspectCmAiQaRevisionTarget({specsDir,feature,identity,packageDigest}){
+  const input={specsDir,feature,identity,packageDigest};
+  latestCmAiQaRun(input);
+  const rows=qaRunRows(input),starts=validateRunSequence(rows,'qa_round_invalid',input.specsDir),start=starts.at(-1).row;
+  need(start.attempt<3,'qa_round_invalid');
+  need(!rows.some(({row})=>row.operation_id===start.operation_id&&['superseded','abandoned'].includes(row.phase)),'qa_revision_pending');
+  return {testRunId:start.operation_id,qaRound:start.attempt,mode:start.mode,caseCount:start.case_count};
+}
+
+export function inspectCmAiQaConfigurationRecovery(input){
+  const rows=qaRunRows(input);
+  if(rows.at(-1)?.row.reason!=='qa_configuration_revision'||rows.at(-1)?.row.phase!=='superseded')return null;
+  validateRunSequence(rows,'qa_round_invalid',input.specsDir);
+  const row=rows.at(-1).row;
+  return {testRunId:row.operation_id,qaRound:row.attempt,mode:row.mode,caseCount:row.case_count,superseded:true};
+}
+
+export function recordCmAiQaConfigurationRevision(input,raw){
+  const record=readQaConfigRevision(raw),{specsDir,feature,identity,packageDigest}=input;
+  const rows=qaRunRows({specsDir,feature,identity,packageDigest});
+  const existing=rows.find(({row})=>row.phase==='superseded'&&row.qa_revision_digest===digest(record));
+  if(existing){
+    validateConfigurationSupersession(existing.row,input.specsDir,'qa_revision_invalid');
+    if(rows.at(-1)===existing)writeCmAiQaStatus({specsDir,feature,identity,phase:'configuration_revised'});
+    return;
+  }
+  const target=inspectCmAiQaRevisionTarget(input);
+  need(target.testRunId===record.testRunId&&target.qaRound===record.qaRound,'qa_revision_invalid');
+  const result=recordCmAiQaRun({...input,...target,phase:'superseded',configurationRevision:record});
+  writeCmAiQaStatus({specsDir,feature,identity,phase:'configuration_revised'});
+  return result;
+}
+
 export function recordCmAiQaRun(input) {
   const keys=['specsDir','codeProject','feature','identity','packageDigest','testRunId','mode','caseCount','phase'];
   if(Object.hasOwn(input,'result'))keys.push('result');
@@ -316,6 +369,7 @@ export function recordCmAiQaRun(input) {
   if(Object.hasOwn(input,'previousTestRunId'))keys.push('previousTestRunId');
   if(Object.hasOwn(input,'deferredCases'))keys.push('deferredCases');
   if(Object.hasOwn(input,'expectedEnvironment'))keys.push('expectedEnvironment');
+  if(Object.hasOwn(input,'configurationRevision'))keys.push('configurationRevision');
   shape(input,keys);validIdentity(input.identity);id(input.testRunId);hex(input.packageDigest);
   text(input.specsDir);text(input.codeProject);text(input.feature);
   need(['commands','browser','all'].includes(input.mode));
@@ -325,7 +379,12 @@ export function recordCmAiQaRun(input) {
   need(Number.isSafeInteger(qaRound)&&qaRound>=1&&qaRound<=3,'qa_round_invalid');
   const binding={specsDir:input.specsDir,feature:input.feature,identity:input.identity,packageDigest:input.packageDigest};
   let passed=[],blockedCases=[];
-  if(input.phase==='superseded'){
+  if(input.configurationRevision){
+    need(input.phase==='superseded','qa_revision_invalid');
+    const record=readQaConfigRevision(input.configurationRevision),target=inspectCmAiQaRevisionTarget(binding);
+    need(record.taskAttempt===input.identity.attempt&&record.testRunId===input.testRunId&&target.testRunId===input.testRunId&&record.packageDigest===input.packageDigest
+      &&target.qaRound===qaRound&&record.qaRound===qaRound&&target.mode===input.mode&&target.caseCount===input.caseCount,'qa_revision_invalid');
+  }else if(input.phase==='superseded'){
     const previous=inspectCmAiQaRecovery(binding,{blocked:true,environment:input.expectedEnvironment});
     blockedCases=previous.blockedCases;
     need(previous.testRunId===input.testRunId&&previous.qaRound===qaRound
@@ -341,7 +400,7 @@ export function recordCmAiQaRun(input) {
     let previous;
     if(Object.hasOwn(input,'previousTestRunId')){
       const rows=qaRunRows(binding),superseded=rows.at(-1)?.row.phase==='superseded';
-      previous=inspectCmAiQaRecovery(binding,{blocked:superseded,environment:rows.at(-1)?.row.expected_environment});
+      previous=inspectCmAiQaConfigurationRecovery(binding)??inspectCmAiQaRecovery(binding,{blocked:superseded,environment:rows.at(-1)?.row.expected_environment});
       need((previous.abandoned||previous.superseded)&&previous.testRunId===input.previousTestRunId
         &&previous.qaRound+(superseded?1:0)===qaRound,'qa_round_invalid');
     }else previous=latestCmAiQaRun(binding);
@@ -372,6 +431,11 @@ export function recordCmAiQaRun(input) {
   if(input.phase==='abandoned')Object.assign(data,{previous_test_run_id:input.testRunId,reason:'host_terminated',partial_pass_cases:passed});
   if(input.phase==='superseded')Object.assign(data,{previous_test_run_id:input.testRunId,
     reason:'host_evidence_problem',blocked_cases:blockedCases,expected_environment:input.expectedEnvironment??null});
+  if(input.configurationRevision){
+    delete data.blocked_cases;delete data.expected_environment;
+    Object.assign(data,{reason:'qa_configuration_revision',qa_revision_digest:digest(input.configurationRevision)});
+    validateConfigurationSupersession({...data,run_id:input.identity.runId},input.specsDir,'qa_revision_invalid');
+  }
   if(input.phase==='complete'){
     const result=json(input.result);shape(result,['result','passed','failed','blocked','report']);
     for(const key of ['passed','failed','blocked'])need(Number.isSafeInteger(result[key])&&result[key]>=0,'qa_result_invalid');
@@ -462,6 +526,7 @@ function inspectQaResult(input,failureSource,historical=false) {
   const latestStart=latestStarts.at(-1);
   if(!historical)need(latestStart.row.operation_id===input.testRunId,'qa_result_stale');
   const runs=candidates.filter(item=>item.row.operation_id===input.testRunId);
+  if(!historical)need(!runs.some(({row})=>row.phase==='superseded'&&row.reason==='qa_configuration_revision'),'qa_result_superseded');
   need(runs.length>0,'qa_result_invalid');
   const starts=runs.filter(item=>item.row.phase==='start'),completes=runs.filter(item=>item.row.phase==='complete');
   need(starts.length===1&&completes.length===1,'qa_result_incomplete');

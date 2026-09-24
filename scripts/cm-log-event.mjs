@@ -336,6 +336,15 @@ function validateQaAbandonment(state,event){
 
 function validateQaSupersession(state,event){
   const {start,complete}=state;
+  if(event.reason==='qa_configuration_revision'){
+    if(state.active||state.superseded||!start||!complete||start.attempt>=3
+      ||event.workflow!=='cm-ai'||event.node!=='N6'||event.previous_test_run_id!==start.operation_id
+      ||!['PASS','FAIL','BLOCKED'].includes(complete.result)||!/^[a-f0-9]{64}$/.test(event.qa_revision_digest??'')
+      ||!['repository_id','run_id','feature','task','package_digest','qa_decision_id','operation_id','attempt','mode','case_count']
+        .every(key=>event[key]!==undefined&&event[key]===start[key]&&event[key]===complete[key]))
+      throw new UsageError('QA configuration supersession requires the matching completed invocation and revision digest');
+    return;
+  }
   if(state.active||state.superseded||!start||!complete||complete.result!=='BLOCKED'||complete.failed!==0
     ||complete.blocked<=0||start.attempt>=3||event.workflow!=='cm-ai'||event.node!=='N6'
     ||event.reason!=='host_evidence_problem'||event.previous_test_run_id!==start.operation_id

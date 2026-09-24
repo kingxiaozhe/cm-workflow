@@ -951,3 +951,40 @@ test('step31 CLI resumes completed evidence BLOCKED QA and reaches the original 
     }
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
+
+test('F7 CLI explicitly revises missing QA commands after N5 and resumes the same run',async()=>{
+  const f=fixture();
+  try{
+    f.workflow=true;
+    const definition=JSON.parse(fs.readFileSync(f.config));definition.scope.push('README.md');
+    fs.writeFileSync(f.config,JSON.stringify(definition));
+    const bin=path.join(f.root,'bin');fs.mkdirSync(bin);
+    const fake=path.join(bin,'codex');fs.copyFileSync(fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url)),fake);
+    fs.chmodSync(fake,0o700);f.env={...process.env,PATH:bin+path.delimiter+process.env.PATH};
+    const preview=spawnSync(process.execPath,[cli,'preflight','--config',f.config,'--review-model','fixture'],
+      {encoding:'utf8',env:f.env,timeout:15000});assert.equal(preview.status,0,preview.stderr);
+    const review=path.join(f.root,'review.json');fs.writeFileSync(review,preview.stdout);
+    const oldWorkflow={documentationPaths:['README.md'],applicableAgentFiles:[],qa:{commands:[],
+      environment:{kind:'web',carrier:'browser',target:'fixture',scope:'local'}}};
+    const oldFile=path.join(f.root,'workflow-old.json'),file=path.join(f.root,'workflow.json');
+    fs.writeFileSync(oldFile,JSON.stringify(oldWorkflow));fs.writeFileSync(file,JSON.stringify(oldWorkflow));
+    f.args.push('--review-config',review,'--allow-review-attempt','1','--workflow-config',file,'--allow-qa');
+    const first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
+    assert.equal(first.rows.find(row=>row.requestId==='advance').result.code,'qa_result_blocked');
+    const stateFile=path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json');
+    const before=JSON.parse(fs.readFileSync(stateFile));
+    fs.writeFileSync(file,JSON.stringify({...oldWorkflow,qa:{...oldWorkflow.qa,
+      commands:[{id:'syntax',command:[process.execPath,'--check','target.mjs'],caseIds:[]}]}}));
+    const denied=await runCli(f,'normal','resume');assert.equal(denied.code,1);assert.match(denied.stderr,/fingerprint_mismatch/);
+    f.args.push('--revise-qa-config',oldFile,'--qa-config-revision-reason','Correct missing QA command');
+    const resumed=await runCli(f,'authorized-review','resume');assert.equal(resumed.code,0,resumed.stderr);
+    assert.equal(resumed.rows.find(row=>row.requestId==='advance').result.code,'run_done');
+    assert.deepEqual(resumed.calls,['documentation_inspect']);
+    const after=JSON.parse(fs.readFileSync(stateFile));assert.deepEqual(after.records.slice(0,before.records.length),before.records);
+    assert.equal(after.records.filter(row=>row.payload.type==='qa-config-revised').length,1);
+    f.args.splice(-4);
+    const again=await runCli(f,'normal','resume');assert.equal(again.code,0,again.stderr);
+    assert.equal(again.rows.find(row=>row.requestId==='advance').result.code,'run_done');
+    assert.deepEqual(JSON.parse(fs.readFileSync(stateFile)),after);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});

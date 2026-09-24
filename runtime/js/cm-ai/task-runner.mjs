@@ -1,3 +1,4 @@
+import {readQaConfigRevision} from './qa-config-revision.mjs';
 import {readQaAttachment} from './qa-attachment.mjs';
 // Trusted synthetic fixture host; explicit V2 supports isolated task-file writes.
 import { randomUUID } from 'node:crypto';
@@ -267,7 +268,7 @@ export function createTaskRunner(options) {
       kind:{init:'result','effect-intent':'intent','effect-checkpoint':'result',control:'cancel',
         'task-commit-intent':'commit-intent','task-commit-result':'commit-result',
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
-        'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result'}[type],
+        'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
     const record={...body,digest:digest(body)};boundRunnerRecord(record,body.seq);
@@ -846,7 +847,14 @@ export function createTaskRunner(options) {
     need(state==='fixture_completed','qa_attach_not_completed');
     persist('qa-attached',{record});qaAttachment=record;return json(record);
   };
-  const api={executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks};
+  const reviseQa=raw=>{
+    need(invocationMode&&store&&!busy&&!poisoned,'qa_revision_unavailable');
+    const record=readQaConfigRevision(raw),current=status();
+    need(current.state==='fixture_completed'&&current.code===null,'qa_revision_not_completed');
+    need(current.packageDigest===record.packageDigest,'package_mismatch');
+    persist('qa-config-revised',{record});return json(record);
+  };
+  const api={reviseQa,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   return Object.freeze(api);

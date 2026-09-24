@@ -2,7 +2,7 @@
 import {inspectCmAiAdmission,matchesCmAiTaskSelection} from './cm-ai-admission.mjs';
 import {inspectCmAiContextRefresh,inspectCmAiTaskLearningInput} from './cm-ai-context-refresh.mjs';
 import {findCmAiQaDecision,inspectCmAiQaDecision,inspectCmAiQaResult,recordCmAiQaDecision,
-  latestCmAiQaRun,recordCmAiQaRun,inspectCmAiQaRecovery} from './cm-ai-qa-log.mjs';
+  latestCmAiQaRun,recordCmAiQaRun,inspectCmAiQaRecovery,inspectCmAiQaConfigurationRecovery} from './cm-ai-qa-log.mjs';
 import {recordCmAiRunDone} from './cm-ai-run-finalizer.mjs';
 import {readHostQaFixHandoff} from './host-qa-fix.mjs';
 import {digest,freeze,hex,id,json,need,shape,text,validIdentity} from './effect-contract.mjs';
@@ -151,6 +151,7 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'inspectFixAssociation'))runnerKeys.push('inspectFixAssociation');
   if(runner&&Object.hasOwn(runner,'acceptCompletedFix'))runnerKeys.push('acceptCompletedFix');
   if(runner&&Object.hasOwn(runner,'attachQa'))runnerKeys.push('attachQa');
+  if(runner&&Object.hasOwn(runner,'reviseQa'))runnerKeys.push('reviseQa');
   if(runner&&Object.hasOwn(runner,'inspectBootstrapAdmission'))runnerKeys.push('inspectBootstrapAdmission');
   shape(runner,runnerKeys);
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');
@@ -158,6 +159,7 @@ export function createCmAiConversationEntry(options) {
   if(Object.hasOwn(runner,'inspectFixAssociation'))need(typeof runner.inspectFixAssociation==='function');
   if(Object.hasOwn(runner,'acceptCompletedFix'))need(typeof runner.acceptCompletedFix==='function');
   if(Object.hasOwn(runner,'attachQa'))need(typeof runner.attachQa==='function');
+  if(Object.hasOwn(runner,'reviseQa'))need(typeof runner.reviseQa==='function');
   if(Object.hasOwn(runner,'inspectBootstrapAdmission'))need(typeof runner.inspectBootstrapAdmission==='function');
 
   const hostDecision=Object.hasOwn(options,'hostDecision')?json(options.hostDecision):null;
@@ -292,16 +294,21 @@ export function createCmAiConversationEntry(options) {
           notCancelled();
           need(pendingExecution===null,'qa_execution_pending');
           const binding={specsDir:options.specsDir,feature:options.feature,identity:result.identity,packageDigest:result.packageDigest};
-          let previous,recovery=null;
+          let previous,recovery=null,configurationRecovery=false;
           try{previous=latestCmAiQaRun(binding);}
           catch(error){
-            if(error.code!=='qa_result_incomplete')throw error;
-            if(rerunUnknownQa){
-              try{recovery=inspectCmAiQaRecovery(binding);}
-              catch(error){if(error.code!=='qa_execution_unknown')throw error;}
+            if(error.code==='qa_result_superseded'){
+              recovery=inspectCmAiQaConfigurationRecovery(binding);
+              need(recovery!==null,'qa_revision_invalid');configurationRecovery=true;previous=null;
+            }else{
+              if(error.code!=='qa_result_incomplete')throw error;
+              if(rerunUnknownQa){
+                try{recovery=inspectCmAiQaRecovery(binding);}
+                catch(error){if(error.code!=='qa_execution_unknown')throw error;}
+              }
+              if(recovery===null)return summary(operation,{...runner.status(),code:'qa_execution_unknown'},'blocked');
+              previous=null;
             }
-            if(recovery===null)return summary(operation,{...runner.status(),code:'qa_execution_unknown'},'blocked');
-            previous=null;
           }
           if(rerunBlockedQa){
             need(previous!==null,'qa_rerun_not_blocked_by_evidence');
@@ -312,8 +319,8 @@ export function createCmAiConversationEntry(options) {
           const repaired=previous?.status==='failed'&&accepted?.testRunId===previous.testRunId;
           if(previous===null||repaired||rerunBlockedQa){
             // Later rounds require an accepted completed repair or explicit
-            // evidence-only BLOCKED recovery. Unknown and unrepaired FAIL stop.
-            const qaRound=recovery?recovery.qaRound+(rerunBlockedQa?1:0):(repaired?accepted.qaRound+1:1);
+            // evidence recovery/configuration revision. Unknown execution stops.
+            const qaRound=recovery?recovery.qaRound+(rerunBlockedQa||configurationRecovery?1:0):(repaired?accepted.qaRound+1:1);
             need(qaRound>=1&&qaRound<=3,'qa_round_invalid');
             testRunId=`qa-${digest(recovery?{...binding,previousTestRunId:recovery.testRunId}:
               repaired?{...binding,qaRound,repair:accepted.evidenceDigest}:binding).slice(0,48)}`;
@@ -321,7 +328,7 @@ export function createCmAiConversationEntry(options) {
               ...(repaired||recovery?{qaRound}: {})};
             const logInput={...invocation,...(Object.hasOwn(options,'qaLogHome')?{logHome:options.qaLogHome}:{})};
             notCancelled();
-            if(recovery){
+            if(recovery&&!configurationRecovery){
               recordCmAiQaRun({...logInput,testRunId:recovery.testRunId,mode:recovery.mode,
                 caseCount:recovery.caseCount,qaRound:recovery.qaRound,phase:rerunBlockedQa?'superseded':'abandoned',
                 ...(rerunBlockedQa?{expectedEnvironment:qaExecutor.configuration?.environment??null}:{})});

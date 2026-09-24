@@ -119,12 +119,34 @@ QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.tim
 已 complete 的宿主证据阻断可用单任务 `--mode resume --workflow-config {原配置} --allow-qa --rerun-blocked-qa`，
 再 `advance`：仅最新结果为 BLOCKED、failed=0、qaRound<3，且每条 BLOCKED 都是 browser 的 evidenceProblem、
 cleanup=failed、环境摘要不一致或 hostRequestTimeout，或 logic 的 INSUFFICIENT_EVIDENCE 时允许。
-commands 阻断（含 commands-unavailable/no-applicable-cases）、产品 FAIL、源码漂移和未 complete 不适用。
+commands 阻断（含 commands-unavailable/no-applicable-cases）、产品 FAIL、源码漂移和未 complete 不适用；配置填错应使用下述“QA 配置修订”。
 先写 `test_run/superseded`（previous_test_run_id、reason=host_evidence_problem、blocked_cases），再以新 testRunId、
 qaRound+1 写带 previous_test_run_id 的 start，全部用例重跑；旧 PASS 仅保留历史，最多三轮，不重做 QA 决策、
 开发或审查，不改 tasks。开关一次性消费且不持久化，不与 --rerun-unknown-qa 合用；仅写 superseded 后中断，
 须重新显式授权恢复。complete 同步 N6 状态镜像为 qa_passed/qa_failed/qa_blocked，并显示本轮通过/失败/阻断数量。
 （事故：宿主把非文件说明混入 browser evidence，导致已完成任务的收尾 QA 无法恢复。）
+
+### QA 配置修订
+
+开发、独立审查和 N5 已完成，最新 QA 已产生完整结果，但命令、环境或 QA 预算填错时，先保留上一版 workflow JSON，再修改新文件。用户明确同意本次配置改动后，用单任务宿主恢复：
+
+```bash
+node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
+  --host-context {原宿主身份} --allow-development \
+  --workflow-config workflow-new.json --allow-qa \
+  --revise-qa-config workflow-old.json \
+  --qa-config-revision-reason "补齐此前漏配的项目测试命令"
+```
+
+原运行需要的审查、保护配置和跨会话身份参数仍须照原值提供，然后发送 `advance`。旧运行只保存完整配置摘要，没有可逆的配置副本，所以必须提供上一版文件核对；不能凭一个新摘要接受任意漂移。旧文件仅用于验证，不执行其命令。
+
+- 修订仅接受 `resume`、`--allow-qa`、非空原因和相符的上一版配置；不能与两个 QA 重跑开关合用。只允许 QA 命令、环境、QA 预算及其派生执行计划变化，任务身份、规格、开发、审查、项目策略、文档与能力配置均保持原绑定。reviewer 的纯传输超时本来就不参与授权摘要，无需本入口。
+- 先追加 `qa-config-revised`，绑定前后指纹、QA 配置摘要、原因、原审查包及旧 QA 轮次；再追加 `test_run/superseded`，原因是 `qa_configuration_revision`。旧结果留在历史，不再作为当前通过或修复依据；原开发、审查、N5、任务勾选和历史字节不改写。
+- 新 QA 使用新 testRunId，全部用例重跑，轮次加一且最多三轮；另行绑定实际完成的开发 attempt，第二次开发审查通过后也能恢复。未完成或结果未知的 QA 必须先核对原执行；本入口不证明资源已清理，不放宽源码漂移检查，不重置轮次，也不自动批准产品修复。
+- 配置链验证成功后，后续恢复只需当前配置与原授权参数，不再需要旧文件。重复同一修订命令不会重复登记；若中断发生在 journal 写入之后，会补齐旧 QA 的作废日志，再运行下一轮。未使用此入口时，改配置仍报 `fingerprint_mismatch`。
+
+本次仅支持单任务宿主；批量宿主未接入该选项。临时夹具覆盖漏命令死锁、正常续跑、连续修订与三轮上限、旧证据拒绝及中断回放；不代表真实模型或浏览器验收。
+
 QA命令复用同一specs只读沙箱。最终任务的documentationPaths必须已在批准scope内，
 在同一次受保护开发调用中同步，随后进入原检查/handoff/Review；不派发宿主documentation_sync，也不增加模型轮次。
 宿主仍处理qa_assess/qa_logic/qa_browser及只读documentation_inspect；不得借这些请求改代码、规格或指令。
