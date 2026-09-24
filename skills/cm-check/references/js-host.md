@@ -4,6 +4,8 @@
 
 ## 启动
 
+单步调用可用 `node scripts/cm-check-drive.mjs --plan PLAN.json start`。计划写 `skillDir`、`project`、可选 `config`/`quick`，以及 `checks:[{id:"check_runtime",command:[checker,"--project",project,"--print-effective"]}]`；命令须与宿主声明逐项一致。完整模式的 `answers/check-semantic.json` 只写人工八组判断及五个可选项，不写 `sourceDigest`；驾驶员从当次请求绑定摘要。驾驶员实际运行机械 checker，保留真实退出码与输出。`status` 只读；该宿主没有跨进程恢复，驾驶员拒绝 `resume`。
+
 完整 Skill 先执行 `cm-check-update.mjs` 的默认更新步骤，再从返回的根目录启动此控制器。
 更新不在控制器会话内进行，避免基线在检查中漂移；低层控制器单独调用保持只读。
 

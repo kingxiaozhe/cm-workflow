@@ -1,5 +1,7 @@
 # 当前会话生成规则草稿
 
+单步调用可用 `node scripts/cm-init-drive.mjs --plan PLAN.json <start|advance|status|resume>`。计划写规范 `project`、私有 `sessionFile`、`mode:create|resume`、当前 `hostContext`；恢复另写 `originalHostContext`。首次 `advance` 写 `selection`；`answers/generate.json` 将固定目标映射到同目录草稿内容文件，后续人工答案依次为 `analyze.json`、`verify.json`、`confirm.json`、`review.json`。驾驶员按存档阶段预检；`init_write` 仅在本次 `allowWrite:true` 时按已审文档实际写入并回报，宿主仍回读。私有会话记录的授权、当前用户确认及真实独立审查要求沿用下文，答案文件不能代替这些事实。`status` 只读；未知调用只用原回执恢复。
+
 ## 中断后恢复
 
 若本次启用了下方`--session-file`，先用原私有记录恢复；只有已进入写入且结果未知，才走已审档案分支。不要从文件时间猜选记录或把两种恢复模式混用。
