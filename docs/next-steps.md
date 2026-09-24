@@ -63,7 +63,7 @@ cm-ai 的 V3 会话父运行用 `--original-host-context` 恢复后，QA 修复�
 
 ### 3. 驾驶员推广到其它工作流
 
-**现状**：cm-fix、cm-ai、cm-check、cm-idea 与 cm-init 已有单步驾驶员，共用 JSONL 传输核心。还剩 4 个宿主：`cm-ai-batch-host`、`cm-prd-host`、`cm-refactor-host`、`cm-test-host`。cm-check 宿主无持久会话，驾驶员只能重新开始或只读 status，不能跨进程 resume。
+**现状**：cm-fix、cm-ai、cm-ai-batch、cm-check、cm-idea 与 cm-init 已有单步驾驶员，共用 JSONL 传输核心。还剩 3 个宿主：`cm-prd-host`、`cm-refactor-host`、`cm-test-host`。cm-check 宿主无持久会话，驾驶员只能重新开始或只读 status，不能跨进程 resume。
 
 **下一步**：逐个从各宿主的操作路由和能力接线推导「这一步会问什么」，为人工答案做发送前预检；执行证据必须来自实际 runner。不能照搬 cm-fix 或 cm-ai 的表。
 
