@@ -1,3 +1,4 @@
+import {assertPrdBatchActive} from './inputs-replaced.mjs';
 // Current host proposes a correction; only the owner writes reviewed spec paths.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -41,6 +42,7 @@ function inspectProposal(review,proposal){
 export function createPrdCorrectionOwner({correct}){
   need(typeof correct==='function','prd_correction_host_required');const attempts=new Set();
   return async({specs,stage,feature,writeEnabled},signal)=>{
+    assertPrdBatchActive(specs,[feature]);
     need(writeEnabled===true&&!signal.aborted,'prd_correction_not_enabled');
     const review=inspectPrdFindings({specs,stage,feature});
     const evidenceHash=sha(readCmInitSource(specs,review.evidence));
@@ -144,6 +146,7 @@ export function inspectPrdCorrectionRecovery(input){
 }
 
 export function resumePrdCorrection(input,signal){
+  assertPrdBatchActive(input.specs,[input.feature]);
   need(input.writeEnabled===true&&!signal.aborted,'prd_correction_not_enabled');
   const value=loadCorrection(input),{specs,stage,feature}=input;
   const current=()=>{

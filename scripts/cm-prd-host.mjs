@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Current conversation transport; original platform adapter owns log locking.
 import fs from 'node:fs';
+import {readPrdInputsReplacement,replacePrdInputs,bindPrdPredecessor,readPrdPredecessor} from '../runtime/js/cm-prd/inputs-replaced.mjs';
 import path from 'node:path';
 import {readCmInitSource} from '../runtime/js/cm-init/draft-inspection.mjs';
 import {randomUUID} from 'node:crypto';
@@ -23,12 +24,15 @@ import {publishPrdReview} from '../runtime/js/cm-prd/review-publication.mjs';
 
 const sessionFailureCodes=new Set(['prd_operation_recovery_required','prd_host_result_unknown','prd_nothing_to_resume',
   'prd_recovery_binding','prd_recovery_evidence_required','prd_replay_inputs_changed','cancelled','prd_turn_not_ready',
-  'prd_review_recovery_required']);
+  'prd_review_recovery_required','prd_batch_inputs_replaced','prd_inputs_changed','prd_replacement_authorization_required',
+  'prd_inputs_not_changed','prd_successor_not_fresh','prd_replacement_conflict','prd_replacement_not_ready',
+  'prd_predecessor_binding','prd_successor_inputs_changed']);
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
   let bridge,analysis,session,change=null,started=false,closed=false,record;
   try{
     if(argv.length===1&&argv[0]==='--help'){
+      output.write('replace_inputs {requestId,operation,approved:true,reason,successorSpecs,successorSessionId} ends a changed-input batch with immutable history; read_batch/status remain available. Start the bound fresh specs root with --session SUCCESSOR_ID --predecessor ABSOLUTE_RECEIPT_PATH. No approvals transfer.\n');
       output.write('New and --change SELECTOR share this host. --session prd-ID resumes a durable local conversation; obtain runId from status. resume {requestId,operation,resolution:null|{callId,requestDigest,result,evidence}} consumes only the original host result, never re-dispatches an unknown call. decision {requestId,operation,proposalDigest,approved,allowUserCaseChanges} confirms an exact change proposal; save_draft archives and writes awaiting_review. prepare_revision {requestId,operation,reason} revises the saved current batch with original review history retained; no review counters reset.\n');
       output.write('resume also accepts resolution:{callId,requestDigest,abandon:true,evidence} with result absent: discard the entire pending operation and restore its before checkpoint, only if no call is prd_review. Explicit cancel is terminal: checkpoint cancelled and active cleared; resume cannot continue it. Session failures return {status:blocked,reason,recovery,completionAuthorized:false} (2026-09-17 dogfood: cancelled checkpoint retained active and hid recovery errors).\n');
       output.write('promote_design {requestId,operation,draftDigest,reason} moves an unreviewed full draft to design while preserving draft and self-check rounds. Saved drafts require complete exact original bytes with private permissions; partial/conflicting saves, prior review and exhausted rounds are rejected. Saved task revisions archive both versions before replacement; no approval is implied.\n');
@@ -47,7 +51,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(argv.filter(x=>x==='--allow-review-write').length<=1,'invalid_arguments');
     const args=argv.slice(1).filter(x=>!['--allow-log-write','--allow-review-write','--allow-disposition-write','--allow-spec-write'].includes(x)),options={};
     for(let i=0;i<args.length;i+=2){
-      need(['--skill-dir','--project','--specs','--runtime','--cases','--host-context','--change','--session'].includes(args[i])
+      need(['--skill-dir','--project','--specs','--runtime','--cases','--host-context','--change','--session','--predecessor'].includes(args[i])
         &&!Object.hasOwn(options,args[i])&&typeof args[i+1]==='string','invalid_arguments');
       options[args[i]]=args[i+1];
     }
@@ -58,11 +62,13 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       ...(options['--change']?{change:options['--change']} : {}),
       ...(options['--cases']?{cases:options['--cases']}:{})};
     const admission=inspectCmPrdAdmission(entry);
-    need(admission.status==='ready'||options['--session']&&admission.mode==='change'&&admission.reason==='feature_missing','prd_admission_blocked');
-    need(fileURLToPath(import.meta.url)===path.join(admission.workflowRoot,'scripts/cm-prd-host.mjs'),'entry_path_invalid');
     const runId=options['--session']??`prd-${randomUUID()}`;let routeTurn=0;
-    session=openPrdSession({specs:admission.specs,sessionId:runId,identity:{entry,runtime}});
-    if(admission.status!=='ready')need(session.state.checkpoint?.change?.stage==='awaiting_review'
+    let ended=readPrdInputsReplacement(admission.specs,runId);
+    need(ended||admission.status==='ready'||options['--session']&&admission.mode==='change'&&admission.reason==='feature_missing','prd_admission_blocked');
+    need(fileURLToPath(import.meta.url)===path.join(admission.workflowRoot,'scripts/cm-prd-host.mjs'),'entry_path_invalid');
+    const predecessor=bindPrdPredecessor({entry,runtime,sessionId:runId,predecessor:options['--predecessor']});
+    session=openPrdSession({specs:admission.specs,sessionId:runId,identity:{entry,runtime,...(predecessor?{predecessor}:{})}});
+    if(!ended&&admission.status!=='ready')need(session.state.checkpoint?.change?.stage==='awaiting_review'
       ||session.state.active?.request.operation==='save_draft','prd_admission_blocked');
     record=({event,phase='analysis',data={},at=null})=>{
       if(event==='decision')data={...data,analysis_turn:++routeTurn};
@@ -77,7 +83,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     };
     bridge=createHostToolBridge({responseLimit:1024*1024});
     const call=(kind,payload,signal)=>session.call(kind,payload,signal,(body,sig)=>bridge.call(kind,body,sig));
-    const restoreAnalysis=restored=>admission.mode==='new'?createCmPrdAnalysis({input:entry,runtime,record,restored,
+    const restoreAnalysis=restored=>admission.mode==='new'?createCmPrdAnalysis({input:entry,runtime,record,restored,allowInputDrift:true,
       checkContext:(payload,signal)=>call('prd_self_check',payload,signal),
       generate:(payload,signal)=>call('prd_generate',payload,signal),
       processMaterials:(payload,signal)=>call('prd_materials',payload,signal),
@@ -105,12 +111,12 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     };
     const contextStartedAt=new Date().toISOString();
     const stored=session.state,cancelled=stored.checkpoint?.analysis?.stage==='cancelled'||stored.checkpoint?.change?.stage==='cancelled';
-    restore(cancelled?stored.checkpoint:stored.active?.before??stored.checkpoint);
+    if(!ended)restore(cancelled?stored.checkpoint:stored.active?.before??stored.checkpoint);
     const contextCompletedAt=new Date().toISOString();let contextLogged=false;
     const checkpoint=()=>({analysis:analysis?.checkpoint()??null,change:change?.checkpoint()??null,started,routeTurn,reviewState,summaryState,publishedSummary});
     // Repair older cancelled checkpoints without replaying their retained call.
-    if(cancelled){reviewController.abort();session.commit(checkpoint());}
-    const status=()=>({...change?.status()??analysis.status(),runId,logWriteEnabled:true,reviewState,summaryState,publishedSummary,
+    if(cancelled&&!ended){reviewController.abort();session.commit(checkpoint());}
+    const status=()=>ended?{stage:'inputs_replaced',runId,replacement:ended,completionAuthorized:false}:({...change?.status()??analysis.status(),...(predecessor?{predecessor}:{}),runId,logWriteEnabled:true,reviewState,summaryState,publishedSummary,
       recovery:session.state.active?{request:session.state.active.request,calls:session.state.active.calls.map(({callId,requestDigest,kind,result})=>
         ({callId,requestDigest,kind,status:result===undefined?'unknown':'recorded'}))}:null});
     const handle=async raw=>{
@@ -236,7 +242,17 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       return ['prd-task-split','task_split'];
     };
     const dispatch=async request=>{
+      ended=readPrdInputsReplacement(admission.specs,runId);
       if(request.operation==='status')return status();
+      if(request.operation==='read_batch')return ended??session.state;
+      if(request.operation==='replace_inputs'){
+        shape(request,['requestId','operation','approved','reason','successorSpecs','successorSessionId']);
+        ended=replacePrdInputs({session,sessionId:runId,approved:request.approved,reason:request.reason,
+          successorSpecs:request.successorSpecs,successorSessionId:request.successorSessionId});
+        return status();
+      }
+      need(!ended,'prd_batch_inputs_replaced');
+      if(predecessor)need(digest(readPrdPredecessor(admission.specs))===digest(predecessor),'prd_predecessor_binding');
       if(request.operation==='cancel'){await handle(request);session.commit(checkpoint());return status();}
       if(request.operation==='inspect_correction')return handle(request);
       need(!reviewController.signal.aborted,'cancelled');
@@ -308,7 +324,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     }};
     const rawMode=input.isTTY&&typeof input.setRawMode==='function';if(rawMode)input.setRawMode(true);
     try{await serveCmAiHost({host,input,output,toolBridge:bridge,inputLimit:1024*1024});}finally{if(rawMode)input.setRawMode(false);}
-    if(started){
+    if(started&&!ended){
       const stage=change?.status().stage??analysis.status().stage;
       closed=true; // An uncertain terminal log write must not be automatically repeated.
       record({event:'run_done',data:{outcome:stage==='cancelled'?'cancelled':stage==='blocked'?'blocked':'incomplete'}});

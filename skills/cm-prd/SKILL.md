@@ -53,7 +53,7 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-prd-entry.mjs" \
 
 准入只核对路径/清单，不读正文或授权写入；selection_required请用户选feature，blocked按reason停。
 两种模式ready后读取`references/js-host.md`，以当前会话连接JS宿主；下方步骤提供业务约束，不再手写日志/规格/审批位。
-变更/已审修订及恢复追加`references/js-change-recovery.md`；所需能力不可用时报告实际缺口，不静默切旧流程。
+变更、已审修订、恢复及原材料真正变更时，读取`references/js-change-recovery.md`；输入替换须明确授权终止旧批次，再关联新批次全量重审。
 两条路径均保留原Step 0–11和人审停点；变更描述、粘贴用例由Skill保留，不能当成工具授权。
 
 ## 项目角色路由

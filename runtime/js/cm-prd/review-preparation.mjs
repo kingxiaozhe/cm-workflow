@@ -1,5 +1,6 @@
 // Read-only preparation around the original single-attempt PRD review gate.
 import fs from 'node:fs';
+import {assertPrdBatchActive} from './inputs-replaced.mjs';
 import {readPrdSelfCheckRevision} from './self-check-revision.mjs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
@@ -14,6 +15,7 @@ function sections(text,pattern){
   return parts.filter(part=>pattern.test(part.split('\n')[0])).join('\n').trim();
 }
 export function preparePrdReview({specs,draft,stage,feature}){
+  assertPrdBatchActive(specs,[feature]);
   need(['design','split'].includes(stage),'prd_review_stage_invalid');
   need(fs.realpathSync(specs)===specs,'prd_review_root_invalid');
   const target=draft.features.find(item=>item.directory===feature);

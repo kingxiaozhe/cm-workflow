@@ -1,5 +1,6 @@
 // Current-host analysis controller. No provider, specification writer or approval authority.
 import path from 'node:path';
+import {assertPrdBatchActive} from './inputs-replaced.mjs';
 import {createPrdSelfCheckRevision,inspectPrdSelfCheckRevision,readPrdSelfCheckRevision} from './self-check-revision.mjs';
 import fs from 'node:fs';
 import {inspectCmPrdAdmission,inspectCmPrdSources} from '../../../scripts/cm-prd-entry.mjs';
@@ -14,15 +15,17 @@ import {inspectAcceptedPrdDesign} from './accepted-design.mjs';
 import {inspectPrdDesignRiskSelection} from './design-risk.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 
-export function createCmPrdAnalysis({input,runtime,analyze,record,processMaterials,generate,checkContext,restored=null}){
+export function createCmPrdAnalysis({input,runtime,analyze,record,processMaterials,generate,checkContext,restored=null,allowInputDrift=false}){
   need(['codex','claude'].includes(runtime)&&typeof analyze==='function'&&typeof record==='function','prd_host_invalid');
   input=json(input);
   const admission=inspectCmPrdAdmission(input);
   need(admission.status==='ready'&&admission.mode==='new','prd_admission_blocked');
+  assertPrdBatchActive(admission.specs);
   // Invalid routing must fail before source bodies or analysis are consumed.
   const config=loadConfig({projectRoot:admission.project});
   const roles=json(Object.fromEntries(['analyst','planner'].map(role=>[role,resolveRole(config,role,runtime)])));
-  const snapshot=inspectCmPrdSources(input),sourceDigest=digest(snapshot);
+  const snapshot=inspectCmPrdSources(input),sourceDigest=restored?.sourceDigest??digest(snapshot);
+  const configDigest=restored?.configDigest??digest(config);
   let stage='ready',result=null,materialEvidence=null,draft=null;const messages=[],planning=[],controller=new AbortController();
   let selfCheckRound=0,contextCheck=null;const selfCheckHistory=[];
   let designDraft=null,designPlanning=false;
@@ -35,8 +38,9 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
     ...(snapshot.sourceInspection.userCases?[snapshot.sourceInspection.userCases]:[])];
   const nonempty=value=>typeof value==='string'&&value.trim().length>0;
   const current=(pendingSplit=null,selfCheckRevisionSave=false)=>{
+    assertPrdBatchActive(admission.specs);
     need(digest(inspectCmPrdSources(input))===sourceDigest
-      &&digest(loadConfig({projectRoot:admission.project}))===digest(config),'prd_inputs_changed');
+      &&digest(loadConfig({projectRoot:admission.project}))===configDigest,'prd_inputs_changed');
     if(acceptedDesign!==null){
       if(selfCheckRevision!==null){
         inspectPrdSelfCheckRevision(selfCheckRevision);
@@ -63,7 +67,9 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
     }
   };
   if(restored!==null){
-    need(restored.sourceDigest===sourceDigest&&restored.configDigest===digest(config),'prd_inputs_changed');
+    need(['sourceDigest','configDigest'].every(key=>typeof restored[key]==='string'&&/^[a-f0-9]{64}$/.test(restored[key])),
+      'prd_inputs_changed');
+    need(allowInputDrift||(restored.sourceDigest===digest(snapshot)&&restored.configDigest===digest(config)),'prd_inputs_changed');
     ({stage,result,materialEvidence,draft,selfCheckRound,contextCheck,designDraft,designPlanning,
       acceptedDesign,designRiskSelection,designPromotion,promotionOriginal}=restored);
     selfCheckRevision=restored.selfCheckRevision??null;selfCheckRevisionSaved=restored.selfCheckRevisionSaved??false;
@@ -72,7 +78,7 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
   }
   return Object.freeze({
     validateCurrent:pendingSplit=>current(pendingSplit),
-    checkpoint:()=>json({stage,result,sourceDigest,configDigest:digest(config),materialEvidence,draft,designDraft,designPlanning,
+    checkpoint:()=>json({stage,result,sourceDigest,configDigest,materialEvidence,draft,designDraft,designPlanning,
       acceptedDesign,designRiskSelection,designPromotion,promotionOriginal,selfCheckRound,contextCheck,selfCheckHistory,messages,planning,
       ...(selfCheckRevision===null?{}:{selfCheckRevision,selfCheckRevisionSaved})},4*1024*1024),
     status:()=>json({stage,result,sourceDigest,materialEvidence,draft,designDraft,designRiskSelection,designPromotion,selfCheckRound,contextCheck,selfCheckHistory,writeAuthorized:false,completionAuthorized:false}),

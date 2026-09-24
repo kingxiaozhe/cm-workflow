@@ -1,5 +1,6 @@
 // Save the current self-checked draft; never issue specification approval.
 import fs from 'node:fs';
+import {assertPrdBatchActive} from './inputs-replaced.mjs';
 import {inspectPrdSelfCheckRevision,readPrdSelfCheckRevision,prdSelfCheckRevisionPath} from './self-check-revision.mjs';
 import path from 'node:path';
 import {TextDecoder} from 'node:util';
@@ -11,15 +12,18 @@ import {inspectPrdFindings} from './review-findings.mjs';
 import {replacePrdDocument} from './review-correction.mjs';
 
 export function savePrdDraft(input){
+  assertPrdBatchActive(input.specs);
   if(input.getSelfCheckRevision?.())return saveSelfCheckRevision(input);
   return saveDocuments(input,false);
 }
 export function savePrdDesign({specs,writeEnabled,getDraft}){
+  assertPrdBatchActive(specs);
   return saveDocuments({specs,writeEnabled,getDraft},true);
 }
 // Only the analysis owner can supply the original saved promotion and the
 // self-checked successor. Requirements/design are never rewritten here.
 export function savePrdPromotedDraft({specs,writeEnabled,getDraft,getOriginal}){
+  assertPrdBatchActive(specs);
   need(writeEnabled===true&&typeof getDraft==='function'&&typeof getOriginal==='function','prd_spec_save_not_enabled');
   const draft=json(getDraft(),256*1024),original=json(getOriginal(),256*1024);
   const inventory=value=>value.features.map(feature=>feature.directory);

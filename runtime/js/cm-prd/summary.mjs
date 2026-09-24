@@ -1,5 +1,6 @@
 // Evidence-backed human handoff. No specification approval or development.
 import fs from 'node:fs';
+import {assertPrdBatchActive,readPrdPredecessor} from './inputs-replaced.mjs';
 import {readPrdSelfCheckRevision,prdSelfCheckRevisionPath} from './self-check-revision.mjs';
 import {inspectPrdSplitDesign} from './split-design.mjs';
 import path from 'node:path';
@@ -17,6 +18,8 @@ import {prdDesignRiskSignals} from './design-risk.mjs';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 
 export function inspectPrdSummaryEvidence(specs,{currentFeatures}={}){
+  assertPrdBatchActive(specs);
+  const predecessor=readPrdPredecessor(specs);
   need(path.isAbsolute(specs)&&fs.realpathSync(specs)===specs,'prd_summary_root_invalid');
   const specFiles=buildManifest(specs),names=[...new Set(specFiles.map(item=>item.path.split('/')[0]))];
   need(currentFeatures===undefined||(Array.isArray(currentFeatures)&&currentFeatures.length>0
@@ -98,10 +101,12 @@ export function inspectPrdSummaryEvidence(specs,{currentFeatures}={}){
   const mechanical=checkPrdDraftMechanics({draftDigest:digest(evidenceFiles),
     features:documents.filter(item=>currentFeatures===undefined||currentFeatures.includes(item.directory))});
   return json({specs,specFiles,features,documents,mechanical,evidenceFiles,
+    ...(predecessor?{predecessor}:{}),
     ...(currentFeatures===undefined?{}:{currentFeatures})},1024*1024);
 }
 
 export function publishPrdAwaitingReview({specs,summary,writeEnabled,recover=false}){
+  assertPrdBatchActive(specs);
   need(writeEnabled===true,'prd_summary_write_not_enabled');
   need(summary.status==='human_summary_prepared'&&summary.readyForAwaitingReview===true
     &&summary.blockers.length===0,'prd_summary_not_ready');
@@ -182,9 +187,10 @@ export function createPrdSummaryOwner({summarize}){
       acceptanceCriteria:sum.acceptanceCriteria+item.acceptanceCriteria}),{tasks:0,acceptanceCriteria:0});
     const revisionNotes=current.filter(feature=>feature.selfCheckRevision).map(feature=>
       `${feature.directory}：整稿自检失败后，在设计审查后修订了 ${feature.selfCheckRevision.changedFiles.join('、')}；原因：${feature.selfCheckRevision.reason}；第 ${feature.selfCheckRevision.round} 轮；${feature.reviews.split.gate.outcome==='completed'?'这些改动已由拆分审查审阅':'这些改动待拆分审查审阅'}，未另做设计审查。`);
+    if(evidence.predecessor)revisionNotes.push(`前序批次 ${evidence.predecessor.sessionId} 因输入已替换而结束；原因：${evidence.predecessor.reason}。旧证据仅作历史，本批全部重新审查。`);
     const humanDetails=riskCard.length||revisionNotes.length?{...details,risks:[...riskCard.map(risk=>
       `${risk.feature}：修正自检失败，待人工裁决；${JSON.stringify(risk.failedChecks)}`),...revisionNotes,details.risks].join('\n')}:details;
-    const summary=json({status:'human_summary_prepared',evidenceDigest,details:humanDetails,features:evidence.features,totals,
+    const summary=json({...(evidence.predecessor?{predecessor:evidence.predecessor}:{}),status:'human_summary_prepared',evidenceDigest,details:humanDetails,features:evidence.features,totals,
       ...(riskCard.length?{riskCard}:{}),
       ...(evidence.currentFeatures===undefined?{}:{currentFeatures:evidence.currentFeatures}),
       notes,historicalSummary:`历史 feature：${historical.length} 个已登记，${historical.filter(item=>Object.values(item.reviews).some(review=>review.archive)).length} 个含旧版归档说明`,
