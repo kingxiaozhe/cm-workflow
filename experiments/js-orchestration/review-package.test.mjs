@@ -139,18 +139,25 @@ test('S2a package derives only task changes and carries exact requirements and c
   assert.deepEqual(createReviewPackage({root,baseline:base,checks}),pkg);
 }));
 
-test('S2a deletion and rename include both paths, mode-only including special bits invalidates approval',()=>fixture(root=>{
+test('S2a deletion and rename include both paths',()=>fixture(root=>{
   const baseline=capture(root); fs.renameSync(path.join(root,'src/a.js'),path.join(root,'src/new.js'));
   const pkg=createReviewPackage({root,baseline,checks});
   assert.equal(pkg.changes[0].after,null); assert.equal(pkg.changes[1].before,null);
   assert.deepEqual(pkg.changes[0].before.contentBase64,pkg.changes[1].after.contentBase64);
-  for(const bit of [0o100,0o1000,0o2000,0o4000]) {
-    fs.chmodSync(path.join(root,'src/new.js'),0o644);
-    const reviewPackage=createReviewPackage({root,baseline,checks});
-    fs.chmodSync(path.join(root,'src/new.js'),0o644|bit);
-    assert.equal(fs.statSync(path.join(root,'src/new.js')).mode&0o7777,0o644|bit);
-    assert.throws(()=>verifyReviewPackage({root,baseline,checks,reviewPackage,expectedDigest:reviewPackage.packageDigest}),{code:'package_mismatch'});
-  }
+}));
+
+for(const bit of [0o100,0o1000,0o2000,0o4000])
+test(`S2a mode-only bit ${bit.toString(8)} invalidates approval`,t=>fixture(root=>{
+  const baseline=capture(root);fs.renameSync(path.join(root,'src/a.js'),path.join(root,'src/new.js'));
+  const reviewPackage=createReviewPackage({root,baseline,checks});
+  const target=path.join(root,'src/new.js');
+  assert.equal(fs.statSync(target).mode&0o7777,0o644);
+  fs.chmodSync(target,0o644|bit);
+  const actual=fs.statSync(target).mode&0o7777;
+  if(actual===0o644){t.skip(`filesystem dropped mode bit ${bit.toString(8)}`);return;}
+  // A preserved mode bit must invalidate the package captured before chmod.
+  assert.equal(actual,0o644|bit);
+  assert.throws(()=>verifyReviewPackage({root,baseline,checks,reviewPackage,expectedDigest:reviewPackage.packageDigest}),{code:'package_mismatch'});
 }));
 
 test('S2a real temporary Git dirty and ignored files use filesystem baseline, not HEAD',()=>fixture(root=>{
@@ -203,7 +210,7 @@ test('S2a different root, run, task, attempt, repository and frozen baseline are
   assert.throws(()=>verifyReviewPackage({...r,baseline:resign(b,'baselineDigest')}),{code:'package_mismatch'});
 }));
 
-for(const p of ['../escape','/absolute','C:/drive','dir\\file','a//b','a/./b','a/../b','a\u0000b','a\nb','e\u0301.txt','.git/config','nested/.git/file','.env','.env.example','.ssh/key','.aws/credentials','.gnupg/file']) {
+for(const p of ['../escape','/absolute','C:/drive','dir\\file','a//b','a/./b','a/../b','a\u0000b','a\nb','e\u0301.txt','.git/config','nested/.git/file','.env','.ssh/key','.aws/credentials','.gnupg/file']) {
   test(`S2a forbidden declaration ${JSON.stringify(p)} is rejected before reading`,t=>fixture(root=>{
     let reads=0; const original=fs.readSync;
     t.mock.method(fs,'readSync',(...args)=>{reads++;return original(...args);});
@@ -212,6 +219,14 @@ for(const p of ['../escape','/absolute','C:/drive','dir\\file','a//b','a/./b','a
     assert.equal(reads,0);
   }));
 }
+
+test('S2a .env.example is selectable as an ordinary placeholder source',()=>fixture(root=>{
+  // Reviewed example files remain selectable while real environment files stay forbidden above.
+  write(root,'.env.example','API_URL=https://example.invalid\n');
+  const baseline=capture(root,{scope:['.env.example']});
+  assert.equal(baseline.files.find(file=>file.path==='.env.example').contentBase64,
+    Buffer.from('API_URL=https://example.invalid\n').toString('base64'));
+}));
 
 test('S2a duplicate/case aliases, directories, empty fields and non-JSON inputs reject',()=>fixture(root=>{
   for(const scope of [[],['src/a.js','src/a.js'],['src/a.js','SRC/A.JS'],['src']]) assert.throws(()=>capture(root,{scope}));

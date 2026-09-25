@@ -47,7 +47,9 @@ test('public host composes the existing runner and conversation entry without a 
           run:()=>{throw new Error('must not run');}},reviewers:[],check:()=>[],commit:()=>{}},
       entry:{specsDir:temp,codeProject:temp,feature:'1.fixture',identity},
     });
-    assert.deepEqual(Object.keys(host),['handle']);
+    // The public host keeps workflow control in handle while exposing named recovery helpers.
+    assert.deepEqual(Object.keys(host),['handle','inspectFixAssociation','acceptCompletedFix',
+      'attachQa','reviseQa','supersedeEvidence']);
     const result=await host.handle({version:1,operation:'status',requestId:'status-1',identity});
     assert.equal(result.workflow,'cm-ai');
     assert.equal(result.operation,'status');

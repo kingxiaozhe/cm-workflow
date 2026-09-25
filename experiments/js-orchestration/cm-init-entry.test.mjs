@@ -24,6 +24,13 @@ function fixture(t,{compat=false,material=true}={}) {
   write(path.join(root,'runtime','project-context.md'));
   const entry=path.join(root,'scripts','cm-init-entry.mjs');
   fs.mkdirSync(path.dirname(entry),{recursive:true});fs.copyFileSync(sourceEntry,entry);
+  fs.copyFileSync(path.resolve(import.meta.dirname,'../../scripts/cm-workflow-config.mjs'),
+    path.join(root,'scripts','cm-workflow-config.mjs'));
+  const runtime=path.resolve(import.meta.dirname,'../../runtime/js');
+  fs.cpSync(path.join(runtime,'cm-init'),path.join(root,'runtime','js','cm-init'),{recursive:true});
+  fs.mkdirSync(path.join(root,'runtime','js','cm-ai'));
+  for(const name of ['effect-contract.mjs','contracts.mjs','review-runner.mjs','review-evidence-file.mjs'])
+    fs.copyFileSync(path.join(runtime,'cm-ai',name),path.join(root,'runtime','js','cm-ai',name));
   if(material)write(path.join(project,'README.md'),'# Existing project\n');
   return {root,skillDir,project,entry};
 }

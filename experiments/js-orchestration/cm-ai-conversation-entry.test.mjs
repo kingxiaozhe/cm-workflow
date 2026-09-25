@@ -204,7 +204,7 @@ test('resume develops only ready work and otherwise reports the existing durable
     ['cancelled','cancelled','none',0],
   ]){
     let effects=0;
-    const current={state,code,identity,packageDigest:state==='ready'?null:'e'.repeat(64)};
+    const current={state,code,identity,packageDigest:state==='ready'?null:'e'.repeat(64),calls:[]};
     const developed={state:'awaiting_review',code:null,identity,packageDigest:'f'.repeat(64)};
     const runner={status:()=>current,executeEffect:async effect=>{effects++;assert.equal(effect.id,'develop-1');return developed;},
       cancel:()=>current,run:async()=>current};
@@ -242,7 +242,7 @@ test('strict input, feature identity, and stale decisions reject before runner e
 for(const originalIdentity of [true,false])
 test(`resume uses the runner current attempt for changes-requested work original=${originalIdentity}`,()=>fixture(async({specsDir,codeProject})=>{
   const attemptTwo={...identity,attempt:2},effects=[];
-  const changed={state:'changes_requested',code:null,identity:attemptTwo,packageDigest:'a'.repeat(64)};
+  const changed={state:'changes_requested',code:null,identity:attemptTwo,packageDigest:'a'.repeat(64),calls:[]};
   const developed={state:'awaiting_review',code:null,identity:attemptTwo,packageDigest:'b'.repeat(64)};
   const runner={status:()=>changed,executeEffect:async effect=>{effects.push(effect);return developed;},
     cancel:()=>changed,run:async()=>changed};
@@ -290,8 +290,8 @@ test('review stage and develop package/store rejections remain safe rejected sum
   for(const [name,current,op,hostDecision] of [
     ['stage_mismatch',{state:'awaiting_review',code:null,identity,packageDigest:'c'.repeat(64)},
       operation('decision',{packageDigest:'c'.repeat(64)}),{status:'approved'}],
-    ['package_mismatch',{state:'ready',code:null,identity,packageDigest:null},operation('start'),null],
-    ['store_failure',{state:'ready',code:null,identity,packageDigest:null},operation('start'),null],
+    ['package_mismatch',{state:'ready',code:null,identity,packageDigest:null,calls:[]},operation('start'),null],
+    ['store_failure',{state:'ready',code:null,identity,packageDigest:null,calls:[]},operation('start'),null],
   ]){
     const runner={status:()=>current,executeEffect:async()=>({outcome:'rejected',code:name}),
       cancel:()=>current,run:async()=>current};

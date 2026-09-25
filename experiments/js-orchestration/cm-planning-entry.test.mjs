@@ -32,6 +32,13 @@ function fixture(t,{compat=false}={}) {
   const prdEntry=path.join(root,'scripts','cm-prd-entry.mjs');
   fs.mkdirSync(path.dirname(ideaEntry),{recursive:true});
   fs.copyFileSync(sourceIdea,ideaEntry);fs.copyFileSync(sourcePrd,prdEntry);
+  fs.copyFileSync(path.resolve(import.meta.dirname,'../../scripts/cm-workflow-config.mjs'),
+    path.join(root,'scripts','cm-workflow-config.mjs'));
+  const runtime=path.resolve(import.meta.dirname,'../../runtime/js');
+  fs.cpSync(path.join(runtime,'cm-init'),path.join(root,'runtime','js','cm-init'),{recursive:true});
+  fs.mkdirSync(path.join(root,'runtime','js','cm-ai'));
+  for(const name of ['effect-contract.mjs','contracts.mjs','review-runner.mjs','review-evidence-file.mjs'])
+    fs.copyFileSync(path.join(runtime,'cm-ai',name),path.join(root,'runtime','js','cm-ai',name));
   write(path.join(project,'package.json'),'{}\n');
   write(path.join(specs,'docs','requirements.md'),'# Requirement\n');
   return {root,ideaSkill,prdSkill,project,specs,ideaEntry,prdEntry};
