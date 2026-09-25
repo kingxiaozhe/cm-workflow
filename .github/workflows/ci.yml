@@ -139,6 +139,34 @@ jobs:
           echo "running ${#files[@]} test files"
           node --test "${files[@]}"
 
+  # 历史兼容夹具（experiments/js-orchestration）：2026-09-25 起全绿，单独一个任务盯着别再烂回去。
+  # 它们是历史夹具而不是当前合同，所以允许失败、不阻断合并；红了要看，但不拦人。
+  experiments-tests:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.14"
+
+      - name: Run the historical orchestration fixtures
+        run: |
+          set -o pipefail
+          mapfile -t files < <(ls experiments/js-orchestration/*.test.mjs)
+          [ "${#files[@]}" -gt 0 ] || { echo "no historical test files found"; exit 1; }
+          echo "running ${#files[@]} historical test files (non-blocking)"
+          node --test --test-concurrency=4 "${files[@]}"
+
   windows-install:
     runs-on: windows-latest
     steps:

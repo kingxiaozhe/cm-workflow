@@ -5,6 +5,7 @@
 
 ## 未发布
 
+- CI 新增独立、不阻断合并的 `experiments-tests` 任务，跑历史兼容夹具目录，防止再次陈旧。
 - 修复 cm-ai runner 读取异常码 getter 的回归，补充回归测试并更新 JS orchestration 历史兼容夹具。
 - 更新 JS orchestration 历史兼容测试，适配当前开发准入与审查超时合同，并修复未完成 Promise。
 - 更新 `experiments/js-orchestration/task-owner.test.mjs` 历史兼容夹具，按当前 JS 任务门禁和运行级写入锁验证所有权、证书与崩溃恢复。
