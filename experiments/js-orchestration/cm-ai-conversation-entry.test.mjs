@@ -62,7 +62,7 @@ test('start admits the selected feature/task and submits one deterministic devel
   fs.writeFileSync(path.join(specsDir,'LESSONS.md'),'# Lessons\n');
   fs.writeFileSync(path.join(codeProject,'AGENTS.md'),'# Project rules\n');
   const effects=[];
-  const ready={state:'ready',code:null,identity,packageDigest:null};
+  const ready={state:'ready',code:null,identity,packageDigest:null,calls:[]};
   const developed={state:'awaiting_review',code:null,identity,packageDigest:'a'.repeat(64)};
   const runner={status:()=>ready,executeEffect:async effect=>{effects.push(effect);return developed;},cancel:()=>ready,run:async()=>ready};
   const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
@@ -268,7 +268,7 @@ test(`resume uses the runner current attempt for changes-requested work original
 test('concurrent start preserves a busy runner rejection and current state',()=>fixture(async({specsDir,codeProject})=>{
   let active=false,startFirst,releaseFirst;
   const started=new Promise(resolve=>{startFirst=resolve;}),release=new Promise(resolve=>{releaseFirst=resolve;});
-  const ready={state:'ready',code:null,identity,packageDigest:null};
+  const ready={state:'ready',code:null,identity,packageDigest:null,calls:[]};
   const developed={state:'awaiting_review',code:null,identity,packageDigest:'a'.repeat(64)};
   const runner={status:()=>ready,executeEffect:async()=>{
     if(active)return {outcome:'rejected',code:'busy'};
