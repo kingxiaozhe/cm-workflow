@@ -87,7 +87,12 @@ async function composedObservationFixture(fn){return fixture(async f=>{
     effectiveModel:'fixture',status:'succeeded',accepted:true,result});
   const r=createTaskRunner({root:f.root,identity:f.input.identity,scope:['a.js'],requirements:['requirements.md'],excludedContexts:['main'],
     developer:{provider:'codex',requestedModel:'fixture',contextId:'observer-dev',run:q=>{
-      fs.writeFileSync(path.join(f.root,'a.js'),'observer implementation\n');return terminal(q,{outcome:'implemented'});}},
+      fs.writeFileSync(path.join(f.root,'a.js'),'observer implementation\n');
+      // The composed run needs review evidence for its own implementation bytes.
+      writeHandoff(f.input.selectors.handoff,f.root,f.input.identity.attempt);
+      writeReview(path.join(f.input.selectors.reviewsDir,`login-T-001-r${f.input.identity.attempt}.md`),
+        f.input.selectors.handoff,f.input.identity.attempt,'approved');
+      return terminal(q,{outcome:'implemented'});}},
     reviewers:[{id:'independent',provider:'claude',requestedModel:'fixture',allowed:true,available:true,contexts:['observer-r1','observer-r2'],run:q=>
       terminal(q,{verdict:'approved',packageDigest:q.payload.reviewPackage.packageDigest,examinedPaths:['a.js','requirements.md'],findings:[],summary:'fixture review'})}],
     check:()=>checks,persistence:{store:f.store,mode:'create',version:2},taskCompletion:{reviewsDir:f.input.selectors.reviewsDir,
@@ -301,19 +306,20 @@ test(`C2b cancellation shape ${kind} refuses without callbacks or writes`,()=>fi
 }));
 
 test('C2b cancellation shape is revalidated after preparation without invoking changed getters',()=>fixture(f=>{
-  const signal=new AbortController().signal,original=childProcess.spawnSync,before=fs.readFileSync(f.tasksPath);
+  const signal=new AbortController().signal,original=fs.readdirSync,before=fs.readFileSync(f.tasksPath);
   let callbacks=0,changed=false;
-  try{childProcess.spawnSync=(command,args,opts)=>{
-    const result=original(command,args,opts);
-    if(args.includes('verify-mark-done-plan')){
+  try{fs.readdirSync=(p,...args)=>{
+    const result=original(p,...args);
+    if(!changed && p===f.specsRoot && original(f.dir).some(n=>n.startsWith('.cm-task.'))){
       const key=Object.getOwnPropertySymbols(signal).find(k=>String(k)==='Symbol(kAborted)');assert(key);
       Object.defineProperty(signal,key,{get(){callbacks++;return false;},configurable:true});changed=true;
     }return result;
   };
+    // Native plan verification must reject a signal changed after intent.
     assert.throws(()=>commitFixtureTask(f.store,f.input,signal),{code:'commit_unknown'});
     assert(changed);assert.equal(callbacks,0);assert.equal(f.store.snapshot().records.length,1);
     assert.deepEqual(fs.readFileSync(f.tasksPath),before);
-  }finally{childProcess.spawnSync=original;}
+  }finally{fs.readdirSync=original;}
 }));
 
 for(const kind of ['controller','timeout','any','aborted','aborted-any'])
@@ -326,35 +332,30 @@ test(`C2b cancellation shape supports native ${kind}`,()=>fixture(f=>{
   }else assert.equal(commitFixtureTask(f.store,f.input,signal).outcome,'fixture_committed');
 }));
 
-for(const bad of ['failed','timeout','overflow','utf8','json','shape','digest','base64'])
-test(`C2b bounded subprocess ${bad} refuses before intent`,()=>fixture(f=>{
-  const original=childProcess.spawnSync;let called=false;
-  try {
-    childProcess.spawnSync=(command,args,opts)=>{
-      called=true;assert.equal(command,'python3');assert.equal(opts.timeout,10000);assert.equal(opts.maxBuffer,1024*1024);
-      assert.equal(opts.killSignal,'SIGKILL');assert(!opts.shell);assert(!opts.env);
-      if(bad==='failed')return {status:1,signal:null,stdout:Buffer.from('private error')};
-      if(bad==='timeout')return {status:null,signal:'SIGKILL',error:Error('timeout'),stdout:Buffer.alloc(0)};
-      if(bad==='overflow')return {status:0,signal:null,stdout:Buffer.alloc(1024*1024+1)};
-      if(bad==='utf8')return {status:0,signal:null,stdout:Buffer.from([255])};
-      if(bad==='json')return {status:0,signal:null,stdout:Buffer.from('{')};
-      if(bad==='shape')return {status:0,signal:null,stdout:Buffer.from('{}')};
-      const result=original(command,args,opts),p=JSON.parse(result.stdout);
-      if(bad==='digest')p.planDigest='0'.repeat(64);
-      if(bad==='base64'){p.beforeBase64+='=';const {planDigest,...data}=p;p.planDigest=digest(data);}
-      return {...result,stdout:Buffer.from(JSON.stringify(p))};
-    };
-    assert.throws(()=>commitFixtureTask(f.store,f.input));assert(called);assert.equal(f.store.snapshot().records.length,0);
-  }finally{childProcess.spawnSync=original;}
+for(const bad of ['invalid-handoff-json','invalid-handoff-shape','unbound-handoff','review-required',
+  'invalid-review','invalid-task-utf8','duplicate-task','implementation-drift'])
+test(`C2b native preparation ${bad} refuses before intent`,()=>fixture(f=>{
+  const review=path.join(f.input.selectors.reviewsDir,'login-T-001-r1.md');
+  if(bad==='invalid-handoff-json')fs.writeFileSync(f.input.selectors.handoff,'{');
+  if(bad==='invalid-handoff-shape')fs.writeFileSync(f.input.selectors.handoff,'{}');
+  if(bad==='unbound-handoff')fs.appendFileSync(f.input.selectors.handoff,' ');
+  if(bad==='review-required')writeReview(review,f.input.selectors.handoff,1,'changes_requested');
+  if(bad==='invalid-review')fs.writeFileSync(review,'invalid');
+  if(bad==='invalid-task-utf8')fs.writeFileSync(f.tasksPath,Buffer.from([255]));
+  if(bad==='duplicate-task')fs.appendFileSync(f.tasksPath,'- [ ] T-001: duplicate\n');
+  if(bad==='implementation-drift')fs.writeFileSync(path.join(f.root,'a.js'),'unreviewed change\n');
+  // The native gate must refuse invalid task or review evidence before an intent is recorded.
+  assert.throws(()=>commitFixtureTask(f.store,f.input),{code:'preparation_failed'});
+  assert.equal(f.store.snapshot().records.length,0);
 }));
 
 for(const changed of ['tasks','evidence','code','requirements','temp-bytes','temp-mode','temp-replace','temp-hardlink','parent','cancel'])
 test(`C2b final revalidation catches ${changed} and retains unknown`,()=>fixture(f=>{
-  const original=childProcess.spawnSync,controller=new AbortController();let changedOnce=false;
+  const original=fs.readdirSync,controller=new AbortController();let changedOnce=false;
   try {
-    childProcess.spawnSync=(command,args,opts)=>{
-      const result=original(command,args,opts);
-      if(args.includes('verify-mark-done-plan')){
+    fs.readdirSync=(p,...args)=>{
+      const result=original(p,...args);
+      if(!changedOnce && p===f.specsRoot && original(f.dir).some(n=>n.startsWith('.cm-task.'))){
         changedOnce=true;const temporary=path.join(f.dir,fs.readdirSync(f.dir).find(n=>n.startsWith('.cm-task.')));
         if(changed==='tasks')fs.appendFileSync(f.tasksPath,'external edit\n');
         if(changed==='evidence')fs.writeFileSync(f.input.selectors.handoff,'changed');
@@ -369,10 +370,11 @@ test(`C2b final revalidation catches ${changed} and retains unknown`,()=>fixture
       }
       return result;
     };
+    // Mutations during native plan verification must leave the commit unknown.
     assert.throws(()=>commitFixtureTask(f.store,f.input,controller.signal),{code:'commit_unknown'});assert(changedOnce);
     assert(!fs.readFileSync(f.tasksPath).includes(Buffer.from('[x]')));assert.equal(f.store.snapshot().records.length,1);
     assert(fs.readdirSync(f.dir).some(n=>n.startsWith('.cm-task.')));
-  }finally{childProcess.spawnSync=original;}
+  }finally{fs.readdirSync=original;}
 }));
 
 test('C2b delivered cancellation before intent leaves no record',()=>fixture(f=>{
@@ -501,7 +503,7 @@ test('C2b Python Unicode path ordering does not use JS UTF16 order',()=>fixture(
 }));
 
 for(const kind of ['task-growth','temp-growth','write','chmod','temp-sync','task-rename','parent-sync'])
-test(`C2b file failure ${kind} retains unknown and bounded reads`,()=>fixture(f=>{
+test(`C2b file failure ${kind} ${kind==='task-growth'?'fails before intent':'retains unknown'} and bounded reads`,()=>fixture(f=>{
   const originals={open:fs.openSync,read:fs.readSync,write:fs.writeFileSync,chmod:fs.fchmodSync,sync:fs.fsyncSync,rename:fs.renameSync};
   const paths=new Map();let hit=false,renamed=false;
   const fail=()=>{hit=true;throw Object.assign(Error('fixture I/O failure'),{code:'EIO'});};
@@ -522,24 +524,26 @@ test(`C2b file failure ${kind} retains unknown and bounded reads`,()=>fixture(f=
       return originals.sync(fd);
     };
     fs.renameSync=(a,b)=>{if(b===f.tasksPath){if(kind==='task-rename')fail();renamed=true;}return originals.rename(a,b);};
-    assert.throws(()=>commitFixtureTask(f.store,f.input),{code:'commit_unknown'});assert(hit);
-    const result=f.store.snapshot();assert.equal(result.records.length,1);
+    // Task growth during native preparation fails before intent; later I/O failures retain unknown.
+    assert.throws(()=>commitFixtureTask(f.store,f.input),{code:kind==='task-growth'?'preparation_failed':'commit_unknown'});assert(hit);
+    const result=f.store.snapshot();assert.equal(result.records.length,kind==='task-growth'?0:1);
     assert.equal(fs.readFileSync(f.tasksPath).includes(Buffer.from('[x]')),kind==='parent-sync');
   }finally{fs.openSync=originals.open;fs.readSync=originals.read;fs.writeFileSync=originals.write;
     fs.fchmodSync=originals.chmod;fs.fsyncSync=originals.sync;fs.renameSync=originals.rename;}
 }));
 
 for(const change of ['binding','close','history'])test(`C2b final owner ${change} change prevents replacement`,()=>fixture(f=>{
-  const original=childProcess.spawnSync;let hit=false;
-  try{childProcess.spawnSync=(command,args,opts)=>{const r=original(command,args,opts);
-    if(args.includes('verify-mark-done-plan')){hit=true;
+  const original=fs.readdirSync;let hit=false;
+  try{fs.readdirSync=(p,...args)=>{const r=original(p,...args);
+    if(!hit && p===f.specsRoot && original(f.dir).some(n=>n.startsWith('.cm-task.'))){hit=true;
       if(change==='binding')fs.writeFileSync(path.join(f.dir,'.reviews/.cm-task-owner.json'),'invalid');
       if(change==='close')f.store.close();
       if(change==='history')f.store.append({id:'foreign',kind:'cancel',payload:{},expectedRevision:f.store.snapshot().revision});
     }return r;};
+    // A changed owner during native plan verification must block task replacement.
     assert.throws(()=>commitFixtureTask(f.store,f.input),{code:'commit_unknown'});assert(hit);
     assert(!fs.readFileSync(f.tasksPath).includes(Buffer.from('[x]')));
     const s=JSON.parse(fs.readFileSync(path.join(f.specsRoot,'.reviews/.execution/commit/state.json')));
     assert.equal(s.records.length,change==='history'?2:1);
-  }finally{childProcess.spawnSync=original;}
+  }finally{fs.readdirSync=original;}
 }));

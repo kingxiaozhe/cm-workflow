@@ -8,6 +8,7 @@
 - 修复 cm-ai runner 读取异常码 getter 的回归，补充回归测试并更新 JS orchestration 历史兼容夹具。
 - 更新 JS orchestration 历史兼容测试，适配当前开发准入与审查超时合同，并修复未完成 Promise。
 - 更新 `experiments/js-orchestration/task-owner.test.mjs` 历史兼容夹具，按当前 JS 任务门禁和运行级写入锁验证所有权、证书与崩溃恢复。
+- 修复 `experiments/js-orchestration/task-commit.test.mjs` 的历史兼容夹具：交接证据绑定当前实现，旧子进程注入用例改用现行 JS 完成门禁与文件变更边界。
 - `cm-ai` 交接文件与 cm-fix 审查证据现共用一份「归档让路」实现；归档命名、权限、旧字节保留和重试行为不变。
 - 在 CI 执行的测试中补充 B 类内部协议分支与变异验证，覆盖授权凭据过期、时钟回退、会话收尾、状态校验、参数传输和补正结果；压缩编码（gzip、zstd）与未声明编码的回环用例在沙箱外验证通过（仅 macOS 运行）。
 
