@@ -70,7 +70,7 @@ cm-ai 的 V3 会话父运行用 `--original-host-context` 恢复后，QA 修复�
 
 ## 第四档：内部协议分支（清单里的 B 类）
 
-不在用户配置面上，踩中的路径窄。其中 `grant_expired` / `clock_invalid` 关系到授权凭据的过期判定，排在最前面。其余见 `docs/untested-branches.md` 的 B 类。
+**已完成**：B 类六项都已在 CI 执行的 `scripts/*.test.mjs` 补测试并完成变异验证。`gzip` / `zstd` / 未声明编码的回环测试由审查方在沙箱外运行通过，并做了 gzip 解码故意改坏的变异验证（注意 `cm-claude-probe` 整份测试只在 macOS 运行，Linux CI 上跳过）。明细见 `docs/untested-branches.md` 的已覆盖表。
 
 ---
 

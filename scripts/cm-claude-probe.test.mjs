@@ -4,9 +4,53 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import * as zlib from 'node:zlib';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {previewClaudeTools,claudeProbeSandbox} from '../runtime/js/cm-ai/claude-tool-preview.mjs';
+import {previewPromptTransport,writePreviewPrompt} from '../runtime/js/cm-ai/tool-preview.mjs';
+
+test('tool preview argument transport preserves a long Unicode argv prompt without stdin',()=>{
+  const prompt='参数\n🚀'+'界'.repeat(10000);
+  const transport=previewPromptTransport('argument',prompt);
+  assert.equal(transport.argument,prompt);assert.equal(transport.stdin,null);
+  assert.deepEqual(transport.stdio,['ignore','pipe','pipe']);
+  let stdinAccesses=0;
+  const cleanup=writePreviewPrompt({get stdin(){stdinAccesses++;throw Error('stdin accessed');}},
+    'argument',prompt,()=>assert.fail('argument transport wrote stdin'));
+  cleanup();assert.equal(stdinAccesses,0);
+});
+
+// Authored without local execution; verification by reviewer outside the sandbox is pending.
+// The sink intentionally retains protocol checks, never the decoded body bytes.
+for(const encoding of ['gzip','zstd','br'])test(`Claude probe ${encoding} body reaches only its declared decoder`,
+  {skip:process.platform!=='darwin'||(encoding==='zstd'&&typeof zlib.zstdCompressSync!=='function')},async()=>{
+    const payload={model:'fixture',messages:[{role:'user',content:`synthetic ${encoding} payload`}],tools:[]};
+    const source=`let input='';process.stdin.on('data',s=>input+=s);process.stdin.on('end',async()=>{
+      const zlib=require('node:zlib');const body=Buffer.from(JSON.stringify(${JSON.stringify(payload)}));
+      const encoded=${JSON.stringify(encoding)}==='gzip'?zlib.gzipSync(body):
+        ${JSON.stringify(encoding)}==='zstd'?zlib.zstdCompressSync(body):body;
+      await fetch(process.env.ANTHROPIC_BASE_URL+'/v1/messages',{method:'POST',
+        headers:{'x-api-key':'cm-synthetic-local-probe','content-encoding':${JSON.stringify(encoding)}},body:encoded});
+      process.exit(1);
+    });`;
+    const {preflight}=await previewClaudeTools({cwd:process.cwd(),model:'fixture',
+      spawnProcess:(command,args,options)=>spawn(command,[...args.slice(0,2),process.execPath,'-e',source],options)});
+    assert.equal(preflight.message_requests,1);
+    assert.equal(preflight.listener_closed,true);
+    if(encoding==='br'){
+      assert.equal(preflight.passed,false);
+      assert.equal(preflight.request_checks[0].encoding_supported,false);
+      assert.equal(preflight.request_checks[0].json,false);
+    }else{
+      assert.equal(preflight.passed,true);
+      assert.equal(preflight.request_checks[0].json,true);
+      assert.equal(preflight.request_checks[0].model_matches,true);
+      assert.equal(preflight.request_checks[0].messages_array,true);
+      assert.equal(preflight.request_checks[0].tools_allowed,true);
+      assert.equal(preflight.request_checks[0].synthetic_auth,true);
+    }
+  });
 
 test('probe accepts only empty tools or one internal StructuredOutput tool',
   {skip:process.platform!=='darwin'},async()=>{
