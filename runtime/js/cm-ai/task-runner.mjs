@@ -758,7 +758,7 @@ export function createTaskRunner(options) {
     busy=true;if(v.kind!=='develop')code=null;
     pending=(async()=>{
       try {await perform(v);}
-      catch(error){if(state!=='cancelled')halt(error.code==='spec_drift'?'blocked':'unknown',failureCode(error));}
+      catch(error){if(state!=='cancelled'){const code=failureCode(error);halt(code==='spec_drift'?'blocked':'unknown',code);}}
       if(poisoned)return status();
       const result=privateStatus();cache.set(v.id,{effect:v,digest:digest(v),result});
       try{persist('effect-checkpoint',{effectId:v.id,checkpoint:frame()});publication=result;return result;}

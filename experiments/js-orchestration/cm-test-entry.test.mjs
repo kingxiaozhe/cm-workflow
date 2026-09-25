@@ -27,6 +27,11 @@ function fixture({compat=false}={}) {
   write(path.join(root,'runtime','test-contract.md'));
   const entry=path.join(root,'scripts','cm-test-entry.mjs');
   fs.mkdirSync(path.dirname(entry),{recursive:true});fs.copyFileSync(sourceEntry,entry);
+  const runtime=path.resolve(import.meta.dirname,'../../runtime/js');
+  fs.cpSync(path.join(runtime,'cm-test'),path.join(root,'runtime','js','cm-test'),{recursive:true});
+  fs.mkdirSync(path.join(root,'runtime','js','cm-ai'));
+  for(const name of ['effect-contract.mjs','contracts.mjs'])
+    fs.copyFileSync(path.join(runtime,'cm-ai',name),path.join(root,'runtime','js','cm-ai',name));
   return {root,skillDir,project,entry};
 }
 
