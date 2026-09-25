@@ -39,13 +39,11 @@ export function writeImmutableWorkflowFile({reviewsDir,name,bytes,validate=()=>{
 
 // Move a workflow file aside without ever deleting its bytes: link into
 // .superseded/ under a content-hash stamp, then unlink the original, so a crash
-// between the two steps leaves both copies rather than neither. Same shape as
-// host-handoff's supersedeHandoff; shared here so cm-fix does not grow a second
-// crash-safety pattern. Callers decide *whether* a file may be superseded — this
-// only knows how.
-export function supersedeWorkflowFile(dir,name){
+// between the two steps leaves both copies rather than neither. Callers decide
+// *whether* a file may be superseded — this only knows how.
+export function supersedeWorkflowFile(dir,name,existing){
   const source=path.join(dir,name),archive=path.join(dir,'.superseded');
-  const existing=fs.readFileSync(source);
+  existing??=fs.readFileSync(source);
   fs.mkdirSync(archive,{recursive:true,mode:0o700});
   const stamp=createHash('sha256').update(existing).digest('hex').slice(0,16);
   const target=path.join(archive,`${name}.${stamp}`);

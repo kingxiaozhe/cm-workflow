@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
 import {createReviewPackage,verifyReviewPackage} from './review-package.mjs';
+import {supersedeWorkflowFile} from './review-evidence-file.mjs';
 import {implementationSha256,loadHandoff} from '../../../scripts/cm-task-gate.mjs';
 import {digest,json,shape,text,need} from './effect-contract.mjs';
 
@@ -83,18 +84,6 @@ function reviewConsumedHandoff(parent,name,attempt){
   return lines.slice(1,end).some(line=>line.trim()===`handoff: ${name}`);
 }
 
-// Archive by link-then-unlink so the bytes survive a crash between the two steps.
-function supersedeHandoff(parent,handoffPath,existing){
-  const archive=path.join(parent,'.superseded');
-  fs.mkdirSync(archive,{recursive:true,mode:0o700});
-  const stamp=createHash('sha256').update(existing).digest('hex').slice(0,16);
-  const target=path.join(archive,`${path.basename(handoffPath)}.${stamp}`);
-  try{fs.linkSync(handoffPath,target);}catch(error){if(error.code!=='EEXIST')throw error;}
-  fs.unlinkSync(handoffPath);
-  const dir=fs.openSync(archive,fs.constants.O_RDONLY);
-  try{fs.fsyncSync(dir);}finally{fs.closeSync(dir);}
-}
-
 // Publish with no-replace semantics, resolving only the collisions that are
 // provably safe to resolve. Returns nothing; throws on a conflict it may not touch.
 function publishHandoff(parent,handoffPath,temp,bytes,attempt){
@@ -106,7 +95,8 @@ function publishHandoff(parent,handoffPath,temp,bytes,attempt){
   // Republishing identical bytes is the crash-after-link case, already published.
   if(existing.equals(bytes))return;
   if(reviewConsumedHandoff(parent,path.basename(handoffPath),attempt))reviewedHandoffConflict();
-  supersedeHandoff(parent,handoffPath,existing);
+  // Crash-after-link retries stamp the checked bytes; a second read could change the archive name.
+  supersedeWorkflowFile(parent,path.basename(handoffPath),existing);
   fs.linkSync(temp,handoffPath);
 }
 

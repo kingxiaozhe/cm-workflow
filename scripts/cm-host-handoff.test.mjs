@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import {createHash} from 'node:crypto';
 import {captureReviewBaseline} from '../runtime/js/cm-ai/review-package.mjs';
 import {createHostHandoff} from '../runtime/js/cm-ai/host-handoff.mjs';
 import {loadHandoff,implementationSha256} from './cm-task-gate.mjs';
@@ -88,6 +89,42 @@ test('an unreviewed handoff from a dead run is archived so the retry can publish
   assert.equal(archived.length,1);
   assert.match(archived[0],/^9\.demo-T-001-a1-handoff\.json\.[0-9a-f]{16}$/);
   assert.deepEqual(fs.readFileSync(path.join(archive,archived[0])),stale);
+}));
+
+test('stale handoff archival preserves exact bytes and tolerates an existing crash-after-link archive',()=>collisionFixture(f=>{
+  createHostHandoff(f.build('first attempt'));
+  const stale=fs.readFileSync(f.handoffPath);
+  const staleStat=fs.statSync(f.handoffPath);
+  const name=path.basename(f.handoffPath);
+  const stamp=createHash('sha256').update(stale).digest('hex').slice(0,16);
+  const archive=path.join(f.reviews,'.superseded');
+  const target=path.join(archive,`${name}.${stamp}`);
+  const unrelated=path.join(f.reviews,'unrelated-r1.md');
+  fs.writeFileSync(unrelated,Buffer.from([0,255,10,42]));
+  const unrelatedBytes=fs.readFileSync(unrelated),unrelatedStat=fs.statSync(unrelated);
+  assert.equal(fs.existsSync(archive),false);
+
+  const retry=f.build('second attempt');
+  assert.equal(createHostHandoff(retry).status,'ready_for_review');
+  assert.equal(fs.statSync(archive).mode&0o777,0o700);
+  assert.deepEqual(fs.readdirSync(archive),[`${name}.${stamp}`]);
+  assert.deepEqual(fs.readFileSync(target),stale);
+  assert.equal(fs.statSync(target).ino,staleStat.ino);
+  const published=fs.readFileSync(f.handoffPath);
+  assert.notDeepEqual(published,stale);
+  assert.equal(fs.statSync(f.handoffPath).nlink,1);
+  assert.notEqual(fs.statSync(f.handoffPath).ino,staleStat.ino);
+  assert.equal(loadHandoff(f.handoffPath).implementation_sha256,implementationSha256(retry.root,['a.mjs']));
+
+  fs.unlinkSync(f.handoffPath);
+  fs.linkSync(target,f.handoffPath); // Crash after archive link, before source unlink.
+  assert.equal(createHostHandoff(retry).status,'ready_for_review');
+  assert.deepEqual(fs.readFileSync(f.handoffPath),published);
+  assert.deepEqual(fs.readdirSync(archive),[`${name}.${stamp}`]);
+  assert.deepEqual(fs.readdirSync(f.reviews).sort(),['.superseded',name,'unrelated-r1.md'].sort());
+  assert.deepEqual(fs.readFileSync(unrelated),unrelatedBytes);
+  assert.equal(fs.statSync(unrelated).ino,unrelatedStat.ino);
+  assert.equal(fs.statSync(unrelated).mtimeMs,unrelatedStat.mtimeMs);
 }));
 
 test('a handoff the matching receipt names is never replaced',()=>collisionFixture(f=>{

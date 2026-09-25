@@ -5,6 +5,8 @@
 
 ## 未发布
 
+- `cm-ai` 交接文件与 cm-fix 审查证据现共用一份「归档让路」实现；归档命名、权限、旧字节保留和重试行为不变。
+
 **cm-ai 已审 handoff 后任务重跑出口**
 
 - 旧运行的 review 已消费 handoff、随后 QA blocked 时，新运行再发布同名 handoff 会报 `handoff_exists`；现在 blocked 结果和 `[host]` 诊断提示先按 QA 问题恢复原运行，确需重跑则显式授权并说明原因。
