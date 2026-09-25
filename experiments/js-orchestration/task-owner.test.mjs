@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { spawn,spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { openTaskExecutionStore } from './task-owner.mjs';
@@ -13,11 +14,33 @@ const fingerprints={workflow:digest('workflow'),config:digest('config'),inputs:d
 const repository=path.resolve(import.meta.dirname,'../..');
 function legacyArgs(root,tasksPath,feature='login') {
   const reviews=path.join(root,'.reviews');
-  const source=`import runpy,sys\nfrom pathlib import Path\nm=runpy.run_path(sys.argv[1])\nr=Path(sys.argv[2]);r.mkdir(exist_ok=True)\nh=r/(sys.argv[3]+"-T-001-a1-handoff.json")\nm["write_handoff"](h)\nm["write_review"](r/(sys.argv[3]+"-T-001-r1.md"),handoff=h)`;
-  const r=spawnSync('python3',['-c',source,path.join(repository,'scripts/test-task-gate.py'),reviews,feature],{encoding:'utf8'});
-  assert.equal(r.status,0,r.stderr);
+  fs.mkdirSync(reviews,{recursive:true});
+  const handoff=path.join(reviews,feature+'-T-001-a1-handoff.json');
+  const review=path.join(reviews,feature+'-T-001-r1.md');
+  // Preserve the approved legacy handoff intent using the current JS-owned gate fixture schema.
+  fs.writeFileSync(handoff,JSON.stringify({schema_version:1,task_id:'T-001',attempt:1,status:'ready_for_review',
+    changed_files:['src/example.ts'],verification:[{command:'npm test -- example',status:'passed',evidence:'tests passed'}],
+    evidence:['src/example.ts','tests passed'],blockers:[],scope_deviation:[]},null,2)+'\n');
+  const handoffDigest=createHash('sha256').update(fs.readFileSync(handoff)).digest('hex');
+  fs.writeFileSync(review,`---
+at: 2026-09-06T07:00:00-07:00
+reviewer: codex-subagent
+independent: true
+task: T-001
+attempt: 1
+round: 1
+verdict: approved
+blocking_findings: 0
+handoff: ${path.basename(handoff)}
+handoff_sha256: ${handoffDigest}
+scope:
+  - src/example.ts
+---
+
+Zero findings.
+`);
   return ['--handoff',path.join(reviews,feature+'-T-001-a1-handoff.json'),'--reviews-dir',reviews,
-    '--feature',feature,'--task','T-001','--tasks',tasksPath];
+    '--feature',feature,'--task','T-001','--allow-legacy-unbound','--tasks',tasksPath];
 }
 const pythonGate=(command,args)=>spawnSync('python3',[path.join(repository,'scripts/cm-task-gate.py'),command,...args],{encoding:'utf8',timeout:10000});
 
@@ -64,7 +87,7 @@ for(const mutation of ['binding','certificate','state','binding-poison','state-p
 test(`C2a refuses invalid or poisoned ownership: ${mutation}`,()=>fixture(({options,binding,root})=>{
   const store=openTaskExecutionStore(options),execution=path.join(root,'.reviews/.execution');
   assert.equal(taskOwner.taskOwnerTarget(store).tasksPath,options.tasksPath);
-  const p=mutation.startsWith('binding')?binding:mutation==='certificate'?path.join(execution,'writer-ready.json'):path.join(execution,'run/state.json');
+  const p=mutation.startsWith('binding')?binding:mutation==='certificate'?path.join(execution,options.identity.runId,'writer-ready.json'):path.join(execution,'run/state.json');
   const bytes=fs.readFileSync(p);
   try {
     if(mutation.endsWith('poison')) {
@@ -189,7 +212,7 @@ test(`S3b2 certificate ${source}/${mutation} refuses both consumers without repa
   const args=legacyArgs(root,tasksPath),execution=path.join(root,'.reviews/.execution');
   if(source==='python')assert.equal(pythonGate('mark-done',args).status,0);
   else {const store=openTaskExecutionStore(options);store.close();}
-  const marker=path.join(execution,'writer-ready.json'),initial=fs.readFileSync(marker),value=JSON.parse(initial);
+  const marker=path.join(execution,...(source==='js'?[options.identity.runId]:[]),'writer-ready.json'),initial=fs.readFileSync(marker),value=JSON.parse(initial);
   if(mutation==='empty')fs.writeFileSync(marker,'');
   if(mutation==='version')fs.writeFileSync(marker,JSON.stringify({...value,version:true})+'\n');
   if(mutation==='duplicate')fs.writeFileSync(marker,'{"version":1,'+initial.toString().slice(1));
@@ -199,12 +222,14 @@ test(`S3b2 certificate ${source}/${mutation} refuses both consumers without repa
   if(mutation==='symlink'){fs.renameSync(marker,path.join(root,'retained-marker'));fs.symlinkSync(path.join(root,'retained-marker'),marker);}
   if(mutation==='digest')fs.writeFileSync(marker,JSON.stringify({...value,databaseDigest:'0'.repeat(64)})+'\n');
   if(mutation==='reordered')fs.writeFileSync(marker,JSON.stringify({protocol:value.protocol,version:1,databaseDigest:value.databaseDigest})+'\n');
-  const bytes=fs.readFileSync(marker),stat=fs.lstatSync(marker),task=fs.readFileSync(tasksPath),db=fs.readFileSync(path.join(execution,'writer.sqlite'));
+  const bytes=fs.readFileSync(marker),stat=fs.lstatSync(marker),task=fs.readFileSync(tasksPath),dbPath=path.join(path.dirname(marker),'writer.sqlite'),db=fs.readFileSync(dbPath);
   assert.equal(pythonGate('mark-done',args).status,1);
-  assert.throws(()=>{const store=openTaskExecutionStore({...options,identity:{...options.identity,runId:'new-run'}});store.close();});
+  // A corrupt certificate must block reopening its own run; a distinct run has an independent writer.
+  const reopened=source==='js'?{...options,create:false}:{...options,identity:{...options.identity,runId:'new-run'}};
+  assert.throws(()=>{const store=openTaskExecutionStore(reopened);store.close();});
   assert.deepEqual(fs.readFileSync(marker),bytes);assert.equal(fs.lstatSync(marker).ino,stat.ino);
-  assert.deepEqual(fs.readFileSync(tasksPath),task);assert.deepEqual(fs.readFileSync(path.join(execution,'writer.sqlite')),db);
-  assert(!fs.existsSync(path.join(execution,'new-run')));
+  assert.deepEqual(fs.readFileSync(tasksPath),task);assert.deepEqual(fs.readFileSync(dbPath),db);
+  if(source==='python')assert(!fs.existsSync(path.join(execution,'new-run')));
 }));
 
 function noNativeOpen(options,args,expectedCalls=0) {
@@ -216,19 +241,21 @@ function noNativeOpen(options,args,expectedCalls=0) {
   const {tasksPath,feature,...storeOptions}=options;
   const js=spawnSync(process.execPath,['--input-type=module','-e',node,JSON.stringify(storeOptions)],{encoding:'utf8',timeout:10000});
   assert.equal(js.status,0,js.stderr);assert.equal(js.stdout.trim(),String(expectedCalls),'raw JS native call count');
-  const python=`import sqlite3,runpy,sys,json\nm=runpy.run_path(sys.argv[1]);calls=[]\ndef reject(*a,**kw):\n calls.append(1)\n raise RuntimeError('NATIVE_OPEN')\nsqlite3.connect=reject\ntry:\n m['mark_done'](m['build_parser']().parse_args(['mark-done']+json.loads(sys.argv[2])))\nexcept Exception: pass\nprint(len(calls))`;
+  const python=`import sqlite3,runpy,sys,json\nm=runpy.run_path(sys.argv[1]);calls=[]\ndef reject(*a,**kw):\n calls.append(1)\n raise RuntimeError('NATIVE_OPEN')\nsqlite3.connect=reject\ntry:\n m['mark_done'](['mark-done']+json.loads(sys.argv[2]))\nexcept Exception: pass\nprint(len(calls))`;
   const py=spawnSync('python3',['-c',python,path.join(repository,'scripts/cm-task-gate.py'),JSON.stringify(args)],{encoding:'utf8',timeout:10000});
   assert.equal(py.status,0,py.stderr);assert.equal(py.stdout.trim(),String(expectedCalls),'Python native call count');
 }
 
 test('S3b2 native-open instrumentation has positive controls for certified databases',()=>fixture(({root,tasksPath,options})=>{
   const args=legacyArgs(root,tasksPath);assert.equal(pythonGate('mark-done',args).status,0);
+  // Keep the task pending so the lock adapter must open the certified database.
+  fs.writeFileSync(tasksPath,'- [ ] T-001: fixture\n');
   noNativeOpen(options,args,1);
 }));
 
 for(const point of ['create','write','file-sync','dir-sync'])for(const source of ['js','python'])
 test(`S3b2 ${source} certificate ${point} failure returns no ownership or task mutation`,()=>fixture(({root,tasksPath,options})=>{
-  const args=legacyArgs(root,tasksPath),task=fs.readFileSync(tasksPath),marker=path.join(root,'.reviews/.execution/writer-ready.json');
+  const args=legacyArgs(root,tasksPath),task=fs.readFileSync(tasksPath),marker=path.join(root,'.reviews/.execution',...(source==='js'?[options.identity.runId]:[]),'writer-ready.json');
   if(source==='js') {
     const open=fs.openSync,write=fs.writeFileSync,sync=fs.fsyncSync;let markerFd,created=false,failed=false;
     const fail=()=>{failed=true;throw Object.assign(Error('certificate fixture failure'),{code:'EIO'});};
@@ -240,11 +267,12 @@ test(`S3b2 ${source} certificate ${point} failure returns no ownership or task m
       assert.throws(()=>{const store=openTaskExecutionStore(options);store.close();},{code:'EIO'});assert(failed);
     }finally{fs.openSync=open;fs.writeFileSync=write;fs.fsyncSync=sync;}
   } else {
-    const code=`import os,stat,runpy,sys,json,pathlib\npoint=sys.argv[3];marker=sys.argv[4];marker_fd=None;created=False;failed=False\ndef fail():\n global failed\n failed=True\n raise OSError('certificate fixture failure')\noriginal_open=os.open\ndef open_file(p,flags,*a,**kw):\n global marker_fd,created\n if str(p)==marker and flags & os.O_CREAT:\n  if point=='create': fail()\n  marker_fd=original_open(p,flags,*a,**kw);created=True;return marker_fd\n return original_open(p,flags,*a,**kw)\nos.open=open_file\noriginal_sync=os.fsync\ndef sync(fd):\n if created and ((point=='file-sync' and fd==marker_fd) or (point=='dir-sync' and stat.S_ISDIR(os.fstat(fd).st_mode))): fail()\n return original_sync(fd)\nos.fsync=sync\noriginal_fdopen=os.fdopen\nclass BadWrite:\n def __init__(self,h): self.h=h\n def __enter__(self): return self\n def __exit__(self,*a): self.h.close()\n def write(self,data): fail()\ndef fdopen(fd,*a,**kw):\n h=original_fdopen(fd,*a,**kw)\n return BadWrite(h) if point=='write' and fd==marker_fd else h\nos.fdopen=fdopen\nm=runpy.run_path(sys.argv[1])\ntry:\n m['mark_done'](m['build_parser']().parse_args(['mark-done']+json.loads(sys.argv[2])))\n print('unexpected success')\nexcept m['GateError']: print('refused' if failed else 'wrong failure')`;
+    const code=`import os,stat,runpy,sys,json,pathlib\npoint=sys.argv[3];marker=sys.argv[4];marker_fd=None;created=False;failed=False\ndef fail():\n global failed\n failed=True\n raise OSError('certificate fixture failure')\noriginal_open=os.open\ndef open_file(p,flags,*a,**kw):\n global marker_fd,created\n if str(p)==marker and flags & os.O_CREAT:\n  if point=='create': fail()\n  marker_fd=original_open(p,flags,*a,**kw);created=True;return marker_fd\n return original_open(p,flags,*a,**kw)\nos.open=open_file\noriginal_sync=os.fsync\ndef sync(fd):\n if created and ((point=='file-sync' and fd==marker_fd) or (point=='dir-sync' and stat.S_ISDIR(os.fstat(fd).st_mode))): fail()\n return original_sync(fd)\nos.fsync=sync\noriginal_fdopen=os.fdopen\nclass BadWrite:\n def __init__(self,h): self.h=h\n def __enter__(self): return self\n def __exit__(self,*a): self.h.close()\n def write(self,data): fail()\ndef fdopen(fd,*a,**kw):\n h=original_fdopen(fd,*a,**kw)\n return BadWrite(h) if point=='write' and fd==marker_fd else h\nos.fdopen=fdopen\nm=runpy.run_path(sys.argv[1])\ntry:\n m['mark_done'](['mark-done']+json.loads(sys.argv[2]))\n print('unexpected success')\nexcept m['GateError']: print('refused' if failed else 'wrong failure')`;
     const r=spawnSync('python3',['-c',code,path.join(repository,'scripts/cm-task-gate.py'),JSON.stringify(args),point,marker],{encoding:'utf8',timeout:10000});
     assert.equal(r.status,0,r.stderr);assert.equal(r.stdout.trim(),'refused');
   }
-  assert.deepEqual(fs.readFileSync(tasksPath),task);assert(!fs.existsSync(path.join(root,'.reviews/.execution/run')));
+  // A failed per-run initializer may retain its directory; it must not publish task state.
+  assert.deepEqual(fs.readFileSync(tasksPath),task);assert(!fs.existsSync(path.join(root,'.reviews/.execution/run/state.json')));
 }));
 
 for(const source of ['python','js'])for(const point of ['before-commit','before-certificate'])
@@ -252,7 +280,7 @@ test(`S3b2 ${source} initializer ${point}: contenders never open native DB befor
   const args=legacyArgs(root,tasksPath),execution=path.join(root,'.reviews/.execution');
   let child;
   if(source==='python') {
-    const code=`import sqlite3,os,runpy,sys,json,pathlib\npoint=sys.argv[3]\ndef pause():\n print('held',flush=True)\n sys.stdin.readline()\nclass Connection(sqlite3.Connection):\n def executescript(self,sql):\n  if point=='before-commit' and 'COMMIT' in sql:\n   super().executescript(sql.split('COMMIT')[0]);pause();return super().execute('COMMIT')\n  return super().executescript(sql)\noriginal_connect=sqlite3.connect\ndef connect(*a,**kw):\n return original_connect(*a,factory=Connection,**kw)\nsqlite3.connect=connect\noriginal_open=os.open\ndef open_file(p,flags,*a,**kw):\n if point=='before-certificate' and str(p).endswith('writer-ready.json') and flags & os.O_CREAT: pause()\n return original_open(p,flags,*a,**kw)\nos.open=open_file\nm=runpy.run_path(sys.argv[1]);m['mark_done'](m['build_parser']().parse_args(['mark-done']+json.loads(sys.argv[2])))`;
+    const code=`import sqlite3,os,runpy,sys,json,pathlib\npoint=sys.argv[3]\ndef pause():\n print('held',flush=True)\n sys.stdin.readline()\nclass Connection(sqlite3.Connection):\n def executescript(self,sql):\n  if point=='before-commit' and 'COMMIT' in sql:\n   super().executescript(sql.split('COMMIT')[0]);pause();return super().execute('COMMIT')\n  return super().executescript(sql)\noriginal_connect=sqlite3.connect\ndef connect(*a,**kw):\n return original_connect(*a,factory=Connection,**kw)\nsqlite3.connect=connect\noriginal_open=os.open\ndef open_file(p,flags,*a,**kw):\n if point=='before-certificate' and str(p).endswith('writer-ready.json') and flags & os.O_CREAT: pause()\n return original_open(p,flags,*a,**kw)\nos.open=open_file\nm=runpy.run_path(sys.argv[1]);m['mark_done'](['mark-done']+json.loads(sys.argv[2]))`;
     child=interactive('python3',['-c',code,path.join(repository,'scripts/cm-task-gate.py'),JSON.stringify(args),point]);
   } else {
     const code=`import fs from 'node:fs';import {DatabaseSync} from 'node:sqlite';
@@ -266,14 +294,18 @@ test(`S3b2 ${source} initializer ${point}: contenders never open native DB befor
     child=interactive(process.execPath,['--input-type=module','-e',code,JSON.stringify(options),point]);
   }
   try {
-    assert.equal(await child.next(),'held');assert(!fs.existsSync(path.join(execution,'writer-ready.json')));
+    const certificate=path.join(execution,...(source==='js'?[options.identity.runId]:[]),'writer-ready.json');
+    assert.equal(await child.next(),'held');assert(!fs.existsSync(certificate));
     noNativeOpen(options,args);
     child.child.kill('SIGKILL');assert.equal((await child.done).signal,'SIGKILL');
-    const retained=Object.fromEntries(fs.readdirSync(execution).map(name=>[name,fs.readFileSync(path.join(execution,name))]));
+    const retained=Object.fromEntries(fs.readdirSync(execution,{recursive:true,withFileTypes:true})
+      .filter(item=>item.isFile()).map(item=>[path.join(item.parentPath,item.name),fs.readFileSync(path.join(item.parentPath,item.name))]));
     noNativeOpen(options,args);
-    assert.deepEqual(Object.fromEntries(fs.readdirSync(execution).map(name=>[name,fs.readFileSync(path.join(execution,name))])),retained);
+    assert.deepEqual(Object.fromEntries(fs.readdirSync(execution,{recursive:true,withFileTypes:true})
+      .filter(item=>item.isFile()).map(item=>[path.join(item.parentPath,item.name),fs.readFileSync(path.join(item.parentPath,item.name))])),retained);
     assert.equal(fs.readFileSync(tasksPath,'utf8'),'- [ ] T-001: fixture\n');
-    assert(!fs.existsSync(path.join(execution,'run')));
+    // A killed per-run initializer may retain its directory, but cannot publish task state.
+    assert(!fs.existsSync(path.join(execution,'run/state.json')));
   }finally{await child.stop();}
 }));
 
@@ -371,7 +403,7 @@ function interactive(executable,args) {
   }),stop:async()=>{if(!closed)child.kill('SIGKILL');await done;}};
 }
 
-for(const sameRoot of [false,true])test(`S3b1 real simultaneous JS initialization single owner (same root=${sameRoot})`,()=>fixture(async({options,dir,binding})=>{
+for(const sameRoot of [false,true])test(`S3b1 real simultaneous JS initialization respects owner scope (same root=${sameRoot})`,()=>fixture(async({options,dir,binding})=>{
   const source=`import {openTaskExecutionStore} from ${JSON.stringify(new URL('./task-owner.mjs',import.meta.url).href)};
     const options=JSON.parse(process.argv[1]);let store;process.stdout.write('ready\\n');
     process.stdin.setEncoding('utf8');process.stdin.on('data',data=>{
@@ -384,7 +416,8 @@ for(const sameRoot of [false,true])test(`S3b1 real simultaneous JS initializatio
   try {
     assert.deepEqual(await Promise.all([first.next(),second.next()]),['ready','ready']);
     first.child.stdin.write('start\n');second.child.stdin.write('start\n');
-    const results=await Promise.all([first.next(),second.next()]);assert.equal(results.filter(r=>r==='opened').length,1);
+    // Per-run writer databases allow two runs under one owner root; a second owner root still conflicts.
+    const results=await Promise.all([first.next(),second.next()]);assert.equal(results.filter(r=>r==='opened').length,sameRoot?2:1);
     const winner=JSON.parse(fs.readFileSync(binding));assert.equal(winner.specsRoot,results[0]==='opened'?options.specsRoot:secondOptions.specsRoot);
     first.child.stdin.write('release\n');second.child.stdin.write('release\n');
     assert.deepEqual(await Promise.all([first.done,second.done]),[{code:0,signal:null},{code:0,signal:null}]);
@@ -393,7 +426,7 @@ for(const sameRoot of [false,true])test(`S3b1 real simultaneous JS initializatio
 
 for(const kill of [false,true])test(`S3b1 actual Python replacement critical section excludes JS (kill=${kill})`,()=>fixture(async({root,tasksPath,options})=>{
   const args=legacyArgs(root,tasksPath);
-  const source=`import runpy,sys,os,json\nm=runpy.run_path(sys.argv[1])\na=m["build_parser"]().parse_args(["mark-done"]+json.loads(sys.argv[2]))\noriginal=os.chmod\ndef pause(*args,**kw):\n original(*args,**kw)\n print("held",flush=True)\n sys.stdin.readline()\nos.chmod=pause\nm["mark_done"](a)\nprint("completed",flush=True)`;
+  const source=`import runpy,sys,json,contextlib\nm=runpy.run_path(sys.argv[1])\na=["mark-done"]+json.loads(sys.argv[2])\noriginal=m["task_writer"]\n@contextlib.contextmanager\ndef pause(*args,**kw):\n with original(*args,**kw) as lock:\n  print("held",flush=True)\n  sys.stdin.readline()\n  yield lock\nm["mark_done"].__globals__["task_writer"]=pause\nm["mark_done"](a)\nprint("completed",flush=True)`;
   const child=interactive('python3',['-c',source,path.join(repository,'scripts/cm-task-gate.py'),JSON.stringify(args)]);
   try {
     assert.equal(await child.next(),'held');
