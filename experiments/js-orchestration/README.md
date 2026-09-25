@@ -29,6 +29,8 @@ including a checkpoint taken just before the worker call; it is never retried.
 
 ## Verification
 
+This suite is not run in CI; run it locally with `node --test experiments/js-orchestration/*.test.mjs`.
+
 Tested initially with Node v24.14.0 and Codex CLI 0.144.5 on macOS; the preview uses
 Node's built-in zstd decoder. This is not a supported-version or platform matrix.
 

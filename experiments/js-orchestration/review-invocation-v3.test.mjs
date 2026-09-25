@@ -277,10 +277,12 @@ test('V3 explicit durable cancel is the only cancellation cause and remains reco
   assert.deepEqual(f.getStore().snapshot(),before);assert.deepEqual(f.reopen().status(),end);
 }));
 
-test('V3 local timeout is unknown, never inferred as cancellation, and never redispatched',()=>fixture(async f=>{
+test('V3 local timeout remains pending, never inferred as cancellation, and never redispatched',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));const end=await runner.executeEffect(f.effect('review'));
-  assert.equal(end.state,'unknown');assert.equal(end.reviewInvocation.result.outcome,'timed_out');
-  assert.equal(end.reviewInvocation.result.reconciliationRequired,true);
+  assert.equal(end.state,'pending_review');assert.equal(end.code,'review_transport_timeout');
+  assert.equal(end.reviewInvocation.result.outcome,'timed_out');
+  assert.equal(end.reviewInvocation.result.reconciliationRequired,false);
+  assert.equal(end.calls.at(-1).terminal,'failed');
   assert(!f.getStore().snapshot().records.some(record=>record.payload.type==='control'));
   const before=f.getStore().snapshot();assert.equal(f.lateEvent()({event:'turn.completed',item_type:null}),false);
   assert.deepEqual(f.getStore().snapshot(),before);const restored=f.reopen();assert.deepEqual(await restored.run(),end);assert.equal(f.dispatches(),1);
