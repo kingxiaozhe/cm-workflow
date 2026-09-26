@@ -34,6 +34,8 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {decideHostQaPolicy} from '../runtime/js/cm-ai/host-qa-policy.mjs';
+import {createHostQaExecutor} from '../runtime/js/cm-ai/host-qa-executor.mjs';
+import {inspectCmAiQaTaskContext} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {readLearningRetrospectiveContent} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
 import {inspectFixInvestigation} from '../runtime/js/cm-fix/investigation.mjs';
 import {readRunDefinition} from './cm-ai-run.mjs';
@@ -70,6 +72,32 @@ const nonempty=value=>typeof value==='string'&&value.trim().length>0;
 function requireShape(ok,label){if(!ok)stop(2,`答案格式错误：${label}`);}
 function exact(value,allowed,label){requireShape(object(value)&&Object.keys(value).every(key=>allowed.includes(key)),label);}
 function answerPath(root,file){return path.join(root,file);}
+function predictedQaAsks(definition,qa){
+  // Reuse the executor's validated initial plan for policy applicability.
+  // QA runs after this task completes, so project its task
+  // state at that point before applying the executor's taskIds deferral rule.
+  const executor=createHostQaExecutor({specsDir:definition.specsDir,codeProject:definition.codeProject,
+    feature:definition.feature,requirements:definition.requirements,runtime:'codex',
+    ...(definition.codeProjects?{codeProjects:definition.codeProjects}:{}),
+    ...qa,timeoutMs:1800000,logHome:path.join(definition.specsDir,'.reviews','host-log-mirror')});
+  const plan=executor.configuration.plan;
+  const context=inspectCmAiQaTaskContext({specsDir:definition.specsDir,codeProject:definition.codeProject,
+    feature:definition.feature});
+  const completed=new Set(context.completed.filter(task=>task.feature===definition.feature).map(task=>task.id));
+  const taskWasPending=!completed.has(definition.identity.taskId);
+  completed.add(definition.identity.taskId);
+  const pendingAfter=context.pending-(taskWasPending?1:0);
+  const cases=plan.cases.filter(item=>pendingAfter===0||item.taskIds.every(taskId=>completed.has(taskId)));
+  const asks=[];
+  // The current executor still calls logic() for mapped cases; command evidence
+  // only affects the later verdict. Keep the preflight conservative until that
+  // runtime contract changes.
+  if(cases.some(item=>item.kind==='logic'))
+    asks.push('qa_logic');
+  if(cases.some(item=>item.kind==='browser'&&!item.expected.some(value=>value.includes('[需确认]'))))
+    asks.push('qa_browser');
+  return asks;
+}
 function edits(value,root,label){
   requireShape(object(value),`${label} 应为路径到内容文件的对象`);
   for(const [target,local] of Object.entries(value)){
@@ -188,8 +216,8 @@ function load(){
   if((operation==='advance'||operation==='qa')&&workflow?.qa){asks.push('qa_assess');
   }
   if(operation==='advance'&&workflow?.qa){
-    const cases=readJson(path.join(definition.specsDir,definition.feature,'test-cases.json'),'test-cases');
-    for(const kind of ['logic','browser'])if(cases?.cases?.some(item=>item.kind===kind))asks.push(`qa_${kind}`);
+    try{asks.push(...predictedQaAsks(definition,workflow.qa));}
+    catch(error){stop(2,`QA 请求预测失败: ${error.code??error.message}`);}
   }
   if(operation==='advance'&&workflow?.documentationPaths?.length&&!protectedMode)asks.push('documentation_sync');
   if(['advance','finish','run_finalize'].includes(operation)&&workflow)asks.push('documentation_inspect');
