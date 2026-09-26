@@ -42,6 +42,24 @@ const develop={status:'succeeded',value:{outcome:'implemented',
   retrospective:{status:'no_new_lesson',candidates:[],reason:null}},
   edits:{'target.mjs':'target-content.mjs'}};
 function prepared(f){f.write('develop.json',develop);fs.writeFileSync(path.join(f.answers,'target-content.mjs'),'export const value = 42;\n');}
+function qaFixture(f,kinds,caseIds=[]){
+  const featureRoot=path.join(f.specsDir,'1.work');
+  fs.writeFileSync(path.join(featureRoot,'requirements.md'),'- [AC-001]: fixture\n');
+  const cases=kinds.map(({kind,expected,taskIds=['T-001']},index)=>({id:`TC-${String(index+1).padStart(3,'0')}`,origin:'user',kind,
+    blocking:true,acIds:['AC-001'],taskIds,title:`${kind} fixture`,preconditions:[],
+    steps:['Observe fixture'],expected:[expected],cleanup:[]}));
+  fs.writeFileSync(path.join(featureRoot,'test-cases.json'),JSON.stringify({schemaVersion:'1.0',feature:'work',cases}));
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],
+    specFiles:buildManifest(f.specsDir)}));
+  fs.writeFileSync(path.join(f.root,'workflow.json'),JSON.stringify({documentationPaths:[],applicableAgentFiles:[],
+    qa:{commands:[{id:'unit',command:[process.execPath,'--check','target.mjs'],caseIds}],
+      environment:{kind:'web',carrier:'browser',target:'fixture-local',scope:'local'}}}));
+  f.write('qa-assess.json',{scores:{scope:1,risk:1,accumulation:1,boundary:1},
+    changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}});
+  f.write('documentation-inspect.json',{status:'blocked',reason:'Fixture stops before documentation review'});
+  return f.plan({permissions:['--workflow-config','workflow.json','--allow-qa',
+    ...(kinds.some(item=>item.kind==='browser')?['--browser-qa','available']:[])]});
+}
 
 test('create and advance run authored edits and actual check, then resume with original context',t=>{
   const f=fixture(t);prepared(f);
@@ -98,12 +116,41 @@ test('verification_precheck static answer is refused without an execution runner
   const run=f.drive(f.plan({verificationPrecheck:true}),'advance');
   assert.equal(run.status,2);assert.match(run.stderr,/verification_precheck/);assert.equal(fs.existsSync(f.store),false);
 });
-test('QA logic case is refused before sending without a real runner',t=>{
+test('mapped logic case is still refused because executor asks qa_logic',t=>{
   const f=fixture(t);prepared(f);
-  fs.writeFileSync(path.join(f.specsDir,'1.work','test-cases.json'),JSON.stringify({cases:[{kind:'logic'}]}));
-  fs.writeFileSync(path.join(f.root,'workflow.json'),JSON.stringify({documentationPaths:[],applicableAgentFiles:[],qa:{}}));
-  const run=f.drive(f.plan({permissions:['--workflow-config','workflow.json','--allow-qa']}),'advance');
-  assert.equal(run.status,2);assert.match(run.stderr,/qa_logic/);assert.equal(fs.existsSync(f.store),false);
+  const plan=qaFixture(f,[{kind:'logic',expected:'Unit check passes'},
+    {kind:'browser',expected:'[需确认] Browser evidence'}],['TC-001']);
+  const run=f.drive(plan,'advance');
+  assert.equal(run.status,2,run.stderr);
+  assert.match(run.stderr,/缺少真实执行 runner: qa_logic/);
+  assert.doesNotMatch(run.stderr,/qa_browser/);
+  assert.equal(fs.existsSync(f.store),false);
+});
+test('marked browser case launches without qa_browser runner',t=>{
+  const f=fixture(t);prepared(f);
+  const run=f.drive(qaFixture(f,[{kind:'browser',expected:'[需确认] Browser evidence'}]),'advance');
+  assert.doesNotMatch(run.stderr,/缺少真实执行 runner/);
+  assert(fs.existsSync(f.store),run.stderr);
+});
+test('uncovered logic case is refused before launch without qa_logic runner',t=>{
+  const f=fixture(t);prepared(f);
+  const run=f.drive(qaFixture(f,[{kind:'logic',expected:'Unit check passes'}]),'advance');
+  assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/缺少真实执行 runner: qa_logic/);
+  assert.equal(fs.existsSync(f.store),false);
+});
+test('unmarked browser case is refused before launch without qa_browser runner',t=>{
+  const f=fixture(t);prepared(f);
+  const run=f.drive(qaFixture(f,[{kind:'browser',expected:'Browser evidence'}]),'advance');
+  assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/缺少真实执行 runner: qa_browser/);
+  assert.equal(fs.existsSync(f.store),false);
+});
+test('cases bound to another unfinished task do not require QA runners yet',t=>{
+  const f=fixture(t);prepared(f);
+  fs.writeFileSync(path.join(f.specsDir,'1.work','tasks.md'),'- [ ] T-001: current\n- [ ] T-002: future\n');
+  const run=f.drive(qaFixture(f,[{kind:'logic',expected:'Future logic',taskIds:['T-002']},
+    {kind:'browser',expected:'Future browser',taskIds:['T-002']}]),'advance');
+  assert.doesNotMatch(run.stderr,/缺少真实执行 runner/);
+  assert(fs.existsSync(f.store),run.stderr);
 });
 test('protected conversation still requires the authored develop answer',t=>{
   const f=fixture(t);fs.writeFileSync(path.join(f.root,'protection.json'),JSON.stringify({checkCommands:[
