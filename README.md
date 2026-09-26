@@ -17,7 +17,7 @@
 
 ## 最近更新
 
-**0.16.2**
+**0.16.3**
 
 - **安装时会问你要不要开启新版提示**。此前安装完只有一句含糊的「自动更新器未自动启用」，已经开启的人也会看到这句（是错的），没开启的人又不会当回事，结果几乎没人用上这个功能。现在安装器会先看你实际配没配，再决定说什么；没配且是手动安装时，问一句、你答 y 才写入。用 `--yes` 静默安装的不会被改动任何配置，只会打印该加什么。
 - 它**只加一条「有新版就告诉你」的提示**，不会顺手打开后台自动升级——那是另一回事，仍需你自己决定。你的 `settings.json` 里原有的内容（比如自定义状态栏）不会被动。
@@ -148,7 +148,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.16.2 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.16.3 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
