@@ -129,13 +129,14 @@ for(const invalid of ['missing','duplicate','utf8'])test(`S3b1 invalid target ${
 }));
 
 for(const engine of ['python','js'])for(const kind of ['private','public','hardlink','symlink','empty','retained-run','case-alias'])
-test(`S3b1 ${engine} preserves preexisting journal ${kind}`,()=>fixture(({root,tasksPath,options})=>{
+test(`S3b1 ${engine} preserves preexisting journal ${kind}`,t=>fixture(({root,tasksPath,options})=>{
   const args=legacyArgs(root,tasksPath);assert.equal(pythonGate('mark-done',args).status,0);
   fs.writeFileSync(tasksPath,'- [ ] T-001: fixture\n');
   const execution=path.join(root,'.reviews/.execution'),journal=path.join(execution,kind==='case-alias'?'WRITER.SQLITE-JOURNAL':'writer.sqlite-journal');
   const bytes=Buffer.from(kind==='empty'?'':'RETAIN CORRUPT EVIDENCE\n'.repeat(32));
   fs.writeFileSync(journal,bytes,{mode:kind==='public'?0o644:0o600});
-  if(kind==='case-alias')assert(fs.existsSync(path.join(execution,'writer.sqlite-journal')),'requires case-insensitive test filesystem');
+  // The alias case only exists on case-insensitive filesystems (macOS default); Linux CI skips it explicitly.
+  if(kind==='case-alias'&&!fs.existsSync(path.join(execution,'writer.sqlite-journal'))){t.skip('case-sensitive filesystem: no case alias to preserve');return;}
   if(kind==='hardlink')fs.linkSync(journal,path.join(root,'retained-journal'));
   if(kind==='symlink'){fs.renameSync(journal,path.join(root,'retained-journal'));fs.symlinkSync(path.join(root,'retained-journal'),journal);}
   if(kind==='retained-run')fs.mkdirSync(path.join(execution,'retained'),{mode:0o700});
