@@ -95,6 +95,7 @@ Review 头或完成记录；provider 身份由原 adapter/V3 绑定，失败不�
 `preflight --config {该代码根的单任务配置} --review-model {已选择模型} --runtime {当前端}`。
 即使后续执行批次，诊断仍用同一代码根的单任务配置，不把 batch/workflows 配置传给该命令。
 诊断输出直接作为 review-config 输入，不手造或修补 `passed`/指纹；失败则保留原因。
+Claude CLI 报 `unrecognized_model` 时 preflight 会失败；`--review-model` 须为已安装 CLI 接受的模型 id（如 CLI 2.1.x 的 `claude-opus-5`）。
 Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终止，不发送工作流 cancel。
 本机配置诊断通过不证明模型可用、Review 协议成功或用户已批准外发；真实审查仍须第5项授权。
 不带对应 `--allow-review-attempt`（单任务）或 `--allow-review feature/task:attempt`（批次）
