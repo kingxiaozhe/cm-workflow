@@ -7,6 +7,38 @@ import {spawn} from 'node:child_process';
 import {gunzipSync,zstdDecompressSync} from 'node:zlib';
 import {claudeWorker,claudeReviewFingerprint} from './worker-claude.mjs';
 
+const UNRECOGNIZED_MODEL_MARKER='[claude-code:unrecognized_model]';
+export function createClaudeModelMarkerDetector(onMarker) {
+  let matched=0,found=false,reported=false,jsonTail='';
+  const report=()=>{
+    if(reported||!found)return;
+    reported=true;
+    let model=null;
+    try {
+      const value=JSON.parse(jsonTail.trim());
+      if(typeof value?.model==='string'&&/^[a-zA-Z0-9._-]+$/.test(value.model))model=value.model;
+    }catch{}
+    onMarker({reported_model:model});
+    jsonTail='';
+  };
+  return {
+    accept(chunk){
+      for(const char of String(chunk)){
+        if(reported)break;
+        if(found){
+          if(char==='\n'||char==='\r'){report();continue;}
+          if(jsonTail.length<512)jsonTail+=char;
+          else report();
+        }else if(char===UNRECOGNIZED_MODEL_MARKER[matched]){
+          matched++;
+          if(matched===UNRECOGNIZED_MODEL_MARKER.length)found=true;
+        }else matched=char===UNRECOGNIZED_MODEL_MARKER[0]?1:0;
+      }
+    },
+    finish:report,
+  };
+}
+
 export function claudeProbeSandbox(temp,port) {
   if(!path.isAbsolute(temp)||!Number.isInteger(port)||port<1||port>65535)throw Error('invalid_probe');
   return `(version 1)(allow default)(deny network*)
@@ -23,7 +55,7 @@ export async function previewClaudeTools({cwd,model,cli='claude',spawnProcess=sp
   const fingerprint=claudeReviewFingerprint({cwd,model,cli});
   const temp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-claude-probe-')));
   const observations=[];
-  const controller=new AbortController();let stoppedByProbe=false;
+  const controller=new AbortController();let stoppedByProbe=false,modelMarker=null;
   const server=http.createServer((request,response)=>{
     const index=observations.length;
     if(index<8)observations.push({valid:false});else observations[0]={valid:false};
@@ -84,11 +116,17 @@ export async function previewClaudeTools({cwd,model,cli='claude',spawnProcess=sp
     // Internal diagnostic bootstrap: same worker lifecycle, forced sink and synthetic prompt only.
     // This object is never returned as a passing receipt without examining the captured request.
     const worker=claudeWorker({cwd,model,cli,preflight,timeoutMs:15000,
-      spawnProcess:(command,args,options)=>spawnProcess('/usr/bin/sandbox-exec',
-        ['-p',claudeProbeSandbox(temp,port),command,...args],{...options,env:{...options.env,
+      spawnProcess:(command,args,options)=>{
+        const child=spawnProcess('/usr/bin/sandbox-exec',
+          ['-p',claudeProbeSandbox(temp,port),command,...args],{...options,env:{...options.env,
           ANTHROPIC_API_KEY:'cm-synthetic-local-probe',ANTHROPIC_BASE_URL:`http://127.0.0.1:${port}`,
           CLAUDE_CONFIG_DIR:temp,CLAUDE_CODE_TMPDIR:temp,
-          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1',TMPDIR:temp}})});
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1',TMPDIR:temp}});
+        const detector=createClaudeModelMarkerDetector(value=>{modelMarker=value;});
+        child.stderr.on('data',detector.accept);
+        child.stderr.once('end',detector.finish);
+        return child;
+      }});
     result=await worker({prompt:'Return JSON for synthetic diagnostic task CM-PROBE-001.'},
       {signal:controller.signal,onEvent:event=>{
         if(event.event==='process_closed')closeEvidence=event;
@@ -100,10 +138,11 @@ export async function previewClaudeTools({cwd,model,cli='claude',spawnProcess=sp
   }
   const messages=observations.filter(item=>item.startup!==true);
   return {model,disabledSkills:[],preflight:{provider:'claude',prompt_transport:'stdin',
-    config_fingerprint:fingerprint,passed:messages.length>=1&&messages.length<=2&&messages.every(message=>message.valid)
+    config_fingerprint:fingerprint,passed:modelMarker===null&&messages.length>=1&&messages.length<=2&&messages.every(message=>message.valid)
       &&stoppedByProbe&&result?.status==='cancelled'&&closeEvidence!==null&&!closeEvidence.timed_out,
     local_requests:observations.length,message_requests:messages.length,message_requests_expected:'1-2',
     listener_closed:closed,isolation:'macos-loopback-sandbox',
     process_code:result?.code??'unknown',stopped_by_probe:stoppedByProbe,exit_code:closeEvidence?.exit_code??null,
-    request_checks:observations.map(item=>item.startup?{startup:true}:item.checks??{complete:false})}};
+    request_checks:[...observations.map(item=>item.startup?{startup:true}:item.checks??{complete:false}),
+      ...(modelMarker?[{model_recognized:false,...modelMarker}]:[])]}};
 }

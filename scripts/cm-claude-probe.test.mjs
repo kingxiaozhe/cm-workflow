@@ -5,9 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import * as zlib from 'node:zlib';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {previewClaudeTools,claudeProbeSandbox} from '../runtime/js/cm-ai/claude-tool-preview.mjs';
+import {buildManifest} from './cm-spec-manifest.mjs';
+import {previewClaudeTools,claudeProbeSandbox,createClaudeModelMarkerDetector} from '../runtime/js/cm-ai/claude-tool-preview.mjs';
 import {previewPromptTransport,writePreviewPrompt} from '../runtime/js/cm-ai/tool-preview.mjs';
 
 test('tool preview argument transport preserves a long Unicode argv prompt without stdin',()=>{
@@ -19,6 +20,23 @@ test('tool preview argument transport preserves a long Unicode argv prompt witho
   const cleanup=writePreviewPrompt({get stdin(){stdinAccesses++;throw Error('stdin accessed');}},
     'argument',prompt,()=>assert.fail('argument transport wrote stdin'));
   cleanup();assert.equal(stdinAccesses,0);
+});
+
+test('fake Claude process stderr marker yields only its reported model',async()=>{
+  const fixture=fileURLToPath(new URL('./fixtures/claude-model-marker.mjs',import.meta.url));
+  for(const [model,expected] of [['fixture-unrecognized-model','fixture-unrecognized-model'],
+    ['fixture-recognized-model',null]]){
+    const child=spawn(process.execPath,[fixture,'--model',model],{stdio:['ignore','pipe','pipe']});
+    let found=null,stdout='';
+    const detector=createClaudeModelMarkerDetector(value=>{found=value;});
+    child.stderr.on('data',chunk=>detector.accept(chunk));
+    child.stdout.on('data',chunk=>stdout+=chunk);
+    const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});
+    detector.finish();
+    assert.equal(code,0);
+    assert.deepEqual(found,expected===null?null:{reported_model:expected});
+    assert.deepEqual(JSON.parse(stdout),{type:'result',result:''});
+  }
 });
 
 // Authored without local execution; verification by reviewer outside the sandbox is pending.
@@ -127,6 +145,59 @@ test('diagnostic still accepts one tool-free message request from an older CLI',
     assert.equal(result.preflight.message_requests,1);
     assert.equal(result.preflight.message_requests_expected,'1-2');
     assert.equal(result.preflight.stopped_by_probe,true);assert.equal(result.preflight.listener_closed,true);
+  });
+for(const [model,recognized] of [['fixture-unrecognized-model',false],['fixture-recognized-model',true]])
+  test(`Claude preflight ${recognized?'accepts':'rejects'} fake CLI ${recognized?'without':'with'} unrecognized_model stderr`,
+    {skip:process.platform!=='darwin'},async()=>{
+      const fixture=fileURLToPath(new URL('./fixtures/claude-review-process.mjs',import.meta.url));
+      const result=await previewClaudeTools({cwd:process.cwd(),model,
+        spawnProcess:(command,args,options)=>spawn(command,[...args.slice(0,2),process.execPath,fixture,...args.slice(3)],options)});
+      assert.equal(result.preflight.message_requests,1);
+      // The fixture's /api/hello HEAD is recorded first as {startup:true}; the message check follows it.
+      const message=result.preflight.request_checks.find(check=>Object.hasOwn(check,'model_matches'));
+      assert.equal(message?.model_matches,true);
+      assert.equal(result.preflight.passed,recognized);
+      const marker=result.preflight.request_checks.filter(check=>Object.hasOwn(check,'model_recognized'));
+      if(recognized)assert.deepEqual(marker,[]);
+      else assert.deepEqual(marker,[{model_recognized:false,reported_model:model}]);
+      if(!recognized)assert.deepEqual(result.preflight.request_checks.at(-1),{model_recognized:false,reported_model:model});
+      assert.equal(JSON.stringify(result).includes('CM-PROBE-001'),false);
+    });
+test('Claude preflight CLI exits 1 with model_recognized false and leaves normal receipt unchanged',
+  {skip:process.platform!=='darwin'},()=>{
+    const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-claude-model-cli-')));
+    try{
+      const codeProject=path.join(root,'code'),specsDir=path.join(root,'specs'),feature='1.work';
+      fs.mkdirSync(codeProject);fs.mkdirSync(path.join(specsDir,feature),{recursive:true});
+      for(const name of ['requirements.md','design.md'])
+        fs.writeFileSync(path.join(specsDir,feature,name),'# Fixture\n');
+      fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: fixture\n');
+      fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],
+        specFiles:buildManifest(specsDir)}));
+      fs.writeFileSync(path.join(codeProject,'requirements.md'),'# Fixture\n');
+      const config=path.join(root,'run.json');
+      fs.writeFileSync(config,JSON.stringify({version:1,specsDir,codeProject,feature,
+        identity:{repositoryId:'model-fixture',runId:'model-fixture-run',taskId:'T-001',attempt:1},
+        scope:['target.mjs'],requirements:['requirements.md']}));
+      const bin=path.join(root,'bin');fs.mkdirSync(bin);
+      const fake=path.join(bin,'claude');
+      fs.copyFileSync(fileURLToPath(new URL('./fixtures/claude-review-process.mjs',import.meta.url)),fake);
+      fs.chmodSync(fake,0o700);
+      const cli=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
+      for(const [model,expectedExit] of [['fixture-unrecognized-model',1],['fixture-recognized-model',0]]){
+        const run=spawnSync(process.execPath,[cli,'preflight','--config',config,'--review-model',model,'--runtime','claude'],
+          {encoding:'utf8',env:{...process.env,PATH:bin+path.delimiter+process.env.PATH},timeout:10000});
+        assert.equal(run.status,expectedExit,run.stderr);
+        assert.ok(run.stdout.trim(),run.stderr);
+        const receipt=JSON.parse(run.stdout);
+        assert.equal(receipt.preflight.passed,expectedExit===0);
+        assert.equal(receipt.preflight.request_checks.find(check=>Object.hasOwn(check,'model_matches'))?.model_matches,true);
+        if(expectedExit===1)assert.deepEqual(receipt.preflight.request_checks.at(-1),
+          {model_recognized:false,reported_model:model});
+        else assert.equal(receipt.preflight.request_checks.some(check=>Object.hasOwn(check,'model_recognized')),false);
+        assert.equal(run.stdout.includes('CM-PROBE-001'),false);
+      }
+    }finally{fs.rmSync(root,{recursive:true,force:true});}
   });
 test('probe sandbox denies sibling writes and connections to a different loopback port',
   {skip:process.platform!=='darwin'},async()=>{

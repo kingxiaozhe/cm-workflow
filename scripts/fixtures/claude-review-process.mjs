@@ -6,6 +6,9 @@ if(process.env.ANTHROPIC_API_KEY==='cm-synthetic-local-probe'){
   const base=process.env.ANTHROPIC_BASE_URL;
   if(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base))throw Error('nonlocal fixture target');
   const args=process.argv.slice(2),model=args[args.indexOf('--model')+1];
+  if(model==='fixture-unrecognized-model'){
+    process.stderr.write(`[claude-code:unrecognized_model] ${JSON.stringify({model,query_source:'sdk'})}\n`);
+  }
   if(model==='fixture-invalid-target'){
     const {request}=await import('node:http'),url=new URL(base);
     await new Promise((resolve,reject)=>{
@@ -16,6 +19,10 @@ if(process.env.ANTHROPIC_API_KEY==='cm-synthetic-local-probe'){
   const hello=await fetch(base+'/api/hello',{method:'HEAD'});if(hello.status!==200)process.exit(1);
   await fetch(base+'/v1/messages?beta=true',{method:'POST',headers:{'x-api-key':'cm-synthetic-local-probe'},
     body:JSON.stringify({model,messages:[{role:'user',content:prompt}],tools:[]})});
+  if(model==='fixture-unrecognized-model'){
+    process.stdout.write('{"type":"result","result":""}\n');
+    process.exit(1);
+  }
   if(model==='fixture-plain-error')process.exit(1);
   const session_id=randomUUID();
   process.stdout.write(JSON.stringify({type:'system',subtype:'init',session_id})+'\n');

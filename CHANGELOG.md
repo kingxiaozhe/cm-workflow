@@ -6,6 +6,7 @@
 ## 未发布
 
 - `cm-ai` 单步驾驶员按任务适用 case 与 `[需确认]` 标记预检 runner；已映射 logic 仍按当前 executor 的真实请求拒绝。
+- cm-ai Claude review preflight 现在识别 CLI 的 `unrecognized_model` stderr 标记，返回失败及被拒模型 id，避免错误模型配置进入真实审查。
 - CI 新增独立、不阻断合并的 `experiments-tests` 任务，跑历史兼容夹具目录，防止再次陈旧。
 - 修复 cm-ai runner 读取异常码 getter 的回归，补充回归测试并更新 JS orchestration 历史兼容夹具。
 - 更新 JS orchestration 历史兼容测试，适配当前开发准入与审查超时合同，并修复未完成 Promise。

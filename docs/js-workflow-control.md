@@ -518,6 +518,7 @@ JS 通过现有通道发出固定请求，结果由原组件校验：
 # --review-model 必须是 CLI 实际写进请求体的完整模型 id，不能用 sonnet 这类别名：
 # 探测按字面比对，别名会以 request_checks 里的 model_matches:false 判失败，
 # 而回执只给布尔值、不给期望值，仅看输出无法推断该填什么。
+# Claude CLI 报 unrecognized_model 时 preflight 也会失败；模型 id 须为已安装 CLI 接受的值（如 CLI 2.1.x 的 claude-opus-5）。
 node scripts/cm-ai-host.mjs preflight --config /absolute/run.json --review-model model-name
 # 携带配置但不授权审查：开发和检查完成后等待授权。
 node scripts/cm-ai-host.mjs serve --config /absolute/run.json --mode create \
