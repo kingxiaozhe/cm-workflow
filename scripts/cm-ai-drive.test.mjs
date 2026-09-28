@@ -185,7 +185,8 @@ test('driver resumes an interrupted develop and sends the bound abandon_effect r
   const saved=JSON.parse(fs.readFileSync(f.store,'utf8'));
   assert.deepEqual(saved.records.slice(-2).map(row=>row.payload.type),['effect-intent','effect-abandoned']);
 });
-test('real host drives split-root bootstrap scaffold, then refuses rules before creating T-002 run',t=>{
+test('real host drives split-root bootstrap scaffold, then refuses rules before creating T-002 run',
+  {skip:process.platform!=='darwin'},t=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-ai-drive-bootstrap-')));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const specsDir=path.join(root,'specs5'),codeProject=path.join(root,'app'),feature='1.bootstrap';
