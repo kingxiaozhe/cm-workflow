@@ -18,6 +18,20 @@ test('draft structure refuses missing triad, unsafe path and dropped user cases'
   const unsafe=draft();unsafe.features[0].documents[0].path='../AGENTS.md';assert.throws(()=>inspectPrdDraft(unsafe,options));
   assert.throws(()=>inspectPrdDraft(draft(),{...options,userCasesProvided:true}));
 });
+test('draft case reason identifies the feature field without accepting non-null values',()=>{
+  const value=draft(),feature=value.features[0];
+  feature.documents.push({path:'test-cases.json',content:JSON.stringify({schemaVersion:'1.0',feature:'guide',cases:[]})});
+  assert.throws(()=>inspectPrdDraft(value,{nextIndex:1,generateCases:true,userCasesProvided:false}),error=>
+    error.code==='prd_draft_cases_invalid'&&error.reason?.field==='features[0].testCasesReason'
+    &&/must be null when test cases are present/.test(error.reason.expected));
+});
+test('oversize draft reports the 64 KiB limit and actual serialized bytes',()=>{
+  const value=draft();value.summary='a'.repeat(65536);
+  const actual=Buffer.byteLength(JSON.stringify(value));
+  assert.throws(()=>inspectPrdDraft(value,{nextIndex:1,generateCases:true,userCasesProvided:false}),error=>
+    error.code==='limit_exceeded'&&error.reason?.field==='draft'
+    &&error.reason.limitBytes===65536&&error.reason.actualBytes===actual);
+});
 test('analysis -> planner clarification -> draft preserves scope and does not write',async t=>{
   const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-draft-')));
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));

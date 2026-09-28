@@ -39,6 +39,36 @@ test('product admission reports generic continuation without approving or writin
   assert.equal(fs.readdirSync(root).length,2);
 }));
 
+test('spec approval accepts only normalized explicit start phrases',()=>fixture(({specs,code})=>{
+  fs.writeFileSync(path.join(specs,'.cm-specs-status'),JSON.stringify({status:'awaiting_review',features:['1.login'],testCases:[]}));
+  const run=reply=>{
+    const result=spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,'--approval-response',reply],{encoding:'utf8'});
+    assert.equal(result.status,0,result.stderr);return JSON.parse(result.stdout);
+  };
+  for(const reply of ['开始','开始吧','可以开始','确认开始','开始执行','现在开始',' 开始吧。 ','现在开始！  ','可以开始!.～~ ']){
+    const result=run(reply);assert.equal(result.approvalIntent,'explicit',reply);
+    assert.equal(result.reason,'approval_write_required',reply);
+  }
+  for(const reply of ['继续','可以','好','好的','OK','按最优解处理','你看着办','行','开始开发','开始吧，请继续']){
+    const result=run(reply);assert.equal(result.approvalIntent,'not_approval',reply);
+    assert.equal(result.reason,'spec_approval_required',reply);
+    assert.match(result.message,/回复.*开始/);
+  }
+}));
+test('approve writes only after a whitelisted reply and preserves the original reply',()=>fixture(({specs,code})=>{
+  const status=path.join(specs,'.cm-specs-status');
+  fs.writeFileSync(status,JSON.stringify({status:'awaiting_review',features:['1.login'],testCases:[]}));
+  const before=fs.readFileSync(status);
+  const invoke=reply=>spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,
+    '--approve','--approval-response',reply],{encoding:'utf8'});
+  const rejected=invoke('好的');assert.equal(rejected.status,1);
+  assert.equal(JSON.parse(rejected.stdout).approveRefused,'explicit_approval_required');
+  assert.deepEqual(fs.readFileSync(status),before);
+  const accepted=invoke('开始吧！');assert.equal(accepted.status,0,accepted.stderr);
+  assert.equal(JSON.parse(accepted.stdout).state,'ready');
+  assert.equal(JSON.parse(fs.readFileSync(status,'utf8')).approval.response,'开始吧！');
+}));
+
 test('ready admission prints a directly valid run definition without writing the project',()=>fixture(({root,specs,code})=>{
   fs.writeFileSync(path.join(specs,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.login'],testCases:[]}));
   fs.writeFileSync(path.join(code,'package.json'),JSON.stringify({name:'login-app'}));

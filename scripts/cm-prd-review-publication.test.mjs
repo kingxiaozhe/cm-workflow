@@ -21,6 +21,12 @@ function fixture(t){
   return {specs,prepared,response,claim:()=>claimPrdReview({...prepared.paths,package_sha256:prepared.packageDigest}),
     publish:()=>publishPrdReview({specs,reviewPackage:prepared.reviewPackage,packageDigest:prepared.packageDigest,authorContextId:'author-context',response})};
 }
+test('review timestamp identifies at and exact JavaScript ISO form',t=>{
+  const {response,claim,publish}=fixture(t);claim();response.at='2026-09-08T00:00:00Z';
+  assert.throws(publish,error=>error.code==='prd_review_timestamp_invalid'
+    &&error.reason?.field==='response.at'
+    &&error.reason.expected.includes('new Date().toISOString()'));
+});
 test('claimed result publishes r1 once, readback resumes original gate and conflict preserves bytes',t=>{
   const {prepared,response,claim,publish}=fixture(t);claim();
   const result=publish();assert.equal(result.gate.outcome,'resume_disposition');assert.equal(result.completionAuthorized,false);

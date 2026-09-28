@@ -91,7 +91,9 @@ function directory(value){
 function approvalIntent(response,assumeYes){
   if(assumeYes===true)return 'explicit';
   if(response===undefined||response===null||response==='')return 'none';
-  return typeof response==='string'&&response.trim()==='开始'?'explicit':'not_approval';
+  if(typeof response!=='string')return 'not_approval';
+  const normalized=response.trim().replace(/[。！!.～~\s]+$/gu,'');
+  return new Set(['开始','开始吧','可以开始','确认开始','开始执行','现在开始']).has(normalized)?'explicit':'not_approval';
 }
 
 

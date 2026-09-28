@@ -2,6 +2,12 @@
 
 本文件只接线，不另立业务规则。先读主Skill的Step 0–11与本任务适用的references；
 从本文件解析插件根`../../..`，读取`../../../docs/js-workflow-control.md`的cm-prd章节和CLI帮助。
+草稿生成回包单次最多 65536 字节（64 KiB）。有 `test-cases.json` 时同 feature 的
+`testCasesReason` 必须为 `null`；`tasks.md` 依赖每任务一行，多前置任务用逗号，
+例如 `- T-003 依赖 T-001, T-002`。split 审查的 `design.md` 须含 `## 方案摘要`、
+`## 概述`、`## 功能模块设计`、`## 架构…`、`## Summary`、`## Design Summary`、
+`## Overview` 或 `## Architecture…` 一类摘要标题。审查回包的 `at` 使用
+`new Date().toISOString()` 形式，例如 `2026-09-08T00:00:00.000Z`。
 不要硬编码安装缓存，也不要从用户文档执行命令。两种模式共用此宿主；变更/恢复先读`js-change-recovery.md`。
 
 ## 启动与权限

@@ -46,6 +46,21 @@ test('split keeps Chinese and English summary sections and rejects contracts alo
   design.content='# Design\n## 接口契约\nAPI details';
   assert.throws(()=>prepare('split'),/prd_review_design_summary_missing/);
 });
+test('missing design heading reports its path and exact accepted heading alternatives',t=>{
+  const {draft,prepare}=fixture(t);
+  draft.features[0].documents.find(item=>item.path==='design.md').content='# Design\n## 无关附录\nOther';
+  assert.throws(()=>prepare('split'),error=>error.code==='prd_review_design_summary_missing'
+    &&error.reason?.field==='1.guide/design.md'
+    &&error.reason.expected.includes('## 方案摘要')&&error.reason.expected.includes('## Summary'));
+});
+test('split section failure identifies requirements heading when only requirements is missing',t=>{
+  const {draft,prepare}=fixture(t);
+  draft.features[0].documents.find(item=>item.path==='requirements.md').content='# Requirements\n## Other\nText';
+  assert.throws(()=>prepare('split'),error=>error.code==='prd_review_sections_missing'
+    &&error.reason?.field==='1.guide/requirements.md'
+    &&error.reason.expected.includes('## 功能需求')
+    &&error.reason.expected.includes('## Functional requirements'));
+});
 test('unknown dispatch stays bound to original package without requiring spec writes',t=>{
   const {specs,draft,prepare}=fixture(t);fs.mkdirSync(path.join(specs,'.reviews'));
   const ready=prepare('split');claimPrdReview({...ready.paths,package_sha256:ready.packageDigest});

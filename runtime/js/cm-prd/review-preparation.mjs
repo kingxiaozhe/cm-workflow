@@ -9,6 +9,7 @@ import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {inspectPrdFindings} from './review-findings.mjs';
 import {inspectPrdSplitDesign} from './split-design.mjs';
 import {need,json,digest} from '../cm-ai/effect-contract.mjs';
+import {needPrd} from './validation-reason.mjs';
 const sha=text=>createHash('sha256').update(text).digest('hex');
 function sections(text,pattern){
   const parts=text.split(/(?=^##\s+)/m);
@@ -55,12 +56,18 @@ export function preparePrdReview({specs,draft,stage,feature}){
   }
   const files=new Map(target.documents.map(document=>[document.path,document.content]));
   const requirements=files.get('requirements.md'),design=files.get('design.md');
-  if(stage==='split')need(sections(design,/^##\s+(方案摘要|概述|功能模块设计|架构.*|summary|design summary|overview|architecture.*)\s*$/i),
-    'prd_review_design_summary_missing');
+  if(stage==='split')needPrd(sections(design,/^##\s+(方案摘要|概述|功能模块设计|架构.*|summary|design summary|overview|architecture.*)\s*$/i),
+    'prd_review_design_summary_missing',{field:`${feature}/design.md`,
+      expected:'Required split summary ## heading: ## 方案摘要, ## 概述, ## 功能模块设计, ## 架构…, ## Summary, ## Design Summary, ## Overview, or ## Architecture…'});
   const content=stage==='design'?{requirements,design}:{
     requirementsFunctions:sections(requirements,/^##\s+(功能需求|Functional requirements)\s*$/i),
     tasks:files.get('tasks.md'),designSummary:sections(design,/^##\s+.*(方案摘要|概述|架构|功能模块|技术|接口|数据|波及|安全|summary|overview|architecture|decision|contract|data|impact|security)/i)};
-  need(Object.values(content).every(value=>typeof value==='string'&&value.trim()),'prd_review_sections_missing');
+  const missing=Object.entries(content).find(([,value])=>typeof value!=='string'||!value.trim());
+  const field=missing?.[0]==='requirementsFunctions'?'requirements.md':missing?.[0]==='designSummary'?'design.md':missing?.[0];
+  needPrd(!missing,'prd_review_sections_missing',{field:`${feature}/${field}`,
+    expected:field==='requirements.md'?'Required ## heading: ## 功能需求 or ## Functional requirements':
+      field==='design.md'?'Required ## heading containing 方案摘要, 概述, 架构, 功能模块, 技术, 接口, 数据, 波及, 安全, summary, overview, architecture, decision, contract, data, impact, or security':
+      'Non-empty section content'});
   const revision=stage==='split'?readPrdSelfCheckRevision(specs,feature):null;
   const revised=revision?.features.find(f=>f.directory===feature);
   const reviewPackage=json({workflow:'cm-prd',stage,feature,draftDigest:draft.draftDigest,content,

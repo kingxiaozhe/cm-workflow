@@ -262,6 +262,7 @@ constraintChanges必须空；application/retrospective沿原Learning字段。此
 scope 和 requirements 是相对代码根的已有 runner 输入，不是额外写入授权。
 键必须恰好如示例，不得任意新增字段（已声明的多代码根模式允许 `codeProjects`，显式任务选择允许生成器写入 `taskSelection`）；定义参与摘要绑定，擅加字段会使同一次 run 的摘要漂移并导致 resume 失败。
 用准入生成器产出定义（`--scope` 必填，填写相对代码根、逗号分隔的允许修改文件；`--requirements` 可选，省略时为空数组）：`node scripts/cm-ai-admission.mjs --specs-dir /absolute/specs --code-project /absolute/code --print-run-definition --scope src/login.js --requirements requirements.md > run.json`。需要选择当前 `nextTask` 以外的任务时加 `--task T-xxx`；只能选择同 feature、依赖已满足的 `eligibleTasks`。生成的可选 `taskSelection` 随定义进入持久配置与指纹；不加参数的旧定义及恢复指纹不变。
+规格待审批时先展示摘要卡并请用户回复“开始”。只识别“开始”“开始吧”“可以开始”“确认开始”“开始执行”“现在开始”及其尾部标点/空白；泛化授权仍是 `not_approval`，提示明确回复“开始”。`--approve` 写入仍须原完整准入门禁。
 
 ```bash
 node scripts/cm-ai-run.mjs serve --config /absolute/run.json --mode create
@@ -1308,8 +1309,8 @@ split必须包含方案概览节（方案摘要/概述/功能模块设计/架构
 失败进入self_check_failed（机械失败为draft_self_check_failed）；下一advance让原planner修订现有feature，拒绝新增/删除/改名或编号漂移。初稿为第1轮，最多第2轮；旧轮次摘要和机械/上下文报告进入selfCheckHistory，当前contextCheck随新稿清空。第2轮仍失败进入self_check_needs_human，不能再生成第3轮或重跑同轮自检；错误/断连也不自动重发。通过为self_check_reported_passed，仍未Review/批准/落盘。当前所有状态在内存，跨会话不恢复；不要用重启来规避轮次。
 
 analysis_ready后继续发送`advance`及当前生成要求，CLI改调planner的`prd_generate`。请求仅含分析结论、用户回答、材料记录/来源引用和用户用例，不重发全部需求正文；模型/adapter仍是请求路由元数据。planner不在当前runtime时明确阻断，不偷换provider。设计基准或其他材料决策不明时返回question，进入awaiting_planning_user，下一次advance带真实用户回答继续规划。
-宿主返回`{status:"draft",summary,features:[{name,documents:[{path,content}],testCasesReason}]}`，或question/blocked；请求instructions中有完整字段格式。name为kebab slug，JS按当前已有编号最大值+1分配目录名，不依赖模型自报编号。每feature只接受requirements.md/design.md/tasks.md和可选test-cases.json，拒绝路径逃逸/重复/缺三件套；原测试合同validator校验JSON，禁生成用例配置仍保留用户用例。无测试合同时testCasesReason必须是no_observable_behavior或合法的generation_disabled。
-draft_ready只表示内存草稿结构及上述机械子集检查通过，返回draft及绑定实际目录的digest；无规格文件写入，无task完成位或审批位。上下文自检沿上方宿主流程执行，设计审查/拆分审查/人工批准仍待接线；不能把testCasesReason自报、结构完整或合成测试当作语义验收。当前整个生成回包64KiB，尚无大规格分块、草稿落盘及恢复。关闭仍记录incomplete。
+宿主返回`{status:"draft",summary,features:[{name,documents:[{path,content}],testCasesReason}]}`，或question/blocked；请求instructions中有完整字段格式。name为kebab slug，JS按当前已有编号最大值+1分配目录名，不依赖模型自报编号。每feature只接受requirements.md/design.md/tasks.md和可选test-cases.json，拒绝路径逃逸/重复/缺三件套；原测试合同validator校验JSON，禁生成用例配置仍保留用户用例。有test-cases.json时testCasesReason必须为null；无测试合同时必须是no_observable_behavior或合法的generation_disabled。tasks.md依赖每任务一行，多前置任务用逗号：`- T-003 依赖 T-001, T-002`。
+draft_ready只表示内存草稿结构及上述机械子集检查通过，返回draft及绑定实际目录的digest；无规格文件写入，无task完成位或审批位。上下文自检沿上方宿主流程执行，设计审查/拆分审查/人工批准仍待接线；不能把testCasesReason自报、结构完整或合成测试当作语义验收。当前整个生成回包最多65536字节（64 KiB），超限的操作者诊断列出实际序列化字节数；尚无大规格分块、草稿落盘及恢复。关闭仍记录incomplete。
 
 PDF/HTML现通过同一CLI的`prd_materials`宿主请求处理，先于prd_analyze且每份当前材料只处理一次。宿主复用已有获准PDF读取工具或Codex内置浏览器，不新装解析库、不启动本机浏览器；不可用或未授权时返回`{status:"blocked",reason:"原因"}`，不降级成静态遍历。这里仅新增宿主接线和报告校验，不内置PDF解析器或浏览器驱动。
 请求含`responseShape`：processed.records中每份记录绑定原path/sha256；PDF带pageCount及从1连续编号的pages（page/text/evidence）；HTML带pages（url/interactiveCount/elements/evidence），元素含id/action/result/kind/screenshot/question，kind为function或dead_zone，后者必须给question。每页元素数量需与interactiveCount相等、ID唯一；截图和工具引用为宿主报告，不是JS实测证明。PDF空白/扫描/过大等无法按现协议忠实返回的材料明确blocked，不虚构文字。
@@ -1345,6 +1346,10 @@ split 审查对文档章节标题有硬要求，不满足时 `final_review_packa
   写成「## 功能要求」不匹配。
 - `design.md` 必须有方案摘要/概述/架构/功能模块/技术/接口/数据/波及/安全一类的
   `##` 章节，`split` 阶段另单独校验一次摘要类标题。
+
+当前宿主校验失败仍向调用方返回原 `host_request_failed`，现仅在本地 stderr 的结构化诊断中
+附字段、预期格式与尺寸；原错误码和审批、审查门禁不变。审查 `response.at` 必须是
+`new Date().toISOString()` 形式，例如 `2026-09-08T00:00:00.000Z`。
 
 `runtime/js/cm-prd/analysis.mjs` 提供 `createCmPrdAnalysis({input,runtime,analyze,record})` 会话分析控制层；input沿用来源入口参数。先准入、解析analyst/planner配置，再读取正文。`advance(text)` 接真实当前用户输入，回调 `analyze(payload,signal)` 执行当前宿主分析；`status()`/`cancel()` 提供状态与取消。
 `record(event)` 必须由宿主接原规格日志写入器，失败阻止派发；此模块不自行创建run_start/run_done或日志文件。非current-runtime analyst明确blocked/degrade，不自动换provider。question进入awaiting_user，analyzed含summary/sourcePaths/openQuestions；来源路径必须完整，开放问题非空仍awaiting_user。PDF/HTML（含用例文件）必须先经上方材料宿主处理；未提供processMaterials的旧模块调用方仍阻断非文本材料。未知格式继续阻断。

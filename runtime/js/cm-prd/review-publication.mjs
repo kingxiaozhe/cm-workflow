@@ -6,6 +6,7 @@ import {inspectPrdReview} from '../../../scripts/cm-prd-review-gate.mjs';
 import {writeReviewEvidence} from '../cm-ai/review-evidence-file.mjs';
 import {reviewResultForPaths} from '../cm-ai/review-runner.mjs';
 import {need,shape,json,digest,id} from '../cm-ai/effect-contract.mjs';
+import {needPrd} from './validation-reason.mjs';
 
 export function publishPrdReview({specs,reviewPackage,packageDigest,authorContextId,response,inspectOnly=false,pendingSplit=null}){
   if(!inspectOnly)assertPrdBatchActive(specs,[reviewPackage.feature]);
@@ -36,8 +37,9 @@ export function publishPrdReview({specs,reviewPackage,packageDigest,authorContex
     &&!/[\r\n\v\f\x1c-\x1e\x85\u2028\u2029\0]/.test(response.degradedReason):
     ['codex-subagent','codex-cli'].includes(response.reviewer)&&response.independent===true&&response.contextId!==authorContextId,
     'prd_review_independence_invalid');
-  need(typeof response.at==='string'&&Number.isFinite(Date.parse(response.at))
-    &&new Date(response.at).toISOString()===response.at,'prd_review_timestamp_invalid');
+  needPrd(typeof response.at==='string'&&Number.isFinite(Date.parse(response.at))
+    &&new Date(response.at).toISOString()===response.at,'prd_review_timestamp_invalid',
+    {field:'response.at',expected:'new Date().toISOString() form, e.g. 2026-09-08T00:00:00.000Z'});
   const files=stage==='design'?['requirements.md','design.md']:['requirements.md','design.md','tasks.md'];
   const examinedPaths=files.map(file=>`${reviewPackage.feature}/${file}`).sort();
   const result=reviewResultForPaths(response.result,{packageDigest},examinedPaths);

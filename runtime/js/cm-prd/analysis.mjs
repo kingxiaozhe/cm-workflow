@@ -14,6 +14,7 @@ import {preparePrdReview} from './review-preparation.mjs';
 import {inspectAcceptedPrdDesign} from './accepted-design.mjs';
 import {inspectPrdDesignRiskSelection} from './design-risk.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
+import {prdDraftJson} from './validation-reason.mjs';
 
 export function createCmPrdAnalysis({input,runtime,analyze,record,processMaterials,generate,checkContext,restored=null,allowInputDrift=false}){
   need(['codex','claude'].includes(runtime)&&typeof analyze==='function'&&typeof record==='function','prd_host_invalid');
@@ -178,7 +179,7 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
           await record({event:'degrade',phase:'route',data:{outcome:'planner_adapter_unavailable'}});
           stage='blocked';return this.status();
         }
-        const reply=json(await generate({project:admission.project,specs:admission.specs,analysis:result,
+        const reply=prdDraftJson(await generate({project:admission.project,specs:admission.specs,analysis:result,
           userAnswers:messages.filter(message=>message.role==='user'),messages:next,role:roles.planner,nextIndex,
           phase:designOnly?'design':acceptedDesign!==null?'tasks_after_design':'full_draft',
           acceptedDesign,
