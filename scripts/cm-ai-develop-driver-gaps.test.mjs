@@ -246,14 +246,14 @@ test('#10 an invalid --input-limit is refused by the driver before launch',t=>{
 });
 // A live session is not the driver: it can still deliver nothing. The runner must
 // then leave a retryable develop block, not an unknown run.
-function liveSession(f,{mode,write=false,act=write?"fs.writeFileSync(cwd+'/target.mjs','export const value = 43;\\n');":''}){
+function liveSession(f,{mode,write=false,act=write?"fs.writeFileSync(cwd+'/target.mjs','export const value = 43;\\n');":'',args=[]}){
   const wrapper=path.join(f.root,`live-${mode}-${Math.random().toString(36).slice(2)}.mjs`);
   fs.writeFileSync(wrapper,`import fs from 'node:fs';
 import {driveHost} from ${JSON.stringify(DRIVE_CORE)};
 import {createHostCheck} from ${JSON.stringify(HOST_CHECK)};
 const cwd=${JSON.stringify(f.codeProject)};
 driveHost({host:${JSON.stringify(HOST)},args:['serve','--config',${JSON.stringify(f.config)},'--mode',${JSON.stringify(mode)},
-  '--host-context','drive-host-a','--allow-development'],cwd,operation:'advance',answers:{},
+  '--host-context','drive-host-a','--allow-development',...${JSON.stringify(args)}],cwd,operation:'advance',answers:{},
   request:{version:1,identity:${JSON.stringify(f.identity)}},
   answerFor:async row=>{
     if(row.kind==='develop'){
@@ -304,6 +304,59 @@ test('#19 an out-of-scope write still wins over a missing requirement and stays 
   const run=liveSession(f,{mode:'create',act:"fs.unlinkSync(cwd+'/requirements.md');fs.writeFileSync(cwd+'/outside.mjs','x');"});
   assert.equal(run.status,1,run.stderr);
   assert.equal(result(run).state,'unknown');assert.equal(result(run).code,'out_of_scope');
+});
+// Round 2 (Codex re-review of 304cbfb): a develop-gate block after a
+// changes_requested review must be retryable at attempt 2 as it is at attempt 1.
+function secondRound(f){
+  f.reviewer('changes_requested');
+  const review=['--review-config','review.json'];
+  f.content('a1.mjs','export const value = 42;\n');f.develop({'target.mjs':'a1.mjs'});
+  const first=f.drive(f.plan({permissions:review}),'advance');assert.equal(first.status,0,first.stderr);
+  const decided=f.drive(f.plan({mode:'resume',permissions:[...review,'--allow-review-attempt','1'],
+    packageDigest:result(first).packageDigest,answers:undefined,checks:undefined}),'decision');
+  assert.equal(decided.status,0,decided.stderr);assert.equal(result(decided).state,'changes_requested');
+  return review;
+}
+test('#19 a second-round develop whose checks fail retries in the same attempt after the fix',t=>{
+  const f=fixture(t),review=secondRound(f);
+  f.content('a2.mjs','export const value = 43;\n');f.develop({'target.mjs':'a2.mjs'},'develop-a2.json');
+  const failing=f.drive(f.plan({mode:'resume',permissions:review,
+    checks:[{id:'unit',command:[process.execPath,'-e','process.exit(3)']}]}),'advance');
+  assert.equal(failing.status,0,failing.stderr);
+  assert.equal(result(failing).state,'blocked',failing.stdout);assert.equal(result(failing).code,'develop_checks_not_passed');
+  assert.equal(result(failing).identity.attempt,2);assert.equal(result(failing).pendingAction,'resume');
+  const retried=f.drive(f.plan({mode:'resume',permissions:review}),'advance');
+  assert.equal(retried.status,0,retried.stderr);
+  assert.equal(result(retried).state,'awaiting_review',retried.stdout);assert.equal(result(retried).identity.attempt,2);
+  const intents=records(f).filter(row=>row.payload.type==='effect-intent'&&row.payload.effect.kind==='develop').map(row=>row.payload.effect.id);
+  assert.deepEqual(intents,['develop-1','develop-2','develop-2-retry-1']);
+});
+test('#19 a second-round delivery that deletes an in-scope requirement is recoverable at attempt 2',t=>{
+  const f=fixture(t,{scope:['target.mjs','requirements.md']}),review=secondRound(f);
+  const args=['--review-config',path.join(f.root,'review.json')];
+  const broken=liveSession(f,{mode:'resume',args,
+    act:"fs.writeFileSync(cwd+'/target.mjs','export const value = 43;\\n');fs.unlinkSync(cwd+'/requirements.md');"});
+  assert.equal(broken.status,0,broken.stderr);
+  assert.equal(result(broken).state,'blocked',broken.stdout);assert.equal(result(broken).code,'develop_requirement_missing');
+  assert.equal(result(broken).identity.attempt,2);
+  // The round-2 edit stays on disk; only the requirement is restored.
+  const restored=liveSession(f,{mode:'resume',args,act:"fs.writeFileSync(cwd+'/requirements.md','# Fixture\\n');"});
+  assert.equal(restored.status,0,restored.stderr);
+  assert.equal(result(restored).state,'awaiting_review',restored.stdout);assert.equal(result(restored).identity.attempt,2);
+  const changes=lastCheckpoint(f).reviewPackage.changes.map(change=>change.path);
+  assert.deepEqual(changes,['target.mjs']);
+});
+test('#19 review material counts every AGENTS.md the snapshot carries, not only ancestors',t=>{
+  // Two unrelated instruction files plus scope growth: 300+300+1000+900 KiB > 2 MiB.
+  const f=fixture(t,{scope:['target.mjs','big2.mjs'],files:{'a/AGENTS.md':'a'.repeat(300*1024),
+    'b/AGENTS.md':'b'.repeat(300*1024),'target.mjs':'export const value = 1;\n'}});
+  f.content('grown.mjs','//'+'y'.repeat(1000*1024)+'\n');f.content('big2.mjs','//'+'z'.repeat(900*1024)+'\n');
+  f.develop({'target.mjs':'grown.mjs','big2.mjs':'big2.mjs'});
+  const run=f.drive(f.plan(),'advance');
+  assert.equal(run.status,2,run.stderr);
+  assert.match(run.stderr,/2097152/);assert.match(run.stderr,/[ab]\/AGENTS\.md/);
+  assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 1;\n');
+  noRun(f);
 });
 test('#19 a legacy unknown/empty_changes develop checkpoint still replays as unknown',t=>{
   const f=fixture(t,{files:{'target.mjs':'export const value = 42;\n'}});

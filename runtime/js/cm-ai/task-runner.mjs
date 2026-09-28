@@ -979,8 +979,13 @@ export function createTaskRunner(options) {
           !Object.hasOwn(original,'ignorePolicy'),original.ignorePolicy?.version??2,
           original.ignorePolicy?.version===2?original.ignorePolicy:null),original);
         // A rejected first delivery has no review package yet. Every later
-        // developer effect must recheck the reviewed tree before dispatch.
-        else if(reviewPackage!==null)verifyReviewPackage({root:config.root,baseline:reviewPackage.identity.attempt===attempt?base:attemptBaseline(original,reviewPackage.identity.attempt),
+        // developer effect must recheck the reviewed tree before dispatch,
+        // except one that redoes a delivery this attempt already made: that
+        // delivery changed the tree on purpose and never became a package, so
+        // it is compared against the baseline when the new package is built,
+        // exactly as a redo at attempt 1 is.
+        else if(reviewPackage!==null&&!(v.kind==='develop'&&state==='blocked'&&code!=='review_package_changed'
+          &&stageAllowed('develop',state,code,priorReview?.verdict)))verifyReviewPackage({root:config.root,baseline:reviewPackage.identity.attempt===attempt?base:attemptBaseline(original,reviewPackage.identity.attempt),
           checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
       } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:failureCode(error),
         ...(safeReason(error)?{reason:safeReason(error)}:{})}));}

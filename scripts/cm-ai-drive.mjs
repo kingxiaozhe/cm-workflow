@@ -43,7 +43,8 @@ import {inspectCmAiQaTaskContext} from '../runtime/js/cm-ai/cm-ai-admission.mjs'
 import {readLearningRetrospectiveContent} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
 import {inspectFixInvestigation} from '../runtime/js/cm-fix/investigation.mjs';
 import {readRunDefinition,assertCreatableRunId} from './cm-ai-run.mjs';
-import {REVIEW_MATERIAL_LIMITS} from '../runtime/js/cm-ai/review-package.mjs';
+import {REVIEW_MATERIAL_LIMITS,captureReviewBaseline,reviewMaterialSizes} from '../runtime/js/cm-ai/review-package.mjs';
+import {codeProjectPaths,resolveCodeProjects} from '../runtime/js/cm-ai/code-projects.mjs';
 import {parseHostInputLimit} from '../runtime/js/cm-ai/host-session.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
@@ -182,9 +183,25 @@ const kib=bytes=>`${bytes} 字节`;
 // Everything the runner would refuse only after the answer is written and the
 // checks have run is refused here instead, with the path and the limit. The
 // runner stays the authority; this is the same rule applied earlier.
+// Material exactly as the review package snapshot selects it (scope, requirements
+// and every AGENTS.md in the tree), read from the tree the next develop starts
+// from. A new run uses the baseline the host is about to capture; an existing run
+// uses its own journaled baseline. Null when the host will report the problem itself.
+export function currentReviewMaterial({definition,codeProject=definition.codeProject,baseline=null}){
+  try{
+    const base=baseline??captureReviewBaseline({root:codeProject,specsRoot:definition.specsDir,identity:definition.identity,
+      scope:definition.scope,requirements:definition.requirements,specification:{specsRoot:definition.specsDir,feature:definition.feature},
+      ...(definition.codeProjects?{codeProjectPaths:codeProjectPaths(codeProject,resolveCodeProjects(codeProject,definition.codeProjects))}:{})});
+    return reviewMaterialSizes({root:codeProject,baseline:base});
+  }catch(error){
+    if(error.code==='limit_exceeded')stop(2,`交付前的审查材料已超出审查包上限：${error.message}`);
+    return null;
+  }
+}
 export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,scope,requirements,
-  baseline='disk',diskChecks=true,protectedMode=false,inputLimit=65536}){
+  baseline='disk',diskChecks=true,protectedMode=false,inputLimit=65536,material=null}){
   const {file:FILE,total:TOTAL,count:COUNT}=REVIEW_MATERIAL_LIMITS;
+  material=diskChecks&&material?new Map(material.map(item=>[item.path,item.size])):null;
   let previous=diskChecks?new Map(scope.map(target=>[target,diskScopeEntry(codeProject,target)])):null;
   const base=!diskChecks?null:baseline==='disk'?previous:baseline;
   for(const {file,value} of deliveries){
@@ -231,21 +248,16 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
     if(!next)continue;
     for(const [target,entry] of next)if(entry&&!entry.unsupported&&entry.size>FILE)
       stop(2,`${label}: 交付后 ${target} 为 ${kib(entry.size)}，超过审查包单文件上限 ${FILE}（1 MiB）；大文件请移出 scope`);
-    // Material is every scope, requirement and AGENTS.md body the review package carries.
-    const material=[...next].filter(([,entry])=>entry&&!entry.unsupported).map(([target,entry])=>[target,entry.size]);
-    const counted=new Set(material.map(([target])=>target));
-    const agents=new Set(['AGENTS.md']);
-    for(const target of [...scope,...requirements]){
-      const parts=target.split('/');for(let n=1;n<parts.length;n++)agents.add(`${parts.slice(0,n).join('/')}/AGENTS.md`);
+    // The snapshot's material with this delivery's scope files applied on top.
+    if(material){
+      const after=new Map(material);
+      for(const [target,entry] of next){if(entry&&!entry.unsupported)after.set(target,entry.size);else after.delete(target);}
+      const total=[...after.values()].reduce((sum,size)=>sum+size,0);
+      const largest=[...after].sort((a,b)=>b[1]-a[1]).slice(0,3).map(([target,size])=>`${target} ${kib(size)}`).join('，');
+      if(total>TOTAL)stop(2,`${label}: 交付后审查材料（scope、requirements 与树中全部 AGENTS.md 正文）合计 ${kib(total)}，超过审查包上限 ${TOTAL}（2 MiB）；最大的是 ${largest}`);
+      if(after.size>COUNT)stop(2,`${label}: 交付后审查材料共 ${after.size} 个文件，超过审查包上限 ${COUNT}`);
+      material=after;
     }
-    for(const target of [...requirements,...agents]){
-      if(counted.has(target))continue;counted.add(target);
-      const entry=diskScopeEntry(codeProject,target);if(entry&&!entry.unsupported)material.push([target,entry.size]);
-    }
-    const total=material.reduce((sum,[,size])=>sum+size,0);
-    const largest=material.slice().sort((a,b)=>b[1]-a[1]).slice(0,3).map(([target,size])=>`${target} ${kib(size)}`).join('，');
-    if(total>TOTAL)stop(2,`${label}: 交付后审查材料（scope、requirements 与 AGENTS.md 正文）合计 ${kib(total)}，超过审查包上限 ${TOTAL}（2 MiB）；最大的是 ${largest}`);
-    if(material.length>COUNT)stop(2,`${label}: 交付后审查材料共 ${material.length} 个文件，超过审查包上限 ${COUNT}`);
     // A Learning writeback can still change AGENTS.md, so only a delivery that
     // cannot write it is known to be empty before the runner sees it.
     const lessonFree=value.value?.outcome==='implemented'&&value.value.retrospective?.status==='no_new_lesson';
@@ -391,7 +403,7 @@ function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
     process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks, checkTimeoutMs。\nchecks 每项为 {id,command,timeoutMs?}；checkTimeoutMs 与每项 timeoutMs 为 1..3600000 整数，默认 900000 ms（15 分钟）。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务（纯规范 scope、单代码根、非 --protected-config）读 answers/init-generate.json（{status:"generated",documents:[{path,contentFile}]}，覆盖全部 targets）与 answers/init-verify.json（commands 为驾驶员实跑的草稿命令 {id,command,timeoutMs?}，可选 commandsNotRun；checks 只含 globs/file_references/constraint_preservation/rule_applicability；constraintChanges:[]；application/retrospective 沿原 Learning）；第 1 轮也可用 *-a1.json，第 2 轮只读 init-generate-a2.json 与 init-verify-a2.json，且须先 decision 读取首轮 findings，不能带 --allow-review-attempt 跨轮。commands 在宿主接受启动后、发送操作前由驾驶员实跑（须先带 --allow-bootstrap-write 等宿主授权；受保护模式在 specs 沙箱内），失败或改动了预检核对的文件即退出 2 且不发送操作（create 时改用 resume 重跑）；结果只来自实跑，答案文件不能提供。\n'
       +'develop.json.edits 每项是 scope 路径到下列之一："内容文件"（写入；已有文件保留权限，新文件 0644）、{"file":"内容文件","mode":"0755"|"0644"}、{"mode":"0755"|"0644"}（只改已有文件权限）、{"delete":true}（删除已有文件）。改名 = 删旧路径 + 写新路径，两者都要在 scope 内；同时列在 requirements 里的路径不能删除。\n'
-      +'启动前拒绝：单个 scope 文件超过 1 MiB、scope/requirements/AGENTS.md 正文合计超过 2 MiB 或超过 256 个文件、交付后与任务基线完全相同（edits 为空或内容和权限都没变）。受保护模式（--protected-conversation-config）只收合法 UTF-8 文本，应答大于 --input-limit（默认 65536）时提示应加的值。\n'
+      +'启动前拒绝：单个 scope 文件超过 1 MiB、审查材料（按审查包快照：scope、requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或超过 256 个文件、交付后与任务基线完全相同（edits 为空或内容和权限都没变）。受保护模式（--protected-conversation-config）只收合法 UTF-8 文本，应答大于 --input-limit（默认 65536）时提示应加的值。\n'
       +'runId 需 8–128 个字符（运行日志要求），create 前检查。resume 时按存档里的当前轮次发送 identity，第 2 轮的 decision/complete/qa 等无需手改。\n');
     process.exit(0);
   }
@@ -518,7 +530,8 @@ function load(){
   if(deliveries.length)preflightDevelopDeliveries({deliveries,answersRoot:answers,codeProject:definition.codeProject,
     scope:definition.scope,requirements:definition.requirements,
     baseline:plan.mode==='create'?'disk':baselineScope(journal.baseline,definition.scope),
-    protectedMode,inputLimit:inputLimitFrom(permissions)});
+    protectedMode,inputLimit:inputLimitFrom(permissions),
+    material:currentReviewMaterial({definition,baseline:plan.mode==='create'?null:journal.baseline})});
   const unique=[...new Set(asks.filter(kind=>FILES[kind]&&kind!=='develop'))];
   const answer=preflightAnswers(unique,kind=>{
     const file=answerPath(answers??'',FILES[kind]);

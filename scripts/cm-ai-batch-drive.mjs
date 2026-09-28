@@ -24,7 +24,7 @@ import {validateRunDefinition} from './cm-ai-run.mjs';
 import {createCmAiBatch} from './cm-ai-batch-run.mjs';
 import {readConversationReviewConfiguration,readConversationProtection} from './cm-ai-host.mjs';
 import {validateCmAiAnswer,developFilename,preflightDevelopDeliveries,baselineScope,inputLimitFrom,
-  applyDevelopEdits,protectedDevelopEdits} from './cm-ai-drive.mjs';
+  applyDevelopEdits,protectedDevelopEdits,currentReviewMaterial} from './cm-ai-drive.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
@@ -233,9 +233,11 @@ function preflight(){
       if(deliveries.length){
         const known=journal!==null||plan.mode==='create'&&firstGroup.includes(key);
         const cwd=journal?actualCwd(bundle,key,journal.generation):batch.codeProject;
-        preflightDevelopDeliveries({deliveries,answersRoot:taskRoot,codeProject:fs.existsSync(cwd)?cwd:batch.codeProject,
+        const codeProject=fs.existsSync(cwd)?cwd:batch.codeProject;
+        preflightDevelopDeliveries({deliveries,answersRoot:taskRoot,codeProject,
           scope:definition.scope,requirements:definition.requirements,diskChecks:known,
-          baseline:journal?baselineScope(journal.baseline,definition.scope):'disk',protectedMode,inputLimit});
+          baseline:journal?baselineScope(journal.baseline,definition.scope):'disk',protectedMode,inputLimit,
+          material:known?currentReviewMaterial({definition,codeProject,baseline:journal?.baseline??null}):null});
       }
     }
     developAnswers.set(key,perAttempt);

@@ -653,23 +653,37 @@ export function validChecks(checks) {
       || c.outcome==='unavailable' && c.exitCode===null);
   }
 }
+// The one selection a review package snapshot uses: its policy, retained paths
+// and material (scope, requirements, earlier material and every AGENTS.md).
+const packagePolicy=(root,b)=>b.ignorePolicy?.version===2?stableSnapshotPolicy(root,b.ignorePolicy)
+  :Object.hasOwn(b,'ignorePolicy')?ignorePolicy(root):null;
+function packageSnapshot(root,b,policy){
+  const selected=b.version===1?null:new Set([...b.scope,...b.requirements,
+    ...b.files.filter(f=>Object.hasOwn(f,'contentBase64')).map(f=>f.path)]);
+  return snapshot(root,b.specsPath??null,b.codeProjectPaths??null,b.ignorePolicy?.version===2?[]:b.files.map(f=>f.path),selected,policy);
+}
+// Read-only: path and size of every material body a package built from the
+// current tree would carry. Callers use it to refuse a delivery before writing it.
+export function reviewMaterialSizes(options){
+  const v=plain(options);keys(v,['root','baseline']);const b=v.baseline;validBaseline(b);
+  const root=rootPath(v.root);need(sha(root)===b.rootDigest,'invalid_baseline');
+  return freeze(packageSnapshot(root,b,packagePolicy(root,b)).filter(f=>Object.hasOwn(f,'contentBase64'))
+    .map(f=>({path:f.path,size:f.size})));
+}
 export function createReviewPackage(options) {
   const v=plain(options); keys(v,['root','baseline','checks',...(Object.hasOwn(v,'handoffPath')?['handoffPath']:[])]); const b=v.baseline;
   validBaseline(b); validChecks(v.checks);
   const specification=Object.hasOwn(b,'specification')?verifySpecificationMaterial(b):null;
   const root=rootPath(v.root); need(sha(root)===b.rootDigest,'invalid_baseline');
   const stable=b.ignorePolicy?.version===2;
-  const policy=stable?stableSnapshotPolicy(root,b.ignorePolicy)
-    :Object.hasOwn(b,'ignorePolicy')?ignorePolicy(root):null;
+  const policy=packagePolicy(root,b);
   if(policy&&!stable&&digest(publicPolicy(policy))!==digest(b.ignorePolicy)){
     const changed=policyDifferencePaths(publicPolicy(policy),b.ignorePolicy);
     throw diagnostic('package_mismatch',changed.join(', ')||'ignore policy','ignore policy changed');
   }
   const bootstrap=Object.hasOwn(b,'bootstrapRequirements')?currentBootstrapRequirements(b.bootstrapRequirements):null;
   if(bootstrap!==null)need(reviewSpecsPath(root,b.bootstrapRequirements.specsRoot)===(b.specsPath??null),'bootstrap_requirements_mismatch');
-  const selected=b.version===1?null:new Set([...b.scope,...b.requirements,
-    ...b.files.filter(f=>Object.hasOwn(f,'contentBase64')).map(f=>f.path)]);
-  const files=snapshot(root,b.specsPath??null,b.codeProjectPaths??null,stable?[]:b.files.map(f=>f.path),selected,policy);
+  const files=packageSnapshot(root,b,policy);
   const protectedPaths=new Set([...b.scope,...b.requirements]);
   const before=new Map((stable?comparableFiles(b.files,policy,protectedPaths):b.files).map(f=>[f.path,f]));
   const after=new Map(files.map(f=>[f.path,f]));
