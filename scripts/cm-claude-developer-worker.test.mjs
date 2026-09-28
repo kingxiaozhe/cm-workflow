@@ -57,6 +57,45 @@ function fakeWorker(cwd,{value=proposal,mode='normal',timeoutMs=3000,noticeEvent
 const rateLimit=(overrides={})=>({type:'rate_limit_event',session_id:'synthetic-claude-developer',
   rate_limit_info:{status:'allowed',rateLimitType:'five_hour',resetsAt:123,active:true,reason:null,
     nested:{raw:'private'},list:['private']},...overrides});
+const devIntent=(sessionId='synthetic-claude-developer')=>JSON.parse(
+  `{"type":"system","subtype":"dev_intent","kind":"ios_app","trigger":"project_scan","uuid":"fixture-uuid","session_id":"${sessionId}"}`,
+);
+test('developer accepts dev_intent on either side of init with a sanitized notice',async t=>{
+  const root=fixture(t),control={signal:new AbortController().signal};
+  const baseline=await fakeWorker(root)({prompt:prompt()},control);
+  for(const noticeAt of [0,1,2]){
+    const notices=[],result=await fakeWorker(root,{noticeAt,noticeEvents:[devIntent()],onNotice:n=>notices.push(n)})
+      ({prompt:prompt()},control);
+    assert.deepEqual(result,baseline);
+    assert.deepEqual(notices,[{kind:'claude_system_notice',subtype:'dev_intent'}]);
+  }
+  for(const onNotice of [undefined,()=>{throw Error('notice consumer');}]){
+    const result=await fakeWorker(root,{noticeAt:0,noticeEvents:[devIntent()],onNotice})({prompt:prompt()},control);
+    assert.deepEqual(result,baseline);
+  }
+});
+test('developer dev_intent binds init session and shares a 32-notice budget',async t=>{
+  const root=fixture(t),control={signal:new AbortController().signal};
+  for(const [noticeEvents,noticeAt,code] of [
+    [[devIntent('other')],0,'session_mismatch'],
+    [[devIntent('other')],1,'session_mismatch'],
+    [[devIntent('')],0,'invalid_session'],
+    [[devIntent(' '.repeat(3))],0,'invalid_session'],
+    [[devIntent('x'.repeat(129))],0,'invalid_session'],
+    [[{...devIntent(),subtype:'api_retry'}],0,'missing_init'],
+    [[{...devIntent(),subtype:'future_notice'}],1,'unexpected_event'],
+    [Array.from({length:33},()=>devIntent()),0,'unexpected_event'],
+  ]){
+    const result=await fakeWorker(root,{noticeEvents,noticeAt})({prompt:prompt()},control);
+    assert.deepEqual(result,{status:'unknown',code});
+  }
+  const notices=[],baseline=await fakeWorker(root)({prompt:prompt()},control);
+  const result=await fakeWorker(root,{noticeAt:1,
+    noticeEvents:[devIntent(),...Array.from({length:30},()=>devIntent()),rateLimit()],
+    onNotice:n=>notices.push(n)})({prompt:prompt()},control);
+  assert.deepEqual(result,baseline);
+  assert.equal(notices.length,32);
+});
 test('developer forwards scalar notices while preserving proposals and read-tool state',async t=>{
   const root=fixture(t),events=[],control={signal:new AbortController().signal,onEvent:e=>events.push(e)};
   const baseline=await fakeWorker(root)({prompt:prompt()},control);
@@ -110,7 +149,7 @@ test('developer rejects mismatched, excessive, unknown and terminal rate limit e
   const root=fixture(t);
   for(const [noticeEvents,noticeAt,code,count] of [
     [[rateLimit({session_id:'other'})],1,'session_mismatch',0],
-    [Array.from({length:9},()=>rateLimit()),1,'unexpected_event',8],
+    [Array.from({length:33},()=>rateLimit()),1,'unexpected_event',32],
     [[rateLimit({type:'foo_event'})],1,'unexpected_event',0],
     [[rateLimit()],0,'missing_init',0],
     [[rateLimit()],3,'invalid_event',0],
