@@ -24,7 +24,9 @@ const retryDeveloper=developmentRetryable;
 export const completionRetryable=status=>status.state==='blocked'&&status.code==='completion_checks_changed';
 const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approval':
   status.state==='changes_requested'||retryDeveloper(status)||retryReview(status)?'resume':
-  status.state==='awaiting_review'?'decision':status.state==='unknown'?'reconcile':
+  status.state==='awaiting_review'?'decision':status.state==='unknown'
+    ?(status.pendingEffectKind?'abandon_effect':
+      status.pendingReviewInvocation?'abandon_review':'reconcile'):
   status.state==='pending_review'&&status.code==='provider_review_observed'?'review_evidence':
   status.state==='pending_review'?'decision':status.state==='approved'||completionRetryable(status)?'complete':
   status.state==='fixture_completed'&&status.code==='qa_triggered'?'qa_execution':
@@ -52,14 +54,17 @@ function readOperation(raw) {
   const operation=json(raw),keys=['version','operation','requestId','identity'];
   if(['decision','complete','qa','qa_result','context_refresh','finish','run_finalize'].includes(operation?.operation))keys.push('packageDigest');
   if(['qa_result','context_refresh','finish','run_finalize'].includes(operation?.operation))keys.push('testRunId');
-  if(operation?.operation==='abandon_review')keys.push('reason');
+  if(['abandon_review','abandon_effect'].includes(operation?.operation))keys.push('reason');
   shape(operation,keys);
-  need(operation.version===1&&['advance','start','status','decision','complete','qa','qa_result','context_refresh','finish','run_finalize','cancel','resume','abandon_review']
+  need(operation.version===1&&['advance','start','status','decision','complete','qa','qa_result','context_refresh','finish','run_finalize','cancel','resume','abandon_review','abandon_effect']
     .includes(operation.operation));
   id(operation.requestId);validIdentity(operation.identity);
   if(operation.operation==='abandon_review')need(typeof operation.reason==='string'
     &&operation.reason.trim().length>0&&Buffer.byteLength(operation.reason,'utf8')<=500
     &&!/[\r\n\0]/.test(operation.reason),'review_abandon_reason_required');
+  if(operation.operation==='abandon_effect')need(typeof operation.reason==='string'
+    &&operation.reason.trim().length>0&&Buffer.byteLength(operation.reason,'utf8')<=500
+    &&!/[\r\n\0]/.test(operation.reason),'effect_abandon_reason_required');
   if(['decision','complete','qa','qa_result','context_refresh','finish','run_finalize'].includes(operation.operation))hex(operation.packageDigest);
   if(operation.operation==='qa_result')id(operation.testRunId);
   if(['context_refresh','finish','run_finalize'].includes(operation.operation)){
@@ -150,6 +155,7 @@ export function createCmAiConversationEntry(options) {
   if(options&&Object.hasOwn(options,'documentationProvider'))optionKeys.push('documentationProvider');
   if(options&&Object.hasOwn(options,'parallelSelection'))optionKeys.push('parallelSelection');
   if(options&&Object.hasOwn(options,'allowAbandonReview'))optionKeys.push('allowAbandonReview');
+  if(options&&Object.hasOwn(options,'allowAbandonEffect'))optionKeys.push('allowAbandonEffect');
   shape(options,optionKeys);
   if(Object.hasOwn(options,'developmentAttempt'))need([1,2].includes(options.developmentAttempt),'invalid_development_attempt');
   text(options.specsDir);text(options.codeProject);text(options.feature);
@@ -165,6 +171,7 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'reviseQa'))runnerKeys.push('reviseQa');
   if(runner&&Object.hasOwn(runner,'supersedeEvidence'))runnerKeys.push('supersedeEvidence');
   if(runner&&Object.hasOwn(runner,'abandonReview'))runnerKeys.push('abandonReview');
+  if(runner&&Object.hasOwn(runner,'abandonEffect'))runnerKeys.push('abandonEffect');
   if(runner&&Object.hasOwn(runner,'inspectBootstrapAdmission'))runnerKeys.push('inspectBootstrapAdmission');
   shape(runner,runnerKeys);
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');
@@ -175,9 +182,12 @@ export function createCmAiConversationEntry(options) {
   if(Object.hasOwn(runner,'attachQa'))need(typeof runner.attachQa==='function');
   if(Object.hasOwn(runner,'reviseQa'))need(typeof runner.reviseQa==='function');
   if(Object.hasOwn(runner,'abandonReview'))need(typeof runner.abandonReview==='function');
+  if(Object.hasOwn(runner,'abandonEffect'))need(typeof runner.abandonEffect==='function');
   if(Object.hasOwn(runner,'inspectBootstrapAdmission'))need(typeof runner.inspectBootstrapAdmission==='function');
   need(options.allowAbandonReview===undefined||typeof options.allowAbandonReview==='boolean','invalid_input');
   let abandonPermission=options.allowAbandonReview===true;
+  need(options.allowAbandonEffect===undefined||typeof options.allowAbandonEffect==='boolean','invalid_input');
+  let abandonEffectPermission=options.allowAbandonEffect===true;
 
   const hostDecision=Object.hasOwn(options,'hostDecision')?json(options.hostDecision):null;
   let hostDecisionProvider=null,pendingReviewDecision=null;
@@ -274,7 +284,7 @@ export function createCmAiConversationEntry(options) {
     need(sameTask(identity,ownerIdentity)&&identity.attempt>=ownerIdentity.attempt,'identity_mismatch');
     // Stable run-definition identity can query/control or resume the current
     // attempt. Package-bound mutations must name the current attempt exactly.
-    const stableControl=['status','cancel','advance','resume','abandon_review'].includes(operation.operation)
+    const stableControl=['status','cancel','advance','resume','abandon_review','abandon_effect'].includes(operation.operation)
       &&sameIdentity(operation.identity,ownerIdentity);
     need(sameIdentity(operation.identity,identity)||stableControl,'identity_mismatch');
     if(operation.operation==='advance'){
@@ -419,6 +429,16 @@ export function createCmAiConversationEntry(options) {
       const result=runner.abandonReview?.({allowed:true,reason:operation.reason})
         ??{outcome:'rejected',code:'review_abandon_unavailable'};
       if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code},'rejected');
+      return summary(operation,boundStatus(result,identity),'abandoned');
+    }
+    if(operation.operation==='abandon_effect'){
+      if(!abandonEffectPermission)return summary(operation,{...runner.status(),
+        code:'effect_abandon_authorization_required'},'rejected');
+      abandonEffectPermission=false;
+      const result=runner.abandonEffect?.({allowed:true,reason:operation.reason})
+        ??{outcome:'rejected',code:'effect_abandon_unavailable'};
+      if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code,
+        ...(result.reason?{reason:result.reason}:{})},'rejected');
       return summary(operation,boundStatus(result,identity),'abandoned');
     }
     if(operation.operation==='decision'){
@@ -637,7 +657,7 @@ export function createCmAiConversationEntry(options) {
     let token=null;
     try{
       const operation=readOperation(raw);
-      if(!['status','cancel','abandon_review'].includes(operation.operation)){
+      if(!['status','cancel','abandon_review','abandon_effect'].includes(operation.operation)){
         token=Symbol(operation.operation);inFlightHandles.add(token);
       }
       return await route(operation);

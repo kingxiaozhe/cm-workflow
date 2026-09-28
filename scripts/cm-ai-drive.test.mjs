@@ -7,6 +7,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
+import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {qaFixAnswerFor,projectDevelopAttempts} from './cm-ai-drive.mjs';
 
 const DRIVER=fileURLToPath(new URL('./cm-ai-drive.mjs',import.meta.url));
@@ -164,6 +165,36 @@ test('create and advance run authored edits and actual check, then resume with o
   assert(fs.existsSync(f.store));
   const resumed=f.drive(f.plan({mode:'resume',hostContext:'drive-host-b',originalHostContext:'drive-host-a'}),'advance');
   assert.equal(resumed.status,0,resumed.stderr);assert.equal(JSON.parse(resumed.stdout).result.code,'decision_required');
+});
+
+test('driver resumes an interrupted develop and sends the bound abandon_effect request',t=>{
+  const f=fixture(t);prepared(f);
+  const first=f.drive(f.plan(),'advance');assert.equal(first.status,0,first.stderr);
+  const current=JSON.parse(fs.readFileSync(f.store,'utf8'));
+  const index=current.records.findIndex(row=>row.payload.type==='effect-intent'
+    &&row.payload.effect.kind==='develop');assert(index>=0);
+  const {revision,...body}=current;body.records=current.records.slice(0,index+1);
+  fs.writeFileSync(f.store,JSON.stringify({...body,revision:digest(body)})+'\n');
+  fs.rmSync(path.join(f.codeProject,'target.mjs'));
+  const plan=f.plan({mode:'resume',permissions:['--allow-abandon-effect'],
+    reason:'Old host and its checks have exited'});
+  const result=f.drive(plan,'abandon_effect');assert.equal(result.status,0,result.stderr);
+  const response=JSON.parse(result.stdout).result;
+  assert.equal(response.state,'cancelled');assert.equal(response.code,'effect_abandoned');
+  const saved=JSON.parse(fs.readFileSync(f.store,'utf8'));
+  assert.deepEqual(saved.records.slice(-2).map(row=>row.payload.type),['effect-intent','effect-abandoned']);
+});
+test('driver requires resume, flag and one-line reason for abandon_effect before launch',t=>{
+  const f=fixture(t);
+  for(const plan of [
+    {mode:'create',permissions:['--allow-abandon-effect'],reason:'host exited'},
+    {mode:'resume',permissions:[],reason:'host exited'},
+    {mode:'resume',permissions:['--allow-abandon-effect'],reason:'line one\nline two'},
+    {mode:'resume',permissions:['--allow-abandon-effect'],reason:'x'.repeat(501)}]){
+    const run=f.drive(f.plan(plan),'abandon_effect');assert.equal(run.status,2,run.stderr);
+    assert.match(run.stderr,/abandon_effect 需要 resume/);
+    assert.equal(fs.existsSync(f.store),false);
+  }
 });
 
 test('missing develop answer is refused before store creation',t=>{

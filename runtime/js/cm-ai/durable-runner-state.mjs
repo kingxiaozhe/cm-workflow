@@ -501,6 +501,7 @@ export function readRunnerHistory(raw,config,version=1) {
     excludedThreadIds:reviewExclusions({excludedThreadIds:[...config.reviewInvocation.excludedThreadIds,...joinedHosts]},
       calls,config.developer.contextId)}});
   for(const [index,r] of records.entries()) {
+    if(index>0)need(records[index-1].payload.type!=='effect-abandoned','runner_abandon');
     boundRunnerRecord(r,index+1);
     if(version>=2)fullEnvelope(r,index,index?records[index-1].digest:null);
     need(r.id===`runner.${String(index+1).padStart(6,'0')}`,'runner_sequence');
@@ -586,6 +587,25 @@ export function readRunnerHistory(raw,config,version=1) {
       state.reviewInvocation={registration:invocation.registration.record,started:invocation.started,
         result:{outcome:'abandoned',reason:p.reason,at:p.at,recordDigest:r.digest}};
       pending=null;beforeIntent=null;invocation={registration:null,started:null,result:null};
+    } else if(version===3&&p.type==='effect-abandoned') {
+      shape(p,[...common,'effectId','effectKind','intentDigest','reason','at',
+        ...(Object.hasOwn(p,'lastRecordDigest')?['lastRecordDigest']:[])]);
+      let intentIndex=index-1;
+      while(intentIndex>=0&&records[intentIndex].payload.type==='control')intentIndex--;
+      const intent=records[intentIndex];
+      need(r.kind==='result'&&pending&&['develop','complete','review'].includes(pending.kind)
+        &&intent?.payload.type==='effect-intent'&&transaction===null
+        &&state.taskCommit?.intentDigest==null,'runner_abandon');
+      need(p.effectId===pending.id&&p.effectKind===pending.kind
+        &&p.intentDigest===intent.digest
+        &&(Object.hasOwn(p,'lastRecordDigest')
+          ?p.lastRecordDigest===records[index-1].digest:intentIndex===index-1)
+        &&(pending.kind!=='review'||!invocation.registration&&!joinedForInvocation),'runner_abandon');
+      need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(p.reason),'runner_abandon');
+      need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_abandon');
+      state.state='cancelled';state.code='effect_abandoned';state.reason=p.reason;state.sequence++;
+      pending=null;beforeIntent=null;
     } else if(p.type==='effect-checkpoint') {
       shape(p,[...common,'effectId','checkpoint']);need(r.kind==='result' && pending && p.effectId===pending.id,'runner_checkpoint');
       state=checkpoint(beforeIntent,p.checkpoint,pending,config,original,session,controls,version,state.taskCommit??null,invocation);
@@ -644,7 +664,15 @@ export function readRunnerHistory(raw,config,version=1) {
   if(pending){state.state='unknown';state.code='reconciliation_required';
     if(version===3&&invocation.registration)state.reviewInvocation={registration:invocation.registration.record,
       started:invocation.started,result:invocation.result};}
-  return {original,session,state,pending,acceptedFixes,qaAttachment,...(version===3?{joinedHosts,reviewerThreads,supersession}:{}),...(version>=2?{transaction}:{})};
+  const pendingAbandonable=version===3&&pending!==null
+    &&['develop','complete','review'].includes(pending.kind)
+    &&!transaction&&state.taskCommit?.intentDigest==null
+    &&(pending.kind!=='review'||!invocation.registration&&!joinedForInvocation)
+    &&records.slice(records.findLastIndex(row=>row.payload.type==='effect-intent')+1)
+      .every(row=>row.payload.type==='control');
+  return {original,session,state,pending,acceptedFixes,qaAttachment,
+    ...(version===3?{joinedHosts,reviewerThreads,supersession,pendingAbandonable}:{}),
+    ...(version>=2?{transaction}:{})};
 }
 // Baseline rootDigest uses bytes of the canonical root, not JSON string encoding.
 import {createHash} from 'node:crypto';

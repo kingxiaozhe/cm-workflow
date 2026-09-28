@@ -113,7 +113,13 @@ export function prepareReviewedEvidenceSupersession({specsDir,codeProject,featur
       unavailable(`旧运行 ${entry.name} 的任务身份或路径不匹配`);
     if(first.version!==3)unavailable(`旧运行 ${entry.name} 的 journal 版本无法验证`);
     const history=readRunnerHistory(snapshot.records,first.config,3);
-    if(history.pending||!['blocked','cancelled','unknown','fixture_completed'].includes(history.state.state))
+    if(history.pending){
+      const exit=history.pendingAbandonable?'abandon_effect':
+        history.pending.kind==='review'&&history.state.reviewInvocation?.registration
+          &&history.state.reviewInvocation.result===null?'abandon_review':'原运行恢复入口';
+      unavailable(`旧运行 ${entry.name} 的 ${history.pending.kind} effect 已中断且未结；先确认旧 host 和子进程已退出，再在原 run 上使用 ${exit}，随后重新发起 supersede`);
+    }
+    if(!['blocked','cancelled','unknown','fixture_completed'].includes(history.state.state))
       unavailable(`旧运行 ${entry.name} 仍可继续或有未结操作`);
     if(oldWriterOpen(execution,entry.name))unavailable(`旧运行 ${entry.name} 的 writer 仍被进程持有`);
     const qa=qaTerminal(specsDir,entry.name,identity.taskId);

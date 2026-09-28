@@ -413,7 +413,7 @@ host-context 必须是真实当前会话身份；宿主将其排除出独立审�
   然后发布新交接。归档目录是子目录，不进入 `{feature}-{任务}-r{N}.md` 的证据文件名匹配。
 - **内容不同且回执指名它**：这是审查已经消费过的证据，绝不覆盖。新运行在创建 store 和开发前即返回 `handoff_exists`；attempt 1 与 attempt 2 均检查。
 
-此时错误的 `reason` 和宿主 stderr 的 `[host]` 提示先恢复原运行的 QA：配置填错用 `--revise-qa-config PREVIOUS.json --qa-config-revision-reason …`，宿主／环境证据不足用 `--rerun-blocked-qa`。确需重跑任务时，注意 N5 已在 N6 前把任务勾为 `[x]`；先在 `tasks.md` 将该任务改回 `- [ ]`，再在新的 runId 上显式提供 `--supersede-reviewed-evidence --supersede-reason "…"`；原因限单行、500 UTF-8 字节。宿主要求 `tasks.md` 未勾选该任务，所有同 feature、task 的旧 V3 journal 均无在途操作且处于 blocked、cancelled、unknown，或 fixture_completed 且 QA 为 BLOCKED／未结束；旧 writer 仍被进程持有、正常完成或无旧证据均拒绝 `supersede_unavailable`。新 journal 先追加 `evidence-superseded`，记录旧 runId、文件名、SHA-256 和原因，再归档同名 handoff／回执／具名 correction、QA 文件并写 `supersede` 事件；恢复会按记录幂等补齐。旧 journal 不改写，旧 QA UUID 报告仍留原位供旧日志引用；新运行随后按原名发布自己的证据。未使用旗标的运行维持原 journal 格式和摘要。
+此时错误的 `reason` 和宿主 stderr 的 `[host]` 提示先恢复原运行的 QA：配置填错用 `--revise-qa-config PREVIOUS.json --qa-config-revision-reason …`，宿主／环境证据不足用 `--rerun-blocked-qa`。确需重跑任务时，注意 N5 已在 N6 前把任务勾为 `[x]`；先在 `tasks.md` 将该任务改回 `- [ ]`，再在新的 runId 上显式提供 `--supersede-reviewed-evidence --supersede-reason "…"`；原因限单行、500 UTF-8 字节。宿主要求 `tasks.md` 未勾选该任务，所有同 feature、task 的旧 V3 journal 均无在途操作且处于 blocked、cancelled、unknown，或 fixture_completed 且 QA 为 BLOCKED／未结束；pending develop/complete 和尚未加入 host／登记调用的 pending review 先在原 run 用 `abandon_effect` 退出，已登记的 pending review 用 `abandon_review`，不会因新 runId 自动清除。旧 writer 仍被进程持有、正常完成或无旧证据均拒绝 `supersede_unavailable`。新 journal 先追加 `evidence-superseded`，记录旧 runId、文件名、SHA-256 和原因，再归档同名 handoff／回执／具名 correction、QA 文件并写 `supersede` 事件；恢复会按记录幂等补齐。旧 journal 不改写，旧 QA UUID 报告仍留原位供旧日志引用；新运行随后按原名发布自己的证据。未使用旗标的运行维持原 journal 格式和摘要。
 
 替代检查还会在任何新持久状态和 `captureReviewBaseline` 之前，只比对尚未被其他旧运行的 `evidence-superseded.previousRunIds` 列出的直接前驱运行的 V2 代码基线与当前代码树的逐文件 SHA-256／存在性（含未选中文件、新增及删除）。更早的运行仍进入新记录的 `previousRunIds` 并照常归档。发现漂移时返回 `supersede_code_drift`，`reason` 与宿主 `[host]` stderr 列出最多 20 个路径及剩余数量：手动还原这些文件后重建运行；或确认保留这些改动时加 `--accept-superseded-code-drift` 重建（这些文件会被当成已有代码，不进新运行的审查改动）。该旗标仅限同时带 `--supersede-reviewed-evidence --supersede-reason` 的 create 请求，不默认启用；接受后 `evidence-superseded` 记录每个漂移路径的当前 SHA-256（删除时为 `null`）及比较的前驱 runId。检测不修改文件，也不读取代码根之外或跟随越界软链接；无法安全读取时即使带旗标也拒绝。旧 journal 没有可用逐文件基线时跳过该运行，不新增记录；这类历史运行无法获得漂移保证。
 
@@ -1141,6 +1141,9 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 | 状态 | 含义 | 恢复路径 |
 | --- | --- | --- |
 | `state: "unknown"` | 某个有副作用的步骤抛了异常或返回了无法判定的终态，做没做成不确定 | 单任务 V3 审查调用已登记、无结果时可用下述 `abandon_review`；其他情况见下 |
+| `state: "unknown"` + pending develop/complete intent（后面可有 control 记录） | 宿主在 effect intent 后、checkpoint 前退出 | `pendingAction: "abandon_effect"`；核对旧 host 与它启动的进程后，在原 run 显式退出 |
+| `state: "unknown"` + pending review intent，尚无 host-joined／review 登记 | reviewer 启动前退出 | `pendingAction: "abandon_effect"`；确认旧 host 已退出后在原 run 显式退出 |
+| `state: "unknown"` + 已登记且无结果的 review invocation | 审查调用未完成 | `pendingAction: "abandon_review"`；核对旧 host 和 reviewer 进程后在原 run 显式退出 |
 | `state: "fixture_completed"` + `code: "qa_execution_unknown"` | 一次 QA 调用没拿到终态，工具可能还在跑或已被中断 | `--rerun-unknown-qa` |
 
 **`reconcile` 不是一个可以发送的操作。** 三件事都不管用，而且会让情况更糟：
@@ -1160,8 +1163,8 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
    带上冲突的 `path` 与 `dest`）。
 2. 若是单任务 V3 journal 停在 `review-invocation-registered` 或 `review-invocation-started`，且没有
    `review-invocation-result`，先确认旧 host 和 review 进程都已退出，再按下述命令在**原 runId** 上
-   发送 `abandon_review`。这是操作员对进程已退出的证明；宿主无法自行验证。
-   其他未知状态按诊断处理真实原因，再考虑新的运行；旧 unknown 不会被自动重分类。
+   发送 `abandon_review`。若 develop/complete 的 `effect-intent` 后仅有 control 记录，先确认旧 host 与它启动的检查、构建进程均已退出，再用下述 `abandon_effect`。review 的 `effect-intent` 后尚无 `host-joined` 和 `review-invocation-registered` 时，也可确认旧 host 退出后使用 `abandon_effect`；一旦登记 review，改走 `abandon_review`。这是操作员对进程已退出的确认；宿主无法自行验证。
+   provider-mode 开发和已写 `task-commit-intent` 的运行不能走 `abandon_effect`。先核对 `tasks.md` 是否已改名或勾选、提交回执及旧进程，再按原提交恢复路径处理；不要猜测提交未发生。其他未知状态按诊断处理真实原因，核对无未结操作后再考虑新的运行；旧 unknown 不会被自动重分类。
 3. 不要手工改写执行日志或伪造一个终态。已完成的提交、已登记的审查记录都不因此作废，
    重跑是从该任务重新开始，不是从整个 feature 重新开始。
 
@@ -1190,6 +1193,14 @@ node scripts/cm-ai-drive.mjs --plan abandon-review.json abandon_review
 同一 attempt 的 transport timeout 与 abandon 共用**最多一次重派**，额度已用完时拒绝 abandon。
 旧 invocation 以后到达的结果不会被接受。若决定终止，在 abandon 后发送普通 `cancel`，
 得到 durable `cancelled`；unknown 上直接 `cancel` 只报告原状态，不会声称已取消。
+
+**单任务未完成 effect 的显式退出**（批次不支持）：适用于 develop/complete intent 后仅有 control 记录，或 review intent 后尚无 host-joined／review 登记且仅有 control 记录。保留原配置与 runId，确认旧 host 和相关子进程均已退出，再用 `mode:"resume"`、原 runtime 和 `--allow-abandon-effect` 启动原运行。driver PLAN 提供 `permissions:["--allow-abandon-effect"]` 及非空单行、最多 500 UTF-8 字节的 `reason`：
+
+```bash
+node scripts/cm-ai-drive.mjs --plan abandon-effect.json abandon_effect
+```
+
+原宿主也可接收 `{"version":1,"requestId":"abandon-effect-1","operation":"abandon_effect","identity":{"repositoryId":"…","runId":"…","taskId":"…","attempt":1},"reason":"已确认旧 host 和检查进程退出"}`。成功后 journal 在对应 `effect-intent` 与其后连续 control 记录之后追加 `effect-abandoned`，绑定 effect id、kind、intent 摘要、前一条记录摘要、原因和时间；运行日志写 `effect_abandoned`，状态成为终态 `cancelled/effect_abandoned`。不会重跑 effect、修改代码根或取消 `tasks.md` 勾选。没有 pending effect、已加入 host 或登记调用的 pending review、provider-mode 开发及已有 `task-commit-intent` 分别拒绝；已登记的 review 使用 `abandon_review`，任务提交已开始时须按上文核对。新建运行仍受 handoff 冲突、显式 supersede、旧 writer 与代码漂移门禁约束。
 
 `node --test scripts/cm-ai-run.test.mjs` 验证真实 store 创建/取消/恢复和零 provider 调用；
 另用真实 host/runner + 隔离假 developer 验证长任务期间的控制可达性。

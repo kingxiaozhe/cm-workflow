@@ -15,6 +15,8 @@ import {createHash} from 'node:crypto';
 import {PassThrough} from 'node:stream';
 import {main as hostMain,withHandoffDiagnostic} from './cm-ai-host.mjs';
 import {prepareReviewedEvidenceSupersession} from '../runtime/js/cm-ai/reviewed-evidence-supersede.mjs';
+import {readRunnerHistory,runnerPayloadV3} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {abandonEffectPlanError,buildCmAiDriveRequest,buildCmAiDriveHostArgs} from './cm-ai-drive.mjs';
 
 // Reuse the isolated handoff shape from cm-host-handoff.test.mjs. The old
 // receipt deliberately consumes a different byte sequence at the same name.
@@ -48,6 +50,186 @@ test('reviewed handoff collision retains its code and explains both exits',()=>{
   }finally{fs.rmSync(temp,{recursive:true,force:true});}
 });
 
+test('interrupted first develop can be abandoned on resume and a plain run can start',async()=>{
+  const f=runFixture();
+  try{
+    const runId='abandon-develop-a1',identity=identityFor(runId);
+    assert.equal((await start(f,runId,'written\n')).state,'blocked');
+    const {stateFile}=interruptAfterIntent(f,runId,'develop');
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
+    for(const name of fs.readdirSync(f.reviewsDir))if(name.startsWith('work-T-002-'))
+      fs.rmSync(path.join(f.reviewsDir,name));
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    const resumed=await openControlRun(definition,'resume',executionFor(f,'written\n'),{allowAbandonEffect:true});
+    try{
+      const status=await resumed.host.handle({version:1,operation:'status',requestId:'status',identity});
+      assert.equal(status.pendingAction,'abandon_effect');
+      const result=await resumed.host.handle(abandonRequest(identity));
+      assert.equal(result.outcome,'abandoned');assert.equal(result.state,'cancelled');
+      assert.equal(result.code,'effect_abandoned');
+    }finally{resumed.close();}
+    const records=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
+    assert.deepEqual(records.slice(-2).map(row=>row.payload.type),['effect-intent','effect-abandoned']);
+    assert.equal(readRunnerHistory(records,records[0].payload.config,3).pending,null);
+    assert.equal(fs.readFileSync(path.join(f.codeProject,'a.mjs'),'utf8'),'old\n');
+    assert.match(fs.readFileSync(f.tasksPath,'utf8'),/\[ \] T-002/);
+    assert.equal((await start(f,'abandon-develop-new','next\n')).state,'blocked');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('interrupted second develop after changes requested can be abandoned before supersede',async()=>{
+  const f=runFixture();
+  try{
+    const runId='abandon-develop-a2',identity=identityFor(runId),content='written\n';
+    const first=await start(f,runId,content,{},'changes_requested');
+    assert.equal(first.code,'review_limit',JSON.stringify(first));
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    interruptAfterIntent(f,runId,'develop',2);
+    await assert.rejects(start(f,'abandon-a2-new','next\n',
+      {supersedeReason:'restart',acceptSupersededCodeDrift:true}),
+    error=>error.code==='supersede_unavailable'&&/已中断.*abandon_effect/.test(error.reason));
+    const resumed=await openControlRun(definition,'resume',executionFor(f,content,'changes_requested'),
+      {allowAbandonEffect:true});
+    try{
+      const result=await resumed.host.handle(abandonRequest({...identity,attempt:2}));
+      assert.equal(result.state,'cancelled',JSON.stringify(result));assert.equal(result.code,'effect_abandoned');
+    }finally{resumed.close();}
+    await assert.rejects(start(f,'abandon-a2-new','next\n',{supersedeReason:'restart'}),
+      error=>error.code==='supersede_code_drift');
+    assert.equal((await start(f,'abandon-a2-new','next\n',
+      {supersedeReason:'restart',acceptSupersededCodeDrift:true})).state,'blocked');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('interrupted complete checks can be abandoned; task commit intent is refused',async()=>{
+  const f=runFixture();
+  try{
+    const runId='abandon-complete',identity=identityFor(runId),content='written\n';
+    assert.equal((await start(f,runId,content,{},'approved')).state,'fixture_completed');
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    const {stateFile}=interruptAfterIntent(f,runId,'complete');
+    fs.writeFileSync(f.tasksPath,'- [ ] T-002: fixture\n');
+    const resumed=await openControlRun(definition,'resume',executionFor(f,content,'approved'),
+      {allowAbandonEffect:true});
+    try{
+      const result=await resumed.host.handle(abandonRequest(identity));
+      assert.equal(result.state,'cancelled',JSON.stringify(result));assert.equal(result.code,'effect_abandoned');
+    }finally{resumed.close();}
+    assert.equal(JSON.parse(fs.readFileSync(stateFile,'utf8')).records.at(-1).payload.type,'effect-abandoned');
+    assert.match(fs.readFileSync(f.tasksPath,'utf8'),/\[ \] T-002/);
+    await assert.rejects(start(f,'abandon-complete-next','next\n',{supersedeReason:'restart'}),
+      error=>error.code==='supersede_code_drift');
+    assert.equal((await start(f,'abandon-complete-next','next\n',
+      {supersedeReason:'restart',acceptSupersededCodeDrift:true})).state,'blocked');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('abandon_effect refuses absent intent, accepts pre-dispatch review, and requires flag and reason',async()=>{
+  const f=runFixture();
+  try{
+    const runId='abandon-refusals',identity=identityFor(runId),content='written\n';
+    await start(f,runId,content);
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    let resumed=await openControlRun(definition,'resume',executionFor(f,content),{allowAbandonEffect:true});
+    try{assert.equal((await resumed.host.handle(abandonRequest(identity))).code,'effect_abandon_no_pending');}
+    finally{resumed.close();}
+    interruptAfterIntent(f,runId,'review');
+    await assert.rejects(start(f,'abandon-review-new','next\n',
+      {supersedeReason:'restart',acceptSupersededCodeDrift:true}),
+    error=>error.code==='supersede_unavailable'&&/已中断.*abandon_effect/.test(error.reason));
+    resumed=await openControlRun(definition,'resume',executionFor(f,content),{allowAbandonEffect:true});
+    try{assert.equal((await resumed.host.handle(abandonRequest(identity))).code,'effect_abandoned');}
+    finally{resumed.close();}
+    interruptAfterIntent(f,runId,'develop');
+    resumed=await openControlRun(definition,'resume',executionFor(f,content));
+    try{assert.equal((await resumed.host.handle(abandonRequest(identity))).code,'effect_abandon_authorization_required');}
+    finally{resumed.close();}
+    resumed=await openControlRun(definition,'resume',executionFor(f,content),{allowAbandonEffect:true});
+    try{
+      assert.equal((await resumed.host.handle({...abandonRequest(identity),reason:''})).code,'effect_abandon_reason_required');
+      assert.equal((await resumed.host.handle({...abandonRequest(identity),reason:'two\nlines'})).code,'effect_abandon_reason_required');
+      assert.equal((await resumed.host.handle(abandonRequest(identity))).state,'cancelled');
+    }finally{resumed.close();}
+    resumed=await openControlRun(definition,'resume',executionFor(f,content),{allowAbandonEffect:true});
+    try{assert.equal((await resumed.host.handle(abandonRequest(identity))).code,'effect_abandon_no_pending');}
+    finally{resumed.close();}
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('abandon_effect refuses provider development and pending task commit',async()=>{
+  for(const kind of ['provider','commit']){
+    const f=runFixture();
+    try{
+      const runId=`abandon-${kind}-guard`,identity=identityFor(runId),content='written\n';
+      const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+        identity,scope:['a.mjs'],requirements:['requirements.md']};
+      const execution=executionFor(f,content,'approved');
+      if(kind==='provider')execution.configuration.providerDevelopment={model:'fixture'};
+      const created=await openControlRun(definition,'create',execution);
+      try{await created.host.handle(requestFor(identity));}finally{created.close();}
+      const stateFile=path.join(f.reviewsDir,'.execution',runId,'state.json');
+      if(kind==='provider')interruptAfterIntent(f,runId,'develop');
+      else {
+        const current=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+        const index=current.records.findIndex(row=>row.payload.type==='task-commit-intent');
+        assert(index>=0);const {revision,...body}=current;body.records=current.records.slice(0,index+1);
+        fs.writeFileSync(stateFile,JSON.stringify({...body,revision:digest(body)})+'\n');
+      }
+      const before=fs.readFileSync(stateFile);
+      const resumed=await openControlRun(definition,'resume',execution,{allowAbandonEffect:true});
+      try{
+        const result=await resumed.host.handle(abandonRequest(identity));
+        assert.equal(result.code,kind==='provider'?'effect_abandon_provider_development':'effect_abandon_commit_pending');
+        if(kind==='commit')assert.match(result.reason,/tasks\.md.*提交回执.*旧进程/);
+      }finally{resumed.close();}
+      assert.deepEqual(fs.readFileSync(stateFile),before);
+    }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+  }
+});
+
+test('effect-abandoned replay binds the adjacent intent and remains terminal',async()=>{
+  const f=runFixture();
+  try{
+    const runId='abandon-replay',identity=identityFor(runId),content='written\n';
+    await start(f,runId,content);
+    const oldRecords=JSON.parse(fs.readFileSync(path.join(f.reviewsDir,'.execution',runId,'state.json'),'utf8')).records;
+    assert.equal(readRunnerHistory(oldRecords,oldRecords[0].payload.config,3).state.state,'blocked');
+    const {body}=interruptAfterIntent(f,runId,'develop');
+    const config=body.records[0].payload.config;
+    assert.equal(readRunnerHistory(body.records,config,3).state.code,'reconciliation_required');
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    const resumed=await openControlRun(definition,'resume',executionFor(f,content),{allowAbandonEffect:true});
+    try{assert.equal((await resumed.host.handle(abandonRequest(identity))).code,'effect_abandoned');}
+    finally{resumed.close();}
+    const saved=JSON.parse(fs.readFileSync(path.join(f.reviewsDir,'.execution',runId,'state.json'),'utf8'));
+    assert.equal(readRunnerHistory(saved.records,config,3).state.code,'effect_abandoned');
+    const altered=structuredClone(saved.records);altered.at(-1).payload.intentDigest='0'.repeat(64);
+    const {digest:old,...record}=altered.at(-1);altered[altered.length-1]={...record,digest:digest(record)};
+    assert.throws(()=>readRunnerHistory(altered,config,3),error=>error.code==='runner_abandon');
+    const orphan=structuredClone(saved.records);orphan.splice(1,1);
+    orphan[1]={...orphan[1],seq:2,id:'runner.000002',previousDigest:orphan[0].digest};
+    const {digest:unused,...orphanBody}=orphan[1];orphan[1]={...orphanBody,digest:digest(orphanBody)};
+    assert.throws(()=>readRunnerHistory(orphan,config,3),error=>error.code==='runner_abandon');
+    const intent=saved.records[1];
+    const controlBody={version:1,seq:3,id:'runner.000003',kind:'cancel',
+      payload:runnerPayloadV3('control',{event:'workflow-error'}),previousDigest:intent.digest};
+    const control={...controlBody,digest:digest(controlBody)};
+    const separatedBody={...saved.records[2],seq:4,id:'runner.000004',previousDigest:control.digest};
+    delete separatedBody.digest;
+    assert.throws(()=>readRunnerHistory([saved.records[0],intent,control,
+      {...separatedBody,digest:digest(separatedBody)}],config,3),error=>error.code==='runner_abandon');
+    const prior=saved.records.at(-1),duplicateBody={...prior,seq:prior.seq+1,id:'runner.000004',previousDigest:prior.digest};
+    delete duplicateBody.digest;
+    assert.throws(()=>readRunnerHistory([...saved.records,{...duplicateBody,digest:digest(duplicateBody)}],config,3),
+      error=>error.code==='runner_abandon');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
 function runFixture(){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-ai-supersede-run-')));
   const codeProject=path.join(root,'code'),specsDir=path.join(root,'specs'),feature='1.work';
@@ -62,6 +244,29 @@ function runFixture(){
 }
 const identityFor=runId=>({repositoryId:'supersede-fixture',runId,taskId:'T-002',attempt:1});
 const requestFor=identity=>({version:1,operation:'advance',requestId:'advance',identity});
+const abandonRequest=identity=>({version:1,operation:'abandon_effect',requestId:'abandon-effect',identity,
+  reason:'Operator confirmed the old host and its check process exited'});
+test('driver maps abandon_effect reason and flag only for resume',()=>{
+  const plan={mode:'resume',hostContext:'live',runtime:'claude',reason:'old host exited'};
+  assert.equal(abandonEffectPlanError('abandon_effect',plan,['--allow-abandon-effect']),null);
+  for(const candidate of [{...plan,mode:'create'},{...plan,reason:'x\ny'},{...plan,reason:'x'.repeat(501)}])
+    assert.match(abandonEffectPlanError('abandon_effect',candidate,['--allow-abandon-effect']),/abandon_effect/);
+  assert.match(abandonEffectPlanError('abandon_effect',plan,[]),/--allow-abandon-effect/);
+  assert.equal(buildCmAiDriveRequest('abandon_effect',plan,{identity:identityFor('driver-mapping')}).reason,plan.reason);
+  assert(buildCmAiDriveHostArgs(plan,['--allow-abandon-effect'],'run.json').includes('--allow-abandon-effect'));
+});
+function interruptAfterIntent(f,runId,kind,attempt=1){
+  const stateFile=path.join(f.reviewsDir,'.execution',runId,'state.json');
+  const current=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+  const index=current.records.findIndex(row=>row.payload.type==='effect-intent'
+    &&row.payload.effect.kind===kind&&row.payload.effect.identity.attempt===attempt);
+  assert(index>=0,`missing ${kind} attempt ${attempt} intent`);
+  const {revision,...body}=current;
+  body.records=current.records.slice(0,index+1);
+  fs.writeFileSync(stateFile,JSON.stringify({...body,revision:digest(body)})+'\n');
+  assert.equal(readRunnerHistory(body.records,body.records[0].payload.config,3).state.state,'unknown');
+  return {stateFile,intent:body.records.at(-1),body};
+}
 function executionFor(f,content,verdict='blocked',qaResult=null){
   const reviewer={id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',
     allowed:true,available:true,contexts:['review-one','review-two'],run:(request,{onEvent})=>{
@@ -69,7 +274,9 @@ function executionFor(f,content,verdict='blocked',qaResult=null){
       onEvent({event:'turn.started',item_type:null});onEvent({event:'item.completed',item_type:'agent_message'});
       onEvent({event:'turn.completed',item_type:null});onEvent({event:'process_closed',exit_code:0,signal:null,timed_out:false});
       return {status:'succeeded',value:{verdict,packageDigest:request.payload.reviewPackage.packageDigest,
-        examinedPaths:reviewPaths(request.payload.reviewPackage),findings:[],summary:'Synthetic review'}};
+        examinedPaths:reviewPaths(request.payload.reviewPackage),
+        findings:verdict==='changes_requested'?[{id:'F1',severity:'P2',path:'a.mjs',message:'Repair needed',evidence:'fixture'}]:[],
+        summary:'Synthetic review'}};
     }};
   const execution={configuration:{kind:'synthetic-host-v1'},timeoutMs:2000,excludedContexts:['control'],
     developer:{provider:'codex',requestedModel:'fixture',contextId:'developer',run:createCodexDeveloperRun({

@@ -254,7 +254,7 @@ test('conversation reports unknown cancel truthfully, then consumes abandonment 
     feature:'feature',identity:f.options.identity,runner,allowAbandonReview:true,hostDecision:{status:'approved'}});
   const cancelled=await entry.handle(request('cancel'));
   assert.equal(cancelled.outcome,'reported');assert.equal(cancelled.state,'unknown');
-  assert.equal(cancelled.pendingAction,'reconcile');
+  assert.equal(cancelled.pendingAction,'abandon_review');
   const result=await entry.handle(request('abandon_review',{reason:'old host and reviewer exited'}));
   assert.equal(result.outcome,'abandoned');assert.equal(result.state,'pending_review');
   assert.equal(result.pendingAction,'resume');

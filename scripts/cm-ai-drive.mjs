@@ -45,7 +45,7 @@ import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
 
 const HOST=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
-const OPERATIONS=new Set(['advance','start','resume','status','cancel','abandon_review','decision','complete','qa','qa_result',
+const OPERATIONS=new Set(['advance','start','resume','status','cancel','abandon_review','abandon_effect','decision','complete','qa','qa_result',
   'fix_status','fix_advance','fix_action','fix_run','run_finalize','context_refresh','finish']);
 const ADVANCE=new Set(['advance','start','resume']);
 const PACKAGE_OPERATIONS=new Set(['decision','complete','qa','qa_result','context_refresh','finish','run_finalize']);
@@ -67,7 +67,7 @@ const PAIR_FLAGS=new Set(['--allow-review-attempt','--review-config','--workflow
   '--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--browser-qa',
   '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason']);
 const FLAG_FLAGS=new Set(['--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
-  '--allow-bootstrap-write','--allow-abandon-review','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
+  '--allow-bootstrap-write','--allow-abandon-review','--allow-abandon-effect','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
   '--supersede-reviewed-evidence','--accept-superseded-code-drift',
   ...['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon',
     'test-author','repair','cause-review','final-review'].map(name=>`--allow-qa-fix-${name}`)]);
@@ -78,6 +78,11 @@ export const abandonReviewPlanError=(operation,plan,permissions)=>operation!=='a
   &&typeof plan.reason==='string'&&plan.reason.trim().length>0
   &&Buffer.byteLength(plan.reason,'utf8')<=500&&!/[\r\n\0]/.test(plan.reason)?null:
     'abandon_review 需要 resume、--allow-abandon-review 与单行 reason（最多 500 UTF-8 字节）';
+export const abandonEffectPlanError=(operation,plan,permissions)=>operation!=='abandon_effect'?null:
+  plan.mode==='resume'&&permissions.includes('--allow-abandon-effect')
+  &&typeof plan.reason==='string'&&plan.reason.trim().length>0
+  &&Buffer.byteLength(plan.reason,'utf8')<=500&&!/[\r\n\0]/.test(plan.reason)?null:
+    'abandon_effect 需要 resume、--allow-abandon-effect 与单行 reason（最多 500 UTF-8 字节）';
 function requireShape(ok,label){if(!ok)stop(2,`答案格式错误：${label}`);}
 function exact(value,allowed,label){requireShape(object(value)&&Object.keys(value).every(key=>allowed.includes(key)),label);}
 function answerPath(root,file){return path.join(root,file);}
@@ -208,7 +213,7 @@ export function validateCmAiAnswer(kind,value,root){
 }
 function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason（单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。\n');
+    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。\n');
     process.exit(0);
   }
   const loaded=loadPlanFile({name:'cm-ai-drive.mjs',known:OPERATIONS});
@@ -234,6 +239,8 @@ function load(){
   if(supersedeFlag&&plan.mode!=='create')stop(2,'supersede 只允许 mode create');
   const abandonError=abandonReviewPlanError(operation,plan,permissions);
   if(abandonError)stop(2,abandonError);
+  const abandonEffectError=abandonEffectPlanError(operation,plan,permissions);
+  if(abandonEffectError)stop(2,abandonEffectError);
   const config=path.resolve(base,plan.config),answers=plan.answers?path.resolve(base,plan.answers):null;
   if(!fs.existsSync(config))stop(2,`运行定义不存在: ${config}`);
   let definition;
@@ -379,7 +386,7 @@ async function answerFor(row,answer){
 }
 export function buildCmAiDriveRequest(operation,plan,definition){
   return {version:1,identity:definition.identity,
-    ...(operation==='abandon_review'?{reason:plan.reason}:{}),
+    ...(['abandon_review','abandon_effect'].includes(operation)?{reason:plan.reason}:{}),
     ...(PACKAGE_OPERATIONS.has(operation)?{packageDigest:plan.packageDigest}:{}),
     ...(TEST_RUN_OPERATIONS.has(operation)?{testRunId:plan.testRunId}:{}),
     ...(['fix_status','fix_advance','fix_action','fix_run'].includes(operation)?{

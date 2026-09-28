@@ -5,6 +5,7 @@
 
 ## 未发布
 
+- cm-ai 单任务 V3 新增 `abandon_effect`：当前会话 develop/complete 在 intent 后中断且无 task commit 时，操作员确认旧 host 与子进程退出后可在原 run 留痕退出为 `cancelled/effect_abandoned`；新运行仍执行原有审查证据及代码漂移门禁。
 - cm-ai 单任务与批次驾驶员按请求轮次读取开发答案；第 2 轮只接受 `develop-a2.json`，审查授权可能跨轮时提前检查，避免把首轮编辑重复用于修订。cm-fix 驾驶员的修订测试／修复答案同样改为 `*-a2.json`。
 - cm-task-gate Python 适配器按 UTF-8 读取 Node 输出，避免 Windows 系统默认编码使中文诊断解码失败。
 - cm-ai 规格审批接受六种明确开始语及尾部标点，泛化授权仍拒绝；cm-prd 草稿与审查校验为时间、标题、依赖、大小和测试理由提供字段级诊断，原门禁不变。

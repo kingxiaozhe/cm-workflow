@@ -95,8 +95,10 @@ export function createTaskRunner(options) {
   if(options && Object.hasOwn(options,'bootstrap'))optionKeys.push('bootstrap');
   if(options && Object.hasOwn(options,'codeProjectPaths'))optionKeys.push('codeProjectPaths');
   if(options && Object.hasOwn(options,'verificationGate'))optionKeys.push('verificationGate');
+  if(options && Object.hasOwn(options,'providerDevelopment'))optionKeys.push('providerDevelopment');
   if(invocationMode)optionKeys.push('reviewInvocation');
   shape(options,optionKeys);
+  need(options.providerDevelopment===undefined||typeof options.providerDevelopment==='boolean','invalid_input');
   const {check,commit}=options;need(typeof check==='function' && (taskMode||typeof commit==='function'));
   // Opt-in gate between the task's own checks and the independent review. It may
   // only block: passing it grants nothing and never substitutes for that review.
@@ -223,7 +225,13 @@ export function createTaskRunner(options) {
     &&entry.result?.state==='blocked'&&entry.result?.code==='verification_precheck_failed').length;
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
     &&entry.result?.state==='blocked'&&entry.result?.code==='completion_checks_changed').length;
-  const privateStatus=()=>json({state,code,...(reason?{reason}:{}),identity:{...config.identity,attempt},packageDigest:reviewPackage?.packageDigest??null,
+  const privateStatus=()=>json({state,code,...(reason?{reason}:{}),
+    ...(state==='unknown'&&restored?.pendingAbandonable
+      ?{pendingEffectKind:restored.pending.kind}:{}),
+    ...(state==='unknown'&&restored?.pending?.kind==='review'
+      &&restored.state.reviewInvocation?.registration&&restored.state.reviewInvocation.result===null
+      ?{pendingReviewInvocation:true}:{}),
+    identity:{...config.identity,attempt},packageDigest:reviewPackage?.packageDigest??null,
     receipt,receipts,calls,cancelAfterCommit,workflowError,...(store?{cancellationRequested}:{}),...(taskMode?{taskCommit}:{}),
     ...(invocationMode?{reviewInvocation}:{}),...(taskLearning!==null?{learningWriteback:learningResult?.writeback??null}:{})},16*1024*1024);
   let publication;
@@ -272,7 +280,7 @@ export function createTaskRunner(options) {
       kind:{init:'result','effect-intent':'intent','effect-checkpoint':'result',control:'cancel',
         'task-commit-intent':'commit-intent','task-commit-result':'commit-result',
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
-        'review-invocation-abandoned':'result',
+        'review-invocation-abandoned':'result','effect-abandoned':'result',
         'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
         'evidence-superseded':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
@@ -917,7 +925,31 @@ export function createTaskRunner(options) {
       publication=privateStatus();return status();
     }catch(error){return freeze({outcome:'rejected',code:error.code??'review_abandon_unavailable'});}
   };
-  const api={reviseQa,supersedeEvidence,abandonReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks};
+  const abandonEffect=raw=>{
+    try{
+      need(invocationMode&&store&&!busy&&!poisoned&&options.persistence.mode==='resume','effect_abandon_unavailable');
+      const value=json(raw);shape(value,['allowed','reason']);
+      need(value.allowed===true,'effect_abandon_authorization_required');
+      need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(value.reason),'effect_abandon_reason_required');
+      const history=readRunnerHistory(journal,metadata,3),effect=history.pending;
+      need(effect!==null,'effect_abandon_no_pending');
+      need(effect.kind!=='review'||history.pendingAbandonable,'effect_abandon_review_pending');
+      need(['develop','complete','review'].includes(effect.kind),'effect_abandon_unavailable');
+      need(effect.kind!=='develop'||options.providerDevelopment!==true,'effect_abandon_provider_development');
+      need(history.transaction===null&&history.state.taskCommit?.intentDigest==null,'effect_abandon_commit_pending');
+      need(history.state.state==='unknown'&&history.state.code==='reconciliation_required'
+        &&history.pendingAbandonable,'effect_abandon_unavailable');
+      const intent=journal.findLast(row=>row.payload.type==='effect-intent');
+      persist('effect-abandoned',{effectId:effect.id,effectKind:effect.kind,intentDigest:intent.digest,
+        lastRecordDigest:journal.at(-1).digest,reason:value.reason,at:new Date().toISOString()});
+      const recovered=readRunnerHistory(journal,metadata,3).state;
+      ({state,code,sequence}=recovered);reason=recovered.reason;restored.pending=null;
+      publication=privateStatus();return status();
+    }catch(error){return freeze({outcome:'rejected',code:error.code??'effect_abandon_unavailable',
+      ...(error.code==='effect_abandon_commit_pending'?{reason:'task-commit-intent 已写入，tasks.md 可能已改名或勾选；请核对 tasks.md、提交回执和旧进程后按原提交恢复路径处理。'}:{})});}
+  };
+  const api={reviseQa,supersedeEvidence,abandonReview,abandonEffect,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   return Object.freeze(api);
