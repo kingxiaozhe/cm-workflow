@@ -10,6 +10,11 @@ export function reportClaudeRateLimitNotice(raw, onNotice) {
   try { onNotice({kind:'rate_limit', info}); } catch {}
 }
 
+export function reportClaudeDevIntentNotice(onNotice) {
+  if (typeof onNotice !== 'function') return;
+  try { onNotice({kind:'claude_system_notice', subtype:'dev_intent'}); } catch {}
+}
+
 export function createClaudeReviewStream(onEvent, onNotice = null) {
   let session = null, stage = 'init', value, noticeCount = 0, thinkingCount = 0, rejectedAttempts = 0;
   const pendingTools = new Map(), toolIds = new Set();
@@ -22,6 +27,13 @@ export function createClaudeReviewStream(onEvent, onNotice = null) {
         || message.session_id.length > 256) reject('invalid_session');
       if (session !== null && session !== message.session_id) reject('session_mismatch');
       if (stage === 'init') {
+        if (message.type === 'system' && message.subtype === 'dev_intent') {
+          if (noticeCount >= 32) reject('unexpected_event');
+          noticeCount++;
+          session = message.session_id;
+          reportClaudeDevIntentNotice(onNotice);
+          return;
+        }
         if (message.type !== 'system' || message.subtype !== 'init') reject('missing_init');
         session = message.session_id;
         stage = 'assistant';
@@ -36,6 +48,12 @@ export function createClaudeReviewStream(onEvent, onNotice = null) {
         return;
       }
       if (message.type === 'system') {
+        if (message.subtype === 'dev_intent') {
+          if (noticeCount >= 32) reject('unexpected_event');
+          noticeCount++;
+          reportClaudeDevIntentNotice(onNotice);
+          return;
+        }
         if (message.subtype === 'thinking_tokens') {
           // Long reviews emit usage heartbeats; worker-claude also caps total output at 1 MB.
           if (thinkingCount >= 4096) reject('unexpected_event');

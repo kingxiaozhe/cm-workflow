@@ -5,7 +5,7 @@
 
 ## 未发布
 
-（暂无）
+- Claude review 与 developer 的 CLI 流解析器接受 init 前后的 `dev_intent` 通知，校验会话并计入 32 条通知上限。
 
 ## 0.16.3 — 2026-09-26
 

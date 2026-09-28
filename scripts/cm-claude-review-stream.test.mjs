@@ -170,12 +170,55 @@ test('rate limit session, count, whitelist and terminal boundaries fail closed',
 });
 
 const systemNotice = (subtype='api_retry',extra={}) => ({type:'system',subtype,session_id:'fresh-review',...extra});
+const devIntent = (sessionId='fresh-review') => JSON.parse(
+  `{"type":"system","subtype":"dev_intent","kind":"ios_app","trigger":"project_scan","uuid":"fixture-uuid","session_id":"${sessionId}"}`,
+);
 function observe(messages,callback) {
   const events=[],notices=[];
   const stream=createClaudeReviewStream(e=>events.push(e),callback ?? (n=>notices.push(n)));
   messages.forEach(m=>stream.accept(m));
   return {result:stream.finish(),events,notices};
 }
+test('dev_intent before or after init preserves review result and emits only its subtype',()=>{
+  const [init,assistant,result]=transcript(),baseline=observe(transcript());
+  for(const messages of [
+    [devIntent(),init,assistant,result],
+    [init,devIntent(),assistant,result],
+    [init,assistant,devIntent(),result],
+  ]){
+    const actual=observe(messages);
+    assert.deepEqual(actual.result,baseline.result);
+    assert.deepEqual(actual.events,baseline.events);
+    assert.deepEqual(actual.notices,[{kind:'claude_system_notice',subtype:'dev_intent'}]);
+  }
+  for(const callback of [undefined,()=>{throw Error('notice consumer');}]){
+    const stream=createClaudeReviewStream(()=>{},callback);
+    [devIntent(),init,assistant,result].forEach(message=>stream.accept(message));
+    assert.deepEqual(stream.finish(),baseline.result);
+  }
+});
+test('dev_intent binds session across init and shares the 32-notice budget',()=>{
+  const [init,assistant,result]=transcript();
+  for(const messages of [
+    [devIntent('other'),init],
+    [init,devIntent('other')],
+  ])assert.throws(()=>decode(messages),{code:'session_mismatch'});
+  for(const sessionId of ['', ' '.repeat(3), 'x'.repeat(257)]){
+    const stream=createClaudeReviewStream(()=>{});
+    assert.throws(()=>stream.accept(devIntent(sessionId)),{code:'invalid_session'});
+  }
+  assert.throws(()=>decode([systemNotice('api_retry'),init]),{code:'missing_init'});
+  assert.throws(()=>decode([init,systemNotice('future_notice')]),{code:'unexpected_event'});
+  const notices=[],stream=createClaudeReviewStream(()=>{},notice=>notices.push(notice));
+  [devIntent(),...Array.from({length:30},()=>devIntent()),init,rateLimit(),assistant,result]
+    .forEach(message=>stream.accept(message));
+  assert.equal(stream.finish().status,'succeeded');
+  assert.equal(notices.length,32);
+  const overflow=createClaudeReviewStream(()=>{});
+  [devIntent(),init,...Array.from({length:31},()=>devIntent())]
+    .forEach(message=>overflow.accept(message));
+  assert.throws(()=>overflow.accept(devIntent()),{code:'unexpected_event'});
+});
 test('88-heartbeat dogfood event counts preserve structured findings and exact observation',()=>{
   const [init,text,result]=transcript();
   const value={verdict:'changes_requested',packageDigest:'a'.repeat(64),examinedPaths:['code.mjs'],

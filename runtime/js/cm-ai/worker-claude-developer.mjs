@@ -2,7 +2,7 @@
 import {spawn} from 'node:child_process';
 import {readFileSync} from 'node:fs';
 import {claudeBaseArgs,claudeEnvironment} from './worker-claude.mjs';
-import {reportClaudeRateLimitNotice} from './claude-review-stream.mjs';
+import {reportClaudeDevIntentNotice,reportClaudeRateLimitNotice} from './claude-review-stream.mjs';
 import {need,text,validCallTimeout,json,shape} from './effect-contract.mjs';
 
 export function claudeDeveloperArgs(model){
@@ -54,21 +54,30 @@ export function validateClaudeProposal(raw){
 }
 
 function createClaudeDeveloperStream(onNotice=null){
-  let session=null,done=false,value,assistant=false,noticeCount=0,thinkingCount=0;
+  let session=null,initialized=false,done=false,value,assistant=false,noticeCount=0,thinkingCount=0;
   const tools=new Set();
   return {
     accept(event){
       need(event&&typeof event==='object'&&!Array.isArray(event)&&!done,'invalid_event');
-      need(typeof event.session_id==='string'&&event.session_id.length>0&&event.session_id.length<=128,'invalid_session');
-      if(session===null){
-        need(event.type==='system'&&event.subtype==='init','missing_init');session=event.session_id;return;
+      need(typeof event.session_id==='string'&&event.session_id.trim()&&event.session_id.length<=128,'invalid_session');
+      if(session!==null)need(event.session_id===session,'session_mismatch');
+      if(!initialized){
+        if(event.type==='system'&&event.subtype==='dev_intent'){
+          need(noticeCount<32,'unexpected_event');noticeCount++;
+          session=event.session_id;reportClaudeDevIntentNotice(onNotice);return;
+        }
+        need(event.type==='system'&&event.subtype==='init','missing_init');
+        session=event.session_id;initialized=true;return;
       }
-      need(event.session_id===session,'session_mismatch');
       if(event.type==='rate_limit_event'){
-        need(noticeCount<8,'unexpected_event');noticeCount++;
+        need(noticeCount<32,'unexpected_event');noticeCount++;
         reportClaudeRateLimitNotice(event.rate_limit_info,onNotice);return;
       }
       if(event.type==='system'){
+        if(event.subtype==='dev_intent'){
+          need(noticeCount<32,'unexpected_event');noticeCount++;
+          reportClaudeDevIntentNotice(onNotice);return;
+        }
         need(event.subtype==='thinking_tokens'&&thinkingCount<64,'unexpected_event');thinkingCount++;return;
       }
       if(event.type==='assistant'){
