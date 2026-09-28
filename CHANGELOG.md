@@ -11,6 +11,10 @@
 - cm-ai N6 的 `qa_assess` 应答超时不再落盘为永久阻塞决定，改为可重试的 `rejected/qa_decision_timeout`，恢复原运行后再次 `advance` 重新询问；旧版本已记录的 `阻塞:host_request_timeout` 决定默认照旧返回 `qa_blocked`（附原因），显式 `--rerun-blocked-qa` 只重新询问一次并以 `previous_decision_id` 追加替代决定，历史不改写；替代决定写入后、首轮 QA 开跑前中断时，同一命令可直接续跑。修正 js-host.md 中 `qa.timeoutMs` 上限为 3600000。
 - cm-ai `--rerun-blocked-qa` 可在同一代码上重跑会话如实回答的 BLOCKED（如模拟器不可用）与没有退出码的 QA 命令结果（超时、被杀、启动或输出失败）及只因其阻断的 logic 用例（`[需确认]` 以 test-cases.json 为准一律除外，报告标记只作交叉核对）；非零退出仍是产品 FAIL，只有同时加 `--qa-environment-failure "原因"` 显式声明环境故障才替代，理由与失败用例写入 superseded 记录。每次重跑都占用同一个最多三轮的 QA 预算。
 - cm-ai `--revise-qa-config` 支持首轮 QA 前修订（开发中、待审、N5 完成但 QA 未开跑），记为不消耗轮次的 round-0 修订并在运行日志留痕，首轮仍为 qaRound 1；QA 开跑后的修订规则不变。
+- cm-ai 独立审查 CLI 未登录、限流、服务端过载、模型不存在、输出无法识别的事件或没有结论就退出（未调用工具、未给结论、进程已退出）时，不再停在 unknown，而是 `pending_review/review_provider_failed`，reason 写明失败类别和下一步（先登录或等额度），同一 attempt 与传输超时、abandon 共用一次重派；超出后为 `blocked/review_provider_failed`。已有最终消息但被超时截断的审查改为提示 `abandon_review`，操作员留痕放弃后同样只重派一次；旧 journal 照原样回放，旧 unknown 不自动改类。
+- cm-ai 审查提示写明 verdict 规则（P0–P3 含义、approved 不能带 P0–P2、changes_requested 至少一条 P0–P2、只有代码无法在范围内修好时才用 blocked、规格文件不是 finding 路径）；审查答复违反这些规则时记为 `pending_review/review_verdict_invalid` 并保留具体代码（如 `contradictory_verdict`），同一预算内重派一次；`blocked` 仍是终态但 reason 写明审查给出的原因。
+- cm-ai 调大 `--review-config` 的 `timeoutMs`（超过 30 分钟）不再在 30 分钟被运行器截断并耗掉唯一重试：运行器的审查计时改为审查预算加 1 分钟余量，且不写入 journal，恢复时可继续调大。
+- cm-ai 第 2 轮交付与第 1 轮被要求修改的代码逐字节相同时，停在可重试的 `blocked/develop_unchanged_after_review`，不送审、不耗第 2 轮审查；同时修正第 2 轮开发检查被门禁拦下时 journal 回放失败、运行变成 unknown 的问题。
 
 - cm-ai 单任务驾驶员对 bootstrap 规范任务在启动前拒绝缺少实时 `init_verify` runner，并将 unknown／reconcile 宿主结果作为失败退出；补充当前会话宿主路径与旧运行恢复说明。
 - cm-ai 开发检查失败或不可用时以独立的 `develop_checks_not_passed` 在审查前阻断并可在原运行重试；旧完成门禁的 `checks_not_passed` 保持终态。检查产物越界重试改用新 effect id，完成复查失败保留原审查重试，单任务和批次驾驶员支持每项及默认检查超时（默认 15 分钟）。

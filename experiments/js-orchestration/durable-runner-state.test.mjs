@@ -19,7 +19,9 @@ async function history(fn,{twoAttempts=false}={}) {
     effectiveModel:'fixture',status:'succeeded',accepted:true,result});
   fs.writeFileSync(path.join(root,'a'),'before');fs.writeFileSync(path.join(root,'req'),'requirements');
   const options={root,identity,scope:['a'],requirements:['req'],excludedContexts:['main'],timeoutMs:1000,
-    developer:{provider:'codex',requestedModel:'fixture',contextId:'dev',run:r=>{effects++;fs.writeFileSync(path.join(root,'a'),'after');return terminal(r,{outcome:'implemented'});}},
+    developer:{provider:'codex',requestedModel:'fixture',contextId:'dev',run:r=>{effects++;
+      // Attempt 2 must answer attempt 1's findings; identical bytes are refused.
+      fs.writeFileSync(path.join(root,'a'),r.identity.attempt===1?'after':'after 2');return terminal(r,{outcome:'implemented'});}},
     reviewers:[{id:'reviewer',provider:'claude',requestedModel:'fixture',contexts:['r1','r2'],allowed:true,available:true,
       run:r=>{effects++;const findings=twoAttempts&&r.identity.attempt===1?
         [{id:'F1',severity:'P2',path:'a',message:'synthetic',evidence:'fixture'}]:[];

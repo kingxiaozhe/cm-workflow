@@ -47,7 +47,8 @@ async function fixture(fn,{reviewRun,authorize,times,timeoutMs=1000,provider='co
       examinedPaths:reviewPaths(request.payload.reviewPackage),findings:[],summary:'Synthetic review'}};};
   const options={root,identity,scope:['code.js'],requirements:['requirements.md'],excludedContexts:['main'],timeoutMs,
     developer:{provider,requestedModel:'fixture',contextId:'developer-logical',run:request=>{
-      fs.writeFileSync(path.join(root,'code.js'),'new\n');return {version:1,invocationId:request.invocationId,
+      // Attempt 2 must answer attempt 1's findings; identical bytes are refused.
+      fs.writeFileSync(path.join(root,'code.js'),request.identity.attempt===1?'new\n':'new 2\n');return {version:1,invocationId:request.invocationId,
         contextId:request.contextId,provider:request.provider,effectiveModel:'fixture',status:'succeeded',accepted:true,
         result:{outcome:'implemented'}};}},
     reviewers:[{id:'reviewer',adapterId:`${provider}-review-adapter`,provider,requestedModel:'fixture',allowed:true,
@@ -425,7 +426,10 @@ test(`factory passes exact configured timeout to ${runtime} reviewer, provider m
       requestedModel:'fixture',contextId:'cm-conversation-review-1',payload:{reviewPackage,priorReview:null}});
     await execution.reviewers[0].run(request,{signal:new AbortController().signal,onEvent:()=>{}});
     assert.deepEqual(timers,[timeoutMs]);
-    assert.equal(execution.timeoutMs,providerMode?timeoutMs:1800000,'outer host timeout remains unchanged');
+    // #20: the journaled call timeout is unchanged, but the runner's review race
+    // is sized above the reviewer budget so a raised budget is not cut early.
+    assert.equal(execution.timeoutMs,providerMode?timeoutMs:1800000,'journaled call timeout remains unchanged');
+    assert.equal(execution.reviewInvocation.timeoutMs,Math.max(execution.timeoutMs,timeoutMs+60000),'review race outlasts the reviewer budget');
   }finally{t.mock.restoreAll();syncBuiltinESMExports();}
 }));
 

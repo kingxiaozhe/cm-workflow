@@ -5,7 +5,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {openControlRun,validateRunDefinition} from './cm-ai-run.mjs';
-import {developmentRetryable,completionRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
+import {developmentRetryable,completionRetryable,reviewRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {digest,json,shape,need,id,hex} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {scanRows,findCmAiQaDecision,latestCmAiQaRun} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {checkParallelWrite} from './cm-task-gate.mjs';
@@ -198,7 +198,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         if(status.code===null&&['ready','changes_requested'].includes(status.state)
           ||developmentRetryable(status))await call('start');
         if(['reported','advanced'].includes(status.outcome)&&(status.code===null&&status.state==='awaiting_review'
-          ||status.state==='pending_review'&&status.code==='review_transport_timeout'))await call('decision');
+          ||reviewRetryable(status)))await call('decision');
         if(status.outcome==='advanced'&&status.code===null&&status.state==='changes_requested'&&status.identity.attempt===round+1)continue;
         if(['reported','advanced'].includes(status.outcome)
           &&(status.code===null&&status.state==='approved'||completionRetryable(status))){
@@ -305,7 +305,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       // their existing recovery path; a new run must not bypass those gates.
       const terminal=['blocked','failed','unknown'].includes(status.state)
         &&!developmentRetryable(status)&&!completionRetryable(status)
-        ||status.state==='pending_review'&&status.code!==null&&status.code!=='review_transport_timeout';
+        ||status.state==='pending_review'&&status.code!==null&&!reviewRetryable(status);
       if(!terminal){waiting??=status;continue;}
       const key=pending[index];
       record('batch_member_blocked',{from_key:key,code:status.code??status.state,

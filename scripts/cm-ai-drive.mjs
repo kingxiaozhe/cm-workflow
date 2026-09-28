@@ -319,7 +319,7 @@ function load(){
     if(!answers||!fs.existsSync(file)){
       const reviewFile=`.reviews/${definition.feature.replace(/^\d+\./,'')}-${definition.identity.taskId}-r1.md`;
       if(reachable.reviewAfterDevelop&&attempt===2)
-        stop(2,`缺少 ${file}；本次 advance 带 --allow-review-attempt 1，宿主完成首轮审查后可能直接进入第 2 轮 develop。可选：1) 从 PLAN.permissions 移除 --allow-review-attempt 1，先 advance 到 awaiting_review；再用该运行返回的 packageDigest 执行 decision，读取 ${reviewFile} 的 findings；若要求修改，写 answers/develop-a2.json 后 advance。2) 若有意一次跑完，预先写 answers/develop-a2.json 后重试 advance。`);
+        stop(2,`缺少 ${file}；本次 advance 带 --allow-review-attempt 1，宿主完成首轮审查后可能直接进入第 2 轮 develop。可选：1) 从 PLAN.permissions 移除 --allow-review-attempt 1，先 advance 到 awaiting_review；再用该运行返回的 packageDigest 执行 decision，读取 ${reviewFile} 的 findings；若要求修改，写 answers/develop-a2.json 后 advance。2) 若有意一次跑完，预先写 answers/develop-a2.json 后重试 advance。develop-a2.json 必须针对首轮 findings 修改；与第 1 轮被要求修改的代码逐字节相同时，第 2 轮停在 blocked/develop_unchanged_after_review，不送审，改好后再 advance。`);
       if(reachable.reviewFirst)stop(2,`缺少 ${path.basename(file)}；请先以 decision 和当前 packageDigest ${reachable.packageDigest} 单独运行审查，读取 .reviews/${definition.feature.replace(/^\d+\./,'')}-${definition.identity.taskId}-r${attempt-1}.md 中的 findings，写 answers/develop-a${attempt}.json 后再 advance`);
       stop(2,`步骤 ${operation} 会反问 develop，但答案文件不存在: ${file}`);
     }

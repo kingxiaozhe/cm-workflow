@@ -12,9 +12,10 @@ import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTas
 import { reviewResult,reviewReceipt } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
-  MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,completedEffectCount,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage } from './durable-runner-state.mjs';
+  MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,completedEffectCount,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
+  reviewRetrySpent,abandonableReviewResult } from './durable-runner-state.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
-import {inspectProviderReview,hasProviderReviewResult} from './provider-review-observation.mjs';
+import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure} from './provider-review-observation.mjs';
 import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence,
   readCmAiTaskLearningApplication} from './cm-ai-context-refresh.mjs';
 import {readCmAiProjectLearningWriteback,writeCmAiProjectLearning} from './cm-ai-learning-writer.mjs';
@@ -82,6 +83,30 @@ function observePromise(value,onFulfilled,onRejected) {
   }
 }
 const ignorePromiseResult=()=>{};
+// Reviewer budgets go up to 3,600,000 ms; the host adds its cleanup margin.
+export const MAX_REVIEW_BOUND_MS=3600000+60000;
+// What the user does next for each retryable reviewer failure class. The class
+// itself is also journaled in reviewInvocation.result.inspection.failure.
+const REVIEW_FAILURE_HINTS=Object.freeze({
+  reviewer_auth_failed:'审查 CLI 未登录或凭证失效；先在本机重新登录审查 CLI，再恢复原 run 重派本轮审查',
+  reviewer_billing_error:'审查账号额度或计费不可用；恢复额度后再恢复原 run 重派本轮审查',
+  reviewer_rate_limited:'审查请求被限流或额度用尽；等额度恢复后再恢复原 run 重派本轮审查',
+  reviewer_server_error:'审查服务端错误或过载；稍后恢复原 run 重派本轮审查',
+  reviewer_model_not_found:'审查模型不存在或当前账号不可用；模型已绑定原 run 配置，确认账号可用该模型后恢复，换模型需新建运行',
+  reviewer_api_error:'审查 API 返回错误且没有结论；核对审查 CLI 账号与网络后恢复原 run 重派本轮审查',
+  reviewer_provider_failed:'审查进程报告失败且没有结论；核对审查 CLI 后恢复原 run 重派本轮审查',
+  reviewer_exited:'审查进程没有给出结论就退出；核对审查 CLI 能否正常运行后恢复原 run 重派本轮审查',
+  reviewer_stream_unrecognized:'审查 CLI 输出了无法识别的事件（常见于 CLI 升级）；核对 CLI 版本后恢复原 run 重派本轮审查',
+  contradictory_verdict:'审查结论与 finding 等级矛盾：approved 不能带 P0–P2，changes_requested 至少要有一条 P0–P2；本轮结论作废并重派',
+  invalid_finding_path:'审查 finding 的 path 不在 examinedPaths 或 handoff 路径内；本轮结论作废并重派',
+  missing_material:'审查没有原样复制 examinedPaths；本轮结论作废并重派',
+  review_package_mismatch:'审查没有原样复制 packageDigest；本轮结论作废并重派',
+  invalid_finding_severity:'审查 finding 的 severity 不是 P0–P3；本轮结论作废并重派',
+  invalid_finding_id:'审查 finding 的 id 不合格式；本轮结论作废并重派',
+  invalid_finding_shape:'审查 finding 字段不全或重复；本轮结论作废并重派'});
+const reviewFailureReason=failure=>`${failure}: ${REVIEW_FAILURE_HINTS[failure]??'审查失败且没有可用结论'}`;
+// A verdict the review round ends on names why, instead of a bare code.
+const verdictReason=(prefix,summary)=>`${prefix}：${String(summary).replace(/[\x00-\x1f\x7f]/g,' ').slice(0,300)}`;
 const safeReason=error=>{
   if(error===null||typeof error!=='object'||types.isProxy(error))return null;
   const descriptor=Object.getOwnPropertyDescriptor(error,'message');
@@ -134,12 +159,18 @@ export function createTaskRunner(options) {
     if(invocationMode)id(r.adapterId);
     return {...v,...(invocationMode?{adapterId:r.adapterId}:{}),run};
   });
-  let invocationConfig=null,authorize=null,liveHostContextId=null;
+  let invocationConfig=null,authorize=null,liveHostContextId=null,reviewTimeoutMs=null;
   if(invocationMode){
     need(reviewers.length===1&&['codex','claude'].includes(reviewers[0].provider)&&reviewers[0].allowed&&reviewers[0].available,'runner_invocation');
     shape(options.reviewInvocation,['developerThreadId','excludedThreadIds','authorize',
-      ...(Object.hasOwn(options.reviewInvocation,'hostContextId')?['hostContextId']:[])]);
+      ...['hostContextId','timeoutMs'].filter(key=>Object.hasOwn(options.reviewInvocation,key))]);
     liveHostContextId=options.reviewInvocation.hostContextId??null;
+    // Transient like hostContextId, never journaled: the host sizes the review
+    // race above its reviewer's own budget, which a resumed run may raise.
+    if(Object.hasOwn(options.reviewInvocation,'timeoutMs')){
+      reviewTimeoutMs=options.reviewInvocation.timeoutMs;
+      need(Number.isSafeInteger(reviewTimeoutMs)&&reviewTimeoutMs>=1&&reviewTimeoutMs<=MAX_REVIEW_BOUND_MS,'runner_invocation');
+    }
     if(liveHostContextId!==null){id(liveHostContextId);
       need(![developer.contextId,...reviewers.flatMap(r=>r.contexts)].includes(liveHostContextId),'not_independent');}
     authorize=options.reviewInvocation.authorize;need(typeof authorize==='function','runner_invocation');
@@ -229,7 +260,7 @@ export function createTaskRunner(options) {
   // derivation in one place, next to the cache it is derived from.
   const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
     &&entry.result?.state==='blocked'
-    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed'].includes(entry.result?.code)).length;
+    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review'].includes(entry.result?.code)).length;
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
     &&entry.result?.state==='blocked'&&['completion_checks_changed','completion_package_changed'].includes(entry.result?.code)).length;
   const privateStatus=()=>json({state,code,...(reason?{reason}:{}),
@@ -242,8 +273,15 @@ export function createTaskRunner(options) {
     receipt,receipts,calls,cancelAfterCommit,workflowError,...(store?{cancellationRequested}:{}),...(taskMode?{taskCommit}:{}),
     ...(invocationMode?{reviewInvocation}:{}),...(taskLearning!==null?{learningWriteback:learningResult?.writeback??null}:{})},16*1024*1024);
   let publication;
+  // Replay decides; this only reports an exit abandonReview would accept.
+  function reviewResultAbandonable(){
+    return invocationMode&&store&&!busy&&!poisoned&&state==='unknown'&&!restored?.pending
+      &&abandonableReviewResult({state,attempt,cache:[...cache.values()],calls,reviewInvocation},reviewers[0].contexts[attempt-1]);
+  }
   const status=()=>{
-    const current=store?publication:privateStatus();
+    let current=store?publication:privateStatus();
+    // Status only; never part of a cached result or checkpoint.
+    if(current.state==='unknown'&&reviewResultAbandonable())current=freeze({...current,abandonableReviewResult:true});
     if(!busy&&!poisoned)try{publishRegisteredReview(true);}
     catch{return freeze({...current,code:'review_publication_required'});}
     if(!busy&&reviewPackage&&(['awaiting_review','approved','changes_requested'].includes(current.state)
@@ -453,7 +491,9 @@ export function createTaskRunner(options) {
       state='changes_requested';code=null;attempt=2;
       const {baselineDigest:old,...data}=original,newData={...data,identity:{...config.identity,attempt}};
       base=freeze({...newData,baselineDigest:digest(newData)});
-    } else halt('blocked',result.verdict==='changes_requested'?'review_limit':'review_blocked');
+    } else halt('blocked',result.verdict==='changes_requested'?'review_limit':'review_blocked',
+      verdictReason(result.verdict==='changes_requested'?'review_limit: 第 2 轮审查仍要求修改，本运行两轮已用完'
+        :'review_blocked: 审查判定 blocked，无法靠修改批准范围内的代码解决',result.summary));
     if(drift)halt('blocked','review_package_changed',drift.message);
   }
   const clock=Date.now.bind(Date);
@@ -570,7 +610,7 @@ export function createTaskRunner(options) {
           })),
           invalidPromise,
           new Promise((_,reject)=>{timer=setTimeout(()=>{timedOut=true;localController.abort();
-            reject(Object.assign(new Error('call_timeout'),{code:'call_timeout'}));},config.timeoutMs);}),
+            reject(Object.assign(new Error('call_timeout'),{code:'call_timeout'}));},reviewTimeoutMs??config.timeoutMs);}),
           new Promise((_,reject)=>{cancelReject=()=>reject(Object.assign(new Error('cancelled'),{code:'cancelled'}));
             controller.signal.addEventListener('abort',cancelReject,{once:true});})
         ]);
@@ -612,14 +652,29 @@ export function createTaskRunner(options) {
         Object.assign(call,{terminal:'unknown',resultDigest:digest(result)});reviewInvocation=json({registration,started,result});
         halt('unknown',inspection.code??'reconciliation_required');return;
       }
+      // A reviewer that failed without a verdict, or whose complete answer breaks
+      // the verdict contract, ends in a new explicit retryable result.
+      const reviewerFailed=(recorded,failure)=>{
+        const fields={effectId,invocationId:request.invocationId,dispatchAt,outcome:'failed',observation:recorded,
+          inspection:failure,reconciliationRequired:false};
+        persist('review-invocation-result',fields);const result=resultView(fields);
+        const retry=reviewTimeoutTransition(result,[...cache.values()],attempt,calls.slice(0,-1),contextId);
+        Object.assign(call,{terminal:'failed',resultDigest:digest(result)});reviewInvocation=json({registration,started,result});
+        halt(retry.state,retry.code,reviewFailureReason(failure.failure));
+      };
       let recorded,inspection;
       try{recorded=observation(providerResult);inspection=inspectProviderReview(JSON.stringify(recorded),JSON.stringify(expectation));}
       catch{
+        const failure=recorded===undefined?null:inspectProviderReviewFailure(JSON.stringify(recorded),JSON.stringify(expectation));
+        if(failure){reviewerFailed(recorded,failure);return;}
         const fields=invalidFields();persist('review-invocation-result',fields);const result=resultView(fields);
         Object.assign(call,{terminal:'unknown',resultDigest:digest(result)});reviewInvocation=json({registration,started,result});
         halt('unknown','observation_invalid');return;
       }
       const observed=inspection.observationStatus==='completed';
+      const failure=!observed&&inspection.code==='transport_incomplete'
+        ?inspectProviderReviewFailure(JSON.stringify(recorded),JSON.stringify(expectation)):null;
+      if(failure){reviewerFailed(recorded,failure);return;}
       const fields={effectId,invocationId:request.invocationId,dispatchAt,outcome:observed?'observed':inspection.code==='transport_timeout'?'timed_out':'unknown',
         observation:recorded,inspection,reconciliationRequired:!observed
           &&(inspection.code!=='transport_timeout'||hasProviderReviewResult(recorded.events))};
@@ -668,6 +723,17 @@ export function createTaskRunner(options) {
     shape(verdict,['satisfied']);need(typeof verdict.satisfied==='boolean','invalid_result');
     return verdict.satisfied;
   }
+  // Attempt 2 exists to answer the findings that rejected attempt 1. Code
+  // byte-identical to that rejected artifact cannot, so it never spends the
+  // last review round; the same attempt may deliver again under a new effect id.
+  function unchangedSinceRejection(){
+    if(attempt!==2||priorReview?.verdict!=='changes_requested')return null;
+    const rejected=receipts.findLast(item=>item.identity.attempt===1&&item.result.verdict==='changes_requested');
+    if(!rejected)return null;
+    const candidate=createReviewPackage({root:config.root,baseline:base,checks:currentChecks});
+    return candidate.artifactDigest===rejected.artifactDigest
+      ?`develop_unchanged_after_review: 第 2 轮交付与第 1 轮被要求修改的代码逐字节相同（artifactDigest ${rejected.artifactDigest.slice(0,12)}）；按审查 findings 修改后重新交付`:null;
+  }
   async function perform(v) {
     if(v.kind==='develop') {
       need(stageAllowed('develop',state,code,priorReview?.verdict),'stage_mismatch');state='developing';code=null;reason=null;checkNewPaths=null;receipt=null;
@@ -711,6 +777,8 @@ export function createTaskRunner(options) {
           if(failedChecks(currentChecks).length){halt('blocked','develop_checks_not_passed',checkFailureReason(currentChecks,'develop_checks_not_passed'));return;}
           if(!await verificationSatisfied(currentChecks)){halt('blocked','verification_precheck_failed');return;}
           active();
+          const unchanged=unchangedSinceRejection();
+          if(unchanged){halt('blocked','develop_unchanged_after_review',unchanged);return;}
           createHostHandoff({root:config.root,baseline:base,checks:currentChecks,
             handoffPath:completion.handoffs[attempt-1]});
         }
@@ -722,6 +790,9 @@ export function createTaskRunner(options) {
         currentChecks=await collectChecks();active();
         if(failedChecks(currentChecks).length){halt('blocked','develop_checks_not_passed',checkFailureReason(currentChecks,'develop_checks_not_passed'));return;}
         if(!await verificationSatisfied(currentChecks)){halt('blocked','verification_precheck_failed');return;}
+        active();
+        const unchanged=unchangedSinceRejection();
+        if(unchanged){halt('blocked','develop_unchanged_after_review',unchanged);return;}
       }
       active();
       const nextPackage=createReviewPackage({root:config.root,baseline:base,checks:currentChecks,
@@ -802,7 +873,7 @@ export function createTaskRunner(options) {
       if(old){need(old.digest===digest(v),'intent_conflict');return Promise.resolve(old.result);}
       if(restored?.pending?.id===v.id){need(digest(restored.pending)===digest(v),'intent_conflict');return Promise.resolve(status());}
       need(!busy,'busy');need(v.identity.attempt===attempt,'attempt_mismatch');
-      need(stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(completedEffectCount([...cache.values()])<6,'limit_exceeded');
+      need(stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(completedEffectCount([...cache.values()],calls)<6,'limit_exceeded');
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
     } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input'}));}
@@ -840,8 +911,9 @@ export function createTaskRunner(options) {
       catch{return poison();}
     })().finally(()=>{busy=false;pending=null;completeEffect=null;}).then(result=>{
       if(poisoned)return result;
-      try{publishRegisteredReview();return result;}
+      try{publishRegisteredReview();}
       catch{return freeze({...result,code:'review_publication_required'});}
+      return result.state==='unknown'&&reviewResultAbandonable()?freeze({...result,abandonableReviewResult:true}):result;
     });
     return pending;
   }
@@ -947,12 +1019,22 @@ export function createTaskRunner(options) {
   };
   const abandonReview=raw=>{
     try{
-      need(invocationMode&&store&&!busy&&!poisoned&&state==='unknown'&&restored?.pending?.kind==='review',
-        'review_abandon_unavailable');
+      need(invocationMode&&store&&!busy&&!poisoned&&state==='unknown'
+        &&(restored?.pending?.kind==='review'||reviewResultAbandonable()),'review_abandon_unavailable');
       const value=json(raw);shape(value,['allowed','reason']);
       need(value.allowed===true,'review_abandon_authorization_required');
       need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=500
         &&!/[\r\n\0]/.test(value.reason),'review_abandon_reason_required');
+      if(!restored?.pending){
+        // A checkpointed review whose journaled result was never accepted.
+        const binding=readRunnerHistory(journal,metadata,3).reviewResultAbandon;
+        need(binding!==null,'review_abandon_unavailable');
+        persist('review-invocation-abandoned',{...binding,reason:value.reason,at:new Date().toISOString()});
+        const recovered=readRunnerHistory(journal,metadata,3).state;
+        ({state,code,sequence,reviewInvocation}=recovered);reason=recovered.reason??null;
+        calls.splice(0,calls.length,...recovered.calls);
+        publication=privateStatus();return status();
+      }
       const history=readRunnerHistory(journal,metadata,3),last=journal.at(-1);
       need(history.pending?.id===restored.pending.id&&history.state.state==='unknown'
         &&history.state.code==='reconciliation_required'
@@ -964,10 +1046,7 @@ export function createTaskRunner(options) {
       const started=last.payload.type==='review-invocation-started'?last:null;
       need(registration,'review_abandon_unavailable');
       const contextId=reviewers[0].contexts[attempt-1];
-      need(!history.state.cache.some(entry=>entry.effect.kind==='review'
-        &&entry.effect.identity.attempt===attempt&&entry.result.code==='review_transport_timeout')
-        &&!history.state.calls.some(call=>call.terminal==='abandoned'&&call.contextId===contextId),
-      'review_abandon_budget_exhausted');
+      need(!reviewRetrySpent(history.state.cache,history.state.calls,attempt,contextId),'review_abandon_budget_exhausted');
       const fields={effectId:history.pending.id,
         invocationId:history.state.reviewInvocation.registration.grant.invocationId,
         registeredDigest:registration.digest,startedDigest:started?.digest??null,

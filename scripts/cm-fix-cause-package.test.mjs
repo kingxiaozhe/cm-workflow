@@ -57,6 +57,8 @@ test('cause package binds only selected current source and never advances the fi
         requestedModel:'synthetic',contextId:'logical-review',payload:{reviewPackage:first,priorReview:null}});
       assert.match(buildCauseReviewPrompt(request,provider),/pre-implementation review/);
       assert.match(buildCauseReviewPrompt(request,provider),/Rewrite all callers/);
+      assert.match(buildCauseReviewPrompt(request,provider),/approved requires zero P0, P1 and P2 findings/);
+      assert.match(buildCauseReviewPrompt(request,provider),/changes_requested requires at least one P0, P1 or P2 finding/);
       assert.throws(()=>buildReviewPrompt(request,provider));
       const expectation=JSON.stringify({request,developerThreadId:'author',excludedThreadIds:['fixture-host']});
       const observation={version:1,kind:'cm-provider-review-observation',requestDigest:request.requestDigest,

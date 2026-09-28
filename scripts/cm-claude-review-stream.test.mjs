@@ -321,3 +321,28 @@ test('exhausted retries do not decide success or suppress provider failure',()=>
     }
   }
 });
+
+// Claude CLI 2.1.274 reports an API failure as a synthetic assistant message
+// with a string error class. Before any tool call it names a retryable class;
+// anything else keeps the fail-closed unexpected_assistant.
+test('API error classes before any tool call name the reviewer failure',()=>{
+  const [init]=transcript();
+  const apiError=error=>({type:'assistant',session_id:'fresh-review',parent_tool_use_id:null,error,is_api_error_message:true,
+    message:{role:'assistant',content:[{type:'text',text:'API Error'}]}});
+  for(const [error,code] of [['authentication_failed','reviewer_auth_failed'],['billing_error','reviewer_billing_error'],
+    ['rate_limit','reviewer_rate_limited'],['server_error','reviewer_server_error'],['model_not_found','reviewer_model_not_found'],
+    ['invalid_request','reviewer_api_error'],['__proto__','reviewer_api_error']]){
+    const events=[],stream=createClaudeReviewStream(event=>events.push(event));stream.accept(init);
+    assert.throws(()=>stream.accept(apiError(error)),{code});
+    assert.deepEqual(events.map(event=>event.event),['thread.started','turn.started']);
+    assert.throws(()=>stream.finish(),{code:'incomplete_result'});
+  }
+  for(const messages of [
+    [assistant([tool('t1','Bash')]),toolResult('t1',true),apiError('rate_limit')],
+    [{...apiError('rate_limit'),parent_tool_use_id:'child'}],
+    [apiError({type:'rate_limit'})],
+  ]){
+    const stream=createClaudeReviewStream(()=>{});stream.accept(init);
+    assert.throws(()=>messages.forEach(message=>stream.accept(message)),{code:'unexpected_assistant'});
+  }
+});

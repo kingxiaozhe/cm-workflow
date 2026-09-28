@@ -72,7 +72,8 @@ async function fixture(fn,{reviewRun,authorize,times,timeoutMs=1000,provider='co
       examinedPaths:reviewPaths(request.payload.reviewPackage),findings:[],summary:'Synthetic review'}};};
   const options={root,identity,scope:['code.js'],requirements:['requirements.md'],excludedContexts:['main'],timeoutMs,
     developer:{provider,requestedModel:'fixture',contextId:'developer-logical',run:request=>{
-      fs.writeFileSync(path.join(root,'code.js'),'new\n');return {version:1,invocationId:request.invocationId,
+      // Attempt 2 must answer attempt 1's findings; identical bytes are refused.
+      fs.writeFileSync(path.join(root,'code.js'),request.identity.attempt===1?'new\n':'new 2\n');return {version:1,invocationId:request.invocationId,
         contextId:request.contextId,provider:request.provider,effectiveModel:'fixture',status:'succeeded',accepted:true,
         result:{outcome:'implemented'}};}},
     reviewers:[{id:'reviewer',adapterId:`${provider}-review-adapter`,provider,requestedModel:'fixture',allowed:true,
@@ -361,12 +362,15 @@ test('V3 adapter-originated cancelled observation stays unknown without claiming
   assert(!f.getStore().snapshot().records.some(record=>record.payload.type==='control'));assert.deepEqual(f.reopen().status(),end);
 },{reviewRun:(request,{onEvent})=>{onEvent({event:'thread.started',provider_thread:'actual-review'});return {status:'cancelled',code:'cancelled'};}}));
 
+// A wrong packageDigest breaks the written verdict contract and is retried
+// (scripts/cm-ai-review-failure.test.mjs); a malformed result stays invalid.
 test('V3 rejected final review payload becomes durable observation_invalid without poisoning storage',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));const end=await runner.executeEffect(f.effect('review'));
   assert.equal(end.state,'unknown');assert.equal(end.code,'observation_invalid');assert.equal(end.reviewInvocation.result.reason,'observation_invalid');
   assert.equal(end.reviewInvocation.result.inspection,null);assert.equal(end.receipt,null);assert.deepEqual(f.reopen().status(),end);
-},{reviewRun:(request,{onEvent})=>{events(onEvent);return {status:'succeeded',value:{verdict:'approved',packageDigest:digest('wrong'),
-  examinedPaths:reviewPaths(request.payload.reviewPackage),findings:[],summary:'Wrong package'}};}}));
+},{reviewRun:(request,{onEvent})=>{events(onEvent);return {status:'succeeded',value:{verdict:'approved',
+  packageDigest:request.payload.reviewPackage.packageDigest,examinedPaths:reviewPaths(request.payload.reviewPackage),
+  findings:[],summary:'Malformed',unexpected:true}};}}));
 
 test('V3 oversized normalized provider result becomes bounded durable observation_invalid',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));const end=await runner.executeEffect(f.effect('review'));
@@ -376,13 +380,15 @@ test('V3 oversized normalized provider result becomes bounded durable observatio
   packageDigest:request.payload.reviewPackage.packageDigest,examinedPaths:reviewPaths(request.payload.reviewPackage),
   findings:[],summary:'x'.repeat(600*1024)}};}}));
 
+// Classified no-verdict reviewer failures are retryable; an unlisted worker code
+// (here the output limit) is still an unresolved durable unknown.
 test('V3 ordinary incomplete provider result is a valid durable unknown',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));const end=await runner.executeEffect(f.effect('review'));
   assert.equal(end.state,'unknown');assert.equal(end.code,'transport_incomplete');
   assert.equal(end.reviewInvocation.result.outcome,'unknown');assert.equal(end.reviewInvocation.result.inspection.observationStatus,'unknown');
   assert.deepEqual(f.reopen().status(),end);
 },{reviewRun:(request,{onEvent})=>{onEvent({event:'thread.started',provider_thread:'actual-review'});
-  onEvent({event:'process_closed',exit_code:1,signal:'SIGTERM',timed_out:false});return {status:'failed',code:'provider_failed'};}}));
+  onEvent({event:'process_closed',exit_code:1,signal:'SIGTERM',timed_out:false});return {status:'failed',code:'output_limit'};}}));
 
 test('V3 workflow error preserves an unresolved review across restart without redispatch',()=>fixture(async f=>{
   const runner=f.make();const live=await runner.run(async ctx=>{
@@ -392,7 +398,7 @@ test('V3 workflow error preserves an unresolved review across restart without re
   assert.equal(live.workflowError,'workflow_error');assert.equal(live.receipt,null);
   assert.deepEqual(f.reopen().status(),live);assert.equal(f.dispatches(),1);
 },{reviewRun:(request,{onEvent})=>{onEvent({event:'thread.started',provider_thread:'actual-review'});
-  onEvent({event:'process_closed',exit_code:1,signal:'SIGTERM',timed_out:false});return {status:'failed',code:'provider_failed'};}}));
+  onEvent({event:'process_closed',exit_code:1,signal:'SIGTERM',timed_out:false});return {status:'failed',code:'output_limit'};}}));
 
 for(const prefix of ['review-invocation-registered','review-invocation-started'])
 test(`V3 workflow error preserves the ${prefix} crash prefix across restart`,()=>fixture(async f=>{

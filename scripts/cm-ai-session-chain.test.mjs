@@ -59,7 +59,9 @@ function launch(f,{host='session-A',original,mode='resume',operation='status',re
           if(row.type==='host_request'){
             let result;
             if(row.kind==='develop'){
-              fs.writeFileSync(path.join(f.codeProject,'target.mjs'),'export const value = 42;\n');
+              // Attempt 2 must change the rejected bytes (develop_unchanged_after_review).
+              fs.writeFileSync(path.join(f.codeProject,'target.mjs'),row.payload.request.identity.attempt===1
+                ?'export const value = 42;\n':'export const value = 43;\n');
               result={status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
                 retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};
             }else{
@@ -228,9 +230,11 @@ test('second review excludes earlier joined host even when the current host is C
 // can open B with these unchanged bytes, but rejects B's grant as unauthorized.
 test('runner session chain without CLI reaches B grant and replays it in C',async t=>{
   const f=fixture(t);
-  const bridge={async call(kind){
+  const bridge={async call(kind,payload){
     if(kind==='develop'){
-      fs.writeFileSync(path.join(f.codeProject,'target.mjs'),'export const value = 42;\n');
+      // Attempt 2 must change the rejected bytes (develop_unchanged_after_review).
+      fs.writeFileSync(path.join(f.codeProject,'target.mjs'),payload.request.identity.attempt===1
+        ?'export const value = 42;\n':'export const value = 43;\n');
       return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
         retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};
     }

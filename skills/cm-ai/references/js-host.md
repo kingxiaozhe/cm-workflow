@@ -29,7 +29,10 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 缺 `develop-a2.json` 会在启动前退出 2。尚未看到首轮 findings 时，从 `PLAN.permissions` 移除该审查授权，
 先 `advance` 到 `awaiting_review`，再以运行返回的 `packageDigest` 执行 `decision`；读取
 `.reviews/<feature>-<task>-r1.md`，如需修改则写好 `develop-a2.json` 再 `advance`。
-若有意一次完成，也可预先写好 `develop-a2.json` 后带审查授权运行。
+若有意一次完成，也可预先写好 `develop-a2.json` 后带审查授权运行。`develop-a2.json` 必须针对首轮 findings 修改：
+第 2 轮交付与第 1 轮被要求修改的代码逐字节相同（`artifactDigest` 相同）时停在可重试的
+`blocked/develop_unchanged_after_review`，不送审、不耗第 2 轮审查；改好 `develop-a2.json` 后在原 run `advance`，
+以新的 develop effect id 重新交付。
 若第 1 轮已经待审且计划带
 `--allow-review-attempt 1`，`advance` 可能在同一次调用中进入第 2 轮；缺 `develop-a2.json` 时会在
 启动宿主前退出 2，并提示当前 `packageDigest`。此时先以该 digest 调用 `decision` 单独运行审查，
@@ -170,12 +173,28 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 不新增模型调用的方案：单任务和批次均可传`--protected-conversation-config {文件}`，配置固定为
 `{checkCommands,timeoutMs}`，命令须已获准；检查命令用此预算，独立审查默认 900000 毫秒（15 分钟），可在 review-config 中单独覆盖，范围 1–3600000。preflight 输出有效 `timeoutMs`；此预算不进入授权配置摘要，旧运行可用原 runId 恢复。
 需要模拟器、真机或系统服务的 iOS 项目（CoreSimulatorService、Xcode UI tests、Keychain 等），应将 specs 与代码分根，并选用有系统访问能力的当前会话宿主路径执行检查；实际检查进程必须在 Codex 原生沙箱外。仅改变目录或改用驱动脚本不会让沙箱内检查获得这些服务。同仓 specs 的受保护检查仍在 Codex 沙箱内，典型症状是模拟器不可用、UI tests 无法启动，SwiftPM 的 `swift build` 需要 `--disable-sandbox`；不要把这种失败记成产品测试通过。检查命令的构建产物放在代码根外，例如 `xcodebuild -derivedDataPath {代码根外的目录}`。检查自己新增的范围外未跟踪文件使原 run 进入 `blocked/check_output_out_of_scope`，状态原因和 stderr 列出最多 20 个相对路径；操作员清理产物后在原 run 重试。开发者造成的范围外改动仍是 `unknown/out_of_scope`，不得据此放宽 scope。
+运行器对每次审查计时的上限取「journal 里的调用超时」与「审查预算 + 60000 毫秒余量」中较大者；这个上限不写入 journal，所以把 review-config 的 `timeoutMs` 调到 30 分钟以上（最多 3600000）不会再在 30 分钟被运行器截断，恢复时也可继续调大。
 新运行的代码根快照固定忽略 `.DS_Store`、`._*`、`.AppleDouble/`、`Thumbs.db`、`xcuserdata/`、`*.xcuserstate`、`.build/`、`.swiftpm/`、`DerivedData/`，也跳过 Git 报告为 ignored 的目录及路径；任务 scope、AGENTS.md 与 specs 仍须验证。基线有界保存 Git 忽略路径与目录，后续将基线和当前忽略决定的并集应用到比较两侧；规则文件和无关 Git 配置变化本身不阻断审查。Git 不可用或忽略结果超限时基线标明仅用固定列表。这有意缩小代码根检查面，被忽略的产物不构成已审代码；旧 journal 沿旧规则回放。
 审查期间代码根非忽略路径漂移时，`blocked/review_package_changed` 保留 verdict、回执与最多 20 个差异路径；清理或还原后在原 run 继续 `advance`，不会重派 reviewer。结果已入 journal 而检查点未写入时，恢复会从同一结果补写检查点；结果仍可用，不消耗新轮次。审查前的漂移拒绝 `decision`，完成前的漂移拒绝 `complete`，均列出路径；完成检查期间新增文件进入可重试的 `blocked/completion_package_changed`，清理后在原 run 重发 `complete`。未匹配时 `pendingAction` 不提示会被拒绝的动作。
 审查传输超时且没有结果事件时，记录 `pending_review/review_transport_timeout`，可用 `--mode resume` 后 advance，
 同一 attempt 最多重派一次，重新取得 Review 授权、grant 与 invocation；第二次超时为 `blocked/review_transport_timeout`。
-已有最终消息（即使截断）的超时仍需 reconcile，旧 unknown 历史不自动改类。兼容Codex/Claude当前会话，保留原runtime与Review授权。
-单任务 V3 的审查调用若已登记（可能已 started）但没有 result，操作员先确认旧 host 与 Review 进程都退出，
+审查 CLI 没调用工具、没给结论就失败且进程已退出时（未登录 `reviewer_auth_failed`、额度 `reviewer_billing_error`、
+限流 `reviewer_rate_limited`、服务端错误或过载 `reviewer_server_error`、模型不存在 `reviewer_model_not_found`、
+其他 API 错误 `reviewer_api_error`、进程报告失败 `reviewer_provider_failed`、没有 init 或无法识别的事件
+`reviewer_stream_unrecognized`、没有结论就退出 `reviewer_exited`），记录新的 `failed` 结果并停在
+`pending_review/review_provider_failed`，`reason` 以类别开头并写明先登录还是等待；处理后按超时同样的方式恢复重派。
+审查答复违反 verdict 规则（`contradictory_verdict`、`invalid_finding_path`、`missing_material`、`review_package_mismatch`、
+`invalid_finding_severity/id/shape`）时不产生回执，停在 `pending_review/review_verdict_invalid`，`reason` 以该代码开头。
+这两类与传输超时、abandon 共用同一 attempt 的一次重派，超出后为 `blocked/review_provider_failed` 或
+`blocked/review_verdict_invalid`。工具或上下文越界、输出超限、启动失败等仍为 unknown。
+`blocked` verdict 表示在批准范围内改代码也无法通过（规格矛盾、缺材料、需改范围外文件或需人工决定），
+是终态且不进入第 2 轮；`reason` 写明审查给出的原因，按原因修规格或范围后新建运行。审查提示已写明这一定义，
+可修复的问题必须用 `changes_requested`。
+已有最终消息但被超时截断（或旧版本记为 unknown、属于上述可重试类别）的审查不会自动重派；`pendingAction`
+为 `abandon_review`，操作员确认后用下述 `abandon_review` 留痕放弃这条从未被接收的结果，journal 追加带
+`resultDigest` 的 `review-invocation-abandoned`，再按一次重派恢复。旧 journal 按原样回放，旧 unknown 不自动改类；
+旧版本以 `unexpected_assistant` 等不在上述类别的代码记下的失败仍需 reconcile。兼容Codex/Claude当前会话，保留原runtime与Review授权。
+单任务 V3 的审查调用若已登记（可能已 started）但没有 result，或如上所述已有未被接收的结果，操作员先确认旧 host 与 Review 进程都退出，
 再用原 runId 恢复并显式放弃该调用：
 
 ```bash
