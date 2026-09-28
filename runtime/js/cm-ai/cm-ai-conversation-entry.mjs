@@ -194,6 +194,7 @@ export function createCmAiConversationEntry(options) {
   const decideQa=qaProvider?.decide,qaTimeout=qaProvider?.timeoutMs;
   let pendingQa=null;
   let qaExecutor=null,pendingExecution=null,cancellationEpoch=0;
+  const inFlightHandles=new Set();
   let rerunUnknownQa=options.rerunUnknownQa??false;need(typeof rerunUnknownQa==='boolean');
   let rerunBlockedQa=options.rerunBlockedQa??false;need(typeof rerunBlockedQa==='boolean');
   need(!(rerunUnknownQa&&rerunBlockedQa),'qa_recovery_authorization_required');
@@ -396,13 +397,15 @@ export function createCmAiConversationEntry(options) {
       return summary(operation,status,'reported');
     }
     if(operation.operation==='cancel'){
+      const interrupted=inFlightHandles.size>0||pendingReviewDecision!==null||pendingQa!==null
+        ||pendingExecution!==null||pendingDocumentation!==null;
       cancellationEpoch++;
       pendingReviewDecision?.abort();
       pendingQa?.abort();
       pendingExecution?.abort();
       pendingDocumentation?.abort();
       const status=boundStatus(runner.cancel(),identity);
-      return summary(operation,status,status.state==='cancelled'?'cancelled':'reported');
+      return summary(operation,status,status.state==='cancelled'||interrupted?'cancelled':'reported');
     }
     if(operation.operation==='abandon_review'){
       if(!abandonPermission)return summary(operation,{...runner.status(),
@@ -623,6 +626,16 @@ export function createCmAiConversationEntry(options) {
     const result=await runner.executeEffect({version:1,id:effectId,identity,kind:'develop',learningInput});
     return effectSummary(operation,result,runner,identity);
   }
-  const handle=async raw=>{try{return await route(raw);}catch(error){return rejected(ownerIdentity,error);}};
+  const handle=async raw=>{
+    let token=null;
+    try{
+      const operation=readOperation(raw);
+      if(!['status','cancel','abandon_review'].includes(operation.operation)){
+        token=Symbol(operation.operation);inFlightHandles.add(token);
+      }
+      return await route(operation);
+    }catch(error){return rejected(ownerIdentity,error);}
+    finally{if(token!==null)inFlightHandles.delete(token);}
+  };
   return Object.freeze({handle});
 }
