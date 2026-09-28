@@ -43,6 +43,22 @@ async function fixture(fn){
 
 
 async function completed(f,{attach=false,twoAttempts=false}={}){
+  const built=buildExecution(f,{twoAttempts}),{execution,configure,qa,counts}=built,provider=execution.qaDecisionProvider;
+  if(attach){execution.configuration.workflow.qa=null;delete execution.qaExecutor;delete execution.qaDecisionProvider;}
+  let run=await openControlRun(f.definition,'create',execution);
+  let result=await run.host.handle(request('advance'));run.close();
+  if(attach){
+    assert.equal(result.code,'qa_decision_required');configure(qa);execution.qaDecisionProvider=provider;
+    run=await openControlRun(f.definition,'resume',execution);result=await run.host.handle(request('advance'));run.close();
+  }
+  assert.equal(result.code,'qa_result_blocked',JSON.stringify(result));
+  assert.equal(result.state,'fixture_completed');
+  assert.deepEqual(counts(),{calls:twoAttempts?2:1,reviews:twoAttempts?2:1});
+  assert.match(fs.readFileSync(path.join(f.specsDir,'1.login','tasks.md'),'utf8'),/\[x\]/);
+  return {execution,configure,qa,counts};
+}
+
+function buildExecution(f,{twoAttempts=false}={}){
   let calls=0,reviews=0;
   const execution={configuration:{kind:'synthetic-host-v1'},timeoutMs:2000,excludedContexts:['main'],
     developer:{provider:'codex',requestedModel:'fixture',contextId:'dev',run:createCodexDeveloperRun({requestedModel:'fixture',worker:async()=>{
@@ -86,18 +102,6 @@ async function completed(f,{attach=false,twoAttempts=false}={}){
       requirements:['requirements.md'],runtime:'codex',...qa,timeoutMs:60000,logHome:execution.qaLogHome});
   };
   configure(qa);
-  const provider=execution.qaDecisionProvider;
-  if(attach){execution.configuration.workflow.qa=null;delete execution.qaExecutor;delete execution.qaDecisionProvider;}
-  let run=await openControlRun(f.definition,'create',execution);
-  let result=await run.host.handle(request('advance'));run.close();
-  if(attach){
-    assert.equal(result.code,'qa_decision_required');configure(qa);execution.qaDecisionProvider=provider;
-    run=await openControlRun(f.definition,'resume',execution);result=await run.host.handle(request('advance'));run.close();
-  }
-  assert.equal(result.code,'qa_result_blocked',JSON.stringify(result));
-  assert.equal(result.state,'fixture_completed');
-  assert.equal(calls,twoAttempts?2:1);assert.equal(reviews,twoAttempts?2:1);
-  assert.match(fs.readFileSync(path.join(f.specsDir,'1.login','tasks.md'),'utf8'),/\[x\]/);
   return {execution,configure,qa,counts:()=>({calls,reviews})};
 }
 
@@ -325,4 +329,145 @@ test('F7 review R3: normal resume rejects QA and non-QA drift from the recorded 
   configure(fixed);execution.configuration.workflow.documentationPaths=[];
   run=await openControlRun(f.definition,'resume',execution);run.close();
   assert.deepEqual(counts(),{calls:1,reviews:1});
+}));
+
+// #26: a wrong QA configuration found before any QA round ran. The round-0
+// revision supersedes nothing, consumes no round and is mirrored once in the log.
+const logRows=f=>{const log=path.join(f.specsDir,'运行日志.jsonl');
+  return fs.existsSync(log)?fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse):[];};
+const revisedRecords=f=>snapshot(f).records.filter(r=>r.payload.type==='qa-config-revised').map(r=>r.payload.record);
+async function stepToFixtureCompleted(f,execution,{qa=true}={}){
+  const run=await openControlRun(f.definition,'create',execution);
+  const started=await run.host.handle(request('start'));assert.equal(started.state,'awaiting_review',JSON.stringify(started));
+  const packageDigest=started.packageDigest;
+  assert.equal((await run.host.handle({...request('decision'),packageDigest})).state,'approved');
+  assert.equal((await run.host.handle({...request('complete'),packageDigest})).state,'fixture_completed');
+  if(qa)assert.equal((await run.host.handle({...request('qa'),packageDigest})).code,'qa_triggered');
+  run.close();return packageDigest;
+}
+
+test('#26 pre-round revision: run still ready (no package) reaches QA round 1 with the corrected config',()=>fixture(async f=>{
+  const {execution,configure,qa,counts}=buildExecution(f);
+  let run=await openControlRun(f.definition,'create',execution);run.close();
+  // Several corrections may precede the first round; each is a round-0 record.
+  const first={...qa,environment:{...qa.environment,target:'first-correction'}};configure(first);
+  await assert.rejects(openControlRun(f.definition,'resume',execution),{code:'fingerprint_mismatch'});
+  run=await openControlRun(f.definition,'resume',execution,revision(qa));run.close();
+  configure(fixedQa(first));
+  run=await openControlRun(f.definition,'resume',execution,revision(first));
+  const result=await run.host.handle(request('advance'));run.close();
+  assert.equal(result.code,'qa_passed',JSON.stringify(result));
+  const records=revisedRecords(f),[record]=records;
+  assert.deepEqual(records.map(r=>[r.qaRound,r.testRunId,r.packageDigest]),[[0,null,null],[0,null,null]]);
+  assert.equal(record.qaRound,0);assert.equal(record.testRunId,null);assert.equal(record.packageDigest,null);
+  const rows=logRows(f),starts=rows.filter(r=>r.event==='test_run'&&r.phase==='start');
+  assert.deepEqual(starts.map(r=>[r.attempt,r.previous_test_run_id]),[[1,undefined]]);
+  assert.equal(rows.filter(r=>r.phase==='qa_config_revise').length,2);
+  assert.deepEqual(counts(),{calls:1,reviews:1});
+}));
+
+test('#26 pre-round revision after N5 and a triggered decision keeps round 1; a later revision still consumes one',()=>fixture(async f=>{
+  const {execution,configure,qa,counts}=buildExecution(f);
+  const packageDigest=await stepToFixtureCompleted(f,execution);
+  assert.equal(logRows(f).filter(r=>r.event==='test_run').length,0);
+  const fixed=fixedQa(qa);configure(fixed);
+  let run=await openControlRun(f.definition,'resume',execution,revision(qa));
+  assert.equal((await run.host.handle(request('advance'))).code,'qa_passed');run.close();
+  assert.deepEqual(revisedRecords(f).map(r=>[r.qaRound,r.testRunId,r.packageDigest]),[[0,null,packageDigest]]);
+  const moved={...fixed,environment:{...fixed.environment,target:'second-revision'}};configure(moved);
+  run=await openControlRun(f.definition,'resume',execution,revision(fixed));
+  assert.equal((await run.host.handle(request('advance'))).code,'qa_passed');run.close();
+  assert.deepEqual(revisedRecords(f).map(r=>r.qaRound),[0,1]);
+  const rows=logRows(f);
+  assert.deepEqual(rows.filter(r=>r.event==='test_run'&&r.phase==='start').map(r=>r.attempt),[1,2]);
+  assert.deepEqual(rows.filter(r=>r.phase==='superseded').map(r=>r.reason),['qa_configuration_revision']);
+  run=await openControlRun(f.definition,'resume',execution);run.close();
+  assert.deepEqual(counts(),{calls:1,reviews:1});
+}));
+
+test('#26 pre-round revision refuses completed code that drifted from its review',()=>fixture(async f=>{
+  const {execution,configure,qa}=buildExecution(f);
+  await stepToFixtureCompleted(f,execution,{qa:false});
+  const before=snapshot(f);configure(fixedQa(qa));
+  fs.writeFileSync(path.join(f.codeProject,'a.js'),'drift\n');
+  await assert.rejects(openControlRun(f.definition,'resume',execution,revision(qa)),{code:'qa_revision_not_completed'});
+  assert.deepEqual(snapshot(f),before);
+}));
+
+test('#26 pre-round revision refuses a cancelled run, also at journal replay',()=>fixture(async f=>{
+  const {execution,configure,qa}=buildExecution(f);
+  let run=await openControlRun(f.definition,'create',execution);
+  assert.equal((await run.host.handle(request('cancel'))).state,'cancelled');run.close();
+  const before=snapshot(f);configure(fixedQa(qa));
+  await assert.rejects(openControlRun(f.definition,'resume',execution,revision(qa)),{code:'qa_revision_not_completed'});
+  assert.deepEqual(snapshot(f),before);
+  const {readRunnerHistory}=await import('../runtime/js/cm-ai/durable-runner-state.mjs');
+  const record={version:1,fromFingerprint:before.fingerprints.config,toFingerprint:'b'.repeat(64),invariantDigest:'c'.repeat(64),
+    previousQaDigest:'d'.repeat(64),qaDigest:'e'.repeat(64),reason:'forged',hostContextId:'main',revisedAt:'2026-09-28T00:00:00Z',
+    packageDigest:null,testRunId:null,qaRound:0,taskAttempt:1};
+  const body={version:1,seq:before.records.length+1,id:`runner.${String(before.records.length+1).padStart(6,'0')}`,kind:'result',
+    payload:{version:3,protocol:'cm-task-runner',type:'qa-config-revised',record},previousDigest:before.records.at(-1).digest};
+  assert.throws(()=>readRunnerHistory([...before.records,{...body,digest:digest(body)}],before.records[0].payload.config,3),
+    {code:'qa_revision_not_completed'});
+}));
+
+test('QA environment-failure declaration requires the one-shot rerun grant and a single-line reason',()=>fixture(async f=>{
+  const {execution}=await completed(f);
+  for(const options of [{qaEnvironmentFailure:'no rerun grant'},{rerunBlockedQa:true,qaEnvironmentFailure:' '},
+    {rerunBlockedQa:true,qaEnvironmentFailure:'two\nlines'},{rerunBlockedQa:true,qaEnvironmentFailure:'x'.repeat(501)}])
+    await assert.rejects(openControlRun(f.definition,'resume',execution,options),{code:'qa_recovery_authorization_required'});
+}));
+
+test('#26 pre-round revision log mirror is repaired once, never after a QA round; replay keeps round order',()=>fixture(async f=>{
+  const {execution,configure,qa}=buildExecution(f);
+  await stepToFixtureCompleted(f,execution);
+  const fixed=fixedQa(qa);configure(fixed);
+  let run=await openControlRun(f.definition,'resume',execution,revision(qa));run.close();
+  const saved=snapshot(f),log=path.join(f.specsDir,'运行日志.jsonl'),complete=fs.readFileSync(log,'utf8');
+  const withoutMirror=complete.split('\n').filter(line=>!line||JSON.parse(line).phase!=='qa_config_revise').join('\n');
+  // Journal-only crash: same authorization reopens without a second record and restores the row.
+  fs.writeFileSync(log,withoutMirror);
+  run=await openControlRun(f.definition,'resume',execution,revision(qa));run.close();
+  assert.deepEqual(snapshot(f),saved);assert.equal(logRows(f).filter(r=>r.phase==='qa_config_revise').length,1);
+  run=await openControlRun(f.definition,'resume',execution);run.close();
+  assert.equal(logRows(f).filter(r=>r.phase==='qa_config_revise').length,1);
+  // A QA round cannot be followed by an unmirrored round-0 revision.
+  const [decision]=logRows(f).filter(r=>r.event==='qa');
+  fs.writeFileSync(log,withoutMirror+JSON.stringify({schema_version:1,workflow:'cm-ai',event:'test_run',phase:'start',node:'N6',
+    run_id:identity.runId,repository_id:identity.repositoryId,feature:'1.login',task:identity.taskId,
+    package_digest:decision.package_digest,qa_decision_id:decision.decision_id,operation_id:'forged-round',attempt:1,mode:'commands',case_count:1})+'\n');
+  await assert.rejects(openControlRun(f.definition,'resume',execution),{code:'qa_revision_invalid'});
+  // Nor can an existing mirror sit after a QA round (a revision recorded late).
+  const lines=complete.trim().split('\n'),mirrorAt=lines.findIndex(line=>JSON.parse(line).phase==='qa_config_revise');
+  const forgedRun=fs.readFileSync(log,'utf8').trim().split('\n').at(-1);
+  fs.writeFileSync(log,[...lines.slice(0,mirrorAt),forgedRun,...lines.slice(mirrorAt)].join('\n')+'\n');
+  await assert.rejects(openControlRun(f.definition,'resume',execution),{code:'qa_revision_invalid'});
+  fs.writeFileSync(log,complete);
+  const {readRunnerHistory}=await import('../runtime/js/cm-ai/durable-runner-state.mjs');
+  const {readQaConfigRevision}=await import('../runtime/js/cm-ai/qa-config-revision.mjs');
+  const roundZero=revisedRecords(f)[0];
+  assert.equal(readQaConfigRevision(roundZero).qaRound,0);
+  // Only a round-0 record may lack a review package or a QA run to supersede.
+  assert.throws(()=>readQaConfigRevision({...roundZero,qaRound:1,testRunId:'forged-run',packageDigest:null}));
+  const reseal=records=>{for(let i=0;i<records.length;i++){const {digest:ignored,...body}=records[i];
+    body.previousDigest=i?records[i-1].digest:null;records[i]={...body,digest:digest(body)};}return records;};
+  for(const [field,value,code] of [['packageDigest','b'.repeat(64),'package_mismatch'],['testRunId','forged-run','qa_revision_invalid']]){
+    const records=structuredClone(saved.records),target=records.find(r=>r.payload.type==='qa-config-revised');
+    target.payload.record[field]=value;
+    assert.throws(()=>readRunnerHistory(reseal(records),saved.records[0].payload.config,3),{code},field);
+  }
+  // Round 0 after a consumed round is out of order in both chain readers.
+  run=await openControlRun(f.definition,'resume',execution);
+  assert.equal((await run.host.handle(request('advance'))).code,'qa_passed');run.close();
+  const moved={...fixed,environment:{...fixed.environment,target:'second'}};configure(moved);
+  run=await openControlRun(f.definition,'resume',execution,revision(fixed));
+  await run.host.handle(request('advance'));run.close();
+  configure(fixed);
+  const chained=snapshot(f),forged=structuredClone(chained),revised=forged.records.filter(r=>r.payload.type==='qa-config-revised');
+  assert.deepEqual(revised.map(r=>r.payload.record.qaRound),[0,1]);
+  Object.assign(revised[0].payload.record,{qaRound:1,testRunId:'forged-run'});
+  Object.assign(revised[1].payload.record,{qaRound:0,testRunId:null});reseal(forged.records);
+  const {revision:ignored,...body}=forged;forged.revision=digest(body);
+  assert.throws(()=>qaRevisionChain(forged),{code:'qa_revision_chain_invalid'});
+  assert.throws(()=>readRunnerHistory(forged.records,forged.records[0].payload.config,3),{code:'qa_revision_chain_invalid'});
 }));

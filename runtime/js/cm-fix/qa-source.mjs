@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {readHostQaFixHandoff,readHostQaFixHistory} from '../cm-ai/host-qa-fix.mjs';
-import {scanRows} from '../cm-ai/cm-ai-qa-log.mjs';
+import {effectiveQaDecisionRow,scanRows} from '../cm-ai/cm-ai-qa-log.mjs';
 import {readReviewSourceFiles} from '../cm-ai/review-package.mjs';
 import {digest,hex,id,json,need,shape,text,validIdentity} from '../cm-ai/effect-contract.mjs';
 
@@ -39,9 +39,11 @@ function inspectSource({specsRoot,identity,configuration},readHandoff){
       &&row.task===source.identity.taskId&&row.attempt===source.identity.attempt
       &&row.feature===source.feature&&row.package_digest===source.packageDigest)rows.push(row);
   });
-  need(rows.length===1&&typeof rows[0].project_path==='string'&&typeof rows[0].specs_path==='string'
-    &&fs.realpathSync(rows[0].project_path)===fs.realpathSync(configuration.reproduction.cwd)
-    &&fs.realpathSync(rows[0].specs_path)===fs.realpathSync(specsRoot),'fix_qa_project_mismatch');
+  // A recovered timeout decision appends one linked row; bind the effective one.
+  const decision=effectiveQaDecisionRow(rows,'fix_qa_project_mismatch');
+  need(decision&&typeof decision.project_path==='string'&&typeof decision.specs_path==='string'
+    &&fs.realpathSync(decision.project_path)===fs.realpathSync(configuration.reproduction.cwd)
+    &&fs.realpathSync(decision.specs_path)===fs.realpathSync(specsRoot),'fix_qa_project_mismatch');
   need(handoff.handoffDigest===handoffDigest,'fix_qa_source_changed');
   need(handoff.status!=='blocked','fix_qa_source_blocked');
   return handoff;

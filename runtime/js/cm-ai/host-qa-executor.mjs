@@ -218,10 +218,10 @@ export function createHostQaExecutor(options) {
               ...(hostRequestTimeout?{hostRequestTimeout:true}:{})});
           }else{
             logStep(configuration,binding,'test_run','case_start',{case_id:item.id},'QA browser case started');
-            let observed,hostRequestTimeout=false;
+            let observed,hostRequestTimeout=false,answered=false;
             if(browser===null||item.expected.some(value=>value.includes('[需确认]')))
               observed={verdict:'BLOCKED',evidence:[],environment,cleanup:'not_needed'};
-            else try{observed=json(await browser(request,signal));}
+            else try{observed=json(await browser(request,signal));answered=true;}
             catch(error){
               if(error.code!=='host_request_timeout')throw error;
               hostRequestTimeout=true;
@@ -239,9 +239,13 @@ export function createHostQaExecutor(options) {
             }catch{evidenceProblem='qa_evidence_required';}
             const verdict=evidenceProblem!==null||digest(observed.environment)!==digest(environment)||observed.cleanup==='failed'
               ||(item.cleanup.length>0&&observed.cleanup!=='completed')?'BLOCKED':observed.verdict;
+            // The session itself answered BLOCKED (for example: simulator
+            // unreachable). Unlike [需确认] or a missing capability, a later
+            // explicit rerun on the same code can change this outcome.
             rows.push({id:item.id,kind:'browser',origin:item.origin,blocking:item.blocking,verdict,
               evidence:observed.evidence,evidenceProblem,environment:observed.environment,cleanup:observed.cleanup,
-              ...(hostRequestTimeout?{hostRequestTimeout:true}:{})});
+              ...(hostRequestTimeout?{hostRequestTimeout:true}:{}),
+              ...(answered&&observed.verdict==='BLOCKED'?{hostDeclaredBlocked:true}:{})});
             logStep(configuration,binding,'test_run',verdict==='BLOCKED'?'case_blocked':'case_complete',
               {case_id:item.id,result:verdict},'QA browser case finished');
           }

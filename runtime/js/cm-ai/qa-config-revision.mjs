@@ -40,20 +40,31 @@ export function previousQaMaterial(material,previousWorkflow){
   need(qaInvariantDigest(result)===qaInvariantDigest(material),'fingerprint_mismatch');
   return result;
 }
+// qaRound 0 with testRunId null records a revision made before any QA round
+// ran: nothing is superseded and no round is consumed. packageDigest is the
+// task's current review package, or null before one exists.
+export const beforeFirstQaRound=r=>r.qaRound===0;
 export function readQaConfigRevision(raw){
   const r=json(raw);
   shape(r,['version','fromFingerprint','toFingerprint','invariantDigest','previousQaDigest','qaDigest','reason','hostContextId',
     'revisedAt','packageDigest','testRunId','qaRound','taskAttempt']);
   need(r.version===1,'qa_revision_invalid');
-  for(const key of ['fromFingerprint','toFingerprint','invariantDigest','packageDigest','previousQaDigest','qaDigest'])hex(r[key]);
+  for(const key of ['fromFingerprint','toFingerprint','invariantDigest','previousQaDigest','qaDigest'])hex(r[key]);
+  if(!(beforeFirstQaRound(r)&&r.packageDigest===null))hex(r.packageDigest);
   need(r.fromFingerprint!==r.toFingerprint&&r.previousQaDigest!==r.qaDigest,'qa_revision_unchanged');
-  id(r.hostContextId);id(r.testRunId);text(r.reason);
+  id(r.hostContextId);
+  if(beforeFirstQaRound(r))need(r.testRunId===null,'qa_revision_invalid');else id(r.testRunId);
+  text(r.reason);
   need(r.reason.trim().length>0&&r.reason.length<=500&&!/[\r\n\0]/.test(r.reason),'qa_revision_authorization_required');
   need(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(r.revisedAt)&&Number.isFinite(Date.parse(r.revisedAt)),'qa_revision_invalid');
   need([1,2].includes(r.taskAttempt),'qa_revision_invalid');
-  need(Number.isInteger(r.qaRound)&&r.qaRound>=1&&r.qaRound<3,'qa_round_invalid');
+  need(Number.isInteger(r.qaRound)&&r.qaRound>=0&&r.qaRound<3,'qa_round_invalid');
   return r;
 }
+// Rounds strictly increase once QA has run; any number of revisions may
+// precede the first round, and none may follow a completed round at round 0.
+export const qaRevisionFollows=(next,previous)=>next.qaRound>previous.qaRound
+  ||beforeFirstQaRound(next)&&beforeFirstQaRound(previous);
 export function qaRevisionChain(snapshot){
   let fingerprint=snapshot.fingerprints.config,invariant=null,attached=false;const revisions=[];
   for(const row of snapshot.records){
@@ -65,7 +76,7 @@ export function qaRevisionChain(snapshot){
     const r=readQaConfigRevision(row.payload.record);
     need(r.fromFingerprint===fingerprint&&(invariant===null||r.invariantDigest===invariant)
       &&(!revisions.length||(r.previousQaDigest===revisions.at(-1).qaDigest
-        &&r.qaRound>revisions.at(-1).qaRound)),'qa_revision_chain_invalid');
+        &&qaRevisionFollows(r,revisions.at(-1)))),'qa_revision_chain_invalid');
     fingerprint=r.toFingerprint;invariant=r.invariantDigest;revisions.push(r);
   }
   return {fingerprint,revisions};

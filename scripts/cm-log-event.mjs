@@ -345,6 +345,19 @@ function validateQaSupersession(state,event){
       throw new UsageError('QA configuration supersession requires the matching completed invocation and revision digest');
     return;
   }
+  const caseList=(value,count)=>Array.isArray(value)&&value.length===count&&new Set(value).size===value.length
+    &&value.every(item=>typeof item==='string'&&RESOURCE_ID.test(item));
+  if(event.reason==='declared_environment_failure'){
+    const reason=event.environment_failure_reason;
+    if(state.active||state.superseded||!start||!complete||complete.result!=='FAIL'||!(complete.failed>0)
+      ||start.attempt>=3||event.workflow!=='cm-ai'||event.node!=='N6'||event.previous_test_run_id!==start.operation_id
+      ||!caseList(event.failed_cases,complete.failed)||!caseList(event.blocked_cases,complete.blocked)
+      ||typeof reason!=='string'||!reason.trim()||Buffer.byteLength(reason,'utf8')>500||/[\r\n\0]/.test(reason)
+      ||!['repository_id','run_id','feature','task','package_digest','qa_decision_id','operation_id','attempt','mode','case_count']
+        .every(key=>event[key]!==undefined&&event[key]===start[key]&&event[key]===complete[key]))
+      throw new UsageError('QA environment-failure supersession requires the matching completed FAIL invocation, case lists and reason');
+    return;
+  }
   if(state.active||state.superseded||!start||!complete||complete.result!=='BLOCKED'||complete.failed!==0
     ||complete.blocked<=0||start.attempt>=3||event.workflow!=='cm-ai'||event.node!=='N6'
     ||event.reason!=='host_evidence_problem'||event.previous_test_run_id!==start.operation_id

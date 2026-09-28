@@ -224,7 +224,7 @@ test('host QA cancellation leaves an unfinished invocation and never writes succ
   }finally{f.cleanup();}
 });
 
-for(const kind of ['qa_logic','qa_browser','qa_assess'])test(`QA request watchdog settles ${kind} as BLOCKED`,async()=>{
+for(const kind of ['qa_logic','qa_browser','qa_assess'])test(`QA request watchdog settles ${kind} ${kind==='qa_assess'?'as a retryable qa_decision_timeout':'as BLOCKED'}`,async()=>{
   const f=fixture(),bridge=createHostToolBridge(),sent=[];
   try{
     bridge.attach(row=>{if(row.type==='host_request'){
@@ -240,9 +240,12 @@ for(const kind of ['qa_logic','qa_browser','qa_assess'])test(`QA request watchdo
     }});
     const call=(name)=>(r,s)=>bridge.call(name,r,s,{timeoutMs:20});
     if(kind==='qa_assess'){
+      // A missed assessment window is a transport outcome: nothing to record.
       const {testRunId,...binding}=f.binding;
-      const decision=await createHostQaDecisionProvider({timeoutMs:1000,assess:call(kind)}).decide(binding,new AbortController().signal);
-      assert.equal(decision.status,'blocked');assert.equal(decision.reason,'host_request_timeout');
+      const log=path.join(f.binding.specsDir,'运行日志.jsonl'),before=fs.readFileSync(log);
+      await assert.rejects(createHostQaDecisionProvider({timeoutMs:1000,assess:call(kind)}).decide(binding,new AbortController().signal),
+        {code:'qa_decision_timeout'});
+      assert.deepEqual(fs.readFileSync(log),before);
     }else{
       const executor=createHostQaExecutor({...f.configuration,logic:call('qa_logic'),browser:call('qa_browser')});
       const binding=begin(f,executor),result=await executor.run(binding,new AbortController().signal);
@@ -638,7 +641,9 @@ test('step30b empty mid-feature plan emits one explicit deferred BLOCKED row',as
 });
 
 for(const scenario of ['evidence','cleanup','environment','timeout','logic','commands','product-blocked',
-  'source-drift','FAIL','mixed-failure','round-limit','incomplete','superseded-crash','one-shot','metadata-command'])
+  'source-drift','FAIL','mixed-failure','round-limit','incomplete','superseded-crash','one-shot','metadata-command',
+  'legacy-product-blocked','needs-confirmation','command-unavailable','command-exit','declared-command-exit','declared-product-fail',
+  'declared-contradicted','declared-after-repair','declared-superseded-crash','declared-blocked','declared-unknown-verdict'])
 test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
   const {createCmAiConversationEntry}=await import('../runtime/js/cm-ai/cm-ai-conversation-entry.mjs');
   const {inspectCmAiQaRecovery}=await import('../runtime/js/cm-ai/cm-ai-qa-log.mjs');
@@ -649,16 +654,27 @@ test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
     if(scenario==='logic')f.configuration.commands[0].caseIds=[];
     if(scenario==='metadata-command')f.configuration.commands[0].id='deferred_cases';
     if(scenario==='commands')f.configuration.commands=[];
+    if(scenario==='needs-confirmation'){
+      const source=path.join(f.binding.specsDir,f.binding.feature,'test-cases.json'),contract=JSON.parse(fs.readFileSync(source));
+      contract.cases[1].expected=['[需确认] synthetic expectation'];fs.writeFileSync(source,JSON.stringify(contract));
+    }
+    // Environment stand-in outside both roots: killed (no exit code) or exit 65 until it is fixed.
+    const ready=path.join(f.root,'environment-ready');
+    const exits=['command-exit','declared-command-exit','declared-contradicted','declared-after-repair','declared-superseded-crash','declared-unknown-verdict'];
+    if(['command-unavailable',...exits].includes(scenario))f.configuration.commands[0].command=[process.execPath,'-e',
+      `require('node:fs').existsSync(${JSON.stringify(ready)})||${scenario==='command-unavailable'?'process.kill(process.pid,"SIGKILL")':'process.exit(65)'}`];
+    const failLike=['FAIL','declared-product-fail'].includes(scenario),contradicted=['mixed-failure','declared-contradicted'].includes(scenario);
+    const hostBlocked=['product-blocked','legacy-product-blocked'].includes(scenario);
     let repaired=false,browserCalls=0,logicCalls=0;
     const executor=createHostQaExecutor({...f.configuration,
-      logic:async()=>{logicCalls++;return {verdict:scenario==='mixed-failure'?'CONTRADICTED':
+      logic:async()=>{logicCalls++;return {verdict:contradicted?'CONTRADICTED':
         scenario==='logic'?'INSUFFICIENT_EVIDENCE':'SUPPORTED',evidence:['Synthetic static observation']};},
       browser:async request=>{
         browserCalls++;
         if(!repaired&&scenario==='source-drift')fs.appendFileSync(path.join(f.configuration.codeProject,'source.mjs'),'// drift\n');
         if(!repaired&&scenario==='timeout')throw Object.assign(new Error('timeout'),{code:'host_request_timeout'});
-        return {verdict:!repaired&&scenario==='FAIL'?'FAIL':!repaired&&scenario==='product-blocked'?'BLOCKED':'PASS',
-          evidence:!repaired&&['evidence','source-drift','round-limit','incomplete','superseded-crash','one-shot','mixed-failure','metadata-command'].includes(scenario)
+        return {verdict:!repaired&&failLike?'FAIL':!repaired&&hostBlocked?'BLOCKED':'PASS',
+          evidence:!repaired&&['evidence','source-drift','round-limit','incomplete','superseded-crash','one-shot','mixed-failure','declared-contradicted','metadata-command','declared-blocked'].includes(scenario)
             ?['not-an-evidence-file']: [artifact],
           environment:!repaired&&scenario==='environment'?{...request.environment,target:'different-target'}:request.environment,
           cleanup:!repaired&&scenario==='cleanup'?'failed':'completed'};
@@ -667,6 +683,12 @@ test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
     const {codeProject,testRunId,mode,caseCount,...query}=binding;
     const base={...binding,logHome:f.configuration.logHome};
     if(scenario!=='incomplete')recordCmAiQaRun({...base,phase:'complete',result});
+    // Older executors wrote host-declared BLOCKED rows without the marker; those stay ineligible.
+    if(scenario==='legacy-product-blocked')fs.writeFileSync(result.report,
+      fs.readFileSync(result.report,'utf8').replace(/,\n\s*"hostDeclaredBlocked": true/g,''));
+    // A report row outside PASS/FAIL/BLOCKED no longer matches the recorded counts.
+    if(scenario==='declared-unknown-verdict')fs.writeFileSync(result.report,
+      fs.readFileSync(result.report,'utf8').replace(/("id": "TC-001",[\s\S]*?"verdict": )"FAIL"/,'$1"SKIPPED"'));
     if(scenario!=='incomplete'){
       const state=JSON.parse(fs.readFileSync(path.join(binding.specsDir,'.cm-status.json')));
       assert.equal(state.state,result.failed?'qa_failed':'qa_blocked');assert.equal(state.node,'N6');
@@ -679,6 +701,8 @@ test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
       recordCmAiQaRun({...base,testRunId:`blocked-${round+1}`,qaRound:round+1,previousTestRunId:previous,phase:'start'});
       recordCmAiQaRun({...base,testRunId:`blocked-${round+1}`,qaRound:round+1,phase:'complete',result});
     }
+    if(scenario==='declared-superseded-crash')recordCmAiQaRun({...base,phase:'superseded',
+      expectedEnvironment:f.configuration.environment,environmentFailure:'simulator runtime was missing'});
     if(scenario==='superseded-crash'){
       recordCmAiQaRun({...base,phase:'superseded'});
       assert.equal(inspectRunClosure(log,binding.identity.runId).closed,false);
@@ -694,15 +718,29 @@ test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
     assert.equal(without.code,scenario==='incomplete'?'qa_execution_unknown':result.failed?'qa_failed':'qa_result_blocked');
     if(!result.failed&&scenario!=='incomplete')assert.equal(without.pendingAction,'none');
     assert.deepEqual(fs.readFileSync(log),before);
-    const entry=createCmAiConversationEntry({...options,rerunBlockedQa:true});
-    if(['commands','product-blocked','source-drift','FAIL','mixed-failure','round-limit','incomplete'].includes(scenario)){
+    if(scenario==='declared-command-exit'){
+      // The declaration only travels with the one-shot rerun grant and a superseded row.
+      for(const bad of [{qaEnvironmentFailure:'no rerun grant'},{rerunBlockedQa:true,qaEnvironmentFailure:'two\nlines'}])
+        assert.throws(()=>createCmAiConversationEntry({...options,...bad}),{code:'qa_recovery_authorization_required'});
+      assert.throws(()=>recordCmAiQaRun({...base,testRunId:'declared-start',qaRound:2,phase:'start',environmentFailure:'misplaced'}),
+        {code:'qa_recovery_authorization_required'});
+    }
+    // An accepted repair already owns the next round of that FAIL.
+    const repairedRunner=scenario==='declared-after-repair'?{runner:{...options.runner,status:()=>({...completed,
+      acceptedQaFix:{qaRound:1,testRunId,evidenceDigest:'c'.repeat(64)}})}}:{};
+    const entry=createCmAiConversationEntry({...options,...repairedRunner,rerunBlockedQa:true,
+      ...(scenario.startsWith('declared-')&&scenario!=='declared-superseded-crash'?{qaEnvironmentFailure:'simulator runtime was missing'}:{})});
+    if(['commands','legacy-product-blocked','needs-confirmation','source-drift','FAIL','mixed-failure','round-limit','incomplete',
+      'command-exit','declared-product-fail','declared-contradicted','declared-after-repair','declared-blocked',
+      'declared-unknown-verdict'].includes(scenario)){
       const rejected=await entry.handle(operation);
       assert.equal(rejected.code,scenario==='round-limit'?'qa_round_invalid':scenario==='incomplete'?'qa_execution_unknown':'qa_rerun_not_blocked_by_evidence');
-      assert.deepEqual(fs.readFileSync(log),before);assert.equal(browserCalls,1);
+      assert.deepEqual(fs.readFileSync(log),before);assert.equal(browserCalls,scenario==='needs-confirmation'?0:1);
     }else{
       const queried=await entry.handle({...operation,operation:'qa_result',packageDigest:binding.packageDigest,testRunId});
-      assert.equal(queried.pendingAction,'qa');
+      assert.equal(queried.pendingAction,result.failed?'fix_authorization':'qa');
       repaired=scenario!=='one-shot';
+      if(['command-unavailable',...exits].includes(scenario))fs.writeFileSync(ready,'');
       const rerun=await entry.handle(operation);
       assert.equal(rerun.code,['logic','one-shot'].includes(scenario)?'qa_result_blocked':'qa_passed',JSON.stringify(rerun));
       assert.equal(browserCalls,2);assert.equal(logicCalls,2);
@@ -727,6 +765,30 @@ test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
         fs.writeFileSync(log,corrupt.map(JSON.stringify).join('\n')+'\n');
         assert.throws(()=>inspectCmAiQaRecovery(query,{blocked:true}));fs.writeFileSync(log,after);
       }
+      // The passing successor re-validates its predecessor's exact report and
+      // supersession fields, so each forged detail is caught on its own.
+      const round2=starts[1].operation_id,firstReport=rows().find(row=>row.phase==='complete'&&row.operation_id===testRunId).report;
+      const precise=[];
+      if(scenario==='command-unavailable')precise.push(['report',row=>{row.exitCode=0;}],
+        ['report',row=>{row.evidence=['No declared project test command'];}],
+        ['log',list=>{list.find(row=>row.phase==='superseded').failed_cases=[];}]);
+      if(['declared-command-exit','declared-superseded-crash'].includes(scenario))precise.push(['report',row=>{row.exitCode=null;}],
+        ['report',row=>{row.exitCode=0;}],['log',list=>{list.find(row=>row.phase==='superseded').environment_failure_reason=' ';}],
+        ['log',list=>{list.find(row=>row.phase==='superseded').failed_cases=['declared-test'];}],
+        ['report',row=>{row.verdict='SKIPPED';},'TC-001']);
+      if(precise.length)assert.equal(inspectCmAiQaResult({...query,testRunId:round2}).status,'passed');
+      for(const [target,tamper,caseId='declared-test'] of precise){
+        const report=fs.readFileSync(firstReport,'utf8');
+        if(target==='report'){
+          const parts=report.split(/^## /m),index=parts.findIndex(part=>part.startsWith(`${caseId}\n`));
+          const body=parts[index].slice(caseId.length+1),row=JSON.parse(body);tamper(row);
+          parts[index]=`${caseId}\n\n${JSON.stringify(row,null,2)}${body.match(/\s*$/)[0]}`;
+          fs.writeFileSync(firstReport,parts.map((part,i)=>i?`## ${part}`:part).join(''));
+        }else{const corrupt=rows();tamper(corrupt);fs.writeFileSync(log,corrupt.map(JSON.stringify).join('\n')+'\n');}
+        assert.throws(()=>inspectCmAiQaResult({...query,testRunId:round2}),{code:'qa_result_invalid'},`${target} ${tamper}`);
+        fs.writeFileSync(firstReport,report);fs.writeFileSync(log,after);
+      }
+      if(precise.length)assert.equal(inspectCmAiQaResult({...query,testRunId:round2}).status,'passed');
     }
   }finally{f.cleanup();}
 });

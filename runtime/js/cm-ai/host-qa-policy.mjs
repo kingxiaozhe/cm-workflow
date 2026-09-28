@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {inspectCmAiQaTaskContext} from './cm-ai-admission.mjs';
 import {scanRows,readDecision} from './cm-ai-qa-log.mjs';
-import {digest,freeze,hex,json,need,shape,validIdentity} from './effect-contract.mjs';
+import {digest,freeze,hex,id,json,need,shape,validIdentity} from './effect-contract.mjs';
 
 const key=(feature,task)=>`${feature}/${task}`;
 
@@ -53,23 +53,32 @@ export function decideHostQaPolicy({assessment,pending,mergeEligible,unassessedT
 export function createHostQaDecisionProvider({assess,timeoutMs}) {
   need(typeof assess==='function'&&Number.isSafeInteger(timeoutMs)&&timeoutMs>0&&timeoutMs<=60000,'qa_assessment_invalid');
   return Object.freeze({timeoutMs,async decide(raw,signal){
-    const binding=json(raw);shape(binding,['specsDir','codeProject','feature','identity','packageDigest']);
+    const input=json(raw);
+    shape(input,['specsDir','codeProject','feature','identity','packageDigest',...(Object.hasOwn(input,'previousDecisionId')?['previousDecisionId']:[])]);
+    // previousDecisionId names an older recorded decision that an explicit
+    // recovery supersedes; it only derives a distinct id, never the assessment.
+    const {previousDecisionId=null,...binding}=input;if(previousDecisionId!==null)id(previousDecisionId);
     validIdentity(binding.identity);hex(binding.packageDigest);
     const context=inspectCmAiQaTaskContext({...binding,taskId:binding.identity.taskId});
     const unassessedTasks=history(binding,context);
     need(!signal.aborted,'cancelled');
-    let assessment,timedOut=false;
+    let assessment;
     try{assessment=await assess(freeze({...binding,pending:context.pending,mergeEligible:context.mergeEligible,
       unassessedTasks}),signal);}
-    catch(error){if(error.code!=='host_request_timeout')throw error;timedOut=true;}
+    catch(error){
+      // A missed answer window is a transport outcome, not a QA decision. It is
+      // reported like the outer decision timer: retryable, and nothing durable.
+      if(error?.code==='host_request_timeout')throw Object.assign(new Error('QA assessment timed out'),{code:'qa_decision_timeout'});
+      throw error;
+    }
     need(!signal.aborted,'cancelled');
     // Assessment is read-only. A task/log change while it was pending requires
     // another decision; do not bind an answer to different policy inputs.
     const current=inspectCmAiQaTaskContext({...binding,taskId:binding.identity.taskId});
     need(digest(current)===digest(context)&&history(binding,current)===unassessedTasks,'stale_qa');
-    const result=timedOut?{status:'blocked',score:null,reason:'host_request_timeout'}:
-      decideHostQaPolicy({assessment,pending:context.pending,mergeEligible:context.mergeEligible,unassessedTasks});
-    return freeze({...result,decisionId:`qa-${digest({identity:binding.identity,packageDigest:binding.packageDigest}).slice(0,48)}`,
+    const result=decideHostQaPolicy({assessment,pending:context.pending,mergeEligible:context.mergeEligible,unassessedTasks});
+    const bound={identity:binding.identity,packageDigest:binding.packageDigest,...(previousDecisionId===null?{}:{previousDecisionId})};
+    return freeze({...result,decisionId:`qa-${digest(bound).slice(0,48)}`,
       identity:binding.identity,packageDigest:binding.packageDigest,at:new Date().toISOString().replace(/\.\d{3}Z$/,'Z')});
   }});
 }
