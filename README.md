@@ -17,7 +17,7 @@
 
 ## 最近更新
 
-**0.16.3**
+**0.16.4**
 
 - **审查过的任务可以显式重做了**：独立审查用过的交接文件不能覆盖。QA 因宿主或环境证据不足而 BLOCKED、且满足重跑条件时，原本就能在原运行上用 `--rerun-blocked-qa` 重跑 QA；但确需重新开发、新建运行时，会一直报 `handoff_exists`，任务就跑不起来。现在报错会直接给出三条出路：原运行修订填错的 QA 配置、原运行重跑被环境卡住的 QA，或把任务改回 `- [ ]` 后用新运行带 `--supersede-reviewed-evidence --supersede-reason` 重做。旧交接和审查回执按内容摘要归档到 `.reviews/.superseded/`，不会删除。
 - **换一个聊天会话也能接着跑**：cm-ai 的单任务运行（及其 QA 修复子运行）和 cm-fix 都能由新会话接手原运行；批次运行和旧受保护兼容入口不在此列。新会话第一次签审查授权前会记进存档，并被排除在审查员之外，只读打开不写记录。0.16.1～0.16.2 期间已换会话签过授权的旧 cm-fix 运行，仍只能由当时签授权的会话继续。
@@ -168,7 +168,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.16.3 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.16.4 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 

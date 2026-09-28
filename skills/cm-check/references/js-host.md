@@ -4,13 +4,13 @@
 
 ## 启动
 
-单步调用可用 `node scripts/cm-check-drive.mjs --plan PLAN.json start`。计划写 `skillDir`、`project`、可选 `config`/`quick`，以及 `checks:[{id:"check_runtime",command:[checker,"--project",project,"--print-effective"]}]`；命令须与宿主声明逐项一致。完整模式的 `answers/check-semantic.json` 只写人工八组判断及五个可选项，不写 `sourceDigest`；驾驶员从当次请求绑定摘要。驾驶员实际运行机械 checker，保留真实退出码与输出。`status` 只读；该宿主没有跨进程恢复，驾驶员拒绝 `resume`。
+单步调用可用 `node scripts/cm-check-drive.mjs --plan PLAN.json start`。计划写 `skillDir`、`project`、可选 `config`/`runtime`/`quick`，以及 `checks:[{id:"check_runtime",command:[checker,"--project",project,"--runtime",runtime,"--print-effective"]}]`（未指定 `runtime` 时去掉该对参数）；命令须与宿主声明逐项一致。完整模式的 `answers/check-semantic.json` 只写人工八组判断及五个可选项，不写 `sourceDigest`；驾驶员从当次请求绑定摘要。驾驶员实际运行机械 checker，保留真实退出码与输出。`status` 只读；该宿主没有跨进程恢复，驾驶员拒绝 `resume`。
 
 完整 Skill 先执行 `cm-check-update.mjs` 的默认更新步骤，再从返回的根目录启动此控制器。
 更新不在控制器会话内进行，避免基线在检查中漂移；低层控制器单独调用保持只读。
 
-按主Skill启动`cm-check-host.mjs serve --skill-dir PATH --project PATH [--config PATH]`，保持stdin/stdout双向。
-Windows PowerShell使用`node "{CM_WORKFLOW_ROOT}\scripts\cm-check-host.mjs" serve --skill-dir "{CM_WORKFLOW_ROOT}\skills\cm-check" --project (Get-Location).Path`。
+按主Skill启动`cm-check-host.mjs serve --skill-dir PATH --project PATH [--config PATH] [--runtime codex|claude]`，保持stdin/stdout双向。`--runtime`只说明本次检查跑在哪个运行时，供机械检查给coder/reviewer打标；不传记`未判定`，不对派发下结论。
+Windows PowerShell使用`node "{CM_WORKFLOW_ROOT}\scripts\cm-check-host.mjs" serve --skill-dir "{CM_WORKFLOW_ROOT}\skills\cm-check" --project (Get-Location).Path --runtime codex`。
 host_ready后发送`{"requestId":"check-1","operation":"start"}`；状态用status，取消用cancel，最后发送`{type:"host_close",sessionId:"原值"}`。
 不重发start；断开或缺宿主能力如实阻断，不伪造检查、不另调provider、不自行修文件。取消时宿主负责停止原终端检查并核实清理，JS不会替宿主杀进程。
 

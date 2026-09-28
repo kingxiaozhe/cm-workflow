@@ -51,9 +51,14 @@ function ownedFile(root,relative,code) {
   }
 }
 
+// The checker labels each role against the runtime actually running it; an unnamed
+// runtime stays unknown rather than being assumed.
+const CHECK_RUNTIMES=new Set(['codex','claude']);
+
 export function createCmCheckInvocation(input) {
   const allowed=['skillDir','project'];
   if(input&&Object.hasOwn(input,'config'))allowed.push('config');
+  if(input&&Object.hasOwn(input,'runtime'))allowed.push('runtime');
   if(!input||typeof input!=='object'||Array.isArray(input)
     ||Object.keys(input).length!==allowed.length||!allowed.every(key=>Object.hasOwn(input,key)))reject('invalid_input');
   const skillDir=realDirectory(input.skillDir,'skill_path_invalid');
@@ -68,8 +73,14 @@ export function createCmCheckInvocation(input) {
     config=realFile(input.config,'config_path_invalid');
     args.push('--config',config);
   }
+  let runtime=null;
+  if(Object.hasOwn(input,'runtime')){
+    if(!CHECK_RUNTIMES.has(input.runtime))reject('runtime_invalid');
+    runtime=input.runtime;
+    args.push('--runtime',runtime);
+  }
   args.push('--print-effective');
-  return Object.freeze({workflow:'cm-check',workflowRoot,skillDir,checker,project,config,args:Object.freeze(args)});
+  return Object.freeze({workflow:'cm-check',workflowRoot,skillDir,checker,project,config,runtime,args:Object.freeze(args)});
 }
 
 export function runCmCheck(input) {
@@ -99,7 +110,7 @@ function parseCli(argv) {
       printEffective=true;
       continue;
     }
-    if(!['--skill-dir','--project','--config'].includes(flag)||index+1>=argv.length)reject('invalid_arguments');
+    if(!['--skill-dir','--project','--config','--runtime'].includes(flag)||index+1>=argv.length)reject('invalid_arguments');
     const key=flag==='--skill-dir'?'skillDir':flag.slice(2);
     if(Object.hasOwn(input,key))reject('invalid_arguments');
     input[key]=argv[index+1];

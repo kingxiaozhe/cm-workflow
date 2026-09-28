@@ -50,15 +50,16 @@ function semantic(value,root){
 }
 function main(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-check-drive.mjs --plan PLAN.json <start|status|cancel>\nPLAN: skillDir, project, optional config/quick, checks:[{command:[checker,...args]}], answers。start 的机械证据由实际命令产生；check-semantic.json 只存人工判断。宿主没有跨进程恢复。\n');return;
+    process.stdout.write('用法: cm-check-drive.mjs --plan PLAN.json <start|status|cancel>\nPLAN: skillDir, project, optional config/runtime/quick, checks:[{command:[checker,...args]}], answers。start 的机械证据由实际命令产生；check-semantic.json 只存人工判断。宿主没有跨进程恢复。\n');return;
   }
   const {plan,operation,base}=loadPlanFile({name:'cm-check-drive.mjs',known:KNOWN});
   requireFields(plan,['skillDir','project']);
   if(plan.mode==='resume')stop(2,'cm-check 宿主没有持久会话，不能 resume');
   const skillDir=path.resolve(base,plan.skillDir),project=path.resolve(base,plan.project);
   const config=plan.config?path.resolve(base,plan.config):undefined;
+  const runtime=Object.hasOwn(plan,'runtime')?plan.runtime:undefined;
   let invocation;
-  try{invocation=createCmCheckInvocation({skillDir,project,...(config?{config}:{})});}
+  try{invocation=createCmCheckInvocation({skillDir,project,...(config?{config}:{}),...(runtime===undefined?{}:{runtime})});}
   catch(error){stop(2,`宿主输入无效: ${error.code??error.message}`);}
   if(config)try{loadConfig({projectRoot:project,configPath:config});}
   catch(error){stop(2,`PLAN.config 无效: ${config}: ${error.message}`);}
@@ -76,7 +77,7 @@ function main(){
     if(value===undefined)stop(2,`步骤 start 会反问 ${kind}，但答案文件不存在: ${file}`);
     semantic(value,invocation.workflowRoot);return value;
   });
-  driveHost({host:HOST,args:['serve','--skill-dir',skillDir,'--project',project,...(config?['--config',config]:[]),...(plan.quick?['--quick']:[])],
+  driveHost({host:HOST,args:['serve','--skill-dir',skillDir,'--project',project,...(config?['--config',config]:[]),...(runtime===undefined?[]:['--runtime',String(runtime)]),...(plan.quick?['--quick']:[])],
     cwd:project,operation,answers:answer,answerFor:row=>{
       if(row.kind==='check_semantic')return {sourceDigest:row.payload.sourceDigest,...answer.check_semantic};
       if(row.kind!=='check_runtime')return null;

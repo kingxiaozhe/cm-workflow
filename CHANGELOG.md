@@ -9,6 +9,12 @@
 - 修复 cm-prd 自检命令产生输出时误报 `output_capture_failed`；cm-ai 单任务和批次宿主可用 `--input-limit BYTES` 将输入上限从默认 64 KiB 提高到最多 4 MiB，恢复时可调整。
 - 修复 `cm-prd --change` 的 `revisionDigest` 在汇总发布或规格审批后丢失，导致后续变更误判旧审查记录；补充旧状态恢复说明与明确的“开始”审批提示。
 
+## 0.16.4 — 2026-09-27
+
+- 修复 `cm-check` 机械检查把当前运行时硬当成 Codex 的问题：从 Claude Code 跑自检时，`reviewer` 会被误标成 `declared-adapter`（已声明未派发），看起来像独立审查通道没派出去。
+- `cm-check-runtime.sh` 新增 `--runtime codex|claude`，取值优先级为 `--runtime` > `CM_RUNTIME` > 未判定；两者都没有时打印「未判定」并说明如何指定，不再对是否派发下结论。
+- 该参数经 `cm-check-host.mjs`、`cm-check-entry.mjs`、`cm-check-drive.mjs` 一路透传到检查脚本，并同步更新 `cm-check` 的 SKILL 与接线文档。
+
 ## 0.16.3 — 2026-09-26
 
 - `cm-ai` 单步驾驶员按任务适用 case 与 `[需确认]` 标记预检 runner；已映射 logic 仍按当前 executor 的真实请求拒绝。
