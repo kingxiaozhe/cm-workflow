@@ -246,8 +246,8 @@ test('#10 an invalid --input-limit is refused by the driver before launch',t=>{
 });
 // A live session is not the driver: it can still deliver nothing. The runner must
 // then leave a retryable develop block, not an unknown run.
-function liveSession(f,{mode,write}){
-  const wrapper=path.join(f.root,`live-${mode}-${write}.mjs`);
+function liveSession(f,{mode,write=false,act=write?"fs.writeFileSync(cwd+'/target.mjs','export const value = 43;\\n');":''}){
+  const wrapper=path.join(f.root,`live-${mode}-${Math.random().toString(36).slice(2)}.mjs`);
   fs.writeFileSync(wrapper,`import fs from 'node:fs';
 import {driveHost} from ${JSON.stringify(DRIVE_CORE)};
 import {createHostCheck} from ${JSON.stringify(HOST_CHECK)};
@@ -257,7 +257,7 @@ driveHost({host:${JSON.stringify(HOST)},args:['serve','--config',${JSON.stringif
   request:{version:1,identity:${JSON.stringify(f.identity)}},
   answerFor:async row=>{
     if(row.kind==='develop'){
-      if(${write})fs.writeFileSync(cwd+'/target.mjs','export const value = 43;\\n');
+      ${act}
       return {status:'succeeded',value:${JSON.stringify(developValue)}};
     }
     if(row.kind==='check')return createHostCheck({cwd,commands:[{id:'noop',command:[process.execPath,'-e','0']}]})
@@ -276,6 +276,34 @@ test('#19 a live empty delivery blocks as a retryable develop_empty_changes and 
   assert.equal(result(retried).state,'awaiting_review',retried.stdout);
   const intents=records(f).filter(row=>row.payload.type==='effect-intent').map(row=>row.payload.effect.id);
   assert.deepEqual(intents,['develop-1','develop-1-retry-1']);
+});
+// Scope and requirements may overlap. A requirement must exist in every review
+// package, so deleting one is refused before launch (Codex review of 6f005df).
+test('#11 deleting a scope path that is also a requirement is refused before launch',t=>{
+  const f=fixture(t,{scope:['target.mjs','requirements.md']});
+  f.content('target.mjs','export const value = 42;\n');f.develop({'target.mjs':'target.mjs','requirements.md':{delete:true}});
+  const run=f.drive(f.plan(),'advance');
+  assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/requirements\.md/);assert.match(run.stderr,/requirements/);
+  assert.equal(fs.readFileSync(path.join(f.codeProject,'requirements.md'),'utf8'),'# Fixture\n');
+  assert.equal(fs.existsSync(path.join(f.codeProject,'target.mjs')),false);
+  noRun(f);
+});
+test('#19 a live delivery that deletes an in-scope requirement blocks retryably and the restored retry reaches review',t=>{
+  const f=fixture(t,{scope:['target.mjs','requirements.md'],files:{'target.mjs':'export const value = 42;\n'}});
+  const broken=liveSession(f,{mode:'create',act:"fs.writeFileSync(cwd+'/target.mjs','export const value = 43;\\n');fs.unlinkSync(cwd+'/requirements.md');"});
+  assert.equal(broken.status,0,broken.stderr);
+  assert.equal(result(broken).state,'blocked',broken.stdout);assert.equal(result(broken).code,'develop_requirement_missing');
+  assert.equal(result(broken).pendingAction,'resume');assert.match(result(broken).reason,/requirements\.md/);
+  const restored=liveSession(f,{mode:'resume',act:"fs.writeFileSync(cwd+'/requirements.md','# Fixture\\n');"});
+  assert.equal(restored.status,0,restored.stderr);assert.equal(result(restored).state,'awaiting_review',restored.stdout);
+  const intents=records(f).filter(row=>row.payload.type==='effect-intent').map(row=>row.payload.effect.id);
+  assert.deepEqual(intents,['develop-1','develop-1-retry-1']);
+});
+test('#19 an out-of-scope write still wins over a missing requirement and stays unknown',t=>{
+  const f=fixture(t,{scope:['target.mjs','requirements.md'],files:{'target.mjs':'export const value = 42;\n'}});
+  const run=liveSession(f,{mode:'create',act:"fs.unlinkSync(cwd+'/requirements.md');fs.writeFileSync(cwd+'/outside.mjs','x');"});
+  assert.equal(run.status,1,run.stderr);
+  assert.equal(result(run).state,'unknown');assert.equal(result(run).code,'out_of_scope');
 });
 test('#19 a legacy unknown/empty_changes develop checkpoint still replays as unknown',t=>{
   const f=fixture(t,{files:{'target.mjs':'export const value = 42;\n'}});

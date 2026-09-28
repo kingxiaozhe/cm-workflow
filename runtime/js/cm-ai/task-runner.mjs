@@ -263,7 +263,7 @@ export function createTaskRunner(options) {
   // derivation in one place, next to the cache it is derived from.
   const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
     &&entry.result?.state==='blocked'
-    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes'].includes(entry.result?.code)).length;
+    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing'].includes(entry.result?.code)).length;
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
     &&entry.result?.state==='blocked'&&['completion_checks_changed','completion_package_changed'].includes(entry.result?.code)).length;
   const privateStatus=()=>json({state,code,...(reason?{reason}:{}),
@@ -786,7 +786,21 @@ export function createTaskRunner(options) {
   // unknown effect: nothing was dispatched to a reviewer and no round was spent.
   const EMPTY_DELIVERY='develop_empty_changes: the delivery changes nothing in scope relative to the task baseline; '
     +'write the actual change and resume to redo this attempt';
-  const emptyDelivery=error=>{if(error?.code!=='empty_changes')throw error;halt('blocked','develop_empty_changes',EMPTY_DELIVERY);};
+  // Scope may overlap requirements. A delivery that removed such a file cannot be
+  // packaged (every requirement must exist), which is again a delivery to redo.
+  // Only in-scope requirements qualify: touching any other file stays out_of_scope,
+  // which the package builder reports before it ever reads the requirements.
+  const missingScopeRequirements=()=>config.scope.filter(p=>config.requirements.includes(p)).filter(p=>{
+    try{const stat=fs.lstatSync(path.join(config.root,p));return !stat.isFile()||stat.isSymbolicLink();}
+    catch(error){if(error.code==='ENOENT'||error.code==='ENOTDIR')return true;throw error;}
+  });
+  const emptyDelivery=error=>{
+    if(error?.code==='empty_changes'){halt('blocked','develop_empty_changes',EMPTY_DELIVERY);return;}
+    const missing=error?.code==='read_failed'?missingScopeRequirements():[];
+    if(!missing.length)throw error;
+    halt('blocked','develop_requirement_missing',`develop_requirement_missing: ${missing.slice(0,20).join(', ')} `
+      +'are requirement files and must exist in the review package; restore them and resume to redo this attempt');
+  };
   async function perform(v) {
     if(v.kind==='develop') {
       need(stageAllowed('develop',state,code,priorReview?.verdict),'stage_mismatch');state='developing';code=null;reason=null;checkNewPaths=null;receipt=null;

@@ -26,7 +26,9 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 `develop-a1.json`，两者不能同时存在）；第 2 轮只读 `answers/develop-a2.json`，绝不复用第 1 轮答案。
 `edits` 把批准 scope 内路径映射到以下之一：答案目录里的内容文件名（写入；已有文件保留权限，新文件为 0644）、
 `{"file":"内容文件","mode":"0755"|"0644"}`（写入并设权限）、`{"mode":"0755"|"0644"}`（只改已有文件的权限位）、
-`{"delete":true}`（删除已有文件）。改名是删除旧路径加写入新路径，两个路径都要在 scope 内。审查包本就逐文件记录
+`{"delete":true}`（删除已有文件）。改名是删除旧路径加写入新路径，两个路径都要在 scope 内。同时列在
+`requirements` 里的路径不能删除（审查包要求每个 requirements 文件存在），启动前即拒绝；当前会话若仍删掉了这类文件，
+结果是可重试的 `blocked/develop_requirement_missing`，恢复该文件后 `--mode resume` 再 `advance`。审查包本就逐文件记录
 `mode`（十进制权限位）且删除记为 `after:null`，审查者可见，事后改动权限同样算包漂移。驾驶员在启动宿主前拒绝：
 格式不对的条目、删除或改权限的文件在交付前不存在、单个 scope 文件超过 1 MiB、scope/requirements/AGENTS.md
 正文合计超过 2 MiB 或 256 个文件，以及交付后与任务基线完全相同（`edits:{}` 或内容和权限都没变）；报错写明

@@ -22,7 +22,7 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes'].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing'].includes(code)
   ||kind==='review'&&state==='pending_review'&&REVIEW_RETRY_CODES.includes(code)
   ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed'].includes(code)
     ||code==='review_package_changed'&&reviewVerdict==='approved')
@@ -415,7 +415,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     // between the checks and the review package. No package exists, so no review
     // round was spent; the attempt counter does not move either.
     // develop_unchanged_after_review: attempt 2 matched the rejected attempt-1 artifact.
-    if(added[0]?.terminal==='succeeded'&&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes'].includes(s.code)) {
+    if(added[0]?.terminal==='succeeded'&&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing'].includes(s.code)) {
       // s.receipt is null for every develop checkpoint (above); at attempt 2 the
       // state before still holds the attempt-1 receipt, so only receipts compare.
       need(digest(s.reviewPackage)===digest(before.reviewPackage),'runner_develop');
