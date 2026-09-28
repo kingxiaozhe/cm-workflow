@@ -5,7 +5,7 @@
 
 ## 未发布
 
-- cm-ai 单任务驾驶员可驾驶 bootstrap 规范任务（通常 T-002）及第 2 轮修订：启动前校验 `init-generate.json`／`init-verify.json`（第 2 轮只读 `*-a2.json`，须在读取首轮 findings 后编写），`init_verify` 的命令组只由驾驶员在启动宿主前实跑会话列出的草稿命令得出（先核对写入授权、嵌套 specs 保护与恢复会话，受保护模式在 specs 沙箱内运行，跑后重核规范目标与绑定文件），未通过不进入宿主，其余四组核验与 Learning 来自会话答案；规范写入后检查未通过可在原运行修好后同轮重试，宿主与驾驶员只接受本运行存档记录的写入；含业务文件、多代码根或 `--protected-config` 的规范任务及批次驾驶员仍在启动前拒绝。
+- cm-ai 单任务驾驶员可驾驶 bootstrap 规范任务（通常 T-002）及第 2 轮修订：启动前校验 `init-generate.json`／`init-verify.json`（第 2 轮只读 `*-a2.json`，须在读取首轮 findings 后编写），`init_verify` 的命令组只由驾驶员在宿主接受启动后、发送操作前实跑会话列出的草稿命令得出（先用宿主自己的读取器与 admission 函数核对写入授权、配置、任务选择与 nextTask，受保护模式在 specs 沙箱内运行，跑后重核规范目标与绑定文件），未通过不发送操作，其余四组核验与 Learning 来自会话答案；规范写入后检查未通过可在原运行修好后同轮重试，宿主与驾驶员只接受本运行存档记录的写入；含业务文件、多代码根或 `--protected-config` 的规范任务及批次驾驶员仍在启动前拒绝。
 - cm-ai 单任务驾驶员对 bootstrap 规范任务在启动前拒绝缺少实时 `init_verify` runner，并将 unknown／reconcile 宿主结果作为失败退出；补充当前会话宿主路径与旧运行恢复说明。
 - cm-ai 开发检查失败或不可用时以独立的 `develop_checks_not_passed` 在审查前阻断并可在原运行重试；旧完成门禁的 `checks_not_passed` 保持终态。检查产物越界重试改用新 effect id，完成复查失败保留原审查重试，单任务和批次驾驶员支持每项及默认检查超时（默认 15 分钟）。
 - cm-ai 代码根快照跳过 macOS/iOS IDE 与构建杂项及 Git 忽略路径，保留任务范围、AGENTS.md 与规格检查；基线保存有界忽略决定并在后续比较两侧取并集，允许任务修改 `.gitignore`、运行中 `git init` 及无关 Git 配置变化。漂移诊断列出路径，审查中漂移保存 verdict 并可在原运行清理后继续，完成复核漂移可重试。

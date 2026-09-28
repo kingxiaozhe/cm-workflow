@@ -84,6 +84,11 @@ function prepareRules(f,attempt,options={}){
   f.write(`init-verify${suffix}.json`,verifyAnswer(options.commands,options.retrospective?{retrospective:options.retrospective}:{}));
   return docs.contents;
 }
+// A create-mode refusal after host_ready leaves the host-created run at ready with no effect.
+function assertReadyWithoutEffect(f,key){
+  const saved=JSON.parse(fs.readFileSync(path.join(f.store(key),'state.json'),'utf8'));
+  assert.deepEqual(saved.records.map(row=>row.payload.type),['init']);
+}
 function assertRefusedBeforeLaunch(f,run,pattern){
   assert.equal(run.status,2,run.stderr);assert.match(run.stderr,pattern);
   assert.equal(fs.existsSync(f.store('T-002')),false,'preflight must not create the T-002 run store');
@@ -94,7 +99,7 @@ test('help names the rules answer files and that command results come only from 
   const help=spawnSync(process.execPath,[DRIVER,'--help'],{encoding:'utf8'});
   assert.equal(help.status,0);
   for(const pattern of [/init-generate\.json/,/init-verify\.json/,/init-generate-a2\.json 与 init-verify-a2\.json/,
-    /commands 在启动宿主前由驾驶员实跑（须先带 --allow-bootstrap-write/,/结果只来自实跑，答案文件不能提供/])
+    /commands 在宿主接受启动后、发送操作前由驾驶员实跑（须先带 --allow-bootstrap-write/,/结果只来自实跑，答案文件不能提供/])
     assert.match(help.stdout,pattern);
 });
 
@@ -187,15 +192,33 @@ test('attempt 1 refuses existing instructions the host would not overwrite',t=>{
   assertRefusedBeforeLaunch(f,run(),/必须逐字保留当前 AGENTS\.md 中「## 项目教训」段以外的全部内容/);
 });
 
-test('init-verify commands never run without the grants the host requires before writing rules',t=>{
-  for(const nested of [false,true]){
-    const f=fixture(t,{scaffolded:true,nested});f.writeRun('T-002',[...f.targets]);f.writeBootstrap(selection);
+test('init-verify commands never run unless the host itself accepted the launch and the task',t=>{
+  const cases=[
+    ['no write grant',{},f=>['--bootstrap-config','bootstrap.json'],
+      {status:2,pattern:/规范任务需要 --allow-bootstrap-write.*驾驶员不运行 init-verify 命令、不启动宿主/}],
+    ['symlinked bootstrap config',{},f=>{const real=path.join(f.root,'bootstrap-real.json');
+      fs.renameSync(path.join(f.root,'bootstrap.json'),real);fs.symlinkSync(real,path.join(f.root,'bootstrap.json'));return rulesPermissions;},
+      {status:2,pattern:/bootstrap-config 无效或缺少有效的 cm-init selection: invalid_bootstrap_config/}],
+    ['malformed protected config',{},f=>{fs.writeFileSync(path.join(f.root,'protection.json'),JSON.stringify({checkCommands:[]}));
+      return [...rulesPermissions,'--protected-conversation-config','protection.json'];},
+      {status:2,pattern:/--protected-conversation-config 无效.*宿主以同一读取器拒绝启动.*不运行 init-verify 命令/}],
+    ['T-001 still pending',{pending:true},f=>rulesPermissions,
+      {status:2,pattern:/T-002 现在不能新建运行：admission ready，nextTask T-001.*不运行 init-verify 命令/}],
+    // No driver replica: the host's own launch check refuses before host_ready.
+    ['nested specs without protection',{nested:true},f=>rulesPermissions,
+      {status:1,pattern:/nested_specs_protection_required/}],
+  ];
+  for(const [name,options,permissions,expected] of cases){
+    const f=fixture(t,{scaffolded:!options.pending,nested:options.nested});
+    f.writeRun('T-002',[...f.targets]);f.writeBootstrap(selection);
     const marker=path.join(f.root,'ran.marker');
     prepareRules(f,1,{commands:[{id:'marker',command:['/bin/sh','-c',`echo ran > ${marker}`]}]});
-    const run=f.drive(f.plan('T-002','create',nested?rulesPermissions:['--bootstrap-config','bootstrap.json']),'advance');
-    assertRefusedBeforeLaunch(f,run,nested?/specs 位于代码根内时宿主要求 --protected-conversation-config.*不运行 init-verify 命令/
-      :/规范任务需要 --allow-bootstrap-write.*驾驶员不运行 init-verify 命令、不启动宿主/);
-    assert.equal(fs.existsSync(marker),false,'no command may run before the grants are checked');
+    const run=f.drive(f.plan('T-002','create',permissions(f)),'advance');
+    assert.equal(run.status,expected.status,`${name}: ${run.stderr}`);assert.match(run.stderr,expected.pattern,name);
+    assert.equal(fs.existsSync(marker),false,`${name}: no command may run`);
+    assert.equal(fs.existsSync(f.store('T-002')),false,name);
+    assert.equal(fs.existsSync(path.join(f.codeProject,'.claude')),false,name);
+    t.diagnostic(`refused: ${name}`);
   }
 });
 
@@ -204,16 +227,17 @@ test('init-verify commands that change what the preflight bound are refused befo
   const f=fixture(t,{scaffolded:true});f.writeRun('T-002',[...f.targets]);f.writeBootstrap(selection);
   const bootstrapFile=path.join(f.root,'bootstrap.json'),tasks=path.join(f.specsDir,f.feature,'tasks.md');
   const original={bootstrap:fs.readFileSync(bootstrapFile),tasks:fs.readFileSync(tasks)};
-  for(const [script,changed] of [
+  for(const [index,[script,changed]] of [
     ['mkdir -p .claude && echo rewritten > .claude/CLAUDE.md','.claude/CLAUDE.md'],
     [`printf ' ' >> ${bootstrapFile}`,bootstrapFile],
-    [`printf '\\n' >> ${tasks}`,tasks]]){
+    [`printf '\\n' >> ${tasks}`,tasks]].entries()){
+    const key=`T-002-${index}`;f.writeRun('T-002',[...f.targets],key);
     prepareRules(f,1,{commands:[{id:'writer',command:['/bin/sh','-c',script]}]});
-    const run=f.drive(f.plan('T-002','create',rulesPermissions),'advance');
+    const run=f.drive(f.plan(key,'create',rulesPermissions),'advance');
     assert.equal(run.status,2,run.stderr);
-    assert.match(run.stderr,new RegExp(`init-verify 命令改动了预检已核对的文件: ${changed.replace(/[.*+?^${}()|[\]\\/]/g,'\\$&')}`));
+    assert.match(run.stderr,new RegExp(`预检已核对的文件在发送操作前被改动: ${changed.replace(/[.*+?^${}()|[\]\\/]/g,'\\$&')}.*PLAN\\.mode 改为 resume`));
     assert.doesNotMatch(run.stderr,/应答 init_generate/);
-    assert.equal(fs.existsSync(f.store('T-002')),false);
+    assertReadyWithoutEffect(f,key);
     fs.rmSync(path.join(f.codeProject,'.claude'),{recursive:true,force:true});
     fs.writeFileSync(bootstrapFile,original.bootstrap);fs.writeFileSync(tasks,original.tasks);
   }
@@ -227,9 +251,9 @@ test('protected mode runs init-verify commands inside the same specs sandbox as 
   const leak=path.join(f.specsDir,'leak.txt');
   prepareRules(f,1,{commands:[{id:'leak',command:['/bin/sh','-c',`echo leak > ${leak}`],timeoutMs:60000}]});
   const run=f.drive(f.plan('T-002','create',[...rulesPermissions,'--protected-conversation-config','protection.json']),'advance');
-  assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/init-verify\.json 的命令在启动宿主前实跑未通过：leak:/);
+  assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/init-verify\.json 的命令在发送操作前实跑未通过：leak:/);
   assert.equal(fs.existsSync(leak),false,'the specs root stays read-only for init-verify commands');
-  assert.equal(fs.existsSync(f.store('T-002')),false);
+  assertReadyWithoutEffect(f,'T-002');
 });
 
 test('responder binds each host request to the preflighted attempt and its own command runs',
@@ -256,7 +280,8 @@ test('responder binds each host request to the preflighted attempt and its own c
   responder.init_generate(generate());
   await assert.rejects(async()=>responder.init_verify(verify()),/命令尚未由本驾驶员实跑/);
   // prepare really runs the listed command before the host starts and refuses its failure.
-  assert.match(await responder.prepare(),/init-verify\.json 的命令在启动宿主前实跑未通过：strict: failed（host check exited 1）。宿主未启动，运行存档不变/);
+  assert.match(await responder.prepare(),/init-verify\.json 的命令在发送操作前实跑未通过：strict: failed（host check exited 1）。未发送操作，运行存档不变/);
+  assert.match(await responder.prepare('create'),/宿主已按 create 建好运行（ready，未执行开发步骤）；修正后把 PLAN\.mode 改为 resume 重试/);
   assert.throws(()=>responder.init_generate({...generate(),payload:{...generate().payload,project:f.root}}),/项目根与运行定义不一致/);
   assert.throws(()=>responder.init_generate({...generate(),payload:{...generate().payload,selection:{...selection,modules:['frontend']}}}),
     /selection 与 bootstrap-config 不一致/);
@@ -274,7 +299,7 @@ test('responder binds each host request to the preflighted attempt and its own c
   responder.init_generate(generate());
   const reply=await responder.init_verify(verify());
   assert.equal(reply.checks.commands.status,'failed');
-  assert.match(reply.checks.commands.evidence,/驾驶员在启动宿主前实跑 1\/1 条草稿命令（\d{4}-\d{2}-\d{2}T[\d:]+Z）: strict: failed（host check exited 1）/);
+  assert.match(reply.checks.commands.evidence,/驾驶员在发送本操作前实跑 1\/1 条草稿命令（\d{4}-\d{2}-\d{2}T[\d:]+Z）: strict: failed（host check exited 1）/);
   assert.deepEqual(reply.constraintChanges,[]);assert.deepEqual(reply.application,learning.application);
 });
 
@@ -345,19 +370,19 @@ test('real host drives split-root T-001 scaffold, then T-002 rules with a revisi
   prepareRules(f,2,{agents:'# AITide rewritten\n'});
   run=again();assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/init-generate-a2\.json 的 AGENTS\.md 必须逐字保留/);
   assert.deepEqual(fs.readFileSync(state),before);
-  // A resume that the host would not open (other session, other runtime) runs no command.
+  // A resume the host itself refuses to open (other session, other runtime) runs no command.
   const marker=path.join(f.root,'ran.marker');
   prepareRules(f,2,{commands:[{id:'marker',command:['/bin/sh','-c',`echo ran > ${marker}`]}]});
-  for(const [extra,pattern] of [[{hostContext:'another-session'},/恢复存档不是由 another-session 创建/],
-    [{runtime:'codex'},/PLAN\.runtime codex 与恢复存档的 claude 不一致/]]){
+  for(const extra of [{hostContext:'another-session'},{runtime:'codex'}]){
     run=f.drive(f.plan('T-002','resume',[...rulesPermissions,...review],extra),'advance');
-    assert.equal(run.status,2,run.stderr);assert.match(run.stderr,pattern);
+    assert.equal(run.status,1,run.stderr);assert.match(run.stderr,/fingerprint_mismatch/);
+    assert.doesNotMatch(run.stderr,/\[drive init_verify/);
     assert.equal(fs.existsSync(marker),false);assert.deepEqual(fs.readFileSync(state),before);
   }
   // A failing attempt-2 command is refused before launch: the run stays changes_requested.
   prepareRules(f,2,{commands:[{id:'strict',command:['/bin/sh','scripts/verify.sh','--strict'],timeoutMs:60000}]});
   run=again();assert.equal(run.status,2,run.stderr);
-  assert.match(run.stderr,/init-verify-a2\.json 的命令在启动宿主前实跑未通过：strict: failed（host check exited 1）/);
+  assert.match(run.stderr,/init-verify-a2\.json 的命令在发送操作前实跑未通过：strict: failed（host check exited 1）。未发送操作，运行存档不变/);
   assert.doesNotMatch(run.stderr,/应答 init_generate/);
   assert.deepEqual(fs.readFileSync(state),before);
   matches(first);
@@ -375,7 +400,7 @@ test('real host drives split-root T-001 scaffold, then T-002 rules with a revisi
   assert.deepEqual([...handoff.changed_files].sort(),[...f.targets].sort());
 });
 
-test('a failing init_verify command is really run before launch and refused with nothing written',
+test('a failing init_verify command really runs after the host accepts the launch and before any operation',
   {skip:process.platform!=='darwin',timeout:120000},t=>{
   const f=fixture(t,{scaffolded:true});f.writeRun('T-002',[...f.targets]);f.writeBootstrap(selection);
   f.writeRun('T-001',Object.keys(scaffold));reviewFixture(f);
@@ -385,14 +410,16 @@ test('a failing init_verify command is really run before launch and refused with
   prepareRules(f,1,{commands:[{id:'strict',command:['/bin/sh','scripts/verify.sh','--strict'],timeoutMs:60000}]});
   const failed=f.drive(f.plan('T-002','create',permissions),'advance');
   assert.equal(failed.status,2,failed.stderr);
-  assert.match(failed.stderr,/init-verify\.json 的命令在启动宿主前实跑未通过：strict: failed（host check exited 1）/);
+  assert.match(failed.stderr,/init-verify\.json 的命令在发送操作前实跑未通过：strict: failed（host check exited 1）/);
+  assert.match(failed.stderr,/PLAN\.mode 改为 resume/);
   assert.match(failed.stderr,/\[drive init_verify strict stderr\] strict-check-ran/);
   assert.doesNotMatch(failed.stderr,/应答 init_generate/);
-  assertRefusedBeforeLaunch(f,failed,/宿主未启动，运行存档不变/);
+  assertReadyWithoutEffect(f,'T-002');
   assert.equal(fs.existsSync(path.join(f.codeProject,'AGENTS.md')),false);
-  // Fix the draft's command list; the same run definition then advances.
+  assert.equal(fs.existsSync(path.join(f.codeProject,'.claude')),false);
+  // Fix the draft's command list; the host-created ready run then advances on resume.
   const contents=prepareRules(f,1);
-  const fixed=f.drive(f.plan('T-002','create',permissions),'advance');
+  const fixed=f.drive(f.plan('T-002','resume',permissions),'advance');
   assert.equal(fixed.status,0,fixed.stderr);assert.equal(result(fixed).state,'awaiting_review',fixed.stdout);
   assert.match(fixed.stderr,/\[drive init_verify verify /);
   for(const file of f.targets)assert.equal(read(f,file),contents[file],file);
@@ -418,6 +445,14 @@ test('rules written by this run survive a failed task check: fix the environment
   assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/\.claude\/rules\/security\.md 与本运行已记录的写入不一致/);
   assert.deepEqual(fs.readFileSync(state),before);
   fs.writeFileSync(path.join(f.codeProject,'.claude/rules/security.md'),contents['.claude/rules/security.md']);
+  // The rules effect only enters the admitted next task (host-bootstrap.mjs run()).
+  const tasks=path.join(f.specsDir,f.feature,'tasks.md'),taskList=fs.readFileSync(tasks,'utf8');
+  fs.writeFileSync(tasks,taskList.replace('[ ] T-002','[x] T-002'));
+  run=f.drive(f.plan('T-002','resume',permissions,{checks}),'advance');
+  assert.equal(run.status,2,run.stderr);
+  assert.match(run.stderr,/T-002 不是当前可进入的 bootstrap 任务（nextTask 无，宿主以 bootstrap_task_required 拒绝）；驾驶员不运行 init-verify 命令/);
+  assert.deepEqual(fs.readFileSync(state),before);
+  fs.writeFileSync(tasks,taskList);
   fs.writeFileSync(path.join(f.root,'environment.ready'),'ok\n');
   run=f.drive(f.plan('T-002','resume',permissions,{checks}),'advance');
   assert.equal(run.status,0,run.stderr);assert.equal(result(run).state,'awaiting_review',run.stdout);

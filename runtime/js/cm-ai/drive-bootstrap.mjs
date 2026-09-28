@@ -6,17 +6,19 @@
 // it host verification, not Review), so they come from a per-attempt answer file.
 // The commands group is execution evidence: only commands this driver really
 // runs produce it; an answer file can list commands but never their results.
-// They run before the host starts (prepare): a failure is refused with the run
-// store untouched, because any init_verify failure inside the host leaves the
-// develop effect unknown with no in-run recovery (host-bootstrap.mjs run()).
-// Nothing runs until the PLAN carries the grants the host requires before it
-// writes rules, and every file the preflight or host binds is re-read afterwards.
+// They run after the host accepted the launch (host_ready: every launch input,
+// admission, task selection and the run store) and before any operation is sent
+// (prepare): a failure is refused before the develop effect exists, because any
+// init_verify failure inside the host leaves it unknown with no in-run recovery
+// (host-bootstrap.mjs run()). Static refusals reuse the host's own readers and
+// admission functions, and every file the preflight bound is re-read afterwards.
 import fs from 'node:fs';
 import path from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import {createHash} from 'node:crypto';
 import {createHostCheck} from './host-check.mjs';
-import {inspectCmAiBootstrapTask} from './cm-ai-admission.mjs';
+import {inspectCmAiAdmission,inspectCmAiBootstrapTask,matchesCmAiTaskSelection} from './cm-ai-admission.mjs';
+import {readBootstrapConfiguration,readConversationProtection} from '../../../scripts/cm-ai-host.mjs';
 import {mergeBootstrapAgents} from './host-bootstrap.mjs';
 import {createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective} from './cm-ai-context-refresh.mjs';
 import {cmInitRuleTargets,validateCmInitSelection} from '../cm-init/draft-generation.mjs';
@@ -57,11 +59,9 @@ export function inspectDriverBootstrap({advance,definition,permissions}){
   if(permissions.includes('--protected-config'))return gap('规范任务不支持 --protected-config（provider 开发）驾驶');
   if(Object.hasOwn(definition,'codeProjects'))return gap('多代码根（codeProjects）规范任务驾驶员尚不支持');
   let selection;
-  try{
-    const raw=JSON.parse(fs.readFileSync(permissions[permissions.indexOf('--bootstrap-config')+1],'utf8'));
-    if(!object(raw)||Object.keys(raw).join()!=='selection')throw Error('bootstrap-config 只允许 selection');
-    selection=validateCmInitSelection(raw.selection);
-  }catch(error){return {mode:'instructions',gap:`bootstrap-config 缺少有效的 cm-init selection: ${error.code??error.message}；宿主未启动`};}
+  // The host's own reader: a regular, non-symlink file of at most 64 KiB with only selection.
+  try{selection=validateCmInitSelection(readBootstrapConfiguration(permissions[permissions.indexOf('--bootstrap-config')+1]).selection);}
+  catch(error){return {mode:'instructions',gap:`bootstrap-config 无效或缺少有效的 cm-init selection: ${error.code??error.message}；宿主未启动`};}
   const instructionPaths=cmInitRuleTargets(selection);
   const missing=instructionPaths.filter(file=>!definition.scope.includes(file));
   if(missing.length)return {mode:'instructions',gap:`规范任务 scope 缺少固定目标 ${missing.join(', ')}；宿主会以 bootstrap_scope_required 拒绝启动`};
@@ -174,18 +174,31 @@ function readVerify(root,name,{definition,plan,attempt}){
 // advance that could review and then revise in one go is refused: the revision
 // must answer findings that do not exist yet, and its commands would run before
 // attempt 1 even writes.
-function authorizeRulesLaunch({definition,plan,permissions,reachable}){
+// Early refusals with the host's own functions. The host checks the write grant
+// only when the develop effect starts, and the task entry inside it
+// (host-bootstrap.mjs run()), so both are required here; everything else the host
+// checks at launch runs before host_ready, before any command.
+function authorizeRulesLaunch({definition,plan,permissions}){
   const refusal='；驾驶员不运行 init-verify 命令、不启动宿主';
   refuse(permissions.includes('--allow-bootstrap-write'),
     `规范任务需要 --allow-bootstrap-write：宿主写规范前要求这一授权（bootstrap_write_authorization_required）${refusal}`);
-  refuse(permissions.includes('--protected-conversation-config')||!definition.specsDir.startsWith(definition.codeProject+path.sep),
-    `specs 位于代码根内时宿主要求 --protected-conversation-config（nested_specs_protection_required）${refusal}`);
-  if(reachable.journal===null)return;
-  const durable=plan.originalHostContext??plan.hostContext,runtime=plan.runtime??'codex';
-  refuse(Array.isArray(reachable.journal.excludedContexts)&&reachable.journal.excludedContexts.includes(durable),
-    `恢复存档不是由 ${durable} 创建：换会话恢复须在 PLAN.originalHostContext 填创建运行的会话 ID，否则宿主拒绝打开${refusal}`);
-  refuse(reachable.journal.developerProvider===runtime,
-    `PLAN.runtime ${runtime} 与恢复存档的 ${reachable.journal.developerProvider} 不一致，宿主拒绝打开${refusal}`);
+  const protection=permissions.indexOf('--protected-conversation-config');
+  if(protection!==-1)try{readConversationProtection(permissions[protection+1]);}
+  catch(error){stop(2,`--protected-conversation-config 无效: ${error.code??error.message}（宿主以同一读取器拒绝启动）${refusal}`);}
+  const where={specsDir:definition.specsDir,codeProject:definition.codeProject};
+  if(plan.mode==='create'){
+    // openControlRun: a new run needs a ready admission that selects this task.
+    const admission=inspectCmAiAdmission(where);
+    refuse(admission.state==='ready'&&matchesCmAiTaskSelection(admission,definition.feature,definition.identity.taskId,
+      definition.taskSelection??null),`${definition.identity.taskId} 现在不能新建运行：admission ${admission.state}，`
+      +`nextTask ${admission.nextTask?.id??'无'}（宿主以 task_selection_mismatch 等拒绝）${refusal}`);
+  }
+  // host-bootstrap.mjs run(): the rules effect only enters the admitted next task.
+  let entry;
+  try{entry=inspectCmAiBootstrapTask({...where,taskId:definition.identity.taskId}).admission.nextTask;}
+  catch(error){return stop(2,`bootstrap 任务预检失败: ${error.code??error.message}${refusal}`);}
+  refuse(entry?.feature===definition.feature&&entry.id===definition.identity.taskId,
+    `${definition.identity.taskId} 不是当前可进入的 bootstrap 任务（nextTask ${entry?.id??'无'}，宿主以 bootstrap_task_required 拒绝）${refusal}`);
 }
 
 export function readBootstrapRulesAnswers({answers,operation,definition,plan,permissions,bootstrap,reachable}){
@@ -195,7 +208,7 @@ export function readBootstrapRulesAnswers({answers,operation,definition,plan,per
     stop(2,`规范任务的 advance 不能带 --allow-review-attempt 1 直接进入第 2 轮：修订答案须在读取首轮审查 findings 之后编写。请从 PLAN.permissions 移除 --allow-review-attempt 1，先 advance 到 awaiting_review；再用返回的 packageDigest 执行 decision，读取 ${slug}-r1.md 的 findings；若要求修改，写 ${pair(2)} 后 advance。`);
   if(reachable.reviewFirst)
     stop(2,`规范修订答案须在读取首轮审查 findings 之后编写：请先以 decision 和当前 packageDigest ${reachable.packageDigest} 单独运行审查，读取 ${slug}-r1.md 的 findings，写 ${pair(2)} 后再 advance（不要带 --allow-review-attempt 1 advance）`);
-  if(reachable.attempts.length)authorizeRulesLaunch({definition,plan,permissions,reachable});
+  if(reachable.attempts.length)authorizeRulesLaunch({definition,plan,permissions});
   for(const attempt of reachable.attempts){
     const names=['init-generate','init-verify'].map(name=>attemptAnswerName(answers??'',name,attempt));
     for(const name of names){
@@ -226,11 +239,15 @@ function boundFiles({definition,bootstrap,watch}){
 }
 export function createBootstrapRulesResponder({definition,plan,bootstrap,answers,specsRoot=null,watch=[]}){
   let generated=null;const executed=new Map();
+  // Bound at preflight time: a change before the host opened or during the commands both count.
+  const before=boundFiles({definition,bootstrap,watch});
+  const recovery=mode=>mode==='create'
+    ?'宿主已按 create 建好运行（ready，未执行开发步骤）；修正后把 PLAN.mode 改为 resume 重试'
+    :'运行存档不变；修正后原样重试';
   return {
     // Returns null when every listed command passed and left the bound files
     // unchanged, otherwise the refusal line.
-    async prepare(){
-      const before=boundFiles({definition,bootstrap,watch});
+    async prepare(mode='resume'){
       for(const [attempt,entry] of answers){
         const results=[],at=new Date().toISOString().replace(/\.\d{3}Z$/,'Z');
         for(const command of entry.verify.commands){
@@ -246,12 +263,12 @@ export function createBootstrapRulesResponder({definition,plan,bootstrap,answers
         if(results.length<entry.verify.commands.length)
           lines.push(`未运行（前一条未通过）: ${entry.verify.commands.slice(results.length).map(item=>item.id).join(', ')}`);
         executed.set(attempt,{passed,lines,at,total:entry.verify.commands.length,ran:results.length});
-        if(!passed)return `${entry.verifyName} 的命令在启动宿主前实跑未通过：${lines.join('；')}。宿主未启动，运行存档不变；修正项目或草稿及答案后重试`;
+        if(!passed)return `${entry.verifyName} 的命令在发送操作前实跑未通过：${lines.join('；')}。未发送操作，${recovery(mode)}（修正项目或草稿及答案）`;
       }
       const after=boundFiles({definition,bootstrap,watch});
       const changed=[...before.keys()].filter(file=>before.get(file)!==after.get(file));
-      if(changed.length)return `init-verify 命令改动了预检已核对的文件: ${changed.join(', ')}；宿主未启动（否则会以 bootstrap_instruction_conflict 等停在 unknown）。`
-        +'命令须只读核验，还原这些文件后重试';
+      if(changed.length)return `预检已核对的文件在发送操作前被改动: ${changed.join(', ')}；未发送操作（否则宿主会以 bootstrap_instruction_conflict 等停在 unknown），`
+        +`${recovery(mode)}。init-verify 命令须只读核验，还原这些文件后重试`;
       return null;
     },
     init_generate(row){
@@ -279,7 +296,7 @@ export function createBootstrapRulesResponder({definition,plan,bootstrap,answers
         throw Error('宿主核验的草稿与 init-generate 答案（含合入的项目教训段）不一致');
       const answer=answers.get(attempt).verify,run=executed.get(attempt);
       if(!run)throw Error('init_verify 的命令尚未由本驾驶员实跑，拒绝应答');
-      const evidence=`驾驶员在启动宿主前实跑 ${run.ran}/${run.total} 条草稿命令（${run.at}）: ${run.lines.join('；')}`
+      const evidence=`驾驶员在发送本操作前实跑 ${run.ran}/${run.total} 条草稿命令（${run.at}）: ${run.lines.join('；')}`
         +(nonempty(answer.commandsNotRun)?`。未实跑（会话核对说明，不是执行证据）: ${answer.commandsNotRun}`:'');
       return {checks:{...answer.checks,commands:{status:run.passed?'verified':'failed',evidence}},
         constraintChanges:[],application:answer.application,retrospective:answer.retrospective};

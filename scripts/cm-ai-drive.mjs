@@ -98,21 +98,18 @@ function reachableDevelopAttempts({plan,operation,definition,permissions}){
   if(plan.mode==='create'){
     const reviewAfterDevelop=operation==='advance'
       &&permissions.some((flag,index)=>flag==='--allow-review-attempt'&&permissions[index+1]==='1');
-    return {attempts:reviewAfterDevelop?[1,2]:[1],reviewFirst:false,reviewAfterDevelop,packageDigest:null,learning:null,journal:null};
+    return {attempts:reviewAfterDevelop?[1,2]:[1],reviewFirst:false,reviewAfterDevelop,packageDigest:null,learning:null};
   }
-  let history,snapshot;
+  let history;
   try{
-    snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,identity:{
+    const snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,identity:{
       repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
     const first=snapshot.records[0];
     history=readRunnerHistory(snapshot.records,first.payload.config,3);
   }catch(error){stop(2,`无法只读检查恢复存档: ${error.code??error.message}`);}
   // learning is the journal's Learning result the next develop effect starts from
-  // (bootstrap rules bind their on-disk files to its recorded evidence); journal
-  // keeps the creating context and runtime the host checks when it reopens the run.
-  const metadata=snapshot.records[0].payload.config;
-  return {...projectDevelopAttempts(history.state,operation,permissions),learning:history.state.learningResult??null,
-    journal:{excludedContexts:metadata.excludedContexts,developerProvider:metadata.developer?.provider??null}};
+  // (bootstrap rules bind their on-disk files to its recorded evidence).
+  return {...projectDevelopAttempts(history.state,operation,permissions),learning:history.state.learningResult??null};
 }
 export function projectDevelopAttempts(status,operation,permissions){
   const {state,attempt,reviewPackage}=status;
@@ -217,7 +214,7 @@ export function validateCmAiAnswer(kind,value,root){
 }
 function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks, checkTimeoutMs。\nchecks 每项为 {id,command,timeoutMs?}；checkTimeoutMs 与每项 timeoutMs 为 1..3600000 整数，默认 900000 ms（15 分钟）。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务（纯规范 scope、单代码根、非 --protected-config）读 answers/init-generate.json（{status:"generated",documents:[{path,contentFile}]}，覆盖全部 targets）与 answers/init-verify.json（commands 为驾驶员实跑的草稿命令 {id,command,timeoutMs?}，可选 commandsNotRun；checks 只含 globs/file_references/constraint_preservation/rule_applicability；constraintChanges:[]；application/retrospective 沿原 Learning）；第 1 轮也可用 *-a1.json，第 2 轮只读 init-generate-a2.json 与 init-verify-a2.json，且须先 decision 读取首轮 findings，不能带 --allow-review-attempt 跨轮。commands 在启动宿主前由驾驶员实跑（须先带 --allow-bootstrap-write 等宿主授权；受保护模式在 specs 沙箱内），失败或改动了预检核对的文件即退出 2；结果只来自实跑，答案文件不能提供。\n');
+    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks, checkTimeoutMs。\nchecks 每项为 {id,command,timeoutMs?}；checkTimeoutMs 与每项 timeoutMs 为 1..3600000 整数，默认 900000 ms（15 分钟）。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务（纯规范 scope、单代码根、非 --protected-config）读 answers/init-generate.json（{status:"generated",documents:[{path,contentFile}]}，覆盖全部 targets）与 answers/init-verify.json（commands 为驾驶员实跑的草稿命令 {id,command,timeoutMs?}，可选 commandsNotRun；checks 只含 globs/file_references/constraint_preservation/rule_applicability；constraintChanges:[]；application/retrospective 沿原 Learning）；第 1 轮也可用 *-a1.json，第 2 轮只读 init-generate-a2.json 与 init-verify-a2.json，且须先 decision 读取首轮 findings，不能带 --allow-review-attempt 跨轮。commands 在宿主接受启动后、发送操作前由驾驶员实跑（须先带 --allow-bootstrap-write 等宿主授权；受保护模式在 specs 沙箱内），失败或改动了预检核对的文件即退出 2 且不发送操作（create 时改用 resume 重跑）；结果只来自实跑，答案文件不能提供。\n');
     process.exit(0);
   }
   const loaded=loadPlanFile({name:'cm-ai-drive.mjs',known:OPERATIONS});
@@ -434,12 +431,12 @@ async function main(){
   const request=buildCmAiDriveRequest(operation,plan,definition);
   if(operation.startsWith('fix_')&&(!nonempty(plan.packageDigest)||!nonempty(plan.testRunId)))
     stop(2,`${operation} 需要 packageDigest 和 testRunId`);
-  // Rules init_verify commands really run here, before the host exists: a failure
-  // leaves the run store untouched instead of an unknown develop effect.
-  const refusal=await loaded.bootstrapRules?.prepare();
-  if(refusal)stop(2,refusal);
+  // Rules init_verify commands really run once the host has accepted the launch
+  // (host_ready) and before the operation is sent: a failure never becomes an
+  // unknown develop effect, and the host's own launch validation came first.
   driveHost({host:HOST,args:buildCmAiDriveHostArgs(plan,permissions,config),cwd:definition.codeProject,operation,request,
-    answers:answer,paths:{answers:loaded.answers},answerFor});
+    answers:answer,paths:{answers:loaded.answers},answerFor,
+    ...(loaded.bootstrapRules?{beforeRequest:()=>loaded.bootstrapRules.prepare(plan.mode)}:{})});
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))
   main().catch(error=>stop(1,`驾驶员失败：${error.message}`));
