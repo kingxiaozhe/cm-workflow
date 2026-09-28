@@ -48,7 +48,7 @@ function project(){
   const state={browserUp:false,documentation:0,reviews:new Map()};
   const logHome=path.join(specsDir,'.reviews','host-log-mirror');
   const environment={kind:'web',carrier:'browser',target:'fixture',scope:'local'};
-  const execution=(feature,{write,retrospective=noLesson,verdict=()=>'approved'})=>({
+  const execution=(feature,{write,retrospective=noLesson,verdict=()=>'approved',decision=null})=>({
     configuration:{kind:'synthetic-host-v1',hostContextId:'control',workflow:{qa:{commands:[],environment},documentationPaths:[],applicableAgentFiles:[]}},
     timeoutMs:5000,excludedContexts:['control'],
     developer:{provider:'codex',requestedModel:'fixture',contextId:'developer',run:createCodexDeveloperRun({requestedModel:'fixture',worker:async()=>{
@@ -74,7 +74,7 @@ function project(){
       return {syncId:binding.syncId,identity:binding.identity,packageDigest:binding.packageDigest,contextDigest:binding.contextDigest,
         status:'completed',reason:'Documentation checked',at:'2026-09-28T00:00:00Z'};}},
     qaDecisionProvider:{timeoutMs:1000,decide:async binding=>({decisionId:`qa-${binding.identity.runId}`,identity:binding.identity,
-      packageDigest:binding.packageDigest,status:'triggered',reason:'feature_complete',score:null,at:'2026-09-28T00:00:00Z'})},
+      packageDigest:binding.packageDigest,status:'triggered',reason:'feature_complete',score:null,at:'2026-09-28T00:00:00Z',...decision})},
     qaExecutor:createHostQaExecutor({specsDir,codeProject,feature,requirements:['requirements.md'],runtime:'codex',
       commands:[{id:'unit',command:[process.execPath,'--check','a.mjs'],caseIds:[]}],environment,timeoutMs:60000,logHome,
       browser:async browserRequest=>{
@@ -89,7 +89,11 @@ function project(){
   };
   const first=definition('1.work','T-002',['a.mjs']);
   const firstExecution=()=>execution('1.work',{write:()=>fs.writeFileSync(path.join(codeProject,'a.mjs'),'export const a=1;\n')});
-  return {root,codeProject,specsDir,state,execution,definition,advance,first,firstExecution};
+  // Re-approve after a deliberate tasks.md change so admission stays ready.
+  const reapprove=()=>{const manifest=buildManifest(specsDir);
+    fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work','2.next'],
+      specFiles:manifest,testCases:manifest.filter(item=>item.path.endsWith('/test-cases.json'))}));};
+  return {root,codeProject,specsDir,state,execution,definition,advance,first,firstExecution,reapprove};
 }
 const status=p=>JSON.parse(fs.readFileSync(path.join(p.specsDir,'.cm-status.json'),'utf8'));
 
@@ -199,4 +203,47 @@ test('#18 reviewed transitions apply only from their reviewed before-state, in e
   fs.writeFileSync(path.join(root,'.cm-workflow.yml'),'version: 1\n');explain([second,third]);
   assert.throws(()=>explainReviewedDrift({root,baseline:own,composed,ownScope:['a.mjs','.cm-workflow.yml'],deliveries:[second,third]}),
     error=>error.paths.join()==='.cm-workflow.yml');
+});
+
+test('#18 a permission-only change to the delivered file still requires correction review',async()=>{
+  const p=project();
+  await p.advance(p.first,p.firstExecution(),'create');
+  fs.chmodSync(path.join(p.codeProject,'a.mjs'),0o755);
+  p.state.browserUp=true;
+  const locked=await p.advance(p.first,p.firstExecution(),'resume',{rerunBlockedQa:true});
+  assert.equal(locked.code,'correction_review_required');assert.equal(locked.reason,'未经审查的改动：a.mjs');
+  fs.chmodSync(path.join(p.codeProject,'a.mjs'),0o644);
+  assert.equal((await p.advance(p.first,p.firstExecution(),'resume',{rerunBlockedQa:true})).code,'context_refreshed');
+});
+
+test('#17 a feature completed outside N6 has no completion QA and blocks run_done',async()=>{
+  const p=project();
+  // T-002 was ticked by hand: no run, no QA row for 1.work.
+  const tasks=path.join(p.specsDir,'1.work','tasks.md');
+  fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('- [ ] T-002','- [x] T-002'));
+  const admission=inspectCmAiAdmission({specsDir:p.specsDir,codeProject:p.codeProject});
+  assert.match(admission.warnings.find(line=>line.includes('QA 未通过')),/1\.work（任务已全部完成，但没有 QA 记录）/);
+  const last=p.definition('2.next','T-003',['b.mjs']);
+  const refused=await p.advance(last,p.execution('2.next',{write:()=>fs.writeFileSync(path.join(p.codeProject,'b.mjs'),'export const b=1;\n')}),'create');
+  assert.equal(refused.code,'project_qa_not_passed',JSON.stringify(refused));
+  assert.deepEqual(refused.outstandingQa,[{feature:'1.work',runId:null,taskId:null,attempt:null,status:'qa_missing'}]);
+  assert.notEqual(status(p).state,'run_done');
+});
+
+test('#17 a skip is fine while tasks remain, but a terminal feature whose latest decision is a skip blocks run_done',async()=>{
+  const p=project();
+  const tasks=path.join(p.specsDir,'1.work','tasks.md');
+  fs.writeFileSync(tasks,'- [ ] T-001: first\n- [ ] T-002: fixture\n');p.reapprove();
+  const first=p.definition('1.work','T-001',['a.mjs']);
+  const skipped=await p.advance(first,p.execution('1.work',{write:()=>fs.writeFileSync(path.join(p.codeProject,'a.mjs'),'export const a=1;\n'),
+    decision:{status:'skipped',reason:'risk_score_below_threshold',score:4}}),'create');
+  assert.equal(skipped.code,'context_refreshed',JSON.stringify(skipped));
+  const midway=inspectCmAiAdmission({specsDir:p.specsDir,codeProject:p.codeProject});
+  assert.equal(midway.nextTask.id,'T-002');assert(!midway.warnings.some(line=>line.includes('QA 未通过')),JSON.stringify(midway.warnings));
+  // The feature's final task is then finished outside the workflow.
+  fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('- [ ] T-002','- [x] T-002'));
+  const last=p.definition('2.next','T-003',['b.mjs']);
+  const refused=await p.advance(last,p.execution('2.next',{write:()=>fs.writeFileSync(path.join(p.codeProject,'b.mjs'),'export const b=1;\n')}),'create');
+  assert.equal(refused.code,'project_qa_not_passed',JSON.stringify(refused));
+  assert.deepEqual(refused.outstandingQa,[{feature:'1.work',runId:'run-T-001',taskId:'T-001',attempt:1,status:'qa_skipped'}]);
 });

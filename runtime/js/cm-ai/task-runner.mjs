@@ -314,7 +314,8 @@ export function createTaskRunner(options) {
           need(history.handoffDigest===handoffDigest,'fix_qa_source_changed');
         }
         inspectFixCodeAssociation({root:config.root,specsRoot:completion.owner.specsRoot,baseline:base,
-          parentPackage:reviewPackage,fixPackages:acceptedFixes.map(item=>item.evidence.reviewPackage),deliveries:laterDeliveries});
+          parentPackage:reviewPackage,fixPackages:acceptedFixes.map(item=>item.evidence.reviewPackage),
+          steps:acceptedFixes.at(-1).association.laterDeliveries??[],deliveries:laterDeliveries});
         const last=acceptedFixes.at(-1);
         return freeze({...current,acceptedQaFix:{qaRound:last.qaRound,testRunId:last.evidence.qaSource.testRunId,
           evidenceDigest:digest(last)}});
@@ -1011,11 +1012,11 @@ export function createTaskRunner(options) {
     need(!busy&&!poisoned,'host_busy');
     const current=status();
     need(current.state==='fixture_completed'&&current.code!=='review_publication_required','qa_fix_parent_not_completed');
+    const known=acceptedFixes.some(item=>item.evidence.reviewPackage.packageDigest===fixPackage.packageDigest);
     return inspectFixCodeAssociation({root:config.root,
       ...(completion?{specsRoot:completion.owner.specsRoot,deliveries:laterDeliveries}:{}),
-      baseline:base,parentPackage:reviewPackage,
-      fixPackages:acceptedFixes.some(item=>item.evidence.reviewPackage.packageDigest===fixPackage.packageDigest)
-        ?acceptedFixes.map(item=>item.evidence.reviewPackage)
+      baseline:base,parentPackage:reviewPackage,steps:acceptedFixes.at(-1)?.association.laterDeliveries??[],extend:!known,
+      fixPackages:known?acceptedFixes.map(item=>item.evidence.reviewPackage)
         :[...acceptedFixes.map(item=>item.evidence.reviewPackage),fixPackage]});
   };
   const acceptCompletedFix=raw=>{

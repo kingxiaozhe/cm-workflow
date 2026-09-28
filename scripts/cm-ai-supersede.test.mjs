@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -17,6 +17,15 @@ import {main as hostMain,withHandoffDiagnostic} from './cm-ai-host.mjs';
 import {prepareReviewedEvidenceSupersession} from '../runtime/js/cm-ai/reviewed-evidence-supersede.mjs';
 import {readRunnerHistory,runnerPayloadV3} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {abandonEffectPlanError,buildCmAiDriveRequest,buildCmAiDriveHostArgs} from './cm-ai-drive.mjs';
+
+// Never write the real ~/.cm-workflow home or its global log from this suite.
+const isolatedHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-supersede-home-'));
+const savedHome={CM_WORKFLOW_HOME:process.env.CM_WORKFLOW_HOME,CM_WORKFLOW_LOG_HOME:process.env.CM_WORKFLOW_LOG_HOME};
+process.env.CM_WORKFLOW_HOME=path.join(isolatedHome,'home');process.env.CM_WORKFLOW_LOG_HOME=path.join(isolatedHome,'logs');
+after(()=>{
+  for(const [key,value] of Object.entries(savedHome)){if(value===undefined)delete process.env[key];else process.env[key]=value;}
+  fs.rmSync(isolatedHome,{recursive:true,force:true});
+});
 
 // Reuse the isolated handoff shape from cm-host-handoff.test.mjs. The old
 // receipt deliberately consumes a different byte sequence at the same name.

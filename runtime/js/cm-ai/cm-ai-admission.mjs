@@ -346,7 +346,7 @@ function selectTask(specsDir,names){
 // here and enforced at N8 (finish/run_finalize), never by reordering tasks.
 function featureQaWarnings(specsDir,features){
   try{
-    return outstandingFeatureQa({specsDir,features}).map(item=>
+    return outstandingFeatureQa({specsDir,features:features.map(({name,pending})=>({name,pending}))}).map(item=>
       `⚠ QA 未通过: ${describeOutstandingQa(item)}；它通过之前项目不能收尾（run_done）`);
   }catch{return ['⚠ QA 日志无法读取，未能确认各 feature 的最新 QA 是否通过'];}
 }
@@ -412,7 +412,7 @@ function admissionFor(options,inProgressBootstrap=null){
   const selection=selectTask(specsDir,discovered.names);
   if(selection.error)return result(base,'blocked',selection.error,{features:selection.features,warnings:selection.warnings,
     ...(selection.detail?{detail:selection.detail}:{})});
-  const warnings=[...selection.warnings,...featureQaWarnings(specsDir,discovered.names)];
+  const warnings=[...selection.warnings,...featureQaWarnings(specsDir,selection.features)];
   if(!selection.nextTask)return result(base,'complete','all_tasks_terminal',{features:selection.features,warnings});
   return result(base,'ready','task_selected',{features:selection.features,nextTask:selection.nextTask,eligibleTasks:selection.eligibleTasks,warnings});
 }

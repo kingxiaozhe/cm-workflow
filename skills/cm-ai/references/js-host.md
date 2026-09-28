@@ -335,8 +335,10 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
 阻塞决策不算通过。任一 feature 最新一轮 FAIL、BLOCKED、已触发未执行、结果未知或旧结果已作废待下一轮时，返回
 `blocked/project_qa_not_passed`，`outstandingQa` 与 `reason` 列出 feature、任务和 runId；不做文档核验，不写 run_done。
 准入仍按 tasks.md 选下一任务，但在 `warnings` 里提示这些 feature。按对应运行的恢复入口（QA 修复、`--rerun-blocked-qa`、
-`--rerun-unknown-qa` 或配置修订）让它通过后，再对本运行 `advance` 收尾。最新决策为 skipped 或从未记录 QA 的 feature
-不在此列。
+`--rerun-unknown-qa` 或配置修订）让它通过后，再对本运行 `advance` 收尾。任务未做完的 feature 允许中途的 skipped 决策；
+任务已全部完成的 feature 必须以 feature 完成时的 QA PASS 结束，没有 QA 记录（`qa_missing`）或最新决策是 skipped
+（`qa_skipped`）同样拒绝——JS 流程不能关闭 N6，这类 feature 只可能在流程外完成。恢复：把它的末任务改回 `- [ ]`，
+用 cm-ai 重跑（有审查证据时加 `--supersede-reviewed-evidence`），让 N6 补上 feature 完成时的 QA。
 
 ### 已完成运行上的后续改动
 
@@ -344,7 +346,9 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
 其他任务已完成并已提交运行的审查交付（及其已登记的 QA 修复），按各自审查前状态逐文件接续——包括其 AGENTS.md
 教训行和对本任务文件的修改；以及本任务范围外的项目根 CM 配置文件。其余变化，包括对本任务交付文件、需求文件或其他
 文件的未审改动，仍返回 `correction_review_required`，`reason` 列出未解释的路径。同一任务的替代运行、未完成运行和并行
-批次成员（工作树根不同）的改动不被采纳。QA 修复与后续交付改同一路径时（例如两边都写 AGENTS.md 教训）仍按原规则拒绝。
+批次成员（工作树根不同）的改动不被采纳。比较包括文件权限，只改 mode 也算未审改动。QA 修复若建立在其他任务后续交付之上
+（包括改同一文件），接受时只插入它的审查前状态所需的交付，并以 version 2 关联记录（`laterDeliveries`）存进 journal；
+回放只用这份记录，旧 version 1 记录照原样回放。
 收尾发现文档需要改时，仍走经审查的任务，不能在已完成运行内直接改。
 
 ### 已审交接后的任务重跑

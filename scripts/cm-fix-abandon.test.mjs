@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -13,6 +13,15 @@ import {startFixRun} from '../runtime/js/cm-fix/start.mjs';
 import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {fixHandoffEvidence,fixDefectHandoffEvidence} from '../runtime/js/cm-fix/handoff.mjs';
+
+// Never write the real ~/.cm-workflow home or its global log from this suite.
+const isolatedHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-fix-abandon-home-'));
+const savedHome={CM_WORKFLOW_HOME:process.env.CM_WORKFLOW_HOME,CM_WORKFLOW_LOG_HOME:process.env.CM_WORKFLOW_LOG_HOME};
+process.env.CM_WORKFLOW_HOME=path.join(isolatedHome,'home');process.env.CM_WORKFLOW_LOG_HOME=path.join(isolatedHome,'logs');
+after(()=>{
+  for(const [key,value] of Object.entries(savedHome)){if(value===undefined)delete process.env[key];else process.env[key]=value;}
+  fs.rmSync(isolatedHome,{recursive:true,force:true});
+});
 
 const diagnosis={status:'diagnosed',rootCause:'Wrong value',affectedPaths:['value.mjs'],
   affectedModules:['value'],plan:'Correct value',crossLayer:false};
@@ -442,13 +451,16 @@ test('#15 an abandonment record must bind the exact registration and thread',asy
   assert.throws(()=>f.append('fix-cause-abandoned','result',forged),{code:'fix_review_abandon_mismatch'});
 });
 
-test('#15 the fix host needs --allow-abandon for abandon_review and its status points to it',async t=>{
+test('#15 the fix host needs the dedicated --allow-abandon-review for abandon_review and its status points to it',async t=>{
   const f=await fixture(t,{reviewMode:'lost',crossLayer:true});
   await f.owner().advance({authorized:true});await causeDecide(f);await f.owner().reviewCause();
   const config={...f.configuration,specsRoot:f.specsRoot,identity:f.identity};
-  const refused=createFixHost({owner:f.owner(),config,permissions:['--allow-reproduction']});
-  await assert.rejects(refused.handle({requestId:'abandon',operation:'abandon_review',reason:'Stopped'}),{code:'fix_review_abandon_authorization_required'});
-  const allowed=createFixHost({owner:f.owner(),config,permissions:['--allow-reproduction','--allow-abandon']});
+  // Local step abandonment authority does not extend to a reviewer invocation.
+  for(const permissions of [['--allow-reproduction'],['--allow-reproduction','--allow-abandon']]){
+    const refused=createFixHost({owner:f.owner(),config,permissions});
+    await assert.rejects(refused.handle({requestId:'abandon',operation:'abandon_review',reason:'Stopped'}),{code:'fix_review_abandon_authorization_required'});
+  }
+  const allowed=createFixHost({owner:f.owner(),config,permissions:['--allow-reproduction','--allow-abandon-review']});
   assert.match((await allowed.handle({requestId:'status',operation:'status'})).progress.nextAction,/abandon_review/);
   assert.equal((await allowed.handle({requestId:'abandon',operation:'abandon_review',reason:'Stopped'})).stage,'cause_review_required');
 });

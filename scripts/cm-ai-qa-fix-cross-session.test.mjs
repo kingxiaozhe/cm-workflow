@@ -269,7 +269,9 @@ test('#15 a QA-fix child cause review without a result is abandoned once through
   await assert.rejects(owner.handle(request),{code:'fix_review_abandon_authorization_required'});
   assert.deepEqual(fs.readFileSync(f.statePath),before);
   f.close();
-  const allowed=await cli(f,A,request,{flags:['--allow-qa-fix-abandon']});
+  const local=await cli(f,A,request,{flags:['--allow-qa-fix-abandon']});
+  assert.match(local.stderr,/fix_review_abandon_authorization_required/);assert.deepEqual(fs.readFileSync(f.statePath),before);
+  const allowed=await cli(f,A,request,{flags:['--allow-qa-fix-abandon-review']});
   assert.equal(allowed.code,0,allowed.stderr);assert.equal(allowed.result?.fixStage,'cause_review_required');
   assert(f.records().some(row=>row.id==='fix-cause-abandoned'));
   owner=await f.open(A);

@@ -17,6 +17,10 @@ import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {readProjectInstructionContext} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
+import {attemptBaseline,readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {validateAcceptedFix} from '../runtime/js/cm-ai/accepted-fix.mjs';
+import {captureReviewBaseline,createReviewPackage} from '../runtime/js/cm-ai/review-package.mjs';
+import {composeFixCode,inspectFixCodeAssociation} from '../runtime/js/cm-ai/fix-code-association.mjs';
 
 const isolated=fs.mkdtempSync(path.join(os.tmpdir(),'cm-fix-later-delivery-'));
 const saved={CM_WORKFLOW_HOME:process.env.CM_WORKFLOW_HOME,CM_WORKFLOW_LOG_HOME:process.env.CM_WORKFLOW_LOG_HOME};
@@ -31,7 +35,9 @@ const events=(onEvent,thread)=>{
     {event:'process_closed',exit_code:0,signal:null,timed_out:false}])onEvent(event);
 };
 
-test('#18 a QA fix for an earlier feature is accepted after a later reviewed task; #17 the project reaches run_done only then',async()=>{
+// shared: the later task also rewrites the earlier task's value.mjs, so the QA
+// fix child is reviewed on top of that delivery (v1 -> later -> fix).
+for(const variant of ['separate','shared'])test(`#18 a QA fix for an earlier feature is accepted after a later reviewed task (${variant}); #17 the project reaches run_done only then`,async()=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(isolated,'project-')));
   const codeProject=path.join(root,'code'),specsDir=path.join(root,'specs');fs.mkdirSync(codeProject);
   for(const [feature,task] of [['1.value','T-001'],['2.more','T-002']]){
@@ -83,8 +89,10 @@ test('#18 a QA fix for an earlier feature is accepted after a later reviewed tas
     parent.close();parent=null;
     // The later task of another feature lands first: a reviewed AGENTS.md lesson and a new file.
     const laterIdentity={repositoryId:'fixture',runId:'later-run',taskId:'T-002',attempt:1};
-    const laterDefinition={version:1,specsDir,codeProject,feature:'2.more',identity:laterIdentity,scope:['more.mjs'],requirements:['requirements.md']};
-    const laterExecution=execution({feature:'2.more',write:()=>fs.writeFileSync(path.join(codeProject,'more.mjs'),'export const more=1;'),
+    const laterDefinition={version:1,specsDir,codeProject,feature:'2.more',identity:laterIdentity,
+      scope:variant==='shared'?['more.mjs','value.mjs']:['more.mjs'],requirements:['requirements.md']};
+    const laterExecution=execution({feature:'2.more',write:()=>{fs.writeFileSync(path.join(codeProject,'more.mjs'),'export const more=1;');
+      if(variant==='shared')fs.writeFileSync(path.join(codeProject,'value.mjs'),'export const value=1; // shared with a later task');},
       retrospective:{status:'lesson_candidate',reason:null,candidates:[{classification:'structured',trigger:'Later lesson',
         action:'Keep value constants in one module',evidence:['more.mjs']}]},qa:()=>'PASS'});
     let later=await openControlRun(laterDefinition,'create',laterExecution);
@@ -138,7 +146,27 @@ test('#18 a QA fix for an earlier feature is accepted after a later reviewed tas
     }
     assert.equal(result.code,'qa_fix_completed',JSON.stringify(result));
     assert.equal(result.accepted.qaRound,1);
+    const association=result.accepted.association;
+    if(variant==='separate')assert.equal(association.version,1);
+    else{
+      assert.equal(association.version,2);
+      assert.deepEqual(association.laterDeliveries.map(step=>[step.beforeFix,step.runId,step.changes.map(change=>change.path).sort()]),
+        [[0,'later-run',['AGENTS.md','more.mjs','value.mjs']]]);
+    }
     serial.close();serial=null;
+    // Durable replay reproduces the association from the journal alone.
+    const state=JSON.parse(fs.readFileSync(path.join(specsDir,'.reviews','.execution',identity.runId,'state.json')));
+    const history=readRunnerHistory(state.records,state.records[0].payload.config,3);
+    const accepted=state.records.find(row=>row.payload.type==='qa-fix-accepted').payload.record;
+    const check=record=>validateAcceptedFix({record,previous:[],baseline:attemptBaseline(history.original,history.state.attempt),
+      parentPackage:history.state.reviewPackage,feature:'1.value'});
+    check(accepted);
+    if(variant==='shared'){
+      const stripped=structuredClone(accepted);stripped.association={...stripped.association,version:1};delete stripped.association.laterDeliveries;
+      assert.throws(()=>check(stripped),{code:'fix_before_mismatch'});
+      const forged=structuredClone(accepted);forged.association.laterDeliveries[0].changes.find(change=>change.path==='value.mjs').after.sha256='0'.repeat(64);
+      assert.throws(()=>check(forged));
+    }
     parent=await openControlRun(definition,'resume',parentExecution);
     const done=await parent.host.handle(request('advance'));
     assert.equal(done.code,'run_done',JSON.stringify(done));assert.equal(qaRuns,2);
@@ -147,4 +175,36 @@ test('#18 a QA fix for an earlier feature is accepted after a later reviewed tas
     const finished=await later.host.handle({version:1,requestId:'later-again',operation:'advance',identity:laterIdentity});later.close();
     assert.equal(finished.code,'run_done',JSON.stringify(finished));
   }finally{serial?.close();parent?.close();}
+});
+
+test('#18 a fix interleaves only the delivery its reviewed before-state needs, skipping an older one on the same file',()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(isolated,'interleave-')));
+  fs.writeFileSync(path.join(root,'value.mjs'),'v0\n');fs.writeFileSync(path.join(root,'req.md'),'r\n');
+  const checks=[{id:'c',command:['true'],outcome:'passed',exitCode:0,evidence:'ok'}];
+  const step=(runId,content)=>{
+    const baseline=captureReviewBaseline({root,identity:{repositoryId:'interleave',runId,taskId:`T-${runId}`,attempt:1},
+      scope:['value.mjs'],requirements:['req.md']});
+    fs.writeFileSync(path.join(root,'value.mjs'),content);
+    return {baseline,pkg:createReviewPackage({root,baseline,checks})};
+  };
+  const earlier=step('a-earlier','vE\n'),parent=step('parent','v1\n'),later=step('later','v2\n'),fix=step('fix','v3\n');
+  const deliveries=()=>[{runId:'a-earlier',packages:[earlier.pkg]},{runId:'later',packages:[later.pkg]}];
+  const input={root,baseline:parent.baseline,parentPackage:parent.pkg,fixPackages:[fix.pkg]};
+  assert.throws(()=>composeFixCode(input),{code:'fix_before_mismatch'});
+  const association=inspectFixCodeAssociation({...input,extend:true,deliveries});
+  assert.equal(association.version,2);
+  assert.deepEqual(association.laterDeliveries.map(item=>[item.beforeFix,item.runId]),[[0,'later']]);
+  assert.equal(association.currentFilesDigest,digest(composeFixCode({...input,steps:association.laterDeliveries}).files));
+  // Without the needed delivery the fix's before-state cannot be explained.
+  assert.throws(()=>inspectFixCodeAssociation({...input,extend:true,deliveries:()=>[{runId:'a-earlier',packages:[earlier.pkg]}]}),
+    {code:'fix_before_mismatch'});
+  // A mode-only change to the fixed file after acceptance is not explained either.
+  fs.chmodSync(path.join(root,'value.mjs'),0o755);
+  assert.throws(()=>inspectFixCodeAssociation({...input,steps:association.laterDeliveries,deliveries}),{code:'fix_current_code_unexplained'});
+  fs.chmodSync(path.join(root,'value.mjs'),0o644);
+  inspectFixCodeAssociation({...input,steps:association.laterDeliveries,deliveries});
+  // Nor is one on a file whose content no reviewed package touched.
+  fs.chmodSync(path.join(root,'req.md'),0o755);
+  assert.throws(()=>inspectFixCodeAssociation({...input,steps:association.laterDeliveries,deliveries}),
+    error=>error.code==='fix_current_code_unexplained'&&error.paths.join()==='req.md');
 });

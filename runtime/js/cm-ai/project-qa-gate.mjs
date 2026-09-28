@@ -6,7 +6,8 @@ import path from 'node:path';
 import {scanRows} from './log-rows.mjs';
 
 const LABELS={qa_failed:'最新一轮 FAIL',qa_blocked:'最新一轮 BLOCKED',qa_decision_blocked:'QA 决策阻塞',
-  qa_not_run:'已触发但未执行',qa_execution_unknown:'执行结果未知',qa_pending:'旧结果已作废，待下一轮'};
+  qa_not_run:'已触发但未执行',qa_execution_unknown:'执行结果未知',qa_pending:'旧结果已作废，待下一轮',
+  qa_missing:'任务已全部完成，但没有 QA 记录',qa_skipped:'任务已全部完成，但最新 QA 决策为跳过'};
 const cache=new Map();
 
 // One pass: the latest decision per feature, and the test_run rows bound to it.
@@ -42,15 +43,25 @@ function latestRound(runs){
   return ['PASS','PASSED'].includes(result)?null:['FAIL','FAILED'].includes(result)?'qa_failed':'qa_blocked';
 }
 
-// Features whose latest QA decision (from any run but the caller's own) has not
-// ended in a completed PASS. A skipped latest decision is not a failure; the
-// mandatory feature-completion trigger is enforced where it is decided.
+// features: admission summaries {name,pending}. The latest QA decision of each
+// feature (from any run but the caller's own) must not have failed. A skip is
+// fine while tasks remain; a terminal feature (pending 0) must end in its
+// feature-completion QA with a completed PASS. N6 cannot be switched off in the
+// JS flow, so a terminal feature with no QA rows, or whose latest decision is a
+// skip, was finished outside it and is reported rather than trusted.
 export function outstandingFeatureQa({specsDir,features,currentRunId=null,inspect=null}){
-  const outstanding=[];
-  for(const [feature,{decision,runs}] of readFeatureQa(specsDir)){
-    if(!features.includes(feature)||decision.run_id===currentRunId||decision.status==='skipped')continue;
+  const outstanding=[],qa=readFeatureQa(specsDir);
+  for(const {name:feature,pending} of features){
+    const terminal=pending===0,entry=qa.get(feature);
+    if(!entry){
+      if(terminal)outstanding.push({feature,runId:null,taskId:null,attempt:null,status:'qa_missing'});
+      continue;
+    }
+    const {decision,runs}=entry;
+    if(decision.run_id===currentRunId)continue;
     let status;
-    if(decision.status!=='triggered')status='qa_decision_blocked';
+    if(decision.status==='skipped')status=terminal?'qa_skipped':null;
+    else if(decision.status!=='triggered')status='qa_decision_blocked';
     else if(inspect===null)status=latestRound(runs);
     else{
       try{
@@ -64,9 +75,10 @@ export function outstandingFeatureQa({specsDir,features,currentRunId=null,inspec
     }
     if(status!==null)outstanding.push({feature,runId:decision.run_id,taskId:decision.task,attempt:decision.attempt,status});
   }
-  return outstanding.sort((left,right)=>features.indexOf(left.feature)-features.indexOf(right.feature));
+  return outstanding;
 }
 
 export function describeOutstandingQa(item){
-  return `${item.feature}（${item.taskId} / run ${item.runId}：${LABELS[item.status]??item.status}）`;
+  const label=LABELS[item.status]??item.status;
+  return item.runId===null?`${item.feature}（${label}）`:`${item.feature}（${item.taskId} / run ${item.runId}：${label}）`;
 }

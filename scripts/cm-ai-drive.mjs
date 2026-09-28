@@ -73,7 +73,7 @@ const PAIR_FLAGS=new Set(['--allow-review-attempt','--review-config','--workflow
 const FLAG_FLAGS=new Set(['--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
   '--allow-bootstrap-write','--allow-abandon-review','--allow-abandon-effect','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
   '--supersede-reviewed-evidence','--accept-superseded-code-drift',
-  ...['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon',
+  ...['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon','abandon-review',
     'test-author','repair','cause-review','final-review'].map(name=>`--allow-qa-fix-${name}`)]);
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;
@@ -291,8 +291,9 @@ function load(){
   if(['fix_advance','fix_run'].includes(operation))asks.push(...new Set(Object.values(FIX_ASKS).flat()));
   if(operation==='fix_action'){
     if(!FIX_ACTIONS.has(plan.fixOperation))stop(2,'fix_action 需要宿主支持的 fixOperation');
+    const abandonFlag=plan.fixOperation==='abandon_review'?'--allow-qa-fix-abandon-review':'--allow-qa-fix-abandon';
     if(['abandon_step','abandon_review'].includes(plan.fixOperation)&&(!nonempty(plan.reason)
-      ||!permissions.includes('--allow-qa-fix-abandon')))stop(2,`${plan.fixOperation} 需要 reason 与 --allow-qa-fix-abandon`);
+      ||!permissions.includes(abandonFlag)))stop(2,`${plan.fixOperation} 需要 reason 与 ${abandonFlag}`);
     asks.push(...(FIX_ASKS[plan.fixOperation]??[]));
   }
   if(['qa_logic','qa_browser','verification_precheck'].some(kind=>asks.includes(kind)))

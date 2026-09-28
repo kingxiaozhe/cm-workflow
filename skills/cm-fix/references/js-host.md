@@ -119,10 +119,11 @@ beforeSha256严格复制expected中该路径的摘要（原不存在则null）�
 
 原因审查（`pending:"cause_review"`）或第二轮最终审查（`pending:"revision_final_review"`）已登记，却没有审查结论时——
 宿主中途被杀、审查超时、断连或被取消——`status` 为 `unknown` 并带 `reviewAbandonable`。
-先确认旧审查进程已退出，再以 `--allow-abandon` 启动，发送
+先确认旧审查进程已退出，再以专用的 `--allow-abandon-review` 启动（`--allow-abandon` 只管本地步骤，不授权放弃审查调用），发送
 `{"requestId":"abandon-review-1","operation":"abandon_review","reason":"旧审查进程已确认退出"}`；
-QA-fix 子宿主用 `--allow-qa-fix-abandon`，`fix_action` 带 `fixOperation:"abandon_review"` 和 `reason`。
-原因规则同 `abandon_step`。每种审查每个运行只能放弃一次；重审仍无结论时返回 `fix_review_abandon_budget_exhausted`，
+QA-fix 子宿主用 `--allow-qa-fix-abandon-review`，`fix_action` 带 `fixOperation:"abandon_review"` 和 `reason`；驾驶员 PLAN 的
+`permissions` 相应填这两个旗标。原因规则同 `abandon_step`。每个运行可放弃一次原因审查、一次第二轮最终审查；
+同一种审查重审仍无结论时返回 `fix_review_abandon_budget_exhausted`，
 `status.reviewAbandonBudgetExhausted` 为 true，只能按原阻断处理，不能继续重派。
 
 放弃追加 `fix-cause-abandoned` 或 `fix-revision-final-abandoned`，绑定原调用 ID、登记摘要、已知线程和无结论结果的摘要，

@@ -399,7 +399,9 @@ export function captureReviewInventory(root,baseline){
     stable?[]:baseline.files.map(file=>file.path),new Set(),policy)
     .map(file=>({path:file.path,sha256:file.sha256}));
 }
-export function compareReviewInventoryToBaseline(root,baseline){
+// withMode also reports permission-only changes; the mode is part of a reviewed
+// file record. The default keeps the historical content-only comparison.
+export function compareReviewInventoryToBaseline(root,baseline,{withMode=false}={}){
   validBaseline(baseline);
   const stable=baseline.ignorePolicy?.version===2;
   const policy=stable?stableSnapshotPolicy(root,baseline.ignorePolicy)
@@ -407,10 +409,12 @@ export function compareReviewInventoryToBaseline(root,baseline){
   const before=stable?comparableFiles(baseline.files,policy,new Set([...baseline.scope,...baseline.requirements])):baseline.files;
   const after=snapshot(root,baseline.specsPath??null,baseline.codeProjectPaths??null,
     stable?[]:baseline.files.map(file=>file.path),new Set(),policy);
-  const previous=new Map(before.map(file=>[file.path,file.sha256]));
-  const current=new Map(after.map(file=>[file.path,file.sha256]));
+  const key=file=>withMode?`${file.sha256}:${file.mode}`:file.sha256;
+  const previous=new Map(before.map(file=>[file.path,key(file)]));
+  const current=new Map(after.map(file=>[file.path,key(file)]));
+  const records=new Map(after.map(file=>[file.path,file]));
   return [...new Set([...previous.keys(),...current.keys()])].filter(p=>previous.get(p)!==current.get(p))
-    .map(p=>({path:p,sha256:current.get(p)??null}));
+    .map(p=>({path:p,sha256:records.get(p)?.sha256??null,...(withMode?{mode:records.get(p)?.mode??null}:{})}));
 }
 export function compareReviewBaseline(current,expected){
   if(digest(current)===digest(expected))return true;

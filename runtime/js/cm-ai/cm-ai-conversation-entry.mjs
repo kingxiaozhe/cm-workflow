@@ -62,7 +62,7 @@ const correctionSummary=(operation,status)=>status.code==='correction_review_req
 // have passed, not only this final run's own. Read with the strict owner validator.
 function projectQaSummary(operation,status,options){
   const admission=inspectCmAiAdmission({specsDir:options.specsDir,codeProject:options.codeProject});
-  const outstanding=outstandingFeatureQa({specsDir:options.specsDir,features:admission.features.map(item=>item.name),
+  const outstanding=outstandingFeatureQa({specsDir:options.specsDir,features:admission.features.map(({name,pending})=>({name,pending})),
     currentRunId:status.identity.runId,inspect:latestCmAiQaRun});
   if(!outstanding.length)return null;
   return freeze({...summary(operation,{...status,code:'project_qa_not_passed',

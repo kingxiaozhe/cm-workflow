@@ -24,10 +24,12 @@
 ## cm-fix 原因审查与第二轮最终审查的一次性放弃重审
 
 原因审查或第二轮最终审查已登记但没有审查结论（宿主中途被杀、超时、断连或取消）时，`status.stage=unknown`
-并带 `reviewAbandonable:"cause_review"|"revision_final_review"`。宿主确认旧审查进程已退出后，以 `--allow-abandon`
-（QA-fix 父宿主为 `--allow-qa-fix-abandon`，经 `fix_action` 的 `fixOperation:"abandon_review"`）发送
+并带 `reviewAbandonable:"cause_review"|"revision_final_review"`。宿主确认旧审查进程已退出后，以专用的 `--allow-abandon-review`
+（不是 `--allow-abandon`；QA-fix 父宿主为 `--allow-qa-fix-abandon-review`，经 `fix_action` 的 `fixOperation:"abandon_review"`；
+父运行自己的 `--allow-abandon-review` 不会传给子运行）发送
 `{"requestId":"abandon-review-1","operation":"abandon_review","reason":"具体原因"}`，原因规则同 `abandon_step`。
-每种审查每个运行最多一次，与 cm-ai 的 `abandon_review` 对应；第二次仍无结论返回 `fix_review_abandon_budget_exhausted`。
+每个运行可放弃一次原因审查、一次第二轮最终审查，与 cm-ai 的 `abandon_review` 对应；同一种审查重审仍无结论返回
+`fix_review_abandon_budget_exhausted`。
 
 放弃记录 `fix-cause-abandoned` / `fix-revision-final-abandoned` 绑定原 invocationId、登记摘要、已知线程及无结论结果的摘要，
 写 `abandon` 日志，回到待审阶段；回放逐项核对这些绑定。重审需原审查权限与一次新授权，使用
@@ -537,17 +539,25 @@ JS 通过现有通道发出固定请求，结果由原组件校验：
 run_done 是项目级声明：`finish` 与 `run_finalize` 还按权威日志核对每个已批准 feature 的最新 QA 决策——触发的 QA
 须以完整 PASS 结束（用原 owner 校验器读取），阻塞决策也不算通过；任一 FAIL、BLOCKED、已触发未执行、结果未知
 或旧结果已作废待下一轮，返回 `blocked/project_qa_not_passed`，`outstandingQa` 与 `reason` 列出 feature、任务、runId，
-不做文档核验、不写 run_done，`.cm-status.json` 不会被改成 run_done。最新决策为 skipped 或从未记录 QA 的 feature 不在此列
-（强制 QA 仍在决策处执行）。准入选择仍按 tasks.md，只在 `warnings` 中提示这些 feature。恢复对应运行让 QA 通过后，
-再次 `advance` 本运行即可收尾。
+不做文档核验、不写 run_done，`.cm-status.json` 不会被改成 run_done。任务还没做完的 feature 允许中途的 skipped 决策；
+任务已全部完成（均勾选或 DROPPED）的 feature 必须以 feature 完成时的 QA PASS 结束：没有任何 QA 记录（`qa_missing`，
+runId 为 null）或最新决策仍是 skipped（`qa_skipped`）同样拒绝。JS 流程没有关闭 N6 的配置——`policies.tests` 不能为空，
+收尾要求本运行的 QA 决策，feature 完成时的 QA 是强制的——所以这类 feature 只可能是在流程外（手工勾选或旧流程）完成的，
+不被信任。恢复方法：把该 feature 的末任务在 `tasks.md` 改回 `- [ ]`，用 cm-ai 重跑它（已有审查证据时加
+`--supersede-reviewed-evidence`），让 N6 在 feature 完成时补上 QA。准入选择仍按 tasks.md，只在 `warnings` 中提示这些
+feature。恢复对应运行让 QA 通过后，再次 `advance` 本运行即可收尾。
 
 已完成运行（fixture_completed）的 QA 恢复、QA 修复、配置修订与收尾先照旧核对原审查包；树已变化时，再核对
 变化是否恰好是同一代码根、同一仓库、其他任务的已完成并已提交运行的审查交付（含其已登记 QA 修复）：按各自审查前
 状态逐文件接续，可覆盖其 AGENTS.md 教训行和对本任务文件的修改。项目根的 CM 配置文件在本任务范围外可以改。
 其余变化——包括对本任务交付文件、需求文件或其他文件的未审改动、未完成或同任务替代运行的改动——仍是
 `correction_review_required`，`reason` 列出未解释的路径。这比原先“完成后整棵树不许动”放宽了一处：只接受
-已审交付与根 CM 配置，未审改动仍失败关闭。QA 修复关联记录的摘要仍是修复链组合，与旧 journal 回放一致；
-修复与后续交付改同一路径（例如两边都写 AGENTS.md 教训）时仍按原规则拒绝。并行批次成员（工作树根不同）
+已审交付与根 CM 配置，未审改动仍失败关闭。比较包括内容和文件权限（mode）：只改权限同样是未审改动。
+QA 修复子运行若建立在其他任务后续交付之上（例如对方改过本任务的文件、修复再改同一文件），接受修复时只插入修复的审查前
+状态所需的那些交付：关联记录升为 version 2，`laterDeliveries` 按顺序存下这些交付的逐文件前后摘要（不含内容）和它们
+位于第几次修复之前，回放只用 journal 里的这份记录组合，不再读取其他运行的存档；下一次修复记录必须原样保留前一条的
+插入序列。没有插入时仍写原 version 1 记录，旧记录按原算法回放。只含全文清单的旧 V1 基线不支持插入，仍按原规则拒绝。
+并行批次成员（工作树根不同）
 的交付不被识别；收尾发现文档需改时仍要走已审任务，不能在已完成运行内直接改。
 日志镜像位于 specs/.reviews/host-log-mirror，只是原日志的可重建副本；权威仍是 specs-local 日志。
 重开复用原 QA/任务结果，只读文档核验可以再次进行，不能重发开发、文档写入或 QA。

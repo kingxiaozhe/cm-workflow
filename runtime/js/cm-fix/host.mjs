@@ -27,7 +27,8 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
         authorized:extra.has('--allow-final-review-recovery'),recoveryInvocationId,invocationId:request.invocationId,
         packageDigest:request.packageDigest,previousInvocationStopped:request.previousInvocationStopped,reason:request.reason});
       if(request.operation==='abandon_step')return owner.abandonStep({authorized:extra.has('--allow-abandon'),reason:request.reason});
-      if(request.operation==='abandon_review')return owner.abandonReview({authorized:extra.has('--allow-abandon'),reason:request.reason});
+      // Reviewer-invocation authority stays separate from local step abandonment.
+      if(request.operation==='abandon_review')return owner.abandonReview({authorized:extra.has('--allow-abandon-review'),reason:request.reason});
       if(request.operation==='completion_evidence')return owner.completionEvidence();
       if(request.operation==='finish')return owner.finish({authorized:extra.has('--allow-finish')});
       if(request.operation==='author_tests')return owner.authorTests({authorized:extra.has('--allow-test-author')});

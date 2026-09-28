@@ -22,7 +22,7 @@
 //     "reviewConfig": "review.json",         可选
 //     "permissions": ["--allow-red-test", ...],   原样传给宿主，不另造一套词
 //     "answers": "answers",                  答案目录；abandon_step / abandon_review 可省略
-//     "reason": "旧本地步骤结果丢失"           abandon_step / abandon_review 必填，并需 --allow-abandon
+//     "reason": "旧本地步骤结果丢失"           abandon_step 必填并需 --allow-abandon；abandon_review 必填并需 --allow-abandon-review
 //   }
 //
 // answers/ 里按反问种类放文件，一种一个：
@@ -65,9 +65,10 @@ function loadPlan(){
   if(!['create','resume'].includes(plan.mode))stop(2,'mode 只能是 create 或 resume');
   if(!Array.isArray(plan.permissions)||plan.permissions.some(p=>!/^--allow-[a-z-]+$/.test(p)))
     stop(2,'permissions 必须是 --allow-xxx 形式的数组，原样传给宿主');
-  if(abandoning&&(!plan.permissions.includes('--allow-abandon')||typeof plan.reason!=='string'
+  const abandonFlag=operation==='abandon_review'?'--allow-abandon-review':'--allow-abandon';
+  if(abandoning&&(!plan.permissions.includes(abandonFlag)||typeof plan.reason!=='string'
     ||!plan.reason.trim().length||Buffer.byteLength(plan.reason,'utf8')>1000||/[\r\n\0\u0085\u2028\u2029]/.test(plan.reason)))
-    stop(2,`${operation} 需要 PLAN.reason（单行，最多 1000 字节）和 --allow-abandon`);
+    stop(2,`${operation} 需要 PLAN.reason（单行，最多 1000 字节）和 ${abandonFlag}`);
   if(plan.originalHostContext&&plan.mode!=='resume')stop(2,'originalHostContext 只在 resume 时有意义');
   const resolve=p=>path.resolve(base,p);
   return {operation,plan,paths:{config:resolve(plan.config),answers:plan.answers?resolve(plan.answers):null,
