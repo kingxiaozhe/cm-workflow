@@ -3,7 +3,7 @@ import {inspectCmAiAdmission,matchesCmAiTaskSelection} from './cm-ai-admission.m
 import {inspectCmAiContextRefresh,inspectCmAiTaskLearningInput} from './cm-ai-context-refresh.mjs';
 import {findCmAiQaDecision,inspectCmAiQaDecision,inspectCmAiQaResult,recordCmAiQaDecision,
   latestCmAiQaRun,recordCmAiQaRun,inspectCmAiQaRecovery,inspectCmAiQaConfigurationRecovery,timedOutQaDecision,
-  validEnvironmentFailureReason} from './cm-ai-qa-log.mjs';
+  replacesTimedOutQaDecision,validEnvironmentFailureReason} from './cm-ai-qa-log.mjs';
 import {recordCmAiRunDone} from './cm-ai-run-finalizer.mjs';
 import {REVIEWED_HANDOFF_HINT} from './host-handoff.mjs';
 import {readHostQaFixHandoff} from './host-qa-fix.mjs';
@@ -347,6 +347,10 @@ export function createCmAiConversationEntry(options) {
               previous=null;
             }
           }
+          // The authorization's durable effect is a replacement of a timed-out
+          // decision with no QA run under it yet (just written, or written
+          // before an interruption): run the ordinary first round, not a rerun.
+          if(rerunBlockedQa&&previous===null&&replacesTimedOutQaDecision(binding))rerunBlockedQa=false;
           if(rerunBlockedQa){
             need(previous!==null,'qa_rerun_not_blocked_by_evidence');
             recovery=inspectCmAiQaRecovery(binding,{blocked:true,environment:qaExecutor.configuration?.environment,
@@ -561,8 +565,6 @@ export function createCmAiConversationEntry(options) {
       if(Object.hasOwn(options,'qaLogHome'))input.logHome=options.qaLogHome;
       if(previousDecisionId!==null)input.previousDecisionId=previousDecisionId;
       recordCmAiQaDecision(input);
-      // Consumed: the same flag must not also supersede the fresh decision's QA.
-      if(previousDecisionId!==null)rerunBlockedQa=false;
       return summary(operation,{...status,code:`qa_${decision.status}`},'recorded');
     }
     if(operation.operation==='qa_result'){

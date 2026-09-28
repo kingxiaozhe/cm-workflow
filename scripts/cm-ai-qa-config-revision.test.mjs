@@ -370,6 +370,11 @@ test('#26 pre-round revision after N5 and a triggered decision keeps round 1; a 
   const {execution,configure,qa,counts}=buildExecution(f);
   const packageDigest=await stepToFixtureCompleted(f,execution);
   assert.equal(logRows(f).filter(r=>r.event==='test_run').length,0);
+  // Nothing to rerun yet and no recovered timeout decision: the flag is still refused.
+  const logBefore=fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl'));
+  let refused=await openControlRun(f.definition,'resume',execution,{rerunBlockedQa:true});
+  assert.equal((await refused.host.handle(request('advance'))).code,'qa_rerun_not_blocked_by_evidence');refused.close();
+  assert.deepEqual(fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl')),logBefore);
   const fixed=fixedQa(qa);configure(fixed);
   let run=await openControlRun(f.definition,'resume',execution,revision(qa));
   assert.equal((await run.host.handle(request('advance'))).code,'qa_passed');run.close();

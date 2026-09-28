@@ -262,8 +262,14 @@ export function createHostQaExecutor(options) {
           observed.length>0&&observed.every(item=>item?.outcome==='passed')?'PASS':'BLOCKED';
         row.commandEvidence=mappings.map(item=>item.id);
         const item=plan.cases.find(item=>item.id===row.id);
-        if(item.expected.some(value=>value.includes('[需确认]')))row.verdict='BLOCKED';
+        // Record why a logic case is BLOCKED: an unresolved [需确认] expectation
+        // stays BLOCKED on every round, while a mapped command that produced no
+        // exit code is an environment outcome that an explicit rerun can change.
+        const needsConfirmation=item.expected.some(value=>value.includes('[需确认]'));
+        if(needsConfirmation){row.verdict='BLOCKED';row.needsConfirmation=true;}
         if(row.hostRequestTimeout)row.verdict='BLOCKED';
+        if(row.verdict==='BLOCKED'&&row.staticVerdict==='SUPPORTED'&&!needsConfirmation
+          &&observed.some(result=>result?.outcome==='unavailable'))row.commandUnavailable=true;
       }
       if(rows.length===0)rows.push({id:'qa-unavailable',kind:'commands',verdict:'BLOCKED',evidence:['No executable QA contract']});
       const drift=digest(before.files)!==digest(snapshot().files);

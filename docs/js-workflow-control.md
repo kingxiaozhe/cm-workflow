@@ -845,15 +845,17 @@ workflow 配置的 `qa` 在 `commands/environment` 之外可选 `timeoutMs`（1�
 评估超时是传输结果而不是 QA 决定：无论请求看门狗还是外层计时先到，`advance` 都返回可重试的
 `rejected/qa_decision_timeout`，不写 N6 决定、不启动 QA；原 run 恢复后再次 `advance` 会重新询问。
 旧版本把请求看门狗超时落盘为 `blocked/host_request_timeout` 决定；这类记录默认原样回放为 `qa_blocked`，
-仅在显式 `--rerun-blocked-qa` 下重新询问一次 `qa_assess`，新决定带 `previous_decision_id` 追加在旧行之后。
+仅在显式 `--rerun-blocked-qa` 下重新询问一次 `qa_assess`，新决定带 `previous_decision_id` 追加在旧行之后；
+替代决定已落盘而首轮 start 尚未写入时，同一授权再次 `advance` 视为该恢复的延续，按普通首轮执行。
 所有 N6 决定读取方（qa、qa_result、context_refresh、finish/run_finalize、QA 轮次与 cm-fix 来源）只接受
 “一条超时阻断 + 一条链接替代”的两行链并读取最后一行；更长、未链接或替代非超时决定的链一律拒绝。
 取消、断连与超时保留各自原因，迟到答复不会被采纳。
 
 已 complete 的 BLOCKED 结果用 `--rerun-blocked-qa` 在同一代码上重跑，除原有宿主证据问题外，还接受会话自己回答的
 browser BLOCKED（执行器在报告行写 `hostDeclaredBlocked: true`；旧报告无此标记仍不适用）、没有退出码的命令结果
-（host-check 的 timeout、signal_exit、spawn_failed、output_*、cleanup_failed）以及只因这类映射命令阻断的 logic 用例。
-没有声明命令、延后用例、`[需确认]`、缺少浏览器能力和源码漂移仍不适用。有退出码的非零结果是产品 FAIL，
+（host-check 的 timeout、signal_exit、spawn_failed、output_*、cleanup_failed）以及只因这类映射命令阻断的 logic 用例
+（执行器写 `commandUnavailable: true`；`[需确认]` 的 logic 用例写 `needsConfirmation: true`，任何路径都不适用）。
+没有声明命令、延后用例、`[需确认]`、缺少浏览器能力和源码漂移仍不适用；旧报告的 logic INSUFFICIENT_EVIDENCE 行按原规则回放。有退出码的非零结果是产品 FAIL，
 只有操作员在同一次恢复中加 `--qa-environment-failure "原因"`（单行、最多 500 UTF-8 字节，仅单任务宿主）声明环境故障时，
 才允许替代最新 FAIL：每条 FAIL 必须是有非零退出码的命令行或只因其失败的非 `CONTRADICTED` logic 用例，browser FAIL
 与已接受修复的 FAIL 拒绝；superseded 记 `reason: declared_environment_failure`、`environment_failure_reason`、`failed_cases`

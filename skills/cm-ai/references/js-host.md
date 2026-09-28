@@ -237,7 +237,8 @@ QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.tim
 旧版本已把这种超时记成 `阻塞:host_request_timeout` 决定的运行，默认仍按原记录返回 `qa_blocked`（结果带
 `reason: host_request_timeout`）；用户同意后以 `--mode resume --allow-qa --rerun-blocked-qa` 再 `advance`，
 只重新询问一次 `qa_assess`，新决定以 `previous_decision_id` 链接旧决定追加到运行日志，旧行保留；
-旗标随即消费，不再用于同一次调用的 QA 重跑。第二次替代、非超时阻断或其他决定一律拒绝。
+旗标随即消费，不再用于同一次调用的 QA 重跑。若替代决定已写入、首轮 `test_run/start` 前中断，用同一条命令再 `advance`
+即按普通首轮继续，不再询问 `qa_assess`，也不必去掉旗标。第二次替代、非超时阻断或其他决定一律拒绝。
 （事故：AI潮 bootstrap-T-002-r2 的 N6 评估超时 60 秒后被永久阻塞，context_refresh/finish 无法通过。）
 宿主读取 JSONL 时必须处理当前缓冲区内的全部完整行，再等下一个数据块；处理单行后不能
 提前 return（事故：确认和 TC-007 请求合并到一个数据块，旧驱动只读确认而悬空等待）。
@@ -250,10 +251,11 @@ QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.tim
 已 complete 的宿主证据或环境阻断可用单任务 `--mode resume --workflow-config {原配置} --allow-qa --rerun-blocked-qa`，
 再 `advance`：仅最新结果为 BLOCKED、failed=0、qaRound<3，且每条 BLOCKED 都是 browser 的 evidenceProblem、
 cleanup=failed、环境摘要不一致、hostRequestTimeout 或会话自己回答的 BLOCKED（报告行 `hostDeclaredBlocked`，
-例如模拟器当时不可用），logic 的 INSUFFICIENT_EVIDENCE 或只因映射命令没有退出码而阻断，或 commands 行没有退出码
+例如模拟器当时不可用），logic 的 INSUFFICIENT_EVIDENCE 或只因映射命令没有退出码而阻断（报告行 `commandUnavailable`），或 commands 行没有退出码
 （`host check: timeout/signal_exit/spawn_failed/output_*/cleanup_failed`，例如 xcodebuild 超时或被杀）时允许。
-没有声明命令（commands-unavailable）、延后用例（no-applicable-cases）、`[需确认]`、缺浏览器能力、源码漂移和未 complete 不适用；
-旧版本报告里会话回答的 BLOCKED 没有该标记，仍不适用。配置填错应使用下述“QA 配置修订”。
+没有声明命令（commands-unavailable）、延后用例（no-applicable-cases）、`[需确认]`（logic 报告行 `needsConfirmation`，
+即使映射命令同时没有退出码）、缺浏览器能力、源码漂移和未 complete 不适用；
+旧版本报告里会话回答的 BLOCKED 没有标记，仍不适用；旧报告里 logic INSUFFICIENT_EVIDENCE 行按原规则回放。配置填错应使用下述“QA 配置修订”。
 非零退出码是产品 FAIL，不会被重新归类；确认是环境造成（例如模拟器运行时缺失时 `xcodebuild test` 退出 65）时，
 可在同一命令加 `--qa-environment-failure "原因"`（单行，最多 500 UTF-8 字节，必须与 `--rerun-blocked-qa` 同用，仅单任务宿主）：
 只接受最新结果为 FAIL 且每条 FAIL 都是有退出码的命令行、或只因这类映射命令失败的 logic 用例；browser FAIL、

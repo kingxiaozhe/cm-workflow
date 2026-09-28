@@ -640,10 +640,35 @@ test('step30b empty mid-feature plan emits one explicit deferred BLOCKED row',as
   }finally{f.cleanup();assert.equal(fs.existsSync(f.root),false);}
 });
 
+for(const mode of ['unavailable-only','confirmation','failed-and-unavailable','insufficient-and-unavailable','unmapped'])
+test(`logic report rows record why they are BLOCKED: ${mode}`,async()=>{
+  const f=fixture();
+  try{
+    const kill=[process.execPath,'-e','process.kill(process.pid,"SIGKILL")'];
+    f.configuration.commands=[{id:'killed',command:kill,caseIds:mode==='unmapped'?[]:['TC-001']},
+      ...(mode==='failed-and-unavailable'?[{id:'fails',command:[process.execPath,'-e','process.exit(1)'],caseIds:['TC-001']}]:[])];
+    if(mode==='confirmation'){
+      const source=path.join(f.binding.specsDir,f.binding.feature,'test-cases.json'),contract=JSON.parse(fs.readFileSync(source));
+      contract.cases[0].expected=['[需确认] synthetic expectation'];fs.writeFileSync(source,JSON.stringify(contract));
+    }
+    const artifact=path.join(f.binding.specsDir,'.reviews','browser.txt');fs.writeFileSync(artifact,'Synthetic observation');
+    const executor=createHostQaExecutor({...f.configuration,logic:async()=>({verdict:mode==='insufficient-and-unavailable'?'INSUFFICIENT_EVIDENCE':'SUPPORTED',
+      evidence:['Synthetic static observation']}),
+      browser:async request=>({verdict:'PASS',evidence:[artifact],environment:request.environment,cleanup:'completed'})});
+    const result=await executor.run(begin(f,executor),new AbortController().signal);
+    const row=fs.readFileSync(result.report,'utf8').split(/^## /m).filter(part=>part.startsWith('TC-001\n'))
+      .map(part=>JSON.parse(part.slice('TC-001'.length+1)))[0];
+    assert.equal(row.verdict,mode==='failed-and-unavailable'?'FAIL':'BLOCKED');
+    assert.equal(row.commandUnavailable,mode==='unavailable-only'?true:undefined);
+    assert.equal(row.needsConfirmation,mode==='confirmation'?true:undefined);
+  }finally{f.cleanup();}
+});
+
 for(const scenario of ['evidence','cleanup','environment','timeout','logic','commands','product-blocked',
   'source-drift','FAIL','mixed-failure','round-limit','incomplete','superseded-crash','one-shot','metadata-command',
   'legacy-product-blocked','needs-confirmation','command-unavailable','command-exit','declared-command-exit','declared-product-fail',
-  'declared-contradicted','declared-after-repair','declared-superseded-crash','declared-blocked','declared-unknown-verdict'])
+  'declared-contradicted','declared-after-repair','declared-superseded-crash','declared-blocked','declared-unknown-verdict',
+  'logic-confirmation-unavailable','logic-confirmation-insufficient'])
 test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
   const {createCmAiConversationEntry}=await import('../runtime/js/cm-ai/cm-ai-conversation-entry.mjs');
   const {inspectCmAiQaRecovery}=await import('../runtime/js/cm-ai/cm-ai-qa-log.mjs');
@@ -654,21 +679,24 @@ test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
     if(scenario==='logic')f.configuration.commands[0].caseIds=[];
     if(scenario==='metadata-command')f.configuration.commands[0].id='deferred_cases';
     if(scenario==='commands')f.configuration.commands=[];
-    if(scenario==='needs-confirmation'){
+    // [需确认] keeps a case BLOCKED on every round; a rerun can never resolve it.
+    const confirmation={'needs-confirmation':1,'logic-confirmation-unavailable':0,'logic-confirmation-insufficient':0}[scenario];
+    if(confirmation!==undefined){
       const source=path.join(f.binding.specsDir,f.binding.feature,'test-cases.json'),contract=JSON.parse(fs.readFileSync(source));
-      contract.cases[1].expected=['[需确认] synthetic expectation'];fs.writeFileSync(source,JSON.stringify(contract));
+      contract.cases[confirmation].expected=['[需确认] synthetic expectation'];fs.writeFileSync(source,JSON.stringify(contract));
     }
     // Environment stand-in outside both roots: killed (no exit code) or exit 65 until it is fixed.
     const ready=path.join(f.root,'environment-ready');
     const exits=['command-exit','declared-command-exit','declared-contradicted','declared-after-repair','declared-superseded-crash','declared-unknown-verdict'];
-    if(['command-unavailable',...exits].includes(scenario))f.configuration.commands[0].command=[process.execPath,'-e',
-      `require('node:fs').existsSync(${JSON.stringify(ready)})||${scenario==='command-unavailable'?'process.kill(process.pid,"SIGKILL")':'process.exit(65)'}`];
+    const killed=['command-unavailable','logic-confirmation-unavailable'].includes(scenario);
+    if([...(killed?[scenario]:[]),...exits].includes(scenario))f.configuration.commands[0].command=[process.execPath,'-e',
+      `require('node:fs').existsSync(${JSON.stringify(ready)})||${killed?'process.kill(process.pid,"SIGKILL")':'process.exit(65)'}`];
     const failLike=['FAIL','declared-product-fail'].includes(scenario),contradicted=['mixed-failure','declared-contradicted'].includes(scenario);
     const hostBlocked=['product-blocked','legacy-product-blocked'].includes(scenario);
     let repaired=false,browserCalls=0,logicCalls=0;
     const executor=createHostQaExecutor({...f.configuration,
       logic:async()=>{logicCalls++;return {verdict:contradicted?'CONTRADICTED':
-        scenario==='logic'?'INSUFFICIENT_EVIDENCE':'SUPPORTED',evidence:['Synthetic static observation']};},
+        ['logic','logic-confirmation-insufficient'].includes(scenario)?'INSUFFICIENT_EVIDENCE':'SUPPORTED',evidence:['Synthetic static observation']};},
       browser:async request=>{
         browserCalls++;
         if(!repaired&&scenario==='source-drift')fs.appendFileSync(path.join(f.configuration.codeProject,'source.mjs'),'// drift\n');
@@ -732,7 +760,7 @@ test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
       ...(scenario.startsWith('declared-')&&scenario!=='declared-superseded-crash'?{qaEnvironmentFailure:'simulator runtime was missing'}:{})});
     if(['commands','legacy-product-blocked','needs-confirmation','source-drift','FAIL','mixed-failure','round-limit','incomplete',
       'command-exit','declared-product-fail','declared-contradicted','declared-after-repair','declared-blocked',
-      'declared-unknown-verdict'].includes(scenario)){
+      'declared-unknown-verdict','logic-confirmation-unavailable','logic-confirmation-insufficient'].includes(scenario)){
       const rejected=await entry.handle(operation);
       assert.equal(rejected.code,scenario==='round-limit'?'qa_round_invalid':scenario==='incomplete'?'qa_execution_unknown':'qa_rerun_not_blocked_by_evidence');
       assert.deepEqual(fs.readFileSync(log),before);assert.equal(browserCalls,scenario==='needs-confirmation'?0:1);
@@ -771,7 +799,10 @@ test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
       const precise=[];
       if(scenario==='command-unavailable')precise.push(['report',row=>{row.exitCode=0;}],
         ['report',row=>{row.evidence=['No declared project test command'];}],
-        ['log',list=>{list.find(row=>row.phase==='superseded').failed_cases=[];}]);
+        ['log',list=>{list.find(row=>row.phase==='superseded').failed_cases=[];}],
+        // The logic case is eligible only by its own "blocked by that command" marker.
+        ['report',row=>{delete row.commandUnavailable;},'TC-001'],['report',row=>{row.commandEvidence=[];},'TC-001'],
+        ['report',row=>{row.needsConfirmation=true;},'TC-001']);
       if(['declared-command-exit','declared-superseded-crash'].includes(scenario))precise.push(['report',row=>{row.exitCode=null;}],
         ['report',row=>{row.exitCode=0;}],['log',list=>{list.find(row=>row.phase==='superseded').environment_failure_reason=' ';}],
         ['log',list=>{list.find(row=>row.phase==='superseded').failed_cases=['declared-test'];}],

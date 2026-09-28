@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
@@ -94,13 +94,24 @@ function defaultAnswer(f,row){
   throw Error(`unexpected host request ${row.kind}`);
 }
 
+// A python3 shim that refuses only the N6 test_run/start append, so the real host
+// leaves exactly the durable prefix a crash right before that append leaves.
+function failingStartShim(f){
+  const dir=path.join(f.root,'shim');fs.mkdirSync(dir,{recursive:true});
+  const shim=path.join(dir,'python3');
+  fs.writeFileSync(shim,`#!/bin/sh\ncase " $* " in *" --event test_run --phase start "*) exit 3;; esac\nexec ${JSON.stringify(REAL_PYTHON)} "$@"\n`,{mode:0o700});
+  return dir;
+}
+const REAL_PYTHON=spawnSync('/bin/sh',['-c','command -v python3'],{encoding:'utf8'}).stdout.trim();
+
 // answers[kind] may be a value, a function(row) or 'IGNORE' (never answered).
-function launch(f,{mode='resume',operation='advance',workflow=null,extra=[],answers={},review=true}={}){
+function launch(f,{mode='resume',operation='advance',workflow=null,extra=[],answers={},review=true,pathPrefix=null}={}){
   return new Promise((resolve,reject)=>{
     const args=['serve','--config',f.config,'--mode',mode,'--host-context','session-A','--allow-development',
       '--review-config',f.reviewFile,...(review?['--allow-review-attempt','1']:[]),
       ...(workflow?['--workflow-config',workflow,'--allow-qa']:[]),...extra];
-    const child=spawn(process.execPath,[cli,...args],{env:f.env,stdio:['pipe','pipe','pipe']});
+    const env=pathPrefix?{...f.env,PATH:pathPrefix+path.delimiter+f.env.PATH}:f.env;
+    const child=spawn(process.execPath,[cli,...args],{env,stdio:['pipe','pipe','pipe']});
     let buffer='',stderr='',sessionId=null;const rows=[],asked=[];
     const timer=setTimeout(()=>{child.kill('SIGKILL');reject(Error(`host timeout: ${stderr}`));},60000);
     const send=value=>{try{child.stdin.write(JSON.stringify(value)+'\n');}catch{}};
@@ -187,6 +198,30 @@ test('#7 a legacy 阻塞:host_request_timeout decision stays blocked unless --re
     assert.equal(again.code,0,again.stderr);assert.equal(qaRows(f).length,2);
   }
   assert.deepEqual(f.journal().records.slice(0,journalBefore.records.length),journalBefore.records);
+});
+
+test('#7 recovery interrupted after the replacement decision, before QA start, resumes with the same command',async t=>{
+  const f=fixture(t),workflow=f.workflow('workflow',probeQa({timeoutMs:1500}));
+  done(await launch(f,{mode:'create',workflow,answers:{qa_assess:'IGNORE'}}));
+  legacyTimeoutDecision(f,done(await launch(f,{operation:'status',workflow})).packageDigest);
+  const interrupted=done(await launch(f,{workflow,extra:['--rerun-blocked-qa'],pathPrefix:failingStartShim(f)}));
+  assert.equal(interrupted.outcome,'rejected',JSON.stringify(interrupted));assert.equal(interrupted.code,'qa_log_failed');
+  const prefix=qaRows(f);
+  assert.deepEqual(prefix.map(row=>row.status),['blocked','triggered']);assert.equal(testRuns(f).length,0);
+  // The same authorized command finishes the recovery as the ordinary first
+  // round; qa_assess is not asked again. Here that round meets a killed command.
+  const noAssess={qa_assess:()=>assert.fail('qa_assess must not be re-asked')};
+  f.environment('killed');
+  const resumed=done(await launch(f,{workflow,extra:['--rerun-blocked-qa'],answers:noAssess}));
+  assert.equal(resumed.code,'qa_result_blocked',JSON.stringify(resumed));
+  assert.deepEqual(qaRows(f).map(row=>row.decision_id),prefix.map(row=>row.decision_id));
+  assert.deepEqual(testRuns(f,'start').map(row=>[row.attempt,row.qa_decision_id,row.previous_test_run_id]),[[1,prefix[1].decision_id,undefined]]);
+  // Once a round exists under the replacement, the flag is an ordinary rerun again.
+  f.environment('ready');
+  const result=done(await launch(f,{workflow,extra:['--rerun-blocked-qa'],answers:noAssess}));
+  assert.equal(result.state,'run_done',JSON.stringify(result));
+  assert.deepEqual(testRuns(f,'start').map(row=>row.attempt),[1,2]);
+  assert.deepEqual(testRuns(f,'superseded').map(row=>row.reason),['host_evidence_problem']);
 });
 
 test('#13 a host-declared BLOCKED simulator case re-runs on unchanged code with --rerun-blocked-qa',async t=>{

@@ -170,6 +170,12 @@ export function findCmAiQaDecision(input) {
     packageDigest:input.packageDigest,reason:row.reason,score:row.score,at:row.at},input.identity,input.packageDigest);
 }
 
+// True when the effective decision is the linked replacement of a timed-out
+// decision (the durable effect of one explicit --rerun-blocked-qa recovery).
+export function replacesTimedOutQaDecision(input) {
+  return findDecisionRow(input)?.previous_decision_id!==undefined;
+}
+
 export function inspectCmAiQaDecision(input) {
   const row=findDecisionRow(input);need(row,'context_not_ready');
   return Object.freeze({status:row.status,decisionId:row.decision_id});
@@ -243,7 +249,8 @@ function recoverableCases(items,specsDir,environment,code='qa_rerun_not_blocked_
   const mapped=(row,test)=>Array.isArray(row.commandEvidence)&&row.commandEvidence.some(item=>test(byId.get(item)));
   const blocked=cases.filter(row=>row.verdict==='BLOCKED'),failed=cases.filter(row=>row.verdict==='FAIL');
   for(const row of blocked)need(!row.sourceChanged&&(
-    row.kind==='logic'&&(row.staticVerdict==='INSUFFICIENT_EVIDENCE'||mapped(row,unavailableCommand))
+    row.kind==='logic'&&row.needsConfirmation!==true&&(row.staticVerdict==='INSUFFICIENT_EVIDENCE'
+      ||row.commandUnavailable===true&&mapped(row,unavailableCommand))
     ||row.kind==='browser'&&(typeof row.evidenceProblem==='string'&&row.evidenceProblem.length>0
       ||row.cleanup==='failed'||row.hostRequestTimeout===true||row.hostDeclaredBlocked===true
       ||environment!=null&&row.environment!=null&&digest(row.environment)!==digest(environment))
