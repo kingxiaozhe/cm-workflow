@@ -170,7 +170,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--rerun-unknown-qa requires --mode resume and fresh --allow-qa with the original workflow config. Only an unfinished QA invocation whose recorded case results are all PASS and which has no fixed execution report may be abandoned and rerun under a new testRunId at the same qaRound. The abandoned record lists partial_pass_cases; every case is rerun and old PASS evidence is history only. FAIL/BLOCKED results and unclosed resources remain blocked; no complete is fabricated.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--rerun-blocked-qa requires --mode resume, the original --workflow-config and fresh --allow-qa. Only the latest completed BLOCKED invocation with zero failures and exclusively host/environment evidence gaps can be superseded: browser evidenceProblem, failed cleanup, environment mismatch or host timeout; logic INSUFFICIENT_EVIDENCE. Commands BLOCKED and source drift are excluded. A new testRunId reruns every case at qaRound+1 (maximum 3); superseded and start link previous_test_run_id. The flag is consumed once, never persisted; no development/Review/task replay or new QA decision. Do not combine with --rerun-unknown-qa.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--allow-abandon-review: resume 原 run 后发送 abandon_review，request.reason 必须是单行且不超过 500 UTF-8 字节。操作员先确认旧 host 与 review 进程已退出；旗标只消费一次，不写入配置。\n');
-  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--supersede-reviewed-evidence --supersede-reason REASON：仅新建同任务运行；旧运行都已终止且 tasks.md 未勾选时，先在新 journal 记授权，再归档旧审查证据。\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--supersede-reviewed-evidence --supersede-reason REASON：仅新建同任务运行；旧运行都已终止且 tasks.md 未勾选时，先在新 journal 记授权，再归档旧审查证据。若保留直接前驱运行留下的代码漂移，可额外使用 --accept-superseded-code-drift；漂移文件会作为新运行的已有代码并记录当前 SHA-256。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\n');return 0;}
   let run,bridge;
   try{
@@ -192,13 +192,13 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const extra=new Map();
     for(let index=8;index<argv.length;index++){
       const name=argv[index];need(!extra.has(name),'invalid_arguments');
-      need(['--revise-qa-config','--qa-config-revision-reason','--supersede-reviewed-evidence','--supersede-reason','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--allow-abandon-review','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments');
-      if(['--supersede-reviewed-evidence','--allow-bootstrap-write','--allow-qa','--allow-abandon-review','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
+      need(['--revise-qa-config','--qa-config-revision-reason','--supersede-reviewed-evidence','--supersede-reason','--accept-superseded-code-drift','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--allow-abandon-review','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments');
+      if(['--supersede-reviewed-evidence','--accept-superseded-code-drift','--allow-bootstrap-write','--allow-qa','--allow-abandon-review','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
       else{need(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments');extra.set(name,argv[++index]);}
     }
     parseHostInputLimit(extra.get('--input-limit'));
     const revisionRequested=extra.has('--revise-qa-config')||extra.has('--qa-config-revision-reason');
-    need(!extra.has('--supersede-reviewed-evidence')&&!extra.has('--supersede-reason')
+    need(!extra.has('--supersede-reviewed-evidence')&&!extra.has('--supersede-reason')&&!extra.has('--accept-superseded-code-drift')
       ||(argv[4]==='create'&&extra.has('--supersede-reviewed-evidence')&&extra.has('--supersede-reason')),
     'supersede_unavailable');
     need(!revisionRequested||(argv[4]==='resume'&&extra.has('--allow-qa')&&extra.has('--revise-qa-config')
@@ -266,7 +266,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     if(argv[4]==='resume'&&!extra.has('--original-host-context')&&extra.has('--protected-config')&&canResumeLegacyProtected(definition,runtime)){
       try{
         execution=await legacyProtectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap);
-        run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),supersedeReason:extra.get('--supersede-reason')??null,allowAbandonReview:extra.has('--allow-abandon-review')});
+        run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:extra.has('--allow-abandon-review')});
         error.write('cm-ai-host: resumed original Codex protected execution after exact fingerprint validation.\n');
       }catch(cause){
         if(!['fingerprint_mismatch','tool_preflight_missing'].includes(cause.code))throw cause;
@@ -278,7 +278,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap)
         :executionFor(definition,argv[6],bridge,review,allowedAttempt,workflow,extra.has('--allow-qa'),runtime,
           {...(extra.has('--original-host-context')?{originalHostContextId:extra.get('--original-host-context')}:{}),...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{})});
-      run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),supersedeReason:extra.get('--supersede-reason')??null,allowAbandonReview:extra.has('--allow-abandon-review')});
+      run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:extra.has('--allow-abandon-review')});
     }
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}
     if(hasFix){
@@ -313,7 +313,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const code=typeof cause?.code==='string'&&(/^[a-z][a-z0-9_]{0,63}$/.test(cause.code)
       ||cause.code.startsWith('invalid_config: '))?cause.code:'host_launch_failed';
     if(code==='handoff_exists')error.write(`[host] ${REVIEWED_HANDOFF_HINT}\n`);
-    error.write(JSON.stringify({error:{code,...(['supersede_unavailable','handoff_exists','browser_capability_required','browser_capability_unavailable'].includes(code)
+    if(code==='supersede_code_drift'&&typeof cause.reason==='string')error.write(`[host] ${cause.reason}\n`);
+    error.write(JSON.stringify({error:{code,...(['supersede_unavailable','supersede_code_drift','handoff_exists','browser_capability_required','browser_capability_unavailable'].includes(code)
       &&typeof cause.reason==='string'?{reason:cause.reason}:{})}})+'\n');return 1;
   }finally{bridge?.close();run?.close();}
 }

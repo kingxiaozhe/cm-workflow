@@ -177,12 +177,14 @@ export function validateRunDefinition(input){
   return value;
 }
 
-export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,allowAbandonReview=false}={}){
+export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false}={}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
   if(!['create','resume'].includes(mode))fail('invalid_mode');
   if(supersedeReason!==null&&mode!=='create')fail('supersede_unavailable');
+  if(typeof acceptSupersededCodeDrift!=='boolean'||acceptSupersededCodeDrift&&supersedeReason===null)
+    fail('supersede_unavailable');
   if(qaConfigRevision!==null&&(mode!=='resume'||!execution?.qaExecutor||rerunUnknownQa||rerunBlockedQa
     ||typeof qaConfigRevision.reason!=='string'||!qaConfigRevision.reason.trim()||qaConfigRevision.reason.length>500
     ||/[\r\n\0]/.test(qaConfigRevision.reason)||!qaConfigRevision.previousWorkflow))fail('qa_revision_authorization_required');
@@ -220,7 +222,8 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
   const featureSlug=feature.replace(/^\d+\./,'');
   const reviewsDir=path.join(specsDir,'.reviews');
   const supersession=mode==='create'&&supersedeReason!==null
-    ?prepareReviewedEvidenceSupersession({specsDir,codeProject,feature,identity,reason:supersedeReason,tasksPath}):null;
+    ?prepareReviewedEvidenceSupersession({specsDir,codeProject,feature,identity,reason:supersedeReason,tasksPath,
+      acceptSupersededCodeDrift}):null;
   let bootstrapConfig=null;
   if(execution?.bootstrap){
     const {bootstrapConfiguration}=await import('../runtime/js/cm-ai/host-bootstrap.mjs');

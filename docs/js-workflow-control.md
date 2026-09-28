@@ -413,6 +413,8 @@ host-context 必须是真实当前会话身份；宿主将其排除出独立审�
 
 此时错误的 `reason` 和宿主 stderr 的 `[host]` 提示先恢复原运行的 QA：配置填错用 `--revise-qa-config PREVIOUS.json --qa-config-revision-reason …`，宿主／环境证据不足用 `--rerun-blocked-qa`。确需重跑任务时，注意 N5 已在 N6 前把任务勾为 `[x]`；先在 `tasks.md` 将该任务改回 `- [ ]`，再在新的 runId 上显式提供 `--supersede-reviewed-evidence --supersede-reason "…"`；原因限单行、500 UTF-8 字节。宿主要求 `tasks.md` 未勾选该任务，所有同 feature、task 的旧 V3 journal 均无在途操作且处于 blocked、cancelled、unknown，或 fixture_completed 且 QA 为 BLOCKED／未结束；旧 writer 仍被进程持有、正常完成或无旧证据均拒绝 `supersede_unavailable`。新 journal 先追加 `evidence-superseded`，记录旧 runId、文件名、SHA-256 和原因，再归档同名 handoff／回执／具名 correction、QA 文件并写 `supersede` 事件；恢复会按记录幂等补齐。旧 journal 不改写，旧 QA UUID 报告仍留原位供旧日志引用；新运行随后按原名发布自己的证据。未使用旗标的运行维持原 journal 格式和摘要。
 
+替代检查还会在任何新持久状态和 `captureReviewBaseline` 之前，只比对尚未被其他旧运行的 `evidence-superseded.previousRunIds` 列出的直接前驱运行的 V2 代码基线与当前代码树的逐文件 SHA-256／存在性（含未选中文件、新增及删除）。更早的运行仍进入新记录的 `previousRunIds` 并照常归档。发现漂移时返回 `supersede_code_drift`，`reason` 与宿主 `[host]` stderr 列出最多 20 个路径及剩余数量：手动还原这些文件后重建运行；或确认保留这些改动时加 `--accept-superseded-code-drift` 重建（这些文件会被当成已有代码，不进新运行的审查改动）。该旗标仅限同时带 `--supersede-reviewed-evidence --supersede-reason` 的 create 请求，不默认启用；接受后 `evidence-superseded` 记录每个漂移路径的当前 SHA-256（删除时为 `null`）及比较的前驱 runId。检测不修改文件，也不读取代码根之外或跟随越界软链接；无法安全读取时即使带旗标也拒绝。旧 journal 没有可用逐文件基线时跳过该运行，不新增记录；这类历史运行无法获得漂移保证。
+
 判据只认回执 **front matter 内**（首个 `---` 到下一个 `---` 之间）的 `handoff:` 行，不按固定行数截取——`handoff:` 之后的 `scope` 列表长度等于该任务的改动文件数，按行数截取会让判定依赖字段顺序。正文里出现的 `handoff:` 不算数。回执缺失视为未被消费；front matter 未闭合、起始不是 `---`、文件非普通文件或为符号链接、超过 256 KiB，一律按「已消费」处理（失败关闭），绝不因为读不懂就去覆盖审查证据。
 
 因此同一任务失败一次后不再需要人工去 `.reviews/` 删文件才能重跑；已批准的交接仍然不可覆盖。

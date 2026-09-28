@@ -230,7 +230,9 @@ node scripts/cm-ai-host.mjs serve --config run-new.json --mode create \
 
 原因必须为单行、非空、最多 500 UTF-8 字节。N5 会在 N6 前把任务勾为 `[x]`：若 QA BLOCKED 后确需重新开发，先在 `tasks.md` 将该任务改回 `- [ ]`，再用新 runId 和上述两个旗标创建运行；仍可恢复原 QA 时优先走原运行。只接受同 feature、task 的新运行：`tasks.md` 未勾选该任务，且每个旧运行的 V3 journal 已是无在途操作的 blocked、cancelled、unknown，或 fixture_completed 且 QA 为 BLOCKED／尚未结束；旧 writer 仍被进程持有也拒绝。已完成或仍可继续的旧运行、没有旧运行或可归档文件同样拒绝。旧运行的 journal 不改写、不以新运行身份重开。
 
-使用 `cm-ai-drive.mjs` 时，将这两个参数放入新运行 PLAN 的 `permissions`；缺少其中一个或 `mode: "resume"` 时，驾驶员在启动宿主前拒绝。
+创建新 journal 和捕获新基线前，只把当前代码树与尚未被其他旧运行替代的直接前驱运行的 V2 开工基线逐文件比对，包含未选中文件及新增、删除路径；所有旧运行仍进入 `previousRunIds` 和归档。差异返回 `supersede_code_drift`，`reason` 和 `[host]` stderr 最多列出 20 个路径及其余数量。操作员可手动还原这些文件后重建运行；或确认保留这些改动时，在上述两个旗标之外加 `--accept-superseded-code-drift` 重建（这些文件会被当成已有代码，不进新运行的审查改动）。接受时新运行的 `evidence-superseded` 记录存下每个漂移路径、当前 SHA-256（删除时为 `null`）及被比较的前驱 runId。该旗标仅限新建运行，不默认启用。检测只读代码根，不跟随越界软链接；无法安全读取时即使带旗标也拒绝。没有可用逐文件基线的旧 journal 跳过此检测，不改写历史记录。
+
+使用 `cm-ai-drive.mjs` 时，将两个必需参数放入新运行 PLAN 的 `permissions`；接受代码漂移时再加入 `--accept-superseded-code-drift`。缺少必需参数、单独使用接受旗标或 `mode: "resume"` 时，驾驶员在启动宿主前拒绝。
 
 新运行先在自己的 journal 追加 `evidence-superseded`，绑定原因、旧 runId、文件名和 SHA-256，然后用先硬链接再解除原链接的方式把该任务同名 handoff、review 及具名 correction／QA 文件移至 `.reviews/.superseded/{原文件名}.{摘要前16位}`，并写 `supersede` 运行日志。归档中断后以同一新 runId 执行 `resume` 会按记录补齐；未用此旗标的运行不增加记录或改动旧证据。历史 QA 的 UUID 报告仍由旧 runId 日志引用，保持原位。新 handoff 和 review 使用原文件名，旧证据只在归档中留史。
 

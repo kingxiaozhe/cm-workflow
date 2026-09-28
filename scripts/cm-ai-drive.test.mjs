@@ -276,11 +276,17 @@ test('supersession flags reach create and incomplete or resume pairs stop before
   const create=f.drive(f.plan({permissions:both}),'advance');
   assert.equal(create.status,1,create.stderr);
   assert.match(create.stderr,/supersede_unavailable/);
+  const accepted=f.drive(f.plan({permissions:[...both,'--accept-superseded-code-drift']}),'advance');
+  assert.equal(accepted.status,1,accepted.stderr);
+  assert.match(accepted.stderr,/supersede_unavailable/);
   for(const permissions of [['--supersede-reviewed-evidence'],['--supersede-reason','operator restart']]){
     const refused=f.drive(f.plan({permissions}),'advance');
     assert.equal(refused.status,2,refused.stderr);
     assert.match(refused.stderr,/supersede-reviewed-evidence.*supersede-reason/);
   }
+  const orphan=f.drive(f.plan({permissions:['--accept-superseded-code-drift']}),'advance');
+  assert.equal(orphan.status,2,orphan.stderr);
+  assert.match(orphan.stderr,/accept-superseded-code-drift.*supersede-reviewed-evidence/);
   const resumed=f.drive(f.plan({mode:'resume',originalHostContext:'drive-host-a',permissions:both}),'status');
   assert.equal(resumed.status,2,resumed.stderr);
   assert.match(resumed.stderr,/supersede.*create/);

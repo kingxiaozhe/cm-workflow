@@ -3,7 +3,8 @@ import {need,shape,id,hex,json} from './effect-contract.mjs';
 
 export function readEvidenceSupersession(raw,expected=null){
   const record=json(raw,1024*1024);
-  shape(record,['version','feature','taskId','newRunId','previousRunIds','reason','files','authorizedAt']);
+  shape(record,['version','feature','taskId','newRunId','previousRunIds','reason','files','authorizedAt',
+    ...(Object.hasOwn(record,'acceptedCodeDrift')?['acceptedCodeDrift']:[])]);
   need(record.version===1,'supersede_record_invalid');
   need(typeof record.authorizedAt==='string'
     &&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(record.authorizedAt)
@@ -11,6 +12,20 @@ export function readEvidenceSupersession(raw,expected=null){
   for(const key of ['feature','taskId','newRunId'])id(record[key]);
   need(Array.isArray(record.previousRunIds)&&record.previousRunIds.length>0&&record.previousRunIds.length<=128,'supersede_record_invalid');
   const runs=new Set();for(const runId of record.previousRunIds){id(runId);need(!runs.has(runId)&&runId!==record.newRunId,'supersede_record_invalid');runs.add(runId);}
+  if(Object.hasOwn(record,'acceptedCodeDrift')){
+    need(Array.isArray(record.acceptedCodeDrift)&&record.acceptedCodeDrift.length>0
+      &&record.acceptedCodeDrift.length<=8192,'supersede_record_invalid');
+    const seen=new Set();
+    for(const file of record.acceptedCodeDrift){
+      shape(file,['predecessorRunId','path','sha256']);
+      need(runs.has(file.predecessorRunId)&&typeof file.path==='string'&&file.path.length>0
+        &&file.path.normalize('NFC')===file.path&&!/[\\:\x00-\x1f\x7f-\x9f]/.test(file.path)
+        &&file.path.split('/').every(part=>part&&part!=='.'&&part!=='..'),'supersede_record_invalid');
+      if(file.sha256!==null)hex(file.sha256);
+      const key=`${file.predecessorRunId}\0${file.path}`;
+      need(!seen.has(key),'supersede_record_invalid');seen.add(key);
+    }
+  }
   need(typeof record.reason==='string'&&record.reason.trim()&&Buffer.byteLength(record.reason,'utf8')<=500
     &&!/[\r\n\0]/.test(record.reason),'supersede_reason_required');
   need(Array.isArray(record.files)&&record.files.length>0&&record.files.length<=256,'supersede_record_invalid');

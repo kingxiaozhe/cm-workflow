@@ -68,7 +68,7 @@ const PAIR_FLAGS=new Set(['--allow-review-attempt','--review-config','--workflow
   '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason']);
 const FLAG_FLAGS=new Set(['--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
   '--allow-bootstrap-write','--allow-abandon-review','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
-  '--supersede-reviewed-evidence',
+  '--supersede-reviewed-evidence','--accept-superseded-code-drift',
   ...['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon',
     'test-author','repair','cause-review','final-review'].map(name=>`--allow-qa-fix-${name}`)]);
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
@@ -229,6 +229,8 @@ function load(){
   const supersedeReason=permissions.includes('--supersede-reason');
   if(supersedeFlag!==supersedeReason)
     stop(2,'--supersede-reviewed-evidence 与 --supersede-reason 必须同时提供');
+  if(permissions.includes('--accept-superseded-code-drift')&&!supersedeFlag)
+    stop(2,'--accept-superseded-code-drift 需要 --supersede-reviewed-evidence 与 --supersede-reason');
   if(supersedeFlag&&plan.mode!=='create')stop(2,'supersede 只允许 mode create');
   const abandonError=abandonReviewPlanError(operation,plan,permissions);
   if(abandonError)stop(2,abandonError);

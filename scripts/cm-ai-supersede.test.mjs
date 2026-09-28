@@ -105,6 +105,141 @@ async function start(f,runId,content,options={},verdict='blocked',qaResult=null)
   try{return await run.host.handle(requestFor(identity));}finally{run.close();}
 }
 
+async function expectCodeDrift(f,runId,paths){
+  const stateFile=path.join(f.reviewsDir,'.execution',runId,'state.json');
+  await assert.rejects(start(f,runId,'next\n',{supersedeReason:'restart'}),error=>{
+    assert.equal(error.code,'supersede_code_drift');
+    for(const name of paths)assert.match(error.reason,new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+    assert.match(error.reason,/手动还原这些文件后重建运行/);
+    assert.match(error.reason,/--accept-superseded-code-drift/);
+    return true;
+  });
+  assert.equal(fs.existsSync(stateFile),false);
+}
+
+test('supersession refuses code left by an old run and proceeds after manual restoration',async()=>{
+  const f=runFixture();
+  try{
+    assert.equal((await start(f,'run-drift-old-0001','written\n')).state,'blocked');
+    await expectCodeDrift(f,'run-drift-new-0002',['a.mjs']);
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
+    assert.equal((await start(f,'run-drift-new-0002','next\n',{supersedeReason:'restart'})).state,'blocked');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('chained supersession checks only the immediate predecessor baseline',async()=>{
+  const f=runFixture();
+  try{
+    assert.equal((await start(f,'chain-one-0001','first\n')).state,'blocked');
+    assert.equal((await start(f,'chain-two-0002','second\n',
+      {supersedeReason:'keep first',acceptSupersededCodeDrift:true})).state,'blocked');
+    await expectCodeDrift(f,'chain-three-0003',['a.mjs']);
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'first\n');
+    assert.equal((await start(f,'chain-three-0003','third\n',{supersedeReason:'next'})).state,'blocked');
+    const state=JSON.parse(fs.readFileSync(path.join(f.reviewsDir,'.execution','chain-three-0003','state.json')));
+    const record=state.records.find(row=>row.payload.type==='evidence-superseded')?.payload.record;
+    assert.deepEqual(record.previousRunIds,['chain-one-0001','chain-two-0002']);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('explicit drift acknowledgement records current hashes and deleted paths',async()=>{
+  const f=runFixture();
+  try{
+    fs.writeFileSync(path.join(f.codeProject,'deleted.mjs'),'before\n');
+    assert.equal((await start(f,'accept-one-0001','first\n')).state,'blocked');
+    fs.rmSync(path.join(f.codeProject,'deleted.mjs'));
+    fs.writeFileSync(path.join(f.codeProject,'added.mjs'),'current\n');
+    await expectCodeDrift(f,'accept-two-0002',['a.mjs','deleted.mjs','added.mjs']);
+    assert.equal((await start(f,'accept-two-0002','second\n',
+      {supersedeReason:'keep existing changes',acceptSupersededCodeDrift:true})).state,'blocked');
+    const state=JSON.parse(fs.readFileSync(path.join(f.reviewsDir,'.execution','accept-two-0002','state.json')));
+    const record=state.records.find(row=>row.payload.type==='evidence-superseded')?.payload.record;
+    const current=content=>createHash('sha256').update(content).digest('hex');
+    assert.deepEqual(record.acceptedCodeDrift,[
+      {predecessorRunId:'accept-one-0001',path:'a.mjs',sha256:current('first\n')},
+      {predecessorRunId:'accept-one-0001',path:'added.mjs',sha256:current('current\n')},
+      {predecessorRunId:'accept-one-0001',path:'deleted.mjs',sha256:null}]);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('supersession refuses deleted, unselected, and newly added code paths',async()=>{
+  for(const [name,change] of [
+    ['deleted.mjs',f=>fs.rmSync(path.join(f.codeProject,'deleted.mjs'))],
+    ['unselected.mjs',f=>fs.writeFileSync(path.join(f.codeProject,'unselected.mjs'),'changed\n')],
+    ['added.mjs',f=>fs.writeFileSync(path.join(f.codeProject,'added.mjs'),'added\n')]]){
+    const f=runFixture();
+    try{
+      if(name!=='added.mjs')fs.writeFileSync(path.join(f.codeProject,name),'before\n');
+      const prior=await start(f,'run-path-old-0001','written\n');assert.equal(prior.state,'blocked',JSON.stringify(prior));
+      fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
+      change(f);
+      await expectCodeDrift(f,'run-path-new-0002',[name]);
+    }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+  }
+});
+
+test('supersession of an untouched code tree proceeds',async()=>{
+  const f=runFixture();
+  try{
+    const prior=await start(f,'run-clean-old-0001','written\n');assert.equal(prior.state,'blocked',JSON.stringify(prior));
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
+    assert.equal((await start(f,'run-clean-new-0002','new\n',{supersedeReason:'restart'})).state,'blocked');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('supersession drift reason lists only the first 20 of 21 paths',async()=>{
+  const f=runFixture();
+  try{
+    for(let i=0;i<21;i++)fs.writeFileSync(path.join(f.codeProject,`file-${String(i).padStart(2,'0')}.mjs`),'before\n');
+    const prior=await start(f,'run-many-old-0001','written\n');assert.equal(prior.state,'blocked',JSON.stringify(prior));
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
+    for(let i=0;i<21;i++)fs.writeFileSync(path.join(f.codeProject,`file-${String(i).padStart(2,'0')}.mjs`),'after\n');
+    await assert.rejects(start(f,'run-many-new-0002','new\n',{supersedeReason:'restart'}),error=>{
+      assert.equal(error.code,'supersede_code_drift');
+      for(let i=0;i<20;i++)assert.match(error.reason,new RegExp(`file-${String(i).padStart(2,'0')}\\.mjs`));
+      assert.doesNotMatch(error.reason,/file-20\.mjs/);
+      assert.match(error.reason,/等 1 个/);
+      return true;
+    });
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('supersession refuses a symlink without reading its target outside the code root',async()=>{
+  const f=runFixture();
+  try{
+    assert.equal((await start(f,'run-link-old-0001','written\n')).state,'blocked');
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
+    const outside=path.join(f.root,'outside.mjs');
+    fs.writeFileSync(outside,'private fixture\n');
+    fs.symlinkSync(outside,path.join(f.codeProject,'link.mjs'));
+    for(const acceptSupersededCodeDrift of [false,true])
+      await assert.rejects(start(f,'run-link-new-0002','new\n',
+        {supersedeReason:'restart',acceptSupersededCodeDrift}),error=>
+        error.code==='supersede_code_drift'&&/无法安全核对代码树/.test(error.reason));
+    assert.equal(fs.readFileSync(outside,'utf8'),'private fixture\n');
+    assert.equal(fs.existsSync(path.join(f.reviewsDir,'.execution','run-link-new-0002')),false);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('host launch prints supersede code drift reason and stderr hint',async()=>{
+  const f=runFixture();
+  try{
+    assert.equal((await start(f,'run-host-old-0001','written\n')).state,'blocked');
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity:identityFor('run-host-new-0002'),scope:['a.mjs'],requirements:['requirements.md']};
+    const config=path.join(f.root,'run.json');fs.writeFileSync(config,JSON.stringify(definition));
+    const output=new PassThrough(),error=new PassThrough();let stderr='';error.on('data',chunk=>stderr+=chunk);
+    assert.equal(await hostMain(['serve','--config',config,'--mode','create','--host-context','fixture-host',
+      '--allow-development','--runtime','claude','--supersede-reviewed-evidence','--supersede-reason','restart'],
+    {input:new PassThrough(),output,error}),1);
+    assert.match(stderr,/\[host\].*a\.mjs/);
+    const response=JSON.parse(stderr.trim().split('\n').at(-1));
+    assert.equal(response.error.code,'supersede_code_drift');
+    assert.match(response.error.reason,/a\.mjs/);
+    assert.equal(fs.existsSync(path.join(f.reviewsDir,'.execution','run-host-new-0002')),false);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
 test('explicit restart archives reviewed bytes and records a new-run authorization',async()=>{
   const f=runFixture();
   try{
@@ -126,6 +261,7 @@ test('explicit restart archives reviewed bytes and records a new-run authorizati
     assert.equal(fs.existsSync(path.join(f.reviewsDir,'.execution','run-two-0002')),false);
     for(const [name,bytes] of old)assert.deepEqual(fs.readFileSync(path.join(f.reviewsDir,name)),bytes);
     assert.equal(fs.existsSync(path.join(f.reviewsDir,'.superseded')),false);
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
     const second=await start(f,'run-three-0003','third\n',{supersedeReason:'Operator confirmed genuine restart'});
     assert.equal(second.state,'blocked');
     const archive=path.join(f.reviewsDir,'.superseded');
@@ -181,6 +317,7 @@ test('reviewed run with BLOCKED QA reproduces the collision after the task is re
     for(const [name,bytes] of oldEvidence)assert.deepEqual(fs.readFileSync(path.join(f.reviewsDir,name)),bytes);
     assert.deepEqual(fs.readFileSync(path.join(f.reviewsDir,'.execution','run-qa-one-0001','state.json')),priorJournal);
     assert.equal(fs.existsSync(path.join(f.reviewsDir,'.superseded')),false);
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
     const restarted=await start(f,'run-qa-three-0003','third\n',{supersedeReason:'Reopen after blocked QA'});
     assert.equal(restarted.state,'blocked');
     const record=JSON.parse(fs.readFileSync(path.join(f.reviewsDir,'.execution','run-qa-three-0003','state.json')))
@@ -219,6 +356,7 @@ test('supersession recognizes the optional task strikethrough used by admission'
   try{
     assert.equal((await start(f,'run-struck-0001','first\n')).state,'blocked');
     fs.writeFileSync(f.tasksPath,'- [ ] ~~T-002: fixture\n');
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
     const record=prepareReviewedEvidenceSupersession({specsDir:f.specsDir,codeProject:f.codeProject,
       feature:f.feature,identity:identityFor('run-struck-0002'),reason:'restart',tasksPath:f.tasksPath});
     assert.deepEqual(record.previousRunIds,['run-struck-0001']);
@@ -292,6 +430,10 @@ test('CLI requires both create-time supersession flags before opening a run',asy
   assert.equal(await hostMain([...base,'--supersede-reason','restart'],
     {input:new PassThrough(),output,error}),1);
   assert.match(stderr,/supersede_unavailable/);
+  stderr='';
+  assert.equal(await hostMain([...base,'--accept-superseded-code-drift'],
+    {input:new PassThrough(),output,error}),1);
+  assert.match(stderr,/supersede_unavailable/);
 });
 
 test('host stderr carries the handoff recovery hint while the result keeps its code',async()=>{
@@ -305,6 +447,7 @@ test('resume completes an interrupted archive from the durable new-run record',a
   const f=runFixture();
   try{
     await start(f,'run-first-0001','first\n');
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
     const identity=identityFor('run-next-0002');
     const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
       identity,scope:['a.mjs'],requirements:['requirements.md']};
