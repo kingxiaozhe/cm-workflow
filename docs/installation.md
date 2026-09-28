@@ -153,6 +153,26 @@ The installed `/cm-ai` Skill invokes the same read-only
 `$CLAUDE_HOME/scripts/cm-ai-admission.mjs` N1/N2 authority used by Codex; no
 Claude-specific workflow fork is installed.
 
+### Claude Code 权限建议（可选）
+
+安装器把 CM 脚本放在 `$CLAUDE_HOME/scripts/`（默认 `~/.claude/scripts/`），不会代改项目的 `.claude/settings.json`。如需减少普通驱动调用的重复提示，可由项目所有者审阅后在项目配置中添加以下示例；自定义 `CLAUDE_HOME` 时替换路径：
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(node ~/.claude/scripts/cm-ai-drive.mjs:*)",
+      "Bash(node ~/.claude/scripts/cm-ai-batch-drive.mjs:*)",
+      "Bash(node ~/.claude/scripts/cm-fix-drive.mjs:*)",
+      "Bash(node ~/.claude/scripts/cm-prd-drive.mjs:*)",
+      "Bash(node ~/.claude/scripts/cm-ai-host.mjs --help)"
+    ]
+  }
+}
+```
+
+这只是启动命令的建议规则，不是 CM 的运行授权；计划文件里的操作与权限仍须逐项审查。覆盖旧审查证据的 `--supersede-reviewed-evidence`、保留前驱代码漂移的 `--accept-superseded-code-drift`、SwiftPM 的 `--disable-sandbox`、QA 重跑的 `--rerun-unknown-qa`／`--rerun-blocked-qa`、放弃审查的 `--allow-abandon-review`，以及修改权限配置，都应由用户针对本次动作确认。尤其 `--supersede-reviewed-evidence` 和 `--accept-superseded-code-drift` 可以写在驱动的 `PLAN.permissions` 中，单凭上面的 Bash 通配规则无法识别；无法逐次审阅计划时，不要启用这些通配规则。要试改驱动脚本，请把副本放在项目或临时工作目录，不在 `~/.claude/scripts/` 原地编辑。若组织级权限策略继续拒绝，即使项目规则允许也应遵循该策略。
+
 ## Claude Code on Windows
 
 ```powershell

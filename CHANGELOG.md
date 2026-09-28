@@ -9,6 +9,7 @@
 - cm-task-gate Python 适配器按 UTF-8 读取 Node 输出，避免 Windows 系统默认编码使中文诊断解码失败。
 - cm-ai 规格审批接受六种明确开始语及尾部标点，泛化授权仍拒绝；cm-prd 草稿与审查校验为时间、标题、依赖、大小和测试理由提供字段级诊断，原门禁不变。
 - cm-ai 新建运行替代旧审查证据前，只核对尚未被其他旧运行替代的直接前驱运行的 V2 逐文件代码基线；漂移默认以 `supersede_code_drift` 拒绝，操作员也可显式加 `--accept-superseded-code-drift` 保留并记录前驱 runId、路径和当前摘要。更早运行仍照常归档；检查发生在新 journal 与新基线创建前。
+- 补充 iOS 系统服务检查的分根与沙箱边界、当前会话驱动脚本和 Claude Code 权限建议，并在 cm-ai 宿主帮助中指向驱动。
 - cm-ai bootstrap支持已批准的单个编号`*.bootstrap`（含`1.bootstrap`），拒绝多个候选，并在规范写入前保留AGENTS.md既有Learning段及其他约束。
 - cm-ai 已批准任务在完成前重跑检查时，仅比较检查身份与结果（id、command、outcome、exitCode），允许 evidence 摘要文字变化；检查结果变化保留原审查并以 `blocked/completion_checks_changed` 在同一 run 重试完成，代码、范围、handoff 或检查身份漂移仍终态阻断。
 - cm-ai 改进检查产物越界诊断和同 run 恢复、独立审查 15 分钟默认超时、Claude 模型拒绝提示及交互 QA 载体说明。

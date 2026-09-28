@@ -5,13 +5,19 @@
 明确开始；“继续”“可以”“好”“好的”“OK”“按最优解处理”“你看着办”“行”仍不审批。
 `not_approval` 时提示明确回复“开始”；写审批位仍须原 `--approve` 门禁。
 
-## 单步驾驶员
+## 当前会话手动驱动：用驱动脚本，不要自己搭 FIFO
 
-仓库自带 `../../../scripts/cm-ai-drive.mjs`，一次启动宿主、发送一个 operation、回答这一轮的反问并打印结果：
+单任务用 `cm-ai-drive.mjs`，批次用 `cm-ai-batch-drive.mjs`；修复用 `cm-fix-drive.mjs`，规格编写用 `cm-prd-drive.mjs`。它们负责保持宿主 stdin、应答反问并按 callId 配对结果，无需后台保活 FIFO。`cm-ai`、批次和 `cm-prd` 驱动的 `--help` 列出计划字段；单任务最小调用：
 
 ```bash
 node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 ```
+
+先按下节准备计划及真实答案文件。计划中的 `checks` 须为实际可执行的命令；驱动不接受静态检查结果代替执行。
+
+## 单步驾驶员
+
+仓库自带 `../../../scripts/cm-ai-drive.mjs`，按上例一次启动宿主、发送一个 operation、回答这一轮的反问并打印结果。
 
 `PLAN.json` 与 cm-fix 驾驶员一样，以自身目录解析相对路径；填写 `config`（已批准的运行定义）、
 `mode`、当前真实 `hostContext`、`runtime`、原样传给宿主的 `permissions`、`answers` 和
@@ -31,7 +37,8 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 `advance`。其余人工文件为
 `qa-assess.json`、`documentation-inspect.json`、`documentation-sync.json`；QA 修复子运行沿用
 cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edits.json` 和
-`retrospective.json`。缺答案、结构错误、路径或存档无效会在启动宿主前退出 2。
+`retrospective.json`；修订轮的测试和修复分别读取 `test-edits-a2.json`、`repair-edits-a2.json`。
+缺答案、结构错误、路径或存档无效会在启动宿主前退出 2。
 
 当单次 `develop` 回答超过默认 64 KiB 时，在单任务或批次 `PLAN.permissions` 传
 `["--input-limit","1048576"]`；上限为 4 MiB（4194304 字节）。这是宿主输入传输限额，
@@ -128,7 +135,7 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 
 不新增模型调用的方案：单任务和批次均可传`--protected-conversation-config {文件}`，配置固定为
 `{checkCommands,timeoutMs}`，命令须已获准；检查命令用此预算，独立审查默认 900000 毫秒（15 分钟），可在 review-config 中单独覆盖，范围 1–3600000。preflight 输出有效 `timeoutMs`；此预算不进入授权配置摘要，旧运行可用原 runId 恢复。
-检查命令的构建产物放在代码根外，例如 `xcodebuild -derivedDataPath` 指向外部目录。检查自己新增的范围外未跟踪文件使原 run 进入 `blocked/check_output_out_of_scope`，状态原因和 stderr 列出最多 20 个相对路径；操作员清理产物后在原 run 重试。开发者造成的范围外改动仍是 `unknown/out_of_scope`，不得据此放宽 scope。
+需要模拟器、真机或系统服务的 iOS 项目（CoreSimulatorService、Xcode UI tests、Keychain 等），应将 specs 与代码分根，并选用有系统访问能力的当前会话宿主路径执行检查；实际检查进程必须在 Codex 原生沙箱外。仅改变目录或改用驱动脚本不会让沙箱内检查获得这些服务。同仓 specs 的受保护检查仍在 Codex 沙箱内，典型症状是模拟器不可用、UI tests 无法启动，SwiftPM 的 `swift build` 需要 `--disable-sandbox`；不要把这种失败记成产品测试通过。检查命令的构建产物放在代码根外，例如 `xcodebuild -derivedDataPath {代码根外的目录}`。检查自己新增的范围外未跟踪文件使原 run 进入 `blocked/check_output_out_of_scope`，状态原因和 stderr 列出最多 20 个相对路径；操作员清理产物后在原 run 重试。开发者造成的范围外改动仍是 `unknown/out_of_scope`，不得据此放宽 scope。
 审查传输超时且没有结果事件时，记录 `pending_review/review_transport_timeout`，可用 `--mode resume` 后 advance，
 同一 attempt 最多重派一次，重新取得 Review 授权、grant 与 invocation；第二次超时为 `blocked/review_transport_timeout`。
 已有最终消息（即使截断）的超时仍需 reconcile，旧 unknown 历史不自动改类。兼容Codex/Claude当前会话，保留原runtime与Review授权。

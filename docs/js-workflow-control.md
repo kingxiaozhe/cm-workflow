@@ -219,6 +219,8 @@ const result = await generateCmInitRules(
 
 ### 多代码目录：同一个任务统一收口
 
+需要 CoreSimulatorService、模拟器、真机、Xcode UI tests 或 Keychain 等系统服务的项目，应采用分离的 specs 根与代码根，并由具备系统访问能力的当前会话宿主在 Codex 沙箱外执行检查。单靠 `codeProjects` 多代码根配置或同仓受保护模式不能改变检查进程的沙箱：模拟器会不可用、UI tests 无法启动，SwiftPM 的 `swift build` 可能要求 `--disable-sandbox`。若宿主仍在沙箱内，就应报告环境阻断，不把失败写成通过。配置检查时将构建产物放在代码根外，例如给 `xcodebuild -derivedDataPath` 指定外部目录，避免触发 `check_output_out_of_scope`（详见下文检查产物说明）。
+
 单任务定义或batch定义可增加`codeProjects:["{WORKSPACE}/frontend","{WORKSPACE}/backend"]`。
 `codeProject`是明确选择的共同工作区根，不创建挂载或搬移目录；每个代码根必须是真实已存在、互不重叠的子目录。
 scope/requirements使用相对工作区的前缀路径（如`frontend/src/view.mjs`），不得选择未声明的兄弟目录。
