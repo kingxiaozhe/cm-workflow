@@ -113,6 +113,22 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 审查传输超时且没有结果事件时，记录 `pending_review/review_transport_timeout`，可用 `--mode resume` 后 advance，
 同一 attempt 最多重派一次，重新取得 Review 授权、grant 与 invocation；第二次超时为 `blocked/review_transport_timeout`。
 已有最终消息（即使截断）的超时仍需 reconcile，旧 unknown 历史不自动改类。兼容Codex/Claude当前会话，保留原runtime与Review授权。
+单任务 V3 的审查调用若已登记（可能已 started）但没有 result，操作员先确认旧 host 与 Review 进程都退出，
+再用原 runId 恢复并显式放弃该调用：
+
+```bash
+node scripts/cm-ai-host.mjs serve --config run.json --mode resume --host-context new-host-id --original-host-context old-host-id --allow-development --review-config review.json --allow-abandon-review --runtime claude
+```
+
+向宿主 JSONL 输入发送 `{"version":1,"requestId":"abandon-1","operation":"abandon_review","identity":{"repositoryId":"…","runId":"…","taskId":"…","attempt":1},"reason":"已确认旧进程退出"}`。
+`reason` 为非空单行、≤500 UTF-8 字节。旗标一次性消费，不持久化、不影响配置指纹；宿主无法验证进程已退出。
+成功后 journal 追加 `review-invocation-abandoned` 并写 `review_abandoned` 运行日志，状态为
+`pending_review/review_abandoned`，`pendingAction: resume`。新宿主以原配置、原 runId 和新的
+`--allow-review-attempt 1`（第二轮为 2）恢复并发送 `advance`，重新签发 grant、登记新 invocation。
+同一 attempt 与无结果 transport timeout 共用最多一次重派；额度已用完则拒绝 abandon。
+旧 invocation 的迟到结果不能再接收；若要终止，abandon 后普通 `cancel` 才能得到 durable cancelled。
+批次路径不支持此操作。driver 可用 `node scripts/cm-ai-drive.mjs --plan abandon-review.json abandon_review`；
+PLAN 需 `mode:"resume"`、原配置、`originalHostContext`、`permissions` 包含 `--allow-abandon-review`、`reason`。
 develop若有`editMode:"protected-text-v1"`，只读并返回`{status:"succeeded",value:{原开发/Learning结果},edits:[{path,beforeSha256,content}]}`；
 使用scope内expected摘要，正文完整UTF-8，null删除；不得先自行写文件或执行命令。失败返回原status/code，blocked不能带改动。
 固定沙箱负责应用提案和原检查，不再请求宿主check；文档同步包含在同次develop提案。原64KiB通道不变，二进制/超限明确阻断。

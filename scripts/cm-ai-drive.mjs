@@ -22,7 +22,7 @@
 //                                    fix_repair, fix_retrospective; host-qa-fix-owner.mjs
 //                                    forwards to cm-fix host.run/handle.
 // fix_action                         selected cm-fix step; host-qa-fix-owner.mjs fix_action.
-// status/cancel/fix_status/context_refresh: none; cm-ai-conversation-entry.mjs
+// status/cancel/abandon_review/fix_status/context_refresh: none; cm-ai-conversation-entry.mjs
 //                                    status/cancel/context_refresh; host-qa-fix-owner.mjs fix_status.
 // verification_precheck              optional execution.verificationGate in
 //                                    host-conversation-execution.mjs; CLI has no runner for it.
@@ -42,7 +42,7 @@ import {readRunDefinition} from './cm-ai-run.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
 
 const HOST=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
-const OPERATIONS=new Set(['advance','start','resume','status','cancel','decision','complete','qa','qa_result',
+const OPERATIONS=new Set(['advance','start','resume','status','cancel','abandon_review','decision','complete','qa','qa_result',
   'fix_status','fix_advance','fix_action','fix_run','run_finalize','context_refresh','finish']);
 const ADVANCE=new Set(['advance','start','resume']);
 const PACKAGE_OPERATIONS=new Set(['decision','complete','qa','qa_result','context_refresh','finish','run_finalize']);
@@ -64,12 +64,17 @@ const PAIR_FLAGS=new Set(['--allow-review-attempt','--review-config','--workflow
   '--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--browser-qa',
   '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason']);
 const FLAG_FLAGS=new Set(['--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
-  '--allow-bootstrap-write','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
+  '--allow-bootstrap-write','--allow-abandon-review','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
   '--supersede-reviewed-evidence',
   ...['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon',
     'test-author','repair','cause-review','final-review'].map(name=>`--allow-qa-fix-${name}`)]);
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;
+export const abandonReviewPlanError=(operation,plan,permissions)=>operation!=='abandon_review'?null:
+  plan.mode==='resume'&&permissions.includes('--allow-abandon-review')
+  &&typeof plan.reason==='string'&&plan.reason.trim().length>0
+  &&Buffer.byteLength(plan.reason,'utf8')<=500&&!/[\r\n\0]/.test(plan.reason)?null:
+    'abandon_review 需要 resume、--allow-abandon-review 与单行 reason（最多 500 UTF-8 字节）';
 function requireShape(ok,label){if(!ok)stop(2,`答案格式错误：${label}`);}
 function exact(value,allowed,label){requireShape(object(value)&&Object.keys(value).every(key=>allowed.includes(key)),label);}
 function answerPath(root,file){return path.join(root,file);}
@@ -163,7 +168,7 @@ export function validateCmAiAnswer(kind,value,root){
 }
 function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (resume), runtime, permissions, answers, checks。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。\n');
+    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (resume), runtime, permissions, answers, checks。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason（单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。\n');
     process.exit(0);
   }
   const loaded=loadPlanFile({name:'cm-ai-drive.mjs',known:OPERATIONS});
@@ -186,6 +191,8 @@ function load(){
   if(supersedeFlag!==supersedeReason)
     stop(2,'--supersede-reviewed-evidence 与 --supersede-reason 必须同时提供');
   if(supersedeFlag&&plan.mode!=='create')stop(2,'supersede 只允许 mode create');
+  const abandonError=abandonReviewPlanError(operation,plan,permissions);
+  if(abandonError)stop(2,abandonError);
   const config=path.resolve(base,plan.config),answers=plan.answers?path.resolve(base,plan.answers):null;
   if(!fs.existsSync(config))stop(2,`运行定义不存在: ${config}`);
   let definition;
@@ -310,6 +317,22 @@ async function answerFor(row,answer){
   if(kind.startsWith('fix_'))return qaFixAnswerFor(row,answer,loaded.answers);
   return value??null;
 }
+export function buildCmAiDriveRequest(operation,plan,definition){
+  return {version:1,identity:definition.identity,
+    ...(operation==='abandon_review'?{reason:plan.reason}:{}),
+    ...(PACKAGE_OPERATIONS.has(operation)?{packageDigest:plan.packageDigest}:{}),
+    ...(TEST_RUN_OPERATIONS.has(operation)?{testRunId:plan.testRunId}:{}),
+    ...(['fix_status','fix_advance','fix_action','fix_run'].includes(operation)?{
+      packageDigest:plan.packageDigest,testRunId:plan.testRunId,
+      ...(operation==='fix_action'?{fixOperation:plan.fixOperation,
+        ...(plan.fixOperation==='abandon_step'?{reason:plan.reason}:{})}: {})}: {})};
+}
+export function buildCmAiDriveHostArgs(plan,permissions,config){
+  return ['serve','--config',config,'--mode',plan.mode,'--host-context',plan.hostContext,
+    '--allow-development',
+    ...(plan.originalHostContext?['--original-host-context',plan.originalHostContext]:[]),
+    '--runtime',plan.runtime??'codex',...permissions.filter(flag=>flag!=='--allow-development')];
+}
 function main(){
   loaded=load();
   const {plan,operation,definition,permissions,config,answer}=loaded;
@@ -317,19 +340,10 @@ function main(){
     stop(2,`${operation} 需要 packageDigest（64 位十六进制）`);
   if(TEST_RUN_OPERATIONS.has(operation)&&!(operation==='qa_result'?nonempty(plan.testRunId)
     :plan.testRunId===null||nonempty(plan.testRunId)))stop(2,`${operation} 需要 testRunId（可为 null）`);
-  const request={version:1,identity:definition.identity,
-    ...(PACKAGE_OPERATIONS.has(operation)?{packageDigest:plan.packageDigest}:{}),
-    ...(TEST_RUN_OPERATIONS.has(operation)?{testRunId:plan.testRunId}:{}),
-    ...(['fix_status','fix_advance','fix_action','fix_run'].includes(operation)?{
-      packageDigest:plan.packageDigest,testRunId:plan.testRunId,
-      ...(operation==='fix_action'?{fixOperation:plan.fixOperation,
-        ...(plan.fixOperation==='abandon_step'?{reason:plan.reason}:{})}: {})}: {})};
+  const request=buildCmAiDriveRequest(operation,plan,definition);
   if(operation.startsWith('fix_')&&(!nonempty(plan.packageDigest)||!nonempty(plan.testRunId)))
     stop(2,`${operation} 需要 packageDigest 和 testRunId`);
-  driveHost({host:HOST,args:['serve','--config',config,'--mode',plan.mode,'--host-context',plan.hostContext,
-    '--allow-development',
-    ...(plan.originalHostContext?['--original-host-context',plan.originalHostContext]:[]),
-    '--runtime',plan.runtime??'codex',...permissions.filter(flag=>flag!=='--allow-development')],cwd:definition.codeProject,operation,request,
+  driveHost({host:HOST,args:buildCmAiDriveHostArgs(plan,permissions,config),cwd:definition.codeProject,operation,request,
     answers:answer,paths:{answers:loaded.answers},answerFor});
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))main();

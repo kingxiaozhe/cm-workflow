@@ -10,6 +10,7 @@ import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 const identity={repositoryId:'fixture',runId:'conversation-ops',taskId:'T-001',attempt:1};
 const packageDigest='8'.repeat(64);
 const operation=(name,requestId=name)=>({version:1,operation:name,requestId,identity,packageDigest,testRunId:null});
+const control=name=>({version:1,operation:name,requestId:name,identity});
 
 async function fixture(run){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-ai-conversation-ops-')));
@@ -26,10 +27,11 @@ async function fixture(run){
   const entry=extra=>createCmAiConversationEntry({specsDir,codeProject,feature,identity,runner,
     applicableAgentFiles:[],...extra});
   const complete=()=>{current={...current,state:'fixture_completed'};};
+  const setStatus=(state,code)=>{current={...current,state,code};};
   const seedQa=()=>recordCmAiQaDecision({specsDir,codeProject,feature,identity,packageDigest,
     logHome:path.join(root,'logs'),decision:{decisionId:'qa-skipped',identity,packageDigest,
       status:'skipped',reason:'fixture',score:4,at:'2026-09-04T15:10:00-07:00'}});
-  try{return await run({root,specsDir,codeProject,entry,complete,seedQa,effects:()=>effects});}
+  try{return await run({root,specsDir,codeProject,entry,complete,setStatus,seedQa,effects:()=>effects});}
   finally{fs.rmSync(root,{recursive:true,force:true});}
 }
 
@@ -45,6 +47,24 @@ test('context_refresh requires a completed task and returns its bound context su
   assert.deepEqual(result.contextFiles.map(file=>file.path),[
     '1.login/design.md','1.login/requirements.md','1.login/tasks.md']);
   assert.equal(f.effects(),0);
+}));
+
+test('idle unknown cancel reports unchanged durable state',()=>fixture(async f=>{
+  f.setStatus('unknown','reconciliation_required');
+  const entry=f.entry(),result=await entry.handle(control('cancel'));
+  assert.equal(result.outcome,'reported');
+  assert.equal(result.state,'unknown');
+  assert.equal(result.code,'reconciliation_required');
+  assert.equal(result.pendingAction,'reconcile');
+}));
+
+test('cancel stops an in-flight advance on a completed runner',()=>fixture(async f=>{
+  f.complete();
+  const entry=f.entry(),advance=entry.handle(control('advance'));
+  const cancelled=await entry.handle(control('cancel'));
+  assert.equal(cancelled.outcome,'cancelled');
+  assert.equal(cancelled.state,'fixture_completed');
+  assert.equal((await advance).code,'cancelled');
 }));
 
 test('run_finalize requires documentation sync and returns the final outcome without runner effects',()=>fixture(async f=>{

@@ -13,6 +13,7 @@ import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs'
 import {previousQaMaterial,qaConfigurationSlice,qaInvariantDigest,qaRevisionChain,verifyQaRevisionMaterial} from '../runtime/js/cm-ai/qa-config-revision.mjs';
 import {inspectCmAiQaRevisionTarget,recordCmAiQaConfigurationRevision} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {prepareReviewedEvidenceSupersession,archiveReviewedEvidence,recordEvidenceSupersession} from '../runtime/js/cm-ai/reviewed-evidence-supersede.mjs';
+import {recordReviewAbandonment} from '../runtime/js/cm-ai/review-abandon-log.mjs';
 
 const usage='cm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
 const fail=code=>{throw Object.assign(new Error(code),{code});};
@@ -171,7 +172,7 @@ export function validateRunDefinition(input){
   return value;
 }
 
-export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,parallelSelection=null,qaConfigRevision=null,supersedeReason=null}={}){
+export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,allowAbandonReview=false}={}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
@@ -313,9 +314,16 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
           excludedContexts:execution.excludedContexts,timeoutMs:execution.timeoutMs,
           ...(Object.hasOwn(execution,'verificationGate')?{verificationGate:execution.verificationGate}:{}),
           taskLearning:{feature,hostHandoff:true}})},
-      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,...(parallelSelection===null?{}:{parallelSelection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
+      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,allowAbandonReview,...(parallelSelection===null?{}:{parallelSelection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
         ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
+    const logAbandonments=()=>{
+      for(const record of store.snapshot().records.filter(row=>row.payload.type==='review-invocation-abandoned'))
+        recordReviewAbandonment({specsDir,codeProject,feature,identity,record,
+          runtime:execution?.reviewers?.[0]?.provider??'codex',
+          ...(execution?.qaLogHome?{logHome:execution.qaLogHome}:{})});
+    };
+    if(mode==='resume')logAbandonments();
     const recorded=store.snapshot().records.find(row=>row.payload.type==='evidence-superseded')?.payload.record??null;
     if(supersession!==null||recorded!==null){
       const record=host.supersedeEvidence(supersession??recorded);
@@ -353,7 +361,9 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
         // Do not imply an unavailable execution adapter was dispatched.
         return {outcome:'blocked',code:'execution_adapter_required',providerCalls:0};
       }
-      return host.handle(request);
+      const result=await host.handle(request);
+      if(request.operation==='abandon_review'&&result.outcome==='abandoned')logAbandonments();
+      return result;
     }},inspectFixAssociation:host.inspectFixAssociation,acceptCompletedFix:host.acceptCompletedFix,
       checkpoint:()=>store.snapshot().revision,close:()=>store.close()};
   }catch(error){store.close();throw error;}

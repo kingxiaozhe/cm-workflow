@@ -22,7 +22,7 @@ const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null)=>
   kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed'].includes(code)
-  ||kind==='review'&&state==='pending_review'&&code==='review_transport_timeout'
+  ||kind==='review'&&state==='pending_review'&&['review_transport_timeout','review_abandoned'].includes(code)
   ||({develop:['ready','changes_requested'],review:['awaiting_review'],complete:['approved']})[kind]?.includes(state)===true;
 // Local rejected values keep audit records but do not consume provider rounds.
 export const invalidDeveloperCall=call=>call.terminal==='failed'&&call.failureResult?.code==='invalid_result'&&call.failureResult.retryable===true;
@@ -32,8 +32,9 @@ export const reviewTransportTimeout=result=>result?.outcome==='timed_out'&&resul
   &&!hasProviderReviewResult(result.observation.events);
 const timeoutEffect=entry=>entry.effect.kind==='review'&&entry.result.code==='review_transport_timeout'
   &&reviewTransportTimeout(entry.result.reviewInvocation?.result);
-export const reviewTimeoutTransition=(result,cache,attempt)=>reviewTransportTimeout(result)?{
-  state:cache.some(entry=>entry.effect.identity.attempt===attempt&&timeoutEffect(entry))?'blocked':'pending_review',
+export const reviewTimeoutTransition=(result,cache,attempt,calls=[],contextId=null)=>reviewTransportTimeout(result)?{
+  state:cache.some(entry=>entry.effect.identity.attempt===attempt&&timeoutEffect(entry))
+    ||calls.some(call=>call.terminal==='abandoned'&&call.contextId===contextId)?'blocked':'pending_review',
   code:'review_transport_timeout'}:null;
 export const completedEffectCount=cache=>cache.filter(entry=>!(entry.effect.kind==='develop'
   &&entry.result.state==='blocked'&&entry.result.code==='developer_result_invalid')&&!timeoutEffect(entry)).length;
@@ -357,7 +358,8 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     }
     else if(invocation.result.outcome==='cancelled'){need(controls.cancelled===true,'runner_control');expectedState='cancelled';expectedCode='cancelled';}
     else if(invocation.result.outcome==='not_dispatched'){expectedState='pending_review';expectedCode=invocation.result.reason;}
-    else {const retry=reviewTimeoutTransition(invocation.result,before.cache,before.attempt);
+    else {const retry=reviewTimeoutTransition(invocation.result,before.cache,before.attempt,before.calls,
+      config.reviewers[0].contexts[before.attempt-1]);
       expectedState=retry?.state??'unknown';expectedCode=retry?.code??invocation.result.reason??invocation.result.inspection?.code??'reconciliation_required';}
     if(invocation.result.outcome!=='observed'){
       same(s.receipt,before.receipt);same(s.receipts,before.receipts);same(s.priorReview,before.priorReview);
@@ -478,7 +480,7 @@ export function readRunnerHistory(raw,config,version=1) {
   need(records[0]?.payload?.version===version,'runner_version');
   const completion=version>=2?completionConfig(config,version):null;
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
-  let invocation={registration:null,started:null,result:null};
+  let invocation={registration:null,started:null,result:null};let registrationRecord=null,startedRecord=null;
   const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false,supersession=null;
   const reviewConfig=(calls=[])=>({...config,reviewInvocation:{...config.reviewInvocation,
     excludedThreadIds:reviewExclusions({excludedThreadIds:[...config.reviewInvocation.excludedThreadIds,...joinedHosts]},
@@ -520,7 +522,7 @@ export function readRunnerHistory(raw,config,version=1) {
       same(e.identity,{...config.identity,attempt:state.attempt});need(e.version===1 && stageAllowed(e.kind,state.state,state.code),'runner_stage');
       need(completedEffectCount(state.cache)<6 && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
       pending=e;beforeIntent=structuredClone(state);controls={};completeIntentDigest=e.kind==='complete'?r.digest:null;
-      invocation={registration:null,started:null,result:null};joinedForInvocation=false;
+      invocation={registration:null,started:null,result:null};registrationRecord=null;startedRecord=null;joinedForInvocation=false;
     } else if(version===3&&p.type==='host-joined') {
       shape(p,[...common,'hostContextId']);id(p.hostContextId);
       // Only one join in a pending review effect, before registration. A crash
@@ -536,14 +538,39 @@ export function readRunnerHistory(raw,config,version=1) {
     } else if(version===3&&p.type==='review-invocation-registered') {
       need(r.kind==='intent'&&pending?.kind==='review'&&!invocation.registration,'runner_invocation');
       invocation.registration=readRegistration(p,beforeIntent,pending,reviewConfig(),session);
+      registrationRecord=r;
     } else if(version===3&&p.type==='review-invocation-started') {
       need(r.kind==='result'&&invocation.registration&&!invocation.started&&!invocation.result,'runner_invocation');
       invocation.started=readStarted(p,invocation.registration,pending,reviewConfig(beforeIntent.calls));
+      startedRecord=r;
       reviewerThreads.push(invocation.started);
     } else if(version===3&&p.type==='review-invocation-result') {
       need(r.kind==='result'&&invocation.registration&&!invocation.result,'runner_invocation');
       invocation.result=readInvocationResult(p,invocation.registration,invocation.started,pending,reviewConfig(beforeIntent.calls));
       if(invocation.result.outcome==='cancelled')need(controls.cancelled===true,'runner_control');
+    } else if(version===3&&p.type==='review-invocation-abandoned') {
+      shape(p,[...common,'effectId','invocationId','registeredDigest','startedDigest','reason','at']);
+      need(r.kind==='result'&&pending?.kind==='review'&&invocation.registration&&!invocation.result
+        &&!controls.cancelled&&!controls.workflowError&&state.state==='awaiting_review','runner_abandon');
+      need(p.effectId===pending.id&&p.invocationId===invocation.registration.request.invocationId
+        &&p.registeredDigest===registrationRecord.digest
+        &&p.startedDigest===(startedRecord?.digest??null),'runner_abandon');
+      need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(p.reason),'runner_abandon');
+      need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_abandon');
+      need(!state.cache.some(entry=>entry.effect.identity.attempt===state.attempt&&timeoutEffect(entry))
+        &&!state.calls.some(call=>call.terminal==='abandoned'
+          &&call.contextId===config.reviewers[0].contexts[state.attempt-1]),'runner_abandon_budget');
+      const request=invocation.registration.request;
+      state.calls.push({invocationId:request.invocationId,contextId:request.contextId,provider:request.provider,
+        requestedModel:request.requestedModel,effectiveModel:'unknown',channel:'host-authorized',
+        started:startedRecord!==null,terminal:'abandoned',requestDigest:request.requestDigest,
+        resultDigest:r.digest,providerThreadId:invocation.started});
+      state.sequence++;
+      state.state='pending_review';state.code='review_abandoned';
+      state.reviewInvocation={registration:invocation.registration.record,started:invocation.started,
+        result:{outcome:'abandoned',reason:p.reason,at:p.at,recordDigest:r.digest}};
+      pending=null;beforeIntent=null;invocation={registration:null,started:null,result:null};
     } else if(p.type==='effect-checkpoint') {
       shape(p,[...common,'effectId','checkpoint']);need(r.kind==='result' && pending && p.effectId===pending.id,'runner_checkpoint');
       state=checkpoint(beforeIntent,p.checkpoint,pending,config,original,session,controls,version,state.taskCommit??null,invocation);
