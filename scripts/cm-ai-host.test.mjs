@@ -104,6 +104,34 @@ function fixture(){
   return {root,specsDir,codeProject,config,args:['serve','--config',config,'--mode','create','--host-context','native-host-fixture','--allow-development']};
 }
 
+test('D1 SIGKILL at a real host develop request leaves an intent without checkpoint',async()=>{
+  const f=fixture();
+  try{
+    const result=await new Promise((resolve,reject)=>{
+      const child=spawn(process.execPath,[cli,...f.args],{stdio:['pipe','pipe','pipe']});
+      let buffer='',asked=false;
+      const timer=setTimeout(()=>{child.kill('SIGKILL');reject(Error('host request timeout'));},15000);
+      child.once('error',error=>{clearTimeout(timer);reject(error);});
+      child.stdout.on('data',chunk=>{
+        buffer+=chunk;
+        for(let newline;(newline=buffer.indexOf('\n'))!==-1;){
+          const line=buffer.slice(0,newline);buffer=buffer.slice(newline+1);
+          if(!line)continue;
+          const row=JSON.parse(line);
+          if(row.type==='host_ready')child.stdin.write(JSON.stringify(request('advance'))+'\n');
+          if(row.type==='host_request'&&row.kind==='develop'){asked=true;child.kill('SIGKILL');}
+        }
+      });
+      child.once('close',(code,signal)=>{clearTimeout(timer);resolve({code,signal,asked});});
+    });
+    assert.equal(result.signal,'SIGKILL');assert.equal(result.asked,true);
+    const state=path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json');
+    const records=JSON.parse(fs.readFileSync(state,'utf8')).records;
+    assert.equal(records.at(-1).payload.type,'effect-intent');
+    assert.equal(records.some(row=>row.payload.type==='effect-checkpoint'),false);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
 function runCli(f,mode,action='create'){
   return new Promise((resolve,reject)=>{
     const args=[...f.args];args[4]=action;

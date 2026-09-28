@@ -44,7 +44,7 @@ import {readRunDefinition} from './cm-ai-run.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
-import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
+import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 
 const HOST=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
 const OPERATIONS=new Set(['advance','start','resume','status','cancel','abandon_review','abandon_effect','decision','complete','qa','qa_result',
@@ -226,12 +226,13 @@ export function validateCmAiAnswer(kind,value,root){
 }
 function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务需要当前会话用 cm-ai-host.mjs serve 完成 init_generate/init_verify，驾驶员启动前拒绝。\n');
+    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks, checkTimeoutMs。\nchecks 每项为 {id,command,timeoutMs?}；checkTimeoutMs 与每项 timeoutMs 为 1..3600000 整数，默认 900000 ms（15 分钟）。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务需要当前会话用 cm-ai-host.mjs serve 完成 init_generate/init_verify，驾驶员启动前拒绝。\n');
     process.exit(0);
   }
   const loaded=loadPlanFile({name:'cm-ai-drive.mjs',known:OPERATIONS});
   const {plan,operation,base}=loaded;
   requireFields(plan,['config','mode','hostContext','permissions']);
+  try{planCheckTimeout(plan);}catch(error){stop(2,error.message);}
   if(!['create','resume'].includes(plan.mode))stop(2,'mode 只能是 create 或 resume');
   if(!nonempty(plan.hostContext))stop(2,'hostContext 必须是当前真实会话 ID');
   if(plan.mode==='create'&&plan.originalHostContext)stop(2,'originalHostContext 只在 resume 时有意义');
@@ -306,7 +307,13 @@ function load(){
     stop(2,`缺少真实执行 runner: ${asks.filter(kind=>['qa_logic','qa_browser','verification_precheck'].includes(kind)).join(', ')}；不能从静态答案文件应答`);
   if(asks.includes('check')){
     if(!Array.isArray(plan.checks)||plan.checks.length===0)stop(2,'步骤会反问 check，但 PLAN.checks 缺少真实命令列表');
-    try{createHostCheck({cwd:definition.codeProject,commands:plan.checks});}
+    try{
+      for(const item of plan.checks){
+        if(!object(item)||Object.keys(item).some(key=>!['id','command','timeoutMs'].includes(key)))throw Error('PLAN.checks 每项只允许 id、command、timeoutMs');
+        planCheckTimeout(plan,item);
+      }
+      createHostCheck({cwd:definition.codeProject,commands:plan.checks.map(({id,command})=>({id,command}))});
+    }
     catch(error){stop(2,`PLAN.checks 格式错误: ${error.code??error.message}`);}
   }
   const reachable=asks.includes('develop')&&!providerMode
@@ -371,7 +378,8 @@ async function answerFor(row,answer){
   if(kind==='check'){
     const results=[];
     for(const command of loaded.plan.checks){
-      const run=createHostCheck({cwd:loaded.definition.codeProject,commands:[command],
+      const run=createHostCheck({cwd:loaded.definition.codeProject,commands:[{id:command.id,command:command.command}],
+        timeoutMs:planCheckTimeout(loaded.plan,command),
         onOutput:({stream,chunk})=>{process.stderr.write(`[drive check ${command.id} ${stream}] ${chunk.toString('utf8')}`);}});
       const [item]=await run({identity:row.payload.identity},{signal:new AbortController().signal});
       results.push(item);

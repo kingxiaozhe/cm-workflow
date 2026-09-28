@@ -27,7 +27,7 @@ import {validateCmAiAnswer,developFilename} from './cm-ai-drive.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
-import {stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
+import {stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 
 const HOST=fileURLToPath(new URL('./cm-ai-batch-host.mjs',import.meta.url));
 const KINDS={develop:'develop.json',qa_assess:'qa-assess.json',
@@ -56,26 +56,30 @@ function actualCwd(bundle,key,generation=1){
   const id=key.slice(key.lastIndexOf('/')+1);
   return path.resolve(bundle.batch.codeProject,'..','.cm-worktrees',bundle.batch.batchId.slice(0,8),id);
 }
-function checkCommandShape(commands,key){
+function checkCommandShape(commands,key,plan){
   if(!Array.isArray(commands)||!commands.length||commands.length>32)stop(2,`任务 ${key} 会反问 check，但 PLAN.checks.${key} 缺少真实命令列表`);
   const ids=new Set();
   for(const item of commands){
-    if(!isObject(item)||Object.keys(item).sort().join()!=='command,id'
-      ||!nonempty(item.id)||ids.has(item.id)||!Array.isArray(item.command)||!item.command.length
-      ||item.command.some(arg=>typeof arg!=='string'||arg.includes('\0')))
+    if(!isObject(item)||Object.keys(item).some(field=>!['id','command','timeoutMs'].includes(field))
+      ||!nonempty(item.id)||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(item.id)
+      ||ids.has(item.id)||!Array.isArray(item.command)||!item.command.length
+      ||item.command.some(arg=>typeof arg!=='string'||!arg.trim()||arg.includes('\0')))
       stop(2,`PLAN.checks.${key} 格式错误`);
+    try{planCheckTimeout(plan,item);}catch(error){stop(2,error.message);}
     ids.add(item.id);
   }
 }
 function preflight(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
     process.stdout.write('用法: cm-ai-batch-drive.mjs --plan PLAN.json <operation>\n'
-      +'operation: advance, status, cancel。PLAN: config, mode, hostContext, permissions, answers, checks。\n');
+      +'operation: advance, status, cancel。PLAN: config, mode, hostContext, permissions, answers, checks, checkTimeoutMs。\n'
+      +'checks 每项为 {id,command,timeoutMs?}；超时为 1..3600000 整数，默认 900000 ms（15 分钟）。\n');
     process.exit(0);
   }
   const loaded=loadPlanFile({name:'cm-ai-batch-drive.mjs',known:new Set(['advance','status','cancel'])});
   const {plan,base,operation}=loaded;
   requireFields(plan,['config','mode','hostContext','permissions']);
+  try{planCheckTimeout(plan);}catch(error){stop(2,error.message);}
   if(!['create','resume'].includes(plan.mode))stop(2,'mode 只能是 create 或 resume');
   if(!nonempty(plan.hostContext))stop(2,'hostContext 必须是当前真实会话 ID');
   if(plan.mode==='resume'&&plan.originalHostContext!==plan.hostContext)
@@ -182,7 +186,7 @@ function preflight(){
     if(workflow)kinds.push('documentation_inspect');
     const evidence=kinds.filter(kind=>['qa_logic','qa_browser'].includes(kind));
     if(evidence.length)stop(2,`缺少真实执行 runner: ${evidence.join(', ')}；不能从静态答案文件应答`);
-    if(kinds.includes('check'))checkCommandShape(plan.checks?.[key],key);
+    if(kinds.includes('check'))checkCommandShape(plan.checks?.[key],key,plan);
     const taskRoot=root&&path.join(root,task.feature,task.taskId);
     const perAttempt=new Map();
     if(kinds.includes('develop')){
@@ -246,7 +250,8 @@ async function answerFor(row){
     if(row.payload.codeProject!==cwd)return null;
     const results=[];
     for(const command of loaded.plan.checks[key]){
-      const run=createHostCheck({cwd,commands:[command],onOutput:({stream,chunk})=>{
+      const run=createHostCheck({cwd,commands:[{id:command.id,command:command.command}],
+        timeoutMs:planCheckTimeout(loaded.plan,command),onOutput:({stream,chunk})=>{
         process.stderr.write(`[drive check ${key} ${command.id} ${stream}] ${chunk.toString('utf8')}`);
       }});
       const [result]=await run({identity},{signal:new AbortController().signal});

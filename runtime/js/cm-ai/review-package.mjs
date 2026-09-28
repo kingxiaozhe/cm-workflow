@@ -361,7 +361,7 @@ function validBaseline(b) {
     const {baselineDigest,...data}=b; hex(baselineDigest); need(digest(data)===baselineDigest);
   } catch { fail('invalid_baseline'); }
 }
-function validChecks(checks) {
+export function validChecks(checks) {
   need(Array.isArray(checks) && checks.length>0);
   need(Buffer.byteLength(JSON.stringify(checks))<=64*1024,'limit_exceeded');
   const ids=new Set();

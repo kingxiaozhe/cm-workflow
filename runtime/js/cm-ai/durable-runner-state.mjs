@@ -22,7 +22,7 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope'].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed'].includes(code)
   ||kind==='review'&&state==='pending_review'&&['review_transport_timeout','review_abandoned'].includes(code)
   ||kind==='complete'&&state==='blocked'&&code==='completion_checks_changed'
   ||({develop:['ready','changes_requested'],review:['awaiting_review'],complete:['approved']})[kind]?.includes(state)===true;
@@ -307,7 +307,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
         ||Object.hasOwn(original,'specification')&&s.state==='blocked'&&s.code==='spec_drift'
         // The host gate rejected the delivery after Learning was already written
         // back: the writeback stands, only the review package was not built.
-        ||s.state==='blocked'&&['verification_precheck_failed','check_output_out_of_scope'].includes(s.code)
+        ||s.state==='blocked'&&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed'].includes(s.code)
         ||added[0]&&['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal),'runner_learning');
     }
     if(digest(s.reviewPackage)!==digest(before.reviewPackage)) {
@@ -326,7 +326,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     // The developer call succeeded and is never retried, but the host gate blocked
     // between the checks and the review package. No package exists, so no review
     // round was spent; the attempt counter does not move either.
-    if(added[0]?.terminal==='succeeded'&&['verification_precheck_failed','check_output_out_of_scope'].includes(s.code)) {
+    if(added[0]?.terminal==='succeeded'&&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed'].includes(s.code)) {
       need(digest(s.reviewPackage)===digest(before.reviewPackage),'runner_develop');
       same(s.receipt,before.receipt);same(s.receipts,before.receipts);
       expectedState='blocked';expectedCode=s.code;

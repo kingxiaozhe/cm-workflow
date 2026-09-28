@@ -6,6 +6,12 @@ import readline from 'node:readline';
 
 export const stderr=line=>process.stderr.write(`[drive] ${line}\n`);
 export const stop=(code,line)=>{stderr(line);process.exit(code);};
+export function planCheckTimeout(plan,item=null){
+  const valid=value=>Number.isInteger(value)&&value>=1&&value<=3600000;
+  if(Object.hasOwn(plan,'checkTimeoutMs')&&!valid(plan.checkTimeoutMs))throw Error('PLAN.checkTimeoutMs 需要 1..3600000 的整数');
+  if(item!==null&&Object.hasOwn(item,'timeoutMs')&&!valid(item.timeoutMs))throw Error('PLAN.checks timeoutMs 需要 1..3600000 的整数');
+  return item?.timeoutMs??plan.checkTimeoutMs??900000;
+}
 
 export function readJson(file,label){
   try{return JSON.parse(fs.readFileSync(file,'utf8'));}

@@ -19,7 +19,7 @@ const retryReview=status=>status.state==='pending_review'
 // batch driver decides retryability from the same predicate instead of keeping a
 // second copy of the code list that silently drifts.
 export const developmentRetryable=status=>status.state==='blocked'
-  &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope'].includes(status.code);
+  &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed'].includes(status.code);
 const retryDeveloper=developmentRetryable;
 export const completionRetryable=status=>status.state==='blocked'&&status.code==='completion_checks_changed';
 const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approval':

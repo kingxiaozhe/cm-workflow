@@ -19,7 +19,7 @@ const develop={status:'succeeded',value:{outcome:'implemented',
 function fixture(t,count=1){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-batch-drive-')));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const specsDir=path.join(root,'specs'),codeProject=path.join(root,'code'),bin=path.join(root,'bin');
+  const specsDir=path.join(root,'specs5'),codeProject=path.join(root,'app'),bin=path.join(root,'bin');
   fs.mkdirSync(path.join(specsDir,'1.work'),{recursive:true});fs.mkdirSync(codeProject);fs.mkdirSync(bin);
   for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(specsDir,'1.work',name),'# Fixture\n');
   fs.writeFileSync(path.join(specsDir,'1.work','tasks.md'),Array.from({length:count},(_,n)=>
@@ -128,8 +128,27 @@ test('batch first-round answer aliases cannot coexist',t=>{
   assert.match(run.stderr,/develop\.json.*develop-a1\.json/);noStore(f);
 });
 test('batch retryable blocked state projects the same develop attempt',()=>{
-  for(const code of ['developer_result_invalid','verification_precheck_failed'])
+  for(const code of ['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed'])
     assert.deepEqual(batchDevelopAttempts({state:'blocked',code,attempt:2},key,[]),[2]);
+  assert.deepEqual(batchDevelopAttempts({state:'blocked',code:'checks_not_passed',attempt:2},key,[]),[]);
+});
+
+test('D1 batch rejects invalid check timeout before opening a host',t=>{
+  const f=fixture(t);prepared(f);
+  const checks={[key]:[{id:'syntax',command:[process.execPath,'--check','target.mjs'],timeoutMs:0}]};
+  const run=f.drive(f.plan({checks}),'advance');
+  assert.equal(run.status,2);assert.match(run.stderr,/timeoutMs/);noStore(f);
+});
+
+test('D1 batch retries failed checks before review in the same attempt',t=>{
+  const f=fixture(t);prepared(f);
+  const failed={[key]:[{id:'test',command:[process.execPath,'-e','process.exit(1)']}]};
+  const first=f.drive(f.plan({permissions:['--allow-qa','--runtime','claude'],checks:failed}),'advance');assert.equal(first.status,0,first.stderr);
+  const result=JSON.parse(first.stdout).result;
+  assert.equal(result.code,'develop_checks_not_passed');assert.equal(result.pendingAction,'resume');
+  const clean={[key]:[{id:'test',command:[process.execPath,'-e','0']}]};
+  const second=f.drive(f.plan({mode:'resume',originalHostContext:'batch-host-a',permissions:['--allow-qa','--runtime','claude'],checks:clean}),'advance');
+  assert.equal(second.status,0,second.stderr);assert.match(second.stderr,/应答 develop/);
 });
 test('missing answer leaves no batch store or session',t=>{
   const f=fixture(t);const run=f.drive(f.plan(),'advance');

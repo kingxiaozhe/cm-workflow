@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createRequire} from 'node:module';
 import {verifySpecificationMaterial} from './specification-material.mjs';
-import { captureReviewBaseline, captureReviewInventory, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage } from './review-package.mjs';
+import { captureReviewBaseline, captureReviewInventory, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage, validChecks } from './review-package.mjs';
 import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,validCallTimeout,requestFor,terminalFor,failureCode } from './effect-contract.mjs';
 import { reviewResult,reviewReceipt } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
@@ -222,7 +222,8 @@ export function createTaskRunner(options) {
   // the blocked result back out of the cache. Counting them here keeps that
   // derivation in one place, next to the cache it is derived from.
   const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
-    &&entry.result?.state==='blocked'&&entry.result?.code==='verification_precheck_failed').length;
+    &&entry.result?.state==='blocked'
+    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed'].includes(entry.result?.code)).length;
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
     &&entry.result?.state==='blocked'&&entry.result?.code==='completion_checks_changed').length;
   const privateStatus=()=>json({state,code,...(reason?{reason}:{}),
@@ -606,10 +607,17 @@ export function createTaskRunner(options) {
   async function collectChecks(){
     const before=new Map(captureReviewInventory(config.root,base).map(file=>[file.path,file.sha256]));
     const results=json(await bounded(check,json({identity:{...config.identity,attempt}})));
+    validChecks(results);
     const after=captureReviewInventory(config.root,base);
     checkNewPaths=new Set(after.filter(file=>!before.has(file.path)).map(file=>file.path));
     return results;
   }
+  const failedChecks=checks=>checks.filter(item=>item.outcome!=='passed'||item.kind!=='visual'&&item.exitCode!==0);
+  const checkFailureReason=(checks,code='checks_not_passed')=>{
+    const details=failedChecks(checks).map(item=>
+      `${item.id}: ${item.outcome}; ${item.evidence.replace(/[\x00-\x1f]/g,' ').slice(0,60)}`);
+    return `${code}: ${details.join(' | ')}`;
+  };
   // Runs on the checks just collected, before any handoff or review package is
   // built, so a deliverable that does not satisfy the task's own written
   // verification never spends an independent review round.
@@ -671,6 +679,7 @@ export function createTaskRunner(options) {
         if(writeback.outcome==='writeback_pending'){halt('blocked','learning_writeback_pending');return;}
         if(taskLearning.hostHandoff===true){
           currentChecks=await collectChecks();active();
+          if(failedChecks(currentChecks).length){halt('blocked','develop_checks_not_passed',checkFailureReason(currentChecks,'develop_checks_not_passed'));return;}
           if(!await verificationSatisfied(currentChecks)){halt('blocked','verification_precheck_failed');return;}
           active();
           createHostHandoff({root:config.root,baseline:base,checks:currentChecks,
@@ -682,6 +691,7 @@ export function createTaskRunner(options) {
       need(result.response.result.outcome==='implemented','invalid_result');
       if(taskLearning?.hostHandoff!==true){
         currentChecks=await collectChecks();active();
+        if(failedChecks(currentChecks).length){halt('blocked','develop_checks_not_passed',checkFailureReason(currentChecks,'develop_checks_not_passed'));return;}
         if(!await verificationSatisfied(currentChecks)){halt('blocked','verification_precheck_failed');return;}
       }
       active();
@@ -714,7 +724,8 @@ export function createTaskRunner(options) {
       const fresh=await collectChecks();active();
       try {
         verifyCompletionReviewPackage({root:config.root,baseline:base,checks:fresh,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
-      } catch(error){halt('blocked',failureCode(error));return;}
+      } catch(error){halt('blocked',failureCode(error),
+        failureCode(error)==='completion_checks_changed'&&failedChecks(fresh).length?checkFailureReason(fresh):null);return;}
       if(taskLearning!==null)try {
         const learningInput=currentLearningInput();
         verifyCmAiTaskLearningHandoff({handoffPath:completion.handoffs[attempt-1],feature:taskLearning.feature,

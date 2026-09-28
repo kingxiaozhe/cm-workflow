@@ -342,7 +342,7 @@ host-context 必须是真实当前会话身份；宿主将其排除出独立审�
   返回原检查数组 `[{id,command,outcome,exitCode,evidence}]`，不能用静态判断填通过。
   该数组**就是 host_result 的 `result` 本身**，不套 `{status,value}`——那是 develop 的形状，
   用错会以 `invalid_input` 停在 `reconcile` 且重试无效。审查包另外要求数组非空、且每条
-  `outcome` 为 `passed` 并且 `exitCode` 为 0，否则以 `checks_not_passed` 判未通过：
+  `outcome` 为 `passed` 并且 `exitCode` 为 0；开发阶段以 `develop_checks_not_passed` 阻断，旧运行在完成阶段仍可能以终态 `checks_not_passed` 阻断：
 
 ```json
 {"type":"host_result","sessionId":"from-request","callId":"from-request","requestDigest":"from-request","result":[{"id":"test","command":["npm","test"],"outcome":"passed","exitCode":0,"evidence":"实际输出摘要"}]}
@@ -355,7 +355,9 @@ host-context 必须是真实当前会话身份；宿主将其排除出独立审�
 或 model_usage。角色 Skill 的业务使用仍由当前会话负责；这不是模型路由全量实装。
 旧运行恢复只有真正再次进入角色时才读取/记录，不重发已完成开发或重复历史路由。
 
-已批准任务在完成前会重新执行检查。审查回执及原 `packageDigest` 不改：完成门禁重建代码、scope、需求、指令与 handoff 等非检查字段并逐项比较；检查只比较有序的 `id`、`command`、`outcome`、`exitCode`，视觉检查在结果相同时还比较前后载体，`evidence` 诊断文字可变化。代码、handoff 字节或检查身份漂移仍以 `blocked/package_mismatch` 终止；越界的 scope 或需求漂移保持既有 `blocked/out_of_scope` 终态。仅检查结果（`outcome`、`exitCode`）变化记录 `blocked/completion_checks_changed`，不标记完成；视觉检查从 passed 变成 unavailable 时，即使 after 载体按合同变成 null，也先按结果漂移处理。恢复原 runId 后重新执行检查，结果恢复一致时用新的 complete effect id 继续原批准，不重新审查。`advance` 和 `complete` 均可续跑，持久 journal 回放接受该重试状态；旧 journal 与回执保持原格式。重试仍受原 effect 数量上限约束。
+开发检查有任一失败或不可用时，在生成审查包前停 `blocked/develop_checks_not_passed`；`reason` 列出失败 id 和证据摘要，`pendingAction: "resume"`。修好环境后在原 run `advance` 重新开发并检查，使用新 effect id，审查轮次不增加。已经审查过失败检查的旧 journal 仍按原历史回放；其完成阶段 `blocked/checks_not_passed` 保持终态，不能重新开发。
+
+已批准任务在完成前会重新执行检查。审查回执及原 `packageDigest` 不改：完成门禁重建代码、scope、需求、指令与 handoff 等非检查字段并逐项比较；检查只比较有序的 `id`、`command`、`outcome`、`exitCode`，视觉检查在结果相同时还比较前后载体，`evidence` 诊断文字可变化。代码、handoff 字节或检查身份漂移仍以 `blocked/package_mismatch` 终止；越界的 scope 或需求漂移保持既有 `blocked/out_of_scope` 终态。检查结果变化记录 `blocked/completion_checks_changed`，不标记完成；失败或不可用时 `reason` 列出检查 id 和证据摘要。视觉检查从 passed 变成 unavailable 时，即使 after 载体按合同变成 null，也先按结果漂移处理。恢复原 runId 后重新执行检查，结果恢复一致时用新的 complete effect id 继续原批准，不重新审查。`advance` 和 `complete` 均可续跑，持久 journal 回放接受该重试状态；旧 journal 与回执保持原格式。重试仍受原 effect 数量上限约束。
 
 回复固定为以下形状；三个绑定值必须逐字取自该次请求，不要自行计算或沿用上次值：
 
@@ -549,7 +551,7 @@ review.json 含 `{model, disabledSkills, preflight}`，另有可选 `timeoutMs`�
 它不进入已授权配置的摘要，所以 `review_transport_timeout` 之后可以在恢复时调大再续跑；
 它只管 reviewer，不改变开发、检查或 QA 的任何超时。
 
-检查命令产生的构建文件应放在代码根外，例如将 `xcodebuild -derivedDataPath` 指向外部目录。若检查自己新增了未跟踪的范围外文件，状态为 `blocked/check_output_out_of_scope`，`reason` 与宿主 stderr 列出最多 20 个相对路径；移走产物后可在原 run 恢复。开发者写出的范围外文件仍按 `unknown/out_of_scope` 处理，检查前后树的比较不会给它恢复权限。
+单任务和批次驾驶员的 PLAN 可给 `checks` 每项设置 `timeoutMs`，也可给 PLAN 设置 `checkTimeoutMs` 作为默认值；均须为 1..3600000 的整数毫秒，每项优先，省略时驱动默认 900000（15 分钟），启动宿主前校验。`host-check` 对其他调用方仍默认 60000。检查命令产生的构建文件应放在代码根外，例如将 `xcodebuild -derivedDataPath` 指向外部目录。若检查自己新增了未跟踪的范围外文件，状态为 `blocked/check_output_out_of_scope`，`reason` 与宿主 stderr 列出最多 20 个相对路径；移走产物后在原 run `advance` 会用新 develop effect id 重做。开发者写出的范围外文件仍按 `unknown/out_of_scope` 处理，检查前后树的比较不会给它恢复权限。
 
 `--allow-review-attempt` 只能为1或2，只传递可信启动会话已经取得的那一轮授权，
 不能为了让流程继续而擅自添加。不会自动批准后续轮次、换模型或重试失败；若第一轮要求
@@ -1141,6 +1143,10 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 
 | 状态 | 含义 | 恢复路径 |
 | --- | --- | --- |
+| `blocked/develop_checks_not_passed` | 开发检查失败或不可用，审查包未生成 | 根据 `reason` 的 id 和证据修复环境，在原 run `advance`；不消耗审查轮次 |
+| `blocked/checks_not_passed` | 旧运行的已审包在完成门禁发现失败检查 | 终态；不得重新开发 |
+| `blocked/check_output_out_of_scope` | 检查新增了范围外产物 | 移走产物并改检查输出路径，在原 run `advance`；新 develop effect id 重做 |
+| `blocked/completion_checks_changed` | 已审包的完成前复查结果变化 | 修好检查环境，在原 run `advance` 或 `complete`，保留原审查回执；仍受 effect 上限约束 |
 | `state: "unknown"` | 某个有副作用的步骤抛了异常或返回了无法判定的终态，做没做成不确定 | 单任务 V3 审查调用已登记、无结果时可用下述 `abandon_review`；其他情况见下 |
 | `state: "unknown"` + `execution_error`，`pendingAction: "reconcile"`，且 stderr 显示驱动未应答 `init_generate`／`init_verify` | 驾驶员断联，原 develop effect 结果未定；旧版驾驶员可能错误退出 0 | 先核对原 host 与子进程及代码根实际写入；仅满足下述 pending effect 条件时在原 run 用 `abandon_effect`，之后按原新运行门禁使用当前会话宿主路径；不要原样重发 `advance` |
 | `state: "unknown"` + pending develop/complete intent（后面可有 control 记录） | 宿主在 effect intent 后、checkpoint 前退出 | `pendingAction: "abandon_effect"`；核对旧 host 与它启动的进程后，在原 run 显式退出 |
@@ -1166,7 +1172,7 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 2. 若是单任务 V3 journal 停在 `review-invocation-registered` 或 `review-invocation-started`，且没有
    `review-invocation-result`，先确认旧 host 和 review 进程都已退出，再按下述命令在**原 runId** 上
    发送 `abandon_review`。若 develop/complete 的 `effect-intent` 后仅有 control 记录，先确认旧 host 与它启动的检查、构建进程均已退出，再用下述 `abandon_effect`。review 的 `effect-intent` 后尚无 `host-joined` 和 `review-invocation-registered` 时，也可确认旧 host 退出后使用 `abandon_effect`；一旦登记 review，改走 `abandon_review`。这是操作员对进程已退出的确认；宿主无法自行验证。
-   provider-mode 开发和已写 `task-commit-intent` 的运行不能走 `abandon_effect`。先核对 `tasks.md` 是否已改名或勾选、提交回执及旧进程，再按原提交恢复路径处理；不要猜测提交未发生。旧版驾驶员在 bootstrap T-002 的 `init_generate` 断联并返回 `unknown/reconcile` 时，也先按原 journal 核对 pending develop intent、旧进程和实际指令文件；符合条件才在原 run 显式 `abandon_effect`，然后按新运行的旧证据、代码漂移和 writer 门禁重新建 run，并改用当前会话宿主应答。其他未知状态按诊断处理真实原因，核对无未结操作后再考虑新的运行；旧 unknown 不会被自动重分类。
+   provider-mode 开发和已写 `task-commit-intent` 的运行不能走 `abandon_effect`。先核对 `tasks.md` 是否已改名或勾选、提交回执及旧进程，再按原提交恢复路径处理；不要猜测提交未发生。`develop_checks_not_passed`、`check_output_out_of_scope` 和 `completion_checks_changed` 属于上表可恢复的 blocked 状态，先走原运行；旧 `checks_not_passed` 为终态。旧版驾驶员在 bootstrap T-002 的 `init_generate` 断联并返回 `unknown/reconcile` 时，也先按原 journal 核对 pending develop intent、旧进程和实际指令文件；符合条件才在原 run 显式 `abandon_effect`，然后按新运行的旧证据、代码漂移和 writer 门禁重新建 run，并改用当前会话宿主应答。其他 unknown 按诊断处理真实原因，核对无未结操作后再考虑新的运行；旧 unknown 不会被自动重分类。
 3. 不要手工改写执行日志或伪造一个终态。已完成的提交、已登记的审查记录都不因此作废，
    重跑是从该任务重新开始，不是从整个 feature 重新开始。
 
