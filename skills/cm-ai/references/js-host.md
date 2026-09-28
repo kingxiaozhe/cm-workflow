@@ -155,6 +155,16 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume --host-context
 旧 invocation 的迟到结果不能再接收；若要终止，abandon 后普通 `cancel` 才能得到 durable cancelled。
 批次路径不支持此操作。driver 可用 `node scripts/cm-ai-drive.mjs --plan abandon-review.json abandon_review`；
 PLAN 需 `mode:"resume"`、原配置、`originalHostContext`、`permissions` 包含 `--allow-abandon-review`、`reason`。
+
+单任务 V3 的当前会话 `develop` 或 `complete` 若留下 `effect-intent`，其后仅有 control 记录且没有 checkpoint，恢复后是 `unknown/reconciliation_required`，`pendingAction: abandon_effect`。`review` intent 尚无 `host-joined`／`review-invocation-registered`，且其后仅有 control 记录时也走此入口；已登记 review 仍走 `abandon_review`。操作员须先确认原 host 已退出，且相关子进程均已停止；随后用原 runId、原配置和原 runtime 执行：
+
+```bash
+node scripts/cm-ai-host.mjs serve --config run.json --mode resume --host-context new-host-id --original-host-context old-host-id --allow-development --allow-abandon-effect --runtime claude
+```
+
+向宿主发送 `{"version":1,"requestId":"abandon-effect-1","operation":"abandon_effect","identity":{"repositoryId":"…","runId":"…","taskId":"…","attempt":1},"reason":"已确认旧 host 和检查进程退出"}`；driver 可用 `node scripts/cm-ai-drive.mjs --plan abandon-effect.json abandon_effect`，PLAN 需 `mode:"resume"`、`permissions:["--allow-abandon-effect"]` 和单行非空、最多 500 UTF-8 字节的 `reason`。旗标只消费一次，不进入原配置指纹。journal 仅在对应 intent 及其后连续 control 记录后追加绑定 effect id、kind、intent 摘要、前一条记录摘要与原因的 `effect-abandoned`，运行日志写 `effect_abandoned`；结果是终态 `cancelled/effect_abandoned`，不会改代码根或自动取消 `tasks.md` 勾选。
+
+没有 pending effect 应拒绝；已加入 host 或登记调用的 pending review 用上方 `abandon_review` 或原运行恢复入口。provider-mode 开发可能有独立进程继续写入，不能走此出口。若已写 `task-commit-intent` 而无结果，`tasks.md` 可能已经被改名或勾选；须先核对该文件、提交回执和旧进程，不能猜测未提交而放弃。批次路径没有 `abandon_review`，也不接入 `abandon_effect`。退出后，未产生已审 handoff 的任务可按普通新 run 准入；已有已审证据时走下方显式 supersede，仍须通过旧 writer 和代码漂移检查。
 develop若有`editMode:"protected-text-v1"`，只读并返回`{status:"succeeded",value:{原开发/Learning结果},edits:[{path,beforeSha256,content}]}`；
 使用scope内expected摘要，正文完整UTF-8，null删除；不得先自行写文件或执行命令。失败返回原status/code，blocked不能带改动。
 固定沙箱负责应用提案和原检查，不再请求宿主check；文档同步包含在同次develop提案。原64KiB通道不变，二进制/超限明确阻断。
@@ -235,7 +245,7 @@ node scripts/cm-ai-host.mjs serve --config run-new.json --mode create \
   --supersede-reviewed-evidence --supersede-reason "说明为什么要重跑任务"
 ```
 
-原因必须为单行、非空、最多 500 UTF-8 字节。N5 会在 N6 前把任务勾为 `[x]`：若 QA BLOCKED 后确需重新开发，先在 `tasks.md` 将该任务改回 `- [ ]`，再用新 runId 和上述两个旗标创建运行；仍可恢复原 QA 时优先走原运行。只接受同 feature、task 的新运行：`tasks.md` 未勾选该任务，且每个旧运行的 V3 journal 已是无在途操作的 blocked、cancelled、unknown，或 fixture_completed 且 QA 为 BLOCKED／尚未结束；旧 writer 仍被进程持有也拒绝。已完成或仍可继续的旧运行、没有旧运行或可归档文件同样拒绝。旧运行的 journal 不改写、不以新运行身份重开。
+原因必须为单行、非空、最多 500 UTF-8 字节。N5 会在 N6 前把任务勾为 `[x]`：若 QA BLOCKED 后确需重新开发，先在 `tasks.md` 将该任务改回 `- [ ]`，再用新 runId 和上述两个旗标创建运行；仍可恢复原 QA 时优先走原运行。只接受同 feature、task 的新运行：`tasks.md` 未勾选该任务，且每个旧运行的 V3 journal 已是无在途操作的 blocked、cancelled、unknown，或 fixture_completed 且 QA 为 BLOCKED／尚未结束；旧 writer 仍被进程持有也拒绝。pending develop/complete 和未加入 host／登记调用的 pending review 须先在原 run 用 `abandon_effect` 退出，已登记 pending review 须用 `abandon_review`，之后再建新运行。已完成或仍可继续的旧运行、没有旧运行或可归档文件同样拒绝。旧运行的 journal 不改写、不以新运行身份重开。
 
 创建新 journal 和捕获新基线前，只把当前代码树与尚未被其他旧运行替代的直接前驱运行的 V2 开工基线逐文件比对，包含未选中文件及新增、删除路径；所有旧运行仍进入 `previousRunIds` 和归档。差异返回 `supersede_code_drift`，`reason` 和 `[host]` stderr 最多列出 20 个路径及其余数量。操作员可手动还原这些文件后重建运行；或确认保留这些改动时，在上述两个旗标之外加 `--accept-superseded-code-drift` 重建（这些文件会被当成已有代码，不进新运行的审查改动）。接受时新运行的 `evidence-superseded` 记录存下每个漂移路径、当前 SHA-256（删除时为 `null`）及被比较的前驱 runId。该旗标仅限新建运行，不默认启用。检测只读代码根，不跟随越界软链接；无法安全读取时即使带旗标也拒绝。没有可用逐文件基线的旧 journal 跳过此检测，不改写历史记录。
 

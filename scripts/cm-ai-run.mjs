@@ -14,6 +14,7 @@ import {previousQaMaterial,qaConfigurationSlice,qaInvariantDigest,qaRevisionChai
 import {inspectCmAiQaRevisionTarget,recordCmAiQaConfigurationRevision} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {prepareReviewedEvidenceSupersession,archiveReviewedEvidence,recordEvidenceSupersession} from '../runtime/js/cm-ai/reviewed-evidence-supersede.mjs';
 import {recordReviewAbandonment} from '../runtime/js/cm-ai/review-abandon-log.mjs';
+import {recordEffectAbandonment} from '../runtime/js/cm-ai/effect-abandon-log.mjs';
 import {reviewConsumedHandoff,reviewedHandoffConflict} from '../runtime/js/cm-ai/host-handoff.mjs';
 
 const usage='cm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
@@ -177,12 +178,13 @@ export function validateRunDefinition(input){
   return value;
 }
 
-export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false}={}){
+export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false}={}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
   if(!['create','resume'].includes(mode))fail('invalid_mode');
   if(supersedeReason!==null&&mode!=='create')fail('supersede_unavailable');
+  if(allowAbandonEffect&&mode!=='resume')fail('effect_abandon_unavailable');
   if(typeof acceptSupersededCodeDrift!=='boolean'||acceptSupersededCodeDrift&&supersedeReason===null)
     fail('supersede_unavailable');
   if(qaConfigRevision!==null&&(mode!=='resume'||!execution?.qaExecutor||rerunUnknownQa||rerunBlockedQa
@@ -321,19 +323,25 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
         developer:{provider:'codex',requestedModel:'unconfigured',contextId:'control-developer',run:unavailable},
         reviewers:[],check:unavailable,taskCompletion:{reviewsDir,handoffs},taskLearning:{feature},
         persistence:{store,mode:runnerMode,version:execution===null?2:3},
+        ...(execution===null?{}:{providerDevelopment:protectedExecutions.has(execution)
+          ||Boolean(execution.configuration.providerDevelopment)}),
         ...(execution===null?{}:{developer,reviewers:execution.reviewers,
           ...(execution.bootstrap?{bootstrap:execution.bootstrap}:{}),
           reviewInvocation:execution.reviewInvocation,check:execution.check,
           excludedContexts:execution.excludedContexts,timeoutMs:execution.timeoutMs,
           ...(Object.hasOwn(execution,'verificationGate')?{verificationGate:execution.verificationGate}:{}),
           taskLearning:{feature,hostHandoff:true}})},
-      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,allowAbandonReview,...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
+      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,allowAbandonReview,allowAbandonEffect,...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
         ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
     const logAbandonments=()=>{
       for(const record of store.snapshot().records.filter(row=>row.payload.type==='review-invocation-abandoned'))
         recordReviewAbandonment({specsDir,codeProject,feature,identity,record,
           runtime:execution?.reviewers?.[0]?.provider??'codex',
+          ...(execution?.qaLogHome?{logHome:execution.qaLogHome}:{})});
+      for(const record of store.snapshot().records.filter(row=>row.payload.type==='effect-abandoned'))
+        recordEffectAbandonment({specsDir,codeProject,feature,identity,record,
+          runtime:execution?.developer?.provider??'codex',
           ...(execution?.qaLogHome?{logHome:execution.qaLogHome}:{})});
     };
     if(mode==='resume')logAbandonments();
@@ -375,7 +383,7 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
         return {outcome:'blocked',code:'execution_adapter_required',providerCalls:0};
       }
       const result=await host.handle(request);
-      if(request.operation==='abandon_review'&&result.outcome==='abandoned')logAbandonments();
+      if(['abandon_review','abandon_effect'].includes(request.operation)&&result.outcome==='abandoned')logAbandonments();
       return result;
     }},inspectFixAssociation:host.inspectFixAssociation,acceptCompletedFix:host.acceptCompletedFix,
       checkpoint:()=>store.snapshot().revision,close:()=>store.close()};
