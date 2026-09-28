@@ -28,7 +28,8 @@ import {isFinalCmAiTask} from './cm-ai-admission.mjs';
 import {createHostBootstrap} from './host-bootstrap.mjs';
 import {digest,id,hex,json,need,shape,freeze,arrayItems} from './effect-contract.mjs';
 export const protectedTextInstructions='\nProtected current-host mode: do not write files or run commands. Return {status,value,edits} on success; '
-  +'value retains the original implementation/Learning contract. edits is [{path,beforeSha256,content}], complete UTF-8 text or null for deletion. '
+  +'value retains the original implementation/Learning contract. edits is [{path,beforeSha256,content[,mode]}], complete UTF-8 text or null for deletion; '
+  +'optional mode "0755" or "0644" sets the permission bits of a written file. '
   +'Only the supplied scope and expected hashes are allowed. The fixed sandbox applies these edits. On failure return {status,code} without edits. '
   +'status must be exactly "succeeded" on success (with value and edits) or "failed" (with code). Return the object through the structured output schema; never wrap it in markdown fences.';
 const protectedConversations=new WeakMap();
@@ -245,7 +246,8 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
               if(response.value.outcome==='blocked')need(response.edits.length===0,'protected_edit_invalid');
               const seen=new Set();
               for(const edit of response.edits){
-                shape(edit,['path','beforeSha256','content']);
+                shape(edit,['path','beforeSha256','content',...(Object.hasOwn(edit,'mode')?['mode']:[])]);
+                need(!Object.hasOwn(edit,'mode')||edit.content!==null&&['0644','0755'].includes(edit.mode),'protected_edit_invalid');
                 need(bound.payload.scope.includes(edit.path)&&!seen.has(edit.path),'out_of_scope');seen.add(edit.path);
                 if(edit.beforeSha256!==null)hex(edit.beforeSha256);
                 need(edit.content===null||typeof edit.content==='string','protected_edit_invalid');

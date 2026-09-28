@@ -9,7 +9,7 @@ import {REVIEWED_HANDOFF_HINT} from '../runtime/js/cm-ai/host-handoff.mjs';
 import {readRunDefinition,openControlRun,createCodexExecution} from './cm-ai-run.mjs';
 import {createConversationExecution as executionFor} from '../runtime/js/cm-ai/host-conversation-execution.mjs';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
-import {serveCmAiHost,parseHostInputLimit} from '../runtime/js/cm-ai/host-session.mjs';
+import {serveCmAiHost,parseHostInputLimit,inputLimitReason} from '../runtime/js/cm-ai/host-session.mjs';
 import {createQaFixOwnerHost} from '../runtime/js/cm-ai/host-qa-fix-owner.mjs';
 import {createFixLearningPreparation} from '../runtime/js/cm-fix/learning.mjs';
 import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
@@ -41,7 +41,7 @@ const fixLocalPermissions=new Map(['red-test','baseline','regression','learning-
   'abandon-review','test-author','repair','cause-review','final-review']
   .map(name=>[`--allow-qa-fix-${name}`,`--allow-${name}`]));
 
-const usage='cm-ai-host.mjs serve --config RUN_DEFINITION.json --mode create|resume --host-context ID --allow-development [--original-host-context ID] [--runtime codex|claude] [--input-limit BYTES] [--failover] [--review-config PATH] [--allow-review-attempt 1|2] [--allow-abandon-review] [--allow-abandon-effect] [--workflow-config PATH] [--allow-qa] [--browser-qa available|unavailable]\nInput limit is transport-only: integer 65536-4194304 bytes, default 65536; it may change on resume. Review config is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 900000), independent of protected mode and outside the authorized configuration digest. --browser-qa declares interactive QA capability for applicable carriers including browser and ios-simulator.\ncm-ai-host.mjs preflight --config RUN_DEFINITION.json --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
+const usage='cm-ai-host.mjs serve --config RUN_DEFINITION.json --mode create|resume --host-context ID --allow-development [--original-host-context ID] [--runtime codex|claude] [--input-limit BYTES] [--failover] [--review-config PATH] [--allow-review-attempt 1|2] [--allow-abandon-review] [--allow-abandon-effect] [--workflow-config PATH] [--allow-qa] [--browser-qa available|unavailable]\nInput limit is transport-only: integer 65536-4194304 bytes, default 65536; it bounds every input line and every tool reply, and may change on resume. A longer line stops the session with request_too_large. Review config is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 900000), independent of protected mode and outside the authorized configuration digest. --browser-qa declares interactive QA capability for applicable carriers including browser and ios-simulator.\ncm-ai-host.mjs preflight --config RUN_DEFINITION.json --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
 
 export function formatClaudeModelHint(config,version=null){
   const marker=config?.preflight?.request_checks?.find(check=>check?.model_recognized===false);
@@ -155,7 +155,7 @@ function canResumeLegacyProtected(definition,runtime){
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--original-host-context ID is resume-only: keep the creating session in durable configuration while --host-context remains the real live session. Omit it for same-session resume; a different session must declare the creating session. Equal IDs are equivalent to omission. Parent conversation runs only; legacy protected runs, batch and QA-fix children are unchanged.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Approved bootstrap feature (0.bootstrap or a single numbered *.bootstrap): --bootstrap-config PATH {selection:null for scaffold, or original cm-init selection for rules} and --allow-bootstrap-write. Original scope must include fixed instruction targets; they are host-written inside the original task effect, checked/reviewed and reloaded. No Git/install/network grant. Optional codeProjects selects disjoint real roots below codeProject; prefix scope/requirements and use protected current-session checks with a declared codeProject per command.\n');
-  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Protected current-session mode (Codex or Claude; also batch): --protected-conversation-config PATH with {checkCommands,timeoutMs}; timeoutMs bounds check commands and is the reviewer budget only when review-config has no timeoutMs. A review transport timeout with no result can resume once per attempt with fresh review authorization; a result-bearing timeout still requires reconciliation. No extra model call. The current host returns scoped UTF-8 edits; native Codex sandbox applies them and runs the declared checks. Original author runtime, per-attempt Review and QA permissions remain required. Do not combine with --protected-config. The input limit defaults to 64 KiB and may be raised with --input-limit; unavailable/binary changes stop, never switch to direct writes.\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Protected current-session mode (Codex or Claude; also batch): --protected-conversation-config PATH with {checkCommands,timeoutMs}; timeoutMs bounds check commands and is the reviewer budget only when review-config has no timeoutMs. A review transport timeout with no result can resume once per attempt with fresh review authorization; a result-bearing timeout still requires reconciliation. No extra model call. The current host returns scoped UTF-8 edits (optional mode "0755"/"0644" on written files; new files are 0644); native Codex sandbox applies them and runs the declared checks. Original author runtime, per-attempt Review and QA permissions remain required. Do not combine with --protected-config. The input limit defaults to 64 KiB and may be raised with --input-limit; unavailable/binary changes stop, never switch to direct writes.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Protected single-task CLI mode: add --protected-config PATH --allow-provider-development-attempt 1|2 and --review-config PATH. Protected config is {model,checkCommands,timeoutMs}; roots and host identity come from the original run definition and launch. This explicitly permits one task attempt of real developer execution and its declared native-sandbox checks; --allow-development alone does not. Review separately requires --allow-review-attempt 1|2. Diagnostics are required but are not review authorization. Optional original --workflow-config PATH and --allow-qa connect protected QA commands and documentation within the same developer invocation before Review; host semantic/browser/inspection requests retain their original contracts, not arbitrary writes. Default current-session mode is unchanged. Protected parent mode selects coder/reviewer CLIs from the project declaration; Claude returns protected-text-v1 proposals for host validation and sandbox application; original QA-fix options require child configuration.protectSpecs=true and all original child action permissions. Protected fix writes use text proposals, not direct host edits. The original QA/documentation/finalizer gates remain required. No installation or Git authority.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--browser-qa is required when the approved contract for this feature contains blocking or policy-enabled interactive QA cases and QA is enabled. It covers the declared carrier (browser, ios-simulator, and others); the flag name is retained for compatibility. It is a declaration by the launching session, not a probe. The gate applies to create and resume, and is not persisted. unavailable refuses to start.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--revise-qa-config PREVIOUS_WORKFLOW.json --qa-config-revision-reason REASON: 仅 resume 且 --allow-qa；核对旧配置后追加 QA 修订，旧 QA 作废留史，下一轮仍受三轮上限约束。未知 QA 须先处理；不能修改开发配置或重开 N5。\n');
@@ -200,7 +200,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       if(['--supersede-reviewed-evidence','--accept-superseded-code-drift','--allow-bootstrap-write','--allow-qa','--allow-abandon-review','--allow-abandon-effect','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
       else{need(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments');extra.set(name,argv[++index]);}
     }
-    parseHostInputLimit(extra.get('--input-limit'));
+    const inputLimit=parseHostInputLimit(extra.get('--input-limit'));
     const revisionRequested=extra.has('--revise-qa-config')||extra.has('--qa-config-revision-reason');
     need(!extra.has('--supersede-reviewed-evidence')&&!extra.has('--supersede-reason')&&!extra.has('--accept-superseded-code-drift')
       ||(argv[4]==='create'&&extra.has('--supersede-reviewed-evidence')&&extra.has('--supersede-reason')),
@@ -241,7 +241,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     readBrowserCapability(extra.get('--browser-qa'),
       workflow?.qa!=null&&featureHasBrowserCases(definition.specsDir,definition.feature,definition.codeProject)
         ?[workflow.qa.environment?.carrier??'browser']:[]);
-    bridge=createHostToolBridge();
+    // Tool replies travel on the same input lines, so they share the one limit.
+    bridge=createHostToolBridge({responseLimit:inputLimit});
     // Startup-only role failover. The project's runtimes.available declaration is
     // primary: it fixes which runtimes may be chosen and, via roles.coder, the
     // requested start runtime. The CLI probe only confirms reachability. It never
@@ -324,7 +325,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     if(code==='handoff_exists')error.write(`[host] ${REVIEWED_HANDOFF_HINT}\n`);
     if(['supersede_code_drift','fingerprint_mismatch'].includes(code)&&typeof cause.reason==='string')error.write(`[host] ${cause.reason}\n`);
     if(snapshotReason)error.write(`[host] ${snapshotReason}\n`);
-    error.write(JSON.stringify({error:{code,...(snapshotReason?{reason:snapshotReason}:{}),...(['supersede_unavailable','supersede_code_drift','handoff_exists','browser_capability_required','browser_capability_unavailable','fingerprint_mismatch'].includes(code)
+    const limitReason=code==='request_too_large'?inputLimitReason(cause.limit):null;
+    if(limitReason)error.write(`[host] request_too_large: ${limitReason}\n`);
+    error.write(JSON.stringify({error:{code,...(snapshotReason?{reason:snapshotReason}:{}),...(limitReason?{reason:limitReason}:{}),...(['supersede_unavailable','supersede_code_drift','handoff_exists','browser_capability_required','browser_capability_unavailable','fingerprint_mismatch'].includes(code)
       &&typeof cause.reason==='string'?{reason:cause.reason}:{})}})+'\n');return 1;
   }finally{bridge?.close();run?.close();}
 }

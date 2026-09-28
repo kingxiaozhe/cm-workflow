@@ -104,12 +104,96 @@ test('real batch reaches completion with an independently dispatched fixture rev
   }
   assert.equal(result.state,'run_done',JSON.stringify(result));
 });
-test('batch review authorization requires a second-round develop answer before launch',t=>{
+// Deliberately replaced (#30). The batch driver has no separate decision step, so
+// demanding develop-a2.json before any findings existed made a first review with
+// a possible revision impossible. Without the answer it now stops after the review.
+function changesRequested(f){
+  const cli=path.join(f.root,'bin','codex');
+  fs.writeFileSync(cli,fs.readFileSync(reviewer,'utf8').replace("verdict:'approved'","verdict:'changes_requested'")
+    .replace('findings:[]',"findings:[{id:'F1',severity:'P2',path:'target.mjs',message:'Revise value',evidence:'Fixture finding'}]"));
+  fs.chmodSync(cli,0o700);
+}
+const developIntents=f=>{
+  const state=path.join(f.store,fs.readdirSync(f.store).find(name=>name.startsWith('task-')),'state.json');
+  return JSON.parse(fs.readFileSync(state,'utf8')).records.filter(row=>row.payload.type==='effect-intent'
+    &&row.payload.effect.kind==='develop').map(row=>row.payload.effect.id);
+};
+test('batch review without a second-round answer stops at changes_requested after the first review',t=>{
+  const f=fixture(t);prepared(f);changesRequested(f);
+  const permissions=['--allow-qa','--review-config','review.json','--allow-review',`${key}:1`];
+  const run=f.drive(f.plan({permissions}),'advance');
+  assert.equal(run.status,0,run.stderr);
+  assert.match(run.stderr,/没有 develop-a2\.json/);assert.match(run.stderr,/\.reviews\/work-T-001-r1\.md/);
+  const result=JSON.parse(run.stdout).result;
+  assert.equal(result.state,'changes_requested',run.stdout);assert.equal(result.code,'revision_answer_required');
+  assert.equal(result.identity.attempt,2);assert.equal(result.pendingAction,'resume');
+  assert(fs.existsSync(path.join(f.specsDir,'.reviews','work-T-001-r1.md')));
+  assert.deepEqual(developIntents(f),['develop-1'],'no second-round develop intent before its answer exists');
+  // The findings exist now: the revision is written and the same batch continues.
+  fs.writeFileSync(path.join(f.answers,'target-a2.txt'),'export const value = 43;\n');
+  f.write('develop-a2.json',{...develop,edits:{'target.mjs':'target-a2.txt'}});
+  const revised=f.drive(f.plan({mode:'resume',originalHostContext:'batch-host-a',
+    permissions:['--allow-qa','--review-config','review.json']}),'advance');
+  assert.equal(revised.status,0,revised.stderr);assert.match(revised.stderr,/应答 develop/);
+  assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 43;\n');
+  assert.equal(JSON.parse(revised.stdout).result.identity.attempt,2);
+  assert.deepEqual(developIntents(f),['develop-1','develop-2']);
+});
+test('batch resume holds a later task that has no run yet when its second-round answer is missing',t=>{
+  const f=fixture(t,2);prepared(f);
+  const later=path.join(f.root,'answers','1.work','T-002');fs.mkdirSync(later,{recursive:true});
+  fs.writeFileSync(path.join(later,'target2.txt'),'export const value = 42;\n');
+  for(const name of ['qa-assess.json','documentation-inspect.json'])
+    fs.copyFileSync(path.join(f.answers,name),path.join(later,name));
+  fs.writeFileSync(path.join(later,'develop.json'),JSON.stringify({...develop,edits:{'target2.mjs':'target2.txt'}}));
+  // T-001 stops at awaiting_review first, so T-002 has no run when the batch resumes.
+  const first=f.drive(f.plan({permissions:['--allow-qa','--review-config','review.json']}),'advance');
+  assert.equal(first.status,0,first.stderr);assert.equal(JSON.parse(first.stdout).result.state,'awaiting_review');
+  // The reviewer approves T-001 and asks for changes on T-002.
+  const cli=path.join(f.root,'bin','codex');
+  fs.writeFileSync(cli,fs.readFileSync(reviewer,'utf8').replace("verdict:'approved'",
+    "verdict:prompt.includes('target2.mjs')?'changes_requested':'approved'")
+    .replace('findings:[]',"findings:prompt.includes('target2.mjs')?[{id:'F1',severity:'P2',path:'target2.mjs',message:'Revise',evidence:'Fixture finding'}]:[]"));
+  fs.chmodSync(cli,0o700);
+  const permissions=['--allow-qa','--review-config','review.json','--allow-review',`${key}:1`,'--allow-review','1.work/T-002:1'];
+  let result;
+  for(let n=0;n<4;n++){
+    const next=f.drive(f.plan({mode:'resume',originalHostContext:'batch-host-a',permissions}),'advance');
+    assert.equal(next.status,0,next.stderr);result=JSON.parse(next.stdout).result;
+    if(result.code==='revision_answer_required')break;
+  }
+  assert.equal(result.state,'changes_requested',JSON.stringify(result));assert.equal(result.code,'revision_answer_required');
+  assert.equal(result.identity.taskId,'T-002');
+});
+test('batch hold without a second-round answer does not interfere with an approving review',t=>{
   const f=fixture(t);prepared(f);
-  const run=f.drive(f.plan({permissions:['--allow-qa','--review-config','review.json','--allow-review',`${key}:1`]}),'advance');
-  assert.equal(run.status,2,run.stderr);
-  assert.match(run.stderr,/develop-a2\.json/);
-  noStore(f);
+  const permissions=['--allow-qa','--review-config','review.json','--allow-review',`${key}:1`];
+  const first=f.drive(f.plan({permissions}),'advance');assert.equal(first.status,0,first.stderr);
+  let result=JSON.parse(first.stdout).result;
+  for(let n=0;n<4&&result.state!=='run_done';n++){
+    const next=f.drive(f.plan({mode:'resume',originalHostContext:'batch-host-a',permissions}),'advance');
+    assert.equal(next.status,0,next.stderr);result=JSON.parse(next.stdout).result;
+  }
+  assert.equal(result.state,'run_done',JSON.stringify(result));
+});
+test('batch driver refuses an oversized answer of a later task before launching the first',t=>{
+  const f=fixture(t,2);prepared(f);
+  const later=path.join(f.root,'answers','1.work','T-002');fs.mkdirSync(later,{recursive:true});
+  fs.writeFileSync(path.join(later,'big.txt'),Buffer.alloc(1200*1024,0x61));
+  fs.writeFileSync(path.join(later,'develop.json'),JSON.stringify({...develop,edits:{'target2.mjs':'big.txt'}}));
+  const run=f.drive(f.plan(),'advance');assert.equal(run.status,2,run.stderr);
+  assert.match(run.stderr,/target2\.mjs/);assert.match(run.stderr,/1048576/);noStore(f);
+});
+test('batch driver refuses a no-op or non-UTF-8 protected develop answer before launch',t=>{
+  const f=fixture(t);prepared(f);
+  f.write('develop.json',{...develop,edits:{}});
+  const empty=f.drive(f.plan(),'advance');assert.equal(empty.status,2,empty.stderr);
+  assert.match(empty.stderr,/没有任何改动/);noStore(f);
+  fs.writeFileSync(path.join(f.root,'protection.json'),JSON.stringify({checkCommands:[{id:'noop',command:['/usr/bin/true']}],timeoutMs:60000}));
+  fs.writeFileSync(path.join(f.answers,'target.txt'),Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0xff]));
+  f.write('develop.json',develop);
+  const binary=f.drive(f.plan({permissions:['--allow-qa','--protected-conversation-config','protection.json'],checks:undefined}),'advance');
+  assert.equal(binary.status,2,binary.stderr);assert.match(binary.stderr,/UTF-8/);assert.match(binary.stderr,/target\.mjs/);noStore(f);
 });
 test('batch review revision applies the second-round develop content',t=>{
   const f=fixture(t);prepared(f);

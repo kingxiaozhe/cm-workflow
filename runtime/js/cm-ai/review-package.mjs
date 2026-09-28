@@ -12,6 +12,8 @@ import {resolveCodeProjects,validateCodeProjectPaths,
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 
 const FILE_LIMIT=1024*1024, SNAPSHOT_LIMIT=2*1024*1024, FILE_COUNT=256;
+// Read-only view for callers that must refuse an oversized delivery before it is written.
+export const REVIEW_MATERIAL_LIMITS=Object.freeze({file:FILE_LIMIT,total:SNAPSHOT_LIMIT,count:FILE_COUNT});
 // Inventory budgets bound scanning, independently of the much smaller review body.
 const INVENTORY_COUNT=10000, INVENTORY_LIMIT=1024*1024*1024;
 const IGNORE_COUNT=10000, IGNORE_BYTES=1024*1024;
@@ -316,8 +318,10 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
     const byteLimit=selected===null?SNAPSHOT_LIMIT:INVENTORY_LIMIT;
     if(files.length>=countLimit)throw diagnostic('limit_exceeded',p,`file count > ${countLimit}`);
     if(total+s.size>byteLimit)throw diagnostic('limit_exceeded',p,`inventory bytes > ${byteLimit}`);
-    if(includeContent&&(materialCount>=FILE_COUNT||materialBytes+s.size>SNAPSHOT_LIMIT))
-      throw diagnostic('limit_exceeded',p,`material count > ${FILE_COUNT} or bytes > ${SNAPSHOT_LIMIT}`);
+    if(includeContent&&materialCount>=FILE_COUNT)
+      throw diagnostic('limit_exceeded',p,`material file count > ${FILE_COUNT}`);
+    if(includeContent&&materialBytes+s.size>SNAPSHOT_LIMIT)
+      throw diagnostic('limit_exceeded',p,`material bytes ${materialBytes}+${s.size} > ${SNAPSHOT_LIMIT}; scope, requirements and AGENTS.md content count`);
     const f=readFile(root,p,includeContent,includeContent?Math.min(FILE_LIMIT,SNAPSHOT_LIMIT-materialBytes):byteLimit-total);
     total+=f.size;
     if(includeContent){materialBytes+=f.size;materialCount++;}

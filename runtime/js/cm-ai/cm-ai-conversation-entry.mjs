@@ -25,7 +25,7 @@ const retryReview=reviewRetryable;
 // batch driver decides retryability from the same predicate instead of keeping a
 // second copy of the code list that silently drifts.
 export const developmentRetryable=status=>status.state==='blocked'
-  &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review'].includes(status.code);
+  &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes'].includes(status.code);
 const retryDeveloper=developmentRetryable;
 export const completionRetryable=status=>status.state==='blocked'
   &&['completion_checks_changed','completion_package_changed'].includes(status.code)
@@ -177,7 +177,9 @@ export function createCmAiConversationEntry(options) {
   if(options&&Object.hasOwn(options,'parallelSelection'))optionKeys.push('parallelSelection');
   if(options&&Object.hasOwn(options,'allowAbandonReview'))optionKeys.push('allowAbandonReview');
   if(options&&Object.hasOwn(options,'allowAbandonEffect'))optionKeys.push('allowAbandonEffect');
+  if(options&&Object.hasOwn(options,'holdRevision'))optionKeys.push('holdRevision');
   shape(options,optionKeys);
+  need(!Object.hasOwn(options,'holdRevision')||options.holdRevision===true,'invalid_input');
   if(Object.hasOwn(options,'developmentAttempt'))need([1,2].includes(options.developmentAttempt),'invalid_development_attempt');
   text(options.specsDir);text(options.codeProject);text(options.feature);
   const ownerIdentity=json(options.identity);validIdentity(ownerIdentity);
@@ -685,6 +687,10 @@ export function createCmAiConversationEntry(options) {
     // An unapproved next attempt is waiting, not a dispatched effect of unknown outcome.
     if(developable&&Object.hasOwn(options,'developmentAttempt')&&options.developmentAttempt!==identity.attempt)
       return summary(operation,{...status,code:'provider_development_authorization_required'},'awaiting');
+    // Transient launch option: the caller has no revision answer yet. Stop after
+    // the review that asked for it, before any develop intent, and say so.
+    if(options.holdRevision===true&&status.state==='changes_requested')
+      return summary(operation,{...status,code:'revision_answer_required'},'awaiting');
     const learningInput=inspectCmAiTaskLearningInput({specsDir:options.specsDir,codeProject:options.codeProject,
       feature:options.feature,identity,applicableAgentFiles:applicableAgentFiles??[]},
     {admission:runner.inspectBootstrapAdmission?.()??null,parallelSelection:options.parallelSelection??null});

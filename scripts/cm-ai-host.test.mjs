@@ -1132,3 +1132,63 @@ test('F7 CLI explicitly revises missing QA commands after N5 and resumes the sam
     assert.deepEqual(JSON.parse(fs.readFileSync(stateFile)),after);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
+
+// Protected current-session driver answers (#10, #11, #31). These reach the real
+// Codex sandbox that applies protected edits, so they live in this excluded file.
+const protectedDriver=fileURLToPath(new URL('./cm-ai-drive.mjs',import.meta.url));
+function protectedDriveFixture({scope,files={},checkCommands=[{id:'noop',command:['/usr/bin/true']}]}){
+  const f=fixture(),definition=JSON.parse(fs.readFileSync(f.config,'utf8'));
+  definition.scope=scope;fs.writeFileSync(f.config,JSON.stringify(definition));
+  for(const [file,content] of Object.entries(files)){
+    fs.mkdirSync(path.dirname(path.join(f.codeProject,file)),{recursive:true});
+    fs.writeFileSync(path.join(f.codeProject,file),content);fs.chmodSync(path.join(f.codeProject,file),0o644);
+  }
+  const answers=path.join(f.root,'answers');fs.mkdirSync(answers);
+  fs.writeFileSync(path.join(f.root,'protection.json'),JSON.stringify({checkCommands,timeoutMs:120000}));
+  f.content=(name,bytes)=>fs.writeFileSync(path.join(answers,name),bytes);
+  f.developAnswer=edits=>fs.writeFileSync(path.join(answers,'develop.json'),JSON.stringify({status:'succeeded',
+    value:implementedValue(),edits}));
+  f.drive=(permissions=[],umask='022')=>{
+    const plan=path.join(f.root,`plan-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(plan,JSON.stringify({config:'run.json',mode:'create',hostContext:'native-host-fixture',
+      permissions:['--protected-conversation-config','protection.json',...permissions],answers:'answers'}));
+    return spawnSync('/bin/sh',['-c',`umask ${umask}; exec "$0" "$@"`,process.execPath,protectedDriver,'--plan',plan,'advance'],
+      {encoding:'utf8',timeout:120000,
+        env:{...process.env,CM_WORKFLOW_HOME:path.join(f.root,'home'),CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')}});
+  };
+  return f;
+}
+const lastPackageChanges=f=>new Map(lastCheckpoint(f).reviewPackage.changes.map(change=>[change.path,change]));
+test('#10 the driver carries a protected develop reply above 64 KiB once --input-limit is raised',()=>{
+  const f=protectedDriveFixture({scope:['App.xcodeproj/project.pbxproj']});
+  try{
+    const content='// !$*UTF8*$!\n'+'\t\tA1D0000000000000000001 /* x */ = {isa = PBXBuildFile; };\n'.repeat(1500);
+    f.content('pbxproj.txt',content);f.developAnswer({'App.xcodeproj/project.pbxproj':'pbxproj.txt'});
+    const run=f.drive(['--input-limit','1048576']);
+    assert.equal(run.signal,null,'driver waited on a rejected reply');assert.equal(run.status,0,run.stderr);
+    assert.equal(JSON.parse(run.stdout).result.state,'awaiting_review',run.stdout);
+    assert.equal(fs.readFileSync(path.join(f.codeProject,'App.xcodeproj','project.pbxproj'),'utf8'),content);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+test('#11 #31 protected driver deletes, sets the executable bit, creates new files 0644 and keeps BOM/CRLF text exact',()=>{
+  const f=protectedDriveFixture({scope:['scripts/test.sh','old/Legacy.swift','new/Legacy.swift','App/Home.swift'],
+    files:{'scripts/test.sh':'#!/bin/sh\necho TEST SUCCEEDED\n','old/Legacy.swift':'// legacy\n'},
+    checkCommands:[{id:'test',command:['./scripts/test.sh']}]});
+  try{
+    const home=Buffer.from('﻿import SwiftUI\r\nstruct Home {}\r\n','utf8');
+    f.content('legacy.swift','// legacy\n');f.content('home.swift',home);
+    f.developAnswer({'scripts/test.sh':{mode:'0755'},'old/Legacy.swift':{delete:true},
+      'new/Legacy.swift':'legacy.swift','App/Home.swift':'home.swift'});
+    const run=f.drive([],'077');
+    assert.equal(run.status,0,run.stderr);assert.equal(JSON.parse(run.stdout).result.state,'awaiting_review',run.stdout);
+    assert.equal(fs.statSync(path.join(f.codeProject,'scripts/test.sh')).mode&0o777,0o755);
+    assert.equal(fs.existsSync(path.join(f.codeProject,'old/Legacy.swift')),false);
+    assert.equal(fs.statSync(path.join(f.codeProject,'new/Legacy.swift')).mode&0o777,0o644);
+    assert.equal(fs.statSync(path.join(f.codeProject,'App/Home.swift')).mode&0o777,0o644);
+    assert.deepEqual(fs.readFileSync(path.join(f.codeProject,'App/Home.swift')),home);
+    const changes=lastPackageChanges(f);
+    assert.equal(changes.get('scripts/test.sh').before.mode,0o644);assert.equal(changes.get('scripts/test.sh').after.mode,0o755);
+    assert.equal(changes.get('old/Legacy.swift').after,null);
+    assert.equal(changes.get('new/Legacy.swift').after.mode,0o644);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});

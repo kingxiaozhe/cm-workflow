@@ -263,7 +263,7 @@ export function createTaskRunner(options) {
   // derivation in one place, next to the cache it is derived from.
   const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
     &&entry.result?.state==='blocked'
-    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review'].includes(entry.result?.code)).length;
+    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes'].includes(entry.result?.code)).length;
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
     &&entry.result?.state==='blocked'&&['completion_checks_changed','completion_package_changed'].includes(entry.result?.code)).length;
   const privateStatus=()=>json({state,code,...(reason?{reason}:{}),
@@ -781,6 +781,12 @@ export function createTaskRunner(options) {
     return candidate.artifactDigest===rejected.artifactDigest
       ?`develop_unchanged_after_review: 第 2 轮交付与第 1 轮被要求修改的代码逐字节相同（artifactDigest ${rejected.artifactDigest.slice(0,12)}）；按审查 findings 修改后重新交付`:null;
   }
+  // A delivery that changes nothing in scope has no review package to build. It
+  // is the delivery that must be redone, exactly like failed checks, not an
+  // unknown effect: nothing was dispatched to a reviewer and no round was spent.
+  const EMPTY_DELIVERY='develop_empty_changes: the delivery changes nothing in scope relative to the task baseline; '
+    +'write the actual change and resume to redo this attempt';
+  const emptyDelivery=error=>{if(error?.code!=='empty_changes')throw error;halt('blocked','develop_empty_changes',EMPTY_DELIVERY);};
   async function perform(v) {
     if(v.kind==='develop') {
       need(stageAllowed('develop',state,code,priorReview?.verdict),'stage_mismatch');state='developing';code=null;reason=null;checkNewPaths=null;receipt=null;
@@ -824,10 +830,14 @@ export function createTaskRunner(options) {
           if(failedChecks(currentChecks).length){halt('blocked','develop_checks_not_passed',checkFailureReason(currentChecks,'develop_checks_not_passed'));return;}
           if(!await verificationSatisfied(currentChecks)){halt('blocked','verification_precheck_failed');return;}
           active();
-          const unchanged=unchangedSinceRejection();
+          // unchangedSinceRejection builds a package too, so an empty delivery
+          // surfaces there first and takes the same retryable block.
+          let unchanged;
+          try{unchanged=unchangedSinceRejection();}catch(error){emptyDelivery(error);return;}
           if(unchanged){halt('blocked','develop_unchanged_after_review',unchanged);return;}
-          createHostHandoff({root:config.root,baseline:base,checks:currentChecks,
-            handoffPath:completion.handoffs[attempt-1]});
+          try{createHostHandoff({root:config.root,baseline:base,checks:currentChecks,
+            handoffPath:completion.handoffs[attempt-1]});}
+          catch(error){emptyDelivery(error);return;}
         }
         writeCmAiTaskLearningHandoff({handoffPath:completion.handoffs[attempt-1],feature:taskLearning.feature,
           identity:{...config.identity,attempt},learningInput:v.learningInput,application,retrospective,writeback});
@@ -838,12 +848,15 @@ export function createTaskRunner(options) {
         if(failedChecks(currentChecks).length){halt('blocked','develop_checks_not_passed',checkFailureReason(currentChecks,'develop_checks_not_passed'));return;}
         if(!await verificationSatisfied(currentChecks)){halt('blocked','verification_precheck_failed');return;}
         active();
-        const unchanged=unchangedSinceRejection();
+        let unchanged;
+        try{unchanged=unchangedSinceRejection();}catch(error){emptyDelivery(error);return;}
         if(unchanged){halt('blocked','develop_unchanged_after_review',unchanged);return;}
       }
       active();
-      const nextPackage=createReviewPackage({root:config.root,baseline:base,checks:currentChecks,
-        ...(taskLearning?.hostHandoff===true?{handoffPath:completion.handoffs[attempt-1]}:{})});
+      let nextPackage;
+      try{nextPackage=createReviewPackage({root:config.root,baseline:base,checks:currentChecks,
+        ...(taskLearning?.hostHandoff===true?{handoffPath:completion.handoffs[attempt-1]}:{})});}
+      catch(error){emptyDelivery(error);return;}
       if(taskLearning!==null)validateTaskLearningReviewPackage(nextPackage,learningResult.writeback,v.learningInput,
         learningResult.bootstrap??null,metadata.bootstrap??null);
       reviewPackage=nextPackage;

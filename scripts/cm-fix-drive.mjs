@@ -23,6 +23,7 @@
 //     "permissions": ["--allow-red-test", ...],   原样传给宿主，不另造一套词
 //     "answers": "answers",                  答案目录；abandon_step / abandon_review 可省略
 //     "reason": "旧本地步骤结果丢失"           abandon_step 必填并需 --allow-abandon；abandon_review 必填并需 --allow-abandon-review
+//     "inputLimit": 1048576                  可选；宿主输入与应答上限（65536–4194304，默认 65536）
 //   }
 //
 // answers/ 里按反问种类放文件，一种一个：
@@ -70,6 +71,8 @@ function loadPlan(){
     ||!plan.reason.trim().length||Buffer.byteLength(plan.reason,'utf8')>1000||/[\r\n\0\u0085\u2028\u2029]/.test(plan.reason)))
     stop(2,`${operation} 需要 PLAN.reason（单行，最多 1000 字节）和 ${abandonFlag}`);
   if(plan.originalHostContext&&plan.mode!=='resume')stop(2,'originalHostContext 只在 resume 时有意义');
+  if(Object.hasOwn(plan,'inputLimit')&&!(Number.isSafeInteger(plan.inputLimit)&&plan.inputLimit>=65536&&plan.inputLimit<=4194304))
+    stop(2,'inputLimit 需要 65536–4194304 的整数（字节）');
   const resolve=p=>path.resolve(base,p);
   return {operation,plan,paths:{config:resolve(plan.config),answers:plan.answers?resolve(plan.answers):null,
     review:plan.reviewConfig?resolve(plan.reviewConfig):null}};
@@ -157,6 +160,7 @@ function hostArgs({plan,paths}){
   return [HOST,'serve','--config',paths.config,'--mode',plan.mode,'--host-context',plan.hostContext,'--allow-reproduction',
     ...(plan.originalHostContext?['--original-host-context',plan.originalHostContext]:[]),
     '--runtime',plan.runtime??'codex',
+    ...(Object.hasOwn(plan,'inputLimit')?['--input-limit',String(plan.inputLimit)]:[]),
     ...(paths.review?['--review-config',paths.review]:[]),
     ...plan.permissions];
 }

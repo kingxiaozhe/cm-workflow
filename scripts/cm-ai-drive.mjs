@@ -34,6 +34,7 @@
 // For unsupported evidence kinds, preflight refuses before the host starts.
 import fs from 'node:fs';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {decideHostQaPolicy} from '../runtime/js/cm-ai/host-qa-policy.mjs';
@@ -41,7 +42,9 @@ import {createHostQaExecutor} from '../runtime/js/cm-ai/host-qa-executor.mjs';
 import {inspectCmAiQaTaskContext} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {readLearningRetrospectiveContent} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
 import {inspectFixInvestigation} from '../runtime/js/cm-fix/investigation.mjs';
-import {readRunDefinition} from './cm-ai-run.mjs';
+import {readRunDefinition,assertCreatableRunId} from './cm-ai-run.mjs';
+import {REVIEW_MATERIAL_LIMITS} from '../runtime/js/cm-ai/review-package.mjs';
+import {parseHostInputLimit} from '../runtime/js/cm-ai/host-session.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
@@ -94,22 +97,189 @@ function requireShape(ok,label){if(!ok)stop(2,`答案格式错误：${label}`);}
 function exact(value,allowed,label){requireShape(object(value)&&Object.keys(value).every(key=>allowed.includes(key)),label);}
 function answerPath(root,file){return path.join(root,file);}
 export const developFilename=(root,attempt)=>attemptAnswerName(root,'develop',attempt);
-function reachableDevelopAttempts({plan,operation,definition,permissions}){
+// develop.json.edits maps an approved scope path to one of:
+//   "content-file"                 write these bytes (existing mode kept, new file 0644)
+//   {file:"content-file",mode}     write, then set mode
+//   {mode:"0755"|"0644"}           only change the permission bits of an existing file
+//   {delete:true}                  delete an existing file
+// A rename is a delete of the old path plus a write of the new one, both in scope.
+const DEVELOP_MODES=new Map([['0644',0o644],['0755',0o755]]);
+const answerError=message=>Object.assign(new Error(message),{answerShape:true});
+function safeContentFile(local,root,label){
+  if(!(typeof local==='string'&&local.length>0&&!path.isAbsolute(local)&&!local.split(/[\\/]/).includes('..')))
+    throw answerError(`${label} 路径无效`);
+  const file=answerPath(root,local);
+  if(!(fs.existsSync(file)&&fs.lstatSync(file).isFile()&&!fs.lstatSync(file).isSymbolicLink()
+    &&fs.realpathSync(file).startsWith(fs.realpathSync(root)+path.sep)))throw answerError(`${label} 缺少安全的内容文件 ${file}`);
+  return local;
+}
+export function readDevelopEntry(target,entry,root,label='develop.json.edits'){
+  if(!nonempty(target))throw answerError(`${label} 路径无效`);
+  if(typeof entry==='string')return {kind:'write',local:safeContentFile(entry,root,label)};
+  const at=`${label}.${target}`;
+  if(!object(entry))throw answerError(`${at} 应为内容文件名，或 {file,mode} / {mode} / {delete:true}`);
+  const keys=Object.keys(entry).sort().join(',');
+  if(Object.hasOwn(entry,'delete')){
+    if(keys!=='delete')throw answerError(`${at}: delete 不能与 file、mode 同时出现`);
+    if(entry.delete!==true)throw answerError(`${at}.delete 只能是 true`);
+    return {kind:'delete'};
+  }
+  if(!['file','file,mode','mode'].includes(keys))throw answerError(`${at} 只允许 file、mode 或 delete 字段`);
+  if(Object.hasOwn(entry,'mode')&&!DEVELOP_MODES.has(entry.mode))throw answerError(`${at}.mode 只能是字符串 "0644" 或 "0755"`);
+  return Object.hasOwn(entry,'file')?{kind:'write',local:safeContentFile(entry.file,root,label),
+    ...(Object.hasOwn(entry,'mode')?{mode:entry.mode}:{})}:{kind:'mode',mode:entry.mode};
+}
+function developEntries(map,root,label){
+  if(!object(map))throw answerError(`${label} 应为路径到内容文件或权限/删除声明的对象`);
+  return Object.entries(map).map(([target,entry])=>[target,readDevelopEntry(target,entry,root,label)]);
+}
+// Protected text mode carries content as JSON strings. Only well-formed UTF-8
+// survives that round trip byte for byte (BOM and CRLF included); anything else
+// would be silently replaced, so it is refused instead.
+const strictUtf8=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
+function protectedText(bytes,target){
+  try{return strictUtf8.decode(bytes);}
+  catch{throw answerError(`${target} 不是合法 UTF-8 文本；受保护模式只能提交 UTF-8 文本，二进制文件（图片、证书等）请移出 scope 或改用非受保护模式`);}
+}
+export function protectedDevelopEdits(map,answersRoot,codeProject,expected){
+  return developEntries(map,answersRoot,'develop.json.edits').map(([target,entry])=>{
+    const beforeSha256=expected?.[target]??null;
+    if(entry.kind==='delete')return {path:target,beforeSha256,content:null};
+    const source=entry.kind==='mode'?path.join(codeProject,target):answerPath(answersRoot,entry.local);
+    return {path:target,beforeSha256,content:protectedText(fs.readFileSync(source),target),
+      ...(entry.mode?{mode:entry.mode}:{})};
+  });
+}
+export function applyDevelopEdits(map,answersRoot,codeProject,allowed){
+  const entries=developEntries(map,answersRoot,'develop.json.edits');
+  for(const [target,entry] of entries){
+    if(!allowed.includes(target))throw Error(`${target} 不在宿主允许的范围`);
+    const file=path.resolve(codeProject,target);
+    if(!file.startsWith(codeProject+path.sep))throw Error('编辑路径越界');
+    for(let parent=path.dirname(file);parent!==codeProject;parent=path.dirname(parent))
+      if(fs.existsSync(parent)&&fs.lstatSync(parent).isSymbolicLink())throw Error('编辑路径经过符号链接');
+    if(fs.existsSync(file)&&fs.lstatSync(file).isSymbolicLink())throw Error('编辑路径是符号链接');
+    if(entry.kind!=='write'&&!(fs.existsSync(file)&&fs.lstatSync(file).isFile()))throw Error(`${target} 不存在，无法删除或改权限`);
+  }
+  for(const [target,entry] of entries){
+    const file=path.resolve(codeProject,target);
+    if(entry.kind==='delete'){fs.unlinkSync(file);continue;}
+    if(entry.kind==='mode'){fs.chmodSync(file,DEVELOP_MODES.get(entry.mode));continue;}
+    const existed=fs.existsSync(file);
+    fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,fs.readFileSync(answerPath(answersRoot,entry.local)));
+    if(entry.mode||!existed)fs.chmodSync(file,entry.mode?DEVELOP_MODES.get(entry.mode):0o644);
+  }
+}
+const sha256=bytes=>createHash('sha256').update(bytes).digest('hex');
+function diskScopeEntry(codeProject,target){
+  const file=path.join(codeProject,target);let stat;
+  try{stat=fs.lstatSync(file);}catch(error){if(error.code==='ENOENT'||error.code==='ENOTDIR')return null;throw error;}
+  if(!stat.isFile()||stat.isSymbolicLink())return {unsupported:true};
+  return {size:stat.size,mode:stat.mode&0o7777,source:file,
+    sha256:stat.size<=REVIEW_MATERIAL_LIMITS.file?sha256(fs.readFileSync(file)):null};
+}
+const kib=bytes=>`${bytes} 字节`;
+// Everything the runner would refuse only after the answer is written and the
+// checks have run is refused here instead, with the path and the limit. The
+// runner stays the authority; this is the same rule applied earlier.
+export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,scope,requirements,
+  baseline='disk',diskChecks=true,protectedMode=false,inputLimit=65536}){
+  const {file:FILE,total:TOTAL,count:COUNT}=REVIEW_MATERIAL_LIMITS;
+  let previous=diskChecks?new Map(scope.map(target=>[target,diskScopeEntry(codeProject,target)])):null;
+  const base=!diskChecks?null:baseline==='disk'?previous:baseline;
+  for(const {file,value} of deliveries){
+    if(value.status!=='succeeded')continue;
+    const label=path.basename(file);let entries;
+    try{entries=developEntries(value.edits,answersRoot,`${label}.edits`);}catch(error){stop(2,`答案格式错误：${error.message}`);}
+    const next=previous&&new Map(previous);
+    for(const [target,entry] of entries){
+      const before=previous?.get(target)??null;
+      if(entry.kind!=='write'){
+        if(previous&&(before===null||before.unsupported))
+          stop(2,`${label}.edits.${target}: 要${entry.kind==='delete'?'删除':'改权限'}的文件在交付前不存在或不是普通文件`);
+        next?.set(target,entry.kind==='delete'?null:{...before,mode:DEVELOP_MODES.get(entry.mode)});
+        continue;
+      }
+      const source=answerPath(answersRoot,entry.local),size=fs.lstatSync(source).size;
+      if(size>FILE)stop(2,`${label}.edits.${target}: 内容 ${kib(size)}，超过审查包单文件上限 ${FILE}（1 MiB）；大文件请移出 scope`);
+      next?.set(target,{size,source,sha256:sha256(fs.readFileSync(source)),
+        mode:entry.mode?DEVELOP_MODES.get(entry.mode):before&&!before.unsupported?before.mode:0o644});
+    }
+    if(protectedMode){
+      const edits=[];
+      try{
+        for(const [target,entry] of entries){
+          if(entry.kind==='delete'){edits.push({path:target,beforeSha256:'0'.repeat(64),content:null});continue;}
+          const source=entry.kind==='write'?answerPath(answersRoot,entry.local):previous?.get(target)?.source??path.join(codeProject,target);
+          if(!fs.existsSync(source))continue;
+          edits.push({path:target,beforeSha256:'0'.repeat(64),content:protectedText(fs.readFileSync(source),target),
+            ...(entry.mode?{mode:entry.mode}:{})});
+        }
+      }catch(error){stop(2,`${label}.edits: ${error.message}`);}
+      const uuid='00000000-0000-4000-8000-000000000000';
+      const bytes=Buffer.byteLength(JSON.stringify({type:'host_result',sessionId:uuid,callId:uuid,requestDigest:'0'.repeat(64),
+        result:{status:'succeeded',value:value.value,edits}}));
+      const max=4*1024*1024;
+      if(bytes>inputLimit)stop(2,`${label} 在受保护模式下的应答约 ${kib(bytes)}，超过宿主输入上限 ${inputLimit}（--input-limit，默认 65536）；`
+        +(bytes<=max?`在 PLAN.permissions 加 "--input-limit","${Math.min(max,2**Math.ceil(Math.log2(bytes)))}" 后重试`
+          :`已超过 --input-limit 最大值 ${max}，受保护模式无法一次送达，请缩小本任务 scope 或拆分任务`));
+    }
+    if(!next)continue;
+    for(const [target,entry] of next)if(entry&&!entry.unsupported&&entry.size>FILE)
+      stop(2,`${label}: 交付后 ${target} 为 ${kib(entry.size)}，超过审查包单文件上限 ${FILE}（1 MiB）；大文件请移出 scope`);
+    // Material is every scope, requirement and AGENTS.md body the review package carries.
+    const material=[...next].filter(([,entry])=>entry&&!entry.unsupported).map(([target,entry])=>[target,entry.size]);
+    const counted=new Set(material.map(([target])=>target));
+    const agents=new Set(['AGENTS.md']);
+    for(const target of [...scope,...requirements]){
+      const parts=target.split('/');for(let n=1;n<parts.length;n++)agents.add(`${parts.slice(0,n).join('/')}/AGENTS.md`);
+    }
+    for(const target of [...requirements,...agents]){
+      if(counted.has(target))continue;counted.add(target);
+      const entry=diskScopeEntry(codeProject,target);if(entry&&!entry.unsupported)material.push([target,entry.size]);
+    }
+    const total=material.reduce((sum,[,size])=>sum+size,0);
+    const largest=material.slice().sort((a,b)=>b[1]-a[1]).slice(0,3).map(([target,size])=>`${target} ${kib(size)}`).join('，');
+    if(total>TOTAL)stop(2,`${label}: 交付后审查材料（scope、requirements 与 AGENTS.md 正文）合计 ${kib(total)}，超过审查包上限 ${TOTAL}（2 MiB）；最大的是 ${largest}`);
+    if(material.length>COUNT)stop(2,`${label}: 交付后审查材料共 ${material.length} 个文件，超过审查包上限 ${COUNT}`);
+    // A Learning writeback can still change AGENTS.md, so only a delivery that
+    // cannot write it is known to be empty before the runner sees it.
+    const lessonFree=value.value?.outcome==='implemented'&&value.value.retrospective?.status==='no_new_lesson';
+    if(base&&lessonFree&&scope.every(target=>{
+      const a=base.get(target)??null,b=next.get(target)??null;
+      return a===null&&b===null||a!==null&&b!==null&&!a.unsupported&&!b.unsupported&&a.sha256!==null&&a.sha256===b.sha256&&a.mode===b.mode;
+    }))stop(2,`${label}: 交付后与任务基线相比没有任何改动（edits 为空，或内容和权限都与基线相同）；审查包不能为空，请写入实际修改后再试`);
+    previous=next;
+  }
+}
+// The original baseline of an existing run, keyed by scope path, from its journal.
+export function baselineScope(baseline,scope){
+  const files=new Map((baseline?.files??[]).map(file=>[file.path,file]));
+  return new Map(scope.map(target=>{const file=files.get(target);
+    return [target,file?{size:file.size,mode:file.mode,sha256:file.sha256}:null];}));
+}
+export const inputLimitFrom=permissions=>{
+  const at=permissions.indexOf('--input-limit');
+  try{return parseHostInputLimit(at===-1?undefined:permissions[at+1]);}
+  catch{stop(2,'--input-limit 需要 65536–4194304 的整数（字节）');}
+};
+// Read-only view of an existing run: its runner state and original baseline.
+export function readRunJournal(definition){
+  const snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,identity:{
+    repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
+  const first=snapshot.records[0];
+  return {history:readRunnerHistory(snapshot.records,first.payload.config,3),baseline:first.payload.baseline};
+}
+function reachableDevelopAttempts({plan,operation,journal,permissions}){
   if(plan.mode==='create'){
     const reviewAfterDevelop=operation==='advance'
       &&permissions.some((flag,index)=>flag==='--allow-review-attempt'&&permissions[index+1]==='1');
     return {attempts:reviewAfterDevelop?[1,2]:[1],reviewFirst:false,reviewAfterDevelop,packageDigest:null,learning:null};
   }
-  let history;
-  try{
-    const snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,identity:{
-      repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
-    const first=snapshot.records[0];
-    history=readRunnerHistory(snapshot.records,first.payload.config,3);
-  }catch(error){stop(2,`无法只读检查恢复存档: ${error.code??error.message}`);}
+  if(journal.error)stop(2,`无法只读检查恢复存档: ${journal.error.code??journal.error.message}`);
   // learning is the journal's Learning result the next develop effect starts from
   // (bootstrap rules bind their on-disk files to its recorded evidence).
-  return {...projectDevelopAttempts(history.state,operation,permissions),learning:history.state.learningResult??null};
+  return {...projectDevelopAttempts(journal.history.state,operation,permissions),learning:journal.history.state.learningResult??null};
 }
 export function projectDevelopAttempts(status,operation,permissions){
   const {state,attempt,reviewPackage}=status;
@@ -176,7 +346,8 @@ export function validateCmAiAnswer(kind,value,root){
       if(value.value.application)exact(value.value.application,['status','note'],'develop.json.value.application');
       if(value.value.outcome==='implemented')try{readLearningRetrospectiveContent(value.value.retrospective);}
       catch{stop(2,'答案格式错误：develop.json.value.retrospective');}
-      requireShape(object(value.edits),'develop.json.edits');edits(value.edits,root,'develop.json.edits');
+      requireShape(object(value.edits),'develop.json.edits');
+      try{developEntries(value.edits,root,'develop.json.edits');}catch(error){stop(2,`答案格式错误：${error.message}`);}
     }else {exact(value,['status','code'],'develop.json');requireShape(nonempty(value.code),'develop.json.code');}
   }else if(kind==='qa_assess'){
     try{decideHostQaPolicy({assessment:value,pending:1,mergeEligible:false,unassessedTasks:1});}
@@ -214,7 +385,10 @@ export function validateCmAiAnswer(kind,value,root){
 }
 function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks, checkTimeoutMs。\nchecks 每项为 {id,command,timeoutMs?}；checkTimeoutMs 与每项 timeoutMs 为 1..3600000 整数，默认 900000 ms（15 分钟）。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务（纯规范 scope、单代码根、非 --protected-config）读 answers/init-generate.json（{status:"generated",documents:[{path,contentFile}]}，覆盖全部 targets）与 answers/init-verify.json（commands 为驾驶员实跑的草稿命令 {id,command,timeoutMs?}，可选 commandsNotRun；checks 只含 globs/file_references/constraint_preservation/rule_applicability；constraintChanges:[]；application/retrospective 沿原 Learning）；第 1 轮也可用 *-a1.json，第 2 轮只读 init-generate-a2.json 与 init-verify-a2.json，且须先 decision 读取首轮 findings，不能带 --allow-review-attempt 跨轮。commands 在宿主接受启动后、发送操作前由驾驶员实跑（须先带 --allow-bootstrap-write 等宿主授权；受保护模式在 specs 沙箱内），失败或改动了预检核对的文件即退出 2 且不发送操作（create 时改用 resume 重跑）；结果只来自实跑，答案文件不能提供。\n');
+    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks, checkTimeoutMs。\nchecks 每项为 {id,command,timeoutMs?}；checkTimeoutMs 与每项 timeoutMs 为 1..3600000 整数，默认 900000 ms（15 分钟）。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务（纯规范 scope、单代码根、非 --protected-config）读 answers/init-generate.json（{status:"generated",documents:[{path,contentFile}]}，覆盖全部 targets）与 answers/init-verify.json（commands 为驾驶员实跑的草稿命令 {id,command,timeoutMs?}，可选 commandsNotRun；checks 只含 globs/file_references/constraint_preservation/rule_applicability；constraintChanges:[]；application/retrospective 沿原 Learning）；第 1 轮也可用 *-a1.json，第 2 轮只读 init-generate-a2.json 与 init-verify-a2.json，且须先 decision 读取首轮 findings，不能带 --allow-review-attempt 跨轮。commands 在宿主接受启动后、发送操作前由驾驶员实跑（须先带 --allow-bootstrap-write 等宿主授权；受保护模式在 specs 沙箱内），失败或改动了预检核对的文件即退出 2 且不发送操作（create 时改用 resume 重跑）；结果只来自实跑，答案文件不能提供。\n'
+      +'develop.json.edits 每项是 scope 路径到下列之一："内容文件"（写入；已有文件保留权限，新文件 0644）、{"file":"内容文件","mode":"0755"|"0644"}、{"mode":"0755"|"0644"}（只改已有文件权限）、{"delete":true}（删除已有文件）。改名 = 删旧路径 + 写新路径，两者都要在 scope 内。\n'
+      +'启动前拒绝：单个 scope 文件超过 1 MiB、scope/requirements/AGENTS.md 正文合计超过 2 MiB 或超过 256 个文件、交付后与任务基线完全相同（edits 为空或内容和权限都没变）。受保护模式（--protected-conversation-config）只收合法 UTF-8 文本，应答大于 --input-limit（默认 65536）时提示应加的值。\n'
+      +'runId 需 8–128 个字符（运行日志要求），create 前检查。resume 时按存档里的当前轮次发送 identity，第 2 轮的 decision/complete/qa 等无需手改。\n');
     process.exit(0);
   }
   const loaded=loadPlanFile({name:'cm-ai-drive.mjs',known:OPERATIONS});
@@ -247,8 +421,16 @@ function load(){
   if(!fs.existsSync(config))stop(2,`运行定义不存在: ${config}`);
   let definition;
   try{definition=readRunDefinition(config);}catch(error){stop(2,`运行定义无效或 codeProject/specsDir 无法解析: ${error.code??error.message}`);}
+  if(plan.mode==='create')try{assertCreatableRunId(definition.identity);}
+  catch(error){stop(2,`运行定义的 ${error.code.replace(/^invalid_config: /,'')}；宿主未启动，请换一个更长的 runId`);}
   const store=path.join(definition.specsDir,'.reviews','.execution',definition.identity.runId);
   if(plan.mode==='resume'&&!fs.existsSync(path.join(store,'state.json')))stop(2,`恢复存档不存在: ${store}`);
+  let journal=null;
+  if(plan.mode==='resume')try{journal=readRunJournal(definition);}catch(error){journal={error};}
+  // The run definition always says attempt 1. Package-bound operations must name
+  // the attempt the run is on now, so send that; an unreadable journal keeps the
+  // original identity and the host decides, exactly as before.
+  const identity=journal?.history?{...definition.identity,attempt:journal.history.state.attempt}:definition.identity;
   const workflowAt=permissions.indexOf('--workflow-config');let workflow=null;
   if(workflowAt!==-1){
     const file=path.resolve(base,permissions[workflowAt+1]);workflow=readJson(file,'workflow-config');
@@ -310,11 +492,11 @@ function load(){
     catch(error){stop(2,`PLAN.checks 格式错误: ${error.code??error.message}`);}
   }
   const reachable=(asks.includes('develop')||rules)&&!providerMode
-    ?reachableDevelopAttempts({plan,operation,definition,permissions})
+    ?reachableDevelopAttempts({plan,operation,journal,permissions})
     :{attempts:[],reviewFirst:false,packageDigest:null};
   const bootstrapAnswers=rules
     ?readBootstrapRulesAnswers({answers,operation,definition,plan,permissions,bootstrap,reachable}):null;
-  const developAnswers=new Map();
+  const developAnswers=new Map(),deliveries=[];
   if(asks.includes('develop'))for(const attempt of reachable.attempts){
     const file=answerPath(answers??'',developFilename(answers??'',attempt));
     if(!answers||!fs.existsSync(file)){
@@ -327,8 +509,12 @@ function load(){
     const value=readJson(file,'develop');validateCmAiAnswer('develop',value,answers);
     if(value.status==='succeeded')for(const target of Object.keys(value.edits))
       if(!definition.scope.includes(target))stop(2,`${path.basename(file)}.edits 越过批准 scope: ${target}`);
-    developAnswers.set(attempt,value);
+    developAnswers.set(attempt,value);deliveries.push({file,value});
   }
+  if(deliveries.length)preflightDevelopDeliveries({deliveries,answersRoot:answers,codeProject:definition.codeProject,
+    scope:definition.scope,requirements:definition.requirements,
+    baseline:plan.mode==='create'?'disk':baselineScope(journal.baseline,definition.scope),
+    protectedMode,inputLimit:inputLimitFrom(permissions)});
   const unique=[...new Set(asks.filter(kind=>FILES[kind]&&kind!=='develop'))];
   const answer=preflightAnswers(unique,kind=>{
     const file=answerPath(answers??'',FILES[kind]);
@@ -337,7 +523,7 @@ function load(){
   });
   if(answer.documentation_sync)for(const target of Object.keys(answer.documentation_sync.edits))
     if(!workflow.documentationPaths.includes(target))stop(2,`documentation-sync.json.edits 越过文档 scope: ${target}`);
-  return {...loaded,definition,permissions,config,answers,answer,developAnswers,
+  return {...loaded,definition,identity,permissions,config,answers,answer,developAnswers,
     bootstrapRules:bootstrapAnswers&&createBootstrapRulesResponder({definition,plan,bootstrap,answers:bootstrapAnswers,
       // Same execution as the task checks: the host's specs sandbox in protected mode, else the driver's own.
       specsRoot:protectedMode?definition.specsDir:null,watch:[config,...permissionFiles]})};
@@ -389,12 +575,9 @@ async function answerFor(row,answer){
   if(kind==='develop'){
     if(!value)throw Error(`develop attempt ${row.payload.request?.identity?.attempt??row.payload.identity?.attempt} 未预检，拒绝复用旧答案`);
     if(value.status!=='succeeded')return {status:'failed',code:value.code};
-    if(row.payload.editMode==='protected-text-v1'){
-      const edits=Object.entries(value.edits).map(([target,local])=>({path:target,
-        beforeSha256:row.payload.expected?.[target]??null,content:fs.readFileSync(path.join(loaded.answers,local),'utf8')}));
-      return {status:'succeeded',value:value.value,edits};
-    }
-    applyEdits(value.edits,loaded.definition.codeProject,row.payload.request.payload.scope);
+    if(row.payload.editMode==='protected-text-v1')return {status:'succeeded',value:value.value,
+      edits:protectedDevelopEdits(value.edits,loaded.answers,loaded.definition.codeProject,row.payload.expected)};
+    applyDevelopEdits(value.edits,loaded.answers,loaded.definition.codeProject,row.payload.request.payload.scope);
     return {status:'succeeded',value:value.value};
   }
   if(kind==='documentation_sync'){
@@ -406,8 +589,8 @@ async function answerFor(row,answer){
   if(kind.startsWith('fix_'))return qaFixAnswerFor(row,answer,loaded.answers);
   return value??null;
 }
-export function buildCmAiDriveRequest(operation,plan,definition){
-  return {version:1,identity:definition.identity,
+export function buildCmAiDriveRequest(operation,plan,definition,identity=definition.identity){
+  return {version:1,identity,
     ...(['abandon_review','abandon_effect'].includes(operation)?{reason:plan.reason}:{}),
     ...(PACKAGE_OPERATIONS.has(operation)?{packageDigest:plan.packageDigest}:{}),
     ...(TEST_RUN_OPERATIONS.has(operation)?{testRunId:plan.testRunId}:{}),
@@ -429,7 +612,7 @@ async function main(){
     stop(2,`${operation} 需要 packageDigest（64 位十六进制）`);
   if(TEST_RUN_OPERATIONS.has(operation)&&!(operation==='qa_result'?nonempty(plan.testRunId)
     :plan.testRunId===null||nonempty(plan.testRunId)))stop(2,`${operation} 需要 testRunId（可为 null）`);
-  const request=buildCmAiDriveRequest(operation,plan,definition);
+  const request=buildCmAiDriveRequest(operation,plan,definition,loaded.identity);
   if(operation.startsWith('fix_')&&(!nonempty(plan.packageDigest)||!nonempty(plan.testRunId)))
     stop(2,`${operation} 需要 packageDigest 和 testRunId`);
   // Rules init_verify commands really run once the host has accepted the launch

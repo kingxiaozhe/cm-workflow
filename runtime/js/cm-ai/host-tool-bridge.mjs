@@ -47,7 +47,7 @@ export function createHostToolBridge({responseLimit=64*1024}={}){
         reply=json(raw,responseLimit);shape(reply,['type','sessionId','callId','requestDigest','result']);
         need(reply.type==='host_result'&&pending!==null&&!closed,'host_response_mismatch');
         for(const key of ['sessionId','callId','requestDigest'])need(reply[key]===pending.request[key],'host_response_mismatch');
-      }catch{return {accepted:false,code:'host_response_mismatch'};}
+      }catch(error){return {accepted:false,code:error?.code==='limit_exceeded'?'host_response_too_large':'host_response_mismatch'};}
       const call=pending;pending=null;clearTimeout(call.timer);call.signal.removeEventListener('abort',call.abort);
       call.resolve(reply.result);return {accepted:true,callId:reply.callId};
     },

@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {hex,id,json,need,shape,text,validIdentity} from './effect-contract.mjs';
+import {validRunId} from '../../../scripts/cm-log-event.mjs';
 
 const writer=fileURLToPath(new URL('../../../scripts/cm-log-event.py',import.meta.url));
 const MiB=1024*1024;
@@ -81,7 +82,7 @@ export function recordCmAiRunDone(input) {
   if(input&&Object.hasOwn(input,'logHome'))keys.push('logHome');
   shape(input,keys);text(input.specsDir);text(input.codeProject);text(input.feature);validIdentity(input.identity);
   hex(input.packageDigest);hex(input.contextDigest);id(input.documentationSyncId);
-  need(/^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$/.test(input.identity.runId),'invalid_run_id');
+  need(validRunId(input.identity.runId),'invalid_run_id');
   const target=statusTarget(input.specsDir),prepared=prepareStatus(target,input.feature,input.identity);
   const data={node:'N8',feature:input.feature,task:input.identity.taskId,package_digest:input.packageDigest,
     context_digest:input.contextDigest,documentation_sync_id:input.documentationSyncId};

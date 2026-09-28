@@ -9,6 +9,10 @@ import {fileURLToPath} from 'node:url';
 const IDENTIFIER=/^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
 const RESOURCE_ID=/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const RUN_ID=/^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$/;
+// The single run ID rule. Workflow run definitions must satisfy it before they
+// create durable state, otherwise the first log write fails inside an effect.
+export const RUN_ID_RULE='8-128 characters of A-Z a-z 0-9 . _ -, starting with a letter or digit';
+export const validRunId=value=>typeof value==='string'&&RUN_ID.test(value);
 const SENSITIVE_KEY=/(api[_-]?key|authorization|cookie|password|passwd|private[_-]?key|recovery[_-]?code|secret|token)/i;
 const RESERVED_FIELDS=new Set(['schema_version','event_id','run_id','at','workflow','event','phase','runtime','project','project_path','specs_path','detail']);
 export const TERMINAL_EVENTS=new Set(['done','run_done']);

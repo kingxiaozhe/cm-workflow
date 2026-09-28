@@ -16,6 +16,7 @@ import {prepareReviewedEvidenceSupersession,archiveReviewedEvidence,recordEviden
 import {recordReviewAbandonment} from '../runtime/js/cm-ai/review-abandon-log.mjs';
 import {recordEffectAbandonment} from '../runtime/js/cm-ai/effect-abandon-log.mjs';
 import {reviewConsumedHandoff,reviewedHandoffConflict} from '../runtime/js/cm-ai/host-handoff.mjs';
+import {RUN_ID_RULE,validRunId} from './cm-log-event.mjs';
 
 const usage='cm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
 const fail=code=>{throw Object.assign(new Error(code),{code});};
@@ -177,6 +178,12 @@ export function validateRunDefinition(input){
   }
   return value;
 }
+// Create-time only: an existing journal keeps resuming (and can be abandoned)
+// exactly as before, while a new run can no longer strand its first develop
+// effect on a run ID the run log refuses.
+export function assertCreatableRunId(identity){
+  if(!validRunId(identity?.runId))fail(`invalid_config: identity.runId must be ${RUN_ID_RULE} (run log requirement)`);
+}
 
 // Definition is data, never an import path, command, grant or executable callback.
 // legacyQa rebuilds the historical QA executor form for stores created before
@@ -198,13 +205,15 @@ const LEGACY_QA_FINGERPRINT_REASON='运行指纹与当前配置不符。若此�
   +'（项目 .cm-workflow.yml、~/.cm-workflow/runtimes.yml 与插件内置默认值）：把这些配置恢复为创建时的内容即可恢复；'
   +'现在新建的运行不再把这些可变配置写进指纹。否则请核对 run.json、--workflow-config、宿主身份及授权参数是否与创建时一致。';
 
-export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false}={}){
+export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,holdRevision=false}={}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
   if(!['create','resume'].includes(mode))fail('invalid_mode');
+  if(mode==='create')assertCreatableRunId(definition?.identity);
   if(supersedeReason!==null&&mode!=='create')fail('supersede_unavailable');
   if(allowAbandonEffect&&mode!=='resume')fail('effect_abandon_unavailable');
+  if(typeof holdRevision!=='boolean')fail('invalid_input');
   if(typeof acceptSupersededCodeDrift!=='boolean'||acceptSupersededCodeDrift&&supersedeReason===null)
     fail('supersede_unavailable');
   if(qaConfigRevision!==null&&(mode!=='resume'||!execution?.qaExecutor||rerunUnknownQa||rerunBlockedQa
@@ -358,7 +367,7 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
           ...(Object.hasOwn(execution,'verificationGate')?{verificationGate:execution.verificationGate}:{}),
           taskLearning:{feature,hostHandoff:true}})},
       // The entry validates the declaration (single line, with --rerun-blocked-qa) before any durable write.
-      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
+      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
         ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
     const logAbandonments=()=>{

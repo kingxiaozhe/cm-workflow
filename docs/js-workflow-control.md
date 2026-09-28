@@ -597,7 +597,11 @@ node scripts/cm-ai-host.mjs serve --config /absolute/run.json --mode resume \
   --allow-review-attempt 1
 ```
 
-若改用 `cm-ai-drive.mjs` 的 `create`/`advance` 并同时传 `--allow-review-attempt 1`，需预备 `develop-a2.json`；通常先不带审查授权到 `awaiting_review`，再按 `packageDigest` 单独 `decision`，读首轮 findings 后写第 2 轮答案。第 2 轮交付与第 1 轮被要求修改的代码逐字节相同（审查包 `artifactDigest` 相同）时，运行器在送审前停在可重试的 `blocked/develop_unchanged_after_review`（`pendingAction: "resume"`），不消耗第 2 轮审查；改好答案后在原 run `advance`，以新的 develop effect id 重新交付。
+若改用 `cm-ai-drive.mjs` 的 `create`/`advance` 并同时传 `--allow-review-attempt 1`，需预备 `develop-a2.json`；通常先不带审查授权到 `awaiting_review`，再按 `packageDigest` 单独 `decision`，读首轮 findings 后写第 2 轮答案。第 2 轮交付与第 1 轮被要求修改的代码逐字节相同（审查包 `artifactDigest` 相同）时，运行器在送审前停在可重试的 `blocked/develop_unchanged_after_review`（`pendingAction: "resume"`），不消耗第 2 轮审查；改好答案后在原 run `advance`，以新的 develop effect id 重新交付。`resume` 时驾驶员按存档里的当前轮次发送 identity，所以第 2 轮的 `decision`、`complete`、`qa`、`finish` 等不会再因 attempt 1 身份报 `identity_mismatch`；入口对包绑定操作要求精确轮次的边界不变。
+
+批次驾驶员没有单独的 `decision`。带 `--allow-review 任务:1` 但缺 `develop-a2.json` 时，驾驶员给该任务加启动期旗标 `--hold-revision FEATURE/TASK`：审查若要求修改，任务停在 `changes_requested`，`code:"revision_answer_required"`、`pendingAction:"resume"`，不写第 2 轮开发 intent；写好 `develop-a2.json` 后不带该旗标再 `advance` 继续同一轮修订。旗标只缩小本次启动能做的事，不持久化、不进配置指纹；审查批准时不受影响。
+
+`develop.json.edits` 的值可以是内容文件名（写入，已有文件保留权限，新文件 0644）、`{file,mode}`、`{mode}`（只改权限位）或 `{delete:true}`；`mode` 只接受 `"0755"`、`"0644"`，改名为删旧写新。审查包的文件记录本就含 `mode`，删除为 `after:null`，审查提示会说明二者；包验证逐字段比较，事后改权限同样判为漂移，旧基线和旧包格式不变。驾驶员启动前按审查包上限拒绝单文件超过 1 MiB、材料合计超过 2 MiB 或 256 个文件及与基线完全相同的交付，报错带路径与上限；当前会话若仍交付空改动，运行停在可重试的 `blocked/develop_empty_changes`，旧 `unknown/empty_changes` 历史按原样回放。新建运行要求 `runId` 满足运行日志规则（8–128 个字符），已有运行恢复不变。
 
 review.json 含 `{model, disabledSkills, preflight}`，另有可选 `timeoutMs`；disabledSkills 是本机探测实际发现并
 禁用的 Skill 路径，preflight 沿原配置指纹/模型/stdin 合同。探测输出不包含原始诊断、
@@ -698,8 +702,10 @@ JSON 配置本身不能证明执行过；未配置的安全检查不会被执行
 复制或修改对象不能保留保护声明。批次在冻结前绑定整个workflows配置与原日志目录，恢复不换配置。
 
 收到develop的 `editMode:"protected-text-v1"` 时，宿主只能读取并返回
-`{status:"succeeded",value:{原outcome/application/retrospective},edits:[{path,beforeSha256,content}]}`。
-沿用fixed fix编辑器的scope/expected摘要、完整UTF-8/null删除和64KiB通道限制；宿主不得先写或运行命令。
+`{status:"succeeded",value:{原outcome/application/retrospective},edits:[{path,beforeSha256,content[,mode]}]}`。
+沿用fixed fix编辑器的scope/expected摘要、完整UTF-8/null删除；可选 `mode`（"0755"/"0644"）只用于写入的文件，新文件为 0644。
+通道上限默认 64KiB，可用 `--input-limit` 调到 4 MiB，输入行与工具应答共用该上限；宿主不得先写或运行命令。
+驾驶员只提交严格 UTF-8 内容，二进制文件启动前拒绝。cm-fix 的受保护提案仍不接受 `mode`。
 失败仍返回原 `{status,code}`，blocked值必须空edits。实际编辑及配置中的检查由native Codex sandbox执行，
 不使用宿主check回报。Claude作者/Review身份保持Claude，所需本机Codex sandbox不是Codex模型调用。
 文档同步并入最后任务的同次编辑提案，QA命令受保护，语义/浏览器/文档核验仍按原宿主合同执行。
