@@ -23,11 +23,11 @@ const scaffold={'Package.swift':'// swift-tools-version:5.9\nimport PackageDescr
   'scripts/verify.sh':'set -e\ntest -f Package.swift\ntest -f Sources/AITide/AITideApp.swift\nif [ "$1" = "--strict" ]; then test -f Sources/AITide/Missing.swift; fi\n'};
 const learning={application:{status:'no_relevant_lesson',note:null},retrospective:{status:'no_new_lesson',candidates:[],reason:null}};
 
-function fixture(t,{scaffolded=false}={}){
+function fixture(t,{scaffolded=false,nested=false}={}){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-ai-drive-rules-')));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const specsDir=path.join(root,'specs5'),codeProject=path.join(root,'app'),feature='1.bootstrap';
-  fs.mkdirSync(path.join(specsDir,feature),{recursive:true});fs.mkdirSync(codeProject);
+  const codeProject=path.join(root,'app'),specsDir=nested?path.join(codeProject,'specs5'):path.join(root,'specs5'),feature='1.bootstrap';
+  fs.mkdirSync(codeProject);fs.mkdirSync(path.join(specsDir,feature),{recursive:true});
   fs.writeFileSync(path.join(specsDir,feature,'requirements.md'),'# SwiftUI scaffold and rules\n');
   fs.writeFileSync(path.join(specsDir,feature,'design.md'),'# Split specs5 and app roots; SwiftUI; local Git\n');
   fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),
@@ -94,7 +94,7 @@ test('help names the rules answer files and that command results come only from 
   const help=spawnSync(process.execPath,[DRIVER,'--help'],{encoding:'utf8'});
   assert.equal(help.status,0);
   for(const pattern of [/init-generate\.json/,/init-verify\.json/,/init-generate-a2\.json 与 init-verify-a2\.json/,
-    /commands 在启动宿主前由驾驶员实跑，失败即退出 2；结果只来自实跑/])
+    /commands 在启动宿主前由驾驶员实跑（须先带 --allow-bootstrap-write/,/结果只来自实跑，答案文件不能提供/])
     assert.match(help.stdout,pattern);
 });
 
@@ -187,6 +187,51 @@ test('attempt 1 refuses existing instructions the host would not overwrite',t=>{
   assertRefusedBeforeLaunch(f,run(),/必须逐字保留当前 AGENTS\.md 中「## 项目教训」段以外的全部内容/);
 });
 
+test('init-verify commands never run without the grants the host requires before writing rules',t=>{
+  for(const nested of [false,true]){
+    const f=fixture(t,{scaffolded:true,nested});f.writeRun('T-002',[...f.targets]);f.writeBootstrap(selection);
+    const marker=path.join(f.root,'ran.marker');
+    prepareRules(f,1,{commands:[{id:'marker',command:['/bin/sh','-c',`echo ran > ${marker}`]}]});
+    const run=f.drive(f.plan('T-002','create',nested?rulesPermissions:['--bootstrap-config','bootstrap.json']),'advance');
+    assertRefusedBeforeLaunch(f,run,nested?/specs 位于代码根内时宿主要求 --protected-conversation-config.*不运行 init-verify 命令/
+      :/规范任务需要 --allow-bootstrap-write.*驾驶员不运行 init-verify 命令、不启动宿主/);
+    assert.equal(fs.existsSync(marker),false,'no command may run before the grants are checked');
+  }
+});
+
+test('init-verify commands that change what the preflight bound are refused before launch',
+  {skip:process.platform==='win32'},t=>{
+  const f=fixture(t,{scaffolded:true});f.writeRun('T-002',[...f.targets]);f.writeBootstrap(selection);
+  const bootstrapFile=path.join(f.root,'bootstrap.json'),tasks=path.join(f.specsDir,f.feature,'tasks.md');
+  const original={bootstrap:fs.readFileSync(bootstrapFile),tasks:fs.readFileSync(tasks)};
+  for(const [script,changed] of [
+    ['mkdir -p .claude && echo rewritten > .claude/CLAUDE.md','.claude/CLAUDE.md'],
+    [`printf ' ' >> ${bootstrapFile}`,bootstrapFile],
+    [`printf '\\n' >> ${tasks}`,tasks]]){
+    prepareRules(f,1,{commands:[{id:'writer',command:['/bin/sh','-c',script]}]});
+    const run=f.drive(f.plan('T-002','create',rulesPermissions),'advance');
+    assert.equal(run.status,2,run.stderr);
+    assert.match(run.stderr,new RegExp(`init-verify 命令改动了预检已核对的文件: ${changed.replace(/[.*+?^${}()|[\]\\/]/g,'\\$&')}`));
+    assert.doesNotMatch(run.stderr,/应答 init_generate/);
+    assert.equal(fs.existsSync(f.store('T-002')),false);
+    fs.rmSync(path.join(f.codeProject,'.claude'),{recursive:true,force:true});
+    fs.writeFileSync(bootstrapFile,original.bootstrap);fs.writeFileSync(tasks,original.tasks);
+  }
+});
+
+test('protected mode runs init-verify commands inside the same specs sandbox as its task checks',
+  {skip:process.platform!=='darwin'},t=>{
+  const f=fixture(t,{scaffolded:true});f.writeRun('T-002',[...f.targets]);f.writeBootstrap(selection);
+  fs.writeFileSync(path.join(f.root,'protection.json'),JSON.stringify({checkCommands:[{id:'structure',
+    command:['/bin/sh','scripts/verify.sh']}],timeoutMs:60000}));
+  const leak=path.join(f.specsDir,'leak.txt');
+  prepareRules(f,1,{commands:[{id:'leak',command:['/bin/sh','-c',`echo leak > ${leak}`],timeoutMs:60000}]});
+  const run=f.drive(f.plan('T-002','create',[...rulesPermissions,'--protected-conversation-config','protection.json']),'advance');
+  assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/init-verify\.json 的命令在启动宿主前实跑未通过：leak:/);
+  assert.equal(fs.existsSync(leak),false,'the specs root stays read-only for init-verify commands');
+  assert.equal(fs.existsSync(f.store('T-002')),false);
+});
+
 test('responder binds each host request to the preflighted attempt and its own command runs',
   {skip:process.platform==='win32'},async t=>{
   const f=fixture(t,{scaffolded:true});f.writeBootstrap(selection);
@@ -196,7 +241,8 @@ test('responder binds each host request to the preflighted attempt and its own c
     permissions:['--bootstrap-config',path.join(f.root,'bootstrap.json')]});
   const contents=prepareRules(f,1,{commands:[{id:'strict',command:['/bin/sh','scripts/verify.sh','--strict'],timeoutMs:60000}]});
   const answers=readBootstrapRulesAnswers({answers:f.answers,operation:'advance',definition,plan:{},bootstrap,
-    reachable:{attempts:[1],reviewFirst:false,packageDigest:null,learning:null}});
+    permissions:['--bootstrap-config',path.join(f.root,'bootstrap.json'),'--allow-bootstrap-write'],
+    reachable:{attempts:[1],reviewFirst:false,packageDigest:null,learning:null,journal:null}});
   // Even answer data that carried a commands entry cannot replace the driver's own run.
   answers.get(1).verify.checks={...answers.get(1).verify.checks,commands:{status:'verified',evidence:'static pass'}};
   const responder=createBootstrapRulesResponder({definition,plan:{},bootstrap,answers});
@@ -299,6 +345,15 @@ test('real host drives split-root T-001 scaffold, then T-002 rules with a revisi
   prepareRules(f,2,{agents:'# AITide rewritten\n'});
   run=again();assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/init-generate-a2\.json 的 AGENTS\.md 必须逐字保留/);
   assert.deepEqual(fs.readFileSync(state),before);
+  // A resume that the host would not open (other session, other runtime) runs no command.
+  const marker=path.join(f.root,'ran.marker');
+  prepareRules(f,2,{commands:[{id:'marker',command:['/bin/sh','-c',`echo ran > ${marker}`]}]});
+  for(const [extra,pattern] of [[{hostContext:'another-session'},/恢复存档不是由 another-session 创建/],
+    [{runtime:'codex'},/PLAN\.runtime codex 与恢复存档的 claude 不一致/]]){
+    run=f.drive(f.plan('T-002','resume',[...rulesPermissions,...review],extra),'advance');
+    assert.equal(run.status,2,run.stderr);assert.match(run.stderr,pattern);
+    assert.equal(fs.existsSync(marker),false);assert.deepEqual(fs.readFileSync(state),before);
+  }
   // A failing attempt-2 command is refused before launch: the run stays changes_requested.
   prepareRules(f,2,{commands:[{id:'strict',command:['/bin/sh','scripts/verify.sh','--strict'],timeoutMs:60000}]});
   run=again();assert.equal(run.status,2,run.stderr);

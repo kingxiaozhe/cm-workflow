@@ -9,6 +9,8 @@
 // They run before the host starts (prepare): a failure is refused with the run
 // store untouched, because any init_verify failure inside the host leaves the
 // develop effect unknown with no in-run recovery (host-bootstrap.mjs run()).
+// Nothing runs until the PLAN carries the grants the host requires before it
+// writes rules, and every file the preflight or host binds is re-read afterwards.
 import fs from 'node:fs';
 import path from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
@@ -172,13 +174,28 @@ function readVerify(root,name,{definition,plan,attempt}){
 // advance that could review and then revise in one go is refused: the revision
 // must answer findings that do not exist yet, and its commands would run before
 // attempt 1 even writes.
-export function readBootstrapRulesAnswers({answers,operation,definition,plan,bootstrap,reachable}){
+function authorizeRulesLaunch({definition,plan,permissions,reachable}){
+  const refusal='；驾驶员不运行 init-verify 命令、不启动宿主';
+  refuse(permissions.includes('--allow-bootstrap-write'),
+    `规范任务需要 --allow-bootstrap-write：宿主写规范前要求这一授权（bootstrap_write_authorization_required）${refusal}`);
+  refuse(permissions.includes('--protected-conversation-config')||!definition.specsDir.startsWith(definition.codeProject+path.sep),
+    `specs 位于代码根内时宿主要求 --protected-conversation-config（nested_specs_protection_required）${refusal}`);
+  if(reachable.journal===null)return;
+  const durable=plan.originalHostContext??plan.hostContext,runtime=plan.runtime??'codex';
+  refuse(Array.isArray(reachable.journal.excludedContexts)&&reachable.journal.excludedContexts.includes(durable),
+    `恢复存档不是由 ${durable} 创建：换会话恢复须在 PLAN.originalHostContext 填创建运行的会话 ID，否则宿主拒绝打开${refusal}`);
+  refuse(reachable.journal.developerProvider===runtime,
+    `PLAN.runtime ${runtime} 与恢复存档的 ${reachable.journal.developerProvider} 不一致，宿主拒绝打开${refusal}`);
+}
+
+export function readBootstrapRulesAnswers({answers,operation,definition,plan,permissions,bootstrap,reachable}){
   const result=new Map(),slug=`.reviews/${definition.feature.replace(/^\d+\./,'')}-${definition.identity.taskId}`;
   const pair=attempt=>`answers/init-generate-a${attempt}.json 与 answers/init-verify-a${attempt}.json`;
   if(reachable.reviewAfterDevelop)
     stop(2,`规范任务的 advance 不能带 --allow-review-attempt 1 直接进入第 2 轮：修订答案须在读取首轮审查 findings 之后编写。请从 PLAN.permissions 移除 --allow-review-attempt 1，先 advance 到 awaiting_review；再用返回的 packageDigest 执行 decision，读取 ${slug}-r1.md 的 findings；若要求修改，写 ${pair(2)} 后 advance。`);
   if(reachable.reviewFirst)
     stop(2,`规范修订答案须在读取首轮审查 findings 之后编写：请先以 decision 和当前 packageDigest ${reachable.packageDigest} 单独运行审查，读取 ${slug}-r1.md 的 findings，写 ${pair(2)} 后再 advance（不要带 --allow-review-attempt 1 advance）`);
+  if(reachable.attempts.length)authorizeRulesLaunch({definition,plan,permissions,reachable});
   for(const attempt of reachable.attempts){
     const names=['init-generate','init-verify'].map(name=>attemptAnswerName(answers??'',name,attempt));
     for(const name of names){
@@ -194,16 +211,31 @@ export function readBootstrapRulesAnswers({answers,operation,definition,plan,boo
 }
 
 const documentMap=documents=>new Map(documents.map(item=>[item.path,item.content]));
-export function createBootstrapRulesResponder({definition,plan,bootstrap,answers}){
+// Everything the preflight validated or the host re-reads at launch: the fixed
+// targets, the run definition and permission files, and the approved bootstrap specs.
+function boundFiles({definition,bootstrap,watch}){
+  const state=new Map(),mark=error=>`unreadable:${error.code??'error'}`;
+  for(const file of bootstrap.targets){
+    try{state.set(file,sha(readCmInitSource(definition.codeProject,file)));}catch(error){state.set(file,mark(error));}
+  }
+  const specs=['requirements.md','design.md','tasks.md'].map(name=>path.join(definition.specsDir,definition.feature,name));
+  for(const file of [...watch,...specs,path.join(definition.specsDir,'.cm-specs-status')]){
+    try{state.set(file,sha(fs.readFileSync(file)));}catch(error){state.set(file,error.code==='ENOENT'?null:mark(error));}
+  }
+  return state;
+}
+export function createBootstrapRulesResponder({definition,plan,bootstrap,answers,specsRoot=null,watch=[]}){
   let generated=null;const executed=new Map();
   return {
-    // Returns null when every listed command passed, otherwise the refusal line.
+    // Returns null when every listed command passed and left the bound files
+    // unchanged, otherwise the refusal line.
     async prepare(){
+      const before=boundFiles({definition,bootstrap,watch});
       for(const [attempt,entry] of answers){
         const results=[],at=new Date().toISOString().replace(/\.\d{3}Z$/,'Z');
         for(const command of entry.verify.commands){
           const run=createHostCheck({cwd:definition.codeProject,commands:[{id:command.id,command:command.command}],
-            timeoutMs:planCheckTimeout(plan,command),
+            timeoutMs:planCheckTimeout(plan,command),...(specsRoot===null?{}:{specsRoot}),
             onOutput:({stream,chunk})=>{process.stderr.write(`[drive init_verify ${command.id} ${stream}] ${chunk.toString('utf8')}`);}});
           const [item]=await run({identity:{...definition.identity,attempt}},{signal:new AbortController().signal});
           results.push(item);
@@ -216,6 +248,10 @@ export function createBootstrapRulesResponder({definition,plan,bootstrap,answers
         executed.set(attempt,{passed,lines,at,total:entry.verify.commands.length,ran:results.length});
         if(!passed)return `${entry.verifyName} 的命令在启动宿主前实跑未通过：${lines.join('；')}。宿主未启动，运行存档不变；修正项目或草稿及答案后重试`;
       }
+      const after=boundFiles({definition,bootstrap,watch});
+      const changed=[...before.keys()].filter(file=>before.get(file)!==after.get(file));
+      if(changed.length)return `init-verify 命令改动了预检已核对的文件: ${changed.join(', ')}；宿主未启动（否则会以 bootstrap_instruction_conflict 等停在 unknown）。`
+        +'命令须只读核验，还原这些文件后重试';
       return null;
     },
     init_generate(row){
