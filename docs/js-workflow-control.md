@@ -244,6 +244,7 @@ scope/requirements使用相对工作区的前缀路径（如`frontend/src/view.m
 init_generate返回原`{status,documents}`；init_verify逐组核验并返回`{checks,constraintChanges,application,retrospective}`，
 checks为commands/globs/file_references/constraint_preservation/rule_applicability，各含status/evidence。
 constraintChanges必须空；application/retrospective沿原Learning字段。此核验不是独立Review，仍走原N4/N5。
+单任务驾驶员只覆盖T-001骨架；T-002规范任务和第2轮规范修订需要当前AI会话直接保持`cm-ai-host.mjs serve`的交互进程，依实际`host_request`生成草稿并实时核验上述五组。单任务与批次驾驶员没有可信`init_verify` runner，预检退出2；静态`verify.json`不可替代。详见[当前会话宿主路径](../skills/cm-ai/references/js-host.md#bootstrap-规范任务的当前会话宿主路径)。
 规则读回及证据进入同一原develop记录与handoff，然后Review，完成后N7重载。若T-001 Learning已写入AGENTS.md，规范草稿须保留其他既有约束原文；宿主把既有`## 项目教训`段按原字节合入最终草稿，再核验、写入并交独立Review。草稿修改既有教训或遗漏其他既有内容时阻断。已有用户规则冲突、未知写入或材料漂移不覆盖不重派；
 缺当前写许可在派发前阻断，补许可只能沿原run恢复。此开关不授权Git初始化、安装、网络或额外provider。
 
@@ -1141,6 +1142,7 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 | 状态 | 含义 | 恢复路径 |
 | --- | --- | --- |
 | `state: "unknown"` | 某个有副作用的步骤抛了异常或返回了无法判定的终态，做没做成不确定 | 单任务 V3 审查调用已登记、无结果时可用下述 `abandon_review`；其他情况见下 |
+| `state: "unknown"` + `execution_error`，`pendingAction: "reconcile"`，且 stderr 显示驱动未应答 `init_generate`／`init_verify` | 驾驶员断联，原 develop effect 结果未定；旧版驾驶员可能错误退出 0 | 先核对原 host 与子进程及代码根实际写入；仅满足下述 pending effect 条件时在原 run 用 `abandon_effect`，之后按原新运行门禁使用当前会话宿主路径；不要原样重发 `advance` |
 | `state: "unknown"` + pending develop/complete intent（后面可有 control 记录） | 宿主在 effect intent 后、checkpoint 前退出 | `pendingAction: "abandon_effect"`；核对旧 host 与它启动的进程后，在原 run 显式退出 |
 | `state: "unknown"` + pending review intent，尚无 host-joined／review 登记 | reviewer 启动前退出 | `pendingAction: "abandon_effect"`；确认旧 host 已退出后在原 run 显式退出 |
 | `state: "unknown"` + 已登记且无结果的 review invocation | 审查调用未完成 | `pendingAction: "abandon_review"`；核对旧 host 和 reviewer 进程后在原 run 显式退出 |
@@ -1164,7 +1166,7 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 2. 若是单任务 V3 journal 停在 `review-invocation-registered` 或 `review-invocation-started`，且没有
    `review-invocation-result`，先确认旧 host 和 review 进程都已退出，再按下述命令在**原 runId** 上
    发送 `abandon_review`。若 develop/complete 的 `effect-intent` 后仅有 control 记录，先确认旧 host 与它启动的检查、构建进程均已退出，再用下述 `abandon_effect`。review 的 `effect-intent` 后尚无 `host-joined` 和 `review-invocation-registered` 时，也可确认旧 host 退出后使用 `abandon_effect`；一旦登记 review，改走 `abandon_review`。这是操作员对进程已退出的确认；宿主无法自行验证。
-   provider-mode 开发和已写 `task-commit-intent` 的运行不能走 `abandon_effect`。先核对 `tasks.md` 是否已改名或勾选、提交回执及旧进程，再按原提交恢复路径处理；不要猜测提交未发生。其他未知状态按诊断处理真实原因，核对无未结操作后再考虑新的运行；旧 unknown 不会被自动重分类。
+   provider-mode 开发和已写 `task-commit-intent` 的运行不能走 `abandon_effect`。先核对 `tasks.md` 是否已改名或勾选、提交回执及旧进程，再按原提交恢复路径处理；不要猜测提交未发生。旧版驾驶员在 bootstrap T-002 的 `init_generate` 断联并返回 `unknown/reconcile` 时，也先按原 journal 核对 pending develop intent、旧进程和实际指令文件；符合条件才在原 run 显式 `abandon_effect`，然后按新运行的旧证据、代码漂移和 writer 门禁重新建 run，并改用当前会话宿主应答。其他未知状态按诊断处理真实原因，核对无未结操作后再考虑新的运行；旧 unknown 不会被自动重分类。
 3. 不要手工改写执行日志或伪造一个终态。已完成的提交、已登记的审查记录都不因此作废，
    重跑是从该任务重新开始，不是从整个 feature 重新开始。
 

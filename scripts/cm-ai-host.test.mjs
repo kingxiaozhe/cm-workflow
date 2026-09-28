@@ -43,6 +43,35 @@ test('single host CLI rejects out-of-range and non-integer input limits before o
     assert.equal(run.status,1);assert.match(run.stderr,/invalid_arguments/);
   }
 });
+test('killing a real host at develop request leaves the original effect intent for recovery',async()=>{
+  const f=fixture();
+  try{
+    let buffer='',sawDevelop=false,stderr='';
+    const child=spawn(process.execPath,[cli,...f.args],{stdio:['pipe','pipe','pipe'],env:process.env});
+    child.stderr.on('data',chunk=>{stderr+=chunk;});
+    const done=new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>{child.kill('SIGKILL');reject(new Error('host kill fixture timed out: '+stderr));},10000);
+      child.stdout.on('data',chunk=>{
+        buffer+=chunk;
+        let newline;
+        while((newline=buffer.indexOf('\n'))!==-1){
+          const line=buffer.slice(0,newline);buffer=buffer.slice(newline+1);
+          if(!line)continue;
+          const row=JSON.parse(line);
+          if(row.type==='host_ready')child.stdin.write(JSON.stringify(request('advance'))+'\n');
+          if(row.type==='host_request'&&row.kind==='develop'){sawDevelop=true;child.kill('SIGKILL');}
+        }
+      });
+      child.once('error',error=>{clearTimeout(timer);reject(error);});
+      child.once('exit',(code,signal)=>{clearTimeout(timer);resolve({code,signal});});
+    });
+    const exited=await done;
+    assert.equal(sawDevelop,true,stderr);assert.equal(exited.signal,'SIGKILL');
+    const state=JSON.parse(fs.readFileSync(path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json'),'utf8'));
+    assert(state.records.some(row=>row.payload.type==='effect-intent'&&row.payload.effect.kind==='develop'));
+    assert.equal(state.records.some(row=>row.payload.type==='effect-checkpoint'),false);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
 test('resume accepts a changed transport input limit without changing the durable fingerprint',async()=>{
   const f=fixture(),bridge=createHostToolBridge();
   try{

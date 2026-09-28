@@ -5,7 +5,9 @@
 // host-qa-executor.mjs logic/browser 和 host-documentation.mjs sync、
 // host-qa-fix-owner.mjs fix_* 转发 cm-fix。保守预检整个 operation 可达的反问。
 // operation                         possible host_request kinds; proving route
-// advance                            develop, check; workflow adds documentation_sync,
+// advance                            develop, check; bootstrap instructions add init_generate,
+//                                    init_verify (no trusted semantic runner in this driver);
+//                                    workflow adds documentation_sync,
 //                                    qa_assess, qa_logic, qa_browser, documentation_inspect;
 //                                    auto QA-fix adds fix_* below.
 //                                    cm-ai-conversation-entry.mjs advance -> start/complete/qa/finish;
@@ -35,7 +37,7 @@ import {fileURLToPath} from 'node:url';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {decideHostQaPolicy} from '../runtime/js/cm-ai/host-qa-policy.mjs';
 import {createHostQaExecutor} from '../runtime/js/cm-ai/host-qa-executor.mjs';
-import {inspectCmAiQaTaskContext} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
+import {inspectCmAiBootstrapTask,inspectCmAiQaTaskContext} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {readLearningRetrospectiveContent} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
 import {inspectFixInvestigation} from '../runtime/js/cm-fix/investigation.mjs';
 import {readRunDefinition} from './cm-ai-run.mjs';
@@ -73,6 +75,17 @@ const FLAG_FLAGS=new Set(['--allow-development','--allow-qa','--allow-qa-fix-sta
     'test-author','repair','cause-review','final-review'].map(name=>`--allow-qa-fix-${name}`)]);
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;
+export function bootstrapDriverGap(operation,definition,permissions){
+  if(!ADVANCE.has(operation)||!permissions.includes('--bootstrap-config'))return null;
+  let task;
+  try{task=inspectCmAiBootstrapTask({specsDir:definition.specsDir,codeProject:definition.codeProject,
+    taskId:definition.identity.taskId},true);}catch(error){
+    return `bootstrap 任务预检失败: ${error.code??'bootstrap_task_required'}；宿主未启动`;
+  }
+  return task.mode==='instructions'
+    ?'缺少真实执行 runner: init_verify；单任务规范任务请由当前 AI 会话使用 cm-ai-host.mjs serve 应答 init_generate/init_verify，不能从静态答案文件应答'
+    :null;
+}
 export const abandonReviewPlanError=(operation,plan,permissions)=>operation!=='abandon_review'?null:
   plan.mode==='resume'&&permissions.includes('--allow-abandon-review')
   &&typeof plan.reason==='string'&&plan.reason.trim().length>0
@@ -213,7 +226,7 @@ export function validateCmAiAnswer(kind,value,root){
 }
 function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。\n');
+    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务需要当前会话用 cm-ai-host.mjs serve 完成 init_generate/init_verify，驾驶员启动前拒绝。\n');
     process.exit(0);
   }
   const loaded=loadPlanFile({name:'cm-ai-drive.mjs',known:OPERATIONS});
@@ -245,6 +258,8 @@ function load(){
   if(!fs.existsSync(config))stop(2,`运行定义不存在: ${config}`);
   let definition;
   try{definition=readRunDefinition(config);}catch(error){stop(2,`运行定义无效或 codeProject/specsDir 无法解析: ${error.code??error.message}`);}
+  const bootstrapGap=bootstrapDriverGap(operation,definition,permissions);
+  if(bootstrapGap)stop(2,bootstrapGap);
   const store=path.join(definition.specsDir,'.reviews','.execution',definition.identity.runId);
   if(plan.mode==='resume'&&!fs.existsSync(path.join(store,'state.json')))stop(2,`恢复存档不存在: ${store}`);
   const workflowAt=permissions.indexOf('--workflow-config');let workflow=null;

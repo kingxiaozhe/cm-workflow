@@ -34,6 +34,9 @@ export function preflightAnswers(kinds,load){
   return answers;
 }
 
+export const hostResponseFailed=row=>Boolean(row.error||row.result?.state==='unknown'
+  ||row.result?.pendingAction==='reconcile');
+
 export function driveHost({host,args,cwd,operation,request={},answers,paths,answerFor}){
   const child=spawn(process.execPath,[host,...args],{cwd,stdio:['pipe','pipe','pipe']});
   child.stderr.on('data',chunk=>process.stderr.write(chunk));
@@ -59,7 +62,7 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
       process.stdout.write(JSON.stringify(row,null,2)+'\n');
       if(row.result?.stage)stderr(`stage = ${row.result.stage}`);
       if(row.error)stderr(`宿主拒绝：${row.error.code}（真实原因和位置在上面 [host] 那行 diagnostic 里）`);
-      process.exitCode=row.error?1:0;
+      process.exitCode=hostResponseFailed(row)?1:0;
       child.stdin.end();
     }
   });
