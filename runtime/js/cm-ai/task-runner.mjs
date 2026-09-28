@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createRequire} from 'node:module';
 import {verifySpecificationMaterial} from './specification-material.mjs';
-import { captureReviewBaseline, captureReviewInventory, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage, validChecks } from './review-package.mjs';
+import { captureReviewBaseline, captureReviewInventory, compareReviewBaseline, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage, validChecks } from './review-package.mjs';
 import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,validCallTimeout,requestFor,terminalFor,failureCode } from './effect-contract.mjs';
 import { reviewResult,reviewReceipt } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
@@ -82,6 +82,12 @@ function observePromise(value,onFulfilled,onRejected) {
   }
 }
 const ignorePromiseResult=()=>{};
+const safeReason=error=>{
+  if(error===null||typeof error!=='object'||types.isProxy(error))return null;
+  const descriptor=Object.getOwnPropertyDescriptor(error,'message');
+  return descriptor&&Object.hasOwn(descriptor,'value')&&typeof descriptor.value==='string'
+    &&descriptor.value.length<=8192&&!/[\r\n\0]/.test(descriptor.value)?descriptor.value:null;
+};
 
 export function createTaskRunner(options) {
   const taskMode=options && Object.hasOwn(options,'taskCompletion');
@@ -225,7 +231,7 @@ export function createTaskRunner(options) {
     &&entry.result?.state==='blocked'
     &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed'].includes(entry.result?.code)).length;
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
-    &&entry.result?.state==='blocked'&&entry.result?.code==='completion_checks_changed').length;
+    &&entry.result?.state==='blocked'&&['completion_checks_changed','completion_package_changed'].includes(entry.result?.code)).length;
   const privateStatus=()=>json({state,code,...(reason?{reason}:{}),
     ...(state==='unknown'&&restored?.pendingAbandonable
       ?{pendingEffectKind:restored.pending.kind}:{}),
@@ -240,6 +246,23 @@ export function createTaskRunner(options) {
     const current=store?publication:privateStatus();
     if(!busy&&!poisoned)try{publishRegisteredReview(true);}
     catch{return freeze({...current,code:'review_publication_required'});}
+    if(!busy&&reviewPackage&&(['awaiting_review','approved','changes_requested'].includes(current.state)
+      ||current.state==='blocked'&&['review_package_changed','completion_package_changed'].includes(current.code))){
+      try{
+        verifyReviewPackage({root:config.root,baseline:attemptBaseline(original,reviewPackage.identity.attempt),
+          checks:currentChecks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
+        if(current.state==='blocked'&&current.code==='review_package_changed'){
+          const {reason:oldReason,...rest}=current;
+          if(priorReview?.verdict==='approved')return freeze({...rest,state:'approved',code:null});
+          if(priorReview?.verdict==='changes_requested'&&attempt===2&&reviewPackage.identity.attempt===1)
+            return freeze({...rest,state:'changes_requested',code:null});
+          return freeze({...rest,state:'blocked',code:priorReview?.verdict==='changes_requested'?'review_limit':'review_blocked'});
+        }
+        if(current.code==='completion_package_changed')return freeze({...current,retryReady:true});
+      }catch(error){return freeze({...current,state:'blocked',
+        code:current.code==='completion_package_changed'?'completion_package_changed':'review_package_changed',
+        ...(current.code==='completion_package_changed'?{retryReady:false}:{}),reason:error.message});}
+    }
     if(current.state!=='fixture_completed')return current;
     try {
       if(acceptedFixes.length){
@@ -416,8 +439,13 @@ export function createTaskRunner(options) {
   }
   function acceptReview(request,call,rawResult,fallbackReasons=[]) {
     const result=reviewResult(rawResult,reviewPackage);
-    verifyReviewPackage({root:config.root,baseline:base,checks:currentChecks,
-      reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
+    let drift=null;
+    try{verifyReviewPackage({root:config.root,baseline:base,checks:currentChecks,
+      reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});}
+    catch(error){drift=error;}
+    // Changed approved specs invalidate the verdict itself. Do not register a
+    // receipt that the code-root cleanup path could later reuse.
+    if(drift?.code==='spec_drift'){halt('blocked','spec_drift');return;}
     receipt=reviewReceipt({request,call,result,reviewPackage,developerProvider:developer.provider,fallbackReasons});
     registered.set(receipt.id,receipt);receipts.push(receipt);priorReview=result;
     if(result.verdict==='approved'){state='approved';code=null;}
@@ -426,6 +454,7 @@ export function createTaskRunner(options) {
       const {baselineDigest:old,...data}=original,newData={...data,identity:{...config.identity,attempt}};
       base=freeze({...newData,baselineDigest:digest(newData)});
     } else halt('blocked',result.verdict==='changes_requested'?'review_limit':'review_blocked');
+    if(drift)halt('blocked','review_package_changed',drift.message);
   }
   const clock=Date.now.bind(Date);
   const safeTime=()=>{const value=clock();need(Number.isSafeInteger(value),'clock_invalid');return value;};
@@ -641,7 +670,7 @@ export function createTaskRunner(options) {
   }
   async function perform(v) {
     if(v.kind==='develop') {
-      need(stageAllowed('develop',state,code),'stage_mismatch');state='developing';code=null;reason=null;checkNewPaths=null;receipt=null;
+      need(stageAllowed('develop',state,code,priorReview?.verdict),'stage_mismatch');state='developing';code=null;reason=null;checkNewPaths=null;receipt=null;
       const previousBootstrap=learningResult?.bootstrap??null;
       const previousWriteback=learningResult?.writeback??null;
       if(taskLearning!==null)learningResult=null;
@@ -724,8 +753,13 @@ export function createTaskRunner(options) {
       const fresh=await collectChecks();active();
       try {
         verifyCompletionReviewPackage({root:config.root,baseline:base,checks:fresh,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
-      } catch(error){halt('blocked',failureCode(error),
-        failureCode(error)==='completion_checks_changed'&&failedChecks(fresh).length?checkFailureReason(fresh):null);return;}
+      } catch(error){
+        const duringCheck=error.code==='out_of_scope'&&Array.isArray(error.violations)
+          &&error.violations.length>0&&error.violations.every(item=>item.newFile);
+        const blockedCode=duringCheck?'completion_package_changed':failureCode(error);
+        halt('blocked',blockedCode,blockedCode==='completion_checks_changed'&&failedChecks(fresh).length
+          ?checkFailureReason(fresh):safeReason(error));return;
+      }
       if(taskLearning!==null)try {
         const learningInput=currentLearningInput();
         verifyCmAiTaskLearningHandoff({handoffPath:completion.handoffs[attempt-1],feature:taskLearning.feature,
@@ -768,20 +802,22 @@ export function createTaskRunner(options) {
       if(old){need(old.digest===digest(v),'intent_conflict');return Promise.resolve(old.result);}
       if(restored?.pending?.id===v.id){need(digest(restored.pending)===digest(v),'intent_conflict');return Promise.resolve(status());}
       need(!busy,'busy');need(v.identity.attempt===attempt,'attempt_mismatch');
-      need(stageAllowed(v.kind,state,code),'stage_mismatch');need(completedEffectCount([...cache.values()])<6,'limit_exceeded');
+      need(stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(completedEffectCount([...cache.values()])<6,'limit_exceeded');
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
     } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input'}));}
     if(store) {
       try {
-        if(state==='ready')need(digest(captureReviewBaseline({...configToBaseline(metadata),version:original.version,
-          ...(Object.hasOwn(original,'specification')?{specification:{specsRoot:original.specificationRoot,feature:original.specification.feature}}:{})}))===digest(original),'package_mismatch');
-        // A develop restarted from a locally rejected delivery has no review package
-        // to verify yet: the invalid result never built one, and the host gate blocks
-        // before one is built.
-        else if(!(v.kind==='develop'&&stageAllowed('develop',state,code)))verifyReviewPackage({root:config.root,baseline:state==='changes_requested'?attemptBaseline(original,attempt-1):base,
+        if(state==='ready')compareReviewBaseline(captureReviewBaseline({...configToBaseline(metadata),version:original.version,
+          ...(Object.hasOwn(original,'specification')?{specification:{specsRoot:original.specificationRoot,feature:original.specification.feature}}:{})},
+          !Object.hasOwn(original,'ignorePolicy'),original.ignorePolicy?.version??2,
+          original.ignorePolicy?.version===2?original.ignorePolicy:null),original);
+        // A rejected first delivery has no review package yet. Every later
+        // developer effect must recheck the reviewed tree before dispatch.
+        else if(reviewPackage!==null)verifyReviewPackage({root:config.root,baseline:reviewPackage.identity.attempt===attempt?base:attemptBaseline(original,reviewPackage.identity.attempt),
           checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
-      } catch {return Promise.resolve(freeze({outcome:'rejected',code:'package_mismatch'}));}
+      } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:failureCode(error),
+        ...(safeReason(error)?{reason:safeReason(error)}:{})}));}
       try{const record=persist('effect-intent',{effect:v});
         if(taskMode&&v.kind==='complete')completeEffect={effect:v,digest:record.digest};
       }catch{return Promise.resolve(poison());}
@@ -795,7 +831,8 @@ export function createTaskRunner(options) {
           &&error.violations.every(item=>item.newFile&&checkNewPaths?.has(item.path));
         halt(checkOnly||failure==='spec_drift'?'blocked':'unknown',
           checkOnly?'check_output_out_of_scope':failure,
-          failure==='out_of_scope'?error.message:null);
+          ['out_of_scope','unsupported_file','limit_exceeded','package_mismatch','snapshot_changed'].includes(failure)
+            ?safeReason(error):null);
       }}
       if(poisoned)return status();
       const result=privateStatus();cache.set(v.id,{effect:v,digest:digest(v),result});
@@ -963,6 +1000,22 @@ export function createTaskRunner(options) {
   const api={reviseQa,supersedeEvidence,abandonReview,abandonEffect,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
+  // A terminal reviewer observation is durable even if the host died before
+  // the checkpoint. Finish that same effect from its validated journal bytes.
+  if(restored?.pendingObservedReview){
+    const observed=restored.pendingObservedReview,request=observed.request,result=observed.result;
+    const call={invocationId:request.invocationId,contextId:request.contextId,provider:request.provider,
+      requestedModel:request.requestedModel,effectiveModel:'unknown',channel:'host-authorized',
+      started:true,terminal:'succeeded',requestDigest:request.requestDigest,
+      resultDigest:digest(result.inspection.review),providerThreadId:observed.started};
+    sequence++;calls.push(call);
+    reviewInvocation=json({registration:observed.registration,started:observed.started,result});
+    acceptReview(request,call,result.inspection.review);
+    const effect=restored.pending,response=privateStatus();
+    cache.set(effect.id,{effect,digest:digest(effect),result:response});
+    persist('effect-checkpoint',{effectId:effect.id,checkpoint:frame()});
+    restored.pending=null;publication=response;
+  }
   return Object.freeze(api);
 }
 function configToBaseline(c){

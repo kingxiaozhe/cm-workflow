@@ -150,7 +150,9 @@ test('Learning appearing after the task baseline cannot be adopted as bootstrap 
   run=open(f,'T-002');
   const agents=path.join(f.codeProject,'AGENTS.md');fs.writeFileSync(agents,'## 项目教训\n\n- late change\n');
   const result=await run.effect('develop');run.close();
-  assert.deepEqual(result,{outcome:'rejected',code:'package_mismatch'});
+  assert.equal(result.outcome,'rejected');
+  assert.equal(result.code,'package_mismatch');
+  assert.match(result.reason,/AGENTS\.md/);
   assert.equal(fs.existsSync(path.join(f.codeProject,'.claude')),false);
   assert.equal(fs.readFileSync(agents,'utf8'),'## 项目教训\n\n- late change\n');
 });

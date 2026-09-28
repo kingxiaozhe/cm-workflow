@@ -207,15 +207,23 @@ test(`S2a mode-only bit ${bit.toString(8)} invalidates approval`,t=>fixture(root
   assert.throws(()=>verifyReviewPackage({root,baseline,checks,reviewPackage,expectedDigest:reviewPackage.packageDigest}),{code:'package_mismatch'});
 }));
 
-test('S2a real temporary Git dirty and ignored files use filesystem baseline, not HEAD',()=>fixture(root=>{
+test('S2a real temporary Git dirty files use filesystem baseline while ignored files stay excluded',()=>fixture(root=>{
   const git=(...argv)=>execFileSync('git',argv,{cwd:root,encoding:'utf8',stdio:['ignore','pipe','pipe']});
   git('init','-q'); git('config','user.name','CM Fixture'); git('config','user.email','fixture@example.invalid');
-  write(root,'.gitignore','ignored.txt\n'); git('add','.'); git('commit','-qm','fixture baseline');
+  write(root,'.gitignore','ignored.txt\nsrc/ignored-scoped.txt\n'); git('add','.'); git('commit','-qm','fixture baseline');
   write(root,'src/a.js','existing dirty, not HEAD\n'); write(root,'ignored.txt','old ignored\n');
-  const baseline=capture(root); write(root,'src/a.js','task change\n');
+  write(root,'src/ignored-scoped.txt','old scoped ignored\n');
+  assert.equal(git('check-ignore','src/ignored-scoped.txt').trim(),'src/ignored-scoped.txt');
+  const baseline=capture(root,{scope:['src/a.js','src/new.js','src/ignored-scoped.txt']});
+  write(root,'src/a.js','task change\n'); write(root,'src/ignored-scoped.txt','new scoped ignored\n');
   const pkg=createReviewPackage({root,baseline,checks});
   assert.equal(Buffer.from(pkg.changes[0].before.contentBase64,'base64').toString(),'existing dirty, not HEAD\n');
+  assert(!baseline.files.some(file=>file.path==='ignored.txt'));
+  assert(baseline.files.some(file=>file.path==='src/ignored-scoped.txt'));
+  assert(pkg.changes.some(change=>change.path==='src/ignored-scoped.txt'));
   write(root,'ignored.txt','new ignored\n');
+  assert.equal(verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
+  write(root,'unrelated.txt','real out of scope change');
   assert.throws(()=>createReviewPackage({root,baseline,checks}),{code:'out_of_scope'});
 }));
 

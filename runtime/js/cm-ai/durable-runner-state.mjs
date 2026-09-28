@@ -21,10 +21,12 @@ const same=(a,b)=>need(digest(a)===digest(b),'runner_history_mismatch');
 const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b.slice(0,a.length));};
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
-export const stageAllowed=(kind,state,code=null)=>
+export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
   kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed'].includes(code)
   ||kind==='review'&&state==='pending_review'&&['review_transport_timeout','review_abandoned'].includes(code)
-  ||kind==='complete'&&state==='blocked'&&code==='completion_checks_changed'
+  ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed'].includes(code)
+    ||code==='review_package_changed'&&reviewVerdict==='approved')
+  ||kind==='develop'&&state==='blocked'&&code==='review_package_changed'&&reviewVerdict==='changes_requested'
   ||({develop:['ready','changes_requested'],review:['awaiting_review'],complete:['approved']})[kind]?.includes(state)===true;
 // Local rejected values keep audit records but do not consume provider rounds.
 export const invalidDeveloperCall=call=>call.terminal==='failed'&&call.failureResult?.code==='invalid_result'&&call.failureResult.retryable===true;
@@ -106,6 +108,7 @@ function packageLink(pkg,original,attempt,checks) {
   same(p.specification??null,b.specification??null);
   same(p.requirements,b.requirements.map(path=>files.get(path)??null));
   same(p.codeProjectPaths??null,b.codeProjectPaths??null);
+  same(p.ignorePolicy??null,b.ignorePolicy??null);
   if(Object.hasOwn(b,'bootstrapRequirements'))same(p.bootstrapRequirements,{feature:b.bootstrapRequirements.feature,
     rootDigest:digestRoot(b.bootstrapRequirements.specsRoot),files:b.bootstrapRequirements.files});
   else need(!Object.hasOwn(p,'bootstrapRequirements'),'runner_package');
@@ -362,6 +365,10 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
       if(result.verdict==='approved')expectedState='approved';
       else if(result.verdict==='changes_requested'&&before.attempt===1){expectedState='changes_requested';expectedAttempt=2;}
       else {expectedState='blocked';expectedCode=result.verdict==='changes_requested'?'review_limit':'review_blocked';}
+      if(s.code==='review_package_changed'){
+        need(typeof s.reason==='string'&&s.reason.length>0,'runner_diagnostic');
+        expectedState='blocked';expectedCode=s.code;
+      }
     }
     else if(invocation.result.outcome==='cancelled'){need(controls.cancelled===true,'runner_control');expectedState='cancelled';expectedCode='cancelled';}
     else if(invocation.result.outcome==='not_dispatched'){expectedState='pending_review';expectedCode=invocation.result.reason;}
@@ -389,6 +396,10 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
         if(result.verdict==='approved')expectedState='approved';
         else if(result.verdict==='changes_requested' && before.attempt===1){expectedState='changes_requested';expectedAttempt=2;}
         else {expectedState='blocked';expectedCode=result.verdict==='changes_requested'?'review_limit':'review_blocked';}
+        if(s.code==='review_package_changed'){
+          need(typeof s.reason==='string'&&s.reason.length>0,'runner_diagnostic');
+          expectedState='blocked';expectedCode=s.code;
+        }
       } else if(call.terminal==='failed'){expectedState='pending_review';expectedCode='failed';}
       break;
     }
@@ -403,10 +414,11 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
         reviewPackage:s.reviewPackage,identity});expectedState='fixture_completed';
     } else if(s.state==='blocked'){
       expectedState='blocked';
-      if(s.code==='completion_checks_changed'){
+      if(['completion_checks_changed','completion_package_changed'].includes(s.code)){
         need(effect.kind==='complete'&&['approved','blocked'].includes(before.state)
-          &&(before.state==='approved'||before.code==='completion_checks_changed'),'runner_transition');
-        expectedCode='completion_checks_changed';
+          &&(before.state==='approved'||['completion_checks_changed','completion_package_changed','review_package_changed'].includes(before.code)),'runner_transition');
+        expectedCode=s.code;
+        if(s.code==='completion_package_changed')need(typeof s.reason==='string'&&s.reason.length>0,'runner_diagnostic');
       }
     }
   }
@@ -535,7 +547,7 @@ export function readRunnerHistory(raw,config,version=1) {
       if(e.kind==='develop'&&Object.hasOwn(config,'taskLearning'))need(Object.hasOwn(e,'learningInput'),'runner_learning');
       if(Object.hasOwn(e,'learningInput')){need(e.kind==='develop'&&Object.hasOwn(config,'taskLearning'),'runner_learning');
         validTaskLearningInput(e.learningInput,e.identity,config.taskLearning.feature);}
-      same(e.identity,{...config.identity,attempt:state.attempt});need(e.version===1 && stageAllowed(e.kind,state.state,state.code),'runner_stage');
+      same(e.identity,{...config.identity,attempt:state.attempt});need(e.version===1 && stageAllowed(e.kind,state.state,state.code,state.priorReview?.verdict),'runner_stage');
       need(completedEffectCount(state.cache)<6 && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
       pending=e;beforeIntent=structuredClone(state);controls={};completeIntentDigest=e.kind==='complete'?r.digest:null;
       invocation={registration:null,started:null,result:null};registrationRecord=null;startedRecord=null;joinedForInvocation=false;
@@ -616,7 +628,7 @@ export function readRunnerHistory(raw,config,version=1) {
       if(p.type==='task-commit-intent'){
         need(r.kind==='commit-intent'&&transaction===null
           &&(beforeIntent.state==='approved'||beforeIntent.state==='blocked'
-            &&beforeIntent.code==='completion_checks_changed'),'runner_commit');
+            &&['completion_checks_changed','completion_package_changed','review_package_changed'].includes(beforeIntent.code)),'runner_commit');
         const c=readCommitIntent(p.commit,{owner:completion.owner,identity:pending.identity,fingerprints:completion.fingerprints});
         const base=attemptBaseline(original,pending.identity.attempt),s=beforeIntent;
         checkCompletion({receipt:s.receipt,registered:s.receipts.find(x=>x.id===s.receipt?.id),
@@ -671,7 +683,10 @@ export function readRunnerHistory(raw,config,version=1) {
     &&records.slice(records.findLastIndex(row=>row.payload.type==='effect-intent')+1)
       .every(row=>row.payload.type==='control');
   return {original,session,state,pending,acceptedFixes,qaAttachment,
-    ...(version===3?{joinedHosts,reviewerThreads,supersession,pendingAbandonable}:{}),
+    ...(version===3?{joinedHosts,reviewerThreads,supersession,pendingAbandonable,
+      pendingObservedReview:pending?.kind==='review'&&invocation.result?.outcome==='observed'
+        ?{request:invocation.registration.request,registration:invocation.registration.record,
+          started:invocation.started,result:invocation.result}:null}:{}),
     ...(version>=2?{transaction}:{})};
 }
 // Baseline rootDigest uses bytes of the canonical root, not JSON string encoding.

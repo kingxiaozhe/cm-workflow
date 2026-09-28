@@ -22,7 +22,8 @@ export function withHandoffDiagnostic(host,error){
   return {...host,async handle(request){
     const result=await host.handle(request);
     if(result?.code==='handoff_exists')error.write(`[host] ${REVIEWED_HANDOFF_HINT}\n`);
-    if(['out_of_scope','check_output_out_of_scope'].includes(result?.code)&&typeof result.reason==='string')
+    if(['out_of_scope','check_output_out_of_scope','unsupported_file','limit_exceeded','package_mismatch',
+      'review_package_changed','completion_package_changed'].includes(result?.code)&&typeof result.reason==='string')
       error.write(`[host] ${result.reason}\n`);
     return result;
   }};
@@ -315,9 +316,13 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
   }catch(cause){
     const code=typeof cause?.code==='string'&&(/^[a-z][a-z0-9_]{0,63}$/.test(cause.code)
       ||cause.code.startsWith('invalid_config: '))?cause.code:'host_launch_failed';
+    const snapshotReason=['out_of_scope','unsupported_file','limit_exceeded','package_mismatch'].includes(code)
+      &&typeof cause?.message==='string'&&cause.message.length<=8192&&!/[\r\n\0]/.test(cause.message)
+      ?cause.message:null;
     if(code==='handoff_exists')error.write(`[host] ${REVIEWED_HANDOFF_HINT}\n`);
     if(code==='supersede_code_drift'&&typeof cause.reason==='string')error.write(`[host] ${cause.reason}\n`);
-    error.write(JSON.stringify({error:{code,...(['supersede_unavailable','supersede_code_drift','handoff_exists','browser_capability_required','browser_capability_unavailable'].includes(code)
+    if(snapshotReason)error.write(`[host] ${snapshotReason}\n`);
+    error.write(JSON.stringify({error:{code,...(snapshotReason?{reason:snapshotReason}:{}),...(['supersede_unavailable','supersede_code_drift','handoff_exists','browser_capability_required','browser_capability_unavailable'].includes(code)
       &&typeof cause.reason==='string'?{reason:cause.reason}:{})}})+'\n');return 1;
   }finally{bridge?.close();run?.close();}
 }
