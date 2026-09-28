@@ -1130,7 +1130,7 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 
 | 状态 | 含义 | 恢复路径 |
 | --- | --- | --- |
-| `state: "unknown"` | 某个有副作用的步骤抛了异常或返回了无法判定的终态，做没做成不确定 | 无协议级恢复，见下 |
+| `state: "unknown"` | 某个有副作用的步骤抛了异常或返回了无法判定的终态，做没做成不确定 | 单任务 V3 审查调用已登记、无结果时可用下述 `abandon_review`；其他情况见下 |
 | `state: "fixture_completed"` + `code: "qa_execution_unknown"` | 一次 QA 调用没拿到终态，工具可能还在跑或已被中断 | `--rerun-unknown-qa` |
 
 **`reconcile` 不是一个可以发送的操作。** 三件事都不管用，而且会让情况更糟：
@@ -1148,14 +1148,38 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 1. 先看宿主进程的 stderr。被塌缩成 `execution_error` 的失败会在那里留下一行
    `{"diagnostic":"execution_error","code":…}`，多数情况足以定位（例如 `EEXIST` 会
    带上冲突的 `path` 与 `dest`）。
-2. 按诊断处理掉真实原因，**再**用新的 `batchId` 重跑该任务。旧的未知状态已经写进该
-   runId 的执行日志，同一个 runId 重开只会原样重放它。
+2. 若是单任务 V3 journal 停在 `review-invocation-registered` 或 `review-invocation-started`，且没有
+   `review-invocation-result`，先确认旧 host 和 review 进程都已退出，再按下述命令在**原 runId** 上
+   发送 `abandon_review`。这是操作员对进程已退出的证明；宿主无法自行验证。
+   其他未知状态按诊断处理真实原因，再考虑新的运行；旧 unknown 不会被自动重分类。
 3. 不要手工改写执行日志或伪造一个终态。已完成的提交、已登记的审查记录都不因此作废，
    重跑是从该任务重新开始，不是从整个 feature 重新开始。
 
 **`qa_execution_unknown` 的处理**：按上文 `--rerun-unknown-qa` 的条件恢复。
 它只接受「已记录的用例结果全部 PASS 且没有定稿执行报告」的未完成调用，
 FAIL/BLOCKED 或资源未关闭的仍然拒绝，不会伪造通过。
+
+**单任务无结果 Review 的显式退出**（批次不支持）：保留原 `run.json`、review 配置及原 host 身份，
+写一个 `abandon-review.json`；若原运行还用了 protected 或 workflow 配置，`permissions` 中也带上原配置参数。
+
+```json
+{"config":"run.json","mode":"resume","hostContext":"new-host-id","originalHostContext":"old-host-id","runtime":"claude","permissions":["--review-config","review.json","--allow-abandon-review"],"reason":"已确认旧 host 与 review 进程退出"}
+```
+
+```bash
+node scripts/cm-ai-drive.mjs --plan abandon-review.json abandon_review
+```
+
+也可用 `cm-ai-host.mjs serve --config run.json --mode resume --host-context new-host-id --original-host-context old-host-id --allow-development --review-config review.json --allow-abandon-review --runtime claude` 启动原 run，向 JSONL 输入发送
+`{"version":1,"requestId":"abandon-1","operation":"abandon_review","identity":{"repositoryId":"…","runId":"…","taskId":"…","attempt":1},"reason":"已确认旧 host 与 review 进程退出"}`。
+`reason` 必须非空、单行、最多 500 UTF-8 字节；旗标只允许本次宿主调用一次，不进入配置指纹。
+前提不满足时拒绝且 journal 不变。成功后追加绑定 effect、invocation、registered／started 记录摘要、
+原因和时间的 `review-invocation-abandoned`，并写 `review_abandoned` 运行日志；旧记录保留。
+状态变为 `pending_review/review_abandoned`、`pendingAction: "resume"`。重新启动原 run 的宿主，带新的
+`--allow-review-attempt 1`（第二轮用 2）并发送 `advance`；会取得新 grant、新 invocation。
+同一 attempt 的 transport timeout 与 abandon 共用**最多一次重派**，额度已用完时拒绝 abandon。
+旧 invocation 以后到达的结果不会被接受。若决定终止，在 abandon 后发送普通 `cancel`，
+得到 durable `cancelled`；unknown 上直接 `cancel` 只报告原状态，不会声称已取消。
 
 `node --test scripts/cm-ai-run.test.mjs` 验证真实 store 创建/取消/恢复和零 provider 调用；
 另用真实 host/runner + 隔离假 developer 验证长任务期间的控制可达性。

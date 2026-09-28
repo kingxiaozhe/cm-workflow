@@ -3,11 +3,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {spawnSync} from 'node:child_process';
 import {createTaskRunner} from '../runtime/js/cm-ai/task-runner.mjs';
 import {openTaskExecutionStore} from '../runtime/js/cm-ai/task-owner.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {readRunnerHistory,runnerStatus,completedEffectCount} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
+import {createCmAiConversationEntry} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
+import {abandonReviewPlanError,buildCmAiDriveRequest,buildCmAiDriveHostArgs} from './cm-ai-drive.mjs';
+import {recordReviewAbandonment} from '../runtime/js/cm-ai/review-abandon-log.mjs';
 
 
 
@@ -58,8 +62,9 @@ async function fixture(fn,{reviewRun,authorize,times,timeoutMs=1000,provider='co
     try{return createTaskRunner({...options,persistence:{store,mode,version:3}});}finally{Date.now=old;}
   };
   const reopen=()=>{store.close();store=openTaskExecutionStore({...owner,create:false});return make('resume');};
-  const resumePrefix=type=>{
-    const current=store.snapshot(),at=current.records.findIndex(record=>record.payload.type===type);assert(at>=0);store.close();
+  const resumePrefix=(type,last=false)=>{
+    const current=store.snapshot(),at=last?current.records.findLastIndex(record=>record.payload.type===type)
+      :current.records.findIndex(record=>record.payload.type===type);assert(at>=0);store.close();
     const statePath=path.join(specsRoot,'.reviews','.execution',identity.runId,'state.json');
     const body={version:current.version,identity:current.identity,fingerprints:current.fingerprints,records:current.records.slice(0,at+1)};
     fs.writeFileSync(statePath,JSON.stringify({...body,revision:digest(body)})+'\n',{mode:0o600});
@@ -156,11 +161,197 @@ test('each attempt gets one retry without consuming the six-effect budget or reu
   assert.equal(f.reopen().status().state,complete.state);
 }));
 
+test('interrupted V3 review needs explicit abandonment and replays the audited exit',()=>fixture(async f=>{
+  const first=f.make();await first.executeEffect(f.effect('develop'));
+  await first.executeEffect(f.effect('review'));
+  const runner=f.resumePrefix('review-invocation-started');
+  const before=f.getStore().snapshot();
+  assert.deepEqual(before.records.map(row=>row.payload.type),[
+    'init','effect-intent','effect-checkpoint','effect-intent',
+    'review-invocation-registered','review-invocation-started']);
+  assert.equal(runner.status().state,'unknown');
+  assert.equal(runner.status().code,'reconciliation_required');
+  for(const input of [{reason:'operator confirmed exit'}, {allowed:true}, {allowed:true,reason:'\n'},
+    {allowed:true,reason:'x'.repeat(501)}]){
+    assert.equal(runner.abandonReview(input).outcome,'rejected');
+    assert.deepEqual(f.getStore().snapshot(),before);
+  }
+  const abandoned=runner.abandonReview({allowed:true,reason:'operator confirmed exit'});
+  assert.equal(abandoned.state,'pending_review');assert.equal(abandoned.code,'review_abandoned');
+  assert.equal(f.getStore().snapshot().records.at(-1).payload.type,'review-invocation-abandoned');
+  assert.deepEqual(f.reopen().status(),abandoned);
+  const next=f.reopen();
+  const result=await next.executeEffect(retryEffect(f));
+  assert.equal(result.state,'approved');
+  assert.notEqual(result.reviewInvocation.registration.grant.invocationId,
+    abandoned.reviewInvocation.registration.grant.invocationId);
+  assert.notEqual(result.reviewInvocation.registration.grant.grantDigest,
+    abandoned.reviewInvocation.registration.grant.grantDigest);
+}));
+
+test('registered review without a started record can also be abandoned',()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
+  const interrupted=f.resumePrefix('review-invocation-registered');
+  assert.equal(interrupted.status().state,'unknown');
+  const result=interrupted.abandonReview({allowed:true,reason:'dispatch never started'});
+  assert.equal(result.state,'pending_review');assert.equal(result.reviewInvocation.started,null);
+  assert.equal(f.getStore().snapshot().records.at(-1).payload.startedDigest,null);
+  assert.deepEqual(f.reopen().status(),result);
+}));
+
+test('abandonment projects a deduplicated run-log event',()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
+  const interrupted=f.resumePrefix('review-invocation-started');
+  interrupted.abandonReview({allowed:true,reason:'old reviewer exited'});
+  const record=f.getStore().snapshot().records.at(-1),specsDir=path.dirname(f.tasksPath),logHome=path.join(specsDir,'logs');
+  const input={specsDir,codeProject:f.root,feature:'feature',identity:f.options.identity,record,logHome};
+  recordReviewAbandonment(input);recordReviewAbandonment(input);
+  const events=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(events.filter(row=>row.event==='review_abandoned').length,1);
+}));
+
+test('abandonment is refused without a pending registered review or after a result',()=>fixture(async f=>{
+  let runner=f.make();
+  const initial=f.getStore().snapshot();
+  assert.equal(runner.abandonReview({allowed:true,reason:'exit'}).outcome,'rejected');
+  assert.deepEqual(f.getStore().snapshot(),initial);
+  await runner.executeEffect(f.effect('develop'));
+  const pendingDevelop=f.resumePrefix('effect-intent');
+  const pendingSnapshot=f.getStore().snapshot();
+  assert.equal(pendingDevelop.abandonReview({allowed:true,reason:'exit'}).outcome,'rejected');
+  assert.deepEqual(f.getStore().snapshot(),pendingSnapshot);
+}));
+
+test('abandonment is refused when a review result is already journaled',()=>fixture(async f=>{
+  let runner=f.make();await runner.executeEffect(f.effect('develop'));
+  await runner.executeEffect(f.effect('review'));
+  runner=f.reopen();const completed=f.getStore().snapshot();
+  assert.equal(runner.abandonReview({allowed:true,reason:'exit'}).outcome,'rejected');
+  assert.deepEqual(f.getStore().snapshot(),completed);
+}));
+
+test('abandonment and transport timeout share the one redispatch budget',()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
+  const interrupted=f.resumePrefix('review-invocation-started');
+  assert.equal(interrupted.abandonReview({allowed:true,reason:'exit'}).state,'pending_review');
+  f.options.reviewers[0].run=timeoutRun;
+  const retry=f.reopen();
+  const result=await retry.executeEffect(retryEffect(f));
+  assert.equal(result.state,'blocked');assert.equal(result.code,'review_transport_timeout');
+  assert.equal((await f.reopen().executeEffect({...retryEffect(f),id:'review-1-retry-2'})).code,'stage_mismatch');
+}));
+
+test('conversation reports unknown cancel truthfully, then consumes abandonment authority once',()=>fixture(async f=>{
+  const original=f.make();await original.executeEffect(f.effect('develop'));await original.executeEffect(f.effect('review'));
+  const runner=f.resumePrefix('review-invocation-started');
+  const request=(operation,extra={})=>({version:1,operation,requestId:operation,identity:f.options.identity,...extra});
+  const before=f.getStore().snapshot();
+  const noFlag=createCmAiConversationEntry({specsDir:path.dirname(f.tasksPath),codeProject:f.root,
+    feature:'feature',identity:f.options.identity,runner});
+  assert.equal((await noFlag.handle(request('abandon_review',{reason:'old process exited'}))).outcome,'rejected');
+  assert.deepEqual(f.getStore().snapshot(),before);
+  const entry=createCmAiConversationEntry({specsDir:path.dirname(f.tasksPath),codeProject:f.root,
+    feature:'feature',identity:f.options.identity,runner,allowAbandonReview:true,hostDecision:{status:'approved'}});
+  const cancelled=await entry.handle(request('cancel'));
+  assert.equal(cancelled.outcome,'reported');assert.equal(cancelled.state,'unknown');
+  assert.equal(cancelled.pendingAction,'reconcile');
+  const result=await entry.handle(request('abandon_review',{reason:'old host and reviewer exited'}));
+  assert.equal(result.outcome,'abandoned');assert.equal(result.state,'pending_review');
+  assert.equal(result.pendingAction,'resume');
+  const repeated=await entry.handle(request('abandon_review',{reason:'again'}));
+  assert.equal(repeated.outcome,'rejected');assert.equal(repeated.code,'review_abandon_authorization_required');
+  const reviewed=await entry.handle(request('decision',{packageDigest:result.packageDigest}));
+  assert.equal(reviewed.state,'approved');
+  assert.equal(f.getStore().snapshot().records.filter(row=>row.payload.type==='effect-intent').at(-1).payload.effect.id,
+    'review-1-retry-1');
+}));
+
+test('cancel after abandonment becomes durable cancelled',()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
+  const interrupted=f.resumePrefix('review-invocation-started');
+  assert.equal(interrupted.abandonReview({allowed:true,reason:'old process exited'}).state,'pending_review');
+  assert.equal(interrupted.cancel().state,'cancelled');
+  assert.equal(f.reopen().status().state,'cancelled');
+  assert.equal(readRunnerHistory(f.getStore().snapshot().records,
+    f.getStore().snapshot().records[0].payload.config,3).pending,null);
+}));
+
+test('abandonment refuses an exhausted retry before appending a record',()=>fixture(async f=>{
+  let first=true;f.options.reviewers[0].run=(request,control)=>{
+    if(first){first=false;return timeoutRun(request,control);}
+    events(control.onEvent,`thread-${request.invocationId}`);
+    return {status:'succeeded',value:{verdict:'approved',packageDigest:request.payload.reviewPackage.packageDigest,
+      examinedPaths:reviewPaths(request.payload.reviewPackage),findings:[],summary:'Synthetic'}};
+  };
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));
+  const firstResult=await runner.executeEffect(f.effect('review'));
+  assert.equal(firstResult.code,'review_transport_timeout');
+  const secondResult=await runner.executeEffect(retryEffect(f));
+  assert.equal(secondResult.state,'approved');
+  const interrupted=f.resumePrefix('review-invocation-started',true),before=f.getStore().snapshot();
+  const result=interrupted.abandonReview({allowed:true,reason:'exit'});
+  assert.equal(result.outcome,'rejected');assert.equal(result.code,'review_abandon_budget_exhausted');
+  assert.deepEqual(f.getStore().snapshot(),before);
+}));
+
 function rechain(records){
   let previousDigest=null;
   for(const row of records){row.previousDigest=previousDigest;const {digest:old,...body}=row;row.digest=digest(body);previousDigest=row.digest;}
   return records;
 }
+function resequence(records){
+  records.forEach((row,index)=>{row.seq=index+1;row.id=`runner.${String(index+1).padStart(6,'0')}`;});
+  return rechain(records);
+}
+test('replay rejects mutated abandonment bindings, placement, and late old results',()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
+  const completed=structuredClone(f.getStore().snapshot().records);
+  const interrupted=f.resumePrefix('review-invocation-started');
+  interrupted.abandonReview({allowed:true,reason:'old process exited'});
+  const records=f.getStore().snapshot().records,configuration=records[0].payload.config;
+  for(const change of [
+    row=>{row.registeredDigest='0'.repeat(64);},
+    row=>{row.startedDigest='0'.repeat(64);},
+    row=>{row.effectId='other-effect';},
+    row=>{row.invocationId='other-invocation';},
+    row=>{row.reason='line\nbreak';},
+    row=>{row.at='invalid';},
+  ]){
+    const changed=structuredClone(records);change(changed.at(-1).payload);
+    assert.throws(()=>readRunnerHistory(rechain(changed),configuration,3));
+  }
+  const reordered=structuredClone(records);
+  [reordered[reordered.length-1],reordered[reordered.length-2]]=
+    [reordered[reordered.length-2],reordered[reordered.length-1]];
+  assert.throws(()=>readRunnerHistory(resequence(reordered),configuration,3));
+  const late=structuredClone(records);
+  late.push(completed.find(row=>row.payload.type==='review-invocation-result'));
+  assert.throws(()=>readRunnerHistory(resequence(late),configuration,3));
+  const wrongEffect=structuredClone([records[0],records.find(row=>row.payload.type==='effect-intent'),records.at(-1)]);
+  assert.throws(()=>readRunnerHistory(resequence(wrongEffect),configuration,3));
+}));
+
+test('driver forwards reason and one-use flag, rejecting missing input before host launch',t=>{
+  const plan={mode:'resume',hostContext:'new-host',originalHostContext:'old-host',reason:'old review exited'};
+  const permissions=['--allow-abandon-review'];
+  assert.equal(abandonReviewPlanError('abandon_review',plan,permissions),null);
+  assert.deepEqual(buildCmAiDriveRequest('abandon_review',plan,{identity:{repositoryId:'r',runId:'run',taskId:'T-1',attempt:1}}),
+    {version:1,identity:{repositoryId:'r',runId:'run',taskId:'T-1',attempt:1},reason:plan.reason});
+  assert(buildCmAiDriveHostArgs(plan,permissions,'/tmp/run.json').includes('--allow-abandon-review'));
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'cm-ai-abandon-driver-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const driver=new URL('./cm-ai-drive.mjs',import.meta.url);
+  for(const extra of [{reason:plan.reason,permissions:[]},{reason:' ',permissions},
+    {reason:'x'.repeat(501),permissions},{reason:'line\nbreak',permissions}]){
+    const file=path.join(root,`plan-${Math.random()}.json`);
+    fs.writeFileSync(file,JSON.stringify({config:'missing.json',mode:'resume',hostContext:'new-host',
+      originalHostContext:'old-host',...extra}));
+    const result=spawnSync(process.execPath,[driver.pathname,'--plan',file,'abandon_review'],{encoding:'utf8'});
+    assert.equal(result.status,2,result.stderr);
+    assert.match(result.stderr,/abandon_review 需要/);
+    assert.doesNotMatch(result.stderr,/运行定义不存在/);
+  }
+});
 test('legacy worker unknown and legacy runner timed_out checkpoints remain unknown, never resumable',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
   for(const oldOutcome of ['unknown','timed_out']){

@@ -269,6 +269,7 @@ export function createTaskRunner(options) {
       kind:{init:'result','effect-intent':'intent','effect-checkpoint':'result',control:'cancel',
         'task-commit-intent':'commit-intent','task-commit-result':'commit-result',
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
+        'review-invocation-abandoned':'result',
         'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
         'evidence-superseded':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
@@ -548,7 +549,7 @@ export function createTaskRunner(options) {
           fields={effectId,invocationId:request.invocationId,dispatchAt,outcome:'unknown',observation:recorded,inspection,reconciliationRequired:true};
         }
         persist('review-invocation-result',fields);const result=resultView(fields);
-        const retry=reviewTimeoutTransition(result,[...cache.values()],attempt);
+        const retry=reviewTimeoutTransition(result,[...cache.values()],attempt,calls.slice(0,-1),contextId);
         Object.assign(call,{terminal:fields.outcome==='cancelled'?'cancelled':retry?'failed':'unknown',resultDigest:digest(result)});
         reviewInvocation=json({registration,started,result});
         if(fields.outcome==='cancelled')halt('cancelled','cancelled');
@@ -581,7 +582,7 @@ export function createTaskRunner(options) {
         observation:recorded,inspection,reconciliationRequired:!observed
           &&(inspection.code!=='transport_timeout'||hasProviderReviewResult(recorded.events))};
       persist('review-invocation-result',fields);const result=resultView(fields);
-      const retry=reviewTimeoutTransition(result,[...cache.values()],attempt);
+      const retry=reviewTimeoutTransition(result,[...cache.values()],attempt,calls.slice(0,-1),contextId);
       Object.assign(call,{terminal:observed?'succeeded':retry?'failed':'unknown',resultDigest:digest(observed?inspection.review:result)});
       reviewInvocation=json({registration,started,result});
       if(observed)acceptReview(request,call,inspection.review);
@@ -864,7 +865,40 @@ export function createTaskRunner(options) {
     need(journal.length===1&&state==='ready','supersede_unavailable');
     persist('evidence-superseded',{record});return json(record);
   };
-  const api={reviseQa,supersedeEvidence,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks};
+  const abandonReview=raw=>{
+    try{
+      need(invocationMode&&store&&!busy&&!poisoned&&state==='unknown'&&restored?.pending?.kind==='review',
+        'review_abandon_unavailable');
+      const value=json(raw);shape(value,['allowed','reason']);
+      need(value.allowed===true,'review_abandon_authorization_required');
+      need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(value.reason),'review_abandon_reason_required');
+      const history=readRunnerHistory(journal,metadata,3),last=journal.at(-1);
+      need(history.pending?.id===restored.pending.id&&history.state.state==='unknown'
+        &&history.state.code==='reconciliation_required'
+        &&['review-invocation-registered','review-invocation-started'].includes(last?.payload?.type)
+        &&history.state.reviewInvocation?.registration&&history.state.reviewInvocation.result===null,
+      'review_abandon_unavailable');
+      const registration=journal.findLast(row=>row.payload.type==='review-invocation-registered'
+        &&row.payload.effectId===history.pending.id);
+      const started=last.payload.type==='review-invocation-started'?last:null;
+      need(registration,'review_abandon_unavailable');
+      const contextId=reviewers[0].contexts[attempt-1];
+      need(!history.state.cache.some(entry=>entry.effect.kind==='review'
+        &&entry.effect.identity.attempt===attempt&&entry.result.code==='review_transport_timeout')
+        &&!history.state.calls.some(call=>call.terminal==='abandoned'&&call.contextId===contextId),
+      'review_abandon_budget_exhausted');
+      const fields={effectId:history.pending.id,
+        invocationId:history.state.reviewInvocation.registration.grant.invocationId,
+        registeredDigest:registration.digest,startedDigest:started?.digest??null,
+        reason:value.reason,at:new Date().toISOString()};
+      persist('review-invocation-abandoned',fields);
+      const recovered=readRunnerHistory(journal,metadata,3).state;
+      ({state,code,sequence,reviewInvocation}=recovered);calls.push(...recovered.calls.slice(calls.length));
+      publication=privateStatus();return status();
+    }catch(error){return freeze({outcome:'rejected',code:error.code??'review_abandon_unavailable'});}
+  };
+  const api={reviseQa,supersedeEvidence,abandonReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   return Object.freeze(api);
