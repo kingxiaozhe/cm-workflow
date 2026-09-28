@@ -11,6 +11,29 @@ import {claudeReviewFingerprint} from '../runtime/js/cm-ai/worker-claude.mjs';
 import {buildManifest} from './cm-spec-manifest.mjs';
 
 const cli=fileURLToPath(new URL('./cm-ai-batch-host.mjs',import.meta.url));
+test('batch host input limit reaches transport without opening a host',async()=>{
+  const {serveHostTransport}=await import('./cm-ai-batch-host.mjs');
+  assert.equal(typeof serveHostTransport,'function');
+  let seen;
+  await serveHostTransport({host:{}},'1048576',async options=>{seen=options.inputLimit;});
+  assert.equal(seen,1048576);
+  for(const raw of ['65535','4194305','1.5'])
+    await assert.rejects(serveHostTransport({host:{}},raw,async()=>{}),/invalid_arguments/);
+});
+test('batch host help documents input limit',()=>{
+  const help=spawnSync(process.execPath,[cli,'--help'],{encoding:'utf8'});
+  assert.equal(help.status,0);assert.match(help.stdout,/--input-limit BYTES/);
+});
+test('batch host CLI rejects out-of-range and non-integer input limits before opening a run',()=>{
+  const f=fixture();
+  try{
+    for(const raw of ['65535','4194305','1.5']){
+      const run=spawnSync(process.execPath,[cli,...f.args,'--input-limit',raw],{encoding:'utf8'});
+      assert.equal(run.status,1);assert.match(run.stderr,/invalid_arguments/);
+      assert.equal(fs.existsSync(path.join(f.specsDir,'.reviews')),false);
+    }
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
 function fixture(runtime='codex'){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-batch-host-')));
   const specsDir=path.join(root,'specs'),codeProject=path.join(root,'code'),feature='1.work',bin=path.join(root,'bin');
@@ -233,10 +256,12 @@ test('provider development grants select worktree runtimes and keep the serial t
     const protectedFile=path.join(f.root,'protected.json');fs.writeFileSync(protectedFile,JSON.stringify(protection));
     const stub=path.join(f.root,'stub.mjs'),host=path.join(f.root,'batch-host.mjs');
     const hostModule=new URL('./cm-ai-host.mjs',import.meta.url).href;
+    const sessionModule=new URL('../runtime/js/cm-ai/host-session.mjs',import.meta.url).href;
     const workerModule=new URL('../runtime/js/cm-ai/codex-config.mjs',import.meta.url).href;
     fs.writeFileSync(stub,`
 import {configFingerprint} from ${JSON.stringify(workerModule)};
 export {readConversationReviewConfiguration,readConversationProtection} from ${JSON.stringify(hostModule)};
+export {parseHostInputLimit} from ${JSON.stringify(sessionModule)};
 export const calls=[];export let scheduler;
 export function createConversationExecution(...args){calls.push(args);return {};}
 export async function runReviewPreflight(definition,{model}){return {model,disabledSkills:[],preflight:{passed:true,

@@ -274,17 +274,23 @@ function validate(kind,value,ctx){
   }
 }
 let loaded;
+export async function runPrdContextChecks(cwd,commands){
+  const results=[];
+  for(const command of commands){
+    const run=createHostCheck({cwd,commands:[command],onOutput:({stream,chunk})=>{
+      process.stderr.write(`[drive check ${command.id} ${stream}] ${chunk}`);
+    }});
+    const [item]=await run({identity:{repositoryId:'prd',runId:'prd-check',taskId:'prd-check',attempt:1}},
+      {signal:new AbortController().signal});
+    results.push(item);if(item.outcome!=='passed')break;
+  }
+  return results;
+}
 async function answerFor(row,answers){
   const v=answers[row.kind];
   if(row.kind==='prd_materials')return null;
   if(row.kind==='prd_self_check'){
-    const results=[];
-    for(const command of loaded.plan.contextChecks){
-      const run=createHostCheck({cwd:loaded.admission.project,commands:[command],onOutput:({stream,chunk})=>process.stderr.write(`[drive check ${command.id} ${stream}] ${chunk}`)});
-      const [item]=await run({identity:{repositoryId:'prd',runId:'prd-check',taskId:'prd-check',attempt:1}},
-        {signal:new AbortController().signal});
-      results.push(item);if(item.outcome!=='passed')break;
-    }
+    const results=await runPrdContextChecks(loaded.admission.project,loaded.plan.contextChecks);
     const draft=row.payload.draft;const evidence=results.map(r=>`${r.id}: ${r.evidence}`);
     return {draftDigest:draft.draftDigest,features:draft.features.map(f=>({directory:f.directory,
       checks:draft.mechanicalSelfCheck.pending.map(id=>({id,status:results.every(r=>r.outcome==='passed')?

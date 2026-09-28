@@ -8,6 +8,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {createConversationExecution} from './cm-ai-host.mjs';
+import {readRunDefinition,openControlRun} from './cm-ai-run.mjs';
 import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
 
 // Keep runtime declarations and log mirrors independent of the invoking user's home.
@@ -19,6 +20,47 @@ after(()=>fs.rmSync(isolatedWorkflowHome,{recursive:true,force:true}));
 const cli=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
 const identity={repositoryId:'host-fixture',runId:'host-fixture-run',taskId:'T-001',attempt:1};
 const request=(operation,requestId=operation)=>({version:1,operation,requestId,identity});
+test('single host input limit parsing and transport pass-through need no running host',async()=>{
+  const {serveHostTransport}=await import('./cm-ai-host.mjs');
+  assert.equal(typeof serveHostTransport,'function');
+  const seen=[];
+  for(const raw of [undefined,'65536','1048576','4194304']){
+    await serveHostTransport({host:{}},raw,async options=>{seen.push(options.inputLimit);});
+  }
+  assert.deepEqual(seen,[65536,65536,1048576,4194304]);
+  for(const raw of ['65535','4194305','1.5','NaN']){
+    await assert.rejects(serveHostTransport({host:{}},raw,async()=>{}),/invalid_arguments/);
+  }
+});
+test('single host help documents input limit',()=>{
+  const help=spawnSync(process.execPath,[cli,'--help'],{encoding:'utf8'});
+  assert.equal(help.status,0);assert.match(help.stdout,/--input-limit BYTES/);
+});
+test('single host CLI rejects out-of-range and non-integer input limits before opening a run',()=>{
+  for(const raw of ['65535','4194305','1.5']){
+    const run=spawnSync(process.execPath,[cli,'serve','--config','unused','--mode','create',
+      '--host-context','fixture','--allow-development','--input-limit',raw],{encoding:'utf8'});
+    assert.equal(run.status,1);assert.match(run.stderr,/invalid_arguments/);
+  }
+});
+test('resume accepts a changed transport input limit without changing the durable fingerprint',async()=>{
+  const f=fixture(),bridge=createHostToolBridge();
+  try{
+    const definition=readRunDefinition(f.config);
+    const execution=createConversationExecution(definition,'native-host-fixture',bridge,null,null,null,false,'codex');
+    const first=await openControlRun(definition,'create',execution);first.close();
+    const state=path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json');
+    const before=JSON.parse(fs.readFileSync(state,'utf8')).fingerprints;
+    let limit;
+    const {serveHostTransport}=await import('./cm-ai-host.mjs');
+    await serveHostTransport({host:{}},'65536',async options=>{limit=options.inputLimit;});
+    assert.equal(limit,65536);
+    const resumed=await openControlRun(definition,'resume',execution);resumed.close();
+    await serveHostTransport({host:{}},'1048576',async options=>{limit=options.inputLimit;});
+    assert.equal(limit,1048576);
+    assert.deepEqual(JSON.parse(fs.readFileSync(state,'utf8')).fingerprints,before);
+  }finally{bridge.close();fs.rmSync(f.root,{recursive:true,force:true});}
+});
 function fixture(){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-native-host-')));
   const specsDir=path.join(root,'specs'),codeProject=path.join(root,'code'),feature='1.work',config=path.join(root,'run.json');

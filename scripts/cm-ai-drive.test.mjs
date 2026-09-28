@@ -77,6 +77,13 @@ test('missing develop answer is refused before store creation',t=>{
   const f=fixture(t);const run=f.drive(f.plan(),'advance');
   assert.equal(run.status,2);assert.match(run.stderr,/develop\.json/);assert.equal(fs.existsSync(f.store),false);
 });
+test('single driver accepts input limit as a value before host launch',t=>{
+  const f=fixture(t);
+  const run=f.drive(f.plan({permissions:['--input-limit','1048576']}),'advance');
+  assert.equal(run.status,2);assert.match(run.stderr,/develop\.json/);
+  assert.doesNotMatch(run.stderr,/permissions 无效|--input-limit 文件不存在/);
+  assert.equal(fs.existsSync(f.store),false);
+});
 test('out-of-scope develop edit is refused before host launch',t=>{
   const f=fixture(t);prepared(f);
   f.write('develop.json',{...develop,edits:{'outside.mjs':'target-content.mjs'}});

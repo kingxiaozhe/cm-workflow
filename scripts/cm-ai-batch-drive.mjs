@@ -30,7 +30,7 @@ const HOST=fileURLToPath(new URL('./cm-ai-batch-host.mjs',import.meta.url));
 const KINDS={develop:'develop.json',qa_assess:'qa-assess.json',
   documentation_sync:'documentation-sync.json',documentation_inspect:'documentation-inspect.json'};
 const PAIRS=new Set(['--runtime','--review-config','--browser-qa','--protected-conversation-config',
-  '--protected-config','--allow-provider-development','--allow-review']);
+  '--protected-config','--allow-provider-development','--allow-review','--input-limit']);
 const FLAGS=new Set(['--allow-qa','--rerun-unknown-qa','--rerun-blocked-qa','--verification-precheck',
   '--allow-bootstrap-write']);
 const isObject=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
