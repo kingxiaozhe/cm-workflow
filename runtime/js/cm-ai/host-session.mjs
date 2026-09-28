@@ -1,7 +1,14 @@
 // JSONL transport only. The existing host/runner owns decisions and durable state.
-import {executionDiagnostic} from './effect-contract.mjs';
+import {executionDiagnostic,need} from './effect-contract.mjs';
 
 const LIMIT=64*1024;
+export function parseHostInputLimit(raw){
+  if(raw===undefined)return LIMIT;
+  const value=Number(raw);
+  need(typeof raw==='string'&&/^[1-9][0-9]*$/.test(raw)&&Number.isSafeInteger(value)
+    &&value>=LIMIT&&value<=4*1024*1024,'invalid_arguments');
+  return value;
+}
 const operationNames=new Set(['replace_inputs','read_batch','recover_final_review','abandon_step','advance','start','plan_design','promote_design','select_design_reviews','status','fix_status','fix_advance','fix_action','fix_run','decision','complete','qa','qa_result','prepare_revision','prepare_save',
   'context_refresh','finish','completion_evidence','run_finalize','review_findings','review_disposition','save_draft','save_design','correct_findings','prepare_summary','publish_summary','inspect_correction','resume_correction','cancel','resume','prepare_judge_revision','cause_review_package','cause_review','red_test','baseline','author_tests','repair','regression','retrospective','learning_writeback','handoff','final_review_package','final_review','publish_review','check_n5','post_review_regression','publish_dossier','walkthrough']);
 

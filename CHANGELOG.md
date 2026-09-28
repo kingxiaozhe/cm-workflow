@@ -6,6 +6,7 @@
 ## 未发布
 
 - Claude review 与 developer 的 CLI 流解析器接受 init 前后的 `dev_intent` 通知，校验会话并计入 32 条通知上限。
+- 修复 cm-prd 自检命令产生输出时误报 `output_capture_failed`；cm-ai 单任务和批次宿主可用 `--input-limit BYTES` 将输入上限从默认 64 KiB 提高到最多 4 MiB，恢复时可调整。
 
 ## 0.16.3 — 2026-09-26
 

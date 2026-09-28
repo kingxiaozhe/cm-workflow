@@ -67,6 +67,13 @@ test('help names plan invocation',()=>{
   const run=spawnSync(process.execPath,[DRIVER,'--help'],{encoding:'utf8'});
   assert.equal(run.status,0);assert.match(run.stdout,/--plan PLAN\.json <operation>/);
 });
+test('batch driver accepts input limit as a value before host launch',t=>{
+  const f=fixture(t);
+  const run=f.drive(f.plan({permissions:['--allow-qa','--input-limit','1048576']}),'advance');
+  assert.equal(run.status,2);assert.match(run.stderr,/develop\.json/);
+  assert.doesNotMatch(run.stderr,/permissions 无效|--input-limit 文件不存在/);
+  noStore(f);
+});
 test('real batch host advances with authored edit and actual check, then resumes and reports status',t=>{
   const f=fixture(t);prepared(f);
   const first=f.drive(f.plan(),'advance');assert.equal(first.status,0,first.stderr);

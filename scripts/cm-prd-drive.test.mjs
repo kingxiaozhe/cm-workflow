@@ -6,6 +6,7 @@ import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
+import {runPrdContextChecks} from './cm-prd-drive.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const driver=path.join(root,'scripts/cm-prd-drive.mjs');
@@ -33,6 +34,15 @@ const draft={status:'draft',summary:'Synthetic documentation draft',features:[{n
   documents:[{path:'requirements.md',content:'## 功能需求\n1. [F-001] Guide\n- [ ] [AC-001] Document setup.'},
     {path:'design.md',content:'## 方案摘要\nSynthetic design'},
     {path:'tasks.md',content:'- [ ] T-001: Update guide'}]}]};
+test('contextChecks with stdout and stderr record a passed command',async t=>{
+  const f=fixture(t);
+  const checks=await runPrdContextChecks(f.project,[{id:'output',command:[process.execPath,'-e',
+    "console.log('x');console.error('y')"]}]);
+  assert.notEqual(checks[0].evidence,'host check: output_capture_failed');
+  assert.equal(checks[0].outcome,'passed');
+  assert.equal(checks[0].exitCode,0);
+  assert.match(checks[0].evidence,/exited 0/);
+});
 function draftReady(t){
   const f=fixture(t);f.write('analyze.json',analyzed);f.write('generate.json',draft);
   const start=f.drive('start');assert.equal(start.status,0,start.stderr);
