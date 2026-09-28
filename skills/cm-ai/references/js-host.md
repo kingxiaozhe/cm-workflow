@@ -11,8 +11,19 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 `PLAN.json` 与 cm-fix 驾驶员一样，以自身目录解析相对路径；填写 `config`（已批准的运行定义）、
 `mode`、当前真实 `hostContext`、`runtime`、原样传给宿主的 `permissions`、`answers` 和
 `checks: [{"id":"syntax","command":["node","--check","target.mjs"]}]`。换会话恢复还要填
-`originalHostContext`，且运行存档必须已存在。人工写好的开发结果放 `answers/develop.json`，
-其中 `edits` 把批准 scope 内路径映射到答案目录里的 UTF-8 内容文件。其余人工文件为
+`originalHostContext`，且运行存档必须已存在。第 1 轮开发结果放 `answers/develop.json`（也可用
+`develop-a1.json`，两者不能同时存在）；第 2 轮只读 `answers/develop-a2.json`，绝不复用第 1 轮答案。
+`edits` 把批准 scope 内路径映射到答案目录里的 UTF-8 内容文件。初次 `create` 或恢复到
+`ready` 第 1 轮时，若 `advance` 同时带 `--allow-review-attempt 1`，审查后可能直接进入第 2 轮开发；
+缺 `develop-a2.json` 会在启动前退出 2。尚未看到首轮 findings 时，从 `PLAN.permissions` 移除该审查授权，
+先 `advance` 到 `awaiting_review`，再以运行返回的 `packageDigest` 执行 `decision`；读取
+`.reviews/<feature>-<task>-r1.md`，如需修改则写好 `develop-a2.json` 再 `advance`。
+若有意一次完成，也可预先写好 `develop-a2.json` 后带审查授权运行。
+若第 1 轮已经待审且计划带
+`--allow-review-attempt 1`，`advance` 可能在同一次调用中进入第 2 轮；缺 `develop-a2.json` 时会在
+启动宿主前退出 2，并提示当前 `packageDigest`。此时先以该 digest 调用 `decision` 单独运行审查，
+读取 `.reviews/<feature>-<task>-r1.md` 的 findings，针对 findings 写好 `develop-a2.json`，再调用
+`advance`。其余人工文件为
 `qa-assess.json`、`documentation-inspect.json`、`documentation-sync.json`；QA 修复子运行沿用
 cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edits.json` 和
 `retrospective.json`。缺答案、结构错误、路径或存档无效会在启动宿主前退出 2。
@@ -29,7 +40,8 @@ cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edit
 
 批次使用 `../../../scripts/cm-ai-batch-drive.mjs`，调用方式同为 `--plan PLAN.json advance|status|cancel`。
 `config` 指向批次宿主的 `{batch,workflows}` 定义；`answers` 下按 `feature/taskId/` 放每个任务的
-`develop.json`、`qa-assess.json`、`documentation-sync.json`、`documentation-inspect.json`，
+`develop.json`（第 1 轮可改用 `develop-a1.json`，不得并存）、`qa-assess.json`、
+`documentation-sync.json`、`documentation-inspect.json`；第 2 轮开发必须另放 `develop-a2.json`，
 `checks` 按 `feature/taskId` 映射真实命令数组。驾驶员在发批次指令前检查所有任务的答案、
 scope、命令及恢复存档。批次宿主没有 `--original-host-context`，恢复必须沿用原 `hostContext`；
 不能用它接管另一会话。批次的 `qa_logic`、`qa_browser`、`verification_precheck` 与 bootstrap

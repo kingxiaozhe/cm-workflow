@@ -529,6 +529,8 @@ node scripts/cm-ai-host.mjs serve --config /absolute/run.json --mode resume \
   --allow-review-attempt 1
 ```
 
+若改用 `cm-ai-drive.mjs` 的 `create`/`advance` 并同时传 `--allow-review-attempt 1`，需预备 `develop-a2.json`；通常先不带审查授权到 `awaiting_review`，再按 `packageDigest` 单独 `decision`，读首轮 findings 后写第 2 轮答案。
+
 review.json 含 `{model, disabledSkills, preflight}`，另有可选 `timeoutMs`；disabledSkills 是本机探测实际发现并
 禁用的 Skill 路径，preflight 沿原配置指纹/模型/stdin 合同。探测输出不包含原始诊断、
 凭证或请求正文；旧实验路径仅兼容转发到共享 runtime。通过探测不等于获准调用或模型可用。

@@ -115,3 +115,19 @@ test('the driver abandons a local unknown step using only plan reason and flag',
   assert.equal(JSON.parse(result.stdout).result.stage,'reproduce');
   assert(JSON.parse(fs.readFileSync(statePath)).records.some(row=>row.id==='fix-abandoned-1'));
 });
+test('revision repair requires its own answer before launching the host',{skip},t=>{
+  const f=fixture(t);
+  fs.writeFileSync(path.join(f.answers,'learning.json'),JSON.stringify(learning));
+  fs.writeFileSync(path.join(f.answers,'diagnosis.json'),JSON.stringify(diagnosis));
+  assert.equal(drive(f.plan(),'advance').status,0);
+  const statePath=path.join(f.archive,'.reviews','.execution','drive-demo','state.json');
+  const state=JSON.parse(fs.readFileSync(statePath));
+  const store=openExecutionStore({specsRoot:f.archive,identity:state.identity,fingerprints:state.fingerprints,create:false});
+  store.append({id:'fix-revision-prepared',kind:'result',payload:{nextIdentity:{...state.identity,attempt:2}},
+    expectedRevision:store.snapshot().revision});store.close();
+  fs.writeFileSync(path.join(f.answers,'repair-edits.json'),JSON.stringify({'value.mjs':'repair.txt'}));
+  const before=fs.readFileSync(statePath);
+  const run=drive(f.plan({mode:'resume',permissions:['--allow-repair']}),'repair');
+  assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/repair-edits-a2\.json/);
+  assert.deepEqual(fs.readFileSync(statePath),before);
+});

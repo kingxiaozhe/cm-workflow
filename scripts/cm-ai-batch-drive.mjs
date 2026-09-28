@@ -23,7 +23,10 @@ import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {validateRunDefinition} from './cm-ai-run.mjs';
 import {createCmAiBatch} from './cm-ai-batch-run.mjs';
 import {readConversationReviewConfiguration,readConversationProtection} from './cm-ai-host.mjs';
-import {validateCmAiAnswer} from './cm-ai-drive.mjs';
+import {validateCmAiAnswer,developFilename} from './cm-ai-drive.mjs';
+import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
+import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
 
 const HOST=fileURLToPath(new URL('./cm-ai-batch-host.mjs',import.meta.url));
@@ -36,6 +39,16 @@ const FLAGS=new Set(['--allow-qa','--rerun-unknown-qa','--rerun-blocked-qa','--v
 const isObject=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const nonempty=x=>typeof x==='string'&&x.trim().length>0;
 function taskKey(task){return `${task.feature}/${task.taskId}`;}
+export function batchDevelopAttempts(state,key,permissions){
+  if(developmentRetryable(state))return [state.attempt];
+  if(state.state==='ready'&&state.attempt===1&&permissions.some((flag,index)=>
+    flag==='--allow-review'&&permissions[index+1]===`${key}:1`))return [1,2];
+  if(['ready','changes_requested'].includes(state.state))return [state.attempt];
+  if(['awaiting_review','pending_review'].includes(state.state)&&state.attempt<2
+    &&permissions.some((flag,index)=>flag==='--allow-review'
+      &&permissions[index+1]===`${key}:${state.attempt}`))return [state.attempt+1];
+  return [];
+}
 function actualCwd(bundle,key,generation=1){
   if(generation===2)return bundle.batch.codeProject;
   const group=bundle.batch.parallel?.find(group=>group.includes(key));
@@ -153,7 +166,7 @@ function preflight(){
     stop(2,'缺少真实执行 runner: verification_precheck；不能从静态答案文件应答');
   if(operation==='advance'&&bundle.bootstraps&&Object.keys(bundle.bootstraps).length)
     stop(2,'缺少真实执行 runner: init_verify；不能从静态答案文件应答');
-  const root=plan.answers?path.resolve(base,plan.answers):null,answers={};
+  const root=plan.answers?path.resolve(base,plan.answers):null,answers={},developAnswers=new Map();
   if(operation==='advance')for(const task of batch.tasks){
     const key=taskKey(task),workflow=bundle.workflows[key],kinds=[];
     if(!providerAll)kinds.push('develop');
@@ -171,20 +184,41 @@ function preflight(){
     if(evidence.length)stop(2,`缺少真实执行 runner: ${evidence.join(', ')}；不能从静态答案文件应答`);
     if(kinds.includes('check'))checkCommandShape(plan.checks?.[key],key);
     const taskRoot=root&&path.join(root,task.feature,task.taskId);
-    answers[key]=preflightAnswers(kinds.filter(kind=>KINDS[kind]),kind=>{
+    const perAttempt=new Map();
+    if(kinds.includes('develop')){
+      let attempts=[1];
+      if(plan.mode==='resume'){
+        const runIds=[...runs].filter(([,binding])=>binding.key===key).sort((a,b)=>b[1].generation-a[1].generation);
+        const existing=runIds.find(([runId])=>fs.existsSync(path.join(batch.specsDir,'.reviews','.execution',runId,'state.json')));
+        if(existing)try{
+          const snapshot=readExecutionSnapshot({specsRoot:batch.specsDir,identity:{repositoryId:batch.repositoryId,runId:existing[0]}});
+          const history=readRunnerHistory(snapshot.records,snapshot.records[0].payload.config,3);
+          attempts=batchDevelopAttempts(history.state,key,permissions);
+        }catch(error){stop(2,`任务 ${key} 无法只读检查恢复存档: ${error.code??error.message}`);}
+      }else if(permissions.some((flag,index)=>flag==='--allow-review'&&permissions[index+1]===`${key}:1`))attempts=[1,2];
+      for(const attempt of attempts){
+        const file=path.join(taskRoot??'',developFilename(taskRoot??'',attempt));
+        if(!taskRoot||!fs.existsSync(file))stop(2,attempt===1
+          ?`任务 ${key} 会反问 develop，但答案文件不存在: ${file}`
+          :`任务 ${key} 可能反问 develop attempt ${attempt}，但答案文件不存在: ${file}；先单独完成审查并按 findings 写 develop-a${attempt}.json`);
+        const value=readJson(file,'develop');validateCmAiAnswer('develop',value,taskRoot);
+        if(value.status==='succeeded')for(const target of Object.keys(value.edits))
+          if(!definitions.get(key).scope.includes(target))stop(2,`任务 ${key} ${path.basename(file)}.edits 越过批准 scope: ${target}`);
+        perAttempt.set(attempt,value);
+      }
+    }
+    developAnswers.set(key,perAttempt);
+    answers[key]=preflightAnswers(kinds.filter(kind=>KINDS[kind]&&kind!=='develop'),kind=>{
       const file=path.join(taskRoot??'',KINDS[kind]);
       if(!taskRoot||!fs.existsSync(file))stop(2,`任务 ${key} 会反问 ${kind}，但答案文件不存在: ${file}`);
       const value=readJson(file,kind);
       validateCmAiAnswer(kind,value,taskRoot);
       return value;
     });
-    const develop=answers[key].develop;
-    if(develop?.status==='succeeded')for(const target of Object.keys(develop.edits))
-      if(!definitions.get(key).scope.includes(target))stop(2,`任务 ${key} develop.json.edits 越过批准 scope: ${target}`);
     if(answers[key].documentation_sync)for(const target of Object.keys(answers[key].documentation_sync.edits))
       if(!workflow.documentationPaths.includes(target))stop(2,`任务 ${key} documentation-sync.json.edits 越过文档 scope: ${target}`);
   }
-  return {...loaded,bundle,definitions,runs,config,permissions,answers,answerRoot:root};
+  return {...loaded,bundle,definitions,runs,config,permissions,answers,developAnswers,answerRoot:root};
 }
 
 let loaded;
@@ -207,7 +241,7 @@ async function answerFor(row){
   const cwd=actualCwd(loaded.bundle,key,binding.generation);
   const task=loaded.bundle.batch.tasks.find(task=>taskKey(task)===key);
   const root=path.join(loaded.answerRoot,task.feature,task.taskId);
-  const value=loaded.answers[key][row.kind];
+  const value=row.kind==='develop'?loaded.developAnswers.get(key)?.get(identity?.attempt):loaded.answers[key][row.kind];
   if(row.kind==='check'){
     if(row.payload.codeProject!==cwd)return null;
     const results=[];
@@ -221,6 +255,7 @@ async function answerFor(row){
     return results;
   }
   if(row.kind==='develop'){
+    if(!value)throw Error(`任务 ${key} develop attempt ${identity?.attempt} 未预检，拒绝复用旧答案`);
     if(row.payload.codeProject!==cwd)return null;
     if(value.status!=='succeeded')return {status:'failed',code:value.code};
     if(row.payload.editMode==='protected-text-v1')return {status:'succeeded',value:value.value,
