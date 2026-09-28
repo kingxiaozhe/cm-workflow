@@ -43,8 +43,11 @@ Windows 或其他安装方式有新版时，明确提示使用原平台安装器
 
 ```bash
 node "{CM_WORKFLOW_ROOT}/scripts/cm-check-host.mjs" serve \
-  --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-check" --project "$PWD"
+  --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-check" --project "$PWD" --runtime codex
 ```
+
+Claude Code 将 `--runtime` 改为 `claude`。这一项说明本次检查跑在哪个运行时，
+机械检查用它给 coder/reviewer 打标；不传则记 `未判定`，不对是否派发下结论。
 
 用户说「快速检查」「只看装没装对」「别跑全套」时追加 `--quick`：更新与机械检查照常跑，
 机械通过后直接收口，不进八组语义检查。结论为 `MECHANICAL_ONLY`，**不是 PASSED**——
@@ -73,6 +76,8 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-check-host.mjs" serve \
 传入 `--project` 时机械检查额外输出「运行时声明对照」：按项目 > 用户级默认 > 未声明读取
 `runtimes.available`，声明的一家若本机 CLI 不可解析只打 `WARN`（可解析≠配额可用，不算失败）；
 并逐行打印 coder/reviewer 的 `route_state`，`declared-adapter` 标「已声明未派发」。这是诊断，不是授权。
+`route_state` 相对当前运行时才有意义：按 `--runtime` > `CM_RUNTIME` 取值，两者都没有时
+记 `未判定`，不得把未指定运行时读成「审查通道没派出去」。
 
 外部能力只做降级提示，不应导致插件自检失败：状态条、后台定时更新器、子代理、隔离 CLI
 审查通道与 external-expert 浏览器 transport 都是可选增强。浏览器不可用时必须能输出

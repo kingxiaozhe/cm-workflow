@@ -211,3 +211,59 @@ test('quick mode still reports an actual mechanical failure',{timeout:5000},asyn
   assert.equal(report.result.overall,'FAILED','quick mode must not swallow a failing checker');
   assert.equal(report.result.semanticChecked,false);
 });
+
+test('an explicit runtime reaches the checker; omitting it never claims a dispatch verdict',{timeout:5000},async t=>{
+  const f=fixture(t),seen=[];
+  for(const runtime of ['codex','claude']){
+    const host=createCmCheckHost({...f.input,runtime,quick:true},{call:async(kind,payload)=>{
+      seen.push(payload.invocation.args);return mechanical(payload);
+    }});
+    const report=await host.handle({requestId:`r-${runtime}`,operation:'start'});
+    assert.equal(report.result.overall,'MECHANICAL_ONLY');
+  }
+  assert.deepEqual(seen,[
+    ['--project',f.input.project,'--runtime','codex','--print-effective'],
+    ['--project',f.input.project,'--runtime','claude','--print-effective']
+  ],'the checker must be told which runtime is actually running it');
+  const plain=[];
+  const host=createCmCheckHost({...f.input,quick:true},{call:async(kind,payload)=>{
+    plain.push(payload.invocation.args);return mechanical(payload);
+  }});
+  await host.handle({requestId:'r-none',operation:'start'});
+  assert.deepEqual(plain,[['--project',f.input.project,'--print-effective']],'an unnamed runtime must not be substituted with a guess');
+});
+
+test('an unsupported runtime is rejected instead of silently defaulting',{timeout:5000},async t=>{
+  const f=fixture(t);
+  for(const runtime of ['pi','CODEX','unknown','',null]){
+    assert.throws(()=>createCmCheckHost({...f.input,runtime},{call:async()=>{throw Error('must not run');}}),
+      error=>error.code==='runtime_invalid',`runtime ${JSON.stringify(runtime)} must not reach the checker`);
+  }
+});
+
+test('the JSONL CLI accepts --runtime once and rejects a malformed one',{timeout:5000},async t=>{
+  const f=fixture(t),cli=path.join(f.dir,'scripts/cm-check-host.mjs');
+  const base=['serve','--skill-dir',f.input.skillDir,'--project',f.input.project];
+  for(const extra of [['--runtime'],['--runtime','claude','--runtime','codex']]){
+    const bad=spawnSync(process.execPath,[cli,...base,...extra],{encoding:'utf8',input:''});
+    assert.equal(bad.status,1,`${extra.join(' ')} must not start a session`);
+    assert.match(bad.stderr,/invalid_arguments/);
+  }
+  const help=spawnSync(process.execPath,[cli,'--help'],{encoding:'utf8'});
+  assert.match(help.stdout,/--runtime codex\|claude/,'the documented usage must name the option');
+});
+
+test('the standalone mechanical entry CLI takes the runtime flag and validates it',{timeout:5000},async t=>{
+  const f=fixture(t),cli=path.join(f.dir,'scripts/cm-check-entry.mjs');
+  const base=['--skill-dir',f.input.skillDir,'--project',f.input.project];
+  const ok=spawnSync(process.execPath,[cli,...base,'--runtime','claude','--print-effective'],{encoding:'utf8'});
+  assert.equal(ok.status,0,ok.stderr);
+  assert.match(ok.stdout,/original checker output/,'the real checker must still be the one that runs');
+  for(const extra of [['--runtime','pi'],['--runtime','unknown']]){
+    const bad=spawnSync(process.execPath,[cli,...base,...extra,'--print-effective'],{encoding:'utf8'});
+    assert.equal(bad.status,2,`${extra.join(' ')} must not run the checker`);
+    assert.match(bad.stderr,/runtime_invalid/);
+  }
+  const dup=spawnSync(process.execPath,[cli,...base,'--runtime','codex','--runtime','claude','--print-effective'],{encoding:'utf8'});
+  assert.equal(dup.status,2);assert.match(dup.stderr,/invalid_arguments/);
+});

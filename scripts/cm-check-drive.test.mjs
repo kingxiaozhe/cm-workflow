@@ -60,3 +60,19 @@ test('quick mode needs real runner and returns mechanical-only',t=>{
   const run=f.drive(f.plan({quick:true}));assert.equal(run.status,0,run.stderr);
   assert.equal(JSON.parse(run.stdout).result.result.overall,'MECHANICAL_ONLY');
 });
+
+test('a plan runtime reaches the checker command and a stale command is still refused',t=>{
+  const f=fixture(t),checker=path.join(f.dir,'scripts/cm-check-runtime.sh');
+  const withRuntime=f.plan({runtime:'claude',
+    checks:[{id:'check_runtime',command:[checker,'--project',f.project,'--runtime','claude','--print-effective']}]});
+  const run=f.drive(withRuntime);assert.equal(run.status,0,run.stderr);
+  assert.equal(JSON.parse(run.stdout).result.result.overall,'PASSED');
+  assert.equal(fs.readFileSync(f.marker,'utf8'),'x','the checker must run exactly once');
+  const mismatched=f.drive(f.plan({runtime:'claude'}));
+  assert.notEqual(mismatched.status,0,'a plan runtime absent from the command must not be accepted');
+  assert.equal(fs.readFileSync(f.marker,'utf8'),'x','a refused plan must not run the checker again');
+  const rejected=f.drive(f.plan({runtime:'pi',
+    checks:[{id:'check_runtime',command:[checker,'--project',f.project,'--runtime','pi','--print-effective']}]}));
+  assert.notEqual(rejected.status,0,'an unsupported runtime must not reach the checker');
+  assert.equal(fs.readFileSync(f.marker,'utf8'),'x');
+});

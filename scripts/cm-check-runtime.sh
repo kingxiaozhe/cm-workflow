@@ -184,29 +184,38 @@ PROJECT_PATH="$PWD"
 CONFIG_PATH=""
 REQUESTED_MODE=""
 PRINT_EFFECTIVE=0
+CHECK_RUNTIME=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --project)
-      [ "$#" -ge 2 ] || { echo "Usage: $0 [--project PATH] [--config PATH] [--print-effective] [--routing-fixtures|--log-fixtures]" >&2; exit 2; }
+      [ "$#" -ge 2 ] || { echo "Usage: $0 [--project PATH] [--config PATH] [--runtime codex|claude] [--print-effective] [--routing-fixtures|--log-fixtures]" >&2; exit 2; }
       PROJECT_PATH="$2"
       shift 2
       ;;
     --config)
-      [ "$#" -ge 2 ] || { echo "Usage: $0 [--project PATH] [--config PATH] [--print-effective] [--routing-fixtures|--log-fixtures]" >&2; exit 2; }
+      [ "$#" -ge 2 ] || { echo "Usage: $0 [--project PATH] [--config PATH] [--runtime codex|claude] [--print-effective] [--routing-fixtures|--log-fixtures]" >&2; exit 2; }
       CONFIG_PATH="$2"
       shift 2
       ;;
     --routing-fixtures|--log-fixtures)
-      [ -z "$REQUESTED_MODE" ] || { echo "Usage: $0 [--project PATH] [--config PATH] [--print-effective] [--routing-fixtures|--log-fixtures]" >&2; exit 2; }
+      [ -z "$REQUESTED_MODE" ] || { echo "Usage: $0 [--project PATH] [--config PATH] [--runtime codex|claude] [--print-effective] [--routing-fixtures|--log-fixtures]" >&2; exit 2; }
       REQUESTED_MODE="$1"
       shift
+      ;;
+    --runtime)
+      [ "$#" -ge 2 ] || { echo "Usage: $0 [--project PATH] [--config PATH] [--runtime codex|claude] [--print-effective] [--routing-fixtures|--log-fixtures]" >&2; exit 2; }
+      case "$2" in
+        codex|claude) CHECK_RUNTIME="$2" ;;
+        *) echo "Usage: $0 [--project PATH] [--config PATH] [--runtime codex|claude] [--print-effective] [--routing-fixtures|--log-fixtures]" >&2; exit 2 ;;
+      esac
+      shift 2
       ;;
     --print-effective)
       PRINT_EFFECTIVE=1
       shift
       ;;
     *)
-      echo "Usage: $0 [--project PATH] [--config PATH] [--print-effective] [--routing-fixtures|--log-fixtures]" >&2
+      echo "Usage: $0 [--project PATH] [--config PATH] [--runtime codex|claude] [--print-effective] [--routing-fixtures|--log-fixtures]" >&2
       exit 2
       ;;
   esac
@@ -395,14 +404,14 @@ if [ -n "$NODE_BIN" ]; then
         for rt in $missing; do
           warn "runtimes.available 声明 ${declared}，但本机 ${rt} CLI 不可解析（可解析≠配额可用）"
         done
-        current_runtime="${CM_RUNTIME:-codex}"
+        current_runtime="${CHECK_RUNTIME:-${CM_RUNTIME:-unknown}}"
         for role in coder reviewer; do
           if [ -n "$CONFIG_PATH" ]; then
             role_json=$("$NODE_BIN" "$ROOT/scripts/cm-workflow-config.mjs" --project "$PROJECT_PATH" --config "$CONFIG_PATH" --role "$role" --runtime "$current_runtime" --print-role 2>/dev/null || true)
           else
             role_json=$("$NODE_BIN" "$ROOT/scripts/cm-workflow-config.mjs" --project "$PROJECT_PATH" --role "$role" --runtime "$current_runtime" --print-role 2>/dev/null || true)
           fi
-          role_line=$(printf '%s' "$role_json" | "$NODE_BIN" -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{let j={};try{j=JSON.parse(d);}catch{}const tag=j.route_state==="declared-adapter"?"（已声明未派发）":"";process.stdout.write(`${j.role||"?"}: adapter=${j.adapter||"?"} route_state=${j.route_state||"?"}${tag}`);})' 2>/dev/null || true)
+          role_line=$(printf '%s' "$role_json" | "$NODE_BIN" -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{let j={};try{j=JSON.parse(d);}catch{}const unknown=process.argv[1]==="unknown";const state=unknown?"未判定":(j.route_state||"?");const tag=unknown?"（当前运行时未指定，用 --runtime 或 CM_RUNTIME 指定后才能判断）":(j.route_state==="declared-adapter"?"（已声明未派发）":"");process.stdout.write(`${j.role||"?"}: adapter=${j.adapter||"?"} route_state=${state}${tag}`);})' "$current_runtime" 2>/dev/null || true)
           [ -n "$role_line" ] && echo "runtime declaration [${declared}] ${role_line}"
         done
       fi

@@ -17,6 +17,14 @@
 
 ## 最近更新
 
+**0.16.4**
+
+- **项目类型通知不再导致审查失败**：Claude Code CLI 2.1.x 在 Xcode 等项目目录里会多发一条「项目类型」通知，而且可能排在初始化消息前面，CM 的审查解析器不认它，真实审查就以 `transport_incomplete` 收场。现在审查方和开发方的解析器都能接受这条通知，其余消息仍按原规则严格校验。
+- **规格批准后还能继续改**：批准规格时，`.cm-specs-status` 里「上一次变更记录」的编号被丢掉，此后任何 `cm-prd --change` 都报审查记录被改动，规格批准后就改不了。现在批准和摘要发布都会保留它；已经丢了的规格，按 `skills/cm-prd/references/js-change-recovery.md` 核对：能证明是哪一份变更归档对应这次批准时才人工补回，证据有歧义就停下交人重审。
+- **大任务不用再手改安装文件**：一个开发答案超过 64 KiB（一次写好几个源文件）时宿主会拒收。现在单任务和批次宿主都支持 `--input-limit BYTES`（最多 4 MiB），只影响传输，恢复时也能换。
+- **cm-prd 自检命令有输出不再误判失败**：驾驭员跑自检命令时，只要命令打印了东西就被当成失败，现已修正。
+- **`/cm-check` 按实际运行时打标签**：从 Claude Code 跑自检时，独立审查通道不再被误标成「已声明未派发」。新增 `--runtime codex|claude`，优先级为 `--runtime` > 环境变量 `CM_RUNTIME`；两者都没有时标「未判定」，不再乱下结论。
+
 **0.16.3**
 
 - **审查过的任务可以显式重做了**：独立审查用过的交接文件不能覆盖。QA 因宿主或环境证据不足而 BLOCKED、且满足重跑条件时，原本就能在原运行上用 `--rerun-blocked-qa` 重跑 QA；但确需重新开发、新建运行时，会一直报 `handoff_exists`，任务就跑不起来。现在报错会直接给出三条出路：原运行修订填错的 QA 配置、原运行重跑被环境卡住的 QA，或把任务改回 `- [ ]` 后用新运行带 `--supersede-reviewed-evidence --supersede-reason` 重做。旧交接和审查回执按内容摘要归档到 `.reviews/.superseded/`，不会删除。
@@ -168,7 +176,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.16.3 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.16.4 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 

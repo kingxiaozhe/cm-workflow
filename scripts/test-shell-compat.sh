@@ -387,6 +387,73 @@ if command -v pwsh >/dev/null 2>&1; then
   fi
 fi
 
+# route_state is only meaningful against the runtime actually running the check.
+# Without --runtime (or CM_RUNTIME) the checker must say so instead of assuming
+# Codex and reporting the other runtime's role as declared-but-not-dispatched.
+ROUTE_PROJECT="$TMP_ROOT/route-project"
+mkdir -p "$ROUTE_PROJECT"
+cat > "$ROUTE_PROJECT/.cm-workflow.yml" <<'ROUTE_YML'
+version: 1
+runtimes:
+  available: both
+roles:
+  coder:
+    adapter: codex-cli
+    model: default
+    source: subscription
+  reviewer:
+    adapter: claude-cli
+    model: default
+    source: subscription
+ROUTE_YML
+
+route_line() {
+  grep "^runtime declaration \[both\] $2:" "$1" || true
+}
+
+env -u CM_RUNTIME "$ROOT/scripts/cm-check-runtime.sh" --project "$ROUTE_PROJECT" \
+  >"$TMP_ROOT/route-unset.out" 2>&1 || true
+if ! route_line "$TMP_ROOT/route-unset.out" coder | grep -q '未判定'; then
+  cat "$TMP_ROOT/route-unset.out" >&2
+  fail "an unnamed runtime must report 未判定 instead of guessing one"
+fi
+if route_line "$TMP_ROOT/route-unset.out" reviewer | grep -q '已声明未派发'; then
+  cat "$TMP_ROOT/route-unset.out" >&2
+  fail "an unnamed runtime must not claim the reviewer was never dispatched"
+fi
+
+for rt in codex claude; do
+  env -u CM_RUNTIME "$ROOT/scripts/cm-check-runtime.sh" --project "$ROUTE_PROJECT" --runtime "$rt" \
+    >"$TMP_ROOT/route-$rt.out" 2>&1 || true
+  if [ "$rt" = codex ]; then own=coder; other=reviewer; else own=reviewer; other=coder; fi
+  if ! route_line "$TMP_ROOT/route-$rt.out" "$own" | grep -q 'route_state=current-runtime'; then
+    cat "$TMP_ROOT/route-$rt.out" >&2
+    fail "--runtime $rt must label $own as the current runtime"
+  fi
+  if ! route_line "$TMP_ROOT/route-$rt.out" "$other" | grep -q '已声明未派发'; then
+    cat "$TMP_ROOT/route-$rt.out" >&2
+    fail "--runtime $rt must label $other as declared but not dispatched"
+  fi
+done
+
+CM_RUNTIME=claude "$ROOT/scripts/cm-check-runtime.sh" --project "$ROUTE_PROJECT" \
+  >"$TMP_ROOT/route-env.out" 2>&1 || true
+if ! route_line "$TMP_ROOT/route-env.out" reviewer | grep -q 'route_state=current-runtime'; then
+  cat "$TMP_ROOT/route-env.out" >&2
+  fail "CM_RUNTIME must still name the current runtime when no flag is passed"
+fi
+
+for bad in pi CODEX ""; do
+  if env -u CM_RUNTIME "$ROOT/scripts/cm-check-runtime.sh" --project "$ROUTE_PROJECT" --runtime "$bad" \
+    >"$TMP_ROOT/route-bad.out" 2>&1; then
+    fail "--runtime $bad must be rejected"
+  fi
+done
+if "$ROOT/scripts/cm-check-runtime.sh" --project "$ROUTE_PROJECT" --runtime \
+  >"$TMP_ROOT/route-missing.out" 2>&1; then
+  fail "--runtime without a value must be rejected"
+fi
+
 if ! command -v pwsh >/dev/null 2>&1; then
   echo "PowerShell runtime declaration fixtures: SKIPPED (pwsh unavailable)"
 fi
