@@ -7,6 +7,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
+import {batchDevelopAttempts} from './cm-ai-batch-drive.mjs';
 
 const DRIVER=fileURLToPath(new URL('./cm-ai-batch-drive.mjs',import.meta.url));
 const reviewer=fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url));
@@ -92,6 +93,7 @@ test('real batch host advances with authored edit and actual check, then resumes
 });
 test('real batch reaches completion with an independently dispatched fixture review',t=>{
   const f=fixture(t);prepared(f);
+  f.write('develop-a2.json',develop);
   const permissions=['--allow-qa','--review-config','review.json','--allow-review',`${key}:1`];
   const first=f.drive(f.plan({permissions}),'advance');
   assert.equal(first.status,0,first.stderr);assert.match(first.stderr,/应答 check/);
@@ -101,6 +103,33 @@ test('real batch reaches completion with an independently dispatched fixture rev
     assert.equal(next.status,0,next.stderr);result=JSON.parse(next.stdout).result;
   }
   assert.equal(result.state,'run_done',JSON.stringify(result));
+});
+test('batch review authorization requires a second-round develop answer before launch',t=>{
+  const f=fixture(t);prepared(f);
+  const run=f.drive(f.plan({permissions:['--allow-qa','--review-config','review.json','--allow-review',`${key}:1`]}),'advance');
+  assert.equal(run.status,2,run.stderr);
+  assert.match(run.stderr,/develop-a2\.json/);
+  noStore(f);
+});
+test('batch review revision applies the second-round develop content',t=>{
+  const f=fixture(t);prepared(f);
+  const cli=path.join(f.root,'bin','codex');
+  fs.writeFileSync(cli,fs.readFileSync(cli,'utf8').replace("verdict:'approved'","verdict:'changes_requested'")
+    .replace('findings:[]',"findings:[{id:'F1',severity:'P2',path:'target.mjs',message:'Revise value',evidence:'Fixture finding'}]"));
+  fs.writeFileSync(path.join(f.answers,'target-a2.txt'),'export const value = 43;\n');
+  f.write('develop-a2.json',{...develop,edits:{'target.mjs':'target-a2.txt'}});
+  const permissions=['--allow-qa','--review-config','review.json','--allow-review',`${key}:1`];
+  const run=f.drive(f.plan({permissions}),'advance');assert.equal(run.status,0,run.stderr);
+  assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 43;\n');
+});
+test('batch first-round answer aliases cannot coexist',t=>{
+  const f=fixture(t);prepared(f);f.write('develop-a1.json',develop);
+  const run=f.drive(f.plan(),'advance');assert.equal(run.status,2,run.stderr);
+  assert.match(run.stderr,/develop\.json.*develop-a1\.json/);noStore(f);
+});
+test('batch retryable blocked state projects the same develop attempt',()=>{
+  for(const code of ['developer_result_invalid','verification_precheck_failed'])
+    assert.deepEqual(batchDevelopAttempts({state:'blocked',code,attempt:2},key,[]),[2]);
 });
 test('missing answer leaves no batch store or session',t=>{
   const f=fixture(t);const run=f.drive(f.plan(),'advance');

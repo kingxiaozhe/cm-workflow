@@ -29,12 +29,13 @@
 //   learning.json       {status, summary}            恢复时若存档里已有记录会自动复用
 //   diagnosis.json      诊断结论对象
 //   retrospective.json  {status, candidates, reason}
-//   test-edits.json     {"仓库内路径": "本目录下的内容文件"}
-//   repair-edits.json   同上
+//   test-edits.json     {"仓库内路径": "本目录下的内容文件"}；修订轮用 test-edits-a2.json
+//   repair-edits.json   同上；修订轮用 repair-edits-a2.json
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {fixEvidenceNames} from '../runtime/js/cm-fix/layout.mjs';
+import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
@@ -81,12 +82,33 @@ function recordedLearning(config,cwd){
   const record=stored?.records?.find(row=>row.kind==='result'&&/^fix-learning-/.test(row.id));
   return record?.payload?.application??null;
 }
+function answerRound(config,operation,cwd){
+  if(!['repair','author_tests'].includes(operation))return 1;
+  const archive=config.specsRoot??path.join(cwd,'docs','fixes');
+  const state=path.join(archive,'.reviews','.execution',config.identity.runId,'state.json');
+  if(!fs.existsSync(state))return 1;
+  try{
+    const snapshot=readExecutionSnapshot({specsRoot:archive,identity:{
+      repositoryId:config.identity.repositoryId,runId:config.identity.runId}});
+    return snapshot.records.some(row=>row.id==='fix-revision-prepared')?2:1;
+  }catch(error){stop(2,`无法只读检查 cm-fix 修订轮次: ${error.code??error.message}`);}
+}
+function roundAnswerName(root,kind,round){
+  const legacy=`${kind}.json`,first=`${kind}-a1.json`;
+  if(round===1){
+    if(fs.existsSync(path.join(root,legacy))&&fs.existsSync(path.join(root,first)))
+      stop(2,`${legacy} 与 ${first} 不能同时存在`);
+    return fs.existsSync(path.join(root,first))?first:legacy;
+  }
+  return `${kind}-a${round}.json`;
+}
 
 function preflight({operation,plan,paths}){
   const config=readJson(paths.config,'宿主配置');
   if(config===undefined)stop(2,`宿主配置不存在: ${paths.config}`);
   if(path.resolve(plan.cwd)!==path.resolve(config.reproduction?.cwd??''))
     stop(2,`PLAN.cwd 与 config.reproduction.cwd 不一致`);
+  const round=answerRound(config,operation,plan.cwd);
   const need=(kind,file)=>{const value=readJson(path.join(paths.answers,file),kind);
     if(value===undefined)stop(2,`步骤 ${operation} 会反问「${kind}」，但答案文件不存在: ${path.join(paths.answers,file)}\n        先把它写好，再来调驾驱员。缺答案而硬发指令，会把这次运行做死。`);
     return value;};
@@ -98,7 +120,8 @@ function preflight({operation,plan,paths}){
     }
     if(kind==='diagnosis')return need('诊断','diagnosis.json');
     if(kind==='retrospective')return need('复盘','retrospective.json');
-    const map=need(kind==='test-edits'?'测试内容':'修复内容',`${kind}.json`);
+    const file=roundAnswerName(paths.answers,kind,round);
+    const map=need(kind==='test-edits'?'测试内容':'修复内容',file);
     for(const [target,local] of Object.entries(map)){
       const file=path.join(paths.answers,local);
       if(!fs.existsSync(file))stop(2,`${kind}.json 把 ${target} 指向 ${file}，但那个文件不存在`);
@@ -125,7 +148,7 @@ function preflight({operation,plan,paths}){
           stderr(`注意：受保护模式的沙箱跑不了 tsx / vitest 这类要开本地 socket 的命令：${command.join(' ')}\n        见 skills/cm-fix/references/js-host.md「同仓 specs 的受保护修复」`);
     }
   }
-  return {config,answers};
+  return {config,answers,round};
 }
 
 function hostArgs({plan,paths}){
@@ -142,6 +165,9 @@ function answerFor(row,answers,paths){
   if(kind==='fix_diagnose')return answers.diagnosis;
   if(kind==='fix_retrospective')return answers.retrospective;
   if(kind==='fix_test_author'||kind==='fix_repair'){
+    const requestAttempt=payload.identity?.attempt??payload.request?.identity?.attempt;
+    if(requestAttempt!==undefined&&requestAttempt!==paths.round)
+      throw Error(`修订轮次 ${requestAttempt} 与已预检答案轮次 ${paths.round} 不一致`);
     const map=answers[kind==='fix_repair'?'repair-edits':'test-edits'],expected=payload.expected??{};
     const edits=[];
     for(const [target,local] of Object.entries(map)){
@@ -157,12 +183,12 @@ function answerFor(row,answers,paths){
 
 function main(){
   const loaded=loadPlan();
-  const {answers}=preflight(loaded);
+  const {answers,round}=preflight(loaded);
   const {operation,plan,paths}=loaded;
   driveHost({host:HOST,args:hostArgs(loaded).slice(1),cwd:path.resolve(plan.cwd),operation,
     request:{...(operation==='abandon_step'?{reason:plan.reason}:{}),
       ...(operation==='prepare_revision'&&Object.hasOwn(plan,'revisionTests')?{tests:plan.revisionTests}:{})},
-    answers,paths,answerFor});
+    answers,paths:{...paths,round},answerFor});
 }
 
 main();

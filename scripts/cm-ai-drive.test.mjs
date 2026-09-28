@@ -6,7 +6,8 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
-import {qaFixAnswerFor} from './cm-ai-drive.mjs';
+import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
+import {qaFixAnswerFor,projectDevelopAttempts} from './cm-ai-drive.mjs';
 
 const DRIVER=fileURLToPath(new URL('./cm-ai-drive.mjs',import.meta.url));
 const identity={repositoryId:'drive-fixture',runId:'drive-run',taskId:'T-001',attempt:1};
@@ -26,22 +27,114 @@ function fixture(t){
   fs.writeFileSync(path.join(root,'run.json'),JSON.stringify({version:1,specsDir,codeProject,feature,identity,
     scope:['target.mjs'],requirements:['requirements.md']}));
   const answers=path.join(root,'answers');fs.mkdirSync(answers);
+  const bin=path.join(root,'bin');fs.mkdirSync(bin);
   const write=(name,value)=>fs.writeFileSync(path.join(answers,name),JSON.stringify(value));
   const plan=(extra={})=>{const file=path.join(root,`plan-${Math.random().toString(36).slice(2)}.json`);
     fs.writeFileSync(file,JSON.stringify({config:'run.json',mode:'create',hostContext:'drive-host-a',
       permissions:[],answers:'answers',checks:[{id:'syntax',command:[process.execPath,'--check','target.mjs']}],...extra}));
     return file;};
   const drive=(file,operation)=>spawnSync(process.execPath,[DRIVER,'--plan',file,operation],
-    {encoding:'utf8',timeout:30000,env:{...process.env,CM_WORKFLOW_HOME:path.join(root,'home'),
+    {encoding:'utf8',timeout:30000,env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,CM_WORKFLOW_HOME:path.join(root,'home'),
       CM_WORKFLOW_LOG_HOME:path.join(root,'logs')}});
   const store=path.join(specsDir,'.reviews','.execution',identity.runId,'state.json');
-  return {root,codeProject,specsDir,answers,write,plan,drive,store};
+  return {root,codeProject,specsDir,answers,bin,write,plan,drive,store};
 }
 const develop={status:'succeeded',value:{outcome:'implemented',
   application:{status:'no_relevant_lesson',note:null},
   retrospective:{status:'no_new_lesson',candidates:[],reason:null}},
   edits:{'target.mjs':'target-content.mjs'}};
 function prepared(f){f.write('develop.json',develop);fs.writeFileSync(path.join(f.answers,'target-content.mjs'),'export const value = 42;\n');}
+function changesRequestedReview(f){
+  const source=fs.readFileSync(fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url)),'utf8');
+  const fake=source.replace("verdict:'approved'","verdict:'changes_requested'")
+    .replace('findings:[]',"findings:[{id:'F1',severity:'P2',path:'target.mjs',message:'Revise the value',evidence:'Fixture finding'}]");
+  const cli=path.join(f.bin,'codex');fs.writeFileSync(cli,fake,{mode:0o700});
+  fs.writeFileSync(path.join(f.root,'review.json'),JSON.stringify({model:'fixture',preflight:{passed:true,
+    cli_model:'fixture',prompt_transport:'stdin',config_fingerprint:configFingerprint({cwd:f.codeProject,model:'fixture'})}}));
+  return ['--review-config','review.json','--allow-review-attempt','1'];
+}
+function reviewPending(f){
+  prepared(f);const permissions=changesRequestedReview(f);
+  const first=f.drive(f.plan({permissions:permissions.slice(0,2)}),'advance');assert.equal(first.status,0,first.stderr);
+  return {permissions,packageDigest:JSON.parse(first.stdout).result.packageDigest};
+}
+function assertActionableFirstReviewHint(stderr){
+  assert.match(stderr,/develop-a2\.json/);
+  assert.match(stderr,/审查后可能直接进入第 2 轮 develop/);
+  assert.match(stderr,/移除 --allow-review-attempt 1/);
+  assert.match(stderr,/awaiting_review/);
+  assert.match(stderr,/packageDigest.*decision/);
+  assert.match(stderr,/\.reviews\/work-T-001-r1\.md/);
+  assert.match(stderr,/预先写.*develop-a2\.json/);
+}
+test('review-enabled advance refuses missing second-round answer before host launch',t=>{
+  const f=fixture(t),{permissions,packageDigest}=reviewPending(f),before=fs.readFileSync(f.store);
+  const run=f.drive(f.plan({mode:'resume',originalHostContext:'drive-host-a',permissions}),'advance');
+  assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/develop-a2\.json/);
+  assert.match(run.stderr,/decision/);assert.match(run.stderr,new RegExp(packageDigest));
+  assert.match(run.stderr,/\.reviews\/work-T-001-r1\.md/);
+  assert.deepEqual(fs.readFileSync(f.store),before);
+});
+test('retryable blocked state projects the same develop attempt',()=>{
+  for(const code of ['developer_result_invalid','verification_precheck_failed'])
+    assert.deepEqual(projectDevelopAttempts({state:'blocked',code,attempt:2},'advance',[]).attempts,[2]);
+});
+test('review-authorized create preflights a possible second develop round',t=>{
+  const f=fixture(t);prepared(f);const permissions=changesRequestedReview(f);
+  const run=f.drive(f.plan({permissions}),'advance');
+  assert.equal(run.status,2,run.stderr);assertActionableFirstReviewHint(run.stderr);
+  assert.equal(fs.existsSync(f.store),false);
+});
+test('review-authorized resume from ready gives the same two paths before launch',t=>{
+  const f=fixture(t);prepared(f);const permissions=changesRequestedReview(f);
+  const status=f.drive(f.plan({permissions:permissions.slice(0,2),answers:undefined,checks:undefined}),'status');
+  assert.equal(status.status,0,status.stderr);assert.equal(JSON.parse(status.stdout).result.state,'ready');
+  const before=fs.readFileSync(f.store);
+  const run=f.drive(f.plan({mode:'resume',originalHostContext:'drive-host-a',permissions}),'advance');
+  assert.equal(run.status,2,run.stderr);assertActionableFirstReviewHint(run.stderr);
+  assert.deepEqual(fs.readFileSync(f.store),before);
+});
+test('create advance without review authorization accepts only develop.json',t=>{
+  const f=fixture(t);prepared(f);const permissions=changesRequestedReview(f).slice(0,2);
+  assert.equal(fs.existsSync(path.join(f.answers,'develop-a2.json')),false);
+  const run=f.drive(f.plan({permissions}),'advance');assert.equal(run.status,0,run.stderr);
+  assert.equal(JSON.parse(run.stdout).result.state,'awaiting_review');
+});
+test('decision dispatches only review and leaves changes_requested for authored revision',t=>{
+  const f=fixture(t),{permissions,packageDigest}=reviewPending(f);
+  const run=f.drive(f.plan({mode:'resume',originalHostContext:'drive-host-a',permissions,
+    packageDigest,answers:undefined,checks:undefined}),'decision');
+  assert.equal(run.status,0,run.stderr);
+  assert.equal(JSON.parse(run.stdout).result.state,'changes_requested');
+  assert.equal(JSON.parse(run.stdout).result.identity.attempt,2);
+  assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 42;\n');
+});
+test('advance applies develop-a2 content after changes_requested review',t=>{
+  const f=fixture(t),{permissions}=reviewPending(f);
+  fs.writeFileSync(path.join(f.answers,'target-a2.mjs'),'export const value = 43;\n');
+  f.write('develop-a2.json',{...develop,edits:{'target.mjs':'target-a2.mjs'}});
+  const run=f.drive(f.plan({mode:'resume',originalHostContext:'drive-host-a',permissions}),'advance');
+  assert.equal(run.status,0,run.stderr);
+  assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 43;\n');
+  assert.equal(JSON.parse(run.stdout).result.identity.attempt,2);
+});
+test('both first-round develop filenames are refused before launch',t=>{
+  const f=fixture(t);prepared(f);f.write('develop-a1.json',develop);
+  const run=f.drive(f.plan(),'advance');assert.equal(run.status,2,run.stderr);
+  assert.match(run.stderr,/develop\.json.*develop-a1\.json/);assert.equal(fs.existsSync(f.store),false);
+});
+test('develop-a1 alone is accepted for a new run',t=>{
+  const f=fixture(t);prepared(f);fs.renameSync(path.join(f.answers,'develop.json'),path.join(f.answers,'develop-a1.json'));
+  const run=f.drive(f.plan(),'advance');assert.equal(run.status,0,run.stderr);
+  assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 42;\n');
+});
+test('malformed develop-a2 is rejected before review launch',t=>{
+  const f=fixture(t),{permissions}=reviewPending(f),before=fs.readFileSync(f.store);
+  f.write('develop-a2.json',{status:'succeeded',value:{outcome:'implemented'},edits:{}});
+  const run=f.drive(f.plan({mode:'resume',originalHostContext:'drive-host-a',permissions}),'advance');
+  assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/答案格式错误/);
+  assert.deepEqual(fs.readFileSync(f.store),before);
+});
 function qaFixture(f,kinds,caseIds=[]){
   const featureRoot=path.join(f.specsDir,'1.work');
   fs.writeFileSync(path.join(featureRoot,'requirements.md'),'- [AC-001]: fixture\n');

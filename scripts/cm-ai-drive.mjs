@@ -39,6 +39,9 @@ import {inspectCmAiQaTaskContext} from '../runtime/js/cm-ai/cm-ai-admission.mjs'
 import {readLearningRetrospectiveContent} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
 import {inspectFixInvestigation} from '../runtime/js/cm-fix/investigation.mjs';
 import {readRunDefinition} from './cm-ai-run.mjs';
+import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
+import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
 
 const HOST=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
@@ -78,6 +81,43 @@ export const abandonReviewPlanError=(operation,plan,permissions)=>operation!=='a
 function requireShape(ok,label){if(!ok)stop(2,`答案格式错误：${label}`);}
 function exact(value,allowed,label){requireShape(object(value)&&Object.keys(value).every(key=>allowed.includes(key)),label);}
 function answerPath(root,file){return path.join(root,file);}
+export function developFilename(root,attempt){
+  if(attempt===1){
+    const legacy=fs.existsSync(answerPath(root,'develop.json'));
+    const named=fs.existsSync(answerPath(root,'develop-a1.json'));
+    if(legacy&&named)stop(2,'develop.json 与 develop-a1.json 不能同时存在');
+    return named?'develop-a1.json':'develop.json';
+  }
+  return `develop-a${attempt}.json`;
+}
+function reachableDevelopAttempts({plan,operation,definition,permissions}){
+  if(plan.mode==='create'){
+    const reviewAfterDevelop=operation==='advance'
+      &&permissions.some((flag,index)=>flag==='--allow-review-attempt'&&permissions[index+1]==='1');
+    return {attempts:reviewAfterDevelop?[1,2]:[1],reviewFirst:false,reviewAfterDevelop,packageDigest:null};
+  }
+  let history;
+  try{
+    const snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,identity:{
+      repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
+    const first=snapshot.records[0];
+    history=readRunnerHistory(snapshot.records,first.payload.config,3);
+  }catch(error){stop(2,`无法只读检查恢复存档: ${error.code??error.message}`);}
+  return projectDevelopAttempts(history.state,operation,permissions);
+}
+export function projectDevelopAttempts(status,operation,permissions){
+  const {state,attempt,reviewPackage}=status;
+  if(developmentRetryable(status))return {attempts:[attempt],reviewFirst:false,packageDigest:null};
+  if(state==='ready'&&attempt===1&&operation==='advance'
+    &&permissions.some((flag,index)=>flag==='--allow-review-attempt'&&permissions[index+1]==='1'))
+    return {attempts:[1,2],reviewFirst:false,reviewAfterDevelop:true,packageDigest:null};
+  if(['ready','changes_requested'].includes(state))return {attempts:[attempt],reviewFirst:false,packageDigest:null};
+  if(operation==='advance'&&['awaiting_review','pending_review'].includes(state)
+    &&permissions.some((flag,index)=>flag==='--allow-review-attempt'&&Number(permissions[index+1])===attempt)
+    &&attempt<2)return {attempts:[attempt+1],reviewFirst:true,
+      packageDigest:reviewPackage?.packageDigest??null};
+  return {attempts:[],reviewFirst:false,packageDigest:null};
+}
 function predictedQaAsks(definition,qa){
   // Reuse the executor's validated initial plan for policy applicability.
   // QA runs after this task completes, so project its task
@@ -246,17 +286,33 @@ function load(){
     try{createHostCheck({cwd:definition.codeProject,commands:plan.checks});}
     catch(error){stop(2,`PLAN.checks 格式错误: ${error.code??error.message}`);}
   }
-  const unique=[...new Set(asks.filter(kind=>FILES[kind]))];
+  const reachable=asks.includes('develop')&&!providerMode
+    ?reachableDevelopAttempts({plan,operation,definition,permissions})
+    :{attempts:[],reviewFirst:false,packageDigest:null};
+  const developAnswers=new Map();
+  for(const attempt of reachable.attempts){
+    const file=answerPath(answers??'',developFilename(answers??'',attempt));
+    if(!answers||!fs.existsSync(file)){
+      const reviewFile=`.reviews/${definition.feature.replace(/^\d+\./,'')}-${definition.identity.taskId}-r1.md`;
+      if(reachable.reviewAfterDevelop&&attempt===2)
+        stop(2,`缺少 ${file}；本次 advance 带 --allow-review-attempt 1，宿主完成首轮审查后可能直接进入第 2 轮 develop。可选：1) 从 PLAN.permissions 移除 --allow-review-attempt 1，先 advance 到 awaiting_review；再用该运行返回的 packageDigest 执行 decision，读取 ${reviewFile} 的 findings；若要求修改，写 answers/develop-a2.json 后 advance。2) 若有意一次跑完，预先写 answers/develop-a2.json 后重试 advance。`);
+      if(reachable.reviewFirst)stop(2,`缺少 ${path.basename(file)}；请先以 decision 和当前 packageDigest ${reachable.packageDigest} 单独运行审查，读取 .reviews/${definition.feature.replace(/^\d+\./,'')}-${definition.identity.taskId}-r${attempt-1}.md 中的 findings，写 answers/develop-a${attempt}.json 后再 advance`);
+      stop(2,`步骤 ${operation} 会反问 develop，但答案文件不存在: ${file}`);
+    }
+    const value=readJson(file,'develop');validateCmAiAnswer('develop',value,answers);
+    if(value.status==='succeeded')for(const target of Object.keys(value.edits))
+      if(!definition.scope.includes(target))stop(2,`${path.basename(file)}.edits 越过批准 scope: ${target}`);
+    developAnswers.set(attempt,value);
+  }
+  const unique=[...new Set(asks.filter(kind=>FILES[kind]&&kind!=='develop'))];
   const answer=preflightAnswers(unique,kind=>{
     const file=answerPath(answers??'',FILES[kind]);
     if(!answers||!fs.existsSync(file))stop(2,`步骤 ${operation} 会反问 ${kind}，但答案文件不存在: ${file}`);
     const value=readJson(file,kind);validateCmAiAnswer(kind,value,answers);return value;
   });
-  if(answer.develop?.status==='succeeded')for(const target of Object.keys(answer.develop.edits))
-    if(!definition.scope.includes(target))stop(2,`develop.json.edits 越过批准 scope: ${target}`);
   if(answer.documentation_sync)for(const target of Object.keys(answer.documentation_sync.edits))
     if(!workflow.documentationPaths.includes(target))stop(2,`documentation-sync.json.edits 越过文档 scope: ${target}`);
-  return {...loaded,definition,permissions,config,answers,answer};
+  return {...loaded,definition,permissions,config,answers,answer,developAnswers};
 }
 function applyEdits(map,root,allowed){
   for(const target of Object.keys(map)){
@@ -286,7 +342,9 @@ export function qaFixAnswerFor(row,answer,answerRoot){
   return value??null;
 }
 async function answerFor(row,answer){
-  const kind=row.kind,value=answer[kind];
+  const kind=row.kind,value=kind==='develop'
+    ?loaded.developAnswers.get(row.payload.request?.identity?.attempt??row.payload.identity?.attempt)
+    :answer[kind];
   if(kind==='check'){
     const results=[];
     for(const command of loaded.plan.checks){
@@ -299,6 +357,7 @@ async function answerFor(row,answer){
     return results;
   }
   if(kind==='develop'){
+    if(!value)throw Error(`develop attempt ${row.payload.request?.identity?.attempt??row.payload.identity?.attempt} 未预检，拒绝复用旧答案`);
     if(value.status!=='succeeded')return {status:'failed',code:value.code};
     if(row.payload.editMode==='protected-text-v1'){
       const edits=Object.entries(value.edits).map(([target,local])=>({path:target,
