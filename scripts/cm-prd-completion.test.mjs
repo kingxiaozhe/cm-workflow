@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {once} from 'node:events';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
-import {inspectPrdChangeSnapshot,inspectPrdChangeProposal,applyPrdChange} from '../runtime/js/cm-prd/change.mjs';
+import {inspectPrdChangeSnapshot,inspectPrdChangeProposal,applyPrdChange,assertPrdReviewsSettled} from '../runtime/js/cm-prd/change.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
 import {recordPrdReview} from './cm-prd-review-gate.mjs';
 
@@ -82,6 +82,34 @@ test('actual change CLI resumes unsaved phase across processes and stops at huma
     &&other.operation_id===row.operation_id&&other.segment===row.segment).length,1);
   c=await client(t,dir,()=>assert.fail('completed recovery must not call host'),{session:runId});
   assert.equal((await c.request('status')).result.stage,'awaiting_review');await c.close();
+});
+test('approved change retains revision history for the next real cm-prd change',t=>{
+  const dir=fixture(t),reviews=path.join(dir,'.reviews');fs.mkdirSync(reviews);
+  const evidence=path.join(reviews,'prd-guide-split-r1.md'),receipt=path.join(reviews,'prd-guide-split-disposition.json');
+  fs.writeFileSync(evidence,'---\nat: 2026-09-08T00:00:00Z\nreviewer: codex-subagent\nindependent: true\nscope:\n  - 1.guide/tasks.md\n---\nSynthetic original review');
+  recordPrdReview({stage:'split',feature:'guide',evidence,receipt,disposition:'no_findings',finding_count:0,unresolved_count:0,
+    artifact:docs().map(doc=>path.join(dir,'1.guide',doc.path))});
+  const selected=['1.guide'],config=loadConfig({projectRoot:dir});
+  const before=inspectPrdChangeSnapshot(dir);
+  const proposal=inspectPrdChangeProposal(before,{status:'draft',summary:'Add example',removed:[],features:[
+    {directory:'1.guide',documents:revised(),testCasesReason:'no_observable_behavior'}]},selected,config);
+  const proposalDigest=proposal.proposalDigest;
+  const saved=applyPrdChange({specs:dir,before,proposal,selected});
+  assert.equal(saved.status,'awaiting_review');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'.cm-specs-status'))).revisionDigest,proposalDigest);
+  const approval=spawnSync(process.execPath,[path.join(root,'scripts/cm-ai-admission.mjs'),'--specs-dir',dir,
+    '--code-project',dir,'--approve','--approval-response','开始'],{encoding:'utf8'});
+  assert.equal(approval.status,0,approval.stdout+approval.stderr);
+  assert.doesNotThrow(()=>assertPrdReviewsSettled(dir,['1.guide'],{requireSplit:true}));
+  const nextDocs=revised().map(doc=>({path:doc.path,content:doc.content.replace('| 2026-09-08 | v2 | change |',
+      '| 2026-09-08 | v2 | change |\n| 2026-09-08 | v3 | another change |')+
+      (doc.path==='tasks.md'?'\n- [ ] T-004: [NEW] More examples\n':'\nMore detail\n')}));
+  const nextBefore=inspectPrdChangeSnapshot(dir);
+  const nextProposal=inspectPrdChangeProposal(nextBefore,{status:'draft',summary:'Another guide change',removed:[],features:[
+    {directory:'1.guide',documents:nextDocs,testCasesReason:'no_observable_behavior'}]},selected,config);
+  const secondSaved=applyPrdChange({specs:dir,before:nextBefore,proposal:nextProposal,selected});
+  assert.equal(secondSaved.status,'awaiting_review');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'.cm-specs-status'))).revisionDigest,nextProposal.proposalDigest);
 });
 test('unknown host generation resumes only its exact original receipt, no repeat call', {timeout:25000},async t=>{
   const dir=fixture(t);let original;

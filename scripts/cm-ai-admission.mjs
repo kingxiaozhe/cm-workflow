@@ -74,6 +74,8 @@ export function main(argv=process.argv.slice(2)){
   const result={...selected,...(approval?.approveRefused?{approveRefused:approval.approveRefused}:{}),codeProject:input.codeProjects.length===1?selected.codeProject:null,
     codeProjects:projectResults.map(item=>item.codeProject),
     projectAdmissions:projectResults.map(item=>({codeProject:item.codeProject,state:item.state,reason:item.reason}))};
+  if(result.state==='awaiting_spec_approval'&&(result.approvalIntent!=='explicit'||input.assumeYes))
+    result.message='确认规格摘要后，请在 --approval-response 后准确输入“开始”。';
   if(input.printRunDefinition&&!result.approveRefused&&result.state==='ready'){
     try{process.stdout.write(`${JSON.stringify(buildRunDefinition(result,input))}\n`);return 0;}
     catch(error){process.stderr.write(`${JSON.stringify({error:{code:error.code??error.message}})}\n`);return 1;}

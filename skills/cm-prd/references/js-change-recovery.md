@@ -79,6 +79,36 @@
 
 ## 跨进程恢复
 
+### 审批后丢失 `revisionDigest` 的旧状态
+
+旧版审批可能把 `.cm-specs-status` 中的 `revisionDigest` 删除，而对应的
+`.reviews/prd-change-<digest>.json` 仍在。下一次变更可能报
+`PRD review artifact changed after disposition`（宿主外层为 `host_request_failed`）。
+不要仅按归档文件名、修改时间或“只有一个归档”自动回填：不同提案可能生成相同的最终规格，
+这些信息不足以证明哪份归档对应最后一次人工审批。
+
+人工恢复时先备份 `.cm-specs-status`，再逐一核对：状态为 `approved` 且确实没有
+`revisionDigest`；当前全部规格文件的 SHA-256 与状态中的 `specFiles` 一致；
+选定归档的文件名摘要与 `proposal.proposalDigest` 相同；归档提案的最终文件内容、
+feature 清单与当前已批准清单一致；审批记录能把这份提案与这次批准明确关联。
+如果存在多份吻合归档，或审批关联无法证实，就停止并保留原文件，交人工重审。
+确认唯一归档后，在当前 CM Workflow 根目录用共享写入器只补这一字段（把下面两个占位值
+替换为已核对的绝对 specs 路径与归档文件名中的 64 位小写十六进制摘要）：
+
+```bash
+node --input-type=module - '<SPECS_DIR>' '<DIGEST>' <<'NODE'
+import {readSpecsStatus,writeSpecsStatus} from './runtime/js/specs-status.mjs';
+const [specs,digest]=process.argv.slice(2),status=readSpecsStatus(specs);
+if(status.kind!=='valid'||status.value.status!=='approved'||Object.hasOwn(status.value,'revisionDigest'))
+  throw new Error('status is not an approved legacy record without revisionDigest');
+writeSpecsStatus(specs,{...status.value,revisionDigest:digest});
+NODE
+```
+
+写入器会校验摘要格式并保留状态其余字段；之后用共享 `readSpecsStatus` 回读，
+重新运行只读准入及变更预检。
+不要修改归档、审查回执或规格正文来绕过校验。
+
 `status`返回runId与recovery。未保存的问答、材料结果、草稿、风险选择、自检轮次也保存在
 `{SPECS}/.reviews/prd-sessions/{runId}/state.json`（0600）；它是私有执行记录，不是任务真相库，
 不进入全局镜像正文。`--allow-log-write`包含该必要本地执行记录，规格/审查写仍分别授权。
