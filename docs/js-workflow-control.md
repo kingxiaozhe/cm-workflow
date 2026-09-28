@@ -357,7 +357,7 @@ host-context 必须是真实当前会话身份；宿主将其排除出独立审�
 
 开发检查有任一失败或不可用时，在生成审查包前停 `blocked/develop_checks_not_passed`；`reason` 列出失败 id 和证据摘要，`pendingAction: "resume"`。修好环境后在原 run `advance` 重新开发并检查，使用新 effect id，审查轮次不增加。已经审查过失败检查的旧 journal 仍按原历史回放；其完成阶段 `blocked/checks_not_passed` 保持终态，不能重新开发。
 
-已批准任务在完成前会重新执行检查。审查回执及原 `packageDigest` 不改：完成门禁重建代码、scope、需求、指令与 handoff 等非检查字段并逐项比较；检查只比较有序的 `id`、`command`、`outcome`、`exitCode`，视觉检查在结果相同时还比较前后载体，`evidence` 诊断文字可变化。代码、handoff 字节或检查身份漂移仍以 `blocked/package_mismatch` 终止；越界的 scope 或需求漂移保持既有 `blocked/out_of_scope` 终态。检查结果变化记录 `blocked/completion_checks_changed`，不标记完成；失败或不可用时 `reason` 列出检查 id 和证据摘要。视觉检查从 passed 变成 unavailable 时，即使 after 载体按合同变成 null，也先按结果漂移处理。恢复原 runId 后重新执行检查，结果恢复一致时用新的 complete effect id 继续原批准，不重新审查。`advance` 和 `complete` 均可续跑，持久 journal 回放接受该重试状态；旧 journal 与回执保持原格式。重试仍受原 effect 数量上限约束。
+已批准任务在完成前会重新执行检查。审查回执及原 `packageDigest` 不改：完成门禁重建代码、scope、需求、指令与 handoff 等非检查字段并逐项比较；检查只比较有序的 `id`、`command`、`outcome`、`exitCode`，视觉检查在结果相同时还比较前后载体，`evidence` 诊断文字可变化。代码、handoff 字节或检查身份漂移会列出差异路径并阻断；检查期间新出现的范围外文件为可重试的 `blocked/completion_package_changed`，移走后在原运行用新的 complete effect id 重试。仅检查结果（`outcome`、`exitCode`）变化记录 `blocked/completion_checks_changed`，不标记完成；失败或不可用时 `reason` 列出检查 id 和证据摘要；视觉检查从 passed 变成 unavailable 时，即使 after 载体按合同变成 null，也先按结果漂移处理。恢复原 runId 后重新执行检查，结果恢复一致时用新的 complete effect id 继续原批准，不重新审查。`advance` 和 `complete` 均可续跑，持久 journal 回放接受该重试状态；旧 journal 与回执保持原格式。重试仍受原 effect 数量上限约束。
 
 回复固定为以下形状；三个绑定值必须逐字取自该次请求，不要自行计算或沿用上次值：
 
@@ -552,6 +552,8 @@ review.json 含 `{model, disabledSkills, preflight}`，另有可选 `timeoutMs`�
 它只管 reviewer，不改变开发、检查或 QA 的任何超时。
 
 单任务和批次驾驶员的 PLAN 可给 `checks` 每项设置 `timeoutMs`，也可给 PLAN 设置 `checkTimeoutMs` 作为默认值；均须为 1..3600000 的整数毫秒，每项优先，省略时驱动默认 900000（15 分钟），启动宿主前校验。`host-check` 对其他调用方仍默认 60000。检查命令产生的构建文件应放在代码根外，例如将 `xcodebuild -derivedDataPath` 指向外部目录。若检查自己新增了未跟踪的范围外文件，状态为 `blocked/check_output_out_of_scope`，`reason` 与宿主 stderr 列出最多 20 个相对路径；移走产物后在原 run `advance` 会用新 develop effect id 重做。开发者写出的范围外文件仍按 `unknown/out_of_scope` 处理，检查前后树的比较不会给它恢复权限。
+
+代码根快照有意缩小检查面：固定跳过 `.DS_Store`、`._*`、`.AppleDouble/`、`Thumbs.db`、`xcuserdata/`、`*.xcuserstate`、`.build/`、`.swiftpm/`、`DerivedData/`；在 Git 工作树内还跳过 Git 报告的忽略路径。任务 scope、任何 AGENTS.md 与规格不受忽略规则豁免。新基线记录最多 10,000 个、序列化最多 1 MiB 的 Git 忽略路径与目录，以及 `core.excludesFile` 的配置值／内容摘要；超限或 Git 不可用时明确记为仅使用固定列表。后续比较将基线和当前的忽略决定取并集并同时应用到两侧，忽略规则或无关 Git 配置变化本身不阻断审查；非忽略文件的真实漂移仍阻断。旧 journal 的无策略及旧版策略继续按各自原规则回放。审查结果已写入 journal、检查点尚未写入就中断时，恢复原运行会从已验证的结果补写检查点；若树此时漂移，状态为 `blocked/review_package_changed` 并保留 verdict 与路径，清理后继续原运行，不再调用 reviewer。
 
 `--allow-review-attempt` 只能为1或2，只传递可信启动会话已经取得的那一轮授权，
 不能为了让流程继续而擅自添加。不会自动批准后续轮次、换模型或重试失败；若第一轮要求
@@ -1138,6 +1140,8 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 
 ### `pendingAction: "reconcile"` 时该做什么
 
+新建单任务运行的代码根快照固定忽略 `.DS_Store`、`._*`、`.AppleDouble/`、`Thumbs.db`、`xcuserdata/`、`*.xcuserstate`、`.build/`、`.swiftpm/`、`DerivedData/`，并用固定环境下的 Git ignored 结果跳过被忽略目录；Git 不可用或结果超限时只用固定列表并在基线标明。任务 scope、AGENTS.md 和 specs 仍检查：Git 可用时单独查询 ignored AGENTS.md，缺 Git 时只扫描被跳过目录的名字以寻找 AGENTS.md，不读取其他文件内容。基线记录有界的忽略决定；恢复、审查与完成时将基线和当前决定的并集用于两侧比较。**这是有意缩小的检查面**：被忽略的构建产物与 IDE 状态不作为代码审查证据；旧 journal 仍按原策略回放。
+
 `reconcile` 的意思是**这一步的结果未知**——不是失败，也不是成功，JS 拒绝替你猜。
 它只有两个来源：
 
@@ -1153,6 +1157,8 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 | `state: "unknown"` + pending review intent，尚无 host-joined／review 登记 | reviewer 启动前退出 | `pendingAction: "abandon_effect"`；确认旧 host 已退出后在原 run 显式退出 |
 | `state: "unknown"` + 已登记且无结果的 review invocation | 审查调用未完成 | `pendingAction: "abandon_review"`；核对旧 host 和 reviewer 进程后在原 run 显式退出 |
 | `state: "fixture_completed"` + `code: "qa_execution_unknown"` | 一次 QA 调用没拿到终态，工具可能还在跑或已被中断 | `--rerun-unknown-qa` |
+| `state: "blocked"` + `code: "review_package_changed"` | 独立审查已返回 verdict，但代码根在调用期间漂移；reason 列出路径 | 清理或还原后在原 run 继续 `advance`，不再调用 reviewer |
+| `state: "blocked"` + `code: "completion_package_changed"` | 完成复核时代码根或证据漂移；reason 列出路径 | 清理后在原 run 重发 `complete` |
 
 **`reconcile` 不是一个可以发送的操作。** 三件事都不管用，而且会让情况更糟：
 
@@ -1172,7 +1178,7 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 2. 若是单任务 V3 journal 停在 `review-invocation-registered` 或 `review-invocation-started`，且没有
    `review-invocation-result`，先确认旧 host 和 review 进程都已退出，再按下述命令在**原 runId** 上
    发送 `abandon_review`。若 develop/complete 的 `effect-intent` 后仅有 control 记录，先确认旧 host 与它启动的检查、构建进程均已退出，再用下述 `abandon_effect`。review 的 `effect-intent` 后尚无 `host-joined` 和 `review-invocation-registered` 时，也可确认旧 host 退出后使用 `abandon_effect`；一旦登记 review，改走 `abandon_review`。这是操作员对进程已退出的确认；宿主无法自行验证。
-   provider-mode 开发和已写 `task-commit-intent` 的运行不能走 `abandon_effect`。先核对 `tasks.md` 是否已改名或勾选、提交回执及旧进程，再按原提交恢复路径处理；不要猜测提交未发生。`develop_checks_not_passed`、`check_output_out_of_scope` 和 `completion_checks_changed` 属于上表可恢复的 blocked 状态，先走原运行；旧 `checks_not_passed` 为终态。旧版驾驶员在 bootstrap T-002 的 `init_generate` 断联并返回 `unknown/reconcile` 时，也先按原 journal 核对 pending develop intent、旧进程和实际指令文件；符合条件才在原 run 显式 `abandon_effect`，然后按新运行的旧证据、代码漂移和 writer 门禁重新建 run，并改用当前会话宿主应答。其他 unknown 按诊断处理真实原因，核对无未结操作后再考虑新的运行；旧 unknown 不会被自动重分类。
+   provider-mode 开发和已写 `task-commit-intent` 的运行不能走 `abandon_effect`。先核对 `tasks.md` 是否已改名或勾选、提交回执及旧进程，再按原提交恢复路径处理；不要猜测提交未发生。`review_package_changed` 和 `completion_package_changed` 是有路径的可恢复阻断，先清理或还原后继续原运行；`develop_checks_not_passed`、`check_output_out_of_scope` 和 `completion_checks_changed` 属于上表可恢复的 blocked 状态，先走原运行；旧 `checks_not_passed` 为终态。旧版驾驶员在 bootstrap T-002 的 `init_generate` 断联并返回 `unknown/reconcile` 时，也先按原 journal 核对 pending develop intent、旧进程和实际指令文件；符合条件才在原 run 显式 `abandon_effect`，然后按新运行的旧证据、代码漂移和 writer 门禁重新建 run，并改用当前会话宿主应答。其他未知状态按诊断处理真实原因，核对无未结操作后再考虑新的运行；旧 unknown 不会被自动重分类。
 3. 不要手工改写执行日志或伪造一个终态。已完成的提交、已登记的审查记录都不因此作废，
    重跑是从该任务重新开始，不是从整个 feature 重新开始。
 

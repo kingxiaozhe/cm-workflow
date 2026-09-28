@@ -7,7 +7,7 @@ import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
-import {createConversationExecution} from './cm-ai-host.mjs';
+import {createConversationExecution,main as hostMain} from './cm-ai-host.mjs';
 import {readRunDefinition,openControlRun} from './cm-ai-run.mjs';
 import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
 
@@ -129,6 +129,45 @@ test('D1 SIGKILL at a real host develop request leaves an intent without checkpo
     const records=JSON.parse(fs.readFileSync(state,'utf8')).records;
     assert.equal(records.at(-1).payload.type,'effect-intent');
     assert.equal(records.some(row=>row.payload.type==='effect-checkpoint'),false);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('split-root SwiftUI Claude control run creates a baseline beside Git-ignored Xcode and SwiftPM output',async()=>{
+  const f=fixture(),bridge=createHostToolBridge();
+  try{
+    const specs5=path.join(f.root,'specs5'),app=path.join(f.root,'app');
+    fs.renameSync(f.specsDir,specs5);fs.renameSync(f.codeProject,app);
+    fs.mkdirSync(path.join(app,'Sources'));fs.writeFileSync(path.join(app,'Sources','App.swift'),'import SwiftUI\n');
+    fs.writeFileSync(path.join(app,'.gitignore'),'custom-cache/\n');
+    assert.equal(spawnSync('git',['init','-q',app]).status,0);
+    fs.mkdirSync(path.join(app,'.build'));fs.symlinkSync('missing',path.join(app,'.build','workspace-state'));
+    fs.mkdirSync(path.join(app,'custom-cache'));fs.symlinkSync('missing',path.join(app,'custom-cache','linked'));
+    fs.mkdirSync(path.join(app,'DerivedData','Build'),{recursive:true});
+    for(let i=0;i<10005;i++)fs.writeFileSync(path.join(app,'DerivedData','Build',String(i)),'');
+    fs.mkdirSync(path.join(app,'App.xcodeproj','xcuserdata'),{recursive:true});
+    fs.writeFileSync(path.join(app,'App.xcodeproj','xcuserdata','UserInterfaceState.xcuserstate'),'bplist00');
+    fs.writeFileSync(path.join(app,'.DS_Store'),'finder');
+    const run=JSON.parse(fs.readFileSync(f.config,'utf8'));
+    fs.writeFileSync(f.config,JSON.stringify({...run,specsDir:specs5,codeProject:app,scope:['Sources/App.swift']}));
+    const definition=readRunDefinition(f.config);
+    const execution=createConversationExecution(definition,'native-host-fixture',bridge,null,null,null,false,'claude');
+    const opened=await openControlRun(definition,'create',execution);
+    try{
+      const baseline=opened.runner?.baseline??JSON.parse(fs.readFileSync(path.join(specs5,'.reviews','.execution',identity.runId,'state.json'),'utf8')).records[0].payload.baseline;
+      assert(baseline.files.some(file=>file.path==='Sources/App.swift'));
+      assert(!baseline.files.some(file=>/\.build|DerivedData|xcuserdata|custom-cache|DS_Store/.test(file.path)));
+    }finally{opened.close();}
+  }finally{bridge.close();fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('host create reports the offending unsupported file on stderr before transport starts',async()=>{
+  const f=fixture(),lines=[];
+  try{
+    fs.symlinkSync('missing',path.join(f.codeProject,'alien.swift'));
+    const exit=await hostMain(f.args,{input:{},output:{write(){}},error:{write(value){lines.push(value);}}});
+    assert.equal(exit,1);
+    assert.match(lines.join(''),/\[host\] unsupported_file: alien\.swift/);
+    assert.match(lines.join(''),/"reason":"unsupported_file: alien\.swift"/);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 

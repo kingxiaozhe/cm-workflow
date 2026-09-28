@@ -28,6 +28,35 @@ const events=(onEvent,thread='actual-review')=>{
   onEvent({event:'process_closed',exit_code:0,signal:null,timed_out:false});
 };
 
+test('V3 observed verdict survives review-time drift and replays without another reviewer call',()=>fixture(async f=>{
+  const review=f.options.reviewers[0].run;
+  f.options.reviewers[0].run=(request,control)=>{
+    fs.writeFileSync(path.join(f.root,'unexpected.txt'),'during review');
+    return review(request,control);
+  };
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));
+  const blocked=await runner.executeEffect(f.effect('review'));
+  assert.equal(blocked.state,'blocked');assert.equal(blocked.code,'review_package_changed');
+  assert.match(blocked.reason,/unexpected.txt/);
+  assert.equal(blocked.reviewInvocation.result.outcome,'observed');
+  assert.equal(blocked.receipt.result.verdict,'approved');
+  assert.equal(f.reopen().status().code,'review_package_changed');
+  fs.unlinkSync(path.join(f.root,'unexpected.txt'));
+  const recovered=f.reopen();assert.equal(recovered.status().state,'approved');
+  assert.equal(f.dispatches(),1);
+},{provider:'claude'}));
+
+test('V3 Finder junk written by the reviewer does not change the package',()=>fixture(async f=>{
+  const review=f.options.reviewers[0].run;
+  f.options.reviewers[0].run=(request,control)=>{
+    fs.writeFileSync(path.join(f.root,'.DS_Store'),'during review');
+    return review(request,control);
+  };
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));
+  const reviewed=await runner.executeEffect(f.effect('review'));
+  assert.equal(reviewed.state,'approved');assert.equal(f.reopen().status().state,'approved');
+},{provider:'claude'}));
+
 async function fixture(fn,{reviewRun,authorize,times,timeoutMs=1000,provider='codex'}={}) {
   const temp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-review-v3-')));
   const root=path.join(temp,'code'),specsRoot=path.join(temp,'specs'),reviewsDir=path.join(specsRoot,'.reviews');
@@ -146,9 +175,24 @@ for(const prefix of ['review-invocation-registered','review-invocation-started',
 test(`Claude V3 ${prefix} crash prefix never redispatches`,()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
   const resumed=f.resumePrefix(prefix);
-  assert.notEqual(resumed.status().state,'approved');
+  if(prefix==='review-invocation-result')assert.equal(resumed.status().state,'approved');
+  else assert.notEqual(resumed.status().state,'approved');
   await resumed.executeEffect(f.effect('review'));assert.equal(f.dispatches(),1);
 },{provider:'claude'}));
+
+test('V3 observed verdict crash prefix recovers with changed tree and reuses the verdict after cleanup',()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
+  fs.writeFileSync(path.join(f.root,'.DS_Store'),'ignored');
+  fs.writeFileSync(path.join(f.root,'unreviewed.swift'),'stray');
+  const resumed=f.resumePrefix('review-invocation-result');
+  assert.equal(resumed.status().code,'review_package_changed');
+  assert.match(resumed.status().reason,/unreviewed\.swift/);
+  assert.equal(f.dispatches(),1);
+  fs.rmSync(path.join(f.root,'unreviewed.swift'));
+  assert.equal(resumed.status().state,'approved');
+  assert.equal((await resumed.executeEffect(f.effect('review'))).state,'blocked'); // cached review-time drift
+  assert.equal(f.dispatches(),1);
+}));
 
 test('Claude V3 cannot reuse author identity or a Codex adapter grant',async()=>{
   await fixture(async f=>{
@@ -399,9 +443,14 @@ test('V3 enforces the full durable envelope, hash chain, and semantic nested ord
 for(const prefix of ['review-invocation-registered','review-invocation-started','review-invocation-result'])
 test(`V3 durable ${prefix} crash prefix resumes without authorization or redispatch`,()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
-  const restored=f.resumePrefix(prefix),before=f.getStore().snapshot();assert.equal(restored.status().state,'unknown');
-  assert.equal(restored.status().code,'reconciliation_required');assert.equal(restored.status().reviewInvocation.registration.adapterId,'codex-review-adapter');
-  assert.deepEqual(await restored.run(),restored.status());assert.deepEqual(f.getStore().snapshot(),before);assert.equal(f.dispatches(),1);
+  const restored=f.resumePrefix(prefix),before=f.getStore().snapshot();
+  if(prefix==='review-invocation-result')assert.equal(restored.status().state,'approved');
+  else {assert.equal(restored.status().state,'unknown');assert.equal(restored.status().code,'reconciliation_required');}
+  assert.equal(restored.status().reviewInvocation.registration.adapterId,'codex-review-adapter');
+  if(prefix!=='review-invocation-result'){
+    assert.deepEqual(await restored.run(),restored.status());assert.deepEqual(f.getStore().snapshot(),before);
+  }else assert.equal((await restored.executeEffect(f.effect('review'))).state,'approved');
+  assert.equal(f.dispatches(),1);
 }));
 
 test('V1/V2 representative payload and V2 status bytes remain golden',()=>{

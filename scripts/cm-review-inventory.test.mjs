@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {captureReviewBaseline,createReviewPackage,readReviewBaseline,readReviewPackage,verifyReviewPackage} from '../runtime/js/cm-ai/review-package.mjs';
+import {spawnSync} from 'node:child_process';
+import {captureReviewBaseline,compareReviewBaseline,compareReviewInventoryToBaseline,createReviewPackage,readReviewBaseline,readReviewPackage,verifyReviewPackage} from '../runtime/js/cm-ai/review-package.mjs';
 import {digest} from '../runtime/js/cm-ai/contracts.mjs';
 import {buildReviewPrompt} from '../runtime/js/cm-ai/codex-review-adapter.mjs';
 
@@ -18,6 +19,257 @@ function fixture(fn){
   try{write(root,'code.js','before');write(root,'requirements.md','fixture');return fn(root);}
   finally{fs.rmSync(root,{recursive:true,force:true});}
 }
+
+test('Git ignored SwiftPM and DerivedData trees and fixed IDE junk stay outside every snapshot',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  write(root,'.gitignore','custom-cache/\n');
+  fs.mkdirSync(path.join(root,'.build'),{recursive:true});
+  fs.symlinkSync('missing',path.join(root,'.build','linked'));
+  fs.mkdirSync(path.join(root,'custom-cache'));fs.symlinkSync('missing',path.join(root,'custom-cache','linked'));
+  fs.mkdirSync(path.join(root,'DerivedData','Build'),{recursive:true});
+  for(let i=0;i<10005;i++)write(root,`DerivedData/Build/${i}`,'');
+  fs.mkdirSync(path.join(root,'App.xcodeproj','xcuserdata'),{recursive:true});
+  write(root,'App.xcodeproj/xcuserdata/UserInterfaceState.xcuserstate','old');
+  write(root,'.DS_Store','old');write(root,'._asset','old');write(root,'Thumbs.db','old');
+  const baseline=capture(root);write(root,'code.js','after');
+  const pkg=createReviewPackage({root,baseline,checks});
+  write(root,'.DS_Store','new');write(root,'App.xcodeproj/xcuserdata/UserInterfaceState.xcuserstate','new');
+  assert.equal(verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
+  assert(!baseline.files.some(file=>/DerivedData|xcuserdata|custom-cache|\.build|DS_Store/.test(file.path)));
+}));
+
+test('a parent worktree ignore rule can change while review retains the baseline decision',()=>fixture(repo=>{
+  assert.equal(spawnSync('git',['init','-q',repo]).status,0);
+  const app=path.join(repo,'app');fs.mkdirSync(app);
+  write(app,'code.js','before');write(app,'requirements.md','fixture');
+  write(repo,'.gitignore','app/generated/\n');
+  const baseline=capture(app);write(app,'code.js','after');
+  const pkg=createReviewPackage({root:app,baseline,checks});
+  write(repo,'.gitignore','app/generated/\napp/other-generated/\n');
+  fs.mkdirSync(path.join(app,'other-generated'));write(app,'other-generated/check.log','generated');
+  assert.equal(verifyReviewPackage({root:app,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
+}));
+
+test('an ignored same-root specs directory is still reached as a protected boundary',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  write(root,'.gitignore','generated/\n');
+  const specsRoot=path.join(root,'generated','specs');fs.mkdirSync(specsRoot,{recursive:true});
+  write(specsRoot,'tasks.md','- [ ] T-001: fixture\n');
+  const baseline=capture(root,{specsRoot});
+  assert.equal(baseline.specsPath,'generated/specs');
+  assert(!baseline.files.some(file=>file.path.startsWith('generated/specs/')));
+}));
+
+test('a gitignored approved scope and AGENTS.md remain checked',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  write(root,'.gitignore','code.js\nAGENTS.md\n');write(root,'AGENTS.md','rules');
+  const baseline=capture(root);assert(baseline.files.some(file=>file.path==='AGENTS.md'));
+  write(root,'code.js','after');const pkg=createReviewPackage({root,baseline,checks});
+  write(root,'AGENTS.md','changed');
+  assert.throws(()=>verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}),
+    error=>error.code==='out_of_scope'&&error.message.includes('AGENTS.md'));
+}));
+
+test('a selected file and AGENTS inside a Git-ignored directory remain checked without reading siblings',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  write(root,'.gitignore','custom-cache/\n');
+  fs.mkdirSync(path.join(root,'custom-cache'));
+  write(root,'custom-cache/selected.swift','before');write(root,'custom-cache/AGENTS.md','rules');
+  fs.symlinkSync('missing',path.join(root,'custom-cache','linked'));
+  const baseline=capture(root,{scope:['custom-cache/selected.swift']});
+  assert(baseline.files.some(file=>file.path==='custom-cache/AGENTS.md'));
+  write(root,'custom-cache/selected.swift','after');
+  const pkg=createReviewPackage({root,baseline,checks});
+  write(root,'custom-cache/AGENTS.md','changed');
+  assert.throws(()=>verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}),
+    error=>error.code==='out_of_scope'&&error.message.includes('custom-cache/AGENTS.md'));
+}));
+
+test('a nested AGENTS file inside built-in ignored output remains checked',()=>fixture(root=>{
+  fs.mkdirSync(path.join(root,'.build','subdir'),{recursive:true});
+  write(root,'.build/subdir/AGENTS.md','rules');fs.symlinkSync('missing',path.join(root,'.build','linked'));
+  const baseline=capture(root);assert(baseline.files.some(file=>file.path==='.build/subdir/AGENTS.md'));
+  write(root,'code.js','after');const pkg=createReviewPackage({root,baseline,checks});
+  write(root,'.build/subdir/AGENTS.md','changed');
+  assert.throws(()=>verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}),
+    error=>error.code==='out_of_scope'&&error.message.includes('.build/subdir/AGENTS.md'));
+}));
+
+test('Git-active built-in junk still retains nested AGENTS instructions',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  fs.mkdirSync(path.join(root,'.build','nested'),{recursive:true});
+  write(root,'.build/nested/AGENTS.md','rules');fs.symlinkSync('missing',path.join(root,'.build','linked'));
+  const baseline=capture(root);assert(baseline.files.some(file=>file.path==='.build/nested/AGENTS.md'));
+  write(root,'code.js','after');const pkg=createReviewPackage({root,baseline,checks});
+  write(root,'.build/nested/AGENTS.md','changed');
+  assert.throws(()=>verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}),
+    error=>error.code==='out_of_scope'&&error.message.includes('.build/nested/AGENTS.md'));
+}));
+
+test('snapshot failures and package mismatch identify the affected paths',()=>fixture(root=>{
+  fs.symlinkSync('missing',path.join(root,'linked'));
+  assert.throws(()=>capture(root),error=>error.code==='unsupported_file'&&error.message.includes('linked'));
+  fs.unlinkSync(path.join(root,'linked'));
+  const baseline=capture(root);write(root,'code.js','after');const pkg=createReviewPackage({root,baseline,checks});
+  write(root,'stray.txt','x');
+  assert.throws(()=>verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}),
+    error=>error.message.includes('stray.txt'));
+}));
+
+test('an out-of-scope .gitignore edit is a content violation, not policy drift',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  write(root,'.gitignore','cache/\n');fs.mkdirSync(path.join(root,'cache'));write(root,'cache/temp','ignored');
+  const baseline=capture(root);write(root,'code.js','after');
+  write(root,'.gitignore','different/\n');
+  assert.throws(()=>createReviewPackage({root,baseline,checks}),
+    error=>error.code==='out_of_scope'&&error.message.includes('.gitignore'));
+}));
+
+test('an ignored out-of-scope .gitignore may change without altering saved decisions',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  write(root,'.gitignore','.gitignore\ncache/\n');fs.mkdirSync(path.join(root,'cache'));write(root,'cache/temp','ignored');
+  const baseline=capture(root);write(root,'code.js','after');
+  write(root,'.gitignore','.gitignore\nother/\n');
+  const pkg=createReviewPackage({root,baseline,checks});
+  assert.equal(verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
+}));
+
+test('core.excludesFile value and bytes are recorded while later rule edits use the union',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  const exclude=path.join(root,'.git','info','extra-excludes');write(root,'.git/info/extra-excludes','cache/\n');
+  assert.equal(spawnSync('git',['-C',root,'config','core.excludesFile',exclude]).status,0);
+  fs.mkdirSync(path.join(root,'cache'));write(root,'cache/temp','ignored');
+  const baseline=capture(root);write(root,'code.js','after');
+  assert.equal(baseline.ignorePolicy.coreExcludesFile.valueDigest,sha(exclude));
+  assert.equal(baseline.ignorePolicy.coreExcludesFile.sha256,sha('cache/\n'));
+  write(root,'.git/info/extra-excludes','other/\n');
+  const pkg=createReviewPackage({root,baseline,checks});
+  assert.equal(verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
+}));
+
+test('effective worktree core.excludesFile is recorded instead of the local fallback',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  const local=path.join(root,'.git','info','local-excludes');
+  const worktree=path.join(root,'.git','info','worktree-excludes');
+  write(root,'.git/info/local-excludes','local/\n');
+  write(root,'.git/info/worktree-excludes','cache/\n');
+  assert.equal(spawnSync('git',['-C',root,'config','core.excludesFile',local]).status,0);
+  assert.equal(spawnSync('git',['-C',root,'config','extensions.worktreeConfig','true']).status,0);
+  assert.equal(spawnSync('git',['-C',root,'config','--worktree','core.excludesFile',worktree]).status,0);
+  fs.mkdirSync(path.join(root,'cache'));write(root,'cache/generated','ignored');
+  const baseline=capture(root);
+  assert.equal(baseline.ignorePolicy.coreExcludesFile.valueDigest,sha(worktree));
+  assert.equal(baseline.ignorePolicy.coreExcludesFile.sha256,sha('cache/\n'));
+  assert(baseline.ignorePolicy.ignoredDirectories.includes('cache'));
+}));
+
+test('Git info/exclude edits preserve baseline ignored paths',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  const exclude=path.join(root,'.git','info','exclude');
+  write(root,'.git/info/exclude','cache/\n');fs.mkdirSync(path.join(root,'cache'));write(root,'cache/temp','ignored');
+  const baseline=capture(root);write(root,'code.js','after');
+  write(root,'.git/info/exclude','other/\n');
+  const pkg=createReviewPackage({root,baseline,checks});
+  assert.equal(verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
+}));
+
+test('unrelated local Git config changes do not affect review identity',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  const baseline=capture(root);write(root,'code.js','after');
+  assert.equal(spawnSync('git',['-C',root,'config','user.name','Reviewer']).status,0);
+  assert.equal(spawnSync('git',['-C',root,'remote','add','origin','https://example.invalid/repo.git']).status,0);
+  const pkg=createReviewPackage({root,baseline,checks});
+  assert.equal(verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
+}));
+
+test('saved and current ignored directories form a two-sided union for package and verification',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  write(root,'.gitignore','old/\n');
+  fs.mkdirSync(path.join(root,'old'));write(root,'old/generated','before');
+  fs.mkdirSync(path.join(root,'new'));write(root,'new/authored','before');
+  const baseline=capture(root,{scope:['.gitignore','code.js']});
+  assert(baseline.ignorePolicy.ignoredDirectories.includes('old'));
+  assert(baseline.files.some(file=>file.path==='new/authored'));
+  write(root,'code.js','after');write(root,'.gitignore','new/\n');
+  write(root,'old/generated','after');write(root,'new/authored','after');
+  const pkg=createReviewPackage({root,baseline,checks});
+  assert.deepEqual(pkg.changes.map(change=>change.path),['.gitignore','code.js']);
+  assert.deepEqual(compareReviewInventoryToBaseline(root,baseline).map(change=>change.path),['.gitignore','code.js']);
+  assert.equal(verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
+  write(root,'old/generated','later');write(root,'new/authored','later');
+  assert.equal(verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
+  write(root,'requirements.md','real change');
+  assert.throws(()=>verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}),
+    error=>error.code==='out_of_scope'&&error.message.includes('requirements.md'));
+}));
+
+test('ready-state baseline comparison applies old and current ignore decisions to both inventories',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  write(root,'.git/info/exclude','old/\n');
+  fs.mkdirSync(path.join(root,'old'));write(root,'old/generated','before');
+  fs.mkdirSync(path.join(root,'new'));write(root,'new/authored','before');
+  const baseline=capture(root);
+  write(root,'.git/info/exclude','new/\n');
+  write(root,'old/generated','after');write(root,'new/authored','after');
+  const recaptured=capture(root);
+  assert.equal(compareReviewBaseline(recaptured,baseline),true);
+  assert.throws(()=>compareReviewBaseline({...recaptured,rootDigest:'0'.repeat(64)},baseline),
+    error=>error.code==='package_mismatch'&&error.message.includes('baseline metadata'));
+  write(root,'requirements.md','real change');
+  assert.throws(()=>compareReviewBaseline(capture(root),baseline),
+    error=>error.code==='package_mismatch'&&error.message.includes('requirements.md'));
+}));
+
+test('a newly created scoped .gitignore is reviewed and its generated directory is excluded',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  const baseline=capture(root,{scope:['.gitignore','code.js']});
+  assert(!baseline.files.some(file=>file.path==='.gitignore'));
+  write(root,'.gitignore','build/\n');fs.mkdirSync(path.join(root,'build'));
+  write(root,'build/check.log','generated');write(root,'code.js','after');
+  const pkg=createReviewPackage({root,baseline,checks});
+  assert.deepEqual(pkg.changes.map(change=>change.path),['.gitignore','code.js']);
+  assert.equal(verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
+}));
+
+test('git init after baseline does not turn repository metadata into review content',()=>fixture(root=>{
+  const baseline=capture(root);assert.equal(baseline.ignorePolicy.mode,'builtin');
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  write(root,'.git/info/exclude','build/\n');fs.mkdirSync(path.join(root,'build'));
+  write(root,'build/check.log','generated');write(root,'code.js','after');
+  const pkg=createReviewPackage({root,baseline,checks});
+  assert.deepEqual(pkg.changes.map(change=>change.path),['code.js']);
+  assert.equal(verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
+}));
+
+test('an oversized Git ignored set records built-in fallback and stays replayable',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  write(root,'.git/info/exclude','*.xcuserstate\n');
+  write(root,'authored.txt','before');
+  for(let i=0;i<10001;i++)write(root,`state-${i}.xcuserstate`,'generated');
+  const baseline=capture(root);
+  assert.equal(baseline.ignorePolicy.mode,'builtin_limit');
+  assert.deepEqual(baseline.ignorePolicy.ignoredPaths,[]);
+  for(let i=0;i<10001;i++)fs.unlinkSync(path.join(root,`state-${i}.xcuserstate`));
+  write(root,'.git/info/exclude','authored.txt\n');
+  write(root,'code.js','after');
+  write(root,'authored.txt','changed');
+  assert.throws(()=>createReviewPackage({root,baseline,checks}),
+    error=>error.code==='out_of_scope'&&error.message.includes('authored.txt'));
+  write(root,'authored.txt','before');
+  const pkg=createReviewPackage({root,baseline,checks});
+  assert.equal(verifyReviewPackage({root,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
+}));
+
+test('missing Git uses only built-in junk rules and still rejects unsupported ignored paths',()=>fixture(root=>{
+  assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  write(root,'.gitignore','custom-cache/\n');
+  fs.mkdirSync(path.join(root,'.build'));fs.symlinkSync('missing',path.join(root,'.build','linked'));
+  fs.mkdirSync(path.join(root,'custom-cache'));fs.symlinkSync('missing',path.join(root,'custom-cache','linked'));
+  const saved=process.env.PATH;
+  try{process.env.PATH='';assert.throws(()=>capture(root),
+    error=>error.code==='unsupported_file'&&error.message.includes('custom-cache/linked'));}
+  finally{process.env.PATH=saved;}
+}));
 
 test('large inventory retains hashes, emits only selected bodies, and verifies the review package',()=>fixture(root=>{
   for(let i=0;i<510;i++)write(root,`asset-${i}`,Buffer.alloc(4096,i%256));

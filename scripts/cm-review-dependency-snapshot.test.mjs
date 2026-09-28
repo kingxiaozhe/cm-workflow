@@ -72,6 +72,7 @@ test('legacy baselines retain already-recorded dependency files and their drift 
   fs.mkdirSync(path.join(root,'.venv'));
   fs.writeFileSync(path.join(root,'.venv','recorded.txt'),'legacy snapshot material');
   const {baselineDigest,...body}=base;
+  delete body.ignorePolicy;
   body.files=[...body.files,...readReviewSourceFiles(root,['.venv/recorded.txt'])].sort((a,b)=>a.path.localeCompare(b.path));
   const baseline={...body,baselineDigest:digest(body)};
   fs.writeFileSync(path.join(root,'src/main.py'),'after');

@@ -12,7 +12,7 @@ import {need,digest} from './effect-contract.mjs';
 import {readEvidenceSupersession,supersedableEvidenceName} from './reviewed-evidence-supersession-record.mjs';
 import {scanRows} from './cm-ai-qa-log.mjs';
 import {parseCmAiTaskLine} from './cm-ai-admission.mjs';
-import {captureReviewInventory,readReviewBaseline} from './review-package.mjs';
+import {compareReviewInventoryToBaseline,readReviewBaseline} from './review-package.mjs';
 
 const writer=fileURLToPath(new URL('../../../scripts/cm-log-event.py',import.meta.url));
 const unavailable=reason=>{const error=new Error('supersede_unavailable');error.code='supersede_unavailable';error.reason=reason;throw error;};
@@ -28,17 +28,13 @@ function verifyOldCodeBaseline(codeProject,rawBaseline){
   try{
     if(fs.realpathSync(codeProject)!==codeProject||!fs.lstatSync(codeProject).isDirectory())
       codeDrift(`无法安全核对代码根目录。${driftInstruction}`);
-    current=captureReviewInventory(codeProject,baseline);
+    current=compareReviewInventoryToBaseline(codeProject,baseline);
   }catch(error){
     if(error.code==='supersede_code_drift')throw error;
     codeDrift(`无法安全核对代码树（${error.code??'read_failed'}）。${driftInstruction}`);
   }
-  const before=new Map(baseline.files.map(file=>[file.path,file.sha256]));
-  const after=new Map(current.map(file=>[file.path,file.sha256]));
-  // The V2 inventory covers review-package paths too; the union also catches
-  // files created by a reviewed run that were absent at its start.
-  return [...new Set([...before.keys(),...after.keys()])].filter(p=>before.get(p)!==after.get(p))
-    .map(p=>({path:p,sha256:after.get(p)??null}));
+  // The shared comparison filters both sides with one ignore-decision union.
+  return current;
 }
 
 function taskChecked(tasksPath,taskId){

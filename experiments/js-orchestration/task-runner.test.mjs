@@ -97,19 +97,132 @@ for(const version of [1,2])test(`inventory V${version} journal resumes ready thr
   f.create();
   if(version===1){
     // Model an upgrade from the old full-content persisted init record.
-    const legacy=captureReviewBaseline({root:f.root,identity:f.options.identity,scope:f.options.scope,
+    const current=captureReviewBaseline({root:f.root,identity:f.options.identity,scope:f.options.scope,
       requirements:f.options.requirements,specsRoot:f.specsRoot,version:1});
+    const {ignorePolicy,baselineDigest,...data}=current;
+    const legacy={...data,baselineDigest:digest(data)};
     rewriteRunnerState(f,state=>{state.records[0].payload.baseline=legacy;});
   }
   let runner=f.reopen();assert.equal(runner.status().state,'ready');
   const initial=f.getStore().snapshot().records[0].payload.baseline;
   assert.equal(initial.version,version);
-  assert.equal((await runner.executeEffect(f.effect('develop'))).state,'awaiting_review');
+  const developed=await runner.executeEffect(f.effect('develop'));
+  assert.equal(developed.state,'awaiting_review',JSON.stringify(developed));
   runner=f.reopen();assert.equal((await runner.executeEffect(f.effect('review'))).state,'approved');
   runner=f.reopen();assert.equal((await runner.executeEffect(f.effect('complete'))).state,'fixture_completed');
   assert.equal(f.reopen().status().state,'fixture_completed');assert.equal(f.calls.length,2);
   assert.deepEqual(f.getStore().snapshot().records[0].payload.baseline,initial);
   assert.match(fs.readFileSync(f.tasksPath,'utf8'),/\[x\]/);
+}));
+
+test('V2 journal created before ignorePolicy replays and completes with legacy inventory rules',()=>composedFixture(async f=>{
+  f.create();
+  const legacy=captureReviewBaseline({root:f.root,identity:f.options.identity,scope:f.options.scope,
+    requirements:f.options.requirements,specsRoot:f.specsRoot,version:2},true);
+  assert(!Object.hasOwn(legacy,'ignorePolicy'));
+  rewriteRunnerState(f,state=>{state.records[0].payload.baseline=legacy;});
+  let runner=f.reopen();
+  assert.equal((await runner.executeEffect(f.effect('develop'))).state,'awaiting_review');
+  runner=f.reopen();assert.equal((await runner.executeEffect(f.effect('review'))).state,'approved');
+  runner=f.reopen();assert.equal((await runner.executeEffect(f.effect('complete'))).state,'fixture_completed');
+  assert.equal(f.reopen().status().state,'fixture_completed');
+}));
+
+test('V2 journal with the original version 1 ignore policy still replays and completes',()=>composedFixture(async f=>{
+  assert.equal(spawnSync('git',['init','-q',f.root]).status,0);
+  f.create();
+  const legacy=captureReviewBaseline({root:f.root,identity:f.options.identity,scope:f.options.scope,
+    requirements:f.options.requirements,specsRoot:f.specsRoot,version:2},false,1);
+  rewriteRunnerState(f,state=>{state.records[0].payload.baseline=legacy;});
+  let runner=f.reopen();assert.equal(runner.status().state,'ready');
+  const developed=await runner.executeEffect(f.effect('develop'));
+  assert.equal(developed.state,'awaiting_review',JSON.stringify(developed));
+  runner=f.reopen();assert.equal((await runner.executeEffect(f.effect('review'))).state,'approved');
+  runner=f.reopen();assert.equal((await runner.executeEffect(f.effect('complete'))).state,'fixture_completed');
+}));
+
+test('Finder and Xcode state created during development never enter the review package',()=>composedFixture(async f=>{
+  const develop=f.options.developer.run;
+  f.options.developer.run=request=>{
+    fs.writeFileSync(path.join(f.root,'.DS_Store'),'finder');
+    fs.mkdirSync(path.join(f.root,'App.xcodeproj','xcuserdata'),{recursive:true});
+    fs.writeFileSync(path.join(f.root,'App.xcodeproj','xcuserdata','UserInterfaceState.xcuserstate'),'bplist00');
+    return develop(request);
+  };
+  const runner=f.create();const result=await runner.executeEffect(f.effect('develop'));
+  assert.equal(result.state,'awaiting_review');
+  const reviewPackage=f.getStore().snapshot().records.at(-1).payload.checkpoint.reviewPackage;
+  assert(!JSON.stringify(reviewPackage).includes('xcuserstate'));
+  assert(!JSON.stringify(reviewPackage).includes('.DS_Store'));
+  assert.equal(f.reopen().status().state,'awaiting_review');
+}));
+
+test('scaffold creates scoped .gitignore and reaches persisted review approval',()=>composedFixture(async f=>{
+  assert.equal(spawnSync('git',['init','-q',f.root]).status,0);
+  f.options.scope=['.gitignore','a.js'];
+  const develop=f.options.developer.run;
+  f.options.developer.run=request=>{
+    const result=develop(request);
+    fs.writeFileSync(path.join(f.root,'.gitignore'),'build/\n');
+    fs.mkdirSync(path.join(f.root,'build'));fs.writeFileSync(path.join(f.root,'build','check.log'),'generated');
+    writeHandoff(f.options.taskCompletion.handoffs[0],f.root,['.gitignore','a.js']);
+    return result;
+  };
+  let runner=f.create();assert.equal((await runner.executeEffect(f.effect('develop'))).state,'awaiting_review');
+  runner=f.reopen();assert.equal((await runner.executeEffect(f.effect('review'))).state,'approved');
+  assert.equal(f.reopen().status().state,'approved');
+}));
+
+test('scoped .gitignore edit and check output reach persisted review approval',()=>composedFixture(async f=>{
+  assert.equal(spawnSync('git',['init','-q',f.root]).status,0);
+  fs.writeFileSync(path.join(f.root,'.gitignore'),'old/\n');
+  f.options.scope=['.gitignore','a.js'];
+  const develop=f.options.developer.run;
+  f.options.developer.run=request=>{
+    const result=develop(request);
+    fs.writeFileSync(path.join(f.root,'.gitignore'),'old/\nbuild/\n');
+    writeHandoff(f.options.taskCompletion.handoffs[0],f.root,['.gitignore','a.js']);
+    return result;
+  };
+  f.options.check=()=>{
+    fs.mkdirSync(path.join(f.root,'build'),{recursive:true});
+    fs.writeFileSync(path.join(f.root,'build','check.log'),'generated');
+    return checks;
+  };
+  let runner=f.create();assert.equal((await runner.executeEffect(f.effect('develop'))).state,'awaiting_review');
+  runner=f.reopen();assert.equal((await runner.executeEffect(f.effect('review'))).state,'approved');
+}));
+
+test('git init during development and ordinary Git metadata edits during review preserve approval',()=>composedFixture(async f=>{
+  const develop=f.options.developer.run;
+  f.options.developer.run=request=>{
+    assert.equal(spawnSync('git',['init','-q',f.root]).status,0);
+    return develop(request);
+  };
+  let runner=f.create();assert.equal((await runner.executeEffect(f.effect('develop'))).state,'awaiting_review');
+  assert.equal(spawnSync('git',['-C',f.root,'remote','add','origin','https://example.invalid/repo.git']).status,0);
+  assert.equal(spawnSync('git',['-C',f.root,'config','user.name','Reviewer']).status,0);
+  runner=f.reopen();assert.equal((await runner.executeEffect(f.effect('review'))).state,'approved');
+}));
+
+test('ancestor .gitignore changes outside code root during review preserve approval',()=>composedFixture(async f=>{
+  assert.equal(spawnSync('git',['init','-q',f.temp]).status,0);
+  fs.writeFileSync(path.join(f.temp,'.gitignore'),'code/generated/\n');
+  let runner=f.create();assert.equal((await runner.executeEffect(f.effect('develop'))).state,'awaiting_review');
+  fs.writeFileSync(path.join(f.temp,'.gitignore'),'code/generated/\ncode/build/\n');
+  fs.mkdirSync(path.join(f.root,'build'));fs.writeFileSync(path.join(f.root,'build','check.log'),'generated');
+  runner=f.reopen();assert.equal((await runner.executeEffect(f.effect('review'))).state,'approved');
+}));
+
+test('ready replay keeps a baseline-ignored symlink after an ancestor rule stops ignoring it',()=>composedFixture(async f=>{
+  assert.equal(spawnSync('git',['init','-q',f.temp]).status,0);
+  fs.writeFileSync(path.join(f.temp,'.gitignore'),'code/generated/\n');
+  fs.mkdirSync(path.join(f.root,'generated'));
+  fs.symlinkSync('missing',path.join(f.root,'generated','linked'));
+  let runner=f.create();
+  fs.writeFileSync(path.join(f.temp,'.gitignore'),'code/other/\n');
+  assert.equal((await runner.executeEffect(f.effect('develop'))).state,'awaiting_review');
+  runner=f.reopen();assert.equal((await runner.executeEffect(f.effect('review'))).state,'approved');
 }));
 
 for(const twoAttempts of [false,true])test(`C3b one-owner composed completion with restart attempt${twoAttempts?2:1}`,()=>composedFixture(async f=>{
@@ -145,6 +258,87 @@ test('A4 evidence text drift completes with the reviewed check result and replay
   assert.deepEqual(completed.receipt,approved.receipt);
   assert.equal(f.reopen().status().state,'fixture_completed');
   assert.match(fs.readFileSync(f.tasksPath,'utf8'),/\[x\]/);
+}));
+
+for(const twoAttempts of [false,true])test(`review-time stray file retains observed verdict and resumes after cleanup attempt ${twoAttempts?2:1}`,()=>composedFixture(async f=>{
+  const review=f.options.reviewers[0].run;
+  f.options.reviewers[0].run=request=>{
+    fs.writeFileSync(path.join(f.root,'unexpected.txt'),'created during review');
+    return review(request);
+  };
+  let runner=f.create();
+  assert.equal((await runner.executeEffect(f.effect('develop'))).state,'awaiting_review');
+  const blocked=await runner.executeEffect(f.effect('review'));
+  assert.equal(blocked.state,'blocked');assert.equal(blocked.code,'review_package_changed');
+  assert.match(blocked.reason,/unexpected.txt/);assert.equal(blocked.receipt.result.verdict,twoAttempts?'changes_requested':'approved');
+  runner=f.reopen();assert.equal(runner.status().code,'review_package_changed');
+  fs.unlinkSync(path.join(f.root,'unexpected.txt'));
+  assert.equal(runner.status().state,twoAttempts?'changes_requested':'approved');
+  const wrong=await runner.executeEffect({...f.effect(twoAttempts?'complete':'develop',twoAttempts?2:1),id:'wrong-recovery-action'});
+  assert.equal(wrong.code,'stage_mismatch');
+  if(twoAttempts){
+    fs.writeFileSync(path.join(f.root,'second-stray.txt'),'after recovery status');
+    const refused=await runner.executeEffect(f.effect('develop',2));
+    assert.equal(refused.outcome,'rejected');assert.equal(refused.code,'out_of_scope');
+    assert.match(refused.reason,/second-stray.txt/);
+    assert.equal(f.calls.filter(call=>call.role==='developer').length,1);
+    fs.unlinkSync(path.join(f.root,'second-stray.txt'));
+    assert.equal((await runner.executeEffect(f.effect('develop',2))).state,'awaiting_review');
+  }else {const completed=await runner.executeEffect(f.effect('complete'));
+    assert.equal(completed.state,'fixture_completed',JSON.stringify(completed));}
+  assert.equal(f.calls.filter(call=>call.role==='reviewer').length,1);
+},{twoAttempts}));
+
+test('completion recheck stray file is path-specific and retryable after cleanup',()=>composedFixture(async f=>{
+  let writeStray=false;
+  f.options.check=()=>{if(writeStray)fs.writeFileSync(path.join(f.root,'during-complete.txt'),'x');return checks;};
+  let runner=f.create();await runner.executeEffect(f.effect('develop'));
+  assert.equal((await runner.executeEffect(f.effect('review'))).state,'approved');
+  writeStray=true;
+  const blocked=await runner.executeEffect(f.effect('complete'));
+  assert.equal(blocked.state,'blocked');assert.equal(blocked.code,'completion_package_changed');
+  assert.match(blocked.reason,/during-complete.txt/);
+  runner=f.reopen();assert.equal(runner.status().retryReady,false);
+  fs.unlinkSync(path.join(f.root,'during-complete.txt'));writeStray=false;
+  assert.equal(runner.status().retryReady,true);
+  const retry={...f.effect('complete'),id:'complete-1-retry-1'};
+  const completed=await runner.executeEffect(retry);
+  assert.equal(completed.state,'fixture_completed',JSON.stringify(completed));
+  assert.equal(f.reopen().status().state,'fixture_completed');
+}));
+
+test('Finder and Xcode state written during completion recheck do not block completion',()=>composedFixture(async f=>{
+  let atCompletion=false;
+  f.options.check=()=>{
+    if(atCompletion){
+      fs.writeFileSync(path.join(f.root,'.DS_Store'),'during completion');
+      fs.mkdirSync(path.join(f.root,'App.xcodeproj','xcuserdata'),{recursive:true});
+      fs.writeFileSync(path.join(f.root,'App.xcodeproj','xcuserdata','UserInterfaceState.xcuserstate'),'bplist00');
+    }
+    return checks;
+  };
+  const runner=f.create();await runner.executeEffect(f.effect('develop'));
+  assert.equal((await runner.executeEffect(f.effect('review'))).state,'approved');
+  atCompletion=true;
+  assert.equal((await runner.executeEffect(f.effect('complete'))).state,'fixture_completed');
+  assert.equal(f.reopen().status().state,'fixture_completed');
+}));
+
+test('stray appearing after check inventory sampling remains retryable',t=>composedFixture(async f=>{
+  let runner=f.create();await runner.executeEffect(f.effect('develop'));
+  assert.equal((await runner.executeEffect(f.effect('review'))).state,'approved');
+  const original=fs.readdirSync;let written=false;
+  t.mock.method(fs,'readdirSync',(directory,...args)=>{
+    if(!written&&directory===f.root&&new Error().stack.includes('verifyCompletionReviewPackage')){
+      written=true;fs.writeFileSync(path.join(f.root,'late-stray.txt'),'late');
+    }
+    return original(directory,...args);
+  });
+  const blocked=await runner.executeEffect(f.effect('complete'));
+  assert(written);assert.equal(blocked.code,'completion_package_changed');assert.match(blocked.reason,/late-stray.txt/);
+  fs.unlinkSync(path.join(f.root,'late-stray.txt'));
+  runner=f.reopen();
+  assert.equal((await runner.executeEffect({...f.effect('complete'),id:'complete-1-retry-1'})).state,'fixture_completed');
 }));
 
 test('A4 changed check result is recoverable in one run and replays',()=>composedFixture(async f=>{
@@ -218,8 +412,11 @@ for(const drift of [false,true])test(`P2 host creates checked Learning handoff a
   const handoffPath=f.options.taskCompletion.handoffs[0],bytes=fs.readFileSync(handoffPath);
   if(drift){
     fs.appendFileSync(handoffPath,'\n');
-    assert.deepEqual(await resumed.executeEffect(f.effect('review')),{outcome:'rejected',code:'package_mismatch'});
-    assert.equal(f.reopen().status().state,'awaiting_review');
+    assert.deepEqual(await resumed.executeEffect(f.effect('review')),{outcome:'rejected',code:'package_mismatch',
+      reason:'package_mismatch: login-T-001-a1-handoff.json'});
+    const projected=f.reopen().status();
+    assert.equal(projected.state,'blocked');assert.equal(projected.code,'review_package_changed');
+    assert.match(projected.reason,/login-T-001-a1-handoff\.json/);
     assert.equal(fs.readFileSync(f.tasksPath,'utf8'),'- [ ] T-001: fixture\r\n');return;
   }
   const prior=f.options.reviewers[0].run;
@@ -1331,7 +1528,7 @@ for(const mutation of ['code','requirements','outside','checks'])test(`S2b compl
   const result=await runner.executeEffect(intent('complete'));
   assert.equal(result.state,'blocked');
   assert.equal(result.code,mutation==='checks'?'completion_checks_changed':
-    mutation==='code'?'package_mismatch':'out_of_scope');
+    mutation==='code'?'package_mismatch':mutation==='outside'?'completion_package_changed':'out_of_scope');
   assert.equal(marker.length,0);
   },o=>{o.check=()=>changed?[{...checks[0],outcome:'failed',exitCode:1,evidence:'changed result'}]:checks;});
 });

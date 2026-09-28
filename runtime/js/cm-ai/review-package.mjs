@@ -3,6 +3,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import os from 'node:os';
+import {spawnSync} from 'node:child_process';
 import { digest } from './contracts.mjs';
 import {captureSpecificationMaterial,readSpecificationMaterial,verifySpecificationMaterial} from './specification-material.mjs';
 import {resolveCodeProjects,validateCodeProjectPaths,
@@ -12,10 +14,13 @@ import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 const FILE_LIMIT=1024*1024, SNAPSHOT_LIMIT=2*1024*1024, FILE_COUNT=256;
 // Inventory budgets bound scanning, independently of the much smaller review body.
 const INVENTORY_COUNT=10000, INVENTORY_LIMIT=1024*1024*1024;
+const IGNORE_COUNT=10000, IGNORE_BYTES=1024*1024;
 const materialPath=(p,selected)=>selected.has(p)||p.split('/').at(-1)==='AGENTS.md';
 // Fixed dependency/cache directories, not caller-controlled business exclusions.
 // Keep this narrower than the discovery scanner: dist/build may be authored files.
 const dependencyDirectories=new Set(['.venv','node_modules','__pycache__','.pytest_cache','.ruff_cache']);
+const junkDirectories=new Set(['.appledouble','xcuserdata','.build','.swiftpm','deriveddata']);
+const junkFile=name=>name==='.DS_Store'||name.startsWith('._')||name==='Thumbs.db'||name.endsWith('.xcuserstate');
 const inDependencyDirectory=p=>p.split('/').slice(0,-1).some(part=>dependencyDirectories.has(part.toLowerCase()));
 // CocoaPods installs ios/Pods as a generated tree whose headers are symlinks.
 // It is a dependency root like node_modules, but every other dependency root
@@ -40,6 +45,170 @@ const inCocoaPodsTree=(root,p)=>{
   return parts.slice(0,-1).some((part,index)=>isCocoaPodsRoot(path.join(root,...parts.slice(0,index+1))));
 };
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+const inside=(root,p)=>p===root||p.startsWith(root+path.sep);
+function trustedGit(root){
+  for(const directory of (process.env.PATH??'').split(path.delimiter)){
+    if(!directory||!path.isAbsolute(directory))continue;
+    try {const bin=fs.realpathSync(path.join(directory,process.platform==='win32'?'git.exe':'git'));
+      if(!inside(root,bin)&&fs.statSync(bin).isFile()){fs.accessSync(bin,fs.constants.X_OK);return bin;}
+    }catch{}
+  }
+  return null;
+}
+function gitIgnore(root,legacy=false){
+  const bin=trustedGit(root);if(!bin)return null;
+  const safePath=(process.env.PATH??'').split(path.delimiter).filter(dir=>{
+    if(!dir||!path.isAbsolute(dir))return false;
+    try{return !inside(root,fs.realpathSync(dir));}catch{return false;}
+  }).join(path.delimiter);
+  const env={PATH:safePath,HOME:os.tmpdir(),USERPROFILE:os.tmpdir(),TMPDIR:os.tmpdir(),TMP:os.tmpdir(),TEMP:os.tmpdir(),
+    LANG:'C.UTF-8',LC_ALL:'C.UTF-8',GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1',GIT_TERMINAL_PROMPT:'0',
+    GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:os.devNull};
+  const run=args=>spawnSync(bin,['--no-optional-locks','-c','core.fsmonitor=false','-C',root,...args],
+    {env,timeout:10000,maxBuffer:16*1024*1024});
+  const ruleBytes=file=>{
+    let fd;
+    try{
+      const before=fs.lstatSync(file,{bigint:true});
+      if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1n||before.size>1024n*1024n)throw Error('unsafe_ignore_rule');
+      fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+      if(statKey(before)!==statKey(fs.fstatSync(fd,{bigint:true})))throw Error('unsafe_ignore_rule');
+      const bytes=Buffer.alloc(Number(before.size)+1),count=fs.readSync(fd,bytes,0,bytes.length,0);
+      if(count!==Number(before.size)||statKey(before)!==statKey(fs.fstatSync(fd,{bigint:true}))
+        ||statKey(before)!==statKey(fs.lstatSync(file,{bigint:true})))throw Error('unsafe_ignore_rule');
+      return bytes.subarray(0,count);
+    }finally{if(fd!==undefined)fs.closeSync(fd);}
+  };
+  try {
+    const top=run(['rev-parse','--show-toplevel']);
+    if(top.error||top.status!==0)return null;
+    const worktree=fs.realpathSync(top.stdout.toString('utf8').trim());
+    if(!inside(worktree,root))return null;
+    const result=run(['ls-files','--others','--ignored','--exclude-standard','--directory','-z']);
+    const agents=run(['ls-files','--cached','--others','--exclude-standard','-z','--','AGENTS.md','**/AGENTS.md']);
+    const ignoredAgents=run(['ls-files','--others','--ignored','--exclude-standard','-z','--','AGENTS.md','**/AGENTS.md']);
+    const rules=run(['ls-files','--cached','--others','--exclude-standard','-z','--','.gitignore','**/.gitignore']);
+    const ignoredRules=run(['ls-files','--others','--ignored','--exclude-standard','-z','--','.gitignore','**/.gitignore']);
+    const config=run(['config','--local','--list','--null']);
+    const excludesFile=run(['config',...(legacy?['--local']:[]),'--path','--get','core.excludesfile']);
+    if([result,agents,ignoredAgents,rules,ignoredRules,config].some(row=>row.error||row.status!==0)
+      ||excludesFile.error||![0,1].includes(excludesFile.status))return null;
+    const entries=result.stdout.toString('utf8').split('\0').filter(Boolean);
+    const ignoredDirectories=new Set(entries.filter(p=>p.endsWith('/')).map(p=>p.slice(0,-1)));
+    const ignored=new Set(entries
+      .map(p=>p.endsWith('/')?p.slice(0,-1):p));
+    const agentPaths=new Set([agents,ignoredAgents].flatMap(row=>row.stdout.toString('utf8').split('\0').filter(Boolean)));
+    const names=[...new Set([rules,ignoredRules].flatMap(row=>row.stdout.toString('utf8').split('\0').filter(Boolean)))].sort();
+    const input=names.map(name=>[name,sha(ruleBytes(path.join(root,name)))]);
+    // Git resolves rules from the worktree root down to this code root. Bind
+    // every ancestor, including absent files, so a later rule cannot silently
+    // change the checked surface of a split-root project.
+    for(let directory=worktree;inside(directory,root)&&directory!==root;directory=path.join(directory,path.relative(directory,root).split(path.sep)[0])){
+      const file=path.join(directory,'.gitignore');
+      input.push([`ancestor:${path.relative(worktree,file)}`,fs.existsSync(file)?sha(ruleBytes(file)):null]);
+    }
+    let coreExcludesFile=null;
+    if(excludesFile.status===0){
+      const configured=excludesFile.stdout.toString('utf8').trim();
+      if(!configured||!path.isAbsolute(configured))return null;
+      coreExcludesFile={valueDigest:sha(configured),sha256:fs.existsSync(configured)?sha(ruleBytes(configured)):null};
+      input.push(['core.excludesFile',coreExcludesFile.sha256]);
+    }
+    const gitDir=run(['rev-parse','--absolute-git-dir']);
+    if(gitDir.error||gitDir.status!==0)return null;
+    const exclude=path.join(gitDir.stdout.toString('utf8').trim(),'info','exclude');
+    if(fs.existsSync(exclude))input.push(['.git/info/exclude',sha(ruleBytes(exclude))]);
+    return {ignored,ignoredDirectories,agentPaths,coreExcludesFile,sources:input.map(([name,hash])=>({path:name,sha256:hash})),
+      configDigest:sha(config.stdout),worktreeDigest:sha(worktree),
+      sourceDigest:digest({rules:input,config:sha(config.stdout),worktree:sha(worktree)})};
+  }catch{return null;}
+}
+function ignorePolicy(root){
+  const git=gitIgnore(root,true);
+  return {version:1,builtinDigest:digest({directories:[...junkDirectories].sort(),files:['.DS_Store','._*','Thumbs.db','*.xcuserstate']}),
+    gitSourceDigest:git?.sourceDigest??null,gitSources:git?.sources??null,
+    gitConfigDigest:git?.configDigest??null,gitWorktreeDigest:git?.worktreeDigest??null,
+    ignored:git?.ignored??new Set(),
+    ignoredDirectories:git?.ignoredDirectories??new Set(),agentPaths:git?.agentPaths??new Set()};
+}
+const builtinDigest=()=>digest({directories:[...junkDirectories].sort(),files:['.DS_Store','._*','Thumbs.db','*.xcuserstate']});
+// Version 2 records decisions, not mutable rule inputs. The size bound is part
+// of the decision: an oversized Git inventory uses only the fixed junk list.
+function stableIgnorePolicy(root,builtinOnly=false){
+  const git=builtinOnly?null:gitIgnore(root);
+  const ignoredPaths=git?[...git.ignored].sort():[];
+  const ignoredDirectories=git?[...git.ignoredDirectories].sort():[];
+  let bounded=ignoredPaths.length<=IGNORE_COUNT
+    &&Buffer.byteLength(JSON.stringify([ignoredPaths,ignoredDirectories]))<=IGNORE_BYTES;
+  if(bounded)try{[...ignoredPaths,...ignoredDirectories].forEach(filePath);}catch{bounded=false;}
+  const mode=builtinOnly?'builtin_limit':!git?'builtin':bounded?'git':'builtin_limit';
+  return {version:2,builtinDigest:builtinDigest(),mode,
+    ignoredPaths:mode==='git'?ignoredPaths:[],
+    ignoredDirectories:mode==='git'?ignoredDirectories:[],
+    coreExcludesFile:mode==='git'?git.coreExcludesFile:null,
+    ignored:new Set(mode==='git'?ignoredPaths:[]),
+    agentPaths:git?.agentPaths??new Set(),gitSourceDigest:mode==='git'?git.sourceDigest:null};
+}
+const stablePublicPolicy=policy=>({version:2,builtinDigest:policy.builtinDigest,mode:policy.mode,
+  ignoredPaths:policy.ignoredPaths,ignoredDirectories:policy.ignoredDirectories,
+  coreExcludesFile:policy.coreExcludesFile});
+function stableSnapshotPolicy(root,baseline,current=stableIgnorePolicy(root,baseline.mode==='builtin_limit')){
+  return {ignored:new Set([...baseline.ignoredPaths,...current.ignoredPaths]),
+    ignoredDirectories:new Set([...baseline.ignoredDirectories,...current.ignoredDirectories]),
+    agentPaths:current.agentPaths,gitSourceDigest:current.gitSourceDigest};
+}
+function ignoredByPolicy(p,policy){
+  return policy.ignored.has(p)||[...policy.ignoredDirectories].some(dir=>p.startsWith(dir+'/'))
+    ||junkFile(p.split('/').at(-1))||p.split('/').some(part=>junkDirectories.has(part.toLowerCase()));
+}
+function comparableFiles(files,policy,protectedPaths){
+  return files.filter(file=>protectedPaths.has(file.path)||file.path.split('/').at(-1)==='AGENTS.md'
+    ||!ignoredByPolicy(file.path,policy));
+}
+const publicPolicy=policy=>({version:policy.version,builtinDigest:policy.builtinDigest,
+  gitSourceDigest:policy.gitSourceDigest,gitSources:policy.gitSources,
+  gitConfigDigest:policy.gitConfigDigest,gitWorktreeDigest:policy.gitWorktreeDigest});
+function validatePolicySources(value){
+  need(value===null||Array.isArray(value)&&value.length<=10000);
+  if(value===null)return;
+  const seen=new Set();
+  for(const row of value){keys(row,['path','sha256']);
+    need(typeof row.path==='string'&&row.path.length>0&&row.path.length<=4096
+      &&!/[\r\n\0]/.test(row.path)&&!seen.has(row.path));seen.add(row.path);
+    need(row.sha256===null||/^[a-f0-9]{64}$/.test(row.sha256));}
+}
+function validateStablePolicy(value){
+  keys(value,['version','builtinDigest','mode','ignoredPaths','ignoredDirectories','coreExcludesFile']);
+  need(value.version===2);hex(value.builtinDigest);
+  need(['git','builtin','builtin_limit'].includes(value.mode));
+  for(const field of ['ignoredPaths','ignoredDirectories']){
+    need(Array.isArray(value[field])&&value[field].length<=IGNORE_COUNT);
+    let previous=null;
+    for(const p of value[field]){
+      filePath(p);need(previous===null||previous<p);previous=p;
+    }
+  }
+  need(Buffer.byteLength(JSON.stringify([value.ignoredPaths,value.ignoredDirectories]))<=IGNORE_BYTES);
+  need(value.mode==='git'||value.ignoredPaths.length===0&&value.ignoredDirectories.length===0);
+  if(value.coreExcludesFile!==null){
+    need(value.mode==='git');keys(value.coreExcludesFile,['valueDigest','sha256']);
+    hex(value.coreExcludesFile.valueDigest);
+    need(value.coreExcludesFile.sha256===null||/^[a-f0-9]{64}$/.test(value.coreExcludesFile.sha256));
+  }
+}
+function policyDifferencePaths(current,expected){
+  const before=new Map((expected?.gitSources??[]).map(row=>[row.path,row.sha256]));
+  const after=new Map((current?.gitSources??[]).map(row=>[row.path,row.sha256]));
+  const changed=[...new Set([...before.keys(),...after.keys()])].filter(p=>before.get(p)!==after.get(p));
+  if(current?.builtinDigest!==expected?.builtinDigest)changed.push('built-in ignore list');
+  if(current?.gitConfigDigest!==expected?.gitConfigDigest)changed.push('.git/config');
+  if(current?.gitWorktreeDigest!==expected?.gitWorktreeDigest)changed.push('Git worktree root');
+  if(current?.gitSourceDigest!==expected?.gitSourceDigest&&!changed.length)changed.push('Git ignore policy');
+  return changed.sort().slice(0,20);
+}
+const diagnostic=(code,p,detail='')=>{
+  const error=new Error(`${code}: ${p}${detail?` (${detail})`:''}`);error.code=code;error.paths=[p];return error;
+};
 const fail = code => { const error=new Error(code); error.code=code; throw error; };
 const need = (condition,code='invalid_input') => { if(!condition) fail(code); };
 const record = v => v!==null && typeof v==='object' && !Array.isArray(v);
@@ -122,7 +291,8 @@ function readFile(root,p,includeContent=true,limit=FILE_LIMIT,contentLimit=limit
     return {path:p,type:'file',mode:Number(before.mode & 0o7777n),size:offset,
       sha256:hash.digest('hex'),...(includeContent?{contentBase64:Buffer.concat(chunks).toString('base64')}:{})};
   } catch(error) {
-    if(['unsupported_file','limit_exceeded','snapshot_changed'].includes(error.code))throw error;
+    if(['unsupported_file','limit_exceeded','snapshot_changed'].includes(error.code))throw diagnostic(error.code,p,
+      error.code==='limit_exceeded'?`file bytes > ${limit}`:'');
     fail('read_failed');
   } finally { if(fd!==undefined) fs.closeSync(fd); }
 }
@@ -133,26 +303,38 @@ export function reviewSpecsPath(root,specsRoot) {
   need(root!==specsRoot&&!root.startsWith(specsRoot+path.sep),'overlapping_roots');
   return specsRoot.startsWith(root+path.sep)?filePath(path.relative(root,specsRoot).split(path.sep).join('/')):null;
 }
-function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selected=null) {
+function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selected=null,policy=null) {
   if(specsPath!==null){
     const target=path.join(root,specsPath);
     need(fs.realpathSync(target)===target&&fs.lstatSync(target).isDirectory(),'unsupported_path');
   }
-  const files=[],seen=new Set(); let total=0,materialBytes=0,materialCount=0;
+  const files=[],seen=new Set(); let total=0,materialBytes=0,materialCount=0,visitedSpecs=false;
   function add(p,s){
-    need(s.isFile()&&!s.isSymbolicLink()&&s.nlink===1,'unsupported_file');
+    if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1)throw diagnostic('unsupported_file',p);
     const includeContent=selected===null||materialPath(p,selected);
     const countLimit=selected===null?FILE_COUNT:INVENTORY_COUNT;
     const byteLimit=selected===null?SNAPSHOT_LIMIT:INVENTORY_LIMIT;
-    need(files.length<countLimit&&total+s.size<=byteLimit,'limit_exceeded');
-    if(includeContent)need(materialCount<FILE_COUNT&&materialBytes+s.size<=SNAPSHOT_LIMIT,'limit_exceeded');
+    if(files.length>=countLimit)throw diagnostic('limit_exceeded',p,`file count > ${countLimit}`);
+    if(total+s.size>byteLimit)throw diagnostic('limit_exceeded',p,`inventory bytes > ${byteLimit}`);
+    if(includeContent&&(materialCount>=FILE_COUNT||materialBytes+s.size>SNAPSHOT_LIMIT))
+      throw diagnostic('limit_exceeded',p,`material count > ${FILE_COUNT} or bytes > ${SNAPSHOT_LIMIT}`);
     const f=readFile(root,p,includeContent,includeContent?Math.min(FILE_LIMIT,SNAPSHOT_LIMIT-materialBytes):byteLimit-total);
     total+=f.size;
     if(includeContent){materialBytes+=f.size;materialCount++;}
     files.push(f);
   }
+  function retainIgnoredInstructions(dir,depth=0){
+    if(depth>32)throw diagnostic('limit_exceeded',dir,'instruction search depth > 32');
+    let names;try{names=fs.readdirSync(path.join(root,dir)).sort();}catch{throw diagnostic('read_failed',dir);}
+    for(const name of names){
+      const p=dir+'/'+name;
+      let stat;try{stat=fs.lstatSync(path.join(root,p));}catch{throw diagnostic('read_failed',p);}
+      if(name==='AGENTS.md')add(p,stat);
+      else if(stat.isDirectory()&&!stat.isSymbolicLink())retainIgnoredInstructions(p,depth+1);
+    }
+  }
   function walk(rel='',depth=0,codeRoot='') {
-    need(depth<=32,'limit_exceeded');
+    if(depth>32)throw diagnostic('limit_exceeded',rel,`directory depth > 32`);
     let names;
     try { names=fs.readdirSync(path.join(root,rel)).sort(); } catch { fail('read_failed'); }
     for(const name of names) {
@@ -163,9 +345,29 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
       // Scope and requirement paths still cannot select any .git entry.
       if(p===(codeRoot?codeRoot+'/.git':'.git') && !s.isSymbolicLink()
         && (s.isDirectory() || (s.isFile() && s.nlink===1))) continue;
+      const protectedPath=selected?.has(p)||retainedPaths.includes(p)||name==='AGENTS.md'
+        ||specsPath!==null&&(specsPath===p||specsPath.startsWith(p+'/'))
+        ||[...selected??[],...retainedPaths,...policy?.agentPaths??[]].some(item=>item===p||item.startsWith(p+'/'));
+      const gitIgnored=policy?.ignored.has(p)||[...policy?.ignoredDirectories??[]].some(dir=>p.startsWith(dir+'/'));
+      const builtinIgnored=p.split('/').some(part=>junkDirectories.has(part.toLowerCase()));
+      if(policy&&!protectedPath&&(junkFile(name)||builtinIgnored
+        ||gitIgnored)){
+        // Git's ignored AGENTS path query protects deeper instructions without
+        // entering generated output. Without Git, search names only so an
+        // instruction can never be silently excluded by the fixed junk list.
+        if(s.isDirectory()){
+          if(policy.gitSourceDigest===null)retainIgnoredInstructions(p);
+          else{
+            const instruction=p+'/AGENTS.md';
+            try{add(instruction,fs.lstatSync(path.join(root,instruction)));}
+            catch(error){if(error.code!=='ENOENT')throw error;}
+          }
+        }
+        continue;
+      }
       filePath(p);
       const alias=p.toLowerCase(); need(!seen.has(alias),'unsupported_path'); seen.add(alias);
-      if(p===specsPath){need(s.isDirectory()&&!s.isSymbolicLink(),'unsupported_path');continue;}
+      if(p===specsPath){need(s.isDirectory()&&!s.isSymbolicLink(),'unsupported_path');visitedSpecs=true;continue;}
       // Never follow a dependency-root symlink. Old baselines that captured
       // these files still verify their original material instead of dropping it.
       if(s.isDirectory()&&(dependencyDirectories.has(name.toLowerCase())||isCocoaPodsRoot(path.join(root,p)))
@@ -174,7 +376,7 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
       else add(p,s);
     }
   }
-  if(projectPaths===null)walk();
+  if(projectPaths===null){walk();if(specsPath!==null)need(visitedSpecs,'protected_specs');}
   else{
     const roots=projectPaths.map(prefix=>path.join(root,prefix));
     resolveCodeProjects(root,roots);
@@ -190,15 +392,52 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
 }
 export function captureReviewInventory(root,baseline){
   validBaseline(baseline);
+  const stable=baseline.ignorePolicy?.version===2;
+  const policy=stable?stableSnapshotPolicy(root,baseline.ignorePolicy)
+    :Object.hasOwn(baseline,'ignorePolicy')?ignorePolicy(root):null;
   return snapshot(root,baseline.specsPath??null,baseline.codeProjectPaths??null,
-    baseline.files.map(file=>file.path),new Set()).map(file=>({path:file.path,sha256:file.sha256}));
+    stable?[]:baseline.files.map(file=>file.path),new Set(),policy)
+    .map(file=>({path:file.path,sha256:file.sha256}));
+}
+export function compareReviewInventoryToBaseline(root,baseline){
+  validBaseline(baseline);
+  const stable=baseline.ignorePolicy?.version===2;
+  const policy=stable?stableSnapshotPolicy(root,baseline.ignorePolicy)
+    :Object.hasOwn(baseline,'ignorePolicy')?ignorePolicy(root):null;
+  const before=stable?comparableFiles(baseline.files,policy,new Set([...baseline.scope,...baseline.requirements])):baseline.files;
+  const after=snapshot(root,baseline.specsPath??null,baseline.codeProjectPaths??null,
+    stable?[]:baseline.files.map(file=>file.path),new Set(),policy);
+  const previous=new Map(before.map(file=>[file.path,file.sha256]));
+  const current=new Map(after.map(file=>[file.path,file.sha256]));
+  return [...new Set([...previous.keys(),...current.keys()])].filter(p=>previous.get(p)!==current.get(p))
+    .map(p=>({path:p,sha256:current.get(p)??null}));
+}
+export function compareReviewBaseline(current,expected){
+  if(digest(current)===digest(expected))return true;
+  const stable=current.ignorePolicy?.version===2&&expected.ignorePolicy?.version===2;
+  const useGit=stable&&expected.ignorePolicy.mode!=='builtin_limit';
+  const policy=stable?{ignored:new Set(useGit?[...current.ignorePolicy.ignoredPaths,...expected.ignorePolicy.ignoredPaths]:[]),
+    ignoredDirectories:new Set(useGit?[...current.ignorePolicy.ignoredDirectories,...expected.ignorePolicy.ignoredDirectories]:[])}:null;
+  const protectedPaths=new Set([...expected.scope,...expected.requirements]);
+  const before=new Map((stable?comparableFiles(expected.files,policy,protectedPaths):expected.files).map(file=>[file.path,digest(file)]));
+  const after=new Map((stable?comparableFiles(current.files,policy,protectedPaths):current.files).map(file=>[file.path,digest(file)]));
+  const paths=[...new Set([...before.keys(),...after.keys()])].filter(p=>before.get(p)!==after.get(p)).sort();
+  if(!stable&&digest(current.ignorePolicy??null)!==digest(expected.ignorePolicy??null))paths.push(...policyDifferencePaths(current.ignorePolicy,expected.ignorePolicy));
+  if(stable){
+    const metadata=value=>{const {ignorePolicy,files,baselineDigest,...rest}=value;return rest;};
+    if(digest(metadata(current))!==digest(metadata(expected)))paths.push('baseline metadata');
+  }
+  if(stable&&!paths.length)return true;
+  if(!paths.length)paths.push('baseline metadata');
+  const error=new Error(`package_mismatch: ${paths.slice(0,20).join(', ')}${paths.length>20?` (+${paths.length-20} more)`:''}`);
+  error.code='package_mismatch';error.paths=paths;throw error;
 }
 const sealed = (data,key) => {
   const result={...data,[key]:digest(data)};
   need(Buffer.byteLength(JSON.stringify(result))<=8*1024*1024,'limit_exceeded');
   return freeze(result);
 };
-export function captureReviewBaseline(options) {
+export function captureReviewBaseline(options,legacy=false,policyVersion=2,baselinePolicy=null) {
   const v=plain(options); keys(v,['root','identity','scope','requirements',
     ...['specsRoot','codeProjectPaths','bootstrapRequirements','specification','version'].filter(key=>Object.hasOwn(v,key))]); identityCheck(v.identity);
   const version=v.version??2;need([1,2].includes(version));
@@ -224,7 +463,12 @@ export function captureReviewBaseline(options) {
     if(specsPath!==null)validateProjectSpecs(specsPath,projectPaths);
     assertCodeProjectSelections(projectPaths,[...scope,...requirements],{allowInstructions:true});
   }
-  const files=snapshot(root,specsPath,projectPaths,[],version===1?null:new Set([...scope,...requirements]));
+  need([1,2].includes(policyVersion));
+  if(baselinePolicy!==null){need(policyVersion===2);validateStablePolicy(baselinePolicy);}
+  const policy=legacy||version===1?null:policyVersion===1?ignorePolicy(root)
+    :stableIgnorePolicy(root,baselinePolicy?.mode==='builtin_limit');
+  const snapshotPolicy=baselinePolicy===null?policy:stableSnapshotPolicy(root,baselinePolicy,policy);
+  const files=snapshot(root,specsPath,projectPaths,[],version===1?null:new Set([...scope,...requirements]),snapshotPolicy);
   need(requirements.every(p=>files.some(f=>f.path===p)),'read_failed');
   for(const p of scope) {
     const absolute=path.join(root,p);
@@ -234,7 +478,8 @@ export function captureReviewBaseline(options) {
     scope,requirements,files,...(specsPath===null?{}:{specsPath}),
     ...(projectPaths===null?{}:{codeProjectPaths:projectPaths}),
     ...(bootstrap===null?{}:{bootstrapRequirements:bootstrap}),
-    ...(specification===null?{}:{specification,specificationRoot:v.specification.specsRoot})},'baselineDigest');
+    ...(specification===null?{}:{specification,specificationRoot:v.specification.specsRoot}),
+    ...(policy===null?{}:{ignorePolicy:policyVersion===1?publicPolicy(policy):stablePublicPolicy(policy)})},'baselineDigest');
 }
 
 // Bounded selected-file material for pre-implementation reviews; no whole-tree scan.
@@ -339,8 +584,19 @@ export function readReviewSourceRecords(raw){
 function validBaseline(b) {
   try {
     keys(b,['version','kind','identity','rootDigest','scope','requirements','files','baselineDigest',
-      ...['specsPath','codeProjectPaths','bootstrapRequirements','specification','specificationRoot'].filter(key=>Object.hasOwn(b,key))]);
+      ...['specsPath','codeProjectPaths','bootstrapRequirements','specification','specificationRoot','ignorePolicy'].filter(key=>Object.hasOwn(b,key))]);
     need([1,2].includes(b.version) && b.kind==='cm-review-baseline'); identityCheck(b.identity); hex(b.rootDigest);
+    if(Object.hasOwn(b,'ignorePolicy')){
+      if(b.ignorePolicy.version===2)validateStablePolicy(b.ignorePolicy);
+      else{
+        keys(b.ignorePolicy,['version','builtinDigest','gitSourceDigest','gitSources','gitConfigDigest','gitWorktreeDigest']);
+        need(b.ignorePolicy.version===1);hex(b.ignorePolicy.builtinDigest);
+        need(b.ignorePolicy.gitSourceDigest===null||/^[a-f0-9]{64}$/.test(b.ignorePolicy.gitSourceDigest));
+        need(b.ignorePolicy.gitConfigDigest===null||/^[a-f0-9]{64}$/.test(b.ignorePolicy.gitConfigDigest));
+        need(b.ignorePolicy.gitWorktreeDigest===null||/^[a-f0-9]{64}$/.test(b.ignorePolicy.gitWorktreeDigest));
+        validatePolicySources(b.ignorePolicy.gitSources);
+      }
+    }
     need(Object.hasOwn(b,'specification')===Object.hasOwn(b,'specificationRoot'));
     if(Object.hasOwn(b,'specification')){
       readSpecificationMaterial(b.specification,b.identity.taskId);
@@ -394,11 +650,21 @@ export function createReviewPackage(options) {
   validBaseline(b); validChecks(v.checks);
   const specification=Object.hasOwn(b,'specification')?verifySpecificationMaterial(b):null;
   const root=rootPath(v.root); need(sha(root)===b.rootDigest,'invalid_baseline');
+  const stable=b.ignorePolicy?.version===2;
+  const policy=stable?stableSnapshotPolicy(root,b.ignorePolicy)
+    :Object.hasOwn(b,'ignorePolicy')?ignorePolicy(root):null;
+  if(policy&&!stable&&digest(publicPolicy(policy))!==digest(b.ignorePolicy)){
+    const changed=policyDifferencePaths(publicPolicy(policy),b.ignorePolicy);
+    throw diagnostic('package_mismatch',changed.join(', ')||'ignore policy','ignore policy changed');
+  }
   const bootstrap=Object.hasOwn(b,'bootstrapRequirements')?currentBootstrapRequirements(b.bootstrapRequirements):null;
   if(bootstrap!==null)need(reviewSpecsPath(root,b.bootstrapRequirements.specsRoot)===(b.specsPath??null),'bootstrap_requirements_mismatch');
   const selected=b.version===1?null:new Set([...b.scope,...b.requirements,
     ...b.files.filter(f=>Object.hasOwn(f,'contentBase64')).map(f=>f.path)]);
-  const files=snapshot(root,b.specsPath??null,b.codeProjectPaths??null,b.files.map(f=>f.path),selected),before=new Map(b.files.map(f=>[f.path,f])),after=new Map(files.map(f=>[f.path,f]));
+  const files=snapshot(root,b.specsPath??null,b.codeProjectPaths??null,stable?[]:b.files.map(f=>f.path),selected,policy);
+  const protectedPaths=new Set([...b.scope,...b.requirements]);
+  const before=new Map((stable?comparableFiles(b.files,policy,protectedPaths):b.files).map(f=>[f.path,f]));
+  const after=new Map(files.map(f=>[f.path,f]));
   const changes=[],violations=[];
   for(const p of [...new Set([...before.keys(),...after.keys()])].sort()) {
     const old=before.get(p)??null,current=after.get(p)??null;
@@ -424,6 +690,7 @@ export function createReviewPackage(options) {
     ...(bootstrap===null?{}:{bootstrapRequirements:bootstrap}),
     ...(specification===null?{}:{specification}),
     ...(Object.hasOwn(v,'handoffPath')?{handoff:readHandoffSnapshot(v.handoffPath)}:{}),
+    ...(policy===null?{}:{ignorePolicy:stable?b.ignorePolicy:publicPolicy(policy)}),
     artifactDigest:digest(changes),requirementsDigest:digest(requirements),checksDigest:digest(v.checks)},'packageDigest');
   need(Buffer.byteLength(JSON.stringify(pkg))<=8*1024*1024,'limit_exceeded');
   return pkg;
@@ -436,7 +703,18 @@ function validPackage(p) {
       ...(Object.hasOwn(p,'specification')?['specification']:[]),
       ...(Object.hasOwn(p,'handoff')?['handoff']:[]),
       ...(Object.hasOwn(p,'codeProjectPaths')?['codeProjectPaths','instructions']:[]),
-      ...(Object.hasOwn(p,'bootstrapRequirements')?['bootstrapRequirements']:[])]);
+      ...(Object.hasOwn(p,'bootstrapRequirements')?['bootstrapRequirements']:[]),
+      ...(Object.hasOwn(p,'ignorePolicy')?['ignorePolicy']:[])]);
+    if(Object.hasOwn(p,'ignorePolicy')){
+      if(p.ignorePolicy.version===2)validateStablePolicy(p.ignorePolicy);
+      else{
+        keys(p.ignorePolicy,['version','builtinDigest','gitSourceDigest','gitSources','gitConfigDigest','gitWorktreeDigest']);need(p.ignorePolicy.version===1);
+        hex(p.ignorePolicy.builtinDigest);need(p.ignorePolicy.gitSourceDigest===null||/^[a-f0-9]{64}$/.test(p.ignorePolicy.gitSourceDigest));
+        need(p.ignorePolicy.gitConfigDigest===null||/^[a-f0-9]{64}$/.test(p.ignorePolicy.gitConfigDigest));
+        need(p.ignorePolicy.gitWorktreeDigest===null||/^[a-f0-9]{64}$/.test(p.ignorePolicy.gitWorktreeDigest));
+        validatePolicySources(p.ignorePolicy.gitSources);
+      }
+    }
     if(Object.hasOwn(p,'handoff')) {
       fileRecord(p.handoff);need(!p.handoff.path.includes('/')&&p.handoff.size<=256*1024);
     }
@@ -494,6 +772,7 @@ export function verifyReviewPackage(options) {
   need(v.reviewPackage.packageDigest===v.expectedDigest,'package_mismatch');
   need(Object.hasOwn(v.reviewPackage,'specification')===Object.hasOwn(v.baseline,'specification'),'package_mismatch');
   need(Object.hasOwn(v.reviewPackage,'handoff')===Object.hasOwn(v,'handoffPath'),'package_mismatch');
+  need(digest(v.reviewPackage.ignorePolicy??null)===digest(v.baseline.ignorePolicy??null),'package_mismatch');
   let current=createReviewPackage({root:v.root,baseline:v.baseline,checks:v.checks,
     ...(Object.hasOwn(v,'handoffPath')?{handoffPath:v.handoffPath}:{})});
   // Rebuild the historical representation for legacy receipts, without rewriting them.
@@ -501,7 +780,7 @@ export function verifyReviewPackage(options) {
     const {unchangedScope,packageDigest,...legacy}=current;
     current=sealed(legacy,'packageDigest');
   }
-  need(current.packageDigest===v.expectedDigest,'package_mismatch');
+  if(current.packageDigest!==v.expectedDigest)throw packageMismatch(current,v.reviewPackage);
   return freeze({outcome:'matched',packageDigest:current.packageDigest});
 }
 
@@ -514,6 +793,7 @@ export function verifyCompletionReviewPackage(options) {
   need(v.reviewPackage.packageDigest===v.expectedDigest,'package_mismatch');
   need(Object.hasOwn(v.reviewPackage,'specification')===Object.hasOwn(v.baseline,'specification'),'package_mismatch');
   need(Object.hasOwn(v.reviewPackage,'handoff')===Object.hasOwn(v,'handoffPath'),'package_mismatch');
+  need(digest(v.reviewPackage.ignorePolicy??null)===digest(v.baseline.ignorePolicy??null),'package_mismatch');
   let current=createReviewPackage({root:v.root,baseline:v.baseline,checks:v.checks,
     ...(Object.hasOwn(v,'handoffPath')?{handoffPath:v.handoffPath}:{})});
   if(!Object.hasOwn(v.reviewPackage,'unchangedScope')){
@@ -521,7 +801,7 @@ export function verifyCompletionReviewPackage(options) {
     current=sealed(legacy,'packageDigest');
   }
   const withoutChecks=({checks,checksDigest,packageDigest,...fields})=>fields;
-  need(digest(withoutChecks(current))===digest(withoutChecks(v.reviewPackage)),'package_mismatch');
+  if(digest(withoutChecks(current))!==digest(withoutChecks(v.reviewPackage)))throw packageMismatch(current,v.reviewPackage);
   const checkIdentities=checks=>checks.map(c=>c.kind==='visual'
     ?{id:c.id,kind:c.kind}
     :{id:c.id,command:c.command});
@@ -533,6 +813,21 @@ export function verifyCompletionReviewPackage(options) {
   const visualCarriers=checks=>checks.filter(c=>c.kind==='visual').map(c=>({before:c.before,after:c.after}));
   need(digest(visualCarriers(current.checks))===digest(visualCarriers(v.reviewPackage.checks)),'package_mismatch');
   return freeze({outcome:'matched',packageDigest:v.expectedDigest});
+}
+
+function packageMismatch(current,reviewed){
+  const paths=new Set();
+  for(const field of ['changes','unchangedScope','requirements','instructions']){
+    const before=new Map((reviewed[field]??[]).map(item=>[item.path,digest(item)]));
+    const after=new Map((current[field]??[]).map(item=>[item.path,digest(item)]));
+    for(const p of new Set([...before.keys(),...after.keys()]))if(before.get(p)!==after.get(p))paths.add(p);
+  }
+  if(digest(current.handoff??null)!==digest(reviewed.handoff??null))paths.add(current.handoff?.path??reviewed.handoff?.path??'handoff');
+  if(digest(current.ignorePolicy??null)!==digest(reviewed.ignorePolicy??null))
+    policyDifferencePaths(current.ignorePolicy,reviewed.ignorePolicy).forEach(p=>paths.add(p));
+  if(!paths.size)paths.add('review package metadata');
+  const names=[...paths].sort();const error=new Error(`package_mismatch: ${names.slice(0,20).join(', ')}${names.length>20?` (+${names.length-20} more)`:''}`);
+  error.code='package_mismatch';error.paths=names;return error;
 }
 
 // The host supplies this separate specs-root file; workers never select it.

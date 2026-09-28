@@ -148,14 +148,20 @@ test('a selected root may contain protected specs but specs cannot be a selected
   assert.throws(()=>captureReviewBaseline({...options,specsRoot,codeProjectPaths:['apps/api/specs']}),{code:'protected_specs'});
 });
 
-test('single-root baseline stays unchanged and new package binds an empty unchanged scope',t=>{
+test('single-root baseline and package bind ignore policy with an empty unchanged scope',t=>{
   const {root}=fixture(t),single=path.join(root,'apps/api');
   const baseline=captureReviewBaseline({root:single,identity,scope:['source.mjs'],requirements:['requirement.md']});
-  assert.deepEqual(Object.keys(baseline).sort(),['version','kind','identity','rootDigest','scope','requirements','files','baselineDigest'].sort());
+  assert.deepEqual(Object.keys(baseline).sort(),['version','kind','identity','rootDigest','scope','requirements','files','ignorePolicy','baselineDigest'].sort());
+  assert.deepEqual(Object.keys(baseline.ignorePolicy).sort(),
+    ['version','builtinDigest','mode','ignoredPaths','ignoredDirectories','coreExcludesFile'].sort());
+  assert.equal(baseline.ignorePolicy.version,2);
+  assert.deepEqual(readReviewBaseline(baseline),baseline);
   assert.deepEqual(baseline,resign(baseline,'baselineDigest'));
   write(single,'source.mjs','changed\n');const pkg=createReviewPackage({root:single,baseline,checks});
   assert.deepEqual(Object.keys(pkg).sort(),['version','kind','identity','rootDigest','baseIdentity','scope','changes','unchangedScope','requirements','checks',
-    'artifactDigest','requirementsDigest','checksDigest','packageDigest'].sort());
+    'ignorePolicy','artifactDigest','requirementsDigest','checksDigest','packageDigest'].sort());
+  assert.deepEqual(pkg.ignorePolicy,baseline.ignorePolicy);
+  assert.deepEqual(readReviewPackage(pkg),pkg);
   assert.deepEqual(pkg.unchangedScope,[]);
   assert.equal(verifyReviewPackage({root:single,baseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
 });

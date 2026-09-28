@@ -147,6 +147,8 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 不新增模型调用的方案：单任务和批次均可传`--protected-conversation-config {文件}`，配置固定为
 `{checkCommands,timeoutMs}`，命令须已获准；检查命令用此预算，独立审查默认 900000 毫秒（15 分钟），可在 review-config 中单独覆盖，范围 1–3600000。preflight 输出有效 `timeoutMs`；此预算不进入授权配置摘要，旧运行可用原 runId 恢复。
 需要模拟器、真机或系统服务的 iOS 项目（CoreSimulatorService、Xcode UI tests、Keychain 等），应将 specs 与代码分根，并选用有系统访问能力的当前会话宿主路径执行检查；实际检查进程必须在 Codex 原生沙箱外。仅改变目录或改用驱动脚本不会让沙箱内检查获得这些服务。同仓 specs 的受保护检查仍在 Codex 沙箱内，典型症状是模拟器不可用、UI tests 无法启动，SwiftPM 的 `swift build` 需要 `--disable-sandbox`；不要把这种失败记成产品测试通过。检查命令的构建产物放在代码根外，例如 `xcodebuild -derivedDataPath {代码根外的目录}`。检查自己新增的范围外未跟踪文件使原 run 进入 `blocked/check_output_out_of_scope`，状态原因和 stderr 列出最多 20 个相对路径；操作员清理产物后在原 run 重试。开发者造成的范围外改动仍是 `unknown/out_of_scope`，不得据此放宽 scope。
+新运行的代码根快照固定忽略 `.DS_Store`、`._*`、`.AppleDouble/`、`Thumbs.db`、`xcuserdata/`、`*.xcuserstate`、`.build/`、`.swiftpm/`、`DerivedData/`，也跳过 Git 报告为 ignored 的目录及路径；任务 scope、AGENTS.md 与 specs 仍须验证。基线有界保存 Git 忽略路径与目录，后续将基线和当前忽略决定的并集应用到比较两侧；规则文件和无关 Git 配置变化本身不阻断审查。Git 不可用或忽略结果超限时基线标明仅用固定列表。这有意缩小代码根检查面，被忽略的产物不构成已审代码；旧 journal 沿旧规则回放。
+审查期间代码根非忽略路径漂移时，`blocked/review_package_changed` 保留 verdict、回执与最多 20 个差异路径；清理或还原后在原 run 继续 `advance`，不会重派 reviewer。结果已入 journal 而检查点未写入时，恢复会从同一结果补写检查点；结果仍可用，不消耗新轮次。审查前的漂移拒绝 `decision`，完成前的漂移拒绝 `complete`，均列出路径；完成检查期间新增文件进入可重试的 `blocked/completion_package_changed`，清理后在原 run 重发 `complete`。未匹配时 `pendingAction` 不提示会被拒绝的动作。
 审查传输超时且没有结果事件时，记录 `pending_review/review_transport_timeout`，可用 `--mode resume` 后 advance，
 同一 attempt 最多重派一次，重新取得 Review 授权、grant 与 invocation；第二次超时为 `blocked/review_transport_timeout`。
 已有最终消息（即使截断）的超时仍需 reconcile，旧 unknown 历史不自动改类。兼容Codex/Claude当前会话，保留原runtime与Review授权。

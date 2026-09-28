@@ -21,7 +21,9 @@ const retryReview=status=>status.state==='pending_review'
 export const developmentRetryable=status=>status.state==='blocked'
   &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed'].includes(status.code);
 const retryDeveloper=developmentRetryable;
-export const completionRetryable=status=>status.state==='blocked'&&status.code==='completion_checks_changed';
+export const completionRetryable=status=>status.state==='blocked'
+  &&['completion_checks_changed','completion_package_changed'].includes(status.code)
+  &&status.retryReady!==false;
 const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approval':
   status.state==='changes_requested'||retryDeveloper(status)||retryReview(status)?'resume':
   status.state==='awaiting_review'?'decision':status.state==='unknown'
@@ -94,9 +96,9 @@ function validateHostDecision(decision,status) {
 
 function effectSummary(operation,result,runner,identity) {
   if(result?.outcome==='rejected'){
-    const rejection=json(result);shape(rejection,['outcome','code']);id(rejection.code);
+    const rejection=json(result);shape(rejection,['outcome','code',...(Object.hasOwn(rejection,'reason')?['reason']:[])]);id(rejection.code);
     const current=boundStatus(runner.status(),identity);
-    return summary(operation,{...current,code:rejection.code},'rejected');
+    return summary(operation,{...current,code:rejection.code,...(rejection.reason?{reason:rejection.reason}:{})},'rejected');
   }
   if(operation.operation==='decision'&&identity.attempt===1&&result?.state==='changes_requested'){
     const next={...identity,attempt:2};
@@ -444,6 +446,7 @@ export function createCmAiConversationEntry(options) {
     if(operation.operation==='decision'){
       const status=boundStatus(runner.status(),identity);
       need(status.packageDigest===operation.packageDigest,'stale_decision');
+      if(status.code==='review_package_changed')return summary(operation,status,'rejected');
       let decision=hostDecision;
       if(hostDecisionProvider!==null){
         // A historical terminal or outstanding invocation is owned by the runner;
@@ -484,6 +487,8 @@ export function createCmAiConversationEntry(options) {
     if(operation.operation==='complete'){
       const status=boundStatus(runner.status(),identity);
       need(status.packageDigest===operation.packageDigest,'stale_completion');
+      if(status.code==='review_package_changed')return summary(operation,status,'rejected');
+      if(status.code==='completion_package_changed'&&status.retryReady===false)return summary(operation,status,'rejected');
       const correction=correctionSummary(operation,status);if(correction)return correction;
       need(['approved','fixture_completed'].includes(status.state)||completionRetryable(status),'completion_not_ready');
       const retries=runner.completionBlocks?.()??0;

@@ -62,6 +62,39 @@ test('check output block reaches operator status with paths and resume action',(
   assert.equal(result.reason,'out_of_scope: build/product');
 }));
 
+test('review package drift reports paths and suppresses refused decision and completion actions',()=>fixture(async f=>{
+  f.setStatus('blocked','review_package_changed','out_of_scope: App.xcodeproj/user.xcuserstate');
+  const entry=f.entry();const status=await entry.handle(control('status'));
+  assert.equal(status.pendingAction,'none');assert.match(status.reason,/xcuserstate/);
+  for(const operation of ['decision','complete']){
+    const result=await entry.handle({version:1,operation,requestId:operation,identity,packageDigest});
+    assert.equal(result.outcome,'rejected');assert.equal(result.code,'review_package_changed');
+    assert.match(result.reason,/xcuserstate/);
+  }
+  assert.equal(f.effects(),0);
+}));
+
+test('completion package drift advertises complete retry and uses a fresh effect id',()=>fixture(async f=>{
+  f.setStatus('blocked','completion_package_changed','out_of_scope: unexpected.txt');
+  f.setCompletionBlocks(()=>1);
+  f.setExecutor(effect=>{
+    assert.equal(effect.id,'complete-1-retry-1');f.setStatus('fixture_completed',null);return f.status();
+  });
+  const entry=f.entry();assert.equal((await entry.handle(control('status'))).pendingAction,'complete');
+  assert.equal((await entry.handle({version:1,operation:'complete',requestId:'complete',identity,packageDigest})).state,'fixture_completed');
+}));
+
+test('completion package drift keeps complete unavailable until cleanup',()=>fixture(async f=>{
+  f.setStatus('blocked','completion_package_changed','out_of_scope: unexpected.txt');
+  const entry=f.entry({});
+  const current=f.status();current.retryReady=false;
+  const status=await entry.handle(control('status'));
+  assert.equal(status.pendingAction,'none');
+  const refused=await entry.handle({version:1,operation:'complete',requestId:'complete',identity,packageDigest});
+  assert.equal(refused.outcome,'rejected');assert.equal(refused.code,'completion_package_changed');
+  assert.match(refused.reason,/unexpected.txt/);assert.equal(f.effects(),0);
+}));
+
 test('context_refresh requires a completed task and returns its bound context summary',()=>fixture(async f=>{
   const request=operation('context_refresh');
   assert.equal((await f.entry().handle(request)).code,'context_not_ready');
