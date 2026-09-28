@@ -443,6 +443,9 @@ export function createTaskRunner(options) {
     try{verifyReviewPackage({root:config.root,baseline:base,checks:currentChecks,
       reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});}
     catch(error){drift=error;}
+    // Changed approved specs invalidate the verdict itself. Do not register a
+    // receipt that the code-root cleanup path could later reuse.
+    if(drift?.code==='spec_drift'){halt('blocked','spec_drift');return;}
     receipt=reviewReceipt({request,call,result,reviewPackage,developerProvider:developer.provider,fallbackReasons});
     registered.set(receipt.id,receipt);receipts.push(receipt);priorReview=result;
     if(result.verdict==='approved'){state='approved';code=null;}
