@@ -5,8 +5,9 @@
 // host-qa-executor.mjs logic/browser 和 host-documentation.mjs sync、
 // host-qa-fix-owner.mjs fix_* 转发 cm-fix。保守预检整个 operation 可达的反问。
 // operation                         possible host_request kinds; proving route
-// advance                            develop, check; bootstrap instructions add init_generate,
-//                                    init_verify (no trusted semantic runner in this driver);
+// advance                            develop, check; bootstrap instructions replace develop with
+//                                    init_generate (answer file) and init_verify (answer file plus
+//                                    commands this driver runs; drive-bootstrap.mjs);
 //                                    workflow adds documentation_sync,
 //                                    qa_assess, qa_logic, qa_browser, documentation_inspect;
 //                                    auto QA-fix adds fix_* below.
@@ -37,7 +38,7 @@ import {fileURLToPath} from 'node:url';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {decideHostQaPolicy} from '../runtime/js/cm-ai/host-qa-policy.mjs';
 import {createHostQaExecutor} from '../runtime/js/cm-ai/host-qa-executor.mjs';
-import {inspectCmAiBootstrapTask,inspectCmAiQaTaskContext} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
+import {inspectCmAiQaTaskContext} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {readLearningRetrospectiveContent} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
 import {inspectFixInvestigation} from '../runtime/js/cm-fix/investigation.mjs';
 import {readRunDefinition} from './cm-ai-run.mjs';
@@ -45,6 +46,7 @@ import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs'
 import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
+import {attemptAnswerName,inspectDriverBootstrap,readBootstrapRulesAnswers,createBootstrapRulesResponder} from '../runtime/js/cm-ai/drive-bootstrap.mjs';
 
 const HOST=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
 const OPERATIONS=new Set(['advance','start','resume','status','cancel','abandon_review','abandon_effect','decision','complete','qa','qa_result',
@@ -75,17 +77,9 @@ const FLAG_FLAGS=new Set(['--allow-development','--allow-qa','--allow-qa-fix-sta
     'test-author','repair','cause-review','final-review'].map(name=>`--allow-qa-fix-${name}`)]);
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;
-export function bootstrapDriverGap(operation,definition,permissions){
-  if(!ADVANCE.has(operation)||!permissions.includes('--bootstrap-config'))return null;
-  let task;
-  try{task=inspectCmAiBootstrapTask({specsDir:definition.specsDir,codeProject:definition.codeProject,
-    taskId:definition.identity.taskId},true);}catch(error){
-    return `bootstrap 任务预检失败: ${error.code??'bootstrap_task_required'}；宿主未启动`;
-  }
-  return task.mode==='instructions'
-    ?'缺少真实执行 runner: init_verify；单任务规范任务请由当前 AI 会话使用 cm-ai-host.mjs serve 应答 init_generate/init_verify，不能从静态答案文件应答'
-    :null;
-}
+// Needs the resolved --bootstrap-config path in permissions.
+export const bootstrapDriverGap=(operation,definition,permissions)=>
+  inspectDriverBootstrap({advance:ADVANCE.has(operation),definition,permissions}).gap;
 export const abandonReviewPlanError=(operation,plan,permissions)=>operation!=='abandon_review'?null:
   plan.mode==='resume'&&permissions.includes('--allow-abandon-review')
   &&typeof plan.reason==='string'&&plan.reason.trim().length>0
@@ -99,15 +93,7 @@ export const abandonEffectPlanError=(operation,plan,permissions)=>operation!=='a
 function requireShape(ok,label){if(!ok)stop(2,`答案格式错误：${label}`);}
 function exact(value,allowed,label){requireShape(object(value)&&Object.keys(value).every(key=>allowed.includes(key)),label);}
 function answerPath(root,file){return path.join(root,file);}
-export function developFilename(root,attempt){
-  if(attempt===1){
-    const legacy=fs.existsSync(answerPath(root,'develop.json'));
-    const named=fs.existsSync(answerPath(root,'develop-a1.json'));
-    if(legacy&&named)stop(2,'develop.json 与 develop-a1.json 不能同时存在');
-    return named?'develop-a1.json':'develop.json';
-  }
-  return `develop-a${attempt}.json`;
-}
+export const developFilename=(root,attempt)=>attemptAnswerName(root,'develop',attempt);
 function reachableDevelopAttempts({plan,operation,definition,permissions}){
   if(plan.mode==='create'){
     const reviewAfterDevelop=operation==='advance'
@@ -226,7 +212,7 @@ export function validateCmAiAnswer(kind,value,root){
 }
 function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks, checkTimeoutMs。\nchecks 每项为 {id,command,timeoutMs?}；checkTimeoutMs 与每项 timeoutMs 为 1..3600000 整数，默认 900000 ms（15 分钟）。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务需要当前会话用 cm-ai-host.mjs serve 完成 init_generate/init_verify，驾驶员启动前拒绝。\n');
+    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks, checkTimeoutMs。\nchecks 每项为 {id,command,timeoutMs?}；checkTimeoutMs 与每项 timeoutMs 为 1..3600000 整数，默认 900000 ms（15 分钟）。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务（纯规范 scope、单代码根、非 --protected-config）读 answers/init-generate.json（{status:"generated",documents:[{path,contentFile}]}，覆盖全部 targets）与 answers/init-verify.json（commands 为驾驶员实跑的草稿命令 {id,command,timeoutMs?}，可选 commandsNotRun；checks 只含 globs/file_references/constraint_preservation/rule_applicability；constraintChanges:[]；application/retrospective 沿原 Learning）；第 1 轮也可用 *-a1.json，第 2 轮只读 init-generate-a2.json 与 init-verify-a2.json。commands 结果只来自实跑，答案文件不能提供。\n');
     process.exit(0);
   }
   const loaded=loadPlanFile({name:'cm-ai-drive.mjs',known:OPERATIONS});
@@ -259,8 +245,6 @@ function load(){
   if(!fs.existsSync(config))stop(2,`运行定义不存在: ${config}`);
   let definition;
   try{definition=readRunDefinition(config);}catch(error){stop(2,`运行定义无效或 codeProject/specsDir 无法解析: ${error.code??error.message}`);}
-  const bootstrapGap=bootstrapDriverGap(operation,definition,permissions);
-  if(bootstrapGap)stop(2,bootstrapGap);
   const store=path.join(definition.specsDir,'.reviews','.execution',definition.identity.runId);
   if(plan.mode==='resume'&&!fs.existsSync(path.join(store,'state.json')))stop(2,`恢复存档不存在: ${store}`);
   const workflowAt=permissions.indexOf('--workflow-config');let workflow=null;
@@ -276,11 +260,16 @@ function load(){
     const file=path.resolve(base,permissions[i+1]);if(!fs.existsSync(file))stop(2,`${permissions[i]} 文件不存在: ${file}`);
     permissions[i+1]=file;i++;
   }
+  const bootstrap=inspectDriverBootstrap({advance:ADVANCE.has(operation),definition,permissions});
+  if(bootstrap.gap)stop(2,bootstrap.gap);
+  const rules=bootstrap.mode==='instructions';
   const providerMode=permissions.includes('--protected-config');
   const protectedMode=providerMode||permissions.includes('--protected-conversation-config');
   const asks=[];
   if(ADVANCE.has(operation)){
-    if(!providerMode)asks.push('develop');
+    // A pure rules scope never reaches develop: host-bootstrap.mjs asks the session instead.
+    if(rules)asks.push('init_generate','init_verify');
+    else if(!providerMode)asks.push('develop');
     if(!protectedMode)asks.push('check');
   }
   if(plan.verificationPrecheck===true&&(ADVANCE.has(operation)||operation==='complete'))asks.push('verification_precheck');
@@ -316,11 +305,13 @@ function load(){
     }
     catch(error){stop(2,`PLAN.checks 格式错误: ${error.code??error.message}`);}
   }
-  const reachable=asks.includes('develop')&&!providerMode
+  const reachable=(asks.includes('develop')||rules)&&!providerMode
     ?reachableDevelopAttempts({plan,operation,definition,permissions})
     :{attempts:[],reviewFirst:false,packageDigest:null};
+  const bootstrapAnswers=rules
+    ?readBootstrapRulesAnswers({answers,operation,definition,plan,bootstrap,reachable}):null;
   const developAnswers=new Map();
-  for(const attempt of reachable.attempts){
+  if(asks.includes('develop'))for(const attempt of reachable.attempts){
     const file=answerPath(answers??'',developFilename(answers??'',attempt));
     if(!answers||!fs.existsSync(file)){
       const reviewFile=`.reviews/${definition.feature.replace(/^\d+\./,'')}-${definition.identity.taskId}-r1.md`;
@@ -342,7 +333,8 @@ function load(){
   });
   if(answer.documentation_sync)for(const target of Object.keys(answer.documentation_sync.edits))
     if(!workflow.documentationPaths.includes(target))stop(2,`documentation-sync.json.edits 越过文档 scope: ${target}`);
-  return {...loaded,definition,permissions,config,answers,answer,developAnswers};
+  return {...loaded,definition,permissions,config,answers,answer,developAnswers,
+    bootstrapRules:bootstrapAnswers&&createBootstrapRulesResponder({definition,plan,bootstrap,answers:bootstrapAnswers})};
 }
 function applyEdits(map,root,allowed){
   for(const target of Object.keys(map)){
@@ -372,6 +364,7 @@ export function qaFixAnswerFor(row,answer,answerRoot){
   return value??null;
 }
 async function answerFor(row,answer){
+  if(['init_generate','init_verify'].includes(row.kind))return loaded.bootstrapRules?.[row.kind](row)??null;
   const kind=row.kind,value=kind==='develop'
     ?loaded.developAnswers.get(row.payload.request?.identity?.attempt??row.payload.identity?.attempt)
     :answer[kind];
