@@ -351,6 +351,8 @@ host-context 必须是真实当前会话身份；宿主将其排除出独立审�
 或 model_usage。角色 Skill 的业务使用仍由当前会话负责；这不是模型路由全量实装。
 旧运行恢复只有真正再次进入角色时才读取/记录，不重发已完成开发或重复历史路由。
 
+已批准任务在完成前会重新执行检查。审查回执及原 `packageDigest` 不改：完成门禁重建代码、scope、需求、指令与 handoff 等非检查字段并逐项比较；检查只比较有序的 `id`、`command`、`outcome`、`exitCode`，视觉检查在结果相同时还比较前后载体，`evidence` 诊断文字可变化。代码、handoff 字节或检查身份漂移仍以 `blocked/package_mismatch` 终止；越界的 scope 或需求漂移保持既有 `blocked/out_of_scope` 终态。仅检查结果（`outcome`、`exitCode`）变化记录 `blocked/completion_checks_changed`，不标记完成；视觉检查从 passed 变成 unavailable 时，即使 after 载体按合同变成 null，也先按结果漂移处理。恢复原 runId 后重新执行检查，结果恢复一致时用新的 complete effect id 继续原批准，不重新审查。`advance` 和 `complete` 均可续跑，持久 journal 回放接受该重试状态；旧 journal 与回执保持原格式。重试仍受原 effect 数量上限约束。
+
 回复固定为以下形状；三个绑定值必须逐字取自该次请求，不要自行计算或沿用上次值：
 
 ```json

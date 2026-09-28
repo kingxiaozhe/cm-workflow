@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createRequire} from 'node:module';
 import {verifySpecificationMaterial} from './specification-material.mjs';
-import { captureReviewBaseline, createReviewPackage, verifyReviewPackage } from './review-package.mjs';
+import { captureReviewBaseline, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage } from './review-package.mjs';
 import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,validCallTimeout,requestFor,terminalFor,failureCode } from './effect-contract.mjs';
 import { reviewResult,reviewReceipt } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
@@ -220,6 +220,8 @@ export function createTaskRunner(options) {
   // derivation in one place, next to the cache it is derived from.
   const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
     &&entry.result?.state==='blocked'&&entry.result?.code==='verification_precheck_failed').length;
+  const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
+    &&entry.result?.state==='blocked'&&entry.result?.code==='completion_checks_changed').length;
   const privateStatus=()=>json({state,code,identity:{...config.identity,attempt},packageDigest:reviewPackage?.packageDigest??null,
     receipt,receipts,calls,cancelAfterCommit,workflowError,...(store?{cancellationRequested}:{}),...(taskMode?{taskCommit}:{}),
     ...(invocationMode?{reviewInvocation}:{}),...(taskLearning!==null?{learningWriteback:learningResult?.writeback??null}:{})},16*1024*1024);
@@ -695,7 +697,7 @@ export function createTaskRunner(options) {
     if(v.kind==='complete') {
       const fresh=await collectChecks();active();
       try {
-        verifyReviewPackage({root:config.root,baseline:base,checks:fresh,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
+        verifyCompletionReviewPackage({root:config.root,baseline:base,checks:fresh,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
       } catch(error){halt('blocked',failureCode(error));return;}
       if(taskLearning!==null)try {
         const learningInput=currentLearningInput();
@@ -899,7 +901,7 @@ export function createTaskRunner(options) {
       publication=privateStatus();return status();
     }catch(error){return freeze({outcome:'rejected',code:error.code??'review_abandon_unavailable'});}
   };
-  const api={reviseQa,supersedeEvidence,abandonReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks};
+  const api={reviseQa,supersedeEvidence,abandonReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   return Object.freeze(api);

@@ -493,6 +493,36 @@ export function verifyReviewPackage(options) {
   return freeze({outcome:'matched',packageDigest:current.packageDigest});
 }
 
+// Completion repeats checks after review. Their diagnostic prose may vary, but
+// every reviewed file, scope and handoff byte and every check result must agree.
+export function verifyCompletionReviewPackage(options) {
+  const v=plain(options);keys(v,['root','baseline','checks','reviewPackage','expectedDigest',
+    ...(Object.hasOwn(v,'handoffPath')?['handoffPath']:[])]);
+  hex(v.expectedDigest);validBaseline(v.baseline);validPackage(v.reviewPackage);
+  need(v.reviewPackage.packageDigest===v.expectedDigest,'package_mismatch');
+  need(Object.hasOwn(v.reviewPackage,'specification')===Object.hasOwn(v.baseline,'specification'),'package_mismatch');
+  need(Object.hasOwn(v.reviewPackage,'handoff')===Object.hasOwn(v,'handoffPath'),'package_mismatch');
+  let current=createReviewPackage({root:v.root,baseline:v.baseline,checks:v.checks,
+    ...(Object.hasOwn(v,'handoffPath')?{handoffPath:v.handoffPath}:{})});
+  if(!Object.hasOwn(v.reviewPackage,'unchangedScope')){
+    const {unchangedScope,packageDigest,...legacy}=current;
+    current=sealed(legacy,'packageDigest');
+  }
+  const withoutChecks=({checks,checksDigest,packageDigest,...fields})=>fields;
+  need(digest(withoutChecks(current))===digest(withoutChecks(v.reviewPackage)),'package_mismatch');
+  const checkIdentities=checks=>checks.map(c=>c.kind==='visual'
+    ?{id:c.id,kind:c.kind}
+    :{id:c.id,command:c.command});
+  need(digest(checkIdentities(current.checks))===digest(checkIdentities(v.reviewPackage.checks)),'package_mismatch');
+  const checkResults=checks=>checks.map(c=>c.kind==='visual'
+    ?{outcome:c.outcome}
+    :{outcome:c.outcome,exitCode:c.exitCode});
+  need(digest(checkResults(current.checks))===digest(checkResults(v.reviewPackage.checks)),'completion_checks_changed');
+  const visualCarriers=checks=>checks.filter(c=>c.kind==='visual').map(c=>({before:c.before,after:c.after}));
+  need(digest(visualCarriers(current.checks))===digest(visualCarriers(v.reviewPackage.checks)),'package_mismatch');
+  return freeze({outcome:'matched',packageDigest:v.expectedDigest});
+}
+
 // The host supplies this separate specs-root file; workers never select it.
 // Reuse the bounded no-follow snapshot reader and store bytes, not a live path.
 function readHandoffSnapshot(p) {

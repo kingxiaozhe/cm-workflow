@@ -22,7 +22,8 @@ async function fixture(run){
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature]}));
   fs.writeFileSync(path.join(codeProject,'README.md'),'existing project\n');
   let current={state:'ready',code:null,identity,packageDigest},effects=0;
-  const runner={status:()=>current,executeEffect:async()=>{effects++;throw Error('unexpected runner effect');},
+  let execute=async()=>{throw Error('unexpected runner effect');};
+  const runner={status:()=>current,executeEffect:async effect=>{effects++;return execute(effect);},
     cancel:()=>current,run:async()=>current};
   const entry=extra=>createCmAiConversationEntry({specsDir,codeProject,feature,identity,runner,
     applicableAgentFiles:[],...extra});
@@ -31,9 +32,27 @@ async function fixture(run){
   const seedQa=()=>recordCmAiQaDecision({specsDir,codeProject,feature,identity,packageDigest,
     logHome:path.join(root,'logs'),decision:{decisionId:'qa-skipped',identity,packageDigest,
       status:'skipped',reason:'fixture',score:4,at:'2026-09-04T15:10:00-07:00'}});
-  try{return await run({root,specsDir,codeProject,entry,complete,setStatus,seedQa,effects:()=>effects});}
+  try{return await run({root,specsDir,codeProject,entry,complete,setStatus,seedQa,effects:()=>effects,
+    setExecutor:fn=>{execute=fn;},setCompletionBlocks:fn=>{runner.completionBlocks=fn;},status:()=>current});}
   finally{fs.rmSync(root,{recursive:true,force:true});}
 }
+
+test('A4 completion retry routes a new effect id through the same run',()=>fixture(async f=>{
+  f.setStatus('blocked','completion_checks_changed');f.setCompletionBlocks(()=>1);
+  let expectedId='complete-1-retry-1';
+  f.setExecutor(effect=>{
+    assert.equal(effect.kind,'complete');assert.equal(effect.id,expectedId);
+    f.setStatus('fixture_completed',null);return f.status();
+  });
+  const entry=f.entry(),before=await entry.handle(control('status'));
+  assert.equal(before.pendingAction,'complete');
+  const result=await entry.handle({version:1,operation:'complete',requestId:'complete',identity,packageDigest});
+  assert.equal(result.state,'fixture_completed',JSON.stringify(result));assert.equal(f.effects(),1);
+  f.setStatus('blocked','completion_checks_changed');f.setCompletionBlocks(()=>2);
+  expectedId='complete-1-retry-2';
+  await entry.handle(control('advance'));
+  assert.equal(f.effects(),2);
+}));
 
 test('context_refresh requires a completed task and returns its bound context summary',()=>fixture(async f=>{
   const request=operation('context_refresh');

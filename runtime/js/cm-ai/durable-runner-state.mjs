@@ -24,6 +24,7 @@ const states=['ready','awaiting_review','approved','changes_requested','fixture_
 export const stageAllowed=(kind,state,code=null)=>
   kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed'].includes(code)
   ||kind==='review'&&state==='pending_review'&&['review_transport_timeout','review_abandoned'].includes(code)
+  ||kind==='complete'&&state==='blocked'&&code==='completion_checks_changed'
   ||({develop:['ready','changes_requested'],review:['awaiting_review'],complete:['approved']})[kind]?.includes(state)===true;
 // Local rejected values keep audit records but do not consume provider rounds.
 export const invalidDeveloperCall=call=>call.terminal==='failed'&&call.failureResult?.code==='invalid_result'&&call.failureResult.retryable===true;
@@ -397,7 +398,14 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     if(s.state==='fixture_completed') {
       checkCompletion({receipt:s.receipt,registered:before.receipt,execution:s.calls.find(c=>c.invocationId===s.receipt?.id),
         reviewPackage:s.reviewPackage,identity});expectedState='fixture_completed';
-    } else if(s.state==='blocked')expectedState='blocked';
+    } else if(s.state==='blocked'){
+      expectedState='blocked';
+      if(s.code==='completion_checks_changed'){
+        need(effect.kind==='complete'&&['approved','blocked'].includes(before.state)
+          &&(before.state==='approved'||before.code==='completion_checks_changed'),'runner_transition');
+        expectedCode='completion_checks_changed';
+      }
+    }
   }
   if(Object.hasOwn(original,'specification')&&s.state==='blocked'&&s.code==='spec_drift'){
     need(s.receipts.length===before.receipts.length,'runner_receipt');
@@ -583,7 +591,9 @@ export function readRunnerHistory(raw,config,version=1) {
       shape(p,[...common,'effectId','completeIntentDigest','commit']);
       need(pending?.kind==='complete'&&p.effectId===pending.id&&p.completeIntentDigest===completeIntentDigest&&!controls.cancelled,'runner_commit');
       if(p.type==='task-commit-intent'){
-        need(r.kind==='commit-intent'&&transaction===null&&beforeIntent.state==='approved','runner_commit');
+        need(r.kind==='commit-intent'&&transaction===null
+          &&(beforeIntent.state==='approved'||beforeIntent.state==='blocked'
+            &&beforeIntent.code==='completion_checks_changed'),'runner_commit');
         const c=readCommitIntent(p.commit,{owner:completion.owner,identity:pending.identity,fingerprints:completion.fingerprints});
         const base=attemptBaseline(original,pending.identity.attempt),s=beforeIntent;
         checkCompletion({receipt:s.receipt,registered:s.receipts.find(x=>x.id===s.receipt?.id),

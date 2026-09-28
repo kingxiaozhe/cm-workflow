@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { digest } from './contracts.mjs';
-import { captureReviewBaseline, createReviewPackage, verifyReviewPackage,readReviewBaseline,readReviewPackage } from './review-package.mjs';
+import { captureReviewBaseline, createReviewPackage, verifyReviewPackage,verifyCompletionReviewPackage,readReviewBaseline,readReviewPackage } from './review-package.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const identity = { repositoryId:'fixture', runId:'run-1', taskId:'feature.T-001', attempt:1 };
@@ -49,6 +49,53 @@ function prepared(root,extra={}) {
   const reviewPackage=createReviewPackage({root,baseline,checks});
   return {root,baseline,checks,reviewPackage,expectedDigest:reviewPackage.packageDigest};
 }
+
+test('A4 completion compares check identity and result while keeping the reviewed digest',()=>fixture(root=>{
+  const original=prepared(root),verify=fresh=>verifyCompletionReviewPackage({...original,checks:fresh});
+  assert.equal(verify([{...checks[0],evidence:'different diagnostic text'}]).packageDigest,original.expectedDigest);
+  const legacy=structuredClone(original.reviewPackage);delete legacy.unchangedScope;
+  const legacyPackage=resign(legacy,'packageDigest');
+  assert.equal(verifyCompletionReviewPackage({...original,checks:[{...checks[0],evidence:'legacy fresh output'}],
+    reviewPackage:legacyPackage,expectedDigest:legacyPackage.packageDigest}).packageDigest,legacyPackage.packageDigest);
+  for(const changed of [
+    {...checks[0],id:'other'},
+    {...checks[0],command:['node','other.mjs']},
+  ])assert.throws(()=>verify([changed]),{code:'package_mismatch'});
+  assert.throws(()=>verify([{...checks[0],outcome:'failed',exitCode:1}]),{code:'completion_checks_changed'});
+  const failedChecks=[{...checks[0],outcome:'failed',exitCode:1}];
+  const failedPackage=createReviewPackage({root,baseline:original.baseline,checks:failedChecks});
+  assert.throws(()=>verifyCompletionReviewPackage({...original,checks:[{...failedChecks[0],exitCode:2}],
+    reviewPackage:failedPackage,expectedDigest:failedPackage.packageDigest}),{code:'completion_checks_changed'});
+  write(root,'src/new.js','new scope bytes\n');
+  assert.throws(()=>verify([{...checks[0],evidence:'different diagnostic text'}]),{code:'package_mismatch'});
+}));
+
+test('A4 completion binds exact handoff bytes even if evidence text changes',()=>fixture(root=>{
+  const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-completion-handoff-')));
+  try{
+    const handoffPath=path.join(dir,'task-a1-handoff.json');fs.writeFileSync(handoffPath,'reviewed handoff\n');
+    const baseline=capture(root);write(root,'src/a.js','changed\n');
+    const reviewPackage=createReviewPackage({root,baseline,checks,handoffPath});
+    const options={root,baseline,checks:[{...checks[0],evidence:'fresh output'}],reviewPackage,
+      expectedDigest:reviewPackage.packageDigest,handoffPath};
+    assert.equal(verifyCompletionReviewPackage(options).outcome,'matched');
+    fs.appendFileSync(handoffPath,'drift');
+    assert.throws(()=>verifyCompletionReviewPackage(options),{code:'package_mismatch'});
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+}));
+
+test('A4 visual outcome drift is retryable but stable-outcome carrier drift is terminal',()=>fixture(root=>{
+  const baseline=capture(root);write(root,'src/a.js','changed\n');
+  const before={path:path.join(root,'before.png'),sha256:'a'.repeat(64),kind:'screenshot',description:'before'};
+  const after={path:path.join(root,'after.png'),sha256:'b'.repeat(64),kind:'screenshot',description:'after'};
+  const visual=[{id:'preview',kind:'visual',outcome:'passed',evidence:'reviewed preview',before,after}];
+  const reviewPackage=createReviewPackage({root,baseline,checks:visual});
+  const options={root,baseline,reviewPackage,expectedDigest:reviewPackage.packageDigest};
+  assert.throws(()=>verifyCompletionReviewPackage({...options,checks:[{...visual[0],outcome:'unavailable',after:null,
+    evidence:'preview unavailable'}]}),{code:'completion_checks_changed'});
+  assert.throws(()=>verifyCompletionReviewPackage({...options,checks:[{...visual[0],after:{...after,sha256:'c'.repeat(64)}}]}),
+    {code:'package_mismatch'});
+}));
 
 test('P1 nested specs binding survives host evidence changes but rejects business scope and root substitution',()=>fixture(root=>{
   root=fs.realpathSync(root);

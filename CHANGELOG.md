@@ -7,6 +7,7 @@
 
 - cm-ai 单任务与批次驾驶员按请求轮次读取开发答案；第 2 轮只接受 `develop-a2.json`，审查授权可能跨轮时提前检查，避免把首轮编辑重复用于修订。cm-fix 驾驶员的修订测试／修复答案同样改为 `*-a2.json`。
 - cm-ai bootstrap支持已批准的单个编号`*.bootstrap`（含`1.bootstrap`），拒绝多个候选，并在规范写入前保留AGENTS.md既有Learning段及其他约束。
+- cm-ai 已批准任务在完成前重跑检查时，仅比较检查身份与结果（id、command、outcome、exitCode），允许 evidence 摘要文字变化；检查结果变化保留原审查并以 `blocked/completion_checks_changed` 在同一 run 重试完成，代码、范围、handoff 或检查身份漂移仍终态阻断。
 - cm-ai 单任务 V3 新增 `abandon_review`：操作员确认中断的独立审查进程已退出后，在原 run 上留痕放弃无结果调用，恢复到可重派审查；修正 unknown 上 `cancel` 虚报已取消。
 
 ## 0.16.4 — 2026-09-27

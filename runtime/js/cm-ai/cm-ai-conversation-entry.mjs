@@ -21,11 +21,12 @@ const retryReview=status=>status.state==='pending_review'
 export const developmentRetryable=status=>status.state==='blocked'
   &&['developer_result_invalid','verification_precheck_failed'].includes(status.code);
 const retryDeveloper=developmentRetryable;
+export const completionRetryable=status=>status.state==='blocked'&&status.code==='completion_checks_changed';
 const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approval':
   status.state==='changes_requested'||retryDeveloper(status)||retryReview(status)?'resume':
   status.state==='awaiting_review'?'decision':status.state==='unknown'?'reconcile':
   status.state==='pending_review'&&status.code==='provider_review_observed'?'review_evidence':
-  status.state==='pending_review'?'decision':status.state==='approved'?'complete':
+  status.state==='pending_review'?'decision':status.state==='approved'||completionRetryable(status)?'complete':
   status.state==='fixture_completed'&&status.code==='qa_triggered'?'qa_execution':
   status.state==='fixture_completed'&&status.code==='qa_skipped'?'context_refresh':
   status.state==='fixture_completed'&&status.code==='qa_passed'?'context_refresh':
@@ -155,6 +156,7 @@ export function createCmAiConversationEntry(options) {
   const runner=options.runner;
   const runnerKeys=['executeEffect','status','cancel','run'];
   if(runner&&Object.hasOwn(runner,'verificationBlocks'))runnerKeys.push('verificationBlocks');
+  if(runner&&Object.hasOwn(runner,'completionBlocks'))runnerKeys.push('completionBlocks');
   if(runner&&Object.hasOwn(runner,'attachLearningEvidence'))runnerKeys.push('attachLearningEvidence');
   if(runner&&Object.hasOwn(runner,'inspectFixAssociation'))runnerKeys.push('inspectFixAssociation');
   if(runner&&Object.hasOwn(runner,'acceptCompletedFix'))runnerKeys.push('acceptCompletedFix');
@@ -165,6 +167,7 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'inspectBootstrapAdmission'))runnerKeys.push('inspectBootstrapAdmission');
   shape(runner,runnerKeys);
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');
+  if(Object.hasOwn(runner,'completionBlocks'))need(typeof runner.completionBlocks==='function');
   if(Object.hasOwn(runner,'attachLearningEvidence'))need(typeof runner.attachLearningEvidence==='function');
   if(Object.hasOwn(runner,'inspectFixAssociation'))need(typeof runner.inspectFixAssociation==='function');
   if(Object.hasOwn(runner,'acceptCompletedFix'))need(typeof runner.acceptCompletedFix==='function');
@@ -288,7 +291,8 @@ export function createCmAiConversationEntry(options) {
           result=await call('decision',result.packageDigest);
         if(result.outcome==='advanced'&&result.code===null&&result.state==='changes_requested'
           &&result.identity.attempt===round+1)continue;
-        if(['reported','advanced'].includes(result.outcome)&&result.code===null&&result.state==='approved')
+        if(['reported','advanced'].includes(result.outcome)
+          &&(result.code===null&&result.state==='approved'||completionRetryable(result)))
           result=await call('complete',result.packageDigest);
         break;
       }
@@ -460,8 +464,10 @@ export function createCmAiConversationEntry(options) {
       const status=boundStatus(runner.status(),identity);
       need(status.packageDigest===operation.packageDigest,'stale_completion');
       const correction=correctionSummary(operation,status);if(correction)return correction;
-      need(['approved','fixture_completed'].includes(status.state),'completion_not_ready');
-      const result=await runner.executeEffect({version:1,id:`complete-${identity.attempt}`,identity,kind:'complete'});
+      need(['approved','fixture_completed'].includes(status.state)||completionRetryable(status),'completion_not_ready');
+      const retries=runner.completionBlocks?.()??0;
+      const effectId=`complete-${identity.attempt}${retries?`-retry-${retries}`:''}`;
+      const result=await runner.executeEffect({version:1,id:effectId,identity,kind:'complete'});
       return effectSummary(operation,result,runner,identity);
     }
     if(operation.operation==='qa'){

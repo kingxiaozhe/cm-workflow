@@ -33,6 +33,7 @@ cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edit
 不改变运行定义或恢复指纹；恢复时可调整。
 
 `check` 只运行计划里的真实命令；原始输出打印到驾驶员 stderr，宿主只保存实际退出码和精简证据；静态 `check.json` 不会被读取。
+独立审查批准后，完成前会再次运行相同检查。`evidence` 摘要文字变化且检查 `id/command/outcome/exitCode` 不变时可完成；代码、handoff 或检查身份漂移为终态 `blocked/package_mismatch`，越界 scope/需求漂移保持 `blocked/out_of_scope`。仅 `outcome/exitCode` 变化时为可恢复的 `blocked/completion_checks_changed`：先修好检查环境，再用原 runId、原配置 `--mode resume` 执行 `advance`（或 `complete`）；新 complete effect id 重跑检查，原 Review 回执与 packageDigest 不变，不新开 run 或重审。旧 journal 按原格式回放，重试仍受 effect 上限约束。
 `qa_logic`、`qa_browser`、`verification_precheck` 没有可信本地 runner。单步驾驶员对本任务完成后适用的 logic case 预检 `qa_logic`，包括已被 QA 命令 `caseIds` 覆盖的 case（当前 executor 仍会请求）；只对适用、`expected` 不含 `[需确认]` 的 browser case 预检 `qa_browser`。预测需要 runner 时仍在发送前拒绝，`verification_precheck` 规则不变。
 本次适用的用例里有 logic 类（或无 `[需确认]` 的 browser 类）时，驾驶员完成不了这一步 QA：由当前 AI 会话以 `serve` 启动宿主，按 N6 与 cm-qa-engineer 应答 `qa_assess`，以及宿主实际问到的 `qa_logic` 或 `qa_browser`；拿不到浏览器证据时 `qa_browser` 如实回 BLOCKED，不能省略不答。即使 logic case 已被 QA 命令覆盖也不能跳过这一问：静态判断为 `CONTRADICTED` 时，除非另有阻断条件（`[需确认]`、宿主请求超时或源码漂移会改判为 BLOCKED），该用例判失败，哪怕命令全部通过。
 受保护执行由原宿主处理检查；驾驶员不把人工填写的结果冒充执行证据。一次 `advance` 可能走过多个阶段，
