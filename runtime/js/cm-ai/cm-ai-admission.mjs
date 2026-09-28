@@ -409,6 +409,9 @@ export function matchesCmAiTaskSelection(admission,feature,taskId,parallelSelect
   if(parallelSelection===null)return admission.state==='ready'
     &&admission.nextTask?.feature===feature&&admission.nextTask.id===taskId;
   const value=parallelSelection;
+  if(value?.version===1&&Object.keys(value).sort().join(',')==='taskId,version')
+    return value.taskId===taskId&&admission.state==='ready'
+      &&admission.eligibleTasks?.some(task=>task.feature===feature&&task.id===taskId)===true;
   return admission.state==='ready'&&value?.version===1
     &&Object.keys(value).sort().join(',')==='group,version'&&Array.isArray(value.group)
     &&value.group.length>=2&&new Set(value.group).size===value.group.length

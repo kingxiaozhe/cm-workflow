@@ -208,7 +208,7 @@ export function validateCmAiAnswer(kind,value,root){
 }
 function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (resume), runtime, permissions, answers, checks。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason（单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。\n');
+    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason（单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。\n');
     process.exit(0);
   }
   const loaded=loadPlanFile({name:'cm-ai-drive.mjs',known:OPERATIONS});
@@ -216,7 +216,6 @@ function load(){
   requireFields(plan,['config','mode','hostContext','permissions']);
   if(!['create','resume'].includes(plan.mode))stop(2,'mode 只能是 create 或 resume');
   if(!nonempty(plan.hostContext))stop(2,'hostContext 必须是当前真实会话 ID');
-  if(plan.mode==='resume'&&!nonempty(plan.originalHostContext))stop(2,'resume 需要 originalHostContext');
   if(plan.mode==='create'&&plan.originalHostContext)stop(2,'originalHostContext 只在 resume 时有意义');
   if(!Array.isArray(plan.permissions)||!plan.permissions.every(x=>typeof x==='string'))stop(2,'permissions 必须是宿主参数数组');
   const permissions=[];

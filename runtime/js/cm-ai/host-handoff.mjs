@@ -8,7 +8,7 @@ import {implementationSha256,loadHandoff} from '../../../scripts/cm-task-gate.mj
 import {digest,json,shape,text,need} from './effect-contract.mjs';
 
 export const REVIEWED_HANDOFF_HINT='仅 QA 卡住时，配置错误用 --revise-qa-config PREVIOUS.json --qa-config-revision-reason … 恢复原运行，宿主或环境证据不足用 --rerun-blocked-qa。确需重跑任务时，用 --supersede-reviewed-evidence --supersede-reason … 新建运行。';
-function reviewedHandoffConflict(){
+export function reviewedHandoffConflict(){
   const error=new Error('handoff_exists');error.code='handoff_exists';error.reason=REVIEWED_HANDOFF_HINT;throw error;
 }
 
@@ -57,7 +57,7 @@ export function verifyHostHandoff(raw){
 // One left by a run that died before review is not: it must not block every retry
 // of the same task forever. The receipt names the handoff it reviewed, so the two
 // cases are distinguishable without guessing from timestamps or run identity.
-function reviewConsumedHandoff(parent,name,attempt){
+export function reviewConsumedHandoff(parent,name,attempt){
   const suffix=`-a${attempt}-handoff.json`;
   if(!name.endsWith(suffix))return true;
   const receipt=path.join(parent,`${name.slice(0,-suffix.length)}-r${attempt}.md`);

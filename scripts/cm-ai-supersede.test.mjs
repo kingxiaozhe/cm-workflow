@@ -118,13 +118,14 @@ test('explicit restart archives reviewed bytes and records a new-run authorizati
       'work-T-002-correction-r1.md','work-T-002-qa-extra.json','work-T-002-r1.md','work-T-002-r2.md'];
     const old=new Map(oldNames.map(name=>[name,fs.readFileSync(path.join(f.reviewsDir,name))]));
     const priorJournal=fs.readFileSync(path.join(f.reviewsDir,'.execution','run-one-0001','state.json'));
-    const without=await start(f,'run-two-0002','second\n');
-    assert.equal(without.code,'handoff_exists');assert.equal(without.outcome,'blocked');
-    assert.match(without.reason,/--supersede-reviewed-evidence/);
-    assert(oldNames.every(name=>fs.existsSync(path.join(f.reviewsDir,name))));
-    const plainState=JSON.parse(fs.readFileSync(path.join(f.reviewsDir,'.execution','run-two-0002','state.json')));
-    assert(plainState.records.every(row=>row.payload.type!=='evidence-superseded'));
-    assert.equal(plainState.records[0].payload.version,3);
+    await assert.rejects(start(f,'run-two-0002','second\n'),error=>{
+      assert.equal(error.code,'handoff_exists');
+      assert.match(error.reason,/--supersede-reviewed-evidence/);
+      return true;
+    });
+    assert.equal(fs.existsSync(path.join(f.reviewsDir,'.execution','run-two-0002')),false);
+    for(const [name,bytes] of old)assert.deepEqual(fs.readFileSync(path.join(f.reviewsDir,name)),bytes);
+    assert.equal(fs.existsSync(path.join(f.reviewsDir,'.superseded')),false);
     const second=await start(f,'run-three-0003','third\n',{supersedeReason:'Operator confirmed genuine restart'});
     assert.equal(second.state,'blocked');
     const archive=path.join(f.reviewsDir,'.superseded');
@@ -134,7 +135,7 @@ test('explicit restart archives reviewed bytes and records a new-run authorizati
     }
     const state=JSON.parse(fs.readFileSync(path.join(f.reviewsDir,'.execution','run-three-0003','state.json')));
     const record=state.records.find(row=>row.payload.type==='evidence-superseded')?.payload.record;
-    assert(record);assert.deepEqual(record.previousRunIds,['run-one-0001','run-two-0002']);
+    assert(record);assert.deepEqual(record.previousRunIds,['run-one-0001']);
     assert.deepEqual(record.files.map(file=>file.name),oldNames);
     for(const file of record.files)assert.equal(file.sha256,
       createHash('sha256').update(old.get(file.name)).digest('hex'));
@@ -163,16 +164,28 @@ test('reviewed run with BLOCKED QA reproduces the collision after the task is re
     await assert.rejects(start(f,'run-qa-refused-0002','second\n',{supersedeReason:'restart'}),error=>
       error.code==='supersede_unavailable'&&/先将该任务改回 - \[ \]/.test(error.reason)
         &&/--supersede-reviewed-evidence/.test(error.reason)&&/--supersede-reason/.test(error.reason));
+    const oldEvidence=new Map(fs.readdirSync(f.reviewsDir,{withFileTypes:true})
+      .filter(entry=>entry.isFile()).map(entry=>[entry.name,fs.readFileSync(path.join(f.reviewsDir,entry.name))]));
+    const priorJournal=fs.readFileSync(path.join(f.reviewsDir,'.execution','run-qa-one-0001','state.json'));
     // N5 checked the task before N6. The explicit restart rule requires an
     // operator to reopen it; this test keeps that precondition visible.
     fs.writeFileSync(f.tasksPath,'- [ ] T-002: fixture\n');
-    const without=await start(f,'run-qa-two-0002','second\n');
-    assert.equal(without.code,'handoff_exists');assert.match(without.reason,/--rerun-blocked-qa/);
+    await assert.rejects(start(f,'run-qa-two-0002','second\n'),error=>{
+      assert.equal(error.code,'handoff_exists');
+      assert.match(error.reason,/--rerun-blocked-qa/);
+      return true;
+    });
+    assert.equal(fs.existsSync(path.join(f.reviewsDir,'.execution','run-qa-two-0002')),false);
+    assert.deepEqual(fs.readdirSync(f.reviewsDir,{withFileTypes:true})
+      .filter(entry=>entry.isFile()).map(entry=>entry.name).sort(),[...oldEvidence.keys()].sort());
+    for(const [name,bytes] of oldEvidence)assert.deepEqual(fs.readFileSync(path.join(f.reviewsDir,name)),bytes);
+    assert.deepEqual(fs.readFileSync(path.join(f.reviewsDir,'.execution','run-qa-one-0001','state.json')),priorJournal);
+    assert.equal(fs.existsSync(path.join(f.reviewsDir,'.superseded')),false);
     const restarted=await start(f,'run-qa-three-0003','third\n',{supersedeReason:'Reopen after blocked QA'});
     assert.equal(restarted.state,'blocked');
     const record=JSON.parse(fs.readFileSync(path.join(f.reviewsDir,'.execution','run-qa-three-0003','state.json')))
       .records.find(row=>row.payload.type==='evidence-superseded')?.payload.record;
-    assert(record);assert.deepEqual(record.previousRunIds,['run-qa-one-0001','run-qa-two-0002']);
+    assert(record);assert.deepEqual(record.previousRunIds,['run-qa-one-0001']);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 

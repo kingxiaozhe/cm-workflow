@@ -3,10 +3,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {inspectCmAiAdmission,approveCmAiSpecs} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
+import {inspectCmAiAdmission,approveCmAiSpecs,matchesCmAiTaskSelection} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {validateRunDefinition} from './cm-ai-run.mjs';
 
-const usage='usage: cm-ai-admission.mjs --specs-dir PATH --code-project PATH [--code-project PATH ...] [--approval-response TEXT | --yes] [--approve --approval-response TEXT (no --yes)] [--print-run-definition --scope a,b [--requirements c,d] [--run-id X] [--repository-id Y]]';
+const usage='usage: cm-ai-admission.mjs --specs-dir PATH --code-project PATH [--code-project PATH ...] [--approval-response TEXT | --yes] [--approve --approval-response TEXT (no --yes)] [--print-run-definition --scope a,b [--task T-xxx] [--requirements c,d] [--run-id X] [--repository-id Y]]';
 
 function parse(argv){
   const result={codeProjects:[]};
@@ -27,19 +27,22 @@ function parse(argv){
       result.codeProjects.push(argv[++index]);continue;
     }
     const key={'--specs-dir':'specsDir','--approval-response':'approvalResponse',
-      '--scope':'scope','--requirements':'requirements','--run-id':'runId','--repository-id':'repositoryId'}[flag];
+      '--scope':'scope','--task':'task','--requirements':'requirements','--run-id':'runId','--repository-id':'repositoryId'}[flag];
     if(!key||index+1>=argv.length||Object.hasOwn(result,key))throw new Error('invalid arguments');
     result[key]=argv[++index];
   }
   if(!result.specsDir||result.codeProjects.length===0)throw new Error('specs and code project paths are required');
   if(result.assumeYes&&Object.hasOwn(result,'approvalResponse'))throw new Error('approval input is duplicated');
-  if(!result.printRunDefinition&&['scope','requirements','runId','repositoryId'].some(key=>Object.hasOwn(result,key)))
+  if(!result.printRunDefinition&&['scope','task','requirements','runId','repositoryId'].some(key=>Object.hasOwn(result,key)))
     throw new Error('run definition options require --print-run-definition');
   return result;
 }
 
 function buildRunDefinition(admission,input){
   if(!admission.codeProject)throw new Error('--print-run-definition requires one --code-project');
+  const selected=input.task===undefined?admission.nextTask:{feature:admission.nextTask.feature,id:input.task};
+  if(input.task!==undefined&&!matchesCmAiTaskSelection(admission,selected.feature,selected.id,{version:1,taskId:input.task}))
+    throw Object.assign(new Error('task_selection_mismatch'),{code:'task_selection_mismatch'});
   let repositoryId=input.repositoryId;
   if(repositoryId===undefined){
     let name;
@@ -49,10 +52,11 @@ function buildRunDefinition(admission,input){
   }
   const list=value=>value===undefined||value===''?[]:value.split(',').map(item=>item.trim());
   const definition={version:1,specsDir:admission.specsDir,codeProject:admission.codeProject,
-    feature:admission.nextTask.feature,
-    identity:{repositoryId,runId:input.runId??`${admission.nextTask.feature.replace(/^\d+\./,'')}-${admission.nextTask.id}`,
-      taskId:admission.nextTask.id,attempt:1},
-    scope:list(input.scope),requirements:list(input.requirements)};
+    feature:selected.feature,
+    identity:{repositoryId,runId:input.runId??`${selected.feature.replace(/^\d+\./,'')}-${selected.id}`,
+      taskId:selected.id,attempt:1},
+    scope:list(input.scope),requirements:list(input.requirements),
+    ...(input.task===undefined?{}:{taskSelection:{version:1,taskId:selected.id}})};
   return validateRunDefinition(definition);
 }
 

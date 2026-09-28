@@ -14,6 +14,7 @@ import {previousQaMaterial,qaConfigurationSlice,qaInvariantDigest,qaRevisionChai
 import {inspectCmAiQaRevisionTarget,recordCmAiQaConfigurationRevision} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {prepareReviewedEvidenceSupersession,archiveReviewedEvidence,recordEvidenceSupersession} from '../runtime/js/cm-ai/reviewed-evidence-supersede.mjs';
 import {recordReviewAbandonment} from '../runtime/js/cm-ai/review-abandon-log.mjs';
+import {reviewConsumedHandoff,reviewedHandoffConflict} from '../runtime/js/cm-ai/host-handoff.mjs';
 
 const usage='cm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
 const fail=code=>{throw Object.assign(new Error(code),{code});};
@@ -139,6 +140,7 @@ export function validateRunDefinition(input){
   const value=structuredClone(input);
   const keys=['version','specsDir','codeProject','feature','identity','scope','requirements'];
   if(value&&Object.hasOwn(value,'codeProjects'))keys.push('codeProjects');
+  if(value&&Object.hasOwn(value,'taskSelection'))keys.push('taskSelection');
   if(!value||typeof value!=='object')fail('invalid_config: expected an object');
   const unexpected=Object.keys(value).filter(key=>!keys.includes(key));
   const missing=keys.filter(key=>!Object.hasOwn(value,key));
@@ -158,6 +160,9 @@ export function validateRunDefinition(input){
   for(const key of ['repositoryId','runId','taskId']){
     if(typeof value.identity[key]!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.identity[key]))fail('invalid_identity');
   }
+  if(Object.hasOwn(value,'taskSelection')&&(!value.taskSelection||value.taskSelection.version!==1
+    ||Object.keys(value.taskSelection).sort().join(',')!=='taskId,version'
+    ||value.taskSelection.taskId!==value.identity.taskId))fail('invalid_task_selection');
   for(const key of ['scope','requirements']){
     if(!Array.isArray(value[key])||(!value[key].length&&!(key==='requirements'))||value[key].length>256
       ||value[key].some(p=>typeof p!=='string'||!p||p.includes('\\')||p.includes('\0')
@@ -222,22 +227,27 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
     bootstrapConfig=bootstrapConfiguration(execution.bootstrap,{root:codeProject,identity,scope,feature});
   }
   if(parallelSelection!==null)parallelSelection=JSON.parse(JSON.stringify(parallelSelection));
+  if(parallelSelection!==null&&definition.taskSelection)fail('task_selection_mismatch');
+  const selection=parallelSelection??definition.taskSelection??null;
   const selectedRoots=definition.codeProjects?codeProjectPaths(codeProject,resolveCodeProjects(codeProject,definition.codeProjects)):null;
   if(selectedRoots){
     if(!execution||conversationProtection(execution)===null)fail('multi_root_protection_required');
     for(const root of definition.codeProjects){
       const selected=inspectCmAiAdmission({specsDir,codeProject:root});
-      if(mode==='create'&&!matchesCmAiTaskSelection(selected,feature,identity.taskId,parallelSelection))
+      if(mode==='create'&&!matchesCmAiTaskSelection(selected,feature,identity.taskId,selection))
         return {blocked:selected,close:()=>{}};
     }
   }
   const developer=execution?.documentationSync
     ?(await import('../runtime/js/cm-ai/host-documentation.mjs')).withHostDocumentation({developer:execution.developer,
-      documentationSync:execution.documentationSync,specsDir,codeProject,feature,scope,parallelSelection}):execution?.developer;
+      documentationSync:execution.documentationSync,specsDir,codeProject,feature,scope,parallelSelection:selection}):execution?.developer;
   const admission=inspectCmAiAdmission({specsDir,codeProject});
   if(mode==='create'&&admission.state!=='ready')return {blocked:admission,close:()=>{}};
-  if(mode==='create'&&!matchesCmAiTaskSelection(admission,feature,identity.taskId,parallelSelection))fail('task_selection_mismatch');
+  if(mode==='create'&&!matchesCmAiTaskSelection(admission,feature,identity.taskId,selection))fail('task_selection_mismatch');
   const handoffs=[1,2].map(attempt=>path.join(reviewsDir,`${featureSlug}-${identity.taskId}-a${attempt}-handoff.json`));
+  if(mode==='create'&&supersession===null)for(const [index,handoff] of handoffs.entries()){
+    if(fs.existsSync(handoff)&&reviewConsumedHandoff(reviewsDir,path.basename(handoff),index+1))reviewedHandoffConflict();
+  }
   // Reuse the runner's real validator before creating durable state. A failed
   // baseline must not strand an otherwise unused run ID.
   const specification={specsRoot:specsDir,feature};
@@ -297,7 +307,7 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
     if(mode==='resume'&&store.snapshot().records.length===0){
       // Only the genuine, fingerprint-matching empty initializer can be finished.
       // Never reset/recreate a journal that contains any event.
-      if(!matchesCmAiTaskSelection(admission,feature,identity.taskId,parallelSelection))
+      if(!matchesCmAiTaskSelection(admission,feature,identity.taskId,selection))
         fail('initialization_admission_required');
       captureReviewBaseline(baselineOptions);
       runnerMode='create';
@@ -314,7 +324,7 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
           excludedContexts:execution.excludedContexts,timeoutMs:execution.timeoutMs,
           ...(Object.hasOwn(execution,'verificationGate')?{verificationGate:execution.verificationGate}:{}),
           taskLearning:{feature,hostHandoff:true}})},
-      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,allowAbandonReview,...(parallelSelection===null?{}:{parallelSelection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
+      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,allowAbandonReview,...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
         ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
     const logAbandonments=()=>{

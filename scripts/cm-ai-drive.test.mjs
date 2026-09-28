@@ -259,10 +259,16 @@ test('protected conversation still requires the authored develop answer',t=>{
     permissions:['--protected-conversation-config','protection.json']}),'advance');
   assert.equal(run.status,2);assert.match(run.stderr,/develop\.json/);assert.equal(fs.existsSync(f.store),false);
 });
-test('resume requires originalHostContext before host launch',t=>{
+test('same-session resume may omit originalHostContext and cross-session omission fails exact fingerprint',t=>{
   const f=fixture(t);prepared(f);
-  const run=f.drive(f.plan({mode:'resume'}),'advance');assert.equal(run.status,2);
-  assert.match(run.stderr,/originalHostContext/);assert.equal(fs.existsSync(f.store),false);
+  assert.equal(f.drive(f.plan(),'advance').status,0);
+  const before=fs.readFileSync(f.store);
+  const same=f.drive(f.plan({mode:'resume',answers:undefined,checks:undefined}),'status');
+  assert.equal(same.status,0,same.stderr);
+  assert.equal(JSON.parse(same.stdout).result.state,'awaiting_review');
+  const cross=f.drive(f.plan({mode:'resume',hostContext:'drive-host-b',answers:undefined,checks:undefined}),'status');
+  assert.equal(cross.status,1,cross.stderr);assert.match(cross.stderr,/fingerprint_mismatch/);
+  assert.deepEqual(fs.readFileSync(f.store),before);
 });
 test('supersession flags reach create and incomplete or resume pairs stop before host launch',t=>{
   const f=fixture(t);prepared(f);

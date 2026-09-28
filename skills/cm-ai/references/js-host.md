@@ -10,8 +10,8 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 
 `PLAN.json` 与 cm-fix 驾驶员一样，以自身目录解析相对路径；填写 `config`（已批准的运行定义）、
 `mode`、当前真实 `hostContext`、`runtime`、原样传给宿主的 `permissions`、`answers` 和
-`checks: [{"id":"syntax","command":["node","--check","target.mjs"]}]`。换会话恢复还要填
-`originalHostContext`，且运行存档必须已存在。第 1 轮开发结果放 `answers/develop.json`（也可用
+`checks: [{"id":"syntax","command":["node","--check","target.mjs"]}]`。同会话恢复可省略
+`originalHostContext`；换会话恢复必须填创建运行的会话 ID，且运行存档必须已存在。第 1 轮开发结果放 `answers/develop.json`（也可用
 `develop-a1.json`，两者不能同时存在）；第 2 轮只读 `answers/develop-a2.json`，绝不复用第 1 轮答案。
 `edits` 把批准 scope 内路径映射到答案目录里的 UTF-8 内容文件。初次 `create` 或恢复到
 `ready` 第 1 轮时，若 `advance` 同时带 `--allow-review-attempt 1`，审查后可能直接进入第 2 轮开发；
@@ -67,10 +67,10 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
    runtime，恢复不得换端或冒用旧会话。Codex单任务同仓specs可显式选择下文受保护模式；
    当前Codex/Claude及批次同仓用下文文本提案模式；未选择保护的同仓仍阻断。不搬动specs或删除保护检查；工具会话不是OS沙箱。
 3. 从已批准任务确定 scope、requirements 和顺序；不跳过未解决的 bootstrap 确认或依赖。
-   单代码根用 `cm-ai-admission.mjs --print-run-definition --scope ...` 生成运行定义，不要手写；`--scope` 必填（相对代码根、逗号分隔），`--requirements` 可选；完整命令见产品文档。
+   单代码根用 `cm-ai-admission.mjs --print-run-definition --scope ...` 生成运行定义，不要手写；`--scope` 必填（相对代码根、逗号分隔），`--requirements` 可选。需要跳过当前 `nextTask` 时可加 `--task T-xxx`，仅接受同 feature 的 `eligibleTasks`，选择会写入运行定义并绑定恢复指纹；完整命令见产品文档。
    单任务用 `cm-ai-host.mjs`；多任务用 `cm-ai-batch-host.mjs` 的原 batch/workflows 配置。
    任务列表只包含该运行计划内的任务；恢复必须使用原身份、配置和真实当前会话身份，
-   单任务换会话恢复用 `--mode resume --host-context {当前真实会话ID} --original-host-context {创建运行的会话ID}`；
+   单任务同会话恢复可只用 `--mode resume --host-context {当前真实会话ID}`；换会话恢复用 `--mode resume --host-context {当前真实会话ID} --original-host-context {创建运行的会话ID}`；
    两个 ID 相同等同未传新参数，create 传它报 `original_host_context_unavailable`。不能冒用旧 host-context。
    原配置指纹和 init 元数据仍绑定创建会话，旧记录不改；开发结果和审查授权使用当前真实会话。
    新会话首次签审查授权前追加 `host-joined`，仅打开或 status 不写；创建会话、已加入会话和当前会话
@@ -215,7 +215,7 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
 
 ### 已审交接后的任务重跑
 
-同名 handoff 已被审查回执消费时，宿主保留 `handoff_exists`，blocked 结果的 `reason` 与 `[host]` 诊断会提示两个出口：QA 配置错误用上述 `--revise-qa-config` 恢复原运行；宿主或环境证据不足用 `--rerun-blocked-qa` 恢复原运行。确需重新开发同一任务时，使用新的 runId 和下列显式授权：
+同名 handoff 已被审查回执消费时，新运行在创建 store 和开发前就拒绝 `handoff_exists`，错误的 `reason` 保留恢复提示。QA 配置错误用上述 `--revise-qa-config` 恢复原运行；宿主或环境证据不足用 `--rerun-blocked-qa` 恢复原运行。确需重新开发同一任务时，使用新的 runId 和下列显式授权：
 
 ```bash
 node scripts/cm-ai-host.mjs serve --config run-new.json --mode create \

@@ -56,6 +56,8 @@ test('resume accepts a changed transport input limit without changing the durabl
     await serveHostTransport({host:{}},'65536',async options=>{limit=options.inputLimit;});
     assert.equal(limit,65536);
     const resumed=await openControlRun(definition,'resume',execution);resumed.close();
+    const otherSession=createConversationExecution(definition,'other-host-fixture',bridge,null,null,null,false,'codex');
+    await assert.rejects(openControlRun(definition,'resume',otherSession),{code:'fingerprint_mismatch'});
     await serveHostTransport({host:{}},'1048576',async options=>{limit=options.inputLimit;});
     assert.equal(limit,1048576);
     assert.deepEqual(JSON.parse(fs.readFileSync(state,'utf8')).fingerprints,before);

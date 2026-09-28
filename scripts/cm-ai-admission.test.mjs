@@ -200,3 +200,22 @@ test('parallel eligibility preserves nextTask and returns only dependency-ready 
   assert.equal(admission.nextTask.id,'T-001');
   assert.deepEqual(admission.eligibleTasks,[{feature:'1.login',id:'T-001'},{feature:'1.login',id:'T-002'}]);
 }));
+
+test('explicit task prints only a dependency-ready member and binds selection in the definition',()=>fixture(({specs,code})=>{
+  fs.writeFileSync(path.join(specs,'1.login','tasks.md'),'- [ ] T-001: first\n- [ ] T-002: second\n- [ ] T-003: final\n\n- T-003 依赖 T-001, T-002\n');
+  fs.writeFileSync(path.join(specs,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.login']}));
+  const args=[entry,'--specs-dir',specs,'--code-project',code,'--print-run-definition','--scope','src/a.js'];
+  const chosen=spawnSync(process.execPath,[...args,'--task','T-002'],{encoding:'utf8'});
+  assert.equal(chosen.status,0,chosen.stderr);
+  const definition=JSON.parse(chosen.stdout);
+  assert.equal(definition.identity.taskId,'T-002');
+  assert.deepEqual(definition.taskSelection,{version:1,taskId:'T-002'});
+  assert.deepEqual(validateRunDefinition(definition),definition);
+  for(const task of ['T-003','T-999']){
+    const refused=spawnSync(process.execPath,[...args,'--task',task],{encoding:'utf8'});
+    assert.equal(refused.status,1,refused.stderr);assert.equal(JSON.parse(refused.stderr).error.code,'task_selection_mismatch');
+    assert.equal(refused.stdout,'');
+  }
+  const invalid=spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,'--task','T-002'],{encoding:'utf8'});
+  assert.equal(invalid.status,2);assert.match(invalid.stderr,/--print-run-definition/);
+}));
