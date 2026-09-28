@@ -89,7 +89,7 @@ export function deliveredText(codeProject,scope){
 export function resolveReviewTimeout(review,protection){
   if(review?.timeoutMs!=null)return {timeoutMs:review.timeoutMs};
   if(protection)return {timeoutMs:protection.timeoutMs};
-  return {};
+  return {timeoutMs:900000};
 }
 export function createConversationExecution(definition,hostContextId,bridge,review=null,allowedAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
   definition=json(definition);workflow=workflow===null?null:json(workflow);options=json(options);

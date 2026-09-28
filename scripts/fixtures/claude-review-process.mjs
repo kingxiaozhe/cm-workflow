@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Synthetic stdout protocol fixture only, never a model-generated review.
 import {randomUUID} from 'node:crypto';
+if(process.argv.includes('--version')){process.stdout.write('2.1.274 (Claude Code)\n');process.exit(0);}
 let prompt='';for await(const part of process.stdin)prompt+=part;
 if(process.env.ANTHROPIC_API_KEY==='cm-synthetic-local-probe'){
   const base=process.env.ANTHROPIC_BASE_URL;

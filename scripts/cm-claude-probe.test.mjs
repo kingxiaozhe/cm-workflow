@@ -191,10 +191,17 @@ test('Claude preflight CLI exits 1 with model_recognized false and leaves normal
         assert.ok(run.stdout.trim(),run.stderr);
         const receipt=JSON.parse(run.stdout);
         assert.equal(receipt.preflight.passed,expectedExit===0);
+        assert.equal(receipt.timeoutMs,900000);
         assert.equal(receipt.preflight.request_checks.find(check=>Object.hasOwn(check,'model_matches'))?.model_matches,true);
         if(expectedExit===1)assert.deepEqual(receipt.preflight.request_checks.at(-1),
           {model_recognized:false,reported_model:model});
         else assert.equal(receipt.preflight.request_checks.some(check=>Object.hasOwn(check,'model_recognized')),false);
+        if(expectedExit===1){
+          assert.match(run.stderr,/fixture-unrecognized-model/);
+          assert.match(run.stderr,/claude-opus-5/);
+          assert.match(run.stderr,/installed Claude CLI/);
+          assert.match(run.stderr,/2\.1\.274 \(Claude Code\)/);
+        }
         assert.equal(run.stdout.includes('CM-PROBE-001'),false);
       }
     }finally{fs.rmSync(root,{recursive:true,force:true});}

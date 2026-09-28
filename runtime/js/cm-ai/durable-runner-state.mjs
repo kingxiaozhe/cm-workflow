@@ -22,7 +22,7 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed'].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope'].includes(code)
   ||kind==='review'&&state==='pending_review'&&['review_transport_timeout','review_abandoned'].includes(code)
   ||kind==='complete'&&state==='blocked'&&code==='completion_checks_changed'
   ||({develop:['ready','changes_requested'],review:['awaiting_review'],complete:['approved']})[kind]?.includes(state)===true;
@@ -39,7 +39,7 @@ export const reviewTimeoutTransition=(result,cache,attempt,calls=[],contextId=nu
     ||calls.some(call=>call.terminal==='abandoned'&&call.contextId===contextId)?'blocked':'pending_review',
   code:'review_transport_timeout'}:null;
 export const completedEffectCount=cache=>cache.filter(entry=>!(entry.effect.kind==='develop'
-  &&entry.result.state==='blocked'&&entry.result.code==='developer_result_invalid')&&!timeoutEffect(entry)).length;
+  &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))&&!timeoutEffect(entry)).length;
 export function validateTaskLearningReviewPackage(rawPackage,writeback,learningInput,bootstrap=null,configuration=null) {
   validTaskLearningInput(learningInput,learningInput.identity,learningInput.feature);
   const reviewPackage=readReviewPackage(rawPackage);
@@ -75,7 +75,7 @@ export function initialRunnerState(config,session,version=1) {
     ...(Object.hasOwn(config,'taskLearning')?{learningResult:null}:{})};
 }
 export function runnerStatus(s,config) {
-  return json({state:s.state,code:s.code,identity:{...config.identity,attempt:s.attempt},packageDigest:s.reviewPackage?.packageDigest??null,
+  return json({state:s.state,code:s.code,...(s.reason?{reason:s.reason}:{}),identity:{...config.identity,attempt:s.attempt},packageDigest:s.reviewPackage?.packageDigest??null,
     receipt:s.receipt,receipts:s.receipts,calls:s.calls,cancelAfterCommit:s.cancelAfterCommit,workflowError:s.workflowError,cancellationRequested:s.cancellationRequested,
     ...(Object.hasOwn(s,'taskCommit')?{taskCommit:s.taskCommit}:{}),
     ...(Object.hasOwn(s,'reviewInvocation')?{reviewInvocation:s.reviewInvocation}:{}),
@@ -86,9 +86,9 @@ export function controlledState(state,event,outstanding,version=1) {
   const unresolvedReview=version===3&&s.reviewInvocation?.result?.reconciliationRequired===true
     &&s.reviewInvocation.registration?.grant?.identity?.attempt===s.attempt;
   if(event==='workflow-error') {s.workflowError='workflow_error';if(!outstanding && s.state!=='fixture_completed'
-    && !(s.state==='unknown'&&(version>=2&&s.taskCommit||unresolvedReview))){s.state='blocked';s.code='workflow_error';}}
+    && !(s.state==='unknown'&&(version>=2&&s.taskCommit||unresolvedReview))){s.state='blocked';s.code='workflow_error';if(Object.hasOwn(s,'reason'))s.reason=null;}}
   else if(event==='late-cancel'){s.cancelAfterCommit=true;s.cancellationRequested=true;}
-  else if(event==='cancel') {if(!['blocked','unknown','cancelled','fixture_completed'].includes(s.state)){s.state='cancelled';s.code='cancelled';s.cancellationRequested=true;}}
+  else if(event==='cancel') {if(!['blocked','unknown','cancelled','fixture_completed'].includes(s.state)){s.state='cancelled';s.code='cancelled';if(Object.hasOwn(s,'reason'))s.reason=null;s.cancellationRequested=true;}}
   else need(false,'runner_control');
   return s;
 }
@@ -239,8 +239,11 @@ function invocationCall(call,registration,started,result,before) {
 function checkpoint(before,raw,effect,config,original,session,controls,version=1,taskCommit=null,invocation=null) {
   const s=json(raw,LIMIT);
   shape(s,['state','code','attempt','session','sequence','reviewPackage','currentChecks','receipt','receipts','calls','cache',
+    ...(Object.hasOwn(s,'reason')?['reason']:[]),
     'priorReview','cancelAfterCommit','workflowError','cancellationRequested',...(version>=2?['taskCommit']:[]),...(version===3?['reviewInvocation']:[]),
     ...(Object.hasOwn(config,'taskLearning')?['learningResult']:[])]);
+  if(Object.hasOwn(s,'reason'))need(s.reason===null||typeof s.reason==='string'&&s.reason.length<=8192
+    &&!/\r|\n|\0/.test(s.reason),'runner_diagnostic');
   if(version>=2){
     same(s.taskCommit,effect.kind==='complete'?taskCommit:null);
     if(effect.kind==='complete'){
@@ -304,7 +307,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
         ||Object.hasOwn(original,'specification')&&s.state==='blocked'&&s.code==='spec_drift'
         // The host gate rejected the delivery after Learning was already written
         // back: the writeback stands, only the review package was not built.
-        ||s.state==='blocked'&&s.code==='verification_precheck_failed'
+        ||s.state==='blocked'&&['verification_precheck_failed','check_output_out_of_scope'].includes(s.code)
         ||added[0]&&['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal),'runner_learning');
     }
     if(digest(s.reviewPackage)!==digest(before.reviewPackage)) {
@@ -323,10 +326,10 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     // The developer call succeeded and is never retried, but the host gate blocked
     // between the checks and the review package. No package exists, so no review
     // round was spent; the attempt counter does not move either.
-    if(added[0]?.terminal==='succeeded'&&s.code==='verification_precheck_failed') {
+    if(added[0]?.terminal==='succeeded'&&['verification_precheck_failed','check_output_out_of_scope'].includes(s.code)) {
       need(digest(s.reviewPackage)===digest(before.reviewPackage),'runner_develop');
       same(s.receipt,before.receipt);same(s.receipts,before.receipts);
-      expectedState='blocked';expectedCode='verification_precheck_failed';
+      expectedState='blocked';expectedCode=s.code;
     }
     if(added[0] && ['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal)) {
       expectedState='blocked';expectedCode=invalidDeveloperCall(added[0])

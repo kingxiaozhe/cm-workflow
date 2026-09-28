@@ -520,7 +520,7 @@ JS 通过现有通道发出固定请求，结果由原组件校验：
 # --review-model 必须是 CLI 实际写进请求体的完整模型 id，不能用 sonnet 这类别名：
 # 探测按字面比对，别名会以 request_checks 里的 model_matches:false 判失败，
 # 而回执只给布尔值、不给期望值，仅看输出无法推断该填什么。
-# Claude CLI 报 unrecognized_model 时 preflight 也会失败；模型 id 须为已安装 CLI 接受的值（如 CLI 2.1.x 的 claude-opus-5）。
+# Claude CLI 报 unrecognized_model 时 preflight 也会失败；stderr 指明被拒 id 和家族别名示例（如 CLI 2.1.x 的 claude-opus-5），可快速读取时还会显示 CLI 版本。示例不是完整模型清单。
 node scripts/cm-ai-host.mjs preflight --config /absolute/run.json --review-model model-name
 # 携带配置但不授权审查：开发和检查完成后等待授权。
 node scripts/cm-ai-host.mjs serve --config /absolute/run.json --mode create \
@@ -539,10 +539,11 @@ review.json 含 `{model, disabledSkills, preflight}`，另有可选 `timeoutMs`�
 更换 CLI/安装配置后应重新本机探测；模型和 disabledSkills 必须与运行绑定的配置一致。
 
 `timeoutMs` 是 reviewer 进程的传输预算，单位毫秒，必须是 1 到 3600000 之间的整数，
-不填时沿用 worker 默认的 60000。它与 `--protected-conversation-config`/`--protected-config`
-互不依赖：两者都给出时 reviewer 取 review.json 里的值，因此**调大审查超时不需要切换开发模式**。
+不填且受保护配置也未给预算时使用 900000（15 分钟）；preflight 输出有效 `timeoutMs`。旧 review.json 未写此字段而受保护配置显式给出预算时，沿用后者。两者都给出时 reviewer 取 review.json 里的值，因此**调大审查超时不需要切换开发模式**。
 它不进入已授权配置的摘要，所以 `review_transport_timeout` 之后可以在恢复时调大再续跑；
 它只管 reviewer，不改变开发、检查或 QA 的任何超时。
+
+检查命令产生的构建文件应放在代码根外，例如将 `xcodebuild -derivedDataPath` 指向外部目录。若检查自己新增了未跟踪的范围外文件，状态为 `blocked/check_output_out_of_scope`，`reason` 与宿主 stderr 列出最多 20 个相对路径；移走产物后可在原 run 恢复。开发者写出的范围外文件仍按 `unknown/out_of_scope` 处理，检查前后树的比较不会给它恢复权限。
 
 `--allow-review-attempt` 只能为1或2，只传递可信启动会话已经取得的那一轮授权，
 不能为了让流程继续而擅自添加。不会自动批准后续轮次、换模型或重试失败；若第一轮要求
@@ -1115,8 +1116,8 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
   `createHostWorkflowCapabilities` 不装 `qaDecisionProvider`，该任务开发与检查完成后
   QA 决策恒为空，状态停在 `fixture_completed / qa_decision_required`，**批次不会自行推进，
   再发 advance 也没有反应**。需要某个任务不跑 QA 时，仍给它 `qa` 配置，由评估结果决定跳过。
-- **QA 环境声明 `carrier: "browser"` 时必须显式传 `--browser-qa available|unavailable`**，
-  否则启动即 `browser_capability_required`。这是声明不是探测，创建与恢复都要重新给。
+- **适用测试用例需要交互 QA 时必须显式传 `--browser-qa available|unavailable`**，
+  包括 QA 环境的 `browser`、`ios-simulator` 等载体；错误原因会列出该 feature 的载体。旗标名称保留兼容；这是声明不是探测，创建与恢复都要重新给。
 - **首次推进前主工作区必须干净，含未跟踪文件**，否则 `batch_main_dirty` 并列出文件。
   上一批次的产出未提交即会触发。
 - **`batch.tasks` 的首项必须等于准入的 `nextTask`**，否则 `task_selection_mismatch`。

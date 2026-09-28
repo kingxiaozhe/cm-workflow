@@ -188,6 +188,11 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
   }
   return files.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
 }
+export function captureReviewInventory(root,baseline){
+  validBaseline(baseline);
+  return snapshot(root,baseline.specsPath??null,baseline.codeProjectPaths??null,
+    baseline.files.map(file=>file.path),new Set()).map(file=>({path:file.path,sha256:file.sha256}));
+}
 const sealed = (data,key) => {
   const result={...data,[key]:digest(data)};
   need(Buffer.byteLength(JSON.stringify(result))<=8*1024*1024,'limit_exceeded');
@@ -394,11 +399,18 @@ export function createReviewPackage(options) {
   const selected=b.version===1?null:new Set([...b.scope,...b.requirements,
     ...b.files.filter(f=>Object.hasOwn(f,'contentBase64')).map(f=>f.path)]);
   const files=snapshot(root,b.specsPath??null,b.codeProjectPaths??null,b.files.map(f=>f.path),selected),before=new Map(b.files.map(f=>[f.path,f])),after=new Map(files.map(f=>[f.path,f]));
-  const changes=[];
+  const changes=[],violations=[];
   for(const p of [...new Set([...before.keys(),...after.keys()])].sort()) {
     const old=before.get(p)??null,current=after.get(p)??null;
     if(digest(old)===digest(current))continue;
-    need(b.scope.includes(p),'out_of_scope'); changes.push({path:p,before:old,after:current});
+    if(!b.scope.includes(p)){violations.push({path:p,newFile:old===null&&current!==null});continue;}
+    changes.push({path:p,before:old,after:current});
+  }
+  if(violations.length){
+    const shown=violations.slice(0,20).map(item=>item.path.length>300?`${item.path.slice(0,300)}…`:item.path);
+    const error=new Error(`out_of_scope: ${shown.join(', ')}${violations.length>20?` (+${violations.length-20} more)`:''}`);
+    error.code='out_of_scope';error.violations=violations;
+    throw error;
   }
   need(changes.length>0,'empty_changes');
   const changedPaths=new Set(changes.map(change=>change.path));

@@ -33,6 +33,20 @@ test('dependency directories and nested Python caches do not enter business snap
   assert.throws(()=>createReviewPackage({root,baseline,checks}),{code:'out_of_scope'});
 });
 
+test('out of scope reports bounded relative paths without exposing the root',t=>{
+  const {root,options}=fixture(t),baseline=captureReviewBaseline(options);
+  fs.mkdirSync(path.join(root,'build'));
+  for(let i=0;i<22;i++)fs.writeFileSync(path.join(root,'build',`output-${String(i).padStart(2,'0')}`),'x');
+  assert.throws(()=>createReviewPackage({root,baseline,checks}),error=>{
+    assert.equal(error.code,'out_of_scope');
+    assert.match(error.message,/build\/output-00/);
+    assert.match(error.message,/\(\+2 more\)/);
+    assert(!error.message.includes('build/output-20'));
+    assert(!error.message.includes(root));
+    return true;
+  });
+});
+
 test('excluded directories cannot be selected as business edits or requirements',t=>{
   const {root,options}=fixture(t);
   fs.mkdirSync(path.join(root,'.venv'));

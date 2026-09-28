@@ -28,7 +28,7 @@ async function fixture(run){
   const entry=extra=>createCmAiConversationEntry({specsDir,codeProject,feature,identity,runner,
     applicableAgentFiles:[],...extra});
   const complete=()=>{current={...current,state:'fixture_completed'};};
-  const setStatus=(state,code)=>{current={...current,state,code};};
+  const setStatus=(state,code,reason)=>{current={...current,state,code,...(reason?{reason}:{})};};
   const seedQa=()=>recordCmAiQaDecision({specsDir,codeProject,feature,identity,packageDigest,
     logHome:path.join(root,'logs'),decision:{decisionId:'qa-skipped',identity,packageDigest,
       status:'skipped',reason:'fixture',score:4,at:'2026-09-04T15:10:00-07:00'}});
@@ -52,6 +52,14 @@ test('A4 completion retry routes a new effect id through the same run',()=>fixtu
   expectedId='complete-1-retry-2';
   await entry.handle(control('advance'));
   assert.equal(f.effects(),2);
+}));
+
+test('check output block reaches operator status with paths and resume action',()=>fixture(async f=>{
+  f.setStatus('blocked','check_output_out_of_scope','out_of_scope: build/product');
+  const result=await f.entry().handle(control('status'));
+  assert.equal(result.code,'check_output_out_of_scope');
+  assert.equal(result.pendingAction,'resume');
+  assert.equal(result.reason,'out_of_scope: build/product');
 }));
 
 test('context_refresh requires a completed task and returns its bound context summary',()=>fixture(async f=>{

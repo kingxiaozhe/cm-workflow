@@ -113,7 +113,7 @@ Review 头或完成记录；provider 身份由原 adapter/V3 绑定，失败不�
 `preflight --config {该代码根的单任务配置} --review-model {已选择模型} --runtime {当前端}`。
 即使后续执行批次，诊断仍用同一代码根的单任务配置，不把 batch/workflows 配置传给该命令。
 诊断输出直接作为 review-config 输入，不手造或修补 `passed`/指纹；失败则保留原因。
-Claude CLI 报 `unrecognized_model` 时 preflight 会失败；`--review-model` 须为已安装 CLI 接受的模型 id（如 CLI 2.1.x 的 `claude-opus-5`）。
+Claude CLI 报 `unrecognized_model` 时 preflight 会失败并在 stderr 指明被拒 id、可用的家族别名示例（如 CLI 2.1.x 的 `claude-opus-5`），可快速取得时也打印 CLI 版本；示例不是完整模型清单。
 Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终止，不发送工作流 cancel。
 本机配置诊断通过不证明模型可用、Review 协议成功或用户已批准外发；真实审查仍须第5项授权。
 不带对应 `--allow-review-attempt`（单任务）或 `--allow-review feature/task:attempt`（批次）
@@ -122,7 +122,8 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 ## Codex 单任务：显式受保护执行
 
 不新增模型调用的方案：单任务和批次均可传`--protected-conversation-config {文件}`，配置固定为
-`{checkCommands,timeoutMs}`，命令须已获准；`timeoutMs` 同时约束检查命令与 Codex/Claude 审查进程。
+`{checkCommands,timeoutMs}`，命令须已获准；检查命令用此预算，独立审查默认 900000 毫秒（15 分钟），可在 review-config 中单独覆盖，范围 1–3600000。preflight 输出有效 `timeoutMs`；此预算不进入授权配置摘要，旧运行可用原 runId 恢复。
+检查命令的构建产物放在代码根外，例如 `xcodebuild -derivedDataPath` 指向外部目录。检查自己新增的范围外未跟踪文件使原 run 进入 `blocked/check_output_out_of_scope`，状态原因和 stderr 列出最多 20 个相对路径；操作员清理产物后在原 run 重试。开发者造成的范围外改动仍是 `unknown/out_of_scope`，不得据此放宽 scope。
 审查传输超时且没有结果事件时，记录 `pending_review/review_transport_timeout`，可用 `--mode resume` 后 advance，
 同一 attempt 最多重派一次，重新取得 Review 授权、grant 与 invocation；第二次超时为 `blocked/review_transport_timeout`。
 已有最终消息（即使截断）的超时仍需 reconcile，旧 unknown 历史不自动改类。兼容Codex/Claude当前会话，保留原runtime与Review授权。

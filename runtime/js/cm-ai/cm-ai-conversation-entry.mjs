@@ -19,7 +19,7 @@ const retryReview=status=>status.state==='pending_review'
 // batch driver decides retryability from the same predicate instead of keeping a
 // second copy of the code list that silently drifts.
 export const developmentRetryable=status=>status.state==='blocked'
-  &&['developer_result_invalid','verification_precheck_failed'].includes(status.code);
+  &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope'].includes(status.code);
 const retryDeveloper=developmentRetryable;
 export const completionRetryable=status=>status.state==='blocked'&&status.code==='completion_checks_changed';
 const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approval':
@@ -41,6 +41,7 @@ const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approv
 const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',operation:operation.operation,
   requestDigest:digest(operation),identity:status.identity,outcome,state:status.state,code:status.code??null,
   packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),
+  ...(typeof status.reason==='string'?{reason:status.reason}:{}),
   ...(status.code==='handoff_exists'?{reason:REVIEWED_HANDOFF_HINT}:{}),
   ...(status.state==='blocked'&&status.calls?.at(-1)?.blockedReason!==undefined
     ?{blockedReason:status.calls.at(-1).blockedReason}:{})});
