@@ -7,7 +7,7 @@
 
 ## 当前会话手动驱动：用驱动脚本，不要自己搭 FIFO
 
-单任务用 `cm-ai-drive.mjs`，批次用 `cm-ai-batch-drive.mjs`；修复用 `cm-fix-drive.mjs`，规格编写用 `cm-prd-drive.mjs`。它们负责保持宿主 stdin、应答反问并按 callId 配对结果，无需后台保活 FIFO。`cm-ai`、批次和 `cm-prd` 驱动的 `--help` 列出计划字段；单任务最小调用：
+普通单任务和 bootstrap 骨架 T-001 用 `cm-ai-drive.mjs`，批次用 `cm-ai-batch-drive.mjs`；修复用 `cm-fix-drive.mjs`，规格编写用 `cm-prd-drive.mjs`。它们负责保持宿主 stdin、应答反问并按 callId 配对结果，无需后台保活 FIFO。bootstrap 规范任务（通常 T-002）需要当前 AI 会话以可交互进程工具直接运行 `cm-ai-host.mjs serve`，按下文应答 `init_generate` 和实时 `init_verify`；两个驾驶员都没有此核验 runner，启动前退出 2。`cm-ai`、批次和 `cm-prd` 驱动的 `--help` 列出计划字段；普通单任务最小调用：
 
 ```bash
 node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
@@ -45,6 +45,7 @@ cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edit
 不改变运行定义或恢复指纹；恢复时可调整。
 
 `check` 只运行计划里的真实命令；原始输出打印到驾驶员 stderr，宿主只保存实际退出码和精简证据；静态 `check.json` 不会被读取。
+驾驶员收到 `state: "unknown"` 或 `pendingAction: "reconcile"` 的宿主结果时退出 1，并保留原输出供原 run 恢复；不能把有结果的 JSON 当成成功。
 独立审查批准后，完成前会再次运行相同检查。`evidence` 摘要文字变化且检查 `id/command/outcome/exitCode` 不变时可完成；代码、handoff 或检查身份漂移为终态 `blocked/package_mismatch`，越界 scope/需求漂移保持 `blocked/out_of_scope`。仅 `outcome/exitCode` 变化时为可恢复的 `blocked/completion_checks_changed`：先修好检查环境，再用原 runId、原配置 `--mode resume` 执行 `advance`（或 `complete`）；新 complete effect id 重跑检查，原 Review 回执与 packageDigest 不变，不新开 run 或重审。旧 journal 按原格式回放，重试仍受 effect 上限约束。
 `qa_logic`、`qa_browser`、`verification_precheck` 没有可信本地 runner。单步驾驶员对本任务完成后适用的 logic case 预检 `qa_logic`，包括已被 QA 命令 `caseIds` 覆盖的 case（当前 executor 仍会请求）；只对适用、`expected` 不含 `[需确认]` 的 browser case 预检 `qa_browser`。预测需要 runner 时仍在发送前拒绝，`verification_precheck` 规则不变。
 本次适用的用例里有 logic 类（或无 `[需确认]` 的 browser 类）时，驾驶员完成不了这一步 QA：由当前 AI 会话以 `serve` 启动宿主，按 N6 与 cm-qa-engineer 应答 `qa_assess`，以及宿主实际问到的 `qa_logic` 或 `qa_browser`；拿不到浏览器证据时 `qa_browser` 如实回 BLOCKED，不能省略不答。即使 logic case 已被 QA 命令覆盖也不能跳过这一问：静态判断为 `CONTRADICTED` 时，除非另有阻断条件（`[需确认]`、宿主请求超时或源码漂移会改判为 BLOCKED），该用例判失败，哪怕命令全部通过。
@@ -59,6 +60,16 @@ cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edit
 scope、命令及恢复存档。批次宿主没有 `--original-host-context`，恢复必须沿用原 `hostContext`；
 不能用它接管另一会话。批次的 `qa_logic`、`qa_browser`、`verification_precheck` 与 bootstrap
 `init_verify` 需要驾驶员尚无的真实执行 runner，命中时启动前退出 2。受保护配置里的检查由宿主执行。
+
+### bootstrap 规范任务的当前会话宿主路径
+
+完成 T-001 骨架和其独立审查后，为 T-002 从已批准规格生成独立运行定义，`scope` 列出全部 `cmInitRuleTargets(selection)`，`requirements` 可为空数组。由当前真实 Claude 会话持有可交互进程句柄；下面是启动示意，路径和会话 ID 必须换成当前实际值：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-host.mjs" serve --config "{T-002-run.json}" --mode create --host-context "{当前真实会话ID}" --runtime claude --allow-development --bootstrap-config "{bootstrap.json}" --allow-bootstrap-write
+```
+
+`bootstrap.json` 为 `{"selection":{"versionControl":"local","modules":[],"analysis":"当前项目分析"}}` 这类已确认选择。收到 `host_ready` 后发送带原运行定义 `identity` 的 `{"version":1,"requestId":"t002-advance","operation":"advance","identity":{...}}`；不要等控制响应才处理反问。`init_generate` 按实际请求的 targets、templates、existing 和项目材料生成 `{status:"generated",documents:[{path,content}]}`；`init_verify` 对宿主给出的最终 documents、selection、inspection 及当前项目逐项核验，返回 `{checks,constraintChanges,application,retrospective}`。五项 checks 各给真实 `status/evidence`；不能把预写 JSON 或 `inspectCmInitDraft` 的结构检查冒充语义证据。每条 `host_result` 必须带该次请求的 `sessionId`、`callId`、`requestDigest`。若缺当前会话的真实核验能力，停止并报告，不发送虚构通过结果；断联后按原 run 的 unknown 恢复表处理。
 
 本参考只负责接入已有 runner，不复制 N1–N8 状态机。相对路径从本文件解析；
 插件根是 `../../..`，不得硬编码安装缓存。先读

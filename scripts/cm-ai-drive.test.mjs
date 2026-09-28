@@ -8,6 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {cmInitRuleTargets} from '../runtime/js/cm-init/draft-generation.mjs';
 import {qaFixAnswerFor,projectDevelopAttempts} from './cm-ai-drive.mjs';
 
 const DRIVER=fileURLToPath(new URL('./cm-ai-drive.mjs',import.meta.url));
@@ -183,6 +184,57 @@ test('driver resumes an interrupted develop and sends the bound abandon_effect r
   assert.equal(response.state,'cancelled');assert.equal(response.code,'effect_abandoned');
   const saved=JSON.parse(fs.readFileSync(f.store,'utf8'));
   assert.deepEqual(saved.records.slice(-2).map(row=>row.payload.type),['effect-intent','effect-abandoned']);
+});
+test('real host drives split-root bootstrap scaffold, then refuses rules before creating T-002 run',t=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-ai-drive-bootstrap-')));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const specsDir=path.join(root,'specs5'),codeProject=path.join(root,'app'),feature='1.bootstrap';
+  fs.mkdirSync(path.join(specsDir,feature),{recursive:true});fs.mkdirSync(codeProject);
+  fs.writeFileSync(path.join(specsDir,feature,'requirements.md'),'# SwiftUI scaffold and rules\n');
+  fs.writeFileSync(path.join(specsDir,feature,'design.md'),'# Split specs5 and app roots\n');
+  fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: 生成项目骨架 scaffold\n- [ ] T-002: 生成 AGENTS.md 和 .claude/ 规范（cm-init）\n');
+  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
+  const answers=path.join(root,'answers'),bin=path.join(root,'bin');fs.mkdirSync(answers);fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(answers,'app-content.mjs'),'export const app = true;\n');
+  fs.writeFileSync(path.join(answers,'develop.json'),JSON.stringify({...develop,edits:{'app.mjs':'app-content.mjs'}}));
+  const config=path.join(root,'run.json'),bootstrap=path.join(root,'bootstrap.json');
+  const plan=path.join(root,'plan.json'),selection={versionControl:'local',modules:[],analysis:'SwiftUI iOS app'};
+  const writeRun=(taskId,scope)=>fs.writeFileSync(config,JSON.stringify({version:1,specsDir,codeProject,feature,
+    identity:{repositoryId:'app',runId:`bootstrap-${taskId}`,taskId,attempt:1},scope,requirements:[]}));
+  const writePlan=(mode,permissions,extra={})=>fs.writeFileSync(plan,JSON.stringify({config:'run.json',mode,
+    hostContext:'drive-bootstrap-host',runtime:'claude',permissions,answers:'answers',
+    checks:[{id:'syntax',command:[process.execPath,'--check','app.mjs']}],...extra}));
+  const env={...process.env,PATH:bin+path.delimiter+process.env.PATH,
+    CM_WORKFLOW_HOME:path.join(root,'home'),CM_WORKFLOW_LOG_HOME:path.join(root,'logs')};
+  const drive=operation=>spawnSync(process.execPath,[DRIVER,'--plan',plan,operation],{encoding:'utf8',timeout:30000,env});
+  writeRun('T-001',['app.mjs']);fs.writeFileSync(bootstrap,JSON.stringify({selection:null}));
+  const reviewCli=path.join(bin,'claude');
+  fs.copyFileSync(fileURLToPath(new URL('./fixtures/claude-review-process.mjs',import.meta.url)),reviewCli);
+  fs.chmodSync(reviewCli,0o700);
+  const preview=spawnSync(process.execPath,[fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url)),
+    'preflight','--config',config,'--review-model','fixture','--runtime','claude'],
+  {encoding:'utf8',timeout:10000,env});
+  assert.equal(preview.status,0,preview.stderr);
+  fs.writeFileSync(path.join(root,'review.json'),preview.stdout);
+  writePlan('create',['--bootstrap-config','bootstrap.json','--allow-bootstrap-write','--review-config','review.json']);
+  const scaffold=drive('advance');assert.equal(scaffold.status,0,scaffold.stderr);
+  const first=JSON.parse(scaffold.stdout).result;assert.equal(first.state,'awaiting_review');
+  assert.equal(fs.readFileSync(path.join(codeProject,'app.mjs'),'utf8'),'export const app = true;\n');
+  writePlan('resume',['--bootstrap-config','bootstrap.json','--allow-bootstrap-write','--review-config','review.json',
+    '--allow-review-attempt','1'],{packageDigest:first.packageDigest});
+  const review=drive('decision');
+  assert.equal(review.status,0,review.stderr);assert.equal(JSON.parse(review.stdout).result.state,'approved');
+  writePlan('resume',['--bootstrap-config','bootstrap.json','--allow-bootstrap-write','--review-config','review.json']);
+  const completed=drive('advance');assert.equal(completed.status,0,completed.stderr);
+  assert.equal(JSON.parse(completed.stdout).result.state,'fixture_completed');
+  assert.match(fs.readFileSync(path.join(specsDir,feature,'tasks.md'),'utf8'),/\[x\] T-001/);
+  writeRun('T-002',cmInitRuleTargets(selection,codeProject));
+  fs.writeFileSync(bootstrap,JSON.stringify({selection}));
+  writePlan('create',['--bootstrap-config','bootstrap.json','--allow-bootstrap-write']);
+  const rules=drive('advance');assert.equal(rules.status,2,rules.stderr);
+  assert.match(rules.stderr,/init_verify.*cm-ai-host\.mjs serve/);
+  assert.equal(fs.existsSync(path.join(specsDir,'.reviews','.execution','bootstrap-T-002')),false);
+  assert.equal(fs.existsSync(path.join(codeProject,'.claude')),false);
 });
 test('driver requires resume, flag and one-line reason for abandon_effect before launch',t=>{
   const f=fixture(t);
