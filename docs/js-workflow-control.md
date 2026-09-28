@@ -229,12 +229,12 @@ scope/requirements使用相对工作区的前缀路径（如`frontend/src/view.m
 只快照声明根及适用上级AGENTS，不扫描无关兄弟项目；各根AGENTS进入审查材料，开发请求显式携带各根指令。
 工作区级Learning写回仍由原owner处理，不借此开放子项目指令写权限。不是跨项目DAG、自动合并或额外完成路径。
 
-### 0.bootstrap：骨架与项目规范
+### bootstrap feature：骨架与项目规范
 
-原批准`0.bootstrap`先T-001骨架、再原规范生成任务（通常T-002）。单任务增加
+原批准`0.bootstrap`继续使用；若不存在，则接受唯一一个数字前缀且slug恰为`bootstrap`的已批准feature（如`1.bootstrap`）。多个候选一律以`bootstrap_feature_ambiguous`拒绝。先T-001骨架、再原规范生成任务（通常T-002）。单任务增加
 `--bootstrap-config PATH --allow-bootstrap-write`，配置为`{selection:null}`（骨架），或
 `{selection:{versionControl,modules,analysis}}`（原cm-init规范选择）。批次用可选`bootstraps`映射，
-键为`0.bootstrap/T-001`等，值为同样配置，并显式传`--allow-bootstrap-write`；原逐task Review授权不变。
+键为实际bootstrap feature的`<feature>/T-001`等，值为同样配置，并显式传`--allow-bootstrap-write`；原逐task Review授权不变。
 空项目可用`requirements:[]`，但必须绑定真实bootstrap factory；原requirements/design从已批准specs读取并进入审查包，
 不在代码根生成假需求文件。普通任务仍要求代码需求材料，不能用空数组跳过审查。
 规范任务scope须列完整固定目标：`AGENTS.md`、`.claude/CLAUDE.md`、原选择对应的`.claude/rules/`文件，
@@ -242,7 +242,7 @@ scope/requirements使用相对工作区的前缀路径（如`frontend/src/view.m
 init_generate返回原`{status,documents}`；init_verify逐组核验并返回`{checks,constraintChanges,application,retrospective}`，
 checks为commands/globs/file_references/constraint_preservation/rule_applicability，各含status/evidence。
 constraintChanges必须空；application/retrospective沿原Learning字段。此核验不是独立Review，仍走原N4/N5。
-规则读回及证据进入同一原develop记录与handoff，然后Review，完成后N7重载。已有用户规则、未知写入或材料漂移不覆盖不重派；
+规则读回及证据进入同一原develop记录与handoff，然后Review，完成后N7重载。若T-001 Learning已写入AGENTS.md，规范草稿须保留其他既有约束原文；宿主把既有`## 项目教训`段按原字节合入最终草稿，再核验、写入并交独立Review。草稿修改既有教训或遗漏其他既有内容时阻断。已有用户规则冲突、未知写入或材料漂移不覆盖不重派；
 缺当前写许可在派发前阻断，补许可只能沿原run恢复。此开关不授权Git初始化、安装、网络或额外provider。
 
 配置示意（绝对路径替换为已批准的隔离目标）：

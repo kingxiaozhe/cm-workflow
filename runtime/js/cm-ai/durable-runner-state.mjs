@@ -13,6 +13,7 @@ import {reviewExclusions} from './effect-contract.mjs';
 import {validateAcceptedFix} from './accepted-fix.mjs';
 import {readBootstrapEvidence,validateBootstrapReviewPackage} from './host-bootstrap.mjs';
 import {validateCodeProjectPaths,assertCodeProjectSelections} from './code-projects.mjs';
+import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 
 const LIMIT=16*1024*1024;
 export const MAX_AI_JOINED_HOSTS=16;
@@ -43,7 +44,7 @@ export function validateTaskLearningReviewPackage(rawPackage,writeback,learningI
   const reviewPackage=readReviewPackage(rawPackage);
   const agents=reviewPackage.changes.find(change=>change.path==='AGENTS.md')??null;
   if(bootstrap!==null){
-    need(configuration?.mode==='instructions'&&learningInput.feature==='0.bootstrap','runner_learning');
+    need(configuration?.mode==='instructions'&&learningInput.feature===configuration.feature,'runner_learning');
     validateBootstrapReviewPackage(reviewPackage,bootstrap,configuration,learningInput.identity,writeback);
     if(writeback.outcome==='no_new_lesson'||writeback.outcome==='deduplicated')return true;
   }
@@ -104,7 +105,7 @@ function packageLink(pkg,original,attempt,checks) {
   same(p.specification??null,b.specification??null);
   same(p.requirements,b.requirements.map(path=>files.get(path)??null));
   same(p.codeProjectPaths??null,b.codeProjectPaths??null);
-  if(Object.hasOwn(b,'bootstrapRequirements'))same(p.bootstrapRequirements,{feature:'0.bootstrap',
+  if(Object.hasOwn(b,'bootstrapRequirements'))same(p.bootstrapRequirements,{feature:b.bootstrapRequirements.feature,
     rootDigest:digestRoot(b.bootstrapRequirements.specsRoot),files:b.bootstrapRequirements.files});
   else need(!Object.hasOwn(p,'bootstrapRequirements'),'runner_package');
 }
@@ -279,7 +280,9 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
           for(const file of evidence.files){
             const previous=before.learningResult?.bootstrap?.files.find(item=>item.path===file.path);
             const expected=file.path==='AGENTS.md'&&previous&&before.learningResult.writeback.outcome==='written'
-              ?before.learningResult.writeback.agentsFile.sha256:previous?.afterSha256??null;
+              ?before.learningResult.writeback.agentsFile.sha256:previous?.afterSha256
+                ??(file.path==='AGENTS.md'?effect.learningInput.learningFiles.find(item=>item.scope==='project'
+                  &&item.path==='AGENTS.md')?.sha256??null:null);
             need(file.beforeSha256===expected,'runner_learning');
           }
         }
@@ -423,7 +426,8 @@ function completionConfig(config,version){
     assertCodeProjectSelections(config.codeProjectPaths,[...config.scope,...config.requirements]);
   }
   if(Object.hasOwn(config,'bootstrap')){
-    need(config.taskLearning?.feature==='0.bootstrap'&&config.bootstrap.feature==='0.bootstrap','bootstrap_task_required');
+    need(config.taskLearning?.feature===config.bootstrap.feature
+      &&config.bootstrap.feature===identifyApprovedBootstrapFeature([config.bootstrap.feature]),'bootstrap_task_required');
     same(config.bootstrap.identity,config.identity);same(config.bootstrap.scope,config.scope);
     need(config.bootstrap.codeProject===config.root,'bootstrap_binding_changed');
   }

@@ -1,4 +1,4 @@
-// Approved 0.bootstrap instruction task, inside the original develop effect.
+// Approved bootstrap instruction task, inside the original develop effect.
 // A factory capability owns only init's fixed paths; never a developer grant.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,7 +7,7 @@ import {cmInitRuleTargets,generateCmInitDraft,validateCmInitSelection} from '../
 import {inspectCmInitDraft,readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {replaceSessionFile} from '../cm-prd/session.mjs';
 import {readReviewSourceFiles,readReviewBaseline} from './review-package.mjs';
-import {inspectCmAiBootstrapTask} from './cm-ai-admission.mjs';
+import {inspectCmAiBootstrapTask,identifyApprovedBootstrapFeature} from './cm-ai-admission.mjs';
 import {readProjectInstructionContext,createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective} from './cm-ai-context-refresh.mjs';
 import {validateDeveloperScope,readDeveloperRequest} from './developer-adapter.mjs';
 import {digest,json,shape,need,freeze,validIdentity,hex,requestFor,terminalFor} from './effect-contract.mjs';
@@ -16,8 +16,25 @@ const capabilities=new WeakMap();
 const categories=['commands','globs','file_references','constraint_preservation','rule_applicability'];
 const sha=bytes=>bytes===null?null:createHash('sha256').update(bytes).digest('hex');
 const same=(a,b)=>need(digest(a)===digest(b),'bootstrap_binding_changed');
+const learningSection=source=>/^## 项目教训[ \t]*\r?$/gmu.test(source);
 const canonical=root=>need(typeof root==='string'&&path.isAbsolute(root)&&fs.realpathSync(root)===root
   &&fs.lstatSync(root).isDirectory(),'bootstrap_root_invalid');
+
+export function mergeBootstrapAgents(existing,generated){
+  need(typeof existing==='string'&&typeof generated==='string','bootstrap_instruction_conflict');
+  if(!existing)return generated;
+  const heading=/^## 项目教训[ \t]*\r?$/gmu.exec(existing);
+  if(!heading){need(generated.includes(existing),'bootstrap_instruction_conflict');return generated;}
+  const next=/^## [^\r\n]+\r?$/gmu;
+  next.lastIndex=heading.index+heading[0].length;
+  const end=next.exec(existing)?.index??existing.length;
+  const section=existing.slice(heading.index,end);
+  const before=existing.slice(0,heading.index),after=existing.slice(end);
+  need((!before||generated.includes(before))&&(!after||generated.includes(after)),'bootstrap_instruction_conflict');
+  if(generated.includes(section))return generated;
+  need(!/^## 项目教训[ \t]*\r?$/gmu.test(generated),'bootstrap_instruction_conflict');
+  return generated+(generated.endsWith('\n')?'':'\n')+'\n'+section;
+}
 
 export function readBootstrapEvidence(raw,configuration,identity){
   const value=json(raw);
@@ -50,11 +67,13 @@ export function validateBootstrapReviewPackage(pkg,evidence,configuration,identi
 export function bootstrapConfiguration(capability,{root,identity,scope,feature}){
   const configuration=capabilities.get(capability);need(configuration,'bootstrap_capability_required');
   same(configuration.codeProject,root);same(configuration.identity, {...identity,attempt:1});
-  same(configuration.scope,scope);need(feature==='0.bootstrap','bootstrap_task_required');return configuration;
+  same(configuration.scope,scope);need(feature===configuration.feature
+    &&feature===identifyApprovedBootstrapFeature([configuration.feature]),'bootstrap_task_required');return configuration;
 }
 
 export function createHostBootstrap({definition,workflowRoot,selection,bridge,allowWrite}){
-  const data=json(definition);validIdentity(data.identity);need(data.identity.attempt===1&&data.feature==='0.bootstrap','bootstrap_task_required');
+  const data=json(definition);validIdentity(data.identity);need(data.identity.attempt===1
+    &&data.feature===identifyApprovedBootstrapFeature(data.specsDir),'bootstrap_task_required');
   canonical(data.codeProject);canonical(data.specsDir);canonical(workflowRoot);
   need(typeof bridge?.call==='function'&&typeof allowWrite==='boolean','bootstrap_configuration_invalid');
   // Construction is non-writing and may occur during resume. Only the runner's
@@ -69,7 +88,7 @@ export function createHostBootstrap({definition,workflowRoot,selection,bridge,al
   for(const file of instructionPaths){const target=path.join(data.codeProject,file);
     need(target!==data.specsDir&&!target.startsWith(data.specsDir+path.sep),'bootstrap_specs_overlap');}
   const bootstrapRequirements={specsRoot:data.specsDir,feature:data.feature,
-    files:readReviewSourceFiles(data.specsDir,['0.bootstrap/requirements.md','0.bootstrap/design.md'])};
+    files:readReviewSourceFiles(data.specsDir,[`${data.feature}/requirements.md`,`${data.feature}/design.md`])};
   const policyDigest=digest(instructionPaths.slice(2).map(file=>{
     const relative='templates/rules/'+path.basename(file);return [relative,sha(readCmInitSource(workflowRoot,relative))];}));
   const configuration=json({version:1,mode,codeProject:data.codeProject,specsDir:data.specsDir,feature:data.feature,
@@ -95,7 +114,9 @@ export function createHostBootstrap({definition,workflowRoot,selection,bridge,al
     const originals=instructionPaths.map(file=>({path:file,bytes:readCmInitSource(data.codeProject,file)}));
     for(const file of originals){
       const expected=file.path==='AGENTS.md'&&prior!==null&&previousWriteback?.outcome==='written'
-        ?previousWriteback.agentsFile.sha256:prior?.files.find(item=>item.path===file.path).afterSha256??null;
+        ?previousWriteback.agentsFile.sha256:prior?.files.find(item=>item.path===file.path).afterSha256
+          ??(file.path==='AGENTS.md'&&file.bytes!==null
+            &&learningSection(new TextDecoder('utf8',{fatal:true}).decode(file.bytes))?sha(file.bytes):null);
       need(sha(file.bytes)===expected,'bootstrap_instruction_conflict');
     }
     used.add(request.invocationId);
@@ -120,29 +141,34 @@ export function createHostBootstrap({definition,workflowRoot,selection,bridge,al
       return terminalFor(response,request);
     }
     current();need(!control.signal.aborted,'cancelled');
-    const draft=await generateCmInitDraft({project:data.codeProject,workflowRoot,selection:choice},{signal:control.signal,
+    const generated=await generateCmInitDraft({project:data.codeProject,workflowRoot,selection:choice},{signal:control.signal,
       generate:(payload,signal)=>bridge.call('init_generate',{...payload,bootstrap:{identity:request.identity,
         invocationId:request.invocationId,requirements:[...request.payload.requirements,...bootstrapRequirements.files],
         priorReview:request.payload.priorReview}},signal)});
-    need(draft.status==='draft_generated'&&draft.inspection.status==='structurally_checked','bootstrap_generation_blocked');
-    const verified=json(await bridge.call('init_verify',{project:data.codeProject,selection:choice,documents:draft.documents,
-      inspection:draft.inspection,categories,learningInput:request.payload.learningInput,
+    need(generated.status==='draft_generated'&&generated.inspection.status==='structurally_checked','bootstrap_generation_blocked');
+    const agentsBefore=originals.find(file=>file.path==='AGENTS.md').bytes;
+    const documents=generated.documents.map(document=>document.path==='AGENTS.md'
+      ?{path:document.path,content:mergeBootstrapAgents(agentsBefore?.toString('utf8')??'',document.content)}:document);
+    const inspection=inspectCmInitDraft({project:data.codeProject,documents,selection:choice});
+    need(inspection.status==='structurally_checked','bootstrap_generation_blocked');
+    const verified=json(await bridge.call('init_verify',{project:data.codeProject,selection:choice,documents,
+      inspection,categories,learningInput:request.payload.learningInput,
       instructions:'Verify every generated instruction against the approved bootstrap selection and current project. Do not write files, install or dispatch providers. Return {checks,constraintChanges,application,retrospective}; checks use status/evidence. Application and retrospective use the original developer Learning response fields. Unverified assertions block. This is host verification, not independent Review.'},control.signal));
     shape(verified,['checks','constraintChanges','application','retrospective']);shape(verified.checks,categories);
     for(const check of Object.values(verified.checks)){shape(check,['status','evidence']);
       need(['verified','not_applicable'].includes(check.status)&&typeof check.evidence==='string'&&check.evidence.trim(),'bootstrap_verification_blocked');}
     need(Array.isArray(verified.constraintChanges)&&verified.constraintChanges.length===0,'bootstrap_constraint_confirmation_required');
     const learning=request.payload.learningInput;
-    need(learning?.feature==='0.bootstrap','bootstrap_learning_required');
+    need(learning?.feature===data.feature,'bootstrap_learning_required');
     shape(verified.application,['status','note']);shape(verified.retrospective,['status','candidates','reason']);
     const binding={feature:learning.feature,identity:request.identity,learningDigest:learning.learningDigest};
     const application=createCmAiTaskLearningApplication({...binding,...verified.application});
     const retrospective=createCmAiTaskLearningRetrospective({...binding,...verified.retrospective});
     current();need(!control.signal.aborted,'cancelled');
-    same(inspectCmInitDraft({project:data.codeProject,documents:draft.documents}).changes,draft.inspection.changes);
+    same(inspectCmInitDraft({project:data.codeProject,documents}).changes,inspection.changes);
     // All targets are prechecked before the first write. Interruption stays in
     // the runner's original unknown develop effect, never an automatic retry.
-    for(const document of draft.documents){
+    for(const document of documents){
       need(!control.signal.aborted,'cancelled');canonical(data.codeProject);
       let parent=data.codeProject;
       for(const part of document.path.split('/').slice(0,-1)){
@@ -152,13 +178,13 @@ export function createHostBootstrap({definition,workflowRoot,selection,bridge,al
       const before=originals.find(file=>file.path===document.path).bytes;
       replaceSessionFile(data.codeProject,document.path,before===null?null:new TextDecoder('utf8',{fatal:true}).decode(before),document.content);
     }
-    const after=inspectCmInitDraft({project:data.codeProject,documents:draft.documents});
+    const after=inspectCmInitDraft({project:data.codeProject,documents});
     need(after.status==='structurally_checked'&&after.changes.every(file=>file.action==='unchanged'),'bootstrap_write_unknown');
     const contextFiles=readProjectInstructionContext(data.codeProject).map(({content,...file})=>file);
     // Optional module rules must be reachable through the generated entry.
     const evidenceBody={version:1,workflow:'cm-ai',phase:'bootstrap_instructions',identity:request.identity,
       invocationId:request.invocationId,configurationDigest:digest(configuration),
-      files:instructionPaths.map(file=>{const change=draft.inspection.changes.find(item=>item.path===file);
+      files:instructionPaths.map(file=>{const change=inspection.changes.find(item=>item.path===file);
         return {path:file,beforeSha256:change.beforeSha256,afterSha256:change.afterSha256};}),contextFiles};
     const bootstrap=readBootstrapEvidence({...evidenceBody,evidenceDigest:digest(evidenceBody)},configuration,request.identity);
     return terminalFor({version:1,invocationId:request.invocationId,contextId:request.contextId,provider:request.provider,

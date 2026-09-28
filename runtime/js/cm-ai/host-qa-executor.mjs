@@ -6,7 +6,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {loadConfig,resolveRole} from '../../../scripts/cm-workflow-config.mjs';
 import {validateTestCases} from '../../../scripts/validate-test-cases.mjs';
-import {inspectCmAiAdmission,inspectCmAiQaTaskContext} from './cm-ai-admission.mjs';
+import {inspectCmAiAdmission,inspectCmAiQaTaskContext,identifyApprovedBootstrapFeature} from './cm-ai-admission.mjs';
 import {createHostCheck} from './host-check.mjs';
 import {specsPermissionArgs} from './codex-config.mjs';
 import {resolveCodeProjects,codeProjectPaths} from './code-projects.mjs';
@@ -108,7 +108,8 @@ export function createHostQaExecutor(options) {
   for(const name of ['specsDir','codeProject'])need(fs.realpathSync(configuration[name])===configuration[name],'unsupported_path');
   const roots=configuration.codeProjects?resolveCodeProjects(configuration.codeProject,configuration.codeProjects):null;
   if(configuration.bootstrap){
-    shape(configuration.bootstrap,['requirements','scope']);need(configuration.feature==='0.bootstrap','bootstrap_task_required');
+    shape(configuration.bootstrap,['requirements','scope']);
+    need(configuration.feature===identifyApprovedBootstrapFeature(configuration.specsDir),'bootstrap_task_required');
   }
   if(Object.hasOwn(configuration,'specsRoot')){
     need(configuration.specsRoot===configuration.specsDir,'execution_specs_mismatch');

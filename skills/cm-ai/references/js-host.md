@@ -243,11 +243,12 @@ QA命令复用同一specs只读沙箱。最终任务的documentationPaths必须�
 只用已声明真实根；protected-conversation-config的每条检查及workflow QA命令增加codeProject绑定实际cwd，
 每根至少一条检查。读取develop的codeProjects/projectInstructions，返回前缀路径提案；原同一任务统一审查和完成，不自行拆任务。
 
-0.bootstrap按原骨架→规范任务顺序。单任务bootstrap-config为`{selection:null}`或原cm-init选择；
+已批准bootstrap feature优先用`0.bootstrap`；否则仅接受唯一一个数字前缀后slug恰为`bootstrap`的feature（如`1.bootstrap`）。
+多个候选以`bootstrap_feature_ambiguous`拒绝。按原骨架→规范任务顺序。单任务bootstrap-config为`{selection:null}`或原cm-init选择；
 批次bootstraps映射到具体feature/task，另传allow-bootstrap-write。原任务批准和逐轮独立Review不能省略。
 先按产品文档配置完整固定规范scope；requirements可为空数组；bootstrap原有批准specs需求/设计纳入逻辑保持不变。
 init_generate复用原cm-init生成合同；init_verify五组检查加constraintChanges/application/retrospective，详情以产品文档为准。
-宿主不自行落指令文件：JS固定写入、读回、同次handoff/Review、N7重载。原规则冲突、未知或漂移保留证据，不覆盖或重派。
+宿主不自行落指令文件：JS固定写入、读回、同次handoff/Review、N7重载。T-001 Learning先写入AGENTS.md时，规范草稿须保留其他既有约束原文；JS把已有`## 项目教训`段原字节合入最终草稿，再校验、写入和审查。草稿改写既有教训或丢弃其他既有内容则阻断。原规则冲突、未知或漂移保留证据，不覆盖或重派。
 
 用当前会话可交互的进程工具启动 CLI 并保留会话句柄。收到 `host_ready` 后按文档发送
 `advance`；批次控制消息不带子任务 identity，单任务按原合同携带 identity。

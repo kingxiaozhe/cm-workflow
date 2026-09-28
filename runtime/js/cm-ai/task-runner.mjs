@@ -646,7 +646,8 @@ export function createTaskRunner(options) {
           &&application.learningDigest===v.learningInput.learningDigest,'identity_mismatch');
         const retrospective=json(result.response.result.retrospective,16*1024);
         const writeback=readCmAiProjectLearningWriteback(writeCmAiProjectLearning({codeProject:config.root,
-          learningInput:v.learningInput,retrospective},instructionEvidence?.files.find(file=>file.path==='AGENTS.md').afterSha256??null),
+          learningInput:v.learningInput,retrospective},instructionEvidence?.files.find(file=>file.path==='AGENTS.md').afterSha256??null,
+          metadata.bootstrap?.feature??null),
         {learningInput:v.learningInput,retrospective});
         learningResult=freeze({application,retrospective,writeback,...(instructionEvidence?{bootstrap:instructionEvidence}:{})});
         if(writeback.outcome==='writeback_pending'){halt('blocked','learning_writeback_pending');return;}

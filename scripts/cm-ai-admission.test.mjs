@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {parseFeatureTaskText,validDependencies} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
+import {parseFeatureTaskText,validDependencies,identifyApprovedBootstrapFeature} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {validateRunDefinition} from './cm-ai-run.mjs';
 
 const entry=fileURLToPath(new URL('./cm-ai-admission.mjs',import.meta.url));
@@ -93,6 +93,21 @@ function admission(specs,code,names,exitCode=0){
 }
 
 const threeTasks='- [x] T-001: first\n- [ ] T-002: second\n- [ ] T-003: third\n';
+
+test('approved bootstrap identity accepts numbered scaffold and rejects ambiguous candidates',()=>fixture(({specs,code})=>{
+  writeFeature(specs,'1.bootstrap','- [ ] T-001: 生成项目骨架 scaffold\n- [ ] T-002: 生成 AGENTS.md 和 .claude/ 规范\n');
+  fs.rmSync(path.join(specs,'1.login'),{recursive:true});
+  fs.rmSync(path.join(code,'README.md'));
+  assert.equal(identifyApprovedBootstrapFeature(['1.bootstrap']),'1.bootstrap');
+  assert.equal(identifyApprovedBootstrapFeature(['1.bootstrap-extra']),null);
+  assert.equal(admission(specs,code,['1.bootstrap']).nextTask.feature,'1.bootstrap');
+  assert.throws(()=>identifyApprovedBootstrapFeature(['0.bootstrap','1.bootstrap']),{code:'bootstrap_feature_ambiguous'});
+  assert.throws(()=>identifyApprovedBootstrapFeature(['1.bootstrap','2.bootstrap']),{code:'bootstrap_feature_ambiguous'});
+  for(const names of [['0.bootstrap','1.bootstrap'],['1.bootstrap','2.bootstrap']]){
+    for(const name of names)if(!fs.existsSync(path.join(specs,name)))writeFeature(specs,name,'- [ ] T-001: scaffold\n');
+    assert.equal(admission(specs,code,names,1).reason,'bootstrap_feature_ambiguous');
+  }
+}));
 
 test('dependency parser accepts sentence punctuation per ID and preserves internal ID characters',()=>{
   for(const suffix of ['。','．','.','；',';','、',' 。 ．.；;、 \t']){

@@ -12,6 +12,7 @@ import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {serveCmAiHost,parseHostInputLimit} from '../runtime/js/cm-ai/host-session.mjs';
 import {validateHostWorkflowConfiguration,featureHasBrowserCases,readBrowserCapability} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {digest,json,need,shape} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {identifyApprovedBootstrapFeature} from '../runtime/js/cm-ai/bootstrap-feature.mjs';
 
 const usage='cm-ai-batch-host.mjs serve --config PATH --host-context ID --allow-development [--runtime codex|claude] [--input-limit BYTES] [--review-config PATH] [--allow-review FEATURE/TASK:1|2]... [--allow-qa] [--rerun-unknown-qa | --rerun-blocked-qa] [--verification-precheck] [--browser-qa available|unavailable] [--protected-conversation-config PATH | --protected-config PATH] [--allow-provider-development FEATURE/TASK:1|2]...';
 const safeCode=error=>typeof error?.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(error.code)?error.code:'batch_host_failed';
@@ -61,7 +62,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     if(bootstraps!==null){
       need(typeof bootstraps==='object'&&!Array.isArray(bootstraps),'invalid_bootstrap_config');
       for(const [key,config] of Object.entries(bootstraps)){
-        need(keys.includes(key)&&key.startsWith('0.bootstrap/'),'bootstrap_task_required');shape(config,['selection']);
+        need(keys.includes(key)&&key.startsWith(identifyApprovedBootstrapFeature(batch.specsDir)+'/'),'bootstrap_task_required');shape(config,['selection']);
       }
     }
     need(keys.length===Object.keys(workflows).length&&keys.every(key=>Object.hasOwn(workflows,key)),'workflow_task_mismatch');

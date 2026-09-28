@@ -2,7 +2,7 @@
 import {createHash} from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import {inspectCmAiAdmission,matchesCmAiTaskSelection} from './cm-ai-admission.mjs';
+import {inspectCmAiAdmission,matchesCmAiTaskSelection,identifyApprovedBootstrapFeature} from './cm-ai-admission.mjs';
 import {arrayItems,digest,freeze,hex,json,need,shape,text,validIdentity,validTaskLearningInput} from './effect-contract.mjs';
 
 const BASELINE_RULES=['coding-style.md','testing.md','security.md'];
@@ -62,7 +62,8 @@ export function inspectCmAiContextRefresh(input,{admission:trustedAdmission=null
   shape(input,['specsDir','codeProject','feature','applicableAgentFiles']);
   text(input.specsDir);text(input.codeProject);text(input.feature);
   const admission=trustedAdmission??inspectCmAiAdmission({specsDir:input.specsDir,codeProject:input.codeProject});
-  if(trustedAdmission!==null)need(input.feature==='0.bootstrap'
+  if(trustedAdmission!==null)need(input.feature===identifyApprovedBootstrapFeature(
+    trustedAdmission.features.map(item=>item.name))
     &&admission.specsDir===input.specsDir&&admission.codeProject===input.codeProject,'context_invalid');
   if(!['ready','complete'].includes(admission.state))return freeze({state:admission.state,reason:admission.reason,
     nextTask:null,eligibleTasks:[],contextDigest:null,contextFiles:[]});

@@ -7,6 +7,7 @@ import { digest } from './contracts.mjs';
 import {captureSpecificationMaterial,readSpecificationMaterial,verifySpecificationMaterial} from './specification-material.mjs';
 import {resolveCodeProjects,validateCodeProjectPaths,
   codeProjectInstructionPaths,assertCodeProjectSelections} from './code-projects.mjs';
+import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 
 const FILE_LIMIT=1024*1024, SNAPSHOT_LIMIT=2*1024*1024, FILE_COUNT=256;
 // Inventory budgets bound scanning, independently of the much smaller review body.
@@ -310,20 +311,20 @@ function inventoryList(b) {
   if(material.length)fileList(material);
   need(Buffer.byteLength(JSON.stringify(b))<=8*1024*1024,'limit_exceeded');
 }
-const bootstrapPaths=['0.bootstrap/design.md','0.bootstrap/requirements.md'];
+const bootstrapPaths=feature=>[`${feature}/design.md`,`${feature}/requirements.md`];
 function validBootstrapRequirements(value,published=false){
   keys(value,['feature','files',published?'rootDigest':'specsRoot']);
-  need(value.feature==='0.bootstrap','bootstrap_requirements_invalid');
+  need(value.feature===identifyApprovedBootstrapFeature([value.feature]),'bootstrap_requirements_invalid');
   if(published)hex(value.rootDigest);
   else need(typeof value.specsRoot==='string'&&path.isAbsolute(value.specsRoot)
     &&path.resolve(value.specsRoot)===value.specsRoot&&!value.specsRoot.includes('\0'),'unsupported_path');
   fileList(value.files);
-  need(digest(value.files.map(file=>file.path))===digest(bootstrapPaths)
+  need(digest(value.files.map(file=>file.path))===digest(bootstrapPaths(value.feature))
     &&value.files.every(file=>file.size>0),'bootstrap_requirements_invalid');
 }
 function currentBootstrapRequirements(value){
   need(fs.realpathSync(value.specsRoot)===value.specsRoot,'unsupported_path');
-  const files=readReviewSourceFiles(value.specsRoot,bootstrapPaths);
+  const files=readReviewSourceFiles(value.specsRoot,bootstrapPaths(value.feature));
   need(digest(files)===digest(value.files),'bootstrap_requirements_changed');
   return {feature:value.feature,files:value.files,rootDigest:sha(value.specsRoot)};
 }
