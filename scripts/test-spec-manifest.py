@@ -21,6 +21,7 @@ def invoke(*args: str, expected_exit: int = 0) -> subprocess.CompletedProcess[st
         [sys.executable, str(SCRIPT), *args],
         cwd=ROOT,
         text=True,
+        encoding="utf-8",
         capture_output=True,
         check=False,
     )
@@ -28,11 +29,11 @@ def invoke(*args: str, expected_exit: int = 0) -> subprocess.CompletedProcess[st
     # not against two entrypoints which now execute the same implementation.
     oracle = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "fixtures" / "spec-manifest-python-oracle.py"), *args],
-        cwd=ROOT, text=True, capture_output=True, check=False,
+        cwd=ROOT, text=True, encoding="utf-8", capture_output=True, check=False,
     )
     javascript = subprocess.run(
         [os.environ.get("CM_NODE_BIN", "node"), str(ROOT / "scripts" / "cm-spec-manifest.mjs"), *args],
-        cwd=ROOT, text=True, capture_output=True, check=False,
+        cwd=ROOT, text=True, encoding="utf-8", capture_output=True, check=False,
     )
     if javascript.returncode != result.returncode or oracle.returncode != result.returncode:
         raise AssertionError(f"JS/Python exit mismatch: {javascript.stderr} / {result.stderr}")

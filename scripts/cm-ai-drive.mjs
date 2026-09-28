@@ -68,7 +68,7 @@ const PAIR_FLAGS=new Set(['--allow-review-attempt','--review-config','--workflow
   '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason']);
 const FLAG_FLAGS=new Set(['--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
   '--allow-bootstrap-write','--allow-abandon-review','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
-  '--supersede-reviewed-evidence',
+  '--supersede-reviewed-evidence','--accept-superseded-code-drift',
   ...['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon',
     'test-author','repair','cause-review','final-review'].map(name=>`--allow-qa-fix-${name}`)]);
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
@@ -208,7 +208,7 @@ export function validateCmAiAnswer(kind,value,root){
 }
 function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (resume), runtime, permissions, answers, checks。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason（单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。\n');
+    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason（单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。\n');
     process.exit(0);
   }
   const loaded=loadPlanFile({name:'cm-ai-drive.mjs',known:OPERATIONS});
@@ -216,7 +216,6 @@ function load(){
   requireFields(plan,['config','mode','hostContext','permissions']);
   if(!['create','resume'].includes(plan.mode))stop(2,'mode 只能是 create 或 resume');
   if(!nonempty(plan.hostContext))stop(2,'hostContext 必须是当前真实会话 ID');
-  if(plan.mode==='resume'&&!nonempty(plan.originalHostContext))stop(2,'resume 需要 originalHostContext');
   if(plan.mode==='create'&&plan.originalHostContext)stop(2,'originalHostContext 只在 resume 时有意义');
   if(!Array.isArray(plan.permissions)||!plan.permissions.every(x=>typeof x==='string'))stop(2,'permissions 必须是宿主参数数组');
   const permissions=[];
@@ -230,6 +229,8 @@ function load(){
   const supersedeReason=permissions.includes('--supersede-reason');
   if(supersedeFlag!==supersedeReason)
     stop(2,'--supersede-reviewed-evidence 与 --supersede-reason 必须同时提供');
+  if(permissions.includes('--accept-superseded-code-drift')&&!supersedeFlag)
+    stop(2,'--accept-superseded-code-drift 需要 --supersede-reviewed-evidence 与 --supersede-reason');
   if(supersedeFlag&&plan.mode!=='create')stop(2,'supersede 只允许 mode create');
   const abandonError=abandonReviewPlanError(operation,plan,permissions);
   if(abandonError)stop(2,abandonError);

@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import {need,shape,json,digest} from '../cm-ai/effect-contract.mjs';
 import {validateTestCases} from '../../../scripts/validate-test-cases.mjs';
+import {needPrd,prdDraftJson} from './validation-reason.mjs';
 export function prdFeatureInventory(specs){
   return fs.readdirSync(specs).filter(name=>/^\d+\./.test(name)).sort();
 }
@@ -37,7 +38,7 @@ export function inspectPrdDesignDraft(raw,{nextIndex}){
     writeAuthorized:false,completionAuthorized:false});
 }
 export function inspectPrdDraft(raw,{nextIndex,generateCases,userCasesProvided}){
-  const reply=json(raw,64*1024);shape(reply,['status','summary','features']);
+  const reply=prdDraftJson(raw);shape(reply,['status','summary','features']);
   need(reply.status==='draft'&&typeof reply.summary==='string'&&reply.summary.trim()
     &&Array.isArray(reply.features)&&reply.features.length>0,'prd_draft_invalid');
   const seen=new Set(),features=[];let userCases=0;
@@ -55,7 +56,9 @@ export function inspectPrdDraft(raw,{nextIndex,generateCases,userCasesProvided})
     need(['requirements.md','design.md','tasks.md'].every(file=>files.has(file)),'prd_draft_triad_missing');
     if(files.has('test-cases.json')){
       const cases=JSON.parse(files.get('test-cases.json'));
-      need(validateTestCases(cases).length===0&&cases.feature===feature.name&&feature.testCasesReason===null,'prd_draft_cases_invalid');
+      needPrd(feature.testCasesReason===null,'prd_draft_cases_invalid',
+        {field:`features[${index}].testCasesReason`,expected:'testCasesReason must be null when test cases are present'});
+      need(validateTestCases(cases).length===0&&cases.feature===feature.name,'prd_draft_cases_invalid');
       need(generateCases||cases.cases.every(item=>item.origin!=='generated'),'prd_generated_cases_disabled');
       userCases+=cases.cases.filter(item=>item.origin==='user').length;
     }else need(['no_observable_behavior','generation_disabled'].includes(feature.testCasesReason)

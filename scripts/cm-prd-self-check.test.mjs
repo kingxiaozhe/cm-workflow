@@ -21,3 +21,9 @@ test('cycles, task budget, false declarations and missing AC/task references fai
   const codes=checkPrdDraftMechanics(draft(undefined,wrong)).findings.map(x=>x.code);
   assert.ok(codes.includes('test_reference_invalid'));assert.ok(codes.includes('acceptance_test_coverage_missing'));
 });
+test('malformed dependency finding names tasks.md and one-line comma format',()=>{
+  const report=checkPrdDraftMechanics(draft('- [ ] T-001: A\n- [ ] T-002: B\n- T-002 依赖 T-001。T-003'));
+  const finding=report.findings.find(item=>item.code==='dependencies_invalid');
+  assert.equal(finding.reason.field,'1.sample/tasks.md');
+  assert.match(finding.reason.expected,/- T-003 依赖 T-001, T-002/);
+});

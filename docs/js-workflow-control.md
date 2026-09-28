@@ -219,6 +219,8 @@ const result = await generateCmInitRules(
 
 ### 多代码目录：同一个任务统一收口
 
+需要 CoreSimulatorService、模拟器、真机、Xcode UI tests 或 Keychain 等系统服务的项目，应采用分离的 specs 根与代码根，并由具备系统访问能力的当前会话宿主在 Codex 沙箱外执行检查。单靠 `codeProjects` 多代码根配置或同仓受保护模式不能改变检查进程的沙箱：模拟器会不可用、UI tests 无法启动，SwiftPM 的 `swift build` 可能要求 `--disable-sandbox`。若宿主仍在沙箱内，就应报告环境阻断，不把失败写成通过。配置检查时将构建产物放在代码根外，例如给 `xcodebuild -derivedDataPath` 指定外部目录，避免触发 `check_output_out_of_scope`（详见下文检查产物说明）。
+
 单任务定义或batch定义可增加`codeProjects:["{WORKSPACE}/frontend","{WORKSPACE}/backend"]`。
 `codeProject`是明确选择的共同工作区根，不创建挂载或搬移目录；每个代码根必须是真实已存在、互不重叠的子目录。
 scope/requirements使用相对工作区的前缀路径（如`frontend/src/view.mjs`），不得选择未声明的兄弟目录。
@@ -229,12 +231,12 @@ scope/requirements使用相对工作区的前缀路径（如`frontend/src/view.m
 只快照声明根及适用上级AGENTS，不扫描无关兄弟项目；各根AGENTS进入审查材料，开发请求显式携带各根指令。
 工作区级Learning写回仍由原owner处理，不借此开放子项目指令写权限。不是跨项目DAG、自动合并或额外完成路径。
 
-### 0.bootstrap：骨架与项目规范
+### bootstrap feature：骨架与项目规范
 
-原批准`0.bootstrap`先T-001骨架、再原规范生成任务（通常T-002）。单任务增加
+原批准`0.bootstrap`继续使用；若不存在，则接受唯一一个数字前缀且slug恰为`bootstrap`的已批准feature（如`1.bootstrap`）。多个候选一律以`bootstrap_feature_ambiguous`拒绝。先T-001骨架、再原规范生成任务（通常T-002）。单任务增加
 `--bootstrap-config PATH --allow-bootstrap-write`，配置为`{selection:null}`（骨架），或
 `{selection:{versionControl,modules,analysis}}`（原cm-init规范选择）。批次用可选`bootstraps`映射，
-键为`0.bootstrap/T-001`等，值为同样配置，并显式传`--allow-bootstrap-write`；原逐task Review授权不变。
+键为实际bootstrap feature的`<feature>/T-001`等，值为同样配置，并显式传`--allow-bootstrap-write`；原逐task Review授权不变。
 空项目可用`requirements:[]`，但必须绑定真实bootstrap factory；原requirements/design从已批准specs读取并进入审查包，
 不在代码根生成假需求文件。普通任务仍要求代码需求材料，不能用空数组跳过审查。
 规范任务scope须列完整固定目标：`AGENTS.md`、`.claude/CLAUDE.md`、原选择对应的`.claude/rules/`文件，
@@ -242,7 +244,7 @@ scope/requirements使用相对工作区的前缀路径（如`frontend/src/view.m
 init_generate返回原`{status,documents}`；init_verify逐组核验并返回`{checks,constraintChanges,application,retrospective}`，
 checks为commands/globs/file_references/constraint_preservation/rule_applicability，各含status/evidence。
 constraintChanges必须空；application/retrospective沿原Learning字段。此核验不是独立Review，仍走原N4/N5。
-规则读回及证据进入同一原develop记录与handoff，然后Review，完成后N7重载。已有用户规则、未知写入或材料漂移不覆盖不重派；
+规则读回及证据进入同一原develop记录与handoff，然后Review，完成后N7重载。若T-001 Learning已写入AGENTS.md，规范草稿须保留其他既有约束原文；宿主把既有`## 项目教训`段按原字节合入最终草稿，再核验、写入并交独立Review。草稿修改既有教训或遗漏其他既有内容时阻断。已有用户规则冲突、未知写入或材料漂移不覆盖不重派；
 缺当前写许可在派发前阻断，补许可只能沿原run恢复。此开关不授权Git初始化、安装、网络或额外provider。
 
 配置示意（绝对路径替换为已批准的隔离目标）：
@@ -260,8 +262,9 @@ constraintChanges必须空；application/retrospective沿原Learning字段。此
 ```
 
 scope 和 requirements 是相对代码根的已有 runner 输入，不是额外写入授权。
-键必须恰好如示例，不得新增字段（已声明的多代码根模式仅允许原有可选 `codeProjects`）；定义参与摘要绑定，擅加字段会使同一次 run 的摘要漂移并导致 resume 失败。
-用准入生成器产出定义（`--scope` 必填，填写相对代码根、逗号分隔的允许修改文件；`--requirements` 可选，省略时为空数组）：`node scripts/cm-ai-admission.mjs --specs-dir /absolute/specs --code-project /absolute/code --print-run-definition --scope src/login.js --requirements requirements.md > run.json`。
+键必须恰好如示例，不得任意新增字段（已声明的多代码根模式允许 `codeProjects`，显式任务选择允许生成器写入 `taskSelection`）；定义参与摘要绑定，擅加字段会使同一次 run 的摘要漂移并导致 resume 失败。
+用准入生成器产出定义（`--scope` 必填，填写相对代码根、逗号分隔的允许修改文件；`--requirements` 可选，省略时为空数组）：`node scripts/cm-ai-admission.mjs --specs-dir /absolute/specs --code-project /absolute/code --print-run-definition --scope src/login.js --requirements requirements.md > run.json`。需要选择当前 `nextTask` 以外的任务时加 `--task T-xxx`；只能选择同 feature、依赖已满足的 `eligibleTasks`。生成的可选 `taskSelection` 随定义进入持久配置与指纹；不加参数的旧定义及恢复指纹不变。
+规格待审批时先展示摘要卡并请用户回复“开始”。只识别“开始”“开始吧”“可以开始”“确认开始”“开始执行”“现在开始”及其尾部标点/空白；泛化授权仍是 `not_approval`，提示明确回复“开始”。`--approve` 写入仍须原完整准入门禁。
 
 ```bash
 node scripts/cm-ai-run.mjs serve --config /absolute/run.json --mode create
@@ -351,6 +354,8 @@ host-context 必须是真实当前会话身份；宿主将其排除出独立审�
 或 model_usage。角色 Skill 的业务使用仍由当前会话负责；这不是模型路由全量实装。
 旧运行恢复只有真正再次进入角色时才读取/记录，不重发已完成开发或重复历史路由。
 
+已批准任务在完成前会重新执行检查。审查回执及原 `packageDigest` 不改：完成门禁重建代码、scope、需求、指令与 handoff 等非检查字段并逐项比较；检查只比较有序的 `id`、`command`、`outcome`、`exitCode`，视觉检查在结果相同时还比较前后载体，`evidence` 诊断文字可变化。代码、handoff 字节或检查身份漂移仍以 `blocked/package_mismatch` 终止；越界的 scope 或需求漂移保持既有 `blocked/out_of_scope` 终态。仅检查结果（`outcome`、`exitCode`）变化记录 `blocked/completion_checks_changed`，不标记完成；视觉检查从 passed 变成 unavailable 时，即使 after 载体按合同变成 null，也先按结果漂移处理。恢复原 runId 后重新执行检查，结果恢复一致时用新的 complete effect id 继续原批准，不重新审查。`advance` 和 `complete` 均可续跑，持久 journal 回放接受该重试状态；旧 journal 与回执保持原格式。重试仍受原 effect 数量上限约束。
+
 回复固定为以下形状；三个绑定值必须逐字取自该次请求，不要自行计算或沿用上次值：
 
 ```json
@@ -406,9 +411,11 @@ host-context 必须是真实当前会话身份；宿主将其排除出独立审�
 - **内容不同且没有回执指名它**：这份交接属于一个在审查前就死掉的运行，会被归档到
   `.reviews/.superseded/{原文件名}.{内容摘要前16位}`（先硬链接再删除，中途崩溃不丢字节），
   然后发布新交接。归档目录是子目录，不进入 `{feature}-{任务}-r{N}.md` 的证据文件名匹配。
-- **内容不同且回执指名它**：这是审查已经消费过的证据，绝不覆盖，返回 `handoff_exists`。
+- **内容不同且回执指名它**：这是审查已经消费过的证据，绝不覆盖。新运行在创建 store 和开发前即返回 `handoff_exists`；attempt 1 与 attempt 2 均检查。
 
-此时 blocked 结果的 `reason` 和宿主 stderr 的 `[host]` 提示先恢复原运行的 QA：配置填错用 `--revise-qa-config PREVIOUS.json --qa-config-revision-reason …`，宿主／环境证据不足用 `--rerun-blocked-qa`。确需重跑任务时，注意 N5 已在 N6 前把任务勾为 `[x]`；先在 `tasks.md` 将该任务改回 `- [ ]`，再在新的 runId 上显式提供 `--supersede-reviewed-evidence --supersede-reason "…"`；原因限单行、500 UTF-8 字节。宿主要求 `tasks.md` 未勾选该任务，所有同 feature、task 的旧 V3 journal 均无在途操作且处于 blocked、cancelled、unknown，或 fixture_completed 且 QA 为 BLOCKED／未结束；旧 writer 仍被进程持有、正常完成或无旧证据均拒绝 `supersede_unavailable`。新 journal 先追加 `evidence-superseded`，记录旧 runId、文件名、SHA-256 和原因，再归档同名 handoff／回执／具名 correction、QA 文件并写 `supersede` 事件；恢复会按记录幂等补齐。旧 journal 不改写，旧 QA UUID 报告仍留原位供旧日志引用；新运行随后按原名发布自己的证据。未使用旗标的运行维持原 journal 格式和摘要。
+此时错误的 `reason` 和宿主 stderr 的 `[host]` 提示先恢复原运行的 QA：配置填错用 `--revise-qa-config PREVIOUS.json --qa-config-revision-reason …`，宿主／环境证据不足用 `--rerun-blocked-qa`。确需重跑任务时，注意 N5 已在 N6 前把任务勾为 `[x]`；先在 `tasks.md` 将该任务改回 `- [ ]`，再在新的 runId 上显式提供 `--supersede-reviewed-evidence --supersede-reason "…"`；原因限单行、500 UTF-8 字节。宿主要求 `tasks.md` 未勾选该任务，所有同 feature、task 的旧 V3 journal 均无在途操作且处于 blocked、cancelled、unknown，或 fixture_completed 且 QA 为 BLOCKED／未结束；旧 writer 仍被进程持有、正常完成或无旧证据均拒绝 `supersede_unavailable`。新 journal 先追加 `evidence-superseded`，记录旧 runId、文件名、SHA-256 和原因，再归档同名 handoff／回执／具名 correction、QA 文件并写 `supersede` 事件；恢复会按记录幂等补齐。旧 journal 不改写，旧 QA UUID 报告仍留原位供旧日志引用；新运行随后按原名发布自己的证据。未使用旗标的运行维持原 journal 格式和摘要。
+
+替代检查还会在任何新持久状态和 `captureReviewBaseline` 之前，只比对尚未被其他旧运行的 `evidence-superseded.previousRunIds` 列出的直接前驱运行的 V2 代码基线与当前代码树的逐文件 SHA-256／存在性（含未选中文件、新增及删除）。更早的运行仍进入新记录的 `previousRunIds` 并照常归档。发现漂移时返回 `supersede_code_drift`，`reason` 与宿主 `[host]` stderr 列出最多 20 个路径及剩余数量：手动还原这些文件后重建运行；或确认保留这些改动时加 `--accept-superseded-code-drift` 重建（这些文件会被当成已有代码，不进新运行的审查改动）。该旗标仅限同时带 `--supersede-reviewed-evidence --supersede-reason` 的 create 请求，不默认启用；接受后 `evidence-superseded` 记录每个漂移路径的当前 SHA-256（删除时为 `null`）及比较的前驱 runId。检测不修改文件，也不读取代码根之外或跟随越界软链接；无法安全读取时即使带旗标也拒绝。旧 journal 没有可用逐文件基线时跳过该运行，不新增记录；这类历史运行无法获得漂移保证。
 
 判据只认回执 **front matter 内**（首个 `---` 到下一个 `---` 之间）的 `handoff:` 行，不按固定行数截取——`handoff:` 之后的 `scope` 列表长度等于该任务的改动文件数，按行数截取会让判定依赖字段顺序。正文里出现的 `handoff:` 不算数。回执缺失视为未被消费；front matter 未闭合、起始不是 `---`、文件非普通文件或为符号链接、超过 256 KiB，一律按「已消费」处理（失败关闭），绝不因为读不懂就去覆盖审查证据。
 
@@ -518,7 +525,7 @@ JS 通过现有通道发出固定请求，结果由原组件校验：
 # --review-model 必须是 CLI 实际写进请求体的完整模型 id，不能用 sonnet 这类别名：
 # 探测按字面比对，别名会以 request_checks 里的 model_matches:false 判失败，
 # 而回执只给布尔值、不给期望值，仅看输出无法推断该填什么。
-# Claude CLI 报 unrecognized_model 时 preflight 也会失败；模型 id 须为已安装 CLI 接受的值（如 CLI 2.1.x 的 claude-opus-5）。
+# Claude CLI 报 unrecognized_model 时 preflight 也会失败；stderr 指明被拒 id 和家族别名示例（如 CLI 2.1.x 的 claude-opus-5），可快速读取时还会显示 CLI 版本。示例不是完整模型清单。
 node scripts/cm-ai-host.mjs preflight --config /absolute/run.json --review-model model-name
 # 携带配置但不授权审查：开发和检查完成后等待授权。
 node scripts/cm-ai-host.mjs serve --config /absolute/run.json --mode create \
@@ -537,10 +544,11 @@ review.json 含 `{model, disabledSkills, preflight}`，另有可选 `timeoutMs`�
 更换 CLI/安装配置后应重新本机探测；模型和 disabledSkills 必须与运行绑定的配置一致。
 
 `timeoutMs` 是 reviewer 进程的传输预算，单位毫秒，必须是 1 到 3600000 之间的整数，
-不填时沿用 worker 默认的 60000。它与 `--protected-conversation-config`/`--protected-config`
-互不依赖：两者都给出时 reviewer 取 review.json 里的值，因此**调大审查超时不需要切换开发模式**。
+不填且受保护配置也未给预算时使用 900000（15 分钟）；preflight 输出有效 `timeoutMs`。旧 review.json 未写此字段而受保护配置显式给出预算时，沿用后者。两者都给出时 reviewer 取 review.json 里的值，因此**调大审查超时不需要切换开发模式**。
 它不进入已授权配置的摘要，所以 `review_transport_timeout` 之后可以在恢复时调大再续跑；
 它只管 reviewer，不改变开发、检查或 QA 的任何超时。
+
+检查命令产生的构建文件应放在代码根外，例如将 `xcodebuild -derivedDataPath` 指向外部目录。若检查自己新增了未跟踪的范围外文件，状态为 `blocked/check_output_out_of_scope`，`reason` 与宿主 stderr 列出最多 20 个相对路径；移走产物后可在原 run 恢复。开发者写出的范围外文件仍按 `unknown/out_of_scope` 处理，检查前后树的比较不会给它恢复权限。
 
 `--allow-review-attempt` 只能为1或2，只传递可信启动会话已经取得的那一轮授权，
 不能为了让流程继续而擅自添加。不会自动批准后续轮次、换模型或重试失败；若第一轮要求
@@ -901,7 +909,7 @@ hostContextId、qaSource 及已配置的复现/修复/审查选项；不能通�
 子 runtime 须匹配当前宿主。新建子运行时，配置 hostContextId 只能是当前真实会话或已通过父运行指纹校验的创建会话；
 已有子运行沿用存档配置并校验指纹。打开子运行（含 fix_status）和签审查授权都使用当前真实会话，
 首次签授权前由 cm-fix 追加 fix-host-joined-N；只读打开不写接手记录，原因审查员不能是当前会话。
-父运行换会话恢复仍须提供 --original-host-context；仅配置文件或 auto_fix 策略不能替代原逐项授权。
+父运行同会话恢复可省略 `--original-host-context`；换会话仍须提供创建运行的会话 ID，缺少时配置指纹校验拒绝。仅配置文件或 auto_fix 策略不能替代原逐项授权。
 重复调用继续原状态，不重做已结束步骤或重发 unknown。执行期间 status/cancel 交给原子
 owner，操作结束后恢复父 owner。该入口只接到原 red_test_required 等后续阶段，不授权
 测试编写、修复写码、provider Review 或 finish；后续动作使用下述独立权限，自动重测仍待接线。
@@ -1113,8 +1121,8 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
   `createHostWorkflowCapabilities` 不装 `qaDecisionProvider`，该任务开发与检查完成后
   QA 决策恒为空，状态停在 `fixture_completed / qa_decision_required`，**批次不会自行推进，
   再发 advance 也没有反应**。需要某个任务不跑 QA 时，仍给它 `qa` 配置，由评估结果决定跳过。
-- **QA 环境声明 `carrier: "browser"` 时必须显式传 `--browser-qa available|unavailable`**，
-  否则启动即 `browser_capability_required`。这是声明不是探测，创建与恢复都要重新给。
+- **适用测试用例需要交互 QA 时必须显式传 `--browser-qa available|unavailable`**，
+  包括 QA 环境的 `browser`、`ios-simulator` 等载体；错误原因会列出该 feature 的载体。旗标名称保留兼容；这是声明不是探测，创建与恢复都要重新给。
 - **首次推进前主工作区必须干净，含未跟踪文件**，否则 `batch_main_dirty` 并列出文件。
   上一批次的产出未提交即会触发。
 - **`batch.tasks` 的首项必须等于准入的 `nextTask`**，否则 `task_selection_mismatch`。
@@ -1305,8 +1313,8 @@ split必须包含方案概览节（方案摘要/概述/功能模块设计/架构
 失败进入self_check_failed（机械失败为draft_self_check_failed）；下一advance让原planner修订现有feature，拒绝新增/删除/改名或编号漂移。初稿为第1轮，最多第2轮；旧轮次摘要和机械/上下文报告进入selfCheckHistory，当前contextCheck随新稿清空。第2轮仍失败进入self_check_needs_human，不能再生成第3轮或重跑同轮自检；错误/断连也不自动重发。通过为self_check_reported_passed，仍未Review/批准/落盘。当前所有状态在内存，跨会话不恢复；不要用重启来规避轮次。
 
 analysis_ready后继续发送`advance`及当前生成要求，CLI改调planner的`prd_generate`。请求仅含分析结论、用户回答、材料记录/来源引用和用户用例，不重发全部需求正文；模型/adapter仍是请求路由元数据。planner不在当前runtime时明确阻断，不偷换provider。设计基准或其他材料决策不明时返回question，进入awaiting_planning_user，下一次advance带真实用户回答继续规划。
-宿主返回`{status:"draft",summary,features:[{name,documents:[{path,content}],testCasesReason}]}`，或question/blocked；请求instructions中有完整字段格式。name为kebab slug，JS按当前已有编号最大值+1分配目录名，不依赖模型自报编号。每feature只接受requirements.md/design.md/tasks.md和可选test-cases.json，拒绝路径逃逸/重复/缺三件套；原测试合同validator校验JSON，禁生成用例配置仍保留用户用例。无测试合同时testCasesReason必须是no_observable_behavior或合法的generation_disabled。
-draft_ready只表示内存草稿结构及上述机械子集检查通过，返回draft及绑定实际目录的digest；无规格文件写入，无task完成位或审批位。上下文自检沿上方宿主流程执行，设计审查/拆分审查/人工批准仍待接线；不能把testCasesReason自报、结构完整或合成测试当作语义验收。当前整个生成回包64KiB，尚无大规格分块、草稿落盘及恢复。关闭仍记录incomplete。
+宿主返回`{status:"draft",summary,features:[{name,documents:[{path,content}],testCasesReason}]}`，或question/blocked；请求instructions中有完整字段格式。name为kebab slug，JS按当前已有编号最大值+1分配目录名，不依赖模型自报编号。每feature只接受requirements.md/design.md/tasks.md和可选test-cases.json，拒绝路径逃逸/重复/缺三件套；原测试合同validator校验JSON，禁生成用例配置仍保留用户用例。有test-cases.json时testCasesReason必须为null；无测试合同时必须是no_observable_behavior或合法的generation_disabled。tasks.md依赖每任务一行，多前置任务用逗号：`- T-003 依赖 T-001, T-002`。
+draft_ready只表示内存草稿结构及上述机械子集检查通过，返回draft及绑定实际目录的digest；无规格文件写入，无task完成位或审批位。上下文自检沿上方宿主流程执行，设计审查/拆分审查/人工批准仍待接线；不能把testCasesReason自报、结构完整或合成测试当作语义验收。当前整个生成回包最多65536字节（64 KiB），超限的操作者诊断列出实际序列化字节数；尚无大规格分块、草稿落盘及恢复。关闭仍记录incomplete。
 
 PDF/HTML现通过同一CLI的`prd_materials`宿主请求处理，先于prd_analyze且每份当前材料只处理一次。宿主复用已有获准PDF读取工具或Codex内置浏览器，不新装解析库、不启动本机浏览器；不可用或未授权时返回`{status:"blocked",reason:"原因"}`，不降级成静态遍历。这里仅新增宿主接线和报告校验，不内置PDF解析器或浏览器驱动。
 请求含`responseShape`：processed.records中每份记录绑定原path/sha256；PDF带pageCount及从1连续编号的pages（page/text/evidence）；HTML带pages（url/interactiveCount/elements/evidence），元素含id/action/result/kind/screenshot/question，kind为function或dead_zone，后者必须给question。每页元素数量需与interactiveCount相等、ID唯一；截图和工具引用为宿主报告，不是JS实测证明。PDF空白/扫描/过大等无法按现协议忠实返回的材料明确blocked，不虚构文字。
@@ -1342,6 +1350,10 @@ split 审查对文档章节标题有硬要求，不满足时 `final_review_packa
   写成「## 功能要求」不匹配。
 - `design.md` 必须有方案摘要/概述/架构/功能模块/技术/接口/数据/波及/安全一类的
   `##` 章节，`split` 阶段另单独校验一次摘要类标题。
+
+当前宿主校验失败仍向调用方返回原 `host_request_failed`，现仅在本地 stderr 的结构化诊断中
+附字段、预期格式与尺寸；原错误码和审批、审查门禁不变。审查 `response.at` 必须是
+`new Date().toISOString()` 形式，例如 `2026-09-08T00:00:00.000Z`。
 
 `runtime/js/cm-prd/analysis.mjs` 提供 `createCmPrdAnalysis({input,runtime,analyze,record})` 会话分析控制层；input沿用来源入口参数。先准入、解析analyst/planner配置，再读取正文。`advance(text)` 接真实当前用户输入，回调 `analyze(payload,signal)` 执行当前宿主分析；`status()`/`cancel()` 提供状态与取消。
 `record(event)` 必须由宿主接原规格日志写入器，失败阻止派发；此模块不自行创建run_start/run_done或日志文件。非current-runtime analyst明确blocked/degrade，不自动换provider。question进入awaiting_user，analyzed含summary/sourcePaths/openQuestions；来源路径必须完整，开放问题非空仍awaiting_user。PDF/HTML（含用例文件）必须先经上方材料宿主处理；未提供processMaterials的旧模块调用方仍阻断非文本材料。未知格式继续阻断。

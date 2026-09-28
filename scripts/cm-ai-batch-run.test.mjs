@@ -18,6 +18,7 @@ test(`real multi-task runner keeps QA and recovery authoritative: ${mode}`,()=>b
 
 for(const mode of ['parallel','parallel-retry','parallel-conflict','parallel-resume'])
 test(`parallel batch runs real isolated members: ${mode}`,()=>batchFixture(mode));
+test('A4 parallel member retries changed completion checks in its original run',()=>batchFixture('parallel-completion-retry'));
 
 test('ready member merges before blocked member preserves reason in log and WIP and falls back only once',async()=>{
   for(const withReason of [true,false])await batchFixture('parallel-recovery',{terminalAgain:true,withReason});
@@ -95,7 +96,7 @@ async function batchFixture(mode,options={}){
     const config={version:1,repositoryId:'batch-fixture',batchId:'batch-fixture',specsDir,codeProject,
       ...(parallel?{parallel:[[`${feature}/T-001`,`${feature}/T-002`]]}:{}),
       tasks:(parallel?['T-001','T-002','T-003']:['T-001','T-002']).map((taskId,index)=>({feature,taskId,scope:[`file${index}.js`],requirements:['requirements.md']}))};
-    const calls=[],qaCalls=[],assessments=[],blockedEvidence=[];let qaReady=mode!=='qa-resume',started;
+    const calls=[],qaCalls=[],assessments=[],blockedEvidence=[],checkCalls=new Map();let qaReady=mode!=='qa-resume',started;
     const began=new Promise(resolve=>{started=resolve;});
     let conflictHead=null,interrupted=false;
     const executionFor=async(definition,{parallelMember=false}={})=>({configuration:{kind:'batch-fixture-v1',...(parallelMember?{parallelMember:true}:{})},timeoutMs:3000,
@@ -145,7 +146,12 @@ async function batchFixture(mode,options={}){
           }
           return {status:'succeeded',value:{outcome:'implemented',application,retrospective}};
         }})},
-      check:async()=>[{id:'fixture',command:['fixture'],outcome:'passed',exitCode:0,evidence:'Synthetic task check'}],
+      check:async()=>{
+        const key=definition.identity.taskId,count=(checkCalls.get(key)??0)+1;checkCalls.set(key,count);
+        const failed=mode==='parallel-completion-retry'&&parallelMember&&key==='T-002'&&count===2;
+        return [{id:'fixture',command:['fixture'],outcome:failed?'failed':'passed',exitCode:failed?1:0,
+          evidence:failed?'Synthetic transient failure':'Synthetic task check'}];
+      },
       reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',allowed:true,available:true,
         contexts:['review-1','review-2'],run:(request,{onEvent})=>{
           assert.equal(request.payload.reviewPackage.specification.task.id,definition.identity.taskId);
@@ -236,6 +242,20 @@ async function batchFixture(mode,options={}){
       result=await open().handle({operation:'advance',requestId:'resume-commit-prefix'});
       const recovered=fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
       assert.equal(recovered.find(row=>row.phase==='batch_handoff').task_commit,commit.task_commit);
+    }
+    if(mode==='parallel-completion-retry'){
+      assert.equal(result.code,'completion_checks_changed',JSON.stringify(result));
+      const logfile=path.join(specsDir,'运行日志.jsonl');
+      let rows=fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(rows.filter(row=>row.phase==='batch_member_blocked').length,0);
+      assert(fs.existsSync(path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002')));
+      result=await open().handle({operation:'advance',requestId:'retry-completion'});
+      assert.equal(result.code,'run_done',JSON.stringify(result));
+      rows=fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(rows.filter(row=>row.phase==='batch_member_blocked').length,0);
+      assert.equal(checkCalls.get('T-002'),3);
+      assert.deepEqual(calls,['T-001','T-002','T-003']);
+      return;
     }
     if(recovery&&options.crashAt){assert(interrupted);result=await open().handle({operation:'advance',requestId:'resume-recovery'});}
     if(recovery){

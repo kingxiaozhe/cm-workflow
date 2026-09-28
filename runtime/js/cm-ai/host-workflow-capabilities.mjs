@@ -6,6 +6,7 @@ import {createHostQaDecisionProvider} from './host-qa-policy.mjs';
 import {createHostQaExecutor} from './host-qa-executor.mjs';
 import {loadConfig} from '../../../scripts/cm-workflow-config.mjs';
 import {validateTestCases} from '../../../scripts/validate-test-cases.mjs';
+import {QA_ENVIRONMENT_CARRIERS} from './qa-environment.mjs';
 
 // Browser capability is a property of the launching session, not of the project.
 // The host cannot probe whether this session can drive a browser; it can only
@@ -26,10 +27,13 @@ export function featureHasBrowserCases(specsDir,feature,codeProject){
 }
 
 export function readBrowserCapability(value,applicable){
-  if(!applicable){need(value===undefined,'invalid_arguments');return null;}
-  need(value!==undefined,'browser_capability_required');
+  const carriers=Array.isArray(applicable)?[...new Set(applicable)].sort():applicable?['browser']:[];
+  need(carriers.every(carrier=>Object.values(QA_ENVIRONMENT_CARRIERS).some(values=>values.includes(carrier))),'invalid_arguments');
+  if(carriers.length===0){need(value===undefined,'invalid_arguments');return null;}
+  const reason=`--browser-qa available|unavailable declares whether this session can run interactive QA for carrier(s): ${carriers.join(', ')}.`;
+  if(value===undefined)throw Object.assign(new Error('browser_capability_required'),{code:'browser_capability_required',reason});
   need(['available','unavailable'].includes(value),'invalid_arguments');
-  need(value==='available','browser_capability_unavailable');
+  if(value!=='available')throw Object.assign(new Error('browser_capability_unavailable'),{code:'browser_capability_unavailable',reason});
   return 'available';
 }
 

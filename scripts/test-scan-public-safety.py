@@ -38,7 +38,7 @@ class PublicSafetyTests(unittest.TestCase):
                 )
             return subprocess.run(
                 [sys.executable, str(script)], cwd=root,
-                capture_output=True, text=True, check=False,
+                capture_output=True, text=True, encoding="utf-8", check=False,
             )
 
     def test_reviewed_loopback_literals_and_local_port_templates(self):

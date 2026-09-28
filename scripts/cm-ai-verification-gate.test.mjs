@@ -87,7 +87,8 @@ test('the batch driver decides retryability from the shared predicate', async ()
   const {default:fs}=await import('node:fs');
   const {developmentRetryable}=await import('../runtime/js/cm-ai/cm-ai-conversation-entry.mjs');
   const source=fs.readFileSync(new URL('./cm-ai-batch-run.mjs',import.meta.url),'utf8');
-  assert.match(source,/import \{developmentRetryable\}/);
+  assert.match(source,/import \{[^}]*\bdevelopmentRetryable\b[^}]*\} from '\.\.\/runtime\/js\/cm-ai\/cm-ai-conversation-entry\.mjs'/);
+  assert.match(source,/import \{[^}]*\bcompletionRetryable\b[^}]*\} from '\.\.\/runtime\/js\/cm-ai\/cm-ai-conversation-entry\.mjs'/);
   assert.match(source,/\|\|developmentRetryable\(status\)\)await call\('start'\)/);
   assert.equal(/status\.code==='developer_result_invalid'/.test(source),false,
     'batch driver still carries its own copy of the retryable code list');

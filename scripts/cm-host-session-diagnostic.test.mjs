@@ -3,6 +3,7 @@ import test from 'node:test';
 import {PassThrough} from 'node:stream';
 
 import {serveCmAiHost} from '../runtime/js/cm-ai/host-session.mjs';
+import {needPrd} from '../runtime/js/cm-prd/validation-reason.mjs';
 
 // Drives one request through the real JSONL transport and returns both channels.
 async function exchange(request,handle){
@@ -35,6 +36,15 @@ test('the failing operation is named so a strict field set can be told apart', a
     failing('invalid_input'));
   assert.equal(diagnostics[0].operation,'final_review_package');
   assert.equal(diagnostics[0].code,'invalid_input');
+});
+
+test('known PRD validation reason reaches operator diagnostics but not peer',async()=>{
+  const reason={field:'response.at',expected:'new Date().toISOString() form, e.g. 2026-09-08T00:00:00.000Z'};
+  const {replies,diagnostics}=await exchange({operation:'final_review',requestId:'r-prd'},()=>{
+    needPrd(false,'prd_review_timestamp_invalid',reason);
+  });
+  assert.deepEqual(replies,[{requestId:'r-prd',error:{code:'host_request_failed'}}]);
+  assert.deepEqual(diagnostics[0].reason,reason);
 });
 
 test('a success emits no diagnostic', async () => {

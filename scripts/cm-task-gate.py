@@ -245,7 +245,7 @@ def task_writer(reviews: Path, tasks: Path, feature: str) -> Iterator[Path]:
 
 def run_js(arguments: Sequence[str], *, environment: Mapping[str, str] | None = None, capture: bool = False):
     entry = Path(__file__).resolve().with_name("cm-task-gate.mjs")
-    return subprocess.run(["node", str(entry), *arguments], check=False, text=True, capture_output=capture, env=dict(environment) if environment is not None else None)
+    return subprocess.run(["node", str(entry), *arguments], check=False, text=True, encoding="utf-8", capture_output=capture, env=dict(environment) if environment is not None else None)
 
 
 def read_js_object(arguments: Sequence[str], *, environment: Mapping[str, str] | None = None) -> dict[str, object]:

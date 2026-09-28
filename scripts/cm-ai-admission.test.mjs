@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {parseFeatureTaskText,validDependencies} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
+import {parseFeatureTaskText,validDependencies,identifyApprovedBootstrapFeature} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {validateRunDefinition} from './cm-ai-run.mjs';
 
 const entry=fileURLToPath(new URL('./cm-ai-admission.mjs',import.meta.url));
@@ -37,6 +37,36 @@ test('product admission reports generic continuation without approving or writin
   assert.equal(result.status,0,result.stderr);assert.equal(JSON.parse(result.stdout).reason,'spec_approval_required');
   assert.deepEqual(fs.readFileSync(path.join(specs,'.cm-specs-status')),before);
   assert.equal(fs.readdirSync(root).length,2);
+}));
+
+test('spec approval accepts only normalized explicit start phrases',()=>fixture(({specs,code})=>{
+  fs.writeFileSync(path.join(specs,'.cm-specs-status'),JSON.stringify({status:'awaiting_review',features:['1.login'],testCases:[]}));
+  const run=reply=>{
+    const result=spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,'--approval-response',reply],{encoding:'utf8'});
+    assert.equal(result.status,0,result.stderr);return JSON.parse(result.stdout);
+  };
+  for(const reply of ['开始','开始吧','可以开始','确认开始','开始执行','现在开始',' 开始吧。 ','现在开始！  ','可以开始!.～~ ']){
+    const result=run(reply);assert.equal(result.approvalIntent,'explicit',reply);
+    assert.equal(result.reason,'approval_write_required',reply);
+  }
+  for(const reply of ['继续','可以','好','好的','OK','按最优解处理','你看着办','行','开始开发','开始吧，请继续']){
+    const result=run(reply);assert.equal(result.approvalIntent,'not_approval',reply);
+    assert.equal(result.reason,'spec_approval_required',reply);
+    assert.match(result.message,/回复.*开始/);
+  }
+}));
+test('approve writes only after a whitelisted reply and preserves the original reply',()=>fixture(({specs,code})=>{
+  const status=path.join(specs,'.cm-specs-status');
+  fs.writeFileSync(status,JSON.stringify({status:'awaiting_review',features:['1.login'],testCases:[]}));
+  const before=fs.readFileSync(status);
+  const invoke=reply=>spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,
+    '--approve','--approval-response',reply],{encoding:'utf8'});
+  const rejected=invoke('好的');assert.equal(rejected.status,1);
+  assert.equal(JSON.parse(rejected.stdout).approveRefused,'explicit_approval_required');
+  assert.deepEqual(fs.readFileSync(status),before);
+  const accepted=invoke('开始吧！');assert.equal(accepted.status,0,`stdout: ${accepted.stdout}\nstderr: ${accepted.stderr}`);
+  assert.equal(JSON.parse(accepted.stdout).state,'ready');
+  assert.equal(JSON.parse(fs.readFileSync(status,'utf8')).approval.response,'开始吧！');
 }));
 
 test('ready admission prints a directly valid run definition without writing the project',()=>fixture(({root,specs,code})=>{
@@ -93,6 +123,21 @@ function admission(specs,code,names,exitCode=0){
 }
 
 const threeTasks='- [x] T-001: first\n- [ ] T-002: second\n- [ ] T-003: third\n';
+
+test('approved bootstrap identity accepts numbered scaffold and rejects ambiguous candidates',()=>fixture(({specs,code})=>{
+  writeFeature(specs,'1.bootstrap','- [ ] T-001: 生成项目骨架 scaffold\n- [ ] T-002: 生成 AGENTS.md 和 .claude/ 规范\n');
+  fs.rmSync(path.join(specs,'1.login'),{recursive:true});
+  fs.rmSync(path.join(code,'README.md'));
+  assert.equal(identifyApprovedBootstrapFeature(['1.bootstrap']),'1.bootstrap');
+  assert.equal(identifyApprovedBootstrapFeature(['1.bootstrap-extra']),null);
+  assert.equal(admission(specs,code,['1.bootstrap']).nextTask.feature,'1.bootstrap');
+  assert.throws(()=>identifyApprovedBootstrapFeature(['0.bootstrap','1.bootstrap']),{code:'bootstrap_feature_ambiguous'});
+  assert.throws(()=>identifyApprovedBootstrapFeature(['1.bootstrap','2.bootstrap']),{code:'bootstrap_feature_ambiguous'});
+  for(const names of [['0.bootstrap','1.bootstrap'],['1.bootstrap','2.bootstrap']]){
+    for(const name of names)if(!fs.existsSync(path.join(specs,name)))writeFeature(specs,name,'- [ ] T-001: scaffold\n');
+    assert.equal(admission(specs,code,names,1).reason,'bootstrap_feature_ambiguous');
+  }
+}));
 
 test('dependency parser accepts sentence punctuation per ID and preserves internal ID characters',()=>{
   for(const suffix of ['。','．','.','；',';','、',' 。 ．.；;、 \t']){
@@ -184,4 +229,23 @@ test('parallel eligibility preserves nextTask and returns only dependency-ready 
   assert.equal(result.status,0,result.stderr);const admission=JSON.parse(result.stdout);
   assert.equal(admission.nextTask.id,'T-001');
   assert.deepEqual(admission.eligibleTasks,[{feature:'1.login',id:'T-001'},{feature:'1.login',id:'T-002'}]);
+}));
+
+test('explicit task prints only a dependency-ready member and binds selection in the definition',()=>fixture(({specs,code})=>{
+  fs.writeFileSync(path.join(specs,'1.login','tasks.md'),'- [ ] T-001: first\n- [ ] T-002: second\n- [ ] T-003: final\n\n- T-003 依赖 T-001, T-002\n');
+  fs.writeFileSync(path.join(specs,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.login']}));
+  const args=[entry,'--specs-dir',specs,'--code-project',code,'--print-run-definition','--scope','src/a.js'];
+  const chosen=spawnSync(process.execPath,[...args,'--task','T-002'],{encoding:'utf8'});
+  assert.equal(chosen.status,0,chosen.stderr);
+  const definition=JSON.parse(chosen.stdout);
+  assert.equal(definition.identity.taskId,'T-002');
+  assert.deepEqual(definition.taskSelection,{version:1,taskId:'T-002'});
+  assert.deepEqual(validateRunDefinition(definition),definition);
+  for(const task of ['T-003','T-999']){
+    const refused=spawnSync(process.execPath,[...args,'--task',task],{encoding:'utf8'});
+    assert.equal(refused.status,1,refused.stderr);assert.equal(JSON.parse(refused.stderr).error.code,'task_selection_mismatch');
+    assert.equal(refused.stdout,'');
+  }
+  const invalid=spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,'--task','T-002'],{encoding:'utf8'});
+  assert.equal(invalid.status,2);assert.match(invalid.stderr,/--print-run-definition/);
 }));

@@ -3,6 +3,7 @@
 // attempt and the registered V3 boundary; preflight is only local diagnostics.
 import fs from 'node:fs';
 import path from 'node:path';
+import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {REVIEWED_HANDOFF_HINT} from '../runtime/js/cm-ai/host-handoff.mjs';
 import {readRunDefinition,openControlRun,createCodexExecution} from './cm-ai-run.mjs';
@@ -21,6 +22,8 @@ export function withHandoffDiagnostic(host,error){
   return {...host,async handle(request){
     const result=await host.handle(request);
     if(result?.code==='handoff_exists')error.write(`[host] ${REVIEWED_HANDOFF_HINT}\n`);
+    if(['out_of_scope','check_output_out_of_scope'].includes(result?.code)&&typeof result.reason==='string')
+      error.write(`[host] ${result.reason}\n`);
     return result;
   }};
 }
@@ -37,7 +40,21 @@ const fixLocalPermissions=new Map(['red-test','baseline','regression','learning-
   'test-author','repair','cause-review','final-review']
   .map(name=>[`--allow-qa-fix-${name}`,`--allow-${name}`]));
 
-const usage='cm-ai-host.mjs serve --config RUN_DEFINITION.json --mode create|resume --host-context ID --allow-development [--original-host-context ID] [--runtime codex|claude] [--input-limit BYTES] [--failover] [--review-config PATH] [--allow-review-attempt 1|2] [--allow-abandon-review] [--workflow-config PATH] [--allow-qa] [--browser-qa available|unavailable]\nInput limit is transport-only: integer 65536-4194304 bytes, default 65536; it may change on resume. Review config is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 60000), independent of protected mode and outside the authorized configuration digest.\ncm-ai-host.mjs preflight --config RUN_DEFINITION.json --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
+const usage='cm-ai-host.mjs serve --config RUN_DEFINITION.json --mode create|resume --host-context ID --allow-development [--original-host-context ID] [--runtime codex|claude] [--input-limit BYTES] [--failover] [--review-config PATH] [--allow-review-attempt 1|2] [--allow-abandon-review] [--workflow-config PATH] [--allow-qa] [--browser-qa available|unavailable]\nInput limit is transport-only: integer 65536-4194304 bytes, default 65536; it may change on resume. Review config is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 900000), independent of protected mode and outside the authorized configuration digest. --browser-qa declares interactive QA capability for applicable carriers including browser and ios-simulator.\ncm-ai-host.mjs preflight --config RUN_DEFINITION.json --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
+
+export function formatClaudeModelHint(config,version=null){
+  const marker=config?.preflight?.request_checks?.find(check=>check?.model_recognized===false);
+  if(!marker)return null;
+  const model=marker.reported_model??config.model;
+  return `Model ${model} is not accepted by the installed Claude CLI${version?` (${version})`:''}. Try a family alias accepted by Claude CLI 2.1.x, for example claude-opus-5; this is not a list of available ids.`;
+}
+function claudeCliVersion(){
+  try{
+    const result=spawnSync('claude',['--version'],{encoding:'utf8',timeout:2000,maxBuffer:1024});
+    const value=result.status===0?result.stdout.trim():'';
+    return /^\d+\.\d+\.\d+ \(Claude Code\)$/.test(value)?value:null;
+  }catch{return null;}
+}
 
 export async function serveHostTransport(options,rawInputLimit,serve=serveCmAiHost){
   return serve({...options,inputLimit:parseHostInputLimit(rawInputLimit)});
@@ -135,11 +152,11 @@ function canResumeLegacyProtected(definition,runtime){
 }
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
-  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--original-host-context ID is resume-only: keep the creating session in durable configuration while --host-context remains the real live session. Equal IDs mean a same-session reopen. Parent conversation runs only; legacy protected runs, batch and QA-fix children are unchanged.\n');
-  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Approved 0.bootstrap only: --bootstrap-config PATH {selection:null for scaffold, or original cm-init selection for rules} and --allow-bootstrap-write. Original scope must include fixed instruction targets; they are host-written inside the original task effect, checked/reviewed and reloaded. No Git/install/network grant. Optional codeProjects selects disjoint real roots below codeProject; prefix scope/requirements and use protected current-session checks with a declared codeProject per command.\n');
-  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Protected current-session mode (Codex or Claude; also batch): --protected-conversation-config PATH with {checkCommands,timeoutMs}; timeoutMs bounds both check commands and the reviewer process. A review transport timeout with no result can resume once per attempt with fresh review authorization; a result-bearing timeout still requires reconciliation. No extra model call. The current host returns scoped UTF-8 edits; native Codex sandbox applies them and runs the declared checks. Original author runtime, per-attempt Review and QA permissions remain required. Do not combine with --protected-config. The input limit defaults to 64 KiB and may be raised with --input-limit; unavailable/binary changes stop, never switch to direct writes.\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--original-host-context ID is resume-only: keep the creating session in durable configuration while --host-context remains the real live session. Omit it for same-session resume; a different session must declare the creating session. Equal IDs are equivalent to omission. Parent conversation runs only; legacy protected runs, batch and QA-fix children are unchanged.\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Approved bootstrap feature (0.bootstrap or a single numbered *.bootstrap): --bootstrap-config PATH {selection:null for scaffold, or original cm-init selection for rules} and --allow-bootstrap-write. Original scope must include fixed instruction targets; they are host-written inside the original task effect, checked/reviewed and reloaded. No Git/install/network grant. Optional codeProjects selects disjoint real roots below codeProject; prefix scope/requirements and use protected current-session checks with a declared codeProject per command.\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Protected current-session mode (Codex or Claude; also batch): --protected-conversation-config PATH with {checkCommands,timeoutMs}; timeoutMs bounds check commands and is the reviewer budget only when review-config has no timeoutMs. A review transport timeout with no result can resume once per attempt with fresh review authorization; a result-bearing timeout still requires reconciliation. No extra model call. The current host returns scoped UTF-8 edits; native Codex sandbox applies them and runs the declared checks. Original author runtime, per-attempt Review and QA permissions remain required. Do not combine with --protected-config. The input limit defaults to 64 KiB and may be raised with --input-limit; unavailable/binary changes stop, never switch to direct writes.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Protected single-task CLI mode: add --protected-config PATH --allow-provider-development-attempt 1|2 and --review-config PATH. Protected config is {model,checkCommands,timeoutMs}; roots and host identity come from the original run definition and launch. This explicitly permits one task attempt of real developer execution and its declared native-sandbox checks; --allow-development alone does not. Review separately requires --allow-review-attempt 1|2. Diagnostics are required but are not review authorization. Optional original --workflow-config PATH and --allow-qa connect protected QA commands and documentation within the same developer invocation before Review; host semantic/browser/inspection requests retain their original contracts, not arbitrary writes. Default current-session mode is unchanged. Protected parent mode selects coder/reviewer CLIs from the project declaration; Claude returns protected-text-v1 proposals for host validation and sandbox application; original QA-fix options require child configuration.protectSpecs=true and all original child action permissions. Protected fix writes use text proposals, not direct host edits. The original QA/documentation/finalizer gates remain required. No installation or Git authority.\n');
-  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--browser-qa is required when the approved contract for this feature contains blocking browser cases or policy-enabled browser cases and QA is enabled, and must not be given otherwise. It is a declaration by the launching session, not a probe: the host cannot verify that this session can drive a browser. The gate applies to create and resume alike, so every launch must assert it again; the assertion is not persisted, because a stored assertion would only repeat the claim made by whichever session wrote it. unavailable refuses to start; either launch from a browser-capable session or remove browser cases from the approved contract.\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--browser-qa is required when the approved contract for this feature contains blocking or policy-enabled interactive QA cases and QA is enabled. It covers the declared carrier (browser, ios-simulator, and others); the flag name is retained for compatibility. It is a declaration by the launching session, not a probe. The gate applies to create and resume, and is not persisted. unavailable refuses to start.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--revise-qa-config PREVIOUS_WORKFLOW.json --qa-config-revision-reason REASON: 仅 resume 且 --allow-qa；核对旧配置后追加 QA 修订，旧 QA 作废留史，下一轮仍受三轮上限约束。未知 QA 须先处理；不能修改开发配置或重开 N5。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--auto-qa-fix optionally connects parent advance -> fix_run -> re-QA. Requires --qa-fix-template-config, --allow-qa-fix-start, original action permissions and project policies.auto_fix=auto. Explicit/never policies stop. Unknown, blocked or incomplete repair stops; status/cancel remain available and no fourth QA round is dispatched.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--qa-fix-template-config PATH is an alternative to --qa-fix-owner-config. Supply {specsRoot, feature, identity: parent identity, configuration: original fix configuration without qaSource}. Each fix request binds it to the latest completed QA failure; identity/digests are generated, commands/scope/permissions are not. Existing child configuration remains immutable.\n');
@@ -153,7 +170,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--rerun-unknown-qa requires --mode resume and fresh --allow-qa with the original workflow config. Only an unfinished QA invocation whose recorded case results are all PASS and which has no fixed execution report may be abandoned and rerun under a new testRunId at the same qaRound. The abandoned record lists partial_pass_cases; every case is rerun and old PASS evidence is history only. FAIL/BLOCKED results and unclosed resources remain blocked; no complete is fabricated.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--rerun-blocked-qa requires --mode resume, the original --workflow-config and fresh --allow-qa. Only the latest completed BLOCKED invocation with zero failures and exclusively host/environment evidence gaps can be superseded: browser evidenceProblem, failed cleanup, environment mismatch or host timeout; logic INSUFFICIENT_EVIDENCE. Commands BLOCKED and source drift are excluded. A new testRunId reruns every case at qaRound+1 (maximum 3); superseded and start link previous_test_run_id. The flag is consumed once, never persisted; no development/Review/task replay or new QA decision. Do not combine with --rerun-unknown-qa.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--allow-abandon-review: resume 原 run 后发送 abandon_review，request.reason 必须是单行且不超过 500 UTF-8 字节。操作员先确认旧 host 与 review 进程已退出；旗标只消费一次，不写入配置。\n');
-  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--supersede-reviewed-evidence --supersede-reason REASON：仅新建同任务运行；旧运行都已终止且 tasks.md 未勾选时，先在新 journal 记授权，再归档旧审查证据。\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--supersede-reviewed-evidence --supersede-reason REASON：仅新建同任务运行；旧运行都已终止且 tasks.md 未勾选时，先在新 journal 记授权，再归档旧审查证据。若保留直接前驱运行留下的代码漂移，可额外使用 --accept-superseded-code-drift；漂移文件会作为新运行的已有代码并记录当前 SHA-256。\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('当前会话手动驱动请用 scripts/cm-ai-drive.mjs（批次 cm-ai-batch-drive.mjs；修复 cm-fix-drive.mjs；规格 cm-prd-drive.mjs）；详情见 skills/cm-ai/references/js-host.md。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\n');return 0;}
   let run,bridge;
   try{
@@ -164,20 +182,24 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       need(['codex','claude'].includes(runtime),'invalid_runtime');
       const definition=readRunDefinition(argv[2]);
       const config=await runReviewPreflight(definition,{model:argv[4],runtime});
-      output.write(JSON.stringify(config)+'\n');return config.preflight.passed?0:1;
+      output.write(JSON.stringify({...config,timeoutMs:900000})+'\n');
+      if(runtime==='claude'){
+        const hint=formatClaudeModelHint(config,claudeCliVersion());if(hint)error.write(hint+'\n');
+      }
+      return config.preflight.passed?0:1;
     }
     need(argv.length>=8&&argv[0]==='serve'&&argv[1]==='--config'&&argv[3]==='--mode'
       &&argv[5]==='--host-context'&&argv[7]==='--allow-development','host_launch_authorization_required');
     const extra=new Map();
     for(let index=8;index<argv.length;index++){
       const name=argv[index];need(!extra.has(name),'invalid_arguments');
-      need(['--revise-qa-config','--qa-config-revision-reason','--supersede-reviewed-evidence','--supersede-reason','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--allow-abandon-review','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments');
-      if(['--supersede-reviewed-evidence','--allow-bootstrap-write','--allow-qa','--allow-abandon-review','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
+      need(['--revise-qa-config','--qa-config-revision-reason','--supersede-reviewed-evidence','--supersede-reason','--accept-superseded-code-drift','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--allow-abandon-review','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments');
+      if(['--supersede-reviewed-evidence','--accept-superseded-code-drift','--allow-bootstrap-write','--allow-qa','--allow-abandon-review','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
       else{need(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments');extra.set(name,argv[++index]);}
     }
     parseHostInputLimit(extra.get('--input-limit'));
     const revisionRequested=extra.has('--revise-qa-config')||extra.has('--qa-config-revision-reason');
-    need(!extra.has('--supersede-reviewed-evidence')&&!extra.has('--supersede-reason')
+    need(!extra.has('--supersede-reviewed-evidence')&&!extra.has('--supersede-reason')&&!extra.has('--accept-superseded-code-drift')
       ||(argv[4]==='create'&&extra.has('--supersede-reviewed-evidence')&&extra.has('--supersede-reason')),
     'supersede_unavailable');
     need(!revisionRequested||(argv[4]==='resume'&&extra.has('--allow-qa')&&extra.has('--revise-qa-config')
@@ -212,7 +234,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     // Launch-time capability assertion. See host-workflow-capabilities: this is a
     // fresh declaration, not a probe the host performs.
     readBrowserCapability(extra.get('--browser-qa'),
-      workflow?.qa!=null&&featureHasBrowserCases(definition.specsDir,definition.feature,definition.codeProject));
+      workflow?.qa!=null&&featureHasBrowserCases(definition.specsDir,definition.feature,definition.codeProject)
+        ?[workflow.qa.environment?.carrier??'browser']:[]);
     bridge=createHostToolBridge();
     // Startup-only role failover. The project's runtimes.available declaration is
     // primary: it fixes which runtimes may be chosen and, via roles.coder, the
@@ -244,7 +267,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     if(argv[4]==='resume'&&!extra.has('--original-host-context')&&extra.has('--protected-config')&&canResumeLegacyProtected(definition,runtime)){
       try{
         execution=await legacyProtectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap);
-        run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),supersedeReason:extra.get('--supersede-reason')??null,allowAbandonReview:extra.has('--allow-abandon-review')});
+        run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:extra.has('--allow-abandon-review')});
         error.write('cm-ai-host: resumed original Codex protected execution after exact fingerprint validation.\n');
       }catch(cause){
         if(!['fingerprint_mismatch','tool_preflight_missing'].includes(cause.code))throw cause;
@@ -256,7 +279,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap)
         :executionFor(definition,argv[6],bridge,review,allowedAttempt,workflow,extra.has('--allow-qa'),runtime,
           {...(extra.has('--original-host-context')?{originalHostContextId:extra.get('--original-host-context')}:{}),...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{})});
-      run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),supersedeReason:extra.get('--supersede-reason')??null,allowAbandonReview:extra.has('--allow-abandon-review')});
+      run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:extra.has('--allow-abandon-review')});
     }
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}
     if(hasFix){
@@ -290,7 +313,10 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
   }catch(cause){
     const code=typeof cause?.code==='string'&&(/^[a-z][a-z0-9_]{0,63}$/.test(cause.code)
       ||cause.code.startsWith('invalid_config: '))?cause.code:'host_launch_failed';
-    error.write(JSON.stringify({error:{code,...(code==='supersede_unavailable'&&typeof cause.reason==='string'?{reason:cause.reason}:{})}})+'\n');return 1;
+    if(code==='handoff_exists')error.write(`[host] ${REVIEWED_HANDOFF_HINT}\n`);
+    if(code==='supersede_code_drift'&&typeof cause.reason==='string')error.write(`[host] ${cause.reason}\n`);
+    error.write(JSON.stringify({error:{code,...(['supersede_unavailable','supersede_code_drift','handoff_exists','browser_capability_required','browser_capability_unavailable'].includes(code)
+      &&typeof cause.reason==='string'?{reason:cause.reason}:{})}})+'\n');return 1;
   }finally{bridge?.close();run?.close();}
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))process.exitCode=await main();

@@ -259,7 +259,7 @@ test(`C2b rejects ${bad} before intent`,()=>fixture(f=>{
   if(bad==='handoff')fs.writeFileSync(v.selectors.handoff,'invalid');
   if(bad==='code')fs.writeFileSync(path.join(f.root,'a.js'),'unreviewed');
   if(bad==='requirements')fs.writeFileSync(path.join(f.root,'requirements.md'),'changed');
-  if(bad==='checks')v.checks[0].evidence='different check run';
+  if(bad==='checks')v.checks[0].exitCode=1;
   if(bad==='receipt')v.receipt.result.verdict='blocked';
   if(bad==='execution')v.execution.contextId='forged';
   if(bad==='registered')v.registered=null;
@@ -272,6 +272,11 @@ test(`C2b rejects ${bad} before intent`,()=>fixture(f=>{
   const before=fs.readFileSync(f.tasksPath);
   assert.throws(()=>commitFixtureTask(f.store,v));assert.equal(f.store.snapshot().records.length,0);
   assert.deepEqual(fs.readFileSync(f.tasksPath),before);assert(!fs.readdirSync(f.dir).some(n=>n.startsWith('.cm-task.')));
+}));
+
+test('C2b accepts changed check evidence when identity and result are unchanged',()=>fixture(f=>{
+  const v=structuredClone(f.input);v.checks[0].evidence='different check summary';
+  assert.equal(commitFixtureTask(f.store,v).outcome,'fixture_committed');
 }));
 
 test('C2b exact genuine owner required before reading caller input',()=>{

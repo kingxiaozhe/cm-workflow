@@ -1,17 +1,28 @@
 # 当前会话作为 JS workflow 工具宿主
 
-## 单步驾驶员
+规格待审批时先展示摘要卡并请用户回复“开始”。`approvalIntent` 仅把“开始”“开始吧”
+“可以开始”“确认开始”“开始执行”“现在开始”（允许尾部中英文句末标点与空白）视为
+明确开始；“继续”“可以”“好”“好的”“OK”“按最优解处理”“你看着办”“行”仍不审批。
+`not_approval` 时提示明确回复“开始”；写审批位仍须原 `--approve` 门禁。
 
-仓库自带 `../../../scripts/cm-ai-drive.mjs`，一次启动宿主、发送一个 operation、回答这一轮的反问并打印结果：
+## 当前会话手动驱动：用驱动脚本，不要自己搭 FIFO
+
+单任务用 `cm-ai-drive.mjs`，批次用 `cm-ai-batch-drive.mjs`；修复用 `cm-fix-drive.mjs`，规格编写用 `cm-prd-drive.mjs`。它们负责保持宿主 stdin、应答反问并按 callId 配对结果，无需后台保活 FIFO。`cm-ai`、批次和 `cm-prd` 驱动的 `--help` 列出计划字段；单任务最小调用：
 
 ```bash
 node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 ```
 
+先按下节准备计划及真实答案文件。计划中的 `checks` 须为实际可执行的命令；驱动不接受静态检查结果代替执行。
+
+## 单步驾驶员
+
+仓库自带 `../../../scripts/cm-ai-drive.mjs`，按上例一次启动宿主、发送一个 operation、回答这一轮的反问并打印结果。
+
 `PLAN.json` 与 cm-fix 驾驶员一样，以自身目录解析相对路径；填写 `config`（已批准的运行定义）、
 `mode`、当前真实 `hostContext`、`runtime`、原样传给宿主的 `permissions`、`answers` 和
-`checks: [{"id":"syntax","command":["node","--check","target.mjs"]}]`。换会话恢复还要填
-`originalHostContext`，且运行存档必须已存在。第 1 轮开发结果放 `answers/develop.json`（也可用
+`checks: [{"id":"syntax","command":["node","--check","target.mjs"]}]`。同会话恢复可省略
+`originalHostContext`；换会话恢复必须填创建运行的会话 ID，且运行存档必须已存在。第 1 轮开发结果放 `answers/develop.json`（也可用
 `develop-a1.json`，两者不能同时存在）；第 2 轮只读 `answers/develop-a2.json`，绝不复用第 1 轮答案。
 `edits` 把批准 scope 内路径映射到答案目录里的 UTF-8 内容文件。初次 `create` 或恢复到
 `ready` 第 1 轮时，若 `advance` 同时带 `--allow-review-attempt 1`，审查后可能直接进入第 2 轮开发；
@@ -26,13 +37,15 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 `advance`。其余人工文件为
 `qa-assess.json`、`documentation-inspect.json`、`documentation-sync.json`；QA 修复子运行沿用
 cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edits.json` 和
-`retrospective.json`。缺答案、结构错误、路径或存档无效会在启动宿主前退出 2。
+`retrospective.json`；修订轮的测试和修复分别读取 `test-edits-a2.json`、`repair-edits-a2.json`。
+缺答案、结构错误、路径或存档无效会在启动宿主前退出 2。
 
 当单次 `develop` 回答超过默认 64 KiB 时，在单任务或批次 `PLAN.permissions` 传
 `["--input-limit","1048576"]`；上限为 4 MiB（4194304 字节）。这是宿主输入传输限额，
 不改变运行定义或恢复指纹；恢复时可调整。
 
 `check` 只运行计划里的真实命令；原始输出打印到驾驶员 stderr，宿主只保存实际退出码和精简证据；静态 `check.json` 不会被读取。
+独立审查批准后，完成前会再次运行相同检查。`evidence` 摘要文字变化且检查 `id/command/outcome/exitCode` 不变时可完成；代码、handoff 或检查身份漂移为终态 `blocked/package_mismatch`，越界 scope/需求漂移保持 `blocked/out_of_scope`。仅 `outcome/exitCode` 变化时为可恢复的 `blocked/completion_checks_changed`：先修好检查环境，再用原 runId、原配置 `--mode resume` 执行 `advance`（或 `complete`）；新 complete effect id 重跑检查，原 Review 回执与 packageDigest 不变，不新开 run 或重审。旧 journal 按原格式回放，重试仍受 effect 上限约束。
 `qa_logic`、`qa_browser`、`verification_precheck` 没有可信本地 runner。单步驾驶员对本任务完成后适用的 logic case 预检 `qa_logic`，包括已被 QA 命令 `caseIds` 覆盖的 case（当前 executor 仍会请求）；只对适用、`expected` 不含 `[需确认]` 的 browser case 预检 `qa_browser`。预测需要 runner 时仍在发送前拒绝，`verification_precheck` 规则不变。
 本次适用的用例里有 logic 类（或无 `[需确认]` 的 browser 类）时，驾驶员完成不了这一步 QA：由当前 AI 会话以 `serve` 启动宿主，按 N6 与 cm-qa-engineer 应答 `qa_assess`，以及宿主实际问到的 `qa_logic` 或 `qa_browser`；拿不到浏览器证据时 `qa_browser` 如实回 BLOCKED，不能省略不答。即使 logic case 已被 QA 命令覆盖也不能跳过这一问：静态判断为 `CONTRADICTED` 时，除非另有阻断条件（`[需确认]`、宿主请求超时或源码漂移会改判为 BLOCKED），该用例判失败，哪怕命令全部通过。
 受保护执行由原宿主处理检查；驾驶员不把人工填写的结果冒充执行证据。一次 `advance` 可能走过多个阶段，
@@ -66,10 +79,10 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
    runtime，恢复不得换端或冒用旧会话。Codex单任务同仓specs可显式选择下文受保护模式；
    当前Codex/Claude及批次同仓用下文文本提案模式；未选择保护的同仓仍阻断。不搬动specs或删除保护检查；工具会话不是OS沙箱。
 3. 从已批准任务确定 scope、requirements 和顺序；不跳过未解决的 bootstrap 确认或依赖。
-   单代码根用 `cm-ai-admission.mjs --print-run-definition --scope ...` 生成运行定义，不要手写；`--scope` 必填（相对代码根、逗号分隔），`--requirements` 可选；完整命令见产品文档。
+   单代码根用 `cm-ai-admission.mjs --print-run-definition --scope ...` 生成运行定义，不要手写；`--scope` 必填（相对代码根、逗号分隔），`--requirements` 可选。需要跳过当前 `nextTask` 时可加 `--task T-xxx`，仅接受同 feature 的 `eligibleTasks`，选择会写入运行定义并绑定恢复指纹；完整命令见产品文档。
    单任务用 `cm-ai-host.mjs`；多任务用 `cm-ai-batch-host.mjs` 的原 batch/workflows 配置。
    任务列表只包含该运行计划内的任务；恢复必须使用原身份、配置和真实当前会话身份，
-   单任务换会话恢复用 `--mode resume --host-context {当前真实会话ID} --original-host-context {创建运行的会话ID}`；
+   单任务同会话恢复可只用 `--mode resume --host-context {当前真实会话ID}`；换会话恢复用 `--mode resume --host-context {当前真实会话ID} --original-host-context {创建运行的会话ID}`；
    两个 ID 相同等同未传新参数，create 传它报 `original_host_context_unavailable`。不能冒用旧 host-context。
    原配置指纹和 init 元数据仍绑定创建会话，旧记录不改；开发结果和审查授权使用当前真实会话。
    新会话首次签审查授权前追加 `host-joined`，仅打开或 status 不写；创建会话、已加入会话和当前会话
@@ -112,7 +125,7 @@ Review 头或完成记录；provider 身份由原 adapter/V3 绑定，失败不�
 `preflight --config {该代码根的单任务配置} --review-model {已选择模型} --runtime {当前端}`。
 即使后续执行批次，诊断仍用同一代码根的单任务配置，不把 batch/workflows 配置传给该命令。
 诊断输出直接作为 review-config 输入，不手造或修补 `passed`/指纹；失败则保留原因。
-Claude CLI 报 `unrecognized_model` 时 preflight 会失败；`--review-model` 须为已安装 CLI 接受的模型 id（如 CLI 2.1.x 的 `claude-opus-5`）。
+Claude CLI 报 `unrecognized_model` 时 preflight 会失败并在 stderr 指明被拒 id、可用的家族别名示例（如 CLI 2.1.x 的 `claude-opus-5`），可快速取得时也打印 CLI 版本；示例不是完整模型清单。
 Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终止，不发送工作流 cancel。
 本机配置诊断通过不证明模型可用、Review 协议成功或用户已批准外发；真实审查仍须第5项授权。
 不带对应 `--allow-review-attempt`（单任务）或 `--allow-review feature/task:attempt`（批次）
@@ -121,7 +134,8 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 ## Codex 单任务：显式受保护执行
 
 不新增模型调用的方案：单任务和批次均可传`--protected-conversation-config {文件}`，配置固定为
-`{checkCommands,timeoutMs}`，命令须已获准；`timeoutMs` 同时约束检查命令与 Codex/Claude 审查进程。
+`{checkCommands,timeoutMs}`，命令须已获准；检查命令用此预算，独立审查默认 900000 毫秒（15 分钟），可在 review-config 中单独覆盖，范围 1–3600000。preflight 输出有效 `timeoutMs`；此预算不进入授权配置摘要，旧运行可用原 runId 恢复。
+需要模拟器、真机或系统服务的 iOS 项目（CoreSimulatorService、Xcode UI tests、Keychain 等），应将 specs 与代码分根，并选用有系统访问能力的当前会话宿主路径执行检查；实际检查进程必须在 Codex 原生沙箱外。仅改变目录或改用驱动脚本不会让沙箱内检查获得这些服务。同仓 specs 的受保护检查仍在 Codex 沙箱内，典型症状是模拟器不可用、UI tests 无法启动，SwiftPM 的 `swift build` 需要 `--disable-sandbox`；不要把这种失败记成产品测试通过。检查命令的构建产物放在代码根外，例如 `xcodebuild -derivedDataPath {代码根外的目录}`。检查自己新增的范围外未跟踪文件使原 run 进入 `blocked/check_output_out_of_scope`，状态原因和 stderr 列出最多 20 个相对路径；操作员清理产物后在原 run 重试。开发者造成的范围外改动仍是 `unknown/out_of_scope`，不得据此放宽 scope。
 审查传输超时且没有结果事件时，记录 `pending_review/review_transport_timeout`，可用 `--mode resume` 后 advance，
 同一 attempt 最多重派一次，重新取得 Review 授权、grant 与 invocation；第二次超时为 `blocked/review_transport_timeout`。
 已有最终消息（即使截断）的超时仍需 reconcile，旧 unknown 历史不自动改类。兼容Codex/Claude当前会话，保留原runtime与Review授权。
@@ -213,7 +227,7 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
 
 ### 已审交接后的任务重跑
 
-同名 handoff 已被审查回执消费时，宿主保留 `handoff_exists`，blocked 结果的 `reason` 与 `[host]` 诊断会提示两个出口：QA 配置错误用上述 `--revise-qa-config` 恢复原运行；宿主或环境证据不足用 `--rerun-blocked-qa` 恢复原运行。确需重新开发同一任务时，使用新的 runId 和下列显式授权：
+同名 handoff 已被审查回执消费时，新运行在创建 store 和开发前就拒绝 `handoff_exists`，错误的 `reason` 保留恢复提示。QA 配置错误用上述 `--revise-qa-config` 恢复原运行；宿主或环境证据不足用 `--rerun-blocked-qa` 恢复原运行。确需重新开发同一任务时，使用新的 runId 和下列显式授权：
 
 ```bash
 node scripts/cm-ai-host.mjs serve --config run-new.json --mode create \
@@ -223,7 +237,9 @@ node scripts/cm-ai-host.mjs serve --config run-new.json --mode create \
 
 原因必须为单行、非空、最多 500 UTF-8 字节。N5 会在 N6 前把任务勾为 `[x]`：若 QA BLOCKED 后确需重新开发，先在 `tasks.md` 将该任务改回 `- [ ]`，再用新 runId 和上述两个旗标创建运行；仍可恢复原 QA 时优先走原运行。只接受同 feature、task 的新运行：`tasks.md` 未勾选该任务，且每个旧运行的 V3 journal 已是无在途操作的 blocked、cancelled、unknown，或 fixture_completed 且 QA 为 BLOCKED／尚未结束；旧 writer 仍被进程持有也拒绝。已完成或仍可继续的旧运行、没有旧运行或可归档文件同样拒绝。旧运行的 journal 不改写、不以新运行身份重开。
 
-使用 `cm-ai-drive.mjs` 时，将这两个参数放入新运行 PLAN 的 `permissions`；缺少其中一个或 `mode: "resume"` 时，驾驶员在启动宿主前拒绝。
+创建新 journal 和捕获新基线前，只把当前代码树与尚未被其他旧运行替代的直接前驱运行的 V2 开工基线逐文件比对，包含未选中文件及新增、删除路径；所有旧运行仍进入 `previousRunIds` 和归档。差异返回 `supersede_code_drift`，`reason` 和 `[host]` stderr 最多列出 20 个路径及其余数量。操作员可手动还原这些文件后重建运行；或确认保留这些改动时，在上述两个旗标之外加 `--accept-superseded-code-drift` 重建（这些文件会被当成已有代码，不进新运行的审查改动）。接受时新运行的 `evidence-superseded` 记录存下每个漂移路径、当前 SHA-256（删除时为 `null`）及被比较的前驱 runId。该旗标仅限新建运行，不默认启用。检测只读代码根，不跟随越界软链接；无法安全读取时即使带旗标也拒绝。没有可用逐文件基线的旧 journal 跳过此检测，不改写历史记录。
+
+使用 `cm-ai-drive.mjs` 时，将两个必需参数放入新运行 PLAN 的 `permissions`；接受代码漂移时再加入 `--accept-superseded-code-drift`。缺少必需参数、单独使用接受旗标或 `mode: "resume"` 时，驾驶员在启动宿主前拒绝。
 
 新运行先在自己的 journal 追加 `evidence-superseded`，绑定原因、旧 runId、文件名和 SHA-256，然后用先硬链接再解除原链接的方式把该任务同名 handoff、review 及具名 correction／QA 文件移至 `.reviews/.superseded/{原文件名}.{摘要前16位}`，并写 `supersede` 运行日志。归档中断后以同一新 runId 执行 `resume` 会按记录补齐；未用此旗标的运行不增加记录或改动旧证据。历史 QA 的 UUID 报告仍由旧 runId 日志引用，保持原位。新 handoff 和 review 使用原文件名，旧证据只在归档中留史。
 
@@ -243,11 +259,12 @@ QA命令复用同一specs只读沙箱。最终任务的documentationPaths必须�
 只用已声明真实根；protected-conversation-config的每条检查及workflow QA命令增加codeProject绑定实际cwd，
 每根至少一条检查。读取develop的codeProjects/projectInstructions，返回前缀路径提案；原同一任务统一审查和完成，不自行拆任务。
 
-0.bootstrap按原骨架→规范任务顺序。单任务bootstrap-config为`{selection:null}`或原cm-init选择；
+已批准bootstrap feature优先用`0.bootstrap`；否则仅接受唯一一个数字前缀后slug恰为`bootstrap`的feature（如`1.bootstrap`）。
+多个候选以`bootstrap_feature_ambiguous`拒绝。按原骨架→规范任务顺序。单任务bootstrap-config为`{selection:null}`或原cm-init选择；
 批次bootstraps映射到具体feature/task，另传allow-bootstrap-write。原任务批准和逐轮独立Review不能省略。
 先按产品文档配置完整固定规范scope；requirements可为空数组；bootstrap原有批准specs需求/设计纳入逻辑保持不变。
 init_generate复用原cm-init生成合同；init_verify五组检查加constraintChanges/application/retrospective，详情以产品文档为准。
-宿主不自行落指令文件：JS固定写入、读回、同次handoff/Review、N7重载。原规则冲突、未知或漂移保留证据，不覆盖或重派。
+宿主不自行落指令文件：JS固定写入、读回、同次handoff/Review、N7重载。T-001 Learning先写入AGENTS.md时，规范草稿须保留其他既有约束原文；JS把已有`## 项目教训`段原字节合入最终草稿，再校验、写入和审查。草稿改写既有教训或丢弃其他既有内容则阻断。原规则冲突、未知或漂移保留证据，不覆盖或重派。
 
 用当前会话可交互的进程工具启动 CLI 并保留会话句柄。收到 `host_ready` 后按文档发送
 `advance`；批次控制消息不带子任务 identity，单任务按原合同携带 identity。

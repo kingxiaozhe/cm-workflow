@@ -1,5 +1,6 @@
 // JSONL transport only. The existing host/runner owns decisions and durable state.
 import {executionDiagnostic,need} from './effect-contract.mjs';
+import {diagnosticReason} from './diagnostic-reason.mjs';
 
 const LIMIT=64*1024;
 export function parseHostInputLimit(raw){
@@ -22,8 +23,9 @@ const operationNames=new Set(['replace_inputs','read_batch','recover_final_revie
 function reportRequestFailure(errorOutput,operation,error){
   try{
     const detail=executionDiagnostic(error);
+    const reason=diagnosticReason(error);
     errorOutput.write(JSON.stringify({diagnostic:'host_request_failed',operation,
-      ...(detail??{detail:'unavailable'})})+'\n');
+      ...(detail??{detail:'unavailable'}),...(reason?{reason}:{})})+'\n');
   }catch{/* diagnostics never change the reply */}
 }
 

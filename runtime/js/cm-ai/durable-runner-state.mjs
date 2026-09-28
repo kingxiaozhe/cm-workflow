@@ -13,6 +13,7 @@ import {reviewExclusions} from './effect-contract.mjs';
 import {validateAcceptedFix} from './accepted-fix.mjs';
 import {readBootstrapEvidence,validateBootstrapReviewPackage} from './host-bootstrap.mjs';
 import {validateCodeProjectPaths,assertCodeProjectSelections} from './code-projects.mjs';
+import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 
 const LIMIT=16*1024*1024;
 export const MAX_AI_JOINED_HOSTS=16;
@@ -21,8 +22,9 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed'].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope'].includes(code)
   ||kind==='review'&&state==='pending_review'&&['review_transport_timeout','review_abandoned'].includes(code)
+  ||kind==='complete'&&state==='blocked'&&code==='completion_checks_changed'
   ||({develop:['ready','changes_requested'],review:['awaiting_review'],complete:['approved']})[kind]?.includes(state)===true;
 // Local rejected values keep audit records but do not consume provider rounds.
 export const invalidDeveloperCall=call=>call.terminal==='failed'&&call.failureResult?.code==='invalid_result'&&call.failureResult.retryable===true;
@@ -37,13 +39,13 @@ export const reviewTimeoutTransition=(result,cache,attempt,calls=[],contextId=nu
     ||calls.some(call=>call.terminal==='abandoned'&&call.contextId===contextId)?'blocked':'pending_review',
   code:'review_transport_timeout'}:null;
 export const completedEffectCount=cache=>cache.filter(entry=>!(entry.effect.kind==='develop'
-  &&entry.result.state==='blocked'&&entry.result.code==='developer_result_invalid')&&!timeoutEffect(entry)).length;
+  &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))&&!timeoutEffect(entry)).length;
 export function validateTaskLearningReviewPackage(rawPackage,writeback,learningInput,bootstrap=null,configuration=null) {
   validTaskLearningInput(learningInput,learningInput.identity,learningInput.feature);
   const reviewPackage=readReviewPackage(rawPackage);
   const agents=reviewPackage.changes.find(change=>change.path==='AGENTS.md')??null;
   if(bootstrap!==null){
-    need(configuration?.mode==='instructions'&&learningInput.feature==='0.bootstrap','runner_learning');
+    need(configuration?.mode==='instructions'&&learningInput.feature===configuration.feature,'runner_learning');
     validateBootstrapReviewPackage(reviewPackage,bootstrap,configuration,learningInput.identity,writeback);
     if(writeback.outcome==='no_new_lesson'||writeback.outcome==='deduplicated')return true;
   }
@@ -73,7 +75,7 @@ export function initialRunnerState(config,session,version=1) {
     ...(Object.hasOwn(config,'taskLearning')?{learningResult:null}:{})};
 }
 export function runnerStatus(s,config) {
-  return json({state:s.state,code:s.code,identity:{...config.identity,attempt:s.attempt},packageDigest:s.reviewPackage?.packageDigest??null,
+  return json({state:s.state,code:s.code,...(s.reason?{reason:s.reason}:{}),identity:{...config.identity,attempt:s.attempt},packageDigest:s.reviewPackage?.packageDigest??null,
     receipt:s.receipt,receipts:s.receipts,calls:s.calls,cancelAfterCommit:s.cancelAfterCommit,workflowError:s.workflowError,cancellationRequested:s.cancellationRequested,
     ...(Object.hasOwn(s,'taskCommit')?{taskCommit:s.taskCommit}:{}),
     ...(Object.hasOwn(s,'reviewInvocation')?{reviewInvocation:s.reviewInvocation}:{}),
@@ -84,9 +86,9 @@ export function controlledState(state,event,outstanding,version=1) {
   const unresolvedReview=version===3&&s.reviewInvocation?.result?.reconciliationRequired===true
     &&s.reviewInvocation.registration?.grant?.identity?.attempt===s.attempt;
   if(event==='workflow-error') {s.workflowError='workflow_error';if(!outstanding && s.state!=='fixture_completed'
-    && !(s.state==='unknown'&&(version>=2&&s.taskCommit||unresolvedReview))){s.state='blocked';s.code='workflow_error';}}
+    && !(s.state==='unknown'&&(version>=2&&s.taskCommit||unresolvedReview))){s.state='blocked';s.code='workflow_error';if(Object.hasOwn(s,'reason'))s.reason=null;}}
   else if(event==='late-cancel'){s.cancelAfterCommit=true;s.cancellationRequested=true;}
-  else if(event==='cancel') {if(!['blocked','unknown','cancelled','fixture_completed'].includes(s.state)){s.state='cancelled';s.code='cancelled';s.cancellationRequested=true;}}
+  else if(event==='cancel') {if(!['blocked','unknown','cancelled','fixture_completed'].includes(s.state)){s.state='cancelled';s.code='cancelled';if(Object.hasOwn(s,'reason'))s.reason=null;s.cancellationRequested=true;}}
   else need(false,'runner_control');
   return s;
 }
@@ -104,7 +106,7 @@ function packageLink(pkg,original,attempt,checks) {
   same(p.specification??null,b.specification??null);
   same(p.requirements,b.requirements.map(path=>files.get(path)??null));
   same(p.codeProjectPaths??null,b.codeProjectPaths??null);
-  if(Object.hasOwn(b,'bootstrapRequirements'))same(p.bootstrapRequirements,{feature:'0.bootstrap',
+  if(Object.hasOwn(b,'bootstrapRequirements'))same(p.bootstrapRequirements,{feature:b.bootstrapRequirements.feature,
     rootDigest:digestRoot(b.bootstrapRequirements.specsRoot),files:b.bootstrapRequirements.files});
   else need(!Object.hasOwn(p,'bootstrapRequirements'),'runner_package');
 }
@@ -237,8 +239,11 @@ function invocationCall(call,registration,started,result,before) {
 function checkpoint(before,raw,effect,config,original,session,controls,version=1,taskCommit=null,invocation=null) {
   const s=json(raw,LIMIT);
   shape(s,['state','code','attempt','session','sequence','reviewPackage','currentChecks','receipt','receipts','calls','cache',
+    ...(Object.hasOwn(s,'reason')?['reason']:[]),
     'priorReview','cancelAfterCommit','workflowError','cancellationRequested',...(version>=2?['taskCommit']:[]),...(version===3?['reviewInvocation']:[]),
     ...(Object.hasOwn(config,'taskLearning')?['learningResult']:[])]);
+  if(Object.hasOwn(s,'reason'))need(s.reason===null||typeof s.reason==='string'&&s.reason.length<=8192
+    &&!/\r|\n|\0/.test(s.reason),'runner_diagnostic');
   if(version>=2){
     same(s.taskCommit,effect.kind==='complete'?taskCommit:null);
     if(effect.kind==='complete'){
@@ -279,7 +284,9 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
           for(const file of evidence.files){
             const previous=before.learningResult?.bootstrap?.files.find(item=>item.path===file.path);
             const expected=file.path==='AGENTS.md'&&previous&&before.learningResult.writeback.outcome==='written'
-              ?before.learningResult.writeback.agentsFile.sha256:previous?.afterSha256??null;
+              ?before.learningResult.writeback.agentsFile.sha256:previous?.afterSha256
+                ??(file.path==='AGENTS.md'?effect.learningInput.learningFiles.find(item=>item.scope==='project'
+                  &&item.path==='AGENTS.md')?.sha256??null:null);
             need(file.beforeSha256===expected,'runner_learning');
           }
         }
@@ -300,7 +307,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
         ||Object.hasOwn(original,'specification')&&s.state==='blocked'&&s.code==='spec_drift'
         // The host gate rejected the delivery after Learning was already written
         // back: the writeback stands, only the review package was not built.
-        ||s.state==='blocked'&&s.code==='verification_precheck_failed'
+        ||s.state==='blocked'&&['verification_precheck_failed','check_output_out_of_scope'].includes(s.code)
         ||added[0]&&['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal),'runner_learning');
     }
     if(digest(s.reviewPackage)!==digest(before.reviewPackage)) {
@@ -319,10 +326,10 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     // The developer call succeeded and is never retried, but the host gate blocked
     // between the checks and the review package. No package exists, so no review
     // round was spent; the attempt counter does not move either.
-    if(added[0]?.terminal==='succeeded'&&s.code==='verification_precheck_failed') {
+    if(added[0]?.terminal==='succeeded'&&['verification_precheck_failed','check_output_out_of_scope'].includes(s.code)) {
       need(digest(s.reviewPackage)===digest(before.reviewPackage),'runner_develop');
       same(s.receipt,before.receipt);same(s.receipts,before.receipts);
-      expectedState='blocked';expectedCode='verification_precheck_failed';
+      expectedState='blocked';expectedCode=s.code;
     }
     if(added[0] && ['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal)) {
       expectedState='blocked';expectedCode=invalidDeveloperCall(added[0])
@@ -394,7 +401,14 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     if(s.state==='fixture_completed') {
       checkCompletion({receipt:s.receipt,registered:before.receipt,execution:s.calls.find(c=>c.invocationId===s.receipt?.id),
         reviewPackage:s.reviewPackage,identity});expectedState='fixture_completed';
-    } else if(s.state==='blocked')expectedState='blocked';
+    } else if(s.state==='blocked'){
+      expectedState='blocked';
+      if(s.code==='completion_checks_changed'){
+        need(effect.kind==='complete'&&['approved','blocked'].includes(before.state)
+          &&(before.state==='approved'||before.code==='completion_checks_changed'),'runner_transition');
+        expectedCode='completion_checks_changed';
+      }
+    }
   }
   if(Object.hasOwn(original,'specification')&&s.state==='blocked'&&s.code==='spec_drift'){
     need(s.receipts.length===before.receipts.length,'runner_receipt');
@@ -423,7 +437,8 @@ function completionConfig(config,version){
     assertCodeProjectSelections(config.codeProjectPaths,[...config.scope,...config.requirements]);
   }
   if(Object.hasOwn(config,'bootstrap')){
-    need(config.taskLearning?.feature==='0.bootstrap'&&config.bootstrap.feature==='0.bootstrap','bootstrap_task_required');
+    need(config.taskLearning?.feature===config.bootstrap.feature
+      &&config.bootstrap.feature===identifyApprovedBootstrapFeature([config.bootstrap.feature]),'bootstrap_task_required');
     same(config.bootstrap.identity,config.identity);same(config.bootstrap.scope,config.scope);
     need(config.bootstrap.codeProject===config.root,'bootstrap_binding_changed');
   }
@@ -579,7 +594,9 @@ export function readRunnerHistory(raw,config,version=1) {
       shape(p,[...common,'effectId','completeIntentDigest','commit']);
       need(pending?.kind==='complete'&&p.effectId===pending.id&&p.completeIntentDigest===completeIntentDigest&&!controls.cancelled,'runner_commit');
       if(p.type==='task-commit-intent'){
-        need(r.kind==='commit-intent'&&transaction===null&&beforeIntent.state==='approved','runner_commit');
+        need(r.kind==='commit-intent'&&transaction===null
+          &&(beforeIntent.state==='approved'||beforeIntent.state==='blocked'
+            &&beforeIntent.code==='completion_checks_changed'),'runner_commit');
         const c=readCommitIntent(p.commit,{owner:completion.owner,identity:pending.identity,fingerprints:completion.fingerprints});
         const base=attemptBaseline(original,pending.identity.attempt),s=beforeIntent;
         checkCompletion({receipt:s.receipt,registered:s.receipts.find(x=>x.id===s.receipt?.id),

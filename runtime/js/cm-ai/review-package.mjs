@@ -7,6 +7,7 @@ import { digest } from './contracts.mjs';
 import {captureSpecificationMaterial,readSpecificationMaterial,verifySpecificationMaterial} from './specification-material.mjs';
 import {resolveCodeProjects,validateCodeProjectPaths,
   codeProjectInstructionPaths,assertCodeProjectSelections} from './code-projects.mjs';
+import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 
 const FILE_LIMIT=1024*1024, SNAPSHOT_LIMIT=2*1024*1024, FILE_COUNT=256;
 // Inventory budgets bound scanning, independently of the much smaller review body.
@@ -187,6 +188,11 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
   }
   return files.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
 }
+export function captureReviewInventory(root,baseline){
+  validBaseline(baseline);
+  return snapshot(root,baseline.specsPath??null,baseline.codeProjectPaths??null,
+    baseline.files.map(file=>file.path),new Set()).map(file=>({path:file.path,sha256:file.sha256}));
+}
 const sealed = (data,key) => {
   const result={...data,[key]:digest(data)};
   need(Buffer.byteLength(JSON.stringify(result))<=8*1024*1024,'limit_exceeded');
@@ -310,20 +316,20 @@ function inventoryList(b) {
   if(material.length)fileList(material);
   need(Buffer.byteLength(JSON.stringify(b))<=8*1024*1024,'limit_exceeded');
 }
-const bootstrapPaths=['0.bootstrap/design.md','0.bootstrap/requirements.md'];
+const bootstrapPaths=feature=>[`${feature}/design.md`,`${feature}/requirements.md`];
 function validBootstrapRequirements(value,published=false){
   keys(value,['feature','files',published?'rootDigest':'specsRoot']);
-  need(value.feature==='0.bootstrap','bootstrap_requirements_invalid');
+  need(value.feature===identifyApprovedBootstrapFeature([value.feature]),'bootstrap_requirements_invalid');
   if(published)hex(value.rootDigest);
   else need(typeof value.specsRoot==='string'&&path.isAbsolute(value.specsRoot)
     &&path.resolve(value.specsRoot)===value.specsRoot&&!value.specsRoot.includes('\0'),'unsupported_path');
   fileList(value.files);
-  need(digest(value.files.map(file=>file.path))===digest(bootstrapPaths)
+  need(digest(value.files.map(file=>file.path))===digest(bootstrapPaths(value.feature))
     &&value.files.every(file=>file.size>0),'bootstrap_requirements_invalid');
 }
 function currentBootstrapRequirements(value){
   need(fs.realpathSync(value.specsRoot)===value.specsRoot,'unsupported_path');
-  const files=readReviewSourceFiles(value.specsRoot,bootstrapPaths);
+  const files=readReviewSourceFiles(value.specsRoot,bootstrapPaths(value.feature));
   need(digest(files)===digest(value.files),'bootstrap_requirements_changed');
   return {feature:value.feature,files:value.files,rootDigest:sha(value.specsRoot)};
 }
@@ -393,11 +399,18 @@ export function createReviewPackage(options) {
   const selected=b.version===1?null:new Set([...b.scope,...b.requirements,
     ...b.files.filter(f=>Object.hasOwn(f,'contentBase64')).map(f=>f.path)]);
   const files=snapshot(root,b.specsPath??null,b.codeProjectPaths??null,b.files.map(f=>f.path),selected),before=new Map(b.files.map(f=>[f.path,f])),after=new Map(files.map(f=>[f.path,f]));
-  const changes=[];
+  const changes=[],violations=[];
   for(const p of [...new Set([...before.keys(),...after.keys()])].sort()) {
     const old=before.get(p)??null,current=after.get(p)??null;
     if(digest(old)===digest(current))continue;
-    need(b.scope.includes(p),'out_of_scope'); changes.push({path:p,before:old,after:current});
+    if(!b.scope.includes(p)){violations.push({path:p,newFile:old===null&&current!==null});continue;}
+    changes.push({path:p,before:old,after:current});
+  }
+  if(violations.length){
+    const shown=violations.slice(0,20).map(item=>item.path.length>300?`${item.path.slice(0,300)}…`:item.path);
+    const error=new Error(`out_of_scope: ${shown.join(', ')}${violations.length>20?` (+${violations.length-20} more)`:''}`);
+    error.code='out_of_scope';error.violations=violations;
+    throw error;
   }
   need(changes.length>0,'empty_changes');
   const changedPaths=new Set(changes.map(change=>change.path));
@@ -490,6 +503,36 @@ export function verifyReviewPackage(options) {
   }
   need(current.packageDigest===v.expectedDigest,'package_mismatch');
   return freeze({outcome:'matched',packageDigest:current.packageDigest});
+}
+
+// Completion repeats checks after review. Their diagnostic prose may vary, but
+// every reviewed file, scope and handoff byte and every check result must agree.
+export function verifyCompletionReviewPackage(options) {
+  const v=plain(options);keys(v,['root','baseline','checks','reviewPackage','expectedDigest',
+    ...(Object.hasOwn(v,'handoffPath')?['handoffPath']:[])]);
+  hex(v.expectedDigest);validBaseline(v.baseline);validPackage(v.reviewPackage);
+  need(v.reviewPackage.packageDigest===v.expectedDigest,'package_mismatch');
+  need(Object.hasOwn(v.reviewPackage,'specification')===Object.hasOwn(v.baseline,'specification'),'package_mismatch');
+  need(Object.hasOwn(v.reviewPackage,'handoff')===Object.hasOwn(v,'handoffPath'),'package_mismatch');
+  let current=createReviewPackage({root:v.root,baseline:v.baseline,checks:v.checks,
+    ...(Object.hasOwn(v,'handoffPath')?{handoffPath:v.handoffPath}:{})});
+  if(!Object.hasOwn(v.reviewPackage,'unchangedScope')){
+    const {unchangedScope,packageDigest,...legacy}=current;
+    current=sealed(legacy,'packageDigest');
+  }
+  const withoutChecks=({checks,checksDigest,packageDigest,...fields})=>fields;
+  need(digest(withoutChecks(current))===digest(withoutChecks(v.reviewPackage)),'package_mismatch');
+  const checkIdentities=checks=>checks.map(c=>c.kind==='visual'
+    ?{id:c.id,kind:c.kind}
+    :{id:c.id,command:c.command});
+  need(digest(checkIdentities(current.checks))===digest(checkIdentities(v.reviewPackage.checks)),'package_mismatch');
+  const checkResults=checks=>checks.map(c=>c.kind==='visual'
+    ?{outcome:c.outcome}
+    :{outcome:c.outcome,exitCode:c.exitCode});
+  need(digest(checkResults(current.checks))===digest(checkResults(v.reviewPackage.checks)),'completion_checks_changed');
+  const visualCarriers=checks=>checks.filter(c=>c.kind==='visual').map(c=>({before:c.before,after:c.after}));
+  need(digest(visualCarriers(current.checks))===digest(visualCarriers(v.reviewPackage.checks)),'package_mismatch');
+  return freeze({outcome:'matched',packageDigest:v.expectedDigest});
 }
 
 // The host supplies this separate specs-root file; workers never select it.

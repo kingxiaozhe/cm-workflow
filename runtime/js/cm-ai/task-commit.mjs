@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createHash,randomUUID } from 'node:crypto';
 import { types } from 'node:util';
 import {createRequire} from 'node:module';
-import { verifyReviewPackage,reviewSpecsPath } from './review-package.mjs';
+import { verifyCompletionReviewPackage,reviewSpecsPath } from './review-package.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { need,shape,json,digest,validIdentity } from './effect-contract.mjs';
 import {planBytes,readCommitIntent,readCommitResult} from './task-commit-codec.mjs';
@@ -64,7 +64,7 @@ function readFile(p) {
 function nativeRevision(p,f) {return digest({path:p,stat:statFields(f.stat),sha256:sha(f.bytes)});}
 function completionSelectors(selectors,identity,projectRoot){return {...selectors,task:identity.taskId,projectRoot};}
 function verifyProof(v) {
-  verifyReviewPackage({root:v.root,baseline:v.baseline,checks:v.checks,reviewPackage:v.reviewPackage,expectedDigest:v.reviewPackage.packageDigest,
+  verifyCompletionReviewPackage({root:v.root,baseline:v.baseline,checks:v.checks,reviewPackage:v.reviewPackage,expectedDigest:v.reviewPackage.packageDigest,
     ...(Object.hasOwn(v.reviewPackage,'handoff')?{handoffPath:v.selectors.handoff}:{})});
   checkCompletion({receipt:v.receipt,registered:v.registered,execution:v.execution,reviewPackage:v.reviewPackage,identity:v.identity});
 }

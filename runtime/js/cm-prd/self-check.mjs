@@ -42,7 +42,9 @@ export function checkPrdDraftMechanics(draft,{change=false}={}){
   const findings=[],features=[];
   for(const feature of draft.features){
     const files=new Map(feature.documents.map(document=>[document.path,document.content]));
-    const add=code=>findings.push({feature:feature.directory,code});
+    const add=code=>findings.push({feature:feature.directory,code,
+      ...(code==='dependencies_invalid'?{reason:{field:`${feature.directory}/tasks.md`,
+        expected:'One line per task; comma-separated prerequisites, e.g. - T-003 依赖 T-001, T-002'}}:{})});
     const parsed=parseFeatureTaskText(outsideFences(files.get('tasks.md')));
     const acIds=declaredAcceptanceIds(outsideFences(files.get('requirements.md')));
     if(acIds.size===0)add('acceptance_missing');

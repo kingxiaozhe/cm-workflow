@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {digest,freeze,hex,json,need,shape,text,validIdentity,validTaskLearningInput} from './effect-contract.mjs';
 import {encodeCmAiTaskLearningEvidence,readLearningRetrospectiveContent} from './cm-ai-context-refresh.mjs';
+import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 
 const LIMIT=256*1024,PREFIX='cm-learning-retrospective-v1:';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -99,7 +100,7 @@ export function readCmAiProjectLearningWriteback(raw,{learningInput,retrospectiv
   return freeze(value);
 }
 
-export function writeCmAiProjectLearning(raw,bootstrapAgentsSha256=null) {
+export function writeCmAiProjectLearning(raw,bootstrapAgentsSha256=null,bootstrapFeature=null) {
   const input=json(raw,256*1024);shape(input,['codeProject','learningInput','retrospective']);
   text(input.codeProject);need(path.isAbsolute(input.codeProject)&&path.resolve(input.codeProject)===input.codeProject);
   validTaskLearningInput(input.learningInput,input.learningInput.identity,input.learningInput.feature);
@@ -109,7 +110,9 @@ export function writeCmAiProjectLearning(raw,bootstrapAgentsSha256=null) {
     &&retrospective.learningDigest===input.learningInput.learningDigest,'identity_mismatch');
   // Only the runner supplies a hash from its validated host bootstrap result.
   // The Learning identity/digest still describes the original task-start read.
-  if(bootstrapAgentsSha256!==null){need(input.learningInput.feature==='0.bootstrap','bootstrap_task_required');hex(bootstrapAgentsSha256);}
+  if(bootstrapAgentsSha256!==null){need(bootstrapFeature!==null
+    &&bootstrapFeature===identifyApprovedBootstrapFeature([bootstrapFeature])
+    &&input.learningInput.feature===bootstrapFeature,'bootstrap_task_required');hex(bootstrapAgentsSha256);}
   const expected=bootstrapAgentsSha256===null
     ?input.learningInput.learningFiles.find(file=>file.scope==='project'&&file.path==='AGENTS.md')??null
     :{scope:'project',path:'AGENTS.md',sha256:bootstrapAgentsSha256};

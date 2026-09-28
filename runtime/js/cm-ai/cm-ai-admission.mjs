@@ -5,7 +5,9 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {readSpecsStatus,writeSpecsStatus} from '../specs-status.mjs';
+import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 import {buildManifest,verifyManifest} from '../../../scripts/cm-spec-manifest.mjs';
+export {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 
 const TASK=/^\s*-\s*\[([ xX])\]\s+(?:~~)?(T-[A-Za-z0-9][A-Za-z0-9._-]*)(?=[:\s])[:\s]*(.*)$/;
 const DEPENDENCY=/^\s*-\s*(T-[A-Za-z0-9][A-Za-z0-9._-]*)\s+依赖\s+(.+)$/;
@@ -25,7 +27,9 @@ export function inspectCmAiBootstrapTask({specsDir,codeProject,taskId},inProgres
   const admission=admissionFor({specsDir,codeProject},inProgress?taskId:null);
   const fail=code=>{throw Object.assign(new Error(code),{code});};
   if(!['ready','complete'].includes(admission.state))fail(admission.reason);
-  const parsed=readFeature(admission.specsDir,'0.bootstrap');if(parsed.error)fail(parsed.error);
+  const feature=identifyApprovedBootstrapFeature(readSpecsStatus(admission.specsDir).value.features);
+  if(feature===null)fail('bootstrap_task_required');
+  const parsed=readFeature(admission.specsDir,feature);if(parsed.error)fail(parsed.error);
   const task=parsed.tasks.find(item=>item.id===taskId&&!item.dropped);
   const mode=task?.id==='T-001'&&/(?:脚手架|骨架|scaffold)/i.test(task.description)?'scaffold':'instructions';
   if(!task||mode==='instructions'&&(!/(?:cm-init|\.claude\/|AGENTS\.md)/i.test(task.description)
@@ -87,7 +91,9 @@ function directory(value){
 function approvalIntent(response,assumeYes){
   if(assumeYes===true)return 'explicit';
   if(response===undefined||response===null||response==='')return 'none';
-  return typeof response==='string'&&response.trim()==='开始'?'explicit':'not_approval';
+  if(typeof response!=='string')return 'not_approval';
+  const normalized=response.trim().replace(/[。！!.～~\s]+$/gu,'');
+  return new Set(['开始','开始吧','可以开始','确认开始','开始执行','现在开始']).has(normalized)?'explicit':'not_approval';
 }
 
 
@@ -102,12 +108,13 @@ function discoverFeatures(specsDir){
     .filter(entry=>entry.isDirectory()&&FEATURE.test(entry.name))
     .map(entry=>entry.name)
     .sort((a,b)=>{
-      if(a==='0.bootstrap')return b==='0.bootstrap'?0:-1;
-      if(b==='0.bootstrap')return 1;
+      if(/^\d+\.bootstrap$/.test(a))return /^\d+\.bootstrap$/.test(b)?0:-1;
+      if(/^\d+\.bootstrap$/.test(b))return 1;
       const an=Number(a.match(FEATURE)[1]),bn=Number(b.match(FEATURE)[1]);
       return an-bn||(a<b?-1:a>b?1:0);
     });
   if(!names.length)return {error:'features_missing'};
+  try{identifyApprovedBootstrapFeature(names);}catch(error){return {error:error.code};}
   const reviewKeys=names.flatMap(name=>[name,name.replace(/^\d+\./,'')]);
   if(new Set(reviewKeys).size!==reviewKeys.length)return {error:'feature_contract_invalid'};
   for(const name of names){
@@ -267,10 +274,10 @@ function invalidDependency(tasks,dependencies){
 
 function validateBootstrap(codeProject,specsDir,names){
   const empty=fs.readdirSync(codeProject).length===0;
-  const hasBootstrap=names.includes('0.bootstrap');
-  if(empty&&!hasBootstrap)return 'bootstrap_required';
-  if(!empty&&hasBootstrap){
-    const parsed=readFeature(specsDir,'0.bootstrap');
+  const bootstrap=identifyApprovedBootstrapFeature(names);
+  if(empty&&!bootstrap)return 'bootstrap_required';
+  if(!empty&&bootstrap){
+    const parsed=readFeature(specsDir,bootstrap);
     if(parsed.error)return null; // Let selection retain the parser's location and feature summaries.
     const bootstrapTask=parsed.tasks.find(task=>task.id==='T-001');
     if(bootstrapTask&&!bootstrapTask.completed&&!bootstrapTask.dropped)return 'bootstrap_conflict';
@@ -404,6 +411,9 @@ export function matchesCmAiTaskSelection(admission,feature,taskId,parallelSelect
   if(parallelSelection===null)return admission.state==='ready'
     &&admission.nextTask?.feature===feature&&admission.nextTask.id===taskId;
   const value=parallelSelection;
+  if(value?.version===1&&Object.keys(value).sort().join(',')==='taskId,version')
+    return value.taskId===taskId&&admission.state==='ready'
+      &&admission.eligibleTasks?.some(task=>task.feature===feature&&task.id===taskId)===true;
   return admission.state==='ready'&&value?.version===1
     &&Object.keys(value).sort().join(',')==='group,version'&&Array.isArray(value.group)
     &&value.group.length>=2&&new Set(value.group).size===value.group.length

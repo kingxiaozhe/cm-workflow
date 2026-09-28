@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createRequire} from 'node:module';
 import {verifySpecificationMaterial} from './specification-material.mjs';
-import { captureReviewBaseline, createReviewPackage, verifyReviewPackage } from './review-package.mjs';
+import { captureReviewBaseline, captureReviewInventory, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage } from './review-package.mjs';
 import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,validCallTimeout,requestFor,terminalFor,failureCode } from './effect-contract.mjs';
 import { reviewResult,reviewReceipt } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
@@ -201,6 +201,7 @@ export function createTaskRunner(options) {
   const controller=new AbortController(),calls=[],cache=new Map(),session=restored?.session??randomUUID(),registered=new Map(),receipts=[];
   let state=reviewers.some(r=>r.allowed&&r.available)?'ready':'pending_review',code=null,attempt=1;
   let busy=false,pending=null,sequence=0,base=original,reviewPackage=null,currentChecks=null,workflowRunning=false;
+  let reason=null,checkNewPaths=null;
   let receipt=null,priorReview=null,cancelAfterCommit=false,workflowError=null,cancellationRequested=false,reviewInvocation=null;
   let learningResult=null;
   const acceptedFixes=structuredClone(restored?.acceptedFixes??[]);
@@ -220,7 +221,9 @@ export function createTaskRunner(options) {
   // derivation in one place, next to the cache it is derived from.
   const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
     &&entry.result?.state==='blocked'&&entry.result?.code==='verification_precheck_failed').length;
-  const privateStatus=()=>json({state,code,identity:{...config.identity,attempt},packageDigest:reviewPackage?.packageDigest??null,
+  const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
+    &&entry.result?.state==='blocked'&&entry.result?.code==='completion_checks_changed').length;
+  const privateStatus=()=>json({state,code,...(reason?{reason}:{}),identity:{...config.identity,attempt},packageDigest:reviewPackage?.packageDigest??null,
     receipt,receipts,calls,cancelAfterCommit,workflowError,...(store?{cancellationRequested}:{}),...(taskMode?{taskCommit}:{}),
     ...(invocationMode?{reviewInvocation}:{}),...(taskLearning!==null?{learningWriteback:learningResult?.writeback??null}:{})},16*1024*1024);
   let publication;
@@ -247,8 +250,8 @@ export function createTaskRunner(options) {
       return current;
     } catch {return freeze({...current,code:'correction_review_required'});}
   };
-  const halt=(next,why)=>{state=next;code=why;};
-  function frame(){return {state,code,attempt,session,sequence,reviewPackage,currentChecks,receipt,receipts,calls,
+  const halt=(next,why,detail=null)=>{state=next;code=why;reason=detail;};
+  function frame(){return {state,code,reason,attempt,session,sequence,reviewPackage,currentChecks,receipt,receipts,calls,
     cache:[...cache.values()],priorReview,cancelAfterCommit,workflowError,cancellationRequested,...(taskMode?{taskCommit}:{}),
     ...(invocationMode?{reviewInvocation}:{}),...(taskLearning!==null?{learningResult}:{})};}
   const same=(a,b,why)=>need(digest(a)===digest(b),why);
@@ -333,6 +336,7 @@ export function createTaskRunner(options) {
   if(restored) {
     const s=structuredClone(restored.state);
     ({state,code,attempt,sequence,reviewPackage,currentChecks,receipt,priorReview,cancelAfterCommit,workflowError,cancellationRequested}=s);
+    reason=s.reason??null;
     if(taskLearning!==null)learningResult=s.learningResult;
     if(taskMode)taskCommit=s.taskCommit;
     if(invocationMode)reviewInvocation=s.reviewInvocation;
@@ -591,7 +595,13 @@ export function createTaskRunner(options) {
     }finally{sealed=true;clearTimeout(timer);controller.signal.removeEventListener('abort',abort);
       if(cancelReject)controller.signal.removeEventListener('abort',cancelReject);}
   }
-  async function collectChecks(){return json(await bounded(check,json({identity:{...config.identity,attempt}})));}
+  async function collectChecks(){
+    const before=new Map(captureReviewInventory(config.root,base).map(file=>[file.path,file.sha256]));
+    const results=json(await bounded(check,json({identity:{...config.identity,attempt}})));
+    const after=captureReviewInventory(config.root,base);
+    checkNewPaths=new Set(after.filter(file=>!before.has(file.path)).map(file=>file.path));
+    return results;
+  }
   // Runs on the checks just collected, before any handoff or review package is
   // built, so a deliverable that does not satisfy the task's own written
   // verification never spends an independent review round.
@@ -615,7 +625,7 @@ export function createTaskRunner(options) {
   }
   async function perform(v) {
     if(v.kind==='develop') {
-      need(stageAllowed('develop',state,code),'stage_mismatch');state='developing';code=null;receipt=null;
+      need(stageAllowed('develop',state,code),'stage_mismatch');state='developing';code=null;reason=null;checkNewPaths=null;receipt=null;
       const previousBootstrap=learningResult?.bootstrap??null;
       const previousWriteback=learningResult?.writeback??null;
       if(taskLearning!==null)learningResult=null;
@@ -646,7 +656,8 @@ export function createTaskRunner(options) {
           &&application.learningDigest===v.learningInput.learningDigest,'identity_mismatch');
         const retrospective=json(result.response.result.retrospective,16*1024);
         const writeback=readCmAiProjectLearningWriteback(writeCmAiProjectLearning({codeProject:config.root,
-          learningInput:v.learningInput,retrospective},instructionEvidence?.files.find(file=>file.path==='AGENTS.md').afterSha256??null),
+          learningInput:v.learningInput,retrospective},instructionEvidence?.files.find(file=>file.path==='AGENTS.md').afterSha256??null,
+          metadata.bootstrap?.feature??null),
         {learningInput:v.learningInput,retrospective});
         learningResult=freeze({application,retrospective,writeback,...(instructionEvidence?{bootstrap:instructionEvidence}:{})});
         if(writeback.outcome==='writeback_pending'){halt('blocked','learning_writeback_pending');return;}
@@ -694,7 +705,7 @@ export function createTaskRunner(options) {
     if(v.kind==='complete') {
       const fresh=await collectChecks();active();
       try {
-        verifyReviewPackage({root:config.root,baseline:base,checks:fresh,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
+        verifyCompletionReviewPackage({root:config.root,baseline:base,checks:fresh,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
       } catch(error){halt('blocked',failureCode(error));return;}
       if(taskLearning!==null)try {
         const learningInput=currentLearningInput();
@@ -759,7 +770,14 @@ export function createTaskRunner(options) {
     busy=true;if(v.kind!=='develop')code=null;
     pending=(async()=>{
       try {await perform(v);}
-      catch(error){if(state!=='cancelled'){const code=failureCode(error);halt(code==='spec_drift'?'blocked':'unknown',code);}}
+      catch(error){if(state!=='cancelled'){
+        const failure=failureCode(error);
+        const checkOnly=failure==='out_of_scope'&&Array.isArray(error.violations)&&error.violations.length>0
+          &&error.violations.every(item=>item.newFile&&checkNewPaths?.has(item.path));
+        halt(checkOnly||failure==='spec_drift'?'blocked':'unknown',
+          checkOnly?'check_output_out_of_scope':failure,
+          failure==='out_of_scope'?error.message:null);
+      }}
       if(poisoned)return status();
       const result=privateStatus();cache.set(v.id,{effect:v,digest:digest(v),result});
       try{persist('effect-checkpoint',{effectId:v.id,checkpoint:frame()});publication=result;return result;}
@@ -807,8 +825,9 @@ export function createTaskRunner(options) {
     catch {
       if(workflowError===null && control('workflow-error')) {
         const next=controlledState(frame(),'workflow-error',busy||restored?.pending!=null,version);
-        ({state,code,workflowError}=next);
-        publication=json({...publication,workflowError,...(!busy?{state,code}:{})},16*1024*1024);
+        ({state,code,workflowError}=next);reason=next.reason??null;
+        const {reason:oldReason,...currentPublication}=publication;
+        publication=json({...currentPublication,workflowError,...(!busy?{state,code,...(reason?{reason}:{})}:{})},16*1024*1024);
       }
     }
     finally {
@@ -898,7 +917,7 @@ export function createTaskRunner(options) {
       publication=privateStatus();return status();
     }catch(error){return freeze({outcome:'rejected',code:error.code??'review_abandon_unavailable'});}
   };
-  const api={reviseQa,supersedeEvidence,abandonReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks};
+  const api={reviseQa,supersedeEvidence,abandonReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   return Object.freeze(api);

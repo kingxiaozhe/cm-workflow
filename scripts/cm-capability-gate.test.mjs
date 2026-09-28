@@ -49,7 +49,11 @@ function fixture(browserCase,{blocking=true,tests=['logic','commands','browser']
 const launch=(f,...extra)=>spawnSync(process.execPath,[cli,...f.args,...extra],{encoding:'utf8',timeout:20000,env:{...process.env,NODE_NO_WARNINGS:'1'}});
 function rejected(result,code){
   assert.equal(result.error,undefined);assert.equal(result.status,1,result.stderr);
-  assert.deepEqual(JSON.parse(result.stderr),{error:{code}});
+  const parsed=JSON.parse(result.stderr);
+  assert.equal(parsed.error.code,code);
+  if(['browser_capability_required','browser_capability_unavailable'].includes(code))
+    assert.match(parsed.error.reason,/--browser-qa available\|unavailable.*interactive QA/);
+  else assert.deepEqual(parsed,{error:{code}});
 }
 function started(f,...extra){
   const result=launch(f,...extra);
@@ -74,6 +78,18 @@ test('the browser gate fires exactly when the approved contract can select a bro
     rejected(launch(withoutBrowser,'--browser-qa','available'),'invalid_arguments');
     started(withoutBrowser);
   }finally{fs.rmSync(withoutBrowser.root,{recursive:true,force:true});}
+});
+
+test('iOS simulator carrier is named in the launch diagnostic',()=>{
+  const f=fixture(true);
+  try{
+    const workflow=JSON.parse(fs.readFileSync(f.workflow,'utf8'));
+    workflow.qa.environment={kind:'app',carrier:'ios-simulator',target:'fixture-app',scope:'local'};
+    fs.writeFileSync(f.workflow,JSON.stringify(workflow));
+    const result=launch(f);
+    rejected(result,'browser_capability_required');
+    assert.match(JSON.parse(result.stderr).error.reason,/ios-simulator/);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
 test('resume requires a fresh assertion and reopens the run created by available',()=>{

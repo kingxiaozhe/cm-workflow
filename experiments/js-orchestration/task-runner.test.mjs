@@ -130,6 +130,53 @@ for(const twoAttempts of [false,true])test(`C3b one-owner composed completion wi
   assert.deepEqual(f.getStore().snapshot(),saved);assert.equal(f.calls.length,twoAttempts?4:2);
 },{twoAttempts}));
 
+test('A4 evidence text drift completes with the reviewed check result and replays',()=>composedFixture(async f=>{
+  let evidence='first run';
+  f.options.check=()=>[{...checks[0],evidence}];
+  let runner=f.create();
+  assert.equal((await runner.executeEffect(f.effect('develop'))).state,'awaiting_review');
+  const approved=await runner.executeEffect(f.effect('review'));
+  assert.equal(approved.state,'approved');
+  evidence='second run';
+  runner=f.reopen();
+  const completed=await runner.executeEffect(f.effect('complete'));
+  assert.equal(completed.state,'fixture_completed');
+  assert.equal(completed.packageDigest,approved.packageDigest);
+  assert.deepEqual(completed.receipt,approved.receipt);
+  assert.equal(f.reopen().status().state,'fixture_completed');
+  assert.match(fs.readFileSync(f.tasksPath,'utf8'),/\[x\]/);
+}));
+
+test('A4 changed check result is recoverable in one run and replays',()=>composedFixture(async f=>{
+  let failed=false;
+  f.options.check=()=>[{...checks[0],outcome:failed?'failed':'passed',exitCode:failed?1:0,evidence:failed?'failed run':'passed run'}];
+  let runner=f.create();
+  await runner.executeEffect(f.effect('develop'));
+  assert.equal((await runner.executeEffect(f.effect('review'))).state,'approved');
+  failed=true;runner=f.reopen();
+  const changed=await runner.executeEffect(f.effect('complete'));
+  assert.equal(changed.state,'blocked');assert.equal(changed.code,'completion_checks_changed');
+  assert.deepEqual(f.reopen().status(),changed);
+  assert.equal(fs.readFileSync(f.tasksPath,'utf8'),'- [ ] T-001: fixture\r\n');
+  failed=false;runner=f.reopen();
+  const retried=await runner.executeEffect({...f.effect('complete'),id:'complete-retry-1'});
+  assert.equal(retried.state,'fixture_completed',JSON.stringify({code:retried.code,taskCommit:retried.taskCommit}));
+  assert.equal(f.reopen().status().state,'fixture_completed');
+}));
+
+test('A4 code byte drift remains terminal package mismatch and replays',()=>composedFixture(async f=>{
+  let drift=false;
+  f.options.check=()=>{if(drift)fs.appendFileSync(path.join(f.root,'a.js'),'changed after review\n');return checks;};
+  let runner=f.create();await runner.executeEffect(f.effect('develop'));
+  assert.equal((await runner.executeEffect(f.effect('review'))).state,'approved');
+  drift=true;
+  const blocked=await runner.executeEffect(f.effect('complete'));
+  assert.equal(blocked.state,'blocked');assert.equal(blocked.code,'package_mismatch');
+  assert.deepEqual(f.reopen().status(),blocked);
+  assert.deepEqual(await f.reopen().executeEffect({...f.effect('complete'),id:'complete-retry-1'}),
+    {outcome:'rejected',code:'stage_mismatch'});
+}));
+
 for(const drift of [false,true])test(`P2 host creates checked Learning handoff and resumes through sole completion drift=${drift}`,()=>composedFixture(async f=>{
   f.options.taskLearning={feature:'1.login',hostHandoff:true};
   fs.unlinkSync(f.options.taskCompletion.handoffs[0]);
@@ -1262,8 +1309,12 @@ for(const mutation of ['code','requirements','outside','checks'])test(`S2b compl
   if(mutation==='requirements')fs.writeFileSync(path.join(root,'requirements.md'),'post-review requirement');
   if(mutation==='outside')fs.writeFileSync(path.join(root,'outside.txt'),'outside');
   if(mutation==='checks')changed=true;
-  assert.equal((await runner.executeEffect(intent('complete'))).state,'blocked');assert.equal(marker.length,0);
-  },o=>{o.check=()=>changed?[{...checks[0],evidence:'changed evidence'}]:checks;});
+  const result=await runner.executeEffect(intent('complete'));
+  assert.equal(result.state,'blocked');
+  assert.equal(result.code,mutation==='checks'?'completion_checks_changed':
+    mutation==='code'?'package_mismatch':'out_of_scope');
+  assert.equal(marker.length,0);
+  },o=>{o.check=()=>changed?[{...checks[0],outcome:'failed',exitCode:1,evidence:'changed result'}]:checks;});
 });
 
 for(const outcome of ['failed','unavailable'])test(`S2b stable ${outcome} checks cannot be overridden by approved`,()=>fixture(async({runner,marker})=>{

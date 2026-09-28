@@ -12,10 +12,34 @@ import {need,digest} from './effect-contract.mjs';
 import {readEvidenceSupersession,supersedableEvidenceName} from './reviewed-evidence-supersession-record.mjs';
 import {scanRows} from './cm-ai-qa-log.mjs';
 import {parseCmAiTaskLine} from './cm-ai-admission.mjs';
+import {captureReviewInventory,readReviewBaseline} from './review-package.mjs';
 
 const writer=fileURLToPath(new URL('../../../scripts/cm-log-event.py',import.meta.url));
 const unavailable=reason=>{const error=new Error('supersede_unavailable');error.code='supersede_unavailable';error.reason=reason;throw error;};
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
+const codeDrift=reason=>{const error=new Error('supersede_code_drift');error.code='supersede_code_drift';error.reason=reason;throw error;};
+const driftInstruction='这些文件与直接前驱运行开工前的基线不一致。手动还原这些文件后重建运行；或确认保留这些改动时加 --accept-superseded-code-drift 重建（这些文件会被当成已有代码，不进新运行的审查改动）。';
+
+function verifyOldCodeBaseline(codeProject,rawBaseline){
+  // Legacy journals without a complete V2 inventory cannot prove code drift.
+  if(rawBaseline?.version!==2)return [];
+  const baseline=readReviewBaseline(rawBaseline);
+  let current;
+  try{
+    if(fs.realpathSync(codeProject)!==codeProject||!fs.lstatSync(codeProject).isDirectory())
+      codeDrift(`无法安全核对代码根目录。${driftInstruction}`);
+    current=captureReviewInventory(codeProject,baseline);
+  }catch(error){
+    if(error.code==='supersede_code_drift')throw error;
+    codeDrift(`无法安全核对代码树（${error.code??'read_failed'}）。${driftInstruction}`);
+  }
+  const before=new Map(baseline.files.map(file=>[file.path,file.sha256]));
+  const after=new Map(current.map(file=>[file.path,file.sha256]));
+  // The V2 inventory covers review-package paths too; the union also catches
+  // files created by a reviewed run that were absent at its start.
+  return [...new Set([...before.keys(),...after.keys()])].filter(p=>before.get(p)!==after.get(p))
+    .map(p=>({path:p,sha256:after.get(p)??null}));
+}
 
 function taskChecked(tasksPath,taskId){
   const body=fs.readFileSync(tasksPath,'utf8');
@@ -65,14 +89,14 @@ export function oldWriterOpen(execution,runId,{lsofPath}={}){
   unavailable(`缺少核对旧运行 ${runId} writer 占用的本地工具`);
 }
 
-export function prepareReviewedEvidenceSupersession({specsDir,codeProject,feature,identity,reason,tasksPath}){
+export function prepareReviewedEvidenceSupersession({specsDir,codeProject,feature,identity,reason,tasksPath,acceptSupersededCodeDrift=false}){
   if(typeof reason!=='string'||!reason.trim()||Buffer.byteLength(reason,'utf8')>500||/[\r\n\0]/.test(reason))
     unavailable('必须提供单行且不超过 500 字节的 --supersede-reason');
   if(taskChecked(tasksPath,identity.taskId))unavailable('tasks.md 已将任务标为完成；若 QA BLOCKED 后确需重跑，先将该任务改回 - [ ]，再以 --supersede-reviewed-evidence 和 --supersede-reason 创建新运行');
   const reviewsDir=path.join(specsDir,'.reviews');
   if(!fs.existsSync(reviewsDir))unavailable('没有可替换的旧任务证据');
   const execution=path.join(reviewsDir,'.execution');
-  const previousRunIds=[];
+  const previousRunIds=[],priorRuns=[],alreadySuperseded=new Set();
   if(fs.existsSync(execution))for(const entry of fs.readdirSync(execution,{withFileTypes:true})){
     if(!entry.isDirectory()||entry.name===identity.runId)continue;
     const stateFile=path.join(execution,entry.name,'state.json');
@@ -95,9 +119,20 @@ export function prepareReviewedEvidenceSupersession({specsDir,codeProject,featur
     const qa=qaTerminal(specsDir,entry.name,identity.taskId);
     if(history.state.state==='fixture_completed'&&!['BLOCKED','never_finished'].includes(qa))
       unavailable(`旧运行 ${entry.name} 已完成或 QA 已通过`);
+    priorRuns.push({runId:entry.name,baseline:first.baseline});
+    for(const runId of history.supersession?.previousRunIds??[])alreadySuperseded.add(runId);
     previousRunIds.push(entry.name);
   }
   if(!previousRunIds.length)unavailable('没有同 feature、task 的旧运行');
+  const drift=priorRuns.filter(run=>!alreadySuperseded.has(run.runId))
+    .flatMap(run=>verifyOldCodeBaseline(codeProject,run.baseline)
+      .map(file=>({predecessorRunId:run.runId,...file})))
+    .sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:
+      a.predecessorRunId<b.predecessorRunId?-1:a.predecessorRunId>b.predecessorRunId?1:0);
+  if(drift.length&&!acceptSupersededCodeDrift){
+    const paths=[...new Set(drift.map(file=>file.path))],listed=paths.slice(0,20).join('、');
+    codeDrift(`${listed}${paths.length>20?` 等 ${paths.length-20} 个`:''}：${driftInstruction}`);
+  }
   const names=evidenceNames(reviewsDir,feature,identity.taskId);
   if(!names.length)unavailable('没有可归档的旧任务证据');
   const files=names.map(name=>{
@@ -106,7 +141,8 @@ export function prepareReviewedEvidenceSupersession({specsDir,codeProject,featur
     return {name,sha256:hash(fs.readFileSync(p))};
   });
   return readEvidenceSupersession({version:1,feature,taskId:identity.taskId,newRunId:identity.runId,
-    previousRunIds:previousRunIds.sort(),reason,files,authorizedAt:new Date().toISOString()});
+    previousRunIds:previousRunIds.sort(),reason,files,authorizedAt:new Date().toISOString(),
+    ...(drift.length?{acceptedCodeDrift:drift}:{})});
 }
 
 export function archiveReviewedEvidence(reviewsDir,raw){

@@ -34,6 +34,7 @@ CM_AI_RUNTIME = (
     "codex-review-adapter.mjs",
     "contracts.mjs",
     "durable-runner-state.mjs",
+    "diagnostic-reason.mjs",
     "effect-contract.mjs",
     "execution-store.mjs",
     "gate-bridge.mjs",
