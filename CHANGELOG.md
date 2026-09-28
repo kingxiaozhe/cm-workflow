@@ -17,6 +17,10 @@
 - cm-ai 可重试的开发阻断（如检查产物越界、开发检查未通过）反复出现、剩余调用名额已不够再交付一次并送审，或剩余 effect 名额已不够再交付并送审时，在派发开发前停在终态 `blocked/develop_retry_limit`（journal 记 `develop-retry-limit`，不写 intent、不调用开发者），reason 写明上次阻断原因并提示 supersede 新建运行，不再让第 7 次调用跑完后检查点被拒、运行变成 unknown，也不再停在 complete 被 `limit_exceeded` 拒绝、永远无法完成的 approved；显式放弃的审查调用也不再占调用名额。
 - cm-ai 完成（complete）不再占六个 effect 名额：审查已批准的运行总能进入完成，包括旧版本已用满六个 develop／review 名额后停在 approved、complete 被 `limit_exceeded` 拒绝的运行。完成前复查因检查结果或新文件变化被拦下（`completion_checks_changed`／`completion_package_changed`）时改为单独最多重试 3 次；第 4 次仍被拦下即写入 `completion-retry-limit` 并停在终态 `blocked/completion_retry_limit`（`pendingAction: none`），reason 提示先修好检查环境再 supersede 新建运行，不再出现已批准却因 `limit_exceeded` 永远完成不了的任务。
 - cm-ai 第 2 轮交付与第 1 轮被要求修改的代码逐字节相同时，停在可重试的 `blocked/develop_unchanged_after_review`，不送审、不耗第 2 轮审查；同时修正第 2 轮开发检查被门禁拦下时 journal 回放失败、运行变成 unknown 的问题。
+- cm-ai 带 QA 的运行不再因项目 `.cm-workflow.yml`、用户 `~/.cm-workflow/runtimes.yml` 或插件内置默认值变化而无法恢复：新运行的指纹只绑定宿主给出的 QA 输入，执行计划由每轮 QA 在 N6 冻结并记入 `test_run`；`--revise-qa-config` 也不再用当前配置重建旧计划。此前创建的运行照原指纹打开，配置已变时仍 `fingerprint_mismatch`，并附原因提示恢复创建时的配置。
+- cm-ai 收尾 `finish`／`run_finalize` 在任一已批准 feature 的最新 QA 未通过（FAIL、BLOCKED、已触发未执行或结果未知）时返回 `project_qa_not_passed`，列出 feature、任务和 runId，不做文档核验、不写 run_done；准入选下一任务时在 `warnings` 中提示。
+- cm-ai 已完成运行的 QA 恢复、QA 修复、配置修订与收尾不再被其他任务后续的已审交付锁住：其他已完成并提交运行的审查包（含 AGENTS.md 教训行和对同一文件的修改）按审查前状态逐文件接续，任务范围外的项目根 CM 配置可以修改；本任务交付文件及其他文件的未审改动仍为 `correction_review_required`，并在 `reason` 列出路径。
+- cm-fix 原因审查与第二轮最终审查登记后没有结论（宿主被杀、超时、断连或取消）时，可用 `abandon_review`（`--allow-abandon`，父宿主 `--allow-qa-fix-abandon`）留痕放弃一次，再以新审查线程重审；审查等待改用审查配置的 `timeoutMs`（默认 15 分钟），不再沿用复现命令超时，原因审查超时会记下结果。替代旧审查证据时，QA FAIL 不再被误报为「已完成或 QA 已通过」，并提示改走 QA 修复。
 
 - cm-ai 单任务驾驶员对 bootstrap 规范任务在启动前拒绝缺少实时 `init_verify` runner，并将 unknown／reconcile 宿主结果作为失败退出；补充当前会话宿主路径与旧运行恢复说明。
 - cm-ai 开发检查失败或不可用时以独立的 `develop_checks_not_passed` 在审查前阻断并可在原运行重试；旧完成门禁的 `checks_not_passed` 保持终态。检查产物越界重试改用新 effect id，完成复查失败保留原审查重试，单任务和批次驾驶员支持每项及默认检查超时（默认 15 分钟）。

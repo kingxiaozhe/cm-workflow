@@ -5,6 +5,7 @@ import {findCmAiQaDecision,inspectCmAiQaDecision,inspectCmAiQaResult,recordCmAiQ
   latestCmAiQaRun,recordCmAiQaRun,inspectCmAiQaRecovery,inspectCmAiQaConfigurationRecovery,timedOutQaDecision,
   replacesTimedOutQaDecision,validEnvironmentFailureReason} from './cm-ai-qa-log.mjs';
 import {recordCmAiRunDone} from './cm-ai-run-finalizer.mjs';
+import {outstandingFeatureQa,describeOutstandingQa} from './project-qa-gate.mjs';
 import {REVIEWED_HANDOFF_HINT} from './host-handoff.mjs';
 import {readHostQaFixHandoff} from './host-qa-fix.mjs';
 import {digest,freeze,hex,id,json,need,shape,text,validIdentity} from './effect-contract.mjs';
@@ -43,6 +44,7 @@ const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approv
   status.state==='fixture_completed'&&status.code==='documentation_sync_required'?'documentation_sync':
   status.state==='fixture_completed'&&status.code==='documentation_synced'?'run_finalize':
   status.state==='fixture_completed'&&status.code==='documentation_sync_blocked'?'none':
+  status.state==='fixture_completed'&&status.code==='project_qa_not_passed'?'none':
   status.state==='fixture_completed'&&status.code==='qa_blocked'?'none':
   status.state==='fixture_completed'&&status.code==='qa_execution_unknown'?'reconcile':
   status.state==='fixture_completed'&&['qa_failed','qa_result_blocked'].includes(status.code)?'none':
@@ -56,6 +58,17 @@ const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',ope
     ?{blockedReason:status.calls.at(-1).blockedReason}:{})});
 const correctionSummary=(operation,status)=>status.code==='correction_review_required'
   ?summary(operation,status,'blocked'):null;
+// run_done is a project claim: every approved feature's latest mandatory QA must
+// have passed, not only this final run's own. Read with the strict owner validator.
+function projectQaSummary(operation,status,options){
+  const admission=inspectCmAiAdmission({specsDir:options.specsDir,codeProject:options.codeProject});
+  const outstanding=outstandingFeatureQa({specsDir:options.specsDir,features:admission.features.map(item=>item.name),
+    currentRunId:status.identity.runId,inspect:latestCmAiQaRun});
+  if(!outstanding.length)return null;
+  return freeze({...summary(operation,{...status,code:'project_qa_not_passed',
+    reason:`以下 feature 的最新一轮 QA 未通过：${outstanding.map(describeOutstandingQa).join('；')}。先恢复对应运行让 QA 通过，再重新推进本运行收尾。`},'blocked'),
+  outstandingQa:outstanding});
+}
 
 function readOperation(raw) {
   const operation=json(raw),keys=['version','operation','requestId','identity'];
@@ -612,6 +625,7 @@ export function createCmAiConversationEntry(options) {
       const refresh=inspectCmAiContextRefresh({specsDir:options.specsDir,codeProject:options.codeProject,
         feature:options.feature,applicableAgentFiles});
       need(refresh.state==='complete','run_not_ready');
+      const projectQa=projectQaSummary(operation,status,options);if(projectQa)return projectQa;
       const documentationEpoch=cancellationEpoch;
       const documentation=await documentationFor(status,refresh);
       need(documentationEpoch===cancellationEpoch,'cancelled');
@@ -635,6 +649,7 @@ export function createCmAiConversationEntry(options) {
       const refresh=inspectCmAiContextRefresh({specsDir:options.specsDir,codeProject:options.codeProject,
         feature:options.feature,applicableAgentFiles});
       need(refresh.state==='complete','run_not_ready');
+      const projectQa=projectQaSummary(operation,status,options);if(projectQa)return projectQa;
       const documentationEpoch=cancellationEpoch;
       const documentation=await documentationFor(status,refresh);need(documentation!==null,'run_not_ready');
       need(documentationEpoch===cancellationEpoch,'cancelled');
@@ -648,6 +663,7 @@ export function createCmAiConversationEntry(options) {
       const documentationStatus=validateDocumentationResult(documentation,status,refresh);
       if(documentationStatus==='blocked')
         return summary(operation,{...status,code:'documentation_sync_blocked'},'blocked');
+      const finalQa=projectQaSummary(operation,status,options);if(finalQa)return finalQa;
       const input={specsDir:options.specsDir,codeProject:options.codeProject,feature:options.feature,identity,
         packageDigest:operation.packageDigest,contextDigest:refresh.contextDigest,
         documentationSyncId:documentation.syncId};

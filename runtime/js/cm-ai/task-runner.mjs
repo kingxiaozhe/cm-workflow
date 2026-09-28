@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createRequire} from 'node:module';
 import {verifySpecificationMaterial} from './specification-material.mjs';
-import { captureReviewBaseline, captureReviewInventory, compareReviewBaseline, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage, validChecks } from './review-package.mjs';
+import { captureReviewBaseline, captureReviewInventory, compareReviewBaseline, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage, validChecks, readReviewSourceFiles } from './review-package.mjs';
 import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,validCallTimeout,requestFor,terminalFor,failureCode } from './effect-contract.mjs';
 import { reviewResult,reviewReceipt } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
@@ -22,7 +22,8 @@ import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence
 import {readCmAiProjectLearningWriteback,writeCmAiProjectLearning} from './cm-ai-learning-writer.mjs';
 import {verifyCmAiTaskLearningHandoff,writeCmAiTaskLearningHandoff} from './cm-ai-learning-handoff-writer.mjs';
 import {createHostHandoff} from './host-handoff.mjs';
-import {inspectFixCodeAssociation} from './fix-code-association.mjs';
+import {inspectFixCodeAssociation,explainCompletedDelivery} from './fix-code-association.mjs';
+import {completedReviewedDeliveries} from './reviewed-deliveries.mjs';
 import {validateAcceptedFix} from './accepted-fix.mjs';
 import {inspectCmAiQaFailure} from './cm-ai-qa-log.mjs';
 import {readHostQaFixHistory} from './host-qa-fix.mjs';
@@ -273,6 +274,8 @@ export function createTaskRunner(options) {
     identity:{...config.identity,attempt},packageDigest:reviewPackage?.packageDigest??null,
     receipt,receipts,calls,cancelAfterCommit,workflowError,...(store?{cancellationRequested}:{}),...(taskMode?{taskCommit}:{}),
     ...(invocationMode?{reviewInvocation}:{}),...(taskLearning!==null?{learningWriteback:learningResult?.writeback??null}:{})},16*1024*1024);
+  // Other task runs' committed, reviewed deliveries in this specs root.
+  const laterDeliveries=()=>completedReviewedDeliveries({specsRoot:completion.owner.specsRoot,root:config.root,identity:config.identity});
   let publication;
   // Replay decides; this only reports an exit abandonReview would accept.
   function reviewResultAbandonable(){
@@ -311,15 +314,28 @@ export function createTaskRunner(options) {
           need(history.handoffDigest===handoffDigest,'fix_qa_source_changed');
         }
         inspectFixCodeAssociation({root:config.root,specsRoot:completion.owner.specsRoot,baseline:base,
-          parentPackage:reviewPackage,fixPackages:acceptedFixes.map(item=>item.evidence.reviewPackage)});
+          parentPackage:reviewPackage,fixPackages:acceptedFixes.map(item=>item.evidence.reviewPackage),deliveries:laterDeliveries});
         const last=acceptedFixes.at(-1);
         return freeze({...current,acceptedQaFix:{qaRound:last.qaRound,testRunId:last.evidence.qaSource.testRunId,
           evidenceDigest:digest(last)}});
       }
-      verifyReviewPackage({root:config.root,baseline:base,checks:currentChecks,
-        reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
+      try{verifyReviewPackage({root:config.root,baseline:base,checks:currentChecks,
+        reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});}
+      catch(error){
+        // The exact reviewed tree no longer holds. A committed task may still be
+        // intact under later, separately reviewed deliveries of other runs.
+        if(!completion)throw error;
+        if(reviewPackage.handoff){
+          const handoff=handoffBinding().handoffPath;
+          need(digest(readReviewSourceFiles(path.dirname(handoff),[path.basename(handoff)])[0])===digest(reviewPackage.handoff),'package_mismatch');
+        }
+        explainCompletedDelivery({root:config.root,baseline:base,parentPackage:reviewPackage,deliveries:laterDeliveries()});
+      }
       return current;
-    } catch {return freeze({...current,code:'correction_review_required'});}
+    } catch(error){
+      return freeze({...current,code:'correction_review_required',...(error?.code==='fix_current_code_unexplained'
+        ?{reason:`未经审查的改动：${error.paths.slice(0,20).join(', ')}${error.paths.length>20?` 等 ${error.paths.length} 个路径`:''}`}:{})});
+    }
   };
   const halt=(next,why,detail=null)=>{state=next;code=why;reason=detail;};
   function frame(){return {state,code,reason,attempt,session,sequence,reviewPackage,currentChecks,receipt,receipts,calls,
@@ -996,7 +1012,7 @@ export function createTaskRunner(options) {
     const current=status();
     need(current.state==='fixture_completed'&&current.code!=='review_publication_required','qa_fix_parent_not_completed');
     return inspectFixCodeAssociation({root:config.root,
-      ...(completion?{specsRoot:completion.owner.specsRoot}:{}),
+      ...(completion?{specsRoot:completion.owner.specsRoot,deliveries:laterDeliveries}:{}),
       baseline:base,parentPackage:reviewPackage,
       fixPackages:acceptedFixes.some(item=>item.evidence.reviewPackage.packageDigest===fixPackage.packageDigest)
         ?acceptedFixes.map(item=>item.evidence.reviewPackage)

@@ -60,6 +60,18 @@ function stepRecord(id){
 }
 const retryBase=id=>id.replace(/-retry-[1-8]-(intent|result)$/,'-$1');
 const latestStepRecord=(records,id)=>[...records].reverse().find(row=>retryBase(row.id)===id);
+// A cause or second-round final review that produced no review result may be
+// abandoned once, audited, and dispatched again under its own record prefix.
+const REVIEW_ABANDON={cause_review:'fix-cause',revision_final_review:'fix-revision-final'};
+const reviewCycleRecord=(records,prefix,suffix)=>records.some(row=>row.id===`${prefix}-abandoned`)
+  ?records.find(row=>row.id===`${prefix}-retry-${suffix}`):records.find(row=>row.id===`${prefix}-${suffix}`);
+// Reviews wait for their own budget (host review configuration), never for the
+// reproduction command's. Embedders that supply none keep the historical budget.
+function reviewTimeout(adapter,fallback){
+  if(adapter?.timeoutMs===undefined)return fallback;
+  need(Number.isInteger(adapter.timeoutMs)&&adapter.timeoutMs>=1&&adapter.timeoutMs<=3600000,'invalid_review_config');
+  return adapter.timeoutMs;
+}
 
 function diagnosis(raw){
   const value=json(raw,32*1024);
@@ -192,14 +204,14 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
   const publishCause=(inspectOnly=false)=>{
     const records=store.snapshot().records;
     return publishCauseEvidence({specsRoot:evidenceSpecsRoot,configuration:reviewConfiguration,inspectOnly,
-      registration:records.find(record=>record.id==='fix-cause-registered')?.payload,
-      started:records.find(record=>record.id==='fix-cause-started')?.payload.providerThreadId??null,
-      result:records.find(record=>record.id==='fix-cause-result')?.payload});
+      registration:reviewCycleRecord(records,'fix-cause','registered')?.payload,
+      started:reviewCycleRecord(records,'fix-cause','started')?.payload.providerThreadId??null,
+      result:reviewCycleRecord(records,'fix-cause','result')?.payload});
   };
   const publishFinal=(inspectOnly=false)=>{
     const records=store.snapshot().records;
     return publishFixFinalEvidence({specsRoot:evidenceSpecsRoot,configuration:reviewConfiguration,inspectOnly,
-      causeThread:records.find(record=>record.id==='fix-cause-started')?.payload.providerThreadId??null,
+      causeThread:reviewCycleRecord(records,'fix-cause','started')?.payload.providerThreadId??null,
       registration:finalRecord(records,'registered')?.payload,
       started:finalRecord(records,'started')?.payload.providerThreadId??null,
       result:finalRecord(records,'result')?.payload});
@@ -208,7 +220,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     const records=store.snapshot().records;
     const failed=latestStepRecord(records,'fix-walkthrough-result')?.payload;
     const regression=latestStepRecord(records,'fix-post-regression-result')?.payload;
-    return {configuration:fixFinalReviewConfiguration(reviewConfiguration,records.find(row=>row.id==='fix-cause-started')?.payload.providerThreadId??null),
+    return {configuration:fixFinalReviewConfiguration(reviewConfiguration,reviewCycleRecord(records,'fix-cause','started')?.payload.providerThreadId??null),
       registration:finalRecord(records,'registered')?.payload,
       started:finalRecord(records,'started')?.payload.providerThreadId??null,
       result:finalRecord(records,'result')?.payload,
@@ -222,9 +234,9 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
   const publishRevisionFinal=(inspectOnly=false)=>{
     const records=store.snapshot().records;
     return publishFixFinalEvidence({specsRoot:evidenceSpecsRoot,configuration:reviewConfiguration,inspectOnly,reviewFeedback:revisionFeedback(),
-      registration:records.find(row=>row.id==='fix-revision-final-registered')?.payload,
-      started:records.find(row=>row.id==='fix-revision-final-started')?.payload.providerThreadId??null,
-      result:records.find(row=>row.id==='fix-revision-final-result')?.payload});
+      registration:reviewCycleRecord(records,'fix-revision-final','registered')?.payload,
+      started:reviewCycleRecord(records,'fix-revision-final','started')?.payload.providerThreadId??null,
+      result:reviewCycleRecord(records,'fix-revision-final','result')?.payload});
   };
   const reviewBaseline=()=>{
     const records=store.snapshot().records;
@@ -359,6 +371,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     let repairBaseline=null,repaired=null;
     let regression=null,retrospective=null,retrospectivePackage=null,writeback=null,learningPackage=null,handoff=null;
     let finalRegistration=null,finalStarted=null,finalResult=null,finalRecovery=null,finalRecoveryCount=0;
+    let causeOrigin=null,causeResultPayload=null,causeAbandonment=null,revisionFinalResultPayload=null,revisionAbandonment=null;
     const finalInvocations=new Set(),finalThreads=new Set();
     let joinedCount=0;const seenJoined=new Set();
     let n5=null,postReviewRegression=null,walkthrough=null,revision=null,revisionBaseline=null,revisionRepair=null,revisionRegression=null;
@@ -428,6 +441,13 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(finalRecovery&&record.id===`${recoveryPrefix(finalRecoveryCount)}-${suffix}`,'fix_history_invalid');
         record={...record,id:`fix-final-${suffix}`};
       }else if(/^fix-final-(registered|started|result)$/.test(record.id))need(!finalRecovery,'fix_history_invalid');
+      // After a one-time abandonment only the retry cycle's records are valid.
+      const reviewRetry=/^(fix-cause|fix-revision-final)-retry-(registered|started|result)$/.exec(record.id);
+      if(reviewRetry){
+        need((reviewRetry[1]==='fix-cause'?causeAbandonment:revisionAbandonment)!==null,'fix_history_invalid');
+        record={...record,id:`${reviewRetry[1]}-${reviewRetry[2]}`};
+      }else if(/^fix-cause-(registered|started|result)$/.test(record.id))need(causeAbandonment===null,'fix_history_invalid');
+      else if(/^fix-revision-final-(registered|started|result)$/.test(record.id))need(revisionAbandonment===null,'fix_history_invalid');
       const observed=/^fix-observation-(?:(\d+)-)?(resume-prepared|reproduce-intent|reproduce-result|diagnose-intent|diagnose-result)$/.exec(record.id);
       if(observed){
         const cycle=observed[2]==='resume-prepared'?observationCycle+1:observationCycle;
@@ -639,6 +659,27 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(record.payload.outcome==='created'&&record.payload.status==='ready_for_review'&&/^[a-f0-9]{64}$/.test(record.payload.handoffSha256),'invalid_handoff_result');
         revisionHandoff=record.payload;pending=null;stage='revision_final_review_required';continue;
       }
+      if(record.id==='fix-cause-abandoned'||record.id==='fix-revision-final-abandoned'){
+        const causeKind=record.id==='fix-cause-abandoned';
+        const registration=causeKind?cause:revisionFinalRegistration,result=causeKind?causeResult:revisionFinalResult;
+        need(record.kind==='result'&&(causeKind?causeAbandonment:revisionAbandonment)===null&&registration&&stage==='unknown'
+          &&(pending===(causeKind?'cause_review':'revision_final_review')&&!result
+            ||pending===null&&result&&result.observationStatus!=='completed'),'fix_history_invalid');
+        const value=record.payload,resultPayload=causeKind?causeResultPayload:revisionFinalResultPayload;
+        shape(value,['invocationId','registrationDigest','providerThreadId','resultDigest','reason','abandonedAt']);
+        need(value.invocationId===registration.request.invocationId&&value.registrationDigest===digest(registration)
+          &&value.providerThreadId===(causeKind?started:revisionFinalStarted)
+          &&value.resultDigest===(resultPayload===null?null:digest(resultPayload)),'fix_review_abandon_mismatch');
+        need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=1000
+          &&!/[\r\n\0\u0085\u2028\u2029]/.test(value.reason)&&Number.isSafeInteger(value.abandonedAt)&&value.abandonedAt>0,'fix_history_invalid');
+        if(causeKind){
+          causeAbandonment=value;stage=causeOrigin;cause=null;started=null;causeResult=null;causeResultPayload=null;causeResumeStage=null;
+        }else{
+          revisionAbandonment=value;stage='revision_final_review_required';
+          revisionFinalRegistration=null;revisionFinalStarted=null;revisionFinalResult=null;revisionFinalResultPayload=null;
+        }
+        pending=null;continue;
+      }
       if(record.id==='fix-revision-final-registered'){
         need(revision&&stage==='revision_final_review_required'&&record.kind==='intent','fix_history_invalid');
         revisionFinalRegistration=inspectFixFinalRegistration(record.payload,fixRevisionReviewConfiguration(revisionFeedback(),revision.nextIdentity,hostContextIds));
@@ -651,6 +692,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(revision&&pending==='revision_final_review'&&revisionFinalStarted===null&&record.kind==='result','fix_history_invalid');
         need(record.payload.providerThreadId!==finalRecovery?.providerThreadId,'final_context_mismatch');
         shape(record.payload,['providerThreadId']);id(record.payload.providerThreadId);
+        need(record.payload.providerThreadId!==revisionAbandonment?.providerThreadId,'final_context_mismatch');
         const config=fixRevisionReviewConfiguration(revisionFeedback(),revision.nextIdentity,hostContextIds);
         need(![...fixHostContexts(config),config.reviewer.contextId,...config.reviewer.excludedThreadIds].includes(record.payload.providerThreadId),'final_context_mismatch');
         revisionFinalStarted=record.payload.providerThreadId;continue;
@@ -658,7 +700,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(record.id==='fix-revision-final-result'){
         need(revision&&pending==='revision_final_review'&&record.kind==='result','fix_history_invalid');
         revisionFinalResult=inspectFixFinalResult(record.payload,revisionFinalRegistration,fixRevisionReviewConfiguration(revisionFeedback(),revision.nextIdentity,hostContextIds),revisionFinalStarted);
-        pending=null;stage=revisionFinalResult.observationStatus==='completed'
+        revisionFinalResultPayload=record.payload;pending=null;stage=revisionFinalResult.observationStatus==='completed'
           ?revisionFinalResult.review.verdict==='approved'?'revision_final_review_evidence_required':revisionFinalResult.review.verdict==='changes_requested'?'revision_review_limit_reached':'revision_final_review_blocked':'unknown';continue;
       }
       if(record.id==='fix-revision-n5-result'){
@@ -908,16 +950,17 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(digest(pkg.identity)===digest(identity)&&pkg.defect===configuration.defect
           &&digest(pkg.reproduction)===digest(reproduction)&&digest(pkg.diagnosis)===digest(diagnosed)
           &&digest(pkg.learning)===digest(learning),'cause_registration_mismatch');
-        stage='unknown';pending='cause_review';continue;
+        causeOrigin=stage;stage='unknown';pending='cause_review';continue;
       }
       if(record.id==='fix-cause-started'){
         need(pending==='cause_review'&&started===null&&record.kind==='result','fix_history_invalid');
         shape(record.payload,['providerThreadId']);id(record.payload.providerThreadId);started=record.payload.providerThreadId;
-        need(![...hostContextIds,configuration.causeReview.contextId,finalStarted,...configuration.causeReview.excludedThreadIds].includes(started),'cause_registration_mismatch');continue;
+        need(![...hostContextIds,configuration.causeReview.contextId,finalStarted,...configuration.causeReview.excludedThreadIds,
+          causeAbandonment?.providerThreadId].includes(started),'cause_registration_mismatch');continue;
       }
       if(record.id==='fix-cause-result'){
         need(pending==='cause_review'&&record.kind==='result','fix_history_invalid');
-        causeResult=inspectCauseResult(record.payload,cause,reviewConfiguration,started);pending=null;
+        causeResult=inspectCauseResult(record.payload,cause,reviewConfiguration,started);causeResultPayload=record.payload;pending=null;
         stage=causeResult.observationStatus!=='completed'?'unknown':causeResult.review.verdict==='approved'
           ?(causeResumeStage??(diagnosed.status==='design_change'?'design_change_required':'red_test_required'))
           :causeResult.review.verdict==='changes_requested'?'rediagnosis_required':'cause_review_blocked';continue;
@@ -1086,7 +1129,18 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       catch{stage='visual_evidence_required';}
     }
     if(stage==='design_change_required'&&!runRed)stage='escalation_required';
+    // Registered review with no review result: nothing arrived, or only a timeout,
+    // disconnect or cancellation observation. Each kind may be abandoned once.
+    const noReviewResult=(registration,result,kind)=>stage==='unknown'&&registration!==null
+      &&(pending===kind&&!result||pending===null&&result!==null&&result.observationStatus!=='completed');
+    const causeNoResult=noReviewResult(cause,causeResult,'cause_review');
+    const revisionNoResult=noReviewResult(revisionFinalRegistration,revisionFinalResult,'revision_final_review');
+    const reviewAbandonable=causeNoResult&&!causeAbandonment?'cause_review':revisionNoResult&&!revisionAbandonment?'revision_final_review':null;
     const status=json({identity,stage,pending,abandoned,executionActive:active!==null,reproduction,diagnosis:diagnosed,learning,causeReview:causeResult,
+      ...(reviewAbandonable?{reviewAbandonable}:{}),
+      ...(causeNoResult&&causeAbandonment||revisionNoResult&&revisionAbandonment?{reviewAbandonBudgetExhausted:true}:{}),
+      ...(causeAbandonment?{causeReviewAbandonment:causeAbandonment}:{}),
+      ...(revisionAbandonment?{revisionFinalReviewAbandonment:revisionAbandonment}:{}),
       ...(causeReviewCorrection?{causeReviewCorrection}:{}),
       ...(observationResume?{observationResume,observationCycle}:{}),
       ...(observationReproduction?{observationReproduction}:{}),
@@ -1148,6 +1202,26 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         detail:`显式放弃 unknown 步骤：${current.pending}`,data:{pending:current.pending,reason}});
       return project();
     },
+    // One audited abandonment per review kind, mirroring cm-ai abandon_review. The
+    // host confirms the old reviewer process stopped; the record binds the exact
+    // registration, thread and any no-result observation. The retry needs the
+    // original review permission and a fresh reviewer thread.
+    abandonReview({reason,authorized=false}={}){
+      need(!closed&&active===null,'fix_busy');need(authorized===true,'fix_review_abandon_authorization_required');
+      need(typeof reason==='string'&&reason.trim().length>0&&Buffer.byteLength(reason,'utf8')<=1000
+        &&!/[\r\n\0\u0085\u2028\u2029]/.test(reason),'fix_review_abandon_reason_required');
+      const current=project();
+      need(current.reviewAbandonBudgetExhausted!==true,'fix_review_abandon_budget_exhausted');
+      need(current.reviewAbandonable,'fix_review_abandon_unavailable');
+      const records=store.snapshot().records,prefix=REVIEW_ABANDON[current.reviewAbandonable];
+      const registration=records.find(row=>row.id===`${prefix}-registered`),result=records.find(row=>row.id===`${prefix}-result`)??null;
+      append(`${prefix}-abandoned`,'result',{invocationId:registration.payload.request.invocationId,registrationDigest:digest(registration.payload),
+        providerThreadId:records.find(row=>row.id===`${prefix}-started`)?.payload.providerThreadId??null,
+        resultDigest:result===null?null:digest(result.payload),reason,abandonedAt:Date.now()});
+      logFixEvent({specsRoot:evidenceSpecsRoot,identity,configuration,event:'abandon',phase:current.reviewAbandonable,
+        detail:`显式放弃无结果的审查：${current.reviewAbandonable}`,data:{pending:current.reviewAbandonable,reason}});
+      return project();
+    },
     recoverFinalReview({authorized=false,recoveryInvocationId=null,invocationId,packageDigest,previousInvocationStopped,reason}={}){
       need(!closed&&active===null,'fix_busy');need(authorized===true,'fix_review_recovery_authorization_required');
       const current=project(),records=store.snapshot().records;
@@ -1176,7 +1250,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(configuration.qaSource)readFixQaSourceHistory({specsRoot,identity,configuration});
       const revised=Boolean(current.revisionN5),selected=revised?revisionCloseoutStatus(current):current;
       const records=store.snapshot().records;
-      const registration=(revised?records.find(row=>row.id==='fix-revision-final-registered'):finalRecord(records,'registered')).payload;
+      const registration=(revised?reviewCycleRecord(records,'fix-revision-final','registered'):finalRecord(records,'registered')).payload;
       const reviewPackage=registration.request.payload.reviewPackage;
       need(selected.n5.packageDigest===reviewPackage.packageDigest,'fix_completion_evidence_unavailable');
       // Only a projection of the original owner and gate, never a new completion
@@ -1272,7 +1346,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       if(status.revisionN5){
         need(['revision_closeout_required','revision_closeout_incomplete','completed'].includes(status.stage),'fix_closeout_unavailable');
-        const registration=store.snapshot().records.find(row=>row.id==='fix-revision-final-registered');
+        const registration=reviewCycleRecord(store.snapshot().records,'fix-revision-final','registered');
         finishFix({specsRoot:evidenceSpecsRoot,identity:status.revision.nextIdentity,configuration,status:revisionCloseoutStatus(status),registeredAt:registration.payload.registeredAt},{assertOwned(){
           const current=project();need(['revision_closeout_required','revision_closeout_incomplete','completed'].includes(current.stage),'fix_evidence_changed');
           need(digest(current.revisionN5)===digest(status.revisionN5)&&digest(current.revisionWalkthrough)===digest(status.revisionWalkthrough),'fix_evidence_changed');
@@ -1341,7 +1415,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       need(!closed&&active===null,'fix_busy');const current=project();
       if(current.stage==='revision_completion_gate_required'){
         need(!current.revisionN5,'n5_evidence_changed');
-        const gate=checkN5(revisionN5Options()),registration=store.snapshot().records.find(row=>row.id==='fix-revision-final-registered').payload;
+        const gate=checkN5(revisionN5Options()),registration=reviewCycleRecord(store.snapshot().records,'fix-revision-final','registered').payload;
         append('fix-revision-n5-result','result',{gate,packageDigest:registration.request.payload.reviewPackage.packageDigest});return project();
       }
       if(current.stage!=='completion_gate_required')return current;
@@ -1354,7 +1428,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       need(!closed&&active===null,'fix_busy');const current=project();
       if(['revision_final_review_evidence_required','revision_review_limit_reached','revision_final_review_blocked','revision_completion_gate_required','revision_post_review_regression_required','revision_post_review_regression_blocked','revision_closeout_required','revision_walkthrough_blocked'].includes(current.stage)){
         need(current.revisionFinalReview?.observationStatus==='completed','final_review_evidence_unavailable');publishRevisionFinal();
-        const registration=store.snapshot().records.find(row=>row.id==='fix-revision-final-registered').payload,result=current.revisionFinalReview;
+        const registration=reviewCycleRecord(store.snapshot().records,'fix-revision-final','registered').payload,result=current.revisionFinalReview;
         logFixEvent({specsRoot:evidenceSpecsRoot,identity:current.revision.nextIdentity,configuration,event:'review',phase:'complete',
           detail:'Independent fix second implementation review evidence published',data:{feature:`fix-${identity.taskId.slice(6)}`,review_kind:'implementation',round:2,
             result:result.review.verdict,provider:result.provider,package_digest:registration.request.payload.reviewPackage.packageDigest,
@@ -1377,7 +1451,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     },
     async reviewFinal(){
       need(!closed&&active===null,'fix_busy');const start=project();if(!['final_review_required','revision_final_review_required'].includes(start.stage))return start;
-      const revising=start.stage==='revision_final_review_required',prefix=revising?'fix-revision-final':recoveryPrefix(start.finalReviewRecoveryCount);
+      const revising=start.stage==='revision_final_review_required';
+      const prefix=revising?(start.revisionFinalReviewAbandonment?'fix-revision-final-retry':'fix-revision-final'):recoveryPrefix(start.finalReviewRecoveryCount);
       need(finalReview&&typeof assertReviewReady==='function','final_review_unavailable');
       const ready=assertReviewReady();if(types.isPromise(ready))Promise.prototype.then.call(ready,()=>{},()=>{});
       need(ready===undefined,'final_sync_registration_required');
@@ -1386,7 +1461,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const pkg=createReviewPackage({root:configuration.reproduction.cwd,baseline,checks,handoffPath:selectedHandoff});
       if(start.finalReviewRecovery&&!revising)need(pkg.packageDigest===start.finalReviewRecovery.packageDigest,'fix_review_recovery_drift');
       const run=createFixFinalReview({reviewPackage:pkg,configuration:revising?fixRevisionReviewConfiguration(revisionFeedback(),start.revision.nextIdentity,hostContextIds):fixFinalReviewConfiguration(reviewConfiguration,start.causeReview?.providerThreadId??null),
-        timeoutMs:configuration.reproduction.timeoutMs},finalReview);
+        timeoutMs:reviewTimeout(finalReview,configuration.reproduction.timeoutMs)},finalReview);
       const controller=new AbortController();active=controller;let registered=false;
       try{
         const result=await run({signal:controller.signal,register(value){
@@ -1397,7 +1472,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           need(current.packageDigest===pkg.packageDigest,'final_package_mismatch');
           joinLiveHost();append(`${prefix}-registered`,'intent',value);registered=true;
         },onStarted(providerThreadId){
-          need(providerThreadId!==start.finalReviewRecovery?.providerThreadId,'final_context_mismatch');
+          need(providerThreadId!==start.finalReviewRecovery?.providerThreadId
+            &&providerThreadId!==(revising?start.revisionFinalReviewAbandonment?.providerThreadId:undefined),'final_context_mismatch');
           if(!revising)need(!store.snapshot().records.some(row=>finalCycleRecord(row,'started')
             &&row.payload.providerThreadId===providerThreadId),'final_context_mismatch');
           append(`${prefix}-started`,'result',{providerThreadId});
@@ -1687,6 +1763,9 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         &&!(status.stage==='observation_cause_review_correction_required'&&status.causeReviewCorrection))return status;
       need(configuration.causeReview&&causeReview&&typeof causeReview.authorize==='function'&&typeof causeReview.run==='function','cause_review_unavailable');
       const reviewer=configuration.causeReview;
+      const budget=reviewTimeout(causeReview,configuration.reproduction.timeoutMs);
+      const prefix=status.causeReviewAbandonment?'fix-cause-retry':'fix-cause';
+      const abandonedThread=status.causeReviewAbandonment?.providerThreadId??null;
       const pkg=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,status});
       const request=requestFor({invocationId:`fix-cause.${randomUUID()}`,identity,role:'reviewer',provider:reviewer.provider,
         requestedModel:reviewer.requestedModel,contextId:reviewer.contextId,payload:{reviewPackage:pkg,priorReview:null}});
@@ -1697,7 +1776,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(!controller.signal.aborted,'cancelled');
         if(digest(grant)===digest({status:'denied',code:'permission_denied'}))return {...project(),reason:'permission_denied'};
         const registration=inspectCauseRegistration({request,authorizationAt,registeredAt:Date.now(),grant},reviewConfiguration);
-        joinLiveHost();append('fix-cause-registered','intent',registration);
+        joinLiveHost();append(`${prefix}-registered`,'intent',registration);
         registered=true;
         const dispatchAt=Date.now();need(dispatchAt>=registration.registeredAt&&dispatchAt<grant.expiresAt,'grant_expired');
         const events=[];let invalid=false,sealed=false,timedOut=false,started=null;
@@ -1709,7 +1788,9 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
             inspectProviderCauseReview(JSON.stringify({...observation({status:'failed',code:'in_progress'}),events:[...events,event]}),
               JSON.stringify(causeExpectation(request,reviewConfiguration)));
             if(event.event==='thread.started'){
-              append('fix-cause-started','result',{providerThreadId:event.provider_thread});started=event.provider_thread;
+              // A retry is a fresh reviewer thread, never the abandoned one.
+              need(event.provider_thread!==abandonedThread,'observation_context');
+              append(`${prefix}-started`,'result',{providerThreadId:event.provider_thread});started=event.provider_thread;
             }
             events.push(event);return true;
           }catch{invalid=true;controller.abort();return false;}
@@ -1717,18 +1798,21 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         let rejectAbort;
         const interrupted=new Promise((resolve,reject)=>{rejectAbort=()=>reject(Object.assign(new Error('cause_review_interrupted'),{code:'cause_review_interrupted'}));});
         controller.signal.addEventListener('abort',rejectAbort,{once:true});
-        timer=setTimeout(()=>{timedOut=true;controller.abort();},configuration.reproduction.timeoutMs);
+        timer=setTimeout(()=>{timedOut=true;controller.abort();},budget);
         let result;
         try{
           result=await Promise.race([interrupted,Promise.resolve().then(()=>{
             need(!controller.signal.aborted,'cause_review_interrupted');
             return causeReview.run(request,{signal:controller.signal,onEvent});
           })]);
-        }finally{sealed=true;controller.signal.removeEventListener('abort',rejectAbort);}
-        if(invalid||controller.signal.aborted)return project();
+        }catch(error){if(!timedOut||invalid)throw error;}
+        finally{sealed=true;controller.signal.removeEventListener('abort',rejectAbort);}
+        // The review budget expiring is a recorded no-result observation, not an
+        // unrecorded interruption; a cancellation or invalid stream stays unknown.
+        if(invalid||controller.signal.aborted&&!timedOut||project().stage==='cancelled')return project();
         const value={dispatchAt,observation:observation(timedOut?{status:'failed',code:'timeout'}:result)};
         inspectCauseResult(value,registration,reviewConfiguration,started);
-        append('fix-cause-result','result',value);
+        append(`${prefix}-result`,'result',value);
         if(project().causeReview?.observationStatus==='completed')publishCause();
         return project();
       }catch(error){

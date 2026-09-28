@@ -53,6 +53,7 @@ export function fixProgress(status,config={},authorization={}){
       remaining:finalPending?['取得有效独立审查结果','保存审查证据','核对完成条件','审后回归',...(config.walkthrough?['走查']:[]),'完成收尾']:null,
       nextAction:finalPending&&invocation.providerThreadId
         ?'先确认原调用已停止；核对当前审查包并取得本次一次续审授权，再恢复原任务。'
+        :status.reviewAbandonable?'审查没有结论：先确认原审查进程已停止，再用 abandon_review（--allow-abandon，每种审查一次）放弃这次调用，然后重新审查。'
         :'核对原操作与实际结果；不要重跑已完成步骤或推定成功。',requiresUser:true,
       ...(finalPending?{recovery:{invocationId:invocation.invocationId,packageDigest:invocation.packageDigest,
         completedRecoveryPreparations:status.finalReviewRecoveryCount??0,

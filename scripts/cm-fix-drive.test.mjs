@@ -115,6 +115,15 @@ test('the driver abandons a local unknown step using only plan reason and flag',
   assert.equal(JSON.parse(result.stdout).result.stage,'reproduce');
   assert(JSON.parse(fs.readFileSync(statePath)).records.some(row=>row.id==='fix-abandoned-1'));
 });
+test('#15 the driver refuses abandon_review without plan reason and --allow-abandon before launching the host',{skip},t=>{
+  const f=fixture(t);
+  for(const plan of [f.plan({mode:'resume',permissions:[],reason:'Reviewer stopped',answers:undefined}),
+    f.plan({mode:'resume',permissions:['--allow-abandon'],answers:undefined})]){
+    const refused=drive(plan,'abandon_review');
+    assert.equal(refused.status,2);assert.match(refused.stderr,/abandon_review 需要 PLAN\.reason/);
+  }
+  assert.equal(fs.existsSync(path.join(f.archive,'.reviews')),false);
+});
 test('revision repair requires its own answer before launching the host',{skip},t=>{
   const f=fixture(t);
   fs.writeFileSync(path.join(f.answers,'learning.json'),JSON.stringify(learning));

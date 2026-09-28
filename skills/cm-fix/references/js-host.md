@@ -107,12 +107,32 @@ beforeSha256严格复制expected中该路径的摘要（原不存在则null）�
 `post_review_regression`，以及 `revision_test_author`、`revision_test_check`、`revision_repair`、
 `revision_regression`、`revision_retrospective`、`revision_walkthrough`、`revision_post_review_regression`。
 拒绝 `cause_review`、`final_review`、`revision_final_review`、`learning_writeback`、
-`revision_learning_writeback`、`handoff`、`revision_handoff`；最终审查仍只走既有人工续审。
+`revision_learning_writeback`、`handoff`、`revision_handoff`；第一轮最终审查仍只走既有人工续审，
+原因审查与第二轮最终审查改用下节的 `abandon_review`。
 
 成功放弃只追加 `fix-abandoned-N` 和 `abandon` 日志，`status.abandoned` 列出步骤、原因、时间；
 旧 intent 和部分结果保留。下一次单独执行原步骤，新 intent/result 使用 `-retry-N-` ID，
 红灯原始输出另存 `-retry-N.md`，不覆盖旧输出。`advance`/`run` 遇到 `unknown` 仍停下，
 且放弃本身不证明旧操作没有产生部分本地改动。未经显式授权或不在上表的步骤返回 `fix_abandon_unavailable`。
+
+### 原因审查与第二轮最终审查无结果时的一次性放弃
+
+原因审查（`pending:"cause_review"`）或第二轮最终审查（`pending:"revision_final_review"`）已登记，却没有审查结论时——
+宿主中途被杀、审查超时、断连或被取消——`status` 为 `unknown` 并带 `reviewAbandonable`。
+先确认旧审查进程已退出，再以 `--allow-abandon` 启动，发送
+`{"requestId":"abandon-review-1","operation":"abandon_review","reason":"旧审查进程已确认退出"}`；
+QA-fix 子宿主用 `--allow-qa-fix-abandon`，`fix_action` 带 `fixOperation:"abandon_review"` 和 `reason`。
+原因规则同 `abandon_step`。每种审查每个运行只能放弃一次；重审仍无结论时返回 `fix_review_abandon_budget_exhausted`，
+`status.reviewAbandonBudgetExhausted` 为 true，只能按原阻断处理，不能继续重派。
+
+放弃追加 `fix-cause-abandoned` 或 `fix-revision-final-abandoned`，绑定原调用 ID、登记摘要、已知线程和无结论结果的摘要，
+写 `abandon` 日志，并回到 `cause_review_required`（或原迟到纠正阶段）/`revision_final_review_required`。
+重审仍需原 `--allow-cause-review` / `--allow-final-review` 和一次新的授权，记录改用 `fix-cause-retry-*` /
+`fix-revision-final-retry-*`；新调用的审查线程不能是被放弃的那条。旧记录一字不改，没有放弃记录的运行照原样回放。
+
+审查等待使用审查配置 `--review-config` 的 `timeoutMs`（1–3600000 毫秒，省略为 900000），同时交给审查 worker；
+不再使用 `reproduction.timeoutMs`。原因审查到时会记下超时结果（`transport_timeout`），不再停在无记录的 unknown。
+自行嵌入 owner 而不提供审查预算的调用方仍沿用复现超时。
 
 ### 无specs普通项目
 

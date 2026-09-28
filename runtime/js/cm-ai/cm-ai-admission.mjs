@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {readSpecsStatus,writeSpecsStatus} from '../specs-status.mjs';
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 import {buildManifest,verifyManifest} from '../../../scripts/cm-spec-manifest.mjs';
+import {outstandingFeatureQa,describeOutstandingQa} from './project-qa-gate.mjs';
 export {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 
 const TASK=/^\s*-\s*\[([ xX])\]\s+(?:~~)?(T-[A-Za-z0-9][A-Za-z0-9._-]*)(?=[:\s])[:\s]*(.*)$/;
@@ -341,6 +342,15 @@ function selectTask(specsDir,names){
   return {features,warnings,nextTask:null};
 }
 
+// Selection stays tasks.md-driven; an earlier feature's unfinished QA is surfaced
+// here and enforced at N8 (finish/run_finalize), never by reordering tasks.
+function featureQaWarnings(specsDir,features){
+  try{
+    return outstandingFeatureQa({specsDir,features}).map(item=>
+      `⚠ QA 未通过: ${describeOutstandingQa(item)}；它通过之前项目不能收尾（run_done）`);
+  }catch{return ['⚠ QA 日志无法读取，未能确认各 feature 的最新 QA 是否通过'];}
+}
+
 export function inspectCmAiAdmission(options){
   return admissionFor(options);
 }
@@ -402,8 +412,9 @@ function admissionFor(options,inProgressBootstrap=null){
   const selection=selectTask(specsDir,discovered.names);
   if(selection.error)return result(base,'blocked',selection.error,{features:selection.features,warnings:selection.warnings,
     ...(selection.detail?{detail:selection.detail}:{})});
-  if(!selection.nextTask)return result(base,'complete','all_tasks_terminal',{features:selection.features,warnings:selection.warnings});
-  return result(base,'ready','task_selected',{features:selection.features,nextTask:selection.nextTask,eligibleTasks:selection.eligibleTasks,warnings:selection.warnings});
+  const warnings=[...selection.warnings,...featureQaWarnings(specsDir,discovered.names)];
+  if(!selection.nextTask)return result(base,'complete','all_tasks_terminal',{features:selection.features,warnings});
+  return result(base,'ready','task_selected',{features:selection.features,nextTask:selection.nextTask,eligibleTasks:selection.eligibleTasks,warnings});
 }
 
 // Trusted caller selection is data bound by openControlRun, never message authority.

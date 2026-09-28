@@ -15,11 +15,27 @@
 `revision_regression`、`revision_retrospective`、`revision_walkthrough`、`revision_post_review_regression`。
 `cause_review`、`final_review`、`revision_final_review`、`learning_writeback`、
 `revision_learning_writeback`、`handoff`、`revision_handoff` 一律拒绝本操作，返回 `fix_abandon_unavailable`。
-最终审查的既有人工续审仍是唯一出口。
+第一轮最终审查的既有人工续审仍是其唯一出口；原因审查与第二轮最终审查见下节 `abandon_review`。
 
 放弃追加 `fix-abandoned-N` 记录和 `abandon` 日志；记录绑定旧 intent 摘要，`status.abandoned` 显示步骤、原因和时间。
 重做回到原待执行阶段，intent/result 用 `-retry-N-` ID；红灯输出加 `-retry-N.md`，旧记录和输出保留。
 `advance`/`run` 不自行放弃，放弃不跳过原阶段的校验、授权和独立审查。
+
+## cm-fix 原因审查与第二轮最终审查的一次性放弃重审
+
+原因审查或第二轮最终审查已登记但没有审查结论（宿主中途被杀、超时、断连或取消）时，`status.stage=unknown`
+并带 `reviewAbandonable:"cause_review"|"revision_final_review"`。宿主确认旧审查进程已退出后，以 `--allow-abandon`
+（QA-fix 父宿主为 `--allow-qa-fix-abandon`，经 `fix_action` 的 `fixOperation:"abandon_review"`）发送
+`{"requestId":"abandon-review-1","operation":"abandon_review","reason":"具体原因"}`，原因规则同 `abandon_step`。
+每种审查每个运行最多一次，与 cm-ai 的 `abandon_review` 对应；第二次仍无结论返回 `fix_review_abandon_budget_exhausted`。
+
+放弃记录 `fix-cause-abandoned` / `fix-revision-final-abandoned` 绑定原 invocationId、登记摘要、已知线程及无结论结果的摘要，
+写 `abandon` 日志，回到待审阶段；回放逐项核对这些绑定。重审需原审查权限与一次新授权，使用
+`fix-cause-retry-*` / `fix-revision-final-retry-*` 记录，审查线程不能复用被放弃的线程。
+子运行身份仍由 qaSource 固定，所以这是恢复原子运行的途径，不需要也不能新建同源子运行。
+
+审查等待改用审查配置 `timeoutMs`（默认 900000 毫秒，同时交给 worker），不再用复现命令超时；
+原因审查到时追加 `transport_timeout` 结果而不是停在无记录状态。
 
 ## cm-fix 最终 Review 未知结果的人工续审
 
@@ -480,7 +496,11 @@ QA、文档可显式接入下述固定能力，多任务使用下文批次 CLI�
 已完成任务的一次性 QA 附加：原无 workflow 或 `qa:null` 的 run，仅在 `--mode resume`、
 state 为 `fixture_completed` 时，可显式同时传入含 QA 的 `--workflow-config PATH` 和
 `--allow-qa`。缺授权返回 `qa_authorization_required`；未完成返回 `qa_attach_not_completed`；
-原本已有 QA 的 run 换配置仍返回 `fingerprint_mismatch`。definition、scope、requirements、
+原本已有 QA 的 run 换 QA 命令、环境或预算仍返回 `fingerprint_mismatch`（配置填错时用 QA 配置修订入口）。
+项目 `.cm-workflow.yml`、`~/.cm-workflow/runtimes.yml` 与插件内置默认值不进入新运行的指纹：内置 QA 执行器按它们
+推出的执行计划（用例、命令、阶段、mode/case_count）在每轮 N6 重新冻结，由该轮 `test_run` 记录 mode/case_count；
+旧版本创建的运行指纹含当时的 CM 配置，配置未变照常打开，已变时仍 `fingerprint_mismatch` 并在 `reason` 说明。
+definition、scope、requirements、
 identity、host-context、模型、保护模式、检查及其他配置保持原指纹约束。原无 workflow 时可
 带入原 scope 内的 documentationPaths 和 applicableAgentFiles；已有 `qa:null` workflow
 须保留这两项原值，历史只存摘要，不能猜测旧配置。附加不执行审后文档写入。
@@ -514,6 +534,21 @@ JS 通过现有通道发出固定请求，结果由原组件校验：
 对应权限；这里的 QA 开关不授予这些权限。浏览器能力仍受用户工具策略与目标授权约束，
 缺工具/环境就返回 BLOCKED，不能换载体或伪造证据。QA FAIL/BLOCKED/unknown 不自动重试。
 代码检查、Learning、Review、QA、文档核验全部通过后才由原 finalizer 返回 run_done。
+run_done 是项目级声明：`finish` 与 `run_finalize` 还按权威日志核对每个已批准 feature 的最新 QA 决策——触发的 QA
+须以完整 PASS 结束（用原 owner 校验器读取），阻塞决策也不算通过；任一 FAIL、BLOCKED、已触发未执行、结果未知
+或旧结果已作废待下一轮，返回 `blocked/project_qa_not_passed`，`outstandingQa` 与 `reason` 列出 feature、任务、runId，
+不做文档核验、不写 run_done，`.cm-status.json` 不会被改成 run_done。最新决策为 skipped 或从未记录 QA 的 feature 不在此列
+（强制 QA 仍在决策处执行）。准入选择仍按 tasks.md，只在 `warnings` 中提示这些 feature。恢复对应运行让 QA 通过后，
+再次 `advance` 本运行即可收尾。
+
+已完成运行（fixture_completed）的 QA 恢复、QA 修复、配置修订与收尾先照旧核对原审查包；树已变化时，再核对
+变化是否恰好是同一代码根、同一仓库、其他任务的已完成并已提交运行的审查交付（含其已登记 QA 修复）：按各自审查前
+状态逐文件接续，可覆盖其 AGENTS.md 教训行和对本任务文件的修改。项目根的 CM 配置文件在本任务范围外可以改。
+其余变化——包括对本任务交付文件、需求文件或其他文件的未审改动、未完成或同任务替代运行的改动——仍是
+`correction_review_required`，`reason` 列出未解释的路径。这比原先“完成后整棵树不许动”放宽了一处：只接受
+已审交付与根 CM 配置，未审改动仍失败关闭。QA 修复关联记录的摘要仍是修复链组合，与旧 journal 回放一致；
+修复与后续交付改同一路径（例如两边都写 AGENTS.md 教训）时仍按原规则拒绝。并行批次成员（工作树根不同）
+的交付不被识别；收尾发现文档需改时仍要走已审任务，不能在已完成运行内直接改。
 日志镜像位于 specs/.reviews/host-log-mirror，只是原日志的可重建副本；权威仍是 specs-local 日志。
 重开复用原 QA/任务结果，只读文档核验可以再次进行，不能重发开发、文档写入或 QA。
 本地命令与合成 reviewer 的 CLI 组合已走到 run_done；这不代表真实模型、浏览器或全 N6 验收。

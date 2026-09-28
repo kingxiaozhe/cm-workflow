@@ -120,7 +120,10 @@ export function prepareReviewedEvidenceSupersession({specsDir,codeProject,featur
     if(oldWriterOpen(execution,entry.name))unavailable(`旧运行 ${entry.name} 的 writer 仍被进程持有`);
     const qa=qaTerminal(specsDir,entry.name,identity.taskId);
     if(history.state.state==='fixture_completed'&&!['BLOCKED','never_finished'].includes(qa))
-      unavailable(`旧运行 ${entry.name} 已完成或 QA 已通过`);
+      unavailable(qa==='completed'?`旧运行 ${entry.name} 已完成（run_done）`
+        :['PASS','PASSED'].includes(qa)?`旧运行 ${entry.name} 的 QA 已通过`
+        :['FAIL','FAILED'].includes(qa)?`旧运行 ${entry.name} 的最新 QA 结果为 FAIL（未通过），失败要修复而不是重开发：在原运行上用 QA 修复（fix_advance / fix_run）处理；修复子运行的审查卡在结果未知时，确认旧进程已退出后用 abandon_review 放弃一次再重审`
+        :`旧运行 ${entry.name} 的最新 QA 结果为 ${qa}，不是 BLOCKED，不能用重开发替换；请在原运行上按该结果的恢复入口处理`);
     priorRuns.push({runId:entry.name,baseline:first.baseline});
     for(const runId of history.supersession?.previousRunIds??[])alreadySuperseded.add(runId);
     previousRunIds.push(entry.name);

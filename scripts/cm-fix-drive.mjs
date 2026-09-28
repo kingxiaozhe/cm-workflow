@@ -21,8 +21,8 @@
 //     "runtime": "codex" | "claude",        缺省 codex
 //     "reviewConfig": "review.json",         可选
 //     "permissions": ["--allow-red-test", ...],   原样传给宿主，不另造一套词
-//     "answers": "answers",                  答案目录；abandon_step 可省略
-//     "reason": "旧本地步骤结果丢失"           abandon_step 必填，并需 --allow-abandon
+//     "answers": "answers",                  答案目录；abandon_step / abandon_review 可省略
+//     "reason": "旧本地步骤结果丢失"           abandon_step / abandon_review 必填，并需 --allow-abandon
 //   }
 //
 // answers/ 里按反问种类放文件，一种一个：
@@ -56,17 +56,18 @@ const ASKS={
 const READ_ONLY=new Set(['status','final_review_package','completion_evidence','cause_review_package']);
 const KNOWN=new Set([...Object.keys(ASKS),...READ_ONLY,'cancel','handoff','publish_review','check_n5',
   'publish_dossier','learning_writeback','walkthrough','finish','final_review','cause_review',
-  'recover_final_review','abandon_step','resume','revision_test_check']);
+  'recover_final_review','abandon_step','abandon_review','resume','revision_test_check']);
 
 function loadPlan(){
   const {operation,plan,base}=loadPlanFile({name:'cm-fix-drive.mjs',known:KNOWN});
-  requireFields(plan,['config','cwd','mode','hostContext','permissions',...(operation==='abandon_step'?[]:['answers'])]);
+  const abandoning=['abandon_step','abandon_review'].includes(operation);
+  requireFields(plan,['config','cwd','mode','hostContext','permissions',...(abandoning?[]:['answers'])]);
   if(!['create','resume'].includes(plan.mode))stop(2,'mode 只能是 create 或 resume');
   if(!Array.isArray(plan.permissions)||plan.permissions.some(p=>!/^--allow-[a-z-]+$/.test(p)))
     stop(2,'permissions 必须是 --allow-xxx 形式的数组，原样传给宿主');
-  if(operation==='abandon_step'&&(!plan.permissions.includes('--allow-abandon')||typeof plan.reason!=='string'
+  if(abandoning&&(!plan.permissions.includes('--allow-abandon')||typeof plan.reason!=='string'
     ||!plan.reason.trim().length||Buffer.byteLength(plan.reason,'utf8')>1000||/[\r\n\0\u0085\u2028\u2029]/.test(plan.reason)))
-    stop(2,'abandon_step 需要 PLAN.reason（单行，最多 1000 字节）和 --allow-abandon');
+    stop(2,`${operation} 需要 PLAN.reason（单行，最多 1000 字节）和 --allow-abandon`);
   if(plan.originalHostContext&&plan.mode!=='resume')stop(2,'originalHostContext 只在 resume 时有意义');
   const resolve=p=>path.resolve(base,p);
   return {operation,plan,paths:{config:resolve(plan.config),answers:plan.answers?resolve(plan.answers):null,
@@ -186,7 +187,7 @@ function main(){
   const {answers,round}=preflight(loaded);
   const {operation,plan,paths}=loaded;
   driveHost({host:HOST,args:hostArgs(loaded).slice(1),cwd:path.resolve(plan.cwd),operation,
-    request:{...(operation==='abandon_step'?{reason:plan.reason}:{}),
+    request:{...(['abandon_step','abandon_review'].includes(operation)?{reason:plan.reason}:{}),
       ...(operation==='prepare_revision'&&Object.hasOwn(plan,'revisionTests')?{tests:plan.revisionTests}:{})},
     answers,paths:{...paths,round},answerFor});
 }

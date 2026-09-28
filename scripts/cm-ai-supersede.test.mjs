@@ -302,7 +302,7 @@ function executionFor(f,content,verdict='blocked',qaResult=null){
     execution.qaExecutor={mode:'commands',caseCount:1,timeoutMs:2000,run:async binding=>{
       const report=path.join(f.reviewsDir,`${binding.testRunId}-execution.md`);
       fs.writeFileSync(report,`# Fixture ${qaResult} QA\n`);
-      return {result:qaResult,passed:qaResult==='PASS'?1:0,failed:0,blocked:qaResult==='BLOCKED'?1:0,report};
+      return {result:qaResult,passed:qaResult==='PASS'?1:0,failed:qaResult==='FAIL'?1:0,blocked:qaResult==='BLOCKED'?1:0,report};
     }};
   }
   return execution;
@@ -556,7 +556,21 @@ test('a completed journal with passed QA still refuses supersession after the ta
       &&row.phase==='complete'&&row.result==='PASS'));
     fs.writeFileSync(f.tasksPath,'- [ ] T-002: fixture\n');
     await assert.rejects(start(f,'run-refused-reopened-0002','again\n',{supersedeReason:'restart'}),
-      error=>error.code==='supersede_unavailable'&&/已完成或 QA 已通过/.test(error.reason));
+      error=>error.code==='supersede_unavailable'&&/的 QA 已通过/.test(error.reason));
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('#15 a reopened task whose QA failed is refused with the QA-fix route, not a claim that it passed',async()=>{
+  const f=runFixture();
+  try{
+    assert.equal((await start(f,'run-failed-qa-0001','done\n',{},'approved','FAIL')).code,'qa_failed');
+    fs.writeFileSync(f.tasksPath,'- [ ] T-002: fixture\n');
+    await assert.rejects(start(f,'run-refused-failed-0002','again\n',{supersedeReason:'restart'}),error=>{
+      assert.equal(error.code,'supersede_unavailable');
+      assert.doesNotMatch(error.reason,/已完成|已通过/);
+      assert.match(error.reason,/run-failed-qa-0001 的最新 QA 结果为 FAIL/);assert.match(error.reason,/abandon_review/);
+      return true;
+    });
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 

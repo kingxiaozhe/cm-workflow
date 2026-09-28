@@ -41,11 +41,13 @@ async function fixture(t,{observation=false,reviewMode=null,crossLayer=false,les
     permissions:['--allow-final-review','--allow-cause-review','--allow-repair'],workerFactory:()=>async({prompt},{onEvent})=>{
       reviews++;
       const data=JSON.parse(prompt.split('<cm-review-data-json>\n')[1]);
-      onEvent({event:'thread.started',provider_thread:`fixture-review-${reviews}`});
-      if(reviewMode==='lost'||reviewMode==='second_lost'&&reviews===2)throw Error('Synthetic lost review result');
+      onEvent({event:'thread.started',provider_thread:`fixture-review-${reviewMode==='first_lost_same_thread'?1:reviews}`});
+      if(reviewMode==='lost'||['second_lost','second_lost_retry'].includes(reviewMode)&&reviews===2
+        ||['first_lost','first_lost_same_thread'].includes(reviewMode)&&reviews===1)throw Error('Synthetic lost review result');
       for(const event of [{event:'turn.started',item_type:null},{event:'item.completed',item_type:'agent_message'},
         {event:'turn.completed',item_type:null},{event:'process_closed',exit_code:0,signal:null,timed_out:false}])onEvent(event);
-      const verdict=['changes_requested','second_lost'].includes(reviewMode)?'changes_requested':'approved';
+      const verdict=['changes_requested','second_lost'].includes(reviewMode)||reviewMode==='second_lost_retry'&&reviews===1
+        ?'changes_requested':'approved';
       return {status:'succeeded',value:{verdict,packageDigest:data.reviewPackage.packageDigest,
         examinedPaths:data.examinedPaths,
         findings:verdict==='changes_requested'?[{id:'F1',severity:'P2',path:'value.mjs',message:'Revise value',evidence:'Fixture'}]:[],
@@ -60,7 +62,7 @@ async function fixture(t,{observation=false,reviewMode=null,crossLayer=false,les
       return crossLayer?{...diagnosis,crossLayer:true}:diagnosis;
     }
     if(kind==='fix_repair'){
-      if(['changes_requested','second_lost'].includes(reviewMode)&&payload.identity.attempt===2&&loseRevisionRepair){
+      if(['changes_requested','second_lost','second_lost_retry'].includes(reviewMode)&&payload.identity.attempt===2&&loseRevisionRepair){
         loseRevisionRepair=false;throw Error('Lost revision repair answer');
       }
       fs.writeFileSync(path.join(cwd,'value.mjs'),payload.identity.attempt===2?'export const value=2; // revised\n':'export const value=2;\n');
@@ -380,4 +382,108 @@ test('revision final review cannot use local abandonment',async t=>{
   assert.equal((await f.owner().reviewFinal()).stage,'unknown');
   assert.equal(f.owner().status().pending,'revision_final_review');
   assert.throws(()=>f.owner().abandonStep({authorized:true,reason:'Review result lost'}),{code:'fix_abandon_unavailable'});
+});
+
+// #15: a registered cause or second-round final review with no review result
+// gets one audited abandonment and a retry on a fresh reviewer thread.
+const causeDecide=async f=>{const pkg=f.owner().causeReviewPackage();
+  await f.reviewHost.authority.hostDecisionProvider.decide({identity:f.identity,packageDigest:pkg.packageDigest},new AbortController().signal);};
+const reviewEvents=f=>fs.readFileSync(path.join(f.specsRoot,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse)
+  .filter(row=>row.event==='abandon');
+
+test('#15 a no-result cause review is abandoned once, audited, and retried on a fresh reviewer thread',async t=>{
+  const f=await fixture(t,{reviewMode:'first_lost',crossLayer:true});
+  assert.equal((await f.owner().advance({authorized:true})).stage,'cause_review_required');
+  await causeDecide(f);
+  const lost=await f.owner().reviewCause();
+  assert.equal(lost.stage,'unknown');assert.equal(lost.pending,'cause_review');assert.equal(lost.reviewAbandonable,'cause_review');
+  const before=fs.readFileSync(f.statePath);
+  assert.throws(()=>f.owner().abandonStep({authorized:true,reason:'Review result lost'}),{code:'fix_abandon_unavailable'});
+  assert.throws(()=>f.owner().abandonReview({authorized:false,reason:'Review result lost'}),{code:'fix_review_abandon_authorization_required'});
+  assert.throws(()=>f.owner().abandonReview({authorized:true,reason:'two\nlines'}),{code:'fix_review_abandon_reason_required'});
+  assert.deepEqual(fs.readFileSync(f.statePath),before);
+  const abandoned=f.owner().abandonReview({authorized:true,reason:'Reviewer process confirmed stopped'});
+  assert.equal(abandoned.stage,'cause_review_required');
+  assert.equal(abandoned.causeReviewAbandonment.providerThreadId,'fixture-review-1');
+  assert.equal(abandoned.causeReviewAbandonment.resultDigest,null);
+  assert.equal(f.reopen().status().stage,'cause_review_required');
+  await causeDecide(f);
+  assert.equal((await f.owner().reviewCause()).stage,'red_test_required');
+  const ids=f.records().map(row=>row.id).filter(id=>id.startsWith('fix-cause'));
+  assert.deepEqual(ids,['fix-cause-registered','fix-cause-started','fix-cause-abandoned',
+    'fix-cause-retry-registered','fix-cause-retry-started','fix-cause-retry-result']);
+  assert.equal(f.records().find(row=>row.id==='fix-cause-retry-started').payload.providerThreadId,'fixture-review-2');
+  assert.equal(f.reviews(),2);
+  assert(fs.existsSync(path.join(f.specsRoot,'.reviews','fix-abandon-cause-r1.md')));
+  assert.deepEqual(reviewEvents(f).map(row=>[row.phase,row.pending,row.reason]),[['cause_review','cause_review','Reviewer process confirmed stopped']]);
+  assert.equal(f.reopen().status().stage,'red_test_required');
+  assert.equal(f.owner().status().causeReview.providerThreadId,'fixture-review-2');
+});
+
+test('#15 a second no-result cause review exhausts the one-time budget without changing the store',async t=>{
+  const f=await fixture(t,{reviewMode:'lost',crossLayer:true});
+  await f.owner().advance({authorized:true});await causeDecide(f);
+  assert.equal((await f.owner().reviewCause()).stage,'unknown');
+  f.owner().abandonReview({authorized:true,reason:'First reviewer stopped'});
+  await causeDecide(f);
+  const again=await f.owner().reviewCause();
+  assert.equal(again.stage,'unknown');assert.equal(again.reviewAbandonBudgetExhausted,true);assert.equal(again.reviewAbandonable,undefined);
+  const before=fs.readFileSync(f.statePath);
+  assert.throws(()=>f.owner().abandonReview({authorized:true,reason:'Second reviewer stopped'}),{code:'fix_review_abandon_budget_exhausted'});
+  assert.deepEqual(fs.readFileSync(f.statePath),before);
+});
+
+test('#15 an abandonment record must bind the exact registration and thread',async t=>{
+  const f=await fixture(t,{reviewMode:'lost',crossLayer:true});
+  await f.owner().advance({authorized:true});await causeDecide(f);await f.owner().reviewCause();
+  const registration=f.records().find(row=>row.id==='fix-cause-registered');
+  const forged={invocationId:registration.payload.request.invocationId,registrationDigest:'0'.repeat(64),
+    providerThreadId:'fixture-review-1',resultDigest:null,reason:'Forged',abandonedAt:Date.now()};
+  assert.throws(()=>f.append('fix-cause-abandoned','result',forged),{code:'fix_review_abandon_mismatch'});
+});
+
+test('#15 the fix host needs --allow-abandon for abandon_review and its status points to it',async t=>{
+  const f=await fixture(t,{reviewMode:'lost',crossLayer:true});
+  await f.owner().advance({authorized:true});await causeDecide(f);await f.owner().reviewCause();
+  const config={...f.configuration,specsRoot:f.specsRoot,identity:f.identity};
+  const refused=createFixHost({owner:f.owner(),config,permissions:['--allow-reproduction']});
+  await assert.rejects(refused.handle({requestId:'abandon',operation:'abandon_review',reason:'Stopped'}),{code:'fix_review_abandon_authorization_required'});
+  const allowed=createFixHost({owner:f.owner(),config,permissions:['--allow-reproduction','--allow-abandon']});
+  assert.match((await allowed.handle({requestId:'status',operation:'status'})).progress.nextAction,/abandon_review/);
+  assert.equal((await allowed.handle({requestId:'abandon',operation:'abandon_review',reason:'Stopped'})).stage,'cause_review_required');
+});
+
+test('#15 a no-result second-round final review is abandoned once and retried on a fresh thread',async t=>{
+  const f=await fixture(t,{reviewMode:'second_lost_retry'});
+  await toRevision(f);await completeRevisionRepair(f);
+  await f.owner().runRegression({authorized:true});await f.owner().retrospect();
+  assert.equal(f.owner().createHandoff().stage,'revision_final_review_required');
+  const decide=async()=>{const pkg=f.owner().finalReviewPackage();
+    await f.reviewHost.finalAuthority.hostDecisionProvider.decide({identity:f.owner().status().revision.nextIdentity,
+      packageDigest:pkg.packageDigest},new AbortController().signal);};
+  await decide();
+  const lost=await f.owner().reviewFinal();
+  assert.equal(lost.stage,'unknown');assert.equal(lost.pending,'revision_final_review');
+  assert.equal(lost.reviewAbandonable,'revision_final_review');
+  assert.equal(f.owner().abandonReview({authorized:true,reason:'Second reviewer stopped'}).stage,'revision_final_review_required');
+  assert.equal(f.reopen().status().stage,'revision_final_review_required');
+  await decide();
+  assert.equal((await f.owner().reviewFinal()).stage,'revision_final_review_evidence_required');
+  const ids=f.records().map(row=>row.id).filter(id=>id.startsWith('fix-revision-final'));
+  assert.deepEqual(ids,['fix-revision-final-registered','fix-revision-final-started','fix-revision-final-abandoned',
+    'fix-revision-final-retry-registered','fix-revision-final-retry-started','fix-revision-final-retry-result']);
+  assert.notEqual(f.records().find(row=>row.id==='fix-revision-final-retry-started').payload.providerThreadId,
+    f.records().find(row=>row.id==='fix-revision-final-started').payload.providerThreadId);
+  assert.equal(f.owner().publishReview().stage,'revision_completion_gate_required');
+  assert.equal(f.reopen().status().stage,'revision_completion_gate_required');
+});
+
+test('#15 the retried cause review refuses the abandoned reviewer thread',async t=>{
+  const f=await fixture(t,{reviewMode:'first_lost_same_thread',crossLayer:true});
+  await f.owner().advance({authorized:true});await causeDecide(f);await f.owner().reviewCause();
+  f.owner().abandonReview({authorized:true,reason:'Reviewer process confirmed stopped'});
+  await causeDecide(f);
+  const reused=await f.owner().reviewCause();
+  assert.equal(reused.stage,'unknown');assert.equal(reused.pending,'cause_review');
+  assert(!f.records().some(row=>row.id==='fix-cause-retry-started'));
 });

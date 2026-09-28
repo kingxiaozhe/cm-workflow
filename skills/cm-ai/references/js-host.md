@@ -324,9 +324,28 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
 - 修订仅接受 `resume`、`--allow-qa`、非空原因和相符的上一版配置；不能与两个 QA 重跑开关合用。只允许 QA 命令、环境、QA 预算及其派生执行计划变化，任务身份、规格、开发、审查、项目策略、文档与能力配置均保持原绑定。reviewer 的纯传输超时本来就不参与授权摘要，无需本入口。
 - 先追加 `qa-config-revised`，绑定前后指纹、QA 配置摘要、原因、原审查包及旧 QA 轮次；再追加 `test_run/superseded`，原因是 `qa_configuration_revision`。旧结果留在历史，不再作为当前通过或修复依据；原开发、审查、N5、任务勾选和历史字节不改写。
 - 新 QA 使用新 testRunId，全部用例重跑，轮次加一且最多三轮；另行绑定实际完成的开发 attempt，第二次开发审查通过后也能恢复。未完成或结果未知的 QA 必须先核对原执行；本入口不证明资源已清理，不放宽源码漂移检查，不重置轮次，也不自动批准产品修复。
-- 配置链验证成功后，后续恢复只需当前配置与原授权参数，不再需要旧文件。重复同一修订命令不会重复登记；若中断发生在 journal 写入之后，会补齐旧 QA 的作废日志，再运行下一轮。未使用此入口时，改配置仍报 `fingerprint_mismatch`。
+- 配置链验证成功后，后续恢复只需当前配置与原授权参数，不再需要旧文件。重复同一修订命令不会重复登记；若中断发生在 journal 写入之后，会补齐旧 QA 的作废日志，再运行下一轮。未使用此入口时，改 QA 命令、环境或预算仍报 `fingerprint_mismatch`。
+- 项目 `.cm-workflow.yml`、`~/.cm-workflow/runtimes.yml` 与插件内置默认值不进入新运行的指纹。它们推出的执行计划（用例、命令、阶段、mode/case_count）由每轮 QA 在 N6 重新冻结，并记入该轮 `test_run`；所以为 `--auto-qa-fix` 设 `policies.auto_fix: auto`、执行 `cm-runtime set --user`、规范任务写出 `.cm-workflow.yml` 或升级插件后，原运行照常恢复，本入口也不再用当前配置重建旧计划。此前版本创建的运行仍按原指纹（含当时的 CM 配置）打开：配置已变时报 `fingerprint_mismatch`，`reason` 提示把这些配置恢复为创建时的内容。
 
 本次仅支持单任务宿主；批量宿主未接入该选项。临时夹具覆盖漏命令死锁、正常续跑、连续修订与三轮上限、旧证据拒绝及中断回放；不代表真实模型或浏览器验收。
+
+### 项目收尾核对全部 feature 的 QA
+
+`finish` 与 `run_finalize` 在写 run_done 前核对每个已批准 feature 最新一次 QA 决策：触发的 QA 必须以完整 PASS 结束，
+阻塞决策不算通过。任一 feature 最新一轮 FAIL、BLOCKED、已触发未执行、结果未知或旧结果已作废待下一轮时，返回
+`blocked/project_qa_not_passed`，`outstandingQa` 与 `reason` 列出 feature、任务和 runId；不做文档核验，不写 run_done。
+准入仍按 tasks.md 选下一任务，但在 `warnings` 里提示这些 feature。按对应运行的恢复入口（QA 修复、`--rerun-blocked-qa`、
+`--rerun-unknown-qa` 或配置修订）让它通过后，再对本运行 `advance` 收尾。最新决策为 skipped 或从未记录 QA 的 feature
+不在此列。
+
+### 已完成运行上的后续改动
+
+已完成运行的 QA 恢复、QA 修复、配置修订和收尾先核对原审查包。代码树已变化时，只接受两类变化：同一代码根与仓库中
+其他任务已完成并已提交运行的审查交付（及其已登记的 QA 修复），按各自审查前状态逐文件接续——包括其 AGENTS.md
+教训行和对本任务文件的修改；以及本任务范围外的项目根 CM 配置文件。其余变化，包括对本任务交付文件、需求文件或其他
+文件的未审改动，仍返回 `correction_review_required`，`reason` 列出未解释的路径。同一任务的替代运行、未完成运行和并行
+批次成员（工作树根不同）的改动不被采纳。QA 修复与后续交付改同一路径时（例如两边都写 AGENTS.md 教训）仍按原规则拒绝。
+收尾发现文档需要改时，仍走经审查的任务，不能在已完成运行内直接改。
 
 ### 已审交接后的任务重跑
 
