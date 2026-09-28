@@ -19,6 +19,7 @@ test(`real multi-task runner keeps QA and recovery authoritative: ${mode}`,()=>b
 for(const mode of ['parallel','parallel-retry','parallel-conflict','parallel-resume'])
 test(`parallel batch runs real isolated members: ${mode}`,()=>batchFixture(mode));
 test('A4 parallel member retries changed completion checks in its original run',()=>batchFixture('parallel-completion-retry'));
+test('D1 parallel member retries failed develop checks before review',()=>batchFixture('parallel-develop-check-retry'));
 
 test('ready member merges before blocked member preserves reason in log and WIP and falls back only once',async()=>{
   for(const withReason of [true,false])await batchFixture('parallel-recovery',{terminalAgain:true,withReason});
@@ -148,7 +149,8 @@ async function batchFixture(mode,options={}){
         }})},
       check:async()=>{
         const key=definition.identity.taskId,count=(checkCalls.get(key)??0)+1;checkCalls.set(key,count);
-        const failed=mode==='parallel-completion-retry'&&parallelMember&&key==='T-002'&&count===2;
+        const failed=parallelMember&&key==='T-002'
+          &&(mode==='parallel-completion-retry'&&count===2||mode==='parallel-develop-check-retry'&&count===1);
         return [{id:'fixture',command:['fixture'],outcome:failed?'failed':'passed',exitCode:failed?1:0,
           evidence:failed?'Synthetic transient failure':'Synthetic task check'}];
       },
@@ -255,6 +257,19 @@ async function batchFixture(mode,options={}){
       assert.equal(rows.filter(row=>row.phase==='batch_member_blocked').length,0);
       assert.equal(checkCalls.get('T-002'),3);
       assert.deepEqual(calls,['T-001','T-002','T-003']);
+      return;
+    }
+    if(mode==='parallel-develop-check-retry'){
+      assert.equal(result.code,'develop_checks_not_passed',JSON.stringify(result));
+      const logfile=path.join(specsDir,'运行日志.jsonl');
+      let rows=fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(rows.filter(row=>row.phase==='batch_member_blocked').length,0);
+      result=await open().handle({operation:'advance',requestId:'retry-develop-check'});
+      assert.equal(result.code,'run_done',JSON.stringify(result));
+      rows=fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(rows.filter(row=>row.phase==='batch_member_blocked').length,0);
+      assert.equal(checkCalls.get('T-002'),3);
+      assert.equal(calls.filter(task=>task==='T-002').length,2);
       return;
     }
     if(recovery&&options.crashAt){assert(interrupted);result=await open().handle({operation:'advance',requestId:'resume-recovery'});}

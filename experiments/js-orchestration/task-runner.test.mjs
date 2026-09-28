@@ -156,12 +156,30 @@ test('A4 changed check result is recoverable in one run and replays',()=>compose
   failed=true;runner=f.reopen();
   const changed=await runner.executeEffect(f.effect('complete'));
   assert.equal(changed.state,'blocked');assert.equal(changed.code,'completion_checks_changed');
+  assert.match(changed.reason,/unit.*failed/);
   assert.deepEqual(f.reopen().status(),changed);
   assert.equal(fs.readFileSync(f.tasksPath,'utf8'),'- [ ] T-001: fixture\r\n');
   failed=false;runner=f.reopen();
   const retried=await runner.executeEffect({...f.effect('complete'),id:'complete-retry-1'});
   assert.equal(retried.state,'fixture_completed',JSON.stringify({code:retried.code,taskCommit:retried.taskCommit}));
   assert.equal(f.reopen().status().state,'fixture_completed');
+}));
+
+for(const outcome of ['failed','unavailable'])test(`D1 ${outcome} develop check blocks before review and replays`,()=>composedFixture(async f=>{
+  let failing=true;
+  f.options.check=()=>[{...checks[0],outcome:failing?outcome:'passed',
+    exitCode:failing?(outcome==='failed'?1:null):0,evidence:failing?'simulator unavailable':'passed'}];
+  let runner=f.create();
+  const blocked=await runner.executeEffect(f.effect('develop'));
+  assert.equal(blocked.state,'blocked');assert.equal(blocked.code,'develop_checks_not_passed');
+  assert.match(blocked.reason,/unit.*simulator unavailable/);
+  assert.equal(blocked.packageDigest,null);
+  assert.equal(runner.verificationBlocks(),1);
+  assert.equal(f.calls.filter(call=>call.role==='reviewer').length,0);
+  runner=f.reopen();assert.deepEqual(runner.status(),blocked);assert.equal(runner.verificationBlocks(),1);
+  failing=false;
+  const retried=await runner.executeEffect({...f.effect('develop'),id:'develop-1-retry-1'});
+  assert.equal(retried.state,'awaiting_review');assert.equal(f.reopen().status().state,'awaiting_review');
 }));
 
 test('A4 code byte drift remains terminal package mismatch and replays',()=>composedFixture(async f=>{
@@ -898,10 +916,11 @@ test(`S3b2b independently reconstructs ${reason} route`,()=>durableFixture(async
   else o.reviewers[0].run=r=>terminal(r,null,{status:reason,accepted:false});
 }));
 
-test('S3b2b failed checks can retain approved review but never complete',()=>durableFixture(async f=>{
-  let r=f.create();await r.executeEffect(intent('develop'));await r.executeEffect(intent('review'));r=f.resume();
-  assert.equal(r.status().state,'approved');const end=await r.executeEffect(intent('complete'));
-  assert.equal(end.state,'blocked');assert.equal(end.code,'checks_not_passed');assert.deepEqual(f.resume().status(),end);
+test('S3b2b failed checks retain history without consuming review',()=>durableFixture(async f=>{
+  let r=f.create();const end=await r.executeEffect(intent('develop'));r=f.resume();
+  assert.equal(end.state,'blocked');assert.equal(end.code,'develop_checks_not_passed');
+  assert.equal(end.receipt,null);assert.equal(end.packageDigest,null);
+  assert.deepEqual(r.status(),end);
 },o=>{o.check=()=>[{...checks[0],outcome:'failed',exitCode:1}];}));
 
 for(const phase of ['idle','developer','reviewer','checks','complete-checks'])test(`S3b2b durable cancellation at ${phase}`,()=>durableFixture(async f=>{
@@ -1317,9 +1336,9 @@ for(const mutation of ['code','requirements','outside','checks'])test(`S2b compl
   },o=>{o.check=()=>changed?[{...checks[0],outcome:'failed',exitCode:1,evidence:'changed result'}]:checks;});
 });
 
-for(const outcome of ['failed','unavailable'])test(`S2b stable ${outcome} checks cannot be overridden by approved`,()=>fixture(async({runner,marker})=>{
-  const r=await runner.run();assert.equal(r.state,'blocked');assert.equal(r.code,'checks_not_passed');
-  assert.equal(r.receipt.result.verdict,'approved');assert.equal(marker.length,0);
+for(const outcome of ['failed','unavailable'])test(`S2b stable ${outcome} checks stop before review`,()=>fixture(async({runner,marker,calls})=>{
+  const r=await runner.run();assert.equal(r.state,'blocked');assert.equal(r.code,'develop_checks_not_passed');
+  assert.equal(r.receipt,null);assert.equal(r.packageDigest,null);assert.equal(calls.length,1);assert.equal(marker.length,0);
 },o=>{o.check=()=>[{...checks[0],outcome,exitCode:outcome==='failed'?1:null}];}));
 
 for(const phase of ['before-review','during-review'])test(`S2b edits ${phase} do not produce approval`,()=>fixture(async({runner,root,marker})=>{

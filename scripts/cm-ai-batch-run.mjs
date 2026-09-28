@@ -304,7 +304,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       // Retryable validation, review transport and completed-task QA stay on
       // their existing recovery path; a new run must not bypass those gates.
       const terminal=['blocked','failed','unknown'].includes(status.state)
-        &&status.code!=='developer_result_invalid'&&!completionRetryable(status)
+        &&!developmentRetryable(status)&&!completionRetryable(status)
         ||status.state==='pending_review'&&status.code!==null&&status.code!=='review_transport_timeout';
       if(!terminal){waiting??=status;continue;}
       const key=pending[index];

@@ -6,9 +6,11 @@ import path from 'node:path';
 import {createTaskRunner} from '../runtime/js/cm-ai/task-runner.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {withHandoffDiagnostic} from './cm-ai-host.mjs';
-import {controlledState,stageAllowed,completedEffectCount,runnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {controlledState,stageAllowed,completedEffectCount,runnerStatus,readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {openTaskExecutionStore} from '../runtime/js/cm-ai/task-owner.mjs';
-import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {digest,requestFor} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {reviewPaths,reviewReceipt} from '../runtime/js/cm-ai/review-runner.mjs';
+import {createReviewPackage} from '../runtime/js/cm-ai/review-package.mjs';
 
 test('adapter exception code getter cannot escape the runner failure boundary',async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'cm-runner-error-code-'));
@@ -56,6 +58,7 @@ test('check-created untracked output blocks with paths and retries in the same r
     commit:()=>{throw new Error('must not commit');}});
   const first=await runner.executeEffect({version:1,id:'develop-1',identity,kind:'develop'});
   assert.equal(first.state,'blocked');assert.equal(first.code,'check_output_out_of_scope');
+  assert.equal(runner.verificationBlocks(),1);
   assert.match(first.reason,/build\/product/);assert(!first.reason.includes(root));
   fs.rmSync(path.join(root,'build'),{recursive:true});
   const second=await runner.executeEffect({version:1,id:'develop-2',identity,kind:'develop'});
@@ -107,6 +110,9 @@ test('legacy state without a reason remains readable and check-output retry does
   assert.equal(Object.hasOwn(status,'reason'),false);
   assert.equal(stageAllowed('develop','blocked','check_output_out_of_scope'),true);
   assert.equal(completedEffectCount([{effect:{kind:'develop'},result:{state:'blocked',code:'check_output_out_of_scope'}}]),0);
+  assert.equal(stageAllowed('develop','blocked','develop_checks_not_passed'),true);
+  assert.equal(stageAllowed('develop','blocked','checks_not_passed'),false);
+  assert.equal(completedEffectCount([{effect:{kind:'complete'},result:{state:'blocked',code:'checks_not_passed'}}]),1);
 });
 
 test('check-output block and reason replay from the stored run before retry',async t=>{
@@ -138,10 +144,101 @@ test('check-output block and reason replay from the stored run before retry',asy
   const first=createTaskRunner({...options,persistence:{store,mode:'create'}});
   const blocked=await first.executeEffect({version:1,id:'develop-1',identity,kind:'develop'});
   assert.equal(blocked.code,'check_output_out_of_scope');
+  assert.equal(first.verificationBlocks(),1);
   store.close();store=openTaskExecutionStore({...owner,create:false});
   const resumed=createTaskRunner({...options,persistence:{store,mode:'resume'}});
   assert.equal(resumed.status().reason,blocked.reason);
+  assert.equal(resumed.verificationBlocks(),1);
   fs.rmSync(path.join(code,'build'),{recursive:true});
   const next=await resumed.executeEffect({version:1,id:'develop-2',identity,kind:'develop'});
   assert.equal(next.state,'awaiting_review');
+});
+
+test('legacy completion checks_not_passed never reopens develop live or after replay',async t=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-legacy-complete-')));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const code=path.join(root,'code'),specs=path.join(root,'specs');
+  fs.mkdirSync(code);fs.mkdirSync(path.join(specs,'.reviews'),{recursive:true});
+  fs.writeFileSync(path.join(code,'code.js'),'old');
+  fs.writeFileSync(path.join(code,'requirements.md'),'fixture');
+  const tasksPath=path.join(specs,'tasks.md');fs.writeFileSync(tasksPath,'- [ ] T-001: fixture\n');
+  const identity={repositoryId:'fixture',runId:'legacy-complete',taskId:'T-001',attempt:1};
+  const owner={tasksPath,feature:'feature',specsRoot:specs,identity:{repositoryId:identity.repositoryId,runId:identity.runId},
+    fingerprints:{workflow:digest('legacy-complete'),config:digest('fixture'),inputs:digest('fixture')},create:true};
+  let store=openTaskExecutionStore(owner);
+  t.after(()=>store.close());
+  let checks=0,developCalls=0;
+  const terminal=(request,result)=>({version:1,invocationId:request.invocationId,contextId:request.contextId,
+    provider:request.provider,effectiveModel:'fixture',status:'succeeded',accepted:true,result});
+  const options={root:code,identity,scope:['code.js'],requirements:['requirements.md'],excludedContexts:['main'],timeoutMs:5000,
+    developer:{provider:'codex',requestedModel:'fixture',contextId:'developer',run:request=>{
+      developCalls++;fs.writeFileSync(path.join(code,'code.js'),'new');
+      return terminal(request,{outcome:'implemented'});
+    }},
+    reviewers:[{id:'reviewer',provider:'codex',requestedModel:'fixture',allowed:true,available:true,
+      contexts:['review-one','review-two'],run:request=>terminal(request,{verdict:'approved',
+        packageDigest:request.payload.reviewPackage.packageDigest,
+        examinedPaths:reviewPaths(request.payload.reviewPackage),findings:[],summary:'fixture review'})}],
+    check:()=>{checks++;return [{id:'unit',command:['fixture'],outcome:checks===1?'passed':'failed',
+      exitCode:checks===1?0:1,evidence:'fixture'}];},
+    commit:()=>{throw new Error('must not commit');}};
+  const effect=(kind,id=kind)=>({version:1,id,identity,kind});
+  const first=createTaskRunner({...options,persistence:{store,mode:'create'}});
+  assert.equal((await first.executeEffect(effect('develop'))).state,'awaiting_review');
+  assert.equal((await first.executeEffect(effect('review'))).state,'approved');
+  store.close();
+
+  // A pre-D1 journal could approve a failed-check review package. Rebind its
+  // package, request and receipt so replay validates the actual legacy path.
+  const statePath=path.join(specs,'.reviews','.execution',identity.runId,'state.json');
+  const saved=JSON.parse(fs.readFileSync(statePath,'utf8'));
+  const failed=[{id:'unit',command:['fixture'],outcome:'failed',exitCode:1,evidence:'fixture'}];
+  const legacyPackage=createReviewPackage({root:code,baseline:saved.records[0].payload.baseline,checks:failed});
+  const dev=saved.records.find(record=>record.payload.type==='effect-checkpoint'
+    &&record.payload.checkpoint.state==='awaiting_review').payload.checkpoint;
+  const approved=saved.records.at(-1).payload.checkpoint;
+  dev.reviewPackage=legacyPackage;dev.currentChecks=failed;
+  dev.cache.at(-1).result.packageDigest=legacyPackage.packageDigest;
+  const reviewCall=approved.calls.at(-1);
+  const reviewRequest=requestFor({invocationId:reviewCall.invocationId,identity,role:'reviewer',
+    provider:'codex',requestedModel:'fixture',contextId:'review-one',
+    payload:{reviewPackage:legacyPackage,priorReview:null}});
+  const reviewResult={verdict:'approved',packageDigest:legacyPackage.packageDigest,
+    examinedPaths:reviewPaths(legacyPackage),findings:[],summary:'fixture review'};
+  reviewCall.requestDigest=reviewRequest.requestDigest;reviewCall.resultDigest=digest(reviewResult);
+  const receipt=reviewReceipt({request:reviewRequest,call:reviewCall,result:reviewResult,
+    reviewPackage:legacyPackage,developerProvider:'codex',fallbackReasons:[]});
+  approved.reviewPackage=legacyPackage;approved.currentChecks=failed;
+  approved.receipt=receipt;approved.receipts=[receipt];approved.priorReview=reviewResult;
+  approved.cache[0]=structuredClone(dev.cache[0]);
+  const reviewed=approved.cache.at(-1).result;
+  reviewed.packageDigest=legacyPackage.packageDigest;
+  reviewed.receipt=receipt;reviewed.receipts=[receipt];reviewed.calls=approved.calls;
+  for(let i=0;i<saved.records.length;i++){
+    const {digest:ignored,...record}=saved.records[i];
+    record.previousDigest=i?saved.records[i-1].digest:null;
+    saved.records[i]={...record,digest:digest(record)};
+  }
+  const {revision:ignored,...body}=saved;
+  fs.writeFileSync(statePath,JSON.stringify({...body,revision:digest(body)})+'\n');
+  assert.equal(readRunnerHistory(saved.records,saved.records[0].payload.config).state.state,'approved');
+  const reopen=()=>{
+    store.close();store=openTaskExecutionStore({...owner,create:false});
+    return createTaskRunner({...options,persistence:{store,mode:'resume'}});
+  };
+  const live=reopen();
+  assert.equal(live.status().state,'approved');
+  assert.equal(live.status().receipt.checksDigest,digest(failed));
+  const blocked=await live.executeEffect(effect('complete'));
+  assert.equal(blocked.state,'blocked');assert.equal(blocked.code,'checks_not_passed');
+  assert.equal(live.status().code,'checks_not_passed');
+  assert.equal(live.verificationBlocks(),0);
+  assert.deepEqual(await live.executeEffect(effect('develop','develop-after-complete')),
+    {outcome:'rejected',code:'stage_mismatch'});
+  assert.equal(developCalls,1);
+  const replay=reopen();
+  assert.equal(replay.status().code,'checks_not_passed');
+  assert.deepEqual(await replay.executeEffect(effect('develop','develop-after-replay')),
+    {outcome:'rejected',code:'stage_mismatch'});
+  assert.equal(developCalls,1);
 });

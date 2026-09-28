@@ -20,7 +20,7 @@ test('help prints the plan command without launching a host',()=>{
 function fixture(t){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-ai-drive-')));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const specsDir=path.join(root,'specs'),codeProject=path.join(root,'code'),feature='1.work';
+  const specsDir=path.join(root,'specs5'),codeProject=path.join(root,'app'),feature='1.work';
   fs.mkdirSync(path.join(specsDir,feature),{recursive:true});fs.mkdirSync(codeProject);
   for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(specsDir,feature,name),'# Fixture\n');
   fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: fixture\n');
@@ -35,8 +35,8 @@ function fixture(t){
     fs.writeFileSync(file,JSON.stringify({config:'run.json',mode:'create',hostContext:'drive-host-a',
       permissions:[],answers:'answers',checks:[{id:'syntax',command:[process.execPath,'--check','target.mjs']}],...extra}));
     return file;};
-  const drive=(file,operation)=>spawnSync(process.execPath,[DRIVER,'--plan',file,operation],
-    {encoding:'utf8',timeout:30000,env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,CM_WORKFLOW_HOME:path.join(root,'home'),
+  const drive=(file,operation,timeout=30000)=>spawnSync(process.execPath,[DRIVER,'--plan',file,operation],
+    {encoding:'utf8',timeout,env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,CM_WORKFLOW_HOME:path.join(root,'home'),
       CM_WORKFLOW_LOG_HOME:path.join(root,'logs')}});
   const store=path.join(specsDir,'.reviews','.execution',identity.runId,'state.json');
   return {root,codeProject,specsDir,answers,bin,write,plan,drive,store};
@@ -78,8 +78,44 @@ test('review-enabled advance refuses missing second-round answer before host lau
   assert.deepEqual(fs.readFileSync(f.store),before);
 });
 test('retryable blocked state projects the same develop attempt',()=>{
-  for(const code of ['developer_result_invalid','verification_precheck_failed'])
+  for(const code of ['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed'])
     assert.deepEqual(projectDevelopAttempts({state:'blocked',code,attempt:2},'advance',[]).attempts,[2]);
+  assert.deepEqual(projectDevelopAttempts({state:'blocked',code:'checks_not_passed',attempt:2},'advance',[]).attempts,[]);
+});
+
+test('D1 real host retries a check-output-blocked develop with a fresh effect id',t=>{
+  const f=fixture(t);prepared(f);
+  const definition=JSON.parse(fs.readFileSync(path.join(f.root,'run.json'),'utf8'));
+  definition.scope=['App/ContentView.swift'];fs.writeFileSync(path.join(f.root,'run.json'),JSON.stringify(definition));
+  fs.writeFileSync(path.join(f.answers,'ContentView.swift'),'import SwiftUI\nstruct ContentView: View { var body: some View { Text("Ready") } }\n');
+  f.write('develop.json',{...develop,edits:{'App/ContentView.swift':'ContentView.swift'}});
+  const dirty=[{id:'build',command:[process.execPath,'-e',"require('node:fs').mkdirSync('build',{recursive:true});require('node:fs').writeFileSync('build/out.o','x')"]}];
+  const first=f.drive(f.plan({runtime:'claude',checks:dirty}),'advance');assert.equal(first.status,0,first.stderr);
+  assert.equal(JSON.parse(first.stdout).result.code,'check_output_out_of_scope');
+  fs.rmSync(path.join(f.codeProject,'build'),{recursive:true});
+  const clean=[{id:'build',command:[process.execPath,'-e','0']}];
+  const second=f.drive(f.plan({mode:'resume',originalHostContext:'drive-host-a',runtime:'claude',checks:clean}),'advance');
+  assert.equal(second.status,0,second.stderr);
+  assert.equal(JSON.parse(second.stdout).result.state,'awaiting_review');
+  assert.match(second.stderr,/应答 develop/);
+  const intents=JSON.parse(fs.readFileSync(f.store)).records.filter(r=>r.payload.type==='effect-intent').map(r=>r.payload.effect.id);
+  assert.deepEqual(intents,['develop-1','develop-1-retry-1']);
+  assert.match(fs.readFileSync(path.join(f.codeProject,'App','ContentView.swift'),'utf8'),/import SwiftUI/);
+});
+
+test('D1 per-check timeout lets a 61 second check finish under a 65 second limit',t=>{
+  const f=fixture(t);prepared(f);
+  const checks=[{id:'slow',command:[process.execPath,'-e','setTimeout(()=>{},61000)'],timeoutMs:65000}];
+  const run=f.drive(f.plan({checkTimeoutMs:1000,checks}),'advance',80000);
+  assert.equal(run.status,0,run.stderr);
+  assert.equal(JSON.parse(run.stdout).result.state,'awaiting_review');
+});
+
+for(const plan of [{checkTimeoutMs:0},{checks:[{id:'syntax',command:[process.execPath,'--check','target.mjs'],timeoutMs:3600001}]}])
+test(`D1 single driver rejects invalid timeout before host launch ${Object.keys(plan)[0]}`,t=>{
+  const f=fixture(t);prepared(f);
+  const run=f.drive(f.plan(plan),'advance');
+  assert.equal(run.status,2);assert.match(run.stderr,/[tT]imeoutMs/);assert.equal(fs.existsSync(f.store),false);
 });
 test('review-authorized create preflights a possible second develop round',t=>{
   const f=fixture(t);prepared(f);const permissions=changesRequestedReview(f);
