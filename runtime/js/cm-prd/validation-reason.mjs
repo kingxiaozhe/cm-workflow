@@ -1,13 +1,9 @@
 // Add operator guidance to existing fail-closed codes without changing the gate.
 import {need,json} from '../cm-ai/effect-contract.mjs';
-const tagged=new WeakSet();
-
-export function prdDiagnosticReason(error){
-  return tagged.has(error)?error.reason:null;
-}
+import {tagDiagnosticReason} from '../cm-ai/diagnostic-reason.mjs';
 
 export function needPrd(ok,code,reason){
-  try{need(ok,code);}catch(error){error.reason=reason;tagged.add(error);throw error;}
+  try{need(ok,code);}catch(error){throw tagDiagnosticReason(error,reason);}
 }
 
 export function prdDraftJson(raw){
@@ -16,9 +12,8 @@ export function prdDraftJson(raw){
       // The input is a parsed host reply. Do not include its contents in diagnostics.
       let actualBytes=null;
       try{actualBytes=Buffer.byteLength(JSON.stringify(raw));}catch{/* original error wins */}
-      error.reason={field:'draft',expected:'one submission must be <= 65536 bytes (64 KiB)',
-        limitBytes:65536,actualBytes};
-      tagged.add(error);
+      tagDiagnosticReason(error,{field:'draft',expected:'one submission must be <= 65536 bytes (64 KiB)',
+        limitBytes:65536,actualBytes});
     }
     throw error;
   }

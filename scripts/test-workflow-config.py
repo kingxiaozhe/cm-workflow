@@ -16,6 +16,7 @@ def main() -> int:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env={**os.environ, "CM_PYTHON_BIN": sys.executable},
     )
     if result.returncode != 0:

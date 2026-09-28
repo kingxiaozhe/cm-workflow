@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def run(args, *, cwd=ROOT, env=None, expected=0, input=None):
-    result = subprocess.run(args, cwd=cwd, env=env, input=input, text=True,
+    result = subprocess.run(args, cwd=cwd, env=env, input=input, text=True, encoding="utf-8",
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if result.returncode != expected:
         raise AssertionError(f"{args[0]} exited {result.returncode}, expected {expected}\n{result.stdout}")

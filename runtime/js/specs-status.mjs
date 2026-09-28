@@ -60,7 +60,10 @@ export function writeSpecsStatus(specsDir,value,{beforeRename=()=>{}}={}){
     fd=fs.openSync(temporary,'wx',0o600);fs.writeFileSync(fd,bytes);fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;
     beforeRename();
     fs.renameSync(temporary,target);
-    const dir=fs.openSync(specsDir,'r');try{fs.fsyncSync(dir);}finally{fs.closeSync(dir);}
+    // Windows does not support fsync on directory handles. The file was synced above.
+    if(process.platform!=='win32'){
+      const dir=fs.openSync(specsDir,'r');try{fs.fsyncSync(dir);}finally{fs.closeSync(dir);}
+    }
     need(fs.readFileSync(target).equals(bytes));
     return canonical;
   }finally{

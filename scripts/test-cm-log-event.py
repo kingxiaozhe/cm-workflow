@@ -32,6 +32,7 @@ def invoke(
         cwd=ROOT,
         env=env,
         text=True,
+        encoding="utf-8",
         capture_output=True,
         check=False,
     )
@@ -1082,6 +1083,7 @@ def main() -> int:
                 cwd=ROOT,
                 env=concurrent_env,
                 text=True,
+                encoding="utf-8",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )

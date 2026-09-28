@@ -29,10 +29,10 @@ def main() -> int:
 
     arguments = ["check-n4", "--help"]
     direct = subprocess.run(
-        ["node", str(JS_GATE), *arguments], text=True, capture_output=True, check=False
+        ["node", str(JS_GATE), *arguments], text=True, encoding="utf-8", capture_output=True, check=False
     )
     compatibility = subprocess.run(
-        [sys.executable, str(PYTHON_GATE), *arguments], text=True, capture_output=True, check=False
+        [sys.executable, str(PYTHON_GATE), *arguments], text=True, encoding="utf-8", capture_output=True, check=False
     )
     assert compatibility.returncode == direct.returncode
     assert compatibility.stdout == direct.stdout

@@ -6,6 +6,7 @@
 ## 未发布
 
 - cm-ai 单任务与批次驾驶员按请求轮次读取开发答案；第 2 轮只接受 `develop-a2.json`，审查授权可能跨轮时提前检查，避免把首轮编辑重复用于修订。cm-fix 驾驶员的修订测试／修复答案同样改为 `*-a2.json`。
+- cm-task-gate Python 适配器按 UTF-8 读取 Node 输出，避免 Windows 系统默认编码使中文诊断解码失败。
 - cm-ai 规格审批接受六种明确开始语及尾部标点，泛化授权仍拒绝；cm-prd 草稿与审查校验为时间、标题、依赖、大小和测试理由提供字段级诊断，原门禁不变。
 - cm-ai bootstrap支持已批准的单个编号`*.bootstrap`（含`1.bootstrap`），拒绝多个候选，并在规范写入前保留AGENTS.md既有Learning段及其他约束。
 - cm-ai 已批准任务在完成前重跑检查时，仅比较检查身份与结果（id、command、outcome、exitCode），允许 evidence 摘要文字变化；检查结果变化保留原审查并以 `blocked/completion_checks_changed` 在同一 run 重试完成，代码、范围、handoff 或检查身份漂移仍终态阻断。

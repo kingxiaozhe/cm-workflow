@@ -24,6 +24,7 @@ def invoke(*args: str, expected_exit: int = 0) -> dict[str, object]:
         [os.environ.get("CM_NODE_BIN", "node") if SCRIPT.suffix == ".mjs" else sys.executable, str(SCRIPT), *args],
         cwd=ROOT,
         text=True,
+        encoding="utf-8",
         capture_output=True,
         check=False,
     )
@@ -41,7 +42,7 @@ def invoke(*args: str, expected_exit: int = 0) -> dict[str, object]:
         command = [sys.executable if other.suffix == ".py" else os.environ.get("CM_NODE_BIN", "node"), str(other), "inspect"]
         for flag in ("--stage", "--feature", "--evidence", "--receipt"):
             command.extend([flag, args[args.index(flag) + 1]])
-        checked = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+        checked = subprocess.run(command, cwd=ROOT, text=True, encoding="utf-8", capture_output=True, check=False)
         if checked.returncode != 0 or json.loads(checked.stdout).get("outcome") != "completed":
             raise AssertionError(f"cross-runtime receipt rejected: {checked.stderr}")
     return json.loads(result.stdout) if result.stdout.strip() else {"stderr": result.stderr}

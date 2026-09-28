@@ -64,7 +64,7 @@ test('approve writes only after a whitelisted reply and preserves the original r
   const rejected=invoke('好的');assert.equal(rejected.status,1);
   assert.equal(JSON.parse(rejected.stdout).approveRefused,'explicit_approval_required');
   assert.deepEqual(fs.readFileSync(status),before);
-  const accepted=invoke('开始吧！');assert.equal(accepted.status,0,accepted.stderr);
+  const accepted=invoke('开始吧！');assert.equal(accepted.status,0,`stdout: ${accepted.stdout}\nstderr: ${accepted.stderr}`);
   assert.equal(JSON.parse(accepted.stdout).state,'ready');
   assert.equal(JSON.parse(fs.readFileSync(status,'utf8')).approval.response,'开始吧！');
 }));
