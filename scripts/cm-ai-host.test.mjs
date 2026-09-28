@@ -826,14 +826,16 @@ test(`protected conversation review timeout ${runtime} -> ${second}`,async()=>{
     const setMode=installTimeoutReviewer(f,runtime);
     const preview=spawnSync(process.execPath,[cli,'preflight','--config',f.config,'--review-model','fixture','--runtime',runtime],
       {encoding:'utf8',env:f.env,timeout:5000});assert.equal(preview.status,0,preview.stderr);
-    const config=path.join(f.root,'review.json');fs.writeFileSync(config,preview.stdout);
+    const review=JSON.parse(preview.stdout);assert.equal(review.timeoutMs,900000);
+    delete review.timeoutMs;
+    const config=path.join(f.root,'review.json');fs.writeFileSync(config,JSON.stringify(review));
     f.args.push('--review-config',config,'--allow-review-attempt','1');
     f.develop=payload=>({status:'succeeded',value:implementedValue(),
       edits:[{path:'target.mjs',beforeSha256:payload.expected['target.mjs'],content:'export const value = 42;\n'}]});
     setMode(second==='result'?'result':'timeout');
     const start=Date.now(),first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
     const result=first.rows.find(row=>row.requestId==='advance').result;
-    // A 60s default would hit runCli's 15s watchdog instead of returning here.
+    // A legacy review config without timeoutMs inherits the protected conversation's 5s reviewer budget.
     assert(Date.now()-start>=4900);assert(Date.now()-start<14000);
     assert.equal(result.state,second==='result'?'unknown':'pending_review');
     assert.equal(result.code,second==='result'?'transport_timeout':'review_transport_timeout');
