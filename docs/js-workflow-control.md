@@ -1261,7 +1261,7 @@ node scripts/cm-ai-drive.mjs --plan abandon-review.json abandon_review
 原因和时间的 `review-invocation-abandoned`，并写 `review_abandoned` 运行日志；旧记录保留。
 同一操作也用于 checkpoint 已写入、状态为 unknown 且结果从未被接收的最近一次审查：被超时截断的最终消息，
 或旧版本记为 unknown 且属于上述可重试类别的失败。此时记录另外绑定 `resultDigest`，原 invocation 记为 abandoned，
-其 effect 不再占六个 effect 名额；旧版 `timed_out` 且无 inspection、observation_invalid 与工具／上下文越界仍无此出口。
+其 effect 不再占六个 effect 名额，被放弃的调用（含上述无结果登记调用）也不占六次调用名额；旧版 `timed_out` 且无 inspection、observation_invalid 与工具／上下文越界仍无此出口。
 状态变为 `pending_review/review_abandoned`、`pendingAction: "resume"`。重新启动原 run 的宿主，带新的
 `--allow-review-attempt 1`（第二轮用 2）并发送 `advance`；会取得新 grant、新 invocation。
 同一 attempt 的 transport timeout 与 abandon 共用**最多一次重派**，额度已用完时拒绝 abandon。

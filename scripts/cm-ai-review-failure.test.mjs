@@ -1,7 +1,7 @@
 // Reviewer failures, the verdict contract and the review race bound, driven
 // through the real driver -> cm-ai-host -> claudeWorker path with a synthetic
 // `claude` process on PATH. No model service is contacted.
-import test from 'node:test';
+import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,6 +15,12 @@ import {readRunnerHistory,runnerStatus} from '../runtime/js/cm-ai/durable-runner
 import {inspectProviderReview,inspectProviderReviewFailure} from '../runtime/js/cm-ai/provider-review-observation.mjs';
 import {buildReviewPrompt,VERDICT_RULES} from '../runtime/js/cm-ai/codex-review-adapter.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
+import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
+
+// Every case opens the native V3 store (Node 24.14+ on macOS/Linux) and spawns
+// a POSIX shim; like the other runner-host suites, skip elsewhere explicitly.
+const skip=!isSupportedExecutionPlatform();
+const test=(name,fn)=>nodeTest(name,{skip},fn);
 
 const DRIVER=fileURLToPath(new URL('./cm-ai-drive.mjs',import.meta.url));
 const identity={repositoryId:'review-failure',runId:'review-failure-run',taskId:'T-001',attempt:1};
@@ -24,8 +30,7 @@ const develop=(edits={'target.mjs':'target-content.mjs'})=>({status:'succeeded',
 // Synthetic Claude CLI. api_error replays the stream shape captured from the
 // real Claude CLI 2.1.274 against a local fake Messages API: system/init, a
 // synthetic assistant message carrying the error class, an is_error result, exit 1.
-const fakeClaude=(behaviour,calls)=>`#!${process.execPath}
-import fs from 'node:fs';import {randomUUID} from 'node:crypto';
+const fakeClaude=(behaviour,calls)=>`import fs from 'node:fs';import {randomUUID} from 'node:crypto';
 if(process.argv.includes('--version')){process.stdout.write('2.1.274 (Claude Code)\\n');process.exit(0);}
 let prompt='';for await(const part of process.stdin)prompt+=part;
 const queue=JSON.parse(fs.readFileSync(${JSON.stringify(behaviour)},'utf8'));
@@ -71,7 +76,9 @@ function fixture(t,{reviewTimeoutMs=null}={}){
     preflight:{passed:true,provider:'claude',cli_model:'fixture',prompt_transport:'stdin',
       config_fingerprint:claudeReviewFingerprint({cwd:codeProject,model:'fixture'})}}));
   const behaviourFile=path.join(root,'behaviour.json'),callsFile=path.join(root,'calls.jsonl');
-  fs.writeFileSync(path.join(bin,'claude'),fakeClaude(behaviourFile,callsFile),{mode:0o700});
+  // An explicit .mjs module behind a sh shim: never parsed as CommonJS.
+  const fakeModule=path.join(root,'claude-fixture.mjs');fs.writeFileSync(fakeModule,fakeClaude(behaviourFile,callsFile));
+  fs.writeFileSync(path.join(bin,'claude'),`#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeModule)} "$@"\n`,{mode:0o700});
   const behave=(...queue)=>fs.writeFileSync(behaviourFile,JSON.stringify(queue));behave({mode:'ok'});
   const plan=(extra={})=>{const file=path.join(root,`plan-${Math.random().toString(36).slice(2)}.json`);
     fs.writeFileSync(file,JSON.stringify({config:'run.json',mode:'create',hostContext:'review-host-a',runtime:'claude',
@@ -344,10 +351,18 @@ async function runnerFixture(t,fn,{timeoutMs=1000,reviewTimeoutMs}={}){
       ...(reviewTimeoutMs===undefined?{}:{timeoutMs:reviewTimeoutMs})}};
   const make=(mode,extra={})=>createTaskRunner({...options,reviewInvocation:{...options.reviewInvocation,...extra},persistence:{store,mode,version:3}});
   const reopen=(extra={})=>{store.close();store=openTaskExecutionStore({...owner,create:false});return make('resume',extra);};
+  // Simulate a host that died right after the last record of this type.
+  const resumePrefix=type=>{
+    const current=store.snapshot(),at=current.records.findLastIndex(record=>record.payload.type===type);assert(at>=0);store.close();
+    const statePath=path.join(specsRoot,'.reviews','.execution',runIdentity.runId,'state.json');
+    const body={version:current.version,identity:current.identity,fingerprints:current.fingerprints,records:current.records.slice(0,at+1)};
+    fs.writeFileSync(statePath,JSON.stringify({...body,revision:digest(body)})+'\n',{mode:0o600});
+    store=openTaskExecutionStore({...owner,create:false});return make('resume');
+  };
   const effect=(kind,attempt=1,suffix='')=>({version:1,id:`${kind}-${attempt}${suffix}`,identity:{...runIdentity,attempt},kind});
   const records=()=>store.snapshot().records;
   t.after(()=>{store.close();fs.rmSync(temp,{recursive:true,force:true});});
-  return fn({root,state,options,effect,records,make:(extra)=>make('create',extra),reopen,dispatches:()=>dispatches,
+  return fn({root,state,options,effect,records,make:(extra)=>make('create',extra),reopen,resumePrefix,dispatches:()=>dispatches,
     setChecks:value=>{checks=value;},replay:()=>readRunnerHistory(records(),records()[0].payload.config,3)});
 }
 
@@ -572,3 +587,47 @@ test('#8 replay refuses a journaled-result abandonment bound to the wrong record
   assert.throws(()=>readRunnerHistory(rechain(early.map((row,index)=>({...row,seq:index+1,
     id:`runner.${String(index+1).padStart(6,'0')}`}))),configuration,3));
 },{reviewTimeoutMs:100}));
+
+// Codex review of bf6b6f9: each abandoned invocation must leave the six-call cap
+// exactly as it leaves the six-effect cap, or the retry after a second
+// abandonment is the seventh counted call and its checkpoint is refused.
+for(const exit of ['journaled-result','registered-without-result'])
+test(`#8 abandoned reviews at both attempts plus an unchanged attempt-2 block still complete: ${exit}`,t=>runnerFixture(t,async f=>{
+  const seen=new Map();let secondDeliveries=0;
+  f.state.content=attempt=>attempt===1?'new 1\n':++secondDeliveries===1?'new 1\n':'new 2\n';
+  f.state.review=(request,control)=>{
+    const attempt=request.identity.attempt,count=(seen.get(attempt)??0)+1;seen.set(attempt,count);
+    if(exit==='journaled-result'&&count===1){reviewEvents(control.onEvent,request,{close:false});return new Promise(()=>{});}
+    reviewEvents(control.onEvent,request);
+    return attempt===1?verdict(request,'changes_requested',[{id:'F1',severity:'P2',path:'code.js',message:'Fix',evidence:'fixture'}])
+      :verdict(request,'approved');
+  };
+  let runner=f.make();
+  const abandonedReview=async attempt=>{
+    const first=await runner.executeEffect(f.effect('review',attempt));
+    if(exit==='journaled-result'){assert.equal(first.state,'unknown');assert.equal(first.abandonableReviewResult,true);runner=f.reopen();}
+    else runner=f.resumePrefix('review-invocation-started');
+    const abandoned=runner.abandonReview({allowed:true,reason:'operator confirmed the reviewer exited'});
+    assert.equal(abandoned.state,'pending_review',JSON.stringify(abandoned));assert.equal(abandoned.code,'review_abandoned');
+    runner=f.reopen();
+    return runner.executeEffect(f.effect('review',attempt,'-retry-1'));
+  };
+  assert.equal((await runner.executeEffect(f.effect('develop'))).state,'awaiting_review');
+  assert.equal((await abandonedReview(1)).state,'changes_requested');
+  const unchanged=await runner.executeEffect(f.effect('develop',2));
+  assert.equal(unchanged.state,'blocked');assert.equal(unchanged.code,'develop_unchanged_after_review');
+  assert.equal((await runner.executeEffect(f.effect('develop',2,'-retry-1'))).state,'awaiting_review');
+  const approved=await abandonedReview(2);
+  assert.equal(approved.state,'approved',JSON.stringify(approved.code));
+  // Completion itself is out of this fixture's reach (no handoff evidence); what
+  // matters is that the complete effect is admitted and its checkpoint journaled.
+  const complete=await runner.executeEffect(f.effect('complete',2));
+  assert.notEqual(complete.outcome,'rejected');assert.notEqual(complete.code,'limit_exceeded');
+  assert.notEqual(complete.code,'store_failure');
+  const history=f.replay();assert.equal(history.state.state,complete.state);assert.equal(history.pending,null);
+  assert.equal(f.records().at(-1).payload.effectId,'complete-2');
+  assert.equal(history.state.calls.filter(call=>call.terminal==='abandoned').length,2);
+  // develop-1, review-1, review-1-retry-1, develop-2, develop-2-retry-1, review-2, review-2-retry-1.
+  assert.equal(history.state.calls.length,7);
+  assert.deepEqual(f.reopen().status(),complete);
+},{reviewTimeoutMs:200}));

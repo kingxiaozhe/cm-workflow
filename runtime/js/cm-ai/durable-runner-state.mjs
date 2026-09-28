@@ -296,7 +296,11 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
   need(s.code===null || typeof s.code==='string' && s.code.length<=128,'runner_state');
   need(typeof s.cancelAfterCommit==='boolean' && [null,'workflow_error'].includes(s.workflowError),'runner_state');
   need(typeof s.cancellationRequested==='boolean','runner_state');
-  need(Array.isArray(s.calls) && s.calls.filter(call=>!invalidDeveloperCall(call)).length-s.cache.filter(timeoutEffect).length<=6 && s.sequence===s.calls.length,'runner_calls');
+  // An abandoned invocation holds no effect slot (its pending effect was never
+  // checkpointed, or its journaled result was abandoned), so it holds no call
+  // slot either; the attempt's one redispatch is bounded by reviewRetrySpent.
+  need(Array.isArray(s.calls) && s.calls.filter(call=>!invalidDeveloperCall(call)&&call.terminal!=='abandoned').length
+    -s.cache.filter(timeoutEffect).length<=6 && s.sequence===s.calls.length,'runner_calls');
   need(Array.isArray(s.receipts) && s.receipts.length<=2 && Array.isArray(s.cache) && completedEffectCount(s.cache,s.calls)<=6,'runner_limits');
   prefix(before.calls,s.calls);prefix(before.receipts,s.receipts);prefix(before.cache,s.cache);
   need(s.cache.length===before.cache.length+1,'runner_cache');
