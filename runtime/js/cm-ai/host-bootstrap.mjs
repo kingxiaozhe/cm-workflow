@@ -109,8 +109,13 @@ export function createHostBootstrap({definition,workflowRoot,selection,bridge,al
     need(!used.has(request.invocationId),'bootstrap_dispatch_unknown');
     const currentAdmission=admission(baseline);
     need(currentAdmission.nextTask?.feature===data.feature&&currentAdmission.nextTask.id===request.identity.taskId,'bootstrap_task_required');
-    const prior=previous===null?null:readBootstrapEvidence(previous,configuration,{...request.identity,attempt:request.identity.attempt-1});
-    if(mode==='instructions')need(request.identity.attempt===1?prior===null:prior!==null,'bootstrap_prior_evidence_required');
+    // A revision binds to the previous attempt's evidence. A retryable develop
+    // block after this effect wrote the rules (develop_checks_not_passed) retries
+    // the same attempt, so it binds to that attempt's own recorded evidence.
+    const retry=previous!==null&&previous.identity?.attempt===request.identity.attempt;
+    const prior=previous===null?null:readBootstrapEvidence(previous,configuration,
+      {...request.identity,attempt:retry?request.identity.attempt:request.identity.attempt-1});
+    if(mode==='instructions')need(request.identity.attempt===1?prior===null||retry:prior!==null,'bootstrap_prior_evidence_required');
     const originals=instructionPaths.map(file=>({path:file,bytes:readCmInitSource(data.codeProject,file)}));
     for(const file of originals){
       const expected=file.path==='AGENTS.md'&&prior!==null&&previousWriteback?.outcome==='written'

@@ -244,7 +244,7 @@ scope/requirements使用相对工作区的前缀路径（如`frontend/src/view.m
 init_generate返回原`{status,documents}`；init_verify逐组核验并返回`{checks,constraintChanges,application,retrospective}`，
 checks为commands/globs/file_references/constraint_preservation/rule_applicability，各含status/evidence。
 constraintChanges必须空；application/retrospective沿原Learning字段。此核验不是独立Review，仍走原N4/N5。
-单任务驾驶员覆盖T-001骨架和纯规范scope、单代码根、非`--protected-config`的T-002规范任务及其第2轮修订：`init_generate`读取启动前校验的`answers/init-generate.json`（第2轮只读`init-generate-a2.json`），`init_verify`的globs/file_references/constraint_preservation/rule_applicability四组与Learning读取会话核对后写的`init-verify.json`（第2轮`init-verify-a2.json`），commands组只由驾驶员在代码根实跑该文件列出的草稿命令得出，答案文件不能提供commands结果。含业务scope、`codeProjects`多根或provider开发的规范任务仍启动前退出2，需要当前AI会话直接保持`cm-ai-host.mjs serve`的交互进程依实际`host_request`应答；批次驾驶员没有此runner，预检退出2。详见[单步驾驶员](../skills/cm-ai/references/js-host.md#bootstrap-规范任务用单步驾驶员)与[当前会话宿主路径](../skills/cm-ai/references/js-host.md#bootstrap-规范任务的当前会话宿主路径)。
+单任务驾驶员覆盖T-001骨架和纯规范scope、单代码根、非`--protected-config`的T-002规范任务及其第2轮修订：`init_generate`读取启动前校验的`answers/init-generate.json`（第2轮只读`init-generate-a2.json`），`init_verify`的globs/file_references/constraint_preservation/rule_applicability四组与Learning读取会话核对后写的`init-verify.json`（第2轮`init-verify-a2.json`），commands组只由驾驶员在启动宿主前于代码根实跑该文件列出的草稿命令得出（未通过即退出2，运行存档不变），答案文件不能提供commands结果；修订答案须在读取首轮findings后编写，规范任务的advance不能带`--allow-review-attempt 1`跨进第2轮。续跑（第2轮或检查失败后的同轮重试）时目标文件须与运行存档记录的上次写入一致，宿主同轮重试以本轮已记录的规范证据为起点。含业务scope、`codeProjects`多根或provider开发的规范任务仍启动前退出2，需要当前AI会话直接保持`cm-ai-host.mjs serve`的交互进程依实际`host_request`应答；批次驾驶员没有此runner，预检退出2。详见[单步驾驶员](../skills/cm-ai/references/js-host.md#bootstrap-规范任务用单步驾驶员)与[当前会话宿主路径](../skills/cm-ai/references/js-host.md#bootstrap-规范任务的当前会话宿主路径)。
 规则读回及证据进入同一原develop记录与handoff，然后Review，完成后N7重载。若T-001 Learning已写入AGENTS.md，规范草稿须保留其他既有约束原文；宿主把既有`## 项目教训`段按原字节合入最终草稿，再核验、写入并交独立Review。草稿修改既有教训或遗漏其他既有内容时阻断。已有用户规则冲突、未知写入或材料漂移不覆盖不重派；
 缺当前写许可在派发前阻断，补许可只能沿原run恢复。此开关不授权Git初始化、安装、网络或额外provider。
 
@@ -1153,7 +1153,8 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 | `blocked/completion_checks_changed` | 已审包的完成前复查结果变化 | 修好检查环境，在原 run `advance` 或 `complete`，保留原审查回执；仍受 effect 上限约束 |
 | `state: "unknown"` | 某个有副作用的步骤抛了异常或返回了无法判定的终态，做没做成不确定 | 单任务 V3 审查调用已登记、无结果时可用下述 `abandon_review`；其他情况见下 |
 | `state: "unknown"` + `execution_error`，`pendingAction: "reconcile"`，且 stderr 显示驱动未应答 `init_generate`／`init_verify` | 驾驶员断联，原 develop effect 结果未定；旧版驾驶员可能错误退出 0 | 先核对原 host 与子进程及代码根实际写入；仅满足下述 pending effect 条件时在原 run 用 `abandon_effect`，之后按原新运行门禁使用当前会话宿主路径；不要原样重发 `advance` |
-| `state: "unknown"` + `execution_error`，`pendingAction: "reconcile"`，且 stderr 显示 `init_verify 命令核验未通过` 或宿主诊断 `bootstrap_verification_blocked` | 规范核验没有通过，宿主在写入前停止；没有挂起的 effect | 本轮规范文件未写入，`abandon_effect` 不适用。修正项目或草稿后用新的 runId 新建同一任务运行；若第 2 轮失败时第 1 轮文件已在磁盘上，新运行会以目标已存在拒绝，停止并报告，不删改用户可见规则 |
+| `blocked/develop_checks_not_passed`，bootstrap 规范任务 | 规范已写入，`PLAN.checks` 未通过 | 修好检查环境后在原 run `advance`；同一轮以原答案重试，驾驶员与宿主只接受本运行存档记录的那次写入，他人改动先还原 |
+| `state: "unknown"` + `execution_error`，`pendingAction: "reconcile"`，宿主诊断 `bootstrap_verification_blocked` | 当前会话宿主路径中 `init_verify` 返回了未核验项，宿主在写入前停止；没有挂起的 effect | 本轮规范文件未写入，`abandon_effect` 不适用。第 1 轮可用新的 runId 新建同一任务运行；第 2 轮时第 1 轮文件已在磁盘上，新运行会以目标已存在拒绝，停止并报告，不删改用户可见规则。单步驾驶员在启动宿主前实跑命令，未通过不会进入宿主 |
 | `state: "unknown"` + pending develop/complete intent（后面可有 control 记录） | 宿主在 effect intent 后、checkpoint 前退出 | `pendingAction: "abandon_effect"`；核对旧 host 与它启动的进程后，在原 run 显式退出 |
 | `state: "unknown"` + pending review intent，尚无 host-joined／review 登记 | reviewer 启动前退出 | `pendingAction: "abandon_effect"`；确认旧 host 已退出后在原 run 显式退出 |
 | `state: "unknown"` + 已登记且无结果的 review invocation | 审查调用未完成 | `pendingAction: "abandon_review"`；核对旧 host 和 reviewer 进程后在原 run 显式退出 |

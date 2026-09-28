@@ -62,7 +62,7 @@ const rulesPermissions=['--bootstrap-config','bootstrap.json','--allow-bootstrap
 function rulesDocuments(f,attempt,{agents}={}){
   const baseAgents='# AITide\n\n## 常用命令\n\n- 结构检查: `sh scripts/verify.sh`\n';
   const contents={
-    'AGENTS.md':agents??(attempt===1?baseAgents:baseAgents+'- 严格检查: `sh scripts/verify.sh --strict`（新增模块后）\n'),
+    'AGENTS.md':agents??(attempt===1?baseAgents:baseAgents+'\n## 修订补充\n\n- 严格检查: `sh scripts/verify.sh --strict`（新增模块后）\n'),
     '.claude/CLAUDE.md':'# AITide\n\n## 规则\n\n@rules/coding-style.md\n@rules/testing.md\n@rules/security.md\n@rules/git-workflow.md\n',
     '.claude/rules/coding-style.md':'# 代码风格\n\nSwiftUI 视图放 Sources/AITide。\n',
     '.claude/rules/testing.md':attempt===1?'# 测试\n\n运行 `sh scripts/verify.sh`。\n'
@@ -80,7 +80,8 @@ function verifyAnswer(commands=[{id:'verify',command:['/bin/sh','scripts/verify.
 }
 function prepareRules(f,attempt,options={}){
   const suffix=attempt===1?'':`-a${attempt}`,docs=rulesDocuments(f,attempt,options);
-  f.write(`init-generate${suffix}.json`,docs.generate);f.write(`init-verify${suffix}.json`,verifyAnswer(options.commands));
+  f.write(`init-generate${suffix}.json`,docs.generate);
+  f.write(`init-verify${suffix}.json`,verifyAnswer(options.commands,options.retrospective?{retrospective:options.retrospective}:{}));
   return docs.contents;
 }
 function assertRefusedBeforeLaunch(f,run,pattern){
@@ -92,7 +93,8 @@ function assertRefusedBeforeLaunch(f,run,pattern){
 test('help names the rules answer files and that command results come only from real runs',()=>{
   const help=spawnSync(process.execPath,[DRIVER,'--help'],{encoding:'utf8'});
   assert.equal(help.status,0);
-  for(const pattern of [/init-generate\.json/,/init-verify\.json/,/init-generate-a2\.json 与 init-verify-a2\.json/,/commands 结果只来自实跑/])
+  for(const pattern of [/init-generate\.json/,/init-verify\.json/,/init-generate-a2\.json 与 init-verify-a2\.json/,
+    /commands 在启动宿主前由驾驶员实跑，失败即退出 2；结果只来自实跑/])
     assert.match(help.stdout,pattern);
 });
 
@@ -147,8 +149,6 @@ test('rules answer files are validated before the host starts',t=>{
     ['unverified group',verifyAnswer(undefined,{checks:{...verifyAnswer().checks,globs:{status:'unverified',evidence:'no match yet'}}}),
       /checks\.globs 为 unverified：宿主只接受 verified\/not_applicable/],
     ['constraint change',verifyAnswer(undefined,{constraintChanges:['AGENTS.md']}),/constraintChanges 必须为空/],
-    ['over budget',verifyAnswer([{id:'a',command:['/bin/sh','scripts/verify.sh']},{id:'b',command:['/bin/sh','scripts/verify.sh']}]),
-      /超时合计 1800000 ms，须小于宿主开发步骤预算/],
     ['invalid Learning',verifyAnswer(undefined,{application:{status:'applied',note:null}}),/application 须为原 Learning/],
     ['rebound Learning',verifyAnswer(undefined,{application:{...learning.application,feature:'2.other'}}),/application 须为原 Learning/],
     ['invalid retrospective',verifyAnswer(undefined,{retrospective:{status:'lesson_candidate',candidates:[],reason:null}}),
@@ -166,13 +166,15 @@ test('rules answer files are validated before the host starts',t=>{
   f.write('init-verify.json',verifyAnswer());f.write('init-verify-a1.json',verifyAnswer());
   assertRefusedBeforeLaunch(f,run(),/init-verify\.json 与 init-verify-a1\.json 不能同时存在/);
   fs.rmSync(path.join(f.answers,'init-verify-a1.json'));
-  assertRefusedBeforeLaunch(f,run({permissions:['--allow-review-attempt','1']}),
-    /缺少 .*init-generate-a2\.json；本次 advance 带 --allow-review-attempt 1.*\.reviews\/bootstrap-T-002-r1\.md.*init-verify-a2\.json/);
-  // A preloaded revision runs after attempt 1 writes, so only its own shape is checked now.
+  // A revision written before its findings exist is refused, even when preloaded.
+  const pattern=/advance 不能带 --allow-review-attempt 1 直接进入第 2 轮.*\.reviews\/bootstrap-T-002-r1\.md.*init-verify-a2\.json/;
+  assertRefusedBeforeLaunch(f,run({permissions:['--allow-review-attempt','1']}),pattern);
   const {generate:revision}=rulesDocuments(f,2);f.write('init-generate-a2.json',revision);f.write('init-verify-a2.json',verifyAnswer());
-  f.write(revision.documents[1].contentFile,'# x\n'+'line\n'.repeat(160));
-  assertRefusedBeforeLaunch(f,run({permissions:['--allow-review-attempt','1']}),
-    /^\[drive\] init-generate-a2\.json 结构检查未通过: \.claude\/CLAUDE\.md:claude_line_limit/m);
+  assertRefusedBeforeLaunch(f,run({permissions:['--allow-review-attempt','1']}),pattern);
+  // The host inspects the raw draft before merging AGENTS.md lessons; so does the driver.
+  rulesDocuments(f,1);fs.writeFileSync(path.join(f.codeProject,'AGENTS.md'),'## 项目教训\n\n- 骨架教训\n');
+  f.write(generate.documents[0].contentFile,' \n');
+  assertRefusedBeforeLaunch(f,run(),/^\[drive\] init-generate\.json 无效: init_draft_invalid/m);
 });
 
 test('attempt 1 refuses existing instructions the host would not overwrite',t=>{
@@ -194,7 +196,7 @@ test('responder binds each host request to the preflighted attempt and its own c
     permissions:['--bootstrap-config',path.join(f.root,'bootstrap.json')]});
   const contents=prepareRules(f,1,{commands:[{id:'strict',command:['/bin/sh','scripts/verify.sh','--strict'],timeoutMs:60000}]});
   const answers=readBootstrapRulesAnswers({answers:f.answers,operation:'advance',definition,plan:{},bootstrap,
-    reachable:{attempts:[1],reviewFirst:false,packageDigest:null}});
+    reachable:{attempts:[1],reviewFirst:false,packageDigest:null,learning:null}});
   // Even answer data that carried a commands entry cannot replace the driver's own run.
   answers.get(1).verify.checks={...answers.get(1).verify.checks,commands:{status:'verified',evidence:'static pass'}};
   const responder=createBootstrapRulesResponder({definition,plan:{},bootstrap,answers});
@@ -205,6 +207,10 @@ test('responder binds each host request to the preflighted attempt and its own c
     categories:['commands','globs','file_references','constraint_preservation','rule_applicability'],
     learningInput:{identity:{...identity,attempt}}}});
   await assert.rejects(async()=>responder.init_verify(verify()),/尚未应答对应的 init_generate/);
+  responder.init_generate(generate());
+  await assert.rejects(async()=>responder.init_verify(verify()),/命令尚未由本驾驶员实跑/);
+  // prepare really runs the listed command before the host starts and refuses its failure.
+  assert.match(await responder.prepare(),/init-verify\.json 的命令在启动宿主前实跑未通过：strict: failed（host check exited 1）。宿主未启动，运行存档不变/);
   assert.throws(()=>responder.init_generate({...generate(),payload:{...generate().payload,project:f.root}}),/项目根与运行定义不一致/);
   assert.throws(()=>responder.init_generate({...generate(),payload:{...generate().payload,selection:{...selection,modules:['frontend']}}}),
     /selection 与 bootstrap-config 不一致/);
@@ -222,13 +228,13 @@ test('responder binds each host request to the preflighted attempt and its own c
   responder.init_generate(generate());
   const reply=await responder.init_verify(verify());
   assert.equal(reply.checks.commands.status,'failed');
-  assert.match(reply.checks.commands.evidence,/驾驶员实跑 1\/1 条草稿命令: strict: failed（host check exited 1）/);
+  assert.match(reply.checks.commands.evidence,/驾驶员在启动宿主前实跑 1\/1 条草稿命令（\d{4}-\d{2}-\d{2}T[\d:]+Z）: strict: failed（host check exited 1）/);
   assert.deepEqual(reply.constraintChanges,[]);assert.deepEqual(reply.application,learning.application);
 });
 
-function reviewFixture(f){
+function reviewFixture(f,{revise:requestRevision=true}={}){
   const source=fs.readFileSync(fileURLToPath(new URL('./fixtures/claude-review-process.mjs',import.meta.url)),'utf8');
-  const revise="data.reviewPackage.identity.taskId==='T-002'&&data.reviewPackage.identity.attempt===1";
+  const revise=requestRevision?"data.reviewPackage.identity.taskId==='T-002'&&data.reviewPackage.identity.attempt===1":'false';
   const fake=source.replace("verdict:'approved'",`verdict:${revise}?'changes_requested':'approved'`)
     .replace('findings:[]',`findings:${revise}?[{id:'F1',severity:'P2',path:'.claude/rules/testing.md',message:'Name the structure check for new Swift files',evidence:'Synthetic revision fixture'}]:[]`);
   assert.notEqual(fake,source);
@@ -260,18 +266,25 @@ test('real host drives split-root T-001 scaffold, then T-002 rules with a revisi
   f.writeRun('T-002',[...f.targets]);f.writeBootstrap(selection);
   // Missing answers are refused before the T-002 run exists.
   assertRefusedBeforeLaunch(f,f.drive(f.plan('T-002','create',[...rulesPermissions,...review]),'advance'),/init-generate\.json/);
-  const first=prepareRules(f,1);
+  // Attempt 1 records a real lesson: the host writes it back into AGENTS.md after the rules.
+  const lesson={status:'lesson_candidate',candidates:[{classification:'structured',trigger:'SwiftUI rules bootstrap',
+    action:'Keep scripts/verify.sh as the structure check',evidence:['scripts/verify.sh']}],reason:null};
+  const first=prepareRules(f,1,{retrospective:lesson});
+  // Every target except AGENTS.md (which also carries the written-back lesson) matches the draft.
+  const matches=(docs)=>{for(const file of f.targets)if(file==='AGENTS.md'){
+    assert(read(f,file).startsWith(docs[file]),file);assert.match(read(f,file),/## 项目教训[\s\S]*Keep scripts\/verify\.sh/);}
+    else assert.equal(read(f,file),docs[file],file);};
   run=f.drive(f.plan('T-002','create',[...rulesPermissions,...review]),'advance');
   assert.equal(run.status,0,run.stderr);assert.equal(result(run).state,'awaiting_review',run.stdout);
   assert.match(run.stderr,/应答 init_generate/);assert.match(run.stderr,/应答 init_verify/);assert.match(run.stderr,/应答 check/);
   assert.doesNotMatch(run.stderr,/应答 develop/);
-  for(const file of f.targets)assert.equal(read(f,file),first[file],file);
+  matches(first);
   const waiting=result(run).packageDigest,state=path.join(f.store('T-002'),'state.json');
-  // Review may lead straight into attempt 2 inside this advance: its answers are required first.
+  // Review may lead straight into attempt 2 inside this advance: the revision must wait for findings.
   let before=fs.readFileSync(state);
   run=f.drive(f.plan('T-002','resume',[...rulesPermissions,...review,'--allow-review-attempt','1']),'advance');
   assert.equal(run.status,2,run.stderr);
-  assert.match(run.stderr,new RegExp(`缺少 init-generate-a2\\.json；请先以 decision 和当前 packageDigest ${waiting}.*bootstrap-T-002-r1\\.md`));
+  assert.match(run.stderr,new RegExp(`须在读取首轮审查 findings 之后编写：请先以 decision 和当前 packageDigest ${waiting}.*bootstrap-T-002-r1\\.md`));
   assert.deepEqual(fs.readFileSync(state),before);
   run=f.drive(f.plan('T-002','resume',[...rulesPermissions,...review,'--allow-review-attempt','1'],{packageDigest:waiting}),'decision');
   assert.equal(run.status,0,run.stderr);assert.equal(result(run).state,'changes_requested');
@@ -286,10 +299,17 @@ test('real host drives split-root T-001 scaffold, then T-002 rules with a revisi
   prepareRules(f,2,{agents:'# AITide rewritten\n'});
   run=again();assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/init-generate-a2\.json 的 AGENTS\.md 必须逐字保留/);
   assert.deepEqual(fs.readFileSync(state),before);
+  // A failing attempt-2 command is refused before launch: the run stays changes_requested.
+  prepareRules(f,2,{commands:[{id:'strict',command:['/bin/sh','scripts/verify.sh','--strict'],timeoutMs:60000}]});
+  run=again();assert.equal(run.status,2,run.stderr);
+  assert.match(run.stderr,/init-verify-a2\.json 的命令在启动宿主前实跑未通过：strict: failed（host check exited 1）/);
+  assert.doesNotMatch(run.stderr,/应答 init_generate/);
+  assert.deepEqual(fs.readFileSync(state),before);
+  matches(first);
   const second=prepareRules(f,2);
   run=again();assert.equal(run.status,0,run.stderr);assert.equal(result(run).state,'awaiting_review',run.stdout);
   assert.equal(result(run).identity.attempt,2);
-  for(const file of f.targets)assert.equal(read(f,file),second[file],file);
+  matches(second);
   assert.notEqual(second['.claude/rules/testing.md'],first['.claude/rules/testing.md']);
   // The driver's decision request carries the run definition's attempt-1 identity;
   // the second review runs inside advance with the attempt-2 review grant.
@@ -300,26 +320,56 @@ test('real host drives split-root T-001 scaffold, then T-002 rules with a revisi
   assert.deepEqual([...handoff.changed_files].sort(),[...f.targets].sort());
 });
 
-test('a failing init_verify command is real evidence: nothing is written and a new run recovers',
+test('a failing init_verify command is really run before launch and refused with nothing written',
   {skip:process.platform!=='darwin',timeout:120000},t=>{
   const f=fixture(t,{scaffolded:true});f.writeRun('T-002',[...f.targets]);f.writeBootstrap(selection);
   f.writeRun('T-001',Object.keys(scaffold));reviewFixture(f);
   const permissions=[...rulesPermissions,'--review-config','review.json'];
   // The session's semantic groups say verified; only the real command decides the commands group.
+  fs.writeFileSync(path.join(f.codeProject,'scripts/verify.sh'),'echo strict-check-ran >&2\n'+scaffold['scripts/verify.sh']);
   prepareRules(f,1,{commands:[{id:'strict',command:['/bin/sh','scripts/verify.sh','--strict'],timeoutMs:60000}]});
   const failed=f.drive(f.plan('T-002','create',permissions),'advance');
-  assert.equal(failed.status,1,failed.stderr);
-  assert.equal(result(failed).state,'unknown',failed.stdout);assert.equal(result(failed).code,'execution_error');
-  assert.match(failed.stderr,/init_verify 命令核验未通过：strict: failed（host check exited 1）/);
-  assert.match(failed.stderr,/"code":"bootstrap_verification_blocked"/);assert.match(failed.stderr,/新 runId/);
-  assert.equal(fs.existsSync(path.join(f.codeProject,'.claude')),false);
+  assert.equal(failed.status,2,failed.stderr);
+  assert.match(failed.stderr,/init-verify\.json 的命令在启动宿主前实跑未通过：strict: failed（host check exited 1）/);
+  assert.match(failed.stderr,/\[drive init_verify strict stderr\] strict-check-ran/);
+  assert.doesNotMatch(failed.stderr,/应答 init_generate/);
+  assertRefusedBeforeLaunch(f,failed,/宿主未启动，运行存档不变/);
   assert.equal(fs.existsSync(path.join(f.codeProject,'AGENTS.md')),false);
-  // No pending effect remains to abandon; nothing was written, so a fresh run for T-002 proceeds.
-  const abandon=f.drive(f.plan('T-002','resume',[...permissions,'--allow-abandon-effect'],
-    {reason:'Old host exited after failed init_verify command'}),'abandon_effect');
-  assert.equal(abandon.status,1,abandon.stdout);assert.equal(result(abandon).code,'effect_abandon_no_pending');
-  f.writeRun('T-002',[...f.targets],'T-002-b');const contents=prepareRules(f,1);
-  const fresh=f.drive(f.plan('T-002-b','create',permissions),'advance');
-  assert.equal(fresh.status,0,fresh.stderr);assert.equal(result(fresh).state,'awaiting_review',fresh.stdout);
+  // Fix the draft's command list; the same run definition then advances.
+  const contents=prepareRules(f,1);
+  const fixed=f.drive(f.plan('T-002','create',permissions),'advance');
+  assert.equal(fixed.status,0,fixed.stderr);assert.equal(result(fixed).state,'awaiting_review',fixed.stdout);
+  assert.match(fixed.stderr,/\[drive init_verify verify /);
   for(const file of f.targets)assert.equal(read(f,file),contents[file],file);
+});
+
+test('rules written by this run survive a failed task check: fix the environment, advance again, reach review',
+  {skip:process.platform!=='darwin',timeout:180000},t=>{
+  const f=fixture(t,{scaffolded:true});f.writeRun('T-002',[...f.targets]);f.writeBootstrap(selection);
+  f.writeRun('T-001',Object.keys(scaffold));reviewFixture(f,{revise:false});
+  const permissions=[...rulesPermissions,'--review-config','review.json'];
+  // The task check depends on an environment marker outside the code root.
+  const checks=[{id:'environment',command:['/bin/sh','-c','test -f ../environment.ready']}];
+  const contents=prepareRules(f,1);
+  let run=f.drive(f.plan('T-002','create',permissions,{checks}),'advance');
+  assert.equal(run.status,0,run.stderr);
+  assert.equal(result(run).state,'blocked',run.stdout);assert.equal(result(run).code,'develop_checks_not_passed');
+  assert.equal(result(run).pendingAction,'resume');
+  for(const file of f.targets)assert.equal(read(f,file),contents[file],file);
+  // Rules edited by someone else after this run wrote them are refused before launch.
+  const state=path.join(f.store('T-002'),'state.json'),before=fs.readFileSync(state);
+  fs.appendFileSync(path.join(f.codeProject,'.claude/rules/security.md'),'foreign edit\n');
+  run=f.drive(f.plan('T-002','resume',permissions,{checks}),'advance');
+  assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/\.claude\/rules\/security\.md 与本运行已记录的写入不一致/);
+  assert.deepEqual(fs.readFileSync(state),before);
+  fs.writeFileSync(path.join(f.codeProject,'.claude/rules/security.md'),contents['.claude/rules/security.md']);
+  fs.writeFileSync(path.join(f.root,'environment.ready'),'ok\n');
+  run=f.drive(f.plan('T-002','resume',permissions,{checks}),'advance');
+  assert.equal(run.status,0,run.stderr);assert.equal(result(run).state,'awaiting_review',run.stdout);
+  assert.equal(result(run).identity.attempt,1);
+  for(const file of f.targets)assert.equal(read(f,file),contents[file],file);
+  run=f.drive(f.plan('T-002','resume',[...permissions,'--allow-review-attempt','1'],{checks,packageDigest:result(run).packageDigest}),'decision');
+  assert.equal(run.status,0,run.stderr);assert.equal(result(run).state,'approved',run.stdout);
+  run=f.drive(f.plan('T-002','resume',permissions,{checks}),'advance');
+  assert.equal(run.status,0,run.stderr);assert.equal(result(run).state,'fixture_completed',run.stdout);
 });

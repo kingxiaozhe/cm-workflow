@@ -6,25 +6,26 @@
 // it host verification, not Review), so they come from a per-attempt answer file.
 // The commands group is execution evidence: only commands this driver really
 // runs produce it; an answer file can list commands but never their results.
+// They run before the host starts (prepare): a failure is refused with the run
+// store untouched, because any init_verify failure inside the host leaves the
+// develop effect unknown with no in-run recovery (host-bootstrap.mjs run()).
 import fs from 'node:fs';
 import path from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
+import {createHash} from 'node:crypto';
 import {createHostCheck} from './host-check.mjs';
 import {inspectCmAiBootstrapTask} from './cm-ai-admission.mjs';
 import {mergeBootstrapAgents} from './host-bootstrap.mjs';
 import {createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective} from './cm-ai-context-refresh.mjs';
 import {cmInitRuleTargets,validateCmInitSelection} from '../cm-init/draft-generation.mjs';
 import {inspectCmInitDraft,readCmInitSource} from '../cm-init/draft-inspection.mjs';
-import {stderr,stop,readJson,planCheckTimeout} from './drive-core.mjs';
+import {stop,readJson,planCheckTimeout} from './drive-core.mjs';
 import {need} from './effect-contract.mjs';
 
 const CATEGORIES=['commands','globs','file_references','constraint_preservation','rule_applicability'];
 const REPORTED=CATEGORIES.slice(1);
 // cm-ai-host.mjs uses createHostToolBridge() defaults: one host_result is at most 64 KiB.
 const RESPONSE_LIMIT=64*1024;
-// host-conversation-execution.mjs: the non-provider develop effect budget that
-// init_generate, init_verify and its commands share.
-const DEVELOP_BUDGET_MS=1800000;
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;
 const oneLine=(value,limit)=>nonempty(value)&&Buffer.byteLength(value,'utf8')<=limit&&!/[\r\n\0]/.test(value);
@@ -32,6 +33,7 @@ const refuse=(ok,line)=>{if(!ok)stop(2,line);};
 const envelope=result=>Buffer.byteLength(JSON.stringify({type:'host_result',sessionId:'0'.repeat(36),
   callId:'0'.repeat(36),requestDigest:'0'.repeat(64),result}),'utf8');
 const learningSection=source=>/^## 项目教训[ \t]*\r?$/gmu.test(source);
+const sha=bytes=>bytes===null?null:createHash('sha256').update(bytes).digest('hex');
 
 export function attemptAnswerName(root,name,attempt){
   if(attempt!==1)return `${name}-a${attempt}.json`;
@@ -89,7 +91,7 @@ function readTarget(project,file){
 }
 // Host order: generateCmInitDraft inspects the raw documents, then AGENTS.md is
 // merged with the current file and inspected again (host-bootstrap.mjs run()).
-function readGenerate(root,name,{definition,bootstrap,attempt,current}){
+function readGenerate(root,name,{definition,bootstrap,learning}){
   const value=readJson(path.join(root,name),name);
   refuse(object(value)&&Object.keys(value).sort().join()==='documents,status',`答案格式错误：${name} 只允许 status 与 documents`);
   refuse(value.status==='generated',`答案格式错误：${name}.status 只能是 generated；无法生成时不要启动驾驶员，先报告缺口（宿主把 blocked 记为 unknown 开发步骤）`);
@@ -103,20 +105,27 @@ function readGenerate(root,name,{definition,bootstrap,attempt,current}){
   inspected(definition.codeProject,documents,bootstrap.selection,name);
   refuse(envelope({status:'generated',documents})<=RESPONSE_LIMIT,
     `${name} 的正文合计超过宿主单次回复 64 KiB 上限；精简规范正文，不要截断`);
-  if(current){
-    const project=definition.codeProject;
-    if(attempt===1)for(const file of targets){
-      const bytes=readTarget(project,file);
-      refuse(bytes===null||file==='AGENTS.md'&&learningSection(bytes.toString('utf8')),
-        `规范目标已存在: ${file}；第 1 轮只允许带「## 项目教训」段的 AGENTS.md，宿主不覆盖已有规则（bootstrap_instruction_conflict）`);
+  // Same expectations as host-bootstrap.mjs run(): files this run already wrote are
+  // bound to the journal's recorded evidence (revision or same-attempt retry);
+  // without it only an AGENTS.md carrying a Learning section may pre-exist.
+  const project=definition.codeProject,prior=learning?.bootstrap??null,writeback=learning?.writeback??null;
+  for(const file of targets){
+    const bytes=readTarget(project,file);
+    if(prior===null)refuse(bytes===null||file==='AGENTS.md'&&learningSection(bytes.toString('utf8')),
+      `规范目标已存在: ${file}；本运行尚未写入规范，只允许带「## 项目教训」段的 AGENTS.md，宿主不覆盖已有规则（bootstrap_instruction_conflict）`);
+    else{
+      const expected=file==='AGENTS.md'&&writeback?.outcome==='written'?writeback.agentsFile.sha256
+        :prior.files.find(item=>item.path===file)?.afterSha256??null;
+      refuse(sha(bytes)===expected,`规范目标 ${file} 与本运行已记录的写入不一致（期望 ${expected??'不存在'}，当前 ${sha(bytes)??'不存在'}）；`
+        +'宿主会以 bootstrap_instruction_conflict 停在 unknown，先还原该文件');
     }
-    const existing=readTarget(project,'AGENTS.md')?.toString('utf8')??'';
-    let merged;
-    try{merged=mergeBootstrapAgents(existing,documents.find(item=>item.path==='AGENTS.md').content);}
-    catch{stop(2,`${name} 的 AGENTS.md 必须逐字保留当前 AGENTS.md 中「## 项目教训」段以外的全部内容（宿主只把该段按原字节合入）；否则宿主以 bootstrap_instruction_conflict 停在 unknown`);}
-    inspected(project,documents.map(item=>item.path==='AGENTS.md'?{path:item.path,content:merged}:item),
-      bootstrap.selection,`${name}（合入当前 AGENTS.md 后）`);
   }
+  const existing=readTarget(project,'AGENTS.md')?.toString('utf8')??'';
+  let merged;
+  try{merged=mergeBootstrapAgents(existing,documents.find(item=>item.path==='AGENTS.md').content);}
+  catch{stop(2,`${name} 的 AGENTS.md 必须逐字保留当前 AGENTS.md 中「## 项目教训」段以外的全部内容（宿主只把该段按原字节合入）；否则宿主以 bootstrap_instruction_conflict 停在 unknown`);}
+  inspected(project,documents.map(item=>item.path==='AGENTS.md'?{path:item.path,content:merged}:item),
+    bootstrap.selection,`${name}（合入当前 AGENTS.md 后）`);
   return documents;
 }
 function readVerify(root,name,{definition,plan,attempt}){
@@ -129,15 +138,13 @@ function readVerify(root,name,{definition,plan,attempt}){
     `答案格式错误：${name} 需要 ${keys.join('、')}（可选 commandsNotRun）`);
   refuse(Array.isArray(value.commands)&&value.commands.length>0&&value.commands.length<=32,
     `答案格式错误：${name}.commands 须列出 1..32 条草稿里可安全实跑的命令 {id,command,timeoutMs?}；驾驶员不接受没有实跑的命令核验`);
-  let budget=0;
   try{
     for(const item of value.commands){
       if(!object(item)||Object.keys(item).some(key=>!['id','command','timeoutMs'].includes(key)))throw Error('每项只允许 id、command、timeoutMs');
-      budget+=planCheckTimeout(plan,item);
+      planCheckTimeout(plan,item);
     }
     createHostCheck({cwd:definition.codeProject,commands:value.commands.map(({id,command})=>({id,command}))});
   }catch(error){stop(2,`答案格式错误：${name}.commands ${error.code??error.message}`);}
-  refuse(budget<DEVELOP_BUDGET_MS,`${name}.commands 超时合计 ${budget} ms，须小于宿主开发步骤预算 ${DEVELOP_BUDGET_MS} ms（草稿生成与核验共用）；为每条命令设较小的 timeoutMs`);
   refuse(value.commandsNotRun===undefined||value.commandsNotRun===null||oneLine(value.commandsNotRun,2048),
     `答案格式错误：${name}.commandsNotRun 须为 null 或单行说明（最多 2048 UTF-8 字节）`);
   refuse(object(value.checks)&&Object.keys(value.checks).sort().join()===[...REPORTED].sort().join(),
@@ -161,34 +168,56 @@ function readVerify(root,name,{definition,plan,attempt}){
   return value;
 }
 
-// `current` attempts see today's disk; a revision reached later in the same
-// advance runs after the host wrote attempt 1, so only its standalone shape is checked.
+// Only the attempt that starts from today's disk and journal is accepted. An
+// advance that could review and then revise in one go is refused: the revision
+// must answer findings that do not exist yet, and its commands would run before
+// attempt 1 even writes.
 export function readBootstrapRulesAnswers({answers,operation,definition,plan,bootstrap,reachable}){
   const result=new Map(),slug=`.reviews/${definition.feature.replace(/^\d+\./,'')}-${definition.identity.taskId}`;
+  const pair=attempt=>`answers/init-generate-a${attempt}.json 与 answers/init-verify-a${attempt}.json`;
+  if(reachable.reviewAfterDevelop)
+    stop(2,`规范任务的 advance 不能带 --allow-review-attempt 1 直接进入第 2 轮：修订答案须在读取首轮审查 findings 之后编写。请从 PLAN.permissions 移除 --allow-review-attempt 1，先 advance 到 awaiting_review；再用返回的 packageDigest 执行 decision，读取 ${slug}-r1.md 的 findings；若要求修改，写 ${pair(2)} 后 advance。`);
+  if(reachable.reviewFirst)
+    stop(2,`规范修订答案须在读取首轮审查 findings 之后编写：请先以 decision 和当前 packageDigest ${reachable.packageDigest} 单独运行审查，读取 ${slug}-r1.md 的 findings，写 ${pair(2)} 后再 advance（不要带 --allow-review-attempt 1 advance）`);
   for(const attempt of reachable.attempts){
     const names=['init-generate','init-verify'].map(name=>attemptAnswerName(answers??'',name,attempt));
     for(const name of names){
       const file=path.join(answers??'',name);
       if(answers&&fs.existsSync(file))continue;
-      const pair=`answers/init-generate-a${attempt}.json 与 answers/init-verify-a${attempt}.json`;
-      if(reachable.reviewAfterDevelop&&attempt===2)
-        stop(2,`缺少 ${file}；本次 advance 带 --allow-review-attempt 1，首轮审查后可能直接进入第 2 轮规范生成。可选：1) 从 PLAN.permissions 移除 --allow-review-attempt 1，先 advance 到 awaiting_review；再用返回的 packageDigest 执行 decision，读取 ${slug}-r1.md 的 findings；若要求修改，写 ${pair} 后 advance。2) 若有意一次跑完，预先写好 ${pair} 后重试 advance。`);
-      if(reachable.reviewFirst)
-        stop(2,`缺少 ${name}；请先以 decision 和当前 packageDigest ${reachable.packageDigest} 单独运行审查，读取 ${slug}-r${attempt-1}.md 的 findings，写 ${pair} 后再 advance`);
-      if(attempt>1)stop(2,`步骤 ${operation} 会进入第 ${attempt} 轮规范修订，但答案文件不存在: ${file}；读取 ${slug}-r${attempt-1}.md 的 findings 后写 ${pair}（不会复用第 1 轮答案）`);
+      if(attempt>1)stop(2,`步骤 ${operation} 会进入第 ${attempt} 轮规范修订，但答案文件不存在: ${file}；读取 ${slug}-r${attempt-1}.md 的 findings 后写 ${pair(attempt)}（不会复用第 1 轮答案）`);
       stop(2,`步骤 ${operation} 会反问 ${name.startsWith('init-generate')?'init_generate':'init_verify'}，但答案文件不存在: ${file}`);
     }
-    const current=attempt===reachable.attempts[0];
-    result.set(attempt,{generate:readGenerate(answers,names[0],{definition,bootstrap,attempt,current}),
-      verify:readVerify(answers,names[1],{definition,plan,attempt})});
+    result.set(attempt,{generate:readGenerate(answers,names[0],{definition,bootstrap,learning:reachable.learning}),
+      verify:readVerify(answers,names[1],{definition,plan,attempt}),verifyName:names[1]});
   }
   return result;
 }
 
 const documentMap=documents=>new Map(documents.map(item=>[item.path,item.content]));
 export function createBootstrapRulesResponder({definition,plan,bootstrap,answers}){
-  let generated=null;
+  let generated=null;const executed=new Map();
   return {
+    // Returns null when every listed command passed, otherwise the refusal line.
+    async prepare(){
+      for(const [attempt,entry] of answers){
+        const results=[],at=new Date().toISOString().replace(/\.\d{3}Z$/,'Z');
+        for(const command of entry.verify.commands){
+          const run=createHostCheck({cwd:definition.codeProject,commands:[{id:command.id,command:command.command}],
+            timeoutMs:planCheckTimeout(plan,command),
+            onOutput:({stream,chunk})=>{process.stderr.write(`[drive init_verify ${command.id} ${stream}] ${chunk.toString('utf8')}`);}});
+          const [item]=await run({identity:{...definition.identity,attempt}},{signal:new AbortController().signal});
+          results.push(item);
+          if(item.outcome!=='passed')break;
+        }
+        const passed=results.length===entry.verify.commands.length&&results.every(item=>item.outcome==='passed');
+        const lines=results.map(item=>`${item.id}: ${item.outcome}（${item.evidence}）`);
+        if(results.length<entry.verify.commands.length)
+          lines.push(`未运行（前一条未通过）: ${entry.verify.commands.slice(results.length).map(item=>item.id).join(', ')}`);
+        executed.set(attempt,{passed,lines,at,total:entry.verify.commands.length,ran:results.length});
+        if(!passed)return `${entry.verifyName} 的命令在启动宿主前实跑未通过：${lines.join('；')}。宿主未启动，运行存档不变；修正项目或草稿及答案后重试`;
+      }
+      return null;
+    },
     init_generate(row){
       const payload=row.payload,attempt=payload?.bootstrap?.identity?.attempt,entry=answers.get(attempt);
       if(!entry)throw Error(`init_generate 第 ${attempt} 轮未预检，拒绝复用其他轮答案`);
@@ -212,23 +241,11 @@ export function createBootstrapRulesResponder({definition,plan,bootstrap,answers
         ?{path:item.path,content:mergeBootstrapAgents(agentsBefore(definition.codeProject),item.content)}:item);
       if(!Array.isArray(payload.documents)||!isDeepStrictEqual(documentMap(payload.documents),documentMap(expected)))
         throw Error('宿主核验的草稿与 init-generate 答案（含合入的项目教训段）不一致');
-      const answer=answers.get(attempt).verify,results=[];
-      for(const command of answer.commands){
-        const run=createHostCheck({cwd:definition.codeProject,commands:[{id:command.id,command:command.command}],
-          timeoutMs:planCheckTimeout(plan,command),
-          onOutput:({stream,chunk})=>{process.stderr.write(`[drive init_verify ${command.id} ${stream}] ${chunk.toString('utf8')}`);}});
-        const [item]=await run({identity},{signal:new AbortController().signal});
-        results.push(item);
-        if(item.outcome!=='passed')break;
-      }
-      const passed=results.length===answer.commands.length&&results.every(item=>item.outcome==='passed');
-      const lines=results.map(item=>`${item.id}: ${item.outcome}（${item.evidence}）`);
-      if(results.length<answer.commands.length)
-        lines.push(`未运行（前一条未通过）: ${answer.commands.slice(results.length).map(item=>item.id).join(', ')}`);
-      const evidence=`驾驶员实跑 ${results.length}/${answer.commands.length} 条草稿命令: ${lines.join('；')}`
+      const answer=answers.get(attempt).verify,run=executed.get(attempt);
+      if(!run)throw Error('init_verify 的命令尚未由本驾驶员实跑，拒绝应答');
+      const evidence=`驾驶员在启动宿主前实跑 ${run.ran}/${run.total} 条草稿命令（${run.at}）: ${run.lines.join('；')}`
         +(nonempty(answer.commandsNotRun)?`。未实跑（会话核对说明，不是执行证据）: ${answer.commandsNotRun}`:'');
-      if(!passed)stderr(`init_verify 命令核验未通过：${lines.join('；')}；宿主会以 bootstrap_verification_blocked 让本轮开发步骤停在 unknown，规范文件不会写入；修正项目或草稿后用新 runId 新建本任务运行`);
-      return {checks:{...answer.checks,commands:{status:passed?'verified':'failed',evidence}},
+      return {checks:{...answer.checks,commands:{status:run.passed?'verified':'failed',evidence}},
         constraintChanges:[],application:answer.application,retrospective:answer.retrospective};
     },
   };
