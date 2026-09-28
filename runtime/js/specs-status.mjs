@@ -3,9 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 
-const fields=['status','summaryDigest','at','features','specFiles','testCases','approval'];
+const fields=['status','summaryDigest','at','features','specFiles','testCases','approval','revisionDigest'];
 const record=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const hex=value=>typeof value==='string'&&/^[a-fA-F0-9]{64}$/.test(value);
+const revisionHex=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
 const iso=value=>typeof value==='string'&&/^\d{4}-\d\d-\d\dT/.test(value)&&Number.isFinite(Date.parse(value));
 const need=condition=>{if(!condition)throw new Error('spec_status_invalid');};
 
@@ -20,6 +21,7 @@ export function readSpecsStatus(specsDir){
     need(relative!==''&&relative!=='..'&&!relative.startsWith(`..${path.sep}`)&&!path.isAbsolute(relative));
     const source=JSON.parse(fs.readFileSync(real,'utf8'));
     need(record(source)&&['approved','awaiting_review'].includes(source.status));
+    if(Object.hasOwn(source,'revisionDigest'))need(revisionHex(source.revisionDigest));
     // Keep optional fields absent: admission distinguishes legacy omissions.
     const value=Object.fromEntries(fields.filter(key=>Object.hasOwn(source,key)).map(key=>[key,source[key]]));
     if(record(value.approval))value.approval=Object.fromEntries(['response','at']
@@ -32,6 +34,7 @@ export function writeSpecsStatus(specsDir,value,{beforeRename=()=>{}}={}){
   need(record(value)&&['approved','awaiting_review'].includes(value.status));
   const summaryDigest=value.summaryDigest===undefined?null:value.summaryDigest;
   need(summaryDigest===null||hex(summaryDigest));
+  if(Object.hasOwn(value,'revisionDigest'))need(revisionHex(value.revisionDigest));
   need(iso(value.at)&&Array.isArray(value.features)&&value.features.length>0
     &&value.features.every(name=>typeof name==='string'&&/^\d+\.[^/\\]+$/.test(name))
     &&new Set(value.features).size===value.features.length);
@@ -49,7 +52,8 @@ export function writeSpecsStatus(specsDir,value,{beforeRename=()=>{}}={}){
     &&typeof approval.response==='string'&&approval.response.trim()!==''&&iso(approval.at)));
   const canonical={status:value.status,summaryDigest,at:value.at,features:[...value.features],
     specFiles:manifest(value.specFiles),testCases:manifest(value.testCases),
-    approval:approval===null?null:{response:approval.response,at:approval.at}};
+    approval:approval===null?null:{response:approval.response,at:approval.at},
+    ...(Object.hasOwn(value,'revisionDigest')?{revisionDigest:value.revisionDigest}:{})};
   const bytes=Buffer.from(JSON.stringify(canonical)+'\n'),target=path.join(specsDir,'.cm-specs-status');
   const temporary=path.join(specsDir,`.cm-specs-status-${randomUUID()}`);let fd;
   try{

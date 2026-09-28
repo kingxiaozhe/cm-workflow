@@ -359,7 +359,8 @@ export function approveCmAiSpecs(options){
     const specFiles=buildManifest(specsDir),at=new Date().toISOString();
     writeSpecsStatus(specsDir,{status:'approved',summaryDigest:status.value?.summaryDigest??null,at,
       features:discovered.names,specFiles,testCases:specFiles.filter(item=>item.path.endsWith('/test-cases.json')),
-      approval:{response:options.approvalResponse,at}});
+      approval:{response:options.approvalResponse,at},
+      ...(status.value&&Object.hasOwn(status.value,'revisionDigest')?{revisionDigest:status.value.revisionDigest}:{})});
   }catch(error){return refuse(error.code??error.message);}
   return {projectResults:inspect()};
 }

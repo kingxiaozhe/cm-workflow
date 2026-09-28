@@ -10,6 +10,9 @@ import {preparePrdReview} from '../runtime/js/cm-prd/review-preparation.mjs';
 import {publishPrdReview} from '../runtime/js/cm-prd/review-publication.mjs';
 import {recordPrdHostDisposition,createPrdDispositionOwner} from '../runtime/js/cm-prd/review-disposition.mjs';
 import {inspectPrdSummaryEvidence,createPrdSummaryOwner,publishPrdAwaitingReview} from '../runtime/js/cm-prd/summary.mjs';
+import {inspectPrdChangeSnapshot,inspectPrdChangeProposal,applyPrdChange} from '../runtime/js/cm-prd/change.mjs';
+import {approveCmAiSpecs} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
+import {loadConfig} from './cm-workflow-config.mjs';
 const sha=content=>createHash('sha256').update(content).digest('hex');
 function fixture(t,{pendingCorrection=false}={}){
   const specs=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-summary-marks-')));
@@ -79,6 +82,34 @@ function summaryOwner(){
       signals:{greenfieldAdr:false,architectureOrDataFlow:false,newRuntimeDependencyOrToolchain:false,
         publicContractDataOrSecurity:false,fiveOrMoreFunctions:false},evidence:['Synthetic documentation fixture']}))})});
 }
+test('change digest survives later summary publication, recovery, approval, and another change',async t=>{
+  const {specs}=fixture(t),directory='3.notes',selected=[directory];
+  fs.mkdirSync(path.join(specs,directory));
+  const original=[
+    {path:'requirements.md',content:'## 需求版本\n| 日期 | 版本 | 说明 |\n| --- | --- | --- |\n| 2026-09-08 | v1 | original |\n## 功能需求\n1. [F-003] Notes\n- [ ] [AC-003] Read notes\n'},
+    {path:'design.md',content:'## 设计版本\n| 日期 | 版本 | 说明 |\n| --- | --- | --- |\n| 2026-09-08 | v1 | original |\n## 方案摘要\nNotes\n'},
+    {path:'tasks.md',content:'## 任务版本\n| 日期 | 版本 | 说明 |\n| --- | --- | --- |\n| 2026-09-08 | v1 | original |\n- [ ] T-003: Notes\n'}];
+  for(const doc of original)fs.writeFileSync(path.join(specs,directory,doc.path),doc.content);
+  const revise=(docs,version)=>docs.map(doc=>({path:doc.path,content:doc.content+
+    `\n| 2026-09-08 | v${version} | change |\n`+(doc.path==='tasks.md'?`- [ ] T-00${version+2}: [NEW] Extend notes\n`:'More notes\n')}));
+  const config=loadConfig({projectRoot:specs});
+  const before=inspectPrdChangeSnapshot(specs),proposal=inspectPrdChangeProposal(before,{status:'draft',summary:'Extend notes',removed:[],
+    features:[{directory,documents:revise(original,2),testCasesReason:'no_observable_behavior'}]},selected,config);
+  assert.equal(applyPrdChange({specs,before,proposal,selected}).status,'awaiting_review');
+  const summary=await summaryOwner()(specs,{currentFeatures:['2.appendix']});
+  assert.equal(summary.readyForAwaitingReview,true,JSON.stringify(summary.blockers));
+  assert.equal(publishPrdAwaitingReview({specs,summary,writeEnabled:true}).status,'awaiting_review');
+  const published=fs.readFileSync(path.join(specs,'.cm-specs-status'));
+  assert.equal(JSON.parse(published).revisionDigest,proposal.proposalDigest);
+  assert.equal(publishPrdAwaitingReview({specs,summary,writeEnabled:true,recover:true}).status,'awaiting_review');
+  assert.deepEqual(fs.readFileSync(path.join(specs,'.cm-specs-status')),published);
+  const approval=approveCmAiSpecs({specsDir:specs,codeProject:specs,approvalResponse:'开始'});
+  assert.equal(approval.projectResults[0].state,'ready',JSON.stringify(approval));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(specs,'.cm-specs-status'))).revisionDigest,proposal.proposalDigest);
+  const nextBefore=inspectPrdChangeSnapshot(specs),nextProposal=inspectPrdChangeProposal(nextBefore,{status:'draft',summary:'Extend notes again',removed:[],
+    features:[{directory,documents:revise(revise(original,2),3),testCasesReason:'no_observable_behavior'}]},selected,config);
+  assert.equal(applyPrdChange({specs,before:nextBefore,proposal:nextProposal,selected}).status,'awaiting_review');
+});
 function legacy(specs){
   const prefix=path.join(specs,'.reviews/prd-guide-split');
   for(const suffix of ['-disposition.json','-dispatch.json'])fs.unlinkSync(prefix+suffix);

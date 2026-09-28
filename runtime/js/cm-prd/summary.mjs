@@ -6,7 +6,7 @@ import {inspectPrdSplitDesign} from './split-design.mjs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {TextDecoder} from 'node:util';
-import {writeSpecsStatus} from '../specs-status.mjs';
+import {readSpecsStatus,writeSpecsStatus} from '../specs-status.mjs';
 import {buildManifest} from '../../../scripts/cm-spec-manifest.mjs';
 import {inspectPrdReview} from '../../../scripts/cm-prd-review-gate.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
@@ -125,8 +125,10 @@ export function publishPrdAwaitingReview({specs,summary,writeEnabled,recover=fal
     }
   }
   need(digest(before)===summary.evidenceDigest,'prd_summary_inputs_changed');
+  const prior=readSpecsStatus(specs);
   const status={status:'awaiting_review',summaryDigest:summary.summaryDigest,at:new Date().toISOString(),features:before.features.map(item=>item.directory),
-    specFiles:before.specFiles,testCases:before.specFiles.filter(item=>item.path.endsWith('/test-cases.json')),approval:null};
+    specFiles:before.specFiles,testCases:before.specFiles.filter(item=>item.path.endsWith('/test-cases.json')),approval:null,
+    ...(prior.kind==='valid'&&Object.hasOwn(prior.value,'revisionDigest')?{revisionDigest:prior.value.revisionDigest}:{})};
   const bytes=Buffer.from(JSON.stringify(status)+'\n'),target=path.join(specs,'.cm-specs-status');
   try{
     writeSpecsStatus(specs,status,{beforeRename:()=>{

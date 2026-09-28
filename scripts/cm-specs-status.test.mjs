@@ -64,6 +64,24 @@ test('shared status storage roundtrips canonically and reads legacy metadata wit
   fs.symlinkSync(external,f.target);assert.equal(readSpecsStatus(f.specs).kind,'invalid');
 });
 
+test('revision digest is optional, validated, and retained by shared status storage',t=>{
+  const f=fixture(t),expected=f.initial(),revisionDigest='a'.repeat(64);
+  const withRevision={...expected,revisionDigest};
+  assert.deepEqual(writeSpecsStatus(f.specs,withRevision),withRevision);
+  assert.deepEqual(readSpecsStatus(f.specs),{kind:'valid',value:withRevision});
+  assert.equal(f.value().revisionDigest,revisionDigest);
+  const before=fs.readFileSync(f.target);
+  for(const invalid of ['A'.repeat(64),'f'.repeat(63),null]){
+    assert.throws(()=>writeSpecsStatus(f.specs,{...expected,revisionDigest:invalid}),/spec_status_invalid/);
+    assert.deepEqual(fs.readFileSync(f.target),before);
+    f.raw({...expected,revisionDigest:invalid});
+    assert.equal(readSpecsStatus(f.specs).kind,'invalid');
+    fs.writeFileSync(f.target,before);
+  }
+  writeSpecsStatus(f.specs,expected);
+  assert.equal(Object.hasOwn(f.value(),'revisionDigest'),false);
+});
+
 test('--approve writes only the three permitted reasons with explicit human input and reruns admission',t=>{
   const f=fixture(t),approve=['--approve','--approval-response','开始'];
   f.raw(f.initial());
@@ -83,6 +101,7 @@ test('--approve writes only the three permitted reasons with explicit human inpu
     f.raw({...f.value(),status:'awaiting_review',approval:null});const before=fs.readFileSync(f.target);
     const original=f.run(...args.filter(arg=>arg!=='--approve')).result;
     result=f.run(...args);assert.equal(result.exit,1);assert(result.result.approveRefused);
+    assert.match(result.result.message,/--approval-response.*开始/);
     const {approveRefused,...rest}=result.result;assert.deepEqual(rest,original);
     assert.deepEqual(fs.readFileSync(f.target),before);
   }
