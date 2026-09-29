@@ -60,9 +60,12 @@ test('remote default selects main unpushed commits; detached HEAD works; ambiguo
   f.git('branch','-D','main','master');assert.throws(()=>inspectBranchComparison(f.project),/cm_test_main_missing/);
 });
 test('non-Git and unborn repositories do not fall back to whole-worktree analysis',t=>{
-  const f=fixture(t);fs.rmSync(path.join(f.project,'.git'),{recursive:true});
-  assert.throws(()=>inspectBranchComparison(f.project),/cm_test_git_required/);
-  f.git('init','-q','-b','main');assert.throws(()=>inspectBranchComparison(f.project),/cm_test_head_required/);
+  const project=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-impact-non-git-')));
+  t.after(()=>fs.rmSync(project,{recursive:true,force:true}));
+  assert.throws(()=>inspectBranchComparison(project),/cm_test_git_required/);
+  const initialized=spawnSync('git',['-C',project,'init','-q','-b','main'],{encoding:'utf8'});
+  assert.equal(initialized.status,0,initialized.stderr);
+  assert.throws(()=>inspectBranchComparison(project),/cm_test_head_required/);
 });
 test('two-tip diff includes main-only additions and tracks rename/deletion plus both committed sides',t=>{
   const f=fixture(t);f.write('old name.txt','old content\n');f.write('gone.txt','removed content\n');f.commit();
