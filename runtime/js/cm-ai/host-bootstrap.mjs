@@ -10,7 +10,7 @@ import {readReviewSourceFiles,readReviewBaseline} from './review-package.mjs';
 import {inspectCmAiBootstrapTask,identifyApprovedBootstrapFeature} from './cm-ai-admission.mjs';
 import {readProjectInstructionContext,createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective} from './cm-ai-context-refresh.mjs';
 import {validateDeveloperScope,readDeveloperRequest} from './developer-adapter.mjs';
-import {digest,json,shape,need,freeze,validIdentity,hex,requestFor,terminalFor} from './effect-contract.mjs';
+import {digest,json,shape,need,freeze,validIdentity,hex,requestFor,terminalFor,boundedReason} from './effect-contract.mjs';
 
 const capabilities=new WeakMap();
 const categories=['commands','globs','file_references','constraint_preservation','rule_applicability'];
@@ -102,7 +102,7 @@ export function createHostBootstrap({definition,workflowRoot,selection,bridge,al
   };
   const capability={configuration,inspectAdmission:admission,
     assertWriteAuthorized(){need(allowWrite,'bootstrap_write_authorization_required');},
-    async run(request,control,develop,{previous=null,previousWriteback=null,baseline}={}){
+    async run(request,control,develop,{previous=null,previousWriteback=null,baseline,verificationFailed=null}={}){
     need(allowWrite,'bootstrap_write_authorization_required');
     need(!control.signal.aborted,'cancelled');
     same({...request.identity,attempt:1},data.identity);same(request.payload.scope,data.scope);
@@ -160,8 +160,24 @@ export function createHostBootstrap({definition,workflowRoot,selection,bridge,al
       inspection,categories,learningInput:request.payload.learningInput,
       instructions:'Verify every generated instruction against the approved bootstrap selection and current project. Do not write files, install or dispatch providers. Return {checks,constraintChanges,application,retrospective}; checks use status/evidence. Application and retrospective use the original developer Learning response fields. Unverified assertions block. This is host verification, not independent Review.'},control.signal));
     shape(verified,['checks','constraintChanges','application','retrospective']);shape(verified.checks,categories);
-    for(const check of Object.values(verified.checks)){shape(check,['status','evidence']);
-      need(['verified','not_applicable'].includes(check.status)&&typeof check.evidence==='string'&&check.evidence.trim(),'bootstrap_verification_blocked');}
+    const unverified=[];
+    for(const name of categories){const check=verified.checks[name];shape(check,['status','evidence']);
+      need(typeof check.status==='string'&&typeof check.evidence==='string','bootstrap_verification_blocked');
+      if(!['verified','not_applicable'].includes(check.status)||!check.evidence.trim())
+        unverified.push(`${name}: ${check.status}; ${check.evidence.trim()||'(no evidence)'}`);}
+    // A well-formed verify that does not pass is a determinate answer, not an
+    // unknown effect: nothing has been written yet (writes follow below), so the
+    // same attempt redoes generation and verification against the evidence it
+    // started from. Only the runner's callback may carry the bounded reason.
+    if(unverified.length){
+      need(typeof verificationFailed==='function','bootstrap_verification_blocked');
+      current();verificationFailed(boundedReason('bootstrap_verification_failed: init_verify 未通过的核验组：',unverified,
+        '。规范尚未写入；按证据修正项目或生成内容后恢复运行，本轮重新生成并核验'));
+      return terminalFor({version:1,invocationId:request.invocationId,contextId:request.contextId,provider:request.provider,
+        effectiveModel:response?.effectiveModel??'host-bootstrap',status:'failed',accepted:true,
+        ...(response?.providerThreadId?{providerThreadId:response.providerThreadId}:{}),
+        result:{code:'bootstrap_verification_failed',reason:'bootstrap_verification_failed'}},request);
+    }
     need(Array.isArray(verified.constraintChanges)&&verified.constraintChanges.length===0,'bootstrap_constraint_confirmation_required');
     const learning=request.payload.learningInput;
     need(learning?.feature===data.feature,'bootstrap_learning_required');

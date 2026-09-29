@@ -276,7 +276,7 @@ export function createTaskRunner(options) {
   // derivation in one place, next to the cache it is derived from.
   const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
     &&entry.result?.state==='blocked'
-    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large'].includes(entry.result?.code)).length;
+    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed'].includes(entry.result?.code)).length;
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
     &&entry.result?.state==='blocked'&&['completion_checks_changed','completion_package_changed'].includes(entry.result?.code)).length;
   const privateStatus=()=>json({state,code,...(reason?{reason}:{}),
@@ -851,11 +851,14 @@ export function createTaskRunner(options) {
   async function perform(v) {
     if(v.kind==='develop') {
       need(stageAllowed('develop',state,code,priorReview?.verdict),'stage_mismatch');state='developing';code=null;reason=null;checkNewPaths=null;receipt=null;
+      const previousLearning=learningResult;
       const previousBootstrap=learningResult?.bootstrap??null;
       const previousWriteback=learningResult?.writeback??null;
       if(taskLearning!==null)learningResult=null;
+      let verificationReason=null;
       const adapter=bootstrap===null?developer:{...developer,run:(request,control)=>
-        bootstrap.run(request,control,developer.run,{previous:previousBootstrap,previousWriteback,baseline:original})};
+        bootstrap.run(request,control,developer.run,{previous:previousBootstrap,previousWriteback,baseline:original,
+          verificationFailed:detail=>{verificationReason=detail;}})};
       const result=await invoke(adapter,'developer',developer.contextId,{scope:config.scope,
         requirements:original.files.filter(f=>config.requirements.includes(f.path)),priorReview,
         ...supersededReviewPayload(carriedReview,attempt),
@@ -864,6 +867,14 @@ export function createTaskRunner(options) {
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(result.response.status!=='succeeded'){
         const failure=result.response.result?.code;
+        // The live session's init_verify did not pass, before any rule write.
+        // Keep the Learning/bootstrap evidence this develop started from, so the
+        // retry of the same attempt binds to exactly the files still on disk.
+        if(failure==='bootstrap_verification_failed'){
+          need(metadata.bootstrap?.mode==='instructions'&&typeof verificationReason==='string','invalid_result');
+          learningResult=previousLearning;
+          halt('blocked','bootstrap_verification_failed',verificationReason);return;
+        }
         halt(result.response.status==='unknown'?'unknown':'blocked',
           failure==='invalid_result'&&result.response.result.retryable===true?'developer_result_invalid':
             failure==='protected_edit_stale'?failure:result.response.status);return;
