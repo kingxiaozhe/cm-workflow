@@ -219,11 +219,15 @@ function callRequest(call,adapter,contextId,role,payload,identity,session,index)
     requestedModel:adapter.requestedModel,contextId,payload});
   need(call.requestDigest===request.requestDigest,'runner_request');return request;
 }
-function reviewRequest(before,config,session) {
+// Supersession context (never a verdict) rides only in attempt-1 develop and
+// review requests, so it is bound by their request digests on replay.
+export const supersededReviewPayload=(carried,attempt)=>carried&&attempt===1?{supersededReview:carried}:{};
+function reviewRequest(before,config,session,carried=null) {
   const reviewer=config.reviewers[0];
   return requestFor({invocationId:`${session}.${before.sequence+1}`,identity:{...config.identity,attempt:before.attempt},
     role:'reviewer',provider:reviewer.provider,requestedModel:reviewer.requestedModel,
-    contextId:reviewer.contexts[before.attempt-1],payload:{reviewPackage:before.reviewPackage,priorReview:before.priorReview}});
+    contextId:reviewer.contexts[before.attempt-1],payload:{reviewPackage:before.reviewPackage,priorReview:before.priorReview,
+      ...supersededReviewPayload(carried,before.attempt)}});
 }
 function grantBody(grant) {
   const {grantDigest,...body}=grant;return body;
@@ -245,10 +249,10 @@ export function validateReviewDispatchGrant(raw,expected) {
   need(expected.hostContextIds.includes(grant.hostContextId),'runner_grant');
   need(digest(grantBody(grant))===grant.grantDigest,'runner_grant');return grant;
 }
-function readRegistration(p,before,effect,config,session) {
+function readRegistration(p,before,effect,config,session,carried=null) {
   shape(p,['version','protocol','type','effectId','reviewerId','adapterId','requestDigest','authorizationAt','registeredAt','grant']);
   need(p.effectId===effect.id,'runner_invocation');
-  const request=reviewRequest(before,config,session),reviewer=config.reviewers[0];
+  const request=reviewRequest(before,config,session,carried),reviewer=config.reviewers[0];
   need(p.reviewerId===reviewer.id&&p.adapterId===reviewer.adapterId&&p.requestDigest===request.requestDigest,'runner_grant');
   const grant=validateReviewDispatchGrant(p.grant,{request,reviewerId:reviewer.id,adapterId:reviewer.adapterId,
     packageDigest:before.reviewPackage.packageDigest,hostContextIds:[config.reviewInvocation.developerThreadId,...config.reviewInvocation.excludedThreadIds],
@@ -324,7 +328,7 @@ function invocationCall(call,registration,started,result,before) {
     &&call.resultDigest===digest(result.outcome==='observed'?result.inspection.review:result)
     &&before.sequence+1===Number(request.invocationId.split('.').at(-1)),'runner_call');
 }
-function checkpoint(before,raw,effect,config,original,session,controls,version=1,taskCommit=null,invocation=null) {
+function checkpoint(before,raw,effect,config,original,session,controls,version=1,taskCommit=null,invocation=null,carried=null) {
   const s=json(raw,LIMIT);
   shape(s,['state','code','attempt','session','sequence','reviewPackage','currentChecks','receipt','receipts','calls','cache',
     ...(Object.hasOwn(s,'reason')?['reason']:[]),
@@ -360,6 +364,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     need(added.length<=1 && s.receipts.length===before.receipts.length,'runner_develop');same(s.receipt,null);same(s.priorReview,before.priorReview);
     if(added.length)callRequest(added[0],config.developer,config.developer.contextId,'developer',{
       scope:config.scope,requirements:original.files.filter(f=>config.requirements.includes(f.path)),priorReview:before.priorReview,
+      ...supersededReviewPayload(carried,before.attempt),
       ...(Object.hasOwn(original,'specification')?{specification:original.specification}:{}),
       ...(Object.hasOwn(effect,'learningInput')?{learningInput:effect.learningInput}:{})
     },identity,session,before.calls.length+1);
@@ -479,7 +484,8 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
       if(!candidate.allowed || !candidate.available){reasons.push({id:candidate.id,reason:!candidate.allowed?'not_authorized':'unavailable'});continue;}
       if(index===added.length)break;
       const call=added[index++],request=callRequest(call,candidate,candidate.contexts[before.attempt-1],'reviewer',{
-        reviewPackage:before.reviewPackage,priorReview:before.priorReview},identity,session,before.calls.length+index);
+        reviewPackage:before.reviewPackage,priorReview:before.priorReview,
+        ...supersededReviewPayload(carried,before.attempt)},identity,session,before.calls.length+index);
       if(['unavailable','auth_required','permission_denied'].includes(call.terminal)){reasons.push({id:candidate.id,reason:call.terminal});continue;}
       need(index===added.length,'runner_fallback');
       if(s.receipts.length===before.receipts.length+1) {
@@ -667,7 +673,7 @@ export function readRunnerHistory(raw,config,version=1) {
       joinedHosts.push(p.hostContextId);joinedForInvocation=true;
     } else if(version===3&&p.type==='review-invocation-registered') {
       need(r.kind==='intent'&&pending?.kind==='review'&&!invocation.registration,'runner_invocation');
-      invocation.registration=readRegistration(p,beforeIntent,pending,reviewConfig(),session);
+      invocation.registration=readRegistration(p,beforeIntent,pending,reviewConfig(),session,supersession?.carriedReview??null);
       registrationRecord=r;
     } else if(version===3&&p.type==='review-invocation-started') {
       need(r.kind==='result'&&invocation.registration&&!invocation.started&&!invocation.result,'runner_invocation');
@@ -759,7 +765,8 @@ export function readRunnerHistory(raw,config,version=1) {
       pending=null;beforeIntent=null;
     } else if(p.type==='effect-checkpoint') {
       shape(p,[...common,'effectId','checkpoint']);need(r.kind==='result' && pending && p.effectId===pending.id,'runner_checkpoint');
-      state=checkpoint(beforeIntent,p.checkpoint,pending,config,original,session,controls,version,state.taskCommit??null,invocation);
+      state=checkpoint(beforeIntent,p.checkpoint,pending,config,original,session,controls,version,state.taskCommit??null,invocation,
+        supersession?.carriedReview??null);
       lastReview=version===3&&pending.kind==='review'&&invocation.result?{effect:pending,request:invocation.registration.request,
         registrationRecord,startedRecord,resultRecord}:null;
       pending=null;beforeIntent=null;invocation={registration:null,started:null,result:null};

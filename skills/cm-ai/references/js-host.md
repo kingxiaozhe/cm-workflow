@@ -415,6 +415,8 @@ node scripts/cm-ai-host.mjs serve --config run-new.json --mode create \
 
 新运行先在自己的 journal 追加 `evidence-superseded`，绑定原因、旧 runId、文件名和 SHA-256，然后用先硬链接再解除原链接的方式把该任务同名 handoff、review 及具名 correction／QA 文件移至 `.reviews/.superseded/{原文件名}.{摘要前16位}`，并写 `supersede` 运行日志。归档中断后以同一新 runId 执行 `resume` 会按记录补齐；未用此旗标的运行不增加记录或改动旧证据。历史 QA 的 UUID 报告仍由旧 runId 日志引用，保持原位。新 handoff 和 review 使用原文件名，旧证据只在归档中留史。
 
+旧运行因 `review_limit`／`review_blocked` 等停下时，`evidence-superseded` 另存 `carriedReview`：直接前驱最后一份审查回执的 verdict、summary 与 findings（按审查文本上限截断；前驱没有回执时沿用它自己带过来的那份）。新运行仍从第 1 轮开始、名额不变，只在第 1 轮开发与第 1 轮独立审查请求中附上只读的 `supersededReview`，提示注明它是上个运行的发现、不是结论；回放按请求摘要绑定，事后替换即拒绝。没有该字段的旧记录照原格式回放。
+
 QA命令复用同一specs只读沙箱。最终任务的documentationPaths必须已在批准scope内，
 在同一次受保护开发调用中同步，随后进入原检查/handoff/Review；不派发宿主documentation_sync，也不增加模型轮次。
 宿主仍处理qa_assess/qa_logic/qa_browser及只读documentation_inspect；不得借这些请求改代码、规格或指令。

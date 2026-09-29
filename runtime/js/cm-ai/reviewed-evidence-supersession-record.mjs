@@ -1,10 +1,32 @@
 // Strict V3 payload grammar, shared by live authorization and journal replay.
-import {need,shape,id,hex,json} from './effect-contract.mjs';
+import {need,shape,id,hex,text,json,REVIEW_TEXT_LIMIT} from './effect-contract.mjs';
+
+// Read-only context carried from the most recent superseded run's last review
+// receipt. It is never a verdict: runners only show it to the attempt-1
+// developer and reviewer, and stage, attempt and budget rules never read it.
+export function readCarriedReview(value,previousRunIds=null){
+  const fail=()=>need(false,'supersede_record_invalid');
+  try{
+    shape(value,['previousRunId','verdict','summary','findings']);id(value.previousRunId);
+    need(['approved','changes_requested','blocked'].includes(value.verdict));text(value.summary);
+    need(Array.isArray(value.findings)&&value.findings.length<=100);
+    const ids=new Set();
+    for(const f of value.findings){
+      shape(f,['id','severity','path','message','evidence']);id(f.id);need(!ids.has(f.id));ids.add(f.id);
+      need(['P0','P1','P2','P3'].includes(f.severity));text(f.path);text(f.message);text(f.evidence);
+    }
+    const {previousRunId,...body}=value;
+    need(Buffer.byteLength(JSON.stringify(body),'utf8')<=REVIEW_TEXT_LIMIT);
+  }catch{fail();}
+  if(previousRunIds)need(previousRunIds.has(value.previousRunId),'supersede_record_invalid');
+  return value;
+}
 
 export function readEvidenceSupersession(raw,expected=null){
   const record=json(raw,1024*1024);
   shape(record,['version','feature','taskId','newRunId','previousRunIds','reason','files','authorizedAt',
-    ...(Object.hasOwn(record,'acceptedCodeDrift')?['acceptedCodeDrift']:[])]);
+    ...(Object.hasOwn(record,'acceptedCodeDrift')?['acceptedCodeDrift']:[]),
+    ...(Object.hasOwn(record,'carriedReview')?['carriedReview']:[])]);
   need(record.version===1,'supersede_record_invalid');
   need(typeof record.authorizedAt==='string'
     &&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(record.authorizedAt)
@@ -26,6 +48,7 @@ export function readEvidenceSupersession(raw,expected=null){
       need(!seen.has(key),'supersede_record_invalid');seen.add(key);
     }
   }
+  if(Object.hasOwn(record,'carriedReview'))readCarriedReview(record.carriedReview,runs);
   need(typeof record.reason==='string'&&record.reason.trim()&&Buffer.byteLength(record.reason,'utf8')<=500
     &&!/[\r\n\0]/.test(record.reason),'supersede_reason_required');
   // Zero files: the prior runs stopped before any handoff or review existed.

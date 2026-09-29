@@ -16,7 +16,7 @@ import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
   MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,effectSlotFree,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
   reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted,
-  completionBlockCount,completionRetriesExhausted } from './durable-runner-state.mjs';
+  completionBlockCount,completionRetriesExhausted,supersededReviewPayload } from './durable-runner-state.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
 import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure} from './provider-review-observation.mjs';
 import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence,
@@ -250,6 +250,8 @@ export function createTaskRunner(options) {
   let reason=null,checkNewPaths=null;
   let receipt=null,priorReview=null,cancelAfterCommit=false,workflowError=null,cancellationRequested=false,reviewInvocation=null;
   let learningResult=null;
+  // Journaled supersession context: shown, never counted as a review verdict.
+  let carriedReview=restored?.supersession?.carriedReview??null;
   const acceptedFixes=structuredClone(restored?.acceptedFixes??[]);
   let qaAttachment=restored?.qaAttachment??null;
   // A fresh ready-state capture carries the current material; represent an
@@ -856,6 +858,7 @@ export function createTaskRunner(options) {
         bootstrap.run(request,control,developer.run,{previous:previousBootstrap,previousWriteback,baseline:original})};
       const result=await invoke(adapter,'developer',developer.contextId,{scope:config.scope,
         requirements:original.files.filter(f=>config.requirements.includes(f.path)),priorReview,
+        ...supersededReviewPayload(carriedReview,attempt),
         ...(Object.hasOwn(original,'specification')?{specification:verifySpecificationMaterial(original)}:{}),
         ...(Object.hasOwn(v,'learningInput')?{learningInput:v.learningInput}:{})});
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
@@ -925,12 +928,14 @@ export function createTaskRunner(options) {
     if(v.kind==='review') {
       state='reviewing';verifyReviewPackage({root:config.root,baseline:base,checks:currentChecks,
         reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
-      if(invocationMode){await invokeObserved(reviewers[0],reviewers[0].contexts[attempt-1],{reviewPackage,priorReview},v.id);return;}
+      if(invocationMode){await invokeObserved(reviewers[0],reviewers[0].contexts[attempt-1],{reviewPackage,priorReview,
+        ...supersededReviewPayload(carriedReview,attempt)},v.id);return;}
       const fallbackReasons=[];
       for(const candidate of reviewers) {
         active();
         if(!candidate.allowed || !candidate.available){fallbackReasons.push({id:candidate.id,reason:!candidate.allowed?'not_authorized':'unavailable'});continue;}
-        const {request,response,call}=await invoke(candidate,'reviewer',candidate.contexts[attempt-1],{reviewPackage,priorReview});
+        const {request,response,call}=await invoke(candidate,'reviewer',candidate.contexts[attempt-1],{reviewPackage,priorReview,
+          ...supersededReviewPayload(carriedReview,attempt)});
         if(['unavailable','auth_required','permission_denied'].includes(response.status)) {
           fallbackReasons.push({id:candidate.id,reason:response.status});continue;
         }
@@ -1203,7 +1208,7 @@ export function createTaskRunner(options) {
       taskId:config.identity.taskId,newRunId:config.identity.runId});
     if(restored?.supersession){need(digest(restored.supersession)===digest(record),'supersede_record_invalid');return json(record);}
     need(journal.length===1&&state==='ready','supersede_unavailable');
-    persist('evidence-superseded',{record});return json(record);
+    persist('evidence-superseded',{record});carriedReview=record.carriedReview??null;return json(record);
   };
   const abandonReview=raw=>{
     try{

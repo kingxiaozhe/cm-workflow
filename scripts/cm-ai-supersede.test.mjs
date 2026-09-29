@@ -15,6 +15,9 @@ import {createHash} from 'node:crypto';
 import {PassThrough} from 'node:stream';
 import {main as hostMain,withHandoffDiagnostic} from './cm-ai-host.mjs';
 import {prepareReviewedEvidenceSupersession} from '../runtime/js/cm-ai/reviewed-evidence-supersede.mjs';
+import {readEvidenceSupersession} from '../runtime/js/cm-ai/reviewed-evidence-supersession-record.mjs';
+import {buildCodexDeveloperPrompt} from '../runtime/js/cm-ai/codex-developer-adapter.mjs';
+import {buildCodexReviewPrompt} from '../runtime/js/cm-ai/codex-review-adapter.mjs';
 import {readRunnerHistory,runnerPayloadV3} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {abandonEffectPlanError,buildCmAiDriveRequest,buildCmAiDriveHostArgs} from './cm-ai-drive.mjs';
 
@@ -755,7 +758,9 @@ test('resume completes an interrupted archive from the durable new-run record',a
     const before=fs.readFileSync(stateFile);
     const record=JSON.parse(before).records.find(row=>row.payload.type==='evidence-superseded')?.payload.record;
     assert(record);assert.equal(record.files.length,2);
-    const resumed=await openControlRun(definition,'resume',executionFor(f,'second\n'));
+    assert.equal(record.carriedReview.previousRunId,'run-first-0001');
+    const seen={develop:[],review:[]};
+    const resumed=await openControlRun(definition,'resume',capturing(executionFor(f,'second\n'),seen));
     try{
       assert.deepEqual(fs.readFileSync(stateFile),before);
       assert(record.files.every(file=>fs.existsSync(path.join(f.reviewsDir,'.superseded',
@@ -763,6 +768,107 @@ test('resume completes an interrupted archive from the durable new-run record',a
       assert(record.files.every(file=>!fs.existsSync(path.join(f.reviewsDir,file.name))));
       const result=await resumed.host.handle(requestFor(identity));
       assert.equal(result.state,'blocked');assert(fs.existsSync(path.join(f.reviewsDir,'work-T-002-r1.md')));
+      // Context restored from the journal reaches the first develop after a resume.
+      assert.deepEqual(seen.develop[0].payload.supersededReview,record.carriedReview);
     }finally{resumed.close();}
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// #22: the superseded run's last review travels as read-only, journal-bound context.
+function capturing(execution,seen){
+  const developer=execution.developer,reviewer=execution.reviewers[0];
+  return {...execution,developer:{...developer,run:(request,control)=>{seen.develop.push(request);return developer.run(request,control);}},
+    reviewers:[{...reviewer,run:(request,control)=>{seen.review.push(request);return reviewer.run(request,control);}}]};
+}
+function rechain(records){
+  return records.reduce((out,row,index)=>{
+    const {digest:unused,...body}=row,next={...body,previousDigest:index?out[index-1].digest:null};
+    return [...out,{...next,digest:digest(next)}];
+  },[]);
+}
+async function startCapturing(f,runId,content,options,verdict,seen){
+  const identity=identityFor(runId),definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,
+    feature:f.feature,identity,scope:['a.mjs'],requirements:['requirements.md']};
+  const run=await openControlRun(definition,'create',capturing(executionFor(f,content,verdict),seen),options);
+  try{return await run.host.handle(requestFor(identity));}finally{run.close();}
+}
+test('#22 supersede carries the previous review_limit findings into the first develop and review as context',async()=>{
+  const f=runFixture();
+  try{
+    const first=await start(f,'carry-one-0001','first\n',{},'changes_requested');
+    assert.equal(first.code,'review_limit',JSON.stringify(first));
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
+    const seen={develop:[],review:[]};
+    const second=await startCapturing(f,'carry-two-0002','second\n',{supersedeReason:'restart after review limit'},
+      'changes_requested',seen);
+    // Context never counts as a verdict: the new run still spends both of its own rounds.
+    assert.equal(second.code,'review_limit',JSON.stringify(second));
+    assert.deepEqual(seen.develop.map(r=>r.identity.attempt),[1,2]);
+    assert.deepEqual(seen.review.map(r=>r.identity.attempt),[1,2]);
+    const expected={previousRunId:'carry-one-0001',verdict:'changes_requested',summary:'Synthetic review',
+      findings:[{id:'F1',severity:'P2',path:'a.mjs',message:'Repair needed',evidence:'fixture'}]};
+    assert.deepEqual(seen.develop[0].payload.supersededReview,expected);
+    assert.equal(seen.develop[0].payload.priorReview,null);
+    assert.deepEqual(seen.review[0].payload.supersededReview,expected);
+    assert.equal(seen.review[0].payload.priorReview,null);
+    for(const request of [seen.develop[1],seen.review[1]])assert.equal(Object.hasOwn(request.payload,'supersededReview'),false);
+    const developPrompt=buildCodexDeveloperPrompt(seen.develop[0]);
+    assert.match(developPrompt,/supersededReview exists, it is read-only context/);
+    assert.match(developPrompt,/"supersededReview":\{"previousRunId":"carry-one-0001".*"Repair needed"/);
+    const reviewPrompt=buildCodexReviewPrompt(seen.review[0]);
+    assert.match(reviewPrompt,/previous run's findings \(context, not a verdict\)/);
+    assert.match(reviewPrompt,/"supersededReview":\{"previousRunId":"carry-one-0001".*"Repair needed"/);
+    assert.doesNotMatch(buildCodexReviewPrompt(seen.review[1]),/"supersededReview":/);
+    const stateFile=path.join(f.reviewsDir,'.execution','carry-two-0002','state.json');
+    const saved=JSON.parse(fs.readFileSync(stateFile,'utf8')),config=saved.records[0].payload.config;
+    const index=saved.records.findIndex(row=>row.payload.type==='evidence-superseded');
+    assert.equal(index,1);assert.deepEqual(saved.records[index].payload.record.carriedReview,expected);
+    assert.equal(readRunnerHistory(saved.records,config,3).state.code,'review_limit');
+    // The journal binds the context: swapping or dropping it breaks request replay.
+    const swapped=structuredClone(saved.records);swapped[index].payload.record.carriedReview.findings[0].message='Other';
+    assert.throws(()=>readRunnerHistory(rechain(swapped),config,3),error=>error.code==='runner_request');
+    const dropped=structuredClone(saved.records);delete dropped[index].payload.record.carriedReview;
+    assert.throws(()=>readRunnerHistory(rechain(dropped),config,3),error=>error.code==='runner_request');
+    const before=fs.readFileSync(stateFile);
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity:identityFor('carry-two-0002'),scope:['a.mjs'],requirements:['requirements.md']};
+    const resumed=await openControlRun(definition,'resume',executionFor(f,'second\n','changes_requested'));
+    resumed.close();assert.deepEqual(fs.readFileSync(stateFile),before);
+    // A third run chains from the direct predecessor's own last review.
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
+    const third=prepareReviewedEvidenceSupersession({specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity:identityFor('carry-three-0003'),reason:'again',tasksPath:f.tasksPath});
+    assert.equal(third.carriedReview.previousRunId,'carry-two-0002');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+test('#22 a supersede record without carried review keeps the legacy request shape',async()=>{
+  const f=runFixture();
+  try{
+    const runId='carry-legacy-0001',identity=identityFor(runId);
+    await start(f,runId,'written\n');
+    interruptAfterIntent(f,runId,'develop');
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    const resumed=await openControlRun(definition,'resume',executionFor(f,'written\n'),{allowAbandonEffect:true});
+    try{assert.equal((await resumed.host.handle(abandonRequest(identity))).code,'effect_abandoned');}
+    finally{resumed.close();}
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
+    const seen={develop:[],review:[]};
+    assert.equal((await startCapturing(f,'carry-legacy-0002','next\n',{supersedeReason:'restart'},'blocked',seen)).code,'review_blocked');
+    const saved=JSON.parse(fs.readFileSync(path.join(f.reviewsDir,'.execution','carry-legacy-0002','state.json'),'utf8'));
+    const record=saved.records.find(row=>row.payload.type==='evidence-superseded').payload.record;
+    assert.equal(Object.hasOwn(record,'carriedReview'),false);
+    for(const request of [...seen.develop,...seen.review])assert.equal(Object.hasOwn(request.payload,'supersededReview'),false);
+    assert.equal(readRunnerHistory(saved.records,saved.records[0].payload.config,3).state.code,'review_blocked');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+test('#22 carried review grammar is strict and bound to a previous run',()=>{
+  const base={version:1,feature:'1.work',taskId:'T-002',newRunId:'new-run',previousRunIds:['old-run'],reason:'restart',
+    files:[{name:'work-T-002-r1.md',sha256:'a'.repeat(64)}],authorizedAt:'2026-09-29T00:00:00.000Z'};
+  const carried={previousRunId:'old-run',verdict:'blocked',summary:'s',findings:[]};
+  assert.deepEqual(readEvidenceSupersession(base),base);
+  assert.deepEqual(readEvidenceSupersession({...base,carriedReview:carried}).carriedReview,carried);
+  for(const bad of [{...carried,previousRunId:'other-run'},{...carried,extra:1},{...carried,verdict:'maybe'},
+    {...carried,summary:'x'.repeat(13*1024)},{...carried,findings:[{id:'F1',severity:'P9',path:'a',message:'m',evidence:'e'}]}])
+    assert.throws(()=>readEvidenceSupersession({...base,carriedReview:bad}),error=>error.code==='supersede_record_invalid');
 });
