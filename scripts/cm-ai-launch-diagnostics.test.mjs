@@ -121,3 +121,22 @@ test('usage marks --review-config as required at create',()=>{
   assert.equal(help.status,0);assert.match(help.stdout,/--allow-development --review-config PATH \(required at create/);
   assert.doesNotMatch(help.stdout,/\[--review-config PATH\]/);
 });
+
+test('a new batch requires --review-config like single-task create; a started batch keeps its launch',async t=>{
+  const f=fixture(t),batchCli=fileURLToPath(new URL('./cm-ai-batch-host.mjs',import.meta.url));
+  const {batchTaskRunId}=await import('./cm-ai-batch-run.mjs');
+  const batch={version:1,repositoryId:'launch-fixture',batchId:'launch-batch-1',specsDir:f.specsDir,codeProject:f.codeProject,
+    tasks:[{feature:'1.work',taskId:'T-001',scope:['target.mjs'],requirements:['requirements.md']}]};
+  const config=path.join(f.root,'batch.json');fs.writeFileSync(config,JSON.stringify({batch,workflows:{'1.work/T-001':null}}));
+  const launch=extra=>{const result=spawnSync(process.execPath,[batchCli,'serve','--config',config,'--host-context','batch-host',
+    '--allow-development',...extra],{encoding:'utf8',env:f.env,timeout:20000,input:''});
+    const line=result.stderr.split('\n').find(item=>item.startsWith('{"error"'));return {...result,error:line?JSON.parse(line).error:null};};
+  const refused=launch([]);
+  assert.equal(refused.status,1);assert.equal(refused.error.code,'review_configuration_required');
+  assert.match(refused.error.reason,/新批次必须带 --review-config/);
+  assert.equal(launch(['--review-config',f.review]).status,0);
+  // A batch whose member run already exists resumes with its original launch.
+  const store=path.join(f.specsDir,'.reviews','.execution',batchTaskRunId(batch.batchId,'1.work/T-001'));
+  fs.mkdirSync(store,{recursive:true});fs.writeFileSync(path.join(store,'state.json'),'{}');
+  assert.equal(launch([]).status,0,'no review_configuration_required for a started batch');
+});

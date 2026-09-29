@@ -450,3 +450,23 @@ test('a first approval with no earlier status binds the shared grammar directly'
   assert.equal(readSpecsStatus(f.specsDir).value.taskGrammar,2);
   assert.equal(inspectCmAiAdmission({specsDir:f.specsDir,codeProject:f.codeProject}).nextTask.id,'T-001');
 });
+
+// Batch members cannot take --rebind-spec-material (a single-task resume flag),
+// so the batch never advertises spec_rebind; it names the exits that exist.
+test('a batch member never advertises spec_rebind and names the real exits',async t=>{
+  const f=fixture(t),{createCmAiBatch}=await import('./cm-ai-batch-run.mjs');
+  const git=args=>assert.equal(spawnSync('git',['-C',f.codeProject,...args],{encoding:'utf8'}).status,0);
+  git(['init','-q','-b','main']);git(['config','user.name','F']);git(['config','user.email','f@example.invalid']);
+  git(['add','-A']);git(['commit','-qm','base']);
+  const batch=()=>createCmAiBatch({configuration:{version:1,repositoryId:'rebind-fixture',batchId:'rebind-batch-1',
+    specsDir:f.specsDir,codeProject:f.codeProject,tasks:['T-001','T-002'].map(taskId=>({feature:f.feature,taskId,
+      scope:[taskId==='T-001'?'a.mjs':'b.mjs'],requirements:['requirements.md']}))},
+  executionFor:async()=>executionFor(f),logHome:path.join(f.root,'batch-logs')});
+  const first=await batch().handle({operation:'advance',requestId:'batch-advance'});
+  assert.equal(first.state,'awaiting_review',JSON.stringify(first));
+  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a\n- [ ] T-002: 新增 b 改\n\n- T-002 依赖 T-001\n');reapprove(f);
+  const status=await batch().handle({operation:'status',requestId:'batch-status'});
+  assert.equal(status.code,'spec_drift');assert.equal(status.pendingAction,'none');
+  assert.match(status.reason,/1\.work\/tasks\.md/);assert.match(status.reason,/批次成员不能换绑/);
+  assert.match(status.reason,/--supersede-reviewed-evidence/);assert.doesNotMatch(status.reason,/--rebind-spec-material/);
+});

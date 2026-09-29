@@ -31,7 +31,7 @@
 - cm-ai 受保护当前会话模式在启动前拒绝非 UTF-8 的开发内容（不再被替换字符悄悄改坏），新文件以 0644 创建。
 - cm-ai 新建运行前检查 `runId` 须为 8–128 个字符（与运行日志同一规则），不再在开发 intent 写入后才失败；已有运行恢复不受影响。
 - cm-ai 任务进行中规格经正规流程改动并重新批准后，状态报 `spec_drift`、列出变化文件与真实出口，不再提示会被拒绝的动作；只动了其他任务的条目、依赖或用例（requirements.md、design.md 整份未变，本任务条目含续行及任何点名本任务的行与用例未变，由新记录的 `taskScopeDigest` 证明）时可在原运行用 `--rebind-spec-material --spec-rebind-reason` 显式换绑（journal 记 `specification-rebound`，只换批准哈希；旧版本创建的运行不可换绑），已有开发与审查结论保留；内容有变则拒绝并点名，可还原规格继续或 supersede 重做。
-- cm-ai 启动参数错误不再只报裸错误码：`fingerprint_mismatch` 点名与创建时不同的输入（runtime、审查配置、会话等），`invalid_arguments` 写明参数；单任务 create 必须带 `--review-config`，避免运行到待审后才发现无法补加。
+- cm-ai 启动参数错误不再只报裸错误码：`fingerprint_mismatch` 点名与创建时不同的输入（runtime、审查配置、会话等），`invalid_arguments` 写明参数；单任务 create 与新批次都必须带 `--review-config`，避免运行到待审后才发现无法补加；批次成员不提示换绑，改为说明可用出口。
 - cm-ai `tasks.md` 任务行统一为一套语法（无冒号、全角冒号、缩进嵌套均可，围栏内示例不算），准入、cm-prd 自检、N5 勾选与审批 manifest 归一化一致，勾选后不再误报整个项目规格漂移；语法随批准绑定（新批准记 `taskGrammar: 2`），旧批准继续按原解析器读取，重新批准时若有 feature 在新语法下无效、或从旧语法切换会改变任务集合，则 `task_grammar_conflict` 拒绝并点名行号，旧版批准的 manifest 仍原样匹配。
 - cm-ai `--task` 选择依赖已 DROPPED 任务的下一任务时与 `nextTask` 同样视为依赖已满足；`task_selection_mismatch` 附带原因。
 - cm-ai 普通新建运行会拒绝悄悄接收同任务旧运行留下的未审改动（同 supersede 的漂移检查与 `--accept-superseded-code-drift` 记录）；第 1 轮就结束、没有可归档证据的旧运行也可以 supersede。

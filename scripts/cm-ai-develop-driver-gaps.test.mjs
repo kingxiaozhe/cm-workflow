@@ -53,6 +53,9 @@ function fixture(t,{scope=['target.mjs'],runId='drive-gaps-run',files={}}={}){
   const config=path.join(root,'run.json');
   fs.writeFileSync(config,JSON.stringify({version:1,specsDir,codeProject,feature,identity,scope,requirements:['requirements.md']}));
   const answers=path.join(root,'answers');fs.mkdirSync(answers);
+  // create requires a bound review configuration; reviewer() replaces it with the
+  // same model and a real preflight, so the durable fingerprint is unchanged.
+  fs.writeFileSync(path.join(root,'review.json'),JSON.stringify({model:'fixture',preflight:{}}));
   const bin=path.join(root,'bin');fs.mkdirSync(bin);
   const env={...process.env,PATH:bin+path.delimiter+process.env.PATH,CM_WORKFLOW_HOME:path.join(root,'home'),
     CM_WORKFLOW_LOG_HOME:path.join(root,'logs')};
@@ -60,8 +63,10 @@ function fixture(t,{scope=['target.mjs'],runId='drive-gaps-run',files={}}={}){
   const content=(name,bytes)=>fs.writeFileSync(path.join(answers,name),bytes);
   const develop=(edits,name='develop.json')=>write(name,{status:'succeeded',value:developValue,edits});
   const plan=(extra={})=>{const file=path.join(root,`plan-${Math.random().toString(36).slice(2)}.json`);
-    fs.writeFileSync(file,JSON.stringify({config:'run.json',mode:'create',hostContext:'drive-host-a',
-      permissions:[],answers:'answers',checks:[{id:'noop',command:[process.execPath,'-e','0']}],...extra}));
+    const value={config:'run.json',mode:'create',hostContext:'drive-host-a',
+      permissions:[],answers:'answers',checks:[{id:'noop',command:[process.execPath,'-e','0']}],...extra};
+    if(!value.permissions.includes('--review-config'))value.permissions=[...value.permissions,'--review-config','review.json'];
+    fs.writeFileSync(file,JSON.stringify(value));
     return file;};
   const drive=(file,operation,timeout=60000,umask=null)=>umask===null
     ?spawnSync(process.execPath,[DRIVER,'--plan',file,operation],{encoding:'utf8',timeout,env})
@@ -92,7 +97,7 @@ test('#24 a run ID shorter than 8 characters is refused before the driver launch
 });
 test('#24 the host refuses a short run ID at create before writing any journal, and resume is unaffected',t=>{
   const f=fixture(t,{runId:'short'});
-  const args=mode=>[HOST,'serve','--config',f.config,'--mode',mode,'--host-context','drive-host-a','--allow-development'];
+  const args=mode=>[HOST,'serve','--config',f.config,'--mode',mode,'--host-context','drive-host-a','--allow-development','--review-config',path.join(f.root,'review.json')];
   const created=spawnSync(process.execPath,args('create'),{encoding:'utf8',input:'',timeout:30000,env:f.env});
   assert.equal(created.status,1,created.stderr);
   assert.match(created.stderr,/invalid_config: identity\.runId/);
@@ -231,7 +236,7 @@ test('#11 the protected host refuses an invalid mode before any sandbox write',t
     const wrapper=path.join(f.root,`protected-${Math.random().toString(36).slice(2)}.mjs`);
     fs.writeFileSync(wrapper,`import {driveHost} from ${JSON.stringify(DRIVE_CORE)};
 driveHost({host:${JSON.stringify(HOST)},args:['serve','--config',${JSON.stringify(f.config)},'--mode',${JSON.stringify(fs.existsSync(f.store)?'resume':'create')},
-  '--host-context','drive-host-a','--allow-development','--protected-conversation-config',${JSON.stringify(protection)}],
+  '--host-context','drive-host-a','--allow-development','--review-config',${JSON.stringify(path.join(f.root,'review.json'))},'--protected-conversation-config',${JSON.stringify(protection)}],
   cwd:${JSON.stringify(f.codeProject)},operation:'advance',answers:{},request:{version:1,identity:${JSON.stringify(f.identity)}},
   answerFor:async row=>row.kind==='develop'?{status:'succeeded',value:${JSON.stringify(developValue)},
     edits:[{path:'target.mjs',beforeSha256:row.payload.expected['target.mjs'],...${JSON.stringify(edit)}}]}:null});`);
@@ -256,7 +261,7 @@ import {driveHost} from ${JSON.stringify(DRIVE_CORE)};
 import {createHostCheck} from ${JSON.stringify(HOST_CHECK)};
 const cwd=${JSON.stringify(f.codeProject)};
 driveHost({host:${JSON.stringify(HOST)},args:['serve','--config',${JSON.stringify(f.config)},'--mode',${JSON.stringify(mode)},
-  '--host-context','drive-host-a','--allow-development',...${JSON.stringify(args)}],cwd,operation:'advance',answers:{},
+  '--host-context','drive-host-a','--allow-development',...${JSON.stringify(args.includes('--review-config')?args:['--review-config',path.join(f.root,'review.json'),...args])}],cwd,operation:'advance',answers:{},
   request:{version:1,identity:${JSON.stringify(f.identity)}},
   answerFor:async row=>{
     if(row.kind==='develop'){
@@ -390,7 +395,7 @@ test('#19 a create baseline too large for its journal record is refused by the d
 test('#19 the host refuses an oversized create baseline before it creates any journal',t=>{
   const f=fixture(t,{scope:['Assets/big.bin'],files:{'Assets/big.bin':crypto.randomBytes(800*1024)}});
   const run=spawnSync(process.execPath,[HOST,'serve','--config',f.config,'--mode','create','--host-context','drive-host-a',
-    '--allow-development'],{encoding:'utf8',input:'',timeout:60000,env:f.env});
+    '--allow-development','--review-config',path.join(f.root,'review.json')],{encoding:'utf8',input:'',timeout:60000,env:f.env});
   assert.equal(run.status,1,run.stderr);assert.match(run.stderr,/Assets\/big\.bin/);assert.match(run.stderr,/1048576/);
   assert.equal(fs.existsSync(path.join(f.specsDir,'.reviews','.execution',f.identity.runId)),false);
 });
@@ -401,7 +406,7 @@ test('#19 the runner refuses an init record that only the run metadata pushes ov
   const baselineBytes=f=>Buffer.byteLength(JSON.stringify(captureReviewBaseline({root:f.codeProject,specsRoot:f.specsDir,
     identity:f.identity,scope:['Assets/big.bin'],requirements:['requirements.md'],specification:{specsRoot:f.specsDir,feature:'1.work'}})));
   const created=spawnSync(process.execPath,[HOST,'serve','--config',probe.config,'--mode','create','--host-context','drive-host-a',
-    '--allow-development'],{encoding:'utf8',input:'',timeout:60000,env:probe.env});
+    '--allow-development','--review-config',path.join(probe.root,'review.json')],{encoding:'utf8',input:'',timeout:60000,env:probe.env});
   assert.equal(created.status,0,created.stderr);
   const init=Buffer.byteLength(JSON.stringify(records(probe)[0].payload)),overhead=init-baselineBytes(probe);
   assert(overhead>512,`metadata overhead ${overhead}`);
@@ -410,7 +415,7 @@ test('#19 the runner refuses an init record that only the run metadata pushes ov
   const f=fixture(t,{scope:['Assets/big.bin'],files:{'Assets/big.bin':Buffer.alloc(size+3,0x61)}});
   assert(baselineBytes(f)<=1024*1024&&baselineBytes(f)+overhead>1024*1024,`${baselineBytes(f)} + ${overhead}`);
   const run=spawnSync(process.execPath,[HOST,'serve','--config',f.config,'--mode','create','--host-context','drive-host-a',
-    '--allow-development'],{encoding:'utf8',input:'',timeout:60000,env:f.env});
+    '--allow-development','--review-config',path.join(f.root,'review.json')],{encoding:'utf8',input:'',timeout:60000,env:f.env});
   assert.equal(run.status,1,run.stderr);assert.match(run.stderr,/Assets\/big\.bin/);assert.match(run.stderr,/1048576/);
   assert.equal(fs.existsSync(f.store)?records(f).length:0,0,'no journal record is written');
 });
@@ -667,7 +672,7 @@ const padded=(row,result)=>({type:'host_result',sessionId:row.sessionId,callId:r
 test('#10 the single host sizes the tool-bridge reply limit from --input-limit',async t=>{
   const f=fixture(t);
   const run=await session([HOST,'serve','--config',f.config,'--mode','create','--host-context','drive-host-a',
-    '--allow-development','--input-limit','1048576'],{env:f.env,finish:{version:1,identity:f.identity},
+    '--allow-development','--review-config',path.join(f.root,'review.json'),'--input-limit','1048576'],{env:f.env,finish:{version:1,identity:f.identity},
     onRequest:(row,send)=>send(padded(row,{status:'succeeded',value:developValue}))});
   const response=run.rows.find(row=>row.type==='host_response');
   assert.equal(response.accepted,true,JSON.stringify(response));
@@ -678,7 +683,7 @@ test('#10 the single host sizes the tool-bridge reply limit from --input-limit',
 test('#10 a reply line above the single host input limit is named request_too_large',async t=>{
   const f=fixture(t);
   const run=await session([HOST,'serve','--config',f.config,'--mode','create','--host-context','drive-host-a',
-    '--allow-development'],{env:f.env,finish:{version:1,identity:f.identity},
+    '--allow-development','--review-config',path.join(f.root,'review.json')],{env:f.env,finish:{version:1,identity:f.identity},
     onRequest:(row,send)=>send(padded(row,{status:'succeeded',value:developValue}))});
   assert.equal(run.code,1,run.stderr);
   assert.match(run.stderr,/"code":"request_too_large"/);assert.match(run.stderr,/65536/);assert.match(run.stderr,/--input-limit/);
@@ -697,7 +702,7 @@ function batchFixture(t){
 for(const limit of ['1048576',null])test(`#10 the batch host ${limit?'sizes the reply limit from --input-limit':'names request_too_large'}`,async t=>{
   const f=batchFixture(t);
   const run=await session([BATCH_HOST,'serve','--config',path.join(f.root,'batch.json'),'--host-context','batch-host-a',
-    '--allow-development',...(limit?['--input-limit',limit]:[])],{env:f.env,
+    '--allow-development','--review-config',path.join(f.root,'review.json'),...(limit?['--input-limit',limit]:[])],{env:f.env,
     onRequest:(row,send)=>send(padded(row,{status:'succeeded',value:developValue}))});
   if(limit){
     assert.equal(run.rows.find(row=>row.type==='host_response')?.accepted,true,run.stderr);

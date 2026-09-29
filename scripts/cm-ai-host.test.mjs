@@ -1209,7 +1209,7 @@ function protectedDriveFixture({scope,files={},checkCommands=[{id:'noop',command
   f.drive=(permissions=[],umask='022')=>{
     const plan=path.join(f.root,`plan-${Math.random().toString(36).slice(2)}.json`);
     fs.writeFileSync(plan,JSON.stringify({config:'run.json',mode:'create',hostContext:'native-host-fixture',
-      permissions:['--protected-conversation-config','protection.json',...permissions],answers:'answers'}));
+      permissions:['--protected-conversation-config','protection.json','--review-config',f.reviewFile,...permissions],answers:'answers'}));
     return spawnSync('/bin/sh',['-c',`umask ${umask}; exec "$0" "$@"`,process.execPath,protectedDriver,'--plan',plan,'advance'],
       {encoding:'utf8',timeout:120000,
         env:{...process.env,CM_WORKFLOW_HOME:path.join(f.root,'home'),CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')}});

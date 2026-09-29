@@ -45,10 +45,13 @@ function fixture(t,{scaffolded=false,nested=false}={}){
   const writeRun=(taskId,scope,key=taskId)=>fs.writeFileSync(path.join(root,`run-${key}.json`),JSON.stringify({version:1,specsDir,codeProject,feature,
     identity:{repositoryId:'app',runId:`bootstrap-${key}`,taskId,attempt:1},scope,requirements:[]}));
   const writeBootstrap=value=>fs.writeFileSync(path.join(root,'bootstrap.json'),JSON.stringify({selection:value}));
+  // create requires a bound review configuration; this placeholder grants no review.
+  fs.writeFileSync(path.join(root,'placeholder-review.json'),JSON.stringify({model:'fixture',preflight:{}}));
   const plan=(key,mode,permissions,extra={})=>{
     const file=path.join(root,`plan-${Math.random().toString(36).slice(2)}.json`);
+    const bound=permissions.includes('--review-config')?permissions:[...permissions,'--review-config','placeholder-review.json'];
     fs.writeFileSync(file,JSON.stringify({config:`run-${key}.json`,mode,hostContext:'drive-rules-host',runtime:'claude',
-      permissions,answers:'answers',checks:[{id:'structure',command:['/bin/sh','scripts/verify.sh']}],...extra}));
+      permissions:bound,answers:'answers',checks:[{id:'structure',command:['/bin/sh','scripts/verify.sh']}],...extra}));
     return file;
   };
   const drive=(file,operation)=>spawnSync(process.execPath,[DRIVER,'--plan',file,operation],{encoding:'utf8',timeout:60000,env});

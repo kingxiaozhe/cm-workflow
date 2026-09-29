@@ -16,6 +16,17 @@ import {inspectRunClosure} from './cm-log-event.mjs';
 
 const writer=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
 const key=task=>`${task.feature}/${task.taskId}`;
+// Generation-1 member run id; the batch host uses it to tell a new batch from a resumed one.
+export const batchTaskRunId=(batchId,taskKey)=>`task-${digest({batchId,task:taskKey}).slice(0,48)}`;
+// A spec rebind is a single-task resume flag; batch members cannot take it, so
+// never advertise it for them. Name the exits that do exist instead.
+export function batchMemberResult(result){
+  if(result?.pendingAction!=='spec_rebind')return result;
+  const files=/变更文件：([^；]+)/.exec(result.reason??'')?.[1]??'规格文件';
+  return Object.freeze({...result,pendingAction:'none',
+    reason:`规格已重新批准（变更：${files}，只动了其他任务），但批次成员不能换绑。出口：还原这些规格改动并重新批准后继续本批次；`
+      +'或取消本批次，还原该任务已改动的代码后，用单任务宿主 cm-ai-host.mjs 以 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务。'});
+}
 export function createCmAiBatch({configuration,executionFor,logHome,runtime='codex',checkCommands=null,checkTimeoutMs=60000,
   rerunUnknownQa=false,rerunBlockedQa=false,holdRevisions=[]}){
   const config=json(configuration);
@@ -29,7 +40,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     shape(task,['feature','taskId','scope','requirements']);
     need(!plans.has(key(task)));const definition=validateRunDefinition({version:1,
       specsDir:config.specsDir,codeProject:config.codeProject,...(config.codeProjects?{codeProjects:config.codeProjects}:{}),feature:task.feature,
-      identity:{repositoryId:config.repositoryId,runId:`task-${digest({batchId:config.batchId,task:key(task)}).slice(0,48)}`,
+      identity:{repositoryId:config.repositoryId,runId:batchTaskRunId(config.batchId,key(task)),
         taskId:task.taskId,attempt:1},scope:task.scope,requirements:task.requirements});
     need(definition.specsDir===config.specsDir&&definition.codeProject===config.codeProject,'invalid_path');
     plans.set(key(task),definition);
@@ -95,8 +106,10 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     // only the tasks the flag can legally apply to receive it.
     const recovery=mode==='resume'&&execution?.qaExecutor&&(rerunUnknownQa||rerunBlockedQa)
       ? {rerunUnknownQa,rerunBlockedQa} : {};
-    return openControlRun(definition,mode,execution,{...recovery,...(held.has(taskKey)?{holdRevision:true}:{}),
+    const run=await openControlRun(definition,mode,execution,{...recovery,...(held.has(taskKey)?{holdRevision:true}:{}),
       ...(membership.has(taskKey)?{parallelSelection:{version:1,group:membership.get(taskKey).map(key=>plans.get(key).identity.taskId)}}:{})});
+    if(!run.host)return run;
+    return {...run,host:{...run.host,handle:async request=>batchMemberResult(await run.host.handle(request))}};
   }
   function parallelProgress(rows){
     const done=new Set(),ready=new Map(),merging=new Map(),blocked=new Map();let stopped=false,code=null;

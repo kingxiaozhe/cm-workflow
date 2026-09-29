@@ -195,7 +195,7 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-host.mjs" serve --config "{T-002-run.json
 ## 同一引擎的双端启动
 
 从当前活动 Skill 的本参考文件所在目录解析 `../../../scripts/`，调用对应脚本而不是依赖全局同名命令。
-单任务使用 `cm-ai-host.mjs serve`；多任务使用 `cm-ai-batch-host.mjs serve`，都显式传递
+单任务使用 `cm-ai-host.mjs serve`；多任务使用 `cm-ai-batch-host.mjs serve`（新批次同样必须带 `--review-config`；批次成员不支持 `--rebind-spec-material`，规格变更只动其他任务时也要按 status 给出的出口还原规格或用单任务 supersede 重做），都显式传递
 上述 runtime，并使用真实宿主提供的 `--host-context`。不要为了使用 Claude 改写规格、
 Review 头或完成记录；provider 身份由原 adapter/V3 绑定，失败不切到另一端兜底。
 
