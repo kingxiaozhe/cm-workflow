@@ -58,22 +58,23 @@ function cachedDelivery(specsRoot,repositoryId,runId,stat){
   return cache.get(slot).delivery;
 }
 
-// Recorded interleaving steps must each be exactly derivable from a real,
-// completed, later reviewed package of the named run. allowAbsent is only for
-// journal replay: a missing store cannot be re-proved there, and every live use
-// (status, acceptance) calls this without it and fails closed.
-export function verifyDeliverySteps({specsRoot,root,identity,after,steps,allowAbsent=false}){
+// Resolve recorded steps to the real, completed, later reviewed packages of the
+// named runs. allowAbsent is only for journal replay: a missing store cannot be
+// re-proved there (returns null), and every live use refuses it.
+export function resolveDeliverySteps({specsRoot,root,identity,after,steps,allowAbsent=false}){
+  const resolved=[];
   for(const step of steps){
     need(RUN_ID.test(step.runId)&&step.runId!==identity.runId,'fix_association_unverified');
     let stat;
     try{stat=fs.lstatSync(path.join(specsRoot,'.reviews','.execution',step.runId,'state.json'));}
-    catch(error){if(error.code==='ENOENT'){need(allowAbsent,'fix_association_unverified');continue;}throw error;}
+    catch(error){if(error.code==='ENOENT'){need(allowAbsent,'fix_association_unverified');return null;}throw error;}
     const delivery=cachedDelivery(specsRoot,identity.repositoryId,step.runId,stat);
     need(delivery&&delivery.root===root&&delivery.taskId!==identity.taskId,'fix_association_unverified');
     const found=delivery.packages.find(item=>item.pkg.packageDigest===step.packageDigest);
-    need(found&&deliveredAfter(found,after)
-      &&digest(deliveryStep(step.runId,found.pkg,step.beforeFix))===digest(step),'fix_association_unverified');
+    need(found&&deliveredAfter(found,after)&&digest(deliveryStep(step.runId,found.pkg,step.beforeFix))===digest(step),'fix_association_unverified');
+    resolved.push({...step,pkg:found.pkg});
   }
+  return resolved;
 }
 
 // Deliveries for the same code root and repository, excluding the caller's own

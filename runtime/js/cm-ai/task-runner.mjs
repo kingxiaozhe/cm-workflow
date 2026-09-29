@@ -23,8 +23,9 @@ import {readCmAiProjectLearningWriteback,writeCmAiProjectLearning} from './cm-ai
 import {verifyCmAiTaskLearningHandoff,writeCmAiTaskLearningHandoff} from './cm-ai-learning-handoff-writer.mjs';
 import {createHostHandoff} from './host-handoff.mjs';
 import {inspectFixCodeAssociation,explainCompletedDelivery} from './fix-code-association.mjs';
-import {approvedReviewAt,completedReviewedDeliveries,fixReviewedAt,verifyDeliverySteps} from './reviewed-deliveries.mjs';
+import {approvedReviewAt,completedReviewedDeliveries,fixReviewedAt,resolveDeliverySteps} from './reviewed-deliveries.mjs';
 import {validateAcceptedFix} from './accepted-fix.mjs';
+import {appendFits} from './execution-store.mjs';
 import {inspectCmAiQaFailure} from './cm-ai-qa-log.mjs';
 import {readHostQaFixHistory} from './host-qa-fix.mjs';
 import {publishHostReview} from './host-review-file.mjs';
@@ -279,7 +280,7 @@ export function createTaskRunner(options) {
   // that recorded interleaving steps are exactly such deliveries.
   const laterDeliveries=()=>completedReviewedDeliveries({specsRoot:completion.owner.specsRoot,root:config.root,identity:config.identity});
   const reviewedAt=()=>approvedReviewAt({reviewInvocation,reviewPackage});
-  const verifySteps=(steps,allowAbsent=false)=>verifyDeliverySteps({specsRoot:completion.owner.specsRoot,root:config.root,
+  const resolveSteps=(steps,allowAbsent=false)=>resolveDeliverySteps({specsRoot:completion.owner.specsRoot,root:config.root,
     identity:config.identity,after:reviewedAt(),steps,allowAbsent});
   // This run's own QA fixes take their place in the same order at the final
   // review time their completion evidence cites (evidence: a fix not yet accepted).
@@ -288,7 +289,7 @@ export function createTaskRunner(options) {
       .find(item=>item.reviewPackage.packageDigest===fix.packageDigest);
     return cited?fixReviewedAt(completion.owner.specsRoot,cited):null;
   };
-  const laterOptions=(evidence=null)=>({deliveries:laterDeliveries,after:reviewedAt(),verifySteps,fixTime:fixTime(evidence)});
+  const laterOptions=(evidence=null)=>({deliveries:laterDeliveries,after:reviewedAt(),fixTime:fixTime(evidence)});
   let publication;
   // Replay decides; this only reports an exit abandonReview would accept.
   function reviewResultAbandonable(){
@@ -382,6 +383,14 @@ export function createTaskRunner(options) {
     const record={...body,digest:digest(body)};boundRunnerRecord(record,body.seq);
     return {record,parsed:readRunnerHistory([...journal,record],metadata,version)};
   }
+  // The exact record the store would append must fit its limits (payload, append
+  // input, record count, whole state). Refusing here leaves the store usable,
+  // where an over-limit append inside persist would poison it.
+  function assertJournalFits(type,fields,why){
+    if(!store||!taskMode)return;
+    const {record}=candidate(type,fields);
+    need(appendFits(currentStore(),{id:record.id,kind:record.kind,payload:record.payload,expectedRevision:storeRevision}),why);
+  }
   function persist(type,fields) {
     if(!store)return;
     if(taskMode)return storeOperation(()=>{
@@ -444,9 +453,12 @@ export function createTaskRunner(options) {
     if(invocationMode)reviewInvocation=s.reviewInvocation;
     calls.push(...s.calls);receipts.push(...s.receipts);s.cache.forEach(c=>cache.set(c.effect.id,c));
     receipts.forEach(r=>registered.set(r.id,r));base=attemptBaseline(original,attempt);
-    // Replay proves recorded interleaving against every referenced store that
-    // still exists; a missing store is left to the live checks, which refuse it.
-    for(const item of acceptedFixes)if(item.association.version===2)verifySteps(item.association.laterDeliveries,true);
+    // Replay re-proves each version 2 record (its steps and the composition they
+    // give) against the referenced stores when they all still exist; a missing
+    // store is left to the live checks, which refuse it.
+    for(const [index,item] of acceptedFixes.entries())if(item.association.version===2)
+      validateAcceptedFix({record:item,previous:acceptedFixes.slice(0,index),baseline:base,parentPackage:reviewPackage,
+        feature:taskLearning?.feature,resolveSteps:steps=>resolveSteps(steps,true)});
   } else persist('init',{config:metadata,baseline:original,session});
   publication=privateStatus();
   function control(event) {
@@ -1045,7 +1057,8 @@ export function createTaskRunner(options) {
     const failure=inspectCmAiQaFailure({specsDir:completion.owner.specsRoot,feature:source.feature,
       identity:source.identity,packageDigest:source.packageDigest,testRunId:source.testRunId});
     const record=validateAcceptedFix({record:{evidence,association,qaRound:failure.qaRound},previous:acceptedFixes,
-      baseline:base,parentPackage:reviewPackage,feature:taskLearning?.feature});
+      baseline:base,parentPackage:reviewPackage,feature:taskLearning?.feature,resolveSteps:steps=>resolveSteps(steps)});
+    assertJournalFits('qa-fix-accepted',{record},'fix_record_too_large');
     persist('qa-fix-accepted',{record});acceptedFixes.push(record);
     return json(record,12*1024*1024);
   };

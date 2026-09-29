@@ -165,6 +165,17 @@ function acquireWriter(p,create) {
     return {db,inode:regular(p,64*1024),certificate:current,inspectionFd,release};
   }catch(error){release();if(error.errcode===5)need(false,'store_busy');throw error;}
 }
+// Whether append(input) on this snapshot stays within the store's limits (append
+// input, payload, record count, whole state). Pure: an owner can refuse cleanly
+// before an append that would fail inside its writer.
+export function appendFits(current,input){
+  const bytes=value=>Buffer.byteLength(JSON.stringify(value));
+  if(bytes(input)>MiB+1024||bytes(input.payload)>MiB||current.records.length>=1024)return false;
+  const record={version:1,seq:current.records.length+1,id:input.id,kind:input.kind,payload:input.payload,
+    previousDigest:current.records.at(-1)?.digest??null};
+  const {revision,...data}=current;
+  return bytes(seal({...data,records:[...current.records,{...record,digest:digest(record)}]}))<=STATE_LIMIT;
+}
 export function openExecutionStore(input) {
   const options=json(input);shape(options,['specsRoot','identity','fingerprints','create']);
   shape(options.identity,['repositoryId','runId']);Object.values(options.identity).forEach(id);

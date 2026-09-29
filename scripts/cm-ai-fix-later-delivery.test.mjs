@@ -20,8 +20,9 @@ import {readProjectInstructionContext} from '../runtime/js/cm-ai/cm-ai-context-r
 import {attemptBaseline,readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {validateAcceptedFix} from '../runtime/js/cm-ai/accepted-fix.mjs';
 import {captureReviewBaseline,createReviewPackage} from '../runtime/js/cm-ai/review-package.mjs';
+import {appendFits,openExecutionStore} from '../runtime/js/cm-ai/execution-store.mjs';
 import {composeFixCode,inspectFixCodeAssociation} from '../runtime/js/cm-ai/fix-code-association.mjs';
-import {approvedReviewAt,fixReviewedAt,verifyDeliverySteps} from '../runtime/js/cm-ai/reviewed-deliveries.mjs';
+import {approvedReviewAt,fixReviewedAt,resolveDeliverySteps} from '../runtime/js/cm-ai/reviewed-deliveries.mjs';
 
 const isolated=fs.mkdtempSync(path.join(os.tmpdir(),'cm-fix-later-delivery-'));
 const saved={CM_WORKFLOW_HOME:process.env.CM_WORKFLOW_HOME,CM_WORKFLOW_LOG_HOME:process.env.CM_WORKFLOW_LOG_HOME};
@@ -150,20 +151,25 @@ for(const variant of ['separate','shared'])test(`#18 a QA fix for an earlier fea
     assert.equal(result.accepted.qaRound,1);
     const association=result.accepted.association;
     assert.equal(association.version,2);
-    assert.deepEqual(association.laterDeliveries.map(step=>[step.beforeFix,step.runId,step.changes.map(change=>change.path).sort()]),
+    // The record is compact: run id and package digest; the transitions come from the store.
+    assert.ok(association.laterDeliveries.every(step=>Object.keys(step).sort().join()==='beforeFix,packageDigest,runId'));
+    const parentAfter=()=>{const {records}=JSON.parse(fs.readFileSync(path.join(specsDir,'.reviews','.execution',identity.runId,'state.json')));
+      return approvedReviewAt(readRunnerHistory(records,records[0].payload.config,3).state);};
+    const resolve=(steps,after=parentAfter())=>resolveDeliverySteps({specsRoot:specsDir,root:codeProject,identity,after,steps});
+    assert.deepEqual(resolve(association.laterDeliveries).map(step=>[step.beforeFix,step.runId,step.pkg.changes.map(change=>change.path).sort()]),
       [[0,'later-run',['AGENTS.md','more.mjs',...(variant==='shared'?['value.mjs']:[])]]]);
     serial.close();serial=null;
     // Durable replay reproduces the association from the journal alone.
     const state=JSON.parse(fs.readFileSync(path.join(specsDir,'.reviews','.execution',identity.runId,'state.json')));
     const history=readRunnerHistory(state.records,state.records[0].payload.config,3);
     const accepted=state.records.find(row=>row.payload.type==='qa-fix-accepted').payload.record;
-    const check=record=>validateAcceptedFix({record,previous:[],baseline:attemptBaseline(history.original,history.state.attempt),
-      parentPackage:history.state.reviewPackage,feature:'1.value'});
+    const check=(record,resolveSteps=resolve)=>validateAcceptedFix({record,previous:[],baseline:attemptBaseline(history.original,history.state.attempt),
+      parentPackage:history.state.reviewPackage,feature:'1.value',resolveSteps});
     check(accepted);
     if(variant==='shared'){
       // The recorded step is re-proved against the real later run's store, and only
       // as a delivery reviewed after this run's own approving review.
-      const proof=after=>verifyDeliverySteps({specsRoot:specsDir,root:codeProject,identity,after,steps:accepted.association.laterDeliveries});
+      const proof=after=>resolve(accepted.association.laterDeliveries,after);
       proof(approvedReviewAt(history.state));
       assert.throws(()=>proof(Number.MAX_SAFE_INTEGER-1),{code:'fix_association_unverified'});
       // The fix's own place in the order is the final review registration its
@@ -172,8 +178,10 @@ for(const variant of ['separate','shared'])test(`#18 a QA fix for an earlier fea
       assert.equal(fixReviewedAt(specsDir,{...accepted.evidence,reviewPackage:{...accepted.evidence.reviewPackage,packageDigest:'0'.repeat(64)}}),null);
       const stripped=structuredClone(accepted);stripped.association={...stripped.association,version:1};delete stripped.association.laterDeliveries;
       assert.throws(()=>check(stripped),{code:'fix_before_mismatch'});
-      const forged=structuredClone(accepted);forged.association.laterDeliveries[0].changes.find(change=>change.path==='value.mjs').after.sha256='0'.repeat(64);
-      assert.throws(()=>check(forged));
+      const forged=structuredClone(accepted);forged.association.currentFilesDigest='0'.repeat(64);
+      assert.throws(()=>check(forged),{code:'fix_association_invalid'});
+      // Pure journal replay has no stores: it checks shape and chain only.
+      check(forged,null);
     }
     parent=await openControlRun(definition,'resume',parentExecution);
     const done=await parent.host.handle(request('advance'));
@@ -183,16 +191,13 @@ for(const variant of ['separate','shared'])test(`#18 a QA fix for an earlier fea
     const finished=await later.host.handle({version:1,requestId:'later-again',operation:'advance',identity:laterIdentity});later.close();
     assert.equal(finished.code,'run_done',JSON.stringify(finished));
     if(variant==='shared'){
-      // A forged journal step with every digest recomputed must not pass: the
-      // record chain, association and composition are all made self-consistent.
+      // A forged journal record with every chain digest recomputed replays (pure
+      // replay has no stores), but the open-time re-proof and live checks refuse it.
       const statePath=path.join(specsDir,'.reviews','.execution',identity.runId,'state.json'),original=fs.readFileSync(statePath);
       const forge=mutate=>{
         const saved=JSON.parse(original);const records=structuredClone(saved.records);
         const index=records.findIndex(row=>row.payload.type==='qa-fix-accepted'),record=records[index].payload.record;
-        mutate(record.association.laterDeliveries);
-        record.association.currentFilesDigest=digest(composeFixCode({baseline:attemptBaseline(history.original,history.state.attempt),
-          parentPackage:history.state.reviewPackage,fixPackages:[record.evidence.reviewPackage],steps:record.association.laterDeliveries}).files);
-        check(record);
+        mutate(record.association);check(record,null);
         for(let at=index;at<records.length;at++){
           const {digest:ignored,...body}=records[at];body.previousDigest=at?records[at-1].digest:null;records[at]={...body,digest:digest(body)};
         }
@@ -203,14 +208,15 @@ for(const variant of ['separate','shared'])test(`#18 a QA fix for an earlier fea
         try{return await run.host.handle(request('status'));}finally{run.close();}};
       try{
         // A run that does not exist: replay cannot re-prove it, every live use refuses it.
-        forge(steps=>{steps[0].runId='ghost-run';steps[0].packageDigest='e'.repeat(64);});
+        forge(a=>{a.laterDeliveries[0].runId='ghost-run';a.laterDeliveries[0].packageDigest='e'.repeat(64);});
         const ghost=await status();
         assert.equal(ghost.code,'correction_review_required');assert.match(ghost.reason,/无法按其运行存档核实/);
-        // The real run with a package it never reviewed, or a step not derivable from its package.
-        forge(steps=>{steps[0].packageDigest='f'.repeat(64);});
+        // The real run with a package it never reviewed.
+        forge(a=>{a.laterDeliveries[0].packageDigest='f'.repeat(64);});
         await assert.rejects(openControlRun(definition,'resume',parentExecution),{code:'fix_association_unverified'});
-        forge(steps=>{steps[0].changes=steps[0].changes.filter(change=>change.path!=='AGENTS.md');});
-        await assert.rejects(openControlRun(definition,'resume',parentExecution),{code:'fix_association_unverified'});
+        // A real step with a composition digest it does not give is re-proved at open.
+        forge(a=>{a.currentFilesDigest='0'.repeat(64);});
+        await assert.rejects(openControlRun(definition,'resume',parentExecution),{code:'fix_association_invalid'});
       }finally{fs.writeFileSync(statePath,original);}
       assert.equal((await status()).code,null);
     }
@@ -231,6 +237,10 @@ function unitRoot(prefix,files){
   return {root,write};
 }
 
+// Resolved steps, as the runner reads them from the named runs' stores.
+const resolveFrom=runs=>steps=>steps.map(step=>{const found=runs[step.runId];
+  assert.equal(found.pkg.packageDigest,step.packageDigest);return {...step,pkg:found.pkg};});
+
 test('#18 every later delivery and the QA fix apply in durable review order: (A,0)->(B,1)->(A,2)->(B,0), then the fix x B->C',()=>{
   const {root,write}=unitRoot('ordered-',{'x.mjs':'base\n','y.mjs':'0\n'});
   const scope=['x.mjs','y.mjs'];
@@ -240,22 +250,23 @@ test('#18 every later delivery and the QA fix apply in durable review order: (A,
   const d3=write('d3',scope,{'x.mjs':'B\n','y.mjs':'0\n'}),fix=write('fix',['x.mjs'],{'x.mjs':'C\n'});
   const deliveries=()=>[{runId:'d3',packages:[{pkg:d3.pkg,reviewedAt:40}]},{runId:'d1',packages:[{pkg:d1.pkg,reviewedAt:20}]},
     {runId:'d2',packages:[{pkg:d2.pkg,reviewedAt:30}]}];
-  const verified=[];
+  const resolve=resolveFrom({d1,d2,d3});
   const input={root,baseline:parent.baseline,parentPackage:parent.pkg,fixPackages:[fix.pkg],after:10,deliveries,
-    fixTime:pkg=>pkg.packageDigest===fix.pkg.packageDigest?50:null,verifySteps:steps=>verified.push(steps.map(step=>step.runId).join())};
+    fixTime:pkg=>pkg.packageDigest===fix.pkg.packageDigest?50:null};
   assert.throws(()=>composeFixCode(input),{code:'fix_before_mismatch'});
   const association=inspectFixCodeAssociation({...input,extend:true});
-  // Exactly the ordered list used, re-proved against the stores.
+  // Exactly the ordered list used, compact.
   assert.equal(association.version,2);
-  assert.deepEqual(association.laterDeliveries.map(item=>[item.beforeFix,item.runId]),[[0,'d1'],[0,'d2'],[0,'d3']]);
-  assert.equal(association.currentFilesDigest,digest(composeFixCode({...input,steps:association.laterDeliveries}).files));
-  assert.deepEqual(verified,['d1,d2,d3']);
+  assert.deepEqual(association.laterDeliveries,[['d1',d1],['d2',d2],['d3',d3]].map(([runId,item])=>({beforeFix:0,runId,packageDigest:item.pkg.packageDigest})));
   const steps=association.laterDeliveries;
+  assert.equal(association.currentFilesDigest,digest(composeFixCode({...input,steps:resolve(steps)}).files));
   assert.equal(digest(inspectFixCodeAssociation({...input,steps})),digest(association));
-  // The record is exactly that list: a missing, reordered or extra step, or no store verifier, is refused.
-  for(const wrong of [[],steps.slice(1),[steps[1],steps[0],steps[2]]])
-    assert.throws(()=>inspectFixCodeAssociation({...input,steps:wrong}),{code:'fix_association_unverified'});
-  assert.throws(()=>inspectFixCodeAssociation({...input,steps,verifySteps:null}),{code:'fix_association_unverified'});
+  // Status replays the record as it is: a missing or reordered list does not
+  // compose, and a recorded step that is no longer a completed delivery is refused.
+  assert.throws(()=>inspectFixCodeAssociation({...input,steps:[]}),{code:'fix_before_mismatch'});
+  for(const wrong of [steps.slice(1),[steps[1],steps[0],steps[2]]])
+    assert.throws(()=>inspectFixCodeAssociation({...input,steps:wrong}),{code:'fix_current_code_unexplained'});
+  assert.throws(()=>inspectFixCodeAssociation({...input,steps,deliveries:()=>deliveries().slice(1)}),{code:'fix_association_unverified'});
   // The fix sits at its own durable time: without one there is no order, and
   // reviewed before d3 it no longer finds x=B.
   assert.throws(()=>inspectFixCodeAssociation({...input,extend:true,fixTime:null}),{code:'fix_association_unverified'});
@@ -294,6 +305,52 @@ test('#18 every later delivery and the QA fix apply in durable review order: (A,
   }
 });
 
+test('#18 a delivery reviewed before the fix but committed after its acceptance is applied after it; the next fix records it before itself',()=>{
+  const {root,write}=unitRoot('late-',{'x.mjs':'0\n','late.mjs':'0\n','tail.mjs':'0\n'});
+  const parent=write('parent',['x.mjs'],{'x.mjs':'A\n'});
+  // late is reviewed at 20, before the fix's final review (30), but is still unfinished when the fix is accepted.
+  const late=write('late',['late.mjs'],{'late.mjs':'1\n'}),fix=write('fix',['x.mjs'],{'x.mjs':'B\n'});
+  const input={root,baseline:parent.baseline,parentPackage:parent.pkg,after:10,fixTime:pkg=>({[fix.pkg.packageDigest]:30})[pkg.packageDigest]??null};
+  // At acceptance its change is not in the tree and the run is not a completed delivery.
+  fs.writeFileSync(path.join(root,'late.mjs'),'0\n');
+  const accepted=inspectFixCodeAssociation({...input,fixPackages:[fix.pkg],extend:true,deliveries:()=>[]});
+  assert.equal(accepted.version,1);
+  // It commits later on normal recovery: the accepted record still holds.
+  fs.writeFileSync(path.join(root,'late.mjs'),'1\n');
+  const all=[{runId:'late',packages:[{pkg:late.pkg,reviewedAt:20}]}];
+  assert.equal(digest(inspectFixCodeAssociation({...input,fixPackages:[fix.pkg],deliveries:()=>all})),digest(accepted));
+  // It still applies strictly after the fix: an unreviewed change to its file is named.
+  fs.writeFileSync(path.join(root,'late.mjs'),'X\n');
+  assert.throws(()=>inspectFixCodeAssociation({...input,fixPackages:[fix.pkg],deliveries:()=>all}),
+    error=>error.code==='fix_current_code_unexplained'&&error.paths.join()==='late.mjs');
+  fs.writeFileSync(path.join(root,'late.mjs'),'1\n');
+  // A second fix (final review at 50) takes every delivery not yet recorded and reviewed before it, in order.
+  const tail=write('tail',['tail.mjs'],{'tail.mjs':'1\n'}),second=write('second',['x.mjs'],{'x.mjs':'C\n'});
+  const both=[...all,{runId:'tail',packages:[{pkg:tail.pkg,reviewedAt:40}]}];
+  const time=pkg=>({[fix.pkg.packageDigest]:30,[second.pkg.packageDigest]:50})[pkg.packageDigest]??null;
+  const extended=inspectFixCodeAssociation({...input,fixTime:time,fixPackages:[fix.pkg,second.pkg],extend:true,
+    steps:accepted.laterDeliveries??[],deliveries:()=>both});
+  assert.deepEqual(extended.laterDeliveries.map(step=>[step.beforeFix,step.runId]),[[1,'late'],[1,'tail']]);
+  assert.equal(extended.currentFilesDigest,digest(composeFixCode({baseline:parent.baseline,parentPackage:parent.pkg,
+    fixPackages:[fix.pkg,second.pkg],steps:resolveFrom({late,tail})(extended.laterDeliveries)}).files));
+  assert.equal(digest(inspectFixCodeAssociation({...input,fixPackages:[fix.pkg,second.pkg],steps:extended.laterDeliveries,deliveries:()=>both})),
+    digest(extended));
+});
+
+test('#18 a large history stays a compact record: 200 deliveries of 20 files each before the fix',()=>{
+  const names=Array.from({length:20},(_,index)=>`g${String(index).padStart(2,'0')}.mjs`);
+  const {root,write}=unitRoot('large-',{...Object.fromEntries(names.map(name=>[name,'0\n'])),'value.mjs':'0\n'});
+  const parent=write('parent',['value.mjs'],{'value.mjs':'1\n'});
+  const runs=Array.from({length:200},(_,index)=>{const runId=`r${String(index).padStart(3,'0')}`;
+    return {runId,...write(runId,names,Object.fromEntries(names.map(name=>[name,`${index+1}\n`])))};});
+  const fix=write('fix',['value.mjs'],{'value.mjs':'2\n'});
+  const association=inspectFixCodeAssociation({root,baseline:parent.baseline,parentPackage:parent.pkg,fixPackages:[fix.pkg],extend:true,
+    after:10,deliveries:()=>runs.map((item,index)=>({runId:item.runId,packages:[{pkg:item.pkg,reviewedAt:20+index}]})),fixTime:()=>1000});
+  assert.equal(association.laterDeliveries.length,200);
+  // 4,000 file transitions, yet the record stays well under the journal's 1 MiB record limit.
+  assert.ok(Buffer.byteLength(JSON.stringify(association))<32*1024,String(Buffer.byteLength(JSON.stringify(association))));
+});
+
 test('#18 a 13-file delivery and 13 later one-file deliveries before the fix are all recorded, in order, quickly',()=>{
   const names=Array.from({length:13},(_,index)=>`f${String(index).padStart(2,'0')}.mjs`);
   const {root,write}=unitRoot('many-',{...Object.fromEntries(names.map(name=>[name,'0\n'])),'value.mjs':'0\n'});
@@ -305,8 +362,22 @@ test('#18 a 13-file delivery and 13 later one-file deliveries before the fix are
     {runId:'wide',packages:[{pkg:wide.pkg,reviewedAt:20}]}];
   const started=process.hrtime.bigint();
   const association=inspectFixCodeAssociation({root,baseline:parent.baseline,parentPackage:parent.pkg,fixPackages:[fix.pkg],extend:true,
-    after:10,deliveries,fixTime:()=>100,verifySteps:()=>{}});
+    after:10,deliveries,fixTime:()=>100});
   assert.ok(Number(process.hrtime.bigint()-started)/1e6<5000);
   assert.deepEqual(association.laterDeliveries.map(item=>item.runId),['wide',...narrow.map(item=>item.runId)]);
   assert.ok(association.laterDeliveries.every(item=>item.beforeFix===0));
+});
+
+test('#18 the accepted-fix size check mirrors the store exactly: a record one byte over is refused before append',()=>{
+  const specsRoot=fs.realpathSync(fs.mkdtempSync(path.join(isolated,'store-')));
+  const options={specsRoot,identity:{repositoryId:'size',runId:'size-run'},fingerprints:{workflow:'a'.repeat(64),config:'b'.repeat(64),inputs:'c'.repeat(64)}};
+  let store=openExecutionStore({...options,create:true});
+  try{
+    const input=(id,n)=>({id,kind:'result',payload:{s:'x'.repeat(n)},expectedRevision:store.snapshot().revision});
+    const limit=1024*1024-Buffer.byteLength(JSON.stringify({s:''}));
+    assert.equal(appendFits(store.snapshot(),input('fits',limit)),true);
+    store.append(input('fits',limit));
+    assert.equal(appendFits(store.snapshot(),input('over',limit+1)),false);
+    assert.throws(()=>store.append(input('over',limit+1)),{code:'limit_exceeded'});
+  }finally{store.close();}
 });

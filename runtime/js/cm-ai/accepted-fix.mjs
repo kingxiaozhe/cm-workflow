@@ -1,9 +1,13 @@
 // Journal data grammar. Only the trusted serial host supplies original owner evidence.
 import {digest,hex,id,json,need,shape,validIdentity} from './effect-contract.mjs';
 import {qaFixIdentity} from '../cm-fix/qa-source.mjs';
-import {associationRecord,composeFixCode} from './fix-code-association.mjs';
+import {associationRecord,composeFixCode,readSteps} from './fix-code-association.mjs';
 
-export function validateAcceptedFix({record,previous,baseline,parentPackage,feature}){
+// resolveSteps: steps -> resolved steps from the named runs' verified stores, or
+// null when a store is absent. Pure journal replay has no stores: a version 2
+// record is then checked for shape and chain only, and the runner re-proves its
+// composition against the stores (and every live use refuses what it cannot).
+export function validateAcceptedFix({record,previous,baseline,parentPackage,feature,resolveSteps=null}){
   shape(record,['evidence','association','qaRound']);
   const {evidence:e,association:a,qaRound}=record;
   shape(e,['version','kind','identity','qaSource','checkpointRevision','reviewPackage','reviewRegistrationDigest',
@@ -27,7 +31,16 @@ export function validateAcceptedFix({record,previous,baseline,parentPackage,feat
   need(Array.isArray(steps)&&(a?.version!==2||steps.length>0)&&steps.length>=prior.length
     &&digest(steps.slice(0,prior.length))===digest(prior)
     &&steps.slice(prior.length).every(step=>step?.beforeFix===previous.length),'fix_association_invalid');
-  const composed=composeFixCode({baseline,parentPackage,fixPackages:[...previous.map(item=>item.evidence.reviewPackage),e.reviewPackage],steps});
-  need(digest(a)===digest(associationRecord({...composed,steps})),'fix_association_invalid');
+  const fixPackages=[...previous.map(item=>item.evidence.reviewPackage),e.reviewPackage];
+  readSteps(steps,fixPackages.length);
+  const resolved=steps.length?(typeof resolveSteps==='function'?resolveSteps(steps):null):[];
+  if(resolved){
+    const composed=composeFixCode({baseline,parentPackage,fixPackages,steps:resolved});
+    need(digest(a)===digest(associationRecord({...composed,steps})),'fix_association_invalid');
+  }else{
+    shape(a,['version','kind','parentPackageDigest','fixPackageDigest','currentFilesDigest','laterDeliveries']);
+    need(a.kind==='cm-fix-code-association'&&a.parentPackageDigest===parentPackage.packageDigest
+      &&a.fixPackageDigest===e.reviewPackage.packageDigest,'fix_association_invalid');hex(a.currentFilesDigest);
+  }
   return json(record,12*1024*1024);
 }
