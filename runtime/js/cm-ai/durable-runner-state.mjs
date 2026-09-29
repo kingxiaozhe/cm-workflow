@@ -1,6 +1,6 @@
 import {beforeFirstQaRound,qaRevisionFollows,readQaConfigRevision} from './qa-config-revision.mjs';
 // Host-only S3b2b journal grammar. Data validation grants no provider authority.
-import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,requestFor} from './effect-contract.mjs';
+import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,requestFor,JOURNAL_REASON_LIMIT} from './effect-contract.mjs';
 import {readReviewBaseline,readReviewPackage,reviewSpecsPath} from './review-package.mjs';
 import {reviewResult,reviewReceipt} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
@@ -329,7 +329,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     ...(Object.hasOwn(s,'reason')?['reason']:[]),
     'priorReview','cancelAfterCommit','workflowError','cancellationRequested',...(version>=2?['taskCommit']:[]),...(version===3?['reviewInvocation']:[]),
     ...(Object.hasOwn(config,'taskLearning')?['learningResult']:[])]);
-  if(Object.hasOwn(s,'reason'))need(s.reason===null||typeof s.reason==='string'&&s.reason.length<=8192
+  if(Object.hasOwn(s,'reason'))need(s.reason===null||typeof s.reason==='string'&&s.reason.length<=JOURNAL_REASON_LIMIT
     &&!/\r|\n|\0/.test(s.reason),'runner_diagnostic');
   if(version>=2){
     same(s.taskCommit,effect.kind==='complete'?taskCommit:null);

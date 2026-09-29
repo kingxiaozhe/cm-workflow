@@ -27,6 +27,22 @@ export const developCheckpointReserve=({examinedPathsBytes,receiptsBytes=2,calls
   REVIEW_RESULT_COPIES*(examinedPathsBytes+REVIEW_TEXT_LIMIT)+2*(receiptsBytes+callsBytes+writebackBytes)+REVIEW_FIXED_RESERVE;
 // The runner reviews scope plus the project AGENTS.md a Learning writeback may change.
 export const taskReviewScope=scope=>scope.includes('AGENTS.md')?scope:[...scope,'AGENTS.md'];
+// Journaled reasons (checkpoint reason, host diagnostics) are one line of at most
+// this many characters; replay refuses anything longer.
+export const JOURNAL_REASON_LIMIT=8192;
+// The one builder for reasons that name paths or other open-ended lists: every
+// item is shown up to 300 characters (longer ones keep their start and end, so a
+// file name stays visible), as many as fit, then "等 N 个" gives the total.
+// Control characters become spaces. The result always fits the limit.
+export function boundedReason(head,items,tail=''){
+  const line=value=>String(value).replace(/[\x00-\x1f\x7f]/g,' ');
+  const clip=value=>value.length>300?`${value.slice(0,150)}…${value.slice(-149)}`:value;
+  const list=items.map(item=>clip(line(item))),start=line(head),end=line(tail),more=` 等 ${list.length} 个`;
+  let shown=list.length;
+  const text=count=>`${start}${list.slice(0,count).join(', ')}${count<list.length?more:''}${end}`;
+  while(shown>0&&text(shown).length>JOURNAL_REASON_LIMIT)shown--;
+  return text(shown).slice(0,JOURNAL_REASON_LIMIT);
+}
 // Explicit host call budget, shared by live initialization and journal replay.
 // This is not the short-lived authorization grant expiry.
 export const validCallTimeout=value=>need(Number.isInteger(value)&&value>=1&&value<=3600000);

@@ -542,6 +542,42 @@ test('#19 a lesson delivery near the edge is sized with its AGENTS.md writeback'
     writeLayout:big=>`fs.writeFileSync(cwd+'/target.mjs','//'+'x'.repeat(${big})+'\\n');`,
     answerLayout:(f,big)=>{f.content('big-content.mjs','//'+'x'.repeat(big)+'\n');f.edits={'target.mjs':'big-content.mjs'};}});
 });
+// Codex review of 36d860c: journaled reasons are limited to 8192 characters on
+// replay. A reason listing many long paths must stay within it and replay.
+const longPaths=Array.from({length:20},(_,n)=>`${'a'.repeat(200)}/${'b'.repeat(200)}/requirement-${String(n).padStart(2,'0')}.md`);
+function assertReplayableReason(f,code){
+  const status=f.drive(f.plan({mode:'resume',answers:undefined,checks:undefined}),'status');
+  assert.equal(status.status,0,status.stderr);assert.equal(result(status).code,code);
+  const reason=result(status).reason;assert(reason.length<=8192,String(reason.length));assert(!/[\r\n\0]/.test(reason));
+  return reason;
+}
+test('#19 a requirement-missing reason over 20 long paths stays within the replay limit',t=>{
+  const files=Object.fromEntries(longPaths.map(file=>[file,'# requirement\n']));
+  const f=fixture(t,{scope:['target.mjs',...longPaths],files:{...files,'target.mjs':'export const value = 1;\n'}});
+  const definition=JSON.parse(fs.readFileSync(f.config,'utf8'));definition.requirements=['requirements.md',...longPaths];
+  fs.writeFileSync(f.config,JSON.stringify(definition));
+  const run=liveSession(f,{mode:'create',act:`fs.writeFileSync(cwd+'/target.mjs','export const value = 2;\\n');`
+    +`for(const file of ${JSON.stringify(longPaths)})fs.unlinkSync(cwd+'/'+file);`});
+  assert.equal(run.status,0,run.stderr);assert.equal(result(run).code,'develop_requirement_missing',run.stdout);
+  const reason=assertReplayableReason(f,'develop_requirement_missing');
+  for(const n of ['00','19'])assert.match(reason,new RegExp(`requirement-${n}\\.md`));
+});
+test('#19 a package-too-large reason with long changed paths stays within the replay limit',t=>{
+  const f=fixture(t,{scope:['target.mjs',...longPaths]});
+  const run=liveSession(f,{mode:'create',act:`for(const file of ${JSON.stringify(longPaths)}){fs.mkdirSync(cwd+'/'+file.slice(0,file.lastIndexOf('/')),{recursive:true});`
+    +`fs.writeFileSync(cwd+'/'+file,'//'+'y'.repeat(40*1024)+'\\n');}fs.writeFileSync(cwd+'/target.mjs','//'+'x'.repeat(700*1024)+'\\n');`});
+  assert.equal(run.status,0,run.stderr);assert.equal(result(run).code,'develop_package_too_large',run.stdout);
+  assertReplayableReason(f,'develop_package_too_large');
+});
+test('#19 bounded reasons list what fits and count the rest',async()=>{
+  const {boundedReason}=await import('../runtime/js/cm-ai/effect-contract.mjs');
+  const items=Array.from({length:50},(_,n)=>`${'p'.repeat(1000)}-${n}`);
+  const reason=boundedReason('head: ',items,'; tail');
+  assert(reason.length<=8192);assert.match(reason,/^head: /);assert.match(reason,/等 50 个; tail$/);
+  assert.equal(boundedReason('x: ',['a','b'],'.'),'x: a, b.');
+  assert(!/[\r\n\0]/.test(boundedReason('h',['a\nb','c\0d'],'')));
+  assert.match(boundedReason('',[`${'q'.repeat(500)}/name.md`],''),/…q+\/name\.md$/);
+});
 test('#19 a legacy unknown/empty_changes develop checkpoint still replays as unknown',t=>{
   const f=fixture(t,{files:{'target.mjs':'export const value = 42;\n'}});
   assert.equal(liveSession(f,{mode:'create',write:false}).status,0);

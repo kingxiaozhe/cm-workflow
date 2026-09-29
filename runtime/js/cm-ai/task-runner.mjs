@@ -9,7 +9,7 @@ import {createRequire} from 'node:module';
 import {verifySpecificationMaterial} from './specification-material.mjs';
 import { captureReviewBaseline, captureReviewInventory, compareReviewBaseline, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage, validChecks, readReviewSourceFiles } from './review-package.mjs';
 import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,validCallTimeout,requestFor,terminalFor,failureCode,
-  JOURNAL_PAYLOAD_LIMIT,developCheckpointReserve,taskReviewScope } from './effect-contract.mjs';
+  JOURNAL_PAYLOAD_LIMIT,developCheckpointReserve,taskReviewScope,boundedReason } from './effect-contract.mjs';
 import { reviewResult,reviewReceipt,boundReviewText,reviewPaths } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
@@ -450,7 +450,7 @@ export function createTaskRunner(options) {
   const payloadBytes=(type,fields)=>Buffer.byteLength(JSON.stringify(version===3
     ?runnerPayloadV3(type,fields,Infinity):runnerPayload(type,fields,version,Infinity)));
   const largestFiles=files=>files.slice().sort((a,b)=>b.size-a.size).slice(0,3)
-    .map(file=>`${file.path} ${file.size} bytes`).join(', ');
+    .map(file=>`${file.path} ${file.size} bytes`);
   if(restored) {
     const s=structuredClone(restored.state);
     ({state,code,attempt,sequence,reviewPackage,currentChecks,receipt,priorReview,cancelAfterCommit,workflowError,cancellationRequested}=s);
@@ -469,9 +469,9 @@ export function createTaskRunner(options) {
   } else {
     // A baseline too large for its record is refused before anything is appended.
     const bytes=store?payloadBytes('init',{config:metadata,baseline:original,session}):0;
-    if(bytes>JOURNAL_PAYLOAD_LIMIT)throw Object.assign(new Error(`limit_exceeded: the task baseline journal record would be ${bytes} bytes, `
-      +`above the journal record limit ${JOURNAL_PAYLOAD_LIMIT}; largest baseline material: `
-      +largestFiles(original.files.filter(file=>Object.hasOwn(file,'contentBase64')))),{code:'limit_exceeded'});
+    if(bytes>JOURNAL_PAYLOAD_LIMIT)throw Object.assign(new Error(boundedReason(`limit_exceeded: the task baseline journal record would be ${bytes} bytes, `
+      +`above the journal record limit ${JOURNAL_PAYLOAD_LIMIT}; largest baseline material: `,
+      largestFiles(original.files.filter(file=>Object.hasOwn(file,'contentBase64'))))),{code:'limit_exceeded'});
     persist('init',{config:metadata,baseline:original,session});
   }
   publication=privateStatus();
@@ -822,8 +822,8 @@ export function createTaskRunner(options) {
     if(error?.code==='empty_changes'){halt('blocked','develop_empty_changes',EMPTY_DELIVERY);return;}
     const missing=error?.code==='read_failed'?missingScopeRequirements():[];
     if(!missing.length)throw error;
-    halt('blocked','develop_requirement_missing',`develop_requirement_missing: ${missing.slice(0,20).join(', ')} `
-      +'are requirement files and must exist in the review package; restore them and resume to redo this attempt');
+    halt('blocked','develop_requirement_missing',boundedReason('develop_requirement_missing: ',missing,
+      ' are requirement files and must exist in the review package; restore them and resume to redo this attempt'));
   };
   async function perform(v) {
     if(v.kind==='develop') {
@@ -1044,10 +1044,10 @@ export function createTaskRunner(options) {
         if(bytes>budget){
           const changed=reviewPackage.changes.filter(change=>change.after).map(change=>change.after);
           reviewPackage=packageBefore;
-          halt('blocked','develop_package_too_large',`develop_package_too_large: the review checkpoint would be ${bytes} bytes, `
+          halt('blocked','develop_package_too_large',boundedReason(`develop_package_too_large: the review checkpoint would be ${bytes} bytes, `
             +`above ${budget} (journal record limit ${JOURNAL_PAYLOAD_LIMIT} minus ${reserve} kept for the bounded review `
-            +`and completion records); largest changed files: ${largestFiles(changed)}; shrink them or move them out of scope, `
-            +'then resume to redo this attempt');
+            +'and completion records); largest changed files: ',largestFiles(changed),
+            '; shrink them or move them out of scope, then resume to redo this attempt'));
           result=privateStatus();cache.set(v.id,{effect:v,digest:digest(v),result});
         }
       }

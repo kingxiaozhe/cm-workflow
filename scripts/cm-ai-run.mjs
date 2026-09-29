@@ -17,7 +17,7 @@ import {recordReviewAbandonment} from '../runtime/js/cm-ai/review-abandon-log.mj
 import {recordEffectAbandonment} from '../runtime/js/cm-ai/effect-abandon-log.mjs';
 import {reviewConsumedHandoff,reviewedHandoffConflict} from '../runtime/js/cm-ai/host-handoff.mjs';
 import {RUN_ID_RULE,validRunId} from './cm-log-event.mjs';
-import {JOURNAL_PAYLOAD_LIMIT} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {JOURNAL_PAYLOAD_LIMIT,boundedReason} from '../runtime/js/cm-ai/effect-contract.mjs';
 
 const usage='cm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
 const fail=code=>{throw Object.assign(new Error(code),{code});};
@@ -295,9 +295,9 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
     const preview=captureReviewBaseline(baselineOptions),bytes=Buffer.byteLength(JSON.stringify(preview));
     if(bytes>JOURNAL_PAYLOAD_LIMIT){
       const largest=preview.files.filter(file=>Object.hasOwn(file,'contentBase64')).sort((a,b)=>b.size-a.size).slice(0,3)
-        .map(file=>`${file.path} ${file.size} bytes`).join(', ');
-      throw Object.assign(new Error(`limit_exceeded: the task baseline alone is ${bytes} bytes, above the journal record limit `
-        +`${JOURNAL_PAYLOAD_LIMIT}; largest baseline material: ${largest}`),{code:'limit_exceeded'});
+        .map(file=>`${file.path} ${file.size} bytes`);
+      throw Object.assign(new Error(boundedReason(`limit_exceeded: the task baseline alone is ${bytes} bytes, above the journal record limit `
+        +`${JOURNAL_PAYLOAD_LIMIT}; largest baseline material: `,largest)),{code:'limit_exceeded'});
     }
   }
   const storeIdentity={repositoryId:identity.repositoryId,runId:identity.runId};
