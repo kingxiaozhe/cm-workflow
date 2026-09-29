@@ -12,7 +12,7 @@ import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTas
 import { reviewResult,reviewReceipt } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
-  MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,completedEffectCount,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
+  MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,effectSlotFree,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
   reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted,
   completionBlockCount,completionRetriesExhausted } from './durable-runner-state.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
@@ -893,7 +893,7 @@ export function createTaskRunner(options) {
       if(old){need(old.digest===digest(v),'intent_conflict');return Promise.resolve(old.result);}
       if(restored?.pending?.id===v.id){need(digest(restored.pending)===digest(v),'intent_conflict');return Promise.resolve(status());}
       need(!busy,'busy');need(v.identity.attempt===attempt,'attempt_mismatch');
-      need(stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(completedEffectCount([...cache.values()],calls)<6,'limit_exceeded');
+      need(stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(effectSlotFree(v.kind,[...cache.values()],calls),'limit_exceeded');
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
     } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input'}));}

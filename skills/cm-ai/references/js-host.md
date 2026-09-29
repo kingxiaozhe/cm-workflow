@@ -33,9 +33,9 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 第 2 轮交付与第 1 轮被要求修改的代码逐字节相同（`artifactDigest` 相同）时停在可重试的
 `blocked/develop_unchanged_after_review`，不送审、不耗第 2 轮审查；改好 `develop-a2.json` 后在原 run `advance`，
 以新的 develop effect id 重新交付。
-一个运行最多 6 次计数调用（本地拒绝的开发结果、自动重派的审查和被放弃的调用不计）和 6 个计数 effect（只有 develop、review、complete；
+一个运行最多 6 次计数调用（本地拒绝的开发结果、自动重派的审查和被放弃的调用不计）和 6 个计数 effect（只有 develop、review；complete、
 QA、文档与收尾不占名额；本地拒绝的开发结果、检查产物越界、自动重派的审查和被放弃的审查结果不计）。任何可重试的开发阻断反复出现、
-剩余调用名额已不够再交付一次并送审，或剩余 effect 名额已不够「交付 + 审查 + 完成」时，运行器在派发开发前写入 `develop-retry-limit` 并停在终态
+剩余调用或 effect 名额已不够再交付一次并送审时，运行器在派发开发前写入 `develop-retry-limit` 并停在终态
 `blocked/develop_retry_limit`（`pendingAction: none`）；按 reason 中的上次阻断原因修好根因后用 supersede 新建运行。
 若第 1 轮已经待审且计划带
 `--allow-review-attempt 1`，`advance` 可能在同一次调用中进入第 2 轮；缺 `develop-a2.json` 时会在
@@ -53,7 +53,7 @@ cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edit
 
 `check` 只运行计划里的真实命令；原始输出打印到驾驶员 stderr，宿主只保存实际退出码和精简证据；静态 `check.json` 不会被读取。单任务和批次 PLAN 可设 `checkTimeoutMs` 作为检查默认超时，每个 `checks` 条目可设 `timeoutMs` 覆盖；均为 1..3600000 的整数毫秒，省略时驱动默认 900000（15 分钟），启动前校验。宿主 `host-check` 对其他调用方的默认值仍是 60000。失败或不可用的检查会在开发阶段停 `blocked/develop_checks_not_passed`，`reason` 列出检查 id 与证据摘要；修复环境后在原 run `advance` 会重新开发和检查，不消耗独立审查轮次。旧运行在完成阶段的 `blocked/checks_not_passed` 保持终态，不能重新开发。
 驾驶员收到 `state: "unknown"` 或 `pendingAction: "reconcile"` 的宿主结果时退出 1，并保留原输出供原 run 恢复；不能把有结果的 JSON 当成成功。
-独立审查批准后，完成前会再次运行相同检查。`evidence` 摘要文字变化且检查 `id/command/outcome/exitCode` 不变时可完成；代码、handoff 或检查身份漂移为终态 `blocked/package_mismatch`，越界 scope/需求漂移保持 `blocked/out_of_scope`。仅 `outcome/exitCode` 变化时为可恢复的 `blocked/completion_checks_changed`：先修好检查环境，再用原 runId、原配置 `--mode resume` 执行 `advance`（或 `complete`）；新 complete effect id 重跑检查，原 Review 回执与 packageDigest 不变，不新开 run 或重审。这类完成前复查阻断（含 `completion_package_changed`）不占六个 effect 名额，
+独立审查批准后，完成前会再次运行相同检查。`evidence` 摘要文字变化且检查 `id/command/outcome/exitCode` 不变时可完成；代码、handoff 或检查身份漂移为终态 `blocked/package_mismatch`，越界 scope/需求漂移保持 `blocked/out_of_scope`。仅 `outcome/exitCode` 变化时为可恢复的 `blocked/completion_checks_changed`：先修好检查环境，再用原 runId、原配置 `--mode resume` 执行 `advance`（或 `complete`）；新 complete effect id 重跑检查，原 Review 回执与 packageDigest 不变，不新开 run 或重审。complete 本身不占六个 effect 名额，审查已批准的运行总能进入完成；这类完成前复查阻断（含 `completion_package_changed`）
 单独最多重试 3 次；第 4 次仍被拦下时运行器写入 `completion-retry-limit`，停在终态 `blocked/completion_retry_limit`（`pendingAction: none`），
 先修好检查环境再 supersede 新建运行。旧 journal 按原格式回放。
 `qa_logic`、`qa_browser`、`verification_precheck` 没有可信本地 runner。单步驾驶员对本任务完成后适用的 logic case 预检 `qa_logic`，包括已被 QA 命令 `caseIds` 覆盖的 case（当前 executor 仍会请求）；只对适用、`expected` 不含 `[需确认]` 的 browser case 预检 `qa_browser`。预测需要 runner 时仍在发送前拒绝，`verification_precheck` 规则不变。

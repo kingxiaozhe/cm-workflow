@@ -1202,7 +1202,7 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 | `blocked/develop_checks_not_passed` | 开发检查失败或不可用，审查包未生成 | 根据 `reason` 的 id 和证据修复环境，在原 run `advance`；不消耗审查轮次 |
 | `blocked/checks_not_passed` | 旧运行的已审包在完成门禁发现失败检查 | 终态；不得重新开发 |
 | `blocked/check_output_out_of_scope` | 检查新增了范围外产物 | 移走产物并改检查输出路径，在原 run `advance`；新 develop effect id 重做 |
-| `blocked/completion_checks_changed` | 已审包的完成前复查结果变化 | 修好检查环境，在原 run `advance` 或 `complete`，保留原审查回执；不占六个 effect 名额，与 `completion_package_changed` 合计最多重试 3 次 |
+| `blocked/completion_checks_changed` | 已审包的完成前复查结果变化 | 修好检查环境，在原 run `advance` 或 `complete`，保留原审查回执；complete 不占六个 effect 名额，与 `completion_package_changed` 合计最多重试 3 次 |
 | `blocked/completion_retry_limit` | 完成前复查第 4 次仍被拦下；运行器写入 `completion-retry-limit`，没有新的 complete intent | 终态；按 `reason` 修好检查环境（不稳定的检查、在代码根生成新文件的命令），用 `--supersede-reviewed-evidence` 新建运行 |
 | `state: "unknown"` | 某个有副作用的步骤抛了异常或返回了无法判定的终态，做没做成不确定 | 单任务 V3 审查调用已登记、无结果时可用下述 `abandon_review`；其他情况见下 |
 | `state: "unknown"` + `execution_error`，`pendingAction: "reconcile"`，且 stderr 显示驱动未应答 `init_generate`／`init_verify` | 驾驶员断联，原 develop effect 结果未定；旧版驾驶员可能错误退出 0 | 先核对原 host 与子进程及代码根实际写入；仅满足下述 pending effect 条件时在原 run 用 `abandon_effect`，之后按原新运行门禁使用当前会话宿主路径；不要原样重发 `advance` |
@@ -1212,7 +1212,7 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 | `state: "unknown"` + pending review intent，尚无 host-joined／review 登记 | reviewer 启动前退出 | `pendingAction: "abandon_effect"`；确认旧 host 已退出后在原 run 显式退出 |
 | `state: "unknown"` + 已登记且无结果的 review invocation | 审查调用未完成 | `pendingAction: "abandon_review"`；核对旧 host 和 reviewer 进程后在原 run 显式退出 |
 | `state: "unknown"` + `transport_timeout`，结果已入 journal 且有最终消息 | reviewer 给出最终消息后被超时截断，结论从未被接收 | `pendingAction: "abandon_review"`；确认 reviewer 已退出后在原 run 显式放弃这条结果，再按一次重派恢复 |
-| `state: "blocked"` + `develop_retry_limit` | 可重试的开发阻断反复出现，剩余调用名额已不够再交付一次并送审，或剩余 effect 名额已不够交付、审查并完成（QA 与文档不占 effect）；运行器在派发开发前写入 `develop-retry-limit`，没有 intent、没有开发调用 | 终态；按 `reason` 中上次阻断原因修好根因，用 `--supersede-reviewed-evidence` 新建运行 |
+| `state: "blocked"` + `develop_retry_limit` | 可重试的开发阻断反复出现，剩余调用名额已不够再交付一次并送审，或剩余 effect 名额已不够交付并送审（complete、QA 与文档不占 effect，已批准的运行总能进入完成）；运行器在派发开发前写入 `develop-retry-limit`，没有 intent、没有开发调用 | 终态；按 `reason` 中上次阻断原因修好根因，用 `--supersede-reviewed-evidence` 新建运行 |
 | `state: "pending_review"` + `review_provider_failed` | 审查 CLI 没给结论就失败（`reason` 首段为类别，如 `reviewer_auth_failed`） | 按 `reason` 先登录或等额度，再带本轮审查授权恢复；同一 attempt 只重派一次 |
 | `state: "pending_review"` + `review_verdict_invalid` | 审查答复违反 verdict 规则（`reason` 首段为具体代码） | 带本轮审查授权恢复重派；同一 attempt 只重派一次 |
 | `state: "fixture_completed"` + `code: "qa_execution_unknown"` | 一次 QA 调用没拿到终态，工具可能还在跑或已被中断 | `--rerun-unknown-qa` |

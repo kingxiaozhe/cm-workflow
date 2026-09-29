@@ -59,31 +59,35 @@ export const countedCalls=(calls,cache)=>calls.filter(call=>!invalidDeveloperCal
 // longer holds one of the six effect slots; its retry does.
 const abandonedResult=(entry,calls)=>entry.effect.kind==='review'&&entry.result.state==='unknown'
   &&calls.some(call=>call.terminal==='abandoned'&&call.invocationId===entry.result.reviewInvocation?.registration?.grant?.invocationId);
-// A completion re-check blocked by changed check results or new files makes no
-// provider call. It holds none of the six slots, which stay reserved for the
-// delivery, its review and the completion that succeeds; its own, separate
-// bound is MAX_COMPLETION_RETRIES below.
+// Completion holds no effect slot. It makes no provider call, it is admitted
+// only from an approved review (stageAllowed), and every outcome but a
+// completion re-check block ends the run; those blocks have their own bound,
+// MAX_COMPLETION_RETRIES below. So an approved run can always complete, even
+// when an older version already spent all six slots on develop and review.
 const COMPLETION_RETRY_CODES=['completion_checks_changed','completion_package_changed'];
 const completionBlock=entry=>entry.effect.kind==='complete'&&entry.result.state==='blocked'
   &&COMPLETION_RETRY_CODES.includes(entry.result.code);
 export const completionBlockCount=cache=>cache.filter(completionBlock).length;
 export const completedEffectCount=(cache,calls=[])=>cache.filter(entry=>!(entry.effect.kind==='develop'
   &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))
-  &&!timeoutEffect(entry)&&!abandonedResult(entry,calls)&&!completionBlock(entry)).length;
-// The six-effect cap counts only runner effects (develop, review, complete);
-// QA, documentation and finalization are log records and hold no slot.
+  &&!timeoutEffect(entry)&&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
+// The six-effect cap counts develop and review effects only; completion (above),
+// QA, documentation and finalization hold no slot.
 export const MAX_RUNNER_EFFECTS=6;
-// A delivery is only worth starting while it could still finish: its own call
-// and its review's call, and effect slots for itself, its review and its
-// completion. Otherwise the run could only end in a refused checkpoint after
-// the developer or reviewer already ran, or in an approved task whose complete
-// is refused, so it stops before dispatch instead. This is the budget, whatever
-// block made the delivery retryable.
+// Only develop and review intents need a free slot; complete is gated by stage.
+export const effectSlotFree=(kind,cache,calls)=>kind==='complete'||completedEffectCount(cache,calls)<MAX_RUNNER_EFFECTS;
+// A delivery is only worth starting while it could still be reviewed: its own
+// call and effect slot, and its review's. Otherwise the run could only end in a
+// refused checkpoint after the developer or reviewer already ran, so it stops
+// before dispatch instead. This is the budget, whatever block made the delivery
+// retryable. (Today every counted develop/review effect in a developable state
+// also holds a counted call, so the call term decides; the effect term keeps
+// the rule true for blocks that could stop before their developer call.)
 export const developBudget=s=>({calls:countedCalls(s.calls,s.cache),effects:completedEffectCount(s.cache,s.calls)});
 export const developBudgetExhausted=s=>{
   if(!stageAllowed('develop',s.state,s.code,s.priorReview?.verdict))return false;
   const used=developBudget(s);
-  return used.calls+2>MAX_RUNNER_CALLS||used.effects+3>MAX_RUNNER_EFFECTS;
+  return used.calls+2>MAX_RUNNER_CALLS||used.effects+2>MAX_RUNNER_EFFECTS;
 };
 // At most this many re-checks after a blocked completion. Each re-runs only the
 // local checks and the commit gate, so a small fixed bound keeps the journal
@@ -96,7 +100,7 @@ export const completionRetryLimitReason=({fromCode,completionBlocks})=>
   +'先修好检查环境（结果不稳定的检查、会在代码根生成新文件的命令），再用 --supersede-reviewed-evidence 新建运行';
 export const developRetryLimitReason=({countedCalls:calls,countedEffects:effects,fromState,fromCode})=>
   `develop_retry_limit: 本运行已用 ${calls} 次计数调用（上限 ${MAX_RUNNER_CALLS}）、${effects} 个计数 effect`
-  +`（上限 ${MAX_RUNNER_EFFECTS}），再交付一次将无法送审并完成；上次停在 ${fromState}${fromCode?`/${fromCode}`:''}。`
+  +`（上限 ${MAX_RUNNER_EFFECTS}），再交付一次将无法送审；上次停在 ${fromState}${fromCode?`/${fromCode}`:''}。`
   +'按该原因修好根因后，用 --supersede-reviewed-evidence 新建运行';
 // The latest review of the current attempt was checkpointed unknown with a
 // journaled, never-accepted result: a final message cut off by a timeout, or a
@@ -634,7 +638,7 @@ export function readRunnerHistory(raw,config,version=1) {
       if(Object.hasOwn(e,'learningInput')){need(e.kind==='develop'&&Object.hasOwn(config,'taskLearning'),'runner_learning');
         validTaskLearningInput(e.learningInput,e.identity,config.taskLearning.feature);}
       same(e.identity,{...config.identity,attempt:state.attempt});need(e.version===1 && stageAllowed(e.kind,state.state,state.code,state.priorReview?.verdict),'runner_stage');
-      need(completedEffectCount(state.cache,state.calls)<6 && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
+      need(effectSlotFree(e.kind,state.cache,state.calls) && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
       pending=e;beforeIntent=structuredClone(state);controls={};completeIntentDigest=e.kind==='complete'?r.digest:null;
       invocation={registration:null,started:null,result:null};registrationRecord=null;startedRecord=null;resultRecord=null;
       joinedForInvocation=false;lastReview=null;
