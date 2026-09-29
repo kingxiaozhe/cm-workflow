@@ -235,6 +235,8 @@ function contractCases(specsDir,feature,code){
 const confirmationPending=item=>!Array.isArray(item?.expected)||item.expected.some(value=>String(value).includes('[需确认]'));
 // The eligibility rule of released versions before recovery_rule 2. Superseded
 // rows they wrote (no recovery_rule) are replayed with exactly this predicate.
+// Rows without recovery_rule are exactly the pre-branch released format: the
+// intermediate commits of this change are squash-merged and never reach users.
 const legacyEligible=(row,environment)=>!row.sourceChanged&&(
   row.kind==='logic'&&row.staticVerdict==='INSUFFICIENT_EVIDENCE'
   ||row.kind==='browser'&&(typeof row.evidenceProblem==='string'&&row.evidenceProblem.length>0
@@ -276,13 +278,17 @@ function recoverableCases(items,specsDir,environment,code='qa_rerun_not_blocked_
   // A case may be rerun only if the approved contract has no unresolved
   // [需确认] expectation for it; the report marker must not say otherwise.
   const resolved=row=>!confirmationPending(contract.get(row.id))&&row.needsConfirmation!==true;
+  // A host-declared BLOCKED is proven by the durable case_blocked log row the
+  // executor appended when the session answered, not by the mutable report.
+  const declaredInLog=new Set(items.filter(({row})=>row.phase==='case_blocked'&&row.host_declared_blocked===true)
+    .map(({row})=>row.case_id));
   for(const row of blocked)need(!row.sourceChanged&&(
     row.kind==='logic'&&resolved(row)&&(row.staticVerdict==='INSUFFICIENT_EVIDENCE'
       // Blocked only by a mapped command without exit code, derived from the
       // recorded command rows; the executor's marker has to agree.
       ||row.staticVerdict==='SUPPORTED'&&mapped(row,unavailableCommand)&&row.commandUnavailable===true)
     ||row.kind==='browser'&&resolved(row)&&(typeof row.evidenceProblem==='string'&&row.evidenceProblem.length>0
-      ||row.cleanup==='failed'||row.hostRequestTimeout===true||row.hostDeclaredBlocked===true
+      ||row.cleanup==='failed'||row.hostRequestTimeout===true||declaredInLog.has(row.id)&&row.hostDeclaredBlocked===true
       ||environment!=null&&row.environment!=null&&digest(row.environment)!==digest(environment))
     ||unavailableCommand(row)),code);
   // Only declared (otherwise failed is empty): every failure must be a command
@@ -333,7 +339,8 @@ function validateRunSequence(items,code='qa_round_invalid',specsDir){
         }else{
           const declared=row.reason==='declared_environment_failure';
           need(declared?validEnvironmentFailureReason(row.environment_failure_reason):row.reason==='host_evidence_problem',code);
-          // Rows without recovery_rule were written by older versions under the original rule.
+          // Rows without recovery_rule were written by released versions before
+          // this change (the pre-branch format) under the original rule.
           const legacy=row.recovery_rule===undefined;need(legacy||row.recovery_rule===2,code);
           const cases=recoverableCases(prior,specsDir,row.expected_environment,code,declared,legacy);
           need(JSON.stringify(row.blocked_cases)===JSON.stringify(cases.blocked)

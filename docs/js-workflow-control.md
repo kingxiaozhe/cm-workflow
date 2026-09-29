@@ -856,8 +856,9 @@ browser BLOCKED（执行器在报告行写 `hostDeclaredBlocked: true`；旧报�
 （host-check 的 timeout、signal_exit、spawn_failed、output_*、cleanup_failed）以及只因这类映射命令阻断的 logic 用例
 （执行器写 `commandUnavailable: true`；`[需确认]` 的 logic 用例写 `needsConfirmation: true`，任何路径都不适用）。
 没有声明命令、延后用例、`[需确认]`、缺少浏览器能力和源码漂移仍不适用。判定以权威输入为准：`[需确认]` 读该 feature 的
-`test-cases.json`（契约里找不到的用例按未确认处理），命令阻断由报告中已记录的命令行推出；`needsConfirmation`、`commandUnavailable`
-只作交叉核对，任一与契约或命令行不符即拒绝。新写入的 superseded 行带 `recovery_rule: 2` 并按此规则回放；旧版本写入、
+`test-cases.json`（契约里找不到的用例按未确认处理），命令阻断由报告中已记录的命令行推出，会话回答的 browser BLOCKED
+以执行器在应答时追加的 `test_run/case_blocked` 日志行（`host_declared_blocked: true`）为准；`needsConfirmation`、
+`commandUnavailable`、`hostDeclaredBlocked` 只作交叉核对，任一与契约、命令行或日志不符即拒绝。新写入的 superseded 行带 `recovery_rule: 2` 并按此规则回放；旧版本写入、
 无该字段的 superseded 行按原规则回放，其他 `recovery_rule` 取值拒绝；配置修订的 superseded 行格式不变。有退出码的非零结果是产品 FAIL，
 只有操作员在同一次恢复中加 `--qa-environment-failure "原因"`（单行、最多 500 UTF-8 字节，仅单任务宿主）声明环境故障时，
 才允许替代最新 FAIL：每条 FAIL 必须是有非零退出码的命令行或只因其失败的非 `CONTRADICTED` logic 用例，browser FAIL

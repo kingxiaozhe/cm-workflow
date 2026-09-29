@@ -246,8 +246,11 @@ export function createHostQaExecutor(options) {
               evidence:observed.evidence,evidenceProblem,environment:observed.environment,cleanup:observed.cleanup,
               ...(hostRequestTimeout?{hostRequestTimeout:true}:{}),
               ...(answered&&observed.verdict==='BLOCKED'?{hostDeclaredBlocked:true}:{})});
+            // The durable log row, appended now through the writer, is the record
+            // that the session itself answered BLOCKED; the report only mirrors it.
             logStep(configuration,binding,'test_run',verdict==='BLOCKED'?'case_blocked':'case_complete',
-              {case_id:item.id,result:verdict},'QA browser case finished');
+              {case_id:item.id,result:verdict,...(answered&&observed.verdict==='BLOCKED'?{host_declared_blocked:true}:{})},
+              'QA browser case finished');
           }
         }
       }

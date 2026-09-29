@@ -708,7 +708,9 @@ test('superseded rows written before recovery_rule 2 replay under the original r
 
 // Report forgeries: the approved contract, not the report marker, decides [需确认].
 const FORGED={'contract-resolved-after-run':'logic-confirmation-insufficient','forged-confirmation-insufficient':'logic-confirmation-insufficient',
-  'forged-confirmation-unavailable':'logic-confirmation-unavailable','forged-browser-confirmation':'needs-confirmation'};
+  'forged-confirmation-unavailable':'logic-confirmation-unavailable','forged-browser-confirmation':'needs-confirmation',
+  // No browser answer happened: a marker added to the report must not stand in for one.
+  'forged-no-capability':'no-browser-capability','forged-browser-evidence':'needs-confirmation'};
 for(const name of ['evidence','cleanup','environment','timeout','logic','commands','product-blocked',
   'source-drift','FAIL','mixed-failure','round-limit','incomplete','superseded-crash','one-shot','metadata-command',
   'legacy-product-blocked','needs-confirmation','command-unavailable','command-exit','declared-command-exit','declared-product-fail',
@@ -769,7 +771,10 @@ test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
     }else if(FORGED[name]){
       const forge={'forged-confirmation-insufficient':['TC-001',row=>{delete row.needsConfirmation;}],
         'forged-confirmation-unavailable':['TC-001',row=>{delete row.needsConfirmation;row.commandUnavailable=true;}],
-        'forged-browser-confirmation':['TC-002',row=>{row.hostDeclaredBlocked=true;}]}[name];
+        'forged-browser-confirmation':['TC-002',row=>{row.hostDeclaredBlocked=true;}],
+        'forged-no-capability':['TC-002',row=>{row.hostDeclaredBlocked=true;}],
+        // A forged evidence problem on a [需确认] case: the contract still refuses it.
+        'forged-browser-evidence':['TC-002',row=>{row.evidenceProblem='qa_evidence_required';}]}[name];
       const parts=fs.readFileSync(result.report,'utf8').split(/^## /m),index=parts.findIndex(part=>part.startsWith(`${forge[0]}\n`));
       const body=parts[index].slice(forge[0].length+1),row=JSON.parse(body);forge[1](row);
       parts[index]=`${forge[0]}\n\n${JSON.stringify(row,null,2)}${body.match(/\s*$/)[0]}`;
@@ -826,6 +831,12 @@ test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
       assert.equal(rejected.code,scenario==='round-limit'?'qa_round_invalid':scenario==='incomplete'?'qa_execution_unknown':'qa_rerun_not_blocked_by_evidence');
       assert.deepEqual(fs.readFileSync(log),before);
       assert.equal(browserCalls,['needs-confirmation','no-browser-capability'].includes(scenario)?0:1);
+      if(name==='no-browser-capability'){
+        // Neither the durable log nor the report claims a host answer that never happened.
+        const row=JSON.parse(fs.readFileSync(result.report,'utf8').split(/^## /m).find(part=>part.startsWith('TC-002\n')).slice('TC-002'.length+1));
+        assert.equal(row.hostDeclaredBlocked,undefined);
+        assert.equal(rows().find(item=>item.phase==='case_blocked'&&item.case_id==='TC-002').host_declared_blocked,undefined);
+      }
     }else{
       const queried=await entry.handle({...operation,operation:'qa_result',packageDigest:binding.packageDigest,testRunId});
       assert.equal(queried.pendingAction,result.failed?'fix_authorization':'qa');
@@ -868,6 +879,10 @@ test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
         ['report',row=>{row.staticVerdict='CONTRADICTED';},'TC-001'],
         ['log',list=>{list.find(row=>row.phase==='superseded').recovery_rule=3;}],
         ['contract',contract=>{contract.cases=contract.cases.filter(item=>item.id!=='TC-001');}]);
+      // The host-declared BLOCKED needs both the durable log row and the report mirror.
+      if(scenario==='product-blocked')precise.push(
+        ['log',list=>{delete list.find(row=>row.phase==='case_blocked'&&row.operation_id===testRunId).host_declared_blocked;}],
+        ['report',row=>{delete row.hostDeclaredBlocked;},'TC-002']);
       if(['declared-command-exit','declared-superseded-crash'].includes(scenario))precise.push(['report',row=>{row.exitCode=null;}],
         ['report',row=>{row.exitCode=0;}],['log',list=>{list.find(row=>row.phase==='superseded').environment_failure_reason=' ';}],
         ['log',list=>{list.find(row=>row.phase==='superseded').failed_cases=['declared-test'];}],

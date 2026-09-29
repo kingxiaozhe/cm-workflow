@@ -256,7 +256,8 @@ cleanup=failed、环境摘要不一致、hostRequestTimeout 或会话自己回�
 没有声明命令（commands-unavailable）、延后用例（no-applicable-cases）、`[需确认]`（logic 报告行 `needsConfirmation`，
 即使映射命令同时没有退出码）、缺浏览器能力、源码漂移和未 complete 不适用；
 是否仍有 `[需确认]` 以该 feature 的 `test-cases.json` 为准，并与报告标记交叉核对（两者任一显示未确认即拒绝）；
-“只因命令没有退出码”由已记录的命令行推出，报告的 `commandUnavailable` 必须一致，删改报告标记不能换来重跑资格。
+“只因命令没有退出码”由已记录的命令行推出，报告的 `commandUnavailable` 必须一致；“会话自己回答 BLOCKED”以执行器当时经日志写入器
+追加的 `test_run/case_blocked` 行上的 `host_declared_blocked: true` 为准，报告的 `hostDeclaredBlocked` 只作核对。删改报告标记不能换来重跑资格。
 旧版本报告里会话回答的 BLOCKED 没有标记，仍不适用。新写入的 superseded 行带 `recovery_rule: 2`；旧版本写入、
 没有该字段的 superseded 行按旧版本原规则回放（例如 logic INSUFFICIENT_EVIDENCE 行照旧有效）。配置填错应使用下述“QA 配置修订”。
 非零退出码是产品 FAIL，不会被重新归类；确认是环境造成（例如模拟器运行时缺失时 `xcodebuild test` 退出 65）时，
