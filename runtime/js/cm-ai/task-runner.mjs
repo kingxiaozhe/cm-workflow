@@ -8,7 +8,8 @@ import path from 'node:path';
 import {createRequire} from 'node:module';
 import {verifySpecificationMaterial} from './specification-material.mjs';
 import { captureReviewBaseline, captureReviewInventory, compareReviewBaseline, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage, validChecks, readReviewSourceFiles } from './review-package.mjs';
-import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,validCallTimeout,requestFor,terminalFor,failureCode } from './effect-contract.mjs';
+import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,validCallTimeout,requestFor,terminalFor,failureCode,
+  JOURNAL_PAYLOAD_LIMIT,DEVELOP_CHECKPOINT_RESERVE } from './effect-contract.mjs';
 import { reviewResult,reviewReceipt } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
@@ -263,7 +264,7 @@ export function createTaskRunner(options) {
   // derivation in one place, next to the cache it is derived from.
   const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
     &&entry.result?.state==='blocked'
-    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing'].includes(entry.result?.code)).length;
+    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large'].includes(entry.result?.code)).length;
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
     &&entry.result?.state==='blocked'&&['completion_checks_changed','completion_package_changed'].includes(entry.result?.code)).length;
   const privateStatus=()=>json({state,code,...(reason?{reason}:{}),
@@ -444,6 +445,12 @@ export function createTaskRunner(options) {
       same(result,{outcome:'fixture_committed',intentDigest:taskCommit.intentDigest,planDigest:taskCommit.planDigest},'commit_unknown');
     }finally{revoke();}
   }
+  // Exact byte count of the payload the store validates for this record, built by
+  // the same record builder; an oversized record is measured, never written.
+  const payloadBytes=(type,fields)=>Buffer.byteLength(JSON.stringify(version===3
+    ?runnerPayloadV3(type,fields,Infinity):runnerPayload(type,fields,version,Infinity)));
+  const largestFiles=files=>files.slice().sort((a,b)=>b.size-a.size).slice(0,3)
+    .map(file=>`${file.path} ${file.size} bytes`).join(', ');
   if(restored) {
     const s=structuredClone(restored.state);
     ({state,code,attempt,sequence,reviewPackage,currentChecks,receipt,priorReview,cancelAfterCommit,workflowError,cancellationRequested}=s);
@@ -459,7 +466,14 @@ export function createTaskRunner(options) {
     for(const [index,item] of acceptedFixes.entries())if(item.association.version===2)
       validateAcceptedFix({record:item,previous:acceptedFixes.slice(0,index),baseline:base,parentPackage:reviewPackage,
         feature:taskLearning?.feature,resolveSteps:steps=>resolveSteps(steps,true)});
-  } else persist('init',{config:metadata,baseline:original,session});
+  } else {
+    // A baseline too large for its record is refused before anything is appended.
+    const bytes=store?payloadBytes('init',{config:metadata,baseline:original,session}):0;
+    if(bytes>JOURNAL_PAYLOAD_LIMIT)throw Object.assign(new Error(`limit_exceeded: the task baseline journal record would be ${bytes} bytes, `
+      +`above the journal record limit ${JOURNAL_PAYLOAD_LIMIT}; largest baseline material: `
+      +largestFiles(original.files.filter(file=>Object.hasOwn(file,'contentBase64')))),{code:'limit_exceeded'});
+    persist('init',{config:metadata,baseline:original,session});
+  }
   publication=privateStatus();
   function control(event) {
     if(poisoned)return false;
@@ -994,6 +1008,7 @@ export function createTaskRunner(options) {
       }catch{return Promise.resolve(poison());}
     }
     busy=true;if(v.kind!=='develop')code=null;
+    const packageBefore=reviewPackage;
     pending=(async()=>{
       try {await perform(v);}
       catch(error){if(state!=='cancelled'){
@@ -1006,7 +1021,23 @@ export function createTaskRunner(options) {
             ?safeReason(error):null);
       }}
       if(poisoned)return status();
-      const result=privateStatus();cache.set(v.id,{effect:v,digest:digest(v),result});
+      let result=privateStatus();cache.set(v.id,{effect:v,digest:digest(v),result});
+      // A package the journal cannot hold would poison the store after the delivery
+      // was written. Measure the exact checkpoint first; if it (plus room for the
+      // review and completion checkpoints) does not fit, the delivery is redone.
+      if(store&&v.kind==='develop'&&state==='awaiting_review'&&reviewPackage!==packageBefore){
+        const bytes=payloadBytes('effect-checkpoint',{effectId:v.id,checkpoint:frame()});
+        const budget=JOURNAL_PAYLOAD_LIMIT-DEVELOP_CHECKPOINT_RESERVE;
+        if(bytes>budget){
+          const changed=reviewPackage.changes.filter(change=>change.after).map(change=>change.after);
+          reviewPackage=packageBefore;
+          halt('blocked','develop_package_too_large',`develop_package_too_large: the review checkpoint would be ${bytes} bytes, `
+            +`above ${budget} (journal record limit ${JOURNAL_PAYLOAD_LIMIT} minus ${DEVELOP_CHECKPOINT_RESERVE} kept for the review `
+            +`and completion records); largest changed files: ${largestFiles(changed)}; shrink them or move them out of scope, `
+            +'then resume to redo this attempt');
+          result=privateStatus();cache.set(v.id,{effect:v,digest:digest(v),result});
+        }
+      }
       try{persist('effect-checkpoint',{effectId:v.id,checkpoint:frame()});publication=result;}
       catch{return poison();}
       // A block or verdict that leaves no reviewable delivery ends the run now,

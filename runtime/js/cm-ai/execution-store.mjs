@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID,createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { need,shape,id,hex,json,digest,freeze } from './effect-contract.mjs';
+import { need,shape,id,hex,json,digest,freeze,JOURNAL_PAYLOAD_LIMIT } from './effect-contract.mjs';
 import { isSupportedExecutionPlatform } from './execution-platform.mjs';
 import { MiB,STATE_LIMIT,PHYSICAL_LIMIT } from './execution-store-limits.mjs';
 
@@ -54,7 +54,7 @@ function validateState(raw,options) {
   for(const [index,r] of v.records.entries()) {
     shape(r,['version','seq','id','kind','payload','previousDigest','digest']);
     need(r.version===1,'store_version');need(r.seq===index+1 && r.previousDigest===previous,'store_corrupt');
-    id(r.id);need(!ids.has(r.id) && kinds.has(r.kind),'store_corrupt');ids.add(r.id);json(r.payload,MiB);
+    id(r.id);need(!ids.has(r.id) && kinds.has(r.kind),'store_corrupt');ids.add(r.id);json(r.payload,JOURNAL_PAYLOAD_LIMIT);
     const {digest:checksum,...data}=r;hex(checksum);need(digest(data)===checksum,'store_corrupt');previous=checksum;
   }
   const {revision,...data}=v;hex(revision);need(digest(data)===revision,'store_corrupt');return v;
@@ -216,7 +216,7 @@ export function openExecutionStore(input) {
     const append=input=>{
       need(!closed,'store_closed');need(!poisoned,'store_poisoned');
       const v=json(input,MiB+1024);shape(v,['id','kind','payload','expectedRevision']);
-      id(v.id);hex(v.expectedRevision);need(kinds.has(v.kind));json(v.payload,MiB);
+      id(v.id);hex(v.expectedRevision);need(kinds.has(v.kind));json(v.payload,JOURNAL_PAYLOAD_LIMIT);
       const current=snapshot(),existing=current.records.find(r=>r.id===v.id);
       if(existing){need(existing.kind===v.kind && digest(existing.payload)===digest(v.payload),'record_conflict');return current;}
       need(v.expectedRevision===current.revision,'revision_mismatch');

@@ -16,6 +16,7 @@ import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {applyProtectedEdits,protectedFixBridge} from '../runtime/js/cm-fix/protected-edits.mjs';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {applyDevelopEdits} from './cm-ai-drive.mjs';
+import {captureReviewBaseline} from '../runtime/js/cm-ai/review-package.mjs';
 import {main as fixHostMain} from './cm-fix-host.mjs';
 
 // Log mirrors and runtime declarations stay out of the invoking user's home.
@@ -357,6 +358,80 @@ test('#19 review material counts every AGENTS.md the snapshot carries, not only 
   assert.match(run.stderr,/2097152/);assert.match(run.stderr,/[ab]\/AGENTS\.md/);
   assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 1;\n');
   noRun(f);
+});
+// Journal record payloads are capped at 1 MiB (execution-store). A review package
+// carries base64 content, so a delivery must fit that record, not only the
+// review-package limits, or the checkpoint cannot be written after the files are.
+const line=kib=>'//'+'x'.repeat(kib*1024)+'\n';
+for(const kib of [800,1000])test(`#19 a ${kib} KiB delivery whose checkpoint exceeds the journal record limit is refused before any write`,t=>{
+  const f=fixture(t,{files:{'target.mjs':'export const value = 1;\n'}});
+  f.content('big.mjs',line(kib));f.develop({'target.mjs':'big.mjs'});
+  const run=f.drive(f.plan(),'advance');
+  assert.equal(run.status,2,run.stderr);
+  assert.match(run.stderr,/target\.mjs/);assert.match(run.stderr,/1048576/);
+  assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 1;\n');
+  noRun(f);
+});
+test('#19 a 700 KiB delivery still fits the journal and reaches review',t=>{
+  const f=fixture(t,{files:{'target.mjs':'export const value = 1;\n'}});
+  f.content('big.mjs',line(700));f.develop({'target.mjs':'big.mjs'});
+  const run=f.drive(f.plan(),'advance');
+  assert.equal(run.status,0,run.stderr);assert.equal(result(run).state,'awaiting_review',run.stdout);
+});
+test('#19 a create baseline too large for its journal record is refused by the driver before launch',t=>{
+  const f=fixture(t,{scope:['Assets/big.bin','target.mjs'],files:{'Assets/big.bin':crypto.randomBytes(800*1024)}});
+  f.content('target.mjs','export const value = 1;\n');f.develop({'target.mjs':'target.mjs'});
+  const run=f.drive(f.plan(),'advance');
+  assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/Assets\/big\.bin/);assert.match(run.stderr,/1048576/);
+  assert.equal(fs.existsSync(path.join(f.codeProject,'target.mjs')),false);noRun(f);
+});
+test('#19 the host refuses an oversized create baseline before it creates any journal',t=>{
+  const f=fixture(t,{scope:['Assets/big.bin'],files:{'Assets/big.bin':crypto.randomBytes(800*1024)}});
+  const run=spawnSync(process.execPath,[HOST,'serve','--config',f.config,'--mode','create','--host-context','drive-host-a',
+    '--allow-development'],{encoding:'utf8',input:'',timeout:60000,env:f.env});
+  assert.equal(run.status,1,run.stderr);assert.match(run.stderr,/Assets\/big\.bin/);assert.match(run.stderr,/1048576/);
+  assert.equal(fs.existsSync(path.join(f.specsDir,'.reviews','.execution',f.identity.runId)),false);
+});
+test('#19 the runner refuses an init record that only the run metadata pushes over the journal limit',t=>{
+  // Size a scope file so the baseline alone fits one record but baseline plus
+  // the runner's own metadata does not: only the exact init check can see it.
+  const probe=fixture(t,{scope:['Assets/big.bin'],files:{'Assets/big.bin':Buffer.alloc(3,0x61)}});
+  const baselineBytes=f=>Buffer.byteLength(JSON.stringify(captureReviewBaseline({root:f.codeProject,specsRoot:f.specsDir,
+    identity:f.identity,scope:['Assets/big.bin'],requirements:['requirements.md'],specification:{specsRoot:f.specsDir,feature:'1.work'}})));
+  const created=spawnSync(process.execPath,[HOST,'serve','--config',probe.config,'--mode','create','--host-context','drive-host-a',
+    '--allow-development'],{encoding:'utf8',input:'',timeout:60000,env:probe.env});
+  assert.equal(created.status,0,created.stderr);
+  const init=Buffer.byteLength(JSON.stringify(records(probe)[0].payload)),overhead=init-baselineBytes(probe);
+  assert(overhead>512,`metadata overhead ${overhead}`);
+  const target=1024*1024-Math.floor(overhead/2),base=baselineBytes(probe)-4;
+  const size=Math.floor((target-base)/4)*3;
+  const f=fixture(t,{scope:['Assets/big.bin'],files:{'Assets/big.bin':Buffer.alloc(size+3,0x61)}});
+  assert(baselineBytes(f)<=1024*1024&&baselineBytes(f)+overhead>1024*1024,`${baselineBytes(f)} + ${overhead}`);
+  const run=spawnSync(process.execPath,[HOST,'serve','--config',f.config,'--mode','create','--host-context','drive-host-a',
+    '--allow-development'],{encoding:'utf8',input:'',timeout:60000,env:f.env});
+  assert.equal(run.status,1,run.stderr);assert.match(run.stderr,/Assets\/big\.bin/);assert.match(run.stderr,/1048576/);
+  assert.equal(fs.existsSync(f.store)?records(f).length:0,0,'no journal record is written');
+});
+test('#19 a live delivery too large for its checkpoint blocks retryably and a smaller retry reaches review',t=>{
+  const f=fixture(t,{files:{'target.mjs':'export const value = 1;\n'}});
+  const big=liveSession(f,{mode:'create',act:`fs.writeFileSync(cwd+'/target.mjs','//'+'x'.repeat(800*1024)+'\\n');`});
+  assert.equal(big.status,0,big.stderr);
+  assert.equal(result(big).state,'blocked',big.stdout);assert.equal(result(big).code,'develop_package_too_large');
+  assert.equal(result(big).pendingAction,'resume');assert.match(result(big).reason,/target\.mjs/);assert.match(result(big).reason,/1048576/);
+  const small=liveSession(f,{mode:'resume',act:"fs.writeFileSync(cwd+'/target.mjs','export const value = 2;\\n');"});
+  assert.equal(small.status,0,small.stderr);assert.equal(result(small).state,'awaiting_review',small.stdout);
+  const intents=records(f).filter(row=>row.payload.type==='effect-intent').map(row=>row.payload.effect.id);
+  assert.deepEqual(intents,['develop-1','develop-1-retry-1']);
+});
+test('#19 a delivery whose develop checkpoint fits but leaves no room for review and completion is redone',t=>{
+  // About 1.046 MB: under the 1 MiB record, over the budget that keeps 64 KiB for the
+  // review and completion checkpoints, which carry the same package again.
+  const f=fixture(t,{files:{'target.mjs':'export const value = 1;\n'}});
+  const run=liveSession(f,{mode:'create',act:`fs.writeFileSync(cwd+'/target.mjs','//'+'x'.repeat(760*1024)+'\\n');`});
+  assert.equal(run.status,0,run.stderr);
+  assert.equal(result(run).state,'blocked',run.stdout);assert.equal(result(run).code,'develop_package_too_large');
+  const bytes=Number(/checkpoint would be (\d+) bytes/.exec(result(run).reason)?.[1]);
+  assert(bytes<=1024*1024&&bytes>1024*1024-64*1024,String(bytes));
 });
 test('#19 a legacy unknown/empty_changes develop checkpoint still replays as unknown',t=>{
   const f=fixture(t,{files:{'target.mjs':'export const value = 42;\n'}});

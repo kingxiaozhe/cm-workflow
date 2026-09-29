@@ -670,9 +670,10 @@ export function reviewMaterialSizes(options){
   return freeze(packageSnapshot(root,b,packagePolicy(root,b)).filter(f=>Object.hasOwn(f,'contentBase64'))
     .map(f=>({path:f.path,size:f.size})));
 }
-export function createReviewPackage(options) {
-  const v=plain(options); keys(v,['root','baseline','checks',...(Object.hasOwn(v,'handoffPath')?['handoffPath']:[])]); const b=v.baseline;
-  validBaseline(b); validChecks(v.checks);
+// Validation, specification, policy and bootstrap material a package is built
+// with, shared by the real and the projected package so both use one assembly.
+function packageContext(v){
+  const b=v.baseline;validBaseline(b); validChecks(v.checks);
   const specification=Object.hasOwn(b,'specification')?verifySpecificationMaterial(b):null;
   const root=rootPath(v.root); need(sha(root)===b.rootDigest,'invalid_baseline');
   const stable=b.ignorePolicy?.version===2;
@@ -683,7 +684,9 @@ export function createReviewPackage(options) {
   }
   const bootstrap=Object.hasOwn(b,'bootstrapRequirements')?currentBootstrapRequirements(b.bootstrapRequirements):null;
   if(bootstrap!==null)need(reviewSpecsPath(root,b.bootstrapRequirements.specsRoot)===(b.specsPath??null),'bootstrap_requirements_mismatch');
-  const files=packageSnapshot(root,b,policy);
+  return {b,root,stable,policy,specification,bootstrap};
+}
+function assemblePackage({b,stable,policy,specification,bootstrap},files,checks,handoff){
   const protectedPaths=new Set([...b.scope,...b.requirements]);
   const before=new Map((stable?comparableFiles(b.files,policy,protectedPaths):b.files).map(f=>[f.path,f]));
   const after=new Map(files.map(f=>[f.path,f]));
@@ -706,16 +709,39 @@ export function createReviewPackage(options) {
     .map(p=>({path:p,sha256:after.get(p).sha256}));
   const requirements=b.requirements.map(p=>{ need(after.has(p),'read_failed'); return after.get(p); });
   const pkg=sealed({version:1,kind:'cm-review-package',identity:b.identity,rootDigest:b.rootDigest,
-    baseIdentity:b.baselineDigest,scope:b.scope,changes,unchangedScope,requirements,checks:v.checks,
+    baseIdentity:b.baselineDigest,scope:b.scope,changes,unchangedScope,requirements,checks,
     ...(Object.hasOwn(b,'codeProjectPaths')?{codeProjectPaths:b.codeProjectPaths,
       instructions:files.filter(file=>file.path.split('/').at(-1)==='AGENTS.md')}:{}),
     ...(bootstrap===null?{}:{bootstrapRequirements:bootstrap}),
     ...(specification===null?{}:{specification}),
-    ...(Object.hasOwn(v,'handoffPath')?{handoff:readHandoffSnapshot(v.handoffPath)}:{}),
+    ...(handoff===null?{}:{handoff:handoff()}),
     ...(policy===null?{}:{ignorePolicy:stable?b.ignorePolicy:publicPolicy(policy)}),
-    artifactDigest:digest(changes),requirementsDigest:digest(requirements),checksDigest:digest(v.checks)},'packageDigest');
+    artifactDigest:digest(changes),requirementsDigest:digest(requirements),checksDigest:digest(checks)},'packageDigest');
   need(Buffer.byteLength(JSON.stringify(pkg))<=8*1024*1024,'limit_exceeded');
   return pkg;
+}
+export function createReviewPackage(options) {
+  const v=plain(options); keys(v,['root','baseline','checks',...(Object.hasOwn(v,'handoffPath')?['handoffPath']:[])]);
+  const context=packageContext(v);
+  return assemblePackage(context,packageSnapshot(context.root,context.b,context.policy),v.checks,
+    Object.hasOwn(v,'handoffPath')?()=>readHandoffSnapshot(v.handoffPath):null);
+}
+// Read-only: the package the current tree would give once the listed scope files
+// are replaced ({path,contentBase64,mode}, or contentBase64 null to delete),
+// assembled by the same code as createReviewPackage. Nothing is written. The
+// handoff is only known once it exists, so the projection carries none.
+export function projectedReviewPackage(options){
+  const v=plain(options);keys(v,['root','baseline','checks','scopeFiles']);
+  const context=packageContext(v);need(Array.isArray(v.scopeFiles),'invalid_input');
+  const files=new Map(packageSnapshot(context.root,context.b,context.policy).map(file=>[file.path,file]));
+  for(const item of v.scopeFiles){
+    keys(item,['path','contentBase64','mode']);need(context.b.scope.includes(item.path),'out_of_scope');
+    if(item.contentBase64===null){need(item.mode===null);files.delete(item.path);continue;}
+    need(typeof item.contentBase64==='string'&&Number.isInteger(item.mode)&&item.mode>=0&&item.mode<=0o7777);
+    const bytes=Buffer.from(item.contentBase64,'base64');need(bytes.toString('base64')===item.contentBase64);
+    files.set(item.path,{path:item.path,type:'file',mode:item.mode,size:bytes.length,sha256:sha(bytes),contentBase64:item.contentBase64});
+  }
+  return assemblePackage(context,[...files.values()].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0),v.checks,null);
 }
 function validPackage(p) {
   try {

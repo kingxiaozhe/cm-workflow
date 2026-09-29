@@ -4,6 +4,13 @@ export { digest };
 export const need=(ok,code='invalid_input')=>{
   if(!ok){const e=new Error(code);e.code=code;const at=raisedAt(e);if(at!==null)e.origin=at;throw e;}
 };
+// One journal record payload (execution-store). Anything a record must carry,
+// such as a review package inside a checkpoint, has to fit this, not only its own limits.
+export const JOURNAL_PAYLOAD_LIMIT=1024*1024;
+// A develop checkpoint must leave room for the later checkpoints of the same
+// attempt, which carry the same package plus the review receipt, observation,
+// findings and completion. Measured growth is about 22 KiB per round.
+export const DEVELOP_CHECKPOINT_RESERVE=64*1024;
 // Explicit host call budget, shared by live initialization and journal replay.
 // This is not the short-lived authorization grant expiry.
 export const validCallTimeout=value=>need(Number.isInteger(value)&&value>=1&&value<=3600000);

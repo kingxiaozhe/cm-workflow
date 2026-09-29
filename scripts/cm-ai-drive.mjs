@@ -43,7 +43,8 @@ import {inspectCmAiQaTaskContext} from '../runtime/js/cm-ai/cm-ai-admission.mjs'
 import {readLearningRetrospectiveContent} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
 import {inspectFixInvestigation} from '../runtime/js/cm-fix/investigation.mjs';
 import {readRunDefinition,assertCreatableRunId} from './cm-ai-run.mjs';
-import {REVIEW_MATERIAL_LIMITS,captureReviewBaseline,reviewMaterialSizes} from '../runtime/js/cm-ai/review-package.mjs';
+import {REVIEW_MATERIAL_LIMITS,captureReviewBaseline,reviewMaterialSizes,projectedReviewPackage} from '../runtime/js/cm-ai/review-package.mjs';
+import {JOURNAL_PAYLOAD_LIMIT,DEVELOP_CHECKPOINT_RESERVE} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {codeProjectPaths,resolveCodeProjects} from '../runtime/js/cm-ai/code-projects.mjs';
 import {parseHostInputLimit} from '../runtime/js/cm-ai/host-session.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
@@ -183,25 +184,51 @@ const kib=bytes=>`${bytes} 字节`;
 // Everything the runner would refuse only after the answer is written and the
 // checks have run is refused here instead, with the path and the limit. The
 // runner stays the authority; this is the same rule applied earlier.
-// Material exactly as the review package snapshot selects it (scope, requirements
-// and every AGENTS.md in the tree), read from the tree the next develop starts
-// from. A new run uses the baseline the host is about to capture; an existing run
-// uses its own journaled baseline. Null when the host will report the problem itself.
-export function currentReviewMaterial({definition,codeProject=definition.codeProject,baseline=null}){
+// What the next develop starts from, read the way the runner will read it: the
+// baseline (the one the host is about to capture for a new run, or the run's own
+// journaled one), the material the review package snapshot selects from the
+// current tree (scope, requirements and every AGENTS.md), and the journal bytes
+// the rest of the develop checkpoint already takes. Null when the host itself
+// will report the problem.
+// Bytes of a develop checkpoint that the driver cannot know before the delivery
+// runs: the new developer call and cache entry, the handoff record and the check
+// evidence (measured together at about 5 KiB). The package itself is exact.
+const DELIVERY_ALLOWANCE=8*1024;
+export function journalRestBytes(records){
+  const last=records.findLast(row=>row.payload.type==='effect-checkpoint');
+  if(!last)return 0;
+  return Buffer.byteLength(JSON.stringify(last.payload))-Buffer.byteLength(JSON.stringify(last.payload.checkpoint.reviewPackage??null));
+}
+export function developPreview({definition,codeProject=definition.codeProject,journal=null}){
+  let baseline=journal?.baseline??null;
   try{
-    const base=baseline??captureReviewBaseline({root:codeProject,specsRoot:definition.specsDir,identity:definition.identity,
-      scope:definition.scope,requirements:definition.requirements,specification:{specsRoot:definition.specsDir,feature:definition.feature},
-      ...(definition.codeProjects?{codeProjectPaths:codeProjectPaths(codeProject,resolveCodeProjects(codeProject,definition.codeProjects))}:{})});
-    return reviewMaterialSizes({root:codeProject,baseline:base});
+    if(baseline===null){
+      baseline=captureReviewBaseline({root:codeProject,specsRoot:definition.specsDir,identity:definition.identity,
+        scope:definition.scope,requirements:definition.requirements,specification:{specsRoot:definition.specsDir,feature:definition.feature},
+        ...(definition.codeProjects?{codeProjectPaths:codeProjectPaths(codeProject,resolveCodeProjects(codeProject,definition.codeProjects))}:{})});
+      // The new run journals this baseline as one record, next to its own metadata.
+      const bytes=Buffer.byteLength(JSON.stringify(baseline));
+      if(bytes+DELIVERY_ALLOWANCE>JOURNAL_PAYLOAD_LIMIT){
+        const largest=baseline.files.filter(file=>Object.hasOwn(file,'contentBase64')).sort((a,b)=>b.size-a.size).slice(0,3)
+          .map(file=>`${file.path} ${kib(file.size)}`).join('，');
+        stop(2,`任务基线的运行存档记录约 ${kib(bytes)}，超过单条记录上限 ${JOURNAL_PAYLOAD_LIMIT}（含运行元数据）；最大的基线材料是 ${largest}；请把大文件移出 scope/requirements 后再建运行`);
+      }
+    }
+    return {baseline,material:reviewMaterialSizes({root:codeProject,baseline}),restBytes:journal?.restBytes??0};
   }catch(error){
     if(error.code==='limit_exceeded')stop(2,`交付前的审查材料已超出审查包上限：${error.message}`);
     return null;
   }
 }
+// Stand-in results for the declared checks: the package carries their ids and
+// commands, and their real evidence is only known once they run.
+export const plannedCheckResults=commands=>(Array.isArray(commands)&&commands.length?commands:[{id:'check',command:['check']}])
+  .map(({id,command})=>({id,command,outcome:'passed',exitCode:0,evidence:'host check exited 0'}));
 export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,scope,requirements,
-  baseline='disk',diskChecks=true,protectedMode=false,inputLimit=65536,material=null}){
+  baseline='disk',diskChecks=true,protectedMode=false,inputLimit=65536,preview=null,checks=plannedCheckResults(null)}){
   const {file:FILE,total:TOTAL,count:COUNT}=REVIEW_MATERIAL_LIMITS;
-  material=diskChecks&&material?new Map(material.map(item=>[item.path,item.size])):null;
+  let material=diskChecks&&preview?new Map(preview.material.map(item=>[item.path,item.size])):null;
+  const projected=new Map();
   let previous=diskChecks?new Map(scope.map(target=>[target,diskScopeEntry(codeProject,target)])):null;
   const base=!diskChecks?null:baseline==='disk'?previous:baseline;
   for(const {file,value} of deliveries){
@@ -258,6 +285,31 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
       if(after.size>COUNT)stop(2,`${label}: 交付后审查材料共 ${after.size} 个文件，超过审查包上限 ${COUNT}`);
       material=after;
     }
+    // The develop checkpoint journals the review package as one record. Build the
+    // package this delivery would produce with the runner's own assembly code and
+    // check it, plus the rest of the checkpoint, against the same budget.
+    const projectable=material&&entries.every(([target])=>!next.get(target)?.unsupported);
+    if(projectable){
+      for(const [target] of entries){
+        const after=next.get(target);
+        projected.set(target,after===null?{path:target,contentBase64:null,mode:null}
+          :{path:target,contentBase64:fs.readFileSync(after.source).toString('base64'),mode:after.mode});
+      }
+      let pkg=null;
+      try{pkg=projectedReviewPackage({root:codeProject,baseline:preview.baseline,checks,scopeFiles:[...projected.values()]});}
+      catch(error){if(!['empty_changes','out_of_scope','read_failed'].includes(error.code))throw error;}
+      if(pkg){
+        const packageBytes=Buffer.byteLength(JSON.stringify(pkg)),learning=Buffer.byteLength(JSON.stringify(value.value??null));
+        const bytes=packageBytes+preview.restBytes+DELIVERY_ALLOWANCE+2*learning;
+        const budget=JOURNAL_PAYLOAD_LIMIT-DEVELOP_CHECKPOINT_RESERVE;
+        if(bytes>budget){
+          const largest=pkg.changes.filter(change=>change.after).map(change=>change.after).sort((a,b)=>b.size-a.size).slice(0,3)
+            .map(file=>`${file.path} ${kib(file.size)}`).join('，');
+          stop(2,`${label}: 交付后的开发检查点约 ${kib(bytes)}（其中审查包 ${kib(packageBytes)}），超过运行存档单条记录上限 ${JOURNAL_PAYLOAD_LIMIT} `
+            +`减去为审查与完成记录预留的 ${DEVELOP_CHECKPOINT_RESERVE}（即 ${budget}）；最大的改动文件是 ${largest}；请缩小这些文件或移出 scope`);
+        }
+      }
+    }
     // A Learning writeback can still change AGENTS.md, so only a delivery that
     // cannot write it is known to be empty before the runner sees it.
     const lessonFree=value.value?.outcome==='implemented'&&value.value.retrospective?.status==='no_new_lesson';
@@ -284,7 +336,8 @@ export function readRunJournal(definition){
   const snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,identity:{
     repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
   const first=snapshot.records[0];
-  return {history:readRunnerHistory(snapshot.records,first.payload.config,3),baseline:first.payload.baseline};
+  return {history:readRunnerHistory(snapshot.records,first.payload.config,3),baseline:first.payload.baseline,
+    restBytes:journalRestBytes(snapshot.records)};
 }
 function reachableDevelopAttempts({plan,operation,journal,permissions}){
   if(plan.mode==='create'){
@@ -403,7 +456,7 @@ function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
     process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks, checkTimeoutMs。\nchecks 每项为 {id,command,timeoutMs?}；checkTimeoutMs 与每项 timeoutMs 为 1..3600000 整数，默认 900000 ms（15 分钟）。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务（纯规范 scope、单代码根、非 --protected-config）读 answers/init-generate.json（{status:"generated",documents:[{path,contentFile}]}，覆盖全部 targets）与 answers/init-verify.json（commands 为驾驶员实跑的草稿命令 {id,command,timeoutMs?}，可选 commandsNotRun；checks 只含 globs/file_references/constraint_preservation/rule_applicability；constraintChanges:[]；application/retrospective 沿原 Learning）；第 1 轮也可用 *-a1.json，第 2 轮只读 init-generate-a2.json 与 init-verify-a2.json，且须先 decision 读取首轮 findings，不能带 --allow-review-attempt 跨轮。commands 在宿主接受启动后、发送操作前由驾驶员实跑（须先带 --allow-bootstrap-write 等宿主授权；受保护模式在 specs 沙箱内），失败或改动了预检核对的文件即退出 2 且不发送操作（create 时改用 resume 重跑）；结果只来自实跑，答案文件不能提供。\n'
       +'develop.json.edits 每项是 scope 路径到下列之一："内容文件"（写入；已有文件保留权限，新文件 0644）、{"file":"内容文件","mode":"0755"|"0644"}、{"mode":"0755"|"0644"}（只改已有文件权限）、{"delete":true}（删除已有文件）。改名 = 删旧路径 + 写新路径，两者都要在 scope 内；同时列在 requirements 里的路径不能删除。\n'
-      +'启动前拒绝：单个 scope 文件超过 1 MiB、审查材料（按审查包快照：scope、requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或超过 256 个文件、交付后与任务基线完全相同（edits 为空或内容和权限都没变）。受保护模式（--protected-conversation-config）只收合法 UTF-8 文本，应答大于 --input-limit（默认 65536）时提示应加的值。\n'
+      +'启动前拒绝：单个 scope 文件超过 1 MiB、审查材料（按审查包快照：scope、requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或超过 256 个文件、交付后与任务基线完全相同（edits 为空或内容和权限都没变）、开发检查点装不进运行存档单条 1 MiB 记录（预留 64 KiB 给审查与完成记录）或任务基线装不进一条记录。受保护模式（--protected-conversation-config）只收合法 UTF-8 文本，应答大于 --input-limit（默认 65536）时提示应加的值。\n'
       +'runId 需 8–128 个字符（运行日志要求），create 前检查。resume 时按存档里的当前轮次发送 identity，第 2 轮的 decision/complete/qa 等无需手改。\n');
     process.exit(0);
   }
@@ -530,8 +583,8 @@ function load(){
   if(deliveries.length)preflightDevelopDeliveries({deliveries,answersRoot:answers,codeProject:definition.codeProject,
     scope:definition.scope,requirements:definition.requirements,
     baseline:plan.mode==='create'?'disk':baselineScope(journal.baseline,definition.scope),
-    protectedMode,inputLimit:inputLimitFrom(permissions),
-    material:currentReviewMaterial({definition,baseline:plan.mode==='create'?null:journal.baseline})});
+    protectedMode,inputLimit:inputLimitFrom(permissions),checks:plannedCheckResults(protectedMode?null:plan.checks),
+    preview:developPreview({definition,journal:plan.mode==='create'?null:journal})});
   const unique=[...new Set(asks.filter(kind=>FILES[kind]&&kind!=='develop'))];
   const answer=preflightAnswers(unique,kind=>{
     const file=answerPath(answers??'',FILES[kind]);

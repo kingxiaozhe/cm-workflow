@@ -24,7 +24,7 @@ import {validateRunDefinition} from './cm-ai-run.mjs';
 import {createCmAiBatch} from './cm-ai-batch-run.mjs';
 import {readConversationReviewConfiguration,readConversationProtection} from './cm-ai-host.mjs';
 import {validateCmAiAnswer,developFilename,preflightDevelopDeliveries,baselineScope,inputLimitFrom,
-  applyDevelopEdits,protectedDevelopEdits,currentReviewMaterial} from './cm-ai-drive.mjs';
+  applyDevelopEdits,protectedDevelopEdits,developPreview,plannedCheckResults,journalRestBytes} from './cm-ai-drive.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
@@ -205,7 +205,8 @@ function preflight(){
           const snapshot=readExecutionSnapshot({specsRoot:batch.specsDir,identity:{repositoryId:batch.repositoryId,runId:existing[0]}});
           const history=readRunnerHistory(snapshot.records,snapshot.records[0].payload.config,3);
           attempts=batchDevelopAttempts(history.state,key,permissions);current=history.state.attempt;
-          journal={baseline:snapshot.records[0].payload.baseline,generation:existing[1].generation};
+          journal={baseline:snapshot.records[0].payload.baseline,generation:existing[1].generation,
+            restBytes:journalRestBytes(snapshot.records)};
         }catch(error){stop(2,`任务 ${key} 无法只读检查恢复存档: ${error.code??error.message}`);}
       }
       // A task with no run yet (a new batch, or a later task on resume) starts at
@@ -237,7 +238,8 @@ function preflight(){
         preflightDevelopDeliveries({deliveries,answersRoot:taskRoot,codeProject,
           scope:definition.scope,requirements:definition.requirements,diskChecks:known,
           baseline:journal?baselineScope(journal.baseline,definition.scope):'disk',protectedMode,inputLimit,
-          material:known?currentReviewMaterial({definition,codeProject,baseline:journal?.baseline??null}):null});
+          checks:plannedCheckResults(protectedMode?null:plan.checks?.[key]),
+          preview:known?developPreview({definition,codeProject,journal}):null});
       }
     }
     developAnswers.set(key,perAttempt);
