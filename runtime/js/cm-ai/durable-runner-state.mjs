@@ -23,7 +23,7 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large'].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed'].includes(code)
   ||kind==='review'&&state==='pending_review'&&REVIEW_RETRY_CODES.includes(code)
   ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed'].includes(code)
     ||code==='review_package_changed'&&reviewVerdict==='approved')
@@ -212,7 +212,8 @@ function callRequest(call,adapter,contextId,role,payload,identity,session,index)
     shape(call.failureResult,['code','reason',...(Object.hasOwn(call.failureResult,'retryable')?['retryable']:[])]);
     if(Object.hasOwn(call.failureResult,'retryable'))need(call.failureResult.retryable===true
       &&call.failureResult.code==='invalid_result'&&adapter.requestedModel==='current-session','runner_call');
-    need(['invalid_result','protected_edit_stale'].includes(call.failureResult.code),'runner_call');id(call.failureResult.reason);
+    need(['invalid_result','protected_edit_stale','bootstrap_verification_failed'].includes(call.failureResult.code),'runner_call');id(call.failureResult.reason);
+    if(call.failureResult.code==='bootstrap_verification_failed')need(call.failureResult.reason===call.failureResult.code,'runner_call');
     same(call.resultDigest,digest(call.failureResult));
   }else if(['failed','unavailable','auth_required','permission_denied'].includes(call.terminal))same(call.resultDigest,digest(null));
   const request=requestFor({invocationId:call.invocationId,identity,role,provider:adapter.provider,
@@ -368,7 +369,14 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
       ...(Object.hasOwn(original,'specification')?{specification:original.specification}:{}),
       ...(Object.hasOwn(effect,'learningInput')?{learningInput:effect.learningInput}:{})
     },identity,session,before.calls.length+1);
-    if(Object.hasOwn(config,'taskLearning')){
+    // A live-session init_verify that did not pass: the host wrote nothing, and
+    // the develop keeps exactly the Learning/bootstrap evidence it started from.
+    const verificationFailed=added[0]?.terminal==='failed'&&added[0].failureResult?.code==='bootstrap_verification_failed';
+    if(verificationFailed){
+      need(config.bootstrap?.mode==='instructions'&&Object.hasOwn(config,'taskLearning')
+        &&['blocked','cancelled'].includes(s.state),'runner_learning');
+      same(s.learningResult,before.learningResult);
+    }else if(Object.hasOwn(config,'taskLearning')){
       if(s.learningResult!==null){
         const hasApplication=Object.hasOwn(s.learningResult,'application');
         const hasBootstrap=Object.hasOwn(s.learningResult,'bootstrap');
@@ -434,7 +442,8 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     }
     if(added[0] && ['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal)) {
       expectedState='blocked';expectedCode=invalidDeveloperCall(added[0])
-        ?'developer_result_invalid':added[0].failureResult?.code==='protected_edit_stale'?'protected_edit_stale':added[0].terminal;
+        ?'developer_result_invalid':['protected_edit_stale','bootstrap_verification_failed'].includes(added[0].failureResult?.code)
+          ?added[0].failureResult.code:added[0].terminal;
     }
   } else if(effect.kind==='review'&&version===3) {
     same(s.reviewPackage,before.reviewPackage);same(s.currentChecks,before.currentChecks);

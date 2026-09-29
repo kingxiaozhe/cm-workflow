@@ -193,7 +193,10 @@ export function terminalFor(raw,request) {
     // Reviewer and unknown terminal contracts remain unchanged.
     need(request.role==='developer'&&v.accepted===true);
     shape(v.result,['code','reason',...(Object.hasOwn(v.result,'retryable')?['retryable']:[])]);
-    need(['invalid_result','protected_edit_stale'].includes(v.result.code));id(v.result.reason);
+    // bootstrap_verification_failed is produced only by the host bootstrap
+    // capability (never a provider adapter); its reason is the code itself.
+    need(['invalid_result','protected_edit_stale','bootstrap_verification_failed'].includes(v.result.code));id(v.result.reason);
+    if(v.result.code==='bootstrap_verification_failed')need(v.result.reason===v.result.code);
     if(Object.hasOwn(v.result,'retryable'))need(v.result.retryable===true
       &&v.result.code==='invalid_result'&&request.requestedModel==='current-session');
   }

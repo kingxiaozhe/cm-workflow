@@ -14,6 +14,7 @@ import {createDeveloperRun,validateDeveloperScope} from '../runtime/js/cm-ai/dev
 import {inspectCmAiAdmission} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {inspectCmAiContextRefresh,inspectCmAiTaskLearningInput} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {readRunnerHistory,runnerStatus,developBudgetExhausted} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 const FIXTURE_TIMEOUT_MS=Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000);
@@ -95,9 +96,9 @@ function open(f,taskId,mode='create',overrides={}){
     check:createHostCheck({cwd:f.codeProject,timeoutMs:1000,commands:[{id:'syntax',command:[process.execPath,'--check','app.mjs']}]}),
     taskCompletion:{reviewsDir:path.join(f.specsDir,'.reviews'),handoffs:[1,2].map(a=>path.join(f.specsDir,'.reviews',`bootstrap-${taskId}-a${a}-handoff.json`))},
     persistence:{store,mode,version:3}});
-  return {runner,store,definition:d,close:()=>store.close(),effect:kind=>{
+  return {runner,store,definition:d,close:()=>store.close(),effect:(kind,suffix='')=>{
     const identity=runner.status().identity;
-    return runner.executeEffect({version:1,id:kind+'-'+identity.attempt,kind,identity,...(kind==='develop'?{
+    return runner.executeEffect({version:1,id:kind+'-'+identity.attempt+suffix,kind,identity,...(kind==='develop'?{
       learningInput:inspectCmAiTaskLearningInput({specsDir:f.specsDir,codeProject:f.codeProject,feature:'0.bootstrap',identity,
         applicableAgentFiles:[]},{admission:runner.inspectBootstrapAdmission()})}:{})});
   }};
@@ -145,7 +146,9 @@ function runCli(f,config,mode,operation){
           if(row.type==='host_ready')sessionId=row.sessionId;
           if(row.type==='host_request'){
             calls.push(row.kind);let response;
-            if(['init_generate','init_verify'].includes(row.kind)){assert.equal(mode,'create');response=reply(f,row.kind,row.payload);}
+            if(['init_generate','init_verify'].includes(row.kind)){assert(mode==='create'||f.resumeInit);
+              response=reply(f,row.kind,row.payload);
+              if(row.kind==='init_verify'&&f.failVerify>0){f.failVerify--;response.checks.commands={status:'failed',evidence:'npm test exited 1'};}}
             else if(row.kind==='qa_assess')response={scores:{scope:5,risk:5,accumulation:5,boundary:5},
               changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}};
             else if(row.kind==='documentation_inspect'){
@@ -213,7 +216,7 @@ test('bootstrap denies missing authority before intent and a newly authorized la
   assert.equal((await run.effect('complete')).state,'fixture_completed');run.close();
 });
 
-for(const scenario of ['existing-instructions','failed-verification','target-drift'])
+for(const scenario of ['existing-instructions','target-drift'])
 test('rules task preserves files and original unknown outcome: '+scenario,{timeout:5000},async t=>{
   const f=fixture(t),tasks=path.join(f.specsDir,'0.bootstrap','tasks.md');
   // A previously accepted scaffold is test setup, not a second execution path.
@@ -231,8 +234,95 @@ test('rules task preserves files and original unknown outcome: '+scenario,{timeo
   }});
   const result=await run.effect('develop');assert.equal(result.state,'unknown');run.close();
   assert.equal(fs.existsSync(path.join(f.codeProject,'.claude')),false);
-  if(scenario==='failed-verification')assert.equal(fs.existsSync(agents),false);
-  else assert.match(fs.readFileSync(agents,'utf8'),/user|User/);
+  assert.match(fs.readFileSync(agents,'utf8'),/user|User/);
   const before=[...f.calls],resumed=open(f,'T-002','resume');
   assert.equal(resumed.runner.status().state,'unknown');resumed.close();assert.deepEqual(f.calls,before);
+});
+
+const ruleHashes=f=>Object.fromEntries(cmInitRuleTargets(selection).map(file=>{
+  const target=path.join(f.codeProject,file);return [file,fs.existsSync(target)?digest(fs.readFileSync(target,'utf8')):null];}));
+const journal=f=>JSON.parse(fs.readFileSync(path.join(f.specsDir,'.reviews','.execution','run-T-002','state.json'),'utf8')).records;
+function rechain(records){
+  let previousDigest=null;
+  for(const row of records){row.previousDigest=previousDigest;const {digest:old,...body}=row;row.digest=digest(body);previousDigest=row.digest;}
+  return records;
+}
+
+test('round-2 live init_verify that fails blocks retryably and the same attempt redoes it against its recorded rules',{timeout:FIXTURE_TIMEOUT_MS},async t=>{
+  const f=fixture(t),tasks=path.join(f.specsDir,'0.bootstrap','tasks.md');
+  fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('[ ] T-001','[x] T-001'));
+  fs.writeFileSync(path.join(f.codeProject,'app.mjs'),'export const fixture = true;\n');
+  f.requestRevision=true;f.lesson=true;
+  let failNext=false;const reply2=(kind,payload)=>{
+    const response=reply(f,kind,payload);
+    if(kind==='init_verify'&&failNext){failNext=false;response.checks.commands={status:'failed',evidence:'npm test exited 1'};
+      response.checks.globs={status:'verified',evidence:'  '};}
+    return response;
+  };
+  let run=open(f,'T-002','create',{reply:reply2});
+  assert.equal((await run.effect('develop')).state,'awaiting_review');
+  assert.equal((await run.effect('review')).state,'changes_requested');
+  const recorded=ruleHashes(f);assert(Object.values(recorded).every(Boolean));
+  failNext=true;
+  const blocked=await run.effect('develop');
+  assert.equal(blocked.state,'blocked');assert.equal(blocked.code,'bootstrap_verification_failed');
+  const status=run.runner.status();
+  assert.equal(status.identity.attempt,2);assert.equal(status.state,'blocked');
+  assert.match(status.reason,/^bootstrap_verification_failed: .*commands: failed; npm test exited 1.*globs: verified; \(no evidence\)/);
+  assert.equal(status.calls.at(-1).failureResult.code,'bootstrap_verification_failed');
+  // Nothing was written and the round-1 evidence the retry binds to is kept.
+  assert.deepEqual(ruleHashes(f),recorded);assert.equal(f.reviews.length,1);run.close();
+  // A resumed process replays the blocked journal and redoes the same attempt.
+  run=open(f,'T-002','resume',{reply:reply2});
+  assert.equal(run.runner.status().code,'bootstrap_verification_failed');
+  const calls=f.calls.length,retried=await run.effect('develop','-retry-1');
+  assert.equal(retried.state,'awaiting_review',JSON.stringify(run.runner.status()));
+  assert.deepEqual(f.calls.slice(calls),['init_generate','init_verify']);
+  assert.equal(run.runner.status().identity.attempt,2);
+  assert.equal((await run.effect('review')).state,'approved');
+  assert.equal((await run.effect('complete')).state,'fixture_completed');run.close();
+  assert.equal(f.reviews.length,2);assert.match(fs.readFileSync(path.join(f.codeProject,'.claude','rules','frontend.md'),'utf8'),/Revised for the review findings/);
+  const replay=open(f,'T-002','resume');assert.equal(replay.runner.status().state,'fixture_completed');replay.close();
+
+  // Replay accepts the blocked checkpoint strictly; forged or legacy shapes are judged as before.
+  const rows=journal(f),config=rows[0].payload.config;
+  const index=rows.findIndex(row=>row.payload.checkpoint?.code==='bootstrap_verification_failed');assert(index>0);
+  const blockedState=readRunnerHistory(rechain(structuredClone(rows.slice(0,index+1))),config,3).state;
+  assert.equal(blockedState.code,'bootstrap_verification_failed');
+  // The retry is admitted through the shared develop budget guard, like every other retryable block.
+  assert.equal(developBudgetExhausted(blockedState),false);
+  const spent=structuredClone(blockedState.calls.at(-1));
+  assert.equal(developBudgetExhausted({...blockedState,calls:[...blockedState.calls,spent,spent]}),true);
+  const forged=(change,expected)=>{const records=structuredClone(rows.slice(0,index+1)),checkpoint=records.at(-1).payload.checkpoint;
+    change(checkpoint);checkpoint.cache.at(-1).result=runnerStatus(checkpoint,config);
+    const replayed=()=>readRunnerHistory(rechain(records),config,3);
+    if(expected===null)return replayed();assert.throws(replayed,{code:expected});};
+  forged(checkpoint=>{checkpoint.learningResult=null;},'runner_history_mismatch');
+  forged(checkpoint=>{checkpoint.code='develop_checks_not_passed';},'runner_transition');
+  forged(checkpoint=>{checkpoint.state='awaiting_review';checkpoint.code=null;checkpoint.reason=null;},'runner_learning');
+  // The shape an older version wrote for the same answer: an unknown developer call.
+  const legacy=forged(checkpoint=>{const call=checkpoint.calls.at(-1);delete call.failureResult;call.terminal='unknown';call.resultDigest=null;
+    checkpoint.state='unknown';checkpoint.code='bootstrap_verification_blocked';checkpoint.reason=null;checkpoint.learningResult=null;},null);
+  assert.equal(legacy.state.state,'unknown');
+});
+
+test('current-session host: round-1 init_verify that fails blocks and a resumed advance redoes it in the same run',{timeout:FIXTURE_TIMEOUT_MS},async t=>{
+  const f=fixture(t);
+  const run=open(f,'T-001');await run.effect('develop');await run.effect('review');await run.effect('complete');run.close();
+  const cli=prepareCli(f);f.failVerify=1;
+  const blocked=await runCli(f,cli,'create','advance');
+  assert.equal(blocked.code,0,blocked.stderr);
+  assert.equal(blocked.result.state,'blocked',JSON.stringify(blocked.result));assert.equal(blocked.result.code,'bootstrap_verification_failed');
+  assert.equal(blocked.result.pendingAction,'resume');
+  assert.deepEqual(f.calls,['init_generate','init_verify']);
+  assert.equal(fs.existsSync(path.join(f.codeProject,'AGENTS.md')),false);assert.equal(fs.existsSync(path.join(f.codeProject,'.claude')),false);
+  f.resumeInit=true;
+  const completed=await runCli(f,cli,'resume','advance');
+  assert.equal(completed.code,0,completed.stderr);assert.equal(completed.result.state,'run_done',JSON.stringify(completed.result));
+  assert.deepEqual(f.calls,['init_generate','init_verify','init_generate','init_verify']);
+  // One run: the blocked develop and the redone one share its journal.
+  assert.deepEqual(fs.readdirSync(path.join(f.specsDir,'.reviews','.execution')).filter(name=>name.startsWith('run-')),['run-T-001','run-T-002']);
+  assert(journal(f).some(row=>row.payload.checkpoint?.code==='bootstrap_verification_failed'));
+  const status=await runCli(f,cli,'resume','status');assert.equal(status.code,0,status.stderr);
+  assert.equal(status.result.state,'fixture_completed');assert.deepEqual(status.calls,[]);
 });
