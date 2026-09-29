@@ -2,7 +2,8 @@
 import {inspectCmAiAdmission,matchesCmAiTaskSelection} from './cm-ai-admission.mjs';
 import {inspectCmAiContextRefresh,inspectCmAiTaskLearningInput} from './cm-ai-context-refresh.mjs';
 import {findCmAiQaDecision,inspectCmAiQaDecision,inspectCmAiQaResult,recordCmAiQaDecision,
-  latestCmAiQaRun,recordCmAiQaRun,inspectCmAiQaRecovery,inspectCmAiQaConfigurationRecovery} from './cm-ai-qa-log.mjs';
+  latestCmAiQaRun,recordCmAiQaRun,inspectCmAiQaRecovery,inspectCmAiQaConfigurationRecovery,timedOutQaDecision,
+  replacesTimedOutQaDecision,validEnvironmentFailureReason} from './cm-ai-qa-log.mjs';
 import {recordCmAiRunDone} from './cm-ai-run-finalizer.mjs';
 import {REVIEWED_HANDOFF_HINT} from './host-handoff.mjs';
 import {readHostQaFixHandoff} from './host-qa-fix.mjs';
@@ -151,6 +152,7 @@ export function createCmAiConversationEntry(options) {
   if(options&&Object.hasOwn(options,'qaExecutor'))optionKeys.push('qaExecutor');
   if(options&&Object.hasOwn(options,'rerunUnknownQa'))optionKeys.push('rerunUnknownQa');
   if(options&&Object.hasOwn(options,'rerunBlockedQa'))optionKeys.push('rerunBlockedQa');
+  if(options&&Object.hasOwn(options,'qaEnvironmentFailure'))optionKeys.push('qaEnvironmentFailure');
   if(options&&Object.hasOwn(options,'qaLogHome'))optionKeys.push('qaLogHome');
   if(options&&Object.hasOwn(options,'applicableAgentFiles'))optionKeys.push('applicableAgentFiles');
   if(options&&Object.hasOwn(options,'documentationResult'))optionKeys.push('documentationResult');
@@ -214,6 +216,10 @@ export function createCmAiConversationEntry(options) {
   let rerunUnknownQa=options.rerunUnknownQa??false;need(typeof rerunUnknownQa==='boolean');
   let rerunBlockedQa=options.rerunBlockedQa??false;need(typeof rerunBlockedQa==='boolean');
   need(!(rerunUnknownQa&&rerunBlockedQa),'qa_recovery_authorization_required');
+  // Operator declaration that the latest FAIL came from the environment; only
+  // meaningful with the one-shot rerun authorization and consumed with it.
+  const qaEnvironmentFailure=options.qaEnvironmentFailure??null;
+  need(qaEnvironmentFailure===null||rerunBlockedQa&&validEnvironmentFailureReason(qaEnvironmentFailure),'qa_recovery_authorization_required');
   if(Object.hasOwn(options,'qaExecutor')){
     shape(options.qaExecutor,['mode','caseCount','timeoutMs','run',
       ...(Object.hasOwn(options.qaExecutor,'configuration')?['configuration']:[]),
@@ -341,13 +347,20 @@ export function createCmAiConversationEntry(options) {
               previous=null;
             }
           }
+          // The authorization's durable effect is a replacement of a timed-out
+          // decision with no QA run under it yet (just written, or written
+          // before an interruption): run the ordinary first round, not a rerun.
+          if(rerunBlockedQa&&previous===null&&replacesTimedOutQaDecision(binding))rerunBlockedQa=false;
           if(rerunBlockedQa){
             need(previous!==null,'qa_rerun_not_blocked_by_evidence');
-            recovery=inspectCmAiQaRecovery(binding,{blocked:true,environment:qaExecutor.configuration?.environment});
+            recovery=inspectCmAiQaRecovery(binding,{blocked:true,environment:qaExecutor.configuration?.environment,
+              environmentFailure:qaEnvironmentFailure});
           }
           let testRunId=previous?.testRunId;
           const accepted=runner.status().acceptedQaFix;
           const repaired=previous?.status==='failed'&&accepted?.testRunId===previous.testRunId;
+          // An accepted repair already owns the next round of that FAIL.
+          need(!(rerunBlockedQa&&repaired),'qa_rerun_not_blocked_by_evidence');
           if(previous===null||repaired||rerunBlockedQa){
             // Later rounds require an accepted completed repair or explicit
             // evidence recovery/configuration revision. Unknown execution stops.
@@ -362,7 +375,8 @@ export function createCmAiConversationEntry(options) {
             if(recovery&&!configurationRecovery){
               recordCmAiQaRun({...logInput,testRunId:recovery.testRunId,mode:recovery.mode,
                 caseCount:recovery.caseCount,qaRound:recovery.qaRound,phase:rerunBlockedQa?'superseded':'abandoned',
-                ...(rerunBlockedQa?{expectedEnvironment:qaExecutor.configuration?.environment??null}:{})});
+                ...(rerunBlockedQa?{expectedEnvironment:qaExecutor.configuration?.environment??null}:{}),
+                ...(rerunBlockedQa&&qaEnvironmentFailure!==null?{environmentFailure:qaEnvironmentFailure}:{})});
               rerunUnknownQa=false;rerunBlockedQa=false;
             }
             recordCmAiQaRun({...logInput,phase:'start',
@@ -501,14 +515,19 @@ export function createCmAiConversationEntry(options) {
       need(status.packageDigest===operation.packageDigest,'stale_qa');
       const correction=correctionSummary(operation,status);if(correction)return correction;
       need(status.state==='fixture_completed','qa_not_ready');
-      let decision=qaDecision;
+      let decision=qaDecision,previousDecisionId=null;
       if(qaProvider!==null){
         need(pendingQa===null,'qa_decision_pending');
         const binding={specsDir:options.specsDir,feature:options.feature,identity,packageDigest:operation.packageDigest};
         decision=findCmAiQaDecision(binding);
+        // An older host recorded a missed qa_assess window as this durable
+        // block. Only the explicit one-shot rerun authorization asks again; the
+        // new decision is appended with a link, the old row stays history.
+        if(rerunBlockedQa&&timedOutQaDecision(decision)){previousDecisionId=decision.decisionId;decision=null;}
         // A bound historical decision is evidence, not a fresh proposal. Keep
         // the existing downstream compatibility path; do not rewrite its log.
-        if(decision!==null)return summary(operation,{...status,code:`qa_${decision.status}`},'recorded');
+        if(decision!==null)return summary(operation,{...status,code:`qa_${decision.status}`,
+          ...(decision.status==='blocked'?{reason:decision.reason}:{})},'recorded');
         if(decision===null){
           const controller=new AbortController();pendingQa=controller;
           let timer,timedOut=false;
@@ -516,13 +535,14 @@ export function createCmAiConversationEntry(options) {
             const interrupted=new Promise((_,reject)=>{
               controller.signal.addEventListener('abort',()=>reject(Object.assign(new Error('QA decision interrupted'),
                 {code:timedOut?'qa_decision_timeout':'cancelled'})),{once:true});
-              // Allow the request watchdog to publish its BLOCKED decision at
-              // the same configured deadline before the outer cancellation.
+              // The request watchdog normally settles first with the same
+              // retryable qa_decision_timeout; this is the outer backstop.
               timer=setTimeout(()=>{timedOut=true;controller.abort();},qaTimeout+1000);
             });
             decision=json(await Promise.race([
               Promise.resolve().then(()=>{need(!controller.signal.aborted,'cancelled');
-                return decideQa(freeze({...binding,codeProject:options.codeProject}),controller.signal);}),interrupted]));
+                return decideQa(freeze({...binding,codeProject:options.codeProject,
+                  ...(previousDecisionId===null?{}:{previousDecisionId})}),controller.signal);}),interrupted]));
             need(!controller.signal.aborted,'cancelled');
             const current=boundStatus(runner.status(),identity);
             need(current.state==='fixture_completed'&&current.code==null&&current.packageDigest===operation.packageDigest,'stale_qa');
@@ -543,6 +563,7 @@ export function createCmAiConversationEntry(options) {
       const input={specsDir:options.specsDir,codeProject:options.codeProject,feature:options.feature,identity,
         packageDigest:operation.packageDigest,decision};
       if(Object.hasOwn(options,'qaLogHome'))input.logHome=options.qaLogHome;
+      if(previousDecisionId!==null)input.previousDecisionId=previousDecisionId;
       recordCmAiQaDecision(input);
       return summary(operation,{...status,code:`qa_${decision.status}`},'recorded');
     }

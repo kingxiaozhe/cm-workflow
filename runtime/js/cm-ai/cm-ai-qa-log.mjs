@@ -7,7 +7,7 @@ import {digest,hex,id,json,need,shape,text,validIdentity} from './effect-contrac
 import {readQaAttachment} from './qa-attachment.mjs';
 import {writeCmAiQaStatus} from './cm-ai-run-finalizer.mjs';
 import {readExecutionSnapshot} from './execution-snapshot.mjs';
-import {qaRevisionChain,readQaConfigRevision} from './qa-config-revision.mjs';
+import {beforeFirstQaRound,qaRevisionChain,readQaConfigRevision} from './qa-config-revision.mjs';
 
 const writer=fileURLToPath(new URL('../../../scripts/cm-log-event.py',import.meta.url));
 const MiB=1024*1024;
@@ -58,19 +58,37 @@ export function scanRows(log,visit) {
   } finally {if(descriptor!==undefined)fs.closeSync(descriptor);}
 }
 
-function existingDecision(specsDir,feature,identity,packageDigest,decision) {
+// Older hosts recorded a missed qa_assess answer window as a durable
+// blocked/host_request_timeout decision. One explicit recovery may append a
+// superseding decision linked by previous_decision_id; history is never
+// rewritten and every reader consumes the last row of that two-row chain.
+export const timedOutQaDecision=decision=>decision?.status==='blocked'&&decision.reason==='host_request_timeout';
+export function effectiveQaDecisionRow(rows,code){
+  if(rows.length===0)return null;
+  need(rows.length<=2&&rows[0].previous_decision_id===undefined,code);
+  if(rows.length===2)need(timedOutQaDecision(rows[0])&&rows[1].previous_decision_id===rows[0].decision_id
+    &&rows[1].decision_id!==rows[0].decision_id,code);
+  return rows.at(-1);
+}
+
+function existingDecision(specsDir,feature,identity,packageDigest,decision,previousDecisionId=null) {
   const log=path.join(path.resolve(specsDir),'运行日志.jsonl');
-  if(!fs.existsSync(log))return false;
+  if(!fs.existsSync(log)){need(previousDecisionId===null,'qa_decision_conflict');return false;}
   try {
     const matches=[];scanRows(log,row=>{if(row?.schema_version===1&&row.workflow==='cm-ai'&&row.event==='qa'&&row.node==='N6'
       &&row.repository_id===identity.repositoryId&&row.run_id===identity.runId&&row.feature===feature
       &&row.task===identity.taskId&&row.attempt===identity.attempt&&row.package_digest===packageDigest)matches.push(row);});
-    if(matches.length===0)return false;
-    need(matches.length===1,'qa_decision_conflict');
-    const row=matches[0];
-    need(row.decision_id===decision.decisionId&&row.status===decision.status&&row.reason===decision.reason
-      &&row.score===decision.score&&row.at===decision.at,'qa_decision_conflict');
-    return true;
+    if(matches.length===0){need(previousDecisionId===null,'qa_decision_conflict');return false;}
+    const row=effectiveQaDecisionRow(matches,'qa_decision_conflict');
+    if(row.decision_id===decision.decisionId){
+      need(row.status===decision.status&&row.reason===decision.reason&&row.score===decision.score&&row.at===decision.at
+        &&(row.previous_decision_id??null)===previousDecisionId,'qa_decision_conflict');
+      return true;
+    }
+    // Only the single recorded timeout decision can be superseded, and once.
+    need(previousDecisionId!==null&&matches.length===1&&row.decision_id===previousDecisionId
+      &&timedOutQaDecision(row),'qa_decision_conflict');
+    return false;
   } catch(error) {
     if(error?.code==='qa_decision_conflict')throw error;
     need(false,'qa_log_failed');
@@ -92,15 +110,19 @@ function readResult(stdout,identity,specsDir) {
 export function recordCmAiQaDecision(input) {
   const keys=['specsDir','codeProject','feature','identity','packageDigest','decision'];
   if(input&&Object.hasOwn(input,'logHome'))keys.push('logHome');
+  if(input&&Object.hasOwn(input,'previousDecisionId'))keys.push('previousDecisionId');
   shape(input,keys);text(input.specsDir);text(input.codeProject);text(input.feature);validIdentity(input.identity);
   hex(input.packageDigest);
+  const previousDecisionId=input.previousDecisionId??null;if(previousDecisionId!==null)id(previousDecisionId);
   const decision=readDecision(input.decision,input.identity,input.packageDigest);
-  if(existingDecision(input.specsDir,input.feature,input.identity,input.packageDigest,decision))return;
-  const detail=decision.status==='triggered'?`触发:${decision.reason}`:
-    decision.status==='skipped'?`跳过:评分${decision.score}`:`阻塞:${decision.reason}`;
+  if(existingDecision(input.specsDir,input.feature,input.identity,input.packageDigest,decision,previousDecisionId))return;
+  const detail=(decision.status==='triggered'?`触发:${decision.reason}`:
+    decision.status==='skipped'?`跳过:评分${decision.score}`:`阻塞:${decision.reason}`)
+    +(previousDecisionId===null?'':`（重新评估，替代 ${previousDecisionId}）`);
   const data={node:'N6',feature:input.feature,task:input.identity.taskId,attempt:input.identity.attempt,
     repository_id:input.identity.repositoryId,package_digest:input.packageDigest,decision_id:decision.decisionId,
-    status:decision.status,reason:decision.reason,score:decision.score};
+    status:decision.status,reason:decision.reason,score:decision.score,
+    ...(previousDecisionId===null?{}:{previous_decision_id:previousDecisionId})};
   const args=[writer,'--workflow','cm-ai','--event','qa','--runtime','codex','--project-root',input.codeProject,
     '--specs-dir',input.specsDir,'--run-id',input.identity.runId,'--at',decision.at,'--detail',detail,
     '--data-json',JSON.stringify(data)];
@@ -137,8 +159,7 @@ function findDecisionRow(input) {
     &&row.package_digest===input.packageDigest)matches.push(row);});}
   catch{need(false,'context_not_ready');}
   if(matches.length===0)return null;
-  need(matches.length===1,'context_not_ready');
-  const row=matches[0];id(row.decision_id);
+  const row=effectiveQaDecisionRow(matches,'context_not_ready');id(row.decision_id);
   need(['triggered','skipped','blocked'].includes(row.status),'context_not_ready');
   return row;
 }
@@ -147,6 +168,12 @@ export function findCmAiQaDecision(input) {
   const row=findDecisionRow(input);if(row===null)return null;
   return readDecision({status:row.status,decisionId:row.decision_id,identity:input.identity,
     packageDigest:input.packageDigest,reason:row.reason,score:row.score,at:row.at},input.identity,input.packageDigest);
+}
+
+// True when the effective decision is the linked replacement of a timed-out
+// decision (the durable effect of one explicit --rerun-blocked-qa recovery).
+export function replacesTimedOutQaDecision(input) {
+  return findDecisionRow(input)?.previous_decision_id!==undefined;
 }
 
 export function inspectCmAiQaDecision(input) {
@@ -180,16 +207,53 @@ function partialPassCases(items,code){
   return [...new Set(cases)].sort();
 }
 
+// host-check reports a command that produced no exit code as `unavailable`
+// (timeout, kill, spawn or output transport): an environment outcome, not the
+// product's answer. A real non-zero exit stays a product FAIL unless the
+// operator explicitly declares, and the log records, an environment failure.
+const UNAVAILABLE_COMMAND=/^host check: (?:timeout|signal_exit|spawn_failed|output_limit|output_read_failed|output_capture_failed|cleanup_failed)$/;
+const unavailableCommand=row=>row?.kind==='commands'&&row.exitCode===null
+  &&Array.isArray(row.evidence)&&UNAVAILABLE_COMMAND.test(row.evidence.at(-1));
+const exitedCommand=row=>row?.kind==='commands'&&Number.isSafeInteger(row.exitCode)&&row.exitCode!==0;
+export const validEnvironmentFailureReason=value=>typeof value==='string'&&value.trim().length>0
+  &&Buffer.byteLength(value,'utf8')<=500&&!/[\r\n\0]/.test(value);
+
+// The feature's test contract, the same file the executor plans from, is the
+// authority for an unresolved [需确认] expectation; report markers only confirm it.
+function contractCases(specsDir,feature,code){
+  need(typeof feature==='string'&&/^\d+\.[A-Za-z0-9._-]+$/.test(feature),code);
+  const source=path.join(path.resolve(specsDir),feature,'test-cases.json');
+  if(!fs.existsSync(source))return new Map();
+  try{
+    const stat=fs.lstatSync(source);need(stat.isFile()&&!stat.isSymbolicLink()&&stat.size<=MiB,code);
+    const contract=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(fs.readFileSync(source)));
+    need(Array.isArray(contract?.cases),code);
+    return new Map(contract.cases.map(item=>[item.id,item]));
+  }catch{need(false,code);}
+}
+// A case missing from the contract counts as unresolved (fail closed).
+const confirmationPending=item=>!Array.isArray(item?.expected)||item.expected.some(value=>String(value).includes('[需确认]'));
+// The eligibility rule of released versions before recovery_rule 2. Superseded
+// rows they wrote (no recovery_rule) are replayed with exactly this predicate.
+// Rows without recovery_rule are exactly the pre-branch released format: the
+// intermediate commits of this change are squash-merged and never reach users.
+const legacyEligible=(row,environment)=>!row.sourceChanged&&(
+  row.kind==='logic'&&row.staticVerdict==='INSUFFICIENT_EVIDENCE'
+  ||row.kind==='browser'&&(typeof row.evidenceProblem==='string'&&row.evidenceProblem.length>0
+    ||row.cleanup==='failed'||row.hostRequestTimeout===true
+    ||environment!=null&&row.environment!=null&&digest(row.environment)!==digest(environment)));
+
 // Read the executor's existing report format, including pre-recovery reports.
 // Summary counts alone cannot distinguish product failures from host evidence gaps.
-function blockedEvidenceCases(items,specsDir,environment,code='qa_rerun_not_blocked_by_evidence'){
+function recoverableCases(items,specsDir,environment,code='qa_rerun_not_blocked_by_evidence',environmentFailure=false,legacyRule=false){
   const completes=items.filter(({row})=>row.phase==='complete');
   need(completes.length===1,code);
   const complete=completes[0].row,start=items[0]?.row;
-  need(start?.phase==='start'&&complete.result==='BLOCKED'&&complete.failed===0&&complete.blocked>0
+  need(start?.phase==='start'&&(environmentFailure?complete.result==='FAIL'&&complete.failed>0
+      :complete.result==='BLOCKED'&&complete.failed===0&&complete.blocked>0)
     &&complete.mode===start.mode&&complete.case_count===start.case_count
     &&['case_count','passed','failed','blocked'].every(key=>Number.isSafeInteger(complete[key])&&complete[key]>=0)
-    &&complete.passed+complete.blocked===start.case_count
+    &&complete.passed+complete.failed+complete.blocked===start.case_count
     &&!items.some(({row})=>row.phase==='case_complete'&&row.result!=='PASS'),code);
   let cases;
   try{
@@ -204,14 +268,35 @@ function blockedEvidenceCases(items,specsDir,environment,code='qa_rerun_not_bloc
   }catch{need(false,code);}
   need(cases.length===start.case_count&&new Set(cases.map(row=>row.id)).size===cases.length
     &&cases.filter(row=>row.verdict==='PASS').length===complete.passed
+    &&cases.filter(row=>row.verdict==='FAIL').length===complete.failed
     &&cases.filter(row=>row.verdict==='BLOCKED').length===complete.blocked,code);
-  const blocked=cases.filter(row=>row.verdict==='BLOCKED');
+  const byId=new Map(cases.map(row=>[row.id,row]));
+  const mapped=(row,test)=>Array.isArray(row.commandEvidence)&&row.commandEvidence.some(item=>test(byId.get(item)));
+  const blocked=cases.filter(row=>row.verdict==='BLOCKED'),failed=cases.filter(row=>row.verdict==='FAIL');
+  if(legacyRule){for(const row of blocked)need(legacyEligible(row,environment),code);return {blocked:blocked.map(row=>row.id).sort(),failed:[]};}
+  const contract=contractCases(specsDir,start.feature,code);
+  // A case may be rerun only if the approved contract has no unresolved
+  // [需确认] expectation for it; the report marker must not say otherwise.
+  const resolved=row=>!confirmationPending(contract.get(row.id))&&row.needsConfirmation!==true;
+  // A host-declared BLOCKED is proven by the durable case_blocked log row the
+  // executor appended when the session answered, not by the mutable report.
+  const declaredInLog=new Set(items.filter(({row})=>row.phase==='case_blocked'&&row.host_declared_blocked===true)
+    .map(({row})=>row.case_id));
   for(const row of blocked)need(!row.sourceChanged&&(
-    row.kind==='logic'&&row.staticVerdict==='INSUFFICIENT_EVIDENCE'
-    ||row.kind==='browser'&&(typeof row.evidenceProblem==='string'&&row.evidenceProblem.length>0
-      ||row.cleanup==='failed'||row.hostRequestTimeout===true
-      ||environment!=null&&row.environment!=null&&digest(row.environment)!==digest(environment))),code);
-  return blocked.map(row=>row.id).sort();
+    row.kind==='logic'&&resolved(row)&&(row.staticVerdict==='INSUFFICIENT_EVIDENCE'
+      // Blocked only by a mapped command without exit code, derived from the
+      // recorded command rows; the executor's marker has to agree.
+      ||row.staticVerdict==='SUPPORTED'&&mapped(row,unavailableCommand)&&row.commandUnavailable===true)
+    ||row.kind==='browser'&&resolved(row)&&(typeof row.evidenceProblem==='string'&&row.evidenceProblem.length>0
+      ||row.cleanup==='failed'||row.hostRequestTimeout===true||declaredInLog.has(row.id)&&row.hostDeclaredBlocked===true
+      ||environment!=null&&row.environment!=null&&digest(row.environment)!==digest(environment))
+    ||unavailableCommand(row)),code);
+  // Only declared (otherwise failed is empty): every failure must be a command
+  // exit, or a logic case failed by such a mapped command. Browser and
+  // CONTRADICTED failures never are.
+  for(const row of failed)need(exitedCommand(row)
+    ||row.kind==='logic'&&row.staticVerdict!=='CONTRADICTED'&&mapped(row,exitedCommand),code);
+  return {blocked:blocked.map(row=>row.id).sort(),failed:failed.map(row=>row.id).sort()};
 }
 
 // Supersession is authorized by the owner journal, never a self-reported log digest.
@@ -252,9 +337,14 @@ function validateRunSequence(items,code='qa_round_invalid',specsDir){
           need(prior.filter(entry=>entry.row.phase==='complete').length===1,code);
           validateConfigurationSupersession(row,specsDir,code);
         }else{
-          need(row.reason==='host_evidence_problem',code);
-          const blocked=blockedEvidenceCases(prior,specsDir,row.expected_environment,code);
-          need(JSON.stringify(row.blocked_cases)===JSON.stringify(blocked),code);
+          const declared=row.reason==='declared_environment_failure';
+          need(declared?validEnvironmentFailureReason(row.environment_failure_reason):row.reason==='host_evidence_problem',code);
+          // Rows without recovery_rule were written by released versions before
+          // this change (the pre-branch format) under the original rule.
+          const legacy=row.recovery_rule===undefined;need(legacy||row.recovery_rule===2,code);
+          const cases=recoverableCases(prior,specsDir,row.expected_environment,code,declared,legacy);
+          need(JSON.stringify(row.blocked_cases)===JSON.stringify(cases.blocked)
+            &&(declared?JSON.stringify(row.failed_cases)===JSON.stringify(cases.failed):row.failed_cases===undefined),code);
         }
         superseded=true;
       }
@@ -288,7 +378,7 @@ function qaRunRows(input){
 
 // Only a trusted resumed owner calls this after fresh explicit authorization.
 // Retain unknown for non-PASS results, even if their evidence files vanished.
-export function inspectCmAiQaRecovery(input,{blocked=false,environment=null}={}){
+export function inspectCmAiQaRecovery(input,{blocked=false,environment=null,environmentFailure=null}={}){
   const rows=qaRunRows(input),starts=validateRunSequence(rows,'qa_round_invalid',input.specsDir),start=starts.at(-1).row;
   const runs=rows.filter(item=>item.row.operation_id===start.operation_id);
   // Reject an operation ID reused under another decision, identity or package.
@@ -297,10 +387,15 @@ export function inspectCmAiQaRecovery(input,{blocked=false,environment=null}={})
       need(rows.some(item=>JSON.stringify(item.row)===JSON.stringify(row)),'qa_result_mismatch');
   });
   if(blocked){
-    const blockedCases=blockedEvidenceCases(runs,input.specsDir,environment);
+    // After a crash between superseded and start, the recorded row decides
+    // whether this was a declared environment failure; the flag is not re-read.
+    const recorded=runs.find(({row})=>row.phase==='superseded')?.row;
+    const declared=recorded?recorded.reason==='declared_environment_failure':environmentFailure!==null;
+    const cases=recoverableCases(runs,input.specsDir,environment,'qa_rerun_not_blocked_by_evidence',declared,
+      recorded!==undefined&&recorded.recovery_rule===undefined);
     need(start.attempt<3,'qa_round_invalid');
     return {testRunId:start.operation_id,qaRound:start.attempt,mode:start.mode,caseCount:start.case_count,
-      blockedCases,superseded:runs.some(({row})=>row.phase==='superseded')};
+      blockedCases:cases.blocked,failedCases:cases.failed,superseded:recorded!==undefined};
   }
   const passed=partialPassCases(runs,'qa_execution_unknown');
   const report=path.join(input.specsDir,'.reviews',`${start.operation_id}-execution.md`);
@@ -345,8 +440,46 @@ export function inspectCmAiQaConfigurationRecovery(input){
   return {testRunId:row.operation_id,qaRound:row.attempt,mode:row.mode,caseCount:row.case_count,superseded:true};
 }
 
+// Log positions of this run's first N6 test_run row (under any decision,
+// package or attempt: a QA round has started) and of one revision mirror row.
+function preRoundPositions({specsDir,feature,identity},revisionDigest=null){
+  text(specsDir);text(feature);validIdentity(identity);
+  const log=path.join(path.resolve(specsDir),'运行日志.jsonl');
+  let position=0,firstRun=null,mirror=null;
+  if(fs.existsSync(log))scanRows(log,row=>{const index=position++;
+    if(row?.workflow!=='cm-ai'||row.run_id!==identity.runId||row.repository_id!==identity.repositoryId)return;
+    if(firstRun===null&&row.event==='test_run'&&row.node==='N6'&&row.feature===feature&&row.task===identity.taskId)firstRun=index;
+    if(mirror===null&&revisionDigest!==null&&row.event==='decision'&&row.phase==='qa_config_revise'
+      &&row.qa_revision_digest===revisionDigest)mirror=index;});
+  return {firstRun,mirror};
+}
+export const hasCmAiQaRun=input=>preRoundPositions(input).firstRun!==null;
+
+// The owner journal authorizes the change; this deterministic row is its audit
+// mirror, written before any QA round. A journal-only crash is repaired only
+// while no round exists, and a mirror after a round fails closed on every open.
+function recordPreRoundRevision(input,record){
+  const {specsDir,codeProject,feature,identity}=input,revisionDigest=digest(record);
+  const {firstRun,mirror}=preRoundPositions(input,revisionDigest);
+  need(firstRun===null||mirror!==null&&mirror<firstRun,'qa_revision_invalid');
+  if(mirror!==null)return;
+  const data={node:'N6',feature,task:identity.taskId,attempt:identity.attempt,repository_id:identity.repositoryId,
+    package_digest:record.packageDigest,qa_revision_digest:revisionDigest,from_fingerprint:record.fromFingerprint,
+    to_fingerprint:record.toFingerprint,reason:record.reason};
+  const args=[writer,'--workflow','cm-ai','--event','decision','--phase','qa_config_revise','--runtime','codex',
+    '--project-root',codeProject,'--specs-dir',specsDir,'--run-id',identity.runId,'--at',record.revisedAt,
+    '--detail','首轮 QA 前修订 QA 配置，不消耗轮次','--data-json',JSON.stringify(data)];
+  let result;
+  try{result=childProcess.spawnSync('python3',args,{timeout:10000,maxBuffer:MiB,killSignal:'SIGKILL',
+    ...(input.logHome?{env:{...process.env,CM_WORKFLOW_LOG_HOME:input.logHome}}:{})});}
+  catch{need(false,'qa_log_failed');}
+  need(!result.error&&result.status===0&&result.signal===null&&Buffer.isBuffer(result.stdout),'qa_log_failed');
+  return readResult(result.stdout,identity,specsDir);
+}
+
 export function recordCmAiQaConfigurationRevision(input,raw){
   const record=readQaConfigRevision(raw),{specsDir,feature,identity,packageDigest}=input;
+  if(beforeFirstQaRound(record))return recordPreRoundRevision(input,record);
   const rows=qaRunRows({specsDir,feature,identity,packageDigest});
   const existing=rows.find(({row})=>row.phase==='superseded'&&row.qa_revision_digest===digest(record));
   if(existing){
@@ -370,6 +503,7 @@ export function recordCmAiQaRun(input) {
   if(Object.hasOwn(input,'deferredCases'))keys.push('deferredCases');
   if(Object.hasOwn(input,'expectedEnvironment'))keys.push('expectedEnvironment');
   if(Object.hasOwn(input,'configurationRevision'))keys.push('configurationRevision');
+  if(Object.hasOwn(input,'environmentFailure'))keys.push('environmentFailure');
   shape(input,keys);validIdentity(input.identity);id(input.testRunId);hex(input.packageDigest);
   text(input.specsDir);text(input.codeProject);text(input.feature);
   need(['commands','browser','all'].includes(input.mode));
@@ -378,15 +512,19 @@ export function recordCmAiQaRun(input) {
   const qaRound=input.qaRound??1;
   need(Number.isSafeInteger(qaRound)&&qaRound>=1&&qaRound<=3,'qa_round_invalid');
   const binding={specsDir:input.specsDir,feature:input.feature,identity:input.identity,packageDigest:input.packageDigest};
-  let passed=[],blockedCases=[];
+  let passed=[],blockedCases=[],failedCases=[],declaredFailure=null;
+  if(Object.hasOwn(input,'environmentFailure'))need(input.phase==='superseded'&&!input.configurationRevision
+    &&validEnvironmentFailureReason(input.environmentFailure),'qa_recovery_authorization_required');
   if(input.configurationRevision){
     need(input.phase==='superseded','qa_revision_invalid');
     const record=readQaConfigRevision(input.configurationRevision),target=inspectCmAiQaRevisionTarget(binding);
     need(record.taskAttempt===input.identity.attempt&&record.testRunId===input.testRunId&&target.testRunId===input.testRunId&&record.packageDigest===input.packageDigest
       &&target.qaRound===qaRound&&record.qaRound===qaRound&&target.mode===input.mode&&target.caseCount===input.caseCount,'qa_revision_invalid');
   }else if(input.phase==='superseded'){
-    const previous=inspectCmAiQaRecovery(binding,{blocked:true,environment:input.expectedEnvironment});
-    blockedCases=previous.blockedCases;
+    const previous=inspectCmAiQaRecovery(binding,{blocked:true,environment:input.expectedEnvironment,
+      environmentFailure:input.environmentFailure??null});
+    blockedCases=previous.blockedCases;failedCases=previous.failedCases;
+    declaredFailure=input.environmentFailure??null;
     need(previous.testRunId===input.testRunId&&previous.qaRound===qaRound
       &&previous.mode===input.mode&&previous.caseCount===input.caseCount,'qa_round_invalid');
     if(previous.superseded)return;
@@ -430,9 +568,11 @@ export function recordCmAiQaRun(input) {
   }
   if(input.phase==='abandoned')Object.assign(data,{previous_test_run_id:input.testRunId,reason:'host_terminated',partial_pass_cases:passed});
   if(input.phase==='superseded')Object.assign(data,{previous_test_run_id:input.testRunId,
-    reason:'host_evidence_problem',blocked_cases:blockedCases,expected_environment:input.expectedEnvironment??null});
+    reason:declaredFailure===null?'host_evidence_problem':'declared_environment_failure',recovery_rule:2,
+    blocked_cases:blockedCases,expected_environment:input.expectedEnvironment??null,
+    ...(declaredFailure===null?{}:{failed_cases:failedCases,environment_failure_reason:declaredFailure})});
   if(input.configurationRevision){
-    delete data.blocked_cases;delete data.expected_environment;
+    delete data.blocked_cases;delete data.expected_environment;delete data.recovery_rule;
     Object.assign(data,{reason:'qa_configuration_revision',qa_revision_digest:digest(input.configurationRevision)});
     validateConfigurationSupersession({...data,run_id:input.identity.runId},input.specsDir,'qa_revision_invalid');
   }
@@ -506,8 +646,8 @@ function inspectQaResult(input,failureSource,historical=false) {
       &&row.package_digest===input.packageDigest)decisions.push(item);
     if(row?.schema_version===1&&row.workflow==='cm-ai'&&row.event==='test_run')allRuns.push(item);
   });}catch{need(false,'qa_result_invalid');}
-  need(decisions.length===1&&decisions[0].row.status==='triggered','qa_not_triggered');
-  const decisionId=decisions[0].row.decision_id;id(decisionId);
+  need(effectiveQaDecisionRow(decisions.map(item=>item.row),'qa_not_triggered')?.status==='triggered','qa_not_triggered');
+  const decision=decisions.at(-1),decisionId=decision.row.decision_id;id(decisionId);
   const selected=allRuns.filter(item=>item.row.operation_id===input.testRunId);
   need(selected.length>0,'qa_result_incomplete');
   const bound=row=>row.node==='N6'&&row.repository_id===input.identity.repositoryId
@@ -515,7 +655,7 @@ function inspectQaResult(input,failureSource,historical=false) {
     &&row.package_digest===input.packageDigest
     &&row.qa_decision_id===decisionId;
   for(const {row} of selected)need(bound(row),'qa_result_mismatch');
-  const candidates=allRuns.filter(item=>item.position>decisions[0].position&&bound(item.row));
+  const candidates=allRuns.filter(item=>item.position>decision.position&&bound(item.row));
   need(candidates.length>0,'qa_result_invalid');
   for(const {row} of candidates)need(typeof row.operation_id==='string'
     &&/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(row.operation_id)
@@ -530,7 +670,7 @@ function inspectQaResult(input,failureSource,historical=false) {
   need(runs.length>0,'qa_result_invalid');
   const starts=runs.filter(item=>item.row.phase==='start'),completes=runs.filter(item=>item.row.phase==='complete');
   need(starts.length===1&&completes.length===1,'qa_result_incomplete');
-  need(decisions[0].position<starts[0].position&&starts[0].position<completes[0].position,'qa_result_invalid');
+  need(decision.position<starts[0].position&&starts[0].position<completes[0].position,'qa_result_invalid');
   const start=starts[0].row,complete=completes[0].row;
   text(start.mode);text(complete.mode);need(start.mode===complete.mode&&start.attempt===complete.attempt,'qa_result_invalid');
   for(const key of ['case_count','passed','failed','blocked'])

@@ -67,7 +67,7 @@ const FILES={develop:'develop.json',qa_assess:'qa-assess.json',documentation_ins
   fix_test_author:'test-edits.json',fix_repair:'repair-edits.json',fix_retrospective:'retrospective.json'};
 const PAIR_FLAGS=new Set(['--allow-review-attempt','--review-config','--workflow-config',
   '--input-limit',
-  '--protected-conversation-config','--protected-config','--revise-qa-config','--qa-config-revision-reason',
+  '--protected-conversation-config','--protected-config','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure',
   '--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--browser-qa',
   '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason']);
 const FLAG_FLAGS=new Set(['--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
@@ -258,7 +258,7 @@ function load(){
   const permissionFiles=[];
   for(let i=0;i<permissions.length;i++)if(PAIR_FLAGS.has(permissions[i])
     &&permissions[i]!=='--allow-review-attempt'&&permissions[i]!=='--browser-qa'
-    &&permissions[i]!=='--qa-config-revision-reason'&&permissions[i]!=='--allow-provider-development-attempt'
+    &&permissions[i]!=='--qa-config-revision-reason'&&permissions[i]!=='--qa-environment-failure'&&permissions[i]!=='--allow-provider-development-attempt'
     &&permissions[i]!=='--supersede-reason'&&permissions[i]!=='--input-limit'){
     const file=path.resolve(base,permissions[i+1]);if(!fs.existsSync(file))stop(2,`${permissions[i]} 文件不存在: ${file}`);
     permissions[i+1]=file;permissionFiles.push(file);i++;

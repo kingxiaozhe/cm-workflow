@@ -68,3 +68,34 @@ test('JS log persistence writes project authority, mirrors globally, and dedupli
     assert.equal(fs.readFileSync(result.project_log,'utf8').trim().split('\n').length,1);
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+
+test('QA environment-failure supersession needs the matching completed FAIL, both case lists and a single-line reason',()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-log-env-failure-')));
+  try{
+    const project=path.join(root,'project'),specs=path.join(root,'specs'),runId='env-failure-run';
+    fs.mkdirSync(project);fs.mkdirSync(specs);
+    const env={...process.env,CM_WORKFLOW_LOG_HOME:path.join(root,'logs')};
+    const bound={node:'N6',repository_id:'fixture',feature:'1.work',task:'T-001',package_digest:'a'.repeat(64),
+      qa_decision_id:'qa-decision',operation_id:'qa-round-1',attempt:1,mode:'commands',case_count:2};
+    const write=(phase,data)=>spawnSync(process.env.CM_PYTHON_BIN||'python3',[pythonWriter,'--workflow','cm-ai','--event','test_run',
+      '--phase',phase,'--runtime','codex','--project-root',project,'--specs-dir',specs,'--run-id',runId,'--detail',`QA ${phase}`,
+      '--data-json',JSON.stringify({...bound,...data})],{encoding:'utf8',env});
+    assert.equal(write('start',{}).status,0);
+    assert.equal(write('complete',{result:'FAIL',passed:0,failed:1,blocked:1,report:'r.md'}).status,0);
+    const valid={previous_test_run_id:'qa-round-1',reason:'declared_environment_failure',failed_cases:['probe'],
+      blocked_cases:['TC-001'],expected_environment:null,environment_failure_reason:'simulator runtime was missing'};
+    for(const invalid of [{failed_cases:[]},{blocked_cases:[]},{failed_cases:['probe','probe']},{environment_failure_reason:' '},
+      {environment_failure_reason:'two\nlines'},{previous_test_run_id:'other'},{reason:'host_evidence_problem'}]){
+      const result=write('superseded',{...valid,...invalid});
+      assert.notEqual(result.status,0,JSON.stringify(invalid));
+    }
+    const accepted=write('superseded',valid);assert.equal(accepted.status,0,accepted.stderr);
+    // A BLOCKED invocation (no failures) cannot carry an environment-failure declaration.
+    const blockedRun={...bound,operation_id:'qa-round-2',attempt:2};
+    assert.equal(write('start',{...blockedRun,previous_test_run_id:'qa-round-1'}).status,0);
+    assert.equal(write('complete',{...blockedRun,result:'BLOCKED',passed:1,failed:0,blocked:1,report:'r.md'}).status,0);
+    assert.notEqual(write('superseded',{...blockedRun,...valid,previous_test_run_id:'qa-round-2',failed_cases:[]}).status,0);
+    assert.equal(write('superseded',{...blockedRun,previous_test_run_id:'qa-round-2',reason:'host_evidence_problem',
+      blocked_cases:['TC-001'],expected_environment:null}).status,0);
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});

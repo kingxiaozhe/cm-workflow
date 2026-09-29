@@ -11,7 +11,7 @@ import {recordCmAiQaAttachment} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {previousQaMaterial,qaConfigurationSlice,qaInvariantDigest,qaRevisionChain,verifyQaRevisionMaterial} from '../runtime/js/cm-ai/qa-config-revision.mjs';
-import {inspectCmAiQaRevisionTarget,recordCmAiQaConfigurationRevision} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
+import {hasCmAiQaRun,inspectCmAiQaRevisionTarget,recordCmAiQaConfigurationRevision} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {prepareReviewedEvidenceSupersession,archiveReviewedEvidence,recordEvidenceSupersession} from '../runtime/js/cm-ai/reviewed-evidence-supersede.mjs';
 import {recordReviewAbandonment} from '../runtime/js/cm-ai/review-abandon-log.mjs';
 import {recordEffectAbandonment} from '../runtime/js/cm-ai/effect-abandon-log.mjs';
@@ -178,7 +178,7 @@ export function validateRunDefinition(input){
   return value;
 }
 
-export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false}={}){
+export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false}={}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
@@ -331,7 +331,8 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
           excludedContexts:execution.excludedContexts,timeoutMs:execution.timeoutMs,
           ...(Object.hasOwn(execution,'verificationGate')?{verificationGate:execution.verificationGate}:{}),
           taskLearning:{feature,hostHandoff:true}})},
-      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,allowAbandonReview,allowAbandonEffect,...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
+      // The entry validates the declaration (single line, with --rerun-blocked-qa) before any durable write.
+      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
         ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
     const logAbandonments=()=>{
@@ -367,13 +368,16 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
     if(priorMaterial){
       if(sha(priorMaterial)===fingerprints.config)fail('qa_revision_unchanged');
       const current=await host.handle({version:1,operation:'status',requestId:'qa-revision-status',identity});
-      if(current.state!=='fixture_completed'||current.code!==null)fail('qa_revision_not_completed');
+      // No QA round of this run has started: record a round-0 revision that
+      // supersedes nothing and consumes no round. The runner re-checks state.
+      const beforeQa=!hasCmAiQaRun({specsDir,feature,identity:current.identity});
+      if(!beforeQa&&(current.state!=='fixture_completed'||current.code!==null))fail('qa_revision_not_completed');
       const binding={...qaBinding,identity:current.identity,packageDigest:current.packageDigest};
-      const target=inspectCmAiQaRevisionTarget(binding);
+      const target=beforeQa?{testRunId:null,qaRound:0}:inspectCmAiQaRevisionTarget(binding);
       const record=host.reviseQa({version:1,fromFingerprint:sha(priorMaterial),toFingerprint:fingerprints.config,
         invariantDigest:qaInvariantDigest(configMaterial),previousQaDigest:sha(qaConfigurationSlice(priorMaterial)),qaDigest:sha(qaConfigurationSlice(configMaterial)),
         reason:qaConfigRevision.reason,hostContextId:execution.configuration.hostContextId,
-        revisedAt:new Date().toISOString().replace(/\.\d{3}Z$/,'Z'),packageDigest:current.packageDigest,
+        revisedAt:new Date().toISOString().replace(/\.\d{3}Z$/,'Z'),packageDigest:current.packageDigest??null,
         testRunId:target.testRunId,qaRound:target.qaRound,taskAttempt:current.identity.attempt});
       recordCmAiQaConfigurationRevision(binding,record);
     }

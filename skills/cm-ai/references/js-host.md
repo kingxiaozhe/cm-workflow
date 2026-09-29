@@ -48,7 +48,7 @@ cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edit
 驾驶员收到 `state: "unknown"` 或 `pendingAction: "reconcile"` 的宿主结果时退出 1，并保留原输出供原 run 恢复；不能把有结果的 JSON 当成成功。
 独立审查批准后，完成前会再次运行相同检查。`evidence` 摘要文字变化且检查 `id/command/outcome/exitCode` 不变时可完成；代码、handoff 或检查身份漂移为终态 `blocked/package_mismatch`，越界 scope/需求漂移保持 `blocked/out_of_scope`。仅 `outcome/exitCode` 变化时为可恢复的 `blocked/completion_checks_changed`：先修好检查环境，再用原 runId、原配置 `--mode resume` 执行 `advance`（或 `complete`）；新 complete effect id 重跑检查，原 Review 回执与 packageDigest 不变，不新开 run 或重审。旧 journal 按原格式回放，重试仍受 effect 上限约束。
 `qa_logic`、`qa_browser`、`verification_precheck` 没有可信本地 runner。单步驾驶员对本任务完成后适用的 logic case 预检 `qa_logic`，包括已被 QA 命令 `caseIds` 覆盖的 case（当前 executor 仍会请求）；只对适用、`expected` 不含 `[需确认]` 的 browser case 预检 `qa_browser`。预测需要 runner 时仍在发送前拒绝，`verification_precheck` 规则不变。
-本次适用的用例里有 logic 类（或无 `[需确认]` 的 browser 类）时，驾驶员完成不了这一步 QA：由当前 AI 会话以 `serve` 启动宿主，按 N6 与 cm-qa-engineer 应答 `qa_assess`，以及宿主实际问到的 `qa_logic` 或 `qa_browser`；拿不到浏览器证据时 `qa_browser` 如实回 BLOCKED，不能省略不答。即使 logic case 已被 QA 命令覆盖也不能跳过这一问：静态判断为 `CONTRADICTED` 时，除非另有阻断条件（`[需确认]`、宿主请求超时或源码漂移会改判为 BLOCKED），该用例判失败，哪怕命令全部通过。
+本次适用的用例里有 logic 类（或无 `[需确认]` 的 browser 类）时，驾驶员完成不了这一步 QA：由当前 AI 会话以 `serve` 启动宿主，按 N6 与 cm-qa-engineer 应答 `qa_assess`，以及宿主实际问到的 `qa_logic` 或 `qa_browser`；拿不到浏览器证据时 `qa_browser` 如实回 BLOCKED，不能省略不答；环境恢复后可在原 run 用 `--rerun-blocked-qa` 重跑这一轮 QA（见下方“已 complete 的宿主证据或环境阻断”）。即使 logic case 已被 QA 命令覆盖也不能跳过这一问：静态判断为 `CONTRADICTED` 时，除非另有阻断条件（`[需确认]`、宿主请求超时或源码漂移会改判为 BLOCKED），该用例判失败，哪怕命令全部通过。
 受保护执行由原宿主处理检查；驾驶员不把人工填写的结果冒充执行证据。一次 `advance` 可能走过多个阶段，
 驾驶员会按该宿主的请求路径提前检查本次可能用到的全部答案；只读 `status` 不需要答案。
 
@@ -230,8 +230,16 @@ R1要求修改但尚未授权第2轮时保留changes_requested，不登记开发
 创建运行的 host-context（换会话时由 `--original-host-context` 声明）、开发/审查配置仍须匹配。journal追加不可重复/修改的`qa-attached`，运行日志写
 `decision/qa_attach`；后续恢复须保持已绑定配置及重新授权，`qa`仍要求`qa_assess`等原宿主请求。
 不重跑开发/审查，不将任务完成当作QA通过（事故：create漏配workflow曾使feature强制QA无法补做）。
-QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.timeoutMs` 可设 1–60000 毫秒，
-省略为 60000；超时记 `host_request_timeout` 并阻断，不把已有命令 PASS 用来覆盖超时。
+QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.timeoutMs` 可设 1–3600000 毫秒，
+省略为 60000；`qa_assess` 的实际应答窗口另受决策通道约 60 秒上限约束。`qa_logic/qa_browser` 超时记
+`host_request_timeout` 并判该用例 BLOCKED，不把已有命令 PASS 用来覆盖超时。`qa_assess` 超时不再写 N6 决定：
+`advance` 返回 `rejected/qa_decision_timeout`，用原配置 `--mode resume` 再 `advance` 会重新询问。
+旧版本已把这种超时记成 `阻塞:host_request_timeout` 决定的运行，默认仍按原记录返回 `qa_blocked`（结果带
+`reason: host_request_timeout`）；用户同意后以 `--mode resume --allow-qa --rerun-blocked-qa` 再 `advance`，
+只重新询问一次 `qa_assess`，新决定以 `previous_decision_id` 链接旧决定追加到运行日志，旧行保留；
+旗标随即消费，不再用于同一次调用的 QA 重跑。若替代决定已写入、首轮 `test_run/start` 前中断，用同一条命令再 `advance`
+即按普通首轮继续，不再询问 `qa_assess`，也不必去掉旗标。第二次替代、非超时阻断或其他决定一律拒绝。
+（事故：AI潮 bootstrap-T-002-r2 的 N6 评估超时 60 秒后被永久阻塞，context_refresh/finish 无法通过。）
 宿主读取 JSONL 时必须处理当前缓冲区内的全部完整行，再等下一个数据块；处理单行后不能
 提前 return（事故：确认和 TC-007 请求合并到一个数据块，旧驱动只读确认而悬空等待）。
 无 complete 的 N6 中断只能由用户显式重跑：保留原配置，`--mode resume --allow-qa --rerun-unknown-qa`，
@@ -240,19 +248,38 @@ QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.tim
 所有用例仍全部重跑，旧 PASS 证据文件只作历史保留。任一 FAIL/BLOCKED、固定报告
 `{testRunId}-execution.md` 或未清理资源都不满足恢复条件；保留 unknown/阻断供人工核对，
 不删报告或日志来获得重跑资格，不伪造 complete。仅写了 abandoned 后再中断可沿同一授权入口恢复。
-已 complete 的宿主证据阻断可用单任务 `--mode resume --workflow-config {原配置} --allow-qa --rerun-blocked-qa`，
+已 complete 的宿主证据或环境阻断可用单任务 `--mode resume --workflow-config {原配置} --allow-qa --rerun-blocked-qa`，
 再 `advance`：仅最新结果为 BLOCKED、failed=0、qaRound<3，且每条 BLOCKED 都是 browser 的 evidenceProblem、
-cleanup=failed、环境摘要不一致或 hostRequestTimeout，或 logic 的 INSUFFICIENT_EVIDENCE 时允许。
-commands 阻断（含 commands-unavailable/no-applicable-cases）、产品 FAIL、源码漂移和未 complete 不适用；配置填错应使用下述“QA 配置修订”。
-先写 `test_run/superseded`（previous_test_run_id、reason=host_evidence_problem、blocked_cases），再以新 testRunId、
-qaRound+1 写带 previous_test_run_id 的 start，全部用例重跑；旧 PASS 仅保留历史，最多三轮，不重做 QA 决策、
+cleanup=failed、环境摘要不一致、hostRequestTimeout 或会话自己回答的 BLOCKED（报告行 `hostDeclaredBlocked`，
+例如模拟器当时不可用），logic 的 INSUFFICIENT_EVIDENCE 或只因映射命令没有退出码而阻断（报告行 `commandUnavailable`），或 commands 行没有退出码
+（`host check: timeout/signal_exit/spawn_failed/output_*/cleanup_failed`，例如 xcodebuild 超时或被杀）时允许。
+没有声明命令（commands-unavailable）、延后用例（no-applicable-cases）、`[需确认]`（logic 报告行 `needsConfirmation`，
+即使映射命令同时没有退出码）、缺浏览器能力、源码漂移和未 complete 不适用；
+是否仍有 `[需确认]` 以该 feature 的 `test-cases.json` 为准，并与报告标记交叉核对（两者任一显示未确认即拒绝）；
+“只因命令没有退出码”由已记录的命令行推出，报告的 `commandUnavailable` 必须一致；“会话自己回答 BLOCKED”以执行器当时经日志写入器
+追加的 `test_run/case_blocked` 行上的 `host_declared_blocked: true` 为准，报告的 `hostDeclaredBlocked` 只作核对。只删改报告里的这些标记不能换来重跑资格。
+旧版本报告里会话回答的 BLOCKED 没有标记，仍不适用。新写入的 superseded 行带 `recovery_rule: 2`；旧版本写入、
+没有该字段的 superseded 行按旧版本原规则回放（例如 logic INSUFFICIENT_EVIDENCE 行照旧有效）。配置填错应使用下述“QA 配置修订”。
+非零退出码是产品 FAIL，不会被重新归类；确认是环境造成（例如模拟器运行时缺失时 `xcodebuild test` 退出 65）时，
+可在同一命令加 `--qa-environment-failure "原因"`（单行，最多 500 UTF-8 字节，必须与 `--rerun-blocked-qa` 同用，仅单任务宿主）：
+只接受最新结果为 FAIL 且每条 FAIL 都是有退出码的命令行、或只因这类映射命令失败的 logic 用例；browser FAIL、
+`CONTRADICTED`、已接受修复的 FAIL 均拒绝。superseded 行记 `reason=declared_environment_failure`、`environment_failure_reason`、
+`failed_cases` 与 `blocked_cases`。这不是放行：新一轮在同一代码上全部重跑，真有缺陷仍会 FAIL。
+先写 `test_run/superseded`（previous_test_run_id、reason=host_evidence_problem 或上述声明原因、blocked_cases），再以新 testRunId、
+qaRound+1 写带 previous_test_run_id 的 start，全部用例重跑，占用同一个三轮 QA 预算；旧 PASS 仅保留历史，最多三轮，不重做 QA 决策、
 开发或审查，不改 tasks。开关一次性消费且不持久化，不与 --rerun-unknown-qa 合用；仅写 superseded 后中断，
 须重新显式授权恢复。complete 同步 N6 状态镜像为 qa_passed/qa_failed/qa_blocked，并显示本轮通过/失败/阻断数量。
 （事故：宿主把非文件说明混入 browser evidence，导致已完成任务的收尾 QA 无法恢复。）
 
+**信任边界（QA 恢复）**：恢复判定以这些输入为准——已批准的 feature `test-cases.json`（`[需确认]`），
+以及经日志写入器在应答或记录当时追加到 `运行日志.jsonl` 的行（N6 决定、`test_run` 的 start/case/complete 计数与结果、superseded），
+配置修订另以运行 journal 为准。`.reviews/{testRunId}-execution.md` 执行报告是本地证据：逐例 verdict、静态结论、命令退出码与
+browser 证据字段都从报告读取，只与上述日志计数、case_blocked 行和用例契约交叉核对；有人刻意手改报告并保持计数一致
+（例如对调两个用例的 verdict）不在防御范围内。重跑始终在同一代码上执行全部用例，这类改动最多多占一个 QA 轮次，不能凭空得到 PASS。
+
 ### QA 配置修订
 
-开发、独立审查和 N5 已完成，最新 QA 已产生完整结果，但命令、环境或 QA 预算填错时，先保留上一版 workflow JSON，再修改新文件。用户明确同意本次配置改动后，用单任务宿主恢复：
+最新 QA 已产生完整结果，或 QA 还没开跑（见下方首轮前修订），但命令、环境或 QA 预算填错时，先保留上一版 workflow JSON，再修改新文件。用户明确同意本次配置改动后，用单任务宿主恢复：
 
 ```bash
 node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
@@ -264,6 +291,11 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
 
 原运行需要的审查、保护配置和跨会话身份参数仍须照原值提供，然后发送 `advance`。旧运行只保存完整配置摘要，没有可逆的配置副本，所以必须提供上一版文件核对；不能凭一个新摘要接受任意漂移。旧文件仅用于验证，不执行其命令。
 
+- 首轮 QA 前也可修订：只要这个 run 还没有任何 `test_run` 行（开发中、待审、已审批，或 N5 完成后 QA 决定已触发但未开跑），
+  同一命令即可恢复，不必先用已知错误的命令跑一轮。journal 追加 `qaRound: 0`、`testRunId: null` 的 `qa-config-revised`
+  （绑定当时的审查包，尚无审查包时为 null），运行日志写一次 `decision/qa_config_revise`；不写 superseded，首轮仍是 qaRound 1。
+  首轮前可连续修订；已有 unknown effect、已取消或完成后代码漂移（correction_review_required）的运行拒绝 `qa_revision_not_completed`。
+  QA 一旦开跑，后续修订照旧消耗一轮；首轮后出现的 round-0 修订或其日志镜像会在恢复时以 `qa_revision_invalid` 拒绝。
 - 修订仅接受 `resume`、`--allow-qa`、非空原因和相符的上一版配置；不能与两个 QA 重跑开关合用。只允许 QA 命令、环境、QA 预算及其派生执行计划变化，任务身份、规格、开发、审查、项目策略、文档与能力配置均保持原绑定。reviewer 的纯传输超时本来就不参与授权摘要，无需本入口。
 - 先追加 `qa-config-revised`，绑定前后指纹、QA 配置摘要、原因、原审查包及旧 QA 轮次；再追加 `test_run/superseded`，原因是 `qa_configuration_revision`。旧结果留在历史，不再作为当前通过或修复依据；原开发、审查、N5、任务勾选和历史字节不改写。
 - 新 QA 使用新 testRunId，全部用例重跑，轮次加一且最多三轮；另行绑定实际完成的开发 attempt，第二次开发审查通过后也能恢复。未完成或结果未知的 QA 必须先核对原执行；本入口不证明资源已清理，不放宽源码漂移检查，不重置轮次，也不自动批准产品修复。

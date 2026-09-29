@@ -837,12 +837,45 @@ BLOCKED/unknown 不当作可修复失败；旧轮次不能覆盖新失败或未�
 
 ### N6 请求超时与无结果重跑
 
-workflow 配置的 `qa` 在 `commands/environment` 之外可选 `timeoutMs`（1–60000 毫秒，
+workflow 配置的 `qa` 在 `commands/environment` 之外可选 `timeoutMs`（1–3600000 毫秒，
 默认 60000）。它限定每次 `qa_assess/qa_logic/qa_browser` bridge 请求；原命令及整轮执行
-的外层时限保持不变。评估外层允许 1 秒收尾余量，让请求看门狗先落盘 BLOCKED 决策。
+的外层时限保持不变，`qa_assess` 另受决策通道约 60 秒（外层 61 秒）上限约束。
 逻辑用例超时记录 `host_request_timeout`，即使命令通过也保持 BLOCKED；浏览器超时清理状态
 为 failed，不能宣称资源已清理。执行器生成真实报告，整轮按原 complete/qa_result 门禁返回 BLOCKED。
-评估超时记录 blocked 决策，不启动 QA。取消、断连与超时保留各自原因，迟到答复不会被采纳。
+评估超时是传输结果而不是 QA 决定：无论请求看门狗还是外层计时先到，`advance` 都返回可重试的
+`rejected/qa_decision_timeout`，不写 N6 决定、不启动 QA；原 run 恢复后再次 `advance` 会重新询问。
+旧版本把请求看门狗超时落盘为 `blocked/host_request_timeout` 决定；这类记录默认原样回放为 `qa_blocked`，
+仅在显式 `--rerun-blocked-qa` 下重新询问一次 `qa_assess`，新决定带 `previous_decision_id` 追加在旧行之后；
+替代决定已落盘而首轮 start 尚未写入时，同一授权再次 `advance` 视为该恢复的延续，按普通首轮执行。
+所有 N6 决定读取方（qa、qa_result、context_refresh、finish/run_finalize、QA 轮次与 cm-fix 来源）只接受
+“一条超时阻断 + 一条链接替代”的两行链并读取最后一行；更长、未链接或替代非超时决定的链一律拒绝。
+取消、断连与超时保留各自原因，迟到答复不会被采纳。
+
+已 complete 的 BLOCKED 结果用 `--rerun-blocked-qa` 在同一代码上重跑，除原有宿主证据问题外，还接受会话自己回答的
+browser BLOCKED（执行器在报告行写 `hostDeclaredBlocked: true`；旧报告无此标记仍不适用）、没有退出码的命令结果
+（host-check 的 timeout、signal_exit、spawn_failed、output_*、cleanup_failed）以及只因这类映射命令阻断的 logic 用例
+（执行器写 `commandUnavailable: true`；`[需确认]` 的 logic 用例写 `needsConfirmation: true`，任何路径都不适用）。
+没有声明命令、延后用例、`[需确认]`、缺少浏览器能力和源码漂移仍不适用。判定以权威输入为准：`[需确认]` 读该 feature 的
+`test-cases.json`（契约里找不到的用例按未确认处理），命令阻断由报告中已记录的命令行推出，会话回答的 browser BLOCKED
+以执行器在应答时追加的 `test_run/case_blocked` 日志行（`host_declared_blocked: true`）为准；`needsConfirmation`、
+`commandUnavailable`、`hostDeclaredBlocked` 只作交叉核对，任一与契约、命令行或日志不符即拒绝。新写入的 superseded 行带 `recovery_rule: 2` 并按此规则回放；旧版本写入、
+无该字段的 superseded 行按原规则回放，其他 `recovery_rule` 取值拒绝；配置修订的 superseded 行格式不变。有退出码的非零结果是产品 FAIL，
+只有操作员在同一次恢复中加 `--qa-environment-failure "原因"`（单行、最多 500 UTF-8 字节，仅单任务宿主）声明环境故障时，
+才允许替代最新 FAIL：每条 FAIL 必须是有非零退出码的命令行或只因其失败的非 `CONTRADICTED` logic 用例，browser FAIL
+与已接受修复的 FAIL 拒绝；superseded 记 `reason: declared_environment_failure`、`environment_failure_reason`、`failed_cases`
+与 `blocked_cases`，写入器与回放都复核这些字段。所有重跑都在 qaRound+1 执行全部用例，占用同一个最多三轮的 QA 预算。
+
+信任边界：QA 恢复把已批准的 feature `test-cases.json` 与经日志写入器在应答或记录当时追加的 `运行日志.jsonl` 行
+（N6 决定、`test_run` start/case/complete 与 superseded）视为权威，配置修订另以运行 journal 为准。`.reviews` 下的
+`{testRunId}-execution.md` 执行报告是本地证据：逐例 verdict、静态结论、命令退出码和 browser 证据字段从中读取，
+只与日志计数、case_blocked 行和用例契约交叉核对。刻意手改报告且保持计数一致（例如对调两个用例的 verdict）不在防御范围内；
+重跑仍在同一代码上执行全部用例，此类改动最多多占一个 QA 轮次，不能伪造 PASS。
+
+QA 配置修订（`--revise-qa-config`）在该 run 尚无任何 `test_run` 行时也可使用，不限于 N5 之后：journal 追加
+`qaRound: 0`、`testRunId: null`、绑定当时审查包（尚无则 null）的 `qa-config-revised`，运行日志写一次确定性的
+`decision/qa_config_revise` 镜像，不写 superseded，首轮仍为 qaRound 1。回放允许首轮前多条 round-0 记录，但 round-0
+不能出现在已消耗轮次的修订之后；恢复时若镜像缺失且已有 QA 轮次、或镜像位于首个 QA 轮次之后，均拒绝 `qa_revision_invalid`。
+未决 effect、已取消或完成后代码漂移的运行仍拒绝 `qa_revision_not_completed`；首轮之后的修订规则不变。
 
 若上一调用已有 `test_run start` 但没有 complete，默认仍是 `qa_execution_unknown`。
 确认旧宿主已退出后，单任务宿主可用原配置、原身份和新授权显式恢复：

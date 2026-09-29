@@ -218,10 +218,10 @@ export function createHostQaExecutor(options) {
               ...(hostRequestTimeout?{hostRequestTimeout:true}:{})});
           }else{
             logStep(configuration,binding,'test_run','case_start',{case_id:item.id},'QA browser case started');
-            let observed,hostRequestTimeout=false;
+            let observed,hostRequestTimeout=false,answered=false;
             if(browser===null||item.expected.some(value=>value.includes('[需确认]')))
               observed={verdict:'BLOCKED',evidence:[],environment,cleanup:'not_needed'};
-            else try{observed=json(await browser(request,signal));}
+            else try{observed=json(await browser(request,signal));answered=true;}
             catch(error){
               if(error.code!=='host_request_timeout')throw error;
               hostRequestTimeout=true;
@@ -239,11 +239,18 @@ export function createHostQaExecutor(options) {
             }catch{evidenceProblem='qa_evidence_required';}
             const verdict=evidenceProblem!==null||digest(observed.environment)!==digest(environment)||observed.cleanup==='failed'
               ||(item.cleanup.length>0&&observed.cleanup!=='completed')?'BLOCKED':observed.verdict;
+            // The session itself answered BLOCKED (for example: simulator
+            // unreachable). Unlike [需确认] or a missing capability, a later
+            // explicit rerun on the same code can change this outcome.
             rows.push({id:item.id,kind:'browser',origin:item.origin,blocking:item.blocking,verdict,
               evidence:observed.evidence,evidenceProblem,environment:observed.environment,cleanup:observed.cleanup,
-              ...(hostRequestTimeout?{hostRequestTimeout:true}:{})});
+              ...(hostRequestTimeout?{hostRequestTimeout:true}:{}),
+              ...(answered&&observed.verdict==='BLOCKED'?{hostDeclaredBlocked:true}:{})});
+            // The durable log row, appended now through the writer, is the record
+            // that the session itself answered BLOCKED; the report only mirrors it.
             logStep(configuration,binding,'test_run',verdict==='BLOCKED'?'case_blocked':'case_complete',
-              {case_id:item.id,result:verdict},'QA browser case finished');
+              {case_id:item.id,result:verdict,...(answered&&observed.verdict==='BLOCKED'?{host_declared_blocked:true}:{})},
+              'QA browser case finished');
           }
         }
       }
@@ -258,8 +265,14 @@ export function createHostQaExecutor(options) {
           observed.length>0&&observed.every(item=>item?.outcome==='passed')?'PASS':'BLOCKED';
         row.commandEvidence=mappings.map(item=>item.id);
         const item=plan.cases.find(item=>item.id===row.id);
-        if(item.expected.some(value=>value.includes('[需确认]')))row.verdict='BLOCKED';
+        // Record why a logic case is BLOCKED: an unresolved [需确认] expectation
+        // stays BLOCKED on every round, while a mapped command that produced no
+        // exit code is an environment outcome that an explicit rerun can change.
+        const needsConfirmation=item.expected.some(value=>value.includes('[需确认]'));
+        if(needsConfirmation){row.verdict='BLOCKED';row.needsConfirmation=true;}
         if(row.hostRequestTimeout)row.verdict='BLOCKED';
+        if(row.verdict==='BLOCKED'&&row.staticVerdict==='SUPPORTED'&&!needsConfirmation
+          &&observed.some(result=>result?.outcome==='unavailable'))row.commandUnavailable=true;
       }
       if(rows.length===0)rows.push({id:'qa-unavailable',kind:'commands',verdict:'BLOCKED',evidence:['No executable QA contract']});
       const drift=digest(before.files)!==digest(snapshot().files);

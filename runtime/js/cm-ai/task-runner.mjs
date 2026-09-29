@@ -1,4 +1,4 @@
-import {readQaConfigRevision} from './qa-config-revision.mjs';
+import {beforeFirstQaRound,readQaConfigRevision} from './qa-config-revision.mjs';
 import {readQaAttachment} from './qa-attachment.mjs';
 // Trusted synthetic fixture host; explicit V2 supports isolated task-file writes.
 import { randomUUID } from 'node:crypto';
@@ -928,8 +928,13 @@ export function createTaskRunner(options) {
   const reviseQa=raw=>{
     need(invocationMode&&store&&!busy&&!poisoned,'qa_revision_unavailable');
     const record=readQaConfigRevision(raw),current=status();
-    need(current.state==='fixture_completed'&&current.code===null,'qa_revision_not_completed');
-    need(current.packageDigest===record.packageDigest,'package_mismatch');
+    // Before the first QA round (the caller checks the QA log) development may
+    // still be in progress, but never with an unresolved effect, after
+    // cancellation, or over completed code that no longer matches its review.
+    if(beforeFirstQaRound(record))need(!['unknown','cancelled'].includes(current.state)
+      &&!(current.state==='fixture_completed'&&current.code!==null),'qa_revision_not_completed');
+    else need(current.state==='fixture_completed'&&current.code===null,'qa_revision_not_completed');
+    need((current.packageDigest??null)===record.packageDigest,'package_mismatch');
     persist('qa-config-revised',{record});return json(record);
   };
   const supersedeEvidence=raw=>{

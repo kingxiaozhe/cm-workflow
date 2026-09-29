@@ -1,4 +1,4 @@
-import {readQaConfigRevision} from './qa-config-revision.mjs';
+import {beforeFirstQaRound,qaRevisionFollows,readQaConfigRevision} from './qa-config-revision.mjs';
 // Host-only S3b2b journal grammar. Data validation grants no provider authority.
 import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,requestFor} from './effect-contract.mjs';
 import {readReviewBaseline,readReviewPackage,reviewSpecsPath} from './review-package.mjs';
@@ -651,12 +651,17 @@ export function readRunnerHistory(raw,config,version=1) {
       need(qaAttachment===null,'qa_attachment_duplicate');qaAttachment=readQaAttachment(p.record);
     } else if(version===3&&p.type==='qa-config-revised') {
       shape(p,[...common,'record']);
-      need(r.kind==='result'&&pending===null&&state.state==='fixture_completed','qa_revision_not_completed');
+      need(r.kind==='result'&&pending===null,'qa_revision_not_completed');
       const revision=readQaConfigRevision(p.record);
-      need(revision.packageDigest===state.reviewPackage.packageDigest&&revision.taskAttempt===state.attempt,'package_mismatch');
+      // Before any QA round the revision may precede N5; it still never lands
+      // inside an effect or after cancellation, and binds the current package.
+      if(beforeFirstQaRound(revision))need(state.state!=='cancelled','qa_revision_not_completed');
+      else need(state.state==='fixture_completed','qa_revision_not_completed');
+      need(revision.packageDigest===(beforeFirstQaRound(revision)?state.reviewPackage?.packageDigest??null
+        :state.reviewPackage.packageDigest)&&revision.taskAttempt===state.attempt,'package_mismatch');
       if(qaRevision)need(revision.fromFingerprint===qaRevision.toFingerprint
         &&revision.invariantDigest===qaRevision.invariantDigest
-        &&revision.previousQaDigest===qaRevision.qaDigest&&revision.qaRound>qaRevision.qaRound,'qa_revision_chain_invalid');
+        &&revision.previousQaDigest===qaRevision.qaDigest&&qaRevisionFollows(revision,qaRevision),'qa_revision_chain_invalid');
       else need(revision.fromFingerprint===(qaAttachment?.qaFingerprint??completion.fingerprints.config),'qa_revision_chain_invalid');
       qaRevision=revision;
     } else if(version===3&&p.type==='qa-fix-accepted') {
