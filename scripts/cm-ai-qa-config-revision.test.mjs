@@ -61,8 +61,9 @@ async function completed(f,{attach=false,twoAttempts=false}={}){
 function buildExecution(f,{twoAttempts=false}={}){
   let calls=0,reviews=0;
   const execution={configuration:{kind:'synthetic-host-v1'},timeoutMs:2000,excludedContexts:['main'],
-    developer:{provider:'codex',requestedModel:'fixture',contextId:'dev',run:createCodexDeveloperRun({requestedModel:'fixture',worker:async()=>{
-      calls++;fs.writeFileSync(path.join(f.codeProject,'a.js'),'new\n');
+    developer:{provider:'codex',requestedModel:'fixture',contextId:'dev',run:createCodexDeveloperRun({requestedModel:'fixture',worker:async({prompt})=>{
+      // Attempt 2 must change the rejected bytes (develop_unchanged_after_review).
+      calls++;fs.writeFileSync(path.join(f.codeProject,'a.js'),JSON.parse(prompt.split('<cm-developer-data-json>\n')[1]).identity.attempt===1?'new\n':'new 2\n');
       return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
         retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};
     }})},
@@ -89,7 +90,7 @@ function buildExecution(f,{twoAttempts=false}={}){
       }},
     hostDecision:{status:'approved'},
     check:createHostCheck({cwd:f.codeProject,commands:[{id:'content',command:[process.execPath,'-e',
-      "require('node:assert/strict').equal(require('node:fs').readFileSync('a.js','utf8'),'new\\n')"]}]})};
+      "require('node:assert/strict').match(require('node:fs').readFileSync('a.js','utf8'),/^new( 2)?\\n$/)"]}]})};
 
   const qa={commands:[],environment:{kind:'web',carrier:'browser',target:'fixture',scope:'local'}};
   execution.configuration={kind:'synthetic-host-v1',hostContextId:'main',workflow:{qa,documentationPaths:[],applicableAgentFiles:[]}};

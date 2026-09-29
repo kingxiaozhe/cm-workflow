@@ -13,14 +13,18 @@ const sameIdentity=(left,right)=>['repositoryId','runId','taskId','attempt'].eve
 const sameTask=(left,right)=>['repositoryId','runId','taskId'].every(key=>left[key]===right[key]);
 const boundStatus=(status,identity)=>{validIdentity(status?.identity);
   need(sameIdentity(status.identity,identity),'identity_mismatch');return status;};
-const retryReview=status=>status.state==='pending_review'
-  &&['review_transport_timeout','review_abandoned'].includes(status.code);
+// A no-result timeout, an explicit abandonment, a reviewer failure with no
+// verdict and a verdict that broke the written contract share one redispatch
+// per attempt. Exported for the batch driver, like developmentRetryable.
+export const reviewRetryable=status=>status.state==='pending_review'
+  &&['review_transport_timeout','review_abandoned','review_provider_failed','review_verdict_invalid'].includes(status.code);
+const retryReview=reviewRetryable;
 // Both mean the delivery itself must be redone: an invalid developer result, or
 // one that does not satisfy the task's own written verification. Exported so the
 // batch driver decides retryability from the same predicate instead of keeping a
 // second copy of the code list that silently drifts.
 export const developmentRetryable=status=>status.state==='blocked'
-  &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed'].includes(status.code);
+  &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review'].includes(status.code);
 const retryDeveloper=developmentRetryable;
 export const completionRetryable=status=>status.state==='blocked'
   &&['completion_checks_changed','completion_package_changed'].includes(status.code)
@@ -29,7 +33,7 @@ const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approv
   status.state==='changes_requested'||retryDeveloper(status)||retryReview(status)?'resume':
   status.state==='awaiting_review'?'decision':status.state==='unknown'
     ?(status.pendingEffectKind?'abandon_effect':
-      status.pendingReviewInvocation?'abandon_review':'reconcile'):
+      status.pendingReviewInvocation||status.abandonableReviewResult?'abandon_review':'reconcile'):
   status.state==='pending_review'&&status.code==='provider_review_observed'?'review_evidence':
   status.state==='pending_review'?'decision':status.state==='approved'||completionRetryable(status)?'complete':
   status.state==='fixture_completed'&&status.code==='qa_triggered'?'qa_execution':

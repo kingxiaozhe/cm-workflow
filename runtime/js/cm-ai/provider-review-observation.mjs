@@ -60,15 +60,19 @@ export function inspectProviderCauseReview(observationText,expectationText){
   need(arguments.length===2);
   return inspect(observationText,expectationText,true);
 }
+function readObservation(observationText,expectationText,cause) {
+  const observation=decode(observationText,1024*1024),expected=expectation(decode(expectationText,10*1024*1024),cause);
+  shape(observation,['version','kind','requestDigest','events','result']);
+  need(observation.version===1&&observation.kind==='cm-provider-review-observation');
+  hex(observation.requestDigest);need(observation.requestDigest===expected.request.requestDigest,'observation_binding');
+  const stream=eventStream(observation.events,expected.excluded),r=observation.result;
+  if(r?.status==='succeeded')shape(r,['status','value']);
+  else {shape(r,['status','code']);need(['failed','cancelled'].includes(r.status));text(r.code);need(r.code.length<=256);}
+  return {observation,expected,...stream,r};
+}
 function inspect(observationText,expectationText,cause) {
   try {
-    const observation=decode(observationText,1024*1024),expected=expectation(decode(expectationText,10*1024*1024),cause);
-    shape(observation,['version','kind','requestDigest','events','result']);
-    need(observation.version===1&&observation.kind==='cm-provider-review-observation');
-    hex(observation.requestDigest);need(observation.requestDigest===expected.request.requestDigest,'observation_binding');
-    const {thread,terminal,close}=eventStream(observation.events,expected.excluded),r=observation.result;
-    if(r?.status==='succeeded')shape(r,['status','value']);
-    else {shape(r,['status','code']);need(['failed','cancelled'].includes(r.status));text(r.code);need(r.code.length<=256);}
+    const {observation,expected,thread,terminal,close,r}=readObservation(observationText,expectationText,cause);
     let observationStatus='unknown',code='transport_incomplete',review=null;
     if(close?.timed_out===true||r.code==='timeout')code='transport_timeout';
     else if(r.status==='cancelled'||r.code==='cancelled'){observationStatus='cancelled';code='transport_cancelled';}
@@ -87,4 +91,43 @@ function inspect(observationText,expectationText,cause) {
     const code=allowed.includes(error?.code)?error.code:'observation_invalid';
     throw Object.assign(new Error(code),{code});
   }
+}
+
+// A reviewer that ended without a usable verdict and broke no boundary may be
+// dispatched once more; the class tells the user whether to log in or wait.
+// Only these fixed worker codes qualify, and only with no final message and an
+// observed process exit. Tool/context breaks, output limits, spawn or prompt
+// failures and any other code stay unknown, as before.
+export const REVIEWER_PROVIDER_FAILURES=Object.freeze({
+  reviewer_auth_failed:'reviewer_auth_failed',reviewer_billing_error:'reviewer_billing_error',
+  reviewer_rate_limited:'reviewer_rate_limited',reviewer_server_error:'reviewer_server_error',
+  reviewer_model_not_found:'reviewer_model_not_found',reviewer_api_error:'reviewer_api_error',
+  provider_failed:'reviewer_provider_failed',incomplete_result:'reviewer_exited',
+  missing_init:'reviewer_stream_unrecognized',unexpected_event:'reviewer_stream_unrecognized',
+  invalid_event:'reviewer_stream_unrecognized'});
+// A complete answer that breaks the written verdict contract can never become a
+// receipt. It is retried under the same budget and its exact code is kept.
+export const REVIEWER_VERDICT_FAILURES=Object.freeze(['contradictory_verdict','invalid_finding_path',
+  'invalid_finding_severity','invalid_finding_id','invalid_finding_shape','missing_material','review_package_mismatch']);
+// Pure and deterministic: live classification and journal replay call it with
+// the same bytes. Returns null for everything that is not such a failure.
+export function inspectProviderReviewFailure(observationText,expectationText){
+  need(arguments.length===2);
+  let read;
+  try{read=readObservation(observationText,expectationText,false);}catch{return null;}
+  const {observation,expected,thread,terminal,close,hasResult,r}=read;
+  if(close===null||close.timed_out||r.status==='cancelled'||['timeout','cancelled'].includes(r.code))return null;
+  let category,failure;
+  if(!hasResult){
+    if(r.status!=='failed'||!Object.hasOwn(REVIEWER_PROVIDER_FAILURES,r.code))return null;
+    category='provider';failure=REVIEWER_PROVIDER_FAILURES[r.code];
+  }else{
+    if(!(close.exit_code===0&&close.signal===null&&terminal==='turn.completed'&&r.status==='succeeded'))return null;
+    try{reviewResult(r.value,expected.pkg);return null;}
+    catch(error){if(!REVIEWER_VERDICT_FAILURES.includes(error?.code))return null;category='verdict';failure=error.code;}
+  }
+  return json({version:1,kind:'cm-provider-review-failure',requestDigest:expected.request.requestDigest,
+    observationDigest:digest(observation),identity:expected.request.identity,logicalContextId:expected.request.contextId,
+    provider:expected.request.provider,requestedModel:expected.request.requestedModel,providerThreadId:thread,
+    category,failure,completionEligible:false});
 }

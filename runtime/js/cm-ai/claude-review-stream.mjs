@@ -15,6 +15,11 @@ export function reportClaudeDevIntentNotice(onNotice) {
   try { onNotice({kind:'claude_system_notice', subtype:'dev_intent'}); } catch {}
 }
 
+// Error classes observed from Claude CLI 2.1.274; anything else is reviewer_api_error.
+const API_ERROR_CLASSES = Object.freeze({authentication_failed:'reviewer_auth_failed',
+  billing_error:'reviewer_billing_error', rate_limit:'reviewer_rate_limited',
+  server_error:'reviewer_server_error', model_not_found:'reviewer_model_not_found'});
+
 export function createClaudeReviewStream(onEvent, onNotice = null) {
   let session = null, stage = 'init', value, noticeCount = 0, thinkingCount = 0, rejectedAttempts = 0;
   const pendingTools = new Map(), toolIds = new Set();
@@ -73,6 +78,13 @@ export function createClaudeReviewStream(onEvent, onNotice = null) {
         return;
       }
       if (message.type === 'assistant') {
+        // CLI 2.1.x reports an API failure as a synthetic assistant message with
+        // a string error class, then an is_error result. Before any tool call it
+        // carries no verdict: stop with the class so the user knows what to fix.
+        if (typeof message.error === 'string' && message.parent_tool_use_id === null
+          && message.message?.role === 'assistant' && toolIds.size === 0) {
+          reject(Object.hasOwn(API_ERROR_CLASSES, message.error) ? API_ERROR_CLASSES[message.error] : 'reviewer_api_error');
+        }
         if (message.parent_tool_use_id !== null || message.error != null
           || message.message?.role !== 'assistant') reject('unexpected_assistant');
         const content = message.message.content;

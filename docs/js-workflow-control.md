@@ -539,7 +539,7 @@ node scripts/cm-ai-host.mjs serve --config /absolute/run.json --mode resume \
   --allow-review-attempt 1
 ```
 
-若改用 `cm-ai-drive.mjs` 的 `create`/`advance` 并同时传 `--allow-review-attempt 1`，需预备 `develop-a2.json`；通常先不带审查授权到 `awaiting_review`，再按 `packageDigest` 单独 `decision`，读首轮 findings 后写第 2 轮答案。
+若改用 `cm-ai-drive.mjs` 的 `create`/`advance` 并同时传 `--allow-review-attempt 1`，需预备 `develop-a2.json`；通常先不带审查授权到 `awaiting_review`，再按 `packageDigest` 单独 `decision`，读首轮 findings 后写第 2 轮答案。第 2 轮交付与第 1 轮被要求修改的代码逐字节相同（审查包 `artifactDigest` 相同）时，运行器在送审前停在可重试的 `blocked/develop_unchanged_after_review`（`pendingAction: "resume"`），不消耗第 2 轮审查；改好答案后在原 run `advance`，以新的 develop effect id 重新交付。
 
 review.json 含 `{model, disabledSkills, preflight}`，另有可选 `timeoutMs`；disabledSkills 是本机探测实际发现并
 禁用的 Skill 路径，preflight 沿原配置指纹/模型/stdin 合同。探测输出不包含原始诊断、
@@ -549,7 +549,9 @@ review.json 含 `{model, disabledSkills, preflight}`，另有可选 `timeoutMs`�
 `timeoutMs` 是 reviewer 进程的传输预算，单位毫秒，必须是 1 到 3600000 之间的整数，
 不填且受保护配置也未给预算时使用 900000（15 分钟）；preflight 输出有效 `timeoutMs`。旧 review.json 未写此字段而受保护配置显式给出预算时，沿用后者。两者都给出时 reviewer 取 review.json 里的值，因此**调大审查超时不需要切换开发模式**。
 它不进入已授权配置的摘要，所以 `review_transport_timeout` 之后可以在恢复时调大再续跑；
-它只管 reviewer，不改变开发、检查或 QA 的任何超时。
+它只管 reviewer，不改变开发、检查或 QA 的任何超时。运行器自己的审查计时取 journal 中的调用超时（当前会话模式固定
+1800000，受保护 CLI 模式为其 `timeoutMs`）与「reviewer 预算 + 60000 毫秒」中较大者；该计时同样不写入 journal。
+因此预算可以超过 30 分钟，由 reviewer 自己的超时先触发、带进程退出记录，而不是被运行器在 30 分钟截断并耗掉唯一重派。
 
 单任务和批次驾驶员的 PLAN 可给 `checks` 每项设置 `timeoutMs`，也可给 PLAN 设置 `checkTimeoutMs` 作为默认值；均须为 1..3600000 的整数毫秒，每项优先，省略时驱动默认 900000（15 分钟），启动宿主前校验。`host-check` 对其他调用方仍默认 60000。检查命令产生的构建文件应放在代码根外，例如将 `xcodebuild -derivedDataPath` 指向外部目录。若检查自己新增了未跟踪的范围外文件，状态为 `blocked/check_output_out_of_scope`，`reason` 与宿主 stderr 列出最多 20 个相对路径；移走产物后在原 run `advance` 会用新 develop effect id 重做。开发者写出的范围外文件仍按 `unknown/out_of_scope` 处理，检查前后树的比较不会给它恢复权限。
 
@@ -730,6 +732,22 @@ beforeSha256使用expected原值（缺文件为null），blocked要求空edits�
 只有 QA、上下文、文档核验及既有 finalizer 均通过后才返回 run_done。
 首次审查要求修改时，沿 runner 的既有第 2 轮执行修复和 fresh Review；第二轮仍要求修改
 则以 `review_limit` 停止，不创建第三轮。每轮仍单独经过宿主调用授权。
+
+审查提示写明 verdict 规则：P0 为安全漏洞、数据丢失或主路径崩溃／错误结果，P1 为用户会遇到的错误行为或未满足验收标准，
+P2 为合并前必须修的边界、错误处理、契约或测试缺陷，P3 为不阻断的建议；`approved` 不得有 P0–P2，`changes_requested`
+至少一条 P0–P2；finding.path 只能是 examinedPaths 或 handoff 路径，规格／设计／任务文件不是 examinedPaths。
+违反这些规则的答复不产生回执，状态为 `pending_review/review_verdict_invalid`，`reason` 以具体代码开头
+（`contradictory_verdict`、`invalid_finding_path`、`missing_material`、`review_package_mismatch`、`invalid_finding_*`），
+答复原文留在 journal 供回放复核；与传输超时共用同一 attempt 的一次重派，超出后为 `blocked/review_verdict_invalid`。
+
+`blocked` verdict 的含义固定为：在批准 scope 内修改代码也无法让这个包通过——批准的规格自相矛盾或有误、数据块缺少必需材料、
+修复需要改 scope 外文件，或需要人工决定。它是终态，第 1 轮给出也不进入第 2 轮，`reason` 写明审查给出的原因；
+按原因修改规格或 scope 后以 supersede 新建运行。选择保持终态而不是把 blocked 当成第 2 轮：运行器无法判断 blocked 是否可修，
+把它转成第 2 轮会让不可修的 blocked 白耗最后一轮开发与审查，也会把审查者明确的停止改成继续，削弱失败即停的边界。
+可修的问题由提示要求使用 `changes_requested`，因此不会被 blocked 静默吞掉第 2 轮。
+
+已知限制：`review_limit` 或 `review_blocked` 之后用 supersede 新建的运行从第 1 轮开始，`priorReview` 为空，
+新运行的审查看不到旧运行的 findings；请在新运行开始前自行阅读 `.reviews/` 中归档的旧审查记录。
 `status/cancel/advance/resume` 可以使用启动配置的原身份，返回当前轮次；
 `decision/complete` 等绑定任务包的操作必须使用当前轮次身份，旧轮次请求拒绝。
 任务完成后，`advance` 进入既有 QA 决策步骤；未提供绑定当前任务包的宿主决策时返回
@@ -1167,7 +1185,8 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
   上一轮已把某任务标完成时，新批次要从下一个未完成任务起，不能沿用旧任务清单。
   `--allow-review` 列出的条目也必须落在本批次任务集合内，否则启动即 `review_task_mismatch`。
 
-`review_transport_timeout` 且无结果返回时，状态会带 `pendingAction: "resume"`。
+`review_transport_timeout` 且无结果返回时，状态会带 `pendingAction: "resume"`；
+`review_provider_failed`（审查 CLI 未登录、限流、过载、模型不存在等且没有结论）与 `review_verdict_invalid` 同样如此。
 此时应按该提示走恢复并重新给出审查授权；继续发 `advance` 会消耗掉这次机会，
 随后状态转为 `blocked / pendingAction: none`，只能换新 `batchId` 重来。
 
@@ -1183,7 +1202,8 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 | `blocked/develop_checks_not_passed` | 开发检查失败或不可用，审查包未生成 | 根据 `reason` 的 id 和证据修复环境，在原 run `advance`；不消耗审查轮次 |
 | `blocked/checks_not_passed` | 旧运行的已审包在完成门禁发现失败检查 | 终态；不得重新开发 |
 | `blocked/check_output_out_of_scope` | 检查新增了范围外产物 | 移走产物并改检查输出路径，在原 run `advance`；新 develop effect id 重做 |
-| `blocked/completion_checks_changed` | 已审包的完成前复查结果变化 | 修好检查环境，在原 run `advance` 或 `complete`，保留原审查回执；仍受 effect 上限约束 |
+| `blocked/completion_checks_changed` | 已审包的完成前复查结果变化 | 修好检查环境，在原 run `advance` 或 `complete`，保留原审查回执；complete 不占六个 effect 名额，与 `completion_package_changed` 合计最多重试 3 次 |
+| `blocked/completion_retry_limit` | 完成前复查第 4 次仍被拦下；运行器写入 `completion-retry-limit`，没有新的 complete intent | 终态；按 `reason` 修好检查环境（不稳定的检查、在代码根生成新文件的命令），用 `--supersede-reviewed-evidence` 新建运行 |
 | `state: "unknown"` | 某个有副作用的步骤抛了异常或返回了无法判定的终态，做没做成不确定 | 单任务 V3 审查调用已登记、无结果时可用下述 `abandon_review`；其他情况见下 |
 | `state: "unknown"` + `execution_error`，`pendingAction: "reconcile"`，且 stderr 显示驱动未应答 `init_generate`／`init_verify` | 驾驶员断联，原 develop effect 结果未定；旧版驾驶员可能错误退出 0 | 先核对原 host 与子进程及代码根实际写入；仅满足下述 pending effect 条件时在原 run 用 `abandon_effect`，之后按原新运行门禁使用当前会话宿主路径；不要原样重发 `advance` |
 | `blocked/develop_checks_not_passed`，bootstrap 规范任务 | 规范已写入，`PLAN.checks` 未通过 | 修好检查环境后在原 run `advance`；同一轮以原答案重试，驾驶员与宿主只接受本运行存档记录的那次写入，他人改动先还原 |
@@ -1191,6 +1211,10 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 | `state: "unknown"` + pending develop/complete intent（后面可有 control 记录） | 宿主在 effect intent 后、checkpoint 前退出 | `pendingAction: "abandon_effect"`；核对旧 host 与它启动的进程后，在原 run 显式退出 |
 | `state: "unknown"` + pending review intent，尚无 host-joined／review 登记 | reviewer 启动前退出 | `pendingAction: "abandon_effect"`；确认旧 host 已退出后在原 run 显式退出 |
 | `state: "unknown"` + 已登记且无结果的 review invocation | 审查调用未完成 | `pendingAction: "abandon_review"`；核对旧 host 和 reviewer 进程后在原 run 显式退出 |
+| `state: "unknown"` + `transport_timeout`，结果已入 journal 且有最终消息 | reviewer 给出最终消息后被超时截断，结论从未被接收 | `pendingAction: "abandon_review"`；确认 reviewer 已退出后在原 run 显式放弃这条结果，再按一次重派恢复 |
+| `state: "blocked"` + `develop_retry_limit` | 可重试的开发阻断反复出现，剩余调用名额已不够再交付一次并送审，或剩余 effect 名额已不够交付并送审（complete、QA 与文档不占 effect，已批准的运行总能进入完成）；运行器在派发开发前写入 `develop-retry-limit`，没有 intent、没有开发调用 | 终态；按 `reason` 中上次阻断原因修好根因，用 `--supersede-reviewed-evidence` 新建运行 |
+| `state: "pending_review"` + `review_provider_failed` | 审查 CLI 没给结论就失败（`reason` 首段为类别，如 `reviewer_auth_failed`） | 按 `reason` 先登录或等额度，再带本轮审查授权恢复；同一 attempt 只重派一次 |
+| `state: "pending_review"` + `review_verdict_invalid` | 审查答复违反 verdict 规则（`reason` 首段为具体代码） | 带本轮审查授权恢复重派；同一 attempt 只重派一次 |
 | `state: "fixture_completed"` + `code: "qa_execution_unknown"` | 一次 QA 调用没拿到终态，工具可能还在跑或已被中断 | `--rerun-unknown-qa` |
 | `state: "blocked"` + `code: "review_package_changed"` | 独立审查已返回 verdict，但代码根在调用期间漂移；reason 列出路径 | 清理或还原后在原 run 继续 `advance`，不再调用 reviewer |
 | `state: "blocked"` + `code: "completion_package_changed"` | 完成复核时代码根或证据漂移；reason 列出路径 | 清理后在原 run 重发 `complete` |
@@ -1237,6 +1261,9 @@ node scripts/cm-ai-drive.mjs --plan abandon-review.json abandon_review
 `reason` 必须非空、单行、最多 500 UTF-8 字节；旗标只允许本次宿主调用一次，不进入配置指纹。
 前提不满足时拒绝且 journal 不变。成功后追加绑定 effect、invocation、registered／started 记录摘要、
 原因和时间的 `review-invocation-abandoned`，并写 `review_abandoned` 运行日志；旧记录保留。
+同一操作也用于 checkpoint 已写入、状态为 unknown 且结果从未被接收的最近一次审查：被超时截断的最终消息，
+或旧版本记为 unknown 且属于上述可重试类别的失败。此时记录另外绑定 `resultDigest`，原 invocation 记为 abandoned，
+其 effect 不再占六个 effect 名额，被放弃的调用（含上述无结果登记调用）也不占六次调用名额；旧版 `timed_out` 且无 inspection、observation_invalid 与工具／上下文越界仍无此出口。
 状态变为 `pending_review/review_abandoned`、`pendingAction: "resume"`。重新启动原 run 的宿主，带新的
 `--allow-review-attempt 1`（第二轮用 2）并发送 `advance`；会取得新 grant、新 invocation。
 同一 attempt 的 transport timeout 与 abandon 共用**最多一次重派**，额度已用完时拒绝 abandon。

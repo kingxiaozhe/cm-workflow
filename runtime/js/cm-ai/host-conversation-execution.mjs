@@ -91,6 +91,13 @@ export function resolveReviewTimeout(review,protection){
   if(protection)return {timeoutMs:protection.timeoutMs};
   return {timeoutMs:900000};
 }
+// The runner races each review against its own timer. That timer must outlast
+// the reviewer's budget, or a budget raised above the runner's journaled call
+// timeout (fixed at 30 minutes here) is still cut at 30 minutes and the attempt's
+// only redispatch is spent. The worker stops its process group about a second
+// after its own deadline; the margin leaves room for that and for close.
+export const REVIEW_BOUND_MARGIN_MS=60000;
+export const reviewRaceTimeout=(outerTimeoutMs,reviewTimeoutMs)=>Math.max(outerTimeoutMs,reviewTimeoutMs+REVIEW_BOUND_MARGIN_MS);
 export function createConversationExecution(definition,hostContextId,bridge,review=null,allowedAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
   definition=json(definition);workflow=workflow===null?null:json(workflow);options=json(options);
   shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','parallelMember','verificationPrecheck'].filter(key=>Object.hasOwn(options,key))]);
@@ -192,7 +199,8 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     }catch{/* diagnostics never change the verdict */}
     return {satisfied:verdict.satisfied};
   }:null;
-  const execution={configuration,timeoutMs:provider?protection.timeoutMs:1800000,excludedContexts:[durableHostContextId],hostDecision:null,applicableAgentFiles:[],
+  const outerTimeoutMs=provider?protection.timeoutMs:1800000;
+  const execution={configuration,timeoutMs:outerTimeoutMs,excludedContexts:[durableHostContextId],hostDecision:null,applicableAgentFiles:[],
     ...(verificationGate?{verificationGate}:{}),
     ...(bootstrap?{bootstrap}:{}),
     ...(provider?{developmentAttempt:provider.attempt}:{}),
@@ -291,6 +299,8 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
           :createClaudeReviewRun(claudeWorker(selectedOptions))(request,control);
       }}],
     reviewInvocation:{developerThreadId:author,excludedThreadIds:[durableHostContextId],hostContextId,
+      // Not journaled (unlike timeoutMs above), so a resumed run may raise it.
+      timeoutMs:reviewRaceTimeout(outerTimeoutMs,reviewOptions.timeoutMs),
       authorize:authority?.authorize??(()=>({status:'denied',code:'permission_denied'}))},
   };
   if(definition.codeProjects)execution.applicableAgentFiles=[...new Set([...execution.applicableAgentFiles,

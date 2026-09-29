@@ -162,20 +162,24 @@ test('a denied host decision never reaches the wired fake process',()=>wiredFixt
   assert.equal(fs.readFileSync(f.tasksPath,'utf8'),'- [ ] T-001: fixture\n');assert.deepEqual(f.reopen().status(),end);
 },{authorize:()=>({status:'denied',code:'permission_denied'})}));
 
-test('an incomplete signal-only worker result is durable unknown and never redispatched',()=>wiredFixture(async f=>{
+// A reviewer that exits without a verdict is a durable retryable failure. The
+// retry needs a new effect id and fresh authorization; resume never redispatches.
+test('an incomplete signal-only worker result is a durable retryable failure, never redispatched by resume',()=>wiredFixture(async f=>{
   let runner=f.make();await runner.executeEffect(f.effect('develop'));const end=await runner.executeEffect(f.effect('review'));
-  assert.equal(end.state,'unknown');assert.equal(end.code,'transport_incomplete');assert.equal(f.seen.spawns,1);
-  assert.equal(end.reviewInvocation.result.reconciliationRequired,true);assert.equal(end.receipt,null);
+  assert.equal(end.state,'pending_review');assert.equal(end.code,'review_provider_failed');assert.equal(f.seen.spawns,1);
+  assert.equal(end.reviewInvocation.result.outcome,'failed');assert.equal(end.reviewInvocation.result.inspection.failure,'reviewer_exited');
+  assert.equal(end.reviewInvocation.result.reconciliationRequired,false);assert.equal(end.receipt,null);
   runner=f.reopen();assert.deepEqual(await runner.run(),end);assert.equal(f.seen.spawns,1);
 },{incomplete:true}));
 
-test('observed error then turn.failed is one durable incomplete failure without retry or completion',()=>wiredFixture(async f=>{
+test('observed error then turn.failed is one durable retryable failure without completion',()=>wiredFixture(async f=>{
   let runner=f.make();await runner.executeEffect(f.effect('develop'));const end=await runner.executeEffect(f.effect('review'));
-  assert.equal(end.state,'unknown');assert.equal(end.code,'transport_incomplete');assert.equal(f.seen.spawns,1);
+  assert.equal(end.state,'pending_review');assert.equal(end.code,'review_provider_failed');assert.equal(f.seen.spawns,1);
   assert.equal(end.reviewInvocation.started,'actual-fresh-review');
-  assert.equal(end.reviewInvocation.result.outcome,'unknown');
+  assert.equal(end.reviewInvocation.result.outcome,'failed');
+  assert.equal(end.reviewInvocation.result.inspection.failure,'reviewer_provider_failed');
   assert.equal(end.reviewInvocation.result.inspection.providerThreadId,'actual-fresh-review');
-  assert.equal(end.reviewInvocation.result.reconciliationRequired,true);assert.equal(end.receipt,null);
+  assert.equal(end.reviewInvocation.result.reconciliationRequired,false);assert.equal(end.receipt,null);
   assert.equal(end.taskCommit,null);assert.equal(fs.readFileSync(f.tasksPath,'utf8'),'- [ ] T-001: fixture\n');
   runner=f.reopen();assert.deepEqual(await runner.run(),end);assert.equal(f.seen.spawns,1);
 },{dualFailure:true}));

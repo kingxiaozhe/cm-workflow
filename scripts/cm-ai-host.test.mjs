@@ -935,7 +935,9 @@ test(`protected conversation review timeout ${runtime} -> ${second}`,async()=>{
     assert(Date.now()-start>=4900);assert(Date.now()-start<14000);
     assert.equal(result.state,second==='result'?'unknown':'pending_review');
     assert.equal(result.code,second==='result'?'transport_timeout':'review_transport_timeout');
-    assert.equal(result.pendingAction,second==='result'?'reconcile':'resume');
+    // A final message cut off by the timeout is never retried by itself; its
+    // only exit is the explicit, audited abandon_review (see cm-ai-review-failure).
+    assert.equal(result.pendingAction,second==='result'?'abandon_review':'resume');
     const before=lastCheckpoint(f),original=before.reviewInvocation;
     assert.equal(before.calls.at(-1).terminal,second==='result'?'unknown':'failed');
     assert.equal(original.result.outcome,'timed_out');

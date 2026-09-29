@@ -280,7 +280,9 @@ function executionFor(f,content,verdict='blocked',qaResult=null){
     }};
   const execution={configuration:{kind:'synthetic-host-v1'},timeoutMs:2000,excludedContexts:['control'],
     developer:{provider:'codex',requestedModel:'fixture',contextId:'developer',run:createCodexDeveloperRun({
-      requestedModel:'fixture',worker:async()=>{fs.writeFileSync(path.join(f.codeProject,'a.mjs'),content);
+      // Attempt 2 must change the rejected bytes (develop_unchanged_after_review).
+      requestedModel:'fixture',worker:async({prompt})=>{fs.writeFileSync(path.join(f.codeProject,'a.mjs'),
+        JSON.parse(prompt.split('<cm-developer-data-json>\n')[1]).identity.attempt===1?content:content+'revised\n');
         return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
           retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};}})},
     reviewers:[reviewer],reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control'],

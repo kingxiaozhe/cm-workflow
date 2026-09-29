@@ -112,7 +112,11 @@ test('legacy state without a reason remains readable and check-output retry does
   assert.equal(completedEffectCount([{effect:{kind:'develop'},result:{state:'blocked',code:'check_output_out_of_scope'}}]),0);
   assert.equal(stageAllowed('develop','blocked','develop_checks_not_passed'),true);
   assert.equal(stageAllowed('develop','blocked','checks_not_passed'),false);
-  assert.equal(completedEffectCount([{effect:{kind:'complete'},result:{state:'blocked',code:'checks_not_passed'}}]),1);
+  // Completion holds no effect slot (an approved run can always complete); the
+  // legacy completion-gate checks_not_passed stays terminal through its stage.
+  assert.equal(completedEffectCount([{effect:{kind:'complete'},result:{state:'blocked',code:'checks_not_passed'}}]),0);
+  assert.equal(stageAllowed('complete','blocked','checks_not_passed'),false);
+  assert.equal(completedEffectCount([{effect:{kind:'develop'},result:{state:'blocked',code:'develop_checks_not_passed'}}]),1);
 });
 
 test('check-output block and reason replay from the stored run before retry',async t=>{

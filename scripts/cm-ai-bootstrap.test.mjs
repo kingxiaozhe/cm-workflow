@@ -49,7 +49,9 @@ function reply(f,kind,payload){
   if(kind==='init_generate')return {status:'generated',documents:payload.targets.map(file=>({path:file,
     content:file==='AGENTS.md'&&fs.existsSync(path.join(f.codeProject,file))?fs.readFileSync(path.join(f.codeProject,file),'utf8'):
       file==='.claude/CLAUDE.md'?'# Fixture instructions\n'+payload.targets.filter(p=>p.startsWith('.claude/rules/'))
-      .map(p=>'@rules/'+path.basename(p)).join('\n')+'\n':'# Fixture instructions\nUse approved scope.\n'}))};
+      .map(p=>'@rules/'+path.basename(p)).join('\n')+'\n':'# Fixture instructions\nUse approved scope.\n'
+      // A revision must change the rejected bytes (develop_unchanged_after_review).
+      +(payload.bootstrap?.priorReview?'Revised for the review findings.\n':'')}))};
   if(kind==='init_verify')return {checks:checks(),constraintChanges:[],application:{status:'no_relevant_lesson',note:null},
     retrospective:f.lesson&&f.calls.filter(kind=>kind==='init_verify').length===1
       ?{status:'lesson_candidate',candidates:[{classification:'structured',trigger:'Bootstrap recovery',

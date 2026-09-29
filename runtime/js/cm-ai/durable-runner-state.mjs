@@ -6,7 +6,7 @@ import {reviewResult,reviewReceipt} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
 import path from 'node:path';
 import {readCommitIntent,readCommitResult} from './task-commit-codec.mjs';
-import {inspectProviderReview,hasProviderReviewResult} from './provider-review-observation.mjs';
+import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure,REVIEWER_PROVIDER_FAILURES} from './provider-review-observation.mjs';
 import {readCmAiProjectLearningWriteback} from './cm-ai-learning-writer.mjs';
 import {readCmAiTaskLearningApplication} from './cm-ai-context-refresh.mjs';
 import {reviewExclusions} from './effect-contract.mjs';
@@ -22,8 +22,8 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed'].includes(code)
-  ||kind==='review'&&state==='pending_review'&&['review_transport_timeout','review_abandoned'].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review'].includes(code)
+  ||kind==='review'&&state==='pending_review'&&REVIEW_RETRY_CODES.includes(code)
   ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed'].includes(code)
     ||code==='review_package_changed'&&reviewVerdict==='approved')
   ||kind==='develop'&&state==='blocked'&&code==='review_package_changed'&&reviewVerdict==='changes_requested'
@@ -34,14 +34,90 @@ export const invalidDeveloperCall=call=>call.terminal==='failed'&&call.failureRe
 // of historical unknown/timed_out records which retain reconciliationRequired=true.
 export const reviewTransportTimeout=result=>result?.outcome==='timed_out'&&result.reconciliationRequired===false
   &&!hasProviderReviewResult(result.observation.events);
-const timeoutEffect=entry=>entry.effect.kind==='review'&&entry.result.code==='review_transport_timeout'
-  &&reviewTransportTimeout(entry.result.reviewInvocation?.result);
-export const reviewTimeoutTransition=(result,cache,attempt,calls=[],contextId=null)=>reviewTransportTimeout(result)?{
-  state:cache.some(entry=>entry.effect.identity.attempt===attempt&&timeoutEffect(entry))
-    ||calls.some(call=>call.terminal==='abandoned'&&call.contextId===contextId)?'blocked':'pending_review',
-  code:'review_transport_timeout'}:null;
-export const completedEffectCount=cache=>cache.filter(entry=>!(entry.effect.kind==='develop'
-  &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))&&!timeoutEffect(entry)).length;
+// outcome "failed" is a new explicit result (see inspectProviderReviewFailure);
+// historical unknown results keep reconciliationRequired=true and never read as it.
+export const reviewerFailure=result=>result?.outcome==='failed'&&result.reconciliationRequired===false
+  &&result.inspection?.kind==='cm-provider-review-failure';
+// Every retryable review ending shares one redispatch per attempt with abandon.
+export const reviewRetryCode=result=>reviewTransportTimeout(result)?'review_transport_timeout'
+  :reviewerFailure(result)?(result.inspection.category==='verdict'?'review_verdict_invalid':'review_provider_failed'):null;
+export const REVIEW_RETRY_CODES=Object.freeze(['review_transport_timeout','review_abandoned','review_provider_failed','review_verdict_invalid']);
+const timeoutEffect=entry=>entry.effect.kind==='review'&&reviewRetryCode(entry.result.reviewInvocation?.result)!==null
+  &&entry.result.code===reviewRetryCode(entry.result.reviewInvocation.result);
+export const reviewRetrySpent=(cache,calls,attempt,contextId)=>cache.some(entry=>entry.effect.identity.attempt===attempt&&timeoutEffect(entry))
+  ||calls.some(call=>call.terminal==='abandoned'&&call.contextId===contextId);
+export const reviewTimeoutTransition=(result,cache,attempt,calls=[],contextId=null)=>{
+  const code=reviewRetryCode(result);
+  return code===null?null:{state:reviewRetrySpent(cache,calls,attempt,contextId)?'blocked':'pending_review',code};
+};
+// Six counted provider calls per run. Locally rejected developer values,
+// automatic review retries and abandoned invocations hold no slot.
+export const MAX_RUNNER_CALLS=6;
+export const countedCalls=(calls,cache)=>calls.filter(call=>!invalidDeveloperCall(call)&&call.terminal!=='abandoned').length
+  -cache.filter(timeoutEffect).length;
+// A review effect whose journaled result the operator abandoned (below) no
+// longer holds one of the six effect slots; its retry does.
+const abandonedResult=(entry,calls)=>entry.effect.kind==='review'&&entry.result.state==='unknown'
+  &&calls.some(call=>call.terminal==='abandoned'&&call.invocationId===entry.result.reviewInvocation?.registration?.grant?.invocationId);
+// Completion holds no effect slot. It makes no provider call, it is admitted
+// only from an approved review (stageAllowed), and every outcome but a
+// completion re-check block ends the run; those blocks have their own bound,
+// MAX_COMPLETION_RETRIES below. So an approved run can always complete, even
+// when an older version already spent all six slots on develop and review.
+const COMPLETION_RETRY_CODES=['completion_checks_changed','completion_package_changed'];
+const completionBlock=entry=>entry.effect.kind==='complete'&&entry.result.state==='blocked'
+  &&COMPLETION_RETRY_CODES.includes(entry.result.code);
+export const completionBlockCount=cache=>cache.filter(completionBlock).length;
+export const completedEffectCount=(cache,calls=[])=>cache.filter(entry=>!(entry.effect.kind==='develop'
+  &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))
+  &&!timeoutEffect(entry)&&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
+// The six-effect cap counts develop and review effects only; completion (above),
+// QA, documentation and finalization hold no slot.
+export const MAX_RUNNER_EFFECTS=6;
+// Only develop and review intents need a free slot; complete is gated by stage.
+export const effectSlotFree=(kind,cache,calls)=>kind==='complete'||completedEffectCount(cache,calls)<MAX_RUNNER_EFFECTS;
+// A delivery is only worth starting while it could still be reviewed: its own
+// call and effect slot, and its review's. Otherwise the run could only end in a
+// refused checkpoint after the developer or reviewer already ran, so it stops
+// before dispatch instead. This is the budget, whatever block made the delivery
+// retryable. (Today every counted develop/review effect in a developable state
+// also holds a counted call, so the call term decides; the effect term keeps
+// the rule true for blocks that could stop before their developer call.)
+export const developBudget=s=>({calls:countedCalls(s.calls,s.cache),effects:completedEffectCount(s.cache,s.calls)});
+export const developBudgetExhausted=s=>{
+  if(!stageAllowed('develop',s.state,s.code,s.priorReview?.verdict))return false;
+  const used=developBudget(s);
+  return used.calls+2>MAX_RUNNER_CALLS||used.effects+2>MAX_RUNNER_EFFECTS;
+};
+// At most this many re-checks after a blocked completion. Each re-runs only the
+// local checks and the commit gate, so a small fixed bound keeps the journal
+// bounded; an environment that keeps changing needs fixing, not more attempts.
+export const MAX_COMPLETION_RETRIES=3;
+export const completionRetriesExhausted=s=>s.state==='blocked'&&COMPLETION_RETRY_CODES.includes(s.code)
+  &&completionBlockCount(s.cache)>MAX_COMPLETION_RETRIES;
+export const completionRetryLimitReason=({fromCode,completionBlocks})=>
+  `completion_retry_limit: 完成前复查已 ${completionBlocks} 次被拦下（最多重试 ${MAX_COMPLETION_RETRIES} 次），上次停在 blocked/${fromCode}。`
+  +'先修好检查环境（结果不稳定的检查、会在代码根生成新文件的命令），再用 --supersede-reviewed-evidence 新建运行';
+export const developRetryLimitReason=({countedCalls:calls,countedEffects:effects,fromState,fromCode})=>
+  `develop_retry_limit: 本运行已用 ${calls} 次计数调用（上限 ${MAX_RUNNER_CALLS}）、${effects} 个计数 effect`
+  +`（上限 ${MAX_RUNNER_EFFECTS}），再交付一次将无法送审；上次停在 ${fromState}${fromCode?`/${fromCode}`:''}。`
+  +'按该原因修好根因后，用 --supersede-reviewed-evidence 新建运行';
+// The latest review of the current attempt was checkpointed unknown with a
+// journaled, never-accepted result: a final message cut off by a timeout, or a
+// failure of a class that is now retried automatically but was recorded as
+// unknown (older versions, or after a final message). Nothing ever accepted its
+// verdict, so, exactly like an interrupted registered review, the operator may
+// abandon it and spend the attempt's one redispatch. Tool, context and output
+// limit breaks, observation_invalid and legacy timed_out without inspection stay out.
+export function abandonableReviewResult(s,contextId){
+  const entry=s.cache.at(-1),result=s.reviewInvocation?.result;
+  return s.state==='unknown'&&entry?.effect.kind==='review'&&entry.effect.identity.attempt===s.attempt
+    &&entry.result.state==='unknown'&&result?.inspection!=null&&result.reconciliationRequired===true
+    &&(result.outcome==='timed_out'||result.outcome==='unknown'
+      &&Object.hasOwn(REVIEWER_PROVIDER_FAILURES,result.observation?.result?.code))
+    &&entry.result.reviewInvocation?.registration?.grant?.invocationId===s.reviewInvocation.registration?.grant?.invocationId
+    &&!reviewRetrySpent(s.cache,s.calls,s.attempt,contextId);
+}
 export function validateTaskLearningReviewPackage(rawPackage,writeback,learningInput,bootstrap=null,configuration=null) {
   validTaskLearningInput(learningInput,learningInput.identity,learningInput.feature);
   const reviewPackage=readReviewPackage(rawPackage);
@@ -219,6 +295,12 @@ function readInvocationResult(p,registration,started,effect,config) {
     }
     need(check.providerThreadId===started,'runner_invocation');
     need(p.outcome==='cancelled'?check.observationStatus==='cancelled':check.code==='transport_timeout','runner_invocation');
+  } else if(p.outcome==='failed') {
+    shape(p,common);need(p.reconciliationRequired===false,'runner_invocation');
+    const observation=json(p.observation,512*1024);
+    const failure=inspectProviderReviewFailure(JSON.stringify(observation),JSON.stringify(expectation));
+    need(failure!==null,'runner_invocation');same(p.inspection,failure);
+    need(failure.providerThreadId===started,'runner_invocation');
   } else if(p.outcome==='not_dispatched') {
     shape(p,[...common,'reason']);need(['grant_expired','clock_invalid'].includes(p.reason)
       &&p.observation===null&&p.inspection===null&&p.reconciliationRequired===true&&started===null,'runner_invocation');
@@ -234,7 +316,7 @@ function invocationCall(call,registration,started,result,before) {
     &&call.channel==='host-authorized'&&call.requestDigest===request.requestDigest
     &&call.providerThreadId===started,'runner_call');
   const expectedTerminal=result.outcome==='observed'?'succeeded':result.outcome==='cancelled'?'cancelled':
-    result.outcome==='not_dispatched'?'not_dispatched':reviewTransportTimeout(result)?'failed':'unknown';
+    result.outcome==='not_dispatched'?'not_dispatched':reviewTransportTimeout(result)||reviewerFailure(result)?'failed':'unknown';
   need(call.started===(result.outcome!=='not_dispatched')&&call.terminal===expectedTerminal
     &&call.resultDigest===digest(result.outcome==='observed'?result.inspection.review:result)
     &&before.sequence+1===Number(request.invocationId.split('.').at(-1)),'runner_call');
@@ -259,8 +341,11 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
   need(s.code===null || typeof s.code==='string' && s.code.length<=128,'runner_state');
   need(typeof s.cancelAfterCommit==='boolean' && [null,'workflow_error'].includes(s.workflowError),'runner_state');
   need(typeof s.cancellationRequested==='boolean','runner_state');
-  need(Array.isArray(s.calls) && s.calls.filter(call=>!invalidDeveloperCall(call)).length-s.cache.filter(timeoutEffect).length<=6 && s.sequence===s.calls.length,'runner_calls');
-  need(Array.isArray(s.receipts) && s.receipts.length<=2 && Array.isArray(s.cache) && completedEffectCount(s.cache)<=6,'runner_limits');
+  // An abandoned invocation holds no effect slot (its pending effect was never
+  // checkpointed, or its journaled result was abandoned), so it holds no call
+  // slot either; the attempt's one redispatch is bounded by reviewRetrySpent.
+  need(Array.isArray(s.calls) && countedCalls(s.calls,s.cache)<=MAX_RUNNER_CALLS && s.sequence===s.calls.length,'runner_calls');
+  need(Array.isArray(s.receipts) && s.receipts.length<=2 && Array.isArray(s.cache) && completedEffectCount(s.cache,s.calls)<=6,'runner_limits');
   prefix(before.calls,s.calls);prefix(before.receipts,s.receipts);prefix(before.cache,s.cache);
   need(s.cache.length===before.cache.length+1,'runner_cache');
   const entry=s.cache.at(-1);shape(entry,['effect','digest','result']);same(entry.effect,effect);same(entry.digest,digest(effect));
@@ -329,9 +414,14 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     // The developer call succeeded and is never retried, but the host gate blocked
     // between the checks and the review package. No package exists, so no review
     // round was spent; the attempt counter does not move either.
-    if(added[0]?.terminal==='succeeded'&&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed'].includes(s.code)) {
+    // develop_unchanged_after_review: attempt 2 matched the rejected attempt-1 artifact.
+    if(added[0]?.terminal==='succeeded'&&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review'].includes(s.code)) {
+      // s.receipt is null for every develop checkpoint (above); at attempt 2 the
+      // state before still holds the attempt-1 receipt, so only receipts compare.
       need(digest(s.reviewPackage)===digest(before.reviewPackage),'runner_develop');
-      same(s.receipt,before.receipt);same(s.receipts,before.receipts);
+      same(s.receipts,before.receipts);
+      if(s.code==='develop_unchanged_after_review')
+        need(before.attempt===2&&before.priorReview?.verdict==='changes_requested','runner_develop');
       expectedState='blocked';expectedCode=s.code;
     }
     if(added[0] && ['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal)) {
@@ -507,7 +597,7 @@ export function readRunnerHistory(raw,config,version=1) {
   need(records[0]?.payload?.version===version,'runner_version');
   const completion=version>=2?completionConfig(config,version):null;
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
-  let invocation={registration:null,started:null,result:null};let registrationRecord=null,startedRecord=null;
+  let invocation={registration:null,started:null,result:null};let registrationRecord=null,startedRecord=null,resultRecord=null,lastReview=null;
   const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false,supersession=null;
   const reviewConfig=(calls=[])=>({...config,reviewInvocation:{...config.reviewInvocation,
     excludedThreadIds:reviewExclusions({excludedThreadIds:[...config.reviewInvocation.excludedThreadIds,...joinedHosts]},
@@ -548,9 +638,10 @@ export function readRunnerHistory(raw,config,version=1) {
       if(Object.hasOwn(e,'learningInput')){need(e.kind==='develop'&&Object.hasOwn(config,'taskLearning'),'runner_learning');
         validTaskLearningInput(e.learningInput,e.identity,config.taskLearning.feature);}
       same(e.identity,{...config.identity,attempt:state.attempt});need(e.version===1 && stageAllowed(e.kind,state.state,state.code,state.priorReview?.verdict),'runner_stage');
-      need(completedEffectCount(state.cache)<6 && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
+      need(effectSlotFree(e.kind,state.cache,state.calls) && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
       pending=e;beforeIntent=structuredClone(state);controls={};completeIntentDigest=e.kind==='complete'?r.digest:null;
-      invocation={registration:null,started:null,result:null};registrationRecord=null;startedRecord=null;joinedForInvocation=false;
+      invocation={registration:null,started:null,result:null};registrationRecord=null;startedRecord=null;resultRecord=null;
+      joinedForInvocation=false;lastReview=null;
     } else if(version===3&&p.type==='host-joined') {
       shape(p,[...common,'hostContextId']);id(p.hostContextId);
       // Only one join in a pending review effect, before registration. A crash
@@ -576,6 +667,43 @@ export function readRunnerHistory(raw,config,version=1) {
       need(r.kind==='result'&&invocation.registration&&!invocation.result,'runner_invocation');
       invocation.result=readInvocationResult(p,invocation.registration,invocation.started,pending,reviewConfig(beforeIntent.calls));
       if(invocation.result.outcome==='cancelled')need(controls.cancelled===true,'runner_control');
+      resultRecord=r;
+    } else if(version===3&&p.type==='develop-retry-limit') {
+      // Terminal: written instead of a develop intent when no delivery can still
+      // be reviewed. Every field is recomputed from the replayed state.
+      shape(p,[...common,'fromState','fromCode','countedCalls','countedEffects']);
+      const used=developBudget(state);
+      need(r.kind==='result'&&pending===null&&developBudgetExhausted(state)&&p.fromState===state.state
+        &&p.fromCode===state.code&&p.countedCalls===used.calls&&p.countedEffects===used.effects,'runner_retry_limit');
+      state.state='blocked';state.code='develop_retry_limit';
+      state.reason=developRetryLimitReason(p);lastReview=null;
+    } else if(version===3&&p.type==='completion-retry-limit') {
+      // Terminal: written instead of a complete intent once the re-check bound
+      // is spent. Every field is recomputed from the replayed state.
+      shape(p,[...common,'fromCode','completionBlocks']);
+      need(r.kind==='result'&&pending===null&&completionRetriesExhausted(state)&&p.fromCode===state.code
+        &&p.completionBlocks===completionBlockCount(state.cache),'runner_retry_limit');
+      state.state='blocked';state.code='completion_retry_limit';state.reason=completionRetryLimitReason(p);lastReview=null;
+    } else if(version===3&&p.type==='review-invocation-abandoned'&&Object.hasOwn(p,'resultDigest')) {
+      // Abandoning a checkpointed review whose journaled result was never accepted.
+      shape(p,[...common,'effectId','invocationId','registeredDigest','startedDigest','resultDigest','reason','at']);
+      need(r.kind==='result'&&pending===null&&lastReview!==null
+        &&abandonableReviewResult(state,config.reviewers[0].contexts[state.attempt-1]),'runner_abandon');
+      need(p.effectId===lastReview.effect.id&&state.cache.at(-1).effect.id===lastReview.effect.id
+        &&p.invocationId===lastReview.request.invocationId&&p.registeredDigest===lastReview.registrationRecord.digest
+        &&p.startedDigest===(lastReview.startedRecord?.digest??null)&&p.resultDigest===lastReview.resultRecord.digest,'runner_abandon');
+      need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(p.reason),'runner_abandon');
+      need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_abandon');
+      const call=state.calls.find(item=>item.invocationId===p.invocationId);
+      need(call?.terminal==='unknown'&&call.channel==='host-authorized','runner_abandon');
+      // The invocation keeps its slot and its result digest; only its terminal
+      // records the operator's exit, which also marks the attempt's retry spent.
+      call.terminal='abandoned';
+      state.state='pending_review';state.code='review_abandoned';
+      state.reviewInvocation={registration:state.reviewInvocation.registration,started:state.reviewInvocation.started,
+        result:{outcome:'abandoned',reason:p.reason,at:p.at,recordDigest:r.digest}};
+      lastReview=null;
     } else if(version===3&&p.type==='review-invocation-abandoned') {
       shape(p,[...common,'effectId','invocationId','registeredDigest','startedDigest','reason','at']);
       need(r.kind==='result'&&pending?.kind==='review'&&invocation.registration&&!invocation.result
@@ -621,6 +749,8 @@ export function readRunnerHistory(raw,config,version=1) {
     } else if(p.type==='effect-checkpoint') {
       shape(p,[...common,'effectId','checkpoint']);need(r.kind==='result' && pending && p.effectId===pending.id,'runner_checkpoint');
       state=checkpoint(beforeIntent,p.checkpoint,pending,config,original,session,controls,version,state.taskCommit??null,invocation);
+      lastReview=version===3&&pending.kind==='review'&&invocation.result?{effect:pending,request:invocation.registration.request,
+        registrationRecord,startedRecord,resultRecord}:null;
       pending=null;beforeIntent=null;invocation={registration:null,started:null,result:null};
     } else if(version>=2 && ['task-commit-intent','task-commit-result'].includes(p.type)){
       shape(p,[...common,'effectId','completeIntentDigest','commit']);
@@ -687,8 +817,13 @@ export function readRunnerHistory(raw,config,version=1) {
     &&(pending.kind!=='review'||!invocation.registration&&!joinedForInvocation)
     &&records.slice(records.findLastIndex(row=>row.payload.type==='effect-intent')+1)
       .every(row=>row.payload.type==='control');
+  const reviewResultAbandon=version===3&&pending===null&&lastReview!==null
+    &&abandonableReviewResult(state,config.reviewers[0].contexts[state.attempt-1])
+    ?{effectId:lastReview.effect.id,invocationId:lastReview.request.invocationId,
+      registeredDigest:lastReview.registrationRecord.digest,startedDigest:lastReview.startedRecord?.digest??null,
+      resultDigest:lastReview.resultRecord.digest}:null;
   return {original,session,state,pending,acceptedFixes,qaAttachment,
-    ...(version===3?{joinedHosts,reviewerThreads,supersession,pendingAbandonable,
+    ...(version===3?{joinedHosts,reviewerThreads,supersession,pendingAbandonable,reviewResultAbandon,
       pendingObservedReview:pending?.kind==='review'&&invocation.result?.outcome==='observed'
         ?{request:invocation.registration.request,registration:invocation.registration.record,
           started:invocation.started,result:invocation.result}:null}:{}),

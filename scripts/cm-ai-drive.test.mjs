@@ -68,6 +68,7 @@ function assertActionableFirstReviewHint(stderr){
   assert.match(stderr,/packageDigest.*decision/);
   assert.match(stderr,/\.reviews\/work-T-001-r1\.md/);
   assert.match(stderr,/预先写.*develop-a2\.json/);
+  assert.match(stderr,/逐字节相同时.*develop_unchanged_after_review/);
 }
 test('review-enabled advance refuses missing second-round answer before host launch',t=>{
   const f=fixture(t),{permissions,packageDigest}=reviewPending(f),before=fs.readFileSync(f.store);

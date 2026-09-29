@@ -29,6 +29,8 @@ test('serial fallback resumes from log and automatically commits its completed t
     {blockedIds:['T-001']},{blockedIds:['T-001','T-002']}])await batchFixture('parallel-recovery',options);
 });
 test('final serial task commits durably and commit information survives resume',()=>batchFixture('final-commit'));
+test('a batch member whose reviewer failed without a verdict resumes its one review retry',()=>batchFixture('review-provider-retry'));
+test('a parallel member whose reviewer failed without a verdict resumes its one review retry',()=>batchFixture('parallel-review-provider-retry'));
 test('dirty batch entry lists files and creates no member worktrees',()=>batchFixture('parallel-dirty'));
 
 test('parallel groups reject transitive prerequisites, not just direct edges',()=>{
@@ -99,12 +101,12 @@ async function batchFixture(mode,options={}){
       tasks:(parallel?['T-001','T-002','T-003']:['T-001','T-002']).map((taskId,index)=>({feature,taskId,scope:[`file${index}.js`],requirements:['requirements.md']}))};
     const calls=[],qaCalls=[],assessments=[],blockedEvidence=[],checkCalls=new Map();let qaReady=mode!=='qa-resume',started;
     const began=new Promise(resolve=>{started=resolve;});
-    let conflictHead=null,interrupted=false;
+    let conflictHead=null,interrupted=false,reviewFailed=false;
     const executionFor=async(definition,{parallelMember=false}={})=>({configuration:{kind:'batch-fixture-v1',...(parallelMember?{parallelMember:true}:{})},timeoutMs:3000,
       excludedContexts:['host'],hostDecision:{status:'approved'},applicableAgentFiles:[],
       developer:{provider:'codex',requestedModel:'fixture',contextId:'author',run:createCodexDeveloperRun({requestedModel:'fixture',
         worker:async({prompt},{signal})=>{
-          const material=JSON.parse(prompt.split('<cm-developer-data-json>\n')[1]).specification;
+          const data=JSON.parse(prompt.split('<cm-developer-data-json>\n')[1]),material=data.specification;
           assert.equal(material.task.id,definition.identity.taskId);
           assert.deepEqual(material.sources,buildManifest(specsDir));
           if(recovery&&!parallelMember&&blockedIds.includes(definition.identity.taskId)){
@@ -126,7 +128,9 @@ async function batchFixture(mode,options={}){
               assert.equal(fs.readFileSync(path.join(codeProject,config.tasks.find(task=>task.taskId===id).scope[0]),'utf8'),'implemented\n');
             }
           }
-          calls.push(definition.identity.taskId);fs.writeFileSync(path.join(definition.codeProject,definition.scope[0]),'implemented\n');
+          // A second attempt must change the rejected bytes (develop_unchanged_after_review).
+          calls.push(definition.identity.taskId);fs.writeFileSync(path.join(definition.codeProject,definition.scope[0]),
+            data.identity.attempt===1?'implemented\n':'implemented again\n');
           if(recovery&&blockedIds.includes(definition.identity.taskId)&&(parallelMember||options.terminalAgain))
             return {status:'succeeded',value:{outcome:'blocked',...(options.withReason?{reason:'Expected stub throws; waiting for peer'}:{})}};
           if(parallel&&definition.identity.taskId==='T-002')await new Promise(resolve=>setTimeout(resolve,50));
@@ -160,6 +164,13 @@ async function batchFixture(mode,options={}){
           assert.deepEqual(request.payload.reviewPackage.specification.sources,buildManifest(specsDir));
           if(mode==='learning'&&request.identity.taskId==='T-001')
             assert(request.payload.reviewPackage.changes.some(change=>change.path==='AGENTS.md'));
+          if(mode.endsWith('review-provider-retry')&&request.identity.taskId==='T-001'&&!reviewFailed){
+            reviewFailed=true;
+            // Claude CLI rate limit: no tool call, no verdict, process exited.
+            for(const event of [{event:'thread.started',provider_thread:'review-rate-limited'},{event:'turn.started',item_type:null},
+              {event:'process_closed',exit_code:1,signal:null,timed_out:false}])onEvent(event);
+            return {status:'failed',code:'reviewer_rate_limited'};
+          }
           for(const event of [{event:'thread.started',provider_thread:`review-${request.identity.taskId}`},
             {event:'turn.started',item_type:null},{event:'item.completed',item_type:'agent_message'},
             {event:'turn.completed',item_type:null},{event:'process_closed',exit_code:0,signal:null,timed_out:false}])onEvent(event);
@@ -311,6 +322,11 @@ async function batchFixture(mode,options={}){
       for(const name of heads)git(codeProject,['check-ref-format','--branch',name]);
       for(const task of ['T-001','T-002'])assert.throws(()=>git(codeProject,['rev-parse','--verify',`refs/heads/cm/work/${task}`]));
       return;
+    }
+    if(mode.endsWith('review-provider-retry')){
+      assert.equal(result.state,'pending_review',JSON.stringify(result));assert.equal(result.code,'review_provider_failed');
+      assert.match(result.reason,/^reviewer_rate_limited: /);assert.deepEqual(calls,parallel?['T-001','T-002']:['T-001']);
+      result=await open().handle({operation:'advance',requestId:'retry-review'});
     }
     if(mode==='qa-resume'){
       assert.equal(result.code,'qa_decision_required');assert.deepEqual(calls,['T-001']);
