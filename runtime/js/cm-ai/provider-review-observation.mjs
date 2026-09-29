@@ -18,9 +18,10 @@ function expectation(v,cause=false) {
   need(r.version===1&&r.role==='reviewer'&&['codex','claude'].includes(r.provider));
   id(r.invocationId);id(r.contextId);validIdentity(r.identity);text(r.requestedModel);hex(r.requestDigest);
   const {requestDigest,...body}=r;need(digest(body)===requestDigest,'observation_binding');
-  shape(r.payload,['reviewPackage','priorReview']);
+  const carried=Object.hasOwn(r.payload,'supersededReview');
+  shape(r.payload,['reviewPackage','priorReview',...(carried?['supersededReview']:[])]);
   const pkg=(cause?readFixCausePackage:readReviewPackage)(r.payload.reviewPackage);
-  if(cause)need(r.payload.priorReview===null,'observation_binding');
+  if(cause)need(r.payload.priorReview===null&&!carried,'observation_binding');
   need(digest(pkg.identity)===digest(r.identity),'observation_binding');
   return {request:r,pkg,excluded:new Set([v.developerThreadId,...v.excludedThreadIds])};
 }

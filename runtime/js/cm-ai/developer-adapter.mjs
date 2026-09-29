@@ -4,6 +4,7 @@ import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,
 import {createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective} from './cm-ai-context-refresh.mjs';
 
 import {readSpecificationMaterial} from './specification-material.mjs';
+import {readCarriedReview} from './reviewed-evidence-supersession-record.mjs';
 
 const LIMIT=10*1024*1024;
 const INSTRUCTIONS=`Implement the single task described by the JSON data below in the host-selected workspace.
@@ -21,7 +22,8 @@ or writeback_pending (1-3 candidates and a reason). Each candidate has classific
 trigger, action and evidence (relative file paths). The host binds identities and computes digests; do not invent hashes.
 Without learningInput, return only outcome and reason. A blocked result may include reason explaining why implementation is impossible (string, at most 1000 UTF-8 bytes, no NUL); application and retrospective are optional when blocked.
 The top-level reason explains blocked outcomes; otherwise it must be null. Use null when no explanation is available.
-Use outcome blocked when implementation is not possible. Do not claim implementation if no implementation was made.`;
+Use outcome blocked when implementation is not possible. Do not claim implementation if no implementation was made.
+When supersededReview exists, it is read-only context: the last review of an earlier, superseded run of this task, not a verdict on this run. Avoid repeating its problems, but implement only the supplied task and scope.`;
 
 export function validateDeveloperScope(scope){
   need(Array.isArray(scope)&&scope.length>0);
@@ -45,7 +47,9 @@ export function readDeveloperRequest(raw,provider) {
   id(r.invocationId);validIdentity(r.identity);text(r.requestedModel);id(r.contextId);hex(r.requestDigest);
   const {requestDigest,...body}=r;need(digest(body)===requestDigest,'invalid_input');
   const learning=Object.hasOwn(r.payload,'learningInput');
-  shape(r.payload,['scope','requirements','priorReview',...(learning?['learningInput']:[]),...(Object.hasOwn(r.payload,'specification')?['specification']:[])]);
+  const carried=Object.hasOwn(r.payload,'supersededReview');
+  shape(r.payload,['scope','requirements','priorReview',...(carried?['supersededReview']:[]),...(learning?['learningInput']:[]),...(Object.hasOwn(r.payload,'specification')?['specification']:[])]);
+  if(carried){need(r.identity.attempt===1,'invalid_input');readCarriedReview(r.payload.supersededReview);}
   if(Object.hasOwn(r.payload,'specification'))readSpecificationMaterial(r.payload.specification,r.identity.taskId);
   validateDeveloperScope(r.payload.scope);
   need(Array.isArray(r.payload.requirements));

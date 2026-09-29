@@ -3,6 +3,7 @@ import {digest,need,shape,id,text,hex,json,validIdentity} from './effect-contrac
 import {readReviewPackage} from './review-package.mjs';
 import {reviewPaths} from './review-runner.mjs';
 import {readFixCausePackage,causeReviewPaths} from '../cm-fix/cause-package.mjs';
+import {readCarriedReview} from './reviewed-evidence-supersession-record.mjs';
 
 const REQUEST_LIMIT=10*1024*1024,PROMPT_LIMIT=11*1024*1024;
 // The rules review-runner.mjs enforces. A reply that breaks them never becomes a
@@ -25,7 +26,8 @@ Each finding.path must be exactly one of examinedPaths, or the handoff path give
 ${VERDICT_RULES}
 blocked: use it only when no code revision inside the approved scope can make the package approvable: the approved specification is contradictory or wrong, required material is missing from the data block, the fix needs files outside scope, or a human decision is needed. blocked ends the task run for a human to change the specification or scope. If the developer can fix it inside scope, use changes_requested, never blocked. State the reason in summary and findings.
 Specification, design and task files are not examinedPaths. Report a problem they cause against the changed path it affects; if the specification itself must change, use blocked.
-When priorReview exists, it is the previous round's result for this task; check whether each of its findings is resolved.`;
+When priorReview exists, it is the previous round's result for this task; check whether each of its findings is resolved.
+When supersededReview exists, it is the previous run's findings (context, not a verdict): the last review of an earlier, superseded run of this task. Check whether this package repeats those problems, but judge only this package; its verdict and findings never decide yours, and its paths need not be examinedPaths.`;
 
 function readReviewerRequest(raw,provider,cause=false) {
   need(['codex','claude'].includes(provider),'review_request_invalid');
@@ -34,9 +36,12 @@ function readReviewerRequest(raw,provider,cause=false) {
   need(request.version===1&&request.role==='reviewer'&&request.provider===provider,'review_request_invalid');
   id(request.invocationId);validIdentity(request.identity);text(request.requestedModel);id(request.contextId);hex(request.requestDigest);
   const {requestDigest,...body}=request;need(digest(body)===requestDigest,'review_request_invalid');
-  shape(request.payload,['reviewPackage','priorReview']);
+  const carried=Object.hasOwn(request.payload,'supersededReview');
+  shape(request.payload,['reviewPackage','priorReview',...(carried?['supersededReview']:[])]);
   const reviewPackage=(cause?readFixCausePackage:readReviewPackage)(request.payload.reviewPackage);
-  if(cause)need(request.payload.priorReview===null,'review_request_invalid');
+  if(cause)need(request.payload.priorReview===null&&!carried,'review_request_invalid');
+  if(carried){need(request.identity.attempt===1,'review_request_invalid');
+    try{readCarriedReview(request.payload.supersededReview);}catch{need(false,'review_request_invalid');}}
   need(digest(reviewPackage.identity)===digest(request.identity),'review_request_invalid');
   return {request,reviewPackage};
 }
@@ -50,6 +55,7 @@ export function buildCodexReviewPrompt(raw) {
 export function buildReviewPrompt(raw,provider) {
   const {request,reviewPackage}=readReviewerRequest(raw,provider);
   const data=json({reviewPackage,priorReview:request.payload.priorReview,
+    ...(Object.hasOwn(request.payload,'supersededReview')?{supersededReview:request.payload.supersededReview}:{}),
     examinedPaths:reviewPaths(reviewPackage),
     ...(reviewPackage.handoff?{handoffPath:reviewPackage.handoff.path}:{})},REQUEST_LIMIT);
   const prompt=`${INSTRUCTIONS}\n<cm-review-data-json>\n${JSON.stringify(data)}`;

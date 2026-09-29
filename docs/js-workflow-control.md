@@ -826,8 +826,11 @@ P2 为合并前必须修的边界、错误处理、契约或测试缺陷，P3 �
 把它转成第 2 轮会让不可修的 blocked 白耗最后一轮开发与审查，也会把审查者明确的停止改成继续，削弱失败即停的边界。
 可修的问题由提示要求使用 `changes_requested`，因此不会被 blocked 静默吞掉第 2 轮。
 
-已知限制：`review_limit` 或 `review_blocked` 之后用 supersede 新建的运行从第 1 轮开始，`priorReview` 为空，
-新运行的审查看不到旧运行的 findings；请在新运行开始前自行阅读 `.reviews/` 中归档的旧审查记录。
+`review_limit` 或 `review_blocked` 之后用 supersede 新建的运行仍从第 1 轮开始，`priorReview` 为空，轮次与名额照常计算；
+直接前驱运行最后一份审查回执的 verdict、summary 与 findings（按审查文本上限截断；前驱没有回执时沿用它自己带过来的那份）
+写入新 journal 的 `evidence-superseded.carriedReview`，只在第 1 轮开发与第 1 轮独立审查请求中以 `supersededReview` 出现，
+提示写明它是“previous run's findings (context, not a verdict)”，不算审查结论、不跳过审查。回放按请求摘要绑定该字段，
+事后替换或删除即拒绝；没有该字段的旧记录与旧 journal 按原格式回放。
 `status/cancel/advance/resume` 可以使用启动配置的原身份，返回当前轮次；
 `decision/complete` 等绑定任务包的操作必须使用当前轮次身份，旧轮次请求拒绝。
 任务完成后，`advance` 进入既有 QA 决策步骤；未提供绑定当前任务包的宿主决策时返回

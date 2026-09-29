@@ -10,6 +10,7 @@ import {readRunnerHistory} from './durable-runner-state.mjs';
 import {supersedeWorkflowFile} from './review-evidence-file.mjs';
 import {need,digest} from './effect-contract.mjs';
 import {readEvidenceSupersession,supersedableEvidenceName} from './reviewed-evidence-supersession-record.mjs';
+import {boundReviewText} from './review-runner.mjs';
 import {scanRows} from './cm-ai-qa-log.mjs';
 import {taskDeclarations,approvedTaskGrammar} from '../spec-task-line.mjs';
 import {compareReviewInventoryToBaseline,readReviewBaseline} from './review-package.mjs';
@@ -35,6 +36,16 @@ function verifyOldCodeBaseline(codeProject,rawBaseline){
   }
   // The shared comparison filters both sides with one ignore-decision union.
   return current;
+}
+
+// The direct predecessor's last review receipt, or the context it carried itself
+// when it never reached a review. Bounded like any journaled review text.
+function carriedReviewFrom(runId,state,supersession){
+  const result=state.receipts.at(-1)?.result;
+  if(!result)return supersession?.carriedReview??null;
+  const bounded=boundReviewText({verdict:result.verdict,packageDigest:result.packageDigest,
+    examinedPaths:[],findings:result.findings,summary:result.summary});
+  return bounded?{previousRunId:runId,verdict:bounded.verdict,summary:bounded.summary,findings:bounded.findings}:null;
 }
 
 function taskChecked(tasksPath,taskId){
@@ -124,7 +135,8 @@ export function prepareReviewedEvidenceSupersession({specsDir,codeProject,featur
         :['PASS','PASSED'].includes(qa)?`旧运行 ${entry.name} 的 QA 已通过`
         :['FAIL','FAILED'].includes(qa)?`旧运行 ${entry.name} 的最新 QA 结果为 FAIL（未通过），失败要修复而不是重开发：在原运行上用 QA 修复（fix_advance / fix_run）处理；修复子运行的审查卡在结果未知时，确认旧进程已退出后用 abandon_review 放弃一次再重审`
         :`旧运行 ${entry.name} 的最新 QA 结果为 ${qa}，不是 BLOCKED，不能用重开发替换；请在原运行上按该结果的恢复入口处理`);
-    priorRuns.push({runId:entry.name,baseline:first.baseline});
+    priorRuns.push({runId:entry.name,baseline:first.baseline,
+      carriedReview:carriedReviewFrom(entry.name,history.state,history.supersession)});
     for(const runId of history.supersession?.previousRunIds??[])alreadySuperseded.add(runId);
     previousRunIds.push(entry.name);
   }
@@ -140,6 +152,10 @@ export function prepareReviewedEvidenceSupersession({specsDir,codeProject,featur
   }
   // A run that stopped before any handoff or review has nothing to archive; the
   // record still ends the prior runs and carries any accepted code drift.
+  const previous=new Set(previousRunIds);
+  const carriedReview=priorRuns.filter(run=>!alreadySuperseded.has(run.runId)&&run.carriedReview
+    &&previous.has(run.carriedReview.previousRunId))
+    .sort((a,b)=>a.runId<b.runId?-1:a.runId>b.runId?1:0).at(-1)?.carriedReview??null;
   const names=evidenceNames(reviewsDir,feature,identity.taskId);
   const files=names.map(name=>{
     const p=path.join(reviewsDir,name),stat=fs.lstatSync(p);
@@ -148,7 +164,7 @@ export function prepareReviewedEvidenceSupersession({specsDir,codeProject,featur
   });
   return readEvidenceSupersession({version:1,feature,taskId:identity.taskId,newRunId:identity.runId,
     previousRunIds:previousRunIds.sort(),reason,files,authorizedAt:new Date().toISOString(),
-    ...(drift.length?{acceptedCodeDrift:drift}:{})});
+    ...(drift.length?{acceptedCodeDrift:drift}:{}),...(carriedReview?{carriedReview}:{})});
 }
 
 // A plain create (no supersede) must not silently adopt a previous run's
