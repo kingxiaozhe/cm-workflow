@@ -525,13 +525,26 @@ test('#21 a gate block at attempt 2 is journaled and replayed instead of poisoni
   const blocked=await runner.executeEffect(f.effect('develop',2));
   assert.equal(blocked.state,'blocked');assert.equal(blocked.code,'develop_checks_not_passed');
   runner=f.reopen();assert.deepEqual(runner.status(),blocked);assert.equal(f.replay().state.code,'develop_checks_not_passed');
-  // The retry still rechecks the reviewed attempt-1 tree before dispatch.
+  // The retry redoes this attempt's own delivery, which changed the reviewed
+  // attempt-1 tree on purpose and never became a package: it is dispatched
+  // without first restoring that tree, and its new package is checked against
+  // the task baseline (out-of-scope drift still refused) when it is built.
   f.setChecks(()=>checksPassed);
-  const drifted=await runner.executeEffect(f.effect('develop',2,'-retry-1'));
-  assert.equal(drifted.outcome,'rejected');assert.equal(drifted.code,'package_mismatch');
-  fs.writeFileSync(path.join(f.root,'code.js'),'new 1\n');
   assert.equal((await runner.executeEffect(f.effect('develop',2,'-retry-1'))).state,'awaiting_review');
   assert.equal((await runner.executeEffect(f.effect('review',2))).state,'approved');
+}));
+
+test('#21 redoing a gate-blocked attempt 2 still refuses out-of-scope drift',t=>runnerFixture(t,async f=>{
+  f.state.review=(request,control)=>{reviewEvents(control.onEvent,request);
+    return verdict(request,'changes_requested',[{id:'F1',severity:'P2',path:'code.js',message:'Fix',evidence:'fixture'}]);};
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));
+  assert.equal((await runner.executeEffect(f.effect('review'))).state,'changes_requested');
+  f.setChecks(()=>[{...checksPassed[0],outcome:'failed',exitCode:1}]);
+  assert.equal((await runner.executeEffect(f.effect('develop',2))).code,'develop_checks_not_passed');
+  f.setChecks(()=>checksPassed);
+  fs.writeFileSync(path.join(f.root,'outside.txt'),'drift\n');
+  const redo=await runner.executeEffect(f.effect('develop',2,'-retry-1'));
+  assert.notEqual(redo.state,'awaiting_review');assert.equal(redo.code,'out_of_scope');
 }));
 
 test('#21 a byte-identical attempt 2 through the runner blocks, then a changed one is reviewed',t=>runnerFixture(t,async f=>{
