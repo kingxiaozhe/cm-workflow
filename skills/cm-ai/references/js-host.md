@@ -97,7 +97,7 @@ cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edit
 `develop-a2.json` 时照常启动：驾驶员给该任务加 `--hold-revision`，审查若要求修改，任务停在
 `changes_requested`（`revision_answer_required`），不写第 2 轮开发 intent；读取
 `.reviews/<feature>-<task>-r1.md` 的 findings 写好 `develop-a2.json` 后再 `advance`。已在 `changes_requested`
-的任务缺该文件仍在启动前退出 2。`develop.json.edits` 的格式与启动前检查同单任务；尚未开跑的后续任务只做与磁盘无关的检查。驾驶员在发批次指令前检查所有任务的答案、
+的任务缺该文件仍在启动前退出 2。`develop.json.edits` 的格式与启动前检查同单任务；尚未开跑的后续任务不看代码树，只做答案本身就能判定的检查（单文件不超 1 MiB、答案写入的 scope 文件合计不超 2 MiB 等）；运行存档单条记录的检查要看该任务开跑时的基线，留到它开跑前再做。驾驶员在发批次指令前检查所有任务的答案、
 scope、命令及恢复存档。批次宿主没有 `--original-host-context`，恢复必须沿用原 `hostContext`；
 不能用它接管另一会话。批次的 `qa_logic`、`qa_browser`、`verification_precheck` 与 bootstrap
 `init_verify` 需要驾驶员尚无的真实执行 runner，命中时启动前退出 2。受保护配置里的检查由宿主执行。

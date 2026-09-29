@@ -281,6 +281,13 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
   const projected=new Map();
   let previous=diskChecks?new Map(scope.map(target=>[target,diskScopeEntry(codeProject,target)])):null;
   const base=!diskChecks?null:baseline==='disk'?previous:baseline;
+  // Without the tree (a later batch task), the scope files the answers write are
+  // still known to exist in the review material with exactly these sizes; the
+  // unknown rest can only add to the total. Their count is at most the scope's,
+  // which the run definition already caps at the package's file count; which of
+  // them the package carries in full depends on the unknown baseline, so the
+  // journal budget waits for the task's own launch, where the tree is known.
+  const delivered=diskChecks?null:new Map();
   for(const {file,value,attempt=1} of deliveries){
     if(value.status!=='succeeded')continue;
     const label=path.basename(file);let entries;
@@ -293,6 +300,7 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
       if(entry.kind==='delete'&&requirements.includes(target))
         stop(2,`${label}.edits.${target}: 该路径同时列在运行定义的 requirements 中，审查包要求它存在，不能删除；可改写其内容，或先在新运行定义里把它移出 requirements`);
       if(entry.kind!=='write'){
+        if(entry.kind==='delete')delivered?.delete(target);
         if(previous&&(before===null||before.unsupported))
           stop(2,`${label}.edits.${target}: 要${entry.kind==='delete'?'删除':'改权限'}的文件在交付前不存在或不是普通文件`);
         next?.set(target,entry.kind==='delete'?null:{...before,mode:DEVELOP_MODES.get(entry.mode)});
@@ -300,6 +308,7 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
       }
       const source=answerPath(answersRoot,entry.local),size=fs.lstatSync(source).size;
       if(size>FILE)stop(2,`${label}.edits.${target}: 内容 ${kib(size)}，超过审查包单文件上限 ${FILE}（1 MiB）；大文件请移出 scope`);
+      if(scope.includes(target))delivered?.set(target,size);
       next?.set(target,{size,source,sha256:sha256(fs.readFileSync(source)),
         mode:entry.mode?DEVELOP_MODES.get(entry.mode):before&&!before.unsupported?before.mode:0o644});
     }
@@ -321,6 +330,11 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
       if(bytes>inputLimit)stop(2,`${label} 在受保护模式下的应答约 ${kib(bytes)}，超过宿主输入上限 ${inputLimit}（--input-limit，默认 65536）；`
         +(bytes<=max?`在 PLAN.permissions 加 "--input-limit","${Math.min(max,2**Math.ceil(Math.log2(bytes)))}" 后重试`
           :`已超过 --input-limit 最大值 ${max}，受保护模式无法一次送达，请缩小本任务 scope 或拆分任务`));
+    }
+    if(delivered){
+      const total=[...delivered.values()].reduce((sum,size)=>sum+size,0);
+      const largest=[...delivered].sort((a,b)=>b[1]-a[1]).slice(0,3).map(([target,size])=>`${target} ${kib(size)}`).join('，');
+      if(total>TOTAL)stop(2,`${label}: 仅答案写入的 scope 文件就合计 ${kib(total)}，超过审查包上限 ${TOTAL}（2 MiB），与该任务开跑时的树无关；最大的是 ${largest}`);
     }
     if(!next)continue;
     for(const [target,entry] of next)if(entry&&!entry.unsupported&&entry.size>FILE)

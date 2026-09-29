@@ -184,6 +184,32 @@ test('batch driver refuses an oversized answer of a later task before launching 
   const run=f.drive(f.plan(),'advance');assert.equal(run.status,2,run.stderr);
   assert.match(run.stderr,/target2\.mjs/);assert.match(run.stderr,/1048576/);noStore(f);
 });
+// Codex review of 910b84c: a later task's starting tree is unknown, but its answer
+// files alone can already prove a limit is exceeded; those checks still apply.
+function laterTask(f,scope,files){
+  const config=path.join(f.root,'batch.json'),bundle=JSON.parse(fs.readFileSync(config,'utf8'));
+  bundle.batch.tasks[1].scope=scope;fs.writeFileSync(config,JSON.stringify(bundle));
+  const later=path.join(f.root,'answers','1.work','T-002');fs.mkdirSync(later,{recursive:true});
+  for(const name of ['qa-assess.json','documentation-inspect.json'])
+    fs.copyFileSync(path.join(f.answers,name),path.join(later,name));
+  for(const [name,size] of Object.entries(files))fs.writeFileSync(path.join(later,name.replaceAll('/','_')+'.txt'),Buffer.alloc(size,0x61));
+  fs.writeFileSync(path.join(later,'develop.json'),JSON.stringify({...develop,edits:Object.fromEntries(Object.keys(files).map(name=>[name,name.replaceAll('/','_')+'.txt']))}));
+}
+test('batch driver refuses a later task whose new files alone exceed the 2 MiB material limit',t=>{
+  const f=fixture(t,2);prepared(f);
+  const scope=['gen/a.bin','gen/b.bin','gen/c.bin'];laterTask(f,scope,Object.fromEntries(scope.map(file=>[file,700*1024])));
+  const run=f.drive(f.plan(),'advance');assert.equal(run.status,2,run.stderr);
+  assert.match(run.stderr,/2097152/);assert.match(run.stderr,/gen\/[abc]\.bin/);noStore(f);
+});
+test('batch driver lets a later task\'s second-round delete bring its delivered files back under 2 MiB',t=>{
+  const f=fixture(t,2);prepared(f);
+  laterTask(f,['gen/a.bin','gen/b.bin','gen/c.bin'],{'gen/a.bin':1000*1024,'gen/b.bin':1000*1024});
+  const later=path.join(f.root,'answers','1.work','T-002');
+  fs.writeFileSync(path.join(later,'gen_c.bin.txt'),Buffer.alloc(100*1024,0x61));
+  fs.writeFileSync(path.join(later,'develop-a2.json'),JSON.stringify({...develop,edits:{'gen/b.bin':{delete:true},'gen/c.bin':'gen_c.bin.txt'}}));
+  const run=f.drive(f.plan({permissions:['--allow-qa','--review-config','review.json','--allow-review','1.work/T-002:1']}),'advance');
+  assert.equal(run.status,0,run.stderr);assert.doesNotMatch(run.stderr,/仅答案写入/);assert.equal(fs.existsSync(f.store),true);
+});
 test('batch driver refuses a no-op or non-UTF-8 protected develop answer before launch',t=>{
   const f=fixture(t);prepared(f);
   f.write('develop.json',{...develop,edits:{}});
