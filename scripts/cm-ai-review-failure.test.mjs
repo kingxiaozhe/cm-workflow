@@ -698,7 +698,8 @@ test('#retry-limit replay accepts the limit record only where the call budget is
   assert.equal(limit.type,'develop-retry-limit');assert.equal(limit.countedCalls,5);
   assert.equal(limit.fromState,'blocked');assert.equal(limit.fromCode,'check_output_out_of_scope');
   const history=readRunnerHistory(records,configuration,3);assert.equal(history.state.code,'develop_retry_limit');
-  for(const [field,value] of [['countedCalls',4],['fromCode','develop_checks_not_passed'],['fromState','ready']]){
+  assert.equal(limit.countedEffects,0);
+  for(const [field,value] of [['countedCalls',4],['countedEffects',1],['fromCode','develop_checks_not_passed'],['fromState','ready']]){
     const changed=structuredClone(records);changed.at(-1).payload[field]=value;
     assert.throws(()=>readRunnerHistory(rechain(changed),configuration,3),{code:'runner_retry_limit'});
   }
@@ -713,4 +714,52 @@ test('#retry-limit replay accepts the limit record only where the call budget is
   const extended=[...structuredClone(records),intent].map((row,index)=>({...row,seq:index+1,
     id:`runner.${String(index+1).padStart(6,'0')}`}));
   assert.throws(()=>readRunnerHistory(rechain(extended),configuration,3),{code:'runner_stage'});
+}));
+
+// Blocks such as develop_checks_not_passed hold an effect slot. Enough of them
+// used to leave a delivery that could reach approved but whose complete was then
+// refused with limit_exceeded; now the run stops before that delivery.
+test('develop retries stop before dispatch when no delivery could still be reviewed and completed (real host)',t=>{
+  const f=fixture(t),marker=path.join(f.root,'checks-pass');
+  const gated=[{id:'gate',command:[process.execPath,'-e',`process.exit(require('node:fs').existsSync(${JSON.stringify(marker)})?0:1)`]}];
+  const advance=mode=>f.drive(f.plan({mode,checks:gated,...(mode==='resume'?{originalHostContext:'review-host-a'}:{})}),'advance');
+  for(let round=1;round<=3;round++){
+    const run=advance(round===1?'create':'resume');
+    assert.equal(run.status,0,run.stderr);assert.equal(run.result.code,'develop_checks_not_passed');
+    assert.equal(run.result.pendingAction,'resume');
+  }
+  // Four held effects: a fifth delivery, its review and complete would need seven.
+  const fourth=advance('resume');
+  assert.equal(fourth.status,0,fourth.stderr);
+  assert.equal(fourth.result.state,'blocked');assert.equal(fourth.result.code,'develop_retry_limit');
+  assert.equal(fourth.result.pendingAction,'none');
+  assert.match(fourth.result.reason,/^develop_retry_limit: 本运行已用 4 次计数调用.*4 个计数 effect.*develop_checks_not_passed.*--supersede-reviewed-evidence/);
+  const limit=f.records().at(-1).payload;
+  assert.equal(limit.type,'develop-retry-limit');assert.equal(limit.countedEffects,4);assert.equal(limit.countedCalls,4);
+  const intents=f.intents();
+  assert.deepEqual(intents,['develop-1',...[1,2,3].map(n=>`develop-1-retry-${n}`)]);
+  // Even with the checks fixed, the run neither develops again nor reaches an
+  // approved state it could not complete.
+  fs.writeFileSync(marker,'pass\n');
+  const after=advance('resume');
+  assert.equal(after.status,0,after.stderr);assert.equal(after.result.code,'develop_retry_limit');
+  assert.doesNotMatch(after.stderr,/应答 develop/);assert.deepEqual(f.intents(),intents);
+  assert.equal(f.replay().state.code,'develop_retry_limit');
+  assert(!f.records().some(row=>row.payload.checkpoint?.state==='approved'));
+});
+
+test('#retry-limit a changes_requested verdict with too few effects left ends the run at once',t=>runnerFixture(t,async f=>{
+  let checks=0;f.setChecks(()=>++checks<=2?[{...checksPassed[0],outcome:'failed',exitCode:1}]:checksPassed);
+  f.state.review=(request,control)=>{reviewEvents(control.onEvent,request);
+    return verdict(request,'changes_requested',[{id:'F1',severity:'P2',path:'code.js',message:'Fix',evidence:'fixture'}]);};
+  const runner=f.make();
+  for(const suffix of ['','-retry-1'])assert.equal((await runner.executeEffect(f.effect('develop',1,suffix))).code,'develop_checks_not_passed');
+  assert.equal((await runner.executeEffect(f.effect('develop',1,'-retry-2'))).state,'awaiting_review');
+  // Four effects held after review-1: develop-2, review-2 and complete need three more.
+  const reviewed=await runner.executeEffect(f.effect('review'));
+  assert.equal(reviewed.state,'blocked');assert.equal(reviewed.code,'develop_retry_limit');assert.equal(reviewed.identity.attempt,2);
+  assert.match(reviewed.reason,/changes_requested。/);
+  const limit=f.records().at(-1).payload;
+  assert.deepEqual([limit.fromState,limit.fromCode,limit.countedEffects],['changes_requested',null,4]);
+  assert.deepEqual(f.reopen().status(),reviewed);
 }));

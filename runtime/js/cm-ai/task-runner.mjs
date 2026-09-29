@@ -13,7 +13,7 @@ import { reviewResult,reviewReceipt } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
   MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,completedEffectCount,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
-  reviewRetrySpent,abandonableReviewResult,countedCalls,developCallsExhausted } from './durable-runner-state.mjs';
+  reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted } from './durable-runner-state.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
 import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure} from './provider-review-observation.mjs';
 import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence,
@@ -854,11 +854,12 @@ export function createTaskRunner(options) {
     }
   }
   // No delivery can still be reviewed: journal the terminal limit instead of an
-  // intent, so no developer call runs (see developCallsExhausted).
+  // intent, so no developer call runs (see developBudgetExhausted).
   const retryLimitDue=()=>invocationMode&&store&&!poisoned
-    &&developCallsExhausted({state,code,priorReview,calls,cache:[...cache.values()]});
+    &&developBudgetExhausted({state,code,priorReview,calls,cache:[...cache.values()]});
   function recordRetryLimit(){
-    persist('develop-retry-limit',{fromState:state,fromCode:code,countedCalls:countedCalls(calls,[...cache.values()])});
+    const used=developBudget({calls,cache:[...cache.values()]});
+    persist('develop-retry-limit',{fromState:state,fromCode:code,countedCalls:used.calls,countedEffects:used.effects});
     const recovered=readRunnerHistory(journal,metadata,3).state;
     ({state,code}=recovered);reason=recovered.reason??null;publication=privateStatus();return publication;
   }
