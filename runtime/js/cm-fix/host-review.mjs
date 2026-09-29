@@ -8,6 +8,7 @@ import {createHostReviewAuthority} from '../cm-ai/host-review-authority.mjs';
 import {fixFinalReviewConfiguration} from './final-review.mjs';
 import {digest,id,json,need} from '../cm-ai/effect-contract.mjs';
 
+const DEFAULT_REVIEW_TIMEOUT_MS=900000;
 export function createFixReviewHost({codeProject,hostContextId,runtime='codex',review=null,permissions=[],workerFactory=null}){
   id(hostContextId);need(['codex','claude'].includes(runtime),'invalid_runtime');
   const allowed=new Set(json(permissions)),config=review===null?null:json(review);
@@ -16,8 +17,11 @@ export function createFixReviewHost({codeProject,hostContextId,runtime='codex',r
   need(runtime!=='claude'||!config||config.disabledSkills.length===0,'invalid_review_config');
   const enabled=['--allow-cause-review','--allow-final-review','--allow-test-author','--allow-repair'].some(flag=>allowed.has(flag));
   need(!enabled||config!==null,'review_configuration_required');
+  // Review transport budget from the review configuration (outside its
+  // authorized digest), shared by the worker and the owner's review watchdog.
+  const timeoutMs=config?.timeoutMs??DEFAULT_REVIEW_TIMEOUT_MS;
   const workerOptions=config?{cwd:codeProject,model:config.model,disabledSkills:config.disabledSkills,
-    promptTransport:'stdin',preflight:config.preflight,
+    promptTransport:'stdin',preflight:config.preflight,timeoutMs,
     schemaPath:fileURLToPath(new URL('../cm-ai/review-result.schema.json',import.meta.url))}:null;
   const assertReviewReady=()=>need(config&&matches(config.preflight,workerOptions),'tool_preflight_missing');
   if(enabled)assertReviewReady();
@@ -31,8 +35,8 @@ export function createFixReviewHost({codeProject,hostContextId,runtime='codex',r
   const authority=config?authorityFor(reviewer,'--allow-cause-review'):null;
   const finalAuthority=config?authorityFor(fixFinalReviewConfiguration({hostContextId,causeReview:reviewer}).reviewer,'--allow-final-review'):null;
   return {reviewer,authority,finalAuthority,execution:{assertReviewReady,
-    ...(config?{causeReview:{authorize:authority.authorize,
+    ...(config?{causeReview:{authorize:authority.authorize,timeoutMs,
       run:(request,control)=>createCauseReviewRun(worker(workerOptions),runtime)(request,control)},
-      finalReview:{authorize:finalAuthority.authorize,run:(request,control)=>
+      finalReview:{authorize:finalAuthority.authorize,timeoutMs,run:(request,control)=>
         (runtime==='claude'?createClaudeReviewRun:createCodexReviewRun)(worker(workerOptions))(request,control)}}:{})}};
 }

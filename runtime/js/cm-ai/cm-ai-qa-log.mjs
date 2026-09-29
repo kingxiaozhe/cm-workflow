@@ -6,6 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {digest,hex,id,json,need,shape,text,validIdentity} from './effect-contract.mjs';
 import {readQaAttachment} from './qa-attachment.mjs';
 import {writeCmAiQaStatus} from './cm-ai-run-finalizer.mjs';
+import {scanRows} from './log-rows.mjs';
 import {readExecutionSnapshot} from './execution-snapshot.mjs';
 import {beforeFirstQaRound,qaRevisionChain,readQaConfigRevision} from './qa-config-revision.mjs';
 
@@ -42,21 +43,7 @@ export function readDecision(raw,identity,packageDigest) {
   return json({...decision,at:decision.at.endsWith('Z')?`${decision.at.slice(0,-1)}+00:00`:decision.at});
 }
 
-export function scanRows(log,visit) {
-  let descriptor;
-  try {
-    const stat=fs.lstatSync(log);need(stat.isFile()&&!stat.isSymbolicLink(),'qa_log_failed');
-    descriptor=fs.openSync(log,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
-    const chunk=Buffer.alloc(64*1024);let pending=Buffer.alloc(0);
-    const consume=line=>{if(line.length){need(line.length<=MiB,'qa_log_failed');
-      visit(json(JSON.parse(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(line)),MiB));}};
-    while(true){const size=fs.readSync(descriptor,chunk,0,chunk.length,null);if(size===0)break;
-      pending=Buffer.concat([pending,chunk.subarray(0,size)]);let newline;
-      while((newline=pending.indexOf(10))!==-1){consume(pending.subarray(0,newline));pending=pending.subarray(newline+1);}
-      need(pending.length<=MiB,'qa_log_failed');}
-    consume(pending);
-  } finally {if(descriptor!==undefined)fs.closeSync(descriptor);}
-}
+export {scanRows} from './log-rows.mjs';
 
 // Older hosts recorded a missed qa_assess answer window as a durable
 // blocked/host_request_timeout decision. One explicit recovery may append a

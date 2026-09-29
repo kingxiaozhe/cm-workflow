@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import fs from 'node:fs';
@@ -9,6 +9,15 @@ import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platfo
 import {openFixExecution} from '../runtime/js/cm-fix/execution.mjs';
 import {openExecutionStore} from '../runtime/js/cm-ai/execution-store.mjs';
 import {startFixRun} from '../runtime/js/cm-fix/start.mjs';
+
+// Never write the real ~/.cm-workflow home or its global log from this suite.
+const isolatedHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-fix-drive-home-'));
+const savedHome={CM_WORKFLOW_HOME:process.env.CM_WORKFLOW_HOME,CM_WORKFLOW_LOG_HOME:process.env.CM_WORKFLOW_LOG_HOME};
+process.env.CM_WORKFLOW_HOME=path.join(isolatedHome,'home');process.env.CM_WORKFLOW_LOG_HOME=path.join(isolatedHome,'logs');
+after(()=>{
+  for(const [key,value] of Object.entries(savedHome)){if(value===undefined)delete process.env[key];else process.env[key]=value;}
+  fs.rmSync(isolatedHome,{recursive:true,force:true});
+});
 
 // 驾驭员是宿主的中间人：开进程、发一条指令、代答反问、打结果。它的价值有两条要
 // 拿真宿主验：确实能把一轮开起来并走下去；答案没备齐时停在发指令之前，不把运行做死。
@@ -114,6 +123,16 @@ test('the driver abandons a local unknown step using only plan reason and flag',
   assert.equal(result.status,0,JSON.stringify(result));
   assert.equal(JSON.parse(result.stdout).result.stage,'reproduce');
   assert(JSON.parse(fs.readFileSync(statePath)).records.some(row=>row.id==='fix-abandoned-1'));
+});
+test('#15 the driver refuses abandon_review without plan reason and --allow-abandon-review before launching the host',{skip},t=>{
+  const f=fixture(t);
+  for(const plan of [f.plan({mode:'resume',permissions:[],reason:'Reviewer stopped',answers:undefined}),
+    f.plan({mode:'resume',permissions:['--allow-abandon'],reason:'Reviewer stopped',answers:undefined}),
+    f.plan({mode:'resume',permissions:['--allow-abandon-review'],answers:undefined})]){
+    const refused=drive(plan,'abandon_review');
+    assert.equal(refused.status,2);assert.match(refused.stderr,/abandon_review 需要 PLAN\.reason/);
+  }
+  assert.equal(fs.existsSync(path.join(f.archive,'.reviews')),false);
 });
 test('revision repair requires its own answer before launching the host',{skip},t=>{
   const f=fixture(t);

@@ -10,7 +10,7 @@ import {preQaConfigurations,readQaAttachment} from '../runtime/js/cm-ai/qa-attac
 import {recordCmAiQaAttachment} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
-import {previousQaMaterial,qaConfigurationSlice,qaInvariantDigest,qaRevisionChain,verifyQaRevisionMaterial} from '../runtime/js/cm-ai/qa-config-revision.mjs';
+import {hasLegacyQaPlanFingerprint,previousQaMaterial,qaConfigurationSlice,qaExecutorMaterial,qaInvariantDigest,qaRevisionChain,verifyQaRevisionMaterial} from '../runtime/js/cm-ai/qa-config-revision.mjs';
 import {hasCmAiQaRun,inspectCmAiQaRevisionTarget,recordCmAiQaConfigurationRevision} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {prepareReviewedEvidenceSupersession,archiveReviewedEvidence,recordEvidenceSupersession} from '../runtime/js/cm-ai/reviewed-evidence-supersede.mjs';
 import {recordReviewAbandonment} from '../runtime/js/cm-ai/review-abandon-log.mjs';
@@ -178,6 +178,26 @@ export function validateRunDefinition(input){
   return value;
 }
 
+// Definition is data, never an import path, command, grant or executable callback.
+// legacyQa rebuilds the historical QA executor form for stores created before
+// the built-in plan left the fingerprint; it is never used to create a store.
+export function runConfigMaterial(definition,execution,{parallelSelection=null,bootstrapConfig=null,legacyQa=false}={}){
+  if(execution===null)return parallelSelection===null?definition:{definition,parallelSelection};
+  return {definition,...(parallelSelection===null?{}:{parallelSelection}),execution:execution.configuration,
+    ...(bootstrapConfig?{bootstrap:bootstrapConfig}:{}),
+    ...(Object.hasOwn(execution,'developmentAttempt')?{developmentAuthorization:'per-attempt-v1'}:{}),
+    ...(execution.hostDecisionProvider?{hostDecisionProvider:{version:1,timeoutMs:execution.hostDecisionProvider.timeoutMs}}:{}),
+    ...(execution.qaDecisionProvider?{qaDecisionProvider:'host-v1',qaTimeoutMs:execution.qaDecisionProvider.timeoutMs}:{}),
+    ...(execution.qaExecutor?{qaExecutor:qaExecutorMaterial(execution.qaExecutor,legacyQa)}:{}),
+    ...(execution.applicableAgentFiles?{applicableAgentFiles:execution.applicableAgentFiles}:{}),
+    ...(execution.documentationProvider?{documentationProvider:{version:1,timeoutMs:execution.documentationProvider.timeoutMs}}:{}),
+    ...(execution.documentationResult?{documentationResult:execution.documentationResult}:{}),
+    ...(execution.documentationSync?{documentationSync:{version:1,paths:execution.documentationSync.paths}}:{})};
+}
+const LEGACY_QA_FINGERPRINT_REASON='运行指纹与当前配置不符。若此运行由之前的版本创建，它的指纹还含有当时生效的 CM 配置'
+  +'（项目 .cm-workflow.yml、~/.cm-workflow/runtimes.yml 与插件内置默认值）：把这些配置恢复为创建时的内容即可恢复；'
+  +'现在新建的运行不再把这些可变配置写进指纹。否则请核对 run.json、--workflow-config、宿主身份及授权参数是否与创建时一致。';
+
 export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false}={}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
@@ -260,54 +280,60 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
     ...(bootstrapConfig?{bootstrapRequirements:bootstrapConfig.bootstrapRequirements}:{}),
     ...(selectedRoots?{codeProjectPaths:selectedRoots}:{})};
   if(mode==='create')captureReviewBaseline(baselineOptions);
-  // Definition is data, never an import path, command, grant or executable callback.
-  const configMaterial=execution===null?(parallelSelection===null?definition:{definition,parallelSelection}):{definition,...(parallelSelection===null?{}:{parallelSelection}),execution:execution.configuration,
-        ...(bootstrapConfig?{bootstrap:bootstrapConfig}:{}),
-        ...(Object.hasOwn(execution,'developmentAttempt')?{developmentAuthorization:'per-attempt-v1'}:{}),
-        ...(execution.hostDecisionProvider?{hostDecisionProvider:{version:1,timeoutMs:execution.hostDecisionProvider.timeoutMs}}:{}),
-        ...(execution.qaDecisionProvider?{qaDecisionProvider:'host-v1',qaTimeoutMs:execution.qaDecisionProvider.timeoutMs}:{}),
-        ...(execution.qaExecutor?{qaExecutor:{version:1,mode:execution.qaExecutor.mode,
-          caseCount:execution.qaExecutor.caseCount,timeoutMs:execution.qaExecutor.timeoutMs,
-          ...(Object.hasOwn(execution.qaExecutor,'configuration')?{configuration:execution.qaExecutor.configuration}:{})}}:{}),
-        ...(execution.applicableAgentFiles?{applicableAgentFiles:execution.applicableAgentFiles}:{}),
-        ...(execution.documentationProvider?{documentationProvider:{version:1,timeoutMs:execution.documentationProvider.timeoutMs}}:{}),
-        ...(execution.documentationResult?{documentationResult:execution.documentationResult}:{}),
-        ...(execution.documentationSync?{documentationSync:{version:1,paths:execution.documentationSync.paths}}:{})};
-  const fingerprints={workflow:sha(execution===null?'cm-ai-control-v1':'cm-ai-host-execution-v1'),
-    config:sha(configMaterial),inputs:sha({feature,task:identity.taskId})};
-  const storeOptions={tasksPath,feature:featureSlug,specsRoot:specsDir,
-    identity:{repositoryId:identity.repositoryId,runId:identity.runId},fingerprints,create:mode==='create'};
-  let store,attaching=false,priorMaterial=null;
-  if(qaConfigRevision!==null)priorMaterial=previousQaMaterial(configMaterial,qaConfigRevision.previousWorkflow);
-  try{store=openTaskExecutionStore(storeOptions);}
-  catch(error){
-    if(mode!=='resume'||error.code!=='fingerprint_mismatch')throw error;
-    const snapshot=readExecutionSnapshot({specsRoot:specsDir,identity:storeOptions.identity});
-    const last=qaRevisionChain(snapshot).revisions.at(-1);
-    if(priorMaterial&&last?.toFingerprint===fingerprints.config&&last.fromFingerprint===sha(priorMaterial)
-      &&last.reason===qaConfigRevision.reason)priorMaterial=null;
-    if(priorMaterial||snapshot.records.some(row=>row.payload.type==='qa-config-revised')){
-      verifyQaRevisionMaterial(snapshot,configMaterial,priorMaterial);
-      store=openTaskExecutionStore({...storeOptions,fingerprints:{...fingerprints,config:snapshot.fingerprints.config}});
-    }
-    if(!store){
-      for(const previous of preQaConfigurations(configMaterial)){
-        try{store=openTaskExecutionStore({...storeOptions,fingerprints:{...fingerprints,config:sha(previous)}});break;}
-        catch(cause){if(cause.code!=='fingerprint_mismatch')throw cause;}
+  const storeIdentity={repositoryId:identity.repositoryId,runId:identity.runId};
+  // Every fingerprint check below runs against one candidate material and
+  // closes its store before the next candidate is tried.
+  const openFor=material=>{
+    const fingerprints={workflow:sha(execution===null?'cm-ai-control-v1':'cm-ai-host-execution-v1'),
+      config:sha(material),inputs:sha({feature,task:identity.taskId})};
+    const storeOptions={tasksPath,feature:featureSlug,specsRoot:specsDir,identity:storeIdentity,fingerprints,create:mode==='create'};
+    let store,attaching=false,priorMaterial=null;
+    if(qaConfigRevision!==null)priorMaterial=previousQaMaterial(material,qaConfigRevision.previousWorkflow);
+    try{store=openTaskExecutionStore(storeOptions);}
+    catch(error){
+      if(mode!=='resume'||error.code!=='fingerprint_mismatch')throw error;
+      const snapshot=readExecutionSnapshot({specsRoot:specsDir,identity:storeIdentity});
+      const last=qaRevisionChain(snapshot).revisions.at(-1);
+      if(priorMaterial&&last?.toFingerprint===fingerprints.config&&last.fromFingerprint===sha(priorMaterial)
+        &&last.reason===qaConfigRevision.reason)priorMaterial=null;
+      if(priorMaterial||snapshot.records.some(row=>row.payload.type==='qa-config-revised')){
+        verifyQaRevisionMaterial(snapshot,material,priorMaterial);
+        store=openTaskExecutionStore({...storeOptions,fingerprints:{...fingerprints,config:snapshot.fingerprints.config}});
       }
-      if(!store)throw error;
-      attaching=true;
+      if(!store){
+        for(const previous of preQaConfigurations(material)){
+          try{store=openTaskExecutionStore({...storeOptions,fingerprints:{...fingerprints,config:sha(previous)}});break;}
+          catch(cause){if(cause.code!=='fingerprint_mismatch')throw cause;}
+        }
+        if(!store)throw error;
+        attaching=true;
+      }
+    }
+    try{
+      const chain=qaRevisionChain(store.snapshot());
+      if(chain.revisions.length&&chain.fingerprint!==fingerprints.config&&!priorMaterial)fail('fingerprint_mismatch');
+      if(chain.revisions.length||priorMaterial)verifyQaRevisionMaterial(store.snapshot(),material,priorMaterial);
+      const attachments=store.snapshot().records.filter(row=>row.payload.type==='qa-attached');
+      if(attachments.length>1)fail('qa_attachment_duplicate');
+      const attached=attachments.length?readQaAttachment(attachments[0].payload.record):null;
+      if(attached&&!chain.revisions.length&&!priorMaterial&&attached.qaFingerprint!==fingerprints.config)fail('fingerprint_mismatch');
+      if(attaching&&store.snapshot().records.length===0)fail('qa_attach_not_completed');
+      return {material,fingerprints,store,attaching,priorMaterial,chain,attached};
+    }catch(error){store.close();throw error;}
+  };
+  let opened;
+  try{opened=openFor(runConfigMaterial(definition,execution,{parallelSelection,bootstrapConfig}));}
+  catch(error){
+    // Only resume may fall back, and only to the exact historical QA form.
+    if(mode!=='resume'||error.code!=='fingerprint_mismatch'||!hasLegacyQaPlanFingerprint(execution?.qaExecutor))throw error;
+    try{opened=openFor(runConfigMaterial(definition,execution,{parallelSelection,bootstrapConfig,legacyQa:true}));}
+    catch(cause){
+      if(cause.code!=='fingerprint_mismatch')throw cause;
+      throw Object.assign(error,{reason:LEGACY_QA_FINGERPRINT_REASON});
     }
   }
+  const {material:configMaterial,fingerprints,store,attaching,priorMaterial,chain,attached}=opened;
   try{
-    const chain=qaRevisionChain(store.snapshot());
-    if(chain.revisions.length&&chain.fingerprint!==fingerprints.config&&!priorMaterial)fail('fingerprint_mismatch');
-    if(chain.revisions.length||priorMaterial)verifyQaRevisionMaterial(store.snapshot(),configMaterial,priorMaterial);
-    const attachments=store.snapshot().records.filter(row=>row.payload.type==='qa-attached');
-    if(attachments.length>1)fail('qa_attachment_duplicate');
-    const attached=attachments.length?readQaAttachment(attachments[0].payload.record):null;
-    if(attached&&!chain.revisions.length&&!priorMaterial&&attached.qaFingerprint!==fingerprints.config)fail('fingerprint_mismatch');
-    if(attaching&&store.snapshot().records.length===0)fail('qa_attach_not_completed');
     let runnerMode=mode;
     if(mode==='resume'&&store.snapshot().records.length===0){
       // Only the genuine, fingerprint-matching empty initializer can be finished.

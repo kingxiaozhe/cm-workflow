@@ -31,9 +31,9 @@ async function seedLegacyQaSkip({specsDir,codeProject,packageDigest,logHome,at})
 const documentationResult=(status,packageDigest,contextDigest,{reason='documentation synced',
   at='2026-09-04T15:00:00-07:00',syncId=`docs-${status}`}={})=>({syncId,identity,packageDigest,
   contextDigest,status,reason,at});
-const writeTestRun=({specsDir,codeProject,logHome,phase,data,at})=>{
+const writeTestRun=({specsDir,codeProject,logHome,phase,data,at,runId=identity.runId})=>{
   const args=[path.resolve(import.meta.dirname,'../../scripts/cm-log-event.py'),'--workflow','cm-ai','--event','test_run',
-    '--phase',phase,'--runtime','codex','--project-root',codeProject,'--specs-dir',specsDir,'--run-id',identity.runId,
+    '--phase',phase,'--runtime','codex','--project-root',codeProject,'--specs-dir',specsDir,'--run-id',runId,
     '--at',at,'--detail',phase==='start'?'QA started':'QA completed','--data-json',JSON.stringify(data)];
   const result=spawnSync('python3',args,{encoding:'utf8',env:{...process.env,CM_WORKFLOW_LOG_HOME:logHome}});
   assert.equal(result.status,0,result.stderr);return JSON.parse(result.stdout);
@@ -1215,6 +1215,21 @@ test('N8 finish accepts one current trusted documentation result but only advanc
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.login','2.profile']}));
   const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
 await seedLegacyQaSkip({specsDir,codeProject,packageDigest,logHome,at:"2026-09-04T15:02:00-07:00"});
+  // run_done needs every completed feature's QA to pass: 2.profile's own run ends in a bound PASS.
+  const profile={...identity,runId:'profile-run',taskId:'T-002'},profileDigest='f'.repeat(64);
+  const profileCompleted={state:'fixture_completed',code:null,identity:profile,packageDigest:profileDigest};
+  const profileEntry=createCmAiConversationEntry({specsDir,codeProject,feature:'2.profile',identity:profile,
+    runner:{status:()=>profileCompleted,executeEffect:async()=>assert.fail('runner effect'),cancel:()=>profileCompleted,run:async()=>profileCompleted},
+    qaLogHome:logHome,qaDecision:{...qaDecision('triggered',profileDigest,{reason:'feature_complete',score:null,
+      at:'2026-09-04T15:02:10-07:00'}),identity:profile}});
+  assert.equal((await profileEntry.handle({...operation('qa',{packageDigest:profileDigest}),identity:profile})).code,'qa_triggered');
+  fs.mkdirSync(path.join(specsDir,'.reviews'),{recursive:true});fs.writeFileSync(path.join(specsDir,'.reviews','qa-profile.md'),'passed\n');
+  const binding={node:'N6',feature:'2.profile',task:'T-002',attempt:1,repository_id:'fixture',
+    package_digest:profileDigest,qa_decision_id:'qa-triggered',operation_id:'qa-run-profile'};
+  writeTestRun({specsDir,codeProject,logHome,phase:'start',at:'2026-09-04T15:02:20-07:00',runId:profile.runId,
+    data:{...binding,mode:'commands',case_count:1}});
+  writeTestRun({specsDir,codeProject,logHome,phase:'complete',at:'2026-09-04T15:02:30-07:00',runId:profile.runId,
+    data:{...binding,mode:'commands',case_count:1,passed:1,failed:0,blocked:0,result:'PASS',report:'.reviews/qa-profile.md'}});
   const refreshEntry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
     applicableAgentFiles:[]});
   const refresh=await refreshEntry.handle(operation('context_refresh',{packageDigest,testRunId:null}));

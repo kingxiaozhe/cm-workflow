@@ -61,7 +61,7 @@ const FIX_ASKS={advance:['fix_learning','fix_diagnose'],author_tests:['fix_learn
 const FIX_ACTIONS=new Set(['red_test','baseline','author_tests','repair','regression','retrospective',
   'learning_writeback','handoff','final_review_package','final_review','publish_review','check_n5',
   'post_review_regression','publish_dossier','walkthrough','finish','prepare_revision',
-  'cause_review_package','cause_review','abandon_step']);
+  'cause_review_package','cause_review','abandon_step','abandon_review']);
 const FILES={develop:'develop.json',qa_assess:'qa-assess.json',documentation_inspect:'documentation-inspect.json',
   documentation_sync:'documentation-sync.json',fix_learning:'learning.json',fix_diagnose:'diagnosis.json',
   fix_test_author:'test-edits.json',fix_repair:'repair-edits.json',fix_retrospective:'retrospective.json'};
@@ -73,7 +73,7 @@ const PAIR_FLAGS=new Set(['--allow-review-attempt','--review-config','--workflow
 const FLAG_FLAGS=new Set(['--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
   '--allow-bootstrap-write','--allow-abandon-review','--allow-abandon-effect','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
   '--supersede-reviewed-evidence','--accept-superseded-code-drift',
-  ...['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon',
+  ...['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon','abandon-review',
     'test-author','repair','cause-review','final-review'].map(name=>`--allow-qa-fix-${name}`)]);
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;
@@ -291,8 +291,9 @@ function load(){
   if(['fix_advance','fix_run'].includes(operation))asks.push(...new Set(Object.values(FIX_ASKS).flat()));
   if(operation==='fix_action'){
     if(!FIX_ACTIONS.has(plan.fixOperation))stop(2,'fix_action 需要宿主支持的 fixOperation');
-    if(plan.fixOperation==='abandon_step'&&(!nonempty(plan.reason)
-      ||!permissions.includes('--allow-qa-fix-abandon')))stop(2,'abandon_step 需要 reason 与 --allow-qa-fix-abandon');
+    const abandonFlag=plan.fixOperation==='abandon_review'?'--allow-qa-fix-abandon-review':'--allow-qa-fix-abandon';
+    if(['abandon_step','abandon_review'].includes(plan.fixOperation)&&(!nonempty(plan.reason)
+      ||!permissions.includes(abandonFlag)))stop(2,`${plan.fixOperation} 需要 reason 与 ${abandonFlag}`);
     asks.push(...(FIX_ASKS[plan.fixOperation]??[]));
   }
   if(['qa_logic','qa_browser','verification_precheck'].some(kind=>asks.includes(kind)))
@@ -413,7 +414,7 @@ export function buildCmAiDriveRequest(operation,plan,definition){
     ...(['fix_status','fix_advance','fix_action','fix_run'].includes(operation)?{
       packageDigest:plan.packageDigest,testRunId:plan.testRunId,
       ...(operation==='fix_action'?{fixOperation:plan.fixOperation,
-        ...(plan.fixOperation==='abandon_step'?{reason:plan.reason}:{})}: {})}: {})};
+        ...(['abandon_step','abandon_review'].includes(plan.fixOperation)?{reason:plan.reason}:{})}: {})}: {})};
 }
 export function buildCmAiDriveHostArgs(plan,permissions,config){
   return ['serve','--config',config,'--mode',plan.mode,'--host-context',plan.hostContext,

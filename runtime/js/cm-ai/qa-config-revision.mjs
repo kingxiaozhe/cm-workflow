@@ -5,9 +5,27 @@ import {validateHostWorkflowConfiguration} from './host-workflow-capabilities.mj
 import {preQaConfigurations,readQaAttachment} from './qa-attachment.mjs';
 
 const workflow=material=>material.execution?.workflow?.configuration??material.execution?.workflow;
+const BUILT_IN='cm-host-qa-executor-v1';
+// Store fingerprint form of a QA executor. The built-in executor's plan (the
+// loaded project/user CM config and the mode, case count, cases, commands and
+// stage order derived from it) follows .cm-workflow.yml, ~/.cm-workflow/
+// runtimes.yml and the plugin's built-in defaults, all of which legitimately
+// change during a project. Version 2 binds only the host's QA inputs; each QA
+// round freezes its own plan at N6 (prepare) and records mode/case_count in its
+// test_run rows. Version 1 is the historical form: stores created with it keep
+// opening only while their original configuration is unchanged.
+export function hasLegacyQaPlanFingerprint(executor){return executor?.configuration?.kind===BUILT_IN;}
+export function qaExecutorMaterial(executor,legacy=false){
+  if(legacy||!hasLegacyQaPlanFingerprint(executor))return {version:1,mode:executor.mode,caseCount:executor.caseCount,
+    timeoutMs:executor.timeoutMs,...(Object.hasOwn(executor,'configuration')?{configuration:executor.configuration}:{})};
+  const {plan,...configuration}=executor.configuration;
+  return {version:2,timeoutMs:executor.timeoutMs,configuration};
+}
 export function qaConfigurationSlice(material){
   const qa=workflow(material)?.qa,executor=material.qaExecutor,c=executor?.configuration;
-  need(qa&&c?.kind==='cm-host-qa-executor-v1','qa_revision_configuration_required');
+  need(qa&&c?.kind===BUILT_IN,'qa_revision_configuration_required');
+  if(executor.version===2)return json({qa,timeoutMs:executor.timeoutMs,
+    executor:{commands:c.commands,environment:c.environment,timeoutMs:c.timeoutMs}});
   return json({qa,mode:executor.mode,caseCount:executor.caseCount,timeoutMs:executor.timeoutMs,
     executor:{commands:c.commands,environment:c.environment,timeoutMs:c.timeoutMs,
       commandsPlan:c.plan.commands,modes:c.plan.modes}});
@@ -15,12 +33,15 @@ export function qaConfigurationSlice(material){
 function withQaConfiguration(material,slice){
   const result=structuredClone(json(material)),c=result.qaExecutor.configuration;
   workflow(result).qa=slice.qa;
-  Object.assign(result.qaExecutor,{mode:slice.mode,caseCount:slice.caseCount,timeoutMs:slice.timeoutMs});
   Object.assign(c,{commands:slice.executor.commands,environment:slice.executor.environment,timeoutMs:slice.executor.timeoutMs});
+  if(result.qaExecutor.version===2){result.qaExecutor.timeoutMs=slice.timeoutMs;return result;}
+  Object.assign(result.qaExecutor,{mode:slice.mode,caseCount:slice.caseCount,timeoutMs:slice.timeoutMs});
   Object.assign(c.plan,{commands:slice.executor.commandsPlan,modes:slice.executor.modes});
   return result;
 }
 export function qaInvariantDigest(material){
+  if(material.qaExecutor?.version===2)return digest(withQaConfiguration(material,{qa:null,timeoutMs:null,
+    executor:{commands:null,environment:null,timeoutMs:null}}));
   return digest(withQaConfiguration(material,{qa:null,mode:null,caseCount:null,timeoutMs:null,
     executor:{commands:null,environment:null,timeoutMs:null,commandsPlan:null,modes:null}}));
 }
@@ -30,12 +51,14 @@ export function previousQaMaterial(material,previousWorkflow){
   need(prior.qa!==null,'qa_revision_configuration_required');
   need(digest({...prior,qa:null})===digest({...current,qa:null}),'fingerprint_mismatch');
   const result=structuredClone(json(material)),{kind,plan,capabilities,...configuration}=result.qaExecutor.configuration;
-  need(kind==='cm-host-qa-executor-v1','qa_revision_configuration_required');
-  // Rebuild the old plan using the same executor validator and unchanged project
-  // policy. These callbacks are capability markers and are never dispatched.
+  need(kind===BUILT_IN,'qa_revision_configuration_required');
+  // Rebuild the old executor with the same validator. A version 2 fingerprint
+  // carries no plan, so the current CM config cannot make the previous one
+  // irreproducible; version 1 still rebuilds its plan from the current policy.
+  // These callbacks are capability markers and are never dispatched.
   const executor=createHostQaExecutor({...configuration,commands:prior.qa.commands,environment:prior.qa.environment,
     ...(capabilities.logic?{logic:()=>{}}:{}),...(capabilities.browser?{browser:()=>{}}:{})});
-  result.qaExecutor={version:1,mode:executor.mode,caseCount:executor.caseCount,timeoutMs:executor.timeoutMs,configuration:executor.configuration};
+  result.qaExecutor=qaExecutorMaterial(executor,result.qaExecutor.version!==2);
   workflow(result).qa=prior.qa;
   need(qaInvariantDigest(result)===qaInvariantDigest(material),'fingerprint_mismatch');
   return result;

@@ -15,11 +15,29 @@
 `revision_regression`、`revision_retrospective`、`revision_walkthrough`、`revision_post_review_regression`。
 `cause_review`、`final_review`、`revision_final_review`、`learning_writeback`、
 `revision_learning_writeback`、`handoff`、`revision_handoff` 一律拒绝本操作，返回 `fix_abandon_unavailable`。
-最终审查的既有人工续审仍是唯一出口。
+第一轮最终审查的既有人工续审仍是其唯一出口；原因审查与第二轮最终审查见下节 `abandon_review`。
 
 放弃追加 `fix-abandoned-N` 记录和 `abandon` 日志；记录绑定旧 intent 摘要，`status.abandoned` 显示步骤、原因和时间。
 重做回到原待执行阶段，intent/result 用 `-retry-N-` ID；红灯输出加 `-retry-N.md`，旧记录和输出保留。
 `advance`/`run` 不自行放弃，放弃不跳过原阶段的校验、授权和独立审查。
+
+## cm-fix 原因审查与第二轮最终审查的一次性放弃重审
+
+原因审查或第二轮最终审查已登记但没有审查结论（宿主中途被杀、超时、断连或取消）时，`status.stage=unknown`
+并带 `reviewAbandonable:"cause_review"|"revision_final_review"`。宿主确认旧审查进程已退出后，以专用的 `--allow-abandon-review`
+（不是 `--allow-abandon`；QA-fix 父宿主为 `--allow-qa-fix-abandon-review`，经 `fix_action` 的 `fixOperation:"abandon_review"`；
+父运行自己的 `--allow-abandon-review` 不会传给子运行）发送
+`{"requestId":"abandon-review-1","operation":"abandon_review","reason":"具体原因"}`，原因规则同 `abandon_step`。
+每个运行可放弃一次原因审查、一次第二轮最终审查，与 cm-ai 的 `abandon_review` 对应；同一种审查重审仍无结论返回
+`fix_review_abandon_budget_exhausted`。
+
+放弃记录 `fix-cause-abandoned` / `fix-revision-final-abandoned` 绑定原 invocationId、登记摘要、已知线程及无结论结果的摘要，
+写 `abandon` 日志，回到待审阶段；回放逐项核对这些绑定。重审需原审查权限与一次新授权，使用
+`fix-cause-retry-*` / `fix-revision-final-retry-*` 记录，审查线程不能复用被放弃的线程。
+子运行身份仍由 qaSource 固定，所以这是恢复原子运行的途径，不需要也不能新建同源子运行。
+
+审查等待改用审查配置 `timeoutMs`（默认 900000 毫秒，同时交给 worker），不再用复现命令超时；
+原因审查到时追加 `transport_timeout` 结果而不是停在无记录状态。
 
 ## cm-fix 最终 Review 未知结果的人工续审
 
@@ -480,7 +498,11 @@ QA、文档可显式接入下述固定能力，多任务使用下文批次 CLI�
 已完成任务的一次性 QA 附加：原无 workflow 或 `qa:null` 的 run，仅在 `--mode resume`、
 state 为 `fixture_completed` 时，可显式同时传入含 QA 的 `--workflow-config PATH` 和
 `--allow-qa`。缺授权返回 `qa_authorization_required`；未完成返回 `qa_attach_not_completed`；
-原本已有 QA 的 run 换配置仍返回 `fingerprint_mismatch`。definition、scope、requirements、
+原本已有 QA 的 run 换 QA 命令、环境或预算仍返回 `fingerprint_mismatch`（配置填错时用 QA 配置修订入口）。
+项目 `.cm-workflow.yml`、`~/.cm-workflow/runtimes.yml` 与插件内置默认值不进入新运行的指纹：内置 QA 执行器按它们
+推出的执行计划（用例、命令、阶段、mode/case_count）在每轮 N6 重新冻结，由该轮 `test_run` 记录 mode/case_count；
+旧版本创建的运行指纹含当时的 CM 配置，配置未变照常打开，已变时仍 `fingerprint_mismatch` 并在 `reason` 说明。
+definition、scope、requirements、
 identity、host-context、模型、保护模式、检查及其他配置保持原指纹约束。原无 workflow 时可
 带入原 scope 内的 documentationPaths 和 applicableAgentFiles；已有 `qa:null` workflow
 须保留这两项原值，历史只存摘要，不能猜测旧配置。附加不执行审后文档写入。
@@ -514,6 +536,42 @@ JS 通过现有通道发出固定请求，结果由原组件校验：
 对应权限；这里的 QA 开关不授予这些权限。浏览器能力仍受用户工具策略与目标授权约束，
 缺工具/环境就返回 BLOCKED，不能换载体或伪造证据。QA FAIL/BLOCKED/unknown 不自动重试。
 代码检查、Learning、Review、QA、文档核验全部通过后才由原 finalizer 返回 run_done。
+run_done 是项目级声明：`finish` 与 `run_finalize` 还按权威日志核对每个已批准 feature 的最新 QA 决策——触发的 QA
+须以完整 PASS 结束（用原 owner 校验器读取），阻塞决策也不算通过；任一 FAIL、BLOCKED、已触发未执行、结果未知
+或旧结果已作废待下一轮，返回 `blocked/project_qa_not_passed`，`outstandingQa` 与 `reason` 列出 feature、任务、runId，
+不做文档核验、不写 run_done，`.cm-status.json` 不会被改成 run_done。任务还没做完的 feature 允许中途的 skipped 决策；
+任务已全部完成（均勾选或 DROPPED）的 feature 必须以 feature 完成时的 QA PASS 结束：没有任何 QA 记录（`qa_missing`，
+runId 为 null）或最新决策仍是 skipped（`qa_skipped`）同样拒绝。JS 流程没有关闭 N6 的配置——`policies.tests` 不能为空，
+收尾要求本运行的 QA 决策，feature 完成时的 QA 是强制的——所以这类 feature 只可能是在流程外（手工勾选或旧流程）完成的，
+不被信任。恢复方法：把该 feature 的末任务在 `tasks.md` 改回 `- [ ]`，用 cm-ai 重跑它（已有审查证据时加
+`--supersede-reviewed-evidence`），让 N6 在 feature 完成时补上 QA。准入选择仍按 tasks.md，只在 `warnings` 中提示这些
+feature。恢复对应运行让 QA 通过后，再次 `advance` 本运行即可收尾。
+
+已完成运行（fixture_completed）的 QA 恢复、QA 修复、配置修订与收尾先照旧核对原审查包；树已变化时，再核对
+变化是否恰好是同一代码根、同一仓库、其他任务的已完成并已提交运行的审查交付（含其已登记 QA 修复）。规则是确定的：
+取全部审查时间晚于本运行批准审查的这类交付包（主包取其批准审查的登记时间，QA 修复包取其最终审查的登记时间，
+均为 journal 中的持久字段；没有这一时间的交付不采用），按审查时间排序（同一时间按运行 ID、包内顺序），逐个全部接续，
+不挑选、不搜索（记录条数上限见本节末尾）；本运行自己的 QA 修复按其完成证据所引最终审查的登记时间插在同一序列中。每一个都必须
+严格接续：它在所改路径上的审查前状态必须等于当时的组合，否则失败关闭并列出路径。最终组合必须与当前代码树的内容和
+文件权限（mode）完全一致；唯一例外是本任务范围外的项目根 CM 配置文件。所以早于本运行的旧变更
+不能掩盖对本运行改动的人工回退，已审的 A→B→A 之后再手工改回 B 也对不上；这类交付 AGENTS.md 教训行和对本任务文件的
+修改都按此接续。其余变化——包括对本任务交付文件、需求文件或其他文件的未审改动、未完成或同任务替代运行的改动——仍是
+`correction_review_required`，`reason` 列出未解释的路径。这比原先“完成后整棵树不许动”放宽了一处：只接受
+已审交付与根 CM 配置，未审改动仍失败关闭。
+有 QA 修复时，顺序只取接受修复时已固定的事实：接受一次修复时，所有尚未记录、已完成且审查早于该修复最终审查登记时间的
+交付按审查时间排在它之前，关联记录升为 version 2，`laterDeliveries` 按顺序记下这张清单——每项只有运行 ID、包摘要和它
+位于第几次修复之前，逐文件变化每次都从所列运行已核实的存档重新读出，不写进 journal。已接受的清单此后不再改变：状态核对
+按记录原样严格组合，其余所有交付（包括审查早于修复、但在修复被接受之后才提交完成的交付）一律按审查时间排在最后一次修复
+之后现场接续，所以不会因此被锁住；下一次修复只能在前一条记录之后追加位于它之前的交付。记录里的交付必须仍是所列运行
+已完成、审查晚于本运行的真实交付包，否则 `fix_association_unverified`。打开运行时，所列运行的存档都在就逐条重新读出并
+核对记录的组合摘要，不符即拒绝打开（`fix_association_unverified` / `fix_association_invalid`）；存档已不在时回放无法证明，
+只核对记录的形状与前缀，此时状态核对、QA 恢复与接受新修复一律按 `correction_review_required` 失败关闭。清单为空时仍写
+原 version 1 记录，旧记录按原算法回放。接受修复前按存储的实际限制（单条记录、追加输入、记录条数、整个状态文件）核对
+将写入的完整记录，超出时以 `fix_record_too_large` 拒绝（QA 修复宿主返回 `qa_fix_code_unmatched`，`reason` 为该代码），
+不写入、存储仍可用。只含全文清单的旧 V1 基线不支持后续交付，仍按原规则拒绝。
+已知上限（极端规模，不在本次修复范围）：一条 QA 修复关联记录最多列 2048 个后续已审交付，超出时接受修复以`fix_association_invalid` 失败关闭；接受前的大小核对只覆盖单条记录、追加输入、1024 条记录与 16 MiB 状态文件，不含存储目录 32 MiB 的物理上限——崩溃时残留的 `.state.<uuid>.tmp` 临时文件计入该上限，状态文件与残留临时文件合计超出时追加仍按存储原有方式以 `limit_exceeded` 失败，处理残留临时文件走存储现有的恢复路径，本入口不自动清理。
+并行批次成员（工作树根不同）
+的交付不被识别；收尾发现文档需改时仍要走已审任务，不能在已完成运行内直接改。
 日志镜像位于 specs/.reviews/host-log-mirror，只是原日志的可重建副本；权威仍是 specs-local 日志。
 重开复用原 QA/任务结果，只读文档核验可以再次进行，不能重发开发、文档写入或 QA。
 本地命令与合成 reviewer 的 CLI 组合已走到 run_done；这不代表真实模型、浏览器或全 N6 验收。

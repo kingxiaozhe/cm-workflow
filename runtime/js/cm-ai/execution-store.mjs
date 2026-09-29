@@ -5,8 +5,9 @@ import { randomUUID,createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { need,shape,id,hex,json,digest,freeze } from './effect-contract.mjs';
 import { isSupportedExecutionPlatform } from './execution-platform.mjs';
+import { MiB,STATE_LIMIT,PHYSICAL_LIMIT } from './execution-store-limits.mjs';
 
-const MiB=1024*1024,STATE_LIMIT=16*MiB,PHYSICAL_LIMIT=32*MiB,APP_ID=0x434d5831;
+const APP_ID=0x434d5831;
 const PROTOCOL_SQL='CREATE TABLE protocol(version INTEGER NOT NULL CHECK(version=1))';
 const kinds=new Set(['intent','result','cancel','commit-intent','commit-result','finalized']);
 const seal=value=>freeze({...value,revision:digest(value)});
@@ -165,6 +166,7 @@ function acquireWriter(p,create) {
     return {db,inode:regular(p,64*1024),certificate:current,inspectionFd,release};
   }catch(error){release();if(error.errcode===5)need(false,'store_busy');throw error;}
 }
+export { appendFits } from './execution-store-limits.mjs';
 export function openExecutionStore(input) {
   const options=json(input);shape(options,['specsRoot','identity','fingerprints','create']);
   shape(options.identity,['repositoryId','runId']);Object.values(options.identity).forEach(id);

@@ -32,7 +32,7 @@ function events(onEvent,thread){
     {event:'item.completed',item_type:'agent_message'},{event:'turn.completed',item_type:null},
     {event:'process_closed',exit_code:0,signal:null,timed_out:false}])onEvent(event);
 }
-async function fixture(t,{childHost=A,causeContext=null}={}){
+async function fixture(t,{childHost=A,causeContext=null,lostCauseReviews=0}={}){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qa-fix-session-')));
   const codeProject=path.join(root,'code'),specsDir=path.join(root,'specs'),feature='1.value';
   fs.mkdirSync(codeProject);fs.mkdirSync(path.join(specsDir,feature),{recursive:true});
@@ -81,8 +81,12 @@ async function fixture(t,{childHost=A,causeContext=null}={}){
   const qaSource={feature,identity,packageDigest:failed.packageDigest,testRunId:failed.fixHandoff.source.testRunId,
     handoffDigest:failed.fixHandoff.handoffDigest};
   const permissions=['--allow-cause-review'];
+  let causeReviews=0;
   const reviewHost=live=>createFixReviewHost({codeProject,hostContextId:live,review,permissions,workerFactory:()=>async({prompt},{onEvent})=>{
-    const data=JSON.parse(prompt.split('<cm-review-data-json>\n')[1]);events(onEvent,'synthetic-child-review');
+    const data=JSON.parse(prompt.split('<cm-review-data-json>\n')[1]);
+    if(++causeReviews<=lostCauseReviews){onEvent({event:'thread.started',provider_thread:`lost-child-review-${causeReviews}`});
+      throw Error('Synthetic lost cause review');}
+    events(onEvent,'synthetic-child-review');
     return {status:'succeeded',value:{verdict:'approved',packageDigest:data.reviewPackage.packageDigest,
       examinedPaths:['value.mjs'],findings:[],summary:'Synthetic cause review'}};
   }});
@@ -252,4 +256,25 @@ test('QA-fix child abandons a lost local diagnosis only with its dedicated CLI f
   owner=await f.open(A);
   assert.equal((await owner.handle(f.bound('fix_advance'))).fixStage,'cause_review_required');
   assert(f.records().some(row=>row.id==='fix-diagnose-retry-1-result'));
+});
+
+test('#15 a QA-fix child cause review without a result is abandoned once through the parent host, then re-reviewed',async t=>{
+  const f=await fixture(t,{lostCauseReviews:1});
+  let owner=await f.open(A);
+  assert.equal((await owner.handle(f.bound('fix_advance'))).fixStage,'cause_review_required');
+  const reviewed=await owner.handle({...f.bound('fix_action'),fixOperation:'cause_review'});
+  assert.equal(reviewed.fixStage,'unknown');assert.equal(reviewed.actionResult.reviewAbandonable,'cause_review');
+  const request={...f.bound('fix_action'),fixOperation:'abandon_review',reason:'Child cause reviewer confirmed stopped'};
+  const before=fs.readFileSync(f.statePath);
+  await assert.rejects(owner.handle(request),{code:'fix_review_abandon_authorization_required'});
+  assert.deepEqual(fs.readFileSync(f.statePath),before);
+  f.close();
+  const local=await cli(f,A,request,{flags:['--allow-qa-fix-abandon']});
+  assert.match(local.stderr,/fix_review_abandon_authorization_required/);assert.deepEqual(fs.readFileSync(f.statePath),before);
+  const allowed=await cli(f,A,request,{flags:['--allow-qa-fix-abandon-review']});
+  assert.equal(allowed.code,0,allowed.stderr);assert.equal(allowed.result?.fixStage,'cause_review_required');
+  assert(f.records().some(row=>row.id==='fix-cause-abandoned'));
+  owner=await f.open(A);
+  assert.equal((await owner.handle({...f.bound('fix_action'),fixOperation:'cause_review'})).fixStage,'red_test_required');
+  assert.equal(f.records().find(row=>row.id==='fix-cause-retry-started').payload.providerThreadId,'synthetic-child-review');
 });
