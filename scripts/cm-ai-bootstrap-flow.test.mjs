@@ -130,14 +130,15 @@ test(`approved ${feature} completes T-001 and T-002 with Learning preserved thro
   assert.match(fs.readFileSync(path.join(f.specsDir,feature,'tasks.md'),'utf8'),/\[x\] T-002/);
 });
 
-test('numbered bootstrap still refuses pre-existing non-Learning instructions',async t=>{
+test('numbered bootstrap blocks pre-existing non-Learning instructions before dispatch',async t=>{
   const f=fixture(t,'1.bootstrap');
   let run=open(f,'T-001');assert.equal((await run.effect('develop')).state,'awaiting_review');run.close();
   run=open(f,'T-001','resume');assert.equal((await run.effect('review')).state,'approved');
   assert.equal((await run.effect('complete')).state,'fixture_completed');run.close();
   const agents=path.join(f.codeProject,'AGENTS.md');fs.writeFileSync(agents,'# Existing user rules\n');
   run=open(f,'T-002');const result=await run.effect('develop');run.close();
-  assert.equal(result.state,'unknown');assert.equal(result.code,'execution_error');
+  assert.equal(result.state,'blocked');assert.equal(result.code,'bootstrap_instruction_conflict');
+  assert.equal(result.calls.length,0);
   assert.equal(fs.readFileSync(agents,'utf8'),'# Existing user rules\n');
   assert.equal(fs.existsSync(path.join(f.codeProject,'.claude')),false);
 });

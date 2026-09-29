@@ -276,7 +276,7 @@ export function createTaskRunner(options) {
   // derivation in one place, next to the cache it is derived from.
   const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
     &&entry.result?.state==='blocked'
-    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed'].includes(entry.result?.code)).length;
+    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict'].includes(entry.result?.code)).length;
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
     &&entry.result?.state==='blocked'&&['completion_checks_changed','completion_package_changed'].includes(entry.result?.code)).length;
   const privateStatus=()=>json({state,code,...(reason?{reason}:{}),
@@ -854,6 +854,15 @@ export function createTaskRunner(options) {
       const previousLearning=learningResult;
       const previousBootstrap=learningResult?.bootstrap??null;
       const previousWriteback=learningResult?.writeback??null;
+      if(bootstrap!==null&&metadata.bootstrap?.mode==='instructions'){
+        try{bootstrap.assertInstructionBaseline({identity:v.identity,previous:previousBootstrap,
+          previousWriteback});}
+        catch(error){if(error.code!=='bootstrap_instruction_conflict')throw error;
+          halt('blocked','bootstrap_instruction_conflict',boundedReason(
+            'bootstrap_instruction_conflict: 规则文件与本运行绑定的基准不一致：',error.paths??[],
+            '。本轮未派发或写入。请还原这些文件后在原 run resume；若要采用新的提交，使用新 runId 重建。'));
+          return;}
+      }
       if(taskLearning!==null)learningResult=null;
       let verificationReason=null;
       const adapter=bootstrap===null?developer:{...developer,run:(request,control)=>

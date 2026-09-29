@@ -7,7 +7,9 @@ import {cmInitRuleTargets,generateCmInitDraft,validateCmInitSelection} from '../
 import {inspectCmInitDraft,readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {replaceSessionFile} from '../cm-prd/session.mjs';
 import {readReviewSourceFiles,readReviewBaseline} from './review-package.mjs';
-import {inspectCmAiBootstrapTask,identifyApprovedBootstrapFeature} from './cm-ai-admission.mjs';
+import {inspectCmAiBootstrapTask,identifyApprovedBootstrapFeature,parseFeatureTaskText} from './cm-ai-admission.mjs';
+import {approvedTaskGrammar} from '../spec-task-line.mjs';
+import {readCommittedRuleBasis} from './committed-rule-basis.mjs';
 import {readProjectInstructionContext,createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective} from './cm-ai-context-refresh.mjs';
 import {validateDeveloperScope,readDeveloperRequest} from './developer-adapter.mjs';
 import {digest,json,shape,need,freeze,validIdentity,hex,requestFor,terminalFor,boundedReason} from './effect-contract.mjs';
@@ -20,17 +22,28 @@ const learningSection=source=>/^## 项目教训[ \t]*\r?$/gmu.test(source);
 const canonical=root=>need(typeof root==='string'&&path.isAbsolute(root)&&fs.realpathSync(root)===root
   &&fs.lstatSync(root).isDirectory(),'bootstrap_root_invalid');
 
-export function mergeBootstrapAgents(existing,generated){
+export function committedBootstrapBasis({specsDir,codeProject,feature,taskId,instructionPaths,requireCleanIndex=true}){
+  const parsed=parseFeatureTaskText(fs.readFileSync(path.join(specsDir,feature,'tasks.md'),'utf8'),
+    {allowDependencyPunctuation:true,grammar:approvedTaskGrammar(specsDir)});
+  need(!parsed.error,'bootstrap_task_required');
+  const index=parsed.tasks.findIndex(task=>task.id===taskId);
+  const priorRules=index>0&&parsed.tasks.slice(0,index).some(task=>task.completed&&!task.dropped
+    &&/(?:cm-init|\.claude\/|AGENTS\.md)/i.test(task.description)
+    &&/(?:生成|规范|规则|instruction|rules|generate)/i.test(task.description));
+  return priorRules?readCommittedRuleBasis(codeProject,instructionPaths,{requireCleanIndex}):undefined;
+}
+
+export function mergeBootstrapAgents(existing,generated,{refresh=false}={}){
   need(typeof existing==='string'&&typeof generated==='string','bootstrap_instruction_conflict');
   if(!existing)return generated;
   const heading=/^## 项目教训[ \t]*\r?$/gmu.exec(existing);
-  if(!heading){need(generated.includes(existing),'bootstrap_instruction_conflict');return generated;}
+  if(!heading){need(refresh||generated.includes(existing),'bootstrap_instruction_conflict');return generated;}
   const next=/^## [^\r\n]+\r?$/gmu;
   next.lastIndex=heading.index+heading[0].length;
   const end=next.exec(existing)?.index??existing.length;
   const section=existing.slice(heading.index,end);
   const before=existing.slice(0,heading.index),after=existing.slice(end);
-  need((!before||generated.includes(before))&&(!after||generated.includes(after)),'bootstrap_instruction_conflict');
+  need(refresh||(!before||generated.includes(before))&&(!after||generated.includes(after)),'bootstrap_instruction_conflict');
   if(generated.includes(section))return generated;
   need(!/^## 项目教训[ \t]*\r?$/gmu.test(generated),'bootstrap_instruction_conflict');
   return generated+(generated.endsWith('\n')?'':'\n')+'\n'+section;
@@ -81,6 +94,9 @@ export function createHostBootstrap({definition,workflowRoot,selection,bridge,al
   const selected=inspectCmAiBootstrapTask({specsDir:data.specsDir,codeProject:data.codeProject,taskId:data.identity.taskId},true);
   const mode=selected.mode,choice=mode==='scaffold'?null:validateCmInitSelection(selection);
   const instructionPaths=mode==='scaffold'?[]:cmInitRuleTargets(choice);
+  const committedBasis=mode==='instructions'?committedBootstrapBasis({specsDir:data.specsDir,
+    codeProject:data.codeProject,feature:data.feature,taskId:data.identity.taskId,instructionPaths,
+    requireCleanIndex:false}):undefined;
   need(Array.isArray(data.scope)&&new Set(data.scope).size===data.scope.length
     &&instructionPaths.every(file=>data.scope.includes(file)),'bootstrap_scope_required');
   const businessScope=data.scope.filter(file=>!instructionPaths.includes(file));
@@ -92,7 +108,8 @@ export function createHostBootstrap({definition,workflowRoot,selection,bridge,al
   const policyDigest=digest(instructionPaths.slice(2).map(file=>{
     const relative='templates/rules/'+path.basename(file);return [relative,sha(readCmInitSource(workflowRoot,relative))];}));
   const configuration=json({version:1,mode,codeProject:data.codeProject,specsDir:data.specsDir,feature:data.feature,
-    identity:data.identity,scope:data.scope,businessScope,instructionPaths,workflowRoot,selection:choice,policyDigest,bootstrapRequirements});
+    identity:data.identity,scope:data.scope,businessScope,instructionPaths,workflowRoot,selection:choice,policyDigest,bootstrapRequirements,
+    ...(committedBasis!==undefined?{committedBasisRequired:true,committedBasis}:{})});
   const used=new Set();
   const admission=baseline=>{
     const original=readReviewBaseline(baseline);
@@ -100,7 +117,39 @@ export function createHostBootstrap({definition,workflowRoot,selection,bridge,al
     if(mode==='scaffold')need(original.files.length===0,'bootstrap_original_not_empty');
     return inspectCmAiBootstrapTask({specsDir:data.specsDir,codeProject:data.codeProject,taskId:data.identity.taskId},mode==='scaffold').admission;
   };
-  const capability={configuration,inspectAdmission:admission,
+  const instructionBaseline=({identity,previous=null,previousWriteback=null})=>{
+    need(mode==='instructions','bootstrap_task_required');
+    if(committedBasis===null){
+      const error=new Error('bootstrap_instruction_conflict');error.code='bootstrap_instruction_conflict';
+      error.paths=instructionPaths;throw error;
+    }
+    if(committedBasis!==undefined){
+      const current=readCommittedRuleBasis(data.codeProject,instructionPaths);
+      if(digest(current)!==digest(committedBasis)){
+        const error=new Error('bootstrap_instruction_conflict');error.code='bootstrap_instruction_conflict';
+        error.paths=instructionPaths;throw error;
+      }
+    }
+    const retry=previous!==null&&previous.identity?.attempt===identity.attempt;
+    const prior=previous===null?null:readBootstrapEvidence(previous,configuration,
+      {...identity,attempt:retry?identity.attempt:identity.attempt-1});
+    need(identity.attempt===1?prior===null||retry:prior!==null,'bootstrap_prior_evidence_required');
+    const originals=instructionPaths.map(file=>({path:file,bytes:readCmInitSource(data.codeProject,file)}));
+    const conflicts=[];
+    for(const file of originals){
+      const initial=configuration.committedBasisRequired
+        ?configuration.committedBasis.files.find(item=>item.path===file.path).sha256
+        :file.path==='AGENTS.md'&&file.bytes!==null
+          &&learningSection(new TextDecoder('utf8',{fatal:true}).decode(file.bytes))?sha(file.bytes):null;
+      const expected=file.path==='AGENTS.md'&&prior!==null&&previousWriteback?.outcome==='written'
+        ?previousWriteback.agentsFile.sha256:prior?.files.find(item=>item.path===file.path).afterSha256??initial;
+      if(sha(file.bytes)!==expected)conflicts.push(file.path);
+    }
+    if(conflicts.length){const error=new Error('bootstrap_instruction_conflict');error.code='bootstrap_instruction_conflict';
+      error.paths=conflicts;throw error;}
+    return {originals,prior};
+  };
+  const capability={configuration,inspectAdmission:admission,assertInstructionBaseline:instructionBaseline,
     assertWriteAuthorized(){need(allowWrite,'bootstrap_write_authorization_required');},
     async run(request,control,develop,{previous=null,previousWriteback=null,baseline,verificationFailed=null}={}){
     need(allowWrite,'bootstrap_write_authorization_required');
@@ -112,21 +161,13 @@ export function createHostBootstrap({definition,workflowRoot,selection,bridge,al
     // A revision binds to the previous attempt's evidence. A retryable develop
     // block after this effect wrote the rules (develop_checks_not_passed) retries
     // the same attempt, so it binds to that attempt's own recorded evidence.
-    const retry=previous!==null&&previous.identity?.attempt===request.identity.attempt;
-    const prior=previous===null?null:readBootstrapEvidence(previous,configuration,
-      {...request.identity,attempt:retry?request.identity.attempt:request.identity.attempt-1});
-    if(mode==='instructions')need(request.identity.attempt===1?prior===null||retry:prior!==null,'bootstrap_prior_evidence_required');
-    const originals=instructionPaths.map(file=>({path:file,bytes:readCmInitSource(data.codeProject,file)}));
-    for(const file of originals){
-      const expected=file.path==='AGENTS.md'&&prior!==null&&previousWriteback?.outcome==='written'
-        ?previousWriteback.agentsFile.sha256:prior?.files.find(item=>item.path===file.path).afterSha256
-          ??(file.path==='AGENTS.md'&&file.bytes!==null
-            &&learningSection(new TextDecoder('utf8',{fatal:true}).decode(file.bytes))?sha(file.bytes):null);
-      need(sha(file.bytes)===expected,'bootstrap_instruction_conflict');
-    }
+    const {originals}=mode==='instructions'?instructionBaseline({identity:request.identity,previous,previousWriteback})
+      :{originals:instructionPaths.map(file=>({path:file,bytes:readCmInitSource(data.codeProject,file)}))};
     used.add(request.invocationId);
     const current=()=>{
       canonical(data.codeProject);
+      if(committedBasis!==undefined)need(digest(readCommittedRuleBasis(data.codeProject,instructionPaths))
+        ===digest(committedBasis),'bootstrap_instruction_conflict');
       for(const file of originals)need(sha(readCmInitSource(data.codeProject,file.path))===sha(file.bytes),'bootstrap_instruction_conflict');
     };
     let response=null;
@@ -153,7 +194,8 @@ export function createHostBootstrap({definition,workflowRoot,selection,bridge,al
     need(generated.status==='draft_generated'&&generated.inspection.status==='structurally_checked','bootstrap_generation_blocked');
     const agentsBefore=originals.find(file=>file.path==='AGENTS.md').bytes;
     const documents=generated.documents.map(document=>document.path==='AGENTS.md'
-      ?{path:document.path,content:mergeBootstrapAgents(agentsBefore?.toString('utf8')??'',document.content)}:document);
+      ?{path:document.path,content:mergeBootstrapAgents(agentsBefore?.toString('utf8')??'',document.content,
+        {refresh:committedBasis!==undefined})}:document);
     const inspection=inspectCmInitDraft({project:data.codeProject,documents,selection:choice});
     need(inspection.status==='structurally_checked','bootstrap_generation_blocked');
     const verified=json(await bridge.call('init_verify',{project:data.codeProject,selection:choice,documents,

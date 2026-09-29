@@ -189,10 +189,10 @@ test('attempt 1 refuses existing instructions the host would not overwrite',t=>{
   const f=fixture(t,{scaffolded:true});f.writeRun('T-002',[...f.targets]);f.writeBootstrap(selection);prepareRules(f,1);
   const run=()=>f.drive(f.plan('T-002','create',rulesPermissions),'advance');
   fs.writeFileSync(path.join(f.codeProject,'AGENTS.md'),'# User-owned rules\n');
-  assertRefusedBeforeLaunch(f,run(),/规范目标已存在: AGENTS\.md/);
+  assertRefusedBeforeLaunch(f,run(),/规范目标 AGENTS\.md 与本运行可信基准不一致/);
   // A T-001 Learning section is allowed; the draft must keep every other existing line.
   fs.writeFileSync(path.join(f.codeProject,'AGENTS.md'),'# User-owned rules\n\n## 项目教训\n\n- 保留骨架教训\n');
-  assertRefusedBeforeLaunch(f,run(),/必须逐字保留当前 AGENTS\.md 中「## 项目教训」段以外的全部内容/);
+  assertRefusedBeforeLaunch(f,run(),/必须逐字保留当前「## 项目教训」段/);
 });
 
 test('init-verify commands never run unless the host itself accepted the launch and the task',t=>{

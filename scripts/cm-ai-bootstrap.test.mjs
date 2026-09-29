@@ -217,7 +217,7 @@ test('bootstrap denies missing authority before intent and a newly authorized la
 });
 
 for(const scenario of ['existing-instructions','target-drift'])
-test('rules task preserves files and original unknown outcome: '+scenario,{timeout:5000},async t=>{
+test('rules task preserves files on conflict: '+scenario,{timeout:5000},async t=>{
   const f=fixture(t),tasks=path.join(f.specsDir,'0.bootstrap','tasks.md');
   // A previously accepted scaffold is test setup, not a second execution path.
   fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('[ ] T-001','[x] T-001'));
@@ -232,11 +232,55 @@ test('rules task preserves files and original unknown outcome: '+scenario,{timeo
     }
     return response;
   }});
-  const result=await run.effect('develop');assert.equal(result.state,'unknown');run.close();
+  const expected=scenario==='existing-instructions'?'blocked':'unknown';
+  const result=await run.effect('develop');assert.equal(result.state,expected);run.close();
+  if(scenario==='existing-instructions'){
+    assert.equal(result.code,'bootstrap_instruction_conflict');
+    assert.equal(result.calls.length,0);
+  }
   assert.equal(fs.existsSync(path.join(f.codeProject,'.claude')),false);
   assert.match(fs.readFileSync(agents,'utf8'),/user|User/);
   const before=[...f.calls],resumed=open(f,'T-002','resume');
-  assert.equal(resumed.runner.status().state,'unknown');resumed.close();assert.deepEqual(f.calls,before);
+  assert.equal(resumed.runner.status().state,expected);resumed.close();assert.deepEqual(f.calls,before);
+});
+
+test('completed same-feature rules task refreshes committed rules and replays its evidence',{timeout:FIXTURE_TIMEOUT_MS},async t=>{
+  const f=fixture(t),tasks=path.join(f.specsDir,'0.bootstrap','tasks.md');
+  fs.appendFileSync(tasks,'- [ ] T-010: 同步 AGENTS.md 与 .claude/ 规则\n');
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['0.bootstrap'],
+    specFiles:buildManifest(f.specsDir)}));
+  let run=open(f,'T-001');await run.effect('develop');await run.effect('review');await run.effect('complete');run.close();
+  f.lesson=true;
+  run=open(f,'T-002');await run.effect('develop');await run.effect('review');await run.effect('complete');run.close();
+  const git=(...args)=>{const result=spawnSync('git',args,{cwd:f.codeProject,encoding:'utf8'});
+    assert.equal(result.status,0,result.stderr);return result.stdout.trim();};
+  git('init','-q');git('config','user.email','fixture@example.test');git('config','user.name','Fixture');
+  git('add','.');git('commit','-qm','Committed bootstrap rules');
+  const previous=fs.readFileSync(path.join(f.codeProject,'AGENTS.md'),'utf8');
+  assert.match(previous,/## 项目教训/);
+  const testing=path.join(f.codeProject,'.claude/rules/testing.md');
+  const committedTesting=fs.readFileSync(testing,'utf8');
+  fs.writeFileSync(testing,'# Staged rules drift\n');git('add','--','.claude/rules/testing.md');
+  fs.writeFileSync(testing,committedTesting);
+  const callsBefore=f.calls.length;
+  run=open(f,'T-010','create');
+  const blocked=await run.effect('develop');
+  assert.equal(blocked.state,'blocked');assert.equal(blocked.code,'bootstrap_instruction_conflict');
+  assert.equal(f.calls.length,callsBefore);run.close();
+  git('reset','-q','--','.claude/rules/testing.md');
+  run=open(f,'T-010','resume',{reply:(kind,payload)=>{
+    const answer=reply(f,kind,payload);
+    if(kind==='init_generate')answer.documents=answer.documents.map(document=>({path:document.path,
+      content:document.path==='AGENTS.md'?'# Refreshed rules\n\nNew invariant.\n':document.content+'Refreshed.\n'}));
+    return answer;
+  }});
+  assert.equal((await run.effect('develop','-after-restore')).state,'awaiting_review');run.close();
+  const refreshed=fs.readFileSync(path.join(f.codeProject,'AGENTS.md'),'utf8');
+  assert.match(refreshed,/# Refreshed rules/);
+  assert(refreshed.includes(previous.slice(previous.indexOf('## 项目教训'))));
+  run=open(f,'T-010','resume');assert.equal(run.runner.status().state,'awaiting_review');
+  assert.equal((await run.effect('review')).state,'approved');
+  assert.equal((await run.effect('complete')).state,'fixture_completed');run.close();
 });
 
 const ruleHashes=f=>Object.fromEntries(cmInitRuleTargets(selection).map(file=>{

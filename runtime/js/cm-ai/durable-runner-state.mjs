@@ -23,7 +23,7 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed'].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict'].includes(code)
   ||kind==='review'&&state==='pending_review'&&REVIEW_RETRY_CODES.includes(code)
   ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed'].includes(code)
     ||code==='review_package_changed'&&reviewVerdict==='approved')
@@ -387,10 +387,12 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
           need(evidence.invocationId===added[0]?.invocationId,'runner_learning');
           for(const file of evidence.files){
             const previous=before.learningResult?.bootstrap?.files.find(item=>item.path===file.path);
+            const initial=config.bootstrap?.committedBasis
+              ?config.bootstrap.committedBasis.files.find(item=>item.path===file.path)?.sha256??null
+              :file.path==='AGENTS.md'?effect.learningInput.learningFiles.find(item=>item.scope==='project'
+                &&item.path==='AGENTS.md')?.sha256??null:null;
             const expected=file.path==='AGENTS.md'&&previous&&before.learningResult.writeback.outcome==='written'
-              ?before.learningResult.writeback.agentsFile.sha256:previous?.afterSha256
-                ??(file.path==='AGENTS.md'?effect.learningInput.learningFiles.find(item=>item.scope==='project'
-                  &&item.path==='AGENTS.md')?.sha256??null:null);
+              ?before.learningResult.writeback.agentsFile.sha256:previous?.afterSha256??initial;
             need(file.beforeSha256===expected,'runner_learning');
           }
         }
@@ -411,7 +413,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
         ||Object.hasOwn(original,'specification')&&s.state==='blocked'&&s.code==='spec_drift'
         // The host gate rejected the delivery after Learning was already written
         // back: the writeback stands, only the review package was not built.
-        ||s.state==='blocked'&&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed'].includes(s.code)
+        ||s.state==='blocked'&&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','bootstrap_instruction_conflict'].includes(s.code)
         ||added[0]&&['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal),'runner_learning');
     }
     if(digest(s.reviewPackage)!==digest(before.reviewPackage)) {
@@ -438,6 +440,11 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
       same(s.receipts,before.receipts);
       if(s.code==='develop_unchanged_after_review')
         need(before.attempt===2&&before.priorReview?.verdict==='changes_requested','runner_develop');
+      expectedState='blocked';expectedCode=s.code;
+    }
+    if(added.length===0&&s.code==='bootstrap_instruction_conflict'){
+      need(config.bootstrap?.mode==='instructions','runner_develop');
+      same(s.learningResult,before.learningResult);
       expectedState='blocked';expectedCode=s.code;
     }
     if(added[0] && ['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal)) {

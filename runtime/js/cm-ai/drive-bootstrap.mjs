@@ -19,7 +19,7 @@ import {createHash} from 'node:crypto';
 import {createHostCheck} from './host-check.mjs';
 import {inspectCmAiAdmission,inspectCmAiBootstrapTask,matchesCmAiTaskSelection} from './cm-ai-admission.mjs';
 import {readBootstrapConfiguration,readConversationProtection} from '../../../scripts/cm-ai-host.mjs';
-import {mergeBootstrapAgents} from './host-bootstrap.mjs';
+import {mergeBootstrapAgents,committedBootstrapBasis} from './host-bootstrap.mjs';
 import {createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective} from './cm-ai-context-refresh.mjs';
 import {cmInitRuleTargets,validateCmInitSelection} from '../cm-init/draft-generation.mjs';
 import {inspectCmInitDraft,readCmInitSource} from '../cm-init/draft-inspection.mjs';
@@ -37,6 +37,9 @@ const refuse=(ok,line)=>{if(!ok)stop(2,line);};
 const envelope=result=>Buffer.byteLength(JSON.stringify({type:'host_result',sessionId:'0'.repeat(36),
   callId:'0'.repeat(36),requestDigest:'0'.repeat(64),result}),'utf8');
 const learningSection=source=>/^## 项目教训[ \t]*\r?$/gmu.test(source);
+const committedBasis=(definition,targets)=>committedBootstrapBasis({specsDir:definition.specsDir,
+  codeProject:definition.codeProject,feature:definition.feature,taskId:definition.identity.taskId,
+  instructionPaths:targets});
 const sha=bytes=>bytes===null?null:createHash('sha256').update(bytes).digest('hex');
 
 export function attemptAnswerName(root,name,attempt){
@@ -107,25 +110,30 @@ function readGenerate(root,name,{definition,bootstrap,learning}){
   inspected(definition.codeProject,documents,bootstrap.selection,name);
   refuse(envelope({status:'generated',documents})<=RESPONSE_LIMIT,
     `${name} 的正文合计超过宿主单次回复 64 KiB 上限；精简规范正文，不要截断`);
-  // Same expectations as host-bootstrap.mjs run(): files this run already wrote are
-  // bound to the journal's recorded evidence (revision or same-attempt retry);
-  // without it only an AGENTS.md carrying a Learning section may pre-exist.
+  // Same baseline as host-bootstrap.mjs: this run's prior evidence wins, then
+  // a completed same-feature rule task may authorize clean committed targets.
   const project=definition.codeProject,prior=learning?.bootstrap??null,writeback=learning?.writeback??null;
+  const basis=committedBasis(definition,targets);
+  refuse(basis!==null,`前序规则任务已完成，但固定目标没有可用的 HEAD 提交基准（bootstrap_instruction_conflict）；`
+    +'请恢复已提交的规则文件与暂存区，或在新提交后使用新 runId');
   for(const file of targets){
     const bytes=readTarget(project,file);
-    if(prior===null)refuse(bytes===null||file==='AGENTS.md'&&learningSection(bytes.toString('utf8')),
-      `规范目标已存在: ${file}；本运行尚未写入规范，只允许带「## 项目教训」段的 AGENTS.md，宿主不覆盖已有规则（bootstrap_instruction_conflict）`);
+    if(prior===null){
+      const expected=basis?.files.find(item=>item.path===file)?.sha256??null;
+      refuse(basis!==undefined?sha(bytes)===expected:bytes===null||file==='AGENTS.md'&&learningSection(bytes.toString('utf8')),
+        `规范目标 ${file} 与本运行可信基准不一致（bootstrap_instruction_conflict）；先还原已提交内容，或用新 runId 绑定新的提交`);
+    }
     else{
       const expected=file==='AGENTS.md'&&writeback?.outcome==='written'?writeback.agentsFile.sha256
         :prior.files.find(item=>item.path===file)?.afterSha256??null;
       refuse(sha(bytes)===expected,`规范目标 ${file} 与本运行已记录的写入不一致（期望 ${expected??'不存在'}，当前 ${sha(bytes)??'不存在'}）；`
-        +'宿主会以 bootstrap_instruction_conflict 停在 unknown，先还原该文件');
+        +'驾驶员预检已拒绝启动宿主；先还原该文件');
     }
   }
   const existing=readTarget(project,'AGENTS.md')?.toString('utf8')??'';
   let merged;
-  try{merged=mergeBootstrapAgents(existing,documents.find(item=>item.path==='AGENTS.md').content);}
-  catch{stop(2,`${name} 的 AGENTS.md 必须逐字保留当前 AGENTS.md 中「## 项目教训」段以外的全部内容（宿主只把该段按原字节合入）；否则宿主以 bootstrap_instruction_conflict 停在 unknown`);}
+  try{merged=mergeBootstrapAgents(existing,documents.find(item=>item.path==='AGENTS.md').content,{refresh:basis!==undefined});}
+  catch{stop(2,`${name} 的 AGENTS.md 必须逐字保留当前「## 项目教训」段；驾驶员预检已拒绝启动宿主`);}
   inspected(project,documents.map(item=>item.path==='AGENTS.md'?{path:item.path,content:merged}:item),
     bootstrap.selection,`${name}（合入当前 AGENTS.md 后）`);
   return documents;
@@ -290,8 +298,10 @@ export function createBootstrapRulesResponder({definition,plan,bootstrap,answers
       if(payload.project!==definition.codeProject)throw Error('init_verify 项目根与运行定义不一致');
       if(!isDeepStrictEqual(payload.categories,CATEGORIES))throw Error('init_verify 核验分组与合同不一致');
       // The host verifies the final documents: current AGENTS.md lessons are merged in.
+      const currentBasis=committedBasis(definition,bootstrap.targets);
+      const refresh=currentBasis!==undefined&&currentBasis!==null;
       const expected=documents.map(item=>item.path==='AGENTS.md'
-        ?{path:item.path,content:mergeBootstrapAgents(agentsBefore(definition.codeProject),item.content)}:item);
+        ?{path:item.path,content:mergeBootstrapAgents(agentsBefore(definition.codeProject),item.content,{refresh})}:item);
       if(!Array.isArray(payload.documents)||!isDeepStrictEqual(documentMap(payload.documents),documentMap(expected)))
         throw Error('宿主核验的草稿与 init-generate 答案（含合入的项目教训段）不一致');
       const answer=answers.get(attempt).verify,run=executed.get(attempt);
