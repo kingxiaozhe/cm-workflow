@@ -1202,7 +1202,8 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 | `blocked/develop_checks_not_passed` | 开发检查失败或不可用，审查包未生成 | 根据 `reason` 的 id 和证据修复环境，在原 run `advance`；不消耗审查轮次 |
 | `blocked/checks_not_passed` | 旧运行的已审包在完成门禁发现失败检查 | 终态；不得重新开发 |
 | `blocked/check_output_out_of_scope` | 检查新增了范围外产物 | 移走产物并改检查输出路径，在原 run `advance`；新 develop effect id 重做 |
-| `blocked/completion_checks_changed` | 已审包的完成前复查结果变化 | 修好检查环境，在原 run `advance` 或 `complete`，保留原审查回执；仍受 effect 上限约束 |
+| `blocked/completion_checks_changed` | 已审包的完成前复查结果变化 | 修好检查环境，在原 run `advance` 或 `complete`，保留原审查回执；不占六个 effect 名额，与 `completion_package_changed` 合计最多重试 3 次 |
+| `blocked/completion_retry_limit` | 完成前复查第 4 次仍被拦下；运行器写入 `completion-retry-limit`，没有新的 complete intent | 终态；按 `reason` 修好检查环境（不稳定的检查、在代码根生成新文件的命令），用 `--supersede-reviewed-evidence` 新建运行 |
 | `state: "unknown"` | 某个有副作用的步骤抛了异常或返回了无法判定的终态，做没做成不确定 | 单任务 V3 审查调用已登记、无结果时可用下述 `abandon_review`；其他情况见下 |
 | `state: "unknown"` + `execution_error`，`pendingAction: "reconcile"`，且 stderr 显示驱动未应答 `init_generate`／`init_verify` | 驾驶员断联，原 develop effect 结果未定；旧版驾驶员可能错误退出 0 | 先核对原 host 与子进程及代码根实际写入；仅满足下述 pending effect 条件时在原 run 用 `abandon_effect`，之后按原新运行门禁使用当前会话宿主路径；不要原样重发 `advance` |
 | `blocked/develop_checks_not_passed`，bootstrap 规范任务 | 规范已写入，`PLAN.checks` 未通过 | 修好检查环境后在原 run `advance`；同一轮以原答案重试，驾驶员与宿主只接受本运行存档记录的那次写入，他人改动先还原 |

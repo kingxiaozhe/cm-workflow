@@ -13,7 +13,8 @@ import { reviewResult,reviewReceipt } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
   MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,completedEffectCount,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
-  reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted } from './durable-runner-state.mjs';
+  reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted,
+  completionBlockCount,completionRetriesExhausted } from './durable-runner-state.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
 import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure} from './provider-review-observation.mjs';
 import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence,
@@ -344,7 +345,7 @@ export function createTaskRunner(options) {
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
         'review-invocation-abandoned':'result','effect-abandoned':'result',
         'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
-        'evidence-superseded':'result','develop-retry-limit':'result'}[type],
+        'evidence-superseded':'result','develop-retry-limit':'result','completion-retry-limit':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
     const record={...body,digest:digest(body)};boundRunnerRecord(record,body.seq);
@@ -863,6 +864,15 @@ export function createTaskRunner(options) {
     const recovered=readRunnerHistory(journal,metadata,3).state;
     ({state,code}=recovered);reason=recovered.reason??null;publication=privateStatus();return publication;
   }
+  // The completion re-check bound is spent: journal the terminal limit instead
+  // of another complete intent (see completionRetriesExhausted).
+  const completionLimitDue=()=>invocationMode&&store&&!poisoned&&completionRetriesExhausted({state,code,cache:[...cache.values()]});
+  function recordCompletionLimit(){
+    persist('completion-retry-limit',{fromCode:code,completionBlocks:completionBlockCount([...cache.values()])});
+    const recovered=readRunnerHistory(journal,metadata,3).state;
+    ({state,code}=recovered);reason=recovered.reason??null;publication=privateStatus();return publication;
+  }
+  const limitDue=()=>retryLimitDue()?recordRetryLimit:completionLimitDue()?recordCompletionLimit:null;
   function executeEffect(raw) {
     let v;
     try {
@@ -888,6 +898,7 @@ export function createTaskRunner(options) {
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
     } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input'}));}
     if(v.kind==='develop'&&retryLimitDue()){try{return Promise.resolve(recordRetryLimit());}catch{return Promise.resolve(poison());}}
+    if(v.kind==='complete'&&completionLimitDue()){try{return Promise.resolve(recordCompletionLimit());}catch{return Promise.resolve(poison());}}
     if(store) {
       try {
         if(state==='ready')compareReviewBaseline(captureReviewBaseline({...configToBaseline(metadata),version:original.version,
@@ -922,7 +933,7 @@ export function createTaskRunner(options) {
       catch{return poison();}
       // A block or verdict that leaves no reviewable delivery ends the run now,
       // so status never invites a resume that could not finish.
-      try{return retryLimitDue()?recordRetryLimit():result;}catch{return poison();}
+      try{const record=limitDue();return record?record():result;}catch{return poison();}
     })().finally(()=>{busy=false;pending=null;completeEffect=null;}).then(result=>{
       if(poisoned)return result;
       try{publishRegisteredReview();}

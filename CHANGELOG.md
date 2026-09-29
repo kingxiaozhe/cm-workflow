@@ -15,6 +15,7 @@
 - cm-ai 审查提示写明 verdict 规则（P0–P3 含义、approved 不能带 P0–P2、changes_requested 至少一条 P0–P2、只有代码无法在范围内修好时才用 blocked、规格文件不是 finding 路径）；审查答复违反这些规则时记为 `pending_review/review_verdict_invalid` 并保留具体代码（如 `contradictory_verdict`），同一预算内重派一次；`blocked` 仍是终态但 reason 写明审查给出的原因。
 - cm-ai 调大 `--review-config` 的 `timeoutMs`（超过 30 分钟）不再在 30 分钟被运行器截断并耗掉唯一重试：运行器的审查计时改为审查预算加 1 分钟余量，且不写入 journal，恢复时可继续调大。
 - cm-ai 可重试的开发阻断（如检查产物越界、开发检查未通过）反复出现、剩余调用名额已不够再交付一次并送审，或剩余 effect 名额已不够再交付、审查并完成时，在派发开发前停在终态 `blocked/develop_retry_limit`（journal 记 `develop-retry-limit`，不写 intent、不调用开发者），reason 写明上次阻断原因并提示 supersede 新建运行，不再让第 7 次调用跑完后检查点被拒、运行变成 unknown，也不再停在 complete 被 `limit_exceeded` 拒绝、永远无法完成的 approved；显式放弃的审查调用也不再占调用名额。
+- cm-ai 完成前复查因检查结果或新文件变化被拦下（`completion_checks_changed`／`completion_package_changed`）时不再占六个 effect 名额，改为单独最多重试 3 次；第 4 次仍被拦下即写入 `completion-retry-limit` 并停在终态 `blocked/completion_retry_limit`（`pendingAction: none`），reason 提示先修好检查环境再 supersede 新建运行，不再出现已批准却因 `limit_exceeded` 永远完成不了的任务。
 - cm-ai 第 2 轮交付与第 1 轮被要求修改的代码逐字节相同时，停在可重试的 `blocked/develop_unchanged_after_review`，不送审、不耗第 2 轮审查；同时修正第 2 轮开发检查被门禁拦下时 journal 回放失败、运行变成 unknown 的问题。
 
 - cm-ai 单任务驾驶员对 bootstrap 规范任务在启动前拒绝缺少实时 `init_verify` runner，并将 unknown／reconcile 宿主结果作为失败退出；补充当前会话宿主路径与旧运行恢复说明。

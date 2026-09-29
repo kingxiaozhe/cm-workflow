@@ -59,9 +59,17 @@ export const countedCalls=(calls,cache)=>calls.filter(call=>!invalidDeveloperCal
 // longer holds one of the six effect slots; its retry does.
 const abandonedResult=(entry,calls)=>entry.effect.kind==='review'&&entry.result.state==='unknown'
   &&calls.some(call=>call.terminal==='abandoned'&&call.invocationId===entry.result.reviewInvocation?.registration?.grant?.invocationId);
+// A completion re-check blocked by changed check results or new files makes no
+// provider call. It holds none of the six slots, which stay reserved for the
+// delivery, its review and the completion that succeeds; its own, separate
+// bound is MAX_COMPLETION_RETRIES below.
+const COMPLETION_RETRY_CODES=['completion_checks_changed','completion_package_changed'];
+const completionBlock=entry=>entry.effect.kind==='complete'&&entry.result.state==='blocked'
+  &&COMPLETION_RETRY_CODES.includes(entry.result.code);
+export const completionBlockCount=cache=>cache.filter(completionBlock).length;
 export const completedEffectCount=(cache,calls=[])=>cache.filter(entry=>!(entry.effect.kind==='develop'
   &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))
-  &&!timeoutEffect(entry)&&!abandonedResult(entry,calls)).length;
+  &&!timeoutEffect(entry)&&!abandonedResult(entry,calls)&&!completionBlock(entry)).length;
 // The six-effect cap counts only runner effects (develop, review, complete);
 // QA, documentation and finalization are log records and hold no slot.
 export const MAX_RUNNER_EFFECTS=6;
@@ -77,6 +85,15 @@ export const developBudgetExhausted=s=>{
   const used=developBudget(s);
   return used.calls+2>MAX_RUNNER_CALLS||used.effects+3>MAX_RUNNER_EFFECTS;
 };
+// At most this many re-checks after a blocked completion. Each re-runs only the
+// local checks and the commit gate, so a small fixed bound keeps the journal
+// bounded; an environment that keeps changing needs fixing, not more attempts.
+export const MAX_COMPLETION_RETRIES=3;
+export const completionRetriesExhausted=s=>s.state==='blocked'&&COMPLETION_RETRY_CODES.includes(s.code)
+  &&completionBlockCount(s.cache)>MAX_COMPLETION_RETRIES;
+export const completionRetryLimitReason=({fromCode,completionBlocks})=>
+  `completion_retry_limit: 完成前复查已 ${completionBlocks} 次被拦下（最多重试 ${MAX_COMPLETION_RETRIES} 次），上次停在 blocked/${fromCode}。`
+  +'先修好检查环境（结果不稳定的检查、会在代码根生成新文件的命令），再用 --supersede-reviewed-evidence 新建运行';
 export const developRetryLimitReason=({countedCalls:calls,countedEffects:effects,fromState,fromCode})=>
   `develop_retry_limit: 本运行已用 ${calls} 次计数调用（上限 ${MAX_RUNNER_CALLS}）、${effects} 个计数 effect`
   +`（上限 ${MAX_RUNNER_EFFECTS}），再交付一次将无法送审并完成；上次停在 ${fromState}${fromCode?`/${fromCode}`:''}。`
@@ -656,6 +673,13 @@ export function readRunnerHistory(raw,config,version=1) {
         &&p.fromCode===state.code&&p.countedCalls===used.calls&&p.countedEffects===used.effects,'runner_retry_limit');
       state.state='blocked';state.code='develop_retry_limit';
       state.reason=developRetryLimitReason(p);lastReview=null;
+    } else if(version===3&&p.type==='completion-retry-limit') {
+      // Terminal: written instead of a complete intent once the re-check bound
+      // is spent. Every field is recomputed from the replayed state.
+      shape(p,[...common,'fromCode','completionBlocks']);
+      need(r.kind==='result'&&pending===null&&completionRetriesExhausted(state)&&p.fromCode===state.code
+        &&p.completionBlocks===completionBlockCount(state.cache),'runner_retry_limit');
+      state.state='blocked';state.code='completion_retry_limit';state.reason=completionRetryLimitReason(p);lastReview=null;
     } else if(version===3&&p.type==='review-invocation-abandoned'&&Object.hasOwn(p,'resultDigest')) {
       // Abandoning a checkpointed review whose journaled result was never accepted.
       shape(p,[...common,'effectId','invocationId','registeredDigest','startedDigest','resultDigest','reason','at']);

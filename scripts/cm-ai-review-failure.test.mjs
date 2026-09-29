@@ -58,6 +58,8 @@ out({type:'result',subtype:'success',session_id,is_error:false,num_turns:1,resul
 if(b.mode==='hang_after_result')setInterval(()=>{},1000);
 `;
 
+// The cut-off tests wait out a real reviewer budget; it must leave the fake CLI
+// ample time to print its final message on a loaded machine.
 function fixture(t,{reviewTimeoutMs=null}={}){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-review-failure-')));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
@@ -215,7 +217,7 @@ test('#9 every reviewer prompt states the verdict rules and what blocked means',
 });
 
 test('#8 a final message cut off by the reviewer timeout has an audited exit sharing the one redispatch',t=>{
-  const f=fixture(t,{reviewTimeoutMs:1500}),packageDigest=f.awaitingReview();
+  const f=fixture(t,{reviewTimeoutMs:5000}),packageDigest=f.awaitingReview();
   f.behave({mode:'hang_after_result'});
   const cut=f.decide(packageDigest);
   assert.equal(cut.status,1,cut.stderr);
@@ -251,7 +253,7 @@ test('#8 a final message cut off by the reviewer timeout has an audited exit sha
 });
 
 test('#8 the journaled-result exit leads to a normal review and completion',t=>{
-  const f=fixture(t,{reviewTimeoutMs:1500}),packageDigest=f.awaitingReview();
+  const f=fixture(t,{reviewTimeoutMs:5000}),packageDigest=f.awaitingReview();
   f.behave({mode:'hang_after_result'},{mode:'ok'});
   assert.equal(f.decide(packageDigest).result.pendingAction,'abandon_review');
   const abandoned=f.drive(f.plan({mode:'resume',permissions:['--review-config','review.json','--allow-abandon-review'],
@@ -762,4 +764,108 @@ test('#retry-limit a changes_requested verdict with too few effects left ends th
   const limit=f.records().at(-1).payload;
   assert.deepEqual([limit.fromState,limit.fromCode,limit.countedEffects],['changes_requested',null,4]);
   assert.deepEqual(f.reopen().status(),reviewed);
+}));
+
+// Completion re-checks blocked by changed check results used to hold effect
+// slots, so an approved task could end with its complete refused by
+// limit_exceeded. They now have their own bound and a clean terminal.
+function completionFixture(t){
+  const f=fixture(t),marker=path.join(f.root,'checks-pass');
+  const gated=[{id:'gate',command:[process.execPath,'-e',`process.exit(require('node:fs').existsSync(${JSON.stringify(marker)})?0:1)`]}];
+  const pass=value=>value?fs.writeFileSync(marker,'pass\n'):fs.rmSync(marker,{force:true});
+  const run=(operation,{mode='resume',review=false,packageDigest}={})=>f.drive(f.plan({mode,checks:gated,
+    ...(mode==='resume'?{originalHostContext:'review-host-a'}:{}),...(review?{permissions:f.review(1)}:{}),
+    ...(packageDigest?{packageDigest}:{})}),operation);
+  return {...f,pass,run};
+}
+test('repeated completion re-check blocks stop at completion_retry_limit instead of an uncompletable approval (real host)',t=>{
+  const f=completionFixture(t);f.pass(true);
+  const delivered=f.run('advance',{mode:'create'});
+  assert.equal(delivered.status,0,delivered.stderr);assert.equal(delivered.result.state,'awaiting_review');
+  const packageDigest=delivered.result.packageDigest;
+  assert.equal(f.run('decision',{review:true,packageDigest}).result.state,'approved');
+  f.pass(false);
+  for(let block=1;block<=3;block++){
+    const blocked=f.run('complete',{packageDigest});
+    assert.equal(blocked.status,0,blocked.stderr);assert.equal(blocked.result.code,'completion_checks_changed');
+    assert.equal(blocked.result.pendingAction,'complete');
+  }
+  // The fourth block spends the last re-check: terminal, not another retry.
+  const fourth=f.run('complete',{packageDigest});
+  assert.equal(fourth.status,0,fourth.stderr);
+  assert.equal(fourth.result.state,'blocked');assert.equal(fourth.result.code,'completion_retry_limit');
+  assert.equal(fourth.result.pendingAction,'none');
+  assert.match(fourth.result.reason,/^completion_retry_limit: 完成前复查已 4 次被拦下.*completion_checks_changed.*--supersede-reviewed-evidence/);
+  const limit=f.records().at(-1).payload;
+  assert.deepEqual([limit.type,limit.fromCode,limit.completionBlocks],['completion-retry-limit','completion_checks_changed',4]);
+  const intents=f.intents();
+  assert.deepEqual(intents,['develop-1','review-1','complete-1',...[1,2,3].map(n=>`complete-1-retry-${n}`)]);
+  // Fixing the environment afterwards does not reopen this run.
+  f.pass(true);
+  const after=f.run('advance');
+  assert.equal(after.status,0,after.stderr);assert.equal(after.result.code,'completion_retry_limit');
+  assert.deepEqual(f.intents(),intents);
+  assert.match(fs.readFileSync(path.join(f.specsDir,'1.work','tasks.md'),'utf8'),/\[ \] T-001/);
+  assert.equal(f.replay().state.code,'completion_retry_limit');
+});
+
+test('completion re-checks no longer eat the six effects: develop blocks plus re-checks still complete (real host)',t=>{
+  const f=completionFixture(t);f.pass(false);
+  for(const mode of ['create','resume'])assert.equal(f.run('advance',{mode}).result.code,'develop_checks_not_passed');
+  f.pass(true);
+  const delivered=f.run('advance');assert.equal(delivered.result.state,'awaiting_review');
+  const packageDigest=delivered.result.packageDigest;
+  assert.equal(f.run('decision',{review:true,packageDigest}).result.state,'approved');
+  // Four effects held; three re-check blocks would previously have used the rest.
+  f.pass(false);
+  for(let block=1;block<=3;block++)assert.equal(f.run('complete',{packageDigest}).result.code,'completion_checks_changed');
+  f.pass(true);
+  const completed=f.run('complete',{packageDigest});
+  assert.equal(completed.status,0,completed.stderr);assert.equal(completed.result.state,'fixture_completed',JSON.stringify(completed.result));
+  assert.match(fs.readFileSync(path.join(f.specsDir,'1.work','tasks.md'),'utf8'),/\[x\] T-001/);
+});
+
+test('#retry-limit replay accepts the completion limit only once the re-check bound is spent',t=>{
+  const f=completionFixture(t);f.pass(true);
+  const packageDigest=f.run('advance',{mode:'create'}).result.packageDigest;
+  f.run('decision',{review:true,packageDigest});f.pass(false);
+  for(let block=1;block<=4;block++)f.run('complete',{packageDigest});
+  const records=f.records(),configuration=records[0].payload.config;
+  assert.equal(records.at(-1).payload.type,'completion-retry-limit');
+  assert.equal(readRunnerHistory(records,configuration,3).state.code,'completion_retry_limit');
+  for(const [field,value] of [['completionBlocks',3],['fromCode','completion_package_changed']]){
+    const changed=structuredClone(records);changed.at(-1).payload[field]=value;
+    assert.throws(()=>readRunnerHistory(rechain(changed),configuration,3),{code:'runner_retry_limit'});
+  }
+  // Placed after the third block, while one re-check is still allowed, it is refused.
+  const cut=records.findLastIndex(row=>row.payload.type==='effect-intent');
+  const early=[...structuredClone(records.slice(0,cut)),{...structuredClone(records.at(-1)),
+    payload:{...records.at(-1).payload,completionBlocks:3}}].map((row,index)=>({...row,seq:index+1,
+    id:`runner.${String(index+1).padStart(6,'0')}`}));
+  assert.throws(()=>readRunnerHistory(rechain(early),configuration,3),{code:'runner_retry_limit'});
+  // After the limit no complete intent replays.
+  const intent=structuredClone(records.findLast(row=>row.payload.type==='effect-intent'));
+  intent.payload.effect.id='complete-1-retry-9';
+  const extended=[...structuredClone(records),intent].map((row,index)=>({...row,seq:index+1,
+    id:`runner.${String(index+1).padStart(6,'0')}`}));
+  assert.throws(()=>readRunnerHistory(rechain(extended),configuration,3),{code:'runner_stage'});
+});
+
+test('#retry-limit an older journal past the completion re-check bound converts on the next complete request',t=>runnerFixture(t,async f=>{
+  let failing=false;f.setChecks(()=>failing?[{...checksPassed[0],outcome:'failed',exitCode:1}]:checksPassed);
+  let runner=f.make();
+  await runner.executeEffect(f.effect('develop'));
+  assert.equal((await runner.executeEffect(f.effect('review'))).state,'approved');
+  failing=true;
+  for(const suffix of ['','-retry-1','-retry-2','-retry-3'])await runner.executeEffect(f.effect('complete',1,suffix));
+  assert.equal(runner.status().code,'completion_retry_limit');
+  // The shape an older version left: the fourth block without the limit record.
+  runner=f.resumePrefix('effect-checkpoint');
+  assert.equal(runner.status().code,'completion_checks_changed');
+  const intents=f.records().filter(row=>row.payload.type==='effect-intent').length;
+  const converted=await runner.executeEffect(f.effect('complete',1,'-retry-4'));
+  assert.equal(converted.state,'blocked');assert.equal(converted.code,'completion_retry_limit');
+  assert.equal(f.records().at(-1).payload.type,'completion-retry-limit');
+  assert.equal(f.records().filter(row=>row.payload.type==='effect-intent').length,intents,'no intent');
+  assert.deepEqual(f.reopen().status(),converted);
 }));
