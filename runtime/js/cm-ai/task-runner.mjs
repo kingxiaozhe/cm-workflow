@@ -868,8 +868,9 @@ export function createTaskRunner(options) {
           if(failedChecks(currentChecks).length){halt('blocked','develop_checks_not_passed',checkFailureReason(currentChecks,'develop_checks_not_passed'));return;}
           if(!await verificationSatisfied(currentChecks)){halt('blocked','verification_precheck_failed');return;}
           active();
-          // unchangedSinceRejection builds a package too, so an empty delivery
-          // surfaces there first and takes the same retryable block.
+          // unchangedSinceRejection builds a package too, so an empty delivery or a
+          // deleted in-scope requirement surfaces there first and takes the same
+          // retryable block (emptyDelivery).
           let unchanged;
           try{unchanged=unchangedSinceRejection();}catch(error){emptyDelivery(error);return;}
           if(unchanged){halt('blocked','develop_unchanged_after_review',unchanged);return;}

@@ -284,9 +284,11 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
   // Without the tree (a later batch task), the scope files the answers write are
   // still known to exist in the review material with exactly these sizes; the
   // unknown rest can only add to the total. Their count is at most the scope's,
-  // which the run definition already caps at the package's file count; which of
-  // them the package carries in full depends on the unknown baseline, so the
-  // journal budget waits for the task's own launch, where the tree is known.
+  // which the run definition already caps at the package's file count. Which of
+  // them the package carries in full depends on the baseline that task starts
+  // from, so the driver cannot size its journal record here; an oversized
+  // delivery is caught by the runner after it is written and stays retryable
+  // (blocked/develop_package_too_large).
   const delivered=diskChecks?null:new Map();
   for(const {file,value,attempt=1} of deliveries){
     if(value.status!=='succeeded')continue;
