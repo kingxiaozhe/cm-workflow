@@ -95,7 +95,7 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
       // completion evidence uses the existing parent journal contract.
       if(result.code==='qa_fix_completed'&&typeof current.inspectFixAssociation==='function'){
         try{
-          const association=current.inspectFixAssociation(result.evidence.reviewPackage);
+          const association=current.inspectFixAssociation(result.evidence.reviewPackage,result.evidence);
           const accepted=(running||(acting&&value.fixOperation==='finish'))&&typeof current.acceptCompletedFix==='function'
             ?current.acceptCompletedFix(result.evidence):null;
           return json({...result,association,...(accepted?{accepted}: {})},12*1024*1024);

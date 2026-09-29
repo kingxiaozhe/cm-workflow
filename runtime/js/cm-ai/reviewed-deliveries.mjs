@@ -29,12 +29,16 @@ function readDelivery(specsRoot,identity){
         ...history.acceptedFixes.map(item=>({pkg:item.evidence.reviewPackage,reviewedAt:fixReviewedAt(specsRoot,item.evidence)}))])});
   }catch{return null;}
 }
-function fixReviewedAt(specsRoot,evidence){
+// A QA fix package's durable review time: the final review registration its
+// completion evidence cites, read from the fix child's own store, for exactly
+// that package. Anything else has no time and never orders.
+export function fixReviewedAt(specsRoot,evidence){
   try{
     const {repositoryId,runId}=evidence.identity;
     const row=readExecutionSnapshot({specsRoot,identity:{repositoryId,runId}}).records.find(record=>
       /^fix-(?:revision-)?final(?:-recovery(?:-[1-9]\d*)?|-retry)?-registered$/.test(record.id)
-      &&digest(record.payload)===evidence.reviewRegistrationDigest);
+      &&digest(record.payload)===evidence.reviewRegistrationDigest
+      &&record.payload.request?.payload?.reviewPackage?.packageDigest===evidence.reviewPackage.packageDigest);
     return Number.isSafeInteger(row?.payload.registeredAt)?row.payload.registeredAt:null;
   }catch{return null;}
 }

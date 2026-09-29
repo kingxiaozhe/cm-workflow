@@ -6,12 +6,16 @@ import {digest,hex,id,json,need,shape,text} from './effect-contract.mjs';
 
 const inventoryFile=({contentBase64,...metadata})=>metadata;
 const sameFile=(a,b)=>digest(a===null?null:inventoryFile(a))===digest(b===null?null:inventoryFile(b));
-const MAX_STEPS=64,MAX_STEP_CHANGES=256;
+// Not a search bound: the ordered list is every qualifying delivery. The journal's
+// per-record size (about 1 MiB) is the practical limit; beyond it acceptance
+// fails closed.
+const MAX_STEPS=1024,MAX_STEP_CHANGES=4096;
 
-// Later reviewed deliveries of other runs that a QA fix was built on top of,
-// recorded as metadata-only before->after transitions and the index of the fix
-// they precede. They are durable association data, so replay never needs the
-// other runs' stores; an empty list is the historical strict composition.
+// Later reviewed deliveries of other runs that precede a QA fix in durable
+// review order, recorded as metadata-only before->after transitions and the
+// index of the fix they precede. They are durable association data, so replay
+// never needs the other runs' stores; an empty list is the historical strict
+// composition.
 function readSteps(raw,fixCount){
   need(Array.isArray(raw)&&raw.length<=MAX_STEPS,'fix_association_invalid');
   let previous=0;const seen=new Set();
@@ -43,47 +47,43 @@ export const deliveryStep=(runId,pkg,beforeFix)=>({beforeFix,runId,packageDigest
 // deliveries: [{runId,packages:[{pkg,reviewedAt}]}].
 export const deliveredAfter=(item,after)=>Number.isSafeInteger(after)
   &&Number.isSafeInteger(item.reviewedAt)&&item.reviewedAt>after;
-const laterPool=(deliveries,after,rootDigest,exclude=new Set())=>deliveries
-  .flatMap(delivery=>delivery.packages.filter(item=>deliveredAfter(item,after))
-    .map(item=>({runId:delivery.runId,pkg:readReviewPackage(item.pkg)})))
-  .filter(({pkg})=>pkg.rootDigest===rootDigest&&!exclude.has(pkg.packageDigest));
-
-const SEARCH_LIMIT=4096;
 const key=file=>file===null||file===undefined?null:`${file.sha256}:${file.mode}`;
-const applicable=(state,pkg)=>pkg.changes.every(change=>sameFile(state.get(change.path)??null,change.before))
-  &&!pkg.changes.every(change=>sameFile(state.get(change.path)??null,change.after));
 const applyMeta=(state,pkg)=>{for(const change of pkg.changes){
   if(change.after===null)state.delete(change.path);else state.set(change.path,inventoryFile(change.after));}};
-// Deliveries on disjoint paths are independent; group the ones that share any
-// path, transitively, and search each group separately.
-function groups(candidates){
-  const owner=new Map(),parent=candidates.map((_,index)=>index);
-  const find=index=>parent[index]===index?index:(parent[index]=find(parent[index]));
-  for(const [index,{pkg}] of candidates.entries())for(const change of pkg.changes){
-    if(owner.has(change.path))parent[find(index)]=find(owner.get(change.path));else owner.set(change.path,index);
-  }
-  const result=new Map();
-  for(const index of candidates.keys()){const root=find(index);result.set(root,[...(result.get(root)??[]),index]);}
-  return [...result.values()].map(indexes=>indexes.map(index=>candidates[index]));
+// Every qualifying later package, in durable review order (ties: run id, then
+// package position). Nothing is chosen or dropped by content.
+function laterSequence(deliveries,after,rootDigest){
+  return deliveries.flatMap(delivery=>delivery.packages.map((item,index)=>({runId:delivery.runId,index,reviewedAt:item.reviewedAt,raw:item.pkg})))
+    .filter(entry=>deliveredAfter(entry,after)).map(entry=>({...entry,pkg:readReviewPackage(entry.raw)}))
+    .filter(entry=>entry.pkg.rootDigest===rootDigest)
+    .sort((a,b)=>a.reviewedAt-b.reviewedAt||(a.runId<b.runId?-1:a.runId>b.runId?1:0)||a.index-b.index);
 }
-// Shortest set of transitions, each applied from its own reviewed before-state,
-// that reaches goal. Breadth first over applied sets (the end state of a valid
-// set does not depend on its order), deterministic by candidate order, bounded.
-function shortestTransitions(start,candidates,goal){
-  if(goal(start))return [];
-  const queue=[{state:start,used:[],chain:[]}],seen=new Set(['']);
-  for(let visited=0;queue.length&&visited<SEARCH_LIMIT;visited++){
-    const {state,used,chain}=queue.shift();
-    for(const [index,candidate] of candidates.entries()){
-      if(used.includes(index)||!applicable(state,candidate.pkg))continue;
-      const nextUsed=[...used,index].sort((a,b)=>a-b),id=nextUsed.join(',');
-      if(seen.has(id))continue;seen.add(id);
-      const next=new Map(state);applyMeta(next,candidate.pkg);
-      if(goal(next))return [...chain,candidate];
-      queue.push({state:next,used:nextUsed,chain:[...chain,candidate]});
-    }
-  }
-  return null;
+function unexplainedError(paths){
+  const error=new Error(`fix_current_code_unexplained: ${paths.slice(0,20).join(', ')}${paths.length>20?` (+${paths.length-20} more)`:''}`);
+  error.code='fix_current_code_unexplained';error.paths=paths;return error;
+}
+// The root CM workflow config outside the run's scope is user-editable policy,
+// not delivered code, and is the one tolerated unreviewed difference.
+const toleratedConfig=ownScope=>{const scope=new Set(ownScope);return p=>CONFIG_FILENAMES.includes(p)&&!scope.has(p);};
+// Apply one later delivery strictly: its reviewed before-state must be the
+// running composition on every path it touches (tolerated config aside). None
+// is ever skipped; a mismatch names the paths.
+function applyDelivery(state,pkg,tolerated){
+  const stale=pkg.changes.filter(change=>!tolerated(change.path)&&!sameFile(state.get(change.path)??null,change.before))
+    .map(change=>change.path).sort();
+  if(stale.length)throw unexplainedError(stale);
+  applyMeta(state,pkg);
+}
+// The composition must be the current tree exactly, content and mode.
+function compareCurrent({root,base,state,tolerated}){
+  const original=new Map(base.files.map(file=>[file.path,inventoryFile(file)]));
+  const actual=new Map(compareReviewInventoryToBaseline(root,base,{withMode:true})
+    .map(row=>[row.path,row.sha256===null?null:`${row.sha256}:${row.mode}`]));
+  const wanted=new Map([...new Set([...original.keys(),...state.keys()])]
+    .filter(p=>key(original.get(p))!==key(state.get(p))).map(p=>[p,key(state.get(p))]));
+  const unexplained=[...new Set([...wanted.keys(),...actual.keys()])]
+    .filter(p=>!tolerated(p)&&wanted.get(p)!==actual.get(p)).sort();
+  if(unexplained.length)throw unexplainedError(unexplained);
 }
 
 function bindChain({baseline,parentPackage,fixPackages}){
@@ -126,59 +126,15 @@ export function composeFixCode({baseline,parentPackage,fixPackages,steps=[]}){
   return {base,parent,fixes,files:base.version===1?files:files.map(inventoryFile)};
 }
 
-// The newest fix may have been built after later reviewed deliveries changed a
-// file it touches. Insert the shortest set of them, from the groups sharing its
-// paths, that yields its reviewed before-states; earlier fixes keep their
-// recorded steps. Composition afterwards is strict, so no choice can bypass it.
-function interleaveNewestFix({baseline,parentPackage,fixPackages,steps,deliveries,after}){
-  const chain=bindChain({baseline,parentPackage,fixPackages}),newest=chain.fixes.length-1;
-  const prior=[...readSteps(json(steps),chain.fixes.length)],fix=chain.fixes[newest];
-  const touched=new Set(fix.changes.map(change=>change.path));
-  const state=new Map([...composeState(chain,prior,newest)].map(([p,file])=>[p,inventoryFile(file)]));
-  const pool=laterPool(deliveries,after,chain.base.rootDigest,new Set(prior.map(step=>step.packageDigest)));
-  const added=[];
-  for(const group of groups(pool).filter(group=>group.some(({pkg})=>pkg.changes.some(change=>touched.has(change.path))))){
-    const paths=new Set(group.flatMap(({pkg})=>pkg.changes.map(change=>change.path)));
-    const found=shortestTransitions(state,group,next=>fix.changes.filter(change=>paths.has(change.path))
-      .every(change=>sameFile(next.get(change.path)??null,change.before)));
-    if(!found)continue;
-    for(const item of found){applyMeta(state,item.pkg);added.push(deliveryStep(item.runId,item.pkg,newest));}
-  }
-  need(fix.changes.every(change=>sameFile(state.get(change.path)??null,change.before))&&prior.length+added.length<=MAX_STEPS,'fix_before_mismatch');
-  return [...prior,...added];
-}
-
-// A completed run's reviewed package is history: other task runs may deliver
-// later, separately reviewed changes on top of it (their AGENTS.md learning
-// lines, their own files, even this run's files). Every path that now differs
-// from this run's own reviewed composition must be exactly such a transition,
-// applied only when its reviewed before-state is the current expected state.
-// The root CM workflow config outside this run's scope is user-editable policy,
-// not delivered code, and is the one tolerated unreviewed difference.
-export function explainReviewedDrift({root,baseline,composed,ownScope,deliveries,after,exclude=[]}){
+// A completed run's reviewed package is history: other task runs deliver later,
+// separately reviewed changes on top of it (their AGENTS.md learning lines, their
+// own files, even this run's files). Apply every one of them, in durable review
+// order and strictly; the result must be the current tree exactly.
+export function explainReviewedDrift({root,baseline,composed,ownScope,deliveries,after}){
   const base=readReviewBaseline(baseline);
-  const original=new Map(base.files.map(file=>[file.path,inventoryFile(file)]));
-  const expected=new Map(composed.map(file=>[file.path,inventoryFile(file)]));
-  // Content and mode: a permission change is a change to a reviewed file record.
-  const actual=new Map(compareReviewInventoryToBaseline(root,base,{withMode:true})
-    .map(row=>[row.path,row.sha256===null?null:`${row.sha256}:${row.mode}`]));
-  const scope=new Set(ownScope),tolerated=p=>CONFIG_FILENAMES.includes(p)&&!scope.has(p);
-  const current=p=>actual.has(p)?actual.get(p):key(original.get(p));
-  // Each independent group of later deliveries either explains its paths exactly
-  // or is left out; the final comparison below then names what stays unexplained.
-  for(const group of groups(laterPool(deliveries,after,base.rootDigest,new Set(exclude)))){
-    const paths=[...new Set(group.flatMap(({pkg})=>pkg.changes.map(change=>change.path)))];
-    const found=shortestTransitions(expected,group,next=>paths.every(p=>tolerated(p)||key(next.get(p))===current(p)));
-    for(const item of found??[])applyMeta(expected,item.pkg);
-  }
-  const wanted=new Map([...new Set([...original.keys(),...expected.keys()])]
-    .filter(p=>key(original.get(p))!==key(expected.get(p))).map(p=>[p,key(expected.get(p))]));
-  const unexplained=[...new Set([...wanted.keys(),...actual.keys()])]
-    .filter(p=>!tolerated(p)&&wanted.get(p)!==actual.get(p)).sort();
-  if(unexplained.length){
-    const error=new Error(`fix_current_code_unexplained: ${unexplained.slice(0,20).join(', ')}${unexplained.length>20?` (+${unexplained.length-20} more)`:''}`);
-    error.code='fix_current_code_unexplained';error.paths=unexplained;throw error;
-  }
+  const state=new Map(composed.map(file=>[file.path,inventoryFile(file)])),tolerated=toleratedConfig(ownScope);
+  for(const entry of laterSequence(deliveries,after,base.rootDigest))applyDelivery(state,entry.pkg,tolerated);
+  compareCurrent({root,base,state,tolerated});
 }
 
 // Completed run without accepted fixes: its own reviewed composition, then drift.
@@ -195,40 +151,52 @@ export function explainCompletedDelivery({root,baseline,parentPackage,deliveries
   explainReviewedDrift({root,baseline:base,composed:[...expected.values()],ownScope:parent.scope,deliveries,after});
 }
 
-// steps: the latest accepted record's recorded interleaving. extend: the last
-// package is a new fix whose own preceding deliveries may still be missing.
-// after: the parent's approving-review time. verifySteps re-proves each step
-// against its run's store and must be supplied whenever steps can exist.
-export function inspectFixCodeAssociation({root,specsRoot,baseline,parentPackage,fixPackage,fixPackages,steps=[],extend=false,deliveries=null,after=null,verifySteps=null}){
+// One deterministic order for a run with QA fixes: every later delivery and each
+// of this run's fixes at its own durable review time (fixTime), all applied
+// strictly. Deliveries before a fix are its recorded steps (exactly the ordered
+// list, re-verified against their stores); deliveries after the last fix are
+// applied live. steps: the latest accepted record's list; extend: the last
+// package is a new fix. The record may only grow by steps preceding that fix.
+export function inspectFixCodeAssociation({root,specsRoot,baseline,parentPackage,fixPackage,fixPackages,steps=[],extend=false,
+  deliveries=null,after=null,verifySteps=null,fixTime=null}){
   const chainPackages=fixPackages??[fixPackage];
-  let loaded=null;
-  const available=()=>{
-    need(typeof deliveries==='function','fix_current_code_unexplained');
-    return loaded??=deliveries();
-  };
-  let recorded=steps;
-  if(extend&&typeof deliveries==='function'){
-    try{composeFixCode({baseline,parentPackage,fixPackages:chainPackages,steps});}
-    catch(error){
-      if(error.code!=='fix_before_mismatch')throw error;
-      recorded=interleaveNewestFix({baseline,parentPackage,fixPackages:chainPackages,steps,deliveries:available(),after});
+  const chain=bindChain({baseline,parentPackage,fixPackages:chainPackages}),{base,parent,fixes}=chain,last=fixes.length-1;
+  const prior=readSteps(json(steps),fixes.length),ownScope=[...parent.scope,...fixes.flatMap(fix=>fix.scope)];
+  const tolerated=toleratedConfig(ownScope);
+  const later=typeof deliveries==='function'?laterSequence(deliveries(),after,base.rootDigest):[];
+  const recorded=[],tail=[];
+  if(later.length){
+    // Metadata-only transitions cannot rebuild legacy full-content inventories.
+    need(base.version===2,'fix_before_mismatch');
+    const times=fixes.map(fix=>typeof fixTime==='function'?fixTime(fix):null);
+    need(times.every(Number.isSafeInteger)&&times.every((time,index)=>index===0||time>=times[index-1]),'fix_association_unverified');
+    const state=composeState(chain,[],0),applyFix=applyTo(state);
+    let next=0;
+    for(const entry of later){
+      while(next<=last&&times[next]<entry.reviewedAt)applyFix(fixes[next++]);
+      // Recorded steps are replayed below by the strict composition as well.
+      applyDelivery(state,entry.pkg,tolerated);
+      if(next<=last)recorded.push(deliveryStep(entry.runId,entry.pkg,next));else tail.push(entry.pkg);
     }
   }
+  // The latest record's list must be exactly what this order yields before its
+  // own last fix; a new fix may add only the steps that precede it.
+  need(digest(extend?recorded.filter(step=>step.beforeFix<last):recorded)===digest(prior),'fix_association_unverified');
   if(recorded.length){need(typeof verifySteps==='function','fix_association_unverified');verifySteps(recorded);}
-  const {base,parent,fixes,files}=composeFixCode({baseline,parentPackage,fixPackages:chainPackages,steps:recorded});
+  const {files}=composeFixCode({baseline,parentPackage,fixPackages:chainPackages,steps:recorded});
   if(base.specification)verifySpecificationMaterial(base);
   const current=captureReviewBaseline({root,
     ...(base.specification?{specification:{specsRoot:base.specificationRoot,feature:base.specification.feature}}:{}),...(specsRoot===undefined?{}:{specsRoot}),identity:parent.identity,version:base.version,
     ...(base.codeProjectPaths?{codeProjectPaths:base.codeProjectPaths}:{}),
-    scope:[...new Set([...parent.scope,...fixes.flatMap(fix=>fix.scope)])],requirements:base.requirements});
+    scope:[...new Set(ownScope)],requirements:base.requirements});
   need(current.rootDigest===base.rootDigest,'fix_parent_binding_mismatch');
   const compared=base.version===1?current.files:current.files.map(inventoryFile);
-  // The association binds the reviewed fix-chain composition, including any
-  // recorded interleaved deliveries (version 2). Other later deliveries are
-  // verified live and never enter it, so replay needs no other run's store.
-  if(digest(compared)!==digest(files)){
-    explainReviewedDrift({root,baseline:base,composed:files,ownScope:[...parent.scope,...fixes.flatMap(fix=>fix.scope)],
-      deliveries:available(),after,exclude:recorded.map(step=>step.packageDigest)});
+  if(tail.length||digest(compared)!==digest(files)){
+    // Without a way to read other runs' deliveries the historical exact match holds.
+    need(typeof deliveries==='function','fix_current_code_unexplained');
+    const state=new Map(files.map(file=>[file.path,inventoryFile(file)]));
+    for(const pkg of tail)applyDelivery(state,pkg,tolerated);
+    compareCurrent({root,base,state,tolerated});
   }
   return associationRecord({parent,fixes,files,steps:recorded});
 }

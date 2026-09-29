@@ -176,7 +176,7 @@ test('#18 the root CM workflow config is editable after completion; an unreviewe
   assert.equal(status(p).state,'qa_passed');
 });
 
-test('#18 reviewed transitions apply only from their reviewed before-state, in either discovery order',()=>{
+test('#18 reviewed transitions apply in durable review order, whatever the discovery order, each from its reviewed before-state',()=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(isolated,'drift-')));
   const identity=runId=>({repositoryId:'drift',runId,taskId:`T-${runId}`,attempt:1});
   fs.writeFileSync(path.join(root,'a.mjs'),'a0\n');fs.writeFileSync(path.join(root,'b.mjs'),'b0\n');fs.writeFileSync(path.join(root,'req.md'),'r\n');
@@ -209,9 +209,9 @@ test('#18 reviewed transitions apply only from their reviewed before-state, in e
     error=>error.paths.join()==='.cm-workflow.yml');
 });
 
-test('#18 an old reviewed transition cannot disguise an unreviewed revert, and a cyclic history still finds the true later delivery',()=>{
-  const root=fs.realpathSync(fs.mkdtempSync(path.join(isolated,'cycle-')));
-  const identity=runId=>({repositoryId:'cycle',runId,taskId:`T-${runId}`,attempt:1});
+test('#18 an unreviewed rollback never passes: A reviewed, later A->B and B->A, then a hand edit back to B',()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(isolated,'rollback-')));
+  const identity=runId=>({repositoryId:'rollback',runId,taskId:`T-${runId}`,attempt:1});
   const check=[{id:'c',command:['true'],outcome:'passed',exitCode:0,evidence:'ok'}];
   fs.writeFileSync(path.join(root,'a.mjs'),'A\n');fs.writeFileSync(path.join(root,'req.md'),'r\n');
   const change=(runId,content)=>{
@@ -219,20 +219,49 @@ test('#18 an old reviewed transition cannot disguise an unreviewed revert, and a
     fs.writeFileSync(path.join(root,'a.mjs'),content);
     return {baseline,pkg:createReviewPackage({root,baseline,checks:check})};
   };
-  // Old task A->B (reviewed at 5), parent B->A (reviewed at 10), a later dead end
-  // A->X that was undone (15) and the true later task A->C (20). A first-match
-  // choice would take the dead end and then fail to explain C.
-  const old=change('a-old','B\n'),parent=change('parent','A\n');
-  const deadEnd=change('b-dead-end','X\n');fs.writeFileSync(path.join(root,'a.mjs'),'A\n');
-  const later=change('c-later','C\n');
+  // An old task A->B reviewed at 5, the parent B->A at 10, later tasks A->B (20) and B->A (30).
+  const old=change('old','B\n'),parent=change('parent','A\n'),toB=change('to-b','B\n'),toA=change('to-a','A\n');
   const composed=parent.baseline.files.map(file=>file.path==='a.mjs'?parent.pkg.changes[0].after:file);
-  const deliveries=[{runId:'a-old',packages:[{pkg:old.pkg,reviewedAt:5}]},{runId:'b-dead-end',packages:[{pkg:deadEnd.pkg,reviewedAt:15}]},
-    {runId:'c-later',packages:[{pkg:later.pkg,reviewedAt:20}]}];
-  const explain=()=>explainReviewedDrift({root,baseline:parent.baseline,composed,ownScope:['a.mjs'],deliveries,after:10});
+  const deliveries=[{runId:'to-a',packages:[{pkg:toA.pkg,reviewedAt:30}]},{runId:'old',packages:[{pkg:old.pkg,reviewedAt:5}]},
+    {runId:'to-b',packages:[{pkg:toB.pkg,reviewedAt:20}]}];
+  const explain=(list=deliveries)=>explainReviewedDrift({root,baseline:parent.baseline,composed,ownScope:['a.mjs'],deliveries:list,after:10});
   explain();
-  // Someone reverts the parent's own change by hand: the old A->B must not explain it.
+  // The hand edit back to B: every reviewed A->B is either before the parent or already applied.
   fs.writeFileSync(path.join(root,'a.mjs'),'B\n');
-  assert.throws(explain,error=>error.code==='fix_current_code_unexplained'&&error.paths.join()==='a.mjs');
+  assert.throws(()=>explain(),error=>error.code==='fix_current_code_unexplained'&&error.paths.join()==='a.mjs');
+  // A later dead end A->X undone by hand is an unreviewed rollback too, and it breaks every delivery after it.
+  fs.writeFileSync(path.join(root,'a.mjs'),'A\n');
+  const deadEnd=change('dead-end','X\n');fs.writeFileSync(path.join(root,'a.mjs'),'A\n');
+  const afterIt=change('after-it','C\n');
+  const withDeadEnd=[...deliveries,{runId:'dead-end',packages:[{pkg:deadEnd.pkg,reviewedAt:40}]},
+    {runId:'after-it',packages:[{pkg:afterIt.pkg,reviewedAt:50}]}];
+  assert.throws(()=>explain(withDeadEnd),error=>error.code==='fix_current_code_unexplained'&&error.paths.join()==='a.mjs');
+  explain([...deliveries,{runId:'after-it',packages:[{pkg:afterIt.pkg,reviewedAt:50}]}]);
+});
+
+test('#18 one 13-file delivery and 13 later one-file deliveries on the same files apply in order, quickly',()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(isolated,'wide-')));
+  const identity=runId=>({repositoryId:'wide',runId,taskId:`T-${runId}`,attempt:1});
+  const check=[{id:'c',command:['true'],outcome:'passed',exitCode:0,evidence:'ok'}];
+  const names=Array.from({length:13},(_,index)=>`f${String(index).padStart(2,'0')}.mjs`);
+  for(const name of [...names,'own.mjs'])fs.writeFileSync(path.join(root,name),'0\n');fs.writeFileSync(path.join(root,'req.md'),'r\n');
+  const change=(runId,scope,content)=>{
+    const baseline=captureReviewBaseline({root,identity:identity(runId),scope,requirements:['req.md']});
+    for(const name of scope)fs.writeFileSync(path.join(root,name),content);
+    return {runId,baseline,pkg:createReviewPackage({root,baseline,checks:check})};
+  };
+  const parent=change('parent',['own.mjs'],'1\n'),wide=change('wide',names,'1\n');
+  const narrow=names.map((name,index)=>change(`n${String(index).padStart(2,'0')}`,[name],'2\n'));
+  const composed=parent.baseline.files.map(file=>file.path==='own.mjs'?parent.pkg.changes[0].after:file);
+  const deliveries=[...narrow.map((item,index)=>({runId:item.runId,packages:[{pkg:item.pkg,reviewedAt:30+index}]})).reverse(),
+    {runId:'wide',packages:[{pkg:wide.pkg,reviewedAt:20}]}];
+  const started=process.hrtime.bigint();
+  explainReviewedDrift({root,baseline:parent.baseline,composed,ownScope:['own.mjs'],deliveries,after:10});
+  assert.ok(Number(process.hrtime.bigint()-started)/1e6<5000);
+  // One more unreviewed edit among them is still named.
+  fs.writeFileSync(path.join(root,names[7]),'3\n');
+  assert.throws(()=>explainReviewedDrift({root,baseline:parent.baseline,composed,ownScope:['own.mjs'],deliveries,after:10}),
+    error=>error.paths.join()===names[7]);
 });
 
 test('#18 a permission-only change to the delivered file still requires correction review',{skip:process.platform==='win32'},async()=>{
