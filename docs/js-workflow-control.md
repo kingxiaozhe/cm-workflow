@@ -1507,7 +1507,7 @@ split 审查对文档章节标题有硬要求，不满足时 `final_review_packa
 （如 `prd_review_artifact_changed`、`prd_review_receipt_evidence_mismatch`、`prd_review_evidence_invalid`、
 `prd_review_receipt_invalid`、`prd_review_dispatch_invalid`），`reason` 只含回执/证据/派发文件名与校验过的规格相对路径
 （改动文件另附记录与当前 SHA-256），不再只有 `detail:"unavailable"`；内容为 `null` 的回执与非法 UTF-8 同样带码，
-绝对或越界的产物路径只报回执名。CLI 与 Python 版的报错文字不变。审查 `response.at` 必须是
+绝对或越界的产物路径只报回执名；文件读不了（权限等）同样带码与规格相对文件名，不输出绝对路径；计数类拒绝写明回执与字段。CLI 与 Python 版的报错文字不变。审查 `response.at` 必须是
 `new Date().toISOString()` 形式，例如 `2026-09-08T00:00:00.000Z`。
 
 `runtime/js/cm-prd/analysis.mjs` 提供 `createCmPrdAnalysis({input,runtime,analyze,record})` 会话分析控制层；input沿用来源入口参数。先准入、解析analyst/planner配置，再读取正文。`advance(text)` 接真实当前用户输入，回调 `analyze(payload,signal)` 执行当前宿主分析；`status()`/`cancel()` 提供状态与取消。

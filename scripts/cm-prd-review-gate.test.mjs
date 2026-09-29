@@ -6,6 +6,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {inspectPrdReview,recordPrdReview} from './cm-prd-review-gate.mjs';
 import {diagnosticReason} from '../runtime/js/cm-ai/diagnostic-reason.mjs';
+import {executionDiagnostic} from '../runtime/js/cm-ai/effect-contract.mjs';
 function fixture(t,documents){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-marks-')));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));fs.mkdirSync(path.join(root,'.reviews'));
@@ -124,4 +125,37 @@ test('invalid UTF-8 in evidence, receipt or dispatch refuses with a tagged code 
     assert.equal(error?.code,code);assert.deepEqual(diagnosticReason(error),reason,code);
     assert.match(error.message,/encoded data was not valid/i,code);
   }
+});
+test('an unreadable review file refuses with a code and a specs-relative name, never the absolute path',t=>{
+  if(process.getuid?.()===0)return t.skip('root can read any file');
+  for(const [code,file,reason] of [
+    ['prd_review_evidence_invalid',args=>args.evidence,{evidence:'.reviews/prd-guide-split-r1.md'}],
+    ['prd_review_receipt_invalid',args=>args.receipt,{receipt:'.reviews/prd-guide-split-disposition.json'}],
+    ['prd_review_dispatch_invalid',args=>{const dispatch=args.evidence.replace('-r1.md','-dispatch.json');
+      fs.writeFileSync(dispatch,JSON.stringify({schema_version:1,stage:'split',feature:'guide',package_sha256:'a'.repeat(64),status:'started',at:'2026-09-08T00:00:00Z'}));return dispatch;},
+      {dispatch:'.reviews/prd-guide-split-dispatch.json'}],
+  ]){
+    const {root,args}=fixture(t,{'tasks.md':'- [ ] T-001: Guide\n'});const target=file(args);fs.chmodSync(target,0o000);
+    t.after(()=>{try{fs.chmodSync(target,0o600);}catch{}});
+    let error;try{inspectPrdReview(args);}catch(caught){error=caught;}
+    fs.chmodSync(target,0o600);
+    assert.equal(error?.code,code);assert.deepEqual(diagnosticReason(error),reason,code);
+    assert.equal(Object.hasOwn(error,'path'),false,code);
+    const shown=JSON.stringify({...executionDiagnostic(error),reason:diagnosticReason(error)});
+    assert.equal(shown.includes(root),false,code);
+  }
+});
+test('every count refusal names the receipt and the field',t=>{
+  for(const [field,edit] of [['unresolved_count',value=>({...value,unresolved_count:1})],
+    ['finding_count',value=>({...value,finding_count:-1})],['disposition',value=>({...value,disposition:'maybe'})],
+    ['finding_count',value=>({...value,finding_count:2,unresolved_count:0})]]){
+    const {args}=fixture(t,{'tasks.md':'- [ ] T-001: Guide\n'});
+    fs.writeFileSync(args.receipt,JSON.stringify(edit(JSON.parse(fs.readFileSync(args.receipt,'utf8'))))+'\n');
+    const reason=refusal(()=>inspectPrdReview(args),field==='disposition'?'prd_review_disposition_invalid':'prd_review_counts_invalid');
+    assert.deepEqual(reason,{receipt:'.reviews/prd-guide-split-disposition.json',field},field);
+  }
+  const {root,record}=fixture(t,{'tasks.md':'- [ ] T-001: Guide\n'});fs.unlinkSync(record.receipt);
+  assert.deepEqual(refusal(()=>recordPrdReview({...record,finding_count:0,unresolved_count:1}),'prd_review_counts_invalid'),
+    {receipt:'.reviews/prd-guide-split-disposition.json',field:'unresolved_count'});
+  assert.equal(fs.existsSync(path.join(root,'.reviews/prd-guide-split-disposition.json')),false);
 });

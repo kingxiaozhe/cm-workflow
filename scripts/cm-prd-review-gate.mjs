@@ -34,10 +34,16 @@ const decode=(bytes,code,reason,options={})=>{
   try{return new TextDecoder('utf-8',{fatal:true,...options}).decode(bytes);}
   catch(error){fail(error.message,code,reason);}
 };
-const read=(p,code,reason)=>decode(fs.readFileSync(p),code,reason,{ignoreBOM:true});
-const hash=p=>createHash('sha256').update(fs.readFileSync(p)).digest('hex');
-const stat=p=>{try{return fs.statSync(p);}catch(e){if(e.code==='ENOENT'||e.code==='ENOTDIR')return null;throw e;}};
-const link=p=>{try{return fs.lstatSync(p).isSymbolicLink();}catch(e){if(e.code==='ENOENT')return false;throw e;}};
+// Filesystem errors (EACCES, EISDIR, ...) carry the absolute path as a property that host
+// diagnostics would print. Refuse with the caller's code and a specs-relative name instead;
+// the message stays the system's own for CLI parity.
+const bytesOf=(p,code,reason)=>{try{return fs.readFileSync(p);}catch(error){fail(error.message,code,reason);}};
+const read=(p,code,reason)=>decode(bytesOf(p,code,reason),code,reason,{ignoreBOM:true});
+const hash=(p,code,reason)=>createHash('sha256').update(bytesOf(p,code,reason)).digest('hex');
+const stat=p=>{try{return fs.statSync(p);}catch(e){if(e.code==='ENOENT'||e.code==='ENOTDIR')return null;
+  fail(e.message,'prd_review_path_invalid',{file:reviewFile(p)});}};
+const link=p=>{try{return fs.lstatSync(p).isSymbolicLink();}catch(e){if(e.code==='ENOENT')return false;
+  fail(e.message,'prd_review_path_invalid',{file:reviewFile(p)});}};
 const keys=(v,names)=>v!==null&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join('|')===[...names].sort().join('|');
 const dispositions=['applied','escalated','no_findings','self_check_failed'];
 // Python str.strip/re \s exclude BOM and include these Unicode whitespace chars.
@@ -55,14 +61,17 @@ function resolve(p,depth=0){
   return path.resolve(resolve(parent,depth+1),path.basename(p));
 }
 function within(root,p){const rel=path.relative(root,p);return rel!==''&&!path.isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+path.sep);}
-function counts(disposition,total,unresolved){
-  need(dispositions.includes(disposition),'invalid disposition','prd_review_disposition_invalid');
-  need(Number.isSafeInteger(total)&&Number.isSafeInteger(unresolved)&&total>=0&&unresolved>=0,'finding counts must be non-negative integers','prd_review_counts_invalid');
-  need(unresolved<=total,'unresolved_count cannot exceed finding_count','prd_review_counts_invalid');
-  need(!['applied','no_findings'].includes(disposition)||unresolved===0,'completed disposition cannot retain unresolved findings','prd_review_counts_invalid');
-  need(disposition!=='no_findings'||total===0,'no_findings disposition requires finding_count 0','prd_review_counts_invalid');
-  need(disposition!=='self_check_failed'||total>0&&unresolved===total,'failed check requires all findings pending human ruling','prd_review_counts_invalid');
-  need(disposition!=='escalated'||unresolved>0,'escalated disposition requires unresolved findings','prd_review_counts_invalid');
+// `receipt` names the receipt (specs-relative) the counts belong to; every refusal names its field.
+function counts(disposition,total,unresolved,receipt=null){
+  const field=name=>()=>({...(receipt?{receipt}:{}),field:name});
+  need(dispositions.includes(disposition),'invalid disposition','prd_review_disposition_invalid',field('disposition'));
+  need(Number.isSafeInteger(total)&&total>=0,'finding counts must be non-negative integers','prd_review_counts_invalid',field('finding_count'));
+  need(Number.isSafeInteger(unresolved)&&unresolved>=0,'finding counts must be non-negative integers','prd_review_counts_invalid',field('unresolved_count'));
+  need(unresolved<=total,'unresolved_count cannot exceed finding_count','prd_review_counts_invalid',field('unresolved_count'));
+  need(!['applied','no_findings'].includes(disposition)||unresolved===0,'completed disposition cannot retain unresolved findings','prd_review_counts_invalid',field('unresolved_count'));
+  need(disposition!=='no_findings'||total===0,'no_findings disposition requires finding_count 0','prd_review_counts_invalid',field('finding_count'));
+  need(disposition!=='self_check_failed'||total>0&&unresolved===total,'failed check requires all findings pending human ruling','prd_review_counts_invalid',field('unresolved_count'));
+  need(disposition!=='escalated'||unresolved>0,'escalated disposition requires unresolved findings','prd_review_counts_invalid',field('unresolved_count'));
 }
 function timestamp(value,file){
   if(typeof value==='string')value=value.replaceAll('Z','+00:00');
@@ -120,9 +129,9 @@ function loadReceipt(file,args,evidence){
   need(keys(value,['schema_version','stage','feature','status','disposition','finding_count','unresolved_count',
     'evidence','evidence_sha256','artifacts','at',...(value?.disposition==='self_check_failed'?['correction_check']:[])]),'PRD review receipt fields do not match the contract','prd_review_receipt_invalid',where);
   need(value.schema_version===1&&value.stage===args.stage&&value.feature===args.feature&&value.status==='completed'
-    &&value.evidence===path.basename(evidence)&&value.evidence_sha256===hash(evidence),'PRD review receipt does not match current evidence',
+    &&value.evidence===path.basename(evidence)&&value.evidence_sha256===hash(evidence,'prd_review_evidence_invalid',{evidence:reviewFile(evidence)}),'PRD review receipt does not match current evidence',
     'prd_review_receipt_evidence_mismatch',()=>({receipt,evidence:reviewFile(evidence)}));
-  counts(value.disposition,value.finding_count,value.unresolved_count);timestamp(value.at,file);
+  counts(value.disposition,value.finding_count,value.unresolved_count,receipt);timestamp(value.at,file);
   if(value.disposition==='self_check_failed')need(value.stage==='split','prd_failed_check_split_only','prd_failed_check_split_only',where);
   need(Array.isArray(value.artifacts)&&value.artifacts.length>0,'PRD review receipt must contain artifact hashes','prd_review_receipt_invalid',where);
   const root=resolve(path.dirname(path.dirname(file))),seen=new Set();
@@ -136,7 +145,7 @@ function loadReceipt(file,args,evidence){
     const raw=path.join(root,item.path);need(!link(raw),'PRD review artifact is missing or unsafe','prd_review_artifact_unsafe',named);
     const artifact=resolve(raw);need(within(root,artifact),'PRD review artifact escapes the specs directory','prd_review_artifact_unsafe',named);
     need(stat(artifact)?.isFile(),'PRD review artifact is missing or unsafe','prd_review_artifact_unsafe',named);
-    const bytes=fs.readFileSync(artifact);
+    const bytes=bytesOf(artifact,'prd_review_artifact_unsafe',named());
     const currentSha=createHash('sha256').update(bytes).digest('hex');
     const completedSplit=value.stage==='design'&&item.path.endsWith('/design.md')
       &&stat(path.join(path.dirname(file),`prd-${value.feature}-split-disposition.json`));
@@ -159,12 +168,14 @@ function loadReceipt(file,args,evidence){
 }
 function dispatchFile(evidence){return evidence.replace(/-r1\.md$/,'-dispatch.json');}
 function loadDispatch(file,args){
-  let info;try{info=fs.lstatSync(file);}catch(error){if(error.code==='ENOENT')return null;throw error;}
   const where=()=>({dispatch:reviewFile(file)});
+  let info;try{info=fs.lstatSync(file);}catch(error){if(error.code==='ENOENT')return null;fail(error.message,'prd_review_dispatch_invalid',where());}
   need(info.isFile()&&!info.isSymbolicLink()&&info.nlink===1&&info.size<=4096&&resolve(file)===file,'unsafe PRD dispatch record','prd_review_dispatch_invalid',where);
-  const fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);let value;
+  let fd;try{fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);}catch(error){fail(error.message,'prd_review_dispatch_invalid',where());}
+  let value;
   try{
-    const opened=fs.fstatSync(fd),bytes=Buffer.alloc(4097),count=fs.readSync(fd,bytes,0,bytes.length,0);
+    let opened,bytes=Buffer.alloc(4097),count;
+    try{opened=fs.fstatSync(fd);count=fs.readSync(fd,bytes,0,bytes.length,0);}catch(error){fail(error.message,'prd_review_dispatch_invalid',where());}
     need(opened.isFile()&&opened.nlink===1&&count===opened.size&&count<=4096,'invalid PRD dispatch record','prd_review_dispatch_invalid',where);
     value=parseJson(decode(bytes.subarray(0,count),'prd_review_dispatch_invalid',where()),'prd_review_dispatch_invalid',where());
   }finally{fs.closeSync(fd);}
@@ -208,7 +219,7 @@ export function inspectPrdReview(args){
     ...(value.runtimeMarksNormalized?{runtimeMarksNormalized:true}:{})};
 }
 export function recordPrdReview(args){
-  counts(args.disposition,args.finding_count,args.unresolved_count);
+  counts(args.disposition,args.finding_count,args.unresolved_count,typeof args.receipt==='string'?reviewFile(args.receipt):null);
   if(args.disposition==='self_check_failed'){
     need(args.stage==='split','prd_failed_check_split_only','prd_failed_check_split_only');
     need(args.correction_check,'prd_failed_check_evidence_required','prd_failed_check_evidence_required');
@@ -221,17 +232,18 @@ export function recordPrdReview(args){
     const file=resolve(raw);need(stat(file)?.isFile()&&!link(file),'artifact must be a regular non-symlink file','prd_review_artifact_unsafe');
     need(within(root,file),'artifact must stay inside the specs directory','prd_review_artifact_unsafe');
     const relative=path.relative(root,file).split(path.sep).join('/');need(!seen.has(relative),'artifact must not be duplicated','prd_review_artifact_duplicate',()=>({artifact:relative}));
-    seen.add(relative);return {path:relative,sha256:hash(file)};
+    seen.add(relative);return {path:relative,sha256:hash(file,'prd_review_artifact_unsafe',{artifact:relative})};
   });
   const value={schema_version:1,...base,status:'completed',disposition:args.disposition,finding_count:args.finding_count,
-    unresolved_count:args.unresolved_count,evidence:path.basename(evidence),evidence_sha256:hash(evidence),artifacts,
+    unresolved_count:args.unresolved_count,evidence:path.basename(evidence),evidence_sha256:hash(evidence,'prd_review_evidence_invalid',{evidence:reviewFile(evidence)}),artifacts,
     at:new Date().toISOString().replace(/\.\d{3}Z$/,'+00:00'),
     ...(args.disposition==='self_check_failed'?{correction_check:args.correction_check}:{})};
   if(value.disposition==='self_check_failed')inspectPrdFailedCorrection({specs:root,receipt:value});
   const temp=path.join(path.dirname(receipt),`.${path.basename(receipt)}.${randomUUID()}`);let fd;
   try{
-    fd=fs.openSync(temp,'wx',0o600);fs.writeFileSync(fd,JSON.stringify(value)+'\n');fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;
-    fs.renameSync(temp,receipt);
+    try{fd=fs.openSync(temp,'wx',0o600);fs.writeFileSync(fd,JSON.stringify(value)+'\n');fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;
+      fs.renameSync(temp,receipt);}
+    catch(error){fail(error.message,'prd_review_receipt_write_failed',{receipt:reviewFile(receipt)});}
   }finally{if(fd!==undefined)fs.closeSync(fd);try{fs.unlinkSync(temp);}catch(e){if(e.code!=='ENOENT')throw e;}}
   return {...base,outcome:'recorded'};
 }
