@@ -43,14 +43,24 @@ export function preflightAnswers(kinds,load){
 export const hostResponseFailed=row=>Boolean(row.error||row.result?.state==='unknown'
   ||row.result?.pendingAction==='reconcile');
 
-export function driveHost({host,args,cwd,operation,request={},answers,paths,answerFor}){
+// beforeRequest runs after host_ready, i.e. after the host itself accepted every
+// launch input, admission and the run store, and before the operation is sent.
+// A returned refusal closes the session without any operation and exits 2.
+export function driveHost({host,args,cwd,operation,request={},answers,paths,answerFor,beforeRequest=null}){
   const child=spawn(process.execPath,[host,...args],{cwd,stdio:['pipe','pipe','pipe']});
   child.stderr.on('data',chunk=>process.stderr.write(chunk));
   const send=value=>child.stdin.write(JSON.stringify(value)+'\n');
-  let done=false;
+  let done=false,refused=false;
   readline.createInterface({input:child.stdout}).on('line',async line=>{
     let row;try{row=JSON.parse(line);}catch{process.stdout.write(line+'\n');return;}
-    if(row.type==='host_ready'){send({requestId:'drive',operation,...request});return;}
+    if(row.type==='host_ready'){
+      if(beforeRequest){
+        let refusal;
+        try{refusal=await beforeRequest();}catch(error){refusal=`发送操作前的准备失败：${error.message}`;}
+        if(refusal){refused=true;stderr(refusal);process.exitCode=2;send({type:'host_close',sessionId:row.sessionId});child.stdin.end();return;}
+      }
+      send({requestId:'drive',operation,...request});return;
+    }
     if(row.type==='host_request'){
       let result;
       try{result=await answerFor(row,answers,paths);}catch(error){stderr(`应答 ${row.kind} 失败：${error.message}`);result=null;}
@@ -73,5 +83,5 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
     }
   });
   child.on('error',error=>{stderr(`宿主启动失败：${error.message}`);process.exitCode=1;});
-  child.on('exit',code=>{if(!done){stderr(`宿主在给出结果前退出了，exit ${code}`);process.exitCode=1;}});
+  child.on('exit',code=>{if(!done&&!refused){stderr(`宿主在给出结果前退出了，exit ${code}`);process.exitCode=1;}});
 }

@@ -7,7 +7,7 @@
 
 ## 当前会话手动驱动：用驱动脚本，不要自己搭 FIFO
 
-普通单任务和 bootstrap 骨架 T-001 用 `cm-ai-drive.mjs`，批次用 `cm-ai-batch-drive.mjs`；修复用 `cm-fix-drive.mjs`，规格编写用 `cm-prd-drive.mjs`。它们负责保持宿主 stdin、应答反问并按 callId 配对结果，无需后台保活 FIFO。bootstrap 规范任务（通常 T-002）需要当前 AI 会话以可交互进程工具直接运行 `cm-ai-host.mjs serve`，按下文应答 `init_generate` 和实时 `init_verify`；两个驾驶员都没有此核验 runner，启动前退出 2。`cm-ai`、批次和 `cm-prd` 驱动的 `--help` 列出计划字段；普通单任务最小调用：
+普通单任务和 bootstrap 骨架 T-001、规范任务（通常 T-002）用 `cm-ai-drive.mjs`，批次用 `cm-ai-batch-drive.mjs`；修复用 `cm-fix-drive.mjs`，规格编写用 `cm-prd-drive.mjs`。它们负责保持宿主 stdin、应答反问并按 callId 配对结果，无需后台保活 FIFO。规范任务按下文[用单步驾驶员](#bootstrap-规范任务用单步驾驶员)准备答案文件；批次驾驶员仍不支持规范任务，启动前退出 2。`cm-ai`、批次和 `cm-prd` 驱动的 `--help` 列出计划字段；普通单任务最小调用：
 
 ```bash
 node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
@@ -61,7 +61,30 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
 不能用它接管另一会话。批次的 `qa_logic`、`qa_browser`、`verification_precheck` 与 bootstrap
 `init_verify` 需要驾驶员尚无的真实执行 runner，命中时启动前退出 2。受保护配置里的检查由宿主执行。
 
+### bootstrap 规范任务用单步驾驶员
+
+适用于纯规范 scope（恰为 `cmInitRuleTargets(selection)` 的全部目标）、单代码根、不带 `--protected-config` 的 T-002；含业务文件、`codeProjects` 多根或 provider 开发的规范任务启动前退出 2，改走下节当前会话宿主路径。完成 T-001 骨架及其独立审查后，为 T-002 生成独立运行定义（`requirements` 可为空数组），`bootstrap.json` 放已确认的 cm-init selection。最小 PLAN：
+
+```json
+{"config":"t002-run.json","mode":"create","hostContext":"{当前真实会话ID}","runtime":"claude",
+ "permissions":["--bootstrap-config","bootstrap.json","--allow-bootstrap-write","--review-config","review.json"],
+ "answers":"answers","checks":[{"id":"xcode-list","command":["xcodebuild","-list","-project","App.xcodeproj"]}]}
+```
+
+规范任务不反问 `develop`，不需要 `develop.json`。当前会话先按 cm-init 主 Skill 第3至5节写好全部规范正文（放在答案目录内），再写两份答案：
+
+- `answers/init-generate.json`：`{"status":"generated","documents":[{"path":"AGENTS.md","contentFile":"t002/AGENTS.md"},…]}`，逐项覆盖全部 targets（缺一不可、不能多），`contentFile` 为答案目录内的 UTF-8 普通文件。无法生成时不要启动驾驶员，报告缺口；`blocked` 会被拒绝。
+- `answers/init-verify.json`：会话实际核对草稿后填写。`commands` 列出草稿里可安全实跑的命令 `[{"id","command","timeoutMs"?}]`（1..32 条，至少一条），驾驶员在宿主接受启动（`host_ready`：宿主已用自己的读取器核对全部启动输入、admission、任务选择与运行存档）之后、发送操作之前，于代码根逐条真实运行（超时与输出规则同 `checks`；带 `--protected-conversation-config` 时与宿主的任务检查一样在 specs 沙箱内运行，specs 与 AGENTS.md/CLAUDE.md/.claude 只读），任何一条未通过即退出 2、不发送操作；宿主问到 `init_verify` 时回报这次实跑的退出码作为 commands 组的 status/evidence；可选单行 `commandsNotRun` 说明未实跑的命令（如需模拟器的测试）及其依据，它只是会话说明，不是执行证据。`checks` 只写 `globs`、`file_references`、`constraint_preservation`、`rule_applicability` 四组 `{status,evidence}`，status 只能是 `verified` 或 `not_applicable`；不得写 `commands` 组或任何命令结果。`constraintChanges` 必须是 `[]`，`application`/`retrospective` 沿原 Learning 字段，例如 `{"status":"no_relevant_lesson","note":null}` 与 `{"status":"no_new_lesson","candidates":[],"reason":null}`。
+
+第 1 轮也可命名为 `*-a1.json`（不能与无后缀文件并存）；第 2 轮只读 `init-generate-a2.json` 与 `init-verify-a2.json`，绝不复用第 1 轮答案。修订轮 AGENTS.md 必须逐字保留第 1 轮已写入的正文（宿主只把既有 `## 项目教训` 段按原字节合入，其余只能追加），其他规范文件可按 findings 改写；首轮有 Learning 回写时，AGENTS.md 中「## 项目教训」之前的正文（含其前空行）要逐字保留，新增内容另起一段。修订答案必须在读到首轮 findings 之后编写，所以规范任务的 `advance` 不能带 `--allow-review-attempt 1` 跨进第 2 轮（启动前退出 2，预写的 `-a2` 文件也不行）：先 `advance` 到 `awaiting_review`，用返回的 `packageDigest` 执行带 `--allow-review-attempt 1` 的 `decision`，读取 `.reviews/<feature>-<task>-r1.md` 的 findings，写好第 2 轮两份答案后 `advance`；第 2 轮审查用带 `--allow-review-attempt 2` 的 `advance`（驾驶员的 `decision` 请求只携带运行定义的第 1 轮身份）。
+
+启动前驾驶员会校验：targets 覆盖与内容文件安全、`inspectCmInitDraft` 结构检查（先查原稿，再按当前磁盘合入 AGENTS.md 后查）、单次回复不超过宿主 64 KiB、四组 status、`constraintChanges`、Learning 字段，以及目标文件的当前状态：本运行尚未写入规范时目标不能已存在（仅允许带 `## 项目教训` 段的 AGENTS.md）；本运行已写入过（第 2 轮修订，或同轮重试）时每个目标须与运行存档记录的上次写入逐字节一致（AGENTS.md 按 Learning 回写后的摘要），他人改动会被拒绝，先还原。启动宿主前，驾驶员还用宿主自己的函数提前拒绝：缺 `--allow-bootstrap-write`（宿主到开发步骤才查）、bootstrap 配置或受保护配置不能被宿主读取器接受（如符号链接、字段不符）、新建运行时 admission 不选中本任务、本任务不是 bootstrap 当前 nextTask（宿主在开发步骤内才查）。宿主启动时的其余核对（运行定义、嵌套 specs 保护、恢复的创建会话与 runtime 指纹等）都在 `host_ready` 之前由宿主本身完成，失败时命令不会运行。命令跑完后驾驶员重读预检时核对过的全部规范目标、运行定义、PLAN.permissions 中的文件及已批准的 bootstrap 规格（requirements/design/tasks 与 `.cm-specs-status`），任何一个变化都退出 2：命令须只读核验。静态校验失败在启动宿主前退出 2，运行存档不变。
+
+恢复：`init-verify` 命令未通过或改动了绑定文件时，驾驶员不发送操作并关闭宿主。`mode:resume` 的运行存档不变，修正后原样重跑；`mode:create` 时宿主已建好运行（`ready`，只有 init 记录、未执行开发步骤），修正后把 PLAN.mode 改为 `resume` 重跑。规范写入后若 `PLAN.checks` 未通过，宿主停在可重试的 `blocked/develop_checks_not_passed`，规范文件保留在磁盘上：修好检查环境后在原运行 `advance`（`mode:resume`），同一轮以同一组答案重试，宿主把本运行已记录的写入当作起点，不另建运行。
+
 ### bootstrap 规范任务的当前会话宿主路径
+
+驾驶员不支持的规范任务（见上节），或当前会话能直接持有交互进程时，按本节手动应答。
 
 完成 T-001 骨架和其独立审查后，为 T-002 从已批准规格生成独立运行定义，`scope` 列出全部 `cmInitRuleTargets(selection)`，`requirements` 可为空数组。由当前真实 Claude 会话持有可交互进程句柄；下面是启动示意，路径和会话 ID 必须换成当前实际值：
 
@@ -119,7 +142,7 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-host.mjs" serve --config "{T-002-run.json
 
 4. 核对任务所需能力后才启动。QA 使用原测试合同与已授权命令/环境；无 QA 配置不能宣称
    已完成必需 QA。文档路径预先纳入任务批准 scope；需要 AGENTS/CLAUDE 等保护指令同步、
-   bootstrap规范用下文受信入口；其他未满足的必需能力记录具体缺口，不降格成可选项。
+   bootstrap规范用下文单步驾驶员或受信入口；其他未满足的必需能力记录具体缺口，不降格成可选项。
 5. reviewer 配置在首次运行前绑定；本机 preflight 不是实际模型审查或调用许可。
    只有当前真实用户已授权本任务本轮、模型与发送包时，才传审查授权选项；无许可可以
    不带选项运行至待审，但不能完成。批次按 feature/task:attempt 授权，不授权整个未来批次。

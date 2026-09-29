@@ -221,7 +221,7 @@ test('driver resumes an interrupted develop and sends the bound abandon_effect r
   const saved=JSON.parse(fs.readFileSync(f.store,'utf8'));
   assert.deepEqual(saved.records.slice(-2).map(row=>row.payload.type),['effect-intent','effect-abandoned']);
 });
-test('real host drives split-root bootstrap scaffold, then refuses rules before creating T-002 run',
+test('real host drives split-root bootstrap scaffold, then refuses rules without answer files before creating T-002 run',
   {skip:process.platform!=='darwin'},t=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-ai-drive-bootstrap-')));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
@@ -269,7 +269,7 @@ test('real host drives split-root bootstrap scaffold, then refuses rules before 
   fs.writeFileSync(bootstrap,JSON.stringify({selection}));
   writePlan('create',['--bootstrap-config','bootstrap.json','--allow-bootstrap-write']);
   const rules=drive('advance');assert.equal(rules.status,2,rules.stderr);
-  assert.match(rules.stderr,/init_verify.*cm-ai-host\.mjs serve/);
+  assert.match(rules.stderr,/会反问 init_generate，但答案文件不存在: .*init-generate\.json/);
   assert.equal(fs.existsSync(path.join(specsDir,'.reviews','.execution','bootstrap-T-002')),false);
   assert.equal(fs.existsSync(path.join(codeProject,'.claude')),false);
 });

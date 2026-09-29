@@ -18,17 +18,18 @@ function fixture(t){
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
   const configuration=path.join(root,'bootstrap.json');
   fs.writeFileSync(configuration,JSON.stringify({selection:{versionControl:'local',modules:[],analysis:'SwiftUI iOS app'}}));
-  const definition={specsDir,codeProject,feature,identity:{repositoryId:'app',runId:'t002',taskId:'T-002',attempt:1}};
+  const definition={specsDir,codeProject,feature,identity:{repositoryId:'app',runId:'t002',taskId:'T-002',attempt:1},
+    scope:['AGENTS.md','.claude/CLAUDE.md','.claude/rules/coding-style.md','.claude/rules/testing.md',
+      '.claude/rules/security.md','.claude/rules/git-workflow.md']};
   return {configuration,definition};
 }
 
-test('rules bootstrap requires live init_verify on first and second attempt',t=>{
+test('rules bootstrap is driver-supported for a pure rules scope on first and second attempt',t=>{
   const f=fixture(t),permissions=['--bootstrap-config',f.configuration,'--allow-bootstrap-write'];
-  for(const attempt of [1,2])for(const operation of ['advance','start','resume']){
-    const error=bootstrapDriverGap(operation,{...f.definition,identity:{...f.definition.identity,attempt}},permissions);
-    assert.match(error,/init_verify/);
-    assert.match(error,/cm-ai-host\.mjs serve/);
-  }
+  for(const attempt of [1,2])for(const operation of ['advance','start','resume'])
+    assert.equal(bootstrapDriverGap(operation,{...f.definition,identity:{...f.definition.identity,attempt}},permissions),null);
+  const provider=bootstrapDriverGap('advance',f.definition,[...permissions,'--protected-config','protected.json']);
+  assert.match(provider,/--protected-config/);assert.match(provider,/cm-ai-host\.mjs serve/);
   assert.equal(bootstrapDriverGap('advance',{...f.definition,identity:{...f.definition.identity,taskId:'T-001'}},permissions),null);
   assert.equal(bootstrapDriverGap('advance',f.definition,[]),null);
   assert.equal(bootstrapDriverGap('status',f.definition,permissions),null);
