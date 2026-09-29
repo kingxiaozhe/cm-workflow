@@ -23,11 +23,12 @@ import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {validateRunDefinition} from './cm-ai-run.mjs';
 import {createCmAiBatch} from './cm-ai-batch-run.mjs';
 import {readConversationReviewConfiguration,readConversationProtection} from './cm-ai-host.mjs';
-import {validateCmAiAnswer,developFilename} from './cm-ai-drive.mjs';
+import {validateCmAiAnswer,developFilename,preflightDevelopDeliveries,baselineScope,inputLimitFrom,
+  applyDevelopEdits,protectedDevelopEdits,developPreview,plannedCheckResults,journalRestBytes} from './cm-ai-drive.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
-import {stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
+import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 
 const HOST=fileURLToPath(new URL('./cm-ai-batch-host.mjs',import.meta.url));
 const KINDS={develop:'develop.json',qa_assess:'qa-assess.json',
@@ -73,7 +74,9 @@ function preflight(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
     process.stdout.write('用法: cm-ai-batch-drive.mjs --plan PLAN.json <operation>\n'
       +'operation: advance, status, cancel。PLAN: config, mode, hostContext, permissions, answers, checks, checkTimeoutMs。\n'
-      +'checks 每项为 {id,command,timeoutMs?}；超时为 1..3600000 整数，默认 900000 ms（15 分钟）。\n');
+      +'checks 每项为 {id,command,timeoutMs?}；超时为 1..3600000 整数，默认 900000 ms（15 分钟）。\n'
+      +'develop.json.edits 与单任务驾驶员相同：内容文件、{file,mode}、{mode}、{delete:true}；启动前同样拒绝超限、空交付与受保护模式下的非 UTF-8 内容（尚未开跑的后续任务不看代码树，只做答案本身就能判定的检查：单文件 1 MiB、答案写入的 scope 文件合计 2 MiB，等等；运行存档单条记录上限要看该任务开跑时的代码树，驾驶员事先算不出，超限交付写入后由宿主拦下，停在可重试的 blocked/develop_package_too_large）。\n'
+      +'带 --allow-review 任务:1 但还没有 develop-a2.json 时照常启动：审查若要求修改，该任务停在 changes_requested（revision_answer_required），读 .reviews/<feature>-<task>-r1.md 的 findings 写好 develop-a2.json 后再 advance。\n');
     process.exit(0);
   }
   const loaded=loadPlanFile({name:'cm-ai-batch-drive.mjs',known:new Set(['advance','status','cancel'])});
@@ -170,7 +173,11 @@ function preflight(){
     stop(2,'缺少真实执行 runner: verification_precheck；不能从静态答案文件应答');
   if(operation==='advance'&&bundle.bootstraps&&Object.keys(bundle.bootstraps).length)
     stop(2,'缺少真实执行 runner: init_verify；不能从静态答案文件应答');
-  const root=plan.answers?path.resolve(base,plan.answers):null,answers={},developAnswers=new Map();
+  const root=plan.answers?path.resolve(base,plan.answers):null,answers={},developAnswers=new Map(),holds=[];
+  const inputLimit=inputLimitFrom(permissions);
+  // Tasks that start from today's tree: the first task (and its parallel group) of
+  // a new batch. Later tasks start from trees earlier tasks have not written yet.
+  const firstGroup=batch.parallel?.find(group=>group.includes(keys[0]))??[keys[0]];
   if(operation==='advance')for(const task of batch.tasks){
     const key=taskKey(task),workflow=bundle.workflows[key],kinds=[];
     if(!providerAll)kinds.push('develop');
@@ -190,25 +197,51 @@ function preflight(){
     const taskRoot=root&&path.join(root,task.feature,task.taskId);
     const perAttempt=new Map();
     if(kinds.includes('develop')){
-      let attempts=[1];
+      let attempts=[1],current=1,journal=null;
       if(plan.mode==='resume'){
         const runIds=[...runs].filter(([,binding])=>binding.key===key).sort((a,b)=>b[1].generation-a[1].generation);
         const existing=runIds.find(([runId])=>fs.existsSync(path.join(batch.specsDir,'.reviews','.execution',runId,'state.json')));
         if(existing)try{
           const snapshot=readExecutionSnapshot({specsRoot:batch.specsDir,identity:{repositoryId:batch.repositoryId,runId:existing[0]}});
           const history=readRunnerHistory(snapshot.records,snapshot.records[0].payload.config,3);
-          attempts=batchDevelopAttempts(history.state,key,permissions);
+          attempts=batchDevelopAttempts(history.state,key,permissions);current=history.state.attempt;
+          journal={baseline:snapshot.records[0].payload.baseline,generation:existing[1].generation,
+            frame:journalRestBytes(snapshot.records)};
         }catch(error){stop(2,`任务 ${key} 无法只读检查恢复存档: ${error.code??error.message}`);}
-      }else if(permissions.some((flag,index)=>flag==='--allow-review'&&permissions[index+1]===`${key}:1`))attempts=[1,2];
+      }
+      // A task with no run yet (a new batch, or a later task on resume) starts at
+      // attempt 1; a first-round review grant can then reach attempt 2 as well.
+      if(journal===null&&permissions.some((flag,index)=>flag==='--allow-review'&&permissions[index+1]===`${key}:1`))attempts=[1,2];
+      const deliveries=[],definition=definitions.get(key);
       for(const attempt of attempts){
         const file=path.join(taskRoot??'',developFilename(taskRoot??'',attempt));
-        if(!taskRoot||!fs.existsSync(file))stop(2,attempt===1
-          ?`任务 ${key} 会反问 develop，但答案文件不存在: ${file}`
-          :`任务 ${key} 可能反问 develop attempt ${attempt}，但答案文件不存在: ${file}；先单独完成审查并按 findings 写 develop-a${attempt}.json`);
+        if(!taskRoot||!fs.existsSync(file)){
+          // A later attempt is only reached if the review this launch authorizes asks
+          // for changes. Without its answer the task stops right after that review.
+          if(attempt>current){
+            holds.push(key);
+            stderr(`任务 ${key} 没有 ${path.basename(file)}：本次授权的审查若要求修改，任务会停在 changes_requested（revision_answer_required），不会发起第 ${attempt} 轮开发；读取 .reviews/${task.feature.replace(/^\d+\./,'')}-${task.taskId}-r${attempt-1}.md 的 findings，写 ${file} 后再 advance`);
+            continue;
+          }
+          stop(2,attempt===1?`任务 ${key} 会反问 develop，但答案文件不存在: ${file}`
+            :`任务 ${key} 已在第 ${attempt} 轮等待修订，但答案文件不存在: ${file}；读取 .reviews/${task.feature.replace(/^\d+\./,'')}-${task.taskId}-r${attempt-1}.md 的 findings 后写入再 advance`);
+        }
         const value=readJson(file,'develop');validateCmAiAnswer('develop',value,taskRoot);
         if(value.status==='succeeded')for(const target of Object.keys(value.edits))
-          if(!definitions.get(key).scope.includes(target))stop(2,`任务 ${key} ${path.basename(file)}.edits 越过批准 scope: ${target}`);
-        perAttempt.set(attempt,value);
+          if(!definition.scope.includes(target))stop(2,`任务 ${key} ${path.basename(file)}.edits 越过批准 scope: ${target}`);
+        perAttempt.set(attempt,value);deliveries.push({file,value,attempt});
+      }
+      if(deliveries.length){
+        const known=journal!==null||plan.mode==='create'&&firstGroup.includes(key);
+        const cwd=journal?actualCwd(bundle,key,journal.generation):batch.codeProject;
+        const codeProject=fs.existsSync(cwd)?cwd:batch.codeProject;
+        preflightDevelopDeliveries({deliveries,answersRoot:taskRoot,codeProject,
+          scope:definition.scope,requirements:definition.requirements,diskChecks:known,
+          baseline:journal?baselineScope(journal.baseline,definition.scope):'disk',protectedMode,inputLimit,
+          checks:plannedCheckResults(protectedMode?null:plan.checks?.[key]),
+          preview:known?developPreview({definition,codeProject,journal,
+            parallelSelection:batch.parallel?.find(group=>group.includes(key))
+              ?{version:1,group:batch.parallel.find(group=>group.includes(key)).map(member=>definitions.get(member).identity.taskId)}:null}):null});
       }
     }
     developAnswers.set(key,perAttempt);
@@ -222,7 +255,7 @@ function preflight(){
     if(answers[key].documentation_sync)for(const target of Object.keys(answers[key].documentation_sync.edits))
       if(!workflow.documentationPaths.includes(target))stop(2,`任务 ${key} documentation-sync.json.edits 越过文档 scope: ${target}`);
   }
-  return {...loaded,bundle,definitions,runs,config,permissions,answers,developAnswers,answerRoot:root};
+  return {...loaded,bundle,definitions,runs,config,permissions,answers,developAnswers,answerRoot:root,holds};
 }
 
 let loaded;
@@ -264,9 +297,8 @@ async function answerFor(row){
     if(row.payload.codeProject!==cwd)return null;
     if(value.status!=='succeeded')return {status:'failed',code:value.code};
     if(row.payload.editMode==='protected-text-v1')return {status:'succeeded',value:value.value,
-      edits:Object.entries(value.edits).map(([target,local])=>({path:target,
-        beforeSha256:row.payload.expected?.[target]??null,content:fs.readFileSync(path.join(root,local),'utf8')}))};
-    safeWrite(value.edits,root,cwd,row.payload.request.payload.scope);
+      edits:protectedDevelopEdits(value.edits,root,cwd,row.payload.expected)};
+    applyDevelopEdits(value.edits,root,cwd,row.payload.request.payload.scope);
     return {status:'succeeded',value:value.value};
   }
   if(row.kind==='documentation_sync'){
@@ -285,7 +317,7 @@ function main(){
   loaded=preflight();
   const {plan,operation,bundle,config,permissions}=loaded;
   driveHost({host:HOST,args:['serve','--config',config,'--host-context',plan.hostContext,
-    '--allow-development',...permissions],cwd:bundle.batch.codeProject,operation,
+    '--allow-development',...permissions,...loaded.holds.flatMap(key=>['--hold-revision',key])],cwd:bundle.batch.codeProject,operation,
     answers:loaded.answers,answerFor});
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))main();

@@ -1,6 +1,6 @@
 import {beforeFirstQaRound,qaRevisionFollows,readQaConfigRevision} from './qa-config-revision.mjs';
 // Host-only S3b2b journal grammar. Data validation grants no provider authority.
-import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,requestFor} from './effect-contract.mjs';
+import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,requestFor,JOURNAL_REASON_LIMIT} from './effect-contract.mjs';
 import {readReviewBaseline,readReviewPackage,reviewSpecsPath} from './review-package.mjs';
 import {reviewResult,reviewReceipt} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
@@ -22,7 +22,7 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review'].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large'].includes(code)
   ||kind==='review'&&state==='pending_review'&&REVIEW_RETRY_CODES.includes(code)
   ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed'].includes(code)
     ||code==='review_package_changed'&&reviewVerdict==='approved')
@@ -135,9 +135,11 @@ export function validateTaskLearningReviewPackage(rawPackage,writeback,learningI
     &&(agents===null||agents.after?.sha256===writeback.agentsFile.sha256),'runner_learning');
   return true;
 }
-export const runnerPayload=(type,fields,version=1)=>{need([1,2].includes(version),'runner_version');
-  return json(version===1?{version,protocol:'cm-task-runner',type,...fields}:{...fields,version,protocol:'cm-task-runner',type});};
-export const runnerPayloadV3=(type,fields)=>json({...fields,version:3,protocol:'cm-task-runner',type});
+// limit only widens the builder's own copy check so a caller can measure an
+// oversized record exactly; the store still refuses it (JOURNAL_PAYLOAD_LIMIT).
+export const runnerPayload=(type,fields,version=1,limit=undefined)=>{need([1,2].includes(version),'runner_version');
+  return json(version===1?{version,protocol:'cm-task-runner',type,...fields}:{...fields,version,protocol:'cm-task-runner',type},limit);};
+export const runnerPayloadV3=(type,fields,limit=undefined)=>json({...fields,version:3,protocol:'cm-task-runner',type},limit);
 export function boundRunnerRecord({id,kind,payload},seq) {
   // Exact S3a envelope width. Digest contents do not affect encoded byte count.
   json({version:1,seq,id,kind,payload,previousDigest:seq>1?'0'.repeat(64):null,digest:'0'.repeat(64)});
@@ -327,7 +329,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     ...(Object.hasOwn(s,'reason')?['reason']:[]),
     'priorReview','cancelAfterCommit','workflowError','cancellationRequested',...(version>=2?['taskCommit']:[]),...(version===3?['reviewInvocation']:[]),
     ...(Object.hasOwn(config,'taskLearning')?['learningResult']:[])]);
-  if(Object.hasOwn(s,'reason'))need(s.reason===null||typeof s.reason==='string'&&s.reason.length<=8192
+  if(Object.hasOwn(s,'reason'))need(s.reason===null||typeof s.reason==='string'&&s.reason.length<=JOURNAL_REASON_LIMIT
     &&!/\r|\n|\0/.test(s.reason),'runner_diagnostic');
   if(version>=2){
     same(s.taskCommit,effect.kind==='complete'?taskCommit:null);
@@ -415,7 +417,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     // between the checks and the review package. No package exists, so no review
     // round was spent; the attempt counter does not move either.
     // develop_unchanged_after_review: attempt 2 matched the rejected attempt-1 artifact.
-    if(added[0]?.terminal==='succeeded'&&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review'].includes(s.code)) {
+    if(added[0]?.terminal==='succeeded'&&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large'].includes(s.code)) {
       // s.receipt is null for every develop checkpoint (above); at attempt 2 the
       // state before still holds the attempt-1 receipt, so only receipts compare.
       need(digest(s.reviewPackage)===digest(before.reviewPackage),'runner_develop');

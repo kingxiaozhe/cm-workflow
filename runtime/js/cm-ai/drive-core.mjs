@@ -42,6 +42,11 @@ export function preflightAnswers(kinds,load){
 
 export const hostResponseFailed=row=>Boolean(row.error||row.result?.state==='unknown'
   ||row.result?.pendingAction==='reconcile');
+// A static answer cannot be corrected and resent, so a rejected reply would
+// leave the host waiting forever on the same call. Say why and end the session.
+const rejectedReplyHint=code=>code==='host_response_too_large'
+  ?'应答超过宿主输入上限：在 PLAN.permissions 加 "--input-limit","<字节数>"（65536–4194304，默认 65536）'
+  :'应答与宿主这次反问不匹配（会话、调用或请求摘要不对）';
 
 // beforeRequest runs after host_ready, i.e. after the host itself accepted every
 // launch input, admission and the run store, and before the operation is sent.
@@ -49,8 +54,9 @@ export const hostResponseFailed=row=>Boolean(row.error||row.result?.state==='unk
 export function driveHost({host,args,cwd,operation,request={},answers,paths,answerFor,beforeRequest=null}){
   const child=spawn(process.execPath,[host,...args],{cwd,stdio:['pipe','pipe','pipe']});
   child.stderr.on('data',chunk=>process.stderr.write(chunk));
-  const send=value=>child.stdin.write(JSON.stringify(value)+'\n');
-  let done=false,refused=false;
+  // After a rejected reply the session is ended; later rows get no answer.
+  const send=value=>{if(!child.stdin.writableEnded)child.stdin.write(JSON.stringify(value)+'\n');};
+  let done=false,refused=false,rejected=null;
   readline.createInterface({input:child.stdout}).on('line',async line=>{
     let row;try{row=JSON.parse(line);}catch{process.stdout.write(line+'\n');return;}
     if(row.type==='host_ready'){
@@ -72,13 +78,20 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
       send({type:'host_result',sessionId:row.sessionId,callId:row.callId,requestDigest:row.requestDigest,result});
       return;
     }
-    if(row.type==='host_response')return;
+    if(row.type==='host_response'){
+      if(row.accepted===false&&rejected===null){
+        rejected=typeof row.code==='string'?row.code:'host_response_rejected';
+        stderr(`宿主拒收了应答：${rejected}；${rejectedReplyHint(rejected)}。驾驶员不再等待，已结束会话；宿主会把这一步记为 unknown`);
+        child.stdin.end();
+      }
+      return;
+    }
     if(row.requestId==='drive'){
       done=true;
       process.stdout.write(JSON.stringify(row,null,2)+'\n');
       if(row.result?.stage)stderr(`stage = ${row.result.stage}`);
       if(row.error)stderr(`宿主拒绝：${row.error.code}（真实原因和位置在上面 [host] 那行 diagnostic 里）`);
-      process.exitCode=hostResponseFailed(row)?1:0;
+      process.exitCode=hostResponseFailed(row)||rejected!==null?1:0;
       child.stdin.end();
     }
   });

@@ -1230,9 +1230,13 @@ for(const phase of ['init','checkpoint'])test(`S3b2b ${phase} over one MiB refus
     assert.throws(()=>f.create(),{code:'limit_exceeded'});assert.equal(f.calls.length,0);assert.equal(f.getStore().snapshot().records.length,0);
   } else {
     f.options.developer.run=r=>{f.calls.push(r);fs.writeFileSync(path.join(f.root,'a.js'),'x'.repeat(850000));return terminal(r,{outcome:'implemented'});};
-    const r=f.create();assert.equal((await r.executeEffect(intent('develop'))).code,'store_failure');
-    assert.equal(f.getStore().snapshot().records.at(-1).payload.type,'effect-intent');assert.equal(f.calls.length,1);
-    assert.equal((await r.executeEffect(intent('review'))).code,'store_failure');assert.equal(f.marker.length,0);
+    // Deliberately changed (group C): a package the journal cannot hold is a
+    // delivery to redo, recorded as a retryable block, not a poisoned store.
+    const r=f.create(),blocked=await r.executeEffect(intent('develop'));
+    assert.equal(blocked.state,'blocked');assert.equal(blocked.code,'develop_package_too_large');
+    const last=f.getStore().snapshot().records.at(-1).payload;
+    assert.equal(last.type,'effect-checkpoint');assert.equal(last.checkpoint.reviewPackage,null);assert.equal(f.calls.length,1);
+    assert.equal((await r.executeEffect(intent('review'))).code,'stage_mismatch');assert.equal(f.marker.length,0);
   }
 }));
 

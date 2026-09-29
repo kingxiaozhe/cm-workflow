@@ -9,12 +9,12 @@ import {loadConfig,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
 import {preflightMatches} from '../runtime/js/cm-ai/worker-codex.mjs';
 import {claudePreflightMatches} from '../runtime/js/cm-ai/worker-claude.mjs';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
-import {serveCmAiHost,parseHostInputLimit} from '../runtime/js/cm-ai/host-session.mjs';
+import {serveCmAiHost,parseHostInputLimit,inputLimitReason} from '../runtime/js/cm-ai/host-session.mjs';
 import {validateHostWorkflowConfiguration,featureHasBrowserCases,readBrowserCapability} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {digest,json,need,shape} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {identifyApprovedBootstrapFeature} from '../runtime/js/cm-ai/bootstrap-feature.mjs';
 
-const usage='cm-ai-batch-host.mjs serve --config PATH --host-context ID --allow-development [--runtime codex|claude] [--input-limit BYTES] [--review-config PATH] [--allow-review FEATURE/TASK:1|2]... [--allow-qa] [--rerun-unknown-qa | --rerun-blocked-qa] [--verification-precheck] [--browser-qa available|unavailable] [--protected-conversation-config PATH | --protected-config PATH] [--allow-provider-development FEATURE/TASK:1|2]...';
+const usage='cm-ai-batch-host.mjs serve --config PATH --host-context ID --allow-development [--runtime codex|claude] [--input-limit BYTES] [--review-config PATH] [--allow-review FEATURE/TASK:1|2]... [--allow-qa] [--rerun-unknown-qa | --rerun-blocked-qa] [--verification-precheck] [--browser-qa available|unavailable] [--protected-conversation-config PATH | --protected-config PATH] [--allow-provider-development FEATURE/TASK:1|2]... [--hold-revision FEATURE/TASK]...';
 const safeCode=error=>typeof error?.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(error.code)?error.code:'batch_host_failed';
 
 export async function serveHostTransport(options,rawInputLimit,serve=serveCmAiHost){
@@ -49,7 +49,7 @@ async function memberReviewConfiguration(batch,definition,review,runtime){
 }
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
-  if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\nOptional --input-limit BYTES sets the host input transport limit to an integer from 65536 to 4194304 (default 65536); it may change on resume.\nOptional --protected-conversation-config PATH uses the shared current-host scoped text proposals and native sandbox checks; {checkCommands,timeoutMs}. No extra model call, same Codex/Claude runtime and per-task Review permissions. Optional --protected-config PATH {model,checkCommands,timeoutMs} enables CLI development only for per-task --allow-provider-development FEATURE/TASK:1|2 grants; mutually exclusive with --protected-conversation-config. Optional bundle.bootstraps maps approved bootstrap task keys to {selection}; --allow-bootstrap-write grants only those fixed instruction/scaffold steps. Optional batch.codeProjects uses prefixed paths and checks with codeProject per command; one task remains one completion gate.\nOptional --review-config PATH is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 900000). It is independent of --protected-conversation-config/--protected-config and wins over their timeoutMs for the reviewer. It is not part of the authorized configuration digest, so a resumed run may raise it after review_transport_timeout.\n--browser-qa available|unavailable declares interactive QA capability for applicable feature carriers including browser and ios-simulator; the flag name is retained for compatibility.\nOptional --rerun-unknown-qa / --rerun-blocked-qa carry the same single-task QA recovery into a batch and require --allow-qa; they are mutually exclusive. A batch has no --mode, so each task applies the flag only when it resumes an existing run and has a QA executor; a created run or a task without QA ignores it rather than failing the whole batch. Semantics, limits and the qaRound cap are the single-task ones, unchanged.\nOptional --verification-precheck sends the written verification of the task and the collected checks back as a verification_precheck request before any handoff or review package is built. It may only block: a requirement reported unsatisfied stops the task at blocked / verification_precheck_failed with pendingAction resume and spends no review round. Passing it is not an approval, writes no receipt and does not replace the independent review. A task with no written verification is unaffected.\nBatch entry requires a clean Git main checkout (including untracked files); batch_main_dirty lists dirty files before any task or worktree starts. Serial tasks are committed automatically before batch_handoff, with task_commit recording the SHA (null if unchanged). Terminal parallel members preserve WIP on their retained branches and fall back once to serial generation 2 after ready members merge.\n');return 0;}
+  if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\nOptional --input-limit BYTES sets the host input transport limit to an integer from 65536 to 4194304 (default 65536); it may change on resume.\nOptional --protected-conversation-config PATH uses the shared current-host scoped text proposals and native sandbox checks; {checkCommands,timeoutMs}. No extra model call, same Codex/Claude runtime and per-task Review permissions. Optional --protected-config PATH {model,checkCommands,timeoutMs} enables CLI development only for per-task --allow-provider-development FEATURE/TASK:1|2 grants; mutually exclusive with --protected-conversation-config. Optional bundle.bootstraps maps approved bootstrap task keys to {selection}; --allow-bootstrap-write grants only those fixed instruction/scaffold steps. Optional batch.codeProjects uses prefixed paths and checks with codeProject per command; one task remains one completion gate.\nOptional --review-config PATH is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 900000). It is independent of --protected-conversation-config/--protected-config and wins over their timeoutMs for the reviewer. It is not part of the authorized configuration digest, so a resumed run may raise it after review_transport_timeout.\n--browser-qa available|unavailable declares interactive QA capability for applicable feature carriers including browser and ios-simulator; the flag name is retained for compatibility.\nOptional --rerun-unknown-qa / --rerun-blocked-qa carry the same single-task QA recovery into a batch and require --allow-qa; they are mutually exclusive. A batch has no --mode, so each task applies the flag only when it resumes an existing run and has a QA executor; a created run or a task without QA ignores it rather than failing the whole batch. Semantics, limits and the qaRound cap are the single-task ones, unchanged.\nOptional --verification-precheck sends the written verification of the task and the collected checks back as a verification_precheck request before any handoff or review package is built. It may only block: a requirement reported unsatisfied stops the task at blocked / verification_precheck_failed with pendingAction resume and spends no review round. Passing it is not an approval, writes no receipt and does not replace the independent review. A task with no written verification is unaffected.\nOptional --hold-revision FEATURE/TASK (repeatable, launch-only, never persisted) stops that task after a changes_requested review with code revision_answer_required, before any second-round develop intent; the next launch without it resumes the revision. It only narrows what this launch does.\nBatch entry requires a clean Git main checkout (including untracked files); batch_main_dirty lists dirty files before any task or worktree starts. Serial tasks are committed automatically before batch_handoff, with task_commit recording the SHA (null if unchanged). Terminal parallel members preserve WIP on their retained branches and fall back once to serial generation 2 after ready members merge.\n');return 0;}
   let bridge;
   try{
     need(argv.length>=6&&argv[0]==='serve'&&argv[1]==='--config'&&argv[3]==='--host-context'
@@ -68,7 +68,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(keys.length===Object.keys(workflows).length&&keys.every(key=>Object.hasOwn(workflows,key)),'workflow_task_mismatch');
     for(const key of keys)if(workflows[key]!==null)validateHostWorkflowConfiguration(workflows[key]);
     let review=null,allowQa=false,allowBootstrap=false,runtime=null,protection=null,providerConfig=null,browserQaFlag,inputLimitRaw;
-    let rerunUnknownQa=false,rerunBlockedQa=false,verificationPrecheck=false;const approvals=new Set(),developments=new Map();
+    let rerunUnknownQa=false,rerunBlockedQa=false,verificationPrecheck=false;const approvals=new Set(),developments=new Map(),holds=new Set();
     for(let index=6;index<argv.length;index++){
       const name=argv[index];
       if(name==='--allow-qa'){need(!allowQa,'invalid_arguments');allowQa=true;}
@@ -102,6 +102,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         inputLimitRaw=argv[++index];parseHostInputLimit(inputLimitRaw);
       }
       else if(name==='--review-config'){need(review===null&&typeof argv[index+1]==='string','invalid_arguments');review=readConversationReviewConfiguration(argv[++index]);}
+      else if(name==='--hold-revision'){
+        const held=argv[++index];need(typeof held==='string'&&keys.includes(held)&&!holds.has(held),'invalid_arguments');holds.add(held);
+      }
       else if(name==='--allow-review'){
         const approval=argv[++index];need(typeof approval==='string'&&!approvals.has(approval),'invalid_arguments');
         const split=approval.lastIndexOf(':'),key=approval.slice(0,split),attempt=approval.slice(split+1);
@@ -120,7 +123,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(!(rerunUnknownQa&&rerunBlockedQa),'qa_recovery_authorization_required');
     need(!(rerunUnknownQa||rerunBlockedQa)||allowQa,'qa_recovery_authorization_required');
     need(allowQa||!Object.values(workflows).some(item=>item?.qa!=null),'qa_authorization_required');
-    bridge=createHostToolBridge();
+    // Tool replies travel on the same input lines, so they share the one limit.
+    bridge=createHostToolBridge({responseLimit:parseHostInputLimit(inputLimitRaw)});
     // The current conversation transport accepts one outstanding host call.
     // Queue those calls only; member runners and independent Review stay concurrent.
     let hostCallTail=Promise.resolve();
@@ -130,7 +134,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     }};
     const driver=createCmAiBatch({configuration:batch,logHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
       runtime:runtime??'codex',checkCommands:(providerConfig??protection)?.checkCommands??null,checkTimeoutMs:(providerConfig??protection)?.timeoutMs??60000,
-      rerunUnknownQa,rerunBlockedQa,
+      rerunUnknownQa,rerunBlockedQa,holdRevisions:[...holds],
       executionFor:async(definition,{parallelMember=false}={})=>{
         const key=`${definition.feature}/${definition.identity.taskId}`;
         const attempts=[1,2].filter(attempt=>approvals.has(`${key}:${attempt}`));
@@ -156,7 +160,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     finally{if(rawMode)input.setRawMode(false);}
     return 0;
   }catch(cause){const code=safeCode(cause);error.write(JSON.stringify({error:{code,...(['browser_capability_required','browser_capability_unavailable'].includes(code)
-    &&typeof cause.reason==='string'?{reason:cause.reason}:{})}})+'\n');return 1;}
+    &&typeof cause.reason==='string'?{reason:cause.reason}:{}),...(code==='request_too_large'?{reason:inputLimitReason(cause.limit)}:{})}})+'\n');return 1;}
   finally{bridge?.close();}
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))process.exitCode=await main();

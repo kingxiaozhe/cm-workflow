@@ -12,6 +12,8 @@ import {resolveCodeProjects,validateCodeProjectPaths,
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 
 const FILE_LIMIT=1024*1024, SNAPSHOT_LIMIT=2*1024*1024, FILE_COUNT=256;
+// Read-only view for callers that must refuse an oversized delivery before it is written.
+export const REVIEW_MATERIAL_LIMITS=Object.freeze({file:FILE_LIMIT,total:SNAPSHOT_LIMIT,count:FILE_COUNT});
 // Inventory budgets bound scanning, independently of the much smaller review body.
 const INVENTORY_COUNT=10000, INVENTORY_LIMIT=1024*1024*1024;
 const IGNORE_COUNT=10000, IGNORE_BYTES=1024*1024;
@@ -316,8 +318,10 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
     const byteLimit=selected===null?SNAPSHOT_LIMIT:INVENTORY_LIMIT;
     if(files.length>=countLimit)throw diagnostic('limit_exceeded',p,`file count > ${countLimit}`);
     if(total+s.size>byteLimit)throw diagnostic('limit_exceeded',p,`inventory bytes > ${byteLimit}`);
-    if(includeContent&&(materialCount>=FILE_COUNT||materialBytes+s.size>SNAPSHOT_LIMIT))
-      throw diagnostic('limit_exceeded',p,`material count > ${FILE_COUNT} or bytes > ${SNAPSHOT_LIMIT}`);
+    if(includeContent&&materialCount>=FILE_COUNT)
+      throw diagnostic('limit_exceeded',p,`material file count > ${FILE_COUNT}`);
+    if(includeContent&&materialBytes+s.size>SNAPSHOT_LIMIT)
+      throw diagnostic('limit_exceeded',p,`material bytes ${materialBytes}+${s.size} > ${SNAPSHOT_LIMIT}; scope, requirements and AGENTS.md content count`);
     const f=readFile(root,p,includeContent,includeContent?Math.min(FILE_LIMIT,SNAPSHOT_LIMIT-materialBytes):byteLimit-total);
     total+=f.size;
     if(includeContent){materialBytes+=f.size;materialCount++;}
@@ -649,23 +653,40 @@ export function validChecks(checks) {
       || c.outcome==='unavailable' && c.exitCode===null);
   }
 }
-export function createReviewPackage(options) {
-  const v=plain(options); keys(v,['root','baseline','checks',...(Object.hasOwn(v,'handoffPath')?['handoffPath']:[])]); const b=v.baseline;
-  validBaseline(b); validChecks(v.checks);
+// The one selection a review package snapshot uses: its policy, retained paths
+// and material (scope, requirements, earlier material and every AGENTS.md).
+const packagePolicy=(root,b)=>b.ignorePolicy?.version===2?stableSnapshotPolicy(root,b.ignorePolicy)
+  :Object.hasOwn(b,'ignorePolicy')?ignorePolicy(root):null;
+function packageSnapshot(root,b,policy){
+  const selected=b.version===1?null:new Set([...b.scope,...b.requirements,
+    ...b.files.filter(f=>Object.hasOwn(f,'contentBase64')).map(f=>f.path)]);
+  return snapshot(root,b.specsPath??null,b.codeProjectPaths??null,b.ignorePolicy?.version===2?[]:b.files.map(f=>f.path),selected,policy);
+}
+// Read-only: path and size of every material body a package built from the
+// current tree would carry. Callers use it to refuse a delivery before writing it.
+export function reviewMaterialSizes(options){
+  const v=plain(options);keys(v,['root','baseline']);const b=v.baseline;validBaseline(b);
+  const root=rootPath(v.root);need(sha(root)===b.rootDigest,'invalid_baseline');
+  return freeze(packageSnapshot(root,b,packagePolicy(root,b)).filter(f=>Object.hasOwn(f,'contentBase64'))
+    .map(f=>({path:f.path,size:f.size})));
+}
+// Validation, specification, policy and bootstrap material a package is built
+// with, shared by the real and the projected package so both use one assembly.
+function packageContext(v){
+  const b=v.baseline;validBaseline(b); validChecks(v.checks);
   const specification=Object.hasOwn(b,'specification')?verifySpecificationMaterial(b):null;
   const root=rootPath(v.root); need(sha(root)===b.rootDigest,'invalid_baseline');
   const stable=b.ignorePolicy?.version===2;
-  const policy=stable?stableSnapshotPolicy(root,b.ignorePolicy)
-    :Object.hasOwn(b,'ignorePolicy')?ignorePolicy(root):null;
+  const policy=packagePolicy(root,b);
   if(policy&&!stable&&digest(publicPolicy(policy))!==digest(b.ignorePolicy)){
     const changed=policyDifferencePaths(publicPolicy(policy),b.ignorePolicy);
     throw diagnostic('package_mismatch',changed.join(', ')||'ignore policy','ignore policy changed');
   }
   const bootstrap=Object.hasOwn(b,'bootstrapRequirements')?currentBootstrapRequirements(b.bootstrapRequirements):null;
   if(bootstrap!==null)need(reviewSpecsPath(root,b.bootstrapRequirements.specsRoot)===(b.specsPath??null),'bootstrap_requirements_mismatch');
-  const selected=b.version===1?null:new Set([...b.scope,...b.requirements,
-    ...b.files.filter(f=>Object.hasOwn(f,'contentBase64')).map(f=>f.path)]);
-  const files=snapshot(root,b.specsPath??null,b.codeProjectPaths??null,stable?[]:b.files.map(f=>f.path),selected,policy);
+  return {b,root,stable,policy,specification,bootstrap};
+}
+function assemblePackage({b,stable,policy,specification,bootstrap},files,checks,handoff){
   const protectedPaths=new Set([...b.scope,...b.requirements]);
   const before=new Map((stable?comparableFiles(b.files,policy,protectedPaths):b.files).map(f=>[f.path,f]));
   const after=new Map(files.map(f=>[f.path,f]));
@@ -688,16 +709,49 @@ export function createReviewPackage(options) {
     .map(p=>({path:p,sha256:after.get(p).sha256}));
   const requirements=b.requirements.map(p=>{ need(after.has(p),'read_failed'); return after.get(p); });
   const pkg=sealed({version:1,kind:'cm-review-package',identity:b.identity,rootDigest:b.rootDigest,
-    baseIdentity:b.baselineDigest,scope:b.scope,changes,unchangedScope,requirements,checks:v.checks,
+    baseIdentity:b.baselineDigest,scope:b.scope,changes,unchangedScope,requirements,checks,
     ...(Object.hasOwn(b,'codeProjectPaths')?{codeProjectPaths:b.codeProjectPaths,
       instructions:files.filter(file=>file.path.split('/').at(-1)==='AGENTS.md')}:{}),
     ...(bootstrap===null?{}:{bootstrapRequirements:bootstrap}),
     ...(specification===null?{}:{specification}),
-    ...(Object.hasOwn(v,'handoffPath')?{handoff:readHandoffSnapshot(v.handoffPath)}:{}),
+    ...(handoff===null?{}:{handoff:handoff()}),
     ...(policy===null?{}:{ignorePolicy:stable?b.ignorePolicy:publicPolicy(policy)}),
-    artifactDigest:digest(changes),requirementsDigest:digest(requirements),checksDigest:digest(v.checks)},'packageDigest');
+    artifactDigest:digest(changes),requirementsDigest:digest(requirements),checksDigest:digest(checks)},'packageDigest');
   need(Buffer.byteLength(JSON.stringify(pkg))<=8*1024*1024,'limit_exceeded');
   return pkg;
+}
+export function createReviewPackage(options) {
+  const v=plain(options); keys(v,['root','baseline','checks',...(Object.hasOwn(v,'handoffPath')?['handoffPath']:[])]);
+  const context=packageContext(v);
+  return assemblePackage(context,packageSnapshot(context.root,context.b,context.policy),v.checks,
+    Object.hasOwn(v,'handoffPath')?()=>readHandoffSnapshot(v.handoffPath):null);
+}
+// Read-only: the package the current tree would give once the listed scope files
+// are replaced ({path,contentBase64,mode}, or contentBase64 null to delete),
+// assembled by the same code as createReviewPackage. Nothing is written. The
+// handoff is only known once it exists, so the projection carries none.
+export function projectedReviewPackage(options){
+  const v=plain(options);keys(v,['root','baseline','checks','scopeFiles',...(Object.hasOwn(v,'handoff')?['handoff']:[])]);
+  const context=packageContext(v);need(Array.isArray(v.scopeFiles),'invalid_input');
+  const files=new Map(packageSnapshot(context.root,context.b,context.policy).map(file=>[file.path,file]));
+  for(const item of v.scopeFiles){
+    keys(item,['path','contentBase64','mode']);need(context.b.scope.includes(item.path),'out_of_scope');
+    if(item.contentBase64===null){need(item.mode===null);files.delete(item.path);continue;}
+    need(typeof item.contentBase64==='string'&&Number.isInteger(item.mode)&&item.mode>=0&&item.mode<=0o7777);
+    const bytes=Buffer.from(item.contentBase64,'base64');need(bytes.toString('base64')===item.contentBase64);
+    files.set(item.path,{path:item.path,type:'file',mode:item.mode,size:bytes.length,sha256:sha(bytes),contentBase64:item.contentBase64});
+  }
+  // A projected handoff ({name,contentBase64,mode}) takes the record shape the
+  // package reads back from the published file.
+  let handoff=null;
+  if(Object.hasOwn(v,'handoff')){
+    keys(v.handoff,['name','contentBase64','mode']);const name=filePath(v.handoff.name);need(!name.includes('/'));
+    need(Number.isInteger(v.handoff.mode)&&v.handoff.mode>=0&&v.handoff.mode<=0o7777);
+    const bytes=Buffer.from(v.handoff.contentBase64,'base64');need(bytes.toString('base64')===v.handoff.contentBase64);
+    const record={path:name,type:'file',mode:v.handoff.mode,size:bytes.length,sha256:sha(bytes),contentBase64:v.handoff.contentBase64};
+    handoff=()=>record;
+  }
+  return assemblePackage(context,[...files.values()].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0),v.checks,handoff);
 }
 function validPackage(p) {
   try {

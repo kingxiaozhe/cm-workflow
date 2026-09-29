@@ -24,7 +24,31 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 `checks: [{"id":"syntax","command":["node","--check","target.mjs"]}]`。同会话恢复可省略
 `originalHostContext`；换会话恢复必须填创建运行的会话 ID，且运行存档必须已存在。第 1 轮开发结果放 `answers/develop.json`（也可用
 `develop-a1.json`，两者不能同时存在）；第 2 轮只读 `answers/develop-a2.json`，绝不复用第 1 轮答案。
-`edits` 把批准 scope 内路径映射到答案目录里的 UTF-8 内容文件。初次 `create` 或恢复到
+`edits` 把批准 scope 内路径映射到以下之一：答案目录里的内容文件名（写入；已有文件保留权限，新文件为 0644）、
+`{"file":"内容文件","mode":"0755"|"0644"}`（写入并设权限）、`{"mode":"0755"|"0644"}`（只改已有文件的权限位）、
+`{"delete":true}`（删除已有文件）。改名是删除旧路径加写入新路径，两个路径都要在 scope 内。同时列在
+`requirements` 里的路径不能删除（审查包要求每个 requirements 文件存在），启动前即拒绝；当前会话若仍删掉了这类文件，
+结果是可重试的 `blocked/develop_requirement_missing`，恢复该文件后 `--mode resume` 再 `advance`。
+运行存档每条记录最多 1 MiB（1048576 字节），开发检查点要装下整个审查包（内容按 base64 计），还要给随后的审查与完成记录留足空间。
+这部分预留按有界的审查结果推出：审查结果除 examinedPaths 外最多 12 KiB（12288 字节）JSON，超出时宿主先把每条 finding 的
+message、evidence 与 summary 截到同一上限并标注，仍放不下再从末尾省略 finding（先 P3，至少保留一条阻断 finding），verdict、
+id、severity、path 不变；完成检查点最多重复这份结果 13 次，另加已有回执与调用的两份重复和 96 KiB 固定开销。小任务的预留约
+260 KB，单个文本文件约 550 KiB 以内可以通过。驾驶员用与宿主相同的审查包、handoff、Learning 证据与 AGENTS.md 回写代码算出交付后的
+检查点（含 handoff），超出即启动前拒绝并列出最大的改动文件；新建运行的任务基线装不进一条记录时同样启动前拒绝，宿主在建存档前
+也会拒绝。当前会话若仍交付了这么大的改动，结果是可重试的 `blocked/develop_package_too_large`，缩小或移出这些文件后
+`--mode resume` 再 `advance`，不会再以 `unknown/store_failure` 结束。这些阻断的 `reason` 用同一个有界规则生成：每个路径最多
+300 个字符（超长的保留开头和文件名），放不下的以「等 N 个」汇总，整条不超过存档回放允许的 8192 个字符。任务 handoff 的 256 KiB 上限不会被合法交付触及：改动文件来自不超过 64 KiB 的运行定义，
+检查结果不超过 64 KiB，按这些上限能拼出的最大 handoff 约 219 KB（有测试固定）；提高任一上限时须同步处理 handoff 上限。
+这些开发阶段阻断（含 `develop_checks_not_passed`）在第 2 轮同样可在原轮次重试：重做本轮交付时不再要求代码与第 1 轮审查包一致，
+新审查包仍对照任务基线检查范围外改动。审查包本就逐文件记录
+`mode`（十进制权限位）且删除记为 `after:null`，审查者可见，事后改动权限同样算包漂移。驾驶员在启动宿主前拒绝：
+格式不对的条目、删除或改权限的文件在交付前不存在、单个 scope 文件超过 1 MiB、审查材料（按审查包快照计：scope、
+requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个文件，以及交付后与任务基线完全相同（`edits:{}` 或内容和权限都没变）；报错写明
+文件路径和上限。当前会话若仍交付了空改动，结果是可重试的 `blocked/develop_empty_changes`（旧版本记为
+`unknown/empty_changes` 的历史按原样回放），修正后 `--mode resume` 再 `advance` 同一轮开发。
+运行定义的 `runId` 须为 8–128 个字符（运行日志要求），新建运行前即拒绝；已有运行的恢复不受影响。
+`resume` 时驾驶员按存档里的当前轮次发送 identity，第 2 轮的 `decision`、`complete`、`qa` 等无需手改。
+初次 `create` 或恢复到
 `ready` 第 1 轮时，若 `advance` 同时带 `--allow-review-attempt 1`，审查后可能直接进入第 2 轮开发；
 缺 `develop-a2.json` 会在启动前退出 2。尚未看到首轮 findings 时，从 `PLAN.permissions` 移除该审查授权，
 先 `advance` 到 `awaiting_review`，再以运行返回的 `packageDigest` 执行 `decision`；读取
@@ -49,7 +73,11 @@ cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edit
 
 当单次 `develop` 回答超过默认 64 KiB 时，在单任务或批次 `PLAN.permissions` 传
 `["--input-limit","1048576"]`；上限为 4 MiB（4194304 字节）。这是宿主输入传输限额，
-不改变运行定义或恢复指纹；恢复时可调整。
+同时约束输入行和工具应答（`cm-ai-host`、`cm-ai-batch-host`、`cm-fix-host` 一致；cm-fix 驾驶员用 PLAN
+`inputLimit`），不改变运行定义或恢复指纹；恢复时可调整。受保护模式下驾驶员会先估算 develop 应答大小，
+超过上限时启动前退出 2 并给出应加的值。超长输入行结束会话时报 `request_too_large`（不再是笼统的
+`host_launch_failed`）；宿主拒收应答（`host_response_too_large` 或 `host_response_mismatch`）时驾驶员
+不再等待，结束会话并退出 1，这一步记为 `unknown`。
 
 `check` 只运行计划里的真实命令；原始输出打印到驾驶员 stderr，宿主只保存实际退出码和精简证据；静态 `check.json` 不会被读取。单任务和批次 PLAN 可设 `checkTimeoutMs` 作为检查默认超时，每个 `checks` 条目可设 `timeoutMs` 覆盖；均为 1..3600000 的整数毫秒，省略时驱动默认 900000（15 分钟），启动前校验。宿主 `host-check` 对其他调用方的默认值仍是 60000。失败或不可用的检查会在开发阶段停 `blocked/develop_checks_not_passed`，`reason` 列出检查 id 与证据摘要；修复环境后在原 run `advance` 会重新开发和检查，不消耗独立审查轮次。旧运行在完成阶段的 `blocked/checks_not_passed` 保持终态，不能重新开发。
 驾驶员收到 `state: "unknown"` 或 `pendingAction: "reconcile"` 的宿主结果时退出 1，并保留原输出供原 run 恢复；不能把有结果的 JSON 当成成功。
@@ -65,7 +93,11 @@ cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edit
 `config` 指向批次宿主的 `{batch,workflows}` 定义；`answers` 下按 `feature/taskId/` 放每个任务的
 `develop.json`（第 1 轮可改用 `develop-a1.json`，不得并存）、`qa-assess.json`、
 `documentation-sync.json`、`documentation-inspect.json`；第 2 轮开发必须另放 `develop-a2.json`，
-`checks` 按 `feature/taskId` 映射真实命令数组。驾驶员在发批次指令前检查所有任务的答案、
+`checks` 按 `feature/taskId` 映射真实命令数组。带 `--allow-review 任务:1`（或待审时带本轮授权）但还没有
+`develop-a2.json` 时照常启动：驾驶员给该任务加 `--hold-revision`，审查若要求修改，任务停在
+`changes_requested`（`revision_answer_required`），不写第 2 轮开发 intent；读取
+`.reviews/<feature>-<task>-r1.md` 的 findings 写好 `develop-a2.json` 后再 `advance`。已在 `changes_requested`
+的任务缺该文件仍在启动前退出 2。`develop.json.edits` 的格式与启动前检查同单任务；尚未开跑的后续任务不看代码树，只做答案本身就能判定的检查（单文件不超 1 MiB、答案写入的 scope 文件合计不超 2 MiB 等）；运行存档单条记录上限要看该任务开跑时的基线，驾驶员事先无法核算，超限交付在写入后由宿主拦下，停在可重试的 `blocked/develop_package_too_large`，缩小或移出大文件后重试。驾驶员在发批次指令前检查所有任务的答案、
 scope、命令及恢复存档。批次宿主没有 `--original-host-context`，恢复必须沿用原 `hostContext`；
 不能用它接管另一会话。批次的 `qa_logic`、`qa_browser`、`verification_precheck` 与 bootstrap
 `init_verify` 需要驾驶员尚无的真实执行 runner，命中时启动前退出 2。受保护配置里的检查由宿主执行。
@@ -226,9 +258,10 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume --host-context
 向宿主发送 `{"version":1,"requestId":"abandon-effect-1","operation":"abandon_effect","identity":{"repositoryId":"…","runId":"…","taskId":"…","attempt":1},"reason":"已确认旧 host 和检查进程退出"}`；driver 可用 `node scripts/cm-ai-drive.mjs --plan abandon-effect.json abandon_effect`，PLAN 需 `mode:"resume"`、`permissions:["--allow-abandon-effect"]` 和单行非空、最多 500 UTF-8 字节的 `reason`。旗标只消费一次，不进入原配置指纹。journal 仅在对应 intent 及其后连续 control 记录后追加绑定 effect id、kind、intent 摘要、前一条记录摘要与原因的 `effect-abandoned`，运行日志写 `effect_abandoned`；结果是终态 `cancelled/effect_abandoned`，不会改代码根或自动取消 `tasks.md` 勾选。
 
 没有 pending effect 应拒绝；已加入 host 或登记调用的 pending review 用上方 `abandon_review` 或原运行恢复入口。provider-mode 开发可能有独立进程继续写入，不能走此出口。若已写 `task-commit-intent` 而无结果，`tasks.md` 可能已经被改名或勾选；须先核对该文件、提交回执和旧进程，不能猜测未提交而放弃。批次路径没有 `abandon_review`，也不接入 `abandon_effect`。退出后，未产生已审 handoff 的任务可按普通新 run 准入；已有已审证据时走下方显式 supersede，仍须通过旧 writer 和代码漂移检查。
-develop若有`editMode:"protected-text-v1"`，只读并返回`{status:"succeeded",value:{原开发/Learning结果},edits:[{path,beforeSha256,content}]}`；
-使用scope内expected摘要，正文完整UTF-8，null删除；不得先自行写文件或执行命令。失败返回原status/code，blocked不能带改动。
-固定沙箱负责应用提案和原检查，不再请求宿主check；文档同步包含在同次develop提案。原64KiB通道不变，二进制/超限明确阻断。
+develop若有`editMode:"protected-text-v1"`，只读并返回`{status:"succeeded",value:{原开发/Learning结果},edits:[{path,beforeSha256,content[,mode]}]}`；
+使用scope内expected摘要，正文完整UTF-8，null删除；可选`mode`为"0755"或"0644"，只用于写入的文件。新文件为0644。不得先自行写文件或执行命令。失败返回原status/code，blocked不能带改动。
+驾驶员在受保护模式只接受严格UTF-8内容（保留BOM与CRLF），二进制文件启动前拒绝，不会被替换字符悄悄改坏。cm-fix的受保护提案仍只接受`{path,beforeSha256,content}`。
+固定沙箱负责应用提案和原检查，不再请求宿主check；文档同步包含在同次develop提案。通道默认64KiB，可用`--input-limit`调到4MiB；二进制/超限明确阻断。
 本机Codex sandbox不调用模型，也不改变Claude身份。其余QA/文档核验/子fix权限不变，不与下述protected-config混用。
 
 开发结果先通过完整 value/Learning 合同校验，再由沙箱落盘；本地校验失败记录 `failed` / `invalid_result`，原校验码保留在 `result.reason`。

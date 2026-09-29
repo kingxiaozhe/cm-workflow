@@ -372,10 +372,14 @@ test('V3 rejected final review payload becomes durable observation_invalid witho
   packageDigest:request.payload.reviewPackage.packageDigest,examinedPaths:reviewPaths(request.payload.reviewPackage),
   findings:[],summary:'Malformed',unexpected:true}};}}));
 
-test('V3 oversized normalized provider result becomes bounded durable observation_invalid',()=>fixture(async f=>{
+// Deliberately changed (group C): reviewer text is bounded by a documented rule
+// before it is observed or journaled, so an oversized but valid review is kept,
+// truncated and marked, instead of becoming observation_invalid.
+test('V3 oversized normalized provider result is truncated to the review text limit and kept',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));const end=await runner.executeEffect(f.effect('review'));
-  assert.equal(end.state,'unknown');assert.equal(end.code,'observation_invalid');assert.equal(end.reviewInvocation.result.reason,'observation_invalid');
-  assert(Buffer.byteLength(JSON.stringify(end.reviewInvocation.result.observation))<512*1024);assert.deepEqual(f.reopen().status(),end);
+  assert.equal(end.state,'approved');assert.equal(end.code,null);
+  assert.match(end.receipt.result.summary,/truncated to the review text limit/);
+  assert(Buffer.byteLength(JSON.stringify(end.reviewInvocation.result.observation))<32*1024);assert.deepEqual(f.reopen().status(),end);
 },{reviewRun:(request,{onEvent})=>{events(onEvent);return {status:'succeeded',value:{verdict:'approved',
   packageDigest:request.payload.reviewPackage.packageDigest,examinedPaths:reviewPaths(request.payload.reviewPackage),
   findings:[],summary:'x'.repeat(600*1024)}};}}));

@@ -38,6 +38,15 @@ function validateHandoff(target,identity) {
     &&result.stdout.length<=MiB,'handoff_invalid');
 }
 
+// Pure: the handoff bytes once Learning evidence is attached, exactly as written.
+export function taskLearningHandoffBytes({handoff,feature,identity,learningInput,application,retrospective,includeAgents}){
+  const applied=attachCmAiTaskLearningApplicationEvidence({handoff,feature,identity,learningInput,application});
+  const attached=attachCmAiTaskLearningEvidence({handoff:applied,feature,identity,learningInput,retrospective});
+  const changedFiles=arrayItems(attached.changed_files);for(const item of changedFiles)text(item);
+  const next={...attached,changed_files:includeAgents&&!changedFiles.includes('AGENTS.md')
+    ?[...changedFiles,'AGENTS.md']:changedFiles};
+  return Buffer.from(`${JSON.stringify(next,null,2)}\n`);
+}
 export function writeCmAiTaskLearningHandoff(raw) {
   const input=json(raw,512*1024);
   shape(input,['handoffPath','feature','identity','learningInput','application','retrospective','writeback']);
@@ -55,15 +64,8 @@ export function writeCmAiTaskLearningHandoff(raw) {
   need(sameSnapshot(before,readHandoff(input.handoffPath)),'handoff_changed');
   let handoff;
   try {handoff=JSON.parse(before.source);}catch{need(false,'handoff_invalid');}
-  const applied=attachCmAiTaskLearningApplicationEvidence({handoff,feature:input.feature,identity:input.identity,
-    learningInput:input.learningInput,application:input.application});
-  const attached=attachCmAiTaskLearningEvidence({handoff:applied,feature:input.feature,identity:input.identity,
-    learningInput:input.learningInput,retrospective:input.retrospective});
-  const changedFiles=arrayItems(attached.changed_files);for(const item of changedFiles)text(item);
-  const includeAgents=writeback.outcome==='written';
-  const next={...attached,changed_files:includeAgents&&!changedFiles.includes('AGENTS.md')
-    ?[...changedFiles,'AGENTS.md']:changedFiles};
-  const bytes=Buffer.from(`${JSON.stringify(next,null,2)}\n`);
+  const bytes=taskLearningHandoffBytes({handoff,feature:input.feature,identity:input.identity,learningInput:input.learningInput,
+    application:input.application,retrospective:input.retrospective,includeAgents:writeback.outcome==='written'});
   need(bytes.length<=LIMIT,'limit_exceeded');
   if(bytes.equals(before.bytes))return freeze({outcome:'unchanged',handoffSha256:before.sha256});
 

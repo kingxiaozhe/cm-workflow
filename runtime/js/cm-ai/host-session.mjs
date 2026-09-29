@@ -3,6 +3,9 @@ import {executionDiagnostic,need} from './effect-contract.mjs';
 import {diagnosticReason} from './diagnostic-reason.mjs';
 
 const LIMIT=64*1024;
+// One wording for every host that stops on an over-limit line.
+export const inputLimitReason=limit=>`an input line exceeded --input-limit ${Number.isSafeInteger(limit)?limit:LIMIT} bytes `
+  +`(default ${LIMIT}, maximum ${4*1024*1024}); restart the same run with --mode resume and a larger --input-limit`;
 export function parseHostInputLimit(raw){
   if(raw===undefined)return LIMIT;
   const value=Number(raw);
@@ -29,6 +32,9 @@ function reportRequestFailure(errorOutput,operation,error){
   }catch{/* diagnostics never change the reply */}
 }
 
+// A line above the transport limit ends the session. Carry a code and the
+// limit so every host can name it instead of a generic launch failure.
+const tooLarge=limit=>Object.assign(new Error('request_too_large'),{code:'request_too_large',limit});
 export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimit=LIMIT,errorOutput=process.stderr}){
   if(!Number.isSafeInteger(inputLimit)||inputLimit<LIMIT||inputLimit>4*1024*1024)throw Error('input_limit_invalid');
   let pending=null,buffer=Buffer.alloc(0),failure=null,closeRequested=false;
@@ -95,13 +101,13 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
       let start=0;
       for(let end=0;end<bytes.length;end++){
         if(bytes[end]!==10)continue;
-        if(buffer.length+end-start>inputLimit)throw Error('request_too_large');
+        if(buffer.length+end-start>inputLimit)throw tooLarge(inputLimit);
         const line=Buffer.concat([buffer,bytes.subarray(start,end)]);
         buffer=Buffer.alloc(0);start=end+1;
         if(line.length)await dispatch(line);
         if(closeRequested)break reading;
       }
-      if(buffer.length+bytes.length-start>inputLimit)throw Error('request_too_large');
+      if(buffer.length+bytes.length-start>inputLimit)throw tooLarge(inputLimit);
       buffer=Buffer.concat([buffer,bytes.subarray(start)]);
     }
     if(buffer.length&&!closeRequested)await dispatch(buffer);

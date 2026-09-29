@@ -21,6 +21,14 @@
 - cm-ai 收尾 `finish`／`run_finalize` 在任一已批准 feature 的最新 QA 未通过（FAIL、BLOCKED、已触发未执行或结果未知），或任务已全部完成的 feature 没有 feature 完成时的 QA PASS（无 QA 记录或最新为 skipped）时返回 `project_qa_not_passed`，列出 feature、任务和 runId，不做文档核验、不写 run_done；准入选下一任务时在 `warnings` 中提示。
 - cm-ai 已完成运行的 QA 恢复、QA 修复、配置修订与收尾不再被其他任务后续的已审交付锁住：同一代码根、其他任务已完成并提交运行的审查包（含其已登记 QA 修复、AGENTS.md 教训行和对同一文件的修改），凡审查晚于本运行批准审查的，全部按审查时间顺序逐个严格接续（审查前状态必须等于当时的组合），本运行的 QA 修复按其最终审查时间插在同一序列中，不挑选、不搜索；最终组合须与当前内容和文件权限完全一致，任务范围外的项目根 CM 配置可以修改。接受修复时尚未记录、审查早于该修复的交付排在它之前，以只含运行 ID 与包摘要的 version 2 关联记录存进 journal，此后不变，接受之后才提交的交付排在修复之后现场接续；每条都须能从所列运行的真实交付包推出，存档在时回放即核实、不在时后续操作失败关闭，记录超出存储限制时以 `fix_record_too_large` 拒绝而不写入（一条记录最多 2048 个后续交付；未覆盖存储目录 32 MiB 物理上限与崩溃残留临时文件，见文档），旧记录照原样回放；对不上时（含已审交付之后的手工回退）为 `correction_review_required`，并在 `reason` 列出路径。
 - cm-fix 原因审查与第二轮最终审查登记后没有结论（宿主被杀、超时、断连或取消）时，可用 `abandon_review`（专用 `--allow-abandon-review`，父宿主 `--allow-qa-fix-abandon-review`）各留痕放弃一次，再以新审查线程重审；审查等待改用审查配置的 `timeoutMs`（默认 15 分钟），不再沿用复现命令超时，原因审查超时会记下结果。替代旧审查证据时，QA FAIL 不再被误报为「已完成或 QA 已通过」，并提示改走 QA 修复。
+- cm-ai 批次驾驶员对尚未开跑的后续任务也按答案本身预检审查材料合计：答案写入的 scope 文件合计已超过 2 MiB 时在启动第一个任务前退出 2，不再等到开跑后才被审查包拒绝。
+- cm-ai 单任务、批次与 cm-fix 宿主的工具应答上限随 `--input-limit` 一起放大（cm-fix 宿主新增该参数，cm-fix 驾驶员用 PLAN `inputLimit`），超长输入行报 `request_too_large` 并说明上限；宿主拒收应答时驾驶员立即结束会话并退出 1，受保护模式在启动前估算应答大小并提示应加的值，不再无限等待。
+- cm-ai 开发答案 `develop.json.edits` 支持 `{mode:"0755"|"0644"}`、`{file,mode}` 和 `{delete:true}`，改名即删旧写新；启动前校验（同时是 requirements 的路径不能删除，当前会话仍删除时为可重试的 `blocked/develop_requirement_missing`），审查包原有的权限位与删除记录在审查提示中说明，事后改权限按包漂移阻断。
+- cm-ai 驾驶员在启动前拒绝单文件超过 1 MiB、审查材料（与审查包快照同一选取，含树中全部 AGENTS.md）超过 2 MiB 或 256 个文件、与基线完全相同的开发答案并写明路径和上限；第 2 轮的开发阶段阻断（如 `develop_checks_not_passed`）此前回放即失败为 `store_failure`，现可在原轮次重试；审查包装不进运行存档单条 1 MiB 记录（按有界审查结果推出的预留计，小任务约 550 KiB 以上的单文件交付，或过大的任务基线）时驾驶员以宿主同一套构建代码（含 handoff 与 AGENTS.md 回写）启动前拒绝，宿主在建存档前拒绝过大基线，当前会话交付则为可重试的 `blocked/develop_package_too_large`；审查结果超过 12 KiB 时按固定规则截断并省略末尾 finding（保留 verdict 与至少一条阻断 finding）；列出路径的阻断原因统一有界（「等 N 个」），长路径不再让检查点超出回放上限；当前会话交付空改动改为可重试的 `blocked/develop_empty_changes`，旧 `unknown/empty_changes` 历史按原样回放。
+- cm-ai 单任务驾驶员恢复时按存档里的当前轮次发送 identity，第 2 轮的 decision、complete、qa 等不再报 `identity_mismatch`。
+- cm-ai 批次驾驶员带首轮审查授权但缺 `develop-a2.json` 时不再启动前拒绝：审查要求修改时任务停在 `changes_requested/revision_answer_required`，读完 findings 写好第 2 轮答案再继续。
+- cm-ai 受保护当前会话模式在启动前拒绝非 UTF-8 的开发内容（不再被替换字符悄悄改坏），新文件以 0644 创建。
+- cm-ai 新建运行前检查 `runId` 须为 8–128 个字符（与运行日志同一规则），不再在开发 intent 写入后才失败；已有运行恢复不受影响。
 
 - cm-ai 单任务驾驶员对 bootstrap 规范任务在启动前拒绝缺少实时 `init_verify` runner，并将 unknown／reconcile 宿主结果作为失败退出；补充当前会话宿主路径与旧运行恢复说明。
 - cm-ai 开发检查失败或不可用时以独立的 `develop_checks_not_passed` 在审查前阻断并可在原运行重试；旧完成门禁的 `checks_not_passed` 保持终态。检查产物越界重试改用新 effect id，完成复查失败保留原审查重试，单任务和批次驾驶员支持每项及默认检查超时（默认 15 分钟）。

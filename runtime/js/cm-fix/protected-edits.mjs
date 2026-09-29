@@ -22,12 +22,15 @@ function snapshot(cwd,file){
   }catch(error){if(error.code==='ENOENT')return null;throw error;}
 }
 
+// Optional mode sets the permission bits of a written file (never of a deletion).
+const EDIT_MODES=new Map([['0644',0o644],['0755',0o755]]);
 export function applyProtectedEdits({cwd,scope,edits}){
   validateDeveloperScope(scope);need(fs.realpathSync(cwd)===cwd,'unsupported_path');
   need(Array.isArray(edits)&&edits.length>0&&edits.length<=scope.length,'protected_edit_invalid');
   const seen=new Set();
   for(const edit of edits){
-    shape(edit,['path','beforeSha256','content']);
+    shape(edit,['path','beforeSha256','content',...(Object.hasOwn(edit,'mode')?['mode']:[])]);
+    need(!Object.hasOwn(edit,'mode')||edit.content!==null&&EDIT_MODES.has(edit.mode),'protected_edit_invalid');
     need(scope.includes(edit.path)&&!seen.has(edit.path),'out_of_scope');seen.add(edit.path);
     need(edit.content===null||typeof edit.content==='string','protected_edit_invalid');
     need(edit.content===null||Buffer.byteLength(edit.content)<=1024*1024,'limit_exceeded');
@@ -40,9 +43,15 @@ export function applyProtectedEdits({cwd,scope,edits}){
     if(edit.content===null)fs.unlinkSync(target);
     else{
       fs.mkdirSync(path.dirname(target),{recursive:true});
-      // O_NOFOLLOW avoids silently replacing a last-moment link target.
-      const fd=fs.openSync(target,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_TRUNC|fs.constants.O_NOFOLLOW,0o600);
-      try{fs.writeFileSync(fd,edit.content);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+      // O_NOFOLLOW avoids silently replacing a last-moment link target. A new
+      // file is ordinary source (0644); an existing one keeps its mode unless set.
+      const created=edit.beforeSha256===null;
+      const fd=fs.openSync(target,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_TRUNC|fs.constants.O_NOFOLLOW,0o644);
+      try{
+        fs.writeFileSync(fd,edit.content);
+        if(created||Object.hasOwn(edit,'mode'))fs.fchmodSync(fd,EDIT_MODES.get(edit.mode)??0o644);
+        fs.fsyncSync(fd);
+      }finally{fs.closeSync(fd);}
     }
   }
 }
@@ -81,6 +90,8 @@ export function protectedFixBridge({bridge,cwd,specsRoot,timeoutMs}){
     shape(result,['outcome','edits']);
     need(['blocked',kind==='fix_repair'?'repaired':'authored'].includes(result.outcome),'protected_edit_invalid');
     need(Array.isArray(result.edits),'protected_edit_invalid');
+    // cm-fix keeps its original text-only proposal shape; mode is a cm-ai develop field.
+    for(const edit of result.edits)shape(edit,['path','beforeSha256','content']);
     if(result.outcome==='blocked'){need(result.edits.length===0,'protected_edit_invalid');return {outcome:'blocked'};}
     need(result.edits.length>0||kind==='fix_repair'&&payload.allowUnchanged===true,'protected_edit_invalid');
     await commitProtectedEdits({cwd,specsRoot,scope:payload.scope,edits:result.edits,expected,

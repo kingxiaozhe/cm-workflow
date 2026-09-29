@@ -261,7 +261,7 @@ test('provider development grants select worktree runtimes and keep the serial t
     fs.writeFileSync(stub,`
 import {configFingerprint} from ${JSON.stringify(workerModule)};
 export {readConversationReviewConfiguration,readConversationProtection} from ${JSON.stringify(hostModule)};
-export {parseHostInputLimit} from ${JSON.stringify(sessionModule)};
+export {parseHostInputLimit,inputLimitReason} from ${JSON.stringify(sessionModule)};
 export const calls=[];export let scheduler;
 export function createConversationExecution(...args){calls.push(args);return {};}
 export async function runReviewPreflight(definition,{model}){return {model,disabledSkills:[],preflight:{passed:true,

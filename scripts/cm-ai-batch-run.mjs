@@ -16,7 +16,7 @@ import {inspectRunClosure} from './cm-log-event.mjs';
 const writer=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
 const key=task=>`${task.feature}/${task.taskId}`;
 export function createCmAiBatch({configuration,executionFor,logHome,runtime='codex',checkCommands=null,checkTimeoutMs=60000,
-  rerunUnknownQa=false,rerunBlockedQa=false}){
+  rerunUnknownQa=false,rerunBlockedQa=false,holdRevisions=[]}){
   const config=json(configuration);
   shape(config,['version','repositoryId','batchId','specsDir','codeProject','tasks',...['codeProjects','parallel'].filter(name=>Object.hasOwn(config,name))]);
   need(config.version===1);id(config.repositoryId);id(config.batchId);need(config.batchId.length>=8);
@@ -33,6 +33,9 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     need(definition.specsDir===config.specsDir&&definition.codeProject===config.codeProject,'invalid_path');
     plans.set(key(task),definition);
   }
+  // Tasks whose second-round answer is not written yet stop after a changes_requested review.
+  need(Array.isArray(holdRevisions)&&holdRevisions.every(item=>plans.has(item)),'invalid_input');
+  const held=new Set(holdRevisions);
   const groups=validateGroups(config,plans),membership=new Map(groups.flatMap(group=>group.map(key=>[key,group])));
   const originalMembership=new Map(membership),originalPlans=new Map(plans);
   const first=plans.keys().next().value,planDigest=digest(config),log=path.join(config.specsDir,'运行日志.jsonl');
@@ -91,7 +94,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     // only the tasks the flag can legally apply to receive it.
     const recovery=mode==='resume'&&execution?.qaExecutor&&(rerunUnknownQa||rerunBlockedQa)
       ? {rerunUnknownQa,rerunBlockedQa} : {};
-    return openControlRun(definition,mode,execution,{...recovery,
+    return openControlRun(definition,mode,execution,{...recovery,...(held.has(taskKey)?{holdRevision:true}:{}),
       ...(membership.has(taskKey)?{parallelSelection:{version:1,group:membership.get(taskKey).map(key=>plans.get(key).identity.taskId)}}:{})});
   }
   function parallelProgress(rows){

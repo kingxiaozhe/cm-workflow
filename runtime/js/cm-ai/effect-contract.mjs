@@ -4,6 +4,45 @@ export { digest };
 export const need=(ok,code='invalid_input')=>{
   if(!ok){const e=new Error(code);e.code=code;const at=raisedAt(e);if(at!==null)e.origin=at;throw e;}
 };
+// One journal record payload (execution-store). Anything a record must carry,
+// such as a review package inside a checkpoint, has to fit this, not only its own limits.
+export const JOURNAL_PAYLOAD_LIMIT=1024*1024;
+// A develop checkpoint must leave room for the later checkpoints of the same
+// attempt, which carry the same package again. Their growth is bounded:
+// - the reviewer result (verdict, digest, findings, summary; examinedPaths are
+//   fixed by the package) is truncated to REVIEW_TEXT_LIMIT bytes before any
+//   record is written, and the completion checkpoint journals it
+//   REVIEW_RESULT_COPIES times (frame receipt, receipts, priorReview, observation
+//   and inspection; the review and completion cache entries each repeat
+//   receipt, receipts, observation and inspection);
+// - the review and completion cache entries each repeat the receipts, calls and
+//   Learning writeback that already exist when the package is made;
+// - everything else (receipt and registration metadata, up to 64 observation
+//   events per copy, inspection metadata, the new calls, task commit fields) is
+//   bounded by REVIEW_FIXED_RESERVE.
+export const REVIEW_TEXT_LIMIT=12*1024;
+export const REVIEW_RESULT_COPIES=13;
+export const REVIEW_FIXED_RESERVE=96*1024;
+export const developCheckpointReserve=({examinedPathsBytes,receiptsBytes=2,callsBytes=2,writebackBytes=4})=>
+  REVIEW_RESULT_COPIES*(examinedPathsBytes+REVIEW_TEXT_LIMIT)+2*(receiptsBytes+callsBytes+writebackBytes)+REVIEW_FIXED_RESERVE;
+// The runner reviews scope plus the project AGENTS.md a Learning writeback may change.
+export const taskReviewScope=scope=>scope.includes('AGENTS.md')?scope:[...scope,'AGENTS.md'];
+// Journaled reasons (checkpoint reason, host diagnostics) are one line of at most
+// this many characters; replay refuses anything longer.
+export const JOURNAL_REASON_LIMIT=8192;
+// The one builder for reasons that name paths or other open-ended lists: every
+// item is shown up to 300 characters (longer ones keep their start and end, so a
+// file name stays visible), as many as fit, then "等 N 个" gives the total.
+// Control characters become spaces. The result always fits the limit.
+export function boundedReason(head,items,tail=''){
+  const line=value=>String(value).replace(/[\x00-\x1f\x7f]/g,' ');
+  const clip=value=>value.length>300?`${value.slice(0,150)}…${value.slice(-149)}`:value;
+  const list=items.map(item=>clip(line(item))),start=line(head),end=line(tail),more=` 等 ${list.length} 个`;
+  let shown=list.length;
+  const text=count=>`${start}${list.slice(0,count).join(', ')}${count<list.length?more:''}${end}`;
+  while(shown>0&&text(shown).length>JOURNAL_REASON_LIMIT)shown--;
+  return text(shown).slice(0,JOURNAL_REASON_LIMIT);
+}
 // Explicit host call budget, shared by live initialization and journal replay.
 // This is not the short-lived authorization grant expiry.
 export const validCallTimeout=value=>need(Number.isInteger(value)&&value>=1&&value<=3600000);
