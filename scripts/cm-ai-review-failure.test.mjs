@@ -16,6 +16,7 @@ import {inspectProviderReview,inspectProviderReviewFailure} from '../runtime/js/
 import {buildReviewPrompt,VERDICT_RULES} from '../runtime/js/cm-ai/codex-review-adapter.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
+import {guardFixtureSource,killFixtureProcesses} from './fixtures/process-cleanup.mjs';
 
 // Every case opens the native V3 store (Node 24.14+ on macOS/Linux) and spawns
 // a POSIX shim; like the other runner-host suites, skip elsewhere explicitly.
@@ -62,7 +63,8 @@ if(b.mode==='hang_after_result')setInterval(()=>{},1000);
 // ample time to print its final message on a loaded machine.
 function fixture(t,{reviewTimeoutMs=null}={}){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-review-failure-')));
-  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  // A driver killed by its spawnSync timeout would orphan host and hung reviewer.
+  t.after(()=>{killFixtureProcesses(root);fs.rmSync(root,{recursive:true,force:true});});
   const specsDir=path.join(root,'specs'),codeProject=path.join(root,'code'),feature='1.work';
   fs.mkdirSync(path.join(specsDir,feature),{recursive:true});fs.mkdirSync(codeProject);
   for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(specsDir,feature,name),'# Fixture\n');
@@ -79,7 +81,7 @@ function fixture(t,{reviewTimeoutMs=null}={}){
       config_fingerprint:claudeReviewFingerprint({cwd:codeProject,model:'fixture'})}}));
   const behaviourFile=path.join(root,'behaviour.json'),callsFile=path.join(root,'calls.jsonl');
   // An explicit .mjs module behind a sh shim: never parsed as CommonJS.
-  const fakeModule=path.join(root,'claude-fixture.mjs');fs.writeFileSync(fakeModule,fakeClaude(behaviourFile,callsFile));
+  const fakeModule=path.join(root,'claude-fixture.mjs');fs.writeFileSync(fakeModule,guardFixtureSource(fakeClaude(behaviourFile,callsFile)));
   fs.writeFileSync(path.join(bin,'claude'),`#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeModule)} "$@"\n`,{mode:0o700});
   const behave=(...queue)=>fs.writeFileSync(behaviourFile,JSON.stringify(queue));behave({mode:'ok'});
   const plan=(extra={})=>{const file=path.join(root,`plan-${Math.random().toString(36).slice(2)}.json`);

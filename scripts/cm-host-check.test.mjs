@@ -8,9 +8,12 @@ import {captureReviewBaseline} from '../runtime/js/cm-ai/review-package.mjs';
 import {createHostHandoff} from '../runtime/js/cm-ai/host-handoff.mjs';
 import {loadHandoff,checkN4,checkN5} from './cm-task-gate.mjs';
 import {developerArgs} from '../runtime/js/cm-ai/worker-codex-developer.mjs';
+import {ownerGuardSource} from './fixtures/process-cleanup.mjs';
 const identity={repositoryId:'test',runId:'run',taskId:'T-001',attempt:1};
 const control=()=>({signal:new AbortController().signal});
 const command=(id,code)=>({id,command:[process.execPath,'-e',code]});
+// Hung checks die with this test process even if the host check never reaps them.
+const hung=(id,code)=>command(id,ownerGuardSource()+code);
 async function fixture(fn){const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-check-')));
   try{await fn(root);}finally{fs.rmSync(root,{recursive:true,force:true});}}
 
@@ -37,7 +40,7 @@ test('host check evidence excludes credentials paths and timing output',()=>fixt
 }));
 
 test('async output capture rejects safely and waits for process cleanup',()=>fixture(async cwd=>{
-  const check=createHostCheck({cwd,commands:[command('capture',
+  const check=createHostCheck({cwd,commands:[hung('capture',
     "require('node:fs').writeFileSync('pid',String(process.pid));process.on('SIGTERM',()=>{});console.log('fixture');setInterval(()=>{},1000)")],
     timeoutMs:3000,onOutput:async()=>{throw Error('synthetic capture failure');}});
   const [result]=await check({identity},control());
@@ -78,7 +81,7 @@ for(const scenario of [
   const baseline=captureReviewBaseline({root:cwd,identity,scope:['app.txt'],requirements:['requirements.md']});
   fs.writeFileSync(path.join(cwd,'app.txt'),'after');
   const security=scenario.name==='missing-tool'?{id:'security',command:[path.join(temp,'absent-scanner')]}:
-    command('security',scenario.name==='timeout'?'setInterval(()=>{},1000)':
+    (scenario.name==='timeout'?hung:command)('security',scenario.name==='timeout'?'setInterval(()=>{},1000)':
       // Misleading success text must never override a nonzero exit code.
       `console.log('PASS synthetic private scanner output');process.exit(${scenario.code})`);
   const check=createHostCheck({cwd,timeoutMs:scenario.name==='timeout'?1000:5000,
@@ -128,7 +131,7 @@ test('native Codex profile allows business writes but protects specs for project
     assert.equal(fs.readFileSync(path.join(cwd,'business.txt'),'utf8'),'allowed');
   }));
 test('cancelled check dispatches nothing and hung check is unavailable',()=>fixture(async cwd=>{
-  const check=createHostCheck({cwd,timeoutMs:50,commands:[command('hang','setInterval(()=>{},1000)')]});
+  const check=createHostCheck({cwd,timeoutMs:50,commands:[hung('hang','setInterval(()=>{},1000)')]});
   const ac=new AbortController();ac.abort();await assert.rejects(check({identity},{signal:ac.signal}),{code:'cancelled'});
   const results=await check({identity},control());assert.equal(results[0].outcome,'unavailable');
   assert.equal(results[0].evidence,'host check: timeout');

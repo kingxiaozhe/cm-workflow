@@ -6,6 +6,7 @@ import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {claudeWorker,claudeReviewArgs,claudeReviewFingerprint,claudePreflightMatches} from '../runtime/js/cm-ai/worker-claude.mjs';
+import {killProcessGroup,ownerGuardSource} from './fixtures/process-cleanup.mjs';
 
 const config={cwd:'/tmp',model:'claude-fixture',cli:'never-dispatch-real-cli'};
 const receipt={passed:true,provider:'claude',prompt_transport:'stdin',config_fingerprint:claudeReviewFingerprint(config)};
@@ -164,14 +165,16 @@ test('failure, timeout, explicit cancellation and missing preflight remain disti
 test('timeout kills inherited-pipe descendants, including TERM-ignoring children',
   {skip:process.platform==='win32'},async()=>{
     for (const descendantStdio of ['inherit','ignore']) {
-    let descendant;
+    let descendant,leader;
+    // Both guards watch this test process, never the leader, so a missed group kill still shows.
+    const hung=ownerGuardSource()+"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)";
     const worker=claudeWorker({...config,preflight:receipt,timeoutMs:300,
       spawnProcess:(_cli,_args,options)=>{
         const child=spawn(process.execPath,['-e',
-          `const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e',
-          "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:['ignore','${descendantStdio}','${descendantStdio}']});
+          `${ownerGuardSource()}const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e',
+          ${JSON.stringify(hung)}],{stdio:['ignore','${descendantStdio}','${descendantStdio}']});
           process.stderr.write(String(c.pid)+'\\n');setInterval(()=>{},1000);`],options);
-        child.stderr.on('data',chunk=>{descendant=Number(String(chunk).trim());});
+        leader=child.pid;child.stderr.on('data',chunk=>{descendant=Number(String(chunk).trim());});
         return child;
       }});
     try {
@@ -180,7 +183,11 @@ test('timeout kills inherited-pipe descendants, including TERM-ignoring children
       assert.equal(result.code,'timeout');assert.ok(Date.now()-started<4000);
       assert.ok(Date.now()-started>=1200,'leader close must not cancel group escalation');
       assert.ok(Number.isInteger(descendant));
+      const gone=()=>{try{process.kill(descendant,0);return false;}catch(error){return error.code==='ESRCH';}};
+      for(const deadline=Date.now()+3000;!gone()&&Date.now()<deadline;)await new Promise(resolve=>setTimeout(resolve,25));
+      assert.ok(gone(),'group SIGKILL must reach the TERM-ignoring descendant');
     } finally {
+      killProcessGroup(leader);
       if(Number.isInteger(descendant))try{process.kill(descendant,'SIGKILL');}catch{}
     }
     }
