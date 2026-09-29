@@ -19,7 +19,7 @@
 - cm-ai 第 2 轮交付与第 1 轮被要求修改的代码逐字节相同时，停在可重试的 `blocked/develop_unchanged_after_review`，不送审、不耗第 2 轮审查；同时修正第 2 轮开发检查被门禁拦下时 journal 回放失败、运行变成 unknown 的问题。
 - cm-ai 带 QA 的运行不再因项目 `.cm-workflow.yml`、用户 `~/.cm-workflow/runtimes.yml` 或插件内置默认值变化而无法恢复：新运行的指纹只绑定宿主给出的 QA 输入，执行计划由每轮 QA 在 N6 冻结并记入 `test_run`；`--revise-qa-config` 也不再用当前配置重建旧计划。此前创建的运行照原指纹打开，配置已变时仍 `fingerprint_mismatch`，并附原因提示恢复创建时的配置。
 - cm-ai 收尾 `finish`／`run_finalize` 在任一已批准 feature 的最新 QA 未通过（FAIL、BLOCKED、已触发未执行或结果未知），或任务已全部完成的 feature 没有 feature 完成时的 QA PASS（无 QA 记录或最新为 skipped）时返回 `project_qa_not_passed`，列出 feature、任务和 runId，不做文档核验、不写 run_done；准入选下一任务时在 `warnings` 中提示。
-- cm-ai 已完成运行的 QA 恢复、QA 修复、配置修订与收尾不再被其他任务后续的已审交付锁住：其他已完成并提交运行的审查包（含 AGENTS.md 教训行和对同一文件的修改）按审查前状态逐文件接续，任务范围外的项目根 CM 配置可以修改；比较包括文件权限；QA 修复建立在这些交付之上（含改同一文件）时，所需的交付以 version 2 关联记录存进 journal，回放不依赖其他运行，旧记录照原样回放；本任务交付文件及其他文件的未审改动仍为 `correction_review_required`，并在 `reason` 列出路径。
+- cm-ai 已完成运行的 QA 恢复、QA 修复、配置修订与收尾不再被其他任务后续的已审交付锁住：其他已完成并提交运行的审查包（含 AGENTS.md 教训行和对同一文件的修改）按审查前状态逐文件接续，任务范围外的项目根 CM 配置可以修改；比较包括文件权限；只采用审查晚于本运行批准审查的交付，共享路径的交付按组搜索能对上当前内容的组合；QA 修复建立在这些交付之上（含改同一文件）时，所需的交付以 version 2 关联记录存进 journal，每条都须能从所列运行的真实交付包推出，存档在时回放即核实、不在时后续操作失败关闭，旧记录照原样回放；本任务交付文件及其他文件的未审改动仍为 `correction_review_required`，并在 `reason` 列出路径。
 - cm-fix 原因审查与第二轮最终审查登记后没有结论（宿主被杀、超时、断连或取消）时，可用 `abandon_review`（专用 `--allow-abandon-review`，父宿主 `--allow-qa-fix-abandon-review`）各留痕放弃一次，再以新审查线程重审；审查等待改用审查配置的 `timeoutMs`（默认 15 分钟），不再沿用复现命令超时，原因审查超时会记下结果。替代旧审查证据时，QA FAIL 不再被误报为「已完成或 QA 已通过」，并提示改走 QA 修复。
 
 - cm-ai 单任务驾驶员对 bootstrap 规范任务在启动前拒绝缺少实时 `init_verify` runner，并将 unknown／reconcile 宿主结果作为失败退出；补充当前会话宿主路径与旧运行恢复说明。

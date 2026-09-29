@@ -21,6 +21,7 @@ import {attemptBaseline,readRunnerHistory} from '../runtime/js/cm-ai/durable-run
 import {validateAcceptedFix} from '../runtime/js/cm-ai/accepted-fix.mjs';
 import {captureReviewBaseline,createReviewPackage} from '../runtime/js/cm-ai/review-package.mjs';
 import {composeFixCode,inspectFixCodeAssociation} from '../runtime/js/cm-ai/fix-code-association.mjs';
+import {approvedReviewAt,verifyDeliverySteps} from '../runtime/js/cm-ai/reviewed-deliveries.mjs';
 
 const isolated=fs.mkdtempSync(path.join(os.tmpdir(),'cm-fix-later-delivery-'));
 const saved={CM_WORKFLOW_HOME:process.env.CM_WORKFLOW_HOME,CM_WORKFLOW_LOG_HOME:process.env.CM_WORKFLOW_LOG_HOME};
@@ -162,6 +163,11 @@ for(const variant of ['separate','shared'])test(`#18 a QA fix for an earlier fea
       parentPackage:history.state.reviewPackage,feature:'1.value'});
     check(accepted);
     if(variant==='shared'){
+      // The recorded step is re-proved against the real later run's store, and only
+      // as a delivery reviewed after this run's own approving review.
+      const proof=after=>verifyDeliverySteps({specsRoot:specsDir,root:codeProject,identity,after,steps:accepted.association.laterDeliveries});
+      proof(approvedReviewAt(history.state));
+      assert.throws(()=>proof(Number.MAX_SAFE_INTEGER-1),{code:'fix_association_unverified'});
       const stripped=structuredClone(accepted);stripped.association={...stripped.association,version:1};delete stripped.association.laterDeliveries;
       assert.throws(()=>check(stripped),{code:'fix_before_mismatch'});
       const forged=structuredClone(accepted);forged.association.laterDeliveries[0].changes.find(change=>change.path==='value.mjs').after.sha256='0'.repeat(64);
@@ -174,12 +180,44 @@ for(const variant of ['separate','shared'])test(`#18 a QA fix for an earlier fea
     later=await openControlRun(laterDefinition,'resume',laterExecution);
     const finished=await later.host.handle({version:1,requestId:'later-again',operation:'advance',identity:laterIdentity});later.close();
     assert.equal(finished.code,'run_done',JSON.stringify(finished));
+    if(variant==='shared'){
+      // A forged journal step with every digest recomputed must not pass: the
+      // record chain, association and composition are all made self-consistent.
+      const statePath=path.join(specsDir,'.reviews','.execution',identity.runId,'state.json'),original=fs.readFileSync(statePath);
+      const forge=mutate=>{
+        const saved=JSON.parse(original);const records=structuredClone(saved.records);
+        const index=records.findIndex(row=>row.payload.type==='qa-fix-accepted'),record=records[index].payload.record;
+        mutate(record.association.laterDeliveries);
+        record.association.currentFilesDigest=digest(composeFixCode({baseline:attemptBaseline(history.original,history.state.attempt),
+          parentPackage:history.state.reviewPackage,fixPackages:[record.evidence.reviewPackage],steps:record.association.laterDeliveries}).files);
+        check(record);
+        for(let at=index;at<records.length;at++){
+          const {digest:ignored,...body}=records[at];body.previousDigest=at?records[at-1].digest:null;records[at]={...body,digest:digest(body)};
+        }
+        const {revision,...body}=saved,next={...body,records};
+        fs.writeFileSync(statePath,JSON.stringify({...next,revision:digest(next)})+'\n');
+      };
+      const status=async()=>{const run=await openControlRun(definition,'resume',parentExecution);
+        try{return await run.host.handle(request('status'));}finally{run.close();}};
+      try{
+        // A run that does not exist: replay cannot re-prove it, every live use refuses it.
+        forge(steps=>{steps[0].runId='ghost-run';steps[0].packageDigest='e'.repeat(64);});
+        const ghost=await status();
+        assert.equal(ghost.code,'correction_review_required');assert.match(ghost.reason,/无法按其运行存档核实/);
+        // The real run with a package it never reviewed, or a step not derivable from its package.
+        forge(steps=>{steps[0].packageDigest='f'.repeat(64);});
+        await assert.rejects(openControlRun(definition,'resume',parentExecution),{code:'fix_association_unverified'});
+        forge(steps=>{steps[0].changes=steps[0].changes.filter(change=>change.path!=='AGENTS.md');});
+        await assert.rejects(openControlRun(definition,'resume',parentExecution),{code:'fix_association_unverified'});
+      }finally{fs.writeFileSync(statePath,original);}
+      assert.equal((await status()).code,null);
+    }
   }finally{serial?.close();parent?.close();}
 });
 
-test('#18 a fix interleaves only the delivery its reviewed before-state needs, skipping an older one on the same file',()=>{
+test('#18 a fix interleaves only the later delivery its reviewed before-state needs, in a cyclic history with a competing candidate',()=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(isolated,'interleave-')));
-  fs.writeFileSync(path.join(root,'value.mjs'),'v0\n');fs.writeFileSync(path.join(root,'req.md'),'r\n');
+  fs.writeFileSync(path.join(root,'value.mjs'),'A\n');fs.writeFileSync(path.join(root,'req.md'),'r\n');
   const checks=[{id:'c',command:['true'],outcome:'passed',exitCode:0,evidence:'ok'}];
   const step=(runId,content)=>{
     const baseline=captureReviewBaseline({root,identity:{repositoryId:'interleave',runId,taskId:`T-${runId}`,attempt:1},
@@ -187,24 +225,36 @@ test('#18 a fix interleaves only the delivery its reviewed before-state needs, s
     fs.writeFileSync(path.join(root,'value.mjs'),content);
     return {baseline,pkg:createReviewPackage({root,baseline,checks})};
   };
-  const earlier=step('a-earlier','vE\n'),parent=step('parent','v1\n'),later=step('later','v2\n'),fix=step('fix','v3\n');
-  const deliveries=()=>[{runId:'a-earlier',packages:[earlier.pkg]},{runId:'later',packages:[later.pkg]}];
-  const input={root,baseline:parent.baseline,parentPackage:parent.pkg,fixPackages:[fix.pkg]};
+  // Old task A->B (reviewed at 5, before the parent), parent B->A (reviewed at 10),
+  // a later dead end A->X that was undone (reviewed at 15), the true later task
+  // A->C (reviewed at 20) and the QA fix C->D.
+  const old=step('a-old','B\n'),parent=step('parent','A\n');
+  const deadEnd=step('b-dead-end','X\n');fs.writeFileSync(path.join(root,'value.mjs'),'A\n');
+  const later=step('c-later','C\n'),fix=step('fix','D\n');
+  const deliveries=()=>[{runId:'a-old',packages:[{pkg:old.pkg,reviewedAt:5}]},{runId:'b-dead-end',packages:[{pkg:deadEnd.pkg,reviewedAt:15}]},
+    {runId:'c-later',packages:[{pkg:later.pkg,reviewedAt:20}]}];
+  const verified=[];
+  const input={root,baseline:parent.baseline,parentPackage:parent.pkg,fixPackages:[fix.pkg],after:10,verifySteps:steps=>verified.push(steps.length)};
   assert.throws(()=>composeFixCode(input),{code:'fix_before_mismatch'});
   const association=inspectFixCodeAssociation({...input,extend:true,deliveries});
   assert.equal(association.version,2);
-  assert.deepEqual(association.laterDeliveries.map(item=>[item.beforeFix,item.runId]),[[0,'later']]);
+  assert.deepEqual(association.laterDeliveries.map(item=>[item.beforeFix,item.runId]),[[0,'c-later']]);
   assert.equal(association.currentFilesDigest,digest(composeFixCode({...input,steps:association.laterDeliveries}).files));
-  // Without the needed delivery the fix's before-state cannot be explained.
-  assert.throws(()=>inspectFixCodeAssociation({...input,extend:true,deliveries:()=>[{runId:'a-earlier',packages:[earlier.pkg]}]}),
-    {code:'fix_before_mismatch'});
-  // A mode-only change to the fixed file after acceptance is not explained either.
-  fs.chmodSync(path.join(root,'value.mjs'),0o755);
-  assert.throws(()=>inspectFixCodeAssociation({...input,steps:association.laterDeliveries,deliveries}),{code:'fix_current_code_unexplained'});
-  fs.chmodSync(path.join(root,'value.mjs'),0o644);
-  inspectFixCodeAssociation({...input,steps:association.laterDeliveries,deliveries});
-  // Nor is one on a file whose content no reviewed package touched.
-  fs.chmodSync(path.join(root,'req.md'),0o755);
-  assert.throws(()=>inspectFixCodeAssociation({...input,steps:association.laterDeliveries,deliveries}),
-    error=>error.code==='fix_current_code_unexplained'&&error.paths.join()==='req.md');
+  assert.deepEqual(verified,[1]);
+  // Recorded steps are never used without the store verifier.
+  assert.throws(()=>inspectFixCodeAssociation({...input,verifySteps:null,steps:association.laterDeliveries,deliveries}),{code:'fix_association_unverified'});
+  // Without the needed delivery, or with it reviewed before the parent, the fix's before-state is unexplained.
+  assert.throws(()=>inspectFixCodeAssociation({...input,extend:true,deliveries:()=>deliveries().slice(0,2)}),{code:'fix_before_mismatch'});
+  assert.throws(()=>inspectFixCodeAssociation({...input,after:25,extend:true,deliveries}),{code:'fix_before_mismatch'});
+  if(process.platform!=='win32'){
+    // A mode-only change to the fixed file after acceptance is not explained either.
+    fs.chmodSync(path.join(root,'value.mjs'),0o755);
+    assert.throws(()=>inspectFixCodeAssociation({...input,steps:association.laterDeliveries,deliveries}),{code:'fix_current_code_unexplained'});
+    fs.chmodSync(path.join(root,'value.mjs'),0o644);
+    inspectFixCodeAssociation({...input,steps:association.laterDeliveries,deliveries});
+    // Nor is one on a file whose content no reviewed package touched.
+    fs.chmodSync(path.join(root,'req.md'),0o755);
+    assert.throws(()=>inspectFixCodeAssociation({...input,steps:association.laterDeliveries,deliveries}),
+      error=>error.code==='fix_current_code_unexplained'&&error.paths.join()==='req.md');
+  }
 });

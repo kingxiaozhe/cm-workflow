@@ -23,7 +23,7 @@ import {readCmAiProjectLearningWriteback,writeCmAiProjectLearning} from './cm-ai
 import {verifyCmAiTaskLearningHandoff,writeCmAiTaskLearningHandoff} from './cm-ai-learning-handoff-writer.mjs';
 import {createHostHandoff} from './host-handoff.mjs';
 import {inspectFixCodeAssociation,explainCompletedDelivery} from './fix-code-association.mjs';
-import {completedReviewedDeliveries} from './reviewed-deliveries.mjs';
+import {approvedReviewAt,completedReviewedDeliveries,verifyDeliverySteps} from './reviewed-deliveries.mjs';
 import {validateAcceptedFix} from './accepted-fix.mjs';
 import {inspectCmAiQaFailure} from './cm-ai-qa-log.mjs';
 import {readHostQaFixHistory} from './host-qa-fix.mjs';
@@ -274,8 +274,14 @@ export function createTaskRunner(options) {
     identity:{...config.identity,attempt},packageDigest:reviewPackage?.packageDigest??null,
     receipt,receipts,calls,cancelAfterCommit,workflowError,...(store?{cancellationRequested}:{}),...(taskMode?{taskCommit}:{}),
     ...(invocationMode?{reviewInvocation}:{}),...(taskLearning!==null?{learningWriteback:learningResult?.writeback??null}:{})},16*1024*1024);
-  // Other task runs' committed, reviewed deliveries in this specs root.
+  // Other task runs' committed, reviewed deliveries in this specs root, only
+  // those reviewed after this run's own approving review, and the live proof
+  // that recorded interleaving steps are exactly such deliveries.
   const laterDeliveries=()=>completedReviewedDeliveries({specsRoot:completion.owner.specsRoot,root:config.root,identity:config.identity});
+  const reviewedAt=()=>approvedReviewAt({reviewInvocation,reviewPackage});
+  const verifySteps=(steps,allowAbsent=false)=>verifyDeliverySteps({specsRoot:completion.owner.specsRoot,root:config.root,
+    identity:config.identity,after:reviewedAt(),steps,allowAbsent});
+  const laterOptions=()=>({deliveries:laterDeliveries,after:reviewedAt(),verifySteps});
   let publication;
   // Replay decides; this only reports an exit abandonReview would accept.
   function reviewResultAbandonable(){
@@ -315,7 +321,7 @@ export function createTaskRunner(options) {
         }
         inspectFixCodeAssociation({root:config.root,specsRoot:completion.owner.specsRoot,baseline:base,
           parentPackage:reviewPackage,fixPackages:acceptedFixes.map(item=>item.evidence.reviewPackage),
-          steps:acceptedFixes.at(-1).association.laterDeliveries??[],deliveries:laterDeliveries});
+          steps:acceptedFixes.at(-1).association.laterDeliveries??[],...laterOptions()});
         const last=acceptedFixes.at(-1);
         return freeze({...current,acceptedQaFix:{qaRound:last.qaRound,testRunId:last.evidence.qaSource.testRunId,
           evidenceDigest:digest(last)}});
@@ -330,12 +336,13 @@ export function createTaskRunner(options) {
           const handoff=handoffBinding().handoffPath;
           need(digest(readReviewSourceFiles(path.dirname(handoff),[path.basename(handoff)])[0])===digest(reviewPackage.handoff),'package_mismatch');
         }
-        explainCompletedDelivery({root:config.root,baseline:base,parentPackage:reviewPackage,deliveries:laterDeliveries()});
+        explainCompletedDelivery({root:config.root,baseline:base,parentPackage:reviewPackage,deliveries:laterDeliveries(),after:reviewedAt()});
       }
       return current;
     } catch(error){
       return freeze({...current,code:'correction_review_required',...(error?.code==='fix_current_code_unexplained'
-        ?{reason:`未经审查的改动：${error.paths.slice(0,20).join(', ')}${error.paths.length>20?` 等 ${error.paths.length} 个路径`:''}`}:{})});
+        ?{reason:`未经审查的改动：${error.paths.slice(0,20).join(', ')}${error.paths.length>20?` 等 ${error.paths.length} 个路径`:''}`}
+        :error?.code==='fix_association_unverified'?{reason:'已登记 QA 修复所接续的后续交付无法按其运行存档核实（存档缺失、未完成或内容不符）'}:{})});
     }
   };
   const halt=(next,why,detail=null)=>{state=next;code=why;reason=detail;};
@@ -430,6 +437,9 @@ export function createTaskRunner(options) {
     if(invocationMode)reviewInvocation=s.reviewInvocation;
     calls.push(...s.calls);receipts.push(...s.receipts);s.cache.forEach(c=>cache.set(c.effect.id,c));
     receipts.forEach(r=>registered.set(r.id,r));base=attemptBaseline(original,attempt);
+    // Replay proves recorded interleaving against every referenced store that
+    // still exists; a missing store is left to the live checks, which refuse it.
+    for(const item of acceptedFixes)if(item.association.version===2)verifySteps(item.association.laterDeliveries,true);
   } else persist('init',{config:metadata,baseline:original,session});
   publication=privateStatus();
   function control(event) {
@@ -1014,7 +1024,7 @@ export function createTaskRunner(options) {
     need(current.state==='fixture_completed'&&current.code!=='review_publication_required','qa_fix_parent_not_completed');
     const known=acceptedFixes.some(item=>item.evidence.reviewPackage.packageDigest===fixPackage.packageDigest);
     return inspectFixCodeAssociation({root:config.root,
-      ...(completion?{specsRoot:completion.owner.specsRoot,deliveries:laterDeliveries}:{}),
+      ...(completion?{specsRoot:completion.owner.specsRoot,...laterOptions()}:{}),
       baseline:base,parentPackage:reviewPackage,steps:acceptedFixes.at(-1)?.association.laterDeliveries??[],extend:!known,
       fixPackages:known?acceptedFixes.map(item=>item.evidence.reviewPackage)
         :[...acceptedFixes.map(item=>item.evidence.reviewPackage),fixPackage]});

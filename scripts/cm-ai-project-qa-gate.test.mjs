@@ -184,28 +184,58 @@ test('#18 reviewed transitions apply only from their reviewed before-state, in e
   const check=[{id:'c',command:['true'],outcome:'passed',exitCode:0,evidence:'ok'}];
   fs.writeFileSync(path.join(root,'a.mjs'),'a1\n');
   const ownPackage=createReviewPackage({root,baseline:own,checks:check});
-  const delivery=(runId,edit)=>{
+  // The parent's own approving review happened at t=10.
+  const delivery=(runId,edit,reviewedAt)=>{
     const baseline=captureReviewBaseline({root,identity:identity(runId),scope:['b.mjs'],requirements:['req.md']});
     fs.writeFileSync(path.join(root,'b.mjs'),edit);
-    return {runId,packages:[createReviewPackage({root,baseline,checks:check})]};
+    return {runId,packages:[{pkg:createReviewPackage({root,baseline,checks:check}),reviewedAt}]};
   };
-  const second=delivery('second','b1\n'),third=delivery('third','b2\n');
+  const second=delivery('second','b1\n',20),third=delivery('third','b2\n',30);
   const composed=own.files.map(file=>file.path==='a.mjs'?ownPackage.changes[0].after:file);
-  const explain=deliveries=>explainReviewedDrift({root,baseline:own,composed,ownScope:['a.mjs'],deliveries});
+  const explain=(deliveries,after=10)=>explainReviewedDrift({root,baseline:own,composed,ownScope:['a.mjs'],deliveries,after});
   explain([second,third]);explain([third,second]);
   // Without the intermediate delivery the later transition's before-state never matches.
   assert.throws(()=>explain([third]),error=>error.code==='fix_current_code_unexplained'&&error.paths.join()==='b.mjs');
+  // Deliveries reviewed before the parent, or with no review time, never count.
+  assert.throws(()=>explain([second,third],25),error=>error.paths.join()==='b.mjs');
+  assert.throws(()=>explain([second,third],null),error=>error.paths.join()==='b.mjs');
   // A reviewed transition cannot explain content it did not produce.
-  fs.writeFileSync(path.join(root,'b.mjs'),'b1\n');
+  fs.writeFileSync(path.join(root,'b.mjs'),'bX\n');
   assert.throws(()=>explain([second,third]),error=>error.paths.join()==='b.mjs');
   fs.writeFileSync(path.join(root,'b.mjs'),'b2\n');
   // The CM config is tolerated only outside the run's own scope.
   fs.writeFileSync(path.join(root,'.cm-workflow.yml'),'version: 1\n');explain([second,third]);
-  assert.throws(()=>explainReviewedDrift({root,baseline:own,composed,ownScope:['a.mjs','.cm-workflow.yml'],deliveries:[second,third]}),
+  assert.throws(()=>explainReviewedDrift({root,baseline:own,composed,ownScope:['a.mjs','.cm-workflow.yml'],deliveries:[second,third],after:10}),
     error=>error.paths.join()==='.cm-workflow.yml');
 });
 
-test('#18 a permission-only change to the delivered file still requires correction review',async()=>{
+test('#18 an old reviewed transition cannot disguise an unreviewed revert, and a cyclic history still finds the true later delivery',()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(isolated,'cycle-')));
+  const identity=runId=>({repositoryId:'cycle',runId,taskId:`T-${runId}`,attempt:1});
+  const check=[{id:'c',command:['true'],outcome:'passed',exitCode:0,evidence:'ok'}];
+  fs.writeFileSync(path.join(root,'a.mjs'),'A\n');fs.writeFileSync(path.join(root,'req.md'),'r\n');
+  const change=(runId,content)=>{
+    const baseline=captureReviewBaseline({root,identity:identity(runId),scope:['a.mjs'],requirements:['req.md']});
+    fs.writeFileSync(path.join(root,'a.mjs'),content);
+    return {baseline,pkg:createReviewPackage({root,baseline,checks:check})};
+  };
+  // Old task A->B (reviewed at 5), parent B->A (reviewed at 10), a later dead end
+  // A->X that was undone (15) and the true later task A->C (20). A first-match
+  // choice would take the dead end and then fail to explain C.
+  const old=change('a-old','B\n'),parent=change('parent','A\n');
+  const deadEnd=change('b-dead-end','X\n');fs.writeFileSync(path.join(root,'a.mjs'),'A\n');
+  const later=change('c-later','C\n');
+  const composed=parent.baseline.files.map(file=>file.path==='a.mjs'?parent.pkg.changes[0].after:file);
+  const deliveries=[{runId:'a-old',packages:[{pkg:old.pkg,reviewedAt:5}]},{runId:'b-dead-end',packages:[{pkg:deadEnd.pkg,reviewedAt:15}]},
+    {runId:'c-later',packages:[{pkg:later.pkg,reviewedAt:20}]}];
+  const explain=()=>explainReviewedDrift({root,baseline:parent.baseline,composed,ownScope:['a.mjs'],deliveries,after:10});
+  explain();
+  // Someone reverts the parent's own change by hand: the old A->B must not explain it.
+  fs.writeFileSync(path.join(root,'a.mjs'),'B\n');
+  assert.throws(explain,error=>error.code==='fix_current_code_unexplained'&&error.paths.join()==='a.mjs');
+});
+
+test('#18 a permission-only change to the delivered file still requires correction review',{skip:process.platform==='win32'},async()=>{
   const p=project();
   await p.advance(p.first,p.firstExecution(),'create');
   fs.chmodSync(path.join(p.codeProject,'a.mjs'),0o755);
