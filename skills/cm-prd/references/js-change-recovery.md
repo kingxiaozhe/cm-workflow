@@ -83,7 +83,7 @@
 
 旧版审批可能把 `.cm-specs-status` 中的 `revisionDigest` 删除，而对应的
 `.reviews/prd-change-<digest>.json` 仍在。下一次变更可能报
-`PRD review artifact changed after disposition`（宿主外层为 `host_request_failed`）。
+`PRD review artifact changed after disposition`（宿主外层为 `host_request_failed`；stderr 诊断给出 `code: prd_review_artifact_changed` 及 `reason` 中的回执、文件与两份 SHA-256）。
 不要仅按归档文件名、修改时间或“只有一个归档”自动回填：不同提案可能生成相同的最终规格，
 这些信息不足以证明哪份归档对应最后一次人工审批。
 
