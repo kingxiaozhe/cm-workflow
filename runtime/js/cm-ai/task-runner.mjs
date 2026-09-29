@@ -25,7 +25,7 @@ import {createHostHandoff} from './host-handoff.mjs';
 import {inspectFixCodeAssociation,explainCompletedDelivery} from './fix-code-association.mjs';
 import {approvedReviewAt,completedReviewedDeliveries,fixReviewedAt,resolveDeliverySteps} from './reviewed-deliveries.mjs';
 import {validateAcceptedFix} from './accepted-fix.mjs';
-import {appendFits} from './execution-store.mjs';
+import {appendFits} from './execution-store-limits.mjs';
 import {inspectCmAiQaFailure} from './cm-ai-qa-log.mjs';
 import {readHostQaFixHistory} from './host-qa-fix.mjs';
 import {publishHostReview} from './host-review-file.mjs';

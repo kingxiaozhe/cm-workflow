@@ -282,12 +282,14 @@ test('N2: completed tasks without review evidence remain terminal but emit a vis
 
   const missing=inspectCmAiAdmission({specsDir:specs,codeProject});
   assert.equal(missing.state,'complete');
-  assert.deepEqual(missing.warnings,['⚠ 凭证缺失: T-001（存量欠账,如实留档,恢复起严格执行）']);
+  // A completed feature with no QA record is also reported: it blocks run_done.
+  assert.deepEqual(missing.warnings,['⚠ 凭证缺失: T-001（存量欠账,如实留档,恢复起严格执行）',
+    '⚠ QA 未通过: 1.login（任务已全部完成，但没有 QA 记录）；它通过之前项目不能收尾（run_done）']);
 
   write(path.join(specs,'.reviews','login-T-001-r1.md'),'review evidence\n');
   const reconciled=inspectCmAiAdmission({specsDir:specs,codeProject});
   assert.equal(reconciled.state,'complete');
-  assert.deepEqual(reconciled.warnings,[]);
+  assert.deepEqual(reconciled.warnings,['⚠ QA 未通过: 1.login（任务已全部完成，但没有 QA 记录）；它通过之前项目不能收尾（run_done）']);
 }));
 
 test('R1 Medium: review evidence is bound to both feature and task',()=>fixture(({specs,codeProject})=>{
@@ -299,7 +301,9 @@ test('R1 Medium: review evidence is bound to both feature and task',()=>fixture(
   const result=inspectCmAiAdmission({specsDir:specs,codeProject});
 
   assert.equal(result.state,'complete');
-  assert.deepEqual(result.warnings,['⚠ 凭证缺失: T-001（存量欠账,如实留档,恢复起严格执行）']);
+  assert.deepEqual(result.warnings,['⚠ 凭证缺失: T-001（存量欠账,如实留档,恢复起严格执行）',
+    '⚠ QA 未通过: 1.login（任务已全部完成，但没有 QA 记录）；它通过之前项目不能收尾（run_done）',
+    '⚠ QA 未通过: 2.profile（任务已全部完成，但没有 QA 记录）；它通过之前项目不能收尾（run_done）']);
 }));
 
 test('successor Medium: review identity rejects duplicate feature slugs',()=>fixture(({specs,codeProject})=>{
