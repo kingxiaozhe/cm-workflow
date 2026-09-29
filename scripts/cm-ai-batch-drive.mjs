@@ -75,7 +75,7 @@ function preflight(){
     process.stdout.write('用法: cm-ai-batch-drive.mjs --plan PLAN.json <operation>\n'
       +'operation: advance, status, cancel。PLAN: config, mode, hostContext, permissions, answers, checks, checkTimeoutMs。\n'
       +'checks 每项为 {id,command,timeoutMs?}；超时为 1..3600000 整数，默认 900000 ms（15 分钟）。\n'
-      +'develop.json.edits 与单任务驾驶员相同：内容文件、{file,mode}、{mode}、{delete:true}；启动前同样拒绝超限、空交付与受保护模式下的非 UTF-8 内容（尚未开跑的后续任务不看代码树，只做答案本身就能判定的检查：单文件 1 MiB、答案写入的 scope 文件合计 2 MiB，等等；运行存档单条记录的检查留到该任务开跑前）。\n'
+      +'develop.json.edits 与单任务驾驶员相同：内容文件、{file,mode}、{mode}、{delete:true}；启动前同样拒绝超限、空交付与受保护模式下的非 UTF-8 内容（尚未开跑的后续任务不看代码树，只做答案本身就能判定的检查：单文件 1 MiB、答案写入的 scope 文件合计 2 MiB，等等；运行存档单条记录上限要看该任务开跑时的代码树，驾驶员事先算不出，超限交付写入后由宿主拦下，停在可重试的 blocked/develop_package_too_large）。\n'
       +'带 --allow-review 任务:1 但还没有 develop-a2.json 时照常启动：审查若要求修改，该任务停在 changes_requested（revision_answer_required），读 .reviews/<feature>-<task>-r1.md 的 findings 写好 develop-a2.json 后再 advance。\n');
     process.exit(0);
   }
