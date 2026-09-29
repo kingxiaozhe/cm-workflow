@@ -865,6 +865,12 @@ browser BLOCKED（执行器在报告行写 `hostDeclaredBlocked: true`；旧报�
 与已接受修复的 FAIL 拒绝；superseded 记 `reason: declared_environment_failure`、`environment_failure_reason`、`failed_cases`
 与 `blocked_cases`，写入器与回放都复核这些字段。所有重跑都在 qaRound+1 执行全部用例，占用同一个最多三轮的 QA 预算。
 
+信任边界：QA 恢复把已批准的 feature `test-cases.json` 与经日志写入器在应答或记录当时追加的 `运行日志.jsonl` 行
+（N6 决定、`test_run` start/case/complete 与 superseded）视为权威，配置修订另以运行 journal 为准。`.reviews` 下的
+`{testRunId}-execution.md` 执行报告是本地证据：逐例 verdict、静态结论、命令退出码和 browser 证据字段从中读取，
+只与日志计数、case_blocked 行和用例契约交叉核对。刻意手改报告且保持计数一致（例如对调两个用例的 verdict）不在防御范围内；
+重跑仍在同一代码上执行全部用例，此类改动最多多占一个 QA 轮次，不能伪造 PASS。
+
 QA 配置修订（`--revise-qa-config`）在该 run 尚无任何 `test_run` 行时也可使用，不限于 N5 之后：journal 追加
 `qaRound: 0`、`testRunId: null`、绑定当时审查包（尚无则 null）的 `qa-config-revised`，运行日志写一次确定性的
 `decision/qa_config_revise` 镜像，不写 superseded，首轮仍为 qaRound 1。回放允许首轮前多条 round-0 记录，但 round-0

@@ -257,7 +257,7 @@ cleanup=failed、环境摘要不一致、hostRequestTimeout 或会话自己回�
 即使映射命令同时没有退出码）、缺浏览器能力、源码漂移和未 complete 不适用；
 是否仍有 `[需确认]` 以该 feature 的 `test-cases.json` 为准，并与报告标记交叉核对（两者任一显示未确认即拒绝）；
 “只因命令没有退出码”由已记录的命令行推出，报告的 `commandUnavailable` 必须一致；“会话自己回答 BLOCKED”以执行器当时经日志写入器
-追加的 `test_run/case_blocked` 行上的 `host_declared_blocked: true` 为准，报告的 `hostDeclaredBlocked` 只作核对。删改报告标记不能换来重跑资格。
+追加的 `test_run/case_blocked` 行上的 `host_declared_blocked: true` 为准，报告的 `hostDeclaredBlocked` 只作核对。只删改报告里的这些标记不能换来重跑资格。
 旧版本报告里会话回答的 BLOCKED 没有标记，仍不适用。新写入的 superseded 行带 `recovery_rule: 2`；旧版本写入、
 没有该字段的 superseded 行按旧版本原规则回放（例如 logic INSUFFICIENT_EVIDENCE 行照旧有效）。配置填错应使用下述“QA 配置修订”。
 非零退出码是产品 FAIL，不会被重新归类；确认是环境造成（例如模拟器运行时缺失时 `xcodebuild test` 退出 65）时，
@@ -270,6 +270,12 @@ qaRound+1 写带 previous_test_run_id 的 start，全部用例重跑，占用同
 开发或审查，不改 tasks。开关一次性消费且不持久化，不与 --rerun-unknown-qa 合用；仅写 superseded 后中断，
 须重新显式授权恢复。complete 同步 N6 状态镜像为 qa_passed/qa_failed/qa_blocked，并显示本轮通过/失败/阻断数量。
 （事故：宿主把非文件说明混入 browser evidence，导致已完成任务的收尾 QA 无法恢复。）
+
+**信任边界（QA 恢复）**：恢复判定以这些输入为准——已批准的 feature `test-cases.json`（`[需确认]`），
+以及经日志写入器在应答或记录当时追加到 `运行日志.jsonl` 的行（N6 决定、`test_run` 的 start/case/complete 计数与结果、superseded），
+配置修订另以运行 journal 为准。`.reviews/{testRunId}-execution.md` 执行报告是本地证据：逐例 verdict、静态结论、命令退出码与
+browser 证据字段都从报告读取，只与上述日志计数、case_blocked 行和用例契约交叉核对；有人刻意手改报告并保持计数一致
+（例如对调两个用例的 verdict）不在防御范围内。重跑始终在同一代码上执行全部用例，这类改动最多多占一个 QA 轮次，不能凭空得到 PASS。
 
 ### QA 配置修订
 
