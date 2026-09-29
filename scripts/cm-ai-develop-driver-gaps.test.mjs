@@ -578,6 +578,44 @@ test('#19 bounded reasons list what fits and count the rest',async()=>{
   assert(!/[\r\n\0]/.test(boundedReason('h',['a\nb','c\0d'],'')));
   assert.match(boundedReason('',[`${'q'.repeat(500)}/name.md`],''),/…q+\/name\.md$/);
 });
+// Codex review of ee86753 asked for a retryable block when the task handoff
+// exceeds its 256 KiB limit. Its inputs are already capped: changed files come
+// from the scope in run.json (at most 64 KiB), check results from validChecks (at
+// most 64 KiB of JSON), and Learning records from their own limits. This builds
+// the largest handoff those caps allow with the real builders and keeps it under
+// the limit, so the case cannot happen; raising any of those caps must revisit it.
+test('#19 the largest handoff the input caps allow stays under the 256 KiB handoff limit',async t=>{
+  const {hostHandoffDocument}=await import('../runtime/js/cm-ai/host-handoff.mjs');
+  const {taskLearningHandoffBytes}=await import('../runtime/js/cm-ai/cm-ai-learning-handoff-writer.mjs');
+  const {validChecks}=await import('../runtime/js/cm-ai/review-package.mjs');
+  const {inspectCmAiTaskLearningInput,createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective}=
+    await import('../runtime/js/cm-ai/cm-ai-context-refresh.mjs');
+  const {validateRunDefinition,RUN_DEFINITION_LIMIT}=await import('./cm-ai-run.mjs');
+  const f=fixture(t);
+  // Largest scope a 64 KiB run.json can hold, 255 files plus AGENTS.md added by the writeback.
+  const definition=JSON.parse(fs.readFileSync(f.config,'utf8'));
+  const room=RUN_DEFINITION_LIMIT-Buffer.byteLength(JSON.stringify({...definition,scope:[]}));
+  const length=Math.floor(room/255)-3;
+  definition.scope=Array.from({length:255},(_,n)=>`${'q'.repeat(length-4)}${String(n).padStart(4,'0')}`);
+  assert(Buffer.byteLength(JSON.stringify(definition))<=RUN_DEFINITION_LIMIT);validateRunDefinition(definition);
+  // Largest check JSON: backslashes double in the check JSON and again in the handoff.
+  let low=1,high=70000;
+  const checkWith=size=>[{id:'c',command:['\\'.repeat(size)],outcome:'passed',exitCode:0,evidence:'e'}];
+  while(low<high){const middle=Math.ceil((low+high)/2);try{validChecks(checkWith(middle));low=middle;}catch{high=middle-1;}}
+  const checks=checkWith(low);
+  const identity={...f.identity,attempt:2};
+  const learningInput=inspectCmAiTaskLearningInput({specsDir:f.specsDir,codeProject:f.codeProject,feature:'1.work',
+    identity,applicableAgentFiles:[]},{admission:null,parallelSelection:null});
+  const binding={feature:'1.work',identity,learningDigest:learningInput.learningDigest};
+  const application=createCmAiTaskLearningApplication({...binding,status:'applied',note:'\\'.repeat(512)});
+  const retrospective=createCmAiTaskLearningRetrospective({...binding,status:'lesson_candidate',reason:null,
+    candidates:Array.from({length:3},(_,n)=>({classification:'structured',trigger:`${n}${'\\'.repeat(239)}`,
+      action:`${n}${'\\'.repeat(239)}`,evidence:Array.from({length:8},(_,e)=>`${'e'.repeat(500)}/${n}-${e}.md`)}))});
+  const {payload}=hostHandoffDocument({baseline:{identity},checks,
+    reviewPackage:{changes:definition.scope.map(file=>({path:file})),packageDigest:'0'.repeat(64)},implementationSha256:'0'.repeat(64)});
+  const handoff=taskLearningHandoffBytes({handoff:payload,feature:'1.work',identity,learningInput,application,retrospective,includeAgents:true});
+  assert(handoff.length<256*1024,`largest handoff ${handoff.length}`);
+});
 test('#19 a legacy unknown/empty_changes develop checkpoint still replays as unknown',t=>{
   const f=fixture(t,{files:{'target.mjs':'export const value = 42;\n'}});
   assert.equal(liveSession(f,{mode:'create',write:false}).status,0);

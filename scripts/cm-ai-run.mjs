@@ -133,10 +133,13 @@ export async function createCodexExecution(configuration,authority){
   return execution;
 }
 
+// Also bounds every changed-file list a task handoff can carry (see the handoff
+// size test): raising it means revisiting the 256 KiB handoff limit.
+export const RUN_DEFINITION_LIMIT=64*1024;
 export function readRunDefinition(file){
   const info=fs.lstatSync(file);
   if(!info.isFile()||info.isSymbolicLink())fail('invalid_config: not a regular file');
-  if(info.size>64*1024)fail('invalid_config: file exceeds 64KiB');
+  if(info.size>RUN_DEFINITION_LIMIT)fail('invalid_config: file exceeds 64KiB');
   return validateRunDefinition(JSON.parse(fs.readFileSync(file,'utf8')));
 }
 export function validateRunDefinition(input){
