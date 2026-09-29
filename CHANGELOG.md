@@ -5,6 +5,7 @@
 
 ## 未发布
 
+- cm-prd 审查门禁的每个拒绝带稳定错误码，宿主 stderr 诊断写明回执与改动文件（只含校验过的规格相对路径），不再只报 `host_request_failed` / `detail: unavailable`；内容为 `null` 的回执与非法 UTF-8 也带码，CLI 报错文字不变。
 - cm-ai 单任务驾驶员可驾驶 bootstrap 规范任务（通常 T-002）及第 2 轮修订：启动前校验 `init-generate.json`／`init-verify.json`（第 2 轮只读 `*-a2.json`，须在读取首轮 findings 后编写），`init_verify` 的命令组只由驾驶员在宿主接受启动后、发送操作前实跑会话列出的草稿命令得出（先用宿主自己的读取器与 admission 函数核对写入授权、配置、任务选择与 nextTask，受保护模式在 specs 沙箱内运行，跑后重核规范目标与绑定文件），未通过不发送操作，其余四组核验与 Learning 来自会话答案；规范写入后检查未通过可在原运行修好后同轮重试，宿主与驾驶员只接受本运行存档记录的写入；含业务文件、多代码根或 `--protected-config` 的规范任务及批次驾驶员仍在启动前拒绝。
 - cm-ai N6 的 `qa_assess` 应答超时不再落盘为永久阻塞决定，改为可重试的 `rejected/qa_decision_timeout`，恢复原运行后再次 `advance` 重新询问；旧版本已记录的 `阻塞:host_request_timeout` 决定默认照旧返回 `qa_blocked`（附原因），显式 `--rerun-blocked-qa` 只重新询问一次并以 `previous_decision_id` 追加替代决定，历史不改写。修正 js-host.md 中 `qa.timeoutMs` 上限为 3600000。
 - cm-ai `--rerun-blocked-qa` 可在同一代码上重跑会话如实回答的 BLOCKED（如模拟器不可用）与没有退出码的 QA 命令结果（超时、被杀、启动或输出失败）及受其牵连的 logic 用例；非零退出仍是产品 FAIL，只有同时加 `--qa-environment-failure "原因"` 显式声明环境故障才替代，理由与失败用例写入 superseded 记录。每次重跑都占用同一个最多三轮的 QA 预算。
