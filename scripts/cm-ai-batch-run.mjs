@@ -19,13 +19,16 @@ const key=task=>`${task.feature}/${task.taskId}`;
 // Generation-1 member run id; the batch host uses it to tell a new batch from a resumed one.
 export const batchTaskRunId=(batchId,taskKey)=>`task-${digest({batchId,task:taskKey}).slice(0,48)}`;
 // A spec rebind is a single-task resume flag; batch members cannot take it, so
-// never advertise it for them. Name the exits that do exist instead.
-export function batchMemberResult(result){
+// never advertise it for them. Name the exits that do exist instead. An idle
+// cancel of a parallel group does not end its member runs, so a parallel
+// member cannot be superseded afterwards and only the spec revert applies.
+export function batchMemberResult(result,{parallel=false}={}){
   if(result?.pendingAction!=='spec_rebind')return result;
   const files=/变更文件：([^；]+)/.exec(result.reason??'')?.[1]??'规格文件';
+  const revert=`规格已重新批准（变更：${files}，只动了其他任务），但批次成员不能换绑。出口：还原这些规格改动并重新批准后继续本批次`;
   return Object.freeze({...result,pendingAction:'none',
-    reason:`规格已重新批准（变更：${files}，只动了其他任务），但批次成员不能换绑。出口：还原这些规格改动并重新批准后继续本批次；`
-      +'或取消本批次，还原该任务已改动的代码后，用单任务宿主 cm-ai-host.mjs 以 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务。'});
+    reason:parallel?`${revert}。并行组成员没有单独重做的出口。`
+      :`${revert}；或取消本批次，还原该任务已改动的代码后，用单任务宿主 cm-ai-host.mjs 以 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务。`});
 }
 export function createCmAiBatch({configuration,executionFor,logHome,runtime='codex',checkCommands=null,checkTimeoutMs=60000,
   rerunUnknownQa=false,rerunBlockedQa=false,holdRevisions=[]}){
@@ -109,7 +112,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const run=await openControlRun(definition,mode,execution,{...recovery,...(held.has(taskKey)?{holdRevision:true}:{}),
       ...(membership.has(taskKey)?{parallelSelection:{version:1,group:membership.get(taskKey).map(key=>plans.get(key).identity.taskId)}}:{})});
     if(!run.host)return run;
-    return {...run,host:{...run.host,handle:async request=>batchMemberResult(await run.host.handle(request))}};
+    return {...run,host:{...run.host,handle:async request=>batchMemberResult(await run.host.handle(request),{parallel:membership.has(taskKey)})}};
   }
   function parallelProgress(rows){
     const done=new Set(),ready=new Map(),merging=new Map(),blocked=new Map();let stopped=false,code=null;

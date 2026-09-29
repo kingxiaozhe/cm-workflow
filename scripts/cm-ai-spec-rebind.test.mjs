@@ -451,6 +451,15 @@ test('a first approval with no earlier status binds the shared grammar directly'
   assert.equal(inspectCmAiAdmission({specsDir:f.specsDir,codeProject:f.codeProject}).nextTask.id,'T-001');
 });
 
+test('a parallel batch member is offered only the spec revert exit',async()=>{
+  const {batchMemberResult}=await import('./cm-ai-batch-run.mjs');
+  const drift={state:'blocked',code:'spec_drift',pendingAction:'spec_rebind',reason:'变更文件：1.work/tasks.md；需要换绑'};
+  const parallel=batchMemberResult(drift,{parallel:true}),serial=batchMemberResult(drift);
+  assert.equal(parallel.pendingAction,'none');assert.match(parallel.reason,/还原这些规格改动/);
+  assert.match(parallel.reason,/并行组成员没有单独重做的出口/);assert.doesNotMatch(parallel.reason,/--supersede-reviewed-evidence|取消本批次/);
+  assert.match(serial.reason,/--supersede-reviewed-evidence/);
+  const other={state:'awaiting_review',pendingAction:'none'};assert.equal(batchMemberResult(other,{parallel:true}),other);
+});
 // Batch members cannot take --rebind-spec-material (a single-task resume flag),
 // so the batch never advertises spec_rebind; it names the exits that exist.
 test('a batch member never advertises spec_rebind and names the real exits',async t=>{
