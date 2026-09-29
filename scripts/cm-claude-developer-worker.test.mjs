@@ -9,6 +9,7 @@ import {createProjectExecution} from '../runtime/js/cm-ai/host-project-execution
 import {buildClaudeDeveloperPrompt} from '../runtime/js/cm-ai/claude-developer-adapter.mjs';
 import {protectedTextInstructions} from '../runtime/js/cm-ai/host-conversation-execution.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {ownerGuardSource} from './fixtures/process-cleanup.mjs';
 
 const identity={repositoryId:'proposal-fixture',runId:'proposal-run',taskId:'T-001',attempt:1};
 const proposal={status:'succeeded',value:{outcome:'implemented'},edits:[{path:'target.txt',beforeSha256:null,content:'safe text\n'}]};
@@ -25,7 +26,8 @@ function fixture(t){
 function fakeWorker(cwd,{value=proposal,mode='normal',timeoutMs=3000,noticeEvents=[],noticeAt=1,onNotice,
   resultFields={},toolName='Read',toolResultId='read-1',
   assistantContent=[{type:'text',text:'proposal'}]}={}){
-  const source=`let input='';process.stdin.on('data',s=>input+=s);process.stdin.on('end',()=>{
+  // The timeout mode hangs; the guard ends it if this test process dies first.
+  const source=`${ownerGuardSource()}let input='';process.stdin.on('data',s=>input+=s);process.stdin.on('end',()=>{
     if(!input.includes('Return {status,value,edits}'))process.exit(9);
     if(${JSON.stringify(mode)}==='timeout'){setInterval(()=>{},1000);return;}
     const session_id='synthetic-claude-developer';

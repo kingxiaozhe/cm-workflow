@@ -9,8 +9,10 @@ import {commonArgs} from '../runtime/js/cm-ai/codex-config.mjs';
 import {createCodexDeveloperRun} from '../runtime/js/cm-ai/codex-developer-adapter.mjs';
 import {requestFor} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {createTaskRunner} from '../runtime/js/cm-ai/task-runner.mjs';
+import {ownerGuardSource} from './fixtures/process-cleanup.mjs';
 
-const script=`let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>{
+// The hang mode never exits on its own; the guard ends it if this test process dies first.
+const script=`${ownerGuardSource()}let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>{
 const emit=x=>process.stdout.write(JSON.stringify(x)+'\\n');
 emit({type:'thread.started',thread_id:'isolated-fixture'});emit({type:'turn.started'});
 if(process.argv[1]==='hang'){setInterval(()=>{},1000);return;}
@@ -139,7 +141,7 @@ test('cancellation kills a TERM-resistant descendant inheriting output pipes',()
   const descendant=`process.on('SIGTERM',()=>{});
     process.stdout.write(JSON.stringify({type:'item.started',item:{type:'command_execution',id:'descendant-ready'}})+'\\n');
     setTimeout(()=>{require('node:fs').writeFileSync('leaked.txt','still running');process.exit(0);},2500);`;
-  const parent=`process.stdin.resume();
+  const parent=`${ownerGuardSource()}process.stdin.resume();
     process.stdout.write(JSON.stringify({type:'thread.started',thread_id:'tree'})+'\\n');
     process.stdout.write(JSON.stringify({type:'turn.started'})+'\\n');
     require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore','inherit','inherit']});

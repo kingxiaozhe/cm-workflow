@@ -8,6 +8,7 @@ import * as zlib from 'node:zlib';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
+import {ownerGuardSource} from './fixtures/process-cleanup.mjs';
 import {previewClaudeTools,claudeProbeSandbox,createClaudeModelMarkerDetector} from '../runtime/js/cm-ai/claude-tool-preview.mjs';
 import {previewPromptTransport,writePreviewPrompt} from '../runtime/js/cm-ai/tool-preview.mjs';
 
@@ -107,7 +108,7 @@ test('probe accepts at most two compliant requests and validates every request',
     for(const [name,requests,passed] of cases)await t.test(name,async()=>{
       // Keep the fixture alive after SIGTERM so the worker's real cleanup captures
       // the entire sequence deterministically, without delaying the probe's abort.
-      const source=`process.on('SIGTERM',()=>{});setInterval(()=>{},1000);
+      const source=`${ownerGuardSource()}process.on('SIGTERM',()=>{});setInterval(()=>{},1000);
         let input='';process.stdin.on('data',s=>input+=s);process.stdin.on('end',async()=>{
           for(const request of ${JSON.stringify(requests)}){
             const response=await fetch(process.env.ANTHROPIC_BASE_URL+'/v1/messages',{method:'POST',

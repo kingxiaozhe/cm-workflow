@@ -10,12 +10,20 @@ import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {createConversationExecution,main as hostMain} from './cm-ai-host.mjs';
 import {readRunDefinition,openControlRun} from './cm-ai-run.mjs';
 import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
+import {fixtureProcesses,guardFixtureSource,killFixtureProcesses} from './fixtures/process-cleanup.mjs';
 
 // Keep runtime declarations and log mirrors independent of the invoking user's home.
 const isolatedWorkflowHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-ai-host-home-'));
 process.env.CM_WORKFLOW_HOME=path.join(isolatedWorkflowHome,'user');
 process.env.CM_WORKFLOW_LOG_HOME=path.join(isolatedWorkflowHome,'logs');
 after(()=>fs.rmSync(isolatedWorkflowHome,{recursive:true,force:true}));
+// Every fixture root is swept once the file finishes: a surviving fake CLI or
+// host is a leak even if its test passed (2026-09-28: fake reviewers ran 17h).
+const fixtureRoots=new Set();
+after(()=>{
+  const leaked=[...fixtureRoots].flatMap(root=>killFixtureProcesses(root));
+  assert.deepEqual(leaked.map(row=>row.command.slice(0,160)),[],'fixture processes outlived their tests');
+});
 
 const cli=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
 const identity={repositoryId:'host-fixture',runId:'host-fixture-run',taskId:'T-001',attempt:1};
@@ -93,7 +101,7 @@ test('resume accepts a changed transport input limit without changing the durabl
   }finally{bridge.close();fs.rmSync(f.root,{recursive:true,force:true});}
 });
 function fixture(){
-  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-native-host-')));
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-native-host-')));fixtureRoots.add(root);
   const specsDir=path.join(root,'specs'),codeProject=path.join(root,'code'),feature='1.work',config=path.join(root,'run.json');
   fs.mkdirSync(codeProject);fs.mkdirSync(path.join(specsDir,feature),{recursive:true});
   for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(specsDir,feature,name),'# Fixture\n');
@@ -176,7 +184,17 @@ function runCli(f,mode,action='create'){
     const args=[...f.args];args[4]=action;
     const child=spawn(process.execPath,[cli,...args],{stdio:['pipe','pipe','pipe'],env:f.env??process.env});
     let buffer='',stderr='',closed=false,sessionId;const rows=[],calls=[];
-    const timer=setTimeout(()=>{child.kill('SIGTERM');reject(new Error('host fixture timed out'));},Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000));
+    // Provider children run in their own process groups: stopping only the host
+    // would orphan a hung fake reviewer, so failure and watchdog paths stop the
+    // whole fixture tree. f.watchdog(expire) may replace the timer; it returns a disarm function.
+    let disarm=()=>{};
+    const fail=error=>{
+      disarm();child.kill('SIGKILL');
+      try{killFixtureProcesses(f.root);}catch(cleanup){error=new AggregateError([error,cleanup],String(error?.message??error));}
+      reject(error);
+    };
+    disarm=(f.watchdog??(expire=>{const timer=setTimeout(expire,Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000));
+      return ()=>clearTimeout(timer);}))(()=>fail(new Error('host fixture timed out')));
     child.stderr.on('data',chunk=>{stderr+=chunk;});
     child.once('error',reject);
     const send=value=>child.stdin.write(JSON.stringify(value)+'\n');
@@ -264,10 +282,10 @@ function runCli(f,mode,action='create'){
             closed=true;
             if(mode!=='disconnect'||action==='resume')send({type:'host_close',sessionId});
           }
-        }catch(error){clearTimeout(timer);child.kill('SIGTERM');reject(error);return;}
+        }catch(error){fail(error);return;}
       }
     });
-    child.once('close',code=>{clearTimeout(timer);resolve({code,stderr,rows,calls});});
+    child.once('close',code=>{disarm();resolve({code,stderr,rows,calls});});
     send(f.request??request('advance'));
   });
 }
@@ -887,7 +905,7 @@ function installTimeoutReviewer(f,runtime){
   fs.renameSync(fake,delegate);
   const modeFile=path.join(f.root,'review-mode.json');
   fs.writeFileSync(modeFile,JSON.stringify('approved'));
-  fs.writeFileSync(fake,String.raw`#!${process.execPath}
+  fs.writeFileSync(fake,guardFixtureSource(String.raw`#!${process.execPath}
 const fs=require('node:fs'),cp=require('node:child_process'),crypto=require('node:crypto');
 const args=process.argv.slice(2),runtime=${JSON.stringify(runtime)},modeFile=${JSON.stringify(modeFile)};
 if(args[0]==='sandbox'){const r=cp.spawnSync(${JSON.stringify(delegate)},args,{stdio:'inherit'});process.exit(r.status??1);}
@@ -909,9 +927,11 @@ let prompt='';process.stdin.on('data',s=>prompt+=s);process.stdin.on('end',()=>{
    send({type:'result',subtype:'success',session_id:thread,is_error:false,num_turns:1,result:'{"verdict":"approved"}'});
   }
  }
+ // A hung reviewer announces its pid so the watchdog regression can find it.
+ fs.writeFileSync(modeFile+'.hung',String(process.pid));
  setInterval(()=>{},1000);
 });
-`,{mode:0o700});
+`),{mode:0o700});
   return mode=>fs.writeFileSync(modeFile,JSON.stringify(mode));
 }
 for(const [runtime,second] of [['codex','approved'],['claude','approved'],['codex','timeout'],['codex','result'],['claude','result']])
@@ -976,6 +996,35 @@ test(`protected conversation review timeout ${runtime} -> ${second}`,async()=>{
         assert.deepEqual(lastCheckpoint(f),after);
       }else assert(fs.readFileSync(path.join(f.specsDir,'1.work','tasks.md'),'utf8').includes('[x] T-001'));
     }
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+// Regression (2026-09-28): a host stopped by the fixture watchdog while its
+// detached fake reviewer hung left that reviewer running for 17+ hours.
+test('fixture watchdog stopping a host mid-review leaves no process from the fixture root',async()=>{
+  const f=protectedResultFixture();
+  try{
+    f.runtime='claude';f.args.push('--runtime','claude');
+    const setMode=installTimeoutReviewer(f,'claude');
+    const preview=spawnSync(process.execPath,[cli,'preflight','--config',f.config,'--review-model','fixture','--runtime','claude'],
+      {encoding:'utf8',env:f.env,timeout:5000});assert.equal(preview.status,0,preview.stderr);
+    // Keep the 15-minute reviewer budget: only the watchdog can end this review.
+    const review=JSON.parse(preview.stdout);assert.equal(review.timeoutMs,900000);
+    const config=path.join(f.root,'review.json');fs.writeFileSync(config,JSON.stringify(review));
+    f.args.push('--review-config',config,'--allow-review-attempt','1');
+    f.develop=payload=>({status:'succeeded',value:implementedValue(),
+      edits:[{path:'target.mjs',beforeSha256:payload.expected['target.mjs'],content:'export const value = 42;\n'}]});
+    setMode('timeout');
+    const hung=path.join(f.root,'review-mode.json.hung');
+    f.watchdog=expire=>{
+      const poll=setInterval(()=>{if(fs.existsSync(hung)&&fs.readFileSync(hung,'utf8')){clearInterval(poll);expire();}},25);
+      return ()=>clearInterval(poll);
+    };
+    await assert.rejects(runCli(f,'normal'),/host fixture timed out/);
+    const reviewer=Number(fs.readFileSync(hung,'utf8'));assert(Number.isSafeInteger(reviewer)&&reviewer>1);
+    const gone=()=>{try{process.kill(reviewer,0);return false;}catch(error){return error.code==='ESRCH';}};
+    for(const deadline=Date.now()+3000;!gone()&&Date.now()<deadline;)await new Promise(resolve=>setTimeout(resolve,25));
+    assert(gone(),`hung fake reviewer ${reviewer} survived the watchdog`);
+    assert.deepEqual(fixtureProcesses(f.root),[]);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
