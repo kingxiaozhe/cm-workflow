@@ -5,6 +5,10 @@
 
 ## 未发布
 
+（暂无）
+
+## 0.16.5 — 2026-09-29
+
 - cm-ai 审查轮次用完（`review_limit`／`review_blocked`）后用 supersede 新建的运行，第 1 轮开发与独立审查会看到上个运行最后一次审查的 findings（标明只是参考、不是结论，不跳过审查、不改轮次），开发不再重犯同样问题；该内容写入新运行记录，回放时不可替换，旧记录照常回放。
 - cm-ai 当前会话驱动 bootstrap 规范任务时，会话返回未通过的 `init_verify`（第 1 轮或第 2 轮）不再停在无法恢复的 `unknown/execution_error`，改为同一运行、同一轮可重试的 `blocked/bootstrap_verification_failed`（原因列出未通过的核验组），规范未写入、已记录的规范证据保留，修正后在原运行 `advance` 重新生成与核验；旧运行存档照原样重放。
 - cm-prd 审查门禁的每个拒绝带稳定错误码，宿主 stderr 诊断写明回执与改动文件（只含校验过的规格相对路径），不再只报 `host_request_failed` / `detail: unavailable`；内容为 `null` 的回执与非法 UTF-8 也带码，CLI 报错文字不变。
