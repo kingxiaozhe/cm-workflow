@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {fixtureProcesses,guardFixtureSource,killFixtureProcesses,ownerGuardSource} from './fixtures/process-cleanup.mjs';
 
 const skip=process.platform==='win32';
@@ -31,7 +31,7 @@ test('a guarded detached fixture dies with the test process that created it, eve
   // The owner stands in for a test process: it spawns the fixture detached, as
   // the host under test does, then dies without any cleanup.
   const owner=spawn(process.execPath,['--input-type=module','-e',`
-    import fs from 'node:fs';import {spawn} from 'node:child_process';
+    import fs from 'node:fs';import {spawn,spawnSync} from 'node:child_process';
     import {ownerGuardSource} from ${JSON.stringify(new URL('./fixtures/process-cleanup.mjs',import.meta.url).href)};
     fs.writeFileSync(${JSON.stringify(script)},ownerGuardSource()+${JSON.stringify(hang)});
     const c=spawn(process.execPath,[${JSON.stringify(script)}],{detached:true,stdio:'ignore'});c.unref();
@@ -65,4 +65,31 @@ process.stdout.write(c.pid+'\\n');${hang}`);
   assert.equal(await until(()=>!alive(descendant)),true,'group kill must reach the descendant');
   assert.deepEqual(fixtureProcesses(root),[]);
   assert.throws(()=>fixtureProcesses('/tmp'),/invalid_fixture_marker/);
+  assert.throws(()=>fixtureProcesses('relative/fixture-root'),/invalid_fixture_marker/);
+});
+
+test('an unrelated process that merely names the fixture root survives, as does this test group',{skip},async t=>{
+  const root=fixture(t),log=path.join(root,'fixture.log');fs.writeFileSync(log,'');
+  // Double-fork via sh so these are no descendants of this test, like a user's
+  // own tail/grep of a fixture path or a node one-liner with the path as an argument.
+  const detach=command=>new Promise((resolve,reject)=>{
+    const sh=spawn('/bin/sh',['-c',`${command} >/dev/null 2>&1 </dev/null & echo $!`],{stdio:['ignore','pipe','ignore']});
+    let out='';sh.stdout.on('data',b=>out+=b);sh.once('error',reject);sh.once('close',()=>resolve(Number(out.trim())));
+  });
+  const q=value=>`'${value}'`;
+  const unrelated=[await detach(`/usr/bin/tail -f ${q(log)}`),
+    await detach(`${q(process.execPath)} -e ${q('setTimeout(()=>{},30000)')} ${q(log)}`)];
+  try{
+    for(const pid of unrelated)assert(Number.isSafeInteger(pid)&&alive(pid));
+    assert.equal(await until(()=>unrelated.every(pid=>fixtureProcesses(root).every(row=>row.pid!==pid)&&
+      spawnSync('ps',['-o','ppid=','-p',String(pid)],{encoding:'utf8'}).stdout.trim()==='1')),true);
+    assert.deepEqual(killFixtureProcesses(root),[]);
+    await new Promise(r=>setTimeout(r,300));
+    for(const pid of unrelated)assert.equal(alive(pid),true,`unrelated process ${pid} was killed`);
+    // A descendant of this test that carries the root is still taken, without touching this test's group.
+    const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)',log],{stdio:'ignore'});
+    await until(()=>fixtureProcesses(root).some(row=>row.pid===child.pid));
+    assert.deepEqual(killFixtureProcesses(root).map(row=>row.pid),[child.pid]);
+    assert.equal(alive(process.pid),true);
+  }finally{for(const pid of unrelated)try{process.kill(pid,'SIGKILL');}catch{}}
 });

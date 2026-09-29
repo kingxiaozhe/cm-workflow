@@ -1015,11 +1015,15 @@ test('fixture watchdog stopping a host mid-review leaves no process from the fix
       edits:[{path:'target.mjs',beforeSha256:payload.expected['target.mjs'],content:'export const value = 42;\n'}]});
     setMode('timeout');
     const hung=path.join(f.root,'review-mode.json.hung');
+    // Fire as soon as the reviewer hangs, but never later than the usual
+    // fixture deadline: a host stalled before review is a bounded failure.
     f.watchdog=expire=>{
       const poll=setInterval(()=>{if(fs.existsSync(hung)&&fs.readFileSync(hung,'utf8')){clearInterval(poll);expire();}},25);
-      return ()=>clearInterval(poll);
+      const limit=setTimeout(expire,Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000));
+      return ()=>{clearInterval(poll);clearTimeout(limit);};
     };
     await assert.rejects(runCli(f,'normal'),/host fixture timed out/);
+    assert(fs.existsSync(hung),'the host was stopped by the outer deadline before its reviewer hung');
     const reviewer=Number(fs.readFileSync(hung,'utf8'));assert(Number.isSafeInteger(reviewer)&&reviewer>1);
     const gone=()=>{try{process.kill(reviewer,0);return false;}catch(error){return error.code==='ESRCH';}};
     for(const deadline=Date.now()+3000;!gone()&&Date.now()<deadline;)await new Promise(resolve=>setTimeout(resolve,25));
