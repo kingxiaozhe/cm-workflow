@@ -50,6 +50,20 @@ export const reviewTimeoutTransition=(result,cache,attempt,calls=[],contextId=nu
   const code=reviewRetryCode(result);
   return code===null?null:{state:reviewRetrySpent(cache,calls,attempt,contextId)?'blocked':'pending_review',code};
 };
+// Six counted provider calls per run. Locally rejected developer values,
+// automatic review retries and abandoned invocations hold no slot.
+export const MAX_RUNNER_CALLS=6;
+export const countedCalls=(calls,cache)=>calls.filter(call=>!invalidDeveloperCall(call)&&call.terminal!=='abandoned').length
+  -cache.filter(timeoutEffect).length;
+// A delivery needs its own call and its review's call. Starting one without
+// both slots could only end in a refused checkpoint after the developer (or
+// the reviewer) already ran, so the run stops before dispatch instead. This is
+// the call budget, whatever block made the delivery retryable.
+export const developCallsExhausted=s=>stageAllowed('develop',s.state,s.code,s.priorReview?.verdict)
+  &&countedCalls(s.calls,s.cache)+2>MAX_RUNNER_CALLS;
+export const developRetryLimitReason=(counted,fromState,fromCode)=>`develop_retry_limit: 本运行已用 ${counted} 次计数调用`
+  +`（上限 ${MAX_RUNNER_CALLS}），再交付一次将没有送审名额；上次停在 ${fromState}${fromCode?`/${fromCode}`:''}。`
+  +'按该原因修好根因后，用 --supersede-reviewed-evidence 新建运行';
 // A review effect whose journaled result the operator abandoned (below) no
 // longer holds one of the six effect slots; its retry does.
 const abandonedResult=(entry,calls)=>entry.effect.kind==='review'&&entry.result.state==='unknown'
@@ -299,8 +313,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
   // An abandoned invocation holds no effect slot (its pending effect was never
   // checkpointed, or its journaled result was abandoned), so it holds no call
   // slot either; the attempt's one redispatch is bounded by reviewRetrySpent.
-  need(Array.isArray(s.calls) && s.calls.filter(call=>!invalidDeveloperCall(call)&&call.terminal!=='abandoned').length
-    -s.cache.filter(timeoutEffect).length<=6 && s.sequence===s.calls.length,'runner_calls');
+  need(Array.isArray(s.calls) && countedCalls(s.calls,s.cache)<=MAX_RUNNER_CALLS && s.sequence===s.calls.length,'runner_calls');
   need(Array.isArray(s.receipts) && s.receipts.length<=2 && Array.isArray(s.cache) && completedEffectCount(s.cache,s.calls)<=6,'runner_limits');
   prefix(before.calls,s.calls);prefix(before.receipts,s.receipts);prefix(before.cache,s.cache);
   need(s.cache.length===before.cache.length+1,'runner_cache');
@@ -624,6 +637,14 @@ export function readRunnerHistory(raw,config,version=1) {
       invocation.result=readInvocationResult(p,invocation.registration,invocation.started,pending,reviewConfig(beforeIntent.calls));
       if(invocation.result.outcome==='cancelled')need(controls.cancelled===true,'runner_control');
       resultRecord=r;
+    } else if(version===3&&p.type==='develop-retry-limit') {
+      // Terminal: written instead of a develop intent when no delivery can still
+      // be reviewed. Every field is recomputed from the replayed state.
+      shape(p,[...common,'fromState','fromCode','countedCalls']);
+      need(r.kind==='result'&&pending===null&&developCallsExhausted(state)&&p.fromState===state.state
+        &&p.fromCode===state.code&&p.countedCalls===countedCalls(state.calls,state.cache),'runner_retry_limit');
+      state.state='blocked';state.code='develop_retry_limit';
+      state.reason=developRetryLimitReason(p.countedCalls,p.fromState,p.fromCode);lastReview=null;
     } else if(version===3&&p.type==='review-invocation-abandoned'&&Object.hasOwn(p,'resultDigest')) {
       // Abandoning a checkpointed review whose journaled result was never accepted.
       shape(p,[...common,'effectId','invocationId','registeredDigest','startedDigest','resultDigest','reason','at']);

@@ -13,7 +13,7 @@ import { reviewResult,reviewReceipt } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
   MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,completedEffectCount,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
-  reviewRetrySpent,abandonableReviewResult } from './durable-runner-state.mjs';
+  reviewRetrySpent,abandonableReviewResult,countedCalls,developCallsExhausted } from './durable-runner-state.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
 import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure} from './provider-review-observation.mjs';
 import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence,
@@ -344,7 +344,7 @@ export function createTaskRunner(options) {
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
         'review-invocation-abandoned':'result','effect-abandoned':'result',
         'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
-        'evidence-superseded':'result'}[type],
+        'evidence-superseded':'result','develop-retry-limit':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
     const record={...body,digest:digest(body)};boundRunnerRecord(record,body.seq);
@@ -853,6 +853,15 @@ export function createTaskRunner(options) {
       state='fixture_completed';return;
     }
   }
+  // No delivery can still be reviewed: journal the terminal limit instead of an
+  // intent, so no developer call runs (see developCallsExhausted).
+  const retryLimitDue=()=>invocationMode&&store&&!poisoned
+    &&developCallsExhausted({state,code,priorReview,calls,cache:[...cache.values()]});
+  function recordRetryLimit(){
+    persist('develop-retry-limit',{fromState:state,fromCode:code,countedCalls:countedCalls(calls,[...cache.values()])});
+    const recovered=readRunnerHistory(journal,metadata,3).state;
+    ({state,code}=recovered);reason=recovered.reason??null;publication=privateStatus();return publication;
+  }
   function executeEffect(raw) {
     let v;
     try {
@@ -877,6 +886,7 @@ export function createTaskRunner(options) {
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
     } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input'}));}
+    if(v.kind==='develop'&&retryLimitDue()){try{return Promise.resolve(recordRetryLimit());}catch{return Promise.resolve(poison());}}
     if(store) {
       try {
         if(state==='ready')compareReviewBaseline(captureReviewBaseline({...configToBaseline(metadata),version:original.version,
@@ -907,8 +917,11 @@ export function createTaskRunner(options) {
       }}
       if(poisoned)return status();
       const result=privateStatus();cache.set(v.id,{effect:v,digest:digest(v),result});
-      try{persist('effect-checkpoint',{effectId:v.id,checkpoint:frame()});publication=result;return result;}
+      try{persist('effect-checkpoint',{effectId:v.id,checkpoint:frame()});publication=result;}
       catch{return poison();}
+      // A block or verdict that leaves no reviewable delivery ends the run now,
+      // so status never invites a resume that could not finish.
+      try{return retryLimitDue()?recordRetryLimit():result;}catch{return poison();}
     })().finally(()=>{busy=false;pending=null;completeEffect=null;}).then(result=>{
       if(poisoned)return result;
       try{publishRegisteredReview();}

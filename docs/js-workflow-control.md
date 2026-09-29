@@ -1211,6 +1211,7 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 | `state: "unknown"` + pending review intent，尚无 host-joined／review 登记 | reviewer 启动前退出 | `pendingAction: "abandon_effect"`；确认旧 host 已退出后在原 run 显式退出 |
 | `state: "unknown"` + 已登记且无结果的 review invocation | 审查调用未完成 | `pendingAction: "abandon_review"`；核对旧 host 和 reviewer 进程后在原 run 显式退出 |
 | `state: "unknown"` + `transport_timeout`，结果已入 journal 且有最终消息 | reviewer 给出最终消息后被超时截断，结论从未被接收 | `pendingAction: "abandon_review"`；确认 reviewer 已退出后在原 run 显式放弃这条结果，再按一次重派恢复 |
+| `state: "blocked"` + `develop_retry_limit` | 可重试的开发阻断反复出现，剩余调用名额已不够再交付一次并送审；运行器在派发开发前写入 `develop-retry-limit`，没有 intent、没有开发调用 | 终态；按 `reason` 中上次阻断原因修好根因，用 `--supersede-reviewed-evidence` 新建运行 |
 | `state: "pending_review"` + `review_provider_failed` | 审查 CLI 没给结论就失败（`reason` 首段为类别，如 `reviewer_auth_failed`） | 按 `reason` 先登录或等额度，再带本轮审查授权恢复；同一 attempt 只重派一次 |
 | `state: "pending_review"` + `review_verdict_invalid` | 审查答复违反 verdict 规则（`reason` 首段为具体代码） | 带本轮审查授权恢复重派；同一 attempt 只重派一次 |
 | `state: "fixture_completed"` + `code: "qa_execution_unknown"` | 一次 QA 调用没拿到终态，工具可能还在跑或已被中断 | `--rerun-unknown-qa` |

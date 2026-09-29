@@ -33,6 +33,9 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 第 2 轮交付与第 1 轮被要求修改的代码逐字节相同（`artifactDigest` 相同）时停在可重试的
 `blocked/develop_unchanged_after_review`，不送审、不耗第 2 轮审查；改好 `develop-a2.json` 后在原 run `advance`，
 以新的 develop effect id 重新交付。
+一个运行最多 6 次计数调用（本地拒绝的开发结果、自动重派的审查和被放弃的调用不计）。任何可重试的开发阻断反复出现、
+剩余名额已不够再交付一次并送审时，运行器在派发开发前写入 `develop-retry-limit` 并停在终态
+`blocked/develop_retry_limit`（`pendingAction: none`）；按 reason 中的上次阻断原因修好根因后用 supersede 新建运行。
 若第 1 轮已经待审且计划带
 `--allow-review-attempt 1`，`advance` 可能在同一次调用中进入第 2 轮；缺 `develop-a2.json` 时会在
 启动宿主前退出 2，并提示当前 `packageDigest`。此时先以该 digest 调用 `decision` 单独运行审查，

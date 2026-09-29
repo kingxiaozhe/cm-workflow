@@ -14,6 +14,7 @@
 - cm-ai 独立审查 CLI 未登录、限流、服务端过载、模型不存在、输出无法识别的事件或没有结论就退出（未调用工具、未给结论、进程已退出）时，不再停在 unknown，而是 `pending_review/review_provider_failed`，reason 写明失败类别和下一步（先登录或等额度），同一 attempt 与传输超时、abandon 共用一次重派；超出后为 `blocked/review_provider_failed`。已有最终消息但被超时截断的审查改为提示 `abandon_review`，操作员留痕放弃后同样只重派一次；旧 journal 照原样回放，旧 unknown 不自动改类。
 - cm-ai 审查提示写明 verdict 规则（P0–P3 含义、approved 不能带 P0–P2、changes_requested 至少一条 P0–P2、只有代码无法在范围内修好时才用 blocked、规格文件不是 finding 路径）；审查答复违反这些规则时记为 `pending_review/review_verdict_invalid` 并保留具体代码（如 `contradictory_verdict`），同一预算内重派一次；`blocked` 仍是终态但 reason 写明审查给出的原因。
 - cm-ai 调大 `--review-config` 的 `timeoutMs`（超过 30 分钟）不再在 30 分钟被运行器截断并耗掉唯一重试：运行器的审查计时改为审查预算加 1 分钟余量，且不写入 journal，恢复时可继续调大。
+- cm-ai 可重试的开发阻断（如检查产物越界）反复出现、剩余调用名额已不够再交付一次并送审时，在派发开发前停在终态 `blocked/develop_retry_limit`（journal 记 `develop-retry-limit`，不写 intent、不调用开发者），reason 写明上次阻断原因并提示 supersede 新建运行，不再让第 7 次调用跑完后检查点被拒、运行变成 unknown；显式放弃的审查调用也不再占调用名额。
 - cm-ai 第 2 轮交付与第 1 轮被要求修改的代码逐字节相同时，停在可重试的 `blocked/develop_unchanged_after_review`，不送审、不耗第 2 轮审查；同时修正第 2 轮开发检查被门禁拦下时 journal 回放失败、运行变成 unknown 的问题。
 
 - cm-ai 单任务驾驶员对 bootstrap 规范任务在启动前拒绝缺少实时 `init_verify` runner，并将 unknown／reconcile 宿主结果作为失败退出；补充当前会话宿主路径与旧运行恢复说明。

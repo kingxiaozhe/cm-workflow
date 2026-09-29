@@ -631,3 +631,86 @@ test(`#8 abandoned reviews at both attempts plus an unchanged attempt-2 block st
   assert.equal(history.state.calls.length,7);
   assert.deepEqual(f.reopen().status(),complete);
 },{reviewTimeoutMs:200}));
+
+// Codex re-review of 4e4c7a8: a retryable develop block whose developer call
+// holds no effect slot (check_output_out_of_scope) could repeat until a
+// developer call ran without a call slot and its checkpoint poisoned the store.
+const strayOutput=[{id:'build',command:[process.execPath,'-e',
+  "require('node:fs').mkdirSync('build',{recursive:true});require('node:fs').writeFileSync('build/out.o','x')"]}];
+test('develop retries stop before dispatch when no reviewable delivery fits the call budget (real host)',t=>{
+  const f=fixture(t),advance=(mode)=>{
+    const run=f.drive(f.plan({mode,checks:strayOutput,...(mode==='resume'?{originalHostContext:'review-host-a'}:{})}),'advance');
+    fs.rmSync(path.join(f.codeProject,'build'),{recursive:true,force:true});return run;};
+  for(let round=1;round<=4;round++){
+    const run=advance(round===1?'create':'resume');
+    assert.equal(run.status,0,run.stderr);assert.equal(run.result.code,'check_output_out_of_scope');
+    assert.equal(run.result.pendingAction,'resume');
+  }
+  // The fifth delivery uses the fifth call; a sixth could not also be reviewed.
+  const fifth=advance('resume');
+  assert.equal(fifth.status,0,fifth.stderr);
+  assert.equal(fifth.result.state,'blocked');assert.equal(fifth.result.code,'develop_retry_limit');
+  assert.equal(fifth.result.pendingAction,'none');
+  assert.match(fifth.result.reason,/^develop_retry_limit: 本运行已用 5 次计数调用.*check_output_out_of_scope.*--supersede-reviewed-evidence/);
+  const intents=f.intents();
+  assert.deepEqual(intents,['develop-1',...[1,2,3,4].map(n=>`develop-1-retry-${n}`)]);
+  assert.equal(f.records().at(-1).payload.type,'develop-retry-limit');
+  // Resuming again dispatches nothing: no intent, no developer request.
+  const after=advance('resume');
+  assert.equal(after.status,0,after.stderr);assert.equal(after.result.code,'develop_retry_limit');
+  assert.doesNotMatch(after.stderr,/应答 develop/);assert.deepEqual(f.intents(),intents);
+  const history=f.replay();assert.equal(history.state.code,'develop_retry_limit');assert.equal(history.pending,null);
+});
+
+test('#retry-limit an older journal already out of call slots converts on the next develop request',t=>runnerFixture(t,async f=>{
+  let developed=0;const content=f.state.content;f.state.content=attempt=>{developed++;return content(attempt);};
+  f.setChecks(()=>{fs.writeFileSync(path.join(f.root,`stray-${developed}.o`),'x');return checksPassed;});
+  let runner=f.make();
+  for(const suffix of ['','-retry-1','-retry-2','-retry-3','-retry-4']){
+    for(const name of fs.readdirSync(f.root).filter(name=>name.startsWith('stray-')))fs.rmSync(path.join(f.root,name));
+    await runner.executeEffect(f.effect('develop',1,suffix));
+  }
+  assert.equal(runner.status().code,'develop_retry_limit');assert.equal(developed,5);
+  for(const name of fs.readdirSync(f.root).filter(name=>name.startsWith('stray-')))fs.rmSync(path.join(f.root,name));
+  // The shape an older version left: the fifth block without the limit record.
+  runner=f.resumePrefix('effect-checkpoint');
+  assert.equal(runner.status().code,'check_output_out_of_scope');
+  const converted=await runner.executeEffect(f.effect('develop',1,'-retry-5'));
+  assert.equal(converted.state,'blocked');assert.equal(converted.code,'develop_retry_limit');
+  assert.equal(developed,5,'no developer call');
+  assert.equal(f.records().at(-1).payload.type,'develop-retry-limit');
+  assert(!f.records().some(row=>row.payload.effect?.id==='develop-1-retry-5'),'no intent');
+  assert.deepEqual(f.reopen().status(),converted);
+  // Terminal: a later develop request is refused before any intent.
+  const refused=await f.reopen().executeEffect(f.effect('develop',1,'-retry-6'));
+  assert.equal(refused.outcome,'rejected');assert.equal(refused.code,'stage_mismatch');assert.equal(developed,5);
+}));
+
+test('#retry-limit replay accepts the limit record only where the call budget is exhausted',t=>runnerFixture(t,async f=>{
+  let developed=0;const content=f.state.content;f.state.content=attempt=>{developed++;return content(attempt);};
+  f.setChecks(()=>{fs.writeFileSync(path.join(f.root,`stray-${developed}.o`),'x');return checksPassed;});
+  const runner=f.make();
+  for(const suffix of ['','-retry-1','-retry-2','-retry-3','-retry-4']){
+    for(const name of fs.readdirSync(f.root).filter(name=>name.startsWith('stray-')))fs.rmSync(path.join(f.root,name));
+    await runner.executeEffect(f.effect('develop',1,suffix));
+  }
+  const records=f.records(),configuration=records[0].payload.config,limit=records.at(-1).payload;
+  assert.equal(limit.type,'develop-retry-limit');assert.equal(limit.countedCalls,5);
+  assert.equal(limit.fromState,'blocked');assert.equal(limit.fromCode,'check_output_out_of_scope');
+  const history=readRunnerHistory(records,configuration,3);assert.equal(history.state.code,'develop_retry_limit');
+  for(const [field,value] of [['countedCalls',4],['fromCode','develop_checks_not_passed'],['fromState','ready']]){
+    const changed=structuredClone(records);changed.at(-1).payload[field]=value;
+    assert.throws(()=>readRunnerHistory(rechain(changed),configuration,3),{code:'runner_retry_limit'});
+  }
+  // Earlier, with a slot for a delivery and its review, the record is refused.
+  const early=structuredClone(records.slice(0,-3));early.push({...structuredClone(records.at(-1)),
+    payload:{...limit,countedCalls:4}});
+  assert.throws(()=>readRunnerHistory(rechain(early.map((row,index)=>({...row,seq:index+1,
+    id:`runner.${String(index+1).padStart(6,'0')}`}))),configuration,3),{code:'runner_retry_limit'});
+  // After the limit, no develop intent replays.
+  const intent=structuredClone(records.findLast(row=>row.payload.type==='effect-intent'));
+  intent.payload.effect.id='develop-1-retry-9';
+  const extended=[...structuredClone(records),intent].map((row,index)=>({...row,seq:index+1,
+    id:`runner.${String(index+1).padStart(6,'0')}`}));
+  assert.throws(()=>readRunnerHistory(rechain(extended),configuration,3),{code:'runner_stage'});
+}));
