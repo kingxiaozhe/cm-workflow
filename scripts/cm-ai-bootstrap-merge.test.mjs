@@ -6,7 +6,9 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
-import {createHostBootstrap,mergeBootstrapAgents} from '../runtime/js/cm-ai/host-bootstrap.mjs';
+import {createHostBootstrap,mergeBootstrapAgents,validateBootstrapReviewPackage} from '../runtime/js/cm-ai/host-bootstrap.mjs';
+import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {bootstrapReviewRecoverable} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {cmInitRuleTargets} from '../runtime/js/cm-init/draft-generation.mjs';
 
 const workflowRoot=fileURLToPath(new URL('..',import.meta.url)).replace(/\/$/,'');
@@ -31,6 +33,63 @@ test('approved rule refresh replaces the rule body but preserves Learning bytes'
   assert.equal(mergeBootstrapAgents(existing,generated,{refresh:true}),generated+'\n'+lesson);
   assert.throws(()=>mergeBootstrapAgents(existing,generated+'\n## 项目教训\n- rewritten\n',{refresh:true}),
     {code:'bootstrap_instruction_conflict'});
+});
+
+test('bootstrap review requires a changed entry only when the final target differs from its original bytes',()=>{
+  const identity={repositoryId:'fixture',runId:'refresh',taskId:'T-010',attempt:1};
+  const paths=['AGENTS.md','.claude/rules/security.md'];
+  const original='a'.repeat(64),updated='b'.repeat(64);
+  const configuration={instructionPaths:paths};
+  const body={version:1,workflow:'cm-ai',phase:'bootstrap_instructions',identity,invocationId:'fixture-invocation',
+    configurationDigest:digest(configuration),files:[
+      {path:paths[0],beforeSha256:original,afterSha256:updated},
+      {path:paths[1],beforeSha256:original,afterSha256:original}],
+    contextFiles:[{scope:'project',path:paths[0],sha256:updated},
+      {scope:'project',path:paths[1],sha256:original}]};
+  const evidence={...body,evidenceDigest:digest(body)};
+  const pkg={scope:paths,changes:[{path:paths[0],before:{sha256:original},after:{sha256:updated}}],
+    unchangedScope:[{path:paths[1],sha256:original}]};
+  const writeback={outcome:'no_new_lesson'};
+  assert.doesNotThrow(()=>validateBootstrapReviewPackage(pkg,evidence,configuration,identity,writeback));
+  assert.throws(()=>validateBootstrapReviewPackage({...pkg,changes:[]},evidence,configuration,identity,writeback),
+    {code:'bootstrap_review_mismatch'});
+  assert.throws(()=>validateBootstrapReviewPackage({...pkg,scope:[paths[0]]},evidence,configuration,identity,writeback),
+    {code:'bootstrap_review_mismatch'});
+  assert.throws(()=>validateBootstrapReviewPackage({...pkg,unchangedScope:[]},evidence,configuration,identity,writeback),
+    {code:'bootstrap_review_mismatch'});
+});
+
+test('attempt 2 may restore a rejected rule to the original baseline',()=>{
+  const identity={repositoryId:'fixture',runId:'refresh',taskId:'T-010',attempt:2};
+  const paths=['AGENTS.md','.claude/rules/security.md'];
+  const original='a'.repeat(64),updated='b'.repeat(64);
+  const configuration={instructionPaths:paths};
+  const body={version:1,workflow:'cm-ai',phase:'bootstrap_instructions',identity,invocationId:'second-attempt',
+    configurationDigest:digest(configuration),files:[
+      {path:paths[0],beforeSha256:original,afterSha256:updated},
+      {path:paths[1],beforeSha256:updated,afterSha256:original}],
+    contextFiles:[{scope:'project',path:paths[0],sha256:updated},
+      {scope:'project',path:paths[1],sha256:original}]};
+  const pkg={scope:paths,changes:[{path:paths[0],before:{sha256:original},after:{sha256:updated}}],
+    unchangedScope:[{path:paths[1],sha256:original}]};
+  assert.doesNotThrow(()=>validateBootstrapReviewPackage(pkg,{...body,evidenceDigest:digest(body)},
+    configuration,identity,{outcome:'no_new_lesson'}));
+  assert.throws(()=>validateBootstrapReviewPackage({...pkg,unchangedScope:[{path:paths[1],sha256:updated}]},
+    {...body,evidenceDigest:digest(body)},configuration,identity,{outcome:'no_new_lesson'}),
+  {code:'bootstrap_review_mismatch'});
+});
+
+test('only a completed bootstrap develop with retained passing evidence offers local review recovery',()=>{
+  const state={state:'unknown',code:'execution_error',attempt:1,reviewPackage:null,receipt:null,reviewInvocation:null,
+    calls:[{terminal:'succeeded'}],currentChecks:[{kind:'command',outcome:'passed',exitCode:0}],
+    learningResult:{bootstrap:{files:[]},writeback:{outcome:'no_new_lesson'}},
+    cache:[{effect:{kind:'develop',identity:{attempt:1}},result:{state:'unknown',code:'execution_error'}}]};
+  const bootstrap={mode:'instructions'};
+  assert.equal(bootstrapReviewRecoverable(state,null,bootstrap),true);
+  assert.equal(bootstrapReviewRecoverable({...state,reviewPackage:{}},null,bootstrap),false);
+  assert.equal(bootstrapReviewRecoverable({...state,currentChecks:[{kind:'command',outcome:'failed',exitCode:1}]},null,bootstrap),false);
+  assert.equal(bootstrapReviewRecoverable(state,{kind:'develop'},bootstrap),false);
+  assert.equal(bootstrapReviewRecoverable({...state,state:'unknown',code:'reconciliation_required'},null,bootstrap),false);
 });
 
 test('later same-feature rules task binds clean committed targets and rejects drift',t=>{

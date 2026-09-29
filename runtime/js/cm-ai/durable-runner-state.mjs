@@ -136,6 +136,22 @@ export function validateTaskLearningReviewPackage(rawPackage,writeback,learningI
     &&(agents===null||agents.after?.sha256===writeback.agentsFile.sha256),'runner_learning');
   return true;
 }
+// Only a completed bootstrap development whose package construction failed can
+// be reconciled locally. Its developer call, checks and Learning writeback are
+// already durable; a second develop would lose the original review baseline.
+export function bootstrapReviewRecoverable(s,pending=null,configuration=null) {
+  const last=s.cache.at(-1),call=s.calls.at(-1);
+  return configuration?.mode==='instructions'&&pending===null&&s.attempt===1
+    &&(s.state==='unknown'&&s.code==='execution_error'
+      ||s.state==='blocked'&&s.code==='bootstrap_review_mismatch')
+    &&s.reviewPackage===null&&s.receipt===null&&s.reviewInvocation===null
+    &&last?.effect.kind==='develop'&&last.effect.identity.attempt===s.attempt
+    &&last.result.state===s.state&&last.result.code===s.code
+    &&call?.terminal==='succeeded'&&s.learningResult?.bootstrap!=null
+    &&s.learningResult.writeback?.outcome!=='writeback_pending'
+    &&Array.isArray(s.currentChecks)&&s.currentChecks.length>0
+    &&s.currentChecks.every(item=>item.outcome==='passed'&&(item.kind==='visual'||item.exitCode===0));
+}
 // limit only widens the builder's own copy check so a caller can measure an
 // oversized record exactly; the store still refuses it (JOURNAL_PAYLOAD_LIMIT).
 export const runnerPayload=(type,fields,version=1,limit=undefined)=>{need([1,2].includes(version),'runner_version');
@@ -442,6 +458,11 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
         need(before.attempt===2&&before.priorReview?.verdict==='changes_requested','runner_develop');
       expectedState='blocked';expectedCode=s.code;
     }
+    if(added[0]?.terminal==='succeeded'&&s.code==='bootstrap_review_mismatch'){
+      need(config.bootstrap?.mode==='instructions'&&s.reviewPackage===null&&s.learningResult?.bootstrap!=null,
+        'runner_develop');
+      expectedState='blocked';expectedCode=s.code;
+    }
     if(added.length===0&&s.code==='bootstrap_instruction_conflict'){
       need(config.bootstrap?.mode==='instructions','runner_develop');
       same(s.learningResult,before.learningResult);
@@ -663,6 +684,19 @@ export function readRunnerHistory(raw,config,version=1) {
       need(r.kind==='result'&&index===1&&pending===null&&state.state==='ready'&&supersession===null,'supersede_record_invalid');
       supersession=readEvidenceSupersession(p.record,{feature:config.taskLearning.feature,
         taskId:config.identity.taskId,newRunId:config.identity.runId});
+    } else if(version===3&&p.type==='bootstrap-review-recovered') {
+      shape(p,[...common,'fromDigest','reviewPackage','reason','at']);
+      need(r.kind==='result'&&p.fromDigest===records[index-1].digest
+        &&bootstrapReviewRecoverable(state,pending,config.bootstrap),'bootstrap_review_recovery_unavailable');
+      need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(p.reason),'bootstrap_review_recovery_unavailable');
+      need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,
+        'bootstrap_review_recovery_unavailable');
+      packageLink(p.reviewPackage,original,state.attempt,state.currentChecks);
+      validateTaskLearningReviewPackage(p.reviewPackage,state.learningResult.writeback,
+        state.cache.at(-1).effect.learningInput,state.learningResult.bootstrap,config.bootstrap);
+      state.reviewPackage=readReviewPackage(p.reviewPackage);
+      state.state='awaiting_review';state.code=null;state.reason=null;
     } else if(p.type==='effect-intent') {
       shape(p,[...common,'effect']);need(r.kind==='intent' && pending===null,'runner_intent');
       const e=p.effect;shape(e,['version','id','identity','kind',...(Object.hasOwn(e,'learningInput')?['learningInput']:[])]);

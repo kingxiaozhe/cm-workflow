@@ -33,6 +33,7 @@ export const completionRetryable=status=>status.state==='blocked'
 const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approval':
   // The runner reports spec_drift over any state whose next effect would be refused.
   status.code==='spec_drift'?(status.specificationRebind==='available'?'spec_rebind':'none'):
+  status.bootstrapReviewRecovery===true?'bootstrap_review_recover':
   status.state==='changes_requested'||retryDeveloper(status)||retryReview(status)?'resume':
   status.state==='awaiting_review'?'decision':status.state==='unknown'
     ?(status.pendingEffectKind?'abandon_effect':
@@ -76,9 +77,9 @@ function readOperation(raw) {
   const operation=json(raw),keys=['version','operation','requestId','identity'];
   if(['decision','complete','qa','qa_result','context_refresh','finish','run_finalize'].includes(operation?.operation))keys.push('packageDigest');
   if(['qa_result','context_refresh','finish','run_finalize'].includes(operation?.operation))keys.push('testRunId');
-  if(['abandon_review','abandon_effect'].includes(operation?.operation))keys.push('reason');
+  if(['abandon_review','abandon_effect','bootstrap_review_recover'].includes(operation?.operation))keys.push('reason');
   shape(operation,keys);
-  need(operation.version===1&&['advance','start','status','decision','complete','qa','qa_result','context_refresh','finish','run_finalize','cancel','resume','abandon_review','abandon_effect']
+  need(operation.version===1&&['advance','start','status','decision','complete','qa','qa_result','context_refresh','finish','run_finalize','cancel','resume','abandon_review','abandon_effect','bootstrap_review_recover']
     .includes(operation.operation));
   id(operation.requestId);validIdentity(operation.identity);
   if(operation.operation==='abandon_review')need(typeof operation.reason==='string'
@@ -87,6 +88,9 @@ function readOperation(raw) {
   if(operation.operation==='abandon_effect')need(typeof operation.reason==='string'
     &&operation.reason.trim().length>0&&Buffer.byteLength(operation.reason,'utf8')<=500
     &&!/[\r\n\0]/.test(operation.reason),'effect_abandon_reason_required');
+  if(operation.operation==='bootstrap_review_recover')need(typeof operation.reason==='string'
+    &&operation.reason.trim().length>0&&Buffer.byteLength(operation.reason,'utf8')<=500
+    &&!/[\r\n\0]/.test(operation.reason),'bootstrap_review_recovery_reason_required');
   if(['decision','complete','qa','qa_result','context_refresh','finish','run_finalize'].includes(operation.operation))hex(operation.packageDigest);
   if(operation.operation==='qa_result')id(operation.testRunId);
   if(['context_refresh','finish','run_finalize'].includes(operation.operation)){
@@ -179,6 +183,7 @@ export function createCmAiConversationEntry(options) {
   if(options&&Object.hasOwn(options,'parallelSelection'))optionKeys.push('parallelSelection');
   if(options&&Object.hasOwn(options,'allowAbandonReview'))optionKeys.push('allowAbandonReview');
   if(options&&Object.hasOwn(options,'allowAbandonEffect'))optionKeys.push('allowAbandonEffect');
+  if(options&&Object.hasOwn(options,'allowBootstrapReviewRecovery'))optionKeys.push('allowBootstrapReviewRecovery');
   if(options&&Object.hasOwn(options,'holdRevision'))optionKeys.push('holdRevision');
   shape(options,optionKeys);
   need(!Object.hasOwn(options,'holdRevision')||options.holdRevision===true,'invalid_input');
@@ -198,6 +203,7 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'rebindSpecification'))runnerKeys.push('rebindSpecification');
   if(runner&&Object.hasOwn(runner,'abandonReview'))runnerKeys.push('abandonReview');
   if(runner&&Object.hasOwn(runner,'abandonEffect'))runnerKeys.push('abandonEffect');
+  if(runner&&Object.hasOwn(runner,'recoverBootstrapReview'))runnerKeys.push('recoverBootstrapReview');
   if(runner&&Object.hasOwn(runner,'inspectBootstrapAdmission'))runnerKeys.push('inspectBootstrapAdmission');
   shape(runner,runnerKeys);
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');
@@ -209,11 +215,14 @@ export function createCmAiConversationEntry(options) {
   if(Object.hasOwn(runner,'reviseQa'))need(typeof runner.reviseQa==='function');
   if(Object.hasOwn(runner,'abandonReview'))need(typeof runner.abandonReview==='function');
   if(Object.hasOwn(runner,'abandonEffect'))need(typeof runner.abandonEffect==='function');
+  if(Object.hasOwn(runner,'recoverBootstrapReview'))need(typeof runner.recoverBootstrapReview==='function');
   if(Object.hasOwn(runner,'inspectBootstrapAdmission'))need(typeof runner.inspectBootstrapAdmission==='function');
   need(options.allowAbandonReview===undefined||typeof options.allowAbandonReview==='boolean','invalid_input');
   let abandonPermission=options.allowAbandonReview===true;
   need(options.allowAbandonEffect===undefined||typeof options.allowAbandonEffect==='boolean','invalid_input');
   let abandonEffectPermission=options.allowAbandonEffect===true;
+  need(options.allowBootstrapReviewRecovery===undefined||typeof options.allowBootstrapReviewRecovery==='boolean','invalid_input');
+  let bootstrapReviewRecoveryPermission=options.allowBootstrapReviewRecovery===true;
 
   const hostDecision=Object.hasOwn(options,'hostDecision')?json(options.hostDecision):null;
   let hostDecisionProvider=null,pendingReviewDecision=null;
@@ -314,7 +323,7 @@ export function createCmAiConversationEntry(options) {
     need(sameTask(identity,ownerIdentity)&&identity.attempt>=ownerIdentity.attempt,'identity_mismatch');
     // Stable run-definition identity can query/control or resume the current
     // attempt. Package-bound mutations must name the current attempt exactly.
-    const stableControl=['status','cancel','advance','resume','abandon_review','abandon_effect'].includes(operation.operation)
+    const stableControl=['status','cancel','advance','resume','abandon_review','abandon_effect','bootstrap_review_recover'].includes(operation.operation)
       &&sameIdentity(operation.identity,ownerIdentity);
     need(sameIdentity(operation.identity,identity)||stableControl,'identity_mismatch');
     if(operation.operation==='advance'){
@@ -478,6 +487,16 @@ export function createCmAiConversationEntry(options) {
       if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code,
         ...(result.reason?{reason:result.reason}:{})},'rejected');
       return summary(operation,boundStatus(result,identity),'abandoned');
+    }
+    if(operation.operation==='bootstrap_review_recover'){
+      if(!bootstrapReviewRecoveryPermission)return summary(operation,{...runner.status(),
+        code:'bootstrap_review_recovery_authorization_required'},'rejected');
+      bootstrapReviewRecoveryPermission=false;
+      const result=runner.recoverBootstrapReview?.({allowed:true,reason:operation.reason})
+        ??{outcome:'rejected',code:'bootstrap_review_recovery_unavailable'};
+      if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code,
+        ...(result.reason?{reason:result.reason}:{})},'rejected');
+      return summary(operation,boundStatus(result,identity),'advanced');
     }
     if(operation.operation==='decision'){
       const status=boundStatus(runner.status(),identity);
@@ -712,7 +731,7 @@ export function createCmAiConversationEntry(options) {
     let token=null;
     try{
       const operation=readOperation(raw);
-      if(!['status','cancel','abandon_review','abandon_effect'].includes(operation.operation)){
+      if(!['status','cancel','abandon_review','abandon_effect','bootstrap_review_recover'].includes(operation.operation)){
         token=Symbol(operation.operation);inFlightHandles.add(token);
       }
       return await route(operation);

@@ -9,7 +9,7 @@ import {buildManifest} from './cm-spec-manifest.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {cmInitRuleTargets} from '../runtime/js/cm-init/draft-generation.mjs';
-import {qaFixAnswerFor,projectDevelopAttempts} from './cm-ai-drive.mjs';
+import {qaFixAnswerFor,projectDevelopAttempts,bootstrapReviewRecoveryPlanError,buildCmAiDriveRequest} from './cm-ai-drive.mjs';
 
 const DRIVER=fileURLToPath(new URL('./cm-ai-drive.mjs',import.meta.url));
 const identity={repositoryId:'drive-fixture',runId:'drive-run',taskId:'T-001',attempt:1};
@@ -289,6 +289,22 @@ test('driver requires resume, flag and one-line reason for abandon_effect before
     assert.match(run.stderr,/abandon_effect 需要 resume/);
     assert.equal(fs.existsSync(f.store),false);
   }
+});
+
+test('bootstrap review recovery driver requires a bound resume and sends only the reason',t=>{
+  const f=fixture(t);
+  for(const plan of [
+    {mode:'create',permissions:['--allow-bootstrap-review-recovery'],reason:'review package failed'},
+    {mode:'resume',permissions:[],reason:'review package failed'},
+    {mode:'resume',permissions:['--allow-bootstrap-review-recovery'],reason:'line one\nline two'}]){
+    assert.match(bootstrapReviewRecoveryPlanError('bootstrap_review_recover',plan,plan.permissions),/需要 resume/);
+    const run=f.drive(f.plan(plan),'bootstrap_review_recover');assert.equal(run.status,2,run.stderr);
+    assert.equal(fs.existsSync(f.store),false);
+  }
+  const plan={mode:'resume',permissions:['--allow-bootstrap-review-recovery'],reason:'Checked bound files and handoff'};
+  assert.equal(bootstrapReviewRecoveryPlanError('bootstrap_review_recover',plan,plan.permissions),null);
+  assert.deepEqual(buildCmAiDriveRequest('bootstrap_review_recover',plan,{identity}),
+    {version:1,identity,reason:plan.reason});
 });
 
 test('missing develop answer is refused before store creation',t=>{

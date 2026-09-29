@@ -440,6 +440,8 @@ QA命令复用同一specs只读沙箱。最终任务的documentationPaths必须�
 init_generate复用原cm-init生成合同；init_verify五组检查加constraintChanges/application/retrospective，详情以产品文档为准。
 宿主不自行落指令文件：JS固定写入、读回、同次handoff/Review、N7重载。首次规则任务只允许空目标或已有 Learning 段的 AGENTS.md，须保留其余既有正文。同一 bootstrap feature 中，前序规则任务已完成且固定目标的 HEAD、暂存区与工作文件一致时，后续规则任务可基于该提交刷新正文；当前 `## 项目教训` 段仍原字节合入并接受 `init_verify` 和独立 Review。派发前可判定的规则基准冲突停在 `blocked/bootstrap_instruction_conflict`，修复目标后原 run `resume`；若要采用新的提交，用新 runId 重建。生成后的并发漂移仍按 unknown 保留证据，不覆盖或自动重派。
 
+规则文件、检查与 handoff 已写入，但审查包构建因目标证据不符而停在 `blocked/bootstrap_review_mismatch`，或旧宿主把同一阶段记为 `unknown/execution_error` 时，先确认旧 writer 已退出并保留原文件。仅原 run 的 attempt 1 可用 `bootstrap_review_recover`：以原 run 定义和原审查／workflow／bootstrap 配置 `--mode resume`，增加一次性 `--allow-bootstrap-review-recovery`；请求携带原任务 identity 和单行 `reason`。标准 driver 用 `node scripts/cm-ai-drive.mjs --plan recovery.json bootstrap_review_recover`，PLAN 为 `mode:"resume"`、`permissions` 含上述旗标及原配置路径、`reason`；换会话还须 `originalHostContext`。此操作不读取生成答案、不重派开发或检查，而是核对六个目标当前 SHA、原 handoff 的 changed_files 与 implementation 摘要，重建原审查包，并在 journal 追加可回放的 `bootstrap-review-recovered`。成功后是 `awaiting_review`，须另行授权独立 `decision`；若文件或 handoff 漂移，拒绝并保持原记录不变。
+
 用当前会话可交互的进程工具启动 CLI 并保留会话句柄。收到 `host_ready` 后按文档发送
 `advance`；批次控制消息不带子任务 identity，单任务按原合同携带 identity。
 持续读取响应，按 requestId 关联控制结果。不要等待 `advance` 结束才处理途中 host_request。

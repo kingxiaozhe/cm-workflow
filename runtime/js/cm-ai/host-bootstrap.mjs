@@ -72,7 +72,16 @@ export function validateBootstrapReviewPackage(pkg,evidence,configuration,identi
   for(const file of value.files){
     const change=pkg.changes.find(item=>item.path===file.path);
     const expected=file.path==='AGENTS.md'&&writeback.outcome==='written'?writeback.agentsFile.sha256:file.afterSha256;
-    need(change?.after?.sha256===expected&&pkg.scope.includes(file.path),'bootstrap_review_mismatch');
+    need(pkg.scope.includes(file.path),'bootstrap_review_mismatch');
+    if(change!==undefined){
+      // Attempt 2 packages the full delivery against the original baseline;
+      // this attempt's before hash may already contain attempt 1's edits.
+      need(change.after?.sha256===expected
+        &&(identity.attempt!==1||(change.before?.sha256??null)===file.beforeSha256),
+      'bootstrap_review_mismatch');
+    }else need((identity.attempt!==1||expected===file.beforeSha256)
+      &&pkg.unchangedScope?.some(item=>item.path===file.path&&item.sha256===expected),
+      'bootstrap_review_mismatch');
   }
   return value;
 }

@@ -16,13 +16,14 @@ import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
   MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,effectSlotFree,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
   reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted,
-  completionBlockCount,completionRetriesExhausted,supersededReviewPayload } from './durable-runner-state.mjs';
+  completionBlockCount,completionRetriesExhausted,supersededReviewPayload,bootstrapReviewRecoverable } from './durable-runner-state.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
 import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure} from './provider-review-observation.mjs';
 import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence,
   readCmAiTaskLearningApplication} from './cm-ai-context-refresh.mjs';
 import {readCmAiProjectLearningWriteback,writeCmAiProjectLearning} from './cm-ai-learning-writer.mjs';
 import {verifyCmAiTaskLearningHandoff,writeCmAiTaskLearningHandoff} from './cm-ai-learning-handoff-writer.mjs';
+import {implementationSha256,loadHandoff} from '../../../scripts/cm-task-gate.mjs';
 import {createHostHandoff} from './host-handoff.mjs';
 import {inspectFixCodeAssociation,explainCompletedDelivery} from './fix-code-association.mjs';
 import {approvedReviewAt,completedReviewedDeliveries,fixReviewedAt,resolveDeliverySteps} from './reviewed-deliveries.mjs';
@@ -311,6 +312,8 @@ export function createTaskRunner(options) {
   }
   const status=()=>{
     let current=store?publication:privateStatus();
+    if(!busy&&!poisoned&&bootstrapReviewRecoverable(frame(),restored?.pending??null,metadata.bootstrap))
+      current=freeze({...current,bootstrapReviewRecovery:true});
     // Status only; never part of a cached result or checkpoint.
     if(current.state==='unknown'&&reviewResultAbandonable())current=freeze({...current,abandonableReviewResult:true});
     if(!busy&&!poisoned)try{publishRegisteredReview(true);}
@@ -401,7 +404,8 @@ export function createTaskRunner(options) {
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
         'review-invocation-abandoned':'result','effect-abandoned':'result',
         'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
-        'evidence-superseded':'result','develop-retry-limit':'result','completion-retry-limit':'result','specification-rebound':'result'}[type],
+        'evidence-superseded':'result','develop-retry-limit':'result','completion-retry-limit':'result','specification-rebound':'result',
+        'bootstrap-review-recovered':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
     const record={...body,digest:digest(body)};boundRunnerRecord(record,body.seq);
@@ -1072,10 +1076,12 @@ export function createTaskRunner(options) {
         const failure=failureCode(error);
         const checkOnly=failure==='out_of_scope'&&Array.isArray(error.violations)&&error.violations.length>0
           &&error.violations.every(item=>item.newFile&&checkNewPaths?.has(item.path));
-        halt(checkOnly||failure==='spec_drift'?'blocked':'unknown',
+        halt(checkOnly||failure==='spec_drift'||failure==='bootstrap_review_mismatch'?'blocked':'unknown',
           checkOnly?'check_output_out_of_scope':failure,
-          ['out_of_scope','unsupported_file','limit_exceeded','package_mismatch','snapshot_changed'].includes(failure)
-            ?safeReason(error):null);
+          failure==='bootstrap_review_mismatch'
+            ?'规则审查包与六项目标证据不符；核对当前文件及 handoff 后，在原 run 使用 bootstrap_review_recover 恢复审查包。'
+            :['out_of_scope','unsupported_file','limit_exceeded','package_mismatch','snapshot_changed'].includes(failure)
+              ?safeReason(error):null);
       }}
       if(poisoned)return status();
       let result=privateStatus();cache.set(v.id,{effect:v,digest:digest(v),result});
@@ -1123,8 +1129,11 @@ export function createTaskRunner(options) {
   }
   function currentLearningInput() {
     const currentIdentity={...config.identity,attempt};
+    const recovered=journal?.some(row=>row.payload.type==='bootstrap-review-recovered'
+      &&row.payload.reviewPackage.packageDigest===reviewPackage?.packageDigest)??false;
     const develop=[...cache.values()].filter(entry=>entry.effect.kind==='develop'
-      &&digest(entry.effect.identity)===digest(currentIdentity)&&entry.result.state==='awaiting_review');
+      &&digest(entry.effect.identity)===digest(currentIdentity)
+      &&(entry.result.state==='awaiting_review'||recovered&&['unknown','blocked'].includes(entry.result.state)));
     need(develop.length===1&&Object.hasOwn(develop[0].effect,'learningInput'),'runner_learning');
     return develop[0].effect.learningInput;
   }
@@ -1294,7 +1303,40 @@ export function createTaskRunner(options) {
     }catch(error){return freeze({outcome:'rejected',code:error.code??'effect_abandon_unavailable',
       ...(error.code==='effect_abandon_commit_pending'?{reason:'task-commit-intent 已写入，tasks.md 可能已改名或勾选；请核对 tasks.md、提交回执和旧进程后按原提交恢复路径处理。'}:{})});}
   };
-  const api={reviseQa,supersedeEvidence,rebindSpecification,abandonReview,abandonEffect,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks};
+  const recoverBootstrapReview=raw=>{
+    try{
+      need(invocationMode&&store&&!busy&&!poisoned&&options.persistence.mode==='resume',
+        'bootstrap_review_recovery_unavailable');
+      const value=json(raw);shape(value,['allowed','reason']);
+      need(value.allowed===true,'bootstrap_review_recovery_authorization_required');
+      need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(value.reason),'bootstrap_review_recovery_reason_required');
+      const history=readRunnerHistory(journal,metadata,3);
+      need(bootstrapReviewRecoverable(history.state,history.pending,metadata.bootstrap),
+        'bootstrap_review_recovery_unavailable');
+      const input=history.state.cache.at(-1).effect.learningInput;
+      const handoffPath=completion.handoffs[attempt-1];
+      verifyCmAiTaskLearningHandoff({handoffPath,feature:taskLearning.feature,
+        identity:{...config.identity,attempt},learningInput:input,
+        ...(Object.hasOwn(learningResult,'application')?{application:learningResult.application}:{}),
+        retrospective:learningResult.retrospective,writeback:learningResult.writeback});
+      const pkg=createReviewPackage({root:config.root,baseline:base,checks:currentChecks,handoffPath});
+      validateTaskLearningReviewPackage(pkg,learningResult.writeback,input,learningResult.bootstrap,metadata.bootstrap);
+      const handoff=loadHandoff(handoffPath,{task:config.identity.taskId,attempt});
+      const paths=pkg.changes.map(item=>item.path);
+      need(digest([...handoff.changed_files].sort())===digest([...paths].sort())
+        &&handoff.implementation_sha256===implementationSha256(config.root,handoff.changed_files),
+        'bootstrap_review_recovery_mismatch');
+      verifyReviewPackage({root:config.root,baseline:base,checks:currentChecks,
+        reviewPackage:pkg,expectedDigest:pkg.packageDigest,handoffPath});
+      persist('bootstrap-review-recovered',{fromDigest:journal.at(-1).digest,reviewPackage:pkg,
+        reason:value.reason,at:new Date().toISOString()});
+      reviewPackage=pkg;state='awaiting_review';code=null;reason=null;
+      publication=privateStatus();return status();
+    }catch(error){return freeze({outcome:'rejected',code:error.code??'bootstrap_review_recovery_mismatch',
+      reason:'原运行的文件、handoff 或证据无法精确核对；请保留现场并检查差异，不要重新派发开发。'});}
+  };
+  const api={reviseQa,supersedeEvidence,rebindSpecification,abandonReview,abandonEffect,recoverBootstrapReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   // A terminal reviewer observation is durable even if the host died before

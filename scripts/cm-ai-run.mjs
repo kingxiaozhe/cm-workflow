@@ -210,7 +210,7 @@ const LEGACY_QA_FINGERPRINT_REASON='运行指纹与当前配置不符。若此�
   +'（项目 .cm-workflow.yml、~/.cm-workflow/runtimes.yml 与插件内置默认值）：把这些配置恢复为创建时的内容即可恢复；'
   +'现在新建的运行不再把这些可变配置写进指纹。否则请核对 run.json、--workflow-config、宿主身份及授权参数是否与创建时一致。';
 
-export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,holdRevision=false,specRebindReason=null}={}){
+export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,holdRevision=false,specRebindReason=null}={}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
@@ -218,6 +218,7 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
   if(mode==='create')assertCreatableRunId(definition?.identity);
   if(supersedeReason!==null&&mode!=='create')fail('supersede_unavailable');
   if(allowAbandonEffect&&mode!=='resume')fail('effect_abandon_unavailable');
+  if(allowBootstrapReviewRecovery&&mode!=='resume')fail('bootstrap_review_recovery_unavailable');
   if(typeof holdRevision!=='boolean')fail('invalid_input');
   if(specRebindReason!==null&&(mode!=='resume'||execution===null||typeof specRebindReason!=='string'||!specRebindReason.trim()
     ||Buffer.byteLength(specRebindReason,'utf8')>500||/[\r\n\0]/.test(specRebindReason)))fail('spec_rebind_unavailable');
@@ -393,7 +394,7 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
           ...(Object.hasOwn(execution,'verificationGate')?{verificationGate:execution.verificationGate}:{}),
           taskLearning:{feature,hostHandoff:true}})},
       // The entry validates the declaration (single line, with --rerun-blocked-qa) before any durable write.
-      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
+      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
         ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
     const logAbandonments=()=>{
