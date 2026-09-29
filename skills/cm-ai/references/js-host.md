@@ -255,7 +255,10 @@ cleanup=failed、环境摘要不一致、hostRequestTimeout 或会话自己回�
 （`host check: timeout/signal_exit/spawn_failed/output_*/cleanup_failed`，例如 xcodebuild 超时或被杀）时允许。
 没有声明命令（commands-unavailable）、延后用例（no-applicable-cases）、`[需确认]`（logic 报告行 `needsConfirmation`，
 即使映射命令同时没有退出码）、缺浏览器能力、源码漂移和未 complete 不适用；
-旧版本报告里会话回答的 BLOCKED 没有标记，仍不适用；旧报告里 logic INSUFFICIENT_EVIDENCE 行按原规则回放。配置填错应使用下述“QA 配置修订”。
+是否仍有 `[需确认]` 以该 feature 的 `test-cases.json` 为准，并与报告标记交叉核对（两者任一显示未确认即拒绝）；
+“只因命令没有退出码”由已记录的命令行推出，报告的 `commandUnavailable` 必须一致，删改报告标记不能换来重跑资格。
+旧版本报告里会话回答的 BLOCKED 没有标记，仍不适用。新写入的 superseded 行带 `recovery_rule: 2`；旧版本写入、
+没有该字段的 superseded 行按旧版本原规则回放（例如 logic INSUFFICIENT_EVIDENCE 行照旧有效）。配置填错应使用下述“QA 配置修订”。
 非零退出码是产品 FAIL，不会被重新归类；确认是环境造成（例如模拟器运行时缺失时 `xcodebuild test` 退出 65）时，
 可在同一命令加 `--qa-environment-failure "原因"`（单行，最多 500 UTF-8 字节，必须与 `--rerun-blocked-qa` 同用，仅单任务宿主）：
 只接受最新结果为 FAIL 且每条 FAIL 都是有退出码的命令行、或只因这类映射命令失败的 logic 用例；browser FAIL、

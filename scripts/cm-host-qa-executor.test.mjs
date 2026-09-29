@@ -4,11 +4,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {PassThrough} from 'node:stream';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {serveCmAiHost} from '../runtime/js/cm-ai/host-session.mjs';
 import {createHostQaDecisionProvider} from '../runtime/js/cm-ai/host-qa-policy.mjs';
 import {createHostQaExecutor} from '../runtime/js/cm-ai/host-qa-executor.mjs';
-import {recordCmAiQaDecision,recordCmAiQaRun,inspectCmAiQaResult} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
+import {recordCmAiQaDecision,recordCmAiQaRun,inspectCmAiQaResult,readCmAiQaRunRound} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 
 function fixture() {
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-qa-exec-')));
@@ -664,12 +666,56 @@ test(`logic report rows record why they are BLOCKED: ${mode}`,async()=>{
   }finally{f.cleanup();}
 });
 
-for(const scenario of ['evidence','cleanup','environment','timeout','logic','commands','product-blocked',
+test('superseded rows written before recovery_rule 2 replay under the original rule; new rows use the contract',async()=>{
+  const f=fixture();
+  try{
+    // The original rule accepted a logic INSUFFICIENT_EVIDENCE case even with [需确认].
+    const source=path.join(f.binding.specsDir,f.binding.feature,'test-cases.json'),contract=JSON.parse(fs.readFileSync(source));
+    contract.cases[0].expected=['[需确认] synthetic expectation'];fs.writeFileSync(source,JSON.stringify(contract));
+    f.configuration.commands[0].caseIds=[];
+    const artifact=path.join(f.binding.specsDir,'.reviews','browser.txt');fs.writeFileSync(artifact,'Synthetic observation');
+    const executor=createHostQaExecutor({...f.configuration,logic:async()=>({verdict:'INSUFFICIENT_EVIDENCE',evidence:['Synthetic static observation']}),
+      browser:async request=>({verdict:'PASS',evidence:[artifact],environment:request.environment,cleanup:'completed'})});
+    const binding=begin(f,executor),result=await executor.run(binding,new AbortController().signal);
+    const base={...binding,logHome:f.configuration.logHome};recordCmAiQaRun({...base,phase:'complete',result});
+    assert.equal(result.result,'BLOCKED');
+    // Old executors never wrote the marker; an old host wrote the superseded row without recovery_rule.
+    fs.writeFileSync(result.report,fs.readFileSync(result.report,'utf8').replace(/,\n\s*"needsConfirmation": true/g,''));
+    const {codeProject,testRunId,mode,caseCount,...query}=binding;
+    const writer=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
+    const data={node:'N6',repository_id:binding.identity.repositoryId,feature:binding.feature,task:binding.identity.taskId,
+      package_digest:binding.packageDigest,qa_decision_id:'qa-fixture-decision',operation_id:testRunId,attempt:1,mode,case_count:caseCount,
+      previous_test_run_id:testRunId,reason:'host_evidence_problem',blocked_cases:['TC-001'],expected_environment:f.configuration.environment};
+    const written=spawnSync(process.env.CM_PYTHON_BIN||'python3',[writer,'--workflow','cm-ai','--event','test_run','--phase','superseded',
+      '--runtime','codex','--project-root',codeProject,'--specs-dir',binding.specsDir,'--run-id',binding.identity.runId,
+      '--detail','QA superseded','--data-json',JSON.stringify(data)],{encoding:'utf8',env:{...process.env,CM_WORKFLOW_LOG_HOME:f.configuration.logHome}});
+    assert.equal(written.status,0,written.stderr);
+    recordCmAiQaRun({...base,testRunId:'legacy-round-2',qaRound:2,previousTestRunId:testRunId,phase:'start'});
+    assert.equal(readCmAiQaRunRound({...query,testRunId:'legacy-round-2'}),2);
+    // The same history claimed under the current rule is refused: the contract still says [需确认].
+    const log=path.join(binding.specsDir,'运行日志.jsonl'),kept=fs.readFileSync(log,'utf8');
+    fs.writeFileSync(log,kept.split('\n').map(line=>{if(!line)return line;const row=JSON.parse(line);
+      return row.phase==='superseded'?JSON.stringify({...row,recovery_rule:2}):line;}).join('\n'));
+    assert.throws(()=>readCmAiQaRunRound({...query,testRunId:'legacy-round-2'}),{code:'qa_round_invalid'});
+    fs.writeFileSync(log,kept);assert.equal(readCmAiQaRunRound({...query,testRunId:'legacy-round-2'}),2);
+    // The original rule itself is replayed exactly: it never accepted a SUPPORTED logic case.
+    const report=fs.readFileSync(result.report,'utf8');
+    fs.writeFileSync(result.report,report.replace('"staticVerdict": "INSUFFICIENT_EVIDENCE"','"staticVerdict": "SUPPORTED"'));
+    assert.throws(()=>readCmAiQaRunRound({...query,testRunId:'legacy-round-2'}),{code:'qa_round_invalid'});
+    fs.writeFileSync(result.report,report);assert.equal(readCmAiQaRunRound({...query,testRunId:'legacy-round-2'}),2);
+  }finally{f.cleanup();}
+});
+
+// Report forgeries: the approved contract, not the report marker, decides [需确认].
+const FORGED={'contract-resolved-after-run':'logic-confirmation-insufficient','forged-confirmation-insufficient':'logic-confirmation-insufficient',
+  'forged-confirmation-unavailable':'logic-confirmation-unavailable','forged-browser-confirmation':'needs-confirmation'};
+for(const name of ['evidence','cleanup','environment','timeout','logic','commands','product-blocked',
   'source-drift','FAIL','mixed-failure','round-limit','incomplete','superseded-crash','one-shot','metadata-command',
   'legacy-product-blocked','needs-confirmation','command-unavailable','command-exit','declared-command-exit','declared-product-fail',
   'declared-contradicted','declared-after-repair','declared-superseded-crash','declared-blocked','declared-unknown-verdict',
-  'logic-confirmation-unavailable','logic-confirmation-insufficient'])
-test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
+  'logic-confirmation-unavailable','logic-confirmation-insufficient','no-browser-capability',...Object.keys(FORGED)])
+test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
+  const scenario=FORGED[name]??name;
   const {createCmAiConversationEntry}=await import('../runtime/js/cm-ai/cm-ai-conversation-entry.mjs');
   const {inspectCmAiQaRecovery}=await import('../runtime/js/cm-ai/cm-ai-qa-log.mjs');
   const {inspectRunClosure}=await import('./cm-log-event.mjs');
@@ -697,7 +743,9 @@ test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
     const executor=createHostQaExecutor({...f.configuration,
       logic:async()=>{logicCalls++;return {verdict:contradicted?'CONTRADICTED':
         ['logic','logic-confirmation-insufficient'].includes(scenario)?'INSUFFICIENT_EVIDENCE':'SUPPORTED',evidence:['Synthetic static observation']};},
-      browser:async request=>{
+      // Without a browser capability the executor itself blocks the case; no
+      // session answered it, so a rerun on the same host cannot change it.
+      ...(scenario==='no-browser-capability'?{}:{browser:async request=>{
         browserCalls++;
         if(!repaired&&scenario==='source-drift')fs.appendFileSync(path.join(f.configuration.codeProject,'source.mjs'),'// drift\n');
         if(!repaired&&scenario==='timeout')throw Object.assign(new Error('timeout'),{code:'host_request_timeout'});
@@ -706,7 +754,7 @@ test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
             ?['not-an-evidence-file']: [artifact],
           environment:!repaired&&scenario==='environment'?{...request.environment,target:'different-target'}:request.environment,
           cleanup:!repaired&&scenario==='cleanup'?'failed':'completed'};
-      }});
+      }})});
     const binding=begin(f,executor),result=await executor.run(binding,new AbortController().signal);
     const {codeProject,testRunId,mode,caseCount,...query}=binding;
     const base={...binding,logHome:f.configuration.logHome};
@@ -714,6 +762,19 @@ test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
     // Older executors wrote host-declared BLOCKED rows without the marker; those stay ineligible.
     if(scenario==='legacy-product-blocked')fs.writeFileSync(result.report,
       fs.readFileSync(result.report,'utf8').replace(/,\n\s*"hostDeclaredBlocked": true/g,''));
+    // The contract no longer says [需确认], but the run's own report does: still refused.
+    if(name==='contract-resolved-after-run'){
+      const source=path.join(f.binding.specsDir,f.binding.feature,'test-cases.json'),contract=JSON.parse(fs.readFileSync(source));
+      contract.cases[0].expected=['Synthetic expected behavior'];fs.writeFileSync(source,JSON.stringify(contract));
+    }else if(FORGED[name]){
+      const forge={'forged-confirmation-insufficient':['TC-001',row=>{delete row.needsConfirmation;}],
+        'forged-confirmation-unavailable':['TC-001',row=>{delete row.needsConfirmation;row.commandUnavailable=true;}],
+        'forged-browser-confirmation':['TC-002',row=>{row.hostDeclaredBlocked=true;}]}[name];
+      const parts=fs.readFileSync(result.report,'utf8').split(/^## /m),index=parts.findIndex(part=>part.startsWith(`${forge[0]}\n`));
+      const body=parts[index].slice(forge[0].length+1),row=JSON.parse(body);forge[1](row);
+      parts[index]=`${forge[0]}\n\n${JSON.stringify(row,null,2)}${body.match(/\s*$/)[0]}`;
+      fs.writeFileSync(result.report,parts.map((part,i)=>i?`## ${part}`:part).join(''));
+    }
     // A report row outside PASS/FAIL/BLOCKED no longer matches the recorded counts.
     if(scenario==='declared-unknown-verdict')fs.writeFileSync(result.report,
       fs.readFileSync(result.report,'utf8').replace(/("id": "TC-001",[\s\S]*?"verdict": )"FAIL"/,'$1"SKIPPED"'));
@@ -760,10 +821,11 @@ test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
       ...(scenario.startsWith('declared-')&&scenario!=='declared-superseded-crash'?{qaEnvironmentFailure:'simulator runtime was missing'}:{})});
     if(['commands','legacy-product-blocked','needs-confirmation','source-drift','FAIL','mixed-failure','round-limit','incomplete',
       'command-exit','declared-product-fail','declared-contradicted','declared-after-repair','declared-blocked',
-      'declared-unknown-verdict','logic-confirmation-unavailable','logic-confirmation-insufficient'].includes(scenario)){
+      'declared-unknown-verdict','logic-confirmation-unavailable','logic-confirmation-insufficient','no-browser-capability'].includes(scenario)){
       const rejected=await entry.handle(operation);
       assert.equal(rejected.code,scenario==='round-limit'?'qa_round_invalid':scenario==='incomplete'?'qa_execution_unknown':'qa_rerun_not_blocked_by_evidence');
-      assert.deepEqual(fs.readFileSync(log),before);assert.equal(browserCalls,scenario==='needs-confirmation'?0:1);
+      assert.deepEqual(fs.readFileSync(log),before);
+      assert.equal(browserCalls,['needs-confirmation','no-browser-capability'].includes(scenario)?0:1);
     }else{
       const queried=await entry.handle({...operation,operation:'qa_result',packageDigest:binding.packageDigest,testRunId});
       assert.equal(queried.pendingAction,result.failed?'fix_authorization':'qa');
@@ -802,22 +864,27 @@ test(`completed BLOCKED QA explicit rerun: ${scenario}`,async()=>{
         ['log',list=>{list.find(row=>row.phase==='superseded').failed_cases=[];}],
         // The logic case is eligible only by its own "blocked by that command" marker.
         ['report',row=>{delete row.commandUnavailable;},'TC-001'],['report',row=>{row.commandEvidence=[];},'TC-001'],
-        ['report',row=>{row.needsConfirmation=true;},'TC-001']);
+        ['report',row=>{row.needsConfirmation=true;},'TC-001'],
+        ['report',row=>{row.staticVerdict='CONTRADICTED';},'TC-001'],
+        ['log',list=>{list.find(row=>row.phase==='superseded').recovery_rule=3;}],
+        ['contract',contract=>{contract.cases=contract.cases.filter(item=>item.id!=='TC-001');}]);
       if(['declared-command-exit','declared-superseded-crash'].includes(scenario))precise.push(['report',row=>{row.exitCode=null;}],
         ['report',row=>{row.exitCode=0;}],['log',list=>{list.find(row=>row.phase==='superseded').environment_failure_reason=' ';}],
         ['log',list=>{list.find(row=>row.phase==='superseded').failed_cases=['declared-test'];}],
         ['report',row=>{row.verdict='SKIPPED';},'TC-001']);
       if(precise.length)assert.equal(inspectCmAiQaResult({...query,testRunId:round2}).status,'passed');
+      const contractFile=path.join(f.binding.specsDir,f.binding.feature,'test-cases.json'),contractBytes=fs.readFileSync(contractFile);
       for(const [target,tamper,caseId='declared-test'] of precise){
         const report=fs.readFileSync(firstReport,'utf8');
-        if(target==='report'){
+        if(target==='contract'){const contract=JSON.parse(contractBytes);tamper(contract);fs.writeFileSync(contractFile,JSON.stringify(contract));}
+        else if(target==='report'){
           const parts=report.split(/^## /m),index=parts.findIndex(part=>part.startsWith(`${caseId}\n`));
           const body=parts[index].slice(caseId.length+1),row=JSON.parse(body);tamper(row);
           parts[index]=`${caseId}\n\n${JSON.stringify(row,null,2)}${body.match(/\s*$/)[0]}`;
           fs.writeFileSync(firstReport,parts.map((part,i)=>i?`## ${part}`:part).join(''));
         }else{const corrupt=rows();tamper(corrupt);fs.writeFileSync(log,corrupt.map(JSON.stringify).join('\n')+'\n');}
         assert.throws(()=>inspectCmAiQaResult({...query,testRunId:round2}),{code:'qa_result_invalid'},`${target} ${tamper}`);
-        fs.writeFileSync(firstReport,report);fs.writeFileSync(log,after);
+        fs.writeFileSync(firstReport,report);fs.writeFileSync(log,after);fs.writeFileSync(contractFile,contractBytes);
       }
       if(precise.length)assert.equal(inspectCmAiQaResult({...query,testRunId:round2}).status,'passed');
     }

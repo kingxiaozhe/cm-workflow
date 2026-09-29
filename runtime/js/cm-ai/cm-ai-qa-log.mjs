@@ -218,9 +218,32 @@ const exitedCommand=row=>row?.kind==='commands'&&Number.isSafeInteger(row.exitCo
 export const validEnvironmentFailureReason=value=>typeof value==='string'&&value.trim().length>0
   &&Buffer.byteLength(value,'utf8')<=500&&!/[\r\n\0]/.test(value);
 
+// The feature's test contract, the same file the executor plans from, is the
+// authority for an unresolved [需确认] expectation; report markers only confirm it.
+function contractCases(specsDir,feature,code){
+  need(typeof feature==='string'&&/^\d+\.[A-Za-z0-9._-]+$/.test(feature),code);
+  const source=path.join(path.resolve(specsDir),feature,'test-cases.json');
+  if(!fs.existsSync(source))return new Map();
+  try{
+    const stat=fs.lstatSync(source);need(stat.isFile()&&!stat.isSymbolicLink()&&stat.size<=MiB,code);
+    const contract=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(fs.readFileSync(source)));
+    need(Array.isArray(contract?.cases),code);
+    return new Map(contract.cases.map(item=>[item.id,item]));
+  }catch{need(false,code);}
+}
+// A case missing from the contract counts as unresolved (fail closed).
+const confirmationPending=item=>!Array.isArray(item?.expected)||item.expected.some(value=>String(value).includes('[需确认]'));
+// The eligibility rule of released versions before recovery_rule 2. Superseded
+// rows they wrote (no recovery_rule) are replayed with exactly this predicate.
+const legacyEligible=(row,environment)=>!row.sourceChanged&&(
+  row.kind==='logic'&&row.staticVerdict==='INSUFFICIENT_EVIDENCE'
+  ||row.kind==='browser'&&(typeof row.evidenceProblem==='string'&&row.evidenceProblem.length>0
+    ||row.cleanup==='failed'||row.hostRequestTimeout===true
+    ||environment!=null&&row.environment!=null&&digest(row.environment)!==digest(environment)));
+
 // Read the executor's existing report format, including pre-recovery reports.
 // Summary counts alone cannot distinguish product failures from host evidence gaps.
-function recoverableCases(items,specsDir,environment,code='qa_rerun_not_blocked_by_evidence',environmentFailure=false){
+function recoverableCases(items,specsDir,environment,code='qa_rerun_not_blocked_by_evidence',environmentFailure=false,legacyRule=false){
   const completes=items.filter(({row})=>row.phase==='complete');
   need(completes.length===1,code);
   const complete=completes[0].row,start=items[0]?.row;
@@ -248,10 +271,17 @@ function recoverableCases(items,specsDir,environment,code='qa_rerun_not_blocked_
   const byId=new Map(cases.map(row=>[row.id,row]));
   const mapped=(row,test)=>Array.isArray(row.commandEvidence)&&row.commandEvidence.some(item=>test(byId.get(item)));
   const blocked=cases.filter(row=>row.verdict==='BLOCKED'),failed=cases.filter(row=>row.verdict==='FAIL');
+  if(legacyRule){for(const row of blocked)need(legacyEligible(row,environment),code);return {blocked:blocked.map(row=>row.id).sort(),failed:[]};}
+  const contract=contractCases(specsDir,start.feature,code);
+  // A case may be rerun only if the approved contract has no unresolved
+  // [需确认] expectation for it; the report marker must not say otherwise.
+  const resolved=row=>!confirmationPending(contract.get(row.id))&&row.needsConfirmation!==true;
   for(const row of blocked)need(!row.sourceChanged&&(
-    row.kind==='logic'&&row.needsConfirmation!==true&&(row.staticVerdict==='INSUFFICIENT_EVIDENCE'
-      ||row.commandUnavailable===true&&mapped(row,unavailableCommand))
-    ||row.kind==='browser'&&(typeof row.evidenceProblem==='string'&&row.evidenceProblem.length>0
+    row.kind==='logic'&&resolved(row)&&(row.staticVerdict==='INSUFFICIENT_EVIDENCE'
+      // Blocked only by a mapped command without exit code, derived from the
+      // recorded command rows; the executor's marker has to agree.
+      ||row.staticVerdict==='SUPPORTED'&&mapped(row,unavailableCommand)&&row.commandUnavailable===true)
+    ||row.kind==='browser'&&resolved(row)&&(typeof row.evidenceProblem==='string'&&row.evidenceProblem.length>0
       ||row.cleanup==='failed'||row.hostRequestTimeout===true||row.hostDeclaredBlocked===true
       ||environment!=null&&row.environment!=null&&digest(row.environment)!==digest(environment))
     ||unavailableCommand(row)),code);
@@ -303,7 +333,9 @@ function validateRunSequence(items,code='qa_round_invalid',specsDir){
         }else{
           const declared=row.reason==='declared_environment_failure';
           need(declared?validEnvironmentFailureReason(row.environment_failure_reason):row.reason==='host_evidence_problem',code);
-          const cases=recoverableCases(prior,specsDir,row.expected_environment,code,declared);
+          // Rows without recovery_rule were written by older versions under the original rule.
+          const legacy=row.recovery_rule===undefined;need(legacy||row.recovery_rule===2,code);
+          const cases=recoverableCases(prior,specsDir,row.expected_environment,code,declared,legacy);
           need(JSON.stringify(row.blocked_cases)===JSON.stringify(cases.blocked)
             &&(declared?JSON.stringify(row.failed_cases)===JSON.stringify(cases.failed):row.failed_cases===undefined),code);
         }
@@ -352,7 +384,8 @@ export function inspectCmAiQaRecovery(input,{blocked=false,environment=null,envi
     // whether this was a declared environment failure; the flag is not re-read.
     const recorded=runs.find(({row})=>row.phase==='superseded')?.row;
     const declared=recorded?recorded.reason==='declared_environment_failure':environmentFailure!==null;
-    const cases=recoverableCases(runs,input.specsDir,environment,'qa_rerun_not_blocked_by_evidence',declared);
+    const cases=recoverableCases(runs,input.specsDir,environment,'qa_rerun_not_blocked_by_evidence',declared,
+      recorded!==undefined&&recorded.recovery_rule===undefined);
     need(start.attempt<3,'qa_round_invalid');
     return {testRunId:start.operation_id,qaRound:start.attempt,mode:start.mode,caseCount:start.case_count,
       blockedCases:cases.blocked,failedCases:cases.failed,superseded:recorded!==undefined};
@@ -528,11 +561,11 @@ export function recordCmAiQaRun(input) {
   }
   if(input.phase==='abandoned')Object.assign(data,{previous_test_run_id:input.testRunId,reason:'host_terminated',partial_pass_cases:passed});
   if(input.phase==='superseded')Object.assign(data,{previous_test_run_id:input.testRunId,
-    reason:declaredFailure===null?'host_evidence_problem':'declared_environment_failure',
+    reason:declaredFailure===null?'host_evidence_problem':'declared_environment_failure',recovery_rule:2,
     blocked_cases:blockedCases,expected_environment:input.expectedEnvironment??null,
     ...(declaredFailure===null?{}:{failed_cases:failedCases,environment_failure_reason:declaredFailure})});
   if(input.configurationRevision){
-    delete data.blocked_cases;delete data.expected_environment;
+    delete data.blocked_cases;delete data.expected_environment;delete data.recovery_rule;
     Object.assign(data,{reason:'qa_configuration_revision',qa_revision_digest:digest(input.configurationRevision)});
     validateConfigurationSupersession({...data,run_id:input.identity.runId},input.specsDir,'qa_revision_invalid');
   }

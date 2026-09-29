@@ -23,6 +23,9 @@ after(()=>{
   fs.rmSync(home,{recursive:true,force:true});
 });
 const cli=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
+// The host CLI scenarios run real QA commands (host-check needs POSIX process
+// groups and refuses win32) and POSIX fixtures (fake codex, sh shim).
+const POSIX={skip:process.platform==='win32'?'host-check QA commands and the fixtures need POSIX':false};
 const identity={repositoryId:'qa-rerun-fixture',runId:'qa-rerun-run',taskId:'T-001',attempt:1};
 const simulator={kind:'app',carrier:'ios-simulator',target:'Fixture-iPhone',scope:'local'};
 const service={kind:'service',carrier:'cli',target:'node',scope:'local'};
@@ -96,13 +99,15 @@ function defaultAnswer(f,row){
 
 // A python3 shim that refuses only the N6 test_run/start append, so the real host
 // leaves exactly the durable prefix a crash right before that append leaves.
+// POSIX only: callers are skipped on win32 before this runs.
 function failingStartShim(f){
+  const lookup=spawnSync('/bin/sh',['-c','command -v python3'],{encoding:'utf8'});
+  assert.equal(lookup.status,0,'python3 must be on PATH for the interruption fixture');
   const dir=path.join(f.root,'shim');fs.mkdirSync(dir,{recursive:true});
-  const shim=path.join(dir,'python3');
-  fs.writeFileSync(shim,`#!/bin/sh\ncase " $* " in *" --event test_run --phase start "*) exit 3;; esac\nexec ${JSON.stringify(REAL_PYTHON)} "$@"\n`,{mode:0o700});
+  fs.writeFileSync(path.join(dir,'python3'),
+    `#!/bin/sh\ncase " $* " in *" --event test_run --phase start "*) exit 3;; esac\nexec ${JSON.stringify(lookup.stdout.trim())} "$@"\n`,{mode:0o700});
   return dir;
 }
-const REAL_PYTHON=spawnSync('/bin/sh',['-c','command -v python3'],{encoding:'utf8'}).stdout.trim();
 
 // answers[kind] may be a value, a function(row) or 'IGNORE' (never answered).
 function launch(f,{mode='resume',operation='advance',workflow=null,extra=[],answers={},review=true,pathPrefix=null}={}){
@@ -142,7 +147,7 @@ function launch(f,{mode='resume',operation='advance',workflow=null,extra=[],answ
 }
 const done=run=>{assert.equal(run.code,0,run.stderr);assert(run.result,run.stderr);return run.result;};
 
-test('#7 a qa_assess answer window miss is a retryable rejection, never a durable BLOCKED decision',async t=>{
+test('#7 a qa_assess answer window miss is a retryable rejection, never a durable BLOCKED decision',POSIX,async t=>{
   const f=fixture(t),workflow=f.workflow('workflow',probeQa({timeoutMs:1500}));
   const first=done(await launch(f,{mode:'create',workflow,answers:{qa_assess:'IGNORE'}}));
   assert.equal(first.outcome,'rejected',JSON.stringify(first));assert.equal(first.code,'qa_decision_timeout');
@@ -168,7 +173,7 @@ function legacyTimeoutDecision(f,packageDigest){
       status:'blocked',reason:'host_request_timeout',score:null,at:'2026-09-28T10:48:11Z'}});
 }
 
-test('#7 a legacy 阻塞:host_request_timeout decision stays blocked unless --rerun-blocked-qa re-asks qa_assess once',async t=>{
+test('#7 a legacy 阻塞:host_request_timeout decision stays blocked unless --rerun-blocked-qa re-asks qa_assess once',POSIX,async t=>{
   const f=fixture(t),workflow=f.workflow('workflow',probeQa({timeoutMs:1500}));
   done(await launch(f,{mode:'create',workflow,answers:{qa_assess:'IGNORE'}}));
   const status=done(await launch(f,{operation:'status',workflow}));
@@ -200,7 +205,7 @@ test('#7 a legacy 阻塞:host_request_timeout decision stays blocked unless --re
   assert.deepEqual(f.journal().records.slice(0,journalBefore.records.length),journalBefore.records);
 });
 
-test('#7 recovery interrupted after the replacement decision, before QA start, resumes with the same command',async t=>{
+test('#7 recovery interrupted after the replacement decision, before QA start, resumes with the same command',POSIX,async t=>{
   const f=fixture(t),workflow=f.workflow('workflow',probeQa({timeoutMs:1500}));
   done(await launch(f,{mode:'create',workflow,answers:{qa_assess:'IGNORE'}}));
   legacyTimeoutDecision(f,done(await launch(f,{operation:'status',workflow})).packageDigest);
@@ -224,7 +229,7 @@ test('#7 recovery interrupted after the replacement decision, before QA start, r
   assert.deepEqual(testRuns(f,'superseded').map(row=>row.reason),['host_evidence_problem']);
 });
 
-test('#13 a host-declared BLOCKED simulator case re-runs on unchanged code with --rerun-blocked-qa',async t=>{
+test('#13 a host-declared BLOCKED simulator case re-runs on unchanged code with --rerun-blocked-qa',POSIX,async t=>{
   const f=fixture(t,{browser:true}),workflow=f.workflow('workflow',probeQa({environment:simulator}));
   const evidence=path.join(f.specsDir,'.reviews','tc-001.png');
   const down=row=>({verdict:'BLOCKED',evidence:[],environment:row.payload.environment,cleanup:'not_needed'});
@@ -241,7 +246,7 @@ test('#13 a host-declared BLOCKED simulator case re-runs on unchanged code with 
   assert.deepEqual(testRuns(f,'complete').map(row=>row.result),['BLOCKED','PASS']);
 });
 
-test('#13 an unavailable QA command (killed, no exit code) re-runs; the round budget still caps at three',async t=>{
+test('#13 an unavailable QA command (killed, no exit code) re-runs; the round budget still caps at three',POSIX,async t=>{
   const f=fixture(t),workflow=f.workflow('workflow',probeQa());
   f.environment('killed');
   const first=done(await launch(f,{mode:'create',workflow}));
@@ -256,7 +261,7 @@ test('#13 an unavailable QA command (killed, no exit code) re-runs; the round bu
   assert.deepEqual(testRuns(f,'superseded').map(row=>row.blocked_cases),[['probe'],['probe']]);
 });
 
-test('#13 the environment recovers: an unavailable command reaches run_done on the same approved code',async t=>{
+test('#13 the environment recovers: an unavailable command reaches run_done on the same approved code',POSIX,async t=>{
   const f=fixture(t),workflow=f.workflow('workflow',probeQa());
   f.environment('killed');
   assert.equal(done(await launch(f,{mode:'create',workflow})).code,'qa_result_blocked');
@@ -266,7 +271,7 @@ test('#13 the environment recovers: an unavailable command reaches run_done on t
   assert.deepEqual(testRuns(f,'complete').map(row=>row.result),['BLOCKED','PASS']);
 });
 
-test('#13 a non-zero QA exit stays a product FAIL; only an explicit, recorded operator declaration re-runs it',async t=>{
+test('#13 a non-zero QA exit stays a product FAIL; only an explicit, recorded operator declaration re-runs it',POSIX,async t=>{
   const f=fixture(t),workflow=f.workflow('workflow',probeQa());
   f.environment('exit65');
   const first=done(await launch(f,{mode:'create',workflow}));
@@ -290,7 +295,7 @@ test('#13 a non-zero QA exit stays a product FAIL; only an explicit, recorded op
   assert.deepEqual(testRuns(f,'complete').map(row=>row.result),['FAIL','PASS']);
 });
 
-test('#26 a wrong QA workflow config is revised before any QA round, without consuming a round',async t=>{
+test('#26 a wrong QA workflow config is revised before any QA round, without consuming a round',POSIX,async t=>{
   const f=fixture(t);
   const wrong=f.workflow('workflow-old',{commands:[{id:'probe',command:[process.execPath,'-e','process.exit(3)'],caseIds:[]}],environment:service});
   const fixed=f.workflow('workflow-new',probeQa());

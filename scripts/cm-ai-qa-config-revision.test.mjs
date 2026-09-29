@@ -385,7 +385,7 @@ test('#26 pre-round revision after N5 and a triggered decision keeps round 1; a 
   assert.deepEqual(revisedRecords(f).map(r=>r.qaRound),[0,1]);
   const rows=logRows(f);
   assert.deepEqual(rows.filter(r=>r.event==='test_run'&&r.phase==='start').map(r=>r.attempt),[1,2]);
-  assert.deepEqual(rows.filter(r=>r.phase==='superseded').map(r=>r.reason),['qa_configuration_revision']);
+  assert.deepEqual(rows.filter(r=>r.phase==='superseded').map(r=>[r.reason,r.recovery_rule]),[['qa_configuration_revision',undefined]]);
   run=await openControlRun(f.definition,'resume',execution);run.close();
   assert.deepEqual(counts(),{calls:1,reviews:1});
 }));
