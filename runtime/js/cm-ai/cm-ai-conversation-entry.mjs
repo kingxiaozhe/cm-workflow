@@ -31,6 +31,8 @@ export const completionRetryable=status=>status.state==='blocked'
   &&['completion_checks_changed','completion_package_changed'].includes(status.code)
   &&status.retryReady!==false;
 const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approval':
+  // The runner reports spec_drift over any state whose next effect would be refused.
+  status.code==='spec_drift'?(status.specificationRebind==='available'?'spec_rebind':'none'):
   status.state==='changes_requested'||retryDeveloper(status)||retryReview(status)?'resume':
   status.state==='awaiting_review'?'decision':status.state==='unknown'
     ?(status.pendingEffectKind?'abandon_effect':
@@ -193,6 +195,7 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'attachQa'))runnerKeys.push('attachQa');
   if(runner&&Object.hasOwn(runner,'reviseQa'))runnerKeys.push('reviseQa');
   if(runner&&Object.hasOwn(runner,'supersedeEvidence'))runnerKeys.push('supersedeEvidence');
+  if(runner&&Object.hasOwn(runner,'rebindSpecification'))runnerKeys.push('rebindSpecification');
   if(runner&&Object.hasOwn(runner,'abandonReview'))runnerKeys.push('abandonReview');
   if(runner&&Object.hasOwn(runner,'abandonEffect'))runnerKeys.push('abandonEffect');
   if(runner&&Object.hasOwn(runner,'inspectBootstrapAdmission'))runnerKeys.push('inspectBootstrapAdmission');

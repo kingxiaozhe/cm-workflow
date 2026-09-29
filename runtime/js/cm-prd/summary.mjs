@@ -128,7 +128,9 @@ export function publishPrdAwaitingReview({specs,summary,writeEnabled,recover=fal
   const prior=readSpecsStatus(specs);
   const status={status:'awaiting_review',summaryDigest:summary.summaryDigest,at:new Date().toISOString(),features:before.features.map(item=>item.directory),
     specFiles:before.specFiles,testCases:before.specFiles.filter(item=>item.path.endsWith('/test-cases.json')),approval:null,
-    ...(prior.kind==='valid'&&Object.hasOwn(prior.value,'revisionDigest')?{revisionDigest:prior.value.revisionDigest}:{})};
+    ...(prior.kind==='valid'&&Object.hasOwn(prior.value,'revisionDigest')?{revisionDigest:prior.value.revisionDigest}:{}),
+    // A first publication has no earlier approval to reinterpret: bind grammar 2.
+    ...(prior.kind==='missing'||prior.kind==='valid'&&prior.value.taskGrammar===2?{taskGrammar:2}:{})};
   const bytes=Buffer.from(JSON.stringify(status)+'\n'),target=path.join(specs,'.cm-specs-status');
   try{
     writeSpecsStatus(specs,status,{beforeRename:()=>{

@@ -80,10 +80,10 @@ const PAIR_FLAGS=new Set(['--allow-review-attempt','--review-config','--workflow
   '--input-limit',
   '--protected-conversation-config','--protected-config','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure',
   '--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--browser-qa',
-  '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason']);
+  '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason','--spec-rebind-reason']);
 const FLAG_FLAGS=new Set(['--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
   '--allow-bootstrap-write','--allow-abandon-review','--allow-abandon-effect','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
-  '--supersede-reviewed-evidence','--accept-superseded-code-drift',
+  '--supersede-reviewed-evidence','--accept-superseded-code-drift','--rebind-spec-material',
   ...['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon','abandon-review',
     'test-author','repair','cause-review','final-review'].map(name=>`--allow-qa-fix-${name}`)]);
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
@@ -549,6 +549,9 @@ function load(){
   if(permissions.includes('--accept-superseded-code-drift')&&!supersedeFlag)
     stop(2,'--accept-superseded-code-drift 需要 --supersede-reviewed-evidence 与 --supersede-reason');
   if(supersedeFlag&&plan.mode!=='create')stop(2,'supersede 只允许 mode create');
+  if(permissions.includes('--rebind-spec-material')!==permissions.includes('--spec-rebind-reason')
+    ||permissions.includes('--rebind-spec-material')&&plan.mode!=='resume')
+    stop(2,'--rebind-spec-material 只用于 mode resume，并须同时提供 --spec-rebind-reason 原因');
   const abandonError=abandonReviewPlanError(operation,plan,permissions);
   if(abandonError)stop(2,abandonError);
   const abandonEffectError=abandonEffectPlanError(operation,plan,permissions);
@@ -577,7 +580,7 @@ function load(){
   for(let i=0;i<permissions.length;i++)if(PAIR_FLAGS.has(permissions[i])
     &&permissions[i]!=='--allow-review-attempt'&&permissions[i]!=='--browser-qa'
     &&permissions[i]!=='--qa-config-revision-reason'&&permissions[i]!=='--qa-environment-failure'&&permissions[i]!=='--allow-provider-development-attempt'
-    &&permissions[i]!=='--supersede-reason'&&permissions[i]!=='--input-limit'){
+    &&permissions[i]!=='--supersede-reason'&&permissions[i]!=='--spec-rebind-reason'&&permissions[i]!=='--input-limit'){
     const file=path.resolve(base,permissions[i+1]);if(!fs.existsSync(file))stop(2,`${permissions[i]} 文件不存在: ${file}`);
     permissions[i+1]=file;permissionFiles.push(file);i++;
   }

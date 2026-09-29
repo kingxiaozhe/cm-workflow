@@ -6,21 +6,16 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {readSpecsStatus,writeSpecsStatus} from '../specs-status.mjs';
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
-import {buildManifest,verifyManifest} from '../../../scripts/cm-spec-manifest.mjs';
+import {buildManifest,verifyApprovedManifest} from '../../../scripts/cm-spec-manifest.mjs';
 import {outstandingFeatureQa,describeOutstandingQa} from './project-qa-gate.mjs';
+import {taskLines,taskDeclarations,approvedTaskGrammar,TASK_GRAMMAR,LEGACY_TASK_GRAMMAR} from '../spec-task-line.mjs';
 export {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 
-const TASK=/^\s*-\s*\[([ xX])\]\s+(?:~~)?(T-[A-Za-z0-9][A-Za-z0-9._-]*)(?=[:\s])[:\s]*(.*)$/;
-const DEPENDENCY=/^\s*-\s*(T-[A-Za-z0-9][A-Za-z0-9._-]*)\s+依赖\s+(.+)$/;
+export const DEPENDENCY=/^\s*-\s*(T-[A-Za-z0-9][A-Za-z0-9._-]*)\s+依赖\s+(.+)$/;
 const TASK_ID=/^T-[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ACCEPTANCE=/^\s*[-*]\s+(?:\[[ xX]\]\s+)?(?:\[(AC-\d{3,})\]|(AC-\d{3,}))(?=[:\s])/;
 const FEATURE=/^(\d+)\.(.+)$/;
 const TEST_CASE_VALIDATOR=fileURLToPath(new URL('../../../scripts/validate-test-cases.mjs',import.meta.url));
-
-export function parseCmAiTaskLine(line){
-  const match=line.match(TASK);
-  return match?{id:match[2],completed:match[1].toLowerCase()==='x'}:null;
-}
 
 // Greenfield's T-001 scaffolds; its subsequent instruction task (normally
 // T-002) owns init-equivalent rules. Use the existing parser and approval gate.
@@ -159,7 +154,7 @@ function validTestContract(target,featureName){
   try{sources=['requirements.md','design.md','tasks.md'].map(file=>fs.readFileSync(path.join(featureRoot,file),'utf8'));}
   catch{return false;}
   const acIds=new Set(sources.flatMap(source=>source.split(/\r?\n/).map(line=>line.match(ACCEPTANCE)).filter(Boolean).map(match=>match[1]||match[2])));
-  const taskIds=new Set(sources[2].split(/\r?\n/).map(line=>line.match(TASK)).filter(Boolean).map(match=>match[2]));
+  const taskIds=new Set(taskDeclarations(sources[2],{grammar:approvedTaskGrammar(path.dirname(featureRoot))}).map(task=>task.id));
   return data.cases.every(item=>item.acIds.every(id=>acIds.has(id))&&item.taskIds.every(id=>taskIds.has(id)));
 }
 
@@ -205,7 +200,8 @@ function validateTestCases(specsDir,status,names){
 }
 
 function readFeature(specsDir,name){
-  const parsed=parseFeatureTaskText(fs.readFileSync(path.join(specsDir,name,'tasks.md'),'utf8'),{allowDependencyPunctuation:true});
+  const parsed=parseFeatureTaskText(fs.readFileSync(path.join(specsDir,name,'tasks.md'),'utf8'),
+    {allowDependencyPunctuation:true,grammar:approvedTaskGrammar(specsDir)});
   if(parsed.error)parsed.detail={feature:name,...parsed.detail};
   return parsed;
 }
@@ -214,24 +210,26 @@ export function declaredAcceptanceIds(source){
   return new Set(source.split(/\r?\n/).map(line=>line.match(ACCEPTANCE)).filter(Boolean).map(match=>match[1]||match[2]));
 }
 
-export function parseFeatureTaskText(source,{allowDependencyPunctuation=false}={}){
-  const lines=source.split(/\r?\n/);
+// Shared declaration grammar (spec-task-line.mjs), versioned by the approval.
+export function parseFeatureTaskText(source,{allowDependencyPunctuation=false,grammar=TASK_GRAMMAR}={}){
+  const lines=taskLines(source,{grammar});
   const tasks=[];
   const taskIds=new Set();
   const dependencies=new Map();
   const dependencyLocations=new Map();
-  const location=index=>({line:index+1,text:lines[index].slice(0,120)});
+  const location=index=>({line:index+1,text:lines[index].body.slice(0,120)});
   const invalid=(error,index)=>({error,detail:location(index)});
-  for(const [index,line] of lines.entries()){
-    const task=line.match(TASK);
+  for(const {index,body:line,fenced,declaration:task} of lines){
+    if(fenced)continue;
     if(task){
-      if(taskIds.has(task[2]))return invalid('tasks_invalid',index);
-      taskIds.add(task[2]);
-      const dropped=/\[DROPPED(?:\s[^\]]*)?\]/.test(task[3]);
+      if(taskIds.has(task.id))return invalid('tasks_invalid',index);
+      taskIds.add(task.id);
+      const rest=task.description;
+      const dropped=/\[DROPPED(?:\s[^\]]*)?\]/.test(rest);
       tasks.push({
-        id:task[2],
-        description:task[3].replace(/~~\s*\[DROPPED(?:\s[^\]]*)?\].*$/,'').trim(),
-        completed:task[1].toLowerCase()==='x',
+        id:task.id,
+        description:rest.replace(/~~\s*\[DROPPED(?:\s[^\]]*)?\].*$/,'').trim(),
+        completed:task.completed,
         dropped,
       });
       continue;
@@ -247,7 +245,7 @@ export function parseFeatureTaskText(source,{allowDependencyPunctuation=false}={
       dependencyLocations.set(dependency[1],location(index));
     }
   }
-  if(!tasks.length)return invalid('tasks_invalid',Math.max(0,lines.findIndex(line=>line.trim())));
+  if(!tasks.length)return invalid('tasks_invalid',Math.max(0,lines.findIndex(line=>line.body.trim())));
   return {tasks,dependencies,dependencyLocations};
 }
 
@@ -306,6 +304,13 @@ function missingReviewIds(featureName,tasks,evidenceNames){
   });
 }
 
+function dependenciesSatisfied(task,parsed,byId){
+  return (parsed.dependencies.get(task.id)||[]).every(id=>{
+    const dependency=byId.get(id);
+    return dependency&&(dependency.completed||dependency.dropped);
+  });
+}
+
 function selectTask(specsDir,names){
   const features=[];
   const warnings=[];
@@ -330,14 +335,13 @@ function selectTask(specsDir,names){
       pending:pending.length,
     });
     if(!pending.length)continue;
-    const eligible=pending.find(task=>(parsed.dependencies.get(task.id)||[]).every(id=>{
-      const dependency=byId.get(id);
-      return dependency&&(dependency.completed||dependency.dropped);
-    }));
+    // One dependency rule for nextTask and --task/parallel eligibility: a
+    // prerequisite is satisfied once it is completed or DROPPED.
+    const ready=task=>dependenciesSatisfied(task,parsed,byId);
+    const eligible=pending.find(ready);
     if(!eligible)return {error:'dependencies_not_ready',features,warnings};
     return {features,warnings,nextTask:{feature:name,id:eligible.id,description:eligible.description},
-      eligibleTasks:pending.filter(task=>(parsed.dependencies.get(task.id)||[]).every(id=>byId.get(id)?.completed))
-        .map(task=>({feature:name,id:task.id}))};
+      eligibleTasks:pending.filter(ready).map(task=>({feature:name,id:task.id}))};
   }
   return {features,warnings,nextTask:null};
 }
@@ -360,7 +364,7 @@ export function approveCmAiSpecs(options){
   const projects=options.codeProjects??[options.codeProject];
   const inspect=()=>projects.map(codeProject=>inspectCmAiAdmission({...options,codeProject}));
   const projectResults=inspect();
-  const refuse=approveRefused=>({projectResults,approveRefused});
+  const refuse=(approveRefused,approveReason=null)=>({projectResults,approveRefused,...(approveReason?{approveReason}:{})});
   if(options.assumeYes)return refuse('assume_yes_not_allowed');
   if(typeof options.approvalResponse!=='string'||!options.approvalResponse.trim())
     return refuse('approval_response_required');
@@ -373,10 +377,36 @@ export function approveCmAiSpecs(options){
   try{
     const discovered=discoverFeatures(specsDir);
     if(discovered.error)return refuse(discovered.error);
+    // An approval binds grammar 2 to every feature, including ones this change
+    // did not touch. Refuse rather than silently re-reading bytes that an older
+    // approval parsed differently (e.g. an unfenced `- [ ] T-001：例` becoming a
+    // duplicate of the real T-001), and rather than keeping grammar 1, which
+    // would leave newly drafted full-width task lines silently not tasks.
+    // Moving from the pre-grammar parse must not change which lines are tasks
+    // either (e.g. a unique `- [ ] T-099：示例` would become a pending task). The
+    // status carries the last approval's grammar through cm-prd publication;
+    // once a project is on grammar 2 there is nothing to reconcile.
+    // No status at all means nothing was approved before: no earlier meaning to keep.
+    const fromLegacy=status.kind==='valid'&&status.value.taskGrammar!==TASK_GRAMMAR;
+    for(const name of discovered.names){
+      const source=fs.readFileSync(path.join(specsDir,name,'tasks.md'),'utf8');
+      const parsed=parseFeatureTaskText(source,{allowDependencyPunctuation:true,grammar:TASK_GRAMMAR});
+      if(parsed.error)return refuse('task_grammar_conflict',`${name}/tasks.md 第 ${parsed.detail.line} 行在新任务行语法下无效（${parsed.error}）：`
+        +`${parsed.detail.text}。此前的批准把它当作说明文字；把这类示例放进 \`\`\` 围栏或删去后再批准。`);
+      if(!fromLegacy)continue;
+      const view=grammar=>taskDeclarations(source,{grammar}).map(item=>({line:item.index+1,key:`${item.id}\0${item.completed}\0${item.body.trim()}`,text:item.body.trim()}));
+      const legacy=view(LEGACY_TASK_GRAMMAR),current=view(TASK_GRAMMAR);
+      const legacyKeys=new Set(legacy.map(item=>item.key)),currentKeys=new Set(current.map(item=>item.key));
+      const differing=[...current.filter(item=>!legacyKeys.has(item.key)),...legacy.filter(item=>!currentKeys.has(item.key))]
+        .sort((a,b)=>a.line-b.line);
+      if(differing.length)return refuse('task_grammar_conflict',`${name}/tasks.md 在新任务行语法下任务集合会变化：`
+        +differing.slice(0,5).map(item=>`第 ${item.line} 行 ${item.text}`).join('；')+`${differing.length>5?` 等 ${differing.length} 行`:''}`
+        +'。此前的批准不把这些行当任务（或反之）；是示例就放进 ``` 围栏或删去，是任务就改用英文冒号「:」写法后再批准。');
+    }
     const specFiles=buildManifest(specsDir),at=new Date().toISOString();
     writeSpecsStatus(specsDir,{status:'approved',summaryDigest:status.value?.summaryDigest??null,at,
       features:discovered.names,specFiles,testCases:specFiles.filter(item=>item.path.endsWith('/test-cases.json')),
-      approval:{response:options.approvalResponse,at},
+      approval:{response:options.approvalResponse,at},taskGrammar:TASK_GRAMMAR,
       ...(status.value&&Object.hasOwn(status.value,'revisionDigest')?{revisionDigest:status.value.revisionDigest}:{})});
   }catch(error){return refuse(error.code??error.message);}
   return {projectResults:inspect()};
@@ -400,7 +430,7 @@ function admissionFor(options,inProgressBootstrap=null){
   if(featuresProblem==='spec_features_changed')return result(base,'awaiting_spec_approval',featuresProblem);
   if(featuresProblem)return result(base,'blocked',featuresProblem);
   if(Object.hasOwn(status.value,'specFiles')){
-    try{verifyManifest(buildManifest(specsDir),path.join(specsDir,'.cm-specs-status'));}
+    try{verifyApprovedManifest(specsDir,path.join(specsDir,'.cm-specs-status'));}
     catch{return result(base,'blocked','spec_drift');}
   }
   const testCasesProblem=validateTestCases(specsDir,status.value,discovered.names);
@@ -415,6 +445,29 @@ function admissionFor(options,inProgressBootstrap=null){
   const warnings=[...selection.warnings,...featureQaWarnings(specsDir,selection.features)];
   if(!selection.nextTask)return result(base,'complete','all_tasks_terminal',{features:selection.features,warnings});
   return result(base,'ready','task_selected',{features:selection.features,nextTask:selection.nextTask,eligibleTasks:selection.eligibleTasks,warnings});
+}
+
+// Diagnostic only: why an explicit --task selection is not eligible. Never used
+// to grant a selection; matchesCmAiTaskSelection remains the sole gate.
+export function explainCmAiTaskSelection(admission,{feature,taskId,selection=null}){
+  if(admission.state!=='ready')return `当前准入状态为 ${admission.state}/${admission.reason}，不能选择任务`;
+  const next=admission.nextTask;
+  if(next&&next.feature!==feature)return `--task 只能选择当前 feature ${next.feature} 的任务（运行定义为 ${feature}）`;
+  if(!admission.specsDir)return `${taskId} 不在可选任务中`;
+  let parsed;
+  try{parsed=readFeature(admission.specsDir,feature);}catch{return `无法读取 ${feature}/tasks.md`;}
+  if(parsed.error)return `${feature}/tasks.md 无法解析（${parsed.error}）`;
+  const byId=new Map(parsed.tasks.map(task=>[task.id,task]));
+  const task=byId.get(taskId);
+  if(!task)return `${feature}/tasks.md 中没有任务 ${taskId}`;
+  if(task.dropped)return `${taskId} 已标记 DROPPED`;
+  if(task.completed)return `${taskId} 已勾选完成`;
+  const waiting=(parsed.dependencies.get(taskId)||[]).filter(id=>{const item=byId.get(id);return !item||!item.completed&&!item.dropped;});
+  if(waiting.length)return `${taskId} 依赖的 ${waiting.join('、')} 尚未完成`;
+  const eligible=(admission.eligibleTasks??[]).filter(item=>item.feature===feature).map(item=>item.id);
+  if(selection===null&&next&&next.id!==taskId&&eligible.includes(taskId))
+    return `运行定义未写 taskSelection，只能运行 nextTask ${next.id}；改选 ${taskId} 请用 cm-ai-admission.mjs --print-run-definition --task ${taskId} 重新生成运行定义`;
+  return `${taskId} 不在可选任务中；当前可选：${eligible.join('、')||'无'}`;
 }
 
 // Trusted caller selection is data bound by openControlRun, never message authority.

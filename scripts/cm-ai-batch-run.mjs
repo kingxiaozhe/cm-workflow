@@ -10,6 +10,7 @@ import {digest,json,shape,need,id,hex} from '../runtime/js/cm-ai/effect-contract
 import {scanRows,findCmAiQaDecision,latestCmAiQaRun} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {checkParallelWrite} from './cm-task-gate.mjs';
 import {parseFeatureTaskText} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
+import {approvedTaskGrammar} from '../runtime/js/spec-task-line.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {inspectRunClosure} from './cm-log-event.mjs';
 
@@ -431,7 +432,8 @@ export function taskCommitArgs(taskId,description,blockedCode=null,blockedReason
   return ['-m',subject,'-m',description+(blockedCode!==null&&blockedReason!==null?`\n\n${blockedReason}`:'')];
 }
 function taskDescription(config,definition){
-  const parsed=parseFeatureTaskText(fs.readFileSync(path.join(config.specsDir,definition.feature,'tasks.md'),'utf8'),{allowDependencyPunctuation:true});
+  const parsed=parseFeatureTaskText(fs.readFileSync(path.join(config.specsDir,definition.feature,'tasks.md'),'utf8'),
+    {allowDependencyPunctuation:true,grammar:approvedTaskGrammar(config.specsDir)});
   need(!parsed.error,'parallel_task_invalid');return parsed.tasks.find(task=>task.id===definition.identity.taskId)?.description??definition.identity.taskId;
 }
 function validateGroups(config,plans){
@@ -441,7 +443,8 @@ function validateGroups(config,plans){
     need(group.every(key=>plans.has(key)&&!used.has(key))&&new Set(group).size===group.length,'invalid_parallel_group');
     const feature=plans.get(group[0]).feature;
     need(group.every(key=>plans.get(key).feature===feature),'parallel_feature_mismatch');
-    const parsed=parseFeatureTaskText(fs.readFileSync(path.join(config.specsDir,feature,'tasks.md'),'utf8'),{allowDependencyPunctuation:true});
+    const parsed=parseFeatureTaskText(fs.readFileSync(path.join(config.specsDir,feature,'tasks.md'),'utf8'),
+      {allowDependencyPunctuation:true,grammar:approvedTaskGrammar(config.specsDir)});
     need(!parsed.error,'parallel_task_invalid');
     const ids=new Set(group.map(key=>plans.get(key).identity.taskId));
     need([...ids].every(id=>parsed.tasks.some(task=>task.id===id&&!task.dropped)),'parallel_task_invalid');

@@ -130,7 +130,7 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
 完成 T-001 骨架和其独立审查后，为 T-002 从已批准规格生成独立运行定义，`scope` 列出全部 `cmInitRuleTargets(selection)`，`requirements` 可为空数组。由当前真实 Claude 会话持有可交互进程句柄；下面是启动示意，路径和会话 ID 必须换成当前实际值：
 
 ```bash
-node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-host.mjs" serve --config "{T-002-run.json}" --mode create --host-context "{当前真实会话ID}" --runtime claude --allow-development --bootstrap-config "{bootstrap.json}" --allow-bootstrap-write
+node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-host.mjs" serve --config "{T-002-run.json}" --mode create --host-context "{当前真实会话ID}" --runtime claude --allow-development --review-config "{review.json}" --bootstrap-config "{bootstrap.json}" --allow-bootstrap-write
 ```
 
 `bootstrap.json` 为 `{"selection":{"versionControl":"local","modules":[],"analysis":"当前项目分析"}}` 这类已确认选择。收到 `host_ready` 后发送带原运行定义 `identity` 的 `{"version":1,"requestId":"t002-advance","operation":"advance","identity":{...}}`；不要等控制响应才处理反问。`init_generate` 按实际请求的 targets、templates、existing 和项目材料生成 `{status:"generated",documents:[{path,content}]}`；`init_verify` 对宿主给出的最终 documents、selection、inspection 及当前项目逐项核验，返回 `{checks,constraintChanges,application,retrospective}`。五项 checks 各给真实 `status/evidence`；不能把预写 JSON 或 `inspectCmInitDraft` 的结构检查冒充语义证据。每条 `host_result` 必须带该次请求的 `sessionId`、`callId`、`requestDigest`。若缺当前会话的真实核验能力，停止并报告，不发送虚构通过结果；断联后按原 run 的 unknown 恢复表处理。
@@ -157,7 +157,7 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-host.mjs" serve --config "{T-002-run.json
    单代码根用 `cm-ai-admission.mjs --print-run-definition --scope ...` 生成运行定义，不要手写；`--scope` 必填（相对代码根、逗号分隔），`--requirements` 可选。需要跳过当前 `nextTask` 时可加 `--task T-xxx`，仅接受同 feature 的 `eligibleTasks`，选择会写入运行定义并绑定恢复指纹；完整命令见产品文档。
    单任务用 `cm-ai-host.mjs`；多任务用 `cm-ai-batch-host.mjs` 的原 batch/workflows 配置。
    任务列表只包含该运行计划内的任务；恢复必须使用原身份、配置和真实当前会话身份，
-   单任务同会话恢复可只用 `--mode resume --host-context {当前真实会话ID}`；换会话恢复用 `--mode resume --host-context {当前真实会话ID} --original-host-context {创建运行的会话ID}`；
+   单任务同会话恢复用 `--mode resume --host-context {当前真实会话ID}` 加创建时的同一组启动输入（`--review-config`、`--runtime`、`--workflow-config` 等）；换会话恢复再加 `--original-host-context {创建运行的会话ID}`；
    两个 ID 相同等同未传新参数，create 传它报 `original_host_context_unavailable`。不能冒用旧 host-context。
    原配置指纹和 init 元数据仍绑定创建会话，旧记录不改；开发结果和审查授权使用当前真实会话。
    新会话首次签审查授权前追加 `host-joined`，仅打开或 status 不写；创建会话、已加入会话和当前会话
@@ -184,9 +184,12 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-host.mjs" serve --config "{T-002-run.json
 4. 核对任务所需能力后才启动。QA 使用原测试合同与已授权命令/环境；无 QA 配置不能宣称
    已完成必需 QA。文档路径预先纳入任务批准 scope；需要 AGENTS/CLAUDE 等保护指令同步、
    bootstrap规范用下文单步驾驶员或受信入口；其他未满足的必需能力记录具体缺口，不降格成可选项。
-5. reviewer 配置在首次运行前绑定；本机 preflight 不是实际模型审查或调用许可。
-   只有当前真实用户已授权本任务本轮、模型与发送包时，才传审查授权选项；无许可可以
-   不带选项运行至待审，但不能完成。批次按 feature/task:attempt 授权，不授权整个未来批次。
+5. reviewer 配置在首次运行前绑定；本机 preflight 不是实际模型审查或调用许可。单任务 create
+   必须带 `--review-config`（审查配置进入运行指纹，resume 不能补加，缺少时 `review_configuration_required`）。
+   只有当前真实用户已授权本任务本轮、模型与发送包时，才传审查授权选项（`--allow-review-attempt`）；
+   无授权可以不带授权选项运行至待审，但不能完成。
+   恢复参数与创建时不一致时 `fingerprint_mismatch` 的 `reason` 会点名差异（runtime、审查配置、
+   host-context 或其余只存指纹的配置），`invalid_arguments` 也写明是哪个参数。批次按 feature/task:attempt 授权，不授权整个未来批次。
    不把开发批准转换为网络、安装、Git、发布或真实 provider 调用批准。
 
 ## 同一引擎的双端启动
@@ -213,6 +216,11 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 需要模拟器、真机或系统服务的 iOS 项目（CoreSimulatorService、Xcode UI tests、Keychain 等），应将 specs 与代码分根，并选用有系统访问能力的当前会话宿主路径执行检查；实际检查进程必须在 Codex 原生沙箱外。仅改变目录或改用驱动脚本不会让沙箱内检查获得这些服务。同仓 specs 的受保护检查仍在 Codex 沙箱内，典型症状是模拟器不可用、UI tests 无法启动，SwiftPM 的 `swift build` 需要 `--disable-sandbox`；不要把这种失败记成产品测试通过。检查命令的构建产物放在代码根外，例如 `xcodebuild -derivedDataPath {代码根外的目录}`。检查自己新增的范围外未跟踪文件使原 run 进入 `blocked/check_output_out_of_scope`，状态原因和 stderr 列出最多 20 个相对路径；操作员清理产物后在原 run 重试。开发者造成的范围外改动仍是 `unknown/out_of_scope`，不得据此放宽 scope。
 运行器对每次审查计时的上限取「journal 里的调用超时」与「审查预算 + 60000 毫秒余量」中较大者；这个上限不写入 journal，所以把 review-config 的 `timeoutMs` 调到 30 分钟以上（最多 3600000）不会再在 30 分钟被运行器截断，恢复时也可继续调大。
 新运行的代码根快照固定忽略 `.DS_Store`、`._*`、`.AppleDouble/`、`Thumbs.db`、`xcuserdata/`、`*.xcuserstate`、`.build/`、`.swiftpm/`、`DerivedData/`，也跳过 Git 报告为 ignored 的目录及路径；任务 scope、AGENTS.md 与 specs 仍须验证。基线有界保存 Git 忽略路径与目录，后续将基线和当前忽略决定的并集应用到比较两侧；规则文件和无关 Git 配置变化本身不阻断审查。Git 不可用或忽略结果超限时基线标明仅用固定列表。这有意缩小代码根检查面，被忽略的产物不构成已审代码；旧 journal 沿旧规则回放。
+规格经 `cm-prd --change` 重新批准后，在途运行的 `status` 报 `spec_drift` 并列出变化文件：只动了其他任务的条目、依赖或用例
+（requirements.md、design.md 整份未变，本任务条目含续行未变）时
+`pendingAction: spec_rebind`，用原配置 `--mode resume --rebind-spec-material --spec-rebind-reason "原因"` 显式换绑，
+已有开发与审查结论保留；内容有变时 `pendingAction: none`，还原规格后继续，或 cancel、还原代码后 supersede 重做。
+普通 create 遇到同任务未被替代的旧运行留下的未审改动时返回 `supersede_code_drift`，按提示还原或 supersede。
 审查期间代码根非忽略路径漂移时，`blocked/review_package_changed` 保留 verdict、回执与最多 20 个差异路径；清理或还原后在原 run 继续 `advance`，不会重派 reviewer。结果已入 journal 而检查点未写入时，恢复会从同一结果补写检查点；结果仍可用，不消耗新轮次。审查前的漂移拒绝 `decision`，完成前的漂移拒绝 `complete`，均列出路径；完成检查期间新增文件进入可重试的 `blocked/completion_package_changed`，清理后在原 run 重发 `complete`。未匹配时 `pendingAction` 不提示会被拒绝的动作。
 审查传输超时且没有结果事件时，记录 `pending_review/review_transport_timeout`，可用 `--mode resume` 后 advance，
 同一 attempt 最多重派一次，重新取得 Review 授权、grant 与 invocation；第二次超时为 `blocked/review_transport_timeout`。
@@ -252,7 +260,7 @@ PLAN 需 `mode:"resume"`、原配置、`originalHostContext`、`permissions` 包
 单任务 V3 的当前会话 `develop` 或 `complete` 若留下 `effect-intent`，其后仅有 control 记录且没有 checkpoint，恢复后是 `unknown/reconciliation_required`，`pendingAction: abandon_effect`。`review` intent 尚无 `host-joined`／`review-invocation-registered`，且其后仅有 control 记录时也走此入口；已登记 review 仍走 `abandon_review`。操作员须先确认原 host 已退出，且相关子进程均已停止；随后用原 runId、原配置和原 runtime 执行：
 
 ```bash
-node scripts/cm-ai-host.mjs serve --config run.json --mode resume --host-context new-host-id --original-host-context old-host-id --allow-development --allow-abandon-effect --runtime claude
+node scripts/cm-ai-host.mjs serve --config run.json --mode resume --host-context new-host-id --original-host-context old-host-id --allow-development --review-config review.json --allow-abandon-effect --runtime claude
 ```
 
 向宿主发送 `{"version":1,"requestId":"abandon-effect-1","operation":"abandon_effect","identity":{"repositoryId":"…","runId":"…","taskId":"…","attempt":1},"reason":"已确认旧 host 和检查进程退出"}`；driver 可用 `node scripts/cm-ai-drive.mjs --plan abandon-effect.json abandon_effect`，PLAN 需 `mode:"resume"`、`permissions:["--allow-abandon-effect"]` 和单行非空、最多 500 UTF-8 字节的 `reason`。旗标只消费一次，不进入原配置指纹。journal 仅在对应 intent 及其后连续 control 记录后追加绑定 effect id、kind、intent 摘要、前一条记录摘要与原因的 `effect-abandoned`，运行日志写 `effect_abandoned`；结果是终态 `cancelled/effect_abandoned`，不会改代码根或自动取消 `tasks.md` 勾选。
@@ -300,13 +308,13 @@ QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.tim
 （事故：AI潮 bootstrap-T-002-r2 的 N6 评估超时 60 秒后被永久阻塞，context_refresh/finish 无法通过。）
 宿主读取 JSONL 时必须处理当前缓冲区内的全部完整行，再等下一个数据块；处理单行后不能
 提前 return（事故：确认和 TC-007 请求合并到一个数据块，旧驱动只读确认而悬空等待）。
-无 complete 的 N6 中断只能由用户显式重跑：保留原配置，`--mode resume --allow-qa --rerun-unknown-qa`，
+无 complete 的 N6 中断只能由用户显式重跑：保留原配置（含原 `--review-config` 与 `--workflow-config`），`--mode resume --allow-qa --rerun-unknown-qa`，
 之后 `advance`；运行日志先记 `test_run/abandoned`，新 testRunId 保持原 qaRound，不重跑开发/审查。
 已记录 case_complete 必须全为 PASS（允许零条），且无 case_blocked；abandoned 的 partial_pass_cases 记录旧 PASS 用例。
 所有用例仍全部重跑，旧 PASS 证据文件只作历史保留。任一 FAIL/BLOCKED、固定报告
 `{testRunId}-execution.md` 或未清理资源都不满足恢复条件；保留 unknown/阻断供人工核对，
 不删报告或日志来获得重跑资格，不伪造 complete。仅写了 abandoned 后再中断可沿同一授权入口恢复。
-已 complete 的宿主证据或环境阻断可用单任务 `--mode resume --workflow-config {原配置} --allow-qa --rerun-blocked-qa`，
+已 complete 的宿主证据或环境阻断可用单任务 `--mode resume --review-config {原审查配置} --workflow-config {原配置} --allow-qa --rerun-blocked-qa`，
 再 `advance`：仅最新结果为 BLOCKED、failed=0、qaRound<3，且每条 BLOCKED 都是 browser 的 evidenceProblem、
 cleanup=failed、环境摘要不一致、hostRequestTimeout 或会话自己回答的 BLOCKED（报告行 `hostDeclaredBlocked`，
 例如模拟器当时不可用），logic 的 INSUFFICIENT_EVIDENCE 或只因映射命令没有退出码而阻断（报告行 `commandUnavailable`），或 commands 行没有退出码
@@ -341,7 +349,7 @@ browser 证据字段都从报告读取，只与上述日志计数、case_blocked
 
 ```bash
 node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
-  --host-context {原宿主身份} --allow-development \
+  --host-context {原宿主身份} --allow-development --review-config review.json \
   --workflow-config workflow-new.json --allow-qa \
   --revise-qa-config workflow-old.json \
   --qa-config-revision-reason "补齐此前漏配的项目测试命令"
@@ -395,7 +403,7 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
 
 ```bash
 node scripts/cm-ai-host.mjs serve --config run-new.json --mode create \
-  --host-context {本次宿主身份} --allow-development \
+  --host-context {本次宿主身份} --allow-development --review-config review.json \
   --supersede-reviewed-evidence --supersede-reason "说明为什么要重跑任务"
 ```
 

@@ -159,7 +159,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     try{await serveHostTransport({host,input,output,toolBridge:bridge},inputLimitRaw);}
     finally{if(rawMode)input.setRawMode(false);}
     return 0;
-  }catch(cause){const code=safeCode(cause);error.write(JSON.stringify({error:{code,...(['browser_capability_required','browser_capability_unavailable'].includes(code)
+  }catch(cause){const code=safeCode(cause);error.write(JSON.stringify({error:{code,...(['browser_capability_required','browser_capability_unavailable','invalid_arguments'].includes(code)
     &&typeof cause.reason==='string'?{reason:cause.reason}:{}),...(code==='request_too_large'?{reason:inputLimitReason(cause.limit)}:{})}})+'\n');return 1;}
   finally{bridge?.close();}
 }

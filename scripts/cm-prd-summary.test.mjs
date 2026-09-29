@@ -108,7 +108,14 @@ test('change digest survives later summary publication, recovery, approval, and 
   assert.equal(JSON.parse(fs.readFileSync(path.join(specs,'.cm-specs-status'))).revisionDigest,proposal.proposalDigest);
   const nextBefore=inspectPrdChangeSnapshot(specs),nextProposal=inspectPrdChangeProposal(nextBefore,{status:'draft',summary:'Extend notes again',removed:[],
     features:[{directory,documents:revise(revise(original,2),3),testCasesReason:'no_observable_behavior'}]},selected,config);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(specs,'.cm-specs-status'))).taskGrammar,2,'approval binds the shared grammar');
   assert.equal(applyPrdChange({specs,before:nextBefore,proposal:nextProposal,selected}).status,'awaiting_review');
+  // The last approval's grammar travels through cm-prd change and publication.
+  const status=()=>JSON.parse(fs.readFileSync(path.join(specs,'.cm-specs-status')));
+  assert.equal(status().taskGrammar,2);
+  const nextSummary=await summaryOwner()(specs,{currentFeatures:['2.appendix']});
+  assert.equal(publishPrdAwaitingReview({specs,summary:nextSummary,writeEnabled:true}).status,'awaiting_review');
+  assert.equal(status().status,'awaiting_review');assert.equal(status().taskGrammar,2);
 });
 function legacy(specs){
   const prefix=path.join(specs,'.reviews/prd-guide-split');
@@ -134,6 +141,8 @@ test('legacy completed history registers notes; current summary publishes the fu
   assert.equal(result.status,'awaiting_review');
   const status=JSON.parse(fs.readFileSync(path.join(specs,'.cm-specs-status'),'utf8'));
   assert.deepEqual(status.features,['1.guide','2.appendix']);assert.deepEqual(status.specFiles,evidence.specFiles);
+  // First publication: no earlier approval to reinterpret, so it carries the shared grammar.
+  assert.equal(status.taskGrammar,2);
   assert.equal(publishPrdAwaitingReview({specs,summary,writeEnabled:true,recover:true}).status,'awaiting_review');
 });
 test('current missing disposition remains a blocker',async t=>{

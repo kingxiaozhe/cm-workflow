@@ -35,7 +35,6 @@ for(const [name,before,after] of [
   ['tasks.md','- [ ] T-001: Guide\r\n','- [x] T-001: Guide\n'],
   ['tasks.md','- [ ] T-001: Guide\n- [DROPPED] T-002: Old\n','- [x] T-001: Guide\n- [CHANGED] T-002: Old\n'],
   ['tasks.md','```md\n- [ ] T-001: Example\n```','```md\n- [x] T-001: Example\n```'],
-  ['tasks.md','    - [ ] T-001: Example','    - [x] T-001: Example'],
   ['tasks.md','Prose - [ ] T-001: Example','Prose - [x] T-001: Example'],
   ['tasks.md','- [ ] General checkbox','- [x] General checkbox'],
   ['tasks.md','- [ ] [AC-001] Wrong file','- [x] [AC-001] Wrong file'],
@@ -46,6 +45,12 @@ for(const [name,before,after] of [
   const {root,args}=fixture(t,{[name]:before});fs.writeFileSync(path.join(root,name),after);
   assert.throws(()=>inspectPrdReview(args),/PRD review artifact changed after disposition/);
 });
+// The shared tasks.md grammar: every task admission and N5 accept is a runtime mark here too.
+for(const line of ['    - [ ] T-001: Nested','- [ ] T-001 No colon','- [ ] T-001：全角冒号','- [ ] T-001 - Dash'])
+  test(`task declaration mark is runtime state: ${JSON.stringify(line)}`,t=>{
+    const {root,args}=fixture(t,{'tasks.md':line});fs.writeFileSync(path.join(root,'tasks.md'),line.replace('[ ]','[x]'));
+    assert.equal(inspectPrdReview(args).runtimeMarksNormalized,true);
+  });
 test('runtime mark in another artifact cannot mask JSON drift',t=>{
   const {root,args}=fixture(t,{'tasks.md':'- [ ] T-001: Guide','test-cases.json':'{"cases":[]}'});
   fs.writeFileSync(path.join(root,'tasks.md'),'- [x] T-001: Guide');

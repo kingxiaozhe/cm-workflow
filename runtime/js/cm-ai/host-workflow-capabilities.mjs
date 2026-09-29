@@ -28,11 +28,16 @@ export function featureHasBrowserCases(specsDir,feature,codeProject){
 
 export function readBrowserCapability(value,applicable){
   const carriers=Array.isArray(applicable)?[...new Set(applicable)].sort():applicable?['browser']:[];
-  need(carriers.every(carrier=>Object.values(QA_ENVIRONMENT_CARRIERS).some(values=>values.includes(carrier))),'invalid_arguments');
-  if(carriers.length===0){need(value===undefined,'invalid_arguments');return null;}
+  const invalid=reason=>{throw Object.assign(new Error('invalid_arguments'),{code:'invalid_arguments',reason});};
+  if(!carriers.every(carrier=>Object.values(QA_ENVIRONMENT_CARRIERS).some(values=>values.includes(carrier))))
+    invalid(`QA environment carrier is not supported: ${carriers.join(', ')}`);
+  if(carriers.length===0){
+    if(value!==undefined)invalid('--browser-qa 只在启用 QA（--workflow-config 的 qa 不为 null）且本 feature 有 blocking 或策略启用的交互式用例时使用；本次没有适用的交互式 QA，去掉 --browser-qa');
+    return null;
+  }
   const reason=`--browser-qa available|unavailable declares whether this session can run interactive QA for carrier(s): ${carriers.join(', ')}.`;
   if(value===undefined)throw Object.assign(new Error('browser_capability_required'),{code:'browser_capability_required',reason});
-  need(['available','unavailable'].includes(value),'invalid_arguments');
+  if(!['available','unavailable'].includes(value))invalid('--browser-qa 只接受 available 或 unavailable');
   if(value!=='available')throw Object.assign(new Error('browser_capability_unavailable'),{code:'browser_capability_unavailable',reason});
   return 'available';
 }

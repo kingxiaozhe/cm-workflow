@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "cm-spec-manifest.py"
 
 
-def invoke(*args: str, expected_exit: int = 0) -> subprocess.CompletedProcess[str]:
+def invoke(*args: str, expected_exit: int = 0, oracle_exit: int | None = None) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         cwd=ROOT,
@@ -35,9 +35,12 @@ def invoke(*args: str, expected_exit: int = 0) -> subprocess.CompletedProcess[st
         [os.environ.get("CM_NODE_BIN", "node"), str(ROOT / "scripts" / "cm-spec-manifest.mjs"), *args],
         cwd=ROOT, text=True, encoding="utf-8", capture_output=True, check=False,
     )
-    if javascript.returncode != result.returncode or oracle.returncode != result.returncode:
+    # oracle_exit marks a deliberate post-migration grammar change: the frozen
+    # oracle keeps its old answer and must not be compared byte for byte.
+    expected_oracle = result.returncode if oracle_exit is None else oracle_exit
+    if javascript.returncode != result.returncode or oracle.returncode != expected_oracle:
         raise AssertionError(f"JS/Python exit mismatch: {javascript.stderr} / {result.stderr}")
-    if result.returncode == 0 and not (
+    if result.returncode == 0 and oracle_exit is None and not (
         json.loads(javascript.stdout) == json.loads(result.stdout) == json.loads(oracle.stdout)
     ):
         raise AssertionError("JS/Python semantic manifest mismatch")
@@ -177,13 +180,17 @@ def main() -> int:
             ),
             encoding="utf-8",
         )
-        indented_example = invoke(
+        # The shared tasks.md grammar (runtime/js/spec-task-line.mjs) reads an
+        # indented task line as a declaration, exactly as admission and N5 do,
+        # so its checkbox is runtime state. The frozen oracle still mismatches.
+        indented_task = invoke(
             str(specs),
             "--status-file",
             str(status),
-            expected_exit=1,
+            expected_exit=0,
+            oracle_exit=1,
         )
-        assert "approved spec manifest does not match" in indented_example.stderr
+        assert json.loads(indented_task.stdout)["status"] == "matched"
 
         (feature / "tasks.md").write_text(tasks_completed, encoding="utf-8")
 

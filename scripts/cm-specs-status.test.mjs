@@ -82,12 +82,23 @@ test('revision digest is optional, validated, and retained by shared status stor
   assert.equal(Object.hasOwn(f.value(),'revisionDigest'),false);
 });
 
+test('task grammar is only version 2 and is carried through awaiting review',t=>{
+  const f=fixture(t),expected=f.initial(),approved={...expected,status:'approved',approval:{response:'开始',at:expected.at}};
+  assert.deepEqual(writeSpecsStatus(f.specs,{...approved,taskGrammar:2}),{...approved,taskGrammar:2});
+  assert.equal(readSpecsStatus(f.specs).value.taskGrammar,2);
+  assert.deepEqual(writeSpecsStatus(f.specs,{...expected,taskGrammar:2}),{...expected,taskGrammar:2});
+  for(const invalid of [{...approved,taskGrammar:1},{...approved,taskGrammar:'2'},{...expected,taskGrammar:3}])
+    assert.throws(()=>writeSpecsStatus(f.specs,invalid),/spec_status_invalid/);
+});
+
 test('--approve writes only the three permitted reasons with explicit human input and reruns admission',t=>{
   const f=fixture(t),approve=['--approve','--approval-response','开始'];
   f.raw(f.initial());
   assert.equal(f.run('--approval-response','开始').result.reason,'approval_write_required');
   let result=f.run(...approve);assert.equal(result.exit,0);assert.equal(result.result.state,'ready');
-  assert.deepEqual(Object.keys(f.value()),keys);assert.equal(f.value().approval.response,'开始');
+  // A new approval binds the shared tasks.md grammar (spec-task-line.mjs).
+  assert.deepEqual(Object.keys(f.value()),[...keys,'taskGrammar']);assert.equal(f.value().taskGrammar,2);
+  assert.equal(f.value().approval.response,'开始');
   assert.equal(f.value().approval.at,f.value().at);
   feature(f.specs,'2.appendix');
   assert.equal(f.run('--approval-response','开始').result.reason,'spec_features_changed');

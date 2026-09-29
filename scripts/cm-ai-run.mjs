@@ -12,7 +12,8 @@ import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platfo
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {hasLegacyQaPlanFingerprint,previousQaMaterial,qaConfigurationSlice,qaExecutorMaterial,qaInvariantDigest,qaRevisionChain,verifyQaRevisionMaterial} from '../runtime/js/cm-ai/qa-config-revision.mjs';
 import {hasCmAiQaRun,inspectCmAiQaRevisionTarget,recordCmAiQaConfigurationRevision} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
-import {prepareReviewedEvidenceSupersession,archiveReviewedEvidence,recordEvidenceSupersession} from '../runtime/js/cm-ai/reviewed-evidence-supersede.mjs';
+import {prepareReviewedEvidenceSupersession,archiveReviewedEvidence,recordEvidenceSupersession,assertNoUnrecordedPriorCode} from '../runtime/js/cm-ai/reviewed-evidence-supersede.mjs';
+import {explainFingerprintMismatch} from '../runtime/js/cm-ai/launch-mismatch.mjs';
 import {recordReviewAbandonment} from '../runtime/js/cm-ai/review-abandon-log.mjs';
 import {recordEffectAbandonment} from '../runtime/js/cm-ai/effect-abandon-log.mjs';
 import {reviewConsumedHandoff,reviewedHandoffConflict} from '../runtime/js/cm-ai/host-handoff.mjs';
@@ -209,7 +210,7 @@ const LEGACY_QA_FINGERPRINT_REASON='运行指纹与当前配置不符。若此�
   +'（项目 .cm-workflow.yml、~/.cm-workflow/runtimes.yml 与插件内置默认值）：把这些配置恢复为创建时的内容即可恢复；'
   +'现在新建的运行不再把这些可变配置写进指纹。否则请核对 run.json、--workflow-config、宿主身份及授权参数是否与创建时一致。';
 
-export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,holdRevision=false}={}){
+export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,holdRevision=false,specRebindReason=null}={}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
@@ -218,6 +219,8 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
   if(supersedeReason!==null&&mode!=='create')fail('supersede_unavailable');
   if(allowAbandonEffect&&mode!=='resume')fail('effect_abandon_unavailable');
   if(typeof holdRevision!=='boolean')fail('invalid_input');
+  if(specRebindReason!==null&&(mode!=='resume'||execution===null||typeof specRebindReason!=='string'||!specRebindReason.trim()
+    ||Buffer.byteLength(specRebindReason,'utf8')>500||/[\r\n\0]/.test(specRebindReason)))fail('spec_rebind_unavailable');
   if(typeof acceptSupersededCodeDrift!=='boolean'||acceptSupersededCodeDrift&&supersedeReason===null)
     fail('supersede_unavailable');
   if(qaConfigRevision!==null&&(mode!=='resume'||!execution?.qaExecutor||rerunUnknownQa||rerunBlockedQa
@@ -227,7 +230,7 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
     ||(rerunUnknownQa||rerunBlockedQa)&&(mode!=='resume'||!execution?.qaExecutor))fail('qa_recovery_authorization_required');
   const {openTaskExecutionStore}=await import('../runtime/js/cm-ai/task-owner.mjs');
   const {createCmAiHost}=await import('../runtime/js/cm-ai/host.mjs');
-  const {inspectCmAiAdmission,matchesCmAiTaskSelection}=await import('../runtime/js/cm-ai/cm-ai-admission.mjs');
+  const {inspectCmAiAdmission,matchesCmAiTaskSelection,explainCmAiTaskSelection}=await import('../runtime/js/cm-ai/cm-ai-admission.mjs');
   const {captureReviewBaseline}=await import('../runtime/js/cm-ai/review-package.mjs');
   if(execution!==null){
     const {shape,json,validCallTimeout}=await import('../runtime/js/cm-ai/effect-contract.mjs');
@@ -281,10 +284,15 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
       documentationSync:execution.documentationSync,specsDir,codeProject,feature,scope,parallelSelection:selection}):execution?.developer;
   const admission=inspectCmAiAdmission({specsDir,codeProject});
   if(mode==='create'&&admission.state!=='ready')return {blocked:admission,close:()=>{}};
-  if(mode==='create'&&!matchesCmAiTaskSelection(admission,feature,identity.taskId,selection))fail('task_selection_mismatch');
+  if(mode==='create'&&!matchesCmAiTaskSelection(admission,feature,identity.taskId,selection))
+    throw Object.assign(new Error('task_selection_mismatch'),{code:'task_selection_mismatch',
+      reason:explainCmAiTaskSelection(admission,{feature,taskId:identity.taskId,selection})});
   const handoffs=[1,2].map(attempt=>path.join(reviewsDir,`${featureSlug}-${identity.taskId}-a${attempt}-handoff.json`));
-  if(mode==='create'&&supersession===null)for(const [index,handoff] of handoffs.entries()){
-    if(fs.existsSync(handoff)&&reviewConsumedHandoff(reviewsDir,path.basename(handoff),index+1))reviewedHandoffConflict();
+  if(mode==='create'&&supersession===null){
+    for(const [index,handoff] of handoffs.entries()){
+      if(fs.existsSync(handoff)&&reviewConsumedHandoff(reviewsDir,path.basename(handoff),index+1))reviewedHandoffConflict();
+    }
+    assertNoUnrecordedPriorCode({specsDir,codeProject,feature,identity,tasksPath});
   }
   // Reuse the runner's real validator before creating durable state. A failed
   // baseline must not strand an otherwise unused run ID.
@@ -328,18 +336,22 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
           try{store=openTaskExecutionStore({...storeOptions,fingerprints:{...fingerprints,config:sha(previous)}});break;}
           catch(cause){if(cause.code!=='fingerprint_mismatch')throw cause;}
         }
-        if(!store)throw error;
+        if(!store){error.reason=explainFingerprintMismatch({snapshot,definition,execution,fingerprints});throw error;}
         attaching=true;
       }
     }
     try{
       const chain=qaRevisionChain(store.snapshot());
-      if(chain.revisions.length&&chain.fingerprint!==fingerprints.config&&!priorMaterial)fail('fingerprint_mismatch');
+      if(chain.revisions.length&&chain.fingerprint!==fingerprints.config&&!priorMaterial)
+        throw Object.assign(new Error('fingerprint_mismatch'),{code:'fingerprint_mismatch',
+          reason:'QA 配置与最后一次 --revise-qa-config 修订后的配置不同；请用修订后的 --workflow-config 恢复'});
       if(chain.revisions.length||priorMaterial)verifyQaRevisionMaterial(store.snapshot(),material,priorMaterial);
       const attachments=store.snapshot().records.filter(row=>row.payload.type==='qa-attached');
       if(attachments.length>1)fail('qa_attachment_duplicate');
       const attached=attachments.length?readQaAttachment(attachments[0].payload.record):null;
-      if(attached&&!chain.revisions.length&&!priorMaterial&&attached.qaFingerprint!==fingerprints.config)fail('fingerprint_mismatch');
+      if(attached&&!chain.revisions.length&&!priorMaterial&&attached.qaFingerprint!==fingerprints.config)
+        throw Object.assign(new Error('fingerprint_mismatch'),{code:'fingerprint_mismatch',
+          reason:'启动配置与事后附加 QA 时绑定的配置不同；请用附加 QA 时的 --workflow-config 与参数恢复'});
       if(attaching&&store.snapshot().records.length===0)fail('qa_attach_not_completed');
       return {material,fingerprints,store,attaching,priorMaterial,chain,attached};
     }catch(error){store.close();throw error;}
@@ -352,7 +364,7 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
     try{opened=openFor(runConfigMaterial(definition,execution,{parallelSelection,bootstrapConfig,legacyQa:true}));}
     catch(cause){
       if(cause.code!=='fingerprint_mismatch')throw cause;
-      throw Object.assign(error,{reason:LEGACY_QA_FINGERPRINT_REASON});
+      throw Object.assign(error,{reason:error.reason?`${error.reason}。${LEGACY_QA_FINGERPRINT_REASON}`:LEGACY_QA_FINGERPRINT_REASON});
     }
   }
   const {material:configMaterial,fingerprints,store,attaching,priorMaterial,chain,attached}=opened;
@@ -414,6 +426,10 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
       ...(execution?.qaLogHome?{logHome:execution.qaLogHome}:{})};
     // Repair a crash after the journal append, before the log supersession.
     for(const record of chain.revisions)recordCmAiQaConfigurationRevision({...qaBinding,identity:{...identity,attempt:record.taskAttempt},packageDigest:record.packageDigest},record);
+    if(specRebindReason!==null){
+      // Consumed once on this launch; the journal record is the audit trail.
+      host.rebindSpecification({version:1,reason:specRebindReason,at:new Date().toISOString()});
+    }
     if(priorMaterial){
       if(sha(priorMaterial)===fingerprints.config)fail('qa_revision_unchanged');
       const current=await host.handle({version:1,operation:'status',requestId:'qa-revision-status',identity});

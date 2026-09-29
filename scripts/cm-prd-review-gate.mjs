@@ -157,7 +157,7 @@ function loadReceipt(file,args,evidence){
       if(currentSha===item.sha256)continue;
       const text=bytes.toString('utf8');
       need(path.extname(artifact)==='.md'&&Buffer.from(text,'utf8').equals(bytes)
-        &&createHash('sha256').update(normalizeRuntimeMarks(text,path.basename(artifact))).digest('hex')===item.sha256,
+        &&[false,true].some(legacy=>createHash('sha256').update(normalizeRuntimeMarks(text,path.basename(artifact),{legacy})).digest('hex')===item.sha256),
         'PRD review artifact changed after disposition','prd_review_artifact_changed',
         ()=>({receipt,artifact:item.path,recordedSha256:item.sha256,currentSha256:currentSha}));
       value.runtimeMarksNormalized=true;

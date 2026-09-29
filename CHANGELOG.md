@@ -30,6 +30,11 @@
 - cm-ai 批次驾驶员带首轮审查授权但缺 `develop-a2.json` 时不再启动前拒绝：审查要求修改时任务停在 `changes_requested/revision_answer_required`，读完 findings 写好第 2 轮答案再继续。
 - cm-ai 受保护当前会话模式在启动前拒绝非 UTF-8 的开发内容（不再被替换字符悄悄改坏），新文件以 0644 创建。
 - cm-ai 新建运行前检查 `runId` 须为 8–128 个字符（与运行日志同一规则），不再在开发 intent 写入后才失败；已有运行恢复不受影响。
+- cm-ai 任务进行中规格经正规流程改动并重新批准后，状态报 `spec_drift`、列出变化文件与真实出口，不再提示会被拒绝的动作；只动了其他任务的条目、依赖或用例（requirements.md、design.md 整份未变，本任务条目含续行及任何点名本任务的行与用例未变，由新记录的 `taskScopeDigest` 证明）时可在原运行用 `--rebind-spec-material --spec-rebind-reason` 显式换绑（journal 记 `specification-rebound`，只换批准哈希；旧版本创建的运行不可换绑），已有开发与审查结论保留；内容有变则拒绝并点名，可还原规格继续或 supersede 重做。
+- cm-ai 启动参数错误不再只报裸错误码：`fingerprint_mismatch` 点名与创建时不同的输入（runtime、审查配置、会话等），`invalid_arguments` 写明参数；单任务 create 必须带 `--review-config`，避免运行到待审后才发现无法补加。
+- cm-ai `tasks.md` 任务行统一为一套语法（无冒号、全角冒号、缩进嵌套均可，围栏内示例不算），准入、cm-prd 自检、N5 勾选与审批 manifest 归一化一致，勾选后不再误报整个项目规格漂移；语法随批准绑定（新批准记 `taskGrammar: 2`），旧批准继续按原解析器读取，重新批准时若有 feature 在新语法下无效、或从旧语法切换会改变任务集合，则 `task_grammar_conflict` 拒绝并点名行号，旧版批准的 manifest 仍原样匹配。
+- cm-ai `--task` 选择依赖已 DROPPED 任务的下一任务时与 `nextTask` 同样视为依赖已满足；`task_selection_mismatch` 附带原因。
+- cm-ai 普通新建运行会拒绝悄悄接收同任务旧运行留下的未审改动（同 supersede 的漂移检查与 `--accept-superseded-code-drift` 记录）；第 1 轮就结束、没有可归档证据的旧运行也可以 supersede。
 
 - cm-ai 单任务驾驶员对 bootstrap 规范任务在启动前拒绝缺少实时 `init_verify` runner，并将 unknown／reconcile 宿主结果作为失败退出；补充当前会话宿主路径与旧运行恢复说明。
 - cm-ai 开发检查失败或不可用时以独立的 `develop_checks_not_passed` 在审查前阻断并可在原运行重试；旧完成门禁的 `checks_not_passed` 保持终态。检查产物越界重试改用新 effect id，完成复查失败保留原审查重试，单任务和批次驾驶员支持每项及默认检查超时（默认 15 分钟）。

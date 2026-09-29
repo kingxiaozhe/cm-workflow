@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {inspectCmAiAdmission,approveCmAiSpecs,matchesCmAiTaskSelection} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
+import {inspectCmAiAdmission,approveCmAiSpecs,matchesCmAiTaskSelection,explainCmAiTaskSelection} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {validateRunDefinition} from './cm-ai-run.mjs';
 
 const usage='usage: cm-ai-admission.mjs --specs-dir PATH --code-project PATH [--code-project PATH ...] [--approval-response TEXT | --yes] [--approve --approval-response TEXT (no --yes)] [--print-run-definition --scope a,b [--task T-xxx] [--requirements c,d] [--run-id X] [--repository-id Y]]';
@@ -42,7 +42,8 @@ function buildRunDefinition(admission,input){
   if(!admission.codeProject)throw new Error('--print-run-definition requires one --code-project');
   const selected=input.task===undefined?admission.nextTask:{feature:admission.nextTask.feature,id:input.task};
   if(input.task!==undefined&&!matchesCmAiTaskSelection(admission,selected.feature,selected.id,{version:1,taskId:input.task}))
-    throw Object.assign(new Error('task_selection_mismatch'),{code:'task_selection_mismatch'});
+    throw Object.assign(new Error('task_selection_mismatch'),{code:'task_selection_mismatch',
+      reason:explainCmAiTaskSelection(admission,{feature:selected.feature,taskId:input.task,selection:{version:1,taskId:input.task}})});
   let repositoryId=input.repositoryId;
   if(repositoryId===undefined){
     let name;
@@ -75,14 +76,16 @@ export function main(argv=process.argv.slice(2)){
   const decision=JSON.stringify({state:reference.state,reason:reference.reason,features:reference.features,nextTask:reference.nextTask});
   const mismatch=!firstBlocked&&projectResults.some(item=>JSON.stringify({state:item.state,reason:item.reason,features:item.features,nextTask:item.nextTask})!==decision);
   const selected=mismatch?{...reference,state:'blocked',reason:'project_admission_mismatch',nextTask:null}:reference;
-  const result={...selected,...(approval?.approveRefused?{approveRefused:approval.approveRefused}:{}),codeProject:input.codeProjects.length===1?selected.codeProject:null,
+  const result={...selected,...(approval?.approveRefused?{approveRefused:approval.approveRefused}:{}),
+    ...(approval?.approveReason?{approveReason:approval.approveReason}:{}),codeProject:input.codeProjects.length===1?selected.codeProject:null,
     codeProjects:projectResults.map(item=>item.codeProject),
     projectAdmissions:projectResults.map(item=>({codeProject:item.codeProject,state:item.state,reason:item.reason}))};
   if(result.state==='awaiting_spec_approval'&&(result.approvalIntent!=='explicit'||input.assumeYes))
     result.message='确认规格摘要后，用 --approval-response 传入用户原话，并明确回复“开始”。';
   if(input.printRunDefinition&&!result.approveRefused&&result.state==='ready'){
     try{process.stdout.write(`${JSON.stringify(buildRunDefinition(result,input))}\n`);return 0;}
-    catch(error){process.stderr.write(`${JSON.stringify({error:{code:error.code??error.message}})}\n`);return 1;}
+    catch(error){process.stderr.write(`${JSON.stringify({error:{code:error.code??error.message,
+      ...(typeof error.reason==='string'?{reason:error.reason}:{})}})}\n`);return 1;}
   }
   process.stdout.write(`${JSON.stringify(result)}\n`);
   return result.state==='blocked'||result.approveRefused?1:0;

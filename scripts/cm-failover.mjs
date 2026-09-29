@@ -7,6 +7,7 @@ import path from 'node:path';
 import childProcess from 'node:child_process';
 // Single source of truth for role primary/standby; shared with the cm-ai host.
 import {ROLE_ROUTING} from '../runtime/js/cm-ai/runtime-failover.mjs';
+import {taskDeclarations,approvedTaskGrammar,TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
 
 export {ROLE_ROUTING};
 
@@ -37,17 +38,16 @@ function readDirectory(dir,label){
   return fs.readdirSync(dir,{withFileTypes:true});
 }
 
-// `- [ ] T-001: title` / `- [x] T-002: title`; anything else is prose.
-export function parseTasks(text){
+// Task declarations use the shared tasks.md grammar (spec-task-line.mjs);
+// anything else, including fenced examples, is prose.
+export function parseTasks(text,grammar=TASK_GRAMMAR){
   const tasks=[],seen=new Set();
-  for(const line of text.split(/\r\n|[\n\r]/)){
-    const match=/^[ \t]*-[ \t]+\[([ xX])\][ \t]+(T-[A-Za-z0-9][A-Za-z0-9._-]*)[ \t]*[:：][ \t]*(.*)$/.exec(line);
-    if(!match)continue;
-    const id=match[2];
+  for(const declaration of taskDeclarations(text,{grammar})){
+    const id=declaration.id;
     if(!TASK_RE.test(id))continue;
     if(seen.has(id))throw new FailoverError(`tasks.md contains a duplicate task id: ${id}`);
     seen.add(id);
-    tasks.push({id,done:match[1].toLowerCase()==='x',title:match[3].trim()});
+    tasks.push({id,done:declaration.completed,title:declaration.rest.replace(/^[:：\s]+/u,'').trim()});
   }
   if(tasks.length===0)throw new FailoverError('tasks.md declares no `- [ ] T-xxx:` task line');
   return tasks;
@@ -136,7 +136,7 @@ export function classifyBreakpoint(task,attempts){
 }
 
 function inspectFeature(featureDir,feature){
-  const tasks=parseTasks(readTextFile(path.join(featureDir,'tasks.md'),'tasks.md'));
+  const tasks=parseTasks(readTextFile(path.join(featureDir,'tasks.md'),'tasks.md'),approvedTaskGrammar(path.dirname(featureDir)));
   const reviewsDir=path.join(featureDir,'.reviews');
   let entries=new Set();
   if(fs.existsSync(reviewsDir))

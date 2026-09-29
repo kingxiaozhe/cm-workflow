@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 
-const fields=['status','summaryDigest','at','features','specFiles','testCases','approval','revisionDigest'];
+const fields=['status','summaryDigest','at','features','specFiles','testCases','approval','revisionDigest','taskGrammar'];
 const record=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const hex=value=>typeof value==='string'&&/^[a-fA-F0-9]{64}$/.test(value);
 const revisionHex=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
@@ -35,6 +35,9 @@ export function writeSpecsStatus(specsDir,value,{beforeRename=()=>{}}={}){
   const summaryDigest=value.summaryDigest===undefined?null:value.summaryDigest;
   need(summaryDigest===null||hex(summaryDigest));
   if(Object.hasOwn(value,'revisionDigest'))need(revisionHex(value.revisionDigest));
+  // The grammar the last approval bound (spec-task-line.mjs). An awaiting_review
+  // status only carries it forward; parsing honours it only once approved.
+  if(Object.hasOwn(value,'taskGrammar'))need(value.taskGrammar===2);
   need(iso(value.at)&&Array.isArray(value.features)&&value.features.length>0
     &&value.features.every(name=>typeof name==='string'&&/^\d+\.[^/\\]+$/.test(name))
     &&new Set(value.features).size===value.features.length);
@@ -53,7 +56,8 @@ export function writeSpecsStatus(specsDir,value,{beforeRename=()=>{}}={}){
   const canonical={status:value.status,summaryDigest,at:value.at,features:[...value.features],
     specFiles:manifest(value.specFiles),testCases:manifest(value.testCases),
     approval:approval===null?null:{response:approval.response,at:approval.at},
-    ...(Object.hasOwn(value,'revisionDigest')?{revisionDigest:value.revisionDigest}:{})};
+    ...(Object.hasOwn(value,'revisionDigest')?{revisionDigest:value.revisionDigest}:{}),
+    ...(Object.hasOwn(value,'taskGrammar')?{taskGrammar:value.taskGrammar}:{})};
   const bytes=Buffer.from(JSON.stringify(canonical)+'\n'),target=path.join(specsDir,'.cm-specs-status');
   const temporary=path.join(specsDir,`.cm-specs-status-${randomUUID()}`);let fd;
   try{
