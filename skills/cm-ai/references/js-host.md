@@ -29,11 +29,14 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 `{"delete":true}`（删除已有文件）。改名是删除旧路径加写入新路径，两个路径都要在 scope 内。同时列在
 `requirements` 里的路径不能删除（审查包要求每个 requirements 文件存在），启动前即拒绝；当前会话若仍删掉了这类文件，
 结果是可重试的 `blocked/develop_requirement_missing`，恢复该文件后 `--mode resume` 再 `advance`。
-运行存档每条记录最多 1 MiB（1048576 字节），开发检查点要装下整个审查包（内容按 base64 计），还要给随后的审查与完成记录留
-64 KiB：驾驶员用与宿主相同的审查包组装代码算出交付后的检查点，超出即启动前拒绝并列出最大的改动文件（单个文本文件约 700 KiB
-以内可以通过）；新建运行的任务基线装不进一条记录时同样启动前拒绝，宿主在建存档前也会拒绝。当前会话若仍交付了这么大的改动，
-结果是可重试的 `blocked/develop_package_too_large`，缩小或移出这些文件后 `--mode resume` 再 `advance`，不会再以
-`unknown/store_failure` 结束。
+运行存档每条记录最多 1 MiB（1048576 字节），开发检查点要装下整个审查包（内容按 base64 计），还要给随后的审查与完成记录留足空间。
+这部分预留按有界的审查结果推出：审查结果除 examinedPaths 外最多 12 KiB（12288 字节）JSON，超出时宿主先把每条 finding 的
+message、evidence 与 summary 截到同一上限并标注，仍放不下再从末尾省略 finding（先 P3，至少保留一条阻断 finding），verdict、
+id、severity、path 不变；完成检查点最多重复这份结果 13 次，另加已有回执与调用的两份重复和 96 KiB 固定开销。小任务的预留约
+260 KB，单个文本文件约 550 KiB 以内可以通过。驾驶员用与宿主相同的审查包、handoff、Learning 证据与 AGENTS.md 回写代码算出交付后的
+检查点（含 handoff），超出即启动前拒绝并列出最大的改动文件；新建运行的任务基线装不进一条记录时同样启动前拒绝，宿主在建存档前
+也会拒绝。当前会话若仍交付了这么大的改动，结果是可重试的 `blocked/develop_package_too_large`，缩小或移出这些文件后
+`--mode resume` 再 `advance`，不会再以 `unknown/store_failure` 结束。
 这些开发阶段阻断（含 `develop_checks_not_passed`）在第 2 轮同样可在原轮次重试：重做本轮交付时不再要求代码与第 1 轮审查包一致，
 新审查包仍对照任务基线检查范围外改动。审查包本就逐文件记录
 `mode`（十进制权限位）且删除记为 `after:null`，审查者可见，事后改动权限同样算包漂移。驾驶员在启动宿主前拒绝：

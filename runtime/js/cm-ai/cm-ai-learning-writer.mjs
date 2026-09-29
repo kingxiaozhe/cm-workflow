@@ -64,6 +64,19 @@ export function mergeLessons(source,retrospective) {
   return `${before}${block}${newline}${after?newline:''}${after}`;
 }
 
+// Pure: what a writeback does to this AGENTS.md text, without touching any file.
+function lessonMerge(source,retrospective){
+  const next=mergeLessons(source,retrospective);
+  if(next===source)return {outcome:'deduplicated',content:source};
+  return Buffer.byteLength(next)>LIMIT?{outcome:'writeback_pending',content:source}:{outcome:'written',content:next};
+}
+// The same plan for a task Learning retrospective, for callers that size a
+// delivery before it is written (the driver's journal preflight).
+export function projectLearningWriteback({source,retrospective}){
+  const canonical=canonicalRetrospective(retrospective);
+  if(canonical.status!=='lesson_candidate')return {outcome:canonical.status,content:source};
+  return lessonMerge(source,canonical);
+}
 function result(retrospective,outcome,changed,agentsFile,reason) {
   const body={version:1,workflow:'cm-ai',phase:'task_learning_writeback',feature:retrospective.feature,
     identity:retrospective.identity,learningDigest:retrospective.learningDigest,
@@ -150,10 +163,11 @@ function writeLearningContent(codeProject,expected,retrospective,makeResult){
   } catch(error) {
     return result(retrospective,'writeback_pending',null,expected,error?.code==='agents_changed'?'agents_changed':'agents_unsafe');
   }
-  const source=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(before.bytes),next=mergeLessons(source,retrospective);
-  if(next===source)return result(retrospective,'deduplicated',false,
+  const source=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(before.bytes),plan=lessonMerge(source,retrospective);
+  if(plan.outcome==='deduplicated')return result(retrospective,'deduplicated',false,
     before.exists?{scope:'project',path:'AGENTS.md',sha256:before.sha256}:null,null);
-  const bytes=Buffer.from(next);if(bytes.length>LIMIT)return result(retrospective,'writeback_pending',null,expected,'agents_too_large');
+  if(plan.outcome==='writeback_pending')return result(retrospective,'writeback_pending',null,expected,'agents_too_large');
+  const bytes=Buffer.from(plan.content);
   const temporary=path.join(root,`.AGENTS.md.cm-learning.${process.pid}.${randomUUID()}`);let descriptor,renamed=false;
   try {
     descriptor=fs.openSync(temporary,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL

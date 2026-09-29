@@ -206,7 +206,7 @@ function preflight(){
           const history=readRunnerHistory(snapshot.records,snapshot.records[0].payload.config,3);
           attempts=batchDevelopAttempts(history.state,key,permissions);current=history.state.attempt;
           journal={baseline:snapshot.records[0].payload.baseline,generation:existing[1].generation,
-            restBytes:journalRestBytes(snapshot.records)};
+            frame:journalRestBytes(snapshot.records)};
         }catch(error){stop(2,`任务 ${key} 无法只读检查恢复存档: ${error.code??error.message}`);}
       }
       // A task with no run yet (a new batch, or a later task on resume) starts at
@@ -229,7 +229,7 @@ function preflight(){
         const value=readJson(file,'develop');validateCmAiAnswer('develop',value,taskRoot);
         if(value.status==='succeeded')for(const target of Object.keys(value.edits))
           if(!definition.scope.includes(target))stop(2,`任务 ${key} ${path.basename(file)}.edits 越过批准 scope: ${target}`);
-        perAttempt.set(attempt,value);deliveries.push({file,value});
+        perAttempt.set(attempt,value);deliveries.push({file,value,attempt});
       }
       if(deliveries.length){
         const known=journal!==null||plan.mode==='create'&&firstGroup.includes(key);
@@ -239,7 +239,9 @@ function preflight(){
           scope:definition.scope,requirements:definition.requirements,diskChecks:known,
           baseline:journal?baselineScope(journal.baseline,definition.scope):'disk',protectedMode,inputLimit,
           checks:plannedCheckResults(protectedMode?null:plan.checks?.[key]),
-          preview:known?developPreview({definition,codeProject,journal}):null});
+          preview:known?developPreview({definition,codeProject,journal,
+            parallelSelection:batch.parallel?.find(group=>group.includes(key))
+              ?{version:1,group:batch.parallel.find(group=>group.includes(key)).map(member=>definitions.get(member).identity.taskId)}:null}):null});
       }
     }
     developAnswers.set(key,perAttempt);

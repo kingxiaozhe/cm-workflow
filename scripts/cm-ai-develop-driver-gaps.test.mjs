@@ -17,6 +17,8 @@ import {applyProtectedEdits,protectedFixBridge} from '../runtime/js/cm-fix/prote
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {applyDevelopEdits} from './cm-ai-drive.mjs';
 import {captureReviewBaseline} from '../runtime/js/cm-ai/review-package.mjs';
+import {boundReviewText,reviewResultForPaths} from '../runtime/js/cm-ai/review-runner.mjs';
+import {REVIEW_TEXT_LIMIT,JOURNAL_PAYLOAD_LIMIT} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {main as fixHostMain} from './cm-fix-host.mjs';
 
 // Log mirrors and runtime declarations stay out of the invoking user's home.
@@ -247,7 +249,7 @@ test('#10 an invalid --input-limit is refused by the driver before launch',t=>{
 });
 // A live session is not the driver: it can still deliver nothing. The runner must
 // then leave a retryable develop block, not an unknown run.
-function liveSession(f,{mode,write=false,act=write?"fs.writeFileSync(cwd+'/target.mjs','export const value = 43;\\n');":'',args=[]}){
+function liveSession(f,{mode,write=false,act=write?"fs.writeFileSync(cwd+'/target.mjs','export const value = 43;\\n');":'',args=[],value=developValue}){
   const wrapper=path.join(f.root,`live-${mode}-${Math.random().toString(36).slice(2)}.mjs`);
   fs.writeFileSync(wrapper,`import fs from 'node:fs';
 import {driveHost} from ${JSON.stringify(DRIVE_CORE)};
@@ -259,7 +261,7 @@ driveHost({host:${JSON.stringify(HOST)},args:['serve','--config',${JSON.stringif
   answerFor:async row=>{
     if(row.kind==='develop'){
       ${act}
-      return {status:'succeeded',value:${JSON.stringify(developValue)}};
+      return {status:'succeeded',value:${JSON.stringify(value)}};
     }
     if(row.kind==='check')return createHostCheck({cwd,commands:[{id:'noop',command:[process.execPath,'-e','0']}]})
       ({identity:row.payload.identity},{signal:new AbortController().signal});
@@ -363,7 +365,7 @@ test('#19 review material counts every AGENTS.md the snapshot carries, not only 
 // carries base64 content, so a delivery must fit that record, not only the
 // review-package limits, or the checkpoint cannot be written after the files are.
 const line=kib=>'//'+'x'.repeat(kib*1024)+'\n';
-for(const kib of [800,1000])test(`#19 a ${kib} KiB delivery whose checkpoint exceeds the journal record limit is refused before any write`,t=>{
+for(const kib of [700,800,1000])test(`#19 a ${kib} KiB delivery whose checkpoint exceeds the journal budget is refused before any write`,t=>{
   const f=fixture(t,{files:{'target.mjs':'export const value = 1;\n'}});
   f.content('big.mjs',line(kib));f.develop({'target.mjs':'big.mjs'});
   const run=f.drive(f.plan(),'advance');
@@ -372,9 +374,9 @@ for(const kib of [800,1000])test(`#19 a ${kib} KiB delivery whose checkpoint exc
   assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 1;\n');
   noRun(f);
 });
-test('#19 a 700 KiB delivery still fits the journal and reaches review',t=>{
+test('#19 a 500 KiB delivery still fits the journal and reaches review',t=>{
   const f=fixture(t,{files:{'target.mjs':'export const value = 1;\n'}});
-  f.content('big.mjs',line(700));f.develop({'target.mjs':'big.mjs'});
+  f.content('big.mjs',line(500));f.develop({'target.mjs':'big.mjs'});
   const run=f.drive(f.plan(),'advance');
   assert.equal(run.status,0,run.stderr);assert.equal(result(run).state,'awaiting_review',run.stdout);
 });
@@ -424,14 +426,121 @@ test('#19 a live delivery too large for its checkpoint blocks retryably and a sm
   assert.deepEqual(intents,['develop-1','develop-1-retry-1']);
 });
 test('#19 a delivery whose develop checkpoint fits but leaves no room for review and completion is redone',t=>{
-  // About 1.046 MB: under the 1 MiB record, over the budget that keeps 64 KiB for the
-  // review and completion checkpoints, which carry the same package again.
+  // Under the 1 MiB record on its own, over the budget that keeps room for the
+  // bounded review and completion checkpoints, which carry the same package again.
   const f=fixture(t,{files:{'target.mjs':'export const value = 1;\n'}});
-  const run=liveSession(f,{mode:'create',act:`fs.writeFileSync(cwd+'/target.mjs','//'+'x'.repeat(760*1024)+'\\n');`});
+  const run=liveSession(f,{mode:'create',act:`fs.writeFileSync(cwd+'/target.mjs','//'+'x'.repeat(700*1024)+'\\n');`});
   assert.equal(run.status,0,run.stderr);
   assert.equal(result(run).state,'blocked',run.stdout);assert.equal(result(run).code,'develop_package_too_large');
-  const bytes=Number(/checkpoint would be (\d+) bytes/.exec(result(run).reason)?.[1]);
-  assert(bytes<=1024*1024&&bytes>1024*1024-64*1024,String(bytes));
+  const [,bytes,budget]=/checkpoint would be (\d+) bytes, above (\d+)/.exec(result(run).reason).map(Number);
+  assert(bytes<=JOURNAL_PAYLOAD_LIMIT&&bytes>budget,`${bytes} ${budget}`);
+  assert.match(result(run).reason,/bounded review/);
+});
+// Codex review of 090d683: a valid reviewer result near the admitted package limit
+// must still leave every later checkpoint persistable.
+test('#19 a package admitted at the budget edge survives a maximal review through completion',t=>{
+  const f=fixture(t,{files:{'target.mjs':'export const value = 1;\n'}});f.reviewer('approved');
+  const cli=path.join(f.bin,'codex');
+  fs.writeFileSync(cli,fs.readFileSync(cli,'utf8').replace("findings:[],summary:'Synthetic process review, not model evidence'",
+    "findings:Array.from({length:40},(_,n)=>({id:'F'+n,severity:'P3',path:data.examinedPaths[0],message:'m'.repeat(2000),"
+    +"evidence:'e'.repeat(2000)})),summary:'s'.repeat(20000)"));
+  const args=['--review-config',path.join(f.root,'review.json')];
+  // Walk down from an oversized delivery using the runner's own figures. Base64
+  // carries 3 content bytes in 4; each redo adds about 5 KB to the frame and the
+  // reserve together, and all effects must stay within the six-effect limit.
+  let content=700*1024,admitted,budget,mode='create';
+  for(let round=0;round<3;round++){
+    admitted=liveSession(f,{mode,args,act:`fs.writeFileSync(cwd+'/target.mjs','//'+'x'.repeat(${content})+'\\n');`});mode='resume';
+    assert.equal(admitted.status,0,admitted.stderr);
+    if(result(admitted).state==='awaiting_review')break;
+    const [,bytes,limit]=/checkpoint would be (\d+) bytes, above (\d+)/.exec(result(admitted).reason).map(Number);
+    budget=limit;content-=Math.ceil((bytes-limit+8000)*3/4);
+  }
+  assert.equal(result(admitted).state,'awaiting_review',admitted.stdout);
+  const developed=Buffer.byteLength(JSON.stringify(records(f).at(-1).payload));
+  assert(developed<=budget&&developed>budget-8192,`${developed} vs ${budget}`);
+  const review=['--review-config','review.json'];
+  const decided=f.drive(f.plan({mode:'resume',permissions:[...review,'--allow-review-attempt','1'],
+    packageDigest:result(admitted).packageDigest,answers:undefined,checks:undefined}),'decision');
+  assert.equal(decided.status,0,decided.stderr);assert.equal(result(decided).state,'approved',decided.stdout);
+  const completed=f.drive(f.plan({mode:'resume',permissions:review,packageDigest:result(admitted).packageDigest}),'complete');
+  assert.equal(completed.status,0,completed.stderr);assert.equal(result(completed).state,'fixture_completed',completed.stdout);
+  const payloads=records(f).map(row=>Buffer.byteLength(JSON.stringify(row.payload)));
+  assert(Math.max(...payloads)<=JOURNAL_PAYLOAD_LIMIT,String(Math.max(...payloads)));
+  const receipt=records(f).filter(row=>row.payload.type==='effect-checkpoint').at(-1).payload.checkpoint.receipt.result;
+  const text=Buffer.byteLength(JSON.stringify(receipt))-Buffer.byteLength(JSON.stringify(receipt.examinedPaths));
+  assert(text<=REVIEW_TEXT_LIMIT&&text>REVIEW_TEXT_LIMIT-2048,String(text));assert.match(receipt.summary,/truncated/);
+});
+test('#19 review text over the limit is truncated by the documented rule and stays a valid review',()=>{
+  const pkg={packageDigest:'a'.repeat(64)},paths=['a.mjs','b.mjs'];
+  const long=n=>'z'.repeat(n);
+  const small={verdict:'approved',packageDigest:pkg.packageDigest,examinedPaths:paths,findings:[],summary:'ok'};
+  assert.equal(boundReviewText(small),small);
+  const approved={...small,findings:Array.from({length:40},(_,n)=>({id:`P${n}`,severity:'P3',path:'a.mjs',
+    message:long(3000),evidence:long(3000)})),summary:long(30000)};
+  const bounded=boundReviewText(approved),bytes=v=>Buffer.byteLength(JSON.stringify(v))-Buffer.byteLength(JSON.stringify(v.examinedPaths));
+  assert(bytes(bounded)<=REVIEW_TEXT_LIMIT);assert.equal(bounded.findings.length,40);
+  assert(bounded.findings.every(f=>f.message.endsWith('truncated to the review text limit]')));
+  assert.deepEqual(bounded.findings.map(f=>f.id),approved.findings.map(f=>f.id));
+  reviewResultForPaths(bounded,pkg,paths);
+  // The non-blocking finding comes first, so omitting "from the end" alone would keep it.
+  const requested={...small,verdict:'changes_requested',findings:[{id:'P3-first',severity:'P3',path:'a.mjs',message:'x',evidence:'y'},
+    ...Array.from({length:60},(_,n)=>({id:`B${n}-${'i'.repeat(100)}`,severity:'P1',path:'b.mjs',message:long(500),evidence:long(500)}))],summary:'s'};
+  const omitted=boundReviewText(requested);
+  assert(bytes(omitted)<=REVIEW_TEXT_LIMIT);assert(omitted.findings.length<61&&omitted.findings.some(f=>f.severity==='P1'));
+  assert(!omitted.findings.some(f=>f.id==='P3-first'),'non-blocking findings are omitted first');
+  assert.match(omitted.summary,new RegExp(`${61-omitted.findings.length} findings omitted`));
+  reviewResultForPaths(omitted,pkg,paths);
+  // The last blocking finding is never dropped: a result that cannot fit even then is refused.
+  const huge='d/'+'p'.repeat(14000)+'.mjs';
+  assert.equal(boundReviewText({...small,verdict:'changes_requested',examinedPaths:[huge],
+    findings:[{id:'B1',severity:'P1',path:huge,message:'m',evidence:'e'}],summary:'s'}),null);
+});
+// Codex review of 090d683: the handoff lists every changed path, so with many of
+// them it is far larger than any fixed allowance. Around the budget edge the
+// driver must never admit a delivery the runner then blocks for size.
+// Find the runner's exact edge with a live delivery of this layout, then drive
+// deliveries straddling it: each is refused before any write or reaches review.
+function sweepEdge(t,{scope,files={},writeLayout,answerLayout,value=developValue}){
+  const probe=fixture(t,{scope,files});
+  const blocked=liveSession(probe,{mode:'create',act:writeLayout(700*1024),value});
+  const [,bytes,budget]=/checkpoint would be (\d+) bytes, above (\d+)/.exec(result(blocked).reason).map(Number);
+  const edge=700*1024-Math.ceil((bytes-budget)*3/4);
+  let admitted=0,refused=0;
+  for(let step=-4;step<=4;step++){
+    const f=fixture(t,{scope,files});answerLayout(f,edge+step*4096);
+    f.write('develop.json',{status:'succeeded',value,edits:f.edits});
+    const run=f.drive(f.plan(),'advance');
+    if(run.status===2){refused++;assert.match(run.stderr,/含 handoff/);noRun(f);continue;}
+    admitted++;assert.equal(run.status,0,run.stderr);
+    assert.equal(result(run).state,'awaiting_review',`${edge+step*4096}: ${run.stdout}`);
+  }
+  assert(admitted>0&&refused>0,`admitted ${admitted}, refused ${refused}`);
+}
+// Codex review of 090d683: the handoff lists every changed path, so with many of
+// them it is far larger than any fixed allowance. Around the budget edge the
+// driver must never admit a delivery the runner then blocks for size.
+test('#19 with many changed paths the driver never admits a delivery the runner blocks for size',t=>{
+  const names=Array.from({length:200},(_,n)=>`src/generated/module-with-a-rather-long-descriptive-name-${String(n).padStart(3,'0')}.mjs`);
+  sweepEdge(t,{scope:['big.mjs',...names],
+    writeLayout:big=>`fs.mkdirSync(cwd+'/src/generated',{recursive:true});`
+      +`for(const name of ${JSON.stringify(names)})fs.writeFileSync(cwd+'/'+name,'export const v = '+name.length+';\\n');`
+      +`fs.writeFileSync(cwd+'/big.mjs','//'+'x'.repeat(${big})+'\\n');`,
+    answerLayout:(f,big)=>{
+      for(const name of names)f.content(name.replaceAll('/','_'),`export const v = ${name.length};\n`);
+      f.content('big-content.mjs','//'+'x'.repeat(big)+'\n');
+      f.edits=Object.fromEntries([['big.mjs','big-content.mjs'],...names.map(name=>[name,name.replaceAll('/','_')])]);
+    }});
+});
+// A lesson delivery also changes AGENTS.md through the Learning writeback; the
+// driver projects that write with the writer's own merge.
+test('#19 a lesson delivery near the edge is sized with its AGENTS.md writeback',t=>{
+  const lesson={...developValue,retrospective:{status:'lesson_candidate',reason:null,candidates:[{classification:'structured',
+    trigger:'Large fixture files need a size check',action:'Measure the delivery before writing it',evidence:['target.mjs']}]}};
+  const agents='# Project rules\n\n'+'- keep this rule\n'.repeat(3000);
+  sweepEdge(t,{scope:['target.mjs'],files:{'AGENTS.md':agents},value:lesson,
+    writeLayout:big=>`fs.writeFileSync(cwd+'/target.mjs','//'+'x'.repeat(${big})+'\\n');`,
+    answerLayout:(f,big)=>{f.content('big-content.mjs','//'+'x'.repeat(big)+'\n');f.edits={'target.mjs':'big-content.mjs'};}});
 });
 test('#19 a legacy unknown/empty_changes develop checkpoint still replays as unknown',t=>{
   const f=fixture(t,{files:{'target.mjs':'export const value = 42;\n'}});

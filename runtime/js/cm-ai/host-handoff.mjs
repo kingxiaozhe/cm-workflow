@@ -25,10 +25,19 @@ function prepareHostHandoff(raw){
   need(fs.realpathSync(parent)===parent&&fs.lstatSync(parent).isDirectory(),'unsupported_path');
   const reviewPackage=createReviewPackage({root,baseline,checks});
   const changedFiles=reviewPackage.changes.map(change=>change.path);
+  const {payload,bytes}=hostHandoffDocument({baseline,checks,reviewPackage,
+    implementationSha256:implementationSha256(root,changedFiles),evidence});
+  need(bytes.length<=256*1024,'limit_exceeded');
+  return {root,baseline,checks,handoffPath,parent,reviewPackage,changedFiles,payload,bytes};
+}
+// Pure: the handoff document for a package and its checks, byte for byte as it is
+// published. The driver builds it for a projected package to size a delivery.
+export function hostHandoffDocument({baseline,checks,reviewPackage,implementationSha256,evidence=[]}){
+  const changedFiles=reviewPackage.changes.map(change=>change.path);
   const passed=checks.every(check=>check.outcome==='passed');
   const payload={schema_version:1,task_id:baseline.identity.taskId,attempt:baseline.identity.attempt,
     status:passed?'ready_for_review':'blocked',changed_files:changedFiles,
-    implementation_sha256:implementationSha256(root,changedFiles),
+    implementation_sha256:implementationSha256,
     verification:checks.map(check=>({command:check.kind==='visual'
       ?`Visual inspection (not a shell command): ${check.before.kind} before/after comparison`
       :JSON.stringify(check.command),
@@ -36,9 +45,7 @@ function prepareHostHandoff(raw){
     evidence:[`host review package ${reviewPackage.packageDigest}`,...evidence],
     blockers:passed?[]:checks.filter(check=>check.outcome!=='passed').map(check=>`check ${check.id}: ${check.outcome}`),
     scope_deviation:[]};
-  const bytes=Buffer.from(JSON.stringify(payload,null,2)+'\n');
-  need(bytes.length<=256*1024,'limit_exceeded');
-  return {root,baseline,checks,handoffPath,parent,reviewPackage,changedFiles,payload,bytes};
+  return {payload,bytes:Buffer.from(JSON.stringify(payload,null,2)+'\n')};
 }
 
 // Same serialization as publication, without creating files or registering work.

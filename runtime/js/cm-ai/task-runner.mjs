@@ -9,8 +9,8 @@ import {createRequire} from 'node:module';
 import {verifySpecificationMaterial} from './specification-material.mjs';
 import { captureReviewBaseline, captureReviewInventory, compareReviewBaseline, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage, validChecks, readReviewSourceFiles } from './review-package.mjs';
 import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,validCallTimeout,requestFor,terminalFor,failureCode,
-  JOURNAL_PAYLOAD_LIMIT,DEVELOP_CHECKPOINT_RESERVE } from './effect-contract.mjs';
-import { reviewResult,reviewReceipt } from './review-runner.mjs';
+  JOURNAL_PAYLOAD_LIMIT,developCheckpointReserve,taskReviewScope } from './effect-contract.mjs';
+import { reviewResult,reviewReceipt,boundReviewText,reviewPaths } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
   MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,effectSlotFree,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
@@ -723,6 +723,16 @@ export function createTaskRunner(options) {
         Object.assign(call,{terminal:'failed',resultDigest:digest(result)});reviewInvocation=json({registration,started,result});
         halt(retry.state,retry.code,reviewFailureReason(failure.failure));
       };
+      // Bound the reviewer text before it is observed, inspected or journaled.
+      if(providerResult.status==='succeeded'){
+        const bounded=boundReviewText(providerResult.value);
+        if(bounded===null){
+          const fields=invalidFields();persist('review-invocation-result',fields);const result=resultView(fields);
+          Object.assign(call,{terminal:'unknown',resultDigest:digest(result)});reviewInvocation=json({registration,started,result});
+          halt('unknown','observation_invalid');return;
+        }
+        providerResult=json({status:'succeeded',value:bounded});
+      }
       let recorded,inspection;
       try{recorded=observation(providerResult);inspection=inspectProviderReview(JSON.stringify(recorded),JSON.stringify(expectation));}
       catch{
@@ -1027,12 +1037,15 @@ export function createTaskRunner(options) {
       // review and completion checkpoints) does not fit, the delivery is redone.
       if(store&&v.kind==='develop'&&state==='awaiting_review'&&reviewPackage!==packageBefore){
         const bytes=payloadBytes('effect-checkpoint',{effectId:v.id,checkpoint:frame()});
-        const budget=JOURNAL_PAYLOAD_LIMIT-DEVELOP_CHECKPOINT_RESERVE;
+        const size=value=>Buffer.byteLength(JSON.stringify(value??null));
+        const reserve=developCheckpointReserve({examinedPathsBytes:size(reviewPaths(reviewPackage)),
+          receiptsBytes:size(receipts),callsBytes:size(calls),writebackBytes:size(learningResult?.writeback)});
+        const budget=JOURNAL_PAYLOAD_LIMIT-reserve;
         if(bytes>budget){
           const changed=reviewPackage.changes.filter(change=>change.after).map(change=>change.after);
           reviewPackage=packageBefore;
           halt('blocked','develop_package_too_large',`develop_package_too_large: the review checkpoint would be ${bytes} bytes, `
-            +`above ${budget} (journal record limit ${JOURNAL_PAYLOAD_LIMIT} minus ${DEVELOP_CHECKPOINT_RESERVE} kept for the review `
+            +`above ${budget} (journal record limit ${JOURNAL_PAYLOAD_LIMIT} minus ${reserve} kept for the bounded review `
             +`and completion records); largest changed files: ${largestFiles(changed)}; shrink them or move them out of scope, `
             +'then resume to redo this attempt');
           result=privateStatus();cache.set(v.id,{effect:v,digest:digest(v),result});
@@ -1238,7 +1251,7 @@ export function createTaskRunner(options) {
   return Object.freeze(api);
 }
 function configToBaseline(c){
-  const scope=Object.hasOwn(c,'taskLearning')&&!c.scope.includes('AGENTS.md')?[...c.scope,'AGENTS.md']:c.scope;
+  const scope=Object.hasOwn(c,'taskLearning')?taskReviewScope(c.scope):c.scope;
   return {root:c.root,identity:c.identity,scope,requirements:c.requirements,
     ...(c.codeProjectPaths?{codeProjectPaths:c.codeProjectPaths}:{}),
     ...(c.bootstrap?{bootstrapRequirements:c.bootstrap.bootstrapRequirements}:{}),

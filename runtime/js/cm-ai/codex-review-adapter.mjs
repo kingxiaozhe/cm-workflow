@@ -19,6 +19,7 @@ When reviewPackage.handoff exists, decode its contentBase64 as UTF-8 and examine
 Each reviewPackage.changes entry has before and after file records: before null is a new file, after null is a deletion, and a record's mode is its POSIX permission bits as a decimal integer (420 is 0644, 493 is 0755), so a mode-only change keeps the same sha256.
 When reviewPackage.unchangedScope exists, it lists unchanged in-scope files by path and SHA-256 only, not their contents. You may report evidence-backed findings about these files, but must not require changes to them or infer their contents from hashes.
 Report only plausible failure scenarios, ordered by severity. If there are no real findings, return approved with an empty findings array.
+Keep the whole result except examinedPaths within 12288 bytes of JSON; the host truncates longer text and omits trailing findings by a fixed rule.
 Return only JSON matching the supplied response schema. Copy packageDigest and examinedPaths exactly from the data block.
 Each finding.path must be exactly one of examinedPaths, or the handoff path given in the data block when the finding concerns the handoff evidence.
 ${VERDICT_RULES}

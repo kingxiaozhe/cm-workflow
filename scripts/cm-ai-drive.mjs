@@ -44,11 +44,17 @@ import {readLearningRetrospectiveContent} from '../runtime/js/cm-ai/cm-ai-contex
 import {inspectFixInvestigation} from '../runtime/js/cm-fix/investigation.mjs';
 import {readRunDefinition,assertCreatableRunId} from './cm-ai-run.mjs';
 import {REVIEW_MATERIAL_LIMITS,captureReviewBaseline,reviewMaterialSizes,projectedReviewPackage} from '../runtime/js/cm-ai/review-package.mjs';
-import {JOURNAL_PAYLOAD_LIMIT,DEVELOP_CHECKPOINT_RESERVE} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {JOURNAL_PAYLOAD_LIMIT,developCheckpointReserve,taskReviewScope} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
+import {hostHandoffDocument} from '../runtime/js/cm-ai/host-handoff.mjs';
+import {taskLearningHandoffBytes} from '../runtime/js/cm-ai/cm-ai-learning-handoff-writer.mjs';
+import {projectLearningWriteback} from '../runtime/js/cm-ai/cm-ai-learning-writer.mjs';
+import {inspectCmAiTaskLearningInput,createCmAiTaskLearningApplication,
+  createCmAiTaskLearningRetrospective} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
 import {codeProjectPaths,resolveCodeProjects} from '../runtime/js/cm-ai/code-projects.mjs';
 import {parseHostInputLimit} from '../runtime/js/cm-ai/host-session.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
-import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {readRunnerHistory,attemptBaseline} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 import {attemptAnswerName,inspectDriverBootstrap,readBootstrapRulesAnswers,createBootstrapRulesResponder} from '../runtime/js/cm-ai/drive-bootstrap.mjs';
@@ -190,35 +196,79 @@ const kib=bytes=>`${bytes} 字节`;
 // current tree (scope, requirements and every AGENTS.md), and the journal bytes
 // the rest of the develop checkpoint already takes. Null when the host itself
 // will report the problem.
-// Bytes of a develop checkpoint that the driver cannot know before the delivery
-// runs: the new developer call and cache entry, the handoff record and the check
-// evidence (measured together at about 5 KiB). The package itself is exact.
-const DELIVERY_ALLOWANCE=8*1024;
+// The develop checkpoint is the package (projected exactly below, handoff
+// included) plus the rest of the runner frame. For the rest the driver takes the
+// previous checkpoint of this run and adds upper bounds for what the new
+// develop adds: its call, its cache entry (the previous status plus that call),
+// the Learning result and the check evidence the stand-in checks cannot know.
+const FRAME_ALLOWANCE=16*1024,CHECK_EVIDENCE_ALLOWANCE=512;
+const size=value=>Buffer.byteLength(JSON.stringify(value??null));
 export function journalRestBytes(records){
   const last=records.findLast(row=>row.payload.type==='effect-checkpoint');
-  if(!last)return 0;
-  return Buffer.byteLength(JSON.stringify(last.payload))-Buffer.byteLength(JSON.stringify(last.payload.checkpoint.reviewPackage??null));
+  if(!last)return {restBytes:0,resultBytes:0,receiptsBytes:2,callsBytes:2};
+  const frame=last.payload.checkpoint;
+  return {restBytes:size(last.payload)-size(frame.reviewPackage),resultBytes:size(frame.cache.at(-1)?.result),
+    receiptsBytes:size(frame.receipts),callsBytes:size(frame.calls)};
 }
-export function developPreview({definition,codeProject=definition.codeProject,journal=null}){
+export function developPreview({definition,codeProject=definition.codeProject,journal=null,parallelSelection=null,exact=true}){
   let baseline=journal?.baseline??null;
   try{
     if(baseline===null){
+      // The same baseline the runner captures (taskReviewScope, specsRoot, specification).
       baseline=captureReviewBaseline({root:codeProject,specsRoot:definition.specsDir,identity:definition.identity,
-        scope:definition.scope,requirements:definition.requirements,specification:{specsRoot:definition.specsDir,feature:definition.feature},
+        scope:taskReviewScope(definition.scope),requirements:definition.requirements,specification:{specsRoot:definition.specsDir,feature:definition.feature},
         ...(definition.codeProjects?{codeProjectPaths:codeProjectPaths(codeProject,resolveCodeProjects(codeProject,definition.codeProjects))}:{})});
       // The new run journals this baseline as one record, next to its own metadata.
       const bytes=Buffer.byteLength(JSON.stringify(baseline));
-      if(bytes+DELIVERY_ALLOWANCE>JOURNAL_PAYLOAD_LIMIT){
+      if(bytes+FRAME_ALLOWANCE>JOURNAL_PAYLOAD_LIMIT){
         const largest=baseline.files.filter(file=>Object.hasOwn(file,'contentBase64')).sort((a,b)=>b.size-a.size).slice(0,3)
           .map(file=>`${file.path} ${kib(file.size)}`).join('，');
         stop(2,`任务基线的运行存档记录约 ${kib(bytes)}，超过单条记录上限 ${JOURNAL_PAYLOAD_LIMIT}（含运行元数据）；最大的基线材料是 ${largest}；请把大文件移出 scope/requirements 后再建运行`);
       }
     }
-    return {baseline,material:reviewMaterialSizes({root:codeProject,baseline}),restBytes:journal?.restBytes??0};
+    return {definition,baseline,material:reviewMaterialSizes({root:codeProject,baseline}),parallelSelection,
+      exact:exact&&!definition.codeProjects,...(journal?.frame??journalRestBytes([]))};
   }catch(error){
     if(error.code==='limit_exceeded')stop(2,`交付前的审查材料已超出审查包上限：${error.message}`);
     return null;
   }
+}
+// The package the runner will build for this delivery, byte for byte: the same
+// Learning records, AGENTS.md writeback, handoff and package assembly, applied to
+// the projected scope files. Digest values do not change any length, so the
+// implementation hash stands in as 64 hex digits. Null when the runner would not
+// build a package from it at all (blocked outcome, pending writeback, no change).
+export function projectDevelopCheckpoint({preview,codeProject,attempt,value,projected,checks}){
+  const {definition}=preview,identity={...definition.identity,attempt};
+  if(value.value?.outcome!=='implemented')return null;
+  const learningInput=inspectCmAiTaskLearningInput({specsDir:definition.specsDir,codeProject,feature:definition.feature,
+    identity,applicableAgentFiles:[]},{admission:null,parallelSelection:preview.parallelSelection});
+  const binding={feature:definition.feature,identity,learningDigest:learningInput.learningDigest};
+  const application=createCmAiTaskLearningApplication({...binding,...value.value.application});
+  const retrospective=createCmAiTaskLearningRetrospective({...binding,...value.value.retrospective});
+  const files=new Map(projected);let includeAgents=false;
+  if(retrospective.status==='writeback_pending')return null;
+  if(retrospective.status==='lesson_candidate'){
+    const current=files.get('AGENTS.md'),disk=path.join(codeProject,'AGENTS.md');
+    const exists=current?current.contentBase64!==null:fs.existsSync(disk);
+    const source=!exists?'':current?Buffer.from(current.contentBase64,'base64').toString('utf8'):fs.readFileSync(disk,'utf8');
+    const plan=projectLearningWriteback({source,retrospective});
+    if(plan.outcome==='writeback_pending')return null;
+    if(plan.outcome==='written'){includeAgents=true;files.set('AGENTS.md',{path:'AGENTS.md',
+      contentBase64:Buffer.from(plan.content).toString('base64'),
+      mode:current?.mode??(exists?fs.statSync(disk).mode&0o7777:0o644)});}
+  }
+  const baseline=attemptBaseline(preview.baseline,attempt),scopeFiles=[...files.values()];
+  let initial;
+  try{initial=projectedReviewPackage({root:codeProject,baseline,checks,scopeFiles});}
+  catch(error){if(['empty_changes','out_of_scope','read_failed'].includes(error.code))return null;throw error;}
+  const {payload}=hostHandoffDocument({baseline,checks,reviewPackage:initial,implementationSha256:'0'.repeat(64)});
+  const handoff=taskLearningHandoffBytes({handoff:payload,feature:definition.feature,identity,learningInput,
+    application,retrospective,includeAgents});
+  const pkg=projectedReviewPackage({root:codeProject,baseline,checks,scopeFiles,handoff:{
+    name:`${definition.feature.replace(/^\d+\./,'')}-${identity.taskId}-a${attempt}-handoff.json`,
+    contentBase64:handoff.toString('base64'),mode:0o600}});
+  return {pkg,learningBytes:size({application,retrospective})};
 }
 // Stand-in results for the declared checks: the package carries their ids and
 // commands, and their real evidence is only known once they run.
@@ -231,7 +281,7 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
   const projected=new Map();
   let previous=diskChecks?new Map(scope.map(target=>[target,diskScopeEntry(codeProject,target)])):null;
   const base=!diskChecks?null:baseline==='disk'?previous:baseline;
-  for(const {file,value} of deliveries){
+  for(const {file,value,attempt=1} of deliveries){
     if(value.status!=='succeeded')continue;
     const label=path.basename(file);let entries;
     try{entries=developEntries(value.edits,answersRoot,`${label}.edits`);}catch(error){stop(2,`答案格式错误：${error.message}`);}
@@ -295,18 +345,19 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
         projected.set(target,after===null?{path:target,contentBase64:null,mode:null}
           :{path:target,contentBase64:fs.readFileSync(after.source).toString('base64'),mode:after.mode});
       }
-      let pkg=null;
-      try{pkg=projectedReviewPackage({root:codeProject,baseline:preview.baseline,checks,scopeFiles:[...projected.values()]});}
-      catch(error){if(!['empty_changes','out_of_scope','read_failed'].includes(error.code))throw error;}
-      if(pkg){
-        const packageBytes=Buffer.byteLength(JSON.stringify(pkg)),learning=Buffer.byteLength(JSON.stringify(value.value??null));
-        const bytes=packageBytes+preview.restBytes+DELIVERY_ALLOWANCE+2*learning;
-        const budget=JOURNAL_PAYLOAD_LIMIT-DEVELOP_CHECKPOINT_RESERVE;
+      const projection=preview.exact?projectDevelopCheckpoint({preview,codeProject,attempt,value,projected,checks}):null;
+      if(projection){
+        const {pkg}=projection,packageBytes=size(pkg);
+        const bytes=packageBytes+preview.restBytes+preview.resultBytes+projection.learningBytes
+          +FRAME_ALLOWANCE+CHECK_EVIDENCE_ALLOWANCE*checks.length;
+        const reserve=developCheckpointReserve({examinedPathsBytes:size(reviewPaths(pkg)),receiptsBytes:preview.receiptsBytes,
+          callsBytes:preview.callsBytes+1024,writebackBytes:1024});
+        const budget=JOURNAL_PAYLOAD_LIMIT-reserve;
         if(bytes>budget){
           const largest=pkg.changes.filter(change=>change.after).map(change=>change.after).sort((a,b)=>b.size-a.size).slice(0,3)
             .map(file=>`${file.path} ${kib(file.size)}`).join('，');
-          stop(2,`${label}: 交付后的开发检查点约 ${kib(bytes)}（其中审查包 ${kib(packageBytes)}），超过运行存档单条记录上限 ${JOURNAL_PAYLOAD_LIMIT} `
-            +`减去为审查与完成记录预留的 ${DEVELOP_CHECKPOINT_RESERVE}（即 ${budget}）；最大的改动文件是 ${largest}；请缩小这些文件或移出 scope`);
+          stop(2,`${label}: 交付后的开发检查点约 ${kib(bytes)}（其中审查包 ${kib(packageBytes)}，含 handoff），超过运行存档单条记录上限 ${JOURNAL_PAYLOAD_LIMIT} `
+            +`减去为有界审查与完成记录预留的 ${reserve}（即 ${budget}）；最大的改动文件是 ${largest}；请缩小这些文件或移出 scope`);
         }
       }
     }
@@ -337,7 +388,7 @@ export function readRunJournal(definition){
     repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
   const first=snapshot.records[0];
   return {history:readRunnerHistory(snapshot.records,first.payload.config,3),baseline:first.payload.baseline,
-    restBytes:journalRestBytes(snapshot.records)};
+    frame:journalRestBytes(snapshot.records)};
 }
 function reachableDevelopAttempts({plan,operation,journal,permissions}){
   if(plan.mode==='create'){
@@ -456,7 +507,7 @@ function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
     process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks, checkTimeoutMs。\nchecks 每项为 {id,command,timeoutMs?}；checkTimeoutMs 与每项 timeoutMs 为 1..3600000 整数，默认 900000 ms（15 分钟）。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务（纯规范 scope、单代码根、非 --protected-config）读 answers/init-generate.json（{status:"generated",documents:[{path,contentFile}]}，覆盖全部 targets）与 answers/init-verify.json（commands 为驾驶员实跑的草稿命令 {id,command,timeoutMs?}，可选 commandsNotRun；checks 只含 globs/file_references/constraint_preservation/rule_applicability；constraintChanges:[]；application/retrospective 沿原 Learning）；第 1 轮也可用 *-a1.json，第 2 轮只读 init-generate-a2.json 与 init-verify-a2.json，且须先 decision 读取首轮 findings，不能带 --allow-review-attempt 跨轮。commands 在宿主接受启动后、发送操作前由驾驶员实跑（须先带 --allow-bootstrap-write 等宿主授权；受保护模式在 specs 沙箱内），失败或改动了预检核对的文件即退出 2 且不发送操作（create 时改用 resume 重跑）；结果只来自实跑，答案文件不能提供。\n'
       +'develop.json.edits 每项是 scope 路径到下列之一："内容文件"（写入；已有文件保留权限，新文件 0644）、{"file":"内容文件","mode":"0755"|"0644"}、{"mode":"0755"|"0644"}（只改已有文件权限）、{"delete":true}（删除已有文件）。改名 = 删旧路径 + 写新路径，两者都要在 scope 内；同时列在 requirements 里的路径不能删除。\n'
-      +'启动前拒绝：单个 scope 文件超过 1 MiB、审查材料（按审查包快照：scope、requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或超过 256 个文件、交付后与任务基线完全相同（edits 为空或内容和权限都没变）、开发检查点装不进运行存档单条 1 MiB 记录（预留 64 KiB 给审查与完成记录）或任务基线装不进一条记录。受保护模式（--protected-conversation-config）只收合法 UTF-8 文本，应答大于 --input-limit（默认 65536）时提示应加的值。\n'
+      +'启动前拒绝：单个 scope 文件超过 1 MiB、审查材料（按审查包快照：scope、requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或超过 256 个文件、交付后与任务基线完全相同（edits 为空或内容和权限都没变）、开发检查点（含 handoff 与 AGENTS.md 回写，按宿主同一套构建代码计）装不进运行存档单条 1 MiB 记录减去为有界审查与完成记录推出的预留，或任务基线装不进一条记录。受保护模式（--protected-conversation-config）只收合法 UTF-8 文本，应答大于 --input-limit（默认 65536）时提示应加的值。\n'
       +'runId 需 8–128 个字符（运行日志要求），create 前检查。resume 时按存档里的当前轮次发送 identity，第 2 轮的 decision/complete/qa 等无需手改。\n');
     process.exit(0);
   }
@@ -578,13 +629,14 @@ function load(){
     const value=readJson(file,'develop');validateCmAiAnswer('develop',value,answers);
     if(value.status==='succeeded')for(const target of Object.keys(value.edits))
       if(!definition.scope.includes(target))stop(2,`${path.basename(file)}.edits 越过批准 scope: ${target}`);
-    developAnswers.set(attempt,value);deliveries.push({file,value});
+    developAnswers.set(attempt,value);deliveries.push({file,value,attempt});
   }
   if(deliveries.length)preflightDevelopDeliveries({deliveries,answersRoot:answers,codeProject:definition.codeProject,
     scope:definition.scope,requirements:definition.requirements,
     baseline:plan.mode==='create'?'disk':baselineScope(journal.baseline,definition.scope),
     protectedMode,inputLimit:inputLimitFrom(permissions),checks:plannedCheckResults(protectedMode?null:plan.checks),
-    preview:developPreview({definition,journal:plan.mode==='create'?null:journal})});
+    preview:developPreview({definition,journal:plan.mode==='create'?null:journal,
+      exact:!permissions.includes('--bootstrap-config')})});
   const unique=[...new Set(asks.filter(kind=>FILES[kind]&&kind!=='develop'))];
   const answer=preflightAnswers(unique,kind=>{
     const file=answerPath(answers??'',FILES[kind]);

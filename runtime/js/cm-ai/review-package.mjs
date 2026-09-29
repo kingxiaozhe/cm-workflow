@@ -731,7 +731,7 @@ export function createReviewPackage(options) {
 // assembled by the same code as createReviewPackage. Nothing is written. The
 // handoff is only known once it exists, so the projection carries none.
 export function projectedReviewPackage(options){
-  const v=plain(options);keys(v,['root','baseline','checks','scopeFiles']);
+  const v=plain(options);keys(v,['root','baseline','checks','scopeFiles',...(Object.hasOwn(v,'handoff')?['handoff']:[])]);
   const context=packageContext(v);need(Array.isArray(v.scopeFiles),'invalid_input');
   const files=new Map(packageSnapshot(context.root,context.b,context.policy).map(file=>[file.path,file]));
   for(const item of v.scopeFiles){
@@ -741,7 +741,17 @@ export function projectedReviewPackage(options){
     const bytes=Buffer.from(item.contentBase64,'base64');need(bytes.toString('base64')===item.contentBase64);
     files.set(item.path,{path:item.path,type:'file',mode:item.mode,size:bytes.length,sha256:sha(bytes),contentBase64:item.contentBase64});
   }
-  return assemblePackage(context,[...files.values()].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0),v.checks,null);
+  // A projected handoff ({name,contentBase64,mode}) takes the record shape the
+  // package reads back from the published file.
+  let handoff=null;
+  if(Object.hasOwn(v,'handoff')){
+    keys(v.handoff,['name','contentBase64','mode']);const name=filePath(v.handoff.name);need(!name.includes('/'));
+    need(Number.isInteger(v.handoff.mode)&&v.handoff.mode>=0&&v.handoff.mode<=0o7777);
+    const bytes=Buffer.from(v.handoff.contentBase64,'base64');need(bytes.toString('base64')===v.handoff.contentBase64);
+    const record={path:name,type:'file',mode:v.handoff.mode,size:bytes.length,sha256:sha(bytes),contentBase64:v.handoff.contentBase64};
+    handoff=()=>record;
+  }
+  return assemblePackage(context,[...files.values()].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0),v.checks,handoff);
 }
 function validPackage(p) {
   try {
