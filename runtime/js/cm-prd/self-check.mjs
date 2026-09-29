@@ -26,7 +26,8 @@ export function inspectPrdContextCheck(raw,draft){
   return json({...report,status:failed?'failed':'host_reported_passed',independentReview:false,completionAuthorized:false});
 }
 
-// Examples are not declarations. Leave the original N1 parser behavior unchanged.
+// Examples are not declarations. Task lines go through the shared grammar,
+// which already skips fences; this blanks fenced acceptance examples.
 function outsideFences(source){
   let fence=null;return source.split(/\r?\n/).map(line=>{
     const match=line.match(/^\s*(`{3,}|~{3,})/);
@@ -45,7 +46,7 @@ export function checkPrdDraftMechanics(draft,{change=false}={}){
     const add=code=>findings.push({feature:feature.directory,code,
       ...(code==='dependencies_invalid'?{reason:{field:`${feature.directory}/tasks.md`,
         expected:'One line per task; comma-separated prerequisites, e.g. - T-003 依赖 T-001, T-002'}}:{})});
-    const parsed=parseFeatureTaskText(outsideFences(files.get('tasks.md')));
+    const parsed=parseFeatureTaskText(files.get('tasks.md'));
     const acIds=declaredAcceptanceIds(outsideFences(files.get('requirements.md')));
     if(acIds.size===0)add('acceptance_missing');
     let taskIds=new Set();

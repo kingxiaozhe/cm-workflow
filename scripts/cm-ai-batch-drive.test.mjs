@@ -45,9 +45,12 @@ function fixture(t,count=1){
   const write=(name,value)=>fs.writeFileSync(path.join(answers,name),JSON.stringify(value));
   const plan=(extra={})=>{
     const file=path.join(root,`plan-${Math.random().toString(36).slice(2)}.json`);
-    fs.writeFileSync(file,JSON.stringify({config:'batch.json',mode:'create',hostContext:'batch-host-a',
+    const value={config:'batch.json',mode:'create',hostContext:'batch-host-a',
       permissions:['--allow-qa'],answers:'answers',checks:Object.fromEntries(batch.tasks.map(task=>
-        [`1.work/${task.taskId}`,[{id:'syntax',command:[process.execPath,'--check',task.taskId==='T-001'?'target.mjs':'target2.mjs']}]])),...extra}));
+        [`1.work/${task.taskId}`,[{id:'syntax',command:[process.execPath,'--check',task.taskId==='T-001'?'target.mjs':'target2.mjs']}]])),...extra};
+    // A new batch requires a bound review configuration (it grants no review).
+    if(!value.permissions.includes('--review-config'))value.permissions=[...value.permissions,'--review-config','review.json'];
+    fs.writeFileSync(file,JSON.stringify(value));
     return file;
   };
   const drive=(file,operation)=>spawnSync(process.execPath,[DRIVER,'--plan',file,operation],{encoding:'utf8',timeout:60000,

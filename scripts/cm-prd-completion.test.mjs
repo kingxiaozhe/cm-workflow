@@ -155,6 +155,81 @@ test('change cannot invent completion or erase completed lines; user case change
   const synthetic={...before,files:{...before.files,'1.guide/test-cases.json':JSON.stringify({cases:[{id:'TC-001',origin:'user',expected:'Original user intent'}]})}};
   const proposal=inspectPrdChangeProposal(synthetic,raw,['1.guide'],config);assert.equal(proposal.changedUserCases.length,1);
 });
+// Same declaration grammar as admission/N5: a completed task without a colon is still guarded.
+test('change guards completed tasks written without a colon or with a full-width colon',t=>{
+  const dir=fixture(t),config=loadConfig({projectRoot:dir});
+  // Approved under the shared grammar (taskGrammar 2), where both spellings are declarations.
+  fs.writeFileSync(path.join(dir,'.cm-specs-status'),JSON.stringify({status:'approved',taskGrammar:2}),{mode:0o600});
+  for(const spelling of ['- [x] T-001 Existing guide','- [x] T-001：Existing guide']){
+    fs.writeFileSync(path.join(dir,'1.guide/tasks.md'),docs()[2].content.replace('- [x] T-001: Existing guide',spelling),{mode:0o600});
+    const before=inspectPrdChangeSnapshot(dir),task=revised().find(doc=>doc.path==='tasks.md');
+    const erased={status:'draft',summary:'Change',removed:[],features:[{directory:'1.guide',
+      documents:revised().map(doc=>doc.path==='tasks.md'?{...doc,content:task.content.replace('- [x] T-001: Existing guide',spelling.replace('[x]','[ ]'))}:doc),
+      testCasesReason:'no_observable_behavior'}]};
+    assert.throws(()=>inspectPrdChangeProposal(before,erased,['1.guide'],config),/prd_completed_task_changed/,spelling);
+  }
+});
+// The approved original is read with its approval's grammar: under a legacy
+// approval an unfenced full-width example is prose, not the completed task.
+test('change guard reads the approved original with the legacy grammar',t=>{
+  const dir=fixture(t),config=loadConfig({projectRoot:dir}),example='- [ ] T-001：旧写法示例';
+  fs.writeFileSync(path.join(dir,'1.guide/tasks.md'),docs()[2].content.replace('- [x] T-001: Existing guide\n',
+    `- [x] T-001: Existing guide\n${example}\n`),{mode:0o600});
+  const before=inspectPrdChangeSnapshot(dir),task=revised().find(doc=>doc.path==='tasks.md');
+  const fenced={status:'draft',summary:'Fence the old example',removed:[],features:[{directory:'1.guide',
+    documents:revised().map(doc=>doc.path==='tasks.md'?{...doc,content:task.content.replace('- [x] T-001: Existing guide\n',
+      `- [x] T-001: Existing guide\n\`\`\`md\n${example}\n\`\`\`\n`)}:doc),testCasesReason:'no_observable_behavior'}]};
+  const proposal=inspectPrdChangeProposal(before,fenced,['1.guide'],config);
+  assert.equal(proposal.proposalDigest.length,64);
+});
+// Fifth review: two cm-prd --change runs before re-approval keep the grammar the
+// last approval bound, carried through the awaiting_review status of the first.
+function sharedGrammarFixture(t){
+  const dir=fixture(t),tasks=path.join(dir,'1.guide/tasks.md');
+  fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('- [ ] T-002: Draft appendix','- [ ] T-002：Draft appendix'),{mode:0o600});
+  fs.writeFileSync(path.join(dir,'.cm-specs-status'),JSON.stringify({status:'approved',taskGrammar:2}),{mode:0o600});
+  return dir;
+}
+const fullWidth=docs=>docs.map(doc=>doc.path==='tasks.md'?{...doc,content:doc.content.replace('- [ ] T-002: Draft appendix','- [ ] T-002：Draft appendix')}:doc);
+const status=dir=>JSON.parse(fs.readFileSync(path.join(dir,'.cm-specs-status'),'utf8'));
+test('a second change of the same feature before re-approval keeps the approved grammar',t=>{
+  const dir=sharedGrammarFixture(t),config=loadConfig({projectRoot:dir}),selected=['1.guide'];
+  const first=fullWidth(revised());
+  let before=inspectPrdChangeSnapshot(dir);
+  let proposal=inspectPrdChangeProposal(before,{status:'draft',summary:'First',removed:[],features:[{directory:'1.guide',
+    documents:first,testCasesReason:'no_observable_behavior'}]},selected,config);
+  applyPrdChange({specs:dir,before,proposal,selected});
+  assert.equal(status(dir).status,'awaiting_review');assert.equal(status(dir).taskGrammar,2);
+  const second=first.map(doc=>({...doc,content:doc.content+'\n| 2026-09-08 | v3 | again |\n'
+    +(doc.path==='tasks.md'?'- [ ] T-004: [NEW] Another example\n':'Again\n')}));
+  before=inspectPrdChangeSnapshot(dir);
+  proposal=inspectPrdChangeProposal(before,{status:'draft',summary:'Second',removed:[],features:[{directory:'1.guide',
+    documents:second,testCasesReason:'no_observable_behavior'}]},selected,config);
+  applyPrdChange({specs:dir,before,proposal,selected});
+  assert.equal(status(dir).taskGrammar,2);
+});
+test('a second change of another feature before re-approval still carries the approved grammar',t=>{
+  const dir=sharedGrammarFixture(t),config=loadConfig({projectRoot:dir});
+  let before=inspectPrdChangeSnapshot(dir);
+  let proposal=inspectPrdChangeProposal(before,{status:'draft',summary:'First',removed:[],features:[{directory:'1.guide',
+    documents:fullWidth(revised()),testCasesReason:'no_observable_behavior'}]},['1.guide'],config);
+  applyPrdChange({specs:dir,before,proposal,selected:['1.guide']});
+  before=inspectPrdChangeSnapshot(dir);
+  proposal=inspectPrdChangeProposal(before,{status:'draft',summary:'Second',removed:[],features:[{directory:'2.extra',
+    documents:docs().map(doc=>({...doc,content:doc.content.replace('[x]','[ ]')})),testCasesReason:'no_observable_behavior'}]},[],config);
+  applyPrdChange({specs:dir,before,proposal,selected:[]});
+  assert.equal(status(dir).status,'awaiting_review');assert.equal(status(dir).taskGrammar,2);
+});
+test('an unapproved legacy status never switches the change guard to the shared grammar',t=>{
+  const dir=fixture(t),config=loadConfig({projectRoot:dir}),tasks=path.join(dir,'1.guide/tasks.md');
+  fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('- [ ] T-002: Draft appendix','- [ ] T-002：Draft appendix'),{mode:0o600});
+  fs.writeFileSync(path.join(dir,'.cm-specs-status'),JSON.stringify({status:'awaiting_review'}),{mode:0o600});
+  const before=inspectPrdChangeSnapshot(dir);
+  // Under the old grammar the full-width line is prose, so rewriting it as a
+  // task in the proposal is a new task and needs its [NEW] mark.
+  assert.throws(()=>inspectPrdChangeProposal(before,{status:'draft',summary:'Change',removed:[],features:[{directory:'1.guide',
+    documents:revised(),testCasesReason:'no_observable_behavior'}]},['1.guide'],config),/prd_change_new_task_invalid/);
+});
 test('generate_cases false retains unchanged existing generated cases, forbids new generation',t=>{
   const dir=fixture(t),before=inspectPrdChangeSnapshot(dir),config=loadConfig({projectRoot:dir});
   const contract={schemaVersion:'1.0',feature:'guide',cases:[{id:'TC-001',origin:'generated',kind:'logic',blocking:true,

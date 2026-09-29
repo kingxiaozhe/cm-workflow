@@ -8,6 +8,7 @@ import childProcess from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {inspectFixWalkthrough,readFixWalkthrough,fixWalkthroughBinding} from '../runtime/js/cm-fix/walkthrough.mjs';
 import {inspectFixRegressionFailure} from '../runtime/js/cm-fix/regression-evidence.mjs';
+import {taskDeclarations,approvedTaskGrammar,TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
 
 const TASK_RE=/^T-[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const REVIEWERS=new Set(['codex-subagent','codex-cli','claude-cli','self-degraded']);
@@ -601,27 +602,34 @@ function splitLinesKeepEnds(text){
   if(start<text.length)lines.push({start,text:text.slice(start)});
   return lines;
 }
-
 function withoutLineEnding(line){return line.replace(/(?:\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029])$/,'');}
 function escapeRegExp(value){return value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
 
+// An approval recorded with taskGrammar 2 uses the shared declaration grammar
+// (spec-task-line.mjs): fenced examples are never flipped. Approvals recorded
+// earlier keep the exact original mark-done match on the bytes they approved.
 function parseTaskTarget(task,tasksPath,revision){
   let text;
-  try{text=new TextDecoder('utf-8',{fatal:true}).decode(revision.bytes);}
+  try{text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(revision.bytes);}
   catch(error){throw new GateError(`cannot read tasks file ${tasksPath}: ${error.message}`);}
-  const pattern=new RegExp(`^(\\s*-\\s*)\\[([ xX])\\](\\s+${escapeRegExp(task)}(?=[:\\s]|$).*)$`);
-  const matches=[];
-  for(const line of splitLinesKeepEnds(text)){
-    const match=pattern.exec(withoutLineEnding(line.text));
-    if(match)matches.push({line,match});
+  let matches;
+  if(approvedTaskGrammar(path.dirname(path.dirname(tasksPath)))===TASK_GRAMMAR)
+    matches=taskDeclarations(text).filter(item=>item.id===task).map(item=>({start:item.start,markOffset:item.markOffset,completed:item.completed}));
+  else{
+    const pattern=new RegExp(`^(\\s*-\\s*)\\[([ xX])\\](\\s+${escapeRegExp(task)}(?=[:\\s]|$).*)$`);
+    matches=[];
+    for(const line of splitLinesKeepEnds(text)){
+      const match=pattern.exec(withoutLineEnding(line.text));
+      if(match)matches.push({start:line.start,markOffset:match[1].length+1,completed:match[2].toLowerCase()==='x'});
+    }
   }
   if(matches.length!==1)throw new GateError(`tasks file must contain exactly one checkbox for ${task}`);
-  return {text,...matches[0]};
+  return {text,declaration:matches[0]};
 }
 
 function taskAfterBytes(target,original){
-  if(target.match[2].toLowerCase()==='x')return original;
-  const characterOffset=target.line.start+target.match[1].length+1;
+  if(target.declaration.completed)return original;
+  const characterOffset=target.declaration.start+target.declaration.markOffset;
   const byteOffset=Buffer.byteLength(target.text.slice(0,characterOffset));
   if(original[byteOffset]!==32)throw new GateError('task checkbox byte offset mismatch');
   return Buffer.concat([original.subarray(0,byteOffset),Buffer.from('x'),original.subarray(byteOffset+1)]);

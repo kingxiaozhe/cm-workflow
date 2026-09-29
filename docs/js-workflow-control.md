@@ -283,6 +283,10 @@ constraintChanges必须空；application/retrospective沿原Learning字段。此
 scope 和 requirements 是相对代码根的已有 runner 输入，不是额外写入授权。
 键必须恰好如示例，不得任意新增字段（已声明的多代码根模式允许 `codeProjects`，显式任务选择允许生成器写入 `taskSelection`）；定义参与摘要绑定，擅加字段会使同一次 run 的摘要漂移并导致 resume 失败。
 用准入生成器产出定义（`--scope` 必填，填写相对代码根、逗号分隔的允许修改文件；`--requirements` 可选，省略时为空数组）：`node scripts/cm-ai-admission.mjs --specs-dir /absolute/specs --code-project /absolute/code --print-run-definition --scope src/login.js --requirements requirements.md > run.json`。需要选择当前 `nextTask` 以外的任务时加 `--task T-xxx`；只能选择同 feature、依赖已满足的 `eligibleTasks`。生成的可选 `taskSelection` 随定义进入持久配置与指纹；不加参数的旧定义及恢复指纹不变。
+`--task` 的依赖判定与 `nextTask` 相同：前置任务已勾选完成或标记 DROPPED 即视为满足。选择不成立时返回 `task_selection_mismatch` 并在 `reason` 写明原因（依赖未完成、已完成、已 DROPPED、不存在或不在当前 feature）；运行定义未写 `taskSelection` 却不是 `nextTask` 时也会提示用 `--task` 重新生成。
+
+`tasks.md` 的任务行只有一套语法（`runtime/js/spec-task-line.mjs`），准入、cm-prd 自检与变更守卫、N5 勾选、审批 manifest 的完成标记归一化和 failover 都用它：列表项 + 复选框，任意缩进，可选 `~~`，任务号后接英文冒号、全角冒号或空白，例如 `- [ ] T-003: 描述`、`- [ ] T-003 描述`、`- [ ] T-003：描述`、嵌套的 `    - [ ] T-003: 描述`。``` / ~~~ 围栏内的行是示例，不是任务。全角冒号选择接受而非拒绝：中文输入法常打出它，failover 早已接受，拒绝它只会逼用户为标点改规格再批准。语法随批准绑定：本版本写入的批准在 `.cm-specs-status` 记 `taskGrammar: 2`；更早记录的批准继续用原解析器（准入、规格材料、N5 勾选、supersede 与 failover 都按旧规则读），例如同文件里未加围栏的 `- [ ] T-001：示例` 在旧批准下仍是说明而不是重复任务，已批准的字节含义不变；重新批准后才切换到新语法。重新批准会让全部 feature（包括本次没改的）改用新语法，因此 `--approve` 先按新语法检查每个 feature 的 tasks.md，任一无效（如上例变成重复任务），或从旧语法切换时任何 feature 的任务集合（哪些行是任务、编号、勾选状态）在新旧语法下不一致（如唯一的 `- [ ] T-099：示例` 会变成待办任务），即以 `task_grammar_conflict` 拒绝，`approveReason` 写明文件、行号和原文，提示把这类示例放进围栏或删去后再批准；不会写入 `taskGrammar: 2`，也不退回旧语法——退回会让新写的全角冒号任务行悄悄不算任务。cm-prd 变更守卫读取已批准原文时同样按其批准的语法。状态文件把上次批准的 `taskGrammar` 经 cm-prd 变更与发布一路带到下次批准（重新批准前连续多次 `cm-prd --change` 时，变更守卫按这一携带值读取原文；不带该值的待审状态不会切到新语法）；项目一旦用上新语法就不再做新旧对照，从未批准过的项目首次批准直接用新语法。cm-prd 草稿与自检始终用新语法。旧版本批准的 manifest 按旧归一化规则计算，核验时每行同时接受新旧规则的摘要，因此已批准的规格原样继续匹配（有意的小幅放宽：旧批准下全角冒号或缩进任务行的勾选变化也按运行时标记处理）；只有旧规则下批准时就已勾选的无冒号／缩进任务行，在之后再勾选别的此类任务时仍会漂移，需要重新批准一次（新批准按新规则记录）。
+
 规格待审批时先展示摘要卡并请用户回复“开始”。只识别“开始”“开始吧”“可以开始”“确认开始”“开始执行”“现在开始”及其尾部标点/空白；泛化授权仍是 `not_approval`，提示明确回复“开始”。`--approve` 写入仍须原完整准入门禁。
 
 ```bash
@@ -343,11 +347,11 @@ Windows 明确拒绝此 worker；CLI help 和合成协议验证不证明真实 C
 
 ```bash
 node scripts/cm-ai-host.mjs serve --config /absolute/run.json --mode create \
-  --host-context actual-current-conversation-id --allow-development
+  --host-context actual-current-conversation-id --allow-development --review-config /absolute/review.json
 ```
 
 `--allow-development` 只表示可信启动者已有该配置中开发/本地检查授权，不授予网络、
-安装、Git、specs 修改或独立审查调用权限。恢复使用原配置、相同 host-context 和 `--mode resume`。
+安装、Git、specs 修改或独立审查调用权限。恢复使用原配置（含创建时的 `--review-config`、`--runtime`、`--workflow-config` 等启动输入）、相同 host-context 和 `--mode resume`。
 host-context 必须是真实当前会话身份；宿主将其排除出独立审查候选，而非接受结果自报身份。
 通道只能由当前可信会话控制，不能交给开发 worker、暴露为网络服务或从项目文件自动读取回复。
 
@@ -436,11 +440,22 @@ host-context 必须是真实当前会话身份；宿主将其排除出独立审�
 
 此时错误的 `reason` 和宿主 stderr 的 `[host]` 提示先恢复原运行的 QA：配置填错用 `--revise-qa-config PREVIOUS.json --qa-config-revision-reason …`，宿主／环境证据不足用 `--rerun-blocked-qa`。确需重跑任务时，注意 N5 已在 N6 前把任务勾为 `[x]`；先在 `tasks.md` 将该任务改回 `- [ ]`，再在新的 runId 上显式提供 `--supersede-reviewed-evidence --supersede-reason "…"`；原因限单行、500 UTF-8 字节。宿主要求 `tasks.md` 未勾选该任务，所有同 feature、task 的旧 V3 journal 均无在途操作且处于 blocked、cancelled、unknown，或 fixture_completed 且 QA 为 BLOCKED／未结束；pending develop/complete 和尚未加入 host／登记调用的 pending review 先在原 run 用 `abandon_effect` 退出，已登记的 pending review 用 `abandon_review`，不会因新 runId 自动清除。旧 writer 仍被进程持有、正常完成或无旧证据均拒绝 `supersede_unavailable`。新 journal 先追加 `evidence-superseded`，记录旧 runId、文件名、SHA-256 和原因，再归档同名 handoff／回执／具名 correction、QA 文件并写 `supersede` 事件；恢复会按记录幂等补齐。旧 journal 不改写，旧 QA UUID 报告仍留原位供旧日志引用；新运行随后按原名发布自己的证据。未使用旗标的运行维持原 journal 格式和摘要。
 
+不带 supersede 的普通新建也做同样的代码漂移比较：同 feature、task 且未被后续运行替代的 V3 旧运行，其开工基线与当前代码树不一致时返回 `supersede_code_drift`，`reason` 列出旧 runId 与路径，出口是回到旧运行继续、手动还原后新建，或旧运行结束后用 `--supersede-reviewed-evidence --supersede-reason … --accept-superseded-code-drift` 新建（改动记入 `evidence-superseded`），不再把没审过的改动悄悄当成新运行的已有代码。批次成员新建时同样检查（并行成员在各自工作树、根不同，不受影响）；批次没有 supersede 入口，按提示还原文件，或先用单任务 supersede 结束旧运行。旧运行在交接／审查前就结束、没有任何可归档证据时，supersede 照常进行，记录里 `files` 为空、仍列出旧 runId 与接受的漂移。
+
 替代检查还会在任何新持久状态和 `captureReviewBaseline` 之前，只比对尚未被其他旧运行的 `evidence-superseded.previousRunIds` 列出的直接前驱运行的 V2 代码基线与当前代码树的逐文件 SHA-256／存在性（含未选中文件、新增及删除）。更早的运行仍进入新记录的 `previousRunIds` 并照常归档。发现漂移时返回 `supersede_code_drift`，`reason` 与宿主 `[host]` stderr 列出最多 20 个路径及剩余数量：手动还原这些文件后重建运行；或确认保留这些改动时加 `--accept-superseded-code-drift` 重建（这些文件会被当成已有代码，不进新运行的审查改动）。该旗标仅限同时带 `--supersede-reviewed-evidence --supersede-reason` 的 create 请求，不默认启用；接受后 `evidence-superseded` 记录每个漂移路径的当前 SHA-256（删除时为 `null`）及比较的前驱 runId。检测不修改文件，也不读取代码根之外或跟随越界软链接；无法安全读取时即使带旗标也拒绝。旧 journal 没有可用逐文件基线时跳过该运行，不新增记录；这类历史运行无法获得漂移保证。
 
 判据只认回执 **front matter 内**（首个 `---` 到下一个 `---` 之间）的 `handoff:` 行，不按固定行数截取——`handoff:` 之后的 `scope` 列表长度等于该任务的改动文件数，按行数截取会让判定依赖字段顺序。正文里出现的 `handoff:` 不算数。回执缺失视为未被消费；front matter 未闭合、起始不是 `---`、文件非普通文件或为符号链接、超过 256 KiB，一律按「已消费」处理（失败关闭），绝不因为读不懂就去覆盖审查证据。
 
 因此同一任务失败一次后不再需要人工去 `.reviews/` 删文件才能重跑；已批准的交接仍然不可覆盖。
+
+### 任务进行中规格变更并重新批准
+
+运行在创建时绑定本任务的规格材料（任务描述与验证要求、全部验收标准行、设计摘录、本任务测试用例，以及该 feature 规格文件的批准哈希），此后每次开发、审查、完成都重新核对。经 `cm-prd --change` 重新批准后，哪怕只改了别的任务行，哈希也会变。此时 `status` 不再提示会被拒绝的动作：`code` 为 `spec_drift`，`reason` 列出变化的规格文件及出口，`pendingAction` 为 `spec_rebind`（可换绑）或 `none`。
+
+- **只动了别的任务**：可换绑的判据有意从严——requirements.md 与 design.md 必须整份未变（验收标准可能跨多行续写，说明文字也可能是需求）；tasks.md 与 test-cases.json 中只允许其他任务的条目（含续行和子项）、其他任务的依赖行、只点名其他任务的行和其他任务的用例变化。新运行在材料里记录 `taskScopeDigest` 来证明这一点：它覆盖任何位置点名本任务的行（包括其他任务的子项、依赖行和说明）、本任务的整个条目、不点名任何任务的共用说明，以及本任务或点名本任务的用例；只点名其他任务的行和用例不计入；更早版本创建的运行没有该摘要，仍按原材料正常核对，但永远不能换绑。满足时用原配置恢复并显式换绑：`--mode resume --rebind-spec-material --spec-rebind-reason "原因"`（单行，≤500 UTF-8 字节，仅一次性消费、不进指纹）。journal 追加 `specification-rebound`，记录绑定材料摘要、新批准哈希、变化文件、原因与时间；它只能替换材料里的 `sources`，内容不同的材料永远无法换绑。已有开发、审查包与审查结论原样保留，下一步按原流程继续。没有漂移时该参数不写记录。
+- **内容变了**（本任务描述／验证、验收标准、设计摘录或本任务用例）：换绑以 `spec_rebind_refused` 拒绝并列出变化项。出口一：还原规格改动并重新批准，本运行即可继续。出口二：`cancel` 本运行，还原本运行改动的代码后用 `--supersede-reviewed-evidence --supersede-reason …` 新建运行，开发者重新交付并重新审查。若改用 `--accept-superseded-code-drift` 保留旧代码，旧改动成为新运行的已有代码，新运行必须交付新的改动才能生成审查包。
+- 批次成员不支持换绑：批次打开成员运行时不带该参数，状态不提示 `spec_rebind`，改为说明出口（还原规格改动并重新批准后继续批次，或取消批次、还原代码后用单任务宿主 supersede 重做该任务；并行组成员只有前一个出口，因为空闲时取消批次不会结束成员运行）。新批次（尚无任何成员运行）与单任务 create 一样必须带 `--review-config`，已开始的批次按原启动参数继续。
+- 规格处于待审批或与批准清单不一致时，`reason` 提示先完成重新批准。运行执行中途因规格变化停在 `blocked/spec_drift` 时，`reason` 给出 supersede 出口。
 
 宿主请求在协议层被遮蔽成 `host_request_failed` 时同样如此。哪些契约码可以透给对端
 是刻意划定的边界——宿主选择暴露的走 blocked 结果带 `reason`，其余统一遮蔽——这条边界
@@ -588,7 +603,8 @@ feature。恢复对应运行让 QA 通过后，再次 `advance` 本运行即可�
 # 而回执只给布尔值、不给期望值，仅看输出无法推断该填什么。
 # Claude CLI 报 unrecognized_model 时 preflight 也会失败；stderr 指明被拒 id 和家族别名示例（如 CLI 2.1.x 的 claude-opus-5），可快速读取时还会显示 CLI 版本。示例不是完整模型清单。
 node scripts/cm-ai-host.mjs preflight --config /absolute/run.json --review-model model-name
-# 携带配置但不授权审查：开发和检查完成后等待授权。
+# 携带配置但不授权审查：开发和检查完成后等待授权。create 必须带 --review-config：
+# 审查配置写进运行指纹，resume 时无法补加；不带时宿主以 review_configuration_required 拒绝并说明。
 node scripts/cm-ai-host.mjs serve --config /absolute/run.json --mode create \
   --host-context actual-current-conversation-id --allow-development --review-config /absolute/review.json
 # 当前会话已取得本任务本轮、该模型及发送审查包的用户授权后，才可添加对应轮次：
@@ -964,7 +980,7 @@ QA 配置修订（`--revise-qa-config`）在该 run 尚无任何 `test_run` 行�
 
 ```bash
 node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
-  --host-context current-host --allow-development \
+  --host-context current-host --allow-development --review-config review.json \
   --workflow-config workflow.json --allow-qa --rerun-unknown-qa
 ```
 

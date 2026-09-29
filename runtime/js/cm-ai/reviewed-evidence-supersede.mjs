@@ -11,7 +11,7 @@ import {supersedeWorkflowFile} from './review-evidence-file.mjs';
 import {need,digest} from './effect-contract.mjs';
 import {readEvidenceSupersession,supersedableEvidenceName} from './reviewed-evidence-supersession-record.mjs';
 import {scanRows} from './cm-ai-qa-log.mjs';
-import {parseCmAiTaskLine} from './cm-ai-admission.mjs';
+import {taskDeclarations,approvedTaskGrammar} from '../spec-task-line.mjs';
 import {compareReviewInventoryToBaseline,readReviewBaseline} from './review-package.mjs';
 
 const writer=fileURLToPath(new URL('../../../scripts/cm-log-event.py',import.meta.url));
@@ -38,8 +38,8 @@ function verifyOldCodeBaseline(codeProject,rawBaseline){
 }
 
 function taskChecked(tasksPath,taskId){
-  const body=fs.readFileSync(tasksPath,'utf8');
-  const rows=body.split(/\r?\n/).map(parseCmAiTaskLine).filter(task=>task?.id===taskId);
+  const rows=taskDeclarations(fs.readFileSync(tasksPath,'utf8'),
+    {grammar:approvedTaskGrammar(path.dirname(path.dirname(tasksPath)))}).filter(task=>task.id===taskId);
   if(rows.length!==1)unavailable('tasks.md 中任务身份不唯一或不存在');
   return rows[0].completed;
 }
@@ -90,7 +90,7 @@ export function prepareReviewedEvidenceSupersession({specsDir,codeProject,featur
     unavailable('必须提供单行且不超过 500 字节的 --supersede-reason');
   if(taskChecked(tasksPath,identity.taskId))unavailable('tasks.md 已将任务标为完成；若 QA BLOCKED 后确需重跑，先将该任务改回 - [ ]，再以 --supersede-reviewed-evidence 和 --supersede-reason 创建新运行');
   const reviewsDir=path.join(specsDir,'.reviews');
-  if(!fs.existsSync(reviewsDir))unavailable('没有可替换的旧任务证据');
+  if(!fs.existsSync(reviewsDir))unavailable('没有同 feature、task 的旧运行');
   const execution=path.join(reviewsDir,'.execution');
   const previousRunIds=[],priorRuns=[],alreadySuperseded=new Set();
   if(fs.existsSync(execution))for(const entry of fs.readdirSync(execution,{withFileTypes:true})){
@@ -138,8 +138,9 @@ export function prepareReviewedEvidenceSupersession({specsDir,codeProject,featur
     const paths=[...new Set(drift.map(file=>file.path))],listed=paths.slice(0,20).join('、');
     codeDrift(`${listed}${paths.length>20?` 等 ${paths.length-20} 个`:''}：${driftInstruction}`);
   }
+  // A run that stopped before any handoff or review has nothing to archive; the
+  // record still ends the prior runs and carries any accepted code drift.
   const names=evidenceNames(reviewsDir,feature,identity.taskId);
-  if(!names.length)unavailable('没有可归档的旧任务证据');
   const files=names.map(name=>{
     const p=path.join(reviewsDir,name),stat=fs.lstatSync(p);
     if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)unavailable(`证据文件不可安全归档：${name}`);
@@ -148,6 +149,42 @@ export function prepareReviewedEvidenceSupersession({specsDir,codeProject,featur
   return readEvidenceSupersession({version:1,feature,taskId:identity.taskId,newRunId:identity.runId,
     previousRunIds:previousRunIds.sort(),reason,files,authorizedAt:new Date().toISOString(),
     ...(drift.length?{acceptedCodeDrift:drift}:{})});
+}
+
+// A plain create (no supersede) must not silently adopt a previous run's
+// unreviewed edits as its baseline. Same comparison as supersede, over the runs
+// of this task that no later run has superseded; the only way to keep the
+// edits is the explicit supersede record with --accept-superseded-code-drift.
+export function assertNoUnrecordedPriorCode({specsDir,codeProject,feature,identity,tasksPath}){
+  const execution=path.join(specsDir,'.reviews','.execution');
+  if(!fs.existsSync(execution))return;
+  const priorRuns=[],superseded=new Set();
+  for(const entry of fs.readdirSync(execution,{withFileTypes:true})){
+    if(!entry.isDirectory()||entry.name===identity.runId)continue;
+    if(!fs.existsSync(path.join(execution,entry.name,'state.json')))continue;
+    let snapshot;
+    try{snapshot=readExecutionSnapshot({specsRoot:specsDir,
+      identity:{repositoryId:identity.repositoryId,runId:entry.name}});}
+    catch(error){if(error.code==='identity_mismatch')continue;throw error;}
+    const first=snapshot.records[0]?.payload;
+    // Other tasks, roots and pre-V3 journals are out of this comparison (the
+    // latter cannot prove drift, as in supersede).
+    if(first?.version!==3||first.config?.identity?.taskId!==identity.taskId
+      ||first.config?.taskLearning?.feature!==feature||first.config.root!==codeProject
+      ||first.config.completion?.owner?.tasksPath!==tasksPath)continue;
+    const record=snapshot.records[1]?.payload;
+    if(record?.type==='evidence-superseded')for(const runId of readEvidenceSupersession(record.record).previousRunIds)
+      superseded.add(runId);
+    priorRuns.push({runId:entry.name,baseline:first.baseline});
+  }
+  const drift=priorRuns.filter(run=>!superseded.has(run.runId))
+    .flatMap(run=>verifyOldCodeBaseline(codeProject,run.baseline).map(file=>({runId:run.runId,path:file.path})));
+  if(!drift.length)return;
+  const paths=[...new Set(drift.map(file=>file.path))].sort(),runs=[...new Set(drift.map(file=>file.runId))].sort();
+  codeDrift(`旧运行 ${runs.join('、')} 开工后这些文件被改动，且没有替代记录：${paths.slice(0,20).join('、')}`
+    +`${paths.length>20?` 等 ${paths.length-20} 个`:''}。新运行不会把它们当成已有代码。`
+    +'可选：回到旧运行继续；手动还原这些文件后再新建；或旧运行结束后用 --supersede-reviewed-evidence --supersede-reason 原因 '
+    +'--accept-superseded-code-drift 新建（改动记入替代记录，作为已有代码，不进新运行的审查改动）。');
 }
 
 export function archiveReviewedEvidence(reviewsDir,raw){

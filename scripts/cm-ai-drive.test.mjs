@@ -31,9 +31,13 @@ function fixture(t){
   const answers=path.join(root,'answers');fs.mkdirSync(answers);
   const bin=path.join(root,'bin');fs.mkdirSync(bin);
   const write=(name,value)=>fs.writeFileSync(path.join(answers,name),JSON.stringify(value));
+  // create requires a bound review configuration; this one grants no review attempt.
+  fs.writeFileSync(path.join(root,'placeholder-review.json'),JSON.stringify({model:'fixture',preflight:{}}));
   const plan=(extra={})=>{const file=path.join(root,`plan-${Math.random().toString(36).slice(2)}.json`);
-    fs.writeFileSync(file,JSON.stringify({config:'run.json',mode:'create',hostContext:'drive-host-a',
-      permissions:[],answers:'answers',checks:[{id:'syntax',command:[process.execPath,'--check','target.mjs']}],...extra}));
+    const value={config:'run.json',mode:'create',hostContext:'drive-host-a',
+      permissions:[],answers:'answers',checks:[{id:'syntax',command:[process.execPath,'--check','target.mjs']}],...extra};
+    if(!value.permissions.includes('--review-config'))value.permissions=[...value.permissions,'--review-config','placeholder-review.json'];
+    fs.writeFileSync(file,JSON.stringify(value));
     return file;};
   const drive=(file,operation,timeout=30000)=>spawnSync(process.execPath,[DRIVER,'--plan',file,operation],
     {encoding:'utf8',timeout,env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,CM_WORKFLOW_HOME:path.join(root,'home'),

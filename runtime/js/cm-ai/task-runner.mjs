@@ -6,7 +6,8 @@ import { types } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
 import {createRequire} from 'node:module';
-import {verifySpecificationMaterial} from './specification-material.mjs';
+import {verifySpecificationMaterial,boundSpecificationMaterial,inspectSpecificationDrift,describeSpecificationDrift,
+  readSpecificationRebind} from './specification-material.mjs';
 import { captureReviewBaseline, captureReviewInventory, compareReviewBaseline, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage, validChecks, readReviewSourceFiles } from './review-package.mjs';
 import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,validCallTimeout,requestFor,terminalFor,failureCode,
   JOURNAL_PAYLOAD_LIMIT,developCheckpointReserve,taskReviewScope,boundedReason } from './effect-contract.mjs';
@@ -111,6 +112,8 @@ const REVIEW_FAILURE_HINTS=Object.freeze({
 const reviewFailureReason=failure=>`${failure}: ${REVIEW_FAILURE_HINTS[failure]??'审查失败且没有可用结论'}`;
 // A verdict the review round ends on names why, instead of a bare code.
 const verdictReason=(prefix,summary)=>`${prefix}：${String(summary).replace(/[\x00-\x1f\x7f]/g,' ').slice(0,300)}`;
+const HALTED_SPEC_DRIFT='规格在本运行执行中途变化，运行已停在 blocked/spec_drift，不能继续或换绑。'
+  +'出口：用 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做；本运行改动的代码需还原，或加 --accept-superseded-code-drift 作为已有代码记录。';
 const safeReason=error=>{
   if(error===null||typeof error!=='object'||types.isProxy(error))return null;
   const descriptor=Object.getOwnPropertyDescriptor(error,'message');
@@ -249,6 +252,13 @@ export function createTaskRunner(options) {
   let learningResult=null;
   const acceptedFixes=structuredClone(restored?.acceptedFixes??[]);
   let qaAttachment=restored?.qaAttachment??null;
+  // A fresh ready-state capture carries the current material; represent an
+  // accepted (identical or explicitly rebound) one by the bound material.
+  const withBoundSpecification=fresh=>{
+    if(!Object.hasOwn(fresh,'specification'))return fresh;
+    const {baselineDigest,...data}={...fresh,specification:boundSpecificationMaterial(original,fresh.specification)};
+    return {...data,baselineDigest:digest(data)};
+  };
   const handoffBinding=(pkg=reviewPackage)=>pkg&&Object.hasOwn(pkg,'handoff')
     ?{handoffPath:completion.handoffs[pkg.identity.attempt-1]}:{};
   function publishRegisteredReview(inspectOnly=false){
@@ -303,6 +313,15 @@ export function createTaskRunner(options) {
     if(current.state==='unknown'&&reviewResultAbandonable())current=freeze({...current,abandonableReviewResult:true});
     if(!busy&&!poisoned)try{publishRegisteredReview(true);}
     catch{return freeze({...current,code:'review_publication_required'});}
+    // Every next effect re-verifies the bound specification. When it no longer
+    // verifies, report that and its real exits instead of the refused action.
+    if(!busy&&!poisoned&&specificationLive(current.state,current.code)){
+      const drift=inspectSpecificationDrift(original);
+      if(drift)return freeze({...current,code:'spec_drift',reason:describeSpecificationDrift(drift),
+        specificationRebind:drift.rebindable?'available':'unavailable'});
+    }
+    if(current.state==='blocked'&&current.code==='spec_drift'&&!current.reason)
+      return freeze({...current,reason:HALTED_SPEC_DRIFT});
     if(!busy&&reviewPackage&&(['awaiting_review','approved','changes_requested'].includes(current.state)
       ||current.state==='blocked'&&['review_package_changed','completion_package_changed'].includes(current.code))){
       try{
@@ -355,6 +374,8 @@ export function createTaskRunner(options) {
     }
   };
   const halt=(next,why,detail=null)=>{state=next;code=why;reason=detail;};
+  const specificationLive=(currentState,currentCode)=>Object.hasOwn(original,'specification')
+    &&['develop','review','complete'].some(kind=>stageAllowed(kind,currentState,currentCode,priorReview?.verdict));
   function frame(){return {state,code,reason,attempt,session,sequence,reviewPackage,currentChecks,receipt,receipts,calls,
     cache:[...cache.values()],priorReview,cancelAfterCommit,workflowError,cancellationRequested,...(taskMode?{taskCommit}:{}),
     ...(invocationMode?{reviewInvocation}:{}),...(taskLearning!==null?{learningResult}:{})};}
@@ -378,7 +399,7 @@ export function createTaskRunner(options) {
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
         'review-invocation-abandoned':'result','effect-abandoned':'result',
         'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
-        'evidence-superseded':'result','develop-retry-limit':'result','completion-retry-limit':'result'}[type],
+        'evidence-superseded':'result','develop-retry-limit':'result','completion-retry-limit':'result','specification-rebound':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
     const record={...body,digest:digest(body)};boundRunnerRecord(record,body.seq);
@@ -999,10 +1020,10 @@ export function createTaskRunner(options) {
     if(v.kind==='complete'&&completionLimitDue()){try{return Promise.resolve(recordCompletionLimit());}catch{return Promise.resolve(poison());}}
     if(store) {
       try {
-        if(state==='ready')compareReviewBaseline(captureReviewBaseline({...configToBaseline(metadata),version:original.version,
+        if(state==='ready')compareReviewBaseline(withBoundSpecification(captureReviewBaseline({...configToBaseline(metadata),version:original.version,
           ...(Object.hasOwn(original,'specification')?{specification:{specsRoot:original.specificationRoot,feature:original.specification.feature}}:{})},
           !Object.hasOwn(original,'ignorePolicy'),original.ignorePolicy?.version??2,
-          original.ignorePolicy?.version===2?original.ignorePolicy:null),original);
+          original.ignorePolicy?.version===2?original.ignorePolicy:null)),original);
         // A rejected first delivery has no review package yet. Every later
         // developer effect must recheck the reviewed tree before dispatch,
         // except one that redoes a delivery this attempt already made: that
@@ -1158,6 +1179,24 @@ export function createTaskRunner(options) {
     need((current.packageDigest??null)===record.packageDigest,'package_mismatch');
     persist('qa-config-revised',{record});return json(record);
   };
+  // Explicit, journaled continuation after a proper re-approval. Refused unless
+  // everything this run's developer and reviewer see is unchanged; the record
+  // then lets the bound material verify against the re-approved hashes only.
+  const rebindSpecification=raw=>{
+    const refuse=(code,why)=>{throw Object.assign(new Error(code),{code,reason:why});};
+    need(invocationMode&&store&&!busy&&!poisoned,'spec_rebind_unavailable');
+    const value=json(raw);shape(value,['version','reason','at']);need(value.version===1,'invalid_input');
+    if(!Object.hasOwn(original,'specification'))refuse('spec_rebind_unavailable','本运行没有绑定规格材料（旧版运行），无需换绑');
+    const drift=inspectSpecificationDrift(original);
+    if(drift===null)return freeze({outcome:'unchanged'});
+    if(restored?.pending||!specificationLive(state,code))
+      refuse('spec_rebind_unavailable',`运行当前为 ${state}${code?`/${code}`:''}，没有待执行的开发、审查或完成，不能换绑`);
+    if(!drift.rebindable)refuse('spec_rebind_refused',describeSpecificationDrift(drift));
+    const record=readSpecificationRebind({version:1,taskId:config.identity.taskId,boundDigest:digest(original.specification),
+      sources:drift.sources,files:drift.files,reason:value.reason,reboundAt:value.at});
+    persist('specification-rebound',{record});
+    return json({outcome:'rebound',record});
+  };
   const supersedeEvidence=raw=>{
     need(invocationMode&&store&&!busy&&!poisoned,'supersede_unavailable');
     const record=readEvidenceSupersession(raw,{feature:taskLearning.feature,
@@ -1230,7 +1269,7 @@ export function createTaskRunner(options) {
     }catch(error){return freeze({outcome:'rejected',code:error.code??'effect_abandon_unavailable',
       ...(error.code==='effect_abandon_commit_pending'?{reason:'task-commit-intent 已写入，tasks.md 可能已改名或勾选；请核对 tasks.md、提交回执和旧进程后按原提交恢复路径处理。'}:{})});}
   };
-  const api={reviseQa,supersedeEvidence,abandonReview,abandonEffect,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks};
+  const api={reviseQa,supersedeEvidence,rebindSpecification,abandonReview,abandonEffect,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   // A terminal reviewer observation is durable even if the host died before

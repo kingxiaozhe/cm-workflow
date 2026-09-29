@@ -58,7 +58,7 @@ node scripts/cm-failover.mjs probe
 
 ```bash
 node scripts/cm-ai-host.mjs serve --config {CONFIG} --mode create \
-  --host-context {ID} --allow-development --failover
+  --host-context {ID} --allow-development --review-config {REVIEW_CONFIG} --failover
 ```
 
 传入后，host 在构造 execution **之前**按 `developer` 角色选路。**声明为主、探测为校验**：

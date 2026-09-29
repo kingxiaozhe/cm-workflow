@@ -37,11 +37,17 @@ export function readBootstrapConfiguration(file){
   const stat=fs.lstatSync(file);need(stat.isFile()&&!stat.isSymbolicLink()&&stat.size<=64*1024,'invalid_bootstrap_config');
   const config=json(JSON.parse(fs.readFileSync(file,'utf8')));shape(config,['selection']);return config;
 }
+// Launch-input refusals keep their code and name the input, so the operator can
+// find the exit without reading the host source.
+const refuse=(ok,code,reason)=>{if(!ok)throw Object.assign(new Error(code),{code,reason});};
+const REASONED_CODES=['supersede_unavailable','supersede_code_drift','handoff_exists','browser_capability_required',
+  'browser_capability_unavailable','invalid_arguments','fingerprint_mismatch','task_selection_mismatch','review_configuration_required',
+  'spec_rebind_refused','spec_rebind_unavailable'];
 const fixLocalPermissions=new Map(['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon',
   'abandon-review','test-author','repair','cause-review','final-review']
   .map(name=>[`--allow-qa-fix-${name}`,`--allow-${name}`]));
 
-const usage='cm-ai-host.mjs serve --config RUN_DEFINITION.json --mode create|resume --host-context ID --allow-development [--original-host-context ID] [--runtime codex|claude] [--input-limit BYTES] [--failover] [--review-config PATH] [--allow-review-attempt 1|2] [--allow-abandon-review] [--allow-abandon-effect] [--workflow-config PATH] [--allow-qa] [--browser-qa available|unavailable]\nInput limit is transport-only: integer 65536-4194304 bytes, default 65536; it bounds every input line and every tool reply, and may change on resume. A longer line stops the session with request_too_large. Review config is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 900000), independent of protected mode and outside the authorized configuration digest. --browser-qa declares interactive QA capability for applicable carriers including browser and ios-simulator.\ncm-ai-host.mjs preflight --config RUN_DEFINITION.json --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
+const usage='cm-ai-host.mjs serve --config RUN_DEFINITION.json --mode create|resume --host-context ID --allow-development --review-config PATH (required at create; resume passes the same file) [--original-host-context ID] [--runtime codex|claude] [--input-limit BYTES] [--failover] [--allow-review-attempt 1|2] [--allow-abandon-review] [--allow-abandon-effect] [--workflow-config PATH] [--allow-qa] [--browser-qa available|unavailable]\nInput limit is transport-only: integer 65536-4194304 bytes, default 65536; it bounds every input line and every tool reply, and may change on resume. A longer line stops the session with request_too_large. Review config is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 900000), independent of protected mode and outside the authorized configuration digest. --browser-qa declares interactive QA capability for applicable carriers including browser and ios-simulator.\ncm-ai-host.mjs preflight --config RUN_DEFINITION.json --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
 
 export function formatClaudeModelHint(config,version=null){
   const marker=config?.preflight?.request_checks?.find(check=>check?.model_recognized===false);
@@ -174,6 +180,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--allow-abandon-review: resume 原 run 后发送 abandon_review，request.reason 必须是单行且不超过 500 UTF-8 字节。操作员先确认旧 host 与 review 进程已退出；旗标只消费一次，不写入配置。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--allow-abandon-effect: resume 原 run 后发送 abandon_effect，request.reason 必须是单行且不超过 500 UTF-8 字节。操作员须确认旧 host 和 effect 启动的检查/构建进程均已退出；仅当前会话 develop/complete 且无 task-commit-intent 时可用。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--supersede-reviewed-evidence --supersede-reason REASON：仅新建同任务运行；旧运行都已终止且 tasks.md 未勾选时，先在新 journal 记授权，再归档旧审查证据。若保留直接前驱运行留下的代码漂移，可额外使用 --accept-superseded-code-drift；漂移文件会作为新运行的已有代码并记录当前 SHA-256。\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--rebind-spec-material --spec-rebind-reason REASON：仅 resume。规格经 cm-prd --change 重新批准后，若本任务的描述、验证要求、验收标准、设计摘录与测试用例都未变，只换绑批准哈希并写 specification-rebound 记录，已有开发与审查结论保留；内容有变则拒绝并列出变化。status 的 spec_drift 会说明是否可换绑。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('当前会话手动驱动请用 scripts/cm-ai-drive.mjs（批次 cm-ai-batch-drive.mjs；修复 cm-fix-drive.mjs；规格 cm-prd-drive.mjs）；详情见 skills/cm-ai/references/js-host.md。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\n');return 0;}
   let run,bridge;
@@ -195,12 +202,14 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       &&argv[5]==='--host-context'&&argv[7]==='--allow-development','host_launch_authorization_required');
     const extra=new Map();
     for(let index=8;index<argv.length;index++){
-      const name=argv[index];need(!extra.has(name),'invalid_arguments');
-      need(['--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure','--supersede-reviewed-evidence','--supersede-reason','--accept-superseded-code-drift','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--allow-abandon-review','--allow-abandon-effect','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments');
-      if(['--supersede-reviewed-evidence','--accept-superseded-code-drift','--allow-bootstrap-write','--allow-qa','--allow-abandon-review','--allow-abandon-effect','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
-      else{need(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments');extra.set(name,argv[++index]);}
+      const name=argv[index];refuse(!extra.has(name),'invalid_arguments',`参数重复：${name}`);
+      refuse(['--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure','--supersede-reviewed-evidence','--supersede-reason','--accept-superseded-code-drift','--rebind-spec-material','--spec-rebind-reason','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--allow-abandon-review','--allow-abandon-effect','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments',`未知参数：${name}`);
+      if(['--supersede-reviewed-evidence','--accept-superseded-code-drift','--rebind-spec-material','--allow-bootstrap-write','--allow-qa','--allow-abandon-review','--allow-abandon-effect','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
+      else{refuse(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments',`${name} 需要一个值`);extra.set(name,argv[++index]);}
     }
-    const inputLimit=parseHostInputLimit(extra.get('--input-limit'));
+    let inputLimit;
+    try{inputLimit=parseHostInputLimit(extra.get('--input-limit'));}
+    catch(error){refuse(error.code!=='invalid_arguments','invalid_arguments','--input-limit 须为 65536–4194304 的整数字节数');throw error;}
     const revisionRequested=extra.has('--revise-qa-config')||extra.has('--qa-config-revision-reason');
     need(!extra.has('--supersede-reviewed-evidence')&&!extra.has('--supersede-reason')&&!extra.has('--accept-superseded-code-drift')
       ||(argv[4]==='create'&&extra.has('--supersede-reviewed-evidence')&&extra.has('--supersede-reason')),
@@ -208,6 +217,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(!revisionRequested||(argv[4]==='resume'&&extra.has('--allow-qa')&&extra.has('--revise-qa-config')
       &&extra.has('--qa-config-revision-reason')&&!extra.has('--rerun-unknown-qa')&&!extra.has('--rerun-blocked-qa')),'qa_revision_authorization_required');
     need(!extra.has('--allow-abandon-review')||argv[4]==='resume','review_abandon_unavailable');
+    refuse(extra.has('--rebind-spec-material')===extra.has('--spec-rebind-reason')&&(!extra.has('--rebind-spec-material')||argv[4]==='resume'),
+      'spec_rebind_unavailable','--rebind-spec-material 只用于 --mode resume，并须同时提供单行 --spec-rebind-reason 原因');
     need(!extra.has('--allow-abandon-effect')||argv[4]==='resume','effect_abandon_unavailable');
     const qaConfigRevision=revisionRequested?{previousWorkflow:readHostWorkflowConfiguration(extra.get('--revise-qa-config')),
       reason:extra.get('--qa-config-revision-reason')}:null;
@@ -217,8 +228,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const review=extra.has('--review-config')?reviewConfiguration(extra.get('--review-config')):null;
     const workflow=extra.has('--workflow-config')?readHostWorkflowConfiguration(extra.get('--workflow-config')):null;
     let allowedAttempt=null;
-    if(extra.has('--allow-review-attempt')){need(['1','2'].includes(extra.get('--allow-review-attempt')),'invalid_arguments');allowedAttempt=Number(extra.get('--allow-review-attempt'));}
-    need(!extra.has('--allow-qa')||workflow?.qa!=null,'invalid_arguments');
+    if(extra.has('--allow-review-attempt')){refuse(['1','2'].includes(extra.get('--allow-review-attempt')),'invalid_arguments','--allow-review-attempt 只接受 1 或 2');allowedAttempt=Number(extra.get('--allow-review-attempt'));}
+    refuse(!extra.has('--allow-qa')||workflow?.qa!=null,'invalid_arguments',
+      workflow===null?'--allow-qa 需要同时提供 --workflow-config':'--allow-qa 需要 --workflow-config 中的 qa 不为 null；本运行没有 QA 时去掉 --allow-qa');
     need(!(extra.has('--rerun-unknown-qa')&&extra.has('--rerun-blocked-qa')),'qa_recovery_authorization_required');
     need(!(extra.has('--rerun-unknown-qa')||extra.has('--rerun-blocked-qa'))||(argv[4]==='resume'&&extra.has('--allow-qa')),'qa_recovery_authorization_required');
     need(!extra.has('--qa-environment-failure')||extra.has('--rerun-blocked-qa'),'qa_recovery_authorization_required');
@@ -229,7 +241,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(!extra.has('--auto-qa-fix')||(extra.has('--qa-fix-template-config')&&extra.has('--allow-qa-fix-start')),'qa_fix_auto_authorization_required');
     need(![...fixLocalPermissions.keys()].some(flag=>extra.has(flag))||extra.has('--allow-qa-fix-start'),'qa_fix_start_authorization_required');
     need(!extra.has('--allow-provider-development-attempt')||extra.has('--protected-config'),'protected_configuration_required');
-    need(!(extra.has('--protected-config')&&extra.has('--protected-conversation-config')),'invalid_arguments');
+    refuse(!(extra.has('--protected-config')&&extra.has('--protected-conversation-config')),'invalid_arguments','--protected-config 与 --protected-conversation-config 不能同时使用');
     const protection=extra.has('--protected-conversation-config')?readConversationProtection(extra.get('--protected-conversation-config')):null;
     const bootstrap=extra.has('--bootstrap-config')?readBootstrapConfiguration(extra.get('--bootstrap-config')):null;
     need(!extra.has('--allow-bootstrap-write')||bootstrap!==null,'bootstrap_configuration_required');
@@ -269,11 +281,17 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       fix=json(JSON.parse(fs.readFileSync(file,'utf8')),64*1024);
       if(extra.has('--protected-config')||protection)need(fix.configuration?.protectSpecs===true,'protected_fix_required');
     }
+    // The reviewer binding is part of the durable configuration fingerprint, so
+    // it cannot be added on resume. Requiring it at create removes the trap of
+    // a run that can reach awaiting_review but never be reviewed. Authorizing a
+    // review attempt is still the separate --allow-review-attempt.
+    refuse(argv[4]!=='create'||review!==null,'review_configuration_required',
+      'create 必须带 --review-config：审查配置写进运行指纹，resume 时不能再补。先用 cm-ai-host.mjs preflight --config 运行定义 --review-model 模型 --runtime 端 生成 review.json；是否真正派发审查仍由 --allow-review-attempt 单独授权');
     let execution;
     if(argv[4]==='resume'&&!extra.has('--original-host-context')&&extra.has('--protected-config')&&canResumeLegacyProtected(definition,runtime)){
       try{
         execution=await legacyProtectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap);
-        run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:extra.has('--allow-abandon-review'),allowAbandonEffect:extra.has('--allow-abandon-effect')});
+        run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:extra.has('--allow-abandon-review'),allowAbandonEffect:extra.has('--allow-abandon-effect'),specRebindReason:extra.get('--spec-rebind-reason')??null});
         error.write('cm-ai-host: resumed original Codex protected execution after exact fingerprint validation.\n');
       }catch(cause){
         if(!['fingerprint_mismatch','tool_preflight_missing'].includes(cause.code))throw cause;
@@ -285,7 +303,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap)
         :executionFor(definition,argv[6],bridge,review,allowedAttempt,workflow,extra.has('--allow-qa'),runtime,
           {...(extra.has('--original-host-context')?{originalHostContextId:extra.get('--original-host-context')}:{}),...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{})});
-      run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:extra.has('--allow-abandon-review'),allowAbandonEffect:extra.has('--allow-abandon-effect')});
+      run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:extra.has('--allow-abandon-review'),allowAbandonEffect:extra.has('--allow-abandon-effect'),specRebindReason:extra.get('--spec-rebind-reason')??null});
     }
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}
     if(hasFix){
@@ -322,13 +340,14 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const snapshotReason=['out_of_scope','unsupported_file','limit_exceeded','package_mismatch'].includes(code)
       &&typeof cause?.message==='string'&&cause.message.length<=8192&&!/[\r\n\0]/.test(cause.message)
       ?cause.message:null;
+    const reason=REASONED_CODES.includes(code)&&typeof cause?.reason==='string'&&cause.reason.length<=8192
+      &&!/[\r\n\0]/.test(cause.reason)?cause.reason:null;
     if(code==='handoff_exists')error.write(`[host] ${REVIEWED_HANDOFF_HINT}\n`);
-    if(['supersede_code_drift','fingerprint_mismatch'].includes(code)&&typeof cause.reason==='string')error.write(`[host] ${cause.reason}\n`);
+    if(['supersede_code_drift','fingerprint_mismatch'].includes(code)&&reason)error.write(`[host] ${reason}\n`);
     if(snapshotReason)error.write(`[host] ${snapshotReason}\n`);
     const limitReason=code==='request_too_large'?inputLimitReason(cause.limit):null;
     if(limitReason)error.write(`[host] request_too_large: ${limitReason}\n`);
-    error.write(JSON.stringify({error:{code,...(snapshotReason?{reason:snapshotReason}:{}),...(limitReason?{reason:limitReason}:{}),...(['supersede_unavailable','supersede_code_drift','handoff_exists','browser_capability_required','browser_capability_unavailable','fingerprint_mismatch'].includes(code)
-      &&typeof cause.reason==='string'?{reason:cause.reason}:{})}})+'\n');return 1;
+    error.write(JSON.stringify({error:{code,...(snapshotReason?{reason:snapshotReason}:{}),...(limitReason?{reason:limitReason}:{}),...(reason?{reason}:{})}})+'\n');return 1;
   }finally{bridge?.close();run?.close();}
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))process.exitCode=await main();

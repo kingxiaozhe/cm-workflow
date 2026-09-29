@@ -14,6 +14,7 @@ import {validateAcceptedFix} from './accepted-fix.mjs';
 import {readBootstrapEvidence,validateBootstrapReviewPackage} from './host-bootstrap.mjs';
 import {validateCodeProjectPaths,assertCodeProjectSelections} from './code-projects.mjs';
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
+import {readSpecificationRebind} from './specification-material.mjs';
 
 const LIMIT=16*1024*1024;
 export const MAX_AI_JOINED_HOSTS=16;
@@ -627,7 +628,15 @@ export function readRunnerHistory(raw,config,version=1) {
       same(original.specsPath??null,completion?reviewSpecsPath(config.root,completion.owner.specsRoot):null);
       same(original.rootDigest,digestRoot(config.root));state=initialRunnerState(config,session,version);continue;
     }
-    if(version===3&&p.type==='evidence-superseded') {
+    if(version===3&&p.type==='specification-rebound') {
+      // An explicit rebind never changes runner state; it only lets the bound
+      // material verify against re-approved sources (specification-material.mjs).
+      shape(p,[...common,'record']);
+      need(r.kind==='result'&&pending===null&&Object.hasOwn(original,'specification')
+        &&['develop','review','complete'].some(kind=>stageAllowed(kind,state.state,state.code,state.priorReview?.verdict)),
+      'spec_rebind_invalid');
+      readSpecificationRebind(p.record,{taskId:config.identity.taskId,boundDigest:digest(original.specification)});
+    } else if(version===3&&p.type==='evidence-superseded') {
       shape(p,[...common,'record']);
       need(r.kind==='result'&&index===1&&pending===null&&state.state==='ready'&&supersession===null,'supersede_record_invalid');
       supersession=readEvidenceSupersession(p.record,{feature:config.taskLearning.feature,

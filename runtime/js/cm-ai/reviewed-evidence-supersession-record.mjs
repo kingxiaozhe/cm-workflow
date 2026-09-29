@@ -28,7 +28,8 @@ export function readEvidenceSupersession(raw,expected=null){
   }
   need(typeof record.reason==='string'&&record.reason.trim()&&Buffer.byteLength(record.reason,'utf8')<=500
     &&!/[\r\n\0]/.test(record.reason),'supersede_reason_required');
-  need(Array.isArray(record.files)&&record.files.length>0&&record.files.length<=256,'supersede_record_invalid');
+  // Zero files: the prior runs stopped before any handoff or review existed.
+  need(Array.isArray(record.files)&&record.files.length<=256,'supersede_record_invalid');
   const names=new Set();for(const file of record.files){
     shape(file,['name','sha256']);
     need(typeof file.name==='string'&&/^[A-Za-z0-9._-]+\.(md|json)$/.test(file.name)

@@ -41,9 +41,11 @@ function fixture(browserCase,{blocking=true,tests=['logic','commands','browser']
   fs.writeFileSync(workflow,JSON.stringify({documentationPaths:[],applicableAgentFiles:[],
     qa:{commands:[{id:'unit',command:[process.execPath,'--version'],caseIds:browserCase?[]:['TC-001']}],
       environment:{kind:'web',carrier:'browser',target:'https://example.invalid/fixture',scope:'local'}}}));
+  // create requires a bound review configuration; this one grants no review attempt.
+  const review=path.join(root,'placeholder-review.json');fs.writeFileSync(review,JSON.stringify({model:'fixture',preflight:{}}));
   return {root,specsDir,codeProject,config,workflow,
     args:['serve','--config',config,'--mode','create','--host-context','gate-fixture','--allow-development',
-      '--workflow-config',workflow,'--allow-qa']};
+      '--workflow-config',workflow,'--allow-qa','--review-config',review]};
 }
 
 const launch=(f,...extra)=>spawnSync(process.execPath,[cli,...f.args,...extra],{encoding:'utf8',timeout:20000,env:{...process.env,NODE_NO_WARNINGS:'1'}});
@@ -53,6 +55,7 @@ function rejected(result,code){
   assert.equal(parsed.error.code,code);
   if(['browser_capability_required','browser_capability_unavailable'].includes(code))
     assert.match(parsed.error.reason,/--browser-qa available\|unavailable.*interactive QA/);
+  else if(code==='invalid_arguments')assert.match(parsed.error.reason,/--browser-qa/);
   else assert.deepEqual(parsed,{error:{code}});
 }
 function started(f,...extra){

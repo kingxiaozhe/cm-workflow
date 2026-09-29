@@ -87,6 +87,65 @@ test('interrupted first develop can be abandoned on resume and a plain run can s
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
+// #23: a run that dies at attempt 1 before any handoff/review evidence exists.
+// The host died after the developer wrote a.mjs; the operator abandons the
+// open develop intent (#161), leaving the edits and no evidence behind.
+async function dieBeforeReview(f,runId,content){
+  const identity=identityFor(runId);
+  interruptAfterIntent(f,runId,'develop');
+  for(const name of fs.readdirSync(f.reviewsDir))if(name.startsWith('work-T-002-'))
+    fs.rmSync(path.join(f.reviewsDir,name));
+  const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+    identity,scope:['a.mjs'],requirements:['requirements.md']};
+  const resumed=await openControlRun(definition,'resume',executionFor(f,content),{allowAbandonEffect:true});
+  try{assert.equal((await resumed.host.handle(abandonRequest(identity))).code,'effect_abandoned');}
+  finally{resumed.close();}
+  assert.equal(fs.readFileSync(path.join(f.codeProject,'a.mjs'),'utf8'),content);
+}
+test('a dead attempt-1 run: plain create refuses its unreviewed edits; supersede works with nothing to archive',async()=>{
+  const f=runFixture();
+  try{
+    const runId='dead-first-0001';
+    assert.equal((await start(f,runId,'written\n')).state,'blocked');
+    await dieBeforeReview(f,runId,'written\n');
+    const plainState=path.join(f.reviewsDir,'.execution','dead-first-plain','state.json');
+    await assert.rejects(start(f,'dead-first-plain','next\n'),error=>{
+      assert.equal(error.code,'supersede_code_drift');
+      assert.match(error.reason,/dead-first-0001/);assert.match(error.reason,/a\.mjs/);
+      assert.match(error.reason,/--supersede-reviewed-evidence/);assert.match(error.reason,/--accept-superseded-code-drift/);
+      return true;
+    });
+    assert.equal(fs.existsSync(plainState),false,'a refused plain create leaves no run behind');
+    await assert.rejects(start(f,'dead-first-next','next\n',{supersedeReason:'restart'}),
+      error=>error.code==='supersede_code_drift'&&/--accept-superseded-code-drift/.test(error.reason));
+    // The flag the message suggests now works: there is no evidence to archive.
+    assert.equal((await start(f,'dead-first-next','next\n',
+      {supersedeReason:'restart',acceptSupersededCodeDrift:true})).state,'blocked');
+    const records=JSON.parse(fs.readFileSync(path.join(f.reviewsDir,'.execution','dead-first-next','state.json'),'utf8')).records;
+    const record=records[1].payload.record;
+    assert.equal(records[1].payload.type,'evidence-superseded');assert.deepEqual(record.files,[]);
+    assert.deepEqual(record.previousRunIds,[runId]);
+    assert.deepEqual(record.acceptedCodeDrift.map(file=>[file.predecessorRunId,file.path]),[[runId,'a.mjs']]);
+    assert.equal(readRunnerHistory(records,records[0].payload.config,3).supersession.files.length,0);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('plain create checks only prior runs that no later run superseded',async()=>{
+  const f=runFixture();
+  try{
+    assert.equal((await start(f,'chain-plain-0001','first\n')).state,'blocked');
+    await dieBeforeReview(f,'chain-plain-0001','first\n');
+    assert.equal((await start(f,'chain-plain-0002','second\n',{supersedeReason:'restart',acceptSupersededCodeDrift:true})).state,'blocked');
+    await dieBeforeReview(f,'chain-plain-0002','second\n');
+    // 0001 is superseded by 0002; only 0002's baseline ('first') is compared.
+    await assert.rejects(start(f,'chain-plain-0003','third\n'),error=>error.code==='supersede_code_drift'
+      &&/chain-plain-0002/.test(error.reason)&&!/chain-plain-0001/.test(error.reason));
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'first\n');
+    assert.equal((await start(f,'chain-plain-0003','third\n')).state,'blocked',
+      'restoring the files to the unsuperseded run baseline permits a plain create');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
 test('interrupted second develop after changes requested can be abandoned before supersede',async()=>{
   const f=runFixture();
   try{
@@ -446,9 +505,10 @@ test('host launch prints supersede code drift reason and stderr hint',async()=>{
     const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
       identity:identityFor('run-host-new-0002'),scope:['a.mjs'],requirements:['requirements.md']};
     const config=path.join(f.root,'run.json');fs.writeFileSync(config,JSON.stringify(definition));
+    const review=path.join(f.root,'review.json');fs.writeFileSync(review,JSON.stringify({model:'fixture',preflight:{}}));
     const output=new PassThrough(),error=new PassThrough();let stderr='';error.on('data',chunk=>stderr+=chunk);
     assert.equal(await hostMain(['serve','--config',config,'--mode','create','--host-context','fixture-host',
-      '--allow-development','--runtime','claude','--supersede-reviewed-evidence','--supersede-reason','restart'],
+      '--allow-development','--runtime','claude','--review-config',review,'--supersede-reviewed-evidence','--supersede-reason','restart'],
     {input:new PassThrough(),output,error}),1);
     assert.match(stderr,/\[host\].*a\.mjs/);
     const response=JSON.parse(stderr.trim().split('\n').at(-1));

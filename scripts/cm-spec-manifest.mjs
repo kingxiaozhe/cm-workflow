@@ -6,6 +6,7 @@ import os from 'node:os';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {TextDecoder} from 'node:util';
+import {resetTaskMarks,resetTaskMarkBytes} from '../runtime/js/spec-task-line.mjs';
 
 const required=['requirements.md','design.md','tasks.md'];
 const feature=/^\p{Decimal_Number}+\.[^\n]+$(?![\s\S])/u;
@@ -16,8 +17,13 @@ const compare=(a,b)=>Buffer.compare(Buffer.from(a),Buffer.from(b));
 const exists=p=>{try{fs.statSync(p);return true;}catch(e){if(['ENOENT','ENOTDIR'].includes(e.code))return false;throw e;}};
 
 // Only actual task/AC declarations are runtime state; other files and code stay exact.
-export function normalizeRuntimeMarks(text,name){
+// tasks.md uses the shared declaration grammar (spec-task-line.mjs) so every
+// task admission can select is also a task whose N5 mark is normalized here.
+// {legacy:true} is the frozen pre-grammar rule, kept only to verify manifests
+// that older versions approved; it is never used to write a new manifest.
+export function normalizeRuntimeMarks(text,name,{legacy=false}={}){
   if(!['tasks.md','requirements.md'].includes(name))return text;
+  if(name==='tasks.md'&&!legacy)return resetTaskMarks(text);
   const marker=name==='tasks.md'?/^([ ]{0,3}-[ \t]+)\[[xX]\]([ \t]+T-[A-Za-z0-9][A-Za-z0-9._-]*[ \t]*:)/
     :/^([ ]{0,3}-[ \t]+)\[[xX]\]([ \t]+\[AC-[A-Za-z0-9][A-Za-z0-9._-]*\])/;
   let fenceChar=null,width=0;
@@ -35,14 +41,17 @@ export function normalizeRuntimeMarks(text,name){
   }).join('');
 }
 
-export function semanticDigest(file){
-  const bytes=fs.readFileSync(file);
+export function normalizeRuntimeMarkBytes(bytes,name,{legacy=false}={}){
+  if(name==='tasks.md'&&!legacy)return resetTaskMarkBytes(bytes);
   // Latin-1 is a reversible byte view, including invalid UTF-8 and CRLF.
-  const normalized=Buffer.from(normalizeRuntimeMarks(bytes.toString('latin1'),path.basename(file)),'latin1');
-  return createHash('sha256').update(normalized).digest('hex');
+  return Buffer.from(normalizeRuntimeMarks(bytes.toString('latin1'),name,{legacy}),'latin1');
 }
 
-export function buildManifest(specsDir){
+export function semanticDigest(file,options={}){
+  return createHash('sha256').update(normalizeRuntimeMarkBytes(fs.readFileSync(file),path.basename(file),options)).digest('hex');
+}
+
+export function buildManifest(specsDir,{legacy=false}={}){
   if(!exists(specsDir)||!fs.statSync(specsDir).isDirectory())fail(`specs directory does not exist: ${specsDir}`);
   const features=fs.readdirSync(specsDir).filter(name=>feature.test(name)).sort(compare);
   if(!features.length)fail('specs directory contains no numbered feature directories');
@@ -59,13 +68,15 @@ export function buildManifest(specsDir){
       const file=path.join(dir,filename);if(!exists(file))continue;
       if(!fs.statSync(file).isFile())fail(`approved spec path must be a file: ${file}`);
       if(fs.lstatSync(file).isSymbolicLink())fail(`approved spec file must not be a symlink: ${file}`);
-      rows.push({path:`${name}/${filename}`,sha256:semanticDigest(file)});
+      rows.push({path:`${name}/${filename}`,sha256:semanticDigest(file,{legacy})});
     }
   }
   return rows.sort((a,b)=>compare(a.path,b.path));
 }
 
-export function verifyManifest(manifest,statusFile){
+// Returns the recorded rows. A row also matches its legacy digest, so a manifest
+// approved before the shared task grammar keeps matching the same bytes.
+export function verifyManifest(manifest,statusFile,legacyManifest=null){
   const value=JSON.parse(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(fs.readFileSync(statusFile)));
   if(!record(value))fail('status file root must be an object');
   if(!Array.isArray(value.specFiles)||!value.specFiles.length)fail('status file has no approved specFiles manifest');
@@ -78,7 +89,14 @@ export function verifyManifest(manifest,statusFile){
     seen.add(p);return {path:p,sha256:item.sha256};
   });
   if(value.status!=='approved')fail('status file must have status approved before manifest verification');
-  if(JSON.stringify(rows)!==JSON.stringify(manifest))fail('approved spec manifest does not match current spec files');
+  const matches=rows.length===manifest.length&&rows.every((row,index)=>row.path===manifest[index].path
+    &&(row.sha256===manifest[index].sha256||legacyManifest?.[index]?.path===row.path&&row.sha256===legacyManifest[index].sha256));
+  if(!matches)fail('approved spec manifest does not match current spec files');
+  return rows;
+}
+
+export function verifyApprovedManifest(specsDir,statusFile){
+  return verifyManifest(buildManifest(specsDir),statusFile,buildManifest(specsDir,{legacy:true}));
 }
 
 // Resolve symlinks before '..', like pathlib.resolve, rather than normalizing
@@ -100,7 +118,7 @@ export function main(argv=process.argv.slice(2),{stdout=process.stdout,stderr=pr
     }
     if(specs===undefined)fail('invalid arguments');
     const specFiles=buildManifest(expand(specs));
-    if(status!==undefined)verifyManifest(specFiles,expand(status));
+    if(status!==undefined)verifyManifest(specFiles,expand(status),buildManifest(expand(specs),{legacy:true}));
     stdout.write(JSON.stringify({schema_version:1,...(status!==undefined?{status:'matched'}:{}),specFiles})+'\n');return 0;
   }catch(error){stderr.write(`cm-spec-manifest: ${error.message}\n`);return 1;}
 }

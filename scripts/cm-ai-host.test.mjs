@@ -55,7 +55,7 @@ test('killing a real host at develop request leaves the original effect intent f
   const f=fixture();
   try{
     let buffer='',sawDevelop=false,stderr='';
-    const child=spawn(process.execPath,[cli,...f.args],{stdio:['pipe','pipe','pipe'],env:process.env});
+    const child=spawn(process.execPath,[cli,...launchArgs(f)],{stdio:['pipe','pipe','pipe'],env:process.env});
     child.stderr.on('data',chunk=>{stderr+=chunk;});
     const done=new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>{child.kill('SIGKILL');reject(new Error('host kill fixture timed out: '+stderr));},10000);
@@ -109,14 +109,19 @@ function fixture(){
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
   fs.writeFileSync(path.join(codeProject,'requirements.md'),'# Fixture\n');
   fs.writeFileSync(config,JSON.stringify({version:1,specsDir,codeProject,feature,identity,scope:['target.mjs'],requirements:['requirements.md']}));
-  return {root,specsDir,codeProject,config,args:['serve','--config',config,'--mode','create','--host-context','native-host-fixture','--allow-development']};
+  // create requires a bound review configuration; it grants no review attempt.
+  const reviewFile=path.join(root,'placeholder-review.json');
+  fs.writeFileSync(reviewFile,JSON.stringify({model:'fixture',preflight:{}}));
+  return {root,specsDir,codeProject,config,reviewFile,args:['serve','--config',config,'--mode','create','--host-context','native-host-fixture','--allow-development']};
 }
+// A test that supplies its own --review-config keeps it; others use the placeholder.
+const launchArgs=f=>f.args.includes('--review-config')?f.args:[...f.args,'--review-config',f.reviewFile];
 
 test('D1 SIGKILL at a real host develop request leaves an intent without checkpoint',async()=>{
   const f=fixture();
   try{
     const result=await new Promise((resolve,reject)=>{
-      const child=spawn(process.execPath,[cli,...f.args],{stdio:['pipe','pipe','pipe']});
+      const child=spawn(process.execPath,[cli,...launchArgs(f)],{stdio:['pipe','pipe','pipe']});
       let buffer='',asked=false;
       const timer=setTimeout(()=>{child.kill('SIGKILL');reject(Error('host request timeout'));},15000);
       child.once('error',error=>{clearTimeout(timer);reject(error);});
@@ -172,7 +177,7 @@ test('host create reports the offending unsupported file on stderr before transp
   const f=fixture(),lines=[];
   try{
     fs.symlinkSync('missing',path.join(f.codeProject,'alien.swift'));
-    const exit=await hostMain(f.args,{input:{},output:{write(){}},error:{write(value){lines.push(value);}}});
+    const exit=await hostMain(launchArgs(f),{input:{},output:{write(){}},error:{write(value){lines.push(value);}}});
     assert.equal(exit,1);
     assert.match(lines.join(''),/\[host\] unsupported_file: alien\.swift/);
     assert.match(lines.join(''),/"reason":"unsupported_file: alien\.swift"/);
@@ -181,7 +186,7 @@ test('host create reports the offending unsupported file on stderr before transp
 
 function runCli(f,mode,action='create'){
   return new Promise((resolve,reject)=>{
-    const args=[...f.args];args[4]=action;
+    const args=[...launchArgs(f)];args[4]=action;
     const child=spawn(process.execPath,[cli,...args],{stdio:['pipe','pipe','pipe'],env:f.env??process.env});
     let buffer='',stderr='',closed=false,sessionId;const rows=[],calls=[];
     // Provider children run in their own process groups: stopping only the host
@@ -1204,7 +1209,7 @@ function protectedDriveFixture({scope,files={},checkCommands=[{id:'noop',command
   f.drive=(permissions=[],umask='022')=>{
     const plan=path.join(f.root,`plan-${Math.random().toString(36).slice(2)}.json`);
     fs.writeFileSync(plan,JSON.stringify({config:'run.json',mode:'create',hostContext:'native-host-fixture',
-      permissions:['--protected-conversation-config','protection.json',...permissions],answers:'answers'}));
+      permissions:['--protected-conversation-config','protection.json','--review-config',f.reviewFile,...permissions],answers:'answers'}));
     return spawnSync('/bin/sh',['-c',`umask ${umask}; exec "$0" "$@"`,process.execPath,protectedDriver,'--plan',plan,'advance'],
       {encoding:'utf8',timeout:120000,
         env:{...process.env,CM_WORKFLOW_HOME:path.join(f.root,'home'),CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')}});

@@ -7,6 +7,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {loadConfig,resolveRole} from '../../../scripts/cm-workflow-config.mjs';
 import {buildManifest} from '../../../scripts/cm-spec-manifest.mjs';
+import {specLines,taskDeclarations,TASK_GRAMMAR,LEGACY_TASK_GRAMMAR} from '../spec-task-line.mjs';
 import {inspectPrdReview} from '../../../scripts/cm-prd-review-gate.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {writeImmutableWorkflowFile} from '../cm-ai/review-evidence-file.mjs';
@@ -53,13 +54,27 @@ export function inspectPrdChangeSnapshot(specs){
   const status=read(specs,'.cm-specs-status');
   return json({directories,files,trees,reviews,status},4*1024*1024);
 }
-function completedLines(source){return source.split(/\r?\n/).filter(line=>/^\s*-\s+\[[xX]\]\s+T-[\w.-]+\s*:/.test(line));}
-function taskLines(source){return new Map(source.split(/\r?\n/).flatMap(line=>{
-  const match=line.match(/^\s*-\s+\[[ xX]\]\s+(?:~~)?(T-[\w.-]+)\s*:/);return match?[[match[1],line]]:[];
-}));}
+// Same declaration grammar as admission and N5 mark-done (spec-task-line.mjs):
+// the approved original is read with the grammar its approval bound, the
+// proposed text (a new approval) with the current grammar.
+function completedLines(source,grammar=TASK_GRAMMAR){return taskDeclarations(source,{grammar}).filter(item=>item.completed).map(item=>item.body);}
+function taskLines(source,grammar=TASK_GRAMMAR){return new Map(taskDeclarations(source,{grammar}).map(item=>[item.id,item.body]));}
+// The grammar the last approval established. cm-prd's own awaiting_review
+// statuses (change invalidation/result, summary publication) only ever carry
+// that value forward, so a chain of changes before re-approval keeps reading
+// the approved originals the same way. The one exception is a first summary
+// publication with no earlier status at all, where nothing was ever approved
+// under another grammar.
+function approvedGrammar(before){
+  try{const status=JSON.parse(before.status??'null');
+    return ['approved','awaiting_review'].includes(status?.status)&&status.taskGrammar===TASK_GRAMMAR?TASK_GRAMMAR:LEGACY_TASK_GRAMMAR;}
+  catch{return LEGACY_TASK_GRAMMAR;}
+}
+function sourceLines(source){return specLines(source).map(line=>line.body);}
 function userCases(files){return Object.entries(files).filter(([file])=>file.endsWith('/test-cases.json'))
   .flatMap(([file,content])=>JSON.parse(content).cases.filter(c=>c.origin==='user').map(c=>({feature:file.split('/')[0],value:c})));}
 export function inspectPrdChangeProposal(before,raw,selected,config){
+  const grammar=approvedGrammar(before);
   shape(raw,['status','summary','features','removed']);need(raw.status==='draft'&&text(raw.summary)&&Array.isArray(raw.features)
     &&Array.isArray(raw.removed)&&new Set(raw.removed).size===raw.removed.length,'prd_change_proposal_invalid');
   const files={},features=[],seen=new Set();
@@ -88,10 +103,10 @@ export function inspectPrdChangeProposal(before,raw,selected,config){
     &&new Set(resultDirs.map(dir=>dir.split('.')[0])).size===resultDirs.length,'prd_change_inventory_collision');
   for(const directory of selected){
     const original=before.files[`${directory}/tasks.md`],after=files[`${directory}/tasks.md`]??'';
-    for(const line of completedLines(original))need(after.split(/\r?\n/).includes(line),'prd_completed_task_changed');
-    need(completedLines(after).every(line=>completedLines(original).includes(line)),'prd_completed_task_invented');
+    for(const line of completedLines(original,grammar))need(sourceLines(after).includes(line),'prd_completed_task_changed');
+    need(completedLines(after).every(line=>completedLines(original,grammar).includes(line)),'prd_completed_task_invented');
     if(raw.removed.includes(directory))continue;
-    const prior=taskLines(original),next=taskLines(after);
+    const prior=taskLines(original,grammar),next=taskLines(after);
     for(const [id,line] of prior)need(next.has(id)&&(next.get(id)===line||/\[(?:CHANGED|DROPPED)\b/.test(next.get(id))),
       'prd_change_task_history_missing');
     for(const [id,line] of next)if(!prior.has(id))need(/\[NEW\b/.test(line)&&!/\[[xX]\]/.test(line),'prd_change_new_task_invalid');
@@ -115,7 +130,7 @@ export function inspectPrdChangeProposal(before,raw,selected,config){
   return json({...draft,mechanicalSelfCheck:mechanics,removed:raw.removed,files,changedUserCases,
     proposalDigest:digest({before,raw,selected}),counts:{added:resultDirs.filter(dir=>!before.directories.includes(dir)).length,
       removed:raw.removed.length,changed:selected.filter(dir=>seen.has(dir)).length,
-      preservedCompletedTasks:selected.reduce((n,dir)=>n+completedLines(before.files[`${dir}/tasks.md`]).length,0)}},4*1024*1024);
+      preservedCompletedTasks:selected.reduce((n,dir)=>n+completedLines(before.files[`${dir}/tasks.md`],grammar).length,0)}},4*1024*1024);
 }
 
 export function createPrdChange({admission,runtime,call,restored=null,selected=[admission.feature],reason=null}){
@@ -259,7 +274,9 @@ export function applyPrdChange({specs,before,proposal,selected}){
   current();
   // Invalidate approval BEFORE replacing the first byte (also safe after crash).
   const statusFile='.cm-specs-status',invalidated=JSON.stringify({status:'awaiting_review',revisionDigest:proposal.proposalDigest,
-    at:new Date().toISOString(),features:newDirs,specFiles:[],testCases:[]})+'\n';
+    at:new Date().toISOString(),features:newDirs,specFiles:[],testCases:[],
+    // Carry the last approval's tasks.md grammar to the next approval.
+    ...(approvedGrammar(before)===TASK_GRAMMAR?{taskGrammar:TASK_GRAMMAR}:{})})+'\n';
   if(read(specs,statusFile)===before.status)replaceSessionFile(specs,statusFile,before.status,invalidated);
   for(const [file,content] of Object.entries(expected)){
     if(!selected.includes(file.split('/')[0])&&oldDirs.includes(file.split('/')[0]))continue;
@@ -281,7 +298,8 @@ export function applyPrdChange({specs,before,proposal,selected}){
   current();const specFiles=buildManifest(specs);
   need(digest(fs.readdirSync(specs).filter(dir=>/^\d+\./.test(dir)).sort())===digest(newDirs),'prd_change_inventory_conflict');
   const result={status:'awaiting_review',at:JSON.parse(read(specs,statusFile)).at,revisionDigest:proposal.proposalDigest,
-    features:newDirs,specFiles,testCases:specFiles.filter(item=>item.path.endsWith('/test-cases.json'))};
+    features:newDirs,specFiles,testCases:specFiles.filter(item=>item.path.endsWith('/test-cases.json')),
+    ...(approvedGrammar(before)===TASK_GRAMMAR?{taskGrammar:TASK_GRAMMAR}:{})};
   replaceSessionFile(specs,statusFile,read(specs,statusFile),JSON.stringify(result)+'\n');
   return json({...result,archive:`.reviews/${name}`,counts:proposal.counts,priorReviews:'retained_as_history_not_current_approval',
     next:'human_review_then_explicit_cm_ai',completionAuthorized:false});
