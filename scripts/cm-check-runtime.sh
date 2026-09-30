@@ -311,12 +311,16 @@ require_file "scripts/test-cm-openai-compatible-call.py"
 require_file "scripts/cm-task-gate.mjs"
 require_file "scripts/cm-task-gate.test.mjs"
 require_file "scripts/cm-task-gate-correction.test.mjs"
-require_file "docs/human-correction.md"
+HUMAN_CORRECTION_DOC="docs/human-correction.md"
+if [ "$MODE" != "plugin" ]; then
+  HUMAN_CORRECTION_DOC="cm-workflow/docs/human-correction.md"
+fi
+require_file "$HUMAN_CORRECTION_DOC"
 require_file "scripts/cm-task-gate.py"
 require_file "scripts/test-task-gate.py"
 for correction_command in prepare-human-correction publish-human-correction-review; do
   grep -Fq "$correction_command" "$ROOT/scripts/cm-task-gate.mjs" &&
-    grep -Fq "$correction_command" "$ROOT/docs/human-correction.md" ||
+    grep -Fq "$correction_command" "$ROOT/$HUMAN_CORRECTION_DOC" ||
     fail "human correction command/document pair incomplete: $correction_command"
 done
 require_file "scripts/cm-workflow-config.mjs"
