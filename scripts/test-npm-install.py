@@ -52,6 +52,8 @@ def relocated(source, home, helpers):
 def main():
     assert sys.platform == 'darwin', 'This integration fixture requires macOS'
     helpers = Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex'))) / 'skills/.system/plugin-creator'
+    if not (helpers / 'scripts/create_basic_plugin.py').is_file():
+        helpers = Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex'))) / '.tmp/plugins/.agents/skills/plugin-creator'
     assert (helpers / 'scripts/create_basic_plugin.py').is_file(), 'Codex bundled helpers required'
     with tempfile.TemporaryDirectory(prefix='cm-npm-fixture-') as folder:
         temp = Path(folder).resolve()
@@ -129,10 +131,17 @@ process.exitCode=main(args,{run:(command,argv,options)=>{
         print('PASS: tarball contents, offline npm CLI and fresh file installation', flush=True)
 
         upgrade = temp / 'existing user'
-        install(source, upgrade, npm=False)
+        # Seed predecessor files, without claiming its now-incompatible installer
+        # works with the current minimal official creator. New installer transaction
+        # code is exercised below for decline, rollback and successful upgrade.
         dest = upgrade / 'plugins/cm-workflow'
+        shutil.copytree(source, dest)
         marketplace = upgrade / '.agents/plugins/marketplace.json'
+        run([sys.executable, str(helpers / 'scripts/create_basic_plugin.py'), 'cm-workflow',
+             '--path', str(temp / 'predecessor scaffold'), '--with-skills', '--with-marketplace',
+             '--marketplace-path', str(marketplace), '--force'])
         payload = json.loads(marketplace.read_text())
+        payload['name'] = 'fixture-personal'
         sibling = {**payload['plugins'][0], 'name': 'unrelated-plugin'}
         payload['plugins'].append(sibling)
         marketplace.write_text(json.dumps(payload))

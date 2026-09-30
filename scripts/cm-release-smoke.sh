@@ -5,6 +5,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 SOURCE_CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 SOURCE_CREATOR="$SOURCE_CODEX_HOME/skills/.system/plugin-creator"
+if [ ! -f "$SOURCE_CREATOR/scripts/create_basic_plugin.py" ] &&
+   [ -f "$SOURCE_CODEX_HOME/.tmp/plugins/.agents/skills/plugin-creator/scripts/create_basic_plugin.py" ]; then
+  SOURCE_CREATOR="$SOURCE_CODEX_HOME/.tmp/plugins/.agents/skills/plugin-creator"
+fi
 TMP_ROOT=""
 PYTHON_BIN=""
 
@@ -33,7 +37,7 @@ trap 'exit 143' TERM
 
 command -v byz >/dev/null 2>&1 || blocked "byz command not found"
 command -v codex >/dev/null 2>&1 || blocked "codex command not found"
-[ -d "$SOURCE_CREATOR" ] || blocked "Codex plugin creator not found at $SOURCE_CREATOR"
+[ -f "$SOURCE_CREATOR/scripts/create_basic_plugin.py" ] || blocked "Codex plugin creator not found at $SOURCE_CREATOR"
 for candidate in python3 python; do
   if command -v "$candidate" >/dev/null 2>&1 &&
     "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 9))' >/dev/null 2>&1; then

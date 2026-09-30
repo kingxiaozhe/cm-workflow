@@ -12,6 +12,12 @@ STAGE="$PLUGIN_PARENT/.cm-workflow.stage.$$"
 BACKUP="$PLUGIN_PARENT/.cm-workflow.backup.$$"
 SCAFFOLD_PARENT="$PLUGIN_PARENT/.cm-workflow.scaffold.$$"
 CREATOR_ROOT="$CODEX_HOME/skills/.system/plugin-creator"
+# Codex's current official creator lives in its downloaded plugin collection.
+# Older installations still supply the system-skill layout.
+if [ ! -f "$CREATOR_ROOT/scripts/create_basic_plugin.py" ] &&
+   [ -f "$CODEX_HOME/.tmp/plugins/.agents/skills/plugin-creator/scripts/create_basic_plugin.py" ]; then
+  CREATOR_ROOT="$CODEX_HOME/.tmp/plugins/.agents/skills/plugin-creator"
+fi
 CREATE_PLUGIN="$CREATOR_ROOT/scripts/create_basic_plugin.py"
 VALIDATE_PLUGIN="$CREATOR_ROOT/scripts/validate_plugin.py"
 UPDATE_CACHEBUSTER="$CREATOR_ROOT/scripts/update_plugin_cachebuster.py"
@@ -98,20 +104,18 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-for helper in "$CREATE_PLUGIN" "$VALIDATE_PLUGIN" "$UPDATE_CACHEBUSTER" "$READ_MARKETPLACE"; do
-  if [ ! -f "$helper" ]; then
-    echo "Codex plugin helper not found: $helper" >&2
-    echo "Update Codex, then rerun this installer." >&2
-    exit 1
-  fi
-done
+if [ ! -f "$CREATE_PLUGIN" ]; then
+  echo "Codex plugin creator not found: $CREATE_PLUGIN" >&2
+  echo "Update Codex, then rerun this installer." >&2
+  exit 1
+fi
 
 run_official_validation() {
   target=$1
-  if "$PYTHON_BIN" -c 'import yaml' >/dev/null 2>&1; then
+  if [ -f "$VALIDATE_PLUGIN" ] && "$PYTHON_BIN" -c 'import yaml' >/dev/null 2>&1; then
     "$PYTHON_BIN" "$VALIDATE_PLUGIN" "$target"
   else
-    echo "Warning: PyYAML is unavailable; skipping Codex's optional YAML validator." >&2
+    echo "Warning: Codex optional YAML validator or PyYAML is unavailable; repository validation and Codex CLI validation remain required." >&2
     echo "The dependency-free repository validator and codex plugin add remain required." >&2
   fi
 }
@@ -153,6 +157,11 @@ MARKETPLACE_TOUCHED=1
   --category Productivity \
   --force
 
+# Fill only the official fresh scaffold placeholder, never an existing user name.
+if [ "$MARKETPLACE_EXISTED" -eq 0 ]; then
+  "$PYTHON_BIN" "$SRC_DIR/scripts/cm-codex-plugin-metadata.py" initialize-marketplace "$MARKETPLACE_PATH"
+fi
+
 mkdir -p "$STAGE"
 for part in .codex-plugin skills runtime templates scripts agents compat docs assets; do
   mkdir -p "$STAGE/$part"
@@ -163,7 +172,11 @@ for file in VERSION package.json README.md CHANGELOG.md AGENTS.md LICENSE THIRD_
 done
 
 chmod +x "$STAGE/install-codex.sh" "$STAGE/install.sh" "$STAGE/scripts/cm-check-runtime.sh"
-"$PYTHON_BIN" "$UPDATE_CACHEBUSTER" "$STAGE"
+if [ -f "$UPDATE_CACHEBUSTER" ]; then
+  "$PYTHON_BIN" "$UPDATE_CACHEBUSTER" "$STAGE"
+else
+  "$PYTHON_BIN" "$SRC_DIR/scripts/cm-codex-plugin-metadata.py" cache-version "$STAGE"
+fi
 "$PYTHON_BIN" "$STAGE/scripts/validate-public-repo.py"
 run_official_validation "$STAGE"
 "$STAGE/scripts/cm-check-runtime.sh" --project "$STAGE"
@@ -174,7 +187,11 @@ fi
 mv "$STAGE" "$PLUGIN_DEST"
 DEST_REPLACED=1
 
-marketplace_name="$("$PYTHON_BIN" "$READ_MARKETPLACE" --marketplace-path "$MARKETPLACE_PATH")"
+if [ -f "$READ_MARKETPLACE" ]; then
+  marketplace_name="$("$PYTHON_BIN" "$READ_MARKETPLACE" --marketplace-path "$MARKETPLACE_PATH")"
+else
+  marketplace_name="$("$PYTHON_BIN" "$SRC_DIR/scripts/cm-codex-plugin-metadata.py" marketplace-name "$MARKETPLACE_PATH")"
+fi
 codex plugin add "cm-workflow@$marketplace_name"
 INSTALL_COMPLETE=1
 
