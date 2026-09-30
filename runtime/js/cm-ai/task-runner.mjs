@@ -847,6 +847,15 @@ export function createTaskRunner(options) {
   });
   const emptyDelivery=error=>{
     if(error?.code==='empty_changes'){halt('blocked','develop_empty_changes',EMPTY_DELIVERY);return;}
+    // Instruction bootstrap has its own no-redispatch recovery contract once
+    // rule evidence starts being written. Keep its size failures on that
+    // conservative path instead of granting a fresh developer effect.
+    if(error?.code==='limit_exceeded'&&metadata.bootstrap?.mode!=='instructions'){
+      halt('blocked','develop_package_too_large',boundedReason('develop_package_too_large: ',
+        [safeReason(error)??'review material exceeds its bounded size'],
+        '; shrink the changed files or move generated artifacts out of scope, then resume to redo this attempt'));
+      return;
+    }
     const missing=error?.code==='read_failed'?missingScopeRequirements():[];
     if(!missing.length)throw error;
     halt('blocked','develop_requirement_missing',boundedReason('develop_requirement_missing: ',missing,

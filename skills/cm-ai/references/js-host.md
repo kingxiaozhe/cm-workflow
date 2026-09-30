@@ -36,9 +36,11 @@ id、severity、path 不变；完成检查点最多重复这份结果 13 次，�
 260 KB，单个文本文件约 550 KiB 以内可以通过。驾驶员用与宿主相同的审查包、handoff、Learning 证据与 AGENTS.md 回写代码算出交付后的
 检查点（含 handoff），超出即启动前拒绝并列出最大的改动文件；新建运行的任务基线装不进一条记录时同样启动前拒绝，宿主在建存档前
 也会拒绝。当前会话若仍交付了这么大的改动，结果是可重试的 `blocked/develop_package_too_large`，缩小或移出这些文件后
-`--mode resume` 再 `advance`，不会再以 `unknown/store_failure` 结束。这些阻断的 `reason` 用同一个有界规则生成：每个路径最多
+`--mode resume` 再 `advance`，不会再以 `unknown/store_failure` 结束。旧版已经写成 `unknown/limit_exceeded` 的开发检查点，只有在
+第 1 轮开发调用成功、检查全过且尚未生成审查包时才会按同一阻断投影；第 2 轮旧记录无法证明检查属于当前 effect，保留原状态。原 journal 不改写，恢复后的下一条检查点携带新状态。这些阻断的 `reason` 用同一个有界规则生成：每个路径最多
 300 个字符（超长的保留开头和文件名），放不下的以「等 N 个」汇总，整条不超过存档回放允许的 8192 个字符。任务 handoff 的 256 KiB 上限不会被合法交付触及：改动文件来自不超过 64 KiB 的运行定义，
 检查结果不超过 64 KiB，按这些上限能拼出的最大 handoff 约 219 KB（有测试固定）；提高任一上限时须同步处理 handoff 上限。
+上述通用迁移不适用于 instruction bootstrap：规则写入通道不能因此取得一次新的开发派发；它保留原运行的保守 `unknown/limit_exceeded`，由规则通道单独处置。
 这些开发阶段阻断（含 `develop_checks_not_passed`）在第 2 轮同样可在原轮次重试：重做本轮交付时不再要求代码与第 1 轮审查包一致，
 新审查包仍对照任务基线检查范围外改动。审查包本就逐文件记录
 `mode`（十进制权限位）且删除记为 `after:null`，审查者可见，事后改动权限同样算包漂移。驾驶员在启动宿主前拒绝：

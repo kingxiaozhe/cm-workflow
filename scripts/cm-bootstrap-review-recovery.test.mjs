@@ -47,3 +47,20 @@ test('legacy unknown bootstrap checkpoint recovers its original package without 
   assert.equal((await run.effect('review')).state,'approved');
   const completed=await run.effect('complete');assert.equal(completed.state,'fixture_completed',JSON.stringify(completed));run.close();
 });
+
+test('instruction bootstrap review material limits never grant a developer redispatch',{timeout:FIXTURE_TIMEOUT_MS},async t=>{
+  const f=fixture(t);
+  let run=open(f,'T-001');await run.effect('develop');await run.effect('review');await run.effect('complete');run.close();
+  run=open(f,'T-002','create',{afterCheck:()=>{
+    fs.mkdirSync(path.join(f.codeProject,'notes'),{recursive:true});
+    fs.writeFileSync(path.join(f.codeProject,'notes','AGENTS.md'),'x'.repeat(2100*1024));
+  }});
+  const result=await run.effect('develop');
+  assert.equal(result.state,'unknown',JSON.stringify(result));assert.equal(result.code,'limit_exceeded');
+  assert.equal(run.runner.status().bootstrapReviewRecovery,undefined);
+  const calls=[...f.calls];run.close();
+  run=open(f,'T-002','resume');
+  const retry=await run.effect('develop','-retry');
+  assert.equal(retry.outcome,'rejected');assert.equal(retry.code,'stage_mismatch');
+  assert.deepEqual(f.calls,calls);run.close();
+});

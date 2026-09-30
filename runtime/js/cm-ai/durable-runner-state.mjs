@@ -1,7 +1,7 @@
 import {beforeFirstQaRound,qaRevisionFollows,readQaConfigRevision} from './qa-config-revision.mjs';
 // Host-only S3b2b journal grammar. Data validation grants no provider authority.
-import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,requestFor,JOURNAL_REASON_LIMIT} from './effect-contract.mjs';
-import {readReviewBaseline,readReviewPackage,reviewSpecsPath} from './review-package.mjs';
+import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,requestFor,JOURNAL_REASON_LIMIT,boundedReason} from './effect-contract.mjs';
+import {readReviewBaseline,readReviewPackage,reviewSpecsPath,reviewMaterialLimitReason} from './review-package.mjs';
 import {reviewResult,reviewReceipt} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
 import path from 'node:path';
@@ -573,6 +573,25 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
   need(s.cancelAfterCommit===(controls.cancelAfterCommit||before.cancelAfterCommit),'runner_control');
   need(s.cancellationRequested===(!!controls.cancelled||!!controls.cancelAfterCommit||before.cancellationRequested),'runner_control');
   if(controls.cancelled)need(s.state==='cancelled','runner_control');
+  // Runners before the retryable package-limit transition journaled this exact
+  // host gate as unknown/limit_exceeded. Reproject only the unambiguous case:
+  // development succeeded, every check passed, and no review package exists.
+  // The original record remains byte-for-byte in the journal; a resumed frame
+  // carries the corrected projection forward.
+  if(effect.kind==='develop'&&before.attempt===1&&config.bootstrap?.mode!=='instructions'
+    &&s.state==='unknown'&&s.code==='limit_exceeded'
+    &&added[0]?.terminal==='succeeded'&&digest(s.reviewPackage)===digest(before.reviewPackage)
+    &&s.receipt===null&&Array.isArray(s.currentChecks)&&s.currentChecks.length>0
+    &&s.currentChecks.every(item=>item.outcome==='passed'&&(item.kind==='visual'||item.exitCode===0))
+    &&reviewMaterialLimitReason(s.reason)){
+    const recovered=structuredClone(s);
+    const detail=(s.reason??'review material exceeded its bounded size').replace(/^limit_exceeded:\s*/, '');
+    recovered.state='blocked';recovered.code='develop_package_too_large';
+    recovered.reason=boundedReason('develop_package_too_large: ',[detail],
+      '; shrink the changed files or move generated artifacts out of scope, then resume to redo this attempt');
+    recovered.cache.at(-1).result=runnerStatus(recovered,config);
+    return recovered;
+  }
   return structuredClone(s);
 }
 

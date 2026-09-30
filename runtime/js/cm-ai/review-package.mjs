@@ -211,6 +211,17 @@ function policyDifferencePaths(current,expected){
 const diagnostic=(code,p,detail='')=>{
   const error=new Error(`${code}: ${p}${detail?` (${detail})`:''}`);error.code=code;error.paths=[p];return error;
 };
+// Historical runner checkpoints did not carry a typed failure origin. Accept
+// only messages produced by this snapshot builder when recovering an old
+// unknown/limit_exceeded; a generic JSON/provider limit is not package evidence.
+export function reviewMaterialLimitReason(reason){
+  if(typeof reason!=='string'||!reason.startsWith('limit_exceeded: '))return false;
+  const suffixes=[`file bytes > ${FILE_LIMIT}`,`file count > ${FILE_COUNT}`,
+    `file count > ${INVENTORY_COUNT}`,`inventory bytes > ${INVENTORY_LIMIT}`,
+    `material file count > ${FILE_COUNT}`,'instruction search depth > 32','directory depth > 32'];
+  return suffixes.some(detail=>reason.endsWith(` (${detail})`))
+    ||new RegExp(` \\(material bytes \\d+\\+\\d+ > ${SNAPSHOT_LIMIT}; scope, requirements and AGENTS\\.md content count\\)$`).test(reason);
+}
 const fail = code => { const error=new Error(code); error.code=code; throw error; };
 const need = (condition,code='invalid_input') => { if(!condition) fail(code); };
 const record = v => v!==null && typeof v==='object' && !Array.isArray(v);

@@ -285,6 +285,74 @@ test('#19 a live empty delivery blocks as a retryable develop_empty_changes and 
   const intents=records(f).filter(row=>row.payload.type==='effect-intent').map(row=>row.payload.effect.id);
   assert.deepEqual(intents,['develop-1','develop-1-retry-1']);
 });
+const oversizedScope=['samples/one.bin','samples/two.bin','samples/three.bin'];
+const writeOversizedScope=`fs.mkdirSync(cwd+'/samples',{recursive:true});for(const file of ${JSON.stringify(oversizedScope)})`
+  +`fs.writeFileSync(cwd+'/'+file,Buffer.alloc(750*1024,0x61));`;
+const shrinkOversizedScope=`for(const file of ${JSON.stringify(oversizedScope)})fs.writeFileSync(cwd+'/'+file,'small\\n');`;
+test('#19 a direct live host maps oversized review material to a retryable develop package block',t=>{
+  const f=fixture(t,{scope:oversizedScope});
+  const blocked=liveSession(f,{mode:'create',act:writeOversizedScope});
+  assert.equal(blocked.status,0,blocked.stderr);
+  assert.equal(result(blocked).state,'blocked',blocked.stdout);
+  assert.equal(result(blocked).code,'develop_package_too_large');
+  assert.equal(result(blocked).pendingAction,'resume');
+  assert.match(result(blocked).reason,/2097152/);
+  const retried=liveSession(f,{mode:'resume',act:shrinkOversizedScope});
+  assert.equal(retried.status,0,retried.stderr);
+  assert.equal(result(retried).state,'awaiting_review',retried.stdout);
+  const intents=records(f).filter(row=>row.payload.type==='effect-intent').map(row=>row.payload.effect.id);
+  assert.deepEqual(intents,['develop-1','develop-1-retry-1']);
+});
+test('#19 a legacy unknown limit checkpoint resumes as a retryable develop package block',t=>{
+  const f=fixture(t,{scope:oversizedScope});
+  const blocked=liveSession(f,{mode:'create',act:writeOversizedScope});
+  assert.equal(blocked.status,0,blocked.stderr);
+  assert.equal(result(blocked).code,'develop_package_too_large',blocked.stdout);
+  // Reproduce the previous runner's durable checkpoint exactly: the successful
+  // developer call and passed checks were retained, but the terminal was unknown.
+  const state=JSON.parse(fs.readFileSync(f.store,'utf8'));
+  const last=state.records.at(-1);assert.equal(last.payload.type,'effect-checkpoint');
+  const legacy=value=>({...value,state:'unknown',code:'limit_exceeded',
+    reason:'limit_exceeded: samples/three.bin (material bytes 1536000+768000 > 2097152; scope, requirements and AGENTS.md content count)'});
+  const checkpoint=legacy(last.payload.checkpoint);
+  checkpoint.cache=checkpoint.cache.map(entry=>entry.effect.id===last.payload.effectId?{...entry,result:legacy(entry.result)}:entry);
+  const {digest:old,...body}=last;
+  const payload={...last.payload,checkpoint};const record={...body,payload};record.digest=digest({...body,payload});
+  const {revision,...rest}=state;rest.records=[...state.records.slice(0,-1),record];
+  fs.writeFileSync(f.store,JSON.stringify({...rest,revision:digest(rest)})+'\n');
+  const status=f.drive(f.plan({mode:'resume',answers:undefined,checks:undefined}),'status');
+  assert.equal(status.status,0,status.stderr);
+  assert.equal(result(status).state,'blocked',status.stdout);
+  assert.equal(result(status).code,'develop_package_too_large');
+  assert.equal(result(status).pendingAction,'resume');
+  const retried=liveSession(f,{mode:'resume',act:shrinkOversizedScope});
+  assert.equal(retried.status,0,retried.stderr);
+  assert.equal(result(retried).state,'awaiting_review',retried.stdout);
+});
+test('#19 a generic legacy limit after passed checks is not reclassified as review material',t=>{
+  const f=fixture(t,{scope:oversizedScope});
+  const blocked=liveSession(f,{mode:'create',act:writeOversizedScope});
+  assert.equal(blocked.status,0,blocked.stderr);
+  const state=JSON.parse(fs.readFileSync(f.store,'utf8')),last=state.records.at(-1);
+  const legacy=value=>({...value,state:'unknown',code:'limit_exceeded',reason:'limit_exceeded'});
+  const checkpoint=legacy(last.payload.checkpoint);
+  checkpoint.cache=checkpoint.cache.map(entry=>entry.effect.id===last.payload.effectId?{...entry,result:legacy(entry.result)}:entry);
+  const {digest:old,...body}=last;
+  const payload={...last.payload,checkpoint};const record={...body,payload};record.digest=digest({...body,payload});
+  const {revision,...rest}=state;rest.records=[...state.records.slice(0,-1),record];
+  fs.writeFileSync(f.store,JSON.stringify({...rest,revision:digest(rest)})+'\n');
+  const status=f.drive(f.plan({mode:'resume',answers:undefined,checks:undefined}),'status');
+  assert.equal(status.status,1,status.stderr);
+  assert.equal(result(status).state,'unknown',status.stdout);
+  assert.equal(result(status).code,'limit_exceeded');
+  assert.equal(result(status).pendingAction,'reconcile');
+});
+test('#19 legacy review material diagnostics allow parentheses in the reported path',async()=>{
+  const {reviewMaterialLimitReason}=await import('../runtime/js/cm-ai/review-package.mjs');
+  assert.equal(reviewMaterialLimitReason('limit_exceeded: samples/probe (draft).png '
+    +'(material bytes 1536000+768000 > 2097152; scope, requirements and AGENTS.md content count)'),true);
+  assert.equal(reviewMaterialLimitReason('limit_exceeded'),false);
+});
 // Scope and requirements may overlap. A requirement must exist in every review
 // package, so deleting one is refused before launch (Codex review of 6f005df).
 test('#11 deleting a scope path that is also a requirement is refused before launch',t=>{
