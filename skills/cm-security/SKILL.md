@@ -39,7 +39,7 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-security.mjs" --project "{项目根}" {已�
 node "{CM_WORKFLOW_ROOT}/scripts/cm-security.mjs" --project "{项目根}" --finalize --scan "{外部扫描报告.json}" --review "{外部复核结果.json}"
 ```
 
-9. 以 `--finalize` 返回的 `result`、`coverage`、`gaps` 与 `reportPath` 输出简短结论，模型不再自行决定结论词。宿主在项目外创建私有报告目录；BLOCKED 时报告证据过期或输入错误，不替用户回滚。最终 JSON 原样保留校验通过的分析结论及未复核 reason，按路径列出未复核项；stdout 仅含六个摘要字段，不含自由描述。脱敏针对工具原始 stdout/stderr、密钥原文与源码片段；模型不得把这些内容粘进复核字段，JS 无法验证这项语义义务。默认扫描不自动修复、不安装、不提交、不上传给额外服务；需要修复时将证据交给用户决定。
+9. 以 `--finalize` 返回的 `result`、`coverage`、`gaps` 与 `reportPath` 输出简短结论，模型不再自行决定结论词。读取私有报告的 `checkSummary`，逐项展示已完成、已尝试但失败、未运行及原因，再列 `nextSteps`；OSV 数据库新旧未知或生态未核验必须保留，不能把工具执行成功写成数据已更新。宿主在项目外创建私有报告目录；BLOCKED 时报告证据过期或输入错误，不替用户回滚。最终 JSON 原样保留校验通过的分析结论及未复核 reason，按路径列出未复核项；stdout 仅含六个摘要字段，不含自由描述。脱敏针对工具原始 stdout/stderr、密钥原文与源码片段；模型不得把这些内容粘进复核字段，JS 无法验证这项语义义务。默认扫描不自动修复、不安装、不提交、不上传给额外服务；需要修复时将证据交给用户决定。
 
 范围、业务地图与安全边界确认后按 `runtime/logging.md` 写 `run_start`；`--finalize` 返回终态后写 `run_done`，只记录扫描范围、结论词、发现数量、覆盖率与报告路径。本 Skill 通常在没有 specs 目录的项目上独立运行，保存首次写入器返回的 `run_id` 并在后续事件显式传回。工具原始 stdout/stderr、密钥原文、源码片段与 findings 正文不进日志；`BLOCKED` 同样写 `run_done`，detail 只写阻断原因。写日志不改变本 Skill 的只读边界。
 
@@ -50,7 +50,9 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-security.mjs" --project "{项目根}" --fina
 范围：基准 → 当前分支 + 已跟踪暂存/工作区，或全部已跟踪文件
 业务地图：已核验 / 部分核验 / 缺失 / 陈旧
 发现：严重程度、文件:行号、受影响业务、证据与修复建议
-工具覆盖：逐个列版本、完成/缺失/失败/未配置与遗漏
+已完成或尝试：工具、检查内容、版本、完成/失败及已有缺口
+未运行：工具、原因（如未指定 Semgrep 规则、未提供 OSV 离线数据库）
+需要补齐 / 下一步：逐项列规则、工具、离线数据或人工核验要求
 AI 复核：completed、已复核路径、未复核路径及原因、分析结论与修复建议
 源码一致性：扫描窗口、复核窗口分别列出；综合一致 / 变化
 报告：绝对路径

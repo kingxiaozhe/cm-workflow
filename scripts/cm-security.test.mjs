@@ -250,6 +250,38 @@ function finalizeFixture(t,{all=true}={}){
   return {...f,report,review,run,scanFile,reviewFile};
 }
 
+test('private report names completed checks, skipped configuration and concrete follow-up without changing stdout',t=>{
+  const f=finalizeFixture(t),scan=structuredClone(f.report);
+  scan.tools=[{tool:'gitleaks',status:'NO_FINDINGS',reason:null,version:'9.0.0'},
+    {tool:'semgrep',status:'NOT_RUN',reason:'local_rules_required'},
+    {tool:'osv',status:'NOT_RUN',reason:'offline_database_required'}];
+  const r=f.run(f.review,scan,{cli:true}),summary=r.output.checkSummary;
+  assert.deepEqual(summary.attempted.map(row=>row.tool),['gitleaks']);
+  assert.deepEqual(summary.notRun.map(row=>row.tool),['semgrep','osv']);
+  assert.match(summary.notRun[0].description,/未指定.*本地规则/);
+  assert.match(summary.notRun[1].description,/未提供.*离线数据库/);
+  assert.ok(summary.nextSteps.some(row=>row.tool==='semgrep'&&row.action.includes('--semgrep-rules')));
+  assert.ok(summary.nextSteps.some(row=>row.tool==='osv'&&row.action.includes('--osv-db')));
+  assert.deepEqual(r.output.tools,scan.tools);
+  assert.deepEqual(Object.keys(r.value).sort(),['result','coverage','reportPath','gaps','findingsCount','sourceUnchanged'].sort());
+  assert.equal(r.value.coverage,'PARTIAL');assert.equal(r.code,3);
+});
+
+test('report distinguishes failed attempts, missing tools and unverified offline data freshness',t=>{
+  const f=finalizeFixture(t),scan=structuredClone(f.report);
+  scan.tools=[{tool:'gitleaks',status:'ERROR',reason:'timeout',version:'unknown'},
+    {tool:'semgrep',status:'NOT_RUN',reason:'tool_missing'},
+    {tool:'osv',status:'NO_FINDINGS',reason:'offline_database_freshness_and_ecosystem_coverage_unverified',version:'9.0.0'}];
+  const r=f.run(f.review,scan),summary=r.output.checkSummary;
+  assert.equal(summary.attempted[0].execution,'已尝试，未完成');
+  assert.match(summary.attempted[0].description,/超时/);
+  assert.equal(summary.notRun[0].execution,'未运行');assert.match(summary.notRun[0].description,/工具不可用/);
+  assert.equal(summary.attempted[1].execution,'已完成');
+  assert.match(summary.attempted[1].description,/数据库.*新旧.*未知/);
+  assert.ok(summary.nextSteps.some(row=>row.tool==='osv'&&/新旧.*生态覆盖/.test(row.action)));
+  assert.deepEqual(r.output.tools,scan.tools);assert.equal(r.value.coverage,'PARTIAL');
+});
+
 test('finalize coverage requires every selected path and rejects unknown or malformed review input',t=>{
   const f=finalizeFixture(t);
   assert.equal(f.run().value.coverage,'FULL');

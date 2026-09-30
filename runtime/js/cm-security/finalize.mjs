@@ -127,6 +127,37 @@ function validateReview(review,scan){
   return {version:1,scanDigest:review.scanDigest,paths};
 }
 
+// Presentation is derived from validated metadata, never raw scanner messages.
+function checkSummary(tools){
+  const names={gitleaks:'凭证泄露检查',semgrep:'本地规则代码检查',osv:'离线依赖漏洞检查'};
+  const details={
+    no_scannable_files:['所选范围没有可扫描文件。','核对所选范围与文件缺口；没有可扫描文件不代表安全检查通过。'],
+    tool_missing:['项目外可信工具不可用，检查未运行。','由用户确认项目外可信工具可用后，在同一范围重新检查。'],
+    local_rules_required:['未指定已审查的外部本地规则，检查未运行。','准备已审查的外部本地规则文件，并用 --semgrep-rules 显式指定后重跑。'],
+    no_supported_lockfile_selected:['所选范围没有支持的依赖锁文件，检查未运行。','确认依赖锁文件是否在所选范围内；无锁文件不能推断无依赖漏洞。'],
+    offline_database_required:['未提供外部离线数据库缓存目录，检查未运行。','由用户准备外部离线数据库缓存，并用 --osv-db 显式指定后重跑。'],
+    timeout:['检查已尝试，但超时，未得到完整结果。','排查本地工具耗时与执行条件，再在原范围重跑；保留本次超时记录。'],
+    execution_failed:['检查已尝试，但执行失败，未得到完整结果。','核对本地工具版本与执行条件，处理失败原因后重跑。'],
+    invalid_or_incomplete_report:['检查已尝试，但输出无法验证或不完整。','核对本地工具兼容性和输出完整性，取得可验证结果后重跑。'],
+    unscanned_files:['工具已执行，但部分文件未扫描。','核对工具的 unscanned 路径，补齐对应语言或规则覆盖，或逐项人工复核。'],
+    offline_database_freshness_and_ecosystem_coverage_unverified:['离线扫描已执行；数据库新旧仍未知，生态覆盖未核验。','人工核验离线数据库新旧和生态覆盖；未核验前保留该缺口，不自动下载数据库。'],
+  };
+  const attempted=[],notRun=[],nextSteps=[];
+  for(const row of tools){
+    const execution=row.status==='NOT_RUN'?'未运行':row.status==='ERROR'?'已尝试，未完成':'已完成';
+    const fallback=row.status==='NOT_RUN'?['检查未运行，具体原因未记录。','核对该工具的配置和执行条件后重跑。']
+      :row.status==='ERROR'?['检查已尝试但未完成，具体原因未记录。','核对该工具的执行条件，取得完整结果后重跑。']
+        :row.status==='FINDINGS'?['本轮检查已完成，发现候选问题。','结合相关代码逐项复核候选问题。']
+          :['本轮检查已完成，未报告候选问题。',null];
+    const [description,action]=details[row.reason]??fallback;
+    const item={tool:row.tool,check:names[row.tool],status:row.status,execution,
+      version:row.version??'unknown',reason:row.reason,description};
+    (row.status==='NOT_RUN'?notRun:attempted).push(item);
+    if(action)nextSteps.push({tool:row.tool,action});
+  }
+  return {attempted,notRun,nextSteps};
+}
+
 export function finalize(project,{scanFile,reviewFile}={}){
   project=fs.realpathSync(project);
   const scan=validateScan(readExternal(project,scanFile));
@@ -152,6 +183,7 @@ export function finalize(project,{scanFile,reviewFile}={}){
   const result=scan.result==='BLOCKED'||!unchanged?'BLOCKED':findingsCount?'FINDINGS':!scan.selected.length?'NO_CHANGES':'REVIEWED_PARTIAL';
   const sourceUnchanged=scan.sourceUnchanged&&unchanged;
   const report={...scan,review,gaps,coverage,result,aiReview:'completed',findingsCount,sourceUnchanged,
+    checkSummary:checkSummary(scan.tools),
     sourceWindows:{scan:{sourceUnchanged:scan.sourceUnchanged},review:{sourceUnchanged:unchanged,digest:current.digest}}};
   // Resolve/check TMPDIR before creating anything: the output must remain external.
   const tempRoot=fs.realpathSync(os.tmpdir());need(!inside(project,tempRoot),'external_temp_directory_required');

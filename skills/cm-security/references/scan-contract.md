@@ -75,6 +75,7 @@ severity 只取 high/medium/low，confidence 只取 static-inference/observed，
 aiReview 由宿主固定为 completed，表示复核输入已经处理，未复核项仍在 gaps 中；不证明模型真的读过源码。
 stdout 仅返回 result、coverage、reportPath、gaps、findingsCount、sourceUnchanged，不含自由描述（gaps 中用户提供的 reason 仅在 stdout 遮蔽）；输入拒绝返回脱敏 BLOCKED 错误码。
 最终 JSON 保留扫描元数据、规范化 review 及机械判定；校验通过的 attacker、vector、existingControls、impact、recommendation 与未复核 reason 原样保留，宿主生成的 not_reported 保留。脱敏针对扫描器原始 stdout/stderr、密钥原文与源码片段；模型不得把这些内容粘进分析字段，JS 无法验证这项语义义务。扫描报告未知字段拒绝，不透传源文件 bytes 或工具原始消息。
+私有最终报告另含宿主从已校验 `tools` 派生的 `checkSummary`：`attempted` 列已完成或已尝试但失败的检查，`notRun` 列未运行检查及原因，`nextSteps` 列补齐动作。原工具状态与 reason 保留；离线数据库新旧未知和生态未核验不因生成说明而消失。此字段不进入扫描/复核输入或六字段 stdout，不触发安装、规则/数据库下载或重扫。
 报告使用项目外 mkdtemp 私有目录与 0600 文件。输入文件不会被删除或复制；调用者负责在输入阶段也遵守脱敏纪律。
 本门禁验证覆盖声明与本地证据的一致性，不为输入扫描报告提供签名认证，也不能证明漏洞不存在。
 
