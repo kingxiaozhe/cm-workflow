@@ -7,7 +7,7 @@ import {captureReviewBaseline,createReviewPackage} from '../runtime/js/cm-ai/rev
 import {createHostHandoff} from '../runtime/js/cm-ai/host-handoff.mjs';
 import {createHostReviewAuthority} from '../runtime/js/cm-ai/host-review-authority.mjs';
 import {createCodexReviewRun} from '../runtime/js/cm-ai/codex-review-adapter.mjs';
-import {createFixFinalReview,inspectFixFinalResult,inspectFixRepairReview,fixRevisionReviewConfiguration} from '../runtime/js/cm-fix/final-review.mjs';
+import {createFixFinalReview,inspectFixFinalResult,inspectFixRepairReview,fixRevisionReviewConfiguration,fixFinalReviewConfiguration} from '../runtime/js/cm-fix/final-review.mjs';
 import {prepareFixRepair} from '../runtime/js/cm-fix/repair.mjs';
 import {createFixRedTest} from '../runtime/js/cm-fix/red-test.mjs';
 import {createFixBaseline} from '../runtime/js/cm-fix/baseline.mjs';
@@ -25,10 +25,15 @@ test('final review uses existing grant, prompt and normalized inspection without
     const handoffPath=path.join(temp,'fix-demo-T-FIX-demo-a1-handoff.json');
     createHostHandoff({root,baseline,checks,handoffPath,evidence:['learning: no_relevant_lesson','learning: retrospective no_new_lesson']});
     const pkg=createReviewPackage({root,baseline,checks,handoffPath});
-    for(const mode of ['approved','changes_requested','denied','excluded','lost','timeout']){
+    for(const mode of ['approved','changes_requested','denied','excluded','excluded-prior-cause','excluded-revised-cause','lost','timeout']){
       const reviewer={reviewerId:'final-reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'synthetic',contextId:'logical-review',excludedThreadIds:mode==='excluded'?['actual-review']:mode==='changes_requested'?[...Array.from({length:32},(_,index)=>`configured-${index}`),'cause-reviewer']:[]};
-      const configuration={hostContextId:'actual-host',reviewer};let registered=null,started=null,calls=0;
-      const authority=createHostReviewAuthority({hostContextId:configuration.hostContextId,reviewerId:reviewer.reviewerId,adapterId:reviewer.adapterId,
+      const configuration=['changes_requested','excluded-prior-cause','excluded-revised-cause'].includes(mode)
+        ?fixFinalReviewConfiguration({hostContextId:'actual-host',causeReview:{...reviewer,
+          excludedThreadIds:mode==='changes_requested'?Array.from({length:32},(_,index)=>`configured-${index}`):[]}},
+          mode==='excluded-prior-cause'?['actual-review','revised-cause']:
+          mode==='excluded-revised-cause'?['prior-cause','actual-review']:['prior-cause','revised-cause'])
+        :{hostContextId:'actual-host',reviewer};let registered=null,started=null,calls=0;
+      const authority=createHostReviewAuthority({hostContextId:configuration.hostContextId,reviewerId:configuration.reviewer.reviewerId,adapterId:configuration.reviewer.adapterId,
         decide:async()=>mode==='denied'?{status:'denied',code:'permission_denied'}:{status:'approved'}});
       await authority.hostDecisionProvider.decide({identity,packageDigest:pkg.packageDigest},new AbortController().signal);
       const run=createCodexReviewRun(async({prompt},{onEvent})=>{
@@ -77,7 +82,7 @@ test('final review uses existing grant, prompt and normalized inspection without
           const nextPackage=createReviewPackage({root,baseline:nextBaseline,checks,handoffPath:nextHandoff});
           const nextConfiguration=fixRevisionReviewConfiguration(feedback,next);
           assert(nextConfiguration.reviewer.excludedThreadIds.includes('actual-review'));
-          assert.equal(nextConfiguration.reviewer.excludedThreadIds.length,34);
+          assert.equal(nextConfiguration.reviewer.excludedThreadIds.length,35);
           for(const thread of ['actual-review','fresh-second-review']){
             await authority.hostDecisionProvider.decide({identity:next,packageDigest:nextPackage.packageDigest},signal);
             const nextRun=createFixFinalReview({reviewPackage:nextPackage,configuration:nextConfiguration,timeoutMs:2000},{authorize:authority.authorize,run:async(request,{onEvent})=>{
@@ -113,7 +118,7 @@ test('final review uses existing grant, prompt and normalized inspection without
         assert.equal(result.inspection.completionEligible,false);
       }
       if(mode==='denied'){assert.equal(calls,0);assert.equal(registered,null);}
-      if(mode==='excluded')assert.equal(started,null);
+      if(mode.startsWith('excluded'))assert.equal(started,null);
       if(mode==='timeout'){
         assert.equal(result.reason,'timeout');
         assert.deepEqual(result.diagnostic,{phase:'transport',code:'timeout'});

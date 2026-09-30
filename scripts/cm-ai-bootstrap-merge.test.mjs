@@ -59,8 +59,8 @@ test('bootstrap review requires a changed entry only when the final target diffe
     {code:'bootstrap_review_mismatch'});
 });
 
-test('attempt 2 may restore a rejected rule to the original baseline',()=>{
-  const identity={repositoryId:'fixture',runId:'refresh',taskId:'T-010',attempt:2};
+for(const attempt of [1,2])test(`attempt ${attempt} retry may restore a written rule to the original baseline`,()=>{
+  const identity={repositoryId:'fixture',runId:'refresh',taskId:'T-010',attempt};
   const paths=['AGENTS.md','.claude/rules/security.md'];
   const original='a'.repeat(64),updated='b'.repeat(64);
   const configuration={instructionPaths:paths};

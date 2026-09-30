@@ -30,7 +30,7 @@ export function fixEvidenceNames(identity,configuration){
   // 只列这次配置真的会写的文件，免得拦下根本不会发生的冲突。
   if(configuration.redTest&&configuration.redTest.kind!=='visual')
     names.push(`fix-${slug}-a${identity.attempt}-red-output.md`);
-  if(configuration.causeReview)names.push(`fix-${slug}-cause-r1.md`);
+  if(configuration.causeReview)names.push(`fix-${slug}-cause-r1.md`,`fix-${slug}-cause-r2.md`);
   return names;
 }
 // 名字被占时分两种：审查结论（-r{n}.md / -cause-r{n}.md）是别人签过字的证据，绝不

@@ -8,6 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {batchDevelopAttempts} from './cm-ai-batch-drive.mjs';
+import {runLiveDriver} from './fixtures/live-evidence-driver.mjs';
 
 const DRIVER=fileURLToPath(new URL('./cm-ai-batch-drive.mjs',import.meta.url));
 const reviewer=fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url));
@@ -66,6 +67,36 @@ function prepared(f){
   f.write('documentation-inspect.json',{status:'completed',reason:'README and task artifacts inspected'});
 }
 function noStore(f){assert.equal(fs.existsSync(f.store),false);assert.equal(fs.existsSync(path.join(f.specsDir,'运行日志.jsonl')),false);}
+test('batch reaches live logic and browser QA through the real member host',async t=>{
+  const f=fixture(t);prepared(f);
+  const cases=['logic','browser'].map((kind,index)=>({id:`TC-00${index+1}`,origin:'user',kind,blocking:true,
+    acIds:[],taskIds:['T-001'],title:'Fixture observation',preconditions:[],steps:['Observe fixture'],expected:['value is 42'],cleanup:[]}));
+  fs.writeFileSync(path.join(f.specsDir,'1.work/test-cases.json'),JSON.stringify({schemaVersion:'1.0',feature:'work',cases}));
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(f.specsDir)}));
+  const plan=f.plan({permissions:['--allow-qa','--allow-review',`${key}:1`,'--browser-qa','available'],
+    liveEvidence:{directory:'exchange',kinds:['qa_logic','qa_browser'],timeoutMs:1000}});
+  const out=await runLiveDriver(DRIVER,plan,'advance',row=>row.kind==='qa_logic'
+    ?{verdict:'SUPPORTED',evidence:['Fixture target.mjs exports 42']}
+    :{verdict:'BLOCKED',evidence:[],environment:row.payload.environment,cleanup:'not_needed'},
+    {env:{...process.env,PATH:path.join(f.root,'bin')+path.delimiter+process.env.PATH,
+      CM_WORKFLOW_HOME:path.join(f.root,'home'),CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')}});
+  assert.equal(out.status,0,out.stderr);assert.deepEqual(out.requests.map(r=>r.kind),['qa_logic','qa_browser']);
+  assert.equal(JSON.parse(out.stdout).result.code,'qa_result_blocked');
+});
+test('batch live verification request can reject a written requirement without review',async t=>{
+  const f=fixture(t);prepared(f);
+  fs.writeFileSync(path.join(f.specsDir,'1.work/tasks.md'),'- [ ] T-001: implement target\n  - 验证: value is 43\n');
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(f.specsDir)}));
+  const plan=f.plan({permissions:['--allow-qa','--verification-precheck'],
+    liveEvidence:{directory:'exchange',kinds:['verification_precheck'],timeoutMs:1000}});
+  const out=await runLiveDriver(DRIVER,plan,'advance',row=>{
+    assert.equal(row.kind,'verification_precheck');
+    assert.match(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),/42/);
+    return {items:[{requirement:'value is 43',satisfied:false,evidence:'Fixture source exports 42'}]};
+  },{env:{...process.env,CM_WORKFLOW_HOME:path.join(f.root,'home'),CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')}});
+  assert.equal(out.status,0,out.stderr);assert.equal(out.requests.length,1);
+  assert.match(out.stdout,/verification_precheck_failed/);
+});
 
 test('help names plan invocation',()=>{
   const run=spawnSync(process.execPath,[DRIVER,'--help'],{encoding:'utf8'});

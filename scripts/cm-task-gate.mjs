@@ -472,7 +472,135 @@ function verifyLearningRecord(payload,projectRoot){
     throw new GateError('Learning requires a content-bound handoff');
 }
 
-export function checkN4({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false}){
+// A single explicitly authorized human continuation after a blocked second
+// round. The ordinary two-attempt chain and original evidence stay intact.
+function correctionPaths(reviewsDir,feature,task){
+  requireFeature(feature);requireTaskId(task,'task');
+  const info=fs.lstatSync(reviewsDir);
+  if(!info.isDirectory()||info.isSymbolicLink())throw new GateError('correction reviews directory must be real');
+  const root=fs.realpathSync(reviewsDir),prefix=path.join(root,`${feature}-${task}-human-correction`);
+  return {record:prefix+'.json',handoff:prefix+'-handoff.json',review:prefix+'.md',receipt:prefix+'-receipt.json'};
+}
+function absent(file){
+  try{fs.lstatSync(file);throw new GateError(`human correction evidence already exists: ${file}`);}
+  catch(error){if(error.code!=='ENOENT')throw error;}
+}
+function exactFields(value,fields,label){
+  if(value===null||typeof value!=='object'||Array.isArray(value)
+    ||!sameSet(new Set(Object.keys(value)),new Set(fields)))throw new GateError(`invalid ${label} fields`);
+}
+function correctionHistory({reviewsDir,feature,task,projectRoot}){
+  const handoff=expectedHandoff(reviewsDir,feature,task,2);
+  requireExpectedHandoff(handoff,{reviewsDir,feature,task,attempt:2});
+  const payload=loadHandoff(handoff,{task,attempt:2});
+  if(payload.status!=='ready_for_review'||!payload.implementation_sha256)
+    throw new GateError('human correction requires a bound ready attempt 2 handoff');
+  validateAttemptChain(reviewsDir,feature,task,2,payload,projectRoot);
+  const review=reviewPath(reviewsDir,feature,task,2);
+  const header=validateReview(review,{task,attempt:2,handoff,changedFiles:payload.changed_files});
+  if(header.verdict!=='blocked'||header.independent!=='true')
+    throw new GateError('human correction requires an independent blocked round 2');
+  const files=[expectedHandoff(reviewsDir,feature,task,1),reviewPath(reviewsDir,feature,task,1),handoff,review];
+  const revisions=files.map(file=>fileRevision(file,PREPARATION_FILE_LIMIT));
+  requireRevisions(revisions);
+  return {payload,revisions,history:revisions.map(item=>({file:path.basename(item.path),
+    sha256:createHash('sha256').update(item.bytes).digest('hex')}))};
+}
+function boundCorrectionHandoff(handoff,task,projectRoot){
+  const payload=loadHandoff(handoff,{task,attempt:2});
+  if(payload.status!=='ready_for_review')throw new GateError('human correction requires ready_for_review');
+  verifyLearningRecord(payload,projectRoot);verifyImplementationBinding(payload,{projectRoot});
+  return payload;
+}
+export function prepareHumanCorrection(selectors){
+  const {reviewsDir,feature,task,handoff,projectRoot,humanAuthorized,reason}=selectors;
+  if(humanAuthorized!==true)throw new GateError('human correction requires explicit human authorization');
+  if(typeof reason!=='string'||!reason.trim()||reason.length>2000)
+    throw new GateError('human correction requires a concrete bounded reason');
+  const paths=correctionPaths(reviewsDir,feature,task);
+  absent(paths.record);absent(paths.review);absent(paths.receipt);
+  const original=correctionHistory(selectors),draft=fileRevision(handoff,PREPARATION_FILE_LIMIT);
+  const payload=boundCorrectionHandoff(handoff,task,projectRoot);
+  if(!sameSet(new Set(original.payload.changed_files),new Set(payload.changed_files)))
+    throw new GateError('human correction must retain the full original reviewed file scope');
+  requireRevisions([...original.revisions,draft]);
+  // Permit only an identical orphan handoff after interruption before record
+  // creation. Published authorization/review/receipt are never overwritten.
+  try{absent(paths.handoff);fs.writeFileSync(paths.handoff,draft.bytes,{flag:'wx',mode:0o600});}
+  catch(error){
+    if(error instanceof GateError&&!fs.existsSync(paths.record)&&fileRevision(paths.handoff,PREPARATION_FILE_LIMIT).bytes.equals(draft.bytes)){}
+    else throw error;
+  }
+  const record={version:1,protocol:'cm-human-correction',feature,task,attempt:2,
+    authorization:'explicit-human-confirmation',at:new Date().toISOString(),reason:reason.trim(),
+    history:original.history,handoff_sha256:sha256(paths.handoff)};
+  requireRevisions(original.revisions);
+  boundCorrectionHandoff(paths.handoff,task,projectRoot);
+  fs.writeFileSync(paths.record,JSON.stringify(record,null,2)+'\n',{flag:'wx',mode:0o600});
+  return {outcome:'ready_for_correction_review',correction:paths.record,handoff:paths.handoff,
+    review:paths.review,correction_sha256:sha256(paths.record),attempt:2};
+}
+function inspectHumanCorrection(selectors){
+  const {reviewsDir,feature,task,correction,handoff,projectRoot}=selectors;
+  const paths=correctionPaths(reviewsDir,feature,task);
+  if(typeof correction!=='string'||typeof handoff!=='string'||path.resolve(correction)!==paths.record||path.resolve(handoff)!==paths.handoff)
+    throw new GateError('human correction must use its fixed evidence paths');
+  const pinned=fileRevision(paths.record,PREPARATION_FILE_LIMIT);
+  const record=parseJsonStrict(new TextDecoder('utf8',{fatal:true}).decode(pinned.bytes));
+  exactFields(record,['version','protocol','feature','task','attempt','authorization','at','reason','history','handoff_sha256'],'human correction');
+  if(record.version!==1n||record.protocol!=='cm-human-correction'||record.feature!==feature||record.task!==task
+    ||record.attempt!==2n||record.authorization!=='explicit-human-confirmation'
+    ||typeof record.reason!=='string'||!record.reason.trim()||record.reason.length>2000
+    ||typeof record.at!=='string'||!/(?:Z|[+-]\d{2}:\d{2})$/.test(record.at)||Number.isNaN(Date.parse(record.at)))
+    throw new GateError('invalid human correction authorization record');
+  const original=correctionHistory(selectors);
+  if(canonical(record.history)!==canonical(original.history))throw new GateError('human correction history changed');
+  const payload=boundCorrectionHandoff(paths.handoff,task,projectRoot);
+  fileRevision(paths.handoff,PREPARATION_FILE_LIMIT);
+  if(record.handoff_sha256!==sha256(paths.handoff)
+    ||!sameSet(new Set(original.payload.changed_files),new Set(payload.changed_files)))
+    throw new GateError('human correction handoff changed or omitted original scope');
+  requireRevisions([pinned,...original.revisions]);
+  return {paths,payload,correctionDigest:sha256(paths.record)};
+}
+export function publishHumanCorrectionReview(selectors){
+  const {paths,payload,correctionDigest}=inspectHumanCorrection(selectors);
+  absent(paths.receipt);
+  const pinned=fileRevision(paths.review,PREPARATION_FILE_LIMIT);
+  const header=validateReview(paths.review,{task:selectors.task,attempt:2,handoff:paths.handoff,changedFiles:payload.changed_files});
+  if(header.independent!=='true'||header.correction_sha256!==correctionDigest)
+    throw new GateError('human correction requires fresh independent review bound to the correction record');
+  requireRevisions([pinned]);
+  inspectHumanCorrection(selectors);
+  const receipt={version:1,protocol:'cm-human-correction-review',correction_sha256:correctionDigest,
+    review_sha256:createHash('sha256').update(pinned.bytes).digest('hex'),verdict:header.verdict};
+  fs.writeFileSync(paths.receipt,JSON.stringify(receipt,null,2)+'\n',{flag:'wx',mode:0o600});
+  return {outcome:header.verdict,receipt:paths.receipt};
+}
+function checkHumanCorrection(selectors,stage){
+  const {paths,payload,correctionDigest}=inspectHumanCorrection(selectors);
+  if(stage==='n4'){
+    absent(paths.receipt);
+    return {gate:'n4',task:selectors.task,attempt:2,outcome:'ready_for_review',content_bound:true,
+      handoff_sha256:sha256(paths.handoff),correction_sha256:correctionDigest};
+  }
+  const pinned=fileRevision(paths.review,PREPARATION_FILE_LIMIT);
+  const result=validateReview(paths.review,{task:selectors.task,attempt:2,handoff:paths.handoff,changedFiles:payload.changed_files});
+  const receiptRevision=fileRevision(paths.receipt,PREPARATION_FILE_LIMIT);
+  const receipt=parseJsonStrict(new TextDecoder('utf8',{fatal:true}).decode(receiptRevision.bytes));
+  exactFields(receipt,['version','protocol','correction_sha256','review_sha256','verdict'],'human correction receipt');
+  if(receipt.version!==1n||receipt.protocol!=='cm-human-correction-review'
+    ||receipt.correction_sha256!==correctionDigest||result.correction_sha256!==correctionDigest
+    ||receipt.review_sha256!==sha256(paths.review)||receipt.verdict!==result.verdict)
+    throw new GateError('human correction review or receipt changed');
+  if(result.verdict!=='approved'||result.independent!=='true')throw new GateError('human correction remains blocked');
+  requireRevisions([pinned,receiptRevision]);
+  return {gate:'n5',task:selectors.task,attempt:2,outcome:'approved',review:paths.review,
+    content_bound:true,correction_sha256:correctionDigest};
+}
+
+export function checkN4({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false,correction=null}){
+  if(correction!==null)return checkHumanCorrection({handoff,reviewsDir,feature,task,projectRoot,correction},'n4');
   requireTaskId(task,'task');
   const payload=loadHandoff(handoff,{task});
   if(payload.status!=='ready_for_review')throw new GateError('N4 requires a ready_for_review handoff');
@@ -484,7 +612,8 @@ export function checkN4({handoff,reviewsDir,feature,task,projectRoot=null,allowL
   return {gate:'n4',task,attempt,outcome:'ready_for_review',handoff_sha256:sha256(handoff),content_bound:contentBound};
 }
 
-export function checkN5({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false}){
+export function checkN5({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false,correction=null}){
+  if(correction!==null)return checkHumanCorrection({handoff,reviewsDir,feature,task,projectRoot,correction},'n5');
   requireTaskId(task,'task');
   const payload=loadHandoff(handoff,{task});
   if(payload.status!=='ready_for_review')throw new GateError('N5 requires a ready_for_review handoff');
@@ -553,6 +682,10 @@ function pinApproval(selectors){
       const pinned=fileRevision(file,preparationReadLimit);
       if(!revisions.some(revision=>revision.path===pinned.path))revisions.push(pinned);
     }
+  }
+  if(selectors.correction){
+    const paths=correctionPaths(reviewsDir,feature,task);
+    for(const file of [paths.record,paths.review,paths.receipt])revisions.push(fileRevision(file,preparationReadLimit));
   }
   const approval={...checkN5(selectors)};
   requireRevisions(revisions);
@@ -659,7 +792,7 @@ export function prepareMarkDone(selectors){
       if(existing&&!sameRevision(existing,pinned))throw new GateError('conflicting revisions for physical preparation evidence');
       physical.set(pinned.path,pinned);
     }
-    if(physical.size>4)throw new GateError('preparation evidence count exceeds bound');
+    if(physical.size>(selectors.correction?8:4))throw new GateError('preparation evidence count exceeds bound');
     const plan={
       version:1,protocol:'cm-mark-done-plan',feature:selectors.feature,taskId:selectors.task,
       attempt:approval.attempt,tasksPath:revision.path,mode:Number(BigInt(revision.stat[2])&0o7777n),
@@ -801,17 +934,18 @@ export function checkParallelWrite({repo,assignment}){
   return {gate:'parallel-write',outcome:'isolated',assignments:result};
 }
 
-function usage(){return 'usage: cm-task-gate.mjs {validate-handoff|hash-implementation|check-n4|check-n5|prepare-mark-done|verify-mark-done-plan|check-parallel-write} [options]';}
+function usage(){return 'usage: cm-task-gate.mjs {validate-handoff|hash-implementation|check-n4|check-n5|prepare-mark-done|verify-mark-done-plan|prepare-human-correction|publish-human-correction-review|check-parallel-write} [options]';}
 
 function parseCli(argv){
   if(argv.length===0||argv.includes('--help')||argv.includes('-h'))return {help:true};
   const command=argv[0];
-  if(!['validate-handoff','hash-implementation','check-n4','check-n5','prepare-mark-done','verify-mark-done-plan','mark-done-locked','check-parallel-write'].includes(command))
+  if(!['validate-handoff','hash-implementation','check-n4','check-n5','prepare-mark-done','verify-mark-done-plan','mark-done-locked','prepare-human-correction','publish-human-correction-review','check-parallel-write'].includes(command))
     throw new GateError('unsupported command');
   const allowed=command==='validate-handoff'?new Set(['--handoff','--task','--attempt'])
     :command==='hash-implementation'?new Set(['--project-root','--file'])
     :command==='check-parallel-write'?new Set(['--repo','--assignment'])
-    :new Set(['--handoff','--reviews-dir','--feature','--task','--project-root','--allow-legacy-unbound','--require-learning',
+    :new Set(['--handoff','--reviews-dir','--feature','--task','--project-root','--allow-legacy-unbound','--require-learning','--correction',
+      ...(command==='prepare-human-correction'?['--human-authorized','--reason']:[]),
       ...(['prepare-mark-done','verify-mark-done-plan','mark-done-locked'].includes(command)?['--tasks']:[]),
       ...(['verify-mark-done-plan','mark-done-locked'].includes(command)?['--expected-plan-digest']:[])]);
   const required=command==='validate-handoff'?new Set(['--handoff','--task','--attempt'])
@@ -824,15 +958,15 @@ function parseCli(argv){
   for(let index=1;index<argv.length;){
     const flag=argv[index];
     if(!allowed.has(flag))throw new GateError('invalid arguments');
-    if(flag==='--allow-legacy-unbound'||flag==='--require-learning'){
-      const key=flag==='--require-learning'?'requireLearning':'allowLegacyUnbound';
+    if(flag==='--allow-legacy-unbound'||flag==='--require-learning'||flag==='--human-authorized'){
+      const key=flag==='--human-authorized'?'humanAuthorized':flag==='--require-learning'?'requireLearning':'allowLegacyUnbound';
       if(Object.hasOwn(values,key))throw new GateError(`duplicate argument: ${flag}`);
       values[key]=true;index++;continue;
     }
     const value=argv[index+1];if(value===undefined)throw new GateError('invalid arguments');
     const key={'--handoff':'handoff','--reviews-dir':'reviewsDir','--feature':'feature','--task':'task','--attempt':'attempt',
       '--tasks':'tasksPath','--expected-plan-digest':'expectedPlanDigest','--repo':'repo','--assignment':'assignment',
-      '--project-root':'projectRoot','--file':'file'}[flag];
+      '--project-root':'projectRoot','--file':'file','--correction':'correction','--reason':'reason'}[flag];
     if(['assignment','file'].includes(key)){
       if(!Object.hasOwn(values,key))values[key]=[];
       values[key].push(value);
@@ -845,7 +979,7 @@ function parseCli(argv){
   for(const flag of required){
     const key={'--handoff':'handoff','--reviews-dir':'reviewsDir','--feature':'feature','--task':'task','--attempt':'attempt',
       '--tasks':'tasksPath','--expected-plan-digest':'expectedPlanDigest','--repo':'repo','--assignment':'assignment',
-      '--project-root':'projectRoot','--file':'file'}[flag];
+      '--project-root':'projectRoot','--file':'file','--correction':'correction','--reason':'reason'}[flag];
     if(!Object.hasOwn(values,key))throw new GateError(`missing argument: ${flag}`);
   }
   if(Object.hasOwn(values,'attempt')){
@@ -866,6 +1000,8 @@ export function main(argv=process.argv.slice(2),environment=process.env){
       result={gate:'handoff',task:payload.task_id,attempt:payload.attempt,outcome:payload.status};
     }else if(args.command==='hash-implementation')result={gate:'implementation-hash',
       implementation_sha256:implementationSha256(args.projectRoot,args.file),changed_files:[...args.file].sort((left,right)=>Buffer.compare(Buffer.from(left),Buffer.from(right)))};
+    else if(args.command==='prepare-human-correction')result=prepareHumanCorrection(args);
+    else if(args.command==='publish-human-correction-review')result=publishHumanCorrectionReview(args);
     else if(args.command==='check-n4')result=checkN4(args);
     else if(args.command==='check-n5')result=checkN5(args);
     else if(args.command==='prepare-mark-done')result=prepareMarkDone(args);

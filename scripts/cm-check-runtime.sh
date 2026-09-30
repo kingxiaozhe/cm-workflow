@@ -310,8 +310,15 @@ require_file "scripts/cm-openai-compatible-call.py"
 require_file "scripts/test-cm-openai-compatible-call.py"
 require_file "scripts/cm-task-gate.mjs"
 require_file "scripts/cm-task-gate.test.mjs"
+require_file "scripts/cm-task-gate-correction.test.mjs"
+require_file "docs/human-correction.md"
 require_file "scripts/cm-task-gate.py"
 require_file "scripts/test-task-gate.py"
+for correction_command in prepare-human-correction publish-human-correction-review; do
+  grep -Fq "$correction_command" "$ROOT/scripts/cm-task-gate.mjs" &&
+    grep -Fq "$correction_command" "$ROOT/docs/human-correction.md" ||
+    fail "human correction command/document pair incomplete: $correction_command"
+done
 require_file "scripts/cm-workflow-config.mjs"
 require_file "scripts/cm-workflow-config.test.mjs"
 # Group 4: user runtimes.yml producers <-> authoritative consumer.

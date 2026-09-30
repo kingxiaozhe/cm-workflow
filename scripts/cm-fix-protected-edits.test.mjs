@@ -52,3 +52,15 @@ test('protected test-author response uses native edits and rejects late bytes, w
     await assert.rejects(bridge.call('fix_test_author',payload,controller.signal),{code:'cancelled'});
   }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });
+
+// Real protected bridge and native sandbox, not just the file helper.
+test('protected bridge commits a lock-sized text proposal above 64KiB',async()=>{
+ const cwd=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-edit-large-'))),specsRoot=path.join(cwd,'specs');
+ fs.mkdirSync(specsRoot);
+ const content=JSON.stringify({lockfileVersion:3,fixture:'x'.repeat(640000)});
+ const bridge=protectedFixBridge({cwd,specsRoot,timeoutMs:10000,bridge:{call:async(kind,payload)=>({outcome:'repaired',edits:[{path:'package-lock.json',beforeSha256:payload.expected['package-lock.json'],content}]})}});
+ try{
+  await bridge.call('fix_repair',{identity:{repositoryId:'test',runId:'large-edits',taskId:'T-FIX-large',attempt:1},codeProject:cwd,scope:['package-lock.json'],instructions:'Synthetic lock.'},new AbortController().signal);
+  assert.equal(fs.readFileSync(path.join(cwd,'package-lock.json'),'utf8'),content);
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});

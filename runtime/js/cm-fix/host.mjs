@@ -9,7 +9,7 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
   const extra=new Set(permissions);
     const host={async handle(request){
       shape(request,['requestId','operation',...(request.operation==='resume'?['evidenceFiles']:[]),
-        ...(['abandon_step','abandon_review'].includes(request.operation)&&Object.hasOwn(request,'reason')?['reason']:[]),
+        ...(['abandon_step','abandon_review','rediagnose'].includes(request.operation)&&Object.hasOwn(request,'reason')?['reason']:[]),
         ...(request.operation==='prepare_revision'&&Object.hasOwn(request,'tests')?['tests']:[]),
         ...(request.operation==='recover_final_review'?['invocationId','packageDigest','previousInvocationStopped','reason']:[])]);
       if(config.qaSource&&!['status','cancel','completion_evidence'].includes(request.operation))
@@ -29,6 +29,7 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
       if(request.operation==='abandon_step')return owner.abandonStep({authorized:extra.has('--allow-abandon'),reason:request.reason});
       // Reviewer-invocation authority stays separate from local step abandonment.
       if(request.operation==='abandon_review')return owner.abandonReview({authorized:extra.has('--allow-abandon-review'),reason:request.reason});
+      if(request.operation==='rediagnose')return owner.rediagnose({authorized:extra.has('--allow-rediagnosis'),reason:request.reason});
       if(request.operation==='completion_evidence')return owner.completionEvidence();
       if(request.operation==='finish')return owner.finish({authorized:extra.has('--allow-finish')});
       if(request.operation==='author_tests')return owner.authorTests({authorized:extra.has('--allow-test-author')});

@@ -58,7 +58,9 @@ import {readRunnerHistory,attemptBaseline} from '../runtime/js/cm-ai/durable-run
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 import {attemptAnswerName,inspectDriverBootstrap,readBootstrapRulesAnswers,createBootstrapRulesResponder} from '../runtime/js/cm-ai/drive-bootstrap.mjs';
+import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
 
+// PLAN.liveEvidence: fresh current-session evidence; see docs/live-evidence-drivers.md.
 const HOST=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
 const OPERATIONS=new Set(['advance','start','resume','status','cancel','abandon_review','abandon_effect','bootstrap_review_recover','decision','complete','qa','qa_result',
   'fix_status','fix_advance','fix_action','fix_run','run_finalize','context_refresh','finish']);
@@ -82,6 +84,7 @@ const PAIR_FLAGS=new Set(['--allow-review-attempt','--review-config','--workflow
   '--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--browser-qa',
   '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason','--spec-rebind-reason']);
 const FLAG_FLAGS=new Set(['--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
+  '--verification-precheck',
   '--allow-bootstrap-write','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
   '--supersede-reviewed-evidence','--accept-superseded-code-drift','--rebind-spec-material',
   ...['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon','abandon-review',
@@ -535,6 +538,7 @@ function load(){
   const loaded=loadPlanFile({name:'cm-ai-drive.mjs',known:OPERATIONS});
   const {plan,operation,base}=loaded;
   requireFields(plan,['config','mode','hostContext','permissions']);
+  if(Object.hasOwn(plan,'verificationPrecheck')&&typeof plan.verificationPrecheck!=='boolean')stop(2,'verificationPrecheck 需要 boolean');
   try{planCheckTimeout(plan);}catch(error){stop(2,error.message);}
   if(!['create','resume'].includes(plan.mode))stop(2,'mode 只能是 create 或 resume');
   if(!nonempty(plan.hostContext))stop(2,'hostContext 必须是当前真实会话 ID');
@@ -603,11 +607,11 @@ function load(){
     else if(!providerMode)asks.push('develop');
     if(!protectedMode)asks.push('check');
   }
-  if(plan.verificationPrecheck===true&&(ADVANCE.has(operation)||operation==='complete'))asks.push('verification_precheck');
+  if((plan.verificationPrecheck===true||permissions.includes('--verification-precheck'))&&(ADVANCE.has(operation)||operation==='complete'))asks.push('verification_precheck');
   if(operation==='complete'&&!protectedMode)asks.push('check');
   if((operation==='advance'||operation==='qa')&&workflow?.qa){asks.push('qa_assess');
   }
-  if(operation==='advance'&&workflow?.qa){
+  if((operation==='advance'||operation==='qa')&&workflow?.qa){
     try{asks.push(...predictedQaAsks(definition,workflow.qa));}
     catch(error){stop(2,`QA 请求预测失败: ${error.code??error.message}`);}
   }
@@ -624,8 +628,12 @@ function load(){
       ||!permissions.includes(abandonFlag)))stop(2,`${plan.fixOperation} 需要 reason 与 ${abandonFlag}`);
     asks.push(...(FIX_ASKS[plan.fixOperation]??[]));
   }
-  if(['qa_logic','qa_browser','verification_precheck'].some(kind=>asks.includes(kind)))
-    stop(2,`缺少真实执行 runner: ${asks.filter(kind=>['qa_logic','qa_browser','verification_precheck'].includes(kind)).join(', ')}；不能从静态答案文件应答`);
+  let live;
+  try{live=driverLiveEvidence(plan,{base,protectedRoots:[definition.codeProject,...(definition.codeProjects??[]),definition.specsDir],
+    allowedKinds:['qa_logic','qa_browser','verification_precheck'],maxBytes:inputLimitFrom(permissions)});}
+  catch(error){stop(2,error.message);}
+  const missing=asks.filter(kind=>['qa_logic','qa_browser','verification_precheck'].includes(kind)&&!live.has(kind));
+  if(missing.length)stop(2,`缺少真实执行 runner: ${missing.join(', ')}；不能从静态答案文件应答`);
   if(asks.includes('check')){
     if(!Array.isArray(plan.checks)||plan.checks.length===0)stop(2,'步骤会反问 check，但 PLAN.checks 缺少真实命令列表');
     try{
@@ -671,7 +679,7 @@ function load(){
   });
   if(answer.documentation_sync)for(const target of Object.keys(answer.documentation_sync.edits))
     if(!workflow.documentationPaths.includes(target))stop(2,`documentation-sync.json.edits 越过文档 scope: ${target}`);
-  return {...loaded,definition,identity,permissions,config,answers,answer,developAnswers,
+  return {...loaded,definition,identity,permissions,config,answers,answer,developAnswers,live,
     bootstrapRules:bootstrapAnswers&&createBootstrapRulesResponder({definition,plan,bootstrap,answers:bootstrapAnswers,
       // Same execution as the task checks: the host's specs sandbox in protected mode, else the driver's own.
       specsRoot:protectedMode?definition.specsDir:null,watch:[config,...permissionFiles]})};
@@ -703,7 +711,8 @@ export function qaFixAnswerFor(row,answer,answerRoot){
   }
   return value??null;
 }
-async function answerFor(row,answer){
+async function answerFor(row,answer,paths,control){
+  if(loaded.live.has(row.kind))return loaded.live.answer(row,control);
   if(['init_generate','init_verify'].includes(row.kind))return loaded.bootstrapRules?.[row.kind](row)??null;
   const kind=row.kind,value=kind==='develop'
     ?loaded.developAnswers.get(row.payload.request?.identity?.attempt??row.payload.identity?.attempt)
@@ -750,6 +759,7 @@ export function buildCmAiDriveRequest(operation,plan,definition,identity=definit
 export function buildCmAiDriveHostArgs(plan,permissions,config){
   return ['serve','--config',config,'--mode',plan.mode,'--host-context',plan.hostContext,
     '--allow-development',
+    ...(plan.verificationPrecheck===true&&!permissions.includes('--verification-precheck')?['--verification-precheck']:[]),
     ...(plan.originalHostContext?['--original-host-context',plan.originalHostContext]:[]),
     '--runtime',plan.runtime??'codex',...permissions.filter(flag=>flag!=='--allow-development')];
 }

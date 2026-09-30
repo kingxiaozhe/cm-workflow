@@ -28,7 +28,8 @@
 //
 // answers/ 里按反问种类放文件，一种一个：
 //   learning.json       {status, summary}            恢复时若存档里已有记录会自动复用
-//   diagnosis.json      诊断结论对象
+//   diagnosis.json      首次诊断结论对象
+//   diagnosis-rediagnosis.json  显式原运行重新诊断的新结论，不能复用首次文件
 //   retrospective.json  {status, candidates, reason}
 //   test-edits.json     {"仓库内路径": "本目录下的内容文件"}；修订轮用 test-edits-a2.json
 //   repair-edits.json   同上；修订轮用 repair-edits-a2.json
@@ -47,7 +48,7 @@ const HOST=path.join(here,'cm-fix-host.mjs');
 // design_change_required uses red_test (or test_author_required/author_tests).
 // escalation_required uses publish_dossier/finish: neither requests answers.
 const ASKS={
-  advance:['learning','diagnosis'],
+  advance:['learning','diagnosis'],rediagnose:['learning','diagnosis'],
   author_tests:['learning','test-edits'],
   repair:['learning','repair-edits'],
   retrospective:['learning','retrospective'],
@@ -70,6 +71,9 @@ function loadPlan(){
   if(abandoning&&(!plan.permissions.includes(abandonFlag)||typeof plan.reason!=='string'
     ||!plan.reason.trim().length||Buffer.byteLength(plan.reason,'utf8')>1000||/[\r\n\0\u0085\u2028\u2029]/.test(plan.reason)))
     stop(2,`${operation} 需要 PLAN.reason（单行，最多 1000 字节）和 ${abandonFlag}`);
+  if(operation==='rediagnose'&&(plan.mode!=='resume'||!plan.permissions.includes('--allow-rediagnosis')
+    ||typeof plan.reason!=='string'||!plan.reason.trim()||Buffer.byteLength(plan.reason,'utf8')>1000
+    ||/[\r\n\0\u0085\u2028\u2029]/.test(plan.reason)))stop(2,'rediagnose 需要 mode:resume、--allow-rediagnosis 和单行 reason');
   if(plan.originalHostContext&&plan.mode!=='resume')stop(2,'originalHostContext 只在 resume 时有意义');
   if(Object.hasOwn(plan,'inputLimit')&&!(Number.isSafeInteger(plan.inputLimit)&&plan.inputLimit>=65536&&plan.inputLimit<=4194304))
     stop(2,'inputLimit 需要 65536–4194304 的整数（字节）');
@@ -84,8 +88,12 @@ function recordedLearning(config,cwd){
   const archive=config.specsRoot??path.join(cwd,'docs','fixes');
   const state=path.join(archive,'.reviews','.execution',config.identity.runId,'state.json');
   const stored=readJson(state,'存档');
-  const record=stored?.records?.find(row=>row.kind==='result'&&/^fix-learning-/.test(row.id));
-  return record?.payload?.application??null;
+  let current=null;
+  for(const row of stored?.records??[]){
+    if(row.kind==='result'&&/^fix-learning-[1-9]\d*-[0-9a-f]{64}$/.test(row.id))current=row.payload;
+    else if(row.kind==='intent'&&row.id==='fix-rediagnosis-intent')current=row.payload.learning;
+  }
+  return current?.application??null;
 }
 function answerRound(config,operation,cwd){
   if(!['repair','author_tests'].includes(operation))return 1;
@@ -108,7 +116,7 @@ function roundAnswerName(root,kind,round){
   return `${kind}-a${round}.json`;
 }
 
-function preflight({operation,plan,paths}){
+export function preflight({operation,plan,paths}){
   const config=readJson(paths.config,'宿主配置');
   if(config===undefined)stop(2,`宿主配置不存在: ${paths.config}`);
   if(path.resolve(plan.cwd)!==path.resolve(config.reproduction?.cwd??''))
@@ -119,11 +127,11 @@ function preflight({operation,plan,paths}){
     return value;};
   const answers=preflightAnswers(ASKS[operation]??[],kind=>{
     if(kind==='learning'){
-      const recorded=plan.mode==='resume'?recordedLearning(config,plan.cwd):null;
+      const recorded=plan.mode==='resume'&&operation!=='rediagnose'?recordedLearning(config,plan.cwd):null;
       if(recorded){stderr(`恢复：复用存档里已记的学习记录（${recorded.status}）`);return recorded;}
       return need('学习记录','learning.json');
     }
-    if(kind==='diagnosis')return need('诊断','diagnosis.json');
+    if(kind==='diagnosis')return need('诊断',operation==='rediagnose'?'diagnosis-rediagnosis.json':'diagnosis.json');
     if(kind==='retrospective')return need('复盘','retrospective.json');
     const file=roundAnswerName(paths.answers,kind,round);
     const map=need(kind==='test-edits'?'测试内容':'修复内容',file);
@@ -192,9 +200,9 @@ function main(){
   const {answers,round}=preflight(loaded);
   const {operation,plan,paths}=loaded;
   driveHost({host:HOST,args:hostArgs(loaded).slice(1),cwd:path.resolve(plan.cwd),operation,
-    request:{...(['abandon_step','abandon_review'].includes(operation)?{reason:plan.reason}:{}),
+    request:{...(['abandon_step','abandon_review','rediagnose'].includes(operation)?{reason:plan.reason}:{}),
       ...(operation==='prepare_revision'&&Object.hasOwn(plan,'revisionTests')?{tests:plan.revisionTests}:{})},
     answers,paths:{...paths,round},answerFor});
 }
 
-main();
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))main();

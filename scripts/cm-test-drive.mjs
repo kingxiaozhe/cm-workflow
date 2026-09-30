@@ -10,7 +10,7 @@
 // status,    none                                        host.mjs handle status/cancel.
 // cancel
 // host.mjs 自己运行 config.commands 并记录真实退出码；没有 host_request 命令证据。
-// qa_browser 要执行浏览器/设备并写本轮证据，本驾驶员没有该 runner，发送前拒绝。
+// qa_browser 由显式 liveEvidence 当前会话执行；未配置时发送前拒绝。
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -25,6 +25,9 @@ import {inspectDeclaredTestCommand} from '../runtime/js/cm-test/declared-command
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
 
+import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
+
+// PLAN.liveEvidence: fresh current-session evidence; see docs/live-evidence-drivers.md.
 const HOST=fileURLToPath(new URL('./cm-test-host.mjs',import.meta.url));
 const KNOWN=new Set(['start','resume','status','cancel']);
 const FILES={change_impact:'change-impact.json',test_cases:'test-cases.json',qa_logic:'qa-logic.json'};
@@ -34,7 +37,7 @@ const safeFile=file=>fs.existsSync(file)&&fs.lstatSync(file).isFile()&&!fs.lstat
 
 function main(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-test-drive.mjs --plan PLAN.json <start|resume|status|cancel>\nPLAN: config, answers, sessionDir (resume), resolution:null。浏览器执行证据无 runner，预检拒绝。\n');return;
+    process.stdout.write('用法: cm-test-drive.mjs --plan PLAN.json <start|resume|status|cancel>\nPLAN: config, answers, sessionDir (resume), resolution:null。浏览器执行用 PLAN.liveEvidence {directory,kinds:["qa_browser"],timeoutMs?}；未配置时预检拒绝。\n');return;
   }
   const {operation,plan,base}=loadPlanFile({name:'cm-test-drive.mjs',known:KNOWN});
   requireFields(plan,['config']);
@@ -116,9 +119,12 @@ function main(){
     return value;
   };
   const answers=preflightAnswers(asks,loadAnswer);
+  let live;
+  try{live=driverLiveEvidence(plan,{base,protectedRoots:[admission.project,admission.specs],allowedKinds:['qa_browser']});}
+  catch(error){stop(2,error.message);}
   if(['start','resume'].includes(operation)&&admission.operation!=='impact'){
     if(admission.modes.includes('browser')&&(admission.operation==='explore'||contract?.cases?.some(item=>item.kind==='browser')))
-      stop(2,'缺少真实执行 runner: qa_browser；不能从静态答案文件应答');
+      if(!live.has('qa_browser'))stop(2,'缺少真实执行 runner: qa_browser；不能从静态答案文件应答');
     if(admission.modes.includes('logic')&&contract?.cases?.some(item=>item.kind==='logic'))
       answers.qa_logic=loadAnswer('qa_logic');
   }
@@ -127,6 +133,6 @@ function main(){
     &&(['start','resume'].includes(operation)||operation==='status'&&existingSession)
     ?['--session-dir',path.resolve(base,plan.sessionDir)]:[])],
     cwd:admission.project,operation,request:operation==='resume'?{resolution:null}:{},answers,paths:{},
-    answerFor:row=>answers[row.kind]??null});
+    answerFor:(row,answers,paths,control)=>live.has(row.kind)?live.answer(row,control):answers[row.kind]??null});
 }
 main();

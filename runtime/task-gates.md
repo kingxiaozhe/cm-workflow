@@ -84,6 +84,12 @@ entry and the body must contain findings or an explicit zero-findings result.
 implementation files. Round 2 cannot create attempt 3: another blocking result
 becomes `blocked` and requires human resolution under `runtime/review.md`.
 
+For an explicitly human-authorized correction after round-two blocked, see
+`docs/human-correction.md`: `prepare-human-correction` and
+`publish-human-correction-review` keep the original four records and bind a separate
+one-shot correction. N4/N5 and locked completion accept its fixed `--correction`
+record; legacy-unbound flags do not weaken correction checks.
+
 N5 must let the JavaScript gate validate and update the exact task checkbox while
 the compatibility entry holds the existing platform ownership lock:
 

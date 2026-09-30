@@ -18,7 +18,7 @@ export function fixFinalReviewConfiguration(configuration,causeThread=null){
   return {hostContextId:configuration.hostContextId,...(hosts.length>1?{hostContextIds:hosts}:{}),
     reviewer:{...base,reviewerId:'fix-final-reviewer',
     adapterId:`${base.provider}-review-adapter`,contextId:'fix-final-review-context',
-    excludedThreadIds:[...new Set([...base.excludedThreadIds,...(causeThread?[causeThread]:[])])]}};
+    excludedThreadIds:[...new Set([...base.excludedThreadIds,...(Array.isArray(causeThread)?causeThread:causeThread?[causeThread]:[])])]}};
 }
 
 function expectation(request,configuration){
@@ -46,7 +46,7 @@ function reviewDiagnostic(phase,error,event=null){
 }
 export function inspectFixFinalRegistration(raw,configuration){
   const value=json(raw,12*1024*1024);shape(value,['request','authorizationAt','registeredAt','grant']);
-  const reviewer=validateCauseReviewer(configuration.reviewer,fixHostContexts(configuration),configuration.reviewFeedback?34:33),request=value.request;
+  const reviewer=validateCauseReviewer(configuration.reviewer,fixHostContexts(configuration),configuration.reviewFeedback?35:34),request=value.request;
   need(request.provider===reviewer.provider&&request.requestedModel===reviewer.requestedModel&&request.contextId===reviewer.contextId,'final_registration_mismatch');
   const pkg=readReviewPackage(request.payload.reviewPackage);
   const previous=configuration.reviewFeedback?inspectFixRepairReview(configuration.reviewFeedback,pkg.identity):null;
@@ -112,7 +112,7 @@ export function createFixFinalReview({reviewPackage,configuration,timeoutMs},{au
     ...(Object.hasOwn(config,'hostContextIds')?['hostContextIds']:[]),
     ...(Object.hasOwn(config,'reviewFeedback')?['reviewFeedback']:[])]);
   const previous=config.reviewFeedback?inspectFixRepairReview(config.reviewFeedback,pkg.identity):null;
-  const reviewer=validateCauseReviewer(config.reviewer,fixHostContexts(config),previous?34:33);
+  const reviewer=validateCauseReviewer(config.reviewer,fixHostContexts(config),previous?35:34);
   if(previous)need(reviewer.excludedThreadIds.includes(previous.providerThreadId),'final_context_mismatch');
   need(Number.isInteger(timeoutMs)&&timeoutMs>0&&timeoutMs<=3600000,'invalid_timeout');
   need(typeof authorize==='function'&&typeof run==='function','final_review_unavailable');

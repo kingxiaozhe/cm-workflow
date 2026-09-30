@@ -20,7 +20,7 @@ export function fixHostContexts(configuration){
 export function validateCauseReviewer(raw,hostContextId,maxExclusions=32){
   const hosts=Array.isArray(hostContextId)?hostContextId:[hostContextId];
   need(hosts.length>=1&&hosts.length<=MAX_FIX_JOINED_HOSTS+2,'invalid_cause_reviewer');hosts.forEach(id);
-  need([32,33,34].includes(maxExclusions),'invalid_cause_reviewer');
+  need([32,33,34,35].includes(maxExclusions),'invalid_cause_reviewer');
   const value=json(raw);shape(value,['reviewerId','adapterId','provider','requestedModel','contextId','excludedThreadIds',
     ...(Object.hasOwn(value,'workerConfigurationDigest')?['workerConfigurationDigest']:[])]);
   if(Object.hasOwn(value,'workerConfigurationDigest'))hex(value.workerConfigurationDigest);

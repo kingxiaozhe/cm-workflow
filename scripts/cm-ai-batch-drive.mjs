@@ -30,6 +30,9 @@ import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 
+import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
+
+// PLAN.liveEvidence: fresh current-session evidence; see docs/live-evidence-drivers.md.
 const HOST=fileURLToPath(new URL('./cm-ai-batch-host.mjs',import.meta.url));
 const KINDS={develop:'develop.json',qa_assess:'qa-assess.json',
   documentation_sync:'documentation-sync.json',documentation_inspect:'documentation-inspect.json'};
@@ -169,7 +172,11 @@ function preflight(){
   const protectedMode=permissions.includes('--protected-config')||permissions.includes('--protected-conversation-config');
   const providerAll=permissions.includes('--protected-config')&&keys.every(key=>
     permissions.includes(`${key}:1`)&&permissions[permissions.indexOf(`${key}:1`)-1]==='--allow-provider-development');
-  if(operation==='advance'&&permissions.includes('--verification-precheck'))
+  let live;
+  try{live=driverLiveEvidence(plan,{base,protectedRoots:[batch.codeProject,batch.specsDir,path.resolve(batch.codeProject,'..','.cm-worktrees'),...(batch.codeProjects??[])],
+    allowedKinds:['qa_logic','qa_browser','verification_precheck'],maxBytes:inputLimitFrom(permissions)});}
+  catch(error){stop(2,error.message);}
+  if(operation==='advance'&&permissions.includes('--verification-precheck')&&!live.has('verification_precheck'))
     stop(2,'缺少真实执行 runner: verification_precheck；不能从静态答案文件应答');
   if(operation==='advance'&&bundle.bootstraps&&Object.keys(bundle.bootstraps).length)
     stop(2,'缺少真实执行 runner: init_verify；不能从静态答案文件应答');
@@ -191,7 +198,7 @@ function preflight(){
       for(const kind of ['logic','browser'])if(cases?.cases?.some(item=>item.kind===kind))kinds.push(`qa_${kind}`);
     }
     if(workflow)kinds.push('documentation_inspect');
-    const evidence=kinds.filter(kind=>['qa_logic','qa_browser'].includes(kind));
+    const evidence=kinds.filter(kind=>['qa_logic','qa_browser'].includes(kind)&&!live.has(kind));
     if(evidence.length)stop(2,`缺少真实执行 runner: ${evidence.join(', ')}；不能从静态答案文件应答`);
     if(kinds.includes('check'))checkCommandShape(plan.checks?.[key],key,plan);
     const taskRoot=root&&path.join(root,task.feature,task.taskId);
@@ -255,7 +262,7 @@ function preflight(){
     if(answers[key].documentation_sync)for(const target of Object.keys(answers[key].documentation_sync.edits))
       if(!workflow.documentationPaths.includes(target))stop(2,`任务 ${key} documentation-sync.json.edits 越过文档 scope: ${target}`);
   }
-  return {...loaded,bundle,definitions,runs,config,permissions,answers,developAnswers,answerRoot:root,holds};
+  return {...loaded,bundle,definitions,runs,config,permissions,answers,developAnswers,answerRoot:root,holds,live};
 }
 
 let loaded;
@@ -271,7 +278,8 @@ function safeWrite(map,root,cwd,allowed){
     fs.writeFileSync(file,fs.readFileSync(path.join(root,local)));
   }
 }
-async function answerFor(row){
+async function answerFor(row,answers,paths,control){
+  if(loaded.live.has(row.kind))return loaded.live.answer(row,control);
   const identity=row.payload.identity??row.payload.request?.identity;
   const binding=loaded.runs.get(identity?.runId),key=binding?.key;
   if(!Object.hasOwn(loaded.answers,key))return null;

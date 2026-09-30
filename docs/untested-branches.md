@@ -14,8 +14,8 @@
 一次实跑再撞。
 
 `scripts/audit-untested-enums.mjs` 扫 `runtime/js` 里 `['a','b'].includes(x)` 形式的枚举，
-逐个看 `scripts/*.test.mjs` 里有没有出现过。写这份文档时的结果是 51 个取值缺覆盖；补掉 A 类的 `auto_fix: never`、`video`、cm-check `configured`、cm-fix `design_change`、cm-test 中断步骤恢复和 cm-refactor 两条之后现在是
-**38 个，分布在 40 处**（本次从 45 个、42 处降下）。
+逐个看 `scripts/*.test.mjs` 里有没有出现过。2026-09-30 重新运行脚本，当前为
+**21 个取值，分布在 17 处**；这是文字扫描候选，不是语义覆盖统计。
 
 脚本输出的是**候选，不是待办**——内部记录类型和 `typeof` 判断也会被匹配到。下面是人工
 分好的类。改完代码后重跑脚本对照。
@@ -55,7 +55,7 @@ cm-refactor 的 `refactor_unknown_effect` 列表成员是冗余防线：`unknown
 | `cm-ai/cm-ai-conversation-entry.mjs` 的 `context_refresh` / `run_finalize` | `scripts/cm-ai-conversation-entry-ops.test.mjs` |
 | `cm-ai/contracts.mjs` 的 `waiting_user` / `deny` / `revoked` / `active` | `scripts/cm-ai-contracts.test.mjs` |
 | `cm-ai/tool-preview.mjs` 的 `argument` | `scripts/cm-claude-probe.test.mjs` |
-| `cm-ai/claude-tool-preview.mjs` 的 `gzip` / `zstd` 与未声明编码 | `scripts/cm-claude-probe.test.mjs`（真实回环监听器；只在 macOS 运行，Linux CI 跳过） |
+| `cm-ai/claude-tool-preview.mjs` 的 `gzip` / `zstd` 与未声明编码 | `scripts/cm-claude-probe.test.mjs`（真实回环监听器；专门 macOS CI job 执行；本机实际运行，Linux job 仍跳过） |
 | `cm-prd/correction-check.mjs` 的 `mechanical_failed` / `context_result` | `scripts/correction-check.test.mjs` |
 
 ## C 类：噪声，不必单独补
@@ -72,8 +72,31 @@ cm-refactor 的 `refactor_unknown_effect` 列表成员是冗余防线：`unknown
 ## 这份清单的局限
 
 - 只扫 `['a','b'].includes(x)` 这一种写法。`switch`、对象查表、`Set.has` 都漏掉了，
-  所以当前的 38 是**下限**不是全部。
+  所以当前的 21 只是候选，不能当作全部缺口或实际测试覆盖的下限。
 - 「测试里出现过这个字符串」只能说明它被提到过，不等于那条分支被真正走到并断言了。
   A 类里每一条仍要人去确认。
 - 最重要的一点：上表那四个缺陷是**跑真实项目**跑出来的，不是读代码读出来的。这份清单
   补的是读得出来的那部分；拿工作流去跑真实项目，仍然是发现问题最有效的办法。
+
+
+## 当前会话执行与恢复仍需实跑的边界
+
+四驾驶员的 liveEvidence 请求绑定、验证阻断和材料/设备不可用路径已有实际 host 集成夹具，
+见 `scripts/cm-live-evidence.test.mjs` 及四驾驶员夹具；真实 PDF 每页内容、HTML 逐元素操作和
+真实浏览器/设备成功断言仍需逐产品实跑。Mac 夹具证明本地合成 CLI 的沙箱/回环行为，
+不证明已登录 Claude 账号或真实模型可用。
+
+cm-fix 根因审查拒绝后的恢复入口：standalone `rediagnose` 一次，
+绑定原审查、历史和源包，不重复复现、不覆盖旧证据；新根因必须走 fresh r2 审查，
+第二次拒绝明确停机。`scripts/cm-fix-rediagnosis.test.mjs` 已实际覆盖原运行恢复/replay、
+中断不重派、源漂移/证据冲突前拒绝、第二次拒绝上限和旧 reviewer thread 拒绝。
+真实 Wue 原 run 尚未执行这项恢复；不能把夹具通过当作真实恢复。
+步骤与保守中断边界见 `skills/cm-fix/references/js-host.md`。
+
+## 本轮全库回归发现的失败与修复
+
+规则写入后任务检查失败、环境修好再 advance 的同 attempt 基线核对已修复：审查包比较运行原始基线，bootstrap 写入证据比较本次实际起点，两者不强制相等；最终内容仍须精确匹配。真实 driver/host 夹具验证重试到审查及完成，也保留外部文件改动和非 nextTask 的派发前拒绝。
+
+取消向导测试的 SIGINT 路径现显式传入语言，并分别验证中英文取消与无写入，不再依赖宿主 locale。原两项失败的 red 记录和修复回归保留在本地审查包。
+
+人工补正：新增 `scripts/cm-task-gate-correction.test.mjs`，覆盖真实 JS CLI 与 Python 锁适配器完成、旧历史保留、必须明确授权与 Learning、漂移、旧/降级报告拒绝、一次 blocked 封存以及 symlink/hardlink 拒绝。合成报告只证明门禁合同，真实独立批准另留审查证据。

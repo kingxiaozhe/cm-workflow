@@ -7,6 +7,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {runPrdContextChecks} from './cm-prd-drive.mjs';
+import {runLiveDriver} from './fixtures/live-evidence-driver.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const driver=path.join(root,'scripts/cm-prd-drive.mjs');
@@ -30,6 +31,20 @@ function fixture(t,{pdf=false}={}){
   return {dir,project,answers,plan,write,drive,store:id=>path.join(project,'.reviews/prd-sessions',id,'state.json')};
 }
 const analyzed={status:'analyzed',summary:'Developer need',sourcePaths:['docs/input.md'],openQuestions:[]};
+for(const format of ['pdf','html'])test(`${format} live material request is hash-bound and an unavailable reader stops honestly`,async t=>{
+  const f=fixture(t,{pdf:format==='pdf'});
+  if(format==='html')fs.writeFileSync(path.join(f.project,'docs/input.html'),'<button>Fixture</button>');
+  f.write('analyze.json',{status:'blocked',reason:'No material reader'});
+  const plan=path.join(f.dir,'live-plan.json');fs.writeFileSync(plan,JSON.stringify({...f.plan,
+    liveEvidence:{directory:'exchange',kinds:['prd_materials'],timeoutMs:1000}}));
+  const out=await runLiveDriver(driver,plan,'start',row=>{
+    assert.equal(row.kind,'prd_materials');assert.equal(row.payload.sources[0].format,format);
+    assert.match(row.payload.sources[0].sha256,/^[a-f0-9]{64}$/);
+    return {status:'blocked',reason:'Fixture intentionally has no reader; no processing claimed'};
+  },{env:{...process.env,CM_WORKFLOW_LOG_HOME:path.join(f.dir,'mirror')}});
+  assert.equal(out.status,0,out.stderr);assert.equal(out.requests.length,1);
+  assert.equal(JSON.parse(out.stdout).result.stage,'blocked');
+});
 const draft={status:'draft',summary:'Synthetic documentation draft',features:[{name:'guide',testCasesReason:'no_observable_behavior',
   documents:[{path:'requirements.md',content:'## 功能需求\n1. [F-001] Guide\n- [ ] [AC-001] Document setup.'},
     {path:'design.md',content:'## 方案摘要\nSynthetic design'},

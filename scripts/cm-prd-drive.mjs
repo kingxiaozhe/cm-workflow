@@ -42,7 +42,9 @@ import {inspectPrdSummaryEvidence} from '../runtime/js/cm-prd/summary.mjs';
 import {prdDesignRiskSignals} from '../runtime/js/cm-prd/design-risk.mjs';
 import {reviewResultForPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
+import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
 
+// PLAN.liveEvidence: fresh current-session evidence; see docs/live-evidence-drivers.md.
 const HOST=fileURLToPath(new URL('./cm-prd-host.mjs',import.meta.url));
 const SKILL=fileURLToPath(new URL('../skills/cm-prd',import.meta.url));
 const KNOWN=new Set(['start','advance','plan_design','promote_design','select_design_reviews','status','cancel',
@@ -161,7 +163,10 @@ function load(){
     const pending=state.active.calls.find(c=>!Object.hasOwn(c,'result'));
     if(pending)stop(2,`resume 尚缺原调用结果：${pending.kind} ${pending.callId} ${pending.requestDigest}`);
   }
-  if(asks.includes('prd_materials'))stop(2,'缺少真实执行 runner: prd_materials（PDF/HTML 读取或浏览器交互）；不能从静态答案文件应答');
+  let live;
+  try{live=driverLiveEvidence(plan,{base,protectedRoots:[project,specs],allowedKinds:['prd_materials']});}
+  catch(error){stop(2,error.message);}
+  if(asks.includes('prd_materials')&&!live.has('prd_materials'))stop(2,'缺少真实执行 runner: prd_materials（PDF/HTML 读取或浏览器交互）；不能从静态答案文件应答');
   const answersRoot=plan.answers?resolve(plan.answers):null;
   if(answersRoot&&fs.existsSync(path.join(answersRoot,'materials.json')))
     stop(2,'materials.json 是执行证据；不能从静态答案文件应答 prd_materials');
@@ -195,7 +200,7 @@ function load(){
     if(answersRoot&&fs.existsSync(path.join(answersRoot,'self-check.json')))
       stop(2,'self-check.json 是执行证据；不能从静态答案文件应答 prd_self_check');
   }
-  return {operation,plan,base,project,specs,runtime,entry,admission,config,sources,state,request,asks,answers,answersRoot};
+  return {operation,plan,base,project,specs,runtime,entry,admission,config,sources,state,request,asks,answers,answersRoot,live};
 }
 function validate(kind,value,ctx){
   if(kind==='prd_analyze'){
@@ -286,7 +291,8 @@ export async function runPrdContextChecks(cwd,commands){
   }
   return results;
 }
-async function answerFor(row,answers){
+async function answerFor(row,answers,paths,control){
+  if(loaded.live.has(row.kind))return loaded.live.answer(row,control);
   const v=answers[row.kind];
   if(row.kind==='prd_materials')return null;
   if(row.kind==='prd_self_check'){

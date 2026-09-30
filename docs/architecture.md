@@ -135,6 +135,24 @@ conversation orchestration in the active Skill and use the same JS gates, while 
 fresh context supplies independent review. Real durable N1–N8 dogfood and authorized
 installation evidence remain later work; no Claude-native adapter is required.
 
+## Current-session driver evidence
+
+The four single-step drivers share `runtime/js/cm-ai/live-evidence.mjs` for opt-in
+file transport of fresh host requests. A private exchange stays outside all code,
+specs and future batch-worktree roots. Responses bind the original session, call
+and request digest; the original host still owns semantic validation. Static
+answers cannot supply execution evidence. This is current-session material/QA
+execution, not an autonomous browser or PDF runtime; timeout or invalid responses
+keep the original conservative recovery boundary. See `docs/live-evidence-drivers.md`.
+
+Standalone cm-fix can explicitly append one rediagnosis after a valid rejected
+cause review on the original run. The marker binds history and old review evidence,
+retains original reproduction/attempt/r1, and requires a fresh cause-r2 review.
+A second rejection reaches a limit; unknown results are not automatically retried.
+Final implementation review excludes both cause-review threads. The owner and
+replay enforce the same transitions; no installation or product recovery follows
+from a successful protocol fixture.
+
 ## External reasoning model
 
 `external-expert` is an independent utility Skill for product deliberation,
@@ -214,3 +232,5 @@ Semgrep local rules and OSV offline scanning behind an adapter. Source and proje
 scanner configuration are never executed. Symlinks/protected paths/limits are explicit
 gaps. The current host reviews business boundaries and checks the source digest again;
 scanner output is candidate evidence, never a task-completion or release gate.
+
+人工补正合同：`docs/human-correction.md`。第二轮 blocked 后，仅经明确人审范围的一次性 task-gate 入口可封存独立补正审查；原证据与普通 attempt 上限保留，宿主 journal 不自动重开。

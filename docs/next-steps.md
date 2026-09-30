@@ -1,14 +1,19 @@
 # 接下来要做的事
 
-写于 2026-09-22，2026-09-26 在 0.16.3 发布后更新。按优先级排，每条写清：为什么要做、做完是什么样、动手前要先弄清什么。
+2026-09-30 按 0.16.5 源码及本地修复重新核对；下列状态不等同 npm 发布或远端 CI 结果。
 
 ## 现状
 
-- npm 上是 **0.16.3**（2026-09-26 发布，标记 `v0.16.3`）。下载回来拆包核对过，本次改动都在包里。
-- 主干在发版之后只有文档更新（#150 README、#151 本文件及其审查修正），没有未发布的功能改动。
-- 自动检查：每个 PR 跑 `scripts/` 下 138 份，另有不阻断合并的历史兼容夹具任务跑 `experiments/` 下 24 份；发版时由 `cm-release-smoke.sh` 补跑 CI 跑不了的 7 份。
-- 盘点脚本 `scripts/audit-untested-enums.mjs` 报告：**24 个取值缺覆盖，分布在 22 处**（上次记录为 38 个、40 处）。
-- 已在真实环境验证：「已审交接后 QA 卡住的任务作废重跑」在 e2e 存量项目和全真模型临时项目上各跑通一次（2026-09-25）；公司项目上的原始事故尚待维护者本人跑一次确认。
+- 全库本地回归发现旧 bootstrap 同 attempt 检查失败重试用例失败：恢复后报 `blocked/bootstrap_review_mismatch`，应到 `awaiting_review`。在本轮改动前的 `9bb45fc` 独立源码副本同样复现；属于现存缺陷，不能报全库全绿。
+- 当前源码版本是 **0.16.5**；本地保留 bootstrap 规则刷新、未改文件审查核对和超大交付恢复修复。本次没有发布、推送或更新 tag。
+- 只读查询 origin 的 tags 未找到 `0.16.5` 标签。是否补标签与发布须单独处理；本文件不以旧版 npm 快照声明当前 registry 状态。
+- Linux CI 按 `scripts/*.test.mjs` 自动收集，7 份原生 Codex 沙箱夹具由 release smoke 补跑；新增 macOS job 运行 Darwin-only Claude 回环和 sandbox 夹具，本机已实际运行，远端尚未运行本地变更。
+- 盘点脚本当前报告 **21 个取值，17 处**。这只是源码文字枚举候选，不能证明全部状态路径已有覆盖。
+- cm-fix standalone 提供原 run `rediagnose` 恢复；夹具验证原历史保留、fresh r2、第二次拒绝上限。真实 Wue 原运行尚未执行恢复，不能以夹具替代其现场证据。
+- 第二轮 blocked 后提供明确人审范围的一次性人工补正门禁，保留原四份证据和两轮上限；新审查封存后不能覆盖，详见 `docs/human-correction.md`。
+- 本轮同 attempt bootstrap 重试误报和取消向导 locale 测试失败已修复；Learning application 选择精确事件，排除 writeback 结果。
+- cm-security 最终私有报告增加实际尝试、未运行及需要补做事项；扫描输入、覆盖状态和裁决保持原合同。
+- 四驾驶员新增显式当前会话执行证据通道，见 [使用与恢复边界](live-evidence-drivers.md)。它需要当前会话实际阅读/操作；没有无人值守浏览器服务，也不将合成夹具冒充真实产品验收。
 
 ---
 
@@ -56,7 +61,7 @@ cm-ai 的 V3 会话父运行用 `--original-host-context` 恢复后，QA 修复�
 
 ### 3. 驾驶员推广到其它工作流
 
-**现状**：九个 JSONL 宿主（cm-fix、cm-ai、cm-ai-batch、cm-check、cm-idea、cm-init、cm-prd、cm-refactor、cm-test）都已有单步驾驶员，共用 JSONL 传输核心。剩余缺口：cm-prd 的 PDF/HTML 材料执行器与 cm-test 的浏览器执行仍缺驾驶员 runner，会在发送前拒绝；cm-check 宿主无持久会话，驾驶员只能重新开始或只读 status，不能跨进程 resume。
+**现状**：九个 JSONL 宿主（cm-fix、cm-ai、cm-ai-batch、cm-check、cm-idea、cm-init、cm-prd、cm-refactor、cm-test）都已有单步驾驶员，共用 JSONL 传输核心。cm-prd 的 PDF/HTML 材料与 cm-test 的浏览器执行可显式接入 liveEvidence 当前会话通道；未配置仍在发送前拒绝，真实阅读/交互和工具可用性仍需逐项目验证；cm-check 宿主无持久会话，驾驶员只能重新开始或只读 status，不能跨进程 resume。
 
 **下一步**：补齐上述执行证据类 runner（PDF/HTML 读取、浏览器执行），证据必须来自实际运行；驾驶员的预检表仍须从各宿主的操作路由推导，不能照搬。
 
@@ -70,7 +75,7 @@ cm-ai 的 V3 会话父运行用 `--original-host-context` 恢复后，QA 修复�
 
 - **受保护模式跑不了 `tsx` / `vitest` 这类命令**。它们要开本地 socket，而沙箱把这个和「联网」放在同一个开关下。放开就等于给测试命令开整个外网，不划算。替代写法见 `skills/cm-fix/references/js-host.md`。驾驶员在建运行前会预警。
 - **有 7 份测试只在发版时跑**。它们要启动 Codex 沙箱，GitHub 的机器不给这个权限。已接进 `cm-release-smoke.sh`，发版必过；CI 里有一句断言钉死这 7 份的名单，不会悄悄变多。
-- **盘点脚本只认一种写法**（`['a','b'].includes(x)`），`switch`、对象查表、`Set.has` 都漏掉了。所以「24」是下限。
+- **盘点脚本只认一种写法**（`['a','b'].includes(x)`），`switch`、对象查表、`Set.has` 都漏掉了。当前 21 项只是文字扫描候选，不能当作完整缺口数。
 - **读代码找不到所有问题**。0.16.1 修的四个缺陷全是跑真实项目跑出来的。拿工作流去跑真实项目，仍然是发现问题最有效的办法。
 
 ---
@@ -84,8 +89,8 @@ cm-ai 的 V3 会话父运行用 `--original-host-context` 恢复后，QA 修复�
 3. **改了存档相关的逻辑，要拿真实的存量运行验一遍**。测试套件里没有「带着历史跑过头」的夹具，有一次改动就是靠打开真实存量运行才发现会让它打不开。
 4. **提交前重新 diff 自己改过的每个文件**。别人（或别的会话）可能同时改过，有一次就是这样把没读过的代码合进去了。
 5. **全套检查都跑**：`node --test scripts/*.test.mjs`、`./scripts/cm-check-runtime.sh`、`python3 scripts/validate-public-repo.py`、`python3 scripts/scan-public-safety.py`。
-6. **合并后两端都重装**：`./install.sh --yes`（Claude）和 `./install-codex.sh --yes`（Codex），然后在安装目录里确认改动真的在。Codex 要开新会话才会加载新版本。
-7. **源码在 `cm-workflow-dev`**，不是同名的另外两个目录。
+6. **合并且获得本地安装授权后，两端都重装**：`./install.sh --yes`（Claude）和 `./install-codex.sh --yes`（Codex），然后在安装目录里确认改动真的在。Codex 要开新会话才会加载新版本。
+7. **先核对源码目录、分支与 HEAD**；历史目录名不能证明当前内容。当前本地候选在独立工作树，尚未合并或安装。
 
 ---
 

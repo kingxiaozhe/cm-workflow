@@ -53,6 +53,7 @@ const rejectedReplyHint=code=>code==='host_response_too_large'
 // A returned refusal closes the session without any operation and exits 2.
 export function driveHost({host,args,cwd,operation,request={},answers,paths,answerFor,beforeRequest=null}){
   const child=spawn(process.execPath,[host,...args],{cwd,stdio:['pipe','pipe','pipe']});
+  const control=new AbortController();
   child.stderr.on('data',chunk=>process.stderr.write(chunk));
   // After a rejected reply the session is ended; later rows get no answer.
   const send=value=>{if(!child.stdin.writableEnded)child.stdin.write(JSON.stringify(value)+'\n');};
@@ -69,7 +70,8 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
     }
     if(row.type==='host_request'){
       let result;
-      try{result=await answerFor(row,answers,paths);}catch(error){stderr(`应答 ${row.kind} 失败：${error.message}`);result=null;}
+      try{result=await answerFor(row,answers,paths,{signal:control.signal});}catch(error){stderr(`应答 ${row.kind} 失败：${error.message}`);result=null;}
+      if(control.signal.aborted)return;
       if(result===null){
         stderr(`宿主问了预检没覆盖的问题 ${row.kind}，无法应答；这一步会留在 unknown`);
         send({type:'host_close',sessionId:row.sessionId});return;
@@ -81,6 +83,7 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
     if(row.type==='host_response'){
       if(row.accepted===false&&rejected===null){
         rejected=typeof row.code==='string'?row.code:'host_response_rejected';
+        control.abort();
         stderr(`宿主拒收了应答：${rejected}；${rejectedReplyHint(rejected)}。驾驶员不再等待，已结束会话；宿主会把这一步记为 unknown`);
         child.stdin.end();
       }
@@ -88,6 +91,7 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
     }
     if(row.requestId==='drive'){
       done=true;
+      control.abort();
       process.stdout.write(JSON.stringify(row,null,2)+'\n');
       if(row.result?.stage)stderr(`stage = ${row.result.stage}`);
       if(row.error)stderr(`宿主拒绝：${row.error.code}（真实原因和位置在上面 [host] 那行 diagnostic 里）`);
@@ -95,6 +99,6 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
       child.stdin.end();
     }
   });
-  child.on('error',error=>{stderr(`宿主启动失败：${error.message}`);process.exitCode=1;});
-  child.on('exit',code=>{if(!done&&!refused){stderr(`宿主在给出结果前退出了，exit ${code}`);process.exitCode=1;}});
+  child.on('error',error=>{control.abort();stderr(`宿主启动失败：${error.message}`);process.exitCode=1;});
+  child.on('exit',code=>{control.abort();if(!done&&!refused){stderr(`宿主在给出结果前退出了，exit ${code}`);process.exitCode=1;}});
 }

@@ -9,7 +9,7 @@ import {inspectFixQaSource,readFixQaSourceHistory,qaFixIdentity,fixQaDiagnosisEv
 import {digest,id,json,need,shape,text,validIdentity,requestFor,failureCode} from '../cm-ai/effect-contract.mjs';
 import {createFixReproduction,inspectFixReproduction} from './reproduce.mjs';
 import {inspectFixLearning} from './learning.mjs';
-import {createFixCausePackage,verifyFixCauseTransition} from './cause-package.mjs';
+import {createFixCausePackage,verifyFixCauseTransition,rediagnosisPackage} from './cause-package.mjs';
 import {validateCauseReviewer,inspectCauseRegistration,inspectCauseResult,causeExpectation,fixHostContexts,MAX_FIX_JOINED_HOSTS} from './cause-invocation.mjs';
 import {inspectProviderCauseReview} from '../cm-ai/provider-review-observation.mjs';
 import {publishCauseEvidence} from './cause-evidence.mjs';
@@ -63,6 +63,11 @@ const latestStepRecord=(records,id)=>[...records].reverse().find(row=>retryBase(
 // A cause or second-round final review that produced no review result may be
 // abandoned once, audited, and dispatched again under its own record prefix.
 const REVIEW_ABANDON={cause_review:'fix-cause',revision_final_review:'fix-revision-final'};
+const causeRecord=(records,suffix)=>{
+  const marker=records.findIndex(row=>row.id==='fix-rediagnosis-intent');
+  return marker<0?reviewCycleRecord(records,'fix-cause',suffix)
+    :records.slice(marker+1).find(row=>row.id===`fix-cause-rediagnosis-${suffix}`);
+};
 const reviewCycleRecord=(records,prefix,suffix)=>records.some(row=>row.id===`${prefix}-abandoned`)
   ?records.find(row=>row.id===`${prefix}-retry-${suffix}`):records.find(row=>row.id===`${prefix}-${suffix}`);
 // Reviews wait for their own budget (host review configuration), never for the
@@ -204,14 +209,17 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
   const publishCause=(inspectOnly=false)=>{
     const records=store.snapshot().records;
     return publishCauseEvidence({specsRoot:evidenceSpecsRoot,configuration:reviewConfiguration,inspectOnly,
-      registration:reviewCycleRecord(records,'fix-cause','registered')?.payload,
-      started:reviewCycleRecord(records,'fix-cause','started')?.payload.providerThreadId??null,
-      result:reviewCycleRecord(records,'fix-cause','result')?.payload});
+      round:records.some(row=>row.id==='fix-rediagnosis-intent')?2:1,
+      registration:causeRecord(records,'registered')?.payload,
+      started:causeRecord(records,'started')?.payload.providerThreadId??null,
+      result:causeRecord(records,'result')?.payload});
   };
+  const causeThreads=(thread,records=store.snapshot().records)=>[...new Set([thread,
+    records.find(row=>row.id==='fix-rediagnosis-intent')?.payload.priorProviderThreadId].filter(Boolean))];
   const publishFinal=(inspectOnly=false)=>{
     const records=store.snapshot().records;
     return publishFixFinalEvidence({specsRoot:evidenceSpecsRoot,configuration:reviewConfiguration,inspectOnly,
-      causeThread:reviewCycleRecord(records,'fix-cause','started')?.payload.providerThreadId??null,
+      causeThread:causeThreads(causeRecord(records,'started')?.payload.providerThreadId),
       registration:finalRecord(records,'registered')?.payload,
       started:finalRecord(records,'started')?.payload.providerThreadId??null,
       result:finalRecord(records,'result')?.payload});
@@ -220,7 +228,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     const records=store.snapshot().records;
     const failed=latestStepRecord(records,'fix-walkthrough-result')?.payload;
     const regression=latestStepRecord(records,'fix-post-regression-result')?.payload;
-    return {configuration:fixFinalReviewConfiguration(reviewConfiguration,reviewCycleRecord(records,'fix-cause','started')?.payload.providerThreadId??null),
+    return {configuration:fixFinalReviewConfiguration(reviewConfiguration,causeThreads(causeRecord(records,'started')?.payload.providerThreadId)),
       registration:finalRecord(records,'registered')?.payload,
       started:finalRecord(records,'started')?.payload.providerThreadId??null,
       result:finalRecord(records,'result')?.payload,
@@ -371,6 +379,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     let repairBaseline=null,repaired=null;
     let regression=null,retrospective=null,retrospectivePackage=null,writeback=null,learningPackage=null,handoff=null;
     let finalRegistration=null,finalStarted=null,finalResult=null,finalRecovery=null,finalRecoveryCount=0;
+    let rediagnosis=null,rediagnosisThread=null;
     let causeOrigin=null,causeResultPayload=null,causeAbandonment=null,revisionFinalResultPayload=null,revisionAbandonment=null;
     const finalInvocations=new Set(),finalThreads=new Set();
     let joinedCount=0;const seenJoined=new Set();
@@ -441,6 +450,30 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(finalRecovery&&record.id===`${recoveryPrefix(finalRecoveryCount)}-${suffix}`,'fix_history_invalid');
         record={...record,id:`fix-final-${suffix}`};
       }else if(/^fix-final-(registered|started|result)$/.test(record.id))need(!finalRecovery,'fix_history_invalid');
+      if(record.id==='fix-rediagnosis-intent'){
+        need(record.kind==='intent'&&stage==='rediagnosis_required'&&pending===null&&rediagnosis===null
+          &&causeResult?.observationStatus==='completed'&&causeResult.review.verdict==='changes_requested'
+          &&authorBaseline===null&&red===null,'fix_history_invalid');
+        const value=record.payload;
+        shape(value,['reason','historyDigest','priorRegistrationDigest','priorObservationDigest','priorPackageDigest','priorProviderThreadId','reviewFeedback','learning']);
+        text(value.reason);need(Buffer.byteLength(value.reason,'utf8')<=1000&&!/[\r\n\0\u0085\u2028\u2029]/.test(value.reason),'fix_history_invalid');
+        need(value.historyDigest===digest(snapshot.records.slice(0,record.seq-1))
+          &&value.priorRegistrationDigest===digest(cause)&&value.priorObservationDigest===causeResult.observationDigest
+          &&value.priorPackageDigest===cause.request.payload.reviewPackage.packageDigest&&value.priorProviderThreadId===started
+          &&digest(value.reviewFeedback)===digest(causeResult.review),'fix_history_invalid');
+        if(value.learning!==null)inspectFixLearning(value.learning);
+        rediagnosis=value;rediagnosisThread=started;learning=value.learning;
+        cause=null;causeResult=null;causeResultPayload=null;started=null;causeAbandonment=null;
+        stage='unknown';pending='rediagnosis';continue;
+      }
+      if(record.id==='fix-rediagnosis-result'){
+        need(record.kind==='result'&&pending==='rediagnosis'&&rediagnosis!==null,'fix_history_invalid');
+        diagnosed=diagnosis(record.payload);pending=null;
+        stage=diagnosed.status==='needs_evidence'?'rediagnosis_blocked':'cause_review_required';continue;
+      }
+      const causeRevised=/^fix-cause-rediagnosis-(registered|started|result)$/.exec(record.id);
+      if(causeRevised){need(rediagnosis!==null,'fix_history_invalid');record={...record,id:`fix-cause-${causeRevised[1]}`};}
+      else if(rediagnosis!==null&&/^fix-cause-(?:retry-)?(?:registered|started|result)$/.test(record.id))need(false,'fix_history_invalid');
       // After a one-time abandonment only the retry cycle's records are valid.
       const reviewRetry=/^(fix-cause|fix-revision-final)-retry-(registered|started|result)$/.exec(record.id);
       if(reviewRetry){
@@ -763,7 +796,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       if(record.id==='fix-final-registered'){
         need(stage==='final_review_required'&&record.kind==='intent','fix_history_invalid');
-        finalRegistration=inspectFixFinalRegistration(record.payload,fixFinalReviewConfiguration(reviewConfiguration,started));
+        finalRegistration=inspectFixFinalRegistration(record.payload,fixFinalReviewConfiguration(reviewConfiguration,causeThreads(started)));
         need(!finalInvocations.has(finalRegistration.request.invocationId),'fix_review_recovery_mismatch');
         finalInvocations.add(finalRegistration.request.invocationId);
         if(finalRecovery)need(finalRegistration.request.invocationId!==finalRecovery.invocationId
@@ -776,14 +809,14 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(record.id==='fix-final-started'){
         need(pending==='final_review'&&finalStarted===null&&record.kind==='result','fix_history_invalid');
         shape(record.payload,['providerThreadId']);id(record.payload.providerThreadId);
-        const config=fixFinalReviewConfiguration(reviewConfiguration,started);
+        const config=fixFinalReviewConfiguration(reviewConfiguration,causeThreads(started));
         need(!finalThreads.has(record.payload.providerThreadId),'final_context_mismatch');
         need(![...fixHostContexts(config),config.reviewer.contextId,...config.reviewer.excludedThreadIds].includes(record.payload.providerThreadId),'final_context_mismatch');
         finalStarted=record.payload.providerThreadId;finalThreads.add(finalStarted);continue;
       }
       if(record.id==='fix-final-result'){
         need(pending==='final_review'&&record.kind==='result','fix_history_invalid');
-        finalResult=inspectFixFinalResult(record.payload,finalRegistration,fixFinalReviewConfiguration(reviewConfiguration,started),finalStarted);
+        finalResult=inspectFixFinalResult(record.payload,finalRegistration,fixFinalReviewConfiguration(reviewConfiguration,causeThreads(started)),finalStarted);
         pending=null;stage=finalResult.observationStatus==='completed'
           ?finalResult.review.verdict==='approved'?'final_review_evidence_required':finalResult.review.verdict==='changes_requested'?'final_review_changes_requested':'final_review_blocked':'unknown';
         continue;
@@ -949,13 +982,14 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         }else need(!Object.hasOwn(pkg,'correction'),'cause_registration_mismatch');
         need(digest(pkg.identity)===digest(identity)&&pkg.defect===configuration.defect
           &&digest(pkg.reproduction)===digest(reproduction)&&digest(pkg.diagnosis)===digest(diagnosed)
-          &&digest(pkg.learning)===digest(learning),'cause_registration_mismatch');
+          &&digest(pkg.learning)===digest(learning)
+          &&digest(pkg.rediagnosis??null)===digest(rediagnosis===null?null:rediagnosisPackage(rediagnosis)),'cause_registration_mismatch');
         causeOrigin=stage;stage='unknown';pending='cause_review';continue;
       }
       if(record.id==='fix-cause-started'){
         need(pending==='cause_review'&&started===null&&record.kind==='result','fix_history_invalid');
         shape(record.payload,['providerThreadId']);id(record.payload.providerThreadId);started=record.payload.providerThreadId;
-        need(![...hostContextIds,configuration.causeReview.contextId,finalStarted,...configuration.causeReview.excludedThreadIds,
+        need(![...hostContextIds,configuration.causeReview.contextId,finalStarted,rediagnosisThread,...configuration.causeReview.excludedThreadIds,
           causeAbandonment?.providerThreadId].includes(started),'cause_registration_mismatch');continue;
       }
       if(record.id==='fix-cause-result'){
@@ -963,7 +997,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         causeResult=inspectCauseResult(record.payload,cause,reviewConfiguration,started);causeResultPayload=record.payload;pending=null;
         stage=causeResult.observationStatus!=='completed'?'unknown':causeResult.review.verdict==='approved'
           ?(causeResumeStage??(diagnosed.status==='design_change'?'design_change_required':'red_test_required'))
-          :causeResult.review.verdict==='changes_requested'?'rediagnosis_required':'cause_review_blocked';continue;
+          :causeResult.review.verdict==='changes_requested'?(rediagnosis?'rediagnosis_review_limit_reached':'rediagnosis_required'):'cause_review_blocked';continue;
       }
       if(record.id.startsWith('fix-learning-')){
         need(record.kind==='result'&&pending===null&&['reproduce','diagnose','observation_resume_prepared','observation_diagnose_required'].includes(stage),'fix_history_invalid');
@@ -1011,6 +1045,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       try{
         const current=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,
           status:{identity,stage:'cause_review_required',reproduction,diagnosis:diagnosed,learning,
+            ...(rediagnosis?{rediagnosis}:{}),
             ...(cause.request.payload.reviewPackage.correction?{causeReviewCorrection:cause.request.payload.reviewPackage.correction}:{})}});
         verifyFixCauseTransition(cause.request.payload.reviewPackage,current,authorBaseline,authored);
       }catch{stage='cause_review_drift';}
@@ -1133,7 +1168,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     // disconnect or cancellation observation. Each kind may be abandoned once.
     const noReviewResult=(registration,result,kind)=>stage==='unknown'&&registration!==null
       &&(pending===kind&&!result||pending===null&&result!==null&&result.observationStatus!=='completed');
-    const causeNoResult=noReviewResult(cause,causeResult,'cause_review');
+    const causeNoResult=rediagnosis===null&&noReviewResult(cause,causeResult,'cause_review');
     const revisionNoResult=noReviewResult(revisionFinalRegistration,revisionFinalResult,'revision_final_review');
     const reviewAbandonable=causeNoResult&&!causeAbandonment?'cause_review':revisionNoResult&&!revisionAbandonment?'revision_final_review':null;
     const status=json({identity,stage,pending,abandoned,executionActive:active!==null,reproduction,diagnosis:diagnosed,learning,causeReview:causeResult,
@@ -1141,7 +1176,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       ...(causeNoResult&&causeAbandonment||revisionNoResult&&revisionAbandonment?{reviewAbandonBudgetExhausted:true}:{}),
       ...(causeAbandonment?{causeReviewAbandonment:causeAbandonment}:{}),
       ...(revisionAbandonment?{revisionFinalReviewAbandonment:revisionAbandonment}:{}),
-      ...(causeReviewCorrection?{causeReviewCorrection}:{}),
+      ...(causeReviewCorrection?{causeReviewCorrection}:{}),...(rediagnosis?{rediagnosis}:{}),
       ...(observationResume?{observationResume,observationCycle}:{}),
       ...(observationReproduction?{observationReproduction}:{}),
       ...(observationDiagnosis?{observationDiagnosis}:{}),
@@ -1460,7 +1495,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const checks=reviewChecks(revising?start.revisionRegression:start.regression),selectedHandoff=revising?revisionHandoffPath():handoffPath();
       const pkg=createReviewPackage({root:configuration.reproduction.cwd,baseline,checks,handoffPath:selectedHandoff});
       if(start.finalReviewRecovery&&!revising)need(pkg.packageDigest===start.finalReviewRecovery.packageDigest,'fix_review_recovery_drift');
-      const run=createFixFinalReview({reviewPackage:pkg,configuration:revising?fixRevisionReviewConfiguration(revisionFeedback(),start.revision.nextIdentity,hostContextIds):fixFinalReviewConfiguration(reviewConfiguration,start.causeReview?.providerThreadId??null),
+      const run=createFixFinalReview({reviewPackage:pkg,configuration:revising?fixRevisionReviewConfiguration(revisionFeedback(),start.revision.nextIdentity,hostContextIds):fixFinalReviewConfiguration(reviewConfiguration,causeThreads(start.causeReview?.providerThreadId)),
         timeoutMs:reviewTimeout(finalReview,configuration.reproduction.timeoutMs)},finalReview);
       const controller=new AbortController();active=controller;let registered=false;
       try{
@@ -1764,7 +1799,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       need(configuration.causeReview&&causeReview&&typeof causeReview.authorize==='function'&&typeof causeReview.run==='function','cause_review_unavailable');
       const reviewer=configuration.causeReview;
       const budget=reviewTimeout(causeReview,configuration.reproduction.timeoutMs);
-      const prefix=status.causeReviewAbandonment?'fix-cause-retry':'fix-cause';
+      const prefix=status.rediagnosis?'fix-cause-rediagnosis':status.causeReviewAbandonment?'fix-cause-retry':'fix-cause';
       const abandonedThread=status.causeReviewAbandonment?.providerThreadId??null;
       const pkg=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,status});
       const request=requestFor({invocationId:`fix-cause.${randomUUID()}`,identity,role:'reviewer',provider:reviewer.provider,
@@ -1789,7 +1824,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
               JSON.stringify(causeExpectation(request,reviewConfiguration)));
             if(event.event==='thread.started'){
               // A retry is a fresh reviewer thread, never the abandoned one.
-              need(event.provider_thread!==abandonedThread,'observation_context');
+              need(event.provider_thread!==abandonedThread&&event.provider_thread!==status.rediagnosis?.priorProviderThreadId,'observation_context');
               append(`${prefix}-started`,'result',{providerThreadId:event.provider_thread});started=event.provider_thread;
             }
             events.push(event);return true;
@@ -1819,6 +1854,47 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         if(!registered&&!controller.signal.aborted)need(false,error?.code==='fix_host_limit'?'fix_host_limit':'cause_authorization_invalid');
         return project();
       }
+      finally{clearTimeout(timer);active=null;}
+    },
+    async rediagnose({authorized=false,reason}={}){
+      need(!closed&&active===null,'fix_busy');need(authorized===true,'fix_rediagnosis_authorization_required');
+      const start=project();need(start.stage==='rediagnosis_required'&&!start.rediagnosis,'fix_rediagnosis_unavailable');
+      text(reason);need(Buffer.byteLength(reason,'utf8')<=1000&&!/[\r\n\0\u0085\u2028\u2029]/.test(reason),'fix_rediagnosis_reason_invalid');
+      need(bridge!==null,'fix_rediagnosis_unavailable');publishCause(true);
+      const prior=causeRecord(store.snapshot().records,'registered').payload;
+      const assertBasis=()=>{
+        const pkg=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,
+          status:{...start,stage:'cause_review_required'}});
+        need(pkg.packageDigest===prior.request.payload.reviewPackage.packageDigest,'fix_rediagnosis_source_changed');
+        const slug=identity.taskId.slice(6);
+        const slot=path.join(evidenceSpecsRoot,'.reviews',`fix-${slug}-cause-r2.md`);
+        let occupied=false;
+        try{fs.lstatSync(slot);occupied=true;}catch(error){if(error.code!=='ENOENT')throw error;}
+        need(!occupied,'fix_rediagnosis_evidence_conflict');
+        return pkg;
+      };
+      const pkg=assertBasis();
+      const controller=new AbortController();active=controller;let registered=false,timer;
+      try{
+        timer=setTimeout(()=>controller.abort(),configuration.reproduction.timeoutMs);
+        const learning=prepare===null?start.learning:inspectFixLearning(await prepare({identity,defect:configuration.defect},controller.signal));
+        need(!controller.signal.aborted,'fix_learning_interrupted');
+        need(project().stage===start.stage,'fix_evidence_changed');
+        // Preparation awaits current-session work; recheck its original evidence before the single continuation is registered.
+        assertBasis();
+        const history=store.snapshot().records;
+        append('fix-rediagnosis-intent','intent',{reason,historyDigest:digest(history),priorRegistrationDigest:digest(prior),
+          priorObservationDigest:start.causeReview.observationDigest,priorPackageDigest:pkg.packageDigest,
+          priorProviderThreadId:start.causeReview.providerThreadId,
+          reviewFeedback:start.causeReview.review,learning});registered=true;
+        const value=diagnosis(await bridge.call('fix_diagnose',{identity,defect:configuration.defect,
+          codeProject:configuration.reproduction.cwd,reproduction:start.reproduction,previousDiagnosis:start.diagnosis,
+          reviewFeedback:start.causeReview.review,diagnosticRecord:fixInvestigationRequest,
+          ...fixQaDiagnosisEvidence({specsRoot,identity,configuration})},controller.signal));
+        if(controller.signal.aborted)return project();
+        if(configuration.qaSource)inspectFixQaSource({specsRoot,identity,configuration});
+        append('fix-rediagnosis-result','result',value);return project();
+      }catch(error){if(!registered)throw error;return project();}
       finally{clearTimeout(timer);active=null;}
     },
     async advance({authorized=false}={}){

@@ -8,12 +8,16 @@ import {inspectFixTestAuthor} from './test-author.mjs';
 import {inventory} from './test-extension.mjs';
 import {inspectVisualCarrier} from './visual.mjs';
 
+export const rediagnosisPackage=value=>({historyDigest:value.historyDigest,priorPackageDigest:value.priorPackageDigest,
+  priorObservationDigest:value.priorObservationDigest,reason:value.reason,reviewFeedback:value.reviewFeedback});
+
 export function createFixCausePackage({codeProject,defect,status}){
   need((status.stage==='cause_review_required'||status.stage==='observation_cause_review_correction_required'&&status.causeReviewCorrection)
     &&status.reproduction?.status==='reproduced'
     &&status.diagnosis!==null,'fix_cause_review_unavailable');
   const value=json({version:1,kind:'cm-fix-cause-review-package',identity:status.identity,defect,
     reproduction:status.reproduction,diagnosis:status.diagnosis,learning:status.learning,
+    ...(status.rediagnosis?{rediagnosis:rediagnosisPackage(status.rediagnosis)}:{}),
     ...(status.causeReviewCorrection?{correction:status.causeReviewCorrection}:{}),
     files:readReviewSourceFiles(codeProject,status.diagnosis.affectedPaths)},4*1024*1024);
   return json({...value,packageDigest:digest(value)},4*1024*1024);
@@ -22,7 +26,12 @@ export function createFixCausePackage({codeProject,defect,status}){
 export function readFixCausePackage(raw){
   const value=json(raw,4*1024*1024);
   shape(value,['version','kind','identity','defect','reproduction','diagnosis','learning','files','packageDigest',
-    ...(Object.hasOwn(value,'correction')?['correction']:[])]);
+    ...(Object.hasOwn(value,'correction')?['correction']:[]),...(Object.hasOwn(value,'rediagnosis')?['rediagnosis']:[])]);
+  if(value.rediagnosis){
+    shape(value.rediagnosis,['historyDigest','priorPackageDigest','priorObservationDigest','reason','reviewFeedback']);
+    need([value.rediagnosis.historyDigest,value.rediagnosis.priorPackageDigest,value.rediagnosis.priorObservationDigest].every(v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v)), 'invalid_package');
+    text(value.rediagnosis.reason);need(value.rediagnosis.reviewFeedback?.verdict==='changes_requested','invalid_package');
+  }
   if(value.correction){
     shape(value.correction,['reason','resumeDigest','historyDigest','resumeStage',
       ...(Object.hasOwn(value.correction,'repairPackage')?['repairPackage']:[]),

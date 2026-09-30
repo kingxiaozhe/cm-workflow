@@ -6,6 +6,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {runLiveDriver} from './fixtures/live-evidence-driver.mjs';
 const root=fileURLToPath(new URL('..',import.meta.url));
 const driver=path.join(root,'scripts/cm-test-drive.mjs');
 const write=(file,value)=>fs.writeFileSync(file,JSON.stringify(value));
@@ -27,6 +28,18 @@ function setup(t,kind='logic'){
   t.after(()=>fs.rmSync(temp,{recursive:true,force:true}));
   return {temp,project,config,answers,session,planPath,run};
 }
+test('browser live handoff reaches the real host and preserves an unavailable-device BLOCKED observation',async t=>{
+  const f=setup(t,'browser');
+  write(f.planPath,{config:'config.json',answers:'answers',sessionDir:'session',
+    liveEvidence:{directory:'exchange',kinds:['qa_browser'],timeoutMs:1000}});
+  const out=await runLiveDriver(driver,f.planPath,'start',row=>{
+    assert.equal(row.kind,'qa_browser');assert.equal(row.payload.case.id,'TC-001');
+    return {verdict:'BLOCKED',evidence:[],environment:row.payload.environment,cleanup:'not_needed'};
+  });
+  assert.equal(out.status,0,out.stderr);assert.equal(out.requests.length,1);
+  assert.equal(JSON.parse(out.stdout).result.overall,'BLOCKED');
+  assert.equal(JSON.parse(out.stdout).result.executionPassed,0);
+});
 test('real host: status is read-only, logic start and historical resume',t=>{
   const f=setup(t);let out=f.run('status');assert.equal(out.status,0,out.stderr);
   assert.equal(JSON.parse(out.stdout).result.stage,'ready');assert.equal(fs.existsSync(f.session),false);
@@ -72,7 +85,7 @@ test('mutation probes catch static browser answer, omitted schema check, dropped
   };
   const browser=setup(t,'browser');let out=browser.run('start');assert.equal(out.status,2);
   const changed=source.replace("if(admission.modes.includes('browser')&&(admission.operation==='explore'||contract?.cases?.some(item=>item.kind==='browser')))","if(false)")
-    .replace('answerFor:row=>answers[row.kind]??null',"answerFor:row=>row.kind==='qa_browser'?readJson(path.join(answerRoot,'qa-browser.json'),'qa_browser'):answers[row.kind]??null");
+    .replace('answerFor:(row,answers,paths,control)=>live.has(row.kind)?live.answer(row,control):answers[row.kind]??null',"answerFor:row=>row.kind==='qa_browser'?readJson(path.join(answerRoot,'qa-browser.json'),'qa_browser'):answers[row.kind]??null");
   const staticFile=path.join(root,'scripts',`.cm-test-drive-static-mutant-${process.pid}.mjs`);fs.writeFileSync(staticFile,changed);
   t.after(()=>fs.rmSync(staticFile,{force:true}));
   const report=path.join(browser.project,'docs/test-reports','fake.md');fs.mkdirSync(path.dirname(report),{recursive:true});fs.writeFileSync(report,'Fabricated browser result');

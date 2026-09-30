@@ -58,7 +58,7 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-fix-drive.mjs" --plan "{PLAN}" advance
 `PLAN` 是一份小 JSON：宿主配置路径、代码根、`create|resume`、当前真实会话 ID、换会话时的
 原会话 ID、`--allow-*` 开关数组（原样传给宿主，不另造一套词）、答案目录。宿主中途的反问
 （学习记录、诊断、测试内容、修复内容、复盘）从答案目录里按种类读文件——**你的工作是把内容
-写进文件，再调一次驾驭员**；它绝不替你编任何一份。恢复时学习记录自动复用存档里已记的那份。
+写进文件，再调一次驾驭员**；它绝不替你编任何一份。普通恢复时按历史顺序复用当前生效的 Learning，包含重新诊断记录中的新应用；显式 `rediagnose` 必须重新读取当前适用教训。
 
 它最要紧的一条护栏：按「这一步会反问什么」**先查齐答案文件，再发指令**。宿主默认不重派
 结果不明的步骤；只有下文列出的本地步骤可经显式授权、说明原因后放弃并重做。缺答案硬发仍会让
@@ -67,6 +67,34 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-fix-drive.mjs" --plan "{PLAN}" advance
 
 它只是方便，不是放权：能做什么仍由宿主的开关说了算。
 按当前授权选择 `--review-config` 及 CLI 列明的 `--allow-*`，不要一次性全开。
+
+### 已完成根因审查拒绝后的原运行重新诊断
+
+当 `status.stage` 是 `rediagnosis_required`，有效 `changes_requested` 已保存，
+`advance`、`abandon_step` 和 `abandon_review` 都不能改写这项审查结论。
+standalone cm-fix 可在原配置、原 run、原 task attempt 下显式 `rediagnose` 一次：
+
+1. 对照原 finding 重新读取源文件和适用教训，准备新的诊断；不要修改复现输入或已审源文件。
+2. 驾驶员 PLAN 使用 `mode:"resume"`、原 `config`，保留当前真实 `hostContext`、runtime；
+   换会话时按上文填写 `originalHostContext`。PLAN.permissions 添加 `--allow-rediagnosis`，
+   单行 `reason` 不超过 1000 UTF-8 字节。驾驶员已传宿主启动要求的 `--allow-reproduction`，
+   不在 permissions 数组重复它；手动启动宿主仍须带此旗标，重新诊断不执行复现。
+   答案目录须有新的 `learning.json` 和单独的 `diagnosis-rediagnosis.json`（沿用原诊断 schema）；
+   不会复用 `diagnosis.json` 或自动执行原复现命令。
+3. 执行 `node "{CM_WORKFLOW_ROOT}/scripts/cm-fix-drive.mjs" --plan "{PLAN}" rediagnose`。
+   手动宿主相同操作为
+   `{"requestId":"redo-cause-1","operation":"rediagnose","reason":"按原 finding 重新核对根因"}`，
+   启动必须带 `--allow-rediagnosis`。
+4. 成功进入 `cause_review_required`，即使新诊断认为只有一层也必须重新独立审查。
+   取 `cause_review_package`，按原诊断/模型/授权合同再调用 `cause_review`；使用 fresh reviewer thread，
+   旧 reviewer thread 不可复用；后续最终 diff 审查也排除两轮根因 reviewer thread。新包绑定旧历史、旧审查和恢复原因，新证据写 `cause-r2.md`；
+   `cause-r1.md` 和所有旧记录保留。批准才回到原测试/修复流程，最终 diff Review 和完成门禁不变。
+
+新的诊断仍需补证据时进入 `rediagnosis_blocked`；第二次审查拒绝停在
+`rediagnosis_review_limit_reached`。源文件漂移、r2 证据占用、无效 reason 在追加前拒绝；异步准备返回后再次核对源包与 r2 占位，拒绝不消耗唯一续次；
+不能清档、覆盖旧结论或换 run 重置上限。重新诊断或其新审查中断仍保守停 `unknown`，
+本入口不提供自动重派、abandon 或第三次审查。当前仅 standalone 接线，不宣称 QA-fix 子宿主支持。
+这项恢复需要实际新诊断和独立审查；合成夹具成功不表示真实产品已恢复或已修复。
 
 ### 同仓 specs 的受保护修复
 
@@ -89,7 +117,7 @@ IPC socket 的命令都会失败**，典型的是 `tsx` CLI（启动时在 TMPDI
 `fix_test_author`/`fix_repair`请求若有`editMode:"protected-text-v1"`，当前会话只读取和生成提案，**不直接修改文件**。
 按请求scope和expected返回`{outcome,edits:[{path,beforeSha256,content}]}`，content为完整UTF-8正文，null删除已有文件，
 beforeSha256严格复制expected中该路径的摘要（原不存在则null）；不能改路径范围或先自行落盘。blocked须edits为空数组。
-原64KiB通道上限不变，不能用外部脚本/命令/binary替代超限正文；无法表达则如实阻断，不切回无保护写入。
+默认通道仍为64KiB。锁文件等大文本可显式配置驾驭员inputLimit/宿主--input-limit（至多4MiB），使用同一完整UTF-8正文提案；单文件及提案数据校验仍限1MiB（含JSON编码开销），传输上限不扩大内层数据限制，原范围、摘要、沙箱和Review保护不变。不能用外部脚本/命令/binary代替正文；超出上限如实阻断，不切回无保护写入。
 固定子进程校验整组路径/原摘要后在沙箱内写入；符号链接、硬链接或漂移拒绝。保留原diff检查、Review和门禁。
 这是同一次原已登记操作，不新增provider调用或作者身份；中途失败可能留下部分改动，原owner保留unknown，不能自动重试或回滚。
 恢复必须保持原配置，旧运行不能临时开启/关闭保护。宿主本身仍是受信执行者，语义/浏览器请求不授权修改项目文件。

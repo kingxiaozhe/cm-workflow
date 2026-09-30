@@ -40,7 +40,7 @@ test('fake Claude process stderr marker yields only its reported model',async()=
   }
 });
 
-// Authored without local execution; verification by reviewer outside the sandbox is pending.
+// Darwin fixtures run in the dedicated macOS CI job and were exercised locally.
 // The sink intentionally retains protocol checks, never the decoded body bytes.
 for(const encoding of ['gzip','zstd','br'])test(`Claude probe ${encoding} body reaches only its declared decoder`,
   {skip:process.platform!=='darwin'||(encoding==='zstd'&&typeof zlib.zstdCompressSync!=='function')},async()=>{

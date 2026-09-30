@@ -172,11 +172,14 @@ test('missing project defaults to user scope and Chinese preset/comment/output',
   assert.match(result.text,/你手上有哪个 AI 工具/);assert.match(result.text,/确认？/);assert.match(result.text,/runtimes_source: user/);
 }));
 test('three empty mandatory answers, refusal, EOF and SIGINT do not write',()=>wizardFixture(async root=>{
-  for(const answers of ['2\n\n\n\n','2\n1\nn\n','2\n']){
-    const result=await wizard(root,answers);assert.equal(result.code,0);assert.match(result.text,/Cancelled/);assert.deepEqual(fs.readdirSync(root),[]);
+  for(const [lang,cancelled] of [['en',/Cancelled/],['zh',/已放弃/]]){
+    for(const answers of ['2\n\n\n\n','2\n1\nn\n','2\n']){
+      const result=await wizard(root,answers,lang);assert.equal(result.code,0);
+      assert.match(result.text,cancelled);assert.deepEqual(fs.readdirSync(root),[]);
+    }
+    const io=tty(),running=main(['--project',root],{...io,lang});process.emit('SIGINT');
+    assert.equal(await running,0);assert.match(io.text(),cancelled);assert.deepEqual(fs.readdirSync(root),[]);
   }
-  const io=tty(),running=main(['--project',root],io);process.emit('SIGINT');
-  assert.equal(await running,0);assert.match(io.text(),/Cancelled/);assert.deepEqual(fs.readdirSync(root),[]);
 }));
 test('explicit project creation, existing-project scope default and invalid choice retry',()=>wizardFixture(async root=>{
   const created=await wizard(root,'1\nwrong\n1\ny\n');assert.equal(created.code,0);assert.match(created.text,/Will create project configuration/);

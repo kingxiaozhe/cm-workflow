@@ -271,6 +271,7 @@ def mark_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task", required=True)
     parser.add_argument("--tasks", required=True)
     parser.add_argument("--project-root")
+    parser.add_argument("--correction")
     parser.add_argument("--allow-legacy-unbound", action="store_true")
     parser.add_argument("--require-learning", action="store_true")
     return parser

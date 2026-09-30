@@ -20,6 +20,7 @@ import {captureReviewBaseline} from '../runtime/js/cm-ai/review-package.mjs';
 import {boundReviewText,reviewResultForPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {REVIEW_TEXT_LIMIT,JOURNAL_PAYLOAD_LIMIT} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {main as fixHostMain} from './cm-fix-host.mjs';
+import {runLiveDriver} from './fixtures/live-evidence-driver.mjs';
 
 // Log mirrors and runtime declarations stay out of the invoking user's home.
 const isolated=fs.mkdtempSync(path.join(os.tmpdir(),'cm-drive-gaps-home-'));
@@ -86,6 +87,39 @@ const result=run=>JSON.parse(run.stdout).result;
 const records=f=>JSON.parse(fs.readFileSync(f.store,'utf8')).records;
 const lastCheckpoint=f=>records(f).filter(row=>row.payload.type==='effect-checkpoint').at(-1).payload.checkpoint;
 const noRun=f=>assert.equal(fs.existsSync(path.join(f.specsDir,'.reviews','.execution')),false,'preflight must not create a run');
+test('single advance reaches live logic and browser QA only after independent fixture Review',async t=>{
+  const f=fixture(t);f.reviewer('approved');f.content('target.mjs','export const value = 42;\n');f.develop({'target.mjs':'target.mjs'});f.develop({'target.mjs':'target.mjs'},'develop-a2.json');
+  const cases=['logic','browser'].map((kind,index)=>({id:`TC-00${index+1}`,origin:'user',kind,blocking:true,
+    acIds:[],taskIds:['T-001'],title:'Fixture observation',preconditions:[],steps:['Observe fixture'],expected:['value is 42'],cleanup:[]}));
+  fs.writeFileSync(path.join(f.specsDir,'1.work/test-cases.json'),JSON.stringify({schemaVersion:'1.0',feature:'work',cases}));
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(f.specsDir)}));
+  fs.writeFileSync(path.join(f.root,'workflow.json'),JSON.stringify({documentationPaths:[],applicableAgentFiles:[],qa:{
+    commands:[{id:'fixture-check',caseIds:['TC-001'],command:[process.execPath,'-e','0']}],
+    environment:{kind:'web',carrier:'browser',target:'fixture',scope:'local'}}}));
+  f.write('qa-assess.json',{scores:{scope:2,risk:2,accumulation:2,boundary:2},changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}});
+  f.write('documentation-inspect.json',{status:'completed',reason:'Fixture inspected'});
+  const plan=f.plan({permissions:['--allow-review-attempt','1','--workflow-config','workflow.json','--allow-qa','--browser-qa','available'],
+    liveEvidence:{directory:'exchange',kinds:['qa_logic','qa_browser'],timeoutMs:1000}});
+  const out=await runLiveDriver(DRIVER,plan,'advance',row=>row.kind==='qa_logic'
+    ?{verdict:'SUPPORTED',evidence:['Fixture target.mjs exports 42']}
+    :{verdict:'BLOCKED',evidence:[],environment:row.payload.environment,cleanup:'not_needed'},{env:f.env});
+  assert.equal(out.status,0,out.stderr);assert.deepEqual(out.requests.map(r=>r.kind),['qa_logic','qa_browser']);
+  assert.equal(result(out).code,'qa_result_blocked');
+});
+test('single live verification precheck executes after checks and blocks before Review',async t=>{
+  const f=fixture(t);f.content('target.mjs','export const value = 42;\n');f.develop({'target.mjs':'target.mjs'});
+  fs.writeFileSync(path.join(f.specsDir,'1.work/tasks.md'),'- [ ] T-001: fixture\n  - 验证: value is 43\n');
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(f.specsDir)}));
+  const plan=f.plan({verificationPrecheck:true,liveEvidence:{directory:'exchange',kinds:['verification_precheck'],timeoutMs:1000}});
+  const out=await runLiveDriver(DRIVER,plan,'advance',row=>{
+    assert.equal(row.kind,'verification_precheck');
+    assert.match(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),/42/);
+    return {items:[{requirement:'value is 43',satisfied:false,evidence:'Actual fixture source exports 42'}]};
+  },{env:f.env});
+  assert.equal(out.status,0,out.stderr);assert.equal(out.requests.length,1);
+  assert.equal(result(out).code,'verification_precheck_failed');
+  assert.equal(result(out).pendingAction,'resume');
+});
 
 // ---- #24 run ID length -------------------------------------------------------------------------
 test('#24 a run ID shorter than 8 characters is refused before the driver launches a host',t=>{

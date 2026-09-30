@@ -105,6 +105,11 @@ PRD artifact 回执先比对原始字节，仅 Markdown 中 `tasks.md` 的任务
   proceed only when the reviewer records `approved` and the disagreement is
   preserved in `LESSONS.md`.
 
+A concrete human-approved local correction after blocked round two may use the
+one-shot task-gate entrance in `docs/human-correction.md`. It preserves the original
+reports, seals a fresh independent correction review, and does not reopen a host
+journal or reset ordinary attempts. Without explicit human authorization, stop.
+
 At any stage, changing reviewed code, tests, or execution instructions invalidates
 approval for the changed content. N5 may record improvement suggestions, not make
 new implementation changes while writing lessons. After mark-done, preserve the

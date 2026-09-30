@@ -33,6 +33,10 @@ export function fixProgress(status,config={},authorization={}){
     blocker:null,nextAction:null,requiresUser:false,finished:done,
     evidenceScope:'recorded_history_not_fresh_execution',remainingScope:'current_path_not_future_revisions'};
   if(done){result.remaining=[];return result;}
+  if(stage==='rediagnosis_required')return {...result,current:'根因审查要求重新诊断',blocker:stage,
+    nextAction:'原 run 使用 rediagnose（--allow-rediagnosis、reason）；处理原 findings 后重新独立审查，保留 cause-r1。',requiresUser:true};
+  if(stage==='rediagnosis_review_limit_reached')return {...result,current:'第二次根因审查仍未通过',blocker:stage,
+    nextAction:'保留两次审查和诊断；交用户判断，不继续重派或重建身份。',requiresUser:true};
   if(stage==='escalated')return {...result,current:'已升级立项，修复未完成',remaining:[],nextAction:null};
   if(stage==='cancelled')return {...result,current:'任务已取消',blocker:'cancelled',nextAction:'保留历史，不自动恢复。',requiresUser:true};
   if(status.executionActive===true)return {...result,current:'当前操作正在执行',nextAction:'等待当前操作结果，不重发或申请续审。'};
