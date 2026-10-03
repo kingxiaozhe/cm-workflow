@@ -73,7 +73,7 @@ Install or upgrade with the same command:
 npx @aibyzero/cm-workflow@latest install
 ```
 
-To pin a version, use `npx @aibyzero/cm-workflow@0.16.5 install` from outside
+To pin a version, use `npx @aibyzero/cm-workflow@0.16.6 install` from outside
 the CM Workflow source checkout (for example, your home directory). Inside a
 checkout with the same package name and version, npm can select the local
 uninstalled package and report `cm-workflow: command not found`.
@@ -253,11 +253,16 @@ CM-owned paths you have reviewed, or restore from your own backup.
 ## Runtime declaration at installation
 
 After a successful core install, `install.sh`, `install-codex.sh`, and `install.ps1`
-ask which tools you have: Codex only, Claude only, or both. When both are selected,
-choose the coder (Codex recommended, Claude reviews; or the reverse).
+offer an optional user-default setup. First-time setup defaults to skipping; an existing
+declaration is displayed and “Keep it? [Y/n]” defaults to keeping it.
+Only opting in asks which tools you have: Codex only, Claude only, or both, and which
+tool codes when both are selected. Preview the target, fields and impact, then explicitly
+confirm `[y/N]` to save. Enter at this final step does not save.
 The shared prompt writes only `~/.cm-workflow/runtimes.yml` using a temporary file
 and atomic rename. It never changes settings.json or CLAUDE.md.
-An existing declaration is displayed and “Keep it? [Y/n]” (or “保留？[Y/n]”) defaults to keeping it.
+An invalid existing declaration is reported and preserved; setup does not overwrite it.
+Configuration changes after the preview invalidate that confirmation and require a fresh preview.
+The installer checks user defaults only, not effective configuration in individual projects.
 `--yes` (Bash), `-Yes` (PowerShell, also implies the existing `-Force`), `-Force`,
 or non-TTY input/output skips this prompt without creating or changing the file.
 
@@ -275,14 +280,20 @@ fields still take precedence and conflicts fail validation. `cm-init` inherits t
 user default without asking again and reports `来源: 用户级默认`.
 
 Run `$cm-runtime` in Codex, `/cm-runtime` in Claude Code, or `/cm:runtime` on macOS/Linux
-without arguments for three questions in your current conversation language:
+without arguments to display current effective configuration, source and model aliases. Choose:
+`[1] Keep current configuration (recommended, default)`, `[2] Change runtime preset`, or
+`[3] Advanced model configuration` (documentation and validation only). Keeping missing
+configuration does not create any file. Only option 2 starts the wizard:
 `[1] Current project / [2] User default` → `[1] Codex only / [2] Claude only / [3] Both`
 (with `[1] Codex writes, Claude reviews (recommended) / [2] Claude writes, Codex reviews`
-when both are selected) → preview the preset/current value and confirm `[Y/n]`.
+when both are selected) → preview the fields and effective impact and confirm `[y/N]`.
 In a terminal, `node <workflow-root>/scripts/cm-runtime.mjs [--project PATH]` opens the same wizard.
 Scope defaults to 1 with an existing project config, otherwise 2. Choosing 1 without a config
 announces creation from the template. The tool question has no default. Ctrl+C, three consecutive
-empty answers to that required question, or declining confirmation cancels without writing.
+empty answers to that required question, EOF, declining confirmation or Enter at confirmation
+cancels without writing. Invalid configuration is reported and preserved, not automatically repaired.
+Project overrides are shown explicitly. Model aliases are retained across adapter changes;
+validation does not prove provider compatibility, model access or quota.
 Without a TTY, no command prints usage and exits 2.
 
 Installer prompts, terminal wizard, diagnostics and the user-file comment use Chinese or English:
@@ -293,6 +304,8 @@ For scripting, use explicit commands:
 
 ```text
 cm-runtime show [--project PATH]
+cm-runtime preview codex-codes [--project PATH] [--json]
+cm-runtime set codex-codes [--project PATH] --expect-preview <preview_sha256>
 cm-runtime set codex-codes [--project PATH]
 cm-runtime set --user claude-codes
 cm-runtime unset --user
@@ -302,6 +315,11 @@ Presets: `codex-only`, `claude-only`, `codex-codes`, `claude-codes`.
 For the literal terminal entry, use `node <workflow-root>/scripts/cm-runtime.mjs`.
 A project set preserves every unrelated byte in an existing config; a new config
 uses the distributed template. Unsetting the user file preserves project declarations.
+It is not a reset of all configuration. The conversational wizard uses readonly `preview`
+and `set --expect-preview` to bind approval to the displayed inputs. Preserve the same
+project working directory, language, runtime and user configuration directory across both calls.
+For user defaults, run `preview <preset> --user` in the code project directory to show its
+effective overrides. Stale previews must be regenerated and explicitly confirmed again.
 Changes affect new runs only; existing runs retain their bound configuration.
 `show` is read-only and missing CLIs only produce WARN (presence does not prove quota).
 Successful `set` records a private `decision/route` through the existing log writer;

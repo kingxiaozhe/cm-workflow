@@ -7,7 +7,7 @@ project:
   type: auto                         # auto | java-backend | web-frontend | custom
   workflow: cm-default               # cm-default | java-backend | web-frontend
 
-# 安装时可声明用户默认；cm-init 优先继承，未声明才问。cm-runtime 可随时切换。
+# 安装时可选声明用户默认；cm-init 优先继承，未声明才问。cm-runtime 默认查看并保留。
 # codex | claude | both。不写时回退用户级 runtimes.yml；两级都没有才是未声明。
 runtimes:
   available: both

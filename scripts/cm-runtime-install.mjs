@@ -5,7 +5,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createInterface} from 'node:readline';
 import {userRuntimesPath,readConfigText,parseUserRuntimes} from './cm-workflow-config.mjs';
-import {writeUserRuntime} from './cm-runtime.mjs';
+import {writeUserRuntime,prepareRuntimePreview,formatRuntimePreview} from './cm-runtime.mjs';
 import {runtimeLanguage,runtimeText as t} from './cm-runtime-i18n.mjs';
 
 export class PromptCancelled extends Error {}
@@ -54,12 +54,16 @@ export async function promptRuntime(argv=process.argv.slice(2),input=process.std
       try{
         const current=parseUserRuntimes(readConfigText(file));
         output.write(t('current',lang,{available:current.runtimes.available,preset:current.preset}));
-      }catch(error){output.write(t('invalid',lang,{error:error.message}));}
+      }catch(error){output.write(t('invalid',lang,{file,error:error.message}));return;}
       const keep=await ask(t('keep',lang));
       if(keep!=='n'&&keep!=='N')return;
-    }
+    }else if((await ask(t('configure',lang))).toLowerCase()!=='y')return;
     const preset=await askRuntimePreset(ask,lang);
-    output.write(t('installed',lang,{file:writeUserRuntime(preset,{lang}),preset}));
+    const preview=prepareRuntimePreview(null,preset,{user:true,lang});
+    output.write(formatRuntimePreview(preview,lang));
+    let confirm;do{confirm=(await ask(t('confirm',lang))).toLowerCase();}while(!['','y','n'].includes(confirm));
+    if(confirm!=='y')throw new PromptCancelled();
+    output.write(t('installed',lang,{file:writeUserRuntime(preset,{lang,preview}),preset}));
   }catch(error){if(error instanceof PromptCancelled)output.write(t('cancelled',lang));else throw error;}
   finally{questions.close();}
 }

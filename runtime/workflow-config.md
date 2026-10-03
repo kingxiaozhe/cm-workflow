@@ -30,7 +30,7 @@ CM 支持一个可选的项目根配置文件：`.cm-workflow.yml`、`.cm-workfl
 ## 运行时声明
 
 `runtimes.available` 记录用户自报的可用运行时：`codex`、`claude` 或 `both`。缺省为
-`unknown`（两级均未声明，不做交叉检查）。安装器可写用户默认，`cm-init` 优先继承且不再询问；`cm-runtime` 随时切换。
+`unknown`（两级均未声明，不做交叉检查）。安装器可选写用户默认，`cm-init` 优先继承且不再询问；`cm-runtime` 默认查看并保留，主动选择后才修改。
 
 | 预设 | `runtimes.available` | `roles.coder.adapter` | `roles.reviewer.adapter` |
 | --- | --- | --- | --- |
@@ -150,6 +150,15 @@ preset: codex-codes
 
 `cm-runtime show [--project PATH]` 只读；`set <preset> [--project PATH]` 原子改项目；
 `set --user <preset>` 改用户默认；`unset --user` 删除用户默认但不删除项目声明。
+无参数先显示有效配置、来源与模型，默认保留；高级模型入口只提供说明和现有校验方法。
+终端/会话向导和安装器的最终确认均为 `[y/N]`，回车不写；无效配置保留并报告错误。
+`preview <preset> [--project PATH | --user] [--json]` 只读生成候选，复用同一合并和校验逻辑，
+展示范围、目标、字段前后值、项目覆盖和保留模型。`set ... --expect-preview <preview_sha256>`
+核对项目、范围、预设、候选内容及相关输入快照；漂移后必须重新预览确认。两次调用保持相同
+工作目录、语言和运行时环境。用户范围在代码项目目录执行，以核对该项目；不扫描所有项目。
+摘要是配置一致性检查，不是授权凭证；原有显式 `set` 仍按原合同执行。
+模型别名保留不表示更换适配器后仍可用；结构校验不证明 provider 兼容、调用成功或配额。
+`unset --user` 不是通用重置，项目声明仍优先；高级入口不提供任意模型编辑器。
 新建项目配置使用模板，已有配置只改五个字段，其余原文保留。已创建的 run 绑定原配置，切换不改 run。
 `set` 通过 cm-log-event.mjs 的 Python 锁适配器写独立的 `decision/route` 全局日志，
 仅附 preset、source、项目路径；没有 specs 指针或业务任务状态写入。日志失败明确报告配置已保存。

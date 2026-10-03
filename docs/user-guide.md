@@ -111,7 +111,8 @@ CM Workflow 经常同时使用两个目录：
 
 ### 可选的项目角色与模型配置
 
-如果不同项目需要不同角色或模型，可以把
+建议保留当前默认配置。确有不同角色或模型需求时，可通过 `$cm-runtime` 的
+“查看高级模型配置说明”入口了解合同，再把
 `{CM_WORKFLOW_ROOT}/templates/cm-workflow.yml` 复制到代码项目根目录，命名为
 `.cm-workflow.yml` 后修改。它只配置角色、适配器、模型别名和测试/交付策略，不保存任何
 凭据；配置缺失时仍使用当前默认流程。检查有效配置：
@@ -560,8 +561,9 @@ $cm-security {项目路径} --semgrep-rules {外部本地规则文件} --osv-db 
 
 ## 运行时默认与切换
 
-交互安装在核心成功后询问“只有 Codex / 只有 Claude / 两个都有”，两家都有再问谁写代码。
-结果保存为 `~/.cm-workflow/runtimes.yml`；已有文件显示当前值并默认保留。
+交互安装在核心成功后提供可跳过的用户默认配置入口；已有文件显示当前值并默认保留。
+主动配置才询问“只有 Codex / 只有 Claude / 两个都有”，两家都有再问谁写代码，
+预览后明确确认 `[y/N]` 才保存为 `~/.cm-workflow/runtimes.yml`，回车不保存。
 `--yes` / `-Yes` 或非 TTY 跳过提问且不写文件。测试时可用 `CM_WORKFLOW_HOME` 覆盖目录。
 
 优先级：**项目 > 用户级默认 > 未声明**。项目没有 `runtimes.available` 才读取用户文件；
@@ -576,12 +578,18 @@ $cm-security {项目路径} --semgrep-rules {外部本地规则文件} --osv-db 
 | `codex-codes` | Codex | Claude |
 | `claude-codes` | Claude | Codex |
 
-直接输入 `$cm-runtime`（Claude Code 为 `/cm-runtime`）即可由会话按当前对话语言三问：
+直接输入 `$cm-runtime`（Claude Code 为 `/cm-runtime`）会先展示当前有效配置、来源和模型别名，
+提供 `[1] 保留当前配置（推荐，默认）`、`[2] 修改运行时预设`、`[3] 查看高级模型配置说明`。
+保留时不写文件，配置缺失也不会创建；高级选项只显示说明与校验方法。只有选 2 才进入：
 `[1] 当前项目 / [2] 用户级默认` → `[1] 只有 Codex / [2] 只有 Claude / [3] 两个都有`
-（选 3 再选 `[1] Codex 写、Claude 审（推荐） / [2] Claude 写、Codex 审`）→ 显示预设和当前值并确认。
+（选 3 再选 `[1] Codex 写、Claude 审（推荐） / [2] Claude 写、Codex 审`）→ 预览并明确确认 `[y/N]`。
 终端无参数运行 `node <workflow-root>/scripts/cm-runtime.mjs [--project PATH]` 进入同一向导。
 有项目配置时范围默认 1，否则默认 2；无配置选 1 会提示从模板新建。工具问题必须选择；
-Ctrl+C、必选问题连续三次空输入或拒绝确认均不写。非 TTY 无参数打印用法并退出 2。
+Ctrl+C、EOF、必选问题连续三次空输入、拒绝确认或最终确认直接回车均不写。
+预览显示目标文件/范围、字段前后值、当前项目保存后的实际有效值；项目声明覆盖用户默认时会说明
+当前项目不会切换。模型别名保持原样，但更换适配器后可能不兼容。校验不证明模型可调用或配额可用。
+等待确认时相关配置改变会拒绝旧确认，须重新预览；无效配置报告错误并保留，不自动修复。
+非 TTY 无参数打印用法并退出 2。
 
 安装器、终端向导与人类可读诊断按系统语言显示中文或英文：
 `CM_WORKFLOW_LANG=zh|en` > `LC_ALL` > `LC_MESSAGES` > `LANG` > Node Intl > 英文兜底；
@@ -598,9 +606,16 @@ $cm-runtime unset --user
 
 Claude Code 用 `/cm-runtime`，macOS/Linux 兼容 `/cm:runtime`；终端入口为
 `node <workflow-root>/scripts/cm-runtime.mjs`。`show` 显示 `runtimes_source: project|user|none`、
-有效预设（无法精确匹配时为 custom）、coder/reviewer adapter/source。CLI 缺失只 WARN，不代表配额检测。
+有效预设（运行时五字段无法匹配时为 custom）、coder/reviewer adapter/source/model 和声明路径。
+CLI 缺失只 WARN，不代表配额检测。
+
+会话向导先执行 `preview <preset> [--project PATH | --user]`（可加 `--json`），
+明确确认后用 `set ... --expect-preview <preview_sha256>` 核对同一预览。两次调用须保持相同项目工作目录、
+语言、运行时和用户配置目录；用户级预览在代码项目根执行，以展示该项目的覆盖关系。
+`preview` 不写文件或日志；显式 `show/set/unset` 命令仍可用于原有自动化。
 
 `set` 只改声明和 coder/reviewer 的 adapter/source，保留模型、策略、注释、格式等其他原文；
-新配置从模板生成。`set --user` 改全局默认，`unset --user` 只删除用户默认，不清项目声明。
+新配置从模板生成。`set --user` 改全局默认，`unset --user` 只删除用户默认，不清项目声明，
+不等于恢复所有默认值；不提供通用重置或任意模型编辑器。
 这些操作不修改正在运行的 run；run 创建时已绑定配置。`set` 记录独立的 `decision/route` 日志，
 不借用业务 run 指针；若日志失败会明确提示“配置已写、日志失败”。`show` 不写日志。

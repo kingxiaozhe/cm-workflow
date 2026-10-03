@@ -464,6 +464,15 @@ export function loadUserRuntimes(){
 }
 
 export function loadConfig(input){
+  return loadConfigUsing(input,loadUserRuntimes);
+}
+// Read-only candidate resolution; use the same merge and validation as the real loader.
+// Keep the public loadConfig input and effective-config JSON contracts unchanged.
+export function previewUserRuntimeConfig(input,preset){
+  runtimePreset(preset);
+  return loadConfigUsing(input,()=>({preset}));
+}
+function loadConfigUsing(input,userDefaults){
   if(!object(input)||!Object.hasOwn(input,'projectRoot')
     ||Object.keys(input).some(key=>!['projectRoot','configPath','text'].includes(key)))throw new ConfigError('invalid config input');
   const root=realDirectory(input.projectRoot,'project root');
@@ -486,7 +495,7 @@ export function loadConfig(input){
     const raw=parseDocument(configPath,text);walkForSecrets(raw);validateRaw(raw);
     const normalizedRaw={...raw,version:Number(raw.version)};
     const projectDeclared=raw.runtimes?.available!==undefined;
-    const user=projectDeclared?null:loadUserRuntimes();
+    const user=projectDeclared?null:userDefaults();
     const defaults=user?deepMerge(DEFAULT_CONFIG,runtimePreset(user.preset)):DEFAULT_CONFIG;
     const effective=deepMerge(defaults,normalizedRaw),policy=effective.roles.external_expert.model_policy;
     RUNTIME_SOURCES.set(effective,projectDeclared?'project':user?'user':'none');

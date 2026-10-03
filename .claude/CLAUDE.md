@@ -24,7 +24,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 
 - 双运行时容灾: 断点交接 `node scripts/cm-failover.mjs status|handoff|probe --specs {SPECS_DIR}`（只读，不标记完成）；启动前选路 `cm-ai-host.mjs serve ... --failover`（显式 opt-in，只定起跑运行时，切换必播报）。运行时声明 `runtimes.available` 与四个预设见 `templates/cm-workflow.yml`、`runtime/workflow-config.md`（声明不等于派发）。主从与边界见 `docs/runtime-failover.md`；定点测试 `node --test scripts/cm-failover.test.mjs scripts/cm-runtime-failover.test.mjs`。
 
-- 运行时声明：`$cm-runtime show|set <preset>|set --user <preset>|unset --user`；项目 > `~/.cm-workflow/runtimes.yml` > 未声明；只影响新 run。安装器交互写用户默认，`--yes` / `-Yes` 或非 TTY 跳过。
+- 运行时声明：`$cm-runtime` 先查看并默认保留，主动修改才进入预设向导；高级模型入口只读说明。`show|preview <preset>|set <preset>|set --user <preset>|unset --user`；向导确认 `[y/N]`，`set --expect-preview <sha256>` 拒绝过期预览。项目 > `~/.cm-workflow/runtimes.yml` > 未声明；只影响新 run。安装器可跳过配置且默认保留，`--yes` / `-Yes` 或非 TTY 跳过。
 
 - 安装依赖: 无 npm 安装步骤（`package.json` 无依赖；可视化工具按需使用外部 Playwright）
 - 开发运行: 不适用（直接维护 Markdown 与脚本）
