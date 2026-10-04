@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import readline from 'node:readline';
+import {guidanceText} from './operator-guidance.mjs';
 
 export const stderr=line=>process.stderr.write(`[drive] ${line}\n`);
 export const stop=(code,line)=>{stderr(line);process.exit(code);};
@@ -93,6 +94,7 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
       done=true;
       control.abort();
       process.stdout.write(JSON.stringify(row,null,2)+'\n');
+      const guidance=guidanceText(row.result);if(guidance)stderr(guidance);
       if(row.result?.stage)stderr(`stage = ${row.result.stage}`);
       if(row.error)stderr(`宿主拒绝：${row.error.code}（真实原因和位置在上面 [host] 那行 diagnostic 里）`);
       process.exitCode=hostResponseFailed(row)||rejected!==null?1:0;

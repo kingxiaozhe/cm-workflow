@@ -292,6 +292,8 @@ test('D1 batch retries failed checks before review in the same attempt',t=>{
   const first=f.drive(f.plan({permissions:['--allow-qa','--runtime','claude'],checks:failed}),'advance');assert.equal(first.status,0,first.stderr);
   const result=JSON.parse(first.stdout).result;
   assert.equal(result.code,'develop_checks_not_passed');assert.equal(result.pendingAction,'resume');
+  assert.equal(result.guidance.recoveryOperation,'advance');assert.equal(result.guidance.authorizationGranted,false);
+  assert.match(first.stderr,/原批次入口/);assert.doesNotMatch(result.guidance.prerequisites.join(' '),/--mode/);
   const clean={[key]:[{id:'test',command:[process.execPath,'-e','0']}]};
   const second=f.drive(f.plan({mode:'resume',originalHostContext:'batch-host-a',permissions:['--allow-qa','--runtime','claude'],checks:clean}),'advance');
   assert.equal(second.status,0,second.stderr);assert.match(second.stderr,/应答 develop/);

@@ -70,7 +70,7 @@ export function projectHostResult({specsDir,feature,result,current}){
     if(['N6','N7','N8'].includes(previous.node))return;
     const node=['blocked','unknown','cancelled'].includes(result.state)?previous.node:selected[0];
     writeStatusProjection({specsDir,feature,identity:result.identity,node,state:result.state,
-      detail:selected[1]+(result.code?`（${result.code}）`:''),code:result.code,
+      detail:(result.guidance?.summary??selected[1])+(result.code?`（${result.code}）`:''),code:result.code,
       ...(result.state==='changes_requested'&&result.identity.attempt>1?{previousAttempt:result.identity.attempt-1}:{}),
       expectedToken:previous.progress_id??null});
   }catch{diagnostic();}

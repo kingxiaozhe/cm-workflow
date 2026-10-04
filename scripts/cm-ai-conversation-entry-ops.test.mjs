@@ -60,6 +60,21 @@ test('check output block reaches operator status with paths and resume action',(
   assert.equal(result.code,'check_output_out_of_scope');
   assert.equal(result.pendingAction,'resume');
   assert.equal(result.reason,'out_of_scope: build/product');
+  assert.equal(result.guidance.recoveryOperation,'advance');assert.match(result.guidance.nextStep,/保留用户改动/);
+  assert.equal(f.effects(),0);
+}));
+
+test('in-flight status explains waiting and never offers abandonment or another developer dispatch',()=>fixture(async f=>{
+  f.setStatus('blocked','completion_checks_changed');f.setCompletionBlocks(()=>1);let release;
+  const started=new Promise(resolve=>{release=resolve;});let enter;
+  const entered=new Promise(resolve=>{enter=resolve;});
+  f.setExecutor(async()=>{f.setStatus('unknown','execution_error');enter();await started;return f.status();});
+  const entry=f.entry(),active=entry.handle({version:1,operation:'complete',requestId:'complete',identity,packageDigest});await entered;
+  const status=await entry.handle(control('status'));
+  assert.equal(status.guidance.recoveryOperation,null);assert.match(status.guidance.summary,/仍有操作在执行/);
+  assert.equal(f.effects(),1);release();await active;
+  const idle=await entry.handle(control('status'));
+  assert.match(idle.guidance.nextStep,/只读核对/);assert.equal(f.effects(),1);
 }));
 
 test('review package drift reports paths and suppresses refused decision and completion actions',()=>fixture(async f=>{

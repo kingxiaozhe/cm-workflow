@@ -2,6 +2,29 @@
 
 ## cm-ai 当前任务进度
 
+cm-ai 宿主返回的可选 `guidance` 说明当前阻塞与下一步：`summary` 是普通话摘要，
+`nextStep` 是处理步骤，`recoveryOperation` 是原宿主已有的操作名，`prerequisites` 是恢复前提。
+`authorizationGranted` 固定为 false；它不授予派发权限，也不替代原 `state`、`code`、
+`reason`、`pendingAction` 或完成门禁。结果未确认、拒绝或仍有在途操作时，不建议直接重跑。
+单任务／批次驾驶员把同一说明打印到 stderr，stdout 仍为 JSON；状态卡展示同一摘要。
+读取 status 只计算说明，不更新状态卡或执行存档；历史运行沿原配置恢复，不迁移记录。
+批次说明按批次入口调整：保留原批次配置和 PLAN，从原批次 `advance` 续接；不套用单任务
+`--mode` 或成员的放弃、规则包恢复、规格换绑操作。批次不支持的出口只说明需核对，不派发。
+
+- `blocked/develop_checks_not_passed`、`develop_package_too_large` 等且原 `pendingAction=resume`：
+  根据 reason 修复代码、环境或材料，保留原配置及 runId，以 `--mode resume` 启动，再发送 `advance`。
+  这会重做本轮交付和检查；提示不提供新审查授权。改变 scope 须先走规格变更。
+- 规则交付后的审查包失败，仅原宿主明确 `pendingAction=bootstrap_review_recover` 时：核对规则、
+  handoff 与原证据，以原配置 resume，显式 `--allow-bootstrap-review-recovery` 并提供 reason，
+  再发送 `bootstrap_review_recover`，不重新派发开发。
+- `unknown`：先核对原运行、实际文件及进程。只有原宿主报告可放弃操作时，才说明对应的
+  `abandon_effect`／`abandon_review`、显式权限与 reason；旧进程须退出，放弃不代表成功。
+- 完成复核可重试时只建议 `complete`；旧 `checks_not_passed`、规格漂移、规则基准冲突、
+  已完成任务的补正审查和未知阻塞不获得通用开发重试许可。
+
+例如：检查失败时显示“开发检查未通过，尚未进入独立审查”，而不只显示错误代码。
+精确失败检查、文件和证据继续保留在原 reason 中；说明不复述 provider 原始输出。
+
 当前会话宿主在真实开始开发、执行检查、核对交付和启动审查时更新 specs 下的
 `.cm-status.json`，并记录成对的 `progress/start`、`progress/complete` 事件。
 状态卡绑定 feature、task、run_id、attempt；只有观察到 provider 的新线程事件才显示

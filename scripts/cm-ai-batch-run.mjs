@@ -6,6 +6,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {openControlRun,validateRunDefinition} from './cm-ai-run.mjs';
 import {developmentRetryable,completionRetryable,reviewRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
+import {batchOperatorGuidance} from '../runtime/js/cm-ai/operator-guidance.mjs';
 import {digest,json,shape,need,id,hex} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {scanRows,findCmAiQaDecision,latestCmAiQaRun} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {checkParallelWrite} from './cm-task-gate.mjs';
@@ -23,12 +24,16 @@ export const batchTaskRunId=(batchId,taskKey)=>`task-${digest({batchId,task:task
 // cancel of a parallel group does not end its member runs, so a parallel
 // member cannot be superseded afterwards and only the spec revert applies.
 export function batchMemberResult(result,{parallel=false}={}){
-  if(result?.pendingAction!=='spec_rebind')return result;
+  const decorate=value=>{
+    const guidance=batchOperatorGuidance(value);
+    return guidance?Object.freeze({...value,guidance}):value;
+  };
+  if(result?.pendingAction!=='spec_rebind')return decorate(result);
   const files=/变更文件：([^；]+)/.exec(result.reason??'')?.[1]??'规格文件';
   const revert=`规格已重新批准（变更：${files}，只动了其他任务），但批次成员不能换绑。出口：还原这些规格改动并重新批准后继续本批次`;
-  return Object.freeze({...result,pendingAction:'none',
+  return decorate(Object.freeze({...result,pendingAction:'none',
     reason:parallel?`${revert}。并行组成员没有单独重做的出口。`
-      :`${revert}；或取消本批次，还原该任务已改动的代码后，用单任务宿主 cm-ai-host.mjs 以 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务。`});
+      :`${revert}；或取消本批次，还原该任务已改动的代码后，用单任务宿主 cm-ai-host.mjs 以 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务。`}));
 }
 export function createCmAiBatch({configuration,executionFor,logHome,runtime='codex',checkCommands=null,checkTimeoutMs=60000,
   rerunUnknownQa=false,rerunBlockedQa=false,holdRevisions=[]}){

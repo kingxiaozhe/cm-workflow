@@ -9,6 +9,7 @@ import {buildManifest} from './cm-spec-manifest.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {createConversationExecution} from './cm-ai-host.mjs';
 import {createCmAiConversationEntry} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
+import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 
 const driver=fileURLToPath(new URL('./cm-ai-drive.mjs',import.meta.url));
 const home=fs.mkdtempSync(path.join(os.tmpdir(),'cm-progress-home-'));
@@ -72,10 +73,36 @@ test('failed checks project blocked and do not start later commands or independe
     check('later',`require('node:fs').writeFileSync(${JSON.stringify(marker)},'wrong')`)]);
   assert.equal(run.status,0,run.stderr);const result=JSON.parse(run.stdout).result;
   assert.equal(result.code,'develop_checks_not_passed');assert.equal(result.pendingAction,'resume');
+  assert.equal(result.guidance.recoveryOperation,'advance');assert.equal(result.guidance.authorizationGranted,false);
+  assert.match(f.status().detail,/开发检查未通过/);assert.match(run.stderr,/恢复原运行并发送 advance/);
   assert.equal(f.status().state,'blocked');assert.equal(f.status().code,'develop_checks_not_passed');
   assert.equal(f.status().task,identity.taskId);assert.equal(fs.existsSync(marker),false);
   assert.match(run.stderr,/开始检查.*broken/);assert.match(run.stderr,/检查结束.*broken.*failed/);
   assert(!f.events().some(row=>row.event==='progress'&&row.phase_name==='reviewing'));
+});
+
+test('guidance survives original-run status and recovery without writing it into the journal',t=>{
+  const f=fixture(t),condition=path.join(f.root,'check-ready');
+  const checks=[check('environment',`if(!require('node:fs').existsSync(${JSON.stringify(condition)}))process.exit(2)`)];
+  const blocked=f.run(checks);assert.equal(blocked.status,0,blocked.stderr);
+  const initial=JSON.parse(blocked.stdout).result;
+  assert.equal(initial.state,'blocked');assert.equal(initial.guidance.recoveryOperation,'advance');
+  const snapshot=()=>readExecutionSnapshot({specsRoot:f.specsDir,identity:{repositoryId:identity.repositoryId,runId:identity.runId}});
+  const before=snapshot(),statusBytes=fs.readFileSync(f.statusPath);
+  const plan=f.plan(checks,{mode:'resume'});
+  const reported=spawnSync(process.execPath,[driver,'--plan',plan,'status'],{encoding:'utf8',timeout:30000,env:f.env});
+  assert.equal(reported.status,0,reported.stderr);
+  assert.deepEqual(JSON.parse(reported.stdout).result.guidance,initial.guidance);
+  assert.deepEqual(snapshot(),before);assert.deepEqual(fs.readFileSync(f.statusPath),statusBytes);
+  fs.writeFileSync(condition,'ready');
+  const resumed=f.run(checks,{mode:'resume'});assert.equal(resumed.status,0,resumed.stderr);
+  const result=JSON.parse(resumed.stdout).result;
+  assert.equal(result.state,'awaiting_review');assert.equal(result.identity.runId,identity.runId);
+  assert.equal(result.identity.attempt,1);assert.equal(result.guidance,undefined);
+  const after=snapshot();assert.deepEqual(after.records.slice(0,before.records.length),before.records);
+  assert.equal(JSON.stringify(after.records).includes('recoveryOperation'),false);
+  assert(fs.readFileSync(path.join(f.specsDir,f.feature,'tasks.md'),'utf8').includes('- [ ] T-001'));
+  assert(!f.events().some(row=>row.phase_name==='reviewing'),'no independent review grant');
 });
 
 test('a quiet command announces its start before finishing and preserves the JSON result channel',async t=>{

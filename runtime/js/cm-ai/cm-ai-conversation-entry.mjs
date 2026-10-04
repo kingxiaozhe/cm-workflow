@@ -6,6 +6,7 @@ import {findCmAiQaDecision,inspectCmAiQaDecision,inspectCmAiQaResult,recordCmAiQ
   replacesTimedOutQaDecision,validEnvironmentFailureReason} from './cm-ai-qa-log.mjs';
 import {recordCmAiRunDone} from './cm-ai-run-finalizer.mjs';
 import {projectHostResult} from './host-progress.mjs';
+import {operatorGuidance} from './operator-guidance.mjs';
 import {outstandingFeatureQa,describeOutstandingQa} from './project-qa-gate.mjs';
 import {REVIEWED_HANDOFF_HINT} from './host-handoff.mjs';
 import {readHostQaFixHandoff} from './host-qa-fix.mjs';
@@ -735,7 +736,9 @@ export function createCmAiConversationEntry(options) {
       if(!['status','cancel','abandon_review','abandon_effect','bootstrap_review_recover'].includes(operation.operation)){
         token=Symbol(operation.operation);inFlightHandles.add(token);
       }
-      const result=await route(operation);
+      const routed=await route(operation);
+      const guidance=operatorGuidance(routed,{executionActive:inFlightHandles.size>(token===null?0:1)});
+      const result=guidance?freeze({...routed,guidance}):routed;
       if(epoch===cancellationEpoch||operation.operation==='cancel')projectHostResult({specsDir:options.specsDir,
         feature:options.feature,result,current:runner.status()});
       return result;

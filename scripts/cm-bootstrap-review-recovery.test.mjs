@@ -34,6 +34,10 @@ test('legacy unknown bootstrap checkpoint recovers its original package without 
   assert.equal(run.runner.status().state,'unknown');assert.equal(run.runner.status().bootstrapReviewRecovery,true);
   const entry=createCmAiConversationEntry({specsDir:f.specsDir,codeProject:f.codeProject,feature:'0.bootstrap',
     identity:run.definition.identity,runner:run.runner,allowBootstrapReviewRecovery:true});
+  const statusBefore=run.store.snapshot();
+  const guidance=(await entry.handle({version:1,operation:'status',requestId:'recovery-status',identity:run.definition.identity})).guidance;
+  assert.equal(guidance.recoveryOperation,'bootstrap_review_recover');assert.match(guidance.nextStep,/不重新派发开发/);
+  assert.equal(guidance.authorizationGranted,false);assert.deepEqual(run.store.snapshot(),statusBefore);
   const recovery=await entry.handle({version:1,operation:'bootstrap_review_recover',requestId:'recover-bootstrap',
     identity:run.definition.identity,reason:'Original package validation rejected an unchanged rule'});
   assert.equal(recovery.outcome,'advanced',JSON.stringify(recovery));
