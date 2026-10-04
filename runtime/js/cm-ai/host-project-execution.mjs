@@ -2,7 +2,7 @@
 // Root selection is data, not a second scheduler or a task completion authority.
 import {captureProtectedEdits,commitProtectedEdits} from '../cm-fix/protected-edits.mjs';
 import {groupCodeProjectPaths,resolveCodeProjects} from './code-projects.mjs';
-import {createHostCheck} from './host-check.mjs';
+import {createHostCheck,reportHostCheckProgress} from './host-check.mjs';
 import {specsPermissionArgs} from './codex-config.mjs';
 import {digest,json,need,shape,id} from './effect-contract.mjs';
 
@@ -22,6 +22,7 @@ export function createProjectExecution({definition,protection}){
     const cwd=data.codeProjects?command.codeProject:data.codeProject;
     need(roots.includes(cwd),'execution_root_mismatch');
     const check=createHostCheck({cwd,specsRoot:data.specsDir,timeoutMs:config.timeoutMs,
+      onProgress:reportHostCheckProgress,
       commands:[{id:command.id,command:command.command}]});
     return {cwd,check};
   });

@@ -131,12 +131,14 @@ test('real batch reaches completion with an independently dispatched fixture rev
   const permissions=['--allow-qa','--review-config','review.json','--allow-review',`${key}:1`];
   const first=f.drive(f.plan({permissions}),'advance');
   assert.equal(first.status,0,first.stderr);assert.match(first.stderr,/应答 check/);
-  let result=JSON.parse(first.stdout).result;
+  let result=JSON.parse(first.stdout).result,stderr=first.stderr;
   for(let n=0;n<4&&result.state!=='run_done';n++){
     const next=f.drive(f.plan({mode:'resume',originalHostContext:'batch-host-a',permissions}),'advance');
-    assert.equal(next.status,0,next.stderr);result=JSON.parse(next.stdout).result;
+    assert.equal(next.status,0,next.stderr);result=JSON.parse(next.stdout).result;stderr+=next.stderr;
   }
   assert.equal(result.state,'run_done',JSON.stringify(result));
+  assert.match(stderr,/开始检查.*value/,'quiet QA command start reaches the batch caller');
+  assert.match(stderr,/检查结束.*value.*passed/,'quiet QA command result reaches the batch caller');
 });
 // Deliberately replaced (#30). The batch driver has no separate decision step, so
 // demanding develop-a2.json before any findings existed made a first review with

@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {statusProjectionCommand} from '../runtime/js/cm-ai/status-projection.mjs';
 
 const IDENTIFIER=/^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
 const RESOURCE_ID=/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -601,6 +602,10 @@ function usage(){return 'usage: cm-log-event.py --workflow NAME --event NAME --r
 
 export function main(argv=process.argv.slice(2),environment=process.env){
   try{
+    if(argv[0]==='--status-only'){
+      const result=statusProjectionCommand(argv,environment);
+      if(result!==null)process.stdout.write(`${asciiJson(result)}\n`);return 0;
+    }
     const input=parseCli(argv);if(input.help){process.stdout.write(`${usage()}\n`);return 0;}
     if(environment.CM_LOG_PREFLIGHT==='1'){prepareInput(input);return 0;}
     const result=writeLogEvent(input,{environment});process.stdout.write(`${asciiJson(result)}\n`);return 0;

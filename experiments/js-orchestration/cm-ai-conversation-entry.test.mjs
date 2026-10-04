@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {spawnSync} from 'node:child_process';
+import childProcess,{spawnSync} from 'node:child_process';
 import {digest} from './effect-contract.mjs';
 import {createTaskRunner} from './task-runner.mjs';
 import {openTaskExecutionStore} from './task-owner.mjs';
@@ -1304,7 +1304,9 @@ test('N8 run finalization writes the existing run_done and status once without r
   assert.equal(done[0].run_id,identity.runId);assert.equal(done[0].node,'N8');
   assert.equal(done[0].package_digest,packageDigest);assert.equal(done[0].documentation_sync_id,'docs-completed');
   const status=JSON.parse(fs.readFileSync(path.join(specsDir,'.cm-status.json'),'utf8'));
-  assert.deepEqual(Object.keys(status),['node','feature','task','detail','state','at']);
+  assert.deepEqual(Object.keys(status).sort(),['node','feature','task','detail','state','at','run_id','attempt','progress_id'].sort());
+  assert.equal(status.run_id,identity.runId);assert.equal(status.attempt,identity.attempt);
+  assert.match(status.progress_id,/^[a-f0-9-]{36}$/);
   assert.equal(status.node,'N8');assert.equal(status.feature,'1.login');assert.equal(status.task,'T-001');
   assert.equal(status.state,'run_done');assert.match(status.at,/^\d{2}:\d{2}:\d{2}$/);
 }));
@@ -1342,17 +1344,20 @@ test('N8 run finalization rejects an invalid status target before writing run_do
 test('N8 run finalization replays the same run_done after an unknown status commit',()=>fixture(async({root,specsDir,codeProject})=>{
   const packageDigest='7'.repeat(64);
   const {entry}=await finalizationEntry({root,specsDir,codeProject,packageDigest});
-  const rename=fs.renameSync;let interrupted=false;
+  const spawn=childProcess.spawnSync,target=path.join(specsDir,'.cm-status.json');let interrupted=false;
   try {
-    fs.renameSync=(source,target)=>{
-      if(!interrupted&&target===path.join(specsDir,'.cm-status.json')){
-        interrupted=true;throw Object.assign(Error('fixture status commit'),{code:'EIO'});
+    childProcess.spawnSync=(command,args,options)=>{
+      const result=spawn(command,args,options);
+      // The status writer now runs under a child process's platform lock. Fail
+      // its real filesystem target after the durable log has been written.
+      if(!interrupted&&args.includes('run_done')){
+        interrupted=true;fs.mkdirSync(target);
       }
-      return rename(source,target);
+      return result;
     };
     const first=await entry.handle(operation('run_finalize',{packageDigest,testRunId:null}));
     assert.equal(first.outcome,'rejected');assert.equal(first.code,'run_finalize_unknown');
-  } finally {fs.renameSync=rename;}
+  } finally {childProcess.spawnSync=spawn;if(interrupted)fs.rmdirSync(target);}
 
   const second=await entry.handle(operation('run_finalize',{requestId:'run-finalize-replay',packageDigest,testRunId:null}));
 

@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {loadConfig,resolveRole} from '../../../scripts/cm-workflow-config.mjs';
 import {validateTestCases} from '../../../scripts/validate-test-cases.mjs';
 import {inspectCmAiAdmission,inspectCmAiQaTaskContext,identifyApprovedBootstrapFeature} from './cm-ai-admission.mjs';
-import {createHostCheck} from './host-check.mjs';
+import {createHostCheck,reportHostCheckProgress} from './host-check.mjs';
 import {specsPermissionArgs} from './codex-config.mjs';
 import {resolveCodeProjects,codeProjectPaths} from './code-projects.mjs';
 import {findCmAiQaDecision,readCmAiQaRunRound,reportFile} from './cm-ai-qa-log.mjs';
@@ -184,7 +184,7 @@ export function createHostQaExecutor(options) {
           for(const command of plan.commands){
             notCancelled();
             const check=createHostCheck({cwd:roots?command.codeProject:configuration.codeProject,commands:[{id:command.id,command:command.command}],
-              timeoutMs:configuration.timeoutMs,specsRoot:configuration.specsRoot??null});
+              timeoutMs:configuration.timeoutMs,specsRoot:configuration.specsRoot??null,onProgress:reportHostCheckProgress});
             const resource={resource_id:`qa-command-${digest({testRunId:binding.testRunId,command:command.id}).slice(0,48)}`,
               resource_kind:'qa_command'};
             logStep(configuration,binding,'resource','acquired',{...resource,cleanup_required:true},'QA command resource acquired');

@@ -471,14 +471,11 @@ export function recordCmAiQaConfigurationRevision(input,raw){
   const existing=rows.find(({row})=>row.phase==='superseded'&&row.qa_revision_digest===digest(record));
   if(existing){
     validateConfigurationSupersession(existing.row,input.specsDir,'qa_revision_invalid');
-    if(rows.at(-1)===existing)writeCmAiQaStatus({specsDir,feature,identity,phase:'configuration_revised'});
     return;
   }
   const target=inspectCmAiQaRevisionTarget(input);
   need(target.testRunId===record.testRunId&&target.qaRound===record.qaRound,'qa_revision_invalid');
-  const result=recordCmAiQaRun({...input,...target,phase:'superseded',configurationRevision:record});
-  writeCmAiQaStatus({specsDir,feature,identity,phase:'configuration_revised'});
-  return result;
+  return recordCmAiQaRun({...input,...target,phase:'superseded',configurationRevision:record});
 }
 
 export function recordCmAiQaRun(input) {

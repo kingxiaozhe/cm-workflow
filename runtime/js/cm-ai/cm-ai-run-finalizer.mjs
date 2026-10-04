@@ -1,49 +1,14 @@
 // Thin N8 adapter for the JS run_done authority through its platform lock adapter and status file.
 import childProcess from 'node:child_process';
-import {randomUUID} from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {hex,id,json,need,shape,text,validIdentity} from './effect-contract.mjs';
 import {validRunId} from '../../../scripts/cm-log-event.mjs';
+import {statusTarget,writeStatusProjection} from './status-projection.mjs';
 
 const writer=fileURLToPath(new URL('../../../scripts/cm-log-event.py',import.meta.url));
 const MiB=1024*1024;
-
-function statusTarget(specsDir) {
-  try {
-    const specs=fs.realpathSync(specsDir),stat=fs.lstatSync(specs);
-    need(stat.isDirectory()&&!stat.isSymbolicLink(),'status_invalid');
-    const target=path.join(specs,'.cm-status.json');
-    if(fs.existsSync(target)){
-      const targetStat=fs.lstatSync(target);
-      need(targetStat.isFile()&&!targetStat.isSymbolicLink(),'status_invalid');
-      need(fs.realpathSync(target)===target,'status_invalid');
-    }
-    return {specs,target};
-  } catch(error) {
-    if(error?.code==='status_invalid')throw error;
-    need(false,'status_invalid');
-  }
-}
-
-function prepareStatus({specs,target},feature,identity,progress=null) {
-  const temporary=path.join(specs,`.cm-status.json.tmp.${process.pid}.${randomUUID()}`);
-  const value=progress??{node:'N8',feature,task:identity.taskId,detail:'全部任务和文档同步已完成',
-    state:'run_done',at:new Date().toTimeString().slice(0,8)};
-  let descriptor;
-  try {
-    descriptor=fs.openSync(temporary,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL
-      |(fs.constants.O_NOFOLLOW??0),0o644);
-    fs.writeFileSync(descriptor,`${JSON.stringify(value)}\n`);fs.fsyncSync(descriptor);
-    fs.closeSync(descriptor);descriptor=undefined;
-    return {temporary,target,specs};
-  } catch {
-    if(descriptor!==undefined)try{fs.closeSync(descriptor);}catch{}
-    try{fs.unlinkSync(temporary);}catch{}
-    need(false,'status_write_failed');
-  }
-}
 
 // Existing status file is only the current log projection, not a task store.
 export function writeCmAiQaStatus({specsDir,feature,identity,caseId,phase,result}) {
@@ -51,18 +16,13 @@ export function writeCmAiQaStatus({specsDir,feature,identity,caseId,phase,result
   need(['case_start','case_complete','case_blocked','complete','configuration_revised'].includes(phase));
   if(phase!=='complete'&&phase!=='configuration_revised')id(caseId);
   if(phase==='complete')need(['PASS','FAIL','BLOCKED'].includes(result?.result),'qa_result_invalid');
-  const prepared=prepareStatus(statusTarget(specsDir),feature,identity,{node:'N6',feature,task:identity.taskId,
+  writeStatusProjection({specsDir,feature,identity,node:'N6',claim:['case_start','configuration_revised'].includes(phase),
+    ...(phase==='complete'?{allowedNodes:['N3','N5','N6']}:{}),
+    ...(phase==='case_complete'||phase==='case_blocked'?{caseId,allowedNodes:['N6']}:{}),
+    ...(phase==='case_start'?{caseId}:{}),
     detail:phase==='configuration_revised'?'QA 配置已修订，旧结果仅作历史，等待下一轮':phase==='complete'?`QA 结果 ${result.result}（通过 ${result.passed} / 失败 ${result.failed} / 阻断 ${result.blocked}）`:`QA ${caseId}: ${phase}`,
     state:phase==='configuration_revised'?'qa_pending':phase==='complete'?{PASS:'qa_passed',FAIL:'qa_failed',BLOCKED:'qa_blocked'}[result.result]:'qa_running',
-    at:new Date().toTimeString().slice(0,8)});
-  try{
-    fs.renameSync(prepared.temporary,prepared.target);
-    const directory=fs.openSync(prepared.specs,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
-    try{fs.fsyncSync(directory);}finally{fs.closeSync(directory);}
-  }catch{
-    try{fs.unlinkSync(prepared.temporary);}catch{}
-    need(false,'status_write_failed');
-  }
+  });
 }
 
 function readResult(stdout,identity,specsDir) {
@@ -83,7 +43,7 @@ export function recordCmAiRunDone(input) {
   shape(input,keys);text(input.specsDir);text(input.codeProject);text(input.feature);validIdentity(input.identity);
   hex(input.packageDigest);hex(input.contextDigest);id(input.documentationSyncId);
   need(validRunId(input.identity.runId),'invalid_run_id');
-  const target=statusTarget(input.specsDir),prepared=prepareStatus(target,input.feature,input.identity);
+  statusTarget(input.specsDir);
   const data={node:'N8',feature:input.feature,task:input.identity.taskId,package_digest:input.packageDigest,
     context_digest:input.contextDigest,documentation_sync_id:input.documentationSyncId};
   const args=[writer,'--workflow','cm-ai','--event','run_done','--runtime','codex',
@@ -93,20 +53,16 @@ export function recordCmAiRunDone(input) {
   if(Object.hasOwn(input,'logHome')){text(input.logHome);options.env={...process.env,CM_WORKFLOW_LOG_HOME:input.logHome};}
   let result;
   try{result=childProcess.spawnSync('python3',args,options);}
-  catch{try{fs.unlinkSync(prepared.temporary);}catch{}need(false,'run_log_failed');}
+  catch{need(false,'run_log_failed');}
   if(result.error||result.status!==0||result.signal!==null||!Buffer.isBuffer(result.stdout)
-    ||result.stdout.length>MiB){try{fs.unlinkSync(prepared.temporary);}catch{}need(false,'run_log_failed');}
+    ||result.stdout.length>MiB)need(false,'run_log_failed');
   let receipt;
   try{receipt=readResult(result.stdout,input.identity,input.specsDir);}
-  catch{try{fs.unlinkSync(prepared.temporary);}catch{}need(false,'run_finalize_unknown');}
+  catch{need(false,'run_finalize_unknown');}
   try {
-    fs.renameSync(prepared.temporary,prepared.target);
-    const directory=fs.openSync(prepared.specs,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
-    try{fs.fsyncSync(directory);}finally{fs.closeSync(directory);}
-  } catch {
-    try{fs.unlinkSync(prepared.temporary);}catch{}
-    need(false,'run_finalize_unknown');
-  }
+    writeStatusProjection({specsDir:input.specsDir,feature:input.feature,identity:input.identity,node:'N8',
+      state:'run_done',detail:'全部任务和文档同步已完成'});
+  }catch{need(false,'run_finalize_unknown');}
   return Object.freeze({eventId:receipt.event_id,runId:receipt.run_id,
     deduplicated:receipt.deduplicated,degraded:receipt.degraded});
 }

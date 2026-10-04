@@ -1,5 +1,23 @@
 # JS workflow 控制与当前会话入口
 
+## cm-ai 当前任务进度
+
+当前会话宿主在真实开始开发、执行检查、核对交付和启动审查时更新 specs 下的
+`.cm-status.json`，并记录成对的 `progress/start`、`progress/complete` 事件。
+状态卡绑定 feature、task、run_id、attempt；只有观察到 provider 的新线程事件才显示
+`reviewing`。检查通过后等待授权显示 `awaiting_review`，不把检查通过写成审查通过。
+阻断沿用真实 code；完成开发检查后仍明确等待 QA／收尾，不提前显示整个 run 完成。
+
+`cm-ai-drive.mjs` 和 `cm-ai-batch-drive.mjs` 在 stderr 输出每项检查的开始、结果与退出码，
+包含共享 QA 执行器中的命令。stdout 保留结构化控制结果。普通模式继续转发原有命令输出；保护模式只增加命令边界提示，
+不转发原始输出、不改变沙箱。手写 bridge 若用 `capture_output` 等方式缓冲输出，CM 无法
+取得它尚未转发的中间内容；无需为这个显示修复重跑或修改正在执行的业务任务。
+
+状态卡展示最近开始的阶段，不汇总并行任务；旧 QA／收尾结果仍记在原运行历史，不能覆盖
+其他任务的状态卡。只读 `status` 不落盘刷新。事件更新没有定时心跳，最后更新时间不能
+证明进程仍存活；状态文件也不能代替 journal、独立审查或任务完成门禁。
+恢复时重放 QA 配置修订、补齐缺失的日志镜像，都不算新阶段，不会重新认领或刷新状态卡。
+
 ## cm-fix 本地 unknown 步骤的人工放弃
 
 `stage=unknown` 时，原 intent 不自动重派。宿主先检查旧进程已停止及可能留下的本地改动；

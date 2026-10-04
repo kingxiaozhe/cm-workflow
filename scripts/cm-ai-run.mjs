@@ -8,6 +8,7 @@ import {digest as sha} from '../runtime/js/cm-ai/contracts.mjs';
 import {resolveCodeProjects,codeProjectPaths,assertCodeProjectSelections} from '../runtime/js/cm-ai/code-projects.mjs';
 import {preQaConfigurations,readQaAttachment} from '../runtime/js/cm-ai/qa-attachment.mjs';
 import {recordCmAiQaAttachment} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
+import {writeCmAiQaStatus} from '../runtime/js/cm-ai/cm-ai-run-finalizer.mjs';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {hasLegacyQaPlanFingerprint,previousQaMaterial,qaConfigurationSlice,qaExecutorMaterial,qaInvariantDigest,qaRevisionChain,verifyQaRevisionMaterial} from '../runtime/js/cm-ai/qa-config-revision.mjs';
@@ -446,6 +447,9 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
         revisedAt:new Date().toISOString().replace(/\.\d{3}Z$/,'Z'),packageDigest:current.packageDigest??null,
         testRunId:target.testRunId,qaRound:target.qaRound,taskAttempt:current.identity.attempt});
       recordCmAiQaConfigurationRevision(binding,record);
+      // Only the newly authorized revision projects a new pending QA phase.
+      // Replaying or repairing its audit mirror above is not new execution.
+      if(!beforeQa)writeCmAiQaStatus({specsDir,feature,identity:current.identity,phase:'configuration_revised'});
     }
     return {host:{async handle(request){
       if(execution===null&&!['status','cancel'].includes(request.operation)){

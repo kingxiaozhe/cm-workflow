@@ -5,6 +5,7 @@ import {findCmAiQaDecision,inspectCmAiQaDecision,inspectCmAiQaResult,recordCmAiQ
   latestCmAiQaRun,recordCmAiQaRun,inspectCmAiQaRecovery,inspectCmAiQaConfigurationRecovery,timedOutQaDecision,
   replacesTimedOutQaDecision,validEnvironmentFailureReason} from './cm-ai-qa-log.mjs';
 import {recordCmAiRunDone} from './cm-ai-run-finalizer.mjs';
+import {projectHostResult} from './host-progress.mjs';
 import {outstandingFeatureQa,describeOutstandingQa} from './project-qa-gate.mjs';
 import {REVIEWED_HANDOFF_HINT} from './host-handoff.mjs';
 import {readHostQaFixHandoff} from './host-qa-fix.mjs';
@@ -728,13 +729,16 @@ export function createCmAiConversationEntry(options) {
     return effectSummary(operation,result,runner,identity);
   }
   const handle=async raw=>{
-    let token=null;
+    let token=null;const epoch=cancellationEpoch;
     try{
       const operation=readOperation(raw);
       if(!['status','cancel','abandon_review','abandon_effect','bootstrap_review_recover'].includes(operation.operation)){
         token=Symbol(operation.operation);inFlightHandles.add(token);
       }
-      return await route(operation);
+      const result=await route(operation);
+      if(epoch===cancellationEpoch||operation.operation==='cancel')projectHostResult({specsDir:options.specsDir,
+        feature:options.feature,result,current:runner.status()});
+      return result;
     }catch(error){return rejected(ownerIdentity,error);}
     finally{if(token!==null)inFlightHandles.delete(token);}
   };

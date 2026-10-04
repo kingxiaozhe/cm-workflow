@@ -16,7 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
+import {createHostCheck,reportHostCheckProgress} from '../runtime/js/cm-ai/host-check.mjs';
 import {decideHostQaPolicy} from '../runtime/js/cm-ai/host-qa-policy.mjs';
 import {validateHostWorkflowConfiguration} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
@@ -292,10 +292,11 @@ async function answerFor(row,answers,paths,control){
     const results=[];
     for(const command of loaded.plan.checks[key]){
       const run=createHostCheck({cwd,commands:[{id:command.id,command:command.command}],
+        onProgress:reportHostCheckProgress,
         timeoutMs:planCheckTimeout(loaded.plan,command),onOutput:({stream,chunk})=>{
         process.stderr.write(`[drive check ${key} ${command.id} ${stream}] ${chunk.toString('utf8')}`);
       }});
-      const [result]=await run({identity},{signal:new AbortController().signal});
+      const [result]=await run({identity},control);
       results.push(result);if(result.outcome!=='passed')break;
     }
     return results;

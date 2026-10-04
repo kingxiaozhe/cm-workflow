@@ -26,6 +26,7 @@ import {validateDocumentationPaths} from './host-documentation.mjs';
 import {verifySpecificationMaterial} from './specification-material.mjs';
 import {isFinalCmAiTask} from './cm-ai-admission.mjs';
 import {createHostBootstrap} from './host-bootstrap.mjs';
+import {withHostProgress} from './host-progress.mjs';
 import {digest,id,hex,json,need,shape,freeze,arrayItems} from './effect-contract.mjs';
 export const protectedTextInstructions='\nProtected current-host mode: do not write files or run commands. Return {status,value,edits} on success; '
   +'value retains the original implementation/Learning contract. edits is [{path,beforeSha256,content[,mode]}], complete UTF-8 text or null for deletion; '
@@ -201,8 +202,10 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     return {satisfied:verdict.satisfied};
   }:null;
   const outerTimeoutMs=provider?protection.timeoutMs:1800000;
+  const progress=(request,control,stage,run,selectedRuntime=runtime)=>withHostProgress({definition,
+    identity:request.identity,runtime:selectedRuntime,stage,signal:control.signal},run);
   const execution={configuration,timeoutMs:outerTimeoutMs,excludedContexts:[durableHostContextId],hostDecision:null,applicableAgentFiles:[],
-    ...(verificationGate?{verificationGate}:{}),
+    ...(verificationGate?{verificationGate:(request,control)=>progress(request,control,'verifying',()=>verificationGate(request,control))}:{}),
     ...(bootstrap?{bootstrap}:{}),
     ...(provider?{developmentAttempt:provider.attempt}:{}),
     ...(workflow?createHostWorkflowCapabilities({definition,configuration:workflow,bridge,allowQa,runtime,protectedExecution:protection!==null,bootstrap,parallelMember}):{}),
@@ -282,10 +285,11 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
         if(provider){const {providerThread,...failure}=response;shape(failure,['status','code']);return failure;}
         shape(response,['status','code']);return response;
       };
-      return createDeveloperRun({worker,provider:coderRuntime,requestedModel:provider?.model??'current-session',
-        protectedCurrentSession:protection!==null&&provider===null})(bound,control);
+      return progress(bound,control,'developing',()=>createDeveloperRun({worker,provider:coderRuntime,requestedModel:provider?.model??'current-session',
+        protectedCurrentSession:protection!==null&&provider===null})(bound,control),coderRuntime);
     }},
-    check:check??((request,control)=>{
+    check:(request,control)=>progress(request,control,'checking',()=>{
+      if(check)return check(request,control);
       const route=resolveHostRole({definition,identity:request.identity,role:'tester',signal:control.signal,runtime});
       return bridge.call('check',{...request,codeProject:definition.codeProject,
         scope:definition.scope,requirements:definition.requirements,route},control.signal);
@@ -297,8 +301,14 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
       run:(request,control)=>{
         need(review!==null,'review_configuration_required');
         const selectedOptions={...reviewOptions,...(provider?{spawnProcess:dispatchSpawn('reviewer',request.identity,control.signal)}:{})};
-        return reviewerRuntime==='codex'?createCodexReviewRun(codexWorker(selectedOptions))(request,control)
-          :createClaudeReviewRun(claudeWorker(selectedOptions))(request,control);
+        return progress(request,control,'review_starting',observation=>{
+          const observedControl={...control,onEvent:event=>{
+            control.onEvent(event);
+            if(event.event==='thread.started')observation.reviewStarted();
+          }};
+          return reviewerRuntime==='codex'?createCodexReviewRun(codexWorker(selectedOptions))(request,observedControl)
+            :createClaudeReviewRun(claudeWorker(selectedOptions))(request,observedControl);
+        },reviewerRuntime);
       }}],
     reviewInvocation:{developerThreadId:author,excludedThreadIds:[durableHostContextId],hostContextId,
       // Not journaled (unlike timeoutMs above), so a resumed run may raise it.

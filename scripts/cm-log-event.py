@@ -73,6 +73,7 @@ def run_node(entry: Path, arguments: List[str], environment: dict) -> int:
 
 def main() -> int:
     arguments = sys.argv[1:]
+    status_only = arguments[:1] == ["--status-only"]
     entry = Path(__file__).resolve().with_name("cm-log-event.mjs")
 
     if "--help" in arguments or "-h" in arguments:
@@ -92,6 +93,10 @@ def main() -> int:
     )
     if specs_dir is not None:
         try:
+            if status_only:
+                lock = specs_dir / ".cm-run.lock"
+                if lock.is_symlink() or (lock.exists() and (not lock.is_file() or lock.stat().st_nlink != 1)):
+                    raise OSError("invalid status lock")
             acquire_file_lock(specs_dir / ".cm-run.lock", private=False)
         except OSError as error:
             print(
@@ -99,6 +104,16 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
+
+    # Status is a projection, not a log event. Reuse the project lock, including
+    # its automatic release on process exit; do not touch the global mirror or
+    # active-run pointer for a display-only write.
+    if status_only:
+        environment = os.environ.copy()
+        environment["CM_LOG_LOCK_ADAPTER"] = "1"
+        environment["CM_LOG_LOCK_PARENT_PID"] = str(os.getpid())
+        environment["CM_LOG_PROJECT_LOCK"] = str(specs_dir / ".cm-run.lock")
+        return run_node(entry, arguments, environment)
 
     global_home = Path(
         os.environ.get("CM_WORKFLOW_LOG_HOME", "~/.cm-workflow/logs")

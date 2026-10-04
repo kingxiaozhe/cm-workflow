@@ -36,7 +36,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
+import {createHostCheck,reportHostCheckProgress} from '../runtime/js/cm-ai/host-check.mjs';
 import {decideHostQaPolicy} from '../runtime/js/cm-ai/host-qa-policy.mjs';
 import {createHostQaExecutor} from '../runtime/js/cm-ai/host-qa-executor.mjs';
 import {inspectCmAiQaTaskContext} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
@@ -721,9 +721,10 @@ async function answerFor(row,answer,paths,control){
     const results=[];
     for(const command of loaded.plan.checks){
       const run=createHostCheck({cwd:loaded.definition.codeProject,commands:[{id:command.id,command:command.command}],
+        onProgress:reportHostCheckProgress,
         timeoutMs:planCheckTimeout(loaded.plan,command),
         onOutput:({stream,chunk})=>{process.stderr.write(`[drive check ${command.id} ${stream}] ${chunk.toString('utf8')}`);}});
-      const [item]=await run({identity:row.payload.identity},{signal:new AbortController().signal});
+      const [item]=await run({identity:row.payload.identity},control);
       results.push(item);
       if(item.outcome!=='passed')break;
     }

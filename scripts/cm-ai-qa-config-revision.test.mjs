@@ -128,6 +128,27 @@ const snapshot=f=>JSON.parse(fs.readFileSync(statePath(f)));
 const fixedQa=qa=>({...qa,commands:[{id:'version',command:[process.execPath,'--version'],caseIds:[]}]});
 const revision=qa=>({qaConfigRevision:{previousWorkflow:{qa,documentationPaths:[],applicableAgentFiles:[]},reason:'Correct missing project QA command'}});
 
+for(const missingMirror of [false,true])test(`progress R1: resume/status preserves a newer task card while replaying QA revision; missingMirror=${missingMirror}`,()=>fixture(async f=>{
+  const {writeStatusProjection}=await import('../runtime/js/cm-ai/status-projection.mjs');
+  const {execution,configure,qa,counts}=await completed(f);configure(fixedQa(qa));
+  let run=await openControlRun(f.definition,'resume',execution,revision(qa));run.close();
+  const log=path.join(f.specsDir,'运行日志.jsonl');
+  if(missingMirror)fs.writeFileSync(log,fs.readFileSync(log,'utf8').split('\n')
+    .filter(line=>!line||JSON.parse(line).reason!=='qa_configuration_revision').join('\n'));
+  writeStatusProjection({specsDir:f.specsDir,feature:'2.newer',identity:{...identity,runId:'newer-run',taskId:'T-002'},
+    node:'N3',state:'checking',detail:'newer task checking',claim:true});
+  const statusPath=path.join(f.specsDir,'.cm-status.json'),before=fs.readFileSync(statusPath),journal=fs.readFileSync(statePath(f));
+  run=await openControlRun(f.definition,'resume',execution);
+  try{
+    assert.deepEqual(fs.readFileSync(statusPath),before,'opening the old owner must not claim the newer card');
+    assert.equal((await run.host.handle(request('status'))).state,'fixture_completed');
+    assert.deepEqual(fs.readFileSync(statusPath),before);
+  }finally{run.close();}
+  assert.deepEqual(fs.readFileSync(statePath(f)),journal);assert.deepEqual(counts(),{calls:1,reviews:1});
+  assert.equal(fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse)
+    .filter(row=>row.reason==='qa_configuration_revision').length,1,'missing history still recovers exactly once');
+}));
+
 test('F7 revision resumes N6, preserves N5 and history, replays without authorization flag',()=>fixture(async f=>{
   const {execution,configure,qa,counts}=await completed(f),before=snapshot(f);
   const review=path.join(f.specsDir,'.reviews','login-T-001-r1.md'),receipt=fs.readFileSync(review);

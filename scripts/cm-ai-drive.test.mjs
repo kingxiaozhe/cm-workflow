@@ -197,6 +197,32 @@ function qaFixture(f,kinds,caseIds=[]){
     ...(kinds.some(item=>item.kind==='browser')?['--browser-qa','available']:[])]});
 }
 
+test('progress R1: single driver forwards quiet QA command boundaries',t=>{
+  const f=fixture(t);prepared(f);f.write('develop-a2.json',develop);
+  const plan=JSON.parse(fs.readFileSync(qaFixture(f,[]),'utf8'));
+  fs.unlinkSync(path.join(f.specsDir,'1.work','test-cases.json'));
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],
+    specFiles:buildManifest(f.specsDir)}));
+  const permissions=changesRequestedReview(f);
+  fs.copyFileSync(fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url)),path.join(f.bin,'codex'));
+  fs.chmodSync(path.join(f.bin,'codex'),0o700);
+  f.write('qa-assess.json',{scores:{scope:2,risk:2,accumulation:2,boundary:2},
+    changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}});
+  const workflowPath=path.join(f.root,'workflow.json'),workflow=JSON.parse(fs.readFileSync(workflowPath,'utf8'));
+  workflow.qa.commands=[{id:'quiet-qa',command:[process.execPath,'-e','setTimeout(()=>process.exit(0),400)'],caseIds:[]}];
+  fs.writeFileSync(workflowPath,JSON.stringify(workflow));
+  plan.permissions=['--workflow-config','workflow.json','--allow-qa',...permissions];
+  let result,stderr='';
+  for(let n=0;n<4;n++){
+    const out=f.drive(f.plan({...plan,...(n?{mode:'resume',originalHostContext:'drive-host-a'}:{})}),'advance');
+    assert.equal(out.status,0,out.stderr);stderr+=out.stderr;result=JSON.parse(out.stdout).result;
+    if(result.code==='documentation_sync_blocked')break;
+  }
+  assert.equal(result.code,'documentation_sync_blocked',JSON.stringify(result));
+  assert.match(stderr,/开始检查.*quiet-qa/);assert.match(stderr,/检查结束.*quiet-qa.*passed/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.specsDir,'.cm-status.json'))).state,'qa_passed');
+});
+
 test('create and advance run authored edits and actual check, then resume with original context',t=>{
   const f=fixture(t);prepared(f);
   const first=f.drive(f.plan(),'advance');assert.equal(first.status,0,first.stderr);

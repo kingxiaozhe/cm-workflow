@@ -197,6 +197,29 @@ and fixtures use paired resource events; an unmatched acquisition blocks the
 next task or run completion. Each acquisition has a unique run-local resource
 id, so a delayed cleanup cannot close a later resource.
 
+The cm-ai conversation host projects actual development, checks, verification and
+review stages into `.cm-status.json`. Only an observed provider thread changes
+`review_starting` to `reviewing`; this display never authorizes review or completion.
+`runtime/js/cm-ai/status-projection.mjs` uses the log adapter's project lock to
+check feature/task/run/attempt ownership and phase token and replace the file in
+one critical section. New phase starts claim the card; delayed completions,
+including QA and N8, cannot claim it from another task. A changes-requested result
+may move the same run's card to its next attempt. Status-only writes do not append
+events, acquire the global log lock or move `.cm-run.json`. This is one last-started
+phase card, not an aggregate view of parallel runs; read-only status requests do
+not refresh it.
+Replaying QA configuration revisions, including repair of a missing audit mirror,
+does not claim or refresh the card; only a newly authorized revision projects its
+pending phase.
+
+The single and batch drivers report each check's start and result on stderr,
+alongside their existing streamed command output. Shared QA commands also report
+start and result boundaries. Protected checks report the
+same boundaries without forwarding raw project output or changing their sandbox.
+Custom bridges must forward their own command output. Progress logging and display
+failures are diagnostics, never a different check verdict. Event pairs describe
+observed calls; an unmatched start after interruption is not a completion.
+
 ## Testing model
 
 `cm-prd` can generate one `test-cases.json` per behavior-bearing feature.

@@ -47,6 +47,27 @@ function begin(f,executor) {
   return input;
 }
 
+for(const protectedMode of [false,true])test(`progress R1: quiet QA command boundaries; protected=${protectedMode}`,
+  {skip:protectedMode&&spawnSync('codex',['--version']).status!==0},async()=>{
+  const f=fixture(),events=[],original=process.stderr.write;let captured='';
+  try{
+    fs.unlinkSync(path.join(f.configuration.specsDir,f.configuration.feature,'test-cases.json'));
+    f.configuration.commands=[{id:'quiet-qa',command:[process.execPath,'-e',
+      "setTimeout(()=>{console.log('fixture-raw-output');process.exit(0)},400)"],caseIds:[]}];
+    const executor=createHostQaExecutor({...f.configuration,...(protectedMode?{specsRoot:f.configuration.specsDir}:{})});
+    const binding=begin(f,executor);
+    process.stderr.write=function(chunk,...args){
+      captured+=String(chunk);if(String(chunk).includes('[check]'))events.push({text:String(chunk),at:Date.now()});
+      return original.call(this,chunk,...args);
+    };
+    const result=await executor.run(binding,new AbortController().signal);
+    assert.equal(result.result,'PASS');assert.equal(events.length,2,captured);
+    assert.match(events[0].text,/开始检查.*quiet-qa/);assert.match(events[1].text,/检查结束.*quiet-qa.*passed/);
+    assert(events[1].at-events[0].at>=300,'start must be visible during the quiet command');
+    assert(!captured.includes('fixture-raw-output'),'QA raw project output remains private');
+  }finally{process.stderr.write=original;f.cleanup();}
+});
+
 for(const transport of ['synchronous','jsonl','coalesced-jsonl'])test(`incident sequence: immediate QA replies over ${transport}`,{timeout:30000},async()=>{
   const f=fixture(),bridge=createHostToolBridge(),input=new PassThrough(),output=new PassThrough();
   let serving;

@@ -22,6 +22,8 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 
 - JS 修复入口: `node scripts/cm-fix-host.mjs --help`；同仓specs可显式配置`protectSpecs:true`，原权限/审查不变，宿主只回文本提案，由固定沙箱写入；QA子配置复用，详见`docs/js-workflow-control.md`
 
+- cm-ai 进度：当前任务真实阶段更新 `.cm-status.json`；单／批驱动检查边界写 stderr。保护模式不转发原始命令输出；并行状态卡只展示最近开始的阶段，旧完成不能抢占，详见 `docs/js-workflow-control.md`。
+
 - 双运行时容灾: 断点交接 `node scripts/cm-failover.mjs status|handoff|probe --specs {SPECS_DIR}`（只读，不标记完成）；启动前选路 `cm-ai-host.mjs serve ... --failover`（显式 opt-in，只定起跑运行时，切换必播报）。运行时声明 `runtimes.available` 与四个预设见 `templates/cm-workflow.yml`、`runtime/workflow-config.md`（声明不等于派发）。主从与边界见 `docs/runtime-failover.md`；定点测试 `node --test scripts/cm-failover.test.mjs scripts/cm-runtime-failover.test.mjs`。
 
 - 运行时声明：`$cm-runtime` 先查看并默认保留，主动修改才进入预设向导；高级模型入口只读说明。`show|preview <preset>|set <preset>|set --user <preset>|unset --user`；向导确认 `[y/N]`，`set --expect-preview <sha256>` 拒绝过期预览。项目 > `~/.cm-workflow/runtimes.yml` > 未声明；只影响新 run。安装器可跳过配置且默认保留，`--yes` / `-Yes` 或非 TTY 跳过。
