@@ -12,6 +12,7 @@ import {createHostReviewAuthority} from '../runtime/js/cm-ai/host-review-authori
 import {createCauseReviewRun} from '../runtime/js/cm-ai/codex-review-adapter.mjs';
 import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
+import {EXECUTION_POLICY_V1} from '../runtime/js/cm-ai/execution-policy.mjs';
 import {buildCmAiDriveRequest} from './cm-ai-drive.mjs';
 
 const isolated=fs.mkdtempSync(path.join(os.tmpdir(),'cm-fix-review-budget-'));
@@ -122,7 +123,7 @@ test('#15 the shipped review host hands its review budget to the owner and the r
   const review=timeoutMs=>({model:'synthetic',disabledSkills:[],...(timeoutMs?{timeoutMs}:{}),preflight:{passed:true,cli_model:'synthetic',prompt_transport:'stdin',
     config_fingerprint:configFingerprint({cwd:codeProject,model:'synthetic',disabledSkills:[],promptTransport:'stdin'})}});
   const seen=[];
-  const host=timeoutMs=>createFixReviewHost({codeProject,hostContextId:'host',review:review(timeoutMs),permissions:['--allow-cause-review'],
+  const host=(timeoutMs,executionPolicy=null)=>createFixReviewHost({codeProject,hostContextId:'host',review:review(timeoutMs),executionPolicy,permissions:['--allow-cause-review'],
     workerFactory:options=>{seen.push(options.timeoutMs);return async()=>({status:'failed',code:'unused'});}});
   const configured=host(1234).execution;
   assert.equal(configured.causeReview.timeoutMs,1234);assert.equal(configured.finalReview.timeoutMs,1234);
@@ -131,6 +132,11 @@ test('#15 the shipped review host hands its review budget to the owner and the r
   // The worker is built with the budget before the adapter validates the request.
   assert.throws(()=>configured.causeReview.run({},{signal:new AbortController().signal,onEvent:()=>true}),{code:'invalid_input'});
   assert.deepEqual(seen,[1234]);
+  const optimized=host(1234,EXECUTION_POLICY_V1).execution;
+  assert.throws(()=>optimized.causeReview.run({},{signal:new AbortController().signal,onEvent:()=>true}),{code:'invalid_input'});
+  assert.throws(()=>optimized.finalReview.run({},{signal:new AbortController().signal,onEvent:()=>true}),{code:'invalid_input'});
+  assert.deepEqual(seen,[1234,1234,1234]);
+  assert.equal(fs.existsSync(path.join(isolated,'logs')),false);
 });
 
 test('#15 the cm-ai driver forwards the QA-fix abandon_review reason inside fix_action',()=>{

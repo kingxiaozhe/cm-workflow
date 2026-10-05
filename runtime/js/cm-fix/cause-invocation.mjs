@@ -1,3 +1,4 @@
+import {inspectFixReconciledResult} from './review-reconciliation.mjs';
 // Shared V3 grant and normalized observation contracts; no completion receipt issuer.
 import {validateReviewDispatchGrant} from '../cm-ai/durable-runner-state.mjs';
 import {inspectProviderCauseReview} from '../cm-ai/provider-review-observation.mjs';
@@ -49,9 +50,11 @@ export function inspectCauseRegistration(raw,configuration){
   return value;
 }
 export function inspectCauseResult(raw,registration,configuration,started){
-  const value=json(raw,1024*1024);shape(value,['dispatchAt','observation']);
+  const value=json(raw,1024*1024);shape(value,['dispatchAt','observation',...(Object.hasOwn(value,'reconciliationReceipt')?['reconciliationReceipt']:[])]);
   need(Number.isSafeInteger(value.dispatchAt)&&value.dispatchAt>=registration.registeredAt
     &&value.dispatchAt<registration.grant.expiresAt,'cause_registration_mismatch');
-  const result=inspectProviderCauseReview(JSON.stringify(value.observation),JSON.stringify(causeExpectation(registration.request,configuration)));
+  need(!value.reconciliationReceipt||(configuration.externalModels||configuration.executionPolicy),'review_reconciliation_unavailable');
+  const expected=causeExpectation(registration.request,configuration);
+  const result=value.reconciliationReceipt?inspectFixReconciledResult(value,expected,true):inspectProviderCauseReview(JSON.stringify(value.observation),JSON.stringify(expected));
   need(result.providerThreadId===started,'cause_registration_mismatch');return result;
 }

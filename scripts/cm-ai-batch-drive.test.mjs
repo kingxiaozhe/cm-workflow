@@ -78,7 +78,7 @@ test('batch reaches live logic and browser QA through the real member host',asyn
   const out=await runLiveDriver(DRIVER,plan,'advance',row=>row.kind==='qa_logic'
     ?{verdict:'SUPPORTED',evidence:['Fixture target.mjs exports 42']}
     :{verdict:'BLOCKED',evidence:[],environment:row.payload.environment,cleanup:'not_needed'},
-    {env:{...process.env,PATH:path.join(f.root,'bin')+path.delimiter+process.env.PATH,
+    {timeoutMs:60000,env:{...process.env,PATH:path.join(f.root,'bin')+path.delimiter+process.env.PATH,
       CM_WORKFLOW_HOME:path.join(f.root,'home'),CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')}});
   assert.equal(out.status,0,out.stderr);assert.deepEqual(out.requests.map(r=>r.kind),['qa_logic','qa_browser']);
   assert.equal(JSON.parse(out.stdout).result.code,'qa_result_blocked');
@@ -93,7 +93,7 @@ test('batch live verification request can reject a written requirement without r
     assert.equal(row.kind,'verification_precheck');
     assert.match(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),/42/);
     return {items:[{requirement:'value is 43',satisfied:false,evidence:'Fixture source exports 42'}]};
-  },{env:{...process.env,CM_WORKFLOW_HOME:path.join(f.root,'home'),CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')}});
+  },{timeoutMs:60000,env:{...process.env,CM_WORKFLOW_HOME:path.join(f.root,'home'),CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')}});
   assert.equal(out.status,0,out.stderr);assert.equal(out.requests.length,1);
   assert.match(out.stdout,/verification_precheck_failed/);
 });
@@ -352,4 +352,14 @@ test('resume binding is required before launch',t=>{
   const f=fixture(t);prepared(f);
   const run=f.drive(f.plan({mode:'resume'}),'advance');assert.equal(run.status,2);
   assert.match(run.stderr,/originalHostContext/);noStore(f);
+});
+
+test('optimized real batch driver shares only a declared same-plan check and rejects legacy aliases before launch',t=>{
+  const f=fixture(t);prepared(f);const counter=path.join(f.root,'physical-check-count');
+  const command=[process.execPath,'-e',`require('node:fs').appendFileSync(${JSON.stringify(counter)},'x')`];
+  const checks={[key]:[{id:'first',command},{id:'same',command,sameExecutionAs:'first'}]};
+  const denied=f.drive(f.plan({checks}), 'advance');assert.equal(denied.status,2);noStore(f);assert(!fs.existsSync(counter));
+  const out=f.drive(f.plan({permissions:['--allow-qa','--execution-optimizations'],checks}), 'advance');
+  assert.equal(out.status,0,out.stderr);assert.equal(JSON.parse(out.stdout).result.state,'awaiting_review',out.stdout+out.stderr);
+  assert.equal(fs.readFileSync(counter,'utf8'),'x');
 });

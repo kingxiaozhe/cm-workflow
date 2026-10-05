@@ -20,6 +20,7 @@
 **0.16.6**
 
 - **运行时配置默认保留**：打开 `cm-runtime` 先看当前配置和来源，主动选择修改才进入预设向导；高级模型入口只提供说明和校验方法。
+- **外部模型按 provider 配置**：单任务、批次及修复可显式启用 `cm-model-setup.mjs` 的模型及可选强度；宿主保持当前模型，run 冻结参数，未知调用停止重派。见[配置与恢复边界](docs/external-models.md)。
 - **确认前看清影响**：预览目标、字段变化和项目覆盖关系，最终 `[y/N]` 回车不保存；确认期间配置改变会要求重新预览。安装后的配置可跳过，已有用户默认优先保留。
 - **保留模型别名并提示兼容性**：切换预设不改已有模型或正在运行的任务；配置校验不代表新适配器一定支持该模型。
 
@@ -428,4 +429,4 @@ python3 scripts/scan-public-safety.py
 
 ## License
 
-[MIT License](LICENSE)。Darwin Skill 与 Kenney CC0 素材的来源和许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+[MIT License](LICENSE)。Darwin Skill、neat-freak 只读核对原则与 Kenney CC0 素材的来源和许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

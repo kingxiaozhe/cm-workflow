@@ -33,6 +33,7 @@
 // intentionally not advertised as cm-ai operations.
 // For unsupported evidence kinds, preflight refuses before the host starts.
 import fs from 'node:fs';
+import {readLaunchExecutionPolicy} from '../runtime/js/cm-ai/execution-policy.mjs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
@@ -54,6 +55,7 @@ import {inspectCmAiTaskLearningInput,createCmAiTaskLearningApplication,
 import {codeProjectPaths,resolveCodeProjects} from '../runtime/js/cm-ai/code-projects.mjs';
 import {parseHostInputLimit} from '../runtime/js/cm-ai/host-session.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
+import {readCloseoutReport} from '../runtime/js/cm-ai/knowledge-closeout.mjs';
 import {readRunnerHistory,attemptBaseline} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
@@ -62,7 +64,7 @@ import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
 
 // PLAN.liveEvidence: fresh current-session evidence; see docs/live-evidence-drivers.md.
 const HOST=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
-const OPERATIONS=new Set(['advance','start','resume','status','cancel','abandon_review','abandon_effect','bootstrap_review_recover','decision','complete','qa','qa_result',
+const OPERATIONS=new Set(['advance','start','resume','status','cancel','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','decision','complete','qa','qa_result',
   'fix_status','fix_advance','fix_action','fix_run','run_finalize','context_refresh','finish']);
 const ADVANCE=new Set(['advance','start','resume']);
 const PACKAGE_OPERATIONS=new Set(['decision','complete','qa','qa_result','context_refresh','finish','run_finalize']);
@@ -74,16 +76,16 @@ const FIX_ASKS={advance:['fix_learning','fix_diagnose'],author_tests:['fix_learn
 const FIX_ACTIONS=new Set(['red_test','baseline','author_tests','repair','regression','retrospective',
   'learning_writeback','handoff','final_review_package','final_review','publish_review','check_n5',
   'post_review_regression','publish_dossier','walkthrough','finish','prepare_revision',
-  'cause_review_package','cause_review','abandon_step','abandon_review']);
+  'cause_review_package','cause_review','reconcile_review','abandon_step','abandon_review']);
 const FILES={develop:'develop.json',qa_assess:'qa-assess.json',documentation_inspect:'documentation-inspect.json',
   documentation_sync:'documentation-sync.json',fix_learning:'learning.json',fix_diagnose:'diagnosis.json',
   fix_test_author:'test-edits.json',fix_repair:'repair-edits.json',fix_retrospective:'retrospective.json'};
-const PAIR_FLAGS=new Set(['--allow-review-attempt','--review-config','--workflow-config',
+const PAIR_FLAGS=new Set(['--external-models-config','--allow-review-attempt','--review-config','--workflow-config',
   '--input-limit',
   '--protected-conversation-config','--protected-config','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure',
   '--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--browser-qa',
   '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason','--spec-rebind-reason']);
-const FLAG_FLAGS=new Set(['--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
+const FLAG_FLAGS=new Set(['--execution-optimizations','--external-models','--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
   '--verification-precheck',
   '--allow-bootstrap-write','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
   '--supersede-reviewed-evidence','--accept-superseded-code-drift','--rebind-spec-material',
@@ -497,7 +499,9 @@ export function validateCmAiAnswer(kind,value,root){
     try{decideHostQaPolicy({assessment:value,pending:1,mergeEligible:false,unassessedTasks:1});}
     catch{stop(2,'答案格式错误：qa-assess.json');}
   }else if(kind==='documentation_inspect'){
-    exact(value,['status','reason','at'],'documentation-inspect.json');
+    exact(value,['status','reason','at','closeout'],'documentation-inspect.json');
+    if(Object.hasOwn(value,'closeout'))try{readCloseoutReport(value.closeout);}
+    catch{stop(2,'答案格式错误：documentation-inspect.json.closeout');}
     requireShape(['completed','blocked'].includes(value.status)&&typeof value.reason==='string'
       &&value.reason.length<=200&&!/[\r\n\0]/.test(value.reason),'documentation-inspect.json');
     if(Object.hasOwn(value,'at'))requireShape(typeof value.at==='string'
@@ -622,6 +626,7 @@ function load(){
   }
   if(['fix_advance','fix_run'].includes(operation))asks.push(...new Set(Object.values(FIX_ASKS).flat()));
   if(operation==='fix_action'){
+    if(plan.fixOperation==='reconcile_review'&&(plan.mode!=='resume'||!nonempty(plan.invocationId)))stop(2,'fix reconciliation requires resume and original invocationId');
     if(!FIX_ACTIONS.has(plan.fixOperation))stop(2,'fix_action 需要宿主支持的 fixOperation');
     const abandonFlag=plan.fixOperation==='abandon_review'?'--allow-qa-fix-abandon-review':'--allow-qa-fix-abandon';
     if(['abandon_step','abandon_review'].includes(plan.fixOperation)&&(!nonempty(plan.reason)
@@ -634,14 +639,16 @@ function load(){
   catch(error){stop(2,error.message);}
   const missing=asks.filter(kind=>['qa_logic','qa_browser','verification_precheck'].includes(kind)&&!live.has(kind));
   if(missing.length)stop(2,`缺少真实执行 runner: ${missing.join(', ')}；不能从静态答案文件应答`);
+  const executionPolicy=readLaunchExecutionPolicy({definition,mode:plan.mode??'create',enabled:permissions.includes('--execution-optimizations')});
   if(asks.includes('check')){
     if(!Array.isArray(plan.checks)||plan.checks.length===0)stop(2,'步骤会反问 check，但 PLAN.checks 缺少真实命令列表');
     try{
       for(const item of plan.checks){
-        if(!object(item)||Object.keys(item).some(key=>!['id','command','timeoutMs'].includes(key)))throw Error('PLAN.checks 每项只允许 id、command、timeoutMs');
+        if(!object(item)||Object.keys(item).some(key=>!['id','command','timeoutMs',...(executionPolicy?['sameExecutionAs']:[])].includes(key)))throw Error('PLAN.checks 每项只允许 id、command、timeoutMs');
         planCheckTimeout(plan,item);
       }
-      createHostCheck({cwd:definition.codeProject,commands:plan.checks.map(({id,command})=>({id,command}))});
+      for(const [index,item] of plan.checks.entries())if(Object.hasOwn(item,'sameExecutionAs')&&planCheckTimeout(plan,item)!==planCheckTimeout(plan,plan.checks[index-1]))throw Error('sameExecutionAs requires the same timeout');
+      createHostCheck({cwd:definition.codeProject,reuseDeclared:executionPolicy!==null,commands:plan.checks.map(({timeoutMs,...item})=>item)});
     }
     catch(error){stop(2,`PLAN.checks 格式错误: ${error.code??error.message}`);}
   }
@@ -679,7 +686,7 @@ function load(){
   });
   if(answer.documentation_sync)for(const target of Object.keys(answer.documentation_sync.edits))
     if(!workflow.documentationPaths.includes(target))stop(2,`documentation-sync.json.edits 越过文档 scope: ${target}`);
-  return {...loaded,definition,identity,permissions,config,answers,answer,developAnswers,live,
+  return {...loaded,definition,identity,permissions,config,answers,answer,developAnswers,live,executionPolicy,
     bootstrapRules:bootstrapAnswers&&createBootstrapRulesResponder({definition,plan,bootstrap,answers:bootstrapAnswers,
       // Same execution as the task checks: the host's specs sandbox in protected mode, else the driver's own.
       specsRoot:protectedMode?definition.specsDir:null,watch:[config,...permissionFiles]})};
@@ -719,14 +726,20 @@ async function answerFor(row,answer,paths,control){
     :answer[kind];
   if(kind==='check'){
     const results=[];
+    const groups=[];
     for(const command of loaded.plan.checks){
-      const run=createHostCheck({cwd:loaded.definition.codeProject,commands:[{id:command.id,command:command.command}],
-        onProgress:reportHostCheckProgress,
-        timeoutMs:planCheckTimeout(loaded.plan,command),
-        onOutput:({stream,chunk})=>{process.stderr.write(`[drive check ${command.id} ${stream}] ${chunk.toString('utf8')}`);}});
-      const [item]=await run({identity:row.payload.identity},control);
-      results.push(item);
-      if(item.outcome!=='passed')break;
+      const timeoutMs=planCheckTimeout(loaded.plan,command);
+      if(groups.at(-1)?.timeoutMs!==timeoutMs)groups.push({timeoutMs,commands:[]});
+      const {timeoutMs:ignored,...item}=command;groups.at(-1).commands.push(item);
+    }
+    for(const group of groups){
+      let currentId=group.commands[0].id;
+      const run=createHostCheck({cwd:loaded.definition.codeProject,commands:group.commands,
+        reuseDeclared:loaded.executionPolicy!==null,timeoutMs:group.timeoutMs,
+        onProgress:event=>{if(event.phase==='start')currentId=event.id;reportHostCheckProgress(event);},
+        onOutput:({stream,chunk})=>{process.stderr.write(`[drive check ${currentId} ${stream}] ${chunk.toString('utf8')}`);}});
+      const rows=await run({identity:row.payload.identity},control);results.push(...rows);
+      if(rows.some(item=>item.outcome!=='passed'))break;
     }
     return results;
   }
@@ -749,12 +762,13 @@ async function answerFor(row,answer,paths,control){
 }
 export function buildCmAiDriveRequest(operation,plan,definition,identity=definition.identity){
   return {version:1,identity,
+    ...(operation==='reconcile_review'?{invocationId:plan.invocationId}:{}),
     ...(['abandon_review','abandon_effect','bootstrap_review_recover'].includes(operation)?{reason:plan.reason}:{}),
     ...(PACKAGE_OPERATIONS.has(operation)?{packageDigest:plan.packageDigest}:{}),
     ...(TEST_RUN_OPERATIONS.has(operation)?{testRunId:plan.testRunId}:{}),
     ...(['fix_status','fix_advance','fix_action','fix_run'].includes(operation)?{
       packageDigest:plan.packageDigest,testRunId:plan.testRunId,
-      ...(operation==='fix_action'?{fixOperation:plan.fixOperation,
+      ...(operation==='fix_action'?{fixOperation:plan.fixOperation,...(plan.fixOperation==='reconcile_review'?{invocationId:plan.invocationId}:{}),
         ...(['abandon_step','abandon_review'].includes(plan.fixOperation)?{reason:plan.reason}:{})}: {})}: {})};
 }
 export function buildCmAiDriveHostArgs(plan,permissions,config){
@@ -767,6 +781,8 @@ export function buildCmAiDriveHostArgs(plan,permissions,config){
 async function main(){
   loaded=load();
   const {plan,operation,definition,permissions,config,answer}=loaded;
+  if(operation==='reconcile_review'&&(plan.mode!=='resume'||!nonempty(plan.invocationId)))
+    stop(2,'reconcile_review requires resume and original invocationId');
   if(PACKAGE_OPERATIONS.has(operation)&&!(typeof plan.packageDigest==='string'&&/^[a-f0-9]{64}$/.test(plan.packageDigest)))
     stop(2,`${operation} 需要 packageDigest（64 位十六进制）`);
   if(TEST_RUN_OPERATIONS.has(operation)&&!(operation==='qa_result'?nonempty(plan.testRunId)

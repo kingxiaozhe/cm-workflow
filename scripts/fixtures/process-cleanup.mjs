@@ -35,7 +35,9 @@ export function guardFixtureSource(source,options){
 
 function listProcesses(){
   const listed=spawnSync('ps',['-axww','-o','pid=,ppid=,pgid=,command='],{encoding:'utf8',maxBuffer:64*1024*1024});
-  if(listed.status!==0)throw Error(`ps failed: ${listed.stderr}`);
+  if(listed.status!==0)throw Object.assign(Error('fixture process listing failed'),{
+    code:'fixture_process_listing_failed',diagnostic:{command:'ps',status:listed.status??null,
+      signal:listed.signal??null,systemCode:listed.error?.code??null}});
   const rows=[];
   for(const line of listed.stdout.split('\n')){
     const match=line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/);

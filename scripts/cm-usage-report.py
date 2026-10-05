@@ -179,12 +179,14 @@ def usage_row_error(row: Dict[str, Any]) -> Optional[str]:
             return "invalid input count"
         if not is_nonnegative_int(row.get("output_tokens")):
             return "invalid output count"
-        for field in ("cache_read_tokens", "cache_write_tokens"):
+        for field in ("cache_read_tokens", "cache_write_tokens", "reasoning_tokens"):
             if field in row and not is_nonnegative_int(row[field]):
                 return "invalid cache count"
+        if "reasoning_tokens" in row and row["reasoning_tokens"] > row["output_tokens"]:
+            return "invalid reasoning subset"
         return None
     if usage_state == "unavailable":
-        if any(field in row for field in TOKEN_FIELDS):
+        if any(field in row for field in TOKEN_FIELDS + ("reasoning_tokens",)):
             return "unavailable row contains token counts"
         return None
     return "invalid usage state"
@@ -242,6 +244,8 @@ def build_report(log_home: Path, refs: List[RunRef]) -> Dict[str, Any]:
     usage_candidates: List[Tuple[RunRef, Path, int, Dict[str, Any]]] = []
     seen_event_ids: Set[str] = set()
     seen_call_ids: Set[Tuple[str, str]] = set()
+    native_calls = 0
+    native_components = {field: {"tokens": 0, "observed_calls": 0} for field in TOKEN_FIELDS + ("reasoning_tokens",)}
 
     for ref in refs:
         log_path = safe_log_path(log_home, ref.log_file)
@@ -307,7 +311,7 @@ def build_report(log_home: Path, refs: List[RunRef]) -> Dict[str, Any]:
             continue
         seen_call_ids.add(call_key)
         claim = claims.get(call_key)
-        if row.get("adapter") == "openai-compatible" and claim is None:
+        if (row.get("adapter") == "openai-compatible" or row.get("source") == "native-cli-terminal") and claim is None:
             summary["invalid_calls"] += 1
             print(
                 f"warning: ignored managed model_usage without prior claim at "
@@ -333,6 +337,12 @@ def build_report(log_home: Path, refs: List[RunRef]) -> Dict[str, Any]:
         stage = str(row["stage"])
         role = str(row["role"])
         usage_state = row.get("usage_state")
+        if row.get("source") == "native-cli-terminal":
+            native_calls += 1
+            for field, component in native_components.items():
+                if usage_state == "observed" and field in row:
+                    component["tokens"] += row[field]
+                    component["observed_calls"] += 1
         outcome = str(row["outcome"])
         summary["outcomes"][outcome] += 1
         if usage_state == "unavailable":
@@ -446,6 +456,11 @@ def build_report(log_home: Path, refs: List[RunRef]) -> Dict[str, Any]:
         "groups": groups,
         "unavailable_groups": unavailable_groups,
         "unresolved_groups": unresolved_groups,
+        **({"native_components": {"calls": native_calls, "reasoning_is_output_subset": True,
+            "cache_counts_are_separate": True, "fields": {field: {
+                "tokens": value["tokens"] if value["observed_calls"] else None,
+                "observed_calls": value["observed_calls"], "unavailable_calls": native_calls - value["observed_calls"]
+            } for field, value in native_components.items()}}} if native_calls else {}),
     }
 
 
@@ -490,6 +505,10 @@ def print_human(report: Dict[str, Any]) -> None:
             f"{group['role']} | {group['adapter']} | "
             f"{group['requested_model']} | claims {group['claims']}"
         )
+    if "native_components" in report:
+        for field, value in report["native_components"]["fields"].items():
+            known = value["tokens"] if value["tokens"] is not None else "unavailable"
+            print(f"- native {field}: {known}; observed {value['observed_calls']}, unavailable {value['unavailable_calls']}")
     print(
         "- 缺失 usage 保持 unavailable；未完成 claim 单独报告且不计调用/Token；"
         "未推测缺失用量，也未换算费用。"

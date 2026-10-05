@@ -14,7 +14,8 @@ export function reportHostCheckProgress(event){
     `检查结束 ${event.id}: ${event.outcome} (exit ${event.exitCode??'unavailable'})`;
   try{process.stderr.write(`[check] ${message}\n`);}catch{/* display is not a check verdict */}
 }
-export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,outputIncludes=null,onOutput=null,onProgress=null}){
+export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,outputIncludes=null,onOutput=null,onProgress=null,reuseDeclared=false}){
+  need(typeof reuseDeclared==='boolean','invalid_check_config');
   need(path.isAbsolute(cwd)&&fs.realpathSync(cwd)===cwd&&fs.statSync(cwd).isDirectory());
   validCallTimeout(timeoutMs);
   need(onOutput===null||typeof onOutput==='function');
@@ -29,10 +30,14 @@ export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,out
   const signature=outputIncludes===null?null:Buffer.from(outputIncludes);
   const selected=json(commands,32*1024),ids=new Set();
   need(Array.isArray(selected)&&selected.length>0&&selected.length<=32);
-  for(const item of selected){
-    shape(item,['id','command']);id(item.id);need(!ids.has(item.id));ids.add(item.id);
+  for(const [index,item] of selected.entries()){
+    shape(item,['id','command',...(reuseDeclared&&Object.hasOwn(item,'sameExecutionAs')?['sameExecutionAs']:[])]);id(item.id);need(!ids.has(item.id));ids.add(item.id);
     need(Array.isArray(item.command)&&item.command.length>0);
     for(const arg of item.command){text(arg);need(!arg.includes('\0'));}
+    if(Object.hasOwn(item,'sameExecutionAs')){
+      const previous=selected[index-1];
+      need(previous&&item.sameExecutionAs===previous.id&&JSON.stringify(item.command)===JSON.stringify(previous.command),'check_reuse_binding');
+    }
   }
   return async(raw,{signal})=>{
     shape(raw,['identity']);validIdentity(raw.identity);
@@ -41,6 +46,13 @@ export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,out
     for(const item of selected){
       let signatureMatched=false;
       need(!signal.aborted,'cancelled');
+      if(Object.hasOwn(item,'sameExecutionAs')){
+        const original=results[results.length-1];need(original?.outcome==='passed','check_reuse_binding');
+        const evidence=`same execution as ${original.id}; ${original.evidence}`.slice(0,200);
+        notify({phase:'complete',id:item.id,outcome:original.outcome,exitCode:original.exitCode,sameExecutionAs:original.id});
+        results.push({id:item.id,command:item.command,outcome:original.outcome,exitCode:original.exitCode,evidence,
+          ...(signature?{signatureMatched:original.signatureMatched}:{})});continue;
+      }
       notify({phase:'start',id:item.id});
       const result=await new Promise(resolve=>{
         let child;
@@ -114,7 +126,7 @@ export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,out
       });
       notify({phase:'complete',id:item.id,outcome:result.outcome,exitCode:result.exitCode});
       need(!signal.aborted,'cancelled');
-      results.push({...item,...result,...(signature?{signatureMatched}:{})});
+      results.push({id:item.id,command:item.command,...result,...(signature?{signatureMatched}:{})});
       if(result.outcome!=='passed')break;
     }
     return json(results);

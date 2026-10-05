@@ -20,6 +20,7 @@ import {recordEffectAbandonment} from '../runtime/js/cm-ai/effect-abandon-log.mj
 import {reviewConsumedHandoff,reviewedHandoffConflict} from '../runtime/js/cm-ai/host-handoff.mjs';
 import {RUN_ID_RULE,validRunId} from './cm-log-event.mjs';
 import {JOURNAL_PAYLOAD_LIMIT,boundedReason} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {closeoutPolicyCandidates} from '../runtime/js/cm-ai/knowledge-closeout.mjs';
 
 const usage='cm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
 const fail=code=>{throw Object.assign(new Error(code),{code});};
@@ -194,9 +195,10 @@ export function assertCreatableRunId(identity){
 // Definition is data, never an import path, command, grant or executable callback.
 // legacyQa rebuilds the historical QA executor form for stores created before
 // the built-in plan left the fingerprint; it is never used to create a store.
-export function runConfigMaterial(definition,execution,{parallelSelection=null,bootstrapConfig=null,legacyQa=false}={}){
+export function runConfigMaterial(definition,execution,{parallelSelection=null,bootstrapConfig=null,legacyQa=false,knowledgeCloseout=null}={}){
   if(execution===null)return parallelSelection===null?definition:{definition,parallelSelection};
   return {definition,...(parallelSelection===null?{}:{parallelSelection}),execution:execution.configuration,
+    ...(knowledgeCloseout===null?{}:{knowledgeCloseout}),
     ...(bootstrapConfig?{bootstrap:bootstrapConfig}:{}),
     ...(Object.hasOwn(execution,'developmentAttempt')?{developmentAuthorization:'per-attempt-v1'}:{}),
     ...(execution.hostDecisionProvider?{hostDecisionProvider:{version:1,timeoutMs:execution.hostDecisionProvider.timeoutMs}}:{}),
@@ -211,10 +213,26 @@ const LEGACY_QA_FINGERPRINT_REASON='运行指纹与当前配置不符。若此�
   +'（项目 .cm-workflow.yml、~/.cm-workflow/runtimes.yml 与插件内置默认值）：把这些配置恢复为创建时的内容即可恢复；'
   +'现在新建的运行不再把这些可变配置写进指纹。否则请核对 run.json、--workflow-config、宿主身份及授权参数是否与创建时一致。';
 
-export async function openControlRun(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,holdRevision=false,specRebindReason=null}={}){
+export async function openControlRun(definition,mode,execution=null,options={}){
+  if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
+  if(!['create','resume'].includes(mode))fail('invalid_mode');
+  let guard;
+  try{
+    const acquire=async()=>{
+      const {acquireExternalRunGuard,externalRunGuardExists}=await import('../runtime/js/cm-ai/external-run-guard.mjs');
+      const strict=Boolean(execution?.configuration?.externalModels||execution?.configuration?.executionPolicy);
+      // Switching this binary to a legacy launch must not bypass an existing strict attempt.
+      if(strict||externalRunGuardExists(definition.specsDir,definition.codeProject))guard=acquireExternalRunGuard(definition,{strictOnly:!strict});
+    };
+    const result=await openControlRunOwned(definition,mode,execution,options,acquire);
+    const close=result.close;
+    return {...result,close:()=>{try{close();}finally{guard?.close();}}};
+  }catch(error){guard?.close();throw error;}
+}
+async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,holdRevision=false,specRebindReason=null}={},acquireGuard=async()=>{}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
-  const {conversationProtection}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
+  const {conversationProtection,externalConversationDefinition}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
   if(!['create','resume'].includes(mode))fail('invalid_mode');
   if(mode==='create')assertCreatableRunId(definition?.identity);
   if(supersedeReason!==null&&mode!=='create')fail('supersede_unavailable');
@@ -244,6 +262,11 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
     if(Object.hasOwn(execution.configuration,'workflow')&&protectedExecutions.has(execution)
       &&sha(execution.configuration.workflow.definition)!==sha(definition))fail('execution_definition_mismatch');
     const conversation=conversationProtection(execution);
+    if(execution.configuration.externalModels||execution.configuration.executionPolicy){
+      const bound=externalConversationDefinition(execution);
+      if(bound===null)fail('external_execution_factory_required');
+      if(bound!==sha(definition))fail('execution_definition_mismatch');
+    }
     const protection=protectedExecutions.get(execution)??conversation;
     if(conversation&&conversation.definitionDigest!==sha(definition))fail('execution_definition_mismatch');
     if(protection){
@@ -314,6 +337,8 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
     }
   }
   const storeIdentity={repositoryId:identity.repositoryId,runId:identity.runId};
+  // Publish new ownership only after execution, admission, selection and baseline validation.
+  await acquireGuard();
   // Every fingerprint check below runs against one candidate material and
   // closes its store before the next candidate is tried.
   const openFor=material=>{
@@ -358,18 +383,27 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
       return {material,fingerprints,store,attaching,priorMaterial,chain,attached};
     }catch(error){store.close();throw error;}
   };
-  let opened;
-  try{opened=openFor(runConfigMaterial(definition,execution,{parallelSelection,bootstrapConfig}));}
-  catch(error){
-    // Only resume may fall back, and only to the exact historical QA form.
-    if(mode!=='resume'||error.code!=='fingerprint_mismatch'||!hasLegacyQaPlanFingerprint(execution?.qaExecutor))throw error;
-    try{opened=openFor(runConfigMaterial(definition,execution,{parallelSelection,bootstrapConfig,legacyQa:true}));}
-    catch(cause){
-      if(cause.code!=='fingerprint_mismatch')throw cause;
-      throw Object.assign(error,{reason:error.reason?`${error.reason}。${LEGACY_QA_FINGERPRINT_REASON}`:LEGACY_QA_FINGERPRINT_REASON});
+  const snapshot=mode==='resume'&&(execution?.documentationProvider||execution?.documentationResult)
+    ?readExecutionSnapshot({specsRoot:specsDir,identity:storeIdentity}):null;
+  let opened,lastMismatch;
+  for(const knowledgeCloseout of closeoutPolicyCandidates(execution,mode,snapshot)){
+    const materialOptions={parallelSelection,bootstrapConfig,knowledgeCloseout};
+    try{opened=openFor(runConfigMaterial(definition,execution,materialOptions));break;}
+    catch(error){
+      if(mode!=='resume'||error.code!=='fingerprint_mismatch')throw error;
+      lastMismatch=error;
+      if(!hasLegacyQaPlanFingerprint(execution?.qaExecutor))continue;
+      // Preserve the original exact historical QA fingerprint fallback.
+      try{opened=openFor(runConfigMaterial(definition,execution,{...materialOptions,legacyQa:true}));break;}
+      catch(cause){
+        if(cause.code!=='fingerprint_mismatch')throw cause;
+        lastMismatch=Object.assign(error,{reason:error.reason?`${error.reason}。${LEGACY_QA_FINGERPRINT_REASON}`:LEGACY_QA_FINGERPRINT_REASON});
+      }
     }
   }
+  if(!opened)throw lastMismatch;
   const {material:configMaterial,fingerprints,store,attaching,priorMaterial,chain,attached}=opened;
+  const knowledgeCloseout=configMaterial.knowledgeCloseout??null;
   try{
     let runnerMode=mode;
     if(mode==='resume'&&store.snapshot().records.length===0){
@@ -382,7 +416,10 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
     }
     const unavailable=()=>fail('execution_adapter_required');
     const host=createCmAiHost({
-      runner:{root:codeProject,identity,scope,requirements,specification,...(selectedRoots?{codeProjectPaths:selectedRoots}:{}),excludedContexts:['control-host'],
+      runner:{root:codeProject,identity,scope,requirements,specification,...(selectedRoots?{codeProjectPaths:selectedRoots}:{}),
+        ...(knowledgeCloseout===null?{}:{knowledgeCloseout}),
+        ...(execution?.configuration.executionPolicy?{executionPolicy:execution.configuration.executionPolicy}:{}),
+        ...(execution?.configuration.externalModels?{externalModels:execution.configuration.externalModels}:{}),excludedContexts:['control-host'],
         developer:{provider:'codex',requestedModel:'unconfigured',contextId:'control-developer',run:unavailable},
         reviewers:[],check:unavailable,taskCompletion:{reviewsDir,handoffs},taskLearning:{feature},
         persistence:{store,mode:runnerMode,version:execution===null?2:3},
@@ -395,7 +432,9 @@ export async function openControlRun(definition,mode,execution=null,{rerunUnknow
           ...(Object.hasOwn(execution,'verificationGate')?{verificationGate:execution.verificationGate}:{}),
           taskLearning:{feature,hostHandoff:true}})},
       // The entry validates the declaration (single line, with --rerun-blocked-qa) before any durable write.
-      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
+      entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,
+        ...(knowledgeCloseout===null?{}:{knowledgeCloseout,...(definition.codeProjects?{codeProjects:definition.codeProjects}:{})}),
+        ...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
         ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
     const logAbandonments=()=>{

@@ -58,15 +58,22 @@ const ASKS={
 const READ_ONLY=new Set(['status','final_review_package','completion_evidence','cause_review_package']);
 const KNOWN=new Set([...Object.keys(ASKS),...READ_ONLY,'cancel','handoff','publish_review','check_n5',
   'publish_dossier','learning_writeback','walkthrough','finish','final_review','cause_review',
-  'recover_final_review','abandon_step','abandon_review','resume','revision_test_check']);
+  'reconcile_review','recover_final_review','abandon_step','abandon_review','resume','revision_test_check']);
 
 function loadPlan(){
   const {operation,plan,base}=loadPlanFile({name:'cm-fix-drive.mjs',known:KNOWN});
   const abandoning=['abandon_step','abandon_review'].includes(operation);
-  requireFields(plan,['config','cwd','mode','hostContext','permissions',...(abandoning?[]:['answers'])]);
+  requireFields(plan,['config','cwd','mode','hostContext','permissions',...(abandoning||operation==='reconcile_review'?[]:['answers'])]);
   if(!['create','resume'].includes(plan.mode))stop(2,'mode 只能是 create 或 resume');
-  if(!Array.isArray(plan.permissions)||plan.permissions.some(p=>!/^--allow-[a-z-]+$/.test(p)))
-    stop(2,'permissions 必须是 --allow-xxx 形式的数组，原样传给宿主');
+  if(!Array.isArray(plan.permissions))stop(2,'permissions must be an array');
+  for(let i=0;i<plan.permissions.length;i++){
+    const flag=plan.permissions[i];
+    if(flag==='--external-models-config'){
+      if(typeof plan.permissions[i+1]!=='string')stop(2,'external model configuration path required');
+      plan.permissions[++i]=path.resolve(base,plan.permissions[i]);
+    }else if(!['--execution-optimizations','--external-models'].includes(flag)&&!/^--allow-[a-z-]+$/.test(flag))stop(2,'invalid permissions');
+  }
+  if(operation==='reconcile_review'&&(plan.mode!=='resume'||typeof plan.invocationId!=='string'||!plan.invocationId))stop(2,'reconcile_review requires resume and original invocationId');
   const abandonFlag=operation==='abandon_review'?'--allow-abandon-review':'--allow-abandon';
   if(abandoning&&(!plan.permissions.includes(abandonFlag)||typeof plan.reason!=='string'
     ||!plan.reason.trim().length||Buffer.byteLength(plan.reason,'utf8')>1000||/[\r\n\0\u0085\u2028\u2029]/.test(plan.reason)))
@@ -200,7 +207,7 @@ function main(){
   const {answers,round}=preflight(loaded);
   const {operation,plan,paths}=loaded;
   driveHost({host:HOST,args:hostArgs(loaded).slice(1),cwd:path.resolve(plan.cwd),operation,
-    request:{...(['abandon_step','abandon_review','rediagnose'].includes(operation)?{reason:plan.reason}:{}),
+    request:{...(operation==='reconcile_review'?{invocationId:plan.invocationId}:{}),...(['abandon_step','abandon_review','rediagnose'].includes(operation)?{reason:plan.reason}:{}),
       ...(operation==='prepare_revision'&&Object.hasOwn(plan,'revisionTests')?{tests:plan.revisionTests}:{})},
     answers,paths:{...paths,round},answerFor});
 }

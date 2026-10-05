@@ -1,3 +1,5 @@
+import {selectExternalModels} from './external-models.mjs';
+import {readExecutionPolicy} from './execution-policy.mjs';
 // Serial child host. Existing owners retain lifecycle and action authority.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -6,17 +8,32 @@ import {createFixHost} from '../cm-fix/host.mjs';
 import {bindQaFixDefinition} from './qa-fix-definition.mjs';
 import {digest,id,json,need,shape,validIdentity,hex} from './effect-contract.mjs';
 
-export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHostContextId,fix=null,template=null,allowStart=false,autoFix=false,fixExecution={},fixPermissions=[],fixAuthorities={}}){
+export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHostContextId,fix=null,template=null,allowStart=false,autoFix=false,fixExecution={},fixPermissions=[],fixAuthorities={},externalModels=null,executionPolicy=null}){
   id(hostContextId);id(parentHostContextId);
   need((fix===null)!==(template===null),'invalid_fix_config');
   let definition=null;
-  const fixedTemplate=template===null?null:json(template,64*1024);
+  let fixedTemplate=template===null?null:json(template,64*1024);
   if(fixedTemplate){
     shape(fixedTemplate,['specsRoot','feature','identity','configuration']);validIdentity(fixedTemplate.identity);
     need(!Object.hasOwn(fixedTemplate.configuration,'qaSource'),'invalid_fix_template');
   }else{
     shape(fix,['specsRoot','identity','configuration']);definition=json(fix,64*1024);
     validIdentity(definition.identity);need(definition.configuration.qaSource,'qa_fix_source_required');
+  }
+  if(executionPolicy){
+    const selected=readExecutionPolicy(executionPolicy),target=fixedTemplate??definition;
+    if(!fixedTemplate&&!target.configuration.executionPolicy)need(false,'execution_policy_legacy_child_inheritance_forbidden');
+    if(target.configuration.executionPolicy)need(digest(target.configuration.executionPolicy)===digest(selected),'execution_policy_child_conflict');
+    const inherited={...target,configuration:{...target.configuration,executionPolicy:selected}};
+    if(fixedTemplate)fixedTemplate=inherited;else definition=inherited;
+  }
+  if(externalModels){
+    const target=fixedTemplate??definition,runtime=target.configuration.runtime??'codex';
+    const selected=selectExternalModels(externalModels,[runtime]);
+    if(!fixedTemplate&&!target.configuration.externalModels)need(false,'external_model_legacy_child_inheritance_forbidden');
+    if(target.configuration.externalModels)need(digest(target.configuration.externalModels)===digest(selected),'external_model_pair_conflict');
+    const inherited={...target,configuration:{...target.configuration,externalModels:selected}};
+    if(fixedTemplate)fixedTemplate=inherited;else definition=inherited;
   }
   need(typeof allowStart==='boolean','invalid_input');
   need(typeof autoFix==='boolean'&&(!autoFix||(allowStart&&fixedTemplate!==null)),'qa_fix_auto_authorization_required');
@@ -43,7 +60,7 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
         busy=true;try{return await current.host.handle(request);}finally{busy=false;}
       }
       const value=json(request);shape(value,['version','requestId','operation','identity','packageDigest','testRunId',
-        ...(request.operation==='fix_action'?['fixOperation',...(['abandon_step','abandon_review'].includes(request.fixOperation)&&Object.hasOwn(request,'reason')?['reason']:[])]:[])]);
+        ...(request.operation==='fix_action'?['fixOperation',...(request.fixOperation==='reconcile_review'?['invocationId']:[]),...(['abandon_step','abandon_review'].includes(request.fixOperation)&&Object.hasOwn(request,'reason')?['reason']:[])]:[])]);
       need(value.version===1,'invalid_input');id(value.requestId);validIdentity(value.identity);hex(value.packageDigest);id(value.testRunId);
       if(fixedTemplate)definition=bindQaFixDefinition({template:fixedTemplate,identity:value.identity,
         packageDigest:value.packageDigest,testRunId:value.testRunId});
@@ -55,7 +72,7 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
       const acting=value.operation==='fix_action';
       if(acting)need(['red_test','baseline','author_tests','repair','regression','retrospective','learning_writeback',
         'handoff','final_review_package','final_review','publish_review','check_n5','post_review_regression',
-        'publish_dossier','walkthrough','finish','prepare_revision','cause_review_package','cause_review','abandon_step','abandon_review'].includes(value.fixOperation),'fix_operation_unavailable');
+        'publish_dossier','walkthrough','finish','prepare_revision','cause_review_package','cause_review','reconcile_review','abandon_step','abandon_review'].includes(value.fixOperation),'fix_operation_unavailable');
       need(!(advancing||acting)||allowStart,'qa_fix_start_authorization_required');
       busy=true;let child=null,released=false,result;
       try{
@@ -75,7 +92,7 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
             runtime:definition.configuration.runtime??'codex',permissions:[...permissions,'--allow-reproduction'],...fixAuthorities});
           actionResult=running?await host.run(value.requestId)
             :await host.handle({requestId:value.requestId,operation:advancing?'advance':value.fixOperation,
-              ...(['abandon_step','abandon_review'].includes(value.fixOperation)?{reason:value.reason}:{})});
+              ...(value.fixOperation==='reconcile_review'?{invocationId:value.invocationId}:{}),...(['abandon_step','abandon_review'].includes(value.fixOperation)?{reason:value.reason}:{})});
         }
         // Original observation/escalation finish intentionally closes its owner. Preserve
         // that successful incomplete exit without reading a closed store.

@@ -60,6 +60,8 @@ Read the relevant files under `.claude/rules/` when modifying shell scripts, doc
 
 ## 项目教训
 
+- **显示投影须在资格判断后惰性读取真实状态**：状态查询与规格准入摘要不能为显示层额外访问 runner；可投影响应只在既有异常隔离内读取一次最新状态，再核对 state/run/task/attempt。用准入摘要的私有来源标记区分实际等待转换，不能笼统跳过所有 awaiting；读取失败保留原业务结果，取消 epoch 与锁内归属检查仍须生效。来源：基线状态读取回归修复；证据：`scripts/cm-ai-progress.test.mjs` 的只读 status、准入、真实等待、异常读取、迟到与取消用例。[已结构化]
+
 - **状态归属核对与替换必须在同一个锁区间**：多运行共享状态卡时，真实阶段开始认领，完成只更新仍属同一 feature/task/run/attempt 的状态，并用阶段 token 拒绝迟到回调；核对后另行原子改名仍有竞态。复用既有跨进程锁覆盖核对和替换，QA／收尾也使用归属规则，历史回放不算新阶段，状态只作显示。来源：当前任务进度修复；证据：`scripts/cm-ai-progress.test.mjs` 的两进程、旧 QA／N8 和迟到响应用例，`scripts/cm-ai-qa-config-revision.test.mjs` 的真实 resume/status 回放用例。[已结构化]
 
 - **交互确认要绑定预览时的配置快照**：配置向导复用同一解析器生成候选，保存前核对目标、继承来源和新建模板；只在落盘时读取旧值无法防止等待确认期间的改动被覆盖。会话、终端和安装器共用该校验，摘要不替代用户授权。来源：运行时配置默认保留；证据：`scripts/cm-runtime.test.mjs` 的 CLI、TTY、安装器预览漂移与严格配置合同用例。[已结构化]
@@ -96,3 +98,7 @@ Read the relevant files under `.claude/rules/` when modifying shell scripts, doc
 - **审查期间的规格漂移先于回执登记**：审查返回后若已批准规格改变，先阻断为 `spec_drift`，不得把它降为可清理后复用 verdict 的 `review_package_changed`；只有规格未变时才保留代码根漂移的回执恢复路径。来源：PR #164 阻断审查修复；证据：`scripts/cm-ai-review-drift-precedence.test.mjs` 的规格、代码根及同时漂移用例与定向变异。[已结构化]
 
 - **有效拒绝后的恢复必须绑定旧结论并另存新轮证据**：已完成且有效的根因审查不能当 unknown 放弃；原运行重新诊断时追加绑定历史、旧包、旧 observation 与原因的记录，保留复现和 r1 字节，强制 fresh r2 并限制第二次拒绝，live/replay 共用同一边界；异步准备返回后重查原源包与 r2 占位，再登记唯一续次，驾驶员续行只按应用登记事件和重新诊断记录取最新 Learning，不能把同前缀的写回结果当应用而清空已有值。来源：原运行重新诊断候选及 r1 独立审查补正；证据：`scripts/cm-fix-rediagnosis.test.mjs` 的原记录保留、恢复、源漂移前拒绝、旧 thread 拒绝与第二次拒绝上限用例。该教训随本轮改动待独立审查。
+
+- **失败终态计数与执行结论分别处理**：只从原生 CLI 的原会话终态读取官方 usage，失败仍失败；通用 error notice 不覆盖后续 turn.failed 的计数。按 provider 原生字段映射 cache-write 和 reasoning，reasoning 只作 output 子集，缺失明确 unavailable；记录失败不能重派或放行。来源：可选执行优化独立审查的失败终态与原生字段修复；证据：`scripts/cm-efficiency-usage.test.mjs` 的四 worker 成功／失败／缺失、双失败方言与字段冲突用例，`scripts/test-cm-native-usage.py` 的子集与去重用例。该教训随本轮改动待独立审查。
+
+- **基线复现不能代替失败根因**：区分测试正文与清理钩子失败；相同基线失败只说明不是新增回归，丢失原 cause 后仍保留未知。预检与夹具失败只记录有限系统字段，不打印原 message／stderr，不把能力受限或超时改成通过；夹具总截止与已有驱动预算对齐，产品预算和业务断言保持原值。来源：执行优化回归的启动错误丢失、清理失败和外层夹具超时收尾；证据：`scripts/cm-efficiency-diagnostics.test.mjs` 的无真实枚举／监听错误注入、`scripts/cm-ai-batch-drive.test.mjs` 的实际 live 用例，以及保存的原始失败与基线对照。该教训随本轮改动待独立审查。

@@ -1,5 +1,9 @@
 # 当前会话作为 JS workflow 工具宿主
 
+单任务、批次和修复的外部 CLI 可显式启用[按 provider 的单组模型配置](../../../docs/external-models.md)：
+宿主会话保持当前模型，外部调用共用 provider pair，独立审查仍需新上下文与逐轮授权。
+新模式未知调用禁止 abandon／重派，恢复只读原快照；下文旧模式重试说明不适用于新模式。
+
 规格待审批时先展示摘要卡并请用户回复“开始”。`approvalIntent` 仅把“开始”“开始吧”
 “可以开始”“确认开始”“开始执行”“现在开始”（允许尾部中英文句末标点与空白）视为
 明确开始；“继续”“可以”“好”“好的”“OK”“按最优解处理”“你看着办”“行”仍不审批。
@@ -456,7 +460,7 @@ init_generate复用原cm-init生成合同；init_verify五组检查加constraint
 | check | 按原任务测试合同实际运行适量检查，返回实际退出码及证据；不把自审或静态推断写成测试通过。 |
 | documentation_sync | 使用 cm-doc-syncer 的文档判断，只同步请求列明且获准的普通文档；这是 Review 前写入，不新增完成后写入。 |
 | qa_assess / qa_logic / qa_browser | 使用 N6 与 cm-qa-engineer 的业务判断或获准工具；评分不替代 JS 的强制 QA 政策，静态判断不替代真实运行，不能改变载体或伪造浏览器证据。 |
-| documentation_inspect | 按 N8 只读核对必需文档及收尾证据；缺文档、度量或必需能力返回 blocked，不为了 run_done 宣称 completed。 |
+| documentation_inspect | 按 N8 只读核对必需文档及收尾证据；缺文档、度量或必需能力返回 blocked。新 run 按冻结请求默认做[收尾资料核对](knowledge-closeout.md)，结果并入总结；关闭或缺报告如实记录。 |
 
 进入匹配角色前读取该 Skill 完整指令，但 JS 所有权不让渡给角色。实际模型路由、资源
 及逐例日志由已有实现覆盖到哪里就报告到哪里；读取角色 Skill 不证明配置声明的模型已调用。

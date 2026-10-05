@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Current conversation transport; original platform adapter owns log locking.
 import fs from 'node:fs';
+import {EXECUTION_POLICY_V1} from '../runtime/js/cm-ai/execution-policy.mjs';
 import {readPrdInputsReplacement,replacePrdInputs,bindPrdPredecessor,readPrdPredecessor} from '../runtime/js/cm-prd/inputs-replaced.mjs';
 import path from 'node:path';
 import {readCmInitSource} from '../runtime/js/cm-init/draft-inspection.mjs';
@@ -26,6 +27,7 @@ const sessionFailureCodes=new Set(['prd_operation_recovery_required','prd_host_r
   'prd_recovery_binding','prd_recovery_evidence_required','prd_replay_inputs_changed','cancelled','prd_turn_not_ready',
   'prd_review_recovery_required','prd_batch_inputs_replaced','prd_inputs_changed','prd_replacement_authorization_required',
   'prd_inputs_not_changed','prd_successor_not_fresh','prd_replacement_conflict','prd_replacement_not_ready',
+  'execution_policy_required','execution_policy_legacy_run','prd_response_already_canonical',
   'prd_predecessor_binding','prd_successor_inputs_changed']);
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
@@ -49,7 +51,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(argv.filter(x=>x==='--allow-spec-write').length<=1,'invalid_arguments');
     need(argv.filter(x=>x==='--allow-disposition-write').length<=1,'invalid_arguments');
     need(argv.filter(x=>x==='--allow-review-write').length<=1,'invalid_arguments');
-    const args=argv.slice(1).filter(x=>!['--allow-log-write','--allow-review-write','--allow-disposition-write','--allow-spec-write'].includes(x)),options={};
+    need(argv.filter(x=>x==='--execution-optimizations').length<=1,'invalid_arguments');
+    const args=argv.slice(1).filter(x=>!['--execution-optimizations','--allow-log-write','--allow-review-write','--allow-disposition-write','--allow-spec-write'].includes(x)),options={};
     for(let i=0;i<args.length;i+=2){
       need(['--skill-dir','--project','--specs','--runtime','--cases','--host-context','--change','--session','--predecessor'].includes(args[i])
         &&!Object.hasOwn(options,args[i])&&typeof args[i+1]==='string','invalid_arguments');
@@ -67,7 +70,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(ended||admission.status==='ready'||options['--session']&&admission.mode==='change'&&admission.reason==='feature_missing','prd_admission_blocked');
     need(fileURLToPath(import.meta.url)===path.join(admission.workflowRoot,'scripts/cm-prd-host.mjs'),'entry_path_invalid');
     const predecessor=bindPrdPredecessor({entry,runtime,sessionId:runId,predecessor:options['--predecessor']});
-    session=openPrdSession({specs:admission.specs,sessionId:runId,identity:{entry,runtime,...(predecessor?{predecessor}:{})}});
+    session=openPrdSession({specs:admission.specs,sessionId:runId,identity:{entry,runtime,...(predecessor?{predecessor}:{})},executionPolicy:argv.includes('--execution-optimizations')?EXECUTION_POLICY_V1:null});
     if(!ended&&admission.status!=='ready')need(session.state.checkpoint?.change?.stage==='awaiting_review'
       ||session.state.active?.request.operation==='save_draft','prd_admission_blocked');
     record=({event,phase='analysis',data={},at=null})=>{
@@ -244,6 +247,11 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const dispatch=async request=>{
       ended=readPrdInputsReplacement(admission.specs,runId);
       if(request.operation==='status')return status();
+      if(request.operation==='repair_review_response'){
+        shape(request,['requestId','operation','binding']);need(reviewEnabled,'prd_review_not_enabled');
+        need(!ended,'prd_batch_inputs_replaced');
+        return {outcome:'original_response_repaired',repair:session.repairReviewResponse(request.binding),completionAuthorized:false};
+      }
       if(request.operation==='read_batch')return ended??session.state;
       if(request.operation==='replace_inputs'){
         shape(request,['requestId','operation','approved','reason','successorSpecs','successorSessionId']);
@@ -276,9 +284,10 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
           need(reviewEnabled,'prd_review_not_enabled');const original=active.calls.find(call=>call.kind==='prd_review');
           const prepared=analysis.prepareReview(operation.stage,operation.feature);
           need(prepared.packageDigest===original.payload.package.packageDigest,'prd_review_inputs_changed');
-          validatePrdReviewMode(operation.mode,original.result);
+          const response=session.reviewResponse(original);
+          validatePrdReviewMode(operation.mode,response);
           reviewState={status:'review_recorded',...publishPrdReview({specs:admission.specs,reviewPackage:prepared.reviewPackage,
-            packageDigest:prepared.packageDigest,authorContextId:original.payload.authorContextId,response:original.result})};
+            packageDigest:prepared.packageDigest,authorContextId:original.payload.authorContextId,response})};
           session.commit(checkpoint());return status();
         }
       }else{replaying=false;session.begin(request,checkpoint());}

@@ -50,7 +50,9 @@ export function readHostWorkflowConfiguration(file){
 
 export function validateHostWorkflowConfiguration(raw){
   const config=json(raw);
-  shape(config,['qa','documentationPaths','applicableAgentFiles']);
+  shape(config,['qa','documentationPaths','applicableAgentFiles',
+    ...(Object.hasOwn(config,'knowledgeCloseout')?['knowledgeCloseout']:[])]);
+  if(Object.hasOwn(config,'knowledgeCloseout'))need(typeof config.knowledgeCloseout==='boolean','invalid_workflow_config');
   for(const key of ['documentationPaths','applicableAgentFiles'])
     need(Array.isArray(config[key])&&config[key].length<=256&&config[key].every(item=>typeof item==='string'),'invalid_workflow_config');
   if(config.qa!==null){

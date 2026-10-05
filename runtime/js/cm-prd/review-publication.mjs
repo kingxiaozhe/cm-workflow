@@ -8,21 +8,11 @@ import {reviewResultForPaths} from '../cm-ai/review-runner.mjs';
 import {need,shape,json,digest,id} from '../cm-ai/effect-contract.mjs';
 import {needPrd} from './validation-reason.mjs';
 
-export function publishPrdReview({specs,reviewPackage,packageDigest,authorContextId,response,inspectOnly=false,pendingSplit=null}){
-  if(!inspectOnly)assertPrdBatchActive(specs,[reviewPackage.feature]);
+export function inspectPrdReviewResponse({reviewPackage,packageDigest,authorContextId,response}){
   reviewPackage=json(reviewPackage,256*1024);response=json(response,64*1024);id(authorContextId);
   need(digest(reviewPackage)===packageDigest&&reviewPackage.workflow==='cm-prd'
     &&['design','split'].includes(reviewPackage.stage),'prd_review_package_invalid');
-  const match=typeof reviewPackage.feature==='string'&&reviewPackage.feature.match(/^([1-9]\d*)\.([a-z0-9]+(?:-[a-z0-9]+)*)$/);
-  need(match,'prd_review_feature_invalid');
-  need(path.isAbsolute(specs)&&fs.realpathSync(specs)===specs,'prd_review_root_invalid');
-  const reviews=path.join(specs,'.reviews');
-  need(fs.realpathSync(reviews)===reviews&&fs.lstatSync(reviews).isDirectory(),'prd_review_path_invalid');
-  const stage=reviewPackage.stage,feature=match[2],prefix=`prd-${feature}-${stage}`;
-  const args={stage,feature,pendingSplit,evidence:path.join(reviews,`${prefix}-r1.md`),receipt:path.join(reviews,`${prefix}-disposition.json`)};
-  const gate=inspectPrdReview(args);
-  need(gate.package_sha256===packageDigest&&['dispatch_unknown','resume_disposition','completed'].includes(gate.outcome),
-    'prd_review_unclaimed');
+  need(typeof reviewPackage.feature==='string'&&/^[1-9]\d*\.[a-z0-9]+(?:-[a-z0-9]+)*$/.test(reviewPackage.feature),'prd_review_feature_invalid');
   const degraded=response.reviewer==='self-degraded';
   shape(response,['reviewer','contextId','independent','at','result',...(degraded?['degradedReason']:[])]);
   // Native subagents return canonical context identities, not filesystem paths.
@@ -40,9 +30,29 @@ export function publishPrdReview({specs,reviewPackage,packageDigest,authorContex
   needPrd(typeof response.at==='string'&&Number.isFinite(Date.parse(response.at))
     &&new Date(response.at).toISOString()===response.at,'prd_review_timestamp_invalid',
     {field:'response.at',expected:'new Date().toISOString() form, e.g. 2026-09-08T00:00:00.000Z'});
-  const files=stage==='design'?['requirements.md','design.md']:['requirements.md','design.md','tasks.md'];
+  const files=reviewPackage.stage==='design'?['requirements.md','design.md']:['requirements.md','design.md','tasks.md'];
   const examinedPaths=files.map(file=>`${reviewPackage.feature}/${file}`).sort();
   const result=reviewResultForPaths(response.result,{packageDigest},examinedPaths);
+  return {response,result,examinedPaths,degraded};
+}
+
+export function publishPrdReview({specs,reviewPackage,packageDigest,authorContextId,response,inspectOnly=false,pendingSplit=null}){
+  inspectPrdReviewResponse({reviewPackage,packageDigest,authorContextId,response});
+  if(!inspectOnly)assertPrdBatchActive(specs,[reviewPackage.feature]);
+  reviewPackage=json(reviewPackage,256*1024);response=json(response,64*1024);id(authorContextId);
+  need(digest(reviewPackage)===packageDigest&&reviewPackage.workflow==='cm-prd'
+    &&['design','split'].includes(reviewPackage.stage),'prd_review_package_invalid');
+  const match=typeof reviewPackage.feature==='string'&&reviewPackage.feature.match(/^([1-9]\d*)\.([a-z0-9]+(?:-[a-z0-9]+)*)$/);
+  need(match,'prd_review_feature_invalid');
+  need(path.isAbsolute(specs)&&fs.realpathSync(specs)===specs,'prd_review_root_invalid');
+  const reviews=path.join(specs,'.reviews');
+  need(fs.realpathSync(reviews)===reviews&&fs.lstatSync(reviews).isDirectory(),'prd_review_path_invalid');
+  const stage=reviewPackage.stage,feature=match[2],prefix=`prd-${feature}-${stage}`;
+  const args={stage,feature,pendingSplit,evidence:path.join(reviews,`${prefix}-r1.md`),receipt:path.join(reviews,`${prefix}-disposition.json`)};
+  const gate=inspectPrdReview(args);
+  need(gate.package_sha256===packageDigest&&['dispatch_unknown','resume_disposition','completed'].includes(gate.outcome),
+    'prd_review_unclaimed');
+  const {result,examinedPaths,degraded}=inspectPrdReviewResponse({reviewPackage,packageDigest,authorContextId,response});
   const bytes=Buffer.from(['---',`at: ${response.at}`,`reviewer: ${response.reviewer}`,`independent: ${response.independent}`,
     ...(degraded?[`degraded_reason: ${JSON.stringify(response.degradedReason)}`]:[]),`package_sha256: ${packageDigest}`,
     `verdict: ${result.verdict}`,'scope:',...examinedPaths.map(file=>`  - ${file}`),'---','',

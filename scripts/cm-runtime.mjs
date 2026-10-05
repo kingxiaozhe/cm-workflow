@@ -153,7 +153,9 @@ export function formatRuntimePreview(preview,lang=runtimeLanguage()){
     +t('modelWarning',lang)+`preview_sha256: ${preview.preview_sha256}\n`;
 }
 export function advancedRuntimeHelp(lang=runtimeLanguage()){
-  return t('advanced',lang,{doc:path.join(scripts,'../runtime/workflow-config.md'),validator:path.join(scripts,'cm-workflow-config.mjs')});
+  return t('advanced',lang,{doc:path.join(scripts,'../runtime/workflow-config.md'),validator:path.join(scripts,'cm-workflow-config.mjs')})
+    +`External provider model setup: node ${path.join(scripts,'cm-model-setup.mjs')} configure --provider codex|claude\n`
+    +`Single-task opt-in and recovery limits: ${path.join(scripts,'../docs/external-models.md')}\n`;
 }
 function logSet(preset,source,project){
   // Reuse cm-log-event.mjs through its required Python platform lock adapter.

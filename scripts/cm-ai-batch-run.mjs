@@ -1,3 +1,6 @@
+import {readExecutionPolicy,readBatchExecutionPolicy,freezeBatchExecutionPolicy} from '../runtime/js/cm-ai/execution-policy.mjs';
+import {readModelJsonRecord} from '../runtime/js/cm-ai/model-configuration-file.mjs';
+import {readExternalModels} from '../runtime/js/cm-ai/external-models.mjs';
 // Trusted in-process batch driver. Task lifecycle and completion remain owned
 // by the existing runner; only transitions between task runs are logged here.
 import fs from 'node:fs';
@@ -38,11 +41,27 @@ export function batchMemberResult(result,{parallel=false}={}){
 export function createCmAiBatch({configuration,executionFor,logHome,runtime='codex',checkCommands=null,checkTimeoutMs=60000,
   rerunUnknownQa=false,rerunBlockedQa=false,holdRevisions=[]}){
   const config=json(configuration);
-  shape(config,['version','repositoryId','batchId','specsDir','codeProject','tasks',...['codeProjects','parallel'].filter(name=>Object.hasOwn(config,name))]);
+  shape(config,['version','repositoryId','batchId','specsDir','codeProject','tasks',...['externalModels','executionPolicy','codeProjects','parallel'].filter(name=>Object.hasOwn(config,name))]);
   need(config.version===1);id(config.repositoryId);id(config.batchId);need(config.batchId.length>=8);
   need(typeof executionFor==='function'&&typeof logHome==='string'&&path.isAbsolute(logHome));
   need(Array.isArray(config.tasks)&&config.tasks.length>0&&config.tasks.length<=256);
   need(['codex','claude'].includes(runtime),'invalid_runtime');
+  if(config.externalModels)readExternalModels(config.externalModels);
+  if(config.executionPolicy)readExecutionPolicy(config.executionPolicy);
+  const batchGit=(cwd,args,code)=>{
+    if((config.externalModels||config.executionPolicy)&&args[0]==='add'&&args[1]==='-A')args=['add','-A','--','.',':!.cm-external-models-v1.json',':!.cm-model-config.lock'];
+    if((config.externalModels||config.executionPolicy)&&args[0]==='worktree'&&args[1]==='remove'){
+      const file=path.join(args[2],'.cm-external-models-v1.json');
+      if(fs.existsSync(file)){
+        need(digest(readModelJsonRecord(file).value)===digest({version:1,kind:'cm-external-code-binding',specsDir:config.specsDir}),'external_code_specs_conflict');
+        const lock=path.join(args[2],'.cm-model-config.lock');
+        if(fs.existsSync(lock)){const stat=fs.lstatSync(lock);need(stat.isFile()&&!stat.isSymbolicLink()&&stat.nlink===1&&stat.size===0&&(stat.mode&0o077)===0,'invalid_model_configuration_lock');fs.unlinkSync(lock);}
+        fs.unlinkSync(file);
+      }
+    }
+    const output=git(cwd,args,code);
+    return (config.externalModels||config.executionPolicy)&&args[0]==='status'?output.split('\n').filter(line=>!['?? .cm-external-models-v1.json','?? .cm-model-config.lock'].includes(line)).join('\n'):output;
+  };
   const plans=new Map();
   for(const task of config.tasks){
     shape(task,['feature','taskId','scope','requirements']);
@@ -177,7 +196,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     need(revision===row.checkpoint&&digest(body)===revision,'batch_checkpoint_mismatch');
     const binding={specsDir:config.specsDir,feature:definition.feature,identity:row.identity,packageDigest:row.package_digest};
     need(findCmAiQaDecision(binding)?.status==='skipped'&&inspectRunClosure(log,definition.identity.runId).closed,'batch_qa_not_ready');
-    git(config.codeProject,['merge-base','--is-ancestor',row.merge_commit,'HEAD'],'batch_merge_history_changed');
+    batchGit(config.codeProject,['merge-base','--is-ancestor',row.merge_commit,'HEAD'],'batch_merge_history_changed');
   }
   function prepareGroup(group){
     const state=progress(),remaining=group.filter(key=>membership.has(key)&&!state.done.has(key));
@@ -186,9 +205,9 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       if(!fs.existsSync(worktree)){
         need(!state.ready.has(key),'batch_worktree_missing');
         fs.mkdirSync(path.dirname(worktree),{recursive:true});
-        git(config.codeProject,['worktree','add','-b',branch,worktree,'HEAD'],'batch_worktree_failed');
+        batchGit(config.codeProject,['worktree','add','-b',branch,worktree,'HEAD'],'batch_worktree_failed');
       }
-      need(git(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
+      need(batchGit(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
       const definition=plans.get(key);
       plans.set(key,validateRunDefinition({...definition,codeProject:worktree,
         ...(definition.codeProjects?{codeProjects:definition.codeProjects.map(root=>path.join(worktree,path.relative(config.codeProject,root)))}:{})}));
@@ -201,11 +220,11 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   function preserveBlockedMember(row){
     const {worktree,branch}=location(row.from_key);
     need(row.worktree===worktree&&row.branch===branch,'batch_worktree_mismatch');
-    git(config.codeProject,['rev-parse','--verify',`refs/heads/${branch}`],'batch_worktree_missing');
+    batchGit(config.codeProject,['rev-parse','--verify',`refs/heads/${branch}`],'batch_worktree_missing');
     if(!fs.existsSync(worktree))return;
-    need(git(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
+    need(batchGit(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
     commitChanges(worktree,taskCommitArgs(plans.get(row.from_key).identity.taskId,taskDescription(config,plans.get(row.from_key)),row.code,row.reason));
-    git(config.codeProject,['worktree','remove',worktree]);
+    batchGit(config.codeProject,['worktree','remove',worktree]);
     // Keep the branch: its WIP is evidence, not approved code to merge.
   }
   async function driveMember(key,request){
@@ -257,31 +276,31 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     }finally{run.close();}
     let intent=progress().merging.get(key);
     if(!intent){
-      git(worktree,['add','-A']);
-      if(git(worktree,['status','--porcelain']))git(worktree,['commit',...taskCommitArgs(plans.get(key).identity.taskId,taskDescription(config,plans.get(key)))]);
-      need(git(config.codeProject,['status','--porcelain'])==='','batch_main_dirty');
-      intent={from_key:key,expected_old:git(config.codeProject,['rev-parse','HEAD']),member_commit:git(worktree,['rev-parse','HEAD'])};
+      batchGit(worktree,['add','-A']);
+      if(batchGit(worktree,['status','--porcelain']))batchGit(worktree,['commit',...taskCommitArgs(plans.get(key).identity.taskId,taskDescription(config,plans.get(key)))]);
+      need(batchGit(config.codeProject,['status','--porcelain'])==='','batch_main_dirty');
+      intent={from_key:key,expected_old:batchGit(config.codeProject,['rev-parse','HEAD']),member_commit:batchGit(worktree,['rev-parse','HEAD'])};
       record('batch_merge_started',intent);
     }
-    const current=git(config.codeProject,['rev-parse','HEAD']);
+    const current=batchGit(config.codeProject,['rev-parse','HEAD']);
     if(current===intent.expected_old){
       const restore=unionAttributes(config.codeProject);
       let result;
       try{result=spawnSync('git',['-C',config.codeProject,'merge','--no-ff','--no-edit',intent.member_commit],gitOptions());}
       finally{restore();}
       if(result.error||result.status!==0){
-        const files=git(config.codeProject,['diff','--name-only','--diff-filter=U']).split('\n').filter(Boolean);
-        git(config.codeProject,['merge','--abort'],'batch_merge_abort_failed');
-        need(git(config.codeProject,['rev-parse','HEAD'])===intent.expected_old,'batch_merge_history_changed');
+        const files=batchGit(config.codeProject,['diff','--name-only','--diff-filter=U']).split('\n').filter(Boolean);
+        batchGit(config.codeProject,['merge','--abort'],'batch_merge_abort_failed');
+        need(batchGit(config.codeProject,['rev-parse','HEAD'])===intent.expected_old,'batch_merge_history_changed');
         record('batch_merge_conflict',{from_key:key,code:'merge_conflict',files,expected_old:intent.expected_old});
         return {outcome:'blocked',code:'merge_conflict',batchId:config.batchId,files};
       }
     }else{
       // A crash may happen after Git commits but before the handoff log append.
-      const parents=git(config.codeProject,['show','-s','--format=%P','HEAD']).split(' ');
+      const parents=batchGit(config.codeProject,['show','-s','--format=%P','HEAD']).split(' ');
       need(parents.length===2&&parents[0]===intent.expected_old&&parents[1]===intent.member_commit,'batch_merge_history_changed');
     }
-    const merge_commit=git(config.codeProject,['rev-parse','HEAD']);
+    const merge_commit=batchGit(config.codeProject,['rev-parse','HEAD']);
     let post_merge_check='skipped';
     if(checkCommands?.length){
       const check=createHostCheck({cwd:config.codeProject,commands:checkCommands,timeoutMs:checkTimeoutMs});
@@ -296,7 +315,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const next=[...plans.keys()].find(key=>!done.has(key));need(next,'parallel_final_task_excluded');
     record('batch_handoff',{from_key:key,to_key:next,checkpoint:row.checkpoint,package_digest:row.package_digest,
       identity:row.identity,merge_commit,post_merge_check});
-    git(config.codeProject,['worktree','remove',worktree]);git(config.codeProject,['branch','-d',branch]);
+    batchGit(config.codeProject,['worktree','remove',worktree]);batchGit(config.codeProject,['branch','-d',branch]);
     return null;
   }
   async function parallelGroup(group,request){
@@ -331,7 +350,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       const terminal=['blocked','failed','unknown'].includes(status.state)
         &&!developmentRetryable(status)&&!completionRetryable(status)
         ||status.state==='pending_review'&&status.code!==null&&!reviewRetryable(status);
-      if(!terminal){waiting??=status;continue;}
+      if(!terminal||config.externalModels||config.executionPolicy){waiting??=status;continue;}
       const key=pending[index];
       record('batch_member_blocked',{from_key:key,code:status.code??status.state,
         reason:status.blockedReason??status.reason??status.code??status.state,...location(key),generation:2});
@@ -343,8 +362,8 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     return null;
   }
   return Object.freeze({async handle(raw){
-    const request=json(raw);shape(request,['operation','requestId']);id(request.requestId);
-    need(['advance','status','cancel'].includes(request.operation));
+    const request=json(raw);shape(request,['operation','requestId',...(request.operation==='reconcile_review'?['taskKey','invocationId']:[])]);id(request.requestId);
+    need(['advance','status','cancel','reconcile_review'].includes(request.operation));
     if(request.operation==='cancel'&&busy){
       cancelled=true;
       if(members.size){record('batch_cancel',{from_key:liveKey});
@@ -362,9 +381,29 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     try{
       releaseLock=acquireBatchLock(config);
       const initial=progress();liveKey=initial.current;
+      const {externalModels:ignoredModels,executionPolicy:ignoredPolicy,...policyBatch}=config;
+      const policy=readBatchExecutionPolicy({batch:policyBatch,started:initial.rows.length>0,enabled:!!config.executionPolicy});
+      need(digest(policy)===digest(config.executionPolicy??null),'execution_policy_batch_binding');
+      if(request.operation!=='status')await freezeBatchExecutionPolicy(policyBatch,policy);
+      if(request.operation==='reconcile_review'){
+        need((config.externalModels||config.executionPolicy)&&plans.has(request.taskKey),'review_reconciliation_unavailable');id(request.invocationId);
+        if(membership.has(request.taskKey)){
+          const {worktree,branch}=location(request.taskKey);
+          need(fs.existsSync(worktree),'review_reconciliation_unavailable');
+          need(batchGit(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
+          const definition=plans.get(request.taskKey);
+          plans.set(request.taskKey,validateRunDefinition({...definition,codeProject:worktree,
+            ...(definition.codeProjects?{codeProjects:definition.codeProjects.map(root=>path.join(worktree,path.relative(config.codeProject,root)))}:{})}));
+        }
+        const definition=plans.get(request.taskKey);
+        need(fs.existsSync(path.join(config.specsDir,'.reviews','.execution',definition.identity.runId,'state.json')),'review_reconciliation_unavailable');
+        const run=await open(request.taskKey);
+        try{return await run.host.handle({version:1,operation:'reconcile_review',requestId:request.requestId,identity:definition.identity,invocationId:request.invocationId});}
+        finally{run.close();}
+      }
       if(initial.stopped)return {outcome:'blocked',code:initial.code??'cancelled',batchId:config.batchId};
       if(request.operation==='advance'&&!initial.rows.length){
-        const dirty=git(config.codeProject,['status','--porcelain']);
+        const dirty=batchGit(config.codeProject,['status','--porcelain']);
         if(dirty)return {outcome:'blocked',code:'batch_main_dirty',batchId:config.batchId,
           reason:`batch_main_dirty\n${dirty}`,files:dirty.split('\n')};
       }
@@ -429,8 +468,8 @@ function git(cwd,args,code='batch_git_failed'){
   need(!result.error&&result.status===0&&result.signal===null,code);return result.stdout.trim();
 }
 function commitChanges(cwd,messageArgs){
-  if(!git(cwd,['status','--porcelain']))return null;
-  git(cwd,['add','-A']);git(cwd,['commit',...messageArgs]);
+  if(!git(cwd,['status','--porcelain']).split('\n').filter(line=>!['?? .cm-external-models-v1.json','?? .cm-model-config.lock'].includes(line)).join('\n'))return null;
+  git(cwd,['add','-A','--','.',':!.cm-external-models-v1.json',':!.cm-model-config.lock']);git(cwd,['commit',...messageArgs]);
   return git(cwd,['rev-parse','HEAD']);
 }
 // Keep the original description in the body; only the subject is summarized.

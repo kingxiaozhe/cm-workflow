@@ -15,7 +15,7 @@ const request=(operation,requestId=operation)=>({version:1,operation,requestId,i
 const platform=process.platform==='darwin'&&Number(process.versions.node.split('.')[0])>=24;
 test('QA attachment projections preserve every non-workflow fingerprint input and validate the immutable record',async()=>{
   const {preQaConfigurations,readQaAttachment}=await import('../runtime/js/cm-ai/qa-attachment.mjs');
-  const material={definition:{identity,scope:['a.js'],requirements:['requirements.md']},
+  const material={definition:{identity,scope:['a.js'],requirements:['requirements.md']},knowledgeCloseout:{version:1,enabled:true},
     execution:{kind:'cm-current-conversation-v1',hostContextId:'host',review:{model:'fixture'},
       workflow:{qa:{commands:[],environment:{}},documentationPaths:['README.md'],applicableAgentFiles:[]}},
     qaExecutor:{version:1,mode:'commands'},qaDecisionProvider:'host-v1',qaTimeoutMs:60000,
@@ -28,6 +28,7 @@ test('QA attachment projections preserve every non-workflow fingerprint input an
   assert(!Object.hasOwn(withoutWorkflow.execution,'workflow'));
   assert(!Object.hasOwn(withoutWorkflow,'documentationSync'));
   for(const projection of [withoutQa,withoutWorkflow]){
+    assert.deepEqual(projection.knowledgeCloseout,material.knowledgeCloseout);
     assert.deepEqual(projection.definition,material.definition);
     assert.deepEqual(projection.execution.review,material.execution.review);
     assert.equal(projection.execution.hostContextId,'host');

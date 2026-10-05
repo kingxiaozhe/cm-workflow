@@ -197,6 +197,43 @@ function qaFixture(f,kinds,caseIds=[]){
     ...(kinds.some(item=>item.kind==='browser')?['--browser-qa','available']:[])]});
 }
 
+for(const mode of ['report','legacy-answer','off'])
+test(`closeout real driver completes the original workflow with ${mode}`,t=>{
+  const f=fixture(t);prepared(f);f.write('develop-a2.json',develop);
+  const plan=JSON.parse(fs.readFileSync(qaFixture(f,[]),'utf8'));
+  fs.unlinkSync(path.join(f.specsDir,'1.work','test-cases.json'));
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(f.specsDir)}));
+  const permissions=changesRequestedReview(f);
+  fs.copyFileSync(fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url)),path.join(f.bin,'codex'));
+  fs.chmodSync(path.join(f.bin,'codex'),0o700);
+  if(mode==='off'){
+    const p=path.join(f.root,'workflow.json'),workflow=JSON.parse(fs.readFileSync(p));
+    workflow.knowledgeCloseout=false;fs.writeFileSync(p,JSON.stringify(workflow));
+  }
+  const closeout={version:1,items:['code','runtime','documentation','rules','memory','residue'].map(area=>({area,
+    status:area==='memory'?'out_of_scope':'unverified',evidence:[],detail:'Controlled fixture; no semantic or account claim'}))};
+  f.write('documentation-inspect.json',{status:'completed',reason:'Controlled required-document fixture',
+    ...(mode==='report'?{closeout}:{})});
+  plan.permissions=['--workflow-config','workflow.json','--allow-qa',...permissions];
+  let result;
+  for(let n=0;n<4;n++){
+    const out=f.drive(f.plan({...plan,...(n?{mode:'resume',originalHostContext:'drive-host-a'}:{})}),'advance');
+    assert.equal(out.status,0,out.stderr);result=JSON.parse(out.stdout).result;
+    if(result.state==='run_done')break;
+  }
+  assert.equal(result.state,'run_done',JSON.stringify(result));
+  assert.equal(result.knowledgeCloseout.status,mode==='report'?'reported':mode==='off'?'disabled':'not_completed');
+  if(mode==='report')assert.deepEqual(result.knowledgeCloseout.items,closeout.items);
+  const state=JSON.parse(fs.readFileSync(f.store)),before=fs.readFileSync(path.join(f.codeProject,'target.mjs'));
+  assert.deepEqual(state.records[0].payload.config.knowledgeCloseout,{version:1,enabled:mode!=='off'});
+  assert.match(fs.readFileSync(path.join(f.specsDir,'1.work','tasks.md'),'utf8'),/- \[x\] T-001/);
+  const again=f.drive(f.plan({...plan,mode:'resume',originalHostContext:'drive-host-a'}),'advance');
+  assert.equal(again.status,0,again.stderr);assert.equal(JSON.parse(again.stdout).result.deduplicated,true);
+  const after=JSON.parse(fs.readFileSync(f.store));
+  assert.equal(after.records.filter(row=>row.payload.type==='review-invocation-started').length,1);
+  assert.deepEqual(after.records,state.records);assert.deepEqual(fs.readFileSync(path.join(f.codeProject,'target.mjs')),before);
+});
+
 test('progress R1: single driver forwards quiet QA command boundaries',t=>{
   const f=fixture(t);prepared(f);f.write('develop-a2.json',develop);
   const plan=JSON.parse(fs.readFileSync(qaFixture(f,[]),'utf8'));
@@ -527,4 +564,21 @@ driveHost({host:${JSON.stringify(host)},args:[],cwd:${JSON.stringify(f.root)},op
   assert.equal(run.status,0,run.stderr);assert.match(run.stderr,/应答 fix_learning/);
   assert.deepEqual(JSON.parse(run.stdout).result.answer,
     {contextDigest:'context',status:'no_relevant_lesson',summary:'No applicable lesson'});
+});
+
+test('new policy real driver reuses only declared checks and frozen resume keeps the policy',t=>{
+  const f=fixture(t);prepared(f);
+  const command=[process.execPath,'-e',"require('node:fs').appendFileSync("+JSON.stringify(path.join(f.root,'execution-count'))+",'x');console.log('tests 1\\npass 1')"];
+  const checks=[{id:'tests',command},{id:'ui',command,sameExecutionAs:'tests'}];
+  const plan=f.plan({permissions:['--execution-optimizations'],checks});
+  const first=f.drive(plan,'advance');assert.equal(first.status,0,first.stderr);assert.equal(JSON.parse(first.stdout).result.state,'awaiting_review',first.stdout+first.stderr);
+  assert.equal(fs.readFileSync(path.join(f.root,'execution-count'),'utf8'),'x');
+  const before=fs.readFileSync(f.store),snapshot=JSON.parse(before);assert.equal(snapshot.records[0].payload.config.executionPolicy.checkReuse,'declared-adjacent-v1');
+  const resume=f.plan({mode:'resume',checks});const status=f.drive(resume,'status');assert.equal(status.status,0,status.stderr);
+  assert.equal(fs.readFileSync(path.join(f.root,'execution-count'),'utf8'),'x');assert.deepEqual(fs.readFileSync(f.store),before);
+});
+test('legacy real driver rejects optimization aliases before any host or command starts',t=>{
+  const f=fixture(t);prepared(f);const command=[process.execPath,'-e',"require('node:fs').writeFileSync('marker','bad')"];
+  const result=f.drive(f.plan({checks:[{id:'one',command},{id:'two',command,sameExecutionAs:'one'}]}),'advance');
+  assert.notEqual(result.status,0);assert(!fs.existsSync(f.store));assert(!fs.existsSync(path.join(f.codeProject,'marker')));
 });

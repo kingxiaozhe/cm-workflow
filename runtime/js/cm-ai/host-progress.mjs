@@ -56,14 +56,17 @@ const states={awaiting_review:['N4','检查已结束，等待独立审查'],pend
   changes_requested:['N4','审查要求修改'],approved:['N5','审查已通过，等待完成检查'],
   fixture_completed:['N5','开发完成检查已通过，等待 QA／收尾'],
   blocked:['N3','运行受阻'],unknown:['N3','执行结果待核对'],cancelled:['N3','运行已取消']};
-export function projectHostResult({specsDir,feature,result,current}){
+export function projectHostResult({specsDir,feature,result,readCurrent}){
   if(!result?.operation||result.operation==='status'||!result.state||!result.identity)return;
+  const selected=states[result.state];if(!selected)return;
   // A late control response is not the runner's current state. Derived QA and
   // documentation summaries have their own existing projections.
-  if(current.state!==result.state||current.identity.runId!==result.identity.runId
-    ||current.identity.taskId!==result.identity.taskId||current.identity.attempt!==result.identity.attempt)return;
-  const selected=states[result.state];if(!selected)return;
   try{
+    // Read lazily, after eligibility, and keep display-read failures advisory.
+    // Eligible results still need fresh state after an asynchronous effect.
+    const current=readCurrent();
+    if(current.state!==result.state||current.identity.runId!==result.identity.runId
+      ||current.identity.taskId!==result.identity.taskId||current.identity.attempt!==result.identity.attempt)return;
     const previous=readStatusProjection(specsDir);
     if(previous===null)return;
     // QA and finalization must never be replaced by an earlier N3/N4 response.

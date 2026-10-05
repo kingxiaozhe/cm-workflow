@@ -1,4 +1,7 @@
+import {readExecutionPolicy} from './execution-policy.mjs';
+import {readExternalModels} from './external-models.mjs';
 import {beforeFirstQaRound,readQaConfigRevision} from './qa-config-revision.mjs';
+import {readCloseoutPolicy} from './knowledge-closeout.mjs';
 import {readQaAttachment} from './qa-attachment.mjs';
 // Trusted synthetic fixture host; explicit V2 supports isolated task-file writes.
 import { randomUUID } from 'node:crypto';
@@ -36,6 +39,7 @@ import {reviewExclusions} from './effect-contract.mjs';
 import {bootstrapConfiguration,readBootstrapEvidence} from './host-bootstrap.mjs';
 import {validateCodeProjectPaths,assertCodeProjectSelections} from './code-projects.mjs';
 import {readEvidenceSupersession} from './reviewed-evidence-supersession-record.mjs';
+import {readReconciliationReceipt} from './review-reconciliation.mjs';
 
 // Keep default V1 imports free of SQLite initialization/warnings. Native ownership
 // is loaded synchronously only at the explicit V2 boundary (Node24.14+).
@@ -135,6 +139,9 @@ export function createTaskRunner(options) {
   if(options && Object.hasOwn(options,'codeProjectPaths'))optionKeys.push('codeProjectPaths');
   if(options && Object.hasOwn(options,'verificationGate'))optionKeys.push('verificationGate');
   if(options && Object.hasOwn(options,'providerDevelopment'))optionKeys.push('providerDevelopment');
+  if(options && Object.hasOwn(options,'knowledgeCloseout'))optionKeys.push('knowledgeCloseout');
+  if(options && Object.hasOwn(options,'executionPolicy'))optionKeys.push('executionPolicy');
+  if(options && Object.hasOwn(options,'externalModels'))optionKeys.push('externalModels');
   if(invocationMode)optionKeys.push('reviewInvocation');
   shape(options,optionKeys);
   need(options.providerDevelopment===undefined||typeof options.providerDevelopment==='boolean','invalid_input');
@@ -191,7 +198,10 @@ export function createTaskRunner(options) {
   }
   let metadata=json({...config,developer:{provider:developer.provider,requestedModel:developer.requestedModel,contextId:developer.contextId},
     reviewers:reviewers.map(({run,...r})=>r),...(invocationMode?{reviewInvocation:invocationConfig}:{}),
-    ...(Object.hasOwn(options,'taskLearning')?{taskLearning:json(options.taskLearning)}:{})});
+    ...(Object.hasOwn(options,'taskLearning')?{taskLearning:json(options.taskLearning)}:{}),
+    ...(Object.hasOwn(options,'knowledgeCloseout')?{knowledgeCloseout:readCloseoutPolicy(options.knowledgeCloseout)}:{}),
+    ...(Object.hasOwn(options,'executionPolicy')?{executionPolicy:readExecutionPolicy(options.executionPolicy)}:{}),
+    ...(Object.hasOwn(options,'externalModels')?{externalModels:readExternalModels(options.externalModels)}:{})});
   const taskLearning=metadata.taskLearning??null;
   if(taskLearning!==null){need(taskMode,'runner_learning');
     shape(taskLearning,['feature',...(Object.hasOwn(taskLearning,'hostHandoff')?['hostHandoff']:[])]);
@@ -281,9 +291,9 @@ export function createTaskRunner(options) {
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
     &&entry.result?.state==='blocked'&&['completion_checks_changed','completion_package_changed'].includes(entry.result?.code)).length;
   const privateStatus=()=>json({state,code,...(reason?{reason}:{}),
-    ...(state==='unknown'&&restored?.pendingAbandonable
+    ...(!(metadata.externalModels||metadata.executionPolicy)&&state==='unknown'&&restored?.pendingAbandonable
       ?{pendingEffectKind:restored.pending.kind}:{}),
-    ...(state==='unknown'&&restored?.pending?.kind==='review'
+    ...(!(metadata.externalModels||metadata.executionPolicy)&&state==='unknown'&&restored?.pending?.kind==='review'
       &&restored.state.reviewInvocation?.registration&&restored.state.reviewInvocation.result===null
       ?{pendingReviewInvocation:true}:{}),
     identity:{...config.identity,attempt},packageDigest:reviewPackage?.packageDigest??null,
@@ -305,9 +315,10 @@ export function createTaskRunner(options) {
   };
   const laterOptions=(evidence=null)=>({deliveries:laterDeliveries,after:reviewedAt(),fixTime:fixTime(evidence)});
   let publication;
+  let pendingReconciliation=null;
   // Replay decides; this only reports an exit abandonReview would accept.
   function reviewResultAbandonable(){
-    return invocationMode&&store&&!busy&&!poisoned&&state==='unknown'&&!restored?.pending
+    return !(metadata.externalModels||metadata.executionPolicy)&&invocationMode&&store&&!busy&&!poisoned&&state==='unknown'&&!restored?.pending
       &&abandonableReviewResult({state,attempt,cache:[...cache.values()],calls,reviewInvocation},reviewers[0].contexts[attempt-1]);
   }
   const status=()=>{
@@ -316,6 +327,16 @@ export function createTaskRunner(options) {
       current=freeze({...current,bootstrapReviewRecovery:true});
     // Status only; never part of a cached result or checkpoint.
     if(current.state==='unknown'&&reviewResultAbandonable())current=freeze({...current,abandonableReviewResult:true});
+    const available=Boolean((metadata.externalModels||metadata.executionPolicy))&&!busy&&!poisoned&&invocationMode&&store&&['unknown','pending_review'].includes(current.state)
+      &&readRunnerHistory(journal,metadata,3).reviewReconciliation!==null;
+    if((metadata.externalModels||metadata.executionPolicy)&&!busy&&!poisoned&&invocationMode&&store&&reviewInvocation?.registration
+      &&(available||current.state==='unknown'&&reviewInvocation.result?.reconciliationRequired!==false)){
+      const grant=reviewInvocation.registration.grant;
+      current=freeze({...current,reviewReconciliation:{invocationId:grant.invocationId,requestDigest:grant.requestDigest,
+        provider:reviewers[0].provider,providerThreadId:reviewInvocation.started,available},
+        reason:available?'原调用的终态与本地清理收据已保存；使用 reconcile_review 接纳证据，此操作不派发模型。'
+          :'缺少原调用的可信终态或本地清理证据。保留本 run、attempt、journal 和快照；按 invocationId / providerThreadId 向原宿主或 provider 核对结果及终止状态，并确认本地后代已退出。当前适配器没有远端状态查询入口，人工说明、PID 消失或重启均不能解锁；不要删 journal、换 runId 或重派。'});
+    }
     if(!busy&&!poisoned)try{publishRegisteredReview(true);}
     catch{return freeze({...current,code:'review_publication_required'});}
     // Every next effect re-verifies the bound specification. When it no longer
@@ -402,7 +423,7 @@ export function createTaskRunner(options) {
       kind:{init:'result','effect-intent':'intent','effect-checkpoint':'result',control:'cancel',
         'task-commit-intent':'commit-intent','task-commit-result':'commit-result',
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
-        'review-invocation-abandoned':'result','effect-abandoned':'result',
+        'review-invocation-abandoned':'result','review-invocation-receipt':'result','review-invocation-reconciled':'result','effect-abandoned':'result',
         'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
         'evidence-superseded':'result','develop-retry-limit':'result','completion-retry-limit':'result','specification-rebound':'result',
         'bootstrap-review-recovered':'result'}[type],
@@ -650,6 +671,21 @@ export function createTaskRunner(options) {
     const expectation={request,developerThreadId:invocationConfig.developerThreadId,
       excludedThreadIds:reviewExclusions(liveInvocation(),calls,developer.contextId)};
     const events=[];let started=null,sealed=false,invalid=false,invalidReject;
+    let capturedReceipt=null,receiptConflict=false,captureOpen=true,adapterDone;
+    const adapterFinished=new Promise(resolve=>{adapterDone=resolve;});
+    const onReconciliation=raw=>{
+      if(!captureOpen||invalid)return false;
+      try{
+        let value=readReconciliationReceipt(raw);
+        if(value.result?.status==='succeeded'){
+          const bounded=boundReviewText(value.result.value);need(bounded!==null,'observation_invalid');
+          value={...value,result:{status:'succeeded',value:bounded}};
+        }
+        if(capturedReceipt&&digest(value)!==digest(capturedReceipt))receiptConflict=true;
+        else capturedReceipt=value;
+        return !receiptConflict;
+      }catch{receiptConflict=true;return false;}
+    };
     const localController=new AbortController();
     const abort=()=>localController.abort();controller.signal.addEventListener('abort',abort,{once:true});
     const observation=result=>json({version:1,kind:'cm-provider-review-observation',requestDigest:request.requestDigest,
@@ -688,13 +724,14 @@ export function createTaskRunner(options) {
           new Promise((resolve,reject)=>queueMicrotask(()=>{
             try{
               need(!localController.signal.aborted,'cancelled');
-              const returned=adapter.run(request,{signal:localController.signal,onEvent});
+              const returned=adapter.run(request,{signal:localController.signal,onEvent,...((metadata.externalModels||metadata.executionPolicy)?{onReconciliation}:{})});
               if(types.isPromise(returned)){
                 const supported=Object.getPrototypeOf(returned)===promisePrototype&&!Object.hasOwn(returned,'constructor');
-                const observed=observePromise(returned,supported?resolve:ignorePromiseResult,supported?reject:ignorePromiseResult);
+                const observed=observePromise(returned,supported?value=>{adapterDone();resolve(value);}:ignorePromiseResult,
+                  supported?error=>{adapterDone();reject(error);}:ignorePromiseResult);
                 need(supported&&observed);
-              }else resolve(returned);
-            }catch(error){reject(error);}
+              }else {adapterDone();resolve(returned);}
+            }catch(error){adapterDone();reject(error);}
           })),
           invalidPromise,
           new Promise((_,reject)=>{timer=setTimeout(()=>{timedOut=true;localController.abort();
@@ -710,7 +747,7 @@ export function createTaskRunner(options) {
           const recorded=observation({status:'failed',code:'timeout'});
           fields={effectId,invocationId:request.invocationId,dispatchAt,outcome:'timed_out',
             observation:recorded,inspection:inspectProviderReview(JSON.stringify(recorded),JSON.stringify(expectation)),
-            reconciliationRequired:hasProviderReviewResult(recorded.events)};
+            reconciliationRequired:Boolean((metadata.externalModels||metadata.executionPolicy))||hasProviderReviewResult(recorded.events)};
         }
         else if(state==='cancelled'){fields={effectId,invocationId:request.invocationId,dispatchAt,outcome:'cancelled',
           observation:observation({status:'cancelled',code:'cancelled'}),inspection:null,reconciliationRequired:true};}
@@ -724,7 +761,12 @@ export function createTaskRunner(options) {
         reviewInvocation=json({registration,started,result});
         if(fields.outcome==='cancelled')halt('cancelled','cancelled');
         else if(retry)halt(retry.state,retry.code);
-        else halt('unknown',fields.reason??fields.inspection?.code??'reconciliation_required');return;
+        else halt('unknown',fields.reason??fields.inspection?.code??'reconciliation_required');
+        // Bound cleanup draining; never wait indefinitely or dispatch again.
+        // The original unknown is already journaled and remains unchanged.
+        if((metadata.externalModels||metadata.executionPolicy)&&timedOut&&!invalid){let drainTimer;await Promise.race([adapterFinished,
+          new Promise(resolve=>{drainTimer=setTimeout(resolve,2500);})]);clearTimeout(drainTimer);}
+        return;
       }
       sealed=true;
       let providerResult;
@@ -744,11 +786,11 @@ export function createTaskRunner(options) {
       // the verdict contract, ends in a new explicit retryable result.
       const reviewerFailed=(recorded,failure)=>{
         const fields={effectId,invocationId:request.invocationId,dispatchAt,outcome:'failed',observation:recorded,
-          inspection:failure,reconciliationRequired:false};
+          inspection:failure,reconciliationRequired:Boolean((metadata.externalModels||metadata.executionPolicy))};
         persist('review-invocation-result',fields);const result=resultView(fields);
         const retry=reviewTimeoutTransition(result,[...cache.values()],attempt,calls.slice(0,-1),contextId);
-        Object.assign(call,{terminal:'failed',resultDigest:digest(result)});reviewInvocation=json({registration,started,result});
-        halt(retry.state,retry.code,reviewFailureReason(failure.failure));
+        Object.assign(call,{terminal:retry?'failed':'unknown',resultDigest:digest(result)});reviewInvocation=json({registration,started,result});
+        halt(retry?.state??'unknown',retry?.code??failure.code??'reconciliation_required',reviewFailureReason(failure.failure));
       };
       // Bound the reviewer text before it is observed, inspected or journaled.
       if(providerResult.status==='succeeded'){
@@ -775,7 +817,7 @@ export function createTaskRunner(options) {
       if(failure){reviewerFailed(recorded,failure);return;}
       const fields={effectId,invocationId:request.invocationId,dispatchAt,outcome:observed?'observed':inspection.code==='transport_timeout'?'timed_out':'unknown',
         observation:recorded,inspection,reconciliationRequired:!observed
-          &&(inspection.code!=='transport_timeout'||hasProviderReviewResult(recorded.events))};
+          &&(Boolean((metadata.externalModels||metadata.executionPolicy))||inspection.code!=='transport_timeout'||hasProviderReviewResult(recorded.events))};
       persist('review-invocation-result',fields);const result=resultView(fields);
       const retry=reviewTimeoutTransition(result,[...cache.values()],attempt,calls.slice(0,-1),contextId);
       Object.assign(call,{terminal:observed?'succeeded':retry?'failed':'unknown',resultDigest:digest(observed?inspection.review:result)});
@@ -783,7 +825,12 @@ export function createTaskRunner(options) {
       if(observed)acceptReview(request,call,inspection.review);
       else if(retry)halt(retry.state,retry.code);
       else halt('unknown',inspection.code??'reconciliation_required');
-    }finally{sealed=true;clearTimeout(timer);controller.signal.removeEventListener('abort',abort);
+    }finally{
+      captureOpen=false;
+      if((metadata.externalModels||metadata.executionPolicy)&&(state==='unknown'||state==='pending_review'&&code==='review_transport_timeout')
+        &&started!==null&&!invalid&&!receiptConflict&&capturedReceipt)
+        pendingReconciliation={effectId,invocationId:request.invocationId,receipt:capturedReceipt};
+      sealed=true;clearTimeout(timer);controller.signal.removeEventListener('abort',abort);
       if(cancelReject)controller.signal.removeEventListener('abort',cancelReject);}
   }
   async function collectChecks(){
@@ -1115,6 +1162,16 @@ export function createTaskRunner(options) {
       }
       try{persist('effect-checkpoint',{effectId:v.id,checkpoint:frame()});publication=result;}
       catch{return poison();}
+      if(pendingReconciliation){
+        const saved=pendingReconciliation;pendingReconciliation=null;
+        const registration=journal.findLast(row=>row.payload.type==='review-invocation-registered'&&row.payload.effectId===saved.effectId);
+        const startedRecord=journal.findLast(row=>row.payload.type==='review-invocation-started'&&row.payload.effectId===saved.effectId);
+        const resultRecord=journal.findLast(row=>row.payload.type==='review-invocation-result'&&row.payload.effectId===saved.effectId);
+        const fields={...saved,registeredDigest:registration.digest,startedDigest:startedRecord?.digest??null,resultDigest:resultRecord.digest};
+        // Invalid/unusable evidence never mutates the journal or poisons a run.
+        let usable=false;try{assertJournalFits('review-invocation-receipt',fields,'review_reconciliation_limit');usable=true;}catch{}
+        if(usable)try{persist('review-invocation-receipt',fields);}catch{return poison();}
+      }
       // A block or verdict that leaves no reviewable delivery ends the run now,
       // so status never invites a resume that could not finish.
       try{const record=limitDue();return record?record():result;}catch{return poison();}
@@ -1122,7 +1179,7 @@ export function createTaskRunner(options) {
       if(poisoned)return result;
       try{publishRegisteredReview();}
       catch{return freeze({...result,code:'review_publication_required'});}
-      return result.state==='unknown'&&reviewResultAbandonable()?freeze({...result,abandonableReviewResult:true}):result;
+      return ['unknown','pending_review'].includes(result.state)?status():result;
     });
     return pending;
   }
@@ -1250,6 +1307,7 @@ export function createTaskRunner(options) {
   };
   const abandonReview=raw=>{
     try{
+      need(!(metadata.externalModels||metadata.executionPolicy),'external_review_reconciliation_required');
       need(invocationMode&&store&&!busy&&!poisoned&&state==='unknown'
         &&(restored?.pending?.kind==='review'||reviewResultAbandonable()),'review_abandon_unavailable');
       const value=json(raw);shape(value,['allowed','reason']);
@@ -1288,8 +1346,36 @@ export function createTaskRunner(options) {
       publication=privateStatus();return status();
     }catch(error){return freeze({outcome:'rejected',code:error.code??'review_abandon_unavailable'});}
   };
+  const reconcileReview=raw=>{
+    try{
+      need((metadata.externalModels||metadata.executionPolicy)&&invocationMode&&store&&!busy&&!poisoned,'review_reconciliation_unavailable');
+      const value=json(raw);shape(value,['invocationId']);id(value.invocationId);
+      const prior=journal.findLast(row=>row.payload.type==='review-invocation-reconciled');
+      if(prior?.payload.invocationId===value.invocationId&&state!=='unknown')return status();
+      const history=readRunnerHistory(journal,metadata,3),proof=history.reviewReconciliation;
+      need(['unknown','pending_review'].includes(state)&&!history.pending&&proof!==null,'review_reconciliation_evidence_required');
+      need(proof.invocationId===value.invocationId,'review_reconciliation_binding');
+      const {request,effect,before,result,...binding}=proof;
+      const call=calls.find(item=>item.invocationId===value.invocationId);
+      need(['unknown','failed'].includes(call?.terminal),'review_reconciliation_unavailable');
+      // Same call, same grant and same effect. The journal retains the original
+      // unknown and receipt; one atomic record contains the validated transition.
+      Object.assign(call,{terminal:result.outcome==='observed'?'succeeded':'failed',
+        resultDigest:digest(result.outcome==='observed'?result.inspection.review:result)});
+      reviewInvocation=json({...reviewInvocation,result});reason=null;
+      if(result.outcome==='observed')acceptReview(request,call,result.inspection.review);
+      else {const retry=reviewTimeoutTransition(result,before.cache,before.attempt,before.calls,call.contextId);
+        halt(retry.state,retry.code,reviewFailureReason(result.inspection.failure));}
+      const response=privateStatus();cache.set(effect.id,{effect,digest:digest(effect),result:response});
+      try{persist('review-invocation-reconciled',{...binding,checkpoint:frame()});publication=response;}
+      catch{return poison();}
+      try{limitDue()?.();}catch{return poison();}
+      return status();
+    }catch(error){return freeze({outcome:'rejected',code:error.code??'review_reconciliation_unavailable'});}
+  };
   const abandonEffect=raw=>{
     try{
+      need(!(metadata.externalModels||metadata.executionPolicy),'external_review_reconciliation_required');
       need(invocationMode&&store&&!busy&&!poisoned&&options.persistence.mode==='resume','effect_abandon_unavailable');
       const value=json(raw);shape(value,['allowed','reason']);
       need(value.allowed===true,'effect_abandon_authorization_required');
@@ -1345,7 +1431,7 @@ export function createTaskRunner(options) {
     }catch(error){return freeze({outcome:'rejected',code:error.code??'bootstrap_review_recovery_mismatch',
       reason:'原运行的文件、handoff 或证据无法精确核对；请保留现场并检查差异，不要重新派发开发。'});}
   };
-  const api={reviseQa,supersedeEvidence,rebindSpecification,abandonReview,abandonEffect,recoverBootstrapReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks};
+  const api={reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   // A terminal reviewer observation is durable even if the host died before

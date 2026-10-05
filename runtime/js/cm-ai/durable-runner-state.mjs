@@ -1,4 +1,7 @@
+import {readExecutionPolicy} from './execution-policy.mjs';
+import {readExternalModels} from './external-models.mjs';
 import {beforeFirstQaRound,qaRevisionFollows,readQaConfigRevision} from './qa-config-revision.mjs';
+import {readCloseoutPolicy} from './knowledge-closeout.mjs';
 // Host-only S3b2b journal grammar. Data validation grants no provider authority.
 import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,requestFor,JOURNAL_REASON_LIMIT,boundedReason} from './effect-contract.mjs';
 import {readReviewBaseline,readReviewPackage,reviewSpecsPath,reviewMaterialLimitReason} from './review-package.mjs';
@@ -6,7 +9,8 @@ import {reviewResult,reviewReceipt} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
 import path from 'node:path';
 import {readCommitIntent,readCommitResult} from './task-commit-codec.mjs';
-import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure,REVIEWER_PROVIDER_FAILURES} from './provider-review-observation.mjs';
+import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure,inspectProviderReviewReconciliation,REVIEWER_PROVIDER_FAILURES} from './provider-review-observation.mjs';
+import {readReconciliationReceipt} from './review-reconciliation.mjs';
 import {readCmAiProjectLearningWriteback} from './cm-ai-learning-writer.mjs';
 import {readCmAiTaskLearningApplication} from './cm-ai-context-refresh.mjs';
 import {reviewExclusions} from './effect-contract.mjs';
@@ -315,12 +319,12 @@ function readInvocationResult(p,registration,started,effect,config) {
     if(p.inspection===null)need(p.reconciliationRequired===true,'runner_invocation'); // legacy result
     else {
       same(p.inspection,check);need(p.outcome==='timed_out','runner_invocation');
-      need(p.reconciliationRequired===hasProviderReviewResult(observation.events),'runner_invocation');
+      need(p.reconciliationRequired===(Boolean(config.externalModels||config.executionPolicy)||hasProviderReviewResult(observation.events)),'runner_invocation');
     }
     need(check.providerThreadId===started,'runner_invocation');
     need(p.outcome==='cancelled'?check.observationStatus==='cancelled':check.code==='transport_timeout','runner_invocation');
   } else if(p.outcome==='failed') {
-    shape(p,common);need(p.reconciliationRequired===false,'runner_invocation');
+    shape(p,common);need(p.reconciliationRequired===Boolean(config.externalModels||config.executionPolicy),'runner_invocation');
     const observation=json(p.observation,512*1024);
     const failure=inspectProviderReviewFailure(JSON.stringify(observation),JSON.stringify(expectation));
     need(failure!==null,'runner_invocation');same(p.inspection,failure);
@@ -598,7 +602,10 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
 function completionConfig(config,version){
   shape(config,['root','identity','scope','requirements','excludedContexts','timeoutMs','developer','reviewers','completion',
     ...(version===3?['reviewInvocation']:[]),...(Object.hasOwn(config,'taskLearning')?['taskLearning']:[]),
-    ...['bootstrap','codeProjectPaths'].filter(key=>Object.hasOwn(config,key))]);
+    ...['bootstrap','codeProjectPaths','knowledgeCloseout','externalModels','executionPolicy'].filter(key=>Object.hasOwn(config,key))]);
+  if(Object.hasOwn(config,'knowledgeCloseout'))readCloseoutPolicy(config.knowledgeCloseout);
+  if(Object.hasOwn(config,'executionPolicy')){same(config.executionPolicy,readExecutionPolicy(config.executionPolicy));need(version===3,'execution_policy_runner_version');}
+  if(Object.hasOwn(config,'externalModels')){same(config.externalModels,readExternalModels(config.externalModels));need(version===3,'external_model_runner_version');}
   if(Object.hasOwn(config,'codeProjectPaths')){
     same(config.codeProjectPaths,validateCodeProjectPaths(config.codeProjectPaths));
     assertCodeProjectSelections(config.codeProjectPaths,[...config.scope,...config.requirements]);
@@ -667,6 +674,9 @@ export function readRunnerHistory(raw,config,version=1) {
   const reviewConfig=(calls=[])=>({...config,reviewInvocation:{...config.reviewInvocation,
     excludedThreadIds:reviewExclusions({excludedThreadIds:[...config.reviewInvocation.excludedThreadIds,...joinedHosts]},
       calls,config.developer.contextId)}});
+  const reconciliationBinding=()=>({effectId:lastReview.effect.id,invocationId:lastReview.request.invocationId,
+    registeredDigest:lastReview.registrationRecord.digest,startedDigest:lastReview.startedRecord?.digest??null,
+    resultDigest:lastReview.resultRecord.digest});
   for(const [index,r] of records.entries()) {
     if(index>0)need(records[index-1].payload.type!=='effect-abandoned','runner_abandon');
     boundRunnerRecord(r,index+1);
@@ -754,6 +764,34 @@ export function readRunnerHistory(raw,config,version=1) {
       invocation.result=readInvocationResult(p,invocation.registration,invocation.started,pending,reviewConfig(beforeIntent.calls));
       if(invocation.result.outcome==='cancelled')need(controls.cancelled===true,'runner_control');
       resultRecord=r;
+    } else if(version===3&&['review-invocation-receipt','review-invocation-reconciled'].includes(p.type)) {
+      const bindingKeys=['effectId','invocationId','registeredDigest','startedDigest','resultDigest'];
+      shape(p,[...common,...bindingKeys,...(p.type==='review-invocation-receipt'?['receipt']:['receiptDigest','checkpoint'])]);
+      need((config.externalModels||config.executionPolicy)&&r.kind==='result'&&pending===null&&lastReview!==null
+        &&(state.state==='unknown'&&lastReview.invocation.result.reconciliationRequired===true
+          ||state.state==='pending_review'&&reviewTransportTimeout(lastReview.invocation.result))
+        &&lastReview.invocation.result.inspection!==null&&lastReview.invocation.started!==null,
+      'review_reconciliation_unavailable');
+      same(Object.fromEntries(bindingKeys.map(key=>[key,p[key]])),reconciliationBinding());
+      if(p.type==='review-invocation-receipt'){
+        need(!lastReview.reconciliation,'review_reconciliation_duplicate');
+        const receipt=readReconciliationReceipt(p.receipt);
+        prefix(lastReview.invocation.result.observation.events,receipt.events);
+        const observation={version:1,kind:'cm-provider-review-observation',requestDigest:lastReview.request.requestDigest,
+          events:receipt.events,result:receipt.result};
+        const inspection=inspectProviderReviewReconciliation(JSON.stringify(observation),JSON.stringify({request:lastReview.request,
+          developerThreadId:config.reviewInvocation.developerThreadId,
+          excludedThreadIds:reviewConfig(lastReview.before.calls).reviewInvocation.excludedThreadIds}));
+        need(inspection.providerThreadId===lastReview.invocation.started,'review_reconciliation_binding');
+        const result={dispatchAt:lastReview.invocation.result.dispatchAt,
+          outcome:inspection.observationStatus==='completed'?'observed':'failed',observation,inspection,reconciliationRequired:false};
+        lastReview.reconciliation={receiptDigest:r.digest,result};
+      }else{
+        need(lastReview.reconciliation?.receiptDigest===p.receiptDigest,'review_reconciliation_evidence_required');
+        state=checkpoint(lastReview.before,p.checkpoint,lastReview.effect,config,original,session,lastReview.controls,version,
+          state.taskCommit??null,{...lastReview.invocation,result:lastReview.reconciliation.result},supersession?.carriedReview??null);
+        lastReview=null;
+      }
     } else if(version===3&&p.type==='develop-retry-limit') {
       // Terminal: written instead of a develop intent when no delivery can still
       // be reviewed. Every field is recomputed from the replayed state.
@@ -771,6 +809,7 @@ export function readRunnerHistory(raw,config,version=1) {
         &&p.completionBlocks===completionBlockCount(state.cache),'runner_retry_limit');
       state.state='blocked';state.code='completion_retry_limit';state.reason=completionRetryLimitReason(p);lastReview=null;
     } else if(version===3&&p.type==='review-invocation-abandoned'&&Object.hasOwn(p,'resultDigest')) {
+      need(!(config.externalModels||config.executionPolicy),'external_review_reconciliation_required');
       // Abandoning a checkpointed review whose journaled result was never accepted.
       shape(p,[...common,'effectId','invocationId','registeredDigest','startedDigest','resultDigest','reason','at']);
       need(r.kind==='result'&&pending===null&&lastReview!==null
@@ -791,6 +830,7 @@ export function readRunnerHistory(raw,config,version=1) {
         result:{outcome:'abandoned',reason:p.reason,at:p.at,recordDigest:r.digest}};
       lastReview=null;
     } else if(version===3&&p.type==='review-invocation-abandoned') {
+      need(!(config.externalModels||config.executionPolicy),'external_review_reconciliation_required');
       shape(p,[...common,'effectId','invocationId','registeredDigest','startedDigest','reason','at']);
       need(r.kind==='result'&&pending?.kind==='review'&&invocation.registration&&!invocation.result
         &&!controls.cancelled&&!controls.workflowError&&state.state==='awaiting_review','runner_abandon');
@@ -814,6 +854,7 @@ export function readRunnerHistory(raw,config,version=1) {
         result:{outcome:'abandoned',reason:p.reason,at:p.at,recordDigest:r.digest}};
       pending=null;beforeIntent=null;invocation={registration:null,started:null,result:null};
     } else if(version===3&&p.type==='effect-abandoned') {
+      need(!(config.externalModels||config.executionPolicy),'external_review_reconciliation_required');
       shape(p,[...common,'effectId','effectKind','intentDigest','reason','at',
         ...(Object.hasOwn(p,'lastRecordDigest')?['lastRecordDigest']:[])]);
       let intentIndex=index-1;
@@ -837,7 +878,7 @@ export function readRunnerHistory(raw,config,version=1) {
       state=checkpoint(beforeIntent,p.checkpoint,pending,config,original,session,controls,version,state.taskCommit??null,invocation,
         supersession?.carriedReview??null);
       lastReview=version===3&&pending.kind==='review'&&invocation.result?{effect:pending,request:invocation.registration.request,
-        registrationRecord,startedRecord,resultRecord}:null;
+        registrationRecord,startedRecord,resultRecord,before:beforeIntent,controls,invocation}:null;
       pending=null;beforeIntent=null;invocation={registration:null,started:null,result:null};
     } else if(version>=2 && ['task-commit-intent','task-commit-result'].includes(p.type)){
       shape(p,[...common,'effectId','completeIntentDigest','commit']);
@@ -898,19 +939,21 @@ export function readRunnerHistory(raw,config,version=1) {
   if(pending){state.state='unknown';state.code='reconciliation_required';
     if(version===3&&invocation.registration)state.reviewInvocation={registration:invocation.registration.record,
       started:invocation.started,result:invocation.result};}
-  const pendingAbandonable=version===3&&pending!==null
+  const pendingAbandonable=!(config.externalModels||config.executionPolicy)&&version===3&&pending!==null
     &&['develop','complete','review'].includes(pending.kind)
     &&!transaction&&state.taskCommit?.intentDigest==null
     &&(pending.kind!=='review'||!invocation.registration&&!joinedForInvocation)
     &&records.slice(records.findLastIndex(row=>row.payload.type==='effect-intent')+1)
       .every(row=>row.payload.type==='control');
-  const reviewResultAbandon=version===3&&pending===null&&lastReview!==null
+  const reviewResultAbandon=!(config.externalModels||config.executionPolicy)&&version===3&&pending===null&&lastReview!==null
     &&abandonableReviewResult(state,config.reviewers[0].contexts[state.attempt-1])
     ?{effectId:lastReview.effect.id,invocationId:lastReview.request.invocationId,
       registeredDigest:lastReview.registrationRecord.digest,startedDigest:lastReview.startedRecord?.digest??null,
       resultDigest:lastReview.resultRecord.digest}:null;
   return {original,session,state,pending,acceptedFixes,qaAttachment,
     ...(version===3?{joinedHosts,reviewerThreads,supersession,pendingAbandonable,reviewResultAbandon,
+      reviewReconciliation:lastReview?.reconciliation&&['unknown','pending_review'].includes(state.state)?{...reconciliationBinding(),
+        ...lastReview.reconciliation,request:lastReview.request,effect:lastReview.effect,before:lastReview.before}:null,
       pendingObservedReview:pending?.kind==='review'&&invocation.result?.outcome==='observed'
         ?{request:invocation.registration.request,registration:invocation.registration.record,
           started:invocation.started,result:invocation.result}:null}:{}),

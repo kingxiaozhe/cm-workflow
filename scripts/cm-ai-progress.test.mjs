@@ -130,6 +130,181 @@ test('read-only status and foreign/invalid operations preserve existing projecti
   assert.deepEqual(fs.readFileSync(f.statusPath),before);assert.equal(effects,0);
 });
 
+test('status reads once, exposes no private calls, and never runs a second display read',async t=>{
+  const f=fixture(t);let reads=0;
+  const before=fs.readFileSync(f.statusPath),tasks=fs.readFileSync(path.join(f.specsDir,f.feature,'tasks.md'));
+  const current={state:'unknown',code:'reconciliation_required',identity,packageDigest:'a'.repeat(64),
+    calls:[{secret:'private-call'}],reviewInvocation:{secret:'private-invocation'}};
+  const unexpected=()=>{throw Error('must not dispatch or mutate');};
+  const entry=createCmAiConversationEntry({specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,identity,
+    runner:{status:()=>{if(++reads!==1)throw Error('unnecessary display read');return current;},
+      executeEffect:unexpected,cancel:unexpected,run:unexpected}});
+  const result=await entry.handle(control('status'));
+  assert.equal(result.outcome,'reported');assert.equal(result.pendingAction,'reconcile');assert.equal(reads,1);
+  assert(!Object.hasOwn(result,'calls'));assert(!Object.hasOwn(result,'reviewInvocation'));
+  assert(!JSON.stringify(result).includes('private-'));
+  assert.deepEqual(fs.readFileSync(f.statusPath),before);
+  assert.deepEqual(fs.readFileSync(path.join(f.specsDir,f.feature,'tasks.md')),tasks);
+  assert.equal(fs.existsSync(path.join(f.specsDir,'运行日志.jsonl')),false);
+});
+
+for(const admission of [{state:'awaiting_spec_approval',reason:'spec_approval_required'},
+  {state:'blocked',reason:'spec_features_invalid'}])
+test(`admission ${admission.state} never reads or dispatches the original runner`,async t=>{
+  const f=fixture(t),before=fs.readFileSync(f.statusPath);let touches=0;
+  const unexpected=()=>{touches++;throw Error('admission must not touch runner');};
+  const entry=createCmAiConversationEntry({specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,identity,
+    runner:{inspectBootstrapAdmission:()=>admission,status:unexpected,
+      executeEffect:unexpected,cancel:unexpected,run:unexpected}});
+  for(const operation of ['start','resume']){
+    const result=await entry.handle(control(operation));
+    assert.equal(result.outcome,'awaiting');assert.equal(result.code,admission.reason);
+    assert.deepEqual(result.identity,identity);assert.equal(result.packageDigest,null);
+  }
+  assert.equal(touches,0);
+  assert.deepEqual(fs.readFileSync(f.statusPath),before);
+  assert.equal(fs.existsSync(path.join(f.specsDir,'运行日志.jsonl')),false);
+});
+
+for(const admission of [{state:'awaiting_spec_approval',reason:'spec_approval_required'},
+  {state:'blocked',reason:'spec_features_invalid'}])
+test(`advance preserves admission ${admission.state} without an extra display read`,async t=>{
+  const f=fixture(t),before=fs.readFileSync(f.statusPath);let reads=0,admissions=0,effects=0;
+  const current={state:'ready',code:null,identity,packageDigest:null};
+  const unexpected=()=>{effects++;throw Error('admission must not dispatch');};
+  const entry=createCmAiConversationEntry({specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,identity,
+    runner:{inspectBootstrapAdmission:()=>{admissions++;return admission;},status:()=>{reads++;return current;},
+      executeEffect:unexpected,cancel:unexpected,run:unexpected}});
+  const result=await entry.handle(control('advance'));
+  assert.equal(result.operation,'advance');assert.equal(result.outcome,'awaiting');
+  assert.equal(result.state,admission.state);assert.equal(result.code,admission.reason);
+  assert.deepEqual(result.identity,identity);assert.equal(result.packageDigest,null);
+  assert.equal(reads,4,'advance keeps its state/identity reads but adds no display read');
+  assert.equal(admissions,1);assert.equal(effects,0);assert.deepEqual(fs.readFileSync(f.statusPath),before);
+  assert.equal(fs.existsSync(path.join(f.specsDir,'运行日志.jsonl')),false);
+});
+
+test('admission binds a newer real attempt once and refuses an invented attempt',async t=>{
+  const f=fixture(t),before=fs.readFileSync(f.statusPath),actual={...identity,attempt:2};let reads=0;
+  let current={state:'changes_requested',code:null,identity:actual,packageDigest:'a'.repeat(64)};
+  const unexpected=()=>{throw Error('must not dispatch while specs await approval');};
+  const entry=createCmAiConversationEntry({specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,identity,
+    runner:{inspectBootstrapAdmission:()=>({state:'awaiting_spec_approval',reason:'spec_approval_required'}),
+      status:()=>{reads++;return current;},executeEffect:unexpected,cancel:unexpected,run:unexpected}});
+  for(const operation of ['start','resume']){
+    const result=await entry.handle(control(operation,actual));
+    assert.equal(result.code,'spec_approval_required');assert.deepEqual(result.identity,actual);
+  }
+  const legitimateReads=reads;
+  current={...current,identity};
+  const invented=await entry.handle(control('resume',actual));
+  assert.equal(invented.outcome,'rejected');assert.equal(invented.code,'identity_mismatch');
+  assert.equal(legitimateReads,2,'one identity read per newer-attempt admission, no display read');
+  assert.equal(reads,3);assert.deepEqual(fs.readFileSync(f.statusPath),before);
+});
+
+for(const waiting of ['revision_answer_required','provider_development_authorization_required'])
+test(`${waiting} preserves the real waiting projection`,async t=>{
+  const {writeStatusProjection}=await import('../runtime/js/cm-ai/status-projection.mjs');
+  const f=fixture(t),actual={...identity,attempt:2};let reads=0;
+  writeStatusProjection({specsDir:f.specsDir,feature:f.feature,identity:actual,node:'N4',state:'reviewing',detail:'old review',claim:true});
+  const current={state:'changes_requested',code:null,identity:actual,packageDigest:'a'.repeat(64),calls:[]};
+  const unexpected=()=>{throw Error('waiting must not dispatch');};
+  const entry=createCmAiConversationEntry({specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,identity,
+    ...(waiting==='revision_answer_required'?{holdRevision:true}:{developmentAttempt:1}),
+    runner:{status:()=>{reads++;return current;},executeEffect:unexpected,cancel:unexpected,run:unexpected}});
+  const result=await entry.handle(control('resume',actual));
+  assert.equal(result.outcome,'awaiting');assert.equal(result.code,waiting);assert.deepEqual(result.identity,actual);
+  assert.equal(f.status().state,'changes_requested');assert.equal(f.status().code,waiting);assert.equal(reads,3);
+});
+
+test('a completed effect projects its fresh current state once',async t=>{
+  const {writeStatusProjection}=await import('../runtime/js/cm-ai/status-projection.mjs');
+  const f=fixture(t);let current={state:'approved',code:null,identity,packageDigest:'a'.repeat(64)},effects=0,displayReads=0;
+  writeStatusProjection({specsDir:f.specsDir,feature:f.feature,identity,node:'N4',state:'reviewing',detail:'reviewed',claim:true});
+  const entry=createCmAiConversationEntry({specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,identity,
+    runner:{status:()=>{if(effects)displayReads++;return current;},executeEffect:async()=>{
+      effects++;current={...current,state:'fixture_completed'};return current;},cancel:()=>current,run:async()=>current}});
+  const result=await entry.handle({...control('complete'),packageDigest:current.packageDigest});
+  assert.equal(result.outcome,'advanced');assert.equal(result.state,'fixture_completed');
+  assert.equal(f.status().state,'fixture_completed');assert.equal(f.status().node,'N5');
+  assert.equal(effects,1);assert.equal(displayReads,1);
+});
+
+test('a failed display read cannot reject a successful runner completion',async t=>{
+  const {writeStatusProjection}=await import('../runtime/js/cm-ai/status-projection.mjs');
+  const f=fixture(t);let completed=false,effects=0,displayReads=0;
+  writeStatusProjection({specsDir:f.specsDir,feature:f.feature,identity,node:'N4',state:'reviewing',detail:'reviewed',claim:true});
+  const before=fs.readFileSync(f.statusPath),current={state:'approved',code:null,identity,packageDigest:'a'.repeat(64)};
+  const entry=createCmAiConversationEntry({specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,identity,
+    runner:{status:()=>{if(completed){displayReads++;throw Error('display unavailable');}return current;},
+      executeEffect:async()=>{effects++;completed=true;return {...current,state:'fixture_completed'};},
+      cancel:()=>{throw Error('unexpected cancel');},run:async()=>current}});
+  const result=await entry.handle({...control('complete'),packageDigest:current.packageDigest});
+  assert.equal(result.outcome,'advanced');assert.equal(result.state,'fixture_completed');
+  assert.equal(effects,1);assert.equal(displayReads,1);assert.deepEqual(fs.readFileSync(f.statusPath),before);
+});
+
+test('cancellation epoch rejects a late completion even when runner state still matches',async t=>{
+  const {writeStatusProjection}=await import('../runtime/js/cm-ai/status-projection.mjs');
+  const f=fixture(t);let release,enter;
+  const entered=new Promise(resolve=>{enter=resolve;});
+  let current={state:'approved',code:null,identity,packageDigest:'a'.repeat(64)};
+  writeStatusProjection({specsDir:f.specsDir,feature:f.feature,identity,node:'N4',state:'reviewing',detail:'original',claim:true});
+  const entry=createCmAiConversationEntry({specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,identity,
+    runner:{status:()=>current,executeEffect:()=>{current={...current,state:'fixture_completed'};enter();
+      return new Promise(resolve=>{release=resolve;});},cancel:()=>current,run:async()=>current}});
+  const pending=entry.handle({...control('complete'),packageDigest:current.packageDigest});await entered;
+  const cancelled=await entry.handle(control('cancel'));
+  assert.equal(cancelled.outcome,'cancelled');assert.equal(cancelled.state,'fixture_completed');
+  const before=fs.readFileSync(f.statusPath);release(current);await pending;
+  assert.deepEqual(fs.readFileSync(f.statusPath),before);
+});
+
+for(const changed of ['state','runId','taskId','attempt'])
+test(`a late completion cannot project over changed current ${changed}`,async t=>{
+  const {writeStatusProjection}=await import('../runtime/js/cm-ai/status-projection.mjs');
+  const f=fixture(t);let release,enter,displayReads=0,completed=false;
+  const entered=new Promise(resolve=>{enter=resolve;});
+  const currentBefore={state:'approved',code:null,identity,packageDigest:'a'.repeat(64)};
+  let current=currentBefore;
+  writeStatusProjection({specsDir:f.specsDir,feature:f.feature,identity,node:'N4',state:'reviewing',detail:'original',claim:true});
+  const entry=createCmAiConversationEntry({specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,identity,
+    runner:{status:()=>{if(completed)displayReads++;return current;},
+      executeEffect:()=>{enter();return new Promise(resolve=>{release=resolve;});},cancel:()=>current,run:async()=>current}});
+  const pending=entry.handle({...control('complete'),packageDigest:current.packageDigest});await entered;
+  current={...current,state:'fixture_completed',identity:{...identity}};
+  if(changed==='state')current.state='unknown';
+  else current.identity[changed]=changed==='attempt'?2:changed==='taskId'?'T-002':'newer-progress-run';
+  const before=fs.readFileSync(f.statusPath);completed=true;
+  release({...currentBefore,state:'fixture_completed'});const result=await pending;
+  assert.equal(result.state,'fixture_completed');assert.equal(displayReads,1,'fresh state is read once after the effect');
+  assert.deepEqual(fs.readFileSync(f.statusPath),before);
+});
+
+test('real durable status preserves code, task, receipt, journal and checkpoint bytes',t=>{
+  const f=fixture(t),first=f.run([check('syntax',"process.exit(0)")]);
+  assert.equal(first.status,0,first.stderr);assert.equal(JSON.parse(first.stdout).result.state,'awaiting_review');
+  const capture=()=>{
+    const files=new Map();
+    const visit=dir=>{for(const item of fs.readdirSync(dir,{withFileTypes:true})){
+      const file=path.join(dir,item.name);if(item.isDirectory())visit(file);else if(item.isFile())files.set(file,fs.readFileSync(file));
+    }};
+    visit(f.codeProject);visit(path.join(f.specsDir,'.reviews'));
+    for(const file of [f.statusPath,path.join(f.specsDir,f.feature,'tasks.md'),path.join(f.specsDir,'运行日志.jsonl')]){
+      if(fs.existsSync(file))files.set(file,fs.readFileSync(file));
+    }
+    return files;
+  };
+  const before=capture(),plan=f.plan([check('syntax',"process.exit(0)")],{mode:'resume'});
+  const reported=spawnSync(process.execPath,[driver,'--plan',plan,'status'],{encoding:'utf8',timeout:30000,env:f.env});
+  assert.equal(reported.status,0,reported.stderr);const result=JSON.parse(reported.stdout).result;
+  assert.equal(result.outcome,'reported');assert.equal(result.state,'awaiting_review');
+  assert(!Object.hasOwn(result,'calls'));assert(!Object.hasOwn(result,'reviewInvocation'));
+  assert.deepEqual(capture(),before);
+  assert(!f.events().some(row=>row.phase_name==='reviewing'),'status must not start the independent reviewer');
+});
+
 test('check phase is visible to a manual current-session bridge before it replies',async t=>{
   const f=fixture(t);let seen=false;
   const bridge={call:async kind=>{assert.equal(kind,'check');seen=true;assert.equal(f.status().task,'T-001');assert.equal(f.status().state,'checking');return [];} };

@@ -551,6 +551,13 @@ QA、文档可显式接入下述固定能力，多任务使用下文批次 CLI�
 原业务 scope 内，AGENTS/CLAUDE 等保护指令仍不能从此写入。applicableAgentFiles 沿原 N7
 相对路径合同，须列出实际适用的子目录指令；空数组不是跳过项目根指令或免除宿主读取义务。
 
+具备文档能力的新 run 默认在原 `documentation_inspect` 中做一次只读收尾资料核对，
+并将结果附在 finish/run_finalize 的 `knowledgeCloseout` 中。需要关闭时在上述配置
+添加 `"knowledgeCloseout": false`；开关与版本写入原 init 快照，resume 不能改变。
+旧 init 缺字段继续旧合同；旧文档答案兼容，但新 run 未收到报告会明确标记未完成。
+完整范围、六面报告、失败与回退规则见
+[`knowledge-closeout.md`](../skills/cm-ai/references/knowledge-closeout.md)。报告不替代原 Review/QA 或必需文档凭证。
+
 已完成任务的一次性 QA 附加：原无 workflow 或 `qa:null` 的 run，仅在 `--mode resume`、
 state 为 `fixture_completed` 时，可显式同时传入含 QA 的 `--workflow-config PATH` 和
 `--allow-qa`。缺授权返回 `qa_authorization_required`；未完成返回 `qa_attach_not_completed`；

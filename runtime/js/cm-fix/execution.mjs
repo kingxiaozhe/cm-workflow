@@ -1,3 +1,9 @@
+import {readExecutionPolicy} from '../cm-ai/execution-policy.mjs';
+import {readExecutionSnapshot} from '../cm-ai/execution-snapshot.mjs';
+import {acquireExternalRunGuard,externalRunGuardExists} from '../cm-ai/external-run-guard.mjs';
+import {fixReviewLedger,reconciledFixResultRecord} from './review-reconciliation.mjs';
+import {readReconciliationReceipt} from '../cm-ai/review-reconciliation.mjs';
+import {readExternalModels} from '../cm-ai/external-models.mjs';
 // Fixed initial cm-fix stages over the shared durable store; no task completion authority.
 import {inventory,readTestExtensionPlan,extensionConfig,inspectExtensionCheck,currentTestFiles,verifyExtensionFiles,extendRevisionReviewBaseline} from './test-extension.mjs';
 import path from 'node:path';
@@ -65,11 +71,15 @@ const latestStepRecord=(records,id)=>[...records].reverse().find(row=>retryBase(
 const REVIEW_ABANDON={cause_review:'fix-cause',revision_final_review:'fix-revision-final'};
 const causeRecord=(records,suffix)=>{
   const marker=records.findIndex(row=>row.id==='fix-rediagnosis-intent');
-  return marker<0?reviewCycleRecord(records,'fix-cause',suffix)
+  const row=marker<0?reviewCycleRecord(records,'fix-cause',suffix)
     :records.slice(marker+1).find(row=>row.id===`fix-cause-rediagnosis-${suffix}`);
+  return suffix==='result'?reconciledFixResultRecord(records,row):row;
 };
-const reviewCycleRecord=(records,prefix,suffix)=>records.some(row=>row.id===`${prefix}-abandoned`)
-  ?records.find(row=>row.id===`${prefix}-retry-${suffix}`):records.find(row=>row.id===`${prefix}-${suffix}`);
+const reviewCycleRecord=(records,prefix,suffix)=>{
+  const row=records.some(row=>row.id===`${prefix}-abandoned`)
+    ?records.find(row=>row.id===`${prefix}-retry-${suffix}`):records.find(row=>row.id===`${prefix}-${suffix}`);
+  return suffix==='result'?reconciledFixResultRecord(records,row):row;
+};
 // Reviews wait for their own budget (host review configuration), never for the
 // reproduction command's. Embedders that supply none keep the historical budget.
 function reviewTimeout(adapter,fallback){
@@ -96,7 +106,22 @@ function diagnosis(raw){
   return value;
 }
 
-export function openFixExecution(options,{bridge=null,prepare=null,causeReview=null,finalReview=null,assertReviewReady=null}={}){
+const HISTORY_INSPECTION=Symbol('fix-history-inspection');
+// Same owner projection, backed by a read-only journal and no writer/dispatch.
+export function inspectFixExecutionHistory({specsRoot,identity}){
+  const snapshot=readExecutionSnapshot({specsRoot,identity});
+  const initial=snapshot.records[0]?.payload;need(initial?.workflow==='cm-fix-stages-v1','fix_history_invalid');
+  validIdentity(initial.identity);
+  const runIdentity={repositoryId:initial.identity.repositoryId,runId:initial.identity.runId};
+  need(digest(runIdentity)===digest(snapshot.identity)&&digest(runIdentity)===digest(identity),'identity_mismatch');
+  need(digest(snapshot.fingerprints)===digest({workflow:digest('cm-fix-stages-v1'),config:digest(initial.configuration),inputs:digest(initial.identity)}),'fingerprint_mismatch');
+  const {archiveMode,...configuration}=initial.configuration;
+  need(archiveMode===undefined||archiveMode==='bare','fix_history_invalid');
+  const owner=openFixExecution({specsRoot:archiveMode==='bare'?null:specsRoot,identity:initial.identity,configuration,create:false},{[HISTORY_INSPECTION]:snapshot});
+  try{return owner.status();}finally{owner.close();}
+}
+
+export function openFixExecution(options,{bridge=null,prepare=null,causeReview=null,finalReview=null,assertReviewReady=null,[HISTORY_INSPECTION]:inspectionSnapshot=null}={}){
   shape(options,['identity','configuration','create',...(Object.hasOwn(options,'hostContextId')?['hostContextId']:[]),
     ...(Object.hasOwn(options,'specsRoot')?['specsRoot']:[])]);
   const {identity,configuration:originalConfiguration,create}=json(options,64*1024);validIdentity(identity);
@@ -105,7 +130,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
   const configuration=json({...originalConfiguration,...(bare?{archiveMode:'bare'}:{})});
   need(typeof create==='boolean','invalid_input');
   const specsRoot=fixArchiveRoot(options.specsRoot,configuration.reproduction.cwd,create);
-  shape(configuration,['hostContextId','defect','reproduction',
+  shape(configuration,['hostContextId','defect','reproduction',...(Object.hasOwn(configuration,'externalModels')?['externalModels']:[]),...(Object.hasOwn(configuration,'executionPolicy')?['executionPolicy']:[]),
     ...(bare?['archiveMode']:[]),
     ...(Object.hasOwn(configuration,'protectSpecs')?['protectSpecs']:[]),
     ...(Object.hasOwn(configuration,'qaSource')?['qaSource']:[]),
@@ -116,6 +141,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     ...(Object.hasOwn(configuration,'baseline')?['baseline']:[]),
     ...(Object.hasOwn(configuration,'testAuthor')?['testAuthor']:[]),
     ...(Object.hasOwn(configuration,'repair')?['repair']:[]),...(Object.hasOwn(configuration,'walkthrough')?['walkthrough']:[])]);
+  if(configuration.executionPolicy)readExecutionPolicy(configuration.executionPolicy);
+  if(configuration.externalModels){readExternalModels(configuration.externalModels);need(configuration.causeReview,'external_review_configuration_required');need(configuration.causeReview?.requestedModel===configuration.externalModels.providers[configuration.causeReview.provider]?.model,'external_model_pair_conflict');}
   id(configuration.hostContextId);text(configuration.defect);
   need(!bare||!configuration.qaSource,'fix_qa_specs_required');
   if(isVisual(configuration.reproduction)||isVisual(configuration.redTest)){
@@ -166,8 +193,13 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
   }
   if(create)assertFixEvidenceNamesFree(evidenceSpecsRoot,identity,configuration);
   if(create&&Object.hasOwn(configuration,'qaSource'))inspectFixQaSource({specsRoot,identity,configuration});
-  const store=openExecutionStore({specsRoot,identity:{repositoryId:identity.repositoryId,runId:identity.runId},create,
-    fingerprints:{workflow:digest('cm-fix-stages-v1'),config:digest(configuration),inputs:digest(identity)}});
+  const codeProject=fs.realpathSync(configuration.reproduction.cwd);
+  const guard=!inspectionSnapshot&&((configuration.externalModels||configuration.executionPolicy)||externalRunGuardExists(evidenceSpecsRoot,codeProject))
+    ?acquireExternalRunGuard({specsDir:evidenceSpecsRoot,codeProject,identity,feature:configuration.qaSource?.feature??'fix'}, {strictOnly:!(configuration.externalModels||configuration.executionPolicy)}):null;
+  let store;
+  try{store=inspectionSnapshot?{snapshot:()=>inspectionSnapshot,close(){},append(){need(false,'fix_read_only');}}:openExecutionStore({specsRoot,identity:{repositoryId:identity.repositoryId,runId:identity.runId},create,
+    fingerprints:{workflow:digest('cm-fix-stages-v1'),config:digest(configuration),inputs:digest(identity)}});}catch(error){guard?.close();throw error;}
+  const closeStore=()=>{try{store.close();}finally{guard?.close();}};
   let active=null,closed=false;
   const retryCount=base=>{
     const records=store.snapshot().records;
@@ -204,7 +236,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
   // bound human decision. Selection never falls back to an older result.
   const recoveryPrefix=cycle=>cycle===0?'fix-final':cycle===1?'fix-final-recovery':`fix-final-recovery-${cycle}`;
   const recoveryCount=records=>records.filter(row=>/^fix-final-recovery-(?:[1-9]\d*-)?authorized$/.test(row.id)).length;
-  const finalRecord=(records,suffix)=>records.find(row=>row.id===`${recoveryPrefix(recoveryCount(records))}-${suffix}`);
+  const finalRecord=(records,suffix)=>{const row=records.find(row=>row.id===`${recoveryPrefix(recoveryCount(records))}-${suffix}`);return suffix==='result'?reconciledFixResultRecord(records,row):row;};
   const finalCycleRecord=(row,suffix)=>new RegExp(`^fix-final-(?:recovery-(?:[1-9]\\d*-)?)?${suffix}$`).test(row.id);
   const publishCause=(inspectOnly=false)=>{
     const records=store.snapshot().records;
@@ -347,6 +379,19 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       &&row.dossier_file===dossier.path&&row.dossier_sha256===dossier.sha256),'fix_escalation_exit_conflict');
     return current;
   }
+  function saveReviewReceipt(prefix,raw){
+    if(!(configuration.externalModels||configuration.executionPolicy)||!raw||project().stage!=='unknown')return;
+    try{
+      const records=store.snapshot().records,registration=records.find(r=>r.id===prefix+'-registered'),started=records.find(r=>r.id===prefix+'-started'),result=records.find(r=>r.id===prefix+'-result');
+      need(registration&&started&&result,'review_reconciliation_evidence_required');
+      const invocationId=registration.payload.request.invocationId;
+      const payload={prefix,invocationId,registeredDigest:digest(registration),startedDigest:digest(started),resultDigest:digest(result),receipt:readReconciliationReceipt(raw)};
+      const recordId='fix-review-receipt-'+digest(invocationId).slice(0,24);
+      need(!records.some(r=>r.id===recordId),'review_reconciliation_duplicate');
+      fixReviewLedger([...records,{id:recordId,seq:records.length+1,kind:'result',payload}],configuration);
+      append(recordId,'result',payload);
+    }catch{/* Missing, conflicting or unbound receipts never change the original unknown. */}
+  }
   function project(){
     const snapshot=store.snapshot();
     need(snapshot.records.length>0,'fix_history_invalid');
@@ -399,8 +444,10 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       need(digest(inventory([...reviewedFiles.values()]))===digest(inventory(next.files)),'fix_revision_source_mismatch');
     }
+    const reviewLedger=fixReviewLedger(snapshot.records,configuration);
     for(const storedRecord of records){
-      let record=storedRecord;
+      if(/^fix-review-(receipt|reconciled)-/.test(storedRecord.id))continue;
+      let record=reviewLedger.overlays.has(storedRecord.id)?{...storedRecord,payload:reviewLedger.overlays.get(storedRecord.id)}:storedRecord;
       const abandonedMatch=/^fix-abandoned-([1-8])$/.exec(record.id);
       if(abandonedMatch){
         need(Number(abandonedMatch[1])===abandoned.length+1&&record.kind==='result'
@@ -432,6 +479,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         record={...record,id:baseId};
       }
       if(/^fix-final-recovery-(?:[1-9]\d*-)?authorized$/.test(record.id)){
+        need(!(configuration.externalModels||configuration.executionPolicy),'external_review_reconciliation_required');
         need(record.id===`${recoveryPrefix(finalRecoveryCount+1)}-authorized`,'fix_history_invalid');
         need(identity.attempt===1&&stage==='unknown'&&finalRegistration&&finalStarted&&!revision
           &&(!finalResult||finalResult.observationStatus==='unknown')&&record.kind==='result','fix_review_recovery_unavailable');
@@ -693,6 +741,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         revisionHandoff=record.payload;pending=null;stage='revision_final_review_required';continue;
       }
       if(record.id==='fix-cause-abandoned'||record.id==='fix-revision-final-abandoned'){
+        need(!(configuration.externalModels||configuration.executionPolicy),'external_review_reconciliation_required');
         const causeKind=record.id==='fix-cause-abandoned';
         const registration=causeKind?cause:revisionFinalRegistration,result=causeKind?causeResult:revisionFinalResult;
         need(record.kind==='result'&&(causeKind?causeAbandonment:revisionAbandonment)===null&&registration&&stage==='unknown'
@@ -1170,9 +1219,11 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       &&(pending===kind&&!result||pending===null&&result!==null&&result.observationStatus!=='completed');
     const causeNoResult=rediagnosis===null&&noReviewResult(cause,causeResult,'cause_review');
     const revisionNoResult=noReviewResult(revisionFinalRegistration,revisionFinalResult,'revision_final_review');
-    const reviewAbandonable=causeNoResult&&!causeAbandonment?'cause_review':revisionNoResult&&!revisionAbandonment?'revision_final_review':null;
+    if(stage==='unknown'&&[...reviewLedger.receipts.values()].some(p=>reviewLedger.applied.has(p.invocationId)&&p.inspection.kind==='cm-provider-review-failure')){stage='review_provider_failed';pending=null;}
+    const reviewAbandonable=!(configuration.externalModels||configuration.executionPolicy)&&causeNoResult&&!causeAbandonment?'cause_review':!(configuration.externalModels||configuration.executionPolicy)&&revisionNoResult&&!revisionAbandonment?'revision_final_review':null;
     const status=json({identity,stage,pending,abandoned,executionActive:active!==null,reproduction,diagnosis:diagnosed,learning,causeReview:causeResult,
       ...(reviewAbandonable?{reviewAbandonable}:{}),
+      ...((configuration.externalModels||configuration.executionPolicy)&&stage==='unknown'?{reviewReconciliation:{available:reviewLedger.pending.length===1,invocationId:reviewLedger.pending[0]?.invocationId??null}}:{}),
       ...(causeNoResult&&causeAbandonment||revisionNoResult&&revisionAbandonment?{reviewAbandonBudgetExhausted:true}:{}),
       ...(causeAbandonment?{causeReviewAbandonment:causeAbandonment}:{}),
       ...(revisionAbandonment?{revisionFinalReviewAbandonment:revisionAbandonment}:{}),
@@ -1212,15 +1263,26 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
   try{
     // The existing shared writer lock is already held here: a live parent
     // cannot overlap this child. Recheck current evidence before registration.
-    if(Object.hasOwn(configuration,'qaSource')){
+    if(!inspectionSnapshot&&Object.hasOwn(configuration,'qaSource')){
       const completed=store.snapshot().records.length>0&&project().completionEligible===true;
       (completed?readFixQaSourceHistory:inspectFixQaSource)({specsRoot,identity,configuration});
     }
     if(store.snapshot().records.length===0)append('fix-configuration','intent',initial);
     project();
-  }catch(error){store.close();throw error;}
+  }catch(error){closeStore();throw error;}
   return Object.freeze({
     status:project,
+    reconcileReview({invocationId}={}){
+      need(!closed&&active===null&&(configuration.externalModels||configuration.executionPolicy),'review_reconciliation_unavailable');id(invocationId);
+      const ledger=fixReviewLedger(store.snapshot().records,configuration);
+      if(ledger.applied.has(invocationId))return project();
+      need(project().stage==='unknown','review_reconciliation_unavailable');
+      const proof=ledger.pending.find(p=>p.invocationId===invocationId);
+      need(proof,ledger.pending.length?'review_reconciliation_binding':'review_reconciliation_evidence_required');
+      const {prefix,registeredDigest,startedDigest,resultDigest,receiptDigest}=proof;
+      append('fix-review-reconciled-'+digest(invocationId).slice(0,24),'result',{prefix,invocationId,registeredDigest,startedDigest,resultDigest,receiptDigest});
+      return project();
+    },
     abandonStep({reason,authorized=false}={}){
       need(!closed&&active===null,'fix_busy');
       const current=project();
@@ -1242,6 +1304,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     // registration, thread and any no-result observation. The retry needs the
     // original review permission and a fresh reviewer thread.
     abandonReview({reason,authorized=false}={}){
+      need(!(configuration.externalModels||configuration.executionPolicy),'external_review_reconciliation_required');
       need(!closed&&active===null,'fix_busy');need(authorized===true,'fix_review_abandon_authorization_required');
       need(typeof reason==='string'&&reason.trim().length>0&&Buffer.byteLength(reason,'utf8')<=1000
         &&!/[\r\n\0\u0085\u2028\u2029]/.test(reason),'fix_review_abandon_reason_required');
@@ -1258,6 +1321,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       return project();
     },
     recoverFinalReview({authorized=false,recoveryInvocationId=null,invocationId,packageDigest,previousInvocationStopped,reason}={}){
+      need(!(configuration.externalModels||configuration.executionPolicy),'external_review_reconciliation_required');
       need(!closed&&active===null,'fix_busy');need(authorized===true,'fix_review_recovery_authorization_required');
       const current=project(),records=store.snapshot().records;
       need(identity.attempt===1&&current.stage==='unknown'&&!current.revision
@@ -1363,7 +1427,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         const ended=escalationEvents(status,dossier);need(ended.length===1,'fix_escalation_exit_conflict');
         if(!status.escalation)append('fix-escalation-result','result',{dossier,eventId:ended[0].event_id});
         const result={...project(),dossier:archived.dossier,escalationRunEnded:true};
-        closed=true;store.close();return result;
+        closed=true;closeStore();return result;
       }
       if(['observation','observation_not_reproduced','observation_needs_evidence'].includes(status.stage)){
         const archived=this.publishDossier();
@@ -1377,7 +1441,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           detail:`观测中:等${status.observationDiagnosis?.plan??status.diagnosis?.plan??JSON.stringify(configuration.reproduction.expectedFailure)}`,
           data});
         const result={...archived,observationRunEnded:true};
-        closed=true;store.close();return result;
+        closed=true;closeStore();return result;
       }
       if(status.revisionN5){
         need(['revision_closeout_required','revision_closeout_incomplete','completed'].includes(status.stage),'fix_closeout_unavailable');
@@ -1497,9 +1561,9 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(start.finalReviewRecovery&&!revising)need(pkg.packageDigest===start.finalReviewRecovery.packageDigest,'fix_review_recovery_drift');
       const run=createFixFinalReview({reviewPackage:pkg,configuration:revising?fixRevisionReviewConfiguration(revisionFeedback(),start.revision.nextIdentity,hostContextIds):fixFinalReviewConfiguration(reviewConfiguration,causeThreads(start.causeReview?.providerThreadId)),
         timeoutMs:reviewTimeout(finalReview,configuration.reproduction.timeoutMs)},finalReview);
-      const controller=new AbortController();active=controller;let registered=false;
+      const controller=new AbortController();active=controller;let registered=false,capturedReceipt=null,receiptConflict=false;
       try{
-        const result=await run({signal:controller.signal,register(value){
+        const result=await run({signal:controller.signal,...((configuration.externalModels||configuration.executionPolicy)?{onReconciliation(raw){try{const receipt=readReconciliationReceipt(raw);if(capturedReceipt&&digest(receipt)!==digest(capturedReceipt))receiptConflict=true;else capturedReceipt=receipt;}catch{receiptConflict=true;}}}:{}),register(value){
           need(project().stage===start.stage,'fix_evidence_changed');
           if(!revising)need(!store.snapshot().records.some(row=>finalCycleRecord(row,'registered')
             &&row.payload.request.invocationId===value.request.invocationId),'fix_review_recovery_mismatch');
@@ -1514,7 +1578,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           append(`${prefix}-started`,'result',{providerThreadId});
         }});
         if(result.outcome==='denied')return {...project(),reason:'permission_denied'};
-        if(result.outcome==='observed'&&!controller.signal.aborted)append(`${prefix}-result`,'result',result.value);
+        if((result.outcome==='observed'||(configuration.externalModels||configuration.executionPolicy)&&result.value)&&!controller.signal.aborted)append(`${prefix}-result`,'result',result.value);
+        if(!receiptConflict)saveReviewReceipt(prefix,capturedReceipt);
         if(result.outcome==='unknown')return {...project(),reason:result.reason,diagnostic:result.diagnostic};
         return project();
       }catch(error){
@@ -1804,7 +1869,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const pkg=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,status});
       const request=requestFor({invocationId:`fix-cause.${randomUUID()}`,identity,role:'reviewer',provider:reviewer.provider,
         requestedModel:reviewer.requestedModel,contextId:reviewer.contextId,payload:{reviewPackage:pkg,priorReview:null}});
-      const controller=new AbortController();active=controller;let timer,registered=false;
+      const controller=new AbortController();active=controller;let timer,registered=false,capturedReceipt=null,receiptConflict=false;
       try{
         const authorizationAt=Date.now(),grant=causeReview.authorize(request,{authorizationAt});
         if(types.isPromise(grant)){grant.catch(()=>{});need(false,'cause_authorization_invalid');}
@@ -1834,13 +1899,14 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         const interrupted=new Promise((resolve,reject)=>{rejectAbort=()=>reject(Object.assign(new Error('cause_review_interrupted'),{code:'cause_review_interrupted'}));});
         controller.signal.addEventListener('abort',rejectAbort,{once:true});
         timer=setTimeout(()=>{timedOut=true;controller.abort();},budget);
-        let result;
+        let result,transport;
         try{
-          result=await Promise.race([interrupted,Promise.resolve().then(()=>{
+          transport=Promise.resolve().then(()=>{
             need(!controller.signal.aborted,'cause_review_interrupted');
-            return causeReview.run(request,{signal:controller.signal,onEvent});
-          })]);
-        }catch(error){if(!timedOut||invalid)throw error;}
+            return causeReview.run(request,{signal:controller.signal,onEvent,...((configuration.externalModels||configuration.executionPolicy)?{onReconciliation(raw){try{const receipt=readReconciliationReceipt(raw);if(capturedReceipt&&digest(receipt)!==digest(capturedReceipt))receiptConflict=true;else capturedReceipt=receipt;}catch{receiptConflict=true;}}}:{})});
+          });
+          result=await Promise.race([interrupted,transport]);
+        }catch(error){if(!timedOut||invalid)throw error;if((configuration.externalModels||configuration.executionPolicy)){let drain;await Promise.race([transport.catch(()=>{}),new Promise(resolve=>{drain=setTimeout(resolve,2500);})]);clearTimeout(drain);}}
         finally{sealed=true;controller.signal.removeEventListener('abort',rejectAbort);}
         // The review budget expiring is a recorded no-result observation, not an
         // unrecorded interruption; a cancellation or invalid stream stays unknown.
@@ -1848,6 +1914,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         const value={dispatchAt,observation:observation(timedOut?{status:'failed',code:'timeout'}:result)};
         inspectCauseResult(value,registration,reviewConfiguration,started);
         append(`${prefix}-result`,'result',value);
+        if(!receiptConflict)saveReviewReceipt(prefix,capturedReceipt);
         if(project().causeReview?.observationStatus==='completed')publishCause();
         return project();
       }catch(error){
@@ -1998,6 +2065,6 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const current=project();if(current.stage==='cancelled'||current.stage==='escalated')return current;
       append('fix-cancel','cancel',{reason:'user_cancelled'});active?.abort();return project();
     },
-    close(){need(active===null,'fix_busy');closed=true;store.close();},
+    close(){need(active===null,'fix_busy');closed=true;closeStore();},
   });
 }

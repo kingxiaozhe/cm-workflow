@@ -1,3 +1,5 @@
+import {readExecutionPolicy} from '../cm-ai/execution-policy.mjs';
+import {inspectFixReconciledResult} from './review-reconciliation.mjs';
 // Existing V3 grants and standard implementation-review observations only.
 // The owning execution store registers callbacks; this module issues no receipt.
 import {randomUUID} from 'node:crypto';
@@ -15,7 +17,7 @@ import {inspectFixRegressionFailure} from './regression-evidence.mjs';
 export function fixFinalReviewConfiguration(configuration,causeThread=null){
   const hosts=fixHostContexts(configuration);
   const base=validateCauseReviewer(configuration.causeReview,hosts);
-  return {hostContextId:configuration.hostContextId,...(hosts.length>1?{hostContextIds:hosts}:{}),
+  return {...(configuration.executionPolicy?{executionPolicy:readExecutionPolicy(configuration.executionPolicy)}:{}),...(configuration.externalModels?{externalModels:configuration.externalModels}:{}),hostContextId:configuration.hostContextId,...(hosts.length>1?{hostContextIds:hosts}:{}),
     reviewer:{...base,reviewerId:'fix-final-reviewer',
     adapterId:`${base.provider}-review-adapter`,contextId:'fix-final-review-context',
     excludedThreadIds:[...new Set([...base.excludedThreadIds,...(Array.isArray(causeThread)?causeThread:causeThread?[causeThread]:[])])]}};
@@ -59,10 +61,12 @@ export function inspectFixFinalRegistration(raw,configuration){
   return value;
 }
 export function inspectFixFinalResult(raw,registration,configuration,started){
-  const value=json(raw,1024*1024);shape(value,['dispatchAt','observation']);
+  const value=json(raw,1024*1024);shape(value,['dispatchAt','observation',...(Object.hasOwn(value,'reconciliationReceipt')?['reconciliationReceipt']:[])]);
   need(Number.isSafeInteger(value.dispatchAt)&&value.dispatchAt>=registration.registeredAt
     &&value.dispatchAt<registration.grant.expiresAt,'final_registration_mismatch');
-  const checked=inspectProviderReview(JSON.stringify(value.observation),JSON.stringify(expectation(registration.request,configuration)));
+  need(!value.reconciliationReceipt||(configuration.externalModels||configuration.executionPolicy),'review_reconciliation_unavailable');
+  const expected=expectation(registration.request,configuration);
+  const checked=value.reconciliationReceipt?inspectFixReconciledResult(value,expected):inspectProviderReview(JSON.stringify(value.observation),JSON.stringify(expected));
   need(checked.providerThreadId===started,'final_registration_mismatch');return checked;
 }
 
@@ -108,16 +112,17 @@ export function fixRevisionReviewConfiguration(feedback,nextIdentity,hostContext
 
 export function createFixFinalReview({reviewPackage,configuration,timeoutMs},{authorize,run}){
   const pkg=readReviewPackage(reviewPackage);need(pkg.handoff,'final_handoff_required');
-  const config=json(configuration,12*1024*1024);shape(config,['hostContextId','reviewer',
+  const config=json(configuration,12*1024*1024);shape(config,['hostContextId','reviewer',...(Object.hasOwn(config,'externalModels')?['externalModels']:[]),...(Object.hasOwn(config,'executionPolicy')?['executionPolicy']:[]),
     ...(Object.hasOwn(config,'hostContextIds')?['hostContextIds']:[]),
     ...(Object.hasOwn(config,'reviewFeedback')?['reviewFeedback']:[])]);
+  if(config.executionPolicy)readExecutionPolicy(config.executionPolicy);
   const previous=config.reviewFeedback?inspectFixRepairReview(config.reviewFeedback,pkg.identity):null;
   const reviewer=validateCauseReviewer(config.reviewer,fixHostContexts(config),previous?35:34);
   if(previous)need(reviewer.excludedThreadIds.includes(previous.providerThreadId),'final_context_mismatch');
   need(Number.isInteger(timeoutMs)&&timeoutMs>0&&timeoutMs<=3600000,'invalid_timeout');
   need(typeof authorize==='function'&&typeof run==='function','final_review_unavailable');
   let used=false;
-  return async({signal,register,onStarted})=>{
+  return async({signal,register,onStarted,onReconciliation})=>{
     need(!used,'final_review_already_attempted');need(!signal.aborted,'cancelled');
     need(typeof register==='function'&&typeof onStarted==='function','final_registration_required');used=true;
     const request=requestFor({invocationId:`fix-final.${randomUUID()}`,identity:pkg.identity,role:'reviewer',provider:reviewer.provider,
@@ -145,9 +150,11 @@ export function createFixFinalReview({reviewPackage,configuration,timeoutMs},{au
         events.push(event);return true;
       }catch(error){diagnostic=reviewDiagnostic(eventPhase,error,event);controller.abort();return false;}
     };
+    let transport;
     try{
       timer=setTimeout(()=>{timedOut=true;controller.abort();},timeoutMs);
-      const result=await Promise.race([interrupted,Promise.resolve().then(()=>{need(!controller.signal.aborted,'cancelled');return run(request,{signal:controller.signal,onEvent});})]);
+      transport=Promise.resolve().then(()=>{need(!controller.signal.aborted,'cancelled');return run(request,{signal:controller.signal,onEvent,...(onReconciliation?{onReconciliation}:{})});});
+      const result=await Promise.race([interrupted,transport]);
       need(!controller.signal.aborted,'interrupted');
       const value={dispatchAt,observation:observation(result)};
       phase='result';
@@ -155,7 +162,8 @@ export function createFixFinalReview({reviewPackage,configuration,timeoutMs},{au
       return {outcome:'observed',value,inspection,completionEligible:false};
     }catch(error){
       const reason=timedOut?'timeout':signal.aborted?'cancelled':'transport_incomplete';
-      return {outcome:'unknown',reason,diagnostic:diagnostic??(reason==='transport_incomplete'
+      if(timedOut&&onReconciliation&&transport){let drain;await Promise.race([transport.catch(()=>{}),new Promise(resolve=>{drain=setTimeout(resolve,2500);})]);clearTimeout(drain);}
+      return {outcome:'unknown',...((config.externalModels||config.executionPolicy)&&timedOut&&!diagnostic?{value:{dispatchAt,observation:observation({status:'failed',code:'timeout'})}}:{}),reason,diagnostic:diagnostic??(reason==='transport_incomplete'
         ?reviewDiagnostic(phase,error):{phase:'transport',code:reason}),completionEligible:false};
     }
     finally{sealed=true;clearTimeout(timer);signal.removeEventListener('abort',cancel);controller.signal.removeEventListener('abort',rejectAbort);controller.abort();}

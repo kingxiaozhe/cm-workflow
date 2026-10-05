@@ -13,6 +13,9 @@
 // status/cancel -> none: batch-run.mjs handle routes only these and advance;
 //   host-session.mjs operationNames admits all three. Other operationNames belong
 //   to child/single-task hosts and are not batch operations.
+import {readBatchExecutionPolicy} from '../runtime/js/cm-ai/execution-policy.mjs';
+import {readBatchExternalModels,batchModelsFile} from '../runtime/js/cm-ai/external-group-models.mjs';
+import {loadConfig,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -36,9 +39,9 @@ import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
 const HOST=fileURLToPath(new URL('./cm-ai-batch-host.mjs',import.meta.url));
 const KINDS={develop:'develop.json',qa_assess:'qa-assess.json',
   documentation_sync:'documentation-sync.json',documentation_inspect:'documentation-inspect.json'};
-const PAIRS=new Set(['--runtime','--review-config','--browser-qa','--protected-conversation-config',
+const PAIRS=new Set(['--external-models-config','--runtime','--review-config','--browser-qa','--protected-conversation-config',
   '--protected-config','--allow-provider-development','--allow-review','--input-limit']);
-const FLAGS=new Set(['--allow-qa','--rerun-unknown-qa','--rerun-blocked-qa','--verification-precheck',
+const FLAGS=new Set(['--execution-optimizations','--external-models','--allow-qa','--rerun-unknown-qa','--rerun-blocked-qa','--verification-precheck',
   '--allow-bootstrap-write']);
 const isObject=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const nonempty=x=>typeof x==='string'&&x.trim().length>0;
@@ -60,11 +63,11 @@ function actualCwd(bundle,key,generation=1){
   const id=key.slice(key.lastIndexOf('/')+1);
   return path.resolve(bundle.batch.codeProject,'..','.cm-worktrees',bundle.batch.batchId.slice(0,8),id);
 }
-function checkCommandShape(commands,key,plan){
+function checkCommandShape(commands,key,plan,executionPolicy){
   if(!Array.isArray(commands)||!commands.length||commands.length>32)stop(2,`任务 ${key} 会反问 check，但 PLAN.checks.${key} 缺少真实命令列表`);
   const ids=new Set();
   for(const item of commands){
-    if(!isObject(item)||Object.keys(item).some(field=>!['id','command','timeoutMs'].includes(field))
+    if(!isObject(item)||Object.keys(item).some(field=>!['id','command','timeoutMs',...(executionPolicy?['sameExecutionAs']:[])].includes(field))
       ||!nonempty(item.id)||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(item.id)
       ||ids.has(item.id)||!Array.isArray(item.command)||!item.command.length
       ||item.command.some(arg=>typeof arg!=='string'||!arg.trim()||arg.includes('\0')))
@@ -72,6 +75,10 @@ function checkCommandShape(commands,key,plan){
     try{planCheckTimeout(plan,item);}catch(error){stop(2,error.message);}
     ids.add(item.id);
   }
+  try{
+    for(const [index,item] of commands.entries())if(Object.hasOwn(item,'sameExecutionAs')&&(index===0||planCheckTimeout(plan,item)!==planCheckTimeout(plan,commands[index-1])))throw Error('alias timeout mismatch');
+    createHostCheck({cwd:process.cwd(),commands:commands.map(({timeoutMs,...item})=>item),reuseDeclared:executionPolicy!==null});
+  }catch(error){stop(2,`PLAN.checks.${key} 格式错误: ${error.code??error.message}`);}
 }
 function preflight(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
@@ -82,7 +89,7 @@ function preflight(){
       +'带 --allow-review 任务:1 但还没有 develop-a2.json 时照常启动：审查若要求修改，该任务停在 changes_requested（revision_answer_required），读 .reviews/<feature>-<task>-r1.md 的 findings 写好 develop-a2.json 后再 advance。\n');
     process.exit(0);
   }
-  const loaded=loadPlanFile({name:'cm-ai-batch-drive.mjs',known:new Set(['advance','status','cancel'])});
+  const loaded=loadPlanFile({name:'cm-ai-batch-drive.mjs',known:new Set(['advance','status','cancel','reconcile_review'])});
   const {plan,base,operation}=loaded;
   requireFields(plan,['config','mode','hostContext','permissions']);
   try{planCheckTimeout(plan);}catch(error){stop(2,error.message);}
@@ -135,17 +142,26 @@ function preflight(){
   if(plan.mode==='create'&&operation==='advance'&&(hasLog||hasStore))
     stop(2,`批次已有存档，请用 resume: ${log}`);
   if(operation==='status'&&!hasStore)stop(2,`只读 status 需要已有任务存档: ${stores.join(', ')}`);
+  const argumentValue=name=>permissions.includes(name)?permissions[permissions.indexOf(name)+1]:undefined;
+  if(argumentValue('--external-models-config'))permissions[permissions.indexOf('--external-models-config')+1]=path.resolve(base,argumentValue('--external-models-config'));
+  const chosenRuntime=argumentValue('--runtime')??'codex';
+  const routes=permissions.includes('--protected-config')?resolveProtectedRuntimes(loadConfig({projectRoot:batch.codeProject}),chosenRuntime):{reviewerRuntime:chosenRuntime};
+  let executionPolicy;
+  try{executionPolicy=readBatchExecutionPolicy({batch,started:hasStore,enabled:permissions.includes('--execution-optimizations')});}catch(error){stop(2,error.code??'execution_policy_invalid');}
+  let externalModels;
+  try{externalModels=readBatchExternalModels({batch,started:hasStore,enabled:permissions.includes('--external-models'),inputFile:argumentValue('--external-models-config'),providers:[routes.coderRuntime,routes.reviewerRuntime].filter(Boolean)});}catch(error){stop(2,error.code??'external_model_configuration_invalid');}
+  if(operation==='reconcile_review'&&(plan.mode!=='resume'||!keys.includes(plan.taskKey)||!nonempty(plan.invocationId)))stop(2,'reconcile_review requires resume, taskKey and original invocationId');
   for(let i=0;i<permissions.length;i++)if(PAIRS.has(permissions[i])){
     const name=permissions[i],value=permissions[++i];
     if(['--review-config','--protected-conversation-config','--protected-config'].includes(name)){
       const file=path.resolve(base,value),data=readJson(file,name);
       if(data===undefined)stop(2,`${name} 文件不存在: ${file}`);
       try{
-        if(name==='--review-config')readConversationReviewConfiguration(file);
+        if(name==='--review-config')readConversationReviewConfiguration(file,externalModels?.providers[routes.reviewerRuntime]??null);
         else if(name==='--protected-conversation-config')readConversationProtection(file);
         else {
-          if(!isObject(data)||Object.keys(data).sort().join()!=='checkCommands,model,timeoutMs'
-            ||!nonempty(data.model)||!/^[A-Za-z0-9._-]+$/.test(data.model)
+          if(!isObject(data)||Object.keys(data).some(key=>!['checkCommands','model','effort','timeoutMs'].includes(key))
+            ||!externalModels&&(!nonempty(data.model)||!/^[A-Za-z0-9._-]+$/.test(data.model))
             ||!Number.isSafeInteger(data.timeoutMs)||data.timeoutMs<=0||data.timeoutMs>3600000)
             throw Error('invalid_protected_config');
           createHostCheck({cwd:batch.codeProject,commands:data.checkCommands,timeoutMs:data.timeoutMs});
@@ -200,7 +216,7 @@ function preflight(){
     if(workflow)kinds.push('documentation_inspect');
     const evidence=kinds.filter(kind=>['qa_logic','qa_browser'].includes(kind)&&!live.has(kind));
     if(evidence.length)stop(2,`缺少真实执行 runner: ${evidence.join(', ')}；不能从静态答案文件应答`);
-    if(kinds.includes('check'))checkCommandShape(plan.checks?.[key],key,plan);
+    if(kinds.includes('check'))checkCommandShape(plan.checks?.[key],key,plan,executionPolicy);
     const taskRoot=root&&path.join(root,task.feature,task.taskId);
     const perAttempt=new Map();
     if(kinds.includes('develop')){
@@ -262,7 +278,7 @@ function preflight(){
     if(answers[key].documentation_sync)for(const target of Object.keys(answers[key].documentation_sync.edits))
       if(!workflow.documentationPaths.includes(target))stop(2,`任务 ${key} documentation-sync.json.edits 越过文档 scope: ${target}`);
   }
-  return {...loaded,bundle,definitions,runs,config,permissions,answers,developAnswers,answerRoot:root,holds,live};
+  return {...loaded,executionPolicy,bundle,definitions,runs,config,permissions,answers,developAnswers,answerRoot:root,holds,live};
 }
 
 let loaded;
@@ -290,14 +306,18 @@ async function answerFor(row,answers,paths,control){
   if(row.kind==='check'){
     if(row.payload.codeProject!==cwd)return null;
     const results=[];
+    const groups=[];
     for(const command of loaded.plan.checks[key]){
-      const run=createHostCheck({cwd,commands:[{id:command.id,command:command.command}],
-        onProgress:reportHostCheckProgress,
-        timeoutMs:planCheckTimeout(loaded.plan,command),onOutput:({stream,chunk})=>{
-        process.stderr.write(`[drive check ${key} ${command.id} ${stream}] ${chunk.toString('utf8')}`);
-      }});
-      const [result]=await run({identity},control);
-      results.push(result);if(result.outcome!=='passed')break;
+      const timeoutMs=planCheckTimeout(loaded.plan,command);
+      if(groups.at(-1)?.timeoutMs!==timeoutMs)groups.push({timeoutMs,commands:[]});
+      const {timeoutMs:ignored,...item}=command;groups.at(-1).commands.push(item);
+    }
+    for(const group of groups){
+      let currentId=group.commands[0].id;
+      const run=createHostCheck({cwd,commands:group.commands,reuseDeclared:loaded.executionPolicy!==null,
+        timeoutMs:group.timeoutMs,onProgress:event=>{if(event.phase==='start')currentId=event.id;reportHostCheckProgress(event);},
+        onOutput:({stream,chunk})=>process.stderr.write(`[drive check ${key} ${currentId} ${stream}] ${chunk.toString('utf8')}`)});
+      const rows=await run({identity},control);results.push(...rows);if(rows.some(row=>row.outcome!=='passed'))break;
     }
     return results;
   }
@@ -326,7 +346,7 @@ function main(){
   loaded=preflight();
   const {plan,operation,bundle,config,permissions}=loaded;
   driveHost({host:HOST,args:['serve','--config',config,'--host-context',plan.hostContext,
-    '--allow-development',...permissions,...loaded.holds.flatMap(key=>['--hold-revision',key])],cwd:bundle.batch.codeProject,operation,
+    '--allow-development',...permissions,...loaded.holds.flatMap(key=>['--hold-revision',key])],cwd:bundle.batch.codeProject,operation,request:operation==='reconcile_review'?{taskKey:plan.taskKey,invocationId:plan.invocationId}:{},
     answers:loaded.answers,answerFor});
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))main();

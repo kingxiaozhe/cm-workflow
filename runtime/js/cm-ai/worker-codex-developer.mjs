@@ -1,3 +1,4 @@
+import {createProviderUsageCapture} from './provider-usage.mjs';
 // Coding subprocess only. The host must authorize the task and select an isolated
 // code workspace; workspace-write is not a per-file scope enforcement mechanism.
 import {spawn} from 'node:child_process';
@@ -5,9 +6,9 @@ import {fileURLToPath} from 'node:url';
 import {commonArgs,cleanEnvironment,specsPermissionArgs} from './codex-config.mjs';
 import {need,text,validCallTimeout,json} from './effect-contract.mjs';
 
-export function developerArgs({cwd,model,schemaPath,disabledSkills=[],specsRoot=null}) {
+export function developerArgs({cwd,model,effort,schemaPath,disabledSkills=[],specsRoot=null}) {
   text(cwd);text(schemaPath);
-  const args=commonArgs({cwd,model,disabledSkills}),coding=new Set(['shell_tool','unified_exec']);
+  const args=commonArgs({cwd,model,effort,disabledSkills}),coding=new Set(['shell_tool','unified_exec']);
   const result=[];
   for(let i=0;i<args.length;i++){
     if(specsRoot!==null&&args[i]==='--sandbox'){i++;continue;}
@@ -21,12 +22,12 @@ export function developerArgs({cwd,model,schemaPath,disabledSkills=[],specsRoot=
     '--output-schema',schemaPath,'-'];
 }
 
-export function codexDeveloperWorker({cwd,model,learning=true,specsRoot=null,
+export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=null,
   schemaPath=fileURLToPath(new URL(learning?'./codex-developer-output.schema.json':'./codex-developer-basic-output.schema.json',import.meta.url)),
   disabledSkills=[],cli='codex',
-  timeoutMs=1800000,spawnProcess=spawn,onNotice=null}) {
+  timeoutMs=1800000,spawnProcess=spawn,onNotice=null,onUsage=null,onUsageClaim=null}) {
   validCallTimeout(timeoutMs);
-  const args=developerArgs({cwd,model,schemaPath,disabledSkills,specsRoot});
+  const args=developerArgs({cwd,model,effort,schemaPath,disabledSkills,specsRoot});
   let used=false;
   return async (request,{signal})=>{
     text(request.prompt);need(Buffer.byteLength(request.prompt)<=11*1024*1024,'limit_exceeded');
@@ -41,10 +42,12 @@ export function codexDeveloperWorker({cwd,model,learning=true,specsRoot=null,
       catch{return {status:'unavailable',code:'specs_protection_invalid'};}
     }
     used=true;
+    const usage=createProviderUsageCapture('codex',onUsage);
+    try{onUsageClaim?.();}catch{}
     return new Promise(resolve=>{
       let child;
       try{child=spawnProcess(cli,args,{cwd,env:cleanEnvironment(),stdio:['pipe','pipe','pipe'],shell:false,detached:true});}
-      catch{resolve({status:'unavailable',code:'spawn_failed'});return;}
+      catch{usage.complete();resolve({status:'unavailable',code:'spawn_failed'});return;}
       let buffer='',bytes=0,thread=null,turnStarted=false,completed=false,lastMessage=null;
       let failure=null,closed=false,timer,cleanup,noticeCount=0;
       const signalGroup=signalName=>{
@@ -69,9 +72,11 @@ export function codexDeveloperWorker({cwd,model,learning=true,specsRoot=null,
       timer=setTimeout(()=>stop('timeout'),timeoutMs);
       if(signal.aborted)abort();
       const accept=line=>{
-        if(!line.trim()||failure)return;
+        if(!line.trim()||failure&&failure!=='provider_failed')return;
         let event;try{event=JSON.parse(line);}catch{stop('invalid_event');return;}
         if(!event||Array.isArray(event)||typeof event.type!=='string'){stop('invalid_event');return;}
+        if(event.type==='turn.failed'&&thread&&turnStarted&&!completed)usage.terminal(event.usage);
+        if(failure==='provider_failed')return;
         if(event.type==='error'||event.type==='turn.failed'){stop('provider_failed');return;}
         if(completed){
           stop(event.type==='item.completed'&&event.item?.type==='error'?'invalid_event':'event_after_terminal');return;
@@ -92,7 +97,7 @@ export function codexDeveloperWorker({cwd,model,learning=true,specsRoot=null,
           if(turnStarted){stop('duplicate_turn');return;}turnStarted=true;return;
         }
         if(!turnStarted){stop('turn_missing');return;}
-        if(event.type==='turn.completed'){completed=true;return;}
+        if(event.type==='turn.completed'){completed=true;usage.terminal(event.usage);return;}
         if(!['item.started','item.updated','item.completed'].includes(event.type)
           ||!event.item||typeof event.item.type!=='string'){stop('invalid_event');return;}
         // Tool output stays private. Failed test commands can be a legitimate red
@@ -108,7 +113,7 @@ export function codexDeveloperWorker({cwd,model,learning=true,specsRoot=null,
       child.stderr.resume();
       child.stdout.setEncoding('utf8');
       child.stdout.on('data',chunk=>{
-        if(failure||closed)return;
+        if(failure&&failure!=='provider_failed'||closed)return;
         bytes+=Buffer.byteLength(chunk);if(bytes>4*1024*1024){stop('output_limit');return;}
         buffer+=chunk;let index;
         while((index=buffer.indexOf('\n'))!==-1){accept(buffer.slice(0,index));buffer=buffer.slice(index+1);}
@@ -123,6 +128,7 @@ export function codexDeveloperWorker({cwd,model,learning=true,specsRoot=null,
         closed=true;clearTimeout(timer);signal.removeEventListener('abort',abort);
         await cleanGroup();
         if(buffer.trim())accept(buffer);
+        usage.complete();
         if(failure||code!==0||exitSignal||!completed||lastMessage===null){
           resolve({status:failure==='spawn_failed'?'unavailable':'unknown',code:failure??'incomplete_result'});return;
         }

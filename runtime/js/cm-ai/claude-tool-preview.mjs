@@ -46,13 +46,13 @@ export function claudeProbeSandbox(temp,port) {
     (deny file-write*)(allow file-write* (subpath ${JSON.stringify(temp)}) (literal "/dev/null"))`;
 }
 
-export async function previewClaudeTools({cwd,model,cli='claude',spawnProcess=spawn}) {
+export async function previewClaudeTools({cwd,model,effort,cli='claude',spawnProcess=spawn}) {
   if(process.platform!=='darwin'||!fs.existsSync('/usr/bin/sandbox-exec')) {
     throw Object.assign(Error('unsupported_probe_isolation'),{code:'unsupported_probe_isolation'});
   }
   cwd=fs.realpathSync(cwd);
   if(!fs.statSync(cwd).isDirectory())throw Error('invalid_code_project');
-  const fingerprint=claudeReviewFingerprint({cwd,model,cli});
+  const fingerprint=claudeReviewFingerprint({cwd,model,effort,cli});
   const temp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-claude-probe-')));
   const observations=[];
   const controller=new AbortController();let stoppedByProbe=false,modelMarker=null;
@@ -115,7 +115,7 @@ export async function previewClaudeTools({cwd,model,cli='claude',spawnProcess=sp
     const preflight={passed:true,provider:'claude',prompt_transport:'stdin',config_fingerprint:fingerprint};
     // Internal diagnostic bootstrap: same worker lifecycle, forced sink and synthetic prompt only.
     // This object is never returned as a passing receipt without examining the captured request.
-    const worker=claudeWorker({cwd,model,cli,preflight,timeoutMs:15000,
+    const worker=claudeWorker({cwd,model,effort,cli,preflight,timeoutMs:15000,
       spawnProcess:(command,args,options)=>{
         const child=spawnProcess('/usr/bin/sandbox-exec',
           ['-p',claudeProbeSandbox(temp,port),command,...args],{...options,env:{...options.env,
@@ -137,7 +137,7 @@ export async function previewClaudeTools({cwd,model,cli='claude',spawnProcess=sp
     fs.rmSync(temp,{recursive:true,force:true});
   }
   const messages=observations.filter(item=>item.startup!==true);
-  return {model,disabledSkills:[],preflight:{provider:'claude',prompt_transport:'stdin',
+  return {model,...(effort===undefined?{}:{effort}),disabledSkills:[],preflight:{provider:'claude',prompt_transport:'stdin',
     config_fingerprint:fingerprint,passed:modelMarker===null&&messages.length>=1&&messages.length<=2&&messages.every(message=>message.valid)
       &&stoppedByProbe&&result?.status==='cancelled'&&closeEvidence!==null&&!closeEvidence.timed_out,
     local_requests:observations.length,message_requests:messages.length,message_requests_expected:'1-2',

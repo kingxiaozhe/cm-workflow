@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Opt-in fix stages; cause review dispatch needs explicit launch authority and matching diagnostics.
+import {readFixExecutionPolicy} from '../runtime/js/cm-ai/execution-policy.mjs';
+import {readFixExternalModels} from '../runtime/js/cm-ai/external-group-models.mjs';
 import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {openFixExecution} from '../runtime/js/cm-fix/execution.mjs';
@@ -11,9 +13,10 @@ import {id,json,need,shape,digest} from '../runtime/js/cm-ai/effect-contract.mjs
 import {readConversationReviewConfiguration} from './cm-ai-host.mjs';
 import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
 
-const usage='cm-fix-host.mjs serve --config PATH --mode create|resume --host-context ID --allow-reproduction [--original-host-context ID] [--runtime codex|claude] [--input-limit BYTES] [--review-config PATH] [--allow-cause-review] [--allow-rediagnosis] [--allow-final-review] [--allow-test-author] [--allow-red-test] [--allow-baseline] [--allow-repair] [--allow-regression] [--allow-learning-writeback]\nCodex or Claude current-host operations: rediagnose, prepare_revision, revision_test_check, advance, cause_review_package, cause_review, author_tests, red_test, baseline, repair, regression, retrospective, learning_writeback, handoff, final_review_package, final_review, publish_review, check_n5, post_review_regression, status, cancel. Runtime defaults to codex; claude uses its own matching diagnostic receipt and cannot reuse Codex preflight or disabledSkills settings. Runtime selection is bound to recovery; switching providers requires a separate run. This selects existing adapters, not permission to call them. Each write/check needs its respective launch flag and configuration. Test authoring, repair, cause and final review dispatch require matching existing stdin diagnostics; diagnostic alone is not authorization. Passing regression stops at handoff_required. The read-only retrospective operation yields handoff_ready or learning_writeback_required. learning_writeback requires its own flag, preserves project instructions and includes AGENTS.md in the review scope; it does not authorize provider calls. handoff publishes the fixed specs-local handoff with Learning evidence and moves to final_review_required; no provider is called and no task is completed. final_review_package is read-only and returns the final content-bound review package. final_review requires its own flag and matching diagnostics; observations do not complete the task. publish_review projects the registered result into the existing review file; it does not dispatch or complete tasks. check_n5 runs the original Learning-aware gate; post_review_regression requires --allow-regression and reaches closeout_required, not completion.';
+const usage='cm-fix-host.mjs serve --config PATH --mode create|resume --host-context ID --allow-reproduction [--original-host-context ID] [--execution-optimizations] [--external-models [--external-models-config PATH]] [--runtime codex|claude] [--input-limit BYTES] [--review-config PATH] [--allow-cause-review] [--allow-rediagnosis] [--allow-final-review] [--allow-test-author] [--allow-red-test] [--allow-baseline] [--allow-repair] [--allow-regression] [--allow-learning-writeback]\nCodex or Claude current-host operations: rediagnose, prepare_revision, revision_test_check, advance, cause_review_package, cause_review, author_tests, red_test, baseline, repair, regression, retrospective, learning_writeback, handoff, final_review_package, final_review, publish_review, check_n5, post_review_regression, status, cancel. Runtime defaults to codex; claude uses its own matching diagnostic receipt and cannot reuse Codex preflight or disabledSkills settings. Runtime selection is bound to recovery; switching providers requires a separate run. This selects existing adapters, not permission to call them. Each write/check needs its respective launch flag and configuration. Test authoring, repair, cause and final review dispatch require matching existing stdin diagnostics; diagnostic alone is not authorization. Passing regression stops at handoff_required. The read-only retrospective operation yields handoff_ready or learning_writeback_required. learning_writeback requires its own flag, preserves project instructions and includes AGENTS.md in the review scope; it does not authorize provider calls. handoff publishes the fixed specs-local handoff with Learning evidence and moves to final_review_required; no provider is called and no task is completed. final_review_package is read-only and returns the final content-bound review package. final_review requires its own flag and matching diagnostics; observations do not complete the task. publish_review projects the registered result into the existing review file; it does not dispatch or complete tasks. check_n5 runs the original Learning-aware gate; post_review_regression requires --allow-regression and reaches closeout_required, not completion.';
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr,reviewWorkerFactory=null}={}){
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Optional --execution-optimizations freezes policy v1 for new runs only; recovery retains the original policy and legacy runs reject retrofit. See docs/execution-optimizations.md.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Design-change escalation: approved cause_review reaches design_change_required when redTest is configured (test_author_required first if needed); author_tests/red_test keep their original flags and evidence checks. Confirmed red reaches escalation_required, never baseline/repair/regression. Non-visual runs without redTest reach escalation_required directly after approval and record why no failing test exists. Visual runs require a matching visual redTest with testFiles:[] and must complete the visual red step before escalation; opening without it fails with fix_visual_configuration_required. publish_dossier saves an 升级立项 dossier; finish requires --allow-finish, records run_done phase escalation/result escalated and closes the owner with escalationRunEnded:true. Retained tests become acceptance checks for the suggested $cm-prd --change. Resume the same run after a crash; conflicting exits fail with fix_escalation_exit_conflict. Terminal escalated is not completed: no task_done, metrics, repair or parent QA completion.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Omit specsRoot or use null for a bare project: the same owner stores archives in docs/fixes and reviews in docs/fixes/.reviews, uses the original no-specs log mode, and skips METRICS. No specs skeleton is created. Visual-only reproduction/redTest may use kind:visual with cwd, timeoutMs, before:{path,sha256,kind:screenshot|video,description}, reason explaining why automated red cannot be written, environment, steps and expected; redTest also has testFiles:[]. No testAuthor or fake red/green command. Repair/regression/review/finish permissions remain mandatory. qa_browser returns actual after carrier metadata; missing evidence blocks.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Optional startup configuration protectSpecs:true uses the existing Codex native sandbox for reproduction, red/baseline/regression/walkthrough commands and fixed text edits, without a model call. Requires the local sandbox executable; it does not change the current Codex/Claude host or reviewer identity. Original action permissions remain required. fix_test_author/fix_repair with editMode=protected-text-v1 require {outcome,edits:[{path,beforeSha256,content}]} using the supplied scope/expected hashes; never write directly. Content is full UTF-8 text or null for deletion, blocked requires edits:[]. Default 64KiB response limit applies; --input-limit may explicitly raise transport to 4MiB, while protected text proposal limits remain 1MiB. Drift or failed writes retain the original unknown boundary; no automatic retry/rollback or protection-mode switching on resume.\n');
@@ -33,8 +36,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(['create','resume'].includes(argv[4]),'invalid_arguments');id(argv[6]);
     const extra=new Map();
     for(let index=8;index<argv.length;index++){
-      const flag=argv[index];need(!extra.has(flag)&&['--runtime','--input-limit','--review-config','--original-host-context','--final-review-recovery-invocation','--allow-qa-fix','--allow-rediagnosis','--allow-cause-review','--allow-final-review','--allow-final-review-recovery','--allow-abandon','--allow-abandon-review','--allow-red-test','--allow-baseline','--allow-test-author','--allow-repair','--allow-regression','--allow-learning-writeback','--allow-walkthrough','--allow-finish'].includes(flag),'invalid_arguments');
-      if(flag.startsWith('--allow-'))extra.set(flag,true);
+      const flag=argv[index];need(!extra.has(flag)&&['--execution-optimizations','--external-models','--external-models-config','--runtime','--input-limit','--review-config','--original-host-context','--final-review-recovery-invocation','--allow-qa-fix','--allow-rediagnosis','--allow-cause-review','--allow-final-review','--allow-final-review-recovery','--allow-abandon','--allow-abandon-review','--allow-red-test','--allow-baseline','--allow-test-author','--allow-repair','--allow-regression','--allow-learning-writeback','--allow-walkthrough','--allow-finish'].includes(flag),'invalid_arguments');
+      if(flag.startsWith('--allow-')||flag==='--external-models'||flag==='--execution-optimizations')extra.set(flag,true);
       else{need(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments');extra.set(flag,argv[++index]);}
     }
     // A run created in an earlier session keeps that session in its durable record.
@@ -47,10 +50,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const runtime=extra.get('--runtime')??'codex';need(['codex','claude'].includes(runtime),'invalid_runtime');
     // Transport only, like the cm-ai hosts: lines and tool replies share one limit.
     const inputLimit=parseHostInputLimit(extra.get('--input-limit'));
-    const review=extra.has('--review-config')?readConversationReviewConfiguration(extra.get('--review-config')):null;
-    need(runtime!=='claude'||!review||review.disabledSkills.length===0,'invalid_review_config');
-    need(!extra.has('--allow-cause-review')||review!==null,'review_configuration_required');
-    need(!extra.has('--allow-final-review')||review!==null,'review_configuration_required');
+    let review;
     const stat=fs.lstatSync(argv[2]);
     need(stat.isFile()&&!stat.isSymbolicLink()&&stat.size<=64*1024,'invalid_fix_config');
     const config=json(JSON.parse(fs.readFileSync(argv[2],'utf8')),64*1024);
@@ -59,6 +59,12 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       ...(Object.hasOwn(config,'qaSource')?['qaSource']:[]),
       ...(Object.hasOwn(config,'redTest')?['redTest']:[]),...(Object.hasOwn(config,'baseline')?['baseline']:[]),
       ...(Object.hasOwn(config,'testAuthor')?['testAuthor']:[]),...(Object.hasOwn(config,'repair')?['repair']:[]),...(Object.hasOwn(config,'walkthrough')?['walkthrough']:[])]);
+    const executionPolicy=readFixExecutionPolicy({config,mode:argv[4],enabled:extra.has('--execution-optimizations')});
+    const externalModels=readFixExternalModels({config,mode:argv[4],enabled:extra.has('--external-models'),inputFile:extra.get('--external-models-config'),runtime});
+    review=extra.has('--review-config')?readConversationReviewConfiguration(extra.get('--review-config'),externalModels?.providers[runtime]??null):null;
+    need(runtime!=='claude'||!review||review.disabledSkills.length===0,'invalid_review_config');
+    need(!extra.has('--allow-cause-review')||review!==null,'review_configuration_required');
+    need(!extra.has('--allow-final-review')||review!==null,'review_configuration_required');
     need(!extra.has('--allow-walkthrough')||config.walkthrough,'walkthrough_configuration_required');
     need(!Object.hasOwn(config,'qaSource')||extra.has('--allow-qa-fix'),'qa_fix_authorization_required');
     need(!extra.has('--allow-qa-fix')||Object.hasOwn(config,'qaSource'),'qa_fix_source_required');
@@ -69,11 +75,11 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(!extra.has('--allow-regression')||(config.repair&&config.redTest&&config.baseline),'regression_configuration_required');
     const {reviewer,authority,finalAuthority,execution:reviewExecution}=createFixReviewHost({
       codeProject:config.reproduction.cwd,hostContextId:argv[6],runtime,review,
-      permissions:[...extra.keys()],workerFactory:reviewWorkerFactory});
+      permissions:[...extra.keys()],workerFactory:reviewWorkerFactory,externalModels,executionPolicy,specsDir:config.specsRoot??null});
     bridge=createHostToolBridge({responseLimit:inputLimit});
     owner=openFixExecution({specsRoot:config.specsRoot??null,identity:config.identity,create:argv[4]==='create',
       hostContextId:argv[6],
-      configuration:{hostContextId:originalHostContext??argv[6],defect:config.defect,reproduction:config.reproduction,
+      configuration:{...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels}:{}),hostContextId:originalHostContext??argv[6],defect:config.defect,reproduction:config.reproduction,
         ...(Object.hasOwn(config,'protectSpecs')?{protectSpecs:config.protectSpecs}:{}),
         ...(Object.hasOwn(config,'qaSource')?{qaSource:config.qaSource}:{}),
         ...(runtime==='claude'?{runtime}:{}),

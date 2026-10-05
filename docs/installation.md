@@ -1,5 +1,8 @@
 # Installation
 
+单任务外部模型的可选配置入口见 [外部模型配置](external-models.md)。配置向导不会安装、
+切换当前宿主模型或迁移运行；本阶段需在合法单任务计划显式启用。
+
 ## Requirements
 
 - Git, Python 3.9 or newer, and Node.js 18 or newer.

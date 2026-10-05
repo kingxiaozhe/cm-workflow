@@ -10,6 +10,7 @@ import {operatorGuidance} from './operator-guidance.mjs';
 import {outstandingFeatureQa,describeOutstandingQa} from './project-qa-gate.mjs';
 import {REVIEWED_HANDOFF_HINT} from './host-handoff.mjs';
 import {readHostQaFixHandoff} from './host-qa-fix.mjs';
+import {readCloseoutPolicy,readCloseoutReport,closeoutSummary} from './knowledge-closeout.mjs';
 import {digest,freeze,hex,id,json,need,shape,text,validIdentity} from './effect-contract.mjs';
 
 const sameIdentity=(left,right)=>['repositoryId','runId','taskId','attempt'].every(key=>left[key]===right[key]);
@@ -36,6 +37,7 @@ const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approv
   // The runner reports spec_drift over any state whose next effect would be refused.
   status.code==='spec_drift'?(status.specificationRebind==='available'?'spec_rebind':'none'):
   status.bootstrapReviewRecovery===true?'bootstrap_review_recover':
+  status.reviewReconciliation?.available?'reconcile_review':
   status.state==='changes_requested'||retryDeveloper(status)||retryReview(status)?'resume':
   status.state==='awaiting_review'?'decision':status.state==='unknown'
     ?(status.pendingEffectKind?'abandon_effect':
@@ -57,6 +59,7 @@ const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approv
 const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',operation:operation.operation,
   requestDigest:digest(operation),identity:status.identity,outcome,state:status.state,code:status.code??null,
   packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),
+  ...(status.reviewReconciliation?{reviewReconciliation:status.reviewReconciliation}:{}),
   ...(typeof status.reason==='string'?{reason:status.reason}:{}),
   ...(status.code==='handoff_exists'?{reason:REVIEWED_HANDOFF_HINT}:{}),
   ...(status.state==='blocked'&&status.calls?.at(-1)?.blockedReason!==undefined
@@ -80,8 +83,10 @@ function readOperation(raw) {
   if(['decision','complete','qa','qa_result','context_refresh','finish','run_finalize'].includes(operation?.operation))keys.push('packageDigest');
   if(['qa_result','context_refresh','finish','run_finalize'].includes(operation?.operation))keys.push('testRunId');
   if(['abandon_review','abandon_effect','bootstrap_review_recover'].includes(operation?.operation))keys.push('reason');
+  if(operation?.operation==='reconcile_review')keys.push('invocationId');
   shape(operation,keys);
-  need(operation.version===1&&['advance','start','status','decision','complete','qa','qa_result','context_refresh','finish','run_finalize','cancel','resume','abandon_review','abandon_effect','bootstrap_review_recover']
+  if(operation?.operation==='reconcile_review')id(operation.invocationId);
+  need(operation.version===1&&['advance','start','status','decision','complete','qa','qa_result','context_refresh','finish','run_finalize','cancel','resume','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover']
     .includes(operation.operation));
   id(operation.requestId);validIdentity(operation.identity);
   if(operation.operation==='abandon_review')need(typeof operation.reason==='string'
@@ -154,8 +159,10 @@ const contextSummary=(operation,status,refresh)=>freeze({version:1,workflow:'cm-
   pendingAction:refresh.state==='complete'?'finish':'start_next_task',nextTask:refresh.nextTask,
   contextDigest:refresh.contextDigest,contextFiles:refresh.contextFiles});
 
-function validateDocumentationResult(result,status,refresh) {
-  shape(result,['syncId','identity','packageDigest','contextDigest','status','reason','at']);
+function validateDocumentationResult(result,status,refresh,policy=null) {
+  shape(result,['syncId','identity','packageDigest','contextDigest','status','reason','at',
+    ...(policy?.enabled&&Object.hasOwn(result,'closeout')?['closeout']:[])]);
+  if(Object.hasOwn(result,'closeout'))readCloseoutReport(result.closeout);
   id(result.syncId);validIdentity(result.identity);hex(result.packageDigest);hex(result.contextDigest);
   need(sameIdentity(result.identity,status.identity),'identity_mismatch');
   need(result.packageDigest===status.packageDigest&&result.contextDigest===refresh.contextDigest,'stale_documentation');
@@ -182,6 +189,8 @@ export function createCmAiConversationEntry(options) {
   if(options&&Object.hasOwn(options,'applicableAgentFiles'))optionKeys.push('applicableAgentFiles');
   if(options&&Object.hasOwn(options,'documentationResult'))optionKeys.push('documentationResult');
   if(options&&Object.hasOwn(options,'documentationProvider'))optionKeys.push('documentationProvider');
+  if(options&&Object.hasOwn(options,'knowledgeCloseout'))optionKeys.push('knowledgeCloseout');
+  if(options&&Object.hasOwn(options,'codeProjects'))optionKeys.push('codeProjects');
   if(options&&Object.hasOwn(options,'parallelSelection'))optionKeys.push('parallelSelection');
   if(options&&Object.hasOwn(options,'allowAbandonReview'))optionKeys.push('allowAbandonReview');
   if(options&&Object.hasOwn(options,'allowAbandonEffect'))optionKeys.push('allowAbandonEffect');
@@ -204,6 +213,7 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'supersedeEvidence'))runnerKeys.push('supersedeEvidence');
   if(runner&&Object.hasOwn(runner,'rebindSpecification'))runnerKeys.push('rebindSpecification');
   if(runner&&Object.hasOwn(runner,'abandonReview'))runnerKeys.push('abandonReview');
+  if(runner&&Object.hasOwn(runner,'reconcileReview'))runnerKeys.push('reconcileReview');
   if(runner&&Object.hasOwn(runner,'abandonEffect'))runnerKeys.push('abandonEffect');
   if(runner&&Object.hasOwn(runner,'recoverBootstrapReview'))runnerKeys.push('recoverBootstrapReview');
   if(runner&&Object.hasOwn(runner,'inspectBootstrapAdmission'))runnerKeys.push('inspectBootstrapAdmission');
@@ -216,6 +226,7 @@ export function createCmAiConversationEntry(options) {
   if(Object.hasOwn(runner,'attachQa'))need(typeof runner.attachQa==='function');
   if(Object.hasOwn(runner,'reviseQa'))need(typeof runner.reviseQa==='function');
   if(Object.hasOwn(runner,'abandonReview'))need(typeof runner.abandonReview==='function');
+  if(Object.hasOwn(runner,'reconcileReview'))need(typeof runner.reconcileReview==='function');
   if(Object.hasOwn(runner,'abandonEffect'))need(typeof runner.abandonEffect==='function');
   if(Object.hasOwn(runner,'recoverBootstrapReview'))need(typeof runner.recoverBootstrapReview==='function');
   if(Object.hasOwn(runner,'inspectBootstrapAdmission'))need(typeof runner.inspectBootstrapAdmission==='function');
@@ -265,6 +276,9 @@ export function createCmAiConversationEntry(options) {
   }
   const applicableAgentFiles=Object.hasOwn(options,'applicableAgentFiles')?json(options.applicableAgentFiles):null;
   const documentationResult=Object.hasOwn(options,'documentationResult')?json(options.documentationResult):null;
+  const knowledgeCloseout=Object.hasOwn(options,'knowledgeCloseout')?readCloseoutPolicy(options.knowledgeCloseout):null;
+  if(Object.hasOwn(options,'codeProjects'))need(knowledgeCloseout!==null&&Array.isArray(options.codeProjects)
+    &&options.codeProjects.length>0&&options.codeProjects.every(value=>typeof value==='string'),'invalid_input');
   let documentationProvider=null,pendingDocumentation=null,inspectedDocumentation=null;
   if(Object.hasOwn(options,'documentationProvider')){
     shape(options.documentationProvider,['inspect','timeoutMs']);
@@ -277,7 +291,9 @@ export function createCmAiConversationEntry(options) {
   async function documentationFor(status,refresh){
     if(documentationProvider===null)return documentationResult;
     const binding=json({specsDir:options.specsDir,codeProject:options.codeProject,feature:options.feature,
-      identity:status.identity,packageDigest:status.packageDigest,contextDigest:refresh.contextDigest});
+      identity:status.identity,packageDigest:status.packageDigest,contextDigest:refresh.contextDigest,
+      ...(knowledgeCloseout===null?{}:{closeout:knowledgeCloseout,
+        ...(options.codeProjects?{codeProjects:options.codeProjects}:{})})});
     const syncId=`docs-${digest(binding).slice(0,48)}`;
     if(inspectedDocumentation?.syncId===syncId)return inspectedDocumentation;
     need(pendingDocumentation===null,'documentation_pending');
@@ -300,12 +316,15 @@ export function createCmAiConversationEntry(options) {
       const reread=inspectCmAiContextRefresh({specsDir:options.specsDir,codeProject:options.codeProject,
         feature:options.feature,applicableAgentFiles});
       need(reread.state==='complete'&&reread.contextDigest===refresh.contextDigest,'stale_documentation');
-      validateDocumentationResult(result,current,reread);
+      validateDocumentationResult(result,current,reread,knowledgeCloseout);
       if(result.status==='completed')inspectedDocumentation=result;
       return result;
     }finally{clearTimeout(timer);pendingDocumentation=null;}
   }
 
+  // Admission summaries do not describe a runner transition. Track their
+  // origin privately; other awaiting results still need progress projection.
+  const admissionReports=new WeakSet();
   async function route(raw) {
     const operation=readOperation(raw);
     need(sameTask(operation.identity,ownerIdentity),'identity_mismatch');
@@ -317,15 +336,16 @@ export function createCmAiConversationEntry(options) {
       // a newer attempt must bind it to the runner before we report its block.
       const blockedIdentity=sameIdentity(operation.identity,ownerIdentity)?ownerIdentity:
         boundStatus(runner.status(),operation.identity).identity;
-      return summary(operation,{state:admission.state,code:admission.reason,
+      const report=summary(operation,{state:admission.state,code:admission.reason,
         identity:blockedIdentity,packageDigest:null},'awaiting');
+      admissionReports.add(report);return report;
     }
     const initialStatus=runner.status();
     const identity=json(initialStatus.identity);validIdentity(identity);
     need(sameTask(identity,ownerIdentity)&&identity.attempt>=ownerIdentity.attempt,'identity_mismatch');
     // Stable run-definition identity can query/control or resume the current
     // attempt. Package-bound mutations must name the current attempt exactly.
-    const stableControl=['status','cancel','advance','resume','abandon_review','abandon_effect','bootstrap_review_recover'].includes(operation.operation)
+    const stableControl=['status','cancel','advance','resume','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover'].includes(operation.operation)
       &&sameIdentity(operation.identity,ownerIdentity);
     need(sameIdentity(operation.identity,identity)||stableControl,'identity_mismatch');
     if(operation.operation==='advance'){
@@ -454,7 +474,9 @@ export function createCmAiConversationEntry(options) {
       }
       // Next-task execution and QA execution still need their host adapters;
       // a refreshed nextTask is not permission to dispatch it or claim run_done.
-      return freeze({...result,operation:'advance',requestDigest:digest(operation)});
+      const advanced=freeze({...result,operation:'advance',requestDigest:digest(operation)});
+      if(admissionReports.has(result))admissionReports.add(advanced);
+      return advanced;
     }
     if(operation.operation==='status'){
       const status=boundStatus(initialStatus,identity);
@@ -470,6 +492,12 @@ export function createCmAiConversationEntry(options) {
       pendingDocumentation?.abort();
       const status=boundStatus(runner.cancel(),identity);
       return summary(operation,status,status.state==='cancelled'||interrupted?'cancelled':'reported');
+    }
+    if(operation.operation==='reconcile_review'){
+      const result=runner.reconcileReview?.({invocationId:operation.invocationId})
+        ??{outcome:'rejected',code:'review_reconciliation_unavailable'};
+      return result.outcome==='rejected'?summary(operation,{...runner.status(),code:result.code},'rejected')
+        :summary(operation,result,'reconciled');
     }
     if(operation.operation==='abandon_review'){
       if(!abandonPermission)return summary(operation,{...runner.status(),
@@ -660,10 +688,11 @@ export function createCmAiConversationEntry(options) {
       need(current.state==='fixture_completed'&&current.code==null&&current.packageDigest===status.packageDigest,'stale_documentation');
       if(documentation===null)
         return summary(operation,{...status,code:'documentation_sync_required'},'awaiting');
-      const result=validateDocumentationResult(documentation,status,refresh);
-      if(result==='blocked')return summary(operation,{...status,code:'documentation_sync_blocked'},'blocked');
+      const result=validateDocumentationResult(documentation,status,refresh,knowledgeCloseout);
+      if(result==='blocked')return freeze({...summary(operation,{...status,code:'documentation_sync_blocked'},'blocked'),
+        ...closeoutSummary(knowledgeCloseout,documentation)});
       return freeze({...summary(operation,{...status,code:'documentation_synced'},'verified'),
-        contextDigest:refresh.contextDigest});
+        contextDigest:refresh.contextDigest,...closeoutSummary(knowledgeCloseout,documentation)});
     }
     if(operation.operation==='run_finalize'){
       const status=boundStatus(runner.status(),identity);
@@ -686,9 +715,10 @@ export function createCmAiConversationEntry(options) {
       const finalContext=inspectCmAiContextRefresh({specsDir:options.specsDir,codeProject:options.codeProject,
         feature:options.feature,applicableAgentFiles});
       need(finalContext.state==='complete'&&finalContext.contextDigest===refresh.contextDigest,'stale_documentation');
-      const documentationStatus=validateDocumentationResult(documentation,status,refresh);
+      const documentationStatus=validateDocumentationResult(documentation,status,refresh,knowledgeCloseout);
       if(documentationStatus==='blocked')
-        return summary(operation,{...status,code:'documentation_sync_blocked'},'blocked');
+        return freeze({...summary(operation,{...status,code:'documentation_sync_blocked'},'blocked'),
+          ...closeoutSummary(knowledgeCloseout,documentation)});
       const finalQa=projectQaSummary(operation,status,options);if(finalQa)return finalQa;
       const input={specsDir:options.specsDir,codeProject:options.codeProject,feature:options.feature,identity,
         packageDigest:operation.packageDigest,contextDigest:refresh.contextDigest,
@@ -698,7 +728,8 @@ export function createCmAiConversationEntry(options) {
       return freeze({version:1,workflow:'cm-ai',operation:operation.operation,requestDigest:digest(operation),identity,
         outcome:'finalized',state:'run_done',code:result.degraded?'run_done_degraded':'run_done',
         packageDigest:operation.packageDigest,pendingAction:'none',contextDigest:refresh.contextDigest,
-        deduplicated:result.deduplicated,degraded:result.degraded});
+        deduplicated:result.deduplicated,degraded:result.degraded,
+        ...closeoutSummary(knowledgeCloseout,documentation)});
     }
     need(['start','resume'].includes(operation.operation),'invalid_input');
     need(matchesCmAiTaskSelection(admission,options.feature,identity.taskId,options.parallelSelection??null),'task_mismatch');
@@ -730,19 +761,21 @@ export function createCmAiConversationEntry(options) {
     return effectSummary(operation,result,runner,identity);
   }
   const handle=async raw=>{
-    let token=null;const epoch=cancellationEpoch;
+    let token=null,operation=null;const epoch=cancellationEpoch;
     try{
-      const operation=readOperation(raw);
-      if(!['status','cancel','abandon_review','abandon_effect','bootstrap_review_recover'].includes(operation.operation)){
+      operation=readOperation(raw);
+      if(!['status','cancel','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover'].includes(operation.operation)){
         token=Symbol(operation.operation);inFlightHandles.add(token);
       }
       const routed=await route(operation);
       const guidance=operatorGuidance(routed,{executionActive:inFlightHandles.size>(token===null?0:1)});
       const result=guidance?freeze({...routed,guidance}):routed;
-      if(epoch===cancellationEpoch||operation.operation==='cancel')projectHostResult({specsDir:options.specsDir,
-        feature:options.feature,result,current:runner.status()});
+      if(!admissionReports.has(routed)&&(epoch===cancellationEpoch||operation.operation==='cancel'))projectHostResult({specsDir:options.specsDir,
+        feature:options.feature,result,readCurrent:()=>runner.status()});
       return result;
-    }catch(error){return rejected(ownerIdentity,error);}
+    }catch(error){return freeze({...rejected(ownerIdentity,error),
+      ...(['finish','run_finalize'].includes(operation?.operation)
+        ?closeoutSummary(knowledgeCloseout,null,error.code??'inspection_failed'): {})});}
     finally{if(token!==null)inFlightHandles.delete(token);}
   };
   return Object.freeze({handle});

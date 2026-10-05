@@ -21,7 +21,7 @@ export const RESOURCE_GUARDED_EVENTS=new Set([...TERMINAL_EVENTS,'task_done']);
 const RESOURCE_PHASES=new Set(['acquired','released','cleanup_failed']);
 const TEST_RUN_GUARDED_EVENTS=new Set([...TERMINAL_EVENTS,'task_done']);
 const TEST_RUN_PHASES=new Set(['start','case_start','case_complete','case_blocked','complete','abandoned','superseded']);
-const MODEL_USAGE_TOKEN_FIELDS=new Set(['input_tokens','output_tokens','cache_read_tokens','cache_write_tokens']);
+const MODEL_USAGE_TOKEN_FIELDS=new Set(['input_tokens','output_tokens','cache_read_tokens','cache_write_tokens','reasoning_tokens']);
 const MODEL_USAGE_STATES=new Set(['observed','unavailable']);
 const MODEL_USAGE_OUTCOMES=new Set(['success','error','blocked','cancelled']);
 const MODEL_USAGE_ALLOWED_FIELDS=new Set([...MODEL_USAGE_TOKEN_FIELDS,'call_id','role','adapter','requested_model',
@@ -91,6 +91,7 @@ function validateModelUsageEvent(event,phase,data){
     throw new UsageError('unavailable model_usage cannot contain token counts');
   if(data.usage_state==='observed')for(const field of ['input_tokens','output_tokens'])
     if(!Object.hasOwn(data,field))throw new UsageError(`observed model_usage requires ${field}`);
+  if(Object.hasOwn(data,'reasoning_tokens')&&data.reasoning_tokens>data.output_tokens)throw new UsageError('reasoning_tokens must be an output subset');
   for(const field of [...MODEL_USAGE_TOKEN_FIELDS,'duration_ms'])if(Object.hasOwn(data,field)){
     const value=data[field];
     if(!Number.isInteger(value)||value<0)throw new UsageError(`model_usage ${field} must be a non-negative integer`);
@@ -494,7 +495,7 @@ export function writeLogEvent(rawInput,{environment=process.env,now=new Date(),u
     if(existingUsage!==null&&existingUsage.event_id!==event.event_id)
       throw new UsageError('model_usage call_id already used with different payload');
     const existingClaim=findModelEvent(authoritativeLog,built.runId,'model_call',event.call_id);
-    if(event.adapter==='openai-compatible'&&existingClaim===null)
+    if((event.adapter==='openai-compatible'||event.source==='native-cli-terminal')&&existingClaim===null)
       throw new UsageError('managed model_usage requires a prior model_call claim');
     if(existingClaim!==null&&modelCallIdentity(existingClaim).some((value,index)=>value!==modelCallIdentity(event)[index]))
       throw new UsageError('model_usage identity does not match model_call claim');

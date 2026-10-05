@@ -24,6 +24,8 @@
 // prd_materials needs PDF/browser observation; this driver has no such runner and refuses it.
 // prd_self_check evidence comes from actual PLAN.contextChecks commands, never a static evidence file.
 import fs from 'node:fs';
+import {readPrdRepairBinding,recoverPrdResponse} from '../runtime/js/cm-prd/response-recovery.mjs';
+import {inspectPrdReviewResponse} from '../runtime/js/cm-prd/review-publication.mjs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
@@ -47,7 +49,7 @@ import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
 // PLAN.liveEvidence: fresh current-session evidence; see docs/live-evidence-drivers.md.
 const HOST=fileURLToPath(new URL('./cm-prd-host.mjs',import.meta.url));
 const SKILL=fileURLToPath(new URL('../skills/cm-prd',import.meta.url));
-const KNOWN=new Set(['start','advance','plan_design','promote_design','select_design_reviews','status','cancel',
+const KNOWN=new Set(['repair_review_response','start','advance','plan_design','promote_design','select_design_reviews','status','cancel',
   'final_review_package','final_review','review_findings','review_disposition','save_draft','save_design',
   'correct_findings','prepare_summary','publish_summary','inspect_correction','resume_correction',
   'prepare_revision','decision','resume','read_batch','replace_inputs']);
@@ -77,14 +79,14 @@ function load(){
   catch(e){fail('准入或配置无效',e.code??e.message);}
   if(admission.status!=='ready'&&!(plan.session&&admission.mode==='change'&&admission.reason==='feature_missing'))
     fail('准入失败',admission.reason??admission.status);
-  if(!Array.isArray(plan.permissions??[])||!(plan.permissions??[]).every(p=>['--allow-spec-write','--allow-review-write','--allow-disposition-write'].includes(p)))
+  if(!Array.isArray(plan.permissions??[])||!(plan.permissions??[]).every(p=>['--execution-optimizations','--allow-spec-write','--allow-review-write','--allow-disposition-write'].includes(p)))
     stop(2,'permissions 只能包含宿主支持的写入开关');
   if(new Set(plan.permissions??[]).size!==(plan.permissions??[]).length)stop(2,'permissions 不可重复');
   if(plan.predecessor&&!fs.existsSync(resolve(plan.predecessor)))stop(2,`predecessor 文件不存在: ${resolve(plan.predecessor)}`);
   if(plan.permissions?.includes('--allow-review-write')&&!nonempty(plan.hostContext))stop(2,'--allow-review-write 需要 hostContext');
   if(['save_draft','save_design','publish_summary','resume_correction','correct_findings'].includes(operation)
     &&!plan.permissions?.includes('--allow-spec-write'))stop(2,`${operation} 需要 --allow-spec-write`);
-  if(operation==='final_review'&&!plan.permissions?.includes('--allow-review-write'))stop(2,'final_review 需要 --allow-review-write');
+  if(['final_review','repair_review_response'].includes(operation)&&!plan.permissions?.includes('--allow-review-write'))stop(2,'final_review 需要 --allow-review-write');
   if(operation==='review_disposition'&&!plan.permissions?.includes('--allow-disposition-write'))stop(2,'review_disposition 需要 --allow-disposition-write');
   if(['correct_findings','resume_correction'].includes(operation)&&!plan.permissions?.includes('--allow-review-write'))
     stop(2,`${operation} 需要 --allow-review-write`);
@@ -98,20 +100,32 @@ function load(){
     if(identity?.entry?.project!==project||identity.entry.specs!==specs||identity.entry.skillDir!==SKILL
       ||identity.entry.change!==entry.change||identity.entry.cases!==entry.cases||identity.runtime!==runtime)
       stop(2,'恢复身份不匹配：project/specs/skillDir/change/cases/runtime');
-    if(state.active&&operation!=='resume'&&!['status','read_batch','replace_inputs','cancel'].includes(operation))
+    if(state.active&&!['resume','repair_review_response'].includes(operation)&&!['status','read_batch','replace_inputs','cancel'].includes(operation))
       stop(2,`待恢复操作 ${state.active.request.operation}：先用 resume`);
     if(operation==='resume'&&!state.active)stop(2,'恢复存档没有待定操作');
   }
   const request=plan.request??{};
   exact(request,['text','stage','feature','mode','packageDigest','decisions','artifacts','summaryDigest','draftDigest',
-    'risks','reason','proposalDigest','approved','allowUserCaseChanges','resolution','successorSpecs','successorSessionId'], 'PLAN.request');
-  const needed={start:['text'],advance:['text'],plan_design:['text'],promote_design:['draftDigest','reason'],
+    'risks','reason','proposalDigest','approved','allowUserCaseChanges','resolution','successorSpecs','successorSessionId','binding'], 'PLAN.request');
+  const needed={repair_review_response:['binding'],start:['text'],advance:['text'],plan_design:['text'],promote_design:['draftDigest','reason'],
     select_design_reviews:['draftDigest','risks'],final_review_package:['stage','feature'],final_review:['stage','feature','mode'],
     review_findings:['stage','feature'],review_disposition:['stage','feature','packageDigest','decisions','artifacts'],
     correct_findings:['stage','feature'],inspect_correction:['stage','feature'],resume_correction:['stage','feature'],
     publish_summary:['summaryDigest'],prepare_revision:['reason'],decision:['proposalDigest','approved','allowUserCaseChanges'],
     replace_inputs:['approved','reason','successorSpecs','successorSessionId']};
   for(const key of needed[operation]??[])if(!Object.hasOwn(request,key))stop(2,`${operation} 缺少 PLAN.request.${key}`);
+  if(operation==='repair_review_response'){
+    try{
+      const binding=readPrdRepairBinding(request.binding);
+      const call=state?.active?.calls?.find(item=>item.callId===binding.callId)
+        ??state?.responseRepairs?.find(item=>item.originalCall.callId===binding.callId)?.originalCall;
+      check(state?.version===2&&call?.kind==='prd_review'&&Object.hasOwn(call,'result')
+        &&call.requestDigest===binding.requestDigest&&digest(call.result)===binding.resultDigest
+        &&call.payload.package.packageDigest===binding.packageDigest,'prd_recovery_binding');
+      const {packageDigest,...reviewPackage}=call.payload.package;
+      recoverPrdResponse({original:call.result,reviewPackage,packageDigest,authorContextId:call.payload.authorContextId});
+    }catch(error){fail('原响应修复预检失败',error.code??error.message);}
+  }
   if(['review_disposition','correct_findings'].includes(operation)){
     let review;try{review=inspectPrdFindings({specs,stage:request.stage,feature:request.feature});}
     catch(e){fail('原审查记录无效',e.code??e.message);}
@@ -251,7 +265,7 @@ function validate(kind,value,ctx){
       const prepared=preparePrdReview({specs:ctx.specs,draft,stage:ctx.request.stage,feature:ctx.request.feature});
       const paths=(ctx.request.stage==='design'?['requirements.md','design.md']:['requirements.md','design.md','tasks.md'])
         .map(name=>`${ctx.request.feature}/${name}`).sort();
-      reviewResultForPaths(value.result,{packageDigest:prepared.packageDigest},paths);}
+      inspectPrdReviewResponse({reviewPackage:prepared.reviewPackage,packageDigest:prepared.packageDigest,authorContextId:ctx.hostContext,response:value});}
     catch(e){fail('review.json 与当前原审查包不匹配',e.code??e.message);}
   }else if(kind==='prd_correct'){
     exact(value,['decisions','documents'],'correct.json');
@@ -303,7 +317,8 @@ async function answerFor(row,answers,paths,control){
         loaded.plan.contextJudgements[f.directory][id]:'failed',evidence}))}))};
   }
   if(row.kind==='prd_review'){
-    reviewResultForPaths(v.result,{packageDigest:row.payload.package.packageDigest},row.payload.examinedPaths);
+    const {packageDigest,...reviewPackage}=row.payload.package;
+    inspectPrdReviewResponse({reviewPackage,packageDigest,authorContextId:row.payload.authorContextId,response:v});
     return v;
   }
   if(row.kind==='prd_summary')return {...v,evidenceDigest:row.payload.evidenceDigest};

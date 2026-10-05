@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import {readBatchExecutionPolicy,freezeBatchExecutionPolicy} from '../runtime/js/cm-ai/execution-policy.mjs';
+import {readBatchExternalModels,freezeBatchExternalModels,batchModelsFile} from '../runtime/js/cm-ai/external-group-models.mjs';
 // Current-conversation transport for the existing batch driver, not a new loop.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,20 +16,20 @@ import {validateHostWorkflowConfiguration,featureHasBrowserCases,readBrowserCapa
 import {digest,json,need,shape} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {identifyApprovedBootstrapFeature} from '../runtime/js/cm-ai/bootstrap-feature.mjs';
 
-const usage='cm-ai-batch-host.mjs serve --config PATH --host-context ID --allow-development --review-config PATH (required for a new batch; later launches pass the same file) [--runtime codex|claude] [--input-limit BYTES] [--allow-review FEATURE/TASK:1|2]... [--allow-qa] [--rerun-unknown-qa | --rerun-blocked-qa] [--verification-precheck] [--browser-qa available|unavailable] [--protected-conversation-config PATH | --protected-config PATH] [--allow-provider-development FEATURE/TASK:1|2]... [--hold-revision FEATURE/TASK]...';
+const usage='cm-ai-batch-host.mjs serve --config PATH --host-context ID --allow-development --review-config PATH (required for a new batch; later launches pass the same file) [--execution-optimizations] [--external-models [--external-models-config PATH]] [--runtime codex|claude] [--input-limit BYTES] [--allow-review FEATURE/TASK:1|2]... [--allow-qa] [--rerun-unknown-qa | --rerun-blocked-qa] [--verification-precheck] [--browser-qa available|unavailable] [--protected-conversation-config PATH | --protected-config PATH] [--allow-provider-development FEATURE/TASK:1|2]... [--hold-revision FEATURE/TASK]...';
 const safeCode=error=>typeof error?.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(error.code)?error.code:'batch_host_failed';
 
 export async function serveHostTransport(options,rawInputLimit,serve=serveCmAiHost){
   return serve({...options,inputLimit:parseHostInputLimit(rawInputLimit)});
 }
 
-async function memberReviewConfiguration(batch,definition,review,runtime){
+async function memberReviewConfiguration(batch,definition,review,runtime,pair=null,allowPreflight=true){
   try{
     need(review!==null,'review_configuration_required');
-    const options={cwd:definition.codeProject,model:review.model,disabledSkills:review.disabledSkills,promptTransport:'stdin'};
+    const options={cwd:definition.codeProject,model:review.model,...(pair?{effort:pair.effort}:{}),disabledSkills:review.disabledSkills,promptTransport:'stdin'};
     const matches=config=>config.model===review.model&&digest(config.disabledSkills)===digest(review.disabledSkills)
       &&(runtime==='claude'?claudePreflightMatches:preflightMatches)(config.preflight,options);
-    const directory=path.join(batch.specsDir,'.reviews','.execution',batch.batchId);
+    const directory=path.join(batch.specsDir,'.reviews',...(pair?['external-preflight']:['.execution']),batch.batchId);
     fs.mkdirSync(directory,{recursive:true,mode:0o700});
     need(fs.realpathSync(directory)===directory,'invalid_preflight_cache');
     const file=path.join(directory,`preflight-${definition.identity.taskId}.json`);
@@ -36,10 +38,11 @@ async function memberReviewConfiguration(batch,definition,review,runtime){
     const withTimeout=config=>review.timeoutMs==null?config:{...config,timeoutMs:review.timeoutMs};
     if(fs.existsSync(file)){
       const info=fs.lstatSync(file);need(info.isFile()&&!info.isSymbolicLink(),'invalid_preflight_cache');
-      try{const cached=readConversationReviewConfiguration(file);if(matches(cached))return withTimeout(cached);}
+      try{const cached=readConversationReviewConfiguration(file,pair);if(matches(cached))return withTimeout(cached);}
       catch{/* Invalid or obsolete diagnostics require a fresh loopback, never a rewritten fingerprint. */}
     }
-    const config=await runReviewPreflight(definition,{model:review.model,runtime,disabledSkills:review.disabledSkills});
+    need(allowPreflight,'review_preflight_missing');
+    const config=await runReviewPreflight(definition,{model:review.model,...(pair?{effort:pair.effort}:{}),runtime,disabledSkills:review.disabledSkills});
     need(matches(config),'review_preflight_failed');
     const temporary=`${file}.${process.pid}.tmp`;
     fs.writeFileSync(temporary,JSON.stringify(config)+'\n',{flag:'wx',mode:0o600});
@@ -49,6 +52,7 @@ async function memberReviewConfiguration(batch,definition,review,runtime){
 }
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Optional --execution-optimizations freezes policy v1 for new runs only; recovery retains the original policy and legacy runs reject retrofit. See docs/execution-optimizations.md.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\nOptional --input-limit BYTES sets the host input transport limit to an integer from 65536 to 4194304 (default 65536); it may change on resume.\nOptional --protected-conversation-config PATH uses the shared current-host scoped text proposals and native sandbox checks; {checkCommands,timeoutMs}. No extra model call, same Codex/Claude runtime and per-task Review permissions. Optional --protected-config PATH {model,checkCommands,timeoutMs} enables CLI development only for per-task --allow-provider-development FEATURE/TASK:1|2 grants; mutually exclusive with --protected-conversation-config. Optional bundle.bootstraps maps approved bootstrap task keys to {selection}; --allow-bootstrap-write grants only those fixed instruction/scaffold steps. Optional batch.codeProjects uses prefixed paths and checks with codeProject per command; one task remains one completion gate.\n--review-config PATH is required when no member run of the batch exists yet (like single-task create): it is bound into every member fingerprint and cannot be added on resume. It is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 900000). It is independent of --protected-conversation-config/--protected-config and wins over their timeoutMs for the reviewer. It is not part of the authorized configuration digest, so a resumed run may raise it after review_transport_timeout.\n--browser-qa available|unavailable declares interactive QA capability for applicable feature carriers including browser and ios-simulator; the flag name is retained for compatibility.\nOptional --rerun-unknown-qa / --rerun-blocked-qa carry the same single-task QA recovery into a batch and require --allow-qa; they are mutually exclusive. A batch has no --mode, so each task applies the flag only when it resumes an existing run and has a QA executor; a created run or a task without QA ignores it rather than failing the whole batch. Semantics, limits and the qaRound cap are the single-task ones, unchanged.\nOptional --verification-precheck sends the written verification of the task and the collected checks back as a verification_precheck request before any handoff or review package is built. It may only block: a requirement reported unsatisfied stops the task at blocked / verification_precheck_failed with pendingAction resume and spends no review round. Passing it is not an approval, writes no receipt and does not replace the independent review. A task with no written verification is unaffected.\nOptional --hold-revision FEATURE/TASK (repeatable, launch-only, never persisted) stops that task after a changes_requested review with code revision_answer_required, before any second-round develop intent; the next launch without it resumes the revision. It only narrows what this launch does.\nBatch entry requires a clean Git main checkout (including untracked files); batch_main_dirty lists dirty files before any task or worktree starts. Serial tasks are committed automatically before batch_handoff, with task_commit recording the SHA (null if unchanged). Terminal parallel members preserve WIP on their retained branches and fall back once to serial generation 2 after ready members merge.\n');return 0;}
   let bridge;
   try{
@@ -69,9 +73,11 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     for(const key of keys)if(workflows[key]!==null)validateHostWorkflowConfiguration(workflows[key]);
     let review=null,allowQa=false,allowBootstrap=false,runtime=null,protection=null,providerConfig=null,browserQaFlag,inputLimitRaw;
     let rerunUnknownQa=false,rerunBlockedQa=false,verificationPrecheck=false;const approvals=new Set(),developments=new Map(),holds=new Set();
+    let externalEnabled=false,externalFile,executionPolicyEnabled=false;
     for(let index=6;index<argv.length;index++){
       const name=argv[index];
-      if(name==='--allow-qa'){need(!allowQa,'invalid_arguments');allowQa=true;}
+      if(name==='--execution-optimizations'){need(!executionPolicyEnabled,'invalid_arguments');executionPolicyEnabled=true;}
+      else if(name==='--allow-qa'){need(!allowQa,'invalid_arguments');allowQa=true;}
       else if(name==='--rerun-unknown-qa'){need(!rerunUnknownQa,'invalid_arguments');rerunUnknownQa=true;}
       else if(name==='--rerun-blocked-qa'){need(!rerunBlockedQa,'invalid_arguments');rerunBlockedQa=true;}
       else if(name==='--verification-precheck'){need(!verificationPrecheck,'invalid_arguments');verificationPrecheck=true;}
@@ -86,7 +92,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         need(protection===null&&providerConfig===null&&typeof argv[index+1]==='string','invalid_arguments');
         const file=argv[++index],info=fs.lstatSync(file);
         need(info.isFile()&&!info.isSymbolicLink()&&info.size<=64*1024,'invalid_protected_config');
-        providerConfig=json(JSON.parse(fs.readFileSync(file,'utf8')));shape(providerConfig,['model','checkCommands','timeoutMs']);
+        providerConfig=json(JSON.parse(fs.readFileSync(file,'utf8')));shape(providerConfig,['checkCommands','timeoutMs',...['model','effort'].filter(key=>Object.hasOwn(providerConfig,key))]);
       }
       else if(name==='--allow-provider-development'){
         const approval=argv[++index];need(typeof approval==='string','invalid_arguments');
@@ -94,6 +100,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         need(keys.includes(key)&&['1','2'].includes(attempt),'invalid_arguments');
         need(!developments.has(key),'invalid_arguments');developments.set(key,Number(attempt));
       }
+      else if(name==='--external-models'){need(!externalEnabled,'invalid_arguments');externalEnabled=true;}
+      else if(name==='--external-models-config'){need(externalFile===undefined&&typeof argv[index+1]==='string','invalid_arguments');externalFile=argv[++index];}
       else if(name==='--runtime'){
         need(runtime===null&&['codex','claude'].includes(argv[index+1]),'invalid_runtime');runtime=argv[++index];
       }
@@ -101,7 +109,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         need(inputLimitRaw===undefined&&typeof argv[index+1]==='string','invalid_arguments');
         inputLimitRaw=argv[++index];parseHostInputLimit(inputLimitRaw);
       }
-      else if(name==='--review-config'){need(review===null&&typeof argv[index+1]==='string','invalid_arguments');review=readConversationReviewConfiguration(argv[++index]);}
+      else if(name==='--review-config'){need(review===null&&typeof argv[index+1]==='string','invalid_arguments');review=argv[++index];}
       else if(name==='--hold-revision'){
         const held=argv[++index];need(typeof held==='string'&&keys.includes(held)&&!holds.has(held),'invalid_arguments');holds.add(held);
       }
@@ -111,6 +119,18 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         need(keys.includes(key)&&['1','2'].includes(attempt),'review_task_mismatch');approvals.add(approval);
       }else need(false,'invalid_arguments');
     }
+    const started=keys.some(key=>fs.existsSync(path.join(batch.specsDir,'.reviews','.execution',batchTaskRunId(batch.batchId,key),'state.json')));
+    const executionPolicy=readBatchExecutionPolicy({batch,started,enabled:executionPolicyEnabled});
+    const routes=providerConfig?resolveProtectedRuntimes(loadConfig({projectRoot:batch.codeProject}),runtime??'codex'):{reviewerRuntime:runtime??'codex'};
+    const externalModels=readBatchExternalModels({batch,started,enabled:externalEnabled,inputFile:externalFile,providers:[routes.coderRuntime,routes.reviewerRuntime].filter(Boolean)});
+    if(providerConfig&&!externalModels)shape(providerConfig,['model','checkCommands','timeoutMs']);
+    if(providerConfig&&externalModels){
+      const pair=externalModels.providers[routes.coderRuntime];
+      need(!Object.hasOwn(providerConfig,'model')||providerConfig.model===pair.model,'external_model_configuration_conflict');
+      need(!Object.hasOwn(providerConfig,'effort')||providerConfig.effort===pair.effort,'external_model_configuration_conflict');
+      providerConfig={...providerConfig,...pair};
+    }
+    review=review===null?null:readConversationReviewConfiguration(review,externalModels?.providers[routes.reviewerRuntime]??null);
     need(!developments.size||providerConfig!==null,'protected_configuration_required');
     // Same launch-time assertion as the single-task host, evaluated across every
     // task whose approved contract can select a browser case.
@@ -141,20 +161,23 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       const pending=hostCallTail.then(()=>bridge.call(...args));
       hostCallTail=pending.then(()=>{},()=>{});return pending;
     }};
-    const driver=createCmAiBatch({configuration:batch,logHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
+    let reconciling=false;
+    const driver=createCmAiBatch({configuration:{...batch,...(externalModels?{externalModels}:{}),...(executionPolicy?{executionPolicy}:{})},logHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
       runtime:runtime??'codex',checkCommands:(providerConfig??protection)?.checkCommands??null,checkTimeoutMs:(providerConfig??protection)?.timeoutMs??60000,
       rerunUnknownQa,rerunBlockedQa,holdRevisions:[...holds],
       executionFor:async(definition,{parallelMember=false}={})=>{
+        await freezeBatchExecutionPolicy(batch,executionPolicy);
+        freezeBatchExternalModels(batch,externalModels);
         const key=`${definition.feature}/${definition.identity.taskId}`;
         const attempts=[1,2].filter(attempt=>approvals.has(`${key}:${attempt}`));
-        const memberReview=parallelMember?await memberReviewConfiguration(batch,definition,review,runtime??'codex'):review;
+        const memberReview=parallelMember?await memberReviewConfiguration(batch,definition,review,externalModels?routes.reviewerRuntime:runtime??'codex',externalModels?.providers[routes.reviewerRuntime]??null,!reconciling):review;
         const execution=createConversationExecution(definition,argv[4],parallelMember?memberBridge:bridge,memberReview,attempts,workflows[key],allowQa,runtime??'codex',
-          {parallelMember,...(verificationPrecheck?{verificationPrecheck:true}:{}),batchWorkflowsDigest:digest(bootstraps?{workflows,bootstraps}:workflows),qaLogHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
+          {parallelMember,...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels,...(providerConfig?{reviewerRuntime:routes.reviewerRuntime}:{})}:{}),...(verificationPrecheck?{verificationPrecheck:true}:{}),batchWorkflowsDigest:digest(executionPolicy?{workflows,bootstraps,externalModels,executionPolicy}:externalModels?{workflows,bootstraps,externalModels}:bootstraps?{workflows,bootstraps}:workflows),qaLogHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
             // A protected CLI config also protects unauthorized tasks: they stay on the
             // current-session transport but with the same sandbox checks (protected-text edits).
             ...(protection?{protection}:providerConfig?{protection:{checkCommands:providerConfig.checkCommands,timeoutMs:providerConfig.timeoutMs}}:{}),
             ...(developments.has(key)?{
-              providerDevelopment:{model:providerConfig.model,attempt:developments.get(key),
+              providerDevelopment:{...(providerConfig.model?{model:providerConfig.model}:{}),...(Object.hasOwn(providerConfig,'effort')?{effort:providerConfig.effort}:{}),attempt:developments.get(key),
                 ...resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),runtime??'codex')},
             }:{}),...(bootstraps?.[key]?{bootstrap:{...bootstraps[key],allowWrite:allowBootstrap}}:{})});
         // Bind the entire approved capability map before the first task starts,
@@ -162,7 +185,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         return execution;
       }});
     const host={async handle(request){
-      try{return await driver.handle(request);}catch(cause){return {outcome:'blocked',code:safeCode(cause)};}
+      try{reconciling=request.operation==='reconcile_review';return await driver.handle(request);}catch(cause){return {outcome:'blocked',code:safeCode(cause)};}
     }};
     const rawMode=input.isTTY&&typeof input.setRawMode==='function';if(rawMode)input.setRawMode(true);
     try{await serveHostTransport({host,input,output,toolBridge:bridge},inputLimitRaw);}

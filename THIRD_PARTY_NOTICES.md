@@ -3,6 +3,15 @@
 CM Workflow is MIT licensed. The following bundled materials retain their own
 attribution and license status.
 
+## Neat-freak read-only closeout principles
+
+- Source: https://github.com/KKKKhazix/khazix-skills
+- Fixed commit: `322346ded8129436b3f64707789a73e732ae24d9`, neat-freak 3.0.0
+- Copyright: © 2026 数字生命卡兹克
+- License: MIT; full upstream text is retained in `skills/cm-ai/references/knowledge-closeout.md`.
+- Adaptation: only bounded, read-only evidence reconciliation and reporting principles.
+  No upstream scripts, memory maintenance, cleanup, or additional authority is bundled.
+
 ## Darwin Skill
 
 - Source: https://github.com/alchaincyf/darwin-skill

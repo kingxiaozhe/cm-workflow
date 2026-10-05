@@ -11,6 +11,7 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
       shape(request,['requestId','operation',...(request.operation==='resume'?['evidenceFiles']:[]),
         ...(['abandon_step','abandon_review','rediagnose'].includes(request.operation)&&Object.hasOwn(request,'reason')?['reason']:[]),
         ...(request.operation==='prepare_revision'&&Object.hasOwn(request,'tests')?['tests']:[]),
+        ...(request.operation==='reconcile_review'?['invocationId']:[]),
         ...(request.operation==='recover_final_review'?['invocationId','packageDigest','previousInvocationStopped','reason']:[])]);
       if(config.qaSource&&!['status','cancel','completion_evidence'].includes(request.operation))
         inspectFixQaSource({specsRoot:config.specsRoot,identity:config.identity,configuration:config});
@@ -23,6 +24,7 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
         return {...status,progress:fixProgress(status,config,{finalReviewAllowed:finalAuthority!==null
           &&extra.has('--allow-final-review')&&recoveryAllowed})};
       }
+      if(request.operation==='reconcile_review')return owner.reconcileReview({invocationId:request.invocationId});
       if(request.operation==='recover_final_review')return owner.recoverFinalReview({
         authorized:extra.has('--allow-final-review-recovery'),recoveryInvocationId,invocationId:request.invocationId,
         packageDigest:request.packageDigest,previousInvocationStopped:request.previousInvocationStopped,reason:request.reason});

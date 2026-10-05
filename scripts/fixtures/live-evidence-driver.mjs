@@ -6,7 +6,13 @@ export function runLiveDriver(driver,plan,operation,respond,{env=process.env,tim
   return new Promise((resolve,reject)=>{
     const child=spawn(process.execPath,[driver,'--plan',plan,operation],{env,stdio:['ignore','pipe','pipe']});
     let stdout='',stderr='',buffer='',failure=null;const requests=[];
-    const timer=setTimeout(()=>{failure=Error('fixture driver timeout');child.kill();},timeoutMs);
+    const startedAt=Date.now();
+    const timer=setTimeout(()=>{
+      failure=Object.assign(Error('fixture driver timeout'),{code:'fixture_driver_timeout',
+        diagnostic:{timeoutMs,elapsedMs:Date.now()-startedAt,requestCount:requests.length,
+          stdoutBytes:Buffer.byteLength(stdout),stderrBytes:Buffer.byteLength(stderr)}});
+      child.kill();
+    },timeoutMs);
     child.stdout.on('data',chunk=>{stdout+=chunk;});
     child.stderr.on('data',chunk=>{
       stderr+=chunk;buffer+=chunk;

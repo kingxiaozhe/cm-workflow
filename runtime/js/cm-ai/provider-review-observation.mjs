@@ -132,3 +132,18 @@ export function inspectProviderReviewFailure(observationText,expectationText){
     provider:expected.request.provider,requestedModel:expected.request.requestedModel,providerThreadId:thread,
     category,failure,completionEligible:false});
 }
+
+export function inspectProviderReviewReconciliation(observationText,expectationText,cause=false){
+  const {observation,expected,thread,terminal,close,r}=readObservation(observationText,expectationText,cause);
+  need(thread!==null&&close!==null,'review_reconciliation_evidence_required');
+  if(terminal==='turn.completed'&&r.status==='succeeded'){
+    const review=cause?reviewResultForPaths(r.value,expected.pkg,causeReviewPaths(expected.pkg)):reviewResult(r.value,expected.pkg);
+    return json({...inspect(observationText,expectationText,cause),observationStatus:'completed',code:null,review});
+  }
+  need(['error','turn.failed'].includes(terminal)&&r.status==='failed'&&r.code==='provider_failed',
+    'review_reconciliation_evidence_required');
+  return json({version:1,kind:'cm-provider-review-failure',requestDigest:expected.request.requestDigest,
+    observationDigest:digest(observation),identity:expected.request.identity,logicalContextId:expected.request.contextId,
+    provider:expected.request.provider,requestedModel:expected.request.requestedModel,providerThreadId:thread,
+    category:'provider',failure:'reviewer_provider_failed',completionEligible:false});
+}

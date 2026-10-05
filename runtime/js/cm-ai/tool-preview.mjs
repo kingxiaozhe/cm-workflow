@@ -69,7 +69,7 @@ export function skillContext(parsed) {
     section_lengths: sections.map(s => s.length), folders: [...folders].sort() };
 }
 
-export async function previewTools({ cwd, model, fixtureResponse = false, disabledSkills = [],
+export async function previewTools({ cwd, model, effort, fixtureResponse = false, disabledSkills = [],
   promptTransport = 'argument', cli = 'codex', allowCodeProject = false }) {
   cwd = fs.realpathSync(cwd);
   if (typeof allowCodeProject !== 'boolean' || !fs.statSync(cwd).isDirectory()) throw new Error('invalid code project');
@@ -130,7 +130,7 @@ export async function previewTools({ cwd, model, fixtureResponse = false, disabl
   const loopbackBase = `http://${server.address().address}:${port}`;
   const previewPrompt = 'Return a greeting for synthetic task A-DEMO-001.';
   const transport = previewPromptTransport(promptTransport, previewPrompt);
-  const args = [...commonArgs({ cwd, model, disabledSkills }),
+  const args = [...commonArgs({ cwd, model, effort, disabledSkills }),
     '-c', 'model_provider="cm_local_tool_preview"',
     '-c', `model_providers.cm_local_tool_preview={name="CM local tool preview",base_url="${loopbackBase}/v1",wire_api="responses",env_key="CM_JS_PROBE_AUTH",requires_openai_auth=false,request_max_retries=0,stream_max_retries=0}`,
     transport.argument];
@@ -176,7 +176,7 @@ export async function previewTools({ cwd, model, fixtureResponse = false, disabl
     && posts[0].tools?.length === 0 && posts[0].auth_is_synthetic
     && posts[0].skill_catalog_present === false
     && result.code === (fixtureResponse ? 0 : 1) && !result.timedOut && !result.promptWriteFailed;
-  const receipt = { cli_model: model, config_fingerprint: configFingerprint({ cwd, model, disabledSkills }),
+  const receipt = { cli_model: model, config_fingerprint: configFingerprint({ cwd, model, effort, disabledSkills }),
     passed, fixture_response: fixtureResponse, prompt_transport: promptTransport,
     real_model_requests: 0, local_requests: seen,
     disabled_skill_count: disabledSkills.length, process: result, listener_closed: true };

@@ -2,6 +2,10 @@
 
 所有 feature 的所有任务完成后：
 
+具备 `documentation_inspect` 的新 JS run 按创建时快照默认执行一次
+[收尾资料核对](knowledge-closeout.md)，与下文原检查共用请求；旧 run 不自动开启。
+用户要求关闭时仅在创建前设 `knowledgeCloseout:false`；不能改变已有快照或跳过必需资料。
+
 ## 1. 核验文档同步
 
 项目文档已在最后任务的 N3、定稿 handoff 和 N4 Review 前通过 `cm-doc-syncer`
@@ -97,6 +101,7 @@ staging/体验版验证。
 📂 Features: {完成数}/{总数}
 📋 总任务: {完成数}/{总数}
 📝 文档同步: 已完成
+🔎 收尾核对: {按原结果附六行报告，或未完成原因/已关闭；不能据此代替 Review/QA}
 🚀 生产发布待决清单: 已编制，等待人工决策
 
 各 Feature 摘要:

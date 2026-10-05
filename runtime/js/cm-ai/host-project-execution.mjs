@@ -6,7 +6,7 @@ import {createHostCheck,reportHostCheckProgress} from './host-check.mjs';
 import {specsPermissionArgs} from './codex-config.mjs';
 import {digest,json,need,shape,id} from './effect-contract.mjs';
 
-export function createProjectExecution({definition,protection}){
+export function createProjectExecution({definition,protection,executionPolicy=null}){
   const data=json(definition),config=json(protection);
   const roots=data.codeProjects?resolveCodeProjects(data.codeProject,data.codeProjects):[data.codeProject];
   for(const root of roots)specsPermissionArgs({cwd:root,specsRoot:data.specsDir});
@@ -16,16 +16,20 @@ export function createProjectExecution({definition,protection}){
   const commands=config.checkCommands;
   need(Array.isArray(commands)&&commands.length>0&&commands.length<=32,'invalid_check_config');
   const ids=new Set();
-  const checks=commands.map(command=>{
-    shape(command,['id','command',...(data.codeProjects?['codeProject']:[])]);id(command.id);
+  const plans=[];
+  for(const command of commands){
+    shape(command,['id','command',...(data.codeProjects?['codeProject']:[]),
+      ...(executionPolicy&&Object.hasOwn(command,'sameExecutionAs')?['sameExecutionAs']:[])]);id(command.id);
     need(!ids.has(command.id),'invalid_check_config');ids.add(command.id);
     const cwd=data.codeProjects?command.codeProject:data.codeProject;
     need(roots.includes(cwd),'execution_root_mismatch');
-    const check=createHostCheck({cwd,specsRoot:data.specsDir,timeoutMs:config.timeoutMs,
-      onProgress:reportHostCheckProgress,
-      commands:[{id:command.id,command:command.command}]});
-    return {cwd,check};
-  });
+    if(Object.hasOwn(command,'sameExecutionAs'))need(plans.at(-1)?.cwd===cwd,'check_reuse_binding');
+    if(plans.at(-1)?.cwd!==cwd)plans.push({cwd,commands:[]});
+    const {codeProject,...local}=command;plans.at(-1).commands.push(local);
+  }
+  const checks=plans.map(plan=>({cwd:plan.cwd,check:createHostCheck({cwd:plan.cwd,specsRoot:data.specsDir,
+    timeoutMs:config.timeoutMs,onProgress:reportHostCheckProgress,commands:plan.commands,
+    reuseDeclared:executionPolicy?.checkReuse==='declared-adjacent-v1'})}));
   need(roots.every(root=>checks.some(item=>item.cwd===root)),'code_project_checks_required');
   const recheck=()=>{if(data.codeProjects)need(digest(resolveCodeProjects(data.codeProject,roots))===digest(roots),'execution_root_mismatch');};
   return Object.freeze({
@@ -49,9 +53,9 @@ export function createProjectExecution({definition,protection}){
     async check(request,control){
       recheck();const result=[];
       for(const item of checks){
-        const [row]=await item.check(request,control);
-        result.push(data.codeProjects?{...row,evidence:`cwd=${item.cwd}; ${row.evidence}`}:row);
-        if(row.outcome!=='passed')break;
+        const rows=await item.check(request,control);
+        result.push(...rows.map(row=>data.codeProjects?{...row,evidence:`cwd=${item.cwd}; ${row.evidence}`}:row));
+        if(rows.some(row=>row.outcome!=='passed'))break;
       }
       return result;
     },

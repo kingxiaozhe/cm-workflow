@@ -1,3 +1,4 @@
+import {createProviderUsageCapture} from './provider-usage.mjs';
 // Read-only Claude process: edits are text proposals consumed by the protected host.
 import {spawn} from 'node:child_process';
 import {readFileSync} from 'node:fs';
@@ -5,8 +6,8 @@ import {claudeBaseArgs,claudeEnvironment} from './worker-claude.mjs';
 import {reportClaudeDevIntentNotice,reportClaudeRateLimitNotice} from './claude-review-stream.mjs';
 import {need,text,validCallTimeout,json,shape} from './effect-contract.mjs';
 
-export function claudeDeveloperArgs(model){
-  const args=claudeBaseArgs(model),index=args.indexOf('--tools');
+export function claudeDeveloperArgs(model,effort){
+  const args=claudeBaseArgs(model,effort),index=args.indexOf('--tools');
   args[index+1]='Read,Grep,Glob';
   const schema=JSON.parse(readFileSync(new URL('./claude-developer-proposal.schema.json',import.meta.url),'utf8'));
   delete schema.$schema;delete schema.$id;
@@ -53,7 +54,7 @@ export function validateClaudeProposal(raw){
   return result;
 }
 
-function createClaudeDeveloperStream(onNotice=null){
+function createClaudeDeveloperStream(onNotice=null,onUsageTerminal=null){
   let session=null,initialized=false,done=false,value,assistant=false,noticeCount=0,thinkingCount=0;
   const tools=new Set();
   return {
@@ -99,8 +100,13 @@ function createClaudeDeveloperStream(onNotice=null){
         return;
       }
       need(event.type==='result','unexpected_event');
+      if(event.is_error===true&&['error_during_execution','error_max_turns','error_max_budget_usd','error_max_structured_output_retries'].includes(event.subtype)){
+        if(Number.isInteger(event.num_turns)&&event.num_turns>=0&&event.num_turns<=20)onUsageTerminal?.(event.usage);
+        need(false,'provider_failed');
+      }
       need(event.subtype==='success'&&event.is_error===false,'provider_failed');
       need(assistant&&tools.size===0&&Number.isInteger(event.num_turns)&&event.num_turns>=1,'unexpected_result');
+      onUsageTerminal?.(event.usage);
       let proposal=event.structured_output;
       if(!Object.hasOwn(event,'structured_output')){
         try{proposal=JSON.parse(event.result);}catch{need(false,'invalid_output_json');}
@@ -111,9 +117,9 @@ function createClaudeDeveloperStream(onNotice=null){
   };
 }
 
-export function claudeDeveloperWorker({cwd,model,cli='claude',timeoutMs=1800000,spawnProcess=spawn,onNotice=null}) {
+export function claudeDeveloperWorker({cwd,model,effort,cli='claude',timeoutMs=1800000,spawnProcess=spawn,onNotice=null,onUsage=null,onUsageClaim=null}) {
   validCallTimeout(timeoutMs);
-  const args=claudeDeveloperArgs(model);
+  const args=claudeDeveloperArgs(model,effort);
   let used=false;
   return async (request,{signal})=>{
     text(request.prompt);need(Buffer.byteLength(request.prompt)<=11*1024*1024,'limit_exceeded');
@@ -122,12 +128,14 @@ export function claudeDeveloperWorker({cwd,model,cli='claude',timeoutMs=1800000,
     if(process.platform==='win32')return {status:'unavailable',code:'process_tree_unsupported'};
     if(used)return {status:'unavailable',code:'worker_dispatch_limit'};
     used=true;
+    const usage=createProviderUsageCapture('claude',onUsage);
+    try{onUsageClaim?.();}catch{}
     return new Promise(resolve=>{
       let child;
       try{child=spawnProcess(cli,args,{cwd,env:claudeEnvironment(),stdio:['pipe','pipe','pipe'],shell:false,detached:true});}
-      catch{resolve({status:'unavailable',code:'spawn_failed'});return;}
+      catch{usage.complete();resolve({status:'unavailable',code:'spawn_failed'});return;}
       let buffer='',bytes=0;
-      const stream=createClaudeDeveloperStream(onNotice);
+      const stream=createClaudeDeveloperStream(onNotice,value=>usage.terminal(value));
       let failure=null,closed=false,timer,cleanup;
       const signalGroup=signalName=>{
         if(!Number.isInteger(child.pid)||child.pid<=0)return false;
@@ -172,6 +180,7 @@ export function claudeDeveloperWorker({cwd,model,cli='claude',timeoutMs=1800000,
         closed=true;clearTimeout(timer);signal.removeEventListener('abort',abort);
         await cleanGroup();
         if(buffer.trim())accept(buffer);
+        usage.complete();
         if(failure||code!==0||exitSignal){
           resolve({status:['spawn_failed','provider_failed'].includes(failure)?'unavailable':'unknown',code:failure??'incomplete_result'});return;
         }

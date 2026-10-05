@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import {externalEffort} from './external-models.mjs';
 
 // Native profile, not an outer sandbox. Keep the built-in workspace protections.
 // Reference: https://learn.chatgpt.com/docs/permissions (beta, checked locally).
@@ -25,7 +26,7 @@ export const disabledFeatures = Object.freeze([
   'skill_mcp_dependency_install', 'tool_suggest',
 ]);
 
-export function commonArgs({ cwd, model, disabledSkills = [] }) {
+export function commonArgs({ cwd, model, effort, disabledSkills = [] }) {
   if (!/^[a-zA-Z0-9._-]+$/.test(model)) throw new Error('invalid model');
   return ['exec', '--ignore-user-config', '--strict-config', '--ephemeral',
     '--sandbox', 'read-only', '--skip-git-repo-check', '--cd', cwd, '--json',
@@ -33,7 +34,7 @@ export function commonArgs({ cwd, model, disabledSkills = [] }) {
     '-c', 'approval_policy="never"', '-c', 'web_search="disabled"',
     '-c', 'project_doc_max_bytes=0', '-c', 'mcp_servers={}',
     '-c', 'check_for_update_on_startup=false', '-c', 'analytics.enabled=false',
-    '-c', `model="${model}"`, '-c', 'model_reasoning_effort="high"',
+    '-c', `model="${model}"`, '-c', `model_reasoning_effort=${JSON.stringify(externalEffort('codex',effort))}`,
     // Codex 0.153.4 injects a <skills_instructions> catalog built from every skill root
     // (~/.codex/skills, ~/.agents/skills, ...) even with --ignore-user-config, skills.config
     // disables, skip_host_skill_discovery or --ignore-rules. Only this key removes the block.
