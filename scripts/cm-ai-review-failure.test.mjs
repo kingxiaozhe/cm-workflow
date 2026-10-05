@@ -1,15 +1,20 @@
-// Reviewer failures, the verdict contract and the review race bound, driven
-// through the real driver -> cm-ai-host -> claudeWorker path with a synthetic
-// `claude` process on PATH. No model service is contacted.
+// Reviewer failures, verdict rules and review race bounds use native
+// driver/host fixtures or production worker/runner fixtures with in-memory
+// transport. Prompt checks build packages directly. No model service is contacted.
 import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {EventEmitter} from 'node:events';
+import {PassThrough} from 'node:stream';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
-import {claudeReviewFingerprint} from '../runtime/js/cm-ai/worker-claude.mjs';
+import {claudeReviewFingerprint,claudeWorker} from '../runtime/js/cm-ai/worker-claude.mjs';
+import {createClaudeReviewRun} from '../runtime/js/cm-ai/claude-review-adapter.mjs';
+import {reviewRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
+import {captureReviewBaseline,createReviewPackage} from '../runtime/js/cm-ai/review-package.mjs';
 import {digest,requestFor} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {readRunnerHistory,runnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {inspectProviderReview,inspectProviderReviewFailure} from '../runtime/js/cm-ai/provider-review-observation.mjs';
@@ -18,8 +23,8 @@ import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
 import {guardFixtureSource,killFixtureProcesses} from './fixtures/process-cleanup.mjs';
 
-// Every case opens the native V3 store (Node 24.14+ on macOS/Linux) and spawns
-// a POSIX shim; like the other runner-host suites, skip elsewhere explicitly.
+// Native V3 runner fixtures require Node 24.14+ on macOS/Linux. Preserve the
+// suite's existing explicit platform gate; only CLI fixtures spawn POSIX shims.
 const skip=!isSupportedExecutionPlatform();
 const test=(name,fn)=>nodeTest(name,{skip},fn);
 
@@ -115,7 +120,55 @@ const apiErrors=[
   ['model_not_found',404,'model: claude-opus-5 not found','reviewer_model_not_found'],
 ];
 for(const [error,status,text,failure] of apiErrors)
-test(`#8 real Claude CLI ${error} ends in a retryable review that names ${failure}`,t=>{
+test(`#8 ${error==='authentication_failed'?'real Claude CLI':'in-process Claude worker'} ${error} ends in a retryable review that names ${failure}`,t=>{
+  // The authentication case retains the real driver/host/CLI round trip.
+  // These variants still traverse the production worker, adapter and durable
+  // runner, but only the transport is in memory; no child or process cleanup.
+  if(error!=='authentication_failed')return runnerFixture(t,async f=>{
+    const spawned=[],signals=[];
+    f.state.review=(request,control)=>{
+      const config={cwd:f.root,model:'fixture',cli:'never-run-review-cli'};
+      const worker=claudeWorker({...config,timeoutMs:5000,
+        preflight:{passed:true,provider:'claude',prompt_transport:'stdin',config_fingerprint:claudeReviewFingerprint(config)},
+        killProcess:(pid,signal)=>signals.push({pid,signal}),
+        spawnProcess:(cli,args,{stdio,detached})=>{
+          const child=new EventEmitter();child.pid=12345;
+          child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();
+          child.kill=signal=>{signals.push({pid:child.pid,signal});return true;};
+          let prompt='';child.stdin.on('data',chunk=>prompt+=chunk);
+          spawned.push({cli,args,stdio,detached});
+          child.stdin.once('finish',()=>queueMicrotask(()=>{
+            const marker='<cm-review-data-json>\n',data=JSON.parse(prompt.slice(prompt.indexOf(marker)+marker.length));
+            assert.equal(data.reviewPackage.packageDigest,request.payload.reviewPackage.packageDigest);
+            const session_id='in-memory-review';
+            const messages=[{type:'system',subtype:'init',session_id},
+              {type:'assistant',session_id,parent_tool_use_id:null,error,is_api_error_message:true,
+                message:{role:'assistant',content:[{type:'text',text}]}},
+              {type:'result',subtype:'success',session_id,is_error:true,num_turns:1,result:text,
+                terminal_reason:'api_error',api_error_status:status}];
+            child.stdout.write(messages.map(JSON.stringify).join('\n')+'\n');
+            child.stdout.end();child.stderr.end();child.emit('close',1,null);
+          }));
+          return child;
+        }});
+      return createClaudeReviewRun(worker)(request,control);
+    };
+    const runner=f.make();
+    assert.equal((await runner.executeEffect(f.effect('develop'))).state,'awaiting_review');
+    const failed=await runner.executeEffect(f.effect('review'));
+    assert.equal(failed.state,'pending_review');assert.equal(failed.code,'review_provider_failed');
+    assert.equal(reviewRetryable(failed),true);assert.match(failed.reason,new RegExp(`^${failure}: `));
+    const result=f.records().findLast(row=>row.payload.type==='review-invocation-result').payload;
+    assert.equal(result.outcome,'failed');assert.equal(result.reconciliationRequired,false);
+    assert.equal(result.inspection.kind,'cm-provider-review-failure');assert.equal(result.inspection.category,'provider');
+    assert.equal(result.inspection.failure,failure);assert.equal(result.observation.result.code,failure);
+    assert.deepEqual(result.observation.events.map(event=>event.event),['thread.started','turn.started','process_closed']);
+    const history=f.replay();assert.equal(history.state.state,'pending_review');assert.equal(history.state.code,'review_provider_failed');
+    assert.equal(history.state.receipts.length,0);assert.deepEqual(f.reopen().status(),failed);
+    assert.equal(spawned.length,1);assert.equal(spawned[0].cli,'never-run-review-cli');
+    assert.equal(spawned[0].detached,true);assert.deepEqual(spawned[0].stdio,['pipe','pipe','pipe']);
+    assert(signals.every(row=>row.pid===-12345),'signals must target only the injected transport');
+  },{reviewerProvider:'claude',reviewTimeoutMs:5000});
   const f=fixture(t),packageDigest=f.awaitingReview();
   f.behave({mode:'api_error',error,status,text});
   const failed=f.decide(packageDigest);
@@ -203,8 +256,15 @@ test('#9 a blocked verdict stays terminal and says why instead of a bare code',t
 });
 
 test('#9 every reviewer prompt states the verdict rules and what blocked means',t=>{
-  const f=fixture(t);f.awaitingReview();
-  const reviewPackage=f.records().at(-1).payload.checkpoint.reviewPackage;
+  // Prompt content requires a valid package, not a running driver or reviewer.
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-review-prompt-')));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  fs.writeFileSync(path.join(root,'target.mjs'),'export const value = 1;\n');
+  fs.writeFileSync(path.join(root,'requirements.md'),'# Synthetic requirement\n');
+  const baseline=captureReviewBaseline({root,identity,scope:['target.mjs'],requirements:['requirements.md']});
+  fs.writeFileSync(path.join(root,'target.mjs'),'export const value = 42;\n');
+  const reviewPackage=createReviewPackage({root,baseline,
+    checks:[{id:'synthetic',command:['synthetic'],outcome:'passed',exitCode:0,evidence:'Synthetic check'}]});
   for(const provider of ['codex','claude']){
     const request=requestFor({invocationId:'prompt-check',identity,role:'reviewer',provider,requestedModel:'fixture',
       contextId:'cm-conversation-review-1',payload:{reviewPackage,priorReview:null}});
@@ -327,7 +387,7 @@ const reviewEvents=(onEvent,request,{result=true,close=true}={})=>{
 };
 const verdict=(request,value,findings=[])=>({status:'succeeded',value:{verdict:value,packageDigest:request.payload.reviewPackage.packageDigest,
   examinedPaths:reviewPaths(request.payload.reviewPackage),findings,summary:'Synthetic'}});
-async function runnerFixture(t,fn,{timeoutMs=1000,reviewTimeoutMs}={}){
+async function runnerFixture(t,fn,{timeoutMs=1000,reviewTimeoutMs,reviewerProvider='codex'}={}){
   const {createTaskRunner}=await import('../runtime/js/cm-ai/task-runner.mjs');
   const {openTaskExecutionStore}=await import('../runtime/js/cm-ai/task-owner.mjs');
   const temp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-review-failure-runner-')));
@@ -346,7 +406,7 @@ async function runnerFixture(t,fn,{timeoutMs=1000,reviewTimeoutMs}={}){
       fs.writeFileSync(path.join(root,'code.js'),state.content(request.identity.attempt));return {version:1,invocationId:request.invocationId,
         contextId:request.contextId,provider:request.provider,effectiveModel:'fixture',status:'succeeded',accepted:true,
         result:{outcome:'implemented'}};}},
-    reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',allowed:true,
+    reviewers:[{id:'reviewer',adapterId:`${reviewerProvider}-review-adapter`,provider:reviewerProvider,requestedModel:'fixture',allowed:true,
       available:true,contexts:['review-logical-1','review-logical-2'],run:(request,control)=>{dispatches++;return state.review(request,control);}}],
     check:request=>checks(request),
     taskCompletion:{reviewsDir,handoffs:[path.join(reviewsDir,'a1.json'),path.join(reviewsDir,'a2.json')]},
