@@ -184,6 +184,23 @@ test('host create reports the offending unsupported file on stderr before transp
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
+test('host create refuses a scope with AGENTS.md and lists the protected paths before any journal exists',async()=>{
+  const f=fixture(),lines=[],output=[];
+  try{
+    const definition=JSON.parse(fs.readFileSync(f.config,'utf8'));
+    fs.writeFileSync(f.config,JSON.stringify({...definition,scope:['target.mjs','AGENTS.md','.claude/rules/security.md']}));
+    fs.writeFileSync(path.join(f.codeProject,'AGENTS.md'),'# rules\n');
+    const exit=await hostMain(launchArgs(f),{input:{},output:{write(value){output.push(value);}},error:{write(value){lines.push(value);}}});
+    assert.equal(exit,1);assert.deepEqual(output,[]);
+    const error=JSON.parse(lines.join('').trim().split('\n').at(-1)).error;
+    assert.equal(error.code,'protected_scope');
+    assert.match(error.reason,/AGENTS\.md、\.claude\/rules\/security\.md/);
+    assert.doesNotMatch(error.reason,/target\.mjs/);
+    // No init, no intent, no execution directory, no review record of any kind.
+    assert.equal(fs.existsSync(path.join(f.specsDir,'.reviews')),false);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
 function runCli(f,mode,action='create'){
   return new Promise((resolve,reject)=>{
     const args=[...launchArgs(f)];args[4]=action;
@@ -1249,4 +1266,75 @@ test('#11 #31 protected driver deletes, sets the executable bit, creates new fil
     assert.equal(changes.get('old/Legacy.swift').after,null);
     assert.equal(changes.get('new/Legacy.swift').after.mode,0o644);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// Explicit batch choice (2026-10-06 AI潮 6.api-native-reading before 5.author-column).
+const withEarlierPendingFeature=f=>{
+  const early=path.join(f.specsDir,'0.early');fs.mkdirSync(early);
+  for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(early,name),'# Early\n');
+  fs.writeFileSync(path.join(early,'tasks.md'),'- [ ] T-001: earlier batch, after this one\n');
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['0.early','1.work'],specFiles:buildManifest(f.specsDir)}));
+};
+const serveOnce=(f,extra,mode='create')=>{
+  const args=[...launchArgs(f)];args[4]=mode;
+  const out=spawnSync(process.execPath,[cli,...args,...extra],{encoding:'utf8',timeout:20000,
+    input:[request('status')].map(JSON.stringify).join('\n')+'\n'});
+  return {...out,rows:out.stdout.trim().split('\n').filter(Boolean).map(JSON.parse)};
+};
+test('host --feature creates a later approved feature run; without it the original task_selection_mismatch stays',()=>{
+  const f=fixture();
+  try{
+    withEarlierPendingFeature(f);
+    const refused=serveOnce(f,[]);
+    assert.equal(refused.status,1);assert.match(refused.stderr,/task_selection_mismatch/);assert.match(refused.stderr,/--feature 1\.work/);
+    const wrong=serveOnce(f,['--feature','0.early']);
+    assert.equal(wrong.status,1);assert.match(wrong.stderr,/invalid_arguments/);
+    assert.equal(fs.existsSync(path.join(f.specsDir,'.reviews','.execution',identity.runId)),false);
+    const created=serveOnce(f,['--feature','1.work']);
+    assert.equal(created.status,0,created.stderr);
+    assert.equal(created.rows[0].type,'host_ready');
+    assert.equal(created.rows.find(row=>row.requestId==='status').result.identity.taskId,'T-001');
+    const resumed=serveOnce(f,['--feature','1.work'],'resume');
+    assert.equal(resumed.status,0,resumed.stderr);assert.equal(resumed.rows[0].type,'host_ready');
+    // The choice is bound into the run: resuming without it is a different run.
+    const unbound=serveOnce(f,[],'resume');
+    assert.equal(unbound.status,1);assert.match(unbound.stderr,/fingerprint_mismatch/);
+    assert.match(fs.readFileSync(path.join(f.specsDir,'0.early','tasks.md'),'utf8'),/- \[ \] T-001/);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// Kept from the 0.16.6 project patch: runs T-001..T-003 of that batch were
+// created with --runtime codex --review-runtime claude and resume only with it.
+const crossToolRoles='version: 1\nruntimes: {available: both}\nroles:\n  coder: {adapter: codex-cli, source: subscription}\n  reviewer: {adapter: claude-cli, source: subscription}\n';
+test('--review-runtime binds the other tool as reviewer and must be repeated on resume',async()=>{
+  const f=fixture(),bridge=createHostToolBridge();
+  try{
+    fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.yml'),crossToolRoles);
+    const definition=readRunDefinition(f.config);
+    const {claudeReviewFingerprint}=await import('../runtime/js/cm-ai/worker-claude.mjs');
+    const model='fixture';const review={model,disabledSkills:[],preflight:{passed:true,provider:'claude',
+      config_fingerprint:claudeReviewFingerprint({cwd:f.codeProject,model}),prompt_transport:'stdin'}};
+    const make=options=>createConversationExecution(definition,'native-host-fixture',bridge,review,null,null,false,'codex',options);
+    const original=make({reviewRuntime:'claude'});
+    assert.equal(original.developer.provider,'codex');assert.equal(original.reviewers[0].provider,'claude');
+    assert.equal(original.configuration.reviewRuntime,'claude');
+    const first=await openControlRun(definition,'create',original);first.close();
+    const resumed=await openControlRun(definition,'resume',make({reviewRuntime:'claude'}));resumed.close();
+    await assert.rejects(openControlRun(definition,'resume',make({})),{code:'fingerprint_mismatch'});
+    assert.throws(()=>make({reviewRuntime:'codex'}),{code:'runtime_selection_mismatch'});
+    assert.throws(()=>make({reviewRuntime:'other'}),{code:'invalid_runtime'});
+    assert.throws(()=>createConversationExecution(definition,'native-host-fixture',bridge,{...review,preflight:{}},1,null,false,'codex',{reviewRuntime:'claude'}),{code:'tool_preflight_missing'});
+  }finally{bridge.close();fs.rmSync(f.root,{recursive:true,force:true});}
+});
+test('ordinary CLI accepts --review-runtime claude under a Codex host and refuses an invalid runtime before any journal',()=>{
+  for(const reviewRuntime of ['claude','other']){
+    const f=fixture();
+    try{
+      fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.yml'),crossToolRoles);
+      const out=serveOnce(f,['--runtime','codex','--review-runtime',reviewRuntime]);
+      if(reviewRuntime==='claude'){assert.equal(out.status,0,out.stderr);assert.equal(out.rows[0].type,'host_ready');}
+      else{assert.equal(out.status,1);assert.match(out.stderr,/invalid_runtime/);
+        assert.equal(fs.existsSync(path.join(f.specsDir,'.reviews','.execution',identity.runId)),false);}
+    }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+  }
 });

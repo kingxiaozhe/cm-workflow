@@ -49,6 +49,9 @@ export function operatorGuidance(result,{executionActive=false}={}){
   if(state==='blocked'&&action==='complete')return explain('完成前复核受阻，已有审查结论不能直接当作任务完成。',
     '核对 reason 中的检查或文件变化；满足原完成条件后，在原运行发送 complete，不重新开发。',
     'complete',['原 run 与已审交接、范围和包绑定不变','使用当前 packageDigest；由宿主重新核对完成条件']);
+  if(code==='protected_scope')return explain('任务 scope 含项目规则或工作流文件，开发在派发前被拒绝，未写入任何文件。',
+    '本运行到此结束，原记录保留。从 scope 移除 reason 列出的路径，按原门禁用新 runId 新建运行；规则文件改动走 docs/js-workflow-control.md「项目规则文件的修改通道」。',
+    null,['不放宽受保护路径，开发者不能写这些文件','不改写原运行记录']);
   if(code==='bootstrap_instruction_conflict')return explain('已有项目规则与本次允许的写入基准冲突，规则生成被阻止。',
     '核对前序规则任务、提交基准和当前文件；当前没有可直接重派的动作，不覆盖已有规则。');
   if(code==='checks_not_passed')return explain('旧完成阶段的检查未通过，当前不是可重做开发的阻塞。',

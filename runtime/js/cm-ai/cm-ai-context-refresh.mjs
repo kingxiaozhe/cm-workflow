@@ -2,7 +2,7 @@
 import {createHash} from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import {inspectCmAiAdmission,matchesCmAiTaskSelection,identifyApprovedBootstrapFeature} from './cm-ai-admission.mjs';
+import {inspectCmAiAdmission,matchesCmAiTaskSelection,identifyApprovedBootstrapFeature,selectedFeature} from './cm-ai-admission.mjs';
 import {arrayItems,digest,freeze,hex,json,need,shape,text,validIdentity,validTaskLearningInput} from './effect-contract.mjs';
 
 const BASELINE_RULES=['coding-style.md','testing.md','security.md'];
@@ -59,9 +59,12 @@ export function readProjectInstructionContext(codeProject,applicableAgentFiles=[
 }
 
 export function inspectCmAiContextRefresh(input,{admission:trustedAdmission=null}={}) {
-  shape(input,['specsDir','codeProject','feature','applicableAgentFiles']);
+  shape(input,['specsDir','codeProject','feature','applicableAgentFiles',...(Object.hasOwn(input,'featureSelection')?['featureSelection']:[])]);
   text(input.specsDir);text(input.codeProject);text(input.feature);
-  const admission=trustedAdmission??inspectCmAiAdmission({specsDir:input.specsDir,codeProject:input.codeProject});
+  // A run bound to an explicit feature (featureSelection) reads admission for it.
+  need(!Object.hasOwn(input,'featureSelection')||input.featureSelection===input.feature,'context_invalid');
+  const admission=trustedAdmission??inspectCmAiAdmission({specsDir:input.specsDir,codeProject:input.codeProject,
+    ...selectedFeature(input.featureSelection)});
   if(trustedAdmission!==null)need(input.feature===identifyApprovedBootstrapFeature(
     trustedAdmission.features.map(item=>item.name))
     &&admission.specsDir===input.specsDir&&admission.codeProject===input.codeProject,'context_invalid');
@@ -80,10 +83,11 @@ export function inspectCmAiContextRefresh(input,{admission:trustedAdmission=null
 }
 
 export function inspectCmAiTaskLearningInput(input,authority={}) {
-  shape(input,['specsDir','codeProject','feature','identity','applicableAgentFiles']);
+  shape(input,['specsDir','codeProject','feature','identity','applicableAgentFiles',...(Object.hasOwn(input,'featureSelection')?['featureSelection']:[])]);
   text(input.feature);const identity=json(input.identity);validIdentity(identity);
   const refresh=inspectCmAiContextRefresh({specsDir:input.specsDir,codeProject:input.codeProject,
-    feature:input.feature,applicableAgentFiles:input.applicableAgentFiles},authority);
+    feature:input.feature,applicableAgentFiles:input.applicableAgentFiles,
+    ...(Object.hasOwn(input,'featureSelection')?{featureSelection:input.featureSelection}:{})},authority);
   need(matchesCmAiTaskSelection(refresh,input.feature,identity.taskId,authority.parallelSelection??null),'learning_context_invalid');
   const agentPaths=new Set(['AGENTS.md',...arrayItems(input.applicableAgentFiles)]);
   const selected=refresh.contextFiles.filter(file=>file.scope==='specs'?file.path==='LESSONS.md':

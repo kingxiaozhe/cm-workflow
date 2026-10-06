@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {inspectCmAiAdmission,approveCmAiSpecs,matchesCmAiTaskSelection,explainCmAiTaskSelection} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {validateRunDefinition} from './cm-ai-run.mjs';
 
-const usage='usage: cm-ai-admission.mjs --specs-dir PATH --code-project PATH [--code-project PATH ...] [--approval-response TEXT | --yes] [--approve --approval-response TEXT (no --yes)] [--print-run-definition --scope a,b [--task T-xxx] [--requirements c,d] [--run-id X] [--repository-id Y]]';
+const usage='usage: cm-ai-admission.mjs --specs-dir PATH --code-project PATH [--code-project PATH ...] [--approval-response TEXT | --yes] [--approve --approval-response TEXT (no --yes)] [--feature N.slug] [--print-run-definition --scope a,b [--task T-xxx] [--requirements c,d] [--run-id X] [--repository-id Y]]';
 
 function parse(argv){
   const result={codeProjects:[]};
@@ -26,7 +26,7 @@ function parse(argv){
       if(index+1>=argv.length||result.codeProjects.length>=16)throw new Error('invalid arguments');
       result.codeProjects.push(argv[++index]);continue;
     }
-    const key={'--specs-dir':'specsDir','--approval-response':'approvalResponse',
+    const key={'--specs-dir':'specsDir','--approval-response':'approvalResponse','--feature':'feature',
       '--scope':'scope','--task':'task','--requirements':'requirements','--run-id':'runId','--repository-id':'repositoryId'}[flag];
     if(!key||index+1>=argv.length||Object.hasOwn(result,key))throw new Error('invalid arguments');
     result[key]=argv[++index];
@@ -40,6 +40,10 @@ function parse(argv){
 
 function buildRunDefinition(admission,input){
   if(!admission.codeProject)throw new Error('--print-run-definition requires one --code-project');
+  // An explicit feature never yields another feature's definition.
+  if(input.feature!==undefined&&admission.nextTask.feature!==input.feature)
+    throw Object.assign(new Error('feature_tasks_terminal'),{code:'feature_tasks_terminal',
+      reason:`所选 feature ${input.feature} 已无待办任务，不为其他 feature 生成运行定义；请明确选择下一个 feature`});
   const selected=input.task===undefined?admission.nextTask:{feature:admission.nextTask.feature,id:input.task};
   if(input.task!==undefined&&!matchesCmAiTaskSelection(admission,selected.feature,selected.id,{version:1,taskId:input.task}))
     throw Object.assign(new Error('task_selection_mismatch'),{code:'task_selection_mismatch',
@@ -57,7 +61,8 @@ function buildRunDefinition(admission,input){
     identity:{repositoryId,runId:input.runId??`${selected.feature.replace(/^\d+\./,'')}-${selected.id}`,
       taskId:selected.id,attempt:1},
     scope:list(input.scope),requirements:list(input.requirements),
-    ...(input.task===undefined?{}:{taskSelection:{version:1,taskId:selected.id}})};
+    ...(input.task===undefined?{}:{taskSelection:{version:1,taskId:selected.id}}),
+    ...(input.feature===undefined?{}:{featureSelection:{version:1,feature:input.feature}})};
   return validateRunDefinition(definition);
 }
 
@@ -82,6 +87,12 @@ export function main(argv=process.argv.slice(2)){
     projectAdmissions:projectResults.map(item=>({codeProject:item.codeProject,state:item.state,reason:item.reason}))};
   if(result.state==='awaiting_spec_approval'&&(result.approvalIntent!=='explicit'||input.assumeYes))
     result.message='确认规格摘要后，用 --approval-response 传入用户原话，并明确回复“开始”。';
+  // An explicit feature with nothing left never prints a definition, whether the
+  // project still has other work (ready) or none (complete).
+  if(input.printRunDefinition&&!result.approveRefused&&input.feature!==undefined&&result.requestedFeatureComplete===input.feature){
+    process.stderr.write(`${JSON.stringify({error:{code:'feature_tasks_terminal',
+      reason:`所选 feature ${input.feature} 已无待办任务，不为其他 feature 生成运行定义；请明确选择下一个 feature`}})}\n`);return 1;
+  }
   if(input.printRunDefinition&&!result.approveRefused&&result.state==='ready'){
     try{process.stdout.write(`${JSON.stringify(buildRunDefinition(result,input))}\n`);return 0;}
     catch(error){process.stderr.write(`${JSON.stringify({error:{code:error.code??error.message,

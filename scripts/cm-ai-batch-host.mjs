@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createCmAiBatch,batchTaskRunId} from './cm-ai-batch-run.mjs';
+import {assertCreatableScope} from './cm-ai-run.mjs';
 import {createConversationExecution,readConversationReviewConfiguration,readConversationProtection,runReviewPreflight} from './cm-ai-host.mjs';
 import {loadConfig,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
 import {preflightMatches} from '../runtime/js/cm-ai/worker-codex.mjs';
@@ -120,6 +121,10 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       }else need(false,'invalid_arguments');
     }
     const started=keys.some(key=>fs.existsSync(path.join(batch.specsDir,'.reviews','.execution',batchTaskRunId(batch.batchId,key),'state.json')));
+    // Same read-only create gate as the batch owner, before any model or policy configuration is read or frozen.
+    for(const [index,task] of batch.tasks.entries())
+      if(!Object.hasOwn(bootstraps??{},keys[index])&&!fs.existsSync(path.join(batch.specsDir,'.reviews','.execution',batchTaskRunId(batch.batchId,keys[index]),'state.json')))
+        try{assertCreatableScope(task.scope);}catch(cause){cause.reason=`${keys[index]}: ${cause.reason}`;throw cause;}
     const executionPolicy=readBatchExecutionPolicy({batch,started,enabled:executionPolicyEnabled});
     const routes=providerConfig?resolveProtectedRuntimes(loadConfig({projectRoot:batch.codeProject}),runtime??'codex'):{reviewerRuntime:runtime??'codex'};
     const externalModels=readBatchExternalModels({batch,started,enabled:externalEnabled,inputFile:externalFile,providers:[routes.coderRuntime,routes.reviewerRuntime].filter(Boolean)});
@@ -164,7 +169,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     let reconciling=false;
     const driver=createCmAiBatch({configuration:{...batch,...(externalModels?{externalModels}:{}),...(executionPolicy?{executionPolicy}:{})},logHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
       runtime:runtime??'codex',checkCommands:(providerConfig??protection)?.checkCommands??null,checkTimeoutMs:(providerConfig??protection)?.timeoutMs??60000,
-      rerunUnknownQa,rerunBlockedQa,holdRevisions:[...holds],
+      rerunUnknownQa,rerunBlockedQa,holdRevisions:[...holds],bootstrapKeys:Object.keys(bootstraps??{}),
       executionFor:async(definition,{parallelMember=false}={})=>{
         await freezeBatchExecutionPolicy(batch,executionPolicy);
         freezeBatchExternalModels(batch,externalModels);
@@ -191,7 +196,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     try{await serveHostTransport({host,input,output,toolBridge:bridge},inputLimitRaw);}
     finally{if(rawMode)input.setRawMode(false);}
     return 0;
-  }catch(cause){const code=safeCode(cause);error.write(JSON.stringify({error:{code,...(['browser_capability_required','browser_capability_unavailable','invalid_arguments','review_configuration_required'].includes(code)
+  }catch(cause){const code=safeCode(cause);error.write(JSON.stringify({error:{code,...(['browser_capability_required','browser_capability_unavailable','invalid_arguments','review_configuration_required','protected_scope'].includes(code)
     &&typeof cause.reason==='string'?{reason:cause.reason}:{}),...(code==='request_too_large'?{reason:inputLimitReason(cause.limit)}:{})}})+'\n');return 1;}
   finally{bridge?.close();}
 }

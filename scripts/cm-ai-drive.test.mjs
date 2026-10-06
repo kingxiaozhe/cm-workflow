@@ -582,3 +582,25 @@ test('legacy real driver rejects optimization aliases before any host or command
   const result=f.drive(f.plan({checks:[{id:'one',command},{id:'two',command,sameExecutionAs:'one'}]}),'advance');
   assert.notEqual(result.status,0);assert(!fs.existsSync(f.store));assert(!fs.existsSync(path.join(f.codeProject,'marker')));
 });
+// The driver forwards the explicit batch choice and the cross-tool review
+// binding, and previews with the same effective definition as the host.
+test('driver forwards --feature for a later approved feature and --review-runtime for a cross-tool run',t=>{
+  const f=fixture(t);
+  const early=path.join(f.specsDir,'0.early');fs.mkdirSync(early);
+  for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(early,name),'# Early\n');
+  fs.writeFileSync(path.join(early,'tasks.md'),'- [ ] T-001: earlier batch\n');
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['0.early','1.work'],specFiles:buildManifest(f.specsDir)}));
+  fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.yml'),'version: 1\nruntimes: {available: both}\nroles:\n  coder: {adapter: codex-cli, source: subscription}\n  reviewer: {adapter: claude-cli, source: subscription}\n');
+  const bare={answers:undefined,checks:undefined};
+  const unselected=f.drive(f.plan({...bare}),'status');
+  assert.notEqual(unselected.status,0);assert.match(unselected.stdout+unselected.stderr,/task_selection_mismatch/);
+  const wrong=f.drive(f.plan({...bare,permissions:['--feature','0.early']}),'status');
+  assert.equal(wrong.status,2);assert.match(wrong.stderr,/必须与运行定义的 feature 1\.work 一致/);
+  const bound=['--feature','1.work','--review-runtime','claude'];
+  const created=f.drive(f.plan({...bare,permissions:bound}),'status');
+  assert.equal(created.status,0,created.stderr);assert.equal(fs.existsSync(f.store),true);
+  const resumed=f.drive(f.plan({...bare,mode:'resume',permissions:bound}),'status');
+  assert.equal(resumed.status,0,resumed.stderr);
+  const unbound=f.drive(f.plan({...bare,mode:'resume'}),'status');
+  assert.notEqual(unbound.status,0);assert.match(unbound.stdout+unbound.stderr,/fingerprint_mismatch/);
+});

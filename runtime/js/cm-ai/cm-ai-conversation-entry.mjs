@@ -1,5 +1,5 @@
 // Fixed Codex-host entry for the existing cm-ai admission and V3 task runner.
-import {inspectCmAiAdmission,matchesCmAiTaskSelection} from './cm-ai-admission.mjs';
+import {inspectCmAiAdmission,matchesCmAiTaskSelection,selectedFeature} from './cm-ai-admission.mjs';
 import {inspectCmAiContextRefresh,inspectCmAiTaskLearningInput} from './cm-ai-context-refresh.mjs';
 import {findCmAiQaDecision,inspectCmAiQaDecision,inspectCmAiQaResult,recordCmAiQaDecision,
   latestCmAiQaRun,recordCmAiQaRun,inspectCmAiQaRecovery,inspectCmAiQaConfigurationRecovery,timedOutQaDecision,
@@ -69,7 +69,7 @@ const correctionSummary=(operation,status)=>status.code==='correction_review_req
 // run_done is a project claim: every approved feature's latest mandatory QA must
 // have passed, not only this final run's own. Read with the strict owner validator.
 function projectQaSummary(operation,status,options){
-  const admission=inspectCmAiAdmission({specsDir:options.specsDir,codeProject:options.codeProject});
+  const admission=inspectCmAiAdmission({specsDir:options.specsDir,codeProject:options.codeProject,...selectedFeature(options.featureSelection)});
   const outstanding=outstandingFeatureQa({specsDir:options.specsDir,features:admission.features.map(({name,pending})=>({name,pending})),
     currentRunId:status.identity.runId,inspect:latestCmAiQaRun});
   if(!outstanding.length)return null;
@@ -196,7 +196,9 @@ export function createCmAiConversationEntry(options) {
   if(options&&Object.hasOwn(options,'allowAbandonEffect'))optionKeys.push('allowAbandonEffect');
   if(options&&Object.hasOwn(options,'allowBootstrapReviewRecovery'))optionKeys.push('allowBootstrapReviewRecovery');
   if(options&&Object.hasOwn(options,'holdRevision'))optionKeys.push('holdRevision');
+  if(options&&Object.hasOwn(options,'featureSelection'))optionKeys.push('featureSelection');
   shape(options,optionKeys);
+  need(!Object.hasOwn(options,'featureSelection')||options.featureSelection===options.feature,'invalid_input');
   need(!Object.hasOwn(options,'holdRevision')||options.holdRevision===true,'invalid_input');
   if(Object.hasOwn(options,'developmentAttempt'))need([1,2].includes(options.developmentAttempt),'invalid_development_attempt');
   text(options.specsDir);text(options.codeProject);text(options.feature);
@@ -313,7 +315,7 @@ export function createCmAiConversationEntry(options) {
       need(!controller.signal.aborted,'cancelled');need(result.syncId===syncId,'stale_documentation');
       const current=boundStatus(runner.status(),status.identity);
       need(current.state==='fixture_completed'&&current.code==null&&current.packageDigest===status.packageDigest,'stale_documentation');
-      const reread=inspectCmAiContextRefresh({specsDir:options.specsDir,codeProject:options.codeProject,
+      const reread=inspectCmAiContextRefresh({specsDir:options.specsDir,codeProject:options.codeProject,...(options.featureSelection===undefined?{}:{featureSelection:options.featureSelection}),
         feature:options.feature,applicableAgentFiles});
       need(reread.state==='complete'&&reread.contextDigest===refresh.contextDigest,'stale_documentation');
       validateDocumentationResult(result,current,reread,knowledgeCloseout);
@@ -330,7 +332,7 @@ export function createCmAiConversationEntry(options) {
     need(sameTask(operation.identity,ownerIdentity),'identity_mismatch');
     need(operation.identity.attempt>=ownerIdentity.attempt,'identity_mismatch');
     const admission=['start','resume'].includes(operation.operation)
-      ?runner.inspectBootstrapAdmission?.()??inspectCmAiAdmission({specsDir:options.specsDir,codeProject:options.codeProject}):null;
+      ?runner.inspectBootstrapAdmission?.()??inspectCmAiAdmission({specsDir:options.specsDir,codeProject:options.codeProject,...selectedFeature(options.featureSelection)}):null;
     if(admission&&admission.state!=='ready'){
       // Original callers still stop before reading runner state. A caller using
       // a newer attempt must bind it to the runner before we report its block.
@@ -622,7 +624,7 @@ export function createCmAiConversationEntry(options) {
       }
       if(decision===null)return summary(operation,{...status,code:'qa_decision_required'},'awaiting');
       if(decision.status==='skipped'){
-        const admission=inspectCmAiAdmission({specsDir:options.specsDir,codeProject:options.codeProject});
+        const admission=inspectCmAiAdmission({specsDir:options.specsDir,codeProject:options.codeProject,...selectedFeature(options.featureSelection)});
         if(!['ready','complete'].includes(admission.state))
           return summary(operation,{...status,code:admission.reason},'awaiting');
         const feature=admission.features.find(item=>item.name===options.feature);
@@ -663,7 +665,7 @@ export function createCmAiConversationEntry(options) {
       need(status.state==='fixture_completed','context_not_ready');
       contextEvidence(options,identity,operation);
       need(applicableAgentFiles!==null,'context_invalid');
-      const refresh=inspectCmAiContextRefresh({specsDir:options.specsDir,codeProject:options.codeProject,
+      const refresh=inspectCmAiContextRefresh({specsDir:options.specsDir,codeProject:options.codeProject,...(options.featureSelection===undefined?{}:{featureSelection:options.featureSelection}),
         feature:options.feature,applicableAgentFiles});
       if(!['ready','complete'].includes(refresh.state))return summary(operation,{state:refresh.state,
         code:refresh.reason,identity,packageDigest:status.packageDigest},'awaiting');
@@ -676,7 +678,7 @@ export function createCmAiConversationEntry(options) {
       need(status.state==='fixture_completed','run_not_ready');
       contextEvidence(options,identity,operation);
       need(applicableAgentFiles!==null,'context_invalid');
-      const refresh=inspectCmAiContextRefresh({specsDir:options.specsDir,codeProject:options.codeProject,
+      const refresh=inspectCmAiContextRefresh({specsDir:options.specsDir,codeProject:options.codeProject,...(options.featureSelection===undefined?{}:{featureSelection:options.featureSelection}),
         feature:options.feature,applicableAgentFiles});
       need(refresh.state==='complete','run_not_ready');
       const projectQa=projectQaSummary(operation,status,options);if(projectQa)return projectQa;
@@ -701,7 +703,7 @@ export function createCmAiConversationEntry(options) {
       need(status.state==='fixture_completed','run_not_ready');
       contextEvidence(options,identity,operation);
       need(applicableAgentFiles!==null,'context_invalid');
-      const refresh=inspectCmAiContextRefresh({specsDir:options.specsDir,codeProject:options.codeProject,
+      const refresh=inspectCmAiContextRefresh({specsDir:options.specsDir,codeProject:options.codeProject,...(options.featureSelection===undefined?{}:{featureSelection:options.featureSelection}),
         feature:options.feature,applicableAgentFiles});
       need(refresh.state==='complete','run_not_ready');
       const projectQa=projectQaSummary(operation,status,options);if(projectQa)return projectQa;
@@ -712,7 +714,7 @@ export function createCmAiConversationEntry(options) {
       const current=boundStatus(runner.status(),identity);
       need(!current.cancellationRequested&&!current.cancelAfterCommit,'cancelled');
       need(current.state==='fixture_completed'&&current.code==null&&current.packageDigest===status.packageDigest,'stale_documentation');
-      const finalContext=inspectCmAiContextRefresh({specsDir:options.specsDir,codeProject:options.codeProject,
+      const finalContext=inspectCmAiContextRefresh({specsDir:options.specsDir,codeProject:options.codeProject,...(options.featureSelection===undefined?{}:{featureSelection:options.featureSelection}),
         feature:options.feature,applicableAgentFiles});
       need(finalContext.state==='complete'&&finalContext.contextDigest===refresh.contextDigest,'stale_documentation');
       const documentationStatus=validateDocumentationResult(documentation,status,refresh,knowledgeCloseout);
@@ -747,7 +749,8 @@ export function createCmAiConversationEntry(options) {
     if(options.holdRevision===true&&status.state==='changes_requested')
       return summary(operation,{...status,code:'revision_answer_required'},'awaiting');
     const learningInput=inspectCmAiTaskLearningInput({specsDir:options.specsDir,codeProject:options.codeProject,
-      feature:options.feature,identity,applicableAgentFiles:applicableAgentFiles??[]},
+      feature:options.feature,identity,applicableAgentFiles:applicableAgentFiles??[],
+      ...(options.featureSelection===undefined?{}:{featureSelection:options.featureSelection})},
     {admission:runner.inspectBootstrapAdmission?.()??null,parallelSelection:options.parallelSelection??null});
     // Keep rejected effects immutable. A run-wide rejection count gives each
     // corrected result a new effect id without changing the provider attempt.

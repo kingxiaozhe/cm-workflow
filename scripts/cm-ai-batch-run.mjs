@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {openControlRun,validateRunDefinition} from './cm-ai-run.mjs';
+import {openControlRun,validateRunDefinition,assertCreatableScope} from './cm-ai-run.mjs';
 import {developmentRetryable,completionRetryable,reviewRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {batchOperatorGuidance} from '../runtime/js/cm-ai/operator-guidance.mjs';
 import {digest,json,shape,need,id,hex} from '../runtime/js/cm-ai/effect-contract.mjs';
@@ -39,7 +39,7 @@ export function batchMemberResult(result,{parallel=false}={}){
       :`${revert}；或取消本批次，还原该任务已改动的代码后，用单任务宿主 cm-ai-host.mjs 以 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务。`}));
 }
 export function createCmAiBatch({configuration,executionFor,logHome,runtime='codex',checkCommands=null,checkTimeoutMs=60000,
-  rerunUnknownQa=false,rerunBlockedQa=false,holdRevisions=[]}){
+  rerunUnknownQa=false,rerunBlockedQa=false,holdRevisions=[],bootstrapKeys=[]}){
   const config=json(configuration);
   shape(config,['version','repositoryId','batchId','specsDir','codeProject','tasks',...['externalModels','executionPolicy','codeProjects','parallel'].filter(name=>Object.hasOwn(config,name))]);
   need(config.version===1);id(config.repositoryId);id(config.batchId);need(config.batchId.length>=8);
@@ -70,6 +70,10 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       identity:{repositoryId:config.repositoryId,runId:batchTaskRunId(config.batchId,key(task)),
         taskId:task.taskId,attempt:1},scope:task.scope,requirements:task.requirements});
     need(definition.specsDir===config.specsDir&&definition.codeProject===config.codeProject,'invalid_path');
+    // A member that will be created is refused before the batch locks, logs or
+    // prepares a worktree; an existing member keeps its own recovery path.
+    if(!bootstrapKeys.includes(key(task))&&!fs.existsSync(path.join(config.specsDir,'.reviews','.execution',definition.identity.runId,'state.json')))
+      try{assertCreatableScope(definition.scope);}catch(error){error.reason=`${key(task)}: ${error.reason}`;throw error;}
     plans.set(key(task),definition);
   }
   // Tasks whose second-round answer is not written yet stop after a changes_requested review.

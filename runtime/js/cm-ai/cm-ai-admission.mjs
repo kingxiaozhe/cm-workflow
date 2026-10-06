@@ -34,8 +34,8 @@ export function inspectCmAiBootstrapTask({specsDir,codeProject,taskId},inProgres
 }
 
 // Read N6 task counts with the original task parser, including later features.
-export function inspectCmAiQaTaskContext({specsDir,codeProject,feature,taskId}) {
-  const admission=inspectCmAiAdmission({specsDir,codeProject});
+export function inspectCmAiQaTaskContext({specsDir,codeProject,feature,taskId,featureSelection}) {
+  const admission=inspectCmAiAdmission({specsDir,codeProject,...selectedFeature(featureSelection)});
   const fail=code=>{throw Object.assign(new Error(code),{code});};
   if(!['ready','complete'].includes(admission.state))fail(admission.reason);
   const discovered=discoverFeatures(admission.specsDir);if(discovered.error)fail(discovered.error);
@@ -54,8 +54,8 @@ export function inspectCmAiQaTaskContext({specsDir,codeProject,feature,taskId}) 
 
 // Admission's public feature summary stops at the selected feature. Count all
 // approved features with the same parser before treating a task as the last one.
-export function isFinalCmAiTask({specsDir,codeProject,feature,taskId,parallelSelection=null}) {
-  const admission=inspectCmAiAdmission({specsDir,codeProject});
+export function isFinalCmAiTask({specsDir,codeProject,feature,taskId,parallelSelection=null,featureSelection}) {
+  const admission=inspectCmAiAdmission({specsDir,codeProject,...selectedFeature(featureSelection)});
   if(!matchesCmAiTaskSelection(admission,feature,taskId,parallelSelection))
     throw Object.assign(new Error('documentation_admission_required'),{code:'documentation_admission_required'});
   const discovered=discoverFeatures(admission.specsDir);
@@ -68,6 +68,11 @@ export function isFinalCmAiTask({specsDir,codeProject,feature,taskId,parallelSel
   }
   return pending===1;
 }
+
+// An explicit feature selection is bound by the run definition (featureSelection)
+// and only then passed to admission. Without it, selection is the original
+// lowest-numbered feature with pending tasks.
+export const selectedFeature=feature=>feature===undefined||feature===null?{}:{feature};
 
 function frozen(value){
   if(value && typeof value==='object'){for(const item of Object.values(value))frozen(item);Object.freeze(value);}
@@ -89,7 +94,7 @@ function approvalIntent(response,assumeYes){
   if(response===undefined||response===null||response==='')return 'none';
   if(typeof response!=='string')return 'not_approval';
   const normalized=response.trim().replace(/[。！!.～~\s]+$/gu,'');
-  return new Set(['开始','开始吧','可以开始','确认开始','开始执行','现在开始']).has(normalized)?'explicit':'not_approval';
+  return new Set(['开始','开始吧','可以开始','确认开始','开始执行','现在开始','可以，请开始开发']).has(normalized)?'explicit':'not_approval';
 }
 
 
@@ -311,7 +316,7 @@ function dependenciesSatisfied(task,parsed,byId){
   });
 }
 
-function selectTask(specsDir,names){
+function selectTask(specsDir,names,requestedFeature=null){
   const features=[];
   const warnings=[];
   const evidence=reviewEvidenceNames(specsDir);
@@ -335,6 +340,9 @@ function selectTask(specsDir,names){
       pending:pending.length,
     });
     if(!pending.length)continue;
+    // An explicitly selected later feature passes over earlier unfinished ones;
+    // they stay pending and unchanged, with their counts in features.
+    if(requestedFeature!==null&&name!==requestedFeature)continue;
     // One dependency rule for nextTask and --task/parallel eligibility: a
     // prerequisite is satisfied once it is completed or DROPPED.
     const ready=task=>dependenciesSatisfied(task,parsed,byId);
@@ -342,6 +350,16 @@ function selectTask(specsDir,names){
     if(!eligible)return {error:'dependencies_not_ready',features,warnings};
     return {features,warnings,nextTask:{feature:name,id:eligible.id,description:eligible.description},
       eligibleTasks:pending.filter(ready).map(task=>({feature:name,id:task.id}))};
+  }
+  // The selected feature has nothing left: say so, and report the project's own
+  // next task rather than "complete". Callers never bind it to the selection.
+  // Keep this loop's feature summaries (every feature, the selected one too):
+  // the run of that feature still refreshes its context after its last task.
+  if(requestedFeature!==null){
+    const project=selectTask(specsDir,names);
+    if(project.error)return project;
+    return {...project,features,warnings:[...warnings,`所选 feature ${requestedFeature} 已无待办任务；`
+      +'不会为其他 feature 建运行或生成运行定义，请明确选择下一个 feature'],requestedFeatureComplete:requestedFeature};
   }
   return {features,warnings,nextTask:null};
 }
@@ -420,6 +438,9 @@ function admissionFor(options,inProgressBootstrap=null){
   if(!codeProject)return result(base,'blocked','code_project_missing');
   const discovered=discoverFeatures(specsDir);
   if(discovered.error)return result(base,'blocked',discovered.error);
+  const requestedFeature=input.feature===undefined?null:input.feature;
+  if(requestedFeature!==null&&!discovered.names.includes(requestedFeature))
+    return result(base,'blocked','feature_selection_invalid');
   const status=readSpecsStatus(specsDir);
   if(status.kind==='invalid')return result(base,'blocked','spec_status_invalid');
   if(status.kind==='missing'||status.value.status==='awaiting_review'){
@@ -439,12 +460,13 @@ function admissionFor(options,inProgressBootstrap=null){
   const bootstrapProblem=validateBootstrap(codeProject,specsDir,discovered.names);
   if(bootstrapProblem&&!(bootstrapProblem==='bootstrap_conflict'&&inProgressBootstrap==='T-001'))
     return result(base,'blocked',bootstrapProblem);
-  const selection=selectTask(specsDir,discovered.names);
+  const selection=selectTask(specsDir,discovered.names,requestedFeature);
   if(selection.error)return result(base,'blocked',selection.error,{features:selection.features,warnings:selection.warnings,
     ...(selection.detail?{detail:selection.detail}:{})});
   const warnings=[...selection.warnings,...featureQaWarnings(specsDir,selection.features)];
-  if(!selection.nextTask)return result(base,'complete','all_tasks_terminal',{features:selection.features,warnings});
-  return result(base,'ready','task_selected',{features:selection.features,nextTask:selection.nextTask,eligibleTasks:selection.eligibleTasks,warnings});
+  const requested=selection.requestedFeatureComplete?{requestedFeatureComplete:selection.requestedFeatureComplete}:{};
+  if(!selection.nextTask)return result(base,'complete','all_tasks_terminal',{features:selection.features,warnings,...requested});
+  return result(base,'ready','task_selected',{features:selection.features,nextTask:selection.nextTask,eligibleTasks:selection.eligibleTasks,warnings,...requested});
 }
 
 // Diagnostic only: why an explicit --task selection is not eligible. Never used
@@ -452,7 +474,9 @@ function admissionFor(options,inProgressBootstrap=null){
 export function explainCmAiTaskSelection(admission,{feature,taskId,selection=null}){
   if(admission.state!=='ready')return `当前准入状态为 ${admission.state}/${admission.reason}，不能选择任务`;
   const next=admission.nextTask;
-  if(next&&next.feature!==feature)return `--task 只能选择当前 feature ${next.feature} 的任务（运行定义为 ${feature}）`;
+  if(admission.requestedFeatureComplete===feature)return `所选 feature ${feature} 已无待办任务，不能为它新建运行；请明确选择下一个 feature`;
+  if(next&&next.feature!==feature)return `--task 只能选择当前 feature ${next.feature} 的任务（运行定义为 ${feature}）`
+    +(admission.requestedFeatureComplete===undefined?`；已批准的跨 feature 顺序要先做 ${feature} 时，用 cm-ai-admission.mjs --feature ${feature} --print-run-definition 重新生成运行定义，或给 cm-ai-host.mjs 加 --feature ${feature}`:'');
   if(!admission.specsDir)return `${taskId} 不在可选任务中`;
   let parsed;
   try{parsed=readFeature(admission.specsDir,feature);}catch{return `无法读取 ${feature}/tasks.md`;}

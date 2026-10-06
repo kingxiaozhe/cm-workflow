@@ -84,7 +84,8 @@ const PAIR_FLAGS=new Set(['--external-models-config','--allow-review-attempt','-
   '--input-limit',
   '--protected-conversation-config','--protected-config','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure',
   '--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--browser-qa',
-  '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason','--spec-rebind-reason']);
+  '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason','--spec-rebind-reason',
+  '--review-runtime','--feature']);
 const FLAG_FLAGS=new Set(['--execution-optimizations','--external-models','--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
   '--verification-precheck',
   '--allow-bootstrap-write','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
@@ -252,7 +253,7 @@ export function projectDevelopCheckpoint({preview,codeProject,attempt,value,proj
   const {definition}=preview,identity={...definition.identity,attempt};
   if(value.value?.outcome!=='implemented')return null;
   const learningInput=inspectCmAiTaskLearningInput({specsDir:definition.specsDir,codeProject,feature:definition.feature,
-    identity,applicableAgentFiles:[]},{admission:null,parallelSelection:preview.parallelSelection});
+    identity,applicableAgentFiles:[],...(definition.featureSelection?{featureSelection:definition.featureSelection.feature}:{})},{admission:null,parallelSelection:preview.parallelSelection});
   const binding={feature:definition.feature,identity,learningDigest:learningInput.learningDigest};
   const application=createCmAiTaskLearningApplication({...binding,...value.value.application});
   const retrospective=createCmAiTaskLearningRetrospective({...binding,...value.value.retrospective});
@@ -575,6 +576,15 @@ function load(){
   if(!fs.existsSync(config))stop(2,`运行定义不存在: ${config}`);
   let definition;
   try{definition=readRunDefinition(config);}catch(error){stop(2,`运行定义无效或 codeProject/specsDir 无法解析: ${error.code??error.message}`);}
+  // --feature is forwarded to the host, which binds it as featureSelection.
+  // Use that same effective definition here (Learning input, bootstrap checks).
+  const featureAt=permissions.indexOf('--feature');
+  if(featureAt!==-1){
+    const selected=permissions[featureAt+1];
+    if(selected!==definition.feature||definition.featureSelection&&definition.featureSelection.feature!==selected)
+      stop(2,`--feature ${selected} 必须与运行定义的 feature ${definition.feature} 一致`);
+    definition={...definition,featureSelection:{version:1,feature:selected}};
+  }
   if(plan.mode==='create')try{assertCreatableRunId(definition.identity);}
   catch(error){stop(2,`运行定义的 ${error.code.replace(/^invalid_config: /,'')}；宿主未启动，请换一个更长的 runId`);}
   const store=path.join(definition.specsDir,'.reviews','.execution',definition.identity.runId);
@@ -595,7 +605,8 @@ function load(){
   for(let i=0;i<permissions.length;i++)if(PAIR_FLAGS.has(permissions[i])
     &&permissions[i]!=='--allow-review-attempt'&&permissions[i]!=='--browser-qa'
     &&permissions[i]!=='--qa-config-revision-reason'&&permissions[i]!=='--qa-environment-failure'&&permissions[i]!=='--allow-provider-development-attempt'
-    &&permissions[i]!=='--supersede-reason'&&permissions[i]!=='--spec-rebind-reason'&&permissions[i]!=='--input-limit'){
+    &&permissions[i]!=='--supersede-reason'&&permissions[i]!=='--spec-rebind-reason'&&permissions[i]!=='--input-limit'
+    &&permissions[i]!=='--review-runtime'&&permissions[i]!=='--feature'){
     const file=path.resolve(base,permissions[i+1]);if(!fs.existsSync(file))stop(2,`${permissions[i]} 文件不存在: ${file}`);
     permissions[i+1]=file;permissionFiles.push(file);i++;
   }

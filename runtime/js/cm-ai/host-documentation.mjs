@@ -16,7 +16,7 @@ export function validateDocumentationPaths(raw,scope){
   return paths;
 }
 
-export function withHostDocumentation({developer,documentationSync,specsDir,codeProject,feature,scope,parallelSelection=null}){
+export function withHostDocumentation({developer,documentationSync,specsDir,codeProject,feature,scope,parallelSelection=null,featureSelection}){
   shape(documentationSync,['paths','run']);need(typeof documentationSync.run==='function');
   const paths=validateDocumentationPaths(documentationSync.paths,scope),run=documentationSync.run;
   need(paths.length>0);
@@ -24,7 +24,7 @@ export function withHostDocumentation({developer,documentationSync,specsDir,code
     const response=terminalFor(await developer.run(request,control),request);
     if(response.status!=='succeeded')return response;
     need(!control.signal.aborted,'cancelled');
-    if(!isFinalCmAiTask({specsDir,codeProject,feature,taskId:request.identity.taskId,parallelSelection}))return response;
+    if(!isFinalCmAiTask({specsDir,codeProject,feature,taskId:request.identity.taskId,parallelSelection,featureSelection}))return response;
     const baseline=captureReviewBaseline({root:codeProject,specsRoot:specsDir,identity:request.identity,
       scope:paths,requirements:request.payload.requirements.map(file=>file.path),
       ...(request.payload.specification?{specification:{specsRoot:specsDir,feature}}:{})});

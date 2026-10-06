@@ -17,7 +17,7 @@ import path from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import {createHash} from 'node:crypto';
 import {createHostCheck} from './host-check.mjs';
-import {inspectCmAiAdmission,inspectCmAiBootstrapTask,matchesCmAiTaskSelection} from './cm-ai-admission.mjs';
+import {inspectCmAiAdmission,inspectCmAiBootstrapTask,matchesCmAiTaskSelection,selectedFeature} from './cm-ai-admission.mjs';
 import {readBootstrapConfiguration,readConversationProtection} from '../../../scripts/cm-ai-host.mjs';
 import {mergeBootstrapAgents,committedBootstrapBasis} from './host-bootstrap.mjs';
 import {createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective} from './cm-ai-context-refresh.mjs';
@@ -196,7 +196,7 @@ function authorizeRulesLaunch({definition,plan,permissions}){
   const where={specsDir:definition.specsDir,codeProject:definition.codeProject};
   if(plan.mode==='create'){
     // openControlRun: a new run needs a ready admission that selects this task.
-    const admission=inspectCmAiAdmission(where);
+    const admission=inspectCmAiAdmission({...where,...selectedFeature(definition.featureSelection?.feature)});
     refuse(admission.state==='ready'&&matchesCmAiTaskSelection(admission,definition.feature,definition.identity.taskId,
       definition.taskSelection??null),`${definition.identity.taskId} 现在不能新建运行：admission ${admission.state}，`
       +`nextTask ${admission.nextTask?.id??'无'}（宿主以 task_selection_mismatch 等拒绝）${refusal}`);

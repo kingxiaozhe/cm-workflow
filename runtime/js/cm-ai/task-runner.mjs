@@ -19,7 +19,7 @@ import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
   MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,effectSlotFree,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
   reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted,
-  completionBlockCount,completionRetriesExhausted,supersededReviewPayload,bootstrapReviewRecoverable } from './durable-runner-state.mjs';
+  completionBlockCount,completionRetriesExhausted,supersededReviewPayload,bootstrapReviewRecoverable,protectedDevelopScope,protectedScopeBlockReason } from './durable-runner-state.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
 import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure} from './provider-review-observation.mjs';
 import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence,
@@ -911,6 +911,11 @@ export function createTaskRunner(options) {
   async function perform(v) {
     if(v.kind==='develop') {
       need(stageAllowed('develop',state,code,priorReview?.verdict),'stage_mismatch');state='developing';code=null;reason=null;checkNewPaths=null;receipt=null;
+      // The adapter would refuse this scope before any provider runs. Block it
+      // here instead: no call starts, nothing is written, and the outcome is
+      // definite rather than unknown (create refuses such runs already).
+      const refusedScope=protectedDevelopScope(metadata);
+      if(refusedScope.length){halt('blocked','protected_scope',protectedScopeBlockReason(refusedScope));return;}
       const previousLearning=learningResult;
       const previousBootstrap=learningResult?.bootstrap??null;
       const previousWriteback=learningResult?.writeback??null;

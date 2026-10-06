@@ -5,7 +5,9 @@
 
 ## 未发布
 
-（暂无）
+- `cm-ai` 任务 scope 含受保护路径（AGENTS.md、CLAUDE.md、`.claude/`、`.codex/`、tasks.md、`.cm-*` 等）时，单任务宿主、批量宿主和 `openControlRun` 在建运行前直接以 `protected_scope` 拒绝并列出路径，不写任何运行记录；派发前确定被拒的开发记为 `blocked/protected_scope`，旧版本停在 `unknown/execution_error` 且无出口的运行按原记录回放为该终态（记录不改写），之后可按原门禁新建运行。文档补充规则文件的受支持修改途径，`cm-prd` 拆任务时提示规则文件不进开发 scope。保护范围不变。
+- `cm-ai` 支持显式选择批次：`cm-ai-admission.mjs --feature N.slug --print-run-definition` 写入运行定义的 `featureSelection`，`cm-ai-host.mjs`、`cm-ai-drive.mjs` 也可用 `--feature`；仍校验全部批准、manifest 与所选批次内依赖，所选批次已无待办时明确提示且不为其他批次生成定义或建运行。不显式选择时行为不变。
+- 普通当前会话宿主新增 `--review-runtime codex|claude`（当前会话开发、另一工具审查，须与 roles 一致并写入运行指纹）；批准口令新增整句「可以，请开始开发」。
 
 ## 0.16.7 — 2026-10-06
 

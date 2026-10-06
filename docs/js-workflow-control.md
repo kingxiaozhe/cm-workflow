@@ -322,13 +322,21 @@ constraintChanges必须空；application/retrospective沿原Learning字段。此
 ```
 
 scope 和 requirements 是相对代码根的已有 runner 输入，不是额外写入授权。
-键必须恰好如示例，不得任意新增字段（已声明的多代码根模式允许 `codeProjects`，显式任务选择允许生成器写入 `taskSelection`）；定义参与摘要绑定，擅加字段会使同一次 run 的摘要漂移并导致 resume 失败。
+键必须恰好如示例，不得任意新增字段（已声明的多代码根模式允许 `codeProjects`，显式任务选择允许生成器写入 `taskSelection`，显式批次选择允许写入 `featureSelection`）；定义参与摘要绑定，擅加字段会使同一次 run 的摘要漂移并导致 resume 失败。
 用准入生成器产出定义（`--scope` 必填，填写相对代码根、逗号分隔的允许修改文件；`--requirements` 可选，省略时为空数组）：`node scripts/cm-ai-admission.mjs --specs-dir /absolute/specs --code-project /absolute/code --print-run-definition --scope src/login.js --requirements requirements.md > run.json`。需要选择当前 `nextTask` 以外的任务时加 `--task T-xxx`；只能选择同 feature、依赖已满足的 `eligibleTasks`。生成的可选 `taskSelection` 随定义进入持久配置与指纹；不加参数的旧定义及恢复指纹不变。
 `--task` 的依赖判定与 `nextTask` 相同：前置任务已勾选完成或标记 DROPPED 即视为满足。选择不成立时返回 `task_selection_mismatch` 并在 `reason` 写明原因（依赖未完成、已完成、已 DROPPED、不存在或不在当前 feature）；运行定义未写 `taskSelection` 却不是 `nextTask` 时也会提示用 `--task` 重新生成。
 
+**显式选择批次（feature）**：默认仍选编号最小、有待办任务的 feature。已批准的跨 feature 顺序要求先做后面的批次时（例如 tasks.md「跨批责任」写明先做 6 再回到 5），显式选择：
+`cm-ai-admission.mjs ... --feature 6.api-native-reading --print-run-definition --scope ...` 生成带 `featureSelection: {version:1, feature}` 的运行定义；或对已有运行定义给 `cm-ai-host.mjs serve` 加 `--feature 6.api-native-reading`（须与 `feature` 一致，效果同写入该字段）。
+显式选择只改变「选哪个 feature」：全部规格批准、manifest 一致、bootstrap、测试合同照常校验；所选 feature 内的任务依赖照常判定（`--task` 仍只接受依赖已满足的任务）；更早 feature 的待办任务原样保留，不改 tasks.md。
+所选 feature 已无待办任务时，准入返回 `requestedFeatureComplete` 和明确 warning（项目其他 feature 仍有待办时 `state` 为 ready、`nextTask` 是项目自己的下一任务；全部完成时为 complete），`--print-run-definition` 一律以 `feature_tasks_terminal` 退出 1，宿主建运行一律以 `task_selection_mismatch` 拒绝并写明「已无待办任务」，不会为其他 feature 生成定义或建运行；名称不存在时为 `feature_selection_invalid`。所选批次最后一个任务完成后，该运行的上下文刷新仍包含它自己的规格。单步驾驶员 `cm-ai-drive.mjs` 的 `PLAN.permissions` 可写 `--feature N.slug`、`--review-runtime claude`，原样转发给宿主，驾驶员预检也按同一有效定义计算。
+`featureSelection` 进入运行定义与恢复指纹：用 `--feature` 创建的运行恢复时也要带 `--feature`（或改用写入该字段的运行定义）；运行内的上下文刷新、Learning 输入、文档同步的末任务判断与 QA 跳过判断都按所选 feature 读准入。未显式选择的运行（含 0.16.6 项目补丁期间创建的运行）不写该字段，恢复与指纹不变。QA 执行计划与合并判断仍按默认准入，所选批次不是默认批次时不做跨 feature 的 QA 合并。
+
+**当前会话跨工具审查**：普通单任务宿主可用 `--runtime codex --review-runtime claude`（或反过来）让当前会话开发、另一工具审查。两端须与有效 `.cm-workflow.yml` 的 roles/runtimes 一致，否则 `runtime_selection_mismatch`；该选择以 `reviewRuntime` 写入运行配置与指纹，恢复必须带同一选项。审查配置的 preflight 须由审查端生成（`preflight --runtime claude`）。不能与 `--protected-config`、`--external-models` 同用（它们按 roles 自行选审查端）。此选项不授权真实审查调用，按轮审查授权不变。
+
 `tasks.md` 的任务行只有一套语法（`runtime/js/spec-task-line.mjs`），准入、cm-prd 自检与变更守卫、N5 勾选、审批 manifest 的完成标记归一化和 failover 都用它：列表项 + 复选框，任意缩进，可选 `~~`，任务号后接英文冒号、全角冒号或空白，例如 `- [ ] T-003: 描述`、`- [ ] T-003 描述`、`- [ ] T-003：描述`、嵌套的 `    - [ ] T-003: 描述`。``` / ~~~ 围栏内的行是示例，不是任务。全角冒号选择接受而非拒绝：中文输入法常打出它，failover 早已接受，拒绝它只会逼用户为标点改规格再批准。语法随批准绑定：本版本写入的批准在 `.cm-specs-status` 记 `taskGrammar: 2`；更早记录的批准继续用原解析器（准入、规格材料、N5 勾选、supersede 与 failover 都按旧规则读），例如同文件里未加围栏的 `- [ ] T-001：示例` 在旧批准下仍是说明而不是重复任务，已批准的字节含义不变；重新批准后才切换到新语法。重新批准会让全部 feature（包括本次没改的）改用新语法，因此 `--approve` 先按新语法检查每个 feature 的 tasks.md，任一无效（如上例变成重复任务），或从旧语法切换时任何 feature 的任务集合（哪些行是任务、编号、勾选状态）在新旧语法下不一致（如唯一的 `- [ ] T-099：示例` 会变成待办任务），即以 `task_grammar_conflict` 拒绝，`approveReason` 写明文件、行号和原文，提示把这类示例放进围栏或删去后再批准；不会写入 `taskGrammar: 2`，也不退回旧语法——退回会让新写的全角冒号任务行悄悄不算任务。cm-prd 变更守卫读取已批准原文时同样按其批准的语法。状态文件把上次批准的 `taskGrammar` 经 cm-prd 变更与发布一路带到下次批准（重新批准前连续多次 `cm-prd --change` 时，变更守卫按这一携带值读取原文；不带该值的待审状态不会切到新语法）；项目一旦用上新语法就不再做新旧对照，从未批准过的项目首次批准直接用新语法。cm-prd 草稿与自检始终用新语法。旧版本批准的 manifest 按旧归一化规则计算，核验时每行同时接受新旧规则的摘要，因此已批准的规格原样继续匹配（有意的小幅放宽：旧批准下全角冒号或缩进任务行的勾选变化也按运行时标记处理）；只有旧规则下批准时就已勾选的无冒号／缩进任务行，在之后再勾选别的此类任务时仍会漂移，需要重新批准一次（新批准按新规则记录）。
 
-规格待审批时先展示摘要卡并请用户回复“开始”。只识别“开始”“开始吧”“可以开始”“确认开始”“开始执行”“现在开始”及其尾部标点/空白；泛化授权仍是 `not_approval`，提示明确回复“开始”。`--approve` 写入仍须原完整准入门禁。
+规格待审批时先展示摘要卡并请用户回复“开始”。只识别“开始”“开始吧”“可以开始”“确认开始”“开始执行”“现在开始”“可以，请开始开发”及其尾部标点/空白（整句匹配，“开始开发”“请开始开发”等仍不算）；泛化授权仍是 `not_approval`，提示明确回复“开始”。`--approve` 写入仍须原完整准入门禁。
 
 ```bash
 node scripts/cm-ai-run.mjs serve --config /absolute/run.json --mode create
@@ -1166,6 +1174,28 @@ QA 重测通过及 N7/N8；重启只重新核验文档，不重复开发/修复/
 该证据使用真正 CLI 子进程和仓库内合成 reviewer 可执行文件，Learning/开发/诊断/修复等
 宿主回答由 fixture 提供，不是实际模型或已安装插件的运行验收。
 
+## 项目规则文件的修改通道
+
+开发者 scope 不能含受保护路径：`AGENTS.md`、`CLAUDE.md`、`.claude/`、`.codex/`、`.git/`、`.reviews/`、`tasks.md`、`运行日志.jsonl` 和 `.cm-*`。
+`cm-ai-host.mjs serve --mode create`、批量宿主（对每个将新建的成员）和 `openControlRun` 在建运行前用开发适配器的同一规则检查 scope，
+命中即返回 `protected_scope`，`reason` 列出具体路径（批量前缀任务键）；检查在冻结模型/策略配置、加批次锁、写日志、建工作树之前，
+此时不写 init、不写 intent、不建 `.execution/<runId>`。已存在的运行恢复时不受此检查影响。bootstrap 规范任务按原合同只把
+它自己的规则目标交给宿主，其余业务 scope 仍按此规则检查。保护范围本身不放宽，developer 仍不能写这些文件。
+
+已批准任务要求修改规则文件时，按内容走下列受支持的途径，不放进开发 scope：
+
+- 首次生成或按 cm-init 模板重建规则：bootstrap 规范任务（见上文 bootstrap 一节），由宿主受控写入并交独立 Review。
+- 任务教训：Learning 回写，由宿主写 `AGENTS.md` 的 `## 项目教训` 段。
+- 其他规则内容（如「同步项目规则」的具体差异）：作为人工步骤，由用户本人或主会话按用户指示，在 CM 运行之外修改并提交。
+  放在相关任务建运行之前（基线会记录新内容）或该任务完成之后；不要在运行进行中修改：`AGENTS.md` 属于审查快照，中途改动会被判为漂移。
+  cm-prd 生成任务时把这类步骤单列为人工步骤并注明不进开发 scope。
+
+加入建运行拦截之前创建、scope 含受保护路径的运行，第一次派发开发会停在 `unknown/execution_error`、`pendingAction: reconcile`，没有出口。
+这类记录现在回放为确定的 `blocked/protected_scope`：判定条件是开发 effect 只有一次没有结果的调用、无审查包、无 Learning 结果，
+且运行配置的 scope 命中受保护路径（开发适配器对这种 scope 总是在派发前拒绝）。原 journal 逐字保留，不追加、不改写。
+之后按原门禁用新 runId 新建运行（从 scope 移除受保护路径）；旧运行已是 `blocked`，`--supersede-reviewed-evidence` 也接受它。
+尚未派发开发的旧运行恢复后发 `advance`，宿主在派发前直接记 `blocked/protected_scope`，不启动开发调用。
+
 ## 文档核验与收尾
 
 可信宿主现在可注入 `execution.documentationSync: {paths, run}`，将最后一个任务的
@@ -1339,6 +1369,7 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 | `state: "unknown"` + `execution_error`，`pendingAction: "reconcile"`，且 stderr 显示驱动未应答 `init_generate`／`init_verify` | 驾驶员断联，原 develop effect 结果未定；旧版驾驶员可能错误退出 0 | 先核对原 host 与子进程及代码根实际写入；仅满足下述 pending effect 条件时在原 run 用 `abandon_effect`，之后按原新运行门禁使用当前会话宿主路径；不要原样重发 `advance` |
 | `blocked/develop_checks_not_passed`，bootstrap 规范任务 | 规范已写入，`PLAN.checks` 未通过 | 修好检查环境后在原 run `advance`；同一轮以原答案重试，驾驶员与宿主只接受本运行存档记录的那次写入，他人改动先还原 |
 | `blocked/bootstrap_verification_failed`，bootstrap 规范任务 | 当前会话宿主路径中 `init_verify` 有核验组不是 verified/not_applicable 或缺证据；宿主在写入规范前停止，`reason` 列出未通过的组与证据 | 本轮规范文件未写入，本运行的 Learning 与已记录规范证据保持不变。按证据修正项目或生成内容后在原 run `advance`：同一轮新 develop effect id 重新询问 `init_generate`／`init_verify`，宿主只接受磁盘文件仍与本运行已记录哈希一致（第 1 轮尚无写入时为不存在）；占用计数调用与 effect，受 `develop_retry_limit` 约束。`constraintChanges` 非空或回复结构错误仍停在 `unknown`。旧版本记录的 `unknown` + `bootstrap_verification_blocked` 按原样重放，不改判。单步驾驶员在启动宿主前实跑命令，未通过不会进入宿主 |
+| `blocked/protected_scope` | 任务 scope 含受保护的规则或工作流文件；开发在派发前被拒绝，未写入文件。旧版本创建的运行原记为 `unknown/execution_error`，现按原记录回放为此状态 | 终态；从 scope 移除 `reason` 列出的路径，按原门禁用新 runId 新建运行；规则文件走「项目规则文件的修改通道」 |
 | `state: "unknown"` + pending develop/complete intent（后面可有 control 记录） | 宿主在 effect intent 后、checkpoint 前退出 | `pendingAction: "abandon_effect"`；核对旧 host 与它启动的进程后，在原 run 显式退出 |
 | `state: "unknown"` + pending review intent，尚无 host-joined／review 登记 | reviewer 启动前退出 | `pendingAction: "abandon_effect"`；确认旧 host 已退出后在原 run 显式退出 |
 | `state: "unknown"` + 已登记且无结果的 review invocation | 审查调用未完成 | `pendingAction: "abandon_review"`；核对旧 host 和 reviewer 进程后在原 run 显式退出 |

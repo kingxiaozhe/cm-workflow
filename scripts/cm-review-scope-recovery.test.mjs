@@ -14,14 +14,16 @@ const terminal=(r,result)=>({version:1,invocationId:r.invocationId,contextId:r.c
 async function fixture(fn){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-scope-recovery-')));
   try{
-    fs.writeFileSync(path.join(root,'code.js'),'before');fs.writeFileSync(path.join(root,'AGENTS.md'),'unchanged instructions');
+    fs.writeFileSync(path.join(root,'code.js'),'before');fs.writeFileSync(path.join(root,'notes.md'),'unchanged notes');
     fs.writeFileSync(path.join(root,'requirements.md'),'fixture');
     // V1 fixture journal: no native task writes or real provider calls.
     const records=[];
     const store={snapshot:()=>structuredClone({identity,records,revision:digest(records)}),
       append:({expectedRevision,...record})=>{assert.equal(expectedRevision,digest(records));records.push(structuredClone(record));}};
     let commits=0;
-    const options={root,identity,scope:['code.js','AGENTS.md'],requirements:['requirements.md'],excludedContexts:['main'],
+    // notes.md stays unchanged in scope. Not AGENTS.md: that is a protected path the
+    // developer adapter refuses, and the runner now blocks it before dispatch.
+    const options={root,identity,scope:['code.js','notes.md'],requirements:['requirements.md'],excludedContexts:['main'],
       developer:{provider:'codex',requestedModel:'fixture',contextId:'developer',run:r=>{
         fs.writeFileSync(path.join(root,'code.js'),'after');return terminal(r,{outcome:'implemented'});}},
       reviewers:[{id:'reviewer',provider:'claude',requestedModel:'fixture',allowed:true,available:true,contexts:['r1','r2'],
@@ -45,7 +47,7 @@ for(const legacy of [false,true])test(`scope package resumes review and completi
   }
   const runner=f.make('resume'),reviewed=await runner.executeEffect(f.effect('review'));
   assert.equal(reviewed.state,'approved');
-  assert.equal(reviewed.receipt.result.examinedPaths.includes('AGENTS.md'),!legacy);
+  assert.equal(reviewed.receipt.result.examinedPaths.includes('notes.md'),!legacy);
   const receipt=JSON.stringify(reviewed.receipt);
   assert.equal((await f.make('resume').executeEffect(f.effect('complete'))).state,'fixture_completed');
   assert.equal(JSON.stringify(f.make('resume').status().receipt),receipt);
