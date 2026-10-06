@@ -52,6 +52,8 @@ for(const mode of ['codex','claude','cancel','cases','materials','draft','self-c
         }
         if(message.kind==='prd_review'){
           assert.equal(mode,'self-check');assert.equal(message.payload.authorContextId,'author-context');
+          assert.match(message.payload.instructions,/assess submitted task boundaries/);
+          assert.match(message.payload.instructions,/Do not.*repartition already generated tasks/);
           send({type:'host_result',sessionId,callId:message.callId,requestDigest:message.requestDigest,
             result:{reviewer:'codex-subagent',contextId:'reviewer-context',independent:true,at:'2026-09-08T00:00:00.000Z',
               result:{verdict:'changes_requested',packageDigest:message.payload.package.packageDigest,
@@ -66,6 +68,8 @@ for(const mode of ['codex','claude','cancel','cases','materials','draft','self-c
         }
         if(message.kind==='prd_generate'){
           assert.ok(['draft','self-check'].includes(mode));assert.equal(message.payload.role.role,'planner');
+          if(message.payload.revision===null)assert.match(message.payload.instructions,/FIRST task planning only/);
+          else assert.doesNotMatch(message.payload.instructions,/FIRST task planning only/);
           send({type:'host_result',sessionId,callId:message.callId,requestDigest:message.requestDigest,
             result:{status:'draft',summary:'Synthetic documentation draft',features:[{name:'guide',testCasesReason:'no_observable_behavior',
               documents:['requirements.md','design.md','tasks.md'].map(file=>({path:file,

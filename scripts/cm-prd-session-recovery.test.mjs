@@ -9,6 +9,7 @@ import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {openPrdSession} from '../runtime/js/cm-prd/session.mjs';
 import {createCmPrdAnalysis} from '../runtime/js/cm-prd/analysis.mjs';
+import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 const FIXTURE_TIMEOUT_MS=Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000);
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const sessionId='prd-recovery-fixture';
@@ -37,15 +38,16 @@ async function client(t,f){
     ...(f.entry.change?['--change',f.entry.change]:[])],
   {env:{...process.env,CM_WORKFLOW_LOG_HOME:path.join(f.dir,'mirror')},stdio:['pipe','pipe','pipe']});
   let stderr='',seq=0;child.stderr.on('data',chunk=>stderr+=chunk);
-  const closed=once(child,'close'),lines=createInterface({input:child.stdout}),queue=[],waiters=[];
+  const closed=once(child,'close'),lines=createInterface({input:child.stdout}),queue=[],waiters=[],requests=[];
   lines.on('line',line=>{const value=JSON.parse(line),index=waiters.findIndex(w=>w.match(value));
+    if(value.type==='host_request')requests.push(value);
     if(index===-1)queue.push(value);else waiters.splice(index,1)[0].resolve(value);});
   const wait=match=>{const index=queue.findIndex(match);return index===-1?
     new Promise(resolve=>waiters.push({match,resolve})):Promise.resolve(queue.splice(index,1)[0]);};
   const send=value=>child.stdin.write(JSON.stringify(value)+'\n');
   t.after(async()=>{if(child.exitCode===null&&child.signalCode===null)child.kill();await closed;lines.close();});
   const ready=await wait(m=>m.type==='host_ready');
-  return {wait,send,request:(operation,fields={})=>{const requestId=`request-${++seq}`;
+  return {wait,send,requests,request:(operation,fields={})=>{const requestId=`request-${++seq}`;
     const reply=wait(m=>m.requestId===requestId);send({requestId,operation,...fields});return reply;},
   close:async()=>{send({type:'host_close',sessionId:ready.sessionId});assert.equal((await closed)[0],0,stderr);},
   result:(call,result)=>send({type:'host_result',sessionId:ready.sessionId,callId:call.callId,requestDigest:call.requestDigest,result})};
@@ -166,3 +168,43 @@ test('help documents abandon shape and terminal cancellation',()=>{
   assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/abandon:true/);assert.match(result.stdout,/result absent/);
   assert.match(result.stdout,/cancel is terminal/);assert.match(result.stdout,/prd_review/);
 });
+
+// Capture the actual generator request, then seed a durable interrupted call.
+// Replaying a stored synthetic result verifies the transport boundary, not model judgement.
+for(const mode of ['legacy-prompt','current-prompt','other-field-drift','corrupt-prompt-record'])
+  test(`first planner prompt update preserves original durable call: ${mode}`,{timeout:20000},async t=>{
+    const f=await fixture(t),before=f.state().checkpoint;let payload;
+    const analysis=createCmPrdAnalysis({input:f.entry,runtime:'codex',restored:before.analysis,record:()=>{},
+      analyze:async()=>assert.fail('analysis redispatched'),generate:async request=>{
+        payload=request;return {status:'question',question:'Synthetic original question'};
+      }});
+    await analysis.plan('Original tasks');assert.match(payload.instructions,/FIRST task planning only/);
+    if(mode==='legacy-prompt')payload.instructions=payload.instructions.split(' For FIRST task planning only:')[0];
+    if(mode==='other-field-drift')payload.messages.at(-1).text='Different original user answer';
+    const session=f.open();try{
+      session.begin({requestId:'original-plan',operation:'advance',text:'Original tasks'},before);
+      await assert.rejects(session.call('prd_generate',payload,new AbortController().signal,async()=>{throw Error('synthetic disconnect');}),/synthetic disconnect/);
+    }finally{session.close();}
+    if(mode==='corrupt-prompt-record'){
+      const state=f.state();state.active.calls[0].payload.instructions+=' Corrupt recorded instructions.';
+      fs.writeFileSync(path.join(f.dir,'.reviews/prd-sessions',sessionId,'state.json'),JSON.stringify(state),{mode:0o600});
+    }
+    const original=f.state().active.calls[0],c=await client(t,f);
+    blocked(await c.request('resume',{resolution:null}),'prd_host_result_unknown');
+    const response=await c.request('resume',{resolution:{callId:original.callId,requestDigest:original.requestDigest,
+      result:{status:'draft',summary:'Original recorded planner result',features:[{name:'next',testCasesReason:'no_observable_behavior',
+        documents:[{path:'requirements.md',content:'## 功能需求\n1. [F-001] Guide\n- [ ] [AC-001] Read next guide'},
+          {path:'design.md',content:'## 方案摘要\nGuide'},{path:'tasks.md',content:'- [ ] T-001: Original task'}]}]},
+      evidence:'Original call result retrieved, not another provider invocation'}});
+    if(mode==='other-field-drift')blocked(response,'prd_replay_inputs_changed');
+    else if(mode==='corrupt-prompt-record')blocked(response,'prd_recovery_binding');
+    else{
+      assert.equal(response.error,undefined);assert.equal(response.result.stage,'draft_ready');
+      assert.equal(f.state().active,null);assert.equal(response.result.draft.features[0].directory,'2.next');
+      assert.equal(response.result.draft.features[0].documents.find(d=>d.path==='tasks.md').content,'- [ ] T-001: Original task');
+    }
+    assert.equal(c.requests.length,0,'resume must consume only the original call');
+    if(f.state().active)assert.deepEqual(f.state().active.calls[0].payload,original.payload);
+    assert.equal(original.requestDigest===digest({kind:original.kind,payload:original.payload}),mode!=='corrupt-prompt-record');
+    assert(!fs.existsSync(path.join(f.dir,'2.next')));await c.close();
+  });

@@ -85,7 +85,17 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       need(receipt.run_id===runId&&receipt.project_log===path.join(admission.specs,'运行日志.jsonl'),'prd_log_failed');
     };
     bridge=createHostToolBridge({responseLimit:1024*1024});
-    const call=(kind,payload,signal)=>session.call(kind,payload,signal,(body,sig)=>bridge.call(kind,body,sig));
+    let replaying=false,replayCallIndex=0;
+    const call=(kind,payload,signal)=>{
+      const original=replaying?session.state.active?.calls[replayCallIndex++]:null;
+      if(original?.kind==='prd_generate'&&kind==='prd_generate'){
+        need(original.requestDigest===digest({kind:original.kind,payload:original.payload}),'prd_recovery_binding');
+        // Only the registered instructions survive a prompt update. All other
+        // reconstructed fields still pass session.call's strict digest check.
+        payload={...payload,instructions:original.payload.instructions};
+      }
+      return session.call(kind,payload,signal,(body,sig)=>bridge.call(kind,body,sig));
+    };
     const restoreAnalysis=restored=>admission.mode==='new'?createCmPrdAnalysis({input:entry,runtime,record,restored,allowInputDrift:true,
       checkContext:(payload,signal)=>call('prd_self_check',payload,signal),
       generate:(payload,signal)=>call('prd_generate',payload,signal),
@@ -100,7 +110,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const makeCorrect=()=>createPrdCorrectionOwner({correct:(payload,signal)=>call('prd_correct',{
       ...payload,project:admission.project,specs:admission.specs,
       reference:path.join(admission.workflowRoot,'skills/cm-prd/SKILL.md')},signal)});
-    let correct=makeCorrect(),replaying=false;
+    let correct=makeCorrect();
     const dispose=createPrdDispositionOwner({validateCurrent:input=>{if(input.stage==='split')analysis.validateCurrent(input);},canRecoverRecorded:()=>replaying&&session.state.active.calls.some(call=>call.kind==='prd_self_check'&&Object.hasOwn(call,'result')),
       checkContext:(payload,signal)=>call('prd_self_check',{
       ...payload,project:admission.project,specs:admission.specs,
@@ -276,6 +286,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         }
         if(request.resolution!==null)session.resolve(request.resolution);
         const active=session.replay();
+        replayCallIndex=0;
         need(active.calls.every(call=>Object.hasOwn(call,'result')),'prd_host_result_unknown');
         restore(active.before);operation=active.request;replaying=true;
         // Claim-first review recovery publishes the recorded ORIGINAL result through

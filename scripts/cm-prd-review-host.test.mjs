@@ -28,3 +28,20 @@ for(const mode of ['success','denied','disconnect','cancel','mode-switch'])test(
   const file=path.join(specs,'.reviews/prd-guide-split-r1.md');assert.equal(fs.existsSync(file),mode==='success');
   if(['disconnect','mode-switch'].includes(mode)){assert.equal((await run()).status,'review_existing');assert.equal(calls,1);}
 });
+
+test('design review transport remains unchanged and does not receive split grouping guidance',async t=>{
+  const specs=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-review-design-')));
+  t.after(()=>fs.rmSync(specs,{recursive:true,force:true}));
+  const draft={draftDigest:'a'.repeat(64),features:[{directory:'1.guide',name:'guide',documents:[
+    {path:'requirements.md',content:'## 功能需求\n1. [F-001] Guide'},
+    {path:'design.md',content:'## 方案摘要\nGuide'}]}]};
+  const prepare=()=>preparePrdReview({specs,draft,stage:'design',feature:'1.guide'});let calls=0;
+  const result=await runPrdHostReview({specs,prepared:prepare(),authorContextId:'author',writeEnabled:true,mode:'independent',
+    revalidate:prepare,signal:new AbortController().signal,review:async payload=>{
+      calls++;assert.doesNotMatch(payload.instructions,/assess submitted task boundaries/);
+      assert.equal(payload.package.instructions,'Apply original Step 9.5 only when its risk triggers were established. Read relevant project rules and changed-module context plus steelman-review. No second attempt.');
+      return {reviewer:'codex-subagent',contextId:'reviewer',independent:true,at:'2026-10-06T00:00:00.000Z',
+        result:{verdict:'approved',packageDigest:payload.package.packageDigest,examinedPaths:payload.examinedPaths,findings:[],summary:'Synthetic design review'}};
+    }});
+  assert.equal(result.status,'review_recorded');assert.equal(calls,1);
+});
