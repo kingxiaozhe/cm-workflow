@@ -20,6 +20,7 @@ import {recordEffectAbandonment} from '../runtime/js/cm-ai/effect-abandon-log.mj
 import {reviewConsumedHandoff,reviewedHandoffConflict} from '../runtime/js/cm-ai/host-handoff.mjs';
 import {RUN_ID_RULE,validRunId} from './cm-log-event.mjs';
 import {JOURNAL_PAYLOAD_LIMIT,boundedReason} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {protectedScopePaths} from '../runtime/js/cm-ai/developer-adapter.mjs';
 import {closeoutPolicyCandidates} from '../runtime/js/cm-ai/knowledge-closeout.mjs';
 
 const usage='cm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
@@ -114,7 +115,7 @@ export async function createCodexExecution(configuration,authority){
         // original checks/handoff/Review. The semantic bridge never writes it.
         const {isFinalCmAiTask}=await import('../runtime/js/cm-ai/cm-ai-admission.mjs');
         const sync=documentationPaths.length>0&&isFinalCmAiTask({specsDir:specsRoot,codeProject:config.codeProject,
-          feature:workflowDefinition.feature,taskId:bound.identity.taskId});
+          feature:workflowDefinition.feature,taskId:bound.identity.taskId,featureSelection:workflowDefinition.featureSelection?.feature});
         const protectedWorker=sync?(request,control)=>worker({...request,prompt:
           'Before returning, inspect and synchronize these already-approved ordinary documentation paths with the implemented behavior. '
           +'Keep accurate unchanged documents unchanged. No extra scope or protected instruction writes. '
@@ -150,6 +151,7 @@ export function validateRunDefinition(input){
   const keys=['version','specsDir','codeProject','feature','identity','scope','requirements'];
   if(value&&Object.hasOwn(value,'codeProjects'))keys.push('codeProjects');
   if(value&&Object.hasOwn(value,'taskSelection'))keys.push('taskSelection');
+  if(value&&Object.hasOwn(value,'featureSelection'))keys.push('featureSelection');
   if(!value||typeof value!=='object')fail('invalid_config: expected an object');
   const unexpected=Object.keys(value).filter(key=>!keys.includes(key));
   const missing=keys.filter(key=>!Object.hasOwn(value,key));
@@ -172,6 +174,11 @@ export function validateRunDefinition(input){
   if(Object.hasOwn(value,'taskSelection')&&(!value.taskSelection||value.taskSelection.version!==1
     ||Object.keys(value.taskSelection).sort().join(',')!=='taskId,version'
     ||value.taskSelection.taskId!==value.identity.taskId))fail('invalid_task_selection');
+  // Explicit batch choice: run this approved feature even while an earlier one
+  // has pending tasks. Bound into the definition, so it is part of the run.
+  if(Object.hasOwn(value,'featureSelection')&&(!value.featureSelection||value.featureSelection.version!==1
+    ||Object.keys(value.featureSelection).sort().join(',')!=='feature,version'
+    ||value.featureSelection.feature!==value.feature))fail('invalid_feature_selection');
   for(const key of ['scope','requirements']){
     if(!Array.isArray(value[key])||(!value[key].length&&!(key==='requirements'))||value[key].length>256
       ||value[key].some(p=>typeof p!=='string'||!p||p.includes('\\')||p.includes('\0')
@@ -184,6 +191,18 @@ export function validateRunDefinition(input){
     for(const root of value.codeProjects)if(root===value.specsDir||root.startsWith(value.specsDir+path.sep))fail('overlapping_roots');
   }
   return value;
+}
+// Read-only, shared by every create entry before it locks, logs or builds an
+// execution: the single-task host, openControlRun and the batch owner.
+export function assertCreatableScope(scope){
+  const paths=protectedScopePaths(scope);
+  if(paths.length)throw Object.assign(new Error('protected_scope'),{code:'protected_scope',paths,reason:protectedScopeReason(paths)});
+}
+export function protectedScopeReason(paths){
+  const listed=paths.slice(0,20).join('、')+(paths.length>20?` 等 ${paths.length} 个`:'');
+  return `任务 scope 含受保护路径：${listed}。开发者不能写项目规则（AGENTS.md、CLAUDE.md、.claude/、.codex/）、`
+    +'tasks.md、.cm-* 或审查记录；未建运行，未写任何运行记录。从 scope 移除这些路径后重新生成运行定义再 create；'
+    +'规则文件的修改走 docs/js-workflow-control.md「项目规则文件的修改通道」。';
 }
 // Create-time only: an existing journal keeps resuming (and can be abandoned)
 // exactly as before, while a new run can no longer strand its first develop
@@ -235,6 +254,11 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   const {conversationProtection,externalConversationDefinition}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
   if(!['create','resume'].includes(mode))fail('invalid_mode');
   if(mode==='create')assertCreatableRunId(definition?.identity);
+  // The developer adapter refuses these paths on every dispatch. Refuse the
+  // run here, before any journal, intent or execution directory exists, so it
+  // cannot strand its first develop effect. A bootstrap run's own instruction
+  // paths are checked by createHostBootstrap against its business scope.
+  if(mode==='create'&&!execution?.bootstrap)assertCreatableScope(definition?.scope);
   if(supersedeReason!==null&&mode!=='create')fail('supersede_unavailable');
   if(allowAbandonEffect&&mode!=='resume')fail('effect_abandon_unavailable');
   if(allowBootstrapReviewRecovery&&mode!=='resume')fail('bootstrap_review_recovery_unavailable');
@@ -250,7 +274,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
     ||(rerunUnknownQa||rerunBlockedQa)&&(mode!=='resume'||!execution?.qaExecutor))fail('qa_recovery_authorization_required');
   const {openTaskExecutionStore}=await import('../runtime/js/cm-ai/task-owner.mjs');
   const {createCmAiHost}=await import('../runtime/js/cm-ai/host.mjs');
-  const {inspectCmAiAdmission,matchesCmAiTaskSelection,explainCmAiTaskSelection}=await import('../runtime/js/cm-ai/cm-ai-admission.mjs');
+  const {inspectCmAiAdmission,matchesCmAiTaskSelection,explainCmAiTaskSelection,selectedFeature}=await import('../runtime/js/cm-ai/cm-ai-admission.mjs');
   const {captureReviewBaseline}=await import('../runtime/js/cm-ai/review-package.mjs');
   if(execution!==null){
     const {shape,json,validCallTimeout}=await import('../runtime/js/cm-ai/effect-contract.mjs');
@@ -299,15 +323,21 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   if(selectedRoots){
     if(!execution||conversationProtection(execution)===null)fail('multi_root_protection_required');
     for(const root of definition.codeProjects){
-      const selected=inspectCmAiAdmission({specsDir,codeProject:root});
+      const selected=inspectCmAiAdmission({specsDir,codeProject:root,...selectedFeature(definition.featureSelection?.feature)});
       if(mode==='create'&&!matchesCmAiTaskSelection(selected,feature,identity.taskId,selection))
         return {blocked:selected,close:()=>{}};
     }
   }
   const developer=execution?.documentationSync
     ?(await import('../runtime/js/cm-ai/host-documentation.mjs')).withHostDocumentation({developer:execution.developer,
-      documentationSync:execution.documentationSync,specsDir,codeProject,feature,scope,parallelSelection:selection}):execution?.developer;
-  const admission=inspectCmAiAdmission({specsDir,codeProject});
+      documentationSync:execution.documentationSync,specsDir,codeProject,feature,scope,parallelSelection:selection,
+      featureSelection:definition.featureSelection?.feature}):execution?.developer;
+  const admission=inspectCmAiAdmission({specsDir,codeProject,...selectedFeature(definition.featureSelection?.feature)});
+  // An explicitly selected feature with nothing left never creates a run, even
+  // when the project as a whole is complete.
+  if(mode==='create'&&definition.featureSelection&&admission.requestedFeatureComplete===feature)
+    throw Object.assign(new Error('task_selection_mismatch'),{code:'task_selection_mismatch',
+      reason:explainCmAiTaskSelection({...admission,state:'ready'},{feature,taskId:identity.taskId,selection})});
   if(mode==='create'&&admission.state!=='ready')return {blocked:admission,close:()=>{}};
   if(mode==='create'&&!matchesCmAiTaskSelection(admission,feature,identity.taskId,selection))
     throw Object.assign(new Error('task_selection_mismatch'),{code:'task_selection_mismatch',
@@ -433,6 +463,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
           taskLearning:{feature,hostHandoff:true}})},
       // The entry validates the declaration (single line, with --rerun-blocked-qa) before any durable write.
       entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,
+        ...(definition.featureSelection?{featureSelection:definition.featureSelection.feature}:{}),
         ...(knowledgeCloseout===null?{}:{knowledgeCloseout,...(definition.codeProjects?{codeProjects:definition.codeProjects}:{})}),
         ...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
         ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},

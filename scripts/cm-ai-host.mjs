@@ -10,7 +10,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {REVIEWED_HANDOFF_HINT} from '../runtime/js/cm-ai/host-handoff.mjs';
-import {readRunDefinition,openControlRun,createCodexExecution} from './cm-ai-run.mjs';
+import {readRunDefinition,openControlRun,createCodexExecution,assertCreatableScope} from './cm-ai-run.mjs';
 import {createConversationExecution as executionFor} from '../runtime/js/cm-ai/host-conversation-execution.mjs';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {serveCmAiHost,parseHostInputLimit,inputLimitReason} from '../runtime/js/cm-ai/host-session.mjs';
@@ -46,12 +46,12 @@ export function readBootstrapConfiguration(file){
 const refuse=(ok,code,reason)=>{if(!ok)throw Object.assign(new Error(code),{code,reason});};
 const REASONED_CODES=['supersede_unavailable','supersede_code_drift','handoff_exists','browser_capability_required',
   'browser_capability_unavailable','invalid_arguments','fingerprint_mismatch','task_selection_mismatch','review_configuration_required',
-  'spec_rebind_refused','spec_rebind_unavailable'];
+  'spec_rebind_refused','spec_rebind_unavailable','protected_scope'];
 const fixLocalPermissions=new Map(['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon',
   'abandon-review','test-author','repair','cause-review','final-review']
   .map(name=>[`--allow-qa-fix-${name}`,`--allow-${name}`]));
 
-const usage='cm-ai-host.mjs serve --config RUN_DEFINITION.json --mode create|resume --host-context ID --allow-development --review-config PATH (required at create; resume passes the same file) [--original-host-context ID] [--runtime codex|claude] [--input-limit BYTES] [--failover] [--allow-review-attempt 1|2] [--allow-abandon-review] [--allow-abandon-effect] [--allow-bootstrap-review-recovery] [--workflow-config PATH] [--allow-qa] [--browser-qa available|unavailable]\nInput limit is transport-only: integer 65536-4194304 bytes, default 65536; it bounds every input line and every tool reply, and may change on resume. A longer line stops the session with request_too_large. Review config is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 900000), independent of protected mode and outside the authorized configuration digest. --browser-qa declares interactive QA capability for applicable carriers including browser and ios-simulator.\nNew runs: --external-models [--external-models-config FILE] freezes one pair per actual external provider; resume reads only its snapshot. preflight --config RUN_DEFINITION.json --external-provider codex|claude uses the saved pair.\ncm-ai-host.mjs preflight --config RUN_DEFINITION.json --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
+const usage='cm-ai-host.mjs serve --config RUN_DEFINITION.json --mode create|resume --host-context ID --allow-development --review-config PATH (required at create; resume passes the same file) [--original-host-context ID] [--runtime codex|claude] [--review-runtime codex|claude] [--feature N.slug] [--input-limit BYTES] [--failover] [--allow-review-attempt 1|2] [--allow-abandon-review] [--allow-abandon-effect] [--allow-bootstrap-review-recovery] [--workflow-config PATH] [--allow-qa] [--browser-qa available|unavailable]\nInput limit is transport-only: integer 65536-4194304 bytes, default 65536; it bounds every input line and every tool reply, and may change on resume. A longer line stops the session with request_too_large. Review config is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 900000), independent of protected mode and outside the authorized configuration digest. --browser-qa declares interactive QA capability for applicable carriers including browser and ios-simulator.\nNew runs: --external-models [--external-models-config FILE] freezes one pair per actual external provider; resume reads only its snapshot. preflight --config RUN_DEFINITION.json --external-provider codex|claude uses the saved pair.\ncm-ai-host.mjs preflight --config RUN_DEFINITION.json --review-model MODEL [--runtime codex|claude] (synthetic loopback only)';
 
 export function formatClaudeModelHint(config,version=null){
   const marker=config?.preflight?.request_checks?.find(check=>check?.model_recognized===false);
@@ -223,7 +223,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const extra=new Map();
     for(let index=8;index<argv.length;index++){
       const name=argv[index];refuse(!extra.has(name),'invalid_arguments',`参数重复：${name}`);
-      refuse(['--execution-optimizations','--external-models','--external-models-config','--verification-precheck','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure','--supersede-reviewed-evidence','--supersede-reason','--accept-superseded-code-drift','--rebind-spec-material','--spec-rebind-reason','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments',`未知参数：${name}`);
+      refuse(['--execution-optimizations','--external-models','--external-models-config','--verification-precheck','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure','--supersede-reviewed-evidence','--supersede-reason','--accept-superseded-code-drift','--rebind-spec-material','--spec-rebind-reason','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--review-runtime','--feature','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments',`未知参数：${name}`);
       if(['--execution-optimizations','--external-models','--verification-precheck','--supersede-reviewed-evidence','--accept-superseded-code-drift','--rebind-spec-material','--allow-bootstrap-write','--allow-qa','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
       else{refuse(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments',`${name} 需要一个值`);extra.set(name,argv[++index]);}
     }
@@ -262,13 +262,25 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(!extra.has('--auto-qa-fix')||(extra.has('--qa-fix-template-config')&&extra.has('--allow-qa-fix-start')),'qa_fix_auto_authorization_required');
     need(![...fixLocalPermissions.keys()].some(flag=>extra.has(flag))||extra.has('--allow-qa-fix-start'),'qa_fix_start_authorization_required');
     need(!extra.has('--allow-provider-development-attempt')||extra.has('--protected-config'),'protected_configuration_required');
+    refuse(!(extra.has('--review-runtime')&&(extra.has('--protected-config')||extra.has('--external-models'))),'invalid_arguments',
+      '--review-runtime 只用于普通当前会话宿主；--protected-config 与 --external-models 按 roles 自行选择审查端');
     refuse(!(extra.has('--protected-config')&&extra.has('--protected-conversation-config')),'invalid_arguments','--protected-config 与 --protected-conversation-config 不能同时使用');
     const protection=extra.has('--protected-conversation-config')?readConversationProtection(extra.get('--protected-conversation-config')):null;
     const bootstrap=extra.has('--bootstrap-config')?readBootstrapConfiguration(extra.get('--bootstrap-config')):null;
     need(!extra.has('--allow-bootstrap-write')||bootstrap!==null,'bootstrap_configuration_required');
     // Checked before the definition is read so the conflict is reported on its own.
     need(!(extra.has('--failover')&&extra.has('--protected-config')),'failover_unsupported_in_protected_mode');
-    const definition=readRunDefinition(argv[2]);
+    let definition=readRunDefinition(argv[2]);
+    // --feature binds an explicit batch choice into the run definition, exactly
+    // as a printed featureSelection does; resume must repeat it (fingerprint).
+    if(extra.has('--feature')){
+      refuse(extra.get('--feature')===definition.feature&&(!definition.featureSelection
+        ||definition.featureSelection.feature===definition.feature),'invalid_arguments',
+        `--feature ${extra.get('--feature')} 必须与运行定义的 feature ${definition.feature} 一致`);
+      definition={...definition,featureSelection:{version:1,feature:definition.feature}};
+    }
+    // Before any frozen model/policy configuration, execution or journal write.
+    if(argv[4]==='create'&&bootstrap===null)assertCreatableScope(definition.scope);
     const boundRuntime=extra.get('--runtime')??'codex';
     const routes=extra.has('--protected-config')?resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),boundRuntime):{reviewerRuntime:boundRuntime};
     const executionPolicy=readLaunchExecutionPolicy({definition,mode:argv[4],enabled:extra.has('--execution-optimizations')});
@@ -329,7 +341,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       execution=extra.has('--protected-config')
         ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap,externalModels,executionPolicy)
         :executionFor(definition,argv[6],bridge,review,allowedAttempt,workflow,extra.has('--allow-qa'),runtime,
-          {...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels}:{}),...(extra.has('--verification-precheck')?{verificationPrecheck:true}:{}),...(extra.has('--original-host-context')?{originalHostContextId:extra.get('--original-host-context')}:{}),...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{})});
+          {...(extra.has('--review-runtime')?{reviewRuntime:extra.get('--review-runtime')}:{}),...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels}:{}),...(extra.has('--verification-precheck')?{verificationPrecheck:true}:{}),...(extra.has('--original-host-context')?{originalHostContextId:extra.get('--original-host-context')}:{}),...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{})});
       run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:extra.has('--allow-abandon-review'),allowAbandonEffect:extra.has('--allow-abandon-effect'),allowBootstrapReviewRecovery:extra.has('--allow-bootstrap-review-recovery'),specRebindReason:extra.get('--spec-rebind-reason')??null});
     }
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}

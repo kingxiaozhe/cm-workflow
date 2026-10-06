@@ -5,7 +5,7 @@
 新模式未知调用禁止 abandon／重派，恢复只读原快照；下文旧模式重试说明不适用于新模式。
 
 规格待审批时先展示摘要卡并请用户回复“开始”。`approvalIntent` 仅把“开始”“开始吧”
-“可以开始”“确认开始”“开始执行”“现在开始”（允许尾部中英文句末标点与空白）视为
+“可以开始”“确认开始”“开始执行”“现在开始”“可以，请开始开发”（允许尾部中英文句末标点与空白）视为
 明确开始；“继续”“可以”“好”“好的”“OK”“按最优解处理”“你看着办”“行”仍不审批。
 `not_approval` 时提示明确回复“开始”；写审批位仍须原 `--approve` 门禁。
 
@@ -160,7 +160,7 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-host.mjs" serve --config "{T-002-run.json
    runtime，恢复不得换端或冒用旧会话。Codex单任务同仓specs可显式选择下文受保护模式；
    当前Codex/Claude及批次同仓用下文文本提案模式；未选择保护的同仓仍阻断。不搬动specs或删除保护检查；工具会话不是OS沙箱。
 3. 从已批准任务确定 scope、requirements 和顺序；不跳过未解决的 bootstrap 确认或依赖。
-   单代码根用 `cm-ai-admission.mjs --print-run-definition --scope ...` 生成运行定义，不要手写；`--scope` 必填（相对代码根、逗号分隔），`--requirements` 可选。需要跳过当前 `nextTask` 时可加 `--task T-xxx`，仅接受同 feature 的 `eligibleTasks`，选择会写入运行定义并绑定恢复指纹；完整命令见产品文档。
+   单代码根用 `cm-ai-admission.mjs --print-run-definition --scope ...` 生成运行定义，不要手写；`--scope` 必填（相对代码根、逗号分隔），`--requirements` 可选。需要跳过当前 `nextTask` 时可加 `--task T-xxx`，仅接受同 feature 的 `eligibleTasks`，选择会写入运行定义并绑定恢复指纹。已批准的跨 feature 顺序要先做后面的批次时加 `--feature 数字.slug`（写入 `featureSelection`；宿主也可用同名参数），仍校验全部批准、manifest 与该批次内依赖，不改旧批次任务；恢复须保持同一选择。完整命令见产品文档。
    单任务用 `cm-ai-host.mjs`；多任务用 `cm-ai-batch-host.mjs` 的原 batch/workflows 配置。
    任务列表只包含该运行计划内的任务；恢复必须使用原身份、配置和真实当前会话身份，
    单任务同会话恢复用 `--mode resume --host-context {当前真实会话ID}` 加创建时的同一组启动输入（`--review-config`、`--runtime`、`--workflow-config` 等）；换会话恢复再加 `--original-host-context {创建运行的会话ID}`；

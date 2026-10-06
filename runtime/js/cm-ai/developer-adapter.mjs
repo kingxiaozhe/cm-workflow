@@ -25,16 +25,19 @@ The top-level reason explains blocked outcomes; otherwise it must be null. Use n
 Use outcome blocked when implementation is not possible. Do not claim implementation if no implementation was made.
 When supersededReview exists, it is read-only context: the last review of an earlier, superseded run of this task, not a verdict on this run. Avoid repeating its problems, but implement only the supplied task and scope.`;
 
+// The host owns instructions and workflow evidence. Reject contradictory
+// business requests before authorization/dispatch, not just in the prompt.
+const protectedPath=p=>p.toLowerCase().split('/').some(part=>['.git','.claude','.codex','.reviews','agents.md','claude.md',
+  'tasks.md','运行日志.jsonl'].includes(part)||part.startsWith('.cm-'));
+// The same rule, as the list a host can name back: create refuses these runs
+// before any journal exists, and a pre-dispatch develop blocks on them.
+export const protectedScopePaths=scope=>Array.isArray(scope)?scope.filter(p=>typeof p==='string'&&protectedPath(p)):[];
 export function validateDeveloperScope(scope){
   need(Array.isArray(scope)&&scope.length>0);
   const paths=new Set();
   for(const p of scope){
     text(p);need(!/[\\:\x00-\x1f]/.test(p)&&p.split('/').every(s=>s&&s!=='.'&&s!=='..'));
-    // The host owns instructions and workflow evidence. Reject contradictory
-    // business requests before authorization/dispatch, not just in the prompt.
-    const parts=p.toLowerCase().split('/');
-    need(!parts.some(part=>['.git','.claude','.codex','.reviews','agents.md','claude.md',
-      'tasks.md','运行日志.jsonl'].includes(part)||part.startsWith('.cm-')),'protected_scope');
+    need(!protectedPath(p),'protected_scope');
     need(!paths.has(p));paths.add(p);
   }
 }

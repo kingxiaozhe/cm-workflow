@@ -19,8 +19,16 @@ import {readBootstrapEvidence,validateBootstrapReviewPackage} from './host-boots
 import {validateCodeProjectPaths,assertCodeProjectSelections} from './code-projects.mjs';
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 import {readSpecificationRebind} from './specification-material.mjs';
+import {protectedScopePaths} from './developer-adapter.mjs';
 
 const LIMIT=16*1024*1024;
+// The developer adapter refuses a protected scope on every dispatch, before any
+// provider runs. A run with such a scope can never develop: it is a definite
+// block, not an unknown outcome. Bootstrap runs scope their own rule paths.
+export const protectedDevelopScope=config=>config.bootstrap?[]:protectedScopePaths(config.scope);
+export const protectedScopeBlockReason=paths=>boundedReason('protected_scope: 任务 scope 含受保护路径：',paths,
+  '。开发适配器在派发前拒绝，未派发开发、未写入文件；本运行不能继续。从 scope 移除这些路径后按原门禁新建运行，'
+  +'规则文件走 docs/js-workflow-control.md「项目规则文件的修改通道」。');
 export const MAX_AI_JOINED_HOSTS=16;
 const same=(a,b)=>need(digest(a)===digest(b),'runner_history_mismatch');
 const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b.slice(0,a.length));};
@@ -434,6 +442,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
         // The host gate rejected the delivery after Learning was already written
         // back: the writeback stands, only the review package was not built.
         ||s.state==='blocked'&&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','bootstrap_instruction_conflict'].includes(s.code)
+        ||added.length===0&&s.state==='blocked'&&s.code==='protected_scope'
         ||added[0]&&['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal),'runner_learning');
     }
     if(digest(s.reviewPackage)!==digest(before.reviewPackage)) {
@@ -470,6 +479,11 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     if(added.length===0&&s.code==='bootstrap_instruction_conflict'){
       need(config.bootstrap?.mode==='instructions','runner_develop');
       same(s.learningResult,before.learningResult);
+      expectedState='blocked';expectedCode=s.code;
+    }
+    if(added.length===0&&s.code==='protected_scope'){
+      need(protectedDevelopScope(config).length>0&&digest(s.reviewPackage)===digest(before.reviewPackage),'runner_develop');
+      if(Object.hasOwn(config,'taskLearning'))same(s.learningResult,before.learningResult);
       expectedState='blocked';expectedCode=s.code;
     }
     if(added[0] && ['failed','unavailable','auth_required','permission_denied'].includes(added[0].terminal)) {
@@ -593,6 +607,21 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     recovered.state='blocked';recovered.code='develop_package_too_large';
     recovered.reason=boundedReason('develop_package_too_large: ',[detail],
       '; shrink the changed files or move generated artifacts out of scope, then resume to redo this attempt');
+    recovered.cache.at(-1).result=runnerStatus(recovered,config);
+    return recovered;
+  }
+  // Runners before the create-time scope gate dispatched a protected scope and
+  // journaled the adapter's pre-dispatch refusal as unknown/execution_error,
+  // with no exit. Reproject only that exact shape: one developer call that never
+  // returned a result, nothing built, no Learning. The record stays unchanged.
+  if(effect.kind==='develop'&&s.state==='unknown'&&s.code==='execution_error'
+    &&protectedDevelopScope(config).length>0&&added.length===1&&added[0].terminal==='unknown'
+    &&added[0].resultDigest===null&&digest(s.reviewPackage)===digest(before.reviewPackage)
+    &&s.receipt===null&&s.receipts.length===before.receipts.length
+    &&(!Object.hasOwn(config,'taskLearning')||s.learningResult===null)){
+    const recovered=structuredClone(s);
+    recovered.state='blocked';recovered.code='protected_scope';
+    recovered.reason=protectedScopeBlockReason(protectedDevelopScope(config));
     recovered.cache.at(-1).result=runnerStatus(recovered,config);
     return recovered;
   }

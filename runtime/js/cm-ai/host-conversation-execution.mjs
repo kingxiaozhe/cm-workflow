@@ -107,7 +107,7 @@ export const REVIEW_BOUND_MARGIN_MS=60000;
 export const reviewRaceTimeout=(outerTimeoutMs,reviewTimeoutMs)=>Math.max(outerTimeoutMs,reviewTimeoutMs+REVIEW_BOUND_MARGIN_MS);
 export function createConversationExecution(definition,hostContextId,bridge,review=null,allowedAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
   definition=json(definition);workflow=workflow===null?null:json(workflow);options=json(options);
-  shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','externalModels','reviewerRuntime','parallelMember','verificationPrecheck','executionPolicy'].filter(key=>Object.hasOwn(options,key))]);
+  shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','externalModels','reviewerRuntime','reviewRuntime','parallelMember','verificationPrecheck','executionPolicy'].filter(key=>Object.hasOwn(options,key))]);
   need(!Object.hasOwn(options,'verificationPrecheck')||typeof options.verificationPrecheck==='boolean','invalid_input');
   const executionPolicy=options.executionPolicy?readExecutionPolicy(options.executionPolicy):null;
   const parallelMember=options.parallelMember??false;need(typeof parallelMember==='boolean','invalid_input');
@@ -122,7 +122,14 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   }
   if(Object.hasOwn(options,'reviewerRuntime'))need(options.externalModels&&['codex','claude'].includes(options.reviewerRuntime)
     &&options.reviewerRuntime===resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),runtime).reviewerRuntime,'runtime_selection_mismatch');
-  const coderRuntime=provider?.coderRuntime??runtime,reviewerRuntime=provider?.reviewerRuntime??options.reviewerRuntime??runtime;
+  // --review-runtime: the current session develops, the other tool reviews.
+  // It must match the declared roles/runtimes and is bound into the run (the
+  // configuration key reviewRuntime, as the 0.16.6 project patch wrote it).
+  need(options.reviewRuntime===undefined||['codex','claude'].includes(options.reviewRuntime),'invalid_runtime');
+  need(options.reviewRuntime===undefined||provider===null&&!Object.hasOwn(options,'reviewerRuntime'),'invalid_input');
+  const coderRuntime=provider?.coderRuntime??runtime,reviewerRuntime=provider?.reviewerRuntime??options.reviewerRuntime??options.reviewRuntime??runtime;
+  if(options.reviewRuntime!==undefined)need(digest(resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),runtime))
+    ===digest({coderRuntime,reviewerRuntime}),'runtime_selection_mismatch');
   const externalModels=options.externalModels?selectExternalModels(options.externalModels,provider?[coderRuntime,reviewerRuntime]:[reviewerRuntime]):null;
   if(externalModels){
     const selected=externalModels.providers[reviewerRuntime];need(review!==null&&review.model===selected.model&&review.effort===selected.effort,'external_model_configuration_conflict');
@@ -154,6 +161,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   need(protection||!definition.specsDir.startsWith(definition.codeProject+path.sep),'nested_specs_protection_required');
   const configuration={kind:'cm-current-conversation-v1',...(parallelMember?{parallelMember}:{}),definitionDigest:digest(definition),hostContextId:durableHostContextId,
     ...(runtime==='claude'?{runtime}:{}),
+    ...(options.reviewRuntime===undefined?{}:{reviewRuntime:options.reviewRuntime}),
     ...(executionPolicy?{executionPolicy}:{}),
     ...(externalModels?{externalModels}:{}),
     ...(provider?{providerDevelopment:{model:provider.model,coderRuntime,reviewerRuntime,...(externalModels?{effort:provider.effort}:{})}}:{}),
@@ -250,7 +258,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
         if(protection){
           prompt+=protectedTextInstructions;
           if(!parallelMember&&documentationPaths.length&&isFinalCmAiTask({specsDir:definition.specsDir,codeProject:definition.codeProject,
-            feature:definition.feature,taskId:bound.identity.taskId}))prompt+=' Include necessary documentation synchronization in the same edits: '+JSON.stringify(documentationPaths);
+            feature:definition.feature,taskId:bound.identity.taskId,featureSelection:definition.featureSelection?.feature}))prompt+=' Include necessary documentation synchronization in the same edits: '+JSON.stringify(documentationPaths);
         }
         const response=provider?await processWorker({prompt:prompt+'\n'+JSON.stringify({editMode:'protected-text-v1',expected})},control):json(await bridge.call('develop',{request:bound,prompt,codeProject:definition.codeProject,route,
           ...(definition.codeProjects?{codeProjects:resolveCodeProjects(definition.codeProject,definition.codeProjects),

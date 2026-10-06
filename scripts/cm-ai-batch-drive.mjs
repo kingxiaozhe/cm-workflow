@@ -131,9 +131,9 @@ function preflight(){
       if(bundle.workflows[key]!==null)validateHostWorkflowConfiguration(bundle.workflows[key]);
     }
     // Use the batch owner's selection/parallel-group validator without opening a run.
-    createCmAiBatch({configuration:batch,executionFor:async()=>({}),
+    createCmAiBatch({configuration:batch,executionFor:async()=>({}),bootstrapKeys:Object.keys(bundle.bootstraps??{}),
       logHome:path.join(batch.specsDir,'.reviews','host-log-mirror')});
-  }catch(error){stop(2,`批次定义、scope 或 workflow 无效: ${error.code??error.message}`);}
+  }catch(error){stop(2,`批次定义、scope 或 workflow 无效: ${error.code??error.message}${error.code==='protected_scope'&&typeof error.reason==='string'?`；${error.reason}`:''}`);}
   const log=path.join(batch.specsDir,'运行日志.jsonl');
   const stores=Array.from(definitions.values(),d=>path.join(batch.specsDir,'.reviews','.execution',d.identity.runId,'state.json'));
   const hasLog=fs.existsSync(log),hasStore=stores.some(file=>fs.existsSync(file));
