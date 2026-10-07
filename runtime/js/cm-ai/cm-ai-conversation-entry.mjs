@@ -386,7 +386,7 @@ export function createCmAiConversationEntry(options) {
           notCancelled();
           need(pendingExecution===null,'qa_execution_pending');
           const binding={specsDir:options.specsDir,feature:options.feature,identity:result.identity,packageDigest:result.packageDigest};
-          let previous,recovery=null,configurationRecovery=false;
+          let previous,recovery=null,configurationRecovery=false,incompleteReport=false;
           try{previous=latestCmAiQaRun(binding);}
           catch(error){
             if(error.code==='qa_result_superseded'){
@@ -398,6 +398,14 @@ export function createCmAiConversationEntry(options) {
                 try{recovery=inspectCmAiQaRecovery(binding);}
                 catch(error){if(error.code!=='qa_execution_unknown')throw error;}
               }
+              // The call wrote its fixed report but no complete row (a host before
+              // this fix rejected stale_qa in between). --rerun-blocked-qa reads
+              // that report under the ordinary blocked-evidence rules.
+              if(recovery===null&&rerunBlockedQa){
+                recovery=inspectCmAiQaRecovery(binding,{blocked:true,environment:qaExecutor.configuration?.environment,
+                  environmentFailure:qaEnvironmentFailure});
+                incompleteReport=true;
+              }
               if(recovery===null)return summary(operation,{...runner.status(),code:'qa_execution_unknown'},'blocked');
               previous=null;
             }
@@ -406,7 +414,7 @@ export function createCmAiConversationEntry(options) {
           // decision with no QA run under it yet (just written, or written
           // before an interruption): run the ordinary first round, not a rerun.
           if(rerunBlockedQa&&previous===null&&replacesTimedOutQaDecision(binding))rerunBlockedQa=false;
-          if(rerunBlockedQa){
+          if(rerunBlockedQa&&!incompleteReport){
             need(previous!==null,'qa_rerun_not_blocked_by_evidence');
             recovery=inspectCmAiQaRecovery(binding,{blocked:true,environment:qaExecutor.configuration?.environment,
               environmentFailure:qaEnvironmentFailure});
@@ -451,9 +459,16 @@ export function createCmAiConversationEntry(options) {
                 return qaExecutor.run(freeze(invocation),controller.signal);
               }),interrupted]);
               need(!controller.signal.aborted,'cancelled');
+              // A run that moved on meanwhile (for example files in scope replaced):
+              // still record a BLOCKED or FAIL this call observed, so the restored run
+              // can take the ordinary --rerun-blocked-qa path instead of staying
+              // qa_execution_unknown (a source change is already BLOCKED/sourceChanged).
+              // A PASS is never recorded unconfirmed; it stays unknown, and only
+              // --rerun-unknown-qa may discard that fully backed all-PASS report.
               const current=boundStatus(runner.status(),result.identity);
-              need(current.state==='fixture_completed'&&current.code==null&&current.packageDigest===result.packageDigest,'stale_qa');
-              recordCmAiQaRun({...logInput,phase:'complete',result:executed});
+              const fresh=current.state==='fixture_completed'&&current.code==null&&current.packageDigest===result.packageDigest;
+              if(fresh||executed.result!=='PASS')recordCmAiQaRun({...logInput,phase:'complete',result:executed});
+              need(fresh,'stale_qa');
             }finally{clearTimeout(timer);pendingExecution=null;}
           }
           result=await call('qa_result',result.packageDigest,{testRunId});

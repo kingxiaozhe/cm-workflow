@@ -1012,7 +1012,7 @@ workflow 配置的 `qa` 在 `commands/environment` 之外可选 `timeoutMs`（1�
 browser BLOCKED（执行器在报告行写 `hostDeclaredBlocked: true`；旧报告无此标记仍不适用）、没有退出码的命令结果
 （host-check 的 timeout、signal_exit、spawn_failed、output_*、cleanup_failed）以及只因这类映射命令阻断的 logic 用例
 （执行器写 `commandUnavailable: true`；`[需确认]` 的 logic 用例写 `needsConfirmation: true`，任何路径都不适用）。
-没有声明命令、延后用例、`[需确认]`、缺少浏览器能力和源码漂移仍不适用。判定以权威输入为准：`[需确认]` 读该 feature 的
+没有声明命令、延后用例、`[需确认]`、缺少浏览器能力仍不适用。源码漂移（执行期间范围内文件被改，执行器把全部行改为 BLOCKED 并标 `sourceChanged`）只在该行漂移前的判定是 PASS、或本身符合上述可重跑条件的 BLOCKED 时适用；执行器在报告行另记 `verdictBeforeSourceChange`，并与命令退出码、browser 的 `case_complete`/`case_blocked` 日志行、logic 映射命令的退出码交叉核对，不符按未知拒绝；没有该字段的旧报告由命令退出码和 browser 日志行推出，logic 行无法推出即拒绝。漂移前为 FAIL 的行一律不适用。重跑前运行须回到 `fixture_completed` 且无 code（代码已还原到审查包）。判定以权威输入为准：`[需确认]` 读该 feature 的
 `test-cases.json`（契约里找不到的用例按未确认处理），命令阻断由报告中已记录的命令行推出，会话回答的 browser BLOCKED
 以执行器在应答时追加的 `test_run/case_blocked` 日志行（`host_declared_blocked: true`）为准；`needsConfirmation`、
 `commandUnavailable`、`hostDeclaredBlocked` 只作交叉核对，任一与契约、命令行或日志不符即拒绝。新写入的 superseded 行带 `recovery_rule: 2` 并按此规则回放；旧版本写入、
@@ -1046,7 +1046,7 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
 保留原运行需要的 runtime、保护及审查配置选项；收到 host_ready 后发送原 advance。
 `--rerun-unknown-qa` 是本次恢复授权，不改变持久配置指纹；create、缺少 allow-qa 或配置漂移拒绝。
 仅最新调用无 complete、已记录 case_complete 的 result 全为 PASS（允许零条）、无 case_blocked、
-无固定报告 `{testRunId}-execution.md`，且原资源门禁确认无清理欠账时可重跑。
+无固定报告 `{testRunId}-execution.md`（或报告 `Overall: PASS` 且逐行 PASS 有权威依据，见下文 `qa_execution_unknown` 的处理），且原资源门禁确认无清理欠账时可重跑。
 日志先写 `test_run/abandoned`（`previous_test_run_id` 为旧 ID，`reason: host_terminated`、
 `partial_pass_cases: [caseId…]` 记录旧 PASS 用例，零条时为空数组），
 再以新 testRunId、同一 qaRound 执行整轮；不复用部分用例，也不重跑开发、Review 或改变任务 attempt。
@@ -1404,8 +1404,18 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
    重跑是从该任务重新开始，不是从整个 feature 重新开始。
 
 **`qa_execution_unknown` 的处理**：按上文 `--rerun-unknown-qa` 的条件恢复。
-它只接受「已记录的用例结果全部 PASS 且没有定稿执行报告」的未完成调用，
+它只接受「已记录的用例结果全部 PASS，且没有定稿执行报告、或报告为全 PASS 并逐行有权威依据」的未完成调用，
 FAIL/BLOCKED 或资源未关闭的仍然拒绝，不会伪造通过。
+
+质检执行结束时运行已不是原状态（例如执行期间范围内文件被改，状态变为 `correction_review_required`）：
+宿主先把本次调用观察到的 BLOCKED 或 FAIL 写成 `test_run/complete`（漂移时为 BLOCKED、各行 `sourceChanged`），再返回 `stale_qa`；
+把代码还原到审查包后，按已完成的 BLOCKED 用 `--rerun-blocked-qa` 重跑。观察到的 PASS 不在状态已变时记为完成：
+该调用保留为 `qa_execution_unknown`，任何读取方都不把它当通过；确认后用 `--rerun-unknown-qa` 丢弃并重跑，前提是报告 `Overall: PASS`、
+每行都是 PASS 且有权威依据（命令退出码 0、browser 的 `case_complete` PASS 日志行、契约已确认且映射命令都退出 0 的 logic）。旧版本在写出固定报告 `{testRunId}-execution.md` 之后、
+写 complete 之前就返回 `stale_qa`，留下「有报告、无 complete」的调用（`qa_execution_unknown`）：确认旧宿主已退出、代码已还原后，
+在原 run 用 `--rerun-blocked-qa` 恢复。宿主以该报告为本次结果（报告 `Overall` 须与逐行 verdict 一致），报告中每条 PASS 行也须有上述权威依据，按上段同一规则判定每条非 PASS 行，
+superseded 行另记 `incomplete_report: true`，回放同样以报告复核；FAIL、无法判定的漂移行、`--qa-environment-failure` 均不适用。
+日志不改写，旧调用保留原 start 与 case 行。
 
 **单任务无结果 Review 的显式退出**（批次不支持）：保留原 `run.json`、review 配置及原 host 身份，
 写一个 `abandon-review.json`；若原运行还用了 protected 或 workflow 配置，`permissions` 中也带上原配置参数。

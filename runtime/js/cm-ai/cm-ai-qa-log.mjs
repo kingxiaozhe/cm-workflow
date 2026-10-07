@@ -230,29 +230,60 @@ const legacyEligible=(row,environment)=>!row.sourceChanged&&(
     ||row.cleanup==='failed'||row.hostRequestTimeout===true
     ||environment!=null&&row.environment!=null&&digest(row.environment)!==digest(environment)));
 
+// The executor's report format: one JSON row per `## {id}` section after the summary.
+function readReportCases(text,code){
+  return text.split(/^## /m).slice(1).flatMap(section=>{
+    const split=section.indexOf('\n'),name=section.slice(0,split);
+    const row=JSON.parse(section.slice(split+1));
+    if(name==='deferred_cases'&&Array.isArray(row))return [];
+    need(row.id===name&&['commands','logic','browser'].includes(row.kind),code);id(row.id);return [row];
+  });
+}
+// A report row's PASS backed by authoritative inputs: a command's own zero exit,
+// the durable browser case_complete PASS row, or a logic case the approved
+// contract resolves whose mapped commands all exited 0 and that is not CONTRADICTED.
+function passBacking(items,specsDir,feature,cases,code){
+  const byId=new Map(cases.map(row=>[row.id,row])),contract=contractCases(specsDir,feature,code);
+  const logged=new Map(items.filter(({row})=>['case_complete','case_blocked'].includes(row.phase))
+    .map(({row})=>[row.case_id,row.phase==='case_blocked'?'BLOCKED':row.result]));
+  const resolved=row=>!confirmationPending(contract.get(row.id))&&row.needsConfirmation!==true;
+  const logicPass=row=>resolved(row)&&row.staticVerdict!=='CONTRADICTED'
+    &&Array.isArray(row.commandEvidence)&&row.commandEvidence.length>0
+    &&row.commandEvidence.every(item=>byId.get(item)?.kind==='commands'&&byId.get(item).exitCode===0);
+  const backed=row=>row.kind==='commands'?row.exitCode===0:row.kind==='browser'?logged.get(row.id)==='PASS':logicPass(row);
+  return {byId,logged,resolved,logicPass,backed};
+}
+
 // Read the executor's existing report format, including pre-recovery reports.
 // Summary counts alone cannot distinguish product failures from host evidence gaps.
-function recoverableCases(items,specsDir,environment,code='qa_rerun_not_blocked_by_evidence',environmentFailure=false,legacyRule=false){
-  const completes=items.filter(({row})=>row.phase==='complete');
-  need(completes.length===1,code);
-  const complete=completes[0].row,start=items[0]?.row;
-  need(start?.phase==='start'&&(environmentFailure?complete.result==='FAIL'&&complete.failed>0
+// incomplete: the call wrote its fixed report but no complete row (a pre-fix host
+// rejected stale_qa in between). The report is then the only result; its counts
+// stand in for the complete row and every other rule applies unchanged.
+function recoverableCases(items,specsDir,environment,code='qa_rerun_not_blocked_by_evidence',environmentFailure=false,legacyRule=false,incomplete=false){
+  const completes=items.filter(({row})=>row.phase==='complete'),start=items[0]?.row;
+  need(completes.length===(incomplete?0:1)&&start?.phase==='start'&&!(incomplete&&(legacyRule||environmentFailure)),code);
+  let complete=incomplete?null:completes[0].row;
+  if(incomplete){
+    const report=path.join(specsDir,'.reviews',`${start.operation_id}-execution.md`);
+    complete={mode:start.mode,case_count:start.case_count,report,result:null,passed:null,failed:null,blocked:null};
+  }
+  let cases;
+  try{
+    const file=reportFile(specsDir,complete.report);need(fs.statSync(file).size<=MiB,code);
+    const text=fs.readFileSync(file,'utf8');cases=readReportCases(text,code);
+    if(incomplete){
+      const count=verdict=>cases.filter(row=>row.verdict===verdict).length;
+      Object.assign(complete,{passed:count('PASS'),failed:count('FAIL'),blocked:count('BLOCKED')});
+      complete.result=complete.failed>0?'FAIL':complete.blocked>0?'BLOCKED':'PASS';
+      need(new RegExp(`^Overall: ${complete.result}$`,'m').test(text),code);
+    }
+  }catch{need(false,code);}
+  need((environmentFailure?complete.result==='FAIL'&&complete.failed>0
       :complete.result==='BLOCKED'&&complete.failed===0&&complete.blocked>0)
     &&complete.mode===start.mode&&complete.case_count===start.case_count
     &&['case_count','passed','failed','blocked'].every(key=>Number.isSafeInteger(complete[key])&&complete[key]>=0)
     &&complete.passed+complete.failed+complete.blocked===start.case_count
     &&!items.some(({row})=>row.phase==='case_complete'&&row.result!=='PASS'),code);
-  let cases;
-  try{
-    const file=reportFile(specsDir,complete.report);need(fs.statSync(file).size<=MiB,code);
-    const sections=fs.readFileSync(file,'utf8').split(/^## /m).slice(1);
-    cases=sections.flatMap(section=>{
-      const split=section.indexOf('\n'),name=section.slice(0,split);
-      const row=JSON.parse(section.slice(split+1));
-      if(name==='deferred_cases'&&Array.isArray(row))return [];
-      need(row.id===name&&['commands','logic','browser'].includes(row.kind),code);id(row.id);return [row];
-    });
-  }catch{need(false,code);}
   need(cases.length===start.case_count&&new Set(cases.map(row=>row.id)).size===cases.length
     &&cases.filter(row=>row.verdict==='PASS').length===complete.passed
     &&cases.filter(row=>row.verdict==='FAIL').length===complete.failed
@@ -261,15 +292,17 @@ function recoverableCases(items,specsDir,environment,code='qa_rerun_not_blocked_
   const mapped=(row,test)=>Array.isArray(row.commandEvidence)&&row.commandEvidence.some(item=>test(byId.get(item)));
   const blocked=cases.filter(row=>row.verdict==='BLOCKED'),failed=cases.filter(row=>row.verdict==='FAIL');
   if(legacyRule){for(const row of blocked)need(legacyEligible(row,environment),code);return {blocked:blocked.map(row=>row.id).sort(),failed:[]};}
-  const contract=contractCases(specsDir,start.feature,code);
   // A case may be rerun only if the approved contract has no unresolved
   // [需确认] expectation for it; the report marker must not say otherwise.
-  const resolved=row=>!confirmationPending(contract.get(row.id))&&row.needsConfirmation!==true;
+  const {logged,resolved,logicPass,backed}=passBacking(items,specsDir,start.feature,cases,code);
+  // Without a complete row the report's own counts are the result: every PASS
+  // it claims must be backed by the authoritative inputs as well.
+  if(incomplete)for(const row of cases.filter(row=>row.verdict==='PASS'))need(backed(row),code);
   // A host-declared BLOCKED is proven by the durable case_blocked log row the
   // executor appended when the session answered, not by the mutable report.
   const declaredInLog=new Set(items.filter(({row})=>row.phase==='case_blocked'&&row.host_declared_blocked===true)
     .map(({row})=>row.case_id));
-  for(const row of blocked)need(!row.sourceChanged&&(
+  const eligible=row=>(
     row.kind==='logic'&&resolved(row)&&(row.staticVerdict==='INSUFFICIENT_EVIDENCE'
       // Blocked only by a mapped command without exit code, derived from the
       // recorded command rows; the executor's marker has to agree.
@@ -277,7 +310,24 @@ function recoverableCases(items,specsDir,environment,code='qa_rerun_not_blocked_
     ||row.kind==='browser'&&resolved(row)&&(typeof row.evidenceProblem==='string'&&row.evidenceProblem.length>0
       ||row.cleanup==='failed'||row.hostRequestTimeout===true||declaredInLog.has(row.id)&&row.hostDeclaredBlocked===true
       ||environment!=null&&row.environment!=null&&digest(row.environment)!==digest(environment))
-    ||unavailableCommand(row)),code);
+    ||unavailableCommand(row));
+  // A row BLOCKED only because the source changed during execution is recovered
+  // by what it was before the change: PASS, or a BLOCKED that is itself
+  // recoverable. A FAIL, or a verdict that cannot be told, stays non-recoverable.
+  // Reports written before verdictBeforeSourceChange existed are read from the
+  // command's own exit code and the durable browser case row; logic fails closed.
+  // The report is mutable, so a recorded verdictBeforeSourceChange must agree with
+  // what the command's exit code, the durable browser case row or the mapped
+  // commands of a logic case show; any disagreement is treated as unknown.
+  const before=row=>{
+    const claimed=Object.hasOwn(row,'verdictBeforeSourceChange')?row.verdictBeforeSourceChange:undefined;
+    const derived=row.kind==='commands'?(row.exitCode===0?'PASS':unavailableCommand(row)?'BLOCKED':exitedCommand(row)?'FAIL':null)
+      :row.kind==='browser'?logged.get(row.id)??null
+      :claimed==='PASS'?(logicPass(row)?'PASS':null):['BLOCKED','FAIL'].includes(claimed)?claimed:null;
+    return claimed===undefined||claimed===derived?derived:null;
+  };
+  for(const row of blocked)need(row.sourceChanged===true?(before(row)==='PASS'||before(row)==='BLOCKED'&&eligible(row))
+    :eligible(row),code);
   // Only declared (otherwise failed is empty): every failure must be a command
   // exit, or a logic case failed by such a mapped command. Browser and
   // CONTRADICTED failures never are.
@@ -329,7 +379,11 @@ function validateRunSequence(items,code='qa_round_invalid',specsDir){
           // Rows without recovery_rule were written by released versions before
           // this change (the pre-branch format) under the original rule.
           const legacy=row.recovery_rule===undefined;need(legacy||row.recovery_rule===2,code);
-          const cases=recoverableCases(prior,specsDir,row.expected_environment,code,declared,legacy);
+          // incomplete_report: the superseded call had a fixed report but no complete row.
+          const incomplete=row.incomplete_report===true;
+          need(row.incomplete_report===undefined||incomplete&&!legacy&&!declared
+            &&!prior.some(entry=>entry.row.phase==='complete'),code);
+          const cases=recoverableCases(prior,specsDir,row.expected_environment,code,declared,legacy,incomplete);
           need(JSON.stringify(row.blocked_cases)===JSON.stringify(cases.blocked)
             &&(declared?JSON.stringify(row.failed_cases)===JSON.stringify(cases.failed):row.failed_cases===undefined),code);
         }
@@ -378,16 +432,26 @@ export function inspectCmAiQaRecovery(input,{blocked=false,environment=null,envi
     // whether this was a declared environment failure; the flag is not re-read.
     const recorded=runs.find(({row})=>row.phase==='superseded')?.row;
     const declared=recorded?recorded.reason==='declared_environment_failure':environmentFailure!==null;
-    const cases=recoverableCases(runs,input.specsDir,environment,'qa_rerun_not_blocked_by_evidence',declared,
-      recorded!==undefined&&recorded.recovery_rule===undefined);
+    const prior=runs.filter(({row})=>row.phase!=='superseded');
+    const incomplete=recorded?recorded.incomplete_report===true:!prior.some(({row})=>row.phase==='complete');
+    const cases=recoverableCases(prior,input.specsDir,environment,'qa_rerun_not_blocked_by_evidence',declared,
+      recorded!==undefined&&recorded.recovery_rule===undefined,incomplete);
     need(start.attempt<3,'qa_round_invalid');
     return {testRunId:start.operation_id,qaRound:start.attempt,mode:start.mode,caseCount:start.case_count,
-      blockedCases:cases.blocked,failedCases:cases.failed,superseded:recorded!==undefined};
+      blockedCases:cases.blocked,failedCases:cases.failed,superseded:recorded!==undefined,incompleteReport:incomplete};
   }
   const passed=partialPassCases(runs,'qa_execution_unknown');
   const report=path.join(input.specsDir,'.reviews',`${start.operation_id}-execution.md`);
   let exists=false;try{fs.lstatSync(report);exists=true;}catch(error){if(error.code!=='ENOENT')throw error;}
-  need(!exists,'qa_execution_unknown');
+  // A report without complete is an unconfirmed result: a host that found the run
+  // stale after an all-PASS execution records no complete. Only that all-PASS,
+  // fully backed report may be discarded and rerun; anything else stays unknown.
+  if(exists)try{
+    const text=fs.readFileSync(reportFile(input.specsDir,report),'utf8'),cases=readReportCases(text,'qa_execution_unknown');
+    const {backed}=passBacking(runs,input.specsDir,start.feature,cases,'qa_execution_unknown');
+    need(/^Overall: PASS$/m.test(text)&&cases.length===start.case_count&&new Set(cases.map(row=>row.id)).size===cases.length
+      &&cases.every(row=>row.verdict==='PASS'&&backed(row)),'qa_execution_unknown');
+  }catch{need(false,'qa_execution_unknown');}
   return {testRunId:start.operation_id,qaRound:start.attempt,mode:start.mode,caseCount:start.case_count,
     partialPassCases:passed,abandoned:runs.some(({row})=>row.phase==='abandoned')};
 }
@@ -496,7 +560,7 @@ export function recordCmAiQaRun(input) {
   const qaRound=input.qaRound??1;
   need(Number.isSafeInteger(qaRound)&&qaRound>=1&&qaRound<=3,'qa_round_invalid');
   const binding={specsDir:input.specsDir,feature:input.feature,identity:input.identity,packageDigest:input.packageDigest};
-  let passed=[],blockedCases=[],failedCases=[],declaredFailure=null;
+  let passed=[],blockedCases=[],failedCases=[],declaredFailure=null,incompleteReport=false;
   if(Object.hasOwn(input,'environmentFailure'))need(input.phase==='superseded'&&!input.configurationRevision
     &&validEnvironmentFailureReason(input.environmentFailure),'qa_recovery_authorization_required');
   if(input.configurationRevision){
@@ -507,7 +571,7 @@ export function recordCmAiQaRun(input) {
   }else if(input.phase==='superseded'){
     const previous=inspectCmAiQaRecovery(binding,{blocked:true,environment:input.expectedEnvironment,
       environmentFailure:input.environmentFailure??null});
-    blockedCases=previous.blockedCases;failedCases=previous.failedCases;
+    blockedCases=previous.blockedCases;failedCases=previous.failedCases;incompleteReport=previous.incompleteReport;
     declaredFailure=input.environmentFailure??null;
     need(previous.testRunId===input.testRunId&&previous.qaRound===qaRound
       &&previous.mode===input.mode&&previous.caseCount===input.caseCount,'qa_round_invalid');
@@ -554,6 +618,7 @@ export function recordCmAiQaRun(input) {
   if(input.phase==='superseded')Object.assign(data,{previous_test_run_id:input.testRunId,
     reason:declaredFailure===null?'host_evidence_problem':'declared_environment_failure',recovery_rule:2,
     blocked_cases:blockedCases,expected_environment:input.expectedEnvironment??null,
+    ...(incompleteReport?{incomplete_report:true}:{}),
     ...(declaredFailure===null?{}:{failed_cases:failedCases,environment_failure_reason:declaredFailure})});
   if(input.configurationRevision){
     delete data.blocked_cases;delete data.expected_environment;delete data.recovery_rule;

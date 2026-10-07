@@ -5,6 +5,7 @@
 
 ## 未发布
 
+- `cm-ai` 质检执行期间范围内文件被改时不再卡死：宿主先把本次观察到的 BLOCKED/FAIL 写成 `test_run/complete`（漂移行为 BLOCKED、`sourceChanged`，并记 `verdictBeforeSourceChange`），再返回 `stale_qa`；观察到的 PASS 不记为完成，经核对后只能用 `--rerun-unknown-qa` 重跑；代码还原后可用 `--rerun-blocked-qa` 重跑。漂移前为 PASS 或宿主可判定 BLOCKED 的行才可重跑，FAIL 与无法判定的行仍拒绝。旧版本留下的「有固定报告、无 complete」调用（`qa_execution_unknown`）也可用 `--rerun-blocked-qa` 按报告恢复，superseded 记 `incomplete_report`，日志只追加不改写。
 - `cm-ai` 任务 scope 含受保护路径（AGENTS.md、CLAUDE.md、`.claude/`、`.codex/`、tasks.md、`.cm-*` 等）时，单任务宿主、批量宿主和 `openControlRun` 在建运行前直接以 `protected_scope` 拒绝并列出路径，不写任何运行记录；派发前确定被拒的开发记为 `blocked/protected_scope`，旧版本停在 `unknown/execution_error` 且无出口的运行按原记录回放为该终态（记录不改写），之后可按原门禁新建运行。文档补充规则文件的受支持修改途径，`cm-prd` 拆任务时提示规则文件不进开发 scope。保护范围不变。
 - `cm-ai` 支持显式选择批次：`cm-ai-admission.mjs --feature N.slug --print-run-definition` 写入运行定义的 `featureSelection`，`cm-ai-host.mjs`、`cm-ai-drive.mjs` 也可用 `--feature`；仍校验全部批准、manifest 与所选批次内依赖，所选批次已无待办时明确提示且不为其他批次生成定义或建运行。不显式选择时行为不变。
 - 普通当前会话宿主新增 `--review-runtime codex|claude`（当前会话开发、另一工具审查，须与 roles 一致并写入运行指纹）；批准口令新增整句「可以，请开始开发」。
