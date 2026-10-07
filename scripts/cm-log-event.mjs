@@ -200,9 +200,11 @@ export function unclosedResources(states){
   return [...states].filter(([,value])=>['acquired','cleanup_failed'].includes(value[0])).map(([key])=>key).sort();
 }
 
-function applyTestRunTransition(active,openCases,phase,caseId){
+function applyTestRunTransition(active,openCases,phase,caseId,incompleteReport=false){
   if(phase==='superseded'){
-    if(active||openCases.size)throw new UsageError('QA superseded requires a completed invocation');
+    // incomplete_report: a call with its fixed report but no complete row (see
+    // validateQaSupersession) is closed by its own superseded row.
+    if(active!==incompleteReport||openCases.size)throw new UsageError('QA superseded requires a completed invocation');
     return false;
   }
   if(phase==='start'){
@@ -353,6 +355,20 @@ function validateQaSupersession(state,event){
   }
   const caseList=(value,count)=>Array.isArray(value)&&value.length===count&&new Set(value).size===value.length
     &&value.every(item=>typeof item==='string'&&RESOURCE_ID.test(item));
+  // A host before the stale_qa fix wrote the fixed report and then no complete
+  // row. The host re-reads that report under the blocked-evidence rules; here the
+  // structural part: the still active, otherwise unclosed latest invocation.
+  if(event.incomplete_report!==undefined){
+    if(event.incomplete_report!==true||!state.active||state.superseded||!start||complete||start.attempt>=3
+      ||event.workflow!=='cm-ai'||event.node!=='N6'||event.reason!=='host_evidence_problem'
+      ||event.previous_test_run_id!==start.operation_id||event.recovery_rule!==2
+      ||!Array.isArray(event.blocked_cases)||event.blocked_cases.length===0||event.blocked_cases.length>start.case_count
+      ||!caseList(event.blocked_cases,event.blocked_cases.length)
+      ||!['repository_id','run_id','feature','task','package_digest','qa_decision_id','operation_id','attempt','mode','case_count']
+        .every(key=>event[key]!==undefined&&event[key]===start[key]))
+      throw new UsageError('QA superseded of an incomplete invocation requires its active start, no complete row and blocked_cases');
+    return;
+  }
   if(event.reason==='declared_environment_failure'){
     const reason=event.environment_failure_reason;
     if(state.active||state.superseded||!start||!complete||complete.result!=='FAIL'||!(complete.failed>0)
@@ -387,7 +403,7 @@ function loadTestRunState(file,runId){
     if(phase==='complete'&&!active&&!openCases.size)continue;
     if(phase==='abandoned')validateQaAbandonment({active,start,hasNonPassResult,partialPassCases},value);
     if(phase==='superseded')validateQaSupersession({active,start,complete,superseded},value);
-    active=applyTestRunTransition(active,openCases,phase,typeof caseId==='string'?caseId:null);
+    active=applyTestRunTransition(active,openCases,phase,typeof caseId==='string'?caseId:null,value.incomplete_report===true);
     if(phase==='start'){start=value;complete=null;hasNonPassResult=false;partialPassCases.clear();abandoned=false;superseded=false;}
     if(phase==='complete')complete=value;
     if(phase==='case_complete'){
@@ -534,9 +550,14 @@ export function writeLogEvent(rawInput,{environment=process.env,now=new Date(),u
     if(unclosedResources(loadResourceStates(authoritativeLog,built.runId)).length)
       throw new UsageError('QA abandonment blocked by unclosed resources');
   }
-  if(existing===null&&event.event==='test_run'&&event.phase==='superseded')validateQaSupersession(testRun,event);
+  if(existing===null&&event.event==='test_run'&&event.phase==='superseded'){
+    validateQaSupersession(testRun,event);
+    if(event.incomplete_report===true&&unclosedResources(loadResourceStates(authoritativeLog,built.runId)).length)
+      throw new UsageError('QA superseded of an incomplete invocation blocked by unclosed resources');
+  }
   if(existing===null&&event.event==='test_run'&&event.phase!==undefined)
-    applyTestRunTransition(testRun.active,testRun.openCases,event.phase,event.case_id??null);
+    applyTestRunTransition(testRun.active,testRun.openCases,event.phase,event.case_id??null,
+      event.phase==='superseded'&&event.incomplete_report===true);
 
   let projectDuplicate=false;
   if(projectLog){

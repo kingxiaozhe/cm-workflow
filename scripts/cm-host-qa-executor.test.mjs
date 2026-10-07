@@ -732,8 +732,9 @@ const FORGED={'contract-resolved-after-run':'logic-confirmation-insufficient','f
   'forged-confirmation-unavailable':'logic-confirmation-unavailable','forged-browser-confirmation':'needs-confirmation',
   // No browser answer happened: a marker added to the report must not stand in for one.
   'forged-no-capability':'no-browser-capability','forged-browser-evidence':'needs-confirmation'};
+// source-drift and incomplete have their own tests below (2026-10-06 author-column-T-009).
 for(const name of ['evidence','cleanup','environment','timeout','logic','commands','product-blocked',
-  'source-drift','FAIL','mixed-failure','round-limit','incomplete','superseded-crash','one-shot','metadata-command',
+  'FAIL','mixed-failure','round-limit','superseded-crash','one-shot','metadata-command',
   'legacy-product-blocked','needs-confirmation','command-unavailable','command-exit','declared-command-exit','declared-product-fail',
   'declared-contradicted','declared-after-repair','declared-superseded-crash','declared-blocked','declared-unknown-verdict',
   'logic-confirmation-unavailable','logic-confirmation-insufficient','no-browser-capability',...Object.keys(FORGED)])
@@ -925,4 +926,206 @@ test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
       if(precise.length)assert.equal(inspectCmAiQaResult({...query,testRunId:round2}).status,'passed');
     }
   }finally{f.cleanup();}
+});
+
+// A source change during QA (2026-10-06 author-column-T-009): files in scope were
+// replaced mid-run. The executor marks every row BLOCKED/sourceChanged; a host
+// before this fix wrote the report, then rejected stale_qa before `complete`,
+// leaving qa_execution_unknown with no recovery path.
+async function driftFixture({browserOnly=false,firstBrowser='PASS',commandFails=false,drift=true,confirmLogic=false}={}){
+  const {createCmAiConversationEntry}=await import('../runtime/js/cm-ai/cm-ai-conversation-entry.mjs');
+  const f=fixture();
+  const sourceFile=path.join(f.configuration.codeProject,'source.mjs'),reviewed=fs.readFileSync(sourceFile);
+  if(browserOnly){
+    const source=path.join(f.binding.specsDir,f.binding.feature,'test-cases.json'),contract=JSON.parse(fs.readFileSync(source));
+    contract.cases=contract.cases.filter(item=>item.kind==='browser').map((item,index)=>({...item,id:`TC-00${index+1}`}));fs.writeFileSync(source,JSON.stringify(contract));
+    f.configuration.commands[0].caseIds=[];
+  }
+  const artifact=path.join(f.binding.specsDir,'.reviews','browser.txt');fs.writeFileSync(artifact,'Synthetic observation');
+  // A real product failure: the declared command exits 1 (an exit code, not unavailable).
+  if(commandFails)f.configuration.commands[0].command=[process.execPath,'-e','process.exit(1)'];
+  if(confirmLogic){
+    const source=path.join(f.binding.specsDir,f.binding.feature,'test-cases.json'),contract=JSON.parse(fs.readFileSync(source));
+    contract.cases[0].expected=['[需确认] synthetic expectation'];fs.writeFileSync(source,JSON.stringify(contract));
+  }
+  const state={round:0,browserCalls:0,stale:false};
+  const executor=createHostQaExecutor({...f.configuration,
+    logic:async()=>({verdict:'SUPPORTED',evidence:['Synthetic static observation']}),
+    browser:async request=>{
+      state.browserCalls++;
+      if(state.round===0&&drift)fs.appendFileSync(sourceFile,'// replaced mid-QA\n');
+      return {verdict:state.round===0?firstBrowser:'PASS',evidence:[artifact],environment:request.environment,cleanup:'completed'};
+    }});
+  const completed={state:'fixture_completed',code:null,identity:f.binding.identity,packageDigest:f.binding.packageDigest};
+  const stale={...completed,code:'correction_review_required'};
+  const {codeProject,testRunId,...query}=f.binding;
+  const log=path.join(f.binding.specsDir,'运行日志.jsonl'),rows=()=>fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse);
+  const entry=(extra={})=>createCmAiConversationEntry({specsDir:query.specsDir,feature:query.feature,identity:query.identity,codeProject,
+    runner:{status:()=>state.stale?stale:completed,executeEffect:()=>assert.fail('no development/Review replay'),
+      cancel:()=>completed,run:()=>assert.fail('no task replay')},
+    qaExecutor:{...executor,run:async(...args)=>{const result=await executor.run(...args);
+      // The fix association notices the replaced files right after the run.
+      if(state.round===0)state.stale=true;state.round++;return result;}},
+    qaLogHome:f.configuration.logHome,qaDecisionProvider:{timeoutMs:1000,decide:()=>assert.fail('no repeated QA decision')},...extra});
+  const advance={version:1,operation:'advance',requestId:'advance',identity:f.binding.identity};
+  const restore=()=>{fs.writeFileSync(sourceFile,reviewed);state.stale=false;};
+  const report=()=>path.join(f.binding.specsDir,'.reviews',`${rows().find(row=>row.phase==='start').operation_id}-execution.md`);
+  const reportRows=()=>fs.readFileSync(report(),'utf8').split(/^## /m).slice(1).map(part=>{
+    const split=part.indexOf('\n');return [part.slice(0,split),JSON.parse(part.slice(split+1))];}).filter(([name])=>name!=='deferred_cases');
+  return {f,state,entry,advance,restore,rows,log,report,reportRows,query};
+}
+
+test('a stale QA run records what it observed (complete, BLOCKED/sourceChanged) before stale_qa, then reruns once restored',async()=>{
+  const d=await driftFixture();
+  try{
+    const stale=await d.entry().handle(d.advance);
+    assert.equal(stale.outcome,'rejected');assert.equal(stale.code,'stale_qa');
+    const complete=d.rows().filter(row=>row.phase==='complete');
+    assert.equal(complete.length,1);assert.equal(complete[0].result,'BLOCKED');assert.equal(complete[0].passed,0);
+    for(const [,row] of d.reportRows()){assert.equal(row.sourceChanged,true);assert.equal(row.verdictBeforeSourceChange,'PASS');}
+    d.restore();
+    const blocked=await d.entry().handle(d.advance);
+    assert.equal(blocked.code,'qa_result_blocked');
+    const rerun=await d.entry({rerunBlockedQa:true}).handle(d.advance);
+    assert.equal(rerun.code,'qa_passed',JSON.stringify(rerun));
+    const superseded=d.rows().filter(row=>row.phase==='superseded');
+    assert.equal(superseded.length,1);assert.equal(superseded[0].incomplete_report,undefined);
+    assert.deepEqual(superseded[0].blocked_cases,['TC-001','TC-002','declared-test']);
+    assert.deepEqual(d.rows().filter(row=>row.phase==='start').map(row=>row.attempt),[1,2]);
+  }finally{d.f.cleanup();}
+});
+
+test('a source-changed row that was FAIL before the change is never rerun, and a forged pre-change verdict is refused',async()=>{
+  const fail=await driftFixture({firstBrowser:'FAIL'});
+  try{
+    await fail.entry().handle(fail.advance);fail.restore();
+    const refused=await fail.entry({rerunBlockedQa:true}).handle(fail.advance);
+    assert.equal(refused.code,'qa_rerun_not_blocked_by_evidence');
+    assert.equal(fail.rows().filter(row=>row.phase==='superseded').length,0);
+  }finally{fail.f.cleanup();}
+  // A command that really exited 1 before the change is a product FAIL: never rerun.
+  const exited=await driftFixture({browserOnly:true,commandFails:true});
+  try{
+    await exited.entry().handle(exited.advance);exited.restore();
+    assert.deepEqual(exited.reportRows().filter(([name])=>name==='declared-test').map(([,row])=>[row.verdict,row.verdictBeforeSourceChange,row.exitCode]),
+      [['BLOCKED','FAIL',1]]);
+    const refused=await exited.entry({rerunBlockedQa:true}).handle(exited.advance);
+    assert.equal(refused.code,'qa_rerun_not_blocked_by_evidence');
+    assert.equal(exited.rows().filter(row=>row.phase==='superseded').length,0);
+  }finally{exited.f.cleanup();}
+  const forged=await driftFixture();
+  try{
+    await forged.entry().handle(forged.advance);forged.restore();
+    // The command really exited 1; the report claims it was PASS before the change.
+    const text=fs.readFileSync(forged.report(),'utf8');
+    fs.writeFileSync(forged.report(),text.replace(/("id": "declared-test",[\s\S]*?"exitCode": )0/,'$11'));
+    const refused=await forged.entry({rerunBlockedQa:true}).handle(forged.advance);
+    assert.equal(refused.code,'qa_rerun_not_blocked_by_evidence');
+  }finally{forged.f.cleanup();}
+});
+
+// The exact T-009 history: report written, no complete row, report rows without
+// verdictBeforeSourceChange (pre-fix executor). The log is never edited.
+async function legacyIncomplete(options){
+  const d=await driftFixture(options);
+  const {recordCmAiQaRun:record}=await import('../runtime/js/cm-ai/cm-ai-qa-log.mjs');
+  const begun={...d.f.binding,logHome:d.f.configuration.logHome};
+  const executor=d.entry();
+  // Reproduce the pre-fix host: run, report, then no complete row.
+  const qa=createHostQaExecutor({...d.f.configuration,logic:async()=>({verdict:'SUPPORTED',evidence:['Synthetic static observation']}),
+    browser:async request=>{d.state.browserCalls++;fs.appendFileSync(path.join(d.f.configuration.codeProject,'source.mjs'),'// replaced\n');
+      return {verdict:options?.firstBrowser??'PASS',evidence:[path.join(d.f.binding.specsDir,'.reviews','browser.txt')],environment:request.environment,cleanup:'completed'};}});
+  const binding=begin(d.f,qa);await qa.run(binding,new AbortController().signal);
+  void record;void begun;void executor;
+  const text=fs.readFileSync(d.report(),'utf8');
+  fs.writeFileSync(d.report(),text.replace(/,\n\s*"verdictBeforeSourceChange": "[A-Z]+"/g,''));
+  d.state.round=1;d.restore();
+  return d;
+}
+
+test('a pre-fix call with a fixed report but no complete row reruns under --rerun-blocked-qa; the log is only appended',async()=>{
+  const d=await legacyIncomplete({browserOnly:true});
+  try{
+    assert.equal(d.rows().some(row=>row.phase==='complete'),false);
+    assert.equal(d.reportRows().some(([,row])=>Object.hasOwn(row,'verdictBeforeSourceChange')),false);
+    const before=fs.readFileSync(d.log);
+    assert.equal((await d.entry().handle(d.advance)).code,'qa_execution_unknown');
+    assert.equal((await d.entry({rerunUnknownQa:true}).handle(d.advance)).code,'qa_execution_unknown');
+    assert.deepEqual(fs.readFileSync(d.log),before);
+    const rerun=await d.entry({rerunBlockedQa:true}).handle(d.advance);
+    assert.equal(rerun.code,'qa_passed',JSON.stringify(rerun));
+    const after=fs.readFileSync(d.log);
+    assert.deepEqual(after.subarray(0,before.length),before);
+    const superseded=d.rows().filter(row=>row.phase==='superseded');
+    assert.equal(superseded.length,1);assert.equal(superseded[0].incomplete_report,true);
+    assert.deepEqual(superseded[0].blocked_cases,['TC-001','declared-test']);
+    // Replay re-reads the same report: changing its Overall breaks the history.
+    const text=fs.readFileSync(d.report(),'utf8');
+    fs.writeFileSync(d.report(),text.replace('Overall: BLOCKED','Overall: PASS'));
+    assert.throws(()=>readCmAiQaRunRound({...d.query,testRunId:d.rows().filter(row=>row.phase==='start')[1].operation_id}));
+    fs.writeFileSync(d.report(),text);
+  }finally{d.f.cleanup();}
+});
+
+test('a pre-fix incomplete call stays refused when a row cannot be told (legacy logic) or was a FAIL',async()=>{
+  for(const options of [{},{browserOnly:true,firstBrowser:'FAIL'}]){
+    const d=await legacyIncomplete(options);
+    try{
+      const before=fs.readFileSync(d.log);
+      const refused=await d.entry({rerunBlockedQa:true}).handle(d.advance);
+      assert.equal(refused.code,'qa_rerun_not_blocked_by_evidence',JSON.stringify(options));
+      assert.deepEqual(fs.readFileSync(d.log),before);
+    }finally{d.f.cleanup();}
+  }
+});
+
+test('a stale run with an all-PASS observation records no complete; only --rerun-unknown-qa discards and reruns it',async()=>{
+  const d=await driftFixture({drift:false});
+  try{
+    const stale=await d.entry().handle(d.advance);
+    assert.equal(stale.code,'stale_qa');
+    assert.equal(d.rows().some(row=>row.phase==='complete'),false);
+    assert.match(fs.readFileSync(d.report(),'utf8'),/^Overall: PASS$/m);
+    d.restore();
+    // Never read as a pass, by this run or by the project gate's latest-run reader.
+    const {latestCmAiQaRun}=await import('../runtime/js/cm-ai/cm-ai-qa-log.mjs');
+    assert.throws(()=>latestCmAiQaRun(d.query),{code:'qa_result_incomplete'});
+    assert.equal((await d.entry().handle(d.advance)).code,'qa_execution_unknown');
+    assert.equal((await d.entry({rerunBlockedQa:true}).handle(d.advance)).code,'qa_rerun_not_blocked_by_evidence');
+    // A forged PASS on the command row without its zero exit is not backed.
+    const text=fs.readFileSync(d.report(),'utf8');
+    fs.writeFileSync(d.report(),text.replace(/("id": "declared-test",[\s\S]*?"exitCode": )0/,'$11'));
+    assert.equal((await d.entry({rerunUnknownQa:true}).handle(d.advance)).code,'qa_execution_unknown');
+    fs.writeFileSync(d.report(),text);
+    const rerun=await d.entry({rerunUnknownQa:true}).handle(d.advance);
+    assert.equal(rerun.code,'qa_passed',JSON.stringify(rerun));
+    assert.equal(d.rows().filter(row=>row.phase==='abandoned').length,1);
+  }finally{d.f.cleanup();}
+});
+
+test('a pre-fix incomplete report cannot hide a real failure behind a PASS verdict, nor a [需确认] case behind a PASS pre-change verdict',async()=>{
+  // The command really exited 1; only its final verdict is edited to PASS.
+  const hidden=await legacyIncomplete({browserOnly:true,commandFails:true});
+  try{
+    const text=fs.readFileSync(hidden.report(),'utf8');
+    fs.writeFileSync(hidden.report(),text.replace(/("id": "declared-test",\s*"kind": "commands",\s*"verdict": )"BLOCKED"/,'$1"PASS"'));
+    assert.match(fs.readFileSync(hidden.report(),'utf8'),/"verdict": "PASS"/);
+    const refused=await hidden.entry({rerunBlockedQa:true}).handle(hidden.advance);
+    assert.equal(refused.code,'qa_rerun_not_blocked_by_evidence');
+    assert.equal(hidden.rows().filter(row=>row.phase==='superseded').length,0);
+  }finally{hidden.f.cleanup();}
+  // The approved contract still says [需确认]; the report drops the marker and claims PASS before the change.
+  const unconfirmed=await driftFixture({confirmLogic:true});
+  try{
+    await unconfirmed.entry().handle(unconfirmed.advance);unconfirmed.restore();
+    const text=fs.readFileSync(unconfirmed.report(),'utf8');
+    const parts=text.split(/^## /m),index=parts.findIndex(part=>part.startsWith('TC-001\n'));
+    const body=parts[index].slice('TC-001'.length+1),row=JSON.parse(body);
+    assert.equal(row.verdictBeforeSourceChange,'BLOCKED');assert.equal(row.needsConfirmation,true);
+    delete row.needsConfirmation;row.verdictBeforeSourceChange='PASS';
+    parts[index]=`TC-001\n\n${JSON.stringify(row,null,2)}${body.match(/\s*$/)[0]}`;
+    fs.writeFileSync(unconfirmed.report(),parts.map((part,i)=>i?`## ${part}`:part).join(''));
+    const refused=await unconfirmed.entry({rerunBlockedQa:true}).handle(unconfirmed.advance);
+    assert.equal(refused.code,'qa_rerun_not_blocked_by_evidence');
+  }finally{unconfirmed.f.cleanup();}
 });

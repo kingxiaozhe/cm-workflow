@@ -276,7 +276,9 @@ export function createHostQaExecutor(options) {
       }
       if(rows.length===0)rows.push({id:'qa-unavailable',kind:'commands',verdict:'BLOCKED',evidence:['No executable QA contract']});
       const drift=digest(before.files)!==digest(snapshot().files);
-      if(drift)for(const row of rows){row.verdict='BLOCKED';row.sourceChanged=true;}
+      // Keep each row's own verdict: a later explicit rerun may only recover a row
+      // that was PASS or a host-judged BLOCKED before the source changed, never a FAIL.
+      if(drift)for(const row of rows){row.verdictBeforeSourceChange=row.verdict;row.verdict='BLOCKED';row.sourceChanged=true;}
       const passed=rows.filter(item=>item.verdict==='PASS').length,failed=rows.filter(item=>item.verdict==='FAIL').length,
         blocked=rows.filter(item=>item.verdict==='BLOCKED').length;
       need(passed+failed+blocked===caseCount,'qa_result_invalid');
