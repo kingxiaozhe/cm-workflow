@@ -313,7 +313,10 @@ export function createHostQaExecutor(options) {
             // The durable log row, appended now through the writer, is the record
             // that the session itself answered BLOCKED; the report only mirrors it.
             logStep(configuration,binding,'test_run',verdict==='BLOCKED'?'case_blocked':'case_complete',
-              {case_id:item.id,result:verdict,...(answered&&observed.verdict==='BLOCKED'?{host_declared_blocked:true}:{})},
+              {case_id:item.id,result:verdict,...(answered&&observed.verdict==='BLOCKED'?{host_declared_blocked:true}:{}),
+                // Whether this BLOCKED is a host request that timed out without an
+                // answer; --rerun-unknown-qa reads it after a whole-call timeout.
+                ...(verdict==='BLOCKED'?{host_request_timeout:hostRequestTimeout&&!answered}:{})},
               'QA browser case finished');
           }
         }

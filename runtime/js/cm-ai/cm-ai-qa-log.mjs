@@ -194,6 +194,39 @@ function partialPassCases(items,code){
   return [...new Set(cases)].sort();
 }
 
+// A call stopped by its whole-execution timeout (qa_execution_timeout) records
+// no complete. When every recorded browser case is PASS or a BLOCKED whose host
+// request timed out without a session answer, --rerun-unknown-qa may supersede
+// it into the next round. Current executors mark each case_blocked row with
+// host_request_timeout. Older rows lack the field, and nothing they recorded tells
+// a missed answer from an answer downgraded to BLOCKED (cleanup failed, other
+// environment) near the deadline: they count only with the full request window
+// elapsed since case_start (log times are whole seconds) and an explicit operator
+// attestation (--qa-environment-failure), recorded on the superseded row.
+// A session-declared BLOCKED, any FAIL or other BLOCKED refuses.
+function timedOutCases(items,code,requestTimeoutMs,attestation=null){
+  need(attestation===null||validEnvironmentFailureReason(attestation),code);
+  need(requestTimeoutMs===null||Number.isSafeInteger(requestTimeoutMs)&&requestTimeoutMs>0&&requestTimeoutMs<=3600000,code);
+  need(!items.some(({row})=>['complete','abandoned','superseded'].includes(row.phase)
+    ||(row.phase==='case_complete'&&row.result!=='PASS')),code);
+  const started=new Map(),timedOut=[];
+  for(const {row} of items){
+    if(row.phase==='case_start'){id(row.case_id);started.set(row.case_id,row.at);}
+    if(row.phase!=='case_blocked')continue;
+    id(row.case_id);need(row.result==='BLOCKED'&&row.host_declared_blocked!==true,code);
+    if(Object.hasOwn(row,'host_request_timeout'))need(row.host_request_timeout===true,code);
+    else{
+      const elapsed=Date.parse(row.at)-Date.parse(started.get(row.case_id));
+      need(requestTimeoutMs!==null&&Number.isFinite(elapsed)&&elapsed>=requestTimeoutMs-1000,code);
+      need(attestation!==null,code==='qa_execution_unknown'?'qa_environment_failure_required':code);
+    }
+    timedOut.push(row.case_id);
+  }
+  need(timedOut.length>0,code);
+  const passed=items.filter(({row})=>row.phase==='case_complete').map(({row})=>row.case_id);
+  return {timedOut:[...new Set(timedOut)].sort(),passed:[...new Set(passed)].sort()};
+}
+
 // host-check reports a command that produced no exit code as `unavailable`
 // (timeout, kill, spawn or output transport): an environment outcome, not the
 // product's answer. A real non-zero exit stays a product FAIL unless the
@@ -374,6 +407,10 @@ function validateRunSequence(items,code='qa_round_invalid',specsDir){
         if(row.reason==='qa_configuration_revision'){
           need(prior.filter(entry=>entry.row.phase==='complete').length===1,code);
           validateConfigurationSupersession(row,specsDir,code);
+        }else if(row.reason==='host_request_timeout'){
+          const cases=timedOutCases(prior,code,row.request_timeout_ms??null,row.legacy_timeout_attestation??null);
+          need(row.request_timeout_ms!==null&&JSON.stringify(row.timed_out_cases)===JSON.stringify(cases.timedOut)
+            &&JSON.stringify(row.partial_pass_cases)===JSON.stringify(cases.passed),code);
         }else{
           const declared=row.reason==='declared_environment_failure';
           need(declared?validEnvironmentFailureReason(row.environment_failure_reason):row.reason==='host_evidence_problem',code);
@@ -420,7 +457,7 @@ function qaRunRows(input){
 
 // Only a trusted resumed owner calls this after fresh explicit authorization.
 // Retain unknown for non-PASS results, even if their evidence files vanished.
-export function inspectCmAiQaRecovery(input,{blocked=false,environment=null,environmentFailure=null}={}){
+export function inspectCmAiQaRecovery(input,{blocked=false,environment=null,environmentFailure=null,timedOut=false,requestTimeoutMs=null,attestation=null}={}){
   const rows=qaRunRows(input),starts=validateRunSequence(rows,'qa_round_invalid',input.specsDir),start=starts.at(-1).row;
   const runs=rows.filter(item=>item.row.operation_id===start.operation_id);
   // Reject an operation ID reused under another decision, identity or package.
@@ -441,9 +478,20 @@ export function inspectCmAiQaRecovery(input,{blocked=false,environment=null,envi
     return {testRunId:start.operation_id,qaRound:start.attempt,mode:start.mode,caseCount:start.case_count,
       blockedCases:cases.blocked,failedCases:cases.failed,superseded:recorded!==undefined,incompleteReport:incomplete};
   }
-  const passed=partialPassCases(runs,'qa_execution_unknown');
   const report=path.join(input.specsDir,'.reviews',`${start.operation_id}-execution.md`);
   let exists=false;try{fs.lstatSync(report);exists=true;}catch(error){if(error.code!=='ENOENT')throw error;}
+  if(timedOut){
+    // After a crash between superseded and start, the recorded row decides.
+    const recorded=runs.find(({row})=>row.phase==='superseded')?.row;
+    need(recorded===undefined?!exists:recorded.reason==='host_request_timeout','qa_execution_unknown');
+    const timeout=recorded?recorded.request_timeout_ms??null:requestTimeoutMs;
+    const attested=recorded?recorded.legacy_timeout_attestation??null:attestation;
+    const cases=timedOutCases(runs.filter(({row})=>row.phase!=='superseded'),'qa_execution_unknown',timeout,attested);
+    need(start.attempt<3,'qa_round_invalid');
+    return {testRunId:start.operation_id,qaRound:start.attempt,mode:start.mode,caseCount:start.case_count,
+      timedOutCases:cases.timedOut,partialPassCases:cases.passed,requestTimeoutMs:timeout,attestation:attested,superseded:recorded!==undefined};
+  }
+  const passed=partialPassCases(runs,'qa_execution_unknown');
   // A report without complete is an unconfirmed result: a host that found the run
   // stale after an all-PASS execution records no complete. Only that all-PASS,
   // fully backed report may be discarded and rerun; anything else stays unknown.
@@ -555,6 +603,7 @@ export function recordCmAiQaRun(input) {
   if(Object.hasOwn(input,'expectedEnvironment'))keys.push('expectedEnvironment');
   if(Object.hasOwn(input,'configurationRevision'))keys.push('configurationRevision');
   if(Object.hasOwn(input,'environmentFailure'))keys.push('environmentFailure');
+  if(Object.hasOwn(input,'timedOutRecovery'))keys.push('timedOutRecovery');
   shape(input,keys);validIdentity(input.identity);id(input.testRunId);hex(input.packageDigest);
   text(input.specsDir);text(input.codeProject);text(input.feature);
   need(['commands','browser','all'].includes(input.mode));
@@ -563,7 +612,7 @@ export function recordCmAiQaRun(input) {
   const qaRound=input.qaRound??1;
   need(Number.isSafeInteger(qaRound)&&qaRound>=1&&qaRound<=3,'qa_round_invalid');
   const binding={specsDir:input.specsDir,feature:input.feature,identity:input.identity,packageDigest:input.packageDigest};
-  let passed=[],blockedCases=[],failedCases=[],declaredFailure=null,incompleteReport=false;
+  let passed=[],blockedCases=[],failedCases=[],declaredFailure=null,incompleteReport=false,timedOut=null;
   if(Object.hasOwn(input,'environmentFailure'))need(input.phase==='superseded'&&!input.configurationRevision
     &&validEnvironmentFailureReason(input.environmentFailure),'qa_recovery_authorization_required');
   if(input.configurationRevision){
@@ -571,6 +620,14 @@ export function recordCmAiQaRun(input) {
     const record=readQaConfigRevision(input.configurationRevision),target=inspectCmAiQaRevisionTarget(binding);
     need(record.taskAttempt===input.identity.attempt&&record.testRunId===input.testRunId&&target.testRunId===input.testRunId&&record.packageDigest===input.packageDigest
       &&target.qaRound===qaRound&&record.qaRound===qaRound&&target.mode===input.mode&&target.caseCount===input.caseCount,'qa_revision_invalid');
+  }else if(input.timedOutRecovery){
+    shape(input.timedOutRecovery,['requestTimeoutMs','attestation']);
+    need(input.phase==='superseded'&&!Object.hasOwn(input,'expectedEnvironment')&&!Object.hasOwn(input,'environmentFailure'),'qa_recovery_authorization_required');
+    timedOut=inspectCmAiQaRecovery(binding,{timedOut:true,requestTimeoutMs:input.timedOutRecovery.requestTimeoutMs,
+      attestation:input.timedOutRecovery.attestation});
+    need(timedOut.testRunId===input.testRunId&&timedOut.qaRound===qaRound
+      &&timedOut.mode===input.mode&&timedOut.caseCount===input.caseCount,'qa_round_invalid');
+    if(timedOut.superseded)return;
   }else if(input.phase==='superseded'){
     const previous=inspectCmAiQaRecovery(binding,{blocked:true,environment:input.expectedEnvironment,
       environmentFailure:input.environmentFailure??null});
@@ -588,8 +645,9 @@ export function recordCmAiQaRun(input) {
   }else if(input.phase==='start'){
     let previous;
     if(Object.hasOwn(input,'previousTestRunId')){
-      const rows=qaRunRows(binding),superseded=rows.at(-1)?.row.phase==='superseded';
-      previous=inspectCmAiQaConfigurationRecovery(binding)??inspectCmAiQaRecovery(binding,{blocked:superseded,environment:rows.at(-1)?.row.expected_environment});
+      const rows=qaRunRows(binding),last=rows.at(-1)?.row,superseded=last?.phase==='superseded';
+      previous=inspectCmAiQaConfigurationRecovery(binding)??(superseded&&last.reason==='host_request_timeout'
+        ?inspectCmAiQaRecovery(binding,{timedOut:true}):inspectCmAiQaRecovery(binding,{blocked:superseded,environment:last?.expected_environment}));
       need((previous.abandoned||previous.superseded)&&previous.testRunId===input.previousTestRunId
         &&previous.qaRound+(superseded?1:0)===qaRound,'qa_round_invalid');
     }else previous=latestCmAiQaRun(binding);
@@ -627,7 +685,11 @@ export function recordCmAiQaRun(input) {
     }
   }else need(!Object.hasOwn(input,'droppedTaskCases')&&!Object.hasOwn(input,'droppedTaskCommands'),'qa_plan_invalid');
   if(input.phase==='abandoned')Object.assign(data,{previous_test_run_id:input.testRunId,reason:'host_terminated',partial_pass_cases:passed});
-  if(input.phase==='superseded')Object.assign(data,{previous_test_run_id:input.testRunId,
+  if(timedOut)Object.assign(data,{previous_test_run_id:input.testRunId,reason:'host_request_timeout',
+    timed_out_cases:timedOut.timedOutCases,partial_pass_cases:timedOut.partialPassCases,
+    ...(timedOut.requestTimeoutMs===null?{}:{request_timeout_ms:timedOut.requestTimeoutMs}),
+    ...(timedOut.attestation===null?{}:{legacy_timeout_attestation:timedOut.attestation})});
+  else if(input.phase==='superseded')Object.assign(data,{previous_test_run_id:input.testRunId,
     reason:declaredFailure===null?'host_evidence_problem':'declared_environment_failure',recovery_rule:2,
     blocked_cases:blockedCases,expected_environment:input.expectedEnvironment??null,
     ...(incompleteReport?{incomplete_report:true}:{}),

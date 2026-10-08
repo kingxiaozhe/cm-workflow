@@ -80,13 +80,15 @@ export function createHostWorkflowCapabilities({definition,configuration,bridge,
     const requestTimeout={timeoutMs:configuration.qa.timeoutMs??60000};
     result.qaDecisionProvider=parallelMember?createParallelMemberQaDecisionProvider():createHostQaDecisionProvider({timeoutMs:60000,
       assess:(request,signal)=>bridge.call('qa_assess',request,signal,requestTimeout)});
-    result.qaExecutor=createHostQaExecutor({specsDir,codeProject,feature,requirements,runtime,
+    // requestTimeoutMs stays outside the fingerprinted executor configuration;
+    // timed-out QA recovery reads older case_blocked rows against it.
+    result.qaExecutor=Object.freeze({...createHostQaExecutor({specsDir,codeProject,feature,requirements,runtime,
       ...(definition.codeProjects?{codeProjects:definition.codeProjects}:{}),
       ...(bootstrap?{bootstrap:{requirements:bootstrap.configuration.bootstrapRequirements,scope:definition.scope}}:{}),
       ...configuration.qa,timeoutMs:1800000,logHome,
       ...(protectedExecution?{specsRoot:specsDir}:{}),
       logic:(request,signal)=>bridge.call('qa_logic',request,signal,requestTimeout),
-      browser:(request,signal)=>bridge.call('qa_browser',request,signal,requestTimeout)});
+      browser:(request,signal)=>bridge.call('qa_browser',request,signal,requestTimeout)}),requestTimeoutMs:requestTimeout.timeoutMs});
   }
   return result;
 }

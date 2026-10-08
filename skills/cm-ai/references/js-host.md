@@ -321,6 +321,9 @@ QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.tim
 所有用例仍全部重跑，旧 PASS 证据文件只作历史保留。任一 FAIL/BLOCKED、固定报告
 `{testRunId}-execution.md` 或未清理资源都不满足恢复条件；保留 unknown/阻断供人工核对，
 不删报告或日志来获得重跑资格，不伪造 complete。仅写了 abandoned 后再中断可沿同一授权入口恢复。
+例外：整轮 `qa_execution_timeout` 中断、无报告、无 FAIL，且每条 case_blocked 都是宿主请求超时（行上 `host_request_timeout: true`；
+旧行无此字段时须 case_start 到 case_blocked 满 `qa.timeoutMs`，且同一命令带 `--qa-environment-failure "原因"` 声明没有应答，否则 `qa_environment_failure_required`）、不是会话自答 BLOCKED，同一 `--rerun-unknown-qa`
+写 `test_run/superseded`（`reason: host_request_timeout`）并在 qaRound+1 重跑全部命令与用例；对它用 `--rerun-blocked-qa` 拒绝为 `qa_rerun_unknown_qa_required`。
 已 complete 的宿主证据或环境阻断可用单任务 `--mode resume --review-config {原审查配置} --workflow-config {原配置} --allow-qa --rerun-blocked-qa`，
 再 `advance`：仅最新结果为 BLOCKED、failed=0、qaRound<3，且每条 BLOCKED 都是 browser 的 evidenceProblem、
 cleanup=failed、环境摘要不一致、hostRequestTimeout 或会话自己回答的 BLOCKED（报告行 `hostDeclaredBlocked`，

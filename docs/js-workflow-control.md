@@ -1073,6 +1073,16 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
 `partial_pass_cases: [caseId…]` 记录旧 PASS 用例，零条时为空数组），
 再以新 testRunId、同一 qaRound 执行整轮；不复用部分用例，也不重跑开发、Review 或改变任务 attempt。
 写 abandoned 后、写新 start 前崩溃可再次显式 resume；旧调用永远不能成为 complete 或 QA 通过证据。
+
+整轮因 `qa_execution_timeout`（或宿主退出）中断、已记录的非 PASS 用例全是「宿主请求超时、会话没有应答」的 BLOCKED 时，
+同一 `--rerun-unknown-qa` 也能恢复：无 complete、无固定报告、无 FAIL，每条 `case_blocked` 都没有 `host_declared_blocked`，
+且带 `host_request_timeout: true`（当前执行器写在每条 case_blocked 行上）。旧版本写的行没有该字段，
+也分不清「没应答」和「临近截止才应答、被降成 BLOCKED」：须 `case_start` 到 `case_blocked` 满 `qa.timeoutMs`（容差 1 秒），
+并由操作员在同一命令加 `--qa-environment-failure "原因"` 声明会话确实没应答（原文记入 `legacy_timeout_attestation`），否则拒绝为 `qa_environment_failure_required`。
+日志写 `test_run/superseded`（`reason: host_request_timeout`、`timed_out_cases`、`partial_pass_cases`、`request_timeout_ms`），
+新 testRunId 在 qaRound+1 重跑全部命令与用例，start 以 `previous_test_run_id` 链接；回放按同一规则复核该行，旧行原样保留。
+会话自己答 BLOCKED、任何 FAIL 或其他原因的 BLOCKED 仍是 `qa_execution_unknown`。对这种调用误用 `--rerun-blocked-qa`
+会被拒绝为 `qa_rerun_unknown_qa_required`，提示改用 `--rerun-unknown-qa`。
 新轮完整结果仍须满足原报告文件、cleanup、context_refresh 和 finalizer 合同。
 任一 FAIL/BLOCKED 即使证据文件后来消失仍拒绝重跑；旧 PASS 证据文件只作历史保留。
 原事故已有三个浏览器 PASS，可经显式授权重跑全部用例，不能跳过这三个用例。
@@ -1427,7 +1437,8 @@ review.json 与单任务入口相同；有 QA 配置仍必须获得对应命令/
 
 **`qa_execution_unknown` 的处理**：按上文 `--rerun-unknown-qa` 的条件恢复。
 它只接受「已记录的用例结果全部 PASS，且没有定稿执行报告、或报告为全 PASS 并逐行有权威依据」的未完成调用，
-FAIL/BLOCKED 或资源未关闭的仍然拒绝，不会伪造通过。
+以及整轮超时中断、非 PASS 只有宿主请求超时 BLOCKED 的未完成调用（进入下一轮）；
+其他 FAIL/BLOCKED 或资源未关闭的仍然拒绝，不会伪造通过。
 
 质检执行结束时运行已不是原状态（例如执行期间范围内文件被改，状态变为 `correction_review_required`）：
 宿主先把本次调用观察到的 BLOCKED 或 FAIL 写成 `test_run/complete`（漂移时为 BLOCKED、各行 `sourceChanged`），再返回 `stale_qa`；

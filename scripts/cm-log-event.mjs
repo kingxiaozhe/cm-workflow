@@ -200,8 +200,14 @@ export function unclosedResources(states){
   return [...states].filter(([,value])=>['acquired','cleanup_failed'].includes(value[0])).map(([key])=>key).sort();
 }
 
-function applyTestRunTransition(active,openCases,phase,caseId,incompleteReport=false){
+function applyTestRunTransition(active,openCases,phase,caseId,incompleteReport=false,timedOut=false){
   if(phase==='superseded'){
+    // A call stopped as a whole (see validateQaSupersession) may leave a case
+    // started; like abandonment, its own superseded row closes it.
+    if(timedOut){
+      if(!active)throw new UsageError('QA superseded of a timed-out invocation has no active test run');
+      openCases.clear();return false;
+    }
     // incomplete_report: a call with its fixed report but no complete row (see
     // validateQaSupersession) is closed by its own superseded row.
     if(active!==incompleteReport||openCases.size)throw new UsageError('QA superseded requires a completed invocation');
@@ -369,6 +375,24 @@ function validateQaSupersession(state,event){
       throw new UsageError('QA superseded of an incomplete invocation requires its active start, no complete row and blocked_cases');
     return;
   }
+  // A call stopped as a whole (qa_execution_timeout) with no complete row. The
+  // host re-reads its case rows (PASS or host request timeout only); here the
+  // structural part: the still active latest invocation and its PASS rows.
+  if(event.reason==='host_request_timeout'){
+    if(!state.active||state.superseded||!start||complete||start.attempt>=3
+      ||event.workflow!=='cm-ai'||event.node!=='N6'||event.previous_test_run_id!==start.operation_id
+      ||!Array.isArray(event.timed_out_cases)||event.timed_out_cases.length===0||event.timed_out_cases.length>start.case_count
+      ||!caseList(event.timed_out_cases,event.timed_out_cases.length)
+      ||JSON.stringify(event.partial_pass_cases)!==JSON.stringify([...state.partialPassCases].sort())
+      ||event.request_timeout_ms!==undefined&&!(Number.isSafeInteger(event.request_timeout_ms)&&event.request_timeout_ms>0)
+      ||event.legacy_timeout_attestation!==undefined&&(typeof event.legacy_timeout_attestation!=='string'
+        ||!event.legacy_timeout_attestation.trim()||Buffer.byteLength(event.legacy_timeout_attestation,'utf8')>500
+        ||/[\r\n\0]/.test(event.legacy_timeout_attestation))
+      ||!['repository_id','run_id','feature','task','package_digest','qa_decision_id','operation_id','attempt','mode','case_count']
+        .every(key=>event[key]!==undefined&&event[key]===start[key]))
+      throw new UsageError('QA superseded of a timed-out invocation requires its active start, no complete row and timed_out_cases');
+    return;
+  }
   if(event.reason==='declared_environment_failure'){
     const reason=event.environment_failure_reason;
     if(state.active||state.superseded||!start||!complete||complete.result!=='FAIL'||!(complete.failed>0)
@@ -402,8 +426,9 @@ function loadTestRunState(file,runId){
       throw new UsageError('test_run state log contains a malformed case event');
     if(phase==='complete'&&!active&&!openCases.size)continue;
     if(phase==='abandoned')validateQaAbandonment({active,start,hasNonPassResult,partialPassCases},value);
-    if(phase==='superseded')validateQaSupersession({active,start,complete,superseded},value);
-    active=applyTestRunTransition(active,openCases,phase,typeof caseId==='string'?caseId:null,value.incomplete_report===true);
+    if(phase==='superseded')validateQaSupersession({active,start,complete,superseded,partialPassCases},value);
+    active=applyTestRunTransition(active,openCases,phase,typeof caseId==='string'?caseId:null,value.incomplete_report===true,
+      phase==='superseded'&&value.reason==='host_request_timeout');
     if(phase==='start'){start=value;complete=null;hasNonPassResult=false;partialPassCases.clear();abandoned=false;superseded=false;}
     if(phase==='complete')complete=value;
     if(phase==='case_complete'){
@@ -552,12 +577,13 @@ export function writeLogEvent(rawInput,{environment=process.env,now=new Date(),u
   }
   if(existing===null&&event.event==='test_run'&&event.phase==='superseded'){
     validateQaSupersession(testRun,event);
-    if(event.incomplete_report===true&&unclosedResources(loadResourceStates(authoritativeLog,built.runId)).length)
+    if((event.incomplete_report===true||event.reason==='host_request_timeout')
+      &&unclosedResources(loadResourceStates(authoritativeLog,built.runId)).length)
       throw new UsageError('QA superseded of an incomplete invocation blocked by unclosed resources');
   }
   if(existing===null&&event.event==='test_run'&&event.phase!==undefined)
     applyTestRunTransition(testRun.active,testRun.openCases,event.phase,event.case_id??null,
-      event.phase==='superseded'&&event.incomplete_report===true);
+      event.phase==='superseded'&&event.incomplete_report===true,event.phase==='superseded'&&event.reason==='host_request_timeout');
 
   let projectDuplicate=false;
   if(projectLog){
