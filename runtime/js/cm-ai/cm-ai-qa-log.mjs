@@ -231,11 +231,12 @@ const legacyEligible=(row,environment)=>!row.sourceChanged&&(
     ||environment!=null&&row.environment!=null&&digest(row.environment)!==digest(environment)));
 
 // The executor's report format: one JSON row per `## {id}` section after the summary.
+// deferred_cases and not_applicable (cases bound only to dropped tasks) are lists, not rows.
 function readReportCases(text,code){
   return text.split(/^## /m).slice(1).flatMap(section=>{
     const split=section.indexOf('\n'),name=section.slice(0,split);
     const row=JSON.parse(section.slice(split+1));
-    if(name==='deferred_cases'&&Array.isArray(row))return [];
+    if(['deferred_cases','not_applicable'].includes(name)&&Array.isArray(row))return [];
     need(row.id===name&&['commands','logic','browser'].includes(row.kind),code);id(row.id);return [row];
   });
 }
@@ -549,6 +550,8 @@ export function recordCmAiQaRun(input) {
   if(Object.hasOwn(input,'qaRound'))keys.push('qaRound');
   if(Object.hasOwn(input,'previousTestRunId'))keys.push('previousTestRunId');
   if(Object.hasOwn(input,'deferredCases'))keys.push('deferredCases');
+  if(Object.hasOwn(input,'droppedTaskCases'))keys.push('droppedTaskCases');
+  if(Object.hasOwn(input,'droppedTaskCommands'))keys.push('droppedTaskCommands');
   if(Object.hasOwn(input,'expectedEnvironment'))keys.push('expectedEnvironment');
   if(Object.hasOwn(input,'configurationRevision'))keys.push('configurationRevision');
   if(Object.hasOwn(input,'environmentFailure'))keys.push('environmentFailure');
@@ -613,7 +616,16 @@ export function recordCmAiQaRun(input) {
       for(const taskId of item.taskIds)id(taskId);
     }
     data.deferred_cases=deferred;
-  }
+    // Cases bound only to [DROPPED] tasks and commands declared only for them: not planned.
+    for(const [key,field,list] of [['droppedTaskCases','dropped_task_cases','taskIds'],['droppedTaskCommands','dropped_task_commands','caseIds']]){
+      const items=json(input[key]??[]);need(Array.isArray(items),'qa_plan_invalid');
+      for(const item of items){
+        shape(item,['id',list]);id(item.id);need(Array.isArray(item[list])&&item[list].length>0,'qa_plan_invalid');
+        for(const value of item[list])id(value);
+      }
+      if(items.length)data[field]=items;
+    }
+  }else need(!Object.hasOwn(input,'droppedTaskCases')&&!Object.hasOwn(input,'droppedTaskCommands'),'qa_plan_invalid');
   if(input.phase==='abandoned')Object.assign(data,{previous_test_run_id:input.testRunId,reason:'host_terminated',partial_pass_cases:passed});
   if(input.phase==='superseded')Object.assign(data,{previous_test_run_id:input.testRunId,
     reason:declaredFailure===null?'host_evidence_problem':'declared_environment_failure',recovery_rule:2,

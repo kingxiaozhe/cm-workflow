@@ -663,6 +663,108 @@ test('step30b empty mid-feature plan emits one explicit deferred BLOCKED row',as
   }finally{f.cleanup();assert.equal(fs.existsSync(f.root),false);}
 });
 
+// 2026-10-08 aihot 5.author-column: tasks dropped with the official [DROPPED]
+// marker kept their cases (blocking or not) in the feature-completion plan, so
+// the session was asked about hidden features and the round ended BLOCKED.
+const DROPPED_LINE=id=>`- [ ] ~~${id}: deferred work~~ \`[DROPPED v2: 数据源未定，暂缓]\``;
+function droppedFeature(f,{pending=false,cases,commands,tests=['logic','commands','browser']}){
+  const root=path.join(f.configuration.specsDir,f.configuration.feature);
+  fs.writeFileSync(path.join(root,'tasks.md'),['- [x] T-001: live work',DROPPED_LINE('T-002'),DROPPED_LINE('T-003'),
+    ...(pending?['- [ ] T-004: later work']:[])].join('\n')+'\n');
+  const contract=JSON.parse(fs.readFileSync(path.join(root,'test-cases.json')));
+  contract.cases=cases.map(([kind,blocking,taskIds],i)=>({...contract.cases[0],id:`TC-00${i+1}`,kind,blocking,taskIds,cleanup:[]}));
+  fs.writeFileSync(path.join(root,'test-cases.json'),JSON.stringify(contract));
+  fs.writeFileSync(path.join(f.configuration.codeProject,'.cm-workflow.json'),JSON.stringify({version:1,
+    project:{workflow:'cm-default'},policies:{tests}}));
+  const marker=path.join(f.root,'dropped-command-ran');
+  f.configuration.commands=commands.map(([id,caseIds])=>({id,caseIds,command:id.startsWith('dropped')
+    ?[process.execPath,'-e',`require('node:fs').appendFileSync(${JSON.stringify(marker)},'x')`]:f.configuration.commands[0].command}));
+  return marker;
+}
+const reportSections=file=>fs.readFileSync(file,'utf8').split(/^## /m).slice(1)
+  .map(part=>[part.slice(0,part.indexOf('\n')),JSON.parse(part.slice(part.indexOf('\n')+1))]);
+
+for(const answer of ['PASS','BLOCKED'])test(`dropped tasks: cases bound only to them are NOT_APPLICABLE, never asked or counted; live answer ${answer}`,async()=>{
+  const {inspectCmAiQaRecovery}=await import('../runtime/js/cm-ai/cm-ai-qa-log.mjs');
+  const f=fixture();
+  try{
+    // TC-005 mixes a live and a dropped task: still planned.
+    const marker=droppedFeature(f,{cases:[['logic',true,['T-001']],['logic',false,['T-002']],['browser',true,['T-003']],
+      ['browser',false,['T-002','T-003']],['browser',true,['T-001','T-002']],['logic',false,['T-002']]],
+      commands:[['live-test',['TC-001']],['dropped-test',['TC-002','TC-006']]]});
+    const seen=[];
+    const options={...f.configuration,logic:async request=>{seen.push(request.case.id);return {verdict:'SUPPORTED',evidence:['Synthetic source check']};},
+      browser:async request=>{
+        seen.push(request.case.id);
+        const artifact=path.join(f.configuration.specsDir,'.reviews',`${request.case.id}.txt`);fs.writeFileSync(artifact,'Synthetic observation');
+        return {verdict:answer,evidence:answer==='PASS'?[artifact]:[],environment:request.environment,cleanup:'not_needed'};
+      }};
+    // The persisted (fingerprinted) configuration is planned without task state, exactly as before.
+    const initial=createHostQaExecutor(options);
+    assert.equal(initial.caseCount,8);assert.equal(initial.configuration.plan.cases.length,6);
+    assert.equal(Object.hasOwn(initial.configuration.plan,'dropped_task_cases'),false);
+    assert.equal(Object.hasOwn(initial.configuration.plan,'dropped_task_commands'),false);
+    const executor={...initial,...initial.prepare()},plan=executor.configuration.plan;
+    const dropped=[{id:'TC-002',taskIds:['T-002']},{id:'TC-003',taskIds:['T-003']},{id:'TC-004',taskIds:['T-002','T-003']},{id:'TC-006',taskIds:['T-002']}];
+    assert.deepEqual(plan.cases.map(item=>item.id),['TC-001','TC-005']);assert.deepEqual(plan.deferred_cases,[]);
+    assert.deepEqual(plan.dropped_task_cases,dropped);
+    assert.deepEqual(plan.dropped_task_commands,[{id:'dropped-test',caseIds:['TC-002','TC-006']}]);
+    assert.deepEqual(plan.commands.map(item=>item.id),['live-test']);assert.equal(executor.caseCount,3);
+    const binding={...f.binding,mode:executor.mode,caseCount:executor.caseCount};
+    recordCmAiQaRun({...binding,phase:'start',deferredCases:plan.deferred_cases,droppedTaskCases:plan.dropped_task_cases,
+      droppedTaskCommands:plan.dropped_task_commands,logHome:f.configuration.logHome});
+    const result=await executor.run(binding,new AbortController().signal);
+    assert.deepEqual(seen.sort(),['TC-001','TC-005']);assert.equal(fs.existsSync(marker),false);
+    assert.deepEqual({result:result.result,passed:result.passed,failed:result.failed,blocked:result.blocked},
+      answer==='PASS'?{result:'PASS',passed:3,failed:0,blocked:0}:{result:'BLOCKED',passed:2,failed:0,blocked:1});
+    const sections=reportSections(result.report),listed=Object.fromEntries(sections);
+    assert.deepEqual(listed.not_applicable,[...dropped.map(item=>({...item,verdict:'NOT_APPLICABLE',
+      reason:`bound only to dropped tasks: ${item.taskIds.join(', ')}`})),{id:'dropped-test',caseIds:['TC-002','TC-006'],kind:'commands',
+      verdict:'NOT_APPLICABLE',reason:'declared only for cases bound only to dropped tasks: TC-002, TC-006'}]);
+    assert.deepEqual(sections.map(([name])=>name).filter(name=>!['deferred_cases','not_applicable'].includes(name)).sort(),['TC-001','TC-005','live-test']);
+    const log=fs.readFileSync(path.join(f.configuration.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+    const start=log.find(row=>row.event==='test_run'&&row.phase==='start');
+    assert.deepEqual(start.dropped_task_cases,dropped);assert.deepEqual(start.dropped_task_commands,plan.dropped_task_commands);
+    assert(!log.some(row=>dropped.some(item=>item.id===row.case_id)));
+    recordCmAiQaRun({...binding,phase:'complete',result,logHome:f.configuration.logHome});
+    const {codeProject,mode,caseCount,...query}=binding;
+    assert.equal(inspectCmAiQaResult(query).status,answer==='PASS'?'passed':'blocked');
+    // The rerun reader skips the not_applicable list like deferred_cases.
+    const {testRunId,...run}=query;
+    if(answer==='BLOCKED')assert.deepEqual(inspectCmAiQaRecovery(run,{blocked:true}).blockedCases,['TC-005']);
+  }finally{f.cleanup();}
+});
+
+test('dropped tasks: mid-feature, a case bound only to them is recorded as dropped, not deferred',()=>{
+  const f=fixture();
+  try{
+    droppedFeature(f,{pending:true,cases:[['logic',true,['T-001']],['browser',false,['T-002']],['browser',true,['T-004']],
+      ['logic',true,['T-002','T-004']]],commands:[['live-test',['TC-001']]]});
+    const {plan}=plannedExecutor(f.configuration).configuration;
+    assert.deepEqual(plan.cases.map(item=>item.id),['TC-001']);
+    assert.deepEqual(plan.dropped_task_cases,[{id:'TC-002',taskIds:['T-002']}]);
+    assert.deepEqual(plan.deferred_cases,[{id:'TC-003',taskIds:['T-004']},{id:'TC-004',taskIds:['T-002','T-004']}]);
+  }finally{f.cleanup();}
+});
+
+for(const tests of [['logic','browser'],['logic','commands','browser']])
+test(`dropped tasks: nothing left to verify stays BLOCKED, never a PASS from nothing; policies ${tests.join('+')}`,async()=>{
+  const f=fixture();
+  try{
+    droppedFeature(f,{tests,cases:[['logic',true,['T-002']],['browser',false,['T-003']]],
+      commands:tests.includes('commands')?[['dropped-test',['TC-001']]]:[]});
+    const executor=plannedExecutor({...f.configuration,logic:()=>assert.fail('no dropped logic request'),
+      browser:()=>assert.fail('no dropped browser request')});
+    assert.deepEqual(executor.configuration.plan.cases,[]);assert.equal(executor.caseCount,1);
+    const result=await executor.run(begin(f,executor),new AbortController().signal);
+    assert.deepEqual([result.result,result.passed,result.blocked],['BLOCKED',0,1]);
+    const rows=reportSections(result.report).filter(([name])=>!['deferred_cases','not_applicable'].includes(name));
+    assert.equal(rows.length,1);assert.equal(rows[0][1].verdict,'BLOCKED');
+    assert.equal(rows[0][0],tests.includes('commands')?'commands-unavailable':'qa-unavailable');
+    assert(rows[0][1].evidence.includes('TC-001: bound only to dropped tasks: T-002'));
+  }finally{f.cleanup();}
+});
+
 for(const mode of ['unavailable-only','confirmation','failed-and-unavailable','insufficient-and-unavailable','unmapped'])
 test(`logic report rows record why they are BLOCKED: ${mode}`,async()=>{
   const f=fixture();

@@ -49,7 +49,9 @@ export function inspectCmAiQaTaskContext({specsDir,codeProject,feature,taskId,fe
   // Plan construction happens before task completion; decisions still bind a completed task.
   if(!selected||(taskId!==undefined&&!selected.some(task=>task.id===taskId&&task.completed&&!task.dropped)))fail('qa_not_ready');
   const pending=selected.filter(task=>!task.completed&&!task.dropped).length;
-  return frozen({completed,pendingFeatures,pending,mergeEligible:pending===1&&admission.nextTask?.feature===feature});
+  // The feature's [DROPPED] task ids: N6 does not plan a case bound only to them.
+  const dropped=selected.filter(task=>task.dropped).map(task=>task.id);
+  return frozen({completed,pendingFeatures,pending,dropped,mergeEligible:pending===1&&admission.nextTask?.feature===feature});
 }
 
 // Admission's public feature summary stops at the selected feature. Count all

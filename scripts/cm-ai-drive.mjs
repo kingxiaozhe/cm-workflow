@@ -456,7 +456,10 @@ function predictedQaAsks(definition,qa){
   const taskWasPending=!completed.has(definition.identity.taskId);
   completed.add(definition.identity.taskId);
   const pendingAfter=context.pending-(taskWasPending?1:0);
-  const cases=plan.cases.filter(item=>pendingAfter===0||item.taskIds.every(taskId=>completed.has(taskId)));
+  // A case bound only to [DROPPED] tasks is never planned, so never asked.
+  const dropped=new Set(context.dropped);
+  const cases=plan.cases.filter(item=>!(item.taskIds.length>0&&item.taskIds.every(taskId=>dropped.has(taskId))))
+    .filter(item=>pendingAfter===0||item.taskIds.every(taskId=>completed.has(taskId)));
   const asks=[];
   // The current executor still calls logic() for mapped cases; command evidence
   // only affects the later verdict. Keep the preflight conservative until that

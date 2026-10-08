@@ -36,25 +36,35 @@ function readPlan(configuration,selectCompleted=true) {
     need(validateTestCases(contract).length===0&&contract.feature===feature.replace(/^\d+\./,''),'test_cases_invalid');
     cases=contract.cases;
   }
-  const context=selectCompleted?inspectCmAiQaTaskContext({specsDir,codeProject,feature}):{completed:[],pending:0};
+  const context=selectCompleted?inspectCmAiQaTaskContext({specsDir,codeProject,feature}):{completed:[],pending:0,dropped:[]};
   const completed=new Set(context.completed.filter(task=>task.feature===feature).map(task=>task.id));
+  // A case bound only to [DROPPED] tasks has no deliverable to verify (its AC is
+  // deferred with the task), blocking or not: it is recorded, never planned.
+  const dropped=new Set(context.dropped);
+  const droppedOnly=item=>item.taskIds.length>0&&item.taskIds.every(taskId=>dropped.has(taskId));
   const applicable=cases.filter(item=>item.blocking||config.policies.tests.includes(item.kind));
-  const deferred=context.pending===0?[]:applicable.map(item=>({id:item.id,
+  const droppedCases=applicable.filter(droppedOnly).map(item=>({id:item.id,taskIds:item.taskIds}));
+  const droppedIds=new Set(droppedCases.map(item=>item.id));
+  const deferred=context.pending===0?[]:applicable.filter(item=>!droppedIds.has(item.id)).map(item=>({id:item.id,
     taskIds:item.taskIds.filter(taskId=>!completed.has(taskId))})).filter(item=>item.taskIds.length>0);
   const deferredIds=new Set(deferred.map(item=>item.id));
-  const selected=applicable.filter(item=>!deferredIds.has(item.id));
+  const selected=applicable.filter(item=>!deferredIds.has(item.id)&&!droppedIds.has(item.id));
   const wanted=new Set(selected.filter(item=>item.kind==='logic').map(item=>item.id));
-  const scheduled=commands.filter(item=>(config.policies.tests.includes('commands')
-    &&(context.pending===0||item.caseIds.length===0))||item.caseIds.some(caseId=>wanted.has(caseId)));
+  // A command declared only for such cases is not run for them either.
+  const droppedCommands=commands.filter(item=>item.caseIds.length>0&&item.caseIds.every(caseId=>droppedIds.has(caseId)))
+    .map(item=>({id:item.id,caseIds:item.caseIds}));
+  const scheduled=commands.filter(item=>!droppedCommands.some(other=>other.id===item.id)&&((config.policies.tests.includes('commands')
+    &&(context.pending===0||item.caseIds.length===0))||item.caseIds.some(caseId=>wanted.has(caseId))));
   for(const item of commands)for(const caseId of item.caseIds)
     need(cases.some(candidate=>candidate.id===caseId&&candidate.kind==='logic'),'qa_command_mapping_invalid');
   const modes=order[config.project.workflow].filter(mode=>mode==='commands'
-    ?scheduled.length>0||(config.policies.tests.includes('commands')&&(context.pending===0||commands.length===0))
+    ?scheduled.length>0||(config.policies.tests.includes('commands')&&(context.pending===0||commands.length===droppedCommands.length))
     :selected.some(item=>item.kind===mode));
   const noApplicableCases=context.pending>0&&selected.length===0&&scheduled.length===0;
   if(noApplicableCases)modes.splice(0,modes.length,'commands');
   return json({config,cases:selected,...(selectCompleted?{deferred_cases:deferred}:{}),commands:scheduled,modes,
-    ...(noApplicableCases?{no_applicable_cases:true}:{})});
+    ...(noApplicableCases?{no_applicable_cases:true}:{}),...(droppedCases.length?{dropped_task_cases:droppedCases}:{}),
+    ...(droppedCommands.length?{dropped_task_commands:droppedCommands}:{})});
 }
 
 function logStep(configuration,binding,event,phase,data,detail) {
@@ -106,14 +116,22 @@ function evidence(raw) {
   return result;
 }
 
-function saveReport(configuration,binding,rows,summary,deferred) {
+// Cases (and commands declared only for them) bound only to [DROPPED] tasks:
+// listed as NOT_APPLICABLE beside the rows, never counted as PASS/FAIL/BLOCKED.
+const notApplicable=plan=>[
+  ...(plan.dropped_task_cases??[]).map(item=>({...item,verdict:'NOT_APPLICABLE',reason:`bound only to dropped tasks: ${item.taskIds.join(', ')}`})),
+  ...(plan.dropped_task_commands??[]).map(item=>({...item,kind:'commands',verdict:'NOT_APPLICABLE',
+    reason:`declared only for cases bound only to dropped tasks: ${item.caseIds.join(', ')}`}))];
+
+function saveReport(configuration,binding,rows,summary,plan) {
   const reviews=path.join(configuration.specsDir,'.reviews'),stat=fs.lstatSync(reviews);
   need(stat.isDirectory()&&!stat.isSymbolicLink()&&fs.realpathSync(reviews)===reviews,'qa_report_invalid');
   const target=path.join(reviews,`${binding.testRunId}-execution.md`);
   const body=Buffer.from(`# CM QA execution report\n\nOverall: ${summary.result}\n\n`
     +'Counts are declared command checks plus selected cases, not framework test totals.\n'
     +'Static verdicts are retained separately; only observed command/browser evidence counts as PASS.\n\n'
-    +`## deferred_cases\n\n${JSON.stringify(deferred,null,2)}\n\n`
+    +`## deferred_cases\n\n${JSON.stringify(plan.deferred_cases,null,2)}\n\n`
+    +(notApplicable(plan).length?`## not_applicable\n\n${JSON.stringify(notApplicable(plan),null,2)}\n\n`:'')
     +rows.map(row=>`## ${row.id}\n\n${JSON.stringify(row,null,2)}\n`).join('\n'));
   need(body.length<=1024*1024,'limit_exceeded');
   const fd=fs.openSync(target,fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_WRONLY|fs.constants.O_NOFOLLOW,0o600);
@@ -199,10 +217,11 @@ export function createHostQaExecutor(options) {
       for(const stage of plan.modes){
         const routed=route(stage==='browser'?'browser_qa':'tester');
         if(stage==='commands'){
+          const dropped=notApplicable(plan).map(item=>`${item.id}: ${item.reason}`);
           if(plan.no_applicable_cases)rows.push({id:'no-applicable-cases',kind:'commands',verdict:'BLOCKED',
             evidence:['all applicable cases are bound to unfinished tasks; deferred to feature completion',
-              ...plan.deferred_cases.map(item=>`${item.id}: ${item.taskIds.join(', ')}`)]});
-          else if(!plan.commands.length)rows.push({id:'commands-unavailable',kind:'commands',verdict:'BLOCKED',evidence:['No declared project test command']});
+              ...plan.deferred_cases.map(item=>`${item.id}: ${item.taskIds.join(', ')}`),...dropped]});
+          else if(!plan.commands.length)rows.push({id:'commands-unavailable',kind:'commands',verdict:'BLOCKED',evidence:['No declared project test command',...dropped]});
           for(const command of plan.commands){
             notCancelled();
             const check=createHostCheck({cwd:roots?command.codeProject:configuration.codeProject,commands:[{id:command.id,command:command.command}],
@@ -318,7 +337,8 @@ export function createHostQaExecutor(options) {
         if(row.verdict==='BLOCKED'&&row.staticVerdict==='SUPPORTED'&&!needsConfirmation
           &&observed.some(result=>result?.outcome==='unavailable'))row.commandUnavailable=true;
       }
-      if(rows.length===0)rows.push({id:'qa-unavailable',kind:'commands',verdict:'BLOCKED',evidence:['No executable QA contract']});
+      if(rows.length===0)rows.push({id:'qa-unavailable',kind:'commands',verdict:'BLOCKED',evidence:['No executable QA contract',
+        ...notApplicable(plan).map(item=>`${item.id}: ${item.reason}`)]});
       const drift=digest(before.files)!==digest(snapshot().files);
       // Keep each row's own verdict: a later explicit rerun may only recover a row
       // that was PASS or a host-judged BLOCKED before the source changed, never a FAIL.
@@ -327,7 +347,7 @@ export function createHostQaExecutor(options) {
         blocked=rows.filter(item=>item.verdict==='BLOCKED').length;
       need(passed+failed+blocked===caseCount,'qa_result_invalid');
       const summary={result:failed>0?'FAIL':blocked>0?'BLOCKED':'PASS',passed,failed,blocked};
-      const report=saveReport(configuration,binding,rows,summary,plan.deferred_cases);
+      const report=saveReport(configuration,binding,rows,summary,plan);
       return json({...summary,report});
     }});
 }

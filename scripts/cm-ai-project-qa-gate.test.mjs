@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {openControlRun} from './cm-ai-run.mjs';
 import {createCodexDeveloperRun} from '../runtime/js/cm-ai/codex-developer-adapter.mjs';
@@ -48,7 +49,7 @@ function project(){
   const state={browserUp:false,documentation:0,reviews:new Map()};
   const logHome=path.join(specsDir,'.reviews','host-log-mirror');
   const environment={kind:'web',carrier:'browser',target:'fixture',scope:'local'};
-  const execution=(feature,{write,retrospective=noLesson,verdict=()=>'approved',decision=null})=>({
+  const execution=(feature,{write,retrospective=noLesson,verdict=()=>'approved',decision=null,browser=null,createExecutor=createHostQaExecutor})=>({
     configuration:{kind:'synthetic-host-v1',hostContextId:'control',workflow:{qa:{commands:[],environment},documentationPaths:[],applicableAgentFiles:[]}},
     timeoutMs:5000,excludedContexts:['control'],
     developer:{provider:'codex',requestedModel:'fixture',contextId:'developer',run:createCodexDeveloperRun({requestedModel:'fixture',worker:async()=>{
@@ -75,12 +76,12 @@ function project(){
         status:'completed',reason:'Documentation checked',at:'2026-09-28T00:00:00Z'};}},
     qaDecisionProvider:{timeoutMs:1000,decide:async binding=>({decisionId:`qa-${binding.identity.runId}`,identity:binding.identity,
       packageDigest:binding.packageDigest,status:'triggered',reason:'feature_complete',score:null,at:'2026-09-28T00:00:00Z',...decision})},
-    qaExecutor:createHostQaExecutor({specsDir,codeProject,feature,requirements:['requirements.md'],runtime:'codex',
+    qaExecutor:createExecutor({specsDir,codeProject,feature,requirements:['requirements.md'],runtime:'codex',
       commands:[{id:'unit',command:[process.execPath,'--check','a.mjs'],caseIds:[]}],environment,timeoutMs:60000,logHome,
-      browser:async browserRequest=>{
+      browser:browser??(async browserRequest=>{
         if(!state.browserUp)return {verdict:'BLOCKED',evidence:[],environment:browserRequest.environment,cleanup:'failed'};
         const shot=path.join(specsDir,'.reviews','tc-001.txt');fs.writeFileSync(shot,'observed');
-        return {verdict:'PASS',evidence:[shot],environment:browserRequest.environment,cleanup:'not_needed'};}})});
+        return {verdict:'PASS',evidence:[shot],environment:browserRequest.environment,cleanup:'not_needed'};})})});
   const definition=(feature,taskId,scope)=>({version:1,specsDir,codeProject,feature,
     identity:{repositoryId:'gate-fixture',runId:`run-${taskId}`,taskId,attempt:1},scope,requirements:['requirements.md']});
   const advance=async(def,exec,mode,options)=>{
@@ -135,6 +136,72 @@ test('#17 an earlier feature whose QA is BLOCKED keeps the project from run_done
   const finished=await p.advance(last,lastExecution(),'resume');
   assert.equal(finished.code,'run_done',JSON.stringify(finished));
   assert.equal(status(p).state,'run_done');
+});
+
+// The executor as released before dropped-task cases were left out: the current
+// module with that one rule neutralized, imported from a temporary copy.
+async function releasedQaExecutor(){
+  const source=fileURLToPath(new URL('../runtime/js/cm-ai/host-qa-executor.mjs',import.meta.url));
+  const rule='const dropped=new Set(context.dropped);',text=fs.readFileSync(source,'utf8');
+  assert.equal(text.split(rule).length,2,'the dropped-task rule is where this fixture expects it');
+  const base=pathToFileURL(path.dirname(source)+path.sep).href;
+  const released=text.replace(rule,'const dropped=new Set();')
+    .replace(/'\.\.\/\.\.\/\.\.\//g,`'${new URL('../../../',base).href}`).replace(/from '\.\//g,`from '${base}`);
+  const file=path.join(fs.mkdtempSync(path.join(isolated,'released-')),'host-qa-executor.mjs');fs.writeFileSync(file,released);
+  return (await import(pathToFileURL(file).href)).createHostQaExecutor;
+}
+
+// 2026-10-08 aihot: 5.author-column's feature-completion QA (run author-column-T-010) asked the
+// session about cases bound only to [DROPPED] tasks; they stayed BLOCKED and the project gate then
+// held api-native-reading-T-008's finish. Recovery: --rerun-blocked-qa on the original run, then resume.
+test('#17 an earlier BLOCKED round over dropped-task cases is recovered on its original run; the later run then finishes',async()=>{
+  const p=project();
+  const feature=path.join(p.specsDir,'1.work'),log=path.join(p.specsDir,'运行日志.jsonl');
+  const rows=()=>fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse);
+  const contract=JSON.parse(fs.readFileSync(path.join(feature,'test-cases.json')));
+  // TC-001 is the live task's case; TC-002 (non-blocking browser) and TC-003 (blocking logic) are bound only to dropped T-001.
+  contract.cases.push({...contract.cases[0],id:'TC-002',blocking:false,taskIds:['T-001']},
+    {...contract.cases[0],id:'TC-003',kind:'logic',taskIds:['T-001']});
+  fs.writeFileSync(path.join(feature,'test-cases.json'),JSON.stringify(contract));
+  fs.writeFileSync(path.join(feature,'tasks.md'),'- [ ] ~~T-001: column work~~ `[DROPPED v2: 数据源未定，暂缓]`\n- [ ] T-002: fixture\n');
+  p.reapprove();
+  const asked=[];
+  const firstExecution=createExecutor=>p.execution('1.work',{createExecutor,
+    write:()=>fs.writeFileSync(path.join(p.codeProject,'a.mjs'),'export const a=1;\n'),
+    browser:async request=>{
+      asked.push(request.case.id);
+      // The feature is hidden: the session can only answer BLOCKED for the dropped task's case.
+      if(request.case.id!=='TC-001')return {verdict:'BLOCKED',evidence:[],environment:request.environment,cleanup:'not_needed'};
+      const shot=path.join(p.specsDir,'.reviews',`${request.case.id}-${asked.length}.txt`);fs.writeFileSync(shot,'observed');
+      return {verdict:'PASS',evidence:[shot],environment:request.environment,cleanup:'not_needed'};}});
+  const blocked=await p.advance(p.first,firstExecution(await releasedQaExecutor()),'create');
+  assert.equal(blocked.code,'qa_result_blocked',JSON.stringify(blocked));assert.deepEqual(asked,['TC-001','TC-002']);
+  const oldComplete=rows().find(row=>row.phase==='complete'&&row.run_id==='run-T-002');
+  assert.deepEqual([oldComplete.result,oldComplete.case_count,oldComplete.passed,oldComplete.blocked],['BLOCKED',4,2,2]);
+  // The recorded round is not reinterpreted: the project gate still reads it as BLOCKED.
+  const last=p.definition('2.next','T-003',['b.mjs']);
+  const lastExecution=()=>p.execution('2.next',{write:()=>fs.writeFileSync(path.join(p.codeProject,'b.mjs'),'export const b=1;\n')});
+  const refused=await p.advance(last,lastExecution(),'create');
+  assert.equal(refused.code,'project_qa_not_passed',JSON.stringify(refused));
+  assert.deepEqual(refused.outstandingQa,[{feature:'1.work',runId:'run-T-002',taskId:'T-002',attempt:1,status:'qa_blocked'}]);
+  const history=fs.readFileSync(log,'utf8'),oldReport=fs.readFileSync(oldComplete.report);
+  // Its BLOCKED cases (a session BLOCKED answer, a logic case without a host) are rerun-eligible.
+  const recovered=await p.advance(p.first,firstExecution(),'resume',{rerunBlockedQa:true});
+  assert.equal(recovered.code,'run_done',JSON.stringify(recovered));
+  assert.deepEqual(asked,['TC-001','TC-002','TC-001'],'the dropped task case is never asked again');
+  assert(fs.readFileSync(log,'utf8').startsWith(history));assert.deepEqual(fs.readFileSync(oldComplete.report),oldReport);
+  const superseded=rows().find(row=>row.phase==='superseded');
+  assert.equal(superseded.previous_test_run_id,oldComplete.operation_id);assert.deepEqual(superseded.blocked_cases,['TC-002','TC-003']);
+  const start=rows().filter(row=>row.phase==='start'&&row.run_id==='run-T-002').at(-1);
+  assert.equal(start.attempt,2);assert.equal(start.previous_test_run_id,oldComplete.operation_id);
+  assert.deepEqual(start.dropped_task_cases,[{id:'TC-002',taskIds:['T-001']},{id:'TC-003',taskIds:['T-001']}]);
+  const complete=rows().filter(row=>row.phase==='complete'&&row.run_id==='run-T-002').at(-1);
+  assert.deepEqual([complete.result,complete.case_count,complete.passed],['PASS',2,2]);
+  const notApplicable=fs.readFileSync(complete.report,'utf8').split(/^## /m).find(part=>part.startsWith('not_applicable\n'));
+  assert.deepEqual(JSON.parse(notApplicable.slice('not_applicable\n'.length)).map(item=>[item.id,item.verdict,item.reason]),
+    [['TC-002','NOT_APPLICABLE','bound only to dropped tasks: T-001'],['TC-003','NOT_APPLICABLE','bound only to dropped tasks: T-001']]);
+  const finished=await p.advance(last,lastExecution(),'resume');
+  assert.equal(finished.code,'run_done',JSON.stringify(finished));assert.equal(status(p).state,'run_done');
 });
 
 test('#18 unreviewed tampering with the earlier task file still requires correction review and names the file',async()=>{

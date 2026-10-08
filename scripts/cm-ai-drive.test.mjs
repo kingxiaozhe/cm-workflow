@@ -456,6 +456,14 @@ test('cases bound to another unfinished task do not require QA runners yet',t=>{
   assert.doesNotMatch(run.stderr,/缺少真实执行 runner/);
   assert(fs.existsSync(f.store),run.stderr);
 });
+test('cases bound only to a dropped task never require QA runners',t=>{
+  const f=fixture(t);prepared(f);
+  fs.writeFileSync(path.join(f.specsDir,'1.work','tasks.md'),'- [ ] T-001: current\n- [ ] ~~T-002: column~~ `[DROPPED v2: 暂缓]`\n');
+  const run=f.drive(qaFixture(f,[{kind:'logic',expected:'Dropped logic',taskIds:['T-002']},
+    {kind:'browser',expected:'Dropped browser',taskIds:['T-002']}]),'advance');
+  assert.doesNotMatch(run.stderr,/缺少真实执行 runner/);
+  assert(fs.existsSync(f.store),run.stderr);
+});
 test('protected conversation still requires the authored develop answer',t=>{
   const f=fixture(t);fs.writeFileSync(path.join(f.root,'protection.json'),JSON.stringify({checkCommands:[
     {id:'syntax',command:[process.execPath,'--check','target.mjs']}],timeoutMs:60000}));
