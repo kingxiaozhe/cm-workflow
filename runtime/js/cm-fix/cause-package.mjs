@@ -11,22 +11,38 @@ import {inspectVisualCarrier} from './visual.mjs';
 export const rediagnosisPackage=value=>({historyDigest:value.historyDigest,priorPackageDigest:value.priorPackageDigest,
   priorObservationDigest:value.priorObservationDigest,reason:value.reason,reviewFeedback:value.reviewFeedback});
 
-export function createFixCausePackage({codeProject,defect,status}){
+// Round 2 shows the reviewer the round-1 review; every file that review examined
+// or cited (outside the revised affectedPaths) is supplied as read-only context so
+// the reviewer can examine and cite it. Old round-2 packages have no contextFiles.
+const priorReviewPaths=feedback=>[...new Set([...(feedback?.examinedPaths??[]),...(feedback?.findings??[]).map(f=>f?.path)]
+  .filter(p=>typeof p==='string'&&!p.startsWith('specs:')))].sort();
+function readContextFiles(codeProject,feedback,affectedPaths){
+  const files=[];
+  for(const p of priorReviewPaths(feedback).filter(p=>!affectedPaths.includes(p))){
+    // Only existing, ordinary source files inside the code root; anything else is omitted, never forged.
+    try{files.push(...readReviewSourceFiles(codeProject,[p]));}catch{}
+  }
+  return files;
+}
+
+export function createFixCausePackage({codeProject,defect,status,context=true}){
   need((status.stage==='cause_review_required'||status.stage==='observation_cause_review_correction_required'&&status.causeReviewCorrection)
     &&status.reproduction?.status==='reproduced'
     &&status.diagnosis!==null,'fix_cause_review_unavailable');
+  const contextFiles=context&&status.rediagnosis?readContextFiles(codeProject,status.rediagnosis.reviewFeedback,status.diagnosis.affectedPaths):[];
   const value=json({version:1,kind:'cm-fix-cause-review-package',identity:status.identity,defect,
     reproduction:status.reproduction,diagnosis:status.diagnosis,learning:status.learning,
     ...(status.rediagnosis?{rediagnosis:rediagnosisPackage(status.rediagnosis)}:{}),
     ...(status.causeReviewCorrection?{correction:status.causeReviewCorrection}:{}),
-    files:readReviewSourceFiles(codeProject,status.diagnosis.affectedPaths)},4*1024*1024);
+    files:readReviewSourceFiles(codeProject,status.diagnosis.affectedPaths),...(contextFiles.length?{contextFiles}:{})},4*1024*1024);
   return json({...value,packageDigest:digest(value)},4*1024*1024);
 }
 
 export function readFixCausePackage(raw){
   const value=json(raw,4*1024*1024);
   shape(value,['version','kind','identity','defect','reproduction','diagnosis','learning','files','packageDigest',
-    ...(Object.hasOwn(value,'correction')?['correction']:[]),...(Object.hasOwn(value,'rediagnosis')?['rediagnosis']:[])]);
+    ...(Object.hasOwn(value,'correction')?['correction']:[]),...(Object.hasOwn(value,'rediagnosis')?['rediagnosis']:[]),
+    ...(Object.hasOwn(value,'contextFiles')?['contextFiles']:[])]);
   if(value.rediagnosis){
     shape(value.rediagnosis,['historyDigest','priorPackageDigest','priorObservationDigest','reason','reviewFeedback']);
     need([value.rediagnosis.historyDigest,value.rediagnosis.priorPackageDigest,value.rediagnosis.priorObservationDigest].every(v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v)), 'invalid_package');
@@ -62,6 +78,12 @@ export function readFixCausePackage(raw){
   text(d.rootCause);text(d.plan);need(Array.isArray(d.affectedModules)&&d.affectedModules.length>0,'invalid_package');
   d.affectedModules.forEach(text);
   need(Array.isArray(d.affectedPaths)&&digest([...d.affectedPaths].sort())===digest(files.map(file=>file.path)),'invalid_package');
+  if(Object.hasOwn(value,'contextFiles')){
+    need(value.rediagnosis&&Array.isArray(value.contextFiles)&&value.contextFiles.length>0,'invalid_package');
+    const context=readReviewSourceRecords(value.contextFiles).map(file=>file.path),allowed=priorReviewPaths(value.rediagnosis.reviewFeedback);
+    need(digest(context)===digest([...context].sort())&&new Set(context).size===context.length
+      &&context.every(p=>allowed.includes(p)&&!d.affectedPaths.includes(p)),'invalid_package');
+  }
   shape(r,['status','next','observation',...(Object.hasOwn(r,'attempts')?['attempts']:[])]);
   need(r.status==='reproduced'&&r.next==='diagnose','invalid_package');inspectFixReproductionAttempts(r);
   const o=r.observation;
@@ -78,23 +100,30 @@ export function readFixCausePackage(raw){
   return value;
 }
 
-export const causeReviewPaths=pkg=>pkg.files.map(file=>file.path);
+export const causeReviewPaths=pkg=>[...pkg.files,...(pkg.contextFiles??[])].map(file=>file.path);
 
 // Validate the original package, then admit only the exact registered test transition.
 export function verifyFixCauseTransition(original,current,authorBaseline,authorResult){
   const reviewed=readFixCausePackage(original),now=readFixCausePackage(current);
   const expected=new Map(reviewed.files.map(file=>[file.path,file]));
+  // Round-2 context files (e.g. an existing regression test the narrowed
+  // diagnosis no longer covers) admit the same registered test transition;
+  // any other change to them is drift.
+  const expectedContext=new Map((reviewed.contextFiles??[]).map(file=>[file.path,file]));
   if(authorBaseline&&authorResult){
     const authored=inspectFixTestAuthor(authorResult,authorBaseline);
     need(authored.outcome==='authored','cause_review_drift');
     const before=new Map(authorBaseline.files.map(file=>[file.path,file]));
     for(const file of authored.testFiles){
-      if(!expected.has(file.path))continue;
-      need(digest(inventory([before.get(file.path)]))===digest(inventory([expected.get(file.path)])),'cause_review_drift');
-      expected.set(file.path,file);
+      const target=expected.has(file.path)?expected:expectedContext.has(file.path)?expectedContext:null;
+      if(!target)continue;
+      need(digest(inventory([before.get(file.path)]))===digest(inventory([target.get(file.path)])),'cause_review_drift');
+      target.set(file.path,file);
     }
   }
   need(digest(inventory(now.files))===digest(inventory([...expected.values()])),'cause_review_drift');
+  need(Object.hasOwn(now,'contextFiles')===Object.hasOwn(reviewed,'contextFiles')
+    &&digest(inventory(now.contextFiles??[]))===digest(inventory([...expectedContext.values()])),'cause_review_drift');
   const {packageDigest,...body}=now;
-  need(digest({...body,files:reviewed.files})===reviewed.packageDigest,'cause_review_drift');
+  need(digest({...body,files:reviewed.files,...(reviewed.contextFiles?{contextFiles:reviewed.contextFiles}:{})})===reviewed.packageDigest,'cause_review_drift');
 }
