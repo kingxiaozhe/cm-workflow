@@ -124,6 +124,17 @@ test('host returns NO_CHANGES without model or execution, logs close and histori
   assert.equal(inspectCmTestRecovery(f.config,result).overall,'NO_CHANGES');
   assert.equal(fs.readFileSync(path.join(f.project,'src/input.mjs'),'utf8'),'dirty user work');
 });
+test('historical recovery reads only its own rows from a shared log above 32 MiB',async t=>{
+  const f=fixture(t);
+  const result=await run(f.config,()=>assert.fail('no changes need no callback'));
+  // A long-lived project log: other runs' rows, past the former 32 MiB whole-file cap.
+  const filler='x'.repeat(4000),line=JSON.stringify({schema_version:1,workflow:'cm-ai',event:'progress',run_id:'other-run',detail:filler})+'\n';
+  const fd=fs.openSync(result.logFile,'a');
+  try{const block=line.repeat(1024);for(let written=0;written<33*1024*1024;written+=Buffer.byteLength(block))fs.writeSync(fd,block);}
+  finally{fs.closeSync(fd);}
+  assert(fs.statSync(result.logFile).size>32*1024*1024);
+  assert.equal(inspectCmTestRecovery(f.config,result).overall,'NO_CHANGES');
+});
 test('shared CLI dispatches impact for both runtimes; committed source, report, no execution',async t=>{
   for(const runtime of ['codex','claude']){
     const f=fixture(t);f.branch();f.config.runtime=runtime;f.write('src/input.mjs','dirty version');

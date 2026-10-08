@@ -11,25 +11,8 @@ import {logFixEvent} from './start.mjs';
 import {loadConfig} from '../../../scripts/cm-workflow-config.mjs';
 import {fixDossierRelative} from './layout.mjs';
 
-export function eventsAt(specsRoot,configuration={}){
-  if(configuration.archiveMode==='bare'){
-    const base='.reviews/host-log-mirror/runs',directory=path.join(specsRoot,base);
-    if(!fs.existsSync(directory))return [];
-    const names=[];
-    for(const month of fs.readdirSync(directory).sort()){
-      need(/^\d{4}-\d{2}$/.test(month)&&fs.realpathSync(path.join(directory,month))===path.join(directory,month),'fix_log_failed');
-      for(const file of fs.readdirSync(path.join(directory,month)).sort())if(file.endsWith('.jsonl'))names.push(`${base}/${month}/${file}`);
-    }
-    return names.flatMap(name=>{
-      const [file]=readReviewSourceFiles(specsRoot,[name]);
-      return new TextDecoder('utf-8',{fatal:true}).decode(Buffer.from(file.contentBase64,'base64')).trim().split('\n').filter(Boolean).map(JSON.parse);
-    });
-  }
-  if(!fs.existsSync(path.join(specsRoot,'运行日志.jsonl')))return [];
-  const [file]=readReviewSourceFiles(specsRoot,['运行日志.jsonl']);
-  const body=new TextDecoder('utf-8',{fatal:true}).decode(Buffer.from(file.contentBase64,'base64')).trim();
-  return body?body.split('\n').map(JSON.parse):[];
-}
+export {eventsAt} from './log-events.mjs';
+import {eventsAt} from './log-events.mjs';
 const matches=(row,identity)=>row.workflow==='cm-fix'&&row.node==='FIX'&&row.run_id===identity.runId
   &&row.repository_id===identity.repositoryId&&row.task===identity.taskId&&row.attempt===identity.attempt;
 export const isFixObservationExit=row=>row.event==='run_done'&&row.phase==='observation'&&row.result==='observing';
