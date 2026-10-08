@@ -119,8 +119,14 @@ jobs:
   # 跟登录无关，装上 codex 也没用。它们改由 scripts/cm-release-smoke.sh 在发版时覆盖——
   # 那个脚本本来就要求本机装了 codex 和 byz，是天然的落点。
   # 下面第一步会断言排除名单正好是这几份：想往里加东西就得改这句，改动会出现在评审里。
-  js-tests:
+  # 140 多个测试文件串行要 12～20 分钟：按排序后的序号轮流分成 4 份同时跑，
+  # 每个文件恰好落在一份里；下面的 js-tests 汇总这 4 份，名字和以前一样。
+  js-tests-shard:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - name: Check out repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -147,9 +153,19 @@ jobs:
         run: |
           set -o pipefail
           pattern="scripts/(cm-ai-batch-host|cm-ai-bootstrap|cm-ai-host|cm-ai-multi-root|cm-ai-nested-execution|cm-fix-protected-edits|cm-host-check)\.test\.mjs$"
-          mapfile -t files < <(ls scripts/*.test.mjs | grep -vE "$pattern")
-          echo "running ${#files[@]} test files"
+          mapfile -t all < <(ls scripts/*.test.mjs | grep -vE "$pattern" | sort)
+          files=()
+          for i in "${!all[@]}"; do [ $((i % 4)) -eq ${{ matrix.shard }} ] && files+=("${all[$i]}"); done
+          echo "shard ${{ matrix.shard }}: running ${#files[@]} of ${#all[@]} test files"
           node --test "${files[@]}"
+
+  js-tests:
+    needs: js-tests-shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: All four shards passed
+        run: '[ "${{ needs.js-tests-shard.result }}" = success ] || { echo "js-tests-shard: ${{ needs.js-tests-shard.result }}"; exit 1; }'
 
   # 历史兼容夹具（experiments/js-orchestration）：2026-09-25 起全绿，单独一个任务盯着别再烂回去。
   # 它们是历史夹具而不是当前合同，所以允许失败、不阻断合并；红了要看，但不拦人。
