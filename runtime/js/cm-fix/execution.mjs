@@ -38,7 +38,8 @@ import {readProjectInstructionContext} from '../cm-ai/cm-ai-context-refresh.mjs'
 import {publishFixDossier,publishFixObservationDossier,publishFixEscalationDossier,readFixObservationArchive} from './dossier.mjs';
 import {readFixWalkthrough,fixWalkthroughBinding,createFixWalkthrough,inspectFixWalkthrough,verifyFixWalkthroughEvidence,walkthroughCoversDiagnosis} from './walkthrough.mjs';
 import {logFixEvent} from './start.mjs';
-import {inspectFixInvestigation,fixInvestigationRequest} from './investigation.mjs';
+import {fixInvestigationRequest} from './investigation.mjs';
+import {inspectFixDiagnosis,fixDiagnosisAnswer,isInvalidFixDiagnosis} from './diagnosis.mjs';
 import {finishFix,fixCompletionProjection,eventsAt,isFixObservationExit} from './finish.mjs';
 import {specsPermissionArgs} from '../cm-ai/codex-config.mjs';
 import {protectedFixBridge} from './protected-edits.mjs';
@@ -88,23 +89,7 @@ function reviewTimeout(adapter,fallback){
   return adapter.timeoutMs;
 }
 
-function diagnosis(raw){
-  const value=json(raw,32*1024);
-  shape(value,['status','rootCause','affectedPaths','plan','crossLayer','affectedModules',...(Object.hasOwn(value,'investigation')?['investigation']:[])]);
-  need(['diagnosed','needs_evidence','design_change'].includes(value.status),'invalid_diagnosis');
-  for(const key of ['rootCause','plan'])text(value[key]);
-  need(typeof value.crossLayer==='boolean','invalid_diagnosis');
-  if(Object.hasOwn(value,'investigation'))inspectFixInvestigation(value.investigation,value.crossLayer);
-  for(const key of ['affectedPaths','affectedModules']){
-    need(Array.isArray(value[key])&&value[key].length>0&&value[key].length<=32,'invalid_diagnosis');
-    for(const item of value[key]){
-      text(item);need(!path.isAbsolute(item)&&item===path.posix.normalize(item)
-        &&item!=='.'&&!item.startsWith('../')&&!/[\\\0]/.test(item),'invalid_diagnosis');
-    }
-    need(new Set(value[key]).size===value[key].length,'invalid_diagnosis');
-  }
-  return value;
-}
+const diagnosis=inspectFixDiagnosis;
 
 const HISTORY_INSPECTION=Symbol('fix-history-inspection'),DURABLE_HISTORY=Symbol('fix-durable-history');
 // Same owner projection, backed by a read-only journal and no writer/dispatch.
@@ -1942,14 +1927,29 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     },
     async rediagnose({authorized=false,reason}={}){
       need(!closed&&active===null,'fix_busy');need(authorized===true,'fix_rediagnosis_authorization_required');
-      const start=project();need(start.stage==='rediagnosis_required'&&!start.rediagnosis,'fix_rediagnosis_unavailable');
+      const start=project();
+      // The one continuation is the intent. It binds the request (prior review,
+      // its feedback, Learning), never an answer, so an intent left without a
+      // result (rejected answer or lost reply) is answered again under itself.
+      const reasking=start.stage==='unknown'&&start.pending==='rediagnosis'&&Boolean(start.rediagnosis);
+      need(reasking||start.stage==='rediagnosis_required'&&!start.rediagnosis,'fix_rediagnosis_unavailable');
       text(reason);need(Buffer.byteLength(reason,'utf8')<=1000&&!/[\r\n\0\u0085\u2028\u2029]/.test(reason),'fix_rediagnosis_reason_invalid');
-      need(bridge!==null,'fix_rediagnosis_unavailable');publishCause(true);
-      const prior=causeRecord(store.snapshot().records,'registered').payload;
+      need(bridge!==null,'fix_rediagnosis_unavailable');
+      const records=store.snapshot().records,marker=records.findIndex(row=>row.id==='fix-rediagnosis-intent');
+      const before=marker<0?records:records.slice(0,marker);
+      const prior=reviewCycleRecord(before,'fix-cause','registered').payload;
+      if(reasking){
+        need(digest(prior)===start.rediagnosis.priorRegistrationDigest,'fix_rediagnosis_unavailable');
+        publishCauseEvidence({specsRoot:evidenceSpecsRoot,configuration:reviewConfiguration,inspectOnly:true,round:1,registration:prior,
+          started:reviewCycleRecord(before,'fix-cause','started')?.payload.providerThreadId??null,
+          result:reviewCycleRecord(before,'fix-cause','result')?.payload});
+      }else publishCause(true);
+      const priorPackage=prior.request.payload.reviewPackage;
       const assertBasis=()=>{
         const pkg=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,
-          status:{...start,stage:'cause_review_required'}});
-        need(pkg.packageDigest===prior.request.payload.reviewPackage.packageDigest,'fix_rediagnosis_source_changed');
+          status:reasking?{...start,stage:'cause_review_required',rediagnosis:null,learning:priorPackage.learning}
+            :{...start,stage:'cause_review_required'}});
+        need(pkg.packageDigest===priorPackage.packageDigest,'fix_rediagnosis_source_changed');
         const slug=identity.taskId.slice(6);
         const slot=path.join(evidenceSpecsRoot,'.reviews',`fix-${slug}-cause-r2.md`);
         let occupied=false;
@@ -1958,27 +1958,34 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         return pkg;
       };
       const pkg=assertBasis();
-      const controller=new AbortController();active=controller;let registered=false,timer;
+      const reviewFeedback=reasking?start.rediagnosis.reviewFeedback:start.causeReview.review;
+      const controller=new AbortController();active=controller;let registered=reasking,timer;
       try{
         timer=setTimeout(()=>controller.abort(),configuration.reproduction.timeoutMs);
-        const learning=prepare===null?start.learning:inspectFixLearning(await prepare({identity,defect:configuration.defect},controller.signal));
-        need(!controller.signal.aborted,'fix_learning_interrupted');
-        need(project().stage===start.stage,'fix_evidence_changed');
-        // Preparation awaits current-session work; recheck its original evidence before the single continuation is registered.
-        assertBasis();
-        const history=store.snapshot().records;
-        append('fix-rediagnosis-intent','intent',{reason,historyDigest:digest(history),priorRegistrationDigest:digest(prior),
-          priorObservationDigest:start.causeReview.observationDigest,priorPackageDigest:pkg.packageDigest,
-          priorProviderThreadId:start.causeReview.providerThreadId,
-          reviewFeedback:start.causeReview.review,learning});registered=true;
-        const value=diagnosis(await bridge.call('fix_diagnose',{identity,defect:configuration.defect,
+        if(!reasking){
+          const learning=prepare===null?start.learning:inspectFixLearning(await prepare({identity,defect:configuration.defect},controller.signal));
+          need(!controller.signal.aborted,'fix_learning_interrupted');
+          need(project().stage===start.stage,'fix_evidence_changed');
+          // Preparation awaits current-session work; recheck its original evidence before the single continuation is registered.
+          assertBasis();
+          const history=store.snapshot().records;
+          append('fix-rediagnosis-intent','intent',{reason,historyDigest:digest(history),priorRegistrationDigest:digest(prior),
+            priorObservationDigest:start.causeReview.observationDigest,priorPackageDigest:pkg.packageDigest,
+            priorProviderThreadId:start.causeReview.providerThreadId,
+            reviewFeedback,learning});registered=true;
+        }
+        const value=fixDiagnosisAnswer(await bridge.call('fix_diagnose',{identity,defect:configuration.defect,
           codeProject:configuration.reproduction.cwd,reproduction:start.reproduction,previousDiagnosis:start.diagnosis,
-          reviewFeedback:start.causeReview.review,diagnosticRecord:fixInvestigationRequest,
+          reviewFeedback,diagnosticRecord:fixInvestigationRequest,
           ...fixQaDiagnosisEvidence({specsRoot,identity,configuration})},controller.signal));
         if(controller.signal.aborted)return project();
         if(configuration.qaSource)inspectFixQaSource({specsRoot,identity,configuration});
         append('fix-rediagnosis-result','result',value);return project();
-      }catch(error){if(!registered)throw error;return project();}
+      }catch(error){
+        // A rejected answer is reported, not hidden as an interruption; rediagnosis stays pending.
+        if(!registered||isInvalidFixDiagnosis(error))throw error;
+        return project();
+      }
       finally{clearTimeout(timer);active=null;}
     },
     async advance({authorized=false}={}){
@@ -2014,7 +2021,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
             let value;
             if(diagnosing){
               timer=setTimeout(()=>controller.abort(),configuration.reproduction.timeoutMs);
-              value=diagnosis(await Promise.race([interrupted,Promise.resolve().then(()=>bridge.call('fix_diagnose',{
+              value=fixDiagnosisAnswer(await Promise.race([interrupted,Promise.resolve().then(()=>bridge.call('fix_diagnose',{
                 identity,defect:configuration.defect,codeProject:configuration.reproduction.cwd,
                 reproduction:current.observationReproduction,diagnosticRecord:fixInvestigationRequest,
                 ...fixQaDiagnosisEvidence({specsRoot,identity,configuration}),
@@ -2026,7 +2033,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
             append(`${prefix}-result`,'result',value);current=project();
           }
           return current;
-        }catch(error){if(!registered)throw error;return project();}
+        }catch(error){if(!registered||isInvalidFixDiagnosis(error))throw error;return project();}
         finally{clearTimeout(timer);controller.signal.removeEventListener('abort',rejectAbort);active=null;}
       }
       if(!['reproduce','diagnose'].includes(start.stage))return start;
@@ -2057,7 +2064,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
               ?createFixReproduction(configuration.reproduction,{specsRoot:protectedSpecsRoot}):reproduce)({identity},{signal:controller.signal,authorized:true});
             else{
               timer=setTimeout(()=>controller.abort(),configuration.reproduction.timeoutMs);
-              value=diagnosis(await bridge.call('fix_diagnose',{identity,defect:configuration.defect,
+              value=fixDiagnosisAnswer(await bridge.call('fix_diagnose',{identity,defect:configuration.defect,
                 ...fixQaDiagnosisEvidence({specsRoot,identity,configuration}),
                 codeProject:configuration.reproduction.cwd,reproduction:current.reproduction,diagnosticRecord:fixInvestigationRequest},controller.signal));
             }
@@ -2074,6 +2081,9 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
             'fix_learning_interrupted','cancelled','host_disconnected'].includes(error?.code)?error.code:'fix_preparation_failed';
           need(false,code);
         }
+        // A rejected answer is reported as such; the intent stays without a result
+        // (abandon_step remains the recovery). Transport loss stays unknown and is never redispatched.
+        if(isInvalidFixDiagnosis(error))throw error;
         // Intent without a valid result is unknown, including transport loss; never redispatch it.
         return project();
       }finally{active=null;}

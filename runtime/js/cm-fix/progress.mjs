@@ -51,6 +51,8 @@ export function fixProgress(status,config={},authorization={}){
     }
   }
   const invocation=status.finalReviewInvocation;
+  if(stage==='unknown'&&status.pending==='rediagnosis')return {...result,current:'重新诊断已登记但还没有有效结论',blocker:'rediagnosis_answer_required',
+    nextAction:'原 run 再次使用 rediagnose（--allow-rediagnosis、reason）提交合法诊断答案；沿用已登记的这一次重新诊断，不另占次数，之后进入第二轮根因审查。',requiresUser:true};
   if(stage==='unknown'){
     const finalPending=!revision&&invocation&&(!review||review.observationStatus==='unknown');
     return {...result,current:finalPending?'独立审查结果未确认':'操作结果未确认',blocker:'result_unconfirmed',

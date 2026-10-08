@@ -61,6 +61,7 @@ cm-ai 宿主返回的可选 `guidance` 说明当前阻塞与下一步：`summary
 放弃追加 `fix-abandoned-N` 记录和 `abandon` 日志；记录绑定旧 intent 摘要，`status.abandoned` 显示步骤、原因和时间。
 重做回到原待执行阶段，intent/result 用 `-retry-N-` ID；红灯输出加 `-retry-N.md`，旧记录和输出保留。
 `advance`/`run` 不自行放弃，放弃不跳过原阶段的校验、授权和独立审查。
+诊断答案（首次、观察复诊、重新诊断）不合格时宿主报 `invalid_diagnosis`（诊断里写明字段与上限），不再静默成 `unknown`；首次与观察复诊仍按本节放弃重做，`pending=rediagnosis` 则用原 `rediagnose` 在同一登记下重新作答。
 
 ## cm-fix 原因审查与第二轮最终审查的一次性放弃重审
 
