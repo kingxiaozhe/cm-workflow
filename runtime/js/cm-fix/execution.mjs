@@ -1098,7 +1098,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(causeResult?.review?.verdict==='approved'&&stage!=='cancelled'&&repairBaseline===null){
         try{
           const current=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,
-            status:{identity,stage:'cause_review_required',reproduction,diagnosis:diagnosed,learning,
+            context:Object.hasOwn(cause.request.payload.reviewPackage,'contextFiles'),status:{identity,stage:'cause_review_required',reproduction,diagnosis:diagnosed,learning,
               ...(rediagnosis?{rediagnosis}:{}),
               ...(cause.request.payload.reviewPackage.correction?{causeReviewCorrection:cause.request.payload.reviewPackage.correction}:{})}});
           verifyFixCauseTransition(cause.request.payload.reviewPackage,current,authorBaseline,authored);

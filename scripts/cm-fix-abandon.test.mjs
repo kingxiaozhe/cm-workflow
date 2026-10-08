@@ -53,7 +53,7 @@ async function fixture(t,{observation=false,reviewMode=null,crossLayer=false,les
       onEvent({event:'thread.started',provider_thread:`fixture-review-${reviewMode==='first_lost_same_thread'?1:reviews}`});
       if(reviewMode==='lost'||['second_lost','second_lost_retry'].includes(reviewMode)&&reviews===2
         ||['first_lost','first_lost_same_thread'].includes(reviewMode)&&reviews===1
-        ||['rediagnosis_lost','rediagnosis_twice'].includes(reviewMode)&&(reviews===2||reviewMode==='rediagnosis_twice'&&reviews===3))
+        ||['rediagnosis_lost','rediagnosis_twice','rediagnosis_context'].includes(reviewMode)&&(reviews===2||reviewMode==='rediagnosis_twice'&&reviews===3))
         throw Error('Synthetic lost review result');
       for(const event of [{event:'turn.started',item_type:null},{event:'item.completed',item_type:'agent_message'},
         {event:'turn.completed',item_type:null},{event:'process_closed',exit_code:0,signal:null,timed_out:false}])onEvent(event);
@@ -62,7 +62,8 @@ async function fixture(t,{observation=false,reviewMode=null,crossLayer=false,les
         ||reviewMode?.startsWith('rediagnosis_')&&reviews===1||outsidePath?'changes_requested':'approved';
       return {status:'succeeded',value:{verdict,packageDigest:data.reviewPackage.packageDigest,
         examinedPaths:data.examinedPaths,
-        findings:verdict==='changes_requested'?[{id:'F1',severity:'P2',path:outsidePath?'not-in-package.mjs':'value.mjs',message:'Revise value',evidence:'Fixture'}]:[],
+        findings:verdict==='changes_requested'?[{id:'F1',severity:'P2',path:outsidePath?'not-in-package.mjs':'value.mjs',message:'Revise value',evidence:'Fixture'}]
+          :reviewMode==='rediagnosis_context'?[{id:'C1',severity:'P3',path:'existing.mjs',message:'Prior-round file still fine',evidence:'Fixture'}]:[],
         summary:'Synthetic review'}};
     }}):null;
   if(reviewHost)configuration.causeReview=reviewHost.reviewer;
@@ -70,6 +71,8 @@ async function fixture(t,{observation=false,reviewMode=null,crossLayer=false,les
   let loseObservation=true,loseRevisionRepair=true;
   const bridge={async call(kind,payload){
     if(kind==='fix_diagnose'){
+      // Round 1 covers existing.mjs too; the rediagnosis narrows it away.
+      if(reviewMode==='rediagnosis_context'&&!payload.reviewFeedback)return {...diagnosis,affectedPaths:['existing.mjs','value.mjs'],crossLayer:true};
       if(observation&&payload.observationEvidence&&loseObservation){loseObservation=false;throw Error('Lost observation answer');}
       return crossLayer?{...diagnosis,crossLayer:true}:diagnosis;
     }
@@ -563,4 +566,22 @@ test('regression: a second no-result round-2 cause review exhausts that round\'s
   await assert.rejects(host().handle({requestId:'b',operation:'abandon_review',reason:'Second round-2 reviewer stopped'}),{code:'fix_review_abandon_budget_exhausted'});
   assert.deepEqual(fs.readFileSync(f.statePath),before);
   assert.equal(f.reopen().status().reviewAbandonBudgetExhausted,true);
+});
+
+test('regression: the round-2 cause package carries the prior review\'s examined files as context, on first dispatch and on the retry, and a finding citing them is accepted',async t=>{
+  const f=await fixture(t,{reviewMode:'rediagnosis_context',crossLayer:true});
+  assert.equal((await toRediagnosisReview(f)).reviewAbandonable,'cause_review');
+  await hostFor(f,['--allow-reproduction','--allow-abandon-review']).handle({requestId:'a',operation:'abandon_review',reason:'Round-2 reviewer stopped'});
+  await causeDecide(f);
+  assert.equal((await f.owner().reviewCause()).stage,'red_test_required');
+  const pkgOf=id=>f.records().find(row=>row.id===id).payload.request.payload.reviewPackage;
+  assert.equal(pkgOf('fix-cause-registered').contextFiles,undefined);
+  for(const id of ['fix-cause-rediagnosis-registered','fix-cause-rediagnosis-retry-registered']){
+    const pkg=pkgOf(id);
+    assert.deepEqual(pkg.diagnosis.affectedPaths,['value.mjs']);assert.deepEqual(pkg.files.map(file=>file.path),['value.mjs']);
+    assert.deepEqual(pkg.contextFiles.map(file=>file.path),['existing.mjs']);
+  }
+  const review=f.reopen().status().causeReview.review;
+  assert.equal(review.verdict,'approved');assert.deepEqual(review.findings.map(row=>row.path),['existing.mjs']);
+  assert.equal(f.owner().status().stage,'red_test_required');
 });

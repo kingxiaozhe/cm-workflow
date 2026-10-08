@@ -161,7 +161,10 @@ QA-fix 子宿主用 `--allow-qa-fix-abandon-review`，`fix_action` 带 `fixOpera
 放弃追加 `fix-cause-abandoned`（第二轮为 `fix-cause-rediagnosis-abandoned`）或 `fix-revision-final-abandoned`，绑定原调用 ID、登记摘要、已知线程和无结论结果的摘要，
 写 `abandon` 日志，并回到 `cause_review_required`（或原迟到纠正阶段）/`revision_final_review_required`。
 重审仍需原 `--allow-cause-review` / `--allow-final-review` 和一次新的授权，记录改用 `fix-cause-retry-*`（第二轮为 `fix-cause-rediagnosis-retry-*`）/
-`fix-revision-final-retry-*`；新调用的审查线程不能是被放弃的那条。旧记录一字不改，没有放弃记录的运行照原样回放。
+`fix-revision-final-retry-*`；新调用的审查线程不能是被放弃的那条。
+第二轮原因审查包（首次派发与放弃后重审都是现场重建）另带 `contextFiles`：第一轮审查 `examinedPaths` 与各条问题引用、
+却不在新 `affectedPaths` 里的代码文件（存在于代码根的普通文件），作为只读上下文并计入 `examinedPaths`，审查者可以引用；
+重审的新包有新摘要，绑定在 `fix-cause-rediagnosis-retry-registered` 里，被放弃那次的记录不改。旧的第二轮登记没有该字段，照原样回放。旧记录一字不改，没有放弃记录的运行照原样回放。
 
 审查等待使用审查配置 `--review-config` 的 `timeoutMs`（1–3600000 毫秒，省略为 900000），同时交给审查 worker；
 不再使用 `reproduction.timeoutMs`。原因审查到时会记下超时结果（`transport_timeout`），不再停在无记录的 unknown。
