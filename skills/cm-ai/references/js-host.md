@@ -302,6 +302,7 @@ R1要求修改但尚未授权第2轮时保留changes_requested，不登记开发
 创建运行的 host-context（换会话时由 `--original-host-context` 声明）、开发/审查配置仍须匹配。journal追加不可重复/修改的`qa-attached`，运行日志写
 `decision/qa_attach`；后续恢复须保持已绑定配置及重新授权，`qa`仍要求`qa_assess`等原宿主请求。
 不重跑开发/审查，不将任务完成当作QA通过（事故：create漏配workflow曾使feature强制QA无法补做）。
+`qa_browser` 只在一种情况下被追问一次：回答是 PASS、environment 与登记值相同、cleanup 未失败，但证据列表无效，或证据不在 specs 根的 `.reviews/` 下（或缺失、为空）。请求多带 `correction: {problems, instruction}`，`problems` 逐条给出 code 与路径；把实际观察到的证据复制到 `.reviews/qa-evidence/` 下重答，verdict、environment、cleanup 按实际观察保留，不再认可 PASS 就答 FAIL 或 BLOCKED。第二次回答照原规则判定（仍不合格即 BLOCKED，超时记 hostRequestTimeout），报告行 `answerCorrection` 保留问题与首次回答的 verdict/environment/cleanup。FAIL、BLOCKED、环境不符或清理失败的回答不追问，按原规则判定，需要时走显式恢复。
 QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.timeoutMs` 可设 1–3600000 毫秒，
 省略为 60000；`qa_assess` 的实际应答窗口另受决策通道约 60 秒上限约束。`qa_logic/qa_browser` 超时记
 `host_request_timeout` 并判该用例 BLOCKED，不把已有命令 PASS 用来覆盖超时。`qa_assess` 超时不再写 N6 决定：

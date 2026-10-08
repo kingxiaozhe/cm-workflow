@@ -599,7 +599,7 @@ JS 通过现有通道发出固定请求，结果由原组件校验：
 | documentation_sync | Review 前同步列明的文档，返回 `{status:"completed"}` | 原 scope 检查、最终 handoff 与 Review 覆盖 |
 | qa_assess | 返回原 scores/changes 语义评估 | 原 N6 强制触发、评分及日志 |
 | qa_logic | 返回原静态 verdict/evidence | 与实际命令覆盖关联，不把静态结论算执行 PASS |
-| qa_browser | 用获准工具实测，返回原 verdict/evidence/environment/cleanup | 原逐例日志、证据与载体校验、QA 结果 |
+| qa_browser | 用获准工具实测，返回原 verdict/evidence/environment/cleanup；PASS 只因证据不在 specs 根的 `.reviews/` 下（或缺失、为空）时，宿主带 `correction` 再问一次同一用例，只改证据重答 | 原逐例日志、证据与载体校验、QA 结果 |
 | documentation_inspect | 只读核验，返回请求绑定的原文档结果 | 原 N8/finalizer，唯一 run_done |
 
 正式 QA commands 由现有 host-check 实际执行，必须是宿主核对的已授权命令；配置文件本身
