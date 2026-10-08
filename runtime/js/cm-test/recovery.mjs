@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {inspectRunClosure} from '../../../scripts/cm-log-event.mjs';
 import {need,digest,json} from '../cm-ai/effect-contract.mjs';
+import {readStableLogRows} from '../cm-ai/log-rows.mjs';
 import {inside,canonicalFuture,selectReportDirectory} from './source-snapshot.mjs';
 
 export function inspectCmTestRecovery(config,{runId,logFile}){
@@ -23,10 +24,9 @@ export function inspectCmTestRecovery(config,{runId,logFile}){
   const allowed=admission.specs?logFile===path.join(admission.specs,'运行日志.jsonl'):
     inside(path.join(logHome,'runs'),logFile)&&logFile.endsWith('.jsonl');
   need(allowed,'cm_test_log_path_invalid');
-  const stat=fs.lstatSync(logFile);
-  need(stat.isFile()&&!stat.isSymbolicLink()&&stat.nlink===1&&stat.size<=32*1024*1024,'cm_test_log_invalid');
-  const lines=fs.readFileSync(logFile,'utf8').split('\n').filter(Boolean);
-  const records=lines.map(line=>JSON.parse(line)).filter(event=>event.run_id===runId);
+  // Streamed with the same single-link/stable-file checks: a shared project log
+  // keeps growing, and only this run's rows matter here (no 32 MiB whole-file cap).
+  const records=readStableLogRows(logFile,event=>event?.run_id===runId,'cm_test_log_invalid');
   const starts=records.filter(event=>event.event==='run_start');
   need(starts.length===1&&starts[0].workflow==='cm-test'&&starts[0].project_path===admission.project,
     'cm_test_run_binding_invalid');

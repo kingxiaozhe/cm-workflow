@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {types} from 'node:util';
 import {readReviewSourceFiles} from '../cm-ai/review-package.mjs';
+import {eventsAt} from './log-events.mjs';
 import {id,need,validIdentity} from '../cm-ai/effect-contract.mjs';
 import {METRICS_HEADER as header,METRICS_SEPARATOR as separator,hasMetricsHeader} from '../cm-ai/metrics-table.mjs';
 const cell=value=>String(value).replaceAll('|','&#124;').replace(/[\r\n]+/g,' ');
@@ -43,8 +44,8 @@ export function appendFixMetrics({specsRoot,identity,dossierFile},{assertOwned})
   };
   owned();
   need(path.isAbsolute(specsRoot)&&fs.realpathSync(specsRoot)===specsRoot,'unsupported_path');
-  const [log]=readReviewSourceFiles(specsRoot,['运行日志.jsonl']);
-  const events=new TextDecoder('utf-8',{fatal:true}).decode(Buffer.from(log.contentBase64,'base64')).trim().split('\n').map(line=>JSON.parse(line));
+  // Streamed: the log may exceed the 1 MiB review-material limit (see log-events.mjs).
+  const events=eventsAt(specsRoot);
   const record=fixMetricsRow({events,identity,dossierFile});
   const [dossier]=readReviewSourceFiles(specsRoot,[`fixes/${dossierFile}`]);
   const completion=events.find(event=>event.event_id===record.completionEventId);
