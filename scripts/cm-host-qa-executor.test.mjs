@@ -747,6 +747,25 @@ test('dropped tasks: mid-feature, a case bound only to them is recorded as dropp
   }finally{f.cleanup();}
 });
 
+// Codex review R1: the test-kind policy must not hide a dropped-only case and so schedule its command.
+test('dropped tasks: a command declared only for a policy-excluded dropped case never runs; the round stays BLOCKED',async()=>{
+  const f=fixture();
+  try{
+    const marker=droppedFeature(f,{tests:['commands'],cases:[['logic',false,['T-002']]],commands:[['dropped-test',['TC-001']]]});
+    const executor=plannedExecutor({...f.configuration,logic:()=>assert.fail('no dropped logic request')});
+    const plan=executor.configuration.plan;
+    assert.deepEqual(plan.dropped_task_cases,[{id:'TC-001',taskIds:['T-002']}]);
+    assert.deepEqual(plan.dropped_task_commands,[{id:'dropped-test',caseIds:['TC-001']}]);
+    assert.deepEqual(plan.commands,[]);assert.deepEqual(plan.cases,[]);
+    const result=await executor.run(begin(f,executor),new AbortController().signal);
+    assert.equal(fs.existsSync(marker),false,'the dropped-only command never runs');
+    assert.deepEqual([result.result,result.passed,result.blocked],['BLOCKED',0,1]);
+    const listed=Object.fromEntries(reportSections(result.report));
+    assert.deepEqual(listed.not_applicable.map(item=>[item.id,item.verdict]),[['TC-001','NOT_APPLICABLE'],['dropped-test','NOT_APPLICABLE']]);
+    assert.equal(listed['commands-unavailable'].verdict,'BLOCKED');
+  }finally{f.cleanup();}
+});
+
 for(const tests of [['logic','browser'],['logic','commands','browser']])
 test(`dropped tasks: nothing left to verify stays BLOCKED, never a PASS from nothing; policies ${tests.join('+')}`,async()=>{
   const f=fixture();

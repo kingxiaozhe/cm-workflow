@@ -977,7 +977,7 @@ browser case沿原test_run日志写开始/结束，同步既有.cm-status.json�
 该执行器配置可用于本地隔离组合；不能据此宣称完整N6、真实浏览器或双端安装已经验收。
 
 作废任务的用例：taskIds 非空且全部是本 feature `tasks.md` 中标了 `[DROPPED …]` 的任务（例如
-``- [ ] ~~T-001: …~~ `[DROPPED v6: 原因]` ``）的用例不进入计划，不论 blocking 与否——作废任务的验收随任务一起暂缓，
+``- [ ] ~~T-001: …~~ `[DROPPED v6: 原因]` ``）的用例不进入计划，不论 blocking 与否、也先于 `policies.tests` 的类型筛选判定——作废任务的验收随任务一起暂缓，
 没有可交付的功能可验；至少关联一个未作废任务的用例照旧。这类用例不向会话发 `qa_logic`/`qa_browser`，
 只为它们声明的命令（caseIds 非空且全部是这类用例）也不运行。它们不计入用例数和通过/失败/阻断，summary 只按其余行计算；
 计划另记 `dropped_task_cases: [{id, taskIds}]`、`dropped_task_commands: [{id, caseIds}]`，`test_run/start` 行同名记录，

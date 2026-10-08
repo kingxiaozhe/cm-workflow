@@ -42,13 +42,14 @@ function readPlan(configuration,selectCompleted=true) {
   // deferred with the task), blocking or not: it is recorded, never planned.
   const dropped=new Set(context.dropped);
   const droppedOnly=item=>item.taskIds.length>0&&item.taskIds.every(taskId=>dropped.has(taskId));
-  const applicable=cases.filter(item=>item.blocking||config.policies.tests.includes(item.kind));
-  const droppedCases=applicable.filter(droppedOnly).map(item=>({id:item.id,taskIds:item.taskIds}));
+  // Identified before the test-kind policy, so a command declared only for them is never scheduled.
+  const droppedCases=cases.filter(droppedOnly).map(item=>({id:item.id,taskIds:item.taskIds}));
   const droppedIds=new Set(droppedCases.map(item=>item.id));
-  const deferred=context.pending===0?[]:applicable.filter(item=>!droppedIds.has(item.id)).map(item=>({id:item.id,
+  const applicable=cases.filter(item=>!droppedIds.has(item.id)&&(item.blocking||config.policies.tests.includes(item.kind)));
+  const deferred=context.pending===0?[]:applicable.map(item=>({id:item.id,
     taskIds:item.taskIds.filter(taskId=>!completed.has(taskId))})).filter(item=>item.taskIds.length>0);
   const deferredIds=new Set(deferred.map(item=>item.id));
-  const selected=applicable.filter(item=>!deferredIds.has(item.id)&&!droppedIds.has(item.id));
+  const selected=applicable.filter(item=>!deferredIds.has(item.id));
   const wanted=new Set(selected.filter(item=>item.kind==='logic').map(item=>item.id));
   // A command declared only for such cases is not run for them either.
   const droppedCommands=commands.filter(item=>item.caseIds.length>0&&item.caseIds.every(caseId=>droppedIds.has(caseId)))
