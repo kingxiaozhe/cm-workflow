@@ -2,7 +2,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID,createHash } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
+// Loaded on first open, so modules that only import this one (task-runner via
+// reviewed-deliveries) print no SQLite ExperimentalWarning.
+const sqlite=()=>process.getBuiltinModule('node:sqlite');
 import { need,shape,id,hex,json,digest,freeze,JOURNAL_PAYLOAD_LIMIT } from './effect-contract.mjs';
 import { isSupportedExecutionPlatform } from './execution-platform.mjs';
 import { MiB,STATE_LIMIT,PHYSICAL_LIMIT } from './execution-store-limits.mjs';
@@ -141,7 +143,7 @@ function acquireWriter(p,create) {
       // An O_EXCL loser must NEVER open an incompletely initialized native DB.
       certificate=readiness(p,inspectionFd);fs.fsyncSync(inspectionFd);syncPath(readyPath(p));syncPath(path.dirname(p));
     }
-    db=new DatabaseSync(p,{timeout:0,allowExtension:false});
+    db=new (sqlite().DatabaseSync)(p,{timeout:0,allowExtension:false});
     db.exec('PRAGMA busy_timeout=0; PRAGMA trusted_schema=OFF; PRAGMA synchronous=EXTRA');
     // F_FULLFSYNC is macOS-specific. Linux keeps SQLite's native sync plus the
     // mandatory file/parent fsync below; unsupported sync must still fail closed.

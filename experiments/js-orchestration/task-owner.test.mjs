@@ -237,6 +237,8 @@ function noNativeOpen(options,args,expectedCalls=0) {
   const node=`import {registerHooks} from 'node:module';globalThis.nativeCalls=0;
     const stub='data:text/javascript,'+encodeURIComponent('export class DatabaseSync {constructor(){globalThis.nativeCalls++;throw Error("NATIVE_OPEN");}}');
     registerHooks({resolve(specifier,context,next){return specifier==='node:sqlite'?{url:stub,shortCircuit:true}:next(specifier,context);}});
+    // The store loads node:sqlite lazily through process.getBuiltinModule, which bypasses resolve hooks.
+    const builtin=process.getBuiltinModule;process.getBuiltinModule=name=>name==='node:sqlite'?{DatabaseSync:class{constructor(){globalThis.nativeCalls++;throw Error('NATIVE_OPEN');}}}:builtin(name);
     const {openExecutionStore}=await import(${JSON.stringify(new URL('./execution-store.mjs',import.meta.url).href)});
     try{openExecutionStore(JSON.parse(process.argv[1]));console.log('opened');}catch{}console.log(globalThis.nativeCalls);`;
   const {tasksPath,feature,...storeOptions}=options;
