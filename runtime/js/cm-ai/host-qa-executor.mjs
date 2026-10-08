@@ -78,6 +78,28 @@ function logStep(configuration,binding,event,phase,data,detail) {
     feature:configuration.feature,identity:binding.identity,caseId:data.case_id,phase});
 }
 
+// Only one kind of slip is asked back: a PASS on the registered environment
+// whose evidence files are unusable (outside {specs}/.reviews, missing or
+// empty). A FAIL, a BLOCKED, another environment or a failed cleanup is never
+// asked again: those stay as judged, and only an explicit recovery reruns them.
+const CORRECTION_INSTRUCTION='Only the evidence list of the previous PASS answer can be corrected. Evidence must be non-empty '
+  +'files inside the .reviews directory of the specs root (for example .reviews/qa-evidence/); copy the files you observed '
+  +'there and answer again. Keep the verdict, environment and cleanup you actually observed; if you no longer stand by the '
+  +'PASS, answer FAIL or BLOCKED.';
+// Every other condition of the verdict must already hold, so the correction can
+// only ever change the evidence: same environment, cleanup as the case requires.
+function answerProblems(configuration,observed,environment,item){
+  if(observed.verdict!=='PASS'||observed.cleanup==='failed'||(item.cleanup.length>0&&observed.cleanup!=='completed')
+    ||digest(observed.environment)!==digest(environment))return [];
+  const problems=[];let files=null;
+  try{files=evidence(observed.evidence);}catch{problems.push({code:'evidence_list_invalid'});}
+  for(const file of files??[]){
+    try{if(fs.statSync(reportFile(configuration.specsDir,file)).size===0)problems.push({code:'evidence_empty',path:file});}
+    catch{problems.push({code:'evidence_outside_reviews_or_missing',path:file});}
+  }
+  return problems;
+}
+
 function evidence(raw) {
   const result=json(raw);need(Array.isArray(result)&&result.length>0&&result.length<=32,'qa_evidence_required');
   for(const item of result){text(item);need(item.length<=2000&&!item.includes('\0'),'qa_evidence_required');}
@@ -227,11 +249,32 @@ export function createHostQaExecutor(options) {
               hostRequestTimeout=true;
               observed={verdict:'BLOCKED',evidence:['host_request_timeout'],environment,cleanup:'failed'};
             }
-            notCancelled();shape(observed,['verdict','evidence','environment','cleanup']);
-            need(['PASS','FAIL','BLOCKED'].includes(observed.verdict),'qa_verdict_invalid');
-            need(['completed','not_needed','failed'].includes(observed.cleanup),'qa_cleanup_required');
-            let evidenceProblem=null;
-            if(observed.verdict!=='BLOCKED')try{
+            const validAnswer=()=>{notCancelled();shape(observed,['verdict','evidence','environment','cleanup']);
+              need(['PASS','FAIL','BLOCKED'].includes(observed.verdict),'qa_verdict_invalid');
+              need(['completed','not_needed','failed'].includes(observed.cleanup),'qa_cleanup_required');};
+            validAnswer();
+            // One correction round inside the same case, before any verdict is
+            // recorded, so a form slip does not spend a whole QA round as BLOCKED.
+            let answerCorrection=null;
+            const problems=answered?answerProblems(configuration,observed,environment,item):[];
+            if(problems.length){
+              // The first answer is kept: the correction may only replace its evidence.
+              answerCorrection={problems,first:{verdict:observed.verdict,environment:observed.environment,cleanup:observed.cleanup}};
+              try{observed=json(await browser(freeze({...request,correction:{problems,instruction:CORRECTION_INSTRUCTION}}),signal));}
+              catch(error){
+                if(error.code!=='host_request_timeout')throw error;
+                hostRequestTimeout=true;answered=false;
+                observed={verdict:'BLOCKED',evidence:['host_request_timeout'],environment,cleanup:'failed'};
+              }
+              validAnswer();
+            }
+            // A corrected PASS must keep everything but its evidence; any other
+            // change to the answer is not a correction and does not pass.
+            const changedAnswer=answerCorrection!==null&&observed.verdict==='PASS'
+              &&digest({environment:observed.environment,cleanup:observed.cleanup})
+                !==digest({environment:answerCorrection.first.environment,cleanup:answerCorrection.first.cleanup});
+            let evidenceProblem=changedAnswer?'qa_correction_changed_answer':null;
+            if(observed.verdict!=='BLOCKED'&&evidenceProblem===null)try{
               for(const file of evidence(observed.evidence)){
                 const target=reportFile(configuration.specsDir,file);
                 need(fs.statSync(target).size>0,'qa_evidence_required');
@@ -245,6 +288,7 @@ export function createHostQaExecutor(options) {
             rows.push({id:item.id,kind:'browser',origin:item.origin,blocking:item.blocking,verdict,
               evidence:observed.evidence,evidenceProblem,environment:observed.environment,cleanup:observed.cleanup,
               ...(hostRequestTimeout?{hostRequestTimeout:true}:{}),
+              ...(answerCorrection?{answerCorrection}:{}),
               ...(answered&&observed.verdict==='BLOCKED'?{hostDeclaredBlocked:true}:{})});
             // The durable log row, appended now through the writer, is the record
             // that the session itself answered BLOCKED; the report only mirrors it.

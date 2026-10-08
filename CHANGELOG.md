@@ -5,6 +5,7 @@
 
 ## 未发布
 
+- `cm-ai` 质检浏览器验收回答 PASS、环境与登记一致，只是证据不在 specs 根 `.reviews/` 下（或缺失、为空）时，宿主在同一用例内带着具体问题再问一次，不再直接记 BLOCKED 占掉一轮质检；第二次回答照原规则判定，报告 `answerCorrection` 保留首次回答。FAIL、BLOCKED、环境不符或清理失败的回答不追问。
 - `cm-fix` 收尾与恢复不再受运行日志大小限制：完成投影和 METRICS 行改为逐行流式读取 `运行日志.jsonl`，只取 cm-fix 行并按本运行身份核对；项目日志超过 1 MiB 后 check_n5 及之后每次恢复都报 `limit_exceeded` 的问题已修，已卡住的运行可直接恢复；`cm-test` 历史恢复同样改为逐行读取，不再受 32 MiB 整份上限限制。读取保留单链接、读取前后文件不变等原有检查。
 - `cm-ai` 质检执行期间范围内文件被改时不再卡死：宿主先把本次观察到的 BLOCKED/FAIL 写成 `test_run/complete`（漂移行为 BLOCKED、`sourceChanged`，并记 `verdictBeforeSourceChange`），再返回 `stale_qa`；观察到的 PASS 不记为完成，经核对后只能用 `--rerun-unknown-qa` 重跑；代码还原后可用 `--rerun-blocked-qa` 重跑。漂移前为 PASS 或宿主可判定 BLOCKED 的行才可重跑，FAIL 与无法判定的行仍拒绝。旧版本留下的「有固定报告、无 complete」调用（`qa_execution_unknown`）也可用 `--rerun-blocked-qa` 按报告恢复，superseded 记 `incomplete_report`，日志只追加不改写。
 - `cm-ai` 任务 scope 含受保护路径（AGENTS.md、CLAUDE.md、`.claude/`、`.codex/`、tasks.md、`.cm-*` 等）时，单任务宿主、批量宿主和 `openControlRun` 在建运行前直接以 `protected_scope` 拒绝并列出路径，不写任何运行记录；派发前确定被拒的开发记为 `blocked/protected_scope`，旧版本停在 `unknown/execution_error` 且无出口的运行按原记录回放为该终态（记录不改写），之后可按原门禁新建运行。文档补充规则文件的受支持修改途径，`cm-prd` 拆任务时提示规则文件不进开发 scope。保护范围不变。

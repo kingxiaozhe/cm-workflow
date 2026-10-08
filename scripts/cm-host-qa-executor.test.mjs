@@ -763,14 +763,15 @@ test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
       `require('node:fs').existsSync(${JSON.stringify(ready)})||${killed?'process.kill(process.pid,"SIGKILL")':'process.exit(65)'}`];
     const failLike=['FAIL','declared-product-fail'].includes(scenario),contradicted=['mixed-failure','declared-contradicted'].includes(scenario);
     const hostBlocked=['product-blocked','legacy-product-blocked'].includes(scenario);
-    let repaired=false,browserCalls=0,logicCalls=0;
+    let repaired=false,browserCalls=0,logicCalls=0,corrections=0;
     const executor=createHostQaExecutor({...f.configuration,
       logic:async()=>{logicCalls++;return {verdict:contradicted?'CONTRADICTED':
         ['logic','logic-confirmation-insufficient'].includes(scenario)?'INSUFFICIENT_EVIDENCE':'SUPPORTED',evidence:['Synthetic static observation']};},
       // Without a browser capability the executor itself blocks the case; no
       // session answered it, so a rerun on the same host cannot change it.
       ...(scenario==='no-browser-capability'?{}:{browser:async request=>{
-        browserCalls++;
+        // A correction round re-asks the same case once; this session answers it the same way.
+        if(request.correction){corrections++;}else browserCalls++;
         if(!repaired&&scenario==='source-drift')fs.appendFileSync(path.join(f.configuration.codeProject,'source.mjs'),'// drift\n');
         if(!repaired&&scenario==='timeout')throw Object.assign(new Error('timeout'),{code:'host_request_timeout'});
         return {verdict:!repaired&&failLike?'FAIL':!repaired&&hostBlocked?'BLOCKED':'PASS',
@@ -782,6 +783,10 @@ test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
     const binding=begin(f,executor),result=await executor.run(binding,new AbortController().signal);
     const {codeProject,testRunId,mode,caseCount,...query}=binding;
     const base={...binding,logHome:f.configuration.logHome};
+    // Unusable evidence on a PASS from the registered environment is asked back once.
+    const formSlip=['evidence','round-limit','superseded-crash','one-shot','mixed-failure',
+      'declared-contradicted','metadata-command','declared-blocked'].includes(scenario);
+    assert.equal(corrections,formSlip?1:0,scenario);
     if(scenario!=='incomplete')recordCmAiQaRun({...base,phase:'complete',result});
     // Older executors wrote host-declared BLOCKED rows without the marker; those stay ineligible.
     if(scenario==='legacy-product-blocked')fs.writeFileSync(result.report,
@@ -1128,4 +1133,101 @@ test('a pre-fix incomplete report cannot hide a real failure behind a PASS verdi
     const refused=await unconfirmed.entry({rerunBlockedQa:true}).handle(unconfirmed.advance);
     assert.equal(refused.code,'qa_rerun_not_blocked_by_evidence');
   }finally{unconfirmed.f.cleanup();}
+});
+
+// 2026-10-07 AI潮: most QA BLOCKED rows were answer-form slips (evidence outside
+// the QA directory, the reported device not the registered one), each spending a
+// whole QA round. The host now asks such an answer back once, inside the case.
+test('a browser answer with fixable form problems is asked back once and then judged as usual',async()=>{
+  const f=fixture();
+  try{
+    f.configuration.commands[0].caseIds=[];
+    const inside=path.join(f.binding.specsDir,'.reviews','qa-evidence','walk.txt');
+    fs.mkdirSync(path.dirname(inside),{recursive:true});fs.writeFileSync(inside,'Synthetic observation');
+    const outside=path.join(f.configuration.codeProject,'README.md');fs.writeFileSync(outside,'not QA evidence');
+    // Inside the specs root but outside its .reviews directory: still not QA evidence.
+    const specsOnly=path.join(f.binding.specsDir,'evidence','walk.txt');fs.mkdirSync(path.dirname(specsOnly));fs.writeFileSync(specsOnly,'x');
+    const requests=[];
+    const executor=createHostQaExecutor({...f.configuration,
+      logic:async()=>({verdict:'INSUFFICIENT_EVIDENCE',evidence:['Synthetic static observation']}),
+      browser:async request=>{requests.push(request);
+        return request.correction?{verdict:'PASS',evidence:[inside],environment:request.environment,cleanup:'completed'}
+          :{verdict:'PASS',evidence:[inside,outside,specsOnly],environment:request.environment,cleanup:'completed'};}});
+    const binding=begin(f,executor),result=await executor.run(binding,new AbortController().signal);
+    const rows=fs.readFileSync(result.report,'utf8').split(/^## /m).slice(1).map(part=>JSON.parse(part.slice(part.indexOf('\n')+1)));
+    const browserRows=rows.filter(row=>row.kind==='browser');
+    assert(browserRows.length>=1);
+    for(const row of browserRows){
+      assert.equal(row.verdict,'PASS');assert.equal(row.evidenceProblem,null);
+      assert.deepEqual(row.answerCorrection.problems.map(item=>[item.code,item.path]),
+        [['evidence_outside_reviews_or_missing',outside],['evidence_outside_reviews_or_missing',specsOnly]]);
+      assert.equal(row.answerCorrection.first.verdict,'PASS');
+    }
+    // Each corrected case was asked exactly twice, the second time with the problems and the honesty instruction.
+    assert.equal(requests.length,browserRows.length*2);
+    const correction=requests.find(request=>request.correction).correction;
+    assert.match(correction.instruction,/\.reviews directory of the specs root/);assert.match(correction.instruction,/Keep the verdict, environment and cleanup/);
+    const log=fs.readFileSync(path.join(f.binding.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(log.filter(row=>row.phase==='case_start').length,browserRows.length);
+    assert.equal(log.filter(row=>row.phase==='case_blocked').length,0);
+  }finally{f.cleanup();}
+});
+
+test('a correction is asked at most once, never for a BLOCKED answer, and a timed-out correction stays BLOCKED',async()=>{
+  for(const mode of ['blocked','timeout','fail','environment']){
+    const f=fixture();
+    try{
+      f.configuration.commands[0].caseIds=[];let calls=0;
+      const executor=createHostQaExecutor({...f.configuration,
+        logic:async()=>({verdict:'INSUFFICIENT_EVIDENCE',evidence:['Synthetic static observation']}),
+        browser:async request=>{calls++;
+          if(mode==='blocked')return {verdict:'BLOCKED',evidence:['simulator unreachable'],environment:{...request.environment,target:'x'},cleanup:'not_needed'};
+          // A FAIL, or a PASS from another device, is never asked again (no FAIL→PASS, no field swap).
+          if(mode==='fail')return {verdict:'FAIL',evidence:['not-a-file'],environment:request.environment,cleanup:'completed'};
+          if(mode==='environment')return {verdict:'PASS',evidence:['not-a-file'],environment:{...request.environment,target:'another-device'},cleanup:'completed'};
+          if(request.correction)throw Object.assign(new Error('timeout'),{code:'host_request_timeout'});
+          return {verdict:'PASS',evidence:['not-a-file'],environment:request.environment,cleanup:'completed'};}});
+      const binding=begin(f,executor),result=await executor.run(binding,new AbortController().signal);
+      const rows=fs.readFileSync(result.report,'utf8').split(/^## /m).slice(1).map(part=>JSON.parse(part.slice(part.indexOf('\n')+1)))
+        .filter(row=>row.kind==='browser');
+      assert.equal(calls,rows.length*(mode==='timeout'?2:1),mode);
+      for(const row of rows){
+        assert.equal(row.verdict,'BLOCKED');
+        if(mode!=='timeout')assert.equal(row.answerCorrection,undefined);
+        if(mode==='blocked')assert.equal(row.hostDeclaredBlocked,true);
+        else if(mode!=='timeout'){assert.equal(row.hostDeclaredBlocked,undefined);assert.equal(row.evidenceProblem,'qa_evidence_required');}
+        else{assert.equal(row.hostRequestTimeout,true);assert.equal(row.hostDeclaredBlocked,undefined);
+          assert.deepEqual(row.answerCorrection.problems.map(item=>item.code),['evidence_outside_reviews_or_missing']);}
+      }
+    }finally{f.cleanup();}
+  }
+});
+
+test('a correction never changes anything but evidence: required cleanup not done is not asked, a changed answer does not pass',async()=>{
+  for(const mode of ['cleanup-not-done','changed-cleanup']){
+    const f=fixture();
+    try{
+      f.configuration.commands[0].caseIds=[];let calls=0;
+      const inside=path.join(f.binding.specsDir,'.reviews','qa-evidence','walk.txt');
+      fs.mkdirSync(path.dirname(inside),{recursive:true});fs.writeFileSync(inside,'Synthetic observation');
+      const executor=createHostQaExecutor({...f.configuration,
+        logic:async()=>({verdict:'INSUFFICIENT_EVIDENCE',evidence:['Synthetic static observation']}),
+        browser:async request=>{calls++;
+          const needsCleanup=request.case.cleanup.length>0;
+          if(mode==='cleanup-not-done')return {verdict:'PASS',evidence:['not-a-file'],environment:request.environment,
+            cleanup:needsCleanup?'not_needed':'not_needed'};
+          // First answer is acceptable but for its evidence; the "correction" also flips cleanup.
+          return request.correction?{verdict:'PASS',evidence:[inside],environment:request.environment,cleanup:needsCleanup?'not_needed':'completed'}
+            :{verdict:'PASS',evidence:['not-a-file'],environment:request.environment,cleanup:needsCleanup?'completed':'not_needed'};}});
+      const binding=begin(f,executor),result=await executor.run(binding,new AbortController().signal);
+      const rows=fs.readFileSync(result.report,'utf8').split(/^## /m).slice(1).map(part=>JSON.parse(part.slice(part.indexOf('\n')+1)))
+        .filter(row=>row.kind==='browser');
+      const cleaned=rows.filter(row=>f.configuration&&row.id==='TC-002');
+      assert(cleaned.length===1,'TC-002 requires cleanup in the fixture');
+      const row=cleaned[0];
+      assert.equal(row.verdict,'BLOCKED',mode);
+      if(mode==='cleanup-not-done')assert.equal(row.answerCorrection,undefined);
+      else{assert.equal(row.evidenceProblem,'qa_correction_changed_answer');assert.equal(row.answerCorrection.first.cleanup,'completed');}
+    }finally{f.cleanup();}
+  }
 });
