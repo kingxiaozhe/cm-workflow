@@ -115,3 +115,36 @@ test('F56 M1 cause transition rejects hidden drift beneath a registered test-aut
     assert.equal(JSON.stringify(reviewed),reviewedBytes);
   }
 });
+
+test('regression: a round-2 context file that is a registered test admits the test-author transition, and only that',async t=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fix-cause-context-')));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const cwd=path.join(root,'code'),specsRoot=path.join(root,'specs');fs.mkdirSync(cwd);fs.mkdirSync(specsRoot);
+  const source='export const value=1;',testBody="import {value} from './value.mjs';if(value!==2)throw Error('BUG');";
+  fs.writeFileSync(path.join(cwd,'value.mjs'),source);fs.writeFileSync(path.join(cwd,'regression.mjs'),testBody);
+  const hex=c=>c.repeat(64);
+  // Round 1 covered value.mjs and regression.mjs; the rediagnosis narrowed affectedPaths to value.mjs.
+  const status={stage:'cause_review_required',identity:{repositoryId:'fixture',runId:'context',taskId:'T-FIX-cause',attempt:1},
+    learning:null,reproduction:{status:'reproduced',next:'diagnose',observation:{id:'reproduce',command:['node','regression.mjs'],
+      outcome:'failed',exitCode:1,evidence:'Synthetic BUG',signatureMatched:true}},
+    diagnosis:{status:'diagnosed',rootCause:'Wrong value',plan:'Correct value',crossLayer:false,affectedPaths:['value.mjs'],affectedModules:['value']},
+    rediagnosis:{historyDigest:hex('a'),priorPackageDigest:hex('b'),priorObservationDigest:hex('c'),reason:'Address F1',
+      reviewFeedback:{verdict:'changes_requested',packageDigest:hex('b'),examinedPaths:['regression.mjs','value.mjs'],
+        findings:[{id:'F1',severity:'P2',path:'regression.mjs',message:'Test misses the boundary',evidence:'Fixture'}],summary:'Fixture'}}};
+  const capture=()=>createFixCausePackage({codeProject:cwd,defect:'Wrong value',status});
+  const reviewed=readFixCausePackage(capture());
+  assert.deepEqual(reviewed.contextFiles.map(file=>file.path),['regression.mjs']);
+  for(const hiddenDrift of [false,true]){
+    fs.writeFileSync(path.join(cwd,'regression.mjs'),testBody+(hiddenDrift?'\n// unregistered edit after cause review':''));
+    let registered;
+    const author=prepareFixTestAuthor({codeProject:cwd,specsRoot,identity:status.identity,testFiles:['regression.mjs'],
+      requirements:['value.mjs'],defect:'Wrong value',diagnosis:status.diagnosis,reproduction:status.reproduction},
+    {assertReviewReady(){},bridge:{async call(){fs.appendFileSync(path.join(cwd,'regression.mjs'),'\nif(!Number.isInteger(value))throw Error("boundary");');return {outcome:'authored'};}}});
+    const result=await author.execute({authorized:true,signal:new AbortController().signal,register(baseline){registered=baseline;}});
+    assert.equal(result.outcome,'authored');
+    const verify=()=>verifyFixCauseTransition(reviewed,capture(),registered,result);
+    if(hiddenDrift)assert.throws(verify,{code:'cause_review_drift'});else assert.doesNotThrow(verify);
+  }
+  // Without a registered test transition, any change to a context file is drift.
+  assert.throws(()=>verifyFixCauseTransition(reviewed,capture(),null,null),{code:'cause_review_drift'});
+});

@@ -94,7 +94,7 @@ standalone cm-fix 可在原配置、原 run、原 task attempt 下显式 `rediag
 `rediagnosis_review_limit_reached`。源文件漂移、r2 证据占用、无效 reason 在追加前拒绝；异步准备返回后再次核对源包与 r2 占位，拒绝不消耗唯一续次；
 不能清档、覆盖旧结论或换 run 重置上限。不合格的诊断答案（如 `investigation.discardedAlternatives` 超过 3 项）返回 `invalid_diagnosis` 并写明字段与上限，驾驶员开宿主前即用同一校验器拦下；
 `pending=rediagnosis`（已登记 `fix-rediagnosis-intent`、尚无结论，含旧版本因此卡住的运行）时改好答案再执行同一 `rediagnose`，在已登记的这一次续次下重新作答，不另占次数、不改旧记录，之后照常进入 `cause-r2`。
-新审查中断仍保守停 `unknown`，本入口不提供自动重派、abandon 或第三次审查。当前仅 standalone 接线，不宣称 QA-fix 子宿主支持。
+新审查中断或没有结论时停 `unknown`，不自动重派、不提供第三次审查；可按下文「原因审查与第二轮最终审查无结果时的一次性放弃」用 `abandon_review` 在同一第二轮重审一次。当前仅 standalone 接线，不宣称 QA-fix 子宿主支持。
 这项恢复需要实际新诊断和独立审查；合成夹具成功不表示真实产品已恢复或已修复。
 
 ### 同仓 specs 的受保护修复

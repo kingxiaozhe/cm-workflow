@@ -106,17 +106,24 @@ export const causeReviewPaths=pkg=>[...pkg.files,...(pkg.contextFiles??[])].map(
 export function verifyFixCauseTransition(original,current,authorBaseline,authorResult){
   const reviewed=readFixCausePackage(original),now=readFixCausePackage(current);
   const expected=new Map(reviewed.files.map(file=>[file.path,file]));
+  // Round-2 context files (e.g. an existing regression test the narrowed
+  // diagnosis no longer covers) admit the same registered test transition;
+  // any other change to them is drift.
+  const expectedContext=new Map((reviewed.contextFiles??[]).map(file=>[file.path,file]));
   if(authorBaseline&&authorResult){
     const authored=inspectFixTestAuthor(authorResult,authorBaseline);
     need(authored.outcome==='authored','cause_review_drift');
     const before=new Map(authorBaseline.files.map(file=>[file.path,file]));
     for(const file of authored.testFiles){
-      if(!expected.has(file.path))continue;
-      need(digest(inventory([before.get(file.path)]))===digest(inventory([expected.get(file.path)])),'cause_review_drift');
-      expected.set(file.path,file);
+      const target=expected.has(file.path)?expected:expectedContext.has(file.path)?expectedContext:null;
+      if(!target)continue;
+      need(digest(inventory([before.get(file.path)]))===digest(inventory([target.get(file.path)])),'cause_review_drift');
+      target.set(file.path,file);
     }
   }
   need(digest(inventory(now.files))===digest(inventory([...expected.values()])),'cause_review_drift');
+  need(Object.hasOwn(now,'contextFiles')===Object.hasOwn(reviewed,'contextFiles')
+    &&digest(inventory(now.contextFiles??[]))===digest(inventory([...expectedContext.values()])),'cause_review_drift');
   const {packageDigest,...body}=now;
-  need(digest({...body,files:reviewed.files})===reviewed.packageDigest,'cause_review_drift');
+  need(digest({...body,files:reviewed.files,...(reviewed.contextFiles?{contextFiles:reviewed.contextFiles}:{})})===reviewed.packageDigest,'cause_review_drift');
 }
