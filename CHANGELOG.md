@@ -5,6 +5,7 @@
 
 ## 未发布
 
+- `cm-fix` 重新诊断后的第二轮原因审查没有结论时不再永远卡在 `unknown`：审查进程正常结束但答案不合结论格式（如引用了审查包以外的文件路径）时记为失败观察，不再整条丢掉；第二轮原因审查也可用 `abandon_review`（`--allow-abandon-review`）放弃一次，追加 `fix-cause-rediagnosis-abandoned` 后在同一第二轮重新授权、换新审查线程重审（`fix-cause-rediagnosis-retry-*`），不增加审查轮数，旧记录不改写；同一轮再放弃报 `fix_review_abandon_budget_exhausted`。
 - `cm-fix` 重新诊断答案不合格（如 `investigation.discardedAlternatives` 超过 3 项）不再把运行卡死在 `unknown`：宿主报 `invalid_diagnosis` 并写明字段与上限，驾驶员开宿主前即用同一校验器拦下；已卡在 `fix-rediagnosis-intent` 的运行改好 `diagnosis-rediagnosis.json` 后再执行一次 `rediagnose`，在原登记下重新作答并进入第二轮根因审查，不另占次数、不改旧记录。
 - `cm-ai` 质检整轮因执行超时中断、唯一的非通过用例是「宿主请求超时、会话没应答」的 BLOCKED 时，不再无路可走：`--rerun-unknown-qa` 现在接受这种调用，写 `test_run/superseded`（`reason: host_request_timeout`）后在下一轮重跑全部命令与用例，旧日志原样保留；旧版本写的超时行另需同一命令带 `--qa-environment-failure "原因"` 声明会话确实没应答；会话自答 BLOCKED、任何 FAIL 或其他 BLOCKED 仍拒绝，误用 `--rerun-blocked-qa` 会提示改用 `--rerun-unknown-qa`（`qa_rerun_unknown_qa_required`）。
 - `cm-ai` 已完成任务在同一代码根上被独立 `cm-fix` 修过（修复已独立审查并正常收尾）后，`--rerun-blocked-qa` 等核对不再把该修复的已审改动报成 `correction_review_required`「未经审查的改动」：正常收尾的 cm-fix 运行按其最终审查登记时间算作后续已审交付；进行中、放弃或取消的修复和其余未审改动仍失败关闭，已卡住的运行直接恢复即可。

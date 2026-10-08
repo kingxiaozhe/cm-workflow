@@ -146,18 +146,21 @@ beforeSha256严格复制expected中该路径的摘要（原不存在则null）�
 
 ### 原因审查与第二轮最终审查无结果时的一次性放弃
 
-原因审查（`pending:"cause_review"`）或第二轮最终审查（`pending:"revision_final_review"`）已登记，却没有审查结论时——
-宿主中途被杀、审查超时、断连或被取消——`status` 为 `unknown` 并带 `reviewAbandonable`。
+原因审查（`pending:"cause_review"`，含重新诊断后的第二轮原因审查）或第二轮最终审查（`pending:"revision_final_review"`）已登记，却没有审查结论时——
+宿主中途被杀、审查超时、断连或被取消，或审查进程正常结束但答案不合审查结论格式——`status` 为 `unknown` 并带 `reviewAbandonable`。
+答案不合格式（如 `invalid_finding_path`、`missing_material`、`contradictory_verdict`）现在记为一条失败观察
+（`observation.result` 为 `{status:"failed",code:<该代码>}`），不再整条丢掉、只留无记录的 unknown。
 先确认旧审查进程已退出，再以专用的 `--allow-abandon-review` 启动（`--allow-abandon` 只管本地步骤，不授权放弃审查调用），发送
 `{"requestId":"abandon-review-1","operation":"abandon_review","reason":"旧审查进程已确认退出"}`；
 QA-fix 子宿主用 `--allow-qa-fix-abandon-review`，`fix_action` 带 `fixOperation:"abandon_review"` 和 `reason`；驾驶员 PLAN 的
-`permissions` 相应填这两个旗标。原因规则同 `abandon_step`。每个运行可放弃一次原因审查、一次第二轮最终审查；
-同一种审查重审仍无结论时返回 `fix_review_abandon_budget_exhausted`，
+`permissions` 相应填这两个旗标。原因规则同 `abandon_step`。每一轮原因审查各可放弃一次（第一轮与重新诊断后的第二轮分开计），第二轮最终审查可放弃一次；
+放弃只作废那次无结论的调用，不产生审查结论、不增加审查轮数，第二轮原因审查拒绝后仍是 `rediagnosis_review_limit_reached`。
+同一轮审查重审仍无结论时返回 `fix_review_abandon_budget_exhausted`，
 `status.reviewAbandonBudgetExhausted` 为 true，只能按原阻断处理，不能继续重派。
 
-放弃追加 `fix-cause-abandoned` 或 `fix-revision-final-abandoned`，绑定原调用 ID、登记摘要、已知线程和无结论结果的摘要，
+放弃追加 `fix-cause-abandoned`（第二轮为 `fix-cause-rediagnosis-abandoned`）或 `fix-revision-final-abandoned`，绑定原调用 ID、登记摘要、已知线程和无结论结果的摘要，
 写 `abandon` 日志，并回到 `cause_review_required`（或原迟到纠正阶段）/`revision_final_review_required`。
-重审仍需原 `--allow-cause-review` / `--allow-final-review` 和一次新的授权，记录改用 `fix-cause-retry-*` /
+重审仍需原 `--allow-cause-review` / `--allow-final-review` 和一次新的授权，记录改用 `fix-cause-retry-*`（第二轮为 `fix-cause-rediagnosis-retry-*`）/
 `fix-revision-final-retry-*`；新调用的审查线程不能是被放弃的那条。旧记录一字不改，没有放弃记录的运行照原样回放。
 
 审查等待使用审查配置 `--review-config` 的 `timeoutMs`（1–3600000 毫秒，省略为 900000），同时交给审查 worker；
