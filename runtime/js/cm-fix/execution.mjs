@@ -106,9 +106,19 @@ function diagnosis(raw){
   return value;
 }
 
-const HISTORY_INSPECTION=Symbol('fix-history-inspection');
+const HISTORY_INSPECTION=Symbol('fix-history-inspection'),DURABLE_HISTORY=Symbol('fix-durable-history');
 // Same owner projection, backed by a read-only journal and no writer/dispatch.
 export function inspectFixExecutionHistory({specsRoot,identity}){
+  return readFixHistory({specsRoot,identity},owner=>owner.status());
+}
+// The same read-only owner's completion evidence: present only for a run that
+// reached its normal completed closeout (approved final review of the exact
+// package, task_done and run_done bound), else it throws. Grants nothing.
+export function inspectFixCompletionHistory({specsRoot,identity}){
+  return readFixHistory({specsRoot,identity,durable:true},(owner,initial)=>({identity:initial.identity,
+    configuration:initial.configuration,evidence:owner.completionEvidence()}));
+}
+function readFixHistory({specsRoot,identity,durable=false},read){
   const snapshot=readExecutionSnapshot({specsRoot,identity});
   const initial=snapshot.records[0]?.payload;need(initial?.workflow==='cm-fix-stages-v1','fix_history_invalid');
   validIdentity(initial.identity);
@@ -117,11 +127,12 @@ export function inspectFixExecutionHistory({specsRoot,identity}){
   need(digest(snapshot.fingerprints)===digest({workflow:digest('cm-fix-stages-v1'),config:digest(initial.configuration),inputs:digest(initial.identity)}),'fingerprint_mismatch');
   const {archiveMode,...configuration}=initial.configuration;
   need(archiveMode===undefined||archiveMode==='bare','fix_history_invalid');
-  const owner=openFixExecution({specsRoot:archiveMode==='bare'?null:specsRoot,identity:initial.identity,configuration,create:false},{[HISTORY_INSPECTION]:snapshot});
-  try{return owner.status();}finally{owner.close();}
+  const owner=openFixExecution({specsRoot:archiveMode==='bare'?null:specsRoot,identity:initial.identity,configuration,create:false},{[HISTORY_INSPECTION]:snapshot,[DURABLE_HISTORY]:durable});
+  try{return read(owner,initial);}finally{owner.close();}
 }
 
-export function openFixExecution(options,{bridge=null,prepare=null,causeReview=null,finalReview=null,assertReviewReady=null,[HISTORY_INSPECTION]:inspectionSnapshot=null}={}){
+export function openFixExecution(options,{bridge=null,prepare=null,causeReview=null,finalReview=null,assertReviewReady=null,[HISTORY_INSPECTION]:inspectionSnapshot=null,[DURABLE_HISTORY]:durableHistory=false}={}){
+  need(!durableHistory||inspectionSnapshot,'fix_read_only');
   shape(options,['identity','configuration','create',...(Object.hasOwn(options,'hostContextId')?['hostContextId']:[]),
     ...(Object.hasOwn(options,'specsRoot')?['specsRoot']:[])]);
   const {identity,configuration:originalConfiguration,create}=json(options,64*1024);validIdentity(identity);
@@ -1090,102 +1101,108 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     if(configuration.walkthrough&&diagnosed?.status==='diagnosed'
       &&['red_test_required','cause_review_required'].includes(stage)
       &&!walkthroughCoversDiagnosis(configuration.walkthrough,diagnosed))stage='walkthrough_configuration_mismatch';
-    if(causeResult?.review?.verdict==='approved'&&stage!=='cancelled'&&repairBaseline===null){
-      try{
-        const current=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,
-          status:{identity,stage:'cause_review_required',reproduction,diagnosis:diagnosed,learning,
-            ...(rediagnosis?{rediagnosis}:{}),
-            ...(cause.request.payload.reviewPackage.correction?{causeReviewCorrection:cause.request.payload.reviewPackage.correction}:{})}});
-        verifyFixCauseTransition(cause.request.payload.reviewPackage,current,authorBaseline,authored);
-      }catch{stage='cause_review_drift';}
-    }
-    if(causeResult?.observationStatus==='completed'&&!['cancelled','cause_review_drift'].includes(stage)){
-      try{publishCause(true);}catch{stage='cause_review_evidence_required';}
-    }
-    if(red&&!(revisionAuthorBaseline&&stage==='unknown')&&!['cancelled','cause_review_drift','cause_review_evidence_required'].includes(stage)){
-      try{verifyFixRedEvidence(red,configuration.redTest,evidenceSpecsRoot,currentTestFiles(red.testFiles,revisionAuthored?.outcome==='authored'?{files:revisionAuthored.testFiles}:null));}catch{stage='red_test_evidence_required';}
-    }
-    if(baseline&&['repair_required','baseline_blocked'].includes(stage)){
-      try{need(digest(fixBaselineFiles(configuration.baseline))===digest(baseline.testFiles),'baseline_files_changed');}
-      catch{stage='baseline_evidence_required';}
-    }
-    if(stage===redStage()&&configuration.testAuthor&&!authored)stage='test_author_required';
-    if(stage===redStage()&&authored){
-      try{need(digest(redTestFiles(configuration.redTest))===digest(authored.testFiles),'test_author_drift');}
-      catch{stage='test_author_evidence_required';}
-    }
-    if(!revisionAuthorBaseline&&repaired&&!learningPackage&&['regression_required','repair_blocked','handoff_required','regression_blocked','handoff_ready','learning_writeback_required','learning_writeback_blocked',...finalStages].includes(stage)){
-      try{verifyFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,baseline:repairBaseline,result:repaired});}
-      catch{stage='repair_evidence_required';}
-    }
-    if(!revisionAuthorBaseline&&retrospective&&!learningPackage&&['handoff_ready','learning_writeback_required',...finalStages].includes(stage)){
-      try{need(implementationPackage(regression).packageDigest===retrospective.packageDigest,'retrospective_drift');}
-      catch{stage='retrospective_evidence_required';}
-    }
-    if(!revisionAuthorBaseline&&learningPackage&&['handoff_ready',...finalStages].includes(stage)){
-      try{need(implementationPackage(regression,true).packageDigest===learningPackage.packageDigest,'writeback_drift');}
-      catch{stage='learning_writeback_evidence_required';}
-    }
-    if(!revisionAuthorBaseline&&handoff&&finalStages.includes(stage)){
-      try{
-        const checked=verifyHostHandoff({root:configuration.reproduction.cwd,baseline:learningPackage?fixLearningReviewBaseline(reviewBaseline()):reviewBaseline(),
-          checks:reviewChecks(regression),handoffPath:handoffPath(),evidence:store.snapshot().records.find(record=>record.id==='fix-handoff-intent').payload.evidence});
-        need(checked.handoffSha256===handoff.handoffSha256,'handoff_drift');
-      }catch{stage='handoff_evidence_required';}
-    }
-    if(finalResult?.observationStatus==='completed'&&finalStages.includes(stage)){
-      try{publishFinal(true);if(finalResult.review.verdict==='approved'&&!n5)stage='completion_gate_required';}
-      catch{stage='final_review_evidence_required';}
-    }
-    if(n5&&['post_review_regression_required','post_review_regression_blocked','closeout_required','walkthrough_blocked'].includes(stage)){
-      try{need(digest(checkN5(n5Options()))===digest(n5.gate),'n5_binding_mismatch');}
-      catch{stage='completion_gate_required';}
-    }
-    if(walkthrough&&['closeout_required','walkthrough_blocked'].includes(stage)){
-      try{verifyFixWalkthroughEvidence(walkthrough,evidenceSpecsRoot);}catch{stage='walkthrough_evidence_required';}
-    }
-    if(revision&&['final_review_changes_requested','walkthrough_blocked','post_review_regression_blocked'].includes(stage))stage='revision_prepared';
-    if(stage==='revision_test_author_required'){
-      try{verifyRevisionStart(captureReviewBaseline({root:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,
-        identity:revision.nextIdentity,scope:revision.tests.testFiles,requirements:configuration.repair.requirements}));}
-      catch{stage='revision_test_evidence_required';}
-    }
-    if(revisionAuthored?.outcome==='authored'&&!['unknown','cancelled'].includes(stage)){
-      try{
-        verifyExtensionFiles(configuration.reproduction.cwd,{plan:revision.tests,files:revisionAuthored.testFiles});
-        if(!revisionBaseline)verifyFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,
-          baseline:revisionAuthorBaseline,result:{outcome:'repaired',baselineDigest:revisionAuthored.baselineDigest,changedFiles:revisionAuthored.changedFiles,files:revisionAuthored.testFiles,completionEligible:false}});
-      }catch{stage='revision_test_evidence_required';}
-    }
-    if(revisionRepair&&!revisionLearningPackage&&['revision_regression_required','revision_repair_blocked','revision_handoff_required','revision_regression_blocked','revision_handoff_ready','revision_learning_writeback_required','revision_learning_writeback_blocked',...revisionFinalStages].includes(stage)){
-      try{verifyFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,baseline:revisionBaseline,result:revisionRepair,allowUnchanged:Boolean(revision.tests)});}
-      catch{stage='revision_repair_evidence_required';}
-    }
-    if(revisionRetrospective&&!revisionLearningPackage&&['revision_handoff_ready','revision_learning_writeback_required',...revisionFinalStages].includes(stage)){
-      try{need(revisionImplementationPackage(revisionRegression).packageDigest===revisionRetrospective.packageDigest,'retrospective_drift');}
-      catch{stage='revision_retrospective_evidence_required';}
-    }
-    if(revisionLearningPackage&&['revision_handoff_ready',...revisionFinalStages].includes(stage)){
-      try{need(revisionImplementationPackage(revisionRegression).packageDigest===revisionLearningPackage.packageDigest,'writeback_drift');}
-      catch{stage='revision_learning_writeback_evidence_required';}
-    }
-    if(revisionHandoff&&revisionFinalStages.includes(stage)){
-      try{
-        const checked=verifyHostHandoff({root:configuration.reproduction.cwd,baseline:revisionReviewBaseline(),checks:reviewChecks(revisionRegression),
-          handoffPath:revisionHandoffPath(),evidence:store.snapshot().records.find(row=>row.id==='fix-revision-handoff-intent').payload.evidence});
-        need(checked.handoffSha256===revisionHandoff.handoffSha256,'handoff_drift');
-      }catch{stage='revision_handoff_evidence_required';}
-    }
-    if(revisionFinalResult?.observationStatus==='completed'&&revisionFinalStages.includes(stage)){
-      try{publishRevisionFinal(true);if(revisionFinalResult.review.verdict==='approved'&&!revisionN5)stage='revision_completion_gate_required';}
-      catch{stage='revision_final_review_evidence_required';}
-    }
-    if(revisionN5&&['revision_post_review_regression_required','revision_post_review_regression_blocked','revision_closeout_required','revision_walkthrough_blocked'].includes(stage)){
-      try{need(digest(checkN5(revisionN5Options()))===digest(revisionN5.gate),'n5_binding_mismatch');}
-      catch{stage='revision_completion_gate_required';}
-    }
-    if(revisionWalkthrough&&['revision_closeout_required','revision_walkthrough_blocked'].includes(stage)){
-      try{verifyFixWalkthroughEvidence(revisionWalkthrough,evidenceSpecsRoot);}catch{stage='revision_walkthrough_evidence_required';}
+    // Live re-verification of the run's evidence against the current tree. A
+    // durable history read (a completed run as a later delivery of its root) asks
+    // only what the journal and its closeout settled: later reviewed changes may
+    // legitimately move these files, and the caller checks the tree itself.
+    if(!durableHistory){
+      if(causeResult?.review?.verdict==='approved'&&stage!=='cancelled'&&repairBaseline===null){
+        try{
+          const current=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,
+            status:{identity,stage:'cause_review_required',reproduction,diagnosis:diagnosed,learning,
+              ...(rediagnosis?{rediagnosis}:{}),
+              ...(cause.request.payload.reviewPackage.correction?{causeReviewCorrection:cause.request.payload.reviewPackage.correction}:{})}});
+          verifyFixCauseTransition(cause.request.payload.reviewPackage,current,authorBaseline,authored);
+        }catch{stage='cause_review_drift';}
+      }
+      if(causeResult?.observationStatus==='completed'&&!['cancelled','cause_review_drift'].includes(stage)){
+        try{publishCause(true);}catch{stage='cause_review_evidence_required';}
+      }
+      if(red&&!(revisionAuthorBaseline&&stage==='unknown')&&!['cancelled','cause_review_drift','cause_review_evidence_required'].includes(stage)){
+        try{verifyFixRedEvidence(red,configuration.redTest,evidenceSpecsRoot,currentTestFiles(red.testFiles,revisionAuthored?.outcome==='authored'?{files:revisionAuthored.testFiles}:null));}catch{stage='red_test_evidence_required';}
+      }
+      if(baseline&&['repair_required','baseline_blocked'].includes(stage)){
+        try{need(digest(fixBaselineFiles(configuration.baseline))===digest(baseline.testFiles),'baseline_files_changed');}
+        catch{stage='baseline_evidence_required';}
+      }
+      if(stage===redStage()&&configuration.testAuthor&&!authored)stage='test_author_required';
+      if(stage===redStage()&&authored){
+        try{need(digest(redTestFiles(configuration.redTest))===digest(authored.testFiles),'test_author_drift');}
+        catch{stage='test_author_evidence_required';}
+      }
+      if(!revisionAuthorBaseline&&repaired&&!learningPackage&&['regression_required','repair_blocked','handoff_required','regression_blocked','handoff_ready','learning_writeback_required','learning_writeback_blocked',...finalStages].includes(stage)){
+        try{verifyFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,baseline:repairBaseline,result:repaired});}
+        catch{stage='repair_evidence_required';}
+      }
+      if(!revisionAuthorBaseline&&retrospective&&!learningPackage&&['handoff_ready','learning_writeback_required',...finalStages].includes(stage)){
+        try{need(implementationPackage(regression).packageDigest===retrospective.packageDigest,'retrospective_drift');}
+        catch{stage='retrospective_evidence_required';}
+      }
+      if(!revisionAuthorBaseline&&learningPackage&&['handoff_ready',...finalStages].includes(stage)){
+        try{need(implementationPackage(regression,true).packageDigest===learningPackage.packageDigest,'writeback_drift');}
+        catch{stage='learning_writeback_evidence_required';}
+      }
+      if(!revisionAuthorBaseline&&handoff&&finalStages.includes(stage)){
+        try{
+          const checked=verifyHostHandoff({root:configuration.reproduction.cwd,baseline:learningPackage?fixLearningReviewBaseline(reviewBaseline()):reviewBaseline(),
+            checks:reviewChecks(regression),handoffPath:handoffPath(),evidence:store.snapshot().records.find(record=>record.id==='fix-handoff-intent').payload.evidence});
+          need(checked.handoffSha256===handoff.handoffSha256,'handoff_drift');
+        }catch{stage='handoff_evidence_required';}
+      }
+      if(finalResult?.observationStatus==='completed'&&finalStages.includes(stage)){
+        try{publishFinal(true);if(finalResult.review.verdict==='approved'&&!n5)stage='completion_gate_required';}
+        catch{stage='final_review_evidence_required';}
+      }
+      if(n5&&['post_review_regression_required','post_review_regression_blocked','closeout_required','walkthrough_blocked'].includes(stage)){
+        try{need(digest(checkN5(n5Options()))===digest(n5.gate),'n5_binding_mismatch');}
+        catch{stage='completion_gate_required';}
+      }
+      if(walkthrough&&['closeout_required','walkthrough_blocked'].includes(stage)){
+        try{verifyFixWalkthroughEvidence(walkthrough,evidenceSpecsRoot);}catch{stage='walkthrough_evidence_required';}
+      }
+      if(revision&&['final_review_changes_requested','walkthrough_blocked','post_review_regression_blocked'].includes(stage))stage='revision_prepared';
+      if(stage==='revision_test_author_required'){
+        try{verifyRevisionStart(captureReviewBaseline({root:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,
+          identity:revision.nextIdentity,scope:revision.tests.testFiles,requirements:configuration.repair.requirements}));}
+        catch{stage='revision_test_evidence_required';}
+      }
+      if(revisionAuthored?.outcome==='authored'&&!['unknown','cancelled'].includes(stage)){
+        try{
+          verifyExtensionFiles(configuration.reproduction.cwd,{plan:revision.tests,files:revisionAuthored.testFiles});
+          if(!revisionBaseline)verifyFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,
+            baseline:revisionAuthorBaseline,result:{outcome:'repaired',baselineDigest:revisionAuthored.baselineDigest,changedFiles:revisionAuthored.changedFiles,files:revisionAuthored.testFiles,completionEligible:false}});
+        }catch{stage='revision_test_evidence_required';}
+      }
+      if(revisionRepair&&!revisionLearningPackage&&['revision_regression_required','revision_repair_blocked','revision_handoff_required','revision_regression_blocked','revision_handoff_ready','revision_learning_writeback_required','revision_learning_writeback_blocked',...revisionFinalStages].includes(stage)){
+        try{verifyFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,baseline:revisionBaseline,result:revisionRepair,allowUnchanged:Boolean(revision.tests)});}
+        catch{stage='revision_repair_evidence_required';}
+      }
+      if(revisionRetrospective&&!revisionLearningPackage&&['revision_handoff_ready','revision_learning_writeback_required',...revisionFinalStages].includes(stage)){
+        try{need(revisionImplementationPackage(revisionRegression).packageDigest===revisionRetrospective.packageDigest,'retrospective_drift');}
+        catch{stage='revision_retrospective_evidence_required';}
+      }
+      if(revisionLearningPackage&&['revision_handoff_ready',...revisionFinalStages].includes(stage)){
+        try{need(revisionImplementationPackage(revisionRegression).packageDigest===revisionLearningPackage.packageDigest,'writeback_drift');}
+        catch{stage='revision_learning_writeback_evidence_required';}
+      }
+      if(revisionHandoff&&revisionFinalStages.includes(stage)){
+        try{
+          const checked=verifyHostHandoff({root:configuration.reproduction.cwd,baseline:revisionReviewBaseline(),checks:reviewChecks(revisionRegression),
+            handoffPath:revisionHandoffPath(),evidence:store.snapshot().records.find(row=>row.id==='fix-revision-handoff-intent').payload.evidence});
+          need(checked.handoffSha256===revisionHandoff.handoffSha256,'handoff_drift');
+        }catch{stage='revision_handoff_evidence_required';}
+      }
+      if(revisionFinalResult?.observationStatus==='completed'&&revisionFinalStages.includes(stage)){
+        try{publishRevisionFinal(true);if(revisionFinalResult.review.verdict==='approved'&&!revisionN5)stage='revision_completion_gate_required';}
+        catch{stage='revision_final_review_evidence_required';}
+      }
+      if(revisionN5&&['revision_post_review_regression_required','revision_post_review_regression_blocked','revision_closeout_required','revision_walkthrough_blocked'].includes(stage)){
+        try{need(digest(checkN5(revisionN5Options()))===digest(revisionN5.gate),'n5_binding_mismatch');}
+        catch{stage='revision_completion_gate_required';}
+      }
+      if(revisionWalkthrough&&['revision_closeout_required','revision_walkthrough_blocked'].includes(stage)){
+        try{verifyFixWalkthroughEvidence(revisionWalkthrough,evidenceSpecsRoot);}catch{stage='revision_walkthrough_evidence_required';}
+      }
     }
     if(observationResume&&!['unknown','cancelled'].includes(stage)){
       try{verifyObservationResume(observationResume);}catch{stage='observation_resume_evidence_required';}
