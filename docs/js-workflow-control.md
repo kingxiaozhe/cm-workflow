@@ -1076,8 +1076,9 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
 
 整轮因 `qa_execution_timeout`（或宿主退出）中断、已记录的非 PASS 用例全是「宿主请求超时、会话没有应答」的 BLOCKED 时，
 同一 `--rerun-unknown-qa` 也能恢复：无 complete、无固定报告、无 FAIL，每条 `case_blocked` 都没有 `host_declared_blocked`，
-且带 `host_request_timeout: true`（当前执行器写在每条 case_blocked 行上）；旧版本写的行没有该字段，
-只有其 `case_start` 到 `case_blocked` 的间隔达到 `qa.timeoutMs`（日志按秒取整，容差 1 秒）才算超时。
+且带 `host_request_timeout: true`（当前执行器写在每条 case_blocked 行上）。旧版本写的行没有该字段，
+也分不清「没应答」和「临近截止才应答、被降成 BLOCKED」：须 `case_start` 到 `case_blocked` 满 `qa.timeoutMs`（容差 1 秒），
+并由操作员在同一命令加 `--qa-environment-failure "原因"` 声明会话确实没应答（原文记入 `legacy_timeout_attestation`），否则拒绝为 `qa_environment_failure_required`。
 日志写 `test_run/superseded`（`reason: host_request_timeout`、`timed_out_cases`、`partial_pass_cases`、`request_timeout_ms`），
 新 testRunId 在 qaRound+1 重跑全部命令与用例，start 以 `previous_test_run_id` 链接；回放按同一规则复核该行，旧行原样保留。
 会话自己答 BLOCKED、任何 FAIL 或其他原因的 BLOCKED 仍是 `qa_execution_unknown`。对这种调用误用 `--rerun-blocked-qa`

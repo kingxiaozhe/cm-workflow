@@ -445,26 +445,29 @@ test('#26c --rerun-unknown-qa supersedes a call stopped as a whole whose only no
   assert.equal(done(await launch(f,{workflow,extra:browserQa})).state,'run_done');
 });
 
-test('#26c a session-declared BLOCKED, a FAIL or an unproven older timeout row still refuses --rerun-unknown-qa',POSIX,async t=>{
+test('#26c a session-declared BLOCKED, a FAIL or an unattested older timeout row still refuses --rerun-unknown-qa',POSIX,async t=>{
   const {f,workflow,browserQa}=await timedOutCall(t);
   const original=fs.readFileSync(f.log,'utf8');
   const variant=edit=>original.trim().split('\n').map(line=>{const row=JSON.parse(line);
     return JSON.stringify(row.event==='test_run'&&row.phase==='case_blocked'?edit(row):row);}).join('\n')+'\n';
   const legacy=(seconds)=>row=>{const {host_request_timeout,...rest}=row;
     const start=testRuns(f,'case_start')[0].at;return {...rest,at:new Date(Date.parse(start)+seconds*1000).toISOString().replace(/\.\d{3}Z$/,'Z')};};
-  for(const [name,edit] of [
-    ['session-declared',row=>({...row,host_declared_blocked:true,host_request_timeout:false})],
-    ['other BLOCKED',row=>({...row,host_request_timeout:false})],
-    ['FAIL',row=>({...row,phase:'case_complete',result:'FAIL',host_request_timeout:undefined})],
-    ['older row, window not elapsed',legacy(0)]]){
+  const attest=['--qa-environment-failure','session gave no TC-001 answer before the deadline'];
+  for(const [name,edit,code,extra] of [
+    ['session-declared',row=>({...row,host_declared_blocked:true,host_request_timeout:false}),'qa_execution_unknown',attest],
+    ['other BLOCKED',row=>({...row,host_request_timeout:false}),'qa_execution_unknown',attest],
+    ['FAIL',row=>({...row,phase:'case_complete',result:'FAIL',host_request_timeout:undefined}),'qa_execution_unknown',attest],
+    ['older row, window not elapsed',legacy(0),'qa_execution_unknown',attest],
+    // An older host also wrote this row for a PASS answered near the deadline but
+    // downgraded to BLOCKED (cleanup failed, other environment): the time span
+    // cannot tell them apart, so only the operator's attestation can.
+    ['older row, full window, no attestation',legacy(2),'qa_environment_failure_required',[]]]){
     fs.writeFileSync(f.log,variant(edit));const before=fs.readFileSync(f.log);
-    const refused=done(await launch(f,{workflow,extra:[...browserQa,'--rerun-unknown-qa']}));
-    assert.equal(refused.code,'qa_execution_unknown',`${name}: ${JSON.stringify(refused)}`);
+    const refused=done(await launch(f,{workflow,extra:[...browserQa,'--rerun-unknown-qa',...extra]}));
+    assert.equal(refused.code,code,`${name}: ${JSON.stringify(refused)}`);
     assert(fs.readFileSync(f.log).equals(before),name);
   }
-  // An older row without the marker counts once its case shows the full window.
-  fs.writeFileSync(f.log,variant(legacy(2)));
-  const rerun=done(await launch(f,{workflow,extra:[...browserQa,'--rerun-unknown-qa'],answers:{qa_browser:pass(f)}}));
+  const rerun=done(await launch(f,{workflow,extra:[...browserQa,'--rerun-unknown-qa',...attest],answers:{qa_browser:pass(f)}}));
   assert.equal(rerun.state,'run_done',JSON.stringify(rerun));
-  assert.deepEqual(testRuns(f,'superseded').map(row=>row.timed_out_cases),[['TC-001']]);
+  assert.deepEqual(testRuns(f,'superseded').map(row=>[row.timed_out_cases,row.legacy_timeout_attestation]),[[['TC-001'],attest[1]]]);
 });

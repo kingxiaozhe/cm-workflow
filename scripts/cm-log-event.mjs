@@ -385,6 +385,9 @@ function validateQaSupersession(state,event){
       ||!caseList(event.timed_out_cases,event.timed_out_cases.length)
       ||JSON.stringify(event.partial_pass_cases)!==JSON.stringify([...state.partialPassCases].sort())
       ||event.request_timeout_ms!==undefined&&!(Number.isSafeInteger(event.request_timeout_ms)&&event.request_timeout_ms>0)
+      ||event.legacy_timeout_attestation!==undefined&&(typeof event.legacy_timeout_attestation!=='string'
+        ||!event.legacy_timeout_attestation.trim()||Buffer.byteLength(event.legacy_timeout_attestation,'utf8')>500
+        ||/[\r\n\0]/.test(event.legacy_timeout_attestation))
       ||!['repository_id','run_id','feature','task','package_digest','qa_decision_id','operation_id','attempt','mode','case_count']
         .every(key=>event[key]!==undefined&&event[key]===start[key]))
       throw new UsageError('QA superseded of a timed-out invocation requires its active start, no complete row and timed_out_cases');

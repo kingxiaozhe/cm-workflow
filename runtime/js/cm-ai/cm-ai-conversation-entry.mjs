@@ -265,7 +265,9 @@ export function createCmAiConversationEntry(options) {
   // Operator declaration that the latest FAIL came from the environment; only
   // meaningful with the one-shot rerun authorization and consumed with it.
   const qaEnvironmentFailure=options.qaEnvironmentFailure??null;
-  need(qaEnvironmentFailure===null||rerunBlockedQa&&validEnvironmentFailureReason(qaEnvironmentFailure),'qa_recovery_authorization_required');
+  // With --rerun-unknown-qa it is the operator's attestation that older timed-out
+  // case rows (no host_request_timeout field) had no session answer.
+  need(qaEnvironmentFailure===null||(rerunBlockedQa||rerunUnknownQa)&&validEnvironmentFailureReason(qaEnvironmentFailure),'qa_recovery_authorization_required');
   if(Object.hasOwn(options,'qaExecutor')){
     shape(options.qaExecutor,['mode','caseCount','timeoutMs','run',
       ...(Object.hasOwn(options.qaExecutor,'configuration')?['configuration']:[]),
@@ -389,7 +391,8 @@ export function createCmAiConversationEntry(options) {
           need(pendingExecution===null,'qa_execution_pending');
           const binding={specsDir:options.specsDir,feature:options.feature,identity:result.identity,packageDigest:result.packageDigest};
           let previous,recovery=null,configurationRecovery=false,incompleteReport=false,timedOutCall=false;
-          const timedOutRecovery=()=>inspectCmAiQaRecovery(binding,{timedOut:true,requestTimeoutMs:qaExecutor.requestTimeoutMs??null});
+          const timedOutRecovery=()=>inspectCmAiQaRecovery(binding,{timedOut:true,requestTimeoutMs:qaExecutor.requestTimeoutMs??null,
+            attestation:rerunUnknownQa?qaEnvironmentFailure:null});
           try{previous=latestCmAiQaRun(binding);}
           catch(error){
             if(error.code==='qa_result_superseded'){
@@ -413,7 +416,8 @@ export function createCmAiConversationEntry(options) {
                   environmentFailure:qaEnvironmentFailure});}
                 catch(error){
                   // Name the flag that does recover a timed-out call.
-                  let timedOutCallRecoverable=false;try{timedOutRecovery();timedOutCallRecoverable=true;}catch{}
+                  let timedOutCallRecoverable=false;try{timedOutRecovery();timedOutCallRecoverable=true;}
+                  catch(probe){timedOutCallRecoverable=probe?.code==='qa_environment_failure_required';}
                   if(error.code==='qa_rerun_not_blocked_by_evidence'&&timedOutCallRecoverable)
                     throw Object.assign(new Error('use --rerun-unknown-qa'),{code:'qa_rerun_unknown_qa_required'});
                   throw error;
@@ -452,7 +456,7 @@ export function createCmAiConversationEntry(options) {
             if(recovery&&!configurationRecovery){
               recordCmAiQaRun({...logInput,testRunId:recovery.testRunId,mode:recovery.mode,
                 caseCount:recovery.caseCount,qaRound:recovery.qaRound,phase:rerunBlockedQa||timedOutCall?'superseded':'abandoned',
-                ...(timedOutCall?{timedOutRecovery:{requestTimeoutMs:recovery.requestTimeoutMs}}:{}),
+                ...(timedOutCall?{timedOutRecovery:{requestTimeoutMs:recovery.requestTimeoutMs,attestation:recovery.attestation}}:{}),
                 ...(rerunBlockedQa?{expectedEnvironment:qaExecutor.configuration?.environment??null}:{}),
                 ...(rerunBlockedQa&&qaEnvironmentFailure!==null?{environmentFailure:qaEnvironmentFailure}:{})});
               rerunUnknownQa=false;rerunBlockedQa=false;
