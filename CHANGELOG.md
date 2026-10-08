@@ -5,6 +5,7 @@
 
 ## 未发布
 
+- `cm-ai` 质检整轮因执行超时中断、唯一的非通过用例是「宿主请求超时、会话没应答」的 BLOCKED 时，不再无路可走：`--rerun-unknown-qa` 现在接受这种调用，写 `test_run/superseded`（`reason: host_request_timeout`）后在下一轮重跑全部命令与用例，旧日志原样保留；会话自答 BLOCKED、任何 FAIL 或其他 BLOCKED 仍拒绝，误用 `--rerun-blocked-qa` 会提示改用 `--rerun-unknown-qa`（`qa_rerun_unknown_qa_required`）。
 - `cm-ai` 已完成任务在同一代码根上被独立 `cm-fix` 修过（修复已独立审查并正常收尾）后，`--rerun-blocked-qa` 等核对不再把该修复的已审改动报成 `correction_review_required`「未经审查的改动」：正常收尾的 cm-fix 运行按其最终审查登记时间算作后续已审交付；进行中、放弃或取消的修复和其余未审改动仍失败关闭，已卡住的运行直接恢复即可。
 - `cm-ai` 质检不再要求验证已作废任务的用例：taskIds 全部是 `[DROPPED]` 任务的用例（blocking 与否）不进计划、不问会话，只为它们声明的命令也不跑，报告单列 `not_applicable`（`NOT_APPLICABLE`，不计入通过/失败/阻断）；旧版本因此 BLOCKED 的收尾质检可在原运行用 `--rerun-blocked-qa` 重跑，旧轮次日志与报告不改写，通过后被项目门禁拦住的其他运行 resume 即可收尾。
 - `cm-ai` 质检浏览器验收回答 PASS、环境与登记一致，只是证据不在 specs 根 `.reviews/` 下（或缺失、为空）时，宿主在同一用例内带着具体问题再问一次，不再直接记 BLOCKED 占掉一轮质检；第二次回答照原规则判定，报告 `answerCorrection` 保留首次回答。FAIL、BLOCKED、环境不符或清理失败的回答不追问。

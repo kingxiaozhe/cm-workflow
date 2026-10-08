@@ -50,9 +50,10 @@ function fixture(t,{browser=false}={}){
   fs.writeFileSync(path.join(specsDir,feature,'requirements.md'),'# Fixture\n\n- [AC-001] tab bar shows four tabs\n');
   fs.writeFileSync(path.join(specsDir,feature,'design.md'),'# Fixture\n');
   fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: fixture\n');
-  if(browser)fs.writeFileSync(path.join(specsDir,feature,'test-cases.json'),JSON.stringify({schemaVersion:'1.0',feature:'work',cases:[
-    {id:'TC-001',origin:'generated',kind:'browser',blocking:true,acIds:['AC-001'],taskIds:['T-001'],title:'four tabs',
-      preconditions:['UI test'],steps:['launch on simulator'],expected:['four tabs visible'],cleanup:[]}]}));
+  if(browser)fs.writeFileSync(path.join(specsDir,feature,'test-cases.json'),JSON.stringify({schemaVersion:'1.0',feature:'work',
+    cases:Array.from({length:browser===true?1:browser},(_,index)=>({id:`TC-00${index+1}`,origin:'generated',kind:'browser',
+      blocking:true,acIds:['AC-001'],taskIds:['T-001'],title:'four tabs',
+      preconditions:['UI test'],steps:['launch on simulator'],expected:['four tabs visible'],cleanup:[]}))}));
   const manifest=buildManifest(specsDir);
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:manifest,
     ...(browser?{testCases:manifest.filter(item=>item.path.endsWith('/test-cases.json'))}:{})}));
@@ -109,7 +110,8 @@ function failingStartShim(f){
   return dir;
 }
 
-// answers[kind] may be a value, a function(row) or 'IGNORE' (never answered).
+// answers[kind] may be a value, a function(row) or 'IGNORE' (never answered);
+// a function may also return 'IGNORE', or 'KILL' to SIGKILL the host mid-call.
 function launch(f,{mode='resume',operation='advance',workflow=null,extra=[],answers={},review=true,pathPrefix=null}={}){
   return new Promise((resolve,reject)=>{
     const args=['serve','--config',f.config,'--mode',mode,'--host-context','session-A','--allow-development',
@@ -136,6 +138,8 @@ function launch(f,{mode='resume',operation='advance',workflow=null,extra=[],answ
           let result;
           try{result=configured===undefined?defaultAnswer(f,row):typeof configured==='function'?configured(row):configured;}
           catch(error){child.kill('SIGKILL');clearTimeout(timer);reject(error);return;}
+          if(result==='IGNORE')continue;
+          if(result==='KILL'){child.kill('SIGKILL');continue;}
           send({type:'host_result',sessionId:row.sessionId,callId:row.callId,requestDigest:row.requestDigest,result});
         }
         if(row.requestId==='request'&&(row.result||row.error))send({type:'host_close',sessionId});
@@ -397,4 +401,70 @@ test('#7 decision chain: one linked supersession of a timeout decision, read by 
     assert.throws(()=>inspectCmAiQaResult({...query,testRunId:'qa-round-1'}),{code:'qa_not_triggered'},label);
     assert.throws(()=>inspectFixQaSource({specsRoot:specsDir,identity:qaFixIdentity(qaSource),configuration}),label);
   }
+});
+
+// A QA call stopped as a whole (qa_execution_timeout, or the host gone) leaves no
+// complete and no report. Here the probe command passes, TC-001 gets no session
+// answer within qa.timeoutMs, and the host dies while TC-002 waits.
+async function timedOutCall(t){
+  const f=fixture(t,{browser:2}),workflow=f.workflow('workflow',probeQa({environment:simulator,timeoutMs:1500}));
+  const browserQa=['--browser-qa','available'];
+  const aborted=await launch(f,{mode:'create',workflow,extra:browserQa,
+    answers:{qa_browser:row=>row.payload.case.id==='TC-001'?'IGNORE':'KILL'}});
+  assert.notEqual(aborted.code,0);
+  const recorded=testRuns(f).map(row=>[row.phase,row.case_id]);
+  assert.deepEqual(recorded,[['start',undefined],['case_start','TC-001'],['case_blocked','TC-001'],['case_start','TC-002']]);
+  assert.equal(testRuns(f,'case_blocked')[0].host_request_timeout,true);
+  return {f,workflow,browserQa};
+}
+const pass=f=>row=>{const file=path.join(f.specsDir,'.reviews',`${row.payload.case.id}.png`);fs.writeFileSync(file,'png');
+  return {verdict:'PASS',evidence:[file],environment:row.payload.environment,cleanup:'not_needed'};};
+
+test('#26c --rerun-unknown-qa supersedes a call stopped as a whole whose only non-PASS case is a host request timeout',POSIX,async t=>{
+  const {f,workflow,browserQa}=await timedOutCall(t);
+  const unknown=done(await launch(f,{workflow,extra:browserQa}));
+  assert.equal(unknown.code,'qa_execution_unknown');assert.equal(unknown.pendingAction,'reconcile');
+  const logBefore=fs.readFileSync(f.log),oldRun=testRuns(f,'start')[0].operation_id;
+  // --rerun-blocked-qa needs a completed call; its refusal names the flag that applies.
+  const wrong=done(await launch(f,{workflow,extra:[...browserQa,'--rerun-blocked-qa']}));
+  assert.equal(wrong.code,'qa_rerun_unknown_qa_required',JSON.stringify(wrong));
+  assert(fs.readFileSync(f.log).equals(logBefore));
+  const rerun=await launch(f,{workflow,extra:[...browserQa,'--rerun-unknown-qa'],answers:{qa_browser:pass(f)}});
+  const result=done(rerun);
+  assert.equal(result.state,'run_done',JSON.stringify(result));
+  assert(fs.readFileSync(f.log).subarray(0,logBefore.length).equals(logBefore),'history bytes are kept');
+  // Every case and command runs again at qaRound+1; no PASS is carried forward.
+  assert.deepEqual(rerun.asked.filter(kind=>kind==='qa_browser'),['qa_browser','qa_browser']);
+  const [superseded]=testRuns(f,'superseded');
+  assert.equal(superseded.operation_id,oldRun);assert.equal(superseded.reason,'host_request_timeout');
+  assert.deepEqual([superseded.timed_out_cases,superseded.partial_pass_cases,superseded.request_timeout_ms],[['TC-001'],[],1500]);
+  const starts=testRuns(f,'start');
+  assert.deepEqual(starts.map(row=>[row.attempt,row.previous_test_run_id]),[[1,undefined],[2,oldRun]]);
+  assert.equal(f.rows().filter(row=>row.event==='resource'&&row.phase==='released'&&row.operation_id===starts[1].operation_id).length,1);
+  assert.deepEqual(testRuns(f,'complete').map(row=>[row.attempt,row.result]),[[2,'PASS']]);
+  assert.equal(done(await launch(f,{workflow,extra:browserQa})).state,'run_done');
+});
+
+test('#26c a session-declared BLOCKED, a FAIL or an unproven older timeout row still refuses --rerun-unknown-qa',POSIX,async t=>{
+  const {f,workflow,browserQa}=await timedOutCall(t);
+  const original=fs.readFileSync(f.log,'utf8');
+  const variant=edit=>original.trim().split('\n').map(line=>{const row=JSON.parse(line);
+    return JSON.stringify(row.event==='test_run'&&row.phase==='case_blocked'?edit(row):row);}).join('\n')+'\n';
+  const legacy=(seconds)=>row=>{const {host_request_timeout,...rest}=row;
+    const start=testRuns(f,'case_start')[0].at;return {...rest,at:new Date(Date.parse(start)+seconds*1000).toISOString().replace(/\.\d{3}Z$/,'Z')};};
+  for(const [name,edit] of [
+    ['session-declared',row=>({...row,host_declared_blocked:true,host_request_timeout:false})],
+    ['other BLOCKED',row=>({...row,host_request_timeout:false})],
+    ['FAIL',row=>({...row,phase:'case_complete',result:'FAIL',host_request_timeout:undefined})],
+    ['older row, window not elapsed',legacy(0)]]){
+    fs.writeFileSync(f.log,variant(edit));const before=fs.readFileSync(f.log);
+    const refused=done(await launch(f,{workflow,extra:[...browserQa,'--rerun-unknown-qa']}));
+    assert.equal(refused.code,'qa_execution_unknown',`${name}: ${JSON.stringify(refused)}`);
+    assert(fs.readFileSync(f.log).equals(before),name);
+  }
+  // An older row without the marker counts once its case shows the full window.
+  fs.writeFileSync(f.log,variant(legacy(2)));
+  const rerun=done(await launch(f,{workflow,extra:[...browserQa,'--rerun-unknown-qa'],answers:{qa_browser:pass(f)}}));
+  assert.equal(rerun.state,'run_done',JSON.stringify(rerun));
+  assert.deepEqual(testRuns(f,'superseded').map(row=>row.timed_out_cases),[['TC-001']]);
 });
