@@ -444,6 +444,8 @@ export function createCmAiConversationEntry(options) {
             }
             recordCmAiQaRun({...logInput,phase:'start',
               deferredCases:qaExecutor.configuration?.plan?.deferred_cases??[],
+              ...(qaExecutor.configuration?.plan?.dropped_task_cases?{droppedTaskCases:qaExecutor.configuration.plan.dropped_task_cases}:{}),
+              ...(qaExecutor.configuration?.plan?.dropped_task_commands?{droppedTaskCommands:qaExecutor.configuration.plan.dropped_task_commands}:{}),
               ...(recovery?{previousTestRunId:recovery.testRunId}:{})});
             const controller=new AbortController();pendingExecution=controller;
             let timer,timedOut=false;

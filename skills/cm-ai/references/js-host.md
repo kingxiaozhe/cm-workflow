@@ -326,6 +326,9 @@ QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.tim
 cleanup=failed、环境摘要不一致、hostRequestTimeout 或会话自己回答的 BLOCKED（报告行 `hostDeclaredBlocked`，
 例如模拟器当时不可用），logic 的 INSUFFICIENT_EVIDENCE 或只因映射命令没有退出码而阻断（报告行 `commandUnavailable`），或 commands 行没有退出码
 （`host check: timeout/signal_exit/spawn_failed/output_*/cleanup_failed`，例如 xcodebuild 超时或被杀）时允许。
+taskIds 全部是 `[DROPPED]` 任务的用例不进 QA 计划（不问会话，只为它们声明的命令也不跑），报告 `not_applicable` 节记
+`NOT_APPLICABLE`，不计数；旧版本把它们排进收尾 QA 而得到的会话 BLOCKED / logic INSUFFICIENT_EVIDENCE 符合上述条件，
+用本节命令在原运行重跑即按新计划执行，PASS 后被 `project_qa_not_passed` 拦住的其他运行原配置 `--mode resume` 再 `advance`。
 没有声明命令（commands-unavailable）、延后用例（no-applicable-cases）、`[需确认]`（logic 报告行 `needsConfirmation`，
 即使映射命令同时没有退出码）、缺浏览器能力、源码漂移和未 complete 不适用；
 是否仍有 `[需确认]` 以该 feature 的 `test-cases.json` 为准，并与报告标记交叉核对（两者任一显示未确认即拒绝）；

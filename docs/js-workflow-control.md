@@ -976,6 +976,16 @@ browser case沿原test_run日志写开始/结束，同步既有.cm-status.json�
 记录获得与清理结果。未结束的调用仍由原entry恢复为unknown，不重发。
 该执行器配置可用于本地隔离组合；不能据此宣称完整N6、真实浏览器或双端安装已经验收。
 
+作废任务的用例：taskIds 非空且全部是本 feature `tasks.md` 中标了 `[DROPPED …]` 的任务（例如
+``- [ ] ~~T-001: …~~ `[DROPPED v6: 原因]` ``）的用例不进入计划，不论 blocking 与否、也先于 `policies.tests` 的类型筛选判定——作废任务的验收随任务一起暂缓，
+没有可交付的功能可验；至少关联一个未作废任务的用例照旧。这类用例不向会话发 `qa_logic`/`qa_browser`，
+只为它们声明的命令（caseIds 非空且全部是这类用例）也不运行。它们不计入用例数和通过/失败/阻断，summary 只按其余行计算；
+计划另记 `dropped_task_cases: [{id, taskIds}]`、`dropped_task_commands: [{id, caseIds}]`，`test_run/start` 行同名记录，
+执行报告在 `deferred_cases` 后多一节 `not_applicable`，逐项写 `verdict: NOT_APPLICABLE` 与原因
+（`bound only to dropped tasks: T-00x`），永不记 PASS。剩下没有可执行的用例和命令时仍按原规则 BLOCKED
+（`commands-unavailable` 或 `qa-unavailable`，证据列出这些用例），不会凭空 PASS。feature 中途时这类用例同样记入
+`dropped_task_cases` 而不是 `deferred_cases`。只影响新一轮：已记录的轮次、报告和日志按原样回放，指纹配置（不读任务状态的初始计划）不变。
+
 ### QA 失败交接
 
 `qa_result`（包括 `advance` 内的结果消费）遇到真实 FAIL 时保留 `qa_failed`，并返回
@@ -1028,6 +1038,12 @@ browser BLOCKED（执行器在报告行写 `hostDeclaredBlocked: true`；旧报�
 `{testRunId}-execution.md` 执行报告是本地证据：逐例 verdict、静态结论、命令退出码和 browser 证据字段从中读取，
 只与日志计数、case_blocked 行和用例契约交叉核对。刻意手改报告且保持计数一致（例如对调两个用例的 verdict）不在防御范围内；
 重跑仍在同一代码上执行全部用例，此类改动最多多占一个 QA 轮次，不能伪造 PASS。
+
+旧版本把作废任务的用例也排进了 feature 完成时的 QA，会话只能回答 BLOCKED（功能已隐藏），整轮 BLOCKED，项目门禁随之
+拦住其他运行的收尾（`project_qa_not_passed`）。这样的轮次符合上面的重跑条件（会话回答的 browser BLOCKED、logic
+INSUFFICIENT_EVIDENCE），在原运行上用原配置 `--mode resume … --allow-qa --rerun-blocked-qa` 再 `advance` 即可：先追加
+superseded（`blocked_cases` 列出原阻断用例），新一轮按新计划只跑其余用例，作废任务的用例列入 `not_applicable`；
+旧轮次的日志与报告不改写。新一轮 PASS 后原运行继续 context_refresh/finish，被门禁拦住的其他运行用原配置 `--mode resume` 再 `advance` 即可收尾。
 
 QA 配置修订（`--revise-qa-config`）在该 run 尚无任何 `test_run` 行时也可使用，不限于 N5 之后：journal 追加
 `qaRound: 0`、`testRunId: null`、绑定当时审查包（尚无则 null）的 `qa-config-revised`，运行日志写一次确定性的
