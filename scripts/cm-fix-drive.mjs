@@ -30,6 +30,7 @@
 //   learning.json       {status, summary}            恢复时若存档里已有记录会自动复用
 //   diagnosis.json      首次诊断结论对象
 //   diagnosis-rediagnosis.json  显式原运行重新诊断的新结论，不能复用首次文件
+//                       两份诊断都在开宿主前用宿主同一校验器检查（如 investigation.discardedAlternatives 最多 3 项）
 //   retrospective.json  {status, candidates, reason}
 //   test-edits.json     {"仓库内路径": "本目录下的内容文件"}；修订轮用 test-edits-a2.json
 //   repair-edits.json   同上；修订轮用 repair-edits-a2.json
@@ -37,6 +38,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {fixEvidenceNames} from '../runtime/js/cm-fix/layout.mjs';
+import {inspectFixDiagnosis,describeFixDiagnosisError} from '../runtime/js/cm-fix/diagnosis.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
 
@@ -138,7 +140,13 @@ export function preflight({operation,plan,paths}){
       if(recorded){stderr(`恢复：复用存档里已记的学习记录（${recorded.status}）`);return recorded;}
       return need('学习记录','learning.json');
     }
-    if(kind==='diagnosis')return need('诊断',operation==='rediagnose'?'diagnosis-rediagnosis.json':'diagnosis.json');
+    if(kind==='diagnosis'){
+      // 用宿主同一个校验器：不合格的答案在开宿主前就拦下，免得登记了却交不出结论。
+      const file=operation==='rediagnose'?'diagnosis-rediagnosis.json':'diagnosis.json';
+      const value=need('诊断',file);
+      try{inspectFixDiagnosis(value);}catch(error){stop(2,`${path.join(paths.answers,file)}：${describeFixDiagnosisError(error)}；改好再来，宿主未启动`);}
+      return value;
+    }
     if(kind==='retrospective')return need('复盘','retrospective.json');
     const file=roundAnswerName(paths.answers,kind,round);
     const map=need(kind==='test-edits'?'测试内容':'修复内容',file);

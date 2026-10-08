@@ -64,16 +64,83 @@ test('original run rediagnoses after cause rejection, preserves history, and req
   await assert.rejects(owner.rediagnose({authorized:true,reason:'Again'}),{code:'fix_rediagnosis_unavailable'});
   assert.deepEqual(f.counts(),{calls:2,diagnoses:2});
 }));
-test('interrupted rediagnosis replays unknown and never repeats original reproduction or diagnosis',async t=>fixture(t,async f=>{
+const revised={status:'diagnosed',rootCause:'Fixture revised cause',plan:'Fixture plan',affectedPaths:['value.mjs'],affectedModules:['value'],crossLayer:false};
+const tooManyAlternatives={...revised,investigation:{boundaryAnalysis:null,
+  discardedAlternatives:[1,2,3,4].map(n=>({option:`Fixture option ${n}`,reason:'Fixture reason'}))}};
+async function hostRediagnose(f,reason='Address F1'){
+  const owner=f.owner(),host=createFixHost({owner,config:{...f.options.configuration,...f.options},permissions:['--allow-rediagnosis']});
+  const input=new PassThrough();let output='',errors='';
+  const sink=new Writable({write(chunk,encoding,done){output+=chunk;done();}});
+  const errorOutput=new Writable({write(chunk,encoding,done){errors+=chunk;done();}});
+  input.end(JSON.stringify({requestId:'redo',operation:'rediagnose',reason})+'\n');
+  await serveCmAiHost({host,input,output:sink,errorOutput});
+  return {reply:JSON.parse(output),errors};
+}
+const ids=file=>JSON.parse(fs.readFileSync(file)).records.map(row=>row.id);
+test('regression: invalid rediagnosis answer is invalid_diagnosis, stays pending, and a valid answer under the same intent reaches cause-r2',async t=>fixture(t,async f=>{
   const before=JSON.parse(fs.readFileSync(f.state)).records;
+  f.bridge.call=async kind=>{assert.equal(kind,'fix_diagnose');return tooManyAlternatives;};
+  f.reopen();
+  const rejected=await hostRediagnose(f);
+  assert.deepEqual(rejected.reply.error,{code:'host_request_failed'});
+  const diagnostic=JSON.parse(rejected.errors.trim().split('\n').at(-1));
+  assert.equal(diagnostic.code,'invalid_diagnosis');assert.match(diagnostic.reason,/investigation\.discardedAlternatives.*最多 3 项，实际 4 项/);
+  let owner=f.reopen();
+  assert.equal(owner.status().stage,'unknown');assert.equal(owner.status().pending,'rediagnosis');
+  const pendingIds=ids(f.state);assert.deepEqual(pendingIds.slice(before.length),['fix-rediagnosis-intent']);
+  await assert.rejects(owner.rediagnose({authorized:true,reason:'Retry'}),{code:'invalid_diagnosis'});
+  assert.deepEqual(ids(f.state),pendingIds);
+  let asked=0;f.bridge.call=async(kind,payload)=>{asked++;assert.equal(payload.reviewFeedback.verdict,'changes_requested');return revised;};
+  owner=f.reopen();
+  assert.equal((await hostRediagnose(f,'Resubmit valid answer')).reply.result.stage,'cause_review_required');
+  const next=JSON.parse(fs.readFileSync(f.state)).records;
+  assert.deepEqual(next.slice(0,before.length),before);
+  assert.deepEqual(next.slice(before.length).map(row=>row.id),['fix-rediagnosis-intent','fix-rediagnosis-result']);
+  assert.equal(next[before.length].payload.reason,'Address F1');
+  owner=f.reopen();assert.equal(owner.status().diagnosis.rootCause,'Fixture revised cause');
+  assert.equal((await f.review()).stage,'red_test_required');
+  assert.match(fs.readFileSync(path.join(f.specsRoot,'.reviews/fix-rediagnosis-cause-r2.md'),'utf8'),/round: 2\nverdict: approved/);
+  assert.equal(asked,1);assert.equal(f.counts().calls,2);
+  assert.equal(fs.readFileSync(path.join(f.code,'visits'),'utf8'),'1');
+}));
+for(const secondVerdict of ['approved','changes_requested'])test(`regression: an old journal ending in fix-rediagnosis-intent without a result resumes by re-asking under that intent (${secondVerdict})`,async t=>fixture(t,async f=>{
+  // Old runtime: intent appended, answer rejected inside the catch, nothing else written.
   f.bridge.call=async()=>{throw Error('Fixture lost result');};
   const result=await f.owner().rediagnose({authorized:true,reason:'Address F1'});
   assert.equal(result.stage,'unknown');assert.equal(result.pending,'rediagnosis');
-  const owner=f.reopen();assert.equal(owner.status().pending,'rediagnosis');
+  const stuck=fs.readFileSync(f.state),stuckIds=ids(f.state);
+  assert.equal(stuckIds.at(-1),'fix-rediagnosis-intent');
+  let owner=f.reopen();
   assert.equal((await owner.advance({authorized:true})).stage,'unknown');
-  await assert.rejects(owner.rediagnose({authorized:true,reason:'Retry'}),{code:'fix_rediagnosis_unavailable'});
-  assert.deepEqual(JSON.parse(fs.readFileSync(f.state)).records.slice(0,before.length),before);
+  const host=createFixHost({owner,config:{...f.options.configuration,...f.options},permissions:['--allow-rediagnosis']});
+  const status=await host.handle({requestId:'s',operation:'status'});
+  assert.equal(status.progress.blocker,'rediagnosis_answer_required');assert.match(status.progress.nextAction,/rediagnose/);
+  assert.deepEqual(fs.readFileSync(f.state),stuck);
+  f.bridge.call=async()=>revised;
+  owner=f.reopen();
+  assert.equal((await owner.rediagnose({authorized:true,reason:'Resume pending rediagnosis'})).stage,'cause_review_required');
+  assert.deepEqual(ids(f.state),[...stuckIds,'fix-rediagnosis-result']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.state)).records.slice(0,stuckIds.length),JSON.parse(stuck).records);
+  // The re-ask used the registered continuation: the review limit still applies.
+  const stage=secondVerdict==='approved'?'red_test_required':'rediagnosis_review_limit_reached';
+  assert.equal((await f.review()).stage,stage);
+  owner=f.reopen();assert.equal(owner.status().stage,stage);
+  await assert.rejects(owner.rediagnose({authorized:true,reason:'Again'}),{code:'fix_rediagnosis_unavailable'});
+  assert.equal(ids(f.state).filter(id=>id==='fix-rediagnosis-intent').length,1);
   assert.equal(fs.readFileSync(path.join(f.code,'visits'),'utf8'),'1');
+},{secondVerdict}));
+test('driver preflight refuses an invalid rediagnosis answer before starting the host',async t=>fixture(t,async f=>{
+  const config=path.join(f.root,'driver-config.json'),answers=path.join(f.root,'answers');fs.mkdirSync(answers);
+  fs.writeFileSync(config,JSON.stringify({specsRoot:f.specsRoot,identity:f.identity,reproduction:f.options.configuration.reproduction}));
+  fs.writeFileSync(path.join(answers,'learning.json'),JSON.stringify({status:'no_relevant_lesson',summary:'Fixture'}));
+  const run=file=>{fs.writeFileSync(path.join(answers,'diagnosis-rediagnosis.json'),JSON.stringify(file));
+    const script=`import {preflight} from ${JSON.stringify(new URL('./cm-fix-drive.mjs',import.meta.url).href)};preflight(${JSON.stringify({operation:'rediagnose',plan:{cwd:f.code,mode:'resume'},paths:{config,answers}})});`;
+    return spawnSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8'});};
+  const before=fs.readFileSync(f.state);
+  const refused=run(tooManyAlternatives);
+  assert.equal(refused.status,2);assert.match(refused.stderr,/diagnosis-rediagnosis\.json.*investigation\.discardedAlternatives.*最多 3 项，实际 4 项.*宿主未启动/);
+  assert.equal(run(revised).status,0);
+  assert.deepEqual(fs.readFileSync(f.state),before);
 }));
 for(const failure of ['source','evidence','reason'])test(`rediagnosis refuses ${failure} before registering a new effect`,async t=>fixture(t,async f=>{
   const before=fs.readFileSync(f.state);
