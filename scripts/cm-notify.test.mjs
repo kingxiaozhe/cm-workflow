@@ -175,6 +175,9 @@ const CASES=[
   // cm-fix: execution.mjs / progress.mjs
   ['cm-fix','finish',{identity:id,stage:'completed',completionEligible:true},'done'],
   ['cm-fix','advance',{identity:id,stage:'cause_review_required'},null],
+  ['cm-fix','cause_review',{identity:id,stage:'cause_review_required',reason:'permission_denied'},'stuck'],
+  ['cm-fix','final_review',{identity:id,stage:'final_review_required',reason:'permission_denied'},'stuck'],
+  ['cm-fix','final_review',{identity:id,stage:'revision_final_review_required',reason:'permission_denied'},'stuck'],
   ['cm-fix','repair',{identity:id,stage:'revision_regression_required'},null],
   ['cm-fix','repair',{identity:id,stage:'unknown',pending:'repair'},'stuck'],
   ['cm-fix','cause_review',{identity:id,stage:'rediagnosis_review_limit_reached'},'stuck'],

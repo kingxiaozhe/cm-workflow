@@ -204,6 +204,8 @@ function classifyFix(r){
   const stage=text(r.stage);if(!stage)return null;
   if(stage==='completed')return 'done';
   if(r.progress&&typeof r.progress==='object'){if(r.progress.finished===true)return 'done';if(r.progress.requiresUser===true)return 'stuck';}
+  // A refused review authorization keeps the stage (execution.mjs) but waits on a person.
+  if(text(r.reason)==='permission_denied')return 'stuck';
   return FIX_FLOW.has(stage)||FIX_FLOW.has(stage.replace(/^revision_/,''))?null:'stuck';
 }
 // cm-ai conversation entry (runtime/js/cm-ai/cm-ai-conversation-entry.mjs, operator-guidance.mjs,
