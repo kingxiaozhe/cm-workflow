@@ -92,7 +92,7 @@ function validate(kind,value,{project,selection,checkpoint,answers,hostContext})
 }
 function main(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-init-drive.mjs --plan PLAN.json <operation>\nPLAN: project, sessionFile, mode:create|resume, hostContext, resume 时 originalHostContext；advance 首轮填 selection；answers 存人工分析、草稿、核验、决定和审查。allowWrite:true 时按审查草稿实际写文件。\n');return;
+    process.stdout.write('用法: cm-init-drive.mjs --plan PLAN.json <operation>\nPLAN: project, sessionFile, mode:create|resume, hostContext, resume 时 originalHostContext（resolution 可为 null、原回执，或 {callId,requestDigest,discard|abandon:true,evidence} 作废后重问）；advance 首轮填 selection；answers 存人工分析、草稿、核验、决定和审查。allowWrite:true 时按审查草稿实际写文件。\n');return;
   }
   const {plan,operation,base}=loadPlanFile({name:'cm-init-drive.mjs',known:KNOWN});
   requireFields(plan,['project','sessionFile','mode','hostContext']);
@@ -118,11 +118,22 @@ function main(){
   if(state?.pending&&operation!=='resume')stop(2,'恢复存档存在 pending；必须用 resume 和原调用回执，不能重派');
   if(operation==='resume'){
     if(plan.mode!=='resume')stop(2,'resume 需要已有存档');
-    if(state.pending?.writing)stop(2,'写入结果未知，不能自动恢复');
+    if(state.pending?.writing){const digest=checkpoint?.reviewPackage?.packageDigest??'<packageDigest>';
+      stop(2,`写入结果未知，不能自动恢复，也不重发 init_write。先运行 cm-init-entry.mjs --inspect-recovery ${digest} 逐文件比对，再去掉 --session-file、在宿主启动参数末尾加 --resume-draft ${digest} 续写（冲突报 init_recovery_conflict 交人）`);}
     const call=state.pending?.call,resolution=plan.resolution??null;
-    if(call&&!Object.hasOwn(call,'result')){
+    // discard（已记录被拒）/abandon（结果未知）：作废后在原请求下重问，答案文件按同一步骤预检。
+    const reask=obj(resolution)&&(resolution.discard===true||resolution.abandon===true);
+    if(reask){
+      valid(call&&resolution.callId===call.callId&&resolution.requestDigest===call.requestDigest&&nonempty(resolution.evidence)
+        &&!Object.hasOwn(resolution,'result')&&(resolution.discard===true)!==(resolution.abandon===true)
+        &&(resolution.discard===true?Object.hasOwn(call,'result'):!Object.hasOwn(call,'result'))
+        &&Object.keys(resolution).every(key=>['callId','requestDigest','discard','abandon','evidence'].includes(key)),
+      'resume 作废需要 {callId,requestDigest,discard:true|abandon:true,evidence}：discard 只针对已记录被拒的应答，abandon 只针对结果未知的调用');
+      const used=(state.abandonedCalls??[]).filter(item=>item.kind===call.kind).length;
+      if(used>=2)stop(2,`${call.kind} 本会话已作废 2 次，宿主会报 idea_session_abandon_limit；交人处理`);
+    }else if(call&&!Object.hasOwn(call,'result')){
       valid(obj(resolution)&&resolution.callId===call.callId&&resolution.requestDigest===call.requestDigest
-        &&nonempty(resolution.evidence)&&Object.hasOwn(resolution,'result'),'resume 缺少原调用的真实回执');
+        &&nonempty(resolution.evidence)&&Object.hasOwn(resolution,'result'),'resume 缺少原调用的真实回执；找不到时可用 abandon:true 作废后重问');
     }else valid(resolution===null,'resume 不应提供新回执');
   }
   let selection=checkpoint.selection;

@@ -13,7 +13,28 @@ import {publishCmInitReviewEvidence,loadCmInitRecoveryDraft} from '../runtime/js
 import {inspectCmInitDraft,readCmInitSource} from '../runtime/js/cm-init/draft-inspection.mjs';
 import {inspectCmInitProjectAnalysis} from '../runtime/js/cm-init/project-analysis.mjs';
 import {validateCmInitSelection} from '../runtime/js/cm-init/draft-generation.mjs';
-import {openDraftSession} from '../runtime/js/cm-idea/session.mjs';
+import {openDraftSession,MAX_CALL_ABANDONS} from '../runtime/js/cm-idea/session.mjs';
+
+const STEP_KINDS={ready:'init_generate',analysis_ready:'init_generate',draft_generated:'init_verify',
+  confirmation_required:'init_confirm',review_required:'init_review'};
+// Chinese next steps for a blocked draft (R4). Presentation only, never authority.
+export function initRecoveryGuidance({stage,pending,abandoned,retry,packageDigest}){
+  const used=kind=>abandoned.filter(item=>item.kind===kind).length;
+  const draft=packageDigest?`--resume-draft ${packageDigest}`:'--resume-draft <packageDigest>';
+  if(pending?.writing||['write_unknown','write_incomplete'].includes(stage))return {summary:'规则写入结果未知或只写了一部分，会话模式下 resume 会报 idea_save_outcome_unknown。',
+    nextStep:`不要重发 init_write。先运行 cm-init-entry.mjs --inspect-recovery ${packageDigest??'<packageDigest>'} 逐文件比对；然后去掉 --session-file，在启动参数末尾加 ${draft}：全部一致停在 rules_present，部分写入回到已审草稿续写（重新核验、确认、独立审查），冲突报 init_recovery_conflict 交人。`,
+    authorizationGranted:false};
+  const call=pending?.call;
+  if(call){const left=MAX_CALL_ABANDONS-used(call.kind),person=call.kind==='init_confirm';
+    if(call.status==='unknown')return {summary:`${call.kind} 的应答没有拿到（超时、断开或宿主退出）。`,
+      nextStep:`有原回执就 resume 交回；没有就 resume {resolution:{callId,requestDigest,abandon:true,evidence}} 作废后${person?'重新问当前用户':'重问'}（本会话 ${call.kind} 还可 ${left} 次）。迟到的旧答复一律不用。`,authorizationGranted:false};
+    return {summary:`${call.kind} 的应答已记录。`,
+      nextStep:`resume {resolution:null} 消费原结果；若宿主拒收（stderr diagnostic 的码），用 {callId,requestDigest,discard:true,evidence} 作废后${person?'重新问当前用户':'重问'}（还可 ${left} 次）。`,authorizationGranted:false};}
+  if(stage==='failed'&&retry)return {summary:`${retry.kind} 没有拿到合格应答（超时、校验不过或断开）。`,
+    nextStep:retry.remaining>0?`再发一次 ${retry.operation} 重问，还可 ${retry.remaining} 次。内存模式下宿主退出就只能从头开始，需要可恢复请改用 --session-file。`
+      :'本进程重问次数已用完（init_retry_limit）；交人处理，或改用 --session-file 重新开始。',authorizationGranted:false};
+  return null;
+}
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
   let bridge,session;
@@ -25,6 +46,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       output.write('Optional --allow-write after --host-context ID permits one init_write host request only after the draft review approves and originals still match. The host edits only the fixed reviewed paths; JS reads back every target. Partial/unknown writes stop without retry or rollback. A private immutable .reviews/cm-init-<packageDigest>.md archive is saved before init_write; conflicts or archives over 256 KiB block writing. The archive is not a write result or completion receipt. rules_written does not complete a task; append --resume-draft DIGEST to load an archived draft without regeneration. Conflicts refuse startup. Partial drafts require fresh verification, confirmation when needed and independent review; --allow-write remains required. Only changed targets are dispatched. All-matching drafts stop at rules_present, not task completion. This is draft recovery, not replay of unknown in-flight calls.\n');
       output.write('Optional --host-context ID binds the actual author context and is required for review. In review_required, advance requests init_review from the trusted host; it must return an actual independent reviewer result. The shared review result validator checks package/coverage/findings. Approval only reaches reviewed_draft, not completion or write authority. No provider dispatch authorization is implied.\n');
       output.write('final_review_package is read-only in review_required: fixed draft, original constraints, host verification and confirmation, exact paths and package digest. It is not a registered V3 receipt and neither dispatches a reviewer nor authorizes completion.\n');
+      output.write('Recovery (V1/V7): with --session-file, resume {resolution:{callId,requestDigest,discard:true,evidence}} discards a recorded answer the host refused and {callId,requestDigest,abandon:true,evidence} abandons an unknown analyze/generate/verify/confirm/review call; both ask again under the same pending request with a fresh callId (init_confirm asks the current user again), keep append-only abandonedCalls, 2 per kind per session. init_write is never re-asked: use --inspect-recovery and --resume-draft. Without --session-file a failed step may be re-sent twice in the same process; a dead memory-only host starts over.\n');
       output.write('cm-init-host.mjs serve --skill-dir PATH --project PATH\nOne local draft via existing JSONL host bridge: advance with selection {versionControl,modules,analysis,runtimes?}, then advance without selection for init_verify and, only when required, init_confirm. Status and cancel remain available. Replies use host_result with exact sessionId/callId/requestDigest. Confirmation must convey the explicit current user decision; approval only reaches independent review. Verification is a current-host report, not independent review. No provider or task-completion authority; project writes require --allow-write and the reviewed-draft stage. Host results retain the shared 64 KiB limit.\n');return 0;
     }
     const sessionFile=argv.at(-2)==='--session-file'?argv.at(-1):null;
@@ -43,7 +65,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(fs.realpathSync(fileURLToPath(import.meta.url))===path.join(admission.workflowRoot,'scripts/cm-init-host.mjs'),'entry_path_invalid');
     bridge=createHostToolBridge();
     const controller=new AbortController();let stage='ready',result=null,verification=null,selection=null,confirmation=null,review=null,writeResult=null,reviewPackage=null,reviewEvidence=null,analysisResult=null;
-    const revisionHistory=[];
+    const revisionHistory=[],retries={};let failedStep=null;
     let authorContexts=hostContextId===null?[]:[hostContextId];
     const snapshot=()=>({stage,result,verification,selection,confirmation,review,writeResult,reviewPackage,reviewEvidence,analysisResult,revisionHistory,authorContexts,authorContextId:hostContextId});
     const restore=state=>{
@@ -63,7 +85,12 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const call=(kind,payload,signal)=>session?session.call(kind,payload,signal,(body,abort)=>bridge.call(kind,body,abort)):bridge.call(kind,payload,signal);
     if(resumeDigest!==null){
       const restored=loadCmInitRecoveryDraft({project:admission.project,packageDigest:resumeDigest});
-      need(restored.report.status!=='conflict','init_recovery_conflict');
+      // V6: a conflict goes to a person with the per-file comparison, never as a new delivery.
+      if(restored.report.status==='conflict'){
+        error.write(JSON.stringify({diagnostic:'init_recovery_conflict',files:restored.report.files.map(({path,status})=>({path,status})),
+          guidance:'这些文件既不是原文也不是已审草稿（conflict）：逐个核对是谁改的；保留用户改动，不覆盖、不回滚、不删档。处理后先用 cm-init-entry.mjs --inspect-recovery 复核，再决定续写或重新初始化。'})+'\n');
+        need(false,'init_recovery_conflict');
+      }
       need(restored.inspection.status==='structurally_checked','init_draft_structural_failure');
       selection=restored.selection;
       result={status:'draft_generated',documents:restored.documents,inspection:restored.inspection,
@@ -75,11 +102,29 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       need(inspection.status==='structurally_checked','init_draft_structural_failure');
       need(digest(inspection.changes)===digest(result.inspection.changes),'init_verification_project_changed');
     };
+    const retryInfo=()=>failedStep&&!session?{...failedStep,remaining:MAX_CALL_ABANDONS-(retries[failedStep.kind]??0)}:null;
+    const guidance=()=>initRecoveryGuidance({stage,retry:retryInfo(),abandoned:session?.abandonedCalls??[],
+      pending:session?.state.pending?{writing:session.state.pending.writing,call:session.state.pending.call?{kind:session.state.pending.call.kind,
+        status:Object.hasOwn(session.state.pending.call,'result')?'recorded':'unknown'}:null}:null,
+      packageDigest:writeResult?.packageDigest??reviewPackage?.packageDigest??null});
     const handle=async raw=>{
       const message=json(raw);need(['start','advance','status','cancel','final_review_package','prepare_revision'].includes(message.operation),'host_operation_invalid');
+      // V1 without --session-file: nothing was recorded for a failed step, so the
+      // same operation may be sent again from the stage before it, twice per kind.
+      if(stage==='failed'&&failedStep&&!session&&['start','advance'].includes(message.operation)){
+        need(message.operation===failedStep.operation,'init_generation_already_started');
+        need((retries[failedStep.kind]??0)<MAX_CALL_ABANDONS,'init_retry_limit');
+        retries[failedStep.kind]=(retries[failedStep.kind]??0)+1;stage=failedStep.priorStage;failedStep=null;
+      }
+      const priorStage=stage,failedKind=message.operation==='start'?'init_analyze':STEP_KINDS[stage];
+      const fail=cause=>{stage=controller.signal.aborted?'cancelled':'failed';
+        if(stage==='failed'&&failedKind&&['start','advance'].includes(message.operation))failedStep={operation:message.operation,priorStage,kind:failedKind};
+        throw cause;};
       shape(message,message.operation==='prepare_revision'?['requestId','operation','documents']:
         message.operation==='advance'&&stage==='ready'?['requestId','operation','selection']:['requestId','operation']);
-      if(message.operation==='status')return {stage,result,analysisResult,verification,confirmation,review,writeResult,reviewEvidence,revisionHistory,writeAuthorized:false};
+      if(message.operation==='status'){const advice=guidance(),retry=retryInfo();
+        return {stage,result,analysisResult,verification,confirmation,review,writeResult,reviewEvidence,revisionHistory,writeAuthorized:false,
+          ...(retry?{retry}:{}),...(advice?{guidance:advice}:{})};}
       if(message.operation==='prepare_revision'){
         need(['verification_blocked','review_changes_requested','review_blocked'].includes(stage),'init_revision_not_ready');
         current();
@@ -113,7 +158,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
             analysisResult={source:'current_host_report',observations,...response};stage='analysis_ready';
           }
           return {stage,analysisResult,writeAuthorized:false};
-        }catch(cause){stage=controller.signal.aborted?'cancelled':'failed';throw cause;}
+        }catch(cause){fail(cause);}
       }
       if(message.operation==='final_review_package'){
         need(stage==='review_required','init_review_not_ready');current();
@@ -190,7 +235,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
           reviewPackage=pkg;
           stage=checked.verdict==='approved'?'reviewed_draft':checked.verdict==='changes_requested'?'review_changes_requested':'review_blocked';
           return {stage,review,writeAuthorized:false,completionAuthorized:false};
-        }catch(cause){stage=controller.signal.aborted?'cancelled':'failed';throw cause;}
+        }catch(cause){fail(cause);}
       }
       if(stage==='confirmation_required'){
         stage='confirming';
@@ -208,7 +253,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
             paths:[...verification.constraintChanges],decision:response.decision};
           stage=response.decision==='approved'?'review_required':'confirmation_rejected';
           return {stage,confirmation,independentReviewRequired:true,writeAuthorized:false};
-        }catch(cause){stage=controller.signal.aborted?'cancelled':'failed';throw cause;}
+        }catch(cause){fail(cause);}
       }
       if(stage==='draft_generated'){
         stage='verifying';
@@ -232,7 +277,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
           stage=Object.values(response.checks).some(check=>['unverified','failed'].includes(check.status))?'verification_blocked'
             :response.constraintChanges.length?'confirmation_required':'review_required';
           return {stage,verification,independentReviewRequired:true,writeAuthorized:false};
-        }catch(cause){stage=controller.signal.aborted?'cancelled':'failed';throw cause;}
+        }catch(cause){fail(cause);}
       }
       need(['ready','analysis_ready'].includes(stage),'init_generation_already_started');
       if(stage==='analysis_ready')need(digest(analysisResult.observations)===digest(inspectCmInitProjectAnalysis({project:admission.project})),'init_analysis_project_changed');
@@ -242,7 +287,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         result=await generateCmInitRules(request,selection,{signal:controller.signal,
           generate:(payload,signal)=>call('init_generate',payload,signal)});
         stage=result.status;return result;
-      }catch(cause){stage=controller.signal.aborted?'cancelled':'failed';throw cause;}
+      }catch(cause){fail(cause);}
     };
     const host={handle:async raw=>{
       if(!session)return handle(raw);
@@ -260,7 +305,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       let message=raw;
       if(raw.operation==='resume'){
         shape(raw,['requestId','operation','resolution']);
-        message=session.resume(raw.resolution);
+        const reask=raw.resolution?.discard===true||raw.resolution?.abandon===true;
+        if(reask)session.abandonCall(raw.resolution);
+        message=session.resume(reask?null:raw.resolution);
         if(message===null)return host.handle({requestId:raw.requestId,operation:'status'});
         restore(session.state.checkpoint);
       }else session.begin(raw,snapshot());

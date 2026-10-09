@@ -19,7 +19,7 @@ const obj=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 function valid(ok,label){if(!ok)stop(2,`答案格式错误：${label}`);}
 function main(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-idea-drive.mjs --plan PLAN.json <operation>\nPLAN: project, sessionFile, mode:create|resume, text/maturity, answers；finish 需 saveRoot、filename 和当前用户的确认答案。宿主负责真实保存与回读。\n');return;
+    process.stdout.write('用法: cm-idea-drive.mjs --plan PLAN.json <operation>\nPLAN: project, sessionFile, mode:create|resume, text/maturity, answers；finish 需 saveRoot、filename 和当前用户的确认答案。宿主负责真实保存与回读。resume 的 resolution 可为 null、原回执，或 {callId,requestDigest,discard|abandon:true,evidence} 作废后重问。\n');return;
   }
   const {plan,operation,base}=loadPlanFile({name:'cm-idea-drive.mjs',known:KNOWN});
   requireFields(plan,['project','sessionFile','mode']);
@@ -40,11 +40,21 @@ function main(){
   if(operation==='status'&&plan.mode!=='resume')stop(2,'status 需要已有会话');
   if(operation==='resume'){
     if(plan.mode!=='resume')stop(2,'resume 需要已有存档');
-    if(state.pending?.writing)stop(2,'保存结果未知，不能自动恢复');
+    if(state.pending?.writing&&!state.pending.expected)stop(2,'保存结果未知（旧版会话没有记下应写内容的摘要），不能自动恢复；人工核对 prd/ 下目标文件');
     const call=state.pending?.call,resolution=plan.resolution??null;
-    if(call&&!Object.hasOwn(call,'result'))valid(obj(resolution)&&resolution.callId===call.callId
+    const reask=obj(resolution)&&(resolution.discard===true||resolution.abandon===true);
+    if(state.pending?.writing)valid(resolution===null,'保存中断的恢复只接受 resolution:null（宿主按记下的摘要比对磁盘）');
+    else if(reask){
+      valid(call&&resolution.callId===call.callId&&resolution.requestDigest===call.requestDigest&&nonempty(resolution.evidence)
+        &&!Object.hasOwn(resolution,'result')&&(resolution.discard===true)!==(resolution.abandon===true)
+        &&(resolution.discard===true?Object.hasOwn(call,'result'):!Object.hasOwn(call,'result'))
+        &&Object.keys(resolution).every(key=>['callId','requestDigest','discard','abandon','evidence'].includes(key)),
+      'resume 作废需要 {callId,requestDigest,discard:true|abandon:true,evidence}：discard 只针对已记录被拒的应答，abandon 只针对结果未知的调用');
+      if((state.abandonedCalls??[]).filter(item=>item.kind===call.kind).length>=2)
+        stop(2,`${call.kind} 本会话已作废 2 次，宿主会报 idea_session_abandon_limit；交人处理`);
+    }else if(call&&!Object.hasOwn(call,'result'))valid(obj(resolution)&&resolution.callId===call.callId
       &&resolution.requestDigest===call.requestDigest&&nonempty(resolution.evidence)
-      &&Object.hasOwn(resolution,'result'),'resume 缺少原调用的真实回执');
+      &&Object.hasOwn(resolution,'result'),'resume 缺少原调用的真实回执；找不到时可用 abandon:true 作废后重问');
     else valid(resolution===null,'resume 不应提供新回执');
   }
   const actualOp=operation==='resume'?(state.pending?.request?.operation??'status'):operation;
@@ -57,16 +67,19 @@ function main(){
   if(saveRoot!==null)valid(fs.existsSync(saveRoot)&&fs.realpathSync(saveRoot)===saveRoot
     &&fs.statSync(saveRoot).isDirectory(),'saveRoot');
   if(actualOp==='prepare_save')valid(stage==='draft_ready'&&saveRoot!==null,'prepare_save 缺少 saveRoot 或草稿');
+  // resume 重放的 finish 用原请求的 filename；保存中断时目标可能已存在，由宿主按摘要对账。
+  const filename=operation==='resume'?state.pending?.request?.filename:plan.filename;
+  const reconciling=operation==='resume'&&state.pending?.writing===true;
   if(actualOp==='finish'){
-    valid(stage==='draft_ready'&&nonempty(plan.filename)&&/^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/.test(plan.filename),
+    valid(['draft_ready','save_blocked'].includes(stage)&&nonempty(filename)&&/^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/.test(filename),
       'finish 缺少草稿或安全的 filename');
     const root=saveRoot??state?.checkpoint?.saveRoot;
     valid(nonempty(root),'finish 缺少 saveRoot');
     valid(state?.checkpoint?.saveRoot===null||state?.checkpoint?.saveRoot===root,'finish saveRoot 与已绑定会话不符');
-    const directory=path.join(root,'prd'),target=path.join(directory,plan.filename);
+    const directory=path.join(root,'prd'),target=path.join(directory,filename);
     valid(!fs.existsSync(directory)||fs.lstatSync(directory).isDirectory()&&!fs.lstatSync(directory).isSymbolicLink(),
       'finish 保存目录越界');
-    valid(!fs.existsSync(target),'finish 目标文件已存在');
+    if(!reconciling)valid(!fs.existsSync(target),'finish 目标文件已存在');
   }
   const kind=['start','advance'].includes(actualOp)?'idea_interview':actualOp==='finish'?'idea_confirm_save':null;
   const answers=plan.answers?path.resolve(base,plan.answers):null;
