@@ -29,9 +29,11 @@ $cm-ai ~/projects/specs 前端~/code/fe 后端~/code/api
 
 先按下列顺序选择执行方式；用户无需额外说“使用 JS workflow”。路由选择不替代规格审批或实际调用授权。
 
-1. **恢复已有运行**：先读取原运行记录。已有 JS host/batch 沿原身份与配置恢复；已配置 QA 因命令配置错误卡住时，按 `references/js-host.md` 的“QA 配置修订”显式授权，不重开已完成任务。
+1. **恢复已有运行**：先读取原运行记录。已有 JS host/batch 沿原身份与配置恢复；已配置 QA 因命令配置错误卡住时，按 `references/js-host-qa-recovery.md` 的“QA 配置修订”显式授权，不重开已完成任务。
    已确认的旧兼容任务沿原流程续接，不因升级迁移状态。记录缺失、冲突或无法确定归属时只读核对，不能猜测或另开运行绕过历史。
-2. **新任务**：默认读取 `references/js-host.md`，由共享 JS 入口驱动阶段；当前会话只执行其工具请求。
+2. **新任务**：默认只读取 `references/js-host.md`（正常路径），由共享 JS 入口驱动阶段；当前会话只执行其工具请求。
+   启动条件命中外部模型配置、bootstrap 规范任务、多代码根或同仓 specs 受保护执行／文本提案模式时，启动前先读 `references/js-host-modes.md` 对应一节（见 js-host.md“启动前”第 6 项）。
+   运行停在阻断、unknown、待审失败或需异常恢复时，才按 js-host.md“文档分工与停机路由”表读取 `js-host-recovery.md` 或 `js-host-qa-recovery.md` 的对应一节。
    只有用户明确选择旧兼容流程、且确认不是已有 JS 运行时，才进入下文兼容执行步骤；不新增 CLI 参数。
 3. **JS 准入失败或不支持**：报告具体宿主、Node 版本、目录、配置或业务能力缺口并停止依赖该能力的执行；
    不静默回退兼容流程，不改 runId、runtime 或手工完成路径规避阻断。原生 Windows 尚不支持，Linux 支持声明不等于实机验收。
@@ -41,7 +43,7 @@ JS 路由中的状态、日志、handoff、Review 凭证与任务勾选由原 JS
 
 ### N1–N8 业务概览与兼容执行步骤
 
-下列流程图说明共同业务顺序；JS 的执行操作以 `references/js-host.md` 为准。
+下列流程图说明共同业务顺序；JS 的执行操作以 `references/js-host.md` 及其路由到的恢复／条件文档为准。
 仅已选定兼容流程时，按下文及 `references/` 节点执行手工步骤；入口更新不代表已安装副本或全阶段实机验收。
 
 ```text
