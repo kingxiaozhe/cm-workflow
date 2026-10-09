@@ -51,6 +51,8 @@
 | `verification_precheck_failed` | C「交付前验证闸门」 |
 | `protected_scope` | C「项目规则文件的修改通道」 |
 | `fix_authorization`、`fix_dispatch`、`qa_fix_code_unmatched`、`qa_fix_incomplete`、`qa_round_limit` | C「QA 失败交接」「独立 QA 修复入口」 |
+| QA 修复子运行需要 `rediagnose`、`rerun_blocked_step`、`recover_final_review`、`revision_test_check`；`qa_fix_action_authorization_required` | cm-fix js-host「QA 修复子流程的恢复操作」 |
+| 批次成员停在 `develop_redo`、`abandon_effect`、`abandon_review`、`bootstrap_review_recover`；`batch_member_action_authorization_required`、`batch_member_action_not_current`、`batch_member_action_unavailable`、`batch_parallel_member_recovery_required`、`batch_qa_revision_unavailable`、`batch_spec_rebind_unavailable` | R「批次成员的恢复操作」 |
 | `decision_required`、`permission_denied`、`provider_development_authorization_required`、`qa_decision_required`、`qa_mandatory_required`、`documentation_sync_blocked`、outcome `rejected`／`denied`、`cancelled`、其他 `none` | 本文「执行当前请求，而非手工跳节点」末段；授权见「启动前」第 5 项 |
 
 ## 当前会话手动驱动：用驱动脚本，不要自己搭 FIFO
@@ -103,7 +105,7 @@ cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edit
 受保护执行由原宿主处理检查；驾驶员不把人工填写的结果冒充执行证据。一次 `advance` 可能走过多个阶段，
 驾驶员会按该宿主的请求路径提前检查本次可能用到的全部答案；只读 `status` 不需要答案。
 
-批次使用 `../../../scripts/cm-ai-batch-drive.mjs`，调用方式同为 `--plan PLAN.json advance|status|cancel`。
+批次使用 `../../../scripts/cm-ai-batch-drive.mjs`，调用方式同为 `--plan PLAN.json advance|status|cancel`；成员恢复用 `develop_redo|abandon_effect|abandon_review|bootstrap_review_recover`（`mode:"resume"`、`taskKey`、单行 `reason`，`permissions` 带对应 `--allow-… 任务`，见 [批次成员的恢复操作](js-host-recovery.md#批次成员的恢复操作)）。
 `config` 指向批次宿主的 `{batch,workflows}` 定义；`answers` 下按 `feature/taskId/` 放每个任务的
 `develop.json`（第 1 轮可改用 `develop-a1.json`，不得并存）、`qa-assess.json`、
 `documentation-sync.json`、`documentation-inspect.json`；第 2 轮开发必须另放 `develop-a2.json`，

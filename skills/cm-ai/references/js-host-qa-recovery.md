@@ -61,7 +61,7 @@ superseded 行另记 `host_blocked_cases`（`timed_out_cases` 可以为空）。
 
 整轮超时或取消时正在跑的 QA 命令记 `resource/cleanup_failed`，写入器会一直拒绝放弃、超时替代、`run_done` 与批次交接。
 新执行器在这一行记下命令进程组身份（`pid`、`process_start_time`）；宿主在 QA 恢复、`run_finalize` 与批次交接前核对该进程组已退出，就补记 `resource/released`（`released_by: host_verified`、`verification: process_group_gone`），之后流程照常。
-进程仍在、核对不了（Windows、无权限、读不到启动时间）或旧行没有进程身份时保持未关闭，`run_finalize` 报 `qa_resources_open` 并列出资源；先结束残留进程再重发。浏览器 QA 用例不登记资源（设备与浏览器清理由会话在 `cleanup` 中如实报告），没有可由宿主释放的设备锁。
+进程仍在、核对不了（Windows、无权限、读不到启动时间）或旧行没有进程身份时保持未关闭，`run_finalize` 报 `qa_resources_open` 并列出资源，批次交接报 `batch_resources_open`，`reason` 同样列出资源及原因；先结束残留进程再重发（批次从原批次入口 `advance`）。浏览器 QA 用例不登记资源（设备与浏览器清理由会话在 `cleanup` 中如实报告），没有可由宿主释放的设备锁。
 
 ## 已 complete 的宿主证据或环境阻断
 

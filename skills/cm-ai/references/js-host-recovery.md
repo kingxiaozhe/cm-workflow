@@ -259,3 +259,27 @@ node scripts/cm-ai-host.mjs serve --config run-new.json --mode create \
 新运行先在自己的 journal 追加 `evidence-superseded`，绑定原因、旧 runId、文件名和 SHA-256，然后用先硬链接再解除原链接的方式把该任务同名 handoff、review 及具名 correction／QA 文件移至 `.reviews/.superseded/{原文件名}.{摘要前16位}`，并写 `supersede` 运行日志。归档中断后以同一新 runId 执行 `resume` 会按记录补齐；未用此旗标的运行不增加记录或改动旧证据。历史 QA 的 UUID 报告仍由旧 runId 日志引用，保持原位。新 handoff 和 review 使用原文件名，旧证据只在归档中留史。
 
 旧运行因 `review_limit`／`review_blocked` 等停下时，`evidence-superseded` 另存 `carriedReview`：直接前驱最后一份审查回执的 verdict、summary 与 findings（按审查文本上限截断；前驱没有回执时沿用它自己带过来的那份）。新运行仍从第 1 轮开始、名额不变，只在第 1 轮开发与第 1 轮独立审查请求中附上只读的 `supersededReview`，提示注明它是上个运行的发现、不是结论；回放按请求摘要绑定，事后替换即拒绝。没有该字段的旧记录照原格式回放。
+
+## 批次成员的恢复操作
+
+批次宿主 `cm-ai-batch-host.mjs` 以前只收 `advance`、`status`、`cancel`、`reconcile_review` 和两个 QA 重跑开关，成员停在下面这些状态时整批卡住。
+现在批次把单任务宿主的同名恢复操作转给**当前停住的那个成员**的运行（同一 cm-ai 入口、只带这一项权限），不跨成员：
+
+| 成员 `pendingAction` | 批次启动参数（每个任务一次） | 批次操作 |
+|---|---|---|
+| `develop_redo` | `--allow-develop-redo FEATURE/TASK` | `{"operation":"develop_redo","requestId":"…","taskKey":"FEATURE/TASK","reason":"会话已停止修改代码"}` |
+| `abandon_effect`（含第 2 批的中断续跑 `recorded`） | `--allow-abandon-effect FEATURE/TASK` | 同上，`operation:"abandon_effect"` |
+| `abandon_review` | `--allow-abandon-review FEATURE/TASK` | 同上，`operation:"abandon_review"` |
+| `bootstrap_review_recover` | `--allow-bootstrap-review-recovery FEATURE/TASK` | 同上，`operation:"bootstrap_review_recover"` |
+
+先确认旧宿主、会话写入或子进程已停止，再关掉批次宿主，用同一批次配置加对应参数重新启动，发送批次操作；之后 `advance` 继续本批次（`develop_redo` 之后由 advance 重发本轮开发，驾驶员照样按投影后的状态预检答案）。
+`reason` 单行、不超过 500 UTF-8 字节，规则与次数上限同单任务宿主；授权用一次即失效。
+拒绝码：没有授权 `batch_member_action_authorization_required`（`reason` 写明参数）；不是当前停住的成员 `batch_member_action_not_current`；成员还没有运行存档或 worktree 不在 `batch_member_action_unavailable`。
+整批 `cancel` 之后仍永久停止，转发操作返回 `cancelled`。成员状态里的 `guidance` 已改为指向这些批次参数与操作。
+
+QA：`--qa-environment-failure 原因` 随 `--rerun-blocked-qa` / `--rerun-unknown-qa` 使用，交给有 QA 的已存在成员。
+不支持、启动即拒绝的单任务参数：`--revise-qa-config`（`batch_qa_revision_unavailable`：每个成员的运行指纹绑定整批 workflows，改一个成员会让其他成员都无法恢复，单任务宿主也打不开批次成员运行）和 `--rebind-spec-material`（`batch_spec_rebind_unavailable`）；`reason` 写明出口（`--rerun-blocked-qa`，或取消本批次后用单任务宿主 supersede 新建运行）。
+
+并行组：普通批次的并行成员进入终态仍改排串行第二代（保留 WIP 分支）。外部模型或执行策略批次以前一律停在 waiting、永远不改排；现在只在成员可在自己运行里恢复（`pendingAction` 为上表操作或 `reconcile_review`）时停下，返回 `batch_parallel_member_recovery_required`，`reason` 与 `guidance` 写明批次操作（对账用 `reconcile_review` 的 `taskKey`、`invocationId`），worktree 保留；其他终态与普通批次一样改排串行第二代。
+
+资源闭合：批次交接前对 `cleanup_failed` 的 QA 命令资源先由宿主核对进程组已退出并补记 `released`（第 2 批）；仍未闭合时返回 `batch_resources_open`，`reason` 列出未释放的资源及原因（进程组仍在、没有记录进程身份、无法核实）。

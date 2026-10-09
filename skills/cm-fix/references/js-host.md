@@ -97,7 +97,7 @@ standalone cm-fix 可在原配置、原 run、原 task attempt 下显式 `rediag
 `rediagnosis_review_limit_reached`。源文件漂移、r2 证据占用、无效 reason 在追加前拒绝；异步准备返回后再次核对源包与 r2 占位，拒绝不消耗唯一续次；
 不能清档、覆盖旧结论或换 run 重置上限。不合格的诊断答案（如 `investigation.discardedAlternatives` 超过 3 项）返回 `invalid_diagnosis` 并写明字段与上限，驾驶员开宿主前即用同一校验器拦下；
 `pending=rediagnosis`（已登记 `fix-rediagnosis-intent`、尚无结论，含旧版本因此卡住的运行）时改好答案再执行同一 `rediagnose`，在已登记的这一次续次下重新作答，不另占次数、不改旧记录，之后照常进入 `cause-r2`。
-新审查中断或没有结论时停 `unknown`，不自动重派、不提供第三次审查；可按下文「原因审查与第二轮最终审查无结果时的一次性放弃」用 `abandon_review` 在同一第二轮重审一次。当前仅 standalone 接线，不宣称 QA-fix 子宿主支持。
+新审查中断或没有结论时停 `unknown`，不自动重派、不提供第三次审查；可按下文「原因审查与第二轮最终审查无结果时的一次性放弃」用 `abandon_review` 在同一第二轮重审一次。QA-fix 子运行经父宿主的 `fix_action` 走同一操作，见下文「QA 修复子流程的恢复操作」。
 这项恢复需要实际新诊断和独立审查；合成夹具成功不表示真实产品已恢复或已修复。
 
 ### 同仓 specs 的受保护修复
@@ -159,7 +159,24 @@ beforeSha256严格复制expected中该路径的摘要（原不存在则null）�
 发送 `{"requestId":"rerun-1","operation":"rerun_blocked_step","reason":"已处理的阻断原因"}`（驾驶员：PLAN `reason` + `permissions` 含该旗标）。
 宿主追加 `fix-blocked-rerun-N`（绑定该步骤 intent 与阻断结果的摘要），阶段回到该步骤的 `*_required`，下次执行用 `-retry-N-` ID；阻断结果保留为历史，
 写测试/修复同样固定基线。每个步骤最多重跑 2 次（`status.blockedRerun` 显示已用次数），用满报 `fix_blocked_rerun_limit`。`defect_remaining`/`regressed` 仍走 `prepare_revision`。
-QA 修复子流程的 `fix_action` 暂不接受此操作（与 `rediagnose`、`recover_final_review` 同属第 3 批）。
+QA 修复子流程经父宿主 `fix_action` 同样可用（`--allow-qa-fix-rerun-blocked-step`），见下节「QA 修复子流程的恢复操作」。
+
+### QA 修复子流程的恢复操作
+
+QA 修复子运行由父宿主 `cm-ai-host.mjs` 的 `fix_action` 推进，不必关掉父宿主改用 `cm-fix-host --allow-qa-fix`。
+`fix_action` 把下列恢复操作交给同一个 cm-fix 分发入口（`runtime/js/cm-fix/host.mjs`），条件、次数上限和记录与单独的 cm-fix 宿主完全一样，父运行照旧先关后重开：
+
+| `fixOperation` | 父宿主启动参数（等同 cm-fix-host） | 请求附带字段 |
+|---|---|---|
+| `rediagnose` | `--allow-qa-fix-rediagnosis`（`--allow-rediagnosis`） | 单行 `reason`；会问 `fix_learning` 与 `fix_diagnose`，驾驶员读 `learning.json` 与单独的 `diagnosis-rediagnosis.json` |
+| `rerun_blocked_step` | `--allow-qa-fix-rerun-blocked-step`（`--allow-rerun-blocked-step`） | 单行 `reason` |
+| `recover_final_review` | `--allow-qa-fix-final-review-recovery`（`--allow-final-review-recovery`）；再续一次时加 `--qa-fix-final-review-recovery-invocation ID` | `invocationId`、`reviewPackageDigest`（子运行终审包摘要；请求里的 `packageDigest` 是父 QA 包）、`previousInvocationStopped:true`、单行 `reason` |
+| `revision_test_check` | `--allow-qa-fix-regression`（`--allow-regression`） | 无 |
+| `abandon_step`、`abandon_review` | `--allow-qa-fix-abandon`、`--allow-qa-fix-abandon-review` | 单行 `reason` |
+
+缺对应启动参数时，父宿主在关掉父运行之前就返回 `outcome:"rejected"`、`code:"qa_fix_action_authorization_required"`，`reason` 写明要加的父宿主参数，子运行不变；
+cm-fix 自己拒绝（阶段不符、理由无效、摘要不匹配等）时返回 `outcome:"rejected"` 和 cm-fix 原码（如 `fix_rediagnosis_unavailable`、`fix_blocked_rerun_unavailable`、`fix_review_recovery_unavailable`），不再变成不透明的 `host_request_failed`。
+两种拒绝都由卡住提醒判为 stuck。`prepare_revision` 的可选 `tests` 也随 `fix_action` 透传。
 
 ### 原因审查与第二轮最终审查无结果时的放弃（每轮最多 2 次）
 
