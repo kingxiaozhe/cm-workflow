@@ -86,3 +86,14 @@ test('QA round deadline scales with commands, logic and browser cases',()=>{
   assert.equal(qaRoundDeadlineMs({timeoutMs:2000}),2000);
   assert.deepEqual([0,1,2,3].map(qaRoundLimit),[3,4,5,5]);
 });
+
+// The second-batch blocks wait for a person: the stuck notifier classifies them so.
+test('notify classifies the new answer-gap blocks as stuck',async()=>{
+  const {classifyDriveResult}=await import('../runtime/js/notify.mjs');
+  for(const row of [{state:'blocked',code:'develop_interrupted',pendingAction:'resume',outcome:'recorded'},
+    {state:'blocked',code:'complete_commit_interrupted',pendingAction:'complete',outcome:'reported'},
+    {state:'blocked',code:'develop_out_of_scope',pendingAction:'resume',outcome:'advanced'},
+    {state:'fixture_completed',code:'qa_resources_open',pendingAction:'none',outcome:'blocked'}])
+    assert.equal(classifyDriveResult('cm-ai',{result:row}),'stuck',JSON.stringify(row));
+  assert.equal(classifyDriveResult('cm-fix',{result:{stage:'regression_blocked',blockedRerun:{pending:'regression',used:0,limit:2}}}),'stuck');
+});

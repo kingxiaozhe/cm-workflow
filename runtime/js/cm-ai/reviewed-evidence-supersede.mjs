@@ -121,7 +121,7 @@ export function prepareReviewedEvidenceSupersession({specsDir,codeProject,featur
     if(first.version!==3)unavailable(`旧运行 ${entry.name} 的 journal 版本无法验证`);
     const history=readRunnerHistory(snapshot.records,first.config,3);
     if(history.pending){
-      const exit=history.pendingAbandonable?'abandon_effect':
+      const exit=history.pendingAbandonable||history.pendingInterruptible||history.pendingReviewExhausted?'abandon_effect':
         history.pending.kind==='review'&&history.state.reviewInvocation?.registration
           &&history.state.reviewInvocation.result===null?'abandon_review':'原运行恢复入口';
       unavailable(`旧运行 ${entry.name} 的 ${history.pending.kind} effect 已中断且未结；先确认旧 host 和子进程已退出，再在原 run 上使用 ${exit}，随后重新发起 supersede`);
