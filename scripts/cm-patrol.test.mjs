@@ -151,8 +151,11 @@ test('registry removal honours the test guard',t=>{
   t.after(()=>fs.rmSync(fakeHome,{recursive:true,force:true}));
   const dir=path.join(fakeHome,'.cm-workflow','hosts');fs.mkdirSync(dir,{recursive:true});
   const file=path.join(dir,`${KEYS[0]}.json`);fs.writeFileSync(file,'{}');
-  const env={...process.env,HOME:fakeHome,NODE_TEST_CONTEXT:'1'};delete env.CM_WORKFLOW_HOME;
-  removeHostRegistry(KEYS[0],{env});assert.equal(fs.existsSync(file),true,'real home left alone');
+  // os.homedir() reads HOME from the live process environment, so point it at the fake home for this test only.
+  const realHome=process.env.HOME;process.env.HOME=fakeHome;t.after(()=>{process.env.HOME=realHome;});
+  assert.equal(os.homedir(),fakeHome);
+  const env={...process.env,NODE_TEST_CONTEXT:'1'};delete env.CM_WORKFLOW_HOME;
+  removeHostRegistry(KEYS[0],{env});assert.equal(fs.existsSync(file),true,'home left alone under node --test');
   removeHostRegistry(KEYS[0],{env:{...env,CM_WORKFLOW_HOME:path.join(fakeHome,'.cm-workflow')}});
   assert.equal(fs.existsSync(file),false,'explicit home is honoured');
 });
