@@ -26,7 +26,7 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
 文件路径和上限。当前会话若仍交付了空改动，结果是可重试的 `blocked/develop_empty_changes`（旧版本记为
 `unknown/empty_changes` 的历史按原样回放），修正后 `--mode resume` 再 `advance` 同一轮开发。
 运行定义的 `runId` 须为 8–128 个字符（运行日志要求），新建运行前即拒绝；已有运行的恢复不受影响。
-开发应答超过宿主请求上限（固定 30 分钟）记为 `unknown/call_timeout`；若代码根仍与该轮开发开始时一致（第 2 轮为已审的第 1 轮审查包，第 1 轮为任务基线），status 投影为 `blocked/develop_call_timeout`（`pendingAction=resume`），`--mode resume` 后 `advance` 先追加 `develop-timeout-retry` 记录再以新 effect id 重发同一轮开发，审查轮次不变，超时调用不占计数名额（每运行最多 2 次），仍受 `develop_retry_limit` 约束；代码根已变化（会话超时后写过文件）则保持 `unknown/reconcile`，迟到应答仍以 `host_response_mismatch` 拒绝。
+开发应答超过宿主请求上限（固定 30 分钟）记为 `unknown/call_timeout`；若代码根仍与该轮开发开始时一致（第 2 轮为已审的第 1 轮审查包，第 1 轮为任务基线），status 投影为 `blocked/develop_call_timeout`（`pendingAction=resume`），`--mode resume` 后 `advance` 先追加 `develop-timeout-retry` 记录再以新 effect id 重发同一轮开发，审查轮次不变，超时调用不占计数名额（每运行最多 2 次），仍受 `develop_retry_limit` 约束；代码根已变化（会话超时后写过文件）则保持 `unknown/reconcile`；已写入重试记录后（含记录后宿主退出再恢复）仍在派发前再次比对起点，变化则显示 `unknown/reconcile`、拒绝 `develop_timeout_root_changed` 且不派发，迟到应答仍以 `host_response_mismatch` 拒绝。
 
 批次驾驶员：`develop.json.edits` 的格式与启动前检查同单任务；尚未开跑的后续任务不看代码树，只做答案本身就能判定的检查（单文件不超 1 MiB、答案写入的 scope 文件合计不超 2 MiB 等）；运行存档单条记录上限要看该任务开跑时的基线，驾驶员事先无法核算，超限交付在写入后由宿主拦下，停在可重试的 `blocked/develop_package_too_large`，缩小或移出大文件后重试。
 

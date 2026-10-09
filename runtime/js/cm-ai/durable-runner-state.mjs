@@ -79,10 +79,14 @@ export const DEVELOP_CALL_TIMEOUT_REASON='develop_call_timeout: 开发应答超�
 // reviewed attempt-1 package (attempt 2) or the original baseline (attempt 1,
 // nothing delivered yet). A develop redone from a blocked delivery left
 // unrecorded edits on disk, so its start cannot be proven: null, stays unknown.
+// The binding outlives the develop-timeout-retry record (blocked/develop_call_timeout):
+// the redo re-verifies the same start right before dispatch.
+export const developTimeoutState=s=>s.state==='unknown'&&s.code==='call_timeout'
+  ||s.state==='blocked'&&s.code==='develop_call_timeout';
 export function developTimeoutBasis(s,configuration=null) {
   if(configuration?.mode==='instructions')return null;
   const last=s.cache.at(-1),call=s.calls.at(-1);
-  if(!(s.state==='unknown'&&s.code==='call_timeout'&&last&&developTimeoutEffect(last)
+  if(!(developTimeoutState(s)&&last&&developTimeoutEffect(last)
     &&last.effect.identity.attempt===s.attempt&&call?.terminal==='unknown'&&call.channel==='fixture'))return null;
   if(s.cache.filter(developTimeoutEffect).length>MAX_DEVELOP_TIMEOUT_RETRIES)return null;
   for(let i=s.cache.length-2;i>=0;i--){
@@ -866,7 +870,7 @@ export function readRunnerHistory(raw,config,version=1) {
       // timed-out develop started; replay re-derives everything but the disk.
       shape(p,[...common,'effectId','invocationId','basis']);
       const basis=developTimeoutBasis(state,config.bootstrap);
-      need(r.kind==='result'&&pending===null&&basis!==null&&p.basis===basis
+      need(r.kind==='result'&&pending===null&&state.state==='unknown'&&basis!==null&&p.basis===basis
         &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_timeout');
       state.state='blocked';state.code='develop_call_timeout';state.reason=DEVELOP_CALL_TIMEOUT_REASON;lastReview=null;
     } else if(version===3&&p.type==='completion-retry-limit') {

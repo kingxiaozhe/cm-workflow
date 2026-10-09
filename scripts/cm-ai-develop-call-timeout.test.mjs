@@ -110,3 +110,42 @@ test('develop_call_timeout: a timed-out round-2 develop with an unchanged code r
   const replayed=readRunnerHistory(after,after[0].payload.config,3).state;
   assert.equal(replayed.code,'review_limit');assert.equal(replayed.receipts.length,2,'review rounds are not reset');
 });
+
+// Codex round 1 (P2): the released block keeps its start binding. A crash after
+// develop-timeout-retry, or a write between the status check and dispatch,
+// must not carry unreviewed edits into the redo.
+function truncateAfter(f,type){
+  const state=JSON.parse(fs.readFileSync(f.store,'utf8'));
+  const index=state.records.findIndex(row=>row.payload.type===type);assert.ok(index>0);
+  const {revision,...body}=state;body.records=state.records.slice(0,index+1);
+  fs.writeFileSync(f.store,JSON.stringify({...body,revision:digest(body)})+'\n');
+  return body.records;
+}
+test('develop_call_timeout: the released block re-verifies the round start before dispatch',async t=>{
+  const f=fixture(t);
+  await timedOutRoundTwo(f);
+  // (a) The host wrote develop-timeout-retry and exited before the develop intent.
+  const [, redone]=await session(f,'resume',['round-2\n'],[['status',2],['advance',2]]);
+  assert.equal(redone.identity.attempt,2);
+  const prefix=truncateAfter(f,'develop-timeout-retry');
+  assert.equal(readRunnerHistory(prefix,prefix[0].payload.config,3).state.code,'develop_call_timeout');
+  fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'late edit\n');
+  const [crashed]=await session(f,'resume',['should-not-run\n'],[['advance',2]]);
+  assert.deepEqual([crashed.state,crashed.code,crashed.pendingAction],['unknown','call_timeout','reconcile']);
+  assert.equal(records(f).length,prefix.length,'no develop intent after a changed root');
+  assert.equal(fs.readFileSync(path.join(f.codeProject,'a.mjs'),'utf8'),'late edit\n');
+  // (b) Equal at the status check, changed right before dispatch: refused, nothing dispatched.
+  fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'round-1\n');
+  const target=path.join(f.codeProject,'a.mjs'),open=fs.openSync;
+  // The first read of a.mjs inside executeEffect is its dispatch-time check;
+  // every earlier read (the route's status checks) still sees the round start.
+  let raced,changed=false;const limit=Error.stackTraceLimit;Error.stackTraceLimit=50;
+  fs.openSync=(file,...rest)=>{
+    if(file===target&&!changed&&/executeEffect/.test(new Error().stack)){changed=true;fs.writeFileSync(target,'raced edit\n');}
+    return open(file,...rest);};
+  try{[raced]=await session(f,'resume',['should-not-run\n'],[['advance',2]]);}finally{fs.openSync=open;Error.stackTraceLimit=limit;}
+  assert.ok(changed,'the dispatch-time check read the root');
+  assert.deepEqual([raced.outcome,raced.code],['rejected','develop_timeout_root_changed'],JSON.stringify(raced));
+  assert.equal(records(f).length,prefix.length,'no develop intent after a raced change');
+  assert.equal(fs.readFileSync(target,'utf8'),'raced edit\n');
+});
