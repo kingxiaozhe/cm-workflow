@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {openFixExecution} from '../runtime/js/cm-fix/execution.mjs';
 import {createFixHost} from '../runtime/js/cm-fix/host.mjs';
 import {createFixLearningPreparation} from '../runtime/js/cm-fix/learning.mjs';
-import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
+import {createHostToolBridge,HOST_ANSWER_BACKSTOP_MS} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {serveCmAiHost,parseHostInputLimit,inputLimitReason} from '../runtime/js/cm-ai/host-session.mjs';
 import {id,json,need,shape,digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {readConversationReviewConfiguration} from './cm-ai-host.mjs';
@@ -76,7 +76,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const {reviewer,authority,finalAuthority,execution:reviewExecution}=createFixReviewHost({
       codeProject:config.reproduction.cwd,hostContextId:argv[6],runtime,review,
       permissions:[...extra.keys()],workerFactory:reviewWorkerFactory,externalModels,executionPolicy,specsDir:config.specsRoot??null});
-    bridge=createHostToolBridge({responseLimit:inputLimit});
+    bridge=createHostToolBridge({responseLimit:inputLimit,answerTimeoutMs:HOST_ANSWER_BACKSTOP_MS});
     owner=openFixExecution({specsRoot:config.specsRoot??null,identity:config.identity,create:argv[4]==='create',
       hostContextId:argv[6],
       configuration:{...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels}:{}),hostContextId:originalHostContext??argv[6],defect:config.defect,reproduction:config.reproduction,

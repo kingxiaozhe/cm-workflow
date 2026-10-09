@@ -12,7 +12,7 @@ import {fileURLToPath} from 'node:url';
 import {REVIEWED_HANDOFF_HINT} from '../runtime/js/cm-ai/host-handoff.mjs';
 import {readRunDefinition,openControlRun,createCodexExecution,assertCreatableScope} from './cm-ai-run.mjs';
 import {createConversationExecution as executionFor} from '../runtime/js/cm-ai/host-conversation-execution.mjs';
-import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
+import {createHostToolBridge,HOST_ANSWER_BACKSTOP_MS} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {serveCmAiHost,parseHostInputLimit,inputLimitReason} from '../runtime/js/cm-ai/host-session.mjs';
 import {createQaFixOwnerHost} from '../runtime/js/cm-ai/host-qa-fix-owner.mjs';
 import {createFixLearningPreparation} from '../runtime/js/cm-fix/learning.mjs';
@@ -293,7 +293,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       workflow?.qa!=null&&featureHasBrowserCases(definition.specsDir,definition.feature,definition.codeProject)
         ?[workflow.qa.environment?.carrier??'browser']:[]);
     // Tool replies travel on the same input lines, so they share the one limit.
-    bridge=createHostToolBridge({responseLimit:inputLimit});
+    bridge=createHostToolBridge({responseLimit:inputLimit,answerTimeoutMs:HOST_ANSWER_BACKSTOP_MS});
     // Startup-only role failover. The project's runtimes.available declaration is
     // primary: it fixes which runtimes may be chosen and, via roles.coder, the
     // requested start runtime. The CLI probe only confirms reachability. It never

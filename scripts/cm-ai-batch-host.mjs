@@ -11,7 +11,7 @@ import {createConversationExecution,readConversationReviewConfiguration,readConv
 import {loadConfig,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
 import {preflightMatches} from '../runtime/js/cm-ai/worker-codex.mjs';
 import {claudePreflightMatches} from '../runtime/js/cm-ai/worker-claude.mjs';
-import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
+import {createHostToolBridge,HOST_ANSWER_BACKSTOP_MS} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {serveCmAiHost,parseHostInputLimit,inputLimitReason} from '../runtime/js/cm-ai/host-session.mjs';
 import {validateHostWorkflowConfiguration,featureHasBrowserCases,readBrowserCapability} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {digest,json,need,shape} from '../runtime/js/cm-ai/effect-contract.mjs';
@@ -158,7 +158,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       reason:'新批次必须带 --review-config：审查配置写进每个任务运行的指纹，恢复时不能再补。先用 cm-ai-host.mjs preflight 生成 review.json；'
         +'是否真正派发审查仍由 --allow-review 单独授权'});
     // Tool replies travel on the same input lines, so they share the one limit.
-    bridge=createHostToolBridge({responseLimit:parseHostInputLimit(inputLimitRaw)});
+    bridge=createHostToolBridge({responseLimit:parseHostInputLimit(inputLimitRaw),answerTimeoutMs:HOST_ANSWER_BACKSTOP_MS});
     // The current conversation transport accepts one outstanding host call.
     // Queue those calls only; member runners and independent Review stay concurrent.
     let hostCallTail=Promise.resolve();

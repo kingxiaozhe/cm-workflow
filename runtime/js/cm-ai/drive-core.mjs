@@ -47,6 +47,7 @@ export const hostResponseFailed=row=>Boolean(row.error||row.result?.state==='unk
 // leave the host waiting forever on the same call. Say why and end the session.
 const rejectedReplyHint=code=>code==='host_response_too_large'
   ?'应答超过宿主输入上限：在 PLAN.permissions 加 "--input-limit","<字节数>"（65536–4194304，默认 65536）'
+  :code==='host_response_late'?'应答到得太晚：宿主已按应答期限或取消停止等待这次反问（期限见 CM_HOST_ANSWER_TIMEOUT_MINUTES）'
   :'应答与宿主这次反问不匹配（会话、调用或请求摘要不对）';
 
 // beforeRequest runs after host_ready, i.e. after the host itself accepted every
