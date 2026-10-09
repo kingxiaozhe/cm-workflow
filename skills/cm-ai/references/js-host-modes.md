@@ -1,6 +1,12 @@
-# JS 宿主条件路径：bootstrap 规范任务与受保护执行
+# JS 宿主条件路径：外部模型、bootstrap 规范任务、多代码根与受保护执行
 
-本文是 [js-host.md](js-host.md) 的条件引用：只有运行 bootstrap 规范任务，或同仓 specs 选择受保护执行／文本提案模式时读取。阻断与恢复见 js-host.md 的停机路由表。
+本文是 [js-host.md](js-host.md) 的条件引用：启用外部模型配置、运行 bootstrap 规范任务、多代码根，或同仓 specs 选择受保护执行／文本提案模式时，启动前读取。阻断与恢复见 js-host.md 的停机路由表。
+
+## 按 provider 的外部模型配置
+
+单任务、批次和修复的外部 CLI 可显式启用[按 provider 的单组模型配置](../../../docs/external-models.md)：
+宿主会话保持当前模型，外部调用共用 provider pair，独立审查仍需新上下文与逐轮授权。
+新模式未知调用禁止 abandon／重派，恢复只读原快照；js-host-recovery.md、js-host-qa-recovery.md 中的旧模式重试说明不适用于新模式。
 
 ## bootstrap 规范任务用单步驾驶员
 

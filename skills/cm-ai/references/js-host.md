@@ -1,9 +1,5 @@
 # 当前会话作为 JS workflow 工具宿主
 
-单任务、批次和修复的外部 CLI 可显式启用[按 provider 的单组模型配置](../../../docs/external-models.md)：
-宿主会话保持当前模型，外部调用共用 provider pair，独立审查仍需新上下文与逐轮授权。
-新模式未知调用禁止 abandon／重派，恢复只读原快照；下文旧模式重试说明不适用于新模式。
-
 规格待审批时先展示摘要卡并请用户回复“开始”。`approvalIntent` 仅把“开始”“开始吧”
 “可以开始”“确认开始”“开始执行”“现在开始”“可以，请开始开发”（允许尾部中英文句末标点与空白）视为
 明确开始；“继续”“可以”“好”“好的”“OK”“按最优解处理”“你看着办”“行”仍不审批。
@@ -11,9 +7,9 @@
 
 ## 文档分工与停机路由
 
-本文只写正常路径；以下文档遇到对应情况才读：
+本文只写正常路径。M 按「启动前」第 6 项在启动前读；R、Q 只在运行停住时按下表读：
 
-- M = [js-host-modes.md](js-host-modes.md)：bootstrap 规范任务（通常 T-002）、多代码目录、Codex 受保护执行与文本提案模式。
+- M = [js-host-modes.md](js-host-modes.md)：外部模型配置、bootstrap 规范任务、多代码目录、受保护执行与文本提案模式。
 - R = [js-host-recovery.md](js-host-recovery.md)：开发、审查、完成、规格、跨会话与重跑的恢复。
 - Q = [js-host-qa-recovery.md](js-host-qa-recovery.md)：N6 QA 恢复与项目收尾 QA。
 - C = `../../../docs/js-workflow-control.md`；E = `../../../docs/external-models.md`。
@@ -22,15 +18,15 @@
 
 | 返回或情况 | 读哪里 |
 | --- | --- |
-| `decision`、`complete`、`qa`、`qa_execution`（`qa_triggered`）、`context_refresh`（`qa_passed`、`context_refreshed`）、`documentation_sync`（`documentation_sync_required`）、`run_finalize`（`documentation_synced`）、`finish`、`start_next_task`、`changes_requested`、`revision_answer_required` | 本文「单步驾驶员」「执行当前请求，而非手工跳节点」 |
+| `decision`、`complete`、`qa`、`qa_execution`（`qa_triggered`）、`context_refresh`（`qa_passed`、`qa_skipped`、`context_refreshed`）、`documentation_sync`（`documentation_sync_required`）、`run_finalize`（`documentation_synced`）、`finish`、`start_next_task`、`changes_requested`、`revision_answer_required` | 本文「单步驾驶员」「执行当前请求，而非手工跳节点」 |
 | `spec_approval`／`awaiting_spec_approval`、`not_approval` | 本文开头 |
 | `original_host_context_unavailable`、`review_configuration_required` | 本文「启动前」第 3、5 项 |
 | `parallel_scope_existing_file`、`parallel_dependency_conflict` | 本文「启动前」3.1 |
 | `fingerprint_mismatch`、`invalid_arguments`、换会话恢复、`host-joined` | R「恢复参数与跨会话接手」 |
-| pendingAction `resume` 时的 `develop_checks_not_passed`、旧 `checks_not_passed`、`develop_package_too_large`、`develop_empty_changes`、`develop_requirement_missing`、`develop_unchanged_after_review`；`unknown/limit_exceeded`、`store_failure`、`empty_changes`；`request_too_large`、`host_response_too_large`、`host_response_mismatch`；驾驶员因大小上限或 `runId` 长度退出 2 | R「开发交付阻断与存档限额」 |
+| `resume` 下的 `develop_checks_not_passed`、旧 `checks_not_passed`、`develop_package_too_large`、`develop_empty_changes`、`develop_requirement_missing`、`develop_unchanged_after_review`；`unknown/limit_exceeded`、`store_failure`、`empty_changes`；`request_too_large`、`host_response_too_large`、`host_response_mismatch`；大小上限或 `runId` 长度致退出 2 | R「开发交付阻断与存档限额」 |
 | `developer_result_invalid`、`failed/invalid_result`、`protected_edit_stale` | R「开发结果校验失败」 |
 | `develop_retry_limit`、`completion_checks_changed`、`completion_package_changed`、`completion_retry_limit`、`package_mismatch`、`out_of_scope` | R「重试名额与完成前复查」 |
-| `review_transport_timeout`、`review_provider_failed`（`reviewer_*`）、`review_verdict_invalid`、verdict `blocked`、`supersede_code_drift`、`review_package_changed` | R「规格漂移、代码漂移与审查失败」「审查计时与快照忽略」 |
+| `review_transport_timeout`、`review_provider_failed`、`review_verdict_invalid`、verdict `blocked`、`supersede_code_drift`、`review_package_changed` | R「规格漂移、代码漂移与审查失败」「审查计时与快照忽略」 |
 | `spec_drift`（`spec_rebind`／`none`） | R「规格漂移、代码漂移与审查失败」「已批准规格材料（第 24 步）」 |
 | preflight `unrecognized_model`、`stopped_by_probe` | R「审查配置诊断失败」 |
 | `abandon_review`、`abandon_effect`、`review_abandoned`、`unknown/reconciliation_required`、`effect_abandoned` | R「放弃审查调用与 effect」 |
@@ -45,10 +41,10 @@
 | `qa_execution_unknown`、`qa_execution_timeout`、`qa_environment_failure_required`、`qa_rerun_unknown_qa_required` | Q「未 complete 的 QA 中断」 |
 | `qa_blocked`、`qa_result_blocked`、`qa_failed` 的宿主证据或环境原因 | Q「已 complete 的宿主证据或环境阻断」 |
 | QA 命令、环境或预算填错；`qa_revision_not_completed`、`qa_revision_invalid` | Q「QA 配置修订」 |
-| `project_qa_not_passed`、`qa_missing`、`qa_skipped` | Q「项目收尾核对全部 feature 的 QA」 |
+| 收尾门禁 `project_qa_not_passed`（含未满足的 `qa_missing`／`qa_skipped`） | Q「项目收尾核对全部 feature 的 QA」 |
 | 其余 `reconcile`（含 `execution_error`） | C「`pendingAction: "reconcile"` 时该做什么」 |
 | `reconcile_review`、`review_evidence`（`provider_review_observed`） | E「中断与兼容边界」 |
-| `verification_precheck_failed` | C「交付前验证闸门（可选，`--verification-precheck`）」 |
+| `verification_precheck_failed` | C「交付前验证闸门」 |
 | `protected_scope` | C「项目规则文件的修改通道」 |
 | `fix_authorization`、`fix_dispatch`、`qa_fix_code_unmatched`、`qa_fix_incomplete`、`qa_round_limit` | C「QA 失败交接」「独立 QA 修复入口」 |
 | `decision_required`、`permission_denied`、`provider_development_authorization_required`、`qa_decision_required`、`qa_mandatory_required`、`documentation_sync_blocked`、outcome `rejected`／`denied`、`cancelled`、其他 `none` | 本文「执行当前请求，而非手工跳节点」末段；授权见「启动前」第 5 项 |
@@ -92,6 +88,8 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edits.json` 和
 `retrospective.json`；修订轮的测试和修复分别读取 `test-edits-a2.json`、`repair-edits-a2.json`。
 缺答案、结构错误、路径或存档无效会在启动宿主前退出 2。
+
+`develop` 回答可能超默认 64 KiB 时，首次启动即在 `PLAN.permissions` 传 `["--input-limit","1048576"]`（上限 4194304）；详见 R「开发交付阻断与存档限额」。
 
 `check` 只运行计划里的真实命令；原始输出打印到驾驶员 stderr，宿主只保存实际退出码和精简证据；静态 `check.json` 不会被读取。单任务和批次 PLAN 可设 `checkTimeoutMs` 作为检查默认超时，每个 `checks` 条目可设 `timeoutMs` 覆盖；均为 1..3600000 的整数毫秒，省略时驱动默认 900000（15 分钟），启动前校验。宿主 `host-check` 对其他调用方的默认值仍是 60000。
 驾驶员收到 `state: "unknown"` 或 `pendingAction: "reconcile"` 的宿主结果时退出 1，并保留原输出供原 run 恢复；不能把有结果的 JSON 当成成功。
@@ -164,6 +162,7 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
    无授权可以不带授权选项运行至待审，但不能完成。
    批次按 feature/task:attempt 授权，不授权整个未来批次。
    不把开发批准转换为网络、安装、Git、发布或真实 provider 调用批准。
+6. 启用外部模型配置、bootstrap 规范任务、多代码根（`codeProjects`）或同仓 specs 受保护执行／文本提案模式时，启动前先读 M（js-host-modes.md）对应一节。
 
 ## 同一引擎的双端启动
 
