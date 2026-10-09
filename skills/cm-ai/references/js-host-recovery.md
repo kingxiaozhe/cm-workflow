@@ -63,7 +63,7 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
   修好 reason 指出的宿主环境后 `--mode resume` 再 `advance`：宿主追加 `develop-dispatch-retry` 记录，用新 effect id 重发本轮开发，不占名额，每运行最多 2 次。
   每次重发前（含写下记录后宿主退出、恢复再发）都核对代码根仍等于本轮起点（第 1 轮为任务基线，第 2 轮为已审第 1 轮包）；起点无法核对或代码根已变，改走上一条 `develop_redo` 确认重发，派发时拒绝为 `develop_dispatch_root_changed`。用满 2 次后同样改走 `develop_redo`。
   旧版本把同样的失败记成 `unknown/execution_error`（形状同 api-native-reading-T-006 的旧记录），同样按上述起点核对处理。
-- `blocked/complete_recheck_failed`（`pendingAction=complete`）：完成前复查没拿到可用应答（`unknown/call_timeout`、`execution_error` 等），且 task-commit-intent 尚未写入、tasks.md 未改动。`--mode resume` 后 `complete`（或 `advance`）：宿主追加 `complete-recheck` 记录，用新 effect id 重新复查并完成，不重新开发或审查。已写 task-commit-intent 的仍按「放弃审查调用与 effect」处理。
+- `blocked/complete_recheck_failed`（`pendingAction=complete`）：完成前复查没拿到可用应答或宿主在写提交意图前出错（`unknown/call_timeout`、`execution_error` 等，后者先按 stderr 的 diagnostic 修好原因，如缺失的 handoff），且 task-commit-intent 尚未写入、tasks.md 未改动。`--mode resume` 后 `complete`（或 `advance`）：宿主追加 `complete-recheck` 记录，用新 effect id 重新复查并完成，不重新开发或审查。已写 task-commit-intent 的仍按「放弃审查调用与 effect」处理。
 
 ## 重试名额与完成前复查
 

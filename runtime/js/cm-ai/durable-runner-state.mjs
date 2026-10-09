@@ -179,7 +179,8 @@ export function completeRecheckable(s,recorded=0){
   if(s.state==='blocked'&&s.code===COMPLETE_RECHECK_CODE)return true;
   return s.state==='unknown'&&s.code===last.result.code&&recorded<MAX_ANSWER_GAP_RETRIES;
 }
-export const completeRecheckReason=source=>`${COMPLETE_RECHECK_CODE}: 完成前复查没有拿到可用应答（原记录 unknown/${source}），task-commit-intent 尚未写入，tasks.md 未改动。`
+export const completeRecheckReason=source=>`${COMPLETE_RECHECK_CODE}: 完成前复查没有正常结束（检查应答缺失、断开，或宿主在写入提交意图前出错；原记录 unknown/${source}），task-commit-intent 尚未写入，tasks.md 未改动。`
+  +'先按宿主 stderr 的 diagnostic 修好原因（如缺失的 handoff 或检查环境）；'
   +'在原运行发送 complete 重新复查并完成，不重新开发或审查（每运行最多 2 次）。';
 // V2 + R3: a current-session develop whose answer never arrived (timed out with
 // the code root changed or its start not pinned, disconnected, late) or came back

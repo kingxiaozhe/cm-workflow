@@ -52,7 +52,7 @@ export function operatorGuidance(result,{executionActive=false}={}){
       :'开发交付已落盘，但之后的检查或验证预检没有拿到应答（超时、断开或迟到）。',
     '先确认上一次检查命令已停止；然后恢复原运行并发送 advance，只重跑检查、验证预检与审查包，不重新开发。',
     'advance',['保留原配置、runId 与历史，以 --mode resume 启动','不占开发调用与 effect 名额；每运行最多 2 次','不会自动完成任务或消耗新的独立审查轮次']);
-  if(state==='blocked'&&action==='complete'&&code==='complete_recheck_failed')return explain('完成前复查没有拿到可用应答，任务尚未勾选。',
+  if(state==='blocked'&&action==='complete'&&code==='complete_recheck_failed')return explain('完成前复查没有正常结束（应答缺失或宿主在提交前出错），任务尚未勾选。',
     '恢复原运行并发送 complete，重新复查并完成；不重新开发或审查。',
     'complete',['原 run 与已审交接、范围和包绑定不变','task-commit-intent 尚未写入；每运行最多 2 次']);
   if(state==='blocked'&&action==='resume'&&Object.hasOwn(deliveryMessages,code)){
