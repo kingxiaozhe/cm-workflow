@@ -370,7 +370,7 @@ function validateQaSupersession(state,event){
   if(event.incomplete_report!==undefined){
     if(event.incomplete_report!==true||!state.active||state.superseded||!start||complete||start.attempt>=roundLimit
       ||event.workflow!=='cm-ai'||event.node!=='N6'||event.reason!=='host_evidence_problem'
-      ||event.previous_test_run_id!==start.operation_id||event.recovery_rule!==2
+      ||event.previous_test_run_id!==start.operation_id||![2,3].includes(event.recovery_rule)
       ||!Array.isArray(event.blocked_cases)||event.blocked_cases.length===0||event.blocked_cases.length>start.case_count
       ||!caseList(event.blocked_cases,event.blocked_cases.length)
       ||!['repository_id','run_id','feature','task','package_digest','qa_decision_id','operation_id','attempt','mode','case_count']

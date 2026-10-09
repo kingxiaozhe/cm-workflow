@@ -313,7 +313,10 @@ function passBacking(items,specsDir,feature,cases,code){
 // incomplete: the call wrote its fixed report but no complete row (a pre-fix host
 // rejected stale_qa in between). The report is then the only result; its counts
 // stand in for the complete row and every other rule applies unchanged.
-function recoverableCases(items,specsDir,environment,code='qa_rerun_not_blocked_by_evidence',environmentFailure=false,legacyRule=false,incomplete=false){
+// verdictRule (recovery_rule 3): a browser BLOCKED counts as a host fault only
+// when the durable case row keeps the session's own verdict (answered_verdict)
+// and it was not a FAIL; rows without it (older format) are not recoverable here.
+function recoverableCases(items,specsDir,environment,code='qa_rerun_not_blocked_by_evidence',environmentFailure=false,legacyRule=false,incomplete=false,verdictRule=false){
   const completes=items.filter(({row})=>row.phase==='complete'),start=items[0]?.row;
   need(completes.length===(incomplete?0:1)&&start?.phase==='start'&&!(incomplete&&(legacyRule||environmentFailure)),code);
   let complete=incomplete?null:completes[0].row;
@@ -356,12 +359,23 @@ function recoverableCases(items,specsDir,environment,code='qa_rerun_not_blocked_
   // executor appended when the session answered, not by the mutable report.
   const declaredInLog=new Set(items.filter(({row})=>row.phase==='case_blocked'&&row.host_declared_blocked===true)
     .map(({row})=>row.case_id));
+  const blockedRows=new Map(items.filter(({row})=>row.phase==='case_blocked').map(({row})=>[row.case_id,row]));
+  // An original FAIL the host downgraded, a missing capability and an unresolved
+  // [需确认] refuse before any host-fault eligibility.
+  const sessionVerdictOk=row=>{
+    if(!verdictRule)return true;
+    const logged=blockedRows.get(row.id);
+    if(!logged||['needs_confirmation','unavailable'].includes(logged.blocked_reason))return false;
+    if(row.hostRequestTimeout===true&&logged.host_request_timeout===true&&!Object.hasOwn(logged,'answered_verdict'))return true;
+    return ['PASS','BLOCKED'].includes(logged.answered_verdict)
+      &&(logged.answered_verdict!=='BLOCKED'||logged.host_declared_blocked===true);
+  };
   const eligible=row=>(
     row.kind==='logic'&&resolved(row)&&(row.staticVerdict==='INSUFFICIENT_EVIDENCE'
       // Blocked only by a mapped command without exit code, derived from the
       // recorded command rows; the executor's marker has to agree.
       ||row.staticVerdict==='SUPPORTED'&&mapped(row,unavailableCommand)&&row.commandUnavailable===true)
-    ||row.kind==='browser'&&resolved(row)&&(typeof row.evidenceProblem==='string'&&row.evidenceProblem.length>0
+    ||row.kind==='browser'&&resolved(row)&&sessionVerdictOk(row)&&(typeof row.evidenceProblem==='string'&&row.evidenceProblem.length>0
       ||row.cleanup==='failed'||row.hostRequestTimeout===true||declaredInLog.has(row.id)&&row.hostDeclaredBlocked===true
       ||environment!=null&&row.environment!=null&&digest(row.environment)!==digest(environment))
     ||unavailableCommand(row));
@@ -440,12 +454,12 @@ function validateRunSequence(items,code='qa_round_invalid',specsDir){
           need(declared?validEnvironmentFailureReason(row.environment_failure_reason):row.reason==='host_evidence_problem',code);
           // Rows without recovery_rule were written by released versions before
           // this change (the pre-branch format) under the original rule.
-          const legacy=row.recovery_rule===undefined;need(legacy||row.recovery_rule===2,code);
+          const legacy=row.recovery_rule===undefined;need(legacy||[2,3].includes(row.recovery_rule),code);
           // incomplete_report: the superseded call had a fixed report but no complete row.
           const incomplete=row.incomplete_report===true;
           need(row.incomplete_report===undefined||incomplete&&!legacy&&!declared
             &&!prior.some(entry=>entry.row.phase==='complete'),code);
-          const cases=recoverableCases(prior,specsDir,row.expected_environment,code,declared,legacy,incomplete);
+          const cases=recoverableCases(prior,specsDir,row.expected_environment,code,declared,legacy,incomplete,row.recovery_rule===3);
           need(JSON.stringify(row.blocked_cases)===JSON.stringify(cases.blocked)
             &&(declared?JSON.stringify(row.failed_cases)===JSON.stringify(cases.failed):row.failed_cases===undefined),code);
         }
@@ -497,8 +511,9 @@ export function inspectCmAiQaRecovery(input,{blocked=false,environment=null,envi
     const declared=recorded?recorded.reason==='declared_environment_failure':environmentFailure!==null;
     const prior=runs.filter(({row})=>row.phase!=='superseded');
     const incomplete=recorded?recorded.incomplete_report===true:!prior.some(({row})=>row.phase==='complete');
+    // A fresh supersession is written under recovery_rule 3; a recorded row keeps its own rule.
     const cases=recoverableCases(prior,input.specsDir,environment,'qa_rerun_not_blocked_by_evidence',declared,
-      recorded!==undefined&&recorded.recovery_rule===undefined,incomplete);
+      recorded!==undefined&&recorded.recovery_rule===undefined,incomplete,recorded===undefined||recorded.recovery_rule===3);
     // A recorded supersession is already counted in starts.freed.
     need(start.attempt<qaRoundLimit(starts.freed+(recorded===undefined&&!declared?1:0)),'qa_round_invalid');
     return {testRunId:start.operation_id,qaRound:start.attempt,mode:start.mode,caseCount:start.case_count,
@@ -722,7 +737,7 @@ export function recordCmAiQaRun(input) {
     ...(timedOut.requestTimeoutMs===null?{}:{request_timeout_ms:timedOut.requestTimeoutMs}),
     ...(timedOut.attestation===null?{}:{legacy_timeout_attestation:timedOut.attestation})});
   else if(input.phase==='superseded')Object.assign(data,{previous_test_run_id:input.testRunId,
-    reason:declaredFailure===null?'host_evidence_problem':'declared_environment_failure',recovery_rule:2,
+    reason:declaredFailure===null?'host_evidence_problem':'declared_environment_failure',recovery_rule:3,
     blocked_cases:blockedCases,expected_environment:input.expectedEnvironment??null,
     ...(incompleteReport?{incomplete_report:true}:{}),
     ...(declaredFailure===null?{}:{failed_cases:failedCases,environment_failure_reason:declaredFailure})});

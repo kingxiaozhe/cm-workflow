@@ -74,7 +74,7 @@ taskIds 全部是 `[DROPPED]` 任务的用例不进 QA 计划（不问会话，�
 `CONTRADICTED`、已接受修复的 FAIL 均拒绝。superseded 行记 `reason=declared_environment_failure`、`environment_failure_reason`、
 `failed_cases` 与 `blocked_cases`。这不是放行：新一轮在同一代码上全部重跑，真有缺陷仍会 FAIL。
 先写 `test_run/superseded`（previous_test_run_id、reason=host_evidence_problem 或上述声明原因、blocked_cases），再以新 testRunId、
-qaRound+1 写带 previous_test_run_id 的 start，全部用例重跑；`host_evidence_problem` 的一轮按上方「QA 轮次预算」不计入三轮（最多多给 2 轮），声明环境失败仍计入；旧 PASS 仅保留历史，不重做 QA 决策、
+qaRound+1 写带 previous_test_run_id 的 start，全部用例重跑（新写的 superseded 行带 `recovery_rule: 3`：浏览器用例只有 case 行记了会话原始结论 `answered_verdict` 且不是 FAIL 时才算宿主问题，被降级成 BLOCKED 的 FAIL、未解决的 [需确认]、缺能力和没记原始结论的旧行都拒绝；已发布的 `recovery_rule: 2` 和更早的行按原规则回放）；`host_evidence_problem` 的一轮按上方「QA 轮次预算」不计入三轮（最多多给 2 轮），声明环境失败仍计入；旧 PASS 仅保留历史，不重做 QA 决策、
 开发或审查，不改 tasks。开关一次性消费且不持久化，不与 --rerun-unknown-qa 合用；仅写 superseded 后中断，
 须重新显式授权恢复。complete 同步 N6 状态镜像为 qa_passed/qa_failed/qa_blocked，并显示本轮通过/失败/阻断数量。
 （事故：宿主把非文件说明混入 browser evidence，导致已完成任务的收尾 QA 无法恢复。）

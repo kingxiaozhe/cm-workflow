@@ -858,7 +858,9 @@ for(const name of ['evidence','cleanup','environment','timeout','logic','command
   'FAIL','mixed-failure','round-limit','superseded-crash','one-shot','metadata-command',
   'legacy-product-blocked','needs-confirmation','command-unavailable','command-exit','declared-command-exit','declared-product-fail',
   'declared-contradicted','declared-after-repair','declared-superseded-crash','declared-blocked','declared-unknown-verdict',
-  'logic-confirmation-unavailable','logic-confirmation-insufficient','no-browser-capability',...Object.keys(FORGED)])
+  'logic-confirmation-unavailable','logic-confirmation-insufficient','no-browser-capability',
+  // A browser FAIL the host downgraded to BLOCKED for its evidence: complete row recorded, and report only.
+  'downgraded-fail','downgraded-fail-incomplete',...Object.keys(FORGED)])
 test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
   const scenario=FORGED[name]??name;
   const {createCmAiConversationEntry}=await import('../runtime/js/cm-ai/cm-ai-conversation-entry.mjs');
@@ -882,7 +884,7 @@ test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
     const killed=['command-unavailable','logic-confirmation-unavailable'].includes(scenario);
     if([...(killed?[scenario]:[]),...exits].includes(scenario))f.configuration.commands[0].command=[process.execPath,'-e',
       `require('node:fs').existsSync(${JSON.stringify(ready)})||${killed?'process.kill(process.pid,"SIGKILL")':'process.exit(65)'}`];
-    const failLike=['FAIL','declared-product-fail'].includes(scenario),contradicted=['mixed-failure','declared-contradicted'].includes(scenario);
+    const failLike=['FAIL','declared-product-fail','downgraded-fail','downgraded-fail-incomplete'].includes(scenario),contradicted=['mixed-failure','declared-contradicted'].includes(scenario);
     const hostBlocked=['product-blocked','legacy-product-blocked'].includes(scenario);
     let repaired=false,browserCalls=0,logicCalls=0,corrections=0;
     const executor=createHostQaExecutor({...f.configuration,
@@ -896,7 +898,7 @@ test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
         if(!repaired&&scenario==='source-drift')fs.appendFileSync(path.join(f.configuration.codeProject,'source.mjs'),'// drift\n');
         if(!repaired&&scenario==='timeout')throw Object.assign(new Error('timeout'),{code:'host_request_timeout'});
         return {verdict:!repaired&&failLike?'FAIL':!repaired&&hostBlocked?'BLOCKED':'PASS',
-          evidence:!repaired&&['evidence','source-drift','round-limit','incomplete','superseded-crash','one-shot','mixed-failure','declared-contradicted','metadata-command','declared-blocked'].includes(scenario)
+          evidence:!repaired&&['evidence','source-drift','round-limit','incomplete','superseded-crash','one-shot','mixed-failure','declared-contradicted','metadata-command','declared-blocked','downgraded-fail','downgraded-fail-incomplete'].includes(scenario)
             ?['not-an-evidence-file']: [artifact],
           environment:!repaired&&scenario==='environment'?{...request.environment,target:'different-target'}:request.environment,
           cleanup:!repaired&&scenario==='cleanup'?'failed':'completed'};
@@ -908,7 +910,11 @@ test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
     const formSlip=['evidence','round-limit','superseded-crash','one-shot','mixed-failure',
       'declared-contradicted','metadata-command','declared-blocked'].includes(scenario);
     assert.equal(corrections,formSlip?1:0,scenario);
-    if(scenario!=='incomplete')recordCmAiQaRun({...base,phase:'complete',result});
+    const reportOnly=['incomplete','downgraded-fail-incomplete'].includes(scenario);
+    if(scenario.startsWith('downgraded-fail')){assert.equal(result.failed,0);
+      const logged=fs.readFileSync(path.join(binding.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(logged.find(row=>row.phase==='case_blocked').answered_verdict,'FAIL');}
+    if(!reportOnly)recordCmAiQaRun({...base,phase:'complete',result});
     // Older executors wrote host-declared BLOCKED rows without the marker; those stay ineligible.
     if(scenario==='legacy-product-blocked')fs.writeFileSync(result.report,
       fs.readFileSync(result.report,'utf8').replace(/,\n\s*"hostDeclaredBlocked": true/g,''));
@@ -931,7 +937,7 @@ test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
     // A report row outside PASS/FAIL/BLOCKED no longer matches the recorded counts.
     if(scenario==='declared-unknown-verdict')fs.writeFileSync(result.report,
       fs.readFileSync(result.report,'utf8').replace(/("id": "TC-001",[\s\S]*?"verdict": )"FAIL"/,'$1"SKIPPED"'));
-    if(scenario!=='incomplete'){
+    if(!reportOnly){
       const state=JSON.parse(fs.readFileSync(path.join(binding.specsDir,'.cm-status.json')));
       assert.equal(state.state,result.failed?'qa_failed':'qa_blocked');assert.equal(state.node,'N6');
       assert.equal(state.detail,`QA 结果 ${result.result}（通过 ${result.passed} / 失败 ${result.failed} / 阻断 ${result.blocked}）`);
@@ -942,6 +948,10 @@ test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
       const previous=round===1?testRunId:`blocked-${round}`;
       recordCmAiQaRun({...base,testRunId:previous,qaRound:round,phase:'superseded'});
       recordCmAiQaRun({...base,testRunId:`blocked-${round+1}`,qaRound:round+1,previousTestRunId:previous,phase:'start'});
+      // A real rerun logs its own case rows (the durable session verdicts that
+      // recovery_rule 3 reads); this synthetic round mirrors round 1's.
+      fs.appendFileSync(log,rows().filter(row=>row.operation_id===testRunId&&['case_start','case_blocked'].includes(row.phase))
+        .map(row=>JSON.stringify({...row,operation_id:`blocked-${round+1}`,attempt:round+1})+'\n').join(''));
       recordCmAiQaRun({...base,testRunId:`blocked-${round+1}`,qaRound:round+1,phase:'complete',result});
     }
     if(scenario==='declared-superseded-crash')recordCmAiQaRun({...base,phase:'superseded',
@@ -958,8 +968,8 @@ test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
     const operation={version:1,operation:'advance',requestId:'rerun-blocked',identity:binding.identity};
     const before=fs.readFileSync(log);
     const without=await createCmAiConversationEntry(options).handle(operation);
-    assert.equal(without.code,scenario==='incomplete'?'qa_execution_unknown':result.failed?'qa_failed':'qa_result_blocked');
-    if(!result.failed&&scenario!=='incomplete')assert.equal(without.pendingAction,'none');
+    assert.equal(without.code,reportOnly?'qa_execution_unknown':result.failed?'qa_failed':'qa_result_blocked');
+    if(!result.failed&&!reportOnly)assert.equal(without.pendingAction,'none');
     assert.deepEqual(fs.readFileSync(log),before);
     if(scenario==='declared-command-exit'){
       // The declaration only travels with the one-shot rerun grant and a superseded row.
@@ -975,7 +985,8 @@ test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
       ...(scenario.startsWith('declared-')&&scenario!=='declared-superseded-crash'?{qaEnvironmentFailure:'simulator runtime was missing'}:{})});
     if(['commands','legacy-product-blocked','needs-confirmation','source-drift','FAIL','mixed-failure','round-limit','incomplete',
       'command-exit','declared-product-fail','declared-contradicted','declared-after-repair','declared-blocked',
-      'declared-unknown-verdict','logic-confirmation-unavailable','logic-confirmation-insufficient','no-browser-capability'].includes(scenario)){
+      'declared-unknown-verdict','logic-confirmation-unavailable','logic-confirmation-insufficient','no-browser-capability',
+      'downgraded-fail','downgraded-fail-incomplete'].includes(scenario)){
       const rejected=await entry.handle(operation);
       assert.equal(rejected.code,scenario==='round-limit'?'qa_round_invalid':scenario==='incomplete'?'qa_execution_unknown':'qa_rerun_not_blocked_by_evidence');
       assert.deepEqual(fs.readFileSync(log),before);
@@ -1026,7 +1037,7 @@ test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
         ['report',row=>{delete row.commandUnavailable;},'TC-001'],['report',row=>{row.commandEvidence=[];},'TC-001'],
         ['report',row=>{row.needsConfirmation=true;},'TC-001'],
         ['report',row=>{row.staticVerdict='CONTRADICTED';},'TC-001'],
-        ['log',list=>{list.find(row=>row.phase==='superseded').recovery_rule=3;}],
+        ['log',list=>{list.find(row=>row.phase==='superseded').recovery_rule=4;}],
         ['contract',contract=>{contract.cases=contract.cases.filter(item=>item.id!=='TC-001');}]);
       // The host-declared BLOCKED needs both the durable log row and the report mirror.
       if(scenario==='product-blocked')precise.push(
