@@ -6,7 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {readRunnerHistory,projectedRunnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {gapFixture,gapExecution,gapSession,records,added} from './cm-ai-answer-gap-fixture.mjs';
 
 test('check_answer_missing: a timed-out check after a delivered develop re-runs only the checks, then complete_recheck_failed re-runs only completion',async t=>{
@@ -47,14 +47,20 @@ test('check_answer_missing: a timed-out check after a delivered develop re-runs 
   assert.equal(final.state.receipts.length,1,'one review round');
 });
 
-test('check_answer_invalid: a malformed check answer is re-checked at most twice per run, then stays unknown',async t=>{
+test('check_answer_invalid: a malformed check answer is re-checked at most twice per run, then shows check_answer_retry_limit',async t=>{
   const f=gapFixture(t,'invalid');
   const [stuck]=await gapSession(f,'create',gapExecution(f,{developer:['round-1\n'],checks:['invalid']}),[['advance',1]]);
   assert.deepEqual([stuck.state,stuck.code,stuck.pendingAction],['blocked','check_answer_invalid','resume'],JSON.stringify(stuck));
   const [first]=await gapSession(f,'resume',gapExecution(f,{checks:['hang']}),[['advance',1]]);
   assert.deepEqual([first.state,first.code],['blocked','check_answer_missing'],JSON.stringify(first));
   const [second]=await gapSession(f,'resume',gapExecution(f,{checks:['invalid']}),[['advance',1]]);
-  assert.deepEqual([second.state,second.code,second.pendingAction],['unknown','invalid_input','reconcile'],JSON.stringify(second));
+  // The cap is spent: an explicit limit block naming the exit that is left, not unknown/reconcile.
+  assert.deepEqual([second.state,second.code,second.pendingAction],['blocked','check_answer_retry_limit','none'],JSON.stringify(second));
+  assert.match(second.reason,/--supersede-reviewed-evidence/);assert.match(second.guidance.summary,/用满 2 次/);
+  // Replay shows the same block (journal only), and the journal keeps unknown/invalid_input.
+  const rows=records(f),replayed=projectedRunnerStatus(readRunnerHistory(rows,rows[0].payload.config,3),rows[0].payload.config);
+  assert.deepEqual([replayed.state,replayed.code],['blocked','check_answer_retry_limit']);
+  assert.deepEqual([rows.at(-1).payload.checkpoint.state,rows.at(-1).payload.checkpoint.code],['unknown','invalid_input']);
   assert.equal(f.calls.developer,1);
   const history=readRunnerHistory(records(f),records(f)[0].payload.config,3);
   assert.equal(history.answerGaps.developRecheck,2);

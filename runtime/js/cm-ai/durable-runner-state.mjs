@@ -1242,6 +1242,29 @@ export function readRunnerHistory(raw,config,version=1) {
           started:invocation.started,result:invocation.result}:null}:{}),
     ...(version>=2?{transaction}:{})};
 }
+// R2: each answer-gap exit has two uses per run. Once spent, the same stuck shape
+// is shown as an explicit limit block instead of falling back to an exit-less
+// unknown/reconcile: its code names the spent exit and its reason names what is
+// left (fix the root cause, then a superseding run). Derived from the journal
+// on every read, never journaled itself, so replay shows the same block.
+export const ANSWER_GAP_LIMIT_CODES=Object.freeze(['check_answer_retry_limit','complete_recheck_limit','develop_redo_limit','develop_dispatch_limit']);
+const gapLimitReason=(code,what,source)=>`${code}: ${what}（原记录 ${source}）已在本运行用满 ${MAX_ANSWER_GAP_RETRIES} 次，不再自动重做。`
+  +'先查清根因（会话为何一直不应答或答复不合格、宿主环境为何失败）；修好后用 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做，'
+  +'本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift 作为已有代码记录。';
+export function answerGapLimit(s,config,gaps={}){
+  if(!['unknown','blocked'].includes(s.state))return null;
+  const source=`${s.state}/${s.code}`;
+  if(s.state==='unknown'&&(gaps.developRecheck??0)>=MAX_ANSWER_GAP_RETRIES&&developRecheckCode(s,config,0)!==null)
+    return {code:'check_answer_retry_limit',reason:gapLimitReason('check_answer_retry_limit','开发后的检查或验证预检重跑',source)};
+  if(s.state==='unknown'&&(gaps.completeRecheck??0)>=MAX_ANSWER_GAP_RETRIES&&completeRecheckable(s,0))
+    return {code:'complete_recheck_limit',reason:gapLimitReason('complete_recheck_limit','完成前复查重跑',source)};
+  if(s.state==='unknown'&&(gaps.developDispatch??0)>=MAX_DEVELOP_REDOS&&developDispatchBasis(s,config,0)!==null
+    &&developRedoCause(s,config,gaps.developRedo??0)===null)
+    return {code:'develop_dispatch_limit',reason:gapLimitReason('develop_dispatch_limit','派发前失败后的重发',source)};
+  if((gaps.developRedo??0)>=MAX_DEVELOP_REDOS&&developRedoCause(s,config,0)!==null)
+    return {code:'develop_redo_limit',reason:gapLimitReason('develop_redo_limit','确认停写后的开发重发',source)};
+  return null;
+}
 // Q28: the status a host would show for a replayed journal, as far as the
 // journal alone decides it. Drivers prepare answers from this (never from the
 // raw replay state, which still reads unknown/call_timeout or blocked/failed
@@ -1254,13 +1277,16 @@ export function projectedRunnerStatus(history,config){
   const s=history.state,gaps=history.answerGaps??{};
   const project=code=>({...s,state:'blocked',code});
   if(s.state==='blocked'&&s.code==='failed'&&developAnswerRetryable(s,config.bootstrap))return project('develop_answer_invalid');
+  if(s.state==='blocked'&&s.code==='failed'){const limit=answerGapLimit(s,config,gaps);
+    return limit?{...s,state:'blocked',code:limit.code,reason:limit.reason}:s;}
   if(s.state!=='unknown')return s;
   const recheck=developRecheckCode(s,config,gaps.developRecheck??0);
   if(recheck!==null)return project(recheck);
   if(completeRecheckable(s,gaps.completeRecheck??0))return project(COMPLETE_RECHECK_CODE);
   if(s.code==='call_timeout'&&developTimeoutBasis(s,config.bootstrap)!==null)return project('develop_call_timeout');
   if(developDispatchBasis(s,config,gaps.developDispatch??0)!==null)return project(DISPATCH_RETRY_CODE);
-  return s;
+  const limit=answerGapLimit(s,config,gaps);
+  return limit?{...s,state:'blocked',code:limit.code,reason:limit.reason}:s;
 }
 // Baseline rootDigest uses bytes of the canonical root, not JSON string encoding.
 import {createHash} from 'node:crypto';

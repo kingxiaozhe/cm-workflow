@@ -50,7 +50,7 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
 ## 应答缺失、无效或迟到
 
 会话没给出可用应答时，宿主不再停在 `unknown/reconcile`，而是给出可重试的阻断；旧运行恢复后按原 journal 同样投影，原记录不改写，新记录只追加。
-每种出口每运行最多 2 次，超过仍按原样停在 `unknown`。所有提问都有应答期限（`CM_HOST_ANSWER_TIMEOUT_MINUTES`，见 `docs/user-guide.md`），到期后才到的应答一律拒收为 `host_response_late`。
+每种出口每运行最多 2 次；用满后同样的卡点显示为明确的上限阻断（`check_answer_retry_limit`、`complete_recheck_limit`、`develop_redo_limit`、`develop_dispatch_limit`，`pendingAction=none`），reason 写明剩下的出口：查清根因后用 `--supersede-reviewed-evidence` 新建运行，本运行留在盘上的改动需还原或加 `--accept-superseded-code-drift`。上限阻断由 journal 推导，不另写记录。所有提问都有应答期限（`CM_HOST_ANSWER_TIMEOUT_MINUTES`，见 `docs/user-guide.md`），到期后才到的应答一律拒收为 `host_response_late`。
 
 单任务与批次驾驶员按宿主将显示的投影状态（而不是原始回放状态）决定预检哪一轮的开发答案：`develop_call_timeout`、`develop_answer_invalid`、`develop_dispatch_failed` 预检本轮 `develop*.json`；`check_answer_*` 不再问开发，不需要开发答案。`develop_redo` 由驾驶员 PLAN 的 `mode:resume`、`permissions:["--allow-develop-redo"]` 与 `reason` 发出。
 

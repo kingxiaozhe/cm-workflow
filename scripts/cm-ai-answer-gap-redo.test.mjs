@@ -60,8 +60,10 @@ test('develop_answer_missing: a disconnected develop (unknown/unknown) takes the
     assert.equal(ok.outcome,'recorded');
   }
   // Two redos used: the third stuck develop has no redo exit left.
-  const [last]=await gapSession(f,'resume',gapExecution(f),[['status',1],['develop_redo',1,{reason:'第三次'}]],{allowDevelopRedo:true});
-  assert.deepEqual([last.state,last.code,last.pendingAction],['unknown','unknown','reconcile'],JSON.stringify(last));
+  const [last,third]=await gapSession(f,'resume',gapExecution(f),[['status',1],['develop_redo',1,{reason:'第三次'}]],{allowDevelopRedo:true});
+  assert.deepEqual([third.outcome,third.code],['rejected','develop_redo_unavailable']);
+  assert.deepEqual([last.state,last.code,last.pendingAction],['blocked','develop_redo_limit','none'],JSON.stringify(last));
+  assert.match(last.reason,/--supersede-reviewed-evidence/);
   assert.equal(fs.readFileSync(path.join(f.codeProject,'a.mjs'),'utf8'),'three\n');
   assert.deepEqual(records(f).filter(row=>row.payload.type==='effect-intent').map(row=>row.payload.effect.id),
     ['develop-1','develop-1-retry-1','develop-1-retry-2']);

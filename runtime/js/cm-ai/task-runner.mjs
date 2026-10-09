@@ -25,7 +25,7 @@ import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRu
   RECHECK_CODES,COMPLETE_RECHECK_CODE,developRecheckSource,developRecheckCode,developRecheckReason,
   completeRecheckSource,completeRecheckable,completeRecheckReason,
   DEVELOP_REDO_CODE,developAnswerMissingEffect,developRedoCause,developRedoRequiredReason,developRedoReason,
-  DISPATCH_RETRY_CODE,developDispatchFailedEffect,developDispatchBasis,developDispatchReason } from './durable-runner-state.mjs';
+  DISPATCH_RETRY_CODE,developDispatchFailedEffect,developDispatchBasis,developDispatchReason,answerGapLimit } from './durable-runner-state.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
 import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure} from './provider-review-observation.mjs';
 import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence,
@@ -407,6 +407,14 @@ export function createTaskRunner(options) {
       const cause=developRedoRequired();
       if(cause!==null){const {reason:discard,...rest}=current;
         current=freeze({...rest,state:'blocked',code:DEVELOP_REDO_CODE,reason:developRedoRequiredReason(cause),developRedoRequired:true});}
+    }
+    // R2: a spent exit is an explicit limit block, never an exit-less unknown.
+    if((current.state==='unknown'||current.state==='blocked'&&current.code==='failed')&&gapsLive()&&options.providerDevelopment!==true){
+      const limit=answerGapLimit({state,code,attempt,cache:[...cache.values()],calls,receipt,learningResult,taskCommit,reviewPackage,priorReview},
+        metadata,{developRecheck:answerGapCount('develop-recheck'),completeRecheck:answerGapCount('complete-recheck'),
+          developRedo:answerGapCount('develop-answer-redo'),developDispatch:answerGapCount('develop-dispatch-retry')});
+      if(limit!==null&&!(options.protectedDevelopment===true&&limit.code==='develop_redo_limit')){
+        const {reason:discard,...rest}=current;current=freeze({...rest,state:'blocked',code:limit.code,reason:limit.reason});}
     }
     if(!busy&&!poisoned&&bootstrapReviewRecoverable(frame(),restored?.pending??null,metadata.bootstrap))
       current=freeze({...current,bootstrapReviewRecovery:true});
