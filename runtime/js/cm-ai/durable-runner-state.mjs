@@ -35,7 +35,7 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict'].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout'].includes(code)
   ||kind==='review'&&state==='pending_review'&&REVIEW_RETRY_CODES.includes(code)
   ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed'].includes(code)
     ||code==='review_package_changed'&&reviewVerdict==='approved')
@@ -66,8 +66,35 @@ export const reviewTimeoutTransition=(result,cache,attempt,calls=[],contextId=nu
 // Six counted provider calls per run. Locally rejected developer values,
 // automatic review retries and abandoned invocations hold no slot.
 export const MAX_RUNNER_CALLS=6;
+// A develop the host answer limit cut off (call_timeout, call terminal unknown).
+// It produced nothing the runner accepted. Only while the code root still equals
+// where it started (checked live, see developTimeoutBasis) can the run go on, so
+// it holds no call or effect slot; MAX_DEVELOP_TIMEOUT_RETRIES bounds the redos.
+export const developTimeoutEffect=entry=>entry.effect.kind==='develop'&&entry.result.state==='unknown'
+  &&entry.result.code==='call_timeout';
+export const MAX_DEVELOP_TIMEOUT_RETRIES=2;
+export const DEVELOP_CALL_TIMEOUT_REASON='develop_call_timeout: 开发应答超过宿主请求上限（默认 30 分钟），代码根仍与本轮开发开始时一致；'
+  +'在原运行 advance 重发本轮开发（新 effect id，审查轮次不变）。迟到的应答仍被拒绝。';
+// The tree a timed-out develop started from, when the journal pins it: the
+// reviewed attempt-1 package (attempt 2) or the original baseline (attempt 1,
+// nothing delivered yet). A develop redone from a blocked delivery left
+// unrecorded edits on disk, so its start cannot be proven: null, stays unknown.
+export function developTimeoutBasis(s,configuration=null) {
+  if(configuration?.mode==='instructions')return null;
+  const last=s.cache.at(-1),call=s.calls.at(-1);
+  if(!(s.state==='unknown'&&s.code==='call_timeout'&&last&&developTimeoutEffect(last)
+    &&last.effect.identity.attempt===s.attempt&&call?.terminal==='unknown'&&call.channel==='fixture'))return null;
+  if(s.cache.filter(developTimeoutEffect).length>MAX_DEVELOP_TIMEOUT_RETRIES)return null;
+  for(let i=s.cache.length-2;i>=0;i--){
+    const entry=s.cache[i];
+    if(developTimeoutEffect(entry)&&entry.effect.identity.attempt===s.attempt)continue;
+    return s.attempt===2&&entry.effect.kind==='review'&&entry.result.state==='changes_requested'
+      &&s.reviewPackage?.identity.attempt===1&&s.priorReview?.verdict==='changes_requested'?'reviewed_package':null;
+  }
+  return s.attempt===1&&s.reviewPackage===null?'baseline':null;
+}
 export const countedCalls=(calls,cache)=>calls.filter(call=>!invalidDeveloperCall(call)&&call.terminal!=='abandoned').length
-  -cache.filter(timeoutEffect).length;
+  -cache.filter(timeoutEffect).length-cache.filter(developTimeoutEffect).length;
 // A review effect whose journaled result the operator abandoned (below) no
 // longer holds one of the six effect slots; its retry does.
 const abandonedResult=(entry,calls)=>entry.effect.kind==='review'&&entry.result.state==='unknown'
@@ -83,7 +110,7 @@ const completionBlock=entry=>entry.effect.kind==='complete'&&entry.result.state=
 export const completionBlockCount=cache=>cache.filter(completionBlock).length;
 export const completedEffectCount=(cache,calls=[])=>cache.filter(entry=>!(entry.effect.kind==='develop'
   &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))
-  &&!timeoutEffect(entry)&&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
+  &&!timeoutEffect(entry)&&!developTimeoutEffect(entry)&&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
 // The six-effect cap counts develop and review effects only; completion (above),
 // QA, documentation and finalization hold no slot.
 export const MAX_RUNNER_EFFECTS=6;
@@ -834,6 +861,14 @@ export function readRunnerHistory(raw,config,version=1) {
         &&p.fromCode===state.code&&p.countedCalls===used.calls&&p.countedEffects===used.effects,'runner_retry_limit');
       state.state='blocked';state.code='develop_retry_limit';
       state.reason=developRetryLimitReason(p);lastReview=null;
+    } else if(version===3&&p.type==='develop-timeout-retry') {
+      // Written by advance after it found the code root unchanged since the
+      // timed-out develop started; replay re-derives everything but the disk.
+      shape(p,[...common,'effectId','invocationId','basis']);
+      const basis=developTimeoutBasis(state,config.bootstrap);
+      need(r.kind==='result'&&pending===null&&basis!==null&&p.basis===basis
+        &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_timeout');
+      state.state='blocked';state.code='develop_call_timeout';state.reason=DEVELOP_CALL_TIMEOUT_REASON;lastReview=null;
     } else if(version===3&&p.type==='completion-retry-limit') {
       // Terminal: written instead of a complete intent once the re-check bound
       // is spent. Every field is recomputed from the replayed state.
