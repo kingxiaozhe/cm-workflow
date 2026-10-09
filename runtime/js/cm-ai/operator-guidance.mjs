@@ -11,6 +11,7 @@ const deliveryMessages={
   develop_requirement_missing:['交付后缺少要求保留的文件。','恢复 reason 指出的必要文件'],
   bootstrap_verification_failed:['项目规则验证未通过。','根据规则验证证据修正草稿或检查环境'],
   develop_answer_invalid:['开发应答未通过交付合同校验（如 application.note 过长），代码已保留、尚未进入审查。','按 reason 中的字段上限重新应答'],
+  develop_dispatch_failed:['开发请求在派发给会话之前失败（宿主自己的运行日志或角色配置出错），代码未改动。','修好 reason 指出的宿主环境'],
   develop_call_timeout:['开发应答超时、代码未改动。','先确认会话已不再修改代码；重发的请求须在宿主请求上限（默认 30 分钟）内应答，迟到应答仍被拒绝'],
 };
 const explain=(summary,nextStep,operation=null,prerequisites=[])=>Object.freeze({
@@ -40,6 +41,20 @@ export function operatorGuidance(result,{executionActive=false}={}){
     return explain('执行结果尚未确认，不能判断这一步成功或失败。',
       '只读核对原运行记录、进程及实际文件；当前没有已确认的直接重试入口，不新建运行绕过历史。');
   }
+  if(action==='develop_redo')return explain('开发应答没有拿到（超时后代码已改动、会话断开或只回了 failed），会话可能仍在写文件。',
+    '先确认会话已停止修改代码；再恢复原运行并发送 develop_redo 写入确认，之后 advance 重发本轮开发。盘上改动保留，经检查和独立审查。',
+    'develop_redo',['保留原配置、runId 与历史，以 --mode resume 启动','显式 --allow-develop-redo，并提供单行 reason','不占调用与 effect 名额；每运行最多 2 次']);
+  if(state==='blocked'&&action==='resume'&&code==='develop_answer_missing')return explain('已确认会话停写，本轮开发等待重发。',
+    '恢复原运行并发送 advance，用新 effect id 重发本轮开发；盘上改动保留，经检查和独立审查。',
+    'advance',['保留原配置、runId 与历史，以 --mode resume 启动','确认原宿主已关闭，且本轮开发有原合同要求的授权']);
+  if(state==='blocked'&&action==='resume'&&['check_answer_missing','check_answer_invalid'].includes(code))
+    return explain(code==='check_answer_invalid'?'开发交付已落盘，但之后的检查或验证预检答复格式不合格。'
+      :'开发交付已落盘，但之后的检查或验证预检没有拿到应答（超时、断开或迟到）。',
+    '先确认上一次检查命令已停止；然后恢复原运行并发送 advance，只重跑检查、验证预检与审查包，不重新开发。',
+    'advance',['保留原配置、runId 与历史，以 --mode resume 启动','不占开发调用与 effect 名额；每运行最多 2 次','不会自动完成任务或消耗新的独立审查轮次']);
+  if(state==='blocked'&&action==='complete'&&code==='complete_recheck_failed')return explain('完成前复查没有正常结束（应答缺失或宿主在提交前出错），任务尚未勾选。',
+    '恢复原运行并发送 complete，重新复查并完成；不重新开发或审查。',
+    'complete',['原 run 与已审交接、范围和包绑定不变','task-commit-intent 尚未写入；每运行最多 2 次']);
   if(state==='blocked'&&action==='resume'&&Object.hasOwn(deliveryMessages,code)){
     const [summary,repair]=deliveryMessages[code];
     return explain(summary,`${repair}；然后恢复原运行并发送 advance，重做本轮交付和检查。`,
@@ -51,6 +66,10 @@ export function operatorGuidance(result,{executionActive=false}={}){
   if(state==='blocked'&&action==='complete')return explain('完成前复核受阻，已有审查结论不能直接当作任务完成。',
     '核对 reason 中的检查或文件变化；满足原完成条件后，在原运行发送 complete，不重新开发。',
     'complete',['原 run 与已审交接、范围和包绑定不变','使用当前 packageDigest；由宿主重新核对完成条件']);
+  if(['check_answer_retry_limit','complete_recheck_limit','develop_redo_limit'].includes(code))
+    return explain('这一步的自动恢复已在本运行用满 2 次，不再重做。',
+      '先查清会话为何一直不应答或答复不合格（或宿主环境为何失败）；修好后按 reason 用 --supersede-reviewed-evidence 新建运行重做。',
+      null,['原运行记录保留，不改写','本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift']);
   if(code==='protected_scope')return explain('任务 scope 含项目规则或工作流文件，开发在派发前被拒绝，未写入任何文件。',
     '本运行到此结束，原记录保留。从 scope 移除 reason 列出的路径，按原门禁用新 runId 新建运行；规则文件改动走 docs/js-workflow-control.md「项目规则文件的修改通道」。',
     null,['不放宽受保护路径，开发者不能写这些文件','不改写原运行记录']);
@@ -80,6 +99,8 @@ export function batchOperatorGuidance(result){
     '批次成员不能换绑规格；先按 reason 核对原批次可用出口，不直接重派。');
   if(g.recoveryOperation==='advance')return explain(g.summary,
     g.nextStep.replace('然后恢复原运行并发送 advance，重做本轮交付和检查。','然后从原批次入口发送 advance，重做本轮交付和检查。')
+      .replace('然后恢复原运行并发送 advance，只重跑','然后从原批次入口发送 advance，只重跑')
+      .replace('恢复原运行并发送 advance，用新 effect id','从原批次入口发送 advance，用新 effect id')
       .replace('恢复原运行后，取得本轮绑定的独立审查授权，再发送 advance。','沿原批次续接，取得本轮绑定的独立审查授权，再发送 advance。'),
     'advance',['保持原批次配置、身份和 PLAN；成员运行由批次宿主选择恢复','先确认原批次宿主已关闭；开发与审查仍需原合同授权']);
   if(g.recoveryOperation==='complete')return explain(g.summary,

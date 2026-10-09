@@ -188,7 +188,7 @@ function hostArgs({plan,paths}){
     ...plan.permissions];
 }
 
-function answerFor(row,answers,paths){
+export function answerFor(row,answers,paths){
   const {kind,payload}=row;
   if(kind==='fix_learning')return {contextDigest:payload.contextDigest,status:answers.learning.status,summary:answers.learning.summary};
   if(kind==='fix_diagnose')return answers.diagnosis;
@@ -198,6 +198,24 @@ function answerFor(row,answers,paths){
     if(requestAttempt!==undefined&&requestAttempt!==paths.round)
       throw Error(`修订轮次 ${requestAttempt} 与已预检答案轮次 ${paths.round} 不一致`);
     const map=answers[kind==='fix_repair'?'repair-edits':'test-edits'],expected=payload.expected??{};
+    const done=kind==='fix_repair'?'repaired':'authored';
+    // F11: outside protected mode the session itself writes inside the supplied
+    // scope and answers only {outcome} (test-author.mjs / repair.mjs); a
+    // {outcome,edits} proposal there always failed its shape check. The driver,
+    // standing in for the session, writes the planned files the same way.
+    if(payload.editMode!=='protected-text-v1'){
+      const scope=Array.isArray(payload.scope)?payload.scope:[];
+      if(typeof payload.codeProject!=='string'||!path.isAbsolute(payload.codeProject))throw Error('宿主没有给出代码根，无法写入');
+      const outside=Object.keys(map).filter(target=>!scope.includes(target));
+      if(outside.length){stderr(`${outside.join(', ')} 不在宿主本次允许的范围内，回 blocked`);return {outcome:'blocked'};}
+      for(const [target,local] of Object.entries(map)){
+        const file=path.join(payload.codeProject,target);
+        if(path.relative(payload.codeProject,file).startsWith('..'))throw Error(`${target} 越出代码根`);
+        fs.mkdirSync(path.dirname(file),{recursive:true});
+        fs.writeFileSync(file,fs.readFileSync(path.join(paths.answers,local),'utf8'));
+      }
+      return {outcome:done};
+    }
     const edits=[];
     for(const [target,local] of Object.entries(map)){
       // 路径不在宿主给的范围里：不能硬塞，也不能断线（断线会把运行做死）。
@@ -205,7 +223,7 @@ function answerFor(row,answers,paths){
       if(!Object.hasOwn(expected,target)){stderr(`${target} 不在宿主本次允许的范围内，回 blocked`);return {outcome:'blocked',edits:[]};}
       edits.push({path:target,beforeSha256:expected[target],content:fs.readFileSync(path.join(paths.answers,local),'utf8')});
     }
-    return {outcome:kind==='fix_repair'?'repaired':'authored',edits};
+    return {outcome:done,edits};
   }
   return null;
 }

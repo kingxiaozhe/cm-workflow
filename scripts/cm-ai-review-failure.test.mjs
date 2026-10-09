@@ -11,6 +11,7 @@ import {PassThrough} from 'node:stream';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
+import {projectedRunnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {claudeReviewFingerprint,claudeWorker} from '../runtime/js/cm-ai/worker-claude.mjs';
 import {createClaudeReviewRun} from '../runtime/js/cm-ai/claude-review-adapter.mjs';
 import {reviewRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
@@ -548,7 +549,14 @@ test('#8 abandoning a journaled result frees its effect slot: both attempts and 
   }
   const complete=await runner.executeEffect(f.effect('complete',2));
   assert.notEqual(complete.outcome,'rejected');assert.notEqual(complete.code,'limit_exceeded');
-  const history=f.replay();assert.equal(history.state.state,complete.state);
+  // This fixture has no handoff evidence, so completion fails before any
+  // task-commit-intent (unknown/execution_error in the journal). The answer-gap
+  // contract shows that as the retryable complete_recheck_failed; replay of the
+  // journal projects the same block.
+  const history=f.replay();
+  assert.deepEqual([history.state.state,history.state.code,history.state.taskCommit],['unknown','execution_error',null]);
+  assert.deepEqual([complete.state,complete.code],['blocked','complete_recheck_failed']);
+  assert.equal(projectedRunnerStatus(history,f.records()[0].payload.config).code,complete.code);
   assert.equal(history.state.calls.filter(call=>call.terminal==='abandoned').length,2);
   assert.equal(history.state.cache.length,7);
 },{reviewTimeoutMs:200}));
@@ -720,7 +728,15 @@ test(`#8 abandoned reviews at both attempts plus an unchanged attempt-2 block st
   const complete=await runner.executeEffect(f.effect('complete',2));
   assert.notEqual(complete.outcome,'rejected');assert.notEqual(complete.code,'limit_exceeded');
   assert.notEqual(complete.code,'store_failure');
-  const history=f.replay();assert.equal(history.state.state,complete.state);assert.equal(history.pending,null);
+  // This fixture has no handoff evidence, so completion fails before any
+  // task-commit-intent (unknown/execution_error in the journal). The answer-gap
+  // contract shows that as the retryable complete_recheck_failed; replay of the
+  // journal projects the same block.
+  const history=f.replay();
+  assert.deepEqual([history.state.state,history.state.code,history.state.taskCommit],['unknown','execution_error',null]);
+  assert.deepEqual([complete.state,complete.code],['blocked','complete_recheck_failed']);
+  assert.equal(projectedRunnerStatus(history,f.records()[0].payload.config).code,complete.code);
+  assert.equal(history.pending,null);
   assert.equal(f.records().at(-1).payload.effectId,'complete-2');
   assert.equal(history.state.calls.filter(call=>call.terminal==='abandoned').length,2);
   // develop-1, review-1, review-1-retry-1, develop-2, develop-2-retry-1, review-2, review-2-retry-1.

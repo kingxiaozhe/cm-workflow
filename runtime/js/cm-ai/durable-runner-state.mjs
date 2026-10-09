@@ -35,9 +35,9 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout','develop_answer_invalid'].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout','develop_answer_invalid',...RECHECK_CODES,DEVELOP_REDO_CODE,DISPATCH_RETRY_CODE].includes(code)
   ||kind==='review'&&state==='pending_review'&&REVIEW_RETRY_CODES.includes(code)
-  ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed'].includes(code)
+  ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed',COMPLETE_RECHECK_CODE].includes(code)
     ||code==='review_package_changed'&&reviewVerdict==='approved')
   ||kind==='develop'&&state==='blocked'&&code==='review_package_changed'&&reviewVerdict==='changes_requested'
   ||({develop:['ready','changes_requested'],review:['awaiting_review'],complete:['approved']})[kind]?.includes(state)===true;
@@ -89,9 +89,18 @@ export function developTimeoutBasis(s,configuration=null) {
   if(!(developTimeoutState(s)&&last&&developTimeoutEffect(last)
     &&last.effect.identity.attempt===s.attempt&&call?.terminal==='unknown'&&call.channel==='fixture'))return null;
   if(s.cache.filter(developTimeoutEffect).length>MAX_DEVELOP_TIMEOUT_RETRIES)return null;
+  return pinnedDevelopStart(s,developTimeoutEffect);
+}
+// The tree the round's develop effects all started from, when the journal pins
+// it: the reviewed attempt-1 package (attempt 2) or the original baseline
+// (attempt 1, nothing delivered yet). Earlier develops of this attempt that
+// produced nothing the runner accepted (skip) are passed over; any other entry
+// means unrecorded edits may exist, so the start cannot be proven (null). The
+// caller still compares the live code root with it.
+function pinnedDevelopStart(s,skip){
   for(let i=s.cache.length-2;i>=0;i--){
     const entry=s.cache[i];
-    if(developTimeoutEffect(entry)&&entry.effect.identity.attempt===s.attempt)continue;
+    if(skip(entry)&&entry.effect.identity.attempt===s.attempt)continue;
     return s.attempt===2&&entry.effect.kind==='review'&&entry.result.state==='changes_requested'
       &&s.reviewPackage?.identity.attempt===1&&s.priorReview?.verdict==='changes_requested'?'reviewed_package':null;
   }
@@ -123,8 +132,138 @@ export function developAnswerRetryable(s,configuration=null) {
     &&developAnswerInvalidEffect(last)&&last.effect.identity.attempt===s.attempt
     &&s.cache.filter(developAnswerInvalidEffect).length<=MAX_DEVELOP_ANSWER_RETRIES;
 }
+// V3 answer gaps: the delivery already reached the disk (the developer call
+// succeeded and its Learning was written back), but a later step never got a
+// usable answer: the task checks or the verification precheck (timed out,
+// disconnected, late, or malformed), or the completion re-check before any
+// task-commit-intent. The developer is never dispatched again: advance journals
+// develop-recheck (or complete-recheck) and re-runs only those later steps.
+// Neither the source effect nor its re-check holds a call or effect slot;
+// MAX_ANSWER_GAP_RETRIES bounds each kind per run. Old journals are projected
+// the same way on replay; their records are never rewritten.
+export const MAX_ANSWER_GAP_RETRIES=2;
+const CHECK_ANSWER_MISSING=['call_timeout','execution_error','host_disconnected','host_request_timeout','role_log_failed'];
+// limit_exceeded is left out: it is also how older runtimes recorded package and
+// journal size limits, which a re-check does not resolve. An oversized check
+// answer is refused by the bridge and times out (check_answer_missing).
+const CHECK_ANSWER_INVALID=['invalid_input','invalid_result','verification_precheck_invalid'];
+export const RECHECK_CODES=Object.freeze(['check_answer_missing','check_answer_invalid']);
+export const COMPLETE_RECHECK_CODE='complete_recheck_failed';
+// learningWriteback mirrors the checkpointed Learning result, which the journal
+// grammar only accepts after this effect's own developer call succeeded (or on a
+// re-check that kept it unchanged).
+export const developRecheckSource=entry=>{
+  const result=entry.result,call=result.calls?.at(-1);
+  return entry.effect.kind==='develop'&&result.state==='unknown'
+    &&[...CHECK_ANSWER_MISSING,...CHECK_ANSWER_INVALID].includes(result.code)
+    &&call?.terminal==='succeeded'&&call.channel==='fixture'
+    &&result.learningWriteback!=null&&result.learningWriteback.outcome!=='writeback_pending';
+};
+export function developRecheckCode(s,config,recorded=0){
+  if(config.bootstrap?.mode==='instructions'||config.taskLearning?.hostHandoff!==true)return null;
+  const last=s.cache.at(-1);
+  if(!last||last.effect.identity.attempt!==s.attempt||!developRecheckSource(last)
+    ||s.learningResult==null||s.receipt!==null)return null;
+  if(s.state==='blocked'&&RECHECK_CODES.includes(s.code))return s.code;
+  if(!(s.state==='unknown'&&s.code===last.result.code)||recorded>=MAX_ANSWER_GAP_RETRIES)return null;
+  return CHECK_ANSWER_INVALID.includes(last.result.code)?'check_answer_invalid':'check_answer_missing';
+}
+export const developRecheckReason=(code,source)=>`${code}: 开发已交付并写回 Learning，但之后的检查或验证预检没有拿到可用应答（原记录 unknown/${source}）。`
+  +'先确认上一次检查命令已经停止；在原运行 advance 只重跑检查、验证预检、handoff 与审查包，不重发开发，不占开发调用与 effect 名额（每运行最多 2 次）。';
+export const completeRecheckSource=entry=>entry.effect.kind==='complete'&&entry.result.state==='unknown'
+  &&[...CHECK_ANSWER_MISSING,'invalid_input'].includes(entry.result.code)
+  &&entry.result.taskCommit===null;
+export function completeRecheckable(s,recorded=0){
+  const last=s.cache.at(-1);
+  if(!last||last.effect.identity.attempt!==s.attempt||!completeRecheckSource(last)||s.taskCommit!=null)return false;
+  if(s.state==='blocked'&&s.code===COMPLETE_RECHECK_CODE)return true;
+  return s.state==='unknown'&&s.code===last.result.code&&recorded<MAX_ANSWER_GAP_RETRIES;
+}
+export const completeRecheckReason=source=>`${COMPLETE_RECHECK_CODE}: 完成前复查没有正常结束（检查应答缺失、断开，或宿主在写入提交意图前出错；原记录 unknown/${source}），task-commit-intent 尚未写入，tasks.md 未改动。`
+  +'先按宿主 stderr 的 diagnostic 修好原因（如缺失的 handoff 或检查环境）；'
+  +'在原运行发送 complete 重新复查并完成，不重新开发或审查（每运行最多 2 次）。';
+// V2 + R3: a current-session develop whose answer never arrived (timed out with
+// the code root changed or its start not pinned, disconnected, late) or came back
+// as a bare failure. The session may still be writing and the host cannot see
+// it, so nothing is redispatched until the operator confirms it stopped:
+// develop_redo with a reason, journaled as develop-answer-redo. The redo sends
+// the same round under a new effect id. Edits already on disk stay and are part
+// of the redone delivery, whose review package is built against the task
+// baseline captured when the run was created (never re-captured), so no edit
+// skips the checks and the independent review. Provider development and
+// instruction bootstrap are excluded (their writers or half-writes need their
+// own reconciliation); the host also excludes protected current-session mode,
+// where a changed root can only be a partially applied proposal.
+export const DEVELOP_REDO_CODE='develop_answer_missing';
+export const MAX_DEVELOP_REDOS=2;
+export const developAnswerMissingEffect=entry=>{
+  const result=entry.result,call=result.calls?.at(-1);
+  if(entry.effect.kind!=='develop'||call?.requestedModel!=='current-session'||call.channel!=='fixture')return false;
+  return result.state==='unknown'&&result.code==='unknown'&&call.terminal==='unknown'
+    ||result.state==='blocked'&&result.code==='failed'&&call.terminal==='failed'
+      &&!Object.hasOwn(call,'failureResult')&&!Object.hasOwn(call,'blockedReason');
+};
+// What the stuck develop was ('call_timeout', 'unknown', 'execution_error' or
+// 'failed'), or null when this exit does not apply.
+export function developRedoCause(s,config,recorded=0){
+  if(config.bootstrap?.mode==='instructions'||config.developer.requestedModel!=='current-session'||recorded>=MAX_DEVELOP_REDOS)return null;
+  const last=s.cache.at(-1);
+  if(!last||last.effect.identity.attempt!==s.attempt||s.receipt!==null)return null;
+  if(developTimeoutEffect(last)&&s.calls.at(-1)?.terminal==='unknown'
+    &&(s.state==='unknown'&&s.code==='call_timeout'||s.state==='blocked'&&s.code==='develop_call_timeout'))return 'call_timeout';
+  if(developAnswerMissingEffect(last)&&s.state===last.result.state&&s.code===last.result.code)return last.result.code;
+  // A dispatch failure whose round start cannot be proven unchanged (legacy
+  // execution_error, a start the journal does not pin, or a root that changed,
+  // also after its develop-dispatch-retry record) needs the same confirmation.
+  if(developDispatchFailedEffect(last)&&(s.state==='unknown'&&s.code===last.result.code
+    ||s.state==='blocked'&&s.code===DISPATCH_RETRY_CODE))return last.result.code;
+  return null;
+}
+// V1/V3 (P1-3): the current-session developer run failed before the session was
+// asked anything: the host's own role routing (its run-log write or the workflow
+// role configuration) threw, the call never returned (terminal unknown, no
+// result). Those codes are raised only before the bridge request, so nothing
+// was dispatched and nothing written: develop_dispatch_failed, redone like any
+// retryable develop block after a develop-dispatch-retry record. Older runtimes
+// collapsed the same failure into execution_error, which a failure after the
+// answer can also produce; such a journal gets this exit only while the code
+// root still equals the round's pinned start (checked live, like #198), and
+// otherwise the operator-confirmed develop_redo.
+export const DISPATCH_RETRY_CODE='develop_dispatch_failed';
+export const DISPATCH_FAILURE_CODES=Object.freeze(['role_log_failed','invalid_workflow_config']);
+export const developDispatchFailedEffect=entry=>{
+  const result=entry.result,call=result.calls?.at(-1);
+  return entry.effect.kind==='develop'&&result.state==='unknown'
+    &&[...DISPATCH_FAILURE_CODES,'execution_error'].includes(result.code)
+    &&call?.terminal==='unknown'&&call.resultDigest===null&&call.requestedModel==='current-session'&&call.channel==='fixture';
+};
+// The round start the journal pins ('baseline' or 'reviewed_package'), or null.
+// Like #198 the binding outlives the develop-dispatch-retry record
+// (blocked/develop_dispatch_failed): the host compares the live code root with
+// this start before every redispatch, the first one and any after a restart.
+export function developDispatchBasis(s,config,recorded=0){
+  if(config.bootstrap?.mode==='instructions'||config.developer.requestedModel!=='current-session')return null;
+  const last=s.cache.at(-1);
+  if(!last||last.effect.identity.attempt!==s.attempt||s.receipt!==null||!developDispatchFailedEffect(last))return null;
+  if(!(s.state==='unknown'&&s.code===last.result.code&&recorded<MAX_DEVELOP_REDOS
+    ||s.state==='blocked'&&s.code===DISPATCH_RETRY_CODE))return null;
+  return pinnedDevelopStart(s,entry=>developDispatchFailedEffect(entry)||developTimeoutEffect(entry));
+}
+export const developDispatchReason=source=>`${DISPATCH_RETRY_CODE}: 开发请求在派发给会话之前失败（原记录 unknown/${source}）`
+  +(DISPATCH_FAILURE_CODES.includes(source)?'，宿主自己的角色路由出错，未派发':'')+'，代码根仍与本轮开发起点一致（每次重发前再核对）'
+  +'。修好 reason 指出的宿主环境（运行日志写入、工作流角色配置）后在原运行 advance 用新 effect id 重发本轮开发；不占调用与 effect 名额（每运行最多 2 次）。';
+const redoCauses={call_timeout:'开发应答超时且代码根已变化或本轮起点无法核对',
+  role_log_failed:'开发请求派发前宿主运行日志写入失败，但代码根已变化或本轮起点无法核对',
+  invalid_workflow_config:'开发请求派发前工作流角色配置无效，但代码根已变化或本轮起点无法核对',unknown:'开发应答中断（会话断开、应答形状错或结果不明）',
+  execution_error:'开发调用以 execution_error 结束、结果不明',failed:'开发应答只回了 failed、没有可用结果'};
+export const developRedoRequiredReason=cause=>`${DEVELOP_REDO_CODE}: ${redoCauses[cause]??cause}。会话可能仍在写文件，宿主看不到；`
+  +'先确认会话已停止修改代码，再以 --mode resume --allow-develop-redo 启动并发送 develop_redo（单行 reason，写入运行存档）。'
+  +'之后 advance 用新 effect id 重发本轮开发：盘上改动保留，审查包仍对照本运行创建时的任务基线，经检查与独立审查；不占调用与 effect 名额（每运行最多 2 次）。';
+export const developRedoReason=cause=>`${DEVELOP_REDO_CODE}: ${redoCauses[cause]??cause}；操作员已确认会话停写（develop-answer-redo）。`
+  +'在原运行 advance 用新 effect id 重发本轮开发；盘上改动保留并经检查与独立审查，审查轮次不变。';
 export const countedCalls=(calls,cache)=>calls.filter(call=>!invalidDeveloperCall(call)&&call.terminal!=='abandoned').length
-  -cache.filter(timeoutEffect).length-cache.filter(developTimeoutEffect).length-cache.filter(developAnswerInvalidEffect).length;
+  -cache.filter(timeoutEffect).length-cache.filter(developTimeoutEffect).length-cache.filter(developAnswerInvalidEffect).length
+  -cache.filter(developAnswerMissingEffect).length-cache.filter(developDispatchFailedEffect).length;
 // A review effect whose journaled result the operator abandoned (below) no
 // longer holds one of the six effect slots; its retry does.
 const abandonedResult=(entry,calls)=>entry.effect.kind==='review'&&entry.result.state==='unknown'
@@ -140,7 +279,9 @@ const completionBlock=entry=>entry.effect.kind==='complete'&&entry.result.state=
 export const completionBlockCount=cache=>cache.filter(completionBlock).length;
 export const completedEffectCount=(cache,calls=[])=>cache.filter(entry=>!(entry.effect.kind==='develop'
   &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))
-  &&!timeoutEffect(entry)&&!developTimeoutEffect(entry)&&!developAnswerInvalidEffect(entry)&&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
+  &&!timeoutEffect(entry)&&!developTimeoutEffect(entry)&&!developAnswerInvalidEffect(entry)&&!developRecheckSource(entry)
+  &&!developAnswerMissingEffect(entry)&&!developDispatchFailedEffect(entry)
+  &&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
 // The six-effect cap counts develop and review effects only; completion (above),
 // QA, documentation and finalization hold no slot.
 export const MAX_RUNNER_EFFECTS=6;
@@ -156,8 +297,9 @@ export const effectSlotFree=(kind,cache,calls)=>kind==='complete'||completedEffe
 export const developBudget=s=>({calls:countedCalls(s.calls,s.cache),effects:completedEffectCount(s.cache,s.calls)});
 export const developBudgetExhausted=s=>{
   if(!stageAllowed('develop',s.state,s.code,s.priorReview?.verdict))return false;
-  const used=developBudget(s);
-  return used.calls+2>MAX_RUNNER_CALLS||used.effects+2>MAX_RUNNER_EFFECTS;
+  // A re-check makes no developer call: only its review needs one.
+  const used=developBudget(s),calls=RECHECK_CODES.includes(s.code)?1:2;
+  return used.calls+calls>MAX_RUNNER_CALLS||used.effects+2>MAX_RUNNER_EFFECTS;
 };
 // At most this many re-checks after a blocked completion. Each re-runs only the
 // local checks and the commit gate, so a small fixed bound keeps the journal
@@ -452,6 +594,12 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
   if(effect.kind!=='develop'&&Object.hasOwn(config,'taskLearning'))same(s.learningResult,before.learningResult);
   if(effect.kind==='develop') {
     need(added.length<=1 && s.receipts.length===before.receipts.length,'runner_develop');same(s.receipt,null);same(s.priorReview,before.priorReview);
+    // A re-check (develop-recheck) dispatches no developer: it keeps the Learning
+    // result and stands on the developer call that already succeeded.
+    const recheck=before.state==='blocked'&&RECHECK_CODES.includes(before.code);
+    if(recheck){need(added.length===0&&before.learningResult!=null&&before.calls.at(-1)?.terminal==='succeeded','runner_develop');
+      same(s.learningResult,before.learningResult);}
+    const developerCall=recheck?before.calls.at(-1):added[0];
     if(added.length)callRequest(added[0],config.developer,config.developer.contextId,'developer',{
       scope:config.scope,requirements:original.files.filter(f=>config.requirements.includes(f.path)),priorReview:before.priorReview,
       ...supersededReviewPayload(carried,before.attempt),
@@ -492,8 +640,8 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
           same(application.identity,effect.learningInput.identity);}
         const writeback=readCmAiProjectLearningWriteback(s.learningResult.writeback,
           {learningInput:effect.learningInput,retrospective:s.learningResult.retrospective});
-        need(added.length===1&&added[0].terminal==='succeeded','runner_learning');
-        same(added[0].resultDigest,digest({outcome:'implemented',...(hasApplication?{application}:{}),
+        need((recheck||added.length===1)&&developerCall?.terminal==='succeeded','runner_learning');
+        same(developerCall.resultDigest,digest({outcome:'implemented',...(hasApplication?{application}:{}),
           retrospective:s.learningResult.retrospective,...(hasBootstrap?{bootstrap:s.learningResult.bootstrap}:{})}));
         if(writeback.outcome==='writeback_pending'){
           expectedState='blocked';expectedCode='learning_writeback_pending';
@@ -511,7 +659,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
         ?{outcome:'implemented',...(s.learningResult&&Object.hasOwn(s.learningResult,'application')
           ?{application:s.learningResult.application}:{}),retrospective:s.learningResult?.retrospective,
           ...(s.learningResult?.bootstrap?{bootstrap:s.learningResult.bootstrap}:{})}:{outcome:'implemented'};
-      need(added.length===1 && added[0].terminal==='succeeded' && added[0].resultDigest===digest(developerResult),'runner_develop');
+      need((recheck||added.length===1) && developerCall?.terminal==='succeeded' && developerCall.resultDigest===digest(developerResult),'runner_develop');
       if(Object.hasOwn(config,'taskLearning'))need(s.learningResult!==null
         &&s.learningResult.writeback.outcome!=='writeback_pending','runner_learning');
       packageLink(s.reviewPackage,original,before.attempt,s.currentChecks);
@@ -523,7 +671,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     // between the checks and the review package. No package exists, so no review
     // round was spent; the attempt counter does not move either.
     // develop_unchanged_after_review: attempt 2 matched the rejected attempt-1 artifact.
-    if(added[0]?.terminal==='succeeded'&&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large'].includes(s.code)) {
+    if(developerCall?.terminal==='succeeded'&&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large'].includes(s.code)) {
       // s.receipt is null for every develop checkpoint (above); at attempt 2 the
       // state before still holds the attempt-1 receipt, so only receipts compare.
       need(digest(s.reviewPackage)===digest(before.reviewPackage),'runner_develop');
@@ -631,7 +779,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
       expectedState='blocked';
       if(['completion_checks_changed','completion_package_changed'].includes(s.code)){
         need(effect.kind==='complete'&&['approved','blocked'].includes(before.state)
-          &&(before.state==='approved'||['completion_checks_changed','completion_package_changed','review_package_changed'].includes(before.code)),'runner_transition');
+          &&(before.state==='approved'||['completion_checks_changed','completion_package_changed','review_package_changed',COMPLETE_RECHECK_CODE].includes(before.code)),'runner_transition');
         expectedCode=s.code;
         if(s.code==='completion_package_changed')need(typeof s.reason==='string'&&s.reason.length>0,'runner_diagnostic');
       }
@@ -761,6 +909,7 @@ export function readRunnerHistory(raw,config,version=1) {
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
   let invocation={registration:null,started:null,result:null};let registrationRecord=null,startedRecord=null,resultRecord=null,lastReview=null;
   const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false,supersession=null;
+  const answerGaps={developRecheck:0,completeRecheck:0,developRedo:0,developDispatch:0};
   const reviewConfig=(calls=[])=>({...config,reviewInvocation:{...config.reviewInvocation,
     excludedThreadIds:reviewExclusions({excludedThreadIds:[...config.reviewInvocation.excludedThreadIds,...joinedHosts]},
       calls,config.developer.contextId)}});
@@ -906,6 +1055,44 @@ export function readRunnerHistory(raw,config,version=1) {
       need(r.kind==='result'&&pending===null&&state.state==='unknown'&&basis!==null&&p.basis===basis
         &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_timeout');
       state.state='blocked';state.code='develop_call_timeout';state.reason=DEVELOP_CALL_TIMEOUT_REASON;lastReview=null;
+    } else if(version===3&&p.type==='develop-recheck') {
+      // Written by advance for a delivered develop whose later checks never got
+      // a usable answer; everything is re-derived from the replayed journal.
+      shape(p,[...common,'effectId','invocationId','code']);
+      const code=developRecheckCode(state,config,answerGaps.developRecheck);
+      need(r.kind==='result'&&pending===null&&state.state==='unknown'&&code!==null&&p.code===code
+        &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_recheck');
+      answerGaps.developRecheck++;
+      state.state='blocked';state.code=code;state.reason=developRecheckReason(code,state.cache.at(-1).result.code);lastReview=null;
+    } else if(version===3&&p.type==='develop-answer-redo') {
+      // The operator confirmed the session stopped writing (R3); the redo itself
+      // is the next develop intent. Re-derived from the journal, never the disk.
+      shape(p,[...common,'effectId','invocationId','cause','reason','at']);
+      const cause=developRedoCause(state,config,answerGaps.developRedo);
+      need(r.kind==='result'&&pending===null&&cause!==null&&p.cause===cause
+        &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_redo');
+      need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(p.reason),'runner_develop_redo');
+      need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_develop_redo');
+      answerGaps.developRedo++;
+      state.state='blocked';state.code=DEVELOP_REDO_CODE;state.reason=developRedoReason(cause);lastReview=null;
+    } else if(version===3&&p.type==='develop-dispatch-retry') {
+      // Written by advance when the develop failed before dispatch; a legacy
+      // execution_error is admitted only on a journal-pinned start (the live
+      // host compared the code root with it before writing this record).
+      shape(p,[...common,'effectId','invocationId','basis']);
+      const basis=developDispatchBasis(state,config,answerGaps.developDispatch);
+      need(r.kind==='result'&&pending===null&&state.state==='unknown'&&basis!==null&&p.basis===basis
+        &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_dispatch');
+      answerGaps.developDispatch++;
+      state.reason=developDispatchReason(state.code);
+      state.state='blocked';state.code=DISPATCH_RETRY_CODE;lastReview=null;
+    } else if(version===3&&p.type==='complete-recheck') {
+      shape(p,[...common,'effectId','source']);
+      need(r.kind==='result'&&pending===null&&state.state==='unknown'&&completeRecheckable(state,answerGaps.completeRecheck)
+        &&p.effectId===state.cache.at(-1).effect.id&&p.source===state.code,'runner_complete_recheck');
+      answerGaps.completeRecheck++;
+      state.state='blocked';state.code=COMPLETE_RECHECK_CODE;state.reason=completeRecheckReason(p.source);lastReview=null;
     } else if(version===3&&p.type==='completion-retry-limit') {
       // Terminal: written instead of a complete intent once the re-check bound
       // is spent. Every field is recomputed from the replayed state.
@@ -991,7 +1178,7 @@ export function readRunnerHistory(raw,config,version=1) {
       if(p.type==='task-commit-intent'){
         need(r.kind==='commit-intent'&&transaction===null
           &&(beforeIntent.state==='approved'||beforeIntent.state==='blocked'
-            &&['completion_checks_changed','completion_package_changed','review_package_changed'].includes(beforeIntent.code)),'runner_commit');
+            &&['completion_checks_changed','completion_package_changed','review_package_changed',COMPLETE_RECHECK_CODE].includes(beforeIntent.code)),'runner_commit');
         const c=readCommitIntent(p.commit,{owner:completion.owner,identity:pending.identity,fingerprints:completion.fingerprints});
         const base=attemptBaseline(original,pending.identity.attempt),s=beforeIntent;
         checkCompletion({receipt:s.receipt,registered:s.receipts.find(x=>x.id===s.receipt?.id),
@@ -1055,7 +1242,7 @@ export function readRunnerHistory(raw,config,version=1) {
     ?{effectId:lastReview.effect.id,invocationId:lastReview.request.invocationId,
       registeredDigest:lastReview.registrationRecord.digest,startedDigest:lastReview.startedRecord?.digest??null,
       resultDigest:lastReview.resultRecord.digest}:null;
-  return {original,session,state,pending,acceptedFixes,qaAttachment,
+  return {original,session,state,pending,acceptedFixes,qaAttachment,answerGaps,
     ...(version===3?{joinedHosts,reviewerThreads,supersession,pendingAbandonable,reviewResultAbandon,
       reviewReconciliation:lastReview?.reconciliation&&['unknown','pending_review'].includes(state.state)?{...reconciliationBinding(),
         ...lastReview.reconciliation,request:lastReview.request,effect:lastReview.effect,before:lastReview.before}:null,
@@ -1063,6 +1250,51 @@ export function readRunnerHistory(raw,config,version=1) {
         ?{request:invocation.registration.request,registration:invocation.registration.record,
           started:invocation.started,result:invocation.result}:null}:{}),
     ...(version>=2?{transaction}:{})};
+}
+// R2: each answer-gap exit has two uses per run. Once spent, the same stuck shape
+// is shown as an explicit limit block instead of falling back to an exit-less
+// unknown/reconcile: its code names the spent exit and its reason names what is
+// left (fix the root cause, then a superseding run). Derived from the journal
+// on every read, never journaled itself, so replay shows the same block.
+// A spent develop_dispatch_failed exit falls to the confirmed develop_redo, so it
+// has no limit code of its own.
+export const ANSWER_GAP_LIMIT_CODES=Object.freeze(['check_answer_retry_limit','complete_recheck_limit','develop_redo_limit']);
+const gapLimitReason=(code,what,source)=>`${code}: ${what}（原记录 ${source}）已在本运行用满 ${MAX_ANSWER_GAP_RETRIES} 次，不再自动重做。`
+  +'先查清根因（会话为何一直不应答或答复不合格、宿主环境为何失败）；修好后用 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做，'
+  +'本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift 作为已有代码记录。';
+export function answerGapLimit(s,config,gaps={}){
+  if(!['unknown','blocked'].includes(s.state))return null;
+  const source=`${s.state}/${s.code}`;
+  if(s.state==='unknown'&&(gaps.developRecheck??0)>=MAX_ANSWER_GAP_RETRIES&&developRecheckCode(s,config,0)!==null)
+    return {code:'check_answer_retry_limit',reason:gapLimitReason('check_answer_retry_limit','开发后的检查或验证预检重跑',source)};
+  if(s.state==='unknown'&&(gaps.completeRecheck??0)>=MAX_ANSWER_GAP_RETRIES&&completeRecheckable(s,0))
+    return {code:'complete_recheck_limit',reason:gapLimitReason('complete_recheck_limit','完成前复查重跑',source)};
+  if((gaps.developRedo??0)>=MAX_DEVELOP_REDOS&&developRedoCause(s,config,0)!==null)
+    return {code:'develop_redo_limit',reason:gapLimitReason('develop_redo_limit','确认停写后的开发重发',source)};
+  return null;
+}
+// Q28: the status a host would show for a replayed journal, as far as the
+// journal alone decides it. Drivers prepare answers from this (never from the
+// raw replay state, which still reads unknown/call_timeout or blocked/failed
+// for the retryable answer-gap blocks). Exits that also need a live disk check
+// (#198 develop_call_timeout, a legacy pinned dispatch failure) are projected
+// as available: preparing an answer that ends up unused is harmless, while a
+// missing one ends a real redo in host_close. Exits that need an operator
+// confirmation first (develop_redo) are not projected as retryable.
+export function projectedRunnerStatus(history,config){
+  const s=history.state,gaps=history.answerGaps??{};
+  const project=code=>({...s,state:'blocked',code});
+  if(s.state==='blocked'&&s.code==='failed'&&developAnswerRetryable(s,config.bootstrap))return project('develop_answer_invalid');
+  if(s.state==='blocked'&&s.code==='failed'){const limit=answerGapLimit(s,config,gaps);
+    return limit?{...s,state:'blocked',code:limit.code,reason:limit.reason}:s;}
+  if(s.state!=='unknown')return s;
+  const recheck=developRecheckCode(s,config,gaps.developRecheck??0);
+  if(recheck!==null)return project(recheck);
+  if(completeRecheckable(s,gaps.completeRecheck??0))return project(COMPLETE_RECHECK_CODE);
+  if(s.code==='call_timeout'&&developTimeoutBasis(s,config.bootstrap)!==null)return project('develop_call_timeout');
+  if(developDispatchBasis(s,config,gaps.developDispatch??0)!==null)return project(DISPATCH_RETRY_CODE);
+  const limit=answerGapLimit(s,config,gaps);
+  return limit?{...s,state:'blocked',code:limit.code,reason:limit.reason}:s;
 }
 // Baseline rootDigest uses bytes of the canonical root, not JSON string encoding.
 import {createHash} from 'node:crypto';

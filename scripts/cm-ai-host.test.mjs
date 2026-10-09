@@ -356,11 +356,14 @@ for(const mode of ['disconnect','cancel'])test(`current conversation ${mode} pre
   try{
     const first=await runCli(f,mode);assert.equal(first.code,0,first.stderr);
     assert.deepEqual(first.calls,['develop']);
-    const expected=mode==='disconnect'?'unknown':'cancelled';
-    assert.equal(first.rows.find(row=>row.requestId==='advance').result.state,expected);
+    // A disconnected session may still be writing: the run waits for the
+    // operator's develop_redo (answer gaps P1-2) and advance dispatches nothing.
+    const expected=mode==='disconnect'?['blocked','develop_answer_missing','develop_redo']:['cancelled'];
+    const outcome=row=>mode==='disconnect'?[row.result.state,row.result.code,row.result.pendingAction]:[row.result.state];
+    assert.deepEqual(outcome(first.rows.find(row=>row.requestId==='advance')),expected);
     if(mode==='cancel')assert(first.rows.some(row=>row.requestId==='status'));
     const resumed=await runCli(f,mode,'resume');assert.equal(resumed.code,0,resumed.stderr);assert.deepEqual(resumed.calls,[]);
-    assert.equal(resumed.rows.find(row=>row.requestId==='advance').result.state,expected);
+    assert.deepEqual(outcome(resumed.rows.find(row=>row.requestId==='advance')),expected);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
@@ -368,14 +371,19 @@ for(const mode of ['normal','disconnect','cancel'])test(`Claude conversation use
   const f=fixture();f.runtime='claude';f.args.push('--runtime','claude');
   try{
     const first=await runCli(f,mode);assert.equal(first.code,0,first.stderr);
-    const state=mode==='normal'?'awaiting_review':mode==='disconnect'?'unknown':'cancelled';
-    assert.equal(first.rows.find(row=>row.requestId==='advance').result.state,state);
+    const state=mode==='normal'?'awaiting_review':mode==='disconnect'?'blocked':'cancelled';
+    const advanced=first.rows.find(row=>row.requestId==='advance').result;
+    assert.equal(advanced.state,state);
+    if(mode==='disconnect')assert.deepEqual([advanced.code,advanced.pendingAction],['develop_answer_missing','develop_redo']);
     assert.deepEqual(first.calls,mode==='normal'?['develop','check']:['develop']);
     const logs=fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
     assert(logs.filter(row=>row.phase==='route').every(row=>row.runtime==='claude'));
     const reopened=await runCli(f,mode,'resume');assert.equal(reopened.code,0,reopened.stderr);
+    // Resume plus advance never redispatches before develop_redo.
     assert.deepEqual(reopened.calls,[]);
-    assert.equal(reopened.rows.find(row=>row.requestId==='advance').result.state,state);
+    const reopenedAdvance=reopened.rows.find(row=>row.requestId==='advance').result;
+    assert.equal(reopenedAdvance.state,state);
+    if(mode==='disconnect')assert.deepEqual([reopenedAdvance.code,reopenedAdvance.pendingAction],['develop_answer_missing','develop_redo']);
     f.args=f.args.slice(0,-2);
     const wrongRuntime=await runCli(f,mode,'resume');
     assert.equal(wrongRuntime.code,1);assert.deepEqual(wrongRuntime.calls,[]);

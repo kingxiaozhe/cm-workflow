@@ -28,15 +28,19 @@ const retryReview=reviewRetryable;
 // batch driver decides retryability from the same predicate instead of keeping a
 // second copy of the code list that silently drifts.
 export const developmentRetryable=status=>status.state==='blocked'
-  &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','develop_call_timeout','develop_answer_invalid'].includes(status.code);
+  &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','develop_call_timeout','develop_answer_invalid',
+    'check_answer_missing','check_answer_invalid','develop_answer_missing','develop_dispatch_failed'].includes(status.code)
+  // Shown before the operator confirmed the session stopped: not yet redoable.
+  &&status.developRedoRequired!==true;
 const retryDeveloper=developmentRetryable;
 export const completionRetryable=status=>status.state==='blocked'
-  &&['completion_checks_changed','completion_package_changed'].includes(status.code)
+  &&['completion_checks_changed','completion_package_changed','complete_recheck_failed'].includes(status.code)
   &&status.retryReady!==false;
 const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approval':
   // The runner reports spec_drift over any state whose next effect would be refused.
   status.code==='spec_drift'?(status.specificationRebind==='available'?'spec_rebind':'none'):
   status.bootstrapReviewRecovery===true?'bootstrap_review_recover':
+  status.developRedoRequired===true?'develop_redo':
   status.reviewReconciliation?.available?'reconcile_review':
   status.state==='changes_requested'||retryDeveloper(status)||retryReview(status)?'resume':
   status.state==='awaiting_review'?'decision':status.state==='unknown'
@@ -60,6 +64,7 @@ const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',ope
   requestDigest:digest(operation),identity:status.identity,outcome,state:status.state,code:status.code??null,
   packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),
   ...(status.reviewReconciliation?{reviewReconciliation:status.reviewReconciliation}:{}),
+  ...(status.developRedoRequired===true?{developRedoRequired:true}:{}),
   ...(typeof status.reason==='string'?{reason:status.reason}:{}),
   ...(status.code==='handoff_exists'?{reason:REVIEWED_HANDOFF_HINT}:{}),
   ...(status.state==='blocked'&&status.calls?.at(-1)?.blockedReason!==undefined
@@ -82,11 +87,11 @@ function readOperation(raw) {
   const operation=json(raw),keys=['version','operation','requestId','identity'];
   if(['decision','complete','qa','qa_result','context_refresh','finish','run_finalize'].includes(operation?.operation))keys.push('packageDigest');
   if(['qa_result','context_refresh','finish','run_finalize'].includes(operation?.operation))keys.push('testRunId');
-  if(['abandon_review','abandon_effect','bootstrap_review_recover'].includes(operation?.operation))keys.push('reason');
+  if(['abandon_review','abandon_effect','bootstrap_review_recover','develop_redo'].includes(operation?.operation))keys.push('reason');
   if(operation?.operation==='reconcile_review')keys.push('invocationId');
   shape(operation,keys);
   if(operation?.operation==='reconcile_review')id(operation.invocationId);
-  need(operation.version===1&&['advance','start','status','decision','complete','qa','qa_result','context_refresh','finish','run_finalize','cancel','resume','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover']
+  need(operation.version===1&&['advance','start','status','decision','complete','qa','qa_result','context_refresh','finish','run_finalize','cancel','resume','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','develop_redo']
     .includes(operation.operation));
   id(operation.requestId);validIdentity(operation.identity);
   if(operation.operation==='abandon_review')need(typeof operation.reason==='string'
@@ -95,6 +100,9 @@ function readOperation(raw) {
   if(operation.operation==='abandon_effect')need(typeof operation.reason==='string'
     &&operation.reason.trim().length>0&&Buffer.byteLength(operation.reason,'utf8')<=500
     &&!/[\r\n\0]/.test(operation.reason),'effect_abandon_reason_required');
+  if(operation.operation==='develop_redo')need(typeof operation.reason==='string'
+    &&operation.reason.trim().length>0&&Buffer.byteLength(operation.reason,'utf8')<=500
+    &&!/[\r\n\0]/.test(operation.reason),'develop_redo_reason_required');
   if(operation.operation==='bootstrap_review_recover')need(typeof operation.reason==='string'
     &&operation.reason.trim().length>0&&Buffer.byteLength(operation.reason,'utf8')<=500
     &&!/[\r\n\0]/.test(operation.reason),'bootstrap_review_recovery_reason_required');
@@ -139,7 +147,7 @@ function effectSummary(operation,result,runner,identity) {
   // A rejected current-session answer is checkpointed blocked/failed; the
   // runner's status shows it as the retryable develop_answer_invalid block.
   if(result?.state==='blocked'&&result.code==='failed'){
-    const current=runner.status();if(current.code==='develop_answer_invalid')result=current;
+    const current=runner.status();if(['develop_answer_invalid','develop_answer_missing'].includes(current.code))result=current;
   }
   return summary(operation,boundStatus(result,identity),result?.code==='handoff_exists'?'blocked':'advanced');
 }
@@ -200,6 +208,7 @@ export function createCmAiConversationEntry(options) {
   if(options&&Object.hasOwn(options,'allowAbandonReview'))optionKeys.push('allowAbandonReview');
   if(options&&Object.hasOwn(options,'allowAbandonEffect'))optionKeys.push('allowAbandonEffect');
   if(options&&Object.hasOwn(options,'allowBootstrapReviewRecovery'))optionKeys.push('allowBootstrapReviewRecovery');
+  if(options&&Object.hasOwn(options,'allowDevelopRedo'))optionKeys.push('allowDevelopRedo');
   if(options&&Object.hasOwn(options,'holdRevision'))optionKeys.push('holdRevision');
   if(options&&Object.hasOwn(options,'featureSelection'))optionKeys.push('featureSelection');
   shape(options,optionKeys);
@@ -212,6 +221,7 @@ export function createCmAiConversationEntry(options) {
   const runnerKeys=['executeEffect','status','cancel','run'];
   if(runner&&Object.hasOwn(runner,'verificationBlocks'))runnerKeys.push('verificationBlocks');
   if(runner&&Object.hasOwn(runner,'completionBlocks'))runnerKeys.push('completionBlocks');
+  if(runner&&Object.hasOwn(runner,'recheckLearningInput'))runnerKeys.push('recheckLearningInput');
   if(runner&&Object.hasOwn(runner,'attachLearningEvidence'))runnerKeys.push('attachLearningEvidence');
   if(runner&&Object.hasOwn(runner,'inspectFixAssociation'))runnerKeys.push('inspectFixAssociation');
   if(runner&&Object.hasOwn(runner,'acceptCompletedFix'))runnerKeys.push('acceptCompletedFix');
@@ -223,10 +233,12 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'reconcileReview'))runnerKeys.push('reconcileReview');
   if(runner&&Object.hasOwn(runner,'abandonEffect'))runnerKeys.push('abandonEffect');
   if(runner&&Object.hasOwn(runner,'recoverBootstrapReview'))runnerKeys.push('recoverBootstrapReview');
+  if(runner&&Object.hasOwn(runner,'redoDevelop'))runnerKeys.push('redoDevelop');
   if(runner&&Object.hasOwn(runner,'inspectBootstrapAdmission'))runnerKeys.push('inspectBootstrapAdmission');
   shape(runner,runnerKeys);
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');
   if(Object.hasOwn(runner,'completionBlocks'))need(typeof runner.completionBlocks==='function');
+  if(Object.hasOwn(runner,'recheckLearningInput'))need(typeof runner.recheckLearningInput==='function');
   if(Object.hasOwn(runner,'attachLearningEvidence'))need(typeof runner.attachLearningEvidence==='function');
   if(Object.hasOwn(runner,'inspectFixAssociation'))need(typeof runner.inspectFixAssociation==='function');
   if(Object.hasOwn(runner,'acceptCompletedFix'))need(typeof runner.acceptCompletedFix==='function');
@@ -236,6 +248,7 @@ export function createCmAiConversationEntry(options) {
   if(Object.hasOwn(runner,'reconcileReview'))need(typeof runner.reconcileReview==='function');
   if(Object.hasOwn(runner,'abandonEffect'))need(typeof runner.abandonEffect==='function');
   if(Object.hasOwn(runner,'recoverBootstrapReview'))need(typeof runner.recoverBootstrapReview==='function');
+  if(Object.hasOwn(runner,'redoDevelop'))need(typeof runner.redoDevelop==='function');
   if(Object.hasOwn(runner,'inspectBootstrapAdmission'))need(typeof runner.inspectBootstrapAdmission==='function');
   need(options.allowAbandonReview===undefined||typeof options.allowAbandonReview==='boolean','invalid_input');
   let abandonPermission=options.allowAbandonReview===true;
@@ -243,6 +256,8 @@ export function createCmAiConversationEntry(options) {
   let abandonEffectPermission=options.allowAbandonEffect===true;
   need(options.allowBootstrapReviewRecovery===undefined||typeof options.allowBootstrapReviewRecovery==='boolean','invalid_input');
   let bootstrapReviewRecoveryPermission=options.allowBootstrapReviewRecovery===true;
+  need(options.allowDevelopRedo===undefined||typeof options.allowDevelopRedo==='boolean','invalid_input');
+  let developRedoPermission=options.allowDevelopRedo===true;
 
   const hostDecision=Object.hasOwn(options,'hostDecision')?json(options.hostDecision):null;
   let hostDecisionProvider=null,pendingReviewDecision=null;
@@ -356,7 +371,7 @@ export function createCmAiConversationEntry(options) {
     need(sameTask(identity,ownerIdentity)&&identity.attempt>=ownerIdentity.attempt,'identity_mismatch');
     // Stable run-definition identity can query/control or resume the current
     // attempt. Package-bound mutations must name the current attempt exactly.
-    const stableControl=['status','cancel','advance','resume','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover'].includes(operation.operation)
+    const stableControl=['status','cancel','advance','resume','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','develop_redo'].includes(operation.operation)
       &&sameIdentity(operation.identity,ownerIdentity);
     need(sameIdentity(operation.identity,identity)||stableControl,'identity_mismatch');
     if(operation.operation==='advance'){
@@ -560,6 +575,15 @@ export function createCmAiConversationEntry(options) {
       if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code,
         ...(result.reason?{reason:result.reason}:{})},'rejected');
       return summary(operation,boundStatus(result,identity),'abandoned');
+    }
+    if(operation.operation==='develop_redo'){
+      if(!developRedoPermission)return summary(operation,{...runner.status(),
+        code:'develop_redo_authorization_required'},'rejected');
+      developRedoPermission=false;
+      const result=runner.redoDevelop?.({allowed:true,reason:operation.reason})
+        ??{outcome:'rejected',code:'develop_redo_unavailable'};
+      if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code},'rejected');
+      return summary(operation,boundStatus(result,identity),'recorded');
     }
     if(operation.operation==='bootstrap_review_recover'){
       if(!bootstrapReviewRecoveryPermission)return summary(operation,{...runner.status(),
@@ -789,7 +813,10 @@ export function createCmAiConversationEntry(options) {
     // the review that asked for it, before any develop intent, and say so.
     if(options.holdRevision===true&&status.state==='changes_requested')
       return summary(operation,{...status,code:'revision_answer_required'},'awaiting');
-    const learningInput=inspectCmAiTaskLearningInput({specsDir:options.specsDir,codeProject:options.codeProject,
+    // A re-check (check_answer_*) re-runs the checks of the delivery already made:
+    // it binds that delivery's Learning input, never a freshly read one (its
+    // writeback may already have changed AGENTS.md).
+    const learningInput=runner.recheckLearningInput?.()??inspectCmAiTaskLearningInput({specsDir:options.specsDir,codeProject:options.codeProject,
       feature:options.feature,identity,applicableAgentFiles:applicableAgentFiles??[],
       ...(options.featureSelection===undefined?{}:{featureSelection:options.featureSelection})},
     {admission:runner.inspectBootstrapAdmission?.()??null,parallelSelection:options.parallelSelection??null});
@@ -808,7 +835,7 @@ export function createCmAiConversationEntry(options) {
     let token=null,operation=null;const epoch=cancellationEpoch;
     try{
       operation=readOperation(raw);
-      if(!['status','cancel','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover'].includes(operation.operation)){
+      if(!['status','cancel','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','develop_redo'].includes(operation.operation)){
         token=Symbol(operation.operation);inFlightHandles.add(token);
       }
       const routed=await route(operation);

@@ -29,7 +29,7 @@ import {readConversationReviewConfiguration,readConversationProtection} from './
 import {validateCmAiAnswer,developFilename,preflightDevelopDeliveries,baselineScope,inputLimitFrom,
   applyDevelopEdits,protectedDevelopEdits,developPreview,plannedCheckResults,journalRestBytes} from './cm-ai-drive.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
-import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {readRunnerHistory,projectedRunnerStatus,RECHECK_CODES} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 
@@ -47,7 +47,14 @@ const isObject=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const nonempty=x=>typeof x==='string'&&x.trim().length>0;
 function taskKey(task){return `${task.feature}/${task.taskId}`;}
 export function batchDevelopAttempts(state,key,permissions){
-  if(developmentRetryable(state))return [state.attempt];
+  // The round-1 review this launch authorizes may lead into round 2 within the
+  // same advance (Codex round 1 on Q28): list it too; a missing a2 answer then
+  // holds the task after that review (revision_answer_required) instead of
+  // sending an unanswerable develop request.
+  const reviewNext=state.attempt===1&&permissions.some((flag,index)=>flag==='--allow-review'&&permissions[index+1]===`${key}:1`);
+  // A re-check (check_answer_*) re-runs only the checks: no developer answer for this round.
+  if(state.state==='blocked'&&RECHECK_CODES.includes(state.code))return reviewNext?[2]:[];
+  if(developmentRetryable(state))return reviewNext?[1,2]:[state.attempt];
   if(state.state==='ready'&&state.attempt===1&&permissions.some((flag,index)=>
     flag==='--allow-review'&&permissions[index+1]===`${key}:1`))return [1,2];
   if(['ready','changes_requested'].includes(state.state))return [state.attempt];
@@ -227,7 +234,8 @@ function preflight(){
         if(existing)try{
           const snapshot=readExecutionSnapshot({specsRoot:batch.specsDir,identity:{repositoryId:batch.repositoryId,runId:existing[0]}});
           const history=readRunnerHistory(snapshot.records,snapshot.records[0].payload.config,3);
-          attempts=batchDevelopAttempts(history.state,key,permissions);current=history.state.attempt;
+          // Q28: decide from what the host will show (projected answer-gap blocks), not the raw replay state.
+          attempts=batchDevelopAttempts(projectedRunnerStatus(history,snapshot.records[0].payload.config),key,permissions);current=history.state.attempt;
           journal={baseline:snapshot.records[0].payload.baseline,generation:existing[1].generation,
             frame:journalRestBytes(snapshot.records)};
         }catch(error){stop(2,`任务 ${key} 无法只读检查恢复存档: ${error.code??error.message}`);}

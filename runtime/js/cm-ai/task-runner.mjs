@@ -21,7 +21,11 @@ import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRu
   reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted,
   completionBlockCount,completionRetriesExhausted,supersededReviewPayload,bootstrapReviewRecoverable,protectedDevelopScope,protectedScopeBlockReason,
   developTimeoutBasis,developTimeoutEffect,developTimeoutState,DEVELOP_CALL_TIMEOUT_REASON,
-  developAnswerInvalidEffect,developAnswerRetryable,developAnswerInvalidReason } from './durable-runner-state.mjs';
+  developAnswerInvalidEffect,developAnswerRetryable,developAnswerInvalidReason,
+  RECHECK_CODES,COMPLETE_RECHECK_CODE,developRecheckSource,developRecheckCode,developRecheckReason,
+  completeRecheckSource,completeRecheckable,completeRecheckReason,
+  DEVELOP_REDO_CODE,developAnswerMissingEffect,developRedoCause,developRedoRequiredReason,developRedoReason,
+  DISPATCH_RETRY_CODE,developDispatchFailedEffect,developDispatchBasis,developDispatchReason,answerGapLimit } from './durable-runner-state.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
 import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure} from './provider-review-observation.mjs';
 import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence,
@@ -141,12 +145,17 @@ export function createTaskRunner(options) {
   if(options && Object.hasOwn(options,'codeProjectPaths'))optionKeys.push('codeProjectPaths');
   if(options && Object.hasOwn(options,'verificationGate'))optionKeys.push('verificationGate');
   if(options && Object.hasOwn(options,'providerDevelopment'))optionKeys.push('providerDevelopment');
+  if(options && Object.hasOwn(options,'protectedDevelopment'))optionKeys.push('protectedDevelopment');
   if(options && Object.hasOwn(options,'knowledgeCloseout'))optionKeys.push('knowledgeCloseout');
   if(options && Object.hasOwn(options,'executionPolicy'))optionKeys.push('executionPolicy');
   if(options && Object.hasOwn(options,'externalModels'))optionKeys.push('externalModels');
   if(invocationMode)optionKeys.push('reviewInvocation');
   shape(options,optionKeys);
   need(options.providerDevelopment===undefined||typeof options.providerDevelopment==='boolean','invalid_input');
+  // Transient like providerDevelopment, never journaled: protected current-session
+  // development applies proposals in a sandbox, so a stuck develop there may be a
+  // partial write and gets no develop_redo exit (durable-runner-state.mjs).
+  need(options.protectedDevelopment===undefined||typeof options.protectedDevelopment==='boolean','invalid_input');
   const {check,commit}=options;need(typeof check==='function' && (taskMode||typeof commit==='function'));
   // Opt-in gate between the task's own checks and the independent review. It may
   // only block: passing it grants nothing and never substitutes for that review.
@@ -290,9 +299,10 @@ export function createTaskRunner(options) {
   const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
     &&entry.result?.state==='blocked'
     &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout'].includes(entry.result?.code)
-    ||developTimeoutEffect(entry)||developAnswerInvalidEffect(entry)).length;
+    ||developTimeoutEffect(entry)||developAnswerInvalidEffect(entry)||developRecheckSource(entry)||developAnswerMissingEffect(entry)||developDispatchFailedEffect(entry)).length;
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
-    &&entry.result?.state==='blocked'&&['completion_checks_changed','completion_package_changed'].includes(entry.result?.code)).length;
+    &&entry.result?.state==='blocked'&&['completion_checks_changed','completion_package_changed'].includes(entry.result?.code)
+    ||completeRecheckSource(entry)).length;
   const privateStatus=()=>json({state,code,...(reason?{reason}:{}),
     ...(!(metadata.externalModels||metadata.executionPolicy)&&state==='unknown'&&restored?.pendingAbandonable
       ?{pendingEffectKind:restored.pending.kind}:{}),
@@ -343,8 +353,42 @@ export function createTaskRunner(options) {
   // validation: shown as the retryable block; advance journals develop-answer-retry.
   const answerRetryable=()=>Boolean(store&&taskMode&&!busy&&!poisoned&&!(restored?.pending&&!cache.has(restored.pending.id))
     &&developAnswerRetryable({state,code,attempt,cache:[...cache.values()]},metadata.bootstrap));
+  // V3 answer gaps (durable-runner-state.mjs): a delivered develop or a complete
+  // whose later re-check never got a usable answer. Status shows the retryable
+  // block; advance journals develop-recheck / complete-recheck first.
+  const answerGapCount=type=>journal?.filter(row=>row.payload.type===type).length??0;
+  const gapsLive=()=>Boolean(store&&taskMode&&invocationMode&&!busy&&!poisoned&&!(restored?.pending&&!cache.has(restored.pending.id)));
+  const developRecheck=()=>gapsLive()?developRecheckCode({state,code,attempt,cache:[...cache.values()],learningResult,receipt},
+    metadata,answerGapCount('develop-recheck')):null;
+  const completeRecheck=()=>gapsLive()&&completeRecheckable({state,code,attempt,cache:[...cache.values()],taskCommit},
+    answerGapCount('complete-recheck'));
+  // V2 + R3: a stuck current-session develop that only an operator confirmation
+  // (develop_redo) may redo. Returns the cause or null.
+  const developRedoRequired=()=>!gapsLive()||options.protectedDevelopment===true||options.providerDevelopment===true?null
+    :developRedoCause({state,code,attempt,cache:[...cache.values()],calls,receipt},metadata,answerGapCount('develop-answer-redo'));
+  // P1-3: a develop that failed before dispatch. A legacy execution_error also
+  // needs the live code root to still equal the journal-pinned round start.
+  function developDispatchRetry(){
+    if(!gapsLive()||options.providerDevelopment===true)return null;
+    const basis=developDispatchBasis({state,code,attempt,cache:[...cache.values()],calls,receipt,reviewPackage,priorReview},
+      metadata,answerGapCount('develop-dispatch-retry'));
+    if(basis===null)return null;
+    try{
+      if(basis==='reviewed_package')verifyReviewPackage({root:config.root,baseline:attemptBaseline(original,reviewPackage.identity.attempt),
+        checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
+      else assertReadyBaseline();
+    }catch{return null;}
+    return basis;
+  }
+  // The Learning input a re-check must carry: exactly the delivered develop's.
+  const recheckLearningInput=()=>RECHECK_CODES.includes(status().code)?json([...cache.values()].at(-1).effect.learningInput):null;
   const status=()=>{
     let current=store?publication:privateStatus();
+    if(current.state==='unknown'){
+      const recheck=developRecheck();
+      if(recheck!==null)current=freeze({...current,state:'blocked',code:recheck,reason:developRecheckReason(recheck,current.code)});
+      else if(completeRecheck())current=freeze({...current,state:'blocked',code:COMPLETE_RECHECK_CODE,reason:completeRecheckReason(current.code)});
+    }
     if(current.state==='blocked'&&current.code==='failed'&&answerRetryable())
       current=freeze({...current,code:'develop_answer_invalid',reason:developAnswerInvalidReason(calls.at(-1).failureResult)});
     if(developTimeoutState(current)){
@@ -353,6 +397,28 @@ export function createTaskRunner(options) {
         ?freeze({...rest,state:'blocked',code:'develop_call_timeout',reason:DEVELOP_CALL_TIMEOUT_REASON})
         :freeze({...rest,state:'unknown',code:'call_timeout',...(current.state==='blocked'
           ?{reason:'develop_call_timeout: 代码根已不等于本轮开发起点（超时后有写入），不能重发；按 unknown 只读核对。'}:{})});
+    }
+    if(current.state==='unknown'){
+      const basis=developDispatchRetry();
+      if(basis!==null){const {reason:discard,...rest}=current;
+        current=freeze({...rest,state:'blocked',code:DISPATCH_RETRY_CODE,reason:developDispatchReason(current.code)});}
+    }
+    // The journaled block keeps its start binding: a changed root falls to develop_redo below.
+    if(current.state==='blocked'&&current.code===DISPATCH_RETRY_CODE&&developDispatchRetry()===null){
+      const {reason:discard,...rest}=current;current=freeze({...rest,state:'unknown',code:[...cache.values()].at(-1).result.code});
+    }
+    if(current.state==='unknown'||current.state==='blocked'&&current.code==='failed'){
+      const cause=developRedoRequired();
+      if(cause!==null){const {reason:discard,...rest}=current;
+        current=freeze({...rest,state:'blocked',code:DEVELOP_REDO_CODE,reason:developRedoRequiredReason(cause),developRedoRequired:true});}
+    }
+    // R2: a spent exit is an explicit limit block, never an exit-less unknown.
+    if((current.state==='unknown'||current.state==='blocked'&&current.code==='failed')&&gapsLive()&&options.providerDevelopment!==true){
+      const limit=answerGapLimit({state,code,attempt,cache:[...cache.values()],calls,receipt,learningResult,taskCommit,reviewPackage,priorReview},
+        metadata,{developRecheck:answerGapCount('develop-recheck'),completeRecheck:answerGapCount('complete-recheck'),
+          developRedo:answerGapCount('develop-answer-redo'),developDispatch:answerGapCount('develop-dispatch-retry')});
+      if(limit!==null&&!(options.protectedDevelopment===true&&limit.code==='develop_redo_limit')){
+        const {reason:discard,...rest}=current;current=freeze({...rest,state:'blocked',code:limit.code,reason:limit.reason});}
     }
     if(!busy&&!poisoned&&bootstrapReviewRecoverable(frame(),restored?.pending??null,metadata.bootstrap))
       current=freeze({...current,bootstrapReviewRecovery:true});
@@ -462,7 +528,7 @@ export function createTaskRunner(options) {
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
         'review-invocation-abandoned':'result','review-invocation-receipt':'result','review-invocation-reconciled':'result','effect-abandoned':'result',
         'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
-        'evidence-superseded':'result','develop-retry-limit':'result','develop-timeout-retry':'result','develop-answer-retry':'result','completion-retry-limit':'result','specification-rebound':'result',
+        'evidence-superseded':'result','develop-retry-limit':'result','develop-timeout-retry':'result','develop-answer-retry':'result','develop-recheck':'result','complete-recheck':'result','develop-answer-redo':'result','develop-dispatch-retry':'result','completion-retry-limit':'result','specification-rebound':'result',
         'bootstrap-review-recovered':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
@@ -945,14 +1011,54 @@ export function createTaskRunner(options) {
     halt('blocked','develop_requirement_missing',boundedReason('develop_requirement_missing: ',missing,
       ' are requirement files and must exist in the review package; restore them and resume to redo this attempt'));
   };
+  // After a delivered develop: the task checks, the verification precheck, the
+  // unchanged-after-review guard and the host handoff. False when it halted.
+  async function hostDeliveryChecks(){
+    currentChecks=await collectChecks();active();
+    if(failedChecks(currentChecks).length){halt('blocked','develop_checks_not_passed',checkFailureReason(currentChecks,'develop_checks_not_passed'));return false;}
+    if(!await verificationSatisfied(currentChecks)){halt('blocked','verification_precheck_failed');return false;}
+    active();
+    // unchangedSinceRejection builds a package too, so an empty delivery or a
+    // deleted in-scope requirement surfaces there first and takes the same
+    // retryable block (emptyDelivery).
+    let unchanged;
+    try{unchanged=unchangedSinceRejection();}catch(error){emptyDelivery(error);return false;}
+    if(unchanged){halt('blocked','develop_unchanged_after_review',unchanged);return false;}
+    try{createHostHandoff({root:config.root,baseline:base,checks:currentChecks,
+      handoffPath:completion.handoffs[attempt-1]});}
+    catch(error){emptyDelivery(error);return false;}
+    return true;
+  }
+  async function packageDelivery(v){
+    active();
+    let nextPackage;
+    try{nextPackage=createReviewPackage({root:config.root,baseline:base,checks:currentChecks,
+      ...(taskLearning?.hostHandoff===true?{handoffPath:completion.handoffs[attempt-1]}:{})});}
+    catch(error){emptyDelivery(error);return;}
+    if(taskLearning!==null)validateTaskLearningReviewPackage(nextPackage,learningResult.writeback,v.learningInput,
+      learningResult.bootstrap??null,metadata.bootstrap??null);
+    reviewPackage=nextPackage;
+    state='awaiting_review';
+  }
   async function perform(v) {
     if(v.kind==='develop') {
-      need(stageAllowed('develop',state,code,priorReview?.verdict),'stage_mismatch');state='developing';code=null;reason=null;checkNewPaths=null;receipt=null;
+      need(stageAllowed('develop',state,code,priorReview?.verdict),'stage_mismatch');
+      const recheck=state==='blocked'&&RECHECK_CODES.includes(code);
+      state='developing';code=null;reason=null;checkNewPaths=null;receipt=null;
       // The adapter would refuse this scope before any provider runs. Block it
       // here instead: no call starts, nothing is written, and the outcome is
       // definite rather than unknown (create refuses such runs already).
       const refusedScope=protectedDevelopScope(metadata);
       if(refusedScope.length){halt('blocked','protected_scope',protectedScopeBlockReason(refusedScope));return;}
+      // The delivery and its Learning writeback are already on disk: re-run only
+      // the checks, the precheck, the handoff and the package. No developer call.
+      if(recheck){
+        if(!await hostDeliveryChecks())return;
+        writeCmAiTaskLearningHandoff({handoffPath:completion.handoffs[attempt-1],feature:taskLearning.feature,
+          identity:{...config.identity,attempt},learningInput:v.learningInput,application:learningResult.application,
+          retrospective:learningResult.retrospective,writeback:learningResult.writeback});
+        await packageDelivery(v);return;
+      }
       const previousLearning=learningResult;
       const previousBootstrap=learningResult?.bootstrap??null;
       const previousWriteback=learningResult?.writeback??null;
@@ -1009,21 +1115,7 @@ export function createTaskRunner(options) {
         {learningInput:v.learningInput,retrospective});
         learningResult=freeze({application,retrospective,writeback,...(instructionEvidence?{bootstrap:instructionEvidence}:{})});
         if(writeback.outcome==='writeback_pending'){halt('blocked','learning_writeback_pending');return;}
-        if(taskLearning.hostHandoff===true){
-          currentChecks=await collectChecks();active();
-          if(failedChecks(currentChecks).length){halt('blocked','develop_checks_not_passed',checkFailureReason(currentChecks,'develop_checks_not_passed'));return;}
-          if(!await verificationSatisfied(currentChecks)){halt('blocked','verification_precheck_failed');return;}
-          active();
-          // unchangedSinceRejection builds a package too, so an empty delivery or a
-          // deleted in-scope requirement surfaces there first and takes the same
-          // retryable block (emptyDelivery).
-          let unchanged;
-          try{unchanged=unchangedSinceRejection();}catch(error){emptyDelivery(error);return;}
-          if(unchanged){halt('blocked','develop_unchanged_after_review',unchanged);return;}
-          try{createHostHandoff({root:config.root,baseline:base,checks:currentChecks,
-            handoffPath:completion.handoffs[attempt-1]});}
-          catch(error){emptyDelivery(error);return;}
-        }
+        if(taskLearning.hostHandoff===true&&!await hostDeliveryChecks())return;
         writeCmAiTaskLearningHandoff({handoffPath:completion.handoffs[attempt-1],feature:taskLearning.feature,
           identity:{...config.identity,attempt},learningInput:v.learningInput,application,retrospective,writeback});
       }
@@ -1037,15 +1129,7 @@ export function createTaskRunner(options) {
         try{unchanged=unchangedSinceRejection();}catch(error){emptyDelivery(error);return;}
         if(unchanged){halt('blocked','develop_unchanged_after_review',unchanged);return;}
       }
-      active();
-      let nextPackage;
-      try{nextPackage=createReviewPackage({root:config.root,baseline:base,checks:currentChecks,
-        ...(taskLearning?.hostHandoff===true?{handoffPath:completion.handoffs[attempt-1]}:{})});}
-      catch(error){emptyDelivery(error);return;}
-      if(taskLearning!==null)validateTaskLearningReviewPackage(nextPackage,learningResult.writeback,v.learningInput,
-        learningResult.bootstrap??null,metadata.bootstrap??null);
-      reviewPackage=nextPackage;
-      state='awaiting_review';return;
+      await packageDelivery(v);return;
     }
     if(v.kind==='review') {
       state='reviewing';verifyReviewPackage({root:config.root,baseline:base,checks:currentChecks,
@@ -1120,7 +1204,7 @@ export function createTaskRunner(options) {
   }
   const limitDue=()=>retryLimitDue()?recordRetryLimit:completionLimitDue()?recordCompletionLimit:null;
   function executeEffect(raw) {
-    let v,timeoutBasis=null,answerRetry=false;
+    let v,timeoutBasis=null,answerRetry=false,recheck=null,completeSource=null,dispatchBasis=null;
     try {
       need(!poisoned,'store_failure');v=json(raw);
       shape(v,['version','id','identity','kind',...(Object.hasOwn(v,'learningInput')?['learningInput']:[])]);id(v.id);validIdentity(v.identity);
@@ -1141,12 +1225,24 @@ export function createTaskRunner(options) {
       need(!busy,'busy');need(v.identity.attempt===attempt,'attempt_mismatch');
       // A timed-out develop (journaled or already released) is redone only while
       // the code root still equals its start, verified here in the dispatch tick.
-      if(v.kind==='develop'&&developTimeoutState({state,code})){
+      // A delivered develop whose later checks lost their answer is re-checked,
+      // never redeveloped; the re-check carries the delivered Learning input.
+      if(v.kind==='develop'&&state==='unknown')recheck=developRecheck();
+      if(v.kind==='develop'&&(recheck!==null||state==='blocked'&&RECHECK_CODES.includes(code)))
+        need(digest(v.learningInput)===digest([...cache.values()].at(-1).effect.learningInput),'runner_learning');
+      if(v.kind==='complete'&&state==='unknown'&&completeRecheck())completeSource=code;
+      if(v.kind==='develop'&&state==='unknown'&&recheck===null)dispatchBasis=developDispatchRetry();
+      // A journaled develop_dispatch_failed (also after a restart between its
+      // record and the develop intent) re-verifies the round start right here.
+      if(v.kind==='develop'&&state==='blocked'&&code===DISPATCH_RETRY_CODE)
+        need(developDispatchRetry()!==null,'develop_dispatch_root_changed');
+      if(v.kind==='develop'&&recheck===null&&developTimeoutState({state,code})){
         timeoutBasis=developTimeoutRetryBasis();need(timeoutBasis!==null,'develop_timeout_root_changed');
         if(state==='blocked')timeoutBasis=null;
       }
       answerRetry=v.kind==='develop'&&state==='blocked'&&code==='failed'&&answerRetryable();
-      need(timeoutBasis!==null||answerRetry||stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(effectSlotFree(v.kind,[...cache.values()],calls),'limit_exceeded');
+      need(timeoutBasis!==null||answerRetry||recheck!==null||completeSource!==null||dispatchBasis!==null
+        ||stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(effectSlotFree(v.kind,[...cache.values()],calls),'limit_exceeded');
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
     } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input'}));}
@@ -1156,6 +1252,23 @@ export function createTaskRunner(options) {
       try{persist('develop-timeout-retry',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId,basis:timeoutBasis});}
       catch{return Promise.resolve(poison());}
       halt('blocked','develop_call_timeout',DEVELOP_CALL_TIMEOUT_REASON);publication=privateStatus();
+    }
+    if(recheck!==null){
+      const source=code;
+      try{persist('develop-recheck',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId,code:recheck});}
+      catch{return Promise.resolve(poison());}
+      halt('blocked',recheck,developRecheckReason(recheck,source));publication=privateStatus();
+    }
+    if(dispatchBasis!==null){
+      const source=code;
+      try{persist('develop-dispatch-retry',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId,basis:dispatchBasis});}
+      catch{return Promise.resolve(poison());}
+      halt('blocked',DISPATCH_RETRY_CODE,developDispatchReason(source));publication=privateStatus();
+    }
+    if(completeSource!==null){
+      try{persist('complete-recheck',{effectId:[...cache.values()].at(-1).effect.id,source:completeSource});}
+      catch{return Promise.resolve(poison());}
+      halt('blocked',COMPLETE_RECHECK_CODE,completeRecheckReason(completeSource));publication=privateStatus();
     }
     if(answerRetry){
       try{persist('develop-answer-retry',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId});}
@@ -1456,6 +1569,21 @@ export function createTaskRunner(options) {
     }catch(error){return freeze({outcome:'rejected',code:error.code??'effect_abandon_unavailable',
       ...(error.code==='effect_abandon_commit_pending'?{reason:'task-commit-intent 已写入，tasks.md 可能已改名或勾选；请核对 tasks.md、提交回执和旧进程后按原提交恢复路径处理。'}:{})});}
   };
+  // The operator's confirmation that the stuck current-session develop stopped
+  // writing (R3). Journals develop-answer-redo; the next advance redoes the round.
+  const redoDevelop=raw=>{
+    try{
+      need(invocationMode&&store&&!busy&&!poisoned&&options.persistence.mode==='resume','develop_redo_unavailable');
+      const value=json(raw);shape(value,['allowed','reason']);
+      need(value.allowed===true,'develop_redo_authorization_required');
+      need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(value.reason),'develop_redo_reason_required');
+      const cause=developRedoRequired();need(cause!==null,'develop_redo_unavailable');
+      persist('develop-answer-redo',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId,
+        cause,reason:value.reason,at:new Date().toISOString()});
+      halt('blocked',DEVELOP_REDO_CODE,developRedoReason(cause));publication=privateStatus();return status();
+    }catch(error){return freeze({outcome:'rejected',code:poisoned?'store_failure':error.code??'develop_redo_unavailable'});}
+  };
   const recoverBootstrapReview=raw=>{
     try{
       need(invocationMode&&store&&!busy&&!poisoned&&options.persistence.mode==='resume',
@@ -1489,7 +1617,7 @@ export function createTaskRunner(options) {
     }catch(error){return freeze({outcome:'rejected',code:error.code??'bootstrap_review_recovery_mismatch',
       reason:'原运行的文件、handoff 或证据无法精确核对；请保留现场并检查差异，不要重新派发开发。'});}
   };
-  const api={reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks};
+  const api={reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks,recheckLearningInput,redoDevelop};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   // A terminal reviewer observation is durable even if the host died before

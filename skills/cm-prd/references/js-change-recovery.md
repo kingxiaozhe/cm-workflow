@@ -142,8 +142,33 @@ callId/requestDigest必须绑定active中的未知调用，evidence不能为空�
 成功后丢弃整个active、不写result，checkpoint还原为active.before；decision/recovery日志只含operation、kind、callId与evidence的哈希/长度摘要，不含payload或证据正文。
 随后可重新发起同一操作并收到新host_request；这只回退会话状态，不撤销已经发生的文件写入，原保存/修正冲突检查仍生效（2026-09-17事故：prepare_summary断连后缺少放弃未知调用的入口）。
 
+### 已记录但被拒的应答：作废后重问
+
+应答先记录、后校验，所以被拒的应答每次 `resume` 都会原样重放、原样失败（真实会话 prd-4b8e48aa：change 模式 prd_generate 卡在未提交）。
+只针对 active 中**最后一个已记录**的应答（不含 prd_review、prd_correct），可显式作废后在同一待定操作下重问：
+
+```json
+{"requestId":"discard-1","operation":"resume","resolution":{"callId":"status原值","requestDigest":"status原值","discard":true,"evidence":"为何被拒（单行原因）"}}
+```
+
+宿主在会话存档追加 `discardedAnswers` 记录（操作、kind、callId、requestDigest、被拒结果的摘要、evidence 摘要），从 active 移除这条应答，再重放同一操作：之前已记录的应答照常重放，被作废的那次重新发 host_request。
+同一会话每种 kind 最多作废 2 次，超过报 `prd_answer_discard_limit`；prd_review 报 `prd_review_recovery_required`（见下节），prd_correct 报 `prd_correction_recovery_required`（走修正存档恢复）。
+
+### prd_review 单次审查的放弃与重审
+
+原审查结果丢失（只占了 claim）、或已记录的结果发布校验不过（如独立审查回成 self-degraded 并带 degradedReason，真实会话 prd-29b5f91e），闸门只认这一次审查、出不了 r1。
+以 `--allow-review-write --allow-review-abandon` 启动宿主，显式放弃这次审查尝试：
+
+```json
+{"requestId":"abandon-review-1","operation":"resume","resolution":{"callId":"prd_review 的 callId","requestDigest":"原值","abandonReview":true,"evidence":"原审查不可用的原因（单行）"}}
+```
+
+宿主先核对：已记录结果若能正常发布，拒绝为 `prd_review_result_publishable`（应直接 `resume` 发布原结果，不能换审查）；闸门须是 `dispatch_unknown`（已认领、无 r1）。
+然后把 `prd-<feature>-<stage>-dispatch.json` 转为只追加的 `prd-<feature>-<stage>-dispatch-abandoned-N.json`（含原 claim、callId、原因），会话追加 `abandonedReviews` 记录并还原到该操作开始前；之后重新发送 `final_review`，认领并派发一次新的独立审查，结果仍发布为 r1。
+每个 feature 每个阶段最多放弃 2 次（`prd_review_abandon_limit`）；未带开关报 `prd_review_abandon_not_enabled`。被放弃的结果永不发布、不被采纳。
+
 ### 可见的会话阻断
 
 宿主返回`{status:'blocked',reason:<code>,recovery:<当前recovery>,completionAuthorized:false}`，调用方先读reason与recovery，再选择原输出恢复、显式放弃或取消。
-可见code为`prd_operation_recovery_required`、`prd_host_result_unknown`、`prd_nothing_to_resume`、`prd_recovery_binding`、`prd_recovery_evidence_required`、`prd_replay_inputs_changed`、`cancelled`、`prd_turn_not_ready`及上述审查放弃阻断。
+可见code为`prd_operation_recovery_required`、`prd_host_result_unknown`、`prd_nothing_to_resume`、`prd_recovery_binding`、`prd_recovery_evidence_required`、`prd_replay_inputs_changed`、`cancelled`、`prd_turn_not_ready`、`prd_answer_discard_limit`、`prd_correction_recovery_required`、`prd_review_abandon_not_enabled`、`prd_review_result_publishable`、`prd_review_abandon_unavailable`、`prd_review_abandon_limit`及上述审查放弃阻断。
 其他异常沿用共享transport脱敏；blocked不是完成授权（2026-09-17事故：真实恢复原因被统一host_request_failed隐藏，导致多轮误排查）。

@@ -536,6 +536,12 @@ CM 不认识任何推送服务，也不保存任何 token；推到哪里、怎�
 
 提醒只是通知。CM 不会因此自动继续、替你应答或授予任何权限。
 
+**应答期限（与提醒无关）**：宿主向会话提的每个问题都有期限，到期就停止等待，不会无限挂着。
+期限由环境变量 `CM_HOST_ANSWER_TIMEOUT_MINUTES` 设定（整数 1–60，默认 30 分钟），宿主启动时读取，不写进运行存档、不影响指纹，恢复运行时可以换值。
+要先跑项目命令的提问（`check`、`verification_precheck`、`init_verify`、`check_runtime`、`qa_logic`、`qa_browser`）固定等满 60 分钟。
+cm-ai、批次和 cm-fix 的提问本来就有自己的计时（最长 60 分钟），这里只作 61 分钟的兜底，不会提前打断它们。
+到期后才到的应答一律拒收（`host_response_late`），宿主在 stderr 写一行 `{"diagnostic":"host_response_late",...}`。
+
 **提醒的边界（先看清再依赖它）**
 
 - 每条提醒只尝试发一次。推送失败（断网、推送服务出错）只在 `notify.log` 记一行，不重试、不补发。

@@ -206,6 +206,62 @@ export function claimPrdReview(args){
   return {stage:args.stage,feature:args.feature,outcome:'dispatch_claimed',dispatch_record:file,
     package_sha256:args.package_sha256,providerAuthorized:false,completionAuthorized:false};
 }
+// V5 (O05/O06): release one interrupted attempt so a fresh independent review
+// can be claimed. Only while the claim has no r1 evidence (dispatch_unknown);
+// the claim moves to an append-only abandoned record carrying the operator
+// reason and the abandoned session call, and at most MAX_PRD_REVIEW_ABANDONS
+// attempts per feature and stage are released. Repeating it for the same call
+// after the claim already moved is a no-op, so a host that died between this
+// and its session record can finish. JS host contract only; the CLI and its
+// Python oracle keep their inspect/claim/record commands unchanged.
+export const MAX_PRD_REVIEW_ABANDONS=2;
+const abandonedFile=(evidence,index)=>evidence.replace(/-r1\.md$/,`-dispatch-abandoned-${index}.json`);
+function releaseClaim(file,directory){
+  fs.unlinkSync(file);
+  if(process.platform!=='win32'){
+    const directoryFd=fs.openSync(directory,'r');try{fs.fsyncSync(directoryFd);}finally{fs.closeSync(directoryFd);}
+  }
+}
+export function abandonPrdReviewAttempt(args){
+  const {evidence}=paths(args),directory=path.dirname(evidence),file=dispatchFile(evidence);
+  need(typeof args.call_id==='string'&&/^[A-Za-z0-9-]{1,128}$/.test(args.call_id),'invalid call id','prd_review_abandon_binding');
+  need(typeof args.reason==='string'&&strip(args.reason).length>0&&args.reason.length<=2000&&!/[\r\n\0]/.test(args.reason),
+    'abandon reason required','prd_review_abandon_reason_required');
+  const existing=[];
+  for(let index=1;index<=MAX_PRD_REVIEW_ABANDONS;index++){
+    const record=abandonedFile(evidence,index);if(!stat(record))break;
+    need(!link(record),'unsafe PRD abandon record','prd_review_dispatch_invalid',()=>({dispatch:reviewFile(record)}));
+    existing.push(parseJson(read(record,'prd_review_dispatch_invalid',{dispatch:reviewFile(record)}),'prd_review_dispatch_invalid',{dispatch:reviewFile(record)}));
+  }
+  const gate=inspectPrdReview(args);
+  if(gate.outcome==='dispatch_once'&&existing.some(item=>item.call_id===args.call_id))
+    return {stage:args.stage,feature:args.feature,outcome:'already_abandoned',abandoned:existing.length};
+  need(gate.outcome==='dispatch_unknown','only an unpublished claimed attempt can be abandoned','prd_review_abandon_unavailable',
+    ()=>({dispatch:reviewFile(file)}));
+  const dispatch=loadDispatch(file,args);
+  // Crash window: the abandoned record is durable but the claim was not yet
+  // removed. The same call and the same claim finish that release; no new
+  // record is appended and no slot is spent.
+  const pending=existing.findIndex(item=>item.call_id===args.call_id&&item.package_sha256===dispatch.package_sha256
+    &&item.dispatch_at===dispatch.at&&item.stage===args.stage&&item.feature===args.feature&&item.status==='abandoned');
+  if(pending!==-1){
+    releaseClaim(file,directory);
+    need(inspectPrdReview(args).outcome==='dispatch_once','PRD review claim was not released','prd_review_abandon_unavailable');
+    return {stage:args.stage,feature:args.feature,outcome:'release_completed',abandoned:pending+1,record:abandonedFile(evidence,pending+1),
+      providerAuthorized:false,completionAuthorized:false};
+  }
+  need(existing.length<MAX_PRD_REVIEW_ABANDONS,'PRD review abandon limit reached','prd_review_abandon_limit',
+    ()=>({dispatch:reviewFile(file)}));
+  const index=existing.length+1,record=abandonedFile(evidence,index);
+  const value={schema_version:1,stage:args.stage,feature:args.feature,package_sha256:dispatch.package_sha256,
+    dispatch_at:dispatch.at,status:'abandoned',call_id:args.call_id,reason:args.reason,at:new Date().toISOString()};
+  const fd=fs.openSync(record,'wx',0o600);
+  try{fs.writeFileSync(fd,JSON.stringify(value)+'\n');fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+  releaseClaim(file,directory);
+  need(inspectPrdReview(args).outcome==='dispatch_once','PRD review claim was not released','prd_review_abandon_unavailable');
+  return {stage:args.stage,feature:args.feature,outcome:'abandoned',abandoned:index,record,
+    providerAuthorized:false,completionAuthorized:false};
+}
 export function inspectPrdReview(args){
   const {evidence,receipt}=paths(args);
   const dispatch=loadDispatch(dispatchFile(evidence),args);

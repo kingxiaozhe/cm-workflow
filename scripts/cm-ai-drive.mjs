@@ -25,7 +25,7 @@
 //                                    fix_repair, fix_retrospective; host-qa-fix-owner.mjs
 //                                    forwards to cm-fix host.run/handle.
 // fix_action                         selected cm-fix step; host-qa-fix-owner.mjs fix_action.
-// status/cancel/abandon_review/abandon_effect/bootstrap_review_recover/fix_status/context_refresh: none; cm-ai-conversation-entry.mjs
+// status/cancel/abandon_review/abandon_effect/bootstrap_review_recover/develop_redo/fix_status/context_refresh: none; cm-ai-conversation-entry.mjs
 //                                    status/cancel/context_refresh; host-qa-fix-owner.mjs fix_status.
 // verification_precheck              optional execution.verificationGate in
 //                                    host-conversation-execution.mjs; CLI has no runner for it.
@@ -56,7 +56,7 @@ import {codeProjectPaths,resolveCodeProjects} from '../runtime/js/cm-ai/code-pro
 import {parseHostInputLimit} from '../runtime/js/cm-ai/host-session.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readCloseoutReport} from '../runtime/js/cm-ai/knowledge-closeout.mjs';
-import {readRunnerHistory,attemptBaseline} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {readRunnerHistory,attemptBaseline,projectedRunnerStatus,RECHECK_CODES} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 import {attemptAnswerName,inspectDriverBootstrap,readBootstrapRulesAnswers,createBootstrapRulesResponder} from '../runtime/js/cm-ai/drive-bootstrap.mjs';
@@ -64,7 +64,7 @@ import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
 
 // PLAN.liveEvidence: fresh current-session evidence; see docs/live-evidence-drivers.md.
 const HOST=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
-const OPERATIONS=new Set(['advance','start','resume','status','cancel','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','decision','complete','qa','qa_result',
+const OPERATIONS=new Set(['advance','start','resume','status','cancel','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','develop_redo','decision','complete','qa','qa_result',
   'fix_status','fix_advance','fix_action','fix_run','run_finalize','context_refresh','finish']);
 const ADVANCE=new Set(['advance','start','resume']);
 const PACKAGE_OPERATIONS=new Set(['decision','complete','qa','qa_result','context_refresh','finish','run_finalize']);
@@ -88,7 +88,7 @@ const PAIR_FLAGS=new Set(['--external-models-config','--allow-review-attempt','-
   '--review-runtime','--feature']);
 const FLAG_FLAGS=new Set(['--execution-optimizations','--external-models','--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
   '--verification-precheck',
-  '--allow-bootstrap-write','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
+  '--allow-bootstrap-write','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
   '--supersede-reviewed-evidence','--accept-superseded-code-drift','--rebind-spec-material',
   ...['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon','abandon-review',
     'test-author','repair','cause-review','final-review'].map(name=>`--allow-qa-fix-${name}`)]);
@@ -107,6 +107,11 @@ export const abandonEffectPlanError=(operation,plan,permissions)=>operation!=='a
   &&typeof plan.reason==='string'&&plan.reason.trim().length>0
   &&Buffer.byteLength(plan.reason,'utf8')<=500&&!/[\r\n\0]/.test(plan.reason)?null:
     'abandon_effect 需要 resume、--allow-abandon-effect 与单行 reason（最多 500 UTF-8 字节）';
+export const developRedoPlanError=(operation,plan,permissions)=>operation!=='develop_redo'?null:
+  plan.mode==='resume'&&permissions.includes('--allow-develop-redo')
+  &&typeof plan.reason==='string'&&plan.reason.trim().length>0
+  &&Buffer.byteLength(plan.reason,'utf8')<=500&&!/[\r\n\0]/.test(plan.reason)?null:
+    'develop_redo 需要 resume、--allow-develop-redo 与单行 reason（最多 500 UTF-8 字节），并先确认会话已停止修改代码';
 export const bootstrapReviewRecoveryPlanError=(operation,plan,permissions)=>operation!=='bootstrap_review_recover'?null:
   plan.mode==='resume'&&permissions.includes('--allow-bootstrap-review-recovery')
   &&typeof plan.reason==='string'&&plan.reason.trim().length>0
@@ -414,7 +419,7 @@ export function readRunJournal(definition){
   const snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,identity:{
     repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
   const first=snapshot.records[0];
-  return {history:readRunnerHistory(snapshot.records,first.payload.config,3),baseline:first.payload.baseline,
+  return {history:readRunnerHistory(snapshot.records,first.payload.config,3),config:first.payload.config,baseline:first.payload.baseline,
     frame:journalRestBytes(snapshot.records)};
 }
 function reachableDevelopAttempts({plan,operation,journal,permissions}){
@@ -426,11 +431,22 @@ function reachableDevelopAttempts({plan,operation,journal,permissions}){
   if(journal.error)stop(2,`无法只读检查恢复存档: ${journal.error.code??journal.error.message}`);
   // learning is the journal's Learning result the next develop effect starts from
   // (bootstrap rules bind their on-disk files to its recorded evidence).
-  return {...projectDevelopAttempts(journal.history.state,operation,permissions),learning:journal.history.state.learningResult??null};
+  // Q28: decide from what the host will show (projected answer-gap blocks), not the raw replay state.
+  return {...projectDevelopAttempts(projectedRunnerStatus(journal.history,journal.config),operation,permissions),
+    learning:journal.history.state.learningResult??null};
 }
 export function projectDevelopAttempts(status,operation,permissions){
   const {state,attempt,reviewPackage}=status;
-  if(developmentRetryable(status))return {attempts:[attempt],reviewFirst:false,packageDigest:null};
+  // One advance can continue past the round-1 review into round 2 when it holds
+  // --allow-review-attempt 1 (Codex round 1 on Q28): preflight that round too.
+  const reviewAfterDevelop=operation==='advance'&&attempt===1
+    &&permissions.some((flag,index)=>flag==='--allow-review-attempt'&&permissions[index+1]==='1');
+  // A re-check (check_answer_*) re-runs only the checks: no developer answer for
+  // this round, only for the round its review may lead to.
+  if(state==='blocked'&&RECHECK_CODES.includes(status.code))
+    return {attempts:reviewAfterDevelop?[2]:[],reviewFirst:false,reviewAfterDevelop,holdable:true,packageDigest:null};
+  if(developmentRetryable(status))
+    return {attempts:reviewAfterDevelop?[1,2]:[attempt],reviewFirst:false,reviewAfterDevelop,holdable:true,packageDigest:null};
   if(state==='ready'&&attempt===1&&operation==='advance'
     &&permissions.some((flag,index)=>flag==='--allow-review-attempt'&&permissions[index+1]==='1'))
     return {attempts:[1,2],reviewFirst:false,reviewAfterDevelop:true,packageDigest:null};
@@ -537,7 +553,7 @@ export function validateCmAiAnswer(kind,value,root){
 }
 function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks, checkTimeoutMs。\nchecks 每项为 {id,command,timeoutMs?}；checkTimeoutMs 与每项 timeoutMs 为 1..3600000 整数，默认 900000 ms（15 分钟）。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。 bootstrap_review_recover 需要 mode:resume、permissions:["--allow-bootstrap-review-recovery"] 与 PLAN.reason；只核对原运行的已写规则与 handoff，不需要答案文件。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务（纯规范 scope、单代码根、非 --protected-config）读 answers/init-generate.json（{status:"generated",documents:[{path,contentFile}]}，覆盖全部 targets）与 answers/init-verify.json（commands 为驾驶员实跑的草稿命令 {id,command,timeoutMs?}，可选 commandsNotRun；checks 只含 globs/file_references/constraint_preservation/rule_applicability；constraintChanges:[]；application/retrospective 沿原 Learning）；第 1 轮也可用 *-a1.json，第 2 轮只读 init-generate-a2.json 与 init-verify-a2.json，且须先 decision 读取首轮 findings，不能带 --allow-review-attempt 跨轮。commands 在宿主接受启动后、发送操作前由驾驶员实跑（须先带 --allow-bootstrap-write 等宿主授权；受保护模式在 specs 沙箱内），失败或改动了预检核对的文件即退出 2 且不发送操作（create 时改用 resume 重跑）；结果只来自实跑，答案文件不能提供。\n'
+    process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks, checkTimeoutMs。\nchecks 每项为 {id,command,timeoutMs?}；checkTimeoutMs 与每项 timeoutMs 为 1..3600000 整数，默认 900000 ms（15 分钟）。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。develop_redo 需要 mode:resume、permissions:["--allow-develop-redo"] 与 PLAN.reason，先确认会话已停止修改代码。 bootstrap_review_recover 需要 mode:resume、permissions:["--allow-bootstrap-review-recovery"] 与 PLAN.reason；只核对原运行的已写规则与 handoff，不需要答案文件。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务（纯规范 scope、单代码根、非 --protected-config）读 answers/init-generate.json（{status:"generated",documents:[{path,contentFile}]}，覆盖全部 targets）与 answers/init-verify.json（commands 为驾驶员实跑的草稿命令 {id,command,timeoutMs?}，可选 commandsNotRun；checks 只含 globs/file_references/constraint_preservation/rule_applicability；constraintChanges:[]；application/retrospective 沿原 Learning）；第 1 轮也可用 *-a1.json，第 2 轮只读 init-generate-a2.json 与 init-verify-a2.json，且须先 decision 读取首轮 findings，不能带 --allow-review-attempt 跨轮。commands 在宿主接受启动后、发送操作前由驾驶员实跑（须先带 --allow-bootstrap-write 等宿主授权；受保护模式在 specs 沙箱内），失败或改动了预检核对的文件即退出 2 且不发送操作（create 时改用 resume 重跑）；结果只来自实跑，答案文件不能提供。\n'
       +'develop.json.edits 每项是 scope 路径到下列之一："内容文件"（写入；已有文件保留权限，新文件 0644）、{"file":"内容文件","mode":"0755"|"0644"}、{"mode":"0755"|"0644"}（只改已有文件权限）、{"delete":true}（删除已有文件）。改名 = 删旧路径 + 写新路径，两者都要在 scope 内；同时列在 requirements 里的路径不能删除。\n'
       +'启动前拒绝：单个 scope 文件超过 1 MiB、审查材料（按审查包快照：scope、requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或超过 256 个文件、交付后与任务基线完全相同（edits 为空或内容和权限都没变）、开发检查点（含 handoff 与 AGENTS.md 回写，按宿主同一套构建代码计）装不进运行存档单条 1 MiB 记录减去为有界审查与完成记录推出的预留，或任务基线装不进一条记录。受保护模式（--protected-conversation-config）只收合法 UTF-8 文本，应答大于 --input-limit（默认 65536）时提示应加的值。\n'
       +'runId 需 8–128 个字符（运行日志要求），create 前检查。resume 时按存档里的当前轮次发送 identity，第 2 轮的 decision/complete/qa 等无需手改。\n');
@@ -573,6 +589,8 @@ function load(){
   if(abandonError)stop(2,abandonError);
   const abandonEffectError=abandonEffectPlanError(operation,plan,permissions);
   if(abandonEffectError)stop(2,abandonEffectError);
+  const developRedoError=developRedoPlanError(operation,plan,permissions);
+  if(developRedoError)stop(2,developRedoError);
   const bootstrapRecoveryError=bootstrapReviewRecoveryPlanError(operation,plan,permissions);
   if(bootstrapRecoveryError)stop(2,bootstrapRecoveryError);
   const config=path.resolve(base,plan.config),answers=plan.answers?path.resolve(base,plan.answers):null;
@@ -671,11 +689,19 @@ function load(){
     :{attempts:[],reviewFirst:false,packageDigest:null};
   const bootstrapAnswers=rules
     ?readBootstrapRulesAnswers({answers,operation,definition,plan,permissions,bootstrap,reachable}):null;
-  const developAnswers=new Map(),deliveries=[];
+  const developAnswers=new Map(),deliveries=[];let holdRevision=false;
   if(asks.includes('develop'))for(const attempt of reachable.attempts){
     const file=answerPath(answers??'',developFilename(answers??'',attempt));
     if(!answers||!fs.existsSync(file)){
       const reviewFile=`.reviews/${definition.feature.replace(/^\d+\./,'')}-${definition.identity.taskId}-r1.md`;
+      // Resuming a retryable block: let the redo and its review run, then stop
+      // at changes_requested (revision_answer_required) instead of asking a
+      // round-2 develop nobody can answer.
+      if(reachable.reviewAfterDevelop&&reachable.holdable&&attempt===2){
+        holdRevision=true;
+        stderr(`没有 ${path.basename(file)}：本次 advance 的首轮审查若要求修改，任务会停在 changes_requested（revision_answer_required），不会发起第 2 轮开发；读取 ${reviewFile} 的 findings，写 answers/develop-a2.json 后再 advance`);
+        continue;
+      }
       if(reachable.reviewAfterDevelop&&attempt===2)
         stop(2,`缺少 ${file}；本次 advance 带 --allow-review-attempt 1，宿主完成首轮审查后可能直接进入第 2 轮 develop。可选：1) 从 PLAN.permissions 移除 --allow-review-attempt 1，先 advance 到 awaiting_review；再用该运行返回的 packageDigest 执行 decision，读取 ${reviewFile} 的 findings；若要求修改，写 answers/develop-a2.json 后 advance。2) 若有意一次跑完，预先写 answers/develop-a2.json 后重试 advance。develop-a2.json 必须针对首轮 findings 修改；与第 1 轮被要求修改的代码逐字节相同时，第 2 轮停在 blocked/develop_unchanged_after_review，不送审，改好后再 advance。`);
       if(reachable.reviewFirst)stop(2,`缺少 ${path.basename(file)}；请先以 decision 和当前 packageDigest ${reachable.packageDigest} 单独运行审查，读取 .reviews/${definition.feature.replace(/^\d+\./,'')}-${definition.identity.taskId}-r${attempt-1}.md 中的 findings，写 answers/develop-a${attempt}.json 后再 advance`);
@@ -700,7 +726,7 @@ function load(){
   });
   if(answer.documentation_sync)for(const target of Object.keys(answer.documentation_sync.edits))
     if(!workflow.documentationPaths.includes(target))stop(2,`documentation-sync.json.edits 越过文档 scope: ${target}`);
-  return {...loaded,definition,identity,permissions,config,answers,answer,developAnswers,live,executionPolicy,
+  return {...loaded,definition,identity,permissions,config,answers,answer,developAnswers,live,executionPolicy,holdRevision,
     bootstrapRules:bootstrapAnswers&&createBootstrapRulesResponder({definition,plan,bootstrap,answers:bootstrapAnswers,
       // Same execution as the task checks: the host's specs sandbox in protected mode, else the driver's own.
       specsRoot:protectedMode?definition.specsDir:null,watch:[config,...permissionFiles]})};
@@ -777,7 +803,7 @@ async function answerFor(row,answer,paths,control){
 export function buildCmAiDriveRequest(operation,plan,definition,identity=definition.identity){
   return {version:1,identity,
     ...(operation==='reconcile_review'?{invocationId:plan.invocationId}:{}),
-    ...(['abandon_review','abandon_effect','bootstrap_review_recover'].includes(operation)?{reason:plan.reason}:{}),
+    ...(['abandon_review','abandon_effect','bootstrap_review_recover','develop_redo'].includes(operation)?{reason:plan.reason}:{}),
     ...(PACKAGE_OPERATIONS.has(operation)?{packageDigest:plan.packageDigest}:{}),
     ...(TEST_RUN_OPERATIONS.has(operation)?{testRunId:plan.testRunId}:{}),
     ...(['fix_status','fix_advance','fix_action','fix_run'].includes(operation)?{
@@ -807,7 +833,7 @@ async function main(){
   // Rules init_verify commands really run once the host has accepted the launch
   // (host_ready) and before the operation is sent: a failure never becomes an
   // unknown develop effect, and the host's own launch validation came first.
-  driveHost({host:HOST,args:buildCmAiDriveHostArgs(plan,permissions,config),cwd:definition.codeProject,operation,request,
+  driveHost({host:HOST,args:[...buildCmAiDriveHostArgs(plan,permissions,config),...(loaded.holdRevision?['--hold-revision']:[])],cwd:definition.codeProject,operation,request,
     answers:answer,paths:{answers:loaded.answers},answerFor,
     ...(loaded.bootstrapRules?{beforeRequest:()=>loaded.bootstrapRules.prepare(plan.mode)}:{})});
 }
