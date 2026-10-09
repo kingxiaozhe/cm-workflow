@@ -456,7 +456,7 @@ test('#26c a stopped call with a session-declared BLOCKED is superseded and reru
   const original=fs.readFileSync(f.log,'utf8');
   fs.writeFileSync(f.log,original.trim().split('\n').map(line=>{const row=JSON.parse(line);
     return JSON.stringify(row.event==='test_run'&&row.phase==='case_blocked'
-      ?{...row,host_declared_blocked:true,host_request_timeout:false}:row);}).join('\n')+'\n');
+      ?{...row,host_declared_blocked:true,host_request_timeout:false,answered_verdict:'BLOCKED'}:row);}).join('\n')+'\n');
   const unknown=done(await launch(f,{workflow,extra:browserQa}));
   assert.equal(unknown.code,'qa_execution_unknown');
   const rerun=done(await launch(f,{workflow,extra:[...browserQa,'--rerun-unknown-qa'],answers:{qa_browser:pass(f)}}));
@@ -465,6 +465,25 @@ test('#26c a stopped call with a session-declared BLOCKED is superseded and reru
   assert.equal(superseded.reason,'host_request_timeout');
   assert.deepEqual([superseded.timed_out_cases,superseded.host_blocked_cases,superseded.partial_pass_cases],[[],['TC-001'],[]]);
   assert.deepEqual(testRuns(f,'start').map(row=>row.attempt),[1,2]);
+});
+
+// The approved contract, not the row, decides [需确认]: an unresolved expectation
+// refuses even when the row claims a host-judged cleanup gap.
+test('#26c the approved contract refuses an unresolved [需确认] case before host-fault eligibility',POSIX,async t=>{
+  const {f}=await timedOutCall(t);
+  const {inspectCmAiQaRecovery}=await import('../runtime/js/cm-ai/cm-ai-qa-log.mjs');
+  const original=fs.readFileSync(f.log,'utf8');
+  fs.writeFileSync(f.log,original.trim().split('\n').map(line=>{const row=JSON.parse(line);
+    return JSON.stringify(row.event==='test_run'&&row.phase==='case_blocked'
+      ?{...row,host_request_timeout:false,blocked_reason:'cleanup',answered_verdict:'PASS'}:row);}).join('\n')+'\n');
+  const start=testRuns(f,'start')[0];
+  const binding={specsDir:f.specsDir,feature:start.feature,packageDigest:start.package_digest,
+    identity:{repositoryId:start.repository_id,runId:start.run_id,taskId:start.task,attempt:1}};
+  const recovery=inspectCmAiQaRecovery(binding,{timedOut:true,requestTimeoutMs:1500});
+  assert.deepEqual([recovery.timedOutCases,recovery.hostBlockedCases],[[],['TC-001']]);
+  const source=path.join(f.specsDir,start.feature,'test-cases.json'),contract=JSON.parse(fs.readFileSync(source,'utf8'));
+  contract.cases.find(item=>item.id==='TC-001').expected=['[需确认] synthetic expectation'];fs.writeFileSync(source,JSON.stringify(contract));
+  assert.throws(()=>inspectCmAiQaRecovery(binding,{timedOut:true,requestTimeoutMs:1500}),{code:'qa_execution_unknown'});
 });
 
 test('#26c an undistinguished BLOCKED, a FAIL or an unattested older timeout row still refuses --rerun-unknown-qa',POSIX,async t=>{
@@ -478,6 +497,9 @@ test('#26c an undistinguished BLOCKED, a FAIL or an unattested older timeout row
   for(const [name,edit,code,extra] of [
     ['other BLOCKED',row=>({...row,host_request_timeout:false}),'qa_execution_unknown',attest],
     ['unresolved expectation',row=>({...row,host_request_timeout:false,blocked_reason:'needs_confirmation'}),'qa_execution_unknown',attest],
+    // A browser FAIL the host downgraded for its evidence stays a product verdict.
+    ['downgraded FAIL',row=>({...row,host_request_timeout:false,blocked_reason:'evidence',answered_verdict:'FAIL'}),'qa_execution_unknown',attest],
+    ['host-judged without the session verdict',row=>({...row,host_request_timeout:false,blocked_reason:'cleanup'}),'qa_execution_unknown',attest],
     ['FAIL',row=>({...row,phase:'case_complete',result:'FAIL',host_request_timeout:undefined}),'qa_execution_unknown',attest],
     ['older row, window not elapsed',legacy(0),'qa_execution_unknown',attest],
     // An older host also wrote this row for a PASS answered near the deadline but

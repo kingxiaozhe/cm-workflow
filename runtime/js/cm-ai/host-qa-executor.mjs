@@ -335,13 +335,18 @@ export function createHostQaExecutor(options) {
             // that the session itself answered BLOCKED; the report only mirrors it.
             // Why the host itself judged this case BLOCKED (Q06/Q11 read it after a
             // call stopped as a whole); never for a session-declared or timed-out case.
+            // A missing capability and an unresolved [需确认] come first: neither is a
+            // host fault a rerun can fix, whatever the cleanup or evidence looked like.
             const blockedReason=verdict!=='BLOCKED'||answered&&observed.verdict==='BLOCKED'||hostRequestTimeout&&!answered?null
+              :browser===null?'unavailable':item.expected.some(value=>value.includes('[需确认]'))?'needs_confirmation'
               :evidenceProblem!==null?'evidence':digest(observed.environment)!==digest(environment)?'environment'
-              :observed.cleanup==='failed'||(item.cleanup.length>0&&observed.cleanup!=='completed')?'cleanup'
-              :browser===null?'unavailable':'needs_confirmation';
+              :observed.cleanup==='failed'||(item.cleanup.length>0&&observed.cleanup!=='completed')?'cleanup':'unclassified';
             logStep(configuration,binding,'test_run',verdict==='BLOCKED'?'case_blocked':'case_complete',
               {case_id:item.id,result:verdict,...(answered&&observed.verdict==='BLOCKED'?{host_declared_blocked:true}:{}),
                 ...(blockedReason?{blocked_reason:blockedReason}:{}),
+                // The session's own verdict before any host downgrade: a FAIL the host
+                // turned BLOCKED (evidence, environment, cleanup) is never a host fault.
+                ...(answered?{answered_verdict:observed.verdict}:{}),
                 // Whether this BLOCKED is a host request that timed out without an
                 // answer; --rerun-unknown-qa reads it after a whole-call timeout.
                 ...(verdict==='BLOCKED'?{host_request_timeout:hostRequestTimeout&&!answered}:{})},

@@ -212,7 +212,8 @@ function partialPassCases(items,code){
 // too: they are listed as host_blocked_cases. An unresolved [需确认], a missing
 // capability, a FAIL, or an older row that cannot tell still refuses.
 const HOST_JUDGED_BLOCKED=['evidence','environment','cleanup'];
-function timedOutCases(items,code,requestTimeoutMs,attestation=null,allowHostBlocked=false){
+// context {specsDir,feature}: the approved test contract decides [需确认].
+function timedOutCases(items,code,requestTimeoutMs,attestation=null,allowHostBlocked=false,context=null){
   need(attestation===null||validEnvironmentFailureReason(attestation),code);
   need(requestTimeoutMs===null||Number.isSafeInteger(requestTimeoutMs)&&requestTimeoutMs>0&&requestTimeoutMs<=3600000,code);
   need(!items.some(({row})=>['complete','abandoned','superseded'].includes(row.phase)
@@ -223,7 +224,13 @@ function timedOutCases(items,code,requestTimeoutMs,attestation=null,allowHostBlo
     if(row.phase!=='case_blocked')continue;
     id(row.case_id);need(row.result==='BLOCKED',code);
     if(row.host_declared_blocked===true||HOST_JUDGED_BLOCKED.includes(row.blocked_reason)){
-      need(allowHostBlocked,code);hostBlocked.push(row.case_id);continue;
+      // An original FAIL the host downgraded, a row that does not keep the
+      // session's verdict, and an unresolved [需确认] in the approved contract
+      // refuse before any host-fault eligibility.
+      need(allowHostBlocked&&context!==null&&['PASS','BLOCKED'].includes(row.answered_verdict)
+        &&(row.host_declared_blocked!==true||row.answered_verdict==='BLOCKED')
+        &&!['needs_confirmation','unavailable'].includes(row.blocked_reason),code);
+      hostBlocked.push(row.case_id);continue;
     }
     if(Object.hasOwn(row,'host_request_timeout'))need(row.host_request_timeout===true,code);
     else{
@@ -234,6 +241,8 @@ function timedOutCases(items,code,requestTimeoutMs,attestation=null,allowHostBlo
     timedOut.push(row.case_id);
   }
   need(timedOut.length+hostBlocked.length>0,code);
+  if(hostBlocked.length){const contract=contractCases(context.specsDir,context.feature,code);
+    for(const caseId of hostBlocked)need(!confirmationPending(contract.get(caseId)),code);}
   const passed=items.filter(({row})=>row.phase==='case_complete').map(({row})=>row.case_id);
   return {timedOut:[...new Set(timedOut)].sort(),hostBlocked:[...new Set(hostBlocked)].sort(),passed:[...new Set(passed)].sort()};
 }
@@ -421,7 +430,7 @@ function validateRunSequence(items,code='qa_round_invalid',specsDir){
         }else if(row.reason==='host_request_timeout'){
           // Rows before host_blocked_cases existed could list no such case.
           const cases=timedOutCases(prior,code,row.request_timeout_ms??null,row.legacy_timeout_attestation??null,
-            Object.hasOwn(row,'host_blocked_cases'));
+            Object.hasOwn(row,'host_blocked_cases'),{specsDir,feature:row.feature});
           need(row.request_timeout_ms!==null&&JSON.stringify(row.timed_out_cases)===JSON.stringify(cases.timedOut)
             &&JSON.stringify(row.host_blocked_cases??[])===JSON.stringify(cases.hostBlocked)
             &&(!Object.hasOwn(row,'host_blocked_cases')||cases.hostBlocked.length>0)
@@ -504,7 +513,7 @@ export function inspectCmAiQaRecovery(input,{blocked=false,environment=null,envi
     const timeout=recorded?recorded.request_timeout_ms??null:requestTimeoutMs;
     const attested=recorded?recorded.legacy_timeout_attestation??null:attestation;
     const cases=timedOutCases(runs.filter(({row})=>row.phase!=='superseded'),'qa_execution_unknown',timeout,attested,
-      recorded===undefined||Object.hasOwn(recorded,'host_blocked_cases'));
+      recorded===undefined||Object.hasOwn(recorded,'host_blocked_cases'),{specsDir:input.specsDir,feature:start.feature});
     need(start.attempt<qaRoundLimit(starts.freed+(recorded===undefined?1:0)),'qa_round_invalid');
     return {testRunId:start.operation_id,qaRound:start.attempt,mode:start.mode,caseCount:start.case_count,
       timedOutCases:cases.timedOut,hostBlockedCases:cases.hostBlocked,partialPassCases:cases.passed,
