@@ -98,7 +98,7 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 这两类与传输超时、abandon 共用同一 attempt 的一次重派，超出后为 `blocked/review_provider_failed` 或
 `blocked/review_verdict_invalid`。工具或上下文越界、输出超限、启动失败等仍为 unknown；其中 Claude 审查进程在边界被停（`unexpected_tool_or_content`，
 代码后带 `{k,m,b,t,e}` 摘要：拒绝点、消息类型、块类型、工具名、is_error，不含正文）且进程已退出、没有最终消息、不是超时、
-摘要属于 `user_content`／`empty_content`／`tool_attempt_limit`（或旧记录没有摘要）时，`pendingAction` 为 `abandon_review`，可按下文显式放弃并重派一次；
+摘要属于 `user_content`／`empty_content`／`tool_attempt_limit`（旧记录没有摘要、分不清原因，按兼容决定同样允许）时，`pendingAction` 为 `abandon_review`，可按下文显式放弃并重派一次；
 `tool_result_not_error`（非 StructuredOutput 工具成功执行）等真正越界仍为 unknown，只能 cancel。Claude CLI 自己注入的提醒（`isSynthetic` 的 user 文本，如要求调用 StructuredOutput）
 现在按通知处理，不再触发该停机；审查结论只认 `structured_output`，文字回答不是结论（`invalid_output_json`）。
 `blocked` verdict 表示在批准范围内改代码也无法通过（规格矛盾、缺材料、需改范围外文件或需人工决定），

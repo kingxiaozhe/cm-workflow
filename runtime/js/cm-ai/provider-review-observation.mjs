@@ -128,8 +128,10 @@ export function reviewerBoundaryExit(code){
 // not by timeout, with no final message and no terminal, and the rejection is
 // one that cannot have run a tool successfully (a user-role message that was
 // not a tool result, empty content, or the attempt limit). A legacy code with
-// no summary qualifies too: nothing was ever accepted from it either. A
-// successful or unmatched tool result stays unknown, as before.
+// no summary cannot tell these apart from a successful tool; it qualifies by
+// compatibility decision only (nothing was ever accepted from it, and the
+// operator abandons explicitly, once). A new record of a successful or
+// unmatched tool result stays unknown, as before.
 const ABANDONABLE_CHECKS=new Set(['user_content','empty_content','tool_attempt_limit']);
 export function abandonableReviewerExit(observation){
   const exit=reviewerBoundaryExit(observation?.result?.code);

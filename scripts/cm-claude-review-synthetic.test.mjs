@@ -137,3 +137,19 @@ test('boundary exit codes parse strictly; only exits that cannot have run a tool
   assert.equal(abandonableReviewerExit(observation('unexpected_tool_or_content',[{event:'bogus'}])),false,'invalid stream');
   assert.equal(abandonableReviewerExit(null),false);
 });
+
+test('the 1024-byte limit is measured in UTF-8 bytes; synthetic, rate limit and system notices share the 32 slots',()=>{
+  const tail=[assistant([tool('out')]),toolResult('out'),result()];
+  const cjk='审'.repeat(341)+'x'; // 341*3+1 = 1024 bytes
+  assert.equal(run([init(),assistant([text('a')]),synthetic(cjk),...tail]).value.status,'succeeded');
+  assert.equal(rejected([init(),assistant([text('a')]),synthetic('审'.repeat(342))]).detail.k,'user_content'); // 1026 bytes
+  assert.equal(run([init(),assistant([text('a')]),synthetic('x'.repeat(1024)),...tail]).value.status,'succeeded');
+  const rateLimit=()=>({type:'rate_limit_event',session_id:'fresh-review',rate_limit_info:{status:'allowed'}});
+  const system=()=>({type:'system',subtype:'api_retry',session_id:'fresh-review',attempt:1});
+  const mixed=[init(),assistant([text('a')])];
+  for(let i=0;i<32;i++)mixed.push(i%3===0?synthetic():i%3===1?rateLimit():system());
+  const ok=run([...mixed,...tail]);
+  assert.equal(ok.value.status,'succeeded');assert.equal(ok.notices.length,32);
+  assert.equal(rejected([...mixed,synthetic()]).code,'unexpected_event');
+  assert.equal(rejected([...mixed,rateLimit()]).code,'unexpected_event');
+});
