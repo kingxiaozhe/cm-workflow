@@ -238,6 +238,7 @@ test('driver classification follows each workflow contract (table)',()=>{
     const notice=driveNotice({host:`/x/scripts/${workflow}-host.mjs`,cwd:'/work/demo-app',args:['serve'],operation,
       row:{requestId:'drive',result}});
     assert.equal(notice?.event??null,expected,`${workflow} ${operation} ${JSON.stringify(result)}`);
+    if(expected==='done')assert.match(notice.nextAction,/新会话/,`${workflow} done suggests a fresh session`);
   }
   for(const workflow of NOTIFY_WORKFLOWS){
     assert.equal(driveNotice({host:`${workflow}-host.mjs`,cwd:'/w/p',operation:'advance',row:{requestId:'drive',error:{code:'host_request_failed'}}}).event,'stuck');
