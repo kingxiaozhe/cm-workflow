@@ -18,7 +18,7 @@ import {prepareReviewedEvidenceSupersession} from '../runtime/js/cm-ai/reviewed-
 import {readEvidenceSupersession} from '../runtime/js/cm-ai/reviewed-evidence-supersession-record.mjs';
 import {buildCodexDeveloperPrompt} from '../runtime/js/cm-ai/codex-developer-adapter.mjs';
 import {buildCodexReviewPrompt} from '../runtime/js/cm-ai/codex-review-adapter.mjs';
-import {readRunnerHistory,runnerPayloadV3} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {readRunnerHistory,runnerPayloadV3,projectedRunnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {abandonEffectPlanError,buildCmAiDriveRequest,buildCmAiDriveHostArgs} from './cm-ai-drive.mjs';
 import {spawn as spawnChild} from 'node:child_process';
 import {readProcessStartTime} from '../runtime/js/cm-ai/worker-process-identity.mjs';
@@ -471,6 +471,12 @@ test('out-of-scope delivery names the paths and re-checks after they are removed
       ['develop_out_of_scope','develop_out_of_scope']);
     const history=readRunnerHistory(records,records[0].payload.config,3);
     assert.equal(history.state.calls.filter(call=>call.contextId==='developer').length,1,'the developer ran once');
+    // The journal shape older runtimes left (first develop checkpointed unknown/out_of_scope)
+    // replays unchanged and is projected for drivers as the retryable block.
+    const first=records.findIndex(row=>row.payload.type==='effect-checkpoint');
+    const prefix=records.slice(0,first+1),old=readRunnerHistory(prefix,prefix[0].payload.config,3);
+    assert.deepEqual([old.state.state,old.state.code],['unknown','out_of_scope']);
+    assert.equal(projectedRunnerStatus(old,prefix[0].payload.config).code,'develop_out_of_scope');
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
