@@ -204,6 +204,11 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   }
   function prepareGroup(group){
     const state=progress(),remaining=group.filter(key=>membership.has(key)&&!state.done.has(key));
+    // A member may only create files (js-host.md 3.1): every scope path of a member
+    // about to get its worktree must be absent from HEAD. Checked for the whole group
+    // before any worktree exists; started members are not rechecked.
+    for(const key of remaining)if(!fs.existsSync(location(key).worktree))for(const file of plans.get(key).scope)
+      need(spawnSync('git',['-C',config.codeProject,'cat-file','-e',`HEAD:${file}`],gitOptions()).status!==0,'parallel_scope_existing_file');
     for(const key of remaining){
       const {worktree,branch}=location(key);
       if(!fs.existsSync(worktree)){
