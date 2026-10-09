@@ -372,7 +372,7 @@ export function createTaskRunner(options) {
     if(!gapsLive()||options.providerDevelopment===true)return null;
     const basis=developDispatchBasis({state,code,attempt,cache:[...cache.values()],calls,receipt,reviewPackage,priorReview},
       metadata,answerGapCount('develop-dispatch-retry'));
-    if(basis===null||basis==='dispatch_failed')return basis;
+    if(basis===null)return null;
     try{
       if(basis==='reviewed_package')verifyReviewPackage({root:config.root,baseline:attemptBaseline(original,reviewPackage.identity.attempt),
         checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
@@ -401,7 +401,11 @@ export function createTaskRunner(options) {
     if(current.state==='unknown'){
       const basis=developDispatchRetry();
       if(basis!==null){const {reason:discard,...rest}=current;
-        current=freeze({...rest,state:'blocked',code:DISPATCH_RETRY_CODE,reason:developDispatchReason(current.code,basis)});}
+        current=freeze({...rest,state:'blocked',code:DISPATCH_RETRY_CODE,reason:developDispatchReason(current.code)});}
+    }
+    // The journaled block keeps its start binding: a changed root falls to develop_redo below.
+    if(current.state==='blocked'&&current.code===DISPATCH_RETRY_CODE&&developDispatchRetry()===null){
+      const {reason:discard,...rest}=current;current=freeze({...rest,state:'unknown',code:[...cache.values()].at(-1).result.code});
     }
     if(current.state==='unknown'||current.state==='blocked'&&current.code==='failed'){
       const cause=developRedoRequired();
@@ -1228,6 +1232,10 @@ export function createTaskRunner(options) {
         need(digest(v.learningInput)===digest([...cache.values()].at(-1).effect.learningInput),'runner_learning');
       if(v.kind==='complete'&&state==='unknown'&&completeRecheck())completeSource=code;
       if(v.kind==='develop'&&state==='unknown'&&recheck===null)dispatchBasis=developDispatchRetry();
+      // A journaled develop_dispatch_failed (also after a restart between its
+      // record and the develop intent) re-verifies the round start right here.
+      if(v.kind==='develop'&&state==='blocked'&&code===DISPATCH_RETRY_CODE)
+        need(developDispatchRetry()!==null,'develop_dispatch_root_changed');
       if(v.kind==='develop'&&recheck===null&&developTimeoutState({state,code})){
         timeoutBasis=developTimeoutRetryBasis();need(timeoutBasis!==null,'develop_timeout_root_changed');
         if(state==='blocked')timeoutBasis=null;
@@ -1255,7 +1263,7 @@ export function createTaskRunner(options) {
       const source=code;
       try{persist('develop-dispatch-retry',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId,basis:dispatchBasis});}
       catch{return Promise.resolve(poison());}
-      halt('blocked',DISPATCH_RETRY_CODE,developDispatchReason(source,dispatchBasis));publication=privateStatus();
+      halt('blocked',DISPATCH_RETRY_CODE,developDispatchReason(source));publication=privateStatus();
     }
     if(completeSource!==null){
       try{persist('complete-recheck',{effectId:[...cache.values()].at(-1).effect.id,source:completeSource});}

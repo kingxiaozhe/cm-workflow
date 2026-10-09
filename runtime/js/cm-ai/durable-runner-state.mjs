@@ -210,8 +210,12 @@ export function developRedoCause(s,config,recorded=0){
   if(!last||last.effect.identity.attempt!==s.attempt||s.receipt!==null)return null;
   if(developTimeoutEffect(last)&&s.calls.at(-1)?.terminal==='unknown'
     &&(s.state==='unknown'&&s.code==='call_timeout'||s.state==='blocked'&&s.code==='develop_call_timeout'))return 'call_timeout';
-  if((developAnswerMissingEffect(last)||developDispatchFailedEffect(last)&&last.result.code==='execution_error')
-    &&s.state===last.result.state&&s.code===last.result.code)return last.result.code;
+  if(developAnswerMissingEffect(last)&&s.state===last.result.state&&s.code===last.result.code)return last.result.code;
+  // A dispatch failure whose round start cannot be proven unchanged (legacy
+  // execution_error, a start the journal does not pin, or a root that changed,
+  // also after its develop-dispatch-retry record) needs the same confirmation.
+  if(developDispatchFailedEffect(last)&&(s.state==='unknown'&&s.code===last.result.code
+    ||s.state==='blocked'&&s.code===DISPATCH_RETRY_CODE))return last.result.code;
   return null;
 }
 // V1/V3 (P1-3): the current-session developer run failed before the session was
@@ -232,20 +236,24 @@ export const developDispatchFailedEffect=entry=>{
     &&[...DISPATCH_FAILURE_CODES,'execution_error'].includes(result.code)
     &&call?.terminal==='unknown'&&call.resultDigest===null&&call.requestedModel==='current-session'&&call.channel==='fixture';
 };
-// 'dispatch_failed' (proven by the code), 'baseline' or 'reviewed_package' (a
-// legacy execution_error whose round start the journal pins), or null.
+// The round start the journal pins ('baseline' or 'reviewed_package'), or null.
+// Like #198 the binding outlives the develop-dispatch-retry record
+// (blocked/develop_dispatch_failed): the host compares the live code root with
+// this start before every redispatch, the first one and any after a restart.
 export function developDispatchBasis(s,config,recorded=0){
-  if(config.bootstrap?.mode==='instructions'||config.developer.requestedModel!=='current-session'||recorded>=MAX_DEVELOP_REDOS)return null;
+  if(config.bootstrap?.mode==='instructions'||config.developer.requestedModel!=='current-session')return null;
   const last=s.cache.at(-1);
-  if(!last||last.effect.identity.attempt!==s.attempt||s.receipt!==null||!developDispatchFailedEffect(last)
-    ||!(s.state==='unknown'&&s.code===last.result.code))return null;
-  if(DISPATCH_FAILURE_CODES.includes(last.result.code))return 'dispatch_failed';
+  if(!last||last.effect.identity.attempt!==s.attempt||s.receipt!==null||!developDispatchFailedEffect(last))return null;
+  if(!(s.state==='unknown'&&s.code===last.result.code&&recorded<MAX_DEVELOP_REDOS
+    ||s.state==='blocked'&&s.code===DISPATCH_RETRY_CODE))return null;
   return pinnedDevelopStart(s,entry=>developDispatchFailedEffect(entry)||developTimeoutEffect(entry));
 }
-export const developDispatchReason=(source,basis)=>`${DISPATCH_RETRY_CODE}: 开发请求在派发给会话之前失败（原记录 unknown/${source}）`
-  +(basis==='dispatch_failed'?'，宿主自己的角色路由出错，未派发、未写盘':'，代码根仍与本轮开发起点一致')
+export const developDispatchReason=source=>`${DISPATCH_RETRY_CODE}: 开发请求在派发给会话之前失败（原记录 unknown/${source}）`
+  +(DISPATCH_FAILURE_CODES.includes(source)?'，宿主自己的角色路由出错，未派发':'')+'，代码根仍与本轮开发起点一致（每次重发前再核对）'
   +'。修好 reason 指出的宿主环境（运行日志写入、工作流角色配置）后在原运行 advance 用新 effect id 重发本轮开发；不占调用与 effect 名额（每运行最多 2 次）。';
-const redoCauses={call_timeout:'开发应答超时且代码根已变化或本轮起点无法核对',unknown:'开发应答中断（会话断开、应答形状错或结果不明）',
+const redoCauses={call_timeout:'开发应答超时且代码根已变化或本轮起点无法核对',
+  role_log_failed:'开发请求派发前宿主运行日志写入失败，但代码根已变化或本轮起点无法核对',
+  invalid_workflow_config:'开发请求派发前工作流角色配置无效，但代码根已变化或本轮起点无法核对',unknown:'开发应答中断（会话断开、应答形状错或结果不明）',
   execution_error:'开发调用以 execution_error 结束、结果不明',failed:'开发应答只回了 failed、没有可用结果'};
 export const developRedoRequiredReason=cause=>`${DEVELOP_REDO_CODE}: ${redoCauses[cause]??cause}。会话可能仍在写文件，宿主看不到；`
   +'先确认会话已停止修改代码，再以 --mode resume --allow-develop-redo 启动并发送 develop_redo（单行 reason，写入运行存档）。'
@@ -1073,10 +1081,10 @@ export function readRunnerHistory(raw,config,version=1) {
       // host compared the code root with it before writing this record).
       shape(p,[...common,'effectId','invocationId','basis']);
       const basis=developDispatchBasis(state,config,answerGaps.developDispatch);
-      need(r.kind==='result'&&pending===null&&basis!==null&&p.basis===basis
+      need(r.kind==='result'&&pending===null&&state.state==='unknown'&&basis!==null&&p.basis===basis
         &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_dispatch');
       answerGaps.developDispatch++;
-      state.reason=developDispatchReason(state.code,basis);
+      state.reason=developDispatchReason(state.code);
       state.state='blocked';state.code=DISPATCH_RETRY_CODE;lastReview=null;
     } else if(version===3&&p.type==='complete-recheck') {
       shape(p,[...common,'effectId','source']);
@@ -1247,7 +1255,9 @@ export function readRunnerHistory(raw,config,version=1) {
 // unknown/reconcile: its code names the spent exit and its reason names what is
 // left (fix the root cause, then a superseding run). Derived from the journal
 // on every read, never journaled itself, so replay shows the same block.
-export const ANSWER_GAP_LIMIT_CODES=Object.freeze(['check_answer_retry_limit','complete_recheck_limit','develop_redo_limit','develop_dispatch_limit']);
+// A spent develop_dispatch_failed exit falls to the confirmed develop_redo, so it
+// has no limit code of its own.
+export const ANSWER_GAP_LIMIT_CODES=Object.freeze(['check_answer_retry_limit','complete_recheck_limit','develop_redo_limit']);
 const gapLimitReason=(code,what,source)=>`${code}: ${what}（原记录 ${source}）已在本运行用满 ${MAX_ANSWER_GAP_RETRIES} 次，不再自动重做。`
   +'先查清根因（会话为何一直不应答或答复不合格、宿主环境为何失败）；修好后用 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做，'
   +'本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift 作为已有代码记录。';
@@ -1258,9 +1268,6 @@ export function answerGapLimit(s,config,gaps={}){
     return {code:'check_answer_retry_limit',reason:gapLimitReason('check_answer_retry_limit','开发后的检查或验证预检重跑',source)};
   if(s.state==='unknown'&&(gaps.completeRecheck??0)>=MAX_ANSWER_GAP_RETRIES&&completeRecheckable(s,0))
     return {code:'complete_recheck_limit',reason:gapLimitReason('complete_recheck_limit','完成前复查重跑',source)};
-  if(s.state==='unknown'&&(gaps.developDispatch??0)>=MAX_DEVELOP_REDOS&&developDispatchBasis(s,config,0)!==null
-    &&developRedoCause(s,config,gaps.developRedo??0)===null)
-    return {code:'develop_dispatch_limit',reason:gapLimitReason('develop_dispatch_limit','派发前失败后的重发',source)};
   if((gaps.developRedo??0)>=MAX_DEVELOP_REDOS&&developRedoCause(s,config,0)!==null)
     return {code:'develop_redo_limit',reason:gapLimitReason('develop_redo_limit','确认停写后的开发重发',source)};
   return null;

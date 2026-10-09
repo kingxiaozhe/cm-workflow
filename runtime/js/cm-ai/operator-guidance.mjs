@@ -66,7 +66,7 @@ export function operatorGuidance(result,{executionActive=false}={}){
   if(state==='blocked'&&action==='complete')return explain('完成前复核受阻，已有审查结论不能直接当作任务完成。',
     '核对 reason 中的检查或文件变化；满足原完成条件后，在原运行发送 complete，不重新开发。',
     'complete',['原 run 与已审交接、范围和包绑定不变','使用当前 packageDigest；由宿主重新核对完成条件']);
-  if(['check_answer_retry_limit','complete_recheck_limit','develop_redo_limit','develop_dispatch_limit'].includes(code))
+  if(['check_answer_retry_limit','complete_recheck_limit','develop_redo_limit'].includes(code))
     return explain('这一步的自动恢复已在本运行用满 2 次，不再重做。',
       '先查清会话为何一直不应答或答复不合格（或宿主环境为何失败）；修好后按 reason 用 --supersede-reviewed-evidence 新建运行重做。',
       null,['原运行记录保留，不改写','本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift']);

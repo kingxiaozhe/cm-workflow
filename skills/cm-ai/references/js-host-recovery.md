@@ -50,7 +50,7 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
 ## 应答缺失、无效或迟到
 
 会话没给出可用应答时，宿主不再停在 `unknown/reconcile`，而是给出可重试的阻断；旧运行恢复后按原 journal 同样投影，原记录不改写，新记录只追加。
-每种出口每运行最多 2 次；用满后同样的卡点显示为明确的上限阻断（`check_answer_retry_limit`、`complete_recheck_limit`、`develop_redo_limit`、`develop_dispatch_limit`，`pendingAction=none`），reason 写明剩下的出口：查清根因后用 `--supersede-reviewed-evidence` 新建运行，本运行留在盘上的改动需还原或加 `--accept-superseded-code-drift`。上限阻断由 journal 推导，不另写记录。所有提问都有应答期限（`CM_HOST_ANSWER_TIMEOUT_MINUTES`，见 `docs/user-guide.md`），到期后才到的应答一律拒收为 `host_response_late`。
+每种出口每运行最多 2 次；用满后同样的卡点显示为明确的上限阻断（`check_answer_retry_limit`、`complete_recheck_limit`、`develop_redo_limit`，`pendingAction=none`），reason 写明剩下的出口：查清根因后用 `--supersede-reviewed-evidence` 新建运行，本运行留在盘上的改动需还原或加 `--accept-superseded-code-drift`。上限阻断由 journal 推导，不另写记录。所有提问都有应答期限（`CM_HOST_ANSWER_TIMEOUT_MINUTES`，见 `docs/user-guide.md`），到期后才到的应答一律拒收为 `host_response_late`。
 
 单任务与批次驾驶员按宿主将显示的投影状态（而不是原始回放状态）决定预检哪一轮的开发答案：`develop_call_timeout`、`develop_answer_invalid`、`develop_dispatch_failed` 预检本轮 `develop*.json`；`check_answer_*` 不再问开发，不需要开发答案。`develop_redo` 由驾驶员 PLAN 的 `mode:resume`、`permissions:["--allow-develop-redo"]` 与 `reason` 发出。
 
@@ -61,7 +61,8 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
   盘上改动保留；审查包始终对照本运行创建时拍下的任务基线（重发时不重拍），所以丢失应答期间写入的内容都会进检查与独立审查。不占调用与 effect 名额，每运行最多 2 次；受保护模式下代码根变化可能是半写入，不走此出口。
 - `blocked/develop_dispatch_failed`（`pendingAction=resume`）：开发请求在派发给会话之前就失败了——宿主自己的角色路由出错（运行日志写不进 `role_log_failed`、工作流角色配置无效 `invalid_workflow_config`），开发调用没有结果、没有派发、没有写盘。
   修好 reason 指出的宿主环境后 `--mode resume` 再 `advance`：宿主追加 `develop-dispatch-retry` 记录，用新 effect id 重发本轮开发，不占名额，每运行最多 2 次。
-  旧版本把同样的失败记成 `unknown/execution_error`（如真实运行 api-native-reading-T-006）；这类旧记录分不清是否已派发，只有代码根仍等于本轮起点（第 1 轮为任务基线，第 2 轮为已审第 1 轮包）时才走此出口，否则走上一条 `develop_redo` 确认重发。
+  每次重发前（含写下记录后宿主退出、恢复再发）都核对代码根仍等于本轮起点（第 1 轮为任务基线，第 2 轮为已审第 1 轮包）；起点无法核对或代码根已变，改走上一条 `develop_redo` 确认重发，派发时拒绝为 `develop_dispatch_root_changed`。用满 2 次后同样改走 `develop_redo`。
+  旧版本把同样的失败记成 `unknown/execution_error`（形状同 api-native-reading-T-006 的旧记录），同样按上述起点核对处理。
 - `blocked/complete_recheck_failed`（`pendingAction=complete`）：完成前复查没拿到可用应答（`unknown/call_timeout`、`execution_error` 等），且 task-commit-intent 尚未写入、tasks.md 未改动。`--mode resume` 后 `complete`（或 `advance`）：宿主追加 `complete-recheck` 记录，用新 effect id 重新复查并完成，不重新开发或审查。已写 task-commit-intent 的仍按「放弃审查调用与 effect」处理。
 
 ## 重试名额与完成前复查

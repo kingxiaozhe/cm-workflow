@@ -64,6 +64,7 @@ const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',ope
   requestDigest:digest(operation),identity:status.identity,outcome,state:status.state,code:status.code??null,
   packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),
   ...(status.reviewReconciliation?{reviewReconciliation:status.reviewReconciliation}:{}),
+  ...(status.developRedoRequired===true?{developRedoRequired:true}:{}),
   ...(typeof status.reason==='string'?{reason:status.reason}:{}),
   ...(status.code==='handoff_exists'?{reason:REVIEWED_HANDOFF_HINT}:{}),
   ...(status.state==='blocked'&&status.calls?.at(-1)?.blockedReason!==undefined
