@@ -12,6 +12,7 @@ import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {createHostQaDecisionProvider} from '../runtime/js/cm-ai/host-qa-policy.mjs';
 import {createHostQaExecutor} from '../runtime/js/cm-ai/host-qa-executor.mjs';
+import {EXECUTION_POLICY_V1} from '../runtime/js/cm-ai/execution-policy.mjs';
 
 for(const mode of ['continuous','qa-resume','failed-qa','cancel','learning','policy','executor'])
 test(`real multi-task runner keeps QA and recovery authoritative: ${mode}`,()=>batchFixture(mode));
@@ -24,6 +25,21 @@ test('D1 parallel member retries failed develop checks before review',()=>batchF
 test('ready member merges before blocked member preserves reason in log and WIP and falls back only once',async()=>{
   for(const withReason of [true,false])await batchFixture('parallel-recovery',{terminalAgain:true,withReason});
 });
+// Q25: an execution-policy (or external-model) batch used to leave a terminal
+// parallel member waiting forever; it is now rescheduled serially like any batch.
+test('Q25 an execution-policy batch reschedules a terminal parallel member serially instead of waiting forever',async()=>{
+  await batchFixture('parallel-recovery',{executionPolicy:true});
+});
+// Q24/Q25: a strict-batch parallel member that can still recover in its own run stops
+// with the batch operation named; the batch forwards develop_redo to it and continues.
+test('Q24 a strict-batch parallel member stopped at develop_redo recovers through the batch entry and merges',async()=>{
+  await batchFixture('parallel-redo',{executionPolicy:true});
+});
+// Q26: the batch handoff check closes a cleanup_failed QA command resource whose
+// process group the host proves gone; one it cannot prove stops the batch with
+// batch_resources_open naming the resource and the exit (not a bare code).
+test('Q26 batch handoff releases a proven-gone QA resource and names one it cannot prove',
+  {skip:process.platform==='win32'},()=>batchFixture('resources-open'));
 test('serial fallback resumes from log and automatically commits its completed task',async()=>{
   for(const options of [{crashAt:'cleanup'},{crashAt:'serial'},
     {blockedIds:['T-001']},{blockedIds:['T-001','T-002']}])await batchFixture('parallel-recovery',options);
@@ -98,14 +114,16 @@ async function batchFixture(mode,options={}){
     {git(codeProject,['init','-b','main']);git(codeProject,['config','user.name','Fixture']);git(codeProject,['config','user.email','fixture@example.invalid']);
       fs.writeFileSync(path.join(codeProject,parallel?'base.js':'file0.js'),'base\n');git(codeProject,['add','-A']);git(codeProject,['commit','-m','fixture baseline']);}
     const config={version:1,repositoryId:'batch-fixture',batchId:'batch-fixture',specsDir,codeProject,
+      ...(options.executionPolicy?{executionPolicy:EXECUTION_POLICY_V1}:{}),
       ...(parallel?{parallel:[[`${feature}/T-001`,`${feature}/T-002`]]}:{}),
       tasks:(parallel?['T-001','T-002','T-003']:['T-001','T-002']).map((taskId,index)=>({feature,taskId,scope:[`file${index}.js`],requirements:['requirements.md']}))};
     const calls=[],qaCalls=[],assessments=[],blockedEvidence=[],checkCalls=new Map();let qaReady=mode!=='qa-resume',started;
     const began=new Promise(resolve=>{started=resolve;});
-    let conflictHead=null,interrupted=false,reviewFailed=false;
+    let conflictHead=null,interrupted=false,reviewFailed=false,redoThrown=false;
+    const developerModel=mode==='parallel-redo'?'current-session':'fixture';
     const executionFor=async(definition,{parallelMember=false}={})=>({configuration:{kind:'batch-fixture-v1',...(parallelMember?{parallelMember:true}:{})},timeoutMs:3000,
       excludedContexts:['host'],hostDecision:{status:'approved'},applicableAgentFiles:[],
-      developer:{provider:'codex',requestedModel:'fixture',contextId:'author',run:createCodexDeveloperRun({requestedModel:'fixture',
+      developer:{provider:'codex',requestedModel:developerModel,contextId:'author',run:createCodexDeveloperRun({requestedModel:developerModel,
         worker:async({prompt},{signal})=>{
           const data=JSON.parse(prompt.split('<cm-developer-data-json>\n')[1]),material=data.specification;
           assert.equal(material.task.id,definition.identity.taskId);
@@ -132,6 +150,9 @@ async function batchFixture(mode,options={}){
           // A second attempt must change the rejected bytes (develop_unchanged_after_review).
           calls.push(definition.identity.taskId);fs.writeFileSync(path.join(definition.codeProject,definition.scope[0]),
             data.identity.attempt===1?'implemented\n':'implemented again\n');
+          // The session wrote, then the conversation dropped: no answer (develop_answer_missing).
+          if(mode==='parallel-redo'&&parallelMember&&definition.identity.taskId==='T-002'&&!redoThrown){
+            redoThrown=true;throw Object.assign(new Error('host_disconnected'),{code:'host_disconnected'});}
           if(recovery&&blockedIds.includes(definition.identity.taskId)&&(parallelMember||options.terminalAgain))
             return {status:'succeeded',value:{outcome:'blocked',...(options.withReason?{reason:'Expected stub throws; waiting for peer'}:{})}};
           if(parallel&&definition.identity.taskId==='T-002')await new Promise(resolve=>setTimeout(resolve,50));
@@ -211,7 +232,7 @@ async function batchFixture(mode,options={}){
       documentationProvider:{timeoutMs:1000,inspect:async binding=>({syncId:binding.syncId,identity:binding.identity,
         packageDigest:binding.packageDigest,contextDigest:binding.contextDigest,status:'completed',reason:'Synthetic docs',at:'2026-09-08T01:00:00Z'})},
     });
-    const open=()=>createCmAiBatch({configuration:config,executionFor,logHome:path.join(root,'logs')});
+    const open=(extra={})=>createCmAiBatch({configuration:config,executionFor,logHome:path.join(root,'logs'),...extra});
     if(mode==='parallel-existing'){
       // T-002's scope file is committed on HEAD, so it is an edit, not a new file.
       fs.writeFileSync(path.join(codeProject,'file1.js'),'existing\n');git(codeProject,['add','file1.js']);git(codeProject,['commit','-m','existing file']);
@@ -263,6 +284,38 @@ async function batchFixture(mode,options={}){
       result=await open().handle({operation:'advance',requestId:'resume-commit-prefix'});
       const recovered=fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
       assert.equal(recovered.find(row=>row.phase==='batch_handoff').task_commit,commit.task_commit);
+    }
+    if(mode==='parallel-redo'){
+      const logfile=path.join(specsDir,'运行日志.jsonl'),rows=()=>fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(result.code,'batch_parallel_member_recovery_required',JSON.stringify(result));
+      assert.deepEqual([result.currentTask,result.pendingAction,result.memberCode],[`${feature}/T-002`,'develop_redo','develop_answer_missing']);
+      assert.match(result.reason,/--allow-develop-redo 1\.work\/T-002/);assert.equal(result.guidance.authorizationGranted,false);
+      // Kept in place: no serial reschedule, its worktree and edits stay for the redo.
+      assert.equal(rows().filter(row=>row.phase==='batch_member_blocked').length,0);
+      const worktree=path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002');
+      assert.equal(fs.readFileSync(path.join(worktree,'file1.js'),'utf8'),'implemented\n');
+      const redo={operation:'develop_redo',requestId:'redo',taskKey:`${feature}/T-002`,reason:'会话已停止修改代码'};
+      const refused=await open().handle(redo);
+      assert.deepEqual([refused.outcome,refused.code],['rejected','batch_member_action_authorization_required']);
+      assert.match(refused.reason,/--allow-develop-redo 1\.work\/T-002/);
+      const other=await open({memberActions:{develop_redo:[`${feature}/T-001`]}}).handle({...redo,taskKey:`${feature}/T-001`});
+      assert.deepEqual([other.outcome,other.code],['rejected','batch_member_action_not_current']);
+      const {classifyDriveResult}=await import('../runtime/js/notify.mjs');
+      for(const value of [result,refused,other])assert.equal(classifyDriveResult('cm-ai-batch',{result:value}),'stuck',value.code);
+      const granted=open({memberActions:{develop_redo:[`${feature}/T-002`]}});
+      const recorded=await granted.handle(redo);
+      assert.deepEqual([recorded.outcome,recorded.code,recorded.pendingAction,recorded.taskKey],['recorded','develop_answer_missing','resume',`${feature}/T-002`],JSON.stringify(recorded));
+      // One-shot: the same launch cannot record a second confirmation.
+      const again=await granted.handle(redo);assert.equal(again.code,'batch_member_action_authorization_required');
+      result=await granted.handle({operation:'advance',requestId:'after-redo'});
+      assert.equal(result.code,'run_done',JSON.stringify(result));
+      assert.deepEqual(calls,['T-001','T-002','T-002','T-003']);
+      assert.equal(rows().filter(row=>row.phase==='batch_member_blocked').length,0);
+      assert.equal(rows().filter(row=>row.phase==='batch_handoff').length,2);
+      const runId=`task-${digest({batchId:config.batchId,task:`${feature}/T-002`}).slice(0,48)}`;
+      const records=JSON.parse(fs.readFileSync(path.join(specsDir,'.reviews','.execution',runId,'state.json'),'utf8')).records;
+      assert.equal(records.filter(row=>row.payload.type==='develop-answer-redo').length,1);
+      return;
     }
     if(mode==='parallel-completion-retry'){
       assert.equal(result.code,'completion_checks_changed',JSON.stringify(result));
@@ -345,6 +398,27 @@ async function batchFixture(mode,options={}){
       qaReady=true;result=await open().handle({operation:'advance',requestId:'advance-2'});
     }
     assert.equal(result.code,mode==='failed-qa'?'qa_failed':'run_done',JSON.stringify(result));
+    if(mode==='resources-open'){
+      const {batchTaskRunId}=await import('./cm-ai-batch-run.mjs');
+      const runId=batchTaskRunId(config.batchId,`${feature}/T-001`),writer=new URL('./cm-log-event.py',import.meta.url).pathname;
+      const resource=(phase,data)=>{const written=spawnSync('python3',[writer,'--workflow','cm-ai','--event','resource','--phase',phase,
+        '--runtime','codex','--project-root',codeProject,'--specs-dir',specsDir,'--run-id',runId,'--detail','fixture','--data-json',JSON.stringify(data)],
+        {encoding:'utf8',timeout:10000,env:{...process.env,CM_WORKFLOW_LOG_HOME:path.join(root,'logs')}});assert.equal(written.status,0,written.stderr);};
+      const gone=spawnSync(process.execPath,['-e','0']).pid;
+      for(const id of ['qa-command-gone','qa-command-legacy'])resource('acquired',{resource_id:id,resource_kind:'qa_command',cleanup_required:true});
+      resource('cleanup_failed',{resource_id:'qa-command-gone',resource_kind:'qa_command',pid:gone,process_start_time:'Mon Jan  1 00:00:00 2001'});
+      resource('cleanup_failed',{resource_id:'qa-command-legacy',resource_kind:'qa_command'});
+      // The batch owner throws; the batch host turns it into {outcome:'blocked',code,reason}.
+      let blocked;
+      await assert.rejects(open().handle({operation:'advance',requestId:'resources'}),error=>{
+        blocked={outcome:'blocked',code:error.code,reason:error.reason};return error.code==='batch_resources_open';});
+      assert.match(blocked.reason,/qa-command-legacy（cleanup_failed，没有记录进程身份）/);assert.doesNotMatch(blocked.reason,/qa-command-gone/);
+      const rows=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(rows.filter(row=>row.event==='resource'&&row.phase==='released'&&row.resource_id==='qa-command-gone'&&row.verification==='process_group_gone').length,1);
+      const {classifyDriveResult}=await import('../runtime/js/notify.mjs');
+      assert.equal(classifyDriveResult('cm-ai-batch',{result:blocked}),'stuck');
+      return;
+    }
     assert.deepEqual(calls,parallel?(mode==='parallel-retry'?['T-001','T-002','T-001','T-003']:['T-001','T-002','T-003']):mode==='failed-qa'?['T-001']:['T-001','T-002']);
     if(parallel){
       const rows=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);

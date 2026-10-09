@@ -63,9 +63,12 @@ function fixture(runtime='codex'){
       ...(runtime==='claude'?['--runtime','claude']:[])]};
 }
 
-function execute(f,approvals,{cancel=false}={}){
+// operations are sent one after another (each after the previous reply); the
+// session closes after the last. failDevelop: task ids whose next develop
+// answer is a bare failure after the session wrote (develop_answer_missing).
+function execute(f,approvals,{cancel=false,args=[],operations=[{operation:'advance',requestId:'advance'}],failDevelop=new Set()}={}){
   return new Promise((resolve,reject)=>{
-    const child=spawn(process.execPath,[cli,...f.args,...approvals.flatMap(value=>['--allow-review',value])],
+    const child=spawn(process.execPath,[cli,...f.args,...args,...approvals.flatMap(value=>['--allow-review',value])],
       {env:f.env,stdio:['pipe','pipe','pipe']});
     let buffer='',stderr='',sessionId;const calls=[],rows=[];
     const timer=setTimeout(()=>{child.kill('SIGTERM');reject(Error('batch host timeout'));},Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000));
@@ -93,6 +96,7 @@ function execute(f,approvals,{cancel=false}={}){
               assert.deepEqual(payload.request.payload.specification.sources,buildManifest(f.specsDir));
               const content=`export const value = ${40+n};\n`;
               if(!f.protected)fs.writeFileSync(path.join(cwd,`task${n}.mjs`),content);
+              if(failDevelop.delete(identity.taskId)){respond(row,{status:'failed',code:'session_error'});continue;}
               respond(row,{status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
                 retrospective:{status:'no_new_lesson',candidates:[],reason:null}},...(f.protected?{edits:
                   payload.request.payload.scope.map(file=>({path:file,beforeSha256:payload.expected[file],
@@ -115,12 +119,17 @@ function execute(f,approvals,{cancel=false}={}){
                 at:new Date().toISOString().replace(/\.\d{3}Z$/,'Z')});
             }else assert.fail(`Unexpected ${row.kind}`);
           }
-          if(row.requestId==='advance'&&(row.result||row.error))send({type:'host_close',sessionId});
+          const index=operations.findIndex(item=>item.requestId===row.requestId);
+          if(index>=0&&(row.result||row.error)){
+            if(index+1<operations.length)send(operations[index+1]);else send({type:'host_close',sessionId});
+          }
         }catch(error){clearTimeout(timer);child.kill('SIGTERM');reject(error);}
       }
     });
-    child.once('close',code=>{clearTimeout(timer);resolve({code,stderr,calls,rows,result:rows.find(row=>row.requestId==='advance')?.result});});
-    send({operation:'advance',requestId:'advance'});
+    child.once('close',code=>{clearTimeout(timer);resolve({code,stderr,calls,rows,
+      results:Object.fromEntries(operations.map(item=>[item.requestId,rows.find(row=>row.requestId===item.requestId)?.result])),
+      result:rows.find(row=>row.requestId===operations.at(-1).requestId)?.result});});
+    send(operations[0]);
   });
 }
 
@@ -304,5 +313,52 @@ export async function serveCmAiHost({host}){await host.handle({});}
       assert.equal(JSON.parse(stderr).error.code,'invalid_arguments');
       assert.equal(capture.calls.length,2);
     }
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// Q24 (real host): a serial member whose develop answer came back as a bare failure
+// after the session wrote stops at develop_redo. The batch host used to accept only
+// advance/status/cancel/reconcile_review, so the batch stayed stuck there. Now the
+// batch host forwards develop_redo to that member's run (same cm-ai entry, one-shot
+// per-member grant) and the next advance redoes the round and finishes the batch.
+test('Q24 batch host recovers a serial member stopped at develop_redo and continues the batch',async()=>{
+  const f=fixture();
+  try{
+    const approvals=['1.work/T-001:1','1.work/T-002:1'];
+    const first=await execute(f,approvals,{failDevelop:new Set(['T-001'])});
+    assert.equal(first.code,0,first.stderr);
+    assert.deepEqual([first.result.state,first.result.code,first.result.pendingAction],['blocked','develop_answer_missing','develop_redo'],JSON.stringify(first.result));
+    assert.match(first.result.guidance.nextStep,/--allow-develop-redo 1\.work\/T-001/);assert.deepEqual(first.calls,['T-001:develop']);
+    const redo={operation:'develop_redo',requestId:'redo',taskKey:'1.work/T-001',reason:'会话已停止修改代码'};
+    // advance alone never redispatches; the operation needs its per-member grant.
+    const refused=await execute(f,approvals,{operations:[{operation:'advance',requestId:'advance'},redo]});
+    assert.equal(refused.results.advance.pendingAction,'develop_redo');
+    assert.deepEqual([refused.result.outcome,refused.result.code],['rejected','batch_member_action_authorization_required']);
+    assert.match(refused.result.reason,/--allow-develop-redo 1\.work\/T-001/);assert.deepEqual(refused.calls,[]);
+    const bad=spawnSync(process.execPath,[cli,...f.args,'--allow-develop-redo','1.work/T-999'],{env:f.env,encoding:'utf8',timeout:5000});
+    assert.equal(bad.status,1);assert.match(bad.stderr,/invalid_arguments/);assert.match(bad.stderr,/FEATURE\/TASK/);
+    for(const [flag,code] of [['--revise-qa-config','batch_qa_revision_unavailable'],['--rebind-spec-material','batch_spec_rebind_unavailable']]){
+      const unsupported=spawnSync(process.execPath,[cli,...f.args,flag,'x'],{env:f.env,encoding:'utf8',timeout:5000});
+      assert.equal(unsupported.status,1);assert.match(unsupported.stderr,new RegExp(code));assert.match(unsupported.stderr,/出口/);
+    }
+    const recovered=await execute(f,approvals,{args:['--allow-develop-redo','1.work/T-001'],
+      operations:[redo,{operation:'advance',requestId:'advance'}]});
+    assert.equal(recovered.code,0,recovered.stderr);
+    assert.deepEqual([recovered.results.redo.outcome,recovered.results.redo.pendingAction,recovered.results.redo.taskKey],
+      ['recorded','resume','1.work/T-001'],JSON.stringify(recovered.results.redo));
+    assert.equal(recovered.result.state,'run_done',JSON.stringify(recovered.result));
+    assert.deepEqual(recovered.calls.slice(0,2),['T-001:develop','T-001:check']);
+    assert(recovered.calls.includes('T-002:develop'));
+    assert.equal(fs.readFileSync(path.join(f.specsDir,'1.work','tasks.md'),'utf8').match(/\[x\]/g).length,2);
+    const {batchTaskRunId}=await import('./cm-ai-batch-run.mjs');
+    const records=JSON.parse(fs.readFileSync(path.join(f.specsDir,'.reviews','.execution',batchTaskRunId(f.batch.batchId,'1.work/T-001'),'state.json'),'utf8')).records;
+    assert.equal(records.filter(row=>row.payload.type==='develop-answer-redo').length,1);
+    // After cancel the batch stays stopped; a forwarded operation cannot reopen it.
+    const g=fixture();
+    try{
+      const stopped=await execute(g,[],{cancel:true});assert.equal(stopped.result.code,'cancelled');
+      const after=await execute(g,[],{args:['--allow-develop-redo','1.work/T-001'],operations:[redo]});
+      assert.deepEqual([after.result.outcome,after.result.code],['blocked','cancelled']);
+    }finally{fs.rmSync(g.root,{recursive:true,force:true});}
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });

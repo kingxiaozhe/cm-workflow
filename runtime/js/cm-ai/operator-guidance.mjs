@@ -115,10 +115,23 @@ export function guidanceText(result){
   return `${guidance.summary} ${guidance.nextStep} ${guidance.prerequisites.join('；')}`.trim();
 }
 
+// Q24: in-run recovery operations the batch entry forwards to the stopped member
+// (scripts/cm-ai-batch-run.mjs BATCH_MEMBER_ACTIONS), with what to confirm first.
+const BATCH_RECOVERY={
+  develop_redo:['--allow-develop-redo','先确认会话已停止修改代码'],
+  abandon_effect:['--allow-abandon-effect','先确认旧宿主及相关子进程已退出、会话已停止写入'],
+  abandon_review:['--allow-abandon-review','先确认旧宿主与审查进程已退出'],
+  bootstrap_review_recover:['--allow-bootstrap-review-recovery','先核对当前规则文件、handoff 和原证据'],
+};
 // A member result is not a batch control surface. Keep unsupported single-run
 // recovery operations out of batch instructions without changing pendingAction.
-export function batchOperatorGuidance(result){
+export function batchOperatorGuidance(result,{taskKey=null}={}){
   const g=result?.guidance;if(!g)return null;
+  if(Object.hasOwn(BATCH_RECOVERY,g.recoveryOperation)){
+    const [flag,confirm]=BATCH_RECOVERY[g.recoveryOperation],target=taskKey??'FEATURE/TASK';
+    return explain(g.summary,`${confirm}；关闭批次宿主，带 ${flag} ${target} 用同一批次配置重新启动，发送批次操作 ${g.recoveryOperation}（taskKey ${target}、单行 reason），之后 advance 继续本批次。`,
+      g.recoveryOperation,['保持原批次配置；批次只用这一项权限打开该成员运行，不跨成员','授权用一次即失效；批次 cancel 后不能再恢复']);
+  }
   if(result.code==='spec_drift')return explain(g.summary,
     '批次成员不能换绑规格；先按 reason 核对原批次可用出口，不直接重派。');
   if(g.recoveryOperation==='advance')return explain(g.summary,

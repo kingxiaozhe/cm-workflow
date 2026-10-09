@@ -363,3 +363,28 @@ test('optimized real batch driver shares only a declared same-plan check and rej
   assert.equal(out.status,0,out.stderr);assert.equal(JSON.parse(out.stdout).result.state,'awaiting_review',out.stdout+out.stderr);
   assert.equal(fs.readFileSync(counter,'utf8'),'x');
 });
+
+// Q24 driver: develop_redo goes through the batch host to the stopped member; the
+// next advance still preflights the develop answer from the projected state (Q28).
+test('Q24 batch driver forwards develop_redo to the stopped member, then advance redoes the round',t=>{
+  const f=fixture(t);prepared(f);
+  f.write('develop.json',{status:'failed',code:'session_error'});
+  const stuck=f.drive(f.plan(),'advance');assert.equal(stuck.status,0,stuck.stderr);
+  const first=JSON.parse(stuck.stdout).result;
+  assert.deepEqual([first.state,first.code,first.pendingAction],['blocked','develop_answer_missing','develop_redo'],stuck.stdout);
+  const resume={mode:'resume',originalHostContext:'batch-host-a'};
+  const missing=f.drive(f.plan({...resume,taskKey:key,reason:'会话已停止修改代码'}),'develop_redo');
+  assert.equal(missing.status,2);assert.match(missing.stderr,/--allow-develop-redo 1\.work\/T-001/);
+  const noReason=f.drive(f.plan({...resume,taskKey:key,permissions:['--allow-qa','--allow-develop-redo',key]}),'develop_redo');
+  assert.equal(noReason.status,2);assert.match(noReason.stderr,/reason/);
+  const unknownTask=f.drive(f.plan({...resume,taskKey:key,reason:'已停',permissions:['--allow-qa','--allow-develop-redo','1.work/T-009']}),'develop_redo');
+  assert.equal(unknownTask.status,2);assert.match(unknownTask.stderr,/--allow-develop-redo/);
+  const redo=f.drive(f.plan({...resume,taskKey:key,reason:'会话已停止修改代码',permissions:['--allow-qa','--allow-develop-redo',key]}),'develop_redo');
+  assert.equal(redo.status,0,redo.stderr);
+  const recorded=JSON.parse(redo.stdout).result;
+  assert.deepEqual([recorded.outcome,recorded.pendingAction,recorded.taskKey],['recorded','resume',key],redo.stdout);
+  prepared(f);
+  const again=f.drive(f.plan(resume),'advance');assert.equal(again.status,0,again.stderr);
+  assert.match(again.stderr,/应答 develop/);
+  assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 42;\n');
+});

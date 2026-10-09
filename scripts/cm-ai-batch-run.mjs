@@ -27,9 +27,9 @@ export const batchTaskRunId=(batchId,taskKey)=>`task-${digest({batchId,task:task
 // never advertise it for them. Name the exits that do exist instead. An idle
 // cancel of a parallel group does not end its member runs, so a parallel
 // member cannot be superseded afterwards and only the spec revert applies.
-export function batchMemberResult(result,{parallel=false}={}){
+export function batchMemberResult(result,{parallel=false,taskKey=null}={}){
   const decorate=value=>{
-    const guidance=batchOperatorGuidance(value);
+    const guidance=batchOperatorGuidance(value,{taskKey});
     return guidance?Object.freeze({...value,guidance}):value;
   };
   if(result?.pendingAction!=='spec_rebind')return decorate(result);
@@ -39,8 +39,18 @@ export function batchMemberResult(result,{parallel=false}={}){
     reason:parallel?`${revert}。并行组成员没有单独重做的出口。`
       :`${revert}；或取消本批次，还原该任务已改动的代码后，用单任务宿主 cm-ai-host.mjs 以 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务。`}));
 }
+// Q24: single-task recovery operations a batch forwards to the member run it is
+// stopped on, through the same cm-ai entry. option is the openControlRun one-shot
+// permission; flag is the batch host launch flag that grants it for one member.
+export const BATCH_MEMBER_ACTIONS=Object.freeze({
+  develop_redo:Object.freeze({option:'allowDevelopRedo',flag:'--allow-develop-redo'}),
+  abandon_effect:Object.freeze({option:'allowAbandonEffect',flag:'--allow-abandon-effect'}),
+  abandon_review:Object.freeze({option:'allowAbandonReview',flag:'--allow-abandon-review'}),
+  bootstrap_review_recover:Object.freeze({option:'allowBootstrapReviewRecovery',flag:'--allow-bootstrap-review-recovery'})});
+// Pending actions a member resolves inside its own run from the batch entry.
+const IN_RUN_ACTIONS=new Set([...Object.keys(BATCH_MEMBER_ACTIONS),'reconcile_review']);
 export function createCmAiBatch({configuration,executionFor,logHome,runtime='codex',checkCommands=null,checkTimeoutMs=60000,
-  rerunUnknownQa=false,rerunBlockedQa=false,holdRevisions=[],bootstrapKeys=[]}){
+  rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,holdRevisions=[],bootstrapKeys=[],memberActions={}}){
   const config=json(configuration);
   shape(config,['version','repositoryId','batchId','specsDir','codeProject','tasks',...['externalModels','executionPolicy','codeProjects','parallel'].filter(name=>Object.hasOwn(config,name))]);
   need(config.version===1);id(config.repositoryId);id(config.batchId);need(config.batchId.length>=8);
@@ -80,16 +90,29 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   // Tasks whose second-round answer is not written yet stop after a changes_requested review.
   need(Array.isArray(holdRevisions)&&holdRevisions.every(item=>plans.has(item)),'invalid_input');
   const held=new Set(holdRevisions);
+  need(qaEnvironmentFailure===null||(rerunUnknownQa||rerunBlockedQa)&&typeof qaEnvironmentFailure==='string','qa_recovery_authorization_required');
+  need(memberActions!==null&&typeof memberActions==='object'&&Object.keys(memberActions).every(name=>Object.hasOwn(BATCH_MEMBER_ACTIONS,name)
+    &&Array.isArray(memberActions[name])&&memberActions[name].every(item=>plans.has(item))),'invalid_input');
+  // One-shot per launch and member, like the single-task flags.
+  const actionGrants=new Map(Object.keys(BATCH_MEMBER_ACTIONS).map(name=>[name,new Set(memberActions[name]??[])]));
   const groups=validateGroups(config,plans),membership=new Map(groups.flatMap(group=>group.map(key=>[key,group])));
   const originalMembership=new Map(membership),originalPlans=new Map(plans);
   const first=plans.keys().next().value,planDigest=digest(config),log=path.join(config.specsDir,'运行日志.jsonl');
   // Q26: before any closure check, close cleanup_failed QA command resources whose
   // journaled process group the host proves gone (qa-resource-release.mjs).
+  let stillOpen=[];
   const inspectRunClosure=(file,runId)=>{
-    const plan=[...plans.values()].find(item=>item.identity.runId===runId);
-    if(plan)try{releaseVerifiedQaResources({specsDir:config.specsDir,codeProject:plan.codeProject,runId});}
+    const plan=[...plans.values()].find(item=>item.identity.runId===runId);stillOpen=[];
+    if(plan)try{stillOpen=releaseVerifiedQaResources({specsDir:config.specsDir,codeProject:plan.codeProject,runId,runtime,logHome}).open;}
     catch(error){if(error?.code==='qa_resource_release_failed')throw error;}
     return inspectClosure(file,runId);
+  };
+  // R4: an open closure names what is still open and the exit, not a bare code.
+  const requireClosed=runId=>{
+    if(inspectRunClosure(log,runId).closed)return;
+    const listed=stillOpen.map(row=>`${row.resourceId}（${row.phase}，${row.verdict==='alive'?'进程组仍在':row.verdict==='unrecorded'?'没有记录进程身份':'无法核实'}）`);
+    throw Object.assign(new Error('batch_resources_open'),{code:'batch_resources_open',
+      reason:`成员运行 ${runId} 的 QA 资源或测试轮次尚未闭合${listed.length?`：${listed.join('、')}`:''}。宿主只在 cleanup_failed 记录了进程组且核实已退出时自动补记 released；先确认这些 QA 命令进程已退出，再从批次入口 advance。`});
   };
   let active=null,busy=false,cancelled=false,liveKey=first;
   const executions=new Map(),members=new Map();
@@ -138,18 +161,20 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     need(!result.error&&result.status===0&&result.signal===null,'batch_log_failed');
     const receipt=JSON.parse(result.stdout);need(receipt.run_id===config.batchId,'batch_log_failed');
   }
-  async function open(taskKey){
+  async function open(taskKey,permission={}){
     const definition=plans.get(taskKey),state=path.join(config.specsDir,'.reviews','.execution',definition.identity.runId,'state.json');
     const mode=fs.existsSync(state)?'resume':'create',execution=await executionForKey(taskKey);
     // QA recovery is rejected outright for a created run or one without a QA
     // executor. Passing it to every task would take down the unrelated ones, so
     // only the tasks the flag can legally apply to receive it.
     const recovery=mode==='resume'&&execution?.qaExecutor&&(rerunUnknownQa||rerunBlockedQa)
-      ? {rerunUnknownQa,rerunBlockedQa} : {};
-    const run=await openControlRun(definition,mode,execution,{...recovery,...(held.has(taskKey)?{holdRevision:true}:{}),
+      ? {rerunUnknownQa,rerunBlockedQa,...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure})} : {};
+    // Q24: a forwarded recovery operation opens the member with exactly its one permission.
+    need(mode==='resume'||!Object.keys(permission).length,'batch_member_action_unavailable');
+    const run=await openControlRun(definition,mode,execution,{...recovery,...permission,...(held.has(taskKey)?{holdRevision:true}:{}),
       ...(membership.has(taskKey)?{parallelSelection:{version:1,group:membership.get(taskKey).map(key=>plans.get(key).identity.taskId)}}:{})});
     if(!run.host)return run;
-    return {...run,host:{...run.host,handle:async request=>batchMemberResult(await run.host.handle(request),{parallel:membership.has(taskKey)})}};
+    return {...run,host:{...run.host,handle:async request=>batchMemberResult(await run.host.handle(request),{parallel:membership.has(taskKey),taskKey})}};
   }
   function parallelProgress(rows){
     const done=new Set(),ready=new Map(),merging=new Map(),blocked=new Map();let stopped=false,code=null;
@@ -274,7 +299,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         if(status.code==='qa_skipped')await call('context_refresh',{testRunId:null});
       }
       if(status.outcome!=='refreshed'||status.pendingAction!=='start_next_task')return status;
-      need(inspectRunClosure(log,plans.get(key).identity.runId).closed,'batch_resources_open');
+      requireClosed(plans.get(key).identity.runId);
       record('batch_member_ready',{from_key:key,checkpoint:run.checkpoint(),package_digest:status.packageDigest,
         identity:status.identity,...location(key)});
       return null;
@@ -359,7 +384,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       if(!group.includes(row.from_key)||progress().done.has(row.from_key))continue;
       const result=await mergeMember(row);if(result)return result;
     }
-    let waiting=null,rejected=null;
+    let waiting=null,rejected=null,recoverable=null;
     for(const [index,result] of results.entries()){
       if(result.status==='rejected'){rejected??=result.reason;continue;}
       const status=result.value;if(!status)continue;
@@ -368,20 +393,70 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       const terminal=['blocked','failed','unknown'].includes(status.state)
         &&!developmentRetryable(status)&&!completionRetryable(status)
         ||status.state==='pending_review'&&status.code!==null&&!reviewRetryable(status);
-      if(!terminal||config.externalModels||config.executionPolicy){waiting??=status;continue;}
+      if(!terminal){waiting??=status;continue;}
       const key=pending[index];
+      // Q25: an external-model or execution-policy member that can still be resolved
+      // in its own run (original-invocation receipts, interrupted effect) keeps its
+      // worktree and stops with the batch operation named; any other terminal member
+      // is rescheduled serially exactly like an ordinary batch (it used to wait forever).
+      if((config.externalModels||config.executionPolicy)&&IN_RUN_ACTIONS.has(status.pendingAction)){recoverable??={key,status};continue;}
       record('batch_member_blocked',{from_key:key,code:status.code??status.state,
         reason:status.blockedReason??status.reason??status.code??status.state,...location(key),generation:2});
     }
     // Log before Git mutation so a crash during WIP commit/removal is resumable.
     for(const row of progress().blocked.values())preserveBlockedMember(row);
     if(rejected)throw rejected;
+    if(recoverable)return parallelRecoveryRequired(recoverable.key,recoverable.status);
     if(waiting)return {...waiting,batchId:config.batchId};
     return null;
   }
+  function parallelRecoveryRequired(key,status){
+    const action=status.pendingAction,grant=BATCH_MEMBER_ACTIONS[action];
+    const exit=action==='reconcile_review'
+      ?`从批次入口发送 reconcile_review（taskKey ${key}、原调用 invocationId）对账原调用回执`
+      :`关闭批次宿主，带 ${grant.flag} ${key} 用同一批次配置重新启动，发送批次操作 ${action}（taskKey ${key}、单行 reason）`;
+    return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_parallel_member_recovery_required',batchId:config.batchId,
+      currentTask:key,identity:status.identity,memberState:status.state,memberCode:status.code??null,pendingAction:action,
+      reason:`外部模型或执行策略批次的并行成员 ${key} 停在 ${status.state}/${status.code??status.state}，可在它自己的运行里恢复，所以不改排串行（改排会丢掉原调用回执或中断记录）。出口：${exit}；之后 advance 继续本批次。`,
+      guidance:Object.freeze({summary:'并行成员停在可在原运行内恢复的状态，批次不会自动改排。',nextStep:`${exit}；之后 advance 继续本批次。`,
+        recoveryOperation:action,prerequisites:Object.freeze(['先确认旧宿主与该成员的会话或子进程已停止写入','恢复只转给该成员运行，不跨成员']),authorizationGranted:false})});
+  }
+  // Q24: forward one recovery operation to the member the batch is stopped on.
+  function bindWorktree(taskKey){
+    const {worktree,branch}=location(taskKey);
+    need(fs.existsSync(worktree),'batch_member_action_unavailable');
+    need(batchGit(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
+    const definition=plans.get(taskKey);
+    plans.set(taskKey,validateRunDefinition({...definition,codeProject:worktree,
+      ...(definition.codeProjects?{codeProjects:definition.codeProjects.map(root=>path.join(worktree,path.relative(config.codeProject,root)))}:{})}));
+  }
+  async function memberAction(request,state){
+    const {option,flag}=BATCH_MEMBER_ACTIONS[request.operation],taskKey=request.taskKey;
+    const refuse=(code,reason)=>Object.freeze({outcome:'rejected',code,batchId:config.batchId,taskKey,operation:request.operation,reason});
+    if(!plans.has(taskKey))return refuse('batch_member_action_unavailable',`taskKey ${taskKey} 不是本批次的任务`);
+    const stopped=membership.has(state.current)
+      ?membership.get(state.current).filter(key=>membership.has(key)&&!state.ready?.has(key)&&!state.done?.has(key)):[state.current];
+    if(!stopped.includes(taskKey))return refuse('batch_member_action_not_current',
+      `批次当前停在 ${stopped.join('、')}；恢复操作只转给当前停住的成员，不跨成员`);
+    if(!actionGrants.get(request.operation).has(taskKey))return refuse('batch_member_action_authorization_required',
+      `${request.operation} 需要批次宿主启动参数 ${flag} ${taskKey}；关闭批次宿主，带上该参数用同一批次配置重新启动后再发送`);
+    if(membership.has(taskKey))bindWorktree(taskKey);
+    const definition=plans.get(taskKey);
+    if(!fs.existsSync(path.join(config.specsDir,'.reviews','.execution',definition.identity.runId,'state.json')))
+      return refuse('batch_member_action_unavailable',`${taskKey} 还没有运行存档，没有可恢复的步骤`);
+    const run=await open(taskKey,{[option]:true});
+    if(run.blocked)return {outcome:'blocked',code:run.blocked.reason,batchId:config.batchId};
+    try{
+      const result=await run.host.handle({version:1,operation:request.operation,requestId:request.requestId,
+        identity:definition.identity,reason:request.reason});
+      actionGrants.get(request.operation).delete(taskKey);
+      return {...result,batchId:config.batchId,taskKey};
+    }finally{run.close();}
+  }
   return Object.freeze({async handle(raw){
-    const request=json(raw);shape(request,['operation','requestId',...(request.operation==='reconcile_review'?['taskKey','invocationId']:[])]);id(request.requestId);
-    need(['advance','status','cancel','reconcile_review'].includes(request.operation));
+    const request=json(raw);shape(request,['operation','requestId',...(request.operation==='reconcile_review'?['taskKey','invocationId']:[]),
+      ...(Object.hasOwn(BATCH_MEMBER_ACTIONS,request.operation??'')?['taskKey','reason']:[])]);id(request.requestId);
+    need(['advance','status','cancel','reconcile_review',...Object.keys(BATCH_MEMBER_ACTIONS)].includes(request.operation));
     if(request.operation==='cancel'&&busy){
       cancelled=true;
       if(members.size){record('batch_cancel',{from_key:liveKey});
@@ -406,12 +481,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       if(request.operation==='reconcile_review'){
         need((config.externalModels||config.executionPolicy)&&plans.has(request.taskKey),'review_reconciliation_unavailable');id(request.invocationId);
         if(membership.has(request.taskKey)){
-          const {worktree,branch}=location(request.taskKey);
-          need(fs.existsSync(worktree),'review_reconciliation_unavailable');
-          need(batchGit(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
-          const definition=plans.get(request.taskKey);
-          plans.set(request.taskKey,validateRunDefinition({...definition,codeProject:worktree,
-            ...(definition.codeProjects?{codeProjects:definition.codeProjects.map(root=>path.join(worktree,path.relative(config.codeProject,root)))}:{})}));
+          need(fs.existsSync(location(request.taskKey).worktree),'review_reconciliation_unavailable');bindWorktree(request.taskKey);
         }
         const definition=plans.get(request.taskKey);
         need(fs.existsSync(path.join(config.specsDir,'.reviews','.execution',definition.identity.runId,'state.json')),'review_reconciliation_unavailable');
@@ -420,6 +490,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         finally{run.close();}
       }
       if(initial.stopped)return {outcome:'blocked',code:initial.code??'cancelled',batchId:config.batchId};
+      if(Object.hasOwn(BATCH_MEMBER_ACTIONS,request.operation))return await memberAction(request,initial);
       if(request.operation==='advance'&&!initial.rows.length){
         const dirty=batchGit(config.codeProject,['status','--porcelain']);
         if(dirty)return {outcome:'blocked',code:'batch_main_dirty',batchId:config.batchId,
@@ -440,7 +511,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
           const binding={specsDir:config.specsDir,feature:definition.feature,identity:status.identity,packageDigest:status.packageDigest};
           const qa=findCmAiQaDecision(binding);
           need(qa?.status==='skipped'||(qa?.status==='triggered'&&latestCmAiQaRun(binding)?.status==='passed'),'batch_qa_not_ready');
-          need(inspectRunClosure(log,definition.identity.runId).closed,'batch_resources_open');
+          requireClosed(definition.identity.runId);
         }
         finally{previous.close();}
       }
@@ -461,8 +532,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         const result=await active.host.handle({version:1,operation:request.operation,requestId:request.requestId,
           identity:plans.get(liveKey).identity});
         if(cancelled)return {outcome:'cancelled',code:'cancelled',batchId:config.batchId};
-        if(result.state==='run_done'||result.pendingAction==='start_next_task')
-          need(inspectRunClosure(log,plans.get(liveKey).identity.runId).closed,'batch_resources_open');
+        if(result.state==='run_done'||result.pendingAction==='start_next_task')requireClosed(plans.get(liveKey).identity.runId);
         const finished=result.state==='run_done'&&['run_done','run_done_degraded'].includes(result.code);
         const handoff=result.outcome==='refreshed'&&result.pendingAction==='start_next_task';
         if(request.operation!=='advance'||(!finished&&!handoff))return {...result,batchId:config.batchId};

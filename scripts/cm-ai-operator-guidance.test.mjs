@@ -82,11 +82,14 @@ test('batch guidance matches its narrower control surface and never advertises s
   assert.equal(wrapped.pendingAction,blocked.pendingAction);assert.equal(wrapped.guidance.recoveryOperation,'advance');
   assert.match(guidanceText(wrapped),/原批次入口/);assert.doesNotMatch(guidanceText(wrapped),/--mode/);
   assert.match(guidanceText(batchMemberResult(member('blocked','completion_checks_changed','complete'))),/成员宿主继续完成复核/);
-  for(const [state,code,action] of [['unknown','execution_error','abandon_effect'],
-    ['unknown','execution_error','abandon_review'],['blocked','bootstrap_review_mismatch','bootstrap_review_recover']]){
-    const output=batchMemberResult(member(state,code,action));
-    assert.equal(output.guidance.recoveryOperation,null);assert.doesNotMatch(guidanceText(output),/--allow-/);
-    assert.match(guidanceText(output),/批次入口不支持/);
+  // Q24: the batch entry forwards these to the stopped member, so guidance names the batch grant and operation.
+  for(const [state,code,action,flag] of [['unknown','execution_error','abandon_effect','--allow-abandon-effect'],
+    ['unknown','execution_error','abandon_review','--allow-abandon-review'],['blocked','bootstrap_review_mismatch','bootstrap_review_recover','--allow-bootstrap-review-recovery'],
+    ['blocked','develop_answer_missing','develop_redo','--allow-develop-redo']]){
+    const output=batchMemberResult(member(state,code,action),{taskKey:'1.work/T-002'});
+    assert.equal(output.guidance.recoveryOperation,action);assert.equal(output.guidance.authorizationGranted,false);
+    assert(guidanceText(output).includes(`${flag} 1.work/T-002`),guidanceText(output));
+    assert.match(guidanceText(output),new RegExp(`批次操作 ${action}`));assert.doesNotMatch(guidanceText(output),/--mode/);
   }
   const rebound=batchMemberResult(member('blocked','spec_drift','spec_rebind'));
   assert.equal(rebound.pendingAction,'none');assert.match(rebound.guidance.nextStep,/不能换绑/);

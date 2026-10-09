@@ -13,6 +13,8 @@
 // status/cancel -> none: batch-run.mjs handle routes only these and advance;
 //   host-session.mjs operationNames admits all three. Other operationNames belong
 //   to child/single-task hosts and are not batch operations.
+// develop_redo/abandon_effect/abandon_review/bootstrap_review_recover -> none:
+//   batch-run.mjs memberAction forwards one to the stopped member's cm-ai entry (Q24).
 import {readBatchExecutionPolicy} from '../runtime/js/cm-ai/execution-policy.mjs';
 import {readBatchExternalModels,batchModelsFile} from '../runtime/js/cm-ai/external-group-models.mjs';
 import {loadConfig,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
@@ -39,13 +41,25 @@ import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
 const HOST=fileURLToPath(new URL('./cm-ai-batch-host.mjs',import.meta.url));
 const KINDS={develop:'develop.json',qa_assess:'qa-assess.json',
   documentation_sync:'documentation-sync.json',documentation_inspect:'documentation-inspect.json'};
+// Q24: per-member recovery grants (cm-ai-batch-host.mjs) and their batch operation.
+const MEMBER_ACTION_FLAGS={develop_redo:'--allow-develop-redo',abandon_effect:'--allow-abandon-effect',
+  abandon_review:'--allow-abandon-review',bootstrap_review_recover:'--allow-bootstrap-review-recovery'};
 const PAIRS=new Set(['--external-models-config','--runtime','--review-config','--browser-qa','--protected-conversation-config',
-  '--protected-config','--allow-provider-development','--allow-review','--input-limit']);
+  '--protected-config','--allow-provider-development','--allow-review','--input-limit','--qa-environment-failure',...Object.values(MEMBER_ACTION_FLAGS)]);
 const FLAGS=new Set(['--execution-optimizations','--external-models','--allow-qa','--rerun-unknown-qa','--rerun-blocked-qa','--verification-precheck',
   '--allow-bootstrap-write']);
 const isObject=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const nonempty=x=>typeof x==='string'&&x.trim().length>0;
 function taskKey(task){return `${task.feature}/${task.taskId}`;}
+export function batchMemberActionPlanError(operation,plan,permissions,keys){
+  const flag=MEMBER_ACTION_FLAGS[operation];if(!flag)return null;
+  if(plan.mode!=='resume')return `${operation} 只用于 mode resume`;
+  if(!keys.includes(plan.taskKey))return `${operation} 需要 PLAN.taskKey 为本批次当前停住的成员 FEATURE/TASK`;
+  if(!(typeof plan.reason==='string'&&plan.reason.trim().length>0&&Buffer.byteLength(plan.reason,'utf8')<=500&&!/[\r\n\0]/.test(plan.reason)))
+    return `${operation} 需要单行 PLAN.reason（最多 500 UTF-8 字节）`;
+  if(!permissions.some((name,index)=>name===flag&&permissions[index+1]===plan.taskKey))return `${operation} 需要 permissions 中的 ${flag} ${plan.taskKey}`;
+  return null;
+}
 export function batchDevelopAttempts(state,key,permissions){
   // The round-1 review this launch authorizes may lead into round 2 within the
   // same advance (Codex round 1 on Q28): list it too; a missing a2 answer then
@@ -90,13 +104,13 @@ function checkCommandShape(commands,key,plan,executionPolicy){
 function preflight(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
     process.stdout.write('用法: cm-ai-batch-drive.mjs --plan PLAN.json <operation>\n'
-      +'operation: advance, status, cancel。PLAN: config, mode, hostContext, permissions, answers, checks, checkTimeoutMs。\n'
+      +'operation: advance, status, cancel, reconcile_review（taskKey、invocationId）, develop_redo / abandon_effect / abandon_review / bootstrap_review_recover（resume、PLAN.taskKey、单行 PLAN.reason，permissions 带对应 --allow-… 任务）。PLAN: config, mode, hostContext, permissions, answers, checks, checkTimeoutMs。\n'
       +'checks 每项为 {id,command,timeoutMs?}；超时为 1..3600000 整数，默认 900000 ms（15 分钟）。\n'
       +'develop.json.edits 与单任务驾驶员相同：内容文件、{file,mode}、{mode}、{delete:true}；启动前同样拒绝超限、空交付与受保护模式下的非 UTF-8 内容（尚未开跑的后续任务不看代码树，只做答案本身就能判定的检查：单文件 1 MiB、答案写入的 scope 文件合计 2 MiB，等等；运行存档单条记录上限要看该任务开跑时的代码树，驾驶员事先算不出，超限交付写入后由宿主拦下，停在可重试的 blocked/develop_package_too_large）。\n'
       +'带 --allow-review 任务:1 但还没有 develop-a2.json 时照常启动：审查若要求修改，该任务停在 changes_requested（revision_answer_required），读 .reviews/<feature>-<task>-r1.md 的 findings 写好 develop-a2.json 后再 advance。\n');
     process.exit(0);
   }
-  const loaded=loadPlanFile({name:'cm-ai-batch-drive.mjs',known:new Set(['advance','status','cancel','reconcile_review'])});
+  const loaded=loadPlanFile({name:'cm-ai-batch-drive.mjs',known:new Set(['advance','status','cancel','reconcile_review',...Object.keys(MEMBER_ACTION_FLAGS)])});
   const {plan,base,operation}=loaded;
   requireFields(plan,['config','mode','hostContext','permissions']);
   try{planCheckTimeout(plan);}catch(error){stop(2,error.message);}
@@ -158,6 +172,7 @@ function preflight(){
   let externalModels;
   try{externalModels=readBatchExternalModels({batch,started:hasStore,enabled:permissions.includes('--external-models'),inputFile:argumentValue('--external-models-config'),providers:[routes.coderRuntime,routes.reviewerRuntime].filter(Boolean)});}catch(error){stop(2,error.code??'external_model_configuration_invalid');}
   if(operation==='reconcile_review'&&(plan.mode!=='resume'||!keys.includes(plan.taskKey)||!nonempty(plan.invocationId)))stop(2,'reconcile_review requires resume, taskKey and original invocationId');
+  const memberError=batchMemberActionPlanError(operation,plan,permissions,keys);if(memberError)stop(2,memberError);
   for(let i=0;i<permissions.length;i++)if(PAIRS.has(permissions[i])){
     const name=permissions[i],value=permissions[++i];
     if(['--review-config','--protected-conversation-config','--protected-config'].includes(name)){
@@ -175,6 +190,8 @@ function preflight(){
         }
       }catch(error){stop(2,`${name} 配置无效: ${file}: ${error.code??error.message}`);}
       permissions[i]=file;
+    }else if(Object.values(MEMBER_ACTION_FLAGS).includes(name)){
+      if(!keys.includes(value))stop(2,`${name} 需要本批次的 FEATURE/TASK: ${value}`);
     }else if(['--allow-review','--allow-provider-development'].includes(name)){
       const cut=value.lastIndexOf(':');
       if(!keys.includes(value.slice(0,cut))||!['1','2'].includes(value.slice(cut+1)))
@@ -354,7 +371,8 @@ function main(){
   loaded=preflight();
   const {plan,operation,bundle,config,permissions}=loaded;
   driveHost({host:HOST,args:['serve','--config',config,'--host-context',plan.hostContext,
-    '--allow-development',...permissions,...loaded.holds.flatMap(key=>['--hold-revision',key])],cwd:bundle.batch.codeProject,operation,request:operation==='reconcile_review'?{taskKey:plan.taskKey,invocationId:plan.invocationId}:{},
+    '--allow-development',...permissions,...loaded.holds.flatMap(key=>['--hold-revision',key])],cwd:bundle.batch.codeProject,operation,request:operation==='reconcile_review'?{taskKey:plan.taskKey,invocationId:plan.invocationId}
+      :Object.hasOwn(MEMBER_ACTION_FLAGS,operation)?{taskKey:plan.taskKey,reason:plan.reason}:{},
     answers:loaded.answers,answerFor});
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))main();
