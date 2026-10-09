@@ -304,7 +304,7 @@ scope/requirements使用相对工作区的前缀路径（如`frontend/src/view.m
 init_generate返回原`{status,documents}`；init_verify逐组核验并返回`{checks,constraintChanges,application,retrospective}`，
 checks为commands/globs/file_references/constraint_preservation/rule_applicability，各含status/evidence。
 constraintChanges必须空；application/retrospective沿原Learning字段。此核验不是独立Review，仍走原N4/N5。
-单任务驾驶员覆盖T-001骨架和纯规范scope、单代码根、非`--protected-config`的T-002规范任务及其第2轮修订：`init_generate`读取启动前校验的`answers/init-generate.json`（第2轮只读`init-generate-a2.json`），`init_verify`的globs/file_references/constraint_preservation/rule_applicability四组与Learning读取会话核对后写的`init-verify.json`（第2轮`init-verify-a2.json`），commands组只由驾驶员在宿主接受启动（`host_ready`，宿主已完成全部启动核对）后、发送操作前于代码根实跑该文件列出的草稿命令得出（此前还用宿主自己的读取器与admission函数核对写入授权、配置文件、任务选择与bootstrap nextTask；受保护模式与宿主检查同用specs沙箱；未通过或改动了预检核对过的规范目标、运行定义、权限文件或bootstrap规格即退出2且不发送操作，create时运行停在只有init记录的ready，改用resume重跑），答案文件不能提供commands结果；修订答案须在读取首轮findings后编写，规范任务的advance不能带`--allow-review-attempt 1`跨进第2轮。续跑（第2轮或检查失败后的同轮重试）时目标文件须与运行存档记录的上次写入一致，宿主同轮重试以本轮已记录的规范证据为起点。含业务scope、`codeProjects`多根或provider开发的规范任务仍启动前退出2，需要当前AI会话直接保持`cm-ai-host.mjs serve`的交互进程依实际`host_request`应答；批次驾驶员没有此runner，预检退出2。详见[单步驾驶员](../skills/cm-ai/references/js-host.md#bootstrap-规范任务用单步驾驶员)与[当前会话宿主路径](../skills/cm-ai/references/js-host.md#bootstrap-规范任务的当前会话宿主路径)。
+单任务驾驶员覆盖T-001骨架和纯规范scope、单代码根、非`--protected-config`的T-002规范任务及其第2轮修订：`init_generate`读取启动前校验的`answers/init-generate.json`（第2轮只读`init-generate-a2.json`），`init_verify`的globs/file_references/constraint_preservation/rule_applicability四组与Learning读取会话核对后写的`init-verify.json`（第2轮`init-verify-a2.json`），commands组只由驾驶员在宿主接受启动（`host_ready`，宿主已完成全部启动核对）后、发送操作前于代码根实跑该文件列出的草稿命令得出（此前还用宿主自己的读取器与admission函数核对写入授权、配置文件、任务选择与bootstrap nextTask；受保护模式与宿主检查同用specs沙箱；未通过或改动了预检核对过的规范目标、运行定义、权限文件或bootstrap规格即退出2且不发送操作，create时运行停在只有init记录的ready，改用resume重跑），答案文件不能提供commands结果；修订答案须在读取首轮findings后编写，规范任务的advance不能带`--allow-review-attempt 1`跨进第2轮。续跑（第2轮或检查失败后的同轮重试）时目标文件须与运行存档记录的上次写入一致，宿主同轮重试以本轮已记录的规范证据为起点。含业务scope、`codeProjects`多根或provider开发的规范任务仍启动前退出2，需要当前AI会话直接保持`cm-ai-host.mjs serve`的交互进程依实际`host_request`应答；批次驾驶员没有此runner，预检退出2。详见[单步驾驶员](../skills/cm-ai/references/js-host-modes.md#bootstrap-规范任务用单步驾驶员)与[当前会话宿主路径](../skills/cm-ai/references/js-host-modes.md#bootstrap-规范任务的当前会话宿主路径)。
 规则读回及证据进入同一原develop记录与handoff，然后Review，完成后N7重载。若T-001 Learning已写入AGENTS.md，规范草稿须保留其他既有约束原文；宿主把既有`## 项目教训`段按原字节合入最终草稿，再核验、写入并交独立Review。草稿修改既有教训或遗漏其他既有内容时阻断。已有用户规则冲突、未知写入或材料漂移不覆盖不重派；
 缺当前写许可在派发前阻断，补许可只能沿原run恢复。此开关不授权Git初始化、安装、网络或额外provider。
 
@@ -537,7 +537,7 @@ PTY 会关闭本进程输入回显并恢复原终端模式，须用上述消息�
 EOF/断联让未完成工具调用沿原 unknown 恢复，不当成用户取消；显式 cancel 才记取消。
 重开不会重发 unknown、cancelled 或已完成开发。每行回复仍限64KiB。
 QA、文档可显式接入下述固定能力，多任务使用下文批次 CLI。源 Skill 显式路由见
-`skills/cm-ai/references/js-host.md`；完整角色接线与安装激活仍未完成，不能自行补 JSON 或绕过待审。
+`skills/cm-ai/references/js-host.md`（恢复与条件路径见同目录 `js-host-recovery.md`、`js-host-qa-recovery.md`、`js-host-modes.md`）；完整角色接线与安装激活仍未完成，不能自行补 JSON 或绕过待审。
 
 ### 接入 QA 与文档
 

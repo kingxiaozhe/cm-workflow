@@ -14,7 +14,7 @@ commands/logic 及 API、数据库回归；`web-frontend` 优先 commands/browse
 
 taskIds 全部是 `[DROPPED]` 任务的用例（blocking 与否）不适用：不执行、不派发宿主请求、不计数，记入 `dropped_task_cases` 与报告 `not_applicable`（`NOT_APPLICABLE`）。feature 未完成时，只执行 taskIds 全部已完成且未 dropped 的用例，其余记入 `deferred_cases`，延后到 feature 收尾；延后用例不计入执行数量，也不派发宿主请求。feature 中途无可执行项时产生一条显式 `BLOCKED` 行，id 为 `no-applicable-cases`，不得以零测试宣称通过。
 
-最新已 complete 的 QA 若为纯宿主/环境证据 BLOCKED、failed=0 且 qaRound<3，可按 [JS 宿主入口](js-host.md) 显式 `--rerun-blocked-qa --allow-qa` 恢复，以 superseded 关联下一轮全量重跑；产品 FAIL、commands 阻断与未 complete 不适用，完成后同步 N6 状态镜像。
+最新已 complete 的 QA 若为纯宿主/环境证据 BLOCKED、failed=0 且 qaRound<3，可按 [JS 宿主 QA 恢复](js-host-qa-recovery.md#已-complete-的宿主证据或环境阻断) 显式 `--rerun-blocked-qa --allow-qa` 恢复，以 superseded 关联下一轮全量重跑；产品 FAIL、commands 阻断与未 complete 不适用，完成后同步 N6 状态镜像。
 
 ## 评分（1-5 分，总分 ≥ 8 触发）
 
