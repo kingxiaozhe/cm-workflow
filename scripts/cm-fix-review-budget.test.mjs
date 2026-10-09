@@ -145,3 +145,16 @@ test('#15 the cm-ai driver forwards the QA-fix abandon_review reason inside fix_
   assert.deepEqual(buildCmAiDriveRequest('fix_action',plan,{identity}),{version:1,identity,packageDigest:plan.packageDigest,
     testRunId:plan.testRunId,fixOperation:'abandon_review',reason:plan.reason});
 });
+
+test('Q23 the cm-ai driver forwards the new QA-fix recovery fields inside fix_action',()=>{
+  const identity={repositoryId:'r',runId:'run',taskId:'T-1',attempt:1},base={packageDigest:'a'.repeat(64),testRunId:'qa-run'};
+  for(const fixOperation of ['rediagnose','rerun_blocked_step'])
+    assert.deepEqual(buildCmAiDriveRequest('fix_action',{...base,fixOperation,reason:'理由'},{identity}),
+      {version:1,identity,...base,fixOperation,reason:'理由'});
+  const recover={...base,fixOperation:'recover_final_review',invocationId:'final-1',reviewPackageDigest:'b'.repeat(64),
+    previousInvocationStopped:true,reason:'旧审查已停'};
+  assert.deepEqual(buildCmAiDriveRequest('fix_action',recover,{identity}),{version:1,identity,...base,fixOperation:'recover_final_review',
+    reason:'旧审查已停',invocationId:'final-1',reviewPackageDigest:'b'.repeat(64),previousInvocationStopped:true});
+  assert.deepEqual(buildCmAiDriveRequest('fix_action',{...base,fixOperation:'revision_test_check'},{identity}),
+    {version:1,identity,...base,fixOperation:'revision_test_check'});
+});

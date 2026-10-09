@@ -556,6 +556,31 @@ test('QA-fix child action requires its own answer before any host request',t=>{
     {fix_repair:{'target.mjs':'repair.txt'}},f.answers),
   {outcome:'repaired',edits:[{path:'target.mjs',beforeSha256:'old-hash',content:'export const value = 43;\n'}]});
 });
+test('Q23 QA-fix recovery fixOperations need their parent flag and fields before any host request',t=>{
+  const f=fixture(t);prepared(f);assert.equal(f.drive(f.plan(),'advance').status,0);
+  const binding={feature:'1.work',identity,packageDigest:'a'.repeat(64),testRunId:'qa-child'};
+  fs.writeFileSync(path.join(f.root,'fix-owner.json'),JSON.stringify({specsRoot:f.specsDir,identity:{...identity,runId:'fix-run'},
+    configuration:{hostContextId:'drive-host-a',reproduction:{cwd:f.codeProject},qaSource:binding}}));
+  const base={mode:'resume',originalHostContext:'drive-host-a',packageDigest:'a'.repeat(64),testRunId:'qa-child',
+    permissions:['--qa-fix-owner-config','fix-owner.json','--allow-qa-fix-start']};
+  const run=(extra,flags=[])=>f.drive(f.plan({...base,...extra,permissions:[...base.permissions,...flags]}),'fix_action');
+  let result=run({fixOperation:'rediagnose',reason:'审查要求补证'});
+  assert.equal(result.status,2);assert.match(result.stderr,/--allow-qa-fix-rediagnosis/);
+  result=run({fixOperation:'rediagnose',reason:'审查要求补证'},['--allow-qa-fix-rediagnosis']);
+  assert.equal(result.status,2);assert.match(result.stderr,/learning\.json/);
+  f.write('learning.json',{status:'no_relevant_lesson',summary:'No applicable project lesson'});
+  f.write('diagnosis.json',{status:'diagnosed',rootCause:'first',affectedPaths:['a.mjs'],affectedModules:['a'],plan:'p',crossLayer:false});
+  result=run({fixOperation:'rediagnose',reason:'审查要求补证'},['--allow-qa-fix-rediagnosis']);
+  assert.equal(result.status,2);assert.match(result.stderr,/diagnosis-rediagnosis\.json/);
+  result=run({fixOperation:'rerun_blocked_step'},['--allow-qa-fix-rerun-blocked-step']);
+  assert.equal(result.status,2);assert.match(result.stderr,/reason/);
+  result=run({fixOperation:'recover_final_review',reason:'旧审查已停',invocationId:'final-1',reviewPackageDigest:'b'.repeat(64)},
+    ['--allow-qa-fix-final-review-recovery']);
+  assert.equal(result.status,2);assert.match(result.stderr,/previousInvocationStopped/);
+  result=run({fixOperation:'recover_final_review',reason:'旧审查已停',invocationId:'final-1',reviewPackageDigest:'b'.repeat(64),
+    previousInvocationStopped:true},['--allow-qa-fix-final-review-recovery','--qa-fix-final-review-recovery-invocation','final-1']);
+  assert.equal(result.status,1,result.stderr);assert.match(result.stderr,/qa_fix_parent_not_completed/);
+});
 test('QA-fix answer travels through the shared JSONL core',t=>{
   const f=fixture(t),host=path.join(f.root,'child-host.mjs'),wrapper=path.join(f.root,'child-drive.mjs');
   fs.writeFileSync(host,`process.stdout.write(JSON.stringify({type:'host_ready',sessionId:'child'})+'\\n');

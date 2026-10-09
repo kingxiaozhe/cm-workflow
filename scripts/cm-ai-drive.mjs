@@ -72,11 +72,17 @@ const TEST_RUN_OPERATIONS=new Set(['qa_result','context_refresh','finish','run_f
 const FIX_ASKS={advance:['fix_learning','fix_diagnose'],author_tests:['fix_learning','fix_test_author'],
   repair:['fix_learning','fix_repair'],retrospective:['fix_learning','fix_retrospective'],
   red_test:['fix_learning'],baseline:['fix_learning'],regression:['fix_learning'],
-  post_review_regression:['fix_learning'],prepare_revision:['fix_learning']};
+  post_review_regression:['fix_learning'],prepare_revision:['fix_learning'],rediagnose:['fix_learning','fix_diagnose']};
 const FIX_ACTIONS=new Set(['red_test','baseline','author_tests','repair','regression','retrospective',
   'learning_writeback','handoff','final_review_package','final_review','publish_review','check_n5',
   'post_review_regression','publish_dossier','walkthrough','finish','prepare_revision',
-  'cause_review_package','cause_review','reconcile_review','abandon_step','abandon_review']);
+  'cause_review_package','cause_review','reconcile_review','abandon_step','abandon_review',
+  'rediagnose','rerun_blocked_step','recover_final_review','revision_test_check']);
+// Q23: parent launch flag per recovery fixOperation (host-qa-fix-owner.mjs QA_FIX_ACTION_FLAGS).
+const FIX_ACTION_FLAGS={abandon_step:'--allow-qa-fix-abandon',abandon_review:'--allow-qa-fix-abandon-review',
+  rediagnose:'--allow-qa-fix-rediagnosis',rerun_blocked_step:'--allow-qa-fix-rerun-blocked-step',
+  recover_final_review:'--allow-qa-fix-final-review-recovery',revision_test_check:'--allow-qa-fix-regression'};
+const FIX_REASONED=['abandon_step','abandon_review','rediagnose','rerun_blocked_step','recover_final_review'];
 const FILES={develop:'develop.json',qa_assess:'qa-assess.json',documentation_inspect:'documentation-inspect.json',
   documentation_sync:'documentation-sync.json',fix_learning:'learning.json',fix_diagnose:'diagnosis.json',
   fix_test_author:'test-edits.json',fix_repair:'repair-edits.json',fix_retrospective:'retrospective.json'};
@@ -85,13 +91,13 @@ const PAIR_FLAGS=new Set(['--external-models-config','--allow-review-attempt','-
   '--protected-conversation-config','--protected-config','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure',
   '--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--browser-qa',
   '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason','--spec-rebind-reason',
-  '--review-runtime','--feature']);
+  '--review-runtime','--feature','--qa-fix-final-review-recovery-invocation']);
 const FLAG_FLAGS=new Set(['--execution-optimizations','--external-models','--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
   '--verification-precheck',
   '--allow-bootstrap-write','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
   '--supersede-reviewed-evidence','--accept-superseded-code-drift','--rebind-spec-material',
   ...['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon','abandon-review',
-    'test-author','repair','cause-review','final-review'].map(name=>`--allow-qa-fix-${name}`)]);
+    'test-author','repair','cause-review','final-review','rediagnosis','rerun-blocked-step','final-review-recovery'].map(name=>`--allow-qa-fix-${name}`)]);
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;
 // Needs the resolved --bootstrap-config path in permissions.
@@ -627,7 +633,7 @@ function load(){
     &&permissions[i]!=='--allow-review-attempt'&&permissions[i]!=='--browser-qa'
     &&permissions[i]!=='--qa-config-revision-reason'&&permissions[i]!=='--qa-environment-failure'&&permissions[i]!=='--allow-provider-development-attempt'
     &&permissions[i]!=='--supersede-reason'&&permissions[i]!=='--spec-rebind-reason'&&permissions[i]!=='--input-limit'
-    &&permissions[i]!=='--review-runtime'&&permissions[i]!=='--feature'){
+    &&permissions[i]!=='--review-runtime'&&permissions[i]!=='--feature'&&permissions[i]!=='--qa-fix-final-review-recovery-invocation'){
     const file=path.resolve(base,permissions[i+1]);if(!fs.existsSync(file))stop(2,`${permissions[i]} 文件不存在: ${file}`);
     permissions[i+1]=file;permissionFiles.push(file);i++;
   }
@@ -660,9 +666,14 @@ function load(){
   if(operation==='fix_action'){
     if(plan.fixOperation==='reconcile_review'&&(plan.mode!=='resume'||!nonempty(plan.invocationId)))stop(2,'fix reconciliation requires resume and original invocationId');
     if(!FIX_ACTIONS.has(plan.fixOperation))stop(2,'fix_action 需要宿主支持的 fixOperation');
-    const abandonFlag=plan.fixOperation==='abandon_review'?'--allow-qa-fix-abandon-review':'--allow-qa-fix-abandon';
-    if(['abandon_step','abandon_review'].includes(plan.fixOperation)&&(!nonempty(plan.reason)
-      ||!permissions.includes(abandonFlag)))stop(2,`${plan.fixOperation} 需要 reason 与 ${abandonFlag}`);
+    const actionFlag=FIX_ACTION_FLAGS[plan.fixOperation];
+    if(actionFlag&&!permissions.includes(actionFlag))stop(2,`${plan.fixOperation} 需要 ${actionFlag}`);
+    if(FIX_REASONED.includes(plan.fixOperation)&&!(nonempty(plan.reason)&&Buffer.byteLength(plan.reason,'utf8')<=1000
+      &&!/[\r\n\0\u0085\u2028\u2029]/.test(plan.reason)))stop(2,`${plan.fixOperation} 需要单行 reason（最多 1000 UTF-8 字节）`);
+    if(plan.fixOperation==='rediagnose'&&plan.mode!=='resume')stop(2,'rediagnose 需要 mode:resume');
+    if(plan.fixOperation==='recover_final_review'&&(plan.mode!=='resume'||!nonempty(plan.invocationId)
+      ||!/^[a-f0-9]{64}$/.test(plan.reviewPackageDigest??'')||plan.previousInvocationStopped!==true))
+      stop(2,'recover_final_review 需要 mode:resume、原 invocationId、子运行终审包 reviewPackageDigest，以及确认旧审查进程已停的 previousInvocationStopped:true');
     asks.push(...(FIX_ASKS[plan.fixOperation]??[]));
   }
   let live;
@@ -720,7 +731,9 @@ function load(){
       exact:!permissions.includes('--bootstrap-config')})});
   const unique=[...new Set(asks.filter(kind=>FILES[kind]&&kind!=='develop'))];
   const answer=preflightAnswers(unique,kind=>{
-    const file=answerPath(answers??'',FILES[kind]);
+    // A rediagnosis is a new conclusion; never reuse the first diagnosis file (same as cm-fix-drive).
+    const file=answerPath(answers??'',operation==='fix_action'&&plan.fixOperation==='rediagnose'&&kind==='fix_diagnose'
+      ?'diagnosis-rediagnosis.json':FILES[kind]);
     if(!answers||!fs.existsSync(file))stop(2,`步骤 ${operation} 会反问 ${kind}，但答案文件不存在: ${file}`);
     const value=readJson(file,kind);validateCmAiAnswer(kind,value,answers);return value;
   });
@@ -809,7 +822,9 @@ export function buildCmAiDriveRequest(operation,plan,definition,identity=definit
     ...(['fix_status','fix_advance','fix_action','fix_run'].includes(operation)?{
       packageDigest:plan.packageDigest,testRunId:plan.testRunId,
       ...(operation==='fix_action'?{fixOperation:plan.fixOperation,...(plan.fixOperation==='reconcile_review'?{invocationId:plan.invocationId}:{}),
-        ...(['abandon_step','abandon_review'].includes(plan.fixOperation)?{reason:plan.reason}:{})}: {})}: {})};
+        ...(FIX_REASONED.includes(plan.fixOperation)?{reason:plan.reason}:{}),
+        ...(plan.fixOperation==='recover_final_review'?{invocationId:plan.invocationId,reviewPackageDigest:plan.reviewPackageDigest,
+          previousInvocationStopped:plan.previousInvocationStopped}:{})}: {})}: {})};
 }
 export function buildCmAiDriveHostArgs(plan,permissions,config){
   return ['serve','--config',config,'--mode',plan.mode,'--host-context',plan.hostContext,

@@ -32,7 +32,7 @@ function events(onEvent,thread){
     {event:'item.completed',item_type:'agent_message'},{event:'turn.completed',item_type:null},
     {event:'process_closed',exit_code:0,signal:null,timed_out:false}])onEvent(event);
 }
-async function fixture(t,{childHost=A,causeContext=null,lostCauseReviews=0}={}){
+async function fixture(t,{childHost=A,causeContext=null,lostCauseReviews=0,rejectedCauseReviews=0}={}){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qa-fix-session-')));
   const codeProject=path.join(root,'code'),specsDir=path.join(root,'specs'),feature='1.value';
   fs.mkdirSync(codeProject);fs.mkdirSync(path.join(specsDir,feature),{recursive:true});
@@ -86,9 +86,12 @@ async function fixture(t,{childHost=A,causeContext=null,lostCauseReviews=0}={}){
     const data=JSON.parse(prompt.split('<cm-review-data-json>\n')[1]);
     if(++causeReviews<=lostCauseReviews){onEvent({event:'thread.started',provider_thread:`lost-child-review-${causeReviews}`});
       throw Error('Synthetic lost cause review');}
-    events(onEvent,'synthetic-child-review');
-    return {status:'succeeded',value:{verdict:'approved',packageDigest:data.reviewPackage.packageDigest,
-      examinedPaths:['value.mjs'],findings:[],summary:'Synthetic cause review'}};
+    // A later independent review needs a fresh reviewer thread.
+    events(onEvent,causeReviews>lostCauseReviews+1?`synthetic-child-review-${causeReviews}`:'synthetic-child-review');
+    const rejected=causeReviews<=lostCauseReviews+rejectedCauseReviews;
+    return {status:'succeeded',value:{verdict:rejected?'changes_requested':'approved',packageDigest:data.reviewPackage.packageDigest,
+      examinedPaths:['value.mjs'],findings:rejected?[{id:'F1',severity:'P2',path:'value.mjs',message:'Cause is incomplete',evidence:'Fixture finding'}]:[],
+      summary:'Synthetic cause review'}};
   }});
   const configuration={hostContextId:childHost,defect:'Value must be 2',qaSource,
     causeReview:{...reviewHost(A).reviewer,...(causeContext?{contextId:causeContext}:{})},
@@ -97,7 +100,7 @@ async function fixture(t,{childHost=A,causeContext=null,lostCauseReviews=0}={}){
   const childDir=path.join(specsDir,'.reviews','.execution',fix.identity.runId),statePath=path.join(childDir,'state.json');
   const bound=operation=>({...request(operation),packageDigest:failed.packageDigest,testRunId:qaSource.testRunId});
   const close=()=>{owner?.close();owner=null;};
-  const open=async(live,{allowStart=true,template=false,allowAbandon=false,lostDiagnosis=false}={})=>{
+  const open=async(live,{allowStart=true,template=false,allowAbandon=false,lostDiagnosis=false,extraPermissions=[]}={})=>{
     close();const execution=executionFor(live);assert.equal(execution.configuration.hostContextId,A);
     parent=await openControlRun(definition,'resume',execution);
     const rh=reviewHost(live);
@@ -105,7 +108,7 @@ async function fixture(t,{childHost=A,causeContext=null,lostCauseReviews=0}={}){
     owner=createQaFixOwnerHost({parent,hostContextId:live,parentHostContextId:execution.configuration.hostContextId,
       reopenParent:()=>openControlRun(definition,'resume',execution),allowStart,
       ...(template?{template:{specsRoot:specsDir,feature,identity,configuration:templateConfiguration}}:{fix}),
-      fixPermissions:allowAbandon?[...permissions,'--allow-abandon']:permissions,
+      fixPermissions:[...permissions,...(allowAbandon?['--allow-abandon']:[]),...extraPermissions],
       fixAuthorities:{authority:rh.authority,finalAuthority:rh.finalAuthority},
       fixExecution:{...rh.execution,prepare,bridge:{async call(kind){assert.equal(kind,'fix_diagnose');
         if(lostDiagnosis)throw Error('Synthetic lost diagnosis');return diagnosis;}}}});
@@ -120,7 +123,7 @@ async function fixture(t,{childHost=A,causeContext=null,lostCauseReviews=0}={}){
 
 // Exercise the actual CLI assembly as well as the direct owner. The CLI only
 // resumes/status/reviews here: these operations do not require a native sandbox.
-async function cli(f,live,operation,{runtime='codex',flags=[]}={}){
+async function cli(f,live,operation,{runtime='codex',flags=[],diagnosed=diagnosis}={}){
   f.close();fs.writeFileSync(path.join(f.root,'fix.json'),JSON.stringify(f.fix));
   const args=['serve','--config',path.join(f.root,'run.json'),'--mode','resume','--host-context',live,'--allow-development',
     '--original-host-context',A,'--review-config',path.join(f.root,'review.json'),'--workflow-config',path.join(f.root,'workflow.json'),'--allow-qa',
@@ -143,7 +146,7 @@ async function cli(f,live,operation,{runtime='codex',flags=[]}={}){
           if(row.type==='host_request'){
             assert(['fix_learning','fix_diagnose'].includes(row.kind),row.kind);
             const result=row.kind==='fix_learning'
-              ?{contextDigest:row.payload.contextDigest,status:'no_relevant_lesson',summary:'Synthetic fixture'}:diagnosis;
+              ?{contextDigest:row.payload.contextDigest,status:'no_relevant_lesson',summary:'Synthetic fixture'}:diagnosed;
             child.stdin.write(JSON.stringify({type:'host_result',sessionId:row.sessionId,callId:row.callId,
               requestDigest:row.requestDigest,result})+'\n');
           }
@@ -247,7 +250,9 @@ test('QA-fix child abandons a lost local diagnosis only with its dedicated CLI f
   const request={...f.bound('fix_action'),fixOperation:'abandon_step',reason:'Child diagnosis response lost'};
   const before=fs.readFileSync(f.statePath);
   const denied=await cli(f,A,request);
-  assert.match(denied.stderr,/fix_abandon_unavailable/);
+  assert.equal(denied.code,0,denied.stderr);
+  assert.deepEqual([denied.result?.outcome,denied.result?.code],['rejected','qa_fix_action_authorization_required'],JSON.stringify(denied.result));
+  assert.match(denied.result.reason,/--allow-qa-fix-abandon（/);
   assert.deepEqual(fs.readFileSync(f.statePath),before);
   const allowed=await cli(f,A,request,{flags:['--allow-qa-fix-abandon']});
   assert.equal(allowed.code,0,allowed.stderr);
@@ -266,15 +271,77 @@ test('#15 a QA-fix child cause review without a result is abandoned once through
   assert.equal(reviewed.fixStage,'unknown');assert.equal(reviewed.actionResult.reviewAbandonable,'cause_review');
   const request={...f.bound('fix_action'),fixOperation:'abandon_review',reason:'Child cause reviewer confirmed stopped'};
   const before=fs.readFileSync(f.statePath);
-  await assert.rejects(owner.handle(request),{code:'fix_review_abandon_authorization_required'});
+  const refused=await owner.handle(request);
+  assert.deepEqual([refused.outcome,refused.code],['rejected','qa_fix_action_authorization_required']);
+  assert.match(refused.reason,/--allow-qa-fix-abandon-review/);
+  assert.equal((await owner.handle(f.request('status'))).state,'fixture_completed');
   assert.deepEqual(fs.readFileSync(f.statePath),before);
   f.close();
   const local=await cli(f,A,request,{flags:['--allow-qa-fix-abandon']});
-  assert.match(local.stderr,/fix_review_abandon_authorization_required/);assert.deepEqual(fs.readFileSync(f.statePath),before);
+  assert.equal(local.result?.code,'qa_fix_action_authorization_required',JSON.stringify(local.result));
+  assert.match(local.result.reason,/--allow-qa-fix-abandon-review/);assert.deepEqual(fs.readFileSync(f.statePath),before);
   const allowed=await cli(f,A,request,{flags:['--allow-qa-fix-abandon-review']});
   assert.equal(allowed.code,0,allowed.stderr);assert.equal(allowed.result?.fixStage,'cause_review_required');
   assert(f.records().some(row=>row.id==='fix-cause-abandoned'));
   owner=await f.open(A);
   assert.equal((await owner.handle({...f.bound('fix_action'),fixOperation:'cause_review'})).fixStage,'red_test_required');
   assert.equal(f.records().find(row=>row.id==='fix-cause-retry-started').payload.providerThreadId,'synthetic-child-review');
+});
+
+// Q23/F08: a rejected child cause review reaches rediagnosis_required. Before this
+// the parent fix_action refused rediagnose, so the only exit was closing the parent
+// and reopening the child with cm-fix-host. Now the parent host forwards it to the
+// same cm-fix dispatcher under --allow-qa-fix-rediagnosis, and the child continues.
+test('Q23 a QA-fix child rediagnoses through the parent host fix_action, then its round-2 cause review proceeds',async t=>{
+  const f=await fixture(t,{rejectedCauseReviews:1});
+  let owner=await f.open(A);
+  assert.equal((await owner.handle(f.bound('fix_advance'))).fixStage,'cause_review_required');
+  assert.equal((await owner.handle({...f.bound('fix_action'),fixOperation:'cause_review'})).fixStage,'rediagnosis_required');
+  f.close();
+  const request={...f.bound('fix_action'),fixOperation:'rediagnose',reason:'根因审查要求补充跨层证据'};
+  const before=fs.readFileSync(f.statePath);
+  // Without the parent flag: an explicit refusal naming it, nothing written, parent reopened.
+  const denied=await cli(f,A,request);
+  assert.equal(denied.code,0,denied.stderr);
+  assert.deepEqual([denied.result?.outcome,denied.result?.code],['rejected','qa_fix_action_authorization_required'],JSON.stringify(denied.result));
+  assert.match(denied.result.reason,/--allow-qa-fix-rediagnosis/);assert.equal(denied.result.guidance.authorizationGranted,false);
+  assert.deepEqual(fs.readFileSync(f.statePath),before);
+  // A missing reason is still the original cm-fix refusal, reported with its code.
+  const reasonless=await cli(f,A,{...request,reason:'第一行\n第二行'},{flags:['--allow-qa-fix-rediagnosis']});
+  assert.deepEqual([reasonless.result?.outcome,reasonless.result?.code],['rejected','fix_rediagnosis_reason_invalid'],JSON.stringify(reasonless.result));
+  assert.deepEqual(fs.readFileSync(f.statePath),before);
+  const revised={...diagnosis,rootCause:'Wrong constant; revised after review',crossLayer:false};
+  const allowed=await cli(f,A,request,{flags:['--allow-qa-fix-rediagnosis'],diagnosed:revised});
+  assert.equal(allowed.code,0,allowed.stderr);
+  assert.equal(allowed.result?.fixStage,'cause_review_required',JSON.stringify(allowed.result));
+  assert.deepEqual(f.records().slice(0,JSON.parse(before).records.length),JSON.parse(before).records,'journal is append-only');
+  assert(f.records().some(row=>row.id==='fix-rediagnosis-intent'));
+  assert.equal(f.records().find(row=>row.id==='fix-rediagnosis-result').payload.rootCause,revised.rootCause);
+  // The batch continues: the second, independent cause review approves and publishes cause-r2.
+  owner=await f.open(A);
+  assert.equal((await owner.handle({...f.bound('fix_action'),fixOperation:'cause_review'})).fixStage,'red_test_required');
+  assert(fs.readdirSync(path.join(path.dirname(f.childDir),'..')).some(name=>/-cause-r2\.md$/.test(name)));
+});
+
+// Q23/F25: recover_final_review and rerun_blocked_step reach the same dispatcher;
+// a stage that does not qualify is the original cm-fix refusal, not host_request_failed.
+test('Q23 recover_final_review and rerun_blocked_step through fix_action report the original cm-fix refusal codes',async t=>{
+  const f=await fixture(t);
+  let owner=await f.open(A,{extraPermissions:['--allow-final-review-recovery','--allow-rerun-blocked-step']});
+  assert.equal((await owner.handle(f.bound('fix_advance'))).fixStage,'cause_review_required');
+  const before=fs.readFileSync(f.statePath);
+  const recovery=await owner.handle({...f.bound('fix_action'),fixOperation:'recover_final_review',invocationId:'final-review-invocation',
+    reviewPackageDigest:'a'.repeat(64),previousInvocationStopped:true,reason:'旧审查进程已退出'});
+  assert.deepEqual([recovery.outcome,recovery.code],['rejected','fix_review_recovery_unavailable'],JSON.stringify(recovery));
+  const rerun=await owner.handle({...f.bound('fix_action'),fixOperation:'rerun_blocked_step',reason:'环境已修好'});
+  assert.deepEqual([rerun.outcome,rerun.code],['rejected','fix_blocked_rerun_unavailable'],JSON.stringify(rerun));
+  assert.equal((await owner.handle(f.request('status'))).state,'fixture_completed');
+  assert.deepEqual(fs.readFileSync(f.statePath),before);
+  f.close();owner=await f.open(A);
+  const missing=await owner.handle({...f.bound('fix_action'),fixOperation:'recover_final_review',invocationId:'final-review-invocation',
+    reviewPackageDigest:'a'.repeat(64),previousInvocationStopped:true,reason:'旧审查进程已退出'});
+  assert.deepEqual([missing.code,missing.fixOperation],['qa_fix_action_authorization_required','recover_final_review']);
+  assert.match(missing.reason,/--allow-qa-fix-final-review-recovery/);
+  const {classifyDriveResult}=await import('../runtime/js/notify.mjs');
+  assert.equal(classifyDriveResult('cm-ai',{result:missing}),'stuck');
 });
