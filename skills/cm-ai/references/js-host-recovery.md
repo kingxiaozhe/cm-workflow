@@ -47,6 +47,15 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
 读取 `.reviews/<feature>-<task>-r1.md` 的 findings，针对 findings 写好 `develop-a2.json`，再调用
 `advance`。
 
+## 应答缺失、无效或迟到
+
+会话没给出可用应答时，宿主不再停在 `unknown/reconcile`，而是给出可重试的阻断；旧运行恢复后按原 journal 同样投影，原记录不改写，新记录只追加。
+每种出口每运行最多 2 次，超过仍按原样停在 `unknown`。所有提问都有应答期限（`CM_HOST_ANSWER_TIMEOUT_MINUTES`，见 `docs/user-guide.md`），到期后才到的应答一律拒收为 `host_response_late`。
+
+- `blocked/check_answer_missing`、`blocked/check_answer_invalid`（`pendingAction=resume`）：开发已交付并写回 Learning，之后的检查或验证预检超时、断开、迟到或答复格式不合格（旧记录 `unknown/call_timeout`、`execution_error`、`invalid_input` 等，最后一次开发调用 `succeeded`）。
+  先确认上一次检查命令已停止，再 `--mode resume` 后 `advance`：宿主追加 `develop-recheck` 记录，用新 effect id 只重跑检查、验证预检、handoff 与审查包，沿用原交付的 Learning 输入，不重发开发、不占开发调用与 effect 名额，重新划定检查新建文件。
+- `blocked/complete_recheck_failed`（`pendingAction=complete`）：完成前复查没拿到可用应答（`unknown/call_timeout`、`execution_error` 等），且 task-commit-intent 尚未写入、tasks.md 未改动。`--mode resume` 后 `complete`（或 `advance`）：宿主追加 `complete-recheck` 记录，用新 effect id 重新复查并完成，不重新开发或审查。已写 task-commit-intent 的仍按「放弃审查调用与 effect」处理。
+
 ## 重试名额与完成前复查
 
 一个运行最多 6 次计数调用（本地拒绝的开发结果、自动重派的审查和被放弃的调用不计）和 6 个计数 effect（只有 develop、review；complete、

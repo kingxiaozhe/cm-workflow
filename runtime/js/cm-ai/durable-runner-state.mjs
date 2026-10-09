@@ -35,9 +35,9 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout','develop_answer_invalid'].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout','develop_answer_invalid',...RECHECK_CODES].includes(code)
   ||kind==='review'&&state==='pending_review'&&REVIEW_RETRY_CODES.includes(code)
-  ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed'].includes(code)
+  ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed',COMPLETE_RECHECK_CODE].includes(code)
     ||code==='review_package_changed'&&reviewVerdict==='approved')
   ||kind==='develop'&&state==='blocked'&&code==='review_package_changed'&&reviewVerdict==='changes_requested'
   ||({develop:['ready','changes_requested'],review:['awaiting_review'],complete:['approved']})[kind]?.includes(state)===true;
@@ -123,6 +123,52 @@ export function developAnswerRetryable(s,configuration=null) {
     &&developAnswerInvalidEffect(last)&&last.effect.identity.attempt===s.attempt
     &&s.cache.filter(developAnswerInvalidEffect).length<=MAX_DEVELOP_ANSWER_RETRIES;
 }
+// V3 answer gaps: the delivery already reached the disk (the developer call
+// succeeded and its Learning was written back), but a later step never got a
+// usable answer: the task checks or the verification precheck (timed out,
+// disconnected, late, or malformed), or the completion re-check before any
+// task-commit-intent. The developer is never dispatched again: advance journals
+// develop-recheck (or complete-recheck) and re-runs only those later steps.
+// Neither the source effect nor its re-check holds a call or effect slot;
+// MAX_ANSWER_GAP_RETRIES bounds each kind per run. Old journals are projected
+// the same way on replay; their records are never rewritten.
+export const MAX_ANSWER_GAP_RETRIES=2;
+const CHECK_ANSWER_MISSING=['call_timeout','execution_error','host_disconnected','host_request_timeout','role_log_failed'];
+const CHECK_ANSWER_INVALID=['invalid_input','invalid_result','limit_exceeded','verification_precheck_invalid'];
+export const RECHECK_CODES=Object.freeze(['check_answer_missing','check_answer_invalid']);
+export const COMPLETE_RECHECK_CODE='complete_recheck_failed';
+// learningWriteback mirrors the checkpointed Learning result, which the journal
+// grammar only accepts after this effect's own developer call succeeded (or on a
+// re-check that kept it unchanged).
+export const developRecheckSource=entry=>{
+  const result=entry.result,call=result.calls?.at(-1);
+  return entry.effect.kind==='develop'&&result.state==='unknown'
+    &&[...CHECK_ANSWER_MISSING,...CHECK_ANSWER_INVALID].includes(result.code)
+    &&call?.terminal==='succeeded'&&call.channel==='fixture'
+    &&result.learningWriteback!=null&&result.learningWriteback.outcome!=='writeback_pending';
+};
+export function developRecheckCode(s,config,recorded=0){
+  if(config.bootstrap?.mode==='instructions'||config.taskLearning?.hostHandoff!==true)return null;
+  const last=s.cache.at(-1);
+  if(!last||last.effect.identity.attempt!==s.attempt||!developRecheckSource(last)
+    ||s.learningResult==null||s.receipt!==null)return null;
+  if(s.state==='blocked'&&RECHECK_CODES.includes(s.code))return s.code;
+  if(!(s.state==='unknown'&&s.code===last.result.code)||recorded>=MAX_ANSWER_GAP_RETRIES)return null;
+  return CHECK_ANSWER_INVALID.includes(last.result.code)?'check_answer_invalid':'check_answer_missing';
+}
+export const developRecheckReason=(code,source)=>`${code}: 开发已交付并写回 Learning，但之后的检查或验证预检没有拿到可用应答（原记录 unknown/${source}）。`
+  +'先确认上一次检查命令已经停止；在原运行 advance 只重跑检查、验证预检、handoff 与审查包，不重发开发，不占开发调用与 effect 名额（每运行最多 2 次）。';
+export const completeRecheckSource=entry=>entry.effect.kind==='complete'&&entry.result.state==='unknown'
+  &&[...CHECK_ANSWER_MISSING,'invalid_input','limit_exceeded'].includes(entry.result.code)
+  &&entry.result.taskCommit===null;
+export function completeRecheckable(s,recorded=0){
+  const last=s.cache.at(-1);
+  if(!last||last.effect.identity.attempt!==s.attempt||!completeRecheckSource(last)||s.taskCommit!=null)return false;
+  if(s.state==='blocked'&&s.code===COMPLETE_RECHECK_CODE)return true;
+  return s.state==='unknown'&&s.code===last.result.code&&recorded<MAX_ANSWER_GAP_RETRIES;
+}
+export const completeRecheckReason=source=>`${COMPLETE_RECHECK_CODE}: 完成前复查没有拿到可用应答（原记录 unknown/${source}），task-commit-intent 尚未写入，tasks.md 未改动。`
+  +'在原运行发送 complete 重新复查并完成，不重新开发或审查（每运行最多 2 次）。';
 export const countedCalls=(calls,cache)=>calls.filter(call=>!invalidDeveloperCall(call)&&call.terminal!=='abandoned').length
   -cache.filter(timeoutEffect).length-cache.filter(developTimeoutEffect).length-cache.filter(developAnswerInvalidEffect).length;
 // A review effect whose journaled result the operator abandoned (below) no
@@ -140,7 +186,8 @@ const completionBlock=entry=>entry.effect.kind==='complete'&&entry.result.state=
 export const completionBlockCount=cache=>cache.filter(completionBlock).length;
 export const completedEffectCount=(cache,calls=[])=>cache.filter(entry=>!(entry.effect.kind==='develop'
   &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))
-  &&!timeoutEffect(entry)&&!developTimeoutEffect(entry)&&!developAnswerInvalidEffect(entry)&&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
+  &&!timeoutEffect(entry)&&!developTimeoutEffect(entry)&&!developAnswerInvalidEffect(entry)&&!developRecheckSource(entry)
+  &&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
 // The six-effect cap counts develop and review effects only; completion (above),
 // QA, documentation and finalization hold no slot.
 export const MAX_RUNNER_EFFECTS=6;
@@ -156,8 +203,9 @@ export const effectSlotFree=(kind,cache,calls)=>kind==='complete'||completedEffe
 export const developBudget=s=>({calls:countedCalls(s.calls,s.cache),effects:completedEffectCount(s.cache,s.calls)});
 export const developBudgetExhausted=s=>{
   if(!stageAllowed('develop',s.state,s.code,s.priorReview?.verdict))return false;
-  const used=developBudget(s);
-  return used.calls+2>MAX_RUNNER_CALLS||used.effects+2>MAX_RUNNER_EFFECTS;
+  // A re-check makes no developer call: only its review needs one.
+  const used=developBudget(s),calls=RECHECK_CODES.includes(s.code)?1:2;
+  return used.calls+calls>MAX_RUNNER_CALLS||used.effects+2>MAX_RUNNER_EFFECTS;
 };
 // At most this many re-checks after a blocked completion. Each re-runs only the
 // local checks and the commit gate, so a small fixed bound keeps the journal
@@ -452,6 +500,12 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
   if(effect.kind!=='develop'&&Object.hasOwn(config,'taskLearning'))same(s.learningResult,before.learningResult);
   if(effect.kind==='develop') {
     need(added.length<=1 && s.receipts.length===before.receipts.length,'runner_develop');same(s.receipt,null);same(s.priorReview,before.priorReview);
+    // A re-check (develop-recheck) dispatches no developer: it keeps the Learning
+    // result and stands on the developer call that already succeeded.
+    const recheck=before.state==='blocked'&&RECHECK_CODES.includes(before.code);
+    if(recheck){need(added.length===0&&before.learningResult!=null&&before.calls.at(-1)?.terminal==='succeeded','runner_develop');
+      same(s.learningResult,before.learningResult);}
+    const developerCall=recheck?before.calls.at(-1):added[0];
     if(added.length)callRequest(added[0],config.developer,config.developer.contextId,'developer',{
       scope:config.scope,requirements:original.files.filter(f=>config.requirements.includes(f.path)),priorReview:before.priorReview,
       ...supersededReviewPayload(carried,before.attempt),
@@ -492,8 +546,8 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
           same(application.identity,effect.learningInput.identity);}
         const writeback=readCmAiProjectLearningWriteback(s.learningResult.writeback,
           {learningInput:effect.learningInput,retrospective:s.learningResult.retrospective});
-        need(added.length===1&&added[0].terminal==='succeeded','runner_learning');
-        same(added[0].resultDigest,digest({outcome:'implemented',...(hasApplication?{application}:{}),
+        need((recheck||added.length===1)&&developerCall?.terminal==='succeeded','runner_learning');
+        same(developerCall.resultDigest,digest({outcome:'implemented',...(hasApplication?{application}:{}),
           retrospective:s.learningResult.retrospective,...(hasBootstrap?{bootstrap:s.learningResult.bootstrap}:{})}));
         if(writeback.outcome==='writeback_pending'){
           expectedState='blocked';expectedCode='learning_writeback_pending';
@@ -511,7 +565,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
         ?{outcome:'implemented',...(s.learningResult&&Object.hasOwn(s.learningResult,'application')
           ?{application:s.learningResult.application}:{}),retrospective:s.learningResult?.retrospective,
           ...(s.learningResult?.bootstrap?{bootstrap:s.learningResult.bootstrap}:{})}:{outcome:'implemented'};
-      need(added.length===1 && added[0].terminal==='succeeded' && added[0].resultDigest===digest(developerResult),'runner_develop');
+      need((recheck||added.length===1) && developerCall?.terminal==='succeeded' && developerCall.resultDigest===digest(developerResult),'runner_develop');
       if(Object.hasOwn(config,'taskLearning'))need(s.learningResult!==null
         &&s.learningResult.writeback.outcome!=='writeback_pending','runner_learning');
       packageLink(s.reviewPackage,original,before.attempt,s.currentChecks);
@@ -523,7 +577,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     // between the checks and the review package. No package exists, so no review
     // round was spent; the attempt counter does not move either.
     // develop_unchanged_after_review: attempt 2 matched the rejected attempt-1 artifact.
-    if(added[0]?.terminal==='succeeded'&&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large'].includes(s.code)) {
+    if(developerCall?.terminal==='succeeded'&&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large'].includes(s.code)) {
       // s.receipt is null for every develop checkpoint (above); at attempt 2 the
       // state before still holds the attempt-1 receipt, so only receipts compare.
       need(digest(s.reviewPackage)===digest(before.reviewPackage),'runner_develop');
@@ -631,7 +685,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
       expectedState='blocked';
       if(['completion_checks_changed','completion_package_changed'].includes(s.code)){
         need(effect.kind==='complete'&&['approved','blocked'].includes(before.state)
-          &&(before.state==='approved'||['completion_checks_changed','completion_package_changed','review_package_changed'].includes(before.code)),'runner_transition');
+          &&(before.state==='approved'||['completion_checks_changed','completion_package_changed','review_package_changed',COMPLETE_RECHECK_CODE].includes(before.code)),'runner_transition');
         expectedCode=s.code;
         if(s.code==='completion_package_changed')need(typeof s.reason==='string'&&s.reason.length>0,'runner_diagnostic');
       }
@@ -761,6 +815,7 @@ export function readRunnerHistory(raw,config,version=1) {
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
   let invocation={registration:null,started:null,result:null};let registrationRecord=null,startedRecord=null,resultRecord=null,lastReview=null;
   const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false,supersession=null;
+  const answerGaps={developRecheck:0,completeRecheck:0};
   const reviewConfig=(calls=[])=>({...config,reviewInvocation:{...config.reviewInvocation,
     excludedThreadIds:reviewExclusions({excludedThreadIds:[...config.reviewInvocation.excludedThreadIds,...joinedHosts]},
       calls,config.developer.contextId)}});
@@ -906,6 +961,21 @@ export function readRunnerHistory(raw,config,version=1) {
       need(r.kind==='result'&&pending===null&&state.state==='unknown'&&basis!==null&&p.basis===basis
         &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_timeout');
       state.state='blocked';state.code='develop_call_timeout';state.reason=DEVELOP_CALL_TIMEOUT_REASON;lastReview=null;
+    } else if(version===3&&p.type==='develop-recheck') {
+      // Written by advance for a delivered develop whose later checks never got
+      // a usable answer; everything is re-derived from the replayed journal.
+      shape(p,[...common,'effectId','invocationId','code']);
+      const code=developRecheckCode(state,config,answerGaps.developRecheck);
+      need(r.kind==='result'&&pending===null&&state.state==='unknown'&&code!==null&&p.code===code
+        &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_recheck');
+      answerGaps.developRecheck++;
+      state.state='blocked';state.code=code;state.reason=developRecheckReason(code,state.cache.at(-1).result.code);lastReview=null;
+    } else if(version===3&&p.type==='complete-recheck') {
+      shape(p,[...common,'effectId','source']);
+      need(r.kind==='result'&&pending===null&&state.state==='unknown'&&completeRecheckable(state,answerGaps.completeRecheck)
+        &&p.effectId===state.cache.at(-1).effect.id&&p.source===state.code,'runner_complete_recheck');
+      answerGaps.completeRecheck++;
+      state.state='blocked';state.code=COMPLETE_RECHECK_CODE;state.reason=completeRecheckReason(p.source);lastReview=null;
     } else if(version===3&&p.type==='completion-retry-limit') {
       // Terminal: written instead of a complete intent once the re-check bound
       // is spent. Every field is recomputed from the replayed state.
@@ -991,7 +1061,7 @@ export function readRunnerHistory(raw,config,version=1) {
       if(p.type==='task-commit-intent'){
         need(r.kind==='commit-intent'&&transaction===null
           &&(beforeIntent.state==='approved'||beforeIntent.state==='blocked'
-            &&['completion_checks_changed','completion_package_changed','review_package_changed'].includes(beforeIntent.code)),'runner_commit');
+            &&['completion_checks_changed','completion_package_changed','review_package_changed',COMPLETE_RECHECK_CODE].includes(beforeIntent.code)),'runner_commit');
         const c=readCommitIntent(p.commit,{owner:completion.owner,identity:pending.identity,fingerprints:completion.fingerprints});
         const base=attemptBaseline(original,pending.identity.attempt),s=beforeIntent;
         checkCompletion({receipt:s.receipt,registered:s.receipts.find(x=>x.id===s.receipt?.id),
@@ -1055,7 +1125,7 @@ export function readRunnerHistory(raw,config,version=1) {
     ?{effectId:lastReview.effect.id,invocationId:lastReview.request.invocationId,
       registeredDigest:lastReview.registrationRecord.digest,startedDigest:lastReview.startedRecord?.digest??null,
       resultDigest:lastReview.resultRecord.digest}:null;
-  return {original,session,state,pending,acceptedFixes,qaAttachment,
+  return {original,session,state,pending,acceptedFixes,qaAttachment,answerGaps,
     ...(version===3?{joinedHosts,reviewerThreads,supersession,pendingAbandonable,reviewResultAbandon,
       reviewReconciliation:lastReview?.reconciliation&&['unknown','pending_review'].includes(state.state)?{...reconciliationBinding(),
         ...lastReview.reconciliation,request:lastReview.request,effect:lastReview.effect,before:lastReview.before}:null,

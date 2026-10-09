@@ -18,6 +18,9 @@ cm-ai 宿主返回的可选 `guidance` 说明当前阻塞与下一步：`summary
   `--mode resume` 后 `advance`，宿主追加 `develop-answer-retry` 记录并用新 effect id 重发同一轮开发，已写代码保留并经检查和审查。
 - 开发应答超时（`unknown/call_timeout`）且代码根仍等于该轮开发起点时，status 显示 `blocked/develop_call_timeout`、`pendingAction=resume`：
   以 `--mode resume` 启动后 `advance`，宿主追加 `develop-timeout-retry` 记录并用新 effect id 重发同一轮开发；代码根已变化则保持 `unknown/reconcile`。
+- 开发已交付、之后的检查或验证预检没拿到可用应答时，status 显示 `blocked/check_answer_missing` 或 `check_answer_invalid`、`pendingAction=resume`：
+  `--mode resume` 后 `advance`，宿主追加 `develop-recheck` 记录，只重跑检查、预检与审查包，不重发开发；完成前复查没拿到应答（尚无 task-commit-intent）时显示
+  `blocked/complete_recheck_failed`、`pendingAction=complete`，宿主追加 `complete-recheck` 后重新复查并完成。每种每运行最多 2 次。
 - 规则交付后的审查包失败，仅原宿主明确 `pendingAction=bootstrap_review_recover` 时：核对规则、
   handoff 与原证据，以原配置 resume，显式 `--allow-bootstrap-review-recovery` 并提供 reason，
   再发送 `bootstrap_review_recover`，不重新派发开发。

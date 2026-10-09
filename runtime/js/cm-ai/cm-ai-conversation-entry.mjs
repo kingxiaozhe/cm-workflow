@@ -28,10 +28,11 @@ const retryReview=reviewRetryable;
 // batch driver decides retryability from the same predicate instead of keeping a
 // second copy of the code list that silently drifts.
 export const developmentRetryable=status=>status.state==='blocked'
-  &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','develop_call_timeout','develop_answer_invalid'].includes(status.code);
+  &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','develop_call_timeout','develop_answer_invalid',
+    'check_answer_missing','check_answer_invalid'].includes(status.code);
 const retryDeveloper=developmentRetryable;
 export const completionRetryable=status=>status.state==='blocked'
-  &&['completion_checks_changed','completion_package_changed'].includes(status.code)
+  &&['completion_checks_changed','completion_package_changed','complete_recheck_failed'].includes(status.code)
   &&status.retryReady!==false;
 const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approval':
   // The runner reports spec_drift over any state whose next effect would be refused.
@@ -212,6 +213,7 @@ export function createCmAiConversationEntry(options) {
   const runnerKeys=['executeEffect','status','cancel','run'];
   if(runner&&Object.hasOwn(runner,'verificationBlocks'))runnerKeys.push('verificationBlocks');
   if(runner&&Object.hasOwn(runner,'completionBlocks'))runnerKeys.push('completionBlocks');
+  if(runner&&Object.hasOwn(runner,'recheckLearningInput'))runnerKeys.push('recheckLearningInput');
   if(runner&&Object.hasOwn(runner,'attachLearningEvidence'))runnerKeys.push('attachLearningEvidence');
   if(runner&&Object.hasOwn(runner,'inspectFixAssociation'))runnerKeys.push('inspectFixAssociation');
   if(runner&&Object.hasOwn(runner,'acceptCompletedFix'))runnerKeys.push('acceptCompletedFix');
@@ -227,6 +229,7 @@ export function createCmAiConversationEntry(options) {
   shape(runner,runnerKeys);
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');
   if(Object.hasOwn(runner,'completionBlocks'))need(typeof runner.completionBlocks==='function');
+  if(Object.hasOwn(runner,'recheckLearningInput'))need(typeof runner.recheckLearningInput==='function');
   if(Object.hasOwn(runner,'attachLearningEvidence'))need(typeof runner.attachLearningEvidence==='function');
   if(Object.hasOwn(runner,'inspectFixAssociation'))need(typeof runner.inspectFixAssociation==='function');
   if(Object.hasOwn(runner,'acceptCompletedFix'))need(typeof runner.acceptCompletedFix==='function');
@@ -789,7 +792,10 @@ export function createCmAiConversationEntry(options) {
     // the review that asked for it, before any develop intent, and say so.
     if(options.holdRevision===true&&status.state==='changes_requested')
       return summary(operation,{...status,code:'revision_answer_required'},'awaiting');
-    const learningInput=inspectCmAiTaskLearningInput({specsDir:options.specsDir,codeProject:options.codeProject,
+    // A re-check (check_answer_*) re-runs the checks of the delivery already made:
+    // it binds that delivery's Learning input, never a freshly read one (its
+    // writeback may already have changed AGENTS.md).
+    const learningInput=runner.recheckLearningInput?.()??inspectCmAiTaskLearningInput({specsDir:options.specsDir,codeProject:options.codeProject,
       feature:options.feature,identity,applicableAgentFiles:applicableAgentFiles??[],
       ...(options.featureSelection===undefined?{}:{featureSelection:options.featureSelection})},
     {admission:runner.inspectBootstrapAdmission?.()??null,parallelSelection:options.parallelSelection??null});
