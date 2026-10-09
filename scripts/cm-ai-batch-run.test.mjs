@@ -32,6 +32,7 @@ test('final serial task commits durably and commit information survives resume',
 test('a batch member whose reviewer failed without a verdict resumes its one review retry',()=>batchFixture('review-provider-retry'));
 test('a parallel member whose reviewer failed without a verdict resumes its one review retry',()=>batchFixture('parallel-review-provider-retry'));
 test('dirty batch entry lists files and creates no member worktrees',()=>batchFixture('parallel-dirty'));
+test('a parallel member whose scope file already exists on HEAD is refused before any worktree',()=>batchFixture('parallel-existing'));
 
 test('parallel groups reject transitive prerequisites, not just direct edges',()=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-batch-transitive-')));
@@ -95,7 +96,7 @@ async function batchFixture(mode,options={}){
     fs.writeFileSync(path.join(codeProject,'requirements.md'),'# Fixture\n');
     const git=(cwd,args)=>{const result=spawnSync('git',['-C',cwd,...args],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);return result.stdout.trim();};
     {git(codeProject,['init','-b','main']);git(codeProject,['config','user.name','Fixture']);git(codeProject,['config','user.email','fixture@example.invalid']);
-      fs.writeFileSync(path.join(codeProject,'file0.js'),'base\n');git(codeProject,['add','-A']);git(codeProject,['commit','-m','fixture baseline']);}
+      fs.writeFileSync(path.join(codeProject,parallel?'base.js':'file0.js'),'base\n');git(codeProject,['add','-A']);git(codeProject,['commit','-m','fixture baseline']);}
     const config={version:1,repositoryId:'batch-fixture',batchId:'batch-fixture',specsDir,codeProject,
       ...(parallel?{parallel:[[`${feature}/T-001`,`${feature}/T-002`]]}:{}),
       tasks:(parallel?['T-001','T-002','T-003']:['T-001','T-002']).map((taskId,index)=>({feature,taskId,scope:[`file${index}.js`],requirements:['requirements.md']}))};
@@ -211,6 +212,13 @@ async function batchFixture(mode,options={}){
         packageDigest:binding.packageDigest,contextDigest:binding.contextDigest,status:'completed',reason:'Synthetic docs',at:'2026-09-08T01:00:00Z'})},
     });
     const open=()=>createCmAiBatch({configuration:config,executionFor,logHome:path.join(root,'logs')});
+    if(mode==='parallel-existing'){
+      // T-002's scope file is committed on HEAD, so it is an edit, not a new file.
+      fs.writeFileSync(path.join(codeProject,'file1.js'),'existing\n');git(codeProject,['add','file1.js']);git(codeProject,['commit','-m','existing file']);
+      await assert.rejects(open().handle({operation:'advance',requestId:'existing'}),error=>error.code==='parallel_scope_existing_file');
+      assert.deepEqual(calls,[]);assert(!fs.existsSync(path.join(root,'.cm-worktrees')));
+      assert.equal(git(codeProject,['status','--porcelain']),'');return;
+    }
     if(mode==='parallel-dirty'){
       fs.writeFileSync(path.join(codeProject,'dirty.txt'),'user-owned\n');
       const result=await open().handle({operation:'advance',requestId:'dirty'});

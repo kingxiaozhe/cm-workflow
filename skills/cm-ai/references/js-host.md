@@ -176,7 +176,7 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-host.mjs" serve --config "{T-002-run.json
    只提议同时满足以下全部条件的任务，任一不满足就不进组；一个组都成立不了就**不写该字段**，正常串行：
    - **纯新建文件**：该任务 scope 的每个路径在 `HEAD` 上都不存在（`git cat-file -e HEAD:{path}`
      判定，不看工作区——成员工作树从 HEAD 创建，未跟踪文件不算数）。任务若需改动现有文件
-     来注册新模块（路由表、index 导出等），那些文件会出现在 scope 里，本条自动将其排除。
+     来注册新模块（路由表、index 导出等），那些文件会出现在 scope 里，本条自动将其排除。runtime 在建成员工作树前对整组逐个核对，任一 scope 路径已在 `HEAD` 上就以 `parallel_scope_existing_file` 拒绝，不建任何工作树；已开工的成员不再复核。
    - **scope 两两不交集**：候选之间不得有重复路径。
    - **无依赖路径**：按 `tasks.md` 依赖图计算**传递闭包**，组内任意两任务之间不得存在依赖路径。
      runner 也按传递闭包校验并以 `parallel_dependency_conflict` 拒绝，此处自行判定是为了
