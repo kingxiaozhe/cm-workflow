@@ -342,7 +342,7 @@ test('provider develop interruption waits for the journaled worker process group
     result=await abandon();
     assert.equal(result.code,'develop_interrupted',JSON.stringify(result));
     const saved=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
-    assert.deepEqual(saved.at(-1).payload.worker,{recordDigest:started.digest,pid:child.pid,verdict:'gone'});
+    assert.deepEqual(saved.at(-1).payload.worker,{worker:{recordDigest:started.digest,pid:child.pid},applies:[],verdict:'gone'});
     // An interruption that omits the worker proof is refused on replay.
     const unproven=structuredClone(saved);delete unproven.at(-1).payload.worker;
     const {digest:old,...record}=unproven.at(-1);unproven[unproven.length-1]={...record,digest:digest(record)};
@@ -394,7 +394,7 @@ test('provider develop without a usable result is redone after its worker group 
     assert.equal(recorded.outcome,'recorded',JSON.stringify(recorded));assert.equal(recorded.code,'develop_answer_missing');
     const redoRecord=JSON.parse(fs.readFileSync(stateFile,'utf8')).records.at(-1);
     assert.equal(redoRecord.payload.type,'develop-answer-redo');assert.equal(redoRecord.payload.cause,'provider_unknown');
-    assert.equal(redoRecord.payload.worker.pid,children[0].pid);
+    assert.equal(redoRecord.payload.worker.worker.pid,children[0].pid);
     run=await openControlRun(definition,'resume',execution());
     try{const last=await run.host.handle(requestFor(identity));assert.equal(last.code,'review_blocked',JSON.stringify(last));}finally{run.close();}
   }finally{for(const child of children)try{process.kill(-child.pid,'SIGKILL');}catch{}
