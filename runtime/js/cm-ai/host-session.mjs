@@ -62,7 +62,7 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
   // Host registry (runtime/js/notify.mjs): serialised so a session that ends at
   // once still removes its own entry. Each step is best-effort and synchronous.
   let registry=Promise.resolve();
-  const register=(row,operation)=>{registry=registry.then(()=>import('../notify.mjs'))
+  const register=(row,operation)=>{if(ended)return;registry=registry.then(()=>import('../notify.mjs'))
     .then(m=>{m.writeHostRegistry({sessionKey,workflow,project:process.cwd(),startedAt,row,operation});}).catch(()=>{});};
   register(null,null);
   const clearIdle=()=>{idle?.();idle=null;};
@@ -151,10 +151,13 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
     // With a duplex conversation, EOF means no more tool replies can arrive.
     // Reject that wait as disconnected, not as an explicit user cancellation.
     toolBridge?.close();ended=true;clearIdle();
-    registry=registry.then(()=>import('../notify.mjs')).then(m=>{m.removeHostRegistry(sessionKey);}).catch(()=>{});
     // EOF is not a user cancellation. Finish the in-flight result before close.
-    try{await Promise.allSettled([...(pending?[pending]:[]),...controls,writing,registry]);}
+    try{await Promise.allSettled([...(pending?[pending]:[]),...controls,writing]);}
     finally{
+      // Only now, after every in-flight reply has queued its last registry
+      // write (and `ended` stops any later one), remove this session's entry.
+      registry=registry.then(()=>import('../notify.mjs')).then(m=>{m.removeHostRegistry(sessionKey);}).catch(()=>{});
+      await registry;
       // destroy() emits error/close on a later tick; retain its error listener
       // until that lifecycle finishes rather than leaking an uncaught error.
       if(output.destroyed&&!output.closed)await new Promise(resolve=>output.once('close',resolve));

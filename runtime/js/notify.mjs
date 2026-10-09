@@ -65,13 +65,14 @@ export function readNotifyConfig(env=process.env){
   return {command:[...command],waitMs:ms(minutes),checkWaitMs:ms(checkMinutes),idleMs:ms(idleMinutes)};
 }
 
-// Messages carry only these structured fields. Absolute paths are redacted and
-// control characters removed; every field and the whole message are bounded.
+// Messages carry only these structured fields. Absolute paths (POSIX, drive
+// letter, UNC; also when glued to CJK text) are redacted and control
+// characters removed; every field and the whole message are bounded.
 const cut=(text,max)=>{const chars=Array.from(text);return chars.length<=max?text:chars.slice(0,max-1).join('')+'…';};
 function clean(value,max){
   if(typeof value!=='string'&&!(typeof value==='number'&&Number.isFinite(value)))return '';
   const text=String(value).replace(/[\u0000-\u001f\u007f-\u009f]+/g,' ')
-    .replace(/(^|[\s(（'"=:：,，])(?:~?\/|[A-Za-z]:[\\/]|\\\\)[^\s'"`，。；;、）)]+/g,'$1<路径>')
+    .replace(/(?<![A-Za-z0-9_.~-])(?:~?\/|[A-Za-z]:[\\/]|\\\\)[^\s'"`，。；;、）)]+/g,'<路径>')
     .replace(/\s+/g,' ').trim();
   return cut(text,max);
 }

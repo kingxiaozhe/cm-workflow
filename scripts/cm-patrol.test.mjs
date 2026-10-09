@@ -45,7 +45,8 @@ test('host session registers itself when notices are configured: written at star
   const h=home(t);
   const script=path.join(h.dir,'cm-prd-host.mjs');
   fs.writeFileSync(script,`import {serveCmAiHost} from ${JSON.stringify(HOST_SESSION)};
-const host={handle:async request=>request.operation==='status'?{stage:'poll'}:{stage:request.stage,runId:'prd-9'}};
+const host={handle:async request=>{if(request.slowMs)await new Promise(resolve=>setTimeout(resolve,request.slowMs));
+  return request.operation==='status'?{stage:'poll'}:{stage:request.stage,runId:'prd-9'};}};
 await serveCmAiHost({host,input:process.stdin,output:process.stdout});`);
   const env={...h.env};delete env.NODE_TEST_CONTEXT;
   const child=spawn(process.execPath,[script],{env,stdio:['pipe','pipe','pipe']});
@@ -66,6 +67,15 @@ await serveCmAiHost({host,input:process.stdin,output:process.stdout});`);
   assert.equal(read().stage,'requirements_analysis','a status poll does not overwrite the registry');
   child.stdin.end();assert.equal(await exited,0);
   assert.deepEqual(h.registry(),[],'removed at session end');
+  // EOF while an operation is still running: its reply must not re-register after the removal.
+  const busy=spawn(process.execPath,[script],{env,stdio:['pipe','pipe','pipe']});
+  t.after(()=>{try{busy.kill();}catch{}});
+  const busyExit=new Promise(resolve=>busy.on('close',resolve));let busyOut='';busy.stdout.on('data',chunk=>{busyOut+=chunk;});
+  assert(await h.until(()=>h.registry().length===1));
+  busy.stdin.write(JSON.stringify({requestId:'r1',operation:'advance',stage:'slow',slowMs:600})+'\n');
+  await new Promise(resolve=>setTimeout(resolve,100));busy.stdin.end();
+  assert.equal(await busyExit,0);assert.match(busyOut,/"requestId":"r1"/,'the in-flight reply is still delivered');
+  assert.deepEqual(h.registry(),[],'removed after the in-flight reply');
   // A session that ends immediately leaves nothing behind either.
   const quick=spawnSync(process.execPath,[script],{env,input:''});assert.equal(quick.status,0,quick.stderr);
   assert.deepEqual(h.registry(),[]);
@@ -91,7 +101,7 @@ test('patrol: dead hosts are merged into one notice and their entries removed; l
   assert.equal(row.title,'CM cm 宿主已退出未收尾 · demo-app');
   assert.equal(row.stdin.code,'host_process_gone');assert.equal(row.stdin.stage,'2 个宿主进程已不在');
   assert.match(row.body,/cm-ai run-1 T-003 awaiting_review 最后动静 07:45Z；cm-fix fix-2 repair_required 最后动静 07:55Z/);
-  assert.doesNotMatch(row.body,/srv|demo-app\//,'no paths');
+  assert.doesNotMatch(row.body+JSON.stringify(row.stdin),/srv|demo-app\//,'no paths in body or payload');
   assert.deepEqual(h.registry(),[`${KEYS[0]}.json`,`${KEYS[3]}.json`,'55555555-5555-4555-8555-555555555555.json']);
   const again=patrol({env:h.env,now:NOW+60000});
   assert.equal(again.notice,'none');assert.equal(again.dead,0);
@@ -126,7 +136,10 @@ test('--report prints the summary and neither notifies nor removes anything',t=>
   assert.equal(plain.status,0,plain.stderr);assert.equal(plain.stdout,'');
 });
 
-test('Windows paths are redacted like POSIX ones',()=>{
+test('Windows paths are redacted like POSIX ones, also when glued to CJK text',()=>{
   const {body}=buildNotifyMessage({workflow:'cm-ai',nextAction:'见 C:\\Users\\me\\proj\\a.txt 和 \\\\server\\share\\b 以及 /tmp/c'},{now:NOW});
   assert.match(body,/下一步：见 <路径> 和 <路径> 以及 <路径>/);
+  const glued=buildNotifyMessage({workflow:'cm-ai',nextAction:'请检查C:\\Users\\me\\a.txt，再看\\\\srv\\s；或/tmp/c。相对 a/b 和 v1.2/x 保留'},{now:NOW}).body;
+  assert.match(glued,/下一步：请检查<路径>，再看<路径>；或<路径>。相对 a\/b 和 v1.2\/x 保留/);
+  assert.doesNotMatch(glued,/Users|srv|tmp/);
 });

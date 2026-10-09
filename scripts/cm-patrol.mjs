@@ -3,7 +3,8 @@
 // 宿主活着但没人推进由宿主自己的空转计时负责（runtime/js/cm-ai/host-session.mjs）；
 // 这里只抓宿主已死（被杀、崩溃、机器重启）而没来得及收尾的情况。
 // 只读 <home>/hosts 下的登记文件和进程是否存在（process.kill(pid,0)），不读日志、
-// 不读项目文件、不写任何流程状态；提醒发出后只删除已报告的登记文件。
+// 不读项目文件、不写任何流程状态。会写的只有两样：提醒模块自己的去重/限流状态
+// （notify-state.json、notify.log，和其他提醒一样），以及删除已报告的登记文件。
 // 用法：node cm-patrol.mjs           巡检并提醒
 //       node cm-patrol.mjs --report  只把结果以 JSON 打到标准输出，不提醒、不删文件
 import fs from 'node:fs';
@@ -12,7 +13,8 @@ import {fileURLToPath} from 'node:url';
 import {HOST_REGISTRY_MAX_AGE_MS,hostRegistryDir,notify,readNotifyConfig} from '../runtime/js/notify.mjs';
 
 const NAME=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/;
-const MAX_LISTED=6;
+// nextAction is capped at 200 chars by the notice; list what fits, count the rest.
+const LIST_BUDGET=150;
 const text=value=>typeof value==='string'&&value?value:null;
 
 // A pid the current user cannot signal (EPERM) still exists; only ESRCH is gone.
@@ -62,8 +64,9 @@ export function patrol({env=process.env,now=Date.now(),report=false}={}){
   if(hosts.dead.length===0)return {...summary,notice:'none'};
   const dead=[...hosts.dead].sort((a,b)=>a.at-b.at);
   const workflows=new Set(dead.map(entry=>entry.workflow)),projects=new Set(dead.map(entry=>entry.project).filter(Boolean));
-  const listed=dead.slice(0,MAX_LISTED).map(line);
-  if(dead.length>MAX_LISTED)listed.push(`另有 ${dead.length-MAX_LISTED} 个`);
+  const listed=[];let used=0;
+  for(const entry of dead){const item=line(entry);if(used+item.length>LIST_BUDGET)break;listed.push(item);used+=item.length+1;}
+  if(listed.length<dead.length)listed.push(`另有 ${dead.length-listed.length} 个`);
   const sent=notify({key:`dead|${dead.map(entry=>entry.sessionKey??entry.file).sort().join(',')}`,event:'dead',
     workflow:workflows.size===1?[...workflows][0]:'cm',project:projects.size===1?[...projects][0]:null,
     runId:dead.length===1?dead[0].runId:null,task:dead.length===1?dead[0].task:null,
