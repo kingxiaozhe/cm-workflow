@@ -143,7 +143,10 @@ export function developAnswerRetryable(s,configuration=null) {
 // the same way on replay; their records are never rewritten.
 export const MAX_ANSWER_GAP_RETRIES=2;
 const CHECK_ANSWER_MISSING=['call_timeout','execution_error','host_disconnected','host_request_timeout','role_log_failed'];
-const CHECK_ANSWER_INVALID=['invalid_input','invalid_result','limit_exceeded','verification_precheck_invalid'];
+// limit_exceeded is left out: it is also how older runtimes recorded package and
+// journal size limits, which a re-check does not resolve. An oversized check
+// answer is refused by the bridge and times out (check_answer_missing).
+const CHECK_ANSWER_INVALID=['invalid_input','invalid_result','verification_precheck_invalid'];
 export const RECHECK_CODES=Object.freeze(['check_answer_missing','check_answer_invalid']);
 export const COMPLETE_RECHECK_CODE='complete_recheck_failed';
 // learningWriteback mirrors the checkpointed Learning result, which the journal
@@ -168,7 +171,7 @@ export function developRecheckCode(s,config,recorded=0){
 export const developRecheckReason=(code,source)=>`${code}: 开发已交付并写回 Learning，但之后的检查或验证预检没有拿到可用应答（原记录 unknown/${source}）。`
   +'先确认上一次检查命令已经停止；在原运行 advance 只重跑检查、验证预检、handoff 与审查包，不重发开发，不占开发调用与 effect 名额（每运行最多 2 次）。';
 export const completeRecheckSource=entry=>entry.effect.kind==='complete'&&entry.result.state==='unknown'
-  &&[...CHECK_ANSWER_MISSING,'invalid_input','limit_exceeded'].includes(entry.result.code)
+  &&[...CHECK_ANSWER_MISSING,'invalid_input'].includes(entry.result.code)
   &&entry.result.taskCommit===null;
 export function completeRecheckable(s,recorded=0){
   const last=s.cache.at(-1);
