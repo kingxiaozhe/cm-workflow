@@ -544,7 +544,7 @@ CM 不认识任何推送服务，也不保存任何 token；推到哪里、怎�
 
 - `command`：要运行的程序和参数，第一项必须是绝对路径；不经过 shell。
 - `waitMinutes`：等待会话应答多久后提醒，默认 10。
-- `checkWaitMinutes`：宿主请求「跑检查」（`check`、`verification_precheck`）时，会话要先跑完项目的检查命令（如 xcodebuild、测试套件），正常就要几十分钟，所以这两类提问只看这个门槛，默认 45；其他提问仍看 `waitMinutes`。
+- `checkWaitMinutes`：宿主请求「跑检查」（`check`、`verification_precheck`、`init_verify`）时，会话要先跑完项目的检查命令（如 xcodebuild、测试套件），正常就要几十分钟，所以这两类提问只看这个门槛，默认 45；其他提问仍看 `waitMinutes`。
 - 文件格式不对时，功能关闭，只在 `notify.log` 记一行，不往流程输出里打印。
 
 命令通过环境变量 `CM_NOTIFY_TITLE`（不超过 60 字）、`CM_NOTIFY_BODY`（不超过 500 字）拿到内容。

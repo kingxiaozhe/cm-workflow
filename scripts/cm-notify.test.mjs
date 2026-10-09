@@ -322,7 +322,7 @@ const kind=process.argv[2],bridge=createHostToolBridge();const sent=[];bridge.at
 const p=bridge.call(kind,{},new AbortController().signal);await new Promise(resolve=>setTimeout(resolve,1000));
 const r=sent.find(row=>row.type==='host_request');bridge.accept({type:'host_result',sessionId:r.sessionId,callId:r.callId,requestDigest:r.requestDigest,result:{ok:true}});await p;`);
   const env={...h.env};delete env.NODE_TEST_CONTEXT;
-  for(const kind of ['check','verification_precheck']){
+  for(const kind of ['check','verification_precheck','init_verify']){
     const run=spawnSync(process.execPath,[script,kind],{encoding:'utf8',env,timeout:20000});assert.equal(run.status,0,run.stderr);
   }
   await new Promise(resolve=>setTimeout(resolve,500));assert.equal(h.rows().length,0,'default 45-minute check threshold');

@@ -174,7 +174,7 @@ export function notify(fields,{env=process.env,now=Date.now(),timeoutMs=NOTIFY_L
 
 // Host side: one notice when a host_request has waited waitMinutes for the
 // session's answer. The timer never keeps the process alive.
-const CHECK_KINDS=new Set(['check','verification_precheck']);
+const CHECK_KINDS=new Set(['check','verification_precheck','init_verify']);
 export function scheduleWaitNotice({kind,callId,workflow,project,env=process.env}){
   try{
     const config=readNotifyConfig(env);if(!config)return null;
