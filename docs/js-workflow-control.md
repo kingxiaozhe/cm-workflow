@@ -14,6 +14,8 @@ cm-ai 宿主返回的可选 `guidance` 说明当前阻塞与下一步：`summary
 - `blocked/develop_checks_not_passed`、`develop_package_too_large` 等且原 `pendingAction=resume`：
   根据 reason 修复代码、环境或材料，保留原配置及 runId，以 `--mode resume` 启动，再发送 `advance`。
   这会重做本轮交付和检查；提示不提供新审查授权。改变 scope 须先走规格变更。
+- 当前会话开发应答未通过校验（旧记录 `blocked/failed` 且 `invalid_result`）时，status 显示 `blocked/develop_answer_invalid`、`pendingAction=resume`：
+  `--mode resume` 后 `advance`，宿主追加 `develop-answer-retry` 记录并用新 effect id 重发同一轮开发，已写代码保留并经检查和审查。
 - 开发应答超时（`unknown/call_timeout`）且代码根仍等于该轮开发起点时，status 显示 `blocked/develop_call_timeout`、`pendingAction=resume`：
   以 `--mode resume` 启动后 `advance`，宿主追加 `develop-timeout-retry` 记录并用新 effect id 重发同一轮开发；代码根已变化则保持 `unknown/reconcile`。
 - 规则交付后的审查包失败，仅原宿主明确 `pendingAction=bootstrap_review_recover` 时：核对规则、

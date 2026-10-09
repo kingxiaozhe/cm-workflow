@@ -35,7 +35,7 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout'].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout','develop_answer_invalid'].includes(code)
   ||kind==='review'&&state==='pending_review'&&REVIEW_RETRY_CODES.includes(code)
   ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed'].includes(code)
     ||code==='review_package_changed'&&reviewVerdict==='approved')
@@ -97,8 +97,34 @@ export function developTimeoutBasis(s,configuration=null) {
   }
   return s.attempt===1&&s.reviewPackage===null?'baseline':null;
 }
+// A current-session answer the host rejected locally (invalid_result without the
+// protected retryable flag: e.g. application.note over 512 characters). It was
+// journaled as blocked/failed. Like a protected invalid value it holds no call
+// or effect slot; MAX_DEVELOP_ANSWER_RETRIES bounds the redos. Edits the session
+// already wrote stay on disk and are part of the redone delivery, which is
+// built from the round's start and reviewed like any other.
+export const developAnswerInvalidEffect=entry=>{
+  const call=entry.result.calls?.at(-1);
+  return entry.effect.kind==='develop'&&entry.result.state==='blocked'&&entry.result.code==='failed'
+    &&call?.terminal==='failed'&&call.requestedModel==='current-session'&&call.failureResult?.code==='invalid_result'
+    &&!Object.hasOwn(call.failureResult,'retryable');
+};
+export const MAX_DEVELOP_ANSWER_RETRIES=2;
+export const DEVELOP_ANSWER_LIMITS='application.note 为单行且不超过 512 个字符（no_relevant_lesson 时为 null）；'
+  +'retrospective 的 reason 与每个候选的 trigger、action 为单行且不超过 240 个字符；候选 1–3 个，每个 1–8 条相对路径证据（单行、不超过 512 个字符）';
+const answerReasons={application_note_limit:'application.note 超过 512 个字符或含换行'};
+export const developAnswerInvalidReason=failure=>`develop_answer_invalid: 开发应答未通过交付合同校验（${answerReasons[failure?.reason]??failure?.reason??'invalid_input'}）；`
+  +`上限：${DEVELOP_ANSWER_LIMITS}。会话已写的代码保留，在原运行 advance 重发本轮开发（新 effect id，审查轮次不变），按上限重新应答。`;
+// The journaled blocked/failed develop is the last effect and the cap is not spent.
+export function developAnswerRetryable(s,configuration=null) {
+  if(configuration?.mode==='instructions')return false;
+  const last=s.cache.at(-1);
+  return s.state==='blocked'&&['failed','develop_answer_invalid'].includes(s.code)&&last!==undefined
+    &&developAnswerInvalidEffect(last)&&last.effect.identity.attempt===s.attempt
+    &&s.cache.filter(developAnswerInvalidEffect).length<=MAX_DEVELOP_ANSWER_RETRIES;
+}
 export const countedCalls=(calls,cache)=>calls.filter(call=>!invalidDeveloperCall(call)&&call.terminal!=='abandoned').length
-  -cache.filter(timeoutEffect).length-cache.filter(developTimeoutEffect).length;
+  -cache.filter(timeoutEffect).length-cache.filter(developTimeoutEffect).length-cache.filter(developAnswerInvalidEffect).length;
 // A review effect whose journaled result the operator abandoned (below) no
 // longer holds one of the six effect slots; its retry does.
 const abandonedResult=(entry,calls)=>entry.effect.kind==='review'&&entry.result.state==='unknown'
@@ -114,7 +140,7 @@ const completionBlock=entry=>entry.effect.kind==='complete'&&entry.result.state=
 export const completionBlockCount=cache=>cache.filter(completionBlock).length;
 export const completedEffectCount=(cache,calls=[])=>cache.filter(entry=>!(entry.effect.kind==='develop'
   &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))
-  &&!timeoutEffect(entry)&&!developTimeoutEffect(entry)&&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
+  &&!timeoutEffect(entry)&&!developTimeoutEffect(entry)&&!developAnswerInvalidEffect(entry)&&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
 // The six-effect cap counts develop and review effects only; completion (above),
 // QA, documentation and finalization hold no slot.
 export const MAX_RUNNER_EFFECTS=6;
@@ -865,6 +891,13 @@ export function readRunnerHistory(raw,config,version=1) {
         &&p.fromCode===state.code&&p.countedCalls===used.calls&&p.countedEffects===used.effects,'runner_retry_limit');
       state.state='blocked';state.code='develop_retry_limit';
       state.reason=developRetryLimitReason(p);lastReview=null;
+    } else if(version===3&&p.type==='develop-answer-retry') {
+      // Written by advance for a current-session answer the host rejected as
+      // invalid; replay re-derives the whole condition from the journal.
+      shape(p,[...common,'effectId','invocationId']);
+      need(r.kind==='result'&&pending===null&&state.code==='failed'&&developAnswerRetryable(state,config.bootstrap)
+        &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_answer');
+      state.code='develop_answer_invalid';state.reason=developAnswerInvalidReason(state.calls.at(-1).failureResult);lastReview=null;
     } else if(version===3&&p.type==='develop-timeout-retry') {
       // Written by advance after it found the code root unchanged since the
       // timed-out develop started; replay re-derives everything but the disk.
