@@ -10,19 +10,25 @@ const transcript = () => [
     num_turns:1, structured_output:{verdict:'approved'}},
 ];
 test('Claude result maps to original observer syntax, never invents process close', () => {
-  for (const structured of [true, false]) {
-    const events=[], stream=createClaudeReviewStream(event=>events.push(event));
-    const messages=transcript();
-    if (!structured) { delete messages[2].structured_output; messages[2].result='{"verdict":"approved"}'; }
-    messages.forEach(message=>stream.accept(message));
-    assert.deepEqual(stream.finish(), {status:'succeeded',value:{verdict:'approved'}});
-    assert.deepEqual(events,[
-      {event:'thread.started',provider_thread:'fresh-review'},
-      {event:'turn.started',item_type:null},
-      {event:'item.completed',item_type:'agent_message'},
-      {event:'turn.completed',item_type:null},
-    ]);
-  }
+  const events=[], stream=createClaudeReviewStream(event=>events.push(event));
+  transcript().forEach(message=>stream.accept(message));
+  assert.deepEqual(stream.finish(), {status:'succeeded',value:{verdict:'approved'}});
+  assert.deepEqual(events,[
+    {event:'thread.started',provider_thread:'fresh-review'},
+    {event:'turn.started',item_type:null},
+    {event:'item.completed',item_type:'agent_message'},
+    {event:'turn.completed',item_type:null},
+  ]);
+});
+// The verdict is only ever structured_output: prose in `result`, even valid
+// JSON, is never parsed as one (a reviewer that answered in text has not answered).
+test('result text is never a verdict without structured_output', () => {
+  const events=[], stream=createClaudeReviewStream(event=>events.push(event));
+  const messages=transcript();delete messages[2].structured_output;messages[2].result='{"verdict":"approved"}';
+  messages.slice(0,2).forEach(message=>stream.accept(message));
+  assert.throws(()=>stream.accept(messages[2]),{code:'invalid_output_json'});
+  assert.throws(()=>stream.finish(),{code:'incomplete_result'});
+  assert.deepEqual(events,[{event:'thread.started',provider_thread:'fresh-review'},{event:'turn.started',item_type:null}]);
 });
 test('wrong session, tools, child agents, errors, repeated or incomplete terminals fail closed', () => {
   const mutations=[
@@ -113,13 +119,12 @@ const rateLimit = (overrides={}) => ({type:'rate_limit_event',session_id:'fresh-
     nested:{text:'private provider payload'},list:['private provider payload']},...overrides});
 const expectedNotice = {kind:'rate_limit',info:{status:'allowed',rateLimitType:'five_hour',
   resetsAt:123,active:true,reason:null}};
-test('rate limit notices preserve both output formats, stage and exact observer events',()=>{
+test('rate limit notices preserve stage and exact observer events',()=>{
   const baseline=[],original=createClaudeReviewStream(e=>baseline.push(e));
   transcript().forEach(m=>original.accept(m));
-  for(const structured of [true,false])for(const count of [1,8,32]){
+  for(const count of [1,8,32]){
     const events=[],notices=[],stream=createClaudeReviewStream(e=>events.push(e),n=>notices.push(n));
     const messages=transcript();
-    if(!structured){delete messages[2].structured_output;messages[2].result='{"verdict":"approved"}';}
     stream.accept(messages[0]);
     for(let i=0;i<count;i++){
       if(i===1)stream.accept(messages[1]);

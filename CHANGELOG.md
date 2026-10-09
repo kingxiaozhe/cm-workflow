@@ -5,7 +5,7 @@
 
 ## 未发布
 
-（暂无）
+- `cm-ai` Claude 独立审查不再被 CLI 自己注入的提醒杀掉：Claude CLI 2.1.x 在审查模型只回文字、还没调 StructuredOutput 时会往对话里塞一条 `isSynthetic` 的 user 文本（如 `[structured-output-enforce] You MUST call the StructuredOutput tool`），原解析器把它当成越界判 `unexpected_tool_or_content` 并 SIGKILL，运行停在 `unknown/transport_incomplete` 且 `abandon_review` 被拒（真实项目 T-009 事故）。现在这类消息（单个短文本块、无在途工具）按通知计入 32 条额度并忽略正文；审查结论只认 `structured_output`，`result` 里的文字即使是合法 JSON 也不再当结论（`invalid_output_json`）。停机时失败码后追加固定摘要 `{k,m,b,t,e}`（拒绝点、消息类型、块类型、工具名、is_error，不含正文），旧版本读到仍按 unknown 处理、回放不变；进程已退出、没有最终消息、不是超时、且拒绝点不可能执行过工具的，可在原运行上 `--allow-abandon-review` 显式放弃并与超时共用一次重派额度，不自动重派；旧记录没有摘要、分不清原因，按兼容决定同样允许人工显式放弃一次；新记录里非 StructuredOutput 工具成功执行仍为 unknown。
 
 ## 0.16.8 — 2026-10-09
 

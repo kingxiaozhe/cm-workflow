@@ -23,7 +23,16 @@ const API_ERROR_CLASSES = Object.freeze({authentication_failed:'reviewer_auth_fa
 export function createClaudeReviewStream(onEvent, onNotice = null) {
   let session = null, stage = 'init', value, noticeCount = 0, thinkingCount = 0, rejectedAttempts = 0;
   const pendingTools = new Map(), toolIds = new Set();
-  const reject = code => { stage = 'failed'; throw Object.assign(new Error(code), {code}); };
+  const reject = (code, detail = null) => {
+    stage = 'failed'; throw Object.assign(new Error(code), {code, ...(detail ? {detail} : {})});
+  };
+  // Body-free summary of the message that broke the review boundary: which
+  // check (k), message type (m), block type (b), tool name (t), is_error (e).
+  // Never the text, input or result content.
+  const summary = (k, m, block = null, tool = null, isError = null) => ({k, m,
+    b: typeof block?.type === 'string' && /^[A-Za-z_]{1,32}$/.test(block.type) ? block.type : null,
+    t: typeof tool === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(tool) ? tool : null,
+    e: typeof isError === 'boolean' ? isError : null});
   return Object.freeze({
     accept(message) {
       if (!message || typeof message !== 'object' || Array.isArray(message)) reject('invalid_event');
@@ -88,17 +97,22 @@ export function createClaudeReviewStream(onEvent, onNotice = null) {
         if (message.parent_tool_use_id !== null || message.error != null
           || message.message?.role !== 'assistant') reject('unexpected_assistant');
         const content = message.message.content;
-        if (!Array.isArray(content) || content.length === 0) reject('unexpected_tool_or_content');
+        if (!Array.isArray(content) || content.length === 0) {
+          reject('unexpected_tool_or_content', summary('empty_content', 'assistant'));
+        }
         let substantive = false;
         for (const block of content) {
           if (['thinking','redacted_thinking'].includes(block?.type)) continue;
           substantive = true;
           if (block?.type === 'text' && typeof block.text === 'string') continue;
           if (block?.type !== 'tool_use' || typeof block.id !== 'string' || !block.id.trim()
-            || toolIds.has(block.id) || typeof block.name !== 'string' || !block.name.trim()) {
-            reject('unexpected_tool_or_content');
+            || typeof block.name !== 'string' || !block.name.trim()) {
+            reject('unexpected_tool_or_content', summary('block_type', 'assistant', block, block?.name));
           }
-          if (block.name !== 'StructuredOutput' && ++rejectedAttempts > 16) reject('unexpected_tool_or_content');
+          if (toolIds.has(block.id)) reject('unexpected_tool_or_content', summary('duplicate_tool_id', 'assistant', block, block.name));
+          if (block.name !== 'StructuredOutput' && ++rejectedAttempts > 16) {
+            reject('unexpected_tool_or_content', summary('tool_attempt_limit', 'assistant', block, block.name));
+          }
           toolIds.add(block.id);
           pendingTools.set(block.id, block.name);
         }
@@ -108,13 +122,35 @@ export function createClaudeReviewStream(onEvent, onNotice = null) {
       }
       if (message.type === 'user') {
         const content = message.message?.content;
+        // CLI 2.1.x injects its own user-role reminders (isSynthetic: true, one
+        // short text block; e.g. that StructuredOutput must be called, or that
+        // the previous response had no visible output). The model cannot author
+        // user messages. Such a reminder carries no verdict and runs nothing:
+        // count it as a notice and ignore its body. Anything else from the user
+        // role must be a tool_result; with a tool still pending nothing may be
+        // injected between call and result.
+        if (message.isSynthetic === true) {
+          if (message.parent_tool_use_id !== null || message.message?.role !== 'user'
+            || !Array.isArray(content) || content.length !== 1 || content[0]?.type !== 'text'
+            || typeof content[0].text !== 'string' || Buffer.byteLength(content[0].text, 'utf8') > 1024
+            || pendingTools.size !== 0) {
+            reject('unexpected_tool_or_content', summary('user_content', 'user', content?.[0]));
+          }
+          if (noticeCount >= 32) reject('unexpected_event');
+          noticeCount++;
+          try { if (typeof onNotice === 'function') onNotice({kind:'claude_system_notice', subtype:'synthetic_user'}); } catch {}
+          return;
+        }
         if (message.message?.role !== 'user' || !Array.isArray(content) || content.length === 0) {
-          reject('unexpected_tool_or_content');
+          reject('unexpected_tool_or_content', summary('user_content', 'user'));
         }
         for (const block of content) {
-          if (block?.type !== 'tool_result' || !pendingTools.has(block.tool_use_id)
-            || (pendingTools.get(block.tool_use_id) !== 'StructuredOutput' && block.is_error !== true)) {
-            reject('unexpected_tool_or_content');
+          if (block?.type !== 'tool_result') reject('unexpected_tool_or_content', summary('user_content', 'user', block));
+          if (!pendingTools.has(block.tool_use_id)) reject('unexpected_tool_or_content', summary('unknown_tool_result', 'user', block));
+          const name = pendingTools.get(block.tool_use_id);
+          if (name !== 'StructuredOutput' && block.is_error !== true) {
+            // A successful non-StructuredOutput tool is a real boundary break.
+            reject('unexpected_tool_or_content', summary('tool_result_not_error', 'user', block, name, block.is_error));
           }
           pendingTools.delete(block.tool_use_id);
         }
@@ -124,10 +160,10 @@ export function createClaudeReviewStream(onEvent, onNotice = null) {
         if (message.subtype !== 'success' || message.is_error !== false) reject('provider_failed');
         if (stage !== 'result' || pendingTools.size !== 0 || !Number.isInteger(message.num_turns)
           || message.num_turns < 1 || message.num_turns > 20) reject('unexpected_result');
-        if (message.structured_output !== undefined) value = message.structured_output;
-        else {
-          try { value = JSON.parse(message.result); } catch { reject('invalid_output_json'); }
-        }
+        // The verdict is only ever the CLI's structured_output object. Prose in
+        // `result` is never parsed as one: a reviewer that answered in text after
+        // a reminder has not answered.
+        value = message.structured_output;
         if (!value || typeof value !== 'object' || Array.isArray(value)) reject('invalid_output_json');
         stage = 'done';
         onEvent({event:'item.completed', item_type:'agent_message'});

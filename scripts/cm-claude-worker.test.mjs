@@ -14,7 +14,7 @@ const messages=[
   {type:'system',subtype:'init',session_id:'fresh-review'},
   {type:'assistant',session_id:'fresh-review',parent_tool_use_id:null,
     message:{role:'assistant',content:[{type:'text',text:'review'}]}},
-  {type:'result',subtype:'success',session_id:'fresh-review',is_error:false,num_turns:1,result:'{"verdict":"approved"}'},
+  {type:'result',subtype:'success',session_id:'fresh-review',is_error:false,num_turns:1,structured_output:{verdict:'approved'},result:'{"verdict":"approved"}'},
 ];
 test('review schema is canonical without metadata and invalidates legacy preflight fingerprint',()=>{
   const args=claudeReviewArgs(config.model),index=args.indexOf('--json-schema');
@@ -59,7 +59,8 @@ test('successful forbidden tool triggers synchronous group SIGKILL without compl
       assert.deepEqual(kills,[{pid:-12345,signal:'SIGKILL'}]);
     },observed)});
   const result=await worker({prompt:'synthetic'}, {signal:new AbortController().signal,onEvent:e=>events.push(e)});
-  assert.deepEqual(result,{status:'failed',code:'unexpected_tool_or_content'});
+  // The base code is kept for callers; the suffix names what was rejected, never its content.
+  assert.deepEqual(result,{status:'failed',code:'unexpected_tool_or_content:{"k":"tool_result_not_error","m":"user","b":"tool_result","t":"Bash","e":false}'});
   assert.ok(!events.some(e=>e.event==='turn.completed'||e.event==='item.completed'));
   assert.equal(events.at(-1).signal,'SIGKILL');
 });
@@ -205,4 +206,19 @@ test('worker forwards system notice summaries without changing result or observa
     {kind:'rate_limit',info:{status:'allowed',resetsAt:123}}]);
   assert.deepEqual(await runMessages(wire),baseline);
   assert.deepEqual(await runMessages(wire,()=>{throw Error('notice consumer');}),baseline);
+});
+
+// A CLI-authored reminder (isSynthetic user text) is a notice, not a boundary
+// break: the worker neither kills the reviewer nor changes the observer events.
+test('synthetic CLI reminder is reported as a notice; between a call and its result it is still rejected with a summary',async()=>{
+  const synthetic={type:'user',session_id:'fresh-review',parent_tool_use_id:null,isSynthetic:true,
+    message:{role:'user',content:[{type:'text',text:'[structured-output-enforce] You MUST call the StructuredOutput tool.'}]}};
+  const baseline=await runMessages(messages);
+  const notices=[];
+  const reminded=await runMessages([messages[0],messages[1],synthetic,{...messages[2],num_turns:2}],n=>notices.push(n));
+  assert.deepEqual(reminded.result,baseline.result);assert.deepEqual(reminded.events,baseline.events);
+  assert.deepEqual(notices,[{kind:'claude_system_notice',subtype:'synthetic_user'}]);
+  const pending=await runMessages([messages[0],{...messages[1],message:{role:'assistant',content:[{type:'tool_use',id:'out',name:'StructuredOutput',input:{}}]}},synthetic,messages[2]]);
+  assert.deepEqual(pending.result,{status:'failed',code:'unexpected_tool_or_content:{"k":"user_content","m":"user","b":"text","t":null,"e":null}'});
+  assert.ok(!pending.events.some(e=>e.event==='item.completed'));
 });

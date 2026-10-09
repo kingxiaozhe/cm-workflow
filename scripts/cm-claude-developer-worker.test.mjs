@@ -275,3 +275,18 @@ test('proposal validation preserves schema fields and strict success/failure bra
     assert.throws(()=>validateClaudeProposal(invalid),undefined,JSON.stringify(invalid));
   }
 });
+
+// The developer stream admits the same CLI-authored reminders as the review stream.
+test('developer stream treats a synthetic CLI reminder as a notice, except between a tool call and its result',async t=>{
+  const root=fixture(t),control={signal:new AbortController().signal};
+  const synthetic={type:'user',session_id:'synthetic-claude-developer',parent_tool_use_id:null,isSynthetic:true,
+    message:{role:'user',content:[{type:'text',text:'[structured-output-enforce] You MUST call the StructuredOutput tool.'}]}};
+  const baseline=await fakeWorker(root)({prompt:prompt()},control);
+  const notices=[];
+  const reminded=await fakeWorker(root,{noticeEvents:[synthetic],noticeAt:1,onNotice:n=>notices.push(n)})({prompt:prompt()},control);
+  assert.deepEqual(reminded,baseline);
+  assert.deepEqual(notices,[{kind:'claude_system_notice',subtype:'synthetic_user'}]);
+  const pending=await fakeWorker(root,{mode:'read',noticeEvents:[synthetic],noticeAt:2})({prompt:prompt()},control);
+  assert.equal(pending.code,'unexpected_tool_or_content');
+  assert.deepEqual(fs.readdirSync(root),[]);
+});

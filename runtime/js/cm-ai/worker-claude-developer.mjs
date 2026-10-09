@@ -95,6 +95,15 @@ function createClaudeDeveloperStream(onNotice=null,onUsageTerminal=null){
         if(substantive)assistant=true;return;
       }
       if(event.type==='user'){
+        // CLI-authored reminder (see claude-review-stream.mjs): a notice, never content.
+        if(event.isSynthetic===true){
+          const c=event.message?.content;
+          need(event.parent_tool_use_id===null&&event.message?.role==='user'&&Array.isArray(c)&&c.length===1
+            &&c[0]?.type==='text'&&typeof c[0].text==='string'&&Buffer.byteLength(c[0].text,'utf8')<=1024&&tools.size===0,'unexpected_tool_or_content');
+          need(noticeCount<32,'unexpected_event');noticeCount++;
+          try{onNotice?.({kind:'claude_system_notice',subtype:'synthetic_user'});}catch{}
+          return;
+        }
         need(event.message?.role==='user'&&Array.isArray(event.message.content),'invalid_event');
         for(const block of event.message.content){need(block.type==='tool_result'&&tools.has(block.tool_use_id),'unexpected_tool_or_content');tools.delete(block.tool_use_id);}
         return;

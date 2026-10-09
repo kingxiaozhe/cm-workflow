@@ -57,6 +57,20 @@ if(b.mode==='api_error'){
     stop_reason:'stop_sequence',session_id,total_cost_usd:0,terminal_reason:'api_error',api_error_status:b.status,uuid:randomUUID()});
   process.exit(1);
 }
+// user_text: a user-role text the CLI did not mark synthetic (boundary break,
+// process left alive for the worker's SIGKILL); reminder: the CLI's own
+// isSynthetic reminder before the StructuredOutput call (must complete).
+if(b.mode==='user_text'||b.mode==='reminder'){
+  out({type:'assistant',session_id,parent_tool_use_id:null,message:{role:'assistant',content:[{type:'text',text:'Review follows.'}]}});
+  out({type:'user',session_id,parent_tool_use_id:null,...(b.mode==='reminder'?{isSynthetic:true}:{}),
+    message:{role:'user',content:[{type:'text',text:b.mode==='reminder'?'[structured-output-enforce] You MUST call the StructuredOutput tool.':'stray user text'}]}});
+  if(b.mode==='user_text'){setInterval(()=>{},1000);await new Promise(()=>{});}
+  const v={verdict:'approved',packageDigest:data.reviewPackage.packageDigest,examinedPaths:data.examinedPaths,findings:[],summary:'Synthetic review'};
+  out({type:'assistant',session_id,parent_tool_use_id:null,message:{role:'assistant',content:[{type:'tool_use',id:'out-1',name:'StructuredOutput',input:v}]}});
+  out({type:'user',session_id,parent_tool_use_id:null,message:{role:'user',content:[{type:'tool_result',tool_use_id:'out-1',content:'ok'}]}});
+  out({type:'result',subtype:'success',session_id,is_error:false,num_turns:2,result:JSON.stringify(v),structured_output:v});
+  process.exit(0);
+}
 const value={verdict:b.verdict??'approved',packageDigest:data.reviewPackage.packageDigest,
   examinedPaths:b.reverse?[...data.examinedPaths].reverse():data.examinedPaths,findings:b.findings??[],summary:b.summary??'Synthetic review'};
 out({type:'assistant',session_id,parent_tool_use_id:null,message:{role:'assistant',content:[{type:'text',text:JSON.stringify(value)}]}});
@@ -352,7 +366,12 @@ test('#8 legacy unknown results replay unchanged and forged failed results are r
     checkpoint.cache.at(-1).result=runnerStatus(checkpoint,configuration);
     return rechain(records);
   };
-  for(const [code,abandonable] of [['missing_init',true],['unexpected_assistant',false]]){
+  // A Claude boundary exit is abandonable only when the summary (or its absence,
+  // for older records) cannot mean a tool ran; T-009 was recorded without one.
+  const exit=d=>`unexpected_tool_or_content:${JSON.stringify(d)}`;
+  for(const [code,abandonable] of [['missing_init',true],['unexpected_assistant',false],['unexpected_tool_or_content',true],
+    [exit({k:'user_content',m:'user',b:'text',t:null,e:null}),true],[exit({k:'empty_content',m:'assistant',b:null,t:null,e:null}),true],
+    [exit({k:'tool_result_not_error',m:'user',b:'tool_result',t:'Bash',e:false}),false],['unexpected_tool_or_content:{"k":"bogus"}',false]]){
     const history=readRunnerHistory(legacy(code),configuration,3);
     assert.equal(history.state.state,'unknown');assert.equal(history.state.code,'transport_incomplete');
     assert.equal(history.state.reviewInvocation.result.reconciliationRequired,true);
@@ -975,3 +994,47 @@ test('#retry-limit an older journal past the completion re-check bound converts 
   assert.equal(f.records().filter(row=>row.payload.type==='effect-intent').length,intents,'no intent');
   assert.deepEqual(f.reopen().status(),converted);
 }));
+
+// Claude boundary exits (the T-009 incident shape): a user-role text the CLI did
+// not mark synthetic stops the reviewer with a summary and stays unknown; the
+// operator may abandon it once and the redispatch runs normally. The CLI's own
+// reminder no longer stops anything.
+test('#9 Claude boundary exit is unknown with a summary, abandonable once, and the CLI reminder itself completes',t=>{
+  const f=fixture(t),packageDigest=f.awaitingReview();
+  f.behave({mode:'user_text'},{mode:'ok'});
+  const stopped=f.decide(packageDigest);
+  assert.equal(stopped.result.state,'unknown');assert.equal(stopped.result.code,'transport_incomplete');
+  assert.equal(stopped.result.pendingAction,'abandon_review');
+  const observation=f.lastResult().observation;
+  assert.equal(observation.result.status,'failed');
+  assert.equal(observation.result.code,'unexpected_tool_or_content:{"k":"user_content","m":"user","b":"text","t":null,"e":null}');
+  assert.ok(!observation.result.code.includes('stray'));
+  assert.deepEqual(observation.events.map(e=>e.event),['thread.started','turn.started','process_closed']);
+  assert.equal(observation.events.at(-1).signal,'SIGKILL');assert.equal(observation.events.at(-1).timed_out,false);
+  assert.deepEqual(f.intents(),['develop-1','review-1'],'never retried automatically');
+  const abandoned=f.drive(f.plan({mode:'resume',permissions:['--review-config','review.json','--allow-abandon-review'],
+    reason:'旧审查进程已退出（SIGKILL），未收到任何结果',answers:undefined,checks:undefined}),'abandon_review');
+  assert.equal(abandoned.result.state,'pending_review');assert.equal(abandoned.result.code,'review_abandoned');
+  const approved=f.decide(packageDigest);
+  assert.equal(approved.result.state,'approved');assert.deepEqual(f.intents(),['develop-1','review-1','review-1-retry-1']);
+  // The CLI reminder path: same prompt, completes without any stop.
+  const g=fixture(t),digest2=g.awaitingReview();
+  g.behave({mode:'reminder'});
+  assert.equal(g.decide(digest2).result.state,'approved');
+  assert.deepEqual(g.intents(),['develop-1','review-1']);
+});
+test('#9 a second boundary exit after the one redispatch stays unknown and cannot be abandoned again',t=>{
+  const f=fixture(t),packageDigest=f.awaitingReview();
+  f.behave({mode:'user_text'},{mode:'user_text'});
+  assert.equal(f.decide(packageDigest).result.pendingAction,'abandon_review');
+  const abandonPlan=f.plan({mode:'resume',permissions:['--review-config','review.json','--allow-abandon-review'],
+    reason:'first exit',answers:undefined,checks:undefined});
+  assert.equal(f.drive(abandonPlan,'abandon_review').result.state,'pending_review');
+  const again=f.decide(packageDigest);
+  assert.equal(again.result.state,'unknown');assert.equal(again.result.code,'transport_incomplete');
+  assert.notEqual(again.result.pendingAction,'abandon_review');
+  const before=fs.readFileSync(f.store);
+  assert.equal(f.drive(abandonPlan,'abandon_review').result.outcome,'rejected');assert.deepEqual(fs.readFileSync(f.store),before);
+  const history=f.replay();assert.equal(history.state.state,'unknown');assert.equal(history.reviewResultAbandon,null);
+  assert.equal(history.state.calls.filter(call=>call.terminal==='abandoned').length,1);
+});
