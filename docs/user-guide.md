@@ -500,6 +500,64 @@ $cm-ai ~/projects/my-app-specs ~/code/my-app
 - **外部行为不变，只整理结构** → `$cm-refactor`；
 - **用户可见行为、接口或业务规则要变化** → `$cm-prd --change`。
 
+## 卡住时提醒到手机（可选）
+
+流程停下来要人处理时，CM 可以运行你自己指定的一条本机命令，由它把提醒推到手机。
+CM 不认识任何推送服务，也不保存任何 token；推到哪里、怎么推，全由你的脚本决定。
+默认关闭：没有配置文件就什么都不做。
+
+**什么时候提醒**
+
+- 驾驶员（`scripts/*-drive.mjs`）一步结束后停在需要人的状态：blocked、unknown、次数用完、`requiresUser`，或驾驶员自己拒绝继续。
+- 整个流程结束（如 `run_done`）时提醒一次，告诉你跑完了。
+- 宿主向会话提问（`host_request`，如 qa_browser、develop、fix_diagnose）后，超过 `waitMinutes` 分钟没有应答，每个提问只提醒一次。
+- 正常推进和只读的 `status` 查询不提醒。
+
+提醒只是通知。CM 不会因此自动继续、替你应答或授予任何权限。
+
+**配置**
+
+在 `~/.cm-workflow/notify.json`（设置了 `CM_WORKFLOW_HOME` 时放在那个目录）写：
+
+```json
+{"version": 1, "command": ["/absolute/path/to/my-notify.sh"], "waitMinutes": 10}
+```
+
+- `command`：要运行的程序和参数，第一项必须是绝对路径；不经过 shell。
+- `waitMinutes`：等待会话应答多久后提醒，默认 10。
+- 文件格式不对时，功能关闭，并在终端打印一行提示。
+
+命令通过环境变量 `CM_NOTIFY_TITLE`（不超过 60 字）、`CM_NOTIFY_BODY`（不超过 500 字）拿到内容。
+标准输入还会收到一行同样内容的 JSON。命令 15 秒内没结束会被终止。
+
+**限流与日志**
+
+- 同一件事 6 小时内只提醒一次；所有提醒合计每分钟最多 4 条、24 小时最多 150 条。
+- 计数记在 `notify-state.json`；发送失败或被限流只在 `notify.log` 追加一行，不影响流程结果和退出码。
+
+**隐私**
+
+消息只含项目目录名、流程、运行编号、任务、阶段、原因代码和下一步提示。
+不含文件内容、日志、diff、审查意见、环境变量或项目目录以外的路径（绝对路径会被替换成 `<路径>`）。
+这些文字会经过你选的推送服务，对方能看到；介意的话不要启用。
+
+**示例脚本（归你自己所有，不随 CM 安装）**
+
+下面是一个通用写法：从本机私有文件读 token，用 curl 发出去。地址和字段请换成你的推送服务要求的样子。
+
+```sh
+#!/bin/sh
+# ~/.cm-workflow/my-notify.sh —— 自己维护，chmod 700
+set -eu
+. "$HOME/.cm-workflow/my-push.env"   # 里面写 PUSH_TOKEN=...，chmod 600，不要提交到任何仓库
+payload=$(node -e 'process.stdout.write(JSON.stringify({token:process.env.PUSH_TOKEN,
+  title:process.env.CM_NOTIFY_TITLE,content:process.env.CM_NOTIFY_BODY}))')
+curl -fsS --max-time 10 -H 'Content-Type: application/json' -d "$payload" \
+  https://push.example.com/send >/dev/null
+```
+
+脚本只在需要时读取 token，不打印它；CM 也不会把 token 写进日志。
+
 ## 可复制的最小清单
 
 ```text

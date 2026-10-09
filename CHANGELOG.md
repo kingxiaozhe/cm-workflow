@@ -5,6 +5,7 @@
 
 ## 未发布
 
+- 新增可选的「卡住时提醒」：在 `~/.cm-workflow/notify.json` 配一条本机命令后，驾驶员停在需要人处理的状态、流程结束，或宿主等待会话应答超过 `waitMinutes`（默认 10 分钟）时运行它；消息只含项目名、流程、运行、任务、阶段、原因和下一步，带去重与限流，失败只记 `notify.log`，不改变流程结果；CM 不绑定任何推送服务，未配置时不做任何事。
 - cm-ai 并行组的「只能新建文件」规则改由 runtime 强制：建成员工作树前核对整组 scope，任一路径已在 HEAD 上就以 `parallel_scope_existing_file` 拒绝且不建工作树，不再只靠会话自觉；已开工的批次不受影响。
 - `cm-fix` 重新诊断后的第二轮原因审查没有结论时不再永远卡在 `unknown`：审查进程正常结束但答案不合结论格式（如引用了审查包以外的文件路径）时记为失败观察，不再整条丢掉；第二轮原因审查也可用 `abandon_review`（`--allow-abandon-review`）放弃一次，追加 `fix-cause-rediagnosis-abandoned` 后在同一第二轮重新授权、换新审查线程重审（`fix-cause-rediagnosis-retry-*`），不增加审查轮数，旧记录不改写；同一轮再放弃报 `fix_review_abandon_budget_exhausted`。第二轮审查包另把第一轮审查看过和引用过、但不在新诊断范围内的代码文件作为只读上下文（`contextFiles`）交给审查者，审查者可以引用，不再因引用这些文件被判不合格。
 - `cm-fix` 重新诊断答案不合格（如 `investigation.discardedAlternatives` 超过 3 项）不再把运行卡死在 `unknown`：宿主报 `invalid_diagnosis` 并写明字段与上限，驾驶员开宿主前即用同一校验器拦下；已卡在 `fix-rediagnosis-intent` 的运行改好 `diagnosis-rediagnosis.json` 后再执行一次 `rediagnose`，在原登记下重新作答并进入第二轮根因审查，不另占次数、不改旧记录。
