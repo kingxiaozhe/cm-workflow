@@ -77,3 +77,25 @@ test('develop_answer_missing: a bare failed answer (blocked/failed without a res
   assert.match(developRedoPlanError('develop_redo',{mode:'resume',reason:'已停'},[]),/--allow-develop-redo/);
   assert.match(developRedoPlanError('develop_redo',{mode:'create',reason:'已停'},['--allow-develop-redo']),/resume/);
 });
+
+test('develop_redo passes the shared JSONL transport (serveCmAiHost) and is journaled',async t=>{
+  const {PassThrough}=await import('node:stream');
+  const {serveCmAiHost}=await import('../runtime/js/cm-ai/host-session.mjs');
+  const {openControlRun}=await import('./cm-ai-run.mjs');
+  const {definition,identity}=await import('./cm-ai-answer-gap-fixture.mjs');
+  const f=gapFixture(t,'transport');
+  await gapSession(f,'create',gapExecution(f,{developer:[{write:'one\n',throw:'host_disconnected'}]}),[['advance',1]]);
+  const run=await openControlRun(definition(f),'resume',gapExecution(f),{allowDevelopRedo:true});
+  const input=new PassThrough(),output=new PassThrough(),errors=new PassThrough();let text='';
+  output.on('data',chunk=>{text+=chunk;});
+  try{
+    const served=serveCmAiHost({host:run.host,input,output,errorOutput:errors});
+    input.write(JSON.stringify({version:1,operation:'develop_redo',requestId:'redo-1',identity:identity(1),reason:'会话已停止修改代码'})+'\n');
+    input.end();await served;
+  }finally{run.close();}
+  const rows=text.trim().split('\n').map(line=>JSON.parse(line));
+  const reply=rows.find(row=>row.requestId==='redo-1');
+  assert.ok(reply&&!reply.error,text);
+  assert.deepEqual([reply.result.outcome,reply.result.code,reply.result.pendingAction],['recorded','develop_answer_missing','resume']);
+  assert.equal(records(f).at(-1).payload.type,'develop-answer-redo');
+});
