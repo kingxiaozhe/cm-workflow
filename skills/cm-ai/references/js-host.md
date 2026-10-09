@@ -34,6 +34,7 @@
 | `bootstrap_verification_failed`、`bootstrap_instruction_conflict`、`bootstrap_review_mismatch`、`bootstrap_review_recover`、`init-verify` 命令未通过 | R「bootstrap 规范任务的恢复」 |
 | `correction_review_required`、`fix_record_too_large`、存储目录 `limit_exceeded` | R「已完成运行上的后续改动」 |
 | `handoff_exists`、`review_limit`／`review_blocked` 后重做同一任务 | R「已审交接后的任务重跑」 |
+| `develop_out_of_scope`（开发改动超出 scope，reason 列路径） | R「应答缺失、无效或迟到」 |
 | `check_output_out_of_scope`、`unknown/out_of_scope`、iOS 沙箱检查失败 | M「Codex 单任务：显式受保护执行」 |
 | `bootstrap_feature_ambiguous` | M「bootstrap feature 与规则写入」 |
 | 补挂 QA（`qa_attach`） | Q「补挂 QA」 |

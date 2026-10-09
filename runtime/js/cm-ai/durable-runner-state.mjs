@@ -148,7 +148,11 @@ const CHECK_ANSWER_MISSING=['call_timeout','execution_error','host_disconnected'
 // journal size limits, which a re-check does not resolve. An oversized check
 // answer is refused by the bridge and times out (check_answer_missing).
 const CHECK_ANSWER_INVALID=['invalid_input','invalid_result','verification_precheck_invalid'];
-export const RECHECK_CODES=Object.freeze(['check_answer_missing','check_answer_invalid']);
+// A53: the delivery touched paths outside the task scope (not only files the
+// checks created). The paths are named; once the operator moved or restored
+// them, a re-check rebuilds the handoff and package without a new develop.
+export const OUT_OF_SCOPE_RECHECK_CODE='develop_out_of_scope';
+export const RECHECK_CODES=Object.freeze(['check_answer_missing','check_answer_invalid',OUT_OF_SCOPE_RECHECK_CODE]);
 export const COMPLETE_RECHECK_CODE='complete_recheck_failed';
 // learningWriteback mirrors the checkpointed Learning result, which the journal
 // grammar only accepts after this effect's own developer call succeeded (or on a
@@ -156,7 +160,7 @@ export const COMPLETE_RECHECK_CODE='complete_recheck_failed';
 export const developRecheckSource=entry=>{
   const result=entry.result,call=result.calls?.at(-1);
   return entry.effect.kind==='develop'&&result.state==='unknown'
-    &&[...CHECK_ANSWER_MISSING,...CHECK_ANSWER_INVALID].includes(result.code)
+    &&[...CHECK_ANSWER_MISSING,...CHECK_ANSWER_INVALID,'out_of_scope'].includes(result.code)
     &&call?.terminal==='succeeded'&&call.channel==='fixture'
     &&result.learningWriteback!=null&&result.learningWriteback.outcome!=='writeback_pending';
 };
@@ -167,9 +171,16 @@ export function developRecheckCode(s,config,recorded=0){
     ||s.learningResult==null||s.receipt!==null)return null;
   if(s.state==='blocked'&&RECHECK_CODES.includes(s.code))return s.code;
   if(!(s.state==='unknown'&&s.code===last.result.code)||recorded>=MAX_ANSWER_GAP_RETRIES)return null;
-  return CHECK_ANSWER_INVALID.includes(last.result.code)?'check_answer_invalid':'check_answer_missing';
+  return last.result.code==='out_of_scope'?OUT_OF_SCOPE_RECHECK_CODE
+    :CHECK_ANSWER_INVALID.includes(last.result.code)?'check_answer_invalid':'check_answer_missing';
 }
-export const developRecheckReason=(code,source)=>`${code}: 开发已交付并写回 Learning，但之后的检查或验证预检没有拿到可用应答（原记录 unknown/${source}）。`
+// detail: the source checkpoint's reason, which names the out-of-scope paths.
+const outOfScopePaths=detail=>typeof detail==='string'&&/^out_of_scope:/.test(detail)
+  ?detail.replace(/^out_of_scope:\s*/,'').split(/,\s*/).filter(Boolean).slice(0,20):[];
+export const developRecheckReason=(code,source,detail=null)=>code===OUT_OF_SCOPE_RECHECK_CODE
+  ?boundedReason(`${code}: 开发已交付并写回 Learning，但改动超出任务 scope（原记录 unknown/${source}）：`,(paths=>paths.length?paths:['见原记录'])(outOfScopePaths(detail)),
+    '。这些路径可能是会话越界写的，也可能是你自己的改动：移走或还原它们（确需改动就先走规格变更扩大 scope）后，在原运行 advance 只重跑检查、验证预检、handoff 与审查包，不重发开发、不占名额（每运行最多 2 次）。')
+  :`${code}: 开发已交付并写回 Learning，但之后的检查或验证预检没有拿到可用应答（原记录 unknown/${source}）。`
   +'先确认上一次检查命令已经停止；在原运行 advance 只重跑检查、验证预检、handoff 与审查包，不重发开发，不占开发调用与 effect 名额（每运行最多 2 次）。';
 export const completeRecheckSource=entry=>entry.effect.kind==='complete'&&entry.result.state==='unknown'
   &&[...CHECK_ANSWER_MISSING,'invalid_input'].includes(entry.result.code)
@@ -880,6 +891,22 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     recovered.cache.at(-1).result=runnerStatus(recovered,config);
     return recovered;
   }
+  // A42: older runtimes ended a completion re-check whose check list or check
+  // evidence differed from the reviewed package in a terminal package_mismatch
+  // with no reason (before #160 the whole package, evidence text included, was
+  // compared) or the bare code (check ids/commands differed). Neither changed
+  // the reviewed code; a retried complete re-verifies everything. A mismatch
+  // that names changed paths stays terminal. The record is not rewritten.
+  if(effect.kind==='complete'&&s.state==='blocked'&&s.code==='package_mismatch'
+    &&(s.reason==null||s.reason==='package_mismatch')&&s.taskCommit==null
+    &&(before.state==='approved'||before.state==='blocked'
+      &&[...COMPLETION_RETRY_CODES,'review_package_changed',COMPLETE_RECHECK_CODE].includes(before.code))){
+    const recovered=structuredClone(s);
+    recovered.code='completion_checks_changed';
+    recovered.reason='completion_checks_changed: 旧版本把完成复查与审查包的检查清单或检查证据差异记成了 package_mismatch（代码未变）；发送 complete 按审查包的检查清单重新复查并完成。';
+    recovered.cache.at(-1).result=runnerStatus(recovered,config);
+    return recovered;
+  }
   // Runners before the create-time scope gate dispatched a protected scope and
   // journaled the adapter's pre-dispatch refusal as unknown/execution_error,
   // with no exit. Reproject only that exact shape: one developer call that never
@@ -1146,7 +1173,7 @@ export function readRunnerHistory(raw,config,version=1) {
       need(r.kind==='result'&&pending===null&&state.state==='unknown'&&code!==null&&p.code===code
         &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_recheck');
       answerGaps.developRecheck++;
-      state.state='blocked';state.code=code;state.reason=developRecheckReason(code,state.cache.at(-1).result.code);lastReview=null;
+      state.state='blocked';state.code=code;state.reason=developRecheckReason(code,state.cache.at(-1).result.code,state.cache.at(-1).result.reason);lastReview=null;
     } else if(version===3&&p.type==='develop-answer-redo') {
       // The operator confirmed the session stopped writing (R3); the redo itself
       // is the next develop intent. Re-derived from the journal, never the disk.

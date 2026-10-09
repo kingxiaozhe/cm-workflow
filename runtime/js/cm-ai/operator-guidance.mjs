@@ -49,6 +49,9 @@ export function operatorGuidance(result,{executionActive=false}={}){
   if(state==='blocked'&&action==='resume'&&code==='develop_answer_missing')return explain('已确认会话停写，本轮开发等待重发。',
     '恢复原运行并发送 advance，用新 effect id 重发本轮开发；盘上改动保留，经检查和独立审查。',
     'advance',['保留原配置、runId 与历史，以 --mode resume 启动','确认原宿主已关闭，且本轮开发有原合同要求的授权']);
+  if(state==='blocked'&&action==='resume'&&code==='develop_out_of_scope')return explain('开发交付已落盘，但改动超出了任务 scope（reason 列出路径），尚未进入审查。',
+    '核对这些路径：会话越界写的就还原，你自己的改动就移出代码根，确需改动先走规格变更扩大 scope；然后恢复原运行并发送 advance，只重跑检查、验证预检与审查包，不重新开发。',
+    'advance',['保留原配置、runId 与历史，以 --mode resume 启动','不占开发调用与 effect 名额；每运行最多 2 次','不擅自删除用户改动']);
   if(state==='blocked'&&action==='resume'&&['check_answer_missing','check_answer_invalid'].includes(code))
     return explain(code==='check_answer_invalid'?'开发交付已落盘，但之后的检查或验证预检答复格式不合格。'
       :'开发交付已落盘，但之后的检查或验证预检没有拿到应答（超时、断开或迟到）。',

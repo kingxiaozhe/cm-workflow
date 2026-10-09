@@ -874,7 +874,16 @@ export function verifyCompletionReviewPackage(options) {
   const checkIdentities=checks=>checks.map(c=>c.kind==='visual'
     ?{id:c.id,kind:c.kind}
     :{id:c.id,command:c.command});
-  need(digest(checkIdentities(current.checks))===digest(checkIdentities(v.reviewPackage.checks)),'package_mismatch');
+  // A42: the completion re-check answered with another check list (ids or
+  // commands) than the reviewed delivery. The code is unchanged, so this is a
+  // retryable re-check block that names the difference, not a terminal mismatch.
+  if(digest(checkIdentities(current.checks))!==digest(checkIdentities(v.reviewPackage.checks))){
+    const ids=checks=>checks.map(c=>String(c.id)).join(', ').slice(0,600)||'（无）';
+    const sameIds=ids(current.checks)===ids(v.reviewPackage.checks);
+    throw Object.assign(new Error(`completion_checks_changed: 完成复查的检查清单与审查包不一致（${sameIds
+      ?`编号相同但命令不同：${ids(current.checks)}`:`审查包：${ids(v.reviewPackage.checks)}；本次：${ids(current.checks)}`}）。按审查包的检查清单原样重跑后再发送 complete`),
+    {code:'completion_checks_changed'});
+  }
   const checkResults=checks=>checks.map(c=>c.kind==='visual'
     ?{outcome:c.outcome}
     :{outcome:c.outcome,exitCode:c.exitCode});

@@ -29,7 +29,7 @@ const retryReview=reviewRetryable;
 // second copy of the code list that silently drifts.
 export const developmentRetryable=status=>status.state==='blocked'
   &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','develop_call_timeout','develop_answer_invalid',
-    'check_answer_missing','check_answer_invalid','develop_answer_missing','develop_dispatch_failed','develop_interrupted'].includes(status.code)
+    'check_answer_missing','check_answer_invalid','develop_out_of_scope','develop_answer_missing','develop_dispatch_failed','develop_interrupted'].includes(status.code)
   // Shown before the operator confirmed the session stopped: not yet redoable.
   &&status.developRedoRequired!==true;
 const retryDeveloper=developmentRetryable;

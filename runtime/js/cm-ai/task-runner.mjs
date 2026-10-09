@@ -431,7 +431,7 @@ export function createTaskRunner(options) {
     }
     if(current.state==='unknown'){
       const recheck=developRecheck();
-      if(recheck!==null)current=freeze({...current,state:'blocked',code:recheck,reason:developRecheckReason(recheck,current.code)});
+      if(recheck!==null)current=freeze({...current,state:'blocked',code:recheck,reason:developRecheckReason(recheck,current.code,current.reason)});
       else if(completeRecheck())current=freeze({...current,state:'blocked',code:COMPLETE_RECHECK_CODE,reason:completeRecheckReason(current.code)});
     }
     if(current.state==='blocked'&&current.code==='failed'&&answerRetryable())
@@ -1218,7 +1218,7 @@ export function createTaskRunner(options) {
           ...(Object.hasOwn(learningResult,'application')?{application:learningResult.application}:{}),
           retrospective:learningResult.retrospective,
           writeback:learningResult.writeback});
-      } catch {halt('blocked','package_mismatch');return;}
+      } catch {halt('blocked','package_mismatch','package_mismatch: 完成前核对 Learning handoff 与已审交付不一致（handoff 文件或 Learning 记录被改动）；保留现场核对 .reviews 下的 handoff，不能直接重试。');return;}
       try {
         checkCompletion({receipt,registered:registered.get(receipt?.id),execution:calls.find(c=>c.invocationId===receipt?.id),
           reviewPackage,identity:{...config.identity,attempt}});
@@ -1306,7 +1306,7 @@ export function createTaskRunner(options) {
       const source=code;
       try{persist('develop-recheck',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId,code:recheck});}
       catch{return Promise.resolve(poison());}
-      halt('blocked',recheck,developRecheckReason(recheck,source));publication=privateStatus();
+      halt('blocked',recheck,developRecheckReason(recheck,source,reason));publication=privateStatus();
     }
     if(dispatchBasis!==null){
       const source=code;

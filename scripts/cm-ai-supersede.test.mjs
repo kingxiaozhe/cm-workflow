@@ -441,6 +441,87 @@ test('interrupted task commit rolls forward from its journaled plan, or stops on
   }
 });
 
+// A53: a delivery that touched a path outside the scope is a named, retryable
+// re-check block; after the operator removes the path the same run continues.
+test('out-of-scope delivery names the paths and re-checks after they are removed',async()=>{
+  const f=runFixture();
+  try{
+    const runId='out-of-scope-recheck',identity=identityFor(runId),content='written\n';
+    const execution=()=>{const value=executionFor(f,content);
+      value.developer.run=createCodexDeveloperRun({requestedModel:'fixture',worker:async()=>{
+        fs.writeFileSync(path.join(f.codeProject,'a.mjs'),content);fs.writeFileSync(path.join(f.codeProject,'stray.mjs'),'x\n');
+        return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
+          retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};}});
+      return value;};
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    let run=await openControlRun(definition,'create',execution());
+    try{
+      const blocked=await run.host.handle(requestFor(identity));
+      assert.equal(blocked.code,'develop_out_of_scope',JSON.stringify(blocked));assert.equal(blocked.pendingAction,'resume');
+      assert.match(blocked.reason,/stray\.mjs/);
+      // Still out of scope: the re-check reproduces the block, nothing is redeveloped.
+      const again=await run.host.handle(requestFor(identity));assert.equal(again.code,'develop_out_of_scope');
+    }finally{run.close();}
+    fs.rmSync(path.join(f.codeProject,'stray.mjs'));
+    run=await openControlRun(definition,'resume',execution());
+    try{assert.equal((await run.host.handle(requestFor(identity))).code,'review_blocked');}finally{run.close();}
+    const records=JSON.parse(fs.readFileSync(path.join(f.reviewsDir,'.execution',runId,'state.json'),'utf8')).records;
+    assert.deepEqual(records.filter(row=>row.payload.type==='develop-recheck').map(row=>row.payload.code),
+      ['develop_out_of_scope','develop_out_of_scope']);
+    const history=readRunnerHistory(records,records[0].payload.config,3);
+    assert.equal(history.state.calls.filter(call=>call.contextId==='developer').length,1,'the developer ran once');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// A42: a completion re-check answering with another check list than the reviewed
+// package is a retryable completion_checks_changed naming both lists; older
+// journals with the terminal package_mismatch shape replay the same way.
+test('completion check-list mismatch is retryable and legacy package_mismatch replays as completion_checks_changed',async()=>{
+  const f=runFixture();
+  try{
+    const runId='completion-check-list',identity=identityFor(runId),content='written\n';
+    let renamed=true;
+    const execution=()=>{const value=executionFor(f,content,'approved'),check=value.check;
+      value.check=async(request,control)=>{const results=await check(request,control);
+        return renamed&&request.identity.attempt===1&&fs.existsSync(path.join(f.reviewsDir,'work-T-002-r1.md'))
+          ?results.map(item=>({...item,id:'syntax-renamed'})):results;};
+      return value;};
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    let run=await openControlRun(definition,'create',execution());
+    let blocked;
+    try{
+      blocked=await run.host.handle(requestFor(identity));
+      assert.equal(blocked.code,'completion_checks_changed',JSON.stringify(blocked));assert.equal(blocked.pendingAction,'complete');
+      assert.match(blocked.reason,/审查包：syntax；本次：syntax-renamed/);
+    }finally{run.close();}
+    const stateFile=path.join(f.reviewsDir,'.execution',runId,'state.json');
+    const records=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
+    // The legacy shapes: blocked/package_mismatch with no reason, or the bare code.
+    for(const legacy of [undefined,'package_mismatch']){
+      const forged=structuredClone(records),cp=forged.at(-1).payload.checkpoint;
+      cp.code='package_mismatch';if(legacy===undefined)cp.reason=null;else cp.reason=legacy;
+      cp.cache.at(-1).result={...cp.cache.at(-1).result,code:'package_mismatch'};
+      if(legacy===undefined)delete cp.cache.at(-1).result.reason;else cp.cache.at(-1).result.reason=legacy;
+      for(let at=forged.length-1;at<forged.length;at++){const {digest:old,...body}=forged[at];forged[at]={...body,digest:digest(body)};}
+      const replayed=readRunnerHistory(forged,forged[0].payload.config,3).state;
+      assert.equal(replayed.code,'completion_checks_changed');assert.match(replayed.reason,/旧版本/);
+      // A mismatch that names changed paths stays terminal.
+      const named=structuredClone(forged),np=named.at(-1).payload.checkpoint;
+      np.reason='package_mismatch: a.mjs';np.cache.at(-1).result.reason='package_mismatch: a.mjs';
+      {const {digest:old,...body}=named.at(-1);named[named.length-1]={...body,digest:digest(body)};}
+      assert.equal(readRunnerHistory(named,named[0].payload.config,3).state.code,'package_mismatch');
+    }
+    renamed=false;
+    run=await openControlRun(definition,'resume',execution());
+    try{
+      const completed=await run.host.handle({version:1,operation:'complete',requestId:'complete',identity,packageDigest:blocked.packageDigest});
+      assert.equal(completed.state,'fixture_completed',JSON.stringify(completed));
+    }finally{run.close();}
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
 test('effect-interrupted replay binds intent and last record; forged and duplicate records are refused',async()=>{
   const f=runFixture();
   try{

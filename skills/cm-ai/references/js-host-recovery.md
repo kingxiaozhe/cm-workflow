@@ -56,6 +56,7 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
 
 - `blocked/check_answer_missing`、`blocked/check_answer_invalid`（`pendingAction=resume`）：开发已交付并写回 Learning，之后的检查或验证预检超时、断开、迟到或答复格式不合格（旧记录 `unknown/call_timeout`、`execution_error`、`invalid_input` 等，最后一次开发调用 `succeeded`）。
   先确认上一次检查命令已停止，再 `--mode resume` 后 `advance`：宿主追加 `develop-recheck` 记录，用新 effect id 只重跑检查、验证预检、handoff 与审查包，沿用原交付的 Learning 输入，不重发开发、不占开发调用与 effect 名额，重新划定检查新建文件。
+- `blocked/develop_out_of_scope`（`pendingAction=resume`）：开发已交付并写回 Learning，但建 handoff 或审查包时发现改动超出任务 scope（旧记录 `unknown/out_of_scope`，不只是检查新建的文件）。reason 列出路径。这些可能是会话越界写的，也可能是你自己的改动：还原或移出代码根（确需改动先走规格变更扩大 scope），再 `--mode resume` 后 `advance`：宿主追加 `develop-recheck`（`code: develop_out_of_scope`），只重跑检查、预检、handoff 与审查包，不重发开发、不占名额，每运行最多 2 次。
 - `blocked/develop_answer_missing`，`pendingAction=develop_redo`：当前会话开发（非受保护、非 provider、非规则 bootstrap）的应答没拿到——超时后代码根已变化或起点无法核对（`unknown/call_timeout`）、会话断开或应答形状错（`unknown/unknown`、旧 `execution_error`）、只回了 `failed` 没有结果（`blocked/failed`）。
   会话可能仍在写文件，宿主看不到，所以 `advance` 不会重发。先确认会话已停止修改代码，再 `--mode resume --allow-develop-redo` 启动并发送 `develop_redo`（单行 reason，最多 500 UTF-8 字节，写进 `develop-answer-redo` 记录）；之后 status 为 `pendingAction=resume`，`advance` 用新 effect id 重发本轮开发。
   盘上改动保留；审查包始终对照本运行创建时拍下的任务基线（重发时不重拍），所以丢失应答期间写入的内容都会进检查与独立审查。不占调用与 effect 名额，每运行最多 2 次；受保护模式下代码根变化可能是半写入，不走此出口。
@@ -73,7 +74,7 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
 QA、文档与收尾不占名额；本地拒绝的开发结果、检查产物越界、自动重派的审查和被放弃的审查结果不计）。任何可重试的开发阻断反复出现、
 剩余调用或 effect 名额已不够再交付一次并送审时，运行器在派发开发前写入 `develop-retry-limit` 并停在终态
 `blocked/develop_retry_limit`（`pendingAction: none`）；按 reason 中的上次阻断原因修好根因后用 supersede 新建运行。
-`evidence` 摘要文字变化且检查 `id/command/outcome/exitCode` 不变时可完成；代码、handoff 或检查身份漂移为终态 `blocked/package_mismatch`，越界 scope/需求漂移保持 `blocked/out_of_scope`。仅 `outcome/exitCode` 变化时为可恢复的 `blocked/completion_checks_changed`：先修好检查环境，再用原 runId、原配置 `--mode resume` 执行 `advance`（或 `complete`）；新 complete effect id 重跑检查，原 Review 回执与 packageDigest 不变，不新开 run 或重审。complete 本身不占六个 effect 名额，审查已批准的运行总能进入完成；这类完成前复查阻断（含 `completion_package_changed`）
+`evidence` 摘要文字变化且检查 `id/command/outcome/exitCode` 不变时可完成；代码、handoff 漂移（reason 列出路径）或 Learning handoff 核对不一致为终态 `blocked/package_mismatch`，越界 scope/需求漂移保持 `blocked/out_of_scope`。完成复查答复的检查清单（编号或命令）与审查包不同、或仅 `outcome/exitCode` 变化时为可恢复的 `blocked/completion_checks_changed`，reason 写明两边的检查编号。旧版本把这两类记成没有原因或原因只有 `package_mismatch` 的终态（如 bootstrap-T-001-r6、picks-feed-T-001-r2），回放时同样投影为 `completion_checks_changed`；"handoff 文件名不带 runId 导致串号"的推断已排除（两次都是检查清单或证据差异）。处理方式：先修好检查环境，再用原 runId、原配置 `--mode resume` 执行 `advance`（或 `complete`）；新 complete effect id 重跑检查，原 Review 回执与 packageDigest 不变，不新开 run 或重审。complete 本身不占六个 effect 名额，审查已批准的运行总能进入完成；这类完成前复查阻断（含 `completion_package_changed`）
 单独最多重试 3 次；第 4 次仍被拦下时运行器写入 `completion-retry-limit`，停在终态 `blocked/completion_retry_limit`（`pendingAction: none`），
 先修好检查环境再 supersede 新建运行。旧 journal 按原格式回放。
 
