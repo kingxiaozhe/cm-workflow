@@ -813,7 +813,7 @@ export function createCmAiConversationEntry(options) {
       const finalQa=projectQaSummary(operation,status,options);if(finalQa)return finalQa;
       const resources=releaseQaResources(identity);
       if(resources.open.length)return summary(operation,{...status,code:'qa_resources_open',
-        reason:`qa_resources_open: 以下 QA 资源仍未释放：${resources.open.slice(0,10).map(item=>`${item.resourceId}（${item.verdict}）`).join('、')}。`
+        reason:`qa_resources_open: 以下运行资源仍未释放（写入器会拒绝 run_done）：${resources.open.slice(0,10).map(item=>`${item.resourceId}（${item.verdict}）`).join('、')}。`
           +'宿主只在运行日志记有该命令进程组身份且核对进程组已退出时补记释放；先结束残留进程后重发 run_finalize，记录里没有进程身份的旧资源需人工处理。'},'blocked');
       const input={specsDir:options.specsDir,codeProject:options.codeProject,feature:options.feature,identity,
         packageDigest:operation.packageDigest,contextDigest:refresh.contextDigest,
