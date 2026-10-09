@@ -46,7 +46,7 @@ test('invalid config turns the feature off: relative command, bad version, bad w
   }
   assert.match(h.log(),/config - key=- off invalid_config command_not_absolute/);
   fs.writeFileSync(file,JSON.stringify({version:1,command:['/bin/true'],waitMinutes:0.5}));
-  assert.deepEqual(readNotifyConfig(h.env),{command:['/bin/true'],waitMs:30000});
+  assert.deepEqual(readNotifyConfig(h.env),{command:['/bin/true'],waitMs:30000,checkWaitMs:2700000});
 });
 
 test('message is bounded and built only from the structured fields',()=>{
@@ -310,4 +310,28 @@ if(mode==='hang')bridge.call('develop',{},new AbortController().signal).catch(()
   fs.writeFileSync(path.join(h.dir,'notify.json'),JSON.stringify({version:1,command:['/bin/true'],waitMinutes:10}));
   const started=Date.now(),hang=spawnSync(process.execPath,[script,'hang'],{encoding:'utf8',env,timeout:20000});
   assert.equal(hang.status,0,hang.stderr);assert(Date.now()-started<5000);
+});
+
+// A check request waits for the session to run the project's check commands,
+// which normally takes tens of minutes: it uses checkWaitMinutes, not waitMinutes.
+test('check requests use checkWaitMinutes so normal long checks are not reported as waiting',async t=>{
+  const h=home(t,{config:{waitMinutes:0.003}});
+  const script=path.join(h.dir,'cm-demo-host.mjs');
+  fs.writeFileSync(script,`import {createHostToolBridge} from ${JSON.stringify(BRIDGE)};
+const kind=process.argv[2],bridge=createHostToolBridge();const sent=[];bridge.attach(row=>{sent.push(row);});
+const p=bridge.call(kind,{},new AbortController().signal);await new Promise(resolve=>setTimeout(resolve,1000));
+const r=sent.find(row=>row.type==='host_request');bridge.accept({type:'host_result',sessionId:r.sessionId,callId:r.callId,requestDigest:r.requestDigest,result:{ok:true}});await p;`);
+  const env={...h.env};delete env.NODE_TEST_CONTEXT;
+  for(const kind of ['check','verification_precheck']){
+    const run=spawnSync(process.execPath,[script,kind],{encoding:'utf8',env,timeout:20000});assert.equal(run.status,0,run.stderr);
+  }
+  await new Promise(resolve=>setTimeout(resolve,500));assert.equal(h.rows().length,0,'default 45-minute check threshold');
+  const cfg=JSON.parse(fs.readFileSync(path.join(h.dir,'notify.json'),'utf8'));
+  fs.writeFileSync(path.join(h.dir,'notify.json'),JSON.stringify({...cfg,waitMinutes:10,checkWaitMinutes:0.003}));
+  const run=spawnSync(process.execPath,[script,'check'],{encoding:'utf8',env,timeout:20000});assert.equal(run.status,0,run.stderr);
+  assert(await h.until(()=>h.rows().length===1));assert.equal(h.rows()[0].stdin.stage,'check');
+});
+test('checkWaitMinutes is validated like waitMinutes',t=>{
+  const h=home(t,{config:{checkWaitMinutes:0}});
+  assert.equal(readNotifyConfig(h.env),null);
 });
