@@ -26,7 +26,7 @@ after(()=>{
 const diagnosis={status:'diagnosed',rootCause:'Wrong value',affectedPaths:['value.mjs'],
   affectedModules:['value'],plan:'Correct value',crossLayer:false};
 
-async function fixture(t,{observation=false,reviewMode=null,crossLayer=false,lesson=false}={}){
+async function fixture(t,{observation=false,reviewMode=null,crossLayer=false,lesson=false,repairContent=null}={}){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fix-abandon-')));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const cwd=path.join(root,'code'),specsRoot=path.join(root,'specs');
@@ -80,7 +80,7 @@ async function fixture(t,{observation=false,reviewMode=null,crossLayer=false,les
       if(['changes_requested','second_lost','second_lost_retry'].includes(reviewMode)&&payload.identity.attempt===2&&loseRevisionRepair){
         loseRevisionRepair=false;throw Error('Lost revision repair answer');
       }
-      fs.writeFileSync(path.join(cwd,'value.mjs'),payload.identity.attempt===2?'export const value=2; // revised\n':'export const value=2;\n');
+      fs.writeFileSync(path.join(cwd,'value.mjs'),repairContent??(payload.identity.attempt===2?'export const value=2; // revised\n':'export const value=2;\n'));
       return {outcome:'repaired'};
     }
     if(kind==='fix_retrospective')return (lesson===true||lesson==='revision'&&payload.identity.attempt===2)?{status:'lesson_candidate',candidates:[{classification:'memory_only',
@@ -103,7 +103,9 @@ async function fixture(t,{observation=false,reviewMode=null,crossLayer=false,les
     owner=openFixExecution({...options,create:false},dependencies);
   };
   const reopen=()=>{owner.close();owner=openFixExecution({...options,create:false},dependencies);return owner;};
-  return {cwd,specsRoot,identity,configuration,options,statePath,records,append,reopen,owner:()=>owner,reviewHost,reviews:()=>reviews};
+  // After a refused append left no open owner: restore the saved bytes and reopen.
+  const restore=bytes=>{owner?.close();fs.writeFileSync(statePath,bytes);owner=openFixExecution({...options,create:false},dependencies);return owner;};
+  return {cwd,specsRoot,identity,configuration,options,statePath,records,append,reopen,restore,owner:()=>owner,reviewHost,reviews:()=>reviews};
 }
 
 test('an unknown red test needs explicit authorization and reason, then redoes with distinct records and evidence',async t=>{
@@ -584,4 +586,77 @@ test('regression: the round-2 cause package carries the prior review\'s examined
   const review=f.reopen().status().causeReview.review;
   assert.equal(review.verdict,'approved');assert.deepEqual(review.findings.map(row=>row.path),['existing.mjs']);
   assert.equal(f.owner().status().stage,'red_test_required');
+});
+
+// V2 (F14): a repair abandoned after it left residue is redone on the baseline
+// its first intent pinned. The residue is reviewed, not absorbed, and an
+// approved cause review does not turn it into cause_review_drift.
+test('abandoned repair with residue keeps its pinned baseline and stays out of cause_review_drift',async t=>{
+  const f=await fixture(t,{reviewMode:'approved_pinned',crossLayer:true});
+  assert.equal((await f.owner().advance({authorized:true})).stage,'cause_review_required');
+  await causeDecide(f);await f.owner().reviewCause();
+  if(f.owner().status().stage==='cause_review_evidence_required')await f.owner().reviewCause();
+  await f.owner().runRedTest({authorized:true});
+  assert.equal((await f.owner().captureBaseline({authorized:true})).stage,'repair_required');
+  const atRepair=f.owner().status();
+  const baseline=captureReviewBaseline({root:f.cwd,specsRoot:f.specsRoot,identity:f.identity,
+    scope:f.configuration.repair.scope,requirements:f.configuration.repair.requirements});
+  f.append('fix-repair-intent','intent',{baseline,redDigest:digest(atRepair.redTest),testBaselineDigest:digest(atRepair.baseline)});
+  // The lost attempt wrote half a repair before the host lost its answer.
+  fs.writeFileSync(path.join(f.cwd,'value.mjs'),'export const value=7; // half\n');
+  const abandoned=f.owner().abandonStep({authorized:true,reason:'Repair answer lost after a partial write'});
+  assert.equal(abandoned.stage,'repair_required');assert.equal(abandoned.pinnedBaselines.repair,baseline.baselineDigest);
+  assert.equal(f.reopen().status().stage,'repair_required');
+  // A redo intent that re-captured the residue as its "before" image is refused on replay.
+  const forged=captureReviewBaseline({root:f.cwd,specsRoot:f.specsRoot,identity:f.identity,
+    scope:f.configuration.repair.scope,requirements:f.configuration.repair.requirements});
+  const saved=fs.readFileSync(f.statePath);
+  assert.throws(()=>f.append('fix-repair-retry-1-intent','intent',{baseline:forged,redDigest:digest(atRepair.redTest),
+    testBaselineDigest:digest(atRepair.baseline)}),{code:'fix_history_invalid'});
+  f.restore(saved);
+  assert.equal((await f.owner().repair({authorized:true})).stage,'regression_required');
+  const retry=f.records().find(row=>row.id==='fix-repair-retry-1-intent');
+  assert.equal(retry.payload.baseline.baselineDigest,baseline.baselineDigest,'the redo registers the pinned baseline');
+  assert.equal(f.records().find(row=>row.id==='fix-abandoned-1').payload.baselinePinned,true);
+});
+
+// V10 (F18): an inconclusive regression (the red test could not run) is a
+// legitimate blocked verdict; with a reason it is rerun at most twice.
+test('a blocked regression is rerun with a reason through the host, keeping the blocked result',async t=>{
+  const marker=path.join(fs.realpathSync(os.tmpdir()),`cm-fix-hang-${process.pid}-${Date.now()}`);t.after(()=>fs.rmSync(marker,{force:true}));
+  const f=await fixture(t,{repairContent:`import fs from 'node:fs';if(fs.existsSync(${JSON.stringify(marker)}))await new Promise(()=>{});export const value=2;\n`});
+  await toRepair(f);
+  assert.equal((await f.owner().repair({authorized:true})).stage,'regression_required');
+  fs.writeFileSync(marker,'');
+  const blocked=await f.owner().runRegression({authorized:true});
+  assert.equal(blocked.stage,'regression_blocked',JSON.stringify(blocked.regression?.status));
+  assert.deepEqual(blocked.blockedRerun,{pending:'regression',used:0,limit:2});
+  const host=createFixHost({owner:f.owner(),config:{...f.configuration,specsRoot:f.specsRoot,identity:f.identity},permissions:[]});
+  await assert.rejects(host.handle({requestId:'r',operation:'rerun_blocked_step',reason:'environment fixed'}),{code:'fix_blocked_rerun_authorization_required'});
+  const allowed=createFixHost({owner:f.owner(),config:{...f.configuration,specsRoot:f.specsRoot,identity:f.identity},permissions:['--allow-rerun-blocked-step']});
+  await assert.rejects(allowed.handle({requestId:'r',operation:'rerun_blocked_step',reason:'two\nlines'}),{code:'fix_blocked_rerun_reason_required'});
+  fs.rmSync(marker);
+  const rerun=await allowed.handle({requestId:'r',operation:'rerun_blocked_step',reason:'Stale hang marker removed'});
+  assert.equal(rerun.stage,'regression_required');assert.deepEqual(rerun.blockedReruns,{regression:1});
+  assert.equal(f.reopen().status().stage,'regression_required');
+  assert.equal((await f.owner().runRegression({authorized:true})).stage,'handoff_required');
+  const ids=f.records().map(row=>row.id);
+  assert(ids.includes('fix-regression-result')&&ids.includes('fix-blocked-rerun-1')&&ids.includes('fix-regression-retry-1-result'));
+  // A forged second rerun record at a non-blocked stage is refused on replay.
+  const saved=fs.readFileSync(f.statePath);
+  assert.throws(()=>f.append('fix-blocked-rerun-2','result',{stage:'regression_blocked',pending:'regression',reason:'x',rerunAt:1,
+    intentDigest:'0'.repeat(64),resultDigest:'0'.repeat(64)}),{code:'fix_history_invalid'});
+  f.restore(saved);
+});
+
+// V6 (F13): in protected mode a redo refuses while the scope still holds a
+// partial write of the abandoned attempt; elsewhere only out-of-scope residue refuses.
+test('pinned residue: out-of-scope always refuses, in-scope refuses only in protected mode',async()=>{
+  const {pinnedResidue}=await import('../runtime/js/cm-fix/pinned-baseline.mjs');
+  const file=(p,sha)=>({path:p,type:'file',mode:420,size:1,sha256:sha.repeat(64)});
+  const baseline={files:[file('value.mjs','a'),file('requirements.md','b')]};
+  const now={files:[file('value.mjs','c'),file('requirements.md','b')]};
+  assert.deepEqual(pinnedResidue(baseline,now,['value.mjs'],false),['value.mjs']);
+  assert.throws(()=>pinnedResidue(baseline,now,['value.mjs'],true),error=>error.code==='fix_protected_residue'&&error.paths[0]==='value.mjs');
+  assert.throws(()=>pinnedResidue(baseline,{files:[file('value.mjs','a'),file('requirements.md','d')]},['value.mjs'],false),{code:'fix_pinned_residue'});
 });

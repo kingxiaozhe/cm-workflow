@@ -22,7 +22,7 @@
 //     "reviewConfig": "review.json",         可选
 //     "permissions": ["--allow-red-test", ...],   原样传给宿主，不另造一套词
 //     "answers": "answers",                  答案目录；abandon_step / abandon_review 可省略
-//     "reason": "旧本地步骤结果丢失"           abandon_step 必填并需 --allow-abandon；abandon_review 必填并需 --allow-abandon-review
+//     "reason": "旧本地步骤结果丢失"           abandon_step 必填并需 --allow-abandon；abandon_review 必填并需 --allow-abandon-review；rerun_blocked_step 必填并需 --allow-rerun-blocked-step
 //     "inputLimit": 1048576                  可选；宿主输入与应答上限（65536–4194304，默认 65536）
 //   }
 //
@@ -60,11 +60,11 @@ const ASKS={
 const READ_ONLY=new Set(['status','final_review_package','completion_evidence','cause_review_package']);
 const KNOWN=new Set([...Object.keys(ASKS),...READ_ONLY,'cancel','handoff','publish_review','check_n5',
   'publish_dossier','learning_writeback','walkthrough','finish','final_review','cause_review',
-  'reconcile_review','recover_final_review','abandon_step','abandon_review','resume','revision_test_check']);
+  'reconcile_review','recover_final_review','abandon_step','abandon_review','rerun_blocked_step','resume','revision_test_check']);
 
 function loadPlan(){
   const {operation,plan,base}=loadPlanFile({name:'cm-fix-drive.mjs',known:KNOWN});
-  const abandoning=['abandon_step','abandon_review'].includes(operation);
+  const abandoning=['abandon_step','abandon_review','rerun_blocked_step'].includes(operation);
   requireFields(plan,['config','cwd','mode','hostContext','permissions',...(abandoning||operation==='reconcile_review'?[]:['answers'])]);
   if(!['create','resume'].includes(plan.mode))stop(2,'mode 只能是 create 或 resume');
   if(!Array.isArray(plan.permissions))stop(2,'permissions must be an array');
@@ -76,7 +76,7 @@ function loadPlan(){
     }else if(!['--execution-optimizations','--external-models'].includes(flag)&&!/^--allow-[a-z-]+$/.test(flag))stop(2,'invalid permissions');
   }
   if(operation==='reconcile_review'&&(plan.mode!=='resume'||typeof plan.invocationId!=='string'||!plan.invocationId))stop(2,'reconcile_review requires resume and original invocationId');
-  const abandonFlag=operation==='abandon_review'?'--allow-abandon-review':'--allow-abandon';
+  const abandonFlag=operation==='abandon_review'?'--allow-abandon-review':operation==='rerun_blocked_step'?'--allow-rerun-blocked-step':'--allow-abandon';
   if(abandoning&&(!plan.permissions.includes(abandonFlag)||typeof plan.reason!=='string'
     ||!plan.reason.trim().length||Buffer.byteLength(plan.reason,'utf8')>1000||/[\r\n\0\u0085\u2028\u2029]/.test(plan.reason)))
     stop(2,`${operation} 需要 PLAN.reason（单行，最多 1000 字节）和 ${abandonFlag}`);
@@ -233,7 +233,7 @@ function main(){
   const {answers,round}=preflight(loaded);
   const {operation,plan,paths}=loaded;
   driveHost({host:HOST,args:hostArgs(loaded).slice(1),cwd:path.resolve(plan.cwd),operation,
-    request:{...(operation==='reconcile_review'?{invocationId:plan.invocationId}:{}),...(['abandon_step','abandon_review','rediagnose'].includes(operation)?{reason:plan.reason}:{}),
+    request:{...(operation==='reconcile_review'?{invocationId:plan.invocationId}:{}),...(['abandon_step','abandon_review','rediagnose','rerun_blocked_step'].includes(operation)?{reason:plan.reason}:{}),
       ...(operation==='prepare_revision'&&Object.hasOwn(plan,'revisionTests')?{tests:plan.revisionTests}:{})},
     answers,paths:{...paths,round},answerFor});
 }

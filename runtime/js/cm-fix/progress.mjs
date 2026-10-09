@@ -80,6 +80,11 @@ export function fixProgress(status,config={},authorization={}){
       requiresUser:currentStage==='final_review_required'&&authorization.finalReviewAllowed!==true,
       ...(currentStage==='final_review_required'?{notice:'按现有启动权限执行；恢复派发仍需本次绑定授权。'}:{})};
   }
+  // V10: a legitimate blocked verdict of a local step can be rerun with a reason.
+  if(status.blockedRerun)return {...result,current:'步骤给出合法的阻断结论',blocker:stage,
+    nextAction:status.blockedRerun.used<status.blockedRerun.limit
+      ?`先处理阻断原因（环境、证据或答复），再在原 run 用 rerun_blocked_step（--allow-rerun-blocked-step、单行 reason）重跑 ${status.blockedRerun.pending}；已用 ${status.blockedRerun.used}/${status.blockedRerun.limit} 次，阻断结果保留为历史。`
+      :`本步骤带理由重跑已用满 ${status.blockedRerun.limit} 次；保留历史，交用户判断。`,requiresUser:true};
   return {...result,current:'当前流程受阻或需人工判断',blocker:stage,
     nextAction:'按现有阶段要求处理阻断；历史记录不代表当前条件已通过。',requiresUser:true};
 }

@@ -147,6 +147,20 @@ beforeSha256严格复制expected中该路径的摘要（原不存在则null）�
 红灯原始输出另存 `-retry-N.md`，不覆盖旧输出。`advance`/`run` 遇到 `unknown` 仍停下，
 且放弃本身不证明旧操作没有产生部分本地改动。未经显式授权或不在上表的步骤返回 `fix_abandon_unavailable`。
 
+写测试与修复（`test_author`、`repair` 及其 `revision_` 形式）放弃后，`fix-abandoned-N` 带 `baselinePinned`：重做的 intent 必须登记第一次 intent 拍下的审查基线（不在重做时按当前盘重拍），
+被放弃那次写下的残留因此算进本步骤改动、经回归与独立审查，不会变成「修复前原样」。范围外文件与固定基线不同时拒绝为 `fix_pinned_residue`（列出路径）；
+受保护模式（宿主应用提案）连范围内也必须先还原到固定基线，否则拒绝为 `fix_protected_residue`，半成品不会当成新交付送审。
+经过根因审查的运行，放弃修复后本轮残留不再判为 `cause_review_drift`；修订轮重做沿用固定基线，不再因残留报 `fix_revision_source_mismatch`。旧运行没有 `baselinePinned` 的记录按原样回放。
+
+### 合法阻断结论的带理由重跑
+
+`test_author_blocked`、`repair_blocked`（会话答 blocked）、`regression_blocked`（回归结论 inconclusive，含视觉 BLOCKED）、`post_review_regression_blocked`、`walkthrough_blocked`
+（证据缺、环境不符、清理失败）以及它们的 `revision_` 形式不是应答失败，但处理好原因后可在原运行重跑这一步：以 `--allow-rerun-blocked-step` 启动 cm-fix 宿主，
+发送 `{"requestId":"rerun-1","operation":"rerun_blocked_step","reason":"已处理的阻断原因"}`（驾驶员：PLAN `reason` + `permissions` 含该旗标）。
+宿主追加 `fix-blocked-rerun-N`（绑定该步骤 intent 与阻断结果的摘要），阶段回到该步骤的 `*_required`，下次执行用 `-retry-N-` ID；阻断结果保留为历史，
+写测试/修复同样固定基线。每个步骤最多重跑 2 次（`status.blockedRerun` 显示已用次数），用满报 `fix_blocked_rerun_limit`。`defect_remaining`/`regressed` 仍走 `prepare_revision`。
+QA 修复子流程的 `fix_action` 暂不接受此操作（与 `rediagnose`、`recover_final_review` 同属第 3 批）。
+
 ### 原因审查与第二轮最终审查无结果时的一次性放弃
 
 原因审查（`pending:"cause_review"`，含重新诊断后的第二轮原因审查）或第二轮最终审查（`pending:"revision_final_review"`）已登记，却没有审查结论时——

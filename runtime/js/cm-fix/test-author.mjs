@@ -2,6 +2,7 @@
 // review-channel readiness; filesystem diff checks detect, not sandbox, writes.
 import {types} from 'node:util';
 import {captureReviewBaseline,readReviewBaseline} from '../cm-ai/review-package.mjs';
+import {readPinned,pinnedResidue} from './pinned-baseline.mjs';
 import {validateDeveloperScope} from '../cm-ai/developer-adapter.mjs';
 import {digest,json,need,shape,validIdentity} from '../cm-ai/effect-contract.mjs';
 
@@ -26,13 +27,19 @@ export function inspectFixTestAuthor(raw,baselineRaw){
   return value;
 }
 
-export function prepareFixTestAuthor(options,{bridge,assertReviewReady}){
+export function prepareFixTestAuthor(options,{bridge,assertReviewReady,pinnedBaseline=null,protectedMode=false}){
   const config=json(options);shape(config,['codeProject','specsRoot','identity','testFiles','requirements','defect','diagnosis','reproduction',...(Object.hasOwn(config,'reviewFeedback')?['reviewFeedback','testPlan']:[])]);
   validIdentity(config.identity);validateDeveloperScope(config.testFiles);
   need(bridge&&typeof bridge.call==='function'&&typeof assertReviewReady==='function','test_author_unavailable');
   const capture=()=>captureReviewBaseline({root:config.codeProject,specsRoot:config.specsRoot,identity:config.identity,
     scope:config.testFiles,requirements:config.requirements});
-  const baseline=capture();let used=false;
+  // A redo after abandonment keeps the first intent's baseline (pinnedBaseline):
+  // the abandoned attempt's residue in scope is reviewed as part of this step.
+  const fresh=capture(),baseline=pinnedBaseline===null?fresh:readPinned(pinnedBaseline,fresh);let used=false;
+  // Out of scope nothing may differ from the pinned image; in protected mode
+  // (host-applied proposals) not even the scope: a partial write is restored
+  // first, never sent to review as a new delivery (V6).
+  const residue=now=>pinnedResidue(baseline,now,config.testFiles,protectedMode);
   return Object.freeze({baseline,async execute({authorized,signal,register}){
     need(authorized===true,'test_author_authorization_required');need(!used,'test_author_already_attempted');
     need(typeof register==='function','test_author_registration_required');need(!signal.aborted,'cancelled');
@@ -42,7 +49,7 @@ export function prepareFixTestAuthor(options,{bridge,assertReviewReady}){
       need(result===undefined,'test_author_sync_boundary_required');
     };
     synchronous(assertReviewReady);
-    need(digest(capture())===digest(baseline),'test_author_baseline_changed');
+    if(pinnedBaseline===null)need(digest(capture())===digest(baseline),'test_author_baseline_changed');else residue(capture());
     used=true;synchronous(()=>register(baseline));need(!signal.aborted,'cancelled');
     const response=json(await bridge.call('fix_test_author',{
       identity:config.identity,codeProject:config.codeProject,scope:config.testFiles,

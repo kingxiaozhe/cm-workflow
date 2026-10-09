@@ -3,6 +3,7 @@
 import {currentTestFiles,verifyExtensionFiles} from './test-extension.mjs';
 import {types} from 'node:util';
 import {captureReviewBaseline,readReviewBaseline} from '../cm-ai/review-package.mjs';
+import {readPinned,pinnedResidue} from './pinned-baseline.mjs';
 import {validateDeveloperScope} from '../cm-ai/developer-adapter.mjs';
 import {inspectFixRedTest,verifyFixRedEvidence,redEvidenceRetry} from './red-test.mjs';
 import {inspectFixBaseline,fixBaselineFiles} from './baseline.mjs';
@@ -45,7 +46,7 @@ export function verifyFixRepair({codeProject,specsRoot,baseline,result,allowUnch
   need(digest(files)===digest(checked.files),'repair_evidence_changed');
 }
 
-export function prepareFixRepair(options,{bridge,assertReviewReady}){
+export function prepareFixRepair(options,{bridge,assertReviewReady,pinnedBaseline=null,protectedMode=false}){
   const config=json(options);shape(config,['codeProject','specsRoot','identity','scope','requirements','defect','diagnosis',
     'redTest','baseline','redEvidence','beforeBaseline',...(Object.hasOwn(config,'reviewFeedback')?['reviewFeedback']:[]),...(Object.hasOwn(config,'testExtension')?['testExtension']:[])]);
   const priorReview=Object.hasOwn(config,'reviewFeedback')?inspectFixRepairReview(config.reviewFeedback,config.identity):null;
@@ -71,7 +72,13 @@ export function prepareFixRepair(options,{bridge,assertReviewReady}){
   verifyTests();
   const capture=()=>captureReviewBaseline({root:config.codeProject,specsRoot:config.specsRoot,identity:config.identity,
     scope:config.scope,requirements:config.requirements});
-  const baseline=capture();let used=false;
+  // A redo after abandonment keeps the first intent's baseline (pinnedBaseline):
+  // the abandoned attempt's residue in scope is reviewed as part of this step.
+  const fresh=capture(),baseline=pinnedBaseline===null?fresh:readPinned(pinnedBaseline,fresh);let used=false;
+  // Out of scope nothing may differ from the pinned image; in protected mode
+  // (host-applied proposals) not even the scope: a partial write is restored
+  // first, never sent to review as a new delivery (V6).
+  const residue=now=>pinnedResidue(baseline,now,config.scope,protectedMode);
   return Object.freeze({baseline,async execute({authorized,signal,register}){
     need(authorized===true,'repair_authorization_required');need(!used,'repair_already_attempted');
     need(typeof register==='function','repair_registration_required');need(!signal.aborted,'cancelled');
@@ -79,7 +86,8 @@ export function prepareFixRepair(options,{bridge,assertReviewReady}){
       const result=callback();if(types.isPromise(result))Promise.prototype.then.call(result,()=>{},()=>{});
       need(result===undefined,'repair_sync_boundary_required');
     };
-    synchronous(assertReviewReady);verifyTests();need(digest(capture())===digest(baseline),'repair_baseline_changed');
+    synchronous(assertReviewReady);verifyTests();
+    if(pinnedBaseline===null)need(digest(capture())===digest(baseline),'repair_baseline_changed');else residue(capture());
     used=true;synchronous(()=>register(baseline));need(!signal.aborted,'cancelled');
     const response=json(await bridge.call('fix_repair',{
       identity:config.identity,codeProject:config.codeProject,scope:config.scope,defect:config.defect,diagnosis:config.diagnosis,
