@@ -6,7 +6,6 @@
 ## 未发布
 
 - 卡住提醒不再把正常的长检查当成「等待会话应答」：`check`、`verification_precheck`、`init_verify` 请求改用 `checkWaitMinutes`（默认 45 分钟）。真实项目里检查通常要 16～33 分钟，原来按 10 分钟会误报。
-- `cm-ai` 新任务每次加载的宿主说明 `skills/cm-ai/references/js-host.md` 由 74,797 字节（501 行）瘦身到 24,957 字节（227 行），只留正常路径和一张「停机路由」表；异常恢复挪到 `js-host-recovery.md`（29,044 字节）、`js-host-qa-recovery.md`（13,844 字节），bootstrap 规范任务、多代码目录与受保护执行挪到 `js-host-modes.md`（13,783 字节），停机时按表只读对应一节；规则原文逐句搬移，一条未删。
 - `cm-ai` 新任务每次加载的宿主说明 `skills/cm-ai/references/js-host.md` 由 74,797 字节（501 行）瘦身到 24,990 字节（226 行），只留正常路径和一张「停机路由」表；异常恢复挪到 `js-host-recovery.md`（29,044 字节）、`js-host-qa-recovery.md`（13,844 字节），外部模型配置、bootstrap 规范任务、多代码目录与受保护执行挪到 `js-host-modes.md`（14,316 字节），启动条件命中时先读；停机时按表只读对应恢复一节；规则原文逐句搬移，一条未删。
 - 新增只读脚本 `scripts/cm-token-report.mjs`：按 `运行日志.jsonl` 的运行与步骤时间窗口，汇总本机 Claude Code 与 Codex 会话的 token 用量（未缓存输入、缓存写入、缓存读取、输出和假定权重的加权合计，含最重 10 次调用），只读元数据、不读消息正文，按 message.id 去重，窗口外记为未归属，缺失数字不估算。
 - cm-ai 单任务、cm-prd、cm-fix 收尾时建议在新会话里开始下一项（批次内部照常继续，批次结束后才提示）；卡住提醒的「流程已结束」消息也带上这句。依据是一个真实项目样本：一个长会话占加权用量 89%，每次调用重读约 48 万 token 历史。
