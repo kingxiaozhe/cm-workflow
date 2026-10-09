@@ -358,7 +358,10 @@ await serveCmAiHost({host,input:process.stdin,output:process.stdout});`);
     const exited=new Promise(resolve=>child.on('close',code=>resolve(code)));
     const replied=id=>stdout.includes(`"requestId":"${id}"`);
     for(const [delay,request] of steps){
-      if(typeof delay==='string'){const id=delay.slice(6);while(!replied(id))await new Promise(resolve=>setTimeout(resolve,10));}
+      if(typeof delay==='string'){
+        const id=delay.slice(6),deadline=Date.now()+15000;
+        while(!replied(id)){if(Date.now()>deadline){child.kill();throw new Error(`no reply for ${id}`);}await new Promise(resolve=>setTimeout(resolve,10));}
+      }
       else await new Promise(resolve=>setTimeout(resolve,delay));
       if(request===null){child.stdin.end();break;}
       if(request!==undefined)child.stdin.write((typeof request==='string'?request:JSON.stringify(request))+'\n');
