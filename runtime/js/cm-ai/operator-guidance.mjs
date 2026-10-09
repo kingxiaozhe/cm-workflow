@@ -10,6 +10,7 @@ const deliveryMessages={
   develop_unchanged_after_review:['交付没有处理上一轮审查要求。','处理原审查 findings 后提供本轮修改'],
   develop_requirement_missing:['交付后缺少要求保留的文件。','恢复 reason 指出的必要文件'],
   bootstrap_verification_failed:['项目规则验证未通过。','根据规则验证证据修正草稿或检查环境'],
+  develop_answer_invalid:['开发应答未通过交付合同校验（如 application.note 过长），代码已保留、尚未进入审查。','按 reason 中的字段上限重新应答'],
   develop_call_timeout:['开发应答超时、代码未改动。','先确认会话已不再修改代码；重发的请求须在宿主请求上限（默认 30 分钟）内应答，迟到应答仍被拒绝'],
 };
 const explain=(summary,nextStep,operation=null,prerequisites=[])=>Object.freeze({
