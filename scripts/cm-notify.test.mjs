@@ -9,6 +9,7 @@ import {notify,readNotifyConfig,buildNotifyMessage,driveNotice,NOTIFY_LIMITS,NOT
 const NOW=Date.parse('2026-10-08T08:00:00.000Z');
 const DRIVE_CORE=new URL('../runtime/js/cm-ai/drive-core.mjs',import.meta.url).href;
 const BRIDGE=new URL('../runtime/js/cm-ai/host-tool-bridge.mjs',import.meta.url).href;
+const HOST_SESSION=new URL('../runtime/js/cm-ai/host-session.mjs',import.meta.url).href;
 
 // A temp CM_WORKFLOW_HOME with notify.json pointing at a fake command that
 // appends its environment message and stdin payload to sent.jsonl.
@@ -18,7 +19,7 @@ function home(t,{exit=0,sleepMs=0,config={}}={}){
   const sent=path.join(dir,'sent.jsonl'),script=path.join(dir,'fake-notify.mjs');
   fs.writeFileSync(script,`import fs from 'node:fs';let input='';process.stdin.on('data',c=>input+=c);
 process.stdin.on('end',()=>{setTimeout(()=>{fs.appendFileSync(${JSON.stringify(sent)},JSON.stringify({title:process.env.CM_NOTIFY_TITLE,
-body:process.env.CM_NOTIFY_BODY,stdin:JSON.parse(input)})+'\\n');process.exit(${exit});},${sleepMs});});`);
+body:process.env.CM_NOTIFY_BODY,stdin:JSON.parse(input),at:Date.now()})+'\\n');process.exit(${exit});},${sleepMs});});`);
   fs.writeFileSync(path.join(dir,'notify.json'),JSON.stringify({version:1,command:[process.execPath,script],...config}));
   const env={...process.env,CM_WORKFLOW_HOME:dir};
   const rows=()=>fs.existsSync(sent)?fs.readFileSync(sent,'utf8').trim().split('\n').map(line=>JSON.parse(line)):[];
@@ -340,25 +341,27 @@ test('checkWaitMinutes is validated like waitMinutes',t=>{
 // session sends no next operation for idleMinutes, one notice says so. A last
 // result that waits on a person says "在等你" instead. Any next operation or
 // session end clears it; status polls are not progress.
-const HOST_SESSION=new URL('../runtime/js/cm-ai/host-session.mjs',import.meta.url).href;
 function idleHost(h){
   const script=path.join(h.dir,'cm-prd-host.mjs');
   fs.writeFileSync(script,`import {serveCmAiHost} from ${JSON.stringify(HOST_SESSION)};
 const host={handle:async request=>{
-  if(request.operation==='status')return {stage:'status_only'};
   if(request.slowMs)await new Promise(resolve=>setTimeout(resolve,request.slowMs));
+  if(['status','fix_status'].includes(request.operation))return {stage:'status_only',doneAt:Date.now()};
   return request.answer;}};
 await serveCmAiHost({host,input:process.stdin,output:process.stdout});`);
   const env={...h.env};delete env.NODE_TEST_CONTEXT;
-  // steps: [delayMs, request object | null to end stdin]
+  // steps: [delayMs, request object | raw line string | null to end stdin];
+  // delay 'reply:<id>' waits until that requestId has been answered instead.
   return async steps=>{
     const child=spawn(process.execPath,[script],{env,stdio:['pipe','pipe','pipe']});
     let stdout='';child.stdout.on('data',chunk=>{stdout+=chunk;});
     const exited=new Promise(resolve=>child.on('close',code=>resolve(code)));
+    const replied=id=>stdout.includes(`"requestId":"${id}"`);
     for(const [delay,request] of steps){
-      await new Promise(resolve=>setTimeout(resolve,delay));
+      if(typeof delay==='string'){const id=delay.slice(6);while(!replied(id))await new Promise(resolve=>setTimeout(resolve,10));}
+      else await new Promise(resolve=>setTimeout(resolve,delay));
       if(request===null){child.stdin.end();break;}
-      child.stdin.write(JSON.stringify(request)+'\n');
+      if(request!==undefined)child.stdin.write((typeof request==='string'?request:JSON.stringify(request))+'\n');
     }
     const started=Date.now(),code=await exited;
     return {code,stdout,exitMs:Date.now()-started};
@@ -396,16 +399,61 @@ test('host session idle: next step, in-flight step and session end clear it; sta
   assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],[60,op(2,{stage:'requirements_analysis'},{slowMs:900})],[950,null]])).code,0);
   // A cancel reply while another operation is still in flight does not arm it.
   assert.equal((await run([[0,op(1,{stage:'requirements_analysis'},{slowMs:900})],[60,{requestId:'c1',operation:'cancel'}],[900,null]])).code,0);
-  // Driver shape: reply, then immediate EOF.
-  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],[30,null]])).code,0);
+  // Driver shape: EOF right after the reply arrived.
+  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],['reply:r1',null]])).code,0);
+  // A line the host rejects (not JSON, unknown operation) is still the session's next step.
+  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],[60,'not json'],[900,null]])).code,0);
+  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],[60,{requestId:'x',operation:'no_such_op'}],[900,null]])).code,0);
   await new Promise(resolve=>setTimeout(resolve,500));
   assert.equal(h.rows().length,0,h.log());
-  // Status polls alone do not hold the timer off.
-  const polls=[[0,op(1,{stage:'requirements_analysis'})]];
-  for(let n=0;n<12;n++)polls.push([60,{requestId:`s${n}`,operation:'status'}]);
-  assert.equal((await run([...polls,[60,null]])).code,0);
+  // Polls (status via the control path, fix_status via the normal path) neither
+  // hold the timer off nor replace the last real step's result.
+  for(const poll of ['status','fix_status']){
+    const polls=[[0,op(1,{stage:'requirements_analysis',runId:`run-${poll}`})]];
+    for(let n=0;n<12;n++)polls.push([60,{requestId:`s${n}`,operation:poll}]);
+    assert.equal((await run([...polls,[60,null]])).code,0);
+    assert(await h.until(()=>h.rows().some(row=>row.stdin.runId===`run-${poll}`)));
+    const row=h.rows().find(row=>row.stdin.runId===`run-${poll}`);
+    assert.equal(row.stdin.event,'idle');assert.equal(row.stdin.stage,'requirements_analysis');
+  }
+  assert.equal(h.rows().length,2);
+});
+
+// A poll that is still running when the deadline passes holds the notice; it
+// goes out right after the poll replies, not during it.
+test('host session idle: a slow status in flight holds the notice until it replies',async t=>{
+  const h=home(t,{config:{idleMinutes:0.003}}),run=idleHost(h);
+  const result=await run([[0,op(1,{stage:'requirements_analysis'})],[60,{requestId:'s1',operation:'status',slowMs:700}],['reply:s1',undefined],[400,null]]);
+  assert.equal(result.code,0);
+  const doneAt=JSON.parse(result.stdout.split('\n').find(line=>line.includes('"requestId":"s1"'))).result.doneAt;
   assert(await h.until(()=>h.rows().length===1));
-  assert.equal(h.rows()[0].stdin.event,'idle');
+  assert(h.rows()[0].at>=doneAt,`notice at ${h.rows()[0].at} before status finished at ${doneAt}`);
+  assert.equal(h.rows()[0].stdin.stage,'requirements_analysis');
+});
+
+// Tool-bridge sessions end with host_close from the driver: exit 0, no notice.
+test('host session idle: host_close ends the session cleanly without a notice',async t=>{
+  const h=home(t,{config:{idleMinutes:0.003}});
+  const script=path.join(h.dir,'cm-demo-host.mjs');
+  fs.writeFileSync(script,`import {serveCmAiHost} from ${JSON.stringify(HOST_SESSION)};
+import {createHostToolBridge} from ${JSON.stringify(BRIDGE)};
+const bridge=createHostToolBridge();
+const host={handle:async()=>({stage:'awaiting_review',asked:await bridge.call('develop',{},new AbortController().signal)})};
+await serveCmAiHost({host,input:process.stdin,output:process.stdout,toolBridge:bridge});`);
+  const env={...h.env};delete env.NODE_TEST_CONTEXT;
+  const child=spawn(process.execPath,[script],{env,stdio:['pipe','pipe','pipe']});
+  let stdout='';child.stdout.on('data',chunk=>{stdout+=chunk;});
+  const exited=new Promise(resolve=>child.on('close',resolve));
+  const lines=()=>stdout.split('\n').filter(Boolean).map(line=>JSON.parse(line));
+  child.stdin.write(JSON.stringify({requestId:'r1',operation:'advance'})+'\n');
+  await h.until(()=>lines().some(row=>row.type==='host_request'));
+  const ask=lines().find(row=>row.type==='host_request');
+  child.stdin.write(JSON.stringify({type:'host_result',sessionId:ask.sessionId,callId:ask.callId,requestDigest:ask.requestDigest,result:{ok:true}})+'\n');
+  await h.until(()=>lines().some(row=>row.requestId==='r1'));
+  child.stdin.write(JSON.stringify({type:'host_close',sessionId:ask.sessionId})+'\n');
+  assert.equal(await exited,0);
+  assert.deepEqual(lines().map(row=>row.type??row.requestId),['host_ready','host_request','host_response','r1','host_response']);
+  await new Promise(resolve=>setTimeout(resolve,500));assert.equal(h.rows().length,0);
 });
 
 test('host session idle timer never delays exit and idleMinutes is validated',async t=>{

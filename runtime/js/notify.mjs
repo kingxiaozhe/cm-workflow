@@ -195,13 +195,15 @@ export function scheduleWaitNotice({kind,callId,workflow,project,env=process.env
 }
 
 // Host side: one notice when an operation has replied, nothing is in flight
-// and the session has not sent the next operation for idleMinutes. A last
+// and the session has not sent the next operation for idleMinutes (polls excluded). A last
 // result that already waits on a person (or ended the run) says so instead of
 // "idle". Built only from that result's structured fields; the timer never
 // keeps the process alive.
-export function scheduleIdleNotice({workflow,project,sessionKey,seq,row,env=process.env}){
+export function scheduleIdleNotice({workflow,project,sessionKey,seq,row,since=Date.now(),env=process.env}){
   try{
     const config=readNotifyConfig(env);if(!config)return null;
+    // `since` is the last real reply: re-arming after a poll keeps that deadline.
+    const delay=Math.max(1,Math.min(config.idleMs,config.idleMs-(Date.now()-since)));
     const minutes=Math.max(1,Math.round(config.idleMs/60000));
     const kind=classifyDriveResult(workflow,row),result=obj(row?.result);
     const runId=text(result.identity?.runId)??text(result.runId)??text(result.batchId);
@@ -211,7 +213,7 @@ export function scheduleIdleNotice({workflow,project,sessionKey,seq,row,env=proc
       :kind==='stuck'?`上一步停在需要你处理的状态，约 ${minutes} 分钟没有下一步，请回到会话处理`
       :`上一步已结束约 ${minutes} 分钟，会话没有发下一步，请回到会话查看`;
     const timer=setTimeout(()=>{notify({key:`idle|${workflow}|${sessionKey}|${seq}`,event:kind?'idle_waiting':'idle',
-      workflow,project,runId,task,stage,code:kind?'waiting_for_you':'no_next_step',nextAction},{env});},config.idleMs);
+      workflow,project,runId,task,stage,code:kind?'waiting_for_you':'no_next_step',nextAction},{env});},delay);
     timer.unref?.();
     return ()=>clearTimeout(timer);
   }catch{return null;}
