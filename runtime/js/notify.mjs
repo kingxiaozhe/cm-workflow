@@ -13,7 +13,8 @@ import {fileURLToPath} from 'node:url';
 import {createHash,randomUUID} from 'node:crypto';
 
 export const NOTIFY_LIMITS=Object.freeze({sameKeyMs:6*3600*1000,perMinute:4,perDay:150,
-  commandTimeoutMs:15000,titleChars:60,bodyChars:500,defaultWaitMinutes:10,defaultCheckWaitMinutes:45});
+  commandTimeoutMs:15000,titleChars:60,bodyChars:500,defaultWaitMinutes:10,defaultCheckWaitMinutes:45,
+  defaultIdleMinutes:45});
 const LOCK_STALE_MS=30000,LOG_LIMIT=256*1024;
 const RUNNER=fileURLToPath(new URL('./notify-run.mjs',import.meta.url));
 
@@ -58,7 +59,10 @@ export function readNotifyConfig(env=process.env){
   if(typeof minutes!=='number'||!Number.isFinite(minutes)||minutes<=0||minutes>1440){warn(env,'wait_minutes');return null;}
   const checkMinutes=value.checkWaitMinutes??NOTIFY_LIMITS.defaultCheckWaitMinutes;
   if(typeof checkMinutes!=='number'||!Number.isFinite(checkMinutes)||checkMinutes<=0||checkMinutes>1440){warn(env,'check_wait_minutes');return null;}
-  return {command:[...command],waitMs:Math.max(1,Math.round(minutes*60000)),checkWaitMs:Math.max(1,Math.round(checkMinutes*60000))};
+  const idleMinutes=value.idleMinutes??NOTIFY_LIMITS.defaultIdleMinutes;
+  if(typeof idleMinutes!=='number'||!Number.isFinite(idleMinutes)||idleMinutes<=0||idleMinutes>1440){warn(env,'idle_minutes');return null;}
+  const ms=value=>Math.max(1,Math.round(value*60000));
+  return {command:[...command],waitMs:ms(minutes),checkWaitMs:ms(checkMinutes),idleMs:ms(idleMinutes)};
 }
 
 // Messages carry only these structured fields. Absolute paths are redacted and
@@ -75,7 +79,7 @@ const projectName=value=>typeof value==='string'&&value?clean(path.basename(valu
 
 export function buildNotifyMessage(fields,{now=Date.now()}={}){
   const workflow=clean(fields.workflow,24)||'cm',project=projectName(fields.project);
-  const headline={done:'流程已结束',waiting:'等待会话应答'}[fields.event]??'需要人处理';
+  const headline={done:'流程已结束',waiting:'等待会话应答',idle:'疑似空转',idle_waiting:'在等你'}[fields.event]??'需要人处理';
   const title=cut(`CM ${workflow} ${headline}${project?` · ${project}`:''}`,NOTIFY_LIMITS.titleChars);
   const lines=[['项目',project],['流程',workflow],['运行',clean(fields.runId,64)],['任务',clean(fields.task,40)],
     ['阶段',clean(fields.stage,48)],['原因',clean(fields.code,64)],['下一步',clean(fields.nextAction,200)]]
@@ -185,6 +189,29 @@ export function scheduleWaitNotice({kind,callId,workflow,project,env=process.env
     const minutes=Math.max(1,Math.round(waitMs/60000));
     const timer=setTimeout(()=>{notify({key:`wait|${workflow}|${callId}`,event:'waiting',workflow,project,stage:kind,
       code:'waiting_session_answer',nextAction:`宿主已等待会话应答约 ${minutes} 分钟，请回到会话处理`},{env});},waitMs);
+    timer.unref?.();
+    return ()=>clearTimeout(timer);
+  }catch{return null;}
+}
+
+// Host side: one notice when an operation has replied, nothing is in flight
+// and the session has not sent the next operation for idleMinutes. A last
+// result that already waits on a person (or ended the run) says so instead of
+// "idle". Built only from that result's structured fields; the timer never
+// keeps the process alive.
+export function scheduleIdleNotice({workflow,project,sessionKey,seq,row,env=process.env}){
+  try{
+    const config=readNotifyConfig(env);if(!config)return null;
+    const minutes=Math.max(1,Math.round(config.idleMs/60000));
+    const kind=classifyDriveResult(workflow,row),result=obj(row?.result);
+    const runId=text(result.identity?.runId)??text(result.runId)??text(result.batchId);
+    const task=text(result.identity?.taskId)??text(result.taskId);
+    const stage=text(result.stage)??text(result.state)??text(result.status);
+    const nextAction=kind==='done'?`流程已结束，宿主仍开着约 ${minutes} 分钟没有下一步，请回到会话收尾或开始下一项`
+      :kind==='stuck'?`上一步停在需要你处理的状态，约 ${minutes} 分钟没有下一步，请回到会话处理`
+      :`上一步已结束约 ${minutes} 分钟，会话没有发下一步，请回到会话查看`;
+    const timer=setTimeout(()=>{notify({key:`idle|${workflow}|${sessionKey}|${seq}`,event:kind?'idle_waiting':'idle',
+      workflow,project,runId,task,stage,code:kind?'waiting_for_you':'no_next_step',nextAction},{env});},config.idleMs);
     timer.unref?.();
     return ()=>clearTimeout(timer);
   }catch{return null;}

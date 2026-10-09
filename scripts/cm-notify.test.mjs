@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {spawnSync} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {notify,readNotifyConfig,buildNotifyMessage,driveNotice,NOTIFY_LIMITS,NOTIFY_WORKFLOWS} from '../runtime/js/notify.mjs';
 
 const NOW=Date.parse('2026-10-08T08:00:00.000Z');
@@ -46,7 +46,7 @@ test('invalid config turns the feature off: relative command, bad version, bad w
   }
   assert.match(h.log(),/config - key=- off invalid_config command_not_absolute/);
   fs.writeFileSync(file,JSON.stringify({version:1,command:['/bin/true'],waitMinutes:0.5}));
-  assert.deepEqual(readNotifyConfig(h.env),{command:['/bin/true'],waitMs:30000,checkWaitMs:2700000});
+  assert.deepEqual(readNotifyConfig(h.env),{command:['/bin/true'],waitMs:30000,checkWaitMs:2700000,idleMs:2700000});
 });
 
 test('message is bounded and built only from the structured fields',()=>{
@@ -334,4 +334,84 @@ const r=sent.find(row=>row.type==='host_request');bridge.accept({type:'host_resu
 test('checkWaitMinutes is validated like waitMinutes',t=>{
   const h=home(t,{config:{checkWaitMinutes:0}});
   assert.equal(readNotifyConfig(h.env),null);
+});
+
+// Host session: after an operation replies, nothing is in flight and the
+// session sends no next operation for idleMinutes, one notice says so. A last
+// result that waits on a person says "在等你" instead. Any next operation or
+// session end clears it; status polls are not progress.
+const HOST_SESSION=new URL('../runtime/js/cm-ai/host-session.mjs',import.meta.url).href;
+function idleHost(h){
+  const script=path.join(h.dir,'cm-prd-host.mjs');
+  fs.writeFileSync(script,`import {serveCmAiHost} from ${JSON.stringify(HOST_SESSION)};
+const host={handle:async request=>{
+  if(request.operation==='status')return {stage:'status_only'};
+  if(request.slowMs)await new Promise(resolve=>setTimeout(resolve,request.slowMs));
+  return request.answer;}};
+await serveCmAiHost({host,input:process.stdin,output:process.stdout});`);
+  const env={...h.env};delete env.NODE_TEST_CONTEXT;
+  // steps: [delayMs, request object | null to end stdin]
+  return async steps=>{
+    const child=spawn(process.execPath,[script],{env,stdio:['pipe','pipe','pipe']});
+    let stdout='';child.stdout.on('data',chunk=>{stdout+=chunk;});
+    const exited=new Promise(resolve=>child.on('close',code=>resolve(code)));
+    for(const [delay,request] of steps){
+      await new Promise(resolve=>setTimeout(resolve,delay));
+      if(request===null){child.stdin.end();break;}
+      child.stdin.write(JSON.stringify(request)+'\n');
+    }
+    const started=Date.now(),code=await exited;
+    return {code,stdout,exitMs:Date.now()-started};
+  };
+}
+const op=(n,answer,extra={})=>({requestId:`r${n}`,operation:'advance',answer,...extra});
+
+test('host session idle after a finished step notifies once: 疑似空转 for progress, 在等你 for a person',async t=>{
+  const h=home(t,{config:{idleMinutes:0.003}}),run=idleHost(h);
+  const progress=await run([[0,op(1,{stage:'requirements_analysis',runId:'prd-1'})],[900,null]]);
+  assert.equal(progress.code,0);
+  assert(await h.until(()=>h.rows().length===1));
+  const [idle]=h.rows();
+  assert.equal(idle.title,'CM cm-prd 疑似空转 · '+path.basename(process.cwd()));
+  assert.equal(idle.stdin.event,'idle');assert.equal(idle.stdin.code,'no_next_step');
+  assert.equal(idle.stdin.runId,'prd-1');assert.equal(idle.stdin.stage,'requirements_analysis');
+  const waiting=home(t,{config:{idleMinutes:0.003}});
+  const review=await idleHost(waiting)([[0,op(1,{stage:'awaiting_user',runId:'prd-2'})],[900,null]]);
+  assert.equal(review.code,0);
+  assert(await waiting.until(()=>waiting.rows().length===1));
+  assert.equal(waiting.rows()[0].title,'CM cm-prd 在等你 · '+path.basename(process.cwd()));
+  assert.equal(waiting.rows()[0].stdin.event,'idle_waiting');assert.equal(waiting.rows()[0].stdin.code,'waiting_for_you');
+  await new Promise(resolve=>setTimeout(resolve,300));
+  assert.equal(h.rows().length,1);assert.equal(waiting.rows().length,1);
+});
+
+test('host session idle: next step, in-flight step and session end clear it; status polls do not',async t=>{
+  const h=home(t,{config:{idleMinutes:0.003}}),run=idleHost(h);
+  // Steady progress: each next operation arrives before the threshold.
+  const steady=[];for(let n=1;n<=6;n++)steady.push([n===1?0:60,op(n,{stage:'requirements_analysis'})]);
+  assert.equal((await run([...steady,[60,null]])).code,0);
+  // A long in-flight operation is not idleness; ending right after its reply clears the timer.
+  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'},{slowMs:900})],[950,null]])).code,0);
+  // A slow next operation: its arrival clears the timer armed by the previous reply.
+  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],[60,op(2,{stage:'requirements_analysis'},{slowMs:900})],[950,null]])).code,0);
+  // A cancel reply while another operation is still in flight does not arm it.
+  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'},{slowMs:900})],[60,{requestId:'c1',operation:'cancel'}],[900,null]])).code,0);
+  // Driver shape: reply, then immediate EOF.
+  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],[30,null]])).code,0);
+  await new Promise(resolve=>setTimeout(resolve,500));
+  assert.equal(h.rows().length,0,h.log());
+  // Status polls alone do not hold the timer off.
+  const polls=[[0,op(1,{stage:'requirements_analysis'})]];
+  for(let n=0;n<12;n++)polls.push([60,{requestId:`s${n}`,operation:'status'}]);
+  assert.equal((await run([...polls,[60,null]])).code,0);
+  assert(await h.until(()=>h.rows().length===1));
+  assert.equal(h.rows()[0].stdin.event,'idle');
+});
+
+test('host session idle timer never delays exit and idleMinutes is validated',async t=>{
+  const h=home(t,{config:{idleMinutes:600}}),run=idleHost(h);
+  const result=await run([[0,op(1,{stage:'requirements_analysis'})],[100,null]]);
+  assert.equal(result.code,0);assert(result.exitMs<3000);assert.match(result.stdout,/"requestId":"r1"/);
+  assert.equal(h.rows().length,0);
+  for(const idleMinutes of [0,-1,1441,'45'])assert.equal(readNotifyConfig(home(t,{config:{idleMinutes}}).env),null);
 });

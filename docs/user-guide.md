@@ -530,6 +530,7 @@ CM 不认识任何推送服务，也不保存任何 token；推到哪里、怎�
 - 驾驶员（`scripts/*-drive.mjs`）一步结束后停在需要人的状态：blocked、unknown、次数用完、`requiresUser`，或驾驶员自己拒绝继续。
 - 整个流程结束（如 `run_done`）时提醒一次，告诉你跑完了。
 - 宿主向会话提问（`host_request`，如 qa_browser、develop、fix_diagnose）后，超过 `waitMinutes` 分钟没有应答，每个提问只提醒一次。
+- 宿主一步做完后一直开着，手上没有进行中的操作，会话却超过 `idleMinutes` 分钟没发下一步，提醒一次：上一步停在要人处理的状态时标题是「在等你」，否则是「疑似空转」。只读的 `status` 查询不算下一步。驾驶员一步结束就关宿主，不会触发这一条。
 - 正常推进和只读的 `status` 查询不提醒。
 
 提醒只是通知。CM 不会因此自动继续、替你应答或授予任何权限。
@@ -545,6 +546,7 @@ CM 不认识任何推送服务，也不保存任何 token；推到哪里、怎�
 - `command`：要运行的程序和参数，第一项必须是绝对路径；不经过 shell。
 - `waitMinutes`：等待会话应答多久后提醒，默认 10。
 - `checkWaitMinutes`：宿主请求「跑检查」（`check`、`verification_precheck`、`init_verify`）时，会话要先跑完项目的检查命令（如 xcodebuild、测试套件），正常就要几十分钟，所以这三类提问只看这个门槛，默认 45；其他提问仍看 `waitMinutes`。
+- `idleMinutes`：宿主一步做完后等下一步多久算空转，默认 45。真实项目里正常的开发加检查一段常见 45～60 分钟，但那时宿主手上有进行中的操作，不计入。
 - 文件格式不对时，功能关闭，只在 `notify.log` 记一行，不往流程输出里打印。
 
 命令通过环境变量 `CM_NOTIFY_TITLE`（不超过 60 字）、`CM_NOTIFY_BODY`（不超过 500 字）拿到内容。
