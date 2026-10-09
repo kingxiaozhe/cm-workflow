@@ -33,6 +33,23 @@ shared contract, or review finding shows that the packet is insufficient.
 Record the reason and newly added scope; do not reread or resend unchanged full
 context. `cm-prd` additionally follows its progressive context-scope contract.
 
+## Session boundary
+
+Conversation length can outweigh packet size. In one real project sample
+(2026-09-27 to 10-09, 8,417 calls, measured with a local token report), a single
+long session carried 89% of weighted usage: each call re-read about 480k tokens
+of prior history while producing a few hundred output tokens. This is one
+sample, not a general measurement; it motivates suggesting fresh sessions, not a
+claim about every project.
+
+Workflows therefore suggest, at the end of a unit of work (a single-task cm-ai
+run at `run_done`, a cm-prd human-review stop, a cm-fix run), starting the next
+unit in a fresh session, which becomes the next run's host context. Batches are
+excluded: a batch hands over to its next task inside the same `advance` and
+keeps its original host context; the suggestion comes only after the whole batch
+ends. Mid-run handover uses the workflow's documented cross-session resume. Changing sessions never rewrites records, skips review, or resets
+authorization.
+
 ## Stable prefix
 
 When an integration owns the prompt assembly, keep reusable instructions in

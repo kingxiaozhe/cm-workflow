@@ -316,5 +316,6 @@ export function driveNotice({host,cwd,args=[],operation,row=null,failure=null}){
   return {key:[workflow,run,task??'',attempt??'',stage??'',done?'done':code??''].join('|'),
     event:kind,workflow,project:cwd?path.basename(path.resolve(cwd)):null,runId,task,stage,
     code:done?(text(result.code)??text(result.overall)??text(nested.overall)??'done'):code,
-    nextAction:done?null:text(result.guidance?.nextStep)??text(progress.nextAction)??text(result.nextAction)};
+    // A finished unit is the natural point to start a fresh session (runtime/model-efficiency.md).
+    nextAction:done?'建议在新会话里开始下一个任务，减少重复读入的上下文':text(result.guidance?.nextStep)??text(progress.nextAction)??text(result.nextAction)};
 }
