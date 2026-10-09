@@ -352,7 +352,12 @@ test('#8 legacy unknown results replay unchanged and forged failed results are r
     checkpoint.cache.at(-1).result=runnerStatus(checkpoint,configuration);
     return rechain(records);
   };
-  for(const [code,abandonable] of [['missing_init',true],['unexpected_assistant',false]]){
+  // A Claude boundary exit is abandonable only when the summary (or its absence,
+  // for older records) cannot mean a tool ran; T-009 was recorded without one.
+  const exit=d=>`unexpected_tool_or_content:${JSON.stringify(d)}`;
+  for(const [code,abandonable] of [['missing_init',true],['unexpected_assistant',false],['unexpected_tool_or_content',true],
+    [exit({k:'user_content',m:'user',b:'text',t:null,e:null}),true],[exit({k:'empty_content',m:'assistant',b:null,t:null,e:null}),true],
+    [exit({k:'tool_result_not_error',m:'user',b:'tool_result',t:'Bash',e:false}),false],['unexpected_tool_or_content:{"k":"bogus"}',false]]){
     const history=readRunnerHistory(legacy(code),configuration,3);
     assert.equal(history.state.state,'unknown');assert.equal(history.state.code,'transport_incomplete');
     assert.equal(history.state.reviewInvocation.result.reconciliationRequired,true);

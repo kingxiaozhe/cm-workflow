@@ -9,7 +9,7 @@ import {reviewResult,reviewReceipt} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
 import path from 'node:path';
 import {readCommitIntent,readCommitResult} from './task-commit-codec.mjs';
-import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure,inspectProviderReviewReconciliation,REVIEWER_PROVIDER_FAILURES} from './provider-review-observation.mjs';
+import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure,inspectProviderReviewReconciliation,REVIEWER_PROVIDER_FAILURES,abandonableReviewerExit} from './provider-review-observation.mjs';
 import {readReconciliationReceipt} from './review-reconciliation.mjs';
 import {readCmAiProjectLearningWriteback} from './cm-ai-learning-writer.mjs';
 import {readCmAiTaskLearningApplication} from './cm-ai-context-refresh.mjs';
@@ -120,14 +120,18 @@ export const developRetryLimitReason=({countedCalls:calls,countedEffects:effects
 // failure of a class that is now retried automatically but was recorded as
 // unknown (older versions, or after a final message). Nothing ever accepted its
 // verdict, so, exactly like an interrupted registered review, the operator may
-// abandon it and spend the attempt's one redispatch. Tool, context and output
-// limit breaks, observation_invalid and legacy timed_out without inspection stay out.
+// abandon it and spend the attempt's one redispatch. A Claude reviewer stopped
+// at its boundary (unexpected_tool_or_content) qualifies only under
+// abandonableReviewerExit: process closed, nothing received, and a rejection
+// that cannot have run a tool. Other tool, context and output limit breaks,
+// observation_invalid and legacy timed_out without inspection stay out.
 export function abandonableReviewResult(s,contextId){
   const entry=s.cache.at(-1),result=s.reviewInvocation?.result;
   return s.state==='unknown'&&entry?.effect.kind==='review'&&entry.effect.identity.attempt===s.attempt
     &&entry.result.state==='unknown'&&result?.inspection!=null&&result.reconciliationRequired===true
     &&(result.outcome==='timed_out'||result.outcome==='unknown'
-      &&Object.hasOwn(REVIEWER_PROVIDER_FAILURES,result.observation?.result?.code))
+      &&(Object.hasOwn(REVIEWER_PROVIDER_FAILURES,result.observation?.result?.code)
+        ||result.inspection.provider==='claude'&&abandonableReviewerExit(result.observation)))
     &&entry.result.reviewInvocation?.registration?.grant?.invocationId===s.reviewInvocation.registration?.grant?.invocationId
     &&!reviewRetrySpent(s.cache,s.calls,s.attempt,contextId);
 }

@@ -106,6 +106,38 @@ export const REVIEWER_PROVIDER_FAILURES=Object.freeze({
   provider_failed:'reviewer_provider_failed',incomplete_result:'reviewer_exited',
   missing_init:'reviewer_stream_unrecognized',unexpected_event:'reviewer_stream_unrecognized',
   invalid_event:'reviewer_stream_unrecognized'});
+// Reviewer boundary exits (unexpected_tool_or_content). The Claude worker appends
+// a fixed, body-free summary of the rejected message to the base code; readers
+// that predate it see one opaque failed code and keep the result unknown.
+export const REVIEWER_REJECTION_CHECKS=Object.freeze(['empty_content','block_type','tool_attempt_limit',
+  'duplicate_tool_id','user_content','unknown_tool_result','tool_result_not_error']);
+export function reviewerBoundaryExit(code){
+  if(typeof code!=='string'||code.length>256)return null;
+  if(code==='unexpected_tool_or_content')return {check:null,message:null,block:null,tool:null,isError:null};
+  if(!code.startsWith('unexpected_tool_or_content:'))return null;
+  let d;try{d=JSON.parse(code.slice('unexpected_tool_or_content:'.length));}catch{return null;}
+  if(!d||typeof d!=='object'||Array.isArray(d)||Object.keys(d).sort().join(',')!=='b,e,k,m,t')return null;
+  if(!REVIEWER_REJECTION_CHECKS.includes(d.k)||!['assistant','user'].includes(d.m))return null;
+  if(d.b!==null&&!(typeof d.b==='string'&&/^[A-Za-z_]{1,32}$/.test(d.b)))return null;
+  if(d.t!==null&&!(typeof d.t==='string'&&/^[A-Za-z0-9_.:-]{1,64}$/.test(d.t)))return null;
+  if(d.e!==null&&typeof d.e!=='boolean')return null;
+  return {check:d.k,message:d.m,block:d.b,tool:d.t,isError:d.e};
+}
+// Such an exit may be abandoned by the operator (never retried automatically)
+// only when nothing was ever received from it: the process was observed closed,
+// not by timeout, with no final message and no terminal, and the rejection is
+// one that cannot have run a tool successfully (a user-role message that was
+// not a tool result, empty content, or the attempt limit). A legacy code with
+// no summary qualifies too: nothing was ever accepted from it either. A
+// successful or unmatched tool result stays unknown, as before.
+const ABANDONABLE_CHECKS=new Set(['user_content','empty_content','tool_attempt_limit']);
+export function abandonableReviewerExit(observation){
+  const exit=reviewerBoundaryExit(observation?.result?.code);
+  if(exit===null||observation.result.status!=='failed')return false;
+  if(exit.check!==null&&!ABANDONABLE_CHECKS.has(exit.check))return false;
+  let stream;try{stream=eventStream(observation.events,new Set());}catch{return false;}
+  return stream.close!==null&&stream.close.timed_out===false&&!stream.hasResult&&stream.terminal===null;
+}
 // A complete answer that breaks the written verdict contract can never become a
 // receipt. It is retried under the same budget and its exact code is kept.
 export const REVIEWER_VERDICT_FAILURES=Object.freeze(['contradictory_verdict','invalid_finding_path',

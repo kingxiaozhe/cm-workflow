@@ -946,7 +946,7 @@ let prompt='';process.stdin.on('data',s=>prompt+=s);process.stdin.on('end',()=>{
   if(mode==='result'){
    send({type:'assistant',session_id:thread,parent_tool_use_id:null,
     message:{role:'assistant',content:[{type:'text',text:'{"verdict":"approved"}'}]}});
-   send({type:'result',subtype:'success',session_id:thread,is_error:false,num_turns:1,result:'{"verdict":"approved"}'});
+   send({type:'result',subtype:'success',session_id:thread,is_error:false,num_turns:1,structured_output:{verdict:'approved'},result:'{"verdict":"approved"}'});
   }
  }
  // A hung reviewer announces its pid so the watchdog regression can find it.

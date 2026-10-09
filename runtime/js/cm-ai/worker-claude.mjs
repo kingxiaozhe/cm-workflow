@@ -59,7 +59,11 @@ export function claudeWorker({cwd,model,preflight,cli='claude',timeoutMs=60000,s
       try { child=spawnProcess(cli,args,{cwd,env:claudeEnvironment(),stdio:['pipe','pipe','pipe'],detached:true}); }
       catch { usage.complete();resolve({status:'failed',code:'spawn_failed'});return; }
       let buffer='', bytes=0, failure=null, settled=false, timedOut=false, killTimer, pendingClose;
-      let providerThread=null,providerTerminal=false,failedTerminal=false,receiptInvalid=false;
+      let providerThread=null,providerTerminal=false,failedTerminal=false,receiptInvalid=false,failureDetail=null;
+      // The boundary code carries the stream's body-free summary so the record
+      // shows what was rejected; stop() and callers keep matching the base code.
+      const withDetail=code=>code==='unexpected_tool_or_content'&&failureDetail!==null
+        ?`${code}:${JSON.stringify(failureDetail)}`:code;
       const cleanupGroup=ownedProcessCleanup(child,{killProcess});
       const providerFailure=()=>['provider_failed','reviewer_auth_failed','reviewer_billing_error',
         'reviewer_rate_limited','reviewer_server_error','reviewer_model_not_found','reviewer_api_error'].includes(failure);
@@ -110,7 +114,10 @@ export function claudeWorker({cwd,model,preflight,cli='claude',timeoutMs=60000,s
             &&Number.isInteger(message.num_turns)&&message.num_turns>=1&&message.num_turns<=20)usage.terminal(message.usage);
           stream.accept(message);
         }
-        catch (error) {stop(error instanceof SyntaxError?'invalid_event':error.code??'invalid_event');}
+        catch (error) {
+          if(failure===null&&error?.code==='unexpected_tool_or_content'&&error.detail)failureDetail=error.detail;
+          stop(error instanceof SyntaxError?'invalid_event':error.code??'invalid_event');
+        }
       };
       signal.addEventListener('abort',abort,{once:true});
       if (signal.aborted) abort();
@@ -142,7 +149,7 @@ export function claudeWorker({cwd,model,preflight,cli='claude',timeoutMs=60000,s
         else if(!receiptInvalid&&typeof onTerminal==='function'&&failedTerminal&&providerFailure())onTerminal({status:'failed',code:'provider_failed'});
         if (signal.aborted) {resolve({status:'cancelled',code:'cancelled'});return;}
         if (failure || code!==0 || exitSignal!==null) {
-          resolve({status:'failed',code:failure??'incomplete_result'});return;
+          resolve({status:'failed',code:withDetail(failure??'incomplete_result')});return;
         }
         try {resolve(stream.finish());}
         catch(error){resolve({status:'failed',code:error.code??'incomplete_result'});}

@@ -39,5 +39,5 @@ for(const event of [
   {type:'system',subtype:'init',session_id},
   {type:'assistant',session_id,parent_tool_use_id:null,
     message:{role:'assistant',content:[{type:'text',text:JSON.stringify(value)}]}},
-  {type:'result',subtype:'success',session_id,is_error:false,num_turns:1,result:JSON.stringify(value)},
+  {type:'result',subtype:'success',session_id,is_error:false,num_turns:1,structured_output:value,result:JSON.stringify(value)},
 ]) process.stdout.write(JSON.stringify(event)+'\n');
