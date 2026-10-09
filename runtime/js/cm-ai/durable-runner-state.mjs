@@ -1242,6 +1242,26 @@ export function readRunnerHistory(raw,config,version=1) {
           started:invocation.started,result:invocation.result}:null}:{}),
     ...(version>=2?{transaction}:{})};
 }
+// Q28: the status a host would show for a replayed journal, as far as the
+// journal alone decides it. Drivers prepare answers from this (never from the
+// raw replay state, which still reads unknown/call_timeout or blocked/failed
+// for the retryable answer-gap blocks). Exits that also need a live disk check
+// (#198 develop_call_timeout, a legacy pinned dispatch failure) are projected
+// as available: preparing an answer that ends up unused is harmless, while a
+// missing one ends a real redo in host_close. Exits that need an operator
+// confirmation first (develop_redo) are not projected as retryable.
+export function projectedRunnerStatus(history,config){
+  const s=history.state,gaps=history.answerGaps??{};
+  const project=code=>({...s,state:'blocked',code});
+  if(s.state==='blocked'&&s.code==='failed'&&developAnswerRetryable(s,config.bootstrap))return project('develop_answer_invalid');
+  if(s.state!=='unknown')return s;
+  const recheck=developRecheckCode(s,config,gaps.developRecheck??0);
+  if(recheck!==null)return project(recheck);
+  if(completeRecheckable(s,gaps.completeRecheck??0))return project(COMPLETE_RECHECK_CODE);
+  if(s.code==='call_timeout'&&developTimeoutBasis(s,config.bootstrap)!==null)return project('develop_call_timeout');
+  if(developDispatchBasis(s,config,gaps.developDispatch??0)!==null)return project(DISPATCH_RETRY_CODE);
+  return s;
+}
 // Baseline rootDigest uses bytes of the canonical root, not JSON string encoding.
 import {createHash} from 'node:crypto';
 import {readQaAttachment} from './qa-attachment.mjs';

@@ -56,7 +56,7 @@ import {codeProjectPaths,resolveCodeProjects} from '../runtime/js/cm-ai/code-pro
 import {parseHostInputLimit} from '../runtime/js/cm-ai/host-session.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readCloseoutReport} from '../runtime/js/cm-ai/knowledge-closeout.mjs';
-import {readRunnerHistory,attemptBaseline} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {readRunnerHistory,attemptBaseline,projectedRunnerStatus,RECHECK_CODES} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 import {attemptAnswerName,inspectDriverBootstrap,readBootstrapRulesAnswers,createBootstrapRulesResponder} from '../runtime/js/cm-ai/drive-bootstrap.mjs';
@@ -419,7 +419,7 @@ export function readRunJournal(definition){
   const snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,identity:{
     repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
   const first=snapshot.records[0];
-  return {history:readRunnerHistory(snapshot.records,first.payload.config,3),baseline:first.payload.baseline,
+  return {history:readRunnerHistory(snapshot.records,first.payload.config,3),config:first.payload.config,baseline:first.payload.baseline,
     frame:journalRestBytes(snapshot.records)};
 }
 function reachableDevelopAttempts({plan,operation,journal,permissions}){
@@ -431,10 +431,14 @@ function reachableDevelopAttempts({plan,operation,journal,permissions}){
   if(journal.error)stop(2,`无法只读检查恢复存档: ${journal.error.code??journal.error.message}`);
   // learning is the journal's Learning result the next develop effect starts from
   // (bootstrap rules bind their on-disk files to its recorded evidence).
-  return {...projectDevelopAttempts(journal.history.state,operation,permissions),learning:journal.history.state.learningResult??null};
+  // Q28: decide from what the host will show (projected answer-gap blocks), not the raw replay state.
+  return {...projectDevelopAttempts(projectedRunnerStatus(journal.history,journal.config),operation,permissions),
+    learning:journal.history.state.learningResult??null};
 }
 export function projectDevelopAttempts(status,operation,permissions){
   const {state,attempt,reviewPackage}=status;
+  // A re-check (check_answer_*) re-runs only the checks: no developer answer is asked.
+  if(state==='blocked'&&RECHECK_CODES.includes(status.code))return {attempts:[],reviewFirst:false,packageDigest:null};
   if(developmentRetryable(status))return {attempts:[attempt],reviewFirst:false,packageDigest:null};
   if(state==='ready'&&attempt===1&&operation==='advance'
     &&permissions.some((flag,index)=>flag==='--allow-review-attempt'&&permissions[index+1]==='1'))

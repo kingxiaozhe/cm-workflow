@@ -30,6 +30,10 @@ export function hostAnswerTimeoutMs(env=process.env){
   need(/^[1-9][0-9]?$/.test(raw)&&Number(raw)<=60,'host_answer_timeout_invalid');
   return Number(raw)*60000;
 }
+// Every kind a workflow host may ask the session. A kind missing here makes
+// that step throw host_operation_invalid on every attempt (O20: the second-round
+// refactor judge revision, refactor_revise_tests, was missing).
+export const HOST_CALL_KINDS=Object.freeze(['develop','check','verification_precheck','check_runtime','check_semantic','qa_assess','qa_logic','qa_browser','change_impact','test_cases','refactor_analyze','refactor_confirm','refactor_apply','refactor_review','refactor_batch','refactor_prepare_tests','refactor_revise_tests','refactor_retrospective','refactor_recover','documentation_sync','documentation_inspect','fix_diagnose','fix_learning','fix_test_author','fix_repair','fix_retrospective','init_analyze','init_generate','init_verify','init_confirm','init_review','init_write','idea_interview','idea_confirm_save','prd_analyze','prd_materials','prd_generate','prd_self_check','prd_review','prd_correct','prd_summary']);
 // Answers that first run the project's own commands (test suites, builds,
 // devices) normally take tens of minutes; they always get the 60-minute maximum.
 const COMMAND_KINDS=new Set(['check','verification_precheck','init_verify','check_runtime','qa_logic','qa_browser']);
@@ -57,8 +61,7 @@ export function createHostToolBridge({responseLimit=64*1024,answerTimeoutMs=host
     },
     call(kind,payload,signal,{timeoutMs=null}={}){
       need(send!==null&&!closed,'host_bridge_unavailable');need(pending===null,'host_bridge_busy');
-      need(['develop','check','verification_precheck','check_runtime','check_semantic','qa_assess','qa_logic','qa_browser','change_impact','test_cases','refactor_analyze','refactor_confirm','refactor_apply','refactor_review','refactor_batch','refactor_prepare_tests','refactor_retrospective','refactor_recover','documentation_sync','documentation_inspect','fix_diagnose','fix_learning','fix_test_author','fix_repair','fix_retrospective','init_analyze','init_generate','init_verify','init_confirm','init_review','init_write','idea_interview','idea_confirm_save','prd_analyze','prd_materials','prd_generate','prd_self_check','prd_review','prd_correct','prd_summary']
-        .includes(kind),'host_operation_invalid');need(!signal.aborted,'cancelled');
+      need(HOST_CALL_KINDS.includes(kind),'host_operation_invalid');need(!signal.aborted,'cancelled');
       const data=json({kind,payload},12*1024*1024);
       const request={type:'host_request',sessionId,callId:randomUUID(),requestDigest:digest(data),...data};
       need(timeoutMs===null||Number.isSafeInteger(timeoutMs)&&timeoutMs>0&&timeoutMs<=3600000,'host_request_timeout_invalid');

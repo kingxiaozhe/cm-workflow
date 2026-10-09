@@ -65,6 +65,9 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-fix-drive.mjs" --plan "{PLAN}" advance
 整轮停在 `unknown`，不能靠普通 `advance` 解除。建运行前它还会预告：任务编号是否已被
 审查结论占住、配置引用的文件是否存在、受保护模式下有没有沙箱跑不了的 tsx/vitest 类命令。
 
+写测试与修复的应答随模式不同：受保护模式回 `{outcome,edits}` 提案，由沙箱写入；非受保护模式由驾驶员代会话把答案文件写进宿主给的 scope，只回 `{outcome}`。
+答案里有 scope 外的路径时两种模式都回合法的 `blocked`，不写任何文件。
+
 它只是方便，不是放权：能做什么仍由宿主的开关说了算。
 按当前授权选择 `--review-config` 及 CLI 列明的 `--allow-*`，不要一次性全开。
 
