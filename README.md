@@ -17,6 +17,15 @@
 
 ## 最近更新
 
+**0.16.8**
+
+- **卡住时能推到手机**：在 `~/.cm-workflow/notify.json` 配一条本机命令后，流程停在要人处理、整个流程跑完、宿主等你应答超时（检查类按 45 分钟）、宿主开着却 45 分钟没人发下一步，都会提醒一次；同一件事 6 小时内只发一次，带限流，发送失败不影响流程。见[使用手册](docs/user-guide.md#卡住时提醒到手机可选)。
+- **提醒能做到什么写清楚了**：只发一次不补发、关机或睡眠时不发、没有常驻监督进程；会话自己派出去的后台命令不在范围内。`cm-ai` 宿主说明「启动前」新增派发纪律：后台命令带超时、不另写等待脚本、非交互调用 Codex 要关输入、拿到终态先核对再重跑。
+- **省 token**：`cm-ai` 每次启动必读的宿主说明从 75KB 减到 25KB，异常恢复按需再读；单任务、cm-prd、cm-fix 收尾时建议换新会话开始下一项；新增只读的 token 用量报告 `scripts/cm-token-report.mjs`。
+- **质检不再卡死**：执行超时、范围内文件被改、浏览器证据放错位置、已作废任务的用例、被独立 `cm-fix` 修过的任务，都有明确出口；`cm-fix` 二轮诊断不合格或原因审查无结论，也不再停在 `unknown`。
+- **受保护路径与批次选择**：任务 scope 含 AGENTS.md、CLAUDE.md 等保护文件时在建运行前拦截；`--feature N.slug` 可显式先做后面的批次；并行组「只能新建文件」改由 runtime 强制；当前会话开发可指定另一工具审查（`--review-runtime`）。
+- **手动核对宿主**：`node scripts/cm-patrol.mjs --report` 查看哪个宿主进程没收尾。
+
 **0.16.7**
 
 - **首次规划按目标组织任务**：相关低风险文案、样式和小交互可合并为能独立验证和回滚的任务；保护基线、明确独立边界及真实契约依赖继续保留。
@@ -170,6 +179,22 @@ $cm-ai ~/projects/my-app-specs ~/code/my-app
 
 > `tasks.md` 是任务状态的权威来源。聊天里的“完成了”、静态分析和界面进度，不能替代真实测试、独立审查与完成凭证。
 
+## 详细流程图（建议设计示意）
+
+以下两图是**建议设计示意，非当前版本完整正式状态机**。图中的阶段、检查项和恢复分支用于讨论流程设计，不表示相关功能均已实现；当前能力与约束以实际运行版本、[使用手册](docs/user-guide.md)和 [JS workflow 控制](docs/js-workflow-control.md)为准。点击图片可查看原尺寸。
+
+### 阶段总图
+
+展示任务拆解与验收、开发自检、独立审查、测试证据及收尾交付之间的关系，以及问题修复后的返回路径。
+
+[![CM 工作流详细阶段总图：建议设计示意，非当前版本完整正式状态机](assets/readme/workflow-stages-detailed.png)](assets/readme/workflow-stages-detailed.png)
+
+### 异常恢复
+
+展示阻塞或超时后的现场保存、原因判断、有界恢复与暂停决策思路；恢复成功仍需回到对应环节取得验收证据。
+
+[![CM 工作流异常恢复图：建议设计示意，非当前版本完整正式状态机](assets/readme/workflow-recovery-detailed.png)](assets/readme/workflow-recovery-detailed.png)
+
 ## 快速开始：Codex
 
 准备好 **Git、Python 3.9+、Node.js 24.14+**，以及带有内置插件创建辅助工具的当前 Codex。安装器和部分共享工具的最低要求是 Node 18；默认 JS 开发流程需要 Node 24.14+。
@@ -200,7 +225,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.16.7 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.16.8 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
