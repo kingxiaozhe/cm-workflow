@@ -40,6 +40,12 @@ export function operatorGuidance(result,{executionActive=false}={}){
     return explain('执行结果尚未确认，不能判断这一步成功或失败。',
       '只读核对原运行记录、进程及实际文件；当前没有已确认的直接重试入口，不新建运行绕过历史。');
   }
+  if(action==='develop_redo')return explain('开发应答没有拿到（超时后代码已改动、会话断开或只回了 failed），会话可能仍在写文件。',
+    '先确认会话已停止修改代码；再恢复原运行并发送 develop_redo 写入确认，之后 advance 重发本轮开发。盘上改动保留，经检查和独立审查。',
+    'develop_redo',['保留原配置、runId 与历史，以 --mode resume 启动','显式 --allow-develop-redo，并提供单行 reason','不占调用与 effect 名额；每运行最多 2 次']);
+  if(state==='blocked'&&action==='resume'&&code==='develop_answer_missing')return explain('已确认会话停写，本轮开发等待重发。',
+    '恢复原运行并发送 advance，用新 effect id 重发本轮开发；盘上改动保留，经检查和独立审查。',
+    'advance',['保留原配置、runId 与历史，以 --mode resume 启动','确认原宿主已关闭，且本轮开发有原合同要求的授权']);
   if(state==='blocked'&&action==='resume'&&['check_answer_missing','check_answer_invalid'].includes(code))
     return explain(code==='check_answer_invalid'?'开发交付已落盘，但之后的检查或验证预检答复格式不合格。'
       :'开发交付已落盘，但之后的检查或验证预检没有拿到应答（超时、断开或迟到）。',
@@ -89,6 +95,7 @@ export function batchOperatorGuidance(result){
   if(g.recoveryOperation==='advance')return explain(g.summary,
     g.nextStep.replace('然后恢复原运行并发送 advance，重做本轮交付和检查。','然后从原批次入口发送 advance，重做本轮交付和检查。')
       .replace('然后恢复原运行并发送 advance，只重跑','然后从原批次入口发送 advance，只重跑')
+      .replace('恢复原运行并发送 advance，用新 effect id','从原批次入口发送 advance，用新 effect id')
       .replace('恢复原运行后，取得本轮绑定的独立审查授权，再发送 advance。','沿原批次续接，取得本轮绑定的独立审查授权，再发送 advance。'),
     'advance',['保持原批次配置、身份和 PLAN；成员运行由批次宿主选择恢复','先确认原批次宿主已关闭；开发与审查仍需原合同授权']);
   if(g.recoveryOperation==='complete')return explain(g.summary,

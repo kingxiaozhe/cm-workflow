@@ -27,7 +27,7 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
 `unknown/empty_changes` 的历史按原样回放），修正后 `--mode resume` 再 `advance` 同一轮开发。
 运行定义的 `runId` 须为 8–128 个字符（运行日志要求），新建运行前即拒绝；已有运行的恢复不受影响。
 当前会话模式下开发应答未通过交付合同校验（如 `application.note` 超过 512 个字符或含换行），旧版记为终态 `blocked/failed`；现在 status 显示可重试的 `blocked/develop_answer_invalid`（`pendingAction=resume`，`reason` 写明字段上限），`--mode resume` 后 `advance` 先追加 `develop-answer-retry` 记录，再以新 effect id 重发同一轮开发：会话已写的代码保留，交付仍按本轮起点生成并经检查和独立审查，审查轮次不变；被拒应答不占计数名额（每运行最多 2 次），仍受 `develop_retry_limit` 约束。开发请求的指令里已写明这些上限。
-开发应答超过宿主请求上限（固定 30 分钟）记为 `unknown/call_timeout`；若代码根仍与该轮开发开始时一致（第 2 轮为已审的第 1 轮审查包，第 1 轮为任务基线），status 投影为 `blocked/develop_call_timeout`（`pendingAction=resume`），`--mode resume` 后 `advance` 先追加 `develop-timeout-retry` 记录再以新 effect id 重发同一轮开发，审查轮次不变，超时调用不占计数名额（每运行最多 2 次），仍受 `develop_retry_limit` 约束；代码根已变化（会话超时后写过文件）则保持 `unknown/reconcile`；已写入重试记录后（含记录后宿主退出再恢复）仍在派发前再次比对起点，变化则显示 `unknown/reconcile`、拒绝 `develop_timeout_root_changed` 且不派发，迟到应答仍以 `host_response_mismatch` 拒绝。
+开发应答超过宿主请求上限（固定 30 分钟）记为 `unknown/call_timeout`；若代码根仍与该轮开发开始时一致（第 2 轮为已审的第 1 轮审查包，第 1 轮为任务基线），status 投影为 `blocked/develop_call_timeout`（`pendingAction=resume`），`--mode resume` 后 `advance` 先追加 `develop-timeout-retry` 记录再以新 effect id 重发同一轮开发，审查轮次不变，超时调用不占计数名额（每运行最多 2 次），仍受 `develop_retry_limit` 约束；代码根已变化（会话超时后写过文件）或起点无法核对时，当前会话（非受保护）开发改走「应答缺失、无效或迟到」的 `develop_redo` 确认重发，其余仍为 `unknown/reconcile`；已写入重试记录后（含记录后宿主退出再恢复）仍在派发前再次比对起点，变化则拒绝 `develop_timeout_root_changed` 且不派发，迟到应答以 `host_response_late` 拒绝。
 
 批次驾驶员：`develop.json.edits` 的格式与启动前检查同单任务；尚未开跑的后续任务不看代码树，只做答案本身就能判定的检查（单文件不超 1 MiB、答案写入的 scope 文件合计不超 2 MiB 等）；运行存档单条记录上限要看该任务开跑时的基线，驾驶员事先无法核算，超限交付在写入后由宿主拦下，停在可重试的 `blocked/develop_package_too_large`，缩小或移出大文件后重试。
 
@@ -54,6 +54,9 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
 
 - `blocked/check_answer_missing`、`blocked/check_answer_invalid`（`pendingAction=resume`）：开发已交付并写回 Learning，之后的检查或验证预检超时、断开、迟到或答复格式不合格（旧记录 `unknown/call_timeout`、`execution_error`、`invalid_input` 等，最后一次开发调用 `succeeded`）。
   先确认上一次检查命令已停止，再 `--mode resume` 后 `advance`：宿主追加 `develop-recheck` 记录，用新 effect id 只重跑检查、验证预检、handoff 与审查包，沿用原交付的 Learning 输入，不重发开发、不占开发调用与 effect 名额，重新划定检查新建文件。
+- `blocked/develop_answer_missing`，`pendingAction=develop_redo`：当前会话开发（非受保护、非 provider、非规则 bootstrap）的应答没拿到——超时后代码根已变化或起点无法核对（`unknown/call_timeout`）、会话断开或应答形状错（`unknown/unknown`、旧 `execution_error`）、只回了 `failed` 没有结果（`blocked/failed`）。
+  会话可能仍在写文件，宿主看不到，所以 `advance` 不会重发。先确认会话已停止修改代码，再 `--mode resume --allow-develop-redo` 启动并发送 `develop_redo`（单行 reason，最多 500 UTF-8 字节，写进 `develop-answer-redo` 记录）；之后 status 为 `pendingAction=resume`，`advance` 用新 effect id 重发本轮开发。
+  盘上改动保留；审查包始终对照本运行创建时拍下的任务基线（重发时不重拍），所以丢失应答期间写入的内容都会进检查与独立审查。不占调用与 effect 名额，每运行最多 2 次；受保护模式下代码根变化可能是半写入，不走此出口。
 - `blocked/complete_recheck_failed`（`pendingAction=complete`）：完成前复查没拿到可用应答（`unknown/call_timeout`、`execution_error` 等），且 task-commit-intent 尚未写入、tasks.md 未改动。`--mode resume` 后 `complete`（或 `advance`）：宿主追加 `complete-recheck` 记录，用新 effect id 重新复查并完成，不重新开发或审查。已写 task-commit-intent 的仍按「放弃审查调用与 effect」处理。
 
 ## 重试名额与完成前复查

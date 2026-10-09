@@ -17,7 +17,10 @@ cm-ai 宿主返回的可选 `guidance` 说明当前阻塞与下一步：`summary
 - 当前会话开发应答未通过校验（旧记录 `blocked/failed` 且 `invalid_result`）时，status 显示 `blocked/develop_answer_invalid`、`pendingAction=resume`：
   `--mode resume` 后 `advance`，宿主追加 `develop-answer-retry` 记录并用新 effect id 重发同一轮开发，已写代码保留并经检查和审查。
 - 开发应答超时（`unknown/call_timeout`）且代码根仍等于该轮开发起点时，status 显示 `blocked/develop_call_timeout`、`pendingAction=resume`：
-  以 `--mode resume` 启动后 `advance`，宿主追加 `develop-timeout-retry` 记录并用新 effect id 重发同一轮开发；代码根已变化则保持 `unknown/reconcile`。
+  以 `--mode resume` 启动后 `advance`，宿主追加 `develop-timeout-retry` 记录并用新 effect id 重发同一轮开发；代码根已变化见下一条。
+- 当前会话开发应答没拿到（超时后代码根已变、会话断开、只回 failed）时，status 显示 `blocked/develop_answer_missing`、`pendingAction=develop_redo`：
+  宿主看不到会话是否还在写，先由操作员确认会话已停写，`--mode resume --allow-develop-redo` 后发送 `develop_redo`（单行 reason，写入 `develop-answer-redo`），
+  再 `advance` 重发本轮开发；盘上改动保留，审查包对照运行创建时的任务基线，经检查与独立审查。每运行最多 2 次。
 - 开发已交付、之后的检查或验证预检没拿到可用应答时，status 显示 `blocked/check_answer_missing` 或 `check_answer_invalid`、`pendingAction=resume`：
   `--mode resume` 后 `advance`，宿主追加 `develop-recheck` 记录，只重跑检查、预检与审查包，不重发开发；完成前复查没拿到应答（尚无 task-commit-intent）时显示
   `blocked/complete_recheck_failed`、`pendingAction=complete`，宿主追加 `complete-recheck` 后重新复查并完成。每种每运行最多 2 次。

@@ -43,7 +43,7 @@ test('check_answer_missing: a timed-out check after a delivered develop re-runs 
   assert.match(fs.readFileSync(path.join(f.specsDir,f.feature,'tasks.md'),'utf8'),/\[x\] T-002/);
   const final=readRunnerHistory(records(f),records(f)[0].payload.config,3);
   assert.equal(final.state.state,'fixture_completed');
-  assert.deepEqual(final.answerGaps,{developRecheck:1,completeRecheck:1});
+  assert.deepEqual([final.answerGaps.developRecheck,final.answerGaps.completeRecheck],[1,1]);
   assert.equal(final.state.receipts.length,1,'one review round');
 });
 

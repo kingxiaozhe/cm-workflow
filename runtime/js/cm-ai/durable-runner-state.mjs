@@ -35,7 +35,7 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout','develop_answer_invalid',...RECHECK_CODES].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout','develop_answer_invalid',...RECHECK_CODES,DEVELOP_REDO_CODE].includes(code)
   ||kind==='review'&&state==='pending_review'&&REVIEW_RETRY_CODES.includes(code)
   ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed',COMPLETE_RECHECK_CODE].includes(code)
     ||code==='review_package_changed'&&reviewVerdict==='approved')
@@ -169,8 +169,48 @@ export function completeRecheckable(s,recorded=0){
 }
 export const completeRecheckReason=source=>`${COMPLETE_RECHECK_CODE}: 完成前复查没有拿到可用应答（原记录 unknown/${source}），task-commit-intent 尚未写入，tasks.md 未改动。`
   +'在原运行发送 complete 重新复查并完成，不重新开发或审查（每运行最多 2 次）。';
+// V2 + R3: a current-session develop whose answer never arrived (timed out with
+// the code root changed or its start not pinned, disconnected, late) or came back
+// as a bare failure. The session may still be writing and the host cannot see
+// it, so nothing is redispatched until the operator confirms it stopped:
+// develop_redo with a reason, journaled as develop-answer-redo. The redo sends
+// the same round under a new effect id. Edits already on disk stay and are part
+// of the redone delivery, whose review package is built against the task
+// baseline captured when the run was created (never re-captured), so no edit
+// skips the checks and the independent review. Provider development and
+// instruction bootstrap are excluded (their writers or half-writes need their
+// own reconciliation); the host also excludes protected current-session mode,
+// where a changed root can only be a partially applied proposal.
+export const DEVELOP_REDO_CODE='develop_answer_missing';
+export const MAX_DEVELOP_REDOS=2;
+export const developAnswerMissingEffect=entry=>{
+  const result=entry.result,call=result.calls?.at(-1);
+  if(entry.effect.kind!=='develop'||call?.requestedModel!=='current-session'||call.channel!=='fixture')return false;
+  return result.state==='unknown'&&['unknown','execution_error'].includes(result.code)&&call.terminal==='unknown'
+    ||result.state==='blocked'&&result.code==='failed'&&call.terminal==='failed'
+      &&!Object.hasOwn(call,'failureResult')&&!Object.hasOwn(call,'blockedReason');
+};
+// What the stuck develop was ('call_timeout', 'unknown', 'execution_error' or
+// 'failed'), or null when this exit does not apply.
+export function developRedoCause(s,config,recorded=0){
+  if(config.bootstrap?.mode==='instructions'||config.developer.requestedModel!=='current-session'||recorded>=MAX_DEVELOP_REDOS)return null;
+  const last=s.cache.at(-1);
+  if(!last||last.effect.identity.attempt!==s.attempt||s.receipt!==null)return null;
+  if(developTimeoutEffect(last)&&s.calls.at(-1)?.terminal==='unknown'
+    &&(s.state==='unknown'&&s.code==='call_timeout'||s.state==='blocked'&&s.code==='develop_call_timeout'))return 'call_timeout';
+  if(developAnswerMissingEffect(last)&&s.state===last.result.state&&s.code===last.result.code)return last.result.code;
+  return null;
+}
+const redoCauses={call_timeout:'开发应答超时且代码根已变化或本轮起点无法核对',unknown:'开发应答中断（会话断开、应答形状错或结果不明）',
+  execution_error:'开发调用以 execution_error 结束、结果不明',failed:'开发应答只回了 failed、没有可用结果'};
+export const developRedoRequiredReason=cause=>`${DEVELOP_REDO_CODE}: ${redoCauses[cause]??cause}。会话可能仍在写文件，宿主看不到；`
+  +'先确认会话已停止修改代码，再以 --mode resume --allow-develop-redo 启动并发送 develop_redo（单行 reason，写入运行存档）。'
+  +'之后 advance 用新 effect id 重发本轮开发：盘上改动保留，审查包仍对照本运行创建时的任务基线，经检查与独立审查；不占调用与 effect 名额（每运行最多 2 次）。';
+export const developRedoReason=cause=>`${DEVELOP_REDO_CODE}: ${redoCauses[cause]??cause}；操作员已确认会话停写（develop-answer-redo）。`
+  +'在原运行 advance 用新 effect id 重发本轮开发；盘上改动保留并经检查与独立审查，审查轮次不变。';
 export const countedCalls=(calls,cache)=>calls.filter(call=>!invalidDeveloperCall(call)&&call.terminal!=='abandoned').length
-  -cache.filter(timeoutEffect).length-cache.filter(developTimeoutEffect).length-cache.filter(developAnswerInvalidEffect).length;
+  -cache.filter(timeoutEffect).length-cache.filter(developTimeoutEffect).length-cache.filter(developAnswerInvalidEffect).length
+  -cache.filter(developAnswerMissingEffect).length;
 // A review effect whose journaled result the operator abandoned (below) no
 // longer holds one of the six effect slots; its retry does.
 const abandonedResult=(entry,calls)=>entry.effect.kind==='review'&&entry.result.state==='unknown'
@@ -187,6 +227,7 @@ export const completionBlockCount=cache=>cache.filter(completionBlock).length;
 export const completedEffectCount=(cache,calls=[])=>cache.filter(entry=>!(entry.effect.kind==='develop'
   &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))
   &&!timeoutEffect(entry)&&!developTimeoutEffect(entry)&&!developAnswerInvalidEffect(entry)&&!developRecheckSource(entry)
+  &&!developAnswerMissingEffect(entry)
   &&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
 // The six-effect cap counts develop and review effects only; completion (above),
 // QA, documentation and finalization hold no slot.
@@ -815,7 +856,7 @@ export function readRunnerHistory(raw,config,version=1) {
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
   let invocation={registration:null,started:null,result:null};let registrationRecord=null,startedRecord=null,resultRecord=null,lastReview=null;
   const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false,supersession=null;
-  const answerGaps={developRecheck:0,completeRecheck:0};
+  const answerGaps={developRecheck:0,completeRecheck:0,developRedo:0};
   const reviewConfig=(calls=[])=>({...config,reviewInvocation:{...config.reviewInvocation,
     excludedThreadIds:reviewExclusions({excludedThreadIds:[...config.reviewInvocation.excludedThreadIds,...joinedHosts]},
       calls,config.developer.contextId)}});
@@ -970,6 +1011,18 @@ export function readRunnerHistory(raw,config,version=1) {
         &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_recheck');
       answerGaps.developRecheck++;
       state.state='blocked';state.code=code;state.reason=developRecheckReason(code,state.cache.at(-1).result.code);lastReview=null;
+    } else if(version===3&&p.type==='develop-answer-redo') {
+      // The operator confirmed the session stopped writing (R3); the redo itself
+      // is the next develop intent. Re-derived from the journal, never the disk.
+      shape(p,[...common,'effectId','invocationId','cause','reason','at']);
+      const cause=developRedoCause(state,config,answerGaps.developRedo);
+      need(r.kind==='result'&&pending===null&&cause!==null&&p.cause===cause
+        &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_redo');
+      need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(p.reason),'runner_develop_redo');
+      need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_develop_redo');
+      answerGaps.developRedo++;
+      state.state='blocked';state.code=DEVELOP_REDO_CODE;state.reason=developRedoReason(cause);lastReview=null;
     } else if(version===3&&p.type==='complete-recheck') {
       shape(p,[...common,'effectId','source']);
       need(r.kind==='result'&&pending===null&&state.state==='unknown'&&completeRecheckable(state,answerGaps.completeRecheck)

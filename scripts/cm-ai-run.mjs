@@ -248,7 +248,7 @@ export async function openControlRun(definition,mode,execution=null,options={}){
     return {...result,close:()=>{try{close();}finally{guard?.close();}}};
   }catch(error){guard?.close();throw error;}
 }
-async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,holdRevision=false,specRebindReason=null}={},acquireGuard=async()=>{}){
+async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,allowDevelopRedo=false,holdRevision=false,specRebindReason=null}={},acquireGuard=async()=>{}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection,externalConversationDefinition}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
@@ -262,6 +262,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   if(supersedeReason!==null&&mode!=='create')fail('supersede_unavailable');
   if(allowAbandonEffect&&mode!=='resume')fail('effect_abandon_unavailable');
   if(allowBootstrapReviewRecovery&&mode!=='resume')fail('bootstrap_review_recovery_unavailable');
+  if(allowDevelopRedo&&mode!=='resume')fail('develop_redo_unavailable');
   if(typeof holdRevision!=='boolean')fail('invalid_input');
   if(specRebindReason!==null&&(mode!=='resume'||execution===null||typeof specRebindReason!=='string'||!specRebindReason.trim()
     ||Buffer.byteLength(specRebindReason,'utf8')>500||/[\r\n\0]/.test(specRebindReason)))fail('spec_rebind_unavailable');
@@ -454,7 +455,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
         reviewers:[],check:unavailable,taskCompletion:{reviewsDir,handoffs},taskLearning:{feature},
         persistence:{store,mode:runnerMode,version:execution===null?2:3},
         ...(execution===null?{}:{providerDevelopment:protectedExecutions.has(execution)
-          ||Boolean(execution.configuration.providerDevelopment)}),
+          ||Boolean(execution.configuration.providerDevelopment),protectedDevelopment:conversationProtection(execution)!==null}),
         ...(execution===null?{}:{developer,reviewers:execution.reviewers,
           ...(execution.bootstrap?{bootstrap:execution.bootstrap}:{}),
           reviewInvocation:execution.reviewInvocation,check:execution.check,
@@ -465,7 +466,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
       entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,
         ...(definition.featureSelection?{featureSelection:definition.featureSelection.feature}:{}),
         ...(knowledgeCloseout===null?{}:{knowledgeCloseout,...(definition.codeProjects?{codeProjects:definition.codeProjects}:{})}),
-        ...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
+        ...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,allowDevelopRedo,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
         ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
     const logAbandonments=()=>{
