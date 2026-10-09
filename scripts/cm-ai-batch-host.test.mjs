@@ -272,7 +272,7 @@ import {configFingerprint} from ${JSON.stringify(workerModule)};
 export {readConversationReviewConfiguration,readConversationProtection} from ${JSON.stringify(hostModule)};
 export {parseHostInputLimit,inputLimitReason} from ${JSON.stringify(sessionModule)};
 export const calls=[];export let scheduler;
-export {batchTaskRunId} from ${JSON.stringify(new URL('./cm-ai-batch-run.mjs',import.meta.url).href)};
+export {batchTaskRunId,BATCH_MEMBER_ACTIONS} from ${JSON.stringify(new URL('./cm-ai-batch-run.mjs',import.meta.url).href)};
 export function createConversationExecution(...args){calls.push(args);return {};}
 export async function runReviewPreflight(definition,{model}){return {model,disabledSkills:[],preflight:{passed:true,
   cli_model:model,prompt_transport:'stdin',config_fingerprint:configFingerprint({cwd:definition.codeProject,model})}};}
