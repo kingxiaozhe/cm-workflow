@@ -577,15 +577,15 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-patrol.mjs"
 - 被限流或提醒未启用时不删登记，下次再报。
 - `--report` 只把结果以 JSON 打到标准输出，不提醒、不删文件。
 
-定时跑由你自己配。macOS 可用 launchd，每 15 分钟一次（把两处路径换成你的）：
+定时跑由你自己配。macOS 可用 launchd，每 15 分钟一次（两处路径换成 `which node` 的结果和你的 CM 安装目录）：
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
   <key>Label</key><string>local.cm-patrol</string>
   <key>ProgramArguments</key><array>
-    <string>/usr/local/bin/node</string>
-    <string>/Users/me/.claude/scripts/cm-patrol.mjs</string>
+    <string>/path/to/node</string>
+    <string>{CM_WORKFLOW_ROOT}/scripts/cm-patrol.mjs</string>
   </array>
   <key>StartInterval</key><integer>900</integer>
 </dict></plist>
