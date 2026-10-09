@@ -58,14 +58,24 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
   child.stderr.on('data',chunk=>process.stderr.write(chunk));
   // After a rejected reply the session is ended; later rows get no answer.
   const send=value=>{if(!child.stdin.writableEnded)child.stdin.write(JSON.stringify(value)+'\n');};
-  let done=false,refused=false,rejected=null;
+  let done=false,refused=false,rejected=null,unanswered=false,finalRow=null,noticed=false,failureCode=null;
+  // Optional stuck/done notice (runtime/js/notify.mjs): decided once when the
+  // host is gone. It is loaded lazily and can never change exit code or output.
+  const notice=failure=>{
+    if(noticed)return;noticed=true;
+    if(rejected!==null)failure='host_response_rejected';else if(!failure&&unanswered&&!finalRow)failure='host_request_unanswered';
+    import('../notify.mjs').then(({driveNotice,notify})=>{
+      const fields=driveNotice({host,cwd,args,operation,row:finalRow,failure});
+      return fields?notify(fields):null;
+    }).catch(()=>{});
+  };
   readline.createInterface({input:child.stdout}).on('line',async line=>{
     let row;try{row=JSON.parse(line);}catch{process.stdout.write(line+'\n');return;}
     if(row.type==='host_ready'){
       if(beforeRequest){
         let refusal;
         try{refusal=await beforeRequest();}catch(error){refusal=`发送操作前的准备失败：${error.message}`;}
-        if(refusal){refused=true;stderr(refusal);process.exitCode=2;send({type:'host_close',sessionId:row.sessionId});child.stdin.end();return;}
+        if(refusal){refused=true;failureCode='driver_refused';stderr(refusal);process.exitCode=2;send({type:'host_close',sessionId:row.sessionId});child.stdin.end();return;}
       }
       send({requestId:'drive',operation,...request});return;
     }
@@ -74,6 +84,7 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
       try{result=await answerFor(row,answers,paths,{signal:control.signal});}catch(error){stderr(`应答 ${row.kind} 失败：${error.message}`);result=null;}
       if(control.signal.aborted)return;
       if(result===null){
+        unanswered=true;
         stderr(`宿主问了预检没覆盖的问题 ${row.kind}，无法应答；这一步会留在 unknown`);
         send({type:'host_close',sessionId:row.sessionId});return;
       }
@@ -91,7 +102,7 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
       return;
     }
     if(row.requestId==='drive'){
-      done=true;
+      done=true;finalRow=row;
       control.abort();
       process.stdout.write(JSON.stringify(row,null,2)+'\n');
       const guidance=guidanceText(row.result);if(guidance)stderr(guidance);
@@ -101,6 +112,8 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
       child.stdin.end();
     }
   });
-  child.on('error',error=>{control.abort();stderr(`宿主启动失败：${error.message}`);process.exitCode=1;});
+  child.on('error',error=>{control.abort();stderr(`宿主启动失败：${error.message}`);process.exitCode=1;notice('host_start_failed');});
   child.on('exit',code=>{control.abort();if(!done&&!refused){stderr(`宿主在给出结果前退出了，exit ${code}`);process.exitCode=1;}});
+  // 'close' waits for the host's stdout, so a final row still in flight is seen.
+  child.on('close',()=>notice(failureCode??(done?null:'host_exited')));
 }

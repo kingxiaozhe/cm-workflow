@@ -1,13 +1,25 @@
 // Duplex transport for a trusted current conversation. This has no task,
 // permission, dispatch-grant or completion authority and persists no state.
 import {randomUUID} from 'node:crypto';
+import path from 'node:path';
 import {digest,json,need,shape} from './effect-contract.mjs';
+
+// Optional notice (runtime/js/notify.mjs) when one call waits too long for the
+// session. Loaded lazily; it only notifies and never answers or cancels a call.
+function waitNotice(kind,callId){
+  let cancelled=false,cancel=null;
+  const workflow=path.basename(process.argv[1]??'').replace(/-host\.mjs$/,'').replace(/\.mjs$/,'')||'cm';
+  import('../notify.mjs').then(({scheduleWaitNotice})=>{
+    if(!cancelled)cancel=scheduleWaitNotice({kind,callId,workflow,project:process.cwd()});
+  }).catch(()=>{});
+  return ()=>{cancelled=true;cancel?.();};
+}
 
 export function createHostToolBridge({responseLimit=64*1024}={}){
   need(Number.isSafeInteger(responseLimit)&&responseLimit>=64*1024&&responseLimit<=4*1024*1024,'host_response_limit_invalid');
   const sessionId=randomUUID();let send=null,pending=null,closed=false;
   const stop=(code,call=pending)=>{
-    if(!call||pending!==call)return;pending=null;clearTimeout(call.timer);
+    if(!call||pending!==call)return;pending=null;clearTimeout(call.timer);call.notice?.();
     call.signal.removeEventListener('abort',call.abort);
     call.reject(Object.assign(new Error(code),{code}));
   };
@@ -28,7 +40,7 @@ export function createHostToolBridge({responseLimit=64*1024}={}){
           stop('cancelled',call);
           Promise.resolve(send({type:'host_call_cancelled',sessionId,callId:request.callId})).catch(()=>{});
         };
-        const call={request,signal,abort,resolve,reject,timer:null};pending=call;
+        const call={request,signal,abort,resolve,reject,timer:null,notice:waitNotice(kind,request.callId)};pending=call;
         if(timeoutMs!==null)call.timer=setTimeout(()=>stop('host_request_timeout',call),timeoutMs);
         signal.addEventListener('abort',abort,{once:true});
         if(signal.aborted){abort();return;}
@@ -48,7 +60,7 @@ export function createHostToolBridge({responseLimit=64*1024}={}){
         need(reply.type==='host_result'&&pending!==null&&!closed,'host_response_mismatch');
         for(const key of ['sessionId','callId','requestDigest'])need(reply[key]===pending.request[key],'host_response_mismatch');
       }catch(error){return {accepted:false,code:error?.code==='limit_exceeded'?'host_response_too_large':'host_response_mismatch'};}
-      const call=pending;pending=null;clearTimeout(call.timer);call.signal.removeEventListener('abort',call.abort);
+      const call=pending;pending=null;clearTimeout(call.timer);call.notice?.();call.signal.removeEventListener('abort',call.abort);
       call.resolve(reply.result);return {accepted:true,callId:reply.callId};
     },
     close(){closed=true;stop('host_disconnected');},
