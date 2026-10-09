@@ -35,7 +35,7 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout','develop_answer_invalid',...RECHECK_CODES,DEVELOP_REDO_CODE].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout','develop_answer_invalid',...RECHECK_CODES,DEVELOP_REDO_CODE,DISPATCH_RETRY_CODE].includes(code)
   ||kind==='review'&&state==='pending_review'&&REVIEW_RETRY_CODES.includes(code)
   ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed',COMPLETE_RECHECK_CODE].includes(code)
     ||code==='review_package_changed'&&reviewVerdict==='approved')
@@ -89,9 +89,18 @@ export function developTimeoutBasis(s,configuration=null) {
   if(!(developTimeoutState(s)&&last&&developTimeoutEffect(last)
     &&last.effect.identity.attempt===s.attempt&&call?.terminal==='unknown'&&call.channel==='fixture'))return null;
   if(s.cache.filter(developTimeoutEffect).length>MAX_DEVELOP_TIMEOUT_RETRIES)return null;
+  return pinnedDevelopStart(s,developTimeoutEffect);
+}
+// The tree the round's develop effects all started from, when the journal pins
+// it: the reviewed attempt-1 package (attempt 2) or the original baseline
+// (attempt 1, nothing delivered yet). Earlier develops of this attempt that
+// produced nothing the runner accepted (skip) are passed over; any other entry
+// means unrecorded edits may exist, so the start cannot be proven (null). The
+// caller still compares the live code root with it.
+function pinnedDevelopStart(s,skip){
   for(let i=s.cache.length-2;i>=0;i--){
     const entry=s.cache[i];
-    if(developTimeoutEffect(entry)&&entry.effect.identity.attempt===s.attempt)continue;
+    if(skip(entry)&&entry.effect.identity.attempt===s.attempt)continue;
     return s.attempt===2&&entry.effect.kind==='review'&&entry.result.state==='changes_requested'
       &&s.reviewPackage?.identity.attempt===1&&s.priorReview?.verdict==='changes_requested'?'reviewed_package':null;
   }
@@ -186,7 +195,7 @@ export const MAX_DEVELOP_REDOS=2;
 export const developAnswerMissingEffect=entry=>{
   const result=entry.result,call=result.calls?.at(-1);
   if(entry.effect.kind!=='develop'||call?.requestedModel!=='current-session'||call.channel!=='fixture')return false;
-  return result.state==='unknown'&&['unknown','execution_error'].includes(result.code)&&call.terminal==='unknown'
+  return result.state==='unknown'&&result.code==='unknown'&&call.terminal==='unknown'
     ||result.state==='blocked'&&result.code==='failed'&&call.terminal==='failed'
       &&!Object.hasOwn(call,'failureResult')&&!Object.hasOwn(call,'blockedReason');
 };
@@ -198,9 +207,41 @@ export function developRedoCause(s,config,recorded=0){
   if(!last||last.effect.identity.attempt!==s.attempt||s.receipt!==null)return null;
   if(developTimeoutEffect(last)&&s.calls.at(-1)?.terminal==='unknown'
     &&(s.state==='unknown'&&s.code==='call_timeout'||s.state==='blocked'&&s.code==='develop_call_timeout'))return 'call_timeout';
-  if(developAnswerMissingEffect(last)&&s.state===last.result.state&&s.code===last.result.code)return last.result.code;
+  if((developAnswerMissingEffect(last)||developDispatchFailedEffect(last)&&last.result.code==='execution_error')
+    &&s.state===last.result.state&&s.code===last.result.code)return last.result.code;
   return null;
 }
+// V1/V3 (P1-3): the current-session developer run failed before the session was
+// asked anything: the host's own role routing (its run-log write or the workflow
+// role configuration) threw, the call never returned (terminal unknown, no
+// result). Those codes are raised only before the bridge request, so nothing
+// was dispatched and nothing written: develop_dispatch_failed, redone like any
+// retryable develop block after a develop-dispatch-retry record. Older runtimes
+// collapsed the same failure into execution_error, which a failure after the
+// answer can also produce; such a journal gets this exit only while the code
+// root still equals the round's pinned start (checked live, like #198), and
+// otherwise the operator-confirmed develop_redo.
+export const DISPATCH_RETRY_CODE='develop_dispatch_failed';
+export const DISPATCH_FAILURE_CODES=Object.freeze(['role_log_failed','invalid_workflow_config']);
+export const developDispatchFailedEffect=entry=>{
+  const result=entry.result,call=result.calls?.at(-1);
+  return entry.effect.kind==='develop'&&result.state==='unknown'
+    &&[...DISPATCH_FAILURE_CODES,'execution_error'].includes(result.code)
+    &&call?.terminal==='unknown'&&call.resultDigest===null&&call.requestedModel==='current-session'&&call.channel==='fixture';
+};
+// 'dispatch_failed' (proven by the code), 'baseline' or 'reviewed_package' (a
+// legacy execution_error whose round start the journal pins), or null.
+export function developDispatchBasis(s,config,recorded=0){
+  if(config.bootstrap?.mode==='instructions'||config.developer.requestedModel!=='current-session'||recorded>=MAX_DEVELOP_REDOS)return null;
+  const last=s.cache.at(-1);
+  if(!last||last.effect.identity.attempt!==s.attempt||s.receipt!==null||!developDispatchFailedEffect(last)
+    ||!(s.state==='unknown'&&s.code===last.result.code))return null;
+  if(DISPATCH_FAILURE_CODES.includes(last.result.code))return 'dispatch_failed';
+  return pinnedDevelopStart(s,entry=>developDispatchFailedEffect(entry)||developTimeoutEffect(entry));
+}
+export const developDispatchReason=(source,basis)=>`${DISPATCH_RETRY_CODE}: 开发请求在派发给会话之前失败（原记录 unknown/${source}）`
+  +(basis==='dispatch_failed'?'，宿主自己的角色路由出错，未派发、未写盘':'，代码根仍与本轮开发起点一致')
+  +'。修好 reason 指出的宿主环境（运行日志写入、工作流角色配置）后在原运行 advance 用新 effect id 重发本轮开发；不占调用与 effect 名额（每运行最多 2 次）。';
 const redoCauses={call_timeout:'开发应答超时且代码根已变化或本轮起点无法核对',unknown:'开发应答中断（会话断开、应答形状错或结果不明）',
   execution_error:'开发调用以 execution_error 结束、结果不明',failed:'开发应答只回了 failed、没有可用结果'};
 export const developRedoRequiredReason=cause=>`${DEVELOP_REDO_CODE}: ${redoCauses[cause]??cause}。会话可能仍在写文件，宿主看不到；`
@@ -210,7 +251,7 @@ export const developRedoReason=cause=>`${DEVELOP_REDO_CODE}: ${redoCauses[cause]
   +'在原运行 advance 用新 effect id 重发本轮开发；盘上改动保留并经检查与独立审查，审查轮次不变。';
 export const countedCalls=(calls,cache)=>calls.filter(call=>!invalidDeveloperCall(call)&&call.terminal!=='abandoned').length
   -cache.filter(timeoutEffect).length-cache.filter(developTimeoutEffect).length-cache.filter(developAnswerInvalidEffect).length
-  -cache.filter(developAnswerMissingEffect).length;
+  -cache.filter(developAnswerMissingEffect).length-cache.filter(developDispatchFailedEffect).length;
 // A review effect whose journaled result the operator abandoned (below) no
 // longer holds one of the six effect slots; its retry does.
 const abandonedResult=(entry,calls)=>entry.effect.kind==='review'&&entry.result.state==='unknown'
@@ -227,7 +268,7 @@ export const completionBlockCount=cache=>cache.filter(completionBlock).length;
 export const completedEffectCount=(cache,calls=[])=>cache.filter(entry=>!(entry.effect.kind==='develop'
   &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))
   &&!timeoutEffect(entry)&&!developTimeoutEffect(entry)&&!developAnswerInvalidEffect(entry)&&!developRecheckSource(entry)
-  &&!developAnswerMissingEffect(entry)
+  &&!developAnswerMissingEffect(entry)&&!developDispatchFailedEffect(entry)
   &&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
 // The six-effect cap counts develop and review effects only; completion (above),
 // QA, documentation and finalization hold no slot.
@@ -856,7 +897,7 @@ export function readRunnerHistory(raw,config,version=1) {
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
   let invocation={registration:null,started:null,result:null};let registrationRecord=null,startedRecord=null,resultRecord=null,lastReview=null;
   const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false,supersession=null;
-  const answerGaps={developRecheck:0,completeRecheck:0,developRedo:0};
+  const answerGaps={developRecheck:0,completeRecheck:0,developRedo:0,developDispatch:0};
   const reviewConfig=(calls=[])=>({...config,reviewInvocation:{...config.reviewInvocation,
     excludedThreadIds:reviewExclusions({excludedThreadIds:[...config.reviewInvocation.excludedThreadIds,...joinedHosts]},
       calls,config.developer.contextId)}});
@@ -1023,6 +1064,17 @@ export function readRunnerHistory(raw,config,version=1) {
       need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_develop_redo');
       answerGaps.developRedo++;
       state.state='blocked';state.code=DEVELOP_REDO_CODE;state.reason=developRedoReason(cause);lastReview=null;
+    } else if(version===3&&p.type==='develop-dispatch-retry') {
+      // Written by advance when the develop failed before dispatch; a legacy
+      // execution_error is admitted only on a journal-pinned start (the live
+      // host compared the code root with it before writing this record).
+      shape(p,[...common,'effectId','invocationId','basis']);
+      const basis=developDispatchBasis(state,config,answerGaps.developDispatch);
+      need(r.kind==='result'&&pending===null&&basis!==null&&p.basis===basis
+        &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_dispatch');
+      answerGaps.developDispatch++;
+      state.reason=developDispatchReason(state.code,basis);
+      state.state='blocked';state.code=DISPATCH_RETRY_CODE;lastReview=null;
     } else if(version===3&&p.type==='complete-recheck') {
       shape(p,[...common,'effectId','source']);
       need(r.kind==='result'&&pending===null&&state.state==='unknown'&&completeRecheckable(state,answerGaps.completeRecheck)

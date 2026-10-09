@@ -180,15 +180,19 @@ test('a stranded T-006 journal replays as blocked/protected_scope and its record
   assert.deepEqual(fs.readFileSync(f.statePath),legacyBytes);
 });
 
-test('the same unknown developer shape without a protected scope is still unknown',async t=>{
+test('the same unknown developer shape without a protected scope is not protected_scope (pinned root: develop_dispatch_failed)',async t=>{
   const f=await runnerFixture(t,['code.js']);
   f.setDeveloper(()=>{throw new Error('adapter failure');});
   const result=await f.make().executeEffect(f.develop());
-  assert.equal(result.state,'unknown');assert.equal(result.code,'execution_error');assert.equal(f.developerCalls(),1);
+  assert.equal(result.state,'blocked');assert.equal(result.code,'develop_dispatch_failed');assert.equal(f.developerCalls(),1);
   // The genuine pre-gate shape has the same call fields the T-006 rewrite uses.
   assert.deepEqual(Object.keys(result.calls[0]),['invocationId','contextId','provider','requestedModel','effectiveModel',
     'channel','started','terminal','requestDigest','resultDigest']);
   assert.equal(result.calls[0].terminal,'unknown');assert.equal(result.calls[0].resultDigest,null);
   const resumed=f.reopen();
-  assert.equal(resumed.status().state,'unknown');assert.equal(resumed.status().code,'execution_error');
+  // The journal keeps unknown/execution_error; with the code root still at the
+  // round start, status offers the plain pre-dispatch redo (answer gaps, P1-3).
+  const history=readRunnerHistory(f.records(),f.records()[0].payload.config,3);
+  assert.deepEqual([history.state.state,history.state.code],['unknown','execution_error']);
+  assert.deepEqual([resumed.status().state,resumed.status().code],['blocked','develop_dispatch_failed']);
 });

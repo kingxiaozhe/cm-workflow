@@ -21,6 +21,8 @@ cm-ai 宿主返回的可选 `guidance` 说明当前阻塞与下一步：`summary
 - 当前会话开发应答没拿到（超时后代码根已变、会话断开、只回 failed）时，status 显示 `blocked/develop_answer_missing`、`pendingAction=develop_redo`：
   宿主看不到会话是否还在写，先由操作员确认会话已停写，`--mode resume --allow-develop-redo` 后发送 `develop_redo`（单行 reason，写入 `develop-answer-redo`），
   再 `advance` 重发本轮开发；盘上改动保留，审查包对照运行创建时的任务基线，经检查与独立审查。每运行最多 2 次。
+- 开发请求在派发前失败（宿主运行日志或角色配置出错）时，status 显示 `blocked/develop_dispatch_failed`、`pendingAction=resume`：修好宿主环境后 `advance`，
+  宿主追加 `develop-dispatch-retry` 后重发本轮开发。旧版记为 `unknown/execution_error` 的同类记录只在代码根仍等于本轮起点时适用，否则走 `develop_redo`。
 - 开发已交付、之后的检查或验证预检没拿到可用应答时，status 显示 `blocked/check_answer_missing` 或 `check_answer_invalid`、`pendingAction=resume`：
   `--mode resume` 后 `advance`，宿主追加 `develop-recheck` 记录，只重跑检查、预检与审查包，不重发开发；完成前复查没拿到应答（尚无 task-commit-intent）时显示
   `blocked/complete_recheck_failed`、`pendingAction=complete`，宿主追加 `complete-recheck` 后重新复查并完成。每种每运行最多 2 次。

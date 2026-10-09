@@ -54,7 +54,9 @@ const failureCodes=new Set(['invalid_input','limit_exceeded','call_timeout','can
   'handoff_exists','verification_precheck_failed','completion_checks_changed','bootstrap_review_mismatch',
   // A lost or malformed session answer keeps its own code instead of collapsing
   // into execution_error, so the answer-gap projections can tell it apart.
-  'host_disconnected','host_request_timeout','verification_precheck_invalid']);
+  'host_disconnected','host_request_timeout','verification_precheck_invalid',
+  // Raised only by the host's own role routing, before any session request.
+  'role_log_failed','invalid_workflow_config']);
 // An unlisted code becomes execution_error, which on its own is not actionable.
 // The EEXIST that blocked every retry of a task in #81 stayed invisible in the
 // log, the state and stderr until a temporary print was added by hand. Emit one

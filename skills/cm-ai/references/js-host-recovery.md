@@ -57,6 +57,9 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
 - `blocked/develop_answer_missing`，`pendingAction=develop_redo`：当前会话开发（非受保护、非 provider、非规则 bootstrap）的应答没拿到——超时后代码根已变化或起点无法核对（`unknown/call_timeout`）、会话断开或应答形状错（`unknown/unknown`、旧 `execution_error`）、只回了 `failed` 没有结果（`blocked/failed`）。
   会话可能仍在写文件，宿主看不到，所以 `advance` 不会重发。先确认会话已停止修改代码，再 `--mode resume --allow-develop-redo` 启动并发送 `develop_redo`（单行 reason，最多 500 UTF-8 字节，写进 `develop-answer-redo` 记录）；之后 status 为 `pendingAction=resume`，`advance` 用新 effect id 重发本轮开发。
   盘上改动保留；审查包始终对照本运行创建时拍下的任务基线（重发时不重拍），所以丢失应答期间写入的内容都会进检查与独立审查。不占调用与 effect 名额，每运行最多 2 次；受保护模式下代码根变化可能是半写入，不走此出口。
+- `blocked/develop_dispatch_failed`（`pendingAction=resume`）：开发请求在派发给会话之前就失败了——宿主自己的角色路由出错（运行日志写不进 `role_log_failed`、工作流角色配置无效 `invalid_workflow_config`），开发调用没有结果、没有派发、没有写盘。
+  修好 reason 指出的宿主环境后 `--mode resume` 再 `advance`：宿主追加 `develop-dispatch-retry` 记录，用新 effect id 重发本轮开发，不占名额，每运行最多 2 次。
+  旧版本把同样的失败记成 `unknown/execution_error`（如真实运行 api-native-reading-T-006）；这类旧记录分不清是否已派发，只有代码根仍等于本轮起点（第 1 轮为任务基线，第 2 轮为已审第 1 轮包）时才走此出口，否则走上一条 `develop_redo` 确认重发。
 - `blocked/complete_recheck_failed`（`pendingAction=complete`）：完成前复查没拿到可用应答（`unknown/call_timeout`、`execution_error` 等），且 task-commit-intent 尚未写入、tasks.md 未改动。`--mode resume` 后 `complete`（或 `advance`）：宿主追加 `complete-recheck` 记录，用新 effect id 重新复查并完成，不重新开发或审查。已写 task-commit-intent 的仍按「放弃审查调用与 effect」处理。
 
 ## 重试名额与完成前复查

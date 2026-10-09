@@ -49,18 +49,24 @@ export function gapExecution(f,{developer=[],checks=[],verdicts=[]}={}){
         :{verdict,packageDigest:pkg.packageDigest,examinedPaths:reviewPaths(pkg),
           findings:[{id:'F1',severity:'P2',path:'a.mjs',message:'Revise',evidence:'Fixture finding'}],summary:'Fixture review'}};
     }};
+  const developerRun=createCodexDeveloperRun({requestedModel:'current-session',worker:async()=>{
+    f.calls.developer++;
+    const item=queue.shift();
+    if(item===undefined)throw Object.assign(new Error('unexpected developer call'),{code:'unexpected_developer_call'});
+    if(item==='hang')return new Promise(()=>{});
+    if(typeof item==='string'){fs.writeFileSync(path.join(f.codeProject,'a.mjs'),item);return {status:'succeeded',value:learning};}
+    if(item.write!==undefined)fs.writeFileSync(path.join(f.codeProject,'a.mjs'),item.write);
+    if(item.throw)throw Object.assign(new Error(item.throw),{code:item.throw});
+    return item.response;
+  }});
   return {configuration:{kind:'answer-gap-v1'},timeoutMs:1500,excludedContexts:['control'],
-    developer:{provider:'codex',requestedModel:'current-session',contextId:'developer',run:createCodexDeveloperRun({
-      requestedModel:'current-session',worker:async()=>{
-        f.calls.developer++;
-        const item=queue.shift();
-        if(item===undefined)throw Object.assign(new Error('unexpected developer call'),{code:'unexpected_developer_call'});
-        if(item==='hang')return new Promise(()=>{});
-        if(typeof item==='string'){fs.writeFileSync(path.join(f.codeProject,'a.mjs'),item);return {status:'succeeded',value:learning};}
-        if(item.write!==undefined)fs.writeFileSync(path.join(f.codeProject,'a.mjs'),item.write);
-        if(item.throw)throw Object.assign(new Error(item.throw),{code:item.throw});
-        return item.response;
-      }})},
+    developer:{provider:'codex',requestedModel:'current-session',contextId:'developer',run:(request,control)=>{
+      // {beforeDispatch:code} fails the developer run itself before any worker
+      // starts, as the host's own role routing does (e.g. role_log_failed).
+      if(queue[0]?.beforeDispatch){const {beforeDispatch}=queue.shift();f.calls.beforeDispatch=(f.calls.beforeDispatch??0)+1;
+        throw Object.assign(new Error(beforeDispatch),{code:beforeDispatch});}
+      return developerRun(request,control);
+    }},
     reviewers:[reviewer],reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control'],
       authorize:(value,{authorizationAt})=>{const body={version:1,kind:'cm-review-dispatch-grant',
         grantId:'grant',adapterId:'codex-review-adapter',invocationId:value.invocationId,

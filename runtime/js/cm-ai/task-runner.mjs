@@ -24,7 +24,8 @@ import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRu
   developAnswerInvalidEffect,developAnswerRetryable,developAnswerInvalidReason,
   RECHECK_CODES,COMPLETE_RECHECK_CODE,developRecheckSource,developRecheckCode,developRecheckReason,
   completeRecheckSource,completeRecheckable,completeRecheckReason,
-  DEVELOP_REDO_CODE,developAnswerMissingEffect,developRedoCause,developRedoRequiredReason,developRedoReason } from './durable-runner-state.mjs';
+  DEVELOP_REDO_CODE,developAnswerMissingEffect,developRedoCause,developRedoRequiredReason,developRedoReason,
+  DISPATCH_RETRY_CODE,developDispatchFailedEffect,developDispatchBasis,developDispatchReason } from './durable-runner-state.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
 import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure} from './provider-review-observation.mjs';
 import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence,
@@ -298,7 +299,7 @@ export function createTaskRunner(options) {
   const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
     &&entry.result?.state==='blocked'
     &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout'].includes(entry.result?.code)
-    ||developTimeoutEffect(entry)||developAnswerInvalidEffect(entry)||developRecheckSource(entry)||developAnswerMissingEffect(entry)).length;
+    ||developTimeoutEffect(entry)||developAnswerInvalidEffect(entry)||developRecheckSource(entry)||developAnswerMissingEffect(entry)||developDispatchFailedEffect(entry)).length;
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
     &&entry.result?.state==='blocked'&&['completion_checks_changed','completion_package_changed'].includes(entry.result?.code)
     ||completeRecheckSource(entry)).length;
@@ -365,6 +366,20 @@ export function createTaskRunner(options) {
   // (develop_redo) may redo. Returns the cause or null.
   const developRedoRequired=()=>!gapsLive()||options.protectedDevelopment===true||options.providerDevelopment===true?null
     :developRedoCause({state,code,attempt,cache:[...cache.values()],calls,receipt},metadata,answerGapCount('develop-answer-redo'));
+  // P1-3: a develop that failed before dispatch. A legacy execution_error also
+  // needs the live code root to still equal the journal-pinned round start.
+  function developDispatchRetry(){
+    if(!gapsLive()||options.providerDevelopment===true)return null;
+    const basis=developDispatchBasis({state,code,attempt,cache:[...cache.values()],calls,receipt,reviewPackage,priorReview},
+      metadata,answerGapCount('develop-dispatch-retry'));
+    if(basis===null||basis==='dispatch_failed')return basis;
+    try{
+      if(basis==='reviewed_package')verifyReviewPackage({root:config.root,baseline:attemptBaseline(original,reviewPackage.identity.attempt),
+        checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
+      else assertReadyBaseline();
+    }catch{return null;}
+    return basis;
+  }
   // The Learning input a re-check must carry: exactly the delivered develop's.
   const recheckLearningInput=()=>RECHECK_CODES.includes(status().code)?json([...cache.values()].at(-1).effect.learningInput):null;
   const status=()=>{
@@ -382,6 +397,11 @@ export function createTaskRunner(options) {
         ?freeze({...rest,state:'blocked',code:'develop_call_timeout',reason:DEVELOP_CALL_TIMEOUT_REASON})
         :freeze({...rest,state:'unknown',code:'call_timeout',...(current.state==='blocked'
           ?{reason:'develop_call_timeout: 代码根已不等于本轮开发起点（超时后有写入），不能重发；按 unknown 只读核对。'}:{})});
+    }
+    if(current.state==='unknown'){
+      const basis=developDispatchRetry();
+      if(basis!==null){const {reason:discard,...rest}=current;
+        current=freeze({...rest,state:'blocked',code:DISPATCH_RETRY_CODE,reason:developDispatchReason(current.code,basis)});}
     }
     if(current.state==='unknown'||current.state==='blocked'&&current.code==='failed'){
       const cause=developRedoRequired();
@@ -496,7 +516,7 @@ export function createTaskRunner(options) {
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
         'review-invocation-abandoned':'result','review-invocation-receipt':'result','review-invocation-reconciled':'result','effect-abandoned':'result',
         'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
-        'evidence-superseded':'result','develop-retry-limit':'result','develop-timeout-retry':'result','develop-answer-retry':'result','develop-recheck':'result','complete-recheck':'result','develop-answer-redo':'result','completion-retry-limit':'result','specification-rebound':'result',
+        'evidence-superseded':'result','develop-retry-limit':'result','develop-timeout-retry':'result','develop-answer-retry':'result','develop-recheck':'result','complete-recheck':'result','develop-answer-redo':'result','develop-dispatch-retry':'result','completion-retry-limit':'result','specification-rebound':'result',
         'bootstrap-review-recovered':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
@@ -1172,7 +1192,7 @@ export function createTaskRunner(options) {
   }
   const limitDue=()=>retryLimitDue()?recordRetryLimit:completionLimitDue()?recordCompletionLimit:null;
   function executeEffect(raw) {
-    let v,timeoutBasis=null,answerRetry=false,recheck=null,completeSource=null;
+    let v,timeoutBasis=null,answerRetry=false,recheck=null,completeSource=null,dispatchBasis=null;
     try {
       need(!poisoned,'store_failure');v=json(raw);
       shape(v,['version','id','identity','kind',...(Object.hasOwn(v,'learningInput')?['learningInput']:[])]);id(v.id);validIdentity(v.identity);
@@ -1199,12 +1219,13 @@ export function createTaskRunner(options) {
       if(v.kind==='develop'&&(recheck!==null||state==='blocked'&&RECHECK_CODES.includes(code)))
         need(digest(v.learningInput)===digest([...cache.values()].at(-1).effect.learningInput),'runner_learning');
       if(v.kind==='complete'&&state==='unknown'&&completeRecheck())completeSource=code;
+      if(v.kind==='develop'&&state==='unknown'&&recheck===null)dispatchBasis=developDispatchRetry();
       if(v.kind==='develop'&&recheck===null&&developTimeoutState({state,code})){
         timeoutBasis=developTimeoutRetryBasis();need(timeoutBasis!==null,'develop_timeout_root_changed');
         if(state==='blocked')timeoutBasis=null;
       }
       answerRetry=v.kind==='develop'&&state==='blocked'&&code==='failed'&&answerRetryable();
-      need(timeoutBasis!==null||answerRetry||recheck!==null||completeSource!==null
+      need(timeoutBasis!==null||answerRetry||recheck!==null||completeSource!==null||dispatchBasis!==null
         ||stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(effectSlotFree(v.kind,[...cache.values()],calls),'limit_exceeded');
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
@@ -1221,6 +1242,12 @@ export function createTaskRunner(options) {
       try{persist('develop-recheck',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId,code:recheck});}
       catch{return Promise.resolve(poison());}
       halt('blocked',recheck,developRecheckReason(recheck,source));publication=privateStatus();
+    }
+    if(dispatchBasis!==null){
+      const source=code;
+      try{persist('develop-dispatch-retry',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId,basis:dispatchBasis});}
+      catch{return Promise.resolve(poison());}
+      halt('blocked',DISPATCH_RETRY_CODE,developDispatchReason(source,dispatchBasis));publication=privateStatus();
     }
     if(completeSource!==null){
       try{persist('complete-recheck',{effectId:[...cache.values()].at(-1).effect.id,source:completeSource});}
