@@ -65,13 +65,14 @@ export function readNotifyConfig(env=process.env){
   return {command:[...command],waitMs:ms(minutes),checkWaitMs:ms(checkMinutes),idleMs:ms(idleMinutes)};
 }
 
-// Messages carry only these structured fields. Absolute paths are redacted and
-// control characters removed; every field and the whole message are bounded.
+// Messages carry only these structured fields. Absolute paths (POSIX, drive
+// letter, UNC; also when glued to CJK text) are redacted and control
+// characters removed; every field and the whole message are bounded.
 const cut=(text,max)=>{const chars=Array.from(text);return chars.length<=max?text:chars.slice(0,max-1).join('')+'…';};
 function clean(value,max){
   if(typeof value!=='string'&&!(typeof value==='number'&&Number.isFinite(value)))return '';
   const text=String(value).replace(/[\u0000-\u001f\u007f-\u009f]+/g,' ')
-    .replace(/(^|[\s(（'"=:：,，])~?\/[^\s'"`，。；;、）)]+/g,'$1<路径>')
+    .replace(/(?<![A-Za-z0-9_.~-])(?:~?\/|[A-Za-z]:[\\/]|\\\\)[^\s'"`，。；;、）)]+/g,'<路径>')
     .replace(/\s+/g,' ').trim();
   return cut(text,max);
 }
@@ -79,7 +80,7 @@ const projectName=value=>typeof value==='string'&&value?clean(path.basename(valu
 
 export function buildNotifyMessage(fields,{now=Date.now()}={}){
   const workflow=clean(fields.workflow,24)||'cm',project=projectName(fields.project);
-  const headline={done:'流程已结束',waiting:'等待会话应答',idle:'疑似空转',idle_waiting:'在等你'}[fields.event]??'需要人处理';
+  const headline={done:'流程已结束',waiting:'等待会话应答',idle:'疑似空转',idle_waiting:'在等你',dead:'宿主已退出未收尾'}[fields.event]??'需要人处理';
   const title=cut(`CM ${workflow} ${headline}${project?` · ${project}`:''}`,NOTIFY_LIMITS.titleChars);
   const lines=[['项目',project],['流程',workflow],['运行',clean(fields.runId,64)],['任务',clean(fields.task,40)],
     ['阶段',clean(fields.stage,48)],['原因',clean(fields.code,64)],['下一步',clean(fields.nextAction,200)]]
@@ -174,6 +175,36 @@ export function notify(fields,{env=process.env,now=Date.now(),timeoutMs=NOTIFY_L
     child.unref();
     return {sent:true,reason:'launched'};
   }catch{return {sent:false,reason:'error'};}
+}
+
+// Host registry: one small private file per live host session under
+// <home>/hosts, so the read-only patrol (scripts/cm-patrol.mjs) can tell a host
+// that died from one that is merely idle. Written only when notices are
+// configured, updated on events the host already has (start, each reply),
+// removed at session end. Best-effort: never throws, never changes the host.
+export const HOST_REGISTRY_MAX_AGE_MS=48*3600*1000;
+const SESSION_KEY=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export function hostRegistryDir(env=process.env){return path.join(notifyHome(env),'hosts');}
+export function writeHostRegistry({sessionKey,workflow,project,startedAt,row=null,operation=null},{env=process.env,now=Date.now()}={}){
+  try{
+    if(!readNotifyConfig(env)||!SESSION_KEY.test(sessionKey))return false;
+    const dir=hostRegistryDir(env);fs.mkdirSync(dir,{recursive:true,mode:0o700});
+    const result=obj(row?.result);
+    const entry={version:1,pid:process.pid,sessionKey,workflow:clean(workflow,24)||'cm',
+      project:typeof project==='string'?project:'',startedAt:new Date(startedAt).toISOString(),at:new Date(now).toISOString(),
+      operation:clean(operation,32)||null,
+      runId:text(result.identity?.runId)??text(result.runId)??text(result.batchId)??null,
+      task:text(result.identity?.taskId)??text(result.taskId)??null,
+      stage:text(result.stage)??text(result.state)??text(result.status)??null};
+    const file=path.join(dir,`${sessionKey}.json`),temp=`${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temp,JSON.stringify(entry),{mode:0o600});fs.renameSync(temp,file);return true;
+  }catch{return false;}
+}
+// Same test guard as readNotifyConfig: a test suite without an explicit
+// CM_WORKFLOW_HOME never touches the user's real directory, not even to unlink.
+export function removeHostRegistry(sessionKey,{env=process.env}={}){
+  if(env.NODE_TEST_CONTEXT&&!env.CM_WORKFLOW_HOME)return;
+  try{if(SESSION_KEY.test(sessionKey))fs.unlinkSync(path.join(hostRegistryDir(env),`${sessionKey}.json`));}catch{}
 }
 
 // Host side: one notice when a host_request has waited waitMinutes for the

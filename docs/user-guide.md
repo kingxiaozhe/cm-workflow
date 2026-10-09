@@ -531,6 +531,7 @@ CM 不认识任何推送服务，也不保存任何 token；推到哪里、怎�
 - 整个流程结束（如 `run_done`）时提醒一次，告诉你跑完了。
 - 宿主向会话提问（`host_request`，如 qa_browser、develop、fix_diagnose）后，超过 `waitMinutes` 分钟没有应答，每个提问只提醒一次。
 - 宿主一步做完后一直开着，手上没有进行中的操作，会话却超过 `idleMinutes` 分钟没发下一步，提醒一次：上一步停在要人处理的状态时标题是「在等你」，否则是「疑似空转」。只读的 `status` 查询不算下一步。驾驶员一步结束就关宿主，不会触发这一条。
+- 宿主进程已经没了（被杀、崩溃、机器重启）却没收尾：由只读巡检 `scripts/cm-patrol.mjs` 发现，见下文「巡检宿主是否还在」。
 - 正常推进和只读的 `status` 查询不提醒。
 
 提醒只是通知。CM 不会因此自动继续、替你应答或授予任何权限。
@@ -563,6 +564,34 @@ CM 不认识任何推送服务，也不保存任何 token；推到哪里、怎�
 消息只含项目目录名、流程、运行编号、任务、阶段、原因代码和下一步提示。
 不含文件内容、日志、diff、审查意见、环境变量或项目目录以外的路径（绝对路径会被替换成 `<路径>`）。
 这些文字会经过你选的推送服务，对方能看到；介意的话不要启用。
+
+**巡检宿主是否还在**
+
+宿主自己的计时器管不到宿主已经死掉的情况。配置了提醒后，每个 JSONL 宿主会在 `~/.cm-workflow/hosts/` 登记一个小文件（进程号、流程、运行、任务、阶段；启动和每次回复时更新，结束时删除）。巡检脚本只读这些登记和「进程是否存在」，不读日志、不读项目文件；会写的只有提醒本身的去重/限流记录（和其他提醒一样）和删除已报告的登记：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-patrol.mjs"
+```
+
+- 登记在最近 48 小时内、进程却已不在的宿主，合并成一条提醒（列得下几个列几个，其余只报个数），发出后删掉这些登记；活着的、超过 48 小时的和格式不对的登记不动。
+- 被限流或提醒未启用时不删登记，下次再报。
+- `--report` 只把结果以 JSON 打到标准输出，不提醒、不删文件。
+
+定时跑由你自己配。macOS 可用 launchd，每 15 分钟一次（两处路径换成 `which node` 的结果和你的 CM 安装目录）：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Label</key><string>local.cm-patrol</string>
+  <key>ProgramArguments</key><array>
+    <string>/path/to/node</string>
+    <string>{CM_WORKFLOW_ROOT}/scripts/cm-patrol.mjs</string>
+  </array>
+  <key>StartInterval</key><integer>900</integer>
+</dict></plist>
+```
+
+保存为 `~/Library/LaunchAgents/local.cm-patrol.plist`，然后 `launchctl load` 它。其他系统用自带的定时任务即可。
 
 **示例脚本（归你自己所有，不随 CM 安装）**
 
