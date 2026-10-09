@@ -110,7 +110,7 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 普通 create 遇到同任务未被替代的旧运行留下的未审改动时返回 `supersede_code_drift`，按提示还原或 supersede。
 审查期间代码根非忽略路径漂移时，`blocked/review_package_changed` 保留 verdict、回执与最多 20 个差异路径；清理或还原后在原 run 继续 `advance`，不会重派 reviewer。结果已入 journal 而检查点未写入时，恢复会从同一结果补写检查点；结果仍可用，不消耗新轮次。审查前的漂移拒绝 `decision`，完成前的漂移拒绝 `complete`，均列出路径；完成检查期间新增文件进入可重试的 `blocked/completion_package_changed`，清理后在原 run 重发 `complete`。未匹配时 `pendingAction` 不提示会被拒绝的动作。
 审查传输超时且没有结果事件时，记录 `pending_review/review_transport_timeout`，可用 `--mode resume` 后 advance，
-同一 attempt 最多重派一次，重新取得 Review 授权、grant 与 invocation；第二次超时为 `blocked/review_transport_timeout`。
+每轮重新取得 Review 授权、grant 与 invocation 后重派；每轮的无结论重派见下文「每轮无结论重派」。
 审查 CLI 没调用工具、没给结论就失败且进程已退出时（未登录 `reviewer_auth_failed`、额度 `reviewer_billing_error`、
 限流 `reviewer_rate_limited`、服务端错误或过载 `reviewer_server_error`、模型不存在 `reviewer_model_not_found`、
 其他 API 错误 `reviewer_api_error`、进程报告失败 `reviewer_provider_failed`、没有 init 或无法识别的事件
@@ -118,8 +118,7 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 `pending_review/review_provider_failed`，`reason` 以类别开头并写明先登录还是等待；处理后按超时同样的方式恢复重派。
 审查答复违反 verdict 规则（`contradictory_verdict`、`invalid_finding_path`、`missing_material`、`review_package_mismatch`、
 `invalid_finding_severity/id/shape`）时不产生回执，停在 `pending_review/review_verdict_invalid`，`reason` 以该代码开头。
-这两类与传输超时、abandon 共用同一 attempt 的一次重派，超出后为 `blocked/review_provider_failed` 或
-`blocked/review_verdict_invalid`。工具或上下文越界、输出超限、启动失败等仍为 unknown；其中 Claude 审查进程在边界被停（`unexpected_tool_or_content`，
+这两类与传输超时、abandon 共用每轮的无结论重派。工具或上下文越界等仍为 unknown；其中 Claude 审查进程在边界被停（`unexpected_tool_or_content`，
 代码后带 `{k,m,b,t,e}` 摘要：拒绝点、消息类型、块类型、工具名、is_error，不含正文）且进程已退出、没有最终消息、不是超时、
 摘要属于 `user_content`／`empty_content`／`tool_attempt_limit`（旧记录没有摘要、分不清原因，按兼容决定同样允许）时，`pendingAction` 为 `abandon_review`，可按下文显式放弃并重派一次；
 `tool_result_not_error`（非 StructuredOutput 工具成功执行）等真正越界仍为 unknown，只能 cancel。Claude CLI 自己注入的提醒（`isSynthetic` 的 user 文本，如要求调用 StructuredOutput）
@@ -131,6 +130,27 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 为 `abandon_review`，操作员确认后用下述 `abandon_review` 留痕放弃这条从未被接收的结果，journal 追加带
 `resultDigest` 的 `review-invocation-abandoned`，再按一次重派恢复。旧 journal 按原样回放，旧 unknown 不自动改类；
 旧版本以 `unexpected_assistant` 等不在上述类别的代码记下的失败仍需 reconcile。兼容Codex/Claude当前会话，保留原runtime与Review授权。
+
+### 每轮无结论重派
+
+一轮审查（attempt）最多无结论重派 **2 次**，单独计数，不算两轮审查轮次，也不占调用与 effect 名额；重派只在本轮没有接收任何结论时发生，所以不会出现第三份结论。三种来源共用这 2 次：
+
+- 第一次可重试的结束（`review_transport_timeout`、`review_provider_failed`、`review_verdict_invalid`）自动回到 `pending_review`；
+- 操作员的 `abandon_review`（已登记无结果、已有未被接收的结果，或下面的进程已退出中断）；
+- 本轮第二次可重试的结束：存档里仍是 `blocked/<同码>`（旧版本到此为止），宿主状态读成 `pending_review/<同码>`、`pendingAction: resume`；`advance` 先追加 `review-redispatch`（绑定 effect、invocation、attempt 与码）再重派。
+
+2 次用完后，可重试的结束显示 `blocked/review_redispatch_limit`，`reason` 写明先查登录、额度、网络或答复格式，再用 `--supersede-reviewed-evidence` 新建运行；`abandon_review` 拒绝为 `review_abandon_budget_exhausted`。回放从存档重新推导：伪造、重复或第三次 `review-redispatch` 一律 `runner_review_redispatch`；没有该记录的旧存档按原样回放。
+
+worker 已证明审查进程退出、又没有结论的中断，`pendingAction` 为 `abandon_review`：`spawn_failed` 且没有任何事件（进程从未启动），或观测到非超时的 `process_closed` 且没有最终消息（`output_limit`、`prompt_write_failed`、`thread_mismatch`、`cli_diagnostic`；`invalid_output_json` 的最终消息无法解析，没有可对账的结论）。宿主不能证明重派安全的仍为 unknown，状态的 `reason` 与 `abandon_review` 的拒绝码一致并指向 supersede：
+
+| 码 | 情形 |
+|---|---|
+| `review_process_unverified` | worker 报告进程组清理不明（`process_cleanup_unknown`） |
+| `review_observation_invalid` | 审查事件流本身不合法（`observation_invalid`） |
+| `review_boundary_unverified` | 工具或内容越界后退出，或退出前可能已收到结论 |
+| `review_abandon_budget_exhausted` | 本轮 2 次已用完 |
+
+外部模型与执行策略的审查不走以上出口：流里有回执就先 `reconcile_review` 对账采纳；没有回执宿主无法证明旧调用已停，`abandon_review`／`abandon_effect` 拒绝为 `external_review_reconciliation_required`，按 status 的 `reviewReconciliation.reason` 向原宿主或 provider 核对。
 
 ### 已批准规格材料（第 24 步）
 
@@ -156,7 +176,8 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume --host-context
 成功后 journal 追加 `review-invocation-abandoned` 并写 `review_abandoned` 运行日志，状态为
 `pending_review/review_abandoned`，`pendingAction: resume`。新宿主以原配置、原 runId 和新的
 `--allow-review-attempt 1`（第二轮为 2）恢复并发送 `advance`，重新签发 grant、登记新 invocation。
-同一 attempt 与无结果 transport timeout 共用最多一次重派；额度已用完则拒绝 abandon。
+与本轮其他无结论重派共用每轮 2 次（见上文）；用完则拒绝为 `review_abandon_budget_exhausted`，拒绝结果带 `reason`。
+宿主在审查结果已写入存档、检查点还没写时退出（结果不是结论），恢复后 `pendingAction` 同样是 `abandon_review`；放弃记录带该结果的 `resultDigest`，并且必须紧跟在结果记录之后。
 旧 invocation 的迟到结果不能再接收；若要终止，abandon 后普通 `cancel` 才能得到 durable cancelled。
 批次路径不支持此操作。driver 可用 `node scripts/cm-ai-drive.mjs --plan abandon-review.json abandon_review`；
 PLAN 需 `mode:"resume"`、原配置、`originalHostContext`、`permissions` 包含 `--allow-abandon-review`、`reason`。
@@ -179,7 +200,7 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume --host-context
 
 同一类步骤每运行最多这样恢复 2 次。第 3 次中断时状态显示 `unknown/effect_interrupt_limit`，`abandon_effect` 只能按旧规则写 `effect-abandoned` 作废本运行（记过写入方的开发要带进程组已退出的证明），之后 supersede 新建运行。
 
-已登记但无结果的 review 仍走上方 `abandon_review`；本轮重派已用完（`review_abandon_budget_exhausted`）时，`abandon_effect` 按旧规则写 `effect-abandoned` 作废运行（必须绑定最后一条记录），之后可走下方 supersede，不再死锁。
+已登记但无结果的 review 仍走上方 `abandon_review`；本轮 2 次无结论重派已用完（`review_abandon_budget_exhausted`）时，`abandon_effect` 按旧规则写 `effect-abandoned` 作废运行（必须绑定最后一条记录），之后可走下方 supersede，不再死锁。
 
 已写 `task-commit-intent` 而没有检查点时（含恢复本身写完提交结果后又中断），状态为 `blocked/complete_commit_interrupted`，`pendingAction: complete`，`abandon_effect` 拒绝为 `effect_abandon_commit_pending`。发送 `complete`：宿主只按 journal 里的提交计划核对 `tasks.md`——已是提交后的内容就补记 `task-commit-result` 与检查点；仍是提交前的字节和文件状态、计划引用的证据未变、代码仍等于审查通过的交付，就按原计划写完再补记；提交结果已在存档里时只补检查点，不再碰 tasks.md、不重复写结果；否则拒绝为 `commit_recovery_conflict`／`commit_recovery_code_changed` 并保留现场，不重新复查或开发。
 

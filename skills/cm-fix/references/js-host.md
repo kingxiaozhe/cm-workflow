@@ -161,7 +161,7 @@ beforeSha256严格复制expected中该路径的摘要（原不存在则null）�
 写测试/修复同样固定基线。每个步骤最多重跑 2 次（`status.blockedRerun` 显示已用次数），用满报 `fix_blocked_rerun_limit`。`defect_remaining`/`regressed` 仍走 `prepare_revision`。
 QA 修复子流程的 `fix_action` 暂不接受此操作（与 `rediagnose`、`recover_final_review` 同属第 3 批）。
 
-### 原因审查与第二轮最终审查无结果时的一次性放弃
+### 原因审查与第二轮最终审查无结果时的放弃（每轮最多 2 次）
 
 原因审查（`pending:"cause_review"`，含重新诊断后的第二轮原因审查）或第二轮最终审查（`pending:"revision_final_review"`）已登记，却没有审查结论时——
 宿主中途被杀、审查超时、断连或被取消，或审查进程正常结束但答案不合审查结论格式——`status` 为 `unknown` 并带 `reviewAbandonable`。
@@ -170,18 +170,23 @@ QA 修复子流程的 `fix_action` 暂不接受此操作（与 `rediagnose`、`r
 先确认旧审查进程已退出，再以专用的 `--allow-abandon-review` 启动（`--allow-abandon` 只管本地步骤，不授权放弃审查调用），发送
 `{"requestId":"abandon-review-1","operation":"abandon_review","reason":"旧审查进程已确认退出"}`；
 QA-fix 子宿主用 `--allow-qa-fix-abandon-review`，`fix_action` 带 `fixOperation:"abandon_review"` 和 `reason`；驾驶员 PLAN 的
-`permissions` 相应填这两个旗标。原因规则同 `abandon_step`。每一轮原因审查各可放弃一次（第一轮与重新诊断后的第二轮分开计），第二轮最终审查可放弃一次；
+`permissions` 相应填这两个旗标。原因规则同 `abandon_step`。每一轮原因审查各可放弃 2 次（第一轮与重新诊断后的第二轮分开计），第二轮最终审查可放弃 2 次；
 放弃只作废那次无结论的调用，不产生审查结论、不增加审查轮数，第二轮原因审查拒绝后仍是 `rediagnosis_review_limit_reached`。
-同一轮审查重审仍无结论时返回 `fix_review_abandon_budget_exhausted`，
+同一轮审查第三次仍无结论时返回 `fix_review_abandon_budget_exhausted`，
 `status.reviewAbandonBudgetExhausted` 为 true，只能按原阻断处理，不能继续重派。
 
 放弃追加 `fix-cause-abandoned`（第二轮为 `fix-cause-rediagnosis-abandoned`）或 `fix-revision-final-abandoned`，绑定原调用 ID、登记摘要、已知线程和无结论结果的摘要，
 写 `abandon` 日志，并回到 `cause_review_required`（或原迟到纠正阶段）/`revision_final_review_required`。
 重审仍需原 `--allow-cause-review` / `--allow-final-review` 和一次新的授权，记录改用 `fix-cause-retry-*`（第二轮为 `fix-cause-rediagnosis-retry-*`）/
-`fix-revision-final-retry-*`；新调用的审查线程不能是被放弃的那条。
+`fix-revision-final-retry-*`；第二次放弃追加 `<前缀>-abandoned-2`（绑定第一次重审那次调用），再重审的记录用 `<前缀>-retry-2-*`。
+新调用的审查线程不能是任何一条被放弃的线程。回放拒绝没有对应放弃的 `retry-2-*`、绑定错调用的 `abandoned-2` 和第三次放弃。
 第二轮原因审查包（首次派发与放弃后重审都是现场重建）另带 `contextFiles`：第一轮审查 `examinedPaths` 与各条问题引用、
 却不在新 `affectedPaths` 里的代码文件（存在于代码根的普通文件），作为只读上下文并计入 `examinedPaths`，审查者可以引用；
 重审的新包有新摘要，绑定在 `fix-cause-rediagnosis-retry-registered` 里，被放弃那次的记录不改。旧的第二轮登记没有该字段，照原样回放。旧记录一字不改，没有放弃记录的运行照原样回放。
+
+首轮最终审查（`fix-final-*`）不走放弃，改用 `recover_final_review`：worker 没打开任何审查线程就丢失（没有 `fix-final-started`）时，
+同样可恢复，`fix-final-recovery*-authorized` 记 `providerThreadId:null`；这类无线程恢复全运行最多 2 次，之后拒绝为 `fix_review_recovery_unavailable`。
+外部模型与执行策略的审查只能凭回执 `reconcile_review`，`abandon_review`／`recover_final_review` 拒绝为 `external_review_reconciliation_required`。
 
 审查等待使用审查配置 `--review-config` 的 `timeoutMs`（1–3600000 毫秒，省略为 900000），同时交给审查 worker；
 不再使用 `reproduction.timeoutMs`。原因审查到时会记下超时结果（`transport_timeout`），不再停在无记录的 unknown。
