@@ -13,7 +13,7 @@ import {fileURLToPath} from 'node:url';
 import {createHash,randomUUID} from 'node:crypto';
 
 export const NOTIFY_LIMITS=Object.freeze({sameKeyMs:6*3600*1000,perMinute:4,perDay:150,
-  commandTimeoutMs:15000,titleChars:60,bodyChars:500,defaultWaitMinutes:10});
+  commandTimeoutMs:15000,titleChars:60,bodyChars:500,defaultWaitMinutes:10,defaultCheckWaitMinutes:45});
 const LOCK_STALE_MS=30000,LOG_LIMIT=256*1024;
 const RUNNER=fileURLToPath(new URL('./notify-run.mjs',import.meta.url));
 
@@ -56,7 +56,9 @@ export function readNotifyConfig(env=process.env){
   if(!path.isAbsolute(command[0])){warn(env,'command_not_absolute');return null;}
   const minutes=value.waitMinutes??NOTIFY_LIMITS.defaultWaitMinutes;
   if(typeof minutes!=='number'||!Number.isFinite(minutes)||minutes<=0||minutes>1440){warn(env,'wait_minutes');return null;}
-  return {command:[...command],waitMs:Math.max(1,Math.round(minutes*60000))};
+  const checkMinutes=value.checkWaitMinutes??NOTIFY_LIMITS.defaultCheckWaitMinutes;
+  if(typeof checkMinutes!=='number'||!Number.isFinite(checkMinutes)||checkMinutes<=0||checkMinutes>1440){warn(env,'check_wait_minutes');return null;}
+  return {command:[...command],waitMs:Math.max(1,Math.round(minutes*60000)),checkWaitMs:Math.max(1,Math.round(checkMinutes*60000))};
 }
 
 // Messages carry only these structured fields. Absolute paths are redacted and
@@ -172,12 +174,17 @@ export function notify(fields,{env=process.env,now=Date.now(),timeoutMs=NOTIFY_L
 
 // Host side: one notice when a host_request has waited waitMinutes for the
 // session's answer. The timer never keeps the process alive.
+const CHECK_KINDS=new Set(['check','verification_precheck','init_verify']);
 export function scheduleWaitNotice({kind,callId,workflow,project,env=process.env}){
   try{
     const config=readNotifyConfig(env);if(!config)return null;
-    const minutes=Math.max(1,Math.round(config.waitMs/60000));
+    // A check request is answered only after the session has run the project's
+    // check commands (xcodebuild, test suites), which normally take tens of
+    // minutes; waiting that long is not idleness, so it uses its own threshold.
+    const waitMs=CHECK_KINDS.has(kind)?config.checkWaitMs:config.waitMs;
+    const minutes=Math.max(1,Math.round(waitMs/60000));
     const timer=setTimeout(()=>{notify({key:`wait|${workflow}|${callId}`,event:'waiting',workflow,project,stage:kind,
-      code:'waiting_session_answer',nextAction:`宿主已等待会话应答约 ${minutes} 分钟，请回到会话处理`},{env});},config.waitMs);
+      code:'waiting_session_answer',nextAction:`宿主已等待会话应答约 ${minutes} 分钟，请回到会话处理`},{env});},waitMs);
     timer.unref?.();
     return ()=>clearTimeout(timer);
   }catch{return null;}
