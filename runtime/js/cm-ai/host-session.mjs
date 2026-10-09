@@ -1,4 +1,6 @@
 // JSONL transport only. The existing host/runner owns decisions and durable state.
+import {randomUUID} from 'node:crypto';
+import path from 'node:path';
 import {executionDiagnostic,need} from './effect-contract.mjs';
 import {diagnosticReason} from './diagnostic-reason.mjs';
 
@@ -32,6 +34,22 @@ function reportRequestFailure(errorOutput,operation,error){
   }catch{/* diagnostics never change the reply */}
 }
 
+// Optional idle notice (runtime/js/notify.mjs): counts from the reply of the
+// last real operation while nothing is in flight. Any other session line
+// (including one the host rejects) is the next step and ends the wait; a
+// status/fix_status poll neither ends it nor restarts it, and while a poll is
+// in flight the deadline is held, not reset. Cleared at session end. Loaded
+// lazily; it only notifies and never writes logs, output or state.
+const POLLS=new Set(['status','fix_status']);
+function idleNotice(sessionKey,seq,row,since){
+  let cancelled=false,cancel=null;
+  const workflow=path.basename(process.argv[1]??'').replace(/-host\.mjs$/,'').replace(/\.mjs$/,'')||'cm';
+  import('../notify.mjs').then(({scheduleIdleNotice})=>{
+    if(!cancelled)cancel=scheduleIdleNotice({workflow,project:process.cwd(),sessionKey,seq,row,since});
+  }).catch(()=>{});
+  return ()=>{cancelled=true;cancel?.();};
+}
+
 // A line above the transport limit ends the session. Carry a code and the
 // limit so every host can name it instead of a generic launch failure.
 const tooLarge=limit=>Object.assign(new Error('request_too_large'),{code:'request_too_large',limit});
@@ -40,6 +58,14 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
   let pending=null,buffer=Buffer.alloc(0),failure=null,closeRequested=false;
   let writing=Promise.resolve();
   const controls=new Set();let queuedWrites=0;
+  const sessionKey=randomUUID();let idle=null,seq=0,ended=false,lastRow=undefined,idleSince=0;
+  const clearIdle=()=>{idle?.();idle=null;};
+  const nextStep=()=>{clearIdle();lastRow=undefined;};
+  const rearm=()=>{
+    clearIdle();
+    if(lastRow!==undefined&&!failure&&!closeRequested&&!ended&&pending===null&&controls.size===0)idle=idleNotice(sessionKey,seq,lastRow,idleSince);
+  };
+  const finished=(row,operation)=>{if(!POLLS.has(operation)){lastRow=row;idleSince=Date.now();seq++;}rearm();};
   const outputError=error=>{failure=error;toolBridge?.close();input.destroy(error);};
   const inputError=error=>{if(!closeRequested)failure=error;toolBridge?.close();};
   input.on('error',inputError);
@@ -67,6 +93,7 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
     let request;
     try{
       request=JSON.parse(bytes.toString('utf8'));
+      if(POLLS.has(request?.operation))clearIdle();else nextStep();
       if(toolBridge!==null&&['host_result','host_close'].includes(request?.type)){
         const accepted=toolBridge.accept(request);closeRequested=accepted.closing===true;
         reply({type:'host_response',...accepted}).catch(error=>{failure=error;});return;
@@ -74,24 +101,26 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
       if(!request||typeof request!=='object'||Array.isArray(request)
         ||typeof request.requestId!=='string'||request.requestId.length>128
         ||!operationNames.has(request.operation))throw Error('invalid');
-    }catch{reply({requestId:null,error:{code:'invalid_request'}}).catch(error=>{failure=error;});return;}
+    }catch{nextStep();reply({requestId:null,error:{code:'invalid_request'}}).catch(error=>{failure=error;});return;}
     const requestId=request.requestId;
+    let row=null;
     const invoke=async()=>{
-      try{await reply({requestId,result:await host.handle(request)});}
+      try{const result=await host.handle(request);row={result};await reply({requestId,result});}
       catch(error){
         reportRequestFailure(errorOutput,request.operation,error);
-        await reply({requestId,error:{code:'host_request_failed'}});
+        row={error:{code:'host_request_failed'}};
+        await reply({requestId,...row});
       }
     };
     // Never queue cancel/status behind a long developer or reviewer call.
     if(request.operation==='status'||request.operation==='cancel'){
       // The input reader must not wait for a slow response consumer before it
       // can deliver the next control request (especially cancellation).
-      const control=invoke().finally(()=>{controls.delete(control);});
+      const control=invoke().finally(()=>{controls.delete(control);finished(row,request.operation);});
       controls.add(control);control.catch(error=>{failure=error;});return;
     }
     if(pending){reply({requestId,error:{code:'host_busy'}}).catch(error=>{failure=error;});return;}
-    pending=invoke().finally(()=>{pending=null;});
+    pending=invoke().finally(()=>{pending=null;finished(row,request.operation);});
     pending.catch(error=>{failure=error;});
   }
   try{
@@ -114,7 +143,7 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
   }finally{
     // With a duplex conversation, EOF means no more tool replies can arrive.
     // Reject that wait as disconnected, not as an explicit user cancellation.
-    toolBridge?.close();
+    toolBridge?.close();ended=true;clearIdle();
     // EOF is not a user cancellation. Finish the in-flight result before close.
     try{await Promise.allSettled([...(pending?[pending]:[]),...controls,writing]);}
     finally{
