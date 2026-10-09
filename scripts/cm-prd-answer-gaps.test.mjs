@@ -191,3 +191,26 @@ test('O02: at most two discards per call kind in a session; prd_review and prd_c
     assert.throws(()=>other.discardAnswer({callId:call.callId,requestDigest:call.requestDigest,discard:true,evidence:'x'}),{code:'prd_review_recovery_required'});
   }finally{other.close();}
 });
+
+test('O05/O06: the gate finishes a release interrupted after the abandoned record, without a new record or slot',async t=>{
+  const {claimPrdReview,abandonPrdReviewAttempt}=await import('./cm-prd-review-gate.mjs');
+  const dir=fixture(t),reviews=path.join(dir,'.reviews');fs.mkdirSync(reviews,{mode:0o700});
+  const args={stage:'split',feature:'guide',evidence:path.join(reviews,'prd-guide-split-r1.md'),receipt:path.join(reviews,'prd-guide-split-disposition.json')};
+  const dispatch=path.join(reviews,'prd-guide-split-dispatch.json');
+  for(const [index,call] of ['call-1','call-2'].entries()){
+    claimPrdReview({...args,package_sha256:String(index+1).repeat(64)});
+    const claim=fs.readFileSync(dispatch);
+    assert.equal(abandonPrdReviewAttempt({...args,call_id:call,reason:'原审查不可用'}).outcome,'abandoned');
+    // Simulate the crash window: the record is durable, the claim is back.
+    fs.writeFileSync(dispatch,claim,{mode:0o600});
+    assert.equal(inspectPrdReview(args).outcome,'dispatch_unknown');
+    const resumed=abandonPrdReviewAttempt({...args,call_id:call,reason:'原审查不可用'});
+    assert.deepEqual([resumed.outcome,resumed.abandoned],['release_completed',index+1]);
+    assert.equal(inspectPrdReview(args).outcome,'dispatch_once');
+  }
+  assert.deepEqual(fs.readdirSync(reviews).filter(name=>name.includes('abandoned')).sort(),
+    ['prd-guide-split-dispatch-abandoned-1.json','prd-guide-split-dispatch-abandoned-2.json']);
+  // A different call on a new claim still meets the cap.
+  claimPrdReview({...args,package_sha256:'3'.repeat(64)});
+  assert.throws(()=>abandonPrdReviewAttempt({...args,call_id:'call-3',reason:'x'}),{code:'prd_review_abandon_limit'});
+});

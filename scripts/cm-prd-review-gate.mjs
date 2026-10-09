@@ -216,6 +216,12 @@ export function claimPrdReview(args){
 // Python oracle keep their inspect/claim/record commands unchanged.
 export const MAX_PRD_REVIEW_ABANDONS=2;
 const abandonedFile=(evidence,index)=>evidence.replace(/-r1\.md$/,`-dispatch-abandoned-${index}.json`);
+function releaseClaim(file,directory){
+  fs.unlinkSync(file);
+  if(process.platform!=='win32'){
+    const directoryFd=fs.openSync(directory,'r');try{fs.fsyncSync(directoryFd);}finally{fs.closeSync(directoryFd);}
+  }
+}
 export function abandonPrdReviewAttempt(args){
   const {evidence}=paths(args),directory=path.dirname(evidence),file=dispatchFile(evidence);
   need(typeof args.call_id==='string'&&/^[A-Za-z0-9-]{1,128}$/.test(args.call_id),'invalid call id','prd_review_abandon_binding');
@@ -232,17 +238,26 @@ export function abandonPrdReviewAttempt(args){
     return {stage:args.stage,feature:args.feature,outcome:'already_abandoned',abandoned:existing.length};
   need(gate.outcome==='dispatch_unknown','only an unpublished claimed attempt can be abandoned','prd_review_abandon_unavailable',
     ()=>({dispatch:reviewFile(file)}));
+  const dispatch=loadDispatch(file,args);
+  // Crash window: the abandoned record is durable but the claim was not yet
+  // removed. The same call and the same claim finish that release; no new
+  // record is appended and no slot is spent.
+  const pending=existing.findIndex(item=>item.call_id===args.call_id&&item.package_sha256===dispatch.package_sha256
+    &&item.dispatch_at===dispatch.at&&item.stage===args.stage&&item.feature===args.feature&&item.status==='abandoned');
+  if(pending!==-1){
+    releaseClaim(file,directory);
+    need(inspectPrdReview(args).outcome==='dispatch_once','PRD review claim was not released','prd_review_abandon_unavailable');
+    return {stage:args.stage,feature:args.feature,outcome:'release_completed',abandoned:pending+1,record:abandonedFile(evidence,pending+1),
+      providerAuthorized:false,completionAuthorized:false};
+  }
   need(existing.length<MAX_PRD_REVIEW_ABANDONS,'PRD review abandon limit reached','prd_review_abandon_limit',
     ()=>({dispatch:reviewFile(file)}));
-  const dispatch=loadDispatch(file,args),index=existing.length+1,record=abandonedFile(evidence,index);
+  const index=existing.length+1,record=abandonedFile(evidence,index);
   const value={schema_version:1,stage:args.stage,feature:args.feature,package_sha256:dispatch.package_sha256,
     dispatch_at:dispatch.at,status:'abandoned',call_id:args.call_id,reason:args.reason,at:new Date().toISOString()};
   const fd=fs.openSync(record,'wx',0o600);
   try{fs.writeFileSync(fd,JSON.stringify(value)+'\n');fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
-  fs.unlinkSync(file);
-  if(process.platform!=='win32'){
-    const directoryFd=fs.openSync(directory,'r');try{fs.fsyncSync(directoryFd);}finally{fs.closeSync(directoryFd);}
-  }
+  releaseClaim(file,directory);
   need(inspectPrdReview(args).outcome==='dispatch_once','PRD review claim was not released','prd_review_abandon_unavailable');
   return {stage:args.stage,feature:args.feature,outcome:'abandoned',abandoned:index,record,
     providerAuthorized:false,completionAuthorized:false};
