@@ -128,10 +128,13 @@ function loadCorrection({specs,stage,feature}){
       'prd_correction_archive_original_mismatch');seen.add(item.path);
   }
   const {after,plan}=inspectProposal(review,value.proposal),states=[];
+  // V6 (O04): reconcile each reviewed file against the archive: the corrected
+  // bytes continue, the original bytes are still to be written, anything else
+  // is a conflict for a person (listed with all three digests, never overwritten).
   const before=value.before.map(item=>{
     const currentHash=sha(readCorrectionFile(specs,item.path)),next=after.find(row=>row.path===item.path).sha256;
-    need([item.sha256,next].includes(currentHash),'prd_correction_recovery_conflict');
-    states.push({path:item.path,status:currentHash===next?'matches_correction':'needs_correction'});
+    states.push({path:item.path,status:currentHash===next?'matches_correction':currentHash===item.sha256?'needs_correction':'conflict',
+      ...(currentHash!==next&&currentHash!==item.sha256?{currentSha256:currentHash,originalSha256:item.sha256,correctedSha256:next}:{})});
     return {...item,sha256:currentHash};
   });
   return {specs,stage,feature,review,archiveName,archiveHash:sha(bytes),evidenceHash:sha(readCmInitSource(specs,review.evidence)),
@@ -139,8 +142,10 @@ function loadCorrection({specs,stage,feature}){
 }
 
 export function inspectPrdCorrectionRecovery(input){
-  const value=loadCorrection(input);
-  return json({status:'correction_recovery_inspected',archive:`.reviews/${value.archiveName}`,states:value.states,
+  const value=loadCorrection(input),conflict=value.states.some(item=>item.status==='conflict');
+  return json({status:conflict?'correction_recovery_conflict':'correction_recovery_inspected',archive:`.reviews/${value.archiveName}`,states:value.states,
+    ...(conflict?{guidance:{summary:'修正存档里的文件既不是原文也不是修正稿（conflict），宿主不会覆盖。',
+      nextStep:'逐个核对 conflict 文件的改动来源，保留用户改动；处理成原文或修正稿后再 inspect_correction，确认无冲突再 resume_correction。',authorizationGranted:false}}:{}),
     packageDigest:value.review.packageDigest,decisions:value.plan.decisions,artifacts:value.after,
     writeAuthorized:false,completionAuthorized:false});
 }
@@ -149,6 +154,7 @@ export function resumePrdCorrection(input,signal){
   assertPrdBatchActive(input.specs,[input.feature]);
   need(input.writeEnabled===true&&!signal.aborted,'prd_correction_not_enabled');
   const value=loadCorrection(input),{specs,stage,feature}=input;
+  need(!value.states.some(item=>item.status==='conflict'),'prd_correction_recovery_conflict');
   const current=()=>{
     need(!signal.aborted,'cancelled');const latest=inspectPrdFindings({specs,stage,feature});
     need(latest.packageDigest===value.review.packageDigest&&latest.gate.outcome===value.review.gate.outcome

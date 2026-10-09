@@ -177,3 +177,18 @@ test('real host unknown call resumes with its original callId and requestDigest'
   assert.equal(resumed.status,0,resumed.stderr);assert.equal(resumed.json.result.stage,'analysis_ready');
   assert.equal(JSON.parse(fs.readFileSync(f.store(session))).active,null);
 });
+
+// O03: a late original result for execution evidence is never relayed from a static
+// file; the driver names the exit (abandon, then send the operation again).
+test('resume with a static result for pending self-check evidence points to abandon and a fresh run',t=>{
+  const f=fixture(t);f.write('analyze.json',analyzed);
+  const started=f.drive('start');assert.equal(started.status,0,started.stderr);
+  const runId=started.json.result.runId,store=f.store(runId),state=JSON.parse(fs.readFileSync(store,'utf8'));
+  state.active={request:{requestId:'drive',operation:'advance',text:'Check'},before:state.checkpoint,
+    calls:[{kind:'prd_self_check',callId:'call-1',requestDigest:'0'.repeat(64),payload:{}}]};
+  fs.writeFileSync(store,JSON.stringify(state),{mode:0o600});
+  const run=f.drive('resume',{session:runId,request:{resolution:{callId:'call-1',requestDigest:'0'.repeat(64),result:{},evidence:'late'}}});
+  assert.equal(run.status,2);assert.match(run.stderr,/abandon:true/);assert.match(run.stderr,/contextChecks/);
+  const missing=f.drive('resume',{session:runId,request:{resolution:null}});
+  assert.equal(missing.status,2);assert.match(missing.stderr,/abandon:true 放弃后重发原操作/);
+});

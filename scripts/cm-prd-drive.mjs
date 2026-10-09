@@ -152,8 +152,10 @@ function load(){
         ||Object.hasOwn(pending,'result')||(v.abandon===true?Object.hasOwn(v,'result'):!Object.hasOwn(v,'result')))
         stop(2,'resume 缺少有效 callId/requestDigest/result/evidence 绑定');
       if(v.abandon===true&&state.active.calls.some(c=>c.kind==='prd_review'))stop(2,'prd_review 不可 abandon');
+      // O03: a late original result for execution evidence cannot be relayed from a static file;
+      // abandon the operation and send it again, so the evidence is produced afresh (live runner / contextChecks).
       if(v.abandon!==true&&['prd_materials','prd_self_check'].includes(pending.kind))
-        stop(2,`resume 的 ${pending.kind} 是执行证据，不能从静态 resolution.result 应答`);
+        stop(2,`resume 的 ${pending.kind} 是执行证据，不能从静态 resolution.result 应答；改用 resolution {callId,requestDigest,abandon:true,evidence} 放弃原操作，再重发同一操作（${pending.kind==='prd_materials'?'PLAN.liveEvidence 实时读取材料':'PLAN.contextChecks 重新执行检查'}）`);
     }
   }
   if(operation==='replace_inputs'){
@@ -186,7 +188,7 @@ function load(){
   if(operation==='review_disposition'&&request.stage==='split'&&request.decisions.some(d=>d.status==='applied'))asks.push('prd_self_check');
   if(operation==='resume'&&request.resolution===null){
     const pending=state.active.calls.find(c=>!Object.hasOwn(c,'result'));
-    if(pending)stop(2,`resume 尚缺原调用结果：${pending.kind} ${pending.callId} ${pending.requestDigest}`);
+    if(pending)stop(2,`resume 尚缺原调用结果：${pending.kind} ${pending.callId} ${pending.requestDigest}；找到原回执就填 resolution.result，找不到且不含 prd_review 时用 abandon:true 放弃后重发原操作`);
   }
   let live;
   try{live=driverLiveEvidence(plan,{base,protectedRoots:[project,specs],allowedKinds:['prd_materials']});}

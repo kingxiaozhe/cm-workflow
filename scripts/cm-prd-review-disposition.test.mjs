@@ -167,7 +167,12 @@ for(const mode of ['saved','partial','drift','outside','completed-task','cancell
     assert.equal(fresh.status,0,fresh.stderr);assert.equal(JSON.parse(fresh.stdout).status,'correction_saved');
     assert.equal(calls,1);assert.match(fs.readFileSync(path.join(args.specs,design.path),'utf8'),/Clarified/);
     fs.appendFileSync(path.join(args.specs,design.path),'\nUser edit');
-    assert.throws(()=>inspectPrdCorrectionRecovery(input),/recovery_conflict/);
+    // V6: inspection lists the conflicting file for a person; resuming refuses and writes nothing.
+    const conflict=inspectPrdCorrectionRecovery(input),row=conflict.states.find(item=>item.path===design.path);
+    assert.equal(conflict.status,'correction_recovery_conflict');assert.equal(row.status,'conflict');assert.ok(row.currentSha256&&row.correctedSha256);
+    const edited=fs.readFileSync(path.join(args.specs,design.path),'utf8');
+    assert.throws(()=>resumePrdCorrection({...input,writeEnabled:true},new AbortController().signal),/prd_correction_recovery_conflict/);
+    assert.equal(fs.readFileSync(path.join(args.specs,design.path),'utf8'),edited);
   }
   assert.equal(fs.existsSync(receipt),false);
 });

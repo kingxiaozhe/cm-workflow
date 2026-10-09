@@ -31,7 +31,8 @@ const sessionFailureCodes=new Set(['prd_operation_recovery_required','prd_host_r
   'execution_policy_required','execution_policy_legacy_run','prd_response_already_canonical',
   'prd_predecessor_binding','prd_successor_inputs_changed',
   'prd_answer_discard_limit','prd_correction_recovery_required','prd_review_abandon_not_enabled','prd_review_result_publishable',
-  'prd_review_abandon_unavailable','prd_review_abandon_limit','prd_review_abandon_reason_required','prd_review_abandon_binding']);
+  'prd_review_abandon_unavailable','prd_review_abandon_limit','prd_review_abandon_reason_required','prd_review_abandon_binding',
+  'prd_correction_recovery_conflict']);
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
   let bridge,analysis,session,change=null,started=false,closed=false,record;
