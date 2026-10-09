@@ -47,9 +47,14 @@ const isObject=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const nonempty=x=>typeof x==='string'&&x.trim().length>0;
 function taskKey(task){return `${task.feature}/${task.taskId}`;}
 export function batchDevelopAttempts(state,key,permissions){
-  // A re-check (check_answer_*) re-runs only the checks: no developer answer is asked.
-  if(state.state==='blocked'&&RECHECK_CODES.includes(state.code))return [];
-  if(developmentRetryable(state))return [state.attempt];
+  // The round-1 review this launch authorizes may lead into round 2 within the
+  // same advance (Codex round 1 on Q28): list it too; a missing a2 answer then
+  // holds the task after that review (revision_answer_required) instead of
+  // sending an unanswerable develop request.
+  const reviewNext=state.attempt===1&&permissions.some((flag,index)=>flag==='--allow-review'&&permissions[index+1]===`${key}:1`);
+  // A re-check (check_answer_*) re-runs only the checks: no developer answer for this round.
+  if(state.state==='blocked'&&RECHECK_CODES.includes(state.code))return reviewNext?[2]:[];
+  if(developmentRetryable(state))return reviewNext?[1,2]:[state.attempt];
   if(state.state==='ready'&&state.attempt===1&&permissions.some((flag,index)=>
     flag==='--allow-review'&&permissions[index+1]===`${key}:1`))return [1,2];
   if(['ready','changes_requested'].includes(state.state))return [state.attempt];

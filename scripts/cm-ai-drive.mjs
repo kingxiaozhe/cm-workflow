@@ -437,9 +437,16 @@ function reachableDevelopAttempts({plan,operation,journal,permissions}){
 }
 export function projectDevelopAttempts(status,operation,permissions){
   const {state,attempt,reviewPackage}=status;
-  // A re-check (check_answer_*) re-runs only the checks: no developer answer is asked.
-  if(state==='blocked'&&RECHECK_CODES.includes(status.code))return {attempts:[],reviewFirst:false,packageDigest:null};
-  if(developmentRetryable(status))return {attempts:[attempt],reviewFirst:false,packageDigest:null};
+  // One advance can continue past the round-1 review into round 2 when it holds
+  // --allow-review-attempt 1 (Codex round 1 on Q28): preflight that round too.
+  const reviewAfterDevelop=operation==='advance'&&attempt===1
+    &&permissions.some((flag,index)=>flag==='--allow-review-attempt'&&permissions[index+1]==='1');
+  // A re-check (check_answer_*) re-runs only the checks: no developer answer for
+  // this round, only for the round its review may lead to.
+  if(state==='blocked'&&RECHECK_CODES.includes(status.code))
+    return {attempts:reviewAfterDevelop?[2]:[],reviewFirst:false,reviewAfterDevelop,holdable:true,packageDigest:null};
+  if(developmentRetryable(status))
+    return {attempts:reviewAfterDevelop?[1,2]:[attempt],reviewFirst:false,reviewAfterDevelop,holdable:true,packageDigest:null};
   if(state==='ready'&&attempt===1&&operation==='advance'
     &&permissions.some((flag,index)=>flag==='--allow-review-attempt'&&permissions[index+1]==='1'))
     return {attempts:[1,2],reviewFirst:false,reviewAfterDevelop:true,packageDigest:null};
@@ -682,11 +689,19 @@ function load(){
     :{attempts:[],reviewFirst:false,packageDigest:null};
   const bootstrapAnswers=rules
     ?readBootstrapRulesAnswers({answers,operation,definition,plan,permissions,bootstrap,reachable}):null;
-  const developAnswers=new Map(),deliveries=[];
+  const developAnswers=new Map(),deliveries=[];let holdRevision=false;
   if(asks.includes('develop'))for(const attempt of reachable.attempts){
     const file=answerPath(answers??'',developFilename(answers??'',attempt));
     if(!answers||!fs.existsSync(file)){
       const reviewFile=`.reviews/${definition.feature.replace(/^\d+\./,'')}-${definition.identity.taskId}-r1.md`;
+      // Resuming a retryable block: let the redo and its review run, then stop
+      // at changes_requested (revision_answer_required) instead of asking a
+      // round-2 develop nobody can answer.
+      if(reachable.reviewAfterDevelop&&reachable.holdable&&attempt===2){
+        holdRevision=true;
+        stderr(`没有 ${path.basename(file)}：本次 advance 的首轮审查若要求修改，任务会停在 changes_requested（revision_answer_required），不会发起第 2 轮开发；读取 ${reviewFile} 的 findings，写 answers/develop-a2.json 后再 advance`);
+        continue;
+      }
       if(reachable.reviewAfterDevelop&&attempt===2)
         stop(2,`缺少 ${file}；本次 advance 带 --allow-review-attempt 1，宿主完成首轮审查后可能直接进入第 2 轮 develop。可选：1) 从 PLAN.permissions 移除 --allow-review-attempt 1，先 advance 到 awaiting_review；再用该运行返回的 packageDigest 执行 decision，读取 ${reviewFile} 的 findings；若要求修改，写 answers/develop-a2.json 后 advance。2) 若有意一次跑完，预先写 answers/develop-a2.json 后重试 advance。develop-a2.json 必须针对首轮 findings 修改；与第 1 轮被要求修改的代码逐字节相同时，第 2 轮停在 blocked/develop_unchanged_after_review，不送审，改好后再 advance。`);
       if(reachable.reviewFirst)stop(2,`缺少 ${path.basename(file)}；请先以 decision 和当前 packageDigest ${reachable.packageDigest} 单独运行审查，读取 .reviews/${definition.feature.replace(/^\d+\./,'')}-${definition.identity.taskId}-r${attempt-1}.md 中的 findings，写 answers/develop-a${attempt}.json 后再 advance`);
@@ -711,7 +726,7 @@ function load(){
   });
   if(answer.documentation_sync)for(const target of Object.keys(answer.documentation_sync.edits))
     if(!workflow.documentationPaths.includes(target))stop(2,`documentation-sync.json.edits 越过文档 scope: ${target}`);
-  return {...loaded,definition,identity,permissions,config,answers,answer,developAnswers,live,executionPolicy,
+  return {...loaded,definition,identity,permissions,config,answers,answer,developAnswers,live,executionPolicy,holdRevision,
     bootstrapRules:bootstrapAnswers&&createBootstrapRulesResponder({definition,plan,bootstrap,answers:bootstrapAnswers,
       // Same execution as the task checks: the host's specs sandbox in protected mode, else the driver's own.
       specsRoot:protectedMode?definition.specsDir:null,watch:[config,...permissionFiles]})};
@@ -818,7 +833,7 @@ async function main(){
   // Rules init_verify commands really run once the host has accepted the launch
   // (host_ready) and before the operation is sent: a failure never becomes an
   // unknown develop effect, and the host's own launch validation came first.
-  driveHost({host:HOST,args:buildCmAiDriveHostArgs(plan,permissions,config),cwd:definition.codeProject,operation,request,
+  driveHost({host:HOST,args:[...buildCmAiDriveHostArgs(plan,permissions,config),...(loaded.holdRevision?['--hold-revision']:[])],cwd:definition.codeProject,operation,request,
     answers:answer,paths:{answers:loaded.answers},answerFor,
     ...(loaded.bootstrapRules?{beforeRequest:()=>loaded.bootstrapRules.prepare(plan.mode)}:{})});
 }

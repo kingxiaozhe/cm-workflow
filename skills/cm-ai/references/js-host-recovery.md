@@ -52,7 +52,7 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
 会话没给出可用应答时，宿主不再停在 `unknown/reconcile`，而是给出可重试的阻断；旧运行恢复后按原 journal 同样投影，原记录不改写，新记录只追加。
 每种出口每运行最多 2 次；用满后同样的卡点显示为明确的上限阻断（`check_answer_retry_limit`、`complete_recheck_limit`、`develop_redo_limit`，`pendingAction=none`），reason 写明剩下的出口：查清根因后用 `--supersede-reviewed-evidence` 新建运行，本运行留在盘上的改动需还原或加 `--accept-superseded-code-drift`。上限阻断由 journal 推导，不另写记录。所有提问都有应答期限（`CM_HOST_ANSWER_TIMEOUT_MINUTES`，见 `docs/user-guide.md`），到期后才到的应答一律拒收为 `host_response_late`。
 
-单任务与批次驾驶员按宿主将显示的投影状态（而不是原始回放状态）决定预检哪一轮的开发答案：`develop_call_timeout`、`develop_answer_invalid`、`develop_dispatch_failed` 预检本轮 `develop*.json`；`check_answer_*` 不再问开发，不需要开发答案。`develop_redo` 由驾驶员 PLAN 的 `mode:resume`、`permissions:["--allow-develop-redo"]` 与 `reason` 发出。
+单任务与批次驾驶员按宿主将显示的投影状态（而不是原始回放状态）决定预检哪一轮的开发答案：`develop_call_timeout`、`develop_answer_invalid`、`develop_dispatch_failed` 预检本轮 `develop*.json`；`check_answer_*` 本轮不再问开发。第 1 轮恢复且带首轮审查授权（单任务 `--allow-review-attempt 1`、批次 `--allow-review 任务:1`）时，同一次 `advance` 可能在审查要求修改后进入第 2 轮，驾驶员也预检 `develop-a2.json`；没有这份答案时，单任务驾驶员给宿主加 `--hold-revision`、批次给该任务加 `--hold-revision`，任务在审查后停在 `changes_requested`（`revision_answer_required`），不发起答不上的第 2 轮开发。`develop_redo` 由驾驶员 PLAN 的 `mode:resume`、`permissions:["--allow-develop-redo"]` 与 `reason` 发出。
 
 - `blocked/check_answer_missing`、`blocked/check_answer_invalid`（`pendingAction=resume`）：开发已交付并写回 Learning，之后的检查或验证预检超时、断开、迟到或答复格式不合格（旧记录 `unknown/call_timeout`、`execution_error`、`invalid_input` 等，最后一次开发调用 `succeeded`）。
   先确认上一次检查命令已停止，再 `--mode resume` 后 `advance`：宿主追加 `develop-recheck` 记录，用新 effect id 只重跑检查、验证预检、handoff 与审查包，沿用原交付的 Learning 输入，不重发开发、不占开发调用与 effect 名额，重新划定检查新建文件。
