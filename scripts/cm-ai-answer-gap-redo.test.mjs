@@ -22,7 +22,9 @@ test('develop_answer_missing: a develop that timed out after writing waits for d
   assert.deepEqual([before.at(-1).payload.checkpoint.state,before.at(-1).payload.checkpoint.code],['unknown','call_timeout']);
   // advance alone never redispatches; develop_redo needs its launch flag.
   const [advanced,refused]=await gapSession(f,'resume',gapExecution(f),[['advance',1],['develop_redo',1,{reason:'会话已停止'}]]);
-  assert.equal(advanced.pendingAction,'develop_redo');assert.equal(records(f).length,before.length);
+  // advance reports the block without even trying a develop effect.
+  assert.deepEqual([advanced.outcome,advanced.code,advanced.pendingAction],['reported','develop_answer_missing','develop_redo'],JSON.stringify(advanced));
+  assert.equal(records(f).length,before.length);
   assert.deepEqual([refused.outcome,refused.code],['rejected','develop_redo_authorization_required']);
   // Confirmed: develop-answer-redo, then advance redoes the round with a new effect id.
   const [confirmed,status]=await gapSession(f,'resume',gapExecution(f),
