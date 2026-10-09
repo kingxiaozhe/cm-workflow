@@ -24,13 +24,13 @@
 | `parallel_scope_existing_file`、`parallel_dependency_conflict` | 本文「启动前」3.1 |
 | `fingerprint_mismatch`、`invalid_arguments`、换会话恢复、`host-joined` | R「恢复参数与跨会话接手」 |
 | `resume` 下的 `develop_checks_not_passed`、旧 `checks_not_passed`、`develop_package_too_large`、`develop_empty_changes`、`develop_requirement_missing`、`develop_unchanged_after_review`、`develop_call_timeout`（开发应答超时）、`develop_answer_invalid`（开发应答超出字段上限）；`unknown/limit_exceeded`、`store_failure`、`empty_changes`；`request_too_large`、`host_response_too_large`、`host_response_mismatch`；大小上限或 `runId` 长度致退出 2 | R「开发交付阻断与存档限额」 |
-| `check_answer_missing`、`check_answer_invalid`、`complete_recheck_failed`、`develop_answer_missing`、`develop_redo`、`develop_dispatch_failed`、`role_log_failed`、`host_response_late`、`check_answer_retry_limit`、`complete_recheck_limit`、`develop_redo_limit` | R「应答缺失、无效或迟到」 |
+| `check_answer_missing`、`check_answer_invalid`、`complete_recheck_failed`、`develop_answer_missing`、`develop_redo`、`develop_redo_worker_*`、`develop_dispatch_failed`、`role_log_failed`、`host_response_late`、`check_answer_retry_limit`、`complete_recheck_limit`、`develop_redo_limit` | R「应答缺失、无效或迟到」 |
 | `developer_result_invalid`、`failed/invalid_result`、`protected_edit_stale` | R「开发结果校验失败」 |
 | `develop_retry_limit`、`completion_checks_changed`、`completion_package_changed`、`completion_retry_limit`、`package_mismatch`、`out_of_scope` | R「重试名额与完成前复查」 |
 | `review_transport_timeout`、`review_provider_failed`、`review_verdict_invalid`、verdict `blocked`、`supersede_code_drift`、`review_package_changed` | R「规格漂移、代码漂移与审查失败」「审查计时与快照忽略」 |
 | `spec_drift`（`spec_rebind`／`none`） | R「规格漂移、代码漂移与审查失败」「已批准规格材料（第 24 步）」 |
 | preflight `unrecognized_model`、`stopped_by_probe` | R「审查配置诊断失败」 |
-| `abandon_review`、`abandon_effect`、`review_abandoned`、`unknown/reconciliation_required`、`effect_abandoned` | R「放弃审查调用与 effect」 |
+| `abandon_review`、`abandon_effect`、`review_abandoned`、`unknown/reconciliation_required`、`effect_abandoned`、`develop_interrupted`、`complete_commit_interrupted`、`effect_interrupt_*`、`commit_recovery_conflict`、`review_abandon_budget_exhausted` | R「放弃审查调用与 effect」 |
 | `bootstrap_verification_failed`、`bootstrap_instruction_conflict`、`bootstrap_review_mismatch`、`bootstrap_review_recover`、`init-verify` 命令未通过 | R「bootstrap 规范任务的恢复」 |
 | `correction_review_required`、`fix_record_too_large`、存储目录 `limit_exceeded` | R「已完成运行上的后续改动」 |
 | `handoff_exists`、`review_limit`／`review_blocked` 后重做同一任务 | R「已审交接后的任务重跑」 |

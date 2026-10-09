@@ -25,7 +25,10 @@ import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRu
   RECHECK_CODES,COMPLETE_RECHECK_CODE,developRecheckSource,developRecheckCode,developRecheckReason,
   completeRecheckSource,completeRecheckable,completeRecheckReason,
   DEVELOP_REDO_CODE,developAnswerMissingEffect,developRedoCause,developRedoRequiredReason,developRedoReason,
-  DISPATCH_RETRY_CODE,developDispatchFailedEffect,developDispatchBasis,developDispatchReason,answerGapLimit } from './durable-runner-state.mjs';
+  DISPATCH_RETRY_CODE,developDispatchFailedEffect,developDispatchBasis,developDispatchReason,answerGapLimit,
+  pendingDevelopStart,workerGoneBinding,developRedoSource,COMMIT_INTERRUPTED_CODE,COMMIT_INTERRUPTED_REASON } from './durable-runner-state.mjs';
+import {readProcessStartTime,inspectWorkerGroup} from './worker-process-identity.mjs';
+import {recoverRunnerCommitImage} from './task-commit.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
 import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure} from './provider-review-observation.mjs';
 import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence,
@@ -223,7 +226,7 @@ export function createTaskRunner(options) {
     metadata=json({...metadata,bootstrap:bootstrapConfiguration(bootstrap,{root:config.root,identity:config.identity,
       scope:config.scope,feature:taskLearning.feature})});
   }
-  let store=null,journal=null,restored=null,storeRevision=null,poisoned=false;
+  let store=null,journal=null,restored=null,storeRevision=null,poisoned=false,parsedHistory=null;
   let completion=null,storeIdentity=null,storeOperating=false,liveToken=null,completeEffect=null,taskCommit=null;
   const version=taskMode?(invocationMode?3:2):1;
   if(Object.hasOwn(options,'persistence')) {
@@ -249,7 +252,7 @@ export function createTaskRunner(options) {
       completion=json({version:1,mode:'fixture-task',owner:completion.owner,fingerprints:saved.fingerprints,...selection});
       storeIdentity=saved.identity;metadata=json({...metadata,completion});
     }
-    if(options.persistence.mode==='resume')restored=readRunnerHistory(journal,metadata,version);
+    if(options.persistence.mode==='resume')parsedHistory=restored=readRunnerHistory(journal,metadata,version);
     else need(journal.length===0,'runner_exists');
   }
   // Transient live identity is deliberately absent from metadata/init bytes.
@@ -299,12 +302,13 @@ export function createTaskRunner(options) {
   const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
     &&entry.result?.state==='blocked'
     &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout'].includes(entry.result?.code)
-    ||developTimeoutEffect(entry)||developAnswerInvalidEffect(entry)||developRecheckSource(entry)||developAnswerMissingEffect(entry)||developDispatchFailedEffect(entry)).length;
+    ||developTimeoutEffect(entry)||developAnswerInvalidEffect(entry)||developRecheckSource(entry)||developRedoSource(entry)||developDispatchFailedEffect(entry)).length;
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
     &&entry.result?.state==='blocked'&&['completion_checks_changed','completion_package_changed'].includes(entry.result?.code)
     ||completeRecheckSource(entry)).length;
   const privateStatus=()=>json({state,code,...(reason?{reason}:{}),
-    ...(!(metadata.externalModels||metadata.executionPolicy)&&state==='unknown'&&restored?.pendingAbandonable
+    ...(!(metadata.externalModels||metadata.executionPolicy)&&state==='unknown'&&restored?.pending
+      &&(restored.pendingAbandonable||restored.pendingInterruptible||restored.pendingReviewExhausted)
       ?{pendingEffectKind:restored.pending.kind}:{}),
     ...(!(metadata.externalModels||metadata.executionPolicy)&&state==='unknown'&&restored?.pending?.kind==='review'
       &&restored.state.reviewInvocation?.registration&&restored.state.reviewInvocation.result===null
@@ -364,8 +368,41 @@ export function createTaskRunner(options) {
     answerGapCount('complete-recheck'));
   // V2 + R3: a stuck current-session develop that only an operator confirmation
   // (develop_redo) may redo. Returns the cause or null.
-  const developRedoRequired=()=>!gapsLive()||options.protectedDevelopment===true||options.providerDevelopment===true?null
-    :developRedoCause({state,code,attempt,cache:[...cache.values()],calls,receipt},metadata,answerGapCount('develop-answer-redo'));
+  // Provider development (V9) qualifies only with its worker identity journaled.
+  const providerRun=developer.requestedModel!=='current-session';
+  const developRedoRequired=()=>{
+    if(!gapsLive()||!providerRun&&(options.protectedDevelopment===true||options.providerDevelopment===true))return null;
+    return developRedoCause({state,code,attempt,cache:[...cache.values()],calls,receipt},metadata,
+      answerGapCount('develop-answer-redo'),parsedHistory?.workers??null);
+  };
+  // V9: provider development journals its worker's identity (develop-worker):
+  // spawning right before the spawn, started (pid = process group, start time)
+  // right after. A throw here makes the spawn wrapper kill the new group.
+  const workerJournaling=()=>Boolean(invocationMode&&store&&taskMode&&developer.requestedModel!=='current-session');
+  function journalWorker(effectId,raw){
+    const event=json(raw);shape(event,['phase',...(event?.phase==='started'?['pid']:[])]);
+    need(['spawning','started'].includes(event.phase),'invalid_input');
+    persist('develop-worker',{effectId,invocationId:calls.at(-1).invocationId,phase:event.phase,
+      ...(event.phase==='started'?{pid:event.pid,startTime:readProcessStartTime(event.pid)}:{})});
+  }
+  // The host's proof for a provider develop: 'none' (never spawned), 'gone',
+  // or a refusal code. Windows, permission errors and unreadable start times
+  // are unknown, never gone.
+  // checkpointed: the host was alive after the spawn, so a spawned child with a
+  // pid was journaled in the same tick; spawning alone then means no process.
+  function workerProof(worker,{checkpointed=false}={}){
+    if(worker?.journal!==true)return {code:'worker_identity_unrecorded'};
+    if(!worker.spawned)return {proof:'none'};
+    if(worker.started===null)return checkpointed?{proof:'none'}:{code:'worker_identity_incomplete'};
+    const verdict=inspectWorkerGroup(worker.started);
+    return verdict==='gone'?{proof:'gone',binding:workerGoneBinding(worker.started)}
+      :{code:verdict==='alive'?'worker_process_alive':'worker_process_unknown',pid:worker.started.pid};
+  }
+  const workerRefusal=(prefix,result)=>({code:`${prefix}_${result.code}`,reason:{
+    worker_identity_unrecorded:'这次 provider 开发没有在运行存档里记下 worker 进程身份（旧版本建的 effect，或未配置 provider 模型），宿主无法证明进程已退出；按 reason 手工核对后只能新建运行替代。',
+    worker_identity_incomplete:'运行存档只记到 worker 即将启动，没有记下 pid，宿主无法证明进程已退出；请手工确认该 provider 进程已不存在后，用新建运行替代。',
+    worker_process_alive:`provider worker 进程组（pid ${result.pid}）仍在运行，可能还在写文件；等它退出或手工结束该进程组后再试。`,
+    worker_process_unknown:`宿主无法核对 provider worker 进程组（pid ${result.pid}）是否已退出（Windows、无权限或读不到启动时间），不放行；确认进程已退出后在能核对的环境重试。`}[result.code]});
   // P1-3: a develop that failed before dispatch. A legacy execution_error also
   // needs the live code root to still equal the journal-pinned round start.
   function developDispatchRetry(){
@@ -380,10 +417,18 @@ export function createTaskRunner(options) {
     }catch{return null;}
     return basis;
   }
+  // A45: the host died between task-commit-intent and task-commit-result. Only
+  // the journaled commit plan is followed (recoverCommit); complete is never redone.
+  const commitRecoveryTransaction=()=>!invocationMode||!store||busy||poisoned||restored?.pending?.kind!=='complete'
+    ||!restored.transaction||restored.transaction.resultRecord!==null?null:restored.transaction;
   // The Learning input a re-check must carry: exactly the delivered develop's.
   const recheckLearningInput=()=>RECHECK_CODES.includes(status().code)?json([...cache.values()].at(-1).effect.learningInput):null;
   const status=()=>{
     let current=store?publication:privateStatus();
+    if(current.state==='unknown'&&commitRecoveryTransaction()!==null){
+      const {reason:discard,...rest}=current;
+      current=freeze({...rest,state:'blocked',code:COMMIT_INTERRUPTED_CODE,reason:COMMIT_INTERRUPTED_REASON});
+    }
     if(current.state==='unknown'){
       const recheck=developRecheck();
       if(recheck!==null)current=freeze({...current,state:'blocked',code:recheck,reason:developRecheckReason(recheck,current.code)});
@@ -407,17 +452,20 @@ export function createTaskRunner(options) {
     if(current.state==='blocked'&&current.code===DISPATCH_RETRY_CODE&&developDispatchRetry()===null){
       const {reason:discard,...rest}=current;current=freeze({...rest,state:'unknown',code:[...cache.values()].at(-1).result.code});
     }
-    if(current.state==='unknown'||current.state==='blocked'&&current.code==='failed'){
+    if(current.state==='unknown'||current.state==='blocked'&&['failed','unavailable'].includes(current.code)){
       const cause=developRedoRequired();
       if(cause!==null){const {reason:discard,...rest}=current;
         current=freeze({...rest,state:'blocked',code:DEVELOP_REDO_CODE,reason:developRedoRequiredReason(cause),developRedoRequired:true});}
     }
     // R2: a spent exit is an explicit limit block, never an exit-less unknown.
-    if((current.state==='unknown'||current.state==='blocked'&&current.code==='failed')&&gapsLive()&&options.providerDevelopment!==true){
+    if((current.state==='unknown'||current.state==='blocked'&&['failed','unavailable'].includes(current.code))&&gapsLive()
+      &&(options.providerDevelopment!==true||providerRun)){
       const limit=answerGapLimit({state,code,attempt,cache:[...cache.values()],calls,receipt,learningResult,taskCommit,reviewPackage,priorReview},
         metadata,{developRecheck:answerGapCount('develop-recheck'),completeRecheck:answerGapCount('complete-recheck'),
-          developRedo:answerGapCount('develop-answer-redo'),developDispatch:answerGapCount('develop-dispatch-retry')});
-      if(limit!==null&&!(options.protectedDevelopment===true&&limit.code==='develop_redo_limit')){
+          developRedo:answerGapCount('develop-answer-redo'),developDispatch:answerGapCount('develop-dispatch-retry'),
+          workers:parsedHistory?.workers??null});
+      if(limit!==null&&(options.providerDevelopment===true?limit.code==='develop_redo_limit'
+        :!(options.protectedDevelopment===true&&limit.code==='develop_redo_limit'))){
         const {reason:discard,...rest}=current;current=freeze({...rest,state:'blocked',code:limit.code,reason:limit.reason});}
     }
     if(!busy&&!poisoned&&bootstrapReviewRecoverable(frame(),restored?.pending??null,metadata.bootstrap))
@@ -528,7 +576,7 @@ export function createTaskRunner(options) {
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
         'review-invocation-abandoned':'result','review-invocation-receipt':'result','review-invocation-reconciled':'result','effect-abandoned':'result',
         'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
-        'evidence-superseded':'result','develop-retry-limit':'result','develop-timeout-retry':'result','develop-answer-retry':'result','develop-recheck':'result','complete-recheck':'result','develop-answer-redo':'result','develop-dispatch-retry':'result','completion-retry-limit':'result','specification-rebound':'result',
+        'evidence-superseded':'result','develop-retry-limit':'result','develop-worker':'result','effect-interrupted':'result','develop-timeout-retry':'result','develop-answer-retry':'result','develop-recheck':'result','complete-recheck':'result','develop-answer-redo':'result','develop-dispatch-retry':'result','completion-retry-limit':'result','specification-rebound':'result',
         'bootstrap-review-recovered':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
@@ -552,7 +600,7 @@ export function createTaskRunner(options) {
       const saved=store.snapshot();need(!poisoned,'store_failure');
       const {revision:old,...body}=current,expected={...body,records:[...journal,record]};
       same(saved,{...expected,revision:digest(expected)},'runner_store_changed');
-      need(!poisoned,'store_failure');journal=saved.records;storeRevision=saved.revision;
+      need(!poisoned,'store_failure');journal=saved.records;storeRevision=saved.revision;parsedHistory=parsed;
       if(type.startsWith('task-commit-'))taskCommit=parsed.state.taskCommit;
       return record;
     });
@@ -643,7 +691,7 @@ export function createTaskRunner(options) {
     return status();
   }
   function active(){need(!poisoned,'store_failure');need(state!=='cancelled','cancelled');}
-  async function bounded(fn,request) {
+  async function bounded(fn,request,extraControl=null) {
     active();let timer,abort;
     try {
       const boxed=await Promise.race([
@@ -652,7 +700,7 @@ export function createTaskRunner(options) {
           const accept=value=>{try {resolve({value:json(value)});}catch(error){reject(error);}};
           queueMicrotask(()=>{
             try {
-              active();const returned=fn(request,{signal:controller.signal});
+              active();const returned=fn(request,{signal:controller.signal,...(extraControl??{})});
               if(types.isPromise(returned)) {
                 const supported=Object.getPrototypeOf(returned)===promisePrototype
                   && !Object.hasOwn(returned,'constructor');
@@ -672,14 +720,14 @@ export function createTaskRunner(options) {
       return boxed.value;
     } finally {clearTimeout(timer);controller.signal.removeEventListener('abort',abort);}
   }
-  async function invoke(adapter,role,contextId,payload) {
+  async function invoke(adapter,role,contextId,payload,extraControl=null) {
     const request=requestFor({invocationId:`${session}.${++sequence}`,identity:{...config.identity,attempt},
       role,provider:adapter.provider,requestedModel:adapter.requestedModel,contextId,payload});
     const call={invocationId:request.invocationId,contextId,provider:adapter.provider,requestedModel:adapter.requestedModel,
       effectiveModel:'unknown',channel:'fixture',started:true,terminal:'running',requestDigest:request.requestDigest,resultDigest:null};
     calls.push(call);
     try {
-      const response=terminalFor(await bounded(adapter.run,request),request);active();
+      const response=terminalFor(await bounded(adapter.run,request,extraControl),request);active();
       call.terminal=response.status;call.effectiveModel=response.effectiveModel;call.resultDigest=digest(response.result);
       if(role==='developer'&&response.status==='failed'&&response.result!==null)call.failureResult=response.result;
       if(role==='developer'&&Object.hasOwn(response,'blockedReason'))call.blockedReason=response.blockedReason;
@@ -1080,7 +1128,8 @@ export function createTaskRunner(options) {
         requirements:original.files.filter(f=>config.requirements.includes(f.path)),priorReview,
         ...supersededReviewPayload(carriedReview,attempt),
         ...(Object.hasOwn(original,'specification')?{specification:verifySpecificationMaterial(original)}:{}),
-        ...(Object.hasOwn(v,'learningInput')?{learningInput:v.learningInput}:{})});
+        ...(Object.hasOwn(v,'learningInput')?{learningInput:v.learningInput}:{})},
+      workerJournaling()?{onWorker:event=>journalWorker(v.id,event)}:null);
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(result.response.status!=='succeeded'){
         const failure=result.response.result?.code;
@@ -1291,7 +1340,7 @@ export function createTaskRunner(options) {
           checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
       } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:failureCode(error),
         ...(safeReason(error)?{reason:safeReason(error)}:{})}));}
-      try{const record=persist('effect-intent',{effect:v});
+      try{const record=persist('effect-intent',{effect:v,...(v.kind==='develop'&&workerJournaling()?{workerJournal:true}:{})});
         if(taskMode&&v.kind==='complete')completeEffect={effect:v,digest:record.digest};
       }catch{return Promise.resolve(poison());}
     }
@@ -1554,20 +1603,77 @@ export function createTaskRunner(options) {
         &&!/[\r\n\0]/.test(value.reason),'effect_abandon_reason_required');
       const history=readRunnerHistory(journal,metadata,3),effect=history.pending;
       need(effect!==null,'effect_abandon_no_pending');
-      need(effect.kind!=='review'||history.pendingAbandonable,'effect_abandon_review_pending');
+      need(history.transaction===null&&history.state.taskCommit?.intentDigest==null,'effect_abandon_commit_pending');
+      // V8: retire the interrupted step and continue the run from its retryable block.
+      if(history.pendingInterruptible)return interruptEffect(history,effect,value.reason);
+      need(effect.kind!=='review'||history.pendingAbandonable||history.pendingReviewExhausted,'effect_abandon_review_pending');
       need(['develop','complete','review'].includes(effect.kind),'effect_abandon_unavailable');
       need(effect.kind!=='develop'||options.providerDevelopment!==true,'effect_abandon_provider_development');
-      need(history.transaction===null&&history.state.taskCommit?.intentDigest==null,'effect_abandon_commit_pending');
       need(history.state.state==='unknown'&&history.state.code==='reconciliation_required'
-        &&history.pendingAbandonable,'effect_abandon_unavailable');
+        &&(history.pendingAbandonable||history.pendingReviewExhausted),'effect_abandon_unavailable');
       const intent=journal.findLast(row=>row.payload.type==='effect-intent');
       persist('effect-abandoned',{effectId:effect.id,effectKind:effect.kind,intentDigest:intent.digest,
         lastRecordDigest:journal.at(-1).digest,reason:value.reason,at:new Date().toISOString()});
       const recovered=readRunnerHistory(journal,metadata,3).state;
       ({state,code,sequence}=recovered);reason=recovered.reason;restored.pending=null;
       publication=privateStatus();return status();
-    }catch(error){return freeze({outcome:'rejected',code:error.code??'effect_abandon_unavailable',
-      ...(error.code==='effect_abandon_commit_pending'?{reason:'task-commit-intent 已写入，tasks.md 可能已改名或勾选；请核对 tasks.md、提交回执和旧进程后按原提交恢复路径处理。'}:{})});}
+    }catch(error){return freeze({outcome:'rejected',code:poisoned?'store_failure':error.code??'effect_abandon_unavailable',
+      ...(error.code==='effect_abandon_commit_pending'?{reason:'task-commit-intent 已写入，tasks.md 可能已改名或勾选；不能放弃或重做完成。发送 complete，宿主只按运行存档里的提交计划核对 tasks.md 并收尾。'}
+        :!poisoned&&error.reason?{reason:error.reason}:{})});}
+  };
+  function interruptEffect(history,effect,why){
+    const refuse=(code,detail)=>{throw Object.assign(new Error(code),{code,reason:detail});};
+    const extra={};
+    if(effect.kind==='develop'){
+      if(options.providerDevelopment===true&&!providerRun)refuse('effect_interrupt_worker_identity_unrecorded',
+        '这次 provider 开发没有配置 provider 模型，运行存档无法记下 worker 进程身份，宿主无法证明进程已退出；请手工确认进程已退出后用新建运行替代。');
+      if(providerRun){
+        const proof=workerProof(history.pendingWorker);
+        if(proof.code){const refusal=workerRefusal('effect_interrupt',proof);refuse(refusal.code,refusal.reason);}
+        if(proof.proof==='gone')extra.worker=proof.binding;
+      }else if(options.protectedDevelopment===true){
+        // A protected write is a host apply: a changed root can only be a partly
+        // applied proposal, which is never sent to review as a new delivery.
+        const basis=pendingDevelopStart(history.state);
+        if(basis===null)refuse('effect_interrupt_root_unpinned','受保护开发的本轮起点无法从运行存档确定（本轮之前已有被拦下的交付），宿主不能证明中途没有写到一半；核对后用新建运行替代。');
+        try{
+          if(basis==='reviewed_package')verifyReviewPackage({root:config.root,baseline:attemptBaseline(original,reviewPackage.identity.attempt),
+            checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
+          else assertReadyBaseline();
+        }catch(error){refuse('effect_interrupt_root_changed',boundedReason('受保护开发中途退出后代码根已不等于本轮起点（可能是写到一半的提案）：',
+          [safeReason(error)??error?.code??'changed'],'。把这些文件还原到本轮起点后重试 abandon_effect；半成品不会被当成新交付送审。'));}
+        extra.basis=basis;
+      }
+    }
+    const intent=journal.findLast(row=>row.payload.type==='effect-intent');
+    persist('effect-interrupted',{effectId:effect.id,effectKind:effect.kind,intentDigest:intent.digest,
+      lastRecordDigest:journal.at(-1).digest,reason:why,at:new Date().toISOString(),...extra});
+    const recovered=readRunnerHistory(journal,metadata,3).state;
+    ({state,code,sequence}=recovered);reason=recovered.reason??null;
+    calls.splice(0,calls.length,...recovered.calls);
+    restored.pending=null;publication=privateStatus();return status();
+  }
+  // A45: finish the interrupted task commit from its journaled plan only.
+  const recoverCommit=()=>{
+    try{
+      const transaction=commitRecoveryTransaction();need(transaction!==null,'commit_recovery_unavailable');
+      const effect=restored.pending,intent=transaction.intentRecord.payload.commit;
+      recoverRunnerCommitImage(completion.owner,intent,()=>verifyReviewPackage({root:config.root,baseline:base,
+        checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()}));
+      persist('task-commit-result',{effectId:effect.id,completeIntentDigest:transaction.completeIntentDigest,
+        commit:{version:1,protocol:'cm-task-commit',type:'result',intentDigest:transaction.intentRecord.digest,
+          planDigest:intent.plan.planDigest,outcome:'fixture_committed'}});
+      state='fixture_completed';code=null;reason=null;
+      const response=privateStatus();cache.set(effect.id,{effect,digest:digest(effect),result:response});
+      persist('effect-checkpoint',{effectId:effect.id,checkpoint:frame()});
+      restored.pending=null;publication=response;return status();
+    }catch(error){
+      if(poisoned)return freeze({outcome:'rejected',code:'store_failure'});
+      return freeze({outcome:'rejected',code:error.code??'commit_recovery_unavailable',reason:error.code==='commit_recovery_conflict'
+        ?'tasks.md 或提交计划引用的证据文件既不是提交前也不是提交后的样子（或已被改动）；宿主不改写。请核对 tasks.md 与 .reviews 下的 handoff/审查文件，还原后重试 complete。'
+        :error.code==='commit_recovery_code_changed'?'代码已不等于审查通过的交付，宿主不勾选任务；还原到审查通过的交付后重试 complete。'
+        :'完成提交无法按运行存档的提交计划收尾；保留现场核对 tasks.md 与提交记录。'});
+    }
   };
   // The operator's confirmation that the stuck current-session develop stopped
   // writing (R3). Journals develop-answer-redo; the next advance redoes the round.
@@ -1579,10 +1685,17 @@ export function createTaskRunner(options) {
       need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=500
         &&!/[\r\n\0]/.test(value.reason),'develop_redo_reason_required');
       const cause=developRedoRequired();need(cause!==null,'develop_redo_unavailable');
-      persist('develop-answer-redo',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId,
-        cause,reason:value.reason,at:new Date().toISOString()});
+      const effectId=[...cache.values()].at(-1).effect.id;let worker=null;
+      if(cause.startsWith('provider_')){
+        const proof=workerProof(parsedHistory?.workers?.[effectId],{checkpointed:true});
+        if(proof.code){const refusal=workerRefusal('develop_redo',proof);throw Object.assign(new Error(refusal.code),refusal);}
+        if(proof.proof==='gone')worker=proof.binding;
+      }
+      persist('develop-answer-redo',{effectId,invocationId:calls.at(-1).invocationId,
+        cause,reason:value.reason,at:new Date().toISOString(),...(worker?{worker}:{})});
       halt('blocked',DEVELOP_REDO_CODE,developRedoReason(cause));publication=privateStatus();return status();
-    }catch(error){return freeze({outcome:'rejected',code:poisoned?'store_failure':error.code??'develop_redo_unavailable'});}
+    }catch(error){return freeze({outcome:'rejected',code:poisoned?'store_failure':error.code??'develop_redo_unavailable',
+      ...(!poisoned&&error.reason?{reason:error.reason}:{})});}
   };
   const recoverBootstrapReview=raw=>{
     try{
@@ -1617,7 +1730,9 @@ export function createTaskRunner(options) {
     }catch(error){return freeze({outcome:'rejected',code:error.code??'bootstrap_review_recovery_mismatch',
       reason:'原运行的文件、handoff 或证据无法精确核对；请保留现场并检查差异，不要重新派发开发。'});}
   };
-  const api={reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks,recheckLearningInput,redoDevelop};
+  // Interrupted intents keep their ids; the entry derives fresh ones from this count.
+  const interruptions=kind=>parsedHistory?.interrupted?.filter(item=>item.kind===kind).length??0;
+  const api={reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks,recheckLearningInput,redoDevelop,recoverCommit,interruptions};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   // A terminal reviewer observation is durable even if the host died before

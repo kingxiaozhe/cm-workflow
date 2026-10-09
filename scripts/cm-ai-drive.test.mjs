@@ -285,9 +285,11 @@ test('driver resumes an interrupted develop and sends the bound abandon_effect r
     reason:'Old host and its checks have exited'});
   const result=f.drive(plan,'abandon_effect');assert.equal(result.status,0,result.stderr);
   const response=JSON.parse(result.stdout).result;
-  assert.equal(response.state,'cancelled');assert.equal(response.code,'effect_abandoned');
+  // V8: the run continues from develop_interrupted instead of being voided.
+  assert.equal(response.state,'blocked');assert.equal(response.code,'develop_interrupted');
+  assert.equal(response.pendingAction,'resume');
   const saved=JSON.parse(fs.readFileSync(f.store,'utf8'));
-  assert.deepEqual(saved.records.slice(-2).map(row=>row.payload.type),['effect-intent','effect-abandoned']);
+  assert.deepEqual(saved.records.slice(-2).map(row=>row.payload.type),['effect-intent','effect-interrupted']);
 });
 test('real host drives split-root bootstrap scaffold, then refuses rules without answer files before creating T-002 run',
   {skip:process.platform!=='darwin'},t=>{

@@ -29,12 +29,12 @@ const retryReview=reviewRetryable;
 // second copy of the code list that silently drifts.
 export const developmentRetryable=status=>status.state==='blocked'
   &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','develop_call_timeout','develop_answer_invalid',
-    'check_answer_missing','check_answer_invalid','develop_answer_missing','develop_dispatch_failed'].includes(status.code)
+    'check_answer_missing','check_answer_invalid','develop_answer_missing','develop_dispatch_failed','develop_interrupted'].includes(status.code)
   // Shown before the operator confirmed the session stopped: not yet redoable.
   &&status.developRedoRequired!==true;
 const retryDeveloper=developmentRetryable;
 export const completionRetryable=status=>status.state==='blocked'
-  &&['completion_checks_changed','completion_package_changed','complete_recheck_failed'].includes(status.code)
+  &&['completion_checks_changed','completion_package_changed','complete_recheck_failed','complete_commit_interrupted'].includes(status.code)
   &&status.retryReady!==false;
 const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approval':
   // The runner reports spec_drift over any state whose next effect would be refused.
@@ -146,7 +146,7 @@ function effectSummary(operation,result,runner,identity) {
   }
   // A rejected current-session answer is checkpointed blocked/failed; the
   // runner's status shows it as the retryable develop_answer_invalid block.
-  if(result?.state==='blocked'&&result.code==='failed'){
+  if(result?.state==='blocked'&&['failed','unavailable'].includes(result.code)){
     const current=runner.status();if(['develop_answer_invalid','develop_answer_missing'].includes(current.code))result=current;
   }
   return summary(operation,boundStatus(result,identity),result?.code==='handoff_exists'?'blocked':'advanced');
@@ -234,6 +234,8 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'abandonEffect'))runnerKeys.push('abandonEffect');
   if(runner&&Object.hasOwn(runner,'recoverBootstrapReview'))runnerKeys.push('recoverBootstrapReview');
   if(runner&&Object.hasOwn(runner,'redoDevelop'))runnerKeys.push('redoDevelop');
+  if(runner&&Object.hasOwn(runner,'recoverCommit'))runnerKeys.push('recoverCommit');
+  if(runner&&Object.hasOwn(runner,'interruptions'))runnerKeys.push('interruptions');
   if(runner&&Object.hasOwn(runner,'inspectBootstrapAdmission'))runnerKeys.push('inspectBootstrapAdmission');
   shape(runner,runnerKeys);
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');
@@ -249,6 +251,8 @@ export function createCmAiConversationEntry(options) {
   if(Object.hasOwn(runner,'abandonEffect'))need(typeof runner.abandonEffect==='function');
   if(Object.hasOwn(runner,'recoverBootstrapReview'))need(typeof runner.recoverBootstrapReview==='function');
   if(Object.hasOwn(runner,'redoDevelop'))need(typeof runner.redoDevelop==='function');
+  if(Object.hasOwn(runner,'recoverCommit'))need(typeof runner.recoverCommit==='function');
+  if(Object.hasOwn(runner,'interruptions'))need(typeof runner.interruptions==='function');
   if(Object.hasOwn(runner,'inspectBootstrapAdmission'))need(typeof runner.inspectBootstrapAdmission==='function');
   need(options.allowAbandonReview===undefined||typeof options.allowAbandonReview==='boolean','invalid_input');
   let abandonPermission=options.allowAbandonReview===true;
@@ -574,7 +578,8 @@ export function createCmAiConversationEntry(options) {
         ??{outcome:'rejected',code:'effect_abandon_unavailable'};
       if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code,
         ...(result.reason?{reason:result.reason}:{})},'rejected');
-      return summary(operation,boundStatus(result,identity),'abandoned');
+      // V8: an interrupted step continues in the run (recorded); a void ends it.
+      return summary(operation,boundStatus(result,identity),result.code==='effect_abandoned'?'abandoned':'recorded');
     }
     if(operation.operation==='develop_redo'){
       if(!developRedoPermission)return summary(operation,{...runner.status(),
@@ -582,7 +587,8 @@ export function createCmAiConversationEntry(options) {
       developRedoPermission=false;
       const result=runner.redoDevelop?.({allowed:true,reason:operation.reason})
         ??{outcome:'rejected',code:'develop_redo_unavailable'};
-      if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code},'rejected');
+      if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code,
+        ...(result.reason?{reason:result.reason}:{})},'rejected');
       return summary(operation,boundStatus(result,identity),'recorded');
     }
     if(operation.operation==='bootstrap_review_recover'){
@@ -632,7 +638,8 @@ export function createCmAiConversationEntry(options) {
       const retries=retryReview(status)?status.calls.filter(call=>call.channel==='host-authorized'
         &&['failed','abandoned'].includes(call.terminal)
         &&call.contextId===status.reviewInvocation.registration.grant.logicalContextId).length:0;
-      const effectId=`review-${identity.attempt}${retries?`-retry-${retries}`:''}`;
+      const resumed=runner.interruptions?.('review')??0;
+      const effectId=`review-${identity.attempt}${retries?`-retry-${retries}`:''}${resumed?`-resume-${resumed}`:''}`;
       const result=await runner.executeEffect({version:1,id:effectId,identity,kind:'review'});
       return effectSummary(operation,result,runner,identity);
     }
@@ -643,8 +650,13 @@ export function createCmAiConversationEntry(options) {
       if(status.code==='completion_package_changed'&&status.retryReady===false)return summary(operation,status,'rejected');
       const correction=correctionSummary(operation,status);if(correction)return correction;
       need(['approved','fixture_completed'].includes(status.state)||completionRetryable(status),'completion_not_ready');
-      const retries=runner.completionBlocks?.()??0;
-      const effectId=`complete-${identity.attempt}${retries?`-retry-${retries}`:''}`;
+      // A45: finish the interrupted task commit from its journaled plan only.
+      if(status.code==='complete_commit_interrupted'){
+        const recovered=runner.recoverCommit?.()??{outcome:'rejected',code:'commit_recovery_unavailable'};
+        return effectSummary(operation,recovered,runner,identity);
+      }
+      const retries=runner.completionBlocks?.()??0,resumed=runner.interruptions?.('complete')??0;
+      const effectId=`complete-${identity.attempt}${retries?`-retry-${retries}`:''}${resumed?`-resume-${resumed}`:''}`;
       const result=await runner.executeEffect({version:1,id:effectId,identity,kind:'complete'});
       return effectSummary(operation,result,runner,identity);
     }
@@ -826,8 +838,8 @@ export function createCmAiConversationEntry(options) {
       &&call.failureResult?.code==='invalid_result'&&call.failureResult.retryable===true).length;
     // Both kinds of local rejection need a fresh effect id: an invalid developer
     // result, and one the host gate blocked before the review package existed.
-    const retries=rejectedValues+(runner.verificationBlocks?.()??0);
-    const effectId=`develop-${identity.attempt}${retries?`-retry-${retries}`:''}`;
+    const retries=rejectedValues+(runner.verificationBlocks?.()??0),resumed=runner.interruptions?.('develop')??0;
+    const effectId=`develop-${identity.attempt}${retries?`-retry-${retries}`:''}${resumed?`-resume-${resumed}`:''}`;
     const result=await runner.executeEffect({version:1,id:effectId,identity,kind:'develop',learningInput});
     return effectSummary(operation,result,runner,identity);
   }
