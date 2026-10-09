@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {buildReport, collectClaude, collectCodex, renderMarkdown, parseArgs, main, UNATTRIBUTED} from './cm-token-report.mjs';
+import {buildReport, collectClaude, collectCodex, readSpecsLog, renderMarkdown, parseArgs, main, lines, UNATTRIBUTED} from './cm-token-report.mjs';
 
 const script = fileURLToPath(new URL('./cm-token-report.mjs', import.meta.url));
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-token-report-home-'));
@@ -137,7 +137,7 @@ test('合成消息、cwd 不在项目内、字段不全不计入，且不估算'
   const c = await collectClaude(f.claude, f.project);
   assert.equal(c.stats.synthetic_skipped, 1);
   assert.equal(c.stats.outside_cwd, 1);
-  assert.equal(c.stats.incomplete, 1);
+  assert.equal(c.stats.incomplete_usage, 1);
   assert.ok(!c.records.some((r) => r.input === 99 || r.input === 5));
   assert.equal(c.records.length, 7); // m1 m2 m3 m4 m5 m9 m10
 });
@@ -210,4 +210,120 @@ test('目录不存在或日志缺失：如实标注，不报错也不估算', as
   assert.equal(rep.claude_stats.dir_missing, true);
   assert.equal(rep.codex_stats.dir_missing, true);
   assert.match(renderMarkdown(rep), /文件不存在/);
+});
+
+// ---------- 第一轮审查修复的回归测试 ----------
+const run1 = (f, extra = {}) => buildReport({project: f.project, specsDirs: [f.specs], claudeProjects: f.claude, codexSessions: f.codex, ...extra});
+const projDir = (f) => path.join(f.claude, f.project.replace(/[^A-Za-z0-9]/g, '-'));
+
+test('隐私：model 是数组/对象/过长/带空格时不进入输出（只放行短的模型标识符）', async (t) => {
+  const f = fixture(t);
+  fs.appendFileSync(path.join(projDir(f), 's1.jsonl'), jl([
+    claudeLine({id: 'p1', t: '2026-10-01T10:03:00.000Z', cwd: f.project, usage: u(1, 1, 1, 1), model: ['BODY-CANARY']}),
+    claudeLine({id: 'p2', t: '2026-10-01T10:03:00.000Z', cwd: f.project, usage: u(1, 1, 1, 1), model: {nested: 'BODY-CANARY'}}),
+    claudeLine({id: 'p3', t: '2026-10-01T10:03:00.000Z', cwd: f.project, usage: u(1, 1, 1, 1), model: 'BODY CANARY with spaces'}),
+    claudeLine({id: 'p4', t: '2026-10-01T10:03:00.000Z', cwd: f.project, usage: u(1, 1, 1, 1), model: 'x'.repeat(101)}),
+    {...claudeLine({id: 'p5', t: '2026-10-01T10:03:00.000Z', cwd: f.project, usage: u(1, 1, 1, 1)}), sessionId: ['BODY-CANARY']},
+  ]));
+  const cdir = path.join(f.codex, '2026', '10', '01');
+  fs.appendFileSync(path.join(cdir, 'rollout-a.jsonl'), jl([
+    {timestamp: '2026-10-01T10:04:00.000Z', type: 'turn_context', payload: {cwd: f.project, model: ['BODY-CANARY']}},
+    {timestamp: '2026-10-01T10:04:01.000Z', type: 'event_msg', payload: {type: 'token_count', info: {total_token_usage: {total_tokens: 9000}, last_token_usage: {input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1}}}},
+  ]));
+  const rep = await run1(f);
+  const out = renderMarkdown(rep) + JSON.stringify(rep);
+  assert.ok(!out.includes('BODY-CANARY') && !out.includes('BODY CANARY') && !out.includes('xxxxxxxxxx'));
+  assert.equal(rep.by_model['未知'].calls, 4); // p1..p4；Codex 的非法 model 保留上一个合法值
+});
+
+test('安全：运行日志是指向 specs 之外的符号链接时不读取；转录目录里指向外部的链接跳过并计数', async (t) => {
+  const f = fixture(t);
+  const outside = path.join(f.root, 'outside.jsonl');
+  fs.writeFileSync(outside, jl([cmRow('2026-10-01T10:00:00Z', 'cm-ai', 'run_start', '', 'evil-run')]));
+  const spec2 = path.join(f.project, 'specs2');
+  fs.mkdirSync(spec2);
+  fs.symlinkSync(outside, path.join(spec2, '运行日志.jsonl'));
+  const lg = await readSpecsLog(spec2);
+  assert.equal(lg.unsafe, true);
+  assert.equal(lg.rows.length, 0);
+  const evil = path.join(f.root, 'evil-transcript.jsonl');
+  fs.writeFileSync(evil, jl([claudeLine({id: 'evil', t: '2026-10-01T10:01:00.000Z', cwd: f.project, usage: u(777, 0, 0, 0)})]));
+  fs.symlinkSync(evil, path.join(projDir(f), 'link.jsonl'));
+  const c = await collectClaude(f.claude, f.project);
+  assert.equal(c.stats.unsafe_links_skipped, 1);
+  assert.ok(!c.records.some((r) => r.input === 777));
+  fs.symlinkSync(evil, path.join(f.codex, '2026', '10', '01', 'link.jsonl'));
+  assert.equal((await collectCodex(f.codex, f.project)).stats.unsafe_links_skipped, 1);
+});
+
+test('--since 按事件时间戳过滤 Codex，不按日期目录跳过', async (t) => {
+  const f = fixture(t);
+  const old = path.join(f.codex, '2020', '01', '01');
+  fs.mkdirSync(old, {recursive: true});
+  const ev = (t2, total) => ({timestamp: t2, type: 'event_msg', payload: {type: 'token_count', info: {total_token_usage: {total_tokens: total}, last_token_usage: {input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1}}}});
+  fs.writeFileSync(path.join(old, 'rollout-old-dir.jsonl'), jl([
+    {timestamp: '2026-10-01T09:00:00Z', type: 'session_meta', payload: {id: 'cx9', cwd: f.project}},
+    ev('2026-10-01T09:30:00Z', 11), ev('2026-10-01T10:30:00Z', 22),
+  ]));
+  const x = await collectCodex(f.codex, f.project, {sinceMs: Date.parse('2026-10-01T10:00:00Z')});
+  assert.ok(x.records.some((r) => r.session === 'cx9' && r.t === Date.parse('2026-10-01T10:30:00Z')));
+  assert.ok(!x.records.some((r) => r.session === 'cx9' && r.t === Date.parse('2026-10-01T09:30:00Z')));
+});
+
+test('缺失的缓存字段不补 0：缺 cached_input_tokens 的 Codex 记录整条排除并计数，缺 cache_write 记为未知', async (t) => {
+  const f = fixture(t);
+  const ev = (t2, total, last) => ({timestamp: t2, type: 'event_msg', payload: {type: 'token_count', info: {total_token_usage: {total_tokens: total}, last_token_usage: last}}});
+  fs.appendFileSync(path.join(f.codex, '2026', '10', '01', 'rollout-a.jsonl'), jl([
+    ev('2026-10-01T10:05:00Z', 5000, {input_tokens: 900, output_tokens: 10}), // 缺 cached
+    ev('2026-10-01T10:06:00Z', 5100, {input_tokens: 50, cached_input_tokens: 10, output_tokens: 1}), // 缺 cache_write
+    ev('2026-10-01T10:07:00Z', 5200, {input_tokens: 5, cached_input_tokens: 10, output_tokens: 1}), // cached > input：不自洽
+  ]));
+  const x = await collectCodex(f.codex, f.project);
+  assert.equal(x.stats.incomplete_usage, 2);
+  assert.equal(x.stats.cache_write_unknown, 1);
+  assert.ok(!x.records.some((r) => r.input === 900));
+  const unknown = x.records.find((r) => r.cache_write === null);
+  assert.deepEqual([unknown.input, unknown.cache_read], [40, 10]);
+  const rep = await run1(f);
+  assert.equal(rep.flags.cache_write_unknown_calls, 1);
+});
+
+test('读取提前结束或遇到超长行时：底层流被销毁，超长行被跳过并计数', async (t) => {
+  const f = fixture(t);
+  const file = path.join(f.root, 'long.jsonl');
+  fs.writeFileSync(file, 'a\n' + 'x'.repeat(5000) + '\nb\n');
+  const got = [];
+  for await (const l of lines(file, 100)) got.push(typeof l === 'symbol' ? 'OVERLONG' : l);
+  assert.deepEqual(got, ['a', 'OVERLONG', 'b']);
+  const streams = [];
+  const orig = fs.createReadStream;
+  t.mock.method(fs, 'createReadStream', (...a) => { const s = orig(...a); streams.push(s); return s; });
+  for await (const l of lines(file)) { void l; break; }
+  assert.equal(streams.length, 1);
+  assert.equal(streams[0].destroyed, true);
+});
+
+test('非对象的合法 JSON 行（null、数组、字符串）不抛错，只计坏行；超长日志行被跳过', async (t) => {
+  const f = fixture(t);
+  fs.appendFileSync(path.join(f.specs, '运行日志.jsonl'), 'null\n[1]\n"usage"\n' + JSON.stringify({at: '2026-10-01T10:00:00Z', run_id: 'big', pad: 'y'.repeat(1100000)}) + '\n');
+  const lg = await readSpecsLog(f.specs);
+  assert.equal(lg.bad, 3);
+  assert.equal(lg.overlong, 1);
+  fs.appendFileSync(path.join(projDir(f), 's1.jsonl'), 'null\n"usage"\n[{"usage":1}]\n{"type":"assistant","message":null,"usage":1}\n{"type":"assistant","message":{"usage":"x"}}\n');
+  fs.appendFileSync(path.join(f.codex, '2026', '10', '01', 'rollout-a.jsonl'), 'null\n{"type":"event_msg","payload":"token_count"}\n[\"token_count\"]\n');
+  const rep = await run1(f);
+  assert.equal(rep.claude_stats.bad_lines, 2); // "usage" 与 [{"usage":1}]；null 行不含 usage 字样被预过滤
+  assert.equal(rep.codex_stats.bad_lines, 1); // ["token_count"]；null 行不含 token_count 字样被预过滤
+  assert.equal(rep.total.calls, 7 + 2);
+});
+
+test('十几万条记录时时间范围不抛 RangeError（增量求最值）', async (t) => {
+  const f = fixture(t);
+  const big = path.join(projDir(f), 'big.jsonl');
+  const parts = [];
+  for (let i = 0; i < 150000; i++) parts.push(`{"type":"assistant","timestamp":"2026-10-02T00:00:00.000Z","cwd":${JSON.stringify(f.project)},"message":{"id":"b${i}","model":"m","usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1}}}`);
+  fs.writeFileSync(big, parts.join('\n') + '\n');
+  const rep = await run1(f);
+  assert.ok(rep.total.calls >= 150000);
+  assert.ok(rep.span.to >= rep.span.from);
 });

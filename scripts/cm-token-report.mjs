@@ -5,7 +5,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import readline from 'node:readline';
 import {pathToFileURL} from 'node:url';
 
 export const UNATTRIBUTED = '未归属（会话闲聊/人工操作）';
@@ -13,30 +12,94 @@ export const STEP_KINDS = ['develop', 'review', 'qa', 'check', 'prd-analysis', '
 export const DEFAULT_WEIGHTS = {input: 1, cache_write: 1.25, cache_read: 0.1, output: 5};
 const DEFAULT_GAP_MIN = 30;
 
-const num = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+const MAX_LINE = 64 * 1024 * 1024; // 会话转录/Codex 单行上限；超过的行跳过并计数
+const MAX_LOG_LINE = 1024 * 1024; // CM 运行日志单行上限
+const OVERLONG = Symbol('overlong');
+
+// 只接受非负安全整数；其余（字符串、小数、负数、数组、对象）一律视为缺失
+const cnt = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null);
 const ms = (s) => {
-  if (typeof s !== 'string') return null;
+  if (typeof s !== 'string' || s.length > 64) return null;
   const t = Date.parse(s);
   return Number.isFinite(t) ? t : null;
 };
+// 只允许出现在报告里的字符串标量：必须是短字符串且符合标识符样式，否则当作缺失
+const safeStr = (v, re, max) => (typeof v === 'string' && v.length > 0 && v.length <= max && re.test(v) ? v : null);
+const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:\/@-]*$/;
+const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const safeModel = (v) => safeStr(v, MODEL_RE, 100);
+const safeId = (v, max = 128) => safeStr(v, ID_RE, max);
+const safeCwd = (v) => (typeof v === 'string' && v.length > 0 && v.length <= 4096 && !/[\x00-\x1f\x7f]/.test(v) ? v : null);
+const isObj = (o) => o !== null && typeof o === 'object' && !Array.isArray(o);
 const iso = (t) => new Date(t).toISOString().replace('.000Z', 'Z');
 const encodeDir = (p) => p.replace(/[^A-Za-z0-9]/g, '-');
 const within = (cwd, root) => typeof cwd === 'string' && (cwd === root || cwd.startsWith(root.endsWith('/') ? root : root + '/'));
+const insideReal = (real, rootReal) => real === rootReal || real.startsWith(rootReal.endsWith(path.sep) ? rootReal : rootReal + path.sep);
 
-async function* lines(file) {
-  const rl = readline.createInterface({input: fs.createReadStream(file), crlfDelay: Infinity});
-  try { for await (const l of rl) yield l; } finally { rl.close(); }
+// 解析一行：根必须是对象，否则返回 null（调用方计入坏行）
+function parseObj(line) {
+  let o;
+  try { o = JSON.parse(line); } catch { return null; }
+  return isObj(o) ? o : null;
 }
 
-function walkJsonl(dir, out = []) {
-  let entries;
-  try { entries = fs.readdirSync(dir, {withFileTypes: true}); } catch { return out; }
-  for (const e of entries) {
-    const p = path.join(dir, e.name);
-    if (e.isDirectory()) walkJsonl(p, out);
-    else if (e.isFile() && e.name.endsWith('.jsonl')) out.push(p);
+// 自己切行：单行超过 maxLine 时丢弃该行并产出 OVERLONG，不会把超长行读进内存；结束或提前退出都销毁底层流
+export async function* lines(file, maxLine = MAX_LINE) {
+  const stream = fs.createReadStream(file);
+  try {
+    let parts = [], size = 0, over = false;
+    for await (const chunk of stream) {
+      let pos = 0;
+      while (pos < chunk.length) {
+        const nl = chunk.indexOf(10, pos);
+        const end = nl === -1 ? chunk.length : nl;
+        if (!over) {
+          size += end - pos;
+          if (size > maxLine) { over = true; parts = []; } else parts.push(chunk.subarray(pos, end));
+        }
+        if (nl === -1) break;
+        if (over) yield OVERLONG;
+        else if (size > 0) yield Buffer.concat(parts).toString('utf8');
+        parts = []; size = 0; over = false;
+        pos = nl + 1;
+      }
+    }
+    if (over) yield OVERLONG;
+    else if (size > 0) yield Buffer.concat(parts).toString('utf8');
+  } finally {
+    stream.destroy();
   }
-  return out;
+}
+
+// 列出 root 下的 .jsonl：不跟随目录符号链接；文件符号链接只有解析后仍在 root 内且是普通文件才用；其余跳过并计数
+function walkJsonl(root) {
+  const out = [], skipped = {unsafe_links: 0};
+  let rootReal;
+  try { rootReal = fs.realpathSync(root); } catch { return {files: out, skipped, rootMissing: true}; }
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, {withFileTypes: true}); } catch { return; }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isSymbolicLink()) {
+        if (!e.name.endsWith('.jsonl')) { skipped.unsafe_links++; continue; }
+        const f = safeRegularFile(p, rootReal);
+        if (f) out.push(f); else skipped.unsafe_links++;
+      } else if (e.isDirectory()) walk(p);
+      else if (e.isFile() && e.name.endsWith('.jsonl')) out.push(p);
+    }
+  };
+  walk(root);
+  return {files: out, skipped, rootMissing: false};
+}
+
+// 解析真实路径并要求落在 rootReal 内、且是普通文件；不满足返回 null
+function safeRegularFile(file, rootReal) {
+  try {
+    const real = fs.realpathSync(file);
+    if (!insideReal(real, rootReal)) return null;
+    return fs.statSync(real).isFile() ? real : null;
+  } catch { return null; }
 }
 
 // ---------- CM 运行日志 -> 时间窗口 ----------
@@ -53,23 +116,29 @@ function stepKind(row) {
   return AI_PHASE_KIND[row.phase_name] || AI_NODE_KIND[row.node] || 'other';
 }
 
-export function readSpecsLog(specsDir) {
+export async function readSpecsLog(specsDir) {
   const file = path.join(specsDir, '运行日志.jsonl');
   const rows = [];
-  let bad = 0;
-  if (!fs.existsSync(file)) return {rows, bad, missing: true, file};
-  for (const l of fs.readFileSync(file, 'utf8').split('\n')) {
+  const info = {rows, bad: 0, overlong: 0, missing: false, unsafe: false, file};
+  let specsReal;
+  try { specsReal = fs.realpathSync(specsDir); } catch { info.missing = true; return info; }
+  if (!fs.existsSync(file)) { info.missing = true; return info; }
+  const real = safeRegularFile(file, specsReal); // 符号链接指到 specs 目录之外、或不是普通文件，都不读
+  if (!real) { info.unsafe = true; return info; }
+  const specs = path.basename(specsDir);
+  for await (const l of lines(real, MAX_LOG_LINE)) {
+    if (l === OVERLONG) { info.overlong++; continue; }
     if (!l.trim()) continue;
-    let o;
-    try { o = JSON.parse(l); } catch { bad++; continue; }
-    const t = ms(o.at);
-    if (t === null || !o.run_id) { bad++; continue; }
-    // 只取元数据字段
-    rows.push({t, workflow: String(o.workflow || ''), event: String(o.event || ''), phase: o.phase || '', run_id: String(o.run_id),
-      node: o.node || '', phase_name: o.phase_name || '', operation_id: o.operation_id || '', specs: path.basename(specsDir)});
+    const o = parseObj(l);
+    const t = o ? ms(o.at) : null;
+    const run_id = o ? safeId(o.run_id) : null;
+    if (t === null || !run_id) { info.bad++; continue; }
+    // 只取白名单标量字段，且都必须符合标识符样式
+    rows.push({t, run_id, specs, workflow: safeId(o.workflow, 64) || '未知', event: safeId(o.event, 64) || '', phase: safeId(o.phase, 64) || '',
+      node: safeId(o.node, 64) || '', phase_name: safeId(o.phase_name, 64) || '', operation_id: safeId(o.operation_id, 200) || ''});
   }
   rows.sort((a, b) => a.t - b.t);
-  return {rows, bad, missing: false, file};
+  return info;
 }
 
 // level 0 = 具体步骤窗口；level 1 = 运行外壳（相邻事件间隔不超过 gap 才连在一起）
@@ -131,106 +200,123 @@ export function attribute(t, windows) {
 }
 
 // ---------- 用量采集 ----------
+// 用量四项里 input/cache_read/output 缺失或不是非负整数 -> 整条记为 incomplete_usage 并排除；cache_write 缺失 -> 记为未知（null），不补 0
+const usageTotal = (r) => r.input + (r.cache_write ?? 0) + r.cache_read + r.output;
+
 export async function collectClaude(projectsDir, project, {sinceMs = null} = {}) {
   const enc = encodeDir(project);
-  const stats = {files: 0, lines_with_usage: 0, unique: 0, duplicates_removed: 0, synthetic_skipped: 0, incomplete: 0, outside_cwd: 0, no_cwd: 0, no_timestamp: 0, dir_missing: false};
+  const stats = {files: 0, lines_with_usage: 0, unique: 0, duplicates_removed: 0, synthetic_skipped: 0, incomplete_usage: 0, cache_write_unknown: 0,
+    outside_cwd: 0, no_cwd: 0, no_timestamp: 0, bad_lines: 0, overlong_lines: 0, unsafe_links_skipped: 0, read_errors: 0, dir_missing: false};
   const byId = new Map();
   let dirs = [];
   try { dirs = fs.readdirSync(projectsDir, {withFileTypes: true}).filter((d) => d.isDirectory() && d.name.includes(enc)); } catch { stats.dir_missing = true; }
   for (const d of dirs) {
-    for (const file of walkJsonl(path.join(projectsDir, d.name))) {
+    const w = walkJsonl(path.join(projectsDir, d.name));
+    stats.unsafe_links_skipped += w.skipped.unsafe_links;
+    for (const file of w.files) {
       stats.files++;
       let lastCwd = null;
-      for await (const l of lines(file)) {
-        if (!l.includes('"usage"')) continue;
-        let o;
-        try { o = JSON.parse(l); } catch { continue; }
-        if (o.type !== 'assistant' || !o.message || !o.message.usage) continue;
-        stats.lines_with_usage++;
-        const m = o.message, u = m.usage;
-        if (m.model === '<synthetic>') { stats.synthetic_skipped++; continue; }
-        const cwd = typeof o.cwd === 'string' ? (lastCwd = o.cwd) : lastCwd;
-        if (!cwd) { stats.no_cwd++; continue; }
-        if (!within(cwd, project)) { stats.outside_cwd++; continue; }
-        const t = ms(o.timestamp);
-        const input = num(u.input_tokens), cw = num(u.cache_creation_input_tokens), cr = num(u.cache_read_input_tokens), out = num(u.output_tokens);
-        if (input === null || cw === null || cr === null || out === null) { stats.incomplete++; continue; }
-        const rec = {src: 'claude', t, model: m.model || '未知', cwd, session: o.sessionId || null, side: o.isSidechain === true, input, cache_write: cw, cache_read: cr, output: out};
-        const id = m.id || o.requestId || o.uuid;
-        if (!id) { byId.set(Symbol('noid'), rec); continue; }
-        const old = byId.get(id);
-        const total = (r) => r.input + r.cache_write + r.cache_read + r.output;
-        if (!old) byId.set(id, rec);
-        else {
-          stats.duplicates_removed++;
-          // 保留更大的用量；相同则保留更早的时间戳
-          if (total(rec) > total(old) || (total(rec) === total(old) && rec.t !== null && (old.t === null || rec.t < old.t))) byId.set(id, rec);
+      try {
+        for await (const l of lines(file)) {
+          if (l === OVERLONG) { stats.overlong_lines++; continue; }
+          if (!l.includes('"usage"')) continue;
+          const o = parseObj(l);
+          if (!o) { stats.bad_lines++; continue; }
+          const m = o.message;
+          if (o.type !== 'assistant' || !isObj(m) || !isObj(m.usage)) continue;
+          stats.lines_with_usage++;
+          const u = m.usage;
+          if (m.model === '<synthetic>') { stats.synthetic_skipped++; continue; }
+          const c = safeCwd(o.cwd);
+          const cwd = c ? (lastCwd = c) : lastCwd;
+          if (!cwd) { stats.no_cwd++; continue; }
+          if (!within(cwd, project)) { stats.outside_cwd++; continue; }
+          const t = ms(o.timestamp);
+          const input = cnt(u.input_tokens), cw = cnt(u.cache_creation_input_tokens), cr = cnt(u.cache_read_input_tokens), out = cnt(u.output_tokens);
+          if (input === null || cr === null || out === null) { stats.incomplete_usage++; continue; }
+          const rec = {src: 'claude', t, model: safeModel(m.model) || '未知', cwd, session: safeId(o.sessionId), side: o.isSidechain === true, input, cache_write: cw, cache_read: cr, output: out};
+          const id = safeId(m.id, 200) || safeId(o.requestId, 200) || safeId(o.uuid, 200);
+          if (!id) { byId.set(Symbol('noid'), rec); continue; }
+          const old = byId.get(id);
+          if (!old) byId.set(id, rec);
+          else {
+            stats.duplicates_removed++;
+            // 保留更大的用量；相同则保留更早的时间戳
+            if (usageTotal(rec) > usageTotal(old) || (usageTotal(rec) === usageTotal(old) && rec.t !== null && (old.t === null || rec.t < old.t))) byId.set(id, rec);
+          }
         }
-      }
+      } catch { stats.read_errors++; }
     }
   }
   const recs = [...byId.values()];
-  for (const r of recs) if (r.t === null) stats.no_timestamp++;
+  for (const r of recs) { if (r.t === null) stats.no_timestamp++; if (r.cache_write === null) stats.cache_write_unknown++; }
   stats.unique = recs.length;
   return {records: recs.filter((r) => sinceMs === null || r.t === null || r.t >= sinceMs), stats};
 }
 
 export async function collectCodex(sessionsDir, project, {sinceMs = null} = {}) {
-  const stats = {files: 0, files_scanned: 0, sessions_matched: 0, token_events: 0, duplicates_removed: 0, null_info: 0, no_timestamp: 0, dir_missing: false, matched_without_token_events: 0};
+  const stats = {files: 0, files_scanned: 0, sessions_matched: 0, token_events: 0, duplicates_removed: 0, null_info: 0, incomplete_usage: 0, cache_write_unknown: 0,
+    no_timestamp: 0, bad_lines: 0, overlong_lines: 0, unsafe_links_skipped: 0, read_errors: 0, dir_missing: false, matched_without_token_events: 0};
   const records = [];
-  if (!fs.existsSync(sessionsDir)) { stats.dir_missing = true; return {records, stats}; }
-  const files = walkJsonl(sessionsDir);
-  stats.files = files.length;
-  for (const file of files) {
-    // 日期目录早于 since 一天以上的文件直接跳过
+  const w = walkJsonl(sessionsDir);
+  if (w.rootMissing) { stats.dir_missing = true; return {records, stats}; }
+  stats.unsafe_links_skipped = w.skipped.unsafe_links;
+  stats.files = w.files.length;
+  for (const file of w.files) {
+    // --since：只在文件最后修改时间早于 since 时跳过（文件里所有事件都不晚于它）；否则逐事件按时间戳过滤
     if (sinceMs !== null) {
-      const m = file.match(/(\d{4})[\/\\](\d{2})[\/\\](\d{2})[\/\\][^\/\\]+$/);
-      if (m && Date.UTC(+m[1], +m[2] - 1, +m[3]) + 2 * 86400000 < sinceMs) continue;
+      try { if (fs.statSync(file).mtimeMs < sinceMs) continue; } catch { stats.read_errors++; continue; }
     }
     stats.files_scanned++;
-    let first = true, metaCwd = null, cwd = null, model = '未知', sessionId = null, matched = false, maxTotal = -1, events = 0;
-    for await (const l of lines(file)) {
-      if (first) {
-        first = false;
-        let o;
-        try { o = JSON.parse(l); } catch { break; }
-        const p = o && o.payload;
-        metaCwd = p && typeof p.cwd === 'string' ? p.cwd : null;
-        sessionId = p && (p.id || p.session_id) || null;
-        if (!within(metaCwd, project)) break;
-        cwd = metaCwd; matched = true; stats.sessions_matched++;
-        continue;
-      }
-      if (l.includes('"turn_context"')) {
-        let o; try { o = JSON.parse(l); } catch { continue; }
-        if (o.type === 'turn_context' && o.payload) {
-          if (typeof o.payload.model === 'string') model = o.payload.model;
-          if (typeof o.payload.cwd === 'string') cwd = o.payload.cwd;
+    let first = true, cwd = null, model = '未知', sessionId = null, matched = false, maxTotal = -1, events = 0;
+    try {
+      for await (const l of lines(file)) {
+        if (l === OVERLONG) { if (first) break; stats.overlong_lines++; continue; }
+        if (first) {
+          first = false;
+          const o = parseObj(l);
+          const p = o && isObj(o.payload) ? o.payload : null;
+          const metaCwd = p ? safeCwd(p.cwd) : null;
+          if (!p) { stats.bad_lines++; break; }
+          sessionId = safeId(p.id) || safeId(p.session_id);
+          if (!within(metaCwd, project)) break;
+          cwd = metaCwd; matched = true; stats.sessions_matched++;
+          continue;
         }
-        continue;
+        if (l.includes('"turn_context"')) {
+          const o = parseObj(l);
+          if (!o) { stats.bad_lines++; continue; }
+          if (o.type === 'turn_context' && isObj(o.payload)) {
+            model = safeModel(o.payload.model) || model;
+            cwd = safeCwd(o.payload.cwd) || cwd;
+          }
+          continue;
+        }
+        if (!l.includes('"token_count"')) continue;
+        const o = parseObj(l);
+        if (!o) { stats.bad_lines++; continue; }
+        const p = o.payload;
+        if (o.type !== 'event_msg' || !isObj(p) || p.type !== 'token_count') continue;
+        stats.token_events++; events++;
+        const info = p.info;
+        if (!isObj(info) || !isObj(info.last_token_usage) || !isObj(info.total_token_usage)) { stats.null_info++; continue; }
+        const tot = cnt(info.total_token_usage.total_tokens);
+        if (tot !== null) {
+          if (tot <= maxTotal) { stats.duplicates_removed++; continue; }
+          maxTotal = tot;
+        }
+        const u = info.last_token_usage;
+        const inp = cnt(u.input_tokens), cached = cnt(u.cached_input_tokens), out = cnt(u.output_tokens), cw = cnt(u.cache_write_input_tokens);
+        // 缺少缓存命中字段就无法把输入拆成「未缓存/缓存读」，不能当 0：整条排除并计数
+        if (inp === null || cached === null || out === null || cached > inp) { stats.incomplete_usage++; continue; }
+        if (!within(cwd, project)) continue;
+        const t = ms(o.timestamp);
+        if (t === null) stats.no_timestamp++;
+        if (cw === null) stats.cache_write_unknown++;
+        // Codex 的 input_tokens 含缓存命中部分，这里拆成 未缓存输入 + 缓存读；output 已含推理 token，不再另加
+        records.push({src: 'codex', t, model, cwd, session: sessionId, side: false, input: inp - cached, cache_write: cw, cache_read: cached, output: out});
       }
-      if (!l.includes('"token_count"')) continue;
-      let o; try { o = JSON.parse(l); } catch { continue; }
-      const p = o.payload;
-      if (o.type !== 'event_msg' || !p || p.type !== 'token_count') continue;
-      stats.token_events++; events++;
-      const info = p.info;
-      if (!info || !info.last_token_usage || !info.total_token_usage) { stats.null_info++; continue; }
-      const tot = num(info.total_token_usage.total_tokens);
-      if (tot !== null) {
-        if (tot <= maxTotal) { stats.duplicates_removed++; continue; }
-        maxTotal = tot;
-      }
-      const u = info.last_token_usage;
-      const inp = num(u.input_tokens), cached = num(u.cached_input_tokens), out = num(u.output_tokens);
-      if (inp === null || out === null) { stats.null_info++; continue; }
-      const cw = num(u.cache_write_input_tokens) || 0, cr = cached || 0;
-      if (!within(cwd, project)) continue;
-      const t = ms(o.timestamp);
-      if (t === null) stats.no_timestamp++;
-      // Codex 的 input_tokens 含缓存命中部分，这里拆成 未缓存输入 + 缓存读；output 已含推理 token，不再另加
-      records.push({src: 'codex', t, model, cwd, session: sessionId, side: false, input: Math.max(0, inp - cr), cache_write: cw, cache_read: cr, output: out});
-    }
+    } catch { stats.read_errors++; }
     if (matched && events === 0) stats.matched_without_token_events++;
   }
   return {records: records.filter((r) => sinceMs === null || r.t === null || r.t >= sinceMs), stats};
@@ -238,7 +324,7 @@ export async function collectCodex(sessionsDir, project, {sinceMs = null} = {}) 
 
 // ---------- 汇总 ----------
 const blank = () => ({calls: 0, input: 0, cache_write: 0, cache_read: 0, output: 0});
-const addTo = (a, r) => { a.calls++; a.input += r.input; a.cache_write += r.cache_write; a.cache_read += r.cache_read; a.output += r.output; };
+const addTo = (a, r) => { a.calls++; a.input += r.input; a.cache_write += r.cache_write ?? 0; a.cache_read += r.cache_read; a.output += r.output; };
 export const weighted = (a, w) => a.input * w.input + a.cache_write * w.cache_write + a.cache_read * w.cache_read + a.output * w.output;
 const cwdClass = (cwd, project) => (cwd === project ? '项目根目录' : /[\/\\]\.work[\/\\]/.test(cwd) ? '.work 工作树（CM 派出的会话）' : '项目子目录');
 
@@ -246,7 +332,7 @@ export function summarize({records, windows, project, weights = DEFAULT_WEIGHTS,
   const tree = new Map(); // workflow -> kind -> sums
   const total = blank(), bySrc = {}, byModel = {}, byCwd = {}, byDir = {}, bySession = {};
   const top = [];
-  const flags = {ambiguous_calls: 0, no_timestamp_calls: 0, uncertain_window_calls: 0};
+  const flags = {ambiguous_calls: 0, no_timestamp_calls: 0, uncertain_window_calls: 0, cache_write_unknown_calls: 0};
   const sorted = windows.slice().sort((a, b) => a.start - b.start);
   for (const r of records) {
     let wf = UNATTRIBUTED, kind = '-', win = null;
@@ -255,6 +341,7 @@ export function summarize({records, windows, project, weights = DEFAULT_WEIGHTS,
       const a = attribute(r.t, sorted);
       if (a.window) { win = a.window; wf = win.workflow; kind = win.kind; if (a.ambiguous) flags.ambiguous_calls++; if (win.uncertain) flags.uncertain_window_calls++; }
     }
+    if (r.cache_write === null) flags.cache_write_unknown_calls++;
     const cell = ((tree.get(wf) || tree.set(wf, new Map()).get(wf)).get(kind) || (tree.get(wf).set(kind, blank()), tree.get(wf).get(kind)));
     addTo(cell, r); addTo(total, r);
     addTo(bySrc[r.src] || (bySrc[r.src] = blank()), r);
@@ -265,8 +352,8 @@ export function summarize({records, windows, project, weights = DEFAULT_WEIGHTS,
     const sk = `${r.src}:${r.session ? String(r.session).slice(0, 8) : '未知'}`;
     addTo(bySession[sk] || (bySession[sk] = {...blank(), dir: rel, unattributed: 0}), r);
     if (wf === UNATTRIBUTED) bySession[sk].unattributed++;
-    const w = r.input * weights.input + r.cache_write * weights.cache_write + r.cache_read * weights.cache_read + r.output * weights.output;
-    top.push({t: r.t, src: r.src, model: r.model, workflow: wf, step: kind, run_id: win ? win.run_id : null, input: r.input, cache_write: r.cache_write, cache_read: r.cache_read, output: r.output, weighted: w, side: r.side});
+    const w = r.input * weights.input + (r.cache_write ?? 0) * weights.cache_write + r.cache_read * weights.cache_read + r.output * weights.output;
+    top.push({t: r.t, src: r.src, model: r.model, workflow: wf, step: kind, run_id: win ? win.run_id : null, input: r.input, cache_write: r.cache_write ?? 0, cache_write_unknown: r.cache_write === null, cache_read: r.cache_read, output: r.output, weighted: w, side: r.side});
     if (top.length > topN * 4) { top.sort((x, y) => y.weighted - x.weighted); top.length = topN; }
   }
   top.sort((x, y) => y.weighted - x.weighted);
@@ -290,8 +377,8 @@ export async function buildReport({project, specsDirs = [], sinceIso = null, cla
   if (sinceIso && sinceMs === null) throw new Error(`--since 不是有效的 ISO 时间: ${sinceIso}`);
   let rows = [], logInfo = [];
   for (const d of specsDirs) {
-    const lg = readSpecsLog(d);
-    logInfo.push({specs: d, rows: lg.rows.length, bad_rows: lg.bad, missing: lg.missing});
+    const lg = await readSpecsLog(d);
+    logInfo.push({specs: d, rows: lg.rows.length, bad_rows: lg.bad, overlong_lines: lg.overlong, missing: lg.missing, unsafe: lg.unsafe});
     rows = rows.concat(lg.rows);
   }
   const {windows: allWindows, stats: winStats} = buildWindows(rows, {gapMs: gapMin * 60000});
@@ -299,11 +386,12 @@ export async function buildReport({project, specsDirs = [], sinceIso = null, cla
   const claude = await collectClaude(claudeProjects, project, {sinceMs});
   const codex = await collectCodex(codexSessions, project, {sinceMs});
   const records = claude.records.concat(codex.records);
-  const times = records.map((r) => r.t).filter((t) => t !== null);
+  let tMin = null, tMax = null;
+  for (const r of records) if (r.t !== null) { if (tMin === null || r.t < tMin) tMin = r.t; if (tMax === null || r.t > tMax) tMax = r.t; }
   const s = summarize({records, windows, project, weights});
   return {
     project, since: sinceIso, weights, gap_min: gapMin,
-    span: times.length ? {from: iso(Math.min(...times)), to: iso(Math.max(...times))} : null,
+    span: tMin !== null ? {from: iso(tMin), to: iso(tMax)} : null,
     cm_logs: logInfo, windows: {count: windows.length, step_level: windows.filter((w) => w.level === 0).length, ...winStats},
     claude_stats: claude.stats, codex_stats: codex.stats, ...s,
   };
@@ -312,7 +400,7 @@ export async function buildReport({project, specsDirs = [], sinceIso = null, cla
 // ---------- 输出 ----------
 const fmt = (n) => Math.round(n).toLocaleString('en-US');
 const pct = (a, b) => (b ? (100 * a / b).toFixed(1) + '%' : '-');
-const tableRow = (cols) => '| ' + cols.join(' | ') + ' |';
+const tableRow = (cols) => '| ' + cols.map((c) => String(c).replace(/\|/g, '\\|')).join(' | ') + ' |';
 
 export function renderMarkdown(rep) {
   const L = [];
@@ -350,9 +438,11 @@ export function renderMarkdown(rep) {
   for (const c of rep.top_calls) L.push(tableRow([c.t === null ? '时间缺失' : iso(c.t), c.src, c.model, c.step === '-' ? c.workflow : `${c.workflow}/${c.step}`, c.side ? '是' : '否', fmt(c.input), fmt(c.cache_write), fmt(c.cache_read), fmt(c.output), fmt(c.weighted)]));
   L.push('', '## 数据质量与不确定项', '');
   const cs = rep.claude_stats, xs = rep.codex_stats;
-  L.push(`- Claude 转录：扫描 ${cs.files} 个文件；含用量的行 ${fmt(cs.lines_with_usage)}，按 message.id 去重后 ${fmt(cs.unique)} 条，去掉重复 ${fmt(cs.duplicates_removed)} 行；跳过合成消息 ${cs.synthetic_skipped}、cwd 不在项目内 ${cs.outside_cwd}、cwd 缺失 ${cs.no_cwd}、用量字段不全 ${cs.incomplete}（不估算，直接不计）、时间缺失 ${cs.no_timestamp}${cs.dir_missing ? '；转录目录不存在' : ''}。`);
-  L.push(`- Codex 会话：共 ${xs.files} 个文件，实际扫描 ${xs.files_scanned} 个，首行 cwd 匹配项目的 ${xs.sessions_matched} 个；用量事件 ${fmt(xs.token_events)} 个，按累计值去重 ${fmt(xs.duplicates_removed)}，info 为空/字段不全 ${xs.null_info}，匹配但没有任何用量事件的会话 ${xs.matched_without_token_events}${xs.dir_missing ? '；Codex 会话目录不存在' : ''}。只按会话首行 cwd 判断是否属于本项目，先在别处启动、后来才切进项目的会话会漏掉。`);
-  for (const l of rep.cm_logs) L.push(`- CM 运行日志 ${l.specs}：${l.missing ? '文件不存在' : `${l.rows} 行可用，${l.bad_rows} 行无法解析/缺时间被忽略`}。`);
+  L.push(`- Claude 转录：扫描 ${cs.files} 个文件；含用量的行 ${fmt(cs.lines_with_usage)}，按 message.id 去重后 ${fmt(cs.unique)} 条，去掉重复 ${fmt(cs.duplicates_removed)} 行；跳过合成消息 ${cs.synthetic_skipped}、cwd 不在项目内 ${cs.outside_cwd}、cwd 缺失 ${cs.no_cwd}、用量字段缺失或不合法 ${cs.incomplete_usage}（整条排除，不估算）、时间缺失 ${cs.no_timestamp}${cs.dir_missing ? '；转录目录不存在' : ''}。`);
+  L.push(`- Claude 转录读取问题：无法解析的行 ${cs.bad_lines}、超长被跳过的行 ${cs.overlong_lines}、指向根目录之外或非普通文件而被跳过的符号链接 ${cs.unsafe_links_skipped}、读文件出错 ${cs.read_errors}；缓存写入字段缺失 ${cs.cache_write_unknown} 条（未知，未计入缓存写入，不是 0）。`);
+  L.push(`- Codex 会话：共 ${xs.files} 个文件，实际扫描 ${xs.files_scanned} 个，首行 cwd 匹配项目的 ${xs.sessions_matched} 个；用量事件 ${fmt(xs.token_events)} 个，按累计值去重 ${fmt(xs.duplicates_removed)}，info 为空 ${xs.null_info}，缓存命中等字段缺失或不合法 ${xs.incomplete_usage}（整条排除，不当 0），匹配但没有任何用量事件的会话 ${xs.matched_without_token_events}${xs.dir_missing ? '；Codex 会话目录不存在' : ''}。只按会话首行 cwd 判断是否属于本项目，先在别处启动、后来才切进项目的会话会漏掉。`);
+  L.push(`- Codex 读取问题：无法解析的行 ${xs.bad_lines}、超长被跳过的行 ${xs.overlong_lines}、被跳过的不安全符号链接 ${xs.unsafe_links_skipped}、读文件出错 ${xs.read_errors}；缓存写入字段缺失 ${xs.cache_write_unknown} 条（未知，未计入）。`);
+  for (const l of rep.cm_logs) L.push(`- CM 运行日志 ${l.specs}：${l.unsafe ? '符号链接指到 specs 目录之外或不是普通文件，未读取' : l.missing ? '文件不存在' : `${l.rows} 行可用，${l.bad_rows} 行无法解析/不是对象/缺时间被忽略，${l.overlong_lines} 行超长被跳过`}。`);
   L.push(`- 时间窗口 ${rep.windows.count} 个（步骤级 ${rep.windows.step_level}）；没有结束事件的开始 ${rep.windows.unpaired_start}（窗口只延伸到下一条事件，标为不确定）；没有开始的结束 ${rep.windows.orphan_complete}（忽略）。`);
   L.push(`- 归属方式是按时间窗口，不是按会话：同一时间多个运行并行、或人在别的会话里干活，都会被算进窗口。落在多个不同运行的窗口里的调用 ${fmt(rep.flags.ambiguous_calls)} 次（已按最内层步骤归属，视为不确定）；落在不确定窗口里的 ${fmt(rep.flags.uncertain_window_calls)} 次；时间缺失无法归属 ${fmt(rep.flags.no_timestamp_calls)} 次。`);
   return L.join('\n') + '\n';
