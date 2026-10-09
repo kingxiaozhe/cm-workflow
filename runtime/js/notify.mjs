@@ -200,7 +200,10 @@ export function writeHostRegistry({sessionKey,workflow,project,startedAt,row=nul
     fs.writeFileSync(temp,JSON.stringify(entry),{mode:0o600});fs.renameSync(temp,file);return true;
   }catch{return false;}
 }
+// Same test guard as readNotifyConfig: a test suite without an explicit
+// CM_WORKFLOW_HOME never touches the user's real directory, not even to unlink.
 export function removeHostRegistry(sessionKey,{env=process.env}={}){
+  if(env.NODE_TEST_CONTEXT&&!env.CM_WORKFLOW_HOME)return;
   try{if(SESSION_KEY.test(sessionKey))fs.unlinkSync(path.join(hostRegistryDir(env),`${sessionKey}.json`));}catch{}
 }
 

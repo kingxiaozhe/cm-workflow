@@ -6,7 +6,7 @@ import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {patrol,inspectHosts,processAlive} from './cm-patrol.mjs';
-import {hostRegistryDir,buildNotifyMessage} from '../runtime/js/notify.mjs';
+import {hostRegistryDir,buildNotifyMessage,removeHostRegistry} from '../runtime/js/notify.mjs';
 
 const HOST_SESSION=new URL('../runtime/js/cm-ai/host-session.mjs',import.meta.url).href;
 const PATROL=fileURLToPath(new URL('./cm-patrol.mjs',import.meta.url));
@@ -142,4 +142,17 @@ test('Windows paths are redacted like POSIX ones, also when glued to CJK text',(
   const glued=buildNotifyMessage({workflow:'cm-ai',nextAction:'请检查C:\\Users\\me\\a.txt，再看\\\\srv\\s；或/tmp/c。相对 a/b 和 v1.2/x 保留'},{now:NOW}).body;
   assert.match(glued,/下一步：请检查<路径>，再看<路径>；或<路径>。相对 a\/b 和 v1.2\/x 保留/);
   assert.doesNotMatch(glued,/Users|srv|tmp/);
+});
+
+// Under node --test without an explicit CM_WORKFLOW_HOME nothing in the user's
+// real directory is touched, not even an unlink of a registry entry.
+test('registry removal honours the test guard',t=>{
+  const fakeHome=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-patrol-home-')));
+  t.after(()=>fs.rmSync(fakeHome,{recursive:true,force:true}));
+  const dir=path.join(fakeHome,'.cm-workflow','hosts');fs.mkdirSync(dir,{recursive:true});
+  const file=path.join(dir,`${KEYS[0]}.json`);fs.writeFileSync(file,'{}');
+  const env={...process.env,HOME:fakeHome,NODE_TEST_CONTEXT:'1'};delete env.CM_WORKFLOW_HOME;
+  removeHostRegistry(KEYS[0],{env});assert.equal(fs.existsSync(file),true,'real home left alone');
+  removeHostRegistry(KEYS[0],{env:{...env,CM_WORKFLOW_HOME:path.join(fakeHome,'.cm-workflow')}});
+  assert.equal(fs.existsSync(file),false,'explicit home is honoured');
 });

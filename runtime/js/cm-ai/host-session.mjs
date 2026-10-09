@@ -61,9 +61,9 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
   const sessionKey=randomUUID(),startedAt=Date.now();let idle=null,seq=0,ended=false,lastRow=undefined,idleSince=0;
   // Host registry (runtime/js/notify.mjs): serialised so a session that ends at
   // once still removes its own entry. Each step is best-effort and synchronous.
-  let registry=Promise.resolve();
+  let registry=Promise.resolve(),registered=false;
   const register=(row,operation)=>{if(ended)return;registry=registry.then(()=>import('../notify.mjs'))
-    .then(m=>{m.writeHostRegistry({sessionKey,workflow,project:process.cwd(),startedAt,row,operation});}).catch(()=>{});};
+    .then(m=>{if(m.writeHostRegistry({sessionKey,workflow,project:process.cwd(),startedAt,row,operation}))registered=true;}).catch(()=>{});};
   register(null,null);
   const clearIdle=()=>{idle?.();idle=null;};
   const nextStep=()=>{clearIdle();lastRow=undefined;};
@@ -156,7 +156,7 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
     finally{
       // Only now, after every in-flight reply has queued its last registry
       // write (and `ended` stops any later one), remove this session's entry.
-      registry=registry.then(()=>import('../notify.mjs')).then(m=>{m.removeHostRegistry(sessionKey);}).catch(()=>{});
+      registry=registry.then(()=>import('../notify.mjs')).then(m=>{if(registered)m.removeHostRegistry(sessionKey);}).catch(()=>{});
       await registry;
       // destroy() emits error/close on a later tick; retain its error listener
       // until that lifecycle finishes rather than leaking an uncaught error.
