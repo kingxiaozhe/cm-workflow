@@ -61,7 +61,7 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
   会话可能仍在写文件，宿主看不到，所以 `advance` 不会重发。先确认会话已停止修改代码，再 `--mode resume --allow-develop-redo` 启动并发送 `develop_redo`（单行 reason，最多 500 UTF-8 字节，写进 `develop-answer-redo` 记录）；之后 status 为 `pendingAction=resume`，`advance` 用新 effect id 重发本轮开发。
   盘上改动保留；审查包始终对照本运行创建时拍下的任务基线（重发时不重拍），所以丢失应答期间写入的内容都会进检查与独立审查。不占调用与 effect 名额，每运行最多 2 次；受保护模式下代码根变化可能是半写入，不走此出口。
 - provider 开发（Codex 直写、Claude 提案由宿主应用）结果不明——`unknown/call_timeout`、`unknown/unknown`、提案未通过本地校验的 `blocked/failed`（`invalid_result`）、启动失败或报告失败的 `blocked/unavailable`——同样显示 `blocked/develop_answer_missing`、`pendingAction=develop_redo`，但只限新版本记了 worker 进程身份（`workerJournal` + `develop-worker`）的 effect。
-  发送 `develop_redo` 时宿主按记录核对进程组：已退出（或从未启动）才写 `develop-answer-redo`（带 `worker` 绑定）；仍在运行拒绝为 `develop_redo_worker_process_alive`，核对不了拒绝为 `develop_redo_worker_process_unknown`，没记身份拒绝为 `develop_redo_worker_identity_unrecorded`。不带原因的 `blocked` 答复仍是终态，不走此出口。
+  发送 `develop_redo` 时宿主按记录核对进程组（含应用提案的子进程）；Claude provider 还要代码根仍等于本轮起点（记 `basis`，否则 `develop_redo_root_changed`）：已退出（或从未启动）才写 `develop-answer-redo`（带 `worker` 绑定）；仍在运行拒绝为 `develop_redo_worker_process_alive`，核对不了拒绝为 `develop_redo_worker_process_unknown`，没记身份拒绝为 `develop_redo_worker_identity_unrecorded`。不带原因的 `blocked` 答复仍是终态，不走此出口。
 - `blocked/develop_dispatch_failed`（`pendingAction=resume`）：开发请求在派发给会话之前就失败了——宿主自己的角色路由出错（运行日志写不进 `role_log_failed`、工作流角色配置无效 `invalid_workflow_config`），开发调用没有结果、没有派发、没有写盘。
   修好 reason 指出的宿主环境后 `--mode resume` 再 `advance`：宿主追加 `develop-dispatch-retry` 记录，用新 effect id 重发本轮开发，不占名额，每运行最多 2 次。
   每次重发前（含写下记录后宿主退出、恢复再发）都核对代码根仍等于本轮起点（第 1 轮为任务基线，第 2 轮为已审第 1 轮包）；起点无法核对或代码根已变，改走上一条 `develop_redo` 确认重发，派发时拒绝为 `develop_dispatch_root_changed`。用满 2 次后同样改走 `develop_redo`。
@@ -74,7 +74,7 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
 QA、文档与收尾不占名额；本地拒绝的开发结果、检查产物越界、自动重派的审查和被放弃的审查结果不计）。任何可重试的开发阻断反复出现、
 剩余调用或 effect 名额已不够再交付一次并送审时，运行器在派发开发前写入 `develop-retry-limit` 并停在终态
 `blocked/develop_retry_limit`（`pendingAction: none`）；按 reason 中的上次阻断原因修好根因后用 supersede 新建运行。
-`evidence` 摘要文字变化且检查 `id/command/outcome/exitCode` 不变时可完成；代码、handoff 漂移（reason 列出路径）或 Learning handoff 核对不一致为终态 `blocked/package_mismatch`，越界 scope/需求漂移保持 `blocked/out_of_scope`。完成复查答复的检查清单（编号或命令）与审查包不同、或仅 `outcome/exitCode` 变化时为可恢复的 `blocked/completion_checks_changed`，reason 写明两边的检查编号。旧版本把这两类记成没有原因或原因只有 `package_mismatch` 的终态（如 bootstrap-T-001-r6、picks-feed-T-001-r2），回放时同样投影为 `completion_checks_changed`；"handoff 文件名不带 runId 导致串号"的推断已排除（两次都是检查清单或证据差异）。处理方式：先修好检查环境，再用原 runId、原配置 `--mode resume` 执行 `advance`（或 `complete`）；新 complete effect id 重跑检查，原 Review 回执与 packageDigest 不变，不新开 run 或重审。complete 本身不占六个 effect 名额，审查已批准的运行总能进入完成；这类完成前复查阻断（含 `completion_package_changed`）
+`evidence` 摘要文字变化且检查 `id/command/outcome/exitCode` 不变时可完成；代码、handoff 漂移（reason 列出路径）或 Learning handoff 核对不一致为终态 `blocked/package_mismatch`，越界 scope/需求漂移保持 `blocked/out_of_scope`。完成复查答复的检查清单（编号或命令）与审查包不同、或仅 `outcome/exitCode` 变化时为可恢复的 `blocked/completion_checks_changed`，reason 写明两边的检查编号。#160 之后的旧版本把检查清单差异记成原因只有 `package_mismatch` 的终态（如 picks-feed-T-001-r2），回放时投影为 `completion_checks_changed`；更早没有原因的形状（如 bootstrap-T-001-r6，#160 前比对了检查证据文字，但同一形状也可能是 Learning handoff 不一致或代码漂移）无法证明只是检查差异，仍是终态，按原样 supersede；"handoff 文件名不带 runId 导致串号"的推断已排除（两次都是检查清单或证据差异）。处理方式：先修好检查环境，再用原 runId、原配置 `--mode resume` 执行 `advance`（或 `complete`）；新 complete effect id 重跑检查，原 Review 回执与 packageDigest 不变，不新开 run 或重审。complete 本身不占六个 effect 名额，审查已批准的运行总能进入完成；这类完成前复查阻断（含 `completion_package_changed`）
 单独最多重试 3 次；第 4 次仍被拦下时运行器写入 `completion-retry-limit`，停在终态 `blocked/completion_retry_limit`（`pendingAction: none`），
 先修好检查环境再 supersede 新建运行。旧 journal 按原格式回放。
 
@@ -172,14 +172,16 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume --host-context
 运行不再作废：journal 追加绑定 effect id、kind、intent 摘要、前一条记录摘要与原因的 `effect-interrupted`，运行日志写 `effect_interrupted`，结果 `outcome: recorded`，运行从这一步自己的可重试阻断继续：
 
 - `develop` → `blocked/develop_interrupted`，`pendingAction: resume`。`advance` 用新 effect id（`develop-N…-resume-K`）重发本轮；被中断的调用留一条 `abandoned` 审计记录，不占调用与 effect 名额。盘上改动保留，审查包仍对照运行创建时的任务基线，经检查与独立审查。bootstrap 规范任务在派发前照常核对规则文件，写到一半会停在 `bootstrap_instruction_conflict` 并列出路径。
-- 受保护当前会话开发：写入是宿主应用提案，代码根必须仍等于本轮起点（`basis`），否则拒绝为 `effect_interrupt_root_changed`／`effect_interrupt_root_unpinned`；先把列出的文件还原到本轮起点再重试，半成品不会当成新交付送审。
+- 受保护当前会话开发和 Claude provider 开发：写入是由 sandbox 子进程应用提案，代码根必须仍等于本轮起点（`basis`），否则拒绝为 `effect_interrupt_root_changed`／`effect_interrupt_root_unpinned`；先把列出的文件还原到本轮起点再重试，半成品不会当成新交付送审。应用提案的子进程同样记 `develop-worker`（`apply_spawning`；`apply_started` 带 pid），宿主核对它们都已退出才放行。
 - provider 开发：新版本在 intent 上标 `workerJournal`，并在 worker 启动前后写 `develop-worker`（`spawning`；`started` 带 pid 即进程组、`ps` 启动时间）。宿主按记录核对进程组：已退出（或从未启动）才写 `effect-interrupted`（带 `worker` 绑定）；仍在运行拒绝为 `effect_interrupt_worker_process_alive`，Windows、无权限、读不到启动时间拒绝为 `effect_interrupt_worker_process_unknown`，只记到 `spawning` 拒绝为 `effect_interrupt_worker_identity_incomplete`，旧版本没记身份拒绝为 `effect_interrupt_worker_identity_unrecorded`（只能手工确认后新建运行替代）。
 - `review`（未登记）→ `awaiting_review`，`advance` 重新取得授权并派发，不占重派次数。
 - `complete`（无 `task-commit-intent`）→ 回到中断前的状态（通常 `approved`），`complete` 重新复查并完成。
 
+同一类步骤每运行最多这样恢复 2 次。第 3 次中断时状态显示 `unknown/effect_interrupt_limit`，`abandon_effect` 只能按旧规则写 `effect-abandoned` 作废本运行（记过写入方的开发要带进程组已退出的证明），之后 supersede 新建运行。
+
 已登记但无结果的 review 仍走上方 `abandon_review`；本轮重派已用完（`review_abandon_budget_exhausted`）时，`abandon_effect` 按旧规则写 `effect-abandoned` 作废运行（必须绑定最后一条记录），之后可走下方 supersede，不再死锁。
 
-已写 `task-commit-intent` 而没有结果时，状态为 `blocked/complete_commit_interrupted`，`pendingAction: complete`，`abandon_effect` 拒绝为 `effect_abandon_commit_pending`。发送 `complete`：宿主只按 journal 里的提交计划核对 `tasks.md`——已是提交后的内容就补记 `task-commit-result` 与检查点；仍是提交前的字节和文件状态、计划引用的证据未变、代码仍等于审查通过的交付，就按原计划写完再补记；否则拒绝为 `commit_recovery_conflict`／`commit_recovery_code_changed` 并保留现场，不重新复查或开发。
+已写 `task-commit-intent` 而没有检查点时（含恢复本身写完提交结果后又中断），状态为 `blocked/complete_commit_interrupted`，`pendingAction: complete`，`abandon_effect` 拒绝为 `effect_abandon_commit_pending`。发送 `complete`：宿主只按 journal 里的提交计划核对 `tasks.md`——已是提交后的内容就补记 `task-commit-result` 与检查点；仍是提交前的字节和文件状态、计划引用的证据未变、代码仍等于审查通过的交付，就按原计划写完再补记；提交结果已在存档里时只补检查点，不再碰 tasks.md、不重复写结果；否则拒绝为 `commit_recovery_conflict`／`commit_recovery_code_changed` 并保留现场，不重新复查或开发。
 
 旧版本写下的 `effect-abandoned` 仍按终态 `cancelled/effect_abandoned` 回放。批次路径没有 `abandon_review`，也不接入 `abandon_effect`。不想在原运行继续时，blocked 的运行可按下方显式 supersede 新建，仍须通过旧 writer 和代码漂移检查。
 

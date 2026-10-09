@@ -26,7 +26,7 @@ import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRu
   completeRecheckSource,completeRecheckable,completeRecheckReason,
   DEVELOP_REDO_CODE,developAnswerMissingEffect,developRedoCause,developRedoRequiredReason,developRedoReason,
   DISPATCH_RETRY_CODE,developDispatchFailedEffect,developDispatchBasis,developDispatchReason,answerGapLimit,
-  pendingDevelopStart,workerGoneBinding,developRedoSource,COMMIT_INTERRUPTED_CODE,COMMIT_INTERRUPTED_REASON } from './durable-runner-state.mjs';
+  pendingDevelopStart,redoDevelopStart,workerGoneBinding,EFFECT_INTERRUPT_LIMIT_CODE,effectInterruptLimitReason,developRedoSource,COMMIT_INTERRUPTED_CODE,COMMIT_INTERRUPTED_REASON } from './durable-runner-state.mjs';
 import {readProcessStartTime,inspectWorkerGroup} from './worker-process-identity.mjs';
 import {recoverRunnerCommitImage} from './task-commit.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
@@ -308,8 +308,11 @@ export function createTaskRunner(options) {
     ||completeRecheckSource(entry)).length;
   const privateStatus=()=>json({state,code,...(reason?{reason}:{}),
     ...(!(metadata.externalModels||metadata.executionPolicy)&&state==='unknown'&&restored?.pending
-      &&(restored.pendingAbandonable||restored.pendingInterruptible||restored.pendingReviewExhausted)
+      &&(restored.pendingAbandonable||restored.pendingInterruptible||restored.pendingReviewExhausted||restored.pendingWorkerVoidable)
       ?{pendingEffectKind:restored.pending.kind}:{}),
+    // R2: the interruption cap is spent; abandon_effect now only voids the run.
+    ...(state==='unknown'&&restored?.pending&&restored.pendingInterruptLimit
+      ?{code:EFFECT_INTERRUPT_LIMIT_CODE,reason:effectInterruptLimitReason(restored.pending.kind)}:{}),
     ...(!(metadata.externalModels||metadata.executionPolicy)&&state==='unknown'&&restored?.pending?.kind==='review'
       &&restored.state.reviewInvocation?.registration&&restored.state.reviewInvocation.result===null
       ?{pendingReviewInvocation:true}:{}),
@@ -378,31 +381,54 @@ export function createTaskRunner(options) {
   // V9: provider development journals its worker's identity (develop-worker):
   // spawning right before the spawn, started (pid = process group, start time)
   // right after. A throw here makes the spawn wrapper kill the new group.
-  const workerJournaling=()=>Boolean(invocationMode&&store&&taskMode&&developer.requestedModel!=='current-session');
+  // Protected development also journals each sandbox subprocess that applies a
+  // proposal (apply_spawning / apply_started): it may outlive a dead host too.
+  const workerJournaling=()=>Boolean(invocationMode&&store&&taskMode
+    &&(developer.requestedModel!=='current-session'||options.protectedDevelopment===true));
   function journalWorker(effectId,raw){
-    const event=json(raw);shape(event,['phase',...(event?.phase==='started'?['pid']:[])]);
-    need(['spawning','started'].includes(event.phase),'invalid_input');
+    const event=json(raw),started=['started','apply_started'].includes(event?.phase);
+    shape(event,['phase',...(started?['pid']:[])]);
+    need(['spawning','started','apply_spawning','apply_started'].includes(event.phase),'invalid_input');
     persist('develop-worker',{effectId,invocationId:calls.at(-1).invocationId,phase:event.phase,
-      ...(event.phase==='started'?{pid:event.pid,startTime:readProcessStartTime(event.pid)}:{})});
+      ...(started?{pid:event.pid,startTime:readProcessStartTime(event.pid)}:{})});
   }
   // The host's proof for a provider develop: 'none' (never spawned), 'gone',
   // or a refusal code. Windows, permission errors and unreadable start times
   // are unknown, never gone.
   // checkpointed: the host was alive after the spawn, so a spawned child with a
   // pid was journaled in the same tick; spawning alone then means no process.
+  // Every started writer is checked: the provider worker and each proposal
+  // apply subprocess.
   function workerProof(worker,{checkpointed=false}={}){
     if(worker?.journal!==true)return {code:'worker_identity_unrecorded'};
-    if(!worker.spawned)return {proof:'none'};
-    if(worker.started===null)return checkpointed?{proof:'none'}:{code:'worker_identity_incomplete'};
-    const verdict=inspectWorkerGroup(worker.started);
-    return verdict==='gone'?{proof:'gone',binding:workerGoneBinding(worker.started)}
-      :{code:verdict==='alive'?'worker_process_alive':'worker_process_unknown',pid:worker.started.pid};
+    if(!checkpointed&&(worker.spawned&&worker.started===null||worker.applies.some(item=>item.started===null)))
+      return {code:'worker_identity_incomplete'};
+    const binding=workerGoneBinding(worker);
+    if(binding===null)return {proof:'none'};
+    for(const started of [worker.started,...worker.applies.map(item=>item.started)].filter(Boolean)){
+      const verdict=inspectWorkerGroup(started);
+      if(verdict!=='gone')return {code:verdict==='alive'?'worker_process_alive':'worker_process_unknown',pid:started.pid};
+    }
+    return {proof:'gone',binding};
+  }
+  // V6: where writes are applied proposals, the live root must still equal the
+  // journal-pinned round start (no partial apply is sent to review).
+  function verifyRoundStart(basis,prefix,what){
+    const refuse=(code,detail)=>{throw Object.assign(new Error(code),{code,reason:detail});};
+    if(basis===null)refuse(`${prefix}_root_unpinned`,`${what}的本轮起点无法从运行存档确定（本轮之前已有被拦下的交付），宿主不能证明中途没有写到一半；核对后用新建运行替代。`);
+    try{
+      if(basis==='reviewed_package')verifyReviewPackage({root:config.root,baseline:attemptBaseline(original,reviewPackage.identity.attempt),
+        checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
+      else assertReadyBaseline();
+    }catch(error){refuse(`${prefix}_root_changed`,boundedReason(`${what}中途退出后代码根已不等于本轮起点（可能是应用到一半的提案）：`,
+      [safeReason(error)??error?.code??'changed'],'。把这些文件还原到本轮起点后重试；半成品不会被当成新交付送审。'));}
+    return basis;
   }
   const workerRefusal=(prefix,result)=>({code:`${prefix}_${result.code}`,reason:{
     worker_identity_unrecorded:'这次 provider 开发没有在运行存档里记下 worker 进程身份（旧版本建的 effect，或未配置 provider 模型），宿主无法证明进程已退出；按 reason 手工核对后只能新建运行替代。',
     worker_identity_incomplete:'运行存档只记到 worker 即将启动，没有记下 pid，宿主无法证明进程已退出；请手工确认该 provider 进程已不存在后，用新建运行替代。',
-    worker_process_alive:`provider worker 进程组（pid ${result.pid}）仍在运行，可能还在写文件；等它退出或手工结束该进程组后再试。`,
-    worker_process_unknown:`宿主无法核对 provider worker 进程组（pid ${result.pid}）是否已退出（Windows、无权限或读不到启动时间），不放行；确认进程已退出后在能核对的环境重试。`}[result.code]});
+    worker_process_alive:`provider worker 或提案应用子进程的进程组（pid ${result.pid}）仍在运行，可能还在写文件；等它退出或手工结束该进程组后再试。`,
+    worker_process_unknown:`宿主无法核对进程组（pid ${result.pid}）是否已退出（Windows、无权限或读不到启动时间），不放行；确认进程已退出后在能核对的环境重试。`}[result.code]});
   // P1-3: a develop that failed before dispatch. A legacy execution_error also
   // needs the live code root to still equal the journal-pinned round start.
   function developDispatchRetry(){
@@ -419,8 +445,10 @@ export function createTaskRunner(options) {
   }
   // A45: the host died between task-commit-intent and task-commit-result. Only
   // the journaled commit plan is followed (recoverCommit); complete is never redone.
+  // A result already journaled (a recovery that died before its checkpoint)
+  // closes the same effect with the checkpoint only.
   const commitRecoveryTransaction=()=>!invocationMode||!store||busy||poisoned||restored?.pending?.kind!=='complete'
-    ||!restored.transaction||restored.transaction.resultRecord!==null?null:restored.transaction;
+    ||!restored.transaction?null:restored.transaction;
   // The Learning input a re-check must carry: exactly the delivered develop's.
   const recheckLearningInput=()=>RECHECK_CODES.includes(status().code)?json([...cache.values()].at(-1).effect.learningInput):null;
   const status=()=>{
@@ -1608,12 +1636,18 @@ export function createTaskRunner(options) {
       if(history.pendingInterruptible)return interruptEffect(history,effect,value.reason);
       need(effect.kind!=='review'||history.pendingAbandonable||history.pendingReviewExhausted,'effect_abandon_review_pending');
       need(['develop','complete','review'].includes(effect.kind),'effect_abandon_unavailable');
-      need(effect.kind!=='develop'||options.providerDevelopment!==true,'effect_abandon_provider_development');
+      // A develop whose writers are journaled is voided only with their gone-proof.
+      let worker=null;
+      if(effect.kind==='develop'&&history.pendingWorkerVoidable){
+        const proof=workerProof(history.pendingWorker);
+        if(proof.code){const refusal=workerRefusal('effect_abandon',proof);throw Object.assign(new Error(refusal.code),refusal);}
+        worker=proof.binding??null;
+      }else need(effect.kind!=='develop'||options.providerDevelopment!==true||history.pendingWorker?.journal===true,'effect_abandon_provider_development');
       need(history.state.state==='unknown'&&history.state.code==='reconciliation_required'
-        &&(history.pendingAbandonable||history.pendingReviewExhausted),'effect_abandon_unavailable');
+        &&(history.pendingAbandonable||history.pendingReviewExhausted||history.pendingWorkerVoidable),'effect_abandon_unavailable');
       const intent=journal.findLast(row=>row.payload.type==='effect-intent');
       persist('effect-abandoned',{effectId:effect.id,effectKind:effect.kind,intentDigest:intent.digest,
-        lastRecordDigest:journal.at(-1).digest,reason:value.reason,at:new Date().toISOString()});
+        lastRecordDigest:journal.at(-1).digest,reason:value.reason,at:new Date().toISOString(),...(worker?{worker}:{})});
       const recovered=readRunnerHistory(journal,metadata,3).state;
       ({state,code,sequence}=recovered);reason=recovered.reason;restored.pending=null;
       publication=privateStatus();return status();
@@ -1627,23 +1661,16 @@ export function createTaskRunner(options) {
     if(effect.kind==='develop'){
       if(options.providerDevelopment===true&&!providerRun)refuse('effect_interrupt_worker_identity_unrecorded',
         '这次 provider 开发没有配置 provider 模型，运行存档无法记下 worker 进程身份，宿主无法证明进程已退出；请手工确认进程已退出后用新建运行替代。');
-      if(providerRun){
+      // Every journaled writer (provider worker, proposal apply subprocess) must be gone.
+      if(providerRun||history.pendingWorker?.journal===true){
         const proof=workerProof(history.pendingWorker);
         if(proof.code){const refusal=workerRefusal('effect_interrupt',proof);refuse(refusal.code,refusal.reason);}
         if(proof.proof==='gone')extra.worker=proof.binding;
-      }else if(options.protectedDevelopment===true){
-        // A protected write is a host apply: a changed root can only be a partly
-        // applied proposal, which is never sent to review as a new delivery.
-        const basis=pendingDevelopStart(history.state);
-        if(basis===null)refuse('effect_interrupt_root_unpinned','受保护开发的本轮起点无法从运行存档确定（本轮之前已有被拦下的交付），宿主不能证明中途没有写到一半；核对后用新建运行替代。');
-        try{
-          if(basis==='reviewed_package')verifyReviewPackage({root:config.root,baseline:attemptBaseline(original,reviewPackage.identity.attempt),
-            checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
-          else assertReadyBaseline();
-        }catch(error){refuse('effect_interrupt_root_changed',boundedReason('受保护开发中途退出后代码根已不等于本轮起点（可能是写到一半的提案）：',
-          [safeReason(error)??error?.code??'changed'],'。把这些文件还原到本轮起点后重试 abandon_effect；半成品不会被当成新交付送审。'));}
-        extra.basis=basis;
       }
+      // A Claude provider and protected current-session development write by
+      // applying proposals: a changed root can only be a partly applied one.
+      if(providerRun?developer.provider==='claude':options.protectedDevelopment===true)
+        extra.basis=verifyRoundStart(pendingDevelopStart(history.state),'effect_interrupt',providerRun?'Claude provider 开发':'受保护开发');
     }
     const intent=journal.findLast(row=>row.payload.type==='effect-intent');
     persist('effect-interrupted',{effectId:effect.id,effectKind:effect.kind,intentDigest:intent.digest,
@@ -1658,11 +1685,15 @@ export function createTaskRunner(options) {
     try{
       const transaction=commitRecoveryTransaction();need(transaction!==null,'commit_recovery_unavailable');
       const effect=restored.pending,intent=transaction.intentRecord.payload.commit;
-      recoverRunnerCommitImage(completion.owner,intent,()=>verifyReviewPackage({root:config.root,baseline:base,
-        checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()}));
-      persist('task-commit-result',{effectId:effect.id,completeIntentDigest:transaction.completeIntentDigest,
-        commit:{version:1,protocol:'cm-task-commit',type:'result',intentDigest:transaction.intentRecord.digest,
-          planDigest:intent.plan.planDigest,outcome:'fixture_committed'}});
+      // tasks.md is never touched again and no second result is appended once
+      // the journal holds the commit result; only the checkpoint is missing.
+      if(transaction.resultRecord===null){
+        recoverRunnerCommitImage(completion.owner,intent,()=>verifyReviewPackage({root:config.root,baseline:base,
+          checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()}));
+        persist('task-commit-result',{effectId:effect.id,completeIntentDigest:transaction.completeIntentDigest,
+          commit:{version:1,protocol:'cm-task-commit',type:'result',intentDigest:transaction.intentRecord.digest,
+            planDigest:intent.plan.planDigest,outcome:'fixture_committed'}});
+      }
       state='fixture_completed';code=null;reason=null;
       const response=privateStatus();cache.set(effect.id,{effect,digest:digest(effect),result:response});
       persist('effect-checkpoint',{effectId:effect.id,checkpoint:frame()});
@@ -1685,14 +1716,16 @@ export function createTaskRunner(options) {
       need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=500
         &&!/[\r\n\0]/.test(value.reason),'develop_redo_reason_required');
       const cause=developRedoRequired();need(cause!==null,'develop_redo_unavailable');
-      const effectId=[...cache.values()].at(-1).effect.id;let worker=null;
+      const effectId=[...cache.values()].at(-1).effect.id;let worker=null,basis=null;
       if(cause.startsWith('provider_')){
         const proof=workerProof(parsedHistory?.workers?.[effectId],{checkpointed:true});
         if(proof.code){const refusal=workerRefusal('develop_redo',proof);throw Object.assign(new Error(refusal.code),refusal);}
         if(proof.proof==='gone')worker=proof.binding;
+        if(developer.provider==='claude')basis=verifyRoundStart(redoDevelopStart({state,code,attempt,cache:[...cache.values()],
+          reviewPackage,priorReview}),'develop_redo','Claude provider 开发');
       }
       persist('develop-answer-redo',{effectId,invocationId:calls.at(-1).invocationId,
-        cause,reason:value.reason,at:new Date().toISOString(),...(worker?{worker}:{})});
+        cause,reason:value.reason,at:new Date().toISOString(),...(worker?{worker}:{}),...(basis?{basis}:{})});
       halt('blocked',DEVELOP_REDO_CODE,developRedoReason(cause));publication=privateStatus();return status();
     }catch(error){return freeze({outcome:'rejected',code:poisoned?'store_failure':error.code??'develop_redo_unavailable',
       ...(!poisoned&&error.reason?{reason:error.reason}:{})});}

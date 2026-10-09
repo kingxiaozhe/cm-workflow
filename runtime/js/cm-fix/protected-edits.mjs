@@ -61,7 +61,10 @@ export function captureProtectedEdits(cwd,scope){
   return Object.fromEntries(scope.map(file=>[file,snapshot(cwd,file)]));
 }
 
-export async function commitProtectedEdits({cwd,specsRoot,scope,edits,expected,identity,timeoutMs,signal}){
+// onApply (cm-ai protected development) journals the applying subprocess:
+// apply_spawning before the spawn, apply_started with its pid right after. A
+// journal failure kills the new group and fails the apply.
+export async function commitProtectedEdits({cwd,specsRoot,scope,edits,expected,identity,timeoutMs,signal,onApply=null}){
   need(Array.isArray(edits),'protected_edit_invalid');
   for(const edit of edits)need(Object.hasOwn(expected,edit.path)&&edit.beforeSha256===expected[edit.path],'protected_edit_stale');
   need(!signal.aborted,'cancelled');
@@ -69,10 +72,14 @@ export async function commitProtectedEdits({cwd,specsRoot,scope,edits,expected,i
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cm-fix-edits-')),file=path.join(dir,'edits.json');
   try{
     fs.writeFileSync(file,JSON.stringify({cwd,scope,edits}),{mode:0o600,flag:'wx'});
+    let journalFailed=false;
+    onApply?.({phase:'apply_spawning'});
     const check=createHostCheck({cwd,specsRoot,timeoutMs,commands:[{id:'protected-edits',
-      command:[process.execPath,fileURLToPath(import.meta.url),file]}]});
+      command:[process.execPath,fileURLToPath(import.meta.url),file]}],
+      ...(onApply?{onSpawn:({pid})=>{try{onApply({phase:'apply_started',pid});}
+        catch{journalFailed=true;try{process.kill(-pid,'SIGKILL');}catch{}}}}:{})});
     const [observed]=await check({identity},{signal});
-    need(observed.outcome==='passed','protected_edit_failed');
+    need(!journalFailed&&observed.outcome==='passed','protected_edit_failed');
   }finally{if(fs.existsSync(file))fs.unlinkSync(file);fs.rmdirSync(dir);}
 }
 

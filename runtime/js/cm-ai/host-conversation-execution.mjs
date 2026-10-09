@@ -302,8 +302,10 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
           if(protection&&response.value.outcome!=='blocked'){
             if(bound.payload.specification)verifySpecificationMaterial({specificationRoot:definition.specsDir,
               specification:bound.payload.specification,identity:bound.identity});
+            // The applying sandbox subprocess is journaled like the worker (V9).
             try{await projectExecution.commit({scope:bound.payload.scope,
-              edits,expected,identity:bound.identity,signal:control.signal});}
+              edits,expected,identity:bound.identity,signal:control.signal,
+              ...(typeof control.onWorker==='function'?{onApply:event=>control.onWorker(event)}:{})});}
             catch(error){
               // This code is emitted by the pre-write expected-hash check.
               // Sandbox execution/partial-write failures stay ambiguous.

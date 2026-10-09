@@ -20,7 +20,8 @@ import {buildCodexDeveloperPrompt} from '../runtime/js/cm-ai/codex-developer-ada
 import {buildCodexReviewPrompt} from '../runtime/js/cm-ai/codex-review-adapter.mjs';
 import {readRunnerHistory,runnerPayloadV3,projectedRunnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {abandonEffectPlanError,buildCmAiDriveRequest,buildCmAiDriveHostArgs} from './cm-ai-drive.mjs';
-import {spawn as spawnChild} from 'node:child_process';
+import {spawn as spawnChild,spawnSync} from 'node:child_process';
+import {createDeveloperRun} from '../runtime/js/cm-ai/developer-adapter.mjs';
 import {readProcessStartTime} from '../runtime/js/cm-ai/worker-process-identity.mjs';
 
 // Never write the real ~/.cm-workflow home or its global log from this suite.
@@ -400,6 +401,135 @@ test('provider develop without a usable result is redone after its worker group 
     if(process.env.DEBUG_KEEP)fs.writeFileSync(process.env.DEBUG_KEEP,f.root);else fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
+// R2: an interrupted step of the same kind is retired at most twice per run;
+// the third host death shows effect_interrupt_limit and abandon_effect voids.
+test('develop interruptions are capped at two per run, then abandon_effect voids the run',async()=>{
+  const f=runFixture();
+  try{
+    const runId='interrupt-cap',identity=identityFor(runId),content='written\n';
+    await start(f,runId,content);
+    const stateFile=path.join(f.reviewsDir,'.execution',runId,'state.json');
+    const cutAtLastDevelop=()=>{const current=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+      const index=current.records.findLastIndex(row=>row.payload.type==='effect-intent'&&row.payload.effect.kind==='develop');
+      const {revision,...body}=current;body.records=current.records.slice(0,index+1);
+      fs.writeFileSync(stateFile,JSON.stringify({...body,revision:digest(body)})+'\n');
+      for(const name of fs.readdirSync(f.reviewsDir))if(name.startsWith('work-T-002-'))fs.rmSync(path.join(f.reviewsDir,name));};
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    for(const round of [1,2]){
+      cutAtLastDevelop();
+      const run=await openControlRun(definition,'resume',executionFor(f,content),{allowAbandonEffect:true});
+      try{
+        assert.equal((await run.host.handle(abandonRequest(identity))).code,'develop_interrupted',`round ${round}`);
+        assert.equal((await run.host.handle(requestFor(identity))).code,'review_blocked');
+      }finally{run.close();}
+    }
+    cutAtLastDevelop();
+    const records=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
+    const history=readRunnerHistory(records,records[0].payload.config,3);
+    assert.equal(history.pendingInterruptible,false);assert.equal(history.pendingInterruptLimit,true);
+    // A third interruption record is refused on replay.
+    const forgedBody={version:1,seq:records.length+1,id:`runner.${String(records.length+1).padStart(6,'0')}`,kind:'result',
+      payload:runnerPayloadV3('effect-interrupted',{effectId:records.at(-1).payload.effect.id,effectKind:'develop',
+        intentDigest:records.at(-1).digest,lastRecordDigest:records.at(-1).digest,reason:'again',at:'2026-10-09T00:00:00.000Z'}),
+      previousDigest:records.at(-1).digest};
+    assert.throws(()=>readRunnerHistory([...records,{...forgedBody,digest:digest(forgedBody)}],records[0].payload.config,3),{code:'runner_interrupt'});
+    const run=await openControlRun(definition,'resume',executionFor(f,content),{allowAbandonEffect:true});
+    try{
+      const status=await run.host.handle({version:1,operation:'status',requestId:'status',identity});
+      assert.equal(status.code,'effect_interrupt_limit');assert.equal(status.pendingAction,'abandon_effect');
+      assert.match(status.reason,/2 次/);
+      const voided=await run.host.handle(abandonRequest(identity));
+      assert.equal(voided.code,'effect_abandoned',JSON.stringify(voided));assert.equal(voided.outcome,'abandoned');
+    }finally{run.close();}
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// P1 (Codex round 1): a Claude provider writes by applying its proposal in a
+// sandbox subprocess. Interruption needs that subprocess gone too and the code
+// root still at the round start (a partial apply is restored first, V6).
+test('Claude provider interruption needs every apply subprocess gone and the round start intact',async()=>{
+  const f=runFixture();let child=null;
+  try{
+    const runId='claude-apply-gone',identity=identityFor(runId),content='written\n';
+    const execution=()=>{const value=executionFor(f,content);
+      value.developer={provider:'claude',requestedModel:'fixture',contextId:'developer',run:createDeveloperRun({provider:'claude',requestedModel:'fixture',
+        worker:async()=>{fs.writeFileSync(path.join(f.codeProject,'a.mjs'),content);
+          return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
+            retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};}})};
+      return value;};
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    let run=await openControlRun(definition,'create',execution());
+    try{assert.equal((await run.host.handle(requestFor(identity))).code,'review_blocked');}finally{run.close();}
+    const {stateFile,body}=interruptAfterIntent(f,runId,'develop');
+    for(const name of fs.readdirSync(f.reviewsDir))if(name.startsWith('work-T-002-'))fs.rmSync(path.join(f.reviewsDir,name));
+    const intent=body.records.at(-1),session=body.records[0].payload.session;
+    const invocationId=`${session}.${readRunnerHistory(body.records,body.records[0].payload.config,3).state.calls.length+1}`;
+    const abandon=async()=>{const value=await openControlRun(definition,'resume',execution(),{allowAbandonEffect:true});
+      try{return await value.host.handle(abandonRequest(identity));}finally{value.close();}};
+    // The proposal was half applied when the host died.
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'half\n');
+    let result=await abandon();
+    assert.equal(result.code,'effect_interrupt_root_changed',JSON.stringify(result));assert.match(result.reason,/还原/);
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
+    child=spawnChild(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});child.unref();
+    appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'spawning'});
+    appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'started',pid:child.pid,startTime:readProcessStartTime(child.pid)});
+    // The worker record names a process group that is alive: refused.
+    assert.equal((await abandon()).code,'effect_interrupt_worker_process_alive');
+    // Rebuild with a gone worker and a live apply subprocess.
+    const gone=spawnSync(process.execPath,['-e','process.exit(0)']).pid;
+    let records=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+    {const {revision,...cut}=records;cut.records=cut.records.slice(0,-1);fs.writeFileSync(stateFile,JSON.stringify({...cut,revision:digest(cut)})+'\n');}
+    appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'started',pid:gone,startTime:null});
+    appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'apply_spawning'});
+    assert.equal((await abandon()).code,'effect_interrupt_worker_identity_incomplete');
+    appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'apply_started',pid:child.pid,startTime:readProcessStartTime(child.pid)});
+    assert.equal((await abandon()).code,'effect_interrupt_worker_process_alive');
+    process.kill(-child.pid,'SIGKILL');
+    const until=Date.now()+5000;
+    while(Date.now()<until){try{process.kill(-child.pid,0);}catch(error){if(error.code==='ESRCH')break;}await new Promise(resolve=>setTimeout(resolve,25));}
+    result=await abandon();
+    assert.equal(result.code,'develop_interrupted',JSON.stringify(result));
+    records=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
+    const record=records.at(-1).payload;
+    assert.equal(record.basis,'baseline');assert.equal(record.worker.applies.length,1);assert.equal(record.worker.applies[0].pid,child.pid);
+    // Without the round-start basis the record is refused on replay.
+    const unbased=structuredClone(records);delete unbased.at(-1).payload.basis;
+    const {digest:old,...last}=unbased.at(-1);unbased[unbased.length-1]={...last,digest:digest(last)};
+    assert.throws(()=>readRunnerHistory(unbased,records[0].payload.config,3),{code:'runner_interrupt'});
+  }finally{try{if(child)process.kill(-child.pid,'SIGKILL');}catch{}fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// The same rule for a checkpointed Claude provider develop with no usable result.
+test('Claude provider develop_redo needs the round start intact (no partial apply sent to review)',async()=>{
+  const f=runFixture();
+  try{
+    const runId='claude-redo-basis',identity=identityFor(runId),content='written\n';let calls=0;
+    const execution=()=>{const value=executionFor(f,content);
+      value.developer={provider:'claude',requestedModel:'fixture',contextId:'developer',run:createDeveloperRun({provider:'claude',requestedModel:'fixture',
+        worker:async()=>{calls++;if(calls===1){fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'half\n');return {status:'unknown',code:'incomplete_result'};}
+          fs.writeFileSync(path.join(f.codeProject,'a.mjs'),content);
+          return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
+            retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};}})};
+      return value;};
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    let run=await openControlRun(definition,'create',execution());
+    try{assert.equal((await run.host.handle(requestFor(identity))).code,'develop_answer_missing');}finally{run.close();}
+    const redo=async()=>{const value=await openControlRun(definition,'resume',execution(),{allowDevelopRedo:true});
+      try{return await value.host.handle({version:1,operation:'develop_redo',requestId:'redo',identity,reason:'checked'});}finally{value.close();}};
+    assert.equal((await redo()).code,'develop_redo_root_changed');
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
+    const recorded=await redo();assert.equal(recorded.outcome,'recorded',JSON.stringify(recorded));
+    const stateFile=path.join(f.reviewsDir,'.execution',runId,'state.json');
+    assert.equal(JSON.parse(fs.readFileSync(stateFile,'utf8')).records.at(-1).payload.basis,'baseline');
+    run=await openControlRun(definition,'resume',execution());
+    try{assert.equal((await run.host.handle(requestFor(identity))).code,'review_blocked');}finally{run.close();}
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
 // A45: the host died after task-commit-intent and before the rename. complete
 // finishes the journaled plan; a changed tasks.md is a conflict left in place.
 test('interrupted task commit rolls forward from its journaled plan, or stops on a conflict',async()=>{
@@ -435,6 +565,20 @@ test('interrupted task commit rolls forward from its journaled plan, or stops on
           const records=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
           assert.deepEqual(records.slice(-2).map(row=>row.payload.type),['task-commit-result','effect-checkpoint']);
           assert.equal(readRunnerHistory(records,records[0].payload.config,3).state.taskCommit.outcome,'fixture_committed');
+          // The recovery itself died after its result record: the next host writes only the checkpoint.
+          const {revision:discard,...cut}=JSON.parse(fs.readFileSync(stateFile,'utf8'));cut.records=cut.records.slice(0,-1);
+          fs.writeFileSync(stateFile,JSON.stringify({...cut,revision:digest(cut)})+'\n');
+          const tasksBefore=fs.readFileSync(f.tasksPath);resumed.close();
+          const again=await openControlRun(definition,'resume',executionFor(f,content,'approved'));
+          try{
+            const reopened=await again.host.handle({version:1,operation:'status',requestId:'status2',identity});
+            assert.equal(reopened.code,'complete_commit_interrupted',JSON.stringify(reopened));
+            const closed=await again.host.handle({version:1,operation:'complete',requestId:'complete2',identity,packageDigest:reopened.packageDigest});
+            assert.equal(closed.state,'fixture_completed',JSON.stringify(closed));
+          }finally{again.close();}
+          const final=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
+          assert.equal(final.filter(row=>row.payload.type==='task-commit-result').length,1);
+          assert.equal(final.at(-1).payload.type,'effect-checkpoint');assert.deepEqual(fs.readFileSync(f.tasksPath),tasksBefore);
         }
       }finally{resumed.close();}
     }finally{fs.renameSync=rename;fs.rmSync(f.root,{recursive:true,force:true});}
@@ -512,6 +656,8 @@ test('completion check-list mismatch is retryable and legacy package_mismatch re
       if(legacy===undefined)delete cp.cache.at(-1).result.reason;else cp.cache.at(-1).result.reason=legacy;
       for(let at=forged.length-1;at<forged.length;at++){const {digest:old,...body}=forged[at];forged[at]={...body,digest:digest(body)};}
       const replayed=readRunnerHistory(forged,forged[0].payload.config,3).state;
+      // Only the bare-code shape provably came from the check list; the no-reason shape stays terminal.
+      if(legacy===undefined){assert.equal(replayed.code,'package_mismatch');continue;}
       assert.equal(replayed.code,'completion_checks_changed');assert.match(replayed.reason,/旧版本/);
       // A mismatch that names changed paths stays terminal.
       const named=structuredClone(forged),np=named.at(-1).payload.checkpoint;
