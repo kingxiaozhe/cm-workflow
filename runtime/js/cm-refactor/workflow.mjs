@@ -20,6 +20,26 @@ const markdown=value=>'```json\n'+JSON.stringify(value,null,2)+'\n```\n';
 const relative=name=>typeof name==='string'&&!path.isAbsolute(name)&&!name.includes('\\')
   &&name.split('/').every(part=>part&&part!=='.'&&part!=='..');
 const protectedName=name=>/(^|\/)(AGENTS\.md|CLAUDE\.md|\.env(?:\..*)?|\.claude|\.codex|\.git|.*\.(pem|key|p12))(\/|$)/i.test(name);
+// Text-only current-host answers: the host, never the session, writes files, so
+// a refused or lost answer can be discarded and asked again (V1); a confirmation
+// is asked of the person again (V7). Commands and writes are never discardable.
+export const REFACTOR_REASKABLE_KINDS=Object.freeze(['refactor_analyze','refactor_confirm','refactor_apply','refactor_review',
+  'refactor_batch','refactor_prepare_tests','refactor_revise_tests','refactor_retrospective']);
+export const refactorDiscardable=kind=>REFACTOR_REASKABLE_KINDS.includes(kind)?{release:false}:null;
+function refactorGuidance(reason,recovery){
+  const unknown=recovery.unknown,last=recovery.lastAnswer;
+  const blocking=unknown.find(item=>item.kind!=='host'||!REFACTOR_REASKABLE_KINDS.includes(item.callKind));
+  if(unknown.length&&blocking)return {summary:`原${blocking.kind==='command'?'命令':blocking.kind==='write'?'写盘':'宿主'}结果未知（${blocking.key}），宿主不能证明它没执行或已清理。`,
+    nextStep:'找回原宿主回执后 resume，由会话在 refactor_recover 中给出 completed（命令须 cleanupConfirmed:true）或 not_started；这类结果不能作废重做，也不要手删归档。',
+    recoveryOperation:'resume',authorizationGranted:false};
+  if(unknown.length){const item=unknown[0];return {summary:`宿主反问 ${item.callKind} 的结果未知，会话也答不出原结果。`,
+    nextStep:`它只是文字应答、不写盘：resume 带 discard {key:"${item.key}",requestDigest:"${item.requestDigest}",evidence:"原因"} 作废后重问；每种最多 ${2} 次，超过报 refactor_discard_limit。`,
+    recoveryOperation:'resume',authorizationGranted:false};}
+  if(last&&REFACTOR_REASKABLE_KINDS.includes(last.kind)&&reason)return {summary:`已记录的 ${last.kind} 应答在回放时被拒（${reason}），每次 resume 都会原样失败。`,
+    nextStep:`确认是应答本身不合格后，resume 带 discard {key:"${last.key}",requestDigest:"${last.requestDigest}",evidence:"原因"} 作废并重问${last.kind==='refactor_confirm'?'当前用户':''}；每种最多 2 次，已发布的审查和已执行的命令不能作废。`,
+    recoveryOperation:'resume',authorizationGranted:false};
+  return null;
+}
 function orderedUnits(units,scope,assembly){
   need(Array.isArray(units)&&units.length>0,'refactor_units_invalid');const seen=new Set(),done=new Set(),result=[];
   for(const unit of units){shape(unit,['id','files','dependsOn']);need(/^[a-z][a-z0-9-]*$/.test(unit.id)&&!seen.has(unit.id)
@@ -54,7 +74,7 @@ export function createCmRefactorHost(raw,{call}){
   for(const name of writebacks)need(relative(name)&&(name==='AGENTS.md'||name==='CLAUDE.md'||name==='README.md'
     ||/^\.claude\/rules\/[a-zA-Z0-9._-]+\.md$/.test(name)),'refactor_writeback_scope');
   need(new Set([...config.scope,...setup.paths,...writebacks]).size===config.scope.length+setup.paths.length+writebacks.length,'refactor_scope_overlap');
-  const records=openRefactorRecords(directory),routes={};
+  const records=openRefactorRecords(directory,{discardable:refactorDiscardable}),routes={};
   for(const role of ['coder','tester','reviewer'])routes[role]=resolveRole(loadConfig({projectRoot:project}),role,config.runtime);
   let controller=new AbortController(),active=false,view=records.progress??{stage:records.context?'interrupted':'ready',reason:null};
   let context=records.context,files={},reports=view.reports??[],judgeBefore=null,analysis=null,proposal=null,rulebook=null,reviewResult=null;
@@ -90,7 +110,10 @@ export function createCmRefactorHost(raw,{call}){
       need(digest(context.baseline.files[name]??null)===digest(now.files[name]??null),'refactor_out_of_scope_change');
     }
   }
-  function status(){return json({...view,runId:context?.runId??null,attempt:active?attempt:view.attempt??attempt,scope:config.scope,reports,
+  function status(){
+    const recovery=['blocked','correction_required'].includes(view.stage)&&context?records.recovery:null;
+    const guidance=recovery?refactorGuidance(view.reason,recovery):null;
+    return json({...view,...(recovery?{recovery}:{}),...(guidance?{guidance}:{}),runId:context?.runId??null,attempt:active?attempt:view.attempt??attempt,scope:config.scope,reports,
     commandCount:active?commandCount:view.commandCount??0,hostCalls:active?hostCalls:view.hostCalls??0,
     baselineCount:config.baselineCommands.length,differentialCount:judgeBefore?.cases.length??view.differentialCount??0,completionAuthorized:false},1024*1024);}
   function projectStatus(){if(specs){const target=path.join(specs,'.cm-status.json');replaceText(target,readText(target),JSON.stringify({node:'REFACTOR',feature,task,
@@ -108,6 +131,9 @@ export function createCmRefactorHost(raw,{call}){
     },(_entry,perform)=>perform()); // Original writer deduplicates the exact deterministic event identity.
   }
   async function recover(entry,perform){
+    // V7: a lost confirmation is asked of the person again under the same
+    // intent; an answer bound to the lost call is never adopted.
+    if(entry.kind==='host'&&entry.input.kind==='refactor_confirm'){guard();return perform();}
     guard();const response=json(await call('refactor_recover',{kind:entry.kind,input:entry.input,
       instructions:'Trusted host reconciliation only. Inspect original invocation/process receipt. Return {decision:completed,result,evidence} only for the actual recorded outcome, or {decision:not_started,evidence} with proof no dispatch/execution occurred. Unknown => {decision:unknown,evidence}. Never infer from time or repeat an unknown review/command. No new execution.'},controller.signal),4*1024*1024);
     need(nonempty(response.evidence),'refactor_unknown_effect');
@@ -473,6 +499,8 @@ export function createCmRefactorHost(raw,{call}){
         lessons:{path:lessons,before:context.lessons,after:files.__lessons??context.lessons},project,baselineCommands:config.baselineCommands,judgeCommand:config.judgeCommand,
         preTaskDirty:context.baseline.gitState,route:routes.reviewer,
         instructions:'Fresh independent reviewer per runtime/review.md, no author history. Review ALL diff including tests/Learning/rules/docs/LESSONS and judge coverage. Return {markdown} with original N4 header binding exact handoff SHA, attempt=round, scope, findings. No writes or unapproved provider. Missing channel is blocked, never invent approval.'});
+      // A reply without review text stays discardable instead of being published.
+      need(nonempty(reviewed.markdown),'refactor_review_invalid');
       const review=await publish(`${prefix}-review`,path.join(reviews,`${feature}-${task}-r${attempt}.md`),reviewed.markdown);
       reviewResult=validateReview(review,{task,attempt,handoff,changedFiles:changed});interceptions+=Number(reviewResult.blocking_findings);
       if(Object.hasOwn(reviewed,'judgeRevision')){
@@ -540,6 +568,14 @@ export function createCmRefactorHost(raw,{call}){
           baseline:baselineSnapshot,batch:batchTrack,lessons:readText(lessons),lessonsMode:fs.existsSync(lessons)?fs.statSync(lessons).mode&0o777:0o644,
           metrics:specs?readText(path.join(specs,'METRICS.md')):null,metricsMode:specs&&fs.existsSync(path.join(specs,'METRICS.md'))?fs.statSync(path.join(specs,'METRICS.md')).mode&0o777:0o600};records.initialize(context);
       }else{guard();if(request.operation==='prepare_judge_revision')return await prepareJudgeRevision(request.judgeRevision);
+        if(request.operation==='resume'&&Object.hasOwn(request,'discard')){
+          need(view.stage==='blocked','refactor_discard_unavailable');
+          const value=request.discard;
+          need(value&&typeof value==='object'&&!Array.isArray(value)
+            &&Object.keys(value).every(key=>['key','requestDigest','evidence'].includes(key)),'refactor_discard_binding');
+          const decision=records.discard({key:value.key,requestDigest:value.requestDigest,evidence:value.evidence});
+          await event(`discard-${records.discards.length}`,'decision','answer_discarded',{key:decision.key,kind:decision.kind,reason:decision.reason});
+        }
         if(view.stage==='done')return status();need(request.operation!=='start','refactor_resume_required');}
       if(await flow()){
         if(request.operation==='resume'){

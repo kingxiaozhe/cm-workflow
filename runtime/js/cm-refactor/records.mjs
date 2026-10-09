@@ -25,17 +25,48 @@ export function replaceText(target,before,after,mode=0o644){
     const d=fs.openSync(dir,'r');try{fs.fsyncSync(d);}finally{fs.closeSync(d);}
   }finally{if(fd!==undefined)fs.closeSync(fd);try{fs.unlinkSync(tmp);}catch(error){if(error.code!=='ENOENT')throw error;}}
 }
-export function openRefactorRecords(directory){
+// V1 (O18/O19/O21): a host answer that was recorded and then refused on every
+// replay, or whose outcome nobody can tell, may be discarded by an explicit,
+// append-only `discard` row and asked again under the same key. Only the most
+// recent intent, only a `host` effect whose call kind the workflow lists as
+// re-askable, at most MAX_DISCARDS_PER_KIND per call kind in a run. A kind with
+// external side effects also needs an operator release record. Replay enforces
+// the same rules, so a forged, duplicated or over-limit row is refused.
+export const MAX_DISCARDS_PER_KIND=2;
+const DISCARD_REASONS=['answer_rejected','answer_missing'];
+export function discardSummary(effects,discards,lastIntent){
+  const last=lastIntent!==null&&effects.has(lastIntent)?[lastIntent,effects.get(lastIntent)]:null;
+  return {discards:discards.map(({key,kind,reason,at})=>({key,kind,reason,at})),
+    lastAnswer:last&&last[1].kind==='host'&&Object.hasOwn(last[1],'result')?{key:last[0],kind:last[1].input?.kind??null,
+      requestDigest:digest(last[1].input),resultDigest:digest(last[1].result)}:null,
+    unknown:[...effects].filter(([,entry])=>!Object.hasOwn(entry,'result'))
+      .map(([key,entry])=>({key,kind:entry.kind,callKind:entry.kind==='host'?entry.input?.kind??null:null,requestDigest:digest(entry.input)}))};
+}
+function checkDiscard(row,entry,lastIntent,discards,policy){
+  const allowed=policy?.(row.kind)??null;
+  need(allowed&&entry&&entry.kind==='host'&&entry.input?.kind===row.kind&&lastIntent===row.key
+    &&DISCARD_REASONS.includes(row.reason)&&discards.filter(item=>item.kind===row.kind).length<MAX_DISCARDS_PER_KIND
+    &&row.evidence&&typeof row.evidence==='object'&&/^[a-f0-9]{64}$/.test(row.evidence.sha256??'')
+    &&Number.isSafeInteger(row.evidence.length)&&row.evidence.length>0&&row.evidence.length<=2000
+    &&typeof row.at==='string'&&Number.isFinite(Date.parse(row.at))
+    &&(row.reason==='answer_rejected'?Object.hasOwn(entry,'result')&&row.resultDigest===digest(entry.result)
+      :!Object.hasOwn(entry,'result')&&row.resultDigest===null)
+    &&(allowed.release?row.released?.source==='operator_confirmed'&&/^[a-f0-9]{64}$/.test(row.released.evidence??''):row.released===null),
+  'refactor_journal_invalid');
+}
+export function openRefactorRecords(directory,{discardable=null}={}){
   need(canonicalFuture(directory)===directory,'refactor_archive_changed');
   const target=path.join(directory,'execution.jsonl'),lock=path.join(directory,'.writer.json');
-  let events=[],last=null,locked=false;const effects=new Map();
+  let events=[],last=null,locked=false,lastIntent=null;const effects=new Map(),discards=[];
   if(fs.existsSync(target)){
     const stat=fs.lstatSync(target);need(stat.isFile()&&!stat.isSymbolicLink()&&stat.nlink===1&&stat.size<=32*1024*1024,'refactor_journal_invalid');
     const source=fs.readFileSync(target,'utf8');need(source.endsWith('\n'),'refactor_journal_incomplete');
     events=source.trimEnd().split('\n').map(line=>JSON.parse(line));
     for(const row of events){const {hash,...body}=row;need(hash===digest(body)&&body.previous===last,'refactor_journal_invalid');last=hash;
-      if(row.type==='intent'){need(!effects.has(row.key),'refactor_journal_invalid');effects.set(row.key,{input:row.input,kind:row.kind});}
+      if(row.type==='intent'){need(!effects.has(row.key),'refactor_journal_invalid');effects.set(row.key,{input:row.input,kind:row.kind});lastIntent=row.key;}
       if(row.type==='result'){const entry=effects.get(row.key);need(entry&&!Object.hasOwn(entry,'result'),'refactor_journal_invalid');entry.result=row.result;}
+      if(row.type==='discard'){checkDiscard(row,effects.get(row.key),lastIntent,discards,discardable);
+        discards.push(row);effects.delete(row.key);lastIntent=null;}
     }
   }
   function append(body){
@@ -46,6 +77,26 @@ export function openRefactorRecords(directory){
   }
   return {
     get context(){return events.find(row=>row.type==='context')?.value??null;},
+    get discards(){return discards.map(row=>({...row}));},
+    get recovery(){return discardSummary(effects,discards,lastIntent);},
+    // The caller binds key/requestDigest from status and supplies the reason;
+    // the row is checked with the replay rules before it is appended.
+    discard({key,requestDigest,evidence,released=null}){
+      need(typeof evidence==='string'&&evidence.trim()&&evidence.length<=2000,'refactor_discard_evidence_required');
+      const entry=effects.get(key);
+      need(entry&&entry.kind==='host'&&digest(entry.input)===requestDigest,'refactor_discard_binding');
+      need(lastIntent===key,'refactor_discard_not_last');
+      const kind=entry.input.kind,allowed=discardable?.(kind)??null;need(allowed,'refactor_discard_kind');
+      need(discards.filter(item=>item.kind===kind).length<MAX_DISCARDS_PER_KIND,'refactor_discard_limit');
+      need(!allowed.release||typeof released==='string'&&released.trim()&&released.length<=2000,'refactor_discard_release_required');
+      const row={type:'discard',key,kind,reason:Object.hasOwn(entry,'result')?'answer_rejected':'answer_missing',
+        resultDigest:Object.hasOwn(entry,'result')?digest(entry.result):null,
+        evidence:{sha256:digest(evidence),length:evidence.length},
+        released:allowed.release?{source:'operator_confirmed',evidence:digest(released)}:null,at:new Date().toISOString()};
+      checkDiscard(row,entry,lastIntent,discards,discardable);
+      append(row);discards.push({...row});effects.delete(key);lastIntent=null;
+      return {key,kind,reason:row.reason,remaining:MAX_DISCARDS_PER_KIND-discards.filter(item=>item.kind===kind).length};
+    },
     get progress(){return events.findLast(row=>row.type==='progress')?.value??null;},
     effects,
     acquire(){
@@ -73,7 +124,7 @@ export function openRefactorRecords(directory){
       }
       if(['host','command'].includes(kind))need(![...effects.values()].some(entry=>['host','command'].includes(entry.kind)
         &&!Object.hasOwn(entry,'result')),'refactor_unknown_effect');
-      append({type:'intent',key,kind,input});const entry={kind,input};effects.set(key,entry);
+      append({type:'intent',key,kind,input});const entry={kind,input};effects.set(key,entry);lastIntent=key;
       const result=json(await perform(),4*1024*1024);append({type:'result',key,result});entry.result=result;return json(result,4*1024*1024);
     },
     async write(key,target,before,after,mode){

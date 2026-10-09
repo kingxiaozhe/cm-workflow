@@ -71,6 +71,23 @@ JS 每次变异后恢复自己写入的精确内容；检测到并发修改时�
 询问当前用户收口决定并归档。收口拒绝只停在原位置，不重做修改或审查。
 `status` 只读状态；`resume` 同配置接回原记录；`cancel` 中止在途工作；退出用 `{type:host_close,sessionId}`。
 
+## 作废已记录或丢失的文字应答
+
+宿主反问都是文字应答（不写盘，写盘和命令由宿主做并记日志），所以下面两种卡点可以作废后重问：
+
+- 已记录的应答在回放时被拒（如`refactor_analysis_invalid`、`refactor_decision_invalid`、`refactor_proposal_scope`），每次resume都原样失败；
+- 宿主中途退出，resume时`refactor_recover`也答不出原结果，停在`refactor_unknown_effect`。
+
+blocked的status带`recovery`（`lastAnswer`、`unknown`、已用`discards`）和中文`guidance`。确认是应答本身的问题后发送：
+
+```json
+{"requestId":"discard-1","operation":"resume","discard":{"key":"status原值","requestDigest":"status原值","evidence":"为何作废（单行原因）"}}
+```
+
+只能作废**最后一个**意图，且是refactor_analyze/confirm/apply/review/batch/prepare_tests/revise_tests/retrospective之一；运行须处于blocked。journal追加只增的`discard`行（key、kind、原因answer_rejected或answer_missing、被拒结果摘要、evidence摘要），再在同一key下重问。每种kind每个运行最多2次（`refactor_discard_limit`）；不是最后一个报`refactor_discard_not_last`，命令和写盘报`refactor_discard_binding`，非blocked报`refactor_discard_unavailable`。已发布的审查（r1.md已落盘）和已执行的命令不能作废；没有审查正文的回复会先被拒，不会发布。命令结果未知仍要原宿主回执并`cleanupConfirmed:true`。回放时伪造、重复、超上限或不是最后一个的discard行一律报`refactor_journal_invalid`；没有discard行的旧journal照原样回放。
+
+`refactor_confirm`的结果未知时，宿主不再调`refactor_recover`采纳旧决定，而是在同一key下重新问当前用户（V7）；驾驶员对此类未知用confirm.json应答。驾驶员的PLAN可写`discard:{key,requestDigest,evidence}`配合resume。
+
 ## 第二轮判官修订
 
 启动前把允许维护的现有或待建测试文件逐个列入 `testSetup.paths`，并在 G0 展示；它与业务
