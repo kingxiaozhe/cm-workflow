@@ -263,10 +263,7 @@ export async function collectCodex(sessionsDir, project, {sinceMs = null} = {}) 
   stats.unsafe_links_skipped = w.skipped.unsafe_links;
   stats.files = w.files.length;
   for (const file of w.files) {
-    // --since：只在文件最后修改时间早于 since 时跳过（文件里所有事件都不晚于它）；否则逐事件按时间戳过滤
-    if (sinceMs !== null) {
-      try { if (fs.statSync(file).mtimeMs < sinceMs) continue; } catch { stats.read_errors++; continue; }
-    }
+    // --since 只按事件时间戳过滤：文件修改时间不能保证晚于其中的事件。
     stats.files_scanned++;
     let first = true, cwd = null, model = '未知', sessionId = null, matched = false, maxTotal = -1, events = 0;
     try {
@@ -330,7 +327,9 @@ const cwdClass = (cwd, project) => (cwd === project ? '项目根目录' : /[\/\\
 
 export function summarize({records, windows, project, weights = DEFAULT_WEIGHTS, topN = 10}) {
   const tree = new Map(); // workflow -> kind -> sums
-  const total = blank(), bySrc = {}, byModel = {}, byCwd = {}, byDir = {}, bySession = {};
+  // 无原型字典：目录名或模型名是 constructor 之类时不会命中继承属性。
+  const dict = () => Object.create(null);
+  const total = blank(), bySrc = dict(), byModel = dict(), byCwd = dict(), byDir = dict(), bySession = dict();
   const top = [];
   const flags = {ambiguous_calls: 0, no_timestamp_calls: 0, uncertain_window_calls: 0, cache_write_unknown_calls: 0};
   const sorted = windows.slice().sort((a, b) => a.start - b.start);
@@ -349,7 +348,8 @@ export function summarize({records, windows, project, weights = DEFAULT_WEIGHTS,
     addTo(byCwd[cwdClass(r.cwd, project)] || (byCwd[cwdClass(r.cwd, project)] = blank()), r);
     const rel = r.cwd === project ? '.' : r.cwd.slice(project.length + 1);
     addTo(byDir[rel] || (byDir[rel] = blank()), r);
-    const sk = `${r.src}:${r.session ? String(r.session).slice(0, 8) : '未知'}`;
+    // 按完整会话 ID 分组，只在展示时截断。
+    const sk = `${r.src}:${r.session ? String(r.session) : '未知'}`;
     addTo(bySession[sk] || (bySession[sk] = {...blank(), dir: rel, unattributed: 0}), r);
     if (wf === UNATTRIBUTED) bySession[sk].unattributed++;
     const w = r.input * weights.input + (r.cache_write ?? 0) * weights.cache_write + r.cache_read * weights.cache_read + r.output * weights.output;
@@ -432,7 +432,9 @@ export function renderMarkdown(rep) {
   L.push('', '## 按会话工作目录（相对项目，前 15）', '', tableRow(['目录', ...hdr]), tableRow(['---', ...hdr.map(() => '---:')]));
   for (const d of rep.by_dir_top) L.push(tableRow([d.dir, ...cells(d)]));
   L.push('', '## 最重的 10 个会话（来源:会话 id 前 8 位）', '', tableRow(['会话', '首个工作目录（会话中途可能换目录）', '其中未归属调用', ...hdr]), tableRow(['---', '---', '---:', ...hdr.map(() => '---:')]));
-  for (const d of rep.by_session_top) L.push(tableRow([d.session, d.dir, fmt(d.unattributed), ...cells(d)]));
+  // 展示时才截断会话 ID：来源前缀 + ID 前 8 位。
+  const shortSession = (k) => { const i = k.indexOf(':'); return i < 0 ? k.slice(0, 16) : `${k.slice(0, i)}:${k.slice(i + 1, i + 9)}`; };
+  for (const d of rep.by_session_top) L.push(tableRow([shortSession(d.session), d.dir, fmt(d.unattributed), ...cells(d)]));
   L.push('', '## 单次最重的 10 次调用（按加权合计）', '');
   L.push(tableRow(['时间(UTC)', '来源', '模型', '工作流/步骤', '子代理', '输入', '缓存写入', '缓存读取', '输出', '加权']), tableRow(['---', '---', '---', '---', '---', '---:', '---:', '---:', '---:', '---:']));
   for (const c of rep.top_calls) L.push(tableRow([c.t === null ? '时间缺失' : iso(c.t), c.src, c.model, c.step === '-' ? c.workflow : `${c.workflow}/${c.step}`, c.side ? '是' : '否', fmt(c.input), fmt(c.cache_write), fmt(c.cache_read), fmt(c.output), fmt(c.weighted)]));

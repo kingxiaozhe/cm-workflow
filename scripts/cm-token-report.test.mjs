@@ -265,6 +265,8 @@ test('--since 按事件时间戳过滤 Codex，不按日期目录跳过', async 
     {timestamp: '2026-10-01T09:00:00Z', type: 'session_meta', payload: {id: 'cx9', cwd: f.project}},
     ev('2026-10-01T09:30:00Z', 11), ev('2026-10-01T10:30:00Z', 22),
   ]));
+  // 文件修改时间早于 since 也不能整份跳过。
+  fs.utimesSync(path.join(old, 'rollout-old-dir.jsonl'), new Date('2026-10-01T09:00:00Z'), new Date('2026-10-01T09:00:00Z'));
   const x = await collectCodex(f.codex, f.project, {sinceMs: Date.parse('2026-10-01T10:00:00Z')});
   assert.ok(x.records.some((r) => r.session === 'cx9' && r.t === Date.parse('2026-10-01T10:30:00Z')));
   assert.ok(!x.records.some((r) => r.session === 'cx9' && r.t === Date.parse('2026-10-01T09:30:00Z')));
@@ -326,4 +328,19 @@ test('十几万条记录时时间范围不抛 RangeError（增量求最值）', 
   const rep = await run1(f);
   assert.ok(rep.total.calls >= 150000);
   assert.ok(rep.span.to >= rep.span.from);
+});
+
+test('会话按完整 ID 分组；目录或模型名叫 constructor 时照常统计', async (t) => {
+  const f = fixture(t);
+  const sub = path.join(f.project, 'constructor');
+  fs.writeFileSync(path.join(projDir(f), 'two.jsonl'), jl([
+    claudeLine({id: 'p1', t: '2026-10-02T00:00:00Z', cwd: sub, usage: u(10, 0, 0, 1), session: '019c7714-aaaa', model: 'constructor'}),
+    claudeLine({id: 'p2', t: '2026-10-02T00:01:00Z', cwd: sub, usage: u(100, 0, 0, 1), session: '019c7714-bbbb', model: 'constructor'}),
+  ]));
+  const rep = await run1(f);
+  const sessions = rep.by_session_top.filter((d) => d.session.includes('019c7714'));
+  assert.equal(sessions.length, 2);
+  assert.deepEqual(sessions.map((d) => d.input).sort((a, b) => a - b), [10, 100]);
+  assert.ok(rep.by_dir_top.some((d) => d.dir === 'constructor' && d.calls === 2));
+  assert.ok(!renderMarkdown(rep).includes(CANARY));
 });
