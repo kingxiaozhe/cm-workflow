@@ -56,7 +56,7 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-prd-entry.mjs" \
 变更、已审修订、恢复及原材料真正变更时，读取`references/js-change-recovery.md`；输入替换须明确授权终止旧批次，再关联新批次全量重审。
 两条路径均保留原Step 0–11和人审停点；变更描述、粘贴用例由Skill保留，不能当成工具授权。
 
-**会话边界（省 token）：** 一次 cm-prd（新建、存量或变更）在人审停点收尾后，提示用户在新会话里开始下一项，不在同一会话里连续推进多项；长会话每次调用都要重读整段历史，是 token 的最大开销（见 `runtime/model-efficiency.md`「Session boundary」）。中途换会话按本技能的恢复规则接手，不改写记录、不跳过审查或授权。
+**会话边界（省 token）：** 一次 cm-prd（新建、存量或变更）在人审停点收尾后，提示用户在新会话里开始下一项，以减少历史上下文的重复读入：长会话每次调用都要重读整段历史，在一个真实项目样本中占了大部分用量（见 `runtime/model-efficiency.md`「Session boundary」）。中途换会话按本技能的恢复规则接手，不改写记录、不跳过审查或授权。
 
 ## 项目角色路由
 
