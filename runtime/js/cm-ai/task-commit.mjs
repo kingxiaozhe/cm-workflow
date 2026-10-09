@@ -176,6 +176,45 @@ function observeImage(owner,p) {
   }catch{/* Unsafe/missing/changed target is observation conflict, not write authority. */}
   return observation;
 }
+// A45: the host died after the commit intent and before its result. Only the
+// journaled plan is followed. tasks.md already holding the planned bytes is the
+// finished commit (observed_after). tasks.md still holding the exact bytes and
+// revision the plan started from, every planned evidence revision unchanged and
+// the reviewed code still in place (beforeRollForward) lets the planned rename
+// finish now. Anything else is a conflict for a person; nothing is compensated.
+export function recoverRunnerCommitImage(owner,intent,beforeRollForward){
+  need(typeof beforeRollForward==='function','invalid_input');
+  const observation=observeImage(owner,intent);
+  if(observation==='observed_after')return 'observed_after';
+  need(observation==='observed_before','commit_recovery_conflict');
+  const {plan,parent}=intent,{after}=planBytes(plan);
+  try{
+    need(equal(parentRevision(parent.path),parent),'snapshot_changed');
+    for(const e of plan.evidence)need(nativeRevision(e.path,readFile(e.path))===e.revision,'snapshot_changed');
+    need(nativeRevision(owner.tasksPath,readFile(owner.tasksPath))===plan.taskRevision,'snapshot_changed');
+  }catch{need(false,'commit_recovery_conflict');}
+  try{beforeRollForward();}catch{need(false,'commit_recovery_code_changed');}
+  // The interrupted writer's own temporary file: removed only while its bytes
+  // are a prefix of the planned image (it can be nothing else of ours).
+  const leftover=path.join(parent.path,intent.temporaryName);
+  try{const f=readFile(leftover);need(after.subarray(0,f.bytes.length).equals(f.bytes),'commit_recovery_conflict');fs.unlinkSync(leftover);}
+  catch(error){if(error.code==='commit_recovery_conflict')throw error;if(error.code!=='ENOENT')need(false,'commit_recovery_conflict');}
+  const temporary=path.join(parent.path,`.cm-task.${randomUUID()}.tmp`);let fd;
+  try{
+    fd=fs.openSync(temporary,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600);
+    fs.writeFileSync(fd,after);fs.fchmodSync(fd,plan.mode);fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;
+    const written=readFile(temporary);need(written.bytes.equals(after)&&mode(written.stat)===plan.mode,'temporary_changed');
+    need(nativeRevision(owner.tasksPath,readFile(owner.tasksPath))===plan.taskRevision,'snapshot_changed');
+    fs.renameSync(temporary,owner.tasksPath);
+    const dir=fs.openSync(parent.path,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+    try{fs.fsyncSync(dir);}finally{fs.closeSync(dir);}
+  }catch{
+    if(fd!==undefined)try{fs.closeSync(fd);}catch{/* retain unknown */}
+    need(false,'commit_unknown');
+  }
+  need(observeImage(owner,intent)==='observed_after','commit_unknown');
+  return 'observed_before_finished';
+}
 export function observeFixtureCommit(store) {
   const owner=taskOwnerTarget(store);let h;
   try{h=history(store,owner);}catch(error){if(error.code==='commit_missing')throw error;need(false,'commit_history_invalid');}

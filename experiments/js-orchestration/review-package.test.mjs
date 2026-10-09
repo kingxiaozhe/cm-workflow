@@ -57,10 +57,12 @@ test('A4 completion compares check identity and result while keeping the reviewe
   const legacyPackage=resign(legacy,'packageDigest');
   assert.equal(verifyCompletionReviewPackage({...original,checks:[{...checks[0],evidence:'legacy fresh output'}],
     reviewPackage:legacyPackage,expectedDigest:legacyPackage.packageDigest}).packageDigest,legacyPackage.packageDigest);
-  for(const changed of [
-    {...checks[0],id:'other'},
-    {...checks[0],command:['node','other.mjs']},
-  ])assert.throws(()=>verify([changed]),{code:'package_mismatch'});
+  // A42 contract: a changed check list (ids or commands) is a retryable
+  // completion re-check block naming both lists, not a terminal mismatch.
+  assert.throws(()=>verify([{...checks[0],id:'other'}]),
+    error=>error.code==='completion_checks_changed'&&/审查包：unit；本次：other/.test(error.message));
+  assert.throws(()=>verify([{...checks[0],command:['node','other.mjs']}]),
+    error=>error.code==='completion_checks_changed'&&/编号相同但命令不同：unit/.test(error.message));
   assert.throws(()=>verify([{...checks[0],outcome:'failed',exitCode:1}]),{code:'completion_checks_changed'});
   const failedChecks=[{...checks[0],outcome:'failed',exitCode:1}];
   const failedPackage=createReviewPackage({root,baseline:original.baseline,checks:failedChecks});

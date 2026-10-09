@@ -90,10 +90,12 @@ test('develop_call_timeout: a timed-out round-2 develop with an unchanged code r
   assert.deepEqual([checkpoint.checkpoint.state,checkpoint.checkpoint.code],['unknown','call_timeout']);
   assert.equal(checkpoint.checkpoint.calls.at(-1).terminal,'unknown');
   assert.equal(readRunnerHistory(before,before[0].payload.config,3).state.state,'unknown');
-  // A session that wrote after the limit keeps unknown/reconcile (no silent adoption).
+  // A writer that wrote after the limit is never silently adopted. This fixture's
+  // developer is a provider model whose worker identity is journaled (it never
+  // spawned), so the only exit is the confirmed develop_redo (V9), not advance.
   fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'late edit\n');
   const [changed]=await session(f,'resume',['round-2\n'],[['status',2],['advance',2]]);
-  assert.deepEqual([changed.state,changed.code,changed.pendingAction],['unknown','call_timeout','reconcile']);
+  assert.deepEqual([changed.state,changed.code,changed.pendingAction],['blocked','develop_answer_missing','develop_redo']);
   assert.equal(records(f).length,before.length,'status/advance on a changed root must not append');
   fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'round-1\n');
   const [status,redone]=await session(f,'resume',['round-2\n'],[['status',2],['advance',2]]);

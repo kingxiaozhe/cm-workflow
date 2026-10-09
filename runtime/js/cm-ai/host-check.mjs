@@ -14,12 +14,13 @@ export function reportHostCheckProgress(event){
     `检查结束 ${event.id}: ${event.outcome} (exit ${event.exitCode??'unavailable'})`;
   try{process.stderr.write(`[check] ${message}\n`);}catch{/* display is not a check verdict */}
 }
-export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,outputIncludes=null,onOutput=null,onProgress=null,reuseDeclared=false}){
+export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,outputIncludes=null,onOutput=null,onProgress=null,reuseDeclared=false,onSpawn=null}){
   need(typeof reuseDeclared==='boolean','invalid_check_config');
   need(path.isAbsolute(cwd)&&fs.realpathSync(cwd)===cwd&&fs.statSync(cwd).isDirectory());
   validCallTimeout(timeoutMs);
   need(onOutput===null||typeof onOutput==='function');
   need(onProgress===null||typeof onProgress==='function');
+  need(onSpawn===null||typeof onSpawn==='function');
   const notify=event=>{
     try{
       const returned=onProgress?.(Object.freeze(event));
@@ -63,6 +64,8 @@ export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,out
               shell:false,detached:true,stdio:['ignore','pipe','pipe']});
         }
         catch{resolve({outcome:'unavailable',exitCode:null,evidence:'host check: spawn_failed'});return;}
+        // Observers cannot change results or prevent cleanup.
+        if(onSpawn&&Number.isInteger(child.pid)&&child.pid>0)try{onSpawn(Object.freeze({id:item.id,pid:child.pid}));}catch{}
         let failure=null,cleanup,bytes=0;
         const counts=new Map();
         const collect=line=>{

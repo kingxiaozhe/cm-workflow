@@ -5,6 +5,9 @@ import {findCmAiQaDecision,inspectCmAiQaDecision,inspectCmAiQaResult,recordCmAiQ
   latestCmAiQaRun,recordCmAiQaRun,inspectCmAiQaRecovery,inspectCmAiQaConfigurationRecovery,timedOutQaDecision,
   replacesTimedOutQaDecision,validEnvironmentFailureReason} from './cm-ai-qa-log.mjs';
 import {recordCmAiRunDone} from './cm-ai-run-finalizer.mjs';
+import {releaseVerifiedQaResources} from './qa-resource-release.mjs';
+import {QA_MAX_ROUNDS} from './qa-round-budget.mjs';
+import {qaRoundDeadlineMs} from './host-qa-executor.mjs';
 import {projectHostResult} from './host-progress.mjs';
 import {operatorGuidance} from './operator-guidance.mjs';
 import {outstandingFeatureQa,describeOutstandingQa} from './project-qa-gate.mjs';
@@ -29,12 +32,12 @@ const retryReview=reviewRetryable;
 // second copy of the code list that silently drifts.
 export const developmentRetryable=status=>status.state==='blocked'
   &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','develop_call_timeout','develop_answer_invalid',
-    'check_answer_missing','check_answer_invalid','develop_answer_missing','develop_dispatch_failed'].includes(status.code)
+    'check_answer_missing','check_answer_invalid','develop_out_of_scope','develop_answer_missing','develop_dispatch_failed','develop_interrupted'].includes(status.code)
   // Shown before the operator confirmed the session stopped: not yet redoable.
   &&status.developRedoRequired!==true;
 const retryDeveloper=developmentRetryable;
 export const completionRetryable=status=>status.state==='blocked'
-  &&['completion_checks_changed','completion_package_changed','complete_recheck_failed'].includes(status.code)
+  &&['completion_checks_changed','completion_package_changed','complete_recheck_failed','complete_commit_interrupted'].includes(status.code)
   &&status.retryReady!==false;
 const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approval':
   // The runner reports spec_drift over any state whose next effect would be refused.
@@ -146,7 +149,7 @@ function effectSummary(operation,result,runner,identity) {
   }
   // A rejected current-session answer is checkpointed blocked/failed; the
   // runner's status shows it as the retryable develop_answer_invalid block.
-  if(result?.state==='blocked'&&result.code==='failed'){
+  if(result?.state==='blocked'&&['failed','unavailable'].includes(result.code)){
     const current=runner.status();if(['develop_answer_invalid','develop_answer_missing'].includes(current.code))result=current;
   }
   return summary(operation,boundStatus(result,identity),result?.code==='handoff_exists'?'blocked':'advanced');
@@ -234,6 +237,8 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'abandonEffect'))runnerKeys.push('abandonEffect');
   if(runner&&Object.hasOwn(runner,'recoverBootstrapReview'))runnerKeys.push('recoverBootstrapReview');
   if(runner&&Object.hasOwn(runner,'redoDevelop'))runnerKeys.push('redoDevelop');
+  if(runner&&Object.hasOwn(runner,'recoverCommit'))runnerKeys.push('recoverCommit');
+  if(runner&&Object.hasOwn(runner,'interruptions'))runnerKeys.push('interruptions');
   if(runner&&Object.hasOwn(runner,'inspectBootstrapAdmission'))runnerKeys.push('inspectBootstrapAdmission');
   shape(runner,runnerKeys);
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');
@@ -249,6 +254,8 @@ export function createCmAiConversationEntry(options) {
   if(Object.hasOwn(runner,'abandonEffect'))need(typeof runner.abandonEffect==='function');
   if(Object.hasOwn(runner,'recoverBootstrapReview'))need(typeof runner.recoverBootstrapReview==='function');
   if(Object.hasOwn(runner,'redoDevelop'))need(typeof runner.redoDevelop==='function');
+  if(Object.hasOwn(runner,'recoverCommit'))need(typeof runner.recoverCommit==='function');
+  if(Object.hasOwn(runner,'interruptions'))need(typeof runner.interruptions==='function');
   if(Object.hasOwn(runner,'inspectBootstrapAdmission'))need(typeof runner.inspectBootstrapAdmission==='function');
   need(options.allowAbandonReview===undefined||typeof options.allowAbandonReview==='boolean','invalid_input');
   let abandonPermission=options.allowAbandonReview===true;
@@ -278,6 +285,12 @@ export function createCmAiConversationEntry(options) {
   const decideQa=qaProvider?.decide,qaTimeout=qaProvider?.timeoutMs;
   let pendingQa=null;
   let qaExecutor=null,pendingExecution=null,cancellationEpoch=0;
+  // Q13: a scan failure (no log yet) leaves resources as they are; the writer still refuses closure.
+  const releaseQaResources=identity=>{
+    try{return releaseVerifiedQaResources({specsDir:options.specsDir,codeProject:options.codeProject,runId:identity.runId,
+      ...(Object.hasOwn(options,'qaLogHome')?{logHome:options.qaLogHome}:{})});}
+    catch(error){if(error?.code==='qa_resource_release_failed')throw error;return {released:[],open:[]};}
+  };
   const inFlightHandles=new Set();
   let rerunUnknownQa=options.rerunUnknownQa??false;need(typeof rerunUnknownQa==='boolean');
   let rerunBlockedQa=options.rerunBlockedQa??false;need(typeof rerunBlockedQa==='boolean');
@@ -410,6 +423,8 @@ export function createCmAiConversationEntry(options) {
           notCancelled();
           need(pendingExecution===null,'qa_execution_pending');
           const binding={specsDir:options.specsDir,feature:options.feature,identity:result.identity,packageDigest:result.packageDigest};
+          // Q13: close cleanup_failed command resources whose process group is proven gone.
+          releaseQaResources(result.identity);
           let previous,recovery=null,configurationRecovery=false,incompleteReport=false,timedOutCall=false;
           const timedOutRecovery=()=>inspectCmAiQaRecovery(binding,{timedOut:true,requestTimeoutMs:qaExecutor.requestTimeoutMs??null,
             attestation:rerunUnknownQa?qaEnvironmentFailure:null});
@@ -466,7 +481,7 @@ export function createCmAiConversationEntry(options) {
             // Later rounds require an accepted completed repair or explicit
             // evidence recovery/configuration revision. Unknown execution stops.
             const qaRound=recovery?recovery.qaRound+(rerunBlockedQa||configurationRecovery||timedOutCall?1:0):(repaired?accepted.qaRound+1:1);
-            need(qaRound>=1&&qaRound<=3,'qa_round_invalid');
+            need(qaRound>=1&&qaRound<=QA_MAX_ROUNDS,'qa_round_invalid');
             testRunId=`qa-${digest(recovery?{...binding,previousTestRunId:recovery.testRunId}:
               repaired?{...binding,qaRound,repair:accepted.evidenceDigest}:binding).slice(0,48)}`;
             const invocation={...binding,codeProject:options.codeProject,testRunId,mode:qaExecutor.mode,caseCount:qaExecutor.caseCount,
@@ -492,7 +507,8 @@ export function createCmAiConversationEntry(options) {
               const interrupted=new Promise((_,reject)=>{
                 controller.signal.addEventListener('abort',()=>reject(Object.assign(new Error('QA interrupted'),
                   {code:timedOut?'qa_execution_timeout':'cancelled'})),{once:true});
-                timer=setTimeout(()=>{timedOut=true;controller.abort();},qaExecutor.timeoutMs);
+                // Q12: the round deadline scales with the frozen plan.
+                timer=setTimeout(()=>{timedOut=true;controller.abort();},qaRoundDeadlineMs(qaExecutor));
               });
               const executed=await Promise.race([Promise.resolve().then(()=>{
                 notCancelled();
@@ -574,7 +590,8 @@ export function createCmAiConversationEntry(options) {
         ??{outcome:'rejected',code:'effect_abandon_unavailable'};
       if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code,
         ...(result.reason?{reason:result.reason}:{})},'rejected');
-      return summary(operation,boundStatus(result,identity),'abandoned');
+      // V8: an interrupted step continues in the run (recorded); a void ends it.
+      return summary(operation,boundStatus(result,identity),result.code==='effect_abandoned'?'abandoned':'recorded');
     }
     if(operation.operation==='develop_redo'){
       if(!developRedoPermission)return summary(operation,{...runner.status(),
@@ -582,7 +599,8 @@ export function createCmAiConversationEntry(options) {
       developRedoPermission=false;
       const result=runner.redoDevelop?.({allowed:true,reason:operation.reason})
         ??{outcome:'rejected',code:'develop_redo_unavailable'};
-      if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code},'rejected');
+      if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code,
+        ...(result.reason?{reason:result.reason}:{})},'rejected');
       return summary(operation,boundStatus(result,identity),'recorded');
     }
     if(operation.operation==='bootstrap_review_recover'){
@@ -632,7 +650,8 @@ export function createCmAiConversationEntry(options) {
       const retries=retryReview(status)?status.calls.filter(call=>call.channel==='host-authorized'
         &&['failed','abandoned'].includes(call.terminal)
         &&call.contextId===status.reviewInvocation.registration.grant.logicalContextId).length:0;
-      const effectId=`review-${identity.attempt}${retries?`-retry-${retries}`:''}`;
+      const resumed=runner.interruptions?.('review')??0;
+      const effectId=`review-${identity.attempt}${retries?`-retry-${retries}`:''}${resumed?`-resume-${resumed}`:''}`;
       const result=await runner.executeEffect({version:1,id:effectId,identity,kind:'review'});
       return effectSummary(operation,result,runner,identity);
     }
@@ -643,8 +662,13 @@ export function createCmAiConversationEntry(options) {
       if(status.code==='completion_package_changed'&&status.retryReady===false)return summary(operation,status,'rejected');
       const correction=correctionSummary(operation,status);if(correction)return correction;
       need(['approved','fixture_completed'].includes(status.state)||completionRetryable(status),'completion_not_ready');
-      const retries=runner.completionBlocks?.()??0;
-      const effectId=`complete-${identity.attempt}${retries?`-retry-${retries}`:''}`;
+      // A45: finish the interrupted task commit from its journaled plan only.
+      if(status.code==='complete_commit_interrupted'){
+        const recovered=runner.recoverCommit?.()??{outcome:'rejected',code:'commit_recovery_unavailable'};
+        return effectSummary(operation,recovered,runner,identity);
+      }
+      const retries=runner.completionBlocks?.()??0,resumed=runner.interruptions?.('complete')??0;
+      const effectId=`complete-${identity.attempt}${retries?`-retry-${retries}`:''}${resumed?`-resume-${resumed}`:''}`;
       const result=await runner.executeEffect({version:1,id:effectId,identity,kind:'complete'});
       return effectSummary(operation,result,runner,identity);
     }
@@ -787,6 +811,10 @@ export function createCmAiConversationEntry(options) {
         return freeze({...summary(operation,{...status,code:'documentation_sync_blocked'},'blocked'),
           ...closeoutSummary(knowledgeCloseout,documentation)});
       const finalQa=projectQaSummary(operation,status,options);if(finalQa)return finalQa;
+      const resources=releaseQaResources(identity);
+      if(resources.open.length)return summary(operation,{...status,code:'qa_resources_open',
+        reason:`qa_resources_open: 以下运行资源仍未释放（写入器会拒绝 run_done）：${resources.open.slice(0,10).map(item=>`${item.resourceId}（${item.verdict}）`).join('、')}。`
+          +'宿主只在运行日志记有该命令进程组身份且核对进程组已退出时补记释放；先结束残留进程后重发 run_finalize，记录里没有进程身份的旧资源需人工处理。'},'blocked');
       const input={specsDir:options.specsDir,codeProject:options.codeProject,feature:options.feature,identity,
         packageDigest:operation.packageDigest,contextDigest:refresh.contextDigest,
         documentationSyncId:documentation.syncId};
@@ -826,8 +854,8 @@ export function createCmAiConversationEntry(options) {
       &&call.failureResult?.code==='invalid_result'&&call.failureResult.retryable===true).length;
     // Both kinds of local rejection need a fresh effect id: an invalid developer
     // result, and one the host gate blocked before the review package existed.
-    const retries=rejectedValues+(runner.verificationBlocks?.()??0);
-    const effectId=`develop-${identity.attempt}${retries?`-retry-${retries}`:''}`;
+    const retries=rejectedValues+(runner.verificationBlocks?.()??0),resumed=runner.interruptions?.('develop')??0;
+    const effectId=`develop-${identity.attempt}${retries?`-retry-${retries}`:''}${resumed?`-resume-${resumed}`:''}`;
     const result=await runner.executeEffect({version:1,id:effectId,identity,kind:'develop',learningInput});
     return effectSummary(operation,result,runner,identity);
   }

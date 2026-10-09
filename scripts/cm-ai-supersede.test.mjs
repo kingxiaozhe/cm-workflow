@@ -18,8 +18,11 @@ import {prepareReviewedEvidenceSupersession} from '../runtime/js/cm-ai/reviewed-
 import {readEvidenceSupersession} from '../runtime/js/cm-ai/reviewed-evidence-supersession-record.mjs';
 import {buildCodexDeveloperPrompt} from '../runtime/js/cm-ai/codex-developer-adapter.mjs';
 import {buildCodexReviewPrompt} from '../runtime/js/cm-ai/codex-review-adapter.mjs';
-import {readRunnerHistory,runnerPayloadV3} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {readRunnerHistory,runnerPayloadV3,projectedRunnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {abandonEffectPlanError,buildCmAiDriveRequest,buildCmAiDriveHostArgs} from './cm-ai-drive.mjs';
+import {spawn as spawnChild,spawnSync} from 'node:child_process';
+import {createDeveloperRun} from '../runtime/js/cm-ai/developer-adapter.mjs';
+import {readProcessStartTime} from '../runtime/js/cm-ai/worker-process-identity.mjs';
 
 // Never write the real ~/.cm-workflow home or its global log from this suite.
 const isolatedHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-supersede-home-'));
@@ -62,13 +65,16 @@ test('reviewed handoff collision retains its code and explains both exits',()=>{
   }finally{fs.rmSync(temp,{recursive:true,force:true});}
 });
 
-test('interrupted first develop can be abandoned on resume and a plain run can start',async()=>{
+// V8 (A14/A25): the host died with only a develop intent. abandon_effect records
+// effect-interrupted and the same run redoes the round under a new effect id;
+// the half-written residue stays on disk and goes through checks and review.
+test('interrupted first develop is recorded on resume and the same run redoes the round',async()=>{
   const f=runFixture();
   try{
     const runId='abandon-develop-a1',identity=identityFor(runId);
     assert.equal((await start(f,runId,'written\n')).state,'blocked');
-    const {stateFile}=interruptAfterIntent(f,runId,'develop');
-    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
+    const {stateFile,intent}=interruptAfterIntent(f,runId,'develop');
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'half\n');
     for(const name of fs.readdirSync(f.reviewsDir))if(name.startsWith('work-T-002-'))
       fs.rmSync(path.join(f.reviewsDir,name));
     const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
@@ -78,15 +84,26 @@ test('interrupted first develop can be abandoned on resume and a plain run can s
       const status=await resumed.host.handle({version:1,operation:'status',requestId:'status',identity});
       assert.equal(status.pendingAction,'abandon_effect');
       const result=await resumed.host.handle(abandonRequest(identity));
-      assert.equal(result.outcome,'abandoned');assert.equal(result.state,'cancelled');
-      assert.equal(result.code,'effect_abandoned');
+      assert.equal(result.outcome,'recorded',JSON.stringify(result));assert.equal(result.state,'blocked');
+      assert.equal(result.code,'develop_interrupted');assert.equal(result.pendingAction,'resume');
+      assert.equal(fs.readFileSync(path.join(f.codeProject,'a.mjs'),'utf8'),'half\n','residue stays on disk');
+      const advanced=await resumed.host.handle(requestFor(identity));
+      assert.equal(advanced.code,'review_blocked',JSON.stringify(advanced));
     }finally{resumed.close();}
     const records=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
-    assert.deepEqual(records.slice(-2).map(row=>row.payload.type),['effect-intent','effect-abandoned']);
-    assert.equal(readRunnerHistory(records,records[0].payload.config,3).pending,null);
-    assert.equal(fs.readFileSync(path.join(f.codeProject,'a.mjs'),'utf8'),'old\n');
+    const interrupted=records.find(row=>row.payload.type==='effect-interrupted');
+    assert.equal(interrupted.payload.intentDigest,intent.digest);
+    const history=readRunnerHistory(records,records[0].payload.config,3);
+    assert.equal(history.pending,null);assert.equal(history.state.code,'review_blocked');
+    const intents=records.filter(row=>row.payload.type==='effect-intent'&&row.payload.effect.kind==='develop').map(row=>row.payload.effect.id);
+    assert.deepEqual(intents,['develop-1','develop-1-resume-1']);
+    // The interrupted call keeps its slot-free audit entry; the redo is the next call.
+    assert.deepEqual(history.state.calls.slice(0,2).map(call=>call.terminal),['abandoned','succeeded']);
+    // The review package is still built against the run's create-time baseline.
+    const pkg=history.state.reviewPackage;
+    assert.equal(pkg.changes.find(change=>change.path==='a.mjs').before.sha256,
+      createHash('sha256').update('old\n').digest('hex'));
     assert.match(fs.readFileSync(f.tasksPath,'utf8'),/\[ \] T-002/);
-    assert.equal((await start(f,'abandon-develop-new','next\n')).state,'blocked');
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
@@ -101,7 +118,7 @@ async function dieBeforeReview(f,runId,content){
   const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
     identity,scope:['a.mjs'],requirements:['requirements.md']};
   const resumed=await openControlRun(definition,'resume',executionFor(f,content),{allowAbandonEffect:true});
-  try{assert.equal((await resumed.host.handle(abandonRequest(identity))).code,'effect_abandoned');}
+  try{assert.equal((await resumed.host.handle(abandonRequest(identity))).code,'develop_interrupted');}
   finally{resumed.close();}
   assert.equal(fs.readFileSync(path.join(f.codeProject,'a.mjs'),'utf8'),content);
 }
@@ -149,7 +166,7 @@ test('plain create checks only prior runs that no later run superseded',async()=
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
-test('interrupted second develop after changes requested can be abandoned before supersede',async()=>{
+test('interrupted second develop after changes requested is recorded, then may still be superseded',async()=>{
   const f=runFixture();
   try{
     const runId='abandon-develop-a2',identity=identityFor(runId),content='written\n';
@@ -165,7 +182,8 @@ test('interrupted second develop after changes requested can be abandoned before
       {allowAbandonEffect:true});
     try{
       const result=await resumed.host.handle(abandonRequest({...identity,attempt:2}));
-      assert.equal(result.state,'cancelled',JSON.stringify(result));assert.equal(result.code,'effect_abandoned');
+      assert.equal(result.state,'blocked',JSON.stringify(result));assert.equal(result.code,'develop_interrupted');
+      assert.equal(result.identity.attempt,2);
     }finally{resumed.close();}
     await assert.rejects(start(f,'abandon-a2-new','next\n',{supersedeReason:'restart'}),
       error=>error.code==='supersede_code_drift');
@@ -174,7 +192,9 @@ test('interrupted second develop after changes requested can be abandoned before
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
-test('interrupted complete checks can be abandoned; task commit intent is refused',async()=>{
+// V8 (A44): a completion interrupted before task-commit-intent returns to the
+// approved state; the same run completes without a new review or develop.
+test('interrupted complete checks are recorded and the same run completes',async()=>{
   const f=runFixture();
   try{
     const runId='abandon-complete',identity=identityFor(runId),content='written\n';
@@ -187,18 +207,22 @@ test('interrupted complete checks can be abandoned; task commit intent is refuse
       {allowAbandonEffect:true});
     try{
       const result=await resumed.host.handle(abandonRequest(identity));
-      assert.equal(result.state,'cancelled',JSON.stringify(result));assert.equal(result.code,'effect_abandoned');
+      assert.equal(result.state,'approved',JSON.stringify(result));assert.equal(result.code,null);
+      assert.equal(result.outcome,'recorded');assert.equal(result.pendingAction,'complete');
+      const completed=await resumed.host.handle({version:1,operation:'complete',requestId:'complete',identity,
+        packageDigest:result.packageDigest});
+      assert.equal(completed.state,'fixture_completed',JSON.stringify(completed));
     }finally{resumed.close();}
-    assert.equal(JSON.parse(fs.readFileSync(stateFile,'utf8')).records.at(-1).payload.type,'effect-abandoned');
-    assert.match(fs.readFileSync(f.tasksPath,'utf8'),/\[ \] T-002/);
-    await assert.rejects(start(f,'abandon-complete-next','next\n',{supersedeReason:'restart'}),
-      error=>error.code==='supersede_code_drift');
-    assert.equal((await start(f,'abandon-complete-next','next\n',
-      {supersedeReason:'restart',acceptSupersededCodeDrift:true})).state,'blocked');
+    const records=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
+    assert(records.some(row=>row.payload.type==='effect-interrupted'));
+    assert.deepEqual(records.filter(row=>row.payload.type==='effect-intent'&&row.payload.effect.kind==='complete')
+      .map(row=>row.payload.effect.id),['complete-1','complete-1-resume-1']);
+    assert.match(fs.readFileSync(f.tasksPath,'utf8'),/\[x\] T-002/i);
+    assert.equal(readRunnerHistory(records,records[0].payload.config,3).state.state,'fixture_completed');
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
-test('abandon_effect refuses absent intent, accepts pre-dispatch review, and requires flag and reason',async()=>{
+test('abandon_effect refuses absent intent, records a pre-dispatch review, and requires flag and reason',async()=>{
   const f=runFixture();
   try{
     const runId='abandon-refusals',identity=identityFor(runId),content='written\n';
@@ -213,7 +237,8 @@ test('abandon_effect refuses absent intent, accepts pre-dispatch review, and req
       {supersedeReason:'restart',acceptSupersededCodeDrift:true}),
     error=>error.code==='supersede_unavailable'&&/已中断.*abandon_effect/.test(error.reason));
     resumed=await openControlRun(definition,'resume',executionFor(f,content),{allowAbandonEffect:true});
-    try{assert.equal((await resumed.host.handle(abandonRequest(identity))).code,'effect_abandoned');}
+    try{const result=await resumed.host.handle(abandonRequest(identity));
+      assert.equal(result.state,'awaiting_review',JSON.stringify(result));assert.equal(result.pendingAction,'decision');}
     finally{resumed.close();}
     interruptAfterIntent(f,runId,'develop');
     resumed=await openControlRun(definition,'resume',executionFor(f,content));
@@ -223,7 +248,7 @@ test('abandon_effect refuses absent intent, accepts pre-dispatch review, and req
     try{
       assert.equal((await resumed.host.handle({...abandonRequest(identity),reason:''})).code,'effect_abandon_reason_required');
       assert.equal((await resumed.host.handle({...abandonRequest(identity),reason:'two\nlines'})).code,'effect_abandon_reason_required');
-      assert.equal((await resumed.host.handle(abandonRequest(identity))).state,'cancelled');
+      assert.equal((await resumed.host.handle(abandonRequest(identity))).state,'blocked');
     }finally{resumed.close();}
     resumed=await openControlRun(definition,'resume',executionFor(f,content),{allowAbandonEffect:true});
     try{assert.equal((await resumed.host.handle(abandonRequest(identity))).code,'effect_abandon_no_pending');}
@@ -231,7 +256,10 @@ test('abandon_effect refuses absent intent, accepts pre-dispatch review, and req
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
-test('abandon_effect refuses provider development and pending task commit',async()=>{
+// V9: a provider develop interrupted by an older runtime has no journaled worker
+// identity, so nothing proves its process gone. A45: after task-commit-intent the
+// completion is never abandoned; complete follows the journaled commit plan.
+test('abandon_effect refuses unrecorded provider workers and pending task commit; complete finishes the commit',async()=>{
   for(const kind of ['provider','commit']){
     const f=runFixture();
     try{
@@ -243,8 +271,10 @@ test('abandon_effect refuses provider development and pending task commit',async
       const created=await openControlRun(definition,'create',execution);
       try{await created.host.handle(requestFor(identity));}finally{created.close();}
       const stateFile=path.join(f.reviewsDir,'.execution',runId,'state.json');
-      if(kind==='provider')interruptAfterIntent(f,runId,'develop');
-      else {
+      if(kind==='provider'){
+        interruptAfterIntent(f,runId,'develop');
+        rewriteLast(stateFile,payload=>{assert.equal(payload.workerJournal,true);delete payload.workerJournal;});
+      }else {
         const current=JSON.parse(fs.readFileSync(stateFile,'utf8'));
         const index=current.records.findIndex(row=>row.payload.type==='task-commit-intent');
         assert(index>=0);const {revision,...body}=current;body.records=current.records.slice(0,index+1);
@@ -254,15 +284,403 @@ test('abandon_effect refuses provider development and pending task commit',async
       const resumed=await openControlRun(definition,'resume',execution,{allowAbandonEffect:true});
       try{
         const result=await resumed.host.handle(abandonRequest(identity));
-        assert.equal(result.code,kind==='provider'?'effect_abandon_provider_development':'effect_abandon_commit_pending');
-        if(kind==='commit')assert.match(result.reason,/tasks\.md.*提交回执.*旧进程/);
+        assert.equal(result.code,kind==='provider'?'effect_interrupt_worker_identity_unrecorded':'effect_abandon_commit_pending');
+        assert.match(result.reason,kind==='provider'?/进程身份/:/tasks\.md.*complete.*提交计划/);
+        assert.deepEqual(fs.readFileSync(stateFile),before);
+        if(kind==='commit'){
+          const status=await resumed.host.handle({version:1,operation:'status',requestId:'status',identity});
+          assert.equal(status.code,'complete_commit_interrupted');assert.equal(status.pendingAction,'complete');
+          // tasks.md already holds the planned bytes: only the result is journaled.
+          const completed=await resumed.host.handle({version:1,operation:'complete',requestId:'complete',identity,
+            packageDigest:status.packageDigest});
+          assert.equal(completed.state,'fixture_completed',JSON.stringify(completed));
+          const records=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
+          assert.deepEqual(records.slice(-2).map(row=>row.payload.type),['task-commit-result','effect-checkpoint']);
+        }
       }finally{resumed.close();}
-      assert.deepEqual(fs.readFileSync(stateFile),before);
     }finally{fs.rmSync(f.root,{recursive:true,force:true});}
   }
 });
 
-test('effect-abandoned replay binds the adjacent intent and remains terminal',async()=>{
+// V9 (A19): the provider worker's identity is journaled around its spawn. A
+// pending develop is retired only once the host proves that process group gone.
+test('provider develop interruption waits for the journaled worker process group to be gone',async()=>{
+  const f=runFixture();let child=null;
+  try{
+    const runId='provider-worker-gone',identity=identityFor(runId),content='written\n';
+    await start(f,runId,content);
+    const {stateFile,body}=interruptAfterIntent(f,runId,'develop');
+    const intent=body.records.at(-1);assert.equal(intent.payload.workerJournal,true);
+    const invocationId=`${body.records[0].payload.session}.${readRunnerHistory(body.records,body.records[0].payload.config,3).state.calls.length+1}`;
+    child=spawnChild(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});child.unref();
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    const abandon=async()=>{const run=await openControlRun(definition,'resume',executionFor(f,content),{allowAbandonEffect:true});
+      try{return await run.host.handle(abandonRequest(identity));}finally{run.close();}};
+    appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'spawning'});
+    let before=fs.readFileSync(stateFile);
+    let result=await abandon();
+    assert.equal(result.code,'effect_interrupt_worker_identity_incomplete',JSON.stringify(result));
+    assert.deepEqual(fs.readFileSync(stateFile),before);
+    const records=appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'started',
+      pid:child.pid,startTime:readProcessStartTime(child.pid)});
+    const started=records.at(-1);
+    // Forged worker records are refused on replay.
+    for(const change of [p=>{p.invocationId=`${body.records[0].payload.session}.99`;},p=>{p.pid=1;},p=>{p.startTime='x'.repeat(65);}]){
+      const forged=structuredClone(records);change(forged.at(-1).payload);
+      const {digest:old,...record}=forged.at(-1);forged[forged.length-1]={...record,digest:digest(record)};
+      assert.throws(()=>readRunnerHistory(forged,records[0].payload.config,3),error=>error.code==='runner_worker');
+    }
+    before=fs.readFileSync(stateFile);
+    result=await abandon();
+    assert.equal(result.code,'effect_interrupt_worker_process_alive',JSON.stringify(result));
+    assert.match(result.reason,new RegExp(String(child.pid)));
+    assert.deepEqual(fs.readFileSync(stateFile),before);
+    process.kill(-child.pid,'SIGKILL');
+    const until=Date.now()+5000;
+    while(Date.now()<until){try{process.kill(-child.pid,0);}catch(error){if(error.code==='ESRCH')break;}await new Promise(resolve=>setTimeout(resolve,25));}
+    result=await abandon();
+    assert.equal(result.code,'develop_interrupted',JSON.stringify(result));
+    const saved=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
+    assert.deepEqual(saved.at(-1).payload.worker,{worker:{recordDigest:started.digest,pid:child.pid},applies:[],verdict:'gone'});
+    // An interruption that omits the worker proof is refused on replay.
+    const unproven=structuredClone(saved);delete unproven.at(-1).payload.worker;
+    const {digest:old,...record}=unproven.at(-1);unproven[unproven.length-1]={...record,digest:digest(record)};
+    assert.throws(()=>readRunnerHistory(unproven,saved[0].payload.config,3),error=>error.code==='runner_interrupt');
+  }finally{try{if(child)process.kill(-child.pid,'SIGKILL');}catch{}fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// V9 (A15/A16/A18): a provider develop that ended without a usable result is
+// redone in the same run only after the host proves its journaled worker gone.
+test('provider develop without a usable result is redone after its worker group is gone',async()=>{
+  const f=runFixture();const children=[];
+  try{
+    const runId='provider-redo-gone',identity=identityFor(runId),content='written\n';
+    const execution=()=>{const value=executionFor(f,content);
+      value.developer.run=createCodexDeveloperRun({requestedModel:'fixture',worker:async({prompt},control)=>{
+        if(children.length===0){
+          control.onWorker({phase:'spawning'});
+          const child=spawnChild(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});
+          child.unref();children.push(child);control.onWorker({phase:'started',pid:child.pid});
+          fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'partial\n');
+          return {status:'unknown',code:'incomplete_result'};
+        }
+        fs.writeFileSync(path.join(f.codeProject,'a.mjs'),content);
+        return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
+          retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};}});
+      return value;};
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    let run=await openControlRun(definition,'create',execution());
+    try{
+      const first=await run.host.handle(requestFor(identity));
+      assert.equal(first.code,'develop_answer_missing',JSON.stringify(first));assert.equal(first.pendingAction,'develop_redo');
+      assert.match(first.reason,/provider/);
+    }finally{run.close();}
+    const stateFile=path.join(f.reviewsDir,'.execution',runId,'state.json');
+    const journaled=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
+    assert.deepEqual(journaled.filter(row=>row.payload.type==='develop-worker').map(row=>row.payload.phase),['spawning','started']);
+    const redo=async()=>{const value=await openControlRun(definition,'resume',execution(),{allowDevelopRedo:true});
+      try{return await value.host.handle({version:1,operation:'develop_redo',requestId:'redo',identity,reason:'worker checked'});}
+      finally{value.close();}};
+    const before=fs.readFileSync(stateFile);
+    const refused=await redo();
+    assert.equal(refused.code,'develop_redo_worker_process_alive',JSON.stringify(refused));
+    assert.deepEqual(fs.readFileSync(stateFile),before);
+    process.kill(-children[0].pid,'SIGKILL');
+    const until=Date.now()+5000;
+    while(Date.now()<until){try{process.kill(-children[0].pid,0);}catch(error){if(error.code==='ESRCH')break;}await new Promise(resolve=>setTimeout(resolve,25));}
+    const recorded=await redo();
+    assert.equal(recorded.outcome,'recorded',JSON.stringify(recorded));assert.equal(recorded.code,'develop_answer_missing');
+    const redoRecord=JSON.parse(fs.readFileSync(stateFile,'utf8')).records.at(-1);
+    assert.equal(redoRecord.payload.type,'develop-answer-redo');assert.equal(redoRecord.payload.cause,'provider_unknown');
+    assert.equal(redoRecord.payload.worker.worker.pid,children[0].pid);
+    run=await openControlRun(definition,'resume',execution());
+    try{const last=await run.host.handle(requestFor(identity));assert.equal(last.code,'review_blocked',JSON.stringify(last));}finally{run.close();}
+  }finally{for(const child of children)try{process.kill(-child.pid,'SIGKILL');}catch{}
+    if(process.env.DEBUG_KEEP)fs.writeFileSync(process.env.DEBUG_KEEP,f.root);else fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// R2: an interrupted step of the same kind is retired at most twice per run;
+// the third host death shows effect_interrupt_limit and abandon_effect voids.
+test('develop interruptions are capped at two per run, then abandon_effect voids the run',async()=>{
+  const f=runFixture();
+  try{
+    const runId='interrupt-cap',identity=identityFor(runId),content='written\n';
+    await start(f,runId,content);
+    const stateFile=path.join(f.reviewsDir,'.execution',runId,'state.json');
+    const cutAtLastDevelop=()=>{const current=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+      const index=current.records.findLastIndex(row=>row.payload.type==='effect-intent'&&row.payload.effect.kind==='develop');
+      const {revision,...body}=current;body.records=current.records.slice(0,index+1);
+      fs.writeFileSync(stateFile,JSON.stringify({...body,revision:digest(body)})+'\n');
+      for(const name of fs.readdirSync(f.reviewsDir))if(name.startsWith('work-T-002-'))fs.rmSync(path.join(f.reviewsDir,name));};
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    for(const round of [1,2]){
+      cutAtLastDevelop();
+      const run=await openControlRun(definition,'resume',executionFor(f,content),{allowAbandonEffect:true});
+      try{
+        assert.equal((await run.host.handle(abandonRequest(identity))).code,'develop_interrupted',`round ${round}`);
+        assert.equal((await run.host.handle(requestFor(identity))).code,'review_blocked');
+      }finally{run.close();}
+    }
+    cutAtLastDevelop();
+    const records=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
+    const history=readRunnerHistory(records,records[0].payload.config,3);
+    assert.equal(history.pendingInterruptible,false);assert.equal(history.pendingInterruptLimit,true);
+    // A third interruption record is refused on replay.
+    const forgedBody={version:1,seq:records.length+1,id:`runner.${String(records.length+1).padStart(6,'0')}`,kind:'result',
+      payload:runnerPayloadV3('effect-interrupted',{effectId:records.at(-1).payload.effect.id,effectKind:'develop',
+        intentDigest:records.at(-1).digest,lastRecordDigest:records.at(-1).digest,reason:'again',at:'2026-10-09T00:00:00.000Z'}),
+      previousDigest:records.at(-1).digest};
+    assert.throws(()=>readRunnerHistory([...records,{...forgedBody,digest:digest(forgedBody)}],records[0].payload.config,3),{code:'runner_interrupt'});
+    const run=await openControlRun(definition,'resume',executionFor(f,content),{allowAbandonEffect:true});
+    try{
+      const status=await run.host.handle({version:1,operation:'status',requestId:'status',identity});
+      assert.equal(status.code,'effect_interrupt_limit');assert.equal(status.pendingAction,'abandon_effect');
+      assert.match(status.reason,/2 次/);
+      const voided=await run.host.handle(abandonRequest(identity));
+      assert.equal(voided.code,'effect_abandoned',JSON.stringify(voided));assert.equal(voided.outcome,'abandoned');
+    }finally{run.close();}
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// P1 (Codex round 1): a Claude provider writes by applying its proposal in a
+// sandbox subprocess. Interruption needs that subprocess gone too and the code
+// root still at the round start (a partial apply is restored first, V6).
+test('Claude provider interruption needs every apply subprocess gone and the round start intact',async()=>{
+  const f=runFixture();let child=null;
+  try{
+    const runId='claude-apply-gone',identity=identityFor(runId),content='written\n';
+    const execution=()=>{const value=executionFor(f,content);
+      value.developer={provider:'claude',requestedModel:'fixture',contextId:'developer',run:createDeveloperRun({provider:'claude',requestedModel:'fixture',
+        worker:async()=>{fs.writeFileSync(path.join(f.codeProject,'a.mjs'),content);
+          return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
+            retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};}})};
+      return value;};
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    let run=await openControlRun(definition,'create',execution());
+    try{assert.equal((await run.host.handle(requestFor(identity))).code,'review_blocked');}finally{run.close();}
+    const {stateFile,body}=interruptAfterIntent(f,runId,'develop');
+    for(const name of fs.readdirSync(f.reviewsDir))if(name.startsWith('work-T-002-'))fs.rmSync(path.join(f.reviewsDir,name));
+    const intent=body.records.at(-1),session=body.records[0].payload.session;
+    const invocationId=`${session}.${readRunnerHistory(body.records,body.records[0].payload.config,3).state.calls.length+1}`;
+    const abandon=async()=>{const value=await openControlRun(definition,'resume',execution(),{allowAbandonEffect:true});
+      try{return await value.host.handle(abandonRequest(identity));}finally{value.close();}};
+    // The proposal was half applied when the host died.
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'half\n');
+    let result=await abandon();
+    assert.equal(result.code,'effect_interrupt_root_changed',JSON.stringify(result));assert.match(result.reason,/还原/);
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
+    child=spawnChild(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});child.unref();
+    appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'spawning'});
+    appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'started',pid:child.pid,startTime:readProcessStartTime(child.pid)});
+    // The worker record names a process group that is alive: refused.
+    assert.equal((await abandon()).code,'effect_interrupt_worker_process_alive');
+    // Rebuild with a gone worker and a live apply subprocess.
+    const gone=spawnSync(process.execPath,['-e','process.exit(0)']).pid;
+    let records=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+    {const {revision,...cut}=records;cut.records=cut.records.slice(0,-1);fs.writeFileSync(stateFile,JSON.stringify({...cut,revision:digest(cut)})+'\n');}
+    appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'started',pid:gone,startTime:null});
+    appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'apply_spawning'});
+    assert.equal((await abandon()).code,'effect_interrupt_worker_identity_incomplete');
+    appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'apply_started',pid:child.pid,startTime:readProcessStartTime(child.pid)});
+    assert.equal((await abandon()).code,'effect_interrupt_worker_process_alive');
+    process.kill(-child.pid,'SIGKILL');
+    const until=Date.now()+5000;
+    while(Date.now()<until){try{process.kill(-child.pid,0);}catch(error){if(error.code==='ESRCH')break;}await new Promise(resolve=>setTimeout(resolve,25));}
+    // A proposal spanning more than eight code roots applies once per root: nine
+    // more apply subprocesses (all gone) still replay and are all proven.
+    for(let root=0;root<9;root++){
+      appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'apply_spawning'});
+      appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'apply_started',pid:gone,startTime:null});
+    }
+    result=await abandon();
+    assert.equal(result.code,'develop_interrupted',JSON.stringify(result));
+    records=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
+    const record=records.at(-1).payload;
+    assert.equal(record.basis,'baseline');assert.equal(record.worker.applies.length,10);assert.equal(record.worker.applies[0].pid,child.pid);
+    // Without the round-start basis the record is refused on replay.
+    const unbased=structuredClone(records);delete unbased.at(-1).payload.basis;
+    const {digest:old,...last}=unbased.at(-1);unbased[unbased.length-1]={...last,digest:digest(last)};
+    assert.throws(()=>readRunnerHistory(unbased,records[0].payload.config,3),{code:'runner_interrupt'});
+  }finally{try{if(child)process.kill(-child.pid,'SIGKILL');}catch{}fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// The same rule for a checkpointed Claude provider develop with no usable result.
+test('Claude provider develop_redo needs the round start intact (no partial apply sent to review)',async()=>{
+  const f=runFixture();
+  try{
+    const runId='claude-redo-basis',identity=identityFor(runId),content='written\n';let calls=0;
+    const execution=()=>{const value=executionFor(f,content);
+      value.developer={provider:'claude',requestedModel:'fixture',contextId:'developer',run:createDeveloperRun({provider:'claude',requestedModel:'fixture',
+        worker:async()=>{calls++;if(calls===1){fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'half\n');return {status:'unknown',code:'incomplete_result'};}
+          fs.writeFileSync(path.join(f.codeProject,'a.mjs'),content);
+          return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
+            retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};}})};
+      return value;};
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    let run=await openControlRun(definition,'create',execution());
+    try{assert.equal((await run.host.handle(requestFor(identity))).code,'develop_answer_missing');}finally{run.close();}
+    const redo=async()=>{const value=await openControlRun(definition,'resume',execution(),{allowDevelopRedo:true});
+      try{return await value.host.handle({version:1,operation:'develop_redo',requestId:'redo',identity,reason:'checked'});}finally{value.close();}};
+    assert.equal((await redo()).code,'develop_redo_root_changed');
+    fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
+    const recorded=await redo();assert.equal(recorded.outcome,'recorded',JSON.stringify(recorded));
+    const stateFile=path.join(f.reviewsDir,'.execution',runId,'state.json');
+    assert.equal(JSON.parse(fs.readFileSync(stateFile,'utf8')).records.at(-1).payload.basis,'baseline');
+    run=await openControlRun(definition,'resume',execution());
+    try{assert.equal((await run.host.handle(requestFor(identity))).code,'review_blocked');}finally{run.close();}
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// A45: the host died after task-commit-intent and before the rename. complete
+// finishes the journaled plan; a changed tasks.md is a conflict left in place.
+test('interrupted task commit rolls forward from its journaled plan, or stops on a conflict',async()=>{
+  for(const kind of ['finish','conflict']){
+    const f=runFixture(),runId=`commit-${kind}`,identity=identityFor(runId),content='written\n';
+    const rename=fs.renameSync;
+    try{
+      fs.renameSync=(from,to)=>{if(to===f.tasksPath)throw Object.assign(new Error('host died'),{code:'EIO'});return rename(from,to);};
+      try{assert.equal((await start(f,runId,content,{},'approved')).state,'unknown');}finally{fs.renameSync=rename;}
+      const stateFile=path.join(f.reviewsDir,'.execution',runId,'state.json');
+      const current=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+      const index=current.records.findIndex(row=>row.payload.type==='task-commit-intent');
+      const {revision,...body}=current;body.records=current.records.slice(0,index+1);
+      fs.writeFileSync(stateFile,JSON.stringify({...body,revision:digest(body)})+'\n');
+      const leftover=path.join(path.dirname(f.tasksPath),body.records.at(-1).payload.commit.temporaryName);
+      assert(fs.existsSync(leftover));assert.match(fs.readFileSync(f.tasksPath,'utf8'),/\[ \] T-002/);
+      if(kind==='conflict')fs.writeFileSync(f.tasksPath,'- [ ] T-002: fixture edited\n');
+      const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+        identity,scope:['a.mjs'],requirements:['requirements.md']};
+      const resumed=await openControlRun(definition,'resume',executionFor(f,content,'approved'));
+      try{
+        const status=await resumed.host.handle({version:1,operation:'status',requestId:'status',identity});
+        assert.equal(status.code,'complete_commit_interrupted');assert.equal(status.pendingAction,'complete');
+        const before=fs.readFileSync(stateFile);
+        const result=await resumed.host.handle({version:1,operation:'complete',requestId:'complete',identity,packageDigest:status.packageDigest});
+        if(kind==='conflict'){
+          assert.equal(result.code,'commit_recovery_conflict',JSON.stringify(result));assert.match(result.reason,/tasks\.md/);
+          assert.deepEqual(fs.readFileSync(stateFile),before);
+          assert.equal(fs.readFileSync(f.tasksPath,'utf8'),'- [ ] T-002: fixture edited\n');
+        }else{
+          assert.equal(result.state,'fixture_completed',JSON.stringify(result));
+          assert.match(fs.readFileSync(f.tasksPath,'utf8'),/\[x\] T-002/i);assert.equal(fs.existsSync(leftover),false);
+          const records=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
+          assert.deepEqual(records.slice(-2).map(row=>row.payload.type),['task-commit-result','effect-checkpoint']);
+          assert.equal(readRunnerHistory(records,records[0].payload.config,3).state.taskCommit.outcome,'fixture_committed');
+          // The recovery itself died after its result record: the next host writes only the checkpoint.
+          const {revision:discard,...cut}=JSON.parse(fs.readFileSync(stateFile,'utf8'));cut.records=cut.records.slice(0,-1);
+          fs.writeFileSync(stateFile,JSON.stringify({...cut,revision:digest(cut)})+'\n');
+          const tasksBefore=fs.readFileSync(f.tasksPath);resumed.close();
+          const again=await openControlRun(definition,'resume',executionFor(f,content,'approved'));
+          try{
+            const reopened=await again.host.handle({version:1,operation:'status',requestId:'status2',identity});
+            assert.equal(reopened.code,'complete_commit_interrupted',JSON.stringify(reopened));
+            const closed=await again.host.handle({version:1,operation:'complete',requestId:'complete2',identity,packageDigest:reopened.packageDigest});
+            assert.equal(closed.state,'fixture_completed',JSON.stringify(closed));
+          }finally{again.close();}
+          const final=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
+          assert.equal(final.filter(row=>row.payload.type==='task-commit-result').length,1);
+          assert.equal(final.at(-1).payload.type,'effect-checkpoint');assert.deepEqual(fs.readFileSync(f.tasksPath),tasksBefore);
+        }
+      }finally{resumed.close();}
+    }finally{fs.renameSync=rename;fs.rmSync(f.root,{recursive:true,force:true});}
+  }
+});
+
+// A53: a delivery that touched a path outside the scope is a named, retryable
+// re-check block; after the operator removes the path the same run continues.
+test('out-of-scope delivery names the paths and re-checks after they are removed',async()=>{
+  const f=runFixture();
+  try{
+    const runId='out-of-scope-recheck',identity=identityFor(runId),content='written\n';
+    const execution=()=>{const value=executionFor(f,content);
+      value.developer.run=createCodexDeveloperRun({requestedModel:'fixture',worker:async()=>{
+        fs.writeFileSync(path.join(f.codeProject,'a.mjs'),content);fs.writeFileSync(path.join(f.codeProject,'stray.mjs'),'x\n');
+        return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
+          retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};}});
+      return value;};
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    let run=await openControlRun(definition,'create',execution());
+    try{
+      const blocked=await run.host.handle(requestFor(identity));
+      assert.equal(blocked.code,'develop_out_of_scope',JSON.stringify(blocked));assert.equal(blocked.pendingAction,'resume');
+      assert.match(blocked.reason,/stray\.mjs/);
+      // Still out of scope: the re-check reproduces the block, nothing is redeveloped.
+      const again=await run.host.handle(requestFor(identity));assert.equal(again.code,'develop_out_of_scope');
+    }finally{run.close();}
+    fs.rmSync(path.join(f.codeProject,'stray.mjs'));
+    run=await openControlRun(definition,'resume',execution());
+    try{assert.equal((await run.host.handle(requestFor(identity))).code,'review_blocked');}finally{run.close();}
+    const records=JSON.parse(fs.readFileSync(path.join(f.reviewsDir,'.execution',runId,'state.json'),'utf8')).records;
+    assert.deepEqual(records.filter(row=>row.payload.type==='develop-recheck').map(row=>row.payload.code),
+      ['develop_out_of_scope','develop_out_of_scope']);
+    const history=readRunnerHistory(records,records[0].payload.config,3);
+    assert.equal(history.state.calls.filter(call=>call.contextId==='developer').length,1,'the developer ran once');
+    // The journal shape older runtimes left (first develop checkpointed unknown/out_of_scope)
+    // replays unchanged and is projected for drivers as the retryable block.
+    const first=records.findIndex(row=>row.payload.type==='effect-checkpoint');
+    const prefix=records.slice(0,first+1),old=readRunnerHistory(prefix,prefix[0].payload.config,3);
+    assert.deepEqual([old.state.state,old.state.code],['unknown','out_of_scope']);
+    assert.equal(projectedRunnerStatus(old,prefix[0].payload.config).code,'develop_out_of_scope');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// A42: a completion re-check answering with another check list than the reviewed
+// package is a retryable completion_checks_changed naming both lists; older
+// journals with the terminal package_mismatch shape replay the same way.
+test('completion check-list mismatch is retryable and legacy package_mismatch replays as completion_checks_changed',async()=>{
+  const f=runFixture();
+  try{
+    const runId='completion-check-list',identity=identityFor(runId),content='written\n';
+    let renamed=true;
+    const execution=()=>{const value=executionFor(f,content,'approved'),check=value.check;
+      value.check=async(request,control)=>{const results=await check(request,control);
+        return renamed&&request.identity.attempt===1&&fs.existsSync(path.join(f.reviewsDir,'work-T-002-r1.md'))
+          ?results.map(item=>({...item,id:'syntax-renamed'})):results;};
+      return value;};
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    let run=await openControlRun(definition,'create',execution());
+    let blocked;
+    try{
+      blocked=await run.host.handle(requestFor(identity));
+      assert.equal(blocked.code,'completion_checks_changed',JSON.stringify(blocked));assert.equal(blocked.pendingAction,'complete');
+      assert.match(blocked.reason,/审查包：syntax；本次：syntax-renamed/);
+    }finally{run.close();}
+    const stateFile=path.join(f.reviewsDir,'.execution',runId,'state.json');
+    const records=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
+    // The legacy shapes: blocked/package_mismatch with no reason, or the bare code.
+    for(const legacy of [undefined,'package_mismatch']){
+      const forged=structuredClone(records),cp=forged.at(-1).payload.checkpoint;
+      cp.code='package_mismatch';if(legacy===undefined)cp.reason=null;else cp.reason=legacy;
+      cp.cache.at(-1).result={...cp.cache.at(-1).result,code:'package_mismatch'};
+      if(legacy===undefined)delete cp.cache.at(-1).result.reason;else cp.cache.at(-1).result.reason=legacy;
+      for(let at=forged.length-1;at<forged.length;at++){const {digest:old,...body}=forged[at];forged[at]={...body,digest:digest(body)};}
+      const replayed=readRunnerHistory(forged,forged[0].payload.config,3).state;
+      // Only the bare-code shape provably came from the check list; the no-reason shape stays terminal.
+      if(legacy===undefined){assert.equal(replayed.code,'package_mismatch');continue;}
+      assert.equal(replayed.code,'completion_checks_changed');assert.match(replayed.reason,/旧版本/);
+      // A mismatch that names changed paths stays terminal.
+      const named=structuredClone(forged),np=named.at(-1).payload.checkpoint;
+      np.reason='package_mismatch: a.mjs';np.cache.at(-1).result.reason='package_mismatch: a.mjs';
+      {const {digest:old,...body}=named.at(-1);named[named.length-1]={...body,digest:digest(body)};}
+      assert.equal(readRunnerHistory(named,named[0].payload.config,3).state.code,'package_mismatch');
+    }
+    renamed=false;
+    run=await openControlRun(definition,'resume',execution());
+    try{
+      const completed=await run.host.handle({version:1,operation:'complete',requestId:'complete',identity,packageDigest:blocked.packageDigest});
+      assert.equal(completed.state,'fixture_completed',JSON.stringify(completed));
+    }finally{run.close();}
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('effect-interrupted replay binds intent and last record; forged and duplicate records are refused',async()=>{
   const f=runFixture();
   try{
     const runId='abandon-replay',identity=identityFor(runId),content='written\n';
@@ -272,32 +690,42 @@ test('effect-abandoned replay binds the adjacent intent and remains terminal',as
     const {body}=interruptAfterIntent(f,runId,'develop');
     const config=body.records[0].payload.config;
     assert.equal(readRunnerHistory(body.records,config,3).state.code,'reconciliation_required');
+    // An older runtime's effect-abandoned record still replays as a terminal void.
+    const legacyBody={version:1,seq:3,id:'runner.000003',kind:'result',payload:runnerPayloadV3('effect-abandoned',
+      {effectId:body.records[1].payload.effect.id,effectKind:'develop',intentDigest:body.records[1].digest,
+        reason:'legacy void',at:'2026-09-28T00:00:00.000Z'}),previousDigest:body.records[1].digest};
+    assert.equal(readRunnerHistory([...body.records,{...legacyBody,digest:digest(legacyBody)}],config,3).state.code,'effect_abandoned');
     const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
       identity,scope:['a.mjs'],requirements:['requirements.md']};
     const resumed=await openControlRun(definition,'resume',executionFor(f,content),{allowAbandonEffect:true});
-    try{assert.equal((await resumed.host.handle(abandonRequest(identity))).code,'effect_abandoned');}
+    try{assert.equal((await resumed.host.handle(abandonRequest(identity))).code,'develop_interrupted');}
     finally{resumed.close();}
     const saved=JSON.parse(fs.readFileSync(path.join(f.reviewsDir,'.execution',runId,'state.json'),'utf8'));
-    assert.equal(readRunnerHistory(saved.records,config,3).state.code,'effect_abandoned');
-    const altered=structuredClone(saved.records);altered.at(-1).payload.intentDigest='0'.repeat(64);
-    const {digest:old,...record}=altered.at(-1);altered[altered.length-1]={...record,digest:digest(record)};
-    assert.throws(()=>readRunnerHistory(altered,config,3),error=>error.code==='runner_abandon');
+    assert.equal(readRunnerHistory(saved.records,config,3).state.code,'develop_interrupted');
+    for(const [key,value] of [['intentDigest','0'.repeat(64)],['lastRecordDigest','0'.repeat(64)],['effectKind','complete'],
+      ['basis','baseline'],['worker',{recordDigest:'0'.repeat(64),pid:2,verdict:'gone'}],['reason','two\nlines']]){
+      const altered=structuredClone(saved.records);altered.at(-1).payload[key]=value;
+      const {digest:old,...record}=altered.at(-1);altered[altered.length-1]={...record,digest:digest(record)};
+      assert.throws(()=>readRunnerHistory(altered,config,3),error=>error.code==='runner_interrupt',key);
+    }
     const orphan=structuredClone(saved.records);orphan.splice(1,1);
     orphan[1]={...orphan[1],seq:2,id:'runner.000002',previousDigest:orphan[0].digest};
     const {digest:unused,...orphanBody}=orphan[1];orphan[1]={...orphanBody,digest:digest(orphanBody)};
-    assert.throws(()=>readRunnerHistory(orphan,config,3),error=>error.code==='runner_abandon');
+    assert.throws(()=>readRunnerHistory(orphan,config,3),error=>error.code==='runner_interrupt');
+    // A workflow-error control between intent and record makes the step non-interruptible.
     const intent=saved.records[1];
     const controlBody={version:1,seq:3,id:'runner.000003',kind:'cancel',
       payload:runnerPayloadV3('control',{event:'workflow-error'}),previousDigest:intent.digest};
     const control={...controlBody,digest:digest(controlBody)};
-    const separatedBody={...saved.records[2],seq:4,id:'runner.000004',previousDigest:control.digest};
+    const separatedBody={...saved.records[2],seq:4,id:'runner.000004',previousDigest:control.digest,
+      payload:{...saved.records[2].payload,lastRecordDigest:control.digest}};
     delete separatedBody.digest;
     assert.throws(()=>readRunnerHistory([saved.records[0],intent,control,
-      {...separatedBody,digest:digest(separatedBody)}],config,3),error=>error.code==='runner_abandon');
+      {...separatedBody,digest:digest(separatedBody)}],config,3),error=>error.code==='runner_interrupt');
     const prior=saved.records.at(-1),duplicateBody={...prior,seq:prior.seq+1,id:'runner.000004',previousDigest:prior.digest};
     delete duplicateBody.digest;
     assert.throws(()=>readRunnerHistory([...saved.records,{...duplicateBody,digest:digest(duplicateBody)}],config,3),
-      error=>error.code==='runner_abandon');
+      error=>error.code==='runner_interrupt');
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
@@ -337,6 +765,23 @@ function interruptAfterIntent(f,runId,kind,attempt=1){
   fs.writeFileSync(stateFile,JSON.stringify({...body,revision:digest(body)})+'\n');
   assert.equal(readRunnerHistory(body.records,body.records[0].payload.config,3).state.state,'unknown');
   return {stateFile,intent:body.records.at(-1),body};
+}
+// Rewrites the journal's last record (and its digest) in place, like an older runtime wrote it.
+function rewriteLast(stateFile,change){
+  const current=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+  const {revision,...body}=current,last=structuredClone(body.records.at(-1));change(last.payload);
+  const {digest:old,...record}=last;body.records[body.records.length-1]={...record,digest:digest(record)};
+  fs.writeFileSync(stateFile,JSON.stringify({...body,revision:digest(body)})+'\n');
+  return body.records;
+}
+function appendRecord(stateFile,type,fields,kind='result'){
+  const current=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+  const {revision,...body}=current,seq=body.records.length+1;
+  const record={version:1,seq,id:`runner.${String(seq).padStart(6,'0')}`,kind,
+    payload:runnerPayloadV3(type,fields),previousDigest:body.records.at(-1).digest};
+  body.records.push({...record,digest:digest(record)});
+  fs.writeFileSync(stateFile,JSON.stringify({...body,revision:digest(body)})+'\n');
+  return body.records;
 }
 function executionFor(f,content,verdict='blocked',qaResult=null){
   const reviewer={id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',
@@ -850,7 +1295,7 @@ test('#22 a supersede record without carried review keeps the legacy request sha
     const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
       identity,scope:['a.mjs'],requirements:['requirements.md']};
     const resumed=await openControlRun(definition,'resume',executionFor(f,'written\n'),{allowAbandonEffect:true});
-    try{assert.equal((await resumed.host.handle(abandonRequest(identity))).code,'effect_abandoned');}
+    try{assert.equal((await resumed.host.handle(abandonRequest(identity))).code,'develop_interrupted');}
     finally{resumed.close();}
     fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
     const seen={develop:[],review:[]};

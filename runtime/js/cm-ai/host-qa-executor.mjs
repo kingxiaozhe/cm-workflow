@@ -15,6 +15,21 @@ import {captureReviewBaseline} from './review-package.mjs';
 import {writeCmAiQaStatus} from './cm-ai-run-finalizer.mjs';
 import {digest,freeze,hex,id,json,need,shape,text,validCallTimeout,validIdentity} from './effect-contract.mjs';
 import {isQaEnvironmentCarrier,QA_ENVIRONMENT_SCOPES} from './qa-environment.mjs';
+import {readProcessStartTime} from './worker-process-identity.mjs';
+
+// Q12: the whole-round deadline scales with the plan: every command may use the
+// command timeout, every logic case one request window and every browser case
+// two (its one evidence correction), plus a minute of margin. Never below the
+// historical 30 minutes and never above a day. Not part of any fingerprint.
+export function qaRoundDeadlineMs({timeoutMs,requestTimeoutMs=null,configuration=null}){
+  const plan=configuration?.plan;
+  if(!Number.isSafeInteger(timeoutMs)||timeoutMs<=0)return 1800000;
+  if(!plan||!Array.isArray(plan.cases)||!Array.isArray(plan.commands)||!Array.isArray(plan.modes))return timeoutMs;
+  const request=Number.isSafeInteger(requestTimeoutMs)&&requestTimeoutMs>0?requestTimeoutMs:timeoutMs;
+  const commands=plan.modes.includes('commands')?plan.commands.length:0;
+  const logic=plan.cases.filter(item=>item.kind==='logic').length,browser=plan.cases.filter(item=>item.kind==='browser').length;
+  return Math.min(Math.max(timeoutMs,commands*timeoutMs+logic*request+browser*2*request+60000),24*3600000);
+}
 
 const writer=fileURLToPath(new URL('../../../scripts/cm-log-event.py',import.meta.url));
 const order={ 'cm-default':['logic','commands','browser'],
@@ -225,18 +240,24 @@ export function createHostQaExecutor(options) {
           else if(!plan.commands.length)rows.push({id:'commands-unavailable',kind:'commands',verdict:'BLOCKED',evidence:['No declared project test command',...dropped]});
           for(const command of plan.commands){
             notCancelled();
+            // Q13: the command's process group identity, so a cleanup_failed row can
+            // later be released once the host proves that group gone.
+            let spawned=null;
             const check=createHostCheck({cwd:roots?command.codeProject:configuration.codeProject,commands:[{id:command.id,command:command.command}],
-              timeoutMs:configuration.timeoutMs,specsRoot:configuration.specsRoot??null,onProgress:reportHostCheckProgress});
+              timeoutMs:configuration.timeoutMs,specsRoot:configuration.specsRoot??null,onProgress:reportHostCheckProgress,
+              onSpawn:({pid})=>{spawned={pid,process_start_time:readProcessStartTime(pid)};}});
+            const failedCleanup=()=>({...resource,...(spawned?spawned:{})});
             const resource={resource_id:`qa-command-${digest({testRunId:binding.testRunId,command:command.id}).slice(0,48)}`,
               resource_kind:'qa_command'};
             logStep(configuration,binding,'resource','acquired',{...resource,cleanup_required:true},'QA command resource acquired');
             let observed;
             try{
               [observed]=await check({identity:binding.identity},{signal});
-              logStep(configuration,binding,'resource',observed.evidence==='host check: cleanup_failed'?'cleanup_failed':'released',
-                resource,'QA command resource finished');
+              const failed=observed.evidence==='host check: cleanup_failed';
+              logStep(configuration,binding,'resource',failed?'cleanup_failed':'released',
+                failed?failedCleanup():resource,'QA command resource finished');
             }catch(error){
-              logStep(configuration,binding,'resource','cleanup_failed',resource,'QA command cleanup not confirmed');throw error;
+              logStep(configuration,binding,'resource','cleanup_failed',failedCleanup(),'QA command cleanup not confirmed');throw error;
             }
             notCancelled();
             commandResults.set(command.id,observed);
@@ -312,8 +333,20 @@ export function createHostQaExecutor(options) {
               ...(answered&&observed.verdict==='BLOCKED'?{hostDeclaredBlocked:true}:{})});
             // The durable log row, appended now through the writer, is the record
             // that the session itself answered BLOCKED; the report only mirrors it.
+            // Why the host itself judged this case BLOCKED (Q06/Q11 read it after a
+            // call stopped as a whole); never for a session-declared or timed-out case.
+            // A missing capability and an unresolved [需确认] come first: neither is a
+            // host fault a rerun can fix, whatever the cleanup or evidence looked like.
+            const blockedReason=verdict!=='BLOCKED'||answered&&observed.verdict==='BLOCKED'||hostRequestTimeout&&!answered?null
+              :browser===null?'unavailable':item.expected.some(value=>value.includes('[需确认]'))?'needs_confirmation'
+              :evidenceProblem!==null?'evidence':digest(observed.environment)!==digest(environment)?'environment'
+              :observed.cleanup==='failed'||(item.cleanup.length>0&&observed.cleanup!=='completed')?'cleanup':'unclassified';
             logStep(configuration,binding,'test_run',verdict==='BLOCKED'?'case_blocked':'case_complete',
               {case_id:item.id,result:verdict,...(answered&&observed.verdict==='BLOCKED'?{host_declared_blocked:true}:{}),
+                ...(blockedReason?{blocked_reason:blockedReason}:{}),
+                // The session's own verdict before any host downgrade: a FAIL the host
+                // turned BLOCKED (evidence, environment, cleanup) is never a host fault.
+                ...(answered?{answered_verdict:observed.verdict}:{}),
                 // Whether this BLOCKED is a host request that timed out without an
                 // answer; --rerun-unknown-qa reads it after a whole-call timeout.
                 ...(verdict==='BLOCKED'?{host_request_timeout:hostRequestTimeout&&!answered}:{})},

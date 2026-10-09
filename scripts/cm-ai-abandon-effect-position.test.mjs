@@ -154,10 +154,22 @@ test('review intent before any join or registration uses abandon_effect; registr
       effectKind:'review',intentDigest:prefix.at(-1).digest,lastRecordDigest:joined.at(-1).digest,
       reason:'old host exited',at:new Date().toISOString()},'result');
     assert.throws(()=>readRunnerHistory(forged,config,3),{code:'runner_abandon'});
+    // V8: a join without registration dispatched nothing; abandon_effect now
+    // records the interruption and the review returns to awaiting_review.
     savePrefix(f,runId,'host-joined',null);
     const joinedRun=await resume(f,runId);
-    try{assert.equal((await joinedRun.host.handle(request(runId))).code,'effect_abandon_review_pending');}
-    finally{joinedRun.close();}
+    try{
+      const result=await joinedRun.host.handle(request(runId));
+      assert.equal(result.outcome,'recorded',JSON.stringify(result));
+      assert.equal(result.state,'awaiting_review');assert.equal(result.code,null);assert.equal(result.pendingAction,'decision');
+    }finally{joinedRun.close();}
+    const interrupted=JSON.parse(fs.readFileSync(statePath(f,runId),'utf8')).records;
+    assert.deepEqual(interrupted.slice(-2).map(row=>row.payload.type),['host-joined','effect-interrupted']);
+    const replayed=readRunnerHistory(interrupted,config,3);
+    assert.equal(replayed.pending,null);assert.deepEqual(replayed.joinedHosts,['fresh-host']);
+    // The interrupted intent id is never reused by a later intent.
+    const reused=append(f,runId,'effect-intent',{effect:prefix.at(-1).payload.effect},'intent');
+    assert.throws(()=>readRunnerHistory(reused,config,3),{code:'runner_cache'});
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
@@ -197,5 +209,51 @@ test('registered review stays on abandon_review and cannot replay effect-abandon
       effectKind:'review',intentDigest:intent.digest,lastRecordDigest:records.at(-1).digest,
       reason:'old host exited',at:new Date().toISOString()},'result');
     assert.throws(()=>readRunnerHistory(forged,config,3),{code:'runner_abandon'});
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+// A36: a registered review whose one redispatch this attempt is already spent
+// cannot be abandoned with abandon_review, and supersede refuses a pending run.
+// abandon_effect now voids it (effect-abandoned bound to the last record), which
+// breaks that deadlock; a supersede may follow.
+test('a registered review with its redispatch spent is voided by abandon_effect, then superseded',async()=>{
+  const f=fixture(),runId='review-exhausted';
+  try{
+    await start(f,runId);
+    savePrefix(f,runId,'review-invocation-registered',null);
+    // The truncated journal never published its review; drop the original's file.
+    for(const name of fs.readdirSync(f.reviewsDir))if(/^work-T-002-r\d+\.md$/.test(name))fs.rmSync(path.join(f.reviewsDir,name));
+    let run=await openControlRun(definition(f,runId),'resume',execution(f),{allowAbandonReview:true});
+    try{
+      const abandoned=await run.host.handle({version:1,operation:'abandon_review',requestId:'abandon-review',
+        identity:identity(runId),reason:'Old host and reviewer exited'});
+      assert.equal(abandoned.code,'review_abandoned',JSON.stringify(abandoned));
+      const redone=await run.host.handle({version:1,operation:'advance',requestId:'advance',identity:identity(runId)});
+      assert.equal(redone.code,'review_blocked',JSON.stringify(redone));
+    }finally{run.close();}
+    const file=statePath(f,runId),state=JSON.parse(fs.readFileSync(file,'utf8'));
+    const last=state.records.findLastIndex(row=>row.payload.type==='review-invocation-registered');
+    const {revision,...body}=state;body.records=state.records.slice(0,last+1);
+    fs.writeFileSync(file,JSON.stringify({...body,revision:digest(body)})+'\n');
+    const config=body.records[0].payload.config,projected=readRunnerHistory(body.records,config,3);
+    assert.equal(projected.pendingReviewExhausted,true);assert.equal(projected.pendingInterruptible,false);
+    run=await openControlRun(definition(f,runId),'resume',execution(f),{allowAbandonReview:true,allowAbandonEffect:true});
+    try{
+      const status=await run.host.handle({version:1,operation:'status',requestId:'status',identity:identity(runId)});
+      assert.equal(status.pendingAction,'abandon_effect');
+      const refused=await run.host.handle({version:1,operation:'abandon_review',requestId:'abandon-review',
+        identity:identity(runId),reason:'again'});
+      assert.equal(refused.code,'review_abandon_budget_exhausted');
+      const voided=await run.host.handle(request(runId));
+      assert.equal(voided.outcome,'abandoned',JSON.stringify(voided));assert.equal(voided.code,'effect_abandoned');
+    }finally{run.close();}
+    const records=JSON.parse(fs.readFileSync(file,'utf8')).records;
+    assert.equal(records.at(-1).payload.lastRecordDigest,records.at(-2).digest);
+    assert.equal(records.at(-1).payload.intentDigest,records.findLast(row=>row.payload.type==='effect-intent').digest);
+    const unbound=mutated(records,records.length-1,p=>{delete p.lastRecordDigest;});
+    assert.throws(()=>readRunnerHistory(unbound,config,3),{code:'runner_abandon'});
+    // The superseding run opens (the accepted drift already holds the delivered bytes).
+    const next=await start(f,`${runId}-next`,'blocked',{supersedeReason:'restart',acceptSupersededCodeDrift:true});
+    assert.equal(next.identity.runId,`${runId}-next`);assert.equal(next.code,'develop_empty_changes');
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });

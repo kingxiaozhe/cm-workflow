@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Fixed, no-provider control entry. Executing adapters are a subsequent slice.
 import fs from 'node:fs';
+import {spawn as spawnChild} from 'node:child_process';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {serveCmAiHost} from '../runtime/js/cm-ai/host-session.mjs';
@@ -110,7 +111,14 @@ export async function createCodexExecution(configuration,authority){
         shape(decision,['status']);need(decision.status==='approved','permission_denied');
         need(!control.signal.aborted,'cancelled');
         need(!used.has(bound.invocationId),'duplicate_dispatch');used.add(bound.invocationId);
-        const worker=codexDeveloperWorker({cwd:config.codeProject,model:config.developerModel,timeoutMs:config.timeoutMs,specsRoot});
+        // The runner journals the worker identity around the spawn (develop-worker).
+        const onWorker=typeof control.onWorker==='function'?control.onWorker:null;
+        const worker=codexDeveloperWorker({cwd:config.codeProject,model:config.developerModel,timeoutMs:config.timeoutMs,specsRoot,
+          spawnProcess:(cli,args,options)=>{
+            onWorker?.({phase:'spawning'});const child=spawnChild(cli,args,options);
+            if(Number.isInteger(child.pid))try{onWorker?.({phase:'started',pid:child.pid});}
+            catch(error){child.on('error',()=>{});child.stdin?.on('error',()=>{});try{process.kill(-child.pid,'SIGKILL');}catch{}throw error;}
+            return child;}});
         // Documentation stays inside the same authorized sandbox invocation and
         // original checks/handoff/Review. The semantic bridge never writes it.
         const {isFinalCmAiTask}=await import('../runtime/js/cm-ai/cm-ai-admission.mjs');
@@ -474,7 +482,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
         recordReviewAbandonment({specsDir,codeProject,feature,identity,record,
           runtime:execution?.reviewers?.[0]?.provider??'codex',
           ...(execution?.qaLogHome?{logHome:execution.qaLogHome}:{})});
-      for(const record of store.snapshot().records.filter(row=>row.payload.type==='effect-abandoned'))
+      for(const record of store.snapshot().records.filter(row=>['effect-abandoned','effect-interrupted'].includes(row.payload.type)))
         recordEffectAbandonment({specsDir,codeProject,feature,identity,record,
           runtime:execution?.developer?.provider??'codex',
           ...(execution?.qaLogHome?{logHome:execution.qaLogHome}:{})});
@@ -528,7 +536,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
         return {outcome:'blocked',code:'execution_adapter_required',providerCalls:0};
       }
       const result=await host.handle(request);
-      if(['abandon_review','abandon_effect'].includes(request.operation)&&result.outcome==='abandoned')logAbandonments();
+      if(['abandon_review','abandon_effect'].includes(request.operation)&&['abandoned','recorded'].includes(result.outcome))logAbandonments();
       return result;
     }},inspectFixAssociation:host.inspectFixAssociation,acceptCompletedFix:host.acceptCompletedFix,
       checkpoint:()=>store.snapshot().revision,close:()=>store.close()};

@@ -9,7 +9,7 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
   const extra=new Set(permissions);
     const host={async handle(request){
       shape(request,['requestId','operation',...(request.operation==='resume'?['evidenceFiles']:[]),
-        ...(['abandon_step','abandon_review','rediagnose'].includes(request.operation)&&Object.hasOwn(request,'reason')?['reason']:[]),
+        ...(['abandon_step','abandon_review','rediagnose','rerun_blocked_step'].includes(request.operation)&&Object.hasOwn(request,'reason')?['reason']:[]),
         ...(request.operation==='prepare_revision'&&Object.hasOwn(request,'tests')?['tests']:[]),
         ...(request.operation==='reconcile_review'?['invocationId']:[]),
         ...(request.operation==='recover_final_review'?['invocationId','packageDigest','previousInvocationStopped','reason']:[])]);
@@ -29,6 +29,7 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
         authorized:extra.has('--allow-final-review-recovery'),recoveryInvocationId,invocationId:request.invocationId,
         packageDigest:request.packageDigest,previousInvocationStopped:request.previousInvocationStopped,reason:request.reason});
       if(request.operation==='abandon_step')return owner.abandonStep({authorized:extra.has('--allow-abandon'),reason:request.reason});
+      if(request.operation==='rerun_blocked_step')return owner.rerunBlockedStep({authorized:extra.has('--allow-rerun-blocked-step'),reason:request.reason});
       // Reviewer-invocation authority stays separate from local step abandonment.
       if(request.operation==='abandon_review')return owner.abandonReview({authorized:extra.has('--allow-abandon-review'),reason:request.reason});
       if(request.operation==='rediagnose')return owner.rediagnose({authorized:extra.has('--allow-rediagnosis'),reason:request.reason});

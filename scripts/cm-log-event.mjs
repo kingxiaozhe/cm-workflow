@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {statusProjectionCommand} from '../runtime/js/cm-ai/status-projection.mjs';
+import {qaRoundLimit,nonProductSupersession} from '../runtime/js/cm-ai/qa-round-budget.mjs';
 
 const IDENTIFIER=/^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
 const RESOURCE_ID=/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -350,8 +351,10 @@ function validateQaAbandonment(state,event){
 
 function validateQaSupersession(state,event){
   const {start,complete}=state;
+  // Q14: rounds superseded for a host or answer problem do not count (qa-round-budget.mjs).
+  const roundLimit=qaRoundLimit((state.freed??0)+(nonProductSupersession(event.reason)?1:0));
   if(event.reason==='qa_configuration_revision'){
-    if(state.active||state.superseded||!start||!complete||start.attempt>=3
+    if(state.active||state.superseded||!start||!complete||start.attempt>=roundLimit
       ||event.workflow!=='cm-ai'||event.node!=='N6'||event.previous_test_run_id!==start.operation_id
       ||!['PASS','FAIL','BLOCKED'].includes(complete.result)||!/^[a-f0-9]{64}$/.test(event.qa_revision_digest??'')
       ||!['repository_id','run_id','feature','task','package_digest','qa_decision_id','operation_id','attempt','mode','case_count']
@@ -365,9 +368,9 @@ function validateQaSupersession(state,event){
   // row. The host re-reads that report under the blocked-evidence rules; here the
   // structural part: the still active, otherwise unclosed latest invocation.
   if(event.incomplete_report!==undefined){
-    if(event.incomplete_report!==true||!state.active||state.superseded||!start||complete||start.attempt>=3
+    if(event.incomplete_report!==true||!state.active||state.superseded||!start||complete||start.attempt>=roundLimit
       ||event.workflow!=='cm-ai'||event.node!=='N6'||event.reason!=='host_evidence_problem'
-      ||event.previous_test_run_id!==start.operation_id||event.recovery_rule!==2
+      ||event.previous_test_run_id!==start.operation_id||![2,3].includes(event.recovery_rule)
       ||!Array.isArray(event.blocked_cases)||event.blocked_cases.length===0||event.blocked_cases.length>start.case_count
       ||!caseList(event.blocked_cases,event.blocked_cases.length)
       ||!['repository_id','run_id','feature','task','package_digest','qa_decision_id','operation_id','attempt','mode','case_count']
@@ -379,10 +382,17 @@ function validateQaSupersession(state,event){
   // host re-reads its case rows (PASS or host request timeout only); here the
   // structural part: the still active latest invocation and its PASS rows.
   if(event.reason==='host_request_timeout'){
-    if(!state.active||state.superseded||!start||complete||start.attempt>=3
+    if(!state.active||state.superseded||!start||complete||start.attempt>=roundLimit
       ||event.workflow!=='cm-ai'||event.node!=='N6'||event.previous_test_run_id!==start.operation_id
-      ||!Array.isArray(event.timed_out_cases)||event.timed_out_cases.length===0||event.timed_out_cases.length>start.case_count
+      ||!Array.isArray(event.timed_out_cases)||event.timed_out_cases.length>start.case_count
       ||!caseList(event.timed_out_cases,event.timed_out_cases.length)
+      // Q06/Q11: cases the session declared BLOCKED or the host judged BLOCKED for
+      // an evidence, environment or cleanup gap before the call stopped.
+      ||event.host_blocked_cases!==undefined&&(!Array.isArray(event.host_blocked_cases)||event.host_blocked_cases.length===0
+        ||!caseList(event.host_blocked_cases,event.host_blocked_cases.length)
+        ||event.host_blocked_cases.some(item=>event.timed_out_cases.includes(item)))
+      ||event.timed_out_cases.length+(event.host_blocked_cases?.length??0)===0
+      ||event.timed_out_cases.length+(event.host_blocked_cases?.length??0)>start.case_count
       ||JSON.stringify(event.partial_pass_cases)!==JSON.stringify([...state.partialPassCases].sort())
       ||event.request_timeout_ms!==undefined&&!(Number.isSafeInteger(event.request_timeout_ms)&&event.request_timeout_ms>0)
       ||event.legacy_timeout_attestation!==undefined&&(typeof event.legacy_timeout_attestation!=='string'
@@ -396,7 +406,7 @@ function validateQaSupersession(state,event){
   if(event.reason==='declared_environment_failure'){
     const reason=event.environment_failure_reason;
     if(state.active||state.superseded||!start||!complete||complete.result!=='FAIL'||!(complete.failed>0)
-      ||start.attempt>=3||event.workflow!=='cm-ai'||event.node!=='N6'||event.previous_test_run_id!==start.operation_id
+      ||start.attempt>=roundLimit||event.workflow!=='cm-ai'||event.node!=='N6'||event.previous_test_run_id!==start.operation_id
       ||!caseList(event.failed_cases,complete.failed)||!caseList(event.blocked_cases,complete.blocked)
       ||typeof reason!=='string'||!reason.trim()||Buffer.byteLength(reason,'utf8')>500||/[\r\n\0]/.test(reason)
       ||!['repository_id','run_id','feature','task','package_digest','qa_decision_id','operation_id','attempt','mode','case_count']
@@ -405,7 +415,7 @@ function validateQaSupersession(state,event){
     return;
   }
   if(state.active||state.superseded||!start||!complete||complete.result!=='BLOCKED'||complete.failed!==0
-    ||complete.blocked<=0||start.attempt>=3||event.workflow!=='cm-ai'||event.node!=='N6'
+    ||complete.blocked<=0||start.attempt>=roundLimit||event.workflow!=='cm-ai'||event.node!=='N6'
     ||event.reason!=='host_evidence_problem'||event.previous_test_run_id!==start.operation_id
     ||!Array.isArray(event.blocked_cases)||event.blocked_cases.length!==complete.blocked
     ||new Set(event.blocked_cases).size!==event.blocked_cases.length
@@ -416,7 +426,7 @@ function validateQaSupersession(state,event){
 }
 
 function loadTestRunState(file,runId){
-  let active=false,start=null,complete=null,hasNonPassResult=false,abandoned=false,superseded=false;
+  let active=false,start=null,complete=null,hasNonPassResult=false,abandoned=false,superseded=false,freed=0;
   const openCases=new Set(),partialPassCases=new Set();
   for(const value of readJsonLines(file,{strict:true})){
     if(!value||typeof value!=='object'||value.run_id!==runId||value.event!=='test_run'||value.phase===null||value.phase===undefined)continue;
@@ -426,7 +436,8 @@ function loadTestRunState(file,runId){
       throw new UsageError('test_run state log contains a malformed case event');
     if(phase==='complete'&&!active&&!openCases.size)continue;
     if(phase==='abandoned')validateQaAbandonment({active,start,hasNonPassResult,partialPassCases},value);
-    if(phase==='superseded')validateQaSupersession({active,start,complete,superseded,partialPassCases},value);
+    if(phase==='superseded'){validateQaSupersession({active,start,complete,superseded,partialPassCases,freed},value);
+      if(nonProductSupersession(value.reason))freed++;}
     active=applyTestRunTransition(active,openCases,phase,typeof caseId==='string'?caseId:null,value.incomplete_report===true,
       phase==='superseded'&&value.reason==='host_request_timeout');
     if(phase==='start'){start=value;complete=null;hasNonPassResult=false;partialPassCases.clear();abandoned=false;superseded=false;}
@@ -439,7 +450,7 @@ function loadTestRunState(file,runId){
     if(phase==='abandoned')abandoned=true;
     if(phase==='superseded')superseded=true;
   }
-  return {active,openCases,start,complete,hasNonPassResult,partialPassCases,abandoned,superseded};
+  return {active,openCases,start,complete,hasNonPassResult,partialPassCases,abandoned,superseded,freed};
 }
 
 // Read-only reuse of the writer's existing resource/test lifecycle guards by

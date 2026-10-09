@@ -35,7 +35,7 @@ export function createProjectExecution({definition,protection,executionPolicy=nu
   return Object.freeze({
     expected(scope){recheck();return Object.fromEntries(groups(scope).flatMap(group=>
       Object.entries(group.paths.length?captureProtectedEdits(group.codeProject,group.paths):{}).map(([file,hash])=>[full(group,file),hash])));},
-    async commit({scope,edits,expected,identity,signal}){
+    async commit({scope,edits,expected,identity,signal,onApply=null}){
       recheck();need(Array.isArray(edits),'protected_edit_invalid');
       for(const edit of edits)need(scope.includes(edit.path),'out_of_scope');
       // Precheck all roots before the first root writes; no claim of atomicity.
@@ -47,7 +47,7 @@ export function createProjectExecution({definition,protection,executionPolicy=nu
           .map(edit=>({...edit,path:group.prefix?edit.path.slice(group.prefix.length+1):edit.path}));
         if(!local.length)continue;
         await commitProtectedEdits({cwd:group.codeProject,specsRoot:data.specsDir,scope:group.paths,edits:local,
-          expected:Object.fromEntries(group.paths.map(file=>[file,expected[full(group,file)]])),identity,signal,timeoutMs:config.timeoutMs});
+          expected:Object.fromEntries(group.paths.map(file=>[file,expected[full(group,file)]])),identity,signal,timeoutMs:config.timeoutMs,onApply});
       }
     },
     async check(request,control){

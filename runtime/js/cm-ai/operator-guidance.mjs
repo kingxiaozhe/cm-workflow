@@ -12,6 +12,7 @@ const deliveryMessages={
   bootstrap_verification_failed:['项目规则验证未通过。','根据规则验证证据修正草稿或检查环境'],
   develop_answer_invalid:['开发应答未通过交付合同校验（如 application.note 过长），代码已保留、尚未进入审查。','按 reason 中的字段上限重新应答'],
   develop_dispatch_failed:['开发请求在派发给会话之前失败（宿主自己的运行日志或角色配置出错），代码未改动。','修好 reason 指出的宿主环境'],
+  develop_interrupted:['宿主在本轮开发中途退出，中断已登记，盘上改动保留、尚未进入审查。','确认会话或 provider 进程已停止修改代码'],
   develop_call_timeout:['开发应答超时、代码未改动。','先确认会话已不再修改代码；重发的请求须在宿主请求上限（默认 30 分钟）内应答，迟到应答仍被拒绝'],
 };
 const explain=(summary,nextStep,operation=null,prerequisites=[])=>Object.freeze({
@@ -32,8 +33,9 @@ export function operatorGuidance(result,{executionActive=false}={}){
   if(state==='unknown'){
     if(action==='abandon_effect'||action==='abandon_review'){
       const review=action==='abandon_review';
-      return explain(review?'独立审查结果尚未确认。':'开发或完成操作的结果尚未确认。',
-        '先核对原操作与磁盘结果，确认旧宿主及相关子进程已退出；符合原宿主条件时，再审计放弃这次操作。放弃不代表成功。',
+      return explain(review?'独立审查结果尚未确认。':'宿主在开发、审查或完成中途退出，这一步只登记了意图、没有结果。',
+        review?'先核对原操作与磁盘结果，确认旧宿主及相关子进程已退出；符合原宿主条件时，再审计放弃这次操作。放弃不代表成功。'
+          :'先确认旧宿主及相关子进程已退出、会话已停止写入（provider 开发由宿主按存档记下的进程身份核对）；再发送 abandon_effect 登记中断，运行从这一步的可重试阻断继续：开发重发本轮、未登记的审查重新派发、未写提交意图的完成重新复查。盘上改动保留并经检查与独立审查；登记中断不代表成功。',
         action,['保留原配置、runId 和失败历史，以 --mode resume 启动',
           review?'显式 --allow-abandon-review，并提供单行 reason':'显式 --allow-abandon-effect，并提供单行 reason',
           '由原宿主核对可放弃条件；不得直接重跑或改写完成记录']);
@@ -47,11 +49,17 @@ export function operatorGuidance(result,{executionActive=false}={}){
   if(state==='blocked'&&action==='resume'&&code==='develop_answer_missing')return explain('已确认会话停写，本轮开发等待重发。',
     '恢复原运行并发送 advance，用新 effect id 重发本轮开发；盘上改动保留，经检查和独立审查。',
     'advance',['保留原配置、runId 与历史，以 --mode resume 启动','确认原宿主已关闭，且本轮开发有原合同要求的授权']);
+  if(state==='blocked'&&action==='resume'&&code==='develop_out_of_scope')return explain('开发交付已落盘，但改动超出了任务 scope（reason 列出路径），尚未进入审查。',
+    '核对这些路径：会话越界写的就还原，你自己的改动就移出代码根，确需改动先走规格变更扩大 scope；然后恢复原运行并发送 advance，只重跑检查、验证预检与审查包，不重新开发。',
+    'advance',['保留原配置、runId 与历史，以 --mode resume 启动','不占开发调用与 effect 名额；每运行最多 2 次','不擅自删除用户改动']);
   if(state==='blocked'&&action==='resume'&&['check_answer_missing','check_answer_invalid'].includes(code))
     return explain(code==='check_answer_invalid'?'开发交付已落盘，但之后的检查或验证预检答复格式不合格。'
       :'开发交付已落盘，但之后的检查或验证预检没有拿到应答（超时、断开或迟到）。',
     '先确认上一次检查命令已停止；然后恢复原运行并发送 advance，只重跑检查、验证预检与审查包，不重新开发。',
     'advance',['保留原配置、runId 与历史，以 --mode resume 启动','不占开发调用与 effect 名额；每运行最多 2 次','不会自动完成任务或消耗新的独立审查轮次']);
+  if(state==='blocked'&&action==='complete'&&code==='complete_commit_interrupted')return explain('宿主在写入任务完成提交意图后退出，tasks.md 可能已勾选也可能未勾选。',
+    '恢复原运行并发送 complete；宿主只按存档里的提交计划核对并收尾，不重新复查、不重新开发。tasks.md 或证据被改动时会拒绝并保留现场。',
+    'complete',['保留原配置、runId 与历史，以 --mode resume 启动','不能 abandon_effect，也不能新建运行替代']);
   if(state==='blocked'&&action==='complete'&&code==='complete_recheck_failed')return explain('完成前复查没有正常结束（应答缺失或宿主在提交前出错），任务尚未勾选。',
     '恢复原运行并发送 complete，重新复查并完成；不重新开发或审查。',
     'complete',['原 run 与已审交接、范围和包绑定不变','task-commit-intent 尚未写入；每运行最多 2 次']);

@@ -36,6 +36,20 @@
 例外：整轮 `qa_execution_timeout` 中断、无报告、无 FAIL，且每条 case_blocked 都是宿主请求超时（行上 `host_request_timeout: true`；
 旧行无此字段时须 case_start 到 case_blocked 满 `qa.timeoutMs`，且同一命令带 `--qa-environment-failure "原因"` 声明没有应答，否则 `qa_environment_failure_required`）、不是会话自答 BLOCKED，同一 `--rerun-unknown-qa`
 写 `test_run/superseded`（`reason: host_request_timeout`）并在 qaRound+1 重跑全部命令与用例；对它用 `--rerun-blocked-qa` 拒绝为 `qa_rerun_unknown_qa_required`。
+混合情形（整轮超时、宿主死亡或会话答复硬无效让整轮停下，已记录的非 PASS 里还有会话自答 BLOCKED，或宿主按证据、环境、清理问题判的 BLOCKED——新执行器在 case_blocked 行写 `blocked_reason`）同样由 `--rerun-unknown-qa` 处理：
+superseded 行另记 `host_blocked_cases`（`timed_out_cases` 可以为空）。FAIL、未解决的 `[需确认]`、缺浏览器能力，以及分辨不出原因的旧行仍拒绝。
+整轮期限不再固定 30 分钟：按冻结的计划放大——每条命令一个命令超时、每个 logic 用例一个应答期限、每个 browser 用例两个（含一次证据追问），再加 1 分钟，最少 30 分钟、最多 24 小时；不进入指纹。
+
+### QA 轮次预算（第 3 轮之后）
+
+三轮预算只算产品证据。因会话没应答、宿主中断、证据格式或环境问题而 superseded 的一轮（`reason` 为 `host_request_timeout` 或 `host_evidence_problem`）不计入，每运行最多因此多给 2 轮（第 5 轮为硬上限）。
+声明环境失败（`declared_environment_failure`）、配置修订和产品 FAIL 仍计入；QA 修复链仍按原三轮计。author-column-T-010 这类第 3 轮仍是宿主证据问题的运行，可再 `--rerun-blocked-qa` 跑第 4 轮。
+
+### QA 命令资源清理失败
+
+整轮超时或取消时正在跑的 QA 命令记 `resource/cleanup_failed`，写入器会一直拒绝放弃、超时替代、`run_done` 与批次交接。
+新执行器在这一行记下命令进程组身份（`pid`、`process_start_time`）；宿主在 QA 恢复、`run_finalize` 与批次交接前核对该进程组已退出，就补记 `resource/released`（`released_by: host_verified`、`verification: process_group_gone`），之后流程照常。
+进程仍在、核对不了（Windows、无权限、读不到启动时间）或旧行没有进程身份时保持未关闭，`run_finalize` 报 `qa_resources_open` 并列出资源；先结束残留进程再重发。浏览器 QA 用例不登记资源（设备与浏览器清理由会话在 `cleanup` 中如实报告），没有可由宿主释放的设备锁。
 
 ## 已 complete 的宿主证据或环境阻断
 
@@ -60,7 +74,7 @@ taskIds 全部是 `[DROPPED]` 任务的用例不进 QA 计划（不问会话，�
 `CONTRADICTED`、已接受修复的 FAIL 均拒绝。superseded 行记 `reason=declared_environment_failure`、`environment_failure_reason`、
 `failed_cases` 与 `blocked_cases`。这不是放行：新一轮在同一代码上全部重跑，真有缺陷仍会 FAIL。
 先写 `test_run/superseded`（previous_test_run_id、reason=host_evidence_problem 或上述声明原因、blocked_cases），再以新 testRunId、
-qaRound+1 写带 previous_test_run_id 的 start，全部用例重跑，占用同一个三轮 QA 预算；旧 PASS 仅保留历史，最多三轮，不重做 QA 决策、
+qaRound+1 写带 previous_test_run_id 的 start，全部用例重跑（新写的 superseded 行带 `recovery_rule: 3`：浏览器用例只有 case 行记了会话原始结论 `answered_verdict` 且不是 FAIL 时才算宿主问题，被降级成 BLOCKED 的 FAIL、未解决的 [需确认]、缺能力和没记原始结论的旧行都拒绝；已发布的 `recovery_rule: 2` 和更早的行按原规则回放）；`host_evidence_problem` 的一轮按上方「QA 轮次预算」不计入三轮（最多多给 2 轮），声明环境失败仍计入；旧 PASS 仅保留历史，不重做 QA 决策、
 开发或审查，不改 tasks。开关一次性消费且不持久化，不与 --rerun-unknown-qa 合用；仅写 superseded 后中断，
 须重新显式授权恢复。complete 同步 N6 状态镜像为 qa_passed/qa_failed/qa_blocked，并显示本轮通过/失败/阻断数量。
 （事故：宿主把非文件说明混入 browser evidence，导致已完成任务的收尾 QA 无法恢复。）

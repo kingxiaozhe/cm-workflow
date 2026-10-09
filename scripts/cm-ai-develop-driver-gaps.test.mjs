@@ -409,11 +409,12 @@ test('#19 a live delivery that deletes an in-scope requirement blocks retryably 
   const intents=records(f).filter(row=>row.payload.type==='effect-intent').map(row=>row.payload.effect.id);
   assert.deepEqual(intents,['develop-1','develop-1-retry-1']);
 });
-test('#19 an out-of-scope write still wins over a missing requirement and stays unknown',t=>{
+// A53: the out-of-scope write still wins, now as the named, retryable re-check block.
+test('#19 an out-of-scope write still wins over a missing requirement and names the path',t=>{
   const f=fixture(t,{scope:['target.mjs','requirements.md'],files:{'target.mjs':'export const value = 42;\n'}});
   const run=liveSession(f,{mode:'create',act:"fs.unlinkSync(cwd+'/requirements.md');fs.writeFileSync(cwd+'/outside.mjs','x');"});
-  assert.equal(run.status,1,run.stderr);
-  assert.equal(result(run).state,'unknown');assert.equal(result(run).code,'out_of_scope');
+  assert.equal(result(run).state,'blocked',run.stdout);assert.equal(result(run).code,'develop_out_of_scope');
+  assert.match(result(run).reason,/outside\.mjs/);assert.equal(result(run).pendingAction,'resume');
 });
 // Round 2 (Codex re-review of 304cbfb): a develop-gate block after a
 // changes_requested review must be retryable at attempt 2 as it is at attempt 1.

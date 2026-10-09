@@ -16,10 +16,11 @@ import {readCmAiTaskLearningApplication} from './cm-ai-context-refresh.mjs';
 import {reviewExclusions} from './effect-contract.mjs';
 import {validateAcceptedFix} from './accepted-fix.mjs';
 import {readBootstrapEvidence,validateBootstrapReviewPackage} from './host-bootstrap.mjs';
-import {validateCodeProjectPaths,assertCodeProjectSelections} from './code-projects.mjs';
+import {validateCodeProjectPaths,assertCodeProjectSelections,MAX_CODE_PROJECTS} from './code-projects.mjs';
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 import {readSpecificationRebind} from './specification-material.mjs';
 import {protectedScopePaths} from './developer-adapter.mjs';
+import {validWorkerPid,validStartTime} from './worker-process-identity.mjs';
 
 const LIMIT=16*1024*1024;
 // The developer adapter refuses a protected scope on every dispatch, before any
@@ -35,7 +36,7 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout','develop_answer_invalid',...RECHECK_CODES,DEVELOP_REDO_CODE,DISPATCH_RETRY_CODE].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout','develop_answer_invalid',...RECHECK_CODES,DEVELOP_REDO_CODE,DISPATCH_RETRY_CODE,DEVELOP_INTERRUPTED_CODE].includes(code)
   ||kind==='review'&&state==='pending_review'&&REVIEW_RETRY_CODES.includes(code)
   ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed',COMPLETE_RECHECK_CODE].includes(code)
     ||code==='review_package_changed'&&reviewVerdict==='approved')
@@ -97,8 +98,8 @@ export function developTimeoutBasis(s,configuration=null) {
 // produced nothing the runner accepted (skip) are passed over; any other entry
 // means unrecorded edits may exist, so the start cannot be proven (null). The
 // caller still compares the live code root with it.
-function pinnedDevelopStart(s,skip){
-  for(let i=s.cache.length-2;i>=0;i--){
+function pinnedDevelopStart(s,skip,from=s.cache.length-2){
+  for(let i=from;i>=0;i--){
     const entry=s.cache[i];
     if(skip(entry)&&entry.effect.identity.attempt===s.attempt)continue;
     return s.attempt===2&&entry.effect.kind==='review'&&entry.result.state==='changes_requested'
@@ -147,7 +148,11 @@ const CHECK_ANSWER_MISSING=['call_timeout','execution_error','host_disconnected'
 // journal size limits, which a re-check does not resolve. An oversized check
 // answer is refused by the bridge and times out (check_answer_missing).
 const CHECK_ANSWER_INVALID=['invalid_input','invalid_result','verification_precheck_invalid'];
-export const RECHECK_CODES=Object.freeze(['check_answer_missing','check_answer_invalid']);
+// A53: the delivery touched paths outside the task scope (not only files the
+// checks created). The paths are named; once the operator moved or restored
+// them, a re-check rebuilds the handoff and package without a new develop.
+export const OUT_OF_SCOPE_RECHECK_CODE='develop_out_of_scope';
+export const RECHECK_CODES=Object.freeze(['check_answer_missing','check_answer_invalid',OUT_OF_SCOPE_RECHECK_CODE]);
 export const COMPLETE_RECHECK_CODE='complete_recheck_failed';
 // learningWriteback mirrors the checkpointed Learning result, which the journal
 // grammar only accepts after this effect's own developer call succeeded (or on a
@@ -155,7 +160,7 @@ export const COMPLETE_RECHECK_CODE='complete_recheck_failed';
 export const developRecheckSource=entry=>{
   const result=entry.result,call=result.calls?.at(-1);
   return entry.effect.kind==='develop'&&result.state==='unknown'
-    &&[...CHECK_ANSWER_MISSING,...CHECK_ANSWER_INVALID].includes(result.code)
+    &&[...CHECK_ANSWER_MISSING,...CHECK_ANSWER_INVALID,'out_of_scope'].includes(result.code)
     &&call?.terminal==='succeeded'&&call.channel==='fixture'
     &&result.learningWriteback!=null&&result.learningWriteback.outcome!=='writeback_pending';
 };
@@ -166,9 +171,16 @@ export function developRecheckCode(s,config,recorded=0){
     ||s.learningResult==null||s.receipt!==null)return null;
   if(s.state==='blocked'&&RECHECK_CODES.includes(s.code))return s.code;
   if(!(s.state==='unknown'&&s.code===last.result.code)||recorded>=MAX_ANSWER_GAP_RETRIES)return null;
-  return CHECK_ANSWER_INVALID.includes(last.result.code)?'check_answer_invalid':'check_answer_missing';
+  return last.result.code==='out_of_scope'?OUT_OF_SCOPE_RECHECK_CODE
+    :CHECK_ANSWER_INVALID.includes(last.result.code)?'check_answer_invalid':'check_answer_missing';
 }
-export const developRecheckReason=(code,source)=>`${code}: 开发已交付并写回 Learning，但之后的检查或验证预检没有拿到可用应答（原记录 unknown/${source}）。`
+// detail: the source checkpoint's reason, which names the out-of-scope paths.
+const outOfScopePaths=detail=>typeof detail==='string'&&/^out_of_scope:/.test(detail)
+  ?detail.replace(/^out_of_scope:\s*/,'').split(/,\s*/).filter(Boolean).slice(0,20):[];
+export const developRecheckReason=(code,source,detail=null)=>code===OUT_OF_SCOPE_RECHECK_CODE
+  ?boundedReason(`${code}: 开发已交付并写回 Learning，但改动超出任务 scope（原记录 unknown/${source}）：`,(paths=>paths.length?paths:['见原记录'])(outOfScopePaths(detail)),
+    '。这些路径可能是会话越界写的，也可能是你自己的改动：移走或还原它们（确需改动就先走规格变更扩大 scope）后，在原运行 advance 只重跑检查、验证预检、handoff 与审查包，不重发开发、不占名额（每运行最多 2 次）。')
+  :`${code}: 开发已交付并写回 Learning，但之后的检查或验证预检没有拿到可用应答（原记录 unknown/${source}）。`
   +'先确认上一次检查命令已经停止；在原运行 advance 只重跑检查、验证预检、handoff 与审查包，不重发开发，不占开发调用与 effect 名额（每运行最多 2 次）。';
 export const completeRecheckSource=entry=>entry.effect.kind==='complete'&&entry.result.state==='unknown'
   &&[...CHECK_ANSWER_MISSING,'invalid_input'].includes(entry.result.code)
@@ -203,10 +215,34 @@ export const developAnswerMissingEffect=entry=>{
     ||result.state==='blocked'&&result.code==='failed'&&call.terminal==='failed'
       &&!Object.hasOwn(call,'failureResult')&&!Object.hasOwn(call,'blockedReason');
 };
-// What the stuck develop was ('call_timeout', 'unknown', 'execution_error' or
-// 'failed'), or null when this exit does not apply.
-export function developRedoCause(s,config,recorded=0){
-  if(config.bootstrap?.mode==='instructions'||config.developer.requestedModel!=='current-session'||recorded>=MAX_DEVELOP_REDOS)return null;
+// V9: a provider develop (Codex writes in its sandbox, Claude proposes and the
+// host applies) that ended without a usable result. Its worker may outlive the
+// call, so a redo is offered only for an effect whose worker identity this
+// runtime journaled (workerJournal intent marker): the host then proves the
+// recorded process group gone before the redo record is written.
+export const providerStuckCause=entry=>{
+  const result=entry.result,call=result.calls?.at(-1);
+  if(entry.effect.kind!=='develop'||!call||call.requestedModel==='current-session'||call.channel!=='fixture')return null;
+  if(result.state==='unknown'&&call.terminal==='unknown')return result.code==='call_timeout'?'provider_call_timeout':'provider_unknown';
+  // Only an explicit invalid proposal: a bare failure may be a legitimate
+  // blocked answer without a reason, which stays terminal (A11).
+  if(result.state==='blocked'&&result.code==='failed'&&call.terminal==='failed'&&!Object.hasOwn(call,'blockedReason')
+    &&call.failureResult?.code==='invalid_result'&&call.failureResult.retryable!==true)return 'provider_failed';
+  if(result.state==='blocked'&&result.code==='unavailable'&&call.terminal==='unavailable')return 'provider_unavailable';
+  return null;
+};
+// What the stuck develop was ('call_timeout', 'unknown', 'execution_error',
+// 'failed' or a provider_* cause), or null when this exit does not apply.
+// workers: the journaled worker records by effect id (readRunnerHistory).
+export function developRedoCause(s,config,recorded=0,workers=null){
+  if(config.bootstrap?.mode==='instructions'||recorded>=MAX_DEVELOP_REDOS)return null;
+  if(config.developer.requestedModel!=='current-session'){
+    const last=s.cache.at(-1);
+    if(!last||last.effect.identity.attempt!==s.attempt||s.receipt!==null)return null;
+    const cause=providerStuckCause(last);
+    if(cause===null||s.state!==last.result.state||s.code!==last.result.code)return null;
+    return workers?.[last.effect.id]?.journal===true?cause:null;
+  }
   const last=s.cache.at(-1);
   if(!last||last.effect.identity.attempt!==s.attempt||s.receipt!==null)return null;
   if(developTimeoutEffect(last)&&s.calls.at(-1)?.terminal==='unknown'
@@ -255,15 +291,54 @@ export const developDispatchReason=source=>`${DISPATCH_RETRY_CODE}: 开发请求
 const redoCauses={call_timeout:'开发应答超时且代码根已变化或本轮起点无法核对',
   role_log_failed:'开发请求派发前宿主运行日志写入失败，但代码根已变化或本轮起点无法核对',
   invalid_workflow_config:'开发请求派发前工作流角色配置无效，但代码根已变化或本轮起点无法核对',unknown:'开发应答中断（会话断开、应答形状错或结果不明）',
-  execution_error:'开发调用以 execution_error 结束、结果不明',failed:'开发应答只回了 failed、没有可用结果'};
-export const developRedoRequiredReason=cause=>`${DEVELOP_REDO_CODE}: ${redoCauses[cause]??cause}。会话可能仍在写文件，宿主看不到；`
+  execution_error:'开发调用以 execution_error 结束、结果不明',failed:'开发应答只回了 failed、没有可用结果',
+  provider_call_timeout:'provider 开发进程超时、结果不明',provider_unknown:'provider 开发进程中断或输出无法解析、结果不明',
+  provider_failed:'provider 开发提案未通过本地校验',provider_unavailable:'provider 开发进程启动失败或报告失败'};
+const providerCause=cause=>String(cause).startsWith('provider_');
+export const developRedoRequiredReason=cause=>providerCause(cause)
+  ?`${DEVELOP_REDO_CODE}: ${redoCauses[cause]??cause}。provider 进程组可能仍在写文件；以 --mode resume --allow-develop-redo 启动并发送 develop_redo（单行 reason），`
+    +'宿主先按运行存档里记下的进程身份（pid、启动时间）核对进程组已退出，核对不了（Windows、无权限、读不到启动时间）就拒绝。'
+    +'之后 advance 用新 effect id 重发本轮开发：盘上改动保留，审查包仍对照本运行创建时的任务基线，经检查与独立审查；不占调用与 effect 名额（每运行最多 2 次）。'
+  :`${DEVELOP_REDO_CODE}: ${redoCauses[cause]??cause}。会话可能仍在写文件，宿主看不到；`
   +'先确认会话已停止修改代码，再以 --mode resume --allow-develop-redo 启动并发送 develop_redo（单行 reason，写入运行存档）。'
   +'之后 advance 用新 effect id 重发本轮开发：盘上改动保留，审查包仍对照本运行创建时的任务基线，经检查与独立审查；不占调用与 effect 名额（每运行最多 2 次）。';
-export const developRedoReason=cause=>`${DEVELOP_REDO_CODE}: ${redoCauses[cause]??cause}；操作员已确认会话停写（develop-answer-redo）。`
+export const developRedoReason=cause=>`${DEVELOP_REDO_CODE}: ${redoCauses[cause]??cause}；`
+  +(providerCause(cause)?'宿主已核对 provider 进程组退出（develop-answer-redo）。':'操作员已确认会话停写（develop-answer-redo）。')
   +'在原运行 advance 用新 effect id 重发本轮开发；盘上改动保留并经检查与独立审查，审查轮次不变。';
+// V8: the host died with an effect intent and no checkpoint. abandon_effect
+// journals effect-interrupted instead of voiding the run: the pending effect is
+// retired (it never got a slot) and the run continues from the step's own
+// retryable block. A develop becomes blocked/develop_interrupted and is redone
+// under a new effect id; edits already on disk stay and are reviewed against
+// the task baseline captured at create (never re-captured). A review that was
+// never registered returns to awaiting_review. A completion without a
+// task-commit-intent returns to the state it started from. Old journals keep
+// their records; their effect-abandoned records still end the run.
+export const DEVELOP_INTERRUPTED_CODE='develop_interrupted';
+export const developInterruptedReason=provider=>`${DEVELOP_INTERRUPTED_CODE}: 宿主在本轮开发中途退出，开发意图已登记但结果没写入；`
+  +(provider?'宿主已核对 provider 进程组退出（或进程从未启动）。':'操作员已确认会话停写。')
+  +'在原运行 advance 用新 effect id 重发本轮开发：盘上改动保留，审查包仍对照本运行创建时的任务基线，经检查与独立审查；不占调用与 effect 名额。';
+// A45: the host died after task-commit-intent and before its result. Shown
+// instead of unknown/reconciliation_required; complete then follows only the
+// journaled commit plan (tasks.md before or after, never a redone completion).
+export const COMMIT_INTERRUPTED_CODE='complete_commit_interrupted';
+export const COMMIT_INTERRUPTED_REASON=`${COMMIT_INTERRUPTED_CODE}: 宿主在写入任务完成的提交意图之后、提交结果之前退出，tasks.md 可能已勾选也可能未勾选。`
+  +'发送 complete：宿主只按运行存档里的提交计划核对 tasks.md——已是提交后的内容就补记结果；仍是提交前的内容且证据文件未变、代码仍等于审查通过的交付，就按原计划写完；其余情况拒绝并保留现场。不重新复查、不重新开发。';
+export const REVIEW_INTERRUPTED_REASON='review_interrupted: 宿主在审查登记前退出，审查没有派发；在原运行 advance 重新取得本轮审查授权并派发，不占重派次数。';
+// A pending develop's round start as the journal pins it (see pinnedDevelopStart):
+// nothing of this attempt may have been accepted or left unrecorded edits.
+export const pendingDevelopStart=s=>pinnedDevelopStart(s,entry=>developDispatchFailedEffect(entry)||developTimeoutEffect(entry),s.cache.length-1);
+// The same start for a checkpointed provider develop being redone (it is the
+// last cache entry; earlier redo sources of this attempt produced nothing accepted).
+export const redoDevelopStart=s=>pinnedDevelopStart(s,entry=>developDispatchFailedEffect(entry)||developTimeoutEffect(entry)||developRedoSource(entry));
+// What may sit between a pending intent and an effect-interrupted record.
+const INTERRUPTIBLE_TRAILERS={develop:['control','develop-worker'],review:['control','host-joined'],complete:['control']};
+// A provider develop that ended without a usable result is, like a current-session
+// one, a redo source (developRedoCause): it holds no call or effect slot either.
+export const developRedoSource=entry=>developAnswerMissingEffect(entry)||providerStuckCause(entry)!==null;
 export const countedCalls=(calls,cache)=>calls.filter(call=>!invalidDeveloperCall(call)&&call.terminal!=='abandoned').length
   -cache.filter(timeoutEffect).length-cache.filter(developTimeoutEffect).length-cache.filter(developAnswerInvalidEffect).length
-  -cache.filter(developAnswerMissingEffect).length-cache.filter(developDispatchFailedEffect).length;
+  -cache.filter(developRedoSource).length-cache.filter(developDispatchFailedEffect).length;
 // A review effect whose journaled result the operator abandoned (below) no
 // longer holds one of the six effect slots; its retry does.
 const abandonedResult=(entry,calls)=>entry.effect.kind==='review'&&entry.result.state==='unknown'
@@ -280,7 +355,7 @@ export const completionBlockCount=cache=>cache.filter(completionBlock).length;
 export const completedEffectCount=(cache,calls=[])=>cache.filter(entry=>!(entry.effect.kind==='develop'
   &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))
   &&!timeoutEffect(entry)&&!developTimeoutEffect(entry)&&!developAnswerInvalidEffect(entry)&&!developRecheckSource(entry)
-  &&!developAnswerMissingEffect(entry)&&!developDispatchFailedEffect(entry)
+  &&!developRedoSource(entry)&&!developDispatchFailedEffect(entry)
   &&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
 // The six-effect cap counts develop and review effects only; completion (above),
 // QA, documentation and finalization hold no slot.
@@ -819,6 +894,23 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     recovered.cache.at(-1).result=runnerStatus(recovered,config);
     return recovered;
   }
+  // A42: since #160 a completion re-check whose check list (ids or commands)
+  // or visual carriers differed from the reviewed package ended in a terminal
+  // package_mismatch whose reason is the bare code; nothing else produced that
+  // reason, and the reviewed code had matched. A retried complete re-verifies
+  // everything. A reason naming changed paths, and the older no-reason shape
+  // (it also covered a Learning handoff mismatch and pre-#160 code drift, so
+  // the journal cannot prove it was only checks), stay terminal.
+  if(effect.kind==='complete'&&s.state==='blocked'&&s.code==='package_mismatch'
+    &&s.reason==='package_mismatch'&&s.taskCommit==null
+    &&(before.state==='approved'||before.state==='blocked'
+      &&[...COMPLETION_RETRY_CODES,'review_package_changed',COMPLETE_RECHECK_CODE].includes(before.code))){
+    const recovered=structuredClone(s);
+    recovered.code='completion_checks_changed';
+    recovered.reason='completion_checks_changed: 旧版本把完成复查与审查包的检查清单或检查证据差异记成了 package_mismatch（代码未变）；发送 complete 按审查包的检查清单重新复查并完成。';
+    recovered.cache.at(-1).result=runnerStatus(recovered,config);
+    return recovered;
+  }
   // Runners before the create-time scope gate dispatched a protected scope and
   // journaled the adapter's pre-dispatch refusal as unknown/execution_error,
   // with no exit. Reproject only that exact shape: one developer call that never
@@ -895,6 +987,29 @@ function completionConfig(config,version){
   }
   return c;
 }
+const workerSummary=w=>({journal:w.journal===true,spawned:w.spawning!==null,started:w.started,
+  applies:w.applies.map(item=>({started:item.started}))});
+// What a redo, interruption or void record names when the host proved every
+// started writer's process group gone: the provider worker and each sandbox
+// subprocess that applied a protected proposal (the exact develop-worker
+// records it checked). null: nothing was started, so there is nothing to prove.
+export const workerGoneBinding=summary=>{
+  const worker=summary?.started??null,applies=(summary?.applies??[]).filter(item=>item.started).map(item=>item.started);
+  if(worker===null&&!applies.length)return null;
+  return {worker:worker&&{recordDigest:worker.digest,pid:worker.pid},
+    applies:applies.map(item=>({recordDigest:item.digest,pid:item.pid})),verdict:'gone'};
+};
+// Every writer the journal shows as about to start also journaled its pid.
+// A pending effect with a spawning record and no pid is unprovable.
+const writersComplete=w=>(w.spawning===null||w.started!==null)&&w.applies.every(item=>item.started!==null);
+const bindingMatches=(p,expected)=>expected===null?!Object.hasOwn(p,'worker')
+  :Object.hasOwn(p,'worker')&&digest(p.worker)===digest(expected);
+// R2: an interrupted step of the same kind is retired at most this many times
+// per run; afterwards abandon_effect only voids the run (effect-abandoned).
+export const MAX_EFFECT_INTERRUPTIONS=2;
+export const EFFECT_INTERRUPT_LIMIT_CODE='effect_interrupt_limit';
+export const effectInterruptLimitReason=kind=>`${EFFECT_INTERRUPT_LIMIT_CODE}: 宿主中途退出后在原运行内恢复 ${kind} 已用满 ${MAX_EFFECT_INTERRUPTIONS} 次。`
+  +'先查清宿主为何反复中断；确认旧宿主与写入方已退出后，abandon_effect 只能作废本运行（effect-abandoned），再用 --supersede-reviewed-evidence 新建运行。';
 function fullEnvelope(r,index,previousDigest){
   shape(r,['version','seq','id','kind','payload','previousDigest','digest']);hex(r.digest);
   need(r.version===1&&r.seq===index+1&&r.previousDigest===previousDigest,'runner_chain');
@@ -910,12 +1025,31 @@ export function readRunnerHistory(raw,config,version=1) {
   let invocation={registration:null,started:null,result:null};let registrationRecord=null,startedRecord=null,resultRecord=null,lastReview=null;
   const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false,supersession=null;
   const answerGaps={developRecheck:0,completeRecheck:0,developRedo:0,developDispatch:0};
+  // V8/V9: interrupted intents (their ids are never reused) and the provider
+  // worker records of the pending develop and of every checkpointed develop.
+  const interrupted=[],workers={};let pendingWorker=null;
   const reviewConfig=(calls=[])=>({...config,reviewInvocation:{...config.reviewInvocation,
     excludedThreadIds:reviewExclusions({excludedThreadIds:[...config.reviewInvocation.excludedThreadIds,...joinedHosts]},
       calls,config.developer.contextId)}});
   const reconciliationBinding=()=>({effectId:lastReview.effect.id,invocationId:lastReview.request.invocationId,
     registeredDigest:lastReview.registrationRecord.digest,startedDigest:lastReview.startedRecord?.digest??null,
     resultDigest:lastReview.resultRecord.digest});
+  // A pending effect that effect-interrupted may retire: no task-commit-intent,
+  // not cancelled, a review never registered, and after the intent only the
+  // records its kind may leave behind (controls, a join, worker records).
+  const pendingInterruptible=(effect,intentIndex,end)=>version===3&&!(config.externalModels||config.executionPolicy)
+    &&effect!==null&&Object.hasOwn(INTERRUPTIBLE_TRAILERS,effect.kind)&&transaction===null&&state.taskCommit?.intentDigest==null
+    &&!controls.cancelled&&!controls.workflowError&&(effect.kind!=='review'||!invocation.registration)
+    &&interrupted.filter(item=>item.kind===effect.kind).length<MAX_EFFECT_INTERRUPTIONS
+    &&records.slice(intentIndex+1,end).every(row=>INTERRUPTIBLE_TRAILERS[effect.kind].includes(row.payload.type));
+  // A pending develop whose only trailers are controls and worker records may
+  // still be voided (effect-abandoned) once the interruption cap is spent.
+  const pendingWorkerVoidable=(effect,intentIndex,end)=>version===3&&!(config.externalModels||config.executionPolicy)
+    &&effect?.kind==='develop'&&transaction===null&&state.taskCommit?.intentDigest==null
+    &&records.slice(intentIndex+1,end).some(row=>row.payload.type==='develop-worker')
+    &&records.slice(intentIndex+1,end).every(row=>['control','develop-worker'].includes(row.payload.type));
+  const pendingReviewExhausted=()=>pending?.kind==='review'&&invocation.registration!==null&&invocation.result===null
+    &&reviewRetrySpent(state.cache,state.calls,state.attempt,config.reviewers[0].contexts[state.attempt-1]);
   for(const [index,r] of records.entries()) {
     if(index>0)need(records[index-1].payload.type!=='effect-abandoned','runner_abandon');
     boundRunnerRecord(r,index+1);
@@ -966,9 +1100,16 @@ export function readRunnerHistory(raw,config,version=1) {
       state.reviewPackage=readReviewPackage(p.reviewPackage);
       state.state='awaiting_review';state.code=null;state.reason=null;
     } else if(p.type==='effect-intent') {
-      shape(p,[...common,'effect']);need(r.kind==='intent' && pending===null,'runner_intent');
+      shape(p,[...common,'effect',...(Object.hasOwn(p,'workerJournal')?['workerJournal']:[])]);need(r.kind==='intent' && pending===null,'runner_intent');
       const e=p.effect;shape(e,['version','id','identity','kind',...(Object.hasOwn(e,'learningInput')?['learningInput']:[])]);
       validIdentity(e.identity);id(e.id);
+      // The marker says this runtime journals the provider worker's identity
+      // (develop-worker) for this effect; only provider development carries it.
+      // Current-session development carries it when protected proposals are
+      // applied by a sandbox subprocess (apply records only).
+      if(Object.hasOwn(p,'workerJournal'))need(version===3&&p.workerJournal===true&&e.kind==='develop','runner_worker');
+      need(!interrupted.some(item=>item.effectId===e.id),'runner_cache');
+      pendingWorker={journal:p.workerJournal===true,spawning:null,started:null,applies:[]};
       if(e.kind==='develop'&&Object.hasOwn(config,'taskLearning'))need(Object.hasOwn(e,'learningInput'),'runner_learning');
       if(Object.hasOwn(e,'learningInput')){need(e.kind==='develop'&&Object.hasOwn(config,'taskLearning'),'runner_learning');
         validTaskLearningInput(e.learningInput,e.identity,config.taskLearning.feature);}
@@ -1063,14 +1204,20 @@ export function readRunnerHistory(raw,config,version=1) {
       need(r.kind==='result'&&pending===null&&state.state==='unknown'&&code!==null&&p.code===code
         &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_recheck');
       answerGaps.developRecheck++;
-      state.state='blocked';state.code=code;state.reason=developRecheckReason(code,state.cache.at(-1).result.code);lastReview=null;
+      state.state='blocked';state.code=code;state.reason=developRecheckReason(code,state.cache.at(-1).result.code,state.cache.at(-1).result.reason);lastReview=null;
     } else if(version===3&&p.type==='develop-answer-redo') {
       // The operator confirmed the session stopped writing (R3); the redo itself
       // is the next develop intent. Re-derived from the journal, never the disk.
-      shape(p,[...common,'effectId','invocationId','cause','reason','at']);
-      const cause=developRedoCause(state,config,answerGaps.developRedo);
+      const cause=developRedoCause(state,config,answerGaps.developRedo,workers);
       need(r.kind==='result'&&pending===null&&cause!==null&&p.cause===cause
         &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_redo');
+      // Every started provider writer must have been proven gone by the host;
+      // a Claude proposal also needs the live root at the round start (basis).
+      const provider=cause.startsWith('provider_');
+      shape(p,[...common,'effectId','invocationId','cause','reason','at',...['worker','basis'].filter(key=>Object.hasOwn(p,key))]);
+      need(bindingMatches(p,provider?workerGoneBinding(workers[p.effectId]):null),'runner_develop_redo');
+      if(provider&&config.developer.provider==='claude')need(p.basis!=null&&p.basis===redoDevelopStart(state),'runner_develop_redo');
+      else need(!Object.hasOwn(p,'basis'),'runner_develop_redo');
       need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
         &&!/[\r\n\0]/.test(p.reason),'runner_develop_redo');
       need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_develop_redo');
@@ -1145,12 +1292,85 @@ export function readRunnerHistory(raw,config,version=1) {
       state.reviewInvocation={registration:invocation.registration.record,started:invocation.started,
         result:{outcome:'abandoned',reason:p.reason,at:p.at,recordDigest:r.digest}};
       pending=null;beforeIntent=null;invocation={registration:null,started:null,result:null};
+    } else if(version===3&&p.type==='develop-worker') {
+      // V9: the writers of the pending develop, journaled by the host right
+      // before (…spawning) and right after (…started: pid = process group,
+      // start time) each spawns: the provider worker once, and each sandbox
+      // subprocess that applies a protected proposal (one per root, at most
+      // MAX_CODE_PROJECTS). Bound to the
+      // develop's invocation; never after a cancel or workflow error.
+      const started=['started','apply_started'].includes(p.phase);
+      shape(p,[...common,'effectId','invocationId','phase',...(started?['pid','startTime']:[])]);
+      need(r.kind==='result'&&pending?.kind==='develop'&&p.effectId===pending.id&&pendingWorker?.journal===true
+        &&p.invocationId===`${session}.${beforeIntent.calls.length+1}`&&!controls.cancelled&&!controls.workflowError,'runner_worker');
+      if(started)need(validWorkerPid(p.pid)&&validStartTime(p.startTime),'runner_worker');
+      const identity={digest:r.digest,pid:p.pid,startTime:p.startTime};
+      const provider=config.developer.requestedModel!=='current-session',open=pendingWorker.applies.at(-1);
+      if(p.phase==='spawning'){need(provider&&pendingWorker.spawning===null&&!pendingWorker.applies.length,'runner_worker');pendingWorker.spawning=r.digest;}
+      else if(p.phase==='started'){need(provider&&pendingWorker.spawning!==null&&pendingWorker.started===null&&!pendingWorker.applies.length,'runner_worker');pendingWorker.started=identity;}
+      else if(p.phase==='apply_spawning'){need((!open||open.started!==null)&&pendingWorker.applies.length<MAX_CODE_PROJECTS,'runner_worker');pendingWorker.applies.push({started:null});}
+      else{need(p.phase==='apply_started'&&open&&open.started===null,'runner_worker');open.started=identity;}
+    } else if(version===3&&p.type==='effect-interrupted') {
+      need(!(config.externalModels||config.executionPolicy),'external_review_reconciliation_required');
+      shape(p,[...common,'effectId','effectKind','intentDigest','lastRecordDigest','reason','at',
+        ...['basis','worker'].filter(key=>Object.hasOwn(p,key))]);
+      const intentIndex=records.slice(0,index).findLastIndex(row=>row.payload.type==='effect-intent');
+      need(r.kind==='result'&&pending&&intentIndex>=0&&pendingInterruptible(pending,intentIndex,index),'runner_interrupt');
+      need(p.effectId===pending.id&&p.effectKind===pending.kind&&p.intentDigest===records[intentIndex].digest
+        &&p.lastRecordDigest===records[index-1].digest,'runner_interrupt');
+      need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(p.reason),'runner_interrupt');
+      need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_interrupt');
+      const provider=config.developer.requestedModel!=='current-session';
+      if(pending.kind==='develop'){
+        // A provider worker that may have started is retired only with the
+        // host's proof that its process group is gone; no record, no proof.
+        if(provider)need(pendingWorker.journal===true,'runner_interrupt');
+        need(writersComplete(pendingWorker)&&bindingMatches(p,workerGoneBinding(pendingWorker)),'runner_interrupt');
+        // basis: the live host proved the code root still equals the pinned round
+        // start where every write is an applied proposal (protected current-session
+        // development, Claude provider development): a partial apply is restored
+        // by a person first, never sent to review as a new delivery (V6).
+        const proposalApply=provider&&config.developer.provider==='claude';
+        if(proposalApply)need(p.basis!=null&&p.basis===pendingDevelopStart(state),'runner_interrupt');
+        else if(Object.hasOwn(p,'basis'))need(!provider&&p.basis===pendingDevelopStart(state),'runner_interrupt');
+        const request=requestFor({invocationId:`${session}.${state.calls.length+1}`,identity:{...config.identity,attempt:state.attempt},
+          role:'developer',provider:config.developer.provider,requestedModel:config.developer.requestedModel,
+          contextId:config.developer.contextId,payload:{scope:config.scope,
+            requirements:original.files.filter(f=>config.requirements.includes(f.path)),priorReview:state.priorReview,
+            ...supersededReviewPayload(supersession?.carriedReview??null,state.attempt),
+            ...(Object.hasOwn(original,'specification')?{specification:original.specification}:{}),
+            ...(Object.hasOwn(pending,'learningInput')?{learningInput:pending.learningInput}:{})}});
+        state.calls.push({invocationId:request.invocationId,contextId:config.developer.contextId,provider:config.developer.provider,
+          requestedModel:config.developer.requestedModel,effectiveModel:'unknown',channel:'fixture',started:true,
+          terminal:'abandoned',requestDigest:request.requestDigest,resultDigest:r.digest});
+        state.sequence++;
+        state.state='blocked';state.code=DEVELOP_INTERRUPTED_CODE;state.reason=developInterruptedReason(provider);
+      }else{
+        need(!Object.hasOwn(p,'basis')&&!Object.hasOwn(p,'worker'),'runner_interrupt');
+        if(pending.kind==='review'){state.state='awaiting_review';state.code=null;state.reason=REVIEW_INTERRUPTED_REASON;}
+        else {state.state=beforeIntent.state;state.code=beforeIntent.code;state.reason=beforeIntent.reason??null;}
+      }
+      interrupted.push({effectId:pending.id,kind:pending.kind});
+      pending=null;beforeIntent=null;invocation={registration:null,started:null,result:null};pendingWorker=null;
+      joinedForInvocation=false;lastReview=null;
     } else if(version===3&&p.type==='effect-abandoned') {
       need(!(config.externalModels||config.executionPolicy),'external_review_reconciliation_required');
       shape(p,[...common,'effectId','effectKind','intentDigest','reason','at',
-        ...(Object.hasOwn(p,'lastRecordDigest')?['lastRecordDigest']:[])]);
+        ...['lastRecordDigest','worker'].filter(key=>Object.hasOwn(p,key))]);
       let intentIndex=index-1;
       while(intentIndex>=0&&records[intentIndex].payload.type==='control')intentIndex--;
+      // A36: a registered review whose one redispatch this attempt is already
+      // spent can no longer be abandoned with abandon_review. Voiding the run
+      // (then superseding it) is its only exit; it must name the last record.
+      const exhaustedReview=pendingReviewExhausted();
+      const lastIntent=records.slice(0,index).findLastIndex(row=>row.payload.type==='effect-intent');
+      // A develop with journaled writers is voided only with their gone-proof.
+      const workerVoid=pendingWorkerVoidable(pending,lastIntent,index);
+      if(exhaustedReview||workerVoid)intentIndex=lastIntent;
+      if(workerVoid)need(writersComplete(pendingWorker)&&bindingMatches(p,workerGoneBinding(pendingWorker))
+        &&Object.hasOwn(p,'lastRecordDigest'),'runner_abandon');
+      else need(!Object.hasOwn(p,'worker'),'runner_abandon');
       const intent=records[intentIndex];
       need(r.kind==='result'&&pending&&['develop','complete','review'].includes(pending.kind)
         &&intent?.payload.type==='effect-intent'&&transaction===null
@@ -1158,8 +1378,8 @@ export function readRunnerHistory(raw,config,version=1) {
       need(p.effectId===pending.id&&p.effectKind===pending.kind
         &&p.intentDigest===intent.digest
         &&(Object.hasOwn(p,'lastRecordDigest')
-          ?p.lastRecordDigest===records[index-1].digest:intentIndex===index-1)
-        &&(pending.kind!=='review'||!invocation.registration&&!joinedForInvocation),'runner_abandon');
+          ?p.lastRecordDigest===records[index-1].digest:intentIndex===index-1&&!exhaustedReview&&!workerVoid)
+        &&(pending.kind!=='review'||!invocation.registration&&!joinedForInvocation||exhaustedReview),'runner_abandon');
       need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
         &&!/[\r\n\0]/.test(p.reason),'runner_abandon');
       need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_abandon');
@@ -1171,7 +1391,8 @@ export function readRunnerHistory(raw,config,version=1) {
         supersession?.carriedReview??null);
       lastReview=version===3&&pending.kind==='review'&&invocation.result?{effect:pending,request:invocation.registration.request,
         registrationRecord,startedRecord,resultRecord,before:beforeIntent,controls,invocation}:null;
-      pending=null;beforeIntent=null;invocation={registration:null,started:null,result:null};
+      if(pending.kind==='develop'&&pendingWorker?.journal)workers[pending.id]=workerSummary(pendingWorker);
+      pending=null;beforeIntent=null;invocation={registration:null,started:null,result:null};pendingWorker=null;
     } else if(version>=2 && ['task-commit-intent','task-commit-result'].includes(p.type)){
       shape(p,[...common,'effectId','completeIntentDigest','commit']);
       need(pending?.kind==='complete'&&p.effectId===pending.id&&p.completeIntentDigest===completeIntentDigest&&!controls.cancelled,'runner_commit');
@@ -1242,8 +1463,16 @@ export function readRunnerHistory(raw,config,version=1) {
     ?{effectId:lastReview.effect.id,invocationId:lastReview.request.invocationId,
       registeredDigest:lastReview.registrationRecord.digest,startedDigest:lastReview.startedRecord?.digest??null,
       resultDigest:lastReview.resultRecord.digest}:null;
+  const lastIntentIndex=records.findLastIndex(row=>row.payload.type==='effect-intent');
+  const interruptible=pending!==null&&pendingInterruptible(pending,lastIntentIndex,records.length);
+  const interruptLimit=pending!==null&&!interruptible
+    &&interrupted.filter(item=>item.kind===pending.kind).length>=MAX_EFFECT_INTERRUPTIONS;
+  const workerVoidable=pending!==null&&pendingWorkerVoidable(pending,lastIntentIndex,records.length);
   return {original,session,state,pending,acceptedFixes,qaAttachment,answerGaps,
     ...(version===3?{joinedHosts,reviewerThreads,supersession,pendingAbandonable,reviewResultAbandon,
+      interrupted,workers,pendingInterruptible:interruptible,pendingReviewExhausted:pendingReviewExhausted(),
+      pendingInterruptLimit:interruptLimit,pendingWorkerVoidable:workerVoidable,
+      pendingWorker:pending?.kind==='develop'&&pendingWorker?workerSummary(pendingWorker):null,
       reviewReconciliation:lastReview?.reconciliation&&['unknown','pending_review'].includes(state.state)?{...reconciliationBinding(),
         ...lastReview.reconciliation,request:lastReview.request,effect:lastReview.effect,before:lastReview.before}:null,
       pendingObservedReview:pending?.kind==='review'&&invocation.result?.outcome==='observed'
@@ -1269,7 +1498,7 @@ export function answerGapLimit(s,config,gaps={}){
     return {code:'check_answer_retry_limit',reason:gapLimitReason('check_answer_retry_limit','开发后的检查或验证预检重跑',source)};
   if(s.state==='unknown'&&(gaps.completeRecheck??0)>=MAX_ANSWER_GAP_RETRIES&&completeRecheckable(s,0))
     return {code:'complete_recheck_limit',reason:gapLimitReason('complete_recheck_limit','完成前复查重跑',source)};
-  if((gaps.developRedo??0)>=MAX_DEVELOP_REDOS&&developRedoCause(s,config,0)!==null)
+  if((gaps.developRedo??0)>=MAX_DEVELOP_REDOS&&developRedoCause(s,config,0,gaps.workers??null)!==null)
     return {code:'develop_redo_limit',reason:gapLimitReason('develop_redo_limit','确认停写后的开发重发',source)};
   return null;
 }

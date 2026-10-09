@@ -942,6 +942,7 @@ for(const mode of ['success','native-failure'])test(`C3b private capability life
   const writerURL=new URL('../../runtime/js/cm-ai/task-commit.mjs',import.meta.url).href;
   const wrapper=`import assert from 'node:assert/strict';
     import {commitRunnerFixture as native} from ${JSON.stringify(writerURL)};
+    export {recoverRunnerCommitImage} from ${JSON.stringify(writerURL)};
     import {resolveFixtureCommit as resolve} from ${JSON.stringify(runnerURL)};
     export function commitRunnerFixture(token,store,input,signal){
       globalThis.captured={token,store};let hits=0;

@@ -66,6 +66,25 @@ function stepRecord(id){
   return abandonable.has(pending)?{base:match[1],suffix:match[2],pending}:null;
 }
 const retryBase=id=>id.replace(/-retry-[1-8]-(intent|result)$/,'-$1');
+// V2 (F09/F13/F14/F28): a redone write step keeps the review baseline its first
+// intent captured. The abandon (or blocked-rerun) record says so with
+// baselinePinned; the redo's intent must carry exactly that baseline, so the
+// abandoned attempt's residue is part of the reviewed diff, never of the
+// "before" image. Older journals without the marker replay unchanged.
+const PINNED_STEPS=new Set(['test_author','repair','revision_test_author','revision_repair']);
+// V10 (F15/F18/F20): a legitimate blocked verdict of a local step may be rerun
+// with a reason, at most twice per step kind; the blocked result stays history.
+const RERUNNABLE=Object.freeze({test_author_blocked:'test_author',repair_blocked:'repair',regression_blocked:'regression',
+  post_review_regression_blocked:'post_review_regression',walkthrough_blocked:'walkthrough',
+  revision_test_author_blocked:'revision_test_author',revision_repair_blocked:'revision_repair',
+  revision_regression_blocked:'revision_regression',revision_post_review_regression_blocked:'revision_post_review_regression',
+  revision_walkthrough_blocked:'revision_walkthrough'});
+export const MAX_FIX_BLOCKED_RERUNS=2;
+// Record numbers cover every legal rerun: two per step kind across all kinds.
+const MAX_FIX_BLOCKED_RERUN_RECORDS=Object.keys(RERUNNABLE).length*MAX_FIX_BLOCKED_RERUNS;
+const BLOCKED_RERUN_ID=/^fix-blocked-rerun-([1-9]\d?)$/;
+const blockedRerunNumber=id=>{const match=BLOCKED_RERUN_ID.exec(id);
+  const n=match?Number(match[1]):0;return n>=1&&n<=MAX_FIX_BLOCKED_RERUN_RECORDS?n:0;};
 const latestStepRecord=(records,id)=>[...records].reverse().find(row=>retryBase(row.id)===id);
 // A cause or second-round final review that produced no review result may be
 // abandoned once, audited, and dispatched again under its own record prefix.
@@ -199,10 +218,13 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
   try{store=inspectionSnapshot?{snapshot:()=>inspectionSnapshot,close(){},append(){need(false,'fix_read_only');}}:openExecutionStore({specsRoot,identity:{repositoryId:identity.repositoryId,runId:identity.runId},create,
     fingerprints:{workflow:digest('cm-fix-stages-v1'),config:digest(configuration),inputs:digest(identity)}});}catch(error){guard?.close();throw error;}
   const closeStore=()=>{try{store.close();}finally{guard?.close();}};
-  let active=null,closed=false;
+  let active=null,closed=false,lastPinned={};
   const retryCount=base=>{
     const records=store.snapshot().records;
     return records.filter(row=>/^fix-abandoned-[1-8]$/.test(row.id)).filter(row=>{
+      const intent=records.find(item=>digest(item)===row.payload.intentDigest);
+      return intent&&stepRecord(retryBase(intent.id))?.base===base;
+    }).length+records.filter(row=>blockedRerunNumber(row.id)>0).filter(row=>{
       const intent=records.find(item=>digest(item)===row.payload.intentDigest);
       return intent&&stepRecord(retryBase(intent.id))?.base===base;
     }).length;
@@ -391,8 +413,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       append(recordId,'result',payload);
     }catch{/* Missing, conflicting or unbound receipts never change the original unknown. */}
   }
-  function project(){
-    const snapshot=store.snapshot();
+  // snapshot: the store's, or a candidate one a writer validates before appending.
+  function project(snapshot=store.snapshot()){
     need(snapshot.records.length>0,'fix_history_invalid');
     const [first,...records]=snapshot.records;
     // Older runs could advance a recovered single-layer diagnosis without cause review.
@@ -417,7 +439,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     need(first.id==='fix-configuration'&&first.kind==='intent'&&digest(first.payload)===digest(initial),'fix_history_invalid');
     let stage='reproduce',pending=null,reproduction=null,diagnosed=null,learning=null,cause=null,started=null,causeResult=null,red=null,redFiles=null,baseline=null,baselineFiles=null;
     let pendingOrigin=null,pendingIntent=null;
-    const abandoned=[],retryCounts=new Map();
+    const abandoned=[],retryCounts=new Map(),pinned={},blockedReruns={};let lastStepResult=null;
     let authorBaseline=null,authored=null,escalationIntent=null,escalation=null;
     const redStage=()=>diagnosed?.status==='design_change'?'design_change_required':'red_test_required';
     let repairBaseline=null,repaired=null;
@@ -443,6 +465,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       need(digest(inventory([...reviewedFiles.values()]))===digest(inventory(next.files)),'fix_revision_source_mismatch');
     }
+    const pendingBaseline=kind=>({test_author:authorBaseline,repair:repairBaseline,revision_test_author:revisionAuthorBaseline,revision_repair:revisionBaseline})[kind];
+    const assertPinned=(kind,value)=>{if(pinned[kind])need(digest(value)===digest(pinned[kind]),'fix_history_invalid');};
     const reviewLedger=fixReviewLedger(snapshot.records,configuration);
     for(const storedRecord of records){
       if(/^fix-review-(receipt|reconciled)-/.test(storedRecord.id))continue;
@@ -451,8 +475,12 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(abandonedMatch){
         need(Number(abandonedMatch[1])===abandoned.length+1&&record.kind==='result'
           &&stage==='unknown'&&abandonable.has(pending)&&pendingIntent&&pendingOrigin,'fix_history_invalid');
-        shape(record.payload,['pending','reason','abandonedAt','intentDigest']);
+        shape(record.payload,['pending','reason','abandonedAt','intentDigest',...(Object.hasOwn(record.payload,'baselinePinned')?['baselinePinned']:[])]);
         need(record.payload.pending===pending&&record.payload.intentDigest===digest(pendingIntent),'fix_history_invalid');
+        if(Object.hasOwn(record.payload,'baselinePinned')){
+          need(record.payload.baselinePinned===true&&PINNED_STEPS.has(pending),'fix_history_invalid');
+          pinned[pending]??=pendingBaseline(pending);
+        }
         need(typeof record.payload.reason==='string'&&record.payload.reason.trim().length>0
           &&Buffer.byteLength(record.payload.reason,'utf8')<=1000
           &&!/[\r\n\0\u0085\u2028\u2029]/.test(record.payload.reason)&&Number.isSafeInteger(record.payload.abandonedAt)
@@ -469,6 +497,36 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         if(pending==='retrospective')retrospectivePackage=null;
         if(pending==='revision_retrospective')revisionRetrospectivePackage=null;
         stage=pendingOrigin;pending=null;pendingOrigin=null;pendingIntent=null;continue;
+      }
+      const blockedRerun=blockedRerunNumber(record.id)?[record.id,String(blockedRerunNumber(record.id))]:null;
+      if(blockedRerun){
+        const kind=RERUNNABLE[stage];
+        need(Number(blockedRerun[1])===Object.values(blockedReruns).reduce((a,b)=>a+b,0)+1&&record.kind==='result'
+          &&kind&&pending===null&&revision===null===!kind.startsWith('revision_')&&pendingIntent&&pendingOrigin&&lastStepResult
+          &&stepRecord(retryBase(pendingIntent.id))?.pending===kind&&stepRecord(retryBase(lastStepResult.id))?.pending===kind
+          &&(blockedReruns[kind]??0)<MAX_FIX_BLOCKED_RERUNS,'fix_history_invalid');
+        shape(record.payload,['stage','pending','reason','rerunAt','intentDigest','resultDigest',...(Object.hasOwn(record.payload,'baselinePinned')?['baselinePinned']:[])]);
+        need(record.payload.stage===stage&&record.payload.pending===kind&&record.payload.intentDigest===digest(pendingIntent)
+          &&record.payload.resultDigest===digest(lastStepResult)&&typeof record.payload.reason==='string'&&record.payload.reason.trim().length>0
+          &&Buffer.byteLength(record.payload.reason,'utf8')<=1000&&!/[\r\n\0\u0085\u2028\u2029]/.test(record.payload.reason)
+          &&Number.isSafeInteger(record.payload.rerunAt)&&record.payload.rerunAt>0,'fix_history_invalid');
+        if(Object.hasOwn(record.payload,'baselinePinned')){
+          need(record.payload.baselinePinned===true&&PINNED_STEPS.has(kind),'fix_history_invalid');pinned[kind]??=pendingBaseline(kind);
+        }
+        const base=stepRecord(retryBase(pendingIntent.id)).base;
+        need((retryCounts.get(base)??0)<8,'fix_history_invalid');retryCounts.set(base,(retryCounts.get(base)??0)+1);
+        blockedReruns[kind]=(blockedReruns[kind]??0)+1;
+        if(kind==='test_author'){authored=null;authorBaseline=null;}
+        if(kind==='repair'){repaired=null;repairBaseline=null;}
+        if(kind==='regression')regression=null;
+        if(kind==='post_review_regression')postReviewRegression=null;
+        if(kind==='walkthrough')walkthrough=null;
+        if(kind==='revision_test_author'){revisionAuthored=null;revisionAuthorBaseline=null;}
+        if(kind==='revision_repair'){revisionRepair=null;revisionBaseline=null;}
+        if(kind==='revision_regression')revisionRegression=null;
+        if(kind==='revision_post_review_regression')revisionPostRegression=null;
+        if(kind==='revision_walkthrough')revisionWalkthrough=null;
+        stage=pendingOrigin;pendingOrigin=null;pendingIntent=null;lastStepResult=null;continue;
       }
       const retried=/^(.*)-retry-([1-8])-(intent|result)$/.exec(record.id);
       if(retried){
@@ -540,6 +598,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(pending===null,'fix_history_invalid');
         pendingOrigin=stage;pendingIntent=storedRecord;
       }
+      if(localStep&&record.kind==='result')lastStepResult=storedRecord;
       need(stage!=='cancelled'&&stage!=='escalated','fix_history_invalid');
       const joined=joinedRecord.exec(record.id);
       if(joined){
@@ -636,7 +695,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(record.id==='fix-revision-test-author-intent'){
         need(revision?.tests&&stage==='revision_test_author_required'&&record.kind==='intent','fix_history_invalid');
         shape(record.payload,['baseline','revisionDigest']);
-        revisionAuthorBaseline=readReviewBaseline(record.payload.baseline);
+        revisionAuthorBaseline=readReviewBaseline(record.payload.baseline);assertPinned('revision_test_author',revisionAuthorBaseline);
         need(record.payload.revisionDigest===digest(revision)&&digest(revisionAuthorBaseline.identity)===digest(revision.nextIdentity)
           &&digest(revisionAuthorBaseline.scope)===digest([...revision.tests.testFiles].sort())
           &&digest(revisionAuthorBaseline.requirements)===digest([...configuration.repair.requirements].sort())
@@ -663,7 +722,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(record.id==='fix-revision-repair-intent'){
         need(revision&&revisionBaseline===null&&['final_review_changes_requested','walkthrough_blocked','post_review_regression_blocked',...(revision.tests?['revision_prepared']:[])].includes(stage)&&record.kind==='intent','fix_history_invalid');
         shape(record.payload,['baseline','revisionDigest','redDigest','testBaselineDigest']);
-        revisionBaseline=readReviewBaseline(record.payload.baseline);
+        revisionBaseline=readReviewBaseline(record.payload.baseline);assertPinned('revision_repair',revisionBaseline);
         need(digest(revisionBaseline.identity)===digest(revision.nextIdentity)
           &&revisionBaseline.rootDigest===repairBaseline.rootDigest&&(revisionBaseline.specsPath??null)===(repairBaseline.specsPath??null)
           &&digest(revisionBaseline.scope)===digest(repairBaseline.scope)&&digest(revisionBaseline.requirements)===digest(repairBaseline.requirements)
@@ -937,7 +996,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(record.id==='fix-repair-intent'){
         need(configuration.repair&&stage==='repair_required'&&repairBaseline===null&&record.kind==='intent','fix_history_invalid');
         shape(record.payload,['baseline','redDigest','testBaselineDigest']);
-        repairBaseline=readReviewBaseline(record.payload.baseline);
+        repairBaseline=readReviewBaseline(record.payload.baseline);assertPinned('repair',repairBaseline);
         const codeRoot=fs.realpathSync(configuration.reproduction.cwd);
         need(digest(repairBaseline.identity)===digest(identity)&&repairBaseline.rootDigest===createHash('sha256').update(codeRoot).digest('hex')
           &&(repairBaseline.specsPath??null)===reviewSpecsPath(codeRoot,evidenceSpecsRoot)
@@ -955,7 +1014,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       if(record.id==='fix-test-author-intent'){
         need(configuration.testAuthor&&stage===redStage()&&authorBaseline===null&&record.kind==='intent','fix_history_invalid');
-        authorBaseline=readReviewBaseline(record.payload);
+        authorBaseline=readReviewBaseline(record.payload);assertPinned('test_author',authorBaseline);
         const codeRoot=fs.realpathSync(configuration.reproduction.cwd);
         need(authorBaseline.rootDigest===createHash('sha256').update(codeRoot).digest('hex')
           &&(authorBaseline.specsPath??null)===reviewSpecsPath(codeRoot,evidenceSpecsRoot),'test_author_binding_mismatch');
@@ -1095,7 +1154,12 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     // only what the journal and its closeout settled: later reviewed changes may
     // legitimately move these files, and the caller checks the tree itself.
     if(!durableHistory){
-      if(causeResult?.review?.verdict==='approved'&&stage!=='cancelled'&&repairBaseline===null){
+      // F14 exemption: once a repair (or, while it is being redone, a test
+      // authoring) pinned its baseline, that intent already passed this check;
+      // the residue in its scope is the redo's input and is reviewed against
+      // the pinned baseline, so it is not cause-review drift.
+      if(causeResult?.review?.verdict==='approved'&&stage!=='cancelled'&&repairBaseline===null&&!pinned.repair
+        &&!(pinned.test_author&&authored===null)){
         try{
           const current=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,
             context:Object.hasOwn(cause.request.payload.reviewPackage,'contextFiles'),status:{identity,stage:'cause_review_required',reproduction,diagnosis:diagnosed,learning,
@@ -1150,12 +1214,12 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         try{verifyFixWalkthroughEvidence(walkthrough,evidenceSpecsRoot);}catch{stage='walkthrough_evidence_required';}
       }
       if(revision&&['final_review_changes_requested','walkthrough_blocked','post_review_regression_blocked'].includes(stage))stage='revision_prepared';
-      if(stage==='revision_test_author_required'){
+      if(stage==='revision_test_author_required'&&!pinned.revision_test_author){
         try{verifyRevisionStart(captureReviewBaseline({root:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,
           identity:revision.nextIdentity,scope:revision.tests.testFiles,requirements:configuration.repair.requirements}));}
         catch{stage='revision_test_evidence_required';}
       }
-      if(revisionAuthored?.outcome==='authored'&&!['unknown','cancelled'].includes(stage)){
+      if(revisionAuthored?.outcome==='authored'&&!['unknown','cancelled'].includes(stage)&&!(pinned.revision_repair&&!revisionBaseline)){
         try{
           verifyExtensionFiles(configuration.reproduction.cwd,{plan:revision.tests,files:revisionAuthored.testFiles});
           if(!revisionBaseline)verifyFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,
@@ -1227,8 +1291,13 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     const revisionNoResult=noReviewResult(revisionFinalRegistration,revisionFinalResult,'revision_final_review');
     if(stage==='unknown'&&[...reviewLedger.receipts.values()].some(p=>reviewLedger.applied.has(p.invocationId)&&p.inspection.kind==='cm-provider-review-failure')){stage='review_provider_failed';pending=null;}
     const reviewAbandonable=!(configuration.externalModels||configuration.executionPolicy)&&causeNoResult&&!causeAbandonment?'cause_review':!(configuration.externalModels||configuration.executionPolicy)&&revisionNoResult&&!revisionAbandonment?'revision_final_review':null;
+    lastPinned=pinned;
+    const rerunKind=RERUNNABLE[stage]&&(revision===null)!==RERUNNABLE[stage].startsWith('revision_')?RERUNNABLE[stage]:null;
     const status=json({identity,stage,pending,abandoned,executionActive:active!==null,reproduction,diagnosis:diagnosed,learning,causeReview:causeResult,
       ...(reviewAbandonable?{reviewAbandonable}:{}),
+      ...(Object.keys(pinned).length?{pinnedBaselines:Object.fromEntries(Object.entries(pinned).map(([kind,value])=>[kind,value.baselineDigest]))}:{}),
+      ...(Object.keys(blockedReruns).length?{blockedReruns}:{}),
+      ...(rerunKind?{blockedRerun:{pending:rerunKind,used:blockedReruns[rerunKind]??0,limit:MAX_FIX_BLOCKED_RERUNS}}:{}),
       ...((configuration.externalModels||configuration.executionPolicy)&&stage==='unknown'?{reviewReconciliation:{available:reviewLedger.pending.length===1,invocationId:reviewLedger.pending[0]?.invocationId??null}}:{}),
       ...(causeNoResult&&causeAbandonment||revisionNoResult&&revisionAbandonment?{reviewAbandonBudgetExhausted:true}:{}),
       ...(causeAbandonment?{causeReviewAbandonment:causeAbandonment}:{}),
@@ -1300,9 +1369,37 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         &&stepRecord(retryBase(row.id))?.pending===current.pending);
       need(intent,'fix_abandon_unavailable');
       append(`fix-abandoned-${current.abandoned.length+1}`,'result',
-        {pending:current.pending,reason,abandonedAt:Date.now(),intentDigest:digest(intent)});
+        {pending:current.pending,reason,abandonedAt:Date.now(),intentDigest:digest(intent),
+          ...(PINNED_STEPS.has(current.pending)?{baselinePinned:true}:{})});
       logFixEvent({specsRoot:evidenceSpecsRoot,identity,configuration,event:'abandon',phase:current.pending,
         detail:`显式放弃 unknown 步骤：${current.pending}`,data:{pending:current.pending,reason}});
+      return project();
+    },
+    // V10: rerun a step whose legitimate verdict was blocked (test author or
+    // repair answered blocked, regression or walkthrough inconclusive/blocked).
+    // The blocked result stays in the journal; a write step keeps its baseline.
+    rerunBlockedStep({reason,authorized=false}={}){
+      need(!closed&&active===null,'fix_busy');need(authorized===true,'fix_blocked_rerun_authorization_required');
+      need(typeof reason==='string'&&reason.trim().length>0&&Buffer.byteLength(reason,'utf8')<=1000
+        &&!/[\r\n\0\u0085\u2028\u2029]/.test(reason),'fix_blocked_rerun_reason_required');
+      const current=project();
+      need(current.blockedRerun,'fix_blocked_rerun_unavailable');
+      need(current.blockedRerun.used<MAX_FIX_BLOCKED_RERUNS,'fix_blocked_rerun_limit');
+      const kind=current.blockedRerun.pending,records=store.snapshot().records;
+      const intent=[...records].reverse().find(row=>row.kind==='intent'&&stepRecord(retryBase(row.id))?.pending===kind);
+      const result=[...records].reverse().find(row=>row.kind==='result'&&stepRecord(retryBase(row.id))?.pending===kind);
+      need(intent&&result,'fix_blocked_rerun_unavailable');
+      const used=records.filter(row=>blockedRerunNumber(row.id)>0).length;
+      const recordId=`fix-blocked-rerun-${used+1}`,payload={stage:current.stage,pending:kind,reason,rerunAt:Date.now(),
+        intentDigest:digest(intent),resultDigest:digest(result),...(PINNED_STEPS.has(kind)?{baselinePinned:true}:{})};
+      // The exact record must replay before it is appended (never a poisoned journal).
+      const snapshot=store.snapshot(),candidate={version:1,seq:snapshot.records.length+1,id:recordId,kind:'result',payload,
+        previousDigest:snapshot.records.at(-1)?.digest??null};
+      try{project({...snapshot,records:[...snapshot.records,{...candidate,digest:digest(candidate)}]});}
+      catch{need(false,'fix_blocked_rerun_unavailable');}
+      append(recordId,'result',payload);
+      logFixEvent({specsRoot:evidenceSpecsRoot,identity,configuration,event:'rerun',phase:kind,
+        detail:`带理由重跑合法阻断的步骤：${kind}`,data:{pending:kind,stage:current.stage,reason}});
       return project();
     },
     // One audited abandonment per review kind, mirroring cm-ai abandon_review. The
@@ -1745,7 +1842,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         const repair=prepareFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,identity:executionIdentity,
           ...configuration.repair,defect:configuration.defect,diagnosis:start.diagnosis,
           ...(revising?{reviewFeedback:revisionFeedback(),...(testExtension()?{testExtension:testExtension()}:{})}:{}),
-          redTest:configuration.redTest,baseline:configuration.baseline,redEvidence:start.redTest,beforeBaseline:start.baseline},{bridge,assertReviewReady});
+          redTest:configuration.redTest,baseline:configuration.baseline,redEvidence:start.redTest,beforeBaseline:start.baseline},{bridge,assertReviewReady,
+          pinnedBaseline:lastPinned[revising?'revision_repair':'repair']??null,protectedMode:protectedSpecsRoot!==null});
         const result=await repair.execute({authorized:true,signal:controller.signal,register(baseline){
           append(`${prefix}-intent`,'intent',{baseline,redDigest:digest(start.redTest),testBaselineDigest:digest(start.baseline),...(revising?{revisionDigest:digest(start.revision)}:{})});registered=true;
         }});
@@ -1753,6 +1851,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         inspectFixRepair(result,repair.baseline,{allowUnchanged:revising&&Boolean(start.revision.tests)});append(`${prefix}-result`,'result',result);return project();
       }catch(error){
         if(preparing&&timedOut)need(false,'fix_learning_interrupted');
+        // A pinned redo names the residue paths the operator must restore first.
+        if(!registered&&!controller.signal.aborted&&['fix_pinned_residue','fix_protected_residue','fix_pinned_baseline_mismatch'].includes(error?.code))throw error;
         if(!registered&&!controller.signal.aborted)need(false,error?.code==='fix_learning_context_changed'?'fix_learning_context_changed':'repair_preparation_failed');
         return project();
       }finally{clearTimeout(timer);active=null;}
@@ -1788,7 +1888,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(project().stage===start.stage,'fix_evidence_changed');
         const author=prepareFixTestAuthor({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,identity:executionIdentity,
           testFiles:revising?start.revision.tests.testFiles:configuration.redTest.testFiles,requirements:revising?configuration.repair.requirements:configuration.testAuthor.requirements,
-          defect:configuration.defect,diagnosis:start.diagnosis,reproduction:start.reproduction,...(revising?{reviewFeedback:inspectFixRepairReview(revisionFeedback(),executionIdentity),testPlan:start.revision.tests}:{})},{bridge,assertReviewReady});
+          defect:configuration.defect,diagnosis:start.diagnosis,reproduction:start.reproduction,...(revising?{reviewFeedback:inspectFixRepairReview(revisionFeedback(),executionIdentity),testPlan:start.revision.tests}:{})},{bridge,assertReviewReady,
+          pinnedBaseline:lastPinned[revising?'revision_test_author':'test_author']??null,protectedMode:protectedSpecsRoot!==null});
         const result=await author.execute({authorized:true,signal:controller.signal,register(baseline){
           append(`${prefix}-intent`,'intent',revising?{baseline,revisionDigest:digest(start.revision)}:baseline);registered=true;
         }});
@@ -1796,6 +1897,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         inspectFixTestAuthor(result,author.baseline);append(`${prefix}-result`,'result',result);return project();
       }catch(error){
         if(preparing&&timedOut)need(false,'fix_learning_interrupted');
+        // A pinned redo names the residue paths the operator must restore first.
+        if(!registered&&!controller.signal.aborted&&['fix_pinned_residue','fix_protected_residue','fix_pinned_baseline_mismatch'].includes(error?.code))throw error;
         if(!registered&&!controller.signal.aborted)need(false,error?.code==='fix_learning_context_changed'
           ?'fix_learning_context_changed':'test_author_preparation_failed');
         return project();

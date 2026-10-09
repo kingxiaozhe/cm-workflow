@@ -16,7 +16,8 @@ import {checkParallelWrite} from './cm-task-gate.mjs';
 import {parseFeatureTaskText} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {approvedTaskGrammar} from '../runtime/js/spec-task-line.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
-import {inspectRunClosure} from './cm-log-event.mjs';
+import {inspectRunClosure as inspectClosure} from './cm-log-event.mjs';
+import {releaseVerifiedQaResources} from '../runtime/js/cm-ai/qa-resource-release.mjs';
 
 const writer=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
 const key=task=>`${task.feature}/${task.taskId}`;
@@ -82,6 +83,14 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   const groups=validateGroups(config,plans),membership=new Map(groups.flatMap(group=>group.map(key=>[key,group])));
   const originalMembership=new Map(membership),originalPlans=new Map(plans);
   const first=plans.keys().next().value,planDigest=digest(config),log=path.join(config.specsDir,'运行日志.jsonl');
+  // Q26: before any closure check, close cleanup_failed QA command resources whose
+  // journaled process group the host proves gone (qa-resource-release.mjs).
+  const inspectRunClosure=(file,runId)=>{
+    const plan=[...plans.values()].find(item=>item.identity.runId===runId);
+    if(plan)try{releaseVerifiedQaResources({specsDir:config.specsDir,codeProject:plan.codeProject,runId});}
+    catch(error){if(error?.code==='qa_resource_release_failed')throw error;}
+    return inspectClosure(file,runId);
+  };
   let active=null,busy=false,cancelled=false,liveKey=first;
   const executions=new Map(),members=new Map();
   let releaseLock=null,completeTail=Promise.resolve();

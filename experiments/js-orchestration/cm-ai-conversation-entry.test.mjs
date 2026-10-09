@@ -1323,10 +1323,16 @@ test('N8 run finalization preserves writer resource blocking and does not create
 
   const result=await entry.handle(operation('run_finalize',{packageDigest,testRunId:null}));
 
-  assert.equal(result.outcome,'rejected');assert.equal(result.code,'run_log_failed');
+  // Q13 contract: an open resource is reported before the writer is asked for
+  // run_done, as the explicit qa_resources_open block (the writer still refuses).
+  assert.equal(result.outcome,'blocked');assert.equal(result.code,'qa_resources_open');
+  assert.match(result.reason,/profile-finalize（unrecorded）/);
   const rows=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
   assert.equal(rows.some(row=>row.event==='run_done'),false);
+  assert.equal(rows.some(row=>row.event==='resource'&&row.phase==='released'),false);
   assert.equal(fs.existsSync(path.join(specsDir,'.cm-status.json')),false);
+  const {inspectRunClosure}=await import('../../scripts/cm-log-event.mjs');
+  assert.equal(inspectRunClosure(path.join(specsDir,'运行日志.jsonl'),identity.runId).closed,false);
 }));
 
 test('N8 run finalization rejects an invalid status target before writing run_done',()=>fixture(async({root,specsDir,codeProject})=>{

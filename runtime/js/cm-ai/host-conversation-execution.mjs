@@ -182,13 +182,18 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   const authority=review?createHostReviewAuthority({hostContextId,reviewerId:'reviewer',adapterId,
     decide:async binding=>allowedAttempts.includes(binding.identity.attempt)?{status:'approved'}:null}):null;
   // Reread role declarations at each boundary; never switch a bound invocation.
-  const dispatchSpawn=(role,identity,signal)=>{
+  // onWorker (provider development, task-runner.mjs) journals the worker's
+  // identity right before and right after the spawn; a journal failure kills
+  // the new process group like a refused role route does.
+  const dispatchSpawn=(role,identity,signal,onWorker=null)=>{
     const configuration=loadConfig({projectRoot:definition.codeProject});
     need(digest(resolveProtectedRuntimes(configuration,runtime))===digest({coderRuntime,reviewerRuntime}),'runtime_selection_mismatch');
     return (cli,args,options)=>{
+      onWorker?.({phase:'spawning'});
       const child=spawn(cli,args,options);
       if(Number.isInteger(child.pid)){
-        try{resolveHostRole({definition,identity,role,signal,runtime,configuration,
+        try{onWorker?.({phase:'started',pid:child.pid});
+          resolveHostRole({definition,identity,role,signal,runtime,configuration,
           dispatchedRuntime:role==='coder'?coderRuntime:reviewerRuntime});}
         catch(error){child.on('error',()=>{});child.stdin?.on('error',()=>{});
           try{options.detached?process.kill(-child.pid,'SIGKILL'):child.kill('SIGKILL');}catch{}throw error;}
@@ -246,7 +251,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
         ...(developerLog?{onUsageClaim:()=>developerLog.claimed(),onUsage:value=>{developerUsage=value;}}:{}),
         cwd:definition.codeProject,model:provider.model,...(externalModels?{effort:provider.effort}:{}),timeoutMs:protection.timeoutMs,
         ...(coderRuntime==='codex'?{specsRoot:definition.specsDir}:{}),
-        spawnProcess:dispatchSpawn('coder',bound.identity,control.signal)}):null;
+        spawnProcess:dispatchSpawn('coder',bound.identity,control.signal,typeof control.onWorker==='function'?control.onWorker:null)}):null;
       const worker=async({prompt})=>{
         if(provider&&coderRuntime==='codex'){
           if(documentationPaths.length)prompt='Synchronize approved documentation inside this invocation: '+JSON.stringify(documentationPaths)+'\n'+prompt;
@@ -297,8 +302,10 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
           if(protection&&response.value.outcome!=='blocked'){
             if(bound.payload.specification)verifySpecificationMaterial({specificationRoot:definition.specsDir,
               specification:bound.payload.specification,identity:bound.identity});
+            // The applying sandbox subprocess is journaled like the worker (V9).
             try{await projectExecution.commit({scope:bound.payload.scope,
-              edits,expected,identity:bound.identity,signal:control.signal});}
+              edits,expected,identity:bound.identity,signal:control.signal,
+              ...(typeof control.onWorker==='function'?{onApply:event=>control.onWorker(event)}:{})});}
             catch(error){
               // This code is emitted by the pre-write expected-hash check.
               // Sandbox execution/partial-write failures stay ambiguous.
