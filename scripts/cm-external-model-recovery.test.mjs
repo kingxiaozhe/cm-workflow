@@ -76,9 +76,11 @@ for(const type of ['review-invocation-registered','review-invocation-started','r
   await runner.executeEffect(f.effect('review',1,'new-call'));assert.equal(f.calls(),1);assert.equal(JSON.stringify(f.records()),before);
   assert.throws(f.guard,{code:'external_prior_attempt_unresolved'});
 },noTerminal));
-test('legacy missing marker retains its once-only local timeout retry contract',()=>fixture(async f=>{
+test('legacy missing marker keeps the local no-result redispatch contract (two per round)',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));assert.equal((await runner.executeEffect(f.effect('review'))).state,'pending_review');
-  assert.equal((await runner.executeEffect(f.effect('review',1,'retry'))).state,'blocked');assert.equal(f.calls(),2);
+  assert.equal((await runner.executeEffect(f.effect('review',1,'retry'))).state,'pending_review');assert.equal(f.calls(),2);
+  const spent=await runner.executeEffect(f.effect('review',1,'retry-2'));
+  assert.equal(spent.state,'blocked');assert.equal(spent.code,'review_redispatch_limit');assert.equal(f.calls(),3);
 },noTerminal,{strict:false}));
 test('valid changes_requested permits a fresh separately authorized second attempt and completion',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));assert.equal((await runner.executeEffect(f.effect('review'))).state,'changes_requested');

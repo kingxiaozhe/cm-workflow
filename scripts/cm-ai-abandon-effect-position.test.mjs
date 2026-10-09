@@ -216,28 +216,38 @@ test('registered review stays on abandon_review and cannot replay effect-abandon
 // cannot be abandoned with abandon_review, and supersede refuses a pending run.
 // abandon_effect now voids it (effect-abandoned bound to the last record), which
 // breaks that deadlock; a supersede may follow.
-test('a registered review with its redispatch spent is voided by abandon_effect, then superseded',async()=>{
+test('a registered review with its two redispatches spent is voided by abandon_effect, then superseded',async()=>{
   const f=fixture(),runId='review-exhausted';
   try{
     await start(f,runId);
     savePrefix(f,runId,'review-invocation-registered',null);
     // The truncated journal never published its review; drop the original's file.
     for(const name of fs.readdirSync(f.reviewsDir))if(/^work-T-002-r\d+\.md$/.test(name))fs.rmSync(path.join(f.reviewsDir,name));
-    let run=await openControlRun(definition(f,runId),'resume',execution(f),{allowAbandonReview:true});
-    try{
-      const abandoned=await run.host.handle({version:1,operation:'abandon_review',requestId:'abandon-review',
-        identity:identity(runId),reason:'Old host and reviewer exited'});
-      assert.equal(abandoned.code,'review_abandoned',JSON.stringify(abandoned));
-      const redone=await run.host.handle({version:1,operation:'advance',requestId:'advance',identity:identity(runId)});
-      assert.equal(redone.code,'review_blocked',JSON.stringify(redone));
-    }finally{run.close();}
-    const file=statePath(f,runId),state=JSON.parse(fs.readFileSync(file,'utf8'));
-    const last=state.records.findLastIndex(row=>row.payload.type==='review-invocation-registered');
-    const {revision,...body}=state;body.records=state.records.slice(0,last+1);
-    fs.writeFileSync(file,JSON.stringify({...body,revision:digest(body)})+'\n');
+    const file=statePath(f,runId);
+    const truncateToLastRegistration=()=>{
+      const state=JSON.parse(fs.readFileSync(file,'utf8'));
+      const last=state.records.findLastIndex(row=>row.payload.type==='review-invocation-registered');
+      const {revision,...body}=state;body.records=state.records.slice(0,last+1);
+      fs.writeFileSync(file,JSON.stringify({...body,revision:digest(body)})+'\n');return body;
+    };
+    // V5: each round has two no-result redispatches; the host dies twice.
+    for(const round of [1,2]){
+      if(round===2){truncateToLastRegistration();
+        for(const name of fs.readdirSync(f.reviewsDir))if(/^work-T-002-r\d+\.md$/.test(name))fs.rmSync(path.join(f.reviewsDir,name));}
+      const run=await openControlRun(definition(f,runId),'resume',execution(f),{allowAbandonReview:true});
+      try{
+        const abandoned=await run.host.handle({version:1,operation:'abandon_review',requestId:`abandon-review-${round}`,
+          identity:identity(runId),reason:'Old host and reviewer exited'});
+        assert.equal(abandoned.code,'review_abandoned',JSON.stringify(abandoned));
+        const redone=await run.host.handle({version:1,operation:'advance',requestId:`advance-${round}`,identity:identity(runId)});
+        assert.equal(redone.code,'review_blocked',JSON.stringify(redone));
+      }finally{run.close();}
+    }
+    const body=truncateToLastRegistration();
+    for(const name of fs.readdirSync(f.reviewsDir))if(/^work-T-002-r\d+\.md$/.test(name))fs.rmSync(path.join(f.reviewsDir,name));
     const config=body.records[0].payload.config,projected=readRunnerHistory(body.records,config,3);
     assert.equal(projected.pendingReviewExhausted,true);assert.equal(projected.pendingInterruptible,false);
-    run=await openControlRun(definition(f,runId),'resume',execution(f),{allowAbandonReview:true,allowAbandonEffect:true});
+    const run=await openControlRun(definition(f,runId),'resume',execution(f),{allowAbandonReview:true,allowAbandonEffect:true});
     try{
       const status=await run.host.handle({version:1,operation:'status',requestId:'status',identity:identity(runId)});
       assert.equal(status.pendingAction,'abandon_effect');

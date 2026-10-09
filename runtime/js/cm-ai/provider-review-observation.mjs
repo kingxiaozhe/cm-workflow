@@ -140,6 +140,22 @@ export function abandonableReviewerExit(observation){
   let stream;try{stream=eventStream(observation.events,new Set());}catch{return false;}
   return stream.close!==null&&stream.close.timed_out===false&&!stream.hasResult&&stream.terminal===null;
 }
+// V5 (A33): other worker failures after which the reviewer process is proven
+// gone and nothing usable was lost. The worker only reports these codes after it
+// awaited its process-group cleanup (process_cleanup_unknown otherwise), so:
+// spawn_failed with no event at all (nothing ever started), or an observed close
+// that was not a timeout with no final message. An unparseable final message
+// (invalid_output_json) has no conclusion to reconcile either. Tool or item
+// boundary exits stay with abandonableReviewerExit; process_cleanup_unknown and
+// any other code stay unknown.
+const GONE_FAILURES=new Set(['spawn_failed','prompt_write_failed','output_limit','invalid_output_json','thread_mismatch','cli_diagnostic']);
+export function reviewerGoneWithoutResult(observation){
+  const r=observation?.result;
+  if(r?.status!=='failed'||!GONE_FAILURES.has(r.code))return false;
+  let stream;try{stream=eventStream(observation.events,new Set());}catch{return false;}
+  if(r.code==='spawn_failed')return observation.events.length===0;
+  return stream.close!==null&&stream.close.timed_out===false&&(r.code==='invalid_output_json'||!stream.hasResult);
+}
 // A complete answer that breaks the written verdict contract can never become a
 // receipt. It is retried under the same budget and its exact code is kept.
 export const REVIEWER_VERDICT_FAILURES=Object.freeze(['contradictory_verdict','invalid_finding_path',

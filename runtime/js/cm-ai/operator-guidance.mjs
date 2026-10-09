@@ -40,6 +40,11 @@ export function operatorGuidance(result,{executionActive=false}={}){
           review?'显式 --allow-abandon-review，并提供单行 reason':'显式 --allow-abandon-effect，并提供单行 reason',
           '由原宿主核对可放弃条件；不得直接重跑或改写完成记录']);
     }
+    // V5 (A33/A36): a no-verdict review end the host cannot prove safe to redispatch.
+    if(['review_process_unverified','review_observation_invalid','review_boundary_unverified','review_abandon_budget_exhausted'].includes(result.reviewAbandonRefusal))
+      return explain('独立审查没有结论，且宿主不能证明再派一次是安全的（reason 写明原因）。',
+        '按 reason 手工核对旧审查进程与原审查证据；本运行不再重派审查，确认后用 --supersede-reviewed-evidence 新建运行重做。',
+        null,['原运行记录保留，不改写','本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift']);
     return explain('执行结果尚未确认，不能判断这一步成功或失败。',
       '只读核对原运行记录、进程及实际文件；当前没有已确认的直接重试入口，不新建运行绕过历史。');
   }
@@ -74,6 +79,9 @@ export function operatorGuidance(result,{executionActive=false}={}){
   if(state==='blocked'&&action==='complete')return explain('完成前复核受阻，已有审查结论不能直接当作任务完成。',
     '核对 reason 中的检查或文件变化；满足原完成条件后，在原运行发送 complete，不重新开发。',
     'complete',['原 run 与已审交接、范围和包绑定不变','使用当前 packageDigest；由宿主重新核对完成条件']);
+  if(code==='review_redispatch_limit')return explain('本轮独立审查已无结论重派 2 次，不再重派；这不计为审查轮次。',
+    '先查清审查进程为何一直没有结论（登录、额度、网络或审查答复格式）；修好后按 reason 用 --supersede-reviewed-evidence 新建运行重做。',
+    null,['原运行记录保留，不改写','本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift']);
   if(['check_answer_retry_limit','complete_recheck_limit','develop_redo_limit'].includes(code))
     return explain('这一步的自动恢复已在本运行用满 2 次，不再重做。',
       '先查清会话为何一直不应答或答复不合格（或宿主环境为何失败）；修好后按 reason 用 --supersede-reviewed-evidence 新建运行重做。',

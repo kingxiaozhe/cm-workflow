@@ -19,6 +19,7 @@ import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
   MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,effectSlotFree,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
   reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted,
+  MAX_REVIEW_REDISPATCHES,REVIEW_RETRY_CODES,reviewRedispatchCount,reviewRedispatchable,reviewRedispatchExhausted,REVIEW_REDISPATCH_LIMIT_CODE,reviewRedispatchLimitReason,reviewAbandonRefusal,
   completionBlockCount,completionRetriesExhausted,supersededReviewPayload,bootstrapReviewRecoverable,protectedDevelopScope,protectedScopeBlockReason,
   developTimeoutBasis,developTimeoutEffect,developTimeoutState,DEVELOP_CALL_TIMEOUT_REASON,
   developAnswerInvalidEffect,developAnswerRetryable,developAnswerInvalidReason,
@@ -314,7 +315,7 @@ export function createTaskRunner(options) {
     ...(state==='unknown'&&restored?.pending&&restored.pendingInterruptLimit
       ?{code:EFFECT_INTERRUPT_LIMIT_CODE,reason:effectInterruptLimitReason(restored.pending.kind)}:{}),
     ...(!(metadata.externalModels||metadata.executionPolicy)&&state==='unknown'&&restored?.pending?.kind==='review'
-      &&restored.state.reviewInvocation?.registration&&restored.state.reviewInvocation.result===null
+      &&restored.state.reviewInvocation?.registration&&(restored.state.reviewInvocation.result===null||restored.pendingResultAbandonable)
       ?{pendingReviewInvocation:true}:{}),
     identity:{...config.identity,attempt},packageDigest:reviewPackage?.packageDigest??null,
     receipt,receipts,calls,cancelAfterCommit,workflowError,...(store?{cancellationRequested}:{}),...(taskMode?{taskCommit}:{}),
@@ -339,8 +340,19 @@ export function createTaskRunner(options) {
   // Replay decides; this only reports an exit abandonReview would accept.
   function reviewResultAbandonable(){
     return !(metadata.externalModels||metadata.executionPolicy)&&invocationMode&&store&&!busy&&!poisoned&&state==='unknown'&&!restored?.pending
-      &&abandonableReviewResult({state,attempt,cache:[...cache.values()],calls,reviewInvocation},reviewers[0].contexts[attempt-1]);
+      &&abandonableReviewResult({state,attempt,cache:[...cache.values()],calls,reviewInvocation},reviewers[0].contexts[attempt-1],reviewRedispatchRecords());
   }
+  // V5 (A34): review-redispatch records of this round (written by advance).
+  function reviewRedispatchRecords(){
+    return journal?.filter(row=>row.payload.type==='review-redispatch'&&row.payload.attempt===attempt).length??0;
+  }
+  // A spent retryable review block this round may still redispatch (advance).
+  const reviewRedispatchLive=()=>Boolean(!(metadata.externalModels||metadata.executionPolicy)&&invocationMode&&store&&!busy&&!poisoned
+    &&!restored?.pending&&reviewRedispatchable({state,code,attempt,cache:[...cache.values()],calls,reviewInvocation},
+      reviewers[0].contexts[attempt-1],reviewRedispatchRecords()));
+  const reviewRedispatchSpent=()=>Boolean(!(metadata.externalModels||metadata.executionPolicy)&&invocationMode&&store&&!busy&&!poisoned
+    &&!restored?.pending&&reviewRedispatchExhausted({state,code,attempt,cache:[...cache.values()],calls,reviewInvocation},
+      reviewers[0].contexts[attempt-1],reviewRedispatchRecords()));
   // A develop cut off by the host answer limit (unknown/call_timeout) whose
   // start the journal pins, checked against the code root now: true only when
   // nothing of it reached the disk. Never journaled by status; advance records
@@ -498,8 +510,18 @@ export function createTaskRunner(options) {
     }
     if(!busy&&!poisoned&&bootstrapReviewRecoverable(frame(),restored?.pending??null,metadata.bootstrap))
       current=freeze({...current,bootstrapReviewRecovery:true});
+    // V5: a spent retryable review block with a no-result redispatch left reads
+    // as pending_review (advance journals review-redispatch); a fully spent
+    // round is an explicit limit block.
+    if(current.state==='blocked'&&reviewRedispatchLive())current=freeze({...current,state:'pending_review'});
+    else if(current.state==='blocked'&&reviewRedispatchSpent())
+      current=freeze({...current,code:REVIEW_REDISPATCH_LIMIT_CODE,reason:reviewRedispatchLimitReason(current.code)});
     // Status only; never part of a cached result or checkpoint.
     if(current.state==='unknown'&&reviewResultAbandonable())current=freeze({...current,abandonableReviewResult:true});
+    else if(current.state==='unknown'&&!(metadata.externalModels||metadata.executionPolicy)&&invocationMode&&store&&!busy&&!poisoned&&!restored?.pending){
+      const refusal=reviewAbandonRefusal({state,attempt,cache:[...cache.values()],calls,reviewInvocation},reviewers[0].contexts[attempt-1],reviewRedispatchRecords());
+      if(refusal)current=freeze({...current,reason:`${refusal.code}: ${refusal.reason}`,reviewAbandonRefusal:refusal.code});
+    }
     const available=Boolean((metadata.externalModels||metadata.executionPolicy))&&!busy&&!poisoned&&invocationMode&&store&&['unknown','pending_review'].includes(current.state)
       &&readRunnerHistory(journal,metadata,3).reviewReconciliation!==null;
     if((metadata.externalModels||metadata.executionPolicy)&&!busy&&!poisoned&&invocationMode&&store&&reviewInvocation?.registration
@@ -604,7 +626,7 @@ export function createTaskRunner(options) {
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
         'review-invocation-abandoned':'result','review-invocation-receipt':'result','review-invocation-reconciled':'result','effect-abandoned':'result',
         'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
-        'evidence-superseded':'result','develop-retry-limit':'result','develop-worker':'result','effect-interrupted':'result','develop-timeout-retry':'result','develop-answer-retry':'result','develop-recheck':'result','complete-recheck':'result','develop-answer-redo':'result','develop-dispatch-retry':'result','completion-retry-limit':'result','specification-rebound':'result',
+        'evidence-superseded':'result','develop-retry-limit':'result','develop-worker':'result','effect-interrupted':'result','develop-timeout-retry':'result','develop-answer-retry':'result','develop-recheck':'result','complete-recheck':'result','develop-answer-redo':'result','develop-dispatch-retry':'result','review-redispatch':'result','completion-retry-limit':'result','specification-rebound':'result',
         'bootstrap-review-recovered':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
@@ -1281,7 +1303,7 @@ export function createTaskRunner(options) {
   }
   const limitDue=()=>retryLimitDue()?recordRetryLimit:completionLimitDue()?recordCompletionLimit:null;
   function executeEffect(raw) {
-    let v,timeoutBasis=null,answerRetry=false,recheck=null,completeSource=null,dispatchBasis=null;
+    let v,timeoutBasis=null,answerRetry=false,reviewRedispatch=false,recheck=null,completeSource=null,dispatchBasis=null;
     try {
       need(!poisoned,'store_failure');v=json(raw);
       shape(v,['version','id','identity','kind',...(Object.hasOwn(v,'learningInput')?['learningInput']:[])]);id(v.id);validIdentity(v.identity);
@@ -1318,7 +1340,9 @@ export function createTaskRunner(options) {
         if(state==='blocked')timeoutBasis=null;
       }
       answerRetry=v.kind==='develop'&&state==='blocked'&&code==='failed'&&answerRetryable();
-      need(timeoutBasis!==null||answerRetry||recheck!==null||completeSource!==null||dispatchBasis!==null
+      // V5 (A34): a spent retryable review block with a no-result redispatch left.
+      reviewRedispatch=v.kind==='review'&&state==='blocked'&&reviewRedispatchLive();
+      need(timeoutBasis!==null||answerRetry||reviewRedispatch||recheck!==null||completeSource!==null||dispatchBasis!==null
         ||stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(effectSlotFree(v.kind,[...cache.values()],calls),'limit_exceeded');
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
@@ -1351,6 +1375,12 @@ export function createTaskRunner(options) {
       try{persist('develop-answer-retry',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId});}
       catch{return Promise.resolve(poison());}
       halt('blocked','develop_answer_invalid',developAnswerInvalidReason(calls.at(-1).failureResult));publication=privateStatus();
+    }
+    if(reviewRedispatch){
+      try{persist('review-redispatch',{effectId:[...cache.values()].at(-1).effect.id,
+        invocationId:reviewInvocation.registration.grant.invocationId,attempt,code});}
+      catch{return Promise.resolve(poison());}
+      state='pending_review';publication=privateStatus();
     }
     if(v.kind==='develop'&&retryLimitDue()){try{return Promise.resolve(recordRetryLimit());}catch{return Promise.resolve(poison());}}
     if(v.kind==='complete'&&completionLimitDue()){try{return Promise.resolve(recordCompletionLimit());}catch{return Promise.resolve(poison());}}
@@ -1427,7 +1457,10 @@ export function createTaskRunner(options) {
       if(poisoned)return result;
       try{publishRegisteredReview();}
       catch{return freeze({...result,code:'review_publication_required'});}
-      return ['unknown','pending_review'].includes(result.state)?status():result;
+      // A spent retryable review block reads through status: its V5 redispatch
+      // (pending_review) or the round's explicit limit.
+      return ['unknown','pending_review'].includes(result.state)
+        ||result.state==='blocked'&&REVIEW_RETRY_CODES.includes(result.code)?status():result;
     });
     return pending;
   }
@@ -1556,6 +1589,10 @@ export function createTaskRunner(options) {
   const abandonReview=raw=>{
     try{
       need(!(metadata.externalModels||metadata.executionPolicy),'external_review_reconciliation_required');
+      if(invocationMode&&store&&!busy&&!poisoned&&state==='unknown'&&!restored?.pending&&!reviewResultAbandonable()){
+        const refusal=reviewAbandonRefusal({state,attempt,cache:[...cache.values()],calls,reviewInvocation},reviewers[0].contexts[attempt-1],reviewRedispatchRecords());
+        if(refusal)throw Object.assign(new Error(refusal.code),refusal);
+      }
       need(invocationMode&&store&&!busy&&!poisoned&&state==='unknown'
         &&(restored?.pending?.kind==='review'||reviewResultAbandonable()),'review_abandon_unavailable');
       const value=json(raw);shape(value,['allowed','reason']);
@@ -1573,26 +1610,34 @@ export function createTaskRunner(options) {
         publication=privateStatus();return status();
       }
       const history=readRunnerHistory(journal,metadata,3),last=journal.at(-1);
+      // A38: the no-verdict result of the pending review reached the journal, its checkpoint did not.
+      const withResult=last?.payload?.type==='review-invocation-result'&&history.pendingResultAbandonable===true;
       need(history.pending?.id===restored.pending.id&&history.state.state==='unknown'
         &&history.state.code==='reconciliation_required'
-        &&['review-invocation-registered','review-invocation-started'].includes(last?.payload?.type)
-        &&history.state.reviewInvocation?.registration&&history.state.reviewInvocation.result===null,
+        &&(['review-invocation-registered','review-invocation-started'].includes(last?.payload?.type)
+          &&history.state.reviewInvocation?.result===null||withResult)
+        &&history.state.reviewInvocation?.registration,
       'review_abandon_unavailable');
       const registration=journal.findLast(row=>row.payload.type==='review-invocation-registered'
         &&row.payload.effectId===history.pending.id);
-      const started=last.payload.type==='review-invocation-started'?last:null;
+      const started=journal.findLast(row=>row.payload.type==='review-invocation-started'&&row.payload.effectId===history.pending.id
+        &&journal.indexOf(row)>journal.indexOf(registration))??null;
       need(registration,'review_abandon_unavailable');
       const contextId=reviewers[0].contexts[attempt-1];
-      need(!reviewRetrySpent(history.state.cache,history.state.calls,attempt,contextId),'review_abandon_budget_exhausted');
+      need(reviewRedispatchCount(history.state.cache,history.state.calls,attempt,contextId,reviewRedispatchRecords())<MAX_REVIEW_REDISPATCHES,
+        'review_abandon_budget_exhausted');
       const fields={effectId:history.pending.id,
         invocationId:history.state.reviewInvocation.registration.grant.invocationId,
         registeredDigest:registration.digest,startedDigest:started?.digest??null,
+        ...(withResult?{resultDigest:last.digest}:{}),
         reason:value.reason,at:new Date().toISOString()};
       persist('review-invocation-abandoned',fields);
       const recovered=readRunnerHistory(journal,metadata,3).state;
       ({state,code,sequence,reviewInvocation}=recovered);calls.push(...recovered.calls.slice(calls.length));
       publication=privateStatus();return status();
-    }catch(error){return freeze({outcome:'rejected',code:error.code??'review_abandon_unavailable'});}
+    }catch(error){return freeze({outcome:'rejected',code:error.code??'review_abandon_unavailable',
+      ...(error.code==='review_abandon_budget_exhausted'?{reason:`本轮独立审查已无结论重派 ${MAX_REVIEW_REDISPATCHES} 次，不能再放弃重派；在途审查可用 abandon_effect 作废本运行后 --supersede-reviewed-evidence 新建运行。`}
+        :typeof error.reason==='string'?{reason:error.reason}:{})});}
   };
   const reconcileReview=raw=>{
     try{

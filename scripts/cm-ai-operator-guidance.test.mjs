@@ -92,3 +92,13 @@ test('batch guidance matches its narrower control surface and never advertises s
   assert.equal(rebound.pendingAction,'none');assert.match(rebound.guidance.nextStep,/不能换绑/);
   assert.equal(rebound.guidance.recoveryOperation,null);
 });
+
+test('V5 review redispatch limit and unprovable review ends name the supersede exit, never a retry',()=>{
+  const identity={repositoryId:'r',runId:'run',taskId:'T-001',attempt:1};
+  const limit=operatorGuidance({workflow:'cm-ai',identity,state:'blocked',code:'review_redispatch_limit',pendingAction:'none'});
+  assert.equal(limit.recoveryOperation,null);assert.match(limit.nextStep,/supersede-reviewed-evidence/);assert.match(limit.summary,/2 次/);
+  for(const refusal of ['review_process_unverified','review_observation_invalid','review_boundary_unverified','review_abandon_budget_exhausted']){
+    const g=operatorGuidance({workflow:'cm-ai',identity,state:'unknown',code:'transport_incomplete',pendingAction:'reconcile',reviewAbandonRefusal:refusal});
+    assert.equal(g.recoveryOperation,null);assert.match(g.nextStep,/supersede-reviewed-evidence/);assert.equal(g.authorizationGranted,false);
+  }
+});

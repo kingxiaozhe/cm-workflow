@@ -68,6 +68,7 @@ const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',ope
   packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),
   ...(status.reviewReconciliation?{reviewReconciliation:status.reviewReconciliation}:{}),
   ...(status.developRedoRequired===true?{developRedoRequired:true}:{}),
+  ...(typeof status.reviewAbandonRefusal==='string'?{reviewAbandonRefusal:status.reviewAbandonRefusal}:{}),
   ...(typeof status.reason==='string'?{reason:status.reason}:{}),
   ...(status.code==='handoff_exists'?{reason:REVIEWED_HANDOFF_HINT}:{}),
   ...(status.state==='blocked'&&status.calls?.at(-1)?.blockedReason!==undefined
@@ -579,7 +580,8 @@ export function createCmAiConversationEntry(options) {
       abandonPermission=false;
       const result=runner.abandonReview?.({allowed:true,reason:operation.reason})
         ??{outcome:'rejected',code:'review_abandon_unavailable'};
-      if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code},'rejected');
+      if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code,
+        ...(typeof result.reason==='string'?{reason:result.reason}:{})},'rejected');
       return summary(operation,boundStatus(result,identity),'abandoned');
     }
     if(operation.operation==='abandon_effect'){
