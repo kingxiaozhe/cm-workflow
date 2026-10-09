@@ -21,14 +21,17 @@ import {serveCmAiHost} from '../runtime/js/cm-ai/host-session.mjs';
 import {need,shape,json,id,digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {openPrdSession} from '../runtime/js/cm-prd/session.mjs';
 import {createPrdChange,assertPrdReviewsSettled} from '../runtime/js/cm-prd/change.mjs';
-import {publishPrdReview} from '../runtime/js/cm-prd/review-publication.mjs';
+import {publishPrdReview,inspectPrdReviewResponse} from '../runtime/js/cm-prd/review-publication.mjs';
+import {abandonPrdReviewAttempt} from './cm-prd-review-gate.mjs';
 
 const sessionFailureCodes=new Set(['prd_operation_recovery_required','prd_host_result_unknown','prd_nothing_to_resume',
   'prd_recovery_binding','prd_recovery_evidence_required','prd_replay_inputs_changed','cancelled','prd_turn_not_ready',
   'prd_review_recovery_required','prd_batch_inputs_replaced','prd_inputs_changed','prd_replacement_authorization_required',
   'prd_inputs_not_changed','prd_successor_not_fresh','prd_replacement_conflict','prd_replacement_not_ready',
   'execution_policy_required','execution_policy_legacy_run','prd_response_already_canonical',
-  'prd_predecessor_binding','prd_successor_inputs_changed']);
+  'prd_predecessor_binding','prd_successor_inputs_changed',
+  'prd_answer_discard_limit','prd_correction_recovery_required','prd_review_abandon_not_enabled','prd_review_result_publishable',
+  'prd_review_abandon_unavailable','prd_review_abandon_limit','prd_review_abandon_reason_required','prd_review_abandon_binding']);
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
   let bridge,analysis,session,change=null,started=false,closed=false,record;
@@ -37,6 +40,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       output.write('replace_inputs {requestId,operation,approved:true,reason,successorSpecs,successorSessionId} ends a changed-input batch with immutable history; read_batch/status remain available. Start the bound fresh specs root with --session SUCCESSOR_ID --predecessor ABSOLUTE_RECEIPT_PATH. No approvals transfer.\n');
       output.write('New and --change SELECTOR share this host. --session prd-ID resumes a durable local conversation; obtain runId from status. resume {requestId,operation,resolution:null|{callId,requestDigest,result,evidence}} consumes only the original host result, never re-dispatches an unknown call. decision {requestId,operation,proposalDigest,approved,allowUserCaseChanges} confirms an exact change proposal; save_draft archives and writes awaiting_review. prepare_revision {requestId,operation,reason} revises the saved current batch with original review history retained; no review counters reset.\n');
       output.write('resume also accepts resolution:{callId,requestDigest,abandon:true,evidence} with result absent: discard the entire pending operation and restore its before checkpoint, only if no call is prd_review. Explicit cancel is terminal: checkpoint cancelled and active cleared; resume cannot continue it. Session failures return {status:blocked,reason,recovery,completionAuthorized:false} (2026-09-17 dogfood: cancelled checkpoint retained active and hid recovery errors).\n');
+      output.write('resume resolution:{callId,requestDigest,discard:true,evidence} discards the last RECORDED answer the host then refused (not prd_review/prd_correct), keeps an append-only discardedAnswers record and asks that call again under the same pending operation; at most 2 per call kind in a session. resolution:{callId,requestDigest,abandonReview:true,evidence} needs --allow-review-write and --allow-review-abandon: only for a pending final_review whose prd_review result was lost or fails publication, it releases the gate claim into prd-<feature>-<stage>-dispatch-abandoned-N.json (at most 2 per feature and stage), records abandonedReviews and restores the before checkpoint; then send final_review again for a fresh independent review. A recorded result that would publish is never abandoned.\n');
       output.write('promote_design {requestId,operation,draftDigest,reason} moves an unreviewed full draft to design while preserving draft and self-check rounds. Saved drafts require complete exact original bytes with private permissions; partial/conflicting saves, prior review and exhausted rounds are rejected. Saved task revisions archive both versions before replacement; no approval is implied.\n');
       output.write('select_design_reviews {requestId,operation,draftDigest,risks:[{feature,signals,evidence}]} at design_ready freezes host-reported Step 9.5 risks for every feature. Only high-risk features may request design review; low-risk exact saved designs continue without it. Not approval; existing attempts cannot be downgraded.\n');
       output.write('plan_design {requestId,operation,text} generates requirements/design only. design_ready permits save_design with --allow-spec-write and original design review. After original design disposition, advance generates tasks from the exact current design, then original self-check/save_draft. No approval is implied.\n');
@@ -48,11 +52,13 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const reviewEnabled=argv.includes('--allow-review-write');
     const dispositionEnabled=argv.includes('--allow-disposition-write');
     const specWriteEnabled=argv.includes('--allow-spec-write');
+    const reviewAbandonEnabled=argv.includes('--allow-review-abandon');
+    need(argv.filter(x=>x==='--allow-review-abandon').length<=1&&(!reviewAbandonEnabled||reviewEnabled),'invalid_arguments');
     need(argv.filter(x=>x==='--allow-spec-write').length<=1,'invalid_arguments');
     need(argv.filter(x=>x==='--allow-disposition-write').length<=1,'invalid_arguments');
     need(argv.filter(x=>x==='--allow-review-write').length<=1,'invalid_arguments');
     need(argv.filter(x=>x==='--execution-optimizations').length<=1,'invalid_arguments');
-    const args=argv.slice(1).filter(x=>!['--execution-optimizations','--allow-log-write','--allow-review-write','--allow-disposition-write','--allow-spec-write'].includes(x)),options={};
+    const args=argv.slice(1).filter(x=>!['--execution-optimizations','--allow-log-write','--allow-review-write','--allow-disposition-write','--allow-spec-write','--allow-review-abandon'].includes(x)),options={};
     for(let i=0;i<args.length;i+=2){
       need(['--skill-dir','--project','--specs','--runtime','--cases','--host-context','--change','--session','--predecessor'].includes(args[i])
         &&!Object.hasOwn(options,args[i])&&typeof args[i+1]==='string','invalid_arguments');
@@ -279,12 +285,38 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         shape(request,['requestId','operation','resolution']);
         need(!reviewController.signal.aborted&&session.state.checkpoint?.analysis?.stage!=='cancelled'
           &&session.state.checkpoint?.change?.stage!=='cancelled','cancelled');
+        if(request.resolution?.discard===true){
+          const {operation:discardedOperation,kind,callId,evidence}=session.discardAnswer(request.resolution);
+          record({event:'decision',phase:'recovery',data:{operation:discardedOperation,kind,callId,evidence,outcome:'answer_discarded'}});
+        }else if(request.resolution?.abandonReview===true){
+          need(reviewAbandonEnabled,'prd_review_abandon_not_enabled');
+          const active=session.state.active,call=active?.calls.find(item=>item.callId===request.resolution.callId);
+          need(active?.request.operation==='final_review'&&call?.kind==='prd_review'
+            &&call.requestDigest===request.resolution.requestDigest,'prd_recovery_binding');
+          // A recorded result that would publish must be published (plain resume), never re-reviewed.
+          if(Object.hasOwn(call,'result')){
+            let publishable=true;
+            try{const response=session.reviewResponse(call),{packageDigest,...reviewPackage}=call.payload.package;
+              validatePrdReviewMode(active.request.mode,response);
+              inspectPrdReviewResponse({reviewPackage,packageDigest,authorContextId:call.payload.authorContextId,response});}
+            catch{publishable=false;}
+            need(!publishable,'prd_review_result_publishable');
+          }
+          const slug=active.request.feature.replace(/^\d+\./,''),prefix=path.join(admission.specs,'.reviews',`prd-${slug}-${active.request.stage}`);
+          const gate=abandonPrdReviewAttempt({stage:active.request.stage,feature:slug,evidence:`${prefix}-r1.md`,
+            receipt:`${prefix}-disposition.json`,call_id:call.callId,reason:request.resolution.evidence});
+          const {kind,callId,evidence}=session.abandonReview(request.resolution);
+          restore(session.state.checkpoint);replaying=false;reviewState=null;
+          record({event:'decision',phase:'recovery',data:{operation:'final_review',kind,callId,evidence,
+            outcome:'review_attempt_abandoned',abandoned:gate.abandoned}});
+          session.commit(checkpoint());return status();
+        }
         if(request.resolution?.abandon===true){
           const decision=session.abandon(request.resolution);
           restore(session.state.checkpoint);replaying=false;
           record({event:'decision',phase:'recovery',data:decision});return status();
         }
-        if(request.resolution!==null)session.resolve(request.resolution);
+        if(request.resolution!==null&&request.resolution.discard!==true)session.resolve(request.resolution);
         const active=session.replay();
         replayCallIndex=0;
         need(active.calls.every(call=>Object.hasOwn(call,'result')),'prd_host_result_unknown');

@@ -79,7 +79,7 @@ function load(){
   catch(e){fail('准入或配置无效',e.code??e.message);}
   if(admission.status!=='ready'&&!(plan.session&&admission.mode==='change'&&admission.reason==='feature_missing'))
     fail('准入失败',admission.reason??admission.status);
-  if(!Array.isArray(plan.permissions??[])||!(plan.permissions??[]).every(p=>['--execution-optimizations','--allow-spec-write','--allow-review-write','--allow-disposition-write'].includes(p)))
+  if(!Array.isArray(plan.permissions??[])||!(plan.permissions??[]).every(p=>['--execution-optimizations','--allow-spec-write','--allow-review-write','--allow-disposition-write','--allow-review-abandon'].includes(p)))
     stop(2,'permissions 只能包含宿主支持的写入开关');
   if(new Set(plan.permissions??[]).size!==(plan.permissions??[]).length)stop(2,'permissions 不可重复');
   if(plan.predecessor&&!fs.existsSync(resolve(plan.predecessor)))stop(2,`predecessor 文件不存在: ${resolve(plan.predecessor)}`);
@@ -137,9 +137,18 @@ function load(){
   if(operation==='resume'){
     if(!Object.hasOwn(request,'resolution'))stop(2,'resume 缺少 PLAN.request.resolution（null 或绑定的回执）');
     if(request.resolution!==null){
-      const v=request.resolution;exact(v,['callId','requestDigest','result','evidence','abandon'],'resolution');
+      const v=request.resolution;exact(v,['callId','requestDigest','result','evidence','abandon','discard','abandonReview'],'resolution');
       const pending=state.active.calls.find(c=>c.callId===v.callId);
-      if(!pending||pending.requestDigest!==v.requestDigest||!nonempty(v.evidence)
+      // discard: re-ask the last recorded answer the host refused (its answer file is preflighted below).
+      if(v.discard===true){
+        if(!pending||pending.requestDigest!==v.requestDigest||!nonempty(v.evidence)||Object.hasOwn(v,'result')
+          ||!Object.hasOwn(pending,'result')||state.active.calls.at(-1)!==pending||['prd_review','prd_correct'].includes(pending.kind))
+          stop(2,'discard 只能作废最后一个已记录且被拒的应答（不含 prd_review、prd_correct），需要 callId/requestDigest/evidence');
+      }else if(v.abandonReview===true){
+        if(!pending||pending.kind!=='prd_review'||pending.requestDigest!==v.requestDigest||!nonempty(v.evidence)||Object.hasOwn(v,'result')
+          ||!plan.permissions?.includes('--allow-review-write')||!plan.permissions?.includes('--allow-review-abandon'))
+          stop(2,'abandonReview 需要 prd_review 的 callId/requestDigest/evidence，以及 --allow-review-write 与 --allow-review-abandon');
+      }else if(!pending||pending.requestDigest!==v.requestDigest||!nonempty(v.evidence)
         ||Object.hasOwn(pending,'result')||(v.abandon===true?Object.hasOwn(v,'result'):!Object.hasOwn(v,'result')))
         stop(2,'resume 缺少有效 callId/requestDigest/result/evidence 绑定');
       if(v.abandon===true&&state.active.calls.some(c=>c.kind==='prd_review'))stop(2,'prd_review 不可 abandon');
@@ -170,6 +179,8 @@ function load(){
       asks.push('prd_materials');asks.push('prd_analyze');}
   }
   if(operation==='final_review')asks.push('prd_review');
+  if(operation==='resume'&&request.resolution?.discard===true)
+    asks.push(state.active.calls.find(c=>c.callId===request.resolution.callId).kind);
   if(operation==='correct_findings')asks.push('prd_correct');
   if(operation==='prepare_summary')asks.push('prd_summary');
   if(operation==='review_disposition'&&request.stage==='split'&&request.decisions.some(d=>d.status==='applied'))asks.push('prd_self_check');

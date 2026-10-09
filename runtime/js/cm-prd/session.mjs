@@ -27,6 +27,7 @@ export function replaceSessionFile(root,relative,before,after){
     const d=fs.openSync(dir,'r');try{fs.fsyncSync(d);}finally{fs.closeSync(d);}
   }finally{if(fd!==undefined)fs.closeSync(fd);try{fs.unlinkSync(tmp);}catch(e){if(e.code!=='ENOENT')throw e;}}
 }
+export const MAX_ANSWER_DISCARDS=2;
 export function openPrdSession({specs,sessionId,identity,executionPolicy=null}){
   need(/^prd-[a-zA-Z0-9-]{1,80}$/.test(sessionId),'prd_session_id_invalid');
   for(const relative of ['.reviews','.reviews/prd-sessions',`.reviews/prd-sessions/${sessionId}`]){
@@ -110,6 +111,48 @@ export function openPrdSession({specs,sessionId,identity,executionPolicy=null}){
       const decision={operation:active.request.operation,kind:call.kind,callId:call.callId,
         evidence:{sha256:digest(resolution.evidence),length:resolution.evidence.length}};
       state.checkpoint=active.before;state.active=null;cursor=0;save();return decision;
+    },
+    // V1 (O02): a recorded answer that the host then refused (validation runs
+    // after recording, so a plain resume replays the same refusal forever) is
+    // discarded by an explicit, append-only record and asked again under the same
+    // pending operation. Only the last recorded answer, never prd_review (its own
+    // abandon path, below) or prd_correct (its archive drives recovery); at most
+    // MAX_ANSWER_DISCARDS per call kind in a session.
+    discardAnswer(resolution){
+      need(resolution!==null&&typeof resolution==='object'&&!Array.isArray(resolution)&&resolution.discard===true
+        &&!Object.hasOwn(resolution,'result')
+        &&Object.keys(resolution).every(key=>['callId','requestDigest','discard','evidence'].includes(key)),'prd_recovery_binding');
+      need(typeof resolution.evidence==='string'&&resolution.evidence.trim()&&resolution.evidence.length<=2000,'prd_recovery_evidence_required');
+      const active=state.active,index=active?active.calls.findIndex(item=>item.callId===resolution.callId):-1,call=active?.calls[index];
+      need(call&&index===active.calls.length-1&&call.requestDigest===resolution.requestDigest&&Object.hasOwn(call,'result'),'prd_recovery_binding');
+      need(call.kind!=='prd_review','prd_review_recovery_required');
+      need(call.kind!=='prd_correct','prd_correction_recovery_required');
+      const discarded=state.discardedAnswers??[];
+      need(discarded.filter(item=>item.kind===call.kind).length<MAX_ANSWER_DISCARDS,'prd_answer_discard_limit');
+      const decision={operation:active.request.operation,kind:call.kind,callId:call.callId,requestDigest:call.requestDigest,
+        resultDigest:digest(call.result),evidence:{sha256:digest(resolution.evidence),length:resolution.evidence.length},
+        at:new Date().toISOString()};
+      state.discardedAnswers=[...discarded,decision];active.calls.splice(index,1);cursor=0;save();return json(decision);
+    },
+    // V5 (O05/O06): the one prd_review attempt of this operation is abandoned with
+    // an operator reason: its result was lost, or the recorded one fails the
+    // publication contract. The host releases the gate claim first; this record
+    // then restores the operation's before checkpoint, so a fresh, independent
+    // review can be claimed. A recorded result that would publish is never
+    // abandoned (the caller checks), and nothing unreviewed is adopted.
+    abandonReview(resolution){
+      need(resolution!==null&&typeof resolution==='object'&&!Array.isArray(resolution)&&resolution.abandonReview===true
+        &&!Object.hasOwn(resolution,'result')
+        &&Object.keys(resolution).every(key=>['callId','requestDigest','abandonReview','evidence'].includes(key)),'prd_recovery_binding');
+      need(typeof resolution.evidence==='string'&&resolution.evidence.trim()&&resolution.evidence.length<=2000,'prd_recovery_evidence_required');
+      const active=state.active,call=active?.calls.find(item=>item.callId===resolution.callId);
+      need(active?.request.operation==='final_review'&&call?.kind==='prd_review'&&call.requestDigest===resolution.requestDigest,'prd_recovery_binding');
+      const decision={operation:'final_review',stage:active.request.stage,feature:active.request.feature,kind:'prd_review',
+        callId:call.callId,requestDigest:call.requestDigest,resultDigest:Object.hasOwn(call,'result')?digest(call.result):null,
+        packageDigest:call.payload.package.packageDigest,evidence:{sha256:digest(resolution.evidence),length:resolution.evidence.length},
+        at:new Date().toISOString()};
+      state.abandonedReviews=[...(state.abandonedReviews??[]),decision];
+      state.checkpoint=active.before;state.active=null;cursor=0;save();return json(decision);
     },
     async call(kind,payload,signal,perform){
       need(state.active!==null,'prd_operation_required');const index=cursor++,input=json({kind,payload},12*1024*1024);
