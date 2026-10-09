@@ -525,10 +525,11 @@ CM 不认识任何推送服务，也不保存任何 token；推到哪里、怎�
 
 - `command`：要运行的程序和参数，第一项必须是绝对路径；不经过 shell。
 - `waitMinutes`：等待会话应答多久后提醒，默认 10。
-- 文件格式不对时，功能关闭，并在终端打印一行提示。
+- 文件格式不对时，功能关闭，只在 `notify.log` 记一行，不往流程输出里打印。
 
 命令通过环境变量 `CM_NOTIFY_TITLE`（不超过 60 字）、`CM_NOTIFY_BODY`（不超过 500 字）拿到内容。
-标准输入还会收到一行同样内容的 JSON。命令 15 秒内没结束会被终止。
+标准输入还会收到一行同样内容的 JSON。
+命令在后台独立运行，流程不等它结束；15 秒内没结束会被终止。
 
 **限流与日志**
 
@@ -550,6 +551,7 @@ CM 不认识任何推送服务，也不保存任何 token；推到哪里、怎�
 # ~/.cm-workflow/my-notify.sh —— 自己维护，chmod 700
 set -eu
 . "$HOME/.cm-workflow/my-push.env"   # 里面写 PUSH_TOKEN=...，chmod 600，不要提交到任何仓库
+export PUSH_TOKEN                     # 下面的 node 子进程要读到它
 payload=$(node -e 'process.stdout.write(JSON.stringify({token:process.env.PUSH_TOKEN,
   title:process.env.CM_NOTIFY_TITLE,content:process.env.CM_NOTIFY_BODY}))')
 curl -fsS --max-time 10 -H 'Content-Type: application/json' -d "$payload" \
