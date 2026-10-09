@@ -31,6 +31,7 @@
 | `spec_drift`（`spec_rebind`／`none`） | R「规格漂移、代码漂移与审查失败」「已批准规格材料（第 24 步）」 |
 | preflight `unrecognized_model`、`stopped_by_probe` | R「审查配置诊断失败」 |
 | `abandon_review`、`abandon_effect`、`review_abandoned`、`unknown/reconciliation_required`、`effect_abandoned`、`develop_interrupted`、`complete_commit_interrupted`、`effect_interrupt_*`、`commit_recovery_conflict`、`review_abandon_budget_exhausted` | R「放弃审查调用与 effect」 |
+| `qa_device_unverified`、`documentation_sync_blocked` | QA「浏览器用例请求超时：设备可能仍被占用」「文档核对与同步」 |
 | `review_redispatch`、`review_redispatch_limit`、`review_process_unverified`、`review_observation_invalid`、`review_boundary_unverified` | R「每轮无结论重派」 |
 | `bootstrap_verification_failed`、`bootstrap_instruction_conflict`、`bootstrap_review_mismatch`、`bootstrap_review_recover`、`init-verify` 命令未通过 | R「bootstrap 规范任务的恢复」 |
 | `correction_review_required`、`fix_record_too_large`、存储目录 `limit_exceeded` | R「已完成运行上的后续改动」 |

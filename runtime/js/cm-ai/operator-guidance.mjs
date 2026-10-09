@@ -86,6 +86,14 @@ export function operatorGuidance(result,{executionActive=false}={}){
     return explain('这一步的自动恢复已在本运行用满 2 次，不再重做。',
       '先查清会话为何一直不应答或答复不合格（或宿主环境为何失败）；修好后按 reason 用 --supersede-reviewed-evidence 新建运行重做。',
       null,['原运行记录保留，不改写','本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift']);
+  // Q06/Q07/Q11: a QA call that stopped as a whole.
+  if(state==='fixture_completed'&&code==='qa_execution_unknown')return explain('本轮 QA 没有正常结束（整轮超时、宿主中途退出、答复格式不合格，或浏览器请求超时后设备可能仍被会话占用）。',
+    '先确认上一轮的会话、浏览器或模拟器已停止、设备已空闲；再用原配置 --mode resume 加 --rerun-unknown-qa 重跑本轮。宿主拒绝时按拒绝码处理：含原始 FAIL、未解决的 [需确认] 或无法归因的旧记录的轮次不能替代，改用 --supersede-reviewed-evidence 新建运行。',
+    null,['保留原运行与 QA 日志，只追加不改写','因宿主或应答原因替代的轮次不占三轮预算']);
+  // Q15: the read-only documentation check answered blocked.
+  if(state==='fixture_completed'&&code==='documentation_sync_blocked')return explain('文档核对判定文档尚未同步（reason 写明缺什么）。',
+    '按 reason 补齐 README 或功能文档；文档核对只读、可重复，用原配置 --mode resume 重启宿主后再发 finish 重新核对（同一宿主进程内结论已缓存）。',
+    null,['不改写运行记录','补文档不需要重新开发或审查']);
   if(code==='protected_scope')return explain('任务 scope 含项目规则或工作流文件，开发在派发前被拒绝，未写入任何文件。',
     '本运行到此结束，原记录保留。从 scope 移除 reason 列出的路径，按原门禁用新 runId 新建运行；规则文件改动走 docs/js-workflow-control.md「项目规则文件的修改通道」。',
     null,['不放宽受保护路径，开发者不能写这些文件','不改写原运行记录']);

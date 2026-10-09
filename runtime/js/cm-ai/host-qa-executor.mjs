@@ -15,6 +15,9 @@ import {captureReviewBaseline} from './review-package.mjs';
 import {writeCmAiQaStatus} from './cm-ai-run-finalizer.mjs';
 import {digest,freeze,hex,id,json,need,shape,text,validCallTimeout,validIdentity} from './effect-contract.mjs';
 import {isQaEnvironmentCarrier,QA_ENVIRONMENT_SCOPES} from './qa-environment.mjs';
+export const QA_DEVICE_UNVERIFIED_REASON='qa_device_unverified: 浏览器用例的宿主请求超时没有拿到应答，会话可能仍在操作设备（浏览器、模拟器或真机），'
+  +'宿主无法核实设备已释放，本次 QA 停在这里，不再派发后面的浏览器用例。先确认该会话已停止、设备已空闲，'
+  +'再用 --rerun-unknown-qa 重跑本轮（因宿主原因替代的轮次不占三轮预算）。';
 import {readProcessStartTime} from './worker-process-identity.mjs';
 
 // Q12: the whole-round deadline scales with the plan: every command may use the
@@ -351,6 +354,15 @@ export function createHostQaExecutor(options) {
                 // answer; --rerun-unknown-qa reads it after a whole-call timeout.
                 ...(verdict==='BLOCKED'?{host_request_timeout:hostRequestTimeout&&!answered}:{})},
               'QA browser case finished');
+            // Q07: an unanswered browser request may leave the session driving the
+            // device. Never dispatch the next browser case on top of it: stop this
+            // call (no complete row), so the round waits for the operator to confirm
+            // the device is free and rerun it with --rerun-unknown-qa.
+            if(hostRequestTimeout&&!answered){
+              const remaining=plan.cases.filter(candidate=>candidate.kind==='browser');
+              if(remaining.indexOf(item)<remaining.length-1)throw Object.assign(new Error(QA_DEVICE_UNVERIFIED_REASON),
+                {code:'qa_device_unverified',reason:QA_DEVICE_UNVERIFIED_REASON});
+            }
           }
         }
       }

@@ -102,3 +102,10 @@ test('V5 review redispatch limit and unprovable review ends name the supersede e
     assert.equal(g.recoveryOperation,null);assert.match(g.nextStep,/supersede-reviewed-evidence/);assert.equal(g.authorizationGranted,false);
   }
 });
+
+test('Q06/Q07/Q15 a stopped QA call and a blocked documentation check name their operator exits',()=>{
+  const unknown=explain('fixture_completed','qa_execution_unknown','reconcile');
+  assert.match(unknown.nextStep,/--rerun-unknown-qa/);assert.match(unknown.nextStep,/设备已空闲/);assert.equal(unknown.authorizationGranted,false);
+  const docs=explain('fixture_completed','documentation_sync_blocked','none');
+  assert.match(docs.nextStep,/finish/);assert.equal(docs.recoveryOperation,null);
+});
