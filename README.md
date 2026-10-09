@@ -179,6 +179,22 @@ $cm-ai ~/projects/my-app-specs ~/code/my-app
 
 > `tasks.md` 是任务状态的权威来源。聊天里的“完成了”、静态分析和界面进度，不能替代真实测试、独立审查与完成凭证。
 
+## 详细流程图（建议设计示意）
+
+以下两图是**建议设计示意，非当前版本完整正式状态机**。图中的阶段、检查项和恢复分支用于讨论流程设计，不表示相关功能均已实现；当前能力与约束以实际运行版本、[使用手册](docs/user-guide.md)和 [JS workflow 控制](docs/js-workflow-control.md)为准。点击图片可查看原尺寸。
+
+### 阶段总图
+
+展示任务拆解与验收、开发自检、独立审查、测试证据及收尾交付之间的关系，以及问题修复后的返回路径。
+
+[![CM 工作流详细阶段总图：建议设计示意，非当前版本完整正式状态机](assets/readme/workflow-stages-detailed.png)](assets/readme/workflow-stages-detailed.png)
+
+### 异常恢复
+
+展示阻塞或超时后的现场保存、原因判断、有界恢复与暂停决策思路；恢复成功仍需回到对应环节取得验收证据。
+
+[![CM 工作流异常恢复图：建议设计示意，非当前版本完整正式状态机](assets/readme/workflow-recovery-detailed.png)](assets/readme/workflow-recovery-detailed.png)
+
 ## 快速开始：Codex
 
 准备好 **Git、Python 3.9+、Node.js 24.14+**，以及带有内置插件创建辅助工具的当前 Codex。安装器和部分共享工具的最低要求是 Node 18；默认 JS 开发流程需要 Node 24.14+。
