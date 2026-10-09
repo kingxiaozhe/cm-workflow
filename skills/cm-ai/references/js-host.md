@@ -40,7 +40,7 @@
 | 补挂 QA（`qa_attach`） | Q「补挂 QA」 |
 | `qa_browser` 带 `correction` | Q「qa_browser 证据追问」 |
 | `qa_decision_timeout`；`qa_blocked` 且 `reason: host_request_timeout` | Q「qa_assess 超时」 |
-| `qa_execution_unknown`、`qa_execution_timeout`、`qa_environment_failure_required`、`qa_rerun_unknown_qa_required` | Q「未 complete 的 QA 中断」 |
+| `qa_execution_unknown`、`qa_execution_timeout`、`qa_environment_failure_required`、`qa_rerun_unknown_qa_required`、`qa_round_invalid`（第 3 轮之后）、`qa_resources_open`、`batch_resources_open` | Q「未 complete 的 QA 中断」 |
 | `qa_blocked`、`qa_result_blocked`、`qa_failed` 的宿主证据或环境原因 | Q「已 complete 的宿主证据或环境阻断」 |
 | QA 命令、环境或预算填错；`qa_revision_not_completed`、`qa_revision_invalid` | Q「QA 配置修订」 |
 | 收尾门禁 `project_qa_not_passed`（含未满足的 `qa_missing`／`qa_skipped`） | Q「项目收尾核对全部 feature 的 QA」 |

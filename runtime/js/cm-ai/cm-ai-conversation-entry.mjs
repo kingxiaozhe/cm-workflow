@@ -5,6 +5,9 @@ import {findCmAiQaDecision,inspectCmAiQaDecision,inspectCmAiQaResult,recordCmAiQ
   latestCmAiQaRun,recordCmAiQaRun,inspectCmAiQaRecovery,inspectCmAiQaConfigurationRecovery,timedOutQaDecision,
   replacesTimedOutQaDecision,validEnvironmentFailureReason} from './cm-ai-qa-log.mjs';
 import {recordCmAiRunDone} from './cm-ai-run-finalizer.mjs';
+import {releaseVerifiedQaResources} from './qa-resource-release.mjs';
+import {QA_MAX_ROUNDS} from './qa-round-budget.mjs';
+import {qaRoundDeadlineMs} from './host-qa-executor.mjs';
 import {projectHostResult} from './host-progress.mjs';
 import {operatorGuidance} from './operator-guidance.mjs';
 import {outstandingFeatureQa,describeOutstandingQa} from './project-qa-gate.mjs';
@@ -282,6 +285,12 @@ export function createCmAiConversationEntry(options) {
   const decideQa=qaProvider?.decide,qaTimeout=qaProvider?.timeoutMs;
   let pendingQa=null;
   let qaExecutor=null,pendingExecution=null,cancellationEpoch=0;
+  // Q13: a scan failure (no log yet) leaves resources as they are; the writer still refuses closure.
+  const releaseQaResources=identity=>{
+    try{return releaseVerifiedQaResources({specsDir:options.specsDir,codeProject:options.codeProject,runId:identity.runId,
+      ...(Object.hasOwn(options,'qaLogHome')?{logHome:options.qaLogHome}:{})});}
+    catch(error){if(error?.code==='qa_resource_release_failed')throw error;return {released:[],open:[]};}
+  };
   const inFlightHandles=new Set();
   let rerunUnknownQa=options.rerunUnknownQa??false;need(typeof rerunUnknownQa==='boolean');
   let rerunBlockedQa=options.rerunBlockedQa??false;need(typeof rerunBlockedQa==='boolean');
@@ -414,6 +423,8 @@ export function createCmAiConversationEntry(options) {
           notCancelled();
           need(pendingExecution===null,'qa_execution_pending');
           const binding={specsDir:options.specsDir,feature:options.feature,identity:result.identity,packageDigest:result.packageDigest};
+          // Q13: close cleanup_failed command resources whose process group is proven gone.
+          releaseQaResources(result.identity);
           let previous,recovery=null,configurationRecovery=false,incompleteReport=false,timedOutCall=false;
           const timedOutRecovery=()=>inspectCmAiQaRecovery(binding,{timedOut:true,requestTimeoutMs:qaExecutor.requestTimeoutMs??null,
             attestation:rerunUnknownQa?qaEnvironmentFailure:null});
@@ -470,7 +481,7 @@ export function createCmAiConversationEntry(options) {
             // Later rounds require an accepted completed repair or explicit
             // evidence recovery/configuration revision. Unknown execution stops.
             const qaRound=recovery?recovery.qaRound+(rerunBlockedQa||configurationRecovery||timedOutCall?1:0):(repaired?accepted.qaRound+1:1);
-            need(qaRound>=1&&qaRound<=3,'qa_round_invalid');
+            need(qaRound>=1&&qaRound<=QA_MAX_ROUNDS,'qa_round_invalid');
             testRunId=`qa-${digest(recovery?{...binding,previousTestRunId:recovery.testRunId}:
               repaired?{...binding,qaRound,repair:accepted.evidenceDigest}:binding).slice(0,48)}`;
             const invocation={...binding,codeProject:options.codeProject,testRunId,mode:qaExecutor.mode,caseCount:qaExecutor.caseCount,
@@ -496,7 +507,8 @@ export function createCmAiConversationEntry(options) {
               const interrupted=new Promise((_,reject)=>{
                 controller.signal.addEventListener('abort',()=>reject(Object.assign(new Error('QA interrupted'),
                   {code:timedOut?'qa_execution_timeout':'cancelled'})),{once:true});
-                timer=setTimeout(()=>{timedOut=true;controller.abort();},qaExecutor.timeoutMs);
+                // Q12: the round deadline scales with the frozen plan.
+                timer=setTimeout(()=>{timedOut=true;controller.abort();},qaRoundDeadlineMs(qaExecutor));
               });
               const executed=await Promise.race([Promise.resolve().then(()=>{
                 notCancelled();
@@ -799,6 +811,10 @@ export function createCmAiConversationEntry(options) {
         return freeze({...summary(operation,{...status,code:'documentation_sync_blocked'},'blocked'),
           ...closeoutSummary(knowledgeCloseout,documentation)});
       const finalQa=projectQaSummary(operation,status,options);if(finalQa)return finalQa;
+      const resources=releaseQaResources(identity);
+      if(resources.open.length)return summary(operation,{...status,code:'qa_resources_open',
+        reason:`qa_resources_open: 以下 QA 资源仍未释放：${resources.open.slice(0,10).map(item=>`${item.resourceId}（${item.verdict}）`).join('、')}。`
+          +'宿主只在运行日志记有该命令进程组身份且核对进程组已退出时补记释放；先结束残留进程后重发 run_finalize，记录里没有进程身份的旧资源需人工处理。'},'blocked');
       const input={specsDir:options.specsDir,codeProject:options.codeProject,feature:options.feature,identity,
         packageDigest:operation.packageDigest,contextDigest:refresh.contextDigest,
         documentationSyncId:documentation.syncId};

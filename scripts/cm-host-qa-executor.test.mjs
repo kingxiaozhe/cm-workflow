@@ -937,7 +937,8 @@ test(`completed BLOCKED QA explicit rerun: ${name}`,async()=>{
       assert.equal(state.detail,`QA 结果 ${result.result}（通过 ${result.passed} / 失败 ${result.failed} / 阻断 ${result.blocked}）`);
     }
     const log=path.join(binding.specsDir,'运行日志.jsonl'),rows=()=>fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse);
-    if(scenario==='round-limit')for(let round=1;round<3;round++){
+    // Q14: evidence-gap rounds give back at most two rounds, so the cap is round 5.
+    if(scenario==='round-limit')for(let round=1;round<5;round++){
       const previous=round===1?testRunId:`blocked-${round}`;
       recordCmAiQaRun({...base,testRunId:previous,qaRound:round,phase:'superseded'});
       recordCmAiQaRun({...base,testRunId:`blocked-${round+1}`,qaRound:round+1,previousTestRunId:previous,phase:'start'});

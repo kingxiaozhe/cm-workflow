@@ -250,19 +250,21 @@ test('#13 a host-declared BLOCKED simulator case re-runs on unchanged code with 
   assert.deepEqual(testRuns(f,'complete').map(row=>row.result),['BLOCKED','PASS']);
 });
 
-test('#13 an unavailable QA command (killed, no exit code) re-runs; the round budget still caps at three',POSIX,async t=>{
+// Q14: rounds ended by a host or environment gap (here a killed command) do not
+// count toward the three-round budget, but at most two are given back per run.
+test('#13 an unavailable QA command (killed, no exit code) re-runs; host-caused rounds give back at most two',POSIX,async t=>{
   const f=fixture(t),workflow=f.workflow('workflow',probeQa());
   f.environment('killed');
   const first=done(await launch(f,{mode:'create',workflow}));
   assert.equal(first.code,'qa_result_blocked',JSON.stringify(first));
-  for(let round=2;round<=3;round++){
+  for(let round=2;round<=5;round++){
     const again=done(await launch(f,{workflow,extra:['--rerun-blocked-qa']}));
     assert.equal(again.code,'qa_result_blocked',JSON.stringify(again));
   }
   const exhausted=done(await launch(f,{workflow,extra:['--rerun-blocked-qa']}));
   assert.equal(exhausted.code,'qa_round_invalid',JSON.stringify(exhausted));
-  assert.deepEqual(testRuns(f,'start').map(row=>row.attempt),[1,2,3]);
-  assert.deepEqual(testRuns(f,'superseded').map(row=>row.blocked_cases),[['probe'],['probe']]);
+  assert.deepEqual(testRuns(f,'start').map(row=>row.attempt),[1,2,3,4,5]);
+  assert.deepEqual(testRuns(f,'superseded').map(row=>row.blocked_cases),[['probe'],['probe'],['probe'],['probe']]);
 });
 
 test('#13 the environment recovers: an unavailable command reaches run_done on the same approved code',POSIX,async t=>{
@@ -445,7 +447,27 @@ test('#26c --rerun-unknown-qa supersedes a call stopped as a whole whose only no
   assert.equal(done(await launch(f,{workflow,extra:browserQa})).state,'run_done');
 });
 
-test('#26c a session-declared BLOCKED, a FAIL or an unattested older timeout row still refuses --rerun-unknown-qa',POSIX,async t=>{
+// Q06/Q11: the call stopped as a whole after the session itself declared a case
+// BLOCKED (or the host judged an evidence gap). That is a host or answer problem,
+// not a product verdict: --rerun-unknown-qa supersedes it with host_blocked_cases
+// and the next round does not count toward the three-round budget (Q14).
+test('#26c a stopped call with a session-declared BLOCKED is superseded and rerun',POSIX,async t=>{
+  const {f,workflow,browserQa}=await timedOutCall(t);
+  const original=fs.readFileSync(f.log,'utf8');
+  fs.writeFileSync(f.log,original.trim().split('\n').map(line=>{const row=JSON.parse(line);
+    return JSON.stringify(row.event==='test_run'&&row.phase==='case_blocked'
+      ?{...row,host_declared_blocked:true,host_request_timeout:false}:row);}).join('\n')+'\n');
+  const unknown=done(await launch(f,{workflow,extra:browserQa}));
+  assert.equal(unknown.code,'qa_execution_unknown');
+  const rerun=done(await launch(f,{workflow,extra:[...browserQa,'--rerun-unknown-qa'],answers:{qa_browser:pass(f)}}));
+  assert.equal(rerun.state,'run_done',JSON.stringify(rerun));
+  const [superseded]=testRuns(f,'superseded');
+  assert.equal(superseded.reason,'host_request_timeout');
+  assert.deepEqual([superseded.timed_out_cases,superseded.host_blocked_cases,superseded.partial_pass_cases],[[],['TC-001'],[]]);
+  assert.deepEqual(testRuns(f,'start').map(row=>row.attempt),[1,2]);
+});
+
+test('#26c an undistinguished BLOCKED, a FAIL or an unattested older timeout row still refuses --rerun-unknown-qa',POSIX,async t=>{
   const {f,workflow,browserQa}=await timedOutCall(t);
   const original=fs.readFileSync(f.log,'utf8');
   const variant=edit=>original.trim().split('\n').map(line=>{const row=JSON.parse(line);
@@ -454,8 +476,8 @@ test('#26c a session-declared BLOCKED, a FAIL or an unattested older timeout row
     const start=testRuns(f,'case_start')[0].at;return {...rest,at:new Date(Date.parse(start)+seconds*1000).toISOString().replace(/\.\d{3}Z$/,'Z')};};
   const attest=['--qa-environment-failure','session gave no TC-001 answer before the deadline'];
   for(const [name,edit,code,extra] of [
-    ['session-declared',row=>({...row,host_declared_blocked:true,host_request_timeout:false}),'qa_execution_unknown',attest],
     ['other BLOCKED',row=>({...row,host_request_timeout:false}),'qa_execution_unknown',attest],
+    ['unresolved expectation',row=>({...row,host_request_timeout:false,blocked_reason:'needs_confirmation'}),'qa_execution_unknown',attest],
     ['FAIL',row=>({...row,phase:'case_complete',result:'FAIL',host_request_timeout:undefined}),'qa_execution_unknown',attest],
     ['older row, window not elapsed',legacy(0),'qa_execution_unknown',attest],
     // An older host also wrote this row for a PASS answered near the deadline but
