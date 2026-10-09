@@ -660,3 +660,26 @@ test('pinned residue: out-of-scope always refuses, in-scope refuses only in prot
   assert.throws(()=>pinnedResidue(baseline,now,['value.mjs'],true),error=>error.code==='fix_protected_residue'&&error.paths[0]==='value.mjs');
   assert.throws(()=>pinnedResidue(baseline,{files:[file('value.mjs','a'),file('requirements.md','d')]},['value.mjs'],false),{code:'fix_pinned_residue'});
 });
+
+// P2 (Codex round 1): a rerun record is checked against the replay parser
+// before it is appended. Here the regression step already used its eight retry
+// ids, so a rerun record could not replay: it is refused and nothing is written.
+test('a blocked rerun that could not replay is refused before append',async t=>{
+  const marker=path.join(fs.realpathSync(os.tmpdir()),`cm-fix-hang-cap-${process.pid}-${Date.now()}`);t.after(()=>fs.rmSync(marker,{force:true}));
+  const f=await fixture(t,{repairContent:`import fs from 'node:fs';if(fs.existsSync(${JSON.stringify(marker)}))await new Promise(()=>{});export const value=2;\n`});
+  await toRepair(f);
+  assert.equal((await f.owner().repair({authorized:true})).stage,'regression_required');
+  for(let n=0;n<8;n++){
+    const at=f.owner().status();
+    f.append(n?`fix-regression-retry-${n}-intent`:'fix-regression-intent','intent',
+      {repairDigest:digest(at.repair),redDigest:digest(at.redTest),baselineDigest:digest(at.baseline)});
+    assert.equal(f.owner().abandonStep({authorized:true,reason:`Regression process crashed ${n+1}`}).stage,'regression_required');
+  }
+  fs.writeFileSync(marker,'');
+  assert.equal((await f.owner().runRegression({authorized:true})).stage,'regression_blocked');
+  assert(f.records().some(row=>row.id==='fix-regression-retry-8-result'));
+  const before=fs.readFileSync(f.statePath);
+  assert.throws(()=>f.owner().rerunBlockedStep({authorized:true,reason:'environment fixed'}),{code:'fix_blocked_rerun_unavailable'});
+  assert.deepEqual(fs.readFileSync(f.statePath),before);
+  assert.equal(f.reopen().status().stage,'regression_blocked');
+});

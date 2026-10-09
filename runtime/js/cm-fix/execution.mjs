@@ -80,6 +80,11 @@ const RERUNNABLE=Object.freeze({test_author_blocked:'test_author',repair_blocked
   revision_regression_blocked:'revision_regression',revision_post_review_regression_blocked:'revision_post_review_regression',
   revision_walkthrough_blocked:'revision_walkthrough'});
 export const MAX_FIX_BLOCKED_RERUNS=2;
+// Record numbers cover every legal rerun: two per step kind across all kinds.
+const MAX_FIX_BLOCKED_RERUN_RECORDS=Object.keys(RERUNNABLE).length*MAX_FIX_BLOCKED_RERUNS;
+const BLOCKED_RERUN_ID=/^fix-blocked-rerun-([1-9]\d?)$/;
+const blockedRerunNumber=id=>{const match=BLOCKED_RERUN_ID.exec(id);
+  const n=match?Number(match[1]):0;return n>=1&&n<=MAX_FIX_BLOCKED_RERUN_RECORDS?n:0;};
 const latestStepRecord=(records,id)=>[...records].reverse().find(row=>retryBase(row.id)===id);
 // A cause or second-round final review that produced no review result may be
 // abandoned once, audited, and dispatched again under its own record prefix.
@@ -219,7 +224,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     return records.filter(row=>/^fix-abandoned-[1-8]$/.test(row.id)).filter(row=>{
       const intent=records.find(item=>digest(item)===row.payload.intentDigest);
       return intent&&stepRecord(retryBase(intent.id))?.base===base;
-    }).length+records.filter(row=>/^fix-blocked-rerun-[1-8]$/.test(row.id)).filter(row=>{
+    }).length+records.filter(row=>blockedRerunNumber(row.id)>0).filter(row=>{
       const intent=records.find(item=>digest(item)===row.payload.intentDigest);
       return intent&&stepRecord(retryBase(intent.id))?.base===base;
     }).length;
@@ -408,8 +413,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       append(recordId,'result',payload);
     }catch{/* Missing, conflicting or unbound receipts never change the original unknown. */}
   }
-  function project(){
-    const snapshot=store.snapshot();
+  // snapshot: the store's, or a candidate one a writer validates before appending.
+  function project(snapshot=store.snapshot()){
     need(snapshot.records.length>0,'fix_history_invalid');
     const [first,...records]=snapshot.records;
     // Older runs could advance a recovered single-layer diagnosis without cause review.
@@ -493,7 +498,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         if(pending==='revision_retrospective')revisionRetrospectivePackage=null;
         stage=pendingOrigin;pending=null;pendingOrigin=null;pendingIntent=null;continue;
       }
-      const blockedRerun=/^fix-blocked-rerun-([1-8])$/.exec(record.id);
+      const blockedRerun=blockedRerunNumber(record.id)?[record.id,String(blockedRerunNumber(record.id))]:null;
       if(blockedRerun){
         const kind=RERUNNABLE[stage];
         need(Number(blockedRerun[1])===Object.values(blockedReruns).reduce((a,b)=>a+b,0)+1&&record.kind==='result'
@@ -1384,9 +1389,15 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const intent=[...records].reverse().find(row=>row.kind==='intent'&&stepRecord(retryBase(row.id))?.pending===kind);
       const result=[...records].reverse().find(row=>row.kind==='result'&&stepRecord(retryBase(row.id))?.pending===kind);
       need(intent&&result,'fix_blocked_rerun_unavailable');
-      const used=records.filter(row=>/^fix-blocked-rerun-[1-8]$/.test(row.id)).length;
-      append(`fix-blocked-rerun-${used+1}`,'result',{stage:current.stage,pending:kind,reason,rerunAt:Date.now(),
-        intentDigest:digest(intent),resultDigest:digest(result),...(PINNED_STEPS.has(kind)?{baselinePinned:true}:{})});
+      const used=records.filter(row=>blockedRerunNumber(row.id)>0).length;
+      const recordId=`fix-blocked-rerun-${used+1}`,payload={stage:current.stage,pending:kind,reason,rerunAt:Date.now(),
+        intentDigest:digest(intent),resultDigest:digest(result),...(PINNED_STEPS.has(kind)?{baselinePinned:true}:{})};
+      // The exact record must replay before it is appended (never a poisoned journal).
+      const snapshot=store.snapshot(),candidate={version:1,seq:snapshot.records.length+1,id:recordId,kind:'result',payload,
+        previousDigest:snapshot.records.at(-1)?.digest??null};
+      try{project({...snapshot,records:[...snapshot.records,{...candidate,digest:digest(candidate)}]});}
+      catch{need(false,'fix_blocked_rerun_unavailable');}
+      append(recordId,'result',payload);
       logFixEvent({specsRoot:evidenceSpecsRoot,identity,configuration,event:'rerun',phase:kind,
         detail:`带理由重跑合法阻断的步骤：${kind}`,data:{pending:kind,stage:current.stage,reason}});
       return project();
