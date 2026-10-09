@@ -20,9 +20,9 @@ Application status is applied (note explains the lesson and action) or no_releva
 Retrospective status is no_new_lesson (candidates empty and reason null), lesson_candidate (1-3 candidates and reason null),
 or writeback_pending (1-3 candidates and a reason). Each candidate has classification (structured or memory_only),
 trigger, action and evidence (relative file paths). The host binds identities and computes digests; do not invent hashes.
-Bounds (an answer over any bound is rejected): application.note is one line of at most 512 characters;
-retrospective reason and each candidate trigger and action are one line of at most 240 characters;
-1-3 candidates, each with 1-8 distinct relative evidence paths of at most 512 characters; a blocked reason is at most 1000 bytes.
+Bounds (an answer over any bound is rejected; lengths count UTF-16 code units, so an emoji counts as 2): application.note is one line of at most 512;
+retrospective reason and each candidate trigger and action are one line of at most 240;
+1-3 candidates, each with 1-8 distinct relative evidence paths of at most 512; a blocked reason is at most 1000 bytes.
 Without learningInput, return only outcome and reason. A blocked result may include reason explaining why implementation is impossible (string, at most 1000 UTF-8 bytes, no NUL); application and retrospective are optional when blocked.
 The top-level reason explains blocked outcomes; otherwise it must be null. Use null when no explanation is available.
 Use outcome blocked when implementation is not possible. Do not claim implementation if no implementation was made.
