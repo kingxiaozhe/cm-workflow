@@ -19,7 +19,8 @@ import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
   MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,effectSlotFree,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
   reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted,
-  completionBlockCount,completionRetriesExhausted,supersededReviewPayload,bootstrapReviewRecoverable,protectedDevelopScope,protectedScopeBlockReason } from './durable-runner-state.mjs';
+  completionBlockCount,completionRetriesExhausted,supersededReviewPayload,bootstrapReviewRecoverable,protectedDevelopScope,protectedScopeBlockReason,
+  developTimeoutBasis,developTimeoutEffect,developTimeoutState,DEVELOP_CALL_TIMEOUT_REASON } from './durable-runner-state.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
 import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure} from './provider-review-observation.mjs';
 import {attachCmAiTaskLearningApplicationEvidence,attachCmAiTaskLearningEvidence,
@@ -287,7 +288,8 @@ export function createTaskRunner(options) {
   // derivation in one place, next to the cache it is derived from.
   const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
     &&entry.result?.state==='blocked'
-    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict'].includes(entry.result?.code)).length;
+    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout'].includes(entry.result?.code)
+    ||developTimeoutEffect(entry)).length;
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
     &&entry.result?.state==='blocked'&&['completion_checks_changed','completion_package_changed'].includes(entry.result?.code)).length;
   const privateStatus=()=>json({state,code,...(reason?{reason}:{}),
@@ -321,8 +323,30 @@ export function createTaskRunner(options) {
     return !(metadata.externalModels||metadata.executionPolicy)&&invocationMode&&store&&!busy&&!poisoned&&state==='unknown'&&!restored?.pending
       &&abandonableReviewResult({state,attempt,cache:[...cache.values()],calls,reviewInvocation},reviewers[0].contexts[attempt-1]);
   }
+  // A develop cut off by the host answer limit (unknown/call_timeout) whose
+  // start the journal pins, checked against the code root now: true only when
+  // nothing of it reached the disk. Never journaled by status; advance records
+  // develop-timeout-retry before redoing the round (see executeEffect).
+  function developTimeoutRetryBasis(){
+    if(!store||!taskMode||busy||poisoned||!developTimeoutState({state,code})||restored?.pending&&!cache.has(restored.pending.id))return null;
+    const basis=developTimeoutBasis({state,code,attempt,cache:[...cache.values()],calls,reviewPackage,priorReview},metadata.bootstrap);
+    if(basis===null)return null;
+    try{
+      if(basis==='reviewed_package')verifyReviewPackage({root:config.root,baseline:attemptBaseline(original,reviewPackage.identity.attempt),
+        checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
+      else assertReadyBaseline();
+    }catch{return null;}
+    return basis;
+  }
   const status=()=>{
     let current=store?publication:privateStatus();
+    if(developTimeoutState(current)){
+      const {reason:discard,...rest}=current;
+      current=developTimeoutRetryBasis()!==null
+        ?freeze({...rest,state:'blocked',code:'develop_call_timeout',reason:DEVELOP_CALL_TIMEOUT_REASON})
+        :freeze({...rest,state:'unknown',code:'call_timeout',...(current.state==='blocked'
+          ?{reason:'develop_call_timeout: 代码根已不等于本轮开发起点（超时后有写入），不能重发；按 unknown 只读核对。'}:{})});
+    }
     if(!busy&&!poisoned&&bootstrapReviewRecoverable(frame(),restored?.pending??null,metadata.bootstrap))
       current=freeze({...current,bootstrapReviewRecovery:true});
     // Status only; never part of a cached result or checkpoint.
@@ -400,6 +424,12 @@ export function createTaskRunner(options) {
     }
   };
   const halt=(next,why,detail=null)=>{state=next;code=why;reason=detail;};
+  function assertReadyBaseline(){
+    compareReviewBaseline(withBoundSpecification(captureReviewBaseline({...configToBaseline(metadata),version:original.version,
+      ...(Object.hasOwn(original,'specification')?{specification:{specsRoot:original.specificationRoot,feature:original.specification.feature}}:{})},
+      !Object.hasOwn(original,'ignorePolicy'),original.ignorePolicy?.version??2,
+      original.ignorePolicy?.version===2?original.ignorePolicy:null)),original);
+  }
   const specificationLive=(currentState,currentCode)=>Object.hasOwn(original,'specification')
     &&['develop','review','complete'].some(kind=>stageAllowed(kind,currentState,currentCode,priorReview?.verdict));
   function frame(){return {state,code,reason,attempt,session,sequence,reviewPackage,currentChecks,receipt,receipts,calls,
@@ -425,7 +455,7 @@ export function createTaskRunner(options) {
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
         'review-invocation-abandoned':'result','review-invocation-receipt':'result','review-invocation-reconciled':'result','effect-abandoned':'result',
         'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
-        'evidence-superseded':'result','develop-retry-limit':'result','completion-retry-limit':'result','specification-rebound':'result',
+        'evidence-superseded':'result','develop-retry-limit':'result','develop-timeout-retry':'result','completion-retry-limit':'result','specification-rebound':'result',
         'bootstrap-review-recovered':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
@@ -1083,7 +1113,7 @@ export function createTaskRunner(options) {
   }
   const limitDue=()=>retryLimitDue()?recordRetryLimit:completionLimitDue()?recordCompletionLimit:null;
   function executeEffect(raw) {
-    let v;
+    let v,timeoutBasis=null;
     try {
       need(!poisoned,'store_failure');v=json(raw);
       shape(v,['version','id','identity','kind',...(Object.hasOwn(v,'learningInput')?['learningInput']:[])]);id(v.id);validIdentity(v.identity);
@@ -1102,25 +1132,35 @@ export function createTaskRunner(options) {
       if(old){need(old.digest===digest(v),'intent_conflict');return Promise.resolve(old.result);}
       if(restored?.pending?.id===v.id){need(digest(restored.pending)===digest(v),'intent_conflict');return Promise.resolve(status());}
       need(!busy,'busy');need(v.identity.attempt===attempt,'attempt_mismatch');
-      need(stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(effectSlotFree(v.kind,[...cache.values()],calls),'limit_exceeded');
+      // A timed-out develop (journaled or already released) is redone only while
+      // the code root still equals its start, verified here in the dispatch tick.
+      if(v.kind==='develop'&&developTimeoutState({state,code})){
+        timeoutBasis=developTimeoutRetryBasis();need(timeoutBasis!==null,'develop_timeout_root_changed');
+        if(state==='blocked')timeoutBasis=null;
+      }
+      need(timeoutBasis!==null||stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(effectSlotFree(v.kind,[...cache.values()],calls),'limit_exceeded');
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
     } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input'}));}
+    // The timed-out develop left the code root as it started: journal that
+    // finding, then redo the round like any retryable develop block.
+    if(timeoutBasis!==null){
+      try{persist('develop-timeout-retry',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId,basis:timeoutBasis});}
+      catch{return Promise.resolve(poison());}
+      halt('blocked','develop_call_timeout',DEVELOP_CALL_TIMEOUT_REASON);publication=privateStatus();
+    }
     if(v.kind==='develop'&&retryLimitDue()){try{return Promise.resolve(recordRetryLimit());}catch{return Promise.resolve(poison());}}
     if(v.kind==='complete'&&completionLimitDue()){try{return Promise.resolve(recordCompletionLimit());}catch{return Promise.resolve(poison());}}
     if(store) {
       try {
-        if(state==='ready')compareReviewBaseline(withBoundSpecification(captureReviewBaseline({...configToBaseline(metadata),version:original.version,
-          ...(Object.hasOwn(original,'specification')?{specification:{specsRoot:original.specificationRoot,feature:original.specification.feature}}:{})},
-          !Object.hasOwn(original,'ignorePolicy'),original.ignorePolicy?.version??2,
-          original.ignorePolicy?.version===2?original.ignorePolicy:null)),original);
+        if(state==='ready')assertReadyBaseline();
         // A rejected first delivery has no review package yet. Every later
         // developer effect must recheck the reviewed tree before dispatch,
         // except one that redoes a delivery this attempt already made: that
         // delivery changed the tree on purpose and never became a package, so
         // it is compared against the baseline when the new package is built,
         // exactly as a redo at attempt 1 is.
-        else if(reviewPackage!==null&&!(v.kind==='develop'&&state==='blocked'&&code!=='review_package_changed'
+        else if(reviewPackage!==null&&!(v.kind==='develop'&&state==='blocked'&&!['review_package_changed','develop_call_timeout'].includes(code)
           &&stageAllowed('develop',state,code,priorReview?.verdict)))verifyReviewPackage({root:config.root,baseline:reviewPackage.identity.attempt===attempt?base:attemptBaseline(original,reviewPackage.identity.attempt),
           checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
       } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:failureCode(error),
