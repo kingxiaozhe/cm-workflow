@@ -5,6 +5,7 @@
 
 ## 未发布
 
+- 新增只读脚本 `scripts/cm-token-report.mjs`：按 `运行日志.jsonl` 的运行与步骤时间窗口，汇总本机 Claude Code 与 Codex 会话的 token 用量（未缓存输入、缓存写入、缓存读取、输出和假定权重的加权合计，含最重 10 次调用），只读元数据、不读消息正文，按 message.id 去重，窗口外记为未归属，缺失数字不估算。
 - 新增可选的「卡住时提醒」：在 `~/.cm-workflow/notify.json` 配一条本机命令后，驾驶员停在需要人处理的状态、流程结束，或宿主等待会话应答超过 `waitMinutes`（默认 10 分钟）时运行它；消息只含项目名、流程、运行、任务、阶段、原因和下一步，命令在后台独立运行、流程不等它，按各流程自己的结果合同判断「要人处理」与「已结束」，带去重与限流，失败只记 `notify.log`，不改变流程结果和退出时间；CM 不绑定任何推送服务，未配置时不做任何事。
 - cm-ai 并行组的「只能新建文件」规则改由 runtime 强制：建成员工作树前核对整组 scope，任一路径已在 HEAD 上就以 `parallel_scope_existing_file` 拒绝且不建工作树，不再只靠会话自觉；已开工的批次不受影响。
 - `cm-fix` 重新诊断后的第二轮原因审查没有结论时不再永远卡在 `unknown`：审查进程正常结束但答案不合结论格式（如引用了审查包以外的文件路径）时记为失败观察，不再整条丢掉；第二轮原因审查也可用 `abandon_review`（`--allow-abandon-review`）放弃一次，追加 `fix-cause-rediagnosis-abandoned` 后在同一第二轮重新授权、换新审查线程重审（`fix-cause-rediagnosis-retry-*`），不增加审查轮数，旧记录不改写；同一轮再放弃报 `fix_review_abandon_budget_exhausted`。第二轮审查包另把第一轮审查看过和引用过、但不在新诊断范围内的代码文件作为只读上下文（`contextFiles`）交给审查者，审查者可以引用，不再因引用这些文件被判不合格。

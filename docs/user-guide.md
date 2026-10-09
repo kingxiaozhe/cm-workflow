@@ -240,6 +240,25 @@ python3 /path/to/cm-workflow/scripts/cm-usage-report.py --last 10
 Token 或费用；同时区分 success/error/blocked/cancelled。已经 claim 但没有有效完成事件的
 调用会单列为 `unresolved`，不计入调用、结果或 Token。需要机器读取时追加 `--json`。
 
+### 按运行/步骤看 Claude 与 Codex 会话的 token 用量（只读）
+
+`cm-usage-report.py` 只覆盖适配器写进日志的用量；想看本机 Claude Code 和 Codex CLI 会话
+实际烧了多少，用 `cm-token-report.mjs`（Node，无依赖）：
+
+```bash
+node /path/to/cm-workflow/scripts/cm-token-report.mjs \
+  --project /你的项目根目录 --specs /你的项目根目录/specs [--since 2026-10-01T00:00:00Z] [--json]
+```
+
+它只读 `~/.claude/projects/*` 和 `~/.codex/sessions/*` 里的时间戳、模型、用量数字、工作目录
+和会话 id（不读消息正文、工具入参或结果），按 `运行日志.jsonl` 里的运行/步骤时间窗口，把每次调用
+归到 工作流 → 步骤（develop / review / qa / check / prd-analysis / fix-diagnose / other），
+窗口之外记为「未归属」；`--specs` 可用逗号传多个目录。输出含：未缓存输入、缓存写入、缓存读取、
+输出、一个「加权合计」（权重是假定比例，默认 1 / 1.25 / 0.1 / 5，可用 `--weights in=1,cw=1.25,cr=0.1,out=5`
+改；不是价格）、最重的 10 次调用，以及数据质量说明（按 message.id 去重数、跳过项、不确定归属数）。
+归属按时间窗口而不是按会话，并行运行或你在别的会话里干活时会有误差，报告里会标出；缺失的数字不估算。
+只读指定 specs 目录下的运行日志；Codex 会话只按首行 cwd 判断是否属于该项目。
+
 项目角色使用 `adapter: openai-compatible` 时，CM 可在真实 HTTP 响应边界自动记录上述
 数据。启动 Codex/Claude 前显式配置本次调用环境（密钥不要写进项目文件）：
 
