@@ -41,9 +41,9 @@ function reportRequestFailure(errorOutput,operation,error){
 // in flight the deadline is held, not reset. Cleared at session end. Loaded
 // lazily; it only notifies and never writes logs, output or state.
 const POLLS=new Set(['status','fix_status']);
+const workflow=path.basename(process.argv[1]??'').replace(/-host\.mjs$/,'').replace(/\.mjs$/,'')||'cm';
 function idleNotice(sessionKey,seq,row,since){
   let cancelled=false,cancel=null;
-  const workflow=path.basename(process.argv[1]??'').replace(/-host\.mjs$/,'').replace(/\.mjs$/,'')||'cm';
   import('../notify.mjs').then(({scheduleIdleNotice})=>{
     if(!cancelled)cancel=scheduleIdleNotice({workflow,project:process.cwd(),sessionKey,seq,row,since});
   }).catch(()=>{});
@@ -58,7 +58,13 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
   let pending=null,buffer=Buffer.alloc(0),failure=null,closeRequested=false;
   let writing=Promise.resolve();
   const controls=new Set();let queuedWrites=0;
-  const sessionKey=randomUUID();let idle=null,seq=0,ended=false,lastRow=undefined,idleSince=0;
+  const sessionKey=randomUUID(),startedAt=Date.now();let idle=null,seq=0,ended=false,lastRow=undefined,idleSince=0;
+  // Host registry (runtime/js/notify.mjs): serialised so a session that ends at
+  // once still removes its own entry. Each step is best-effort and synchronous.
+  let registry=Promise.resolve();
+  const register=(row,operation)=>{registry=registry.then(()=>import('../notify.mjs'))
+    .then(m=>{m.writeHostRegistry({sessionKey,workflow,project:process.cwd(),startedAt,row,operation});}).catch(()=>{});};
+  register(null,null);
   const clearIdle=()=>{idle?.();idle=null;};
   const nextStep=()=>{clearIdle();lastRow=undefined;};
   const rearm=()=>{
@@ -111,6 +117,7 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
         row={error:{code:'host_request_failed'}};
         await reply({requestId,...row});
       }
+      finally{if(!POLLS.has(request.operation))register(row,request.operation);}
     };
     // Never queue cancel/status behind a long developer or reviewer call.
     if(request.operation==='status'||request.operation==='cancel'){
@@ -144,8 +151,9 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
     // With a duplex conversation, EOF means no more tool replies can arrive.
     // Reject that wait as disconnected, not as an explicit user cancellation.
     toolBridge?.close();ended=true;clearIdle();
+    registry=registry.then(()=>import('../notify.mjs')).then(m=>{m.removeHostRegistry(sessionKey);}).catch(()=>{});
     // EOF is not a user cancellation. Finish the in-flight result before close.
-    try{await Promise.allSettled([...(pending?[pending]:[]),...controls,writing]);}
+    try{await Promise.allSettled([...(pending?[pending]:[]),...controls,writing,registry]);}
     finally{
       // destroy() emits error/close on a later tick; retain its error listener
       // until that lifecycle finishes rather than leaking an uncaught error.
