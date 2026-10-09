@@ -490,11 +490,17 @@ test('Claude provider interruption needs every apply subprocess gone and the rou
     process.kill(-child.pid,'SIGKILL');
     const until=Date.now()+5000;
     while(Date.now()<until){try{process.kill(-child.pid,0);}catch(error){if(error.code==='ESRCH')break;}await new Promise(resolve=>setTimeout(resolve,25));}
+    // A proposal spanning more than eight code roots applies once per root: nine
+    // more apply subprocesses (all gone) still replay and are all proven.
+    for(let root=0;root<9;root++){
+      appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'apply_spawning'});
+      appendRecord(stateFile,'develop-worker',{effectId:intent.payload.effect.id,invocationId,phase:'apply_started',pid:gone,startTime:null});
+    }
     result=await abandon();
     assert.equal(result.code,'develop_interrupted',JSON.stringify(result));
     records=JSON.parse(fs.readFileSync(stateFile,'utf8')).records;
     const record=records.at(-1).payload;
-    assert.equal(record.basis,'baseline');assert.equal(record.worker.applies.length,1);assert.equal(record.worker.applies[0].pid,child.pid);
+    assert.equal(record.basis,'baseline');assert.equal(record.worker.applies.length,10);assert.equal(record.worker.applies[0].pid,child.pid);
     // Without the round-start basis the record is refused on replay.
     const unbased=structuredClone(records);delete unbased.at(-1).payload.basis;
     const {digest:old,...last}=unbased.at(-1);unbased[unbased.length-1]={...last,digest:digest(last)};

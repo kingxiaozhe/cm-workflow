@@ -16,7 +16,7 @@ import {readCmAiTaskLearningApplication} from './cm-ai-context-refresh.mjs';
 import {reviewExclusions} from './effect-contract.mjs';
 import {validateAcceptedFix} from './accepted-fix.mjs';
 import {readBootstrapEvidence,validateBootstrapReviewPackage} from './host-bootstrap.mjs';
-import {validateCodeProjectPaths,assertCodeProjectSelections} from './code-projects.mjs';
+import {validateCodeProjectPaths,assertCodeProjectSelections,MAX_CODE_PROJECTS} from './code-projects.mjs';
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 import {readSpecificationRebind} from './specification-material.mjs';
 import {protectedScopePaths} from './developer-adapter.mjs';
@@ -1296,7 +1296,8 @@ export function readRunnerHistory(raw,config,version=1) {
       // V9: the writers of the pending develop, journaled by the host right
       // before (…spawning) and right after (…started: pid = process group,
       // start time) each spawns: the provider worker once, and each sandbox
-      // subprocess that applies a protected proposal (at most 8). Bound to the
+      // subprocess that applies a protected proposal (one per root, at most
+      // MAX_CODE_PROJECTS). Bound to the
       // develop's invocation; never after a cancel or workflow error.
       const started=['started','apply_started'].includes(p.phase);
       shape(p,[...common,'effectId','invocationId','phase',...(started?['pid','startTime']:[])]);
@@ -1307,7 +1308,7 @@ export function readRunnerHistory(raw,config,version=1) {
       const provider=config.developer.requestedModel!=='current-session',open=pendingWorker.applies.at(-1);
       if(p.phase==='spawning'){need(provider&&pendingWorker.spawning===null&&!pendingWorker.applies.length,'runner_worker');pendingWorker.spawning=r.digest;}
       else if(p.phase==='started'){need(provider&&pendingWorker.spawning!==null&&pendingWorker.started===null&&!pendingWorker.applies.length,'runner_worker');pendingWorker.started=identity;}
-      else if(p.phase==='apply_spawning'){need((!open||open.started!==null)&&pendingWorker.applies.length<8,'runner_worker');pendingWorker.applies.push({started:null});}
+      else if(p.phase==='apply_spawning'){need((!open||open.started!==null)&&pendingWorker.applies.length<MAX_CODE_PROJECTS,'runner_worker');pendingWorker.applies.push({started:null});}
       else{need(p.phase==='apply_started'&&open&&open.started===null,'runner_worker');open.started=identity;}
     } else if(version===3&&p.type==='effect-interrupted') {
       need(!(config.externalModels||config.executionPolicy),'external_review_reconciliation_required');

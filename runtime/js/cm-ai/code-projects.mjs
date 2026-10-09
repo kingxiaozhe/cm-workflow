@@ -14,8 +14,11 @@ function relativeFile(value){
 
 // Pure validation also used by offline baseline/package readers. Never repairs
 // or requires the present filesystem merely to read historical evidence.
+// A proposal is applied once per selected root, so this also bounds the
+// apply subprocesses one develop journals (durable-runner-state.mjs).
+export const MAX_CODE_PROJECTS=256;
 export function validateCodeProjectPaths(raw){
-  const values=json(raw);need(Array.isArray(values)&&values.length>0&&values.length<=256,'invalid_code_projects');
+  const values=json(raw);need(Array.isArray(values)&&values.length>0&&values.length<=MAX_CODE_PROJECTS,'invalid_code_projects');
   const selected=values.map(relativeFile).sort(),aliases=selected.map(value=>value.toLowerCase());
   for(let i=0;i<aliases.length;i++)for(let j=0;j<i;j++)
     need(aliases[i]!==aliases[j]&&!aliases[i].startsWith(aliases[j]+'/')
