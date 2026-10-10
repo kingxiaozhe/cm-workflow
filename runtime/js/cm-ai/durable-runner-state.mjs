@@ -347,14 +347,25 @@ export function developDispatchBasis(s,config,recorded=0){
 // the sync, and marks the developer call with that record's digest
 // (call.documentationSync). A sync that then ends without a usable answer is
 // checkpointed unknown with one of these codes; only documentation_sync is
-// asked again (documentation-sync-retry, then a develop intent whose adapter
-// reuses the journaled answer). The developer is never dispatched again, and
-// the review package still compares with the task baseline captured at create.
-// The source effect holds no call or effect slot; MAX_DOCUMENTATION_SYNC_RETRIES
-// bounds the retries per run. Journals without the record keep their old
-// projection: nothing is reinterpreted.
+// asked again, by a develop intent whose adapter reuses the journaled answer.
+// The developer is never dispatched again, and the review package still
+// compares with the task baseline captured at create. The source holds no call
+// or effect slot; MAX_DOCUMENTATION_SYNC_RETRIES bounds the retries per run.
+// Journals without the record keep their old projection.
+//
+// R3: nothing the host observes proves the documentation writer stopped. A
+// lost answer may simply not have written yet, and an accepted answer only ends
+// the host's wait, not the session's writes. So every retry first needs the
+// operator's stop confirmation for that exact source call (develop_redo with a
+// reason, journaled as documentation-sync-retry), or the effect-interrupted
+// record of a host that died during the sync (the same confirmation, given
+// through abandon_effect). The disk is a separate gate, checked right before
+// every redispatch (also after a restart): the code root outside the
+// documentation paths still equals the documentation start, and the
+// documentation paths still equal what they were when the stop was confirmed.
+export const DOCUMENTATION_SYNC_INTERRUPTED_CODE='documentation_sync_interrupted';
 export const DOCUMENTATION_SYNC_CODES=Object.freeze(['documentation_sync_answer_missing','documentation_sync_answer_invalid',
-  'documentation_sync_answer_blocked','documentation_sync_out_of_scope']);
+  'documentation_sync_answer_blocked','documentation_sync_out_of_scope',DOCUMENTATION_SYNC_INTERRUPTED_CODE]);
 export const MAX_DOCUMENTATION_SYNC_RETRIES=2;
 // The workflow configuration accepts up to 256 documentation paths
 // (host-workflow-capabilities.mjs); the record accepts every one of them.
@@ -378,25 +389,20 @@ export const documentationSyncSource=entry=>{
     &&call?.terminal==='unknown'&&call.resultDigest===null&&typeof call.documentationSync==='string'
     &&call.channel==='fixture'&&result.learningWriteback==null;
 };
-// The evidence a documentation-sync-retry record names. The sync answered
-// (invalid, blocked, out of scope), so its writer stopped: 'answered'. It never
-// answered: the documentation paths still equal the journaled start (the live
-// host compared them, 'unchanged'), or an operator confirmed the writer stopped
-// (develop_redo with a reason, R3: 'confirmed'). Only the documentation paths
-// decide this; the rest of the code root holds the delivered develop edits.
-export const documentationSyncBases=code=>code==='documentation_sync_answer_missing'?['unchanged','confirmed']:['answered'];
+// The checkpointed failure (state unknown, last effect) still waiting for its
+// stop confirmation, while the run has a retry left; its code, or null.
 export function documentationSyncRetryCode(s,config,recorded=0){
   if(config.bootstrap)return null;
   const last=s.cache.at(-1);
   if(!last||last.effect.identity.attempt!==s.attempt||!documentationSyncSource(last))return null;
-  if(s.state==='blocked'&&s.code===last.result.code)return s.code;
   return s.state==='unknown'&&s.code===last.result.code&&recorded<MAX_DOCUMENTATION_SYNC_RETRIES?s.code:null;
 }
 const documentationSyncCauses={
   documentation_sync_answer_missing:'文档同步没有拿到应答（超时、断开、迟到被拒或宿主核对时出错）',
   documentation_sync_answer_invalid:'文档同步的应答格式不合格（只接受 {"status":"completed"} 或 {"status":"blocked"}）',
   documentation_sync_answer_blocked:'文档同步答复 blocked，文档没有同步完',
-  documentation_sync_out_of_scope:'文档同步改了文档路径以外的文件'};
+  documentation_sync_out_of_scope:'文档同步改了文档路径以外的文件',
+  documentation_sync_interrupted:'宿主在文档同步中途退出'};
 const documentationDetail=(code,detail)=>{
   if(typeof detail!=='string'||!detail)return '';
   if(code==='documentation_sync_out_of_scope'){
@@ -406,20 +412,19 @@ const documentationDetail=(code,detail)=>{
   return code==='documentation_sync_answer_missing'&&/^[a-z_]{1,64}$/.test(detail)?`（${detail}）`:'';
 };
 const DOCUMENTATION_SYNC_TAIL='只重发文档同步，复用运行存档里已记录的开发应答，不重发开发；盘上的开发与文档改动保留，审查包仍对照本运行创建时的任务基线，经检查与独立审查；不占调用与 effect 名额（每运行最多 2 次）。';
-const documentationSyncSteps={
-  documentation_sync_answer_missing:'文档路径仍与文档同步开始时一致（重发前再核对），在原运行 advance ',
-  documentation_sync_answer_invalid:'会话已应答、不会再写；在原运行 advance ',
-  documentation_sync_answer_blocked:'先按会话说明补齐或修正文档、解决阻碍，再在原运行 advance ',
-  documentation_sync_out_of_scope:'先把这些文件还原到文档同步开始时的内容（宿主按运行存档里的摘要核对，没还原就拒绝；确需修改先走规格变更），再在原运行 advance '};
-export const documentationSyncReason=(code,detail=null)=>`${code}: 开发已应答并写入运行存档，但${documentationSyncCauses[code]}${documentationDetail(code,detail)}。`
-  +documentationSyncSteps[code]+DOCUMENTATION_SYNC_TAIL;
+const documentationSyncFixes={
+  documentation_sync_answer_blocked:'按会话说明补齐或修正文档、解决阻碍；',
+  documentation_sync_out_of_scope:'把这些文件还原到文档同步开始时的内容（宿主按运行存档里的摘要核对，没还原就拒绝；确需修改先走规格变更）；'};
+const documentationSyncGate='重发前宿主再核对：文档路径以外的文件与文档同步开始时一致，文档路径与确认停写时一致，任一不符就拒绝、不写记录。';
+// Before the confirmation: shown as blocked with pendingAction develop_redo.
 export const documentationSyncStopReason=(code,detail=null)=>`${code}: 开发已应答并写入运行存档，但${documentationSyncCauses[code]}${documentationDetail(code,detail)}。`
-  +'文档路径已不等于文档同步开始时的内容，没有应答的文档同步可能仍在写，宿主看不到；'
-  +'先确认会话已停止修改文档，再以 --mode resume --allow-develop-redo 启动并发送 develop_redo（单行 reason，写入运行存档）；之后 advance '
-  +DOCUMENTATION_SYNC_TAIL;
-export const documentationSyncRetryReason=(code,basis,detail=null)=>basis==='confirmed'
-  ?`${code}: ${documentationSyncCauses[code]}${documentationDetail(code,detail)}；操作员已确认会话停止修改文档（documentation-sync-retry）。在原运行 advance `+DOCUMENTATION_SYNC_TAIL
-  :documentationSyncReason(code,detail);
+  +'宿主无法证明会话已停止修改文档（没应答可能只是还没写，已应答也只结束了宿主的等待）；'
+  +`先确认会话已停止修改文档，${documentationSyncFixes[code]??''}再以 --mode resume --allow-develop-redo 启动并发送 develop_redo（单行 reason，写入运行存档）；之后 advance `
+  +DOCUMENTATION_SYNC_TAIL+documentationSyncGate;
+// After the confirmation (documentation-sync-retry or effect-interrupted).
+export const documentationSyncRetryReason=(code,detail=null)=>`${code}: ${documentationSyncCauses[code]}${documentationDetail(code,detail)}；`
+  +(code===DOCUMENTATION_SYNC_INTERRUPTED_CODE?'操作员已确认旧宿主与会话停止写入（effect-interrupted）。':'操作员已确认会话停止修改文档（documentation-sync-retry）。')
+  +'在原运行 advance '+DOCUMENTATION_SYNC_TAIL+documentationSyncGate+'确认之后若你又改了文档，再发送一次 develop_redo 重新确认（不另占次数）。';
 export const documentationSyncLimitReason=source=>`${DOCUMENTATION_SYNC_LIMIT_CODE}: 文档同步重发（原记录 ${source}）已在本运行用满 ${MAX_DOCUMENTATION_SYNC_RETRIES} 次，不再重发。`
   +'先查清会话为何一直不应答、答复 blocked 或越界写文件；修好后用 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做，'
   +'本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift 作为已有代码记录。';
@@ -1199,7 +1204,7 @@ export function readRunnerHistory(raw,config,version=1) {
   const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false,supersession=null;
   const answerGaps={developRecheck:0,completeRecheck:0,developRedo:0,developDispatch:0,documentationSync:0,reviewRedispatch:{1:0,2:0}};
   // Q16: documentation-sync-started records by digest, and the pending develop's.
-  const documentationRecords=new Map();let pendingDocumentation=null;
+  const documentationRecords=new Map();let pendingDocumentation=null,documentationStop=null;
   // V8/V9: interrupted intents (their ids are never reused) and the provider
   // worker records of the pending develop and of every checkpointed develop.
   const interrupted=[],workers={};let pendingWorker=null;
@@ -1300,7 +1305,7 @@ export function readRunnerHistory(raw,config,version=1) {
       same(e.identity,{...config.identity,attempt:state.attempt});need(e.version===1 && stageAllowed(e.kind,state.state,state.code,state.priorReview?.verdict),'runner_stage');
       need(!(e.kind==='review'&&reviewNotDispatchedExhausted(state)),'runner_stage');
       need(effectSlotFree(e.kind,state.cache,state.calls) && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
-      pending=e;beforeIntent=structuredClone(state);controls={};completeIntentDigest=e.kind==='complete'?r.digest:null;pendingDocumentation=null;
+      pending=e;beforeIntent=structuredClone(state);controls={};completeIntentDigest=e.kind==='complete'?r.digest:null;pendingDocumentation=null;documentationStop=null;
       invocation={registration:null,started:null,result:null};registrationRecord=null;startedRecord=null;resultRecord=null;
       joinedForInvocation=false;lastReview=null;
     } else if(version===3&&p.type==='host-joined') {
@@ -1438,21 +1443,31 @@ export function readRunnerHistory(raw,config,version=1) {
       }
       pendingDocumentation={digest:r.digest,payload:p};documentationRecords.set(r.digest,p);
     } else if(version===3&&p.type==='documentation-sync-retry') {
-      // Q16/Q17: written by advance (or develop_redo, basis confirmed) before a
-      // documentation-only redo; the condition is re-derived from the journal.
-      const confirmed=p.basis==='confirmed';
-      shape(p,[...common,'effectId','invocationId','code','basis',...(confirmed?['reason','at']:[])]);
-      const code=documentationSyncRetryCode(state,config,answerGaps.documentationSync);
-      need(r.kind==='result'&&pending===null&&state.state==='unknown'&&code!==null&&p.code===code
-        &&documentationSyncBases(code).includes(p.basis)
-        &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_documentation_retry');
-      if(confirmed){
-        need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
-          &&!/[\r\n\0]/.test(p.reason),'runner_documentation_retry');
-        need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_documentation_retry');
-      }
-      answerGaps.documentationSync++;
-      state.state='blocked';state.code=code;state.reason=documentationSyncRetryReason(code,p.basis,state.cache.at(-1).result.reason);lastReview=null;
+      // Q16/Q17 (R3): develop_redo's stop confirmation for one failed
+      // documentation_sync, bound to its developer call and start record, with
+      // the documentation paths as they were at the confirmation. From the
+      // checkpointed failure (unknown) it spends one of the run's retries; from
+      // an already confirmed block (a re-confirmation after the operator's own
+      // edits) it only replaces the confirmed documentation state.
+      shape(p,[...common,'effectId','invocationId','startDigest','code','documents','reason','at']);
+      need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(p.reason),'runner_documentation_retry');
+      need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_documentation_retry');
+      need(r.kind==='result'&&pending===null,'runner_documentation_retry');
+      const call=state.calls.at(-1),start=documentationRecords.get(call?.documentationSync);
+      need(start!==undefined&&p.invocationId===call.invocationId&&p.startDigest===call.documentationSync,'runner_documentation_retry');
+      validDocumentationStates(p.documents,config.scope);
+      same(p.documents.map(item=>item.path),start.documents.map(item=>item.path));
+      if(state.state==='unknown'){
+        const code=documentationSyncRetryCode(state,config,answerGaps.documentationSync);
+        need(code!==null&&p.code===code&&p.effectId===state.cache.at(-1).effect.id,'runner_documentation_retry');
+        answerGaps.documentationSync++;
+        documentationStop={effectId:p.effectId,invocationId:p.invocationId,startDigest:p.startDigest,
+          detail:state.cache.at(-1).result.reason??null};
+      }else need(state.state==='blocked'&&DOCUMENTATION_SYNC_CODES.includes(state.code)&&p.code===state.code
+        &&documentationStop!==null&&p.effectId===documentationStop.effectId&&p.invocationId===documentationStop.invocationId
+        &&p.startDigest===documentationStop.startDigest,'runner_documentation_retry');
+      state.state='blocked';state.code=p.code;state.reason=documentationSyncRetryReason(p.code,documentationStop.detail);lastReview=null;
     } else if(version===3&&p.type==='complete-recheck') {
       shape(p,[...common,'effectId','source']);
       need(r.kind==='result'&&pending===null&&state.state==='unknown'&&completeRecheckable(state,answerGaps.completeRecheck)
@@ -1774,10 +1789,8 @@ export function projectedRunnerStatus(history,config){
   const recheck=developRecheckCode(s,config,gaps.developRecheck??0);
   if(recheck!==null)return project(recheck);
   if(completeRecheckable(s,gaps.completeRecheck??0))return project(COMPLETE_RECHECK_CODE);
-  // Q16/Q17: whether the documentation paths changed needs the live disk, so the
-  // retryable block is projected as available (a confirmation only adds a record).
-  const documentation=documentationSyncRetryCode(s,config,gaps.documentationSync??0);
-  if(documentation!==null)return {...project(documentation),reason:documentationSyncReason(documentation,s.reason)};
+  // Q16/Q17: a failed documentation_sync needs the operator's stop
+  // confirmation (develop_redo) first, so it is not projected as retryable.
   if(s.code==='call_timeout'&&developTimeoutBasis(s,config.bootstrap)!==null)return project('develop_call_timeout');
   if(developDispatchBasis(s,config,gaps.developDispatch??0)!==null)return project(DISPATCH_RETRY_CODE);
   const limit=answerGapLimit(s,config,gaps);
