@@ -46,7 +46,9 @@ ALLOW_LOOPBACK_ENDPOINT_FILES = {
     Path("scripts/cm-fix-walkthrough.test.mjs"),
     Path("scripts/cm-host-qa-executor.test.mjs"),
     Path("scripts/cm-test-host.test.mjs"),
+    Path("scripts/cm-test-answer-gaps.test.mjs"),
     Path("scripts/cm-test-session.test.mjs"),
+    Path("scripts/policy-binding-compat.test.mjs"),
 }
 URL_AUTHORITY = re.compile(r"https?://([^/\s?#'\"`<>]+)")
 LOOPBACK_AUTHORITY = re.compile(
