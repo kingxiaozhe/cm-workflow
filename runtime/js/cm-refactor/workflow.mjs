@@ -134,9 +134,13 @@ export function createCmRefactorHost(raw,{call}){
     // V7: a lost confirmation is asked of the person again under the same
     // intent; an answer bound to the lost call is never adopted.
     if(entry.kind==='host'&&entry.input.kind==='refactor_confirm'){guard();return perform();}
-    guard();const response=json(await call('refactor_recover',{kind:entry.kind,input:entry.input,
-      instructions:'Trusted host reconciliation only. Inspect original invocation/process receipt. Return {decision:completed,result,evidence} only for the actual recorded outcome, or {decision:not_started,evidence} with proof no dispatch/execution occurred. Unknown => {decision:unknown,evidence}. Never infer from time or repeat an unknown review/command. No new execution.'},controller.signal),4*1024*1024);
+    // A re-asked call (attempt > 1) is reconciled as that attempt only: the
+    // answer must name it, so a receipt of a discarded attempt is never adopted.
+    const attempt=entry.attempt??1;
+    guard();const response=json(await call('refactor_recover',{kind:entry.kind,input:entry.input,...(attempt>1?{attempt}:{}),
+      instructions:'Trusted host reconciliation only. Inspect original invocation/process receipt. Return {decision:completed,result,evidence} only for the actual recorded outcome, or {decision:not_started,evidence} with proof no dispatch/execution occurred. Unknown => {decision:unknown,evidence}. Never infer from time or repeat an unknown review/command. No new execution. When attempt is given, reconcile only that attempt and echo it.'},controller.signal),4*1024*1024);
     need(nonempty(response.evidence),'refactor_unknown_effect');
+    if(attempt>1)need(response.attempt===attempt,'refactor_recover_attempt_mismatch');
     if(response.decision==='not_started')return perform();
     need(response.decision==='completed','refactor_unknown_effect');
     if(entry.kind==='command'){
@@ -148,9 +152,10 @@ export function createCmRefactorHost(raw,{call}){
   }
   async function invoke(key,kind,payload){
     const input={kind,payload};hostCalls++;
-    return records.effect(`host/${key}`,'host',input,async()=>{
+    return records.effect(`host/${key}`,'host',input,async({attempt}={})=>{
       guard();need(!controller.signal.aborted,'cancelled');const at=Date.now();
-      const result=json(await call(kind,payload,controller.signal),1024*1024);
+      // A re-asked call names its attempt, so the session can tell it from the discarded one.
+      const result=json(await call(kind,attempt>1?{...payload,recovery:{key:`host/${key}`,attempt}}:payload,controller.signal),1024*1024);
       guard();need(!controller.signal.aborted,'cancelled');return {value:result,durationMs:Date.now()-at};
     },recover).then(result=>result.value);
   }

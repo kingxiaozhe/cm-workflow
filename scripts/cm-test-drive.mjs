@@ -23,6 +23,7 @@ import {readSourceFiles,snapshotSource,selectReportDirectory,checkSourceEvidence
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {inspectDeclaredTestCommand} from '../runtime/js/cm-test/declared-command.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {effectDigest} from '../runtime/js/cm-refactor/records.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
 
 import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
@@ -69,11 +70,11 @@ function main(){
     const context=rows.find(row=>row.type==='context')?.value;
     valid(context?.workflow==='cm-test'&&context.configDigest===digest(config),'resume 配置绑定不匹配');
     const pending=new Map(),inputs=new Map();let last=null;
-    for(const row of rows){if(row.type==='intent'){pending.set(row.key,row.kind);inputs.set(row.key,row.input);last=row.key;}
+    for(const row of rows){if(row.type==='intent'){pending.set(row.key,row.kind);inputs.set(row.key,{input:row.input,...(row.attempt?{attempt:row.attempt}:{})});last=row.key;}
       if(row.type==='result')pending.delete(row.key);if(row.type==='discard'){pending.delete(row.key);inputs.delete(row.key);last=null;}}
     if(resolution!==null){
-      const input=inputs.get(resolution.key),kind=input?.kind,release=['qa_logic','qa_browser'].includes(kind);
-      if(resolution.key!==last||!['change_impact','test_cases','qa_logic','qa_browser'].includes(kind)||digest(input)!==resolution.requestDigest)
+      const entry=inputs.get(resolution.key),input=entry?.input,kind=input?.kind,release=['qa_logic','qa_browser'].includes(kind);
+      if(resolution.key!==last||!['change_impact','test_cases','qa_logic','qa_browser'].includes(kind)||effectDigest(entry)!==resolution.requestDigest)
         stop(2,'discard 只能作废最后一个 change_impact/test_cases/qa_logic/qa_browser 应答，key/requestDigest 取自宿主 status');
       if(release&&resolution.cleanup!=='completed')
         stop(2,`${kind} 会操作浏览器或设备：先确认会话已清理或资源已释放（设备可能仍在使用），再带 cleanup:"completed"`);

@@ -104,7 +104,7 @@ test('replay refuses a qa discard without a release, a forged digest and a third
   const file=path.join(f.directory,'execution.jsonl'),base=fs.readFileSync(file,'utf8'),list=rows(f);
   const intent=list.filter(row=>row.type==='intent').at(-1),result=list.find(row=>row.type==='result'&&row.key===intent.key);
   const append=body=>{const all=rows(f),row={...body,previous:all.at(-1).hash};fs.appendFileSync(file,JSON.stringify({...row,hash:digest(row)})+'\n');};
-  const good={type:'discard',key:intent.key,kind:'test_cases',reason:'answer_rejected',resultDigest:digest(result.result),
+  const good={type:'discard',key:intent.key,kind:'test_cases',reason:'answer_rejected',attempt:1,requestDigest:digest(intent.input),resultDigest:digest(result.result),
     evidence:{sha256:digest('x'),length:1},released:null,at:'2026-10-09T00:00:00.000Z'};
   const open=()=>{const session=openTestSession(f.directory,f.config);session.close();};
   for(const [name,row] of Object.entries({forgedDigest:{...good,resultDigest:'0'.repeat(64)},
@@ -130,4 +130,22 @@ test('notify classifies cm-test discard blocks as stuck',async()=>{
   const {classifyDriveResult}=await import('../runtime/js/notify.mjs');
   for(const reason of ['cm_test_resource_release_required','cm_test_discard_limit','cm_test_contract_invalid'])
     assert.equal(classifyDriveResult('cm-test',{result:{stage:'interrupted',reason,recovery:{discards:[],lastAnswer:null,unknown:[]}}}),'stuck',reason);
+});
+
+test('real host: after a qa_browser discard, the late receipt of the discarded attempt is refused; the receipt of the new attempt is accepted',{timeout:30000},async t=>{
+  const f=fixture(t);let first;
+  let c=await client(t,f,(message,child)=>{if(message.kind==='qa_logic')return logic(message.payload);first=message;setImmediate(()=>child.kill('SIGKILL'));});
+  await c.request('start');
+  c=await client(t,f,(message,child)=>{setImmediate(()=>child.kill('SIGKILL'));});
+  const old=(await c.request('status')).result.pending;
+  await c.request('resume',{resolution:{key:old.key,requestDigest:old.requestDigest,discard:true,evidence:'lost',cleanup:'completed'}});
+  c=await client(t,f,()=>assert.fail('receipts only'));
+  const now=(await c.request('status')).result;
+  assert.equal(now.recovery.unknown[0].attempt,2);assert.notEqual(now.pending.requestDigest,old.requestDigest);
+  const late={key:old.key,requestDigest:old.requestDigest,result:browser(first.payload),evidence:'late receipt of attempt 1',cleanup:'completed'};
+  assert.equal((await c.request('resume',{resolution:late})).result.reason,'cm_test_resolution_abandoned');
+  const done=(await c.request('resume',{resolution:{...late,requestDigest:now.pending.requestDigest,evidence:'receipt of attempt 2'}})).result;
+  assert.equal(done.stage,'reported',JSON.stringify(done));await c.close();
+  const reask=rows(f).filter(row=>row.type==='intent'&&row.key===old.key);
+  assert.deepEqual(reask.map(row=>row.attempt??1),[1,2]);
 });

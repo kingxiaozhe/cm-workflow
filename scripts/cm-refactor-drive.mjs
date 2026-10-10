@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createCmRefactorHost} from '../runtime/js/cm-refactor/host.mjs';
-import {openRefactorRecords,MAX_DISCARDS_PER_KIND} from '../runtime/js/cm-refactor/records.mjs';
+import {openRefactorRecords,MAX_DISCARDS_PER_KIND,effectDigest} from '../runtime/js/cm-refactor/records.mjs';
 import {refactorDiscardable,REFACTOR_REASKABLE_KINDS} from '../runtime/js/cm-refactor/workflow.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {readLearningRetrospectiveContent} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
@@ -187,7 +187,7 @@ function main(){
     valid(object(value)&&Object.keys(value).sort().join(',')==='evidence,key,requestDigest'&&nonempty(value.evidence)&&value.evidence.length<=2000,
       'PLAN.discard 需要 key/requestDigest/evidence（取自宿主 status 的 recovery）');
     if(!entry||entry.kind!=='host'||!REFACTOR_REASKABLE_KINDS.includes(entry.input.kind)
-      ||digest(entry.input)!==value.requestDigest||!(last?.key===value.key||unknown.at(-1)?.key===value.key))
+      ||effectDigest(entry)!==value.requestDigest||!(last?.key===value.key||unknown.at(-1)?.key===value.key))
       stop(2,'PLAN.discard 只能作废最后一个文字应答（宿主反问，已记录被拒或结果未知）；命令、写盘与已发布的审查不能作废');
     if(records.discards.filter(item=>item.kind===entry.input.kind).length>=MAX_DISCARDS_PER_KIND)
       stop(2,`${entry.input.kind} 本运行已作废 ${MAX_DISCARDS_PER_KIND} 次，宿主会报 refactor_discard_limit；交人处理`);

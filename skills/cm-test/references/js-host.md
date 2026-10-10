@@ -140,7 +140,7 @@ outcome为passed/failed/unavailable，必须与原命令、实际退出码及清
 - change_impact、test_cases只读，不需要cleanup。
 - qa_logic、qa_browser会操作设备或浏览器：只有会话回执确认清理完成、或你核实资源已释放（设备可能仍在使用）后才能带`cleanup:"completed"`；缺少时报`cm_test_resource_release_required`，不自动继续。记录里同时写一条released（来源operator_confirmed，只存摘要）。
 
-journal追加只增的discard行；每种kind每个运行最多2次（`cm_test_discard_limit`），只能作废最后一个意图（`cm_test_discard_not_last`），命令和日志/发布写入不能作废。回放时伪造、重复、超上限或qa_*缺released的行报`refactor_journal_invalid`；没有discard行的旧记录照原样回放。驾驶员的PLAN.resolution可写同一形状。
+重问的调用带attempt（第几次），status的requestDigest随之变化；被作废那次的迟到回执报`cm_test_resolution_abandoned`，不会被采纳。journal追加只增的discard行；每种kind每个运行最多2次（`cm_test_discard_limit`），只能作废最后一个意图（`cm_test_discard_not_last`），命令和日志/发布写入不能作废。回放时伪造、重复、超上限或qa_*缺released的行报`refactor_journal_invalid`；没有discard行的旧记录照原样回放。驾驶员的PLAN.resolution可写同一形状。
 
 ## 覆盖率及授权补测续接
 

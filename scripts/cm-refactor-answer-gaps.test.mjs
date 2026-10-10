@@ -10,7 +10,7 @@ import {once} from 'node:events';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {createCmRefactorHost} from '../runtime/js/cm-refactor/host.mjs';
-import {openRefactorRecords} from '../runtime/js/cm-refactor/records.mjs';
+import {openRefactorRecords,effectDigest} from '../runtime/js/cm-refactor/records.mjs';
 import {refactorDiscardable} from '../runtime/js/cm-refactor/workflow.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {fixture,response,original,replacement} from './fixtures/cm-refactor.mjs';
@@ -99,10 +99,11 @@ test('replay refuses forged, duplicated and over-limit discard rows; an old jour
   const blocked=await host.handle({operation:'start'});const last=blocked.recovery.lastAnswer;
   const base=fs.readFileSync(journalFile(project),'utf8');
   const open=()=>openRefactorRecords(path.dirname(journalFile(project)),{discardable:refactorDiscardable});
-  const good={type:'discard',key:last.key,kind:'refactor_analyze',reason:'answer_rejected',resultDigest:last.resultDigest,
+  const good={type:'discard',key:last.key,kind:'refactor_analyze',reason:'answer_rejected',attempt:1,requestDigest:last.requestDigest,resultDigest:last.resultDigest,
     evidence:{sha256:digest('x'),length:1},released:null,at:'2026-10-09T00:00:00.000Z'};
   const forged={wrongResult:{...good,resultDigest:'0'.repeat(64)},wrongReason:{...good,reason:'answer_missing',resultDigest:null},
-    notReaskable:{...good,kind:'refactor_recover'},rawEvidence:{...good,evidence:'x'},
+    notReaskable:{...good,kind:'refactor_recover'},rawEvidence:{...good,evidence:'x'},wrongAttempt:{...good,attempt:2},
+    wrongIdentity:{...good,requestDigest:'0'.repeat(64)},
     noRelease:Object.fromEntries(Object.entries(good).filter(([name])=>name!=='released'))};
   for(const [name,row] of Object.entries(forged)){
     fs.writeFileSync(journalFile(project),base);appendRow(project,row);
@@ -113,13 +114,17 @@ test('replay refuses forged, duplicated and over-limit discard rows; an old jour
   appendRow(project,good);assert.throws(open,/refactor_journal_invalid/);
   // Over limit: three discards of one kind, each with its own re-asked answer.
   fs.writeFileSync(journalFile(project),base);
+  const intent=rows(project).find(row=>row.type==='intent'&&row.key===last.key);
   for(let n=0;n<3;n++){
-    if(n)for(const type of ['intent','result']){const intent=rows(project).find(row=>row.type==='intent'&&row.key===last.key);
-      appendRow(project,type==='intent'?{type,key:last.key,kind:'host',input:intent.input}:{type,key:last.key,result:{value:{decision:'proceed'},durationMs:n}});}
+    if(n)for(const type of ['intent','result'])
+      appendRow(project,type==='intent'?{type,key:last.key,kind:'host',input:intent.input,attempt:n+1}:{type,key:last.key,result:{value:{decision:'proceed'},durationMs:n}});
     const current=rows(project).filter(row=>row.type==='result'&&row.key===last.key).at(-1);
-    appendRow(project,{...good,resultDigest:digest(current.result)});
+    appendRow(project,{...good,attempt:n+1,requestDigest:effectDigest({input:intent.input,attempt:n+1}),resultDigest:digest(current.result)});
     if(n<2)assert.doesNotThrow(open,`discard ${n+1}`);else assert.throws(open,/refactor_journal_invalid/,'third discard');
   }
+  // A re-asked intent must carry the next attempt; without it the replay refuses.
+  fs.writeFileSync(journalFile(project),base);appendRow(project,good);
+  appendRow(project,{type:'intent',key:last.key,kind:'host',input:intent.input});assert.throws(open,/refactor_journal_invalid/,'missing attempt');
   // An old journal (no discard rows) replays exactly as before.
   fs.writeFileSync(journalFile(project),base);
   const replay=createCmRefactorHost(config,{call:async()=>assert.fail('a recorded answer is replayed')});
@@ -146,4 +151,23 @@ test('notify classifies refactor discard blocks as stuck',async()=>{
   const {classifyDriveResult}=await import('../runtime/js/notify.mjs');
   for(const reason of ['refactor_analysis_invalid','refactor_unknown_effect','refactor_discard_limit','refactor_discard_not_last'])
     assert.equal(classifyDriveResult('cm-refactor',{result:{stage:'blocked',reason,recovery:{discards:[],lastAnswer:null,unknown:[]}}}),'stuck',reason);
+});
+
+test('a re-asked call is reconciled only as its own attempt; a receipt of the discarded attempt is refused',{timeout:60000},async t=>{
+  const {config}=fixture(t);
+  const lost=createCmRefactorHost(config,{call:async(kind,payload)=>{if(kind==='refactor_apply')throw Error('lost');return response(kind,payload);}});
+  assert.equal((await lost.handle({operation:'start'})).stage,'blocked');
+  let blocked=await createCmRefactorHost(config,{call:async kind=>{assert.equal(kind,'refactor_recover');return {decision:'unknown',evidence:'gone'};}}).handle({operation:'resume'});
+  const first=blocked.recovery.unknown[0];let asked;
+  blocked=await createCmRefactorHost(config,{call:async(kind,payload)=>{asked=payload;throw Error('lost again');}})
+    .handle({operation:'resume',discard:{key:first.key,requestDigest:first.requestDigest,evidence:'session lost it'}});
+  assert.deepEqual(asked.recovery,{key:first.key,attempt:2});
+  const second=blocked.recovery.unknown[0];assert.equal(second.attempt,2);assert.notEqual(second.requestDigest,first.requestDigest);
+  const proposal={value:response('refactor_apply',asked),durationMs:1};
+  const stale=await createCmRefactorHost(config,{call:async(kind,payload)=>{assert.equal(payload.attempt,2);
+    return {decision:'completed',result:proposal,evidence:'receipt of attempt 1'};}}).handle({operation:'resume'});
+  assert.equal(stale.reason,'refactor_recover_attempt_mismatch');
+  const done=await createCmRefactorHost(config,{call:async(kind,payload)=>kind==='refactor_recover'
+    ?{decision:'completed',attempt:2,result:proposal,evidence:'receipt of attempt 2'}:response(kind,payload)}).handle({operation:'resume'});
+  assert.equal(done.stage,'awaiting_finish',JSON.stringify(done));
 });
