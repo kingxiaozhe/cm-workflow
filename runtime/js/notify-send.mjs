@@ -95,7 +95,10 @@ async function readChecked(file,label,{privateFile,budget,fileOps=fsp,bytes:raw=
   if(link.size>BigInt(MAX_FILE))throw configError(`${label} 太大`,{state:'invalid',reason:'too_large'});
   let handle;
   try{
-    handle=await fileOps.open(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+    // O_NONBLOCK: a file swapped for a FIFO after lstat opens at once (instead of
+    // waiting for a writer) and is then refused by the type check below.
+    // Reads of regular files are unaffected.
+    handle=await fileOps.open(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
     const st=await handle.stat({bigint:true});
     if(bad(st))throw configError(notRegular,{state:'invalid',reason:'permission'});
     if(st.dev!==link.dev||st.ino!==link.ino)throw configError(`${label} 在核对期间被替换，为安全起见不使用它`,{state:'invalid',reason:'permission'});

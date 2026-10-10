@@ -868,3 +868,33 @@ test('switch refuses to write a notify.json over the 64 KiB read cap and keeps t
     assert.equal((await switchChannel(s.home,'bark',{execPath:node})).channel,'bark');
   }
 });
+
+// A regular file replaced by a FIFO between the lstat check and open must not
+// block on a writer: the open is non-blocking and the handle's type check refuses it.
+test('a file swapped for a FIFO between the check and open is refused at once instead of waiting for a writer',{skip:!posix},async t=>{
+  const s=sandbox(t);
+  const cases=[['notify-channel.conf','CHANNEL=bark\n',(file,fileOps)=>readRegularFile(file,'notify-channel.conf',{fileOps}),/notify-channel.conf 必须是普通文件/],
+    ['notify.json','{"version":1}',(file,fileOps)=>readRegularFile(file,'notify.json',{fileOps,bytes:true}),/notify.json 必须是普通文件/],
+    ['bark.env',`BARK_KEY=${BARK_SECRET}\n`,(file,fileOps)=>readPrivateFile(file,'bark.env',{fileOps}),/bark.env 必须是自己的普通文件且权限 600/]];
+  for(const [name,content,read,refused] of cases){
+    const file=s.write(name,content),flags=[];
+    const swapToFifo={lstat:fsp.lstat,open:async(target,flag)=>{flags.push(flag);fs.unlinkSync(target);
+      assert.equal(spawnSync('mkfifo',['-m','600',target]).status,0);return fsp.open(target,flag);}};
+    // A build that blocks fails here; the waiting open is then given a writer
+    // (held open briefly) so it completes and the test process can still exit.
+    let timer,writer=null;
+    const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{
+      try{writer=fs.openSync(file,fs.constants.O_RDWR|fs.constants.O_NONBLOCK);}catch{}
+      reject(new Error('open blocked on the FIFO'));},3000);});
+    t.after(async()=>{clearTimeout(timer);await new Promise(resolve=>setTimeout(resolve,200));if(writer!==null)fs.closeSync(writer);});
+    await assert.rejects(Promise.race([read(file,swapToFifo),deadline]),error=>{assert.match(error.message,refused);noSecret(error.message);return true;});
+    clearTimeout(timer);
+    assert.equal(flags.length,1);assert.notEqual(flags[0]&fs.constants.O_NONBLOCK,0,`${name} opened non-blocking`);
+    assert.notEqual(flags[0]&fs.constants.O_NOFOLLOW,0);
+    fs.unlinkSync(file);
+  }
+  // Regular files still read exactly as before through the same flags.
+  s.write('bark.env',`BARK_KEY=${BARK_SECRET}\n`);
+  assert.equal(await readPrivateFile(path.join(s.home,'bark.env'),'bark.env'),`BARK_KEY=${BARK_SECRET}\n`);
+  assert.deepEqual(await readRegularFile(s.write('notify.json','﻿{}'),'notify.json',{bytes:true}),Buffer.from('﻿{}'));
+});
