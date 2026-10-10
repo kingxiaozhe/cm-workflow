@@ -6,7 +6,7 @@ import os from 'node:os';
 import {spawnSync} from 'node:child_process';
 import {createParallelMemberQaDecisionProvider} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import path from 'node:path';
-import {createCmAiBatch,taskCommitArgs} from './cm-ai-batch-run.mjs';
+import {createCmAiBatch,taskCommitArgs,memberRescheduleAllowed,memberRunHistory} from './cm-ai-batch-run.mjs';
 import {createCodexDeveloperRun} from '../runtime/js/cm-ai/codex-developer-adapter.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
@@ -34,6 +34,22 @@ test('Q25 an execution-policy batch reschedules a terminal parallel member seria
 // with the batch operation named; the batch forwards develop_redo to it and continues.
 // Review round 1 (blocker): an unresolved unknown member of a strict batch is never
 // rescheduled into a second generation; it stays in its run with an explicit stop.
+// Round-2 review: the host projects a raw unknown whose redo budget is spent as
+// blocked/develop_redo_limit with pendingAction none. The reschedule decision reads
+// the raw journal, so that member stays in its original run.
+test('reschedule needs a raw checkpointed blocked state, never a projection over a raw unknown',()=>{
+  const projected={state:'blocked',code:'develop_redo_limit',pendingAction:'none'};
+  assert.equal(memberRescheduleAllowed(projected,{state:{state:'unknown',code:'call_timeout'},pending:null}),false);
+  assert.equal(memberRescheduleAllowed(projected,null),false);
+  assert.equal(memberRescheduleAllowed({state:'blocked',code:'failed',pendingAction:'none'},{state:{state:'blocked',code:'failed'},pending:{id:'develop-1'}}),false);
+  assert.equal(memberRescheduleAllowed({state:'blocked',code:'review_transport_timeout',pendingAction:'abandon_review',reviewRedispatchStopRequired:true},
+    {state:{state:'blocked',code:'review_transport_timeout'},pending:null}),false);
+  assert.equal(memberRescheduleAllowed({state:'unknown',code:'reconciliation_required',pendingAction:'reconcile'},{state:{state:'unknown'},pending:null}),false);
+  assert.equal(memberRescheduleAllowed({state:'blocked',code:'failed',pendingAction:'none'},{state:{state:'blocked',code:'failed'},pending:null}),true);
+  const missing=fs.mkdtempSync(path.join(os.tmpdir(),'cm-batch-history-'));
+  try{assert.equal(memberRunHistory(missing,'no-such-run'),null);}finally{fs.rmSync(missing,{recursive:true,force:true});}
+});
+
 test('a strict-batch parallel member left unknown stays in its original run and is not rescheduled',async()=>{
   await batchFixture('parallel-unknown',{executionPolicy:true});
 });

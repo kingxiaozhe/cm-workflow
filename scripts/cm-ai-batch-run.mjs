@@ -18,6 +18,7 @@ import {approvedTaskGrammar} from '../runtime/js/spec-task-line.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {inspectRunClosure as inspectClosure} from './cm-log-event.mjs';
 import {releaseVerifiedQaResources} from '../runtime/js/cm-ai/qa-resource-release.mjs';
+import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 
 const writer=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
 const key=task=>`${task.feature}/${task.taskId}`;
@@ -49,13 +50,26 @@ export const BATCH_MEMBER_ACTIONS=Object.freeze({
   bootstrap_review_recover:Object.freeze({option:'allowBootstrapReviewRecovery',flag:'--allow-bootstrap-review-recovery'})});
 // Pending actions a member resolves inside its own run from the batch entry.
 const IN_RUN_ACTIONS=new Set([...Object.keys(BATCH_MEMBER_ACTIONS),'reconcile_review']);
-// A strict (external-model or execution-policy) batch reschedules a parallel member
-// serially only from a checkpointed blocked/failed terminal: the old call ended and
-// its writer stopped. Anything unresolved (unknown, an open review, a pending
-// reconcile) stays in its original run: a second generation would take a new runId
-// and start again at attempt 1, past the original-invocation reconciliation.
-export function strictRescheduleAllowed(status){
-  return ['blocked','failed'].includes(status?.state)&&!IN_RUN_ACTIONS.has(status.pendingAction)&&status.pendingAction!=='reconcile';
+// A batch may reschedule a parallel member serially (a second generation: new runId,
+// attempt 1) only from a checkpointed blocked terminal: the old call returned, so it
+// ended and its writer stopped. The decision reads the member's RAW persisted journal
+// (history from readRunnerHistory), never the host's projected status alone: a
+// projection such as blocked/develop_redo_limit can sit over a raw unknown whose last
+// call nobody proved stopped. Anything unresolved (raw unknown, a pending effect, an
+// open review, a pending reconcile, an operator confirmation still due) stays in its
+// original run. Shared by every batch kind that reschedules.
+export function memberRescheduleAllowed(status,history){
+  const raw=history?.state;
+  return status?.state==='blocked'&&raw?.state==='blocked'&&history.pending==null
+    &&!IN_RUN_ACTIONS.has(status.pendingAction)&&status.pendingAction!=='reconcile'
+    &&status.developRedoRequired!==true&&status.reviewRedispatchStopRequired!==true;
+}
+// The member's raw journal replay, or null when it cannot be read or replayed.
+export function memberRunHistory(specsDir,runId){
+  try{
+    const state=JSON.parse(fs.readFileSync(path.join(specsDir,'.reviews','.execution',runId,'state.json'),'utf8'));
+    const records=state.records;return readRunnerHistory(records,records[0].payload.config,records[0].payload.version);
+  }catch{return null;}
 }
 export function createCmAiBatch({configuration,executionFor,logHome,runtime='codex',checkCommands=null,checkTimeoutMs=60000,
   rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,holdRevisions=[],bootstrapKeys=[],memberActions={}}){
@@ -409,7 +423,9 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       // worktree and stops with the batch operation named; any other terminal member
       // is rescheduled serially exactly like an ordinary batch (it used to wait forever).
       if(strict&&IN_RUN_ACTIONS.has(status.pendingAction)){recoverable??={key,status};continue;}
-      if(strict&&!strictRescheduleAllowed(status)){unresolved??={key,status};continue;}
+      const history=strict?memberRunHistory(config.specsDir,plans.get(key).identity.runId):null;
+      if(strict&&!memberRescheduleAllowed(status,history)){
+        unresolved??={key,status,raw:history?.state?`${history.state.state}/${history.state.code??history.state.state}`:'unreadable'};continue;}
       if(strict)rescheduled.push(key);
       record('batch_member_blocked',{from_key:key,code:status.code??status.state,
         reason:status.blockedReason??status.reason??status.code??status.state,...location(key),generation:2});
@@ -418,7 +434,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     for(const row of progress().blocked.values())preserveBlockedMember(row);
     if(rejected)throw rejected;
     if(recoverable)return parallelRecoveryRequired(recoverable.key,recoverable.status);
-    if(unresolved)return parallelMemberUnresolved(unresolved.key,unresolved.status);
+    if(unresolved)return parallelMemberUnresolved(unresolved.key,unresolved.status,unresolved.raw);
     // The second generation is a new run: stop here so the next advance (and its
     // driver) prepares that run's answers before anything is dispatched to it.
     if(rescheduled.length)return parallelMemberRescheduled(rescheduled);
@@ -427,13 +443,14 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   }
   const stopGuidance=(summary,nextStep,prerequisites)=>Object.freeze({summary,nextStep,recoveryOperation:null,
     prerequisites:Object.freeze(prerequisites),authorizationGranted:false});
-  function parallelMemberUnresolved(key,status){
+  function parallelMemberUnresolved(key,status,raw){
     const exit=`只读核对 ${key} 原运行的记录、进程与 worktree；有原调用回执时从批次入口发送 reconcile_review（taskKey ${key}、invocationId）；`
       +`状态出现 abandon_effect、abandon_review 等可恢复动作时，关闭批次宿主、带对应 --allow-… ${key} 重新启动并发送同名批次操作；`
       +`都没有时只能取消本批次，还原该任务已改动的代码后，用单任务宿主 cm-ai-host.mjs 以 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务`;
     return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_parallel_member_unresolved',batchId:config.batchId,
       currentTask:key,identity:status.identity,memberState:status.state,memberCode:status.code??null,pendingAction:status.pendingAction??null,
-      reason:`外部模型或执行策略批次的并行成员 ${key} 停在 ${status.state}/${status.code??status.state}，结果尚未确认或审查尚未终结，不改排串行（改排会换 runId、从 attempt 1 重派，绕过原调用对账与写入方停止证明）。出口：${exit}。`,
+      rawState:raw,
+      reason:`外部模型或执行策略批次的并行成员 ${key} 停在 ${status.state}/${status.code??status.state}（原始存档状态 ${raw}），结果尚未确认、写入方未证明已停或审查尚未终结，不改排串行（改排会换 runId、从 attempt 1 重派，绕过原调用对账与写入方停止证明）。出口：${exit}。`,
       guidance:stopGuidance('并行成员结果未确认，批次不会自动改排或重派。',`${exit}。`,
         ['不新建第二代运行，不删除该成员 worktree','先确认旧宿主与该成员的会话或子进程已停止写入'])});
   }
