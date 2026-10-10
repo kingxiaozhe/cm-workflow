@@ -65,6 +65,18 @@ export const REVIEW_RETRY_CODES=Object.freeze(['review_transport_timeout','revie
 export const REVIEW_NOT_DISPATCHED_CODES=Object.freeze(['grant_expired','clock_invalid']);
 const notDispatchedEffect=entry=>entry.effect.kind==='review'&&entry.result.state==='pending_review'
   &&REVIEW_NOT_DISPATCHED_CODES.includes(entry.result.code)&&entry.result.reviewInvocation?.result?.outcome==='not_dispatched';
+// Bounded on its own (it holds no call or effect slot): at most two such redispatches
+// per review round, like the no-result ones. The count is the round's not-dispatched
+// effects in the checkpointed cache, so live and replay read the same number; once the
+// round's latest end is the third, no review effect is admitted (live and replay) and
+// status shows the explicit limit block.
+export const MAX_REVIEW_NOT_DISPATCHED_RETRIES=2;
+export const REVIEW_NOT_DISPATCHED_LIMIT_CODE='review_not_dispatched_limit';
+export const reviewNotDispatchedCount=(cache,attempt)=>cache.filter(entry=>entry.effect.identity.attempt===attempt&&notDispatchedEffect(entry)).length;
+export const reviewNotDispatchedExhausted=s=>s.state==='pending_review'&&REVIEW_NOT_DISPATCHED_CODES.includes(s.code)
+  &&reviewNotDispatchedCount(s.cache,s.attempt)>MAX_REVIEW_NOT_DISPATCHED_RETRIES;
+export const reviewNotDispatchedLimitReason=code=>`${REVIEW_NOT_DISPATCHED_LIMIT_CODE}: 本轮独立审查已登记 ${MAX_REVIEW_NOT_DISPATCHED_RETRIES+1} 次，每次都在派发前作废（最近一次 pending_review/${code}：授权过期或派发时钟倒退），审查进程从未启动。`
+  +`本运行不再重派，也没有接受这个状态的恢复操作（supersede 不接受原始 pending_review）。先查清宿主从授权到派发为何超过授权有效期（60 秒内）或本机时钟为何倒退；保留本运行记录与代码，把本 reason 交给维护者处理。`;
 const timeoutEffect=entry=>entry.effect.kind==='review'&&reviewRetryCode(entry.result.reviewInvocation?.result)!==null
   &&entry.result.code===reviewRetryCode(entry.result.reviewInvocation.result);
 export const reviewRetrySpent=(cache,calls,attempt,contextId)=>cache.some(entry=>entry.effect.identity.attempt===attempt&&timeoutEffect(entry))
@@ -1187,6 +1199,7 @@ export function readRunnerHistory(raw,config,version=1) {
       if(Object.hasOwn(e,'learningInput')){need(e.kind==='develop'&&Object.hasOwn(config,'taskLearning'),'runner_learning');
         validTaskLearningInput(e.learningInput,e.identity,config.taskLearning.feature);}
       same(e.identity,{...config.identity,attempt:state.attempt});need(e.version===1 && stageAllowed(e.kind,state.state,state.code,state.priorReview?.verdict),'runner_stage');
+      need(!(e.kind==='review'&&reviewNotDispatchedExhausted(state)),'runner_stage');
       need(effectSlotFree(e.kind,state.cache,state.calls) && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
       pending=e;beforeIntent=structuredClone(state);controls={};completeIntentDigest=e.kind==='complete'?r.digest:null;
       invocation={registration:null,started:null,result:null};registrationRecord=null;startedRecord=null;resultRecord=null;
@@ -1620,6 +1633,7 @@ export function projectedRunnerStatus(history,config){
     if(reviewRedispatchable(s,contextId,records))return {...s,reviewRedispatchStopRequired:true,reason:reviewRedispatchStopReason(s.code)};
     if(reviewRedispatchExhausted(s,contextId,records))return {...s,code:REVIEW_REDISPATCH_LIMIT_CODE,reason:reviewRedispatchLimitReason(s.code)};
   }
+  if(reviewNotDispatchedExhausted(s))return {...s,state:'blocked',code:REVIEW_NOT_DISPATCHED_LIMIT_CODE,reason:reviewNotDispatchedLimitReason(s.code)};
   if(s.state!=='unknown')return s;
   const recheck=developRecheckCode(s,config,gaps.developRecheck??0);
   if(recheck!==null)return project(recheck);

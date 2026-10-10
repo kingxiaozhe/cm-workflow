@@ -19,7 +19,7 @@ import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
   MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,effectSlotFree,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
   reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted,
-  MAX_REVIEW_REDISPATCHES,REVIEW_RETRY_CODES,reviewRedispatchCount,reviewRedispatchable,reviewRedispatchExhausted,REVIEW_REDISPATCH_LIMIT_CODE,reviewRedispatchLimitReason,reviewRedispatchStopReason,reviewAbandonRefusal,
+  MAX_REVIEW_REDISPATCHES,REVIEW_RETRY_CODES,reviewNotDispatchedExhausted,REVIEW_NOT_DISPATCHED_LIMIT_CODE,reviewNotDispatchedLimitReason,reviewRedispatchCount,reviewRedispatchable,reviewRedispatchExhausted,REVIEW_REDISPATCH_LIMIT_CODE,reviewRedispatchLimitReason,reviewRedispatchStopReason,reviewAbandonRefusal,
   completionBlockCount,completionRetriesExhausted,supersededReviewPayload,bootstrapReviewRecoverable,protectedDevelopScope,protectedScopeBlockReason,
   developTimeoutBasis,developTimeoutEffect,developTimeoutState,DEVELOP_CALL_TIMEOUT_REASON,
   developAnswerInvalidEffect,developAnswerRetryable,developAnswerInvalidReason,
@@ -518,6 +518,9 @@ export function createTaskRunner(options) {
       current=freeze({...current,reviewRedispatchStopRequired:true,reason:reviewRedispatchStopReason(current.code)});
     else if(current.state==='blocked'&&reviewRedispatchSpent())
       current=freeze({...current,code:REVIEW_REDISPATCH_LIMIT_CODE,reason:reviewRedispatchLimitReason(current.code)});
+    // A round whose review was registered and voided before dispatch three times.
+    if(!busy&&current.state==='pending_review'&&reviewNotDispatchedExhausted({state,code,attempt,cache:[...cache.values()]}))
+      current=freeze({...current,state:'blocked',code:REVIEW_NOT_DISPATCHED_LIMIT_CODE,reason:reviewNotDispatchedLimitReason(current.code)});
     // Status only; never part of a cached result or checkpoint.
     if(current.state==='unknown'&&reviewResultAbandonable())current=freeze({...current,abandonableReviewResult:true});
     else if(current.state==='unknown'&&!(metadata.externalModels||metadata.executionPolicy)&&invocationMode&&store&&!busy&&!poisoned&&!restored?.pending){
@@ -1344,6 +1347,7 @@ export function createTaskRunner(options) {
       answerRetry=v.kind==='develop'&&state==='blocked'&&code==='failed'&&answerRetryable();
       need(timeoutBasis!==null||answerRetry||recheck!==null||completeSource!==null||dispatchBasis!==null
         ||stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(effectSlotFree(v.kind,[...cache.values()],calls),'limit_exceeded');
+      need(!(v.kind==='review'&&reviewNotDispatchedExhausted({state,code,attempt,cache:[...cache.values()]})),REVIEW_NOT_DISPATCHED_LIMIT_CODE);
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
     } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input'}));}

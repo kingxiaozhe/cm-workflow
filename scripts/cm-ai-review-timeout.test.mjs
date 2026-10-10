@@ -123,6 +123,54 @@ test('a never-dispatched review (grant_expired) redispatches in its own run unde
     assert.deepEqual(f.reopen().status(),approved);
   },{times:[100,101,200],authorize:(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{if(expired)grant.expiresAt=150;})});
 });
+// Batch 4 review round 2: never-dispatched redispatches hold no call or effect slot
+// but have their own bound, two per review round. The third not-dispatched end is an
+// explicit limit block; live status and the replayed projection read the same count.
+test('never-dispatched review redispatches stop at review_not_dispatched_limit after two, identically live and replayed',()=>{
+  let expiring=3;
+  return fixture(async f=>{
+    const runner=f.make();await runner.executeEffect(f.effect('develop'));
+    let end=await runner.executeEffect(f.effect('review'));expiring--;
+    assert.deepEqual([end.state,end.code],['pending_review','grant_expired']);
+    for(const retry of [1,2]){
+      const next=f.reopen();
+      // Still redispatchable: same review round, no call or effect slot spent.
+      end=await next.executeEffect({...f.effect('review'),id:`review-1-retry-${retry}`});expiring--;
+      if(retry===1)assert.deepEqual([end.state,end.code],['pending_review','grant_expired']);
+    }
+    assert.equal(f.dispatches(),0);
+    assert.equal(end.state,'blocked');assert.equal(end.code,'review_not_dispatched_limit');
+    assert.match(end.reason,/^review_not_dispatched_limit: .*3 次.*派发前作废/);
+    const saved=f.getStore().snapshot(),config=saved.records[0].payload.config,history=readRunnerHistory(saved.records,config,3);
+    assert.deepEqual([history.state.state,history.state.code],['pending_review','grant_expired']);
+    assert.equal(completedEffectCount(history.state.cache,history.state.calls),1);
+    const projected=projectedRunnerStatus(history,config);
+    assert.deepEqual([projected.state,projected.code,projected.reason],[end.state,end.code,end.reason]);
+    // Replay applies the same stop: a journal carrying a fourth review intent is refused.
+    const intent=saved.records.findLast(record=>record.kind==='intent'&&record.payload.effect?.id==='review-1-retry-2');
+    assert(intent,'retry-2 intent');
+    const {digest:ignored,...body}=JSON.parse(JSON.stringify(intent).replaceAll('review-1-retry-2','review-1-retry-3'));
+    const last=saved.records.at(-1),forged={...body,seq:last.seq+1,id:`runner.${String(saved.records.length+1).padStart(6,'0')}`,previousDigest:last.digest};
+    assert.throws(()=>readRunnerHistory([...saved.records,{...forged,digest:digest(forged)}],config,3),{code:'runner_stage'});
+    const reopened=f.reopen();assert.deepEqual(reopened.status(),end);
+    // No fourth registration, even with a grant that would dispatch.
+    const refused=await reopened.executeEffect({...f.effect('review'),id:'review-1-retry-3'});
+    assert.deepEqual([refused.outcome,refused.code],['rejected','review_not_dispatched_limit']);
+    assert.equal(f.getStore().snapshot().records.length,saved.records.length);assert.equal(f.dispatches(),0);
+  },{times:[100,101,200],authorize:(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{if(expiring>0)grant.expiresAt=150;})});
+});
+// The bound counts not-dispatched ends only: two of them, then a dispatched review, is approved.
+test('a review dispatched on the second never-dispatched redispatch is accepted',()=>{
+  let expiring=2;
+  return fixture(async f=>{
+    const runner=f.make();await runner.executeEffect(f.effect('develop'));
+    await runner.executeEffect(f.effect('review'));expiring--;
+    await f.reopen().executeEffect({...f.effect('review'),id:'review-1-retry-1'});expiring--;
+    const approved=await f.reopen().executeEffect({...f.effect('review'),id:'review-1-retry-2'});
+    assert.equal(approved.state,'approved',JSON.stringify(approved));assert.equal(f.dispatches(),1);
+    assert.deepEqual(f.reopen().status(),approved);
+  },{times:[100,101,200],authorize:(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{if(expiring>0)grant.expiresAt=150;})});
+});
 test('V3 non-monotonic dispatch clock is journaled as clock_invalid without adapter dispatch',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));
   const end=await runner.executeEffect(f.effect('review'));

@@ -101,7 +101,7 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 
 运行器对每次审查计时的上限取「journal 里的调用超时」与「审查预算 + 60000 毫秒余量」中较大者；这个上限不写入 journal，所以把 review-config 的 `timeoutMs` 调到 30 分钟以上（最多 3600000）不会再在 30 分钟被运行器截断，恢复时也可继续调大。
 新运行的代码根快照固定忽略 `.DS_Store`、`._*`、`.AppleDouble/`、`Thumbs.db`、`xcuserdata/`、`*.xcuserstate`、`.build/`、`.swiftpm/`、`DerivedData/`，也跳过 Git 报告为 ignored 的目录及路径；任务 scope、AGENTS.md 与 specs 仍须验证。基线有界保存 Git 忽略路径与目录，后续将基线和当前忽略决定的并集应用到比较两侧；规则文件和无关 Git 配置变化本身不阻断审查。Git 不可用或忽略结果超限时基线标明仅用固定列表。这有意缩小代码根检查面，被忽略的产物不构成已审代码；旧 journal 沿旧规则回放。
-审查已登记、但派发前授权已过期或派发时钟倒退（`pending_review/grant_expired`、`pending_review/clock_invalid`，调用记为 `not_dispatched`）：审查进程没有启动，也没有结论，不需要证明谁已停止。`pendingAction` 为 `resume`，在原运行 `advance` 会重新取得本轮授权并重派（新 effect id、同一审查轮次）；这次未派发不占调用或 effect 名额。批次成员同样在原运行重派，不改排。
+审查已登记、但派发前授权已过期或派发时钟倒退（`pending_review/grant_expired`、`pending_review/clock_invalid`，调用记为 `not_dispatched`）：审查进程没有启动，也没有结论，不需要证明谁已停止。`pendingAction` 为 `resume`，在原运行 `advance` 会重新取得本轮授权并重派（新 effect id、同一审查轮次）；这次未派发不占调用或 effect 名额，但每轮最多这样重派 2 次：第 3 次仍在派发前作废时停为 `review_not_dispatched_limit`（`reason` 写明原因；没有接受这个状态的恢复操作，保留运行交维护者）。批次成员同样在原运行重派，不改排。
 
 ## 规格漂移、代码漂移与审查失败
 
