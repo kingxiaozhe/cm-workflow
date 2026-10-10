@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
-import {notify,readNotifyConfig,buildNotifyMessage,driveNotice,NOTIFY_LIMITS,NOTIFY_WORKFLOWS} from '../runtime/js/notify.mjs';
+import {notify,readNotifyConfig,parseNotifyConfig,buildNotifyMessage,normalizeNotifyText,driveNotice,NOTIFY_LIMITS,NOTIFY_WORKFLOWS,DEFAULT_NOTIFY_TEXT} from '../runtime/js/notify.mjs';
 
 const NOW=Date.parse('2026-10-08T08:00:00.000Z');
 const DRIVE_CORE=new URL('../runtime/js/cm-ai/drive-core.mjs',import.meta.url).href;
@@ -83,6 +83,107 @@ process.stdout.write(buildNotifyMessage({workflow:'cm-ai',event:'done',project:'
     const run=spawnSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8',env:{...process.env,TZ:tz}});
     assert.equal(run.status,0,run.stderr);assert.equal(run.stdout,`项目：demo\n时间：${clock}`);
   }
+});
+
+// Optional notify.json `text`. Expected strings below are written out by hand
+// from the default layout, not computed by the code under test.
+const EVENTS=[['done','流程已结束'],['waiting','等待会话应答'],['idle','疑似空转'],['idle_waiting','在等你'],
+  ['dead','宿主已退出未收尾'],['stuck','需要人处理'],[undefined,'需要人处理']];
+test('custom text: without `text` (or with an empty one) every event is byte-identical to the default',()=>{
+  const at={now:NOW,timeZone:'Asia/Shanghai'};
+  for(const [event,headline] of EVENTS){
+    const base=buildNotifyMessage(fields('k',{event}),at);
+    assert.equal(base.title,`CM cm-fix ${headline} · demo-app`,String(event));
+    assert.equal(base.body,event==='done'?'项目：demo-app\n任务：T-001\n时间：16:00'
+      :'下一步：核对 reason 后恢复原运行\n项目：demo-app\n流程：cm-fix\n任务：T-001\n阶段：blocked\n原因：checks_not_passed\n时间：16:00');
+    for(const text of [{},DEFAULT_NOTIFY_TEXT,null,normalizeNotifyText({}).text])
+      assert.deepEqual(buildNotifyMessage(fields('k',{event}),{...at,text}),base,`${event} ${JSON.stringify(text)}`);
+  }
+  const plainConfig=parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true']}));
+  assert.deepEqual(plainConfig,{config:{command:['/bin/true'],waitMs:600000,checkWaitMs:2700000,idleMs:2700000}});
+  assert.equal(Object.hasOwn(plainConfig.config,'text'),false);
+});
+
+test('custom text: prefix, headlines, field order (runId included) and labels',()=>{
+  const at={now:NOW,timeZone:'Asia/Shanghai'};
+  const text={titlePrefix:'【工作流】',headlines:{done:'完工',waiting:'等你回话',idle:'没动静',idle_waiting:'该你了',dead:'宿主没了',default:'卡住了'},
+    fields:{default:['code','runId','time'],done:['time','task']},labels:{code:'代码',runId:'编号',time:'时刻',task:'工单'}};
+  const parsed=parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true'],text}));
+  assert.equal(parsed.textReason,undefined);
+  const custom=parsed.config.text;
+  const want={done:'完工',waiting:'等你回话',idle:'没动静',idle_waiting:'该你了',dead:'宿主没了',stuck:'卡住了'};
+  for(const [event,headline] of Object.entries(want)){
+    const message=buildNotifyMessage(fields('k',{event}),{...at,text:custom});
+    assert.equal(message.title,`【工作流】 cm-fix ${headline} · demo-app`);
+    assert.equal(message.body,event==='done'?'时刻：16:00\n工单：T-001':'代码：checks_not_passed\n编号：run-1\n时刻：16:00');
+  }
+  // Partial text: only what is given changes; an empty prefix drops it from the title.
+  const partial=buildNotifyMessage(fields('k'),{...at,text:{titlePrefix:'',labels:{nextAction:'先做'}}});
+  assert.equal(partial.title,'cm-fix 需要人处理 · demo-app');
+  assert.equal(partial.body,'先做：核对 reason 后恢复原运行\n项目：demo-app\n流程：cm-fix\n任务：T-001\n阶段：blocked\n原因：checks_not_passed\n时间：16:00');
+  assert.equal(buildNotifyMessage(fields('k',{event:'waiting'}),{...at,text:{headlines:{waiting:'等'}}}).title,'CM cm-fix 等 · demo-app');
+  assert.equal(buildNotifyMessage(fields('k',{event:'idle'}),{...at,text:{headlines:{waiting:'等'}}}).title,'CM cm-fix 疑似空转 · demo-app');
+  // Empty field values are still left out under a custom order.
+  assert.equal(buildNotifyMessage({workflow:'cm-ai'},{...at,text:{fields:{default:['runId','workflow','time']}}}).body,'流程：cm-ai\n时间：16:00');
+});
+
+test('custom text strings are cleaned like field values: paths redacted, control characters removed, each capped',()=>{
+  const at={now:NOW,timeZone:'UTC'};
+  const text=normalizeNotifyText({titlePrefix:'CM\u0007/Users/me/secret',
+    headlines:{default:'卡住\n见/srv/private/push.env\u001b[31m'},labels:{nextAction:'C:\\Users\\me\\a.txt\u0000下一步',project:'~/proj',code:'\\\\srv\\share\\x'}}).text;
+  const message=buildNotifyMessage(fields('k'),{...at,text});
+  for(const forbidden of ['/Users/','me\\','secret','/srv/','push.env','~/proj','\\\\srv','\u0007','\u001b','\u0000','\n见'])
+    assert(!message.title.includes(forbidden)&&!message.body.split('\n').map(line=>line.split('：')[0]).join('|').includes(forbidden),JSON.stringify(forbidden));
+  assert.equal(message.title,'CM <路径> cm-fix 卡住 见<路径> [31m · demo-app');
+  assert.equal(message.body.split('\n')[0],'<路径> 下一步：核对 reason 后恢复原运行');
+  assert.match(message.body,/\n<路径>：demo-app\n/);
+  assert.match(message.body,/\n<路径>：checks_not_passed\n/);
+  // Caps: prefix 16, headline 24, label 12 characters (… included); title 60, body 500.
+  const long=normalizeNotifyText({titlePrefix:'前'.repeat(40),headlines:{default:'标'.repeat(40)},labels:{nextAction:'签'.repeat(40)}}).text;
+  assert.equal(long.titlePrefix,'前'.repeat(15)+'…');assert.equal(long.headlines.default,'标'.repeat(23)+'…');
+  assert.equal(long.labels.nextAction,'签'.repeat(11)+'…');
+  const huge='x'.repeat(2000);
+  const big=buildNotifyMessage({...fields('k'),workflow:huge,project:huge,runId:huge,task:huge,stage:huge,code:huge,nextAction:huge},
+    {...at,text:{...long,fields:{default:['nextAction','runId','project','workflow','task','stage','code','time']}}});
+  assert.equal(Array.from(big.title).length,NOTIFY_LIMITS.titleChars);
+  assert(Array.from(big.body).length<=NOTIFY_LIMITS.bodyChars);
+  assert.match(big.body,/^签{11}…：x{199}…\n/);
+  assert.match(big.body,/\n运行：x{63}…\n/);
+});
+
+test('invalid text falls back to the default text with one text_config log line; notices stay on',async t=>{
+  const bad=[[null,'text'],['标题','text'],[[],'text'],[{subject:'x'},'text_key'],[{titlePrefix:7},'title_prefix'],
+    [{titlePrefix:'\u0007'},'title_prefix'],[{headlines:{stuck:'x'}},'headlines'],[{headlines:{done:''}},'headlines'],
+    [{headlines:{done:'\u0001\u0002'}},'headlines'],[{headlines:'x'},'headlines'],[{labels:{secret:'x'}},'labels'],
+    [{labels:{task:3}},'labels'],[{fields:{default:['nextAction','diff']}},'fields'],[{fields:{default:[]}},'fields'],
+    [{fields:{default:['task','task']}},'fields'],[{fields:{stuck:['task']}},'fields'],[{fields:{done:'task'}},'fields'],
+    [{fields:{done:['toString']}},'fields']];
+  for(const [text,reason] of bad){
+    const parsed=parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true'],text}));
+    assert.equal(parsed.reason,undefined,JSON.stringify(text));assert.equal(parsed.textReason,reason,JSON.stringify(text));
+    assert.equal(parsed.config.text,undefined);assert.deepEqual(parsed.config.command,['/bin/true']);
+    assert.deepEqual(buildNotifyMessage(fields('k'),{now:NOW,timeZone:'UTC',text}),buildNotifyMessage(fields('k'),{now:NOW,timeZone:'UTC'}));
+  }
+  // End to end: the typo does not silence the notice, it goes out in the default text, and notify.log says why once.
+  const h=home(t,{config:{text:{fields:{default:['nextAction','diff']}}}});
+  assert.equal(readNotifyConfig(h.env).text,undefined);
+  assert.deepEqual(notify(fields('typo'),{env:h.env,now:NOW}),{sent:true,reason:'launched'});
+  assert(await h.until(()=>h.rows().length===1));
+  assert.equal(h.rows()[0].title,'CM cm-fix 需要人处理 · demo-app');
+  assert.match(h.rows()[0].body,/^下一步：核对 reason 后恢复原运行\n项目：demo-app\n/);
+  readNotifyConfig(h.env);
+  const lines=h.log().split('\n').filter(line=>line.includes('text_config'));
+  assert.equal(lines.length,1,h.log());assert.match(lines[0],/ config - key=- default_text text_config fields$/);
+  assert.doesNotMatch(h.log(),/off invalid_config/);
+});
+
+test('custom text reaches the command in CM_NOTIFY_TITLE/BODY and the stdin JSON',async t=>{
+  const h=home(t,{config:{text:{titlePrefix:'提醒',headlines:{default:'卡住了'},fields:{default:['task','code']},labels:{task:'工单'}}}});
+  assert.equal(notify(fields('custom'),{env:h.env,now:NOW}).sent,true);
+  assert(await h.until(()=>h.rows().length===1));
+  const [row]=h.rows();
+  assert.equal(row.title,'提醒 cm-fix 卡住了 · demo-app');assert.equal(row.body,'工单：T-001\n原因：checks_not_passed');
+  assert.equal(row.stdin.title,row.title);assert.equal(row.stdin.body,row.body);assert.equal(row.stdin.runId,'run-1');
 });
 
 test('sends through env and stdin once per key; the same key within 6 hours is skipped',async t=>{
