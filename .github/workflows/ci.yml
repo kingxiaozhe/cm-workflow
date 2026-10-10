@@ -119,8 +119,10 @@ jobs:
   # 跟登录无关，装上 codex 也没用。它们改由 scripts/cm-release-smoke.sh 在发版时覆盖——
   # 那个脚本本来就要求本机装了 codex 和 byz，是天然的落点。
   # 下面第一步会断言排除名单正好是这几份：想往里加东西就得改这句，改动会出现在评审里。
-  # 140 多个测试文件串行要 12～20 分钟：按排序后的序号轮流分成 4 份同时跑，
-  # 每个文件恰好落在一份里；下面的 js-tests 汇总这 4 份，名字和以前一样。
+  # 140 多个测试文件串行要 12～20 分钟：分成 4 份同时跑，每个文件恰好落在一份里；
+  # 下面的 js-tests 汇总这 4 份，名字和以前一样。以前按序号轮流分，最慢的几个文件挤进
+  # 同一份，那份要 7.5 分钟、其余 4.3 分钟；现在 scripts/ci-test-shards.mjs 按
+  # scripts/ci-test-weights.json 里的实测秒数分（最重的先放进最轻的一份），表里没有的新文件按中位数计。
   js-tests-shard:
     runs-on: ubuntu-latest
     strategy:
@@ -154,8 +156,9 @@ jobs:
           set -o pipefail
           pattern="scripts/(cm-ai-batch-host|cm-ai-bootstrap|cm-ai-host|cm-ai-host-cli-workflow|cm-ai-host-protected|cm-ai-multi-root|cm-ai-nested-execution|cm-fix-protected-edits|cm-host-check)\.test\.mjs$"
           mapfile -t all < <(ls scripts/*.test.mjs | grep -vE "$pattern" | sort)
-          files=()
-          for i in "${!all[@]}"; do [ $((i % 4)) -eq ${{ matrix.shard }} ] && files+=("${all[$i]}"); done
+          node scripts/ci-test-shards.mjs --shards 4 --summary "${all[@]}"
+          mapfile -t files < <(node scripts/ci-test-shards.mjs --shards 4 --index ${{ matrix.shard }} "${all[@]}")
+          [ "${#files[@]}" -gt 0 ] || { echo "shard ${{ matrix.shard }} is empty"; exit 1; }
           echo "shard ${{ matrix.shard }}: running ${#files[@]} of ${#all[@]} test files"
           node --test "${files[@]}"
 
