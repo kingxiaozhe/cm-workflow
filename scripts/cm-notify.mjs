@@ -7,6 +7,7 @@
 //   bark | pushplus           switch after the target's secret parses; else nothing changes
 //   off                       moves notify.json aside to notify.off.json
 //   test                      one real push through the configured command
+//   preview                   read-only; prints each event's title and body from sample fields, sends nothing
 //   --replace-custom          allow replacing a notify.json command this tool does not manage (backed up first)
 //   --json                    machine-readable status
 import fs from 'node:fs';
@@ -14,7 +15,7 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {parseNotifyConfig,appendNotifyLog,localClock,NOTIFY_LIMITS} from '../runtime/js/notify.mjs';
+import {parseNotifyConfig,appendNotifyLog,buildNotifyMessage,localClock,NOTIFY_LIMITS} from '../runtime/js/notify.mjs';
 import {CHANNELS,CHANNEL_FILE,SEND_EXIT,SendError,WINDOWS_UNSUPPORTED,NODE_UNSUPPORTED,notifyHome,readChannel,readSecret,readRegularFile,parseAssignments,buildRequest} from '../runtime/js/notify-send.mjs';
 
 export const SENDER_SOURCE=fileURLToPath(new URL('../runtime/js/notify-send.mjs',import.meta.url));
@@ -109,12 +110,14 @@ function loadConfig(home){
   }
   const parsed=parseNotifyConfig(raw);
   if(parsed.reason)return {file,state:'invalid',reason:parsed.reason,command:null};
-  const {command}=parsed.config;
-  return {file,state:classifyCommand(home,command),command};
+  const {command,text}=parsed.config;
+  // Optional custom text: default, custom, or invalid (then the default text is used).
+  const textState=parsed.textReason?'invalid':text?'custom':'default';
+  return {file,state:classifyCommand(home,command),command,textState,...(parsed.textReason?{textReason:parsed.textReason}:{}),textSpec:text??null};
 }
-// Status view of a snapshot; the command itself is not included (custom
-// arguments may hold anything).
-function describeConfig(home,{command,...snapshot},{senderSource=SENDER_SOURCE}={}){
+// Status view of a snapshot; neither the command (custom arguments may hold
+// anything) nor the custom strings are included.
+function describeConfig(home,{command,textSpec,...snapshot},{senderSource=SENDER_SOURCE}={}){
   const result={...snapshot};
   if(!command)return result;
   Object.assign(result,{program:command[0],programExists:Boolean(lstat(command[0]))});
@@ -151,6 +154,7 @@ export function formatStatus(status){
     lines.push(`  警告：命令程序 ${config.program} 不存在（node 可能已移动或升级），重新执行 /cm:notify <渠道> 修复`);
   if(config.state==='managed'&&!config.senderExists)lines.push('  警告：托管发送器文件缺失，重新执行 /cm:notify <渠道> 修复');
   else if(config.state==='managed'&&!config.senderCurrent)lines.push('  提示：托管发送器与当前插件版本不同，重新执行 /cm:notify <渠道> 更新');
+  if(config.textState)lines.push(textLine(config));
   const chosen=channelFile.state==='ok'?channelFile.value:null;
   lines.push(`当前渠道：${active?`${active}（生效中）`:chosen&&windows?`${chosen}（Windows 上不会发送）`:chosen?`${chosen}（未生效：${describe[config.state]}）`
     :channelFile.state==='missing'?'未选择':`无法确定：${channelFile.message}`}`);
@@ -160,6 +164,33 @@ export function formatStatus(status){
     if(info.state!=='ok'&&!windows)lines.push(`  ${fillHint(info)}`);
   }
   lines.push('密钥只由你自己编辑上面的文件填写；本工具不读出、不显示其中的值。');
+  return lines.join('\n');
+}
+
+const textLine=config=>config.textState==='custom'?'文案：自定义（/cm:notify preview 查看效果）'
+  :config.textState==='invalid'?`文案：默认（notify.json 里的 text 无效：${config.textReason}，已改用默认文案，提醒照常发送）`:'文案：默认';
+
+// Read-only preview of every event's title and body under the current
+// notify.json text, built from fixed sample fields. Sends and logs nothing.
+const PREVIEW_SAMPLE=Object.freeze({project:'demo-app',workflow:'cm-ai',runId:'run-sample-1',task:'T-001'});
+export const PREVIEW_EVENTS=Object.freeze([
+  {event:'stuck',name:'卡住，需要人处理',stage:'blocked',code:'checks_not_passed',nextAction:'核对原因后恢复原运行'},
+  {event:'waiting',name:'等待会话应答',stage:'check',code:'waiting_session_answer',nextAction:'宿主已等待会话应答约 10 分钟，请回到会话处理'},
+  {event:'idle',name:'疑似空转',stage:'requirements_analysis',code:'no_next_step',nextAction:'上一步已结束约 45 分钟，会话没有发下一步，请回到会话查看'},
+  {event:'idle_waiting',name:'在等你',stage:'blocked',code:'waiting_for_you',nextAction:'上一步停在需要你处理的状态，约 45 分钟没有下一步，请回到会话处理'},
+  {event:'dead',name:'宿主已退出未收尾',stage:'1 个宿主进程已不在',code:'host_process_gone',nextAction:'请回到会话用 status 核对运行状态，需要时按恢复说明接手'},
+  {event:'done',name:'流程已结束',stage:'run_done',code:'run_done',nextAction:'建议在新会话里开始下一个任务，减少重复读入的上下文'}]);
+export function previewText(home,{now=Date.now(),timeZone}={}){
+  const {state,textState=null,textReason=null,textSpec=null}=loadConfig(home);
+  const messages=PREVIEW_EVENTS.map(({name,...fields})=>({event:fields.event,name,
+    ...buildNotifyMessage({...PREVIEW_SAMPLE,...fields},{now,timeZone,text:textSpec})}));
+  return {state,textState,textReason,messages};
+}
+export function formatPreview(preview){
+  const head=preview.textState?textLine(preview).replace('（/cm:notify preview 查看效果）','')
+    :`文案：默认（${preview.state==='invalid'?'notify.json 无效':'没有生效的 notify.json'}，按默认文案预览）`;
+  const lines=[`提醒文案预览，用示例字段生成，不发送。${head}`];
+  for(const message of preview.messages)lines.push('',`【${message.name}】${message.event}`,`标题：${message.title}`,message.body);
   return lines.join('\n');
 }
 
@@ -267,7 +298,7 @@ export async function switchChannel(home,channel,{platform=process.platform,repl
     throw rollbackMessage(error);
   }
   if(fromOff&&!backup)try{fs.unlinkSync(offFile);}catch{}
-  return {channel,file,sender,node:execPath,replaced:kind,backup,fromOff};
+  return {channel,file,sender,node:execPath,replaced:kind,backup,fromOff,textReason:checked.textReason??null};
 }
 
 // `ops` lets tests inject file-system faults; nothing else passes it.
@@ -363,25 +394,29 @@ export function formatTest(result){
   return `${who}：退出码 ${result.exit}，${EXIT_WORDS[result.exit]??'未知'}。`;
 }
 
-const USAGE='用法：cm-notify.mjs [status|bark|pushplus|off|test] [--replace-custom] [--json]';
+const USAGE='用法：cm-notify.mjs [status|bark|pushplus|off|test|preview] [--replace-custom] [--json]';
 export async function main(argv=process.argv.slice(2),{env=process.env,stdout=process.stdout,stderr=process.stderr,platform=process.platform}={}){
   const say=(stream,text)=>stream.write(`${text}\n`);
-  // First action: on Windows everything except status and off is refused
+  // First action: on Windows everything except status, off and preview is refused
   // before any file is touched (argument parsing only).
   const first=argv.find(arg=>!arg.startsWith('--'))??'status';
-  if(platform==='win32'&&!['status','off'].includes(first)){say(stderr,`cm-notify: ${WINDOWS_UNSUPPORTED}`);return 2;}
+  if(platform==='win32'&&!['status','off','preview'].includes(first)){say(stderr,`cm-notify: ${WINDOWS_UNSUPPORTED}`);return 2;}
   // Under node --test only an explicit CM_WORKFLOW_HOME is allowed: the real
   // home would push to the user's phone.
   if(env.NODE_TEST_CONTEXT&&!env.CM_WORKFLOW_HOME){say(stderr,'cm-notify: 测试环境必须设置 CM_WORKFLOW_HOME');return 2;}
   const flags=new Set(argv.filter(arg=>arg.startsWith('--'))),words=argv.filter(arg=>!arg.startsWith('--'));
   const unknown=[...flags].filter(flag=>!['--replace-custom','--json'].includes(flag));
   const sub=words[0]??'status';
-  if(unknown.length||words.length>1||!['status','bark','pushplus','off','test'].includes(sub)){say(stderr,USAGE);return 2;}
+  if(unknown.length||words.length>1||!['status','bark','pushplus','off','test','preview'].includes(sub)){say(stderr,USAGE);return 2;}
   const home=notifyHome(env);
   try{
     if(sub==='status'){
       const status=await notifyStatus(home,{platform});
       say(stdout,flags.has('--json')?JSON.stringify(status,null,2):formatStatus(status));return 0;
+    }
+    if(sub==='preview'){
+      const preview=previewText(home);
+      say(stdout,flags.has('--json')?JSON.stringify(preview,null,2):formatPreview(preview));return 0;
     }
     if(sub==='off'){
       const result=turnOff(home);
@@ -399,6 +434,7 @@ export async function main(argv=process.argv.slice(2),{env=process.env,stdout=pr
       `发送命令：${result.node} ${result.sender}`];
     if(result.backup)lines.push(`原配置文件已改名备份为 ${result.backup}${result.replaced==='legacy'?`（原 ${LEGACY_SCRIPT} 未改动）`:''}`);
     if(result.fromOff)lines.push(`已从 ${OFF_FILE} 恢复其他设置。`);
+    if(result.textReason)lines.push(`提示：notify.json 里的 text 无效（${result.textReason}），提醒使用默认文案；/cm:notify preview 可查看。`);
     lines.push('node 移动或升级后，再执行一次本命令即可修复路径。发一条测试推送：/cm:notify test');
     say(stdout,lines.join('\n'));return 0;
   }catch(error){
