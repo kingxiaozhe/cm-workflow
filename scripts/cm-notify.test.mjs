@@ -172,6 +172,23 @@ test('custom text loses bidi and zero-width characters; a string left with nothi
   assert.equal(buildNotifyMessage(fields('k',{task:'T​-1'}),at).body.split('\n')[3],'任务：T​-1');
 });
 
+test('custom text redacts absolute paths even when letters touch them; field values keep the shared rule',()=>{
+  const at={now:NOW,timeZone:'UTC'};
+  for(const [raw,want] of [['see/Users/me/key','see<路径>'],['seeC:\\Users\\me\\key','see<路径>'],['seeC:/Users/me/key','see<路径>'],
+    ['see\\\\srv\\share\\key','see<路径>'],['see~/proj/key','see<路径>'],['卡在/srv/a，再看','卡在<路径>，再看'],
+    ['x1/etc/passwd y','x1<路径> y'],['CI/CD','CI<路径>'],['停\u0007/tmp/a','停 <路径>'],['停\u200b/tmp/a','停<路径>'],
+    ['相对 a\\b 保留','相对 a\\b 保留']]){
+    const text=normalizeNotifyText({headlines:{default:raw},labels:{code:raw}}).text;
+    assert.equal(text.headlines.default,want,raw);assert.equal(text.labels.code,want.slice(0,12),raw);
+    const message=buildNotifyMessage(fields('k'),{...at,text});
+    assert.equal(message.title,`CM cm-fix ${want} · demo-app`,raw);
+    for(const leak of ['/Users','Users\\','\\\\srv','/srv','~/proj','/etc','/tmp'])assert(!message.title.includes(leak)&&!message.body.includes(leak),`${raw} ${leak}`);
+  }
+  // The shared rule for field values (and so the default text) is unchanged.
+  assert.equal(buildNotifyMessage(fields('k',{task:'see/Users/me/key'}),at).body.split('\n')[3],'任务：see/Users/me/key');
+  assert.equal(buildNotifyMessage(fields('k',{task:'见 /Users/me/key'}),at).body.split('\n')[3],'任务：见 <路径>');
+});
+
 test('invalid text falls back to the default text with one text_config log line; notices stay on',async t=>{
   const bad=[[null,'text'],['标题','text'],[[],'text'],[{subject:'x'},'text_key'],[{titlePrefix:7},'title_prefix'],
     [{titlePrefix:'\u0007'},'title_prefix'],[{headlines:{stuck:'x'}},'headlines'],[{headlines:{done:''}},'headlines'],

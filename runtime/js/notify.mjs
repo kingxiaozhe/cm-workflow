@@ -121,10 +121,14 @@ export const DEFAULT_NOTIFY_TEXT=Object.freeze({titlePrefix:'CM',
 // Custom strings first lose every Unicode format character (\p{Cf}: bidi
 // controls U+202A-202E, U+2066-2069, U+200E/200F, U+061C; zero-width U+200B-200D,
 // U+2060, U+FEFF; soft hyphen, tag characters), so they cannot reorder or hide
-// text; then the usual clean(). Something visible (a letter, digit, punctuation
-// or symbol) must remain. Field values and the default text are not touched.
+// text. Unlike field values, a path is redacted whatever precedes it: every
+// span starting at "/", "~/", a drive letter with ":\" or ":/", or a UNC "\\" up to the next
+// whitespace or listed punctuation becomes <路径> (so "CI/CD" becomes "CI<路径>").
+// Then the usual clean(). Something visible (a letter, digit, punctuation or
+// symbol) must remain. Field values and the default text are not touched.
 const FORMAT_CHARS=/\p{Cf}+/gu,VISIBLE=/[\p{L}\p{N}\p{P}\p{S}]/u;
-const cleanText=(raw,max)=>clean(raw.replace(FORMAT_CHARS,''),max);
+const TEXT_PATH=/(?:~?\/|[A-Za-z]:[\\/]|\\\\)[^\s'"`，。；;、）)]+/g;
+const cleanText=(raw,max)=>clean(raw.replace(FORMAT_CHARS,'').replace(/[\u0000-\u001f\u007f-\u009f]+/g,' ').replace(TEXT_PATH,'<路径>'),max);
 const plain=value=>value&&typeof value==='object'&&!Array.isArray(value);
 const onlyKeys=(value,keys)=>Object.keys(value).every(key=>keys.includes(key));
 // {text} merged over the default, or {reason}. Idempotent on its own output.
