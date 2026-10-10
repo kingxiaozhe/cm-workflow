@@ -838,3 +838,33 @@ test('status, preview, test and switch never follow a notify.json symlink or rea
   status=await notifyStatus(s.home);assert.equal(status.config.state,'custom');assert.equal(status.config.textState,'custom');
   assert.equal(s.log(),'');
 });
+
+// The file a switch writes is re-indented and gets a new command, so it can
+// grow; it must stay within the 64 KiB the manager itself reads. Checked on the
+// exact bytes before any backup or write.
+test('switch refuses to write a notify.json over the 64 KiB read cap and keeps the original; at the cap it works',async t=>{
+  const s=sandbox(t);
+  s.write('bark.env',`BARK_KEY=${BARK_SECRET}\n`);
+  const node='/opt/node/bin/node',sender=managedSenderPath(s.home);
+  // Pad so that the rewritten file is exactly `target` bytes.
+  const config=pad=>({version:1,command:[node,sender],note:'x'.repeat(pad)});
+  const written=pad=>Buffer.byteLength(`${JSON.stringify(config(pad),null,2)}\n`);
+  const padFor=target=>target-written(0);
+  for(const name of ['notify.json','notify.off.json']){
+    for(const extra of ['notify.json','notify.off.json'])if(s.exists(extra))fs.unlinkSync(path.join(s.home,extra));
+    // Compact input below the cap that grows past it once re-indented.
+    const over=JSON.stringify(config(padFor(65537)));
+    assert(Buffer.byteLength(over)<=65536,'the input itself is readable');
+    s.write(name,over);const before=s.snapshot();
+    await assert.rejects(()=>switchChannel(s.home,'bark',{execPath:node}),error=>{
+      assert.match(error.message,/改写后的 notify.json 会有 65537 字节，超过 65536 字节（64 KiB）的读取上限/);return true;});
+    assert.deepEqual(s.snapshot(),before,`${name}: nothing renamed, written or created`);
+    // Exactly at the cap: switch succeeds and every later command still reads it.
+    s.write(name,JSON.stringify(config(padFor(65536))));
+    const result=await switchChannel(s.home,'bark',{execPath:node});
+    assert.equal(result.fromOff,name==='notify.off.json');
+    assert.equal(fs.statSync(path.join(s.home,'notify.json')).size,65536);
+    const status=await notifyStatus(s.home);assert.equal(status.config.state,'managed');assert.equal(status.config.reason,undefined);
+    assert.equal((await switchChannel(s.home,'bark',{execPath:node})).channel,'bark');
+  }
+});

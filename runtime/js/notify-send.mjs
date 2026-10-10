@@ -51,6 +51,8 @@ if(ENTRY==='windows'){try{process.stderr.write(`cm-notify: ${WINDOWS_UNSUPPORTED
 export const SEND_EXIT=Object.freeze({ok:0,config:2,network:3,rejected:4});
 export const DEADLINE_MS=12000;
 const MAX_FILE=64*1024,MAX_RESPONSE=64*1024,MAX_STDIN=64*1024;
+// Largest file the safe read boundary accepts; /cm:notify never writes a bigger notify.json.
+export const MAX_FILE_BYTES=MAX_FILE;
 export const CHANNEL_FILE='notify-channel.conf';
 export const CHANNELS=Object.freeze({
   bark:Object.freeze({file:'bark.env',names:['BARK_KEY','BARK_SERVER'],required:'BARK_KEY'}),

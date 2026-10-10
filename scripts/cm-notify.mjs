@@ -16,7 +16,7 @@ import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {parseNotifyConfig,appendNotifyLog,buildNotifyMessage,localClock,NOTIFY_LIMITS} from '../runtime/js/notify.mjs';
-import {CHANNELS,CHANNEL_FILE,SEND_EXIT,SendError,WINDOWS_UNSUPPORTED,NODE_UNSUPPORTED,notifyHome,readChannel,readSecret,readRegularFile,parseAssignments,buildRequest} from '../runtime/js/notify-send.mjs';
+import {CHANNELS,CHANNEL_FILE,SEND_EXIT,SendError,WINDOWS_UNSUPPORTED,NODE_UNSUPPORTED,MAX_FILE_BYTES,notifyHome,readChannel,readSecret,readRegularFile,parseAssignments,buildRequest} from '../runtime/js/notify-send.mjs';
 
 export const SENDER_SOURCE=fileURLToPath(new URL('../runtime/js/notify-send.mjs',import.meta.url));
 export const NOTIFY_FILE='notify.json',OFF_FILE='notify.off.json',LEGACY_SCRIPT='cm-notify.py';
@@ -285,6 +285,10 @@ export async function switchChannel(home,channel,{platform=process.platform,repl
   const next={...base,version:1,command:[execPath,sender]};
   const checked=parseNotifyConfig(JSON.stringify(next));
   if(checked.reason)refuse(`没有切换：${baseFile} 里其他字段无效（${checked.reason}），请先修好`);
+  // The rewritten file (re-indented, new command) must stay readable by this
+  // tool: checked on the exact bytes, before any backup or write.
+  const data=`${JSON.stringify(next,null,2)}\n`,size=Buffer.byteLength(data);
+  if(size>MAX_FILE_BYTES)refuse(`没有切换：改写后的 notify.json 会有 ${size} 字节，超过 ${MAX_FILE_BYTES} 字节（64 KiB）的读取上限；请先精简 ${baseFile}（如缩短 text、删掉不用的字段），原有文件都没动`);
   // A replaced custom or legacy config is backed up by renaming the original
   // file (its permissions/ACL travel with it), never by copying its content.
   let backup=null;
@@ -300,7 +304,7 @@ export async function switchChannel(home,channel,{platform=process.platform,repl
     applyAll([
       {file:sender,data:source,mode:0o600},
       {file:path.join(home,CHANNEL_FILE),data:`# CM 提醒渠道，由 /cm:notify 维护；同一时刻只开一个：bark 或 pushplus\nCHANNEL=${channel}\n`,mode:0o600},
-      {file,data:`${JSON.stringify(next,null,2)}\n`,mode:0o600,before:current.bytes},
+      {file,data,mode:0o600,before:current.bytes},
     ],{ops});
   }catch(error){
     if(!(error instanceof ApplyError))throw error;
