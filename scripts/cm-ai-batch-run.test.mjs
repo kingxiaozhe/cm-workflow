@@ -375,6 +375,17 @@ async function batchFixture(mode,options={}){
       return;
     }
     if(recovery&&options.crashAt){assert(interrupted);result=await open().handle({operation:'advance',requestId:'resume-recovery'});}
+    // Review round 1 (major): a strict batch stops right after rescheduling, before
+    // dispatching anything to the new second-generation run; the next advance runs it.
+    if(recovery&&options.executionPolicy){
+      assert.equal(result.code,'batch_member_rescheduled',JSON.stringify(result));
+      assert.deepEqual(result.rescheduled,blockedIds.map(id=>`${feature}/${id}`));
+      assert.match(result.reason,/下一次 advance/);assert.equal(result.guidance.authorizationGranted,false);
+      assert.equal(blockedEvidence.length,0,'no second-generation develop in the rescheduling advance');
+      const {classifyDriveResult}=await import('../runtime/js/notify.mjs');
+      assert.equal(classifyDriveResult('cm-ai-batch',{result}),'stuck');
+      result=await open().handle({operation:'advance',requestId:'after-reschedule'});
+    }
     if(recovery){
       // Assert outside the worker: worker exceptions intentionally become unknown terminals.
       assert(blockedEvidence.length>0);

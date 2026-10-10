@@ -392,7 +392,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       if(!group.includes(row.from_key)||progress().done.has(row.from_key))continue;
       const result=await mergeMember(row);if(result)return result;
     }
-    let waiting=null,rejected=null,recoverable=null,unresolved=null;
+    let waiting=null,rejected=null,recoverable=null,unresolved=null;const rescheduled=[];
     const strict=Boolean(config.externalModels||config.executionPolicy);
     for(const [index,result] of results.entries()){
       if(result.status==='rejected'){rejected??=result.reason;continue;}
@@ -410,6 +410,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       // is rescheduled serially exactly like an ordinary batch (it used to wait forever).
       if(strict&&IN_RUN_ACTIONS.has(status.pendingAction)){recoverable??={key,status};continue;}
       if(strict&&!strictRescheduleAllowed(status)){unresolved??={key,status};continue;}
+      if(strict)rescheduled.push(key);
       record('batch_member_blocked',{from_key:key,code:status.code??status.state,
         reason:status.blockedReason??status.reason??status.code??status.state,...location(key),generation:2});
     }
@@ -418,6 +419,9 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     if(rejected)throw rejected;
     if(recoverable)return parallelRecoveryRequired(recoverable.key,recoverable.status);
     if(unresolved)return parallelMemberUnresolved(unresolved.key,unresolved.status);
+    // The second generation is a new run: stop here so the next advance (and its
+    // driver) prepares that run's answers before anything is dispatched to it.
+    if(rescheduled.length)return parallelMemberRescheduled(rescheduled);
     if(waiting)return {...waiting,batchId:config.batchId};
     return null;
   }
@@ -432,6 +436,15 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       reason:`外部模型或执行策略批次的并行成员 ${key} 停在 ${status.state}/${status.code??status.state}，结果尚未确认或审查尚未终结，不改排串行（改排会换 runId、从 attempt 1 重派，绕过原调用对账与写入方停止证明）。出口：${exit}。`,
       guidance:stopGuidance('并行成员结果未确认，批次不会自动改排或重派。',`${exit}。`,
         ['不新建第二代运行，不删除该成员 worktree','先确认旧宿主与该成员的会话或子进程已停止写入'])});
+  }
+  function parallelMemberRescheduled(keys){
+    const list=keys.join('、');
+    return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_member_rescheduled',batchId:config.batchId,
+      currentTask:keys[0],rescheduled:Object.freeze([...keys]),
+      reason:`并行成员 ${list} 已在 blocked/failed 终态存档，已按普通批次改排为串行第二代（新运行、从 attempt 1 开始，WIP 留在原分支）。本次 advance 到此为止，不在同一次里开发第二代；下一次 advance 先预检第二代的开发答案再开发。`,
+      guidance:stopGuidance('并行成员已改排为串行第二代，等待下一次 advance。',
+        `按 WIP 分支与 reason 准备 ${list} 第二代的开发答案（answers/<feature>/<task>/develop.json，从第 1 轮开始），再从批次入口 advance。`,
+        ['第二代是新运行，旧运行记录与 WIP 分支保留','开发与审查仍需原合同授权'])});
   }
   function parallelRecoveryRequired(key,status){
     const action=status.pendingAction,grant=BATCH_MEMBER_ACTIONS[action];

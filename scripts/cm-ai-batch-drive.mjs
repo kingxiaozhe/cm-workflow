@@ -156,6 +156,18 @@ function preflight(){
       logHome:path.join(batch.specsDir,'.reviews','host-log-mirror')});
   }catch(error){stop(2,`批次定义、scope 或 workflow 无效: ${error.code??error.message}${error.code==='protected_scope'&&typeof error.reason==='string'?`；${error.reason}`:''}`);}
   const log=path.join(batch.specsDir,'运行日志.jsonl');
+  // Members the batch already rescheduled into a serial second generation
+  // (batch_member_blocked). Their gen-2 run starts fresh at attempt 1.
+  const rescheduled=new Set(),handedOff=new Set();
+  if(fs.existsSync(log))for(const line of fs.readFileSync(log,'utf8').split('\n')){
+    if(!line.trim())continue;let row;try{row=JSON.parse(line);}catch{continue;}
+    if(row?.workflow==='cm-ai'&&row.event==='decision'&&row.phase==='batch_member_blocked'&&row.run_id===batch.batchId
+      &&row.generation===2&&typeof row.from_key==='string')rescheduled.add(row.from_key);
+    // A handed-off task never develops again; a merged parallel member's worktree is gone,
+    // so its journal cannot be replayed here (the batch host verifies it on its own).
+    if(row?.workflow==='cm-ai'&&row.event==='decision'&&row.phase==='batch_handoff'&&row.run_id===batch.batchId
+      &&typeof row.from_key==='string')handedOff.add(row.from_key);
+  }
   const stores=Array.from(definitions.values(),d=>path.join(batch.specsDir,'.reviews','.execution',d.identity.runId,'state.json'));
   const hasLog=fs.existsSync(log),hasStore=stores.some(file=>fs.existsSync(file));
   if(plan.mode==='resume'&&!hasLog&&!hasStore)
@@ -233,7 +245,8 @@ function preflight(){
       if(workflow?.documentationPaths?.length)kinds.push('documentation_sync');
     }
     if(workflow?.qa){
-      if(!batch.parallel?.some(group=>group.includes(key)))kinds.push('qa_assess');
+      // A rescheduled second generation runs serially and asks qa_assess like a serial task.
+      if(!batch.parallel?.some(group=>group.includes(key))||rescheduled.has(key))kinds.push('qa_assess');
       const cases=readJson(path.join(batch.specsDir,task.feature,'test-cases.json'),'test-cases');
       for(const kind of ['logic','browser'])if(cases?.cases?.some(item=>item.kind===kind))kinds.push(`qa_${kind}`);
     }
@@ -245,9 +258,13 @@ function preflight(){
     const perAttempt=new Map();
     if(kinds.includes('develop')){
       let attempts=[1],current=1,journal=null;
-      if(plan.mode==='resume'){
+      if(plan.mode==='resume'&&handedOff.has(key)){attempts=[];journal={handedOff:true};}
+      else if(plan.mode==='resume'){
         const runIds=[...runs].filter(([,binding])=>binding.key===key).sort((a,b)=>b[1].generation-a[1].generation);
-        const existing=runIds.find(([runId])=>fs.existsSync(path.join(batch.specsDir,'.reviews','.execution',runId,'state.json')));
+        // A rescheduled member whose gen-2 run does not exist yet is a new run: preflight
+        // its attempt-1 answer instead of the finished first generation.
+        const existing=runIds.find(([runId,binding])=>(binding.generation===2||!rescheduled.has(key))
+          &&fs.existsSync(path.join(batch.specsDir,'.reviews','.execution',runId,'state.json')));
         if(existing)try{
           const snapshot=readExecutionSnapshot({specsRoot:batch.specsDir,identity:{repositoryId:batch.repositoryId,runId:existing[0]}});
           const history=readRunnerHistory(snapshot.records,snapshot.records[0].payload.config,3);
