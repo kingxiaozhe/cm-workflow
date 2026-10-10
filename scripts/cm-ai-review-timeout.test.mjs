@@ -7,7 +7,7 @@ import {spawnSync} from 'node:child_process';
 import {createTaskRunner} from '../runtime/js/cm-ai/task-runner.mjs';
 import {openTaskExecutionStore} from '../runtime/js/cm-ai/task-owner.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
-import {readRunnerHistory,runnerStatus,completedEffectCount} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {readRunnerHistory,runnerStatus,completedEffectCount,projectedRunnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {createCmAiConversationEntry} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {abandonReviewPlanError,buildCmAiDriveRequest,buildCmAiDriveHostArgs} from './cm-ai-drive.mjs';
@@ -126,10 +126,27 @@ test('runner timer without a result shares pending/blocked timeout transitions a
   assert.deepEqual(f.getStore().snapshot(),before);
   const resumed=f.reopen();assert.deepEqual(resumed.status(),end);
   assert.deepEqual(await resumed.executeEffect(f.effect('review')),end);assert.equal(f.dispatches(),1);
+  // V5: the round keeps a second no-result redispatch, but the timer only
+  // aborted the reviewer: nothing is redispatched until the operator confirms
+  // the original reviewer stopped (abandon_review journals review-redispatch).
   const blocked=await resumed.executeEffect(retryEffect(f));assert.equal(blocked.state,'blocked');
-  assert.equal(blocked.code,'review_transport_timeout');assert.deepEqual(f.reopen().status(),blocked);
-  assert.equal((await f.reopen().executeEffect({...retryEffect(f),id:'review-1-retry-2'})).code,'stage_mismatch');
-  assert.equal(f.dispatches(),2);
+  assert.equal(blocked.code,'review_transport_timeout');assert.equal(blocked.reviewRedispatchStopRequired,true);
+  assert.match(blocked.reason,/^review_redispatch_stop_required: /);
+  const second=f.reopen();assert.deepEqual(second.status(),blocked);
+  assert.equal((await second.executeEffect({...retryEffect(f),id:'review-1-retry-2'})).code,'stage_mismatch');assert.equal(f.dispatches(),2);
+  const unconfirmed=f.getStore().snapshot();
+  assert.equal(second.abandonReview({allowed:false,reason:'x'}).code,'review_abandon_authorization_required');
+  assert.equal(second.abandonReview({allowed:true,reason:' '}).code,'review_abandon_reason_required');
+  assert.deepEqual(f.getStore().snapshot(),unconfirmed);
+  const confirmed=second.abandonReview({allowed:true,reason:'Original reviewer process confirmed exited'});
+  assert.equal(confirmed.state,'pending_review');assert.equal(confirmed.code,'review_transport_timeout');
+  const third=await f.reopen().executeEffect({...retryEffect(f),id:'review-1-retry-2'});
+  assert.equal(third.state,'blocked');assert.equal(third.code,'review_redispatch_limit');
+  const spent=f.reopen().status();assert.deepEqual(spent,third);
+  assert.match(spent.reason,/无结论重派 2 次/);
+  assert.equal((await f.reopen().executeEffect({...retryEffect(f),id:'review-1-retry-3'})).code,'stage_mismatch');
+  assert.equal(f.dispatches(),3);
+  assert.equal(f.getStore().snapshot().records.filter(row=>row.payload.type==='review-redispatch').length,1);
 },{timeoutMs:20,reviewRun:(request,{onEvent})=>{
   onEvent({event:'thread.started',provider_thread:`thread-${request.invocationId}`});return new Promise(()=>{});
 }}));
@@ -231,15 +248,18 @@ test('abandonment is refused when a review result is already journaled',()=>fixt
   assert.deepEqual(f.getStore().snapshot(),completed);
 }));
 
-test('abandonment and transport timeout share the one redispatch budget',()=>fixture(async f=>{
+test('abandonment and transport timeout share the round\'s two no-result redispatches',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
   const interrupted=f.resumePrefix('review-invocation-started');
   assert.equal(interrupted.abandonReview({allowed:true,reason:'exit'}).state,'pending_review');
   f.options.reviewers[0].run=timeoutRun;
   const retry=f.reopen();
   const result=await retry.executeEffect(retryEffect(f));
-  assert.equal(result.state,'blocked');assert.equal(result.code,'review_transport_timeout');
-  assert.equal((await f.reopen().executeEffect({...retryEffect(f),id:'review-1-retry-2'})).code,'stage_mismatch');
+  assert.equal(result.state,'blocked');assert.equal(result.reviewRedispatchStopRequired,true);
+  assert.equal(f.reopen().abandonReview({allowed:true,reason:'stopped'}).state,'pending_review');
+  const last=await f.reopen().executeEffect({...retryEffect(f),id:'review-1-retry-2'});
+  assert.equal(last.state,'blocked');assert.equal(last.code,'review_redispatch_limit');
+  assert.equal((await f.reopen().executeEffect({...retryEffect(f),id:'review-1-retry-3'})).code,'stage_mismatch');
 }));
 
 test('conversation reports unknown cancel truthfully, then consumes abandonment authority once',()=>fixture(async f=>{
@@ -278,8 +298,8 @@ test('cancel after abandonment becomes durable cancelled',()=>fixture(async f=>{
 }));
 
 test('abandonment refuses an exhausted retry before appending a record',()=>fixture(async f=>{
-  let first=true;f.options.reviewers[0].run=(request,control)=>{
-    if(first){first=false;return timeoutRun(request,control);}
+  let failures=2;f.options.reviewers[0].run=(request,control)=>{
+    if(failures>0){failures--;return timeoutRun(request,control);}
     events(control.onEvent,`thread-${request.invocationId}`);
     return {status:'succeeded',value:{verdict:'approved',packageDigest:request.payload.reviewPackage.packageDigest,
       examinedPaths:reviewPaths(request.payload.reviewPackage),findings:[],summary:'Synthetic'}};
@@ -287,8 +307,11 @@ test('abandonment refuses an exhausted retry before appending a record',()=>fixt
   const runner=f.make();await runner.executeEffect(f.effect('develop'));
   const firstResult=await runner.executeEffect(f.effect('review'));
   assert.equal(firstResult.code,'review_transport_timeout');
-  const secondResult=await runner.executeEffect(retryEffect(f));
+  assert.equal((await runner.executeEffect(retryEffect(f))).reviewRedispatchStopRequired,true);
+  assert.equal(f.reopen().abandonReview({allowed:true,reason:'stopped'}).state,'pending_review');
+  const secondResult=await f.reopen().executeEffect({...retryEffect(f),id:'review-1-retry-2'});
   assert.equal(secondResult.state,'approved');
+  // Both redispatches of the round are spent (automatic + review-redispatch).
   const interrupted=f.resumePrefix('review-invocation-started',true),before=f.getStore().snapshot();
   const result=interrupted.abandonReview({allowed:true,reason:'exit'});
   assert.equal(result.outcome,'rejected');assert.equal(result.code,'review_abandon_budget_exhausted');
@@ -449,3 +472,88 @@ test(`retry preserves original authorization/package/cancellation boundary: ${bo
   assert.equal(f.dispatches(),1);
   if(boundary==='stale-grant')assert.equal(f.reopen().status().state,'unknown');
 },{reviewRun:timeoutRun}));
+
+// V5 (A33): a reviewer whose worker proved its process gone without a final
+// message may be abandoned and redispatched; an unverified cleanup or an invalid
+// stream is refused with its own code and reason, before anything is appended.
+const closedFailure=code=>(request,{onEvent})=>{
+  onEvent({event:'thread.started',provider_thread:`thread-${request.invocationId}`});
+  onEvent({event:'turn.started',item_type:null});
+  onEvent({event:'process_closed',exit_code:1,signal:null,timed_out:false});
+  return {status:'failed',code};
+};
+for(const [name,run] of [['spawn_failed',()=>({status:'failed',code:'spawn_failed'})],['output_limit',closedFailure('output_limit')],
+  ['prompt_write_failed',closedFailure('prompt_write_failed')]])
+test(`A33 ${name} with the reviewer process gone is abandonable and redispatched`,()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));
+  const end=await runner.executeEffect(f.effect('review'));
+  assert.equal(end.state,'unknown');assert.equal(end.abandonableReviewResult,true,JSON.stringify(end));
+  const abandoned=f.reopen().abandonReview({allowed:true,reason:'worker reported the process gone'});
+  assert.equal(abandoned.state,'pending_review');assert.equal(abandoned.code,'review_abandoned');
+  f.options.reviewers[0].run=(request,{onEvent})=>{events(onEvent,`thread-${request.invocationId}`);
+    return {status:'succeeded',value:{verdict:'approved',packageDigest:request.payload.reviewPackage.packageDigest,
+      examinedPaths:reviewPaths(request.payload.reviewPackage),findings:[],summary:'Synthetic'}};};
+  assert.equal((await f.reopen().executeEffect(retryEffect(f))).state,'approved');
+},{reviewRun:run}));
+for(const [name,run,code] of [
+  ['process_cleanup_unknown',closedFailure('process_cleanup_unknown'),'review_process_unverified'],
+  ['a tool item boundary exit',closedFailure('unexpected_tool_or_item'),'review_boundary_unverified'],
+  ['spawn_failed after events',(request,{onEvent})=>{onEvent({event:'thread.started',provider_thread:`thread-${request.invocationId}`});
+    return {status:'failed',code:'spawn_failed'};},'review_boundary_unverified'],
+  ['an invalid stream',(request,{onEvent})=>{onEvent({event:'turn.completed',item_type:null});return new Promise(()=>{});},'review_observation_invalid']])
+test(`A33 ${name} stays unknown and abandon_review is refused with ${code}`,()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));
+  const end=await runner.executeEffect(f.effect('review'));
+  assert.equal(end.state,'unknown');assert.equal(end.abandonableReviewResult,undefined);
+  assert.equal(end.reviewAbandonRefusal,code);assert.match(end.reason,new RegExp(`^${code}: `));
+  const reopened=f.reopen(),before=f.getStore().snapshot();
+  const refused=reopened.abandonReview({allowed:true,reason:'try'});
+  assert.equal(refused.outcome,'rejected');assert.equal(refused.code,code);assert.match(refused.reason,/supersede-reviewed-evidence/);
+  assert.deepEqual(f.getStore().snapshot(),before);
+},{reviewRun:run}));
+
+// A38: the host died after the no-verdict result reached the journal but before
+// its checkpoint: abandon_review binds that result record; replay re-derives it.
+test('A38 a pending review with a journaled no-verdict result is abandoned and redispatched',()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));
+  assert.equal((await runner.executeEffect(f.effect('review'))).state,'unknown');
+  const interrupted=f.resumePrefix('review-invocation-result',true);
+  const status=interrupted.status();
+  assert.equal(status.state,'unknown');assert.equal(status.pendingReviewInvocation,true);assert.equal(status.pendingEffectKind,undefined);
+  const abandoned=interrupted.abandonReview({allowed:true,reason:'old host and reviewer exited'});
+  assert.equal(abandoned.state,'pending_review',JSON.stringify(abandoned));assert.equal(abandoned.code,'review_abandoned');
+  const records=f.getStore().snapshot().records,last=records.at(-1).payload;
+  assert.equal(last.type,'review-invocation-abandoned');assert.equal(last.resultDigest,records.at(-2).digest);
+  assert.equal(records.at(-2).payload.type,'review-invocation-result');
+  f.options.reviewers[0].run=(request,{onEvent})=>{events(onEvent,`thread-${request.invocationId}`);
+    return {status:'succeeded',value:{verdict:'approved',packageDigest:request.payload.reviewPackage.packageDigest,
+      examinedPaths:reviewPaths(request.payload.reviewPackage),findings:[],summary:'Synthetic'}};};
+  assert.equal((await f.reopen().executeEffect(retryEffect(f))).state,'approved');
+},{reviewRun:closedFailure('output_limit')}));
+
+// V5 replay: review-redispatch is re-derived; forged, duplicate or over-cap records are refused.
+test('review-redispatch replay refuses forged, duplicate and over-limit records',()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));
+  await runner.executeEffect(f.effect('review'));await f.reopen().executeEffect(retryEffect(f));
+  f.reopen().abandonReview({allowed:true,reason:'stopped'});
+  await f.reopen().executeEffect({...retryEffect(f),id:'review-1-retry-2'});
+  const records=structuredClone(f.getStore().snapshot().records),config=records[0].payload.config;
+  assert.equal(readRunnerHistory(records,config,3).state.state,'blocked');
+  const at=records.findIndex(row=>row.payload.type==='review-redispatch');assert(at>0);
+  for(const change of [p=>{p.attempt=2;},p=>{p.code='review_abandoned';},p=>{p.effectId='review-1';},p=>{p.invocationId='other';},p=>{p.extra=true;},
+    p=>{delete p.reason;},p=>{p.reason='';},p=>{p.at='yesterday';}]){
+    const forged=structuredClone(records);change(forged[at].payload);
+    assert.throws(()=>readRunnerHistory(rechain(forged),config,3),{code:/^(runner_review_redispatch|invalid_input)$/});
+  }
+  // A duplicate right after the first, and a third redispatch after the second failure.
+  const duplicate=structuredClone(records.slice(0,at+1));duplicate.push(structuredClone(records[at]));
+  assert.throws(()=>readRunnerHistory(resequence(duplicate),config,3),{code:'runner_review_redispatch'});
+  const third=structuredClone(records);third.push({...structuredClone(records[at]),payload:{...records[at].payload,
+    effectId:'review-1-retry-2',invocationId:readRunnerHistory(records,config,3).state.reviewInvocation.registration.grant.invocationId}});
+  assert.throws(()=>readRunnerHistory(resequence(third),config,3),{code:'runner_review_redispatch'});
+  // A journal without the record (older version) replays the spent block unchanged;
+  // drivers read it through the same projection the host shows.
+  const older=readRunnerHistory(records.slice(0,at),config,3);assert.equal(older.state.state,'blocked');
+  assert.equal(projectedRunnerStatus(older,config).state,'blocked');assert.equal(projectedRunnerStatus(older,config).reviewRedispatchStopRequired,true);
+  assert.equal(projectedRunnerStatus(readRunnerHistory(records,config,3),config).code,'review_redispatch_limit');
+},{timeoutMs:20,reviewRun:timeoutRun}));

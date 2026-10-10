@@ -52,8 +52,8 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-idea-host.mjs" serve --skill-dir "{CM_WORKFL
 
 - 无recovery：沿原stage发送advance；问答、L1/L2/L3、已选保存根均保留，不重发start。
 - 有recovery且call.status为recorded：`{"requestId":"resume-1","operation":"resume","resolution":null}`只消费原结果。
-- call.status为unknown：先找回原宿主实际输出；没有就停，不补调用。找到后按下列信封恢复。
-- recovery.writing为true：可能已写PRD，停止并核对原写入证据及目标文件；不重写，不因字节相同就认定是本次写入。
+- call.status为unknown：先找回原宿主实际输出，找到后按下列信封恢复；确实找不到时按下方“作废后重问”处理，不用旧答复。
+- recovery.writing为true且带expected：发送resume null，宿主按下方“保存中断的对账”处理。不带expected（旧版会话）：可能已写PRD，停止并人工核对目标文件；不重写，不因字节相同就认定是本次写入。
 
 ```json
 {"requestId":"resume-1","operation":"resume","resolution":{"callId":"status原值","requestDigest":"status原值","result":{},"evidence":"实际原工具或消息输出引用"}}
@@ -63,3 +63,28 @@ result必须填原宿主返回，不能使用占位对象或重新生成的答�
 绑定字段不能证明用户真的同意。存在pending时不得用advance/finish绕过，已有记录不得改写为另一结果。
 显式cancel为终止，重开不能续跑；断连不等于cancel。并发写者、陌生JSON、权限/路径/访谈规则变化均拒绝，保留现场。
 恢复草稿不等于保存PRD，正式保存仍走原prepare_save/finish及用户确认。恢复的saved是历史记录，不是本次重新核对了目标文件。
+
+### 作废后重问（idea_interview、idea_confirm_save）
+
+应答先记录、后校验，所以被拒的应答每次resume都会原样失败；超时、断开或宿主退出又会留下结果未知的调用。两种情况都可在同一待定请求下重问，新请求换新的callId：
+
+```json
+{"requestId":"discard-1","operation":"resume","resolution":{"callId":"status原值","requestDigest":"status原值","discard":true,"evidence":"为何被拒（单行原因）"}}
+{"requestId":"abandon-1","operation":"resume","resolution":{"callId":"status原值","requestDigest":"status原值","abandon":true,"evidence":"原调用为何找不回（单行原因）"}}
+```
+
+discard只针对call.status为recorded、宿主拒收（stderr diagnostic有原因码）的应答；abandon只针对unknown。会话记录追加只增的abandonedCalls（kind、callId、requestDigest、原操作、原因、被拒结果摘要、evidence摘要和长度、时间），不存evidence正文。每种kind每个会话最多2次，超过报`idea_session_abandon_limit`。被作废的callId上的迟到答复一律拒收（`idea_session_call_abandoned`），保存确认则重新问当前用户，绝不沿用旧答复。resume期间宿主问到的保存确认（作废后的重问，或崩溃后重新发出的确认），驾驶员一律不预先作答：先让宿主登记新调用，再停下报`confirm_reask_decision_required`并给出新的callId与requestDigest（确认内容的摘要）；当前用户核对后写`answers/confirm-save-reask.json`（`{"callId":"新callId","requestDigest":"…","decision":"approved|rejected"}`），下一次resume只采用callId与requestDigest都等于已登记调用的决定，绑定其他调用的旧文件报`confirm_reask_decision_stale`，绝不使用；旧的confirm-save.json也不读。伪造、重复或超上限的记录在重开时报`idea_session_abandon_record_invalid`。status的guidance字段给出当前该走哪条路。
+
+### 保存中断的对账
+
+宿主独占写`prd/<filename>`，写前先在会话记录里记下expected（目标路径、内容SHA-256与长度、草稿摘要）。中断后resume null时，宿主先比对磁盘：
+
+- 文件与expected一致（0600普通文件）：视为已保存，stage为saved，saved.source为recovered_write_readback；恢复前先按正常保存的同一套检查核对保存根仍是规范路径、`prd/`是真实目录（被换成符号链接或移走一律算冲突）；只移除`prd/`里与已核对目标同一inode、大小和摘要都对得上的宿主临时名`.cm-review-<uuid>`。
+- 文件不存在：沿原已记录的批准重新写入，不再问一次同一请求。
+- 内容不一致或不是普通文件：报`idea_save_recovery_conflict`，交人核对；不覆盖、不删除。
+
+决定无效（save_blocked）时没有写入：会话模式用上方discard作废后重新问当前用户；内存模式直接再发finish，宿主会重新问。目标已存在等写前拒绝会保持draft_ready，可换filename再确认。
+
+### 内存模式
+
+不带`--session-file`时，失败的一轮（超时、校验不过、断开）没有任何记录，可在同一进程里再发一次同样的start/advance重问，最多2次，超过报`idea_retry_limit`。宿主进程一旦退出，内存里的访谈就全部丢失，只能从头开始；需要可恢复请改用`--session-file`。

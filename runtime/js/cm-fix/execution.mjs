@@ -91,16 +91,22 @@ const latestStepRecord=(records,id)=>[...records].reverse().find(row=>retryBase(
 // Each cause review round has its own one-time abandonment: round 1 under
 // fix-cause-*, the post-rediagnosis round 2 under fix-cause-rediagnosis-*.
 const REVIEW_ABANDON={cause_review:'fix-cause',revision_final_review:'fix-revision-final'};
+// V5 (F23/F26): a second no-result abandonment per round (MAX_FIX_REVIEW_ABANDONS)
+// is recorded as <prefix>-abandoned-2 and redispatched under <prefix>-retry-2-*.
+export const MAX_FIX_REVIEW_ABANDONS=2;
+export const FIX_REVIEW_RECOVERY_LIMIT_REASON=`fix_review_recovery_limit: 首轮最终审查的 worker 连续没有打开审查线程就丢失，无线程恢复已用满 ${MAX_FIX_REVIEW_ABANDONS} 次，不再续审。`
+  +'先查清审查 CLI 为何起不来（登录、额度、网络或本机环境），原运行记录保留不改写；修好后发 cancel 结束本运行，用新的 runId 重新发起修复。';
+const cycleId=(prefix,rows,suffix)=>rows.some(row=>row.id===`${prefix}-abandoned-2`)?`${prefix}-retry-2-${suffix}`
+  :rows.some(row=>row.id===`${prefix}-abandoned`)?`${prefix}-retry-${suffix}`:`${prefix}-${suffix}`;
 const causeRecord=(records,suffix)=>{
   const marker=records.findIndex(row=>row.id==='fix-rediagnosis-intent');
-  const tail=marker<0?null:records.slice(marker+1),retried=tail?.some(row=>row.id==='fix-cause-rediagnosis-abandoned');
+  const tail=marker<0?null:records.slice(marker+1);
   const row=marker<0?reviewCycleRecord(records,'fix-cause',suffix)
-    :tail.find(row=>row.id===`fix-cause-rediagnosis-${retried?'retry-':''}${suffix}`);
+    :tail.find(row=>row.id===cycleId('fix-cause-rediagnosis',tail,suffix));
   return suffix==='result'?reconciledFixResultRecord(records,row):row;
 };
 const reviewCycleRecord=(records,prefix,suffix)=>{
-  const row=records.some(row=>row.id===`${prefix}-abandoned`)
-    ?records.find(row=>row.id===`${prefix}-retry-${suffix}`):records.find(row=>row.id===`${prefix}-${suffix}`);
+  const row=records.find(row=>row.id===cycleId(prefix,records,suffix));
   return suffix==='result'?reconciledFixResultRecord(records,row):row;
 };
 // Reviews wait for their own budget (host review configuration), never for the
@@ -447,6 +453,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     let finalRegistration=null,finalStarted=null,finalResult=null,finalRecovery=null,finalRecoveryCount=0;
     let rediagnosis=null,rediagnosisThread=null;
     let causeOrigin=null,causeResultPayload=null,causeAbandonment=null,revisionFinalResultPayload=null,revisionAbandonment=null;
+    let causeAbandonment2=null,revisionAbandonment2=null;
     const finalInvocations=new Set(),finalThreads=new Set();
     let joinedCount=0;const seenJoined=new Set();
     let n5=null,postReviewRegression=null,walkthrough=null,revision=null,revisionBaseline=null,revisionRepair=null,revisionRegression=null;
@@ -529,7 +536,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         stage=pendingOrigin;pendingOrigin=null;pendingIntent=null;lastStepResult=null;continue;
       }
       const retried=/^(.*)-retry-([1-8])-(intent|result)$/.exec(record.id);
-      if(retried){
+      // A review cycle's second retry (fix-cause-retry-2-result) is not a step retry.
+      if(retried&&!/^fix-(?:cause(?:-rediagnosis)?|revision-final)$/.test(retried[1])){
         const baseId=`${retried[1]}-${retried[3]}`,step=stepRecord(baseId);
         need(step&&Number(retried[2])===retryCounts.get(step.base)
           &&record.kind===retried[3],'fix_history_invalid');
@@ -538,7 +546,10 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(/^fix-final-recovery-(?:[1-9]\d*-)?authorized$/.test(record.id)){
         need(!(configuration.externalModels||configuration.executionPolicy),'external_review_reconciliation_required');
         need(record.id===`${recoveryPrefix(finalRecoveryCount+1)}-authorized`,'fix_history_invalid');
-        need(identity.attempt===1&&stage==='unknown'&&finalRegistration&&finalStarted&&!revision
+        // V5 (F24): a first final review whose worker never opened a thread may
+        // also be recovered, bound to providerThreadId null, while fewer than
+        // MAX_FIX_REVIEW_ABANDONS recoveries were made (threaded ones keep their rule).
+        need(identity.attempt===1&&stage==='unknown'&&finalRegistration&&(finalStarted||finalRecoveryCount<MAX_FIX_REVIEW_ABANDONS)&&!revision
           &&(!finalResult||finalResult.observationStatus==='unknown')&&record.kind==='result','fix_review_recovery_unavailable');
         const value=record.payload;
         shape(value,['invocationId','packageDigest','registrationDigest','providerThreadId','previousInvocationStopped','reason']);
@@ -568,7 +579,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           &&digest(value.reviewFeedback)===digest(causeResult.review),'fix_history_invalid');
         if(value.learning!==null)inspectFixLearning(value.learning);
         rediagnosis=value;rediagnosisThread=started;learning=value.learning;
-        cause=null;causeResult=null;causeResultPayload=null;started=null;causeAbandonment=null;
+        cause=null;causeResult=null;causeResultPayload=null;started=null;causeAbandonment=null;causeAbandonment2=null;
         stage='unknown';pending='rediagnosis';continue;
       }
       if(record.id==='fix-rediagnosis-result'){
@@ -577,14 +588,17 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         stage=diagnosed.status==='needs_evidence'?'rediagnosis_blocked':'cause_review_required';continue;
       }
       // Round 2 (after rediagnosis) replays as the cause review cycle, including its own one-time abandonment and retry.
-      const causeRevised=/^fix-cause-rediagnosis-((?:retry-)?(?:registered|started|result)|abandoned)$/.exec(record.id);
+      const causeRevised=/^fix-cause-rediagnosis-((?:retry-(?:2-)?)?(?:registered|started|result)|abandoned(?:-2)?)$/.exec(record.id);
       if(causeRevised){need(rediagnosis!==null,'fix_history_invalid');record={...record,id:`fix-cause-${causeRevised[1]}`};}
-      else if(rediagnosis!==null&&/^fix-cause-(?:(?:retry-)?(?:registered|started|result)|abandoned)$/.test(record.id))need(false,'fix_history_invalid');
-      // After a one-time abandonment only the retry cycle's records are valid.
-      const reviewRetry=/^(fix-cause|fix-revision-final)-retry-(registered|started|result)$/.exec(record.id);
+      else if(rediagnosis!==null&&/^fix-cause-(?:(?:retry-(?:2-)?)?(?:registered|started|result)|abandoned(?:-2)?)$/.test(record.id))need(false,'fix_history_invalid');
+      // After an abandonment only the next cycle's records are valid: retry-*
+      // after the first, retry-2-* after the second (V5, at most two per round).
+      const reviewRetry=/^(fix-cause|fix-revision-final)-retry-(2-)?(registered|started|result)$/.exec(record.id);
       if(reviewRetry){
-        need((reviewRetry[1]==='fix-cause'?causeAbandonment:revisionAbandonment)!==null,'fix_history_invalid');
-        record={...record,id:`${reviewRetry[1]}-${reviewRetry[2]}`};
+        const first=reviewRetry[1]==='fix-cause'?causeAbandonment:revisionAbandonment;
+        const second=reviewRetry[1]==='fix-cause'?causeAbandonment2:revisionAbandonment2;
+        need(reviewRetry[2]?second!==null:first!==null&&second===null,'fix_history_invalid');
+        record={...record,id:`${reviewRetry[1]}-${reviewRetry[3]}`};
       }else if(/^fix-cause-(registered|started|result)$/.test(record.id))need(causeAbandonment===null,'fix_history_invalid');
       else if(/^fix-revision-final-(registered|started|result)$/.test(record.id))need(revisionAbandonment===null,'fix_history_invalid');
       const observed=/^fix-observation-(?:(\d+)-)?(resume-prepared|reproduce-intent|reproduce-result|diagnose-intent|diagnose-result)$/.exec(record.id);
@@ -799,11 +813,12 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(record.payload.outcome==='created'&&record.payload.status==='ready_for_review'&&/^[a-f0-9]{64}$/.test(record.payload.handoffSha256),'invalid_handoff_result');
         revisionHandoff=record.payload;pending=null;stage='revision_final_review_required';continue;
       }
-      if(record.id==='fix-cause-abandoned'||record.id==='fix-revision-final-abandoned'){
+      if(/^(fix-cause|fix-revision-final)-abandoned(-2)?$/.test(record.id)){
         need(!(configuration.externalModels||configuration.executionPolicy),'external_review_reconciliation_required');
-        const causeKind=record.id==='fix-cause-abandoned';
+        const causeKind=record.id.startsWith('fix-cause-'),secondAbandon=record.id.endsWith('-2');
         const registration=causeKind?cause:revisionFinalRegistration,result=causeKind?causeResult:revisionFinalResult;
-        need(record.kind==='result'&&(causeKind?causeAbandonment:revisionAbandonment)===null&&registration&&stage==='unknown'
+        const prior=causeKind?[causeAbandonment,causeAbandonment2]:[revisionAbandonment,revisionAbandonment2];
+        need(record.kind==='result'&&(secondAbandon?prior[0]!==null&&prior[1]===null:prior[0]===null)&&registration&&stage==='unknown'
           &&(pending===(causeKind?'cause_review':'revision_final_review')&&!result
             ||pending===null&&result&&result.observationStatus!=='completed'),'fix_history_invalid');
         const value=record.payload,resultPayload=causeKind?causeResultPayload:revisionFinalResultPayload;
@@ -814,9 +829,11 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=1000
           &&!/[\r\n\0\u0085\u2028\u2029]/.test(value.reason)&&Number.isSafeInteger(value.abandonedAt)&&value.abandonedAt>0,'fix_history_invalid');
         if(causeKind){
-          causeAbandonment=value;stage=causeOrigin;cause=null;started=null;causeResult=null;causeResultPayload=null;causeResumeStage=null;
+          if(secondAbandon)causeAbandonment2=value;else causeAbandonment=value;
+          stage=causeOrigin;cause=null;started=null;causeResult=null;causeResultPayload=null;causeResumeStage=null;
         }else{
-          revisionAbandonment=value;stage='revision_final_review_required';
+          if(secondAbandon)revisionAbandonment2=value;else revisionAbandonment=value;
+          stage='revision_final_review_required';
           revisionFinalRegistration=null;revisionFinalStarted=null;revisionFinalResult=null;revisionFinalResultPayload=null;
         }
         pending=null;continue;
@@ -833,7 +850,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(revision&&pending==='revision_final_review'&&revisionFinalStarted===null&&record.kind==='result','fix_history_invalid');
         need(record.payload.providerThreadId!==finalRecovery?.providerThreadId,'final_context_mismatch');
         shape(record.payload,['providerThreadId']);id(record.payload.providerThreadId);
-        need(record.payload.providerThreadId!==revisionAbandonment?.providerThreadId,'final_context_mismatch');
+        need(![revisionAbandonment?.providerThreadId,revisionAbandonment2?.providerThreadId].includes(record.payload.providerThreadId),'final_context_mismatch');
         const config=fixRevisionReviewConfiguration(revisionFeedback(),revision.nextIdentity,hostContextIds);
         need(![...fixHostContexts(config),config.reviewer.contextId,...config.reviewer.excludedThreadIds].includes(record.payload.providerThreadId),'final_context_mismatch');
         revisionFinalStarted=record.payload.providerThreadId;continue;
@@ -1098,7 +1115,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(pending==='cause_review'&&started===null&&record.kind==='result','fix_history_invalid');
         shape(record.payload,['providerThreadId']);id(record.payload.providerThreadId);started=record.payload.providerThreadId;
         need(![...hostContextIds,configuration.causeReview.contextId,finalStarted,rediagnosisThread,...configuration.causeReview.excludedThreadIds,
-          causeAbandonment?.providerThreadId].includes(started),'cause_registration_mismatch');continue;
+          causeAbandonment?.providerThreadId,causeAbandonment2?.providerThreadId].filter(Boolean).includes(started),'cause_registration_mismatch');continue;
       }
       if(record.id==='fix-cause-result'){
         need(pending==='cause_review'&&record.kind==='result','fix_history_invalid');
@@ -1290,7 +1307,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     const causeNoResult=noReviewResult(cause,causeResult,'cause_review');
     const revisionNoResult=noReviewResult(revisionFinalRegistration,revisionFinalResult,'revision_final_review');
     if(stage==='unknown'&&[...reviewLedger.receipts.values()].some(p=>reviewLedger.applied.has(p.invocationId)&&p.inspection.kind==='cm-provider-review-failure')){stage='review_provider_failed';pending=null;}
-    const reviewAbandonable=!(configuration.externalModels||configuration.executionPolicy)&&causeNoResult&&!causeAbandonment?'cause_review':!(configuration.externalModels||configuration.executionPolicy)&&revisionNoResult&&!revisionAbandonment?'revision_final_review':null;
+    const reviewAbandonable=!(configuration.externalModels||configuration.executionPolicy)&&causeNoResult&&!causeAbandonment2?'cause_review':!(configuration.externalModels||configuration.executionPolicy)&&revisionNoResult&&!revisionAbandonment2?'revision_final_review':null;
     lastPinned=pinned;
     const rerunKind=RERUNNABLE[stage]&&(revision===null)!==RERUNNABLE[stage].startsWith('revision_')?RERUNNABLE[stage]:null;
     const status=json({identity,stage,pending,abandoned,executionActive:active!==null,reproduction,diagnosis:diagnosed,learning,causeReview:causeResult,
@@ -1299,9 +1316,11 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       ...(Object.keys(blockedReruns).length?{blockedReruns}:{}),
       ...(rerunKind?{blockedRerun:{pending:rerunKind,used:blockedReruns[rerunKind]??0,limit:MAX_FIX_BLOCKED_RERUNS}}:{}),
       ...((configuration.externalModels||configuration.executionPolicy)&&stage==='unknown'?{reviewReconciliation:{available:reviewLedger.pending.length===1,invocationId:reviewLedger.pending[0]?.invocationId??null}}:{}),
-      ...(causeNoResult&&causeAbandonment||revisionNoResult&&revisionAbandonment?{reviewAbandonBudgetExhausted:true}:{}),
+      ...(causeNoResult&&causeAbandonment2||revisionNoResult&&revisionAbandonment2?{reviewAbandonBudgetExhausted:true}:{}),
       ...(causeAbandonment?{causeReviewAbandonment:causeAbandonment}:{}),
+      ...(causeAbandonment2?{causeReviewAbandonment2:causeAbandonment2}:{}),
       ...(revisionAbandonment?{revisionFinalReviewAbandonment:revisionAbandonment}:{}),
+      ...(revisionAbandonment2?{revisionFinalReviewAbandonment2:revisionAbandonment2}:{}),
       ...(causeReviewCorrection?{causeReviewCorrection}:{}),...(rediagnosis?{rediagnosis}:{}),
       ...(observationResume?{observationResume,observationCycle}:{}),
       ...(observationReproduction?{observationReproduction}:{}),
@@ -1414,11 +1433,14 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const current=project();
       need(current.reviewAbandonBudgetExhausted!==true,'fix_review_abandon_budget_exhausted');
       need(current.reviewAbandonable,'fix_review_abandon_unavailable');
-      const records=store.snapshot().records,prefix=current.reviewAbandonable==='cause_review'&&current.rediagnosis
+      const records=store.snapshot().records,base=current.reviewAbandonable==='cause_review'&&current.rediagnosis
         ?'fix-cause-rediagnosis':REVIEW_ABANDON[current.reviewAbandonable];
-      const registration=records.find(row=>row.id===`${prefix}-registered`),result=records.find(row=>row.id===`${prefix}-result`)??null;
-      append(`${prefix}-abandoned`,'result',{invocationId:registration.payload.request.invocationId,registrationDigest:digest(registration.payload),
-        providerThreadId:records.find(row=>row.id===`${prefix}-started`)?.payload.providerThreadId??null,
+      // V5: the first abandonment ends the round's first cycle; the second ends the retry cycle.
+      const again=Boolean(current.reviewAbandonable==='cause_review'?current.causeReviewAbandonment:current.revisionFinalReviewAbandonment);
+      const prefix=again?`${base}-retry`:base;
+      const registration=records.findLast(row=>row.id===`${prefix}-registered`),result=records.findLast(row=>row.id===`${prefix}-result`)??null;
+      append(`${base}-abandoned${again?'-2':''}`,'result',{invocationId:registration.payload.request.invocationId,registrationDigest:digest(registration.payload),
+        providerThreadId:records.findLast(row=>row.id===`${prefix}-started`)?.payload.providerThreadId??null,
         resultDigest:result===null?null:digest(result.payload),reason,abandonedAt:Date.now()});
       logFixEvent({specsRoot:evidenceSpecsRoot,identity,configuration,event:'abandon',phase:current.reviewAbandonable,
         detail:`显式放弃无结果的审查：${current.reviewAbandonable}`,data:{pending:current.reviewAbandonable,reason}});
@@ -1430,8 +1452,11 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const current=project(),records=store.snapshot().records;
       need(identity.attempt===1&&current.stage==='unknown'&&!current.revision
         &&(!current.finalReview||current.finalReview.observationStatus==='unknown'),'fix_review_recovery_unavailable');
-      const prior=finalRecord(records,'registered')?.payload,thread=finalRecord(records,'started')?.payload.providerThreadId;
-      need(prior&&thread,'fix_review_recovery_unavailable');
+      const prior=finalRecord(records,'registered')?.payload,thread=finalRecord(records,'started')?.payload.providerThreadId??null;
+      need(prior,'fix_review_recovery_unavailable');
+      // V5 (F24): the thread-less recoveries are spent: an explicit limit, not a generic refusal.
+      if(!thread&&current.finalReviewRecoveryCount>=MAX_FIX_REVIEW_ABANDONS)throw Object.assign(new Error('fix_review_recovery_limit'),
+        {code:'fix_review_recovery_limit',reason:FIX_REVIEW_RECOVERY_LIMIT_REASON});
       if(current.finalReviewRecoveryCount>0||recoveryInvocationId!==null)
         need(recoveryInvocationId===prior.request.invocationId,'fix_review_recovery_authorization_required');
       need(invocationId===prior.request.invocationId&&packageDigest===prior.request.payload.reviewPackage.packageDigest
@@ -1655,7 +1680,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     async reviewFinal(){
       need(!closed&&active===null,'fix_busy');const start=project();if(!['final_review_required','revision_final_review_required'].includes(start.stage))return start;
       const revising=start.stage==='revision_final_review_required';
-      const prefix=revising?(start.revisionFinalReviewAbandonment?'fix-revision-final-retry':'fix-revision-final'):recoveryPrefix(start.finalReviewRecoveryCount);
+      const prefix=revising?(start.revisionFinalReviewAbandonment2?'fix-revision-final-retry-2':start.revisionFinalReviewAbandonment?'fix-revision-final-retry':'fix-revision-final'):recoveryPrefix(start.finalReviewRecoveryCount);
       need(finalReview&&typeof assertReviewReady==='function','final_review_unavailable');
       const ready=assertReviewReady();if(types.isPromise(ready))Promise.prototype.then.call(ready,()=>{},()=>{});
       need(ready===undefined,'final_sync_registration_required');
@@ -1676,7 +1701,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           joinLiveHost();append(`${prefix}-registered`,'intent',value);registered=true;
         },onStarted(providerThreadId){
           need(providerThreadId!==start.finalReviewRecovery?.providerThreadId
-            &&providerThreadId!==(revising?start.revisionFinalReviewAbandonment?.providerThreadId:undefined),'final_context_mismatch');
+            &&!(revising&&[start.revisionFinalReviewAbandonment?.providerThreadId,start.revisionFinalReviewAbandonment2?.providerThreadId].filter(Boolean).includes(providerThreadId)),'final_context_mismatch');
           if(!revising)need(!store.snapshot().records.some(row=>finalCycleRecord(row,'started')
             &&row.payload.providerThreadId===providerThreadId),'final_context_mismatch');
           append(`${prefix}-started`,'result',{providerThreadId});
@@ -1974,8 +1999,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       need(configuration.causeReview&&causeReview&&typeof causeReview.authorize==='function'&&typeof causeReview.run==='function','cause_review_unavailable');
       const reviewer=configuration.causeReview;
       const budget=reviewTimeout(causeReview,configuration.reproduction.timeoutMs);
-      const prefix=`${status.rediagnosis?'fix-cause-rediagnosis':'fix-cause'}${status.causeReviewAbandonment?'-retry':''}`;
-      const abandonedThread=status.causeReviewAbandonment?.providerThreadId??null;
+      const prefix=`${status.rediagnosis?'fix-cause-rediagnosis':'fix-cause'}${status.causeReviewAbandonment2?'-retry-2':status.causeReviewAbandonment?'-retry':''}`;
+      const abandonedThreads=[status.causeReviewAbandonment?.providerThreadId,status.causeReviewAbandonment2?.providerThreadId].filter(Boolean);
       const pkg=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,status});
       const request=requestFor({invocationId:`fix-cause.${randomUUID()}`,identity,role:'reviewer',provider:reviewer.provider,
         requestedModel:reviewer.requestedModel,contextId:reviewer.contextId,payload:{reviewPackage:pkg,priorReview:null}});
@@ -1999,7 +2024,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
               JSON.stringify(causeExpectation(request,reviewConfiguration)));
             if(event.event==='thread.started'){
               // A retry is a fresh reviewer thread, never the abandoned one.
-              need(event.provider_thread!==abandonedThread&&event.provider_thread!==status.rediagnosis?.priorProviderThreadId,'observation_context');
+              need(!abandonedThreads.includes(event.provider_thread)&&event.provider_thread!==status.rediagnosis?.priorProviderThreadId,'observation_context');
               append(`${prefix}-started`,'result',{providerThreadId:event.provider_thread});started=event.provider_thread;
             }
             events.push(event);return true;

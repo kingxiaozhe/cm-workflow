@@ -52,13 +52,15 @@ async function fixture(t,{observation=false,reviewMode=null,crossLayer=false,les
       const data=JSON.parse(prompt.split('<cm-review-data-json>\n')[1]);
       onEvent({event:'thread.started',provider_thread:`fixture-review-${reviewMode==='first_lost_same_thread'?1:reviews}`});
       if(reviewMode==='lost'||['second_lost','second_lost_retry'].includes(reviewMode)&&reviews===2
+        ||reviewMode==='second_lost_twice'&&[2,3].includes(reviews)
         ||['first_lost','first_lost_same_thread'].includes(reviewMode)&&reviews===1
-        ||['rediagnosis_lost','rediagnosis_twice','rediagnosis_context'].includes(reviewMode)&&(reviews===2||reviewMode==='rediagnosis_twice'&&reviews===3))
+        ||['rediagnosis_lost','rediagnosis_twice','rediagnosis_thrice','rediagnosis_context'].includes(reviewMode)
+          &&(reviews===2||['rediagnosis_twice','rediagnosis_thrice'].includes(reviewMode)&&reviews===3||reviewMode==='rediagnosis_thrice'&&reviews===4))
         throw Error('Synthetic lost review result');
       for(const event of [{event:'turn.started',item_type:null},{event:'item.completed',item_type:'agent_message'},
         {event:'turn.completed',item_type:null},{event:'process_closed',exit_code:0,signal:null,timed_out:false}])onEvent(event);
       const outsidePath=reviewMode==='rediagnosis_invalid'&&reviews===2;
-      const verdict=['changes_requested','second_lost'].includes(reviewMode)||reviewMode==='second_lost_retry'&&reviews===1
+      const verdict=['changes_requested','second_lost'].includes(reviewMode)||['second_lost_retry','second_lost_twice'].includes(reviewMode)&&reviews===1
         ||reviewMode?.startsWith('rediagnosis_')&&reviews===1||outsidePath?'changes_requested':'approved';
       return {status:'succeeded',value:{verdict,packageDigest:data.reviewPackage.packageDigest,
         examinedPaths:data.examinedPaths,
@@ -77,7 +79,7 @@ async function fixture(t,{observation=false,reviewMode=null,crossLayer=false,les
       return crossLayer?{...diagnosis,crossLayer:true}:diagnosis;
     }
     if(kind==='fix_repair'){
-      if(['changes_requested','second_lost','second_lost_retry'].includes(reviewMode)&&payload.identity.attempt===2&&loseRevisionRepair){
+      if(['changes_requested','second_lost','second_lost_retry','second_lost_twice'].includes(reviewMode)&&payload.identity.attempt===2&&loseRevisionRepair){
         loseRevisionRepair=false;throw Error('Lost revision repair answer');
       }
       fs.writeFileSync(path.join(cwd,'value.mjs'),repairContent??(payload.identity.attempt===2?'export const value=2; // revised\n':'export const value=2;\n'));
@@ -437,16 +439,25 @@ test('#15 a no-result cause review is abandoned once, audited, and retried on a 
   assert.equal(f.owner().status().causeReview.providerThreadId,'fixture-review-2');
 });
 
-test('#15 a second no-result cause review exhausts the one-time budget without changing the store',async t=>{
+test('#15 a third no-result cause review exhausts the round\'s two abandonments without changing the store',async t=>{
   const f=await fixture(t,{reviewMode:'lost',crossLayer:true});
   await f.owner().advance({authorized:true});await causeDecide(f);
   assert.equal((await f.owner().reviewCause()).stage,'unknown');
   f.owner().abandonReview({authorized:true,reason:'First reviewer stopped'});
   await causeDecide(f);
+  // V5: the round keeps a second abandonment, redispatched under fix-cause-retry-2-*.
+  const second=await f.owner().reviewCause();
+  assert.equal(second.stage,'unknown');assert.equal(second.reviewAbandonable,'cause_review');
+  const abandoned=f.owner().abandonReview({authorized:true,reason:'Second reviewer stopped'});
+  assert.equal(abandoned.stage,'cause_review_required');assert.equal(abandoned.causeReviewAbandonment2.providerThreadId,'fixture-review-2');
+  assert.deepEqual(f.records().filter(row=>/^fix-cause-abandoned/.test(row.id)).map(row=>row.id),['fix-cause-abandoned','fix-cause-abandoned-2']);
+  await causeDecide(f);
   const again=await f.owner().reviewCause();
+  assert(f.records().some(row=>row.id==='fix-cause-retry-2-registered'));
   assert.equal(again.stage,'unknown');assert.equal(again.reviewAbandonBudgetExhausted,true);assert.equal(again.reviewAbandonable,undefined);
   const before=fs.readFileSync(f.statePath);
-  assert.throws(()=>f.owner().abandonReview({authorized:true,reason:'Second reviewer stopped'}),{code:'fix_review_abandon_budget_exhausted'});
+  assert.throws(()=>f.owner().abandonReview({authorized:true,reason:'Third reviewer stopped'}),{code:'fix_review_abandon_budget_exhausted'});
+  assert.equal(f.reopen().status().reviewAbandonBudgetExhausted,true);
   assert.deepEqual(fs.readFileSync(f.statePath),before);
 });
 
@@ -494,6 +505,46 @@ test('#15 a no-result second-round final review is abandoned once and retried on
     'fix-revision-final-retry-registered','fix-revision-final-retry-started','fix-revision-final-retry-result']);
   assert.notEqual(f.records().find(row=>row.id==='fix-revision-final-retry-started').payload.providerThreadId,
     f.records().find(row=>row.id==='fix-revision-final-started').payload.providerThreadId);
+  assert.equal(f.owner().publishReview().stage,'revision_completion_gate_required');
+  assert.equal(f.reopen().status().stage,'revision_completion_gate_required');
+});
+
+// V5 (F26): the second-round final review keeps two no-result abandonments;
+// the second cycle runs under fix-revision-final-retry-2-* on a third thread.
+test('V5 a twice-lost second-round final review is abandoned twice and retried on fresh threads',async t=>{
+  const f=await fixture(t,{reviewMode:'second_lost_twice'});
+  await toRevision(f);await completeRevisionRepair(f);
+  await f.owner().runRegression({authorized:true});await f.owner().retrospect();
+  assert.equal(f.owner().createHandoff().stage,'revision_final_review_required');
+  const decide=async()=>{const pkg=f.owner().finalReviewPackage();
+    await f.reviewHost.finalAuthority.hostDecisionProvider.decide({identity:f.owner().status().revision.nextIdentity,
+      packageDigest:pkg.packageDigest},new AbortController().signal);};
+  let beforeSecond=null,afterSecond=null;
+  for(const reason of ['First stopped','Second stopped']){
+    await decide();
+    const lost=await f.owner().reviewFinal();
+    assert.equal(lost.stage,'unknown');assert.equal(lost.reviewAbandonable,'revision_final_review');
+    if(reason==='Second stopped')beforeSecond=fs.readFileSync(f.statePath);
+    assert.equal(f.owner().abandonReview({authorized:true,reason}).stage,'revision_final_review_required');
+  }
+  afterSecond=fs.readFileSync(f.statePath);
+  // Replay refuses a second abandonment bound to the first cycle, and a duplicate one.
+  const second=f.records().find(row=>row.id==='fix-revision-final-abandoned-2').payload;
+  f.restore(beforeSecond);
+  const firstRegistration=f.records().find(row=>row.id==='fix-revision-final-registered').payload;
+  assert.throws(()=>f.append('fix-revision-final-abandoned-2','result',{...second,registrationDigest:digest(firstRegistration),
+    invocationId:firstRegistration.request.invocationId}),{code:'fix_review_abandon_mismatch'});
+  f.restore(afterSecond);
+  assert.throws(()=>f.append('fix-revision-final-abandoned-2','result',{...second,reason:'Again'}));
+  assert.equal(f.records().filter(row=>row.id==='fix-revision-final-abandoned-2').length,1);
+  f.restore(afterSecond);
+  assert.equal(f.reopen().status().revisionFinalReviewAbandonment2.providerThreadId,'fixture-review-3');
+  await decide();
+  assert.equal((await f.owner().reviewFinal()).stage,'revision_final_review_evidence_required');
+  const records=f.records(),ids=records.map(row=>row.id).filter(id=>id.startsWith('fix-revision-final'));
+  assert.deepEqual(ids,['fix-revision-final-registered','fix-revision-final-started','fix-revision-final-abandoned',
+    'fix-revision-final-retry-registered','fix-revision-final-retry-started','fix-revision-final-abandoned-2',
+    'fix-revision-final-retry-2-registered','fix-revision-final-retry-2-started','fix-revision-final-retry-2-result']);
   assert.equal(f.owner().publishReview().stage,'revision_completion_gate_required');
   assert.equal(f.reopen().status().stage,'revision_completion_gate_required');
 });
@@ -556,11 +607,15 @@ test(`regression: a no-result round-2 cause review (${reviewMode}) is abandoned 
   assert.equal(reopened.stage,'red_test_required');assert.equal(reopened.causeReview.providerThreadId,'fixture-review-3');
 });
 
-test('regression: a second no-result round-2 cause review exhausts that round\'s one-time abandonment without changing the store',async t=>{
-  const f=await fixture(t,{reviewMode:'rediagnosis_twice',crossLayer:true});
+test('regression: a third no-result round-2 cause review exhausts that round\'s two abandonments without changing the store',async t=>{
+  const f=await fixture(t,{reviewMode:'rediagnosis_thrice',crossLayer:true});
   await toRediagnosisReview(f);
   const host=()=>hostFor(f,['--allow-reproduction','--allow-abandon-review']);
   assert.equal((await host().handle({requestId:'a',operation:'abandon_review',reason:'First round-2 reviewer stopped'})).stage,'cause_review_required');
+  await causeDecide(f);
+  assert.equal((await f.owner().reviewCause()).reviewAbandonable,'cause_review');
+  assert.equal((await host().handle({requestId:'a2',operation:'abandon_review',reason:'Second round-2 reviewer stopped'})).stage,'cause_review_required');
+  assert(f.records().some(row=>row.id==='fix-cause-rediagnosis-abandoned-2'));
   await causeDecide(f);
   const again=await f.owner().reviewCause();
   assert.equal(again.stage,'unknown');assert.equal(again.reviewAbandonBudgetExhausted,true);assert.equal(again.reviewAbandonable,undefined);

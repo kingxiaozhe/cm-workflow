@@ -286,7 +286,11 @@ const AI_STUCK_ACTIONS=new Set(['reconcile','abandon_effect','abandon_review','r
 const AI_STUCK_CODES=new Set(['decision_required','permission_denied','provider_development_authorization_required',
   'qa_decision_required','qa_mandatory_required','qa_triggered','qa_blocked','qa_failed','qa_result_blocked',
   'qa_execution_unknown','correction_review_required','project_qa_not_passed','documentation_sync_blocked',
-  'handoff_exists','spec_drift','qa_fix_code_unmatched']);
+  'handoff_exists','spec_drift','qa_fix_code_unmatched',
+  // Q23-Q26: QA-fix and batch recovery refusals and stops (host-qa-fix-owner.mjs, cm-ai-batch-run.mjs).
+  'qa_fix_action_authorization_required','batch_member_action_authorization_required','batch_member_action_not_current',
+  'batch_member_action_unavailable','batch_parallel_member_recovery_required','batch_resources_open',
+  'batch_parallel_member_unresolved','batch_member_rescheduled']);
 function classifyAi(r){
   const state=text(r.state),code=text(r.code),outcome=text(r.outcome);
   if(state==='run_done'&&['run_done','run_done_degraded'].includes(code))return 'done';
@@ -312,7 +316,7 @@ const CLASSIFY={
       'change_rejected','inputs_replaced'].includes(stage))return 'stuck';
     if(stage==='change_check_failed'&&Number(r.round)>=2)return 'stuck';
     if(/^change_(requirements|design|tasks|check)$/.test(stage??'')&&text(r.question))return 'stuck';
-    if(status&&(/_unknown$/.test(status)||['correction_recovery_required','disposition_details_need_verification'].includes(status)))return 'stuck';
+    if(status&&(/_unknown$/.test(status)||['correction_recovery_required','correction_recovery_conflict','disposition_details_need_verification'].includes(status)))return 'stuck';
     if(status==='human_summary_prepared'&&r.readyForAwaitingReview===false)return 'stuck';
     if(status==='review_findings_ready'&&r.verdict==='blocked')return 'stuck';
     if(['review_unknown','review_cancelled'].includes(review.status)||review.verdict==='blocked'
@@ -324,7 +328,9 @@ const CLASSIFY={
   'cm-idea'(r){
     const stage=text(r.stage),recovery=obj(r.recovery);
     if(stage==='saved')return 'done';
-    if(recovery.writing===true||obj(recovery.call).status==='unknown')return 'stuck';
+    // A pending call (unknown, or recorded but not yet consumed/refused) waits on
+    // resume, abandon or discard; an interrupted save waits on reconciliation.
+    if(recovery.writing===true||['unknown','recorded'].includes(obj(recovery.call).status))return 'stuck';
     if(stage==='draft_ready')return r.confirmationRequired===true?null:'stuck';
     return ['awaiting_user','save_unknown','save_blocked',...STUCK_COMMON].includes(stage)?'stuck':null;
   },
@@ -332,7 +338,7 @@ const CLASSIFY={
   'cm-init'(r){
     const stage=text(r.stage)??(r.status==='blocked'?'blocked':null),recovery=obj(r.recovery);
     if(['rules_written','rules_present'].includes(stage))return 'done';
-    if(recovery.writing===true||obj(recovery.call).status==='unknown')return 'stuck';
+    if(recovery.writing===true||['unknown','recorded'].includes(obj(recovery.call).status))return 'stuck';
     return ['analysis_blocked','verification_blocked','confirmation_required','confirmation_rejected','review_changes_requested',
       'review_blocked','write_incomplete','write_unknown',...STUCK_COMMON].includes(stage)?'stuck':null;
   },

@@ -44,6 +44,8 @@ const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approv
   status.code==='spec_drift'?(status.specificationRebind==='available'?'spec_rebind':'none'):
   status.bootstrapReviewRecovery===true?'bootstrap_review_recover':
   status.developRedoRequired===true?'develop_redo':
+  // V5: the round's second no-result redispatch needs the operator's stop confirmation.
+  status.reviewRedispatchStopRequired===true?'abandon_review':
   status.reviewReconciliation?.available?'reconcile_review':
   status.state==='changes_requested'||retryDeveloper(status)||retryReview(status)?'resume':
   status.state==='awaiting_review'?'decision':status.state==='unknown'
@@ -68,6 +70,8 @@ const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',ope
   packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),
   ...(status.reviewReconciliation?{reviewReconciliation:status.reviewReconciliation}:{}),
   ...(status.developRedoRequired===true?{developRedoRequired:true}:{}),
+  ...(status.reviewRedispatchStopRequired===true?{reviewRedispatchStopRequired:true}:{}),
+  ...(typeof status.reviewAbandonRefusal==='string'?{reviewAbandonRefusal:status.reviewAbandonRefusal}:{}),
   ...(typeof status.reason==='string'?{reason:status.reason}:{}),
   ...(status.code==='handoff_exists'?{reason:REVIEWED_HANDOFF_HINT}:{}),
   ...(status.state==='blocked'&&status.calls?.at(-1)?.blockedReason!==undefined
@@ -579,7 +583,8 @@ export function createCmAiConversationEntry(options) {
       abandonPermission=false;
       const result=runner.abandonReview?.({allowed:true,reason:operation.reason})
         ??{outcome:'rejected',code:'review_abandon_unavailable'};
-      if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code},'rejected');
+      if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code,
+        ...(typeof result.reason==='string'?{reason:result.reason}:{})},'rejected');
       return summary(operation,boundStatus(result,identity),'abandoned');
     }
     if(operation.operation==='abandon_effect'){

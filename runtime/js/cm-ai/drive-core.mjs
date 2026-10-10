@@ -53,6 +53,14 @@ const rejectedReplyHint=code=>code==='host_response_too_large'
 // beforeRequest runs after host_ready, i.e. after the host itself accepted every
 // launch input, admission and the run store, and before the operation is sent.
 // A returned refusal closes the session without any operation and exits 2.
+// A driver that deliberately leaves a host question unanswered (a re-asked
+// confirmation the current user must decide) ends with exit code 2, whatever the
+// host's final row says, so callers see a stop that needs a person.
+let deliberateStop=false;
+export function deliberatelyUnanswered(message){
+  if(!deliberateStop){deliberateStop=true;process.on('exit',()=>{process.exitCode=2;});}
+  return Object.assign(new Error(message),{code:'confirm_reask_decision_required'});
+}
 export function driveHost({host,args,cwd,operation,request={},answers,paths,answerFor,beforeRequest=null}){
   const child=spawn(process.execPath,[host,...args],{cwd,stdio:['pipe','pipe','pipe']});
   const control=new AbortController();

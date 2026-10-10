@@ -210,7 +210,7 @@ test(`#8 ${error==='authentication_failed'?'real Claude CLI':'in-process Claude 
   assert.equal(f.replay().state.state,'approved');assert.equal(f.calls().length,2);
 });
 
-test('#8 a reviewer with no init line is retryable once; the second failure is terminal and abandon is refused',t=>{
+test('#8 a reviewer with no init line is redispatched twice per round; the third failure is a limit and abandon is refused',t=>{
   const f=fixture(t),packageDigest=f.awaitingReview();
   f.behave({mode:'no_init'});
   const first=f.decide(packageDigest);
@@ -219,14 +219,26 @@ test('#8 a reviewer with no init line is retryable once; the second failure is t
   assert.equal(f.lastResult().inspection.providerThreadId,null);
   assert.deepEqual(f.lastResult().observation.events.map(event=>event.event),['process_closed']);
   const second=f.decide(packageDigest);
-  assert.equal(second.result.state,'blocked');assert.equal(second.result.code,'review_provider_failed');
-  assert.equal(second.result.pendingAction,'none');assert.equal(f.calls().length,2);
+  assert.equal(second.result.code,'review_provider_failed');assert.equal(f.calls().length,2);
+  // V5: the round's second no-result redispatch waits for the operator's stop
+  // confirmation (abandon_review journals review-redispatch), then advance.
+  assert.equal(second.result.state,'blocked');assert.equal(second.result.pendingAction,'abandon_review');
+  assert.equal(second.result.reviewRedispatchStopRequired,true);
+  assert.equal(f.decide(packageDigest).result.state,'blocked');assert.equal(f.calls().length,2);
+  const stopPlan=f.plan({mode:'resume',permissions:['--review-config','review.json','--allow-abandon-review'],
+    reason:'reviewer process confirmed exited',answers:undefined,checks:undefined});
+  const confirmed=f.drive(stopPlan,'abandon_review');
+  assert.equal(confirmed.result.state,'pending_review',JSON.stringify(confirmed.result));assert.equal(confirmed.result.pendingAction,'resume');
+  const third=f.decide(packageDigest);
+  assert.equal(third.result.state,'blocked');assert.equal(third.result.code,'review_redispatch_limit');
+  assert.equal(third.result.pendingAction,'none');assert.equal(f.calls().length,3);
+  assert.equal(f.records().filter(row=>row.payload.type==='review-redispatch').length,1);
   const before=fs.readFileSync(f.store);
   const abandon=f.drive(f.plan({mode:'resume',permissions:['--review-config','review.json','--allow-abandon-review'],
     reason:'reviewer exited',answers:undefined,checks:undefined}),'abandon_review');
   assert.equal(abandon.result.outcome,'rejected');assert.deepEqual(fs.readFileSync(f.store),before);
-  // The retry budget is spent; resume never dispatches a third review.
-  assert.equal(f.decide(packageDigest).result.state,'blocked');assert.equal(f.calls().length,2);
+  // The round's redispatches are spent; resume never dispatches a fourth review.
+  assert.equal(f.decide(packageDigest).result.state,'blocked');assert.equal(f.calls().length,3);
 });
 
 const contractCases=[
@@ -293,7 +305,7 @@ test('#9 every reviewer prompt states the verdict rules and what blocked means',
   }
 });
 
-test('#8 a final message cut off by the reviewer timeout has an audited exit sharing the one redispatch',t=>{
+test('#8 a final message cut off by the reviewer timeout has an audited exit sharing the round\'s two redispatches',t=>{
   const f=fixture(t,{reviewTimeoutMs:5000}),packageDigest=f.awaitingReview();
   f.behave({mode:'hang_after_result'});
   const cut=f.decide(packageDigest);
@@ -319,11 +331,16 @@ test('#8 a final message cut off by the reviewer timeout has an audited exit sha
   // A second abandonment has nothing left to abandon.
   const before=fs.readFileSync(f.store);
   assert.equal(f.drive(abandonPlan,'abandon_review').result.outcome,'rejected');assert.deepEqual(fs.readFileSync(f.store),before);
-  // The redispatch is the attempt's only one: a failing retry ends blocked.
+  // V5: the abandonment was the round's first redispatch; a failing retry
+  // keeps the second (review-redispatch), and a third failure is the limit.
   f.behave({mode:'api_error',error:'server_error',status:529,text:'API Error: 529 Overloaded'});
   const retried=f.decide(packageDigest);
   assert.equal(retried.result.state,'blocked');assert.equal(retried.result.code,'review_provider_failed');
-  assert.deepEqual(f.intents(),['develop-1','review-1','review-1-retry-1']);
+  assert.equal(retried.result.pendingAction,'abandon_review');
+  assert.equal(f.drive(abandonPlan,'abandon_review').result.state,'pending_review');
+  const last=f.decide(packageDigest);
+  assert.equal(last.result.state,'blocked');assert.equal(last.result.code,'review_redispatch_limit');
+  assert.deepEqual(f.intents(),['develop-1','review-1','review-1-retry-1','review-1-retry-2']);
   const history=f.replay();assert.equal(history.state.state,'blocked');
   assert.equal(history.state.calls.filter(call=>call.terminal==='abandoned').length,1);
   assert.equal(history.state.sequence,history.state.calls.length);
@@ -687,9 +704,18 @@ test('#8 replay refuses a journaled-result abandonment bound to the wrong record
     const changed=structuredClone(records);changed.at(-1).payload[field]=field.endsWith('Digest')?'0'.repeat(64):'other';
     assert.throws(()=>readRunnerHistory(rechain(changed),configuration,3),{code:'runner_abandon'});
   }
+  const reseq=rows=>rechain(rows.map((row,index)=>({...row,seq:index+1,id:`runner.${String(index+1).padStart(6,'0')}`})));
+  // A38: the same record right after the journaled result (the checkpoint never
+  // written) is the abandonment of the pending review, bound to that result.
   const early=structuredClone(records);early.splice(-2,1);
-  assert.throws(()=>readRunnerHistory(rechain(early.map((row,index)=>({...row,seq:index+1,
-    id:`runner.${String(index+1).padStart(6,'0')}`}))),configuration,3));
+  const pendingAbandon=readRunnerHistory(reseq(early),configuration,3);
+  assert.equal(pendingAbandon.state.state,'pending_review');assert.equal(pendingAbandon.state.code,'review_abandoned');
+  assert.equal(pendingAbandon.pending,null);
+  const wrongResult=structuredClone(early);wrongResult.at(-1).payload.resultDigest='0'.repeat(64);
+  assert.throws(()=>readRunnerHistory(reseq(wrongResult),configuration,3),{code:'runner_abandon'});
+  // Never before its result record.
+  const beforeResult=structuredClone(records);beforeResult.splice(-3,2);
+  assert.throws(()=>readRunnerHistory(reseq(beforeResult),configuration,3));
 },{reviewTimeoutMs:100}));
 
 // Codex review of bf6b6f9: each abandoned invocation must leave the six-call cap
@@ -1039,18 +1065,24 @@ test('#9 Claude boundary exit is unknown with a summary, abandonable once, and t
   assert.equal(g.decide(digest2).result.state,'approved');
   assert.deepEqual(g.intents(),['develop-1','review-1']);
 });
-test('#9 a second boundary exit after the one redispatch stays unknown and cannot be abandoned again',t=>{
+test('#9 a third boundary exit after the round\'s two redispatches stays unknown and cannot be abandoned again',t=>{
   const f=fixture(t),packageDigest=f.awaitingReview();
-  f.behave({mode:'user_text'},{mode:'user_text'});
+  f.behave({mode:'user_text'},{mode:'user_text'},{mode:'user_text'});
   assert.equal(f.decide(packageDigest).result.pendingAction,'abandon_review');
   const abandonPlan=f.plan({mode:'resume',permissions:['--review-config','review.json','--allow-abandon-review'],
     reason:'first exit',answers:undefined,checks:undefined});
   assert.equal(f.drive(abandonPlan,'abandon_review').result.state,'pending_review');
+  // V5: the round keeps a second no-result redispatch.
+  assert.equal(f.decide(packageDigest).result.pendingAction,'abandon_review');
+  assert.equal(f.drive(abandonPlan,'abandon_review').result.state,'pending_review');
   const again=f.decide(packageDigest);
   assert.equal(again.result.state,'unknown');assert.equal(again.result.code,'transport_incomplete');
   assert.notEqual(again.result.pendingAction,'abandon_review');
+  assert.match(again.result.reason,/^review_abandon_budget_exhausted: /);
   const before=fs.readFileSync(f.store);
-  assert.equal(f.drive(abandonPlan,'abandon_review').result.outcome,'rejected');assert.deepEqual(fs.readFileSync(f.store),before);
+  const refused=f.drive(abandonPlan,'abandon_review').result;
+  assert.equal(refused.outcome,'rejected');assert.equal(refused.code,'review_abandon_budget_exhausted');
+  assert.deepEqual(fs.readFileSync(f.store),before);
   const history=f.replay();assert.equal(history.state.state,'unknown');assert.equal(history.reviewResultAbandon,null);
-  assert.equal(history.state.calls.filter(call=>call.terminal==='abandoned').length,1);
+  assert.equal(history.state.calls.filter(call=>call.terminal==='abandoned').length,2);
 });

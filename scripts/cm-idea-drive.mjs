@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {inspectCmIdeaAdmission} from './cm-idea-entry.mjs';
-import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
+import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,deliberatelyUnanswered} from '../runtime/js/cm-ai/drive-core.mjs';
 
 const HOST=fileURLToPath(new URL('./cm-idea-host.mjs',import.meta.url));
 const KNOWN=new Set(['start','advance','status','cancel','prepare_save','finish','resume']);
@@ -19,7 +19,7 @@ const obj=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 function valid(ok,label){if(!ok)stop(2,`答案格式错误：${label}`);}
 function main(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-idea-drive.mjs --plan PLAN.json <operation>\nPLAN: project, sessionFile, mode:create|resume, text/maturity, answers；finish 需 saveRoot、filename 和当前用户的确认答案。宿主负责真实保存与回读。\n');return;
+    process.stdout.write('用法: cm-idea-drive.mjs --plan PLAN.json <operation>\nPLAN: project, sessionFile, mode:create|resume, text/maturity, answers；finish 需 saveRoot、filename 和当前用户的确认答案。宿主负责真实保存与回读。resume 的 resolution 可为 null、原回执，或 {callId,requestDigest,discard|abandon:true,evidence} 作废后重问。\n');return;
   }
   const {plan,operation,base}=loadPlanFile({name:'cm-idea-drive.mjs',known:KNOWN});
   requireFields(plan,['project','sessionFile','mode']);
@@ -38,13 +38,36 @@ function main(){
   if(state?.pending&&operation!=='resume')stop(2,'恢复存档存在 pending；必须用 resume 和原调用回执，不能重派');
   const stage=state?.checkpoint?.stage??'ready';
   if(operation==='status'&&plan.mode!=='resume')stop(2,'status 需要已有会话');
+  let boundDecision=null;
   if(operation==='resume'){
     if(plan.mode!=='resume')stop(2,'resume 需要已有存档');
-    if(state.pending?.writing)stop(2,'保存结果未知，不能自动恢复');
+    if(state.pending?.writing&&!state.pending.expected)stop(2,'保存结果未知（旧版会话没有记下应写内容的摘要），不能自动恢复；人工核对 prd/ 下目标文件');
     const call=state.pending?.call,resolution=plan.resolution??null;
-    if(call&&!Object.hasOwn(call,'result'))valid(obj(resolution)&&resolution.callId===call.callId
+    const reask=obj(resolution)&&(resolution.discard===true||resolution.abandon===true);
+    if(state.pending?.writing)valid(resolution===null,'保存中断的恢复只接受 resolution:null（宿主按记下的摘要比对磁盘）');
+    else if(reask){
+      valid(call&&resolution.callId===call.callId&&resolution.requestDigest===call.requestDigest&&nonempty(resolution.evidence)
+        &&!Object.hasOwn(resolution,'result')&&(resolution.discard===true)!==(resolution.abandon===true)
+        &&(resolution.discard===true?Object.hasOwn(call,'result'):!Object.hasOwn(call,'result'))
+        &&Object.keys(resolution).every(key=>['callId','requestDigest','discard','abandon','evidence'].includes(key)),
+      'resume 作废需要 {callId,requestDigest,discard:true|abandon:true,evidence}：discard 只针对已记录被拒的应答，abandon 只针对结果未知的调用');
+      if((state.abandonedCalls??[]).filter(item=>item.kind===call.kind).length>=2)
+        stop(2,`${call.kind} 本会话已作废 2 次，宿主会报 idea_session_abandon_limit；交人处理`);
+    }else if(call&&!Object.hasOwn(call,'result')&&call.kind==='idea_confirm_save'&&resolution===null){
+      // V7: a registered, unanswered confirmation takes only the current user's
+      // decision bound to this exact callId and request digest; never a stale file.
+      const file=path.join(plan.answers?path.resolve(base,plan.answers):base,'confirm-save-reask.json');
+      const expected=`{"callId":"${call.callId}","requestDigest":"${call.requestDigest}","decision":"approved|rejected"}`;
+      const value=readJson(file,'idea_confirm_save');
+      if(value===undefined)stop(2,`confirm_reask_decision_required：保存确认已由宿主登记（callId ${call.callId}、requestDigest ${call.requestDigest}）、尚未作答；请当前用户核对后写 ${file}：${expected}，再 resume；旧的确认文件不会沿用`);
+      if(!obj(value)||value.callId!==call.callId||value.requestDigest!==call.requestDigest)
+        stop(2,`confirm_reask_decision_stale：${file} 绑定的是 callId ${obj(value)?value.callId:'无效内容'}，不是当前登记的 ${call.callId}（requestDigest ${call.requestDigest}）；不会使用，请按 ${expected} 重写`);
+      valid(Object.keys(value).sort().join(',')==='callId,decision,requestDigest'&&['approved','rejected'].includes(value.decision),`${file} 须为 ${expected}`);
+      boundDecision={callId:call.callId,requestDigest:call.requestDigest,result:{decision:value.decision},
+        evidence:`当前用户对已登记确认 ${call.callId} 的新决定（confirm-save-reask.json）`};
+    }else if(call&&!Object.hasOwn(call,'result'))valid(obj(resolution)&&resolution.callId===call.callId
       &&resolution.requestDigest===call.requestDigest&&nonempty(resolution.evidence)
-      &&Object.hasOwn(resolution,'result'),'resume 缺少原调用的真实回执');
+      &&Object.hasOwn(resolution,'result'),'resume 缺少原调用的真实回执；找不到时可用 abandon:true 作废后重问');
     else valid(resolution===null,'resume 不应提供新回执');
   }
   const actualOp=operation==='resume'?(state.pending?.request?.operation??'status'):operation;
@@ -57,20 +80,28 @@ function main(){
   if(saveRoot!==null)valid(fs.existsSync(saveRoot)&&fs.realpathSync(saveRoot)===saveRoot
     &&fs.statSync(saveRoot).isDirectory(),'saveRoot');
   if(actualOp==='prepare_save')valid(stage==='draft_ready'&&saveRoot!==null,'prepare_save 缺少 saveRoot 或草稿');
+  // resume 重放的 finish 用原请求的 filename；保存中断时目标可能已存在，由宿主按摘要对账。
+  const filename=operation==='resume'?state.pending?.request?.filename:plan.filename;
+  const reconciling=operation==='resume'&&state.pending?.writing===true;
   if(actualOp==='finish'){
-    valid(stage==='draft_ready'&&nonempty(plan.filename)&&/^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/.test(plan.filename),
+    valid(['draft_ready','save_blocked'].includes(stage)&&nonempty(filename)&&/^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/.test(filename),
       'finish 缺少草稿或安全的 filename');
     const root=saveRoot??state?.checkpoint?.saveRoot;
     valid(nonempty(root),'finish 缺少 saveRoot');
     valid(state?.checkpoint?.saveRoot===null||state?.checkpoint?.saveRoot===root,'finish saveRoot 与已绑定会话不符');
-    const directory=path.join(root,'prd'),target=path.join(directory,plan.filename);
+    const directory=path.join(root,'prd'),target=path.join(directory,filename);
     valid(!fs.existsSync(directory)||fs.lstatSync(directory).isDirectory()&&!fs.lstatSync(directory).isSymbolicLink(),
       'finish 保存目录越界');
-    valid(!fs.existsSync(target),'finish 目标文件已存在');
+    if(!reconciling)valid(!fs.existsSync(target),'finish 目标文件已存在');
   }
   const kind=['start','advance'].includes(actualOp)?'idea_interview':actualOp==='finish'?'idea_confirm_save':null;
+  // V7: the driver never pre-answers a save confirmation asked during resume (a
+  // re-ask after an abandon, or a call re-issued after a crash): the host registers
+  // it first, the driver stops naming the new callId and request digest, and the
+  // next resume takes only a decision bound to that call (boundDecision above).
+  const reasking=operation==='resume';
   const answers=plan.answers?path.resolve(base,plan.answers):null;
-  const answer=preflightAnswers(kind?[kind]:[],key=>{
+  const answer=preflightAnswers(kind&&!(reasking&&kind==='idea_confirm_save')?[kind]:[],key=>{
     const file=path.join(answers??base,key==='idea_interview'?'interview.json':'confirm-save.json');
     const value=readJson(file,key);
     if(value===undefined)stop(2,`步骤 ${operation} 会反问 ${key}，但答案文件不存在: ${file}`);
@@ -93,7 +124,14 @@ function main(){
       ...(operation==='advance'?{maturity:plan.maturity}:{}),
       ...(operation==='finish'?{filename:plan.filename}:{}),
       ...(operation==='prepare_save'?{saveRoot}:{}),
-      ...(operation==='resume'?{resolution:plan.resolution??null}:{})},answers:answer,
-    answerFor:row=>answer[row.kind]??null});
+      ...(operation==='resume'?{resolution:boundDecision??plan.resolution??null}:{})},answers:answer,
+    answerFor:row=>{
+      if(row.kind==='idea_confirm_save'&&reasking){
+        const recovery=row.payload?.recovery??{};
+        throw deliberatelyUnanswered(`confirm_reask_decision_required：宿主已登记新的保存确认（callId ${recovery.callId}、requestDigest ${recovery.requestDigest}），驾驶员不预先作答；`
+          +`请当前用户核对后写 ${path.join(answers??base,'confirm-save-reask.json')}：{"callId":"${recovery.callId}","requestDigest":"${recovery.requestDigest}","decision":"approved|rejected"}，再 resume；旧的确认文件与绑定其他调用的决定都不会使用`);
+      }
+      return answer[row.kind]??null;
+    }});
 }
 main();

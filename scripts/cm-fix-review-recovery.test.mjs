@@ -35,6 +35,7 @@ async function fixture(t,mode){
   const workerFactory=()=>async({prompt},{onEvent})=>{
     calls++;const data=JSON.parse(prompt.split('<cm-review-data-json>\n')[1]);
     const thread=calls===1||mode==='reuse-thread'||['reuse-first-thread','revision-reuses-lost-thread'].includes(mode)&&calls===3?'old-thread':`new-thread-${calls}`;
+    if(mode==='no-thread-always'||mode==='no-thread'&&calls===1)throw Error('Synthetic loss before any thread');
     onEvent({event:'thread.started',provider_thread:thread});
     if(calls===1&&!['approved','changes_requested'].includes(mode)||mode==='loss-again'
       ||['twice-then-success','reuse-first-thread'].includes(mode)&&calls<=2)throw Error('Synthetic lost result');
@@ -195,4 +196,38 @@ for(const mode of ['loss-again','reuse-thread','approved','changes_requested'])t
   assert.equal(rows[3].error.code,'host_request_failed');assert.equal(f.calls(),2);
   assert.equal(f.reopen().status().stage,'unknown');assert.equal((await f.owner().reviewFinal()).stage,'unknown');
   assert.equal(f.calls(),2);assert.equal(f.repairs(),1);
+});
+
+// V5 (F24): a worker that never opened a thread leaves nothing to exclude; the
+// first final review is still recoverable, at most twice in total.
+test('F24 a first final review lost before any thread is recovered and approved',{timeout:FIXTURE_TIMEOUT_MS},async t=>{
+  const f=await fixture(t,'no-thread');
+  const lost=f.reopen().status();assert.equal(lost.stage,'unknown');
+  assert(!JSON.parse(fs.readFileSync(f.statePath)).records.some(r=>r.id==='fix-final-started'));
+  assert.match((await f.cli([op('status')]))[0].result.progress.nextAction,/recover_final_review/);
+  const rows=await f.cli([f.request,op('final_review')],['--allow-final-review','--allow-final-review-recovery']);
+  for(const row of rows)assert(!row.error,JSON.stringify(row));
+  assert.equal(rows.at(-1).result.stage,'final_review_evidence_required');assert.equal(f.calls(),2);
+  const authorized=JSON.parse(fs.readFileSync(f.statePath)).records.find(r=>r.id==='fix-final-recovery-authorized').payload;
+  assert.equal(authorized.providerThreadId,null);
+});
+test('F24 thread-less recovery stops after two recoveries without changing the store',{timeout:FIXTURE_TIMEOUT_MS},async t=>{
+  const f=await fixture(t,'no-thread-always');
+  await f.cli([f.request,op('final_review')],['--allow-final-review','--allow-final-review-recovery']);
+  assert.equal(f.calls(),2);
+  const bound=()=>{const latest=f.reopen().status().finalReviewInvocation;
+    return {request:{...f.request,invocationId:latest.invocationId,packageDigest:latest.packageDigest},
+      flags:['--allow-final-review-recovery','--final-review-recovery-invocation',latest.invocationId]};};
+  const second=bound();
+  const rows=await f.cli([second.request,op('final_review')],[...second.flags,'--allow-final-review']);
+  assert(!rows[0].error,JSON.stringify(rows[0]));assert.equal(f.calls(),3);assert.equal(f.reopen().status().stage,'unknown');
+  const third=bound(),before=fs.readFileSync(f.statePath);
+  const refused=await f.cli([third.request],third.flags);
+  assert(refused[0].error);assert.deepEqual(fs.readFileSync(f.statePath),before);assert.equal(f.calls(),3);
+  const {requestId,operation,...fields}=third.request;
+  assert.throws(()=>f.reopen().recoverFinalReview({authorized:true,recoveryInvocationId:third.request.invocationId,...fields}),
+    {code:'fix_review_recovery_limit',reason:/无线程恢复已用满 2 次/});
+  const status=(await f.cli([op('status')]))[0].result;
+  assert.equal(status.progress.blocker,'fix_review_recovery_limit');assert.match(status.progress.nextAction,/新的 runId/);
+  assert.deepEqual(fs.readFileSync(f.statePath),before);
 });

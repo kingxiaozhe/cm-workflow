@@ -105,7 +105,7 @@ Codex 浏览器只用内置工具；不可用返回 BLOCKED，不转本机 Playw
 不得包含这些目录；不放秘密或公开仓库。记录复用原执行journal，文件0600、单写者锁；默认不启用。
 记录许可不授予provider、安装、修复、业务文件写入或Git权限；副作用测试仍须原授权和cleanup。
 
-中断后使用同一配置及目录启动，先status取得原runId/logFile和pending；不重发start。
+中断后使用同一配置及目录启动，先status取得原runId/logFile和pending；不重发start。本批之前版本（0b3040e）创建的记录绑定的是旧版本文档摘要：本文档是已知新版本时按原绑定继续（受控迁移，见`runtime/js/policy-binding-compat.mjs`），其他漂移仍报`cm_test_session_binding_changed`。
 新进程不自动调用宿主或命令，显式发送：
 
 ```json
@@ -128,6 +128,19 @@ outcome为passed/failed/unavailable，必须与原命令、实际退出码及清
 原回执的key/requestDigest/evidence/cleanup作为reconciliation来源随结果保留，区分正常返回与核对后恢复；已记录结果不能更换。
 最终评估在发布报告前记录，收尾中断消费原评估和日志，不把本次合法审计写入误作源码变化。unknown log/audit/publish写入不接受该信封，不猜同字节归属、不删除记录重试；报告缺口并人工核对原权威日志/文件。
 旧版本没有记录的调用不可凭空迁移。既有inspect始终只读，不创建、修复或修改执行记录。
+
+### 作废后重问
+
+会话模式下，已记录的应答被宿主拒收（每次resume原样interrupted），或应答没拿到也没有原回执时，interrupted的结果与status带`recovery`（`lastAnswer`、`unknown`、已用`discards`）和中文`guidance`。可作废最后一个应答后重问：
+
+```json
+{"requestId":"discard-1","operation":"resume","resolution":{"key":"原值","requestDigest":"原值","discard":true,"evidence":"为何作废（单行原因）","cleanup":"completed"}}
+```
+
+- change_impact、test_cases只读，不需要cleanup。
+- qa_logic、qa_browser会操作设备或浏览器：只有会话回执确认清理完成、或你核实资源已释放（设备可能仍在使用）后才能带`cleanup:"completed"`；缺少时报`cm_test_resource_release_required`，不自动继续。记录里同时写一条released（来源operator_confirmed，只存摘要）。
+
+重问的调用带attempt（第几次），status的requestDigest随之变化；被作废那次的迟到回执报`cm_test_resolution_abandoned`，不会被采纳。journal追加只增的discard行；每种kind每个运行最多2次（`cm_test_discard_limit`），只能作废最后一个意图（`cm_test_discard_not_last`），命令和日志/发布写入不能作废。回放时伪造、重复、超上限或qa_*缺released的行报`refactor_journal_invalid`；没有discard行的旧记录照原样回放。驾驶员的PLAN.resolution可写同一形状。
 
 ## 覆盖率及授权补测续接
 

@@ -97,7 +97,7 @@ standalone cm-fix 可在原配置、原 run、原 task attempt 下显式 `rediag
 `rediagnosis_review_limit_reached`。源文件漂移、r2 证据占用、无效 reason 在追加前拒绝；异步准备返回后再次核对源包与 r2 占位，拒绝不消耗唯一续次；
 不能清档、覆盖旧结论或换 run 重置上限。不合格的诊断答案（如 `investigation.discardedAlternatives` 超过 3 项）返回 `invalid_diagnosis` 并写明字段与上限，驾驶员开宿主前即用同一校验器拦下；
 `pending=rediagnosis`（已登记 `fix-rediagnosis-intent`、尚无结论，含旧版本因此卡住的运行）时改好答案再执行同一 `rediagnose`，在已登记的这一次续次下重新作答，不另占次数、不改旧记录，之后照常进入 `cause-r2`。
-新审查中断或没有结论时停 `unknown`，不自动重派、不提供第三次审查；可按下文「原因审查与第二轮最终审查无结果时的一次性放弃」用 `abandon_review` 在同一第二轮重审一次。当前仅 standalone 接线，不宣称 QA-fix 子宿主支持。
+新审查中断或没有结论时停 `unknown`，不自动重派、不提供第三次审查；可按下文「原因审查与第二轮最终审查无结果时的一次性放弃」用 `abandon_review` 在同一第二轮重审一次。QA-fix 子运行经父宿主的 `fix_action` 走同一操作，见下文「QA 修复子流程的恢复操作」。
 这项恢复需要实际新诊断和独立审查；合成夹具成功不表示真实产品已恢复或已修复。
 
 ### 同仓 specs 的受保护修复
@@ -159,9 +159,26 @@ beforeSha256严格复制expected中该路径的摘要（原不存在则null）�
 发送 `{"requestId":"rerun-1","operation":"rerun_blocked_step","reason":"已处理的阻断原因"}`（驾驶员：PLAN `reason` + `permissions` 含该旗标）。
 宿主追加 `fix-blocked-rerun-N`（绑定该步骤 intent 与阻断结果的摘要），阶段回到该步骤的 `*_required`，下次执行用 `-retry-N-` ID；阻断结果保留为历史，
 写测试/修复同样固定基线。每个步骤最多重跑 2 次（`status.blockedRerun` 显示已用次数），用满报 `fix_blocked_rerun_limit`。`defect_remaining`/`regressed` 仍走 `prepare_revision`。
-QA 修复子流程的 `fix_action` 暂不接受此操作（与 `rediagnose`、`recover_final_review` 同属第 3 批）。
+QA 修复子流程经父宿主 `fix_action` 同样可用（`--allow-qa-fix-rerun-blocked-step`），见下节「QA 修复子流程的恢复操作」。
 
-### 原因审查与第二轮最终审查无结果时的一次性放弃
+### QA 修复子流程的恢复操作
+
+QA 修复子运行由父宿主 `cm-ai-host.mjs` 的 `fix_action` 推进，不必关掉父宿主改用 `cm-fix-host --allow-qa-fix`。
+`fix_action` 把下列恢复操作交给同一个 cm-fix 分发入口（`runtime/js/cm-fix/host.mjs`），条件、次数上限和记录与单独的 cm-fix 宿主完全一样，父运行照旧先关后重开：
+
+| `fixOperation` | 父宿主启动参数（等同 cm-fix-host） | 请求附带字段 |
+|---|---|---|
+| `rediagnose` | `--allow-qa-fix-rediagnosis`（`--allow-rediagnosis`） | 单行 `reason`；会问 `fix_learning` 与 `fix_diagnose`，驾驶员读 `learning.json` 与单独的 `diagnosis-rediagnosis.json` |
+| `rerun_blocked_step` | `--allow-qa-fix-rerun-blocked-step`（`--allow-rerun-blocked-step`） | 单行 `reason` |
+| `recover_final_review` | `--allow-qa-fix-final-review-recovery`（`--allow-final-review-recovery`）；再续一次时加 `--qa-fix-final-review-recovery-invocation ID` | `invocationId`、`reviewPackageDigest`（子运行终审包摘要；请求里的 `packageDigest` 是父 QA 包）、`previousInvocationStopped:true`、单行 `reason` |
+| `revision_test_check` | `--allow-qa-fix-regression`（`--allow-regression`） | 无 |
+| `abandon_step`、`abandon_review` | `--allow-qa-fix-abandon`、`--allow-qa-fix-abandon-review` | 单行 `reason` |
+
+缺对应启动参数时，父宿主在关掉父运行之前就返回 `outcome:"rejected"`、`code:"qa_fix_action_authorization_required"`，`reason` 写明要加的父宿主参数，子运行不变；
+cm-fix 自己拒绝（阶段不符、理由无效、摘要不匹配等）时返回 `outcome:"rejected"` 和 cm-fix 原码（如 `fix_rediagnosis_unavailable`、`fix_blocked_rerun_unavailable`、`fix_review_recovery_unavailable`），不再变成不透明的 `host_request_failed`。
+两种拒绝都由卡住提醒判为 stuck。`prepare_revision` 的可选 `tests` 也随 `fix_action` 透传。
+
+### 原因审查与第二轮最终审查无结果时的放弃（每轮最多 2 次）
 
 原因审查（`pending:"cause_review"`，含重新诊断后的第二轮原因审查）或第二轮最终审查（`pending:"revision_final_review"`）已登记，却没有审查结论时——
 宿主中途被杀、审查超时、断连或被取消，或审查进程正常结束但答案不合审查结论格式——`status` 为 `unknown` 并带 `reviewAbandonable`。
@@ -170,18 +187,23 @@ QA 修复子流程的 `fix_action` 暂不接受此操作（与 `rediagnose`、`r
 先确认旧审查进程已退出，再以专用的 `--allow-abandon-review` 启动（`--allow-abandon` 只管本地步骤，不授权放弃审查调用），发送
 `{"requestId":"abandon-review-1","operation":"abandon_review","reason":"旧审查进程已确认退出"}`；
 QA-fix 子宿主用 `--allow-qa-fix-abandon-review`，`fix_action` 带 `fixOperation:"abandon_review"` 和 `reason`；驾驶员 PLAN 的
-`permissions` 相应填这两个旗标。原因规则同 `abandon_step`。每一轮原因审查各可放弃一次（第一轮与重新诊断后的第二轮分开计），第二轮最终审查可放弃一次；
+`permissions` 相应填这两个旗标。原因规则同 `abandon_step`。每一轮原因审查各可放弃 2 次（第一轮与重新诊断后的第二轮分开计），第二轮最终审查可放弃 2 次；
 放弃只作废那次无结论的调用，不产生审查结论、不增加审查轮数，第二轮原因审查拒绝后仍是 `rediagnosis_review_limit_reached`。
-同一轮审查重审仍无结论时返回 `fix_review_abandon_budget_exhausted`，
+同一轮审查第三次仍无结论时返回 `fix_review_abandon_budget_exhausted`，
 `status.reviewAbandonBudgetExhausted` 为 true，只能按原阻断处理，不能继续重派。
 
 放弃追加 `fix-cause-abandoned`（第二轮为 `fix-cause-rediagnosis-abandoned`）或 `fix-revision-final-abandoned`，绑定原调用 ID、登记摘要、已知线程和无结论结果的摘要，
 写 `abandon` 日志，并回到 `cause_review_required`（或原迟到纠正阶段）/`revision_final_review_required`。
 重审仍需原 `--allow-cause-review` / `--allow-final-review` 和一次新的授权，记录改用 `fix-cause-retry-*`（第二轮为 `fix-cause-rediagnosis-retry-*`）/
-`fix-revision-final-retry-*`；新调用的审查线程不能是被放弃的那条。
+`fix-revision-final-retry-*`；第二次放弃追加 `<前缀>-abandoned-2`（绑定第一次重审那次调用），再重审的记录用 `<前缀>-retry-2-*`。
+新调用的审查线程不能是任何一条被放弃的线程。回放拒绝没有对应放弃的 `retry-2-*`、绑定错调用的 `abandoned-2` 和第三次放弃。
 第二轮原因审查包（首次派发与放弃后重审都是现场重建）另带 `contextFiles`：第一轮审查 `examinedPaths` 与各条问题引用、
 却不在新 `affectedPaths` 里的代码文件（存在于代码根的普通文件），作为只读上下文并计入 `examinedPaths`，审查者可以引用；
 重审的新包有新摘要，绑定在 `fix-cause-rediagnosis-retry-registered` 里，被放弃那次的记录不改。旧的第二轮登记没有该字段，照原样回放。旧记录一字不改，没有放弃记录的运行照原样回放。
+
+首轮最终审查（`fix-final-*`）不走放弃，改用 `recover_final_review`：worker 没打开任何审查线程就丢失（没有 `fix-final-started`）时，
+同样可恢复，`fix-final-recovery*-authorized` 记 `providerThreadId:null`；这类无线程恢复全运行最多 2 次，用满后拒绝为 `fix_review_recovery_limit`（reason 与 status 的 `progress.blocker` 相同，指引是查清审查 CLI 为何起不来，cancel 本运行后用新 runId 重新发起修复）。
+外部模型与执行策略的审查只能凭回执 `reconcile_review`，`abandon_review`／`recover_final_review` 拒绝为 `external_review_reconciliation_required`。
 
 审查等待使用审查配置 `--review-config` 的 `timeoutMs`（1–3600000 毫秒，省略为 900000），同时交给审查 worker；
 不再使用 `reproduction.timeoutMs`。原因审查到时会记下超时结果（`transport_timeout`），不再停在无记录的 unknown。

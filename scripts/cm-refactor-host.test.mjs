@@ -49,7 +49,10 @@ test('behavior regression restores only the controlled file and blocks review',a
 test('stale independent-review header cannot bypass existing N5',async t=>{
   const {config}=fixture(t),host=createCmRefactorHost(config,{call:async(kind,payload)=>response(kind,payload,'stale-review')});
   const result=await host.handle({requestId:'start',operation:'start'});
-  assert.equal(result.stage,'blocked');assert.match(result.reason,/digest/);
+  // Validated before publication: nothing immutable is written, the answer stays discardable.
+  assert.equal(result.stage,'blocked');assert.equal(result.reason,'refactor_review_invalid');assert.match(result.reasonDetail,/digest/);
+  assert.equal(result.recovery.lastAnswer.kind,'refactor_review');assert.match(result.guidance.nextStep,/discard/);
+  assert.equal(result.reports.some(file=>file.endsWith('-r1.md')),false);
 });
 
 async function finishInProcess(t,config,temp){
@@ -119,17 +122,18 @@ test('interrupted host invocation needs reconciliation, then resumes without rep
   const finished=await reopened.handle({requestId:'finish',operation:'finish'});assert.equal(finished.stage,'done',JSON.stringify(finished));
 });
 
-test('pending finish keeps its key; approved finish replays frozen budget after archival interruption',async t=>{
-  const {config,project}=fixture(t);let confirmations=0,reconciliations=0;
+// V7: a lost confirmation is asked of the person again under the same key; the
+// host never adopts a reconciled answer bound to the lost call (no refactor_recover).
+test('pending finish keeps its key and asks the person again; approved finish replays frozen budget after archival interruption',async t=>{
+  const {config,project}=fixture(t);let confirmations=0,reasks=0;
   const host=createCmRefactorHost(config,{call:async(kind,payload)=>{
     if(kind==='refactor_confirm'&&payload.gate==='finish'){confirmations++;throw Error('lost finish response');}return response(kind,payload);}});
   assert.equal((await host.handle({requestId:'start',operation:'start'})).stage,'awaiting_finish');
   assert.equal((await host.handle({requestId:'finish',operation:'finish'})).stage,'blocked');
   const recovered=createCmRefactorHost(config,{call:async(kind,payload)=>{
-    assert.equal(kind,'refactor_recover');assert.equal(payload.input.kind,'refactor_confirm');reconciliations++;
-    return {decision:'completed',result:{value:{decision:'approved'},durationMs:51},evidence:'Synthetic original confirmation receipt'};}});
+    assert.equal(kind,'refactor_confirm');assert.equal(payload.gate,'finish');reasks++;return {decision:'approved'};}});
   const finished=await recovered.handle({requestId:'finish',operation:'finish'});assert.equal(finished.stage,'done',JSON.stringify(finished));
-  assert.equal(confirmations,1);assert.equal(reconciliations,1);
+  assert.equal(confirmations,1);assert.equal(reasks,1);
   const file=path.join(project,'docs/refactors/extract/execution.jsonl'),rows=fs.readFileSync(file,'utf8').trimEnd().split('\n');
   const index=rows.findIndex(line=>{const row=JSON.parse(line);return row.type==='result'&&row.key==='host/finish-1';});assert.ok(index>=0);
   // Isolated crash-prefix fixture: approval persisted, later archive/checkpoint records did not.

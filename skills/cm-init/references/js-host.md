@@ -4,7 +4,7 @@
 
 ## 中断后恢复
 
-若本次启用了下方`--session-file`，先用原私有记录恢复；只有已进入写入且结果未知，才走已审档案分支。不要从文件时间猜选记录或把两种恢复模式混用。
+若本次启用了下方`--session-file`，先用原私有记录恢复；只有已进入写入且结果未知，才走已审档案分支。不要从文件时间猜选记录或把两种恢复模式混用。本批之前版本（0b3040e）创建的私有记录绑定的是旧版本文档摘要：只要其余规则模板与SKILL逐字未变、本文档是已知的新版本，宿主按原绑定继续（受控迁移，见`runtime/js/policy-binding-compat.mjs`）；其他任何漂移仍报`idea_session_binding_changed`。
 
 ### 未归档的分析、草稿和检查
 
@@ -17,7 +17,7 @@
 - 无recovery：从原stage沿下方共享步骤继续，不重发start或init_generate；final_review_package依旧只读。
 - recovery.call.status为recorded：发送`{"requestId":"resume-1","operation":"resume","resolution":null}`，只消费已记录的原结果。
 - recovery.call为null：同样resume，继续已登记但尚无调用的原操作。
-- recovery.call.status为unknown：没有原宿主实际结果就停，不补调用；找到后按下面信封恢复，不重新生成答案。
+- recovery.call.status为unknown：先找原宿主实际结果，找到后按下面信封恢复，不重新生成答案；确实找不到时按下方“作废后重问”处理。
 - recovery.writing为true：不走resume、不重发init_write，先从该次`.reviews`档案核对写入，按下方已审档案流程处理；档案缺失就报告缺口，不推定成功。
 
 ```json
@@ -26,6 +26,19 @@
 
 result填原实际完整返回；恢复标识来自原请求`payload.recovery`或status，不是本次JSONL桥的临时callId。确认必须来自原用户对具体约束的真实决定，review必须来自原独立上下文及原包；字段吻合不能证明这些事实。已有结果不覆盖，失败仍保留在途结果供核对，不绕过pending开启下一轮。
 取消持久，断连不是取消。陌生记录、不同项目/规则模板、并发写者和当前目标漂移均拒绝并保留现场。沿原核验器回读目标和分析观察，不宣称全源码快照或重新执行了历史检查；版本控制、业务源码等观察范围外变化须宿主核对，过时结果不得当作当前批准。成功写入的checkpoint也只是历史，不是任务完成。
+
+### 作废后重问（分析、生成、核验、确认、审查）
+
+被宿主拒收的已记录应答，每次resume都会原样失败；结果未知的调用又没有回执。两种情况都可在同一待定请求下重问（新callId），init_write除外：
+
+```json
+{"requestId":"discard-1","operation":"resume","resolution":{"callId":"status原值","requestDigest":"status原值","discard":true,"evidence":"为何被拒（单行原因）"}}
+{"requestId":"abandon-1","operation":"resume","resolution":{"callId":"status原值","requestDigest":"status原值","abandon":true,"evidence":"原调用为何找不回（单行原因）"}}
+```
+
+discard只针对recorded且被拒的应答，abandon只针对unknown；适用init_analyze、init_generate、init_verify、init_confirm、init_review。会话记录追加只增的abandonedCalls（只存evidence摘要），每种kind每个会话最多2次（`idea_session_abandon_limit`）。init_confirm作废后重新问当前用户；resume期间宿主问到的init_confirm（作废后的重问，或崩溃后重新发出的确认），驾驶员一律不预先作答：先让宿主登记新调用，再停下报`confirm_reask_decision_required`并给出新的callId与requestDigest（确认内容的摘要）；当前用户核对后写`answers/confirm-reask.json`（`{"callId":"新callId","requestDigest":"…","decision":"approved|rejected"}`），下一次resume只采用callId与requestDigest都等于已登记调用的决定，绑定其他调用的旧文件报`confirm_reask_decision_stale`，绝不使用；旧的confirm.json也不读；被作废callId上的迟到答复一律拒收（`idea_session_call_abandoned`），不沿用。init_review重问等于再做一次独立审查，原因写进evidence。伪造、重复或超上限的记录重开时报`idea_session_abandon_record_invalid`。init_write报`init_write_recovery_required`或`idea_save_outcome_unknown`，走下一节。status的guidance字段给出下一步。
+
+不带`--session-file`（内存模式）时，失败的一步没有记录，可在同一进程再发一次同样的start/advance重问，每种最多2次（`init_retry_limit`）；宿主退出后内存草稿全部丢失，只能从头开始，需要可恢复请改用`--session-file`。
 
 ### 已审档案与未知写入
 
@@ -36,7 +49,7 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-init-entry.mjs" --inspect-recovery "{package
   --skill-dir "{CM_WORKFLOW_ROOT}/skills/cm-init" --project "{CODE_PROJECT}"
 ```
 
-检查结果 conflict 或读取失败：列出冲突/缺口后停止，保留用户文件与旧档案，不自动回滚、删档或换包重试。matches_reviewed_draft：列出匹配文件，不重写，不把匹配当作任务完成。incomplete：确认本次继续初始化的范围，再启动下方相同宿主，在参数末尾追加 `--resume-draft "{packageDigest}"`；只有本次已获写入授权才在它之前加 `--allow-write`。
+检查结果 conflict 或读取失败：列出冲突/缺口后停止，保留用户文件与旧档案，不自动回滚、删档或换包重试。带`--resume-draft`启动遇到冲突时，宿主在stderr先写一行`{"diagnostic":"init_recovery_conflict","files":[{path,status}],"guidance":...}`逐文件列出written/not_written/conflict，再以`init_recovery_conflict`拒绝启动；冲突文件交人核对，半成品不会当成新交付送审。会话模式写入未知（resume报`idea_save_outcome_unknown`）时，status的guidance给出本次packageDigest：先运行下方检查，再去掉`--session-file`改用`--resume-draft`。matches_reviewed_draft：列出匹配文件，不重写，不把匹配当作任务完成。incomplete：确认本次继续初始化的范围，再启动下方相同宿主，在参数末尾追加 `--resume-draft "{packageDigest}"`；只有本次已获写入授权才在它之前加 `--allow-write`。
 
 收到 host_ready 先发送 `{"requestId":"resume-status","operation":"status"}`。rules_present 表示启动时全部匹配，报告后关闭；draft_generated 则直接从下文第5步 init_verify 继续，不发送 selection 或再次生成。旧 selection/analysis 只是待复核输入，须按当前项目核对版本控制、模块和命令；若已过时，报告阻断，不借恢复悄悄变更草稿。必要约束确认与新独立审查仍执行，不复用旧批准。新包的 recoveryOrigin 仅区分旧档案和本次恢复，不代表授权。
 

@@ -8,8 +8,24 @@ import {createFixHost} from '../cm-fix/host.mjs';
 import {bindQaFixDefinition} from './qa-fix-definition.mjs';
 import {digest,id,json,need,shape,validIdentity,hex} from './effect-contract.mjs';
 
-export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHostContextId,fix=null,template=null,allowStart=false,autoFix=false,fixExecution={},fixPermissions=[],fixAuthorities={},externalModels=null,executionPolicy=null}){
+// Q23: the child's recovery operations, each with the original cm-fix flag the
+// shared dispatcher (cm-fix/host.mjs) checks and the parent flag that grants it.
+// The dispatcher stays the only validator; this table only names the missing flag.
+const QA_FIX_ACTION_FLAGS=Object.freeze({rediagnose:'--allow-rediagnosis',rerun_blocked_step:'--allow-rerun-blocked-step',
+  recover_final_review:'--allow-final-review-recovery',abandon_step:'--allow-abandon',abandon_review:'--allow-abandon-review',
+  revision_test_check:'--allow-regression'});
+const QA_FIX_REASONED=['abandon_step','abandon_review','rediagnose','rerun_blocked_step'];
+export const QA_FIX_ACTIONS=Object.freeze(['red_test','baseline','author_tests','repair','regression','retrospective','learning_writeback',
+  'handoff','final_review_package','final_review','publish_review','check_n5','post_review_regression',
+  'publish_dossier','walkthrough','finish','prepare_revision','cause_review_package','cause_review','reconcile_review',
+  ...Object.keys(QA_FIX_ACTION_FLAGS)]);
+const parentFlag=flag=>flag.replace(/^--allow-/,'--allow-qa-fix-');
+const actionRefusal=(fixOperation,code,reason)=>Object.freeze({outcome:'rejected',code,fixOperation,reason,
+  guidance:Object.freeze({summary:'QA 修复子流程的这次操作被拒绝，子运行没有因此改变。',nextStep:reason,
+    recoveryOperation:null,prerequisites:Object.freeze([]),authorizationGranted:false})});
+export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHostContextId,fix=null,template=null,allowStart=false,autoFix=false,fixExecution={},fixPermissions=[],fixAuthorities={},externalModels=null,executionPolicy=null,recoveryInvocationId=null}){
   id(hostContextId);id(parentHostContextId);
+  if(recoveryInvocationId!==null)id(recoveryInvocationId);
   need((fix===null)!==(template===null),'invalid_fix_config');
   let definition=null;
   let fixedTemplate=template===null?null:json(template,64*1024);
@@ -59,8 +75,13 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
       if(!['fix_status','fix_advance','fix_action','fix_run'].includes(request.operation)){
         busy=true;try{return await current.host.handle(request);}finally{busy=false;}
       }
+      // recover_final_review binds the child's final review package; packageDigest
+      // here is the parent QA package, so the child digest is reviewPackageDigest.
       const value=json(request);shape(value,['version','requestId','operation','identity','packageDigest','testRunId',
-        ...(request.operation==='fix_action'?['fixOperation',...(request.fixOperation==='reconcile_review'?['invocationId']:[]),...(['abandon_step','abandon_review'].includes(request.fixOperation)&&Object.hasOwn(request,'reason')?['reason']:[])]:[])]);
+        ...(request.operation==='fix_action'?['fixOperation',...(request.fixOperation==='reconcile_review'?['invocationId']:[]),
+          ...(QA_FIX_REASONED.includes(request.fixOperation)&&Object.hasOwn(request,'reason')?['reason']:[]),
+          ...(request.fixOperation==='prepare_revision'&&Object.hasOwn(request,'tests')?['tests']:[]),
+          ...(request.fixOperation==='recover_final_review'?['invocationId','reviewPackageDigest','previousInvocationStopped','reason']:[])]:[])]);
       need(value.version===1,'invalid_input');id(value.requestId);validIdentity(value.identity);hex(value.packageDigest);id(value.testRunId);
       if(fixedTemplate)definition=bindQaFixDefinition({template:fixedTemplate,identity:value.identity,
         packageDigest:value.packageDigest,testRunId:value.testRunId});
@@ -70,10 +91,13 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
       const running=value.operation==='fix_run';
       const advancing=value.operation==='fix_advance'||running;
       const acting=value.operation==='fix_action';
-      if(acting)need(['red_test','baseline','author_tests','repair','regression','retrospective','learning_writeback',
-        'handoff','final_review_package','final_review','publish_review','check_n5','post_review_regression',
-        'publish_dossier','walkthrough','finish','prepare_revision','cause_review_package','cause_review','reconcile_review','abandon_step','abandon_review'].includes(value.fixOperation),'fix_operation_unavailable');
+      if(acting)need(QA_FIX_ACTIONS.includes(value.fixOperation),'fix_operation_unavailable');
       need(!(advancing||acting)||allowStart,'qa_fix_start_authorization_required');
+      // Refuse a recovery action whose flag this launch lacks before the parent is
+      // closed, naming the parent flag; the cm-fix dispatcher still re-checks it.
+      const actionFlag=acting?QA_FIX_ACTION_FLAGS[value.fixOperation]:undefined;
+      if(actionFlag&&!permissions.includes(actionFlag))return actionRefusal(value.fixOperation,'qa_fix_action_authorization_required',
+        `fix_action ${value.fixOperation} 需要父宿主启动参数 ${parentFlag(actionFlag)}（等同单独 cm-fix-host 的 ${actionFlag}）；关闭父宿主，带上该参数以 --mode resume 重开后再发 fix_action。`);
       busy=true;let child=null,released=false,result;
       try{
         const status=await current.host.handle({version:1,operation:'status',requestId:value.requestId,identity:value.identity});
@@ -89,10 +113,21 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
         let actionResult;
         if(advancing||acting){
           const host=createFixHost({owner:child,config:{...definition.configuration,specsRoot:definition.specsRoot,identity:definition.identity},
-            runtime:definition.configuration.runtime??'codex',permissions:[...permissions,'--allow-reproduction'],...fixAuthorities});
-          actionResult=running?await host.run(value.requestId)
-            :await host.handle({requestId:value.requestId,operation:advancing?'advance':value.fixOperation,
-              ...(value.fixOperation==='reconcile_review'?{invocationId:value.invocationId}:{}),...(['abandon_step','abandon_review'].includes(value.fixOperation)?{reason:value.reason}:{})});
+            runtime:definition.configuration.runtime??'codex',permissions:[...permissions,'--allow-reproduction'],...fixAuthorities,recoveryInvocationId});
+          const action=advancing?{operation:'advance'}:{operation:value.fixOperation,
+            ...(value.fixOperation==='reconcile_review'?{invocationId:value.invocationId}:{}),
+            ...(QA_FIX_REASONED.includes(value.fixOperation)?{reason:value.reason}:{}),
+            ...(value.fixOperation==='prepare_revision'&&Object.hasOwn(value,'tests')?{tests:value.tests}:{}),
+            ...(value.fixOperation==='recover_final_review'?{invocationId:value.invocationId,packageDigest:value.reviewPackageDigest,
+              previousInvocationStopped:value.previousInvocationStopped,reason:value.reason}:{})};
+          try{actionResult=running?await host.run(value.requestId):await host.handle({requestId:value.requestId,...action});}
+          catch(error){
+            // A refused recovery action is the original cm-fix refusal, reported with
+            // its code instead of an opaque host failure; the parent still reopens.
+            if(!(acting&&actionFlag&&typeof error?.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(error.code)))throw error;
+            return actionRefusal(value.fixOperation,error.code,
+              `cm-fix 拒绝了 ${value.fixOperation}（${error.code}）：子运行当前阶段不满足该操作的条件或参数不匹配；先用 fix_status 核对 fixStage 与 progress，再按 skills/cm-fix/references/js-host.md 的条件重发。`);
+          }
         }
         // Original observation/escalation finish intentionally closes its owner. Preserve
         // that successful incomplete exit without reading a closed store.

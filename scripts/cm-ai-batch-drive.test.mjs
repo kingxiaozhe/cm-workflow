@@ -363,3 +363,67 @@ test('optimized real batch driver shares only a declared same-plan check and rej
   assert.equal(out.status,0,out.stderr);assert.equal(JSON.parse(out.stdout).result.state,'awaiting_review',out.stdout+out.stderr);
   assert.equal(fs.readFileSync(counter,'utf8'),'x');
 });
+
+// Q24 driver: develop_redo goes through the batch host to the stopped member; the
+// next advance still preflights the develop answer from the projected state (Q28).
+test('Q24 batch driver forwards develop_redo to the stopped member, then advance redoes the round',t=>{
+  const f=fixture(t);prepared(f);
+  f.write('develop.json',{status:'failed',code:'session_error'});
+  const stuck=f.drive(f.plan(),'advance');assert.equal(stuck.status,0,stuck.stderr);
+  const first=JSON.parse(stuck.stdout).result;
+  assert.deepEqual([first.state,first.code,first.pendingAction],['blocked','develop_answer_missing','develop_redo'],stuck.stdout);
+  const resume={mode:'resume',originalHostContext:'batch-host-a'};
+  const missing=f.drive(f.plan({...resume,taskKey:key,reason:'会话已停止修改代码'}),'develop_redo');
+  assert.equal(missing.status,2);assert.match(missing.stderr,/--allow-develop-redo 1\.work\/T-001/);
+  const noReason=f.drive(f.plan({...resume,taskKey:key,permissions:['--allow-qa','--allow-develop-redo',key]}),'develop_redo');
+  assert.equal(noReason.status,2);assert.match(noReason.stderr,/reason/);
+  const unknownTask=f.drive(f.plan({...resume,taskKey:key,reason:'已停',permissions:['--allow-qa','--allow-develop-redo','1.work/T-009']}),'develop_redo');
+  assert.equal(unknownTask.status,2);assert.match(unknownTask.stderr,/--allow-develop-redo/);
+  const redo=f.drive(f.plan({...resume,taskKey:key,reason:'会话已停止修改代码',permissions:['--allow-qa','--allow-develop-redo',key]}),'develop_redo');
+  assert.equal(redo.status,0,redo.stderr);
+  const recorded=JSON.parse(redo.stdout).result;
+  assert.deepEqual([recorded.outcome,recorded.pendingAction,recorded.taskKey],['recorded','resume',key],redo.stdout);
+  prepared(f);
+  const again=f.drive(f.plan(resume),'advance');assert.equal(again.status,0,again.stderr);
+  assert.match(again.stderr,/应答 develop/);
+  assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 42;\n');
+});
+
+// Review round 1 (major): in a strict batch a terminal parallel member is rescheduled
+// into a serial second generation. The host stops at batch_member_rescheduled; the next
+// resume advance preflights the gen-2 attempt-1 answer (the finished gen-1 run would
+// have yielded none) and the batch continues without a host_close mid-run.
+test('strict batch driver preflights a rescheduled second generation before it is developed',t=>{
+  const f=fixture(t,3);
+  const bundlePath=path.join(f.root,'batch.json'),bundle=JSON.parse(fs.readFileSync(bundlePath,'utf8'));
+  bundle.batch.parallel=[['1.work/T-001','1.work/T-002']];
+  fs.writeFileSync(bundlePath,JSON.stringify(bundle));
+  const dir=id=>{const d=path.join(f.root,'answers','1.work',id);fs.mkdirSync(d,{recursive:true});return d;};
+  const answer=(id,file,content,outcome='implemented')=>{
+    fs.writeFileSync(path.join(dir(id),`${file}.txt`),content);
+    fs.writeFileSync(path.join(dir(id),'develop.json'),JSON.stringify({...develop,
+      value:outcome==='implemented'?develop.value:{outcome:'blocked',reason:'Synthetic dependency is missing'},edits:{[`${file}.mjs`]:`${file}.txt`}}));
+    for(const [name,value] of [['qa-assess.json',{scores:{scope:2,risk:2,accumulation:2,boundary:2},
+      changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}}],
+      ['documentation-inspect.json',{status:'completed',reason:'README and task artifacts inspected'}]])
+      fs.writeFileSync(path.join(dir(id),name),JSON.stringify(value));
+  };
+  answer('T-001','target','export const value = 42;\n');
+  answer('T-002','target2','export const value = 2;\n','blocked');
+  answer('T-003','target3','export const value = 3;\n');
+  const checks=Object.fromEntries(['T-001','T-002','T-003'].map((id,n)=>[`1.work/${id}`,
+    [{id:'syntax',command:[process.execPath,'--check',n===0?'target.mjs':`target${n+1}.mjs`]}]]));
+  const permissions=['--allow-qa','--execution-optimizations',...['T-001','T-002','T-003'].flatMap(id=>['--allow-review',`1.work/${id}:1`])];
+  const first=f.drive(f.plan({permissions,checks}),'advance');assert.equal(first.status,0,first.stderr);
+  const stopped=JSON.parse(first.stdout).result;
+  assert.equal(stopped.code,'batch_member_rescheduled',first.stdout+first.stderr);assert.deepEqual(stopped.rescheduled,['1.work/T-002']);
+  // The gen-2 answer replaces the blocked one; the resume preflight must load it.
+  answer('T-002','target2','export const value = 2;\n');
+  const resumed=f.drive(f.plan({mode:'resume',originalHostContext:'batch-host-a',
+    permissions:permissions.filter(flag=>flag!=='--execution-optimizations'),checks}),'advance');
+  assert.equal(resumed.status,0,resumed.stderr);
+  assert.doesNotMatch(resumed.stderr,/未预检/);
+  const done=JSON.parse(resumed.stdout).result;
+  assert.equal(done.state,'run_done',resumed.stdout+resumed.stderr);
+  assert.equal(fs.readFileSync(path.join(f.codeProject,'target2.mjs'),'utf8'),'export const value = 2;\n');
+});

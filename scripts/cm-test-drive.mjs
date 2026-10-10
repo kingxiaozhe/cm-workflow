@@ -23,6 +23,7 @@ import {readSourceFiles,snapshotSource,selectReportDirectory,checkSourceEvidence
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {inspectDeclaredTestCommand} from '../runtime/js/cm-test/declared-command.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {effectDigest} from '../runtime/js/cm-refactor/records.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
 
 import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
@@ -37,7 +38,7 @@ const safeFile=file=>fs.existsSync(file)&&fs.lstatSync(file).isFile()&&!fs.lstat
 
 function main(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('用法: cm-test-drive.mjs --plan PLAN.json <start|resume|status|cancel>\nPLAN: config, answers, sessionDir (resume), resolution:null。浏览器执行用 PLAN.liveEvidence {directory,kinds:["qa_browser"],timeoutMs?}；未配置时预检拒绝。\n');return;
+    process.stdout.write('用法: cm-test-drive.mjs --plan PLAN.json <start|resume|status|cancel>\nPLAN: config, answers, sessionDir (resume), resolution:null 或 {key,requestDigest,discard:true,evidence,cleanup?}（作废后重问，qa_* 需 cleanup:"completed"）。浏览器执行用 PLAN.liveEvidence {directory,kinds:["qa_browser"],timeoutMs?}；未配置时预检拒绝。\n');return;
   }
   const {operation,plan,base}=loadPlanFile({name:'cm-test-drive.mjs',known:KNOWN});
   requireFields(plan,['config']);
@@ -57,14 +58,29 @@ function main(){
   if(admission.operation==='impact')valid(config.commands.length===0&&config.environment===null,'impact 只读配置');
   if(operation==='resume'){
     requireFields(plan,['sessionDir','resolution']);
-    valid(plan.resolution===null,'resume 只接受 resolution:null；原动作回执不能由静态答案伪造');
+    const resolution=plan.resolution;
+    // discard: V1/V4 作废最后一个应答（已记录被拒或结果未知）后重问；qa_* 需 cleanup:"completed"（资源已释放）。
+    valid(resolution===null||object(resolution)&&resolution.discard===true&&typeof resolution.key==='string'
+      &&typeof resolution.requestDigest==='string'&&typeof resolution.evidence==='string'&&resolution.evidence.trim()
+      &&Object.keys(resolution).every(key=>['key','requestDigest','discard','evidence','cleanup'].includes(key)),
+    'resume 只接受 resolution:null 或 {key,requestDigest,discard:true,evidence,cleanup?}；原动作回执不能由静态答案伪造');
     const session=path.resolve(base,plan.sessionDir);
     if(!safeFile(path.join(session,'execution.jsonl')))stop(2,`恢复记录不存在: ${path.join(session,'execution.jsonl')}`);
     const rows=fs.readFileSync(path.join(session,'execution.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
     const context=rows.find(row=>row.type==='context')?.value;
     valid(context?.workflow==='cm-test'&&context.configDigest===digest(config),'resume 配置绑定不匹配');
-    const pending=new Map();for(const row of rows){if(row.type==='intent')pending.set(row.key,row.kind);if(row.type==='result')pending.delete(row.key);}
-    for(const [key,kind] of pending)if(['host','command'].includes(kind))stop(2,`缺少原执行回执 runner: ${kind} ${key}；不能从静态文件恢复`);
+    const pending=new Map(),inputs=new Map();let last=null;
+    for(const row of rows){if(row.type==='intent'){pending.set(row.key,row.kind);inputs.set(row.key,{input:row.input,...(row.attempt?{attempt:row.attempt}:{})});last=row.key;}
+      if(row.type==='result')pending.delete(row.key);if(row.type==='discard'){pending.delete(row.key);inputs.delete(row.key);last=null;}}
+    if(resolution!==null){
+      const entry=inputs.get(resolution.key),input=entry?.input,kind=input?.kind,release=['qa_logic','qa_browser'].includes(kind);
+      if(resolution.key!==last||!['change_impact','test_cases','qa_logic','qa_browser'].includes(kind)||effectDigest(entry)!==resolution.requestDigest)
+        stop(2,'discard 只能作废最后一个 change_impact/test_cases/qa_logic/qa_browser 应答，key/requestDigest 取自宿主 status');
+      if(release&&resolution.cleanup!=='completed')
+        stop(2,`${kind} 会操作浏览器或设备：先确认会话已清理或资源已释放（设备可能仍在使用），再带 cleanup:"completed"`);
+      pending.delete(resolution.key);
+    }
+    for(const [key,kind] of pending)if(['host','command'].includes(kind))stop(2,`缺少原执行回执 runner: ${kind} ${key}；不能从静态文件恢复。change_impact/test_cases 可用 resolution {key,requestDigest,discard:true,evidence} 作废后重问；qa_* 另需 cleanup:"completed"`);
   }else if(operation==='start'&&plan.sessionDir){
     const session=path.resolve(base,plan.sessionDir);
     valid(!fs.existsSync(path.join(session,'execution.jsonl')),'start 的 sessionDir 已有记录，请用 resume');
@@ -132,7 +148,7 @@ function main(){
   driveHost({host:HOST,args:['serve','--config',configPath,...(plan.sessionDir
     &&(['start','resume'].includes(operation)||operation==='status'&&existingSession)
     ?['--session-dir',path.resolve(base,plan.sessionDir)]:[])],
-    cwd:admission.project,operation,request:operation==='resume'?{resolution:null}:{},answers,paths:{},
+    cwd:admission.project,operation,request:operation==='resume'?{resolution:plan.resolution}:{},answers,paths:{},
     answerFor:(row,answers,paths,control)=>live.has(row.kind)?live.answer(row,control):answers[row.kind]??null});
 }
 main();

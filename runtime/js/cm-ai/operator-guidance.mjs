@@ -40,9 +40,17 @@ export function operatorGuidance(result,{executionActive=false}={}){
           review?'显式 --allow-abandon-review，并提供单行 reason':'显式 --allow-abandon-effect，并提供单行 reason',
           '由原宿主核对可放弃条件；不得直接重跑或改写完成记录']);
     }
+    // V5 (A33/A36): a no-verdict review end the host cannot prove safe to redispatch.
+    if(['review_process_unverified','review_observation_invalid','review_boundary_unverified','review_abandon_budget_exhausted'].includes(result.reviewAbandonRefusal))
+      return explain('独立审查没有结论，且宿主不能证明再派一次是安全的（reason 写明原因）。',
+        '按 reason 手工核对旧审查进程与原审查证据；本运行不再重派审查，确认后用 --supersede-reviewed-evidence 新建运行重做。',
+        null,['原运行记录保留，不改写','本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift']);
     return explain('执行结果尚未确认，不能判断这一步成功或失败。',
       '只读核对原运行记录、进程及实际文件；当前没有已确认的直接重试入口，不新建运行绕过历史。');
   }
+  if(state==='blocked'&&action==='abandon_review')return explain('本轮独立审查第二次没有结论，本轮还剩 1 次无结论重派，但宿主不能证明原审查进程已停止。',
+    '先确认原审查进程（含子进程）已退出；再恢复原运行并发送 abandon_review 登记确认，之后 advance 重新取得授权并重派。不算审查轮次。',
+    'abandon_review',['保留原配置、runId 与历史，以 --mode resume 启动','显式 --allow-abandon-review，并提供单行 reason','用满 2 次后为 review_redispatch_limit']);
   if(action==='develop_redo')return explain('开发应答没有拿到（超时后代码已改动、会话断开或只回了 failed），会话可能仍在写文件。',
     '先确认会话已停止修改代码；再恢复原运行并发送 develop_redo 写入确认，之后 advance 重发本轮开发。盘上改动保留，经检查和独立审查。',
     'develop_redo',['保留原配置、runId 与历史，以 --mode resume 启动','显式 --allow-develop-redo，并提供单行 reason','不占调用与 effect 名额；每运行最多 2 次']);
@@ -74,10 +82,21 @@ export function operatorGuidance(result,{executionActive=false}={}){
   if(state==='blocked'&&action==='complete')return explain('完成前复核受阻，已有审查结论不能直接当作任务完成。',
     '核对 reason 中的检查或文件变化；满足原完成条件后，在原运行发送 complete，不重新开发。',
     'complete',['原 run 与已审交接、范围和包绑定不变','使用当前 packageDigest；由宿主重新核对完成条件']);
+  if(code==='review_redispatch_limit')return explain('本轮独立审查已无结论重派 2 次，不再重派；这不计为审查轮次。',
+    '先查清审查进程为何一直没有结论（登录、额度、网络或审查答复格式）；修好后按 reason 用 --supersede-reviewed-evidence 新建运行重做。',
+    null,['原运行记录保留，不改写','本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift']);
   if(['check_answer_retry_limit','complete_recheck_limit','develop_redo_limit'].includes(code))
     return explain('这一步的自动恢复已在本运行用满 2 次，不再重做。',
       '先查清会话为何一直不应答或答复不合格（或宿主环境为何失败）；修好后按 reason 用 --supersede-reviewed-evidence 新建运行重做。',
       null,['原运行记录保留，不改写','本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift']);
+  // Q06/Q07/Q11: a QA call that stopped as a whole.
+  if(state==='fixture_completed'&&code==='qa_execution_unknown')return explain('本轮 QA 没有正常结束（整轮超时、宿主中途退出、答复格式不合格，或浏览器请求超时后设备可能仍被会话占用）。',
+    '先确认上一轮的会话、浏览器或模拟器已停止、设备已空闲；再用原配置 --mode resume 加 --rerun-unknown-qa 重跑本轮。宿主拒绝时按拒绝码处理：含原始 FAIL、未解决的 [需确认] 或无法归因的旧记录的轮次不能替代，改用 --supersede-reviewed-evidence 新建运行。',
+    null,['保留原运行与 QA 日志，只追加不改写','因宿主或应答原因替代的轮次不占三轮预算']);
+  // Q15: the read-only documentation check answered blocked.
+  if(state==='fixture_completed'&&code==='documentation_sync_blocked')return explain('文档核对判定文档尚未同步（reason 写明缺什么）。',
+    '按 reason 补齐 README 或功能文档；文档核对只读、可重复，用原配置 --mode resume 重启宿主后再发 finish 重新核对（同一宿主进程内结论已缓存）。',
+    null,['不改写运行记录','补文档不需要重新开发或审查']);
   if(code==='protected_scope')return explain('任务 scope 含项目规则或工作流文件，开发在派发前被拒绝，未写入任何文件。',
     '本运行到此结束，原记录保留。从 scope 移除 reason 列出的路径，按原门禁用新 runId 新建运行；规则文件改动走 docs/js-workflow-control.md「项目规则文件的修改通道」。',
     null,['不放宽受保护路径，开发者不能写这些文件','不改写原运行记录']);
@@ -99,10 +118,23 @@ export function guidanceText(result){
   return `${guidance.summary} ${guidance.nextStep} ${guidance.prerequisites.join('；')}`.trim();
 }
 
+// Q24: in-run recovery operations the batch entry forwards to the stopped member
+// (scripts/cm-ai-batch-run.mjs BATCH_MEMBER_ACTIONS), with what to confirm first.
+const BATCH_RECOVERY={
+  develop_redo:['--allow-develop-redo','先确认会话已停止修改代码'],
+  abandon_effect:['--allow-abandon-effect','先确认旧宿主及相关子进程已退出、会话已停止写入'],
+  abandon_review:['--allow-abandon-review','先确认旧宿主与审查进程已退出'],
+  bootstrap_review_recover:['--allow-bootstrap-review-recovery','先核对当前规则文件、handoff 和原证据'],
+};
 // A member result is not a batch control surface. Keep unsupported single-run
 // recovery operations out of batch instructions without changing pendingAction.
-export function batchOperatorGuidance(result){
+export function batchOperatorGuidance(result,{taskKey=null}={}){
   const g=result?.guidance;if(!g)return null;
+  if(Object.hasOwn(BATCH_RECOVERY,g.recoveryOperation)){
+    const [flag,confirm]=BATCH_RECOVERY[g.recoveryOperation],target=taskKey??'FEATURE/TASK';
+    return explain(g.summary,`${confirm}；关闭批次宿主，带 ${flag} ${target} 用同一批次配置重新启动，发送批次操作 ${g.recoveryOperation}（taskKey ${target}、单行 reason），之后 advance 继续本批次。`,
+      g.recoveryOperation,['保持原批次配置；批次只用这一项权限打开该成员运行，不跨成员','授权用一次即失效；批次 cancel 后不能再恢复']);
+  }
   if(result.code==='spec_drift')return explain(g.summary,
     '批次成员不能换绑规格；先按 reason 核对原批次可用出口，不直接重派。');
   if(g.recoveryOperation==='advance')return explain(g.summary,

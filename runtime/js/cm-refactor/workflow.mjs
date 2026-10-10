@@ -1,5 +1,6 @@
 // Fixed cm-refactor flow; the host proposes text, the owner applies and judges it.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
@@ -20,6 +21,28 @@ const markdown=value=>'```json\n'+JSON.stringify(value,null,2)+'\n```\n';
 const relative=name=>typeof name==='string'&&!path.isAbsolute(name)&&!name.includes('\\')
   &&name.split('/').every(part=>part&&part!=='.'&&part!=='..');
 const protectedName=name=>/(^|\/)(AGENTS\.md|CLAUDE\.md|\.env(?:\..*)?|\.claude|\.codex|\.git|.*\.(pem|key|p12))(\/|$)/i.test(name);
+// Text-only current-host answers: the host, never the session, writes files, so
+// a refused or lost answer can be discarded and asked again (V1); a confirmation
+// is asked of the person again (V7). Commands and writes are never discardable.
+export const REFACTOR_REASKABLE_KINDS=Object.freeze(['refactor_analyze','refactor_confirm','refactor_apply','refactor_review',
+  'refactor_batch','refactor_prepare_tests','refactor_revise_tests','refactor_retrospective']);
+export const refactorDiscardable=kind=>REFACTOR_REASKABLE_KINDS.includes(kind)?{release:false}:null;
+function refactorGuidance(reason,recovery){
+  const unknown=recovery.unknown,last=recovery.lastAnswer;
+  const blocking=unknown.find(item=>item.kind!=='host'||!REFACTOR_REASKABLE_KINDS.includes(item.callKind));
+  if(reason==='refactor_confirm_reask_limit')return {summary:'当前用户的确认已经丢失并重新问过 2 次，本运行不再重问。',
+    nextStep:'先查清确认为什么一直拿不到（会话断开、超时或宿主反复退出）；交人处理，确认仍需要时另起新运行。',recoveryOperation:null,authorizationGranted:false};
+  if(unknown.length&&blocking)return {summary:`原${blocking.kind==='command'?'命令':blocking.kind==='write'?'写盘':'宿主'}结果未知（${blocking.key}），宿主不能证明它没执行或已清理。`,
+    nextStep:'找回原宿主回执后 resume，由会话在 refactor_recover 中给出 completed（命令须 cleanupConfirmed:true）或 not_started；这类结果不能作废重做，也不要手删归档。',
+    recoveryOperation:'resume',authorizationGranted:false};
+  if(unknown.length){const item=unknown[0];return {summary:`宿主反问 ${item.callKind} 的结果未知，会话也答不出原结果。`,
+    nextStep:`它只是文字应答、不写盘：resume 带 discard {key:"${item.key}",requestDigest:"${item.requestDigest}",evidence:"原因"} 作废后重问；每种最多 ${2} 次，超过报 refactor_discard_limit。`,
+    recoveryOperation:'resume',authorizationGranted:false};}
+  if(last&&REFACTOR_REASKABLE_KINDS.includes(last.kind)&&reason)return {summary:`已记录的 ${last.kind} 应答在回放时被拒（${reason}），每次 resume 都会原样失败。`,
+    nextStep:`确认是应答本身不合格后，resume 带 discard {key:"${last.key}",requestDigest:"${last.requestDigest}",evidence:"原因"} 作废并重问${last.kind==='refactor_confirm'?'当前用户':''}；每种最多 2 次，已发布的审查和已执行的命令不能作废。`,
+    recoveryOperation:'resume',authorizationGranted:false};
+  return null;
+}
 function orderedUnits(units,scope,assembly){
   need(Array.isArray(units)&&units.length>0,'refactor_units_invalid');const seen=new Set(),done=new Set(),result=[];
   for(const unit of units){shape(unit,['id','files','dependsOn']);need(/^[a-z][a-z0-9-]*$/.test(unit.id)&&!seen.has(unit.id)
@@ -54,7 +77,7 @@ export function createCmRefactorHost(raw,{call}){
   for(const name of writebacks)need(relative(name)&&(name==='AGENTS.md'||name==='CLAUDE.md'||name==='README.md'
     ||/^\.claude\/rules\/[a-zA-Z0-9._-]+\.md$/.test(name)),'refactor_writeback_scope');
   need(new Set([...config.scope,...setup.paths,...writebacks]).size===config.scope.length+setup.paths.length+writebacks.length,'refactor_scope_overlap');
-  const records=openRefactorRecords(directory),routes={};
+  const records=openRefactorRecords(directory,{discardable:refactorDiscardable}),routes={};
   for(const role of ['coder','tester','reviewer'])routes[role]=resolveRole(loadConfig({projectRoot:project}),role,config.runtime);
   let controller=new AbortController(),active=false,view=records.progress??{stage:records.context?'interrupted':'ready',reason:null};
   let context=records.context,files={},reports=view.reports??[],judgeBefore=null,analysis=null,proposal=null,rulebook=null,reviewResult=null;
@@ -90,7 +113,10 @@ export function createCmRefactorHost(raw,{call}){
       need(digest(context.baseline.files[name]??null)===digest(now.files[name]??null),'refactor_out_of_scope_change');
     }
   }
-  function status(){return json({...view,runId:context?.runId??null,attempt:active?attempt:view.attempt??attempt,scope:config.scope,reports,
+  function status(){
+    const recovery=['blocked','correction_required'].includes(view.stage)&&context?records.recovery:null;
+    const guidance=recovery?refactorGuidance(view.reason,recovery):null;
+    return json({...view,...(recovery?{recovery}:{}),...(guidance?{guidance}:{}),runId:context?.runId??null,attempt:active?attempt:view.attempt??attempt,scope:config.scope,reports,
     commandCount:active?commandCount:view.commandCount??0,hostCalls:active?hostCalls:view.hostCalls??0,
     baselineCount:config.baselineCommands.length,differentialCount:judgeBefore?.cases.length??view.differentialCount??0,completionAuthorized:false},1024*1024);}
   function projectStatus(){if(specs){const target=path.join(specs,'.cm-status.json');replaceText(target,readText(target),JSON.stringify({node:'REFACTOR',feature,task,
@@ -108,9 +134,13 @@ export function createCmRefactorHost(raw,{call}){
     },(_entry,perform)=>perform()); // Original writer deduplicates the exact deterministic event identity.
   }
   async function recover(entry,perform){
-    guard();const response=json(await call('refactor_recover',{kind:entry.kind,input:entry.input,
-      instructions:'Trusted host reconciliation only. Inspect original invocation/process receipt. Return {decision:completed,result,evidence} only for the actual recorded outcome, or {decision:not_started,evidence} with proof no dispatch/execution occurred. Unknown => {decision:unknown,evidence}. Never infer from time or repeat an unknown review/command. No new execution.'},controller.signal),4*1024*1024);
+    // A re-asked call (attempt > 1) is reconciled as that attempt only: the
+    // answer must name it, so a receipt of a discarded attempt is never adopted.
+    const attempt=entry.attempt??1;
+    guard();const response=json(await call('refactor_recover',{kind:entry.kind,input:entry.input,...(attempt>1?{attempt}:{}),
+      instructions:'Trusted host reconciliation only. Inspect original invocation/process receipt. Return {decision:completed,result,evidence} only for the actual recorded outcome, or {decision:not_started,evidence} with proof no dispatch/execution occurred. Unknown => {decision:unknown,evidence}. Never infer from time or repeat an unknown review/command. No new execution. When attempt is given, reconcile only that attempt and echo it.'},controller.signal),4*1024*1024);
     need(nonempty(response.evidence),'refactor_unknown_effect');
+    if(attempt>1)need(response.attempt===attempt,'refactor_recover_attempt_mismatch');
     if(response.decision==='not_started')return perform();
     need(response.decision==='completed','refactor_unknown_effect');
     if(entry.kind==='command'){
@@ -122,11 +152,20 @@ export function createCmRefactorHost(raw,{call}){
   }
   async function invoke(key,kind,payload){
     const input={kind,payload};hostCalls++;
-    return records.effect(`host/${key}`,'host',input,async()=>{
+    return records.effect(`host/${key}`,'host',input,async({attempt}={})=>{
       guard();need(!controller.signal.aborted,'cancelled');const at=Date.now();
-      const result=json(await call(kind,payload,controller.signal),1024*1024);
+      // A re-asked call names its attempt, so the session can tell it from the discarded one.
+      const result=json(await call(kind,attempt>1?{...payload,recovery:{key:`host/${key}`,attempt}}:payload,controller.signal),1024*1024);
       guard();need(!controller.signal.aborted,'cancelled');return {value:result,durationMs:Date.now()-at};
-    },recover).then(result=>result.value);
+    },recover,{
+      // V7: a lost confirmation is asked of the person again as a new attempt,
+      // recorded by an ordinary discard row (counted, at most 2 per run); an
+      // answer bound to the lost call is never adopted.
+      reask:old=>old.input.kind==='refactor_confirm'?(guard(),'V7：原确认结果丢失，自动重新问当前用户'):null,
+    }).then(result=>result.value,error=>{
+      if(kind==='refactor_confirm'&&error?.code==='refactor_discard_limit')
+        throw Object.assign(new Error('refactor_confirm_reask_limit'),{code:'refactor_confirm_reask_limit'});
+      throw error;});
   }
   async function confirm(key,gate,payload){
     humanCalls++;await event(`${key}-pause`,'pause',gate);progress(`awaiting_${gate}`);
@@ -473,7 +512,19 @@ export function createCmRefactorHost(raw,{call}){
         lessons:{path:lessons,before:context.lessons,after:files.__lessons??context.lessons},project,baselineCommands:config.baselineCommands,judgeCommand:config.judgeCommand,
         preTaskDirty:context.baseline.gitState,route:routes.reviewer,
         instructions:'Fresh independent reviewer per runtime/review.md, no author history. Review ALL diff including tests/Learning/rules/docs/LESSONS and judge coverage. Return {markdown} with original N4 header binding exact handoff SHA, attempt=round, scope, findings. No writes or unapproved provider. Missing channel is blocked, never invent approval.'});
-      const review=await publish(`${prefix}-review`,path.join(reviews,`${feature}-${task}-r${attempt}.md`),reviewed.markdown);
+      // The review is validated in full before it becomes immutable evidence, so a
+      // reply that fails (missing header, wrong handoff digest, short scope) stays
+      // discardable. An already published review is checked as before (old journals).
+      const reviewPath=path.join(reviews,`${feature}-${task}-r${attempt}.md`);
+      if(!records.effects.has(`publish/${prefix}-review`)){
+        need(nonempty(reviewed.markdown),'refactor_review_invalid');
+        const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'cm-refactor-review-'));
+        try{const draft=path.join(scratch,path.basename(reviewPath));fs.writeFileSync(draft,reviewed.markdown,{mode:0o600});
+          try{validateReview(draft,{task,attempt,handoff,changedFiles:changed});}
+          catch(error){throw Object.assign(new Error('refactor_review_invalid'),{code:'refactor_review_invalid',detail:error.message});}}
+        finally{fs.rmSync(scratch,{recursive:true,force:true});}
+      }
+      const review=await publish(`${prefix}-review`,reviewPath,reviewed.markdown);
       reviewResult=validateReview(review,{task,attempt,handoff,changedFiles:changed});interceptions+=Number(reviewResult.blocking_findings);
       if(Object.hasOwn(reviewed,'judgeRevision')){
         need(attempt===1&&reviewResult.verdict==='changes_requested','refactor_judge_revision_unavailable');
@@ -540,6 +591,24 @@ export function createCmRefactorHost(raw,{call}){
           baseline:baselineSnapshot,batch:batchTrack,lessons:readText(lessons),lessonsMode:fs.existsSync(lessons)?fs.statSync(lessons).mode&0o777:0o644,
           metrics:specs?readText(path.join(specs,'METRICS.md')):null,metricsMode:specs&&fs.existsSync(path.join(specs,'METRICS.md'))?fs.statSync(path.join(specs,'METRICS.md')).mode&0o777:0o600};records.initialize(context);
       }else{guard();if(request.operation==='prepare_judge_revision')return await prepareJudgeRevision(request.judgeRevision);
+        if(request.operation==='resume'&&Object.hasOwn(request,'discard')){
+          need(view.stage==='blocked','refactor_discard_unavailable');
+          const value=request.discard;
+          need(value&&typeof value==='object'&&!Array.isArray(value)
+            &&Object.keys(value).every(key=>['key','requestDigest','evidence'].includes(key)),'refactor_discard_binding');
+          const decision=records.discard({key:value.key,requestDigest:value.requestDigest,evidence:value.evidence});
+          await event(`discard-${records.discards.length}`,'decision','answer_discarded',{key:decision.key,kind:decision.kind,reason:decision.reason});
+        }
+        // V7: the current user's decision for the registered re-asked confirmation.
+        if(request.operation==='resume'&&Object.hasOwn(request,'confirmation')){
+          need(view.stage==='blocked'&&!Object.hasOwn(request,'discard'),'refactor_confirmation_unavailable');
+          const value=request.confirmation;
+          need(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).sort().join(',')==='attempt,decision,evidence,key,requestDigest',
+            'refactor_confirmation_binding');
+          const decision=records.confirm(value);
+          await event(`confirmation-${decision.key.replace(/[^a-z0-9-]/gi,'-')}-${decision.attempt}`,'decision','reask_confirmed',
+            {key:decision.key,attempt:decision.attempt,decision:decision.decision});
+        }
         if(view.stage==='done')return status();need(request.operation!=='start','refactor_resume_required');}
       if(await flow()){
         if(request.operation==='resume'){
@@ -553,7 +622,8 @@ export function createCmRefactorHost(raw,{call}){
       }
       projectStatus();
       return status();
-    }catch(error){view={...view,stage:controller.signal.aborted?'cancelled':'blocked',reason:error.code??error.message};
+    }catch(error){const {reasonDetail:_,...rest}=view;view={...rest,stage:controller.signal.aborted?'cancelled':'blocked',reason:error.code??error.message,
+      ...(typeof error.detail==='string'?{reasonDetail:error.detail.slice(0,500)}:{})};
       try{records.progressWrite(view);projectStatus();}catch{}return status();
     }finally{records.release();active=false;}
   }});

@@ -406,16 +406,18 @@ test('#7 decision chain: one linked supersession of a timeout decision, read by 
 });
 
 // A QA call stopped as a whole (qa_execution_timeout, or the host gone) leaves no
-// complete and no report. Here the probe command passes, TC-001 gets no session
-// answer within qa.timeoutMs, and the host dies while TC-002 waits.
+// complete and no report. Here the probe command passes and TC-001 gets no session
+// answer within qa.timeoutMs. Q07: the session may still drive the device, so the
+// host stops the call (qa_device_unverified) and never dispatches TC-002.
 async function timedOutCall(t){
   const f=fixture(t,{browser:2}),workflow=f.workflow('workflow',probeQa({environment:simulator,timeoutMs:1500}));
   const browserQa=['--browser-qa','available'];
   const aborted=await launch(f,{mode:'create',workflow,extra:browserQa,
     answers:{qa_browser:row=>row.payload.case.id==='TC-001'?'IGNORE':'KILL'}});
-  assert.notEqual(aborted.code,0);
+  assert.equal(aborted.asked.filter(kind=>kind==='qa_browser').length,1);
+  assert.match(JSON.stringify(aborted),/qa_device_unverified/);
   const recorded=testRuns(f).map(row=>[row.phase,row.case_id]);
-  assert.deepEqual(recorded,[['start',undefined],['case_start','TC-001'],['case_blocked','TC-001'],['case_start','TC-002']]);
+  assert.deepEqual(recorded,[['start',undefined],['case_start','TC-001'],['case_blocked','TC-001']]);
   assert.equal(testRuns(f,'case_blocked')[0].host_request_timeout,true);
   return {f,workflow,browserQa};
 }

@@ -9,7 +9,7 @@ import {reviewResult,reviewReceipt} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
 import path from 'node:path';
 import {readCommitIntent,readCommitResult} from './task-commit-codec.mjs';
-import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure,inspectProviderReviewReconciliation,REVIEWER_PROVIDER_FAILURES,abandonableReviewerExit} from './provider-review-observation.mjs';
+import {inspectProviderReview,hasProviderReviewResult,inspectProviderReviewFailure,inspectProviderReviewReconciliation,REVIEWER_PROVIDER_FAILURES,abandonableReviewerExit,reviewerGoneWithoutResult} from './provider-review-observation.mjs';
 import {readReconciliationReceipt} from './review-reconciliation.mjs';
 import {readCmAiProjectLearningWriteback} from './cm-ai-learning-writer.mjs';
 import {readCmAiTaskLearningApplication} from './cm-ai-context-refresh.mjs';
@@ -60,6 +60,41 @@ const timeoutEffect=entry=>entry.effect.kind==='review'&&reviewRetryCode(entry.r
   &&entry.result.code===reviewRetryCode(entry.result.reviewInvocation.result);
 export const reviewRetrySpent=(cache,calls,attempt,contextId)=>cache.some(entry=>entry.effect.identity.attempt===attempt&&timeoutEffect(entry))
   ||calls.some(call=>call.terminal==='abandoned'&&call.contextId===contextId);
+// V5 (A34/A36): no-result redispatches of one review round (attempt), counted
+// apart from the two review rounds: the automatic one (a retryable end that went
+// back to pending_review), operator abandonments (abandoned calls), and the
+// review-redispatch records an operator writes (abandon_review) from a spent
+// retryable block. The automatic transition still grants only the first
+// (reviewTimeoutTransition, unchanged so older journals replay as written); the
+// second needs that record, which carries the operator's confirmation that the
+// original call's reviewer process stopped: a timeout only aborted it and the
+// host never waited for its exit, so nothing else proves it gone.
+// Never a third verdict: a redispatch exists only because the round accepted none.
+export const MAX_REVIEW_REDISPATCHES=2;
+export const reviewRedispatchCount=(cache,calls,attempt,contextId,records=0)=>
+  cache.filter(entry=>entry.effect.identity.attempt===attempt&&timeoutEffect(entry)&&entry.result.state==='pending_review').length
+  +calls.filter(call=>call.terminal==='abandoned'&&call.contextId===contextId).length+records;
+// The spent retryable block of this round (reviewTimeoutTransition gave blocked).
+const spentRetryBlock=s=>{
+  const entry=s.cache.at(-1);
+  // An end whose worker could not confirm its process-group cleanup never qualifies.
+  return s.state==='blocked'&&REVIEW_RETRY_CODES.includes(s.code)&&entry?.effect.kind==='review'
+    &&s.reviewInvocation?.result?.observation?.result?.code!=='process_cleanup_unknown'
+    &&entry.effect.identity.attempt===s.attempt&&timeoutEffect(entry)&&entry.result.state==='blocked'&&entry.result.code===s.code
+    &&s.reviewInvocation?.registration?.grant?.invocationId!=null
+    &&entry.result.reviewInvocation?.registration?.grant?.invocationId===s.reviewInvocation.registration.grant.invocationId;
+};
+export const reviewRedispatchable=(s,contextId,records=0)=>spentRetryBlock(s)
+  &&reviewRedispatchCount(s.cache,s.calls,s.attempt,contextId,records)<MAX_REVIEW_REDISPATCHES;
+export const reviewRedispatchExhausted=(s,contextId,records=0)=>spentRetryBlock(s)
+  &&reviewRedispatchCount(s.cache,s.calls,s.attempt,contextId,records)>=MAX_REVIEW_REDISPATCHES;
+export const REVIEW_REDISPATCH_LIMIT_CODE='review_redispatch_limit';
+export const reviewRedispatchLimitReason=code=>`${REVIEW_REDISPATCH_LIMIT_CODE}: 本轮独立审查已无结论重派 ${MAX_REVIEW_REDISPATCHES} 次（原记录 blocked/${code}），`
+  +'不再自动重派，也不计为审查轮次。先查清审查进程为何一直没有结论（登录、额度、网络或审查答复格式），'
+  +'修好后用 --supersede-reviewed-evidence 新建运行重做；本运行记录保留不改写。';
+export const reviewRedispatchStopReason=code=>`review_redispatch_stop_required: 本轮独立审查第二次没有结论（blocked/${code}），本轮还剩 1 次无结论重派。`
+  +'宿主只中止了原调用、没有等到审查进程退出，不能证明它已停止：先确认原审查进程（含子进程）已退出，'
+  +'再用 --allow-abandon-review 发送 abandon_review（单行 reason）登记确认，之后 advance 重新取得授权并重派；不算审查轮次。';
 export const reviewTimeoutTransition=(result,cache,attempt,calls=[],contextId=null)=>{
   const code=reviewRetryCode(result);
   return code===null?null:{state:reviewRetrySpent(cache,calls,attempt,contextId)?'blocked':'pending_review',code};
@@ -394,20 +429,40 @@ export const developRetryLimitReason=({countedCalls:calls,countedEffects:effects
 // failure of a class that is now retried automatically but was recorded as
 // unknown (older versions, or after a final message). Nothing ever accepted its
 // verdict, so, exactly like an interrupted registered review, the operator may
-// abandon it and spend the attempt's one redispatch. A Claude reviewer stopped
+// abandon it and spend one of the round's MAX_REVIEW_REDISPATCHES. A Claude reviewer stopped
 // at its boundary (unexpected_tool_or_content) qualifies only under
 // abandonableReviewerExit: process closed, nothing received, and a rejection
 // that cannot have run a tool. Other tool, context and output limit breaks,
 // observation_invalid and legacy timed_out without inspection stay out.
-export function abandonableReviewResult(s,contextId){
+// A journaled review end with no accepted verdict that the operator may abandon:
+// a timeout, a fixed provider failure, a Claude boundary exit that cannot have
+// run a tool (abandonableReviewerExit), or (V5, A33) an end whose reviewer
+// process the worker proved gone without a final message (reviewerGoneWithoutResult).
+export const abandonableReviewOutcome=result=>result?.inspection!=null&&result.reconciliationRequired===true
+  &&(result.outcome==='timed_out'||result.outcome==='unknown'
+    &&(Object.hasOwn(REVIEWER_PROVIDER_FAILURES,result.observation?.result?.code)
+      ||result.inspection.provider==='claude'&&abandonableReviewerExit(result.observation)
+      ||reviewerGoneWithoutResult(result.observation)));
+export function abandonableReviewResult(s,contextId,records=0){
   const entry=s.cache.at(-1),result=s.reviewInvocation?.result;
   return s.state==='unknown'&&entry?.effect.kind==='review'&&entry.effect.identity.attempt===s.attempt
-    &&entry.result.state==='unknown'&&result?.inspection!=null&&result.reconciliationRequired===true
-    &&(result.outcome==='timed_out'||result.outcome==='unknown'
-      &&(Object.hasOwn(REVIEWER_PROVIDER_FAILURES,result.observation?.result?.code)
-        ||result.inspection.provider==='claude'&&abandonableReviewerExit(result.observation)))
+    &&entry.result.state==='unknown'&&abandonableReviewOutcome(result)
     &&entry.result.reviewInvocation?.registration?.grant?.invocationId===s.reviewInvocation.registration?.grant?.invocationId
-    &&!reviewRetrySpent(s.cache,s.calls,s.attempt,contextId);
+    &&reviewRedispatchCount(s.cache,s.calls,s.attempt,contextId,records)<MAX_REVIEW_REDISPATCHES;
+}
+// R4: why a no-verdict review end cannot be abandoned, with its real exit.
+export function reviewAbandonRefusal(s,contextId,records=0){
+  const entry=s.cache.at(-1),result=s.reviewInvocation?.result;
+  if(s.state!=='unknown'||entry?.effect.kind!=='review'||entry.effect.identity.attempt!==s.attempt||!result||result.outcome==='observed')return null;
+  if(reviewRedispatchCount(s.cache,s.calls,s.attempt,contextId,records)>=MAX_REVIEW_REDISPATCHES)
+    return {code:'review_abandon_budget_exhausted',reason:`本轮独立审查已无结论重派 ${MAX_REVIEW_REDISPATCHES} 次，不能再放弃重派；查清原因后用 --supersede-reviewed-evidence 新建运行重做。`};
+  if(result.observation?.result?.code==='process_cleanup_unknown')
+    return {code:'review_process_unverified',reason:'审查 worker 报告进程组清理结果不明（process_cleanup_unknown），宿主无法证明旧审查进程已退出，不放行重派；手工确认该进程组已不存在后，用 --supersede-reviewed-evidence 新建运行重做。'};
+  if(result.inspection==null)
+    return {code:'review_observation_invalid',reason:'审查事件流本身不合法（observation_invalid），宿主无法判断审查进程是否给出过结论，不放行重派；核对原审查证据后用 --supersede-reviewed-evidence 新建运行重做。'};
+  if(!abandonableReviewOutcome(result))
+    return {code:'review_boundary_unverified',reason:'审查进程越界（工具或内容边界）后退出，或退出时可能已收到结论，宿主不能证明重派安全；核对原审查证据与磁盘后用 --supersede-reviewed-evidence 新建运行重做。'};
+  return null;
 }
 export function validateTaskLearningReviewPackage(rawPackage,writeback,learningInput,bootstrap=null,configuration=null) {
   validTaskLearningInput(learningInput,learningInput.identity,learningInput.feature);
@@ -1024,7 +1079,7 @@ export function readRunnerHistory(raw,config,version=1) {
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
   let invocation={registration:null,started:null,result:null};let registrationRecord=null,startedRecord=null,resultRecord=null,lastReview=null;
   const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false,supersession=null;
-  const answerGaps={developRecheck:0,completeRecheck:0,developRedo:0,developDispatch:0};
+  const answerGaps={developRecheck:0,completeRecheck:0,developRedo:0,developDispatch:0,reviewRedispatch:{1:0,2:0}};
   // V8/V9: interrupted intents (their ids are never reused) and the provider
   // worker records of the pending develop and of every checkpointed develop.
   const interrupted=[],workers={};let pendingWorker=null;
@@ -1048,8 +1103,17 @@ export function readRunnerHistory(raw,config,version=1) {
     &&effect?.kind==='develop'&&transaction===null&&state.taskCommit?.intentDigest==null
     &&records.slice(intentIndex+1,end).some(row=>row.payload.type==='develop-worker')
     &&records.slice(intentIndex+1,end).every(row=>['control','develop-worker'].includes(row.payload.type));
-  const pendingReviewExhausted=()=>pending?.kind==='review'&&invocation.registration!==null&&invocation.result===null
-    &&reviewRetrySpent(state.cache,state.calls,state.attempt,config.reviewers[0].contexts[state.attempt-1]);
+  const roundRedispatches=()=>reviewRedispatchCount(state.cache,state.calls,state.attempt,
+    config.reviewers[0].contexts[state.attempt-1],answerGaps.reviewRedispatch[state.attempt]);
+  const pendingReviewExhausted=()=>pending?.kind==='review'&&invocation.registration!==null
+    &&(invocation.result===null||invocation.result.outcome!=='observed')&&roundRedispatches()>=MAX_REVIEW_REDISPATCHES;
+  // A38: a pending review whose result reached the journal but whose checkpoint
+  // did not, and the result is a no-verdict end the operator could abandon.
+  const pendingResultAbandonable=()=>!(config.externalModels||config.executionPolicy)&&version===3&&pending?.kind==='review'
+    &&invocation.registration!==null&&invocation.result!==null&&invocation.result.outcome!=='observed'
+    &&!controls.cancelled&&!controls.workflowError
+    &&(abandonableReviewOutcome(invocation.result)||reviewRetryCode(invocation.result)!==null)
+    &&roundRedispatches()<MAX_REVIEW_REDISPATCHES;
   for(const [index,r] of records.entries()) {
     if(index>0)need(records[index-1].payload.type!=='effect-abandoned','runner_abandon');
     boundRunnerRecord(r,index+1);
@@ -1240,6 +1304,23 @@ export function readRunnerHistory(raw,config,version=1) {
         &&p.effectId===state.cache.at(-1).effect.id&&p.source===state.code,'runner_complete_recheck');
       answerGaps.completeRecheck++;
       state.state='blocked';state.code=COMPLETE_RECHECK_CODE;state.reason=completeRecheckReason(p.source);lastReview=null;
+    } else if(version===3&&p.type==='review-redispatch') {
+      // V5 (A34): written by abandon_review from this round's spent retryable
+      // review block while the round has a no-result redispatch left: the
+      // operator confirmed (reason) the original call's reviewer stopped. The
+      // redispatch itself is the next review intent. Re-derived from the journal.
+      need(!(config.externalModels||config.executionPolicy),'external_review_reconciliation_required');
+      shape(p,[...common,'effectId','invocationId','attempt','code','reason','at']);
+      need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(p.reason),'runner_review_redispatch');
+      need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_review_redispatch');
+      const contextId=config.reviewers[0].contexts[state.attempt-1];
+      need(r.kind==='result'&&pending===null&&p.attempt===state.attempt
+        &&reviewRedispatchable(state,contextId,answerGaps.reviewRedispatch[state.attempt])
+        &&p.code===state.code&&p.effectId===state.cache.at(-1).effect.id
+        &&p.invocationId===state.reviewInvocation.registration.grant.invocationId,'runner_review_redispatch');
+      answerGaps.reviewRedispatch[state.attempt]++;
+      state.state='pending_review';lastReview=null;
     } else if(version===3&&p.type==='completion-retry-limit') {
       // Terminal: written instead of a complete intent once the re-check bound
       // is spent. Every field is recomputed from the replayed state.
@@ -1247,12 +1328,12 @@ export function readRunnerHistory(raw,config,version=1) {
       need(r.kind==='result'&&pending===null&&completionRetriesExhausted(state)&&p.fromCode===state.code
         &&p.completionBlocks===completionBlockCount(state.cache),'runner_retry_limit');
       state.state='blocked';state.code='completion_retry_limit';state.reason=completionRetryLimitReason(p);lastReview=null;
-    } else if(version===3&&p.type==='review-invocation-abandoned'&&Object.hasOwn(p,'resultDigest')) {
+    } else if(version===3&&p.type==='review-invocation-abandoned'&&Object.hasOwn(p,'resultDigest')&&pending===null) {
       need(!(config.externalModels||config.executionPolicy),'external_review_reconciliation_required');
       // Abandoning a checkpointed review whose journaled result was never accepted.
       shape(p,[...common,'effectId','invocationId','registeredDigest','startedDigest','resultDigest','reason','at']);
       need(r.kind==='result'&&pending===null&&lastReview!==null
-        &&abandonableReviewResult(state,config.reviewers[0].contexts[state.attempt-1]),'runner_abandon');
+        &&abandonableReviewResult(state,config.reviewers[0].contexts[state.attempt-1],answerGaps.reviewRedispatch[state.attempt]),'runner_abandon');
       need(p.effectId===lastReview.effect.id&&state.cache.at(-1).effect.id===lastReview.effect.id
         &&p.invocationId===lastReview.request.invocationId&&p.registeredDigest===lastReview.registrationRecord.digest
         &&p.startedDigest===(lastReview.startedRecord?.digest??null)&&p.resultDigest===lastReview.resultRecord.digest,'runner_abandon');
@@ -1270,18 +1351,23 @@ export function readRunnerHistory(raw,config,version=1) {
       lastReview=null;
     } else if(version===3&&p.type==='review-invocation-abandoned') {
       need(!(config.externalModels||config.executionPolicy),'external_review_reconciliation_required');
-      shape(p,[...common,'effectId','invocationId','registeredDigest','startedDigest','reason','at']);
-      need(r.kind==='result'&&pending?.kind==='review'&&invocation.registration&&!invocation.result
-        &&!controls.cancelled&&!controls.workflowError&&state.state==='awaiting_review','runner_abandon');
+      // A38: a pending review whose no-verdict result reached the journal right
+      // before the host died (no checkpoint) is abandoned like a pending one,
+      // bound to that result record, which must be the record just before.
+      const withResult=Object.hasOwn(p,'resultDigest');
+      shape(p,[...common,'effectId','invocationId','registeredDigest','startedDigest',...(withResult?['resultDigest']:[]),'reason','at']);
+      need(r.kind==='result'&&pending?.kind==='review'&&invocation.registration
+        &&(withResult?pendingResultAbandonable()&&records[index-1]===resultRecord&&p.resultDigest===resultRecord.digest:!invocation.result)
+        &&!controls.cancelled&&!controls.workflowError
+        // A redispatch's intent was issued from pending_review (V5: up to two per round).
+        &&(state.state==='awaiting_review'||state.state==='pending_review'&&REVIEW_RETRY_CODES.includes(state.code)),'runner_abandon');
       need(p.effectId===pending.id&&p.invocationId===invocation.registration.request.invocationId
         &&p.registeredDigest===registrationRecord.digest
         &&p.startedDigest===(startedRecord?.digest??null),'runner_abandon');
       need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
         &&!/[\r\n\0]/.test(p.reason),'runner_abandon');
       need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_abandon');
-      need(!state.cache.some(entry=>entry.effect.identity.attempt===state.attempt&&timeoutEffect(entry))
-        &&!state.calls.some(call=>call.terminal==='abandoned'
-          &&call.contextId===config.reviewers[0].contexts[state.attempt-1]),'runner_abandon_budget');
+      need(roundRedispatches()<MAX_REVIEW_REDISPATCHES,'runner_abandon_budget');
       const request=invocation.registration.request;
       state.calls.push({invocationId:request.invocationId,contextId:request.contextId,provider:request.provider,
         requestedModel:request.requestedModel,effectiveModel:'unknown',channel:'host-authorized',
@@ -1360,8 +1446,8 @@ export function readRunnerHistory(raw,config,version=1) {
         ...['lastRecordDigest','worker'].filter(key=>Object.hasOwn(p,key))]);
       let intentIndex=index-1;
       while(intentIndex>=0&&records[intentIndex].payload.type==='control')intentIndex--;
-      // A36: a registered review whose one redispatch this attempt is already
-      // spent can no longer be abandoned with abandon_review. Voiding the run
+      // A36: a registered review whose no-result redispatches this round
+      // (MAX_REVIEW_REDISPATCHES) are spent can no longer be abandoned with abandon_review. Voiding the run
       // (then superseding it) is its only exit; it must name the last record.
       const exhaustedReview=pendingReviewExhausted();
       const lastIntent=records.slice(0,index).findLastIndex(row=>row.payload.type==='effect-intent');
@@ -1459,7 +1545,7 @@ export function readRunnerHistory(raw,config,version=1) {
     &&records.slice(records.findLastIndex(row=>row.payload.type==='effect-intent')+1)
       .every(row=>row.payload.type==='control');
   const reviewResultAbandon=!(config.externalModels||config.executionPolicy)&&version===3&&pending===null&&lastReview!==null
-    &&abandonableReviewResult(state,config.reviewers[0].contexts[state.attempt-1])
+    &&abandonableReviewResult(state,config.reviewers[0].contexts[state.attempt-1],answerGaps.reviewRedispatch[state.attempt])
     ?{effectId:lastReview.effect.id,invocationId:lastReview.request.invocationId,
       registeredDigest:lastReview.registrationRecord.digest,startedDigest:lastReview.startedRecord?.digest??null,
       resultDigest:lastReview.resultRecord.digest}:null;
@@ -1471,6 +1557,7 @@ export function readRunnerHistory(raw,config,version=1) {
   return {original,session,state,pending,acceptedFixes,qaAttachment,answerGaps,
     ...(version===3?{joinedHosts,reviewerThreads,supersession,pendingAbandonable,reviewResultAbandon,
       interrupted,workers,pendingInterruptible:interruptible,pendingReviewExhausted:pendingReviewExhausted(),
+      pendingResultAbandonable:pending!==null&&pendingResultAbandonable(),
       pendingInterruptLimit:interruptLimit,pendingWorkerVoidable:workerVoidable,
       pendingWorker:pending?.kind==='develop'&&pendingWorker?workerSummary(pendingWorker):null,
       reviewReconciliation:lastReview?.reconciliation&&['unknown','pending_review'].includes(state.state)?{...reconciliationBinding(),
@@ -1516,6 +1603,14 @@ export function projectedRunnerStatus(history,config){
   if(s.state==='blocked'&&s.code==='failed'&&developAnswerRetryable(s,config.bootstrap))return project('develop_answer_invalid');
   if(s.state==='blocked'&&s.code==='failed'){const limit=answerGapLimit(s,config,gaps);
     return limit?{...s,state:'blocked',code:limit.code,reason:limit.reason}:s;}
+  // V5: a spent retryable review block with a no-result redispatch left waits
+  // for the operator's stop confirmation (abandon_review → review-redispatch);
+  // a fully spent one is a limit.
+  if(s.state==='blocked'&&!(config.externalModels||config.executionPolicy)&&Array.isArray(config.reviewers)){
+    const contextId=config.reviewers[0].contexts[s.attempt-1],records=gaps.reviewRedispatch?.[s.attempt]??0;
+    if(reviewRedispatchable(s,contextId,records))return {...s,reviewRedispatchStopRequired:true,reason:reviewRedispatchStopReason(s.code)};
+    if(reviewRedispatchExhausted(s,contextId,records))return {...s,code:REVIEW_REDISPATCH_LIMIT_CODE,reason:reviewRedispatchLimitReason(s.code)};
+  }
   if(s.state!=='unknown')return s;
   const recheck=developRecheckCode(s,config,gaps.developRecheck??0);
   if(recheck!==null)return project(recheck);

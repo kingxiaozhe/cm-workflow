@@ -16,6 +16,8 @@ import {inspectCmTestRecovery} from './recovery.mjs';
 import {collectBranchImpact,assertBranchComparison,inspectImpactAnalysis} from './branch-impact.mjs';
 import {inside,canonicalFuture,selectReportDirectory,snapshotSource,sourceChanges,readSourceFiles,checkSourceEvidence} from './source-snapshot.mjs';
 import {isQaEnvironmentCarrier} from '../cm-ai/qa-environment.mjs';
+import {cmTestRecoveryGuidance} from './session.mjs';
+import {legacyTestBindings} from '../policy-binding-compat.mjs';
 
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;
 const read=file=>{
@@ -48,7 +50,7 @@ export function createCmTestHost(raw,{call,session=null}){
   const controller=new AbortController();let stage='ready',result=null,reason=null,logFile=null;
   const binding={routes,workflowRoot:admission.workflowRoot,policy:digest(fs.readFileSync(path.join(config.skillDir,'references/js-host.md'),'utf8')),
     ...(admission.operation==='impact'?{comparison:{...admission.comparison,dirty:false}}:{})};
-  if(session?.context)session.validate(binding);
+  if(session?.context)session.validate(binding,legacyTestBindings(binding,config.skillDir));
   if(session?.context){stage='interrupted';logFile=session.logFile;}
   if(session?.progress?.result){result=session.progress.result;stage=result.stage;logFile=result.logFile;}
   if(session?.progress?.cancelled){stage='cancelled';controller.abort();}
@@ -258,7 +260,8 @@ export function createCmTestHost(raw,{call,session=null}){
       if(impact)assertBranchComparison(project,impact.comparison);
     }catch(error){
       reason=error?.code??'cm_test_failed';problems.push(reason);
-      if(session){stage=controller.signal.aborted?'cancelled':'interrupted';return json({stage,runId,logFile,reason,pending:session.pending,completionAuthorized:false});}
+      if(session){stage=controller.signal.aborted?'cancelled':'interrupted';const recovery=session.recovery;
+        return json({stage,runId,logFile,reason,pending:session.pending,recovery,guidance:cmTestRecoveryGuidance(recovery),completionAuthorized:false});}
     }
     stage='reporting';
     result={...await effect('evaluation',{rows,artifacts,reason,problems},()=>{
@@ -326,7 +329,11 @@ export function createCmTestHost(raw,{call,session=null}){
   }
   return Object.freeze({async handle(request){
     shape(request,request.operation==='resume'?['requestId','operation','resolution']:['requestId','operation']);
-    if(request.operation==='status')return json({stage,runId,logFile,result,reason,pending:session?.pending??null,completionAuthorized:false});
+    if(request.operation==='status'){
+      const recovery=session&&stage==='interrupted'?session.recovery:null;
+      return json({stage,runId,logFile,result,reason,pending:session?.pending??null,
+        ...(recovery?{recovery,guidance:cmTestRecoveryGuidance(recovery)}:{}),completionAuthorized:false});
+    }
     if(request.operation==='cancel'){session?.save({cancelled:true,result});controller.abort();return {stage:'cancelled',completionAuthorized:false};}
     if(request.operation==='resume'){
       need(session&&session.context&&!controller.signal.aborted,'cm_test_resume_unavailable');

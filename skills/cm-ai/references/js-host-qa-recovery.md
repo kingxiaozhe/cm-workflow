@@ -40,6 +40,18 @@
 superseded 行另记 `host_blocked_cases`（`timed_out_cases` 可以为空）。FAIL、未解决的 `[需确认]`、缺浏览器能力，以及分辨不出原因的旧行仍拒绝。
 整轮期限不再固定 30 分钟：按冻结的计划放大——每条命令一个命令超时、每个 logic 用例一个应答期限、每个 browser 用例两个（含一次证据追问），再加 1 分钟，最少 30 分钟、最多 24 小时；不进入指纹。
 
+### 浏览器用例请求超时：设备可能仍被占用
+
+浏览器用例的宿主请求超时、没有拿到会话应答时（含证据追问超时），会话可能仍在操作浏览器、模拟器或真机。宿主照常写该用例的 `case_blocked`（`host_request_timeout: true`），但只要本轮后面还有浏览器用例，就停下本次调用并拒绝为 `qa_device_unverified`，不再派发下一个浏览器用例，也不写 complete。之后状态为 `qa_execution_unknown`：先确认那个会话已停止、设备已空闲，再用 `--rerun-unknown-qa` 重跑本轮（宿主原因替代的轮次不占三轮预算）。宿主无法自己核实设备是否释放，所以不会自动继续。最后一个浏览器用例超时时没有后续派发，本轮照常以 BLOCKED 结束。
+
+### 纯逻辑用例的整轮中断（Q06）
+
+逻辑用例（`qa_logic`）只读源码，不写 case 行；整轮因答复格式不合格或宿主退出而中断时，宿主只能凭命令与浏览器行归因。`--rerun-unknown-qa` 能证明的情形照常替代重跑；不能证明的（例如混有原始 FAIL、未解决的 `[需确认]`、无法归因的旧行）按拒绝码停下，指引改用 `--supersede-reviewed-evidence` 新建运行，不写猜测的记录。
+
+### 文档核对与同步
+
+`documentation_inspect`（`finish`/`run_finalize` 前的只读核对）超时、无效或过期都可直接重发；答 `blocked` 时状态为 `documentation_sync_blocked`，按 `reason` 补齐文档后用原配置 `--mode resume` 重启宿主再发 `finish`（同一宿主进程内结论已缓存，核对只读、可重复）。运行配置里的 `documentationSync`（反问 `documentation_sync`）目前没有接入开发调用，开发阶段不会出现文档同步的等待点。
+
 ### QA 轮次预算（第 3 轮之后）
 
 三轮预算只算产品证据。因会话没应答、宿主中断、证据格式或环境问题而 superseded 的一轮（`reason` 为 `host_request_timeout` 或 `host_evidence_problem`）不计入，每运行最多因此多给 2 轮（第 5 轮为硬上限）。
@@ -49,7 +61,7 @@ superseded 行另记 `host_blocked_cases`（`timed_out_cases` 可以为空）。
 
 整轮超时或取消时正在跑的 QA 命令记 `resource/cleanup_failed`，写入器会一直拒绝放弃、超时替代、`run_done` 与批次交接。
 新执行器在这一行记下命令进程组身份（`pid`、`process_start_time`）；宿主在 QA 恢复、`run_finalize` 与批次交接前核对该进程组已退出，就补记 `resource/released`（`released_by: host_verified`、`verification: process_group_gone`），之后流程照常。
-进程仍在、核对不了（Windows、无权限、读不到启动时间）或旧行没有进程身份时保持未关闭，`run_finalize` 报 `qa_resources_open` 并列出资源；先结束残留进程再重发。浏览器 QA 用例不登记资源（设备与浏览器清理由会话在 `cleanup` 中如实报告），没有可由宿主释放的设备锁。
+进程仍在、核对不了（Windows、无权限、读不到启动时间）或旧行没有进程身份时保持未关闭，`run_finalize` 报 `qa_resources_open` 并列出资源，批次交接报 `batch_resources_open`，`reason` 同样列出资源及原因；先结束残留进程再重发（批次从原批次入口 `advance`）。浏览器 QA 用例不登记资源（设备与浏览器清理由会话在 `cleanup` 中如实报告），没有可由宿主释放的设备锁。
 
 ## 已 complete 的宿主证据或环境阻断
 

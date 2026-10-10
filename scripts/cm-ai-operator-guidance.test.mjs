@@ -82,13 +82,38 @@ test('batch guidance matches its narrower control surface and never advertises s
   assert.equal(wrapped.pendingAction,blocked.pendingAction);assert.equal(wrapped.guidance.recoveryOperation,'advance');
   assert.match(guidanceText(wrapped),/原批次入口/);assert.doesNotMatch(guidanceText(wrapped),/--mode/);
   assert.match(guidanceText(batchMemberResult(member('blocked','completion_checks_changed','complete'))),/成员宿主继续完成复核/);
-  for(const [state,code,action] of [['unknown','execution_error','abandon_effect'],
-    ['unknown','execution_error','abandon_review'],['blocked','bootstrap_review_mismatch','bootstrap_review_recover']]){
-    const output=batchMemberResult(member(state,code,action));
-    assert.equal(output.guidance.recoveryOperation,null);assert.doesNotMatch(guidanceText(output),/--allow-/);
-    assert.match(guidanceText(output),/批次入口不支持/);
+  // Q24: the batch entry forwards these to the stopped member, so guidance names the batch grant and operation.
+  for(const [state,code,action,flag] of [['unknown','execution_error','abandon_effect','--allow-abandon-effect'],
+    ['unknown','execution_error','abandon_review','--allow-abandon-review'],['blocked','bootstrap_review_mismatch','bootstrap_review_recover','--allow-bootstrap-review-recovery'],
+    ['blocked','develop_answer_missing','develop_redo','--allow-develop-redo']]){
+    const output=batchMemberResult(member(state,code,action),{taskKey:'1.work/T-002'});
+    assert.equal(output.guidance.recoveryOperation,action);assert.equal(output.guidance.authorizationGranted,false);
+    assert(guidanceText(output).includes(`${flag} 1.work/T-002`),guidanceText(output));
+    assert.match(guidanceText(output),new RegExp(`批次操作 ${action}`));assert.doesNotMatch(guidanceText(output),/--mode/);
   }
   const rebound=batchMemberResult(member('blocked','spec_drift','spec_rebind'));
   assert.equal(rebound.pendingAction,'none');assert.match(rebound.guidance.nextStep,/不能换绑/);
   assert.equal(rebound.guidance.recoveryOperation,null);
+});
+
+test('V5 review redispatch limit and unprovable review ends name the supersede exit, never a retry',()=>{
+  const identity={repositoryId:'r',runId:'run',taskId:'T-001',attempt:1};
+  const limit=operatorGuidance({workflow:'cm-ai',identity,state:'blocked',code:'review_redispatch_limit',pendingAction:'none'});
+  assert.equal(limit.recoveryOperation,null);assert.match(limit.nextStep,/supersede-reviewed-evidence/);assert.match(limit.summary,/2 次/);
+  for(const refusal of ['review_process_unverified','review_observation_invalid','review_boundary_unverified','review_abandon_budget_exhausted']){
+    const g=operatorGuidance({workflow:'cm-ai',identity,state:'unknown',code:'transport_incomplete',pendingAction:'reconcile',reviewAbandonRefusal:refusal});
+    assert.equal(g.recoveryOperation,null);assert.match(g.nextStep,/supersede-reviewed-evidence/);assert.equal(g.authorizationGranted,false);
+  }
+});
+
+test('Q06/Q07/Q15 a stopped QA call and a blocked documentation check name their operator exits',()=>{
+  const unknown=explain('fixture_completed','qa_execution_unknown','reconcile');
+  assert.match(unknown.nextStep,/--rerun-unknown-qa/);assert.match(unknown.nextStep,/设备已空闲/);assert.equal(unknown.authorizationGranted,false);
+  const docs=explain('fixture_completed','documentation_sync_blocked','none');
+  assert.match(docs.nextStep,/finish/);assert.equal(docs.recoveryOperation,null);
+});
+
+test('V5 the second no-result redispatch asks for the operator stop confirmation, never a plain advance',()=>{
+  const g=explain('blocked','review_transport_timeout','abandon_review',{reviewRedispatchStopRequired:true});
+  assert.equal(g.recoveryOperation,'abandon_review');assert.match(g.nextStep,/确认原审查进程/);assert.equal(g.authorizationGranted,false);
 });
