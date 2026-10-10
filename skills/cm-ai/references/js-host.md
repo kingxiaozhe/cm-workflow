@@ -52,7 +52,7 @@
 | `protected_scope` | C「项目规则文件的修改通道」 |
 | `fix_authorization`、`fix_dispatch`、`qa_fix_code_unmatched`、`qa_fix_incomplete`、`qa_round_limit` | C「QA 失败交接」「独立 QA 修复入口」 |
 | QA 修复子运行需要 `rediagnose`、`rerun_blocked_step`、`recover_final_review`、`revision_test_check`；`qa_fix_action_authorization_required` | cm-fix js-host「QA 修复子流程的恢复操作」 |
-| 批次成员停在 `develop_redo`、`abandon_effect`、`abandon_review`、`bootstrap_review_recover`；`batch_member_action_authorization_required`、`batch_member_action_not_current`、`batch_member_action_unavailable`、`batch_parallel_member_recovery_required`、`batch_qa_revision_unavailable`、`batch_spec_rebind_unavailable` | R「批次成员的恢复操作」 |
+| 批次成员停在 `develop_redo`、`abandon_effect`、`abandon_review`、`bootstrap_review_recover`；`batch_member_action_authorization_required`、`batch_member_action_not_current`、`batch_member_action_unavailable`、`batch_parallel_member_recovery_required`、`batch_parallel_member_unresolved`、`batch_qa_revision_unavailable`、`batch_spec_rebind_unavailable` | R「批次成员的恢复操作」 |
 | `decision_required`、`permission_denied`、`provider_development_authorization_required`、`qa_decision_required`、`qa_mandatory_required`、`documentation_sync_blocked`、outcome `rejected`／`denied`、`cancelled`、其他 `none` | 本文「执行当前请求，而非手工跳节点」末段；授权见「启动前」第 5 项 |
 
 ## 当前会话手动驱动：用驱动脚本，不要自己搭 FIFO

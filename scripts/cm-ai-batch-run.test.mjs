@@ -32,6 +32,11 @@ test('Q25 an execution-policy batch reschedules a terminal parallel member seria
 });
 // Q24/Q25: a strict-batch parallel member that can still recover in its own run stops
 // with the batch operation named; the batch forwards develop_redo to it and continues.
+// Review round 1 (blocker): an unresolved unknown member of a strict batch is never
+// rescheduled into a second generation; it stays in its run with an explicit stop.
+test('a strict-batch parallel member left unknown stays in its original run and is not rescheduled',async()=>{
+  await batchFixture('parallel-unknown',{executionPolicy:true});
+});
 test('Q24 a strict-batch parallel member stopped at develop_redo recovers through the batch entry and merges',async()=>{
   await batchFixture('parallel-redo',{executionPolicy:true});
 });
@@ -186,6 +191,9 @@ async function batchFixture(mode,options={}){
           assert.deepEqual(request.payload.reviewPackage.specification.sources,buildManifest(specsDir));
           if(mode==='learning'&&request.identity.taskId==='T-001')
             assert(request.payload.reviewPackage.changes.some(change=>change.path==='AGENTS.md'));
+          // The reviewer started, then its process vanished without any terminal event: unknown.
+          if(mode==='parallel-unknown'&&request.identity.taskId==='T-002'){
+            onEvent({event:'thread.started',provider_thread:'review-lost'});throw Error('Synthetic lost reviewer');}
           if(mode.endsWith('review-provider-retry')&&request.identity.taskId==='T-001'&&!reviewFailed){
             reviewFailed=true;
             // Claude CLI rate limit: no tool call, no verdict, process exited.
@@ -284,6 +292,28 @@ async function batchFixture(mode,options={}){
       result=await open().handle({operation:'advance',requestId:'resume-commit-prefix'});
       const recovered=fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
       assert.equal(recovered.find(row=>row.phase==='batch_handoff').task_commit,commit.task_commit);
+    }
+    if(mode==='parallel-unknown'){
+      const logfile=path.join(specsDir,'运行日志.jsonl'),rows=()=>fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
+      const runId=`task-${digest({batchId:config.batchId,task:`${feature}/T-002`}).slice(0,48)}`;
+      const statePath=path.join(specsDir,'.reviews','.execution',runId,'state.json');
+      for(const requestId of ['advance-unknown-1','advance-unknown-2']){
+        assert.equal(result.code,'batch_parallel_member_unresolved',JSON.stringify(result));
+        assert.equal(result.memberState,'unknown');assert.equal(result.currentTask,`${feature}/T-002`);
+        assert.match(result.reason,/不改排串行/);assert.match(result.guidance.nextStep,/reconcile_review|supersede/);
+        // Kept in its original run: no second generation, no WIP removal, no redispatch.
+        assert.equal(rows().filter(row=>row.phase==='batch_member_blocked').length,0);
+        assert(fs.existsSync(path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002')));
+        assert(!fs.existsSync(path.join(specsDir,'.reviews','.execution',`task-${digest({batchId:config.batchId,task:`${feature}/T-002`,generation:2}).slice(0,48)}`)));
+        assert(fs.existsSync(statePath));
+        const {classifyDriveResult}=await import('../runtime/js/notify.mjs');
+        assert.equal(classifyDriveResult('cm-ai-batch',{result}),'stuck');
+        const before=fs.readFileSync(statePath);
+        result=await open().handle({operation:'advance',requestId});
+        assert.deepEqual(fs.readFileSync(statePath),before,'an unresolved member is not redispatched');
+      }
+      assert.deepEqual(calls,['T-001','T-002']);
+      return;
     }
     if(mode==='parallel-redo'){
       const logfile=path.join(specsDir,'运行日志.jsonl'),rows=()=>fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);

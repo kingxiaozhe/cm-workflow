@@ -289,7 +289,8 @@ const AI_STUCK_CODES=new Set(['decision_required','permission_denied','provider_
   'handoff_exists','spec_drift','qa_fix_code_unmatched',
   // Q23-Q26: QA-fix and batch recovery refusals and stops (host-qa-fix-owner.mjs, cm-ai-batch-run.mjs).
   'qa_fix_action_authorization_required','batch_member_action_authorization_required','batch_member_action_not_current',
-  'batch_member_action_unavailable','batch_parallel_member_recovery_required','batch_resources_open']);
+  'batch_member_action_unavailable','batch_parallel_member_recovery_required','batch_resources_open',
+  'batch_parallel_member_unresolved']);
 function classifyAi(r){
   const state=text(r.state),code=text(r.code),outcome=text(r.outcome);
   if(state==='run_done'&&['run_done','run_done_degraded'].includes(code))return 'done';

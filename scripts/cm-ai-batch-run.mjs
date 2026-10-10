@@ -49,6 +49,14 @@ export const BATCH_MEMBER_ACTIONS=Object.freeze({
   bootstrap_review_recover:Object.freeze({option:'allowBootstrapReviewRecovery',flag:'--allow-bootstrap-review-recovery'})});
 // Pending actions a member resolves inside its own run from the batch entry.
 const IN_RUN_ACTIONS=new Set([...Object.keys(BATCH_MEMBER_ACTIONS),'reconcile_review']);
+// A strict (external-model or execution-policy) batch reschedules a parallel member
+// serially only from a checkpointed blocked/failed terminal: the old call ended and
+// its writer stopped. Anything unresolved (unknown, an open review, a pending
+// reconcile) stays in its original run: a second generation would take a new runId
+// and start again at attempt 1, past the original-invocation reconciliation.
+export function strictRescheduleAllowed(status){
+  return ['blocked','failed'].includes(status?.state)&&!IN_RUN_ACTIONS.has(status.pendingAction)&&status.pendingAction!=='reconcile';
+}
 export function createCmAiBatch({configuration,executionFor,logHome,runtime='codex',checkCommands=null,checkTimeoutMs=60000,
   rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,holdRevisions=[],bootstrapKeys=[],memberActions={}}){
   const config=json(configuration);
@@ -384,7 +392,8 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       if(!group.includes(row.from_key)||progress().done.has(row.from_key))continue;
       const result=await mergeMember(row);if(result)return result;
     }
-    let waiting=null,rejected=null,recoverable=null;
+    let waiting=null,rejected=null,recoverable=null,unresolved=null;
+    const strict=Boolean(config.externalModels||config.executionPolicy);
     for(const [index,result] of results.entries()){
       if(result.status==='rejected'){rejected??=result.reason;continue;}
       const status=result.value;if(!status)continue;
@@ -399,7 +408,8 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       // in its own run (original-invocation receipts, interrupted effect) keeps its
       // worktree and stops with the batch operation named; any other terminal member
       // is rescheduled serially exactly like an ordinary batch (it used to wait forever).
-      if((config.externalModels||config.executionPolicy)&&IN_RUN_ACTIONS.has(status.pendingAction)){recoverable??={key,status};continue;}
+      if(strict&&IN_RUN_ACTIONS.has(status.pendingAction)){recoverable??={key,status};continue;}
+      if(strict&&!strictRescheduleAllowed(status)){unresolved??={key,status};continue;}
       record('batch_member_blocked',{from_key:key,code:status.code??status.state,
         reason:status.blockedReason??status.reason??status.code??status.state,...location(key),generation:2});
     }
@@ -407,8 +417,21 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     for(const row of progress().blocked.values())preserveBlockedMember(row);
     if(rejected)throw rejected;
     if(recoverable)return parallelRecoveryRequired(recoverable.key,recoverable.status);
+    if(unresolved)return parallelMemberUnresolved(unresolved.key,unresolved.status);
     if(waiting)return {...waiting,batchId:config.batchId};
     return null;
+  }
+  const stopGuidance=(summary,nextStep,prerequisites)=>Object.freeze({summary,nextStep,recoveryOperation:null,
+    prerequisites:Object.freeze(prerequisites),authorizationGranted:false});
+  function parallelMemberUnresolved(key,status){
+    const exit=`只读核对 ${key} 原运行的记录、进程与 worktree；有原调用回执时从批次入口发送 reconcile_review（taskKey ${key}、invocationId）；`
+      +`状态出现 abandon_effect、abandon_review 等可恢复动作时，关闭批次宿主、带对应 --allow-… ${key} 重新启动并发送同名批次操作；`
+      +`都没有时只能取消本批次，还原该任务已改动的代码后，用单任务宿主 cm-ai-host.mjs 以 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务`;
+    return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_parallel_member_unresolved',batchId:config.batchId,
+      currentTask:key,identity:status.identity,memberState:status.state,memberCode:status.code??null,pendingAction:status.pendingAction??null,
+      reason:`外部模型或执行策略批次的并行成员 ${key} 停在 ${status.state}/${status.code??status.state}，结果尚未确认或审查尚未终结，不改排串行（改排会换 runId、从 attempt 1 重派，绕过原调用对账与写入方停止证明）。出口：${exit}。`,
+      guidance:stopGuidance('并行成员结果未确认，批次不会自动改排或重派。',`${exit}。`,
+        ['不新建第二代运行，不删除该成员 worktree','先确认旧宿主与该成员的会话或子进程已停止写入'])});
   }
   function parallelRecoveryRequired(key,status){
     const action=status.pendingAction,grant=BATCH_MEMBER_ACTIONS[action];
