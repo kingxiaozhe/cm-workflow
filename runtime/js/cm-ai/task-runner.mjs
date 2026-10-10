@@ -353,6 +353,11 @@ export function createTaskRunner(options) {
   function reviewRedispatchRecords(){
     return journal?.filter(row=>row.payload.type==='review-redispatch'&&row.payload.attempt===attempt).length??0;
   }
+  // The review effect ids of the current round: the entry derives the next redispatch id from
+  // them, never from reviewInvocation (a refused authorization leaves it at the previous round's
+  // value), so an id can never repeat one the cache holds.
+  const reviewEffectIds=()=>[...cache.values()].filter(entry=>entry.effect.kind==='review'
+    &&entry.effect.identity.attempt===attempt).map(entry=>entry.effect.id);
   // Confirmations of this round (abandon_review on a review that never started).
   const reviewDispatchConfirmations=()=>countReviewDispatchConfirmations((journal??[]).map(row=>row.payload),attempt);
   // A spent retryable review block this round may still redispatch (advance).
@@ -616,8 +621,6 @@ export function createTaskRunner(options) {
       const never=reviewNeverStartedStatus({state,code,attempt,cache:[...cache.values()]},reviewDispatchConfirmations());
       if(never!==null)current=freeze({...current,...never});
     }
-    if(current.state==='pending_review'&&reviewDispatchConfirmations().denied>0)
-      current=freeze({...current,reviewDenialConfirmations:reviewDispatchConfirmations().denied});
     // Status only; never part of a cached result or checkpoint.
     if(current.state==='unknown'&&reviewResultAbandonable())current=freeze({...current,abandonableReviewResult:true});
     else if(current.state==='unknown'&&!(metadata.externalModels||metadata.executionPolicy)&&invocationMode&&store&&!busy&&!poisoned&&!restored?.pending){
@@ -2004,7 +2007,7 @@ export function createTaskRunner(options) {
   };
   // Interrupted intents keep their ids; the entry derives fresh ones from this count.
   const interruptions=kind=>parsedHistory?.interrupted?.filter(item=>item.kind===kind).length??0;
-  const api={reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks,recheckLearningInput,redoDevelop,recoverCommit,interruptions};
+  const api={reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks,reviewEffectIds,recheckLearningInput,redoDevelop,recoverCommit,interruptions};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   // A terminal reviewer observation is durable even if the host died before

@@ -44,7 +44,7 @@ const script=(...steps)=>{
   };
 };
 
-async function fixture(fn,{authorize,times=[100,101,200]}={}) {
+async function fixture(fn,{authorize,times=[100,101,200],changesFirst=false}={}) {
   const temp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-review-exit-')));
   const root=path.join(temp,'code'),specsRoot=path.join(temp,'specs'),reviewsDir=path.join(specsRoot,'.reviews');
   fs.mkdirSync(root);fs.mkdirSync(reviewsDir,{recursive:true});
@@ -62,8 +62,10 @@ async function fixture(fn,{authorize,times=[100,101,200]}={}) {
     reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',allowed:true,
       available:true,contexts:['review-logical-1','review-logical-2'],run:(request,{onEvent})=>{
         dispatches++;events(onEvent);
-        return {status:'succeeded',value:{verdict:'approved',packageDigest:request.payload.reviewPackage.packageDigest,
-          examinedPaths:reviewPaths(request.payload.reviewPackage),findings:[],summary:'Synthetic review'}};}}],check:()=>checks,
+        const rework=changesFirst&&request.identity.attempt===1;
+        return {status:'succeeded',value:{verdict:rework?'changes_requested':'approved',packageDigest:request.payload.reviewPackage.packageDigest,
+          examinedPaths:reviewPaths(request.payload.reviewPackage),
+          findings:rework?[{id:'F1',severity:'P2',path:'code.js',message:'Repair',evidence:'Synthetic'}]:[],summary:'Synthetic review'}};}}],check:()=>checks,
     taskCompletion:{reviewsDir,handoffs:[path.join(reviewsDir,'a1.json'),path.join(reviewsDir,'a2.json')]},
     reviewInvocation:{developerThreadId:'actual-developer',excludedThreadIds:['actual-main'],
       authorize:authorize??script()}};
@@ -405,3 +407,69 @@ test('the refused-authorization limit has a new-run exit even for an external-mo
   assert.equal(strictPriorAttemptResolved(strict,history,records),true);
   assert.equal(sameTaskPriorAttemptResolved(history),true);
 },{authorize:script('deny','deny','deny')}));
+
+// ---- redispatch effect ids are derived from the round's own cache ------------------------
+// A refused authorization registers nothing, so reviewInvocation keeps the PREVIOUS round's
+// value; ids counted from it repeated an earlier id, the cache answered, and the run stayed stuck.
+
+async function roundTwo(f,{round1Expiries}){
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));
+  await runner.executeEffect(f.effect('review'));
+  for(let n=1;n<=round1Expiries;n++)await f.reopen().executeEffect(f.retry(n));
+  const changed=f.reopen().status();assert.equal(changed.state,'changes_requested',JSON.stringify(changed));
+  assert.equal((await f.reopen().executeEffect(f.effect('develop',2))).state,'awaiting_review');
+  const identity={...f.identity,attempt:2};
+  const entryFor=()=>createCmAiConversationEntry({specsDir:path.dirname(f.tasksPath),codeProject:f.root,feature:'feature',
+    identity,runner:f.reopen(),allowAbandonReview:true,hostDecision:null,
+    hostDecisionProvider:{timeoutMs:1000,decide:async()=>({status:'approved'})}});
+  const handle=async(operation,extra={})=>{
+    const entry=entryFor();
+    const status=await entry.handle({version:1,operation:'status',requestId:'s',identity});
+    return entry.handle({version:1,operation,requestId:operation,identity,
+      ...(operation==='decision'?{packageDigest:status.packageDigest}:{}),...extra});
+  };
+  const intents=()=>f.records().filter(row=>row.payload.type==='effect-intent'&&row.payload.effect.kind==='review'
+    &&row.payload.effect.identity.attempt===2).map(row=>row.payload.effect.id);
+  // One decision or confirmation: the journal must grow (the cache was not hit) and no id repeats.
+  const step=async(operation,extra)=>{
+    const before=f.records().length,result=await handle(operation,extra);
+    assert(f.records().length>before,`${operation} left the journal unchanged: ${JSON.stringify(result)}`);
+    assert.equal(new Set(intents()).size,intents().length,`repeated id in ${intents()}`);
+    return result;
+  };
+  return {handle,step,intents};
+}
+
+test('round 1 retry, round 2 denial confirmed and denied again: every confirmation redispatches under a new id',()=>fixture(async f=>{
+  const {step,intents,handle}=await roundTwo(f,{round1Expiries:1});
+  assert.equal((await step('decision')).code,'permission_denied');
+  const denied=await handle('status');
+  assert.deepEqual([denied.state,denied.code,denied.pendingAction],['pending_review','permission_denied','abandon_review'],JSON.stringify(denied));
+  assert.equal((await step('abandon_review',{reason:reasonFor})).code,'permission_denied_confirmed');
+  const again=await step('decision');assert.deepEqual([again.state,again.code],['pending_review','permission_denied'],JSON.stringify(again));
+  assert.equal((await step('abandon_review',{reason:reasonFor})).code,'permission_denied_confirmed');
+  const approved=await step('decision');assert.equal(approved.state,'approved',JSON.stringify(approved));
+  assert.equal(f.dispatches(),2);assert.equal(intents().length,3);
+},{authorize:script('expire','ok','deny','deny','ok'),changesFirst:true}));
+
+test('round 1 retry, round 2 denial confirmed, expiry before dispatch, then resume: the resume registers and dispatches',()=>fixture(async f=>{
+  const {step,intents,handle}=await roundTwo(f,{round1Expiries:1});
+  assert.equal((await step('decision')).code,'permission_denied');
+  assert.equal((await step('abandon_review',{reason:reasonFor})).code,'permission_denied_confirmed');
+  const expired=await step('decision');assert.deepEqual([expired.state,expired.code],['pending_review','grant_expired'],JSON.stringify(expired));
+  const status=await handle('status');assert.equal(status.code,'grant_expired');assert.equal(status.pendingAction,'resume');
+  const approved=await step('decision');assert.equal(approved.state,'approved',JSON.stringify(approved));
+  assert.equal(intents().length,3);
+},{authorize:script('expire','ok','deny','expire','ok'),changesFirst:true}));
+
+test('round 1 with two voided registrations, then round 2 with two confirmations and an expiry: no earlier id comes back',()=>fixture(async f=>{
+  const {step,intents,handle}=await roundTwo(f,{round1Expiries:2});
+  assert.equal((await step('decision')).code,'permission_denied');
+  assert.equal((await step('abandon_review',{reason:reasonFor})).code,'permission_denied_confirmed');
+  assert.equal((await step('decision')).code,'permission_denied');
+  assert.equal((await step('abandon_review',{reason:reasonFor})).code,'permission_denied_confirmed');
+  const expired=await step('decision');assert.deepEqual([expired.state,expired.code],['pending_review','grant_expired'],JSON.stringify(expired));
+  assert.equal((await handle('status')).code,'grant_expired');
+  const approved=await step('decision');assert.equal(approved.state,'approved',JSON.stringify(approved));
+  assert.equal(f.dispatches(),2);assert.equal(intents().length,4);
+},{authorize:script('expire','expire','ok','deny','deny','expire','ok'),changesFirst:true}));

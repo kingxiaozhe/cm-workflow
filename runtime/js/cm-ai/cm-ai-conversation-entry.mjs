@@ -242,6 +242,7 @@ export function createCmAiConversationEntry(options) {
   const runnerKeys=['executeEffect','status','cancel','run'];
   if(runner&&Object.hasOwn(runner,'verificationBlocks'))runnerKeys.push('verificationBlocks');
   if(runner&&Object.hasOwn(runner,'completionBlocks'))runnerKeys.push('completionBlocks');
+  if(runner&&Object.hasOwn(runner,'reviewEffectIds'))runnerKeys.push('reviewEffectIds');
   if(runner&&Object.hasOwn(runner,'recheckLearningInput'))runnerKeys.push('recheckLearningInput');
   if(runner&&Object.hasOwn(runner,'attachLearningEvidence'))runnerKeys.push('attachLearningEvidence');
   if(runner&&Object.hasOwn(runner,'inspectFixAssociation'))runnerKeys.push('inspectFixAssociation');
@@ -261,6 +262,7 @@ export function createCmAiConversationEntry(options) {
   shape(runner,runnerKeys);
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');
   if(Object.hasOwn(runner,'completionBlocks'))need(typeof runner.completionBlocks==='function');
+  if(Object.hasOwn(runner,'reviewEffectIds'))need(typeof runner.reviewEffectIds==='function');
   if(Object.hasOwn(runner,'recheckLearningInput'))need(typeof runner.recheckLearningInput==='function');
   if(Object.hasOwn(runner,'attachLearningEvidence'))need(typeof runner.attachLearningEvidence==='function');
   if(Object.hasOwn(runner,'inspectFixAssociation'))need(typeof runner.inspectFixAssociation==='function');
@@ -666,14 +668,21 @@ export function createCmAiConversationEntry(options) {
       if(decision===null)return summary(operation,{...status,code:'decision_required'},'awaiting');
       if(validateHostDecision(decision,status)==='denied')
         return summary(operation,{...status,code:'permission_denied'},'denied');
-      // Each confirmed denial left a denied effect behind that holds no call: count it too so
-      // the new effect id is never one the cache already holds.
-      const retries=retryReview(status)?status.calls.filter(call=>call.channel==='host-authorized'
-        &&['failed','abandoned','not_dispatched'].includes(call.terminal)
-        &&call.contextId===status.reviewInvocation?.registration?.grant.logicalContextId).length
-        +(status.reviewDenialConfirmations??0):0;
-      const resumed=runner.interruptions?.('review')??0;
-      const effectId=`review-${identity.attempt}${retries?`-retry-${retries}`:''}${resumed?`-resume-${resumed}`:''}`;
+      // A redispatch takes the next free id: at least the number of review effects THIS round's cache
+      // holds (runner.reviewEffectIds) and at least the host-authorized calls that ended without a
+      // verdict (an abandoned intent has a call but no cache entry), then skips any id already
+      // cached. A refused authorization leaves no call and keeps the previous round's
+      // reviewInvocation, so the call count alone can repeat an id and the cache would answer.
+      const resumed=runner.interruptions?.('review')??0,roundIds=runner.reviewEffectIds?.();
+      const idFor=n=>`review-${identity.attempt}${n?`-retry-${n}`:''}${resumed?`-resume-${resumed}`:''}`;
+      let retries=0;
+      if(retryReview(status)){
+        retries=Math.max(Array.isArray(roundIds)?roundIds.length:0,
+          status.calls.filter(call=>call.channel==='host-authorized'&&['failed','abandoned','not_dispatched'].includes(call.terminal)
+            &&call.contextId===status.reviewInvocation?.registration?.grant.logicalContextId).length);
+        if(Array.isArray(roundIds))while(roundIds.includes(idFor(retries)))retries++;
+      }
+      const effectId=idFor(retries);
       const result=await runner.executeEffect({version:1,id:effectId,identity,kind:'review'});
       return effectSummary(operation,result,runner,identity);
     }
