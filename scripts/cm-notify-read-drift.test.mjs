@@ -71,6 +71,9 @@ const SCENARIOS=[
     hooks:d=>({open:file=>{
       const before=fs.statSync(file,{bigint:true});fs.renameSync(path.join(d,'other.json'),file);
       assert.notEqual(fs.statSync(file,{bigint:true}).ino,before.ino,'fixture invalid: the swapped-in file must have another inode');}}),refused:{state:'invalid',reason:'permission'},flags:true},
+  // Identity is dev AND ino: each one alone must be enough to refuse.
+  {name:'same ino but another device after the check',make:d=>write(d,JSON_TEXT),hooks:()=>({fstat:st=>clone(st,{dev:st.dev+1n})}),refused:{state:'invalid',reason:'permission'}},
+  {name:'same device but another ino after the check',make:d=>write(d,JSON_TEXT),hooks:()=>({fstat:st=>clone(st,{ino:st.ino+1n})}),refused:{state:'invalid',reason:'permission'}},
   {name:'swapped for a FIFO between check and open',posix:true,make:d=>write(d,JSON_TEXT),hooks:()=>({open:toFifo}),refused:{state:'invalid',reason:'permission'},flags:true},
   {name:'grown past the cap after the check',make:d=>write(d,JSON_TEXT),hooks:()=>({fstat:st=>clone(st,{size:BigInt(64*1024+1)})}),refused:{state:'invalid',reason:'too_large'}},
   {name:'handle is not a regular file after the check',make:d=>write(d,JSON_TEXT),hooks:()=>({fstat:st=>clone(st,{isFile:()=>false})}),refused:{state:'invalid',reason:'permission'}},
