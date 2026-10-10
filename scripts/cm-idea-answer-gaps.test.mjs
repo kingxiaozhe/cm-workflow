@@ -137,3 +137,26 @@ test('memory mode: a failed turn is re-sent twice in the same process, then idea
   status=(await c.request('status')).result;assert.equal(status.retry.remaining,0);
   assert.equal(c.requests.length,3);await c.close();
 });
+
+test('real host V6: recovery refuses a symlinked prd/ and removes only the host temp link of the verified file',{timeout:30000},async t=>{
+  for(const mode of ['symlink','twin']){
+    const f=fixture(t);await toDraft(t,f);fs.mkdirSync(path.join(f.dir,'prd'),{mode:0o500});
+    let c=await client(t,f,()=>({decision:'approved'}));assert.ok((await c.request('finish',{filename:'prd-fixture.md'})).error);await c.close();
+    fs.chmodSync(path.join(f.dir,'prd'),0o700);
+    const elsewhere=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-idea-elsewhere-')));t.after(()=>fs.rmSync(elsewhere,{recursive:true,force:true}));
+    if(mode==='symlink'){
+      // prd/ was replaced by a link to another directory holding a byte-identical file and a same-inode temp name.
+      fs.rmdirSync(path.join(f.dir,'prd'));fs.symlinkSync(elsewhere,path.join(f.dir,'prd'));
+      fs.writeFileSync(path.join(elsewhere,'prd-fixture.md'),'# Synthetic L1',{mode:0o600});
+      fs.linkSync(path.join(elsewhere,'prd-fixture.md'),path.join(elsewhere,'.cm-review-00000000-0000-0000-0000-000000000000'));
+    }else{
+      const target=path.join(f.dir,'prd/prd-fixture.md');fs.writeFileSync(target,'# Synthetic L1',{mode:0o600});
+      fs.linkSync(target,path.join(f.dir,'prd/.cm-review-00000000-0000-0000-0000-000000000000'));
+    }
+    c=await client(t,f,()=>assert.fail('no call'));const result=await c.request('resume',{resolution:null});await c.close();
+    if(mode==='symlink'){assert.ok(result.error);assert.match(c.stderr(),/idea_save_recovery_conflict/);
+      assert.deepEqual(fs.readdirSync(elsewhere).sort(),['.cm-review-00000000-0000-0000-0000-000000000000','prd-fixture.md']);}
+    else{assert.equal(result.result.stage,'saved');assert.deepEqual(fs.readdirSync(path.join(f.dir,'prd')),['prd-fixture.md']);
+      assert.equal(fs.statSync(path.join(f.dir,'prd/prd-fixture.md')).nlink,1);}
+  }
+});

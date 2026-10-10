@@ -79,7 +79,7 @@ discard只针对call.status为recorded、宿主拒收（stderr diagnostic有原�
 
 宿主独占写`prd/<filename>`，写前先在会话记录里记下expected（目标路径、内容SHA-256与长度、草稿摘要）。中断后resume null时，宿主先比对磁盘：
 
-- 文件与expected一致（0600普通文件）：视为已保存，stage为saved，saved.source为recovered_write_readback；崩溃残留的`.cm-review-*`同inode临时链接会被移除。
+- 文件与expected一致（0600普通文件）：视为已保存，stage为saved，saved.source为recovered_write_readback；恢复前先按正常保存的同一套检查核对保存根仍是规范路径、`prd/`是真实目录（被换成符号链接或移走一律算冲突）；只移除`prd/`里与已核对目标同一inode、大小和摘要都对得上的宿主临时名`.cm-review-<uuid>`。
 - 文件不存在：沿原已记录的批准重新写入，不再问一次同一请求。
 - 内容不一致或不是普通文件：报`idea_save_recovery_conflict`，交人核对；不覆盖、不删除。
 

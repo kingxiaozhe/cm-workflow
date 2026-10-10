@@ -67,6 +67,13 @@ output.write('cm-idea-host.mjs serve --skill-dir PATH [--session-file ABSOLUTE_P
     }
     const call=(kind,payload,signal)=>session?session.call(kind,payload,signal,(body,sig)=>bridge.call(kind,body,sig)):bridge.call(kind,payload,signal);
     const nonempty=value=>typeof value==='string'&&value.trim().length>0;
+    // Shared by a normal save and its recovery: the bound root must still be
+    // canonical; prd/ may be absent, otherwise a real canonical directory.
+    const checkSaveLocation=(directory,code=null)=>{
+      need(fs.realpathSync(saveRoot)===saveRoot,code??'idea_save_root_invalid');
+      try{need(fs.lstatSync(directory).isDirectory()&&!fs.lstatSync(directory).isSymbolicLink()
+        &&fs.realpathSync(directory)===directory,code??'idea_save_path_invalid');}catch(cause){if(cause.code!=='ENOENT')throw cause;}
+    };
     const retryInfo=()=>failedTurn&&!session?{operation:failedTurn.operation,remaining:MAX_CALL_ABANDONS-(retries.idea_interview??0)}:null;
     const status=()=>{
       const recovery=session?.state.pending?{operation:session.state.pending.request.operation,
@@ -96,9 +103,7 @@ output.write('cm-idea-host.mjs serve --skill-dir PATH [--session-file ABSOLUTE_P
         need(typeof request.filename==='string'&&/^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/.test(request.filename),'idea_filename_invalid');
         const directory=path.join(saveRoot,'prd'),target=path.join(directory,request.filename);
         const check=()=>{
-          need(fs.realpathSync(saveRoot)===saveRoot,'idea_save_root_invalid');
-          try{need(fs.lstatSync(directory).isDirectory()&&!fs.lstatSync(directory).isSymbolicLink()
-            &&fs.realpathSync(directory)===directory,'idea_save_path_invalid');}catch(cause){if(cause.code!=='ENOENT')throw cause;}
+          checkSaveLocation(directory);
           let exists=true;try{fs.lstatSync(target);}catch(cause){if(cause.code==='ENOENT')exists=false;else throw cause;}
           need(!exists,'idea_save_conflict');
         };
@@ -160,17 +165,28 @@ output.write('cm-idea-host.mjs serve --skill-dir PATH [--session-file ABSOLUTE_P
     // V6 (O15): the host alone writes prd/<file>; compare the disk with the
     // digest recorded before writing. A temp link left by a crash between link
     // and unlink is the host's own name for the same inode and is removed.
-    const reconcileSave=expected=>{
-      need(expected&&typeof expected.path==='string'&&saveRoot!==null&&path.dirname(expected.path)===path.join(saveRoot,'prd')
-        &&draft!==null&&expected.draftDigest===digest(draft),'idea_save_recovery_conflict');
+    const reconcileSave=(expected,filename)=>{
+      const directory=saveRoot===null?null:path.join(saveRoot,'prd');
+      need(expected&&typeof filename==='string'&&/^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/.test(filename)&&directory!==null
+        &&expected.path===path.join(directory,filename)&&draft!==null&&expected.draftDigest===digest(draft),'idea_save_recovery_conflict');
+      // The same location checks as a normal save: canonical root, and prd/ a
+      // real, canonical directory (a symlinked or moved prd/ is a conflict).
+      checkSaveLocation(directory,'idea_save_recovery_conflict');
       let stat;try{stat=fs.lstatSync(expected.path);}catch(cause){if(cause.code==='ENOENT')return 'absent';throw cause;}
+      const sha=file=>createHash('sha256').update(fs.readFileSync(file)).digest('hex');
       need(stat.isFile()&&!stat.isSymbolicLink()&&(stat.mode&0o777)===0o600&&stat.size===expected.length
-        &&createHash('sha256').update(fs.readFileSync(expected.path)).digest('hex')===expected.sha256,'idea_save_recovery_conflict');
+        &&sha(expected.path)===expected.sha256,'idea_save_recovery_conflict');
       if(stat.nlink!==1){
-        const directory=path.dirname(expected.path);
-        const twins=fs.readdirSync(directory).filter(name=>name.startsWith('.cm-review-')).map(name=>path.join(directory,name))
-          .filter(file=>{const other=fs.lstatSync(file);return other.isFile()&&other.ino===stat.ino&&other.dev===stat.dev;});
-        need(stat.nlink===2&&twins.length===1,'idea_save_recovery_conflict');fs.unlinkSync(twins[0]);
+        // Only the host's own temp name for this very file (same device/inode as
+        // the verified target, the recorded size and digest) is removed.
+        const twins=fs.readdirSync(directory).filter(name=>/^\.cm-review-[0-9a-f-]{36}$/.test(name)).map(name=>path.join(directory,name))
+          .filter(file=>{const other=fs.lstatSync(file);return other.isFile()&&!other.isSymbolicLink()&&other.ino===stat.ino&&other.dev===stat.dev;});
+        need(stat.nlink===2&&twins.length===1,'idea_save_recovery_conflict');
+        checkSaveLocation(directory,'idea_save_recovery_conflict');
+        const again=fs.lstatSync(twins[0]),target=fs.lstatSync(expected.path);
+        need(again.ino===stat.ino&&again.dev===stat.dev&&target.ino===stat.ino&&target.dev===stat.dev
+          &&again.size===expected.length&&sha(twins[0])===expected.sha256,'idea_save_recovery_conflict');
+        fs.unlinkSync(twins[0]);
       }
       return 'matches';
     };
@@ -188,7 +204,7 @@ output.write('cm-idea-host.mjs serve --skill-dir PATH [--session-file ABSOLUTE_P
         const pending=session.state.pending;
         if(pending?.writing&&pending.expected&&resolution===null){
           restore(session.state.checkpoint);
-          if(reconcileSave(pending.expected)==='matches'){
+          if(reconcileSave(pending.expected,pending.request.filename)==='matches'){
             saved={path:pending.expected.path,draftDigest:pending.expected.draftDigest,maturity:pending.expected.maturity,
               source:'recovered_write_readback'};stage='saved';session.commit(snapshot());
             return {stage,saved,recovered:true,completionAuthorized:false};
