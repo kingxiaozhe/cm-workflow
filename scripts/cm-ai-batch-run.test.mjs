@@ -346,9 +346,15 @@ async function batchFixture(mode,options={}){
       for(const requestId of ['advance-unknown-1','advance-unknown-2']){
         assert.equal(result.code,'batch_parallel_member_unresolved',JSON.stringify(result));
         assert.equal(result.memberState,'unknown');assert.equal(result.currentTask,`${feature}/T-002`);
-        assert.match(result.reason,/不改排串行/);assert.match(result.guidance.nextStep,/reconcile_review|supersede/);
-        // reconcile_review only exists for strict runs; an ordinary batch is not pointed at it.
-        if(!options.executionPolicy)assert.doesNotMatch(result.reason,/reconcile_review/);
+        assert.match(result.reason,/不改排串行/);
+        // Batch 4 review round 2: the hint follows the real entry conditions (probed
+        // below). This fixture's member journals carry no strict configuration (the
+        // fixture execution is not the protected strict factory), so the guard does not
+        // refuse them and supersede is the named exit; the strict refusal is covered with
+        // real strict journals in cm-external-model-recovery.test.mjs.
+        for(const text of [result.reason,result.guidance.nextStep]){
+          assert.doesNotMatch(text,/reconcile_review|abandon_|--allow-/);assert.match(text,/--supersede-reviewed-evidence/);
+        }
         // Kept in its original run: no second generation, no WIP removal, no redispatch.
         assert.equal(rows().filter(row=>row.phase==='batch_member_blocked').length,0);
         assert(fs.existsSync(path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002')));
@@ -361,6 +367,17 @@ async function batchFixture(mode,options={}){
         assert.deepEqual(fs.readFileSync(statePath),before,'an unresolved member is not redispatched');
       }
       assert.deepEqual(calls,['T-001','T-002']);
+      // Probe the exits the hint names (or withholds) through the real entry checks.
+      const {prepareReviewedEvidenceSupersession}=await import('../runtime/js/cm-ai/reviewed-evidence-supersede.mjs');
+      const {acquireExternalRunGuard,externalRunGuardExists}=await import('../runtime/js/cm-ai/external-run-guard.mjs');
+      const worktree=path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002');
+      const identity={repositoryId:config.repositoryId,runId:'task-supersede-probe',taskId:'T-002',attempt:1};
+      prepareReviewedEvidenceSupersession({specsDir,codeProject:worktree,feature,identity,reason:'probe',
+        tasksPath:path.join(specsDir,feature,'tasks.md'),acceptSupersededCodeDrift:true});
+      // The named exit is an ordinary single-task launch: the guard it takes where a strict
+      // binding exists on that root (strictOnly) does not refuse this prior run.
+      if(!options.executionPolicy)assert.equal(externalRunGuardExists(specsDir,worktree),false,'an ordinary single-task supersede takes no external run guard');
+      acquireExternalRunGuard({specsDir,codeProject:worktree,identity,feature},{strictOnly:true}).close();
       return;
     }
     if(mode==='parallel-denied'){

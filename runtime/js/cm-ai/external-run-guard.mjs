@@ -30,6 +30,22 @@ function fixCallsResolved(records,configuration){
   return true;
 }
 const codeBinding=codeProject=>path.join(codeProject,'.cm-external-models-v1.json');
+// The two refusals below are shared with callers that must tell, read-only, whether
+// a new run on the same code root would pass this guard (cm-ai-batch-run.mjs hints).
+// A strict (external-model or execution-policy) prior run: unknown external work
+// belongs to the code root, even across tasks/features.
+export function strictPriorAttemptResolved(config,history,records){
+  return !(config.externalModels||config.executionPolicy)||!history.pending&&history.state.state!=='unknown'
+    &&history.state.reviewInvocation?.result?.reconciliationRequired!==true
+    &&!history.state.calls.some(call=>call.requestedModel!=='current-session'
+      &&!['succeeded','not_dispatched'].includes(call.terminal)
+      &&!records.some(row=>row.payload.type==='review-invocation-reconciled'&&row.payload.invocationId===call.invocationId));
+}
+// A prior run of the same task on the same code root.
+export function sameTaskPriorAttemptResolved(history){
+  return !history.pending&&!['unknown','ready','awaiting_review','pending_review','changes_requested','approved'].includes(history.state.state)
+    &&history.state.reviewInvocation?.result?.reconciliationRequired!==true;
+}
 export const externalRunGuardExists=(specsDir,codeProject)=>fs.existsSync(path.join(specsDir,'.cm-external-models-v1'))||fs.existsSync(codeBinding(codeProject));
 export function acquireExternalRunGuard(definition,{strictOnly=false}={}){
   const {specsDir,codeProject,identity,feature}=definition;
@@ -79,16 +95,11 @@ export function acquireExternalRunGuard(definition,{strictOnly=false}={}){
       if(config.root!==codeProject)continue;
       const history=readRunnerHistory(snapshot.records,config,init.version);
       // Unknown external work belongs to the code root, even across tasks/features.
-      if(config.externalModels||config.executionPolicy)need(!history.pending&&history.state.state!=='unknown'
-        &&history.state.reviewInvocation?.result?.reconciliationRequired!==true
-        &&!history.state.calls.some(call=>call.requestedModel!=='current-session'
-          &&!['succeeded','not_dispatched'].includes(call.terminal)
-          &&!snapshot.records.some(row=>row.payload.type==='review-invocation-reconciled'&&row.payload.invocationId===call.invocationId)),'external_prior_attempt_unresolved');
+      need(strictPriorAttemptResolved(config,history,snapshot.records),'external_prior_attempt_unresolved');
       need(!oldWriterOpen(execution,entry.name),'external_prior_writer_active');
       if(config.identity.taskId!==identity.taskId
         ||config.completion?.owner?.tasksPath!==path.join(specsDir,feature,'tasks.md'))continue;
-      need(!history.pending&&!['unknown','ready','awaiting_review','pending_review','changes_requested','approved'].includes(history.state.state)
-        &&history.state.reviewInvocation?.result?.reconciliationRequired!==true,'external_prior_attempt_unresolved');
+      need(sameTaskPriorAttemptResolved(history),'external_prior_attempt_unresolved');
       need(!oldWriterOpen(execution,entry.name),'external_prior_writer_active');
     }
     return lease;

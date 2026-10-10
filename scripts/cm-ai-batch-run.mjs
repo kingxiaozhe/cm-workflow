@@ -19,6 +19,7 @@ import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {inspectRunClosure as inspectClosure} from './cm-log-event.mjs';
 import {releaseVerifiedQaResources} from '../runtime/js/cm-ai/qa-resource-release.mjs';
 import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {strictPriorAttemptResolved,sameTaskPriorAttemptResolved} from '../runtime/js/cm-ai/external-run-guard.mjs';
 
 const writer=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
 const key=task=>`${task.feature}/${task.taskId}`;
@@ -70,6 +71,20 @@ export function memberRunHistory(specsDir,runId){
     const state=JSON.parse(fs.readFileSync(path.join(specsDir,'.reviews','.execution',runId,'state.json'),'utf8'));
     const records=state.records;return readRunnerHistory(records,records[0].payload.config,records[0].payload.version);
   }catch{return null;}
+}
+// Whether an ordinary single-task supersede on the member's own worktree would be
+// admitted, by the same entry conditions: reviewed-evidence-supersede takes only a raw
+// blocked, cancelled, unknown or fixture_completed run with no pending effect; the
+// external run guard such a launch takes (strictOnly, when a strict binding exists on
+// the root) skips a non-strict prior run but refuses a strict one that is unknown or
+// holds an unreconciled call, and a same-task prior run still in flight.
+export function memberSupersedeAdmitted(specsDir,runId,history){
+  if(!history?.state||history.pending||!['blocked','cancelled','unknown','fixture_completed'].includes(history.state.state))return false;
+  let records;
+  try{records=JSON.parse(fs.readFileSync(path.join(specsDir,'.reviews','.execution',runId,'state.json'),'utf8')).records;}catch{return false;}
+  const runConfig=records[0]?.payload?.config;if(!runConfig)return false;
+  if(!(runConfig.externalModels||runConfig.executionPolicy))return true;
+  return strictPriorAttemptResolved(runConfig,history,records)&&sameTaskPriorAttemptResolved(history);
 }
 export function createCmAiBatch({configuration,executionFor,logHome,runtime='codex',checkCommands=null,checkTimeoutMs=60000,
   rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,holdRevisions=[],bootstrapKeys=[],memberActions={}}){
@@ -446,17 +461,22 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     prerequisites:Object.freeze(prerequisites),authorizationGranted:false});
   // reconcile_review exists only for external-model or execution-policy runs.
   const batchKind=strict=>strict?'外部模型或执行策略批次':'批次';
-  // Name only exits that accept this member's raw state. Recoverable pendingActions
-  // (develop_redo, abandon_*, reconcile_review) never reach here (parallelRecoveryRequired).
-  // Supersede takes only a raw blocked/cancelled/unknown/fixture_completed run with no
-  // pending effect (reviewed-evidence-supersede.mjs); anything else has no exit today.
+  // Name only exits whose entry conditions accept this member. Recoverable pendingActions
+  // (develop_redo, abandon_*, an available reconcile_review) never reach here
+  // (parallelRecoveryRequired); original-call reconciliation that is not available now
+  // cannot become available later, so it is not offered. Supersede is offered only when
+  // memberSupersedeAdmitted says the supersede check and the external run guard pass.
   function parallelMemberUnresolved(key,status,raw,history){
-    const strict=Boolean(config.externalModels||config.executionPolicy);
-    const supersedable=Boolean(history?.state)&&!history.pending&&['blocked','cancelled','unknown','fixture_completed'].includes(history.state.state);
-    const reconcile=strict&&status.reviewReconciliation?`原调用回执齐全后从批次入口发送 reconcile_review（taskKey ${key}、invocationId ${status.reviewReconciliation.invocationId}）；`:'';
-    const exit=`只读核对 ${key} 原运行的记录、进程与 worktree（${location(key).worktree}）；${reconcile}`
-      +(supersedable?`确认旧宿主与该成员的会话或子进程已停止写入后，取消本批次，还原该任务已改动的代码，用单任务宿主 cm-ai-host.mjs 以该 worktree 为代码根、--supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务`
-        :`批次与单任务宿主目前都没有能处理原始存档状态 ${raw}${history?.pending?`（在途 ${history.pending.kind} effect）`:''} 的操作：supersede 只接受没有在途 effect 的原始 blocked、cancelled、unknown 或 fixture_completed。保留原运行和 worktree，不要取消批次或手改存档，把 rawState 与本 reason 交给维护者处理`);
+    const strict=Boolean(config.externalModels||config.executionPolicy),runId=plans.get(key).identity.runId;
+    const supersedable=memberSupersedeAdmitted(config.specsDir,runId,history);
+    const original=status.reviewReconciliation?`（原调用 invocationId ${status.reviewReconciliation.invocationId}${status.reviewReconciliation.providerThreadId?`、providerThreadId ${status.reviewReconciliation.providerThreadId}`:''}）`:'';
+    const why=!history?.state?'原运行存档无法读取'
+      :history.pending?`原运行仍有在途 ${history.pending.kind} effect`
+      :!['blocked','cancelled','unknown','fixture_completed'].includes(history.state.state)?`supersede 不接受原始状态 ${raw}`
+      :`外部运行守卫会拒绝在这个代码根上新建运行（原严格运行仍为 ${raw} 或有未对账的调用），原调用对账也不可用`;
+    const exit=`只读核对 ${key} 原运行的记录、进程与 worktree（${location(key).worktree}）；`
+      +(supersedable?`确认旧宿主与该成员的会话或子进程已停止写入后，取消本批次，还原该任务已改动的代码，用单任务宿主 cm-ai-host.mjs（不加 --external-models、--execution-optimizations）以该 worktree 为代码根、--supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务`
+        :`批次与单任务宿主目前都没有能处理它的操作：${why}${original}。保留批次、原运行和 worktree，不要取消批次或手改存档，把 rawState 与本 reason 交给维护者处理`);
     return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_parallel_member_unresolved',batchId:config.batchId,
       currentTask:key,identity:status.identity,memberState:status.state,memberCode:status.code??null,pendingAction:status.pendingAction??null,
       rawState:raw,
