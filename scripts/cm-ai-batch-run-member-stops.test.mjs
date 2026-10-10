@@ -22,9 +22,10 @@ test('Q24 an ordinary-batch parallel member stopped at develop_redo recovers thr
 test('an ordinary-batch parallel member whose review grant expired before dispatch redispatches it in its original run',async()=>{
   await batchFixture('parallel-grant-expired');
 });
-// An unresolved stop names only exits that accept the raw state: a raw pending_review
-// (review authorization denied) has no supersede, reconcile or abandon exit.
-test('an unresolved member at raw pending_review is not pointed at supersede, reconcile_review or abandon operations',async()=>{
+// A member whose review authorization was refused (raw pending_review/permission_denied) is not
+// redispatched by the batch and not rescheduled: it names the confirmation (abandon_review) that
+// lets its own run ask for a fresh authorization.
+test('a parallel member whose review authorization was refused stays in its run and names abandon_review',async()=>{
   await batchFixture('parallel-denied');
 });
 // Q26: the batch handoff check closes a cleanup_failed QA command resource whose

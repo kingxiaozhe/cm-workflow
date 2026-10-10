@@ -43,6 +43,7 @@
   "cm-ai-qa-recovery-args.test.mjs": 1,
   "cm-ai-qa-rerun-timeouts.test.mjs": 209,
   "cm-ai-review-drift-precedence.test.mjs": 3,
+  "cm-ai-review-dispatch-exit.test.mjs": 5,
   "cm-ai-review-failure.test.mjs": 291,
   "cm-ai-review-timeout-config.test.mjs": 1,
   "cm-ai-review-timeout.test.mjs": 39,
