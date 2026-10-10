@@ -161,7 +161,18 @@ function main(){
     }
   }
   const answers=plan.answers?path.resolve(base,plan.answers):null;
+  // V7: a re-asked init_confirm needs a NEW decision of the current user in
+  // confirm-reask.json naming the abandoned callId; confirm.json is never reused.
+  const reaskCall=operation==='resume'&&obj(plan.resolution)&&(plan.resolution.discard===true||plan.resolution.abandon===true)
+    &&state.pending?.call?.kind==='init_confirm'?state.pending.call.callId:null;
   const answer=preflightAnswers(kind&&names[kind]?[kind]:[],key=>{
+    if(key==='init_confirm'&&reaskCall){
+      const file=path.join(answers??base,'confirm-reask.json'),value=readJson(file,key);
+      if(value===undefined)stop(2,`confirm_reask_decision_required：作废的约束确认要重新问当前用户，写好新的决定 ${file}（{"decision":"approved|rejected","replaces":"${reaskCall}"}）；旧的 confirm.json 不会沿用`);
+      valid(obj(value)&&Object.keys(value).sort().join(',')==='decision,replaces'&&['approved','rejected'].includes(value.decision)
+        &&value.replaces===reaskCall,`confirm-reask.json 须为本次重问写的新决定，replaces 必须是被作废的 callId ${reaskCall}`);
+      return {decision:value.decision};
+    }
     const file=path.join(answers??base,names[key]),value=readJson(file,key);
     if(value===undefined)stop(2,`步骤 ${operation} 会反问 ${key}，但答案文件不存在: ${file}`);
     return validate(key,value,{project,selection,checkpoint,answers,hostContext:plan.hostContext});
@@ -196,6 +207,7 @@ function main(){
         }
         return {status:'written'};
       }
+      if(row.kind==='init_confirm'&&reaskCall&&row.payload?.recovery?.callId===reaskCall)return null;
       return answer[row.kind]??null;
     }});
 }

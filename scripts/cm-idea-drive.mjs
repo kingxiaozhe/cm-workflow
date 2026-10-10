@@ -82,12 +82,24 @@ function main(){
     if(!reconciling)valid(!fs.existsSync(target),'finish 目标文件已存在');
   }
   const kind=['start','advance'].includes(actualOp)?'idea_interview':actualOp==='finish'?'idea_confirm_save':null;
+  // V7: a re-asked save confirmation needs a NEW decision of the current user, in
+  // a separate file that names the abandoned callId; the earlier confirm-save.json
+  // (bound to the lost call) is never reused.
+  const reaskCall=operation==='resume'&&obj(plan.resolution)&&(plan.resolution.discard===true||plan.resolution.abandon===true)
+    &&state.pending?.call?.kind==='idea_confirm_save'?state.pending.call.callId:null;
   const answers=plan.answers?path.resolve(base,plan.answers):null;
   const answer=preflightAnswers(kind?[kind]:[],key=>{
-    const file=path.join(answers??base,key==='idea_interview'?'interview.json':'confirm-save.json');
+    const name=key==='idea_interview'?'interview.json':reaskCall?'confirm-save-reask.json':'confirm-save.json';
+    const file=path.join(answers??base,name);
     const value=readJson(file,key);
-    if(value===undefined)stop(2,`步骤 ${operation} 会反问 ${key}，但答案文件不存在: ${file}`);
+    if(value===undefined)stop(2,reaskCall?`confirm_reask_decision_required：作废的保存确认要重新问当前用户，写好新的决定 ${file}（{"decision":"approved|rejected","replaces":"${reaskCall}"}）；旧的 confirm-save.json 不会沿用`
+      :`步骤 ${operation} 会反问 ${key}，但答案文件不存在: ${file}`);
     valid(obj(value),'idea answer');
+    if(key==='idea_confirm_save'&&reaskCall){
+      valid(Object.keys(value).sort().join(',')==='decision,replaces'&&['approved','rejected'].includes(value.decision)
+        &&value.replaces===reaskCall,`confirm-save-reask.json 须为本次重问写的新决定，replaces 必须是被作废的 callId ${reaskCall}`);
+      return {decision:value.decision};
+    }
     if(key==='idea_confirm_save')valid(Object.keys(value).join(',')==='decision'
       &&['approved','rejected'].includes(value.decision),'confirm-save.json');
     else if(value.status==='question')valid(Object.keys(value).sort().join(',')==='productType,question,status'
@@ -107,6 +119,6 @@ function main(){
       ...(operation==='finish'?{filename:plan.filename}:{}),
       ...(operation==='prepare_save'?{saveRoot}:{}),
       ...(operation==='resume'?{resolution:plan.resolution??null}:{})},answers:answer,
-    answerFor:row=>answer[row.kind]??null});
+    answerFor:row=>row.kind==='idea_confirm_save'&&reaskCall&&row.payload?.recovery?.callId===reaskCall?null:answer[row.kind]??null});
 }
 main();

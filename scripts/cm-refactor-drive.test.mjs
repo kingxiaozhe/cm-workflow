@@ -75,3 +75,20 @@ test('mutation probes catch skipped answer preflight and dropped resume binding'
   out=g.run('resume',mutant('records.context.configDigest!==digest(config)','false'));
   assert.notEqual(out.status,2,'mutation reached host instead of rejecting resume binding');
 });
+
+// V7 blocker: a lost confirmation asked again is never answered from confirm.json;
+// the driver needs confirm-reask.json naming the key and the new attempt.
+import {createCmRefactorHost} from '../runtime/js/cm-refactor/host.mjs';
+test('re-asked confirmation requires a new decision file bound to key and attempt',async t=>{
+  const f=setup(t);assert.equal(f.run('start').status,0);
+  const lost=await createCmRefactorHost(f.config,{call:async()=>{throw Error('finish confirmation lost');}}).handle({operation:'finish'});
+  assert.equal(lost.stage,'blocked');
+  let out=f.run('finish');assert.equal(out.status,2);assert.match(out.stderr,/confirm_reask_decision_required/);
+  const reask=path.join(f.answers,'confirm-reask.json');
+  write(reask,{replaces:'host/finish-1',attempt:1,finish:'approved'});
+  out=f.run('finish');assert.equal(out.status,2);assert.match(out.stderr,/attempt=2/);
+  write(reask,{replaces:'host/finish-1',attempt:2,finish:'rejected'});
+  out=f.run('finish');assert.equal(out.status,0,out.stderr);
+  // confirm.json still says approved; the new decision (rejected) is the one used.
+  assert.equal(JSON.parse(out.stdout).result.stage,'awaiting_finish');
+});

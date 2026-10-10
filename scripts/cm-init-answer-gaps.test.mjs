@@ -199,3 +199,22 @@ test('notify classifies the new cm-init and cm-idea blocks as stuck',async()=>{
   assert.equal(classifyDriveResult('cm-idea',{result:{stage:'saved',saved:{source:'recovered_write_readback'}}}),'done');
   assert.equal(classifyDriveResult('cm-init',{error:{code:'host_request_failed'}}),'stuck');
 });
+
+test('driver V7: a re-asked init_confirm needs confirm-reask.json naming the abandoned callId; confirm.json is not reused',{timeout:30000},async t=>{
+  const f=fixture(t);fs.writeFileSync(path.join(f.project,'AGENTS.md'),'# Original constraint\n');
+  const respond=message=>message.kind==='init_verify'?{...checks('verified'),constraintChanges:['AGENTS.md']}:reply(message);
+  let c=await client(t,f,respond);await c.request('start');await c.request('advance');await c.request('advance');await c.close();
+  c=await client(t,f,(message,child)=>{setImmediate(()=>child.kill('SIGKILL'));});await c.request('advance');
+  const call=saved(f).pending.call;assert.equal(call.kind,'init_confirm');
+  const answers=path.join(f.dir,'answers');fs.mkdirSync(answers);fs.writeFileSync(path.join(answers,'confirm.json'),JSON.stringify({decision:'approved'}));
+  const drive=()=>{const plan=path.join(f.dir,'plan.json');
+    fs.writeFileSync(plan,JSON.stringify({project:f.project,sessionFile:f.file,mode:'resume',hostContext:'author-a',originalHostContext:'author-a',
+      answers:'answers',resolution:{callId:call.callId,requestDigest:call.requestDigest,abandon:true,evidence:'confirmation lost'}}));
+    return spawnSync(process.execPath,[path.join(root,'scripts/cm-init-drive.mjs'),'--plan',plan,'resume'],{encoding:'utf8',timeout:60000});};
+  let run=drive();assert.equal(run.status,2);assert.match(run.stderr,/confirm_reask_decision_required/);
+  assert.equal(saved(f).abandonedCalls,undefined);
+  fs.writeFileSync(path.join(answers,'confirm-reask.json'),JSON.stringify({decision:'approved',replaces:'other'}));
+  run=drive();assert.equal(run.status,2);assert.match(run.stderr,/replaces/);
+  fs.writeFileSync(path.join(answers,'confirm-reask.json'),JSON.stringify({decision:'rejected',replaces:call.callId}));
+  run=drive();assert.equal(run.status,0,run.stderr);assert.equal(JSON.parse(run.stdout).result.stage,'confirmation_rejected');
+});

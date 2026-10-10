@@ -135,6 +135,13 @@ function validate(kind,value,config,root){
 }
 function answer(row,answers,root){
   const {kind,payload}=row,value=answers[kind];
+  // V7: a re-asked confirmation (attempt > 1) is answered only from the new
+  // decision file bound to that key and attempt, never from confirm.json.
+  if(kind==='refactor_confirm'&&(payload.recovery?.attempt??1)>1){
+    const reask=answers.refactor_confirm_reask;
+    if(!reask||reask.replaces!==payload.recovery.key||reask.attempt!==payload.recovery.attempt||!reask[payload.gate])return null;
+    return {decision:reask[payload.gate]};
+  }
   if(kind==='refactor_confirm')return {decision:value[payload.gate]};
   if(kind==='refactor_review'){
     const chosen=payload.attempt===2?answers.refactor_review_r2??value:value;
@@ -244,6 +251,19 @@ function main(){
     stop(2,'步骤 finish 会反问 refactor_confirm(finish)，但 confirm.json.finish 缺失');
   if(operation==='start'&&answers.refactor_confirm?.g0==='approved'&&!answers.refactor_review)
     stop(2,'步骤 start 会反问 refactor_review，但 review.json 缺失');
+  // A confirmation that will be asked again (lost, or explicitly discarded) needs a
+  // NEW decision of the current user in confirm-reask.json naming key and attempt.
+  const reaskTarget=[...records.effects].find(([key,entry])=>entry.kind==='host'&&entry.input.kind==='refactor_confirm'
+    &&(plan.discard?.key===key||!Object.hasOwn(entry,'result')&&['resume','finish'].includes(operation)));
+  if(reaskTarget){
+    const [key,entry]=reaskTarget,attempt=(entry.attempt??1)+1,file=path.join(answerRoot??'',`confirm-reask.json`);
+    if(!answerRoot||!ownFile(file))stop(2,`confirm_reask_decision_required：${key} 的确认要重新问当前用户，写好新的决定 ${file}（{"replaces":"${key}","attempt":${attempt},"${entry.input.payload.gate}":"approved|rejected"}）；旧的 confirm.json 不会沿用`);
+    const value=readJson(file,'refactor_confirm_reask');
+    valid(object(value)&&value.replaces===key&&value.attempt===attempt&&['approved','rejected'].includes(value[entry.input.payload.gate])
+      &&Object.keys(value).every(name=>['replaces','attempt','g0','rulebook','rulebook_revision','finish'].includes(name)),
+    `confirm-reask.json 须为本次重问写的新决定：replaces=${key}、attempt=${attempt}、${entry.input.payload.gate} 为 approved|rejected`);
+    answers.refactor_confirm_reask=value;
+  }
   stderr(`预检通过：${operation}`);
   driveHost({host:HOST,args:['serve','--config',configPath],cwd:config.project,operation,
     request:operation==='prepare_judge_revision'?{judgeRevision:plan.judgeRevision}:plan.discard?{discard:plan.discard}:{},answers,paths:{},

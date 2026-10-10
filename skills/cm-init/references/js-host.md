@@ -36,7 +36,7 @@ result填原实际完整返回；恢复标识来自原请求`payload.recovery`�
 {"requestId":"abandon-1","operation":"resume","resolution":{"callId":"status原值","requestDigest":"status原值","abandon":true,"evidence":"原调用为何找不回（单行原因）"}}
 ```
 
-discard只针对recorded且被拒的应答，abandon只针对unknown；适用init_analyze、init_generate、init_verify、init_confirm、init_review。会话记录追加只增的abandonedCalls（只存evidence摘要），每种kind每个会话最多2次（`idea_session_abandon_limit`）。init_confirm作废后重新问当前用户；被作废callId上的迟到答复一律拒收（`idea_session_call_abandoned`），不沿用。init_review重问等于再做一次独立审查，原因写进evidence。伪造、重复或超上限的记录重开时报`idea_session_abandon_record_invalid`。init_write报`init_write_recovery_required`或`idea_save_outcome_unknown`，走下一节。status的guidance字段给出下一步。
+discard只针对recorded且被拒的应答，abandon只针对unknown；适用init_analyze、init_generate、init_verify、init_confirm、init_review。会话记录追加只增的abandonedCalls（只存evidence摘要），每种kind每个会话最多2次（`idea_session_abandon_limit`）。init_confirm作废后重新问当前用户；驾驶员重问init_confirm时不读旧的confirm.json，须有本次新决定`answers/confirm-reask.json`（`{"decision":"approved|rejected","replaces":"被作废的callId"}`），否则报`confirm_reask_decision_required`；被作废callId上的迟到答复一律拒收（`idea_session_call_abandoned`），不沿用。init_review重问等于再做一次独立审查，原因写进evidence。伪造、重复或超上限的记录重开时报`idea_session_abandon_record_invalid`。init_write报`init_write_recovery_required`或`idea_save_outcome_unknown`，走下一节。status的guidance字段给出下一步。
 
 不带`--session-file`（内存模式）时，失败的一步没有记录，可在同一进程再发一次同样的start/advance重问，每种最多2次（`init_retry_limit`）；宿主退出后内存草稿全部丢失，只能从头开始，需要可恢复请改用`--session-file`。
 
