@@ -9,19 +9,20 @@ import path from 'node:path';
 import {openControlRun} from './cm-ai-run.mjs';
 import {gapFixture,gapExecution,identity,records,added} from './cm-ai-answer-gap-fixture.mjs';
 
-const docFixture=(t,name)=>{
+// paths: the documentation paths (README.md first, always written by {write}).
+const docFixture=(t,name,paths=['README.md'])=>{
   const f=gapFixture(t,name);
   fs.writeFileSync(path.join(f.codeProject,'README.md'),'# Before\n');
-  f.calls.documentation=0;
+  f.calls.documentation=0;f.docPaths=paths;
   return f;
 };
 const docDefinition=f=>({version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
-  identity:identity(1),scope:['a.mjs','README.md'],requirements:['requirements.md']});
+  identity:identity(1),scope:['a.mjs',...f.docPaths],requirements:['requirements.md']});
 // sync: one item per documentation_sync call: 'hang' never answers, {write}
 // writes README.md (or {other} writes a.mjs) and answers {status} (default completed).
 function docExecution(f,{developer=[],sync=[],verdicts=[]}={}){
   const queue=[...sync];
-  return {...gapExecution(f,{developer,verdicts}),documentationSync:{paths:['README.md'],run:async(request,signal)=>{
+  return {...gapExecution(f,{developer,verdicts}),documentationSync:{paths:f.docPaths,run:async(request,signal)=>{
     f.calls.documentation++;
     const item=queue.shift();
     if(item===undefined)throw Object.assign(new Error('unexpected documentation call'),{code:'unexpected_documentation_call'});
@@ -166,4 +167,34 @@ test('older journals keep their projection: a develop that failed out_of_scope w
   const [status]=await docSession(f,'resume',gapExecution(f),[['status',1]]);
   assert.deepEqual([status.state,status.code,status.pendingAction],['unknown','out_of_scope','reconcile'],JSON.stringify(status));
   assert.deepEqual(records(f),before);
+});
+
+// Q16 (review r1 #3): the record accepts every documentation path the workflow
+// configuration accepts (up to 256), so a large list never ends in store_failure.
+// Documentation paths sit inside the task scope, itself capped at 256 paths
+// (review-package FILE_COUNT), so with a.mjs and the AGENTS.md Learning path a run reaches 254; the record's own
+// 256 bound is checked on replay below.
+for(const count of [65,254])
+test(`documentation-sync-started holds ${count} documentation paths`,async t=>{
+  const paths=['README.md',...Array.from({length:count-1},(_,index)=>`docs/d${String(index).padStart(3,'0')}.md`)];
+  const f=docFixture(t,`doc-many-${count}`,paths);
+  fs.mkdirSync(path.join(f.codeProject,'docs'));
+  const [result]=await docSession(f,'create',docExecution(f,{developer:['delivered\n'],sync:[{write:'# After\n'}]}),[['advance',1]]);
+  assert.notEqual(result.code,'store_failure',JSON.stringify(result));
+  const started=records(f).find(row=>row.payload.type==='documentation-sync-started');
+  assert.equal(started.payload.documents.length,count);
+  const checkpoint=records(f).find(row=>row.payload.type==='effect-checkpoint').payload.checkpoint;
+  assert.equal(checkpoint.state,'awaiting_review',JSON.stringify([checkpoint.code,checkpoint.reason]));
+});
+
+test('the documentation record accepts 256 documentation paths and refuses 257',async()=>{
+  const {validDocumentationStates,MAX_DOCUMENTATION_PATHS}=await import('../runtime/js/cm-ai/durable-runner-state.mjs');
+  const {validateHostWorkflowConfiguration}=await import('../runtime/js/cm-ai/host-workflow-capabilities.mjs');
+  const docs=count=>Array.from({length:count},(_,i)=>`docs/d${String(i).padStart(3,'0')}.md`);
+  // Same bound as the workflow configuration.
+  assert.equal(MAX_DOCUMENTATION_PATHS,256);
+  validateHostWorkflowConfiguration({qa:null,documentationPaths:docs(256),applicableAgentFiles:[]});
+  assert.throws(()=>validateHostWorkflowConfiguration({qa:null,documentationPaths:docs(257),applicableAgentFiles:[]}));
+  assert.equal(validDocumentationStates(docs(256).map(p=>({path:p,sha256:null})),docs(257)).length,256);
+  assert.throws(()=>validDocumentationStates(docs(257).map(p=>({path:p,sha256:null})),docs(257)),{code:'runner_documentation'});
 });

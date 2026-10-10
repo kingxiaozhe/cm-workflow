@@ -356,6 +356,21 @@ export function developDispatchBasis(s,config,recorded=0){
 export const DOCUMENTATION_SYNC_CODES=Object.freeze(['documentation_sync_answer_missing','documentation_sync_answer_invalid',
   'documentation_sync_answer_blocked','documentation_sync_out_of_scope']);
 export const MAX_DOCUMENTATION_SYNC_RETRIES=2;
+// The workflow configuration accepts up to 256 documentation paths
+// (host-workflow-capabilities.mjs); the record accepts every one of them.
+export const MAX_DOCUMENTATION_PATHS=256;
+// The documentation paths and their sha256 (null: absent) a record names: in
+// the task scope, distinct, 1..MAX_DOCUMENTATION_PATHS of them.
+export function validDocumentationStates(documents,scope){
+  need(Array.isArray(documents)&&documents.length>0&&documents.length<=MAX_DOCUMENTATION_PATHS,'runner_documentation');
+  const seen=new Set();
+  for(const item of documents){
+    shape(item,['path','sha256']);
+    need(typeof item.path==='string'&&scope.includes(item.path)&&!seen.has(item.path),'runner_documentation');
+    seen.add(item.path);if(item.sha256!==null)hex(item.sha256);
+  }
+  return documents;
+}
 export const DOCUMENTATION_SYNC_LIMIT_CODE='documentation_sync_retry_limit';
 export const documentationSyncSource=entry=>{
   const result=entry.result,call=result.calls?.at(-1);
@@ -1414,13 +1429,7 @@ export function readRunnerHistory(raw,config,version=1) {
         &&!controls.cancelled&&!controls.workflowError,'runner_documentation');
       text(p.effectiveModel);hex(p.othersDigest);json(p.result,256*1024);
       need(p.result!==null&&typeof p.result==='object'&&!Array.isArray(p.result),'runner_documentation');
-      need(Array.isArray(p.documents)&&p.documents.length>0&&p.documents.length<=64,'runner_documentation');
-      const seen=new Set();
-      for(const item of p.documents){
-        shape(item,['path','sha256']);
-        need(typeof item.path==='string'&&config.scope.includes(item.path)&&!seen.has(item.path),'runner_documentation');
-        seen.add(item.path);if(item.sha256!==null)hex(item.sha256);
-      }
+      validDocumentationStates(p.documents,config.scope);
       // A documentation-only redo carries exactly the answer its source journaled.
       if(beforeIntent.state==='blocked'&&DOCUMENTATION_SYNC_CODES.includes(beforeIntent.code)){
         const source=documentationRecords.get(beforeIntent.calls.at(-1)?.documentationSync);
