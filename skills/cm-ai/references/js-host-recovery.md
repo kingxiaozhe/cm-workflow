@@ -50,9 +50,9 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
 ## 应答缺失、无效或迟到
 
 会话没给出可用应答时，宿主不再停在 `unknown/reconcile`，而是给出可重试的阻断；旧运行恢复后按原 journal 同样投影，原记录不改写，新记录只追加。
-每种出口每运行最多 2 次；用满后同样的卡点显示为明确的上限阻断（`check_answer_retry_limit`、`complete_recheck_limit`、`develop_redo_limit`，`pendingAction=none`），reason 写明剩下的出口：查清根因后用 `--supersede-reviewed-evidence` 新建运行，本运行留在盘上的改动需还原或加 `--accept-superseded-code-drift`。上限阻断由 journal 推导，不另写记录。所有提问都有应答期限（`CM_HOST_ANSWER_TIMEOUT_MINUTES`，见 `docs/user-guide.md`），到期后才到的应答一律拒收为 `host_response_late`。
+每种出口每运行最多 2 次；用满后同样的卡点显示为明确的上限阻断（`check_answer_retry_limit`、`complete_recheck_limit`、`develop_redo_limit`、`documentation_sync_retry_limit`，`pendingAction=none`），reason 写明剩下的出口：查清根因后用 `--supersede-reviewed-evidence` 新建运行，本运行留在盘上的改动需还原或加 `--accept-superseded-code-drift`。上限阻断由 journal 推导，不另写记录。所有提问都有应答期限（`CM_HOST_ANSWER_TIMEOUT_MINUTES`，见 `docs/user-guide.md`），到期后才到的应答一律拒收为 `host_response_late`。
 
-单任务与批次驾驶员按宿主将显示的投影状态（而不是原始回放状态）决定预检哪一轮的开发答案：`develop_call_timeout`、`develop_answer_invalid`、`develop_dispatch_failed` 预检本轮 `develop*.json`；`check_answer_*` 本轮不再问开发。第 1 轮恢复且带首轮审查授权（单任务 `--allow-review-attempt 1`、批次 `--allow-review 任务:1`）时，同一次 `advance` 可能在审查要求修改后进入第 2 轮，驾驶员也预检 `develop-a2.json`；没有这份答案时，单任务驾驶员给宿主加 `--hold-revision`、批次给该任务加 `--hold-revision`，任务在审查后停在 `changes_requested`（`revision_answer_required`），不发起答不上的第 2 轮开发。`develop_redo` 由驾驶员 PLAN 的 `mode:resume`、`permissions:["--allow-develop-redo"]` 与 `reason` 发出。
+单任务与批次驾驶员按宿主将显示的投影状态（而不是原始回放状态）决定预检哪一轮的开发答案：`develop_call_timeout`、`develop_answer_invalid`、`develop_dispatch_failed` 预检本轮 `develop*.json`；`check_answer_*` 与 `documentation_sync_*` 本轮不再问开发（后者只预检 `documentation-sync.json`）。第 1 轮恢复且带首轮审查授权（单任务 `--allow-review-attempt 1`、批次 `--allow-review 任务:1`）时，同一次 `advance` 可能在审查要求修改后进入第 2 轮，驾驶员也预检 `develop-a2.json`；没有这份答案时，单任务驾驶员给宿主加 `--hold-revision`、批次给该任务加 `--hold-revision`，任务在审查后停在 `changes_requested`（`revision_answer_required`），不发起答不上的第 2 轮开发。`develop_redo` 由驾驶员 PLAN 的 `mode:resume`、`permissions:["--allow-develop-redo"]` 与 `reason` 发出。
 
 - `blocked/check_answer_missing`、`blocked/check_answer_invalid`（`pendingAction=resume`）：开发已交付并写回 Learning，之后的检查或验证预检超时、断开、迟到或答复格式不合格（旧记录 `unknown/call_timeout`、`execution_error`、`invalid_input` 等，最后一次开发调用 `succeeded`）。
   先确认上一次检查命令已停止，再 `--mode resume` 后 `advance`：宿主追加 `develop-recheck` 记录，用新 effect id 只重跑检查、验证预检、handoff 与审查包，沿用原交付的 Learning 输入，不重发开发、不占开发调用与 effect 名额，重新划定检查新建文件。
@@ -66,6 +66,11 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
   修好 reason 指出的宿主环境后 `--mode resume` 再 `advance`：宿主追加 `develop-dispatch-retry` 记录，用新 effect id 重发本轮开发，不占名额，每运行最多 2 次。
   每次重发前（含写下记录后宿主退出、恢复再发）都核对代码根仍等于本轮起点（第 1 轮为任务基线，第 2 轮为已审第 1 轮包）；起点无法核对或代码根已变，改走上一条 `develop_redo` 确认重发，派发时拒绝为 `develop_dispatch_root_changed`。用满 2 次后同样改走 `develop_redo`。
   旧版本把同样的失败记成 `unknown/execution_error`（形状同 api-native-reading-T-006 的旧记录），同样按上述起点核对处理。
+- 文档同步（最后一个任务的开发里、审查之前）失败，开发应答已拿到：新版本在问 `documentation_sync` 之前追加 `documentation-sync-started` 记录（开发应答、文档路径各自的 sha256、文档路径以外整个代码根的摘要），失败后只重发文档同步，复用这份开发应答，**不重发开发**。盘上的开发与文档改动保留，审查包仍对照运行创建时的任务基线，经检查与独立审查；不占调用与 effect 名额，每运行最多 2 次（四种合计），用满为 `documentation_sync_retry_limit`。重发前宿主都核对：文档路径以外的文件必须与文档同步开始时完全一致，否则拒绝为 `documentation_sync_out_of_scope`（不写记录）。
+  - `blocked/documentation_sync_answer_missing`（`pendingAction=resume`）：文档同步超时、断开或迟到被拒（reason 带原始码，如 `call_timeout`），且**只比对文档路径**仍与开始时一致：`advance` 追加 `documentation-sync-retry`（`basis: unchanged`）后重发。文档路径已变（没应答的写入方可能仍在写）时 `pendingAction=develop_redo`：先确认会话已停止修改文档，`--mode resume --allow-develop-redo` 发送 `develop_redo`（写 `documentation-sync-retry`，`basis: confirmed`），再 `advance`；advance 本身不会重发。
+  - `blocked/documentation_sync_answer_invalid`、`blocked/documentation_sync_answer_blocked`（`pendingAction=resume`）：会话已应答（格式不合格，或答 blocked），写入方已停；blocked 时先按会话说明补齐或修正文档，再 `advance`（`basis: answered`）。
+  - `blocked/documentation_sync_out_of_scope`（`pendingAction=resume`）：文档同步答 completed，但改了文档路径以外的文件（reason 列出路径）。先把这些文件还原到文档同步开始时的内容（确需修改先走规格变更），再 `advance`；没还原时 `advance` 被拒为 `documentation_sync_out_of_scope`。
+  - 旧版本没有 `documentation-sync-started` 记录，原来的 `unknown/out_of_scope`、`unknown/execution_error` 等照原样回放，不重新判定。宿主在文档同步中途退出仍按「放弃审查调用与 effect」登记中断（`develop_interrupted`，会重发开发）。
 - `blocked/complete_recheck_failed`（`pendingAction=complete`）：完成前复查没拿到可用应答或宿主在写提交意图前出错（`unknown/call_timeout`、`execution_error` 等，后者先按 stderr 的 diagnostic 修好原因，如缺失的 handoff），且 task-commit-intent 尚未写入、tasks.md 未改动。`--mode resume` 后 `complete`（或 `advance`）：宿主追加 `complete-recheck` 记录，用新 effect id 重新复查并完成，不重新开发或审查。已写 task-commit-intent 的仍按「放弃审查调用与 effect」处理。
 
 ## 重试名额与完成前复查
