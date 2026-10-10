@@ -1,0 +1,2 @@
+# SHA-256 file digest in a policy-compat table, flagged by generic-api-key because the key name contains "api"; not a secret.
+e1f2bd916119c3f5ec15045ee933ab7dc9cc4b83:runtime/js/policy-binding-compat.mjs:generic-api-key:22

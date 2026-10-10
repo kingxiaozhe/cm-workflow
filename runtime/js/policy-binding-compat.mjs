@@ -19,7 +19,7 @@ export const LEGACY_INIT_POLICIES=Object.freeze([Object.freeze({since:'0b3040e',
   files:Object.freeze({
     'skills/cm-init/SKILL.md':'4b69e2a2fa14676e3aa105729ba3dccc9f54053b2876cad0af1bf66e344bd7ec',
     'skills/cm-init/references/js-host.md':'da04c4bc6d9c5a40b99a8dd6c2c44e9c719663b4032bbf2b0ef0ae4c53948e8a',
-    'templates/rules/backend-api.md':'4c2b8d85358c81081ab3d039b23a5fb9cb8640f069b222253d612bb48bafdc7e',
+    'templates/rules/backend-api.md':'4c2b8d85358c81081ab3d039b23a5fb9cb8640f069b222253d612bb48bafdc7e', // gitleaks:allow SHA-256 文件摘要，不是密钥
     'templates/rules/coding-style.md':'74b789f8aa44f2ec9643ea85d05705c702ceb278f7cc10731ca5fe78320af796',
     'templates/rules/database.md':'b7c69d7b29870db0f725c0bf80c1d1b989f0c315a5d8f0fb9d311008922b6926',
     'templates/rules/finance.md':'faeac9aedc4aec79161940ae422f56c65872e63c5909642a3fe27714e5646e9c',
