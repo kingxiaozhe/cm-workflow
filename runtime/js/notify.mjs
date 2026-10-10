@@ -11,6 +11,7 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {createHash,randomUUID} from 'node:crypto';
+import {readRegularFileSync} from './notify-safe-read.mjs';
 
 export const NOTIFY_LIMITS=Object.freeze({sameKeyMs:6*3600*1000,perMinute:4,perDay:150,
   commandTimeoutMs:15000,titleChars:60,bodyChars:500,defaultWaitMinutes:10,defaultCheckWaitMinutes:45,
@@ -69,6 +70,14 @@ export function parseNotifyConfig(raw){
   return {config:{...config,text:text.text}};
 }
 
+// The runtime reads notify.json through the same safe boundary as /cm:notify
+// (readRegularFileSync in notify-safe-read.mjs, a side-effect-free twin of the
+// sender's reader; a drift test keeps the two identical): never through a
+// symlink, only a regular file of at most 64 KiB, opened without blocking (a
+// FIFO is refused, never waited on), and the opened handle must be the checked
+// file. Still synchronous and never throws.
+const UNSAFE_READ={permission:'not_regular_file',too_large:'too_large'};
+
 // null = feature off. Under `node --test` only an explicit CM_WORKFLOW_HOME
 // enables it, so a test suite never reaches the user's real configuration.
 // An invalid file is reported in notify.log only, never on workflow output.
@@ -76,7 +85,8 @@ export function readNotifyConfig(env=process.env){
   if(env.NODE_TEST_CONTEXT&&!env.CM_WORKFLOW_HOME)return null;
   const file=path.join(notifyHome(env),'notify.json');
   let raw;
-  try{raw=fs.readFileSync(file,'utf8');}catch(error){if(error.code!=='ENOENT')warn(env,`unreadable_${error.code??'error'}`);return null;}
+  try{raw=readRegularFileSync(file,'notify.json',{bytes:true}).toString('utf8');}
+  catch(error){if(error?.state!=='missing')warn(env,`unreadable_${UNSAFE_READ[error?.reason]??'error'}`);return null;}
   const parsed=parseNotifyConfig(raw);
   if(parsed.reason){warn(env,parsed.reason);return null;}
   if(parsed.textReason)warnOnce(env,'text',`default_text text_config ${parsed.textReason}`);
