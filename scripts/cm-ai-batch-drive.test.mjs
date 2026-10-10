@@ -389,11 +389,12 @@ test('Q24 batch driver forwards develop_redo to the stopped member, then advance
   assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 42;\n');
 });
 
-// Review round 1 (major): in a strict batch a terminal parallel member is rescheduled
+// Review round 1 (major): in a strict batch (and, batch 4, an ordinary one) a terminal parallel member is rescheduled
 // into a serial second generation. The host stops at batch_member_rescheduled; the next
 // resume advance preflights the gen-2 attempt-1 answer (the finished gen-1 run would
 // have yielded none) and the batch continues without a host_close mid-run.
-test('strict batch driver preflights a rescheduled second generation before it is developed',t=>{
+for(const [label,strict] of [['strict',true],['ordinary',false]])
+test(`${label} batch driver preflights a rescheduled second generation before it is developed`,t=>{
   const f=fixture(t,3);
   const bundlePath=path.join(f.root,'batch.json'),bundle=JSON.parse(fs.readFileSync(bundlePath,'utf8'));
   bundle.batch.parallel=[['1.work/T-001','1.work/T-002']];
@@ -413,7 +414,7 @@ test('strict batch driver preflights a rescheduled second generation before it i
   answer('T-003','target3','export const value = 3;\n');
   const checks=Object.fromEntries(['T-001','T-002','T-003'].map((id,n)=>[`1.work/${id}`,
     [{id:'syntax',command:[process.execPath,'--check',n===0?'target.mjs':`target${n+1}.mjs`]}]]));
-  const permissions=['--allow-qa','--execution-optimizations',...['T-001','T-002','T-003'].flatMap(id=>['--allow-review',`1.work/${id}:1`])];
+  const permissions=['--allow-qa',...(strict?['--execution-optimizations']:[]),...['T-001','T-002','T-003'].flatMap(id=>['--allow-review',`1.work/${id}:1`])];
   const first=f.drive(f.plan({permissions,checks}),'advance');assert.equal(first.status,0,first.stderr);
   const stopped=JSON.parse(first.stdout).result;
   assert.equal(stopped.code,'batch_member_rescheduled',first.stdout+first.stderr);assert.deepEqual(stopped.rescheduled,['1.work/T-002']);

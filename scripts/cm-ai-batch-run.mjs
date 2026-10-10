@@ -407,7 +407,6 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       const result=await mergeMember(row);if(result)return result;
     }
     let waiting=null,rejected=null,recoverable=null,unresolved=null;const rescheduled=[];
-    const strict=Boolean(config.externalModels||config.executionPolicy);
     for(const [index,result] of results.entries()){
       if(result.status==='rejected'){rejected??=result.reason;continue;}
       const status=result.value;if(!status)continue;
@@ -418,15 +417,17 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         ||status.state==='pending_review'&&status.code!==null&&!reviewRetryable(status);
       if(!terminal){waiting??=status;continue;}
       const key=pending[index];
-      // Q25: an external-model or execution-policy member that can still be resolved
-      // in its own run (original-invocation receipts, interrupted effect) keeps its
-      // worktree and stops with the batch operation named; any other terminal member
-      // is rescheduled serially exactly like an ordinary batch (it used to wait forever).
-      if(strict&&IN_RUN_ACTIONS.has(status.pendingAction)){recoverable??={key,status};continue;}
-      const history=strict?memberRunHistory(config.specsDir,plans.get(key).identity.runId):null;
-      if(strict&&!memberRescheduleAllowed(status,history)){
+      // Q25: a member that can still be resolved in its own run (original-invocation
+      // receipts, interrupted effect, a redo awaiting stop confirmation) keeps its
+      // worktree and stops with the batch operation named; an unconfirmed one stays
+      // in its run with an explicit stop; only a raw checkpointed blocked terminal is
+      // rescheduled serially. Ordinary batches follow the same rules (they used to
+      // reschedule every terminal, unknown included, and develop gen 2 at once).
+      if(IN_RUN_ACTIONS.has(status.pendingAction)){recoverable??={key,status};continue;}
+      const history=memberRunHistory(config.specsDir,plans.get(key).identity.runId);
+      if(!memberRescheduleAllowed(status,history)){
         unresolved??={key,status,raw:history?.state?`${history.state.state}/${history.state.code??history.state.state}`:'unreadable'};continue;}
-      if(strict)rescheduled.push(key);
+      rescheduled.push(key);
       record('batch_member_blocked',{from_key:key,code:status.code??status.state,
         reason:status.blockedReason??status.reason??status.code??status.state,...location(key),generation:2});
     }
@@ -443,14 +444,17 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   }
   const stopGuidance=(summary,nextStep,prerequisites)=>Object.freeze({summary,nextStep,recoveryOperation:null,
     prerequisites:Object.freeze(prerequisites),authorizationGranted:false});
+  // reconcile_review exists only for external-model or execution-policy runs.
+  const batchKind=strict=>strict?'外部模型或执行策略批次':'批次';
   function parallelMemberUnresolved(key,status,raw){
-    const exit=`只读核对 ${key} 原运行的记录、进程与 worktree；有原调用回执时从批次入口发送 reconcile_review（taskKey ${key}、invocationId）；`
+    const strict=Boolean(config.externalModels||config.executionPolicy);
+    const exit=`只读核对 ${key} 原运行的记录、进程与 worktree；${strict?`有原调用回执时从批次入口发送 reconcile_review（taskKey ${key}、invocationId）；`:''}`
       +`状态出现 abandon_effect、abandon_review 等可恢复动作时，关闭批次宿主、带对应 --allow-… ${key} 重新启动并发送同名批次操作；`
       +`都没有时只能取消本批次，还原该任务已改动的代码后，用单任务宿主 cm-ai-host.mjs 以 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务`;
     return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_parallel_member_unresolved',batchId:config.batchId,
       currentTask:key,identity:status.identity,memberState:status.state,memberCode:status.code??null,pendingAction:status.pendingAction??null,
       rawState:raw,
-      reason:`外部模型或执行策略批次的并行成员 ${key} 停在 ${status.state}/${status.code??status.state}（原始存档状态 ${raw}），结果尚未确认、写入方未证明已停或审查尚未终结，不改排串行（改排会换 runId、从 attempt 1 重派，绕过原调用对账与写入方停止证明）。出口：${exit}。`,
+      reason:`${batchKind(strict)}的并行成员 ${key} 停在 ${status.state}/${status.code??status.state}（原始存档状态 ${raw}），结果尚未确认、写入方未证明已停或审查尚未终结，不改排串行（改排会换 runId、从 attempt 1 重派，绕过原调用对账与写入方停止证明）。出口：${exit}。`,
       guidance:stopGuidance('并行成员结果未确认，批次不会自动改排或重派。',`${exit}。`,
         ['不新建第二代运行，不删除该成员 worktree','先确认旧宿主与该成员的会话或子进程已停止写入'])});
   }
@@ -458,7 +462,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const list=keys.join('、');
     return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_member_rescheduled',batchId:config.batchId,
       currentTask:keys[0],rescheduled:Object.freeze([...keys]),
-      reason:`并行成员 ${list} 已在 blocked/failed 终态存档，已按普通批次改排为串行第二代（新运行、从 attempt 1 开始，WIP 留在原分支）。本次 advance 到此为止，不在同一次里开发第二代；下一次 advance 先预检第二代的开发答案再开发。`,
+      reason:`并行成员 ${list} 已在 blocked/failed 终态存档，已改排为串行第二代（新运行、从 attempt 1 开始，WIP 留在原分支）。本次 advance 到此为止，不在同一次里开发第二代；下一次 advance 先预检第二代的开发答案再开发。`,
       guidance:stopGuidance('并行成员已改排为串行第二代，等待下一次 advance。',
         `按 WIP 分支与 reason 准备 ${list} 第二代的开发答案（answers/<feature>/<task>/develop.json，从第 1 轮开始），再从批次入口 advance。`,
         ['第二代是新运行，旧运行记录与 WIP 分支保留','开发与审查仍需原合同授权'])});
@@ -470,7 +474,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       :`关闭批次宿主，带 ${grant.flag} ${key} 用同一批次配置重新启动，发送批次操作 ${action}（taskKey ${key}、单行 reason）`;
     return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_parallel_member_recovery_required',batchId:config.batchId,
       currentTask:key,identity:status.identity,memberState:status.state,memberCode:status.code??null,pendingAction:action,
-      reason:`外部模型或执行策略批次的并行成员 ${key} 停在 ${status.state}/${status.code??status.state}，可在它自己的运行里恢复，所以不改排串行（改排会丢掉原调用回执或中断记录）。出口：${exit}；之后 advance 继续本批次。`,
+      reason:`${batchKind(Boolean(config.externalModels||config.executionPolicy))}的并行成员 ${key} 停在 ${status.state}/${status.code??status.state}，可在它自己的运行里恢复，所以不改排串行（改排会丢掉原调用回执或中断记录）。出口：${exit}；之后 advance 继续本批次。`,
       guidance:Object.freeze({summary:'并行成员停在可在原运行内恢复的状态，批次不会自动改排。',nextStep:`${exit}；之后 advance 继续本批次。`,
         recoveryOperation:action,prerequisites:Object.freeze(['先确认旧宿主与该成员的会话或子进程已停止写入','恢复只转给该成员运行，不跨成员']),authorizationGranted:false})});
   }
