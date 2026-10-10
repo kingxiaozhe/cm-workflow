@@ -19,7 +19,7 @@ import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
   MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,effectSlotFree,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
   reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted,
-  MAX_REVIEW_REDISPATCHES,REVIEW_RETRY_CODES,reviewRedispatchCount,reviewRedispatchable,reviewRedispatchExhausted,REVIEW_REDISPATCH_LIMIT_CODE,reviewRedispatchLimitReason,reviewAbandonRefusal,
+  MAX_REVIEW_REDISPATCHES,REVIEW_RETRY_CODES,reviewRedispatchCount,reviewRedispatchable,reviewRedispatchExhausted,REVIEW_REDISPATCH_LIMIT_CODE,reviewRedispatchLimitReason,reviewRedispatchStopReason,reviewAbandonRefusal,
   completionBlockCount,completionRetriesExhausted,supersededReviewPayload,bootstrapReviewRecoverable,protectedDevelopScope,protectedScopeBlockReason,
   developTimeoutBasis,developTimeoutEffect,developTimeoutState,DEVELOP_CALL_TIMEOUT_REASON,
   developAnswerInvalidEffect,developAnswerRetryable,developAnswerInvalidReason,
@@ -342,7 +342,7 @@ export function createTaskRunner(options) {
     return !(metadata.externalModels||metadata.executionPolicy)&&invocationMode&&store&&!busy&&!poisoned&&state==='unknown'&&!restored?.pending
       &&abandonableReviewResult({state,attempt,cache:[...cache.values()],calls,reviewInvocation},reviewers[0].contexts[attempt-1],reviewRedispatchRecords());
   }
-  // V5 (A34): review-redispatch records of this round (written by advance).
+  // V5 (A34): review-redispatch records of this round (written by abandon_review).
   function reviewRedispatchRecords(){
     return journal?.filter(row=>row.payload.type==='review-redispatch'&&row.payload.attempt===attempt).length??0;
   }
@@ -510,10 +510,12 @@ export function createTaskRunner(options) {
     }
     if(!busy&&!poisoned&&bootstrapReviewRecoverable(frame(),restored?.pending??null,metadata.bootstrap))
       current=freeze({...current,bootstrapReviewRecovery:true});
-    // V5: a spent retryable review block with a no-result redispatch left reads
-    // as pending_review (advance journals review-redispatch); a fully spent
-    // round is an explicit limit block.
-    if(current.state==='blocked'&&reviewRedispatchLive())current=freeze({...current,state:'pending_review'});
+    // V5: a spent retryable review block with a no-result redispatch left stays
+    // blocked until the operator confirms the original reviewer stopped
+    // (abandon_review journals review-redispatch); a fully spent round is an
+    // explicit limit block.
+    if(current.state==='blocked'&&reviewRedispatchLive())
+      current=freeze({...current,reviewRedispatchStopRequired:true,reason:reviewRedispatchStopReason(current.code)});
     else if(current.state==='blocked'&&reviewRedispatchSpent())
       current=freeze({...current,code:REVIEW_REDISPATCH_LIMIT_CODE,reason:reviewRedispatchLimitReason(current.code)});
     // Status only; never part of a cached result or checkpoint.
@@ -1303,7 +1305,7 @@ export function createTaskRunner(options) {
   }
   const limitDue=()=>retryLimitDue()?recordRetryLimit:completionLimitDue()?recordCompletionLimit:null;
   function executeEffect(raw) {
-    let v,timeoutBasis=null,answerRetry=false,reviewRedispatch=false,recheck=null,completeSource=null,dispatchBasis=null;
+    let v,timeoutBasis=null,answerRetry=false,recheck=null,completeSource=null,dispatchBasis=null;
     try {
       need(!poisoned,'store_failure');v=json(raw);
       shape(v,['version','id','identity','kind',...(Object.hasOwn(v,'learningInput')?['learningInput']:[])]);id(v.id);validIdentity(v.identity);
@@ -1340,9 +1342,7 @@ export function createTaskRunner(options) {
         if(state==='blocked')timeoutBasis=null;
       }
       answerRetry=v.kind==='develop'&&state==='blocked'&&code==='failed'&&answerRetryable();
-      // V5 (A34): a spent retryable review block with a no-result redispatch left.
-      reviewRedispatch=v.kind==='review'&&state==='blocked'&&reviewRedispatchLive();
-      need(timeoutBasis!==null||answerRetry||reviewRedispatch||recheck!==null||completeSource!==null||dispatchBasis!==null
+      need(timeoutBasis!==null||answerRetry||recheck!==null||completeSource!==null||dispatchBasis!==null
         ||stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(effectSlotFree(v.kind,[...cache.values()],calls),'limit_exceeded');
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
@@ -1375,12 +1375,6 @@ export function createTaskRunner(options) {
       try{persist('develop-answer-retry',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId});}
       catch{return Promise.resolve(poison());}
       halt('blocked','develop_answer_invalid',developAnswerInvalidReason(calls.at(-1).failureResult));publication=privateStatus();
-    }
-    if(reviewRedispatch){
-      try{persist('review-redispatch',{effectId:[...cache.values()].at(-1).effect.id,
-        invocationId:reviewInvocation.registration.grant.invocationId,attempt,code});}
-      catch{return Promise.resolve(poison());}
-      state='pending_review';publication=privateStatus();
     }
     if(v.kind==='develop'&&retryLimitDue()){try{return Promise.resolve(recordRetryLimit());}catch{return Promise.resolve(poison());}}
     if(v.kind==='complete'&&completionLimitDue()){try{return Promise.resolve(recordCompletionLimit());}catch{return Promise.resolve(poison());}}
@@ -1589,6 +1583,18 @@ export function createTaskRunner(options) {
   const abandonReview=raw=>{
     try{
       need(!(metadata.externalModels||metadata.executionPolicy),'external_review_reconciliation_required');
+      // V5 (A34): the operator confirms the spent block's reviewer stopped; this
+      // journals the round's second no-result redispatch (no dispatch here).
+      if(state==='blocked'&&reviewRedispatchLive()){
+        const value=json(raw);shape(value,['allowed','reason']);
+        need(value.allowed===true,'review_abandon_authorization_required');
+        need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=500
+          &&!/[\r\n\0]/.test(value.reason),'review_abandon_reason_required');
+        persist('review-redispatch',{effectId:[...cache.values()].at(-1).effect.id,
+          invocationId:reviewInvocation.registration.grant.invocationId,attempt,code,reason:value.reason,at:new Date().toISOString()});
+        state='pending_review';publication=privateStatus();return status();
+      }
+      if(state==='blocked'&&reviewRedispatchSpent())throw Object.assign(new Error('review_abandon_budget_exhausted'),{code:'review_abandon_budget_exhausted'});
       if(invocationMode&&store&&!busy&&!poisoned&&state==='unknown'&&!restored?.pending&&!reviewResultAbandonable()){
         const refusal=reviewAbandonRefusal({state,attempt,cache:[...cache.values()],calls,reviewInvocation},reviewers[0].contexts[attempt-1],reviewRedispatchRecords());
         if(refusal)throw Object.assign(new Error(refusal.code),refusal);

@@ -112,3 +112,8 @@ test('Q06/Q07/Q15 a stopped QA call and a blocked documentation check name their
   const docs=explain('fixture_completed','documentation_sync_blocked','none');
   assert.match(docs.nextStep,/finish/);assert.equal(docs.recoveryOperation,null);
 });
+
+test('V5 the second no-result redispatch asks for the operator stop confirmation, never a plain advance',()=>{
+  const g=explain('blocked','review_transport_timeout','abandon_review',{reviewRedispatchStopRequired:true});
+  assert.equal(g.recoveryOperation,'abandon_review');assert.match(g.nextStep,/确认原审查进程/);assert.equal(g.authorizationGranted,false);
+});

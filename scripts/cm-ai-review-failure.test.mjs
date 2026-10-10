@@ -220,8 +220,15 @@ test('#8 a reviewer with no init line is redispatched twice per round; the third
   assert.deepEqual(f.lastResult().observation.events.map(event=>event.event),['process_closed']);
   const second=f.decide(packageDigest);
   assert.equal(second.result.code,'review_provider_failed');assert.equal(f.calls().length,2);
-  // V5: the round's second no-result redispatch is advance's (review-redispatch).
-  assert.equal(second.result.state,'pending_review');assert.equal(second.result.pendingAction,'resume');
+  // V5: the round's second no-result redispatch waits for the operator's stop
+  // confirmation (abandon_review journals review-redispatch), then advance.
+  assert.equal(second.result.state,'blocked');assert.equal(second.result.pendingAction,'abandon_review');
+  assert.equal(second.result.reviewRedispatchStopRequired,true);
+  assert.equal(f.decide(packageDigest).result.state,'blocked');assert.equal(f.calls().length,2);
+  const stopPlan=f.plan({mode:'resume',permissions:['--review-config','review.json','--allow-abandon-review'],
+    reason:'reviewer process confirmed exited',answers:undefined,checks:undefined});
+  const confirmed=f.drive(stopPlan,'abandon_review');
+  assert.equal(confirmed.result.state,'pending_review',JSON.stringify(confirmed.result));assert.equal(confirmed.result.pendingAction,'resume');
   const third=f.decide(packageDigest);
   assert.equal(third.result.state,'blocked');assert.equal(third.result.code,'review_redispatch_limit');
   assert.equal(third.result.pendingAction,'none');assert.equal(f.calls().length,3);
@@ -328,7 +335,9 @@ test('#8 a final message cut off by the reviewer timeout has an audited exit sha
   // keeps the second (review-redispatch), and a third failure is the limit.
   f.behave({mode:'api_error',error:'server_error',status:529,text:'API Error: 529 Overloaded'});
   const retried=f.decide(packageDigest);
-  assert.equal(retried.result.state,'pending_review');assert.equal(retried.result.code,'review_provider_failed');
+  assert.equal(retried.result.state,'blocked');assert.equal(retried.result.code,'review_provider_failed');
+  assert.equal(retried.result.pendingAction,'abandon_review');
+  assert.equal(f.drive(abandonPlan,'abandon_review').result.state,'pending_review');
   const last=f.decide(packageDigest);
   assert.equal(last.result.state,'blocked');assert.equal(last.result.code,'review_redispatch_limit');
   assert.deepEqual(f.intents(),['develop-1','review-1','review-1-retry-1','review-1-retry-2']);

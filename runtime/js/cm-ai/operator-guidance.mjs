@@ -48,6 +48,9 @@ export function operatorGuidance(result,{executionActive=false}={}){
     return explain('执行结果尚未确认，不能判断这一步成功或失败。',
       '只读核对原运行记录、进程及实际文件；当前没有已确认的直接重试入口，不新建运行绕过历史。');
   }
+  if(state==='blocked'&&action==='abandon_review')return explain('本轮独立审查第二次没有结论，本轮还剩 1 次无结论重派，但宿主不能证明原审查进程已停止。',
+    '先确认原审查进程（含子进程）已退出；再恢复原运行并发送 abandon_review 登记确认，之后 advance 重新取得授权并重派。不算审查轮次。',
+    'abandon_review',['保留原配置、runId 与历史，以 --mode resume 启动','显式 --allow-abandon-review，并提供单行 reason','用满 2 次后为 review_redispatch_limit']);
   if(action==='develop_redo')return explain('开发应答没有拿到（超时后代码已改动、会话断开或只回了 failed），会话可能仍在写文件。',
     '先确认会话已停止修改代码；再恢复原运行并发送 develop_redo 写入确认，之后 advance 重发本轮开发。盘上改动保留，经检查和独立审查。',
     'develop_redo',['保留原配置、runId 与历史，以 --mode resume 启动','显式 --allow-develop-redo，并提供单行 reason','不占调用与 effect 名额；每运行最多 2 次']);

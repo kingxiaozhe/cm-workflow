@@ -137,7 +137,7 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 
 - 第一次可重试的结束（`review_transport_timeout`、`review_provider_failed`、`review_verdict_invalid`）自动回到 `pending_review`；
 - 操作员的 `abandon_review`（已登记无结果、已有未被接收的结果，或下面的进程已退出中断）；
-- 本轮第二次可重试的结束：存档里仍是 `blocked/<同码>`（旧版本到此为止），宿主状态读成 `pending_review/<同码>`、`pendingAction: resume`；`advance` 先追加 `review-redispatch`（绑定 effect、invocation、attempt 与码）再重派。
+- 本轮第二次可重试的结束：存档里仍是 `blocked/<同码>`（旧版本到此为止）。宿主只中止了原调用、没有等到审查进程退出，不能证明它已停止，所以状态保持 `blocked`，带 `reviewRedispatchStopRequired: true`、`pendingAction: abandon_review`，`reason` 以 `review_redispatch_stop_required:` 开头。操作员确认原审查进程（含子进程）已退出后，以 `--allow-abandon-review` 发送 `abandon_review`（单行 reason），宿主追加 `review-redispatch`（绑定 effect、invocation、attempt、码、确认原因与时间），状态回到 `pending_review`，之后 `advance` 重新取得授权并重派。未确认前 `advance` 不派发。
 
 2 次用完后，可重试的结束显示 `blocked/review_redispatch_limit`，`reason` 写明先查登录、额度、网络或答复格式，再用 `--supersede-reviewed-evidence` 新建运行；`abandon_review` 拒绝为 `review_abandon_budget_exhausted`。回放从存档重新推导：伪造、重复或第三次 `review-redispatch` 一律 `runner_review_redispatch`；没有该记录的旧存档按原样回放。
 

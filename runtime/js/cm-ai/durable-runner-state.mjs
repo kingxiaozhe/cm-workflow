@@ -63,9 +63,12 @@ export const reviewRetrySpent=(cache,calls,attempt,contextId)=>cache.some(entry=
 // V5 (A34/A36): no-result redispatches of one review round (attempt), counted
 // apart from the two review rounds: the automatic one (a retryable end that went
 // back to pending_review), operator abandonments (abandoned calls), and the
-// review-redispatch records advance writes from a spent retryable block. The
-// automatic transition still grants only the first (reviewTimeoutTransition,
-// unchanged so older journals replay as written); the second needs a record.
+// review-redispatch records an operator writes (abandon_review) from a spent
+// retryable block. The automatic transition still grants only the first
+// (reviewTimeoutTransition, unchanged so older journals replay as written); the
+// second needs that record, which carries the operator's confirmation that the
+// original call's reviewer process stopped: a timeout only aborted it and the
+// host never waited for its exit, so nothing else proves it gone.
 // Never a third verdict: a redispatch exists only because the round accepted none.
 export const MAX_REVIEW_REDISPATCHES=2;
 export const reviewRedispatchCount=(cache,calls,attempt,contextId,records=0)=>
@@ -74,7 +77,9 @@ export const reviewRedispatchCount=(cache,calls,attempt,contextId,records=0)=>
 // The spent retryable block of this round (reviewTimeoutTransition gave blocked).
 const spentRetryBlock=s=>{
   const entry=s.cache.at(-1);
+  // An end whose worker could not confirm its process-group cleanup never qualifies.
   return s.state==='blocked'&&REVIEW_RETRY_CODES.includes(s.code)&&entry?.effect.kind==='review'
+    &&s.reviewInvocation?.result?.observation?.result?.code!=='process_cleanup_unknown'
     &&entry.effect.identity.attempt===s.attempt&&timeoutEffect(entry)&&entry.result.state==='blocked'&&entry.result.code===s.code
     &&s.reviewInvocation?.registration?.grant?.invocationId!=null
     &&entry.result.reviewInvocation?.registration?.grant?.invocationId===s.reviewInvocation.registration.grant.invocationId;
@@ -87,6 +92,9 @@ export const REVIEW_REDISPATCH_LIMIT_CODE='review_redispatch_limit';
 export const reviewRedispatchLimitReason=code=>`${REVIEW_REDISPATCH_LIMIT_CODE}: 本轮独立审查已无结论重派 ${MAX_REVIEW_REDISPATCHES} 次（原记录 blocked/${code}），`
   +'不再自动重派，也不计为审查轮次。先查清审查进程为何一直没有结论（登录、额度、网络或审查答复格式），'
   +'修好后用 --supersede-reviewed-evidence 新建运行重做；本运行记录保留不改写。';
+export const reviewRedispatchStopReason=code=>`review_redispatch_stop_required: 本轮独立审查第二次没有结论（blocked/${code}），本轮还剩 1 次无结论重派。`
+  +'宿主只中止了原调用、没有等到审查进程退出，不能证明它已停止：先确认原审查进程（含子进程）已退出，'
+  +'再用 --allow-abandon-review 发送 abandon_review（单行 reason）登记确认，之后 advance 重新取得授权并重派；不算审查轮次。';
 export const reviewTimeoutTransition=(result,cache,attempt,calls=[],contextId=null)=>{
   const code=reviewRetryCode(result);
   return code===null?null:{state:reviewRetrySpent(cache,calls,attempt,contextId)?'blocked':'pending_review',code};
@@ -1297,11 +1305,15 @@ export function readRunnerHistory(raw,config,version=1) {
       answerGaps.completeRecheck++;
       state.state='blocked';state.code=COMPLETE_RECHECK_CODE;state.reason=completeRecheckReason(p.source);lastReview=null;
     } else if(version===3&&p.type==='review-redispatch') {
-      // V5 (A34): written by advance from this round's spent retryable review
-      // block while the round has a no-result redispatch left; the redispatch
-      // itself is the next review intent. Re-derived from the journal.
+      // V5 (A34): written by abandon_review from this round's spent retryable
+      // review block while the round has a no-result redispatch left: the
+      // operator confirmed (reason) the original call's reviewer stopped. The
+      // redispatch itself is the next review intent. Re-derived from the journal.
       need(!(config.externalModels||config.executionPolicy),'external_review_reconciliation_required');
-      shape(p,[...common,'effectId','invocationId','attempt','code']);
+      shape(p,[...common,'effectId','invocationId','attempt','code','reason','at']);
+      need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(p.reason),'runner_review_redispatch');
+      need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_review_redispatch');
       const contextId=config.reviewers[0].contexts[state.attempt-1];
       need(r.kind==='result'&&pending===null&&p.attempt===state.attempt
         &&reviewRedispatchable(state,contextId,answerGaps.reviewRedispatch[state.attempt])
@@ -1591,11 +1603,12 @@ export function projectedRunnerStatus(history,config){
   if(s.state==='blocked'&&s.code==='failed'&&developAnswerRetryable(s,config.bootstrap))return project('develop_answer_invalid');
   if(s.state==='blocked'&&s.code==='failed'){const limit=answerGapLimit(s,config,gaps);
     return limit?{...s,state:'blocked',code:limit.code,reason:limit.reason}:s;}
-  // V5: a spent retryable review block with a no-result redispatch left is
-  // redispatched by advance (review-redispatch); a fully spent one is a limit.
+  // V5: a spent retryable review block with a no-result redispatch left waits
+  // for the operator's stop confirmation (abandon_review → review-redispatch);
+  // a fully spent one is a limit.
   if(s.state==='blocked'&&!(config.externalModels||config.executionPolicy)&&Array.isArray(config.reviewers)){
     const contextId=config.reviewers[0].contexts[s.attempt-1],records=gaps.reviewRedispatch?.[s.attempt]??0;
-    if(reviewRedispatchable(s,contextId,records))return {...s,state:'pending_review'};
+    if(reviewRedispatchable(s,contextId,records))return {...s,reviewRedispatchStopRequired:true,reason:reviewRedispatchStopReason(s.code)};
     if(reviewRedispatchExhausted(s,contextId,records))return {...s,code:REVIEW_REDISPATCH_LIMIT_CODE,reason:reviewRedispatchLimitReason(s.code)};
   }
   if(s.state!=='unknown')return s;

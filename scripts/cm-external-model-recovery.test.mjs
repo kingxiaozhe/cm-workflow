@@ -78,7 +78,9 @@ for(const type of ['review-invocation-registered','review-invocation-started','r
 },noTerminal));
 test('legacy missing marker keeps the local no-result redispatch contract (two per round)',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));assert.equal((await runner.executeEffect(f.effect('review'))).state,'pending_review');
-  assert.equal((await runner.executeEffect(f.effect('review',1,'retry'))).state,'pending_review');assert.equal(f.calls(),2);
+  const second=await runner.executeEffect(f.effect('review',1,'retry'));
+  assert.equal(second.state,'blocked');assert.equal(second.reviewRedispatchStopRequired,true);assert.equal(f.calls(),2);
+  assert.equal(runner.abandonReview({allowed:true,reason:'reviewer stopped'}).state,'pending_review');
   const spent=await runner.executeEffect(f.effect('review',1,'retry-2'));
   assert.equal(spent.state,'blocked');assert.equal(spent.code,'review_redispatch_limit');assert.equal(f.calls(),3);
 },noTerminal,{strict:false}));

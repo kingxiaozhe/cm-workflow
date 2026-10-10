@@ -126,13 +126,21 @@ test('runner timer without a result shares pending/blocked timeout transitions a
   assert.deepEqual(f.getStore().snapshot(),before);
   const resumed=f.reopen();assert.deepEqual(resumed.status(),end);
   assert.deepEqual(await resumed.executeEffect(f.effect('review')),end);assert.equal(f.dispatches(),1);
-  // V5: the round keeps a second no-result redispatch; the spent retryable
-  // block reads as pending_review and advance journals review-redispatch.
-  const blocked=await resumed.executeEffect(retryEffect(f));assert.equal(blocked.state,'pending_review');
-  assert.equal(blocked.code,'review_transport_timeout');
-  assert.equal(readRunnerHistory(f.getStore().snapshot().records,f.getStore().snapshot().records[0].payload.config,3).state.state,'blocked');
+  // V5: the round keeps a second no-result redispatch, but the timer only
+  // aborted the reviewer: nothing is redispatched until the operator confirms
+  // the original reviewer stopped (abandon_review journals review-redispatch).
+  const blocked=await resumed.executeEffect(retryEffect(f));assert.equal(blocked.state,'blocked');
+  assert.equal(blocked.code,'review_transport_timeout');assert.equal(blocked.reviewRedispatchStopRequired,true);
+  assert.match(blocked.reason,/^review_redispatch_stop_required: /);
   const second=f.reopen();assert.deepEqual(second.status(),blocked);
-  const third=await second.executeEffect({...retryEffect(f),id:'review-1-retry-2'});
+  assert.equal((await second.executeEffect({...retryEffect(f),id:'review-1-retry-2'})).code,'stage_mismatch');assert.equal(f.dispatches(),2);
+  const unconfirmed=f.getStore().snapshot();
+  assert.equal(second.abandonReview({allowed:false,reason:'x'}).code,'review_abandon_authorization_required');
+  assert.equal(second.abandonReview({allowed:true,reason:' '}).code,'review_abandon_reason_required');
+  assert.deepEqual(f.getStore().snapshot(),unconfirmed);
+  const confirmed=second.abandonReview({allowed:true,reason:'Original reviewer process confirmed exited'});
+  assert.equal(confirmed.state,'pending_review');assert.equal(confirmed.code,'review_transport_timeout');
+  const third=await f.reopen().executeEffect({...retryEffect(f),id:'review-1-retry-2'});
   assert.equal(third.state,'blocked');assert.equal(third.code,'review_redispatch_limit');
   const spent=f.reopen().status();assert.deepEqual(spent,third);
   assert.match(spent.reason,/无结论重派 2 次/);
@@ -247,7 +255,8 @@ test('abandonment and transport timeout share the round\'s two no-result redispa
   f.options.reviewers[0].run=timeoutRun;
   const retry=f.reopen();
   const result=await retry.executeEffect(retryEffect(f));
-  assert.equal(result.state,'pending_review');assert.equal(result.code,'review_transport_timeout');
+  assert.equal(result.state,'blocked');assert.equal(result.reviewRedispatchStopRequired,true);
+  assert.equal(f.reopen().abandonReview({allowed:true,reason:'stopped'}).state,'pending_review');
   const last=await f.reopen().executeEffect({...retryEffect(f),id:'review-1-retry-2'});
   assert.equal(last.state,'blocked');assert.equal(last.code,'review_redispatch_limit');
   assert.equal((await f.reopen().executeEffect({...retryEffect(f),id:'review-1-retry-3'})).code,'stage_mismatch');
@@ -298,7 +307,8 @@ test('abandonment refuses an exhausted retry before appending a record',()=>fixt
   const runner=f.make();await runner.executeEffect(f.effect('develop'));
   const firstResult=await runner.executeEffect(f.effect('review'));
   assert.equal(firstResult.code,'review_transport_timeout');
-  assert.equal((await runner.executeEffect(retryEffect(f))).state,'pending_review');
+  assert.equal((await runner.executeEffect(retryEffect(f))).reviewRedispatchStopRequired,true);
+  assert.equal(f.reopen().abandonReview({allowed:true,reason:'stopped'}).state,'pending_review');
   const secondResult=await f.reopen().executeEffect({...retryEffect(f),id:'review-1-retry-2'});
   assert.equal(secondResult.state,'approved');
   // Both redispatches of the round are spent (automatic + review-redispatch).
@@ -525,11 +535,13 @@ test('A38 a pending review with a journaled no-verdict result is abandoned and r
 test('review-redispatch replay refuses forged, duplicate and over-limit records',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));
   await runner.executeEffect(f.effect('review'));await f.reopen().executeEffect(retryEffect(f));
+  f.reopen().abandonReview({allowed:true,reason:'stopped'});
   await f.reopen().executeEffect({...retryEffect(f),id:'review-1-retry-2'});
   const records=structuredClone(f.getStore().snapshot().records),config=records[0].payload.config;
   assert.equal(readRunnerHistory(records,config,3).state.state,'blocked');
   const at=records.findIndex(row=>row.payload.type==='review-redispatch');assert(at>0);
-  for(const change of [p=>{p.attempt=2;},p=>{p.code='review_abandoned';},p=>{p.effectId='review-1';},p=>{p.invocationId='other';},p=>{p.extra=true;}]){
+  for(const change of [p=>{p.attempt=2;},p=>{p.code='review_abandoned';},p=>{p.effectId='review-1';},p=>{p.invocationId='other';},p=>{p.extra=true;},
+    p=>{delete p.reason;},p=>{p.reason='';},p=>{p.at='yesterday';}]){
     const forged=structuredClone(records);change(forged[at].payload);
     assert.throws(()=>readRunnerHistory(rechain(forged),config,3),{code:/^(runner_review_redispatch|invalid_input)$/});
   }
@@ -542,6 +554,6 @@ test('review-redispatch replay refuses forged, duplicate and over-limit records'
   // A journal without the record (older version) replays the spent block unchanged;
   // drivers read it through the same projection the host shows.
   const older=readRunnerHistory(records.slice(0,at),config,3);assert.equal(older.state.state,'blocked');
-  assert.equal(projectedRunnerStatus(older,config).state,'pending_review');
+  assert.equal(projectedRunnerStatus(older,config).state,'blocked');assert.equal(projectedRunnerStatus(older,config).reviewRedispatchStopRequired,true);
   assert.equal(projectedRunnerStatus(readRunnerHistory(records,config,3),config).code,'review_redispatch_limit');
 },{timeoutMs:20,reviewRun:timeoutRun}));
