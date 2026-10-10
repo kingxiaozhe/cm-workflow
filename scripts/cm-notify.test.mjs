@@ -129,10 +129,10 @@ test('custom text: prefix, headlines, field order (runId included) and labels',(
 
 test('custom text strings are cleaned like field values: paths redacted, control characters removed, each capped',()=>{
   const at={now:NOW,timeZone:'UTC'};
-  const text=normalizeNotifyText({titlePrefix:'CM\u0007/Users/me/secret',
-    headlines:{default:'卡住\n见/srv/private/push.env\u001b[31m'},labels:{nextAction:'C:\\Users\\me\\a.txt\u0000下一步',project:'~/proj',code:'\\\\srv\\share\\x'}}).text;
+  const text=normalizeNotifyText({titlePrefix:'CM\u0007/Users/example/secret',
+    headlines:{default:'卡住\n见/srv/private/push.env\u001b[31m'},labels:{nextAction:'C:\\Users\\example\\a.txt\u0000下一步',project:'~/proj',code:'\\\\srv\\share\\x'}}).text;
   const message=buildNotifyMessage(fields('k'),{...at,text});
-  for(const forbidden of ['/Users/','me\\','secret','/srv/','push.env','~/proj','\\\\srv','\u0007','\u001b','\u0000','\n见'])
+  for(const forbidden of ['/Users','example\\','secret','/srv/','push.env','~/proj','\\\\srv','\u0007','\u001b','\u0000','\n见'])
     assert(!message.title.includes(forbidden)&&!message.body.split('\n').map(line=>line.split('：')[0]).join('|').includes(forbidden),JSON.stringify(forbidden));
   assert.equal(message.title,'CM <路径> cm-fix 卡住 见<路径> [31m · demo-app');
   assert.equal(message.body.split('\n')[0],'<路径> 下一步：核对 reason 后恢复原运行');
@@ -174,7 +174,7 @@ test('custom text loses bidi and zero-width characters; a string left with nothi
 
 test('custom text redacts absolute paths even when letters touch them; field values keep the shared rule',()=>{
   const at={now:NOW,timeZone:'UTC'};
-  for(const [raw,want] of [['see/Users/me/key','see<路径>'],['seeC:\\Users\\me\\key','see<路径>'],['seeC:/Users/me/key','see<路径>'],
+  for(const [raw,want] of [['see/Users/example/key','see<路径>'],['seeC:\\Users\\example\\key','see<路径>'],['seeC:/Users/example/key','see<路径>'],
     ['see\\\\srv\\share\\key','see<路径>'],['see~/proj/key','see<路径>'],['卡在/srv/a，再看','卡在<路径>，再看'],
     ['x1/etc/passwd y','x1<路径> y'],['CI/CD','CI<路径>'],['停\u0007/tmp/a','停 <路径>'],['停\u200b/tmp/a','停<路径>'],
     ['相对 a\\b 保留','相对 a\\b 保留']]){
@@ -185,8 +185,8 @@ test('custom text redacts absolute paths even when letters touch them; field val
     for(const leak of ['/Users','Users\\','\\\\srv','/srv','~/proj','/etc','/tmp'])assert(!message.title.includes(leak)&&!message.body.includes(leak),`${raw} ${leak}`);
   }
   // The shared rule for field values (and so the default text) is unchanged.
-  assert.equal(buildNotifyMessage(fields('k',{task:'see/Users/me/key'}),at).body.split('\n')[3],'任务：see/Users/me/key');
-  assert.equal(buildNotifyMessage(fields('k',{task:'见 /Users/me/key'}),at).body.split('\n')[3],'任务：见 <路径>');
+  assert.equal(buildNotifyMessage(fields('k',{task:'see/Users/example/key'}),at).body.split('\n')[3],'任务：see/Users/example/key');
+  assert.equal(buildNotifyMessage(fields('k',{task:'见 /Users/example/key'}),at).body.split('\n')[3],'任务：见 <路径>');
 });
 
 test('invalid text falls back to the default text with one text_config log line; notices stay on',async t=>{
