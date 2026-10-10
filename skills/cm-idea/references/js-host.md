@@ -73,7 +73,7 @@ result必须填原宿主返回，不能使用占位对象或重新生成的答�
 {"requestId":"abandon-1","operation":"resume","resolution":{"callId":"status原值","requestDigest":"status原值","abandon":true,"evidence":"原调用为何找不回（单行原因）"}}
 ```
 
-discard只针对call.status为recorded、宿主拒收（stderr diagnostic有原因码）的应答；abandon只针对unknown。会话记录追加只增的abandonedCalls（kind、callId、requestDigest、原操作、原因、被拒结果摘要、evidence摘要和长度、时间），不存evidence正文。每种kind每个会话最多2次，超过报`idea_session_abandon_limit`。被作废的callId上的迟到答复一律拒收（`idea_session_call_abandoned`），保存确认则重新问当前用户，绝不沿用旧答复。驾驶员重问保存确认时不读旧的confirm-save.json：要先把当前用户本次的新决定写进`answers/confirm-save-reask.json`（`{"decision":"approved|rejected","replaces":"被作废的callId"}`），缺少或replaces不符报`confirm_reask_decision_required`并停止。伪造、重复或超上限的记录在重开时报`idea_session_abandon_record_invalid`。status的guidance字段给出当前该走哪条路。
+discard只针对call.status为recorded、宿主拒收（stderr diagnostic有原因码）的应答；abandon只针对unknown。会话记录追加只增的abandonedCalls（kind、callId、requestDigest、原操作、原因、被拒结果摘要、evidence摘要和长度、时间），不存evidence正文。每种kind每个会话最多2次，超过报`idea_session_abandon_limit`。被作废的callId上的迟到答复一律拒收（`idea_session_call_abandoned`），保存确认则重新问当前用户，绝不沿用旧答复。resume期间宿主问到的保存确认（作废后的重问，或崩溃后重新发出的确认），驾驶员一律不预先作答：先让宿主登记新调用，再停下报`confirm_reask_decision_required`并给出新的callId与requestDigest（确认内容的摘要）；当前用户核对后写`answers/confirm-save-reask.json`（`{"callId":"新callId","requestDigest":"…","decision":"approved|rejected"}`），下一次resume只采用callId与requestDigest都等于已登记调用的决定，绑定其他调用的旧文件报`confirm_reask_decision_stale`，绝不使用；旧的confirm-save.json也不读。伪造、重复或超上限的记录在重开时报`idea_session_abandon_record_invalid`。status的guidance字段给出当前该走哪条路。
 
 ### 保存中断的对账
 

@@ -16,8 +16,10 @@
 // baseline/judge/mutation/cheap checks 均由 workflow.mjs command/createHostCheck
 // 在项目内真实执行、记录退出码；没有可从答案文件填写的命令证据。
 // unknown command/host 的恢复需原调用回执，本驾驶员没有回执 runner，预检拒绝；
-// 例外：refactor_confirm 未知时宿主按 V7 重新问人（用 confirm.json），以及
-// PLAN.discard {key,requestDigest,evidence} 作废最后一个文字应答（已记录被拒或结果未知）后重问。
+// 例外：refactor_confirm 未知时宿主按 V7 重新问人，以及 PLAN.discard
+// {key,requestDigest,evidence} 作废最后一个文字应答（已记录被拒或结果未知）后重问。
+// 重问的确认（attempt>1）驾驶员从不预先作答：先让宿主登记新调用，再停下并给出
+// key/attempt/gate/requestDigest；下一次 resume 只采用绑定这次调用的 confirm-reask.json。
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -27,7 +29,7 @@ import {refactorDiscardable,REFACTOR_REASKABLE_KINDS} from '../runtime/js/cm-ref
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {readLearningRetrospectiveContent} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
-import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
+import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,deliberatelyUnanswered} from '../runtime/js/cm-ai/drive-core.mjs';
 
 const HOST=fileURLToPath(new URL('./cm-refactor-host.mjs',import.meta.url));
 const KNOWN=new Set(['start','resume','finish','prepare_judge_revision','status','cancel']);
@@ -138,9 +140,11 @@ function answer(row,answers,root){
   // V7: a re-asked confirmation (attempt > 1) is answered only from the new
   // decision file bound to that key and attempt, never from confirm.json.
   if(kind==='refactor_confirm'&&(payload.recovery?.attempt??1)>1){
-    const reask=answers.refactor_confirm_reask;
-    if(!reask||reask.replaces!==payload.recovery.key||reask.attempt!==payload.recovery.attempt||!reask[payload.gate])return null;
-    return {decision:reask[payload.gate]};
+    const {recovery,...rest}=payload,attempt=recovery.attempt;
+    const requestDigest=digest({input:{kind,payload:rest},attempt});
+    throw deliberatelyUnanswered(`confirm_reask_decision_required：宿主已登记重问的确认 ${recovery.key}（gate ${payload.gate}、attempt ${attempt}、requestDigest ${requestDigest}），`
+      +`驾驶员不预先作答。请当前用户核对后写 ${path.join(root??'answers','confirm-reask.json')}：`
+      +`{"key":"${recovery.key}","attempt":${attempt},"gate":"${payload.gate}","requestDigest":"${requestDigest}","decision":"approved|rejected"}，再 resume；旧的 confirm.json 与其他调用的决定都不会使用`);
   }
   if(kind==='refactor_confirm')return {decision:value[payload.gate]};
   if(kind==='refactor_review'){
@@ -251,33 +255,27 @@ function main(){
     stop(2,'步骤 finish 会反问 refactor_confirm(finish)，但 confirm.json.finish 缺失');
   if(operation==='start'&&answers.refactor_confirm?.g0==='approved'&&!answers.refactor_review)
     stop(2,'步骤 start 会反问 refactor_review，但 review.json 缺失');
-  // A confirmation that will be asked again (lost, or explicitly discarded) needs a
-  // NEW decision of the current user in confirm-reask.json naming key and attempt.
-  const lostConfirm=[...records.effects].find(([key,entry])=>entry.kind==='host'&&entry.input.kind==='refactor_confirm'
-    &&(plan.discard?.key===key||!Object.hasOwn(entry,'result')&&['resume','finish'].includes(operation)));
-  // Also from the persisted discard history: the host appended the confirmation's
-  // discard and exited before the re-asked intent, so no effect names it yet; the
-  // host re-asks it (same key, next attempt) on this resume.
-  const lastDiscard=records.discards.at(-1);
-  const pendingReask=!lostConfirm&&['resume','finish'].includes(operation)&&lastDiscard?.kind==='refactor_confirm'
-    &&!records.effects.has(lastDiscard.key)?lastDiscard:null;
-  const GATES=['g0','rulebook','rulebook_revision','finish'];
-  const reaskTarget=lostConfirm?{key:lostConfirm[0],attempt:(lostConfirm[1].attempt??1)+1,gate:lostConfirm[1].input.payload.gate}
-    :pendingReask?{key:pendingReask.key,attempt:(pendingReask.attempt??1)+1,gate:null}:null;
-  if(reaskTarget){
-    const {key,attempt,gate}=reaskTarget,file=path.join(answerRoot??'',`confirm-reask.json`),named=gate??'<gate>';
-    if(!answerRoot||!ownFile(file))stop(2,`confirm_reask_decision_required：${key} 的确认要重新问当前用户，写好新的决定 ${file}（{"replaces":"${key}","attempt":${attempt},"${named}":"approved|rejected"}）；旧的 confirm.json 不会沿用`);
+  // V7: a re-asked confirmation (attempt > 1) the host registered and the driver
+  // left unanswered is answered only from confirm-reask.json bound to its exact
+  // key, attempt, gate and request digest; anything else is refused, never reused.
+  let confirmation=null;
+  const unanswered=[...records.effects].filter(([,entry])=>entry.kind==='host'&&!Object.hasOwn(entry,'result')).at(-1);
+  if(['resume','finish'].includes(operation)&&unanswered&&unanswered[1].input.kind==='refactor_confirm'&&(unanswered[1].attempt??1)>1){
+    const [key,entry]=unanswered,attempt=entry.attempt,gate=entry.input.payload.gate,requestDigest=effectDigest(entry);
+    const file=path.join(answerRoot??base,'confirm-reask.json'),expected=`{"key":"${key}","attempt":${attempt},"gate":"${gate}","requestDigest":"${requestDigest}","decision":"approved|rejected"}`;
+    if(!ownFile(file))stop(2,`confirm_reask_decision_required：重问的确认 ${key}（gate ${gate}、attempt ${attempt}）已由宿主登记、尚未作答；请当前用户核对后写 ${file}：${expected}；旧的 confirm.json 不会沿用`);
     const value=readJson(file,'refactor_confirm_reask');
-    const decided=object(value)?GATES.filter(name=>Object.hasOwn(value,name)):[];
-    valid(object(value)&&value.replaces===key&&value.attempt===attempt
-      &&(gate?['approved','rejected'].includes(value[gate]):decided.length===1&&['approved','rejected'].includes(value[decided[0]]))
-      &&Object.keys(value).every(name=>['replaces','attempt',...GATES].includes(name)),
-    `confirm-reask.json 须为本次重问写的新决定：replaces=${key}、attempt=${attempt}、${named} 为 approved|rejected`);
-    answers.refactor_confirm_reask=value;
+    if(!object(value)||value.key!==key||value.attempt!==attempt||value.gate!==gate||value.requestDigest!==requestDigest)
+      stop(2,`confirm_reask_decision_stale：${file} 绑定的是 ${object(value)?`${value.key} attempt ${value.attempt} gate ${value.gate}`:'无效内容'}，不是当前登记的 ${key}（gate ${gate}、attempt ${attempt}、requestDigest ${requestDigest}）；不会使用，请按 ${expected} 重写`);
+    valid(Object.keys(value).sort().join(',')==='attempt,decision,gate,key,requestDigest'&&['approved','rejected'].includes(value.decision),
+      `confirm-reask.json 须为 ${expected}`);
+    if(operation!=='resume')stop(2,`重问的确认 ${key} 已登记未作答，先用 resume 交回这次的新决定`);
+    confirmation={key,attempt,requestDigest,decision:value.decision,evidence:`当前用户对重问确认 ${key} attempt ${attempt} 的新决定（confirm-reask.json）`};
   }
   stderr(`预检通过：${operation}`);
   driveHost({host:HOST,args:['serve','--config',configPath],cwd:config.project,operation,
-    request:operation==='prepare_judge_revision'?{judgeRevision:plan.judgeRevision}:plan.discard?{discard:plan.discard}:{},answers,paths:{},
+    request:operation==='prepare_judge_revision'?{judgeRevision:plan.judgeRevision}:plan.discard?{discard:plan.discard}
+      :confirmation?{confirmation}:{},answers,paths:{},
     answerFor:row=>answer(row,answers,answerRoot)});
 }
 main();

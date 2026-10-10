@@ -96,6 +96,19 @@ export function openRefactorRecords(directory,{discardable=null}={}){
     // True when key/requestDigest name an attempt that was discarded: its late
     // receipt must never be adopted for the attempt asked afterwards.
     discarded(key,requestDigest){return discards.some(item=>item.key===key&&item.requestDigest===requestDigest);},
+    // V7: the current user's fresh decision for a registered re-asked confirmation
+    // (attempt > 1) that the driver deliberately left unanswered. Bound to the exact
+    // key, attempt and request digest of the last, still unanswered intent.
+    confirm({key,attempt,requestDigest,decision,evidence}){
+      need(typeof evidence==='string'&&evidence.trim()&&evidence.length<=2000,'refactor_confirmation_evidence_required');
+      const entry=effects.get(key);
+      need(entry&&entry.kind==='host'&&entry.input?.kind==='refactor_confirm'&&!Object.hasOwn(entry,'result')
+        &&lastIntent===key&&Number.isSafeInteger(attempt)&&attempt>1&&(entry.attempt??1)===attempt
+        &&effectDigest(entry)===requestDigest,'refactor_confirmation_binding');
+      need(['approved','rejected'].includes(decision),'refactor_decision_invalid');
+      const result={value:{decision},durationMs:0,confirmation:{source:'operator_confirmed',evidence:digest(evidence),at:new Date().toISOString()}};
+      append({type:'result',key,result});entry.result=result;return {key,attempt,decision};
+    },
     // The caller binds key/requestDigest from status and supplies the reason;
     // the row is checked with the replay rules before it is appended.
     discard({key,requestDigest,evidence,released=null}){

@@ -16,7 +16,7 @@ import {inspectCmInitAdmission} from './cm-init-entry.mjs';
 import {validateCmInitSelection,cmInitRuleTargets} from '../runtime/js/cm-init/draft-generation.mjs';
 import {inspectCmInitDraft,readCmInitSource} from '../runtime/js/cm-init/draft-inspection.mjs';
 import {reviewResultForPaths} from '../runtime/js/cm-ai/review-runner.mjs';
-import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
+import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,deliberatelyUnanswered} from '../runtime/js/cm-ai/drive-core.mjs';
 
 const HOST=fileURLToPath(new URL('./cm-init-host.mjs',import.meta.url));
 const KNOWN=new Set(['start','advance','status','cancel','final_review_package','prepare_revision','resume']);
@@ -116,6 +116,7 @@ function main(){
     stop(2,`advance 当前阶段不能继续: ${stage}`);
   if(['status','final_review_package'].includes(operation)&&plan.mode!=='resume')stop(2,`${operation} 需要已有会话`);
   if(state?.pending&&operation!=='resume')stop(2,'恢复存档存在 pending；必须用 resume 和原调用回执，不能重派');
+  let boundDecision=null;
   if(operation==='resume'){
     if(plan.mode!=='resume')stop(2,'resume 需要已有存档');
     if(state.pending?.writing){const digest=checkpoint?.reviewPackage?.packageDigest??'<packageDigest>';
@@ -131,6 +132,18 @@ function main(){
       'resume 作废需要 {callId,requestDigest,discard:true|abandon:true,evidence}：discard 只针对已记录被拒的应答，abandon 只针对结果未知的调用');
       const used=(state.abandonedCalls??[]).filter(item=>item.kind===call.kind).length;
       if(used>=2)stop(2,`${call.kind} 本会话已作废 2 次，宿主会报 idea_session_abandon_limit；交人处理`);
+    }else if(call&&!Object.hasOwn(call,'result')&&call.kind==='init_confirm'&&resolution===null){
+      // V7: a registered, unanswered confirmation takes only the current user's
+      // decision bound to this exact callId and request digest; never a stale file.
+      const file=path.join(plan.answers?path.resolve(base,plan.answers):base,'confirm-reask.json');
+      const expected=`{"callId":"${call.callId}","requestDigest":"${call.requestDigest}","decision":"approved|rejected"}`;
+      const value=readJson(file,'init_confirm');
+      if(value===undefined)stop(2,`confirm_reask_decision_required：约束确认已由宿主登记（callId ${call.callId}、requestDigest ${call.requestDigest}）、尚未作答；请当前用户核对后写 ${file}：${expected}，再 resume；旧的确认文件不会沿用`);
+      if(!obj(value)||value.callId!==call.callId||value.requestDigest!==call.requestDigest)
+        stop(2,`confirm_reask_decision_stale：${file} 绑定的是 callId ${obj(value)?value.callId:'无效内容'}，不是当前登记的 ${call.callId}（requestDigest ${call.requestDigest}）；不会使用，请按 ${expected} 重写`);
+      valid(Object.keys(value).sort().join(',')==='callId,decision,requestDigest'&&['approved','rejected'].includes(value.decision),`${file} 须为 ${expected}`);
+      boundDecision={callId:call.callId,requestDigest:call.requestDigest,result:{decision:value.decision},
+        evidence:`当前用户对已登记确认 ${call.callId} 的新决定（confirm-reask.json）`};
     }else if(call&&!Object.hasOwn(call,'result')){
       valid(obj(resolution)&&resolution.callId===call.callId&&resolution.requestDigest===call.requestDigest
         &&nonempty(resolution.evidence)&&Object.hasOwn(resolution,'result'),'resume 缺少原调用的真实回执；找不到时可用 abandon:true 作废后重问');
@@ -161,24 +174,12 @@ function main(){
     }
   }
   const answers=plan.answers?path.resolve(base,plan.answers):null;
-  // V7: a re-asked init_confirm needs a NEW decision of the current user in
-  // confirm-reask.json naming the abandoned callId; confirm.json is never reused.
-  // The re-ask is also read from the persisted abandon history: the host may have
-  // recorded the abandon (pending.call cleared) and exited before it registered the
-  // new call; a plain resume must then still require the fresh decision.
-  const lastAbandon=(state?.abandonedCalls??[]).at(-1);
-  const persistedReask=operation==='resume'&&state?.pending&&state.pending.call===null
-    &&lastAbandon?.kind==='init_confirm'&&lastAbandon.operation===state.pending.request?.operation?lastAbandon.callId:null;
-  const reaskCall=(operation==='resume'&&obj(plan.resolution)&&(plan.resolution.discard===true||plan.resolution.abandon===true)
-    &&state.pending?.call?.kind==='init_confirm'?state.pending.call.callId:null)??persistedReask;
-  const answer=preflightAnswers(kind&&names[kind]?[kind]:[],key=>{
-    if(key==='init_confirm'&&reaskCall){
-      const file=path.join(answers??base,'confirm-reask.json'),value=readJson(file,key);
-      if(value===undefined)stop(2,`confirm_reask_decision_required：作废的约束确认要重新问当前用户，写好新的决定 ${file}（{"decision":"approved|rejected","replaces":"${reaskCall}"}）；旧的 confirm.json 不会沿用`);
-      valid(obj(value)&&Object.keys(value).sort().join(',')==='decision,replaces'&&['approved','rejected'].includes(value.decision)
-        &&value.replaces===reaskCall,`confirm-reask.json 须为本次重问写的新决定，replaces 必须是被作废的 callId ${reaskCall}`);
-      return {decision:value.decision};
-    }
+  // V7: the driver never pre-answers a constraint confirmation asked during resume
+  // (a re-ask after an abandon, or a call re-issued after a crash): the host registers
+  // it first, the driver stops naming the new callId and request digest, and the
+  // next resume takes only a decision bound to that call (boundDecision above).
+  const reasking=operation==='resume';
+  const answer=preflightAnswers(kind&&names[kind]&&!(reasking&&kind==='init_confirm')?[kind]:[],key=>{
     const file=path.join(answers??base,names[key]),value=readJson(file,key);
     if(value===undefined)stop(2,`步骤 ${operation} 会反问 ${key}，但答案文件不存在: ${file}`);
     return validate(key,value,{project,selection,checkpoint,answers,hostContext:plan.hostContext});
@@ -187,7 +188,7 @@ function main(){
     ...(plan.allowWrite===true?['--allow-write']:[]),'--session-file',sessionFile],cwd:project,operation,
     request:{...(operation==='advance'&&stage==='ready'?{selection}:{}),
       ...(operation==='prepare_revision'?{documents:plan.documents}:{}),
-      ...(operation==='resume'?{resolution:plan.resolution??null}:{})},answers:answer,
+      ...(operation==='resume'?{resolution:boundDecision??plan.resolution??null}:{})},answers:answer,
     answerFor:row=>{
       if(row.kind==='init_review'){
         const value=answer.init_review,pkg=row.payload.package;
@@ -213,7 +214,11 @@ function main(){
         }
         return {status:'written'};
       }
-      if(row.kind==='init_confirm'&&reaskCall&&row.payload?.recovery?.callId===reaskCall)return null;
+      if(row.kind==='init_confirm'&&reasking){
+        const recovery=row.payload?.recovery??{};
+        throw deliberatelyUnanswered(`confirm_reask_decision_required：宿主已登记新的约束确认（callId ${recovery.callId}、requestDigest ${recovery.requestDigest}），驾驶员不预先作答；`
+          +`请当前用户核对后写 ${path.join(answers??base,'confirm-reask.json')}：{"callId":"${recovery.callId}","requestDigest":"${recovery.requestDigest}","decision":"approved|rejected"}，再 resume；旧的确认文件与绑定其他调用的决定都不会使用`);
+      }
       return answer[row.kind]??null;
     }});
 }

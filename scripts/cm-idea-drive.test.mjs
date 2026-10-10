@@ -62,25 +62,43 @@ async function loseConfirmation(f){
     if(message.type==='host_request')child.kill('SIGKILL');});
   await closed;return JSON.parse(fs.readFileSync(f.sessionFile,'utf8')).pending.call;
 }
-test('re-asked save confirmation requires a new decision bound to the abandoned callId',async t=>{
+const reaskFile=f=>path.join(f.answers,'confirm-save-reask.json');
+const pendingCall=f=>JSON.parse(fs.readFileSync(f.sessionFile,'utf8')).pending?.call??null;
+// After the stop: only a decision bound to the newly registered call is used.
+function answerRegistered(f,old){
+  const call=pendingCall(f);assert.equal(call.kind,'idea_confirm_save');assert.equal(Object.hasOwn(call,'result'),false);
+  if(old)assert.notEqual(call.callId,old.callId);
+  // A decision bound to the old call (if any) is refused as stale, then removed.
+  if(fs.existsSync(reaskFile(f))){const stale=f.drive(f.plan({resolution:null}),'resume');assert.equal(stale.status,2);
+    assert.match(stale.stderr,/confirm_reask_decision_stale/);fs.rmSync(reaskFile(f));}
+  let run=f.drive(f.plan({resolution:null}),'resume');assert.equal(run.status,2);assert.match(run.stderr,/confirm_reask_decision_required/);
+  assert.match(run.stderr,new RegExp(call.callId));
+  // The earlier confirm-save.json style, and a decision bound to another call, are refused.
+  for(const stale of [{decision:'approved'},{decision:'approved',replaces:old?.callId??'x'},
+    {callId:old?.callId??'other',requestDigest:call.requestDigest,decision:'approved'},{callId:call.callId,requestDigest:'0'.repeat(64),decision:'approved'}]){
+    fs.writeFileSync(reaskFile(f),JSON.stringify(stale));
+    run=f.drive(f.plan({resolution:null}),'resume');assert.equal(run.status,2);assert.match(run.stderr,/confirm_reask_decision_stale/);
+    assert.equal(Object.hasOwn(pendingCall(f),'result'),false);
+  }
+  fs.writeFileSync(reaskFile(f),JSON.stringify({callId:call.callId,requestDigest:call.requestDigest,decision:'rejected'}));
+  run=f.drive(f.plan({resolution:null}),'resume');assert.equal(run.status,0,run.stderr);
+  assert.equal(JSON.parse(run.stdout).result.saveDecision,'rejected');assert.equal(fs.existsSync(path.join(f.project,'prd/fixture.md')),false);
+}
+test('re-asked save confirmation: the host registers the new call, the driver stops, only a decision bound to it is used',async t=>{
   const f=fixture(t);assert.equal(f.drive(f.plan()).status,0);
   const call=await loseConfirmation(f);assert.equal(call.kind,'idea_confirm_save');
   const resolution={callId:call.callId,requestDigest:call.requestDigest,abandon:true,evidence:'confirmation lost'};
-  let run=f.drive(f.plan({resolution}),'resume');
+  // confirm-save.json says approved; the driver must not answer the re-ask with it.
+  const run=f.drive(f.plan({resolution}),'resume');
   assert.equal(run.status,2);assert.match(run.stderr,/confirm_reask_decision_required/);
   assert.equal(fs.existsSync(path.join(f.project,'prd')),false);
-  const reask=path.join(f.answers,'confirm-save-reask.json');
-  fs.writeFileSync(reask,JSON.stringify({decision:'approved',replaces:'another-call'}));
-  run=f.drive(f.plan({resolution}),'resume');assert.equal(run.status,2);assert.match(run.stderr,/replaces/);
-  fs.writeFileSync(reask,JSON.stringify({decision:'rejected',replaces:call.callId}));
-  run=f.drive(f.plan({resolution}),'resume');assert.equal(run.status,0,run.stderr);
-  assert.equal(JSON.parse(run.stdout).result.saveDecision,'rejected');assert.equal(fs.existsSync(path.join(f.project,'prd/fixture.md')),false);
+  answerRegistered(f,call);
 });
 
 // Round-2 blocker: the host recorded the abandon (pending.call cleared) and exited
 // before registering the re-asked call. A plain resume reads the re-ask from the
 // persisted abandon history and still needs the fresh decision.
-test('crash after the abandon was recorded: a plain resume still needs the fresh save decision',async t=>{
+test('crash after the abandon was recorded: the re-issued call is registered first and answered only from a bound decision',async t=>{
   const f=fixture(t);assert.equal(f.drive(f.plan()).status,0);
   const call=await loseConfirmation(f);assert.equal(call.kind,'idea_confirm_save');
   const state=JSON.parse(fs.readFileSync(f.sessionFile,'utf8'));
@@ -89,10 +107,10 @@ test('crash after the abandon was recorded: a plain resume still needs the fresh
     reason:'answer_missing',resultDigest:null,evidence:{sha256:createHash('sha256').update(JSON.stringify(evidence)).digest('hex'),length:evidence.length},
     at:new Date().toISOString()}];
   state.pending={...state.pending,call:null};fs.writeFileSync(f.sessionFile,JSON.stringify(state),{mode:0o600});
-  let run=f.drive(f.plan({resolution:null}),'resume');
+  // A decision bound to the abandoned call is already on disk: it must not be used.
+  fs.writeFileSync(reaskFile(f),JSON.stringify({callId:call.callId,requestDigest:call.requestDigest,decision:'approved'}));
+  const run=f.drive(f.plan({resolution:null}),'resume');
   assert.equal(run.status,2,run.stdout);assert.match(run.stderr,/confirm_reask_decision_required/);
   assert.equal(fs.existsSync(path.join(f.project,'prd')),false);
-  fs.writeFileSync(path.join(f.answers,'confirm-save-reask.json'),JSON.stringify({decision:'rejected',replaces:call.callId}));
-  run=f.drive(f.plan({resolution:null}),'resume');assert.equal(run.status,0,run.stderr);
-  assert.equal(JSON.parse(run.stdout).result.saveDecision,'rejected');assert.equal(fs.existsSync(path.join(f.project,'prd/fixture.md')),false);
+  answerRegistered(f,call);
 });

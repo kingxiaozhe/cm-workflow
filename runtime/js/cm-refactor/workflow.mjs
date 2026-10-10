@@ -599,6 +599,16 @@ export function createCmRefactorHost(raw,{call}){
           const decision=records.discard({key:value.key,requestDigest:value.requestDigest,evidence:value.evidence});
           await event(`discard-${records.discards.length}`,'decision','answer_discarded',{key:decision.key,kind:decision.kind,reason:decision.reason});
         }
+        // V7: the current user's decision for the registered re-asked confirmation.
+        if(request.operation==='resume'&&Object.hasOwn(request,'confirmation')){
+          need(view.stage==='blocked'&&!Object.hasOwn(request,'discard'),'refactor_confirmation_unavailable');
+          const value=request.confirmation;
+          need(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).sort().join(',')==='attempt,decision,evidence,key,requestDigest',
+            'refactor_confirmation_binding');
+          const decision=records.confirm(value);
+          await event(`confirmation-${decision.key.replace(/[^a-z0-9-]/gi,'-')}-${decision.attempt}`,'decision','reask_confirmed',
+            {key:decision.key,attempt:decision.attempt,decision:decision.decision});
+        }
         if(view.stage==='done')return status();need(request.operation!=='start','refactor_resume_required');}
       if(await flow()){
         if(request.operation==='resume'){

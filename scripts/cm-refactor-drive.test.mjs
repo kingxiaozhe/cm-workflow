@@ -76,38 +76,46 @@ test('mutation probes catch skipped answer preflight and dropped resume binding'
   assert.notEqual(out.status,2,'mutation reached host instead of rejecting resume binding');
 });
 
-// V7 blocker: a lost confirmation asked again is never answered from confirm.json;
-// the driver needs confirm-reask.json naming the key and the new attempt.
+// V7: the driver never pre-answers a re-asked confirmation. The host registers the
+// new attempt, the driver stops naming key/attempt/gate/requestDigest, and only a
+// decision file bound to exactly that call is used on the next resume.
 import {createCmRefactorHost} from '../runtime/js/cm-refactor/host.mjs';
-test('re-asked confirmation requires a new decision file bound to key and attempt',async t=>{
-  const f=setup(t);assert.equal(f.run('start').status,0);
-  const lost=await createCmRefactorHost(f.config,{call:async()=>{throw Error('finish confirmation lost');}}).handle({operation:'finish'});
-  assert.equal(lost.stage,'blocked');
-  let out=f.run('finish');assert.equal(out.status,2);assert.match(out.stderr,/confirm_reask_decision_required/);
-  const reask=path.join(f.answers,'confirm-reask.json');
-  write(reask,{replaces:'host/finish-1',attempt:1,finish:'approved'});
-  out=f.run('finish');assert.equal(out.status,2);assert.match(out.stderr,/attempt=2/);
-  write(reask,{replaces:'host/finish-1',attempt:2,finish:'rejected'});
-  out=f.run('finish');assert.equal(out.status,0,out.stderr);
-  // confirm.json still says approved; the new decision (rejected) is the one used.
-  assert.equal(JSON.parse(out.stdout).result.stage,'awaiting_finish');
-});
-
-// Round-2 major: the host appended the lost confirmation's discard and exited before
-// the re-asked intent. The driver reads the re-ask from the persisted discard history.
 import {openRefactorRecords,effectDigest} from '../runtime/js/cm-refactor/records.mjs';
 import {refactorDiscardable} from '../runtime/js/cm-refactor/workflow.mjs';
-test('crash between the discard and the re-asked intent: the driver still requires and uses confirm-reask.json',async t=>{
+const lastConfirm=f=>{const records=openRefactorRecords(path.dirname(f.store),{discardable:refactorDiscardable});
+  const [key,entry]=[...records.effects].filter(([,item])=>item.kind==='host'&&item.input.kind==='refactor_confirm').at(-1);
+  return {key,attempt:entry.attempt??1,gate:entry.input.payload.gate,requestDigest:effectDigest(entry),answered:Object.hasOwn(entry,'result')};};
+async function reaskFlow(t,crashWindow){
   const f=setup(t);assert.equal(f.run('start').status,0);
   const lost=await createCmRefactorHost(f.config,{call:async()=>{throw Error('finish confirmation lost');}}).handle({operation:'finish'});
   assert.equal(lost.stage,'blocked');
-  const records=openRefactorRecords(path.dirname(f.store),{discardable:refactorDiscardable});records.acquire();
-  try{const entry=records.effects.get('host/finish-1');
-    records.discard({key:'host/finish-1',requestDigest:effectDigest(entry),evidence:'confirmation lost; host exited before re-asking'});}
-  finally{records.release();}
-  assert.equal(fs.readFileSync(f.store,'utf8').trimEnd().split('\n').map(line=>JSON.parse(line)).at(-1).type,'discard');
-  let out=f.run('finish');assert.equal(out.status,2);assert.match(out.stderr,/confirm_reask_decision_required/);assert.match(out.stderr,/"attempt":2/);
-  write(path.join(f.answers,'confirm-reask.json'),{replaces:'host/finish-1',attempt:2,finish:'rejected'});
-  out=f.run('finish');assert.equal(out.status,0,out.stderr);
+  if(crashWindow){
+    // The host appended the lost confirmation's discard and exited before the re-asked intent.
+    const records=openRefactorRecords(path.dirname(f.store),{discardable:refactorDiscardable});records.acquire();
+    try{const entry=records.effects.get('host/finish-1');
+      records.discard({key:'host/finish-1',requestDigest:effectDigest(entry),evidence:'confirmation lost; host exited before re-asking'});}
+    finally{records.release();}
+    assert.equal(fs.readFileSync(f.store,'utf8').trimEnd().split('\n').map(line=>JSON.parse(line)).at(-1).type,'discard');
+  }
+  // confirm.json still says finish: approved; the driver must not use it for the re-ask.
+  let out=f.run('finish');assert.notEqual(out.status,0);
+  const asked=lastConfirm(f);assert.deepEqual([asked.key,asked.attempt,asked.gate,asked.answered],['host/finish-1',2,'finish',false]);
+  assert.match(out.stderr,/confirm_reask_decision_required/);assert.match(out.stderr,new RegExp(asked.requestDigest));
+  out=f.run('resume');assert.equal(out.status,2);assert.match(out.stderr,/confirm_reask_decision_required/);
+  const reask=path.join(f.answers,'confirm-reask.json');
+  // A wrong gate, another attempt and another digest are refused and never used.
+  for(const stale of [{...asked,gate:'g0'},{...asked,attempt:1},{...asked,requestDigest:'0'.repeat(64)}]){
+    write(reask,{key:stale.key,attempt:stale.attempt,gate:stale.gate,requestDigest:stale.requestDigest,decision:'approved'});
+    out=f.run('resume');assert.equal(out.status,2);assert.match(out.stderr,/confirm_reask_decision_stale/);
+    assert.equal(lastConfirm(f).answered,false);
+  }
+  write(reask,{key:asked.key,attempt:asked.attempt,gate:asked.gate,requestDigest:asked.requestDigest,decision:'rejected'});
+  out=f.run('resume');assert.equal(out.status,0,out.stderr);assert.equal(lastConfirm(f).answered,true);
   assert.equal(JSON.parse(out.stdout).result.stage,'awaiting_finish');
-});
+  // The new decision (rejected) is the one recorded, not confirm.json's approved.
+  const rows=fs.readFileSync(f.store,'utf8').trimEnd().split('\n').map(line=>JSON.parse(line));
+  const adopted=rows.findLast(row=>row.type==='result'&&row.key==='host/finish-1');
+  assert.equal(adopted.result.value.decision,'rejected');assert.equal(adopted.result.confirmation.source,'operator_confirmed');
+}
+test('a re-asked confirmation is registered first, then answered only from a decision bound to that call',t=>reaskFlow(t,false));
+test('crash between the discard and the re-asked intent: the same stop, the same bound decision',t=>reaskFlow(t,true));

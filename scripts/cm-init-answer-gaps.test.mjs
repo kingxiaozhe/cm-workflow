@@ -200,44 +200,57 @@ test('notify classifies the new cm-init and cm-idea blocks as stuck',async()=>{
   assert.equal(classifyDriveResult('cm-init',{error:{code:'host_request_failed'}}),'stuck');
 });
 
-test('driver V7: a re-asked init_confirm needs confirm-reask.json naming the abandoned callId; confirm.json is not reused',{timeout:30000},async t=>{
-  const f=fixture(t);fs.writeFileSync(path.join(f.project,'AGENTS.md'),'# Original constraint\n');
+async function lostConfirm(t,f){
+  fs.writeFileSync(path.join(f.project,'AGENTS.md'),'# Original constraint\n');
   const respond=message=>message.kind==='init_verify'?{...checks('verified'),constraintChanges:['AGENTS.md']}:reply(message);
   let c=await client(t,f,respond);await c.request('start');await c.request('advance');await c.request('advance');await c.close();
   c=await client(t,f,(message,child)=>{setImmediate(()=>child.kill('SIGKILL'));});await c.request('advance');
-  const call=saved(f).pending.call;assert.equal(call.kind,'init_confirm');
-  const answers=path.join(f.dir,'answers');fs.mkdirSync(answers);fs.writeFileSync(path.join(answers,'confirm.json'),JSON.stringify({decision:'approved'}));
-  const drive=()=>{const plan=path.join(f.dir,'plan.json');
+  const call=saved(f).pending.call;assert.equal(call.kind,'init_confirm');return call;
+}
+function initDriver(f,resolution){
+  const answers=path.join(f.dir,'answers');fs.mkdirSync(answers,{recursive:true});
+  fs.writeFileSync(path.join(answers,'confirm.json'),JSON.stringify({decision:'approved'}));
+  const drive=(value=resolution)=>{const plan=path.join(f.dir,'plan.json');
     fs.writeFileSync(plan,JSON.stringify({project:f.project,sessionFile:f.file,mode:'resume',hostContext:'author-a',originalHostContext:'author-a',
-      answers:'answers',resolution:{callId:call.callId,requestDigest:call.requestDigest,abandon:true,evidence:'confirmation lost'}}));
+      answers:'answers',resolution:value}));
     return spawnSync(process.execPath,[path.join(root,'scripts/cm-init-drive.mjs'),'--plan',plan,'resume'],{encoding:'utf8',timeout:60000});};
-  let run=drive();assert.equal(run.status,2);assert.match(run.stderr,/confirm_reask_decision_required/);
-  assert.equal(saved(f).abandonedCalls,undefined);
-  fs.writeFileSync(path.join(answers,'confirm-reask.json'),JSON.stringify({decision:'approved',replaces:'other'}));
-  run=drive();assert.equal(run.status,2);assert.match(run.stderr,/replaces/);
-  fs.writeFileSync(path.join(answers,'confirm-reask.json'),JSON.stringify({decision:'rejected',replaces:call.callId}));
-  run=drive();assert.equal(run.status,0,run.stderr);assert.equal(JSON.parse(run.stdout).result.stage,'confirmation_rejected');
+  return {answers,reask:path.join(answers,'confirm-reask.json'),drive};
+}
+// After the stop: only a decision bound to the newly registered call is used.
+function answerRegisteredInit(f,d,old){
+  const call=saved(f).pending.call;assert.equal(call.kind,'init_confirm');assert.equal(Object.hasOwn(call,'result'),false);
+  assert.notEqual(call.callId,old.callId);
+  if(fs.existsSync(d.reask)){const stale=d.drive(null);assert.equal(stale.status,2);assert.match(stale.stderr,/confirm_reask_decision_stale/);fs.rmSync(d.reask);}
+  let run=d.drive(null);assert.equal(run.status,2);assert.match(run.stderr,/confirm_reask_decision_required/);assert.match(run.stderr,new RegExp(call.callId));
+  for(const stale of [{decision:'approved',replaces:old.callId},{callId:old.callId,requestDigest:old.requestDigest,decision:'approved'},
+    {callId:call.callId,requestDigest:'0'.repeat(64),decision:'approved'}]){
+    fs.writeFileSync(d.reask,JSON.stringify(stale));run=d.drive(null);assert.equal(run.status,2);assert.match(run.stderr,/confirm_reask_decision_stale/);
+    assert.equal(Object.hasOwn(saved(f).pending.call,'result'),false);
+  }
+  fs.writeFileSync(d.reask,JSON.stringify({callId:call.callId,requestDigest:call.requestDigest,decision:'rejected'}));
+  run=d.drive(null);assert.equal(run.status,0,run.stderr);assert.equal(JSON.parse(run.stdout).result.stage,'confirmation_rejected');
+}
+test('driver V7: a re-asked init_confirm is registered first; confirm.json and decisions bound to other calls are never used',{timeout:60000},async t=>{
+  const f=fixture(t),call=await lostConfirm(t,f),d=initDriver(f,null);
+  const run=d.drive({callId:call.callId,requestDigest:call.requestDigest,abandon:true,evidence:'confirmation lost'});
+  assert.equal(run.status,2);assert.match(run.stderr,/confirm_reask_decision_required/);
+  answerRegisteredInit(f,d,call);
 });
-
-// Round-2 blocker: the abandon was recorded (pending.call cleared) and the host exited
-// before registering the re-asked confirmation; a plain resume still needs the fresh decision.
-test('driver V7 crash window: a plain resume after a recorded abandon needs confirm-reask.json, never confirm.json',{timeout:30000},async t=>{
-  const f=fixture(t);fs.writeFileSync(path.join(f.project,'AGENTS.md'),'# Original constraint\n');
-  const respond=message=>message.kind==='init_verify'?{...checks('verified'),constraintChanges:['AGENTS.md']}:reply(message);
-  let c=await client(t,f,respond);await c.request('start');await c.request('advance');await c.request('advance');await c.close();
-  c=await client(t,f,(message,child)=>{setImmediate(()=>child.kill('SIGKILL'));});await c.request('advance');
-  const state=saved(f),call=state.pending.call;assert.equal(call.kind,'init_confirm');
+// Round-2 narrow review: a decision bound to an earlier (historical) confirmation is
+// on disk when a later confirmation is re-issued after a crash; it is never reused.
+test('driver V7 cross-request: after a crash before registration, a stale decision of an earlier call is refused',{timeout:60000},async t=>{
+  const f=fixture(t),call=await lostConfirm(t,f),state=saved(f);
   const {createHash}=await import('node:crypto');const evidence='confirmation lost';
   state.abandonedCalls=[{kind:call.kind,callId:call.callId,requestDigest:call.requestDigest,operation:state.pending.request.operation,
     reason:'answer_missing',resultDigest:null,evidence:{sha256:createHash('sha256').update(JSON.stringify(evidence)).digest('hex'),length:evidence.length},
     at:new Date().toISOString()}];
   state.pending={...state.pending,call:null};fs.writeFileSync(f.file,JSON.stringify(state),{mode:0o600});
-  const answers=path.join(f.dir,'answers');fs.mkdirSync(answers);fs.writeFileSync(path.join(answers,'confirm.json'),JSON.stringify({decision:'approved'}));
-  const drive=()=>{const plan=path.join(f.dir,'plan.json');
-    fs.writeFileSync(plan,JSON.stringify({project:f.project,sessionFile:f.file,mode:'resume',hostContext:'author-a',originalHostContext:'author-a',
-      answers:'answers',resolution:null}));
-    return spawnSync(process.execPath,[path.join(root,'scripts/cm-init-drive.mjs'),'--plan',plan,'resume'],{encoding:'utf8',timeout:60000});};
-  let run=drive();assert.equal(run.status,2,run.stdout);assert.match(run.stderr,/confirm_reask_decision_required/);
-  fs.writeFileSync(path.join(answers,'confirm-reask.json'),JSON.stringify({decision:'rejected',replaces:call.callId}));
-  run=drive();assert.equal(run.status,0,run.stderr);assert.equal(JSON.parse(run.stdout).result.stage,'confirmation_rejected');
+  const d=initDriver(f,null);
+  // The earlier call's approval, in both the old and the new decision-file shapes.
+  for(const stale of [{decision:'approved',replaces:call.callId},{callId:call.callId,requestDigest:call.requestDigest,decision:'approved'}]){
+    fs.writeFileSync(d.reask,JSON.stringify(stale));
+    const run=d.drive(null);assert.equal(run.status,2,run.stdout);
+    assert.match(run.stderr,/confirm_reask_decision_(required|stale)/);assert.notEqual(saved(f).checkpoint.stage,'review_required');
+  }
+  answerRegisteredInit(f,d,call);
 });

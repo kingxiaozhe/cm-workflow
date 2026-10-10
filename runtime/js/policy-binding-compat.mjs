@@ -33,7 +33,8 @@ export const LEGACY_TEST_POLICIES=Object.freeze([Object.freeze({since:'0b3040e',
   policy:'0a80dde424c5aea90fc05ea2bb919a8bdb1ae4a2788d252e2b97a7de135f8bf4',changed:'skills/cm-test/references/js-host.md'})]);
 // Known versions of the changed documents that may continue a legacy binding.
 export const POLICY_DOC_SUCCESSORS=Object.freeze({
-  'skills/cm-init/references/js-host.md':Object.freeze(['d3d6ad0b02ee7d3863302c49a9434b1a9f423e8ab4ff332cd9ad077a0b270fb1']),
+  'skills/cm-init/references/js-host.md':Object.freeze(['d3d6ad0b02ee7d3863302c49a9434b1a9f423e8ab4ff332cd9ad077a0b270fb1',
+    '223dd3a4a4172591480bff818bc81216d5554ea1c7c7785619ccab33ee3fd833']),
   'skills/cm-test/references/js-host.md':Object.freeze(['0a6023c9036693a93a17650872b634b33d68eecc2fbece188519e94e31452e8c']),
 });
 // cm-init: files is the current [[relativePath, content|null], ...] policy list.
