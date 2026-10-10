@@ -184,3 +184,23 @@ test('real host: a non-empty but invalid review is not published and can be disc
   run=await serve(t,config,temp,respond,[{operation:'resume',discard:{key,requestDigest,evidence:'handoff digest was wrong'}}]);
   assert.equal(run.results[0].stage,'awaiting_finish',JSON.stringify(run.results[0]));assert.ok(fs.existsSync(review));
 });
+
+test('a lost confirmation is asked again at most twice, each time recorded; then refactor_confirm_reask_limit',{timeout:60000},async t=>{
+  const {config,project}=fixture(t);
+  assert.equal((await createCmRefactorHost(config,{call:async(kind,payload)=>response(kind,payload)}).handle({operation:'start'})).stage,'awaiting_finish');
+  const asked=[];
+  const lose=createCmRefactorHost(config,{call:async(kind,payload)=>{asked.push(payload);throw Error('confirmation lost');}});
+  assert.equal((await lose.handle({operation:'finish'})).stage,'blocked');
+  for(let n=1;n<=2;n++){
+    const result=await createCmRefactorHost(config,{call:async(kind,payload)=>{asked.push(payload);throw Error('lost again');}}).handle({operation:'finish'});
+    assert.equal(result.stage,'blocked');assert.notEqual(result.reason,'refactor_confirm_reask_limit');
+  }
+  assert.deepEqual(asked.map(item=>item.recovery?.attempt??1),[1,2,3]);
+  const limited=await createCmRefactorHost(config,{call:async()=>assert.fail('no third re-ask')}).handle({operation:'finish'});
+  assert.equal(limited.reason,'refactor_confirm_reask_limit');assert.match(limited.guidance.summary,/2 次/);
+  const discards=rows(project).filter(row=>row.type==='discard');
+  assert.deepEqual(discards.map(row=>[row.kind,row.reason,row.attempt]),[['refactor_confirm','answer_missing',1],['refactor_confirm','answer_missing',2]]);
+  // Replay rebuilds both records (the shared per-kind limit is enforced on replay, see the over-limit test).
+  const records=openRefactorRecords(path.dirname(journalFile(project)),{discardable:refactorDiscardable});
+  assert.equal(records.discards.length,2);
+});

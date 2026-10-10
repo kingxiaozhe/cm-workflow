@@ -30,6 +30,8 @@ export const refactorDiscardable=kind=>REFACTOR_REASKABLE_KINDS.includes(kind)?{
 function refactorGuidance(reason,recovery){
   const unknown=recovery.unknown,last=recovery.lastAnswer;
   const blocking=unknown.find(item=>item.kind!=='host'||!REFACTOR_REASKABLE_KINDS.includes(item.callKind));
+  if(reason==='refactor_confirm_reask_limit')return {summary:'当前用户的确认已经丢失并重新问过 2 次，本运行不再重问。',
+    nextStep:'先查清确认为什么一直拿不到（会话断开、超时或宿主反复退出）；交人处理，确认仍需要时另起新运行。',recoveryOperation:null,authorizationGranted:false};
   if(unknown.length&&blocking)return {summary:`原${blocking.kind==='command'?'命令':blocking.kind==='write'?'写盘':'宿主'}结果未知（${blocking.key}），宿主不能证明它没执行或已清理。`,
     nextStep:'找回原宿主回执后 resume，由会话在 refactor_recover 中给出 completed（命令须 cleanupConfirmed:true）或 not_started；这类结果不能作废重做，也不要手删归档。',
     recoveryOperation:'resume',authorizationGranted:false};
@@ -132,9 +134,6 @@ export function createCmRefactorHost(raw,{call}){
     },(_entry,perform)=>perform()); // Original writer deduplicates the exact deterministic event identity.
   }
   async function recover(entry,perform){
-    // V7: a lost confirmation is asked of the person again under the same
-    // intent; an answer bound to the lost call is never adopted.
-    if(entry.kind==='host'&&entry.input.kind==='refactor_confirm'){guard();return perform();}
     // A re-asked call (attempt > 1) is reconciled as that attempt only: the
     // answer must name it, so a receipt of a discarded attempt is never adopted.
     const attempt=entry.attempt??1;
@@ -158,7 +157,15 @@ export function createCmRefactorHost(raw,{call}){
       // A re-asked call names its attempt, so the session can tell it from the discarded one.
       const result=json(await call(kind,attempt>1?{...payload,recovery:{key:`host/${key}`,attempt}}:payload,controller.signal),1024*1024);
       guard();need(!controller.signal.aborted,'cancelled');return {value:result,durationMs:Date.now()-at};
-    },recover).then(result=>result.value);
+    },recover,{
+      // V7: a lost confirmation is asked of the person again as a new attempt,
+      // recorded by an ordinary discard row (counted, at most 2 per run); an
+      // answer bound to the lost call is never adopted.
+      reask:old=>old.input.kind==='refactor_confirm'?(guard(),'V7：原确认结果丢失，自动重新问当前用户'):null,
+    }).then(result=>result.value,error=>{
+      if(kind==='refactor_confirm'&&error?.code==='refactor_discard_limit')
+        throw Object.assign(new Error('refactor_confirm_reask_limit'),{code:'refactor_confirm_reask_limit'});
+      throw error;});
   }
   async function confirm(key,gate,payload){
     humanCalls++;await event(`${key}-pause`,'pause',gate);progress(`awaiting_${gate}`);
