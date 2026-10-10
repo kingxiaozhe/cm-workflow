@@ -99,16 +99,24 @@ export function classifyCommand(home,command){
   if(command.length===1&&path.isAbsolute(command[0])&&path.resolve(command[0])===path.join(home,LEGACY_SCRIPT))return 'legacy';
   return 'custom';
 }
-// notify.json is read once per operation; `test` runs exactly this snapshot.
-function loadConfig(home){
-  const file=path.join(home,NOTIFY_FILE),off=path.join(home,OFF_FILE);
-  let raw;
-  try{raw=fs.readFileSync(file,'utf8');}
+// notify.json and notify.off.json are read only through the safe boundary
+// (never via a symlink, regular file, size cap, same file object), as exact
+// bytes so the content matches what the runtime sees. null = no such file.
+const UNSAFE_REASON={permission:'not_regular_file',too_large:'too_large'};
+async function readConfigBytes(file){
+  try{return {bytes:await readRegularFile(file,path.basename(file),{bytes:true})};}
   catch(error){
-    if(error.code!=='ENOENT')return {file,state:'invalid',reason:`unreadable_${error.code??'error'}`,command:null};
-    return {file,state:lstat(off)?'off':'missing',command:null};
+    if(error instanceof SendError&&error.detail.state==='missing')return {bytes:null};
+    return {bytes:null,reason:error instanceof SendError?UNSAFE_REASON[error.detail.reason]??'unreadable':'unreadable'};
   }
-  const parsed=parseNotifyConfig(raw);
+}
+// notify.json is read once per operation; `test` runs exactly this snapshot.
+async function loadConfig(home){
+  const file=path.join(home,NOTIFY_FILE),off=path.join(home,OFF_FILE);
+  const {bytes,reason}=await readConfigBytes(file);
+  if(reason)return {file,state:'invalid',reason,command:null};
+  if(bytes===null)return {file,state:lstat(off)?'off':'missing',command:null};
+  const parsed=parseNotifyConfig(bytes.toString('utf8'));
   if(parsed.reason)return {file,state:'invalid',reason:parsed.reason,command:null};
   const {command,text}=parsed.config;
   // Optional custom text: default, custom, or invalid (then the default text is used).
@@ -128,15 +136,17 @@ function describeConfig(home,{command,textSpec,...snapshot},{senderSource=SENDER
   }
   return result;
 }
-const inspectConfig=(home,options)=>describeConfig(home,loadConfig(home),options);
+const inspectConfig=async(home,options)=>describeConfig(home,await loadConfig(home),options);
 
 export async function notifyStatus(home,{platform=process.platform,...options}={}){
-  const config=inspectConfig(home,options),channelFile=await inspectChannelFile(home,{platform});
+  const config=await inspectConfig(home,options),channelFile=await inspectChannelFile(home,{platform});
   const channels={};for(const name of Object.keys(CHANNELS))channels[name]=await inspectSecret(home,name,{platform});
   const active=platform!=='win32'&&['managed','legacy'].includes(config.state)&&channelFile.state==='ok'?channelFile.value:null;
   return {home,platform,config,channelFile,channels,active};
 }
 
+const UNSAFE_WORD={not_regular_file:'notify.json 不是普通文件（可能是符号链接），cm-notify 不读取它，无法确认提醒是否生效',
+  too_large:'notify.json 超过 64 KiB，cm-notify 不读取它，无法确认提醒是否生效'};
 const STATE_WORD={missing:'未填写（文件不存在）',empty:'未填写',invalid:'格式不对',ok:'已填写，可解析',unchecked:'文件存在（Windows 上不读取内容，无法判断是否填好）'};
 export function formatStatus(status){
   const {config,channelFile,channels,active}=status,lines=[`CM 提醒设置（目录 ${status.home}）`];
@@ -148,7 +158,7 @@ export function formatStatus(status){
     custom:'自定义命令（cm-notify 不管理，切换渠道不会改它，除非加 --replace-custom）',
     missing:'未开启（没有 notify.json）',
     off:`已关闭（配置已移到 ${OFF_FILE}，切换渠道即重新开启）`,
-    invalid:`notify.json 无效（${config.reason}），提醒实际关闭`};
+    invalid:UNSAFE_WORD[config.reason]??`notify.json 无效（${config.reason}），提醒实际关闭`};
   lines.push(`发送命令：${describe[config.state]}`);
   if(['managed','legacy','custom'].includes(config.state)&&!config.programExists)
     lines.push(`  警告：命令程序 ${config.program} 不存在（node 可能已移动或升级），重新执行 /cm:notify <渠道> 修复`);
@@ -180,8 +190,8 @@ export const PREVIEW_EVENTS=Object.freeze([
   {event:'idle_waiting',name:'在等你',stage:'blocked',code:'waiting_for_you',nextAction:'上一步停在需要你处理的状态，约 45 分钟没有下一步，请回到会话处理'},
   {event:'dead',name:'宿主已退出未收尾',stage:'1 个宿主进程已不在',code:'host_process_gone',nextAction:'请回到会话用 status 核对运行状态，需要时按恢复说明接手'},
   {event:'done',name:'流程已结束',stage:'run_done',code:'run_done',nextAction:'建议在新会话里开始下一个任务，减少重复读入的上下文'}]);
-export function previewText(home,{now=Date.now(),timeZone}={}){
-  const {state,textState=null,textReason=null,textSpec=null}=loadConfig(home);
+export async function previewText(home,{now=Date.now(),timeZone}={}){
+  const {state,textState=null,textReason=null,textSpec=null}=await loadConfig(home);
   const messages=PREVIEW_EVENTS.map(({name,...fields})=>({event:fields.event,name,
     ...buildNotifyMessage({...PREVIEW_SAMPLE,...fields},{now,timeZone,text:textSpec})}));
   return {state,textState,textReason,messages};
@@ -213,10 +223,11 @@ function writeAtomic(file,data,mode=0o600,ops=FS_OPS){
 // put back from the previous bytes held in memory. No extra copies are made:
 // a file that cannot be put back is reported by path, never silently kept.
 class ApplyError extends Error{constructor(cause,restored,unrestored){super(cause);Object.assign(this,{restored,unrestored});}}
+// An item may carry `before` already read through the safe boundary.
 function applyAll(writes,{ops=FS_OPS}={}){
   const done=[];let failedFile=null;
   try{
-    for(const item of writes){failedFile=item.file;const before=readBytes(item.file);writeAtomic(item.file,item.data,item.mode,ops);done.push({file:item.file,before});}
+    for(const item of writes){failedFile=item.file;const before=Object.hasOwn(item,'before')?item.before:readBytes(item.file);writeAtomic(item.file,item.data,item.mode,ops);done.push({file:item.file,before});}
   }catch(error){
     const restored=[],unrestored=[];
     for(const {file,before} of done.reverse()){
@@ -257,7 +268,8 @@ export async function switchChannel(home,channel,{platform=process.platform,repl
   const file=path.join(home,NOTIFY_FILE),offFile=path.join(home,OFF_FILE);
   for(const item of [file,offFile,path.join(home,CHANNEL_FILE),managedSenderPath(home)])safeTarget(item);
   const fromOff=!lstat(file)&&Boolean(lstat(offFile));
-  const baseFile=fromOff?offFile:file,baseRaw=readBytes(baseFile);
+  const baseFile=fromOff?offFile:file,baseRead=await readConfigBytes(baseFile),baseRaw=baseRead.bytes;
+  if(baseRead.reason)refuse(`${baseFile} ${baseRead.reason==='too_large'?'超过 64 KiB':'不是普通文件（可能是符号链接）或无法安全读取'}，cm-notify 不会改它`);
   let base={version:1};
   if(baseRaw!==null){
     try{base=JSON.parse(baseRaw.toString('utf8'));}catch{refuse(`${baseFile} 不是有效 JSON，cm-notify 不会改它；请先修好或移走`);}
@@ -282,10 +294,13 @@ export async function switchChannel(home,channel,{platform=process.platform,repl
     catch(error){refuse(`没有切换：备份 ${baseFile} 失败（${error.code??'error'}），什么都没改`);}
   }
   try{
+    // notify.json's previous bytes (for rollback) come through the safe boundary too.
+    const current=await readConfigBytes(file);
+    if(current.reason)throw new ApplyError(`${file} 不是普通文件或无法安全读取，没有写入`,[],[]);
     applyAll([
       {file:sender,data:source,mode:0o600},
       {file:path.join(home,CHANNEL_FILE),data:`# CM 提醒渠道，由 /cm:notify 维护；同一时刻只开一个：bark 或 pushplus\nCHANNEL=${channel}\n`,mode:0o600},
-      {file,data:`${JSON.stringify(next,null,2)}\n`,mode:0o600},
+      {file,data:`${JSON.stringify(next,null,2)}\n`,mode:0o600,before:current.bytes},
     ],{ops});
   }catch(error){
     if(!(error instanceof ApplyError))throw error;
@@ -340,7 +355,7 @@ export function turnOff(home,{now=Date.now(),ops={renameSync:fs.renameSync}}={})
 // checked at all: the redacted request is built here from the channel file only.
 export async function sendTest(home,{platform=process.platform,env=process.env,now=Date.now(),timeoutMs=NOTIFY_LIMITS.commandTimeoutMs,beforeSpawn}={}){
   if(platform==='win32')refuse(WINDOWS_UNSUPPORTED);// also covers dry-run
-  const snapshot=loadConfig(home),config=describeConfig(home,snapshot);
+  const snapshot=await loadConfig(home),config=describeConfig(home,snapshot);
   if(config.state==='missing'||config.state==='off')refuse('提醒未开启：先执行 /cm:notify bark 或 /cm:notify pushplus');
   if(config.state==='invalid')refuse(`notify.json 无效（${config.reason}），先修好或重新选择渠道`);
   const dry=env.CM_NOTIFY_DRY_RUN==='1';
@@ -415,7 +430,7 @@ export async function main(argv=process.argv.slice(2),{env=process.env,stdout=pr
       say(stdout,flags.has('--json')?JSON.stringify(status,null,2):formatStatus(status));return 0;
     }
     if(sub==='preview'){
-      const preview=previewText(home);
+      const preview=await previewText(home);
       say(stdout,flags.has('--json')?JSON.stringify(preview,null,2):formatPreview(preview));return 0;
     }
     if(sub==='off'){
