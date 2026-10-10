@@ -1217,14 +1217,24 @@ export function readRunnerHistory(raw,config,version=1) {
   // A pending effect that effect-interrupted may retire: no task-commit-intent,
   // not cancelled, a review never registered, and after the intent only the
   // records its kind may leave behind (controls, a join, worker records).
+  // Q16: the documentation start a pending develop belongs to. Its own once
+  // documentation_sync was asked; before that (a documentation-only redo whose
+  // host died between its intent and its new start record) the start of the
+  // failure the redo was confirmed for, which the intent's prior state names.
+  const documentationOrigin=()=>{
+    if(pending?.kind!=='develop')return null;
+    if(pendingDocumentation!==null)return pendingDocumentation;
+    if(beforeIntent?.state!=='blocked'||!DOCUMENTATION_SYNC_CODES.includes(beforeIntent.code))return null;
+    const digest=beforeIntent.calls.at(-1)?.documentationSync,payload=documentationRecords.get(digest);
+    return payload===undefined?null:{digest,payload};
+  };
   const pendingInterruptible=(effect,intentIndex,end)=>version===3&&!(config.externalModels||config.executionPolicy)
     &&effect!==null&&Object.hasOwn(INTERRUPTIBLE_TRAILERS,effect.kind)&&transaction===null&&state.taskCommit?.intentDigest==null
     &&!controls.cancelled&&!controls.workflowError&&(effect.kind!=='review'||!invocation.registration)
     &&interrupted.filter(item=>item.kind===effect.kind).length<MAX_EFFECT_INTERRUPTIONS
     // Q16: one that died during documentation_sync is a documentation retry and
     // shares that cap; once spent, abandon_effect only voids the run.
-    &&(!records.slice(intentIndex+1,end).some(row=>row.payload.type==='documentation-sync-started')
-      ||answerGaps.documentationSync<MAX_DOCUMENTATION_SYNC_RETRIES)
+    &&(documentationOrigin()===null||answerGaps.documentationSync<MAX_DOCUMENTATION_SYNC_RETRIES)
     &&records.slice(intentIndex+1,end).every(row=>INTERRUPTIBLE_TRAILERS[effect.kind].includes(row.payload.type));
   // A pending develop whose only trailers are controls and worker records may
   // still be voided (effect-abandoned) once the interruption cap is spent.
@@ -1578,12 +1588,12 @@ export function readRunnerHistory(raw,config,version=1) {
       // Q16: a develop that died during documentation_sync names its start record
       // and the documentation paths as they were when the operator confirmed
       // the old host and session stopped (this record); exactly then.
-      const documentationInterrupted=pending?.kind==='develop'&&pendingDocumentation!==null;
+      const origin=documentationOrigin(),documentationInterrupted=origin!==null;
       need(documentationInterrupted===Object.hasOwn(p,'startDigest')&&documentationInterrupted===Object.hasOwn(p,'documents'),'runner_interrupt');
       if(documentationInterrupted){
-        need(p.startDigest===pendingDocumentation.digest,'runner_interrupt');
+        need(p.startDigest===origin.digest,'runner_interrupt');
         validDocumentationStates(p.documents,config.scope);
-        same(p.documents.map(item=>item.path),pendingDocumentation.payload.documents.map(item=>item.path));
+        same(p.documents.map(item=>item.path),origin.payload.documents.map(item=>item.path));
       }
       need(r.kind==='result'&&pending&&intentIndex>=0&&pendingInterruptible(pending,intentIndex,index),'runner_interrupt');
       need(p.effectId===pending.id&&p.effectKind===pending.kind&&p.intentDigest===records[intentIndex].digest
@@ -1614,7 +1624,7 @@ export function readRunnerHistory(raw,config,version=1) {
         state.calls.push({invocationId:request.invocationId,contextId:config.developer.contextId,provider:config.developer.provider,
           requestedModel:config.developer.requestedModel,effectiveModel:'unknown',channel:'fixture',started:true,
           terminal:'abandoned',requestDigest:request.requestDigest,resultDigest:r.digest,
-          ...(documentationInterrupted?{documentationSync:pendingDocumentation.digest}:{})});
+          ...(documentationInterrupted?{documentationSync:origin.digest}:{})});
         state.sequence++;
         if(documentationInterrupted){
           // The developer had answered (journaled): redo only documentation_sync.
@@ -1752,7 +1762,7 @@ export function readRunnerHistory(raw,config,version=1) {
       pendingResultAbandonable:pending!==null&&pendingResultAbandonable(),
       pendingInterruptLimit:interruptLimit,pendingWorkerVoidable:workerVoidable,
       pendingWorker:pending?.kind==='develop'&&pendingWorker?workerSummary(pendingWorker):null,
-      pendingDocumentation:pending?.kind==='develop'?pendingDocumentation:null,
+      pendingDocumentation:documentationOrigin(),
       reviewReconciliation:lastReview?.reconciliation&&['unknown','pending_review'].includes(state.state)?{...reconciliationBinding(),
         ...lastReview.reconciliation,request:lastReview.request,effect:lastReview.effect,before:lastReview.before}:null,
       pendingObservedReview:pending?.kind==='review'&&invocation.result?.outcome==='observed'

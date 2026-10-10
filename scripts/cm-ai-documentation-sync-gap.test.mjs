@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {openControlRun} from './cm-ai-run.mjs';
 import {gapFixture,gapExecution,identity,records,added} from './cm-ai-answer-gap-fixture.mjs';
+import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 
 // paths: the documentation paths (README.md first, always written by {write}).
 const docFixture=(t,name,paths=['README.md'])=>{
@@ -342,4 +343,50 @@ test('Q16 host exit during a documentation_sync retry: the interruption is the s
   assert.equal(f.calls.developer,1);
   assert.equal(delivered.code,'documentation_sync_retry_limit',JSON.stringify(delivered));
   assert.equal(f.calls.documentation,3,'first, the interrupted retry, the last attempt');
+});
+
+// Review r2 #1: the host dies after the redo's new effect-intent, before its new
+// documentation-sync-started. The torn tail is made by dropping that last record
+// (the chain and the revision are re-sealed, as the store would have left them).
+function dropLastRecord(f){
+  const state=JSON.parse(fs.readFileSync(f.store,'utf8'));
+  state.records.pop();const {revision,...data}=state;
+  fs.writeFileSync(f.store,JSON.stringify({...data,revision:digest(data)})+'\n');
+}
+test('Q16 host exit between a documentation redo\'s intent and its start record: abandon_effect redoes only documentation_sync within the cap',async t=>{
+  const f=docFixture(t,'doc-intent-only');
+  await docSession(f,'create',docExecution(f,{developer:['delivered\n'],sync:[{status:'blocked'}]}),[['advance',1]]);
+  assert.equal((await confirm(f)).outcome,'recorded');
+  await dieDuringSync(f,docExecution(f,{sync:[{hang:true}]}));
+  const first=records(f).find(row=>row.payload.type==='documentation-sync-started');
+  dropLastRecord(f);
+  assert.equal(records(f).at(-1).payload.type,'effect-intent',JSON.stringify(records(f).map(row=>row.payload.type)));
+  const {readRunnerHistory}=await import('../runtime/js/cm-ai/durable-runner-state.mjs');
+  const probe=readRunnerHistory(records(f),records(f)[0].payload.config,3);
+  assert.equal(probe.pendingDocumentation?.digest,first.digest,'the redo inherits the failed start');
+  const [pending]=await docSession(f,'resume',docExecution(f),[['status',1]]);
+  assert.equal(pending.pendingAction,'abandon_effect',JSON.stringify(pending));
+  const [interrupted]=await docSession(f,'resume',docExecution(f),
+    [['abandon_effect',1,{reason:'旧宿主与会话都已退出'}]],{allowAbandonEffect:true});
+  assert.deepEqual([interrupted.state,interrupted.code,interrupted.pendingAction],['blocked','documentation_sync_interrupted','resume'],JSON.stringify(interrupted));
+  const record=records(f).at(-1).payload;
+  assert.deepEqual([record.type,record.startDigest],['effect-interrupted',first.digest]);
+  assert.equal(readRunnerHistory(records(f),records(f)[0].payload.config,3).answerGaps.documentationSync,2);
+  const before=records(f);
+  const [delivered]=await docSession(f,'resume',docExecution(f,{sync:[{write:'# Final\n'}],verdicts:['approved']}),[['advance',1]]);
+  assert.equal(f.calls.developer,1,'develop is never redispatched');assert.equal(f.calls.documentation,3);
+  const checkpoint=records(f).find((row,index)=>index>=before.length&&row.payload.type==='effect-checkpoint').payload.checkpoint;
+  assert.equal(checkpoint.state,'awaiting_review',JSON.stringify(delivered));
+});
+test('Q16 host exit between a documentation redo\'s intent and its start record, with both retries spent: abandon_effect only voids the run',async t=>{
+  const f=docFixture(t,'doc-intent-only-cap');
+  await docSession(f,'create',docExecution(f,{developer:['delivered\n'],sync:[{status:'blocked'}]}),[['advance',1]]);
+  assert.equal((await confirm(f)).outcome,'recorded');
+  await docSession(f,'resume',docExecution(f,{sync:[{status:'blocked'}]}),[['advance',1]]);
+  assert.equal((await confirm(f)).outcome,'recorded');
+  await dieDuringSync(f,docExecution(f,{sync:[{hang:true}]}));
+  dropLastRecord(f);
+  const [voided]=await docSession(f,'resume',docExecution(f),[['abandon_effect',1,{reason:'旧宿主已退出'}]],{allowAbandonEffect:true});
+  assert.deepEqual([voided.state,voided.code],['cancelled','effect_abandoned'],JSON.stringify(voided));
+  assert.equal(f.calls.developer,1);
 });
