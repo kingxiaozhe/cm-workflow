@@ -44,6 +44,7 @@ ALLOW_LOOPBACK_ENDPOINT_FILES = {
     Path("scripts/cm-claude-probe.test.mjs"),
     Path("scripts/cm-fix-visual-bare.test.mjs"),
     Path("scripts/cm-fix-walkthrough.test.mjs"),
+    Path("scripts/cm-notify-command.test.mjs"),
     Path("scripts/cm-host-qa-executor.test.mjs"),
     Path("scripts/cm-test-host.test.mjs"),
     Path("scripts/cm-test-answer-gaps.test.mjs"),

@@ -60,10 +60,29 @@ test('message is bounded and built only from the structured fields',()=>{
   for(const forbidden of ['DIFF-CONTENT','LOG-CONTENT','SECRET','push.env','/srv/','/very/secret','~/secret','\0'])
     assert(!message.body.includes(forbidden)&&!message.title.includes(forbidden),forbidden);
   assert.match(message.body,/<路径>/);
-  const short=buildNotifyMessage(fields('k'),{now:NOW});
+  const short=buildNotifyMessage(fields('k'),{now:NOW,timeZone:'Asia/Shanghai'});
   assert.equal(short.title,'CM cm-fix 需要人处理 · demo-app');
-  assert.match(short.body,/^项目：demo-app\n流程：cm-fix\n运行：run-1\n任务：T-001\n阶段：blocked\n原因：checks_not_passed\n下一步：/);
-  assert.match(short.body,/CM 不会自动继续/);
+  assert.equal(short.body,'下一步：核对 reason 后恢复原运行\n项目：demo-app\n流程：cm-fix\n任务：T-001\n阶段：blocked\n原因：checks_not_passed\n时间：16:00');
+  assert.doesNotMatch(short.body,/运行：|run-1|CM 不会自动继续/);
+});
+
+test('done shows only project, task and local time; empty fields are left out',()=>{
+  const done=buildNotifyMessage(fields('k',{event:'done',stage:'run_done',code:'run_done',nextAction:'建议在新会话里开始下一个任务'}),
+    {now:NOW,timeZone:'Asia/Shanghai'});
+  assert.equal(done.title,'CM cm-fix 流程已结束 · demo-app');
+  assert.equal(done.body,'项目：demo-app\n任务：T-001\n时间：16:00');
+  assert.equal(buildNotifyMessage(fields('k',{event:'done',task:null}),{now:NOW,timeZone:'UTC'}).body,'项目：demo-app\n时间：08:00');
+  assert.equal(buildNotifyMessage({workflow:'cm-ai',event:'waiting'},{now:NOW,timeZone:'America/New_York'}).body,'流程：cm-ai\n时间：04:00');
+  assert.equal(buildNotifyMessage({workflow:'cm-ai'},{now:Date.parse('2026-10-08T16:05:00.000Z'),timeZone:'Asia/Shanghai'}).body,'流程：cm-ai\n时间：00:05');
+});
+
+test('without an injected time zone the clock follows the process TZ',()=>{
+  const script=`import {buildNotifyMessage} from ${JSON.stringify(new URL('../runtime/js/notify.mjs',import.meta.url).href)};
+process.stdout.write(buildNotifyMessage({workflow:'cm-ai',event:'done',project:'/p/demo'},{now:${NOW}}).body);`;
+  for(const [tz,clock] of [['Asia/Shanghai','16:00'],['UTC','08:00'],['America/Los_Angeles','01:00']]){
+    const run=spawnSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8',env:{...process.env,TZ:tz}});
+    assert.equal(run.status,0,run.stderr);assert.equal(run.stdout,`项目：demo\n时间：${clock}`);
+  }
 });
 
 test('sends through env and stdin once per key; the same key within 6 hours is skipped',async t=>{

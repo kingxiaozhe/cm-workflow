@@ -65,6 +65,12 @@ cm-ai 的 V3 会话父运行用 `--original-host-context` 恢复后，QA 修复�
 
 **下一步**：补齐上述执行证据类 runner（PDF/HTML 读取、浏览器执行），证据必须来自实际运行；驾驶员的预检表仍须从各宿主的操作路由推导，不能照搬。
 
+### 4. /cm:notify 的 Windows 支持
+
+**现状**：Windows 上 `/cm:notify` 的切换、`test`（含演练）与托管发送器（含 `--check`）一律以退出码 2 拒绝，查看只显示文件是否存在、不读密钥内容。原因是密钥文件的所有者与访问规则核对还没有可靠做法：按路径读 ACL 再读句柄，中间可被换掉又换回，也没有实机验证。
+
+**下一步**：做绑定到已打开句柄的所有者与 ACL 核对（不能只按路径），区分 NULL 与空 DACL，再在 Windows 实机上测试通过后，才解除 `runtime/js/notify-send.mjs` 的 `WINDOWS_UNSUPPORTED` 拒绝。
+
 ## 第四档：内部协议分支（清单里的 B 类）
 
 **已完成**：B 类六项都已在 CI 执行的 `scripts/*.test.mjs` 补测试并完成变异验证。`gzip` / `zstd` / 未声明编码的回环测试由审查方在沙箱外运行通过，并做了 gzip 解码故意改坏的变异验证（注意 `cm-claude-probe` 整份测试只在 macOS 运行，Linux CI 上跳过）。明细见 `docs/untested-branches.md` 的已覆盖表。

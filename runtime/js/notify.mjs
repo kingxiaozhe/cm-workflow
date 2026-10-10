@@ -38,6 +38,28 @@ const warn=(env,reason)=>{
   appendNotifyLog(notifyHome(env),Date.now(),{event:'config',result:`off invalid_config ${reason}`});
 };
 
+// Pure check of notify.json text: {config} or {reason}. Shared by the
+// runtime reader below and by /cm:notify, which must not write notify.log.
+export function parseNotifyConfig(raw){
+  let value;
+  try{value=JSON.parse(raw);}catch{return {reason:'not_json'};}
+  if(!value||typeof value!=='object'||Array.isArray(value)||value.version!==1)return {reason:'version'};
+  const {command}=value;
+  if(!Array.isArray(command)||command.length<1||command.length>32
+    ||!command.every(item=>typeof item==='string'&&item.length>0&&item.length<=4096&&!item.includes('\0'))){
+    return {reason:'command'};
+  }
+  if(!path.isAbsolute(command[0]))return {reason:'command_not_absolute'};
+  const minutes=value.waitMinutes??NOTIFY_LIMITS.defaultWaitMinutes;
+  if(typeof minutes!=='number'||!Number.isFinite(minutes)||minutes<=0||minutes>1440)return {reason:'wait_minutes'};
+  const checkMinutes=value.checkWaitMinutes??NOTIFY_LIMITS.defaultCheckWaitMinutes;
+  if(typeof checkMinutes!=='number'||!Number.isFinite(checkMinutes)||checkMinutes<=0||checkMinutes>1440)return {reason:'check_wait_minutes'};
+  const idleMinutes=value.idleMinutes??NOTIFY_LIMITS.defaultIdleMinutes;
+  if(typeof idleMinutes!=='number'||!Number.isFinite(idleMinutes)||idleMinutes<=0||idleMinutes>1440)return {reason:'idle_minutes'};
+  const ms=value=>Math.max(1,Math.round(value*60000));
+  return {config:{command:[...command],waitMs:ms(minutes),checkWaitMs:ms(checkMinutes),idleMs:ms(idleMinutes)}};
+}
+
 // null = feature off. Under `node --test` only an explicit CM_WORKFLOW_HOME
 // enables it, so a test suite never reaches the user's real configuration.
 // An invalid file is reported in notify.log only, never on workflow output.
@@ -46,23 +68,9 @@ export function readNotifyConfig(env=process.env){
   const file=path.join(notifyHome(env),'notify.json');
   let raw;
   try{raw=fs.readFileSync(file,'utf8');}catch(error){if(error.code!=='ENOENT')warn(env,`unreadable_${error.code??'error'}`);return null;}
-  let value;
-  try{value=JSON.parse(raw);}catch{warn(env,'not_json');return null;}
-  if(!value||typeof value!=='object'||Array.isArray(value)||value.version!==1){warn(env,'version');return null;}
-  const {command}=value;
-  if(!Array.isArray(command)||command.length<1||command.length>32
-    ||!command.every(item=>typeof item==='string'&&item.length>0&&item.length<=4096&&!item.includes('\0'))){
-    warn(env,'command');return null;
-  }
-  if(!path.isAbsolute(command[0])){warn(env,'command_not_absolute');return null;}
-  const minutes=value.waitMinutes??NOTIFY_LIMITS.defaultWaitMinutes;
-  if(typeof minutes!=='number'||!Number.isFinite(minutes)||minutes<=0||minutes>1440){warn(env,'wait_minutes');return null;}
-  const checkMinutes=value.checkWaitMinutes??NOTIFY_LIMITS.defaultCheckWaitMinutes;
-  if(typeof checkMinutes!=='number'||!Number.isFinite(checkMinutes)||checkMinutes<=0||checkMinutes>1440){warn(env,'check_wait_minutes');return null;}
-  const idleMinutes=value.idleMinutes??NOTIFY_LIMITS.defaultIdleMinutes;
-  if(typeof idleMinutes!=='number'||!Number.isFinite(idleMinutes)||idleMinutes<=0||idleMinutes>1440){warn(env,'idle_minutes');return null;}
-  const ms=value=>Math.max(1,Math.round(value*60000));
-  return {command:[...command],waitMs:ms(minutes),checkWaitMs:ms(checkMinutes),idleMs:ms(idleMinutes)};
+  const parsed=parseNotifyConfig(raw);
+  if(parsed.reason){warn(env,parsed.reason);return null;}
+  return parsed.config;
 }
 
 // Messages carry only these structured fields. Absolute paths (POSIX, drive
@@ -78,15 +86,24 @@ function clean(value,max){
 }
 const projectName=value=>typeof value==='string'&&value?clean(path.basename(value),40):'';
 
-export function buildNotifyMessage(fields,{now=Date.now()}={}){
+// Local 24-hour HH:MM in the process time zone (TZ) unless one is injected.
+export function localClock(now,timeZone){
+  const parts=new Intl.DateTimeFormat('en-GB',{hour:'2-digit',minute:'2-digit',hourCycle:'h23',
+    ...(timeZone?{timeZone}:{})}).formatToParts(new Date(now));
+  const pick=type=>parts.find(part=>part.type===type)?.value??'00';
+  return `${pick('hour')}:${pick('minute')}`;
+}
+
+// Fixed layout: the next step first; a finished run only names project, task and time.
+export function buildNotifyMessage(fields,{now=Date.now(),timeZone}={}){
   const workflow=clean(fields.workflow,24)||'cm',project=projectName(fields.project);
   const headline={done:'流程已结束',waiting:'等待会话应答',idle:'疑似空转',idle_waiting:'在等你',dead:'宿主已退出未收尾'}[fields.event]??'需要人处理';
   const title=cut(`CM ${workflow} ${headline}${project?` · ${project}`:''}`,NOTIFY_LIMITS.titleChars);
-  const lines=[['项目',project],['流程',workflow],['运行',clean(fields.runId,64)],['任务',clean(fields.task,40)],
-    ['阶段',clean(fields.stage,48)],['原因',clean(fields.code,64)],['下一步',clean(fields.nextAction,200)]]
-    .filter(([,value])=>value).map(([label,value])=>`${label}：${value}`);
-  lines.push(`时间：${new Date(now).toISOString()}`);
-  if(fields.event!=='done')lines.push('CM 不会自动继续，请回到会话处理。');
+  const task=clean(fields.task,40),time=['时间',localClock(now,timeZone)];
+  const rows=fields.event==='done'?[['项目',project],['任务',task],time]
+    :[['下一步',clean(fields.nextAction,200)],['项目',project],['流程',workflow],['任务',task],
+      ['阶段',clean(fields.stage,48)],['原因',clean(fields.code,64)],time];
+  const lines=rows.filter(([,value])=>value).map(([label,value])=>`${label}：${value}`);
   return {title,body:cut(lines.join('\n'),NOTIFY_LIMITS.bodyChars)};
 }
 

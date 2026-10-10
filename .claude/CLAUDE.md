@@ -29,6 +29,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - 双运行时容灾: 断点交接 `node scripts/cm-failover.mjs status|handoff|probe --specs {SPECS_DIR}`（只读，不标记完成）；启动前选路 `cm-ai-host.mjs serve ... --failover`（显式 opt-in，只定起跑运行时，切换必播报）。运行时声明 `runtimes.available` 与四个预设见 `templates/cm-workflow.yml`、`runtime/workflow-config.md`（声明不等于派发）。主从与边界见 `docs/runtime-failover.md`；定点测试 `node --test scripts/cm-failover.test.mjs scripts/cm-runtime-failover.test.mjs`。
 
 - 运行时声明：`$cm-runtime` 先查看并默认保留，主动修改才进入预设向导；高级模型入口只读说明。`show|preview <preset>|set <preset>|set --user <preset>|unset --user`；向导确认 `[y/N]`，`set --expect-preview <sha256>` 拒绝过期预览。项目 > `~/.cm-workflow/runtimes.yml` > 未声明；只影响新 run。安装器可跳过配置且默认保留，`--yes` / `-Yes` 或非 TTY 跳过。
+- 提醒渠道：`$cm-notify` / `/cm:notify` 查看、`bark|pushplus` 切换（目标密钥可解析才生效，否则不改文件）、`test`、`off`；托管发送器复制到 `<CM_WORKFLOW_HOME>/notify/cm-notify-send.mjs`，自定义命令需 `--replace-custom`。密钥只由用户填文件，不读出、不显示。定点测试 `node --test scripts/cm-notify-command.test.mjs scripts/cm-notify.test.mjs`。
 - 外部模型：`node scripts/cm-model-setup.mjs configure --provider codex|claude`，一组模型／可选强度；`--external-models` 显式启用，宿主不切模型，恢复只读原快照，未知调用不重派。范围及回滚见 `docs/external-models.md`。
 
 - 安装依赖: 无 npm 安装步骤（`package.json` 无依赖；可视化工具按需使用外部 Playwright）
