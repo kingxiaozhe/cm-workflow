@@ -37,7 +37,7 @@ const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
   kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout','develop_answer_invalid',...RECHECK_CODES,DEVELOP_REDO_CODE,DISPATCH_RETRY_CODE,DEVELOP_INTERRUPTED_CODE].includes(code)
-  ||kind==='review'&&state==='pending_review'&&REVIEW_RETRY_CODES.includes(code)
+  ||kind==='review'&&state==='pending_review'&&(REVIEW_RETRY_CODES.includes(code)||REVIEW_NOT_DISPATCHED_CODES.includes(code))
   ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed',COMPLETE_RECHECK_CODE].includes(code)
     ||code==='review_package_changed'&&reviewVerdict==='approved')
   ||kind==='develop'&&state==='blocked'&&code==='review_package_changed'&&reviewVerdict==='changes_requested'
@@ -56,6 +56,15 @@ export const reviewerFailure=result=>result?.outcome==='failed'&&result.reconcil
 export const reviewRetryCode=result=>reviewTransportTimeout(result)?'review_transport_timeout'
   :reviewerFailure(result)?(result.inspection.category==='verdict'?'review_verdict_invalid':'review_provider_failed'):null;
 export const REVIEW_RETRY_CODES=Object.freeze(['review_transport_timeout','review_abandoned','review_provider_failed','review_verdict_invalid']);
+// A review registered but never handed to the reviewer: the dispatch grant had
+// expired, or the dispatch clock ran backwards (task-runner, outcome not_dispatched,
+// call started:false). No reviewer process ran and no verdict exists, so nothing has
+// to be proven stopped: the round may dispatch again under a fresh grant (new effect
+// id, same review round). Such an effect holds no call or effect slot. Only the
+// runner's not_dispatched halt yields pending_review with these codes.
+export const REVIEW_NOT_DISPATCHED_CODES=Object.freeze(['grant_expired','clock_invalid']);
+const notDispatchedEffect=entry=>entry.effect.kind==='review'&&entry.result.state==='pending_review'
+  &&REVIEW_NOT_DISPATCHED_CODES.includes(entry.result.code)&&entry.result.reviewInvocation?.result?.outcome==='not_dispatched';
 const timeoutEffect=entry=>entry.effect.kind==='review'&&reviewRetryCode(entry.result.reviewInvocation?.result)!==null
   &&entry.result.code===reviewRetryCode(entry.result.reviewInvocation.result);
 export const reviewRetrySpent=(cache,calls,attempt,contextId)=>cache.some(entry=>entry.effect.identity.attempt===attempt&&timeoutEffect(entry))
@@ -373,7 +382,7 @@ const INTERRUPTIBLE_TRAILERS={develop:['control','develop-worker'],review:['cont
 export const developRedoSource=entry=>developAnswerMissingEffect(entry)||providerStuckCause(entry)!==null;
 export const countedCalls=(calls,cache)=>calls.filter(call=>!invalidDeveloperCall(call)&&call.terminal!=='abandoned').length
   -cache.filter(timeoutEffect).length-cache.filter(developTimeoutEffect).length-cache.filter(developAnswerInvalidEffect).length
-  -cache.filter(developRedoSource).length-cache.filter(developDispatchFailedEffect).length;
+  -cache.filter(developRedoSource).length-cache.filter(developDispatchFailedEffect).length-cache.filter(notDispatchedEffect).length;
 // A review effect whose journaled result the operator abandoned (below) no
 // longer holds one of the six effect slots; its retry does.
 const abandonedResult=(entry,calls)=>entry.effect.kind==='review'&&entry.result.state==='unknown'
@@ -390,7 +399,7 @@ export const completionBlockCount=cache=>cache.filter(completionBlock).length;
 export const completedEffectCount=(cache,calls=[])=>cache.filter(entry=>!(entry.effect.kind==='develop'
   &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))
   &&!timeoutEffect(entry)&&!developTimeoutEffect(entry)&&!developAnswerInvalidEffect(entry)&&!developRecheckSource(entry)
-  &&!developRedoSource(entry)&&!developDispatchFailedEffect(entry)
+  &&!developRedoSource(entry)&&!developDispatchFailedEffect(entry)&&!notDispatchedEffect(entry)
   &&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
 // The six-effect cap counts develop and review effects only; completion (above),
 // QA, documentation and finalization hold no slot.

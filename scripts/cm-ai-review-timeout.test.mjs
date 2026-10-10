@@ -101,6 +101,28 @@ test('V3 expired dispatch grant is journaled as grant_expired without adapter di
   assert.deepEqual(f.reopen().status(),end);
 },{times:[100,101,200],authorize:(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{grant.expiresAt=150;})}));
 
+// Batch 4 review round 1: a registered review that was never dispatched (expired
+// grant) left the run at pending_review/grant_expired with no usable exit. No
+// reviewer ran, so the round redispatches under a fresh grant (new effect id), the
+// not-dispatched effect holds no call or effect slot, and the journal replays.
+test('a never-dispatched review (grant_expired) redispatches in its own run under a fresh grant and replays',()=>{
+  let expired=true;
+  return fixture(async f=>{
+    const runner=f.make();await runner.executeEffect(f.effect('develop'));
+    const end=await runner.executeEffect(f.effect('review'));
+    assert.deepEqual([end.state,end.code,f.dispatches()],['pending_review','grant_expired',0]);
+    assert.equal(end.calls.at(-1).terminal,'not_dispatched');assert.equal(end.calls.at(-1).started,false);
+    const saved=f.getStore().snapshot(),history=readRunnerHistory(saved.records,saved.records[0].payload.config,3);
+    assert.equal(completedEffectCount(history.state.cache,history.state.calls),1,'the never-dispatched review holds no effect slot');
+    // The cached effect id still replays the not-dispatched result unchanged.
+    const resumed=f.reopen();assert.deepEqual(await resumed.executeEffect(f.effect('review')),end);assert.equal(f.dispatches(),0);
+    expired=false;
+    const approved=await resumed.executeEffect({...f.effect('review'),id:'review-1-retry-1'});
+    assert.equal(approved.state,'approved',JSON.stringify(approved));assert.equal(f.dispatches(),1);
+    assert.equal(approved.calls.filter(call=>call.terminal==='not_dispatched').length,1);
+    assert.deepEqual(f.reopen().status(),approved);
+  },{times:[100,101,200],authorize:(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{if(expired)grant.expiresAt=150;})});
+});
 test('V3 non-monotonic dispatch clock is journaled as clock_invalid without adapter dispatch',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));
   const end=await runner.executeEffect(f.effect('review'));

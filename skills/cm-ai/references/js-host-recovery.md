@@ -101,6 +101,7 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 
 运行器对每次审查计时的上限取「journal 里的调用超时」与「审查预算 + 60000 毫秒余量」中较大者；这个上限不写入 journal，所以把 review-config 的 `timeoutMs` 调到 30 分钟以上（最多 3600000）不会再在 30 分钟被运行器截断，恢复时也可继续调大。
 新运行的代码根快照固定忽略 `.DS_Store`、`._*`、`.AppleDouble/`、`Thumbs.db`、`xcuserdata/`、`*.xcuserstate`、`.build/`、`.swiftpm/`、`DerivedData/`，也跳过 Git 报告为 ignored 的目录及路径；任务 scope、AGENTS.md 与 specs 仍须验证。基线有界保存 Git 忽略路径与目录，后续将基线和当前忽略决定的并集应用到比较两侧；规则文件和无关 Git 配置变化本身不阻断审查。Git 不可用或忽略结果超限时基线标明仅用固定列表。这有意缩小代码根检查面，被忽略的产物不构成已审代码；旧 journal 沿旧规则回放。
+审查已登记、但派发前授权已过期或派发时钟倒退（`pending_review/grant_expired`、`pending_review/clock_invalid`，调用记为 `not_dispatched`）：审查进程没有启动，也没有结论，不需要证明谁已停止。`pendingAction` 为 `resume`，在原运行 `advance` 会重新取得本轮授权并重派（新 effect id、同一审查轮次）；这次未派发不占调用或 effect 名额。批次成员同样在原运行重派，不改排。
 
 ## 规格漂移、代码漂移与审查失败
 
@@ -282,6 +283,6 @@ QA：`--qa-environment-failure 原因` 随 `--rerun-blocked-qa` / `--rerun-unkno
 不支持、启动即拒绝的单任务参数：`--revise-qa-config`（`batch_qa_revision_unavailable`：每个成员的运行指纹绑定整批 workflows，改一个成员会让其他成员都无法恢复，单任务宿主也打不开批次成员运行）和 `--rebind-spec-material`（`batch_spec_rebind_unavailable`）；`reason` 写明出口（`--rerun-blocked-qa`，或取消本批次后用单任务宿主 supersede 新建运行）。
 
 并行组：所有批次的并行成员终态按同一规则处理（改排时 WIP 留在原分支）。普通批次以前把所有终态（含 `unknown`、待重做确认）一律改排、并在同一次 `advance` 里开发第二代；外部模型或执行策略批次以前一律停在 waiting、永远不改排；现在只在成员可在自己运行里恢复（`pendingAction` 为上表操作或 `reconcile_review`）时停下，返回 `batch_parallel_member_recovery_required`，`reason` 与 `guidance` 写明批次操作（对账用 `reconcile_review` 的 `taskKey`、`invocationId`），worktree 保留；结果未确认或审查未终结（`unknown`，如 `unknown/transport_incomplete`、`reviewReconciliation.available:false` 时的 `pendingAction:"reconcile"`，以及 `pending_review`）返回 `batch_parallel_member_unresolved`，同样留在原运行、不删 worktree、不建第二代，`reason` 写明出口（有回执就批次 `reconcile_review`；出现 `abandon_*` 用对应批次操作；都没有只能取消批次后用单任务宿主 supersede 新建运行）；只有成员**原始存档**也是已 checkpoint 的 `blocked`、且没有在途 effect（旧调用已返回、写入方已停）才改排串行第二代——宿主显示的投影不算数，例如原始状态为 `unknown`、只是重做额度用完而显示为 `blocked/develop_redo_limit` 的成员同样返回 `batch_parallel_member_unresolved`（结果带 `rawState`）；改排后这次 `advance` 先停在 `batch_member_rescheduled`（`rescheduled` 列出成员），不在同一次里开发第二代。第二代是新运行、从第 1 轮开始：按 WIP 分支准备 `answers/<feature>/<task>/develop.json`（批次驾驶员在 resume 时会按日志里的 `batch_member_blocked` 预检第二代的第 1 轮答案与 `qa_assess`，已交接的任务不再预检），再 `advance`。
-普通批次没有 `reconcile_review`（只属于外部模型或执行策略运行），所以普通批次的 `batch_parallel_member_unresolved` 出口只写 `abandon_*` 批次操作或取消批次后 supersede；停在 `develop_redo` 等操作的成员同样返回 `batch_parallel_member_recovery_required`，用上表的一次性授权在原运行里恢复。已写入日志的旧 `batch_member_blocked` 记录照原样回放，不重新判定。
+普通批次没有 `reconcile_review`（只属于外部模型或执行策略运行）。`batch_parallel_member_unresolved` 的出口按成员原始存档写：没有在途 effect 的原始 `unknown`／`blocked` 等可在确认旧写入方已停后取消批次、以该成员 worktree 为代码根 supersede；原始 `pending_review` 或仍有在途 effect 时 supersede 不接受，`reason` 直接说明目前没有可用操作、保留原运行交维护者，不再列出用不上的操作；停在 `develop_redo` 等操作的成员同样返回 `batch_parallel_member_recovery_required`，用上表的一次性授权在原运行里恢复。已写入日志的旧 `batch_member_blocked` 记录照原样回放，不重新判定。
 
 资源闭合：批次交接前对 `cleanup_failed` 的 QA 命令资源先由宿主核对进程组已退出并补记 `released`（第 2 批）；仍未闭合时返回 `batch_resources_open`，`reason` 列出未释放的资源及原因（进程组仍在、没有记录进程身份、无法核实）。

@@ -24,7 +24,11 @@ const boundStatus=(status,identity)=>{validIdentity(status?.identity);
 // verdict and a verdict that broke the written contract share one redispatch
 // per attempt. Exported for the batch driver, like developmentRetryable.
 export const reviewRetryable=status=>status.state==='pending_review'
-  &&['review_transport_timeout','review_abandoned','review_provider_failed','review_verdict_invalid'].includes(status.code);
+  &&(['review_transport_timeout','review_abandoned','review_provider_failed','review_verdict_invalid'].includes(status.code)
+  // Registered but never dispatched (expired grant, clock ran backwards): no reviewer
+  // ran, so a fresh authorization redispatches it (REVIEW_NOT_DISPATCHED_CODES; the
+  // runner's not_dispatched halt is the only source of pending_review with these codes).
+  ||['grant_expired','clock_invalid'].includes(status.code));
 const retryReview=reviewRetryable;
 // Both mean the delivery itself must be redone: an invalid developer result, or
 // one that does not satisfy the task's own written verification. Exported so the
@@ -653,7 +657,7 @@ export function createCmAiConversationEntry(options) {
       if(validateHostDecision(decision,status)==='denied')
         return summary(operation,{...status,code:'permission_denied'},'denied');
       const retries=retryReview(status)?status.calls.filter(call=>call.channel==='host-authorized'
-        &&['failed','abandoned'].includes(call.terminal)
+        &&['failed','abandoned','not_dispatched'].includes(call.terminal)
         &&call.contextId===status.reviewInvocation.registration.grant.logicalContextId).length:0;
       const resumed=runner.interruptions?.('review')??0;
       const effectId=`review-${identity.attempt}${retries?`-retry-${retries}`:''}${resumed?`-resume-${resumed}`:''}`;

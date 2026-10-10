@@ -426,7 +426,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       if(IN_RUN_ACTIONS.has(status.pendingAction)){recoverable??={key,status};continue;}
       const history=memberRunHistory(config.specsDir,plans.get(key).identity.runId);
       if(!memberRescheduleAllowed(status,history)){
-        unresolved??={key,status,raw:history?.state?`${history.state.state}/${history.state.code??history.state.state}`:'unreadable'};continue;}
+        unresolved??={key,status,history,raw:history?.state?`${history.state.state}/${history.state.code??history.state.state}`:'unreadable'};continue;}
       rescheduled.push(key);
       record('batch_member_blocked',{from_key:key,code:status.code??status.state,
         reason:status.blockedReason??status.reason??status.code??status.state,...location(key),generation:2});
@@ -435,7 +435,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     for(const row of progress().blocked.values())preserveBlockedMember(row);
     if(rejected)throw rejected;
     if(recoverable)return parallelRecoveryRequired(recoverable.key,recoverable.status);
-    if(unresolved)return parallelMemberUnresolved(unresolved.key,unresolved.status,unresolved.raw);
+    if(unresolved)return parallelMemberUnresolved(unresolved.key,unresolved.status,unresolved.raw,unresolved.history);
     // The second generation is a new run: stop here so the next advance (and its
     // driver) prepares that run's answers before anything is dispatched to it.
     if(rescheduled.length)return parallelMemberRescheduled(rescheduled);
@@ -446,11 +446,17 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     prerequisites:Object.freeze(prerequisites),authorizationGranted:false});
   // reconcile_review exists only for external-model or execution-policy runs.
   const batchKind=strict=>strict?'外部模型或执行策略批次':'批次';
-  function parallelMemberUnresolved(key,status,raw){
+  // Name only exits that accept this member's raw state. Recoverable pendingActions
+  // (develop_redo, abandon_*, reconcile_review) never reach here (parallelRecoveryRequired).
+  // Supersede takes only a raw blocked/cancelled/unknown/fixture_completed run with no
+  // pending effect (reviewed-evidence-supersede.mjs); anything else has no exit today.
+  function parallelMemberUnresolved(key,status,raw,history){
     const strict=Boolean(config.externalModels||config.executionPolicy);
-    const exit=`只读核对 ${key} 原运行的记录、进程与 worktree；${strict?`有原调用回执时从批次入口发送 reconcile_review（taskKey ${key}、invocationId）；`:''}`
-      +`状态出现 abandon_effect、abandon_review 等可恢复动作时，关闭批次宿主、带对应 --allow-… ${key} 重新启动并发送同名批次操作；`
-      +`都没有时只能取消本批次，还原该任务已改动的代码后，用单任务宿主 cm-ai-host.mjs 以 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务`;
+    const supersedable=Boolean(history?.state)&&!history.pending&&['blocked','cancelled','unknown','fixture_completed'].includes(history.state.state);
+    const reconcile=strict&&status.reviewReconciliation?`原调用回执齐全后从批次入口发送 reconcile_review（taskKey ${key}、invocationId ${status.reviewReconciliation.invocationId}）；`:'';
+    const exit=`只读核对 ${key} 原运行的记录、进程与 worktree（${location(key).worktree}）；${reconcile}`
+      +(supersedable?`确认旧宿主与该成员的会话或子进程已停止写入后，取消本批次，还原该任务已改动的代码，用单任务宿主 cm-ai-host.mjs 以该 worktree 为代码根、--supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务`
+        :`批次与单任务宿主目前都没有能处理原始存档状态 ${raw}${history?.pending?`（在途 ${history.pending.kind} effect）`:''} 的操作：supersede 只接受没有在途 effect 的原始 blocked、cancelled、unknown 或 fixture_completed。保留原运行和 worktree，不要取消批次或手改存档，把 rawState 与本 reason 交给维护者处理`);
     return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_parallel_member_unresolved',batchId:config.batchId,
       currentTask:key,identity:status.identity,memberState:status.state,memberCode:status.code??null,pendingAction:status.pendingAction??null,
       rawState:raw,
