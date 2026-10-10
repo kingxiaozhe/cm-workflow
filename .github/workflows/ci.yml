@@ -144,15 +144,15 @@ jobs:
 
       - name: Pin the excluded set
         run: |
-          expected='cm-ai-batch-host cm-ai-bootstrap cm-ai-host cm-ai-multi-root cm-ai-nested-execution cm-fix-protected-edits cm-host-check'
+          expected='cm-ai-batch-host cm-ai-bootstrap cm-ai-host cm-ai-host-cli-workflow cm-ai-host-protected cm-ai-multi-root cm-ai-nested-execution cm-fix-protected-edits cm-host-check'
           [ "$(echo $expected)" = "$EXCLUDED" ] || { echo "排除名单变了，请在评审中说明理由"; exit 1; }
         env:
-          EXCLUDED: cm-ai-batch-host cm-ai-bootstrap cm-ai-host cm-ai-multi-root cm-ai-nested-execution cm-fix-protected-edits cm-host-check
+          EXCLUDED: cm-ai-batch-host cm-ai-bootstrap cm-ai-host cm-ai-host-cli-workflow cm-ai-host-protected cm-ai-multi-root cm-ai-nested-execution cm-fix-protected-edits cm-host-check
 
       - name: Run every JavaScript test except the Codex-sandbox set
         run: |
           set -o pipefail
-          pattern="scripts/(cm-ai-batch-host|cm-ai-bootstrap|cm-ai-host|cm-ai-multi-root|cm-ai-nested-execution|cm-fix-protected-edits|cm-host-check)\.test\.mjs$"
+          pattern="scripts/(cm-ai-batch-host|cm-ai-bootstrap|cm-ai-host|cm-ai-host-cli-workflow|cm-ai-host-protected|cm-ai-multi-root|cm-ai-nested-execution|cm-fix-protected-edits|cm-host-check)\.test\.mjs$"
           mapfile -t all < <(ls scripts/*.test.mjs | grep -vE "$pattern" | sort)
           files=()
           for i in "${!all[@]}"; do [ $((i % 4)) -eq ${{ matrix.shard }} ] && files+=("${all[$i]}"); done

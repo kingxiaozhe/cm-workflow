@@ -56,6 +56,8 @@ printf '%s\n' '==> Running the Codex-sandbox tests that CI cannot host'
   scripts/cm-ai-batch-host.test.mjs \
   scripts/cm-ai-bootstrap.test.mjs \
   scripts/cm-ai-host.test.mjs \
+  scripts/cm-ai-host-cli-workflow.test.mjs \
+  scripts/cm-ai-host-protected.test.mjs \
   scripts/cm-ai-multi-root.test.mjs \
   scripts/cm-ai-nested-execution.test.mjs \
   scripts/cm-fix-protected-edits.test.mjs \
