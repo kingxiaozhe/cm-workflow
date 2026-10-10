@@ -64,6 +64,7 @@ export function migrateLegacyPreflightCache(batch,review,runtime){
         refuse(`新位置 ${directory} 不是权限 0700 的普通目录`);
     }
   };
+  targetDirectories(false);
   // One read per file through a no-follow fd bound to the path's dev+ino; only these
   // exact bytes are validated and compared. links: 2 only for an interrupted move,
   // where the old and new names are the same inode.

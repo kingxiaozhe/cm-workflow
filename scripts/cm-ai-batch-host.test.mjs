@@ -413,6 +413,39 @@ test('old-layout preflight migration never overwrites, re-checks what it commits
     assert.equal(fs.readFileSync(path.join(f.current,'preflight-T-001.json'),'utf8'),legacyReceipt(f,'T-001'));
   });
 });
+// Batch 4 review round 1: the target directory and its parent are checked before any
+// delete or move, also when every old file is a duplicate (nothing to move).
+test('old-layout preflight migration refuses a symlinked target even when every old file is a duplicate',async()=>{
+  const {migrateLegacyPreflightCache}=await import('./cm-ai-batch-host.mjs');
+  const review={model:'fixture',preflight:{},disabledSkills:[]};
+  for(const linked of ['target','parent']){
+    const f=legacyParallelFixture();
+    try{
+      const files={'preflight-T-001.json':legacyReceipt(f,'T-001'),'preflight-T-002.json':legacyReceipt(f,'T-002')};
+      writeLegacy(f,files);
+      // The real directory holds identical copies; the expected path only links to it.
+      const elsewhere=path.join(f.root,'elsewhere'),real=path.join(elsewhere,linked==='target'?'':f.batch.batchId);
+      fs.mkdirSync(real,{recursive:true,mode:0o700});fs.chmodSync(elsewhere,0o700);
+      for(const [name,bytes] of Object.entries(files))fs.writeFileSync(path.join(real,name),bytes,{mode:0o600});
+      if(linked==='target'){fs.mkdirSync(path.dirname(f.current),{recursive:true,mode:0o700});fs.symlinkSync(elsewhere,f.current);}
+      else fs.symlinkSync(elsewhere,path.dirname(f.current));
+      assert.throws(()=>migrateLegacyPreflightCache(f.batch,review,'codex'),
+        error=>error.code==='legacy_preflight_cache_invalid'&&/不是权限 0700 的普通目录/.test(error.reason),linked);
+      assert.deepEqual(fs.readdirSync(f.legacy).sort(),Object.keys(files).sort(),linked);
+      for(const [name,bytes] of Object.entries(files))assert.equal(fs.readFileSync(path.join(f.legacy,name),'utf8'),bytes);
+    }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+  }
+  // A target copy that breaks the file constraints (mode, links) is refused too.
+  const f=legacyParallelFixture();
+  try{
+    writeLegacy(f,{'preflight-T-001.json':legacyReceipt(f,'T-001')});
+    fs.mkdirSync(f.current,{recursive:true,mode:0o700});
+    fs.writeFileSync(path.join(f.current,'preflight-T-001.json'),legacyReceipt(f,'T-001'),{mode:0o644});
+    assert.throws(()=>migrateLegacyPreflightCache(f.batch,review,'codex'),/legacy_preflight_cache_invalid/);
+    assert(fs.existsSync(path.join(f.legacy,'preflight-T-001.json')));
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
 test('provider development grants select worktree runtimes and keep the serial task on protected conversation transport',async()=>{
   const f=fixture();
   try{

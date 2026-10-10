@@ -95,7 +95,7 @@ QA-fix 新建子运行的配置 hostContextId 只能是当前会话或父运行�
 
 Claude CLI 报 `unrecognized_model` 时 preflight 会失败并在 stderr 指明被拒 id、可用的家族别名示例（如 CLI 2.1.x 的 `claude-opus-5`），可快速取得时也打印 CLI 版本；示例不是完整模型清单。
 Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终止，不发送工作流 cancel。
-执行策略批次（未开外部模型）的并行成员预检缓存现在放在 `.reviews/external-preflight/<batchId>/`。旧版本放在运行目录 `.reviews/.execution/<batchId>/`，外部运行守卫会把它当成无法核实的运行，成员一律打不开。批次宿主打开成员前会核对这个旧目录：只含本批次并行成员的 `preflight-<task>.json`（0700 目录、0600 单链接文件），且每份仍绑定本次 `--review-config` 的模型、禁用技能和该成员 worktree 的指纹时，逐个移到新位置复用（新位置已有相同内容就删旧副本），不再重做回环。每个文件只按不跟随链接的方式读一次并核对这份字节；移动用不覆盖的硬链接再删旧名，新位置在迁移时出现或任一侧内容被改就拒绝；中途停下时同一文件会留在新旧两处，下次启动会补完。其他情况返回 `legacy_preflight_cache_invalid`，`reason` 写明目录和不符合的地方，宿主不移动任何文件；只读核对、确认没有进程在写后把该目录移出 `.reviews/.execution`，再用同一配置重启批次宿主并 `advance`，成员会重新预检。
+执行策略批次（未开外部模型）的并行成员预检缓存现在放在 `.reviews/external-preflight/<batchId>/`。旧版本放在运行目录 `.reviews/.execution/<batchId>/`，外部运行守卫会把它当成无法核实的运行，成员一律打不开。批次宿主打开成员前会核对这个旧目录：只含本批次并行成员的 `preflight-<task>.json`（0700 目录、0600 单链接文件），且每份仍绑定本次 `--review-config` 的模型、禁用技能和该成员 worktree 的指纹时，逐个移到新位置复用（新位置已有相同内容就删旧副本），不再重做回环。动任何文件之前先核对新位置 `.reviews/external-preflight/` 及 `<batchId>` 目录（存在时须为 0700 普通目录、不是链接，全是重复副本时也一样），新位置的副本也须是 0600 单链接普通文件；每个文件只按不跟随链接的方式读一次并核对这份字节；移动用不覆盖的硬链接再删旧名，新位置在迁移时出现或任一侧内容被改就拒绝；中途停下时同一文件会留在新旧两处，下次启动会补完。其他情况返回 `legacy_preflight_cache_invalid`，`reason` 写明目录和不符合的地方，宿主不移动任何文件；只读核对、确认没有进程在写后把该目录移出 `.reviews/.execution`，再用同一配置重启批次宿主并 `advance`，成员会重新预检。
 
 ## 审查计时与快照忽略
 
