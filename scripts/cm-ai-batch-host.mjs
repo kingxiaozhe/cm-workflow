@@ -21,7 +21,7 @@ import {identifyApprovedBootstrapFeature} from '../runtime/js/cm-ai/bootstrap-fe
 const usage='cm-ai-batch-host.mjs serve --config PATH --host-context ID --allow-development --review-config PATH (required for a new batch; later launches pass the same file) [--execution-optimizations] [--external-models [--external-models-config PATH]] [--runtime codex|claude] [--input-limit BYTES] [--allow-review FEATURE/TASK:1|2]... [--allow-qa] [--rerun-unknown-qa | --rerun-blocked-qa [--qa-environment-failure REASON]] [--allow-develop-redo FEATURE/TASK]... [--allow-abandon-effect FEATURE/TASK]... [--allow-abandon-review FEATURE/TASK]... [--allow-bootstrap-review-recovery FEATURE/TASK]... [--verification-precheck] [--browser-qa available|unavailable] [--protected-conversation-config PATH | --protected-config PATH] [--allow-provider-development FEATURE/TASK:1|2]... [--hold-revision FEATURE/TASK]...';
 const safeCode=error=>typeof error?.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(error.code)?error.code:'batch_host_failed';
 // Operator-facing reasons the batch owner writes itself (R4); others stay redacted.
-const REASONED=new Set(['batch_resources_open']);
+const REASONED=new Set(['batch_resources_open','legacy_preflight_cache_invalid']);
 const boundedReason=error=>REASONED.has(error?.code)&&typeof error.reason==='string'&&error.reason.length<=8192&&!/[\r\n\0]/.test(error.reason)?error.reason:null;
 const actionFlags=new Map(Object.entries(BATCH_MEMBER_ACTIONS).map(([name,{flag}])=>[flag,name]));
 // Single-task recovery inputs a batch cannot take: each member's fingerprint binds
@@ -35,10 +35,58 @@ export async function serveHostTransport(options,rawInputLimit,serve=serveCmAiHo
   return serve({...options,inputLimit:parseHostInputLimit(rawInputLimit)});
 }
 
+// Before 53c385e an execution-policy batch (without external models) cached its member
+// loopback preflights in .reviews/.execution/<batchId>/preflight-<task>.json. The
+// external run guard refuses that non-run directory, so such a batch could never open
+// a member again. A directory that is exactly that old cache (only 0600 single-link
+// preflight files of this batch's parallel members, each still bound to the launch
+// review model, disabled skills and the member worktree cwd) moves file by file to
+// the current location; an identical file already there drops the old copy. Anything
+// else is refused with the directory named and nothing moved, so it is checked by hand.
+export function migrateLegacyPreflightCache(batch,review,runtime){
+  const legacy=path.join(batch.specsDir,'.reviews','.execution',batch.batchId);
+  let stat;try{stat=fs.lstatSync(legacy);}catch(error){if(error.code==='ENOENT')return {moved:[],dropped:[]};throw error;}
+  const refuse=detail=>{throw Object.assign(new Error('legacy_preflight_cache_invalid'),{code:'legacy_preflight_cache_invalid',
+    reason:`运行目录下的 ${legacy} 不是可识别的旧版并行成员预检缓存（${detail}）。外部运行守卫会把它当作无法核实的运行，批次成员打不开；宿主没有移动或删除其中任何文件。`
+      +`下一步：只读核对该目录；确认只是旧版 preflight 缓存且没有进程在写后，把它移出 .reviews/.execution（例如移到 .reviews/external-preflight-legacy/），再用同一批次配置重新启动批次宿主并 advance，成员会重新做一次本地 loopback 预检`});};
+  if(!stat.isDirectory()||stat.isSymbolicLink()||(stat.mode&0o077)!==0||fs.realpathSync(legacy)!==legacy)refuse('不是权限 0700 的普通目录');
+  if(review===null)refuse('本次启动没有 --review-config，无法核对缓存绑定的审查模型');
+  const members=new Map((batch.parallel??[]).flat().map(key=>[`preflight-${key.slice(key.lastIndexOf('/')+1)}.json`,key.slice(key.lastIndexOf('/')+1)]));
+  const target=path.join(batch.specsDir,'.reviews','external-preflight',batch.batchId),plan=[];
+  for(const entry of fs.readdirSync(legacy,{withFileTypes:true})){
+    const taskId=members.get(entry.name);if(!taskId)refuse(`含有不属于本批次并行成员预检缓存的条目 ${entry.name}`);
+    const file=path.join(legacy,entry.name),info=fs.lstatSync(file);
+    if(!info.isFile()||info.isSymbolicLink()||info.nlink!==1||(info.mode&0o077)!==0)refuse(`${entry.name} 不是权限 0600 的单链接普通文件`);
+    const cwd=path.resolve(batch.codeProject,'..','.cm-worktrees',batch.batchId.slice(0,8),taskId);
+    const options={cwd,model:review.model,disabledSkills:review.disabledSkills,promptTransport:'stdin'};
+    let cached;try{cached=readConversationReviewConfiguration(file,null);}catch{refuse(`${entry.name} 不是预检缓存格式`);}
+    if(Object.hasOwn(cached,'timeoutMs')||cached.model!==review.model||digest(cached.disabledSkills)!==digest(review.disabledSkills)
+      ||!(runtime==='claude'?claudePreflightMatches:preflightMatches)(cached.preflight,options))
+      refuse(`${entry.name} 绑定的审查模型、禁用技能或成员 worktree 指纹与本次启动不一致`);
+    const bytes=fs.readFileSync(file),destination=path.join(target,entry.name);
+    if(fs.existsSync(destination)){
+      const current=fs.lstatSync(destination);
+      if(!current.isFile()||current.isSymbolicLink()||!fs.readFileSync(destination).equals(bytes))refuse(`新位置 ${destination} 已有不同内容`);
+      plan.push({file,destination,drop:true});
+    }else plan.push({file,destination,drop:false});
+  }
+  if(plan.some(item=>!item.drop)){
+    fs.mkdirSync(target,{recursive:true,mode:0o700});
+    need(fs.realpathSync(target)===target,'invalid_preflight_cache');
+  }
+  const moved=[],dropped=[];
+  for(const item of plan){
+    if(item.drop){fs.unlinkSync(item.file);dropped.push(path.basename(item.file));}
+    else{fs.renameSync(item.file,item.destination);moved.push(path.basename(item.file));}
+  }
+  fs.rmdirSync(legacy);
+  return {moved,dropped};
+}
 // strict: an execution-policy batch. Its member runs take the external run guard,
 // which refuses any non-run directory under .reviews/.execution, so the loopback
 // cache lives beside the external-model one instead.
 async function memberReviewConfiguration(batch,definition,review,runtime,pair=null,allowPreflight=true,strict=false){
+  if(strict&&!pair)migrateLegacyPreflightCache(batch,review,runtime);
   try{
     need(review!==null,'review_configuration_required');
     const options={cwd:definition.codeProject,model:review.model,...(pair?{effort:pair.effort}:{}),disabledSkills:review.disabledSkills,promptTransport:'stdin'};
