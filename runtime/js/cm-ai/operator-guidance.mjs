@@ -1,5 +1,5 @@
 import {REVIEW_NEVER_STARTED_MANUAL_STEP,MAX_REVIEW_NOT_DISPATCHED_RETRIES as REDISPATCHES,MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS as EXTENSIONS,
-  MAX_REVIEW_DENIAL_CONFIRMATIONS as DENIALS} from './durable-runner-state.mjs';
+  MAX_REVIEW_DENIAL_CONFIRMATIONS as DENIALS} from './review-dispatch-limits.mjs';
 // Presentation only. Native pendingAction decides the available path; guidance
 // never grants permission, changes retryability, or writes execution history.
 const deliveryMessages={

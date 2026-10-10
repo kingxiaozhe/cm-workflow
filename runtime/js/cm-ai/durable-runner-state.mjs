@@ -21,6 +21,10 @@ import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 import {readSpecificationRebind} from './specification-material.mjs';
 import {protectedScopePaths} from './developer-adapter.mjs';
 import {validWorkerPid,validStartTime} from './worker-process-identity.mjs';
+import {MAX_REVIEW_NOT_DISPATCHED_RETRIES,MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS,REVIEW_NOT_DISPATCHED_LIMIT_CODE,MAX_REVIEW_DENIAL_CONFIRMATIONS,
+  REVIEW_DENIAL_LIMIT_CODE,REVIEW_NEVER_STARTED_MANUAL_STEP} from './review-dispatch-limits.mjs';
+export {MAX_REVIEW_NOT_DISPATCHED_RETRIES,MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS,REVIEW_NOT_DISPATCHED_LIMIT_CODE,MAX_REVIEW_DENIAL_CONFIRMATIONS,
+  REVIEW_DENIAL_LIMIT_CODE,REVIEW_NEVER_STARTED_MANUAL_STEP};
 
 const LIMIT=16*1024*1024;
 // The developer adapter refuses a protected scope on every dispatch, before any
@@ -74,9 +78,6 @@ const notDispatchedEffect=entry=>entry.effect.kind==='review'&&entry.result.stat
 // confirmation (abandon_review + reason, journaled as review-dispatch-confirmed) grants
 // MAX_REVIEW_NOT_DISPATCHED_RETRIES more, at most MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS
 // per round, so the retry cap (R2) is never defeated, only extended on the record.
-export const MAX_REVIEW_NOT_DISPATCHED_RETRIES=2;
-export const MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS=1;
-export const REVIEW_NOT_DISPATCHED_LIMIT_CODE='review_not_dispatched_limit';
 export const reviewNotDispatchedCount=(cache,attempt)=>cache.filter(entry=>entry.effect.identity.attempt===attempt&&notDispatchedEffect(entry)).length;
 export const reviewNotDispatchedExhausted=(s,extended=0)=>s.state==='pending_review'&&REVIEW_NOT_DISPATCHED_CODES.includes(s.code)
   &&reviewNotDispatchedCount(s.cache,s.attempt)>MAX_REVIEW_NOT_DISPATCHED_RETRIES*(1+extended);
@@ -97,8 +98,6 @@ export const reviewNotDispatchedLimitReason=(code,extended=0)=>`${REVIEW_NOT_DIS
 export const REVIEW_DENIED_CODE='permission_denied';
 export const REVIEW_DENIAL_CONFIRMED_CODE='permission_denied_confirmed';
 export const REVIEW_DISPATCH_CONFIRM_REQUIRED_CODE='review_dispatch_confirmation_required';
-export const MAX_REVIEW_DENIAL_CONFIRMATIONS=2;
-export const REVIEW_DENIAL_LIMIT_CODE='review_permission_denied_limit';
 const deniedEffect=entry=>entry.effect.kind==='review'&&entry.result.state==='pending_review'&&entry.result.code===REVIEW_DENIED_CODE;
 export const reviewDenialUnconfirmed=s=>s.state==='pending_review'&&s.code===REVIEW_DENIED_CODE;
 export const reviewDenialExhausted=(s,confirmed)=>reviewDenialUnconfirmed(s)&&confirmed.denied>=MAX_REVIEW_DENIAL_CONFIRMATIONS;
@@ -116,14 +115,6 @@ export const countReviewDispatchConfirmations=(payloads,attempt)=>{
 export const reviewDenialConfirmReason=confirmed=>`${REVIEW_DENIED_CODE}: 本轮独立审查的授权没有取得（被拒绝，或授权已超过有效期），审查没有登记、没有派发、审查进程从未启动，不会有任何写入。`
   +'宿主不会自动重试，也不会因为留着的审查授权而重派：先查清是谁拒绝、为什么，确认现在可以授权后，用 --mode resume 加 --allow-abandon-review 启动并发送 abandon_review（单行 reason 写明依据）登记确认，'
   +`再按原方式重新取得本轮审查授权后 advance。每轮最多这样确认 ${MAX_REVIEW_DENIAL_CONFIRMATIONS} 次（本轮已确认 ${confirmed.denied} 次），之后为 ${REVIEW_DENIAL_LIMIT_CODE}。`;
-// The only manual step left once a never-started review has no in-run exit: the review
-// process never started, so there is no writer to wait for; cancel is accepted from this raw
-// pending_review end and supersede accepts the cancelled run (reviewed-evidence-supersede.mjs).
-// The external-run guard still refuses a strict prior run whose last review was voided
-// before dispatch (strictPriorAttemptResolved), so that case has no new-run exit at all.
-export const REVIEW_NEVER_STARTED_MANUAL_STEP='要继续这个任务：先用 cancel 取消本运行（审查从未启动，没有需要等待停下的写入方）；另存或还原本运行留在盘上的代码改动；'
-  +'再用 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做。不要加 --accept-superseded-code-drift：那会把这些没审过的改动当成已有代码，新运行的审查看不到它们。'
-  +'原运行若是外部模型或执行策略运行，外部运行守卫可能拒绝同一代码根上的新运行（被派发前作废的审查记录仍带对账标记）；守卫拒绝时本运行没有别的出口，保留运行记录与代码，把本 reason 交给维护者。';
 export const reviewDenialLimitReason=()=>`${REVIEW_DENIAL_LIMIT_CODE}: 本轮独立审查的授权已被拒绝 ${MAX_REVIEW_DENIAL_CONFIRMATIONS+1} 次，已确认重新授权 ${MAX_REVIEW_DENIAL_CONFIRMATIONS} 次（用满），审查进程从未启动，也没有写入。`
   +`本运行不再提供重新授权的操作。先查清授权为何一直被拒绝（宿主是否配了审查权限、授权是否在 60 秒内用完）。${REVIEW_NEVER_STARTED_MANUAL_STEP}`;
 // Status-only overlay for a review round that ended without ever starting a reviewer,

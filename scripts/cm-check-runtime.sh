@@ -284,7 +284,7 @@ for module in \
   durable-runner-state.mjs effect-contract.mjs execution-store.mjs gate-bridge.mjs \
   host.mjs host-session.mjs diagnostic-reason.mjs index.mjs provider-review-observation.mjs review-package.mjs \
   review-result.schema.json review-runner.mjs task-commit-codec.mjs task-commit.mjs \
-  task-owner.mjs task-runner.mjs worker-codex.mjs; do
+  task-owner.mjs task-runner.mjs worker-codex.mjs operator-guidance.mjs review-dispatch-limits.mjs; do
   require_file "runtime/js/cm-ai/$module"
 done
 require_file "scripts/cm-check-runtime.ps1"
