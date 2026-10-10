@@ -49,7 +49,10 @@ test('behavior regression restores only the controlled file and blocks review',a
 test('stale independent-review header cannot bypass existing N5',async t=>{
   const {config}=fixture(t),host=createCmRefactorHost(config,{call:async(kind,payload)=>response(kind,payload,'stale-review')});
   const result=await host.handle({requestId:'start',operation:'start'});
-  assert.equal(result.stage,'blocked');assert.match(result.reason,/digest/);
+  // Validated before publication: nothing immutable is written, the answer stays discardable.
+  assert.equal(result.stage,'blocked');assert.equal(result.reason,'refactor_review_invalid');assert.match(result.reasonDetail,/digest/);
+  assert.equal(result.recovery.lastAnswer.kind,'refactor_review');assert.match(result.guidance.nextStep,/discard/);
+  assert.equal(result.reports.some(file=>file.endsWith('-r1.md')),false);
 });
 
 async function finishInProcess(t,config,temp){

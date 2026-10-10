@@ -171,3 +171,16 @@ test('a re-asked call is reconciled only as its own attempt; a receipt of the di
     ?{decision:'completed',attempt:2,result:proposal,evidence:'receipt of attempt 2'}:response(kind,payload)}).handle({operation:'resume'});
   assert.equal(done.stage,'awaiting_finish',JSON.stringify(done));
 });
+
+test('real host: a non-empty but invalid review is not published and can be discarded and asked again',{timeout:60000},async t=>{
+  const {config,temp,project}=fixture(t);let bad=1;
+  const respond=message=>{const value=response(message.kind,message.payload);
+    if(message.kind==='refactor_review'&&bad-->0)value.markdown=value.markdown.replace(/handoff_sha256: [0-9a-f]+/,'handoff_sha256: '+'0'.repeat(64));
+    return value;};
+  let run=await serve(t,config,temp,respond,[{operation:'start'}]);
+  const blocked=run.results[0];assert.equal(blocked.reason,'refactor_review_invalid',JSON.stringify(blocked));
+  const review=path.join(project,'docs/refactors/.reviews/refactor-extract-T-REFACTOR-extract-r1.md');assert.equal(fs.existsSync(review),false);
+  const {key,requestDigest}=blocked.recovery.lastAnswer;assert.equal(key,'host/a1/review');
+  run=await serve(t,config,temp,respond,[{operation:'resume',discard:{key,requestDigest,evidence:'handoff digest was wrong'}}]);
+  assert.equal(run.results[0].stage,'awaiting_finish',JSON.stringify(run.results[0]));assert.ok(fs.existsSync(review));
+});

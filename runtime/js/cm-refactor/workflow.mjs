@@ -1,5 +1,6 @@
 // Fixed cm-refactor flow; the host proposes text, the owner applies and judges it.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
@@ -504,9 +505,19 @@ export function createCmRefactorHost(raw,{call}){
         lessons:{path:lessons,before:context.lessons,after:files.__lessons??context.lessons},project,baselineCommands:config.baselineCommands,judgeCommand:config.judgeCommand,
         preTaskDirty:context.baseline.gitState,route:routes.reviewer,
         instructions:'Fresh independent reviewer per runtime/review.md, no author history. Review ALL diff including tests/Learning/rules/docs/LESSONS and judge coverage. Return {markdown} with original N4 header binding exact handoff SHA, attempt=round, scope, findings. No writes or unapproved provider. Missing channel is blocked, never invent approval.'});
-      // A reply without review text stays discardable instead of being published.
-      need(nonempty(reviewed.markdown),'refactor_review_invalid');
-      const review=await publish(`${prefix}-review`,path.join(reviews,`${feature}-${task}-r${attempt}.md`),reviewed.markdown);
+      // The review is validated in full before it becomes immutable evidence, so a
+      // reply that fails (missing header, wrong handoff digest, short scope) stays
+      // discardable. An already published review is checked as before (old journals).
+      const reviewPath=path.join(reviews,`${feature}-${task}-r${attempt}.md`);
+      if(!records.effects.has(`publish/${prefix}-review`)){
+        need(nonempty(reviewed.markdown),'refactor_review_invalid');
+        const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'cm-refactor-review-'));
+        try{const draft=path.join(scratch,path.basename(reviewPath));fs.writeFileSync(draft,reviewed.markdown,{mode:0o600});
+          try{validateReview(draft,{task,attempt,handoff,changedFiles:changed});}
+          catch(error){throw Object.assign(new Error('refactor_review_invalid'),{code:'refactor_review_invalid',detail:error.message});}}
+        finally{fs.rmSync(scratch,{recursive:true,force:true});}
+      }
+      const review=await publish(`${prefix}-review`,reviewPath,reviewed.markdown);
       reviewResult=validateReview(review,{task,attempt,handoff,changedFiles:changed});interceptions+=Number(reviewResult.blocking_findings);
       if(Object.hasOwn(reviewed,'judgeRevision')){
         need(attempt===1&&reviewResult.verdict==='changes_requested','refactor_judge_revision_unavailable');
@@ -594,7 +605,8 @@ export function createCmRefactorHost(raw,{call}){
       }
       projectStatus();
       return status();
-    }catch(error){view={...view,stage:controller.signal.aborted?'cancelled':'blocked',reason:error.code??error.message};
+    }catch(error){const {reasonDetail:_,...rest}=view;view={...rest,stage:controller.signal.aborted?'cancelled':'blocked',reason:error.code??error.message,
+      ...(typeof error.detail==='string'?{reasonDetail:error.detail.slice(0,500)}:{})};
       try{records.progressWrite(view);projectStatus();}catch{}return status();
     }finally{records.release();active=false;}
   }});
