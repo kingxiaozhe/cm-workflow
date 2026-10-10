@@ -102,7 +102,9 @@ test('drift guard: the runtime sync reader and the sender async reader take the 
           ?()=>readRegularFile(target,'notify.json',{fileOps:asyncOps(hooks,calls),bytes:raw})
           :()=>Promise.resolve().then(()=>readRegularFileSync(target,'notify.json',{fileOps:syncOps(hooks,calls),bytes:raw}));
         const result=await outcome(read,raw);
-        if(scenario.flags&&calls.length){
+        // libuv defines O_NOFOLLOW and O_NONBLOCK as 0 on Windows: where a flag is 0
+        // the open has no protection of that kind (see docs/user-guide.md).
+        if(scenario.flags&&calls.length&&process.platform!=='win32'){
           assert.notEqual(calls[0]&fs.constants.O_NONBLOCK,0,`${scenario.name} (${kind}): open is non-blocking`);
           assert.notEqual(calls[0]&fs.constants.O_NOFOLLOW,0,`${scenario.name} (${kind}): open does not follow links`);
         }
