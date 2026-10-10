@@ -50,6 +50,65 @@ test('invalid config turns the feature off: relative command, bad version, bad w
   assert.deepEqual(readNotifyConfig(h.env),{command:['/bin/true'],waitMs:30000,checkWaitMs:2700000,idleMs:2700000});
 });
 
+// The runtime reads notify.json through the same safe boundary as /cm:notify:
+// no symlink, regular file only, 64 KiB cap, non-blocking open. Every refusal
+// turns notices off with one notify.log line; nothing throws or waits.
+// Each probe runs in its own process: the log line is once per process, and a
+// build that blocks on a FIFO fails by timeout instead of hanging the suite.
+const posix=process.platform!=='win32';
+const CONFIG={version:1,command:['/bin/true']},PARSED={command:['/bin/true'],waitMs:600000,checkWaitMs:2700000,idleMs:2700000};
+const NOTIFY_URL=new URL('../runtime/js/notify.mjs',import.meta.url).href;
+function probe(h){
+  const child=spawnSync(process.execPath,['--input-type=module','-e',
+    `import {readNotifyConfig,notify} from ${JSON.stringify(NOTIFY_URL)};
+console.log(JSON.stringify({config:readNotifyConfig(process.env),sent:notify({key:'k'},{env:process.env})}));`],
+  {env:{...process.env,CM_WORKFLOW_HOME:h.dir},encoding:'utf8',timeout:5000,killSignal:'SIGKILL'});
+  assert.equal(child.error,undefined,'reading notify.json made the runtime wait');
+  assert.equal(child.status,0,child.stderr);
+  return JSON.parse(child.stdout);
+}
+const OFF={config:null,sent:{sent:false,reason:'off'}};
+const unreadable=(h,reason)=>assert.match(h.log(),new RegExp(`config - key=- off invalid_config unreadable_${reason}\\n$`));
+
+test('runtime read: notify.json that is a symlink is never read, even to a valid config; a normal file still is',{skip:!posix},t=>{
+  const h=home(t);const file=path.join(h.dir,'notify.json'),real=path.join(h.dir,'real-config.json');
+  fs.writeFileSync(real,JSON.stringify(CONFIG));fs.rmSync(file);fs.symlinkSync(real,file);
+  assert.deepEqual(probe(h),OFF);unreadable(h,'not_regular_file');assert.equal(h.rows().length,0);
+  // A dangling link is a link too: refused and logged, not treated as "missing".
+  const dangling=home(t);fs.rmSync(path.join(dangling.dir,'notify.json'));fs.symlinkSync(path.join(dangling.dir,'nowhere.json'),path.join(dangling.dir,'notify.json'));
+  assert.deepEqual(probe(dangling),OFF);unreadable(dangling,'not_regular_file');
+  // The same content as a regular file reads exactly as before.
+  fs.rmSync(file);fs.writeFileSync(file,JSON.stringify(CONFIG));
+  assert.deepEqual(probe(h).config,PARSED);
+});
+
+test('runtime read: a FIFO at notify.json is refused at once, never waited on',{skip:!posix},t=>{
+  const h=home(t);const file=path.join(h.dir,'notify.json');
+  fs.rmSync(file);assert.equal(spawnSync('mkfifo',['-m','600',file]).status,0);
+  assert.deepEqual(probe(h),OFF);unreadable(h,'not_regular_file');
+});
+
+test('runtime read: notify.json over 64 KiB is refused; exactly 64 KiB is still read',{skip:!posix},t=>{
+  const json=JSON.stringify(CONFIG),pad=n=>json+' '.repeat(n-Buffer.byteLength(json));
+  const over=home(t);fs.writeFileSync(path.join(over.dir,'notify.json'),pad(64*1024+1));
+  assert.deepEqual(probe(over),OFF);unreadable(over,'too_large');
+  const exact=home(t);fs.writeFileSync(path.join(exact.dir,'notify.json'),pad(64*1024));
+  assert.deepEqual(probe(exact).config,PARSED);assert.equal(exact.log(),'');
+});
+
+test('runtime read: a missing file stays silent, a directory is a logged off, a BOM file behaves as before (not_json)',{skip:!posix},t=>{
+  const missing=home(t);fs.rmSync(path.join(missing.dir,'notify.json'));
+  assert.deepEqual(probe(missing),OFF);assert.equal(missing.log(),'');
+  const dir=home(t);fs.rmSync(path.join(dir.dir,'notify.json'));fs.mkdirSync(path.join(dir.dir,'notify.json'));
+  assert.deepEqual(probe(dir),OFF);unreadable(dir,'not_regular_file');
+  // Same as the plain read it replaces: the BOM is not stripped, JSON.parse rejects it.
+  const bom=home(t);fs.writeFileSync(path.join(bom.dir,'notify.json'),'\uFEFF'+JSON.stringify(CONFIG));
+  assert.deepEqual(probe(bom),OFF);assert.match(bom.log(),/config - key=- off invalid_config not_json\n$/);
+  // Invalid UTF-8 never throws; it is just an invalid file.
+  const bad=home(t);fs.writeFileSync(path.join(bad.dir,'notify.json'),Buffer.from([0x7b,0xff,0xfe,0x7d]));
+  assert.deepEqual(probe(bad),OFF);assert.match(bad.log(),/off invalid_config not_json\n$/);
+});
+
 test('message is bounded and built only from the structured fields',()=>{
   const long='x'.repeat(2000);
   const message=buildNotifyMessage({...fields('k'),workflow:long,project:'/very/secret/path/'+long,runId:long,task:long,
