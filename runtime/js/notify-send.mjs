@@ -51,6 +51,8 @@ if(ENTRY==='windows'){try{process.stderr.write(`cm-notify: ${WINDOWS_UNSUPPORTED
 export const SEND_EXIT=Object.freeze({ok:0,config:2,network:3,rejected:4});
 export const DEADLINE_MS=12000;
 const MAX_FILE=64*1024,MAX_RESPONSE=64*1024,MAX_STDIN=64*1024;
+// Largest file the safe read boundary accepts; /cm:notify never writes a bigger notify.json.
+export const MAX_FILE_BYTES=MAX_FILE;
 export const CHANNEL_FILE='notify-channel.conf';
 export const CHANNELS=Object.freeze({
   bark:Object.freeze({file:'bark.env',names:['BARK_KEY','BARK_SERVER'],required:'BARK_KEY'}),
@@ -80,8 +82,9 @@ const windowsRefusal=()=>configError(WINDOWS_UNSUPPORTED,{state:'unsupported'});
 // `privateFile` adds: owned by this user, no group/other mode bits.
 // `budget` (from runSender) returns the milliseconds left and throws once the
 // total deadline has passed. `fileOps` (lstat/open) is replaceable only through
-// this module API, so tests can simulate slow reads.
-async function readChecked(file,label,{privateFile,budget,fileOps=fsp}){
+// this module API, so tests can simulate slow reads. `bytes` returns the exact
+// bytes read instead of strict UTF-8 text (BOM kept).
+async function readChecked(file,label,{privateFile,budget,fileOps=fsp,bytes:raw=false}){
   if(budget)budget();
   const notRegular=privateFile?`${label} 必须是自己的普通文件且权限 600`:`${label} 必须是普通文件（不能是符号链接）`;
   let link;
@@ -89,16 +92,20 @@ async function readChecked(file,label,{privateFile,budget,fileOps=fsp}){
   catch(error){if(error.code==='ENOENT')throw configError(`读不到 ${label}`,{state:'missing'});throw configError(`读不到 ${label}`,{state:'invalid'});}
   const bad=st=>!st.isFile()||(privateFile&&((typeof process.getuid==='function'&&st.uid!==BigInt(process.getuid()))||(st.mode&0o077n)!==0n));
   if(link.isSymbolicLink()||bad(link))throw configError(notRegular,{state:'invalid',reason:'permission'});
-  if(link.size>BigInt(MAX_FILE))throw configError(`${label} 太大`,{state:'invalid'});
+  if(link.size>BigInt(MAX_FILE))throw configError(`${label} 太大`,{state:'invalid',reason:'too_large'});
   let handle;
   try{
-    handle=await fileOps.open(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+    // O_NONBLOCK: a file swapped for a FIFO after lstat opens at once (instead of
+    // waiting for a writer) and is then refused by the type check below.
+    // Reads of regular files are unaffected.
+    handle=await fileOps.open(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
     const st=await handle.stat({bigint:true});
     if(bad(st))throw configError(notRegular,{state:'invalid',reason:'permission'});
     if(st.dev!==link.dev||st.ino!==link.ino)throw configError(`${label} 在核对期间被替换，为安全起见不使用它`,{state:'invalid',reason:'permission'});
-    if(st.size>BigInt(MAX_FILE))throw configError(`${label} 太大`,{state:'invalid'});
+    if(st.size>BigInt(MAX_FILE))throw configError(`${label} 太大`,{state:'invalid',reason:'too_large'});
     const size=Number(st.size),bytes=Buffer.alloc(size);let read=0;
     while(read<size){const {bytesRead}=await handle.read(bytes,read,size-read,read);if(bytesRead===0)break;read+=bytesRead;}
+    if(raw)return bytes.subarray(0,read);
     return new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,read)).replace(/^\uFEFF/,'');
   }catch(error){
     if(error instanceof SendError)throw error;
@@ -112,9 +119,9 @@ export async function readPrivateFile(file,label,{platform=process.platform,budg
 }
 // A file that holds no secret (the channel file, for display on Windows):
 // the same boundary without the owner/mode rule, so a link to a secret file
-// is never followed.
-export async function readRegularFile(file,label,{fileOps}={}){
-  return readChecked(file,label,{privateFile:false,fileOps});
+// is never followed. `bytes` (used for notify.json) returns the raw bytes.
+export async function readRegularFile(file,label,{fileOps,bytes=false}={}){
+  return readChecked(file,label,{privateFile:false,fileOps,bytes});
 }
 
 // KEY=value lines only: optional `export `, optional matching quotes, blank

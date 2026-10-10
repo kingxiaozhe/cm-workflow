@@ -10,7 +10,7 @@ import {performance} from 'node:perf_hooks';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {parseAssignments,readPrivateFile,readSecret,runSender,responseCodeType,readRegularFile,entryDecision,WINDOWS_UNSUPPORTED,SEND_EXIT} from '../runtime/js/notify-send.mjs';
-import {main,notifyStatus,switchChannel,turnOff,sendTest,formatTest,managedSenderPath,classifyCommand,SENDER_SOURCE,TEMPLATES} from './cm-notify.mjs';
+import {main,notifyStatus,switchChannel,turnOff,sendTest,formatTest,previewText,formatPreview,managedSenderPath,classifyCommand,SENDER_SOURCE,TEMPLATES} from './cm-notify.mjs';
 
 // Every test works in its own temp CM_WORKFLOW_HOME / log home / HOME: the
 // real ~/.cm-workflow/notify.json would push to the user's phone.
@@ -722,4 +722,179 @@ test('manager dry-run never opens or checks the secret file',async t=>{
   }
   // Without dry-run the same missing file is refused.
   const result=s.cli(['test']);assert.equal(result.status,2);assert.match(result.stderr,/未填写（文件不存在）/);
+});
+
+// Optional notify.json `text` is the user's: /cm:notify keeps it (and any other
+// unknown key) across switch, off and on, and status says which text is in use.
+const CUSTOM_TEXT={titlePrefix:'提醒',headlines:{default:'卡住了',done:'完工'},fields:{default:['nextAction','task','time']},labels:{task:'工单'}};
+test('custom text survives switch, off and on; status shows 文案：默认/自定义/无效 and writes nothing',t=>{
+  const s=sandbox(t);
+  s.write('bark.env',`BARK_KEY=${BARK_SECRET}\n`);s.write('pushplus.env',`PUSHPLUS_TOKEN=${PUSH_SECRET}\n`);
+  assert.equal(s.cli(['bark']).status,0);
+  assert.match(s.cli([]).stdout,/\n文案：默认\n/);
+  assert.equal(JSON.parse(s.cli(['--json']).stdout).config.textState,'default');
+  const config={...JSON.parse(s.read('notify.json')),text:CUSTOM_TEXT,note:'kept'};s.write('notify.json',JSON.stringify(config));
+  let result=s.cli([]);assert.match(result.stdout,/\n文案：自定义（\/cm:notify preview 查看效果）\n/);
+  let parsed=JSON.parse(s.cli(['status','--json']).stdout);
+  assert.equal(parsed.config.textState,'custom');assert.equal(JSON.stringify(parsed).includes('卡住了'),false,'status lists no custom strings');
+  result=s.cli(['pushplus']);assert.equal(result.status,0,result.stderr);assert.doesNotMatch(result.stdout,/text 无效/);
+  assert.deepEqual(JSON.parse(s.read('notify.json')).text,CUSTOM_TEXT);assert.equal(JSON.parse(s.read('notify.json')).note,'kept');
+  assert.equal(s.cli(['off']).status,0);
+  assert.deepEqual(JSON.parse(s.read('notify.off.json')).text,CUSTOM_TEXT);
+  assert.doesNotMatch(s.cli([]).stdout,/文案：/);
+  result=s.cli(['bark']);assert.equal(result.status,0,result.stderr);
+  const restored=JSON.parse(s.read('notify.json'));
+  assert.deepEqual(restored.text,CUSTOM_TEXT);assert.equal(restored.note,'kept');assert.equal(restored.command[1],managedSenderPath(s.home));
+  assert.match(s.cli([]).stdout,/\n文案：自定义/);
+  // A broken text is kept as written, never dropped; notices stay on with the default text.
+  const broken={...restored,text:{fields:{default:['diff']}}};s.write('notify.json',JSON.stringify(broken));
+  result=s.cli([]);assert.match(result.stdout,/\n文案：默认（notify.json 里的 text 无效：fields，已改用默认文案，提醒照常发送）\n/);
+  assert.match(result.stdout,/当前渠道：bark（生效中）/);
+  parsed=JSON.parse(s.cli(['--json']).stdout);assert.equal(parsed.config.textState,'invalid');assert.equal(parsed.config.textReason,'fields');
+  result=s.cli(['pushplus']);assert.equal(result.status,0,result.stderr);
+  assert.match(result.stdout,/提示：notify.json 里的 text 无效（fields），提醒使用默认文案/);
+  assert.deepEqual(JSON.parse(s.read('notify.json')).text,broken.text);
+  assert.equal(s.log(),'','status and switch write nothing to notify.log');
+  noSecret(s.cli([]).stdout);
+});
+
+test('preview prints every event from sample fields with the current text; it sends, logs and changes nothing',async t=>{
+  const s=sandbox(t);
+  const at={now:Date.parse('2026-10-08T08:00:00.000Z'),timeZone:'Asia/Shanghai'};
+  let preview=await previewText(s.home,at);
+  assert.equal(preview.textState,null);assert.deepEqual(preview.messages.map(m=>m.event),['stuck','waiting','idle','idle_waiting','dead','done']);
+  assert.equal(preview.messages[0].title,'CM cm-ai 需要人处理 · demo-app');
+  assert.equal(preview.messages[5].body,'项目：demo-app\n任务：T-001\n时间：16:00');
+  assert.match(formatPreview(preview),/^提醒文案预览，用示例字段生成，不发送。文案：默认（没有生效的 notify.json，按默认文案预览）\n/);
+  // Point notify.json at a command that would record any run: preview must never run it.
+  const ran=path.join(s.root,'ran');
+  s.write('notify.json',JSON.stringify({version:1,command:[process.execPath,'-e',`require('fs').writeFileSync(${JSON.stringify(ran)},'x')`],text:CUSTOM_TEXT}));
+  preview=await previewText(s.home,at);
+  assert.equal(preview.textState,'custom');
+  assert.deepEqual(preview.messages.map(m=>m.title),['提醒 cm-ai 卡住了 · demo-app','提醒 cm-ai 等待会话应答 · demo-app','提醒 cm-ai 疑似空转 · demo-app',
+    '提醒 cm-ai 在等你 · demo-app','提醒 cm-ai 宿主已退出未收尾 · demo-app','提醒 cm-ai 完工 · demo-app']);
+  assert.equal(preview.messages[0].body,'下一步：核对原因后恢复原运行\n工单：T-001\n时间：16:00');
+  assert.equal(preview.messages[5].body,'项目：demo-app\n工单：T-001\n时间：16:00');
+  const before=s.snapshot();
+  let result=s.cli(['preview']);assert.equal(result.status,0,result.stderr);
+  assert.match(result.stdout,/^提醒文案预览，用示例字段生成，不发送。文案：自定义\n\n【卡住，需要人处理】stuck\n标题：提醒 cm-ai 卡住了 · demo-app\n下一步：核对原因后恢复原运行\n工单：T-001\n时间：\d\d:\d\d\n/);
+  assert.match(result.stdout,/【流程已结束】done\n标题：提醒 cm-ai 完工 · demo-app\n/);
+  assert.equal(JSON.parse(s.cli(['preview','--json']).stdout).messages.length,6);
+  // Also allowed on Windows: it reads notify.json only, never a secret file.
+  const out=sink();assert.equal(await main(['preview'],{env:s.env,stdout:out.stream,stderr:sink().stream,platform:'win32'}),0);
+  assert.match(out.text(),/标题：提醒 cm-ai 卡住了 · demo-app/);
+  s.write('notify.json',JSON.stringify({version:1,command:['/bin/true'],text:{labels:{secret:'x'}}}));
+  assert.match(s.cli(['preview']).stdout,/文案：默认（notify.json 里的 text 无效：labels，已改用默认文案，提醒照常发送）\n\n【卡住，需要人处理】stuck\n标题：CM cm-ai 需要人处理 · demo-app\n/);
+  s.write('notify.json','not json');
+  assert.match(s.cli(['preview']).stdout,/文案：默认（notify.json 无效，按默认文案预览）/);
+  s.write('notify.json',JSON.stringify({version:1,command:[process.execPath,'-e',`require('fs').writeFileSync(${JSON.stringify(ran)},'x')`],text:CUSTOM_TEXT}));
+  assert.deepEqual(s.snapshot(),before,'preview wrote nothing');assert(!fs.existsSync(ran),'the command never ran');
+  assert.equal(s.log(),'');
+});
+
+// notify.json is read through the same safe boundary as the channel file in
+// every manager path: a symlink (e.g. to a secret file), a FIFO or an oversized
+// file is never read; status says so instead of guessing.
+test('status, preview, test and switch never follow a notify.json symlink or read a non-regular or oversized file',{skip:!posix},async t=>{
+  const s=sandbox(t);
+  s.write('bark.env',`BARK_KEY=${BARK_SECRET}\n`);s.write('notify-channel.conf','CHANNEL=bark\n');
+  // The link target is valid JSON with a marker: if anything followed the link, the marker would show up.
+  const target=s.write('elsewhere.json',JSON.stringify({version:1,command:['/bin/true'],text:{headlines:{default:'LEAKED'}}}));
+  const link=path.join(s.home,'notify.json');fs.symlinkSync(target,link);
+  let status=await notifyStatus(s.home);
+  assert.equal(status.config.state,'invalid');assert.equal(status.config.reason,'not_regular_file');
+  let result=s.cli([]);assert.equal(result.status,0,result.stderr);
+  assert.match(result.stdout,/发送命令：notify.json 不是普通文件（可能是符号链接），cm-notify 不读取它，无法确认提醒是否生效/);
+  const preview=await previewText(s.home,{now:Date.parse('2026-10-08T08:00:00.000Z'),timeZone:'UTC'});
+  assert.equal(preview.state,'invalid');assert.equal(preview.textState,null);
+  assert.equal(preview.messages[0].title,'CM cm-ai 需要人处理 · demo-app');
+  result=s.cli(['preview']);assert.equal(result.status,0);assert.doesNotMatch(result.stdout,/LEAKED/);
+  assert.match(result.stdout,/文案：默认（notify.json 无效，按默认文案预览）/);
+  result=s.cli(['test']);assert.equal(result.status,2);assert.match(result.stderr,/notify.json 无效（not_regular_file）/);
+  result=s.cli(['bark']);assert.equal(result.status,2);assert.match(result.stderr,/不是普通文件/);
+  assert(fs.lstatSync(link).isSymbolicLink());assert.match(fs.readFileSync(target,'utf8'),/LEAKED/);
+  // The same for notify.off.json as the base of a switch.
+  fs.unlinkSync(link);fs.symlinkSync(target,path.join(s.home,'notify.off.json'));
+  result=s.cli(['bark']);assert.equal(result.status,2);assert.match(result.stderr,/不是普通文件/);
+  assert(!s.exists('notify.json'));fs.unlinkSync(path.join(s.home,'notify.off.json'));
+  // A FIFO is refused at once instead of blocking the read.
+  assert.equal(spawnSync('mkfifo',[link]).status,0);
+  const started=performance.now();status=await notifyStatus(s.home);
+  assert.equal(status.config.reason,'not_regular_file');assert(performance.now()-started<5000);
+  fs.unlinkSync(link);
+  // Oversized: not read, reported as such.
+  s.write('notify.json',JSON.stringify({version:1,command:['/bin/true'],pad:'x'.repeat(70*1024)}));
+  status=await notifyStatus(s.home);assert.equal(status.config.reason,'too_large');
+  assert.match(s.cli([]).stdout,/notify.json 超过 64 KiB，cm-notify 不读取它/);
+  // Switching from an oversized notify.off.json is refused before anything is read or written.
+  fs.renameSync(path.join(s.home,'notify.json'),path.join(s.home,'notify.off.json'));
+  const beforeSwitch=s.snapshot();
+  result=s.cli(['bark']);assert.equal(result.status,2);assert.match(result.stderr,/notify.off.json 超过 64 KiB，cm-notify 不会改它/);
+  assert.deepEqual(s.snapshot(),beforeSwitch);fs.unlinkSync(path.join(s.home,'notify.off.json'));
+  // A regular file still works, byte for byte as the runtime reads it (a BOM stays invalid JSON for both).
+  s.write('notify.json','﻿'+JSON.stringify({version:1,command:['/bin/true']}));
+  status=await notifyStatus(s.home);assert.equal(status.config.state,'invalid');assert.equal(status.config.reason,'not_json');
+  s.write('notify.json',JSON.stringify({version:1,command:['/bin/true'],text:{headlines:{default:'卡住了'}}}));
+  status=await notifyStatus(s.home);assert.equal(status.config.state,'custom');assert.equal(status.config.textState,'custom');
+  assert.equal(s.log(),'');
+});
+
+// The file a switch writes is re-indented and gets a new command, so it can
+// grow; it must stay within the 64 KiB the manager itself reads. Checked on the
+// exact bytes before any backup or write.
+test('switch refuses to write a notify.json over the 64 KiB read cap and keeps the original; at the cap it works',async t=>{
+  const s=sandbox(t);
+  s.write('bark.env',`BARK_KEY=${BARK_SECRET}\n`);
+  const node='/opt/node/bin/node',sender=managedSenderPath(s.home);
+  // Pad so that the rewritten file is exactly `target` bytes.
+  const config=pad=>({version:1,command:[node,sender],note:'x'.repeat(pad)});
+  const written=pad=>Buffer.byteLength(`${JSON.stringify(config(pad),null,2)}\n`);
+  const padFor=target=>target-written(0);
+  for(const name of ['notify.json','notify.off.json']){
+    for(const extra of ['notify.json','notify.off.json'])if(s.exists(extra))fs.unlinkSync(path.join(s.home,extra));
+    // Compact input below the cap that grows past it once re-indented.
+    const over=JSON.stringify(config(padFor(65537)));
+    assert(Buffer.byteLength(over)<=65536,'the input itself is readable');
+    s.write(name,over);const before=s.snapshot();
+    await assert.rejects(()=>switchChannel(s.home,'bark',{execPath:node}),error=>{
+      assert.match(error.message,/改写后的 notify.json 会有 65537 字节，超过 65536 字节（64 KiB）的读取上限/);return true;});
+    assert.deepEqual(s.snapshot(),before,`${name}: nothing renamed, written or created`);
+    // Exactly at the cap: switch succeeds and every later command still reads it.
+    s.write(name,JSON.stringify(config(padFor(65536))));
+    const result=await switchChannel(s.home,'bark',{execPath:node});
+    assert.equal(result.fromOff,name==='notify.off.json');
+    assert.equal(fs.statSync(path.join(s.home,'notify.json')).size,65536);
+    const status=await notifyStatus(s.home);assert.equal(status.config.state,'managed');assert.equal(status.config.reason,undefined);
+    assert.equal((await switchChannel(s.home,'bark',{execPath:node})).channel,'bark');
+  }
+});
+
+// A regular file replaced by a FIFO between the lstat check and open must not
+// block on a writer: the open is non-blocking and the handle's type check refuses it.
+test('a file swapped for a FIFO between the check and open is refused at once instead of waiting for a writer',{skip:!posix},async t=>{
+  const s=sandbox(t);
+  const cases=[['notify-channel.conf','CHANNEL=bark\n',(file,fileOps)=>readRegularFile(file,'notify-channel.conf',{fileOps}),/notify-channel.conf 必须是普通文件/],
+    ['notify.json','{"version":1}',(file,fileOps)=>readRegularFile(file,'notify.json',{fileOps,bytes:true}),/notify.json 必须是普通文件/],
+    ['bark.env',`BARK_KEY=${BARK_SECRET}\n`,(file,fileOps)=>readPrivateFile(file,'bark.env',{fileOps}),/bark.env 必须是自己的普通文件且权限 600/]];
+  for(const [name,content,read,refused] of cases){
+    const file=s.write(name,content),flags=[];
+    const swapToFifo={lstat:fsp.lstat,open:async(target,flag)=>{flags.push(flag);fs.unlinkSync(target);
+      assert.equal(spawnSync('mkfifo',['-m','600',target]).status,0);return fsp.open(target,flag);}};
+    // A build that blocks fails here; the waiting open is then given a writer
+    // (held open briefly) so it completes and the test process can still exit.
+    let timer,writer=null;
+    const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{
+      try{writer=fs.openSync(file,fs.constants.O_RDWR|fs.constants.O_NONBLOCK);}catch{}
+      reject(new Error('open blocked on the FIFO'));},3000);});
+    t.after(async()=>{clearTimeout(timer);await new Promise(resolve=>setTimeout(resolve,200));if(writer!==null)fs.closeSync(writer);});
+    await assert.rejects(Promise.race([read(file,swapToFifo),deadline]),error=>{assert.match(error.message,refused);noSecret(error.message);return true;});
+    clearTimeout(timer);
+    assert.equal(flags.length,1);assert.notEqual(flags[0]&fs.constants.O_NONBLOCK,0,`${name} opened non-blocking`);
+    assert.notEqual(flags[0]&fs.constants.O_NOFOLLOW,0);
+    fs.unlinkSync(file);
+  }
+  // Regular files still read exactly as before through the same flags.
+  s.write('bark.env',`BARK_KEY=${BARK_SECRET}\n`);
+  assert.equal(await readPrivateFile(path.join(s.home,'bark.env'),'bark.env'),`BARK_KEY=${BARK_SECRET}\n`);
+  assert.deepEqual(await readRegularFile(s.write('notify.json','﻿{}'),'notify.json',{bytes:true}),Buffer.from('﻿{}'));
 });

@@ -32,11 +32,14 @@ export function appendNotifyLog(home,now,{event='-',workflow='-',hash='-',result
   }catch{}
 }
 
-let warned=false;
-const warn=(env,reason)=>{
-  if(warned)return;warned=true;
-  appendNotifyLog(notifyHome(env),Date.now(),{event:'config',result:`off invalid_config ${reason}`});
+// One line per process and kind: an unusable file turns notices off; an
+// unusable `text` only falls back to the default text (notices stay on).
+const warned=new Set();
+const warnOnce=(env,kind,result)=>{
+  if(warned.has(kind))return;warned.add(kind);
+  appendNotifyLog(notifyHome(env),Date.now(),{event:'config',result});
 };
+const warn=(env,reason)=>warnOnce(env,'config',`off invalid_config ${reason}`);
 
 // Pure check of notify.json text: {config} or {reason}. Shared by the
 // runtime reader below and by /cm:notify, which must not write notify.log.
@@ -57,7 +60,13 @@ export function parseNotifyConfig(raw){
   const idleMinutes=value.idleMinutes??NOTIFY_LIMITS.defaultIdleMinutes;
   if(typeof idleMinutes!=='number'||!Number.isFinite(idleMinutes)||idleMinutes<=0||idleMinutes>1440)return {reason:'idle_minutes'};
   const ms=value=>Math.max(1,Math.round(value*60000));
-  return {config:{command:[...command],waitMs:ms(minutes),checkWaitMs:ms(checkMinutes),idleMs:ms(idleMinutes)}};
+  const config={command:[...command],waitMs:ms(minutes),checkWaitMs:ms(checkMinutes),idleMs:ms(idleMinutes)};
+  // An unusable `text` never turns notices off: the default text is used and
+  // the caller is told why (textReason), so a typo cannot silence notices.
+  if(value.text===undefined)return {config};
+  const text=normalizeNotifyText(value.text);
+  if(text.reason)return {config,textReason:text.reason};
+  return {config:{...config,text:text.text}};
 }
 
 // null = feature off. Under `node --test` only an explicit CM_WORKFLOW_HOME
@@ -70,6 +79,7 @@ export function readNotifyConfig(env=process.env){
   try{raw=fs.readFileSync(file,'utf8');}catch(error){if(error.code!=='ENOENT')warn(env,`unreadable_${error.code??'error'}`);return null;}
   const parsed=parseNotifyConfig(raw);
   if(parsed.reason){warn(env,parsed.reason);return null;}
+  if(parsed.textReason)warnOnce(env,'text',`default_text text_config ${parsed.textReason}`);
   return parsed.config;
 }
 
@@ -94,15 +104,76 @@ export function localClock(now,timeZone){
   return `${pick('hour')}:${pick('minute')}`;
 }
 
-// Fixed layout: the next step first; a finished run only names project, task and time.
-export function buildNotifyMessage(fields,{now=Date.now(),timeZone}={}){
+// Optional user text (notify.json `text`): a title prefix, one headline per
+// event, which structured fields appear in which order, and their labels.
+// Nothing else: no templates or expressions. Custom strings go through the same
+// clean() as field values (paths redacted, control characters removed) and are
+// capped; the whole title and body keep their caps.
+export const NOTIFY_TEXT_FIELDS=Object.freeze(['project','workflow','runId','task','stage','code','nextAction','time']);
+const TEXT_EVENTS=['done','waiting','idle','idle_waiting','dead','default'];
+const TEXT_CAPS=Object.freeze({titlePrefix:16,headline:24,label:12});
+const FIELD_CAPS={workflow:24,runId:64,task:40,stage:48,code:64,nextAction:200};
+export const DEFAULT_NOTIFY_TEXT=Object.freeze({titlePrefix:'CM',
+  headlines:Object.freeze({done:'流程已结束',waiting:'等待会话应答',idle:'疑似空转',idle_waiting:'在等你',dead:'宿主已退出未收尾',default:'需要人处理'}),
+  fields:Object.freeze({default:Object.freeze(['nextAction','project','workflow','task','stage','code','time']),
+    done:Object.freeze(['project','task','time'])}),
+  labels:Object.freeze({nextAction:'下一步',project:'项目',workflow:'流程',runId:'运行',task:'任务',stage:'阶段',code:'原因',time:'时间'})});
+// Custom strings first lose every Unicode format character (\p{Cf}: bidi
+// controls U+202A-202E, U+2066-2069, U+200E/200F, U+061C; zero-width U+200B-200D,
+// U+2060, U+FEFF; soft hyphen, tag characters), so they cannot reorder or hide
+// text. Unlike field values, a path is redacted whatever precedes it: every
+// span starting at "/", "~/", a drive letter with ":\" or ":/", or a UNC "\\" up to the next
+// whitespace or listed punctuation becomes <路径> (so "CI/CD" becomes "CI<路径>").
+// Then the usual clean(). Something visible (a letter, digit, punctuation or
+// symbol) must remain. Field values and the default text are not touched.
+const FORMAT_CHARS=/\p{Cf}+/gu,VISIBLE=/[\p{L}\p{N}\p{P}\p{S}]/u;
+const TEXT_PATH=/(?:~?\/|[A-Za-z]:[\\/]|\\\\)[^\s'"`，。；;、）)]+/g;
+const cleanText=(raw,max)=>clean(raw.replace(FORMAT_CHARS,'').replace(/[\u0000-\u001f\u007f-\u009f]+/g,' ').replace(TEXT_PATH,'<路径>'),max);
+const plain=value=>value&&typeof value==='object'&&!Array.isArray(value);
+const onlyKeys=(value,keys)=>Object.keys(value).every(key=>keys.includes(key));
+// {text} merged over the default, or {reason}. Idempotent on its own output.
+export function normalizeNotifyText(value){
+  if(!plain(value))return {reason:'text'};
+  if(!onlyKeys(value,['titlePrefix','headlines','fields','labels']))return {reason:'text_key'};
+  const text={titlePrefix:DEFAULT_NOTIFY_TEXT.titlePrefix,headlines:{...DEFAULT_NOTIFY_TEXT.headlines},
+    fields:{default:[...DEFAULT_NOTIFY_TEXT.fields.default],done:[...DEFAULT_NOTIFY_TEXT.fields.done]},labels:{...DEFAULT_NOTIFY_TEXT.labels}};
+  // A custom string must still show something after cleaning; only the prefix
+  // may be given as exactly "" (no prefix).
+  const word=(raw,max,empty=false)=>{
+    if(typeof raw!=='string')return null;if(empty&&raw==='')return '';
+    const cleaned=cleanText(raw,max);return VISIBLE.test(cleaned)?cleaned:null;};
+  if(value.titlePrefix!==undefined){
+    const prefix=word(value.titlePrefix,TEXT_CAPS.titlePrefix,true);if(prefix===null)return {reason:'title_prefix'};
+    text.titlePrefix=prefix;
+  }
+  for(const [name,keys,cap] of [['headlines',TEXT_EVENTS,TEXT_CAPS.headline],['labels',NOTIFY_TEXT_FIELDS,TEXT_CAPS.label]]){
+    if(value[name]===undefined)continue;
+    if(!plain(value[name])||!onlyKeys(value[name],keys))return {reason:name};
+    for(const [key,raw] of Object.entries(value[name])){const cleaned=word(raw,cap);if(cleaned===null)return {reason:name};text[name][key]=cleaned;}
+  }
+  if(value.fields!==undefined){
+    if(!plain(value.fields)||!onlyKeys(value.fields,['default','done']))return {reason:'fields'};
+    for(const [key,list] of Object.entries(value.fields)){
+      if(!Array.isArray(list)||list.length<1||new Set(list).size!==list.length
+        ||!list.every(item=>NOTIFY_TEXT_FIELDS.includes(item)))return {reason:'fields'};
+      text.fields[key]=[...list];
+    }
+  }
+  return {text};
+}
+
+// The default text is a next-step-first layout; a finished run only names
+// project, task and time. `text` is a normalized notify.json `text`; anything
+// unusable falls back to the default.
+export function buildNotifyMessage(fields,{now=Date.now(),timeZone,text}={}){
+  const spec=text===undefined||text===null?DEFAULT_NOTIFY_TEXT:normalizeNotifyText(text).text??DEFAULT_NOTIFY_TEXT;
   const workflow=clean(fields.workflow,24)||'cm',project=projectName(fields.project);
-  const headline={done:'流程已结束',waiting:'等待会话应答',idle:'疑似空转',idle_waiting:'在等你',dead:'宿主已退出未收尾'}[fields.event]??'需要人处理';
-  const title=cut(`CM ${workflow} ${headline}${project?` · ${project}`:''}`,NOTIFY_LIMITS.titleChars);
-  const task=clean(fields.task,40),time=['时间',localClock(now,timeZone)];
-  const rows=fields.event==='done'?[['项目',project],['任务',task],time]
-    :[['下一步',clean(fields.nextAction,200)],['项目',project],['流程',workflow],['任务',task],
-      ['阶段',clean(fields.stage,48)],['原因',clean(fields.code,64)],time];
+  const event=Object.hasOwn(spec.headlines,fields.event)&&fields.event!=='default'?fields.event:'default';
+  const head=[spec.titlePrefix,workflow,spec.headlines[event]].filter(Boolean).join(' ');
+  const title=cut(`${head}${project?` · ${project}`:''}`,NOTIFY_LIMITS.titleChars);
+  const value=name=>name==='time'?localClock(now,timeZone):name==='project'?project:name==='workflow'?workflow
+    :clean(fields[name],FIELD_CAPS[name]);
+  const rows=spec.fields[fields.event==='done'?'done':'default'].map(name=>[spec.labels[name],value(name)]);
   const lines=rows.filter(([,value])=>value).map(([label,value])=>`${label}：${value}`);
   return {title,body:cut(lines.join('\n'),NOTIFY_LIMITS.bodyChars)};
 }
@@ -179,7 +250,7 @@ export function notify(fields,{env=process.env,now=Date.now(),timeoutMs=NOTIFY_L
       if(reserved!=='duplicate')appendNotifyLog(home,now,{event,workflow,hash,result:`skipped ${reserved}`});
       return {sent:false,reason:reserved};
     }
-    const message=buildNotifyMessage(fields,{now});
+    const message=buildNotifyMessage(fields,{now,text:config.text});
     const payload={...message,event};
     for(const name of ['project','workflow','runId','task','stage','code','nextAction']){
       const value=name==='project'?projectName(fields.project):clean(fields[name],name==='nextAction'?200:64);
