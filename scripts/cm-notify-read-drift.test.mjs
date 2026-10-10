@@ -136,15 +136,43 @@ test('runtime sync reader: reads from the handle it checked and always closes it
 // process. The sender (a CLI entry) may exit on an unsupported Node, so the
 // runtime must not import it, directly or through anything it imports.
 const RUNTIME=new URL('../runtime/js/',import.meta.url);
+// Small scanner, not a parser: static imports/re-exports (also over several
+// lines), side-effect imports and dynamic import() with a literal specifier.
+// A dynamic import() with anything else as its argument is reported as
+// `nonLiteral` so the test fails instead of silently missing a dependency.
+export function scanImports(source){
+  const code=source.replace(/\/\*[\s\S]*?\*\//g,'').replace(/^\s*\/\/.*$/gm,'');
+  const specifiers=[];
+  for(const m of code.matchAll(/\b(?:import|export)\b[^;'"`()]*?\bfrom\s*['"]([^'"]+)['"]/g))specifiers.push(m[1]);
+  for(const m of code.matchAll(/\bimport\s*['"]([^'"]+)['"]/g))specifiers.push(m[1]);
+  let literal=0;
+  for(const m of code.matchAll(/\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g)){specifiers.push(m[2]);literal+=1;}
+  const nonLiteral=[...code.matchAll(/\bimport\s*\(/g)].length-literal;
+  return {specifiers,nonLiteral};
+}
+// Files of the runtime import graph, as paths relative to runtime/js/.
+// Relative specifiers resolve from the importing file's own directory; the
+// only other specifiers allowed are node: built-ins.
 function importGraph(entry,seen=new Set()){
   if(seen.has(entry))return seen;seen.add(entry);
-  const source=fs.readFileSync(new URL(entry,RUNTIME),'utf8');
-  for(const match of source.matchAll(/(?:^|\n)\s*(?:import|export)\b[^'"\n]*?from\s*['"]([^'"]+)['"]|(?:^|\n)\s*import\s*['"]([^'"]+)['"]/g)){
-    const specifier=match[1]??match[2];
-    if(specifier.startsWith('.'))importGraph(path.posix.normalize(specifier),seen);
+  const base=new URL(entry,RUNTIME);
+  const {specifiers,nonLiteral}=scanImports(fs.readFileSync(base,'utf8'));
+  assert.equal(nonLiteral,0,`${entry} has a dynamic import() with a non-literal specifier; the import graph cannot be checked`);
+  for(const specifier of specifiers){
+    if(specifier.startsWith('node:'))continue;
+    assert(specifier.startsWith('.'),`${entry} imports ${specifier}: only node: built-ins and relative files are allowed`);
+    importGraph(path.relative(fileURLToPath(RUNTIME),fileURLToPath(new URL(specifier,base))),seen);
   }
   return seen;
 }
+test('import scanner: multi-line static imports, dynamic import() with a literal, non-literal dynamic import()',()=>{
+  const multi=scanImports(`import {\n  a,\n  b,\n} from './multi.mjs';\nexport * from "./re.mjs";\nimport './side.mjs';\n// import {x} from './comment.mjs';\n/* import('./block.mjs') */\nconst lazy=await import('./lazy/dyn.mjs');`);
+  assert.deepEqual(multi.specifiers.sort(),['./lazy/dyn.mjs','./multi.mjs','./re.mjs','./side.mjs']);
+  assert.equal(multi.nonLiteral,0);
+  assert.equal(scanImports('const m=await import(name);import(`./${x}.mjs`);import("./ok.mjs");').nonLiteral,2);
+  assert.equal(scanImports('console.log(import.meta.url);').nonLiteral,0);
+});
+
 const importChild=(file,env={})=>spawnSync(process.execPath,['--input-type=module','-e',
   `await import(${JSON.stringify(pathToFileURL(file).href)});console.log('imported');`],{encoding:'utf8',timeout:10000,env:{...process.env,...env}});
 
