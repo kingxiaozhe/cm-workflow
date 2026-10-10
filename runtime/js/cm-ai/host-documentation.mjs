@@ -2,7 +2,7 @@
 // checks/Learning/handoff/review. This adapter grants no additional file scope.
 import {isFinalCmAiTask} from './cm-ai-admission.mjs';
 import {captureReviewBaseline} from './review-package.mjs';
-import {digest,json,shape,need,terminalFor} from './effect-contract.mjs';
+import {digest,json,shape,need,terminalFor,boundedReason} from './effect-contract.mjs';
 
 export function validateDocumentationPaths(raw,scope){
   const paths=json(raw);
@@ -16,27 +16,68 @@ export function validateDocumentationPaths(raw,scope){
   return paths;
 }
 
+// Q16/Q17: a code-root snapshot split into the documentation paths (each
+// path's sha256, null when absent) and one digest of everything else. The
+// task runner supplies the snapshot (control.documentationSnapshot): its fixed
+// task-snapshot rules (full develop scope, the ignore policy bound at create),
+// so a develop-scope file Git ignores is still part of "everything else". The
+// runner records the split when the sync starts and compares a later one with
+// it before it re-asks only documentation_sync.
+export function splitDocumentationState(files,paths){
+  const others=files.filter(file=>!paths.includes(file.path));
+  return {files,documents:paths.map(file=>({path:file,
+    sha256:files.find(item=>item.path===file)?.sha256??null})),othersDigest:digest(others)};
+}
+// Without a runner snapshot (no journal: nothing is recorded or retried), the
+// adapter keeps its own scope-only capture for the out-of-scope check.
+export function captureDocumentationState({root,specsRoot,identity,paths,requirements,specification=null}){
+  const baseline=captureReviewBaseline({root,specsRoot,identity,scope:paths,requirements,
+    ...(specification?{specification}:{})});
+  return splitDocumentationState(baseline.files,paths);
+}
+// Paths outside the documentation paths that differ between two captures.
+export function documentationOutOfScopePaths(before,after,paths){
+  const index=files=>new Map(files.filter(file=>!paths.includes(file.path)).map(file=>[file.path,digest(file)]));
+  const a=index(before),b=index(after);
+  return [...new Set([...a.keys(),...b.keys()])].filter(file=>a.get(file)!==b.get(file)).sort();
+}
+const fail=(code,message=code)=>Object.assign(new Error(message),{code});
+
 export function withHostDocumentation({developer,documentationSync,specsDir,codeProject,feature,scope,parallelSelection=null,featureSelection}){
   shape(documentationSync,['paths','run']);need(typeof documentationSync.run==='function');
   const paths=validateDocumentationPaths(documentationSync.paths,scope),run=documentationSync.run;
   need(paths.length>0);
   return {...developer,run:async(request,control)=>{
-    const response=terminalFor(await developer.run(request,control),request);
+    // A documentation-only redo (task-runner: documentation-sync-retry) reuses
+    // the developer answer journaled when the failed sync started; the
+    // developer is never asked again.
+    const redo=control.documentationRedo;
+    if(redo!==undefined)shape(redo,['result','effectiveModel']);
+    const response=terminalFor(redo!==undefined?{version:1,invocationId:request.invocationId,contextId:request.contextId,
+      provider:request.provider,effectiveModel:redo.effectiveModel,status:'succeeded',accepted:true,result:redo.result}
+      :await developer.run(request,control),request);
     if(response.status!=='succeeded')return response;
     need(!control.signal.aborted,'cancelled');
-    if(!isFinalCmAiTask({specsDir,codeProject,feature,taskId:request.identity.taskId,parallelSelection,featureSelection}))return response;
-    const baseline=captureReviewBaseline({root:codeProject,specsRoot:specsDir,identity:request.identity,
-      scope:paths,requirements:request.payload.requirements.map(file=>file.path),
-      ...(request.payload.specification?{specification:{specsRoot:specsDir,feature}}:{})});
+    if(!isFinalCmAiTask({specsDir,codeProject,feature,taskId:request.identity.taskId,parallelSelection,featureSelection})){
+      need(redo===undefined,'documentation_redo_mismatch');return response;
+    }
+    const capture=()=>typeof control.documentationSnapshot==='function'?control.documentationSnapshot(paths):captureDocumentationState({root:codeProject,specsRoot:specsDir,identity:request.identity,paths,
+      requirements:request.payload.requirements.map(file=>file.path),
+      specification:request.payload.specification?{specsRoot:specsDir,feature}:null});
+    const before=capture();
+    // The runner journals the developer answer and this start before the sync
+    // is asked, so a lost sync can be re-asked alone.
+    if(typeof control.onDocumentationSync==='function')control.onDocumentationSync({result:response.result,
+      effectiveModel:response.effectiveModel,documents:before.documents,othersDigest:before.othersDigest});
     const result=json(await run(json({identity:request.identity,invocationId:request.invocationId,
       specsDir,codeProject,feature,paths}),control.signal));
-    need(!control.signal.aborted,'cancelled');shape(result,['status']);
+    need(!control.signal.aborted,'cancelled');
+    try{shape(result,['status']);need(['completed','blocked'].includes(result.status));}
+    catch{throw fail('documentation_sync_answer_invalid');}
     need(result.status==='completed','documentation_sync_blocked');
-    const after=captureReviewBaseline({root:codeProject,specsRoot:specsDir,identity:request.identity,
-      scope:paths,requirements:request.payload.requirements.map(file=>file.path),
-      ...(request.payload.specification?{specification:{specsRoot:specsDir,feature}}:{})});
-    need(digest(baseline.files.filter(file=>!paths.includes(file.path)))===
-      digest(after.files.filter(file=>!paths.includes(file.path))),'out_of_scope');
+    const after=capture();
+    if(after.othersDigest!==before.othersDigest)throw fail('out_of_scope',
+      boundedReason('out_of_scope: ',documentationOutOfScopePaths(before.files,after.files,paths),''));
     return response;
   }};
 }

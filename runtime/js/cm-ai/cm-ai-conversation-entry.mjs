@@ -36,7 +36,9 @@ const retryReview=reviewRetryable;
 // second copy of the code list that silently drifts.
 export const developmentRetryable=status=>status.state==='blocked'
   &&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','develop_call_timeout','develop_answer_invalid',
-    'check_answer_missing','check_answer_invalid','develop_out_of_scope','develop_answer_missing','develop_dispatch_failed','develop_interrupted'].includes(status.code)
+    'check_answer_missing','check_answer_invalid','develop_out_of_scope','develop_answer_missing','develop_dispatch_failed','develop_interrupted',
+    // Q16/Q17: only documentation_sync is asked again (durable-runner-state.mjs DOCUMENTATION_SYNC_CODES).
+    'documentation_sync_answer_missing','documentation_sync_answer_invalid','documentation_sync_answer_blocked','documentation_sync_out_of_scope','documentation_sync_interrupted'].includes(status.code)
   // Shown before the operator confirmed the session stopped: not yet redoable.
   &&status.developRedoRequired!==true;
 const retryDeveloper=developmentRetryable;
@@ -74,6 +76,7 @@ const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',ope
   packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),
   ...(status.reviewReconciliation?{reviewReconciliation:status.reviewReconciliation}:{}),
   ...(status.developRedoRequired===true?{developRedoRequired:true}:{}),
+  ...(status.documentationSyncPending===true?{documentationSyncPending:true}:{}),
   ...(status.reviewRedispatchStopRequired===true?{reviewRedispatchStopRequired:true}:{}),
   ...(typeof status.reviewAbandonRefusal==='string'?{reviewAbandonRefusal:status.reviewAbandonRefusal}:{}),
   ...(typeof status.reason==='string'?{reason:status.reason}:{}),

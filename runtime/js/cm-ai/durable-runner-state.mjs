@@ -36,7 +36,7 @@ const prefix=(a,b)=>{need(b.length>=a.length,'runner_history_mismatch');same(a,b
 const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(s),'runner_session');
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
-  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout','develop_answer_invalid',...RECHECK_CODES,DEVELOP_REDO_CODE,DISPATCH_RETRY_CODE,DEVELOP_INTERRUPTED_CODE].includes(code)
+  kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout','develop_answer_invalid',...RECHECK_CODES,DEVELOP_REDO_CODE,DISPATCH_RETRY_CODE,DEVELOP_INTERRUPTED_CODE,...DOCUMENTATION_SYNC_CODES].includes(code)
   ||kind==='review'&&state==='pending_review'&&(REVIEW_RETRY_CODES.includes(code)||REVIEW_NOT_DISPATCHED_CODES.includes(code))
   ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed',COMPLETE_RECHECK_CODE].includes(code)
     ||code==='review_package_changed'&&reviewVerdict==='approved')
@@ -341,6 +341,93 @@ export function developDispatchBasis(s,config,recorded=0){
     ||s.state==='blocked'&&s.code===DISPATCH_RETRY_CODE))return null;
   return pinnedDevelopStart(s,entry=>developDispatchFailedEffect(entry)||developTimeoutEffect(entry));
 }
+// Q16/Q17 (V2): documentation_sync runs inside the final task's develop, after
+// the session already answered the develop. This runtime journals that answer
+// and the documentation start (documentation-sync-started) right before it asks
+// the sync, and marks the developer call with that record's digest
+// (call.documentationSync). A sync that then ends without a usable answer is
+// checkpointed unknown with one of these codes; only documentation_sync is
+// asked again, by a develop intent whose adapter reuses the journaled answer.
+// The developer is never dispatched again, and the review package still
+// compares with the task baseline captured at create. The source holds no call
+// or effect slot; MAX_DOCUMENTATION_SYNC_RETRIES bounds the retries per run.
+// Journals without the record keep their old projection.
+//
+// R3: nothing the host observes proves the documentation writer stopped. A
+// lost answer may simply not have written yet, and an accepted answer only ends
+// the host's wait, not the session's writes. So every retry first needs the
+// operator's stop confirmation for that exact source call (develop_redo with a
+// reason, journaled as documentation-sync-retry), or the effect-interrupted
+// record of a host that died during the sync (the same confirmation, given
+// through abandon_effect). The disk is a separate gate, checked right before
+// every redispatch (also after a restart): the code root outside the
+// documentation paths still equals the documentation start, and the
+// documentation paths still equal what they were when the stop was confirmed.
+export const DOCUMENTATION_SYNC_INTERRUPTED_CODE='documentation_sync_interrupted';
+export const DOCUMENTATION_SYNC_CODES=Object.freeze(['documentation_sync_answer_missing','documentation_sync_answer_invalid',
+  'documentation_sync_answer_blocked','documentation_sync_out_of_scope',DOCUMENTATION_SYNC_INTERRUPTED_CODE]);
+export const MAX_DOCUMENTATION_SYNC_RETRIES=2;
+// The workflow configuration accepts up to 256 documentation paths
+// (host-workflow-capabilities.mjs); the record accepts every one of them.
+export const MAX_DOCUMENTATION_PATHS=256;
+// The documentation paths and their sha256 (null: absent) a record names: in
+// the task scope, distinct, 1..MAX_DOCUMENTATION_PATHS of them.
+export function validDocumentationStates(documents,scope){
+  need(Array.isArray(documents)&&documents.length>0&&documents.length<=MAX_DOCUMENTATION_PATHS,'runner_documentation');
+  const seen=new Set();
+  for(const item of documents){
+    shape(item,['path','sha256']);
+    need(typeof item.path==='string'&&scope.includes(item.path)&&!seen.has(item.path),'runner_documentation');
+    seen.add(item.path);if(item.sha256!==null)hex(item.sha256);
+  }
+  return documents;
+}
+export const DOCUMENTATION_SYNC_LIMIT_CODE='documentation_sync_retry_limit';
+export const documentationSyncSource=entry=>{
+  const result=entry.result,call=result.calls?.at(-1);
+  return entry.effect.kind==='develop'&&result.state==='unknown'&&DOCUMENTATION_SYNC_CODES.includes(result.code)
+    &&call?.terminal==='unknown'&&call.resultDigest===null&&typeof call.documentationSync==='string'
+    &&call.channel==='fixture'&&result.learningWriteback==null;
+};
+// The checkpointed failure (state unknown, last effect) still waiting for its
+// stop confirmation, while the run has a retry left; its code, or null.
+export function documentationSyncRetryCode(s,config,recorded=0){
+  if(config.bootstrap)return null;
+  const last=s.cache.at(-1);
+  if(!last||last.effect.identity.attempt!==s.attempt||!documentationSyncSource(last))return null;
+  return s.state==='unknown'&&s.code===last.result.code&&recorded<MAX_DOCUMENTATION_SYNC_RETRIES?s.code:null;
+}
+const documentationSyncCauses={
+  documentation_sync_answer_missing:'文档同步没有拿到应答（超时、断开、迟到被拒或宿主核对时出错）',
+  documentation_sync_answer_invalid:'文档同步的应答格式不合格（只接受 {"status":"completed"} 或 {"status":"blocked"}）',
+  documentation_sync_answer_blocked:'文档同步答复 blocked，文档没有同步完',
+  documentation_sync_out_of_scope:'文档同步改了文档路径以外的文件',
+  documentation_sync_interrupted:'宿主在文档同步中途退出'};
+const documentationDetail=(code,detail)=>{
+  if(typeof detail!=='string'||!detail)return '';
+  if(code==='documentation_sync_out_of_scope'){
+    const paths=detail.replace(/^out_of_scope:\s*/,'').split(/,\s*/).filter(Boolean).slice(0,20);
+    return paths.length?`：${paths.join(', ')}`:'';
+  }
+  return code==='documentation_sync_answer_missing'&&/^[a-z_]{1,64}$/.test(detail)?`（${detail}）`:'';
+};
+const DOCUMENTATION_SYNC_TAIL='只重发文档同步，复用运行存档里已记录的开发应答，不重发开发；盘上的开发与文档改动保留，审查包仍对照本运行创建时的任务基线，经检查与独立审查；不占调用与 effect 名额（每运行最多 2 次）。';
+const documentationSyncFixes={
+  documentation_sync_answer_blocked:'按会话说明补齐或修正文档、解决阻碍；',
+  documentation_sync_out_of_scope:'把这些文件还原到文档同步开始时的内容（宿主按运行存档里的摘要核对，没还原就拒绝；确需修改先走规格变更）；'};
+const documentationSyncGate='重发前宿主再核对：文档路径以外的文件与文档同步开始时一致，文档路径与确认停写时一致，任一不符就拒绝、不写记录。';
+// Before the confirmation: shown as blocked with pendingAction develop_redo.
+export const documentationSyncStopReason=(code,detail=null)=>`${code}: 开发已应答并写入运行存档，但${documentationSyncCauses[code]}${documentationDetail(code,detail)}。`
+  +'宿主无法证明会话已停止修改文档（没应答可能只是还没写，已应答也只结束了宿主的等待）；'
+  +`先确认会话已停止修改文档，${documentationSyncFixes[code]??''}再以 --mode resume --allow-develop-redo 启动并发送 develop_redo（单行 reason，写入运行存档）；之后 advance `
+  +DOCUMENTATION_SYNC_TAIL+documentationSyncGate;
+// After the confirmation (documentation-sync-retry or effect-interrupted).
+export const documentationSyncRetryReason=(code,detail=null)=>`${code}: ${documentationSyncCauses[code]}${documentationDetail(code,detail)}；`
+  +(code===DOCUMENTATION_SYNC_INTERRUPTED_CODE?'操作员已确认旧宿主与会话停止写入（effect-interrupted）。':'操作员已确认会话停止修改文档（documentation-sync-retry）。')
+  +'在原运行 advance '+DOCUMENTATION_SYNC_TAIL+documentationSyncGate+'确认之后若你又改了文档，再发送一次 develop_redo 重新确认（不另占次数）。';
+export const documentationSyncLimitReason=source=>`${DOCUMENTATION_SYNC_LIMIT_CODE}: 文档同步重发（原记录 ${source}）已在本运行用满 ${MAX_DOCUMENTATION_SYNC_RETRIES} 次，不再重发。`
+  +'先查清会话为何一直不应答、答复 blocked 或越界写文件；修好后用 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做，'
+  +'本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift 作为已有代码记录。';
 export const developDispatchReason=source=>`${DISPATCH_RETRY_CODE}: 开发请求在派发给会话之前失败（原记录 unknown/${source}）`
   +(DISPATCH_FAILURE_CODES.includes(source)?'，宿主自己的角色路由出错，未派发':'')+'，代码根仍与本轮开发起点一致（每次重发前再核对）'
   +'。修好 reason 指出的宿主环境（运行日志写入、工作流角色配置）后在原运行 advance 用新 effect id 重发本轮开发；不占调用与 effect 名额（每运行最多 2 次）。';
@@ -388,13 +475,15 @@ export const pendingDevelopStart=s=>pinnedDevelopStart(s,entry=>developDispatchF
 // last cache entry; earlier redo sources of this attempt produced nothing accepted).
 export const redoDevelopStart=s=>pinnedDevelopStart(s,entry=>developDispatchFailedEffect(entry)||developTimeoutEffect(entry)||developRedoSource(entry));
 // What may sit between a pending intent and an effect-interrupted record.
-const INTERRUPTIBLE_TRAILERS={develop:['control','develop-worker'],review:['control','host-joined'],complete:['control']};
+// documentation-sync-started (Q16) keeps a host death during the sync interruptible as before.
+const INTERRUPTIBLE_TRAILERS={develop:['control','develop-worker','documentation-sync-started'],review:['control','host-joined'],complete:['control']};
 // A provider develop that ended without a usable result is, like a current-session
 // one, a redo source (developRedoCause): it holds no call or effect slot either.
 export const developRedoSource=entry=>developAnswerMissingEffect(entry)||providerStuckCause(entry)!==null;
 export const countedCalls=(calls,cache)=>calls.filter(call=>!invalidDeveloperCall(call)&&call.terminal!=='abandoned').length
   -cache.filter(timeoutEffect).length-cache.filter(developTimeoutEffect).length-cache.filter(developAnswerInvalidEffect).length
-  -cache.filter(developRedoSource).length-cache.filter(developDispatchFailedEffect).length-cache.filter(notDispatchedEffect).length;
+  -cache.filter(developRedoSource).length-cache.filter(developDispatchFailedEffect).length-cache.filter(notDispatchedEffect).length
+  -cache.filter(documentationSyncSource).length;
 // A review effect whose journaled result the operator abandoned (below) no
 // longer holds one of the six effect slots; its retry does.
 const abandonedResult=(entry,calls)=>entry.effect.kind==='review'&&entry.result.state==='unknown'
@@ -411,7 +500,7 @@ export const completionBlockCount=cache=>cache.filter(completionBlock).length;
 export const completedEffectCount=(cache,calls=[])=>cache.filter(entry=>!(entry.effect.kind==='develop'
   &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))
   &&!timeoutEffect(entry)&&!developTimeoutEffect(entry)&&!developAnswerInvalidEffect(entry)&&!developRecheckSource(entry)
-  &&!developRedoSource(entry)&&!developDispatchFailedEffect(entry)&&!notDispatchedEffect(entry)
+  &&!developRedoSource(entry)&&!developDispatchFailedEffect(entry)&&!notDispatchedEffect(entry)&&!documentationSyncSource(entry)
   &&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
 // The six-effect cap counts develop and review effects only; completion (above),
 // QA, documentation and finalization hold no slot.
@@ -578,7 +667,10 @@ function callRequest(call,adapter,contextId,role,payload,identity,session,index)
   shape(call,['invocationId','contextId','provider','requestedModel','effectiveModel','channel','started','terminal','requestDigest','resultDigest',
     ...(Object.hasOwn(call,'providerThreadId')?['providerThreadId']:[]),
     ...(Object.hasOwn(call,'failureResult')?['failureResult']:[]),
-    ...(Object.hasOwn(call,'blockedReason')?['blockedReason']:[])]);
+    ...(Object.hasOwn(call,'blockedReason')?['blockedReason']:[]),
+    ...(Object.hasOwn(call,'documentationSync')?['documentationSync']:[])]);
+  // Q16: the documentation-sync-started record this developer call journaled.
+  if(Object.hasOwn(call,'documentationSync')){need(role==='developer','runner_call');hex(call.documentationSync);}
   if(Object.hasOwn(call,'blockedReason')){
     need(role==='developer'&&call.terminal==='failed'&&!Object.hasOwn(call,'failureResult'),'runner_call');
     validBlockedReason(call.blockedReason);
@@ -711,7 +803,7 @@ function invocationCall(call,registration,started,result,before) {
     &&call.resultDigest===digest(result.outcome==='observed'?result.inspection.review:result)
     &&before.sequence+1===Number(request.invocationId.split('.').at(-1)),'runner_call');
 }
-function checkpoint(before,raw,effect,config,original,session,controls,version=1,taskCommit=null,invocation=null,carried=null) {
+function checkpoint(before,raw,effect,config,original,session,controls,version=1,taskCommit=null,invocation=null,carried=null,documentation=null) {
   const s=json(raw,LIMIT);
   shape(s,['state','code','attempt','session','sequence','reviewPackage','currentChecks','receipt','receipts','calls','cache',
     ...(Object.hasOwn(s,'reason')?['reason']:[]),
@@ -757,6 +849,16 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
       ...(Object.hasOwn(original,'specification')?{specification:original.specification}:{}),
       ...(Object.hasOwn(effect,'learningInput')?{learningInput:effect.learningInput}:{})
     },identity,session,before.calls.length+1);
+    // Q16: a developer call carries the documentation-sync-started record it
+    // journaled (exactly that one), and a delivery is the answer it recorded.
+    need((added[0]?.documentationSync??null)===(documentation?.digest??null),'runner_documentation');
+    if(documentation&&added[0].terminal==='succeeded')
+      need(added[0].resultDigest===digest(documentation.payload.result),'runner_documentation');
+    if(s.state==='unknown'&&DOCUMENTATION_SYNC_CODES.includes(s.code))
+      need(documentation!==null&&added[0].terminal==='unknown'&&added[0].resultDigest===null,'runner_documentation');
+    // A documentation-only redo of the final task's develop journals a sync again.
+    if(before.state==='blocked'&&DOCUMENTATION_SYNC_CODES.includes(before.code)&&added[0]?.terminal==='succeeded')
+      need(documentation!==null,'runner_documentation');
     // A live-session init_verify that did not pass: the host wrote nothing, and
     // the develop keeps exactly the Learning/bootstrap evidence it started from.
     const verificationFailed=added[0]?.terminal==='failed'&&added[0].failureResult?.code==='bootstrap_verification_failed';
@@ -1100,7 +1202,9 @@ export function readRunnerHistory(raw,config,version=1) {
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
   let invocation={registration:null,started:null,result:null};let registrationRecord=null,startedRecord=null,resultRecord=null,lastReview=null;
   const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false,supersession=null;
-  const answerGaps={developRecheck:0,completeRecheck:0,developRedo:0,developDispatch:0,reviewRedispatch:{1:0,2:0}};
+  const answerGaps={developRecheck:0,completeRecheck:0,developRedo:0,developDispatch:0,documentationSync:0,reviewRedispatch:{1:0,2:0}};
+  // Q16: documentation-sync-started records by digest, and the pending develop's.
+  const documentationRecords=new Map();let pendingDocumentation=null,documentationStop=null;
   // V8/V9: interrupted intents (their ids are never reused) and the provider
   // worker records of the pending develop and of every checkpointed develop.
   const interrupted=[],workers={};let pendingWorker=null;
@@ -1113,10 +1217,24 @@ export function readRunnerHistory(raw,config,version=1) {
   // A pending effect that effect-interrupted may retire: no task-commit-intent,
   // not cancelled, a review never registered, and after the intent only the
   // records its kind may leave behind (controls, a join, worker records).
+  // Q16: the documentation start a pending develop belongs to. Its own once
+  // documentation_sync was asked; before that (a documentation-only redo whose
+  // host died between its intent and its new start record) the start of the
+  // failure the redo was confirmed for, which the intent's prior state names.
+  const documentationOrigin=()=>{
+    if(pending?.kind!=='develop')return null;
+    if(pendingDocumentation!==null)return pendingDocumentation;
+    if(beforeIntent?.state!=='blocked'||!DOCUMENTATION_SYNC_CODES.includes(beforeIntent.code))return null;
+    const digest=beforeIntent.calls.at(-1)?.documentationSync,payload=documentationRecords.get(digest);
+    return payload===undefined?null:{digest,payload};
+  };
   const pendingInterruptible=(effect,intentIndex,end)=>version===3&&!(config.externalModels||config.executionPolicy)
     &&effect!==null&&Object.hasOwn(INTERRUPTIBLE_TRAILERS,effect.kind)&&transaction===null&&state.taskCommit?.intentDigest==null
     &&!controls.cancelled&&!controls.workflowError&&(effect.kind!=='review'||!invocation.registration)
     &&interrupted.filter(item=>item.kind===effect.kind).length<MAX_EFFECT_INTERRUPTIONS
+    // Q16: one that died during documentation_sync is a documentation retry and
+    // shares that cap; once spent, abandon_effect only voids the run.
+    &&(documentationOrigin()===null||answerGaps.documentationSync<MAX_DOCUMENTATION_SYNC_RETRIES)
     &&records.slice(intentIndex+1,end).every(row=>INTERRUPTIBLE_TRAILERS[effect.kind].includes(row.payload.type));
   // A pending develop whose only trailers are controls and worker records may
   // still be voided (effect-abandoned) once the interruption cap is spent.
@@ -1201,7 +1319,7 @@ export function readRunnerHistory(raw,config,version=1) {
       same(e.identity,{...config.identity,attempt:state.attempt});need(e.version===1 && stageAllowed(e.kind,state.state,state.code,state.priorReview?.verdict),'runner_stage');
       need(!(e.kind==='review'&&reviewNotDispatchedExhausted(state)),'runner_stage');
       need(effectSlotFree(e.kind,state.cache,state.calls) && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
-      pending=e;beforeIntent=structuredClone(state);controls={};completeIntentDigest=e.kind==='complete'?r.digest:null;
+      pending=e;beforeIntent=structuredClone(state);controls={};completeIntentDigest=e.kind==='complete'?r.digest:null;pendingDocumentation=null;documentationStop=null;
       invocation={registration:null,started:null,result:null};registrationRecord=null;startedRecord=null;resultRecord=null;
       joinedForInvocation=false;lastReview=null;
     } else if(version===3&&p.type==='host-joined') {
@@ -1320,6 +1438,50 @@ export function readRunnerHistory(raw,config,version=1) {
       answerGaps.developDispatch++;
       state.reason=developDispatchReason(state.code);
       state.state='blocked';state.code=DISPATCH_RETRY_CODE;lastReview=null;
+    } else if(version===3&&p.type==='documentation-sync-started') {
+      // Q16: written by the final task's develop right before it asks
+      // documentation_sync: the developer answer it already accepted and the
+      // documentation start. Bound to the pending develop's own developer call.
+      shape(p,[...common,'effectId','invocationId','result','effectiveModel','documents','othersDigest']);
+      need(r.kind==='result'&&pending?.kind==='develop'&&p.effectId===pending.id&&pendingDocumentation===null
+        &&!config.bootstrap&&p.invocationId===`${session}.${beforeIntent.calls.length+1}`
+        &&!controls.cancelled&&!controls.workflowError,'runner_documentation');
+      text(p.effectiveModel);hex(p.othersDigest);json(p.result,256*1024);
+      need(p.result!==null&&typeof p.result==='object'&&!Array.isArray(p.result),'runner_documentation');
+      validDocumentationStates(p.documents,config.scope);
+      // A documentation-only redo carries exactly the answer its source journaled.
+      if(beforeIntent.state==='blocked'&&DOCUMENTATION_SYNC_CODES.includes(beforeIntent.code)){
+        const source=documentationRecords.get(beforeIntent.calls.at(-1)?.documentationSync);
+        need(source&&digest(source.result)===digest(p.result)&&source.effectiveModel===p.effectiveModel
+          &&digest(source.documents.map(item=>item.path))===digest(p.documents.map(item=>item.path)),'runner_documentation');
+      }
+      pendingDocumentation={digest:r.digest,payload:p};documentationRecords.set(r.digest,p);
+    } else if(version===3&&p.type==='documentation-sync-retry') {
+      // Q16/Q17 (R3): develop_redo's stop confirmation for one failed
+      // documentation_sync, bound to its developer call and start record, with
+      // the documentation paths as they were at the confirmation. From the
+      // checkpointed failure (unknown) it spends one of the run's retries; from
+      // an already confirmed block (a re-confirmation after the operator's own
+      // edits) it only replaces the confirmed documentation state.
+      shape(p,[...common,'effectId','invocationId','startDigest','code','documents','reason','at']);
+      need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(p.reason),'runner_documentation_retry');
+      need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_documentation_retry');
+      need(r.kind==='result'&&pending===null,'runner_documentation_retry');
+      const call=state.calls.at(-1),start=documentationRecords.get(call?.documentationSync);
+      need(start!==undefined&&p.invocationId===call.invocationId&&p.startDigest===call.documentationSync,'runner_documentation_retry');
+      validDocumentationStates(p.documents,config.scope);
+      same(p.documents.map(item=>item.path),start.documents.map(item=>item.path));
+      if(state.state==='unknown'){
+        const code=documentationSyncRetryCode(state,config,answerGaps.documentationSync);
+        need(code!==null&&p.code===code&&p.effectId===state.cache.at(-1).effect.id,'runner_documentation_retry');
+        answerGaps.documentationSync++;
+        documentationStop={effectId:p.effectId,invocationId:p.invocationId,startDigest:p.startDigest,
+          detail:state.cache.at(-1).result.reason??null};
+      }else need(state.state==='blocked'&&DOCUMENTATION_SYNC_CODES.includes(state.code)&&p.code===state.code
+        &&documentationStop!==null&&p.effectId===documentationStop.effectId&&p.invocationId===documentationStop.invocationId
+        &&p.startDigest===documentationStop.startDigest,'runner_documentation_retry');
+      state.state='blocked';state.code=p.code;state.reason=documentationSyncRetryReason(p.code,documentationStop.detail);lastReview=null;
     } else if(version===3&&p.type==='complete-recheck') {
       shape(p,[...common,'effectId','source']);
       need(r.kind==='result'&&pending===null&&state.state==='unknown'&&completeRecheckable(state,answerGaps.completeRecheck)
@@ -1421,8 +1583,18 @@ export function readRunnerHistory(raw,config,version=1) {
     } else if(version===3&&p.type==='effect-interrupted') {
       need(!(config.externalModels||config.executionPolicy),'external_review_reconciliation_required');
       shape(p,[...common,'effectId','effectKind','intentDigest','lastRecordDigest','reason','at',
-        ...['basis','worker'].filter(key=>Object.hasOwn(p,key))]);
+        ...['basis','worker','startDigest','documents'].filter(key=>Object.hasOwn(p,key))]);
       const intentIndex=records.slice(0,index).findLastIndex(row=>row.payload.type==='effect-intent');
+      // Q16: a develop that died during documentation_sync names its start record
+      // and the documentation paths as they were when the operator confirmed
+      // the old host and session stopped (this record); exactly then.
+      const origin=documentationOrigin(),documentationInterrupted=origin!==null;
+      need(documentationInterrupted===Object.hasOwn(p,'startDigest')&&documentationInterrupted===Object.hasOwn(p,'documents'),'runner_interrupt');
+      if(documentationInterrupted){
+        need(p.startDigest===origin.digest,'runner_interrupt');
+        validDocumentationStates(p.documents,config.scope);
+        same(p.documents.map(item=>item.path),origin.payload.documents.map(item=>item.path));
+      }
       need(r.kind==='result'&&pending&&intentIndex>=0&&pendingInterruptible(pending,intentIndex,index),'runner_interrupt');
       need(p.effectId===pending.id&&p.effectKind===pending.kind&&p.intentDigest===records[intentIndex].digest
         &&p.lastRecordDigest===records[index-1].digest,'runner_interrupt');
@@ -1451,23 +1623,31 @@ export function readRunnerHistory(raw,config,version=1) {
             ...(Object.hasOwn(pending,'learningInput')?{learningInput:pending.learningInput}:{})}});
         state.calls.push({invocationId:request.invocationId,contextId:config.developer.contextId,provider:config.developer.provider,
           requestedModel:config.developer.requestedModel,effectiveModel:'unknown',channel:'fixture',started:true,
-          terminal:'abandoned',requestDigest:request.requestDigest,resultDigest:r.digest});
+          terminal:'abandoned',requestDigest:request.requestDigest,resultDigest:r.digest,
+          ...(documentationInterrupted?{documentationSync:origin.digest}:{})});
         state.sequence++;
-        state.state='blocked';state.code=DEVELOP_INTERRUPTED_CODE;state.reason=developInterruptedReason(provider);
+        if(documentationInterrupted){
+          // The developer had answered (journaled): redo only documentation_sync.
+          answerGaps.documentationSync++;
+          documentationStop={effectId:pending.id,invocationId:request.invocationId,startDigest:p.startDigest,detail:null};
+          state.state='blocked';state.code=DOCUMENTATION_SYNC_INTERRUPTED_CODE;
+          state.reason=documentationSyncRetryReason(DOCUMENTATION_SYNC_INTERRUPTED_CODE);
+        }else{state.state='blocked';state.code=DEVELOP_INTERRUPTED_CODE;state.reason=developInterruptedReason(provider);}
       }else{
         need(!Object.hasOwn(p,'basis')&&!Object.hasOwn(p,'worker'),'runner_interrupt');
         if(pending.kind==='review'){state.state='awaiting_review';state.code=null;state.reason=REVIEW_INTERRUPTED_REASON;}
         else {state.state=beforeIntent.state;state.code=beforeIntent.code;state.reason=beforeIntent.reason??null;}
       }
       interrupted.push({effectId:pending.id,kind:pending.kind});
-      pending=null;beforeIntent=null;invocation={registration:null,started:null,result:null};pendingWorker=null;
+      pending=null;beforeIntent=null;invocation={registration:null,started:null,result:null};pendingWorker=null;pendingDocumentation=null;
       joinedForInvocation=false;lastReview=null;
     } else if(version===3&&p.type==='effect-abandoned') {
       need(!(config.externalModels||config.executionPolicy),'external_review_reconciliation_required');
       shape(p,[...common,'effectId','effectKind','intentDigest','reason','at',
         ...['lastRecordDigest','worker'].filter(key=>Object.hasOwn(p,key))]);
       let intentIndex=index-1;
-      while(intentIndex>=0&&records[intentIndex].payload.type==='control')intentIndex--;
+      while(intentIndex>=0&&(records[intentIndex].payload.type==='control'
+        ||pending?.kind==='develop'&&records[intentIndex].payload.type==='documentation-sync-started'))intentIndex--;
       // A36: a registered review whose no-result redispatches this round
       // (MAX_REVIEW_REDISPATCHES) are spent can no longer be abandoned with abandon_review. Voiding the run
       // (then superseding it) is its only exit; it must name the last record.
@@ -1496,7 +1676,7 @@ export function readRunnerHistory(raw,config,version=1) {
     } else if(p.type==='effect-checkpoint') {
       shape(p,[...common,'effectId','checkpoint']);need(r.kind==='result' && pending && p.effectId===pending.id,'runner_checkpoint');
       state=checkpoint(beforeIntent,p.checkpoint,pending,config,original,session,controls,version,state.taskCommit??null,invocation,
-        supersession?.carriedReview??null);
+        supersession?.carriedReview??null,pendingDocumentation);pendingDocumentation=null;
       lastReview=version===3&&pending.kind==='review'&&invocation.result?{effect:pending,request:invocation.registration.request,
         registrationRecord,startedRecord,resultRecord,before:beforeIntent,controls,invocation}:null;
       if(pending.kind==='develop'&&pendingWorker?.journal)workers[pending.id]=workerSummary(pendingWorker);
@@ -1565,7 +1745,7 @@ export function readRunnerHistory(raw,config,version=1) {
     &&!transaction&&state.taskCommit?.intentDigest==null
     &&(pending.kind!=='review'||!invocation.registration&&!joinedForInvocation)
     &&records.slice(records.findLastIndex(row=>row.payload.type==='effect-intent')+1)
-      .every(row=>row.payload.type==='control');
+      .every(row=>row.payload.type==='control'||pending.kind==='develop'&&row.payload.type==='documentation-sync-started');
   const reviewResultAbandon=!(config.externalModels||config.executionPolicy)&&version===3&&pending===null&&lastReview!==null
     &&abandonableReviewResult(state,config.reviewers[0].contexts[state.attempt-1],answerGaps.reviewRedispatch[state.attempt])
     ?{effectId:lastReview.effect.id,invocationId:lastReview.request.invocationId,
@@ -1582,6 +1762,7 @@ export function readRunnerHistory(raw,config,version=1) {
       pendingResultAbandonable:pending!==null&&pendingResultAbandonable(),
       pendingInterruptLimit:interruptLimit,pendingWorkerVoidable:workerVoidable,
       pendingWorker:pending?.kind==='develop'&&pendingWorker?workerSummary(pendingWorker):null,
+      pendingDocumentation:documentationOrigin(),
       reviewReconciliation:lastReview?.reconciliation&&['unknown','pending_review'].includes(state.state)?{...reconciliationBinding(),
         ...lastReview.reconciliation,request:lastReview.request,effect:lastReview.effect,before:lastReview.before}:null,
       pendingObservedReview:pending?.kind==='review'&&invocation.result?.outcome==='observed'
@@ -1596,7 +1777,7 @@ export function readRunnerHistory(raw,config,version=1) {
 // on every read, never journaled itself, so replay shows the same block.
 // A spent develop_dispatch_failed exit falls to the confirmed develop_redo, so it
 // has no limit code of its own.
-export const ANSWER_GAP_LIMIT_CODES=Object.freeze(['check_answer_retry_limit','complete_recheck_limit','develop_redo_limit']);
+export const ANSWER_GAP_LIMIT_CODES=Object.freeze(['check_answer_retry_limit','complete_recheck_limit','develop_redo_limit',DOCUMENTATION_SYNC_LIMIT_CODE]);
 const gapLimitReason=(code,what,source)=>`${code}: ${what}（原记录 ${source}）已在本运行用满 ${MAX_ANSWER_GAP_RETRIES} 次，不再自动重做。`
   +'先查清根因（会话为何一直不应答或答复不合格、宿主环境为何失败）；修好后用 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做，'
   +'本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift 作为已有代码记录。';
@@ -1607,6 +1788,8 @@ export function answerGapLimit(s,config,gaps={}){
     return {code:'check_answer_retry_limit',reason:gapLimitReason('check_answer_retry_limit','开发后的检查或验证预检重跑',source)};
   if(s.state==='unknown'&&(gaps.completeRecheck??0)>=MAX_ANSWER_GAP_RETRIES&&completeRecheckable(s,0))
     return {code:'complete_recheck_limit',reason:gapLimitReason('complete_recheck_limit','完成前复查重跑',source)};
+  if(s.state==='unknown'&&(gaps.documentationSync??0)>=MAX_DOCUMENTATION_SYNC_RETRIES&&documentationSyncRetryCode(s,config,0)!==null)
+    return {code:DOCUMENTATION_SYNC_LIMIT_CODE,reason:documentationSyncLimitReason(source)};
   if((gaps.developRedo??0)>=MAX_DEVELOP_REDOS&&developRedoCause(s,config,0,gaps.workers??null)!==null)
     return {code:'develop_redo_limit',reason:gapLimitReason('develop_redo_limit','确认停写后的开发重发',source)};
   return null;
@@ -1638,6 +1821,8 @@ export function projectedRunnerStatus(history,config){
   const recheck=developRecheckCode(s,config,gaps.developRecheck??0);
   if(recheck!==null)return project(recheck);
   if(completeRecheckable(s,gaps.completeRecheck??0))return project(COMPLETE_RECHECK_CODE);
+  // Q16/Q17: a failed documentation_sync needs the operator's stop
+  // confirmation (develop_redo) first, so it is not projected as retryable.
   if(s.code==='call_timeout'&&developTimeoutBasis(s,config.bootstrap)!==null)return project('develop_call_timeout');
   if(developDispatchBasis(s,config,gaps.developDispatch??0)!==null)return project(DISPATCH_RETRY_CODE);
   const limit=answerGapLimit(s,config,gaps);

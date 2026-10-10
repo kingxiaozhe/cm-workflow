@@ -15,6 +15,14 @@ const deliveryMessages={
   develop_interrupted:['宿主在本轮开发中途退出，中断已登记，盘上改动保留、尚未进入审查。','确认会话或 provider 进程已停止修改代码'],
   develop_call_timeout:['开发应答超时、代码未改动。','先确认会话已不再修改代码；重发的请求须在宿主请求上限（默认 30 分钟）内应答，迟到应答仍被拒绝'],
 };
+// Q16/Q17: documentation_sync of the final task, after develop already answered.
+const documentationMessages={
+  documentation_sync_answer_missing:['文档同步没有拿到应答（超时、断开或迟到）。开发应答已记录，不需要重新开发。','重发的文档同步须在宿主请求上限内应答，迟到应答仍被拒绝；'],
+  documentation_sync_answer_invalid:['文档同步的应答格式不合格。开发应答已记录，不需要重新开发。','只按合同应答 {"status":"completed"} 或 {"status":"blocked"}；'],
+  documentation_sync_answer_blocked:['文档同步答复 blocked，文档没有同步完。开发应答已记录，不需要重新开发。','先按会话说明补齐或修正文档、解决阻碍；'],
+  documentation_sync_out_of_scope:['文档同步改了文档路径以外的文件（reason 列出路径），尚未进入审查。','先把这些文件还原到文档同步开始时的内容（宿主按存档摘要核对，没还原就拒绝；确需修改先走规格变更）；'],
+  documentation_sync_interrupted:['宿主在文档同步中途退出，中断已登记。开发应答已记录，不需要重新开发。',''],
+};
 const explain=(summary,nextStep,operation=null,prerequisites=[])=>Object.freeze({
   summary,nextStep,recoveryOperation:operation,prerequisites:Object.freeze(prerequisites),authorizationGranted:false,
 });
@@ -35,6 +43,8 @@ export function operatorGuidance(result,{executionActive=false}={}){
       const review=action==='abandon_review';
       return explain(review?'独立审查结果尚未确认。':'宿主在开发、审查或完成中途退出，这一步只登记了意图、没有结果。',
         review?'先核对原操作与磁盘结果，确认旧宿主及相关子进程已退出；符合原宿主条件时，再审计放弃这次操作。放弃不代表成功。'
+          :result.documentationSyncPending===true
+            ?'先确认旧宿主及相关子进程已退出、会话已停止修改文档（宿主按存档核对文档路径以外的文件与此刻的文档）；再发送 abandon_effect 登记中断，运行转为 documentation_sync_interrupted，之后只重发文档同步、不重新开发，计入文档同步重发的 2 次上限。盘上改动保留并经检查与独立审查；登记中断不代表成功。'
           :'先确认旧宿主及相关子进程已退出、会话已停止写入（provider 开发由宿主按存档记下的进程身份核对）；再发送 abandon_effect 登记中断，运行从这一步的可重试阻断继续：开发重发本轮、未登记的审查重新派发、未写提交意图的完成重新复查。盘上改动保留并经检查与独立审查；登记中断不代表成功。',
         action,['保留原配置、runId 和失败历史，以 --mode resume 启动',
           review?'显式 --allow-abandon-review，并提供单行 reason':'显式 --allow-abandon-effect，并提供单行 reason',
@@ -51,6 +61,19 @@ export function operatorGuidance(result,{executionActive=false}={}){
   if(state==='blocked'&&action==='abandon_review')return explain('本轮独立审查第二次没有结论，本轮还剩 1 次无结论重派，但宿主不能证明原审查进程已停止。',
     '先确认原审查进程（含子进程）已退出；再恢复原运行并发送 abandon_review 登记确认，之后 advance 重新取得授权并重派。不算审查轮次。',
     'abandon_review',['保留原配置、runId 与历史，以 --mode resume 启动','显式 --allow-abandon-review，并提供单行 reason','用满 2 次后为 review_redispatch_limit']);
+  // Q16/Q17: the final task's documentation_sync failed after develop answered.
+  // R3: whatever the failure, the host cannot see whether the session still writes.
+  if(action==='develop_redo'&&Object.hasOwn(documentationMessages,code))return explain(`${documentationMessages[code][0]}宿主无法证明会话已停止修改文档。`,
+    `先确认会话已停止修改文档，${documentationMessages[code][1]}再恢复原运行并发送 develop_redo 写入确认，之后 advance 只重发文档同步。盘上的开发与文档改动保留，经检查和独立审查。`,
+    'develop_redo',['保留原配置、runId 与历史，以 --mode resume 启动','显式 --allow-develop-redo，并提供单行 reason','只重发文档同步，不重发开发；每运行最多 2 次']);
+  if(state==='blocked'&&action==='resume'&&Object.hasOwn(documentationMessages,code)){
+    const [summary,repair]=documentationMessages[code];
+    return explain(summary,`${repair}然后恢复原运行并发送 advance，只重发文档同步，复用已记录的开发应答，不重新开发。`,
+      'advance',['保留原配置、runId 与历史，以 --mode resume 启动','文档路径以外的文件须与文档同步开始时一致、文档须与确认停写时一致，否则拒绝','不占调用与 effect 名额；每运行最多 2 次，用满为 documentation_sync_retry_limit']);
+  }
+  if(code==='documentation_sync_retry_limit')return explain('文档同步重发已在本运行用满 2 次，不再重发。',
+    '先查清会话为何一直不应答、答复 blocked 或越界写文件；修好后按 reason 用 --supersede-reviewed-evidence 新建运行重做。',
+    null,['原运行记录保留，不改写','本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift']);
   if(action==='develop_redo')return explain('开发应答没有拿到（超时后代码已改动、会话断开或只回了 failed），会话可能仍在写文件。',
     '先确认会话已停止修改代码；再恢复原运行并发送 develop_redo 写入确认，之后 advance 重发本轮开发。盘上改动保留，经检查和独立审查。',
     'develop_redo',['保留原配置、runId 与历史，以 --mode resume 启动','显式 --allow-develop-redo，并提供单行 reason','不占调用与 effect 名额；每运行最多 2 次']);

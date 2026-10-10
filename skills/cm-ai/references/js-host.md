@@ -24,7 +24,7 @@
 | `parallel_scope_existing_file`、`parallel_dependency_conflict` | 本文「启动前」3.1 |
 | `fingerprint_mismatch`、`invalid_arguments`、换会话恢复、`host-joined` | R「恢复参数与跨会话接手」 |
 | `resume` 下的 `develop_checks_not_passed`、旧 `checks_not_passed`、`develop_package_too_large`、`develop_empty_changes`、`develop_requirement_missing`、`develop_unchanged_after_review`、`develop_call_timeout`（开发应答超时）、`develop_answer_invalid`（开发应答超出字段上限）；`unknown/limit_exceeded`、`store_failure`、`empty_changes`；`request_too_large`、`host_response_too_large`、`host_response_mismatch`；大小上限或 `runId` 长度致退出 2 | R「开发交付阻断与存档限额」 |
-| `check_answer_missing`、`check_answer_invalid`、`complete_recheck_failed`、`develop_answer_missing`、`develop_redo`、`develop_redo_worker_*`、`develop_dispatch_failed`、`role_log_failed`、`host_response_late`、`check_answer_retry_limit`、`complete_recheck_limit`、`develop_redo_limit` | R「应答缺失、无效或迟到」 |
+| `check_answer_missing`、`check_answer_invalid`、`complete_recheck_failed`、`develop_answer_missing`、`develop_redo`、`develop_redo_worker_*`、`develop_dispatch_failed`、`role_log_failed`、`host_response_late`、`check_answer_retry_limit`、`complete_recheck_limit`、`develop_redo_limit`、`documentation_sync_answer_missing`、`documentation_sync_answer_invalid`、`documentation_sync_answer_blocked`、`documentation_sync_out_of_scope`、`documentation_sync_interrupted`、`documentation_sync_stop_required`、`documentation_sync_changed_after_stop`、`documentation_sync_retry_limit` | R「应答缺失、无效或迟到」 |
 | `developer_result_invalid`、`failed/invalid_result`、`protected_edit_stale` | R「开发结果校验失败」 |
 | `develop_retry_limit`、`completion_checks_changed`、`completion_package_changed`、`completion_retry_limit`、`package_mismatch`、`out_of_scope` | R「重试名额与完成前复查」 |
 | `review_transport_timeout`、`review_provider_failed`、`review_verdict_invalid`、verdict `blocked`、`supersede_code_drift`、`review_package_changed` | R「规格漂移、代码漂移与审查失败」「审查计时与快照忽略」 |
@@ -213,7 +213,7 @@ QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.tim
 | --- | --- |
 | develop | 读取 N3 的业务约束、适用项目指令与请求中的 Learning；按 N3 的技能匹配读取并使用真实工程 Skill，只修改固定业务 scope，返回原开发/Learning 结果。不要执行 N3 的手工交接/标记流程。 |
 | check | 按原任务测试合同实际运行适量检查，返回实际退出码及证据；不把自审或静态推断写成测试通过。 |
-| documentation_sync | 使用 cm-doc-syncer 的文档判断，只同步请求列明且获准的普通文档；这是 Review 前写入，不新增完成后写入。 |
+| documentation_sync | 使用 cm-doc-syncer 的文档判断，只同步请求列明且获准的普通文档；这是 Review 前写入，不新增完成后写入。只回 `{"status":"completed"}` 或 `{"status":"blocked"}`，不碰列明文档以外的文件；失败后宿主只重问这一项、不重问开发。 |
 | qa_assess / qa_logic / qa_browser | 使用 N6 与 cm-qa-engineer 的业务判断或获准工具；评分不替代 JS 的强制 QA 政策，静态判断不替代真实运行，不能改变载体或伪造浏览器证据。 |
 | documentation_inspect | 按 N8 只读核对必需文档及收尾证据；缺文档、度量或必需能力返回 blocked。新 run 按冻结请求默认做[收尾资料核对](knowledge-closeout.md)，结果并入总结；关闭或缺报告如实记录。 |
 

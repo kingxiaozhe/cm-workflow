@@ -21,6 +21,11 @@ cm-ai 宿主返回的可选 `guidance` 说明当前阻塞与下一步：`summary
 - 当前会话开发应答没拿到（超时后代码根已变、会话断开、只回 failed）时，status 显示 `blocked/develop_answer_missing`、`pendingAction=develop_redo`：
   宿主看不到会话是否还在写，先由操作员确认会话已停写，`--mode resume --allow-develop-redo` 后发送 `develop_redo`（单行 reason，写入 `develop-answer-redo`），
   再 `advance` 重发本轮开发；盘上改动保留，审查包对照运行创建时的任务基线，经检查与独立审查。每运行最多 2 次。
+- 最后一个任务开发里的文档同步失败（开发应答已拿到并记入 `documentation-sync-started`）时，status 显示 `blocked/documentation_sync_answer_missing`、`documentation_sync_answer_invalid`、
+  `documentation_sync_answer_blocked` 或 `documentation_sync_out_of_scope`、`pendingAction=develop_redo`：宿主无法证明会话已停写，先确认停写、处理 reason 说的原因，
+  再 `--allow-develop-redo` 发送 `develop_redo`（写 `documentation-sync-retry`），之后 `advance` 只重发文档同步、复用记下的开发应答，不重发开发。
+  每次重发前核对：文档路径以外的文件与文档同步开始时一致（`documentation_sync_out_of_scope`），文档与确认停写时一致（`documentation_sync_changed_after_stop`）。
+  宿主在文档同步中途退出时 `abandon_effect` 登记为 `blocked/documentation_sync_interrupted`，同样只重发文档同步。每运行最多 2 次，用满为 `documentation_sync_retry_limit`。
 - 开发请求在派发前失败（宿主运行日志或角色配置出错）时，status 显示 `blocked/develop_dispatch_failed`、`pendingAction=resume`：修好宿主环境后 `advance`，
   宿主追加 `develop-dispatch-retry` 后重发本轮开发。旧版记为 `unknown/execution_error` 的同类记录只在代码根仍等于本轮起点时适用，否则走 `develop_redo`。
 - 开发已交付、之后的检查或验证预检没拿到可用应答时，status 显示 `blocked/check_answer_missing` 或 `check_answer_invalid`、`pendingAction=resume`：
@@ -609,7 +614,7 @@ JS 通过现有通道发出固定请求，结果由原组件校验：
 
 | kind | 当前会话的职责 | JS 的职责 |
 | --- | --- | --- |
-| documentation_sync | Review 前同步列明的文档，返回 `{status:"completed"}` | 原 scope 检查、最终 handoff 与 Review 覆盖 |
+| documentation_sync | Review 前同步列明的文档，返回 `{status:"completed"}`（做不了返回 `{status:"blocked"}`） | 原 scope 检查、最终 handoff 与 Review 覆盖；问之前记下开发应答与文档起点，失败时只重问这一项 |
 | qa_assess | 返回原 scores/changes 语义评估 | 原 N6 强制触发、评分及日志 |
 | qa_logic | 返回原静态 verdict/evidence | 与实际命令覆盖关联，不把静态结论算执行 PASS |
 | qa_browser | 用获准工具实测，返回原 verdict/evidence/environment/cleanup；PASS 只因证据不在 specs 根的 `.reviews/` 下（或缺失、为空）时，宿主带 `correction` 再问一次同一用例，只改证据重答 | 原逐例日志、证据与载体校验、QA 结果 |
