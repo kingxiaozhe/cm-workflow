@@ -1846,6 +1846,13 @@ export function createTaskRunner(options) {
       // applying proposals: a changed root can only be a partly applied one.
       if(providerRun?developer.provider==='claude':options.protectedDevelopment===true)
         extra.basis=verifyRoundStart(pendingDevelopStart(history.state),'effect_interrupt',providerRun?'Claude provider 开发':'受保护开发');
+      // Q16: the host died during documentation_sync, after the developer
+      // answered: bind the start record and the documentation as confirmed now,
+      // so the run redoes only documentation_sync.
+      if(history.pendingDocumentation){
+        extra.startDigest=history.pendingDocumentation.digest;
+        extra.documents=documentationLive(history.pendingDocumentation.payload.documents.map(item=>item.path)).documents;
+      }
     }
     const intent=journal.findLast(row=>row.payload.type==='effect-intent');
     persist('effect-interrupted',{effectId:effect.id,effectKind:effect.kind,intentDigest:intent.digest,

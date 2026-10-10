@@ -281,3 +281,65 @@ test('guidance for every documentation block names develop_redo first and never 
     assert.equal(ready.recoveryOperation,'advance',code);assert.match(ready.nextStep,/不重新开发/,code);
   }
 });
+
+// Review r1 #4: the host dies during documentation_sync (intent and start
+// record journaled, no checkpoint). abandon_effect records the interruption with
+// the start binding; the run then redoes only documentation_sync, never develop,
+// and the interruption counts toward the same two retries.
+async function dieDuringSync(f,execution){
+  let entered;const inSync=new Promise(resolve=>{entered=resolve;});
+  const sync=execution.documentationSync.run;
+  execution.documentationSync.run=(request,signal)=>{entered();return sync(request,signal);};
+  const run=await openControlRun(docDefinition(f),fs.existsSync(f.store)?'resume':'create',execution);
+  const advancing=run.host.handle({version:1,operation:'advance',requestId:'advance-dying',identity:identity(1)});
+  advancing.catch(()=>{});
+  await inSync;run.close();
+  // The dead host's advance never settles; its closed store refuses any later write.
+}
+test('Q16 host exit during documentation_sync: abandon_effect, then only documentation_sync is redone, within the shared cap',async t=>{
+  const f=docFixture(t,'doc-interrupted');
+  await dieDuringSync(f,docExecution(f,{developer:['delivered\n'],sync:[{write:'# Half\n',hang:true}]}));
+  assert.equal(records(f).at(-1).payload.type,'documentation-sync-started',JSON.stringify(records(f).map(row=>row.payload.type)));
+  const [pending]=await docSession(f,'resume',docExecution(f),[['status',1]]);
+  assert.equal(pending.pendingAction,'abandon_effect',JSON.stringify(pending));
+  const [interrupted]=await docSession(f,'resume',docExecution(f),
+    [['abandon_effect',1,{reason:'旧宿主与会话都已退出'}]],{allowAbandonEffect:true});
+  assert.deepEqual([interrupted.state,interrupted.code,interrupted.pendingAction],['blocked','documentation_sync_interrupted','resume'],JSON.stringify(interrupted));
+  assert.equal(interrupted.guidance.recoveryOperation,'advance');
+  const record=records(f).at(-1).payload,started=records(f).find(row=>row.payload.type==='documentation-sync-started');
+  assert.deepEqual([record.type,record.startDigest,record.documents[0].path],['effect-interrupted',started.digest,'README.md']);
+  const before=records(f);
+  const [delivered]=await docSession(f,'resume',docExecution(f,{sync:[{write:'# Final\n'}],verdicts:['approved']}),[['advance',1]]);
+  assert.equal(f.calls.developer,1,'develop is never redispatched');assert.equal(f.calls.documentation,2);
+  const checkpoint=records(f).find((row,index)=>index>=before.length&&row.payload.type==='effect-checkpoint').payload.checkpoint;
+  assert.equal(checkpoint.state,'awaiting_review',JSON.stringify(delivered));
+  assert.equal(Buffer.from(checkpoint.reviewPackage.changes.find(change=>change.path==='a.mjs').before.contentBase64,'base64').toString(),'old\n');
+  const {readRunnerHistory}=await import('../runtime/js/cm-ai/durable-runner-state.mjs');
+  assert.equal(readRunnerHistory(records(f),records(f)[0].payload.config,3).answerGaps.documentationSync,1);
+});
+test('Q16 host exit during documentation_sync after both retries are spent: abandon_effect only voids the run',async t=>{
+  const f=docFixture(t,'doc-interrupted-cap');
+  await docSession(f,'create',docExecution(f,{developer:['delivered\n'],sync:[{status:'blocked'}]}),[['advance',1]]);
+  assert.equal((await confirm(f)).outcome,'recorded');
+  await docSession(f,'resume',docExecution(f,{sync:[{status:'blocked'}]}),[['advance',1]]);
+  assert.equal((await confirm(f)).outcome,'recorded');
+  await dieDuringSync(f,docExecution(f,{sync:[{hang:true}]}));
+  const [voided]=await docSession(f,'resume',docExecution(f),[['abandon_effect',1,{reason:'旧宿主已退出'}]],{allowAbandonEffect:true});
+  assert.deepEqual([voided.state,voided.code],['cancelled','effect_abandoned'],JSON.stringify(voided));
+  assert.equal(f.calls.developer,1);
+});
+test('Q16 host exit during a documentation_sync retry: the interruption is the second retry, the developer answer survives, a third failure hits the cap',async t=>{
+  const f=docFixture(t,'doc-interrupted-after-retry');
+  await docSession(f,'create',docExecution(f,{developer:['delivered\n'],sync:[{status:'blocked'}]}),[['advance',1]]);
+  assert.equal((await confirm(f)).outcome,'recorded');
+  await dieDuringSync(f,docExecution(f,{sync:[{hang:true}]}));
+  const [interrupted]=await docSession(f,'resume',docExecution(f),[['abandon_effect',1,{reason:'旧宿主与会话都已退出'}]],{allowAbandonEffect:true});
+  assert.equal(interrupted.code,'documentation_sync_interrupted',JSON.stringify(interrupted));
+  const {readRunnerHistory}=await import('../runtime/js/cm-ai/durable-runner-state.mjs');
+  assert.equal(readRunnerHistory(records(f),records(f)[0].payload.config,3).answerGaps.documentationSync,2);
+  // The developer answer of the first run is what the second documentation_sync is built on.
+  const [delivered]=await docSession(f,'resume',docExecution(f,{sync:[{status:'blocked'}]}),[['advance',1]]);
+  assert.equal(f.calls.developer,1);
+  assert.equal(delivered.code,'documentation_sync_retry_limit',JSON.stringify(delivered));
+  assert.equal(f.calls.documentation,3,'first, the interrupted retry, the last attempt');
+});

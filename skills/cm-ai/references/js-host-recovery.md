@@ -66,11 +66,11 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
   修好 reason 指出的宿主环境后 `--mode resume` 再 `advance`：宿主追加 `develop-dispatch-retry` 记录，用新 effect id 重发本轮开发，不占名额，每运行最多 2 次。
   每次重发前（含写下记录后宿主退出、恢复再发）都核对代码根仍等于本轮起点（第 1 轮为任务基线，第 2 轮为已审第 1 轮包）；起点无法核对或代码根已变，改走上一条 `develop_redo` 确认重发，派发时拒绝为 `develop_dispatch_root_changed`。用满 2 次后同样改走 `develop_redo`。
   旧版本把同样的失败记成 `unknown/execution_error`（形状同 api-native-reading-T-006 的旧记录），同样按上述起点核对处理。
-- 文档同步（最后一个任务的开发里、审查之前）失败，开发应答已拿到：新版本在问 `documentation_sync` 之前追加 `documentation-sync-started` 记录（开发应答、文档路径各自的 sha256、按任务快照规则——完整开发 scope、运行创建时固定的忽略规则——拍下的文档路径以外代码根摘要），失败后只重发文档同步，复用这份开发应答，**不重发开发**。盘上的开发与文档改动保留，审查包仍对照运行创建时的任务基线，经检查与独立审查；不占调用与 effect 名额，每运行最多 2 次，用满为 `documentation_sync_retry_limit`。
+- 文档同步（最后一个任务的开发里、审查之前）失败，开发应答已拿到：新版本在问 `documentation_sync` 之前追加 `documentation-sync-started` 记录（开发应答、文档路径各自的 sha256、按任务快照规则——完整开发 scope、运行创建时固定的忽略规则——拍下的文档路径以外代码根摘要），失败后只重发文档同步，复用这份开发应答，**不重发开发**。盘上的开发与文档改动保留，审查包仍对照运行创建时的任务基线，经检查与独立审查；不占调用与 effect 名额，每运行最多 2 次（含下文的中途退出），用满为 `documentation_sync_retry_limit`。
   - 四种失败——`documentation_sync_answer_missing`（超时、断开、迟到被拒，reason 带原始码如 `call_timeout`）、`documentation_sync_answer_invalid`（应答格式不合格）、`documentation_sync_answer_blocked`（答 blocked）、`documentation_sync_out_of_scope`（答 completed 但改了文档路径以外的文件，reason 列出路径）——一律先显示 `pendingAction=develop_redo`：宿主看不到会话是否还在写（没应答可能只是还没写；已应答也只结束了宿主的等待），`advance` 不重发。
   - 先确认会话已停止修改文档（blocked 先补齐或修正文档，越界先把那些文件还原），再 `--mode resume --allow-develop-redo` 发送 `develop_redo`（单行 reason）：宿主写 `documentation-sync-retry`，绑定原开发调用与 start 记录，并记下此刻文档路径的内容；之后 `pendingAction=resume`，`advance` 只重发文档同步。
   - 每次重发前（含确认后宿主退出、恢复再发）宿主都核对：文档路径以外的文件与文档同步开始时一致，否则拒绝 `documentation_sync_out_of_scope`；文档路径与确认停写时一致，否则拒绝 `documentation_sync_changed_after_stop`（旧写入方可能仍在写；若是你自己的修改，确认会话已停后再发一次 `develop_redo` 重新确认，不另占次数）。拒绝都不写记录。
-  - 宿主在文档同步中途退出仍按「放弃审查调用与 effect」登记中断（`develop_interrupted`，会重发开发）。
+  - 宿主在文档同步中途退出（已写 `documentation-sync-started`、没有检查点）：按「放弃审查调用与 effect」用 `abandon_effect` 登记中断，宿主在 `effect-interrupted` 里绑定 start 记录并记下此刻的文档内容，状态为 `blocked/documentation_sync_interrupted`（`pendingAction=resume`），`advance` 同样只重发文档同步、不重发开发，计入上面的 2 次；次数用满后 `abandon_effect` 只能作废本运行。
   - 旧版本没有 `documentation-sync-started` 记录，原来的 `unknown/out_of_scope`、`unknown/execution_error` 等照原样回放，不重新判定。
 - `blocked/complete_recheck_failed`（`pendingAction=complete`）：完成前复查没拿到可用应答或宿主在写提交意图前出错（`unknown/call_timeout`、`execution_error` 等，后者先按 stderr 的 diagnostic 修好原因，如缺失的 handoff），且 task-commit-intent 尚未写入、tasks.md 未改动。`--mode resume` 后 `complete`（或 `advance`）：宿主追加 `complete-recheck` 记录，用新 effect id 重新复查并完成，不重新开发或审查。已写 task-commit-intent 的仍按「放弃审查调用与 effect」处理。
 

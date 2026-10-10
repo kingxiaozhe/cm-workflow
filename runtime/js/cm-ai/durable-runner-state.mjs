@@ -1221,6 +1221,10 @@ export function readRunnerHistory(raw,config,version=1) {
     &&effect!==null&&Object.hasOwn(INTERRUPTIBLE_TRAILERS,effect.kind)&&transaction===null&&state.taskCommit?.intentDigest==null
     &&!controls.cancelled&&!controls.workflowError&&(effect.kind!=='review'||!invocation.registration)
     &&interrupted.filter(item=>item.kind===effect.kind).length<MAX_EFFECT_INTERRUPTIONS
+    // Q16: one that died during documentation_sync is a documentation retry and
+    // shares that cap; once spent, abandon_effect only voids the run.
+    &&(!records.slice(intentIndex+1,end).some(row=>row.payload.type==='documentation-sync-started')
+      ||answerGaps.documentationSync<MAX_DOCUMENTATION_SYNC_RETRIES)
     &&records.slice(intentIndex+1,end).every(row=>INTERRUPTIBLE_TRAILERS[effect.kind].includes(row.payload.type));
   // A pending develop whose only trailers are controls and worker records may
   // still be voided (effect-abandoned) once the interruption cap is spent.
@@ -1569,8 +1573,18 @@ export function readRunnerHistory(raw,config,version=1) {
     } else if(version===3&&p.type==='effect-interrupted') {
       need(!(config.externalModels||config.executionPolicy),'external_review_reconciliation_required');
       shape(p,[...common,'effectId','effectKind','intentDigest','lastRecordDigest','reason','at',
-        ...['basis','worker'].filter(key=>Object.hasOwn(p,key))]);
+        ...['basis','worker','startDigest','documents'].filter(key=>Object.hasOwn(p,key))]);
       const intentIndex=records.slice(0,index).findLastIndex(row=>row.payload.type==='effect-intent');
+      // Q16: a develop that died during documentation_sync names its start record
+      // and the documentation paths as they were when the operator confirmed
+      // the old host and session stopped (this record); exactly then.
+      const documentationInterrupted=pending?.kind==='develop'&&pendingDocumentation!==null;
+      need(documentationInterrupted===Object.hasOwn(p,'startDigest')&&documentationInterrupted===Object.hasOwn(p,'documents'),'runner_interrupt');
+      if(documentationInterrupted){
+        need(p.startDigest===pendingDocumentation.digest,'runner_interrupt');
+        validDocumentationStates(p.documents,config.scope);
+        same(p.documents.map(item=>item.path),pendingDocumentation.payload.documents.map(item=>item.path));
+      }
       need(r.kind==='result'&&pending&&intentIndex>=0&&pendingInterruptible(pending,intentIndex,index),'runner_interrupt');
       need(p.effectId===pending.id&&p.effectKind===pending.kind&&p.intentDigest===records[intentIndex].digest
         &&p.lastRecordDigest===records[index-1].digest,'runner_interrupt');
@@ -1599,16 +1613,23 @@ export function readRunnerHistory(raw,config,version=1) {
             ...(Object.hasOwn(pending,'learningInput')?{learningInput:pending.learningInput}:{})}});
         state.calls.push({invocationId:request.invocationId,contextId:config.developer.contextId,provider:config.developer.provider,
           requestedModel:config.developer.requestedModel,effectiveModel:'unknown',channel:'fixture',started:true,
-          terminal:'abandoned',requestDigest:request.requestDigest,resultDigest:r.digest});
+          terminal:'abandoned',requestDigest:request.requestDigest,resultDigest:r.digest,
+          ...(documentationInterrupted?{documentationSync:pendingDocumentation.digest}:{})});
         state.sequence++;
-        state.state='blocked';state.code=DEVELOP_INTERRUPTED_CODE;state.reason=developInterruptedReason(provider);
+        if(documentationInterrupted){
+          // The developer had answered (journaled): redo only documentation_sync.
+          answerGaps.documentationSync++;
+          documentationStop={effectId:pending.id,invocationId:request.invocationId,startDigest:p.startDigest,detail:null};
+          state.state='blocked';state.code=DOCUMENTATION_SYNC_INTERRUPTED_CODE;
+          state.reason=documentationSyncRetryReason(DOCUMENTATION_SYNC_INTERRUPTED_CODE);
+        }else{state.state='blocked';state.code=DEVELOP_INTERRUPTED_CODE;state.reason=developInterruptedReason(provider);}
       }else{
         need(!Object.hasOwn(p,'basis')&&!Object.hasOwn(p,'worker'),'runner_interrupt');
         if(pending.kind==='review'){state.state='awaiting_review';state.code=null;state.reason=REVIEW_INTERRUPTED_REASON;}
         else {state.state=beforeIntent.state;state.code=beforeIntent.code;state.reason=beforeIntent.reason??null;}
       }
       interrupted.push({effectId:pending.id,kind:pending.kind});
-      pending=null;beforeIntent=null;invocation={registration:null,started:null,result:null};pendingWorker=null;
+      pending=null;beforeIntent=null;invocation={registration:null,started:null,result:null};pendingWorker=null;pendingDocumentation=null;
       joinedForInvocation=false;lastReview=null;
     } else if(version===3&&p.type==='effect-abandoned') {
       need(!(config.externalModels||config.executionPolicy),'external_review_reconciliation_required');
@@ -1731,6 +1752,7 @@ export function readRunnerHistory(raw,config,version=1) {
       pendingResultAbandonable:pending!==null&&pendingResultAbandonable(),
       pendingInterruptLimit:interruptLimit,pendingWorkerVoidable:workerVoidable,
       pendingWorker:pending?.kind==='develop'&&pendingWorker?workerSummary(pendingWorker):null,
+      pendingDocumentation:pending?.kind==='develop'?pendingDocumentation:null,
       reviewReconciliation:lastReview?.reconciliation&&['unknown','pending_review'].includes(state.state)?{...reconciliationBinding(),
         ...lastReview.reconciliation,request:lastReview.request,effect:lastReview.effect,before:lastReview.before}:null,
       pendingObservedReview:pending?.kind==='review'&&invocation.result?.outcome==='observed'

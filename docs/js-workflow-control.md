@@ -25,7 +25,7 @@ cm-ai 宿主返回的可选 `guidance` 说明当前阻塞与下一步：`summary
   `documentation_sync_answer_blocked` 或 `documentation_sync_out_of_scope`、`pendingAction=develop_redo`：宿主无法证明会话已停写，先确认停写、处理 reason 说的原因，
   再 `--allow-develop-redo` 发送 `develop_redo`（写 `documentation-sync-retry`），之后 `advance` 只重发文档同步、复用记下的开发应答，不重发开发。
   每次重发前核对：文档路径以外的文件与文档同步开始时一致（`documentation_sync_out_of_scope`），文档与确认停写时一致（`documentation_sync_changed_after_stop`）。
-  每运行最多 2 次，用满为 `documentation_sync_retry_limit`。
+  宿主在文档同步中途退出时 `abandon_effect` 登记为 `blocked/documentation_sync_interrupted`，同样只重发文档同步。每运行最多 2 次，用满为 `documentation_sync_retry_limit`。
 - 开发请求在派发前失败（宿主运行日志或角色配置出错）时，status 显示 `blocked/develop_dispatch_failed`、`pendingAction=resume`：修好宿主环境后 `advance`，
   宿主追加 `develop-dispatch-retry` 后重发本轮开发。旧版记为 `unknown/execution_error` 的同类记录只在代码根仍等于本轮起点时适用，否则走 `develop_redo`。
 - 开发已交付、之后的检查或验证预检没拿到可用应答时，status 显示 `blocked/check_answer_missing` 或 `check_answer_invalid`、`pendingAction=resume`：
