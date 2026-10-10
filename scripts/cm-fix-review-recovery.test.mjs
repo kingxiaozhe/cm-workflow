@@ -226,6 +226,8 @@ test('F24 thread-less recovery stops after two recoveries without changing the s
   assert(refused[0].error);assert.deepEqual(fs.readFileSync(f.statePath),before);assert.equal(f.calls(),3);
   const {requestId,operation,...fields}=third.request;
   assert.throws(()=>f.reopen().recoverFinalReview({authorized:true,recoveryInvocationId:third.request.invocationId,...fields}),
-    {code:'fix_review_recovery_unavailable'});
+    {code:'fix_review_recovery_limit',reason:/无线程恢复已用满 2 次/});
+  const status=(await f.cli([op('status')]))[0].result;
+  assert.equal(status.progress.blocker,'fix_review_recovery_limit');assert.match(status.progress.nextAction,/新的 runId/);
   assert.deepEqual(fs.readFileSync(f.statePath),before);
 });

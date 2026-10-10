@@ -94,6 +94,8 @@ const REVIEW_ABANDON={cause_review:'fix-cause',revision_final_review:'fix-revisi
 // V5 (F23/F26): a second no-result abandonment per round (MAX_FIX_REVIEW_ABANDONS)
 // is recorded as <prefix>-abandoned-2 and redispatched under <prefix>-retry-2-*.
 export const MAX_FIX_REVIEW_ABANDONS=2;
+export const FIX_REVIEW_RECOVERY_LIMIT_REASON=`fix_review_recovery_limit: 首轮最终审查的 worker 连续没有打开审查线程就丢失，无线程恢复已用满 ${MAX_FIX_REVIEW_ABANDONS} 次，不再续审。`
+  +'先查清审查 CLI 为何起不来（登录、额度、网络或本机环境），原运行记录保留不改写；修好后发 cancel 结束本运行，用新的 runId 重新发起修复。';
 const cycleId=(prefix,rows,suffix)=>rows.some(row=>row.id===`${prefix}-abandoned-2`)?`${prefix}-retry-2-${suffix}`
   :rows.some(row=>row.id===`${prefix}-abandoned`)?`${prefix}-retry-${suffix}`:`${prefix}-${suffix}`;
 const causeRecord=(records,suffix)=>{
@@ -1451,7 +1453,10 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       need(identity.attempt===1&&current.stage==='unknown'&&!current.revision
         &&(!current.finalReview||current.finalReview.observationStatus==='unknown'),'fix_review_recovery_unavailable');
       const prior=finalRecord(records,'registered')?.payload,thread=finalRecord(records,'started')?.payload.providerThreadId??null;
-      need(prior&&(thread||current.finalReviewRecoveryCount<MAX_FIX_REVIEW_ABANDONS),'fix_review_recovery_unavailable');
+      need(prior,'fix_review_recovery_unavailable');
+      // V5 (F24): the thread-less recoveries are spent: an explicit limit, not a generic refusal.
+      if(!thread&&current.finalReviewRecoveryCount>=MAX_FIX_REVIEW_ABANDONS)throw Object.assign(new Error('fix_review_recovery_limit'),
+        {code:'fix_review_recovery_limit',reason:FIX_REVIEW_RECOVERY_LIMIT_REASON});
       if(current.finalReviewRecoveryCount>0||recoveryInvocationId!==null)
         need(recoveryInvocationId===prior.request.invocationId,'fix_review_recovery_authorization_required');
       need(invocationId===prior.request.invocationId&&packageDigest===prior.request.payload.reviewPackage.packageDigest

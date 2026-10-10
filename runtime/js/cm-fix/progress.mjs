@@ -55,6 +55,10 @@ export function fixProgress(status,config={},authorization={}){
     nextAction:'原 run 再次使用 rediagnose（--allow-rediagnosis、reason）提交合法诊断答案；沿用已登记的这一次重新诊断，不另占次数，之后进入第二轮根因审查。',requiresUser:true};
   if(stage==='unknown'){
     const finalPending=!revision&&invocation&&(!review||review.observationStatus==='unknown');
+    const recoveryLimit=finalPending&&!invocation.providerThreadId&&(status.finalReviewRecoveryCount??0)>=2;
+    if(recoveryLimit)return {...result,current:'首轮最终审查无线程恢复已用满',blocker:'fix_review_recovery_limit',
+      nextAction:'首轮最终审查的 worker 连续没有打开审查线程，无线程恢复已用满 2 次，不再续审。先查清审查 CLI 为何起不来（登录、额度、网络或本机环境）；原运行记录保留，修好后发 cancel 结束本运行，用新的 runId 重新发起修复。',
+      requiresUser:true};
     return {...result,current:finalPending?'独立审查结果未确认':'操作结果未确认',blocker:'result_unconfirmed',
       remaining:finalPending?['取得有效独立审查结果','保存审查证据','核对完成条件','审后回归',...(config.walkthrough?['走查']:[]),'完成收尾']:null,
       nextAction:finalPending&&(invocation.providerThreadId||(status.finalReviewRecoveryCount??0)<2)

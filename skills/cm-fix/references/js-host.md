@@ -202,7 +202,7 @@ QA-fix 子宿主用 `--allow-qa-fix-abandon-review`，`fix_action` 带 `fixOpera
 重审的新包有新摘要，绑定在 `fix-cause-rediagnosis-retry-registered` 里，被放弃那次的记录不改。旧的第二轮登记没有该字段，照原样回放。旧记录一字不改，没有放弃记录的运行照原样回放。
 
 首轮最终审查（`fix-final-*`）不走放弃，改用 `recover_final_review`：worker 没打开任何审查线程就丢失（没有 `fix-final-started`）时，
-同样可恢复，`fix-final-recovery*-authorized` 记 `providerThreadId:null`；这类无线程恢复全运行最多 2 次，之后拒绝为 `fix_review_recovery_unavailable`。
+同样可恢复，`fix-final-recovery*-authorized` 记 `providerThreadId:null`；这类无线程恢复全运行最多 2 次，用满后拒绝为 `fix_review_recovery_limit`（reason 与 status 的 `progress.blocker` 相同，指引是查清审查 CLI 为何起不来，cancel 本运行后用新 runId 重新发起修复）。
 外部模型与执行策略的审查只能凭回执 `reconcile_review`，`abandon_review`／`recover_final_review` 拒绝为 `external_review_reconciliation_required`。
 
 审查等待使用审查配置 `--review-config` 的 `timeoutMs`（1–3600000 毫秒，省略为 900000），同时交给审查 worker；
