@@ -1,3 +1,5 @@
+import {REVIEW_NEVER_STARTED_MANUAL_STEP,MAX_REVIEW_NOT_DISPATCHED_RETRIES as REDISPATCHES,MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS as EXTENSIONS,
+  MAX_REVIEW_DENIAL_CONFIRMATIONS as DENIALS} from './review-dispatch-limits.mjs';
 // Presentation only. Native pendingAction decides the available path; guidance
 // never grants permission, changes retryability, or writes execution history.
 const deliveryMessages={
@@ -58,6 +60,27 @@ export function operatorGuidance(result,{executionActive=false}={}){
     return explain('执行结果尚未确认，不能判断这一步成功或失败。',
       '只读核对原运行记录、进程及实际文件；当前没有已确认的直接重试入口，不新建运行绕过历史。');
   }
+  // A review round that never started a reviewer (nothing ran, nothing to prove stopped).
+  if(action==='abandon_review'&&result.reviewDispatchConfirmRequired===true&&code==='permission_denied')
+    return explain('本轮独立审查的授权没有取得（被拒绝，或授权已失效），审查没有登记、没有派发、审查进程从未启动，不会有任何写入；宿主不会自动重试。',
+      '先查清是谁拒绝、为什么；确认现在可以授权后，用 --allow-abandon-review 恢复原运行并发送 abandon_review（单行 reason 写明依据）登记确认，再按原方式重新取得本轮独立审查授权，然后 advance。',
+      'abandon_review',['保留原配置、runId 与历史，以 --mode resume 启动','显式 --allow-abandon-review，并提供单行 reason',`每轮最多确认 ${DENIALS} 次，用满为 review_permission_denied_limit；每次重派前仍须新的审查授权`]);
+  if(action==='abandon_review'&&result.reviewDispatchConfirmRequired===true&&code==='review_not_dispatched_limit')
+    return explain(`本轮独立审查已登记 ${REDISPATCHES+1} 次，每次都在派发前作废（授权过期或派发时钟倒退），审查进程从未启动、没有写入；自动重派已用满。`,
+      `先查清宿主从授权到派发为何超过授权有效期（60 秒内）或本机时钟为何倒退，并修好；然后用 --allow-abandon-review 恢复原运行并发送 abandon_review（单行 reason 写明修好了什么）登记确认，再按原方式取得新的审查授权后 advance。本轮因此再多重派 ${REDISPATCHES} 次。`,
+      'abandon_review',['保留原配置、runId 与历史，以 --mode resume 启动','显式 --allow-abandon-review，并提供单行 reason',`每轮只能确认 ${EXTENSIONS} 次；再用满为 review_not_dispatched_limit，之后没有这个出口`]);
+  if(code==='review_not_dispatched_limit')return explain(`本轮独立审查已在派发前作废 ${REDISPATCHES*(1+EXTENSIONS)+1} 次、已确认延长 ${EXTENSIONS} 次，不再提供继续重派的操作；审查进程从未启动，也没有写入。`,
+    `先查清宿主从授权到派发为何超过授权有效期（60 秒内）或本机时钟为何倒退。${REVIEW_NEVER_STARTED_MANUAL_STEP}`,
+    null,['原运行记录保留，不改写','本运行留在盘上的改动需另存或还原，不要加 --accept-superseded-code-drift']);
+  if(state==='pending_review'&&action==='resume'&&['grant_expired','clock_invalid'].includes(code))return explain('本轮独立审查已登记，但派发前授权过期或派发时钟倒退，审查进程从未启动、没有结论。',
+    '恢复原运行，按原方式重新取得本轮独立审查的新的审查授权，再发送 advance；派发要在授权后 60 秒内完成。',
+    'advance',['保留原配置、runId 与历史，以 --mode resume 启动','不算审查轮次，不占调用与 effect 名额',`每轮最多重派 ${REDISPATCHES} 次，用满为 review_not_dispatched_limit，再确认 ${EXTENSIONS} 次后才能多重派 ${REDISPATCHES} 次`]);
+  if(code==='review_permission_denied_limit')return explain(`本轮独立审查的授权已被拒绝 ${DENIALS+1} 次、已确认重新授权 ${DENIALS} 次，不再提供重新授权的操作；审查从未启动，也没有写入。`,
+    `先查清授权为何一直被拒绝（宿主是否配了审查权限、授权是否在 60 秒内用完）。${REVIEW_NEVER_STARTED_MANUAL_STEP}`,
+    null,['原运行记录保留，不改写','本运行留在盘上的改动需另存或还原，不要加 --accept-superseded-code-drift']);
+  if(state==='pending_review'&&action==='resume'&&code==='permission_denied_confirmed')return explain('审查授权被拒绝的情况已由操作员确认，本轮可以重新申请授权；审查从未启动。',
+    '恢复原运行，按原方式重新取得本轮独立审查的新的审查授权（旧授权不复用），再发送 advance；仍被拒绝时需要再确认一次。',
+    'advance',['保留原配置、runId 与历史，以 --mode resume 启动','本轮独立审查授权须是新取得的','不算审查轮次，不占调用与 effect 名额']);
   if(state==='blocked'&&action==='abandon_review')return explain('本轮独立审查第二次没有结论，本轮还剩 1 次无结论重派，但宿主不能证明原审查进程已停止。',
     '先确认原审查进程（含子进程）已退出；再恢复原运行并发送 abandon_review 登记确认，之后 advance 重新取得授权并重派。不算审查轮次。',
     'abandon_review',['保留原配置、runId 与历史，以 --mode resume 启动','显式 --allow-abandon-review，并提供单行 reason','用满 2 次后为 review_redispatch_limit']);

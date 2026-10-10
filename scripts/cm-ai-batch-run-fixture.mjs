@@ -260,12 +260,17 @@ export async function batchFixture(mode,options={}){
       return;
     }
     if(mode==='parallel-denied'){
-      assert.deepEqual([result.code,result.memberState,result.memberCode,result.rawState],
-        ['batch_parallel_member_unresolved','pending_review','permission_denied','pending_review/permission_denied'],JSON.stringify(result));
-      for(const text of [result.reason,result.guidance.nextStep]){
-        assert.doesNotMatch(text,/--supersede-reviewed-evidence|reconcile_review|abandon_|--allow-/);assert.match(text,/目前都没有/);}
+      // A refused review authorization is a decision, never retried by the batch itself: the member
+      // stays in its own run and names the operator's confirmation (abandon_review), which the batch
+      // forwards only under --allow-abandon-review for that member.
+      assert.equal(result.code,'batch_parallel_member_recovery_required',JSON.stringify(result));
+      assert.deepEqual([result.currentTask,result.memberState,result.memberCode,result.pendingAction],
+        [`${feature}/T-002`,'pending_review','permission_denied','abandon_review'],JSON.stringify(result));
+      assert.match(result.reason,/--allow-abandon-review 1\.work\/T-002/);assert.equal(result.guidance.authorizationGranted,false);
       assert(fs.existsSync(path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002')));
       assert.equal(fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').includes('batch_member_blocked'),false);
+      const {classifyDriveResult}=await import('../runtime/js/notify.mjs');
+      assert.equal(classifyDriveResult('cm-ai-batch',{result}),'stuck');
       return;
     }
     if(mode==='parallel-grant-expired'){

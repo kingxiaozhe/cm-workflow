@@ -19,7 +19,8 @@ import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
   MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,effectSlotFree,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
   reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted,
-  MAX_REVIEW_REDISPATCHES,REVIEW_RETRY_CODES,reviewNotDispatchedExhausted,REVIEW_NOT_DISPATCHED_LIMIT_CODE,reviewNotDispatchedLimitReason,reviewRedispatchCount,reviewRedispatchable,reviewRedispatchExhausted,REVIEW_REDISPATCH_LIMIT_CODE,reviewRedispatchLimitReason,reviewRedispatchStopReason,reviewAbandonRefusal,
+  MAX_REVIEW_REDISPATCHES,REVIEW_RETRY_CODES,reviewNotDispatchedExhausted,REVIEW_NOT_DISPATCHED_LIMIT_CODE,reviewNeverStartedStatus,reviewNotDispatchedLimitReason,reviewNotDispatchedExtendable,reviewDenialUnconfirmed,reviewDenialExhausted,reviewDenialConfirmable,reviewDenialLimitReason,
+  REVIEW_DENIAL_LIMIT_CODE,REVIEW_DISPATCH_CONFIRM_REQUIRED_CODE,countReviewDispatchConfirmations,reviewRedispatchCount,reviewRedispatchable,reviewRedispatchExhausted,REVIEW_REDISPATCH_LIMIT_CODE,reviewRedispatchLimitReason,reviewRedispatchStopReason,reviewAbandonRefusal,
   completionBlockCount,completionRetriesExhausted,supersededReviewPayload,bootstrapReviewRecoverable,protectedDevelopScope,protectedScopeBlockReason,
   developTimeoutBasis,developTimeoutEffect,developTimeoutState,DEVELOP_CALL_TIMEOUT_REASON,
   developAnswerInvalidEffect,developAnswerRetryable,developAnswerInvalidReason,
@@ -352,6 +353,13 @@ export function createTaskRunner(options) {
   function reviewRedispatchRecords(){
     return journal?.filter(row=>row.payload.type==='review-redispatch'&&row.payload.attempt===attempt).length??0;
   }
+  // The review effect ids of the current round: the entry derives the next redispatch id from
+  // them, never from reviewInvocation (a refused authorization leaves it at the previous round's
+  // value), so an id can never repeat one the cache holds.
+  const reviewEffectIds=()=>[...cache.values()].filter(entry=>entry.effect.kind==='review'
+    &&entry.effect.identity.attempt===attempt).map(entry=>entry.effect.id);
+  // Confirmations of this round (abandon_review on a review that never started).
+  const reviewDispatchConfirmations=()=>countReviewDispatchConfirmations((journal??[]).map(row=>row.payload),attempt);
   // A spent retryable review block this round may still redispatch (advance).
   const reviewRedispatchLive=()=>Boolean(!(metadata.externalModels||metadata.executionPolicy)&&invocationMode&&store&&!busy&&!poisoned
     &&!restored?.pending&&reviewRedispatchable({state,code,attempt,cache:[...cache.values()],calls,reviewInvocation},
@@ -607,9 +615,12 @@ export function createTaskRunner(options) {
       current=freeze({...current,reviewRedispatchStopRequired:true,reason:reviewRedispatchStopReason(current.code)});
     else if(current.state==='blocked'&&reviewRedispatchSpent())
       current=freeze({...current,code:REVIEW_REDISPATCH_LIMIT_CODE,reason:reviewRedispatchLimitReason(current.code)});
-    // A round whose review was registered and voided before dispatch three times.
-    if(!busy&&current.state==='pending_review'&&reviewNotDispatchedExhausted({state,code,attempt,cache:[...cache.values()]}))
-      current=freeze({...current,state:'blocked',code:REVIEW_NOT_DISPATCHED_LIMIT_CODE,reason:reviewNotDispatchedLimitReason(current.code)});
+    // A round whose review never started: a refused authorization (explicit confirmation
+    // needed) or registrations voided before dispatch three times. Shared with replay.
+    if(!busy&&current.state==='pending_review'){
+      const never=reviewNeverStartedStatus({state,code,attempt,cache:[...cache.values()]},reviewDispatchConfirmations());
+      if(never!==null)current=freeze({...current,...never});
+    }
     // Status only; never part of a cached result or checkpoint.
     if(current.state==='unknown'&&reviewResultAbandonable())current=freeze({...current,abandonableReviewResult:true});
     else if(current.state==='unknown'&&!(metadata.externalModels||metadata.executionPolicy)&&invocationMode&&store&&!busy&&!poisoned&&!restored?.pending){
@@ -720,7 +731,7 @@ export function createTaskRunner(options) {
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
         'review-invocation-abandoned':'result','review-invocation-receipt':'result','review-invocation-reconciled':'result','effect-abandoned':'result',
         'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
-        'evidence-superseded':'result','develop-retry-limit':'result','develop-worker':'result','effect-interrupted':'result','develop-timeout-retry':'result','develop-answer-retry':'result','develop-recheck':'result','complete-recheck':'result','develop-answer-redo':'result','develop-dispatch-retry':'result','review-redispatch':'result','completion-retry-limit':'result','specification-rebound':'result','documentation-sync-started':'result','documentation-sync-retry':'result',
+        'evidence-superseded':'result','develop-retry-limit':'result','develop-worker':'result','effect-interrupted':'result','develop-timeout-retry':'result','develop-answer-retry':'result','develop-recheck':'result','complete-recheck':'result','develop-answer-redo':'result','develop-dispatch-retry':'result','review-redispatch':'result','review-dispatch-confirmed':'result','completion-retry-limit':'result','specification-rebound':'result','documentation-sync-started':'result','documentation-sync-retry':'result',
         'bootstrap-review-recovered':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
@@ -1470,10 +1481,14 @@ export function createTaskRunner(options) {
         timeoutBasis=developTimeoutRetryBasis();need(timeoutBasis!==null,'develop_timeout_root_changed');
         if(state==='blocked')timeoutBasis=null;
       }
+      // A refused authorization is a decision: a review is admitted again only after the
+      // operator's journaled confirmation (abandon_review), bounded per round.
+      if(v.kind==='review'&&reviewDenialUnconfirmed({state,code}))
+        need(false,reviewDenialExhausted({state,code},reviewDispatchConfirmations())?REVIEW_DENIAL_LIMIT_CODE:REVIEW_DISPATCH_CONFIRM_REQUIRED_CODE);
       answerRetry=v.kind==='develop'&&state==='blocked'&&code==='failed'&&answerRetryable();
       need(timeoutBasis!==null||answerRetry||recheck!==null||completeSource!==null||dispatchBasis!==null
         ||stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(effectSlotFree(v.kind,[...cache.values()],calls),'limit_exceeded');
-      need(!(v.kind==='review'&&reviewNotDispatchedExhausted({state,code,attempt,cache:[...cache.values()]})),REVIEW_NOT_DISPATCHED_LIMIT_CODE);
+      need(!(v.kind==='review'&&reviewNotDispatchedExhausted({state,code,attempt,cache:[...cache.values()]},reviewDispatchConfirmations().extended)),REVIEW_NOT_DISPATCHED_LIMIT_CODE);
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
     } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input',
@@ -1715,6 +1730,29 @@ export function createTaskRunner(options) {
   };
   const abandonReview=raw=>{
     try{
+      // A review that never started (a refused authorization, or the spent not-dispatched
+      // redispatch bound): nothing ran, so no process needs proving stopped, even for
+      // external-model runs. Only this explicit, audited confirmation leaves those ends.
+      if(invocationMode&&store&&!busy&&!poisoned&&!restored?.pending&&state==='pending_review'){
+        const confirmed=reviewDispatchConfirmations(),ended={state,code,attempt,cache:[...cache.values()]};
+        const denied=reviewDenialUnconfirmed(ended),voided=reviewNotDispatchedExhausted(ended,confirmed.extended);
+        if(denied||voided){
+          if(denied&&reviewDenialExhausted(ended,confirmed))
+            throw Object.assign(new Error(REVIEW_DENIAL_LIMIT_CODE),{code:REVIEW_DENIAL_LIMIT_CODE,reason:reviewDenialLimitReason()});
+          if(voided&&!reviewNotDispatchedExtendable(ended,confirmed))
+            throw Object.assign(new Error(REVIEW_NOT_DISPATCHED_LIMIT_CODE),
+              {code:REVIEW_NOT_DISPATCHED_LIMIT_CODE,reason:reviewNotDispatchedLimitReason(code,confirmed.extended)});
+          need(denied?reviewDenialConfirmable(ended,confirmed):true,'review_abandon_unavailable');
+          const value=json(raw);shape(value,['allowed','reason']);
+          need(value.allowed===true,'review_abandon_authorization_required');
+          need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=500
+            &&!/[\r\n\0]/.test(value.reason),'review_abandon_reason_required');
+          persist('review-dispatch-confirmed',{effectId:[...cache.values()].at(-1).effect.id,attempt,code,reason:value.reason,
+            at:new Date().toISOString()});
+          const recovered=readRunnerHistory(journal,metadata,3).state;
+          ({state,code}=recovered);reason=recovered.reason??null;publication=privateStatus();return status();
+        }
+      }
       need(!(metadata.externalModels||metadata.executionPolicy),'external_review_reconciliation_required');
       // V5 (A34): the operator confirms the spent block's reviewer stopped; this
       // journals the round's second no-result redispatch (no dispatch here).
@@ -1969,7 +2007,7 @@ export function createTaskRunner(options) {
   };
   // Interrupted intents keep their ids; the entry derives fresh ones from this count.
   const interruptions=kind=>parsedHistory?.interrupted?.filter(item=>item.kind===kind).length??0;
-  const api={reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks,recheckLearningInput,redoDevelop,recoverCommit,interruptions};
+  const api={reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks,reviewEffectIds,recheckLearningInput,redoDevelop,recoverCommit,interruptions};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   // A terminal reviewer observation is durable even if the host died before

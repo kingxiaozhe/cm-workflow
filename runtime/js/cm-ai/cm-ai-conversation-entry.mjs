@@ -28,7 +28,11 @@ export const reviewRetryable=status=>status.state==='pending_review'
   // Registered but never dispatched (expired grant, clock ran backwards): no reviewer
   // ran, so a fresh authorization redispatches it (REVIEW_NOT_DISPATCHED_CODES; the
   // runner's not_dispatched halt is the only source of pending_review with these codes).
-  ||['grant_expired','clock_invalid'].includes(status.code));
+  ||['grant_expired','clock_invalid'].includes(status.code)
+  // A refused authorization the operator has since confirmed (abandon_review): the same
+  // round asks for a fresh authorization. Unconfirmed (reviewDispatchConfirmRequired) it
+  // is not retryable here, so neither advance nor the batch driver ever redispatches it.
+  ||status.code==='permission_denied_confirmed');
 const retryReview=reviewRetryable;
 // Both mean the delivery itself must be redone: an invalid developer result, or
 // one that does not satisfy the task's own written verification. Exported so the
@@ -52,6 +56,8 @@ const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approv
   status.developRedoRequired===true?'develop_redo':
   // V5: the round's second no-result redispatch needs the operator's stop confirmation.
   status.reviewRedispatchStopRequired===true?'abandon_review':
+  // A review that never started and needs the operator's confirmation (abandon_review).
+  status.reviewDispatchConfirmRequired===true?'abandon_review':
   status.reviewReconciliation?.available?'reconcile_review':
   status.state==='changes_requested'||retryDeveloper(status)||retryReview(status)?'resume':
   status.state==='awaiting_review'?'decision':status.state==='unknown'
@@ -78,6 +84,7 @@ const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',ope
   ...(status.developRedoRequired===true?{developRedoRequired:true}:{}),
   ...(status.documentationSyncPending===true?{documentationSyncPending:true}:{}),
   ...(status.reviewRedispatchStopRequired===true?{reviewRedispatchStopRequired:true}:{}),
+  ...(status.reviewDispatchConfirmRequired===true?{reviewDispatchConfirmRequired:true}:{}),
   ...(typeof status.reviewAbandonRefusal==='string'?{reviewAbandonRefusal:status.reviewAbandonRefusal}:{}),
   ...(typeof status.reason==='string'?{reason:status.reason}:{}),
   ...(status.code==='handoff_exists'?{reason:REVIEWED_HANDOFF_HINT}:{}),
@@ -235,6 +242,7 @@ export function createCmAiConversationEntry(options) {
   const runnerKeys=['executeEffect','status','cancel','run'];
   if(runner&&Object.hasOwn(runner,'verificationBlocks'))runnerKeys.push('verificationBlocks');
   if(runner&&Object.hasOwn(runner,'completionBlocks'))runnerKeys.push('completionBlocks');
+  if(runner&&Object.hasOwn(runner,'reviewEffectIds'))runnerKeys.push('reviewEffectIds');
   if(runner&&Object.hasOwn(runner,'recheckLearningInput'))runnerKeys.push('recheckLearningInput');
   if(runner&&Object.hasOwn(runner,'attachLearningEvidence'))runnerKeys.push('attachLearningEvidence');
   if(runner&&Object.hasOwn(runner,'inspectFixAssociation'))runnerKeys.push('inspectFixAssociation');
@@ -254,6 +262,7 @@ export function createCmAiConversationEntry(options) {
   shape(runner,runnerKeys);
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');
   if(Object.hasOwn(runner,'completionBlocks'))need(typeof runner.completionBlocks==='function');
+  if(Object.hasOwn(runner,'reviewEffectIds'))need(typeof runner.reviewEffectIds==='function');
   if(Object.hasOwn(runner,'recheckLearningInput'))need(typeof runner.recheckLearningInput==='function');
   if(Object.hasOwn(runner,'attachLearningEvidence'))need(typeof runner.attachLearningEvidence==='function');
   if(Object.hasOwn(runner,'inspectFixAssociation'))need(typeof runner.inspectFixAssociation==='function');
@@ -659,11 +668,21 @@ export function createCmAiConversationEntry(options) {
       if(decision===null)return summary(operation,{...status,code:'decision_required'},'awaiting');
       if(validateHostDecision(decision,status)==='denied')
         return summary(operation,{...status,code:'permission_denied'},'denied');
-      const retries=retryReview(status)?status.calls.filter(call=>call.channel==='host-authorized'
-        &&['failed','abandoned','not_dispatched'].includes(call.terminal)
-        &&call.contextId===status.reviewInvocation.registration.grant.logicalContextId).length:0;
-      const resumed=runner.interruptions?.('review')??0;
-      const effectId=`review-${identity.attempt}${retries?`-retry-${retries}`:''}${resumed?`-resume-${resumed}`:''}`;
+      // A redispatch takes the next free id: at least the number of review effects THIS round's cache
+      // holds (runner.reviewEffectIds) and at least the host-authorized calls that ended without a
+      // verdict (an abandoned intent has a call but no cache entry), then skips any id already
+      // cached. A refused authorization leaves no call and keeps the previous round's
+      // reviewInvocation, so the call count alone can repeat an id and the cache would answer.
+      const resumed=runner.interruptions?.('review')??0,roundIds=runner.reviewEffectIds?.();
+      const idFor=n=>`review-${identity.attempt}${n?`-retry-${n}`:''}${resumed?`-resume-${resumed}`:''}`;
+      let retries=0;
+      if(retryReview(status)){
+        retries=Math.max(Array.isArray(roundIds)?roundIds.length:0,
+          status.calls.filter(call=>call.channel==='host-authorized'&&['failed','abandoned','not_dispatched'].includes(call.terminal)
+            &&call.contextId===status.reviewInvocation?.registration?.grant.logicalContextId).length);
+        if(Array.isArray(roundIds))while(roundIds.includes(idFor(retries)))retries++;
+      }
+      const effectId=idFor(retries);
       const result=await runner.executeEffect({version:1,id:effectId,identity,kind:'review'});
       return effectSummary(operation,result,runner,identity);
     }

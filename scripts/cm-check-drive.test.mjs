@@ -5,16 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {CHECK_DRIVE_COPIED_FILES} from './cm-check-drive-files.mjs';
 
 const root=fileURLToPath(new URL('..',import.meta.url));
 function fixture(t,exit=0){
   const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-check-drive-')));
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
-  for(const file of ['scripts/cm-check-entry.mjs','scripts/cm-check-host.mjs','scripts/cm-check-drive.mjs',
-    'scripts/cm-workflow-config.mjs','runtime/js/cm-check/host.mjs','runtime/js/cm-ai/drive-core.mjs',
-    'runtime/js/cm-ai/operator-guidance.mjs',
-    'runtime/js/cm-ai/host-tool-bridge.mjs','runtime/js/cm-ai/host-session.mjs','runtime/js/cm-ai/diagnostic-reason.mjs','runtime/js/cm-ai/effect-contract.mjs',
-    'runtime/js/cm-ai/contracts.mjs','runtime/js/cm-init/draft-inspection.mjs','skills/cm-check/SKILL.md']){
+  for(const file of CHECK_DRIVE_COPIED_FILES){
     fs.mkdirSync(path.dirname(path.join(dir,file)),{recursive:true});fs.copyFileSync(path.join(root,file),path.join(dir,file));
   }
   fs.writeFileSync(path.join(dir,'VERSION'),'0.0.0\n');fs.writeFileSync(path.join(dir,'README.md'),'# Fixture\n');

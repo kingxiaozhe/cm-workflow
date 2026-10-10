@@ -107,7 +107,7 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 
 运行器对每次审查计时的上限取「journal 里的调用超时」与「审查预算 + 60000 毫秒余量」中较大者；这个上限不写入 journal，所以把 review-config 的 `timeoutMs` 调到 30 分钟以上（最多 3600000）不会再在 30 分钟被运行器截断，恢复时也可继续调大。
 新运行的代码根快照固定忽略 `.DS_Store`、`._*`、`.AppleDouble/`、`Thumbs.db`、`xcuserdata/`、`*.xcuserstate`、`.build/`、`.swiftpm/`、`DerivedData/`，也跳过 Git 报告为 ignored 的目录及路径；任务 scope、AGENTS.md 与 specs 仍须验证。基线有界保存 Git 忽略路径与目录，后续将基线和当前忽略决定的并集应用到比较两侧；规则文件和无关 Git 配置变化本身不阻断审查。Git 不可用或忽略结果超限时基线标明仅用固定列表。这有意缩小代码根检查面，被忽略的产物不构成已审代码；旧 journal 沿旧规则回放。
-审查已登记、但派发前授权已过期或派发时钟倒退（`pending_review/grant_expired`、`pending_review/clock_invalid`，调用记为 `not_dispatched`）：审查进程没有启动，也没有结论，不需要证明谁已停止。`pendingAction` 为 `resume`，在原运行 `advance` 会重新取得本轮授权并重派（新 effect id、同一审查轮次）；这次未派发不占调用或 effect 名额，但每轮最多这样重派 2 次：第 3 次仍在派发前作废时停为 `review_not_dispatched_limit`（`reason` 写明原因；没有接受这个状态的恢复操作，保留运行交维护者）。批次成员同样在原运行重派，不改排。
+审查已登记、但派发前授权已过期或派发时钟倒退（`pending_review/grant_expired`、`pending_review/clock_invalid`，调用记为 `not_dispatched`）：审查进程没有启动，也没有结论，不需要证明谁已停止。`pendingAction` 为 `resume`，在原运行 `advance` 会重新取得本轮授权并重派（新 effect id、同一审查轮次）；这次未派发不占调用或 effect 名额，但每轮最多这样重派 2 次：第 3 次仍在派发前作废时停为 `review_not_dispatched_limit`（`reason` 写明原因），出口见下文「审查从未启动：授权被拒与派发前作废」。批次成员同样在原运行重派，不改排。
 
 ## 规格漂移、代码漂移与审查失败
 
@@ -159,6 +159,23 @@ worker 已证明审查进程退出、又没有结论的中断，`pendingAction` 
 | `review_abandon_budget_exhausted` | 本轮 2 次已用完 |
 
 外部模型与执行策略的审查不走以上出口：流里有回执就先 `reconcile_review` 对账采纳；没有回执宿主无法证明旧调用已停，`abandon_review`／`abandon_effect` 拒绝为 `external_review_reconciliation_required`，按 status 的 `reviewReconciliation.reason` 向原宿主或 provider 核对。
+
+### 审查从未启动：授权被拒与派发前作废
+
+下面两种停机的审查进程都从未启动、也没有写入，所以不需要证明谁已停止；但重派不能由宿主、批次驱动或一直批准的 `--allow-review-attempt` 悄悄完成，必须由操作员显式确认，并且有上限。确认就是已有的 `abandon_review`（`--mode resume --allow-abandon-review`，单行 reason，最多 500 字节）：这里它不放弃任何调用，只写一条审计记录 `review-dispatch-confirmed`（绑定 effect、轮次、原因码、reason、时间）。确认之后仍要 `advance` 重新取得本轮审查授权，旧授权不复用。
+
+| 停机 | 标志 | 确认的效果 | 每轮上限 |
+|---|---|---|---|
+| 原始 `pending_review/permission_denied`：审查授权被拒（或授权已超过 60 秒有效期），审查没有登记、没有派发 | `reviewDispatchConfirmRequired: true`、`pendingAction: abandon_review`、`reason` 以 `permission_denied:` 开头 | 变为 `pending_review/permission_denied_confirmed`（`pendingAction: resume`），`advance` 用新 effect id 重派；每次拒绝要自己的一次确认，再被拒就要再确认 | 2 次；第 3 次拒绝为 `blocked/review_permission_denied_limit` |
+| `blocked/review_not_dispatched_limit`：三次登记都在派发前作废（授权过期、派发时钟倒退） | 同上 | 回到可重试的 `pending_review/grant_expired`（或 `clock_invalid`），本轮再多重派 2 次（共 5 次登记） | 确认 1 次；再用满仍为 `review_not_dispatched_limit`，此时没有 `reviewDispatchConfirmRequired`、`pendingAction: none` |
+
+没有确认就直接发 review effect 会被拒绝：`review_dispatch_confirmation_required`（被拒的授权）或原来的 `review_not_dispatched_limit`；`abandon_review` 在用满后拒绝为同一个 limit 码并附 `reason`，不在这两种停机时仍是 `review_abandon_unavailable`。被拒的审查和作废的登记都不占调用或 effect 名额。回放用同一组函数从存档重新推导：伪造、重复、位置不对或超出上限的 `review-dispatch-confirmed` 一律 `runner_review_dispatch_confirm`；没有这条记录的旧存档按原样回放（旧存档里停在 `permission_denied` 的运行，现在多出 `reviewDispatchConfirmRequired` 和指引，状态码不变）。外部模型与执行策略运行同样适用，因为审查进程从未启动，不需要对账。批次成员停在这两个状态时返回 `batch_parallel_member_recovery_required`，按提示带 `--allow-abandon-review <feature/task>` 重启批次宿主再发 `abandon_review`；用满后成员原始状态仍是 `pending_review`，批次不改排。
+
+两个 limit 用满后没有进程内出口，唯一安全的手工步骤：
+
+1. `cancel` 取消本运行（审查从未启动，没有需要等待停下的写入方；原始 `pending_review` 可以取消，取消后原始状态是 `cancelled`，`--supersede-reviewed-evidence` 收这个状态）。
+2. 另存或还原本运行留在盘上的代码改动，再用 `--supersede-reviewed-evidence --supersede-reason 原因` 新建运行重做。不要加 `--accept-superseded-code-drift`：那会把这些没审过的改动当成已有代码，新运行的审查看不到它们。
+3. 原运行是外部模型或执行策略运行时，外部运行守卫会拒绝同一代码根上的新运行（被派发前作废的审查记录仍带对账标记，`strictPriorAttemptResolved`），这类运行没有新建运行的出口：保留运行记录与代码，把 `reason` 交给维护者。被拒授权（`review_permission_denied_limit`）的运行若此前没有未派发记录，守卫不拒绝。
 
 ### 已批准规格材料（第 24 步）
 

@@ -21,6 +21,10 @@ import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 import {readSpecificationRebind} from './specification-material.mjs';
 import {protectedScopePaths} from './developer-adapter.mjs';
 import {validWorkerPid,validStartTime} from './worker-process-identity.mjs';
+import {MAX_REVIEW_NOT_DISPATCHED_RETRIES,MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS,REVIEW_NOT_DISPATCHED_LIMIT_CODE,MAX_REVIEW_DENIAL_CONFIRMATIONS,
+  REVIEW_DENIAL_LIMIT_CODE,REVIEW_NEVER_STARTED_MANUAL_STEP} from './review-dispatch-limits.mjs';
+export {MAX_REVIEW_NOT_DISPATCHED_RETRIES,MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS,REVIEW_NOT_DISPATCHED_LIMIT_CODE,MAX_REVIEW_DENIAL_CONFIRMATIONS,
+  REVIEW_DENIAL_LIMIT_CODE,REVIEW_NEVER_STARTED_MANUAL_STEP};
 
 const LIMIT=16*1024*1024;
 // The developer adapter refuses a protected scope on every dispatch, before any
@@ -37,7 +41,8 @@ const uuid=s=>need(typeof s==='string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}
 const states=['ready','awaiting_review','approved','changes_requested','fixture_completed','blocked','unknown','cancelled','pending_review'];
 export const stageAllowed=(kind,state,code=null,reviewVerdict=null)=>
   kind==='develop'&&state==='blocked'&&['developer_result_invalid','verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout','develop_answer_invalid',...RECHECK_CODES,DEVELOP_REDO_CODE,DISPATCH_RETRY_CODE,DEVELOP_INTERRUPTED_CODE,...DOCUMENTATION_SYNC_CODES].includes(code)
-  ||kind==='review'&&state==='pending_review'&&(REVIEW_RETRY_CODES.includes(code)||REVIEW_NOT_DISPATCHED_CODES.includes(code))
+  ||kind==='review'&&state==='pending_review'&&(REVIEW_RETRY_CODES.includes(code)||REVIEW_NOT_DISPATCHED_CODES.includes(code)
+    ||code===REVIEW_DENIAL_CONFIRMED_CODE)
   ||kind==='complete'&&state==='blocked'&&(['completion_checks_changed','completion_package_changed',COMPLETE_RECHECK_CODE].includes(code)
     ||code==='review_package_changed'&&reviewVerdict==='approved')
   ||kind==='develop'&&state==='blocked'&&code==='review_package_changed'&&reviewVerdict==='changes_requested'
@@ -69,14 +74,59 @@ const notDispatchedEffect=entry=>entry.effect.kind==='review'&&entry.result.stat
 // per review round, like the no-result ones. The count is the round's not-dispatched
 // effects in the checkpointed cache, so live and replay read the same number; once the
 // round's latest end is the third, no review effect is admitted (live and replay) and
-// status shows the explicit limit block.
-export const MAX_REVIEW_NOT_DISPATCHED_RETRIES=2;
-export const REVIEW_NOT_DISPATCHED_LIMIT_CODE='review_not_dispatched_limit';
+// status shows the explicit limit block. The limit has one audited exit: the operator's
+// confirmation (abandon_review + reason, journaled as review-dispatch-confirmed) grants
+// MAX_REVIEW_NOT_DISPATCHED_RETRIES more, at most MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS
+// per round, so the retry cap (R2) is never defeated, only extended on the record.
 export const reviewNotDispatchedCount=(cache,attempt)=>cache.filter(entry=>entry.effect.identity.attempt===attempt&&notDispatchedEffect(entry)).length;
-export const reviewNotDispatchedExhausted=s=>s.state==='pending_review'&&REVIEW_NOT_DISPATCHED_CODES.includes(s.code)
-  &&reviewNotDispatchedCount(s.cache,s.attempt)>MAX_REVIEW_NOT_DISPATCHED_RETRIES;
-export const reviewNotDispatchedLimitReason=code=>`${REVIEW_NOT_DISPATCHED_LIMIT_CODE}: 本轮独立审查已登记 ${MAX_REVIEW_NOT_DISPATCHED_RETRIES+1} 次，每次都在派发前作废（最近一次 pending_review/${code}：授权过期或派发时钟倒退），审查进程从未启动。`
-  +`本运行不再重派，也没有接受这个状态的恢复操作（supersede 不接受原始 pending_review）。先查清宿主从授权到派发为何超过授权有效期（60 秒内）或本机时钟为何倒退；保留本运行记录与代码，把本 reason 交给维护者处理。`;
+export const reviewNotDispatchedExhausted=(s,extended=0)=>s.state==='pending_review'&&REVIEW_NOT_DISPATCHED_CODES.includes(s.code)
+  &&reviewNotDispatchedCount(s.cache,s.attempt)>MAX_REVIEW_NOT_DISPATCHED_RETRIES*(1+extended);
+export const reviewNotDispatchedExtendable=(s,confirmed)=>reviewNotDispatchedExhausted(s,confirmed.extended)
+  &&confirmed.extended<MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS
+  &&s.cache.at(-1)!==undefined&&notDispatchedEffect(s.cache.at(-1))&&s.cache.at(-1).effect.identity.attempt===s.attempt;
+export const reviewNotDispatchedLimitReason=(code,extended=0)=>`${REVIEW_NOT_DISPATCHED_LIMIT_CODE}: 本轮独立审查已登记 ${MAX_REVIEW_NOT_DISPATCHED_RETRIES*(1+extended)+1} 次，每次都在派发前作废（最近一次 pending_review/${code}：授权过期或派发时钟倒退），审查进程从未启动、没有写入。`
+  +(extended<MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS
+    ?'本运行不再自动重派。先查清宿主从授权到派发为何超过授权有效期（60 秒内）或本机时钟为何倒退，并修好；'
+      +`然后用 --mode resume 加 --allow-abandon-review 启动并发送 abandon_review（单行 reason 写明修好了什么）登记确认，本轮再多重派 ${MAX_REVIEW_NOT_DISPATCHED_RETRIES} 次（每轮只能确认 ${MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS} 次，用满后不再有这个出口）。`
+    :`已确认延长 ${extended} 次（用满），不再提供继续重派的操作。先查清宿主从授权到派发为何超过授权有效期（60 秒内）或本机时钟为何倒退。${REVIEW_NEVER_STARTED_MANUAL_STEP}`);
+// A review whose authorization was refused before any registration (the runner's
+// permission_denied halt): no call, no grant, no reviewer, so nothing can be writing.
+// It is a decision, not a timing failure: only an explicit operator confirmation
+// (abandon_review, journaled as review-dispatch-confirmed with its reason) lets the same
+// round ask for a fresh authorization, once per denial, at most
+// MAX_REVIEW_DENIAL_CONFIRMATIONS per round; a host or a standing approval never does.
+export const REVIEW_DENIED_CODE='permission_denied';
+export const REVIEW_DENIAL_CONFIRMED_CODE='permission_denied_confirmed';
+export const REVIEW_DISPATCH_CONFIRM_REQUIRED_CODE='review_dispatch_confirmation_required';
+const deniedEffect=entry=>entry.effect.kind==='review'&&entry.result.state==='pending_review'&&entry.result.code===REVIEW_DENIED_CODE;
+export const reviewDenialUnconfirmed=s=>s.state==='pending_review'&&s.code===REVIEW_DENIED_CODE;
+export const reviewDenialExhausted=(s,confirmed)=>reviewDenialUnconfirmed(s)&&confirmed.denied>=MAX_REVIEW_DENIAL_CONFIRMATIONS;
+export const reviewDenialConfirmable=(s,confirmed)=>reviewDenialUnconfirmed(s)&&confirmed.denied<MAX_REVIEW_DENIAL_CONFIRMATIONS
+  &&deniedEffect(s.cache.at(-1)??{effect:{},result:{}})&&s.cache.at(-1).effect.identity.attempt===s.attempt;
+// Confirmations of a review round, read the same way live (journal payloads) and in
+// replay (the running tally in answerGaps.reviewDispatchConfirmed).
+export const noReviewDispatchConfirmations=()=>({denied:0,extended:0});
+export const countReviewDispatchConfirmations=(payloads,attempt)=>{
+  const count=noReviewDispatchConfirmations();
+  for(const p of payloads)if(p.type==='review-dispatch-confirmed'&&p.attempt===attempt)
+    count[p.code===REVIEW_DENIED_CODE?'denied':'extended']++;
+  return count;
+};
+export const reviewDenialConfirmReason=confirmed=>`${REVIEW_DENIED_CODE}: 本轮独立审查的授权没有取得（被拒绝，或授权已超过有效期），审查没有登记、没有派发、审查进程从未启动，不会有任何写入。`
+  +'宿主不会自动重试，也不会因为留着的审查授权而重派：先查清是谁拒绝、为什么，确认现在可以授权后，用 --mode resume 加 --allow-abandon-review 启动并发送 abandon_review（单行 reason 写明依据）登记确认，'
+  +`再按原方式重新取得本轮审查授权后 advance。每轮最多这样确认 ${MAX_REVIEW_DENIAL_CONFIRMATIONS} 次（本轮已确认 ${confirmed.denied} 次），之后为 ${REVIEW_DENIAL_LIMIT_CODE}。`;
+export const reviewDenialLimitReason=()=>`${REVIEW_DENIAL_LIMIT_CODE}: 本轮独立审查的授权已被拒绝 ${MAX_REVIEW_DENIAL_CONFIRMATIONS+1} 次，已确认重新授权 ${MAX_REVIEW_DENIAL_CONFIRMATIONS} 次（用满），审查进程从未启动，也没有写入。`
+  +`本运行不再提供重新授权的操作。先查清授权为何一直被拒绝（宿主是否配了审查权限、授权是否在 60 秒内用完）。${REVIEW_NEVER_STARTED_MANUAL_STEP}`;
+// Status-only overlay for a review round that ended without ever starting a reviewer,
+// read by the live runner and by replay (projectedRunnerStatus) alike; never journaled.
+export function reviewNeverStartedStatus(s,confirmed){
+  if(reviewDenialExhausted(s,confirmed))return {state:'blocked',code:REVIEW_DENIAL_LIMIT_CODE,reason:reviewDenialLimitReason()};
+  if(reviewDenialUnconfirmed(s))return {reviewDispatchConfirmRequired:true,reason:reviewDenialConfirmReason(confirmed)};
+  if(reviewNotDispatchedExhausted(s,confirmed.extended))
+    return {state:'blocked',code:REVIEW_NOT_DISPATCHED_LIMIT_CODE,reason:reviewNotDispatchedLimitReason(s.code,confirmed.extended),
+      ...(confirmed.extended<MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS?{reviewDispatchConfirmRequired:true}:{})};
+  return null;
+}
 const timeoutEffect=entry=>entry.effect.kind==='review'&&reviewRetryCode(entry.result.reviewInvocation?.result)!==null
   &&entry.result.code===reviewRetryCode(entry.result.reviewInvocation.result);
 export const reviewRetrySpent=(cache,calls,attempt,contextId)=>cache.some(entry=>entry.effect.identity.attempt===attempt&&timeoutEffect(entry))
@@ -500,7 +550,7 @@ export const completionBlockCount=cache=>cache.filter(completionBlock).length;
 export const completedEffectCount=(cache,calls=[])=>cache.filter(entry=>!(entry.effect.kind==='develop'
   &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))
   &&!timeoutEffect(entry)&&!developTimeoutEffect(entry)&&!developAnswerInvalidEffect(entry)&&!developRecheckSource(entry)
-  &&!developRedoSource(entry)&&!developDispatchFailedEffect(entry)&&!notDispatchedEffect(entry)&&!documentationSyncSource(entry)
+  &&!developRedoSource(entry)&&!developDispatchFailedEffect(entry)&&!notDispatchedEffect(entry)&&!deniedEffect(entry)&&!documentationSyncSource(entry)
   &&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
 // The six-effect cap counts develop and review effects only; completion (above),
 // QA, documentation and finalization hold no slot.
@@ -1202,7 +1252,8 @@ export function readRunnerHistory(raw,config,version=1) {
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
   let invocation={registration:null,started:null,result:null};let registrationRecord=null,startedRecord=null,resultRecord=null,lastReview=null;
   const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false,supersession=null;
-  const answerGaps={developRecheck:0,completeRecheck:0,developRedo:0,developDispatch:0,documentationSync:0,reviewRedispatch:{1:0,2:0}};
+  const answerGaps={developRecheck:0,completeRecheck:0,developRedo:0,developDispatch:0,documentationSync:0,reviewRedispatch:{1:0,2:0},
+    reviewDispatchConfirmed:{1:noReviewDispatchConfirmations(),2:noReviewDispatchConfirmations()}};
   // Q16: documentation-sync-started records by digest, and the pending develop's.
   const documentationRecords=new Map();let pendingDocumentation=null,documentationStop=null;
   // V8/V9: interrupted intents (their ids are never reused) and the provider
@@ -1317,7 +1368,7 @@ export function readRunnerHistory(raw,config,version=1) {
       if(Object.hasOwn(e,'learningInput')){need(e.kind==='develop'&&Object.hasOwn(config,'taskLearning'),'runner_learning');
         validTaskLearningInput(e.learningInput,e.identity,config.taskLearning.feature);}
       same(e.identity,{...config.identity,attempt:state.attempt});need(e.version===1 && stageAllowed(e.kind,state.state,state.code,state.priorReview?.verdict),'runner_stage');
-      need(!(e.kind==='review'&&reviewNotDispatchedExhausted(state)),'runner_stage');
+      need(!(e.kind==='review'&&reviewNotDispatchedExhausted(state,answerGaps.reviewDispatchConfirmed[state.attempt].extended)),'runner_stage');
       need(effectSlotFree(e.kind,state.cache,state.calls) && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
       pending=e;beforeIntent=structuredClone(state);controls={};completeIntentDigest=e.kind==='complete'?r.digest:null;pendingDocumentation=null;documentationStop=null;
       invocation={registration:null,started:null,result:null};registrationRecord=null;startedRecord=null;resultRecord=null;
@@ -1505,6 +1556,22 @@ export function readRunnerHistory(raw,config,version=1) {
         &&p.invocationId===state.reviewInvocation.registration.grant.invocationId,'runner_review_redispatch');
       answerGaps.reviewRedispatch[state.attempt]++;
       state.state='pending_review';lastReview=null;
+    } else if(version===3&&p.type==='review-dispatch-confirmed') {
+      // The operator's confirmation (abandon_review + reason) for a review that never
+      // started: a refused authorization (once per denial) or the spent not-dispatched
+      // redispatch bound (once per round). Nothing ran, so there is no process to prove
+      // stopped (unlike review-redispatch). Re-derived from the journal.
+      shape(p,[...common,'effectId','attempt','code','reason','at']);
+      need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
+        &&!/[\r\n\0]/.test(p.reason),'runner_review_dispatch_confirm');
+      need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_review_dispatch_confirm');
+      const confirmed=answerGaps.reviewDispatchConfirmed[state.attempt];
+      need(r.kind==='result'&&pending===null&&p.attempt===state.attempt&&p.code===state.code
+        &&p.effectId===state.cache.at(-1)?.effect.id
+        &&(reviewDenialConfirmable(state,confirmed)||reviewNotDispatchedExtendable(state,confirmed)),'runner_review_dispatch_confirm');
+      if(p.code===REVIEW_DENIED_CODE){confirmed.denied++;state.code=REVIEW_DENIAL_CONFIRMED_CODE;}
+      else confirmed.extended++;
+      lastReview=null;
     } else if(version===3&&p.type==='completion-retry-limit') {
       // Terminal: written instead of a complete intent once the re-check bound
       // is spent. Every field is recomputed from the replayed state.
@@ -1816,7 +1883,8 @@ export function projectedRunnerStatus(history,config){
     if(reviewRedispatchable(s,contextId,records))return {...s,reviewRedispatchStopRequired:true,reason:reviewRedispatchStopReason(s.code)};
     if(reviewRedispatchExhausted(s,contextId,records))return {...s,code:REVIEW_REDISPATCH_LIMIT_CODE,reason:reviewRedispatchLimitReason(s.code)};
   }
-  if(reviewNotDispatchedExhausted(s))return {...s,state:'blocked',code:REVIEW_NOT_DISPATCHED_LIMIT_CODE,reason:reviewNotDispatchedLimitReason(s.code)};
+  const never=reviewNeverStartedStatus(s,gaps.reviewDispatchConfirmed?.[s.attempt]??noReviewDispatchConfirmations());
+  if(never!==null)return {...s,...never};
   if(s.state!=='unknown')return s;
   const recheck=developRecheckCode(s,config,gaps.developRecheck??0);
   if(recheck!==null)return project(recheck);
