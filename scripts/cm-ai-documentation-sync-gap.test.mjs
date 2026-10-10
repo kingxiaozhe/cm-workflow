@@ -390,3 +390,32 @@ test('Q16 host exit between a documentation redo\'s intent and its start record,
   assert.deepEqual([voided.state,voided.code],['cancelled','effect_abandoned'],JSON.stringify(voided));
   assert.equal(f.calls.developer,1);
 });
+
+// Review r2 #3: a documentation redo carries the Learning input bound to the
+// delivered develop answer, so a LESSONS.md edited while the run waited (it is
+// outside the documentation paths and the code root) does not end as runner_learning.
+for(const kind of ['answer_missing','answer_invalid','answer_blocked','out_of_scope','interrupted'])
+test(`Q16/Q17 a LESSONS.md edited during the wait does not block the documentation redo (${kind})`,async t=>{
+  const f=docFixture(t,`doc-learning-${kind}`);
+  const failure={answer_missing:{hang:true},answer_invalid:{throw:'invalid_result'},answer_blocked:{status:'blocked'},
+    out_of_scope:{other:'rewritten by docs\n'}}[kind];
+  if(kind==='interrupted'){
+    await docSession(f,'create',docExecution(f,{developer:['delivered\n'],sync:[{hang:true}]}),[['advance',1]]);
+    await confirm(f);
+    await dieDuringSync(f,docExecution(f,{sync:[{hang:true}]}));
+    const [done]=await docSession(f,'resume',docExecution(f),[['abandon_effect',1,{reason:'旧宿主与会话都已退出'}]],{allowAbandonEffect:true});
+    assert.equal(done.code,'documentation_sync_interrupted',JSON.stringify(done));
+  }else{
+    await docSession(f,'create',docExecution(f,{developer:['delivered\n'],sync:[failure]}),[['advance',1]]);
+    if(kind==='out_of_scope')fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'delivered\n');
+    assert.equal((await confirm(f)).outcome,'recorded');
+  }
+  fs.writeFileSync(path.join(f.specsDir,'LESSONS.md'),'## 待触发备忘\n- [待触发] 等待期间新增\n');
+  const before=records(f);
+  const [redone]=await docSession(f,'resume',docExecution(f,{sync:[{write:'# Final\n'}],verdicts:['approved']}),[['advance',1]]);
+  assert.notEqual(redone.code,'runner_learning',JSON.stringify(redone));
+  assert.equal(f.calls.developer,1,'develop is never redispatched');
+  const intent=records(f).slice(before.length).find(row=>row.payload.type==='effect-intent');
+  assert.deepEqual(intent.payload.effect.learningInput,records(f).find(row=>row.payload.type==='effect-intent').payload.effect.learningInput);
+  assert.ok(records(f).some((row,index)=>index>=before.length&&row.payload.type==='effect-checkpoint'),JSON.stringify(redone));
+});

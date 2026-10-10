@@ -533,7 +533,13 @@ export function createTaskRunner(options) {
   const commitRecoveryTransaction=()=>!invocationMode||!store||busy||poisoned||restored?.pending?.kind!=='complete'
     ||!restored.transaction?null:restored.transaction;
   // The Learning input a re-check must carry: exactly the delivered develop's.
-  const recheckLearningInput=()=>RECHECK_CODES.includes(status().code)?json([...cache.values()].at(-1).effect.learningInput):null;
+  // A documentation-only redo reuses that develop's answer, so it carries the
+  // input bound to it too (a LESSONS.md edited meanwhile changes a fresh read).
+  const recheckLearningInput=()=>{
+    if(RECHECK_CODES.includes(status().code))return json([...cache.values()].at(-1).effect.learningInput);
+    const bound=documentationRedoSource()===null?undefined:documentationRedoLearningInput();
+    return bound===undefined?null:json(bound);
+  };
   const status=()=>{
     let current=store?publication:privateStatus();
     if(current.state==='unknown'&&commitRecoveryTransaction()!==null){
