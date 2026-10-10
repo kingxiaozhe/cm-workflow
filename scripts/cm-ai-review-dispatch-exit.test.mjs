@@ -392,3 +392,16 @@ test('the superseding new run named for an ordinary run is admitted; the externa
   assert.equal(strictPriorAttemptResolved(strict,history,records),false);
   assert.equal(sameTaskPriorAttemptResolved(history),false);
 },{authorize:script('expire','expire','expire')}));
+
+test('the refused-authorization limit has a new-run exit even for an external-model run: no registration left a reconciliation mark',()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
+  f.reopen().abandonReview({allowed:true,reason:reasonFor});
+  await f.reopen().executeEffect(f.retry(1));
+  f.reopen().abandonReview({allowed:true,reason:reasonFor});
+  const limit=await f.reopen().executeEffect(f.retry(2));assert.equal(limit.code,'review_permission_denied_limit');
+  assert.equal(f.reopen().cancel().state,'cancelled');
+  const history=f.history(),records=f.records(),strict={...records[0].payload.config,externalModels:{providers:{}}};
+  assert.equal(history.state.reviewInvocation,null);
+  assert.equal(strictPriorAttemptResolved(strict,history,records),true);
+  assert.equal(sameTaskPriorAttemptResolved(history),true);
+},{authorize:script('deny','deny','deny')}));

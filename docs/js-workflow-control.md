@@ -31,6 +31,13 @@ cm-ai 宿主返回的可选 `guidance` 说明当前阻塞与下一步：`summary
 - 开发已交付、之后的检查或验证预检没拿到可用应答时，status 显示 `blocked/check_answer_missing` 或 `check_answer_invalid`、`pendingAction=resume`：
   `--mode resume` 后 `advance`，宿主追加 `develop-recheck` 记录，只重跑检查、预检与审查包，不重发开发；完成前复查没拿到应答（尚无 task-commit-intent）时显示
   `blocked/complete_recheck_failed`、`pendingAction=complete`，宿主追加 `complete-recheck` 后重新复查并完成。每种每运行最多 2 次。
+- 审查从未启动的两种停机（审查进程没有启动，没有写入方，不需要证明谁已停止，但重派必须由操作员显式确认）：
+  审查授权被拒（原始 `pending_review/permission_denied`，`reviewDispatchConfirmRequired`、`pendingAction=abandon_review`）和三次登记都在派发前作废后的
+  `blocked/review_not_dispatched_limit`（同样 `pendingAction=abandon_review`）。操作员查清原因后 `--mode resume --allow-abandon-review` 发送 `abandon_review`（单行 reason），
+  宿主追加 `review-dispatch-confirmed`：前者变为 `pending_review/permission_denied_confirmed`，每轮最多确认 2 次，第 3 次拒绝为 `review_permission_denied_limit`；
+  后者回到可重试的 `pending_review/grant_expired|clock_invalid`，每轮最多确认 1 次、再多重派 2 次，再用满仍是 `review_not_dispatched_limit` 且 `pendingAction=none`。
+  之后 `advance` 重新取得本轮审查授权并用新 effect id 重派；未确认前 advance、批次驱动和一直批准的宿主都不会重派。
+  用满后没有进程内出口：`cancel` → 另存或还原代码 → `--supersede-reviewed-evidence` 新建运行（不要 `--accept-superseded-code-drift`）；外部模型或执行策略运行被外部运行守卫拒绝时保留运行交维护者。
 - 规则交付后的审查包失败，仅原宿主明确 `pendingAction=bootstrap_review_recover` 时：核对规则、
   handoff 与原证据，以原配置 resume，显式 `--allow-bootstrap-review-recovery` 并提供 reason，
   再发送 `bootstrap_review_recover`，不重新派发开发。
