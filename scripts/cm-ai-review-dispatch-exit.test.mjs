@@ -1,7 +1,9 @@
-// A review whose authorization was refused (raw pending_review/permission_denied): nothing was
-// registered or dispatched. It is left only by an explicit, audited operator confirmation
-// (abandon_review with a reason), once per denial and bounded per review round, replayed by the
-// same functions the live runner uses.
+// Review ends that never started a reviewer, and their operator exits:
+//   A. raw pending_review/permission_denied (the authorization was refused, nothing was
+//      registered or dispatched);
+//   B. blocked/review_not_dispatched_limit (three registrations voided before dispatch).
+// Both are left only by an explicit, audited operator confirmation (abandon_review with a
+// reason), bounded per review round, replayed by the same functions the live runner uses.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -12,6 +14,7 @@ import {openTaskExecutionStore} from '../runtime/js/cm-ai/task-owner.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {readRunnerHistory,completedEffectCount,projectedRunnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
+import {strictPriorAttemptResolved,sameTaskPriorAttemptResolved} from '../runtime/js/cm-ai/external-run-guard.mjs';
 import {createCmAiConversationEntry} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {operatorGuidance,guidanceText} from '../runtime/js/cm-ai/operator-guidance.mjs';
 
@@ -234,7 +237,113 @@ test('A the conversation entry never redispatches a denied end on its own; aband
   assert.equal(f.records().filter(row=>row.payload.type==='effect-intent').at(-1).payload.effect.id,'review-1-retry-1');
 },{authorize:script('deny','ok')}));
 
-// ---- guidance ----------------------------------------------------------------------------
+// ---- B. review_not_dispatched_limit --------------------------------------------------
+
+async function toLimit(f){
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));
+  await runner.executeEffect(f.effect('review'));
+  await f.reopen().executeEffect(f.retry(1));
+  return f.reopen().executeEffect(f.retry(2));
+}
+
+test('B the limit block asks for an explicit confirmation; one confirmation grants two more redispatches',()=>fixture(async f=>{
+  const limit=await toLimit(f);
+  assert.deepEqual([limit.state,limit.code,limit.reviewDispatchConfirmRequired],['blocked','review_not_dispatched_limit',true]);
+  assert.match(limit.reason,/^review_not_dispatched_limit: .*3 次.*abandon_review/);
+  const before=f.records().length,rejected=await f.reopen().executeEffect(f.retry(3));
+  assert.deepEqual([rejected.outcome,rejected.code],['rejected','review_not_dispatched_limit']);assert.equal(f.records().length,before);
+  const confirmed=f.reopen().abandonReview({allowed:true,reason:'宿主已修好，授权不会再过期'});
+  assert.deepEqual([confirmed.state,confirmed.code],['pending_review','grant_expired'],JSON.stringify(confirmed));
+  assert.equal(confirmed.reviewDispatchConfirmRequired,undefined);
+  const rows=confirmations(f.records());assert.equal(rows.length,1);
+  assert.deepEqual([rows[0].payload.effectId,rows[0].payload.attempt,rows[0].payload.code],['review-1-retry-2',1,'grant_expired']);
+  // Replay and a restart agree.
+  assert.deepEqual(f.reopen().status(),confirmed);
+  const approved=await f.reopen().executeEffect(f.retry(3));
+  assert.equal(approved.state,'approved',JSON.stringify(approved));assert.equal(f.dispatches(),1);
+  assert.deepEqual(f.reopen().status(),approved);
+},{authorize:script('expire','expire','expire','ok')}));
+
+test('B the extension is itself capped: two more voided registrations end in a limit with no further exit',()=>fixture(async f=>{
+  await toLimit(f);
+  assert.equal(f.reopen().abandonReview({allowed:true,reason:'第一次确认'}).state,'pending_review');
+  await f.reopen().executeEffect(f.retry(3));
+  const last=await f.reopen().executeEffect(f.retry(4));
+  assert.equal(f.dispatches(),0);
+  assert.deepEqual([last.state,last.code,last.reviewDispatchConfirmRequired],['blocked','review_not_dispatched_limit',undefined]);
+  assert.match(last.reason,/^review_not_dispatched_limit: .*5 次.*已确认延长 1 次.*用满/);
+  const before=f.records().length,limited=f.reopen();
+  const again=limited.abandonReview({allowed:true,reason:'第二次确认'});
+  assert.deepEqual([again.outcome,again.code],['rejected','review_not_dispatched_limit']);
+  const refused=await limited.executeEffect(f.retry(5));
+  assert.deepEqual([refused.outcome,refused.code],['rejected','review_not_dispatched_limit']);
+  assert.equal(f.records().length,before);
+  const history=f.history(),config=f.records()[0].payload.config,projected=projectedRunnerStatus(history,config);
+  assert.deepEqual([projected.state,projected.code,projected.reason],[last.state,last.code,last.reason]);
+  // A forged second confirmation or a sixth review intent is refused by replay.
+  const records=structuredClone(f.records()),at=records.findIndex(row=>row.payload.type==='review-dispatch-confirmed');
+  const second=structuredClone(records);
+  second.push({...structuredClone(records[at]),payload:{...records[at].payload,effectId:'review-1-retry-4'}});
+  assert.throws(()=>readRunnerHistory(resequence(second),config,3),{code:'runner_review_dispatch_confirm'});
+  const intent=structuredClone(records.findLast(row=>row.kind==='intent'&&row.payload.effect?.id==='review-1-retry-4'));
+  const {digest:ignored,...body}=JSON.parse(JSON.stringify(intent).replaceAll('review-1-retry-4','review-1-retry-5'));
+  const forged={...body,seq:records.length+1,id:`runner.${String(records.length+1).padStart(6,'0')}`,previousDigest:records.at(-1).digest};
+  assert.throws(()=>readRunnerHistory([...records,{...forged,digest:digest(forged)}],config,3),{code:'runner_stage'});
+},{authorize:script('expire','expire','expire','expire','expire','ok')}));
+
+test('B a confirmation is refused before the limit and without permission or reason, and never forged into replay',()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
+  // One voided registration only: still redispatchable on its own, nothing to confirm.
+  const early=f.reopen().abandonReview({allowed:true,reason:reasonFor});
+  assert.deepEqual([early.outcome,early.code],['rejected','review_abandon_unavailable']);
+  await f.reopen().executeEffect(f.retry(1));
+  const limit=await f.reopen().executeEffect(f.retry(2));assert.equal(limit.code,'review_not_dispatched_limit');
+  const before=f.records().length;
+  for(const [raw,code] of [[{allowed:false,reason:reasonFor},'review_abandon_authorization_required'],
+    [{allowed:true,reason:''},'review_abandon_reason_required'],[{allowed:true,reason:'a\r\nb'},'review_abandon_reason_required']]){
+    const result=f.reopen().abandonReview(raw);assert.deepEqual([result.outcome,result.code],['rejected',code]);
+  }
+  assert.equal(f.records().length,before);
+  // A record forged into a journal that is not at the limit is refused by replay.
+  const config=f.records()[0].payload.config,all=structuredClone(f.records());
+  f.reopen().abandonReview({allowed:true,reason:reasonFor});
+  const real=f.records().findLast(row=>row.payload.type==='review-dispatch-confirmed');
+  const firstEnd=all.findIndex(row=>row.payload.type==='effect-checkpoint'&&row.payload.checkpoint?.code==='grant_expired');
+  const early2=structuredClone(all.slice(0,firstEnd+1));
+  early2.push({...structuredClone(real),payload:{...real.payload,effectId:'review-1'}});
+  assert.throws(()=>readRunnerHistory(resequence(early2),config,3),{code:'runner_review_dispatch_confirm'});
+},{authorize:script('expire','expire','expire')}));
+
+test('B the extension counts per review round, so a later round has its own',()=>fixture(async f=>{
+  const limit=await toLimit(f);assert.equal(limit.code,'review_not_dispatched_limit');
+  f.reopen().abandonReview({allowed:true,reason:reasonFor});
+  const records=f.records();
+  assert.equal(confirmations(records).length,1);assert.equal(confirmations(records)[0].payload.attempt,1);
+  // The count is read from the journal for this attempt only.
+  const history=f.history();
+  assert.deepEqual(history.answerGaps.reviewDispatchConfirmed,{1:{denied:0,extended:1},2:{denied:0,extended:0}});
+},{authorize:script('expire','expire','expire')}));
+
+test('B the conversation entry names abandon_review for an extendable limit and nothing for a spent one',()=>fixture(async f=>{
+  await toLimit(f);
+  const request=(operation,extra={})=>({version:1,operation,requestId:operation,identity:f.identity,...extra});
+  const entryFor=runner=>createCmAiConversationEntry({specsDir:path.dirname(f.tasksPath),codeProject:f.root,feature:'feature',
+    identity:f.identity,runner,allowAbandonReview:true,hostDecision:{status:'approved'}});
+  const entry=entryFor(f.reopen());
+  const status=await entry.handle(request('status'));
+  assert.deepEqual([status.state,status.code,status.pendingAction,status.reviewDispatchConfirmRequired],
+    ['blocked','review_not_dispatched_limit','abandon_review',true]);
+  assert.match(status.guidance.nextStep,/abandon_review/);assert.equal(status.guidance.recoveryOperation,'abandon_review');
+  const result=await entry.handle(request('abandon_review',{reason:reasonFor}));
+  assert.deepEqual([result.outcome,result.state,result.code,result.pendingAction],['abandoned','pending_review','grant_expired','resume'],JSON.stringify(result));
+  await f.reopen().executeEffect(f.retry(3));
+  await f.reopen().executeEffect(f.retry(4));
+  const spent=await entryFor(f.reopen()).handle(request('status'));
+  assert.deepEqual([spent.state,spent.code,spent.pendingAction],['blocked','review_not_dispatched_limit','none']);
+  assert.equal(spent.reviewDispatchConfirmRequired,undefined);assert.equal(spent.guidance.recoveryOperation,null);
+},{authorize:script('expire','expire','expire','expire','expire')}));
+
+// ---- guidance and the exits that really exist -----------------------------------------
 
 const guidanceFor=(state,code,pendingAction,extra={})=>operatorGuidance({workflow:'cm-ai',
   identity:{repositoryId:'r',runId:'run',taskId:'T-001',attempt:1},state,code,pendingAction,outcome:'reported',...extra});
@@ -254,3 +363,32 @@ test('A guidance names the confirmation exit for a refused authorization and the
   assert.match(spent.nextStep,/不要加 --accept-superseded-code-drift/);
 });
 
+test('B guidance names the extension exit for an extendable limit, the exact manual step for a spent one',()=>{
+  const extendable=guidanceFor('blocked','review_not_dispatched_limit','abandon_review',{reviewDispatchConfirmRequired:true});
+  assert.equal(extendable.recoveryOperation,'abandon_review');assert.equal(extendable.authorizationGranted,false);
+  assert.match(extendable.nextStep,/授权.*过期|时钟/);assert.match(extendable.nextStep,/--allow-abandon-review/);
+  assert.match(extendable.prerequisites.join(' '),/只能确认 1 次/);
+  const expired=guidanceFor('pending_review','grant_expired','resume');
+  assert.equal(expired.recoveryOperation,'advance');assert.match(expired.summary,/从未启动/);
+  assert.match(expired.nextStep,/新的审查授权|重新取得/);
+  const spent=guidanceFor('blocked','review_not_dispatched_limit','none');
+  assert.equal(spent.recoveryOperation,null);assert.equal(spent.authorizationGranted,false);
+  assert.match(spent.nextStep,/cancel/);assert.match(spent.nextStep,/--supersede-reviewed-evidence/);
+  assert.match(spent.nextStep,/外部模型|执行策略/);assert.match(spent.nextStep,/还原|另存/);
+  assert.match(spent.nextStep,/不要加 --accept-superseded-code-drift/);
+});
+
+test('the superseding new run named for an ordinary run is admitted; the external-run guard refuses a not-dispatched strict prior run',()=>fixture(async f=>{
+  await toLimit(f);
+  // cancel from the raw pending_review end journals cancelled, which supersede accepts.
+  const cancelled=f.reopen().cancel();assert.equal(cancelled.state,'cancelled');
+  const history=f.history(),records=f.records();
+  assert.equal(history.state.state,'cancelled');assert.equal(history.pending,null);
+  const ordinary=records[0].payload.config,strict={...ordinary,externalModels:{providers:{}}};
+  assert.equal(strictPriorAttemptResolved(ordinary,history,records),true);
+  // A strict (external-model) prior run whose last review was never dispatched keeps its reconciliation
+  // flag, so the guard refuses a new run on the same code root: no new-run exit exists for it.
+  assert.equal(history.state.reviewInvocation.result.reconciliationRequired,true);
+  assert.equal(strictPriorAttemptResolved(strict,history,records),false);
+  assert.equal(sameTaskPriorAttemptResolved(history),false);
+},{authorize:script('expire','expire','expire')}));

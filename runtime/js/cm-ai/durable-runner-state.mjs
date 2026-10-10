@@ -70,14 +70,24 @@ const notDispatchedEffect=entry=>entry.effect.kind==='review'&&entry.result.stat
 // per review round, like the no-result ones. The count is the round's not-dispatched
 // effects in the checkpointed cache, so live and replay read the same number; once the
 // round's latest end is the third, no review effect is admitted (live and replay) and
-// status shows the explicit limit block.
+// status shows the explicit limit block. The limit has one audited exit: the operator's
+// confirmation (abandon_review + reason, journaled as review-dispatch-confirmed) grants
+// MAX_REVIEW_NOT_DISPATCHED_RETRIES more, at most MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS
+// per round, so the retry cap (R2) is never defeated, only extended on the record.
 export const MAX_REVIEW_NOT_DISPATCHED_RETRIES=2;
+export const MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS=1;
 export const REVIEW_NOT_DISPATCHED_LIMIT_CODE='review_not_dispatched_limit';
 export const reviewNotDispatchedCount=(cache,attempt)=>cache.filter(entry=>entry.effect.identity.attempt===attempt&&notDispatchedEffect(entry)).length;
-export const reviewNotDispatchedExhausted=s=>s.state==='pending_review'&&REVIEW_NOT_DISPATCHED_CODES.includes(s.code)
-  &&reviewNotDispatchedCount(s.cache,s.attempt)>MAX_REVIEW_NOT_DISPATCHED_RETRIES;
-export const reviewNotDispatchedLimitReason=code=>`${REVIEW_NOT_DISPATCHED_LIMIT_CODE}: 本轮独立审查已登记 ${MAX_REVIEW_NOT_DISPATCHED_RETRIES+1} 次，每次都在派发前作废（最近一次 pending_review/${code}：授权过期或派发时钟倒退），审查进程从未启动。`
-  +`本运行不再重派，也没有接受这个状态的恢复操作（supersede 不接受原始 pending_review）。先查清宿主从授权到派发为何超过授权有效期（60 秒内）或本机时钟为何倒退；保留本运行记录与代码，把本 reason 交给维护者处理。`;
+export const reviewNotDispatchedExhausted=(s,extended=0)=>s.state==='pending_review'&&REVIEW_NOT_DISPATCHED_CODES.includes(s.code)
+  &&reviewNotDispatchedCount(s.cache,s.attempt)>MAX_REVIEW_NOT_DISPATCHED_RETRIES*(1+extended);
+export const reviewNotDispatchedExtendable=(s,confirmed)=>reviewNotDispatchedExhausted(s,confirmed.extended)
+  &&confirmed.extended<MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS
+  &&s.cache.at(-1)!==undefined&&notDispatchedEffect(s.cache.at(-1))&&s.cache.at(-1).effect.identity.attempt===s.attempt;
+export const reviewNotDispatchedLimitReason=(code,extended=0)=>`${REVIEW_NOT_DISPATCHED_LIMIT_CODE}: 本轮独立审查已登记 ${MAX_REVIEW_NOT_DISPATCHED_RETRIES*(1+extended)+1} 次，每次都在派发前作废（最近一次 pending_review/${code}：授权过期或派发时钟倒退），审查进程从未启动、没有写入。`
+  +(extended<MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS
+    ?'本运行不再自动重派。先查清宿主从授权到派发为何超过授权有效期（60 秒内）或本机时钟为何倒退，并修好；'
+      +`然后用 --mode resume 加 --allow-abandon-review 启动并发送 abandon_review（单行 reason 写明修好了什么）登记确认，本轮再多重派 ${MAX_REVIEW_NOT_DISPATCHED_RETRIES} 次（每轮只能确认 ${MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS} 次，用满后不再有这个出口）。`
+    :`已确认延长 ${extended} 次（用满），不再提供继续重派的操作。先查清宿主从授权到派发为何超过授权有效期（60 秒内）或本机时钟为何倒退。${REVIEW_NEVER_STARTED_MANUAL_STEP}`);
 // A review whose authorization was refused before any registration (the runner's
 // permission_denied halt): no call, no grant, no reviewer, so nothing can be writing.
 // It is a decision, not a timing failure: only an explicit operator confirmation
@@ -121,7 +131,9 @@ export const reviewDenialLimitReason=()=>`${REVIEW_DENIAL_LIMIT_CODE}: 本轮独
 export function reviewNeverStartedStatus(s,confirmed){
   if(reviewDenialExhausted(s,confirmed))return {state:'blocked',code:REVIEW_DENIAL_LIMIT_CODE,reason:reviewDenialLimitReason()};
   if(reviewDenialUnconfirmed(s))return {reviewDispatchConfirmRequired:true,reason:reviewDenialConfirmReason(confirmed)};
-  if(reviewNotDispatchedExhausted(s))return {state:'blocked',code:REVIEW_NOT_DISPATCHED_LIMIT_CODE,reason:reviewNotDispatchedLimitReason(s.code)};
+  if(reviewNotDispatchedExhausted(s,confirmed.extended))
+    return {state:'blocked',code:REVIEW_NOT_DISPATCHED_LIMIT_CODE,reason:reviewNotDispatchedLimitReason(s.code,confirmed.extended),
+      ...(confirmed.extended<MAX_REVIEW_NOT_DISPATCHED_EXTENSIONS?{reviewDispatchConfirmRequired:true}:{})};
   return null;
 }
 const timeoutEffect=entry=>entry.effect.kind==='review'&&reviewRetryCode(entry.result.reviewInvocation?.result)!==null
@@ -1365,7 +1377,7 @@ export function readRunnerHistory(raw,config,version=1) {
       if(Object.hasOwn(e,'learningInput')){need(e.kind==='develop'&&Object.hasOwn(config,'taskLearning'),'runner_learning');
         validTaskLearningInput(e.learningInput,e.identity,config.taskLearning.feature);}
       same(e.identity,{...config.identity,attempt:state.attempt});need(e.version===1 && stageAllowed(e.kind,state.state,state.code,state.priorReview?.verdict),'runner_stage');
-      need(!(e.kind==='review'&&reviewNotDispatchedExhausted(state)),'runner_stage');
+      need(!(e.kind==='review'&&reviewNotDispatchedExhausted(state,answerGaps.reviewDispatchConfirmed[state.attempt].extended)),'runner_stage');
       need(effectSlotFree(e.kind,state.cache,state.calls) && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
       pending=e;beforeIntent=structuredClone(state);controls={};completeIntentDigest=e.kind==='complete'?r.digest:null;pendingDocumentation=null;documentationStop=null;
       invocation={registration:null,started:null,result:null};registrationRecord=null;startedRecord=null;resultRecord=null;
@@ -1555,17 +1567,20 @@ export function readRunnerHistory(raw,config,version=1) {
       state.state='pending_review';lastReview=null;
     } else if(version===3&&p.type==='review-dispatch-confirmed') {
       // The operator's confirmation (abandon_review + reason) for a review that never
-      // started: a refused authorization, once per denial. Nothing ran, so there is no
-      // process to prove stopped (unlike review-redispatch). Re-derived from the journal.
+      // started: a refused authorization (once per denial) or the spent not-dispatched
+      // redispatch bound (once per round). Nothing ran, so there is no process to prove
+      // stopped (unlike review-redispatch). Re-derived from the journal.
       shape(p,[...common,'effectId','attempt','code','reason','at']);
       need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason,'utf8')<=500
         &&!/[\r\n\0]/.test(p.reason),'runner_review_dispatch_confirm');
       need(typeof p.at==='string'&&Number.isFinite(Date.parse(p.at))&&new Date(p.at).toISOString()===p.at,'runner_review_dispatch_confirm');
       const confirmed=answerGaps.reviewDispatchConfirmed[state.attempt];
       need(r.kind==='result'&&pending===null&&p.attempt===state.attempt&&p.code===state.code
-        &&p.effectId===state.cache.at(-1)?.effect.id&&reviewDenialConfirmable(state,confirmed),'runner_review_dispatch_confirm');
-      confirmed.denied++;
-      state.code=REVIEW_DENIAL_CONFIRMED_CODE;lastReview=null;
+        &&p.effectId===state.cache.at(-1)?.effect.id
+        &&(reviewDenialConfirmable(state,confirmed)||reviewNotDispatchedExtendable(state,confirmed)),'runner_review_dispatch_confirm');
+      if(p.code===REVIEW_DENIED_CODE){confirmed.denied++;state.code=REVIEW_DENIAL_CONFIRMED_CODE;}
+      else confirmed.extended++;
+      lastReview=null;
     } else if(version===3&&p.type==='completion-retry-limit') {
       // Terminal: written instead of a complete intent once the re-check bound
       // is spent. Every field is recomputed from the replayed state.

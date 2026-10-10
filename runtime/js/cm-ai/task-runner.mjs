@@ -19,7 +19,7 @@ import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
   MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,effectSlotFree,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
   reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted,
-  MAX_REVIEW_REDISPATCHES,REVIEW_RETRY_CODES,reviewNotDispatchedExhausted,REVIEW_NOT_DISPATCHED_LIMIT_CODE,reviewNeverStartedStatus,reviewDenialUnconfirmed,reviewDenialExhausted,reviewDenialConfirmable,reviewDenialLimitReason,
+  MAX_REVIEW_REDISPATCHES,REVIEW_RETRY_CODES,reviewNotDispatchedExhausted,REVIEW_NOT_DISPATCHED_LIMIT_CODE,reviewNeverStartedStatus,reviewNotDispatchedLimitReason,reviewNotDispatchedExtendable,reviewDenialUnconfirmed,reviewDenialExhausted,reviewDenialConfirmable,reviewDenialLimitReason,
   REVIEW_DENIAL_LIMIT_CODE,REVIEW_DISPATCH_CONFIRM_REQUIRED_CODE,countReviewDispatchConfirmations,reviewRedispatchCount,reviewRedispatchable,reviewRedispatchExhausted,REVIEW_REDISPATCH_LIMIT_CODE,reviewRedispatchLimitReason,reviewRedispatchStopReason,reviewAbandonRefusal,
   completionBlockCount,completionRetriesExhausted,supersededReviewPayload,bootstrapReviewRecoverable,protectedDevelopScope,protectedScopeBlockReason,
   developTimeoutBasis,developTimeoutEffect,developTimeoutState,DEVELOP_CALL_TIMEOUT_REASON,
@@ -1485,7 +1485,7 @@ export function createTaskRunner(options) {
       answerRetry=v.kind==='develop'&&state==='blocked'&&code==='failed'&&answerRetryable();
       need(timeoutBasis!==null||answerRetry||recheck!==null||completeSource!==null||dispatchBasis!==null
         ||stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(effectSlotFree(v.kind,[...cache.values()],calls),'limit_exceeded');
-      need(!(v.kind==='review'&&reviewNotDispatchedExhausted({state,code,attempt,cache:[...cache.values()]})),REVIEW_NOT_DISPATCHED_LIMIT_CODE);
+      need(!(v.kind==='review'&&reviewNotDispatchedExhausted({state,code,attempt,cache:[...cache.values()]},reviewDispatchConfirmations().extended)),REVIEW_NOT_DISPATCHED_LIMIT_CODE);
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
     } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input',
@@ -1727,22 +1727,28 @@ export function createTaskRunner(options) {
   };
   const abandonReview=raw=>{
     try{
-      // A review that never started (refused authorization): nothing ran, so no process
-      // needs proving stopped, even for external-model runs. Only this explicit, audited
-      // confirmation lets the round ask for a fresh authorization.
-      if(invocationMode&&store&&!busy&&!poisoned&&!restored?.pending&&reviewDenialUnconfirmed({state,code})){
-        const confirmed=reviewDispatchConfirmations(),pendingState={state,code,attempt,cache:[...cache.values()]};
-        if(reviewDenialExhausted(pendingState,confirmed))
-          throw Object.assign(new Error(REVIEW_DENIAL_LIMIT_CODE),{code:REVIEW_DENIAL_LIMIT_CODE,reviewDenialLimit:true});
-        need(reviewDenialConfirmable(pendingState,confirmed),'review_abandon_unavailable');
-        const value=json(raw);shape(value,['allowed','reason']);
-        need(value.allowed===true,'review_abandon_authorization_required');
-        need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=500
-          &&!/[\r\n\0]/.test(value.reason),'review_abandon_reason_required');
-        persist('review-dispatch-confirmed',{effectId:[...cache.values()].at(-1).effect.id,attempt,code,reason:value.reason,
-          at:new Date().toISOString()});
-        const recovered=readRunnerHistory(journal,metadata,3).state;
-        ({state,code}=recovered);reason=recovered.reason??null;publication=privateStatus();return status();
+      // A review that never started (a refused authorization, or the spent not-dispatched
+      // redispatch bound): nothing ran, so no process needs proving stopped, even for
+      // external-model runs. Only this explicit, audited confirmation leaves those ends.
+      if(invocationMode&&store&&!busy&&!poisoned&&!restored?.pending&&state==='pending_review'){
+        const confirmed=reviewDispatchConfirmations(),ended={state,code,attempt,cache:[...cache.values()]};
+        const denied=reviewDenialUnconfirmed(ended),voided=reviewNotDispatchedExhausted(ended,confirmed.extended);
+        if(denied||voided){
+          if(denied&&reviewDenialExhausted(ended,confirmed))
+            throw Object.assign(new Error(REVIEW_DENIAL_LIMIT_CODE),{code:REVIEW_DENIAL_LIMIT_CODE,reason:reviewDenialLimitReason()});
+          if(voided&&!reviewNotDispatchedExtendable(ended,confirmed))
+            throw Object.assign(new Error(REVIEW_NOT_DISPATCHED_LIMIT_CODE),
+              {code:REVIEW_NOT_DISPATCHED_LIMIT_CODE,reason:reviewNotDispatchedLimitReason(code,confirmed.extended)});
+          need(denied?reviewDenialConfirmable(ended,confirmed):true,'review_abandon_unavailable');
+          const value=json(raw);shape(value,['allowed','reason']);
+          need(value.allowed===true,'review_abandon_authorization_required');
+          need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=500
+            &&!/[\r\n\0]/.test(value.reason),'review_abandon_reason_required');
+          persist('review-dispatch-confirmed',{effectId:[...cache.values()].at(-1).effect.id,attempt,code,reason:value.reason,
+            at:new Date().toISOString()});
+          const recovered=readRunnerHistory(journal,metadata,3).state;
+          ({state,code}=recovered);reason=recovered.reason??null;publication=privateStatus();return status();
+        }
       }
       need(!(metadata.externalModels||metadata.executionPolicy),'external_review_reconciliation_required');
       // V5 (A34): the operator confirms the spent block's reviewer stopped; this
@@ -1804,7 +1810,6 @@ export function createTaskRunner(options) {
       ({state,code,sequence,reviewInvocation}=recovered);calls.push(...recovered.calls.slice(calls.length));
       publication=privateStatus();return status();
     }catch(error){return freeze({outcome:'rejected',code:error.code??'review_abandon_unavailable',
-      ...(error.reviewDenialLimit===true?{reason:reviewDenialLimitReason()}:{}),
       ...(error.code==='review_abandon_budget_exhausted'?{reason:`本轮独立审查已无结论重派 ${MAX_REVIEW_REDISPATCHES} 次，不能再放弃重派；在途审查可用 abandon_effect 作废本运行后 --supersede-reviewed-evidence 新建运行。`}
         :typeof error.reason==='string'?{reason:error.reason}:{})});}
   };
