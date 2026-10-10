@@ -76,3 +76,23 @@ test('re-asked save confirmation requires a new decision bound to the abandoned 
   run=f.drive(f.plan({resolution}),'resume');assert.equal(run.status,0,run.stderr);
   assert.equal(JSON.parse(run.stdout).result.saveDecision,'rejected');assert.equal(fs.existsSync(path.join(f.project,'prd/fixture.md')),false);
 });
+
+// Round-2 blocker: the host recorded the abandon (pending.call cleared) and exited
+// before registering the re-asked call. A plain resume reads the re-ask from the
+// persisted abandon history and still needs the fresh decision.
+test('crash after the abandon was recorded: a plain resume still needs the fresh save decision',async t=>{
+  const f=fixture(t);assert.equal(f.drive(f.plan()).status,0);
+  const call=await loseConfirmation(f);assert.equal(call.kind,'idea_confirm_save');
+  const state=JSON.parse(fs.readFileSync(f.sessionFile,'utf8'));
+  const {createHash}=await import('node:crypto');const evidence='confirmation lost';
+  state.abandonedCalls=[{kind:call.kind,callId:call.callId,requestDigest:call.requestDigest,operation:state.pending.request.operation,
+    reason:'answer_missing',resultDigest:null,evidence:{sha256:createHash('sha256').update(JSON.stringify(evidence)).digest('hex'),length:evidence.length},
+    at:new Date().toISOString()}];
+  state.pending={...state.pending,call:null};fs.writeFileSync(f.sessionFile,JSON.stringify(state),{mode:0o600});
+  let run=f.drive(f.plan({resolution:null}),'resume');
+  assert.equal(run.status,2,run.stdout);assert.match(run.stderr,/confirm_reask_decision_required/);
+  assert.equal(fs.existsSync(path.join(f.project,'prd')),false);
+  fs.writeFileSync(path.join(f.answers,'confirm-save-reask.json'),JSON.stringify({decision:'rejected',replaces:call.callId}));
+  run=f.drive(f.plan({resolution:null}),'resume');assert.equal(run.status,0,run.stderr);
+  assert.equal(JSON.parse(run.stdout).result.saveDecision,'rejected');assert.equal(fs.existsSync(path.join(f.project,'prd/fixture.md')),false);
+});

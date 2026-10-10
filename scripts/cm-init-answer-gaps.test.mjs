@@ -218,3 +218,26 @@ test('driver V7: a re-asked init_confirm needs confirm-reask.json naming the aba
   fs.writeFileSync(path.join(answers,'confirm-reask.json'),JSON.stringify({decision:'rejected',replaces:call.callId}));
   run=drive();assert.equal(run.status,0,run.stderr);assert.equal(JSON.parse(run.stdout).result.stage,'confirmation_rejected');
 });
+
+// Round-2 blocker: the abandon was recorded (pending.call cleared) and the host exited
+// before registering the re-asked confirmation; a plain resume still needs the fresh decision.
+test('driver V7 crash window: a plain resume after a recorded abandon needs confirm-reask.json, never confirm.json',{timeout:30000},async t=>{
+  const f=fixture(t);fs.writeFileSync(path.join(f.project,'AGENTS.md'),'# Original constraint\n');
+  const respond=message=>message.kind==='init_verify'?{...checks('verified'),constraintChanges:['AGENTS.md']}:reply(message);
+  let c=await client(t,f,respond);await c.request('start');await c.request('advance');await c.request('advance');await c.close();
+  c=await client(t,f,(message,child)=>{setImmediate(()=>child.kill('SIGKILL'));});await c.request('advance');
+  const state=saved(f),call=state.pending.call;assert.equal(call.kind,'init_confirm');
+  const {createHash}=await import('node:crypto');const evidence='confirmation lost';
+  state.abandonedCalls=[{kind:call.kind,callId:call.callId,requestDigest:call.requestDigest,operation:state.pending.request.operation,
+    reason:'answer_missing',resultDigest:null,evidence:{sha256:createHash('sha256').update(JSON.stringify(evidence)).digest('hex'),length:evidence.length},
+    at:new Date().toISOString()}];
+  state.pending={...state.pending,call:null};fs.writeFileSync(f.file,JSON.stringify(state),{mode:0o600});
+  const answers=path.join(f.dir,'answers');fs.mkdirSync(answers);fs.writeFileSync(path.join(answers,'confirm.json'),JSON.stringify({decision:'approved'}));
+  const drive=()=>{const plan=path.join(f.dir,'plan.json');
+    fs.writeFileSync(plan,JSON.stringify({project:f.project,sessionFile:f.file,mode:'resume',hostContext:'author-a',originalHostContext:'author-a',
+      answers:'answers',resolution:null}));
+    return spawnSync(process.execPath,[path.join(root,'scripts/cm-init-drive.mjs'),'--plan',plan,'resume'],{encoding:'utf8',timeout:60000});};
+  let run=drive();assert.equal(run.status,2,run.stdout);assert.match(run.stderr,/confirm_reask_decision_required/);
+  fs.writeFileSync(path.join(answers,'confirm-reask.json'),JSON.stringify({decision:'rejected',replaces:call.callId}));
+  run=drive();assert.equal(run.status,0,run.stderr);assert.equal(JSON.parse(run.stdout).result.stage,'confirmation_rejected');
+});

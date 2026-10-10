@@ -85,8 +85,14 @@ function main(){
   // V7: a re-asked save confirmation needs a NEW decision of the current user, in
   // a separate file that names the abandoned callId; the earlier confirm-save.json
   // (bound to the lost call) is never reused.
-  const reaskCall=operation==='resume'&&obj(plan.resolution)&&(plan.resolution.discard===true||plan.resolution.abandon===true)
-    &&state.pending?.call?.kind==='idea_confirm_save'?state.pending.call.callId:null;
+  // The re-ask is also read from the persisted abandon history: the host may have
+  // recorded the abandon (pending.call cleared) and exited before it registered the
+  // new call; a plain resume must then still require the fresh decision.
+  const lastAbandon=(state?.abandonedCalls??[]).at(-1);
+  const persistedReask=operation==='resume'&&state?.pending&&state.pending.call===null
+    &&lastAbandon?.kind==='idea_confirm_save'&&lastAbandon.operation===state.pending.request?.operation?lastAbandon.callId:null;
+  const reaskCall=(operation==='resume'&&obj(plan.resolution)&&(plan.resolution.discard===true||plan.resolution.abandon===true)
+    &&state.pending?.call?.kind==='idea_confirm_save'?state.pending.call.callId:null)??persistedReask;
   const answers=plan.answers?path.resolve(base,plan.answers):null;
   const answer=preflightAnswers(kind?[kind]:[],key=>{
     const name=key==='idea_interview'?'interview.json':reaskCall?'confirm-save-reask.json':'confirm-save.json';

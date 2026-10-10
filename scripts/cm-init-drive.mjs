@@ -163,8 +163,14 @@ function main(){
   const answers=plan.answers?path.resolve(base,plan.answers):null;
   // V7: a re-asked init_confirm needs a NEW decision of the current user in
   // confirm-reask.json naming the abandoned callId; confirm.json is never reused.
-  const reaskCall=operation==='resume'&&obj(plan.resolution)&&(plan.resolution.discard===true||plan.resolution.abandon===true)
-    &&state.pending?.call?.kind==='init_confirm'?state.pending.call.callId:null;
+  // The re-ask is also read from the persisted abandon history: the host may have
+  // recorded the abandon (pending.call cleared) and exited before it registered the
+  // new call; a plain resume must then still require the fresh decision.
+  const lastAbandon=(state?.abandonedCalls??[]).at(-1);
+  const persistedReask=operation==='resume'&&state?.pending&&state.pending.call===null
+    &&lastAbandon?.kind==='init_confirm'&&lastAbandon.operation===state.pending.request?.operation?lastAbandon.callId:null;
+  const reaskCall=(operation==='resume'&&obj(plan.resolution)&&(plan.resolution.discard===true||plan.resolution.abandon===true)
+    &&state.pending?.call?.kind==='init_confirm'?state.pending.call.callId:null)??persistedReask;
   const answer=preflightAnswers(kind&&names[kind]?[kind]:[],key=>{
     if(key==='init_confirm'&&reaskCall){
       const file=path.join(answers??base,'confirm-reask.json'),value=readJson(file,key);
