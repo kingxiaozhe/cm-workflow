@@ -76,6 +76,7 @@ const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',ope
   packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),
   ...(status.reviewReconciliation?{reviewReconciliation:status.reviewReconciliation}:{}),
   ...(status.developRedoRequired===true?{developRedoRequired:true}:{}),
+  ...(status.documentationSyncPending===true?{documentationSyncPending:true}:{}),
   ...(status.reviewRedispatchStopRequired===true?{reviewRedispatchStopRequired:true}:{}),
   ...(typeof status.reviewAbandonRefusal==='string'?{reviewAbandonRefusal:status.reviewAbandonRefusal}:{}),
   ...(typeof status.reason==='string'?{reason:status.reason}:{}),

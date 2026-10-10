@@ -43,6 +43,8 @@ export function operatorGuidance(result,{executionActive=false}={}){
       const review=action==='abandon_review';
       return explain(review?'独立审查结果尚未确认。':'宿主在开发、审查或完成中途退出，这一步只登记了意图、没有结果。',
         review?'先核对原操作与磁盘结果，确认旧宿主及相关子进程已退出；符合原宿主条件时，再审计放弃这次操作。放弃不代表成功。'
+          :result.documentationSyncPending===true
+            ?'先确认旧宿主及相关子进程已退出、会话已停止修改文档（宿主按存档核对文档路径以外的文件与此刻的文档）；再发送 abandon_effect 登记中断，运行转为 documentation_sync_interrupted，之后只重发文档同步、不重新开发，计入文档同步重发的 2 次上限。盘上改动保留并经检查与独立审查；登记中断不代表成功。'
           :'先确认旧宿主及相关子进程已退出、会话已停止写入（provider 开发由宿主按存档记下的进程身份核对）；再发送 abandon_effect 登记中断，运行从这一步的可重试阻断继续：开发重发本轮、未登记的审查重新派发、未写提交意图的完成重新复查。盘上改动保留并经检查与独立审查；登记中断不代表成功。',
         action,['保留原配置、runId 和失败历史，以 --mode resume 启动',
           review?'显式 --allow-abandon-review，并提供单行 reason':'显式 --allow-abandon-effect，并提供单行 reason',

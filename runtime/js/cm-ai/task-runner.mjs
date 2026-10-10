@@ -314,6 +314,9 @@ export function createTaskRunner(options) {
     ...(!(metadata.externalModels||metadata.executionPolicy)&&state==='unknown'&&restored?.pending
       &&(restored.pendingAbandonable||restored.pendingInterruptible||restored.pendingReviewExhausted||restored.pendingWorkerVoidable)
       ?{pendingEffectKind:restored.pending.kind}:{}),
+    // Q16: this interruption is a documentation retry; abandon_effect resends only documentation_sync.
+    ...(!(metadata.externalModels||metadata.executionPolicy)&&state==='unknown'&&restored?.pending?.kind==='develop'
+      &&restored.pendingInterruptible&&restored.pendingDocumentation!=null?{documentationSyncPending:true}:{}),
     // R2: the interruption cap is spent; abandon_effect now only voids the run.
     ...(state==='unknown'&&restored?.pending&&restored.pendingInterruptLimit
       ?{code:EFFECT_INTERRUPT_LIMIT_CODE,reason:effectInterruptLimitReason(restored.pending.kind)}:{}),

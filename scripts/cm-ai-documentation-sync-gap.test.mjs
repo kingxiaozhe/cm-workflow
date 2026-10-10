@@ -303,6 +303,9 @@ test('Q16 host exit during documentation_sync: abandon_effect, then only documen
   assert.equal(records(f).at(-1).payload.type,'documentation-sync-started',JSON.stringify(records(f).map(row=>row.payload.type)));
   const [pending]=await docSession(f,'resume',docExecution(f),[['status',1]]);
   assert.equal(pending.pendingAction,'abandon_effect',JSON.stringify(pending));
+  // Review r2 #4: before registration the hint already says only documentation_sync is resent.
+  assert.equal(pending.documentationSyncPending,true,JSON.stringify(pending));
+  assert.match(pending.guidance.nextStep,/只重发文档同步、不重新开发/);assert.doesNotMatch(pending.guidance.nextStep,/开发重发本轮/);
   const [interrupted]=await docSession(f,'resume',docExecution(f),
     [['abandon_effect',1,{reason:'旧宿主与会话都已退出'}]],{allowAbandonEffect:true});
   assert.deepEqual([interrupted.state,interrupted.code,interrupted.pendingAction],['blocked','documentation_sync_interrupted','resume'],JSON.stringify(interrupted));
