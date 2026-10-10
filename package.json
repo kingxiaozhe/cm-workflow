@@ -48,6 +48,7 @@
 			"./skills/cm-fix",
 			"./skills/cm-idea",
 			"./skills/cm-init",
+			"./skills/cm-notify",
 			"./skills/cm-prd",
 			"./skills/cm-refactor",
 			"./skills/cm-runtime",

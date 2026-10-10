@@ -21,6 +21,7 @@ CORE_SKILLS = (
     "cm-refactor",
     "cm-check",
     "cm-runtime",
+    "cm-notify",
 )
 CM_AI_RUNTIME = (
     "cm-ai-admission.mjs",
@@ -98,6 +99,9 @@ REQUIRED = (
     "scripts/cm-runtime-edit.mjs",
     "scripts/cm-runtime-install.mjs",
     "scripts/cm-runtime.test.mjs",
+    "scripts/cm-notify.mjs",
+    "scripts/cm-notify-command.test.mjs",
+    "runtime/js/notify-send.mjs",
     "scripts/cm-workflow-config.mjs",
     "scripts/cm-workflow-config.test.mjs",
     "scripts/cm_workflow_config.py",
