@@ -29,7 +29,7 @@ import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRu
   DISPATCH_RETRY_CODE,developDispatchFailedEffect,developDispatchBasis,developDispatchReason,answerGapLimit,
   pendingDevelopStart,redoDevelopStart,workerGoneBinding,EFFECT_INTERRUPT_LIMIT_CODE,effectInterruptLimitReason,developRedoSource,COMMIT_INTERRUPTED_CODE,COMMIT_INTERRUPTED_REASON,
   DOCUMENTATION_SYNC_CODES,documentationSyncSource,documentationSyncRetryCode,documentationSyncReason,documentationSyncStopReason,documentationSyncRetryReason } from './durable-runner-state.mjs';
-import {captureDocumentationState} from './host-documentation.mjs';
+import {splitDocumentationState} from './host-documentation.mjs';
 import {readProcessStartTime,inspectWorkerGroup} from './worker-process-identity.mjs';
 import {recoverRunnerCommitImage} from './task-commit.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
@@ -412,13 +412,20 @@ export function createTaskRunner(options) {
     const source=retry===null?null:documentationRecord(calls.at(-1)?.documentationSync);
     return source?{code:retry,source,detail:[...cache.values()].at(-1).result.reason??null}:null;
   }
-  // The live code root against the journaled documentation start, captured
-  // exactly as the documentation adapter captures it.
+  // The code root under the task's own fixed snapshot rules (the full develop
+  // scope and the ignore policy bound at create, as the task baseline), split
+  // at the documentation paths. The adapter takes its start and end with it too.
+  function documentationSnapshot(paths){
+    const baseline=captureReviewBaseline({...configToBaseline(metadata),version:original.version,
+      ...(Object.hasOwn(original,'specification')?{specification:{specsRoot:original.specificationRoot,feature:original.specification.feature}}:{})},
+      !Object.hasOwn(original,'ignorePolicy'),original.ignorePolicy?.version??2,
+      original.ignorePolicy?.version===2?original.ignorePolicy:null);
+    return splitDocumentationState(baseline.files,paths);
+  }
+  // The live code root against the journaled documentation start.
   function documentationLive(source){
     try{
-      const now=captureDocumentationState({root:config.root,specsRoot:completion.owner.specsRoot,identity:{...config.identity,attempt},
-        paths:source.documents.map(item=>item.path),requirements:config.requirements,
-        specification:Object.hasOwn(original,'specification')?{specsRoot:original.specificationRoot,feature:original.specification.feature}:null});
+      const now=documentationSnapshot(source.documents.map(item=>item.path));
       return {documentsUnchanged:digest(now.documents)===digest(source.documents),othersUnchanged:now.othersDigest===source.othersDigest};
     }catch(error){return {error:failureCode(error)};}
   }
@@ -1204,7 +1211,8 @@ export function createTaskRunner(options) {
   }
   function developControl(effectId,documentationRedo){
     const control={...(workerJournaling()?{onWorker:event=>journalWorker(effectId,event)}:{}),
-      ...(documentationJournaling()?{onDocumentationSync:event=>journalDocumentationSync(effectId,event)}:{}),
+      ...(documentationJournaling()?{onDocumentationSync:event=>journalDocumentationSync(effectId,event),
+        documentationSnapshot:paths=>documentationSnapshot(json(paths))}:{}),
       ...(documentationRedo?{documentationRedo}:{})};
     return Object.keys(control).length?control:null;
   }

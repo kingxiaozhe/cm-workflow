@@ -22,7 +22,7 @@ const docDefinition=f=>({version:1,specsDir:f.specsDir,codeProject:f.codeProject
 // writes README.md (or {other} writes a.mjs) and answers {status} (default completed).
 function docExecution(f,{developer=[],sync=[],verdicts=[]}={}){
   const queue=[...sync];
-  return {...gapExecution(f,{developer,verdicts}),documentationSync:{paths:f.docPaths,run:async(request,signal)=>{
+  return {...gapExecution(f,{developer,verdicts}),...(f.timeoutMs?{timeoutMs:f.timeoutMs}:{}),documentationSync:{paths:f.docPaths,run:async(request,signal)=>{
     f.calls.documentation++;
     const item=queue.shift();
     if(item===undefined)throw Object.assign(new Error('unexpected documentation call'),{code:'unexpected_documentation_call'});
@@ -197,4 +197,37 @@ test('the documentation record accepts 256 documentation paths and refuses 257',
   assert.throws(()=>validateHostWorkflowConfiguration({qa:null,documentationPaths:docs(257),applicableAgentFiles:[]}));
   assert.equal(validDocumentationStates(docs(256).map(p=>({path:p,sha256:null})),docs(257)).length,256);
   assert.throws(()=>validDocumentationStates(docs(257).map(p=>({path:p,sha256:null})),docs(257)),{code:'runner_documentation'});
+});
+
+// Review r1 #2: a develop-scope file that Git ignores (a.mjs here) is kept by
+// the task baseline; the documentation start must keep it too, so an edit to it
+// during or after documentation_sync is caught before a stale answer is reused.
+const ignoredFixture=(t,name)=>{
+  const f=docFixture(t,name);
+  const {spawnSync}=awaitSpawn;
+  // Git ignore queries make each capture slower than the 1.5 s fixture limit.
+  f.timeoutMs=20000;
+  fs.writeFileSync(path.join(f.codeProject,'.gitignore'),'a.mjs\n');
+  for(const args of [['init','-q'],['add','.gitignore','README.md','requirements.md'],
+    ['-c','user.name=t','-c','user.email=t@example.invalid','commit','-q','-m','init']]){
+    const result=spawnSync('git',['-C',f.codeProject,...args],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
+  }
+  return f;
+};
+const awaitSpawn=await import('node:child_process');
+test('a gitignored develop-scope file written by documentation_sync is out of scope',async t=>{
+  const f=ignoredFixture(t,'doc-ignored-during');
+  const [stuck]=await docSession(f,'create',docExecution(f,{developer:['delivered\n'],sync:[{write:'# After\n',other:'rewritten by docs\n'}]}),[['advance',1]]);
+  assert.equal(stuck.code,'documentation_sync_out_of_scope',JSON.stringify(stuck));
+  assert.match(stuck.reason,/a\.mjs/);
+});
+test('a gitignored develop-scope file changed after a failed documentation_sync blocks the retry',async t=>{
+  const f=ignoredFixture(t,'doc-ignored-after');
+  const [stuck]=await docSession(f,'create',docExecution(f,{developer:['delivered\n'],sync:[{status:'blocked'}]}),[['advance',1]]);
+  assert.equal(stuck.code,'documentation_sync_answer_blocked',JSON.stringify(stuck));
+  fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'changed after the sync\n');
+  const before=records(f);
+  const [refused]=await docSession(f,'resume',docExecution(f),[['advance',1]]);
+  assert.deepEqual([refused.outcome,refused.code],['rejected','documentation_sync_out_of_scope'],JSON.stringify(refused));
+  assert.equal(records(f).length,before.length);assert.equal(f.calls.documentation,1);
 });

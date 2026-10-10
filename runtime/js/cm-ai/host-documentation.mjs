@@ -16,19 +16,24 @@ export function validateDocumentationPaths(raw,scope){
   return paths;
 }
 
-// Q16/Q17: the code root as documentation_sync sees it, split into the
-// documentation paths (each path's sha256, null when absent) and one digest
-// of everything else. The runner records it when the sync starts and compares
-// a later state with it before it re-asks only documentation_sync: the
-// documentation paths decide whether the writer changed anything, the rest
-// must be exactly as the sync found it (the writer may touch nothing else).
-// requirements: paths; specification: {specsRoot,feature} or null.
+// Q16/Q17: a code-root snapshot split into the documentation paths (each
+// path's sha256, null when absent) and one digest of everything else. The
+// task runner supplies the snapshot (control.documentationSnapshot): its fixed
+// task-snapshot rules (full develop scope, the ignore policy bound at create),
+// so a develop-scope file Git ignores is still part of "everything else". The
+// runner records the split when the sync starts and compares a later one with
+// it before it re-asks only documentation_sync.
+export function splitDocumentationState(files,paths){
+  const others=files.filter(file=>!paths.includes(file.path));
+  return {files,documents:paths.map(file=>({path:file,
+    sha256:files.find(item=>item.path===file)?.sha256??null})),othersDigest:digest(others)};
+}
+// Without a runner snapshot (no journal: nothing is recorded or retried), the
+// adapter keeps its own scope-only capture for the out-of-scope check.
 export function captureDocumentationState({root,specsRoot,identity,paths,requirements,specification=null}){
   const baseline=captureReviewBaseline({root,specsRoot,identity,scope:paths,requirements,
     ...(specification?{specification}:{})});
-  const others=baseline.files.filter(file=>!paths.includes(file.path));
-  return {files:baseline.files,documents:paths.map(file=>({path:file,
-    sha256:baseline.files.find(item=>item.path===file)?.sha256??null})),othersDigest:digest(others)};
+  return splitDocumentationState(baseline.files,paths);
 }
 // Paths outside the documentation paths that differ between two captures.
 export function documentationOutOfScopePaths(before,after,paths){
@@ -56,7 +61,7 @@ export function withHostDocumentation({developer,documentationSync,specsDir,code
     if(!isFinalCmAiTask({specsDir,codeProject,feature,taskId:request.identity.taskId,parallelSelection,featureSelection})){
       need(redo===undefined,'documentation_redo_mismatch');return response;
     }
-    const capture=()=>captureDocumentationState({root:codeProject,specsRoot:specsDir,identity:request.identity,paths,
+    const capture=()=>typeof control.documentationSnapshot==='function'?control.documentationSnapshot(paths):captureDocumentationState({root:codeProject,specsRoot:specsDir,identity:request.identity,paths,
       requirements:request.payload.requirements.map(file=>file.path),
       specification:request.payload.specification?{specsRoot:specsDir,feature}:null});
     const before=capture();
