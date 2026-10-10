@@ -64,8 +64,13 @@ const SCENARIOS=[
   {name:'dangling symlink',make:d=>fs.symlinkSync(path.join(d,'nowhere.json'),path.join(d,'notify.json')),refused:{state:'invalid',reason:'permission'}},
   {name:'FIFO',posix:true,make:d=>mkfifo(path.join(d,'notify.json')),refused:{state:'invalid',reason:'permission'}},
   {name:'directory',make:d=>fs.mkdirSync(path.join(d,'notify.json')),refused:{state:'invalid',reason:'permission'}},
+  // `other.json` exists before the check, so it has its own identity; at the swap
+  // it is renamed onto the target. unlink+create could be handed the freed inode
+  // back (ext4 does), which would make the identity check legitimately pass.
   {name:'swapped for another regular file between check and open',make:d=>{fs.writeFileSync(path.join(d,'other.json'),'{}');return write(d,JSON_TEXT);},
-    hooks:d=>({open:(file)=>{fs.unlinkSync(file);fs.writeFileSync(file,'{}');}}),refused:{state:'invalid',reason:'permission'},flags:true},
+    hooks:d=>({open:file=>{
+      const before=fs.statSync(file,{bigint:true});fs.renameSync(path.join(d,'other.json'),file);
+      assert.notEqual(fs.statSync(file,{bigint:true}).ino,before.ino,'fixture invalid: the swapped-in file must have another inode');}}),refused:{state:'invalid',reason:'permission'},flags:true},
   {name:'swapped for a FIFO between check and open',posix:true,make:d=>write(d,JSON_TEXT),hooks:()=>({open:toFifo}),refused:{state:'invalid',reason:'permission'},flags:true},
   {name:'grown past the cap after the check',make:d=>write(d,JSON_TEXT),hooks:()=>({fstat:st=>clone(st,{size:BigInt(64*1024+1)})}),refused:{state:'invalid',reason:'too_large'}},
   {name:'handle is not a regular file after the check',make:d=>write(d,JSON_TEXT),hooks:()=>({fstat:st=>clone(st,{isFile:()=>false})}),refused:{state:'invalid',reason:'permission'}},
