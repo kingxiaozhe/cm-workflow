@@ -27,7 +27,9 @@ import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRu
   completeRecheckSource,completeRecheckable,completeRecheckReason,
   DEVELOP_REDO_CODE,developAnswerMissingEffect,developRedoCause,developRedoRequiredReason,developRedoReason,
   DISPATCH_RETRY_CODE,developDispatchFailedEffect,developDispatchBasis,developDispatchReason,answerGapLimit,
-  pendingDevelopStart,redoDevelopStart,workerGoneBinding,EFFECT_INTERRUPT_LIMIT_CODE,effectInterruptLimitReason,developRedoSource,COMMIT_INTERRUPTED_CODE,COMMIT_INTERRUPTED_REASON } from './durable-runner-state.mjs';
+  pendingDevelopStart,redoDevelopStart,workerGoneBinding,EFFECT_INTERRUPT_LIMIT_CODE,effectInterruptLimitReason,developRedoSource,COMMIT_INTERRUPTED_CODE,COMMIT_INTERRUPTED_REASON,
+  DOCUMENTATION_SYNC_CODES,documentationSyncSource,documentationSyncRetryCode,documentationSyncReason,documentationSyncStopReason,documentationSyncRetryReason } from './durable-runner-state.mjs';
+import {captureDocumentationState} from './host-documentation.mjs';
 import {readProcessStartTime,inspectWorkerGroup} from './worker-process-identity.mjs';
 import {recoverRunnerCommitImage} from './task-commit.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
@@ -303,7 +305,8 @@ export function createTaskRunner(options) {
   const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
     &&entry.result?.state==='blocked'
     &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout'].includes(entry.result?.code)
-    ||developTimeoutEffect(entry)||developAnswerInvalidEffect(entry)||developRecheckSource(entry)||developRedoSource(entry)||developDispatchFailedEffect(entry)).length;
+    ||developTimeoutEffect(entry)||developAnswerInvalidEffect(entry)||developRecheckSource(entry)||developRedoSource(entry)||developDispatchFailedEffect(entry)
+    ||documentationSyncSource(entry)).length;
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
     &&entry.result?.state==='blocked'&&['completion_checks_changed','completion_package_changed'].includes(entry.result?.code)
     ||completeRecheckSource(entry)).length;
@@ -390,6 +393,50 @@ export function createTaskRunner(options) {
     return developRedoCause({state,code,attempt,cache:[...cache.values()],calls,receipt},metadata,
       answerGapCount('develop-answer-redo'),parsedHistory?.workers??null);
   };
+  // Q16/Q17: the final task's develop journals the developer answer it accepted
+  // and the documentation start (documentation-sync-started) right before the
+  // adapter asks documentation_sync, and marks its developer call with the
+  // record. A sync that then fails is redone alone, from that record.
+  const documentationJournaling=()=>Boolean(invocationMode&&store&&taskMode&&bootstrap===null&&!metadata.bootstrap);
+  function journalDocumentationSync(effectId,raw){
+    const event=json(raw,512*1024);shape(event,['result','effectiveModel','documents','othersDigest']);
+    const call=calls.at(-1);need(call?.terminal==='running'&&!Object.hasOwn(call,'documentationSync'),'invalid_input');
+    const record=persist('documentation-sync-started',{effectId,invocationId:call.invocationId,...event});
+    call.documentationSync=record.digest;
+  }
+  const documentationRecord=value=>journal?.find(row=>row.digest===value&&row.payload.type==='documentation-sync-started')?.payload??null;
+  // The retryable documentation block the last develop left, with its record.
+  function documentationSyncRetry(){
+    if(!gapsLive()||!documentationJournaling()||options.providerDevelopment===true)return null;
+    const retry=documentationSyncRetryCode({state,code,attempt,cache:[...cache.values()]},metadata,answerGapCount('documentation-sync-retry'));
+    const source=retry===null?null:documentationRecord(calls.at(-1)?.documentationSync);
+    return source?{code:retry,source,detail:[...cache.values()].at(-1).result.reason??null}:null;
+  }
+  // The live code root against the journaled documentation start, captured
+  // exactly as the documentation adapter captures it.
+  function documentationLive(source){
+    try{
+      const now=captureDocumentationState({root:config.root,specsRoot:completion.owner.specsRoot,identity:{...config.identity,attempt},
+        paths:source.documents.map(item=>item.path),requirements:config.requirements,
+        specification:Object.hasOwn(original,'specification')?{specsRoot:original.specificationRoot,feature:original.specification.feature}:null});
+      return {documentsUnchanged:digest(now.documents)===digest(source.documents),othersUnchanged:now.othersDigest===source.othersDigest};
+    }catch(error){return {error:failureCode(error)};}
+  }
+  const documentationRefusal=(refusal,detail)=>Object.assign(new Error(refusal),{code:refusal,reason:{
+    documentation_sync_out_of_scope:`documentation_sync_out_of_scope: 文档路径以外的文件已不等于文档同步开始时的内容${detail?`（${detail.replace(/^out_of_scope:\s*/,'')}）`:''}，`
+      +'可能是文档同步越界写的，也可能是之后的改动。先把它们还原到文档同步开始时的内容（git diff 查看差异；确需修改先走规格变更），再 advance 只重发文档同步。',
+    documentation_sync_stop_required:'documentation_sync_stop_required: 文档路径已不等于文档同步开始时的内容，没有应答的文档同步可能仍在写；先确认会话已停止修改文档，再以 --mode resume --allow-develop-redo 发送 develop_redo，之后 advance 只重发文档同步。',
+    documentation_sync_capture_failed:`documentation_sync_capture_failed: 宿主无法读取代码根来核对文档同步的起点（${detail}）；修好后再 advance。`}[refusal]});
+  // The redo may start only while the rest of the code root is exactly as the
+  // failed sync found it; a lost answer also needs unchanged documentation paths.
+  function assertDocumentationRetry(retry,{fresh}){
+    const live=documentationLive(retry.source);
+    if(live.error)throw documentationRefusal('documentation_sync_capture_failed',live.error);
+    if(!live.othersUnchanged)throw documentationRefusal('documentation_sync_out_of_scope',
+      retry.code==='documentation_sync_out_of_scope'?retry.detail:null);
+    if(fresh&&retry.code==='documentation_sync_answer_missing'&&!live.documentsUnchanged)throw documentationRefusal('documentation_sync_stop_required');
+    return retry.code==='documentation_sync_answer_missing'?'unchanged':'answered';
+  }
   // V9: provider development journals its worker's identity (develop-worker):
   // spawning right before the spawn, started (pid = process group, start time)
   // right after. A throw here makes the spawn wrapper kill the new group.
@@ -492,6 +539,17 @@ export function createTaskRunner(options) {
     if(current.state==='blocked'&&current.code===DISPATCH_RETRY_CODE&&developDispatchRetry()===null){
       const {reason:discard,...rest}=current;current=freeze({...rest,state:'unknown',code:[...cache.values()].at(-1).result.code});
     }
+    // Q16/Q17: a failed documentation_sync of the final task (never develop_redo).
+    if(current.state==='unknown'){
+      const retry=documentationSyncRetry();
+      if(retry!==null){
+        const {reason:discard,...rest}=current;
+        const live=retry.code==='documentation_sync_answer_missing'?documentationLive(retry.source):null;
+        current=live&&(live.error||!live.documentsUnchanged)
+          ?freeze({...rest,state:'blocked',code:retry.code,reason:documentationSyncStopReason(retry.code,retry.detail),developRedoRequired:true})
+          :freeze({...rest,state:'blocked',code:retry.code,reason:documentationSyncReason(retry.code,retry.detail)});
+      }
+    }
     if(current.state==='unknown'||current.state==='blocked'&&['failed','unavailable'].includes(current.code)){
       const cause=developRedoRequired();
       if(cause!==null){const {reason:discard,...rest}=current;
@@ -503,6 +561,7 @@ export function createTaskRunner(options) {
       const limit=answerGapLimit({state,code,attempt,cache:[...cache.values()],calls,receipt,learningResult,taskCommit,reviewPackage,priorReview},
         metadata,{developRecheck:answerGapCount('develop-recheck'),completeRecheck:answerGapCount('complete-recheck'),
           developRedo:answerGapCount('develop-answer-redo'),developDispatch:answerGapCount('develop-dispatch-retry'),
+          documentationSync:answerGapCount('documentation-sync-retry'),
           workers:parsedHistory?.workers??null});
       if(limit!==null&&(options.providerDevelopment===true?limit.code==='develop_redo_limit'
         :!(options.protectedDevelopment===true&&limit.code==='develop_redo_limit'))){
@@ -631,7 +690,7 @@ export function createTaskRunner(options) {
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
         'review-invocation-abandoned':'result','review-invocation-receipt':'result','review-invocation-reconciled':'result','effect-abandoned':'result',
         'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
-        'evidence-superseded':'result','develop-retry-limit':'result','develop-worker':'result','effect-interrupted':'result','develop-timeout-retry':'result','develop-answer-retry':'result','develop-recheck':'result','complete-recheck':'result','develop-answer-redo':'result','develop-dispatch-retry':'result','review-redispatch':'result','completion-retry-limit':'result','specification-rebound':'result',
+        'evidence-superseded':'result','develop-retry-limit':'result','develop-worker':'result','effect-interrupted':'result','develop-timeout-retry':'result','develop-answer-retry':'result','develop-recheck':'result','complete-recheck':'result','develop-answer-redo':'result','develop-dispatch-retry':'result','review-redispatch':'result','completion-retry-limit':'result','specification-rebound':'result','documentation-sync-started':'result','documentation-sync-retry':'result',
         'bootstrap-review-recovered':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
@@ -1143,10 +1202,35 @@ export function createTaskRunner(options) {
     reviewPackage=nextPackage;
     state='awaiting_review';
   }
+  function developControl(effectId,documentationRedo){
+    const control={...(workerJournaling()?{onWorker:event=>journalWorker(effectId,event)}:{}),
+      ...(documentationJournaling()?{onDocumentationSync:event=>journalDocumentationSync(effectId,event)}:{}),
+      ...(documentationRedo?{documentationRedo}:{})};
+    return Object.keys(control).length?control:null;
+  }
+  // Q16/Q17: a develop whose documentation_sync started (its call carries the
+  // record) and then failed: the code its checkpoint shows, and the detail
+  // (out-of-scope paths, or the transport code of a lost answer).
+  function documentationFailure(v,error){
+    const call=calls.at(-1);
+    if(v.kind!=='develop'||call?.terminal!=='unknown'||typeof call.documentationSync!=='string')return null;
+    let raw=null;
+    try{const d=Object.getOwnPropertyDescriptor(error,'code');if(d&&Object.hasOwn(d,'value')&&typeof d.value==='string')raw=d.value;}catch{}
+    if(raw==='documentation_sync_blocked')return {code:'documentation_sync_answer_blocked',detail:null};
+    if(['documentation_sync_answer_invalid','invalid_input','invalid_result'].includes(raw))return {code:'documentation_sync_answer_invalid',detail:null};
+    if(raw==='out_of_scope')return {code:'documentation_sync_out_of_scope',detail:safeReason(error)};
+    return {code:'documentation_sync_answer_missing',detail:typeof raw==='string'&&/^[a-z_]{1,64}$/.test(raw)?raw:'execution_error'};
+  }
   async function perform(v) {
     if(v.kind==='develop') {
       need(stageAllowed('develop',state,code,priorReview?.verdict),'stage_mismatch');
       const recheck=state==='blocked'&&RECHECK_CODES.includes(code);
+      // Q16/Q17: a documentation-only redo reuses the journaled developer answer.
+      let documentationRedo=null;
+      if(state==='blocked'&&DOCUMENTATION_SYNC_CODES.includes(code)){
+        const source=documentationRecord(calls.at(-1)?.documentationSync);need(source!==null,'documentation_sync_unavailable');
+        documentationRedo={result:source.result,effectiveModel:source.effectiveModel};
+      }
       state='developing';code=null;reason=null;checkNewPaths=null;receipt=null;
       // The adapter would refuse this scope before any provider runs. Block it
       // here instead: no call starts, nothing is written, and the outcome is
@@ -1184,7 +1268,7 @@ export function createTaskRunner(options) {
         ...supersededReviewPayload(carriedReview,attempt),
         ...(Object.hasOwn(original,'specification')?{specification:verifySpecificationMaterial(original)}:{}),
         ...(Object.hasOwn(v,'learningInput')?{learningInput:v.learningInput}:{})},
-      workerJournaling()?{onWorker:event=>journalWorker(v.id,event)}:null);
+      developControl(v.id,documentationRedo));
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(result.response.status!=='succeeded'){
         const failure=result.response.result?.code;
@@ -1308,7 +1392,7 @@ export function createTaskRunner(options) {
   }
   const limitDue=()=>retryLimitDue()?recordRetryLimit:completionLimitDue()?recordCompletionLimit:null;
   function executeEffect(raw) {
-    let v,timeoutBasis=null,answerRetry=false,recheck=null,completeSource=null,dispatchBasis=null;
+    let v,timeoutBasis=null,answerRetry=false,recheck=null,completeSource=null,dispatchBasis=null,documentationRetry=null;
     try {
       need(!poisoned,'store_failure');v=json(raw);
       shape(v,['version','id','identity','kind',...(Object.hasOwn(v,'learningInput')?['learningInput']:[])]);id(v.id);validIdentity(v.identity);
@@ -1336,6 +1420,19 @@ export function createTaskRunner(options) {
         need(digest(v.learningInput)===digest([...cache.values()].at(-1).effect.learningInput),'runner_learning');
       if(v.kind==='complete'&&state==='unknown'&&completeRecheck())completeSource=code;
       if(v.kind==='develop'&&state==='unknown'&&recheck===null)dispatchBasis=developDispatchRetry();
+      // Q16/Q17: re-ask only documentation_sync; refused (nothing journaled)
+      // while the code root outside the documentation paths changed, or while a
+      // writer that never answered may still be writing the documentation.
+      if(v.kind==='develop'&&state==='unknown'&&recheck===null){
+        const retry=documentationSyncRetry();
+        if(retry!==null){if(taskLearning!==null)need(digest(v.learningInput)===digest([...cache.values()].at(-1).effect.learningInput),'runner_learning');
+          documentationRetry={...retry,basis:assertDocumentationRetry(retry,{fresh:true})};}
+      }
+      if(v.kind==='develop'&&state==='blocked'&&DOCUMENTATION_SYNC_CODES.includes(code)){
+        const retry=documentationSyncRetry();need(retry!==null,'documentation_sync_unavailable');
+        if(taskLearning!==null)need(digest(v.learningInput)===digest([...cache.values()].at(-1).effect.learningInput),'runner_learning');
+        assertDocumentationRetry(retry,{fresh:false});
+      }
       // A journaled develop_dispatch_failed (also after a restart between its
       // record and the develop intent) re-verifies the round start right here.
       if(v.kind==='develop'&&state==='blocked'&&code===DISPATCH_RETRY_CODE)
@@ -1345,12 +1442,20 @@ export function createTaskRunner(options) {
         if(state==='blocked')timeoutBasis=null;
       }
       answerRetry=v.kind==='develop'&&state==='blocked'&&code==='failed'&&answerRetryable();
-      need(timeoutBasis!==null||answerRetry||recheck!==null||completeSource!==null||dispatchBasis!==null
+      need(timeoutBasis!==null||answerRetry||recheck!==null||completeSource!==null||dispatchBasis!==null||documentationRetry!==null
         ||stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(effectSlotFree(v.kind,[...cache.values()],calls),'limit_exceeded');
       need(!(v.kind==='review'&&reviewNotDispatchedExhausted({state,code,attempt,cache:[...cache.values()]})),REVIEW_NOT_DISPATCHED_LIMIT_CODE);
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
-    } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input'}));}
+    } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input',
+      ...(String(error.code).startsWith('documentation_sync_')&&typeof error.reason==='string'?{reason:error.reason}:{})}));}
+    if(documentationRetry!==null){
+      try{persist('documentation-sync-retry',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId,
+        code:documentationRetry.code,basis:documentationRetry.basis});}
+      catch{return Promise.resolve(poison());}
+      halt('blocked',documentationRetry.code,documentationSyncRetryReason(documentationRetry.code,documentationRetry.basis,documentationRetry.detail));
+      publication=privateStatus();
+    }
     // The timed-out develop left the code root as it started: journal that
     // finding, then redo the round like any retryable develop block.
     if(timeoutBasis!==null){
@@ -1404,7 +1509,9 @@ export function createTaskRunner(options) {
     const packageBefore=reviewPackage;
     pending=(async()=>{
       try {await perform(v);}
-      catch(error){if(state!=='cancelled'){
+      catch(error){if(state!=='cancelled'&&!poisoned&&documentationFailure(v,error)){
+        const {code:failed,detail}=documentationFailure(v,error);halt('unknown',failed,detail);
+      }else if(state!=='cancelled'){
         const failure=failureCode(error);
         const checkOnly=failure==='out_of_scope'&&Array.isArray(error.violations)&&error.violations.length>0
           &&error.violations.every(item=>item.newFile&&checkNewPaths?.has(item.path));
@@ -1770,6 +1877,15 @@ export function createTaskRunner(options) {
       need(value.allowed===true,'develop_redo_authorization_required');
       need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=500
         &&!/[\r\n\0]/.test(value.reason),'develop_redo_reason_required');
+      // Q16: the confirmation for a documentation_sync that never answered after
+      // it changed the documentation paths; only documentation_sync is redone.
+      const documentation=state==='unknown'?documentationSyncRetry():null;
+      if(documentation?.code==='documentation_sync_answer_missing'){
+        persist('documentation-sync-retry',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId,
+          code:documentation.code,basis:'confirmed',reason:value.reason,at:new Date().toISOString()});
+        halt('blocked',documentation.code,documentationSyncRetryReason(documentation.code,'confirmed',documentation.detail));
+        publication=privateStatus();return status();
+      }
       const cause=developRedoRequired();need(cause!==null,'develop_redo_unavailable');
       const effectId=[...cache.values()].at(-1).effect.id;let worker=null,basis=null;
       if(cause.startsWith('provider_')){

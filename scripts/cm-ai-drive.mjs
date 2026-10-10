@@ -56,7 +56,7 @@ import {codeProjectPaths,resolveCodeProjects} from '../runtime/js/cm-ai/code-pro
 import {parseHostInputLimit} from '../runtime/js/cm-ai/host-session.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readCloseoutReport} from '../runtime/js/cm-ai/knowledge-closeout.mjs';
-import {readRunnerHistory,attemptBaseline,projectedRunnerStatus,RECHECK_CODES} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {readRunnerHistory,attemptBaseline,projectedRunnerStatus,RECHECK_CODES,DOCUMENTATION_SYNC_CODES} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 import {attemptAnswerName,inspectDriverBootstrap,readBootstrapRulesAnswers,createBootstrapRulesResponder} from '../runtime/js/cm-ai/drive-bootstrap.mjs';
@@ -449,7 +449,8 @@ export function projectDevelopAttempts(status,operation,permissions){
     &&permissions.some((flag,index)=>flag==='--allow-review-attempt'&&permissions[index+1]==='1');
   // A re-check (check_answer_*) re-runs only the checks: no developer answer for
   // this round, only for the round its review may lead to.
-  if(state==='blocked'&&RECHECK_CODES.includes(status.code))
+  // Q16/Q17: a documentation-only redo reuses the journaled developer answer.
+  if(state==='blocked'&&(RECHECK_CODES.includes(status.code)||DOCUMENTATION_SYNC_CODES.includes(status.code)))
     return {attempts:reviewAfterDevelop?[2]:[],reviewFirst:false,reviewAfterDevelop,holdable:true,packageDigest:null};
   if(developmentRetryable(status))
     return {attempts:reviewAfterDevelop?[1,2]:[attempt],reviewFirst:false,reviewAfterDevelop,holdable:true,packageDigest:null};

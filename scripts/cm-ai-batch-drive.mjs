@@ -31,7 +31,7 @@ import {readConversationReviewConfiguration,readConversationProtection} from './
 import {validateCmAiAnswer,developFilename,preflightDevelopDeliveries,baselineScope,inputLimitFrom,
   applyDevelopEdits,protectedDevelopEdits,developPreview,plannedCheckResults,journalRestBytes} from './cm-ai-drive.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
-import {readRunnerHistory,projectedRunnerStatus,RECHECK_CODES} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {readRunnerHistory,projectedRunnerStatus,RECHECK_CODES,DOCUMENTATION_SYNC_CODES} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 
@@ -68,6 +68,8 @@ export function batchDevelopAttempts(state,key,permissions){
   const reviewNext=state.attempt===1&&permissions.some((flag,index)=>flag==='--allow-review'&&permissions[index+1]===`${key}:1`);
   // A re-check (check_answer_*) re-runs only the checks: no developer answer for this round.
   if(state.state==='blocked'&&RECHECK_CODES.includes(state.code))return reviewNext?[2]:[];
+  // Q16/Q17: a documentation-only redo reuses the journaled developer answer.
+  if(state.state==='blocked'&&DOCUMENTATION_SYNC_CODES.includes(state.code))return reviewNext?[2]:[];
   if(developmentRetryable(state))return reviewNext?[1,2]:[state.attempt];
   if(state.state==='ready'&&state.attempt===1&&permissions.some((flag,index)=>
     flag==='--allow-review'&&permissions[index+1]===`${key}:1`))return [1,2];
