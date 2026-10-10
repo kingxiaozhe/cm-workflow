@@ -8,7 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {createCmAiBatch,batchTaskRunId,BATCH_MEMBER_ACTIONS} from './cm-ai-batch-run.mjs';
 import {validEnvironmentFailureReason} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {assertCreatableScope} from './cm-ai-run.mjs';
-import {createConversationExecution,readConversationReviewConfiguration,readConversationProtection,runReviewPreflight} from './cm-ai-host.mjs';
+import {createConversationExecution,readConversationReviewConfiguration,readConversationReviewConfigurationValue,readConversationProtection,runReviewPreflight} from './cm-ai-host.mjs';
 import {loadConfig,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
 import {preflightMatches} from '../runtime/js/cm-ai/worker-codex.mjs';
 import {claudePreflightMatches} from '../runtime/js/cm-ai/worker-claude.mjs';
@@ -52,34 +52,73 @@ export function migrateLegacyPreflightCache(batch,review,runtime){
   if(!stat.isDirectory()||stat.isSymbolicLink()||(stat.mode&0o077)!==0||fs.realpathSync(legacy)!==legacy)refuse('不是权限 0700 的普通目录');
   if(review===null)refuse('本次启动没有 --review-config，无法核对缓存绑定的审查模型');
   const members=new Map((batch.parallel??[]).flat().map(key=>[`preflight-${key.slice(key.lastIndexOf('/')+1)}.json`,key.slice(key.lastIndexOf('/')+1)]));
-  const target=path.join(batch.specsDir,'.reviews','external-preflight',batch.batchId),plan=[];
+  // The target and its parent are checked before anything is moved or deleted,
+  // whether or not a file will be moved; a missing one is created 0700 (one level at
+  // a time) and checked again only right before the first move.
+  const parent=path.join(batch.specsDir,'.reviews','external-preflight'),target=path.join(parent,batch.batchId);
+  const targetDirectories=create=>{
+    for(const directory of [parent,target]){
+      if(create)try{fs.mkdirSync(directory,{mode:0o700});}catch(error){if(error.code!=='EEXIST')throw error;}
+      let info;try{info=fs.lstatSync(directory);}catch(error){if(error.code==='ENOENT'&&!create)return;throw error;}
+      if(!info.isDirectory()||info.isSymbolicLink()||(info.mode&0o077)!==0||fs.realpathSync(directory)!==directory)
+        refuse(`新位置 ${directory} 不是权限 0700 的普通目录`);
+    }
+  };
+  // One read per file through a no-follow fd bound to the path's dev+ino; only these
+  // exact bytes are validated and compared. links: 2 only for an interrupted move,
+  // where the old and new names are the same inode.
+  const pinned=(file,links=1)=>{
+    let before;try{before=fs.lstatSync(file);}catch(error){if(error.code==='ENOENT')return null;throw error;}
+    if(!before.isFile()||before.isSymbolicLink()||before.nlink!==links||(before.mode&0o077)!==0||before.size>64*1024)
+      refuse(`${file} 不是权限 0600、${links} 个链接的普通文件`);
+    let fd;try{fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);}catch{refuse(`${file} 无法按不跟随链接的方式打开`);}
+    try{
+      const info=fs.fstatSync(fd);
+      if(info.dev!==before.dev||info.ino!==before.ino||!info.isFile()||info.nlink!==links)refuse(`${file} 在核对时被替换`);
+      return {bytes:fs.readFileSync(fd),dev:info.dev,ino:info.ino};
+    }finally{fs.closeSync(fd);}
+  };
+  const same=(left,right)=>left!==null&&right!==null&&left.dev===right.dev&&left.ino===right.ino&&left.bytes.equals(right.bytes);
+  const plan=[];
   for(const entry of fs.readdirSync(legacy,{withFileTypes:true})){
     const taskId=members.get(entry.name);if(!taskId)refuse(`含有不属于本批次并行成员预检缓存的条目 ${entry.name}`);
-    const file=path.join(legacy,entry.name),info=fs.lstatSync(file);
-    if(!info.isFile()||info.isSymbolicLink()||info.nlink!==1||(info.mode&0o077)!==0)refuse(`${entry.name} 不是权限 0600 的单链接普通文件`);
+    const file=path.join(legacy,entry.name),destination=path.join(target,entry.name);
+    let interrupted=false;
+    try{const a=fs.lstatSync(file),b=fs.lstatSync(destination);interrupted=a.dev===b.dev&&a.ino===b.ino;}catch(error){if(error.code!=='ENOENT')throw error;}
+    const source=pinned(file,interrupted?2:1);
+    if(source===null)refuse(`${entry.name} 在核对时消失`);
     const cwd=path.resolve(batch.codeProject,'..','.cm-worktrees',batch.batchId.slice(0,8),taskId);
     const options={cwd,model:review.model,disabledSkills:review.disabledSkills,promptTransport:'stdin'};
-    let cached;try{cached=readConversationReviewConfiguration(file,null);}catch{refuse(`${entry.name} 不是预检缓存格式`);}
+    let cached;try{cached=readConversationReviewConfigurationValue(JSON.parse(source.bytes.toString('utf8')),null);}
+    catch{refuse(`${entry.name} 不是预检缓存格式`);}
     if(Object.hasOwn(cached,'timeoutMs')||cached.model!==review.model||digest(cached.disabledSkills)!==digest(review.disabledSkills)
       ||!(runtime==='claude'?claudePreflightMatches:preflightMatches)(cached.preflight,options))
       refuse(`${entry.name} 绑定的审查模型、禁用技能或成员 worktree 指纹与本次启动不一致`);
-    const bytes=fs.readFileSync(file),destination=path.join(target,entry.name);
-    if(fs.existsSync(destination)){
-      const current=fs.lstatSync(destination);
-      if(!current.isFile()||current.isSymbolicLink()||!fs.readFileSync(destination).equals(bytes))refuse(`新位置 ${destination} 已有不同内容`);
-      plan.push({file,destination,drop:true});
-    }else plan.push({file,destination,drop:false});
+    if(interrupted){plan.push({file,destination,source,action:'finish'});continue;}
+    const existing=pinned(destination);
+    if(existing!==null&&!existing.bytes.equals(source.bytes))refuse(`新位置 ${destination} 已有不同内容`);
+    plan.push({file,destination,source,existing,action:existing===null?'move':'drop'});
   }
-  if(plan.some(item=>!item.drop)){
-    fs.mkdirSync(target,{recursive:true,mode:0o700});
-    need(fs.realpathSync(target)===target,'invalid_preflight_cache');
-  }
+  // Commit without overwriting: link (fails on an existing name), re-read the linked
+  // inode, then remove the old name. A duplicate is removed only after both sides are
+  // re-read unchanged. A stop at any point leaves either the old file, or the same inode
+  // under both names, which the next launch finishes ('finish').
   const moved=[],dropped=[];
+  if(plan.some(item=>item.action==='move'))targetDirectories(true);
   for(const item of plan){
-    if(item.drop){fs.unlinkSync(item.file);dropped.push(path.basename(item.file));}
-    else{fs.renameSync(item.file,item.destination);moved.push(path.basename(item.file));}
+    const name=path.basename(item.file);
+    if(item.action==='move'){
+      try{fs.linkSync(item.file,item.destination);}
+      catch(error){if(error.code==='EEXIST')refuse(`新位置 ${item.destination} 在迁移时出现`);throw error;}
+      const linked=pinned(item.destination,2);
+      if(!same(linked,item.source)){fs.unlinkSync(item.destination);refuse(`${name} 在迁移时被改动`);}
+    }else if(item.action==='drop'){
+      if(!same(pinned(item.file),item.source)||!same(pinned(item.destination),item.existing))refuse(`${name} 或新位置的副本在迁移时被改动`);
+    }else if(!same(pinned(item.destination,2),item.source))refuse(`${name} 在迁移时被改动`);
+    fs.unlinkSync(item.file);
+    (item.action==='drop'?dropped:moved).push(name);
   }
-  fs.rmdirSync(legacy);
+  try{fs.rmdirSync(legacy);}catch(error){if(['ENOTEMPTY','EEXIST'].includes(error.code))refuse('迁移时目录里出现了新条目');throw error;}
   return {moved,dropped};
 }
 // strict: an execution-policy batch. Its member runs take the external run guard,
