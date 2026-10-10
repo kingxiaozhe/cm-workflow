@@ -7,7 +7,7 @@
 - 全库本地回归发现旧 bootstrap 同 attempt 检查失败重试用例失败：恢复后报 `blocked/bootstrap_review_mismatch`，应到 `awaiting_review`。在本轮改动前的 `9bb45fc` 独立源码副本同样复现；属于现存缺陷，不能报全库全绿。
 - 当前源码版本是 **0.16.5**；本地保留 bootstrap 规则刷新、未改文件审查核对和超大交付恢复修复。本次没有发布、推送或更新 tag。
 - 只读查询 origin 的 tags 未找到 `0.16.5` 标签。是否补标签与发布须单独处理；本文件不以旧版 npm 快照声明当前 registry 状态。
-- Linux CI 按 `scripts/*.test.mjs` 自动收集，7 份原生 Codex 沙箱夹具由 release smoke 补跑；新增 macOS job 运行 Darwin-only Claude 回环和 sandbox 夹具，本机已实际运行，远端尚未运行本地变更。
+- Linux CI 按 `scripts/*.test.mjs` 自动收集，9 份原生 Codex 沙箱夹具由 release smoke 补跑；新增 macOS job 运行 Darwin-only Claude 回环和 sandbox 夹具，本机已实际运行，远端尚未运行本地变更。
 - 盘点脚本当前报告 **21 个取值，17 处**。这只是源码文字枚举候选，不能证明全部状态路径已有覆盖。
 - cm-fix standalone 提供原 run `rediagnose` 恢复；夹具验证原历史保留、fresh r2、第二次拒绝上限。真实 Wue 原运行尚未执行恢复，不能以夹具替代其现场证据。
 - 第二轮 blocked 后提供明确人审范围的一次性人工补正门禁，保留原四份证据和两轮上限；新审查封存后不能覆盖，详见 `docs/human-correction.md`。
@@ -80,7 +80,7 @@ cm-ai 的 V3 会话父运行用 `--original-host-context` 恢复后，QA 修复�
 ## 已知限制（不打算修，但要知道）
 
 - **受保护模式跑不了 `tsx` / `vitest` 这类命令**。它们要开本地 socket，而沙箱把这个和「联网」放在同一个开关下。放开就等于给测试命令开整个外网，不划算。替代写法见 `skills/cm-fix/references/js-host.md`。驾驶员在建运行前会预警。
-- **有 7 份测试只在发版时跑**。它们要启动 Codex 沙箱，GitHub 的机器不给这个权限。已接进 `cm-release-smoke.sh`，发版必过；CI 里有一句断言钉死这 7 份的名单，不会悄悄变多。
+- **有 9 份测试只在发版时跑**（原来 7 份；`cm-ai-host.test.mjs` 为了分进程并行拆成了 3 份，用例不变）。它们要启动 Codex 沙箱，GitHub 的机器不给这个权限。已接进 `cm-release-smoke.sh`，发版必过；CI 里有一句断言钉死这 9 份的名单，不会悄悄变多。
 - **盘点脚本只认一种写法**（`['a','b'].includes(x)`），`switch`、对象查表、`Set.has` 都漏掉了。当前 21 项只是文字扫描候选，不能当作完整缺口数。
 - **读代码找不到所有问题**。0.16.1 修的四个缺陷全是跑真实项目跑出来的。拿工作流去跑真实项目，仍然是发现问题最有效的办法。
 

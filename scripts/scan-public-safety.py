@@ -39,6 +39,7 @@ ALLOW_LOOPBACK_ENDPOINT_FILES = {
     Path("runtime/js/cm-ai/claude-tool-preview.mjs"),
     Path("scripts/cm-ai-batch-host.test.mjs"),
     Path("scripts/cm-ai-host.test.mjs"),
+    Path("scripts/cm-ai-host-cli-workflow.test.mjs"),
     Path("scripts/cm-ai-multi-root.test.mjs"),
     Path("scripts/cm-ai-nested-execution.test.mjs"),
     Path("scripts/cm-claude-probe.test.mjs"),
