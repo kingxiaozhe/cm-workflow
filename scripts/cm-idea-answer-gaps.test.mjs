@@ -33,7 +33,9 @@ async function client(t,{dir,file},respond,{memory=false}={}){
   });
   child.on('close',code=>{if(!sessionId)rejectReady(Error(stderr));for(const resolve of pending.values())resolve({closed:code});pending.clear();});
   await ready;
-  return {child,requests,stderr:()=>stderr,request:(operation,fields={})=>new Promise(resolve=>{
+  return {child,requests,stderr:()=>stderr,
+    // stderr is a separate pipe from the reply on stdout: wait for the diagnostic line instead of racing it.
+    stderrMatch:async(pattern,ms=5000)=>{const end=Date.now()+ms;while(!pattern.test(stderr)&&Date.now()<end)await new Promise(r=>setTimeout(r,10));assert.match(stderr,pattern);},request:(operation,fields={})=>new Promise(resolve=>{
     const requestId=`test-${++seq}`;pending.set(requestId,resolve);send({requestId,operation,...fields});}),
     close:async()=>{send({type:'host_close',sessionId});const [code]=await closed;assert.equal(code,0,stderr);}};
 }
@@ -53,7 +55,7 @@ test('real host: a refused interview reply is discarded and asked again; the thi
     assert.equal(status.recovery.call.status,'recorded');assert.match(status.guidance.nextStep,/discard:true/);
     const {callId,requestDigest}=status.recovery.call;
     const result=await c.request('resume',{resolution:{callId,requestDigest,discard:true,evidence:'blank question'}});
-    assert.ok(result.error);if(round===3){assert.match(c.stderr(),/idea_session_abandon_limit/);assert.equal(c.requests.length,0);}
+    assert.ok(result.error);if(round===3){await c.stderrMatch(/idea_session_abandon_limit/);assert.equal(c.requests.length,0);}
     else{assert.equal(c.requests.length,1);assert.notEqual(c.requests[0].callId,callId);}
     await c.close();
   }
@@ -70,7 +72,7 @@ test('real host: an unknown interview is abandoned and re-asked; the late origin
   await c.request('resume',{resolution:{callId,requestDigest,abandon:true,evidence:'session lost it'}});
   c=await client(t,f,()=>question);
   const late={...original.payload.recovery,result:question,evidence:'late original'};
-  assert.ok((await c.request('resume',{resolution:late})).error);assert.match(c.stderr(),/idea_session_call_abandoned/);
+  assert.ok((await c.request('resume',{resolution:late})).error);await c.stderrMatch(/idea_session_call_abandoned/);
   const again=(await c.request('status')).result.recovery.call;assert.notEqual(again.callId,original.payload.recovery.callId);
   const second=await c.request('resume',{resolution:{callId:again.callId,requestDigest:again.requestDigest,abandon:true,evidence:'lost twice'}});
   assert.equal(second.result?.stage,'awaiting_user',c.stderr());await c.close();
@@ -116,7 +118,7 @@ test('real host V6: an interrupted save reconciles absent, matching and conflict
     if(mode==='conflict')fs.writeFileSync(target,'# Someone else',{mode:0o600});
     c=await client(t,f,()=>assert.fail('the recorded approval is reused, the user is not asked for the same request'));
     const result=await c.request('resume',{resolution:null});
-    if(mode==='conflict'){assert.ok(result.error);assert.match(c.stderr(),/idea_save_recovery_conflict/);
+    if(mode==='conflict'){assert.ok(result.error);await c.stderrMatch(/idea_save_recovery_conflict/);
       assert.equal(fs.readFileSync(target,'utf8'),'# Someone else');assert.equal((await c.request('status')).result.recovery.writing,true);}
     else{assert.equal(result.result.stage,'saved',JSON.stringify(result));assert.equal(fs.readFileSync(target,'utf8'),'# Synthetic L1');
       assert.equal(fs.statSync(target).mode&0o777,0o600);
@@ -133,7 +135,7 @@ test('memory mode: a failed turn is re-sent twice in the same process, then idea
   let status=(await c.request('status')).result;assert.equal(status.stage,'failed');assert.equal(status.retry.remaining,2);
   assert.match(status.guidance.nextStep,/--session-file/);
   assert.ok((await c.request('start',{text:'Synthetic idea'})).error);assert.ok((await c.request('start',{text:'Synthetic idea'})).error);
-  assert.ok((await c.request('start',{text:'Synthetic idea'})).error);assert.match(c.stderr(),/idea_retry_limit/);
+  assert.ok((await c.request('start',{text:'Synthetic idea'})).error);await c.stderrMatch(/idea_retry_limit/);
   status=(await c.request('status')).result;assert.equal(status.retry.remaining,0);
   assert.equal(c.requests.length,3);await c.close();
 });
@@ -154,7 +156,7 @@ test('real host V6: recovery refuses a symlinked prd/ and removes only the host 
       fs.linkSync(target,path.join(f.dir,'prd/.cm-review-00000000-0000-0000-0000-000000000000'));
     }
     c=await client(t,f,()=>assert.fail('no call'));const result=await c.request('resume',{resolution:null});await c.close();
-    if(mode==='symlink'){assert.ok(result.error);assert.match(c.stderr(),/idea_save_recovery_conflict/);
+    if(mode==='symlink'){assert.ok(result.error);await c.stderrMatch(/idea_save_recovery_conflict/);
       assert.deepEqual(fs.readdirSync(elsewhere).sort(),['.cm-review-00000000-0000-0000-0000-000000000000','prd-fixture.md']);}
     else{assert.equal(result.result.stage,'saved');assert.deepEqual(fs.readdirSync(path.join(f.dir,'prd')),['prd-fixture.md']);
       assert.equal(fs.statSync(path.join(f.dir,'prd/prd-fixture.md')).nlink,1);}

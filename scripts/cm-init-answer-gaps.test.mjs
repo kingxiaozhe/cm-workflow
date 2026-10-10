@@ -42,7 +42,9 @@ async function client(t,f,respond,options={}){
   });
   child.on('close',code=>{if(!sessionId)rejectReady(Object.assign(Error(stderr),{stderr,code}));for(const resolve of pending.values())resolve({closed:code});pending.clear();});
   await ready;
-  return {child,requests,stderr:()=>stderr,send:value=>send({...value,sessionId}),request:(operation,fields={})=>new Promise(resolve=>{
+  return {child,requests,stderr:()=>stderr,
+    // stderr is a separate pipe from the reply on stdout: wait for the diagnostic line instead of racing it.
+    stderrMatch:async(pattern,ms=5000)=>{const end=Date.now()+ms;while(!pattern.test(stderr)&&Date.now()<end)await new Promise(r=>setTimeout(r,10));assert.match(stderr,pattern);},send:value=>send({...value,sessionId}),request:(operation,fields={})=>new Promise(resolve=>{
     const requestId=`request-${++seq}`;pending.set(requestId,resolve);send({requestId,operation,...fields});}),
     close:async()=>{send({type:'host_close',sessionId});const [code]=await closed;assert.equal(code,0,stderr);}};
 }
@@ -72,7 +74,7 @@ test('real host: a recorded refused analysis is discarded and asked again twice,
     const result=await c.request('resume',{resolution:{callId,requestDigest,discard:true,evidence:'evidence was blank'}});
     if(round<3){assert.equal(result.error.code,'host_request_failed');assert.equal(c.requests.at(-1).kind,'init_analyze');
       assert.notEqual(c.requests.at(-1).callId,callId);}
-    else{assert.equal(result.error.code,'host_request_failed');assert.match(c.stderr(),/idea_session_abandon_limit/);assert.equal(c.requests.length,0);}
+    else{assert.equal(result.error.code,'host_request_failed');await c.stderrMatch(/idea_session_abandon_limit/);assert.equal(c.requests.length,0);}
     await c.close();
   }
   const record=saved(f).abandonedCalls;
@@ -154,7 +156,7 @@ test('memory mode: a failed step is re-sent twice in the same process, then init
   assert.ok((await c.request('advance')).error,'a different operation does not reuse the failed step');
   assert.ok((await c.request('start')).error);assert.ok((await c.request('start')).error);
   status=(await c.request('status')).result;assert.equal(status.retry.remaining,0);
-  assert.ok((await c.request('start')).error);assert.match(c.stderr(),/init_retry_limit/);
+  assert.ok((await c.request('start')).error);await c.stderrMatch(/init_retry_limit/);
   assert.equal(c.requests.filter(item=>item.kind==='init_analyze').length,3);await c.close();
 });
 
@@ -173,7 +175,7 @@ test('unknown write stays on archived-draft recovery; a conflict lists every fil
   assert.equal(status.recovery.writing,true);assert.match(status.guidance.nextStep,new RegExp(`--resume-draft ${digest}`));
   assert.ok((await c.request('resume',{resolution:null})).error);
   assert.ok((await c.request('resume',{resolution:{...status.recovery.call,discard:true,evidence:'x'}})).error);await c.close();
-  assert.match(c.stderr(),/idea_save_outcome_unknown/);
+  await c.stderrMatch(/idea_save_outcome_unknown/);
   const driver=spawnSync(process.execPath,[path.join(root,'scripts/cm-init-drive.mjs'),'--plan',(()=>{const plan=path.join(f.dir,'plan.json');
     fs.writeFileSync(plan,JSON.stringify({project:f.project,sessionFile:f.file,mode:'resume',hostContext:'author-a',originalHostContext:'author-a',resolution:null}));return plan;})(),'resume'],{encoding:'utf8'});
   assert.equal(driver.status,2);assert.match(driver.stderr,new RegExp(`--resume-draft ${digest}`));
