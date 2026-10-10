@@ -118,6 +118,13 @@ export const DEFAULT_NOTIFY_TEXT=Object.freeze({titlePrefix:'CM',
   fields:Object.freeze({default:Object.freeze(['nextAction','project','workflow','task','stage','code','time']),
     done:Object.freeze(['project','task','time'])}),
   labels:Object.freeze({nextAction:'下一步',project:'项目',workflow:'流程',runId:'运行',task:'任务',stage:'阶段',code:'原因',time:'时间'})});
+// Custom strings first lose every Unicode format character (\p{Cf}: bidi
+// controls U+202A-202E, U+2066-2069, U+200E/200F, U+061C; zero-width U+200B-200D,
+// U+2060, U+FEFF; soft hyphen, tag characters), so they cannot reorder or hide
+// text; then the usual clean(). Something visible (a letter, digit, punctuation
+// or symbol) must remain. Field values and the default text are not touched.
+const FORMAT_CHARS=/\p{Cf}+/gu,VISIBLE=/[\p{L}\p{N}\p{P}\p{S}]/u;
+const cleanText=(raw,max)=>clean(raw.replace(FORMAT_CHARS,''),max);
 const plain=value=>value&&typeof value==='object'&&!Array.isArray(value);
 const onlyKeys=(value,keys)=>Object.keys(value).every(key=>keys.includes(key));
 // {text} merged over the default, or {reason}. Idempotent on its own output.
@@ -126,8 +133,11 @@ export function normalizeNotifyText(value){
   if(!onlyKeys(value,['titlePrefix','headlines','fields','labels']))return {reason:'text_key'};
   const text={titlePrefix:DEFAULT_NOTIFY_TEXT.titlePrefix,headlines:{...DEFAULT_NOTIFY_TEXT.headlines},
     fields:{default:[...DEFAULT_NOTIFY_TEXT.fields.default],done:[...DEFAULT_NOTIFY_TEXT.fields.done]},labels:{...DEFAULT_NOTIFY_TEXT.labels}};
-  // A custom string must still say something after cleaning; the prefix may be empty.
-  const word=(raw,max,empty=false)=>{if(typeof raw!=='string')return null;const cleaned=clean(raw,max);return cleaned||empty&&!raw.trim()?cleaned:null;};
+  // A custom string must still show something after cleaning; only the prefix
+  // may be given as exactly "" (no prefix).
+  const word=(raw,max,empty=false)=>{
+    if(typeof raw!=='string')return null;if(empty&&raw==='')return '';
+    const cleaned=cleanText(raw,max);return VISIBLE.test(cleaned)?cleaned:null;};
   if(value.titlePrefix!==undefined){
     const prefix=word(value.titlePrefix,TEXT_CAPS.titlePrefix,true);if(prefix===null)return {reason:'title_prefix'};
     text.titlePrefix=prefix;

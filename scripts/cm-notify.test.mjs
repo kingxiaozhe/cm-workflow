@@ -151,6 +151,27 @@ test('custom text strings are cleaned like field values: paths redacted, control
   assert.match(big.body,/\n运行：x{63}…\n/);
 });
 
+test('custom text loses bidi and zero-width characters; a string left with nothing visible is invalid',()=>{
+  const at={now:NOW,timeZone:'UTC'};
+  const hidden=['‪','‫','‬','‭','‮','⁦','⁧','⁨','⁩','‎','‏','؜',
+    '​','‌','‍','⁠','﻿','­','\u{e0041}'];
+  const text=normalizeNotifyText({titlePrefix:`C${hidden.join('')}M`,headlines:{default:`‮卡住⁦了⁩`},
+    labels:{code:'‮原因',task:'​工‍单﻿'}}).text;
+  const message=buildNotifyMessage(fields('k'),{...at,text});
+  for(const char of hidden)assert(!message.title.includes(char)&&!message.body.includes(char),`U+${char.codePointAt(0).toString(16)}`);
+  assert.equal(message.title,'CM cm-fix 卡住了 · demo-app');
+  assert.match(message.body,/\n工单：T-001\n/);assert.match(message.body,/\n原因：checks_not_passed\n/);
+  // Nothing visible left: the whole text is invalid and the default text is used.
+  for(const [value,reason] of [[{headlines:{default:'​⁦⁩'}},'headlines'],[{labels:{code:'‮ ‏'}},'labels'],
+    [{titlePrefix:'​'},'title_prefix'],[{titlePrefix:'  '},'title_prefix'],[{headlines:{done:'̀'}},'headlines']]){
+    assert.equal(normalizeNotifyText(value).reason,reason,JSON.stringify(value));
+    assert.equal(parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true'],text:value})).textReason,reason);
+    assert.deepEqual(buildNotifyMessage(fields('k'),{...at,text:value}),buildNotifyMessage(fields('k'),at));
+  }
+  // Field values are not part of the text layer: the default path is unchanged.
+  assert.equal(buildNotifyMessage(fields('k',{task:'T​-1'}),at).body.split('\n')[3],'任务：T​-1');
+});
+
 test('invalid text falls back to the default text with one text_config log line; notices stay on',async t=>{
   const bad=[[null,'text'],['标题','text'],[[],'text'],[{subject:'x'},'text_key'],[{titlePrefix:7},'title_prefix'],
     [{titlePrefix:'\u0007'},'title_prefix'],[{headlines:{stuck:'x'}},'headlines'],[{headlines:{done:''}},'headlines'],
