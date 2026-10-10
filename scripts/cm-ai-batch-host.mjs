@@ -8,7 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {createCmAiBatch,batchTaskRunId,BATCH_MEMBER_ACTIONS} from './cm-ai-batch-run.mjs';
 import {validEnvironmentFailureReason} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {assertCreatableScope} from './cm-ai-run.mjs';
-import {createConversationExecution,readConversationReviewConfiguration,readConversationProtection,runReviewPreflight} from './cm-ai-host.mjs';
+import {createConversationExecution,readConversationReviewConfiguration,readConversationReviewConfigurationValue,readConversationProtection,runReviewPreflight} from './cm-ai-host.mjs';
 import {loadConfig,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
 import {preflightMatches} from '../runtime/js/cm-ai/worker-codex.mjs';
 import {claudePreflightMatches} from '../runtime/js/cm-ai/worker-claude.mjs';
@@ -21,7 +21,7 @@ import {identifyApprovedBootstrapFeature} from '../runtime/js/cm-ai/bootstrap-fe
 const usage='cm-ai-batch-host.mjs serve --config PATH --host-context ID --allow-development --review-config PATH (required for a new batch; later launches pass the same file) [--execution-optimizations] [--external-models [--external-models-config PATH]] [--runtime codex|claude] [--input-limit BYTES] [--allow-review FEATURE/TASK:1|2]... [--allow-qa] [--rerun-unknown-qa | --rerun-blocked-qa [--qa-environment-failure REASON]] [--allow-develop-redo FEATURE/TASK]... [--allow-abandon-effect FEATURE/TASK]... [--allow-abandon-review FEATURE/TASK]... [--allow-bootstrap-review-recovery FEATURE/TASK]... [--verification-precheck] [--browser-qa available|unavailable] [--protected-conversation-config PATH | --protected-config PATH] [--allow-provider-development FEATURE/TASK:1|2]... [--hold-revision FEATURE/TASK]...';
 const safeCode=error=>typeof error?.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(error.code)?error.code:'batch_host_failed';
 // Operator-facing reasons the batch owner writes itself (R4); others stay redacted.
-const REASONED=new Set(['batch_resources_open']);
+const REASONED=new Set(['batch_resources_open','legacy_preflight_cache_invalid']);
 const boundedReason=error=>REASONED.has(error?.code)&&typeof error.reason==='string'&&error.reason.length<=8192&&!/[\r\n\0]/.test(error.reason)?error.reason:null;
 const actionFlags=new Map(Object.entries(BATCH_MEMBER_ACTIONS).map(([name,{flag}])=>[flag,name]));
 // Single-task recovery inputs a batch cannot take: each member's fingerprint binds
@@ -35,10 +35,98 @@ export async function serveHostTransport(options,rawInputLimit,serve=serveCmAiHo
   return serve({...options,inputLimit:parseHostInputLimit(rawInputLimit)});
 }
 
+// Before 53c385e an execution-policy batch (without external models) cached its member
+// loopback preflights in .reviews/.execution/<batchId>/preflight-<task>.json. The
+// external run guard refuses that non-run directory, so such a batch could never open
+// a member again. A directory that is exactly that old cache (only 0600 single-link
+// preflight files of this batch's parallel members, each still bound to the launch
+// review model, disabled skills and the member worktree cwd) moves file by file to
+// the current location; an identical file already there drops the old copy. Anything
+// else is refused with the directory named and nothing moved, so it is checked by hand.
+export function migrateLegacyPreflightCache(batch,review,runtime){
+  const legacy=path.join(batch.specsDir,'.reviews','.execution',batch.batchId);
+  let stat;try{stat=fs.lstatSync(legacy);}catch(error){if(error.code==='ENOENT')return {moved:[],dropped:[]};throw error;}
+  const refuse=detail=>{throw Object.assign(new Error('legacy_preflight_cache_invalid'),{code:'legacy_preflight_cache_invalid',
+    reason:`运行目录下的 ${legacy} 不是可识别的旧版并行成员预检缓存（${detail}）。外部运行守卫会把它当作无法核实的运行，批次成员打不开；宿主没有移动或删除其中任何文件。`
+      +`下一步：只读核对该目录；确认只是旧版 preflight 缓存且没有进程在写后，把它移出 .reviews/.execution（例如移到 .reviews/external-preflight-legacy/），再用同一批次配置重新启动批次宿主并 advance，成员会重新做一次本地 loopback 预检`});};
+  if(!stat.isDirectory()||stat.isSymbolicLink()||(stat.mode&0o077)!==0||fs.realpathSync(legacy)!==legacy)refuse('不是权限 0700 的普通目录');
+  if(review===null)refuse('本次启动没有 --review-config，无法核对缓存绑定的审查模型');
+  const members=new Map((batch.parallel??[]).flat().map(key=>[`preflight-${key.slice(key.lastIndexOf('/')+1)}.json`,key.slice(key.lastIndexOf('/')+1)]));
+  // The target and its parent are checked before anything is moved or deleted,
+  // whether or not a file will be moved; a missing one is created 0700 (one level at
+  // a time) and checked again only right before the first move.
+  const parent=path.join(batch.specsDir,'.reviews','external-preflight'),target=path.join(parent,batch.batchId);
+  const targetDirectories=create=>{
+    for(const directory of [parent,target]){
+      if(create)try{fs.mkdirSync(directory,{mode:0o700});}catch(error){if(error.code!=='EEXIST')throw error;}
+      let info;try{info=fs.lstatSync(directory);}catch(error){if(error.code==='ENOENT'&&!create)return;throw error;}
+      if(!info.isDirectory()||info.isSymbolicLink()||(info.mode&0o077)!==0||fs.realpathSync(directory)!==directory)
+        refuse(`新位置 ${directory} 不是权限 0700 的普通目录`);
+    }
+  };
+  targetDirectories(false);
+  // One read per file through a no-follow fd bound to the path's dev+ino; only these
+  // exact bytes are validated and compared. links: 2 only for an interrupted move,
+  // where the old and new names are the same inode.
+  const pinned=(file,links=1)=>{
+    let before;try{before=fs.lstatSync(file);}catch(error){if(error.code==='ENOENT')return null;throw error;}
+    if(!before.isFile()||before.isSymbolicLink()||before.nlink!==links||(before.mode&0o077)!==0||before.size>64*1024)
+      refuse(`${file} 不是权限 0600、${links} 个链接的普通文件`);
+    let fd;try{fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);}catch{refuse(`${file} 无法按不跟随链接的方式打开`);}
+    try{
+      const info=fs.fstatSync(fd);
+      if(info.dev!==before.dev||info.ino!==before.ino||!info.isFile()||info.nlink!==links)refuse(`${file} 在核对时被替换`);
+      return {bytes:fs.readFileSync(fd),dev:info.dev,ino:info.ino};
+    }finally{fs.closeSync(fd);}
+  };
+  const same=(left,right)=>left!==null&&right!==null&&left.dev===right.dev&&left.ino===right.ino&&left.bytes.equals(right.bytes);
+  const plan=[];
+  for(const entry of fs.readdirSync(legacy,{withFileTypes:true})){
+    const taskId=members.get(entry.name);if(!taskId)refuse(`含有不属于本批次并行成员预检缓存的条目 ${entry.name}`);
+    const file=path.join(legacy,entry.name),destination=path.join(target,entry.name);
+    let interrupted=false;
+    try{const a=fs.lstatSync(file),b=fs.lstatSync(destination);interrupted=a.dev===b.dev&&a.ino===b.ino;}catch(error){if(error.code!=='ENOENT')throw error;}
+    const source=pinned(file,interrupted?2:1);
+    if(source===null)refuse(`${entry.name} 在核对时消失`);
+    const cwd=path.resolve(batch.codeProject,'..','.cm-worktrees',batch.batchId.slice(0,8),taskId);
+    const options={cwd,model:review.model,disabledSkills:review.disabledSkills,promptTransport:'stdin'};
+    let cached;try{cached=readConversationReviewConfigurationValue(JSON.parse(source.bytes.toString('utf8')),null);}
+    catch{refuse(`${entry.name} 不是预检缓存格式`);}
+    if(Object.hasOwn(cached,'timeoutMs')||cached.model!==review.model||digest(cached.disabledSkills)!==digest(review.disabledSkills)
+      ||!(runtime==='claude'?claudePreflightMatches:preflightMatches)(cached.preflight,options))
+      refuse(`${entry.name} 绑定的审查模型、禁用技能或成员 worktree 指纹与本次启动不一致`);
+    if(interrupted){plan.push({file,destination,source,action:'finish'});continue;}
+    const existing=pinned(destination);
+    if(existing!==null&&!existing.bytes.equals(source.bytes))refuse(`新位置 ${destination} 已有不同内容`);
+    plan.push({file,destination,source,existing,action:existing===null?'move':'drop'});
+  }
+  // Commit without overwriting: link (fails on an existing name), re-read the linked
+  // inode, then remove the old name. A duplicate is removed only after both sides are
+  // re-read unchanged. A stop at any point leaves either the old file, or the same inode
+  // under both names, which the next launch finishes ('finish').
+  const moved=[],dropped=[];
+  if(plan.some(item=>item.action==='move'))targetDirectories(true);
+  for(const item of plan){
+    const name=path.basename(item.file);
+    if(item.action==='move'){
+      try{fs.linkSync(item.file,item.destination);}
+      catch(error){if(error.code==='EEXIST')refuse(`新位置 ${item.destination} 在迁移时出现`);throw error;}
+      const linked=pinned(item.destination,2);
+      if(!same(linked,item.source)){fs.unlinkSync(item.destination);refuse(`${name} 在迁移时被改动`);}
+    }else if(item.action==='drop'){
+      if(!same(pinned(item.file),item.source)||!same(pinned(item.destination),item.existing))refuse(`${name} 或新位置的副本在迁移时被改动`);
+    }else if(!same(pinned(item.destination,2),item.source))refuse(`${name} 在迁移时被改动`);
+    fs.unlinkSync(item.file);
+    (item.action==='drop'?dropped:moved).push(name);
+  }
+  try{fs.rmdirSync(legacy);}catch(error){if(['ENOTEMPTY','EEXIST'].includes(error.code))refuse('迁移时目录里出现了新条目');throw error;}
+  return {moved,dropped};
+}
 // strict: an execution-policy batch. Its member runs take the external run guard,
 // which refuses any non-run directory under .reviews/.execution, so the loopback
 // cache lives beside the external-model one instead.
 async function memberReviewConfiguration(batch,definition,review,runtime,pair=null,allowPreflight=true,strict=false){
+  if(strict&&!pair)migrateLegacyPreflightCache(batch,review,runtime);
   try{
     need(review!==null,'review_configuration_required');
     const options={cwd:definition.codeProject,model:review.model,...(pair?{effort:pair.effort}:{}),disabledSkills:review.disabledSkills,promptTransport:'stdin'};
@@ -68,8 +156,8 @@ async function memberReviewConfiguration(batch,definition,review,runtime,pair=nu
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Optional --execution-optimizations freezes policy v1 for new runs only; recovery retains the original policy and legacy runs reject retrofit. See docs/execution-optimizations.md.\n');
-  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('成员恢复（Q24）：--allow-develop-redo / --allow-abandon-effect / --allow-abandon-review / --allow-bootstrap-review-recovery FEATURE/TASK 各授权一次同名批次操作 {operation, requestId, taskKey, reason}，只转给批次当前停住的那个成员运行（同一 cm-ai 入口、只带这一项权限，不跨成员），之后 advance 继续本批次；缺授权返回 batch_member_action_authorization_required，非当前成员返回 batch_member_action_not_current。批次 cancel 后永久停止不变。--qa-environment-failure REASON 随 --rerun-blocked-qa / --rerun-unknown-qa 使用。--revise-qa-config 与 --rebind-spec-material 不支持（batch_qa_revision_unavailable / batch_spec_rebind_unavailable，原因里写明出口）。外部模型或执行策略批次的并行成员停在可在原运行内恢复的状态时返回 batch_parallel_member_recovery_required，其他终态与普通批次一样改排串行第二代。\n');
-  if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\nOptional --input-limit BYTES sets the host input transport limit to an integer from 65536 to 4194304 (default 65536); it may change on resume.\nOptional --protected-conversation-config PATH uses the shared current-host scoped text proposals and native sandbox checks; {checkCommands,timeoutMs}. No extra model call, same Codex/Claude runtime and per-task Review permissions. Optional --protected-config PATH {model,checkCommands,timeoutMs} enables CLI development only for per-task --allow-provider-development FEATURE/TASK:1|2 grants; mutually exclusive with --protected-conversation-config. Optional bundle.bootstraps maps approved bootstrap task keys to {selection}; --allow-bootstrap-write grants only those fixed instruction/scaffold steps. Optional batch.codeProjects uses prefixed paths and checks with codeProject per command; one task remains one completion gate.\n--review-config PATH is required when no member run of the batch exists yet (like single-task create): it is bound into every member fingerprint and cannot be added on resume. It is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 900000). It is independent of --protected-conversation-config/--protected-config and wins over their timeoutMs for the reviewer. It is not part of the authorized configuration digest, so a resumed run may raise it after review_transport_timeout.\n--browser-qa available|unavailable declares interactive QA capability for applicable feature carriers including browser and ios-simulator; the flag name is retained for compatibility.\nOptional --rerun-unknown-qa / --rerun-blocked-qa carry the same single-task QA recovery into a batch and require --allow-qa; they are mutually exclusive. A batch has no --mode, so each task applies the flag only when it resumes an existing run and has a QA executor; a created run or a task without QA ignores it rather than failing the whole batch. Semantics, limits and the qaRound cap are the single-task ones, unchanged.\nOptional --verification-precheck sends the written verification of the task and the collected checks back as a verification_precheck request before any handoff or review package is built. It may only block: a requirement reported unsatisfied stops the task at blocked / verification_precheck_failed with pendingAction resume and spends no review round. Passing it is not an approval, writes no receipt and does not replace the independent review. A task with no written verification is unaffected.\nOptional --hold-revision FEATURE/TASK (repeatable, launch-only, never persisted) stops that task after a changes_requested review with code revision_answer_required, before any second-round develop intent; the next launch without it resumes the revision. It only narrows what this launch does.\nBatch entry requires a clean Git main checkout (including untracked files); batch_main_dirty lists dirty files before any task or worktree starts. Serial tasks are committed automatically before batch_handoff, with task_commit recording the SHA (null if unchanged). Terminal parallel members preserve WIP on their retained branches and fall back once to serial generation 2 after ready members merge.\n');return 0;}
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('成员恢复（Q24）：--allow-develop-redo / --allow-abandon-effect / --allow-abandon-review / --allow-bootstrap-review-recovery FEATURE/TASK 各授权一次同名批次操作 {operation, requestId, taskKey, reason}，只转给批次当前停住的那个成员运行（同一 cm-ai 入口、只带这一项权限，不跨成员），之后 advance 继续本批次；缺授权返回 batch_member_action_authorization_required，非当前成员返回 batch_member_action_not_current。批次 cancel 后永久停止不变。--qa-environment-failure REASON 随 --rerun-blocked-qa / --rerun-unknown-qa 使用。--revise-qa-config 与 --rebind-spec-material 不支持（batch_qa_revision_unavailable / batch_spec_rebind_unavailable，原因里写明出口）。并行成员停在可在原运行内恢复的状态时返回 batch_parallel_member_recovery_required；结果未确认时返回 batch_parallel_member_unresolved 并留在原运行；只有原始存档为已 checkpoint 的 blocked 才改排串行第二代，且先停在 batch_member_rescheduled，下一次 advance 才开发第二代（普通批次与外部模型、执行策略批次相同）。\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\nOptional --input-limit BYTES sets the host input transport limit to an integer from 65536 to 4194304 (default 65536); it may change on resume.\nOptional --protected-conversation-config PATH uses the shared current-host scoped text proposals and native sandbox checks; {checkCommands,timeoutMs}. No extra model call, same Codex/Claude runtime and per-task Review permissions. Optional --protected-config PATH {model,checkCommands,timeoutMs} enables CLI development only for per-task --allow-provider-development FEATURE/TASK:1|2 grants; mutually exclusive with --protected-conversation-config. Optional bundle.bootstraps maps approved bootstrap task keys to {selection}; --allow-bootstrap-write grants only those fixed instruction/scaffold steps. Optional batch.codeProjects uses prefixed paths and checks with codeProject per command; one task remains one completion gate.\n--review-config PATH is required when no member run of the batch exists yet (like single-task create): it is bound into every member fingerprint and cannot be added on resume. It is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 900000). It is independent of --protected-conversation-config/--protected-config and wins over their timeoutMs for the reviewer. It is not part of the authorized configuration digest, so a resumed run may raise it after review_transport_timeout.\n--browser-qa available|unavailable declares interactive QA capability for applicable feature carriers including browser and ios-simulator; the flag name is retained for compatibility.\nOptional --rerun-unknown-qa / --rerun-blocked-qa carry the same single-task QA recovery into a batch and require --allow-qa; they are mutually exclusive. A batch has no --mode, so each task applies the flag only when it resumes an existing run and has a QA executor; a created run or a task without QA ignores it rather than failing the whole batch. Semantics, limits and the qaRound cap are the single-task ones, unchanged.\nOptional --verification-precheck sends the written verification of the task and the collected checks back as a verification_precheck request before any handoff or review package is built. It may only block: a requirement reported unsatisfied stops the task at blocked / verification_precheck_failed with pendingAction resume and spends no review round. Passing it is not an approval, writes no receipt and does not replace the independent review. A task with no written verification is unaffected.\nOptional --hold-revision FEATURE/TASK (repeatable, launch-only, never persisted) stops that task after a changes_requested review with code revision_answer_required, before any second-round develop intent; the next launch without it resumes the revision. It only narrows what this launch does.\nBatch entry requires a clean Git main checkout (including untracked files); batch_main_dirty lists dirty files before any task or worktree starts. Serial tasks are committed automatically before batch_handoff, with task_commit recording the SHA (null if unchanged). A parallel member whose raw journal is a checkpointed blocked terminal preserves WIP on its retained branch and falls back once to serial generation 2 after ready members merge; that advance stops at batch_member_rescheduled and the next one develops generation 2. Unconfirmed members stay in their original run.\n');return 0;}
   let bridge;
   try{
     need(argv.length>=6&&argv[0]==='serve'&&argv[1]==='--config'&&argv[3]==='--host-context'

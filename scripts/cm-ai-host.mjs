@@ -21,7 +21,7 @@ import {createHostReviewAuthority} from '../runtime/js/cm-ai/host-review-authori
 import {loadConfig,declaredRuntimes,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
 import {readHostWorkflowConfiguration,featureHasBrowserCases,readBrowserCapability} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {digest,json,need,shape,id} from '../runtime/js/cm-ai/effect-contract.mjs';
-export {executionFor as createConversationExecution,reviewConfiguration as readConversationReviewConfiguration};
+export {executionFor as createConversationExecution,reviewConfiguration as readConversationReviewConfiguration,reviewConfigurationValue as readConversationReviewConfigurationValue};
 export function withHandoffDiagnostic(host,error){
   return {...host,async handle(request){
     const result=await host.handle(request);
@@ -74,7 +74,11 @@ export async function serveHostTransport(options,rawInputLimit,serve=serveCmAiHo
 function reviewConfiguration(file,pair=null){
   const info=fs.lstatSync(file);
   need(info.isFile()&&!info.isSymbolicLink()&&info.size<=64*1024,'invalid_review_config');
-  let config=json(JSON.parse(fs.readFileSync(file,'utf8')));
+  return reviewConfigurationValue(JSON.parse(fs.readFileSync(file,'utf8')),pair);
+}
+// Same validation for bytes the caller already read (and pinned) itself.
+function reviewConfigurationValue(raw,pair=null){
+  let config=json(raw);
   if(pair){need(!Object.hasOwn(config,'model')||config.model===pair.model,'external_model_configuration_conflict');
     need(!Object.hasOwn(config,'effort')||config.effort===pair.effort,'external_model_configuration_conflict');config={...config,...pair};}
   shape(config,['model','preflight',...(pair?['effort']:[]),...(Object.hasOwn(config,'disabledSkills')?['disabledSkills']:[]),

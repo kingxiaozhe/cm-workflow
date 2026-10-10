@@ -254,6 +254,198 @@ let input='';process.stdin.on('data',part=>input+=part);process.stdin.on('end',(
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
+// 53c385e moved the execution-policy member preflight cache out of .reviews/.execution.
+// A batch that had already cached there (old layout) was refused by the external run
+// guard on every later launch. The exact old cache now moves to the current location
+// and is reused without a new loopback; anything else is refused with a reason.
+function legacyParallelFixture(){
+  const f=fixture();f.parallel=true;
+  f.batch.tasks=[1,2,3].map(n=>({feature:'1.work',taskId:`T-00${n}`,scope:[`task${n}.mjs`],requirements:['requirements.md']}));
+  f.batch.parallel=[['1.work/T-001','1.work/T-002']];
+  fs.writeFileSync(path.join(f.specsDir,'1.work','tasks.md'),'- [ ] T-001: first\n- [ ] T-002: second\n- [ ] T-003: final\n\n- T-003 依赖 T-001, T-002\n');
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(f.specsDir)}));
+  const original=JSON.parse(fs.readFileSync(f.config,'utf8')).workflows['1.work/T-001'];
+  fs.writeFileSync(f.config,JSON.stringify({batch:f.batch,workflows:Object.fromEntries(f.batch.tasks.map(task=>[`1.work/${task.taskId}`,original]))}));
+  f.legacy=path.join(f.specsDir,'.reviews','.execution',f.batch.batchId);
+  f.current=path.join(f.specsDir,'.reviews','external-preflight',f.batch.batchId);
+  f.worktree=taskId=>path.join(f.root,'.cm-worktrees',f.batch.batchId.slice(0,8),taskId);
+  return f;
+}
+const legacyReceipt=(f,taskId,extra={})=>JSON.stringify({model:'fixture',disabledSkills:[],preflight:{passed:true,cli_model:'fixture',
+  config_fingerprint:configFingerprint({cwd:f.worktree(taskId),model:'fixture',disabledSkills:[]}),prompt_transport:'stdin',
+  real_model_requests:0,listener_closed:true,...extra}})+'\n';
+function writeLegacy(f,files){
+  fs.mkdirSync(f.legacy,{recursive:true,mode:0o700});fs.chmodSync(f.legacy,0o700);
+  for(const [name,bytes] of Object.entries(files))fs.writeFileSync(path.join(f.legacy,name),bytes,{mode:0o600});
+}
+test('execution-policy batch moves an exact old-layout member preflight cache out of the run directory and reuses it',async()=>{
+  const f=legacyParallelFixture();
+  try{
+    const log=path.join(f.root,'probe-cwds.jsonl'),fail=path.join(f.root,'fail-probe');
+    fs.writeFileSync(fail,'fail second member');
+    const processFixture=fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url));
+    fs.writeFileSync(path.join(f.root,'bin','codex'),`#!${process.execPath}
+const fs=require('node:fs'),cp=require('node:child_process');
+const args=process.argv.slice(2),cwd=args[args.indexOf('--cd')+1];
+fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(cwd)+'\\n');
+if(cwd.endsWith('T-002')&&fs.existsSync(${JSON.stringify(fail)}))process.exit(1);
+let input='';process.stdin.on('data',part=>input+=part);process.stdin.on('end',()=>{
+  const result=cp.spawnSync(process.execPath,[${JSON.stringify(processFixture)},...args],{input,encoding:'utf8'});
+  process.stdout.write(result.stdout??'');process.stderr.write(result.stderr??'');process.exit(result.status??1);
+});
+`,{mode:0o700});
+    const probes=()=>fs.readFileSync(log,'utf8').trim().split('\n').length;
+    const policy=['--execution-optimizations'];
+    // Stop before any member run exists (T-002's loopback fails): T-001 gets a real receipt.
+    const failed=await execute(f,['1.work/T-001:1','1.work/T-002:1'],{args:policy});
+    assert.equal(failed.result.code,'review_preflight_failed',JSON.stringify(failed));
+    fs.unlinkSync(fail);
+    const real=fs.readFileSync(path.join(f.current,'preflight-T-001.json'),'utf8');
+    // Old layout: the same receipts under .reviews/.execution/<batchId>, nothing at the new place.
+    const second=JSON.parse(real);second.preflight.config_fingerprint=configFingerprint({cwd:f.worktree('T-002'),model:'fixture',disabledSkills:[]});
+    const receipts={'preflight-T-001.json':real,'preflight-T-002.json':JSON.stringify(second)+'\n'};
+    assert.deepEqual(Object.keys(JSON.parse(receipts['preflight-T-002.json'])),Object.keys(JSON.parse(real)));
+    fs.rmSync(path.dirname(f.current),{recursive:true});writeLegacy(f,receipts);
+    const before=probes();
+    const resumed=await execute(f,[],{args:policy});
+    assert.equal(resumed.code,0,resumed.stderr);
+    assert.equal(resumed.result.code,'decision_required',JSON.stringify(resumed.result));
+    assert.equal(resumed.calls.filter(call=>call.endsWith(':develop')).length,2,JSON.stringify(resumed.calls));
+    assert.equal(probes(),before,'migrated receipts are reused without a new loopback');
+    assert(!fs.existsSync(f.legacy));
+    for(const [name,bytes] of Object.entries(receipts))assert.equal(fs.readFileSync(path.join(f.current,name),'utf8'),bytes);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+test('old-layout preflight cache that is not the exact old shape or binding is refused with a reason and left untouched',async()=>{
+  const {migrateLegacyPreflightCache}=await import('./cm-ai-batch-host.mjs');
+  const review={model:'fixture',preflight:{},disabledSkills:[]};
+  const cases=[
+    ['an unrelated entry',f=>({'preflight-T-001.json':legacyReceipt(f,'T-001'),'state.json':'{}'}),/state\.json/],
+    ['a non-member task',f=>({'preflight-T-003.json':legacyReceipt(f,'T-003')}),/preflight-T-003\.json/],
+    ['a stale fingerprint',f=>({'preflight-T-001.json':legacyReceipt(f,'T-001',{config_fingerprint:'0'.repeat(64)})}),/指纹/],
+    ['another member cwd',f=>({'preflight-T-002.json':legacyReceipt(f,'T-001')}),/指纹/],
+    ['a reviewer budget',f=>({'preflight-T-001.json':JSON.stringify({...JSON.parse(legacyReceipt(f,'T-001')),timeoutMs:5})}),/不一致/],
+    ['not a cache',f=>({'preflight-T-001.json':'{"model":"fixture"}'}),/格式/],
+  ];
+  for(const [label,files,pattern] of cases){
+    const f=legacyParallelFixture();
+    try{
+      const content=files(f);writeLegacy(f,content);
+      assert.throws(()=>migrateLegacyPreflightCache(f.batch,review,'codex'),error=>error.code==='legacy_preflight_cache_invalid'
+        &&pattern.test(error.reason)&&/下一步/.test(error.reason)&&error.reason.includes(f.legacy),label);
+      assert.deepEqual(fs.readdirSync(f.legacy).sort(),Object.keys(content).sort(),label);
+      assert(!fs.existsSync(f.current),label);
+    }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+  }
+  const f=legacyParallelFixture();
+  try{
+    // Symlinked file, loose directory mode, and a differing file at the new place: refused.
+    writeLegacy(f,{});fs.symlinkSync(path.join(f.root,'review.json'),path.join(f.legacy,'preflight-T-001.json'));
+    assert.throws(()=>migrateLegacyPreflightCache(f.batch,review,'codex'),/legacy_preflight_cache_invalid/);
+    fs.unlinkSync(path.join(f.legacy,'preflight-T-001.json'));
+    writeLegacy(f,{'preflight-T-001.json':legacyReceipt(f,'T-001'),'preflight-T-002.json':legacyReceipt(f,'T-002')});
+    fs.chmodSync(f.legacy,0o755);
+    assert.throws(()=>migrateLegacyPreflightCache(f.batch,review,'codex'),/legacy_preflight_cache_invalid/);
+    fs.chmodSync(f.legacy,0o700);
+    fs.mkdirSync(f.current,{recursive:true,mode:0o700});
+    fs.writeFileSync(path.join(f.current,'preflight-T-002.json'),legacyReceipt(f,'T-002',{listener_closed:false}),{mode:0o600});
+    assert.throws(()=>migrateLegacyPreflightCache(f.batch,review,'codex'),error=>/已有不同内容/.test(error.reason));
+    assert.equal(fs.readdirSync(f.legacy).length,2);
+    assert.throws(()=>migrateLegacyPreflightCache(f.batch,null,'codex'),/legacy_preflight_cache_invalid/);
+    // An identical copy already at the new place drops the old one; the other one moves.
+    fs.writeFileSync(path.join(f.current,'preflight-T-002.json'),legacyReceipt(f,'T-002'));
+    assert.deepEqual(migrateLegacyPreflightCache(f.batch,review,'codex'),{moved:['preflight-T-001.json'],dropped:['preflight-T-002.json']});
+    assert(!fs.existsSync(f.legacy));
+    assert.equal(fs.readFileSync(path.join(f.current,'preflight-T-001.json'),'utf8'),legacyReceipt(f,'T-001'));
+    // Idempotent: nothing left to migrate.
+    assert.deepEqual(migrateLegacyPreflightCache(f.batch,review,'codex'),{moved:[],dropped:[]});
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+// Batch 4 review round 1: the migration commits without overwriting, validates the
+// exact bytes it moves, re-checks both sides before dropping a duplicate and leaves
+// a resumable state when it stops part way. fs is patched at the commit step only.
+test('old-layout preflight migration never overwrites, re-checks what it commits and resumes an interrupted move',async()=>{
+  const {migrateLegacyPreflightCache}=await import('./cm-ai-batch-host.mjs');
+  const review={model:'fixture',preflight:{},disabledSkills:[]};
+  const {linkSync,unlinkSync}=fs;
+  const run=async(label,files,patch,check)=>{
+    const f=legacyParallelFixture();
+    try{
+      writeLegacy(f,files(f));
+      if(patch.existing){fs.mkdirSync(f.current,{recursive:true,mode:0o700});
+        for(const [name,bytes] of Object.entries(patch.existing(f)))fs.writeFileSync(path.join(f.current,name),bytes,{mode:0o600});}
+      if(patch.link)fs.linkSync=(...args)=>{patch.link(f,...args);return linkSync.apply(fs,args);};
+      if(patch.unlink)fs.unlinkSync=(...args)=>{patch.unlink(f,...args);return unlinkSync.apply(fs,args);};
+      let error=null;try{migrateLegacyPreflightCache(f.batch,review,'codex');}catch(cause){error=cause;}
+      finally{fs.linkSync=linkSync;fs.unlinkSync=unlinkSync;}
+      await check(f,error,label);
+    }finally{fs.linkSync=linkSync;fs.unlinkSync=unlinkSync;fs.rmSync(f.root,{recursive:true,force:true});}
+  };
+  const one=f=>({'preflight-T-001.json':legacyReceipt(f,'T-001')});
+  const refused=(error,pattern,label)=>assert(error?.code==='legacy_preflight_cache_invalid'&&pattern.test(error.reason),`${label}: ${error?.code} ${error?.reason}`);
+  // A different file appears at the target between planning and commit: not replaced.
+  await run('target appears',one,{link:(f,from,to)=>{if(!fs.existsSync(to))fs.writeFileSync(to,'other\n',{mode:0o600});}},(f,error,label)=>{
+    refused(error,/在迁移时出现/,label);
+    assert.equal(fs.readFileSync(path.join(f.current,'preflight-T-001.json'),'utf8'),'other\n');
+    assert.equal(fs.readFileSync(path.join(f.legacy,'preflight-T-001.json'),'utf8'),legacyReceipt(f,'T-001'));
+  });
+  // The source changes in place (same inode) after validation: the link is undone.
+  await run('source rewritten',one,{link:(f,from)=>fs.writeFileSync(from,legacyReceipt(f,'T-001',{listener_closed:false}))},(f,error,label)=>{
+    refused(error,/被改动/,label);
+    assert(!fs.existsSync(path.join(f.current,'preflight-T-001.json')));
+    assert(fs.existsSync(path.join(f.legacy,'preflight-T-001.json')));
+  });
+  // A duplicate's new copy changes after planning: the old copy is kept.
+  await run('duplicate changed',f=>({'preflight-T-001.json':legacyReceipt(f,'T-001'),'preflight-T-002.json':legacyReceipt(f,'T-002')}),
+    {existing:f=>({'preflight-T-002.json':legacyReceipt(f,'T-002')}),
+      link:f=>fs.writeFileSync(path.join(f.current,'preflight-T-002.json'),legacyReceipt(f,'T-002',{listener_closed:false}))},(f,error,label)=>{
+      refused(error,/被改动/,label);
+      assert(fs.existsSync(path.join(f.legacy,'preflight-T-002.json')));
+    });
+  // A stop after the link (both names on one inode) is finished by the next launch.
+  await run('interrupted move',one,{unlink:(f,file)=>{if(file.startsWith(f.legacy))throw Object.assign(new Error('crash'),{code:'synthetic_crash'});}},(f,error,label)=>{
+    assert.equal(error?.code,'synthetic_crash',label);
+    const a=fs.lstatSync(path.join(f.legacy,'preflight-T-001.json')),b=fs.lstatSync(path.join(f.current,'preflight-T-001.json'));
+    assert.deepEqual([a.ino,a.nlink],[b.ino,2]);
+    assert.deepEqual(migrateLegacyPreflightCache(f.batch,review,'codex'),{moved:['preflight-T-001.json'],dropped:[]});
+    assert(!fs.existsSync(f.legacy));
+    assert.equal(fs.lstatSync(path.join(f.current,'preflight-T-001.json')).nlink,1);
+    assert.equal(fs.readFileSync(path.join(f.current,'preflight-T-001.json'),'utf8'),legacyReceipt(f,'T-001'));
+  });
+});
+// Batch 4 review round 1: the target directory and its parent are checked before any
+// delete or move, also when every old file is a duplicate (nothing to move).
+test('old-layout preflight migration refuses a symlinked target even when every old file is a duplicate',async()=>{
+  const {migrateLegacyPreflightCache}=await import('./cm-ai-batch-host.mjs');
+  const review={model:'fixture',preflight:{},disabledSkills:[]};
+  for(const linked of ['target','parent']){
+    const f=legacyParallelFixture();
+    try{
+      const files={'preflight-T-001.json':legacyReceipt(f,'T-001'),'preflight-T-002.json':legacyReceipt(f,'T-002')};
+      writeLegacy(f,files);
+      // The real directory holds identical copies; the expected path only links to it.
+      const elsewhere=path.join(f.root,'elsewhere'),real=path.join(elsewhere,linked==='target'?'':f.batch.batchId);
+      fs.mkdirSync(real,{recursive:true,mode:0o700});fs.chmodSync(elsewhere,0o700);
+      for(const [name,bytes] of Object.entries(files))fs.writeFileSync(path.join(real,name),bytes,{mode:0o600});
+      if(linked==='target'){fs.mkdirSync(path.dirname(f.current),{recursive:true,mode:0o700});fs.symlinkSync(elsewhere,f.current);}
+      else fs.symlinkSync(elsewhere,path.dirname(f.current));
+      assert.throws(()=>migrateLegacyPreflightCache(f.batch,review,'codex'),
+        error=>error.code==='legacy_preflight_cache_invalid'&&/不是权限 0700 的普通目录/.test(error.reason),linked);
+      assert.deepEqual(fs.readdirSync(f.legacy).sort(),Object.keys(files).sort(),linked);
+      for(const [name,bytes] of Object.entries(files))assert.equal(fs.readFileSync(path.join(f.legacy,name),'utf8'),bytes);
+    }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+  }
+  // A target copy that breaks the file constraints (mode, links) is refused too.
+  const f=legacyParallelFixture();
+  try{
+    writeLegacy(f,{'preflight-T-001.json':legacyReceipt(f,'T-001')});
+    fs.mkdirSync(f.current,{recursive:true,mode:0o700});
+    fs.writeFileSync(path.join(f.current,'preflight-T-001.json'),legacyReceipt(f,'T-001'),{mode:0o644});
+    assert.throws(()=>migrateLegacyPreflightCache(f.batch,review,'codex'),/legacy_preflight_cache_invalid/);
+    assert(fs.existsSync(path.join(f.legacy,'preflight-T-001.json')));
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
 test('provider development grants select worktree runtimes and keep the serial task on protected conversation transport',async()=>{
   const f=fixture();
   try{
@@ -269,7 +461,7 @@ test('provider development grants select worktree runtimes and keep the serial t
     const workerModule=new URL('../runtime/js/cm-ai/codex-config.mjs',import.meta.url).href;
     fs.writeFileSync(stub,`
 import {configFingerprint} from ${JSON.stringify(workerModule)};
-export {readConversationReviewConfiguration,readConversationProtection} from ${JSON.stringify(hostModule)};
+export {readConversationReviewConfiguration,readConversationReviewConfigurationValue,readConversationProtection} from ${JSON.stringify(hostModule)};
 export {parseHostInputLimit,inputLimitReason} from ${JSON.stringify(sessionModule)};
 export const calls=[];export let scheduler;
 export {batchTaskRunId,BATCH_MEMBER_ACTIONS} from ${JSON.stringify(new URL('./cm-ai-batch-run.mjs',import.meta.url).href)};

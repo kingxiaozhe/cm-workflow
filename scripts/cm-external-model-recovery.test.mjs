@@ -11,6 +11,7 @@ import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {writeHandoff,writeReview} from '../experiments/js-orchestration/native-gate-fixture.mjs';
 import {acquireExternalRunGuard} from '../runtime/js/cm-ai/external-run-guard.mjs';
+import {memberSupersedeAdmitted} from './cm-ai-batch-run.mjs';
 const grant=(request,issuedAt)=>{
   const value={version:1,kind:'cm-review-dispatch-grant',grantId:'grant-'+request.invocationId,adapterId:'codex-review-adapter',
     invocationId:request.invocationId,requestDigest:request.requestDigest,identity:request.identity,reviewerId:'reviewer',logicalContextId:request.contextId,
@@ -44,7 +45,7 @@ async function fixture(fn,review,{strict=true,timeoutMs=2000,externalDeveloper=f
   };
   const effect=(kind,attempt=1,id=kind+'-'+attempt)=>({version:1,id,identity:{...identity,attempt},kind});
   const guard=(override={})=>acquireExternalRunGuard({specsDir:specsRoot,codeProject:root,feature:'feature',identity:{...identity,runId:'another-run'},...override});
-  try{await fn({make:()=>make('create'),reopen,prefix,effect,records,guard,closeStore:()=>store.close(),calls:()=>calls,developerCalls:()=>developerCalls});}finally{store.close();fs.rmSync(tmp,{recursive:true,force:true});}
+  try{await fn({make:()=>make('create'),reopen,prefix,effect,records,guard,specsRoot,root,closeStore:()=>store.close(),calls:()=>calls,developerCalls:()=>developerCalls});}finally{store.close();fs.rmSync(tmp,{recursive:true,force:true});}
 }
 const start=(request,onEvent)=>{onEvent({event:'thread.started',provider_thread:'actual-review-'+request.identity.attempt});onEvent({event:'turn.started',item_type:null});};
 const noTerminal=(request,{onEvent})=>{start(request,onEvent);onEvent({event:'process_closed',exit_code:143,signal:null,timed_out:true});return {status:'failed',code:'timeout'};};
@@ -67,7 +68,28 @@ for(const [name,review] of [['close without provider terminal',noTerminal],['out
   assert.throws(()=>f.guard({identity:{repositoryId:'fixture',runId:'other-task-run',taskId:'T-002',attempt:1}}),{code:'external_prior_attempt_unresolved'});
   assert.throws(()=>f.guard({feature:'other-feature',identity:{repositoryId:'fixture',runId:'other-feature-run',taskId:'T-002',attempt:1}}),{code:'external_prior_attempt_unresolved'});assert.equal(f.calls(),1);
   const init=rows[0].payload;assert.equal(readRunnerHistory(rows,init.config,3).state.state,'unknown');
+  // Batch 4 review round 2: the batch's unresolved hint decides supersede from the same
+  // entry conditions as the guard above, so this strict raw-unknown run (which the
+  // supersede state check alone would take) is not sent to supersede.
+  assert.equal(memberSupersedeAdmitted(f.specsRoot,'strict-run',readRunnerHistory(rows,init.config,3)),false);
 },review,{timeoutMs:40}));
+// The same probe on a non-strict run left unknown: admitted. The supersede it names is
+// an ordinary single-task launch; the guard such a launch takes when a strict binding
+// exists on the root (strictOnly) does not refuse it. A strict
+// new run would refuse any unresolved same-task prior run, so the hint names an
+// ordinary launch.
+test('a non-strict unknown run is admitted to supersede by the batch hint check and the guard alike',()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));
+  const reviewed=await runner.executeEffect(f.effect('review'));assert.equal(reviewed.state,'unknown',JSON.stringify(reviewed));f.closeStore();
+  const rows=JSON.parse(fs.readFileSync(path.join(f.specsRoot,'.reviews/.execution/strict-run/state.json'),'utf8')).records;
+  const history=readRunnerHistory(rows,rows[0].payload.config,3);assert.equal(history.pending,null);
+  assert.equal(memberSupersedeAdmitted(f.specsRoot,'strict-run',history),true);
+  const identity={repositoryId:'fixture',runId:'another-run',taskId:'T-001',attempt:1};
+  acquireExternalRunGuard({specsDir:f.specsRoot,codeProject:f.root,feature:'feature',identity},{strictOnly:true}).close();
+  assert.throws(()=>acquireExternalRunGuard({specsDir:f.specsRoot,codeProject:f.root,feature:'feature',identity}),{code:'external_prior_attempt_unresolved'});
+  // (This runner fixture carries no task-learning feature, so the supersede check itself
+  // is probed on a real batch member journal in cm-ai-batch-run.test.mjs.)
+},(request,{onEvent})=>{onEvent({event:'thread.started',provider_thread:'review-lost'});throw Error('Synthetic lost reviewer');},{strict:false}));
 for(const type of ['review-invocation-registered','review-invocation-started','review-invocation-result'])test(type+' crash prefix preserves original attempt and rejects old abandonment paths',()=>fixture(async f=>{
   let runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));runner=f.prefix(type);
   assert.equal(runner.status().state,'unknown');assert.equal(runner.status().pendingReviewInvocation,undefined);assert.equal(runner.status().pendingEffectKind,undefined);

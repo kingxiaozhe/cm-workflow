@@ -56,6 +56,26 @@ test('a strict-batch parallel member left unknown stays in its original run and 
 test('Q24 a strict-batch parallel member stopped at develop_redo recovers through the batch entry and merges',async()=>{
   await batchFixture('parallel-redo',{executionPolicy:true});
 });
+// Ordinary (non-strict) batches follow the same rules: an unconfirmed member stays in
+// its original run with an explicit code and a member that can recover in its own run
+// is not rescheduled past its stop confirmation (both used to get a new gen-2 runId).
+test('an ordinary-batch parallel member left unknown stays in its original run and is not rescheduled',async()=>{
+  await batchFixture('parallel-unknown');
+});
+test('Q24 an ordinary-batch parallel member stopped at develop_redo recovers through the batch entry and merges',async()=>{
+  await batchFixture('parallel-redo');
+});
+// Batch 4 review round 1: a member whose review was registered but never dispatched
+// (pending_review/grant_expired, call not_dispatched) is not an unresolved stop with
+// unusable exits: no reviewer ran, so the next advance redispatches it in its own run.
+test('an ordinary-batch parallel member whose review grant expired before dispatch redispatches it in its original run',async()=>{
+  await batchFixture('parallel-grant-expired');
+});
+// An unresolved stop names only exits that accept the raw state: a raw pending_review
+// (review authorization denied) has no supersede, reconcile or abandon exit.
+test('an unresolved member at raw pending_review is not pointed at supersede, reconcile_review or abandon operations',async()=>{
+  await batchFixture('parallel-denied');
+});
 // Q26: the batch handoff check closes a cleanup_failed QA command resource whose
 // process group the host proves gone; one it cannot prove stops the batch with
 // batch_resources_open naming the resource and the exit (not a bare code).
@@ -124,6 +144,11 @@ async function batchFixture(mode,options={}){
   const parallel=mode.startsWith('parallel');
   const recovery=mode==='parallel-recovery',blockedIds=options.blockedIds??['T-002'];
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-batch-')));
+  // parallel-grant-expired: right after T-002's first grant, registration reads the
+  // authorization instant and the dispatch clock reads past the 1 ms grant.
+  const realNow=Date.now;let expiry=null,expiredOnce=false,reviewDispatches=0;
+  if(mode==='parallel-grant-expired')Date.now=()=>{const now=realNow.call(Date);
+    if(expiry===null)return now;return expiry.reads++===0?expiry.at:Math.max(now,expiry.at+2);};
   try{
     const specsDir=path.join(root,'specs'),codeProject=path.join(root,'code'),feature='1.work';
     fs.mkdirSync(path.join(specsDir,feature),{recursive:true});fs.mkdirSync(codeProject);
@@ -203,6 +228,7 @@ async function batchFixture(mode,options={}){
       },
       reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',allowed:true,available:true,
         contexts:['review-1','review-2'],run:(request,{onEvent})=>{
+          if(request.identity.taskId==='T-002')reviewDispatches++;
           assert.equal(request.payload.reviewPackage.specification.task.id,definition.identity.taskId);
           assert.deepEqual(request.payload.reviewPackage.specification.sources,buildManifest(specsDir));
           if(mode==='learning'&&request.identity.taskId==='T-001')
@@ -229,6 +255,9 @@ async function batchFixture(mode,options={}){
           invocationId:request.invocationId,requestDigest:request.requestDigest,identity:request.identity,reviewerId:'reviewer',
           logicalContextId:request.contextId,packageDigest:request.payload.reviewPackage.packageDigest,hostContextId:'host',
           decisionId:'decision',decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
+        if(mode==='parallel-denied'&&request.identity.taskId==='T-002')return {status:'denied',code:'permission_denied'};
+        if(mode==='parallel-grant-expired'&&request.identity.taskId==='T-002'&&!expiredOnce){
+          expiredOnce=true;body.expiresAt=authorizationAt+1;expiry={at:authorizationAt,reads:0};}
         return {...body,grantDigest:digest(body)};
       }},
       qaDecisionProvider:parallelMember?createParallelMemberQaDecisionProvider():mode==='policy'?createHostQaDecisionProvider({timeoutMs:1000,assess:async binding=>{
@@ -273,7 +302,7 @@ async function batchFixture(mode,options={}){
       assert.equal(git(codeProject,['status','--porcelain']),'?? dirty.txt');return;
     }
     const originalRead=fs.readFileSync,originalExists=fs.existsSync;
-    if(recovery&&options.crashAt)fs.existsSync=function(file,...args){
+    const crashExists=function(file,...args){
       if(!interrupted&&(options.crashAt==='serial'?String(file).endsWith('state.json'):String(file).endsWith('T-002'))){
         const logfile=path.join(specsDir,'运行日志.jsonl');
         if(originalExists(logfile)&&originalRead(logfile,'utf8').split('\n').filter(Boolean).map(JSON.parse).some(row=>row.phase==='batch_member_blocked')){
@@ -281,6 +310,7 @@ async function batchFixture(mode,options={}){
         }
       }return originalExists.call(fs,file,...args);
     };
+    if(recovery&&options.crashAt)fs.existsSync=crashExists;
     if(mode==='parallel-resume'||mode==='final-commit')fs.existsSync=function(file,...args){
       if(!interrupted&&String(file).endsWith('state.json')){
         const logfile=path.join(specsDir,'运行日志.jsonl');
@@ -316,7 +346,15 @@ async function batchFixture(mode,options={}){
       for(const requestId of ['advance-unknown-1','advance-unknown-2']){
         assert.equal(result.code,'batch_parallel_member_unresolved',JSON.stringify(result));
         assert.equal(result.memberState,'unknown');assert.equal(result.currentTask,`${feature}/T-002`);
-        assert.match(result.reason,/不改排串行/);assert.match(result.guidance.nextStep,/reconcile_review|supersede/);
+        assert.match(result.reason,/不改排串行/);
+        // Batch 4 review round 2: the hint follows the real entry conditions (probed
+        // below). This fixture's member journals carry no strict configuration (the
+        // fixture execution is not the protected strict factory), so the guard does not
+        // refuse them and supersede is the named exit; the strict refusal is covered with
+        // real strict journals in cm-external-model-recovery.test.mjs.
+        for(const text of [result.reason,result.guidance.nextStep]){
+          assert.doesNotMatch(text,/reconcile_review|abandon_|--allow-/);assert.match(text,/--supersede-reviewed-evidence/);
+        }
         // Kept in its original run: no second generation, no WIP removal, no redispatch.
         assert.equal(rows().filter(row=>row.phase==='batch_member_blocked').length,0);
         assert(fs.existsSync(path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002')));
@@ -329,6 +367,43 @@ async function batchFixture(mode,options={}){
         assert.deepEqual(fs.readFileSync(statePath),before,'an unresolved member is not redispatched');
       }
       assert.deepEqual(calls,['T-001','T-002']);
+      // Probe the exits the hint names (or withholds) through the real entry checks.
+      const {prepareReviewedEvidenceSupersession}=await import('../runtime/js/cm-ai/reviewed-evidence-supersede.mjs');
+      const {acquireExternalRunGuard,externalRunGuardExists}=await import('../runtime/js/cm-ai/external-run-guard.mjs');
+      const worktree=path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002');
+      const identity={repositoryId:config.repositoryId,runId:'task-supersede-probe',taskId:'T-002',attempt:1};
+      prepareReviewedEvidenceSupersession({specsDir,codeProject:worktree,feature,identity,reason:'probe',
+        tasksPath:path.join(specsDir,feature,'tasks.md'),acceptSupersededCodeDrift:true});
+      // The named exit is an ordinary single-task launch: the guard it takes where a strict
+      // binding exists on that root (strictOnly) does not refuse this prior run.
+      if(!options.executionPolicy)assert.equal(externalRunGuardExists(specsDir,worktree),false,'an ordinary single-task supersede takes no external run guard');
+      acquireExternalRunGuard({specsDir,codeProject:worktree,identity,feature},{strictOnly:true}).close();
+      return;
+    }
+    if(mode==='parallel-denied'){
+      assert.deepEqual([result.code,result.memberState,result.memberCode,result.rawState],
+        ['batch_parallel_member_unresolved','pending_review','permission_denied','pending_review/permission_denied'],JSON.stringify(result));
+      for(const text of [result.reason,result.guidance.nextStep]){
+        assert.doesNotMatch(text,/--supersede-reviewed-evidence|reconcile_review|abandon_|--allow-/);assert.match(text,/目前都没有/);}
+      assert(fs.existsSync(path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002')));
+      assert.equal(fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').includes('batch_member_blocked'),false);
+      return;
+    }
+    if(mode==='parallel-grant-expired'){
+      const logfile=path.join(specsDir,'运行日志.jsonl'),rows=()=>fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
+      assert(expiredOnce);
+      assert.deepEqual([result.state,result.code,result.pendingAction,result.identity.taskId],['pending_review','grant_expired','resume','T-002'],JSON.stringify(result));
+      assert.equal(reviewDispatches,0);
+      // Kept in its run: no reschedule, worktree and delivery stay.
+      assert.equal(rows().filter(row=>row.phase==='batch_member_blocked').length,0);
+      assert.equal(fs.readFileSync(path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002','file1.js'),'utf8'),'implemented\n');
+      result=await open().handle({operation:'advance',requestId:'after-grant-expired'});
+      assert.equal(result.code,'run_done',JSON.stringify(result));
+      assert.equal(reviewDispatches,1);assert.deepEqual(calls,['T-001','T-002','T-003']);
+      assert.equal(rows().filter(row=>row.phase==='batch_member_blocked').length,0);
+      const runId=`task-${digest({batchId:config.batchId,task:`${feature}/T-002`}).slice(0,48)}`;
+      const records=JSON.parse(fs.readFileSync(path.join(specsDir,'.reviews','.execution',runId,'state.json'),'utf8')).records;
+      assert.deepEqual(records.filter(row=>row.payload.type==='review-invocation-result').map(row=>row.payload.outcome),['not_dispatched','observed']);
       return;
     }
     if(mode==='parallel-redo'){
@@ -390,18 +465,25 @@ async function batchFixture(mode,options={}){
       assert.equal(calls.filter(task=>task==='T-002').length,2);
       return;
     }
-    if(recovery&&options.crashAt){assert(interrupted);result=await open().handle({operation:'advance',requestId:'resume-recovery'});}
-    // Review round 1 (major): a strict batch stops right after rescheduling, before
-    // dispatching anything to the new second-generation run; the next advance runs it.
-    if(recovery&&options.executionPolicy){
+    // Review round 1 (major): a batch (strict or ordinary) stops right after
+    // rescheduling, before dispatching anything to the new second-generation run;
+    // the next advance runs it. A crash while preserving the WIP (cleanup) happens
+    // inside the rescheduling advance; the resume then finds the logged decision.
+    if(recovery&&options.crashAt!=='cleanup'){
       assert.equal(result.code,'batch_member_rescheduled',JSON.stringify(result));
       assert.deepEqual(result.rescheduled,blockedIds.map(id=>`${feature}/${id}`));
       assert.match(result.reason,/下一次 advance/);assert.equal(result.guidance.authorizationGranted,false);
       assert.equal(blockedEvidence.length,0,'no second-generation develop in the rescheduling advance');
+      assert(!fs.existsSync(path.join(specsDir,'.reviews','.execution',`task-${digest({batchId:config.batchId,task:`${feature}/${blockedIds[0]}`,generation:2}).slice(0,48)}`)));
       const {classifyDriveResult}=await import('../runtime/js/notify.mjs');
       assert.equal(classifyDriveResult('cm-ai-batch',{result}),'stuck');
-      result=await open().handle({operation:'advance',requestId:'after-reschedule'});
+      // crashAt serial: the interrupt hits the second-generation start in this advance.
+      if(options.crashAt)fs.existsSync=crashExists;
+      try{result=await open().handle({operation:'advance',requestId:'after-reschedule'});}
+      catch(error){if(!(options.crashAt&&error.code==='simulated_interrupt'))throw error;}
+      finally{fs.existsSync=originalExists;}
     }
+    if(recovery&&options.crashAt){assert(interrupted);result=await open().handle({operation:'advance',requestId:'resume-recovery'});}
     if(recovery){
       // Assert outside the worker: worker exceptions intentionally become unknown terminals.
       assert(blockedEvidence.length>0);
@@ -529,5 +611,5 @@ async function batchFixture(mode,options={}){
       assert.equal(log.filter(row=>row.event==='decision'&&row.phase==='qa_merge'&&row.task==='T-001').length,1);
       assert(log.some(row=>row.event==='qa'&&row.task==='T-002'&&row.reason==='feature_complete'));
     }
-  }finally{fs.rmSync(root,{recursive:true,force:true});}
+  }finally{Date.now=realNow;fs.rmSync(root,{recursive:true,force:true});}
 }
