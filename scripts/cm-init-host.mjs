@@ -14,6 +14,7 @@ import {inspectCmInitDraft,readCmInitSource} from '../runtime/js/cm-init/draft-i
 import {inspectCmInitProjectAnalysis} from '../runtime/js/cm-init/project-analysis.mjs';
 import {validateCmInitSelection} from '../runtime/js/cm-init/draft-generation.mjs';
 import {openDraftSession,MAX_CALL_ABANDONS} from '../runtime/js/cm-idea/session.mjs';
+import {legacyInitBindings} from '../runtime/js/policy-binding-compat.mjs';
 
 const STEP_KINDS={ready:'init_generate',analysis_ready:'init_generate',draft_generated:'init_verify',
   confirmation_required:'init_confirm',review_required:'init_review'};
@@ -77,8 +78,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       need(hostContextId!==null,'init_session_host_context_required');
       const policyFiles=['skills/cm-init/SKILL.md','skills/cm-init/references/js-host.md',
         ...fs.readdirSync(path.join(admission.workflowRoot,'templates/rules')).filter(name=>name.endsWith('.md')).sort().map(name=>'templates/rules/'+name)];
-      session=openDraftSession(sessionFile,{project:admission.project,workflowRoot:admission.workflowRoot,
-        policyDigest:digest(policyFiles.map(file=>[file,readCmInitSource(admission.workflowRoot,file)?.toString('utf8')??null]))},'cm-init');
+      const policy=policyFiles.map(file=>[file,readCmInitSource(admission.workflowRoot,file)?.toString('utf8')??null]);
+      session=openDraftSession(sessionFile,{project:admission.project,workflowRoot:admission.workflowRoot,policyDigest:digest(policy)},'cm-init',
+        {legacyBindings:legacyInitBindings({project:admission.project,workflowRoot:admission.workflowRoot,files:policy})});
       if(session.state.checkpoint)restore(session.state.checkpoint);
       if(session.state.cancelled){stage='cancelled';controller.abort();}
     }

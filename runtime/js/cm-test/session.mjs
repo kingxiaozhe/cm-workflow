@@ -51,8 +51,9 @@ export function openTestSession(directory,config){
     get pending(){const entry=unknown();return entry?{key:entry[0],kind:entry[1].kind,requestDigest:effectDigest(entry[1])}:null;},
     get recovery(){return records.recovery;},
     initialize(context){records.initialize({...context,workflow:'cm-test',configDigest:digest(config)});},
-    validate(binding){need(records.context?.workflow==='cm-test'&&records.context.configDigest===digest(config)
-      &&digest(records.context.binding)===digest(binding),'cm_test_session_binding_changed');},
+    // legacy: older bindings accepted as a controlled migration (policy-binding-compat.mjs).
+    validate(binding,legacy=[]){need(records.context?.workflow==='cm-test'&&records.context.configDigest===digest(config)
+      &&[binding,...legacy].some(item=>digest(records.context.binding)===digest(item)),'cm_test_session_binding_changed');},
     begin(current,receipt){
       need(!records.progress?.cancelled,'cancelled');
       const last=[...records.effects.values()].filter(entry=>Object.hasOwn(entry,'result')).at(-1)?.result.source??records.context.source;

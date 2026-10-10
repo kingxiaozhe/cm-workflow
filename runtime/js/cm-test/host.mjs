@@ -17,6 +17,7 @@ import {collectBranchImpact,assertBranchComparison,inspectImpactAnalysis} from '
 import {inside,canonicalFuture,selectReportDirectory,snapshotSource,sourceChanges,readSourceFiles,checkSourceEvidence} from './source-snapshot.mjs';
 import {isQaEnvironmentCarrier} from '../cm-ai/qa-environment.mjs';
 import {cmTestRecoveryGuidance} from './session.mjs';
+import {legacyTestBindings} from '../policy-binding-compat.mjs';
 
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;
 const read=file=>{
@@ -49,7 +50,7 @@ export function createCmTestHost(raw,{call,session=null}){
   const controller=new AbortController();let stage='ready',result=null,reason=null,logFile=null;
   const binding={routes,workflowRoot:admission.workflowRoot,policy:digest(fs.readFileSync(path.join(config.skillDir,'references/js-host.md'),'utf8')),
     ...(admission.operation==='impact'?{comparison:{...admission.comparison,dirty:false}}:{})};
-  if(session?.context)session.validate(binding);
+  if(session?.context)session.validate(binding,legacyTestBindings(binding,config.skillDir));
   if(session?.context){stage='interrupted';logFile=session.logFile;}
   if(session?.progress?.result){result=session.progress.result;stage=result.stage;logFile=result.logFile;}
   if(session?.progress?.cancelled){stage='cancelled';controller.abort();}

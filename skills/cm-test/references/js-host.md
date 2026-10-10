@@ -105,7 +105,7 @@ Codex 浏览器只用内置工具；不可用返回 BLOCKED，不转本机 Playw
 不得包含这些目录；不放秘密或公开仓库。记录复用原执行journal，文件0600、单写者锁；默认不启用。
 记录许可不授予provider、安装、修复、业务文件写入或Git权限；副作用测试仍须原授权和cleanup。
 
-中断后使用同一配置及目录启动，先status取得原runId/logFile和pending；不重发start。
+中断后使用同一配置及目录启动，先status取得原runId/logFile和pending；不重发start。本批之前版本（0b3040e）创建的记录绑定的是旧版本文档摘要：本文档是已知新版本时按原绑定继续（受控迁移，见`runtime/js/policy-binding-compat.mjs`），其他漂移仍报`cm_test_session_binding_changed`。
 新进程不自动调用宿主或命令，显式发送：
 
 ```json

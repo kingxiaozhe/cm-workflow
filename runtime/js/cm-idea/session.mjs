@@ -37,7 +37,9 @@ export function openIdeaSession(file,binding){
 }
 
 // Same private single-call journal for init; workflow identity stays disjoint.
-export function openDraftSession(file,binding,workflow){
+// legacyBindings: older bindings accepted as a controlled migration (see
+// runtime/js/policy-binding-compat.mjs); a session opened under one keeps it.
+export function openDraftSession(file,binding,workflow,{legacyBindings=[]}={}){
   need(['cm-idea','cm-init'].includes(workflow),'draft_session_workflow_invalid');
   need(typeof file==='string'&&path.isAbsolute(file)&&path.resolve(file)===file
     &&/^[A-Za-z0-9][A-Za-z0-9._-]*\.json$/.test(path.basename(file)),'idea_session_path_invalid');
@@ -62,7 +64,8 @@ export function openDraftSession(file,binding,workflow){
   try{
     bytes=read(name);state=bytes===null?{version:1,workflow,binding,checkpoint:null,pending:null,cancelled:false}:JSON.parse(bytes);
     shape(state,['version','workflow','binding','checkpoint','pending','cancelled',...(Object.hasOwn(state,'abandonedCalls')?['abandonedCalls']:[])]);
-    need(state.version===1&&state.workflow===workflow&&digest(state.binding)===digest(binding),'idea_session_binding_changed');
+    need(state.version===1&&state.workflow===workflow&&(digest(state.binding)===digest(binding)
+      ||bytes!==null&&legacyBindings.some(item=>digest(item)===digest(state.binding))),'idea_session_binding_changed');
     // Older files have no abandonedCalls and replay unchanged; a present list is checked.
     if(Object.hasOwn(state,'abandonedCalls')){const ids=checkAbandoned(state.abandonedCalls,workflow);
       need(!ids.has(state.pending?.call?.callId),'idea_session_abandon_record_invalid');}
