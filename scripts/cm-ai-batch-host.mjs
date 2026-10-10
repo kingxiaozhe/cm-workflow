@@ -35,13 +35,16 @@ export async function serveHostTransport(options,rawInputLimit,serve=serveCmAiHo
   return serve({...options,inputLimit:parseHostInputLimit(rawInputLimit)});
 }
 
-async function memberReviewConfiguration(batch,definition,review,runtime,pair=null,allowPreflight=true){
+// strict: an execution-policy batch. Its member runs take the external run guard,
+// which refuses any non-run directory under .reviews/.execution, so the loopback
+// cache lives beside the external-model one instead.
+async function memberReviewConfiguration(batch,definition,review,runtime,pair=null,allowPreflight=true,strict=false){
   try{
     need(review!==null,'review_configuration_required');
     const options={cwd:definition.codeProject,model:review.model,...(pair?{effort:pair.effort}:{}),disabledSkills:review.disabledSkills,promptTransport:'stdin'};
     const matches=config=>config.model===review.model&&digest(config.disabledSkills)===digest(review.disabledSkills)
       &&(runtime==='claude'?claudePreflightMatches:preflightMatches)(config.preflight,options);
-    const directory=path.join(batch.specsDir,'.reviews',...(pair?['external-preflight']:['.execution']),batch.batchId);
+    const directory=path.join(batch.specsDir,'.reviews',...(pair||strict?['external-preflight']:['.execution']),batch.batchId);
     fs.mkdirSync(directory,{recursive:true,mode:0o700});
     need(fs.realpathSync(directory)===directory,'invalid_preflight_cache');
     const file=path.join(directory,`preflight-${definition.identity.taskId}.json`);
@@ -202,7 +205,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         freezeBatchExternalModels(batch,externalModels);
         const key=`${definition.feature}/${definition.identity.taskId}`;
         const attempts=[1,2].filter(attempt=>approvals.has(`${key}:${attempt}`));
-        const memberReview=parallelMember?await memberReviewConfiguration(batch,definition,review,externalModels?routes.reviewerRuntime:runtime??'codex',externalModels?.providers[routes.reviewerRuntime]??null,!reconciling):review;
+        const memberReview=parallelMember?await memberReviewConfiguration(batch,definition,review,externalModels?routes.reviewerRuntime:runtime??'codex',externalModels?.providers[routes.reviewerRuntime]??null,!reconciling,Boolean(executionPolicy)):review;
         const execution=createConversationExecution(definition,argv[4],parallelMember?memberBridge:bridge,memberReview,attempts,workflows[key],allowQa,runtime??'codex',
           {parallelMember,...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels,...(providerConfig?{reviewerRuntime:routes.reviewerRuntime}:{})}:{}),...(verificationPrecheck?{verificationPrecheck:true}:{}),batchWorkflowsDigest:digest(executionPolicy?{workflows,bootstraps,externalModels,executionPolicy}:externalModels?{workflows,bootstraps,externalModels}:bootstraps?{workflows,bootstraps}:workflows),qaLogHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
             // A protected CLI config also protects unauthorized tasks: they stay on the
