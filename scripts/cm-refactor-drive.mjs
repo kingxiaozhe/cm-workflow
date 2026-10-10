@@ -253,15 +253,26 @@ function main(){
     stop(2,'步骤 start 会反问 refactor_review，但 review.json 缺失');
   // A confirmation that will be asked again (lost, or explicitly discarded) needs a
   // NEW decision of the current user in confirm-reask.json naming key and attempt.
-  const reaskTarget=[...records.effects].find(([key,entry])=>entry.kind==='host'&&entry.input.kind==='refactor_confirm'
+  const lostConfirm=[...records.effects].find(([key,entry])=>entry.kind==='host'&&entry.input.kind==='refactor_confirm'
     &&(plan.discard?.key===key||!Object.hasOwn(entry,'result')&&['resume','finish'].includes(operation)));
+  // Also from the persisted discard history: the host appended the confirmation's
+  // discard and exited before the re-asked intent, so no effect names it yet; the
+  // host re-asks it (same key, next attempt) on this resume.
+  const lastDiscard=records.discards.at(-1);
+  const pendingReask=!lostConfirm&&['resume','finish'].includes(operation)&&lastDiscard?.kind==='refactor_confirm'
+    &&!records.effects.has(lastDiscard.key)?lastDiscard:null;
+  const GATES=['g0','rulebook','rulebook_revision','finish'];
+  const reaskTarget=lostConfirm?{key:lostConfirm[0],attempt:(lostConfirm[1].attempt??1)+1,gate:lostConfirm[1].input.payload.gate}
+    :pendingReask?{key:pendingReask.key,attempt:(pendingReask.attempt??1)+1,gate:null}:null;
   if(reaskTarget){
-    const [key,entry]=reaskTarget,attempt=(entry.attempt??1)+1,file=path.join(answerRoot??'',`confirm-reask.json`);
-    if(!answerRoot||!ownFile(file))stop(2,`confirm_reask_decision_required：${key} 的确认要重新问当前用户，写好新的决定 ${file}（{"replaces":"${key}","attempt":${attempt},"${entry.input.payload.gate}":"approved|rejected"}）；旧的 confirm.json 不会沿用`);
+    const {key,attempt,gate}=reaskTarget,file=path.join(answerRoot??'',`confirm-reask.json`),named=gate??'<gate>';
+    if(!answerRoot||!ownFile(file))stop(2,`confirm_reask_decision_required：${key} 的确认要重新问当前用户，写好新的决定 ${file}（{"replaces":"${key}","attempt":${attempt},"${named}":"approved|rejected"}）；旧的 confirm.json 不会沿用`);
     const value=readJson(file,'refactor_confirm_reask');
-    valid(object(value)&&value.replaces===key&&value.attempt===attempt&&['approved','rejected'].includes(value[entry.input.payload.gate])
-      &&Object.keys(value).every(name=>['replaces','attempt','g0','rulebook','rulebook_revision','finish'].includes(name)),
-    `confirm-reask.json 须为本次重问写的新决定：replaces=${key}、attempt=${attempt}、${entry.input.payload.gate} 为 approved|rejected`);
+    const decided=object(value)?GATES.filter(name=>Object.hasOwn(value,name)):[];
+    valid(object(value)&&value.replaces===key&&value.attempt===attempt
+      &&(gate?['approved','rejected'].includes(value[gate]):decided.length===1&&['approved','rejected'].includes(value[decided[0]]))
+      &&Object.keys(value).every(name=>['replaces','attempt',...GATES].includes(name)),
+    `confirm-reask.json 须为本次重问写的新决定：replaces=${key}、attempt=${attempt}、${named} 为 approved|rejected`);
     answers.refactor_confirm_reask=value;
   }
   stderr(`预检通过：${operation}`);

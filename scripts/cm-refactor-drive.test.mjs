@@ -92,3 +92,22 @@ test('re-asked confirmation requires a new decision file bound to key and attemp
   // confirm.json still says approved; the new decision (rejected) is the one used.
   assert.equal(JSON.parse(out.stdout).result.stage,'awaiting_finish');
 });
+
+// Round-2 major: the host appended the lost confirmation's discard and exited before
+// the re-asked intent. The driver reads the re-ask from the persisted discard history.
+import {openRefactorRecords,effectDigest} from '../runtime/js/cm-refactor/records.mjs';
+import {refactorDiscardable} from '../runtime/js/cm-refactor/workflow.mjs';
+test('crash between the discard and the re-asked intent: the driver still requires and uses confirm-reask.json',async t=>{
+  const f=setup(t);assert.equal(f.run('start').status,0);
+  const lost=await createCmRefactorHost(f.config,{call:async()=>{throw Error('finish confirmation lost');}}).handle({operation:'finish'});
+  assert.equal(lost.stage,'blocked');
+  const records=openRefactorRecords(path.dirname(f.store),{discardable:refactorDiscardable});records.acquire();
+  try{const entry=records.effects.get('host/finish-1');
+    records.discard({key:'host/finish-1',requestDigest:effectDigest(entry),evidence:'confirmation lost; host exited before re-asking'});}
+  finally{records.release();}
+  assert.equal(fs.readFileSync(f.store,'utf8').trimEnd().split('\n').map(line=>JSON.parse(line)).at(-1).type,'discard');
+  let out=f.run('finish');assert.equal(out.status,2);assert.match(out.stderr,/confirm_reask_decision_required/);assert.match(out.stderr,/"attempt":2/);
+  write(path.join(f.answers,'confirm-reask.json'),{replaces:'host/finish-1',attempt:2,finish:'rejected'});
+  out=f.run('finish');assert.equal(out.status,0,out.stderr);
+  assert.equal(JSON.parse(out.stdout).result.stage,'awaiting_finish');
+});
