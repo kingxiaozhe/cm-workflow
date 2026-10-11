@@ -4,7 +4,7 @@
 
 ## 先确认原运行协议
 
-目标缺失或结构不符使用 `invalid_input`，目标过期使用 `snapshot_changed`；混入旧权限使用 `invalid_arguments`，策略/入口不匹配使用 `fingerprint_mismatch`，未开放的 supersede 使用 `supersede_unavailable`。拒绝后不自动刷新目标或换协议。旧 grant 审查登记以 runner_invocation 拒绝；保留 journal，只用原版本只读工具查看历史，不在新版回放或迁移。
+目标缺失或结构不符使用 `invalid_input`，目标过期使用 `snapshot_changed`；混入旧权限使用 `invalid_arguments`，策略/入口不匹配使用 `fingerprint_mismatch`，未开放的 supersede 使用 `supersede_unavailable`。拒绝后不自动刷新目标或换协议。旧 grant 审查登记在配置指纹检查前以 `runner_invocation` 拒绝，提示「旧授权协议不支持恢复」。保留 journal，使用 `node scripts/cm-ai-run.mjs inspect-history --config 原run.json` 只读查看经摘要校验的历史类型、序号与指纹；该命令不打开 writer、不回放授权、不调用模型。旧 `createCodexExecution` 组装的 `--protected-config` CLI 恢复入口已停用。没有 grant 登记时不能仅凭指纹识别旧运行；该路径仍返回 `fingerprint_mismatch` 并说明这个边界。属于旧组装时不要重复原参数；现代 provider 运行仍须核对原配置漂移。
 
 原运行有 control policy v2 时，恢复继续提供相同 `--control-config`，请求为 `version:2`，不传任何 `--allow-*`。
 旧运行/不含 `controlConfig` 的旧 PLAN 沿 legacy，不能为恢复换协议。下文旧 `--allow-*`、version 1 与 supersede 参数只属 legacy；业务范围、进程退出、预算、漂移和独立审查条件仍需核对。
@@ -128,7 +128,7 @@ host-context 或其余只存指纹的配置），`invalid_arguments` 也写明�
 原配置指纹和 init 元数据仍绑定创建会话，旧记录不改；开发结果和审查授权使用当前真实会话。
 新会话首次签审查授权前追加 `host-joined`，仅打开或 status 不写；创建会话、已加入会话和当前会话
 都排除为审查员，当过审查员的线程不能回来当宿主。最多记录 16 个接手会话。
-支持 V3 会话父运行及其 QA-fix 子运行；旧 protected 兼容分支、batch 不支持此跨会话入口，原授权仍须逐项提供。
+支持 V3 会话父运行及其 QA-fix 子运行；batch 不支持此跨会话入口。旧 protected factory 的 CLI 恢复入口已停用，见本页开头的只读历史查看动作。
 QA-fix 新建子运行的配置 hostContextId 只能是当前会话或父运行的持久创建会话；已有子运行沿用原配置并校验指纹。
 子运行打开（含 fix_status）和审查授权使用当前真实会话；首次签授权前由 cm-fix 记录 fix-host-joined-N，
 只读打开不写接手记录，causeReview.contextId 不能是当前会话。子 runtime 仍须匹配宿主。

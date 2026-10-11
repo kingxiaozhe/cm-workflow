@@ -34,7 +34,8 @@ export const LEGACY_TEST_POLICIES=Object.freeze([Object.freeze({since:'0b3040e',
 // Known versions of the changed documents that may continue a legacy binding.
 export const POLICY_DOC_SUCCESSORS=Object.freeze({
   'skills/cm-init/references/js-host.md':Object.freeze(['d3d6ad0b02ee7d3863302c49a9434b1a9f423e8ab4ff332cd9ad077a0b270fb1',
-    '223dd3a4a4172591480bff818bc81216d5554ea1c7c7785619ccab33ee3fd833']),
+    '223dd3a4a4172591480bff818bc81216d5554ea1c7c7785619ccab33ee3fd833',
+    'b218527db47bfa2c995173a0d80e3927e1bb8946c397a2945c3c09e73639af59']),
   'skills/cm-test/references/js-host.md':Object.freeze(['0a6023c9036693a93a17650872b634b33d68eecc2fbece188519e94e31452e8c']),
 });
 // cm-init: files is the current [[relativePath, content|null], ...] policy list.

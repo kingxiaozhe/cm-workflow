@@ -60,6 +60,10 @@ test('real cm-init host: a session bound by 0b3040e opens, reports status and ke
     checkpoint:{stage:'ready',result:null,verification:null,selection:null,confirmation:null,review:null,writeResult:null,reviewPackage:null,
       reviewEvidence:null,analysisResult:null,revisionHistory:[],authorContexts:['author-a'],authorContextId:'author-a'},pending:null,cancelled:false};
   fs.writeFileSync(file,JSON.stringify(legacy),{mode:0o600});
+  const originalBytes=fs.readFileSync(file);
+  const status=await serve(args,{cwd:project,operations:[{operation:'status'}]});
+  assert.equal(status.code,0,status.stderr);assert.equal(status.results[0].stage,'ready');
+  assert.deepEqual(fs.readFileSync(file),originalBytes,'status does not rewrite the legacy binding or session');
   let run=await serve(args,{cwd:project,operations:[{operation:'status'},{operation:'cancel'}]});
   assert.equal(run.code,0,run.stderr);assert.equal(run.results[0].stage,'ready');assert.equal(run.results[1].stage,'cancelled');
   assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).binding.policyDigest,legacyInit.policyDigest,'the original binding is kept');

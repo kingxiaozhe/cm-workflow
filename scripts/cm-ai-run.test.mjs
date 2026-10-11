@@ -58,7 +58,9 @@ test('fixed Codex assembly requires review preflight and denies developer dispat
   const execution=await createCodexExecution(config,authority);assert.equal(decisions,0);
   const request=requestFor({invocationId:'dev-1',identity,role:'developer',provider:'codex',requestedModel:'fixture',
     contextId:'author',payload:{scope:['a.js'],requirements:[],priorReview:null}});
-  await assert.rejects(execution.developer.run(request,{signal:new AbortController().signal}),{code:'permission_denied'});
+  let workerEvents=0;
+  await assert.rejects(execution.developer.run(request,{signal:new AbortController().signal,onWorker:()=>workerEvents++}),{code:'invalid_development_attempt'});
+  assert.equal(workerEvents,0,'denied workflow scope must refuse before worker spawn');
   assert.equal(decisions,1);assert.equal(fs.readFileSync(path.join(f.codeProject,'a.js'),'utf8'),'old\n');
   assert.equal(Object.hasOwn(execution.reviewInvocation,'authorize'),false);
 }));

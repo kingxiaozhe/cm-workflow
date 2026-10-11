@@ -103,7 +103,7 @@ QA命令复用同一specs只读沙箱。最终任务的documentationPaths必须�
 宿主仍处理qa_assess/qa_logic/qa_browser及只读documentation_inspect；不得借这些请求改代码、规格或指令。
 浏览器仍遵循原工具、目标、证据与清理约束；此模式只对开发及命令子进程提供OS保护，不把宿主语义报告冒充沙箱证明。
 只有原QA/文档核验/完成门禁通过才返回run_done；缺能力或核验blocked仍阻断，不手工补状态。
-旧 protected 兼容分支仅单任务 Codex；可接原 QA-fix 参数，但子owner/template的configuration必须显式protectSpecs:true，
+当前受保护父运行可接原 QA-fix 参数，但子owner/template的configuration必须显式protectSpecs:true，
 否则在父运行建store前拒绝。v2 使用冻结 qaFix 模式与原子配置，legacy 保留原每项权限；auto_fix 策略和最多三轮 QA 不变，不因父开发/审查选择取得范围外子权限。
 子修复的文本提案合同见`../../cm-fix/references/js-host.md`“同仓specs的受保护修复”；收到对应editMode时宿主不直接落盘。
-旧 protected 兼容分支不适用于 Claude/批次；v2 的 provider 模式共用当前会话执行合同，单任务/批次仍按原 provider 路由配置选择实际运行端，批次 QA-fix 不支持。两协议不改变 Git、安装和发布权限；恢复不得在受保护模式与默认会话模式之间切换。
+旧 protected factory 的 CLI 组装恢复入口已停用；旧 grant 登记在指纹检查前以 runner_invocation 拒绝。无 grant 的历史不由指纹猜测身份，指纹不匹配时保留现场并用 `cm-ai-run.mjs inspect-history --config 原run.json` 只读查看。v2 的 provider 模式共用当前会话执行合同，单任务/批次仍按原 provider 路由配置选择实际运行端，批次 QA-fix 不支持。两协议不改变 Git、安装和发布权限；恢复不得在受保护模式与默认会话模式之间切换。

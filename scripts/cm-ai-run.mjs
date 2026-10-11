@@ -26,7 +26,7 @@ import {JOURNAL_PAYLOAD_LIMIT,boundedReason} from '../runtime/js/cm-ai/effect-co
 import {protectedScopePaths} from '../runtime/js/cm-ai/developer-adapter.mjs';
 import {closeoutPolicyCandidates} from '../runtime/js/cm-ai/knowledge-closeout.mjs';
 
-const usage='cm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
+const usage='cm-ai-run.mjs inspect-history --config RUN_DEFINITION.json (validated read-only history; no owner lock or provider dispatch)\ncm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
 const fail=code=>{throw Object.assign(new Error(code),{code});};
 // In-process provenance only; a config flag cannot certify protected callbacks.
 const protectedExecutions=new WeakMap();
@@ -239,6 +239,27 @@ export function runConfigMaterial(definition,execution,{parallelSelection=null,b
     ...(execution.documentationResult?{documentationResult:execution.documentationResult}:{}),
     ...(execution.documentationSync?{documentationSync:{version:1,paths:execution.documentationSync.paths}}:{})};
 }
+// Inspect only the validated store envelope. Do not replay old grants or open
+// a writer merely to explain an unsupported historical execution.
+export function inspectRunHistory(definition){
+  const snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,
+    identity:{repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
+  return {identity:snapshot.identity,revision:snapshot.revision,fingerprints:snapshot.fingerprints,
+    records:snapshot.records.map(record=>({seq:record.seq,id:record.id,kind:record.kind,type:record.payload.type??null,
+      legacyReviewGrant:record.payload.type==='review-invocation-registered'
+        &&(Object.hasOwn(record.payload,'grant')||Object.hasOwn(record.payload,'authorizationAt'))}))};
+}
+export function assertSupportedResumeHistory(definition){
+  let snapshot;
+  try{snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,
+    identity:{repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});}
+  catch(error){if(error.code==='ENOENT')return null;throw error;}
+  if(snapshot.records.some(record=>record.payload.type==='review-invocation-registered'
+    &&(Object.hasOwn(record.payload,'grant')||Object.hasOwn(record.payload,'authorizationAt'))))
+    throw Object.assign(new Error('runner_invocation'),{code:'runner_invocation',
+      reason:'旧授权协议不支持恢复。原运行与审查历史已保留；重复原参数不会恢复。只读查看历史：node scripts/cm-ai-run.mjs inspect-history --config RUN_DEFINITION.json（使用原运行定义文件）。'});
+  return snapshot;
+}
 const LEGACY_QA_FINGERPRINT_REASON='运行指纹与当前配置不符。若此运行由之前的版本创建，它的指纹还含有当时生效的 CM 配置'
   +'（项目 .cm-workflow.yml、~/.cm-workflow/runtimes.yml 与插件内置默认值）：把这些配置恢复为创建时的内容即可恢复；'
   +'现在新建的运行不再把这些可变配置写进指纹。否则请核对 run.json、--workflow-config、宿主身份及授权参数是否与创建时一致。';
@@ -296,13 +317,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
     }else if(expectedControl!==null)fail('invalid_input');
   }
   if(mode==='resume'){
-    let snapshot;
-    try{snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,
-      identity:{repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});}
-    catch(error){
-      if(error.code!=='ENOENT')throw error;
-      // The existing owner reports missing stores and owns initializer recovery.
-    }
+    const snapshot=assertSupportedResumeHistory(definition);
     if(snapshot?.records.length)assertControlEntry(snapshot,controlPolicy);
   }
   const {createCmAiHost}=await import('../runtime/js/cm-ai/host.mjs');
@@ -584,6 +599,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
   if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\n');return 0;}
   let run;
   try{
+    if(argv.length===3&&argv[0]==='inspect-history'&&argv[1]==='--config'){
+      output.write(JSON.stringify(inspectRunHistory(readRunDefinition(argv[2])))+'\n');return 0;
+    }
     if(argv.length!==5||argv[0]!=='serve'||argv[1]!=='--config'||argv[3]!=='--mode')fail('invalid_arguments');
     run=await openControlRun(readRunDefinition(argv[2]),argv[4],execution);
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}
@@ -592,7 +610,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     // Config diagnostics contain field names/reasons, never field values or provider text.
     const code=typeof cause.code==='string'&&(/^[a-z_]+$/.test(cause.code)
       ||cause.code.startsWith('invalid_config: '))?cause.code:'control_failed';
-    error.write(JSON.stringify({error:{code}})+'\n');return 1;
+    const reason=code==='runner_invocation'&&typeof cause.reason==='string'?cause.reason:null;
+    error.write(JSON.stringify({error:{code,...(reason?{reason}:{})}})+'\n');return 1;
   }finally{run?.close();}
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))process.exitCode=await main();

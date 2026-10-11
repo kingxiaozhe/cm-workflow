@@ -40,7 +40,7 @@
 | `original_host_context_unavailable`、`review_configuration_required` | 本文「启动前」第 3、5 项 |
 | `fingerprint_mismatch`、`invalid_arguments`、`invalid_arguments`、`invalid_arguments`、`invalid_input`、`snapshot_changed` | control policy v2 文档「旧运行与迁移拒绝」「显式恢复」 |
 | `parallel_scope_existing_file`、`parallel_dependency_conflict` | 本文「启动前」3.1 |
-| `runner_invocation`（旧 grant 审查登记） | 保留原 journal，用原版本只读工具查看历史；新版不回放或迁移这类登记 |
+| `runner_invocation`（旧 grant 审查登记） | 保留原 journal，用 `cm-ai-run.mjs inspect-history --config 原run.json` 只读查看历史；新版不回放或迁移这类登记 |
 | `fingerprint_mismatch`、`invalid_arguments`、换会话恢复、`host-joined` | R「恢复参数与跨会话接手」 |
 | `resume` 下的 `develop_checks_not_passed`、旧 `checks_not_passed`、`develop_package_too_large`、`develop_empty_changes`、`develop_requirement_missing`、`develop_unchanged_after_review`、`develop_call_timeout`（开发应答超时）、`develop_answer_invalid`（开发应答超出字段上限）；`unknown/limit_exceeded`、`store_failure`、`empty_changes`；`request_too_large`、`host_response_too_large`、`host_response_mismatch`；大小上限或 `runId` 长度致退出 2 | R「开发交付阻断与存档限额」 |
 | `check_answer_missing`、`check_answer_invalid`、`complete_recheck_failed`、`develop_answer_missing`、`develop_redo`、`develop_redo_worker_*`、`develop_dispatch_failed`、`role_log_failed`、`host_response_late`、`check_answer_retry_limit`、`complete_recheck_limit`、`develop_redo_limit`、`documentation_sync_answer_missing`、`documentation_sync_answer_invalid`、`documentation_sync_answer_blocked`、`documentation_sync_out_of_scope`、`documentation_sync_interrupted`、`documentation_sync_stop_required`、`documentation_sync_changed_after_stop`、`documentation_sync_retry_limit` | R「应答缺失、无效或迟到」 |
@@ -265,7 +265,7 @@ cm-ai 单/批任务 r2 仍 blocked，
 ## legacy 兼容：旧运行与旧 PLAN
 
 本节及旧恢复参考中的 `--allow-*` 只适用于未使用 control policy v2 的原入口。
-不含 `controlConfig` 的 PLAN 保持原语义；旧 journal、指纹与控制记录不改写。
+不含 `controlConfig` 的 PLAN 保持原语义；旧 journal、指纹与控制记录不改写。含旧 grant 登记的运行不支持恢复，CLI 在指纹检查前以 `runner_invocation` 拒绝。只读历史查看使用 `node scripts/cm-ai-run.mjs inspect-history --config 原run.json`，不回放或迁移授权。旧 factory 的 `--protected-config` CLI 组装恢复入口已停用；无 grant 记录时保留 `fingerprint_mismatch`，明确给出历史查看与该边界，不能由指纹猜测历史身份。
 单任务原 `serve` 保留 `--allow-development`，create 的 reviewer 配置仍必须首次提供。
 普通 advance 直接派发本轮 fresh 审查；单任务与批次均不再使用按轮审查参数。
 `--allow-development`、`--allow-qa` 等保留为运行能力开关，不是身份或人工交互凭据。

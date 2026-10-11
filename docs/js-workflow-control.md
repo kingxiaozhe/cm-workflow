@@ -11,7 +11,7 @@ cm-ai 单/批 r2 blocked 的 runner-owned correction 尚未支持；原兼容任
 
 下文原 `cm-ai` 能力开关和请求 `version:1` 示例用于未启用 v2 的旧运行、旧 PLAN 或原进程内接线。
 cm-ai 新旧入口均直接审查，不再使用逐轮审查参数。v2 使用上方文档中的策略与固定恢复目标。
-包含旧 grant 审查登记的 cm-ai journal 以 runner_invocation 拒绝；保留记录，用原版本只读工具查看历史，新版不回放或迁移这类登记。
+包含旧 grant 审查登记的 cm-ai journal 以 runner_invocation 拒绝；保留记录，用 `node scripts/cm-ai-run.mjs inspect-history --config 原run.json` 只读查看历史类型与指纹，新版不回放或迁移这类登记。
 `cm-fix`、`cm-prd`、`cm-init` 等独立入口不因这次控制改动而改变原协议。
 源文件更新不等于已安装副本加载，也不证明真实 provider 或生产发布可用。
 
@@ -734,6 +734,8 @@ cm-ai 单任务与批次的新旧入口均直接派发常规 fresh 审查，不�
 
 ## legacy：受信宿主执行组装
 
+旧 grant 审查登记不再恢复。正式 CLI 在配置指纹检查前返回 `runner_invocation`，提示「旧授权协议不支持恢复」。`node scripts/cm-ai-run.mjs inspect-history --config 原run.json` 只读校验并查看存档中的记录类型、序号、身份和指纹，不打开 writer、不执行 runner、不派发模型。旧 factory 对应的 `--protected-config` CLI 组装恢复入口已停用；没有 grant 时不猜测运行来源，仍返回 `fingerprint_mismatch`，并提示旧组装不能靠重复原参数恢复。现代 provider 运行继续核对原配置漂移。
+
 `scripts/cm-ai-run.mjs` 的进程内 `main` 接受宿主提供的 execution；
 `createCodexExecution` 组合开发、检查与独立审查适配器。JSON 配置和 stdin 不能启用它。
 该路径已接 Learning、定稿 handoff、V3 审查登记与既有唯一完成门禁。
@@ -751,7 +753,7 @@ cm-ai 单任务与批次的新旧入口均直接派发常规 fresh 审查，不�
 创建/恢复及子进程派发前重新核对真实路径，不能以 symlink 替换 specs。
 
 此变体不能再挂接任意 qaExecutor 或 documentationSync。固定factory可在冻结前接入下述原workflow能力；
-未传 specsRoot/workflow 的旧 factory 配置和恢复指纹保持兼容。
+无旧 grant 登记的进程内 factory 仍按原配置指纹核对；这不恢复已停用的旧 CLI 组装入口。
 底层保持进程内 Codex 适配器，不给 JSON CLI 加载任意执行模块的开关；普通单任务入口可通过下文
 显式选项调用它；Codex/Claude当前会话及批次使用下方独立的受保护文本提案接线，cm-fix使用protectSpecs，不冒用此Codex模型调用。
 Node 24.14+要求不变；本地原生沙箱与合成CLI证据不是实际模型开发或Linux端到端验收，平台证据见“当前支持”。

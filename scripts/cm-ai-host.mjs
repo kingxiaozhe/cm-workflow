@@ -10,7 +10,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {REVIEWED_HANDOFF_HINT} from '../runtime/js/cm-ai/host-handoff.mjs';
-import {readRunDefinition,openControlRun,createCodexExecution,assertCreatableScope,controlLaunchTarget} from './cm-ai-run.mjs';
+import {readRunDefinition,openControlRun,createCodexExecution,assertCreatableScope,controlLaunchTarget,assertSupportedResumeHistory} from './cm-ai-run.mjs';
 import {createConversationExecution as executionFor} from '../runtime/js/cm-ai/host-conversation-execution.mjs';
 import {createHostToolBridge,HOST_ANSWER_BACKSTOP_MS} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {serveCmAiHost,parseHostInputLimit,inputLimitReason} from '../runtime/js/cm-ai/host-session.mjs';
@@ -59,7 +59,7 @@ export function readBootstrapConfiguration(file){
 const refuse=(ok,code,reason)=>{if(!ok)throw Object.assign(new Error(code),{code,reason});};
 const REASONED_CODES=['supersede_unavailable','supersede_code_drift','handoff_exists','browser_capability_required',
   'browser_capability_unavailable','invalid_arguments','fingerprint_mismatch','task_selection_mismatch','review_configuration_required',
-  'spec_rebind_refused','spec_rebind_unavailable','protected_scope','invalid_input','snapshot_changed'];
+  'spec_rebind_refused','spec_rebind_unavailable','protected_scope','invalid_input','snapshot_changed','runner_invocation'];
 const fixLocalPermissions=new Map(['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon',
   'abandon-review','test-author','repair','cause-review','final-review','rediagnosis','rerun-blocked-step','final-review-recovery']
   .map(name=>[`--allow-qa-fix-${name}`,`--allow-${name}`]));
@@ -156,7 +156,7 @@ async function protectedExecutionFor(definition,hostContextId,extra,review,mode,
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Control v2: serve --config RUN --mode create|resume --host-context ID --control-config POLICY --review-config REVIEW. No --allow-*; policy selects optional modes, not human authentication. Old launches remain legacy. See docs/cm-control-policy-v2.md.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Optional --execution-optimizations freezes policy v1 for new runs only; recovery retains the original policy and legacy runs reject retrofit. See docs/execution-optimizations.md.\n');
-  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--original-host-context ID is resume-only: keep the creating session in durable configuration while --host-context remains the real live session. Omit it for same-session resume; a different session must declare the creating session. Equal IDs are equivalent to omission. Parent conversation runs only; legacy protected runs, batch and QA-fix children are unchanged.\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--original-host-context ID is resume-only: keep the creating session in durable configuration while --host-context remains the real live session. Omit it for same-session resume; a different session must declare the creating session. Equal IDs are equivalent to omission. Parent conversation runs only. Historical grant runs cannot resume; inspect them with cm-ai-run.mjs inspect-history --config RUN. The old protected assembly entrance is discontinued.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Approved bootstrap feature (0.bootstrap or a single numbered *.bootstrap): --bootstrap-config PATH {selection:null for scaffold, or original cm-init selection for rules} and --allow-bootstrap-write. Original scope must include fixed instruction targets; they are host-written inside the original task effect, checked/reviewed and reloaded. No Git/install/network grant. Optional codeProjects selects disjoint real roots below codeProject; prefix scope/requirements and use protected current-session checks with a declared codeProject per command.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Protected current-session mode (Codex or Claude; also batch): --protected-conversation-config PATH with {checkCommands,timeoutMs}; timeoutMs bounds check commands and is the reviewer budget only when review-config has no timeoutMs. A review transport timeout with no result can resume once per attempt with a fresh review context; a result-bearing timeout still requires reconciliation. No extra model call. The current host returns scoped UTF-8 edits (optional mode "0755"/"0644" on written files; new files are 0644); native Codex sandbox applies them and runs the declared checks. Original author runtime, Review checks and QA capability choices remain required. Do not combine with --protected-config. The input limit defaults to 64 KiB and may be raised with --input-limit; unavailable/binary changes stop, never switch to direct writes.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Protected single-task CLI mode: add --protected-config PATH --allow-provider-development-attempt 1|2 and --review-config PATH. Protected config is {model,checkCommands,timeoutMs}; roots and host identity come from the original run definition and launch. This explicitly permits one task attempt of real developer execution and its declared native-sandbox checks; --allow-development alone does not. Review dispatches directly with the configured reviewer. Diagnostics check capability. Optional original --workflow-config PATH and --allow-qa connect protected QA commands and documentation within the same developer invocation before Review; host semantic/browser/inspection requests retain their original contracts, not arbitrary writes. Default current-session mode is unchanged. Protected parent mode selects coder/reviewer CLIs from the project declaration; Claude returns protected-text-v1 proposals for host validation and sandbox application; original QA-fix options require child configuration.protectSpecs=true and all original child action permissions. Protected fix writes use text proposals, not direct host edits. The original QA/documentation/finalizer gates remain required. No installation or Git authority.\n');
@@ -293,6 +293,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     // Checked before the definition is read so the conflict is reported on its own.
     need(!(extra.has('--failover')&&extra.has('--protected-config')),'failover_unsupported_in_protected_mode');
     let definition=readRunDefinition(argv[2]);
+    if(argv[4]==='resume')assertSupportedResumeHistory(definition);
     // --feature binds an explicit batch choice into the run definition, exactly
     // as a printed featureSelection does; resume must repeat it (fingerprint).
     if(extra.has('--feature')){
@@ -409,6 +410,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const snapshotReason=['out_of_scope','unsupported_file','limit_exceeded','package_mismatch'].includes(code)
       &&typeof cause?.message==='string'&&cause.message.length<=8192&&!/[\r\n\0]/.test(cause.message)
       ?cause.message:null;
+    const protectedHistoryHint=code==='fingerprint_mismatch'&&argv[4]==='resume'&&argv.includes('--protected-config')
+      ?' --protected-config 的配置指纹不匹配。旧 createCodexExecution 组装的 CLI 恢复入口已停用；无旧 grant 登记时不能仅凭指纹识别旧运行，不能自动转换。若属于这种旧运行，重复原参数无法恢复；保留现场，只读查看：node scripts/cm-ai-run.mjs inspect-history --config RUN_DEFINITION.json（使用原运行定义文件）。现代 provider 运行仍须核对原配置漂移。':null;
+    if(protectedHistoryHint)cause.reason=(typeof cause.reason==='string'?cause.reason:'')+protectedHistoryHint;
     const reason=REASONED_CODES.includes(code)&&typeof cause?.reason==='string'&&cause.reason.length<=8192
       &&!/[\r\n\0]/.test(cause.reason)?cause.reason:null;
     if(code==='handoff_exists')error.write(`[host] ${REVIEWED_HANDOFF_HINT}\n`);

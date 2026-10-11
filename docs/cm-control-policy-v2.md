@@ -209,7 +209,7 @@ v2 create supersede 尚未开放，返回 `supersede_unavailable`；保留原证
 | 输入或情形 | 结果 |
 | --- | --- |
 | PLAN 不含 `controlConfig` | 沿原请求 version 1 与能力开关，常规审查直接派发 |
-| cm-ai journal 含旧 grant 通道的审查登记 | `runner_invocation`，保留原记录，仅由原版本只读工具查看历史 |
+| cm-ai journal 含旧 grant 通道的审查登记 | `runner_invocation` 在指纹检查前拒绝；保留原记录，`cm-ai-run.mjs inspect-history --config 原run.json` 只读查看 |
 | v2 入口带任意 `--allow-*` | `invalid_arguments` 或驾驶员启动前迁移拒绝 |
 | 旧运行通过 v2 执行，或 v2 运行通过 legacy 执行 | `fingerprint_mismatch`，不转换历史后继续 |
 | 策略启用的能力缺配置 | 沿原具体配置阻断；模式冲突用 `invalid_arguments`，不自动开启 |
