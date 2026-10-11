@@ -66,7 +66,7 @@ export function validateHostWorkflowConfiguration(raw){
   return config;
 }
 
-export function createHostWorkflowCapabilities({definition,configuration,bridge,allowQa,runtime='codex',protectedExecution=false,bootstrap=null,parallelMember=false}){
+export function createHostWorkflowCapabilities({definition,configuration,bridge,allowQa,runtime='codex',protectedExecution=false,bootstrap=null,parallelMember=false,controlPolicy=null}){
   need(['codex','claude'].includes(runtime),'invalid_runtime');
   const {specsDir,codeProject,feature,requirements}=definition;
   const logHome=path.join(specsDir,'.reviews','host-log-mirror');
@@ -74,12 +74,19 @@ export function createHostWorkflowCapabilities({definition,configuration,bridge,
     documentationProvider:{timeoutMs:60000,inspect:(request,signal)=>bridge.call('documentation_inspect',request,signal)}};
   if(!protectedExecution&&configuration.documentationPaths.length)result.documentationSync={paths:configuration.documentationPaths,
     run:(request,signal)=>bridge.call('documentation_sync',request,signal)};
-  if(configuration.qa!==null){
-    need(allowQa===true,'qa_authorization_required');
+  // The N6 disposition is required even when execution is disabled. Its
+  // semantic assessment plus the existing mechanical policy may require QA;
+  // only a configured executor can then supply actual execution evidence.
+  // Legacy qa:null keeps its historical caller-supplied disposition contract.
+  if(configuration.qa!==null||controlPolicy!==null){
     result.qaLogHome=logHome;
-    const requestTimeout={timeoutMs:configuration.qa.timeoutMs??60000};
+    const requestTimeout={timeoutMs:configuration.qa?.timeoutMs??60000};
     result.qaDecisionProvider=parallelMember?createParallelMemberQaDecisionProvider():createHostQaDecisionProvider({timeoutMs:60000,
       assess:(request,signal)=>bridge.call('qa_assess',request,signal,requestTimeout)});
+  }
+  if(configuration.qa!==null&&(controlPolicy===null||controlPolicy.qa==='run')){
+    need(allowQa===true,'qa_authorization_required');
+    const requestTimeout={timeoutMs:configuration.qa.timeoutMs??60000};
     // requestTimeoutMs stays outside the fingerprinted executor configuration;
     // timed-out QA recovery reads older case_blocked rows against it.
     result.qaExecutor=Object.freeze({...createHostQaExecutor({specsDir,codeProject,feature,requirements,runtime,

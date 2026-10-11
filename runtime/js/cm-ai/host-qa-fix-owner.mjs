@@ -7,6 +7,8 @@ import {openFixExecution} from '../cm-fix/execution.mjs';
 import {createFixHost} from '../cm-fix/host.mjs';
 import {bindQaFixDefinition} from './qa-fix-definition.mjs';
 import {digest,id,json,need,shape,validIdentity,hex} from './effect-contract.mjs';
+import {readExecutionSnapshot} from './execution-snapshot.mjs';
+import {readFixControlTarget,CONTROL_FIX_RECOVERY_OPERATIONS} from './control-policy.mjs';
 
 // Q23: the child's recovery operations, each with the original cm-fix flag the
 // shared dispatcher (cm-fix/host.mjs) checks and the parent flag that grants it.
@@ -23,7 +25,7 @@ const parentFlag=flag=>flag.replace(/^--allow-/,'--allow-qa-fix-');
 const actionRefusal=(fixOperation,code,reason)=>Object.freeze({outcome:'rejected',code,fixOperation,reason,
   guidance:Object.freeze({summary:'QA 修复子流程的这次操作被拒绝，子运行没有因此改变。',nextStep:reason,
     recoveryOperation:null,prerequisites:Object.freeze([]),authorizationGranted:false})});
-export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHostContextId,fix=null,template=null,allowStart=false,autoFix=false,fixExecution={},fixPermissions=[],fixAuthorities={},externalModels=null,executionPolicy=null,recoveryInvocationId=null}){
+export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHostContextId,fix=null,template=null,allowStart=false,autoFix=false,fixExecution={},fixPermissions=[],fixAuthorities={},externalModels=null,executionPolicy=null,recoveryInvocationId=null,controlPolicy=null}){
   id(hostContextId);id(parentHostContextId);
   if(recoveryInvocationId!==null)id(recoveryInvocationId);
   need((fix===null)!==(template===null),'invalid_fix_config');
@@ -81,7 +83,8 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
         ...(request.operation==='fix_action'?['fixOperation',...(request.fixOperation==='reconcile_review'?['invocationId']:[]),
           ...(QA_FIX_REASONED.includes(request.fixOperation)&&Object.hasOwn(request,'reason')?['reason']:[]),
           ...(request.fixOperation==='prepare_revision'&&Object.hasOwn(request,'tests')?['tests']:[]),
-          ...(request.fixOperation==='recover_final_review'?['invocationId','reviewPackageDigest','previousInvocationStopped','reason']:[])]:[])]);
+          ...(request.fixOperation==='recover_final_review'?['invocationId','reviewPackageDigest','previousInvocationStopped','reason']:[])]:[]),
+        ...(controlPolicy&&request.operation==='fix_action'&&CONTROL_FIX_RECOVERY_OPERATIONS.includes(request.fixOperation)?['expectedFixControl']:[])]);
       need(value.version===1,'invalid_input');id(value.requestId);validIdentity(value.identity);hex(value.packageDigest);id(value.testRunId);
       if(fixedTemplate)definition=bindQaFixDefinition({template:fixedTemplate,identity:value.identity,
         packageDigest:value.packageDigest,testRunId:value.testRunId});
@@ -110,6 +113,11 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
         if(advancing&&!existing)need([hostContextId,parentHostContextId].includes(definition.configuration.hostContextId),'qa_fix_host_mismatch');
         child=openFixExecution({...definition,hostContextId,create:advancing&&!existing},advancing||acting?fixExecution:{});
         activeChild=child;
+        const childTarget=()=>readFixControlTarget({runId:definition.identity.runId,stage:child.status().stage,
+          revision:readExecutionSnapshot({specsRoot:definition.specsRoot,
+            identity:{repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}}).revision});
+        if(controlPolicy&&acting&&CONTROL_FIX_RECOVERY_OPERATIONS.includes(value.fixOperation))
+          need(digest(readFixControlTarget(value.expectedFixControl))===digest(childTarget()),'snapshot_changed');
         let actionResult;
         if(advancing||acting){
           const host=createFixHost({owner:child,config:{...definition.configuration,specsRoot:definition.specsRoot,identity:definition.identity},
@@ -138,6 +146,7 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
           ?json({outcome:'verified',code:'qa_fix_completed',evidence:child.completionEvidence()},12*1024*1024)
           :json({outcome:'blocked',code:'qa_fix_incomplete',fixStage:observed.stage,
             ...(acting?{actionResult}: {})},12*1024*1024);
+        if(controlPolicy&&value.operation==='fix_status')result={...result,childControlTarget:childTarget()};
       }finally{
         try{activeChild=null;child?.close();if(released)current=await reopenParent();}
         finally{busy=false;switching=false;}

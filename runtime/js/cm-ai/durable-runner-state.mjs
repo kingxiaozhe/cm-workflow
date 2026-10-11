@@ -1,4 +1,5 @@
 import {readExecutionPolicy} from './execution-policy.mjs';
+import {readControlPolicy} from './control-policy.mjs';
 import {readExternalModels} from './external-models.mjs';
 import {beforeFirstQaRound,qaRevisionFollows,readQaConfigRevision} from './qa-config-revision.mjs';
 import {readCloseoutPolicy} from './knowledge-closeout.mjs';
@@ -1160,7 +1161,8 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
 function completionConfig(config,version){
   shape(config,['root','identity','scope','requirements','excludedContexts','timeoutMs','developer','reviewers','completion',
     ...(version===3?['reviewInvocation']:[]),...(Object.hasOwn(config,'taskLearning')?['taskLearning']:[]),
-    ...['bootstrap','codeProjectPaths','knowledgeCloseout','externalModels','executionPolicy'].filter(key=>Object.hasOwn(config,key))]);
+    ...['bootstrap','codeProjectPaths','knowledgeCloseout','externalModels','executionPolicy','controlPolicy'].filter(key=>Object.hasOwn(config,key))]);
+  if(Object.hasOwn(config,'controlPolicy')){same(config.controlPolicy,readControlPolicy(config.controlPolicy));need(version===3,'runner_version');}
   if(Object.hasOwn(config,'knowledgeCloseout'))readCloseoutPolicy(config.knowledgeCloseout);
   if(Object.hasOwn(config,'executionPolicy')){same(config.executionPolicy,readExecutionPolicy(config.executionPolicy));need(version===3,'execution_policy_runner_version');}
   if(Object.hasOwn(config,'externalModels')){same(config.externalModels,readExternalModels(config.externalModels));need(version===3,'external_model_runner_version');}

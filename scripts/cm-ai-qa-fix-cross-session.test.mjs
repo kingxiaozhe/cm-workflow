@@ -100,13 +100,13 @@ async function fixture(t,{childHost=A,causeContext=null,lostCauseReviews=0,rejec
   const childDir=path.join(specsDir,'.reviews','.execution',fix.identity.runId),statePath=path.join(childDir,'state.json');
   const bound=operation=>({...request(operation),packageDigest:failed.packageDigest,testRunId:qaSource.testRunId});
   const close=()=>{owner?.close();owner=null;};
-  const open=async(live,{allowStart=true,template=false,allowAbandon=false,lostDiagnosis=false,extraPermissions=[]}={})=>{
+  const open=async(live,{allowStart=true,template=false,allowAbandon=false,lostDiagnosis=false,extraPermissions=[],controlPolicy=null}={})=>{
     close();const execution=executionFor(live);assert.equal(execution.configuration.hostContextId,A);
     parent=await openControlRun(definition,'resume',execution);
     const rh=reviewHost(live);
     const {qaSource:ignored,...templateConfiguration}=configuration;
     owner=createQaFixOwnerHost({parent,hostContextId:live,parentHostContextId:execution.configuration.hostContextId,
-      reopenParent:()=>openControlRun(definition,'resume',execution),allowStart,
+      reopenParent:()=>openControlRun(definition,'resume',execution),allowStart,controlPolicy,
       ...(template?{template:{specsRoot:specsDir,feature,identity,configuration:templateConfiguration}}:{fix}),
       fixPermissions:[...permissions,...(allowAbandon?['--allow-abandon']:[]),...extraPermissions],
       fixAuthorities:{authority:rh.authority,finalAuthority:rh.finalAuthority},
@@ -190,6 +190,21 @@ for(const operation of ['fix_status','fix_advance'])test(`live cause reviewer is
   await assert.rejects(owner.handle(f.bound(operation)),{code:'invalid_cause_reviewer'});
   assert.equal((await owner.handle(f.request('status'))).state,'fixture_completed');f.close();
   assert.deepEqual(fs.readFileSync(f.statePath),bytes);
+});
+
+test('v2 child recovery refuses a stale child snapshot with unchanged parent and preserves child records',async t=>{
+  const f=await fixture(t),policy={version:2,development:'conversation',bootstrap:'disabled',qa:'run',qaFix:'manual'};
+  let owner=await f.open(A,{controlPolicy:policy,allowAbandon:true});
+  await owner.handle(f.bound('fix_advance'));
+  const preview=(await owner.handle(f.bound('fix_status'))).childControlTarget;
+  assert.equal(preview.runId,f.fix.identity.runId);assert.equal(preview.revision,JSON.parse(fs.readFileSync(f.statePath)).revision);
+  // Advance the real child only; the completed parent identity/package stay unchanged.
+  await owner.handle({...f.bound('fix_action'),fixOperation:'cause_review'});
+  const bytes=fs.readFileSync(f.statePath);
+  await assert.rejects(owner.handle({...f.bound('fix_action'),fixOperation:'abandon_step',reason:'Synthetic stale recovery',expectedFixControl:preview}),
+    {code:'snapshot_changed'});
+  assert.deepEqual(fs.readFileSync(f.statePath),bytes);
+  assert.equal((await owner.handle(f.request('status'))).state,'fixture_completed');
 });
 
 test('owner requires a valid live host id',async t=>{

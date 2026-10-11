@@ -2,15 +2,15 @@
 import {readLaunchExecutionPolicy} from '../runtime/js/cm-ai/execution-policy.mjs';
 import {readLaunchExternalModels} from '../runtime/js/cm-ai/external-model-launch.mjs';
 import {loadExternalModels,externalPair} from '../runtime/js/cm-ai/external-models.mjs';
-// Opt-in current-conversation host. Review requires a separately authorized
-// attempt and the registered V3 boundary; preflight is only local diagnostics.
+// Current-conversation host. Legacy keeps explicit attempt choices; v2 uses
+// its bound policy. Both retain V3 review binding; preflight is local diagnostics.
 import {selectExternalModels} from '../runtime/js/cm-ai/external-models.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {REVIEWED_HANDOFF_HINT} from '../runtime/js/cm-ai/host-handoff.mjs';
-import {readRunDefinition,openControlRun,createCodexExecution,assertCreatableScope} from './cm-ai-run.mjs';
+import {readRunDefinition,openControlRun,createCodexExecution,assertCreatableScope,controlLaunchTarget} from './cm-ai-run.mjs';
 import {createConversationExecution as executionFor} from '../runtime/js/cm-ai/host-conversation-execution.mjs';
 import {createHostToolBridge,HOST_ANSWER_BACKSTOP_MS} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {serveCmAiHost,parseHostInputLimit,inputLimitReason} from '../runtime/js/cm-ai/host-session.mjs';
@@ -21,7 +21,21 @@ import {createHostReviewAuthority} from '../runtime/js/cm-ai/host-review-authori
 import {loadConfig,declaredRuntimes,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
 import {readHostWorkflowConfiguration,featureHasBrowserCases,readBrowserCapability} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {digest,json,need,shape,id} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {readControlPolicyFile,withControlPolicyHost,readControlTarget} from '../runtime/js/cm-ai/control-policy.mjs';
+import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
+import {parseModelJson} from '../runtime/js/cm-ai/model-configuration-file.mjs';
 export {executionFor as createConversationExecution,reviewConfiguration as readConversationReviewConfiguration,reviewConfigurationValue as readConversationReviewConfigurationValue};
+export function readLaunchControlFile(file){
+  const before=fs.lstatSync(file);
+  need(before.isFile()&&!before.isSymbolicLink()&&before.nlink===1&&before.size<=65536,'invalid_input');
+  const descriptor=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+  try{
+    const bytes=fs.readFileSync(descriptor),after=fs.fstatSync(descriptor),current=fs.lstatSync(file);
+    need([after,current].every(info=>['dev','ino','size','mtimeMs','ctimeMs'].every(key=>info[key]===before[key]))
+      &&bytes.length===before.size,'snapshot_changed');
+    return readControlTarget(parseModelJson(new TextDecoder('utf-8',{fatal:true}).decode(bytes)));
+  }finally{fs.closeSync(descriptor);}
+}
 export function withHandoffDiagnostic(host,error){
   return {...host,async handle(request){
     const result=await host.handle(request);
@@ -46,7 +60,7 @@ export function readBootstrapConfiguration(file){
 const refuse=(ok,code,reason)=>{if(!ok)throw Object.assign(new Error(code),{code,reason});};
 const REASONED_CODES=['supersede_unavailable','supersede_code_drift','handoff_exists','browser_capability_required',
   'browser_capability_unavailable','invalid_arguments','fingerprint_mismatch','task_selection_mismatch','review_configuration_required',
-  'spec_rebind_refused','spec_rebind_unavailable','protected_scope'];
+  'spec_rebind_refused','spec_rebind_unavailable','protected_scope','invalid_input','snapshot_changed'];
 const fixLocalPermissions=new Map(['red-test','baseline','regression','learning-writeback','walkthrough','finish','abandon',
   'abandon-review','test-author','repair','cause-review','final-review','rediagnosis','rerun-blocked-step','final-review-recovery']
   .map(name=>[`--allow-qa-fix-${name}`,`--allow-${name}`]));
@@ -112,12 +126,12 @@ export async function runReviewPreflight(definition,{model,effort,runtime='codex
     real_model_requests:receipt.real_model_requests,listener_closed:receipt.listener_closed}};
 }
 
-async function protectedExecutionFor(definition,hostContextId,extra,review,mode,workflow,bridge,bootstrap=null,externalModels=null,executionPolicy=null){
+async function protectedExecutionFor(definition,hostContextId,extra,review,mode,workflow,bridge,bootstrap=null,externalModels=null,executionPolicy=null,controlPolicy=null){
   const runtime=extra.get('--runtime')??'codex';
   const selected=resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),runtime);
   need(review!==null,'review_configuration_required');
-  need(['1','2'].includes(extra.get('--allow-provider-development-attempt')),'provider_development_authorization_required');
-  const attempt=Number(extra.get('--allow-provider-development-attempt'));
+  const attempt=controlPolicy?1:Number(extra.get('--allow-provider-development-attempt'));
+  need([1,2].includes(attempt),'provider_development_authorization_required');
   need(mode!=='create'||attempt===1,'invalid_development_attempt');
   // Child fix configuration is checked before opening the parent store below.
   const file=extra.get('--protected-config'),info=fs.lstatSync(file);
@@ -126,15 +140,16 @@ async function protectedExecutionFor(definition,hostContextId,extra,review,mode,
   if(externalModels){const pair=externalModels.providers[selected.coderRuntime];need(!Object.hasOwn(config,'model')||config.model===pair.model,'external_model_configuration_conflict');need(!Object.hasOwn(config,'effort')||config.effort===pair.effort,'external_model_configuration_conflict');config={...config,...pair};}
   shape(config,['model','checkCommands','timeoutMs',...(externalModels?['effort']:[])]);
   return executionFor(definition,hostContextId,bridge,review,
-    extra.has('--allow-review-attempt')?Number(extra.get('--allow-review-attempt')):null,
-    workflow,extra.has('--allow-qa'),runtime,{
+    controlPolicy?[1,2]:extra.has('--allow-review-attempt')?Number(extra.get('--allow-review-attempt')):null,
+    workflow,controlPolicy?controlPolicy.qa==='run':extra.has('--allow-qa'),runtime,{
       ...(extra.has('--original-host-context')?{originalHostContextId:extra.get('--original-host-context')}:{}),
       protection:{checkCommands:config.checkCommands,timeoutMs:config.timeoutMs},
       providerDevelopment:{model:config.model,attempt,...selected,...(externalModels?{effort:config.effort}:{})},
       ...(executionPolicy?{executionPolicy}:{}),
+      ...(controlPolicy?{controlPolicy}:{}),
       ...(externalModels?{externalModels}:{}),
       ...(extra.has('--verification-precheck')?{verificationPrecheck:true}:{}),
-      ...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{}),
+      ...(bootstrap?{bootstrap:{...bootstrap,allowWrite:controlPolicy?controlPolicy.bootstrap==='write':extra.has('--allow-bootstrap-write')}}:{}),
     });
 }
 
@@ -175,6 +190,7 @@ function canResumeLegacyProtected(definition,runtime){
 }
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Control v2: serve --config RUN --mode create|resume --host-context ID --control-config POLICY --review-config REVIEW. No --allow-*; policy selects optional modes, not human authentication. Old launches remain legacy. See docs/cm-control-policy-v2.md.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Optional --execution-optimizations freezes policy v1 for new runs only; recovery retains the original policy and legacy runs reject retrofit. See docs/execution-optimizations.md.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--original-host-context ID is resume-only: keep the creating session in durable configuration while --host-context remains the real live session. Omit it for same-session resume; a different session must declare the creating session. Equal IDs are equivalent to omission. Parent conversation runs only; legacy protected runs, batch and QA-fix children are unchanged.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Approved bootstrap feature (0.bootstrap or a single numbered *.bootstrap): --bootstrap-config PATH {selection:null for scaffold, or original cm-init selection for rules} and --allow-bootstrap-write. Original scope must include fixed instruction targets; they are host-written inside the original task effect, checked/reviewed and reloaded. No Git/install/network grant. Optional codeProjects selects disjoint real roots below codeProject; prefix scope/requirements and use protected current-session checks with a declared codeProject per command.\n');
@@ -203,7 +219,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--rebind-spec-material --spec-rebind-reason REASON：仅 resume。规格经 cm-prd --change 重新批准后，若本任务的描述、验证要求、验收标准、设计摘录与测试用例都未变，只换绑批准哈希并写 specification-rebound 记录，已有开发与审查结论保留；内容有变则拒绝并列出变化。status 的 spec_drift 会说明是否可换绑。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('当前会话手动驱动请用 scripts/cm-ai-drive.mjs（批次 cm-ai-batch-drive.mjs；修复 cm-fix-drive.mjs；规格 cm-prd-drive.mjs）；详情见 skills/cm-ai/references/js-host.md。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('External-model mode freezes one model/effort pair per provider. Unknown or invalid external results require reconciliation; automatic retries and abandonment are disabled. See docs/external-models.md.\n');
-  if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\n');return 0;}
+  if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\nV2: replace --allow-development with --control-config FILE. Explicit resume QA reruns, QA configuration revisions and specification rebinds require --expected-control FILE containing the original status.launchControlTarget; ordinary host recovery uses status.controlTarget.\n');return 0;}
   let run,bridge;
   try{
     if(argv[0]==='preflight'){
@@ -224,15 +240,46 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       }
       return config.preflight.passed?0:1;
     }
+    let controlPolicy=null;
+    if(argv[0]==='serve'&&argv[7]==='--control-config'){
+      refuse(!argv.some(value=>value.startsWith('--allow-')),'invalid_arguments',
+        '新版控制入口不接受 --allow-*；用 control-config 选择执行模式。旧运行请保留原入口与参数。');
+      controlPolicy=readControlPolicyFile(argv[8]);
+      // Keep the policy entry separate; never synthesize legacy argv or grants.
+    }
     need(argv.length>=8&&argv[0]==='serve'&&argv[1]==='--config'&&argv[3]==='--mode'
-      &&argv[5]==='--host-context'&&argv[7]==='--allow-development','host_launch_authorization_required');
+      &&argv[5]==='--host-context'&&(controlPolicy!==null||argv[7]==='--allow-development'),'host_launch_authorization_required');
     const extra=new Map();
-    for(let index=8;index<argv.length;index++){
+    for(let index=controlPolicy?9:8;index<argv.length;index++){
       const name=argv[index];refuse(!extra.has(name),'invalid_arguments',`参数重复：${name}`);
-      refuse(['--execution-optimizations','--external-models','--external-models-config','--verification-precheck','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure','--supersede-reviewed-evidence','--supersede-reason','--accept-superseded-code-drift','--rebind-spec-material','--spec-rebind-reason','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--hold-revision','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--review-runtime','--feature','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--qa-fix-final-review-recovery-invocation','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments',`未知参数：${name}`);
+      refuse(['--expected-control','--execution-optimizations','--external-models','--external-models-config','--verification-precheck','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure','--supersede-reviewed-evidence','--supersede-reason','--accept-superseded-code-drift','--rebind-spec-material','--spec-rebind-reason','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-review-attempt','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--hold-revision','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--review-runtime','--feature','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--qa-fix-final-review-recovery-invocation','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments',`未知参数：${name}`);
       if(['--execution-optimizations','--external-models','--verification-precheck','--supersede-reviewed-evidence','--accept-superseded-code-drift','--rebind-spec-material','--allow-bootstrap-write','--allow-qa','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--hold-revision','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
       else{refuse(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments',`${name} 需要一个值`);extra.set(name,argv[++index]);}
     }
+    if(controlPolicy){
+      // Policy choices go directly to execution contracts, not the legacy flag map.
+      refuse((controlPolicy.development==='provider')===extra.has('--protected-config'),'invalid_arguments',
+        'development:provider 需要 --protected-config；conversation 模式不启动 provider 开发。');
+      refuse((controlPolicy.bootstrap==='write')===extra.has('--bootstrap-config'),'invalid_arguments',
+        'bootstrap:write 需要 --bootstrap-config；加载规则配置必须明确选择 write 模式。');
+      refuse(controlPolicy.qaFix!=='disabled'||!['--qa-fix-owner-config','--qa-fix-template-config'].some(flag=>extra.has(flag)),
+        'invalid_arguments','加载 QA 修复配置必须选择 manual 或 auto 模式。');
+      refuse(!extra.has('--auto-qa-fix')||controlPolicy.qaFix==='auto','invalid_input','自动 QA 修复需要 qaFix:auto。');
+      refuse(!['--supersede-reviewed-evidence','--supersede-reason','--accept-superseded-code-drift']
+        .some(flag=>extra.has(flag)),'supersede_unavailable',
+        '新版启动入口暂不作废旧运行；保留现场，不自动更新目标后换运行。');
+    }
+    const qaEnabled=controlPolicy?controlPolicy.qa==='run':extra.has('--allow-qa');
+    const fixEnabled=controlPolicy?controlPolicy.qaFix!=='disabled':extra.has('--allow-qa-fix-start');
+    const autoFix=controlPolicy?controlPolicy.qaFix==='auto':extra.has('--auto-qa-fix');
+    const recoveryEnabled=flag=>controlPolicy?argv[4]==='resume':extra.has(flag);
+    const launchRecovery=['--revise-qa-config','--qa-config-revision-reason','--rerun-unknown-qa','--rerun-blocked-qa',
+      '--rebind-spec-material','--spec-rebind-reason'].some(flag=>extra.has(flag));
+    refuse(!extra.has('--expected-control')||(controlPolicy&&launchRecovery&&argv[4]==='resume'),'invalid_input',
+      '--expected-control 仅用于新版 --mode resume 的显式 QA 恢复、QA 配置修订或规格重绑。');
+    if(controlPolicy&&launchRecovery)refuse(argv[4]==='resume'&&extra.has('--expected-control'),'invalid_input',
+      '启动恢复需要 --mode resume 与 --expected-control FILE，文件须保存原 status 的 launchControlTarget；目标变化时先核对，不能自动替换。');
+    const expectedControl=extra.has('--expected-control')?readLaunchControlFile(extra.get('--expected-control')):null;
     let inputLimit;
     try{inputLimit=parseHostInputLimit(extra.get('--input-limit'));}
     catch(error){refuse(error.code!=='invalid_arguments','invalid_arguments','--input-limit 须为 65536–4194304 的整数字节数');throw error;}
@@ -240,7 +287,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(!extra.has('--supersede-reviewed-evidence')&&!extra.has('--supersede-reason')&&!extra.has('--accept-superseded-code-drift')
       ||(argv[4]==='create'&&extra.has('--supersede-reviewed-evidence')&&extra.has('--supersede-reason')),
     'supersede_unavailable');
-    need(!revisionRequested||(argv[4]==='resume'&&extra.has('--allow-qa')&&extra.has('--revise-qa-config')
+    need(!revisionRequested||(argv[4]==='resume'&&qaEnabled&&extra.has('--revise-qa-config')
       &&extra.has('--qa-config-revision-reason')&&!extra.has('--rerun-unknown-qa')&&!extra.has('--rerun-blocked-qa')),'qa_revision_authorization_required');
     need(!extra.has('--allow-abandon-review')||argv[4]==='resume','review_abandon_unavailable');
     refuse(extra.has('--rebind-spec-material')===extra.has('--spec-rebind-reason')&&(!extra.has('--rebind-spec-material')||argv[4]==='resume'),
@@ -257,20 +304,22 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const workflow=extra.has('--workflow-config')?readHostWorkflowConfiguration(extra.get('--workflow-config')):null;
     let allowedAttempt=null;
     if(extra.has('--allow-review-attempt')){refuse(['1','2'].includes(extra.get('--allow-review-attempt')),'invalid_arguments','--allow-review-attempt 只接受 1 或 2');allowedAttempt=Number(extra.get('--allow-review-attempt'));}
-    refuse(!extra.has('--allow-qa')||workflow?.qa!=null,'invalid_arguments',
-      workflow===null?'--allow-qa 需要同时提供 --workflow-config':'--allow-qa 需要 --workflow-config 中的 qa 不为 null；本运行没有 QA 时去掉 --allow-qa');
+    refuse(!qaEnabled||workflow?.qa!=null,'invalid_arguments',
+      controlPolicy
+        ?(workflow===null?'QA 执行需要同时提供 --workflow-config':'QA 执行需要 --workflow-config 中的 qa 不为 null；没有 QA 时不要启用执行')
+        :(workflow===null?'--allow-qa 需要同时提供 --workflow-config':'--allow-qa 需要 --workflow-config 中的 qa 不为 null；本运行没有 QA 时去掉 --allow-qa'));
     need(!(extra.has('--rerun-unknown-qa')&&extra.has('--rerun-blocked-qa')),'qa_recovery_authorization_required');
-    need(!(extra.has('--rerun-unknown-qa')||extra.has('--rerun-blocked-qa'))||(argv[4]==='resume'&&extra.has('--allow-qa')),'qa_recovery_authorization_required');
+    need(!(extra.has('--rerun-unknown-qa')||extra.has('--rerun-blocked-qa'))||(argv[4]==='resume'&&qaEnabled),'qa_recovery_authorization_required');
     need(!extra.has('--qa-environment-failure')||extra.has('--rerun-blocked-qa')||extra.has('--rerun-unknown-qa'),'qa_recovery_authorization_required');
     const hasFix=extra.has('--qa-fix-owner-config')||extra.has('--qa-fix-template-config');
     need(!(extra.has('--qa-fix-owner-config')&&extra.has('--qa-fix-template-config')),'invalid_fix_config');
-    need(!extra.has('--allow-qa-fix-start')||hasFix,'qa_fix_source_required');
+    need(!fixEnabled||hasFix,'qa_fix_source_required');
     need(!extra.has('--qa-fix-review-config')||hasFix,'qa_fix_source_required');
-    need(!extra.has('--auto-qa-fix')||(extra.has('--qa-fix-template-config')&&extra.has('--allow-qa-fix-start')),'qa_fix_auto_authorization_required');
-    need(![...fixLocalPermissions.keys()].some(flag=>extra.has(flag))||extra.has('--allow-qa-fix-start'),'qa_fix_start_authorization_required');
+    need(!autoFix||(extra.has('--qa-fix-template-config')&&fixEnabled),'qa_fix_auto_authorization_required');
+    need(![...fixLocalPermissions.keys()].some(flag=>extra.has(flag))||fixEnabled,'qa_fix_start_authorization_required');
     // Same binding as cm-fix-host --final-review-recovery-invocation, for the child.
-    refuse(!extra.has('--qa-fix-final-review-recovery-invocation')||extra.has('--allow-qa-fix-final-review-recovery'),'invalid_arguments',
-      '--qa-fix-final-review-recovery-invocation 需要同时提供 --allow-qa-fix-final-review-recovery');
+    refuse(!extra.has('--qa-fix-final-review-recovery-invocation')||(controlPolicy?fixEnabled:extra.has('--allow-qa-fix-final-review-recovery')),'invalid_arguments',
+      controlPolicy?'QA 修复回执恢复需要已启用 QA Fix 模式':'--qa-fix-final-review-recovery-invocation 需要同时提供 --allow-qa-fix-final-review-recovery');
     if(extra.has('--qa-fix-final-review-recovery-invocation'))id(extra.get('--qa-fix-final-review-recovery-invocation'));
     need(!extra.has('--allow-provider-development-attempt')||extra.has('--protected-config'),'protected_configuration_required');
     refuse(!(extra.has('--review-runtime')&&(extra.has('--protected-config')||extra.has('--external-models'))),'invalid_arguments',
@@ -278,7 +327,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     refuse(!(extra.has('--protected-config')&&extra.has('--protected-conversation-config')),'invalid_arguments','--protected-config 与 --protected-conversation-config 不能同时使用');
     const protection=extra.has('--protected-conversation-config')?readConversationProtection(extra.get('--protected-conversation-config')):null;
     const bootstrap=extra.has('--bootstrap-config')?readBootstrapConfiguration(extra.get('--bootstrap-config')):null;
-    need(!extra.has('--allow-bootstrap-write')||bootstrap!==null,'bootstrap_configuration_required');
+    need(!(controlPolicy?controlPolicy.bootstrap==='write':extra.has('--allow-bootstrap-write'))||bootstrap!==null,'bootstrap_configuration_required');
     // Checked before the definition is read so the conflict is reported on its own.
     need(!(extra.has('--failover')&&extra.has('--protected-config')),'failover_unsupported_in_protected_mode');
     let definition=readRunDefinition(argv[2]);
@@ -301,7 +350,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     // Launch-time capability assertion. See host-workflow-capabilities: this is a
     // fresh declaration, not a probe the host performs.
     readBrowserCapability(extra.get('--browser-qa'),
-      workflow?.qa!=null&&featureHasBrowserCases(definition.specsDir,definition.feature,definition.codeProject)
+      (!controlPolicy||qaEnabled)&&workflow?.qa!=null&&featureHasBrowserCases(definition.specsDir,definition.feature,definition.codeProject)
         ?[workflow.qa.environment?.carrier??'browser']:[]);
     // Tool replies travel on the same input lines, so they share the one limit.
     bridge=createHostToolBridge({responseLimit:inputLimit,answerTimeoutMs:HOST_ANSWER_BACKSTOP_MS});
@@ -334,14 +383,16 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     // The reviewer binding is part of the durable configuration fingerprint, so
     // it cannot be added on resume. Requiring it at create removes the trap of
     // a run that can reach awaiting_review but never be reviewed. Authorizing a
-    // review attempt is still the separate --allow-review-attempt.
+    // Legacy review dispatch uses --allow-review-attempt; v2 enables its internal
+    // request-bound dispatch from the selected policy, without a person grant.
     refuse(argv[4]!=='create'||review!==null,'review_configuration_required',
-      'create 必须带 --review-config：审查配置写进运行指纹，resume 时不能再补。先用 cm-ai-host.mjs preflight --config 运行定义 --review-model 模型 --runtime 端 生成 review.json；是否真正派发审查仍由 --allow-review-attempt 单独授权');
+      controlPolicy?'create 必须带 --review-config：审查配置写进运行指纹，resume 时不能再补。独立 Review 按 control-config 的执行模式自动派发；配置与模式不证明人工批准。':
+        'create 必须带 --review-config：审查配置写进运行指纹，resume 时不能再补。先用 cm-ai-host.mjs preflight --config 运行定义 --review-model 模型 --runtime 端 生成 review.json；是否真正派发审查仍由 --allow-review-attempt 单独授权');
     let execution;
-    if(argv[4]==='resume'&&!extra.has('--original-host-context')&&extra.has('--protected-config')&&!externalModels&&!executionPolicy&&canResumeLegacyProtected(definition,runtime)){
+    if(!controlPolicy&&argv[4]==='resume'&&!extra.has('--original-host-context')&&extra.has('--protected-config')&&!externalModels&&!executionPolicy&&canResumeLegacyProtected(definition,runtime)){
       try{
         execution=await legacyProtectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap);
-        run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:extra.has('--allow-abandon-review'),allowAbandonEffect:extra.has('--allow-abandon-effect'),allowBootstrapReviewRecovery:extra.has('--allow-bootstrap-review-recovery'),allowDevelopRedo:extra.has('--allow-develop-redo'),...(extra.has('--hold-revision')?{holdRevision:true}:{}),specRebindReason:extra.get('--spec-rebind-reason')??null});
+        run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:recoveryEnabled('--allow-abandon-review'),allowAbandonEffect:recoveryEnabled('--allow-abandon-effect'),allowBootstrapReviewRecovery:recoveryEnabled('--allow-bootstrap-review-recovery'),allowDevelopRedo:recoveryEnabled('--allow-develop-redo'),...(extra.has('--hold-revision')?{holdRevision:true}:{}),specRebindReason:extra.get('--spec-rebind-reason')??null,expectedControl});
         error.write('cm-ai-host: resumed original Codex protected execution after exact fingerprint validation.\n');
       }catch(cause){
         if(!['fingerprint_mismatch','tool_preflight_missing'].includes(cause.code))throw cause;
@@ -350,10 +401,10 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     }
     if(!run){
       execution=extra.has('--protected-config')
-        ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap,externalModels,executionPolicy)
-        :executionFor(definition,argv[6],bridge,review,allowedAttempt,workflow,extra.has('--allow-qa'),runtime,
-          {...(extra.has('--review-runtime')?{reviewRuntime:extra.get('--review-runtime')}:{}),...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels}:{}),...(extra.has('--verification-precheck')?{verificationPrecheck:true}:{}),...(extra.has('--original-host-context')?{originalHostContextId:extra.get('--original-host-context')}:{}),...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:extra.has('--allow-bootstrap-write')}}:{})});
-      run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:extra.has('--allow-abandon-review'),allowAbandonEffect:extra.has('--allow-abandon-effect'),allowBootstrapReviewRecovery:extra.has('--allow-bootstrap-review-recovery'),allowDevelopRedo:extra.has('--allow-develop-redo'),...(extra.has('--hold-revision')?{holdRevision:true}:{}),specRebindReason:extra.get('--spec-rebind-reason')??null});
+        ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap,externalModels,executionPolicy,controlPolicy)
+        :executionFor(definition,argv[6],bridge,review,allowedAttempt,workflow,qaEnabled,runtime,
+          {...(controlPolicy?{controlPolicy}:{}),...(extra.has('--review-runtime')?{reviewRuntime:extra.get('--review-runtime')}:{}),...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels}:{}),...(extra.has('--verification-precheck')?{verificationPrecheck:true}:{}),...(extra.has('--original-host-context')?{originalHostContextId:extra.get('--original-host-context')}:{}),...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:(controlPolicy?controlPolicy.bootstrap==='write':extra.has('--allow-bootstrap-write'))}}:{})});
+      run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:recoveryEnabled('--allow-abandon-review'),allowAbandonEffect:recoveryEnabled('--allow-abandon-effect'),allowBootstrapReviewRecovery:recoveryEnabled('--allow-bootstrap-review-recovery'),allowDevelopRedo:recoveryEnabled('--allow-develop-redo'),...(extra.has('--hold-revision')?{holdRevision:true}:{}),specRebindReason:extra.get('--spec-rebind-reason')??null,expectedControl});
     }
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}
     if(hasFix){
@@ -361,11 +412,17 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         &&fs.realpathSync(fix.configuration.reproduction.cwd)===fs.realpathSync(definition.codeProject)
         &&(templated?fix.feature:fix.configuration.qaSource.feature)===definition.feature,'qa_fix_source_mismatch');
       if(templated)need(digest(fix.identity)===digest(definition.identity),'qa_fix_source_mismatch');
-      if(extra.has('--allow-qa-fix-start'))need((fix.configuration.runtime??'codex')===runtime,'qa_fix_host_mismatch');
-      const fixPermissions=[...fixLocalPermissions].filter(([flag])=>extra.has(flag)).map(([,permission])=>permission);
+      if(fixEnabled)need((fix.configuration.runtime??'codex')===runtime,'qa_fix_host_mismatch');
+      let fixPermissions=[...fixLocalPermissions].filter(([flag])=>controlPolicy
+        ?!['test-author','repair','cause-review','final-review'].some(name=>flag.endsWith('-'+name))
+        :extra.has(flag)).map(([,permission])=>permission);
       const fixRuntime=fix.configuration.runtime??'codex';
       const fixModels=externalModels?selectExternalModels(externalModels,[fixRuntime]):null;
       const fixReview=extra.has('--qa-fix-review-config')?reviewConfiguration(extra.get('--qa-fix-review-config'),fixModels?.providers[fixRuntime]??null):null;
+      if(controlPolicy&&fixReview)fixPermissions.push(...[...fixLocalPermissions]
+        .filter(([flag])=>flag.endsWith('-cause-review')||flag.endsWith('-final-review')
+          ||fix.configuration.testAuthor&&flag.endsWith('-test-author')||fix.configuration.repair&&flag.endsWith('-repair'))
+        .map(([,permission])=>permission));
       need(!fixPermissions.includes('--allow-test-author')||(fix.configuration.testAuthor&&fixReview),'test_author_configuration_required');
       need(!fixPermissions.includes('--allow-repair')||(fix.configuration.repair&&fixReview),'repair_configuration_required');
       const fixReviewHost=createFixReviewHost({codeProject:definition.codeProject,
@@ -380,8 +437,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         }
       }else if(fixReview)need(digest(fix.configuration.causeReview??null)===digest(fixReviewHost.reviewer),'qa_fix_review_configuration_mismatch');
       const host=createQaFixOwnerHost({parent:run,hostContextId:argv[6],parentHostContextId:execution.configuration.hostContextId,...(templated?{template:fix}:{fix}),reopenParent:()=>openControlRun(definition,'resume',execution),
-        externalModels:fixModels,executionPolicy,fixPermissions,fixAuthorities:{authority:fixReviewHost.authority,finalAuthority:fixReviewHost.finalAuthority},
-        allowStart:extra.has('--allow-qa-fix-start'),autoFix:extra.has('--auto-qa-fix'),
+        externalModels:fixModels,executionPolicy,controlPolicy,fixPermissions,fixAuthorities:{authority:fixReviewHost.authority,finalAuthority:fixReviewHost.finalAuthority},
+        allowStart:fixEnabled,autoFix:autoFix,
         recoveryInvocationId:extra.get('--qa-fix-final-review-recovery-invocation')??null,fixExecution:{bridge,...fixReviewHost.execution,
           prepare:createFixLearningPreparation({bridge,codeProject:definition.codeProject,
             applicableAgentFiles:fix.configuration.applicableAgentFiles??[]})}});
@@ -390,7 +447,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     // PTY sessions are used by desktop tool hosts. Disable echo only on this
     // process's own terminal so tool results are not mistaken for output frames.
     const rawMode=input.isTTY&&typeof input.setRawMode==='function';if(rawMode)input.setRawMode(true);
-    const diagnosticHost=withHandoffDiagnostic(run.host,error);
+    const controlled=controlPolicy?withControlPolicyHost(run.host,{identity:definition.identity,
+      snapshot:()=>readExecutionSnapshot({specsRoot:definition.specsDir,identity:{repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}}),launchTarget:controlLaunchTarget}):run.host;
+    const diagnosticHost=withHandoffDiagnostic(controlled,error);
     try{await serveHostTransport({host:diagnosticHost,input,output,toolBridge:bridge,errorOutput:error},extra.get('--input-limit'));}
     finally{if(rawMode)input.setRawMode(false);}
     return 0;

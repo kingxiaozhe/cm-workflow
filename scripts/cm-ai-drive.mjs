@@ -61,6 +61,7 @@ import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 import {attemptAnswerName,inspectDriverBootstrap,readBootstrapRulesAnswers,createBootstrapRulesResponder} from '../runtime/js/cm-ai/drive-bootstrap.mjs';
 import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
+import {readControlPolicyFile,isControlRecovery as controlRecoveryRequest} from '../runtime/js/cm-ai/control-policy.mjs';
 
 // PLAN.liveEvidence: fresh current-session evidence; see docs/live-evidence-drivers.md.
 const HOST=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
@@ -100,6 +101,47 @@ const FLAG_FLAGS=new Set(['--execution-optimizations','--external-models','--all
     'test-author','repair','cause-review','final-review','rediagnosis','rerun-blocked-step','final-review-recovery'].map(name=>`--allow-qa-fix-${name}`)]);
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;
+// V2 control is explicit configuration. Never derive a fresh recovery target
+// from the journal or status here: the caller must carry its earlier preview.
+export function readDriverControl(plan,base,operation,recovery=null){
+  if(!Object.hasOwn(plan,'controlConfig'))return null;
+  if(!nonempty(plan.controlConfig)||path.isAbsolute(plan.controlConfig))
+    throw Error('PLAN.controlConfig 必须是相对 PLAN 的配置文件路径');
+  if(!Array.isArray(plan.permissions)||plan.permissions.some(flag=>typeof flag!=='string'))
+    throw Error('permissions 必须是宿主参数数组');
+  if(plan.permissions.some(flag=>flag.startsWith('--allow-')))
+    throw Error('control v2 迁移错误：permissions 禁止 --allow-*；请改用 controlConfig 的明确模式和 expectedControl');
+  const recovering=recovery??isControlRecovery(operation,plan);
+  if(plan.mode==='create'&&Object.hasOwn(plan,'expectedControl'))
+    throw Error('control v2 create 禁止 expectedControl');
+  if(!recovering&&Object.hasOwn(plan,'expectedControl'))
+    throw Error('control v2 expectedControl 只用于显式恢复操作');
+  if(recovering&&(plan.mode!=='resume'||!object(plan.expectedControl)))
+    throw Error('control v2 恢复需要 PLAN.expectedControl；请携带此前 status 返回的 controlTarget');
+  const file=path.resolve(base,plan.controlConfig);
+  const policy=readControlPolicyFile(file);
+  if((policy.development==='provider')!==plan.permissions.includes('--protected-config'))
+    throw Error('invalid_arguments: development provider 需要 --protected-config；conversation 禁止 provider 配置');
+  if(policy.bootstrap==='disabled'&&plan.permissions.includes('--bootstrap-config'))
+    throw Error('invalid_arguments: bootstrap disabled 禁止 --bootstrap-config；未读取该配置');
+  if(policy.qaFix==='disabled'&&['--qa-fix-owner-config','--qa-fix-template-config'].some(flag=>plan.permissions.includes(flag)))
+    throw Error('invalid_arguments: qaFix disabled 禁止 QA Fix 配置；未读取该配置');
+  return {file,policy};
+}
+export const isControlRecovery=(operation,plan)=>controlRecoveryRequest({operation,fixOperation:plan.fixOperation});
+export function controlDevelopAttempts(status,operation){
+  const {state,attempt,reviewPackage}=status;
+  const reviewAfterDevelop=operation==='advance'&&attempt===1;
+  if(state==='blocked'&&(RECHECK_CODES.includes(status.code)||DOCUMENTATION_SYNC_CODES.includes(status.code)))
+    return {attempts:reviewAfterDevelop?[2]:[],reviewFirst:false,reviewAfterDevelop,holdable:true,packageDigest:null};
+  if(developmentRetryable(status))
+    return {attempts:reviewAfterDevelop?[1,2]:[attempt],reviewFirst:false,reviewAfterDevelop,holdable:true,packageDigest:null};
+  if(state==='ready')return {attempts:reviewAfterDevelop?[1,2]:[attempt],reviewFirst:false,reviewAfterDevelop,holdable:true,packageDigest:null};
+  if(state==='changes_requested')return {attempts:[attempt],reviewFirst:false,packageDigest:null};
+  if(operation==='advance'&&['awaiting_review','pending_review'].includes(state)&&attempt<2)
+    return {attempts:[attempt+1],reviewFirst:true,reviewAfterDevelop:true,holdable:true,packageDigest:reviewPackage?.packageDigest??null};
+  return {attempts:[],reviewFirst:false,packageDigest:null};
+}
 // Needs the resolved --bootstrap-config path in permissions.
 export const bootstrapDriverGap=(operation,definition,permissions)=>
   inspectDriverBootstrap({advance:ADVANCE.has(operation),definition,permissions}).gap;
@@ -428,17 +470,19 @@ export function readRunJournal(definition){
   return {history:readRunnerHistory(snapshot.records,first.payload.config,3),config:first.payload.config,baseline:first.payload.baseline,
     frame:journalRestBytes(snapshot.records)};
 }
-function reachableDevelopAttempts({plan,operation,journal,permissions}){
+function reachableDevelopAttempts({plan,operation,journal,permissions,controlPolicy=null}){
   if(plan.mode==='create'){
     const reviewAfterDevelop=operation==='advance'
-      &&permissions.some((flag,index)=>flag==='--allow-review-attempt'&&permissions[index+1]==='1');
-    return {attempts:reviewAfterDevelop?[1,2]:[1],reviewFirst:false,reviewAfterDevelop,packageDigest:null,learning:null};
+      &&(controlPolicy!==null||permissions.some((flag,index)=>flag==='--allow-review-attempt'&&permissions[index+1]==='1'));
+    return {attempts:reviewAfterDevelop?[1,2]:[1],reviewFirst:false,reviewAfterDevelop,
+      ...(controlPolicy?{holdable:true}:{}),packageDigest:null,learning:null};
   }
   if(journal.error)stop(2,`无法只读检查恢复存档: ${journal.error.code??journal.error.message}`);
   // learning is the journal's Learning result the next develop effect starts from
   // (bootstrap rules bind their on-disk files to its recorded evidence).
   // Q28: decide from what the host will show (projected answer-gap blocks), not the raw replay state.
-  return {...projectDevelopAttempts(projectedRunnerStatus(journal.history,journal.config),operation,permissions),
+  const status=projectedRunnerStatus(journal.history,journal.config);
+  return {...(controlPolicy?controlDevelopAttempts(status,operation):projectDevelopAttempts(status,operation,permissions)),
     learning:journal.history.state.learningResult??null};
 }
 export function projectDevelopAttempts(status,operation,permissions){
@@ -560,6 +604,7 @@ export function validateCmAiAnswer(kind,value,root){
 }
 function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
+    process.stdout.write('新版 PLAN.controlConfig 为相对 PLAN 的 v2 控制配置路径；development、bootstrap、qa、qaFix 使用明确模式，permissions 禁止所有 --allow-*。普通 advance 自动独立审查；缺少 develop-a2.json 时保持 revision_answer_required。显式恢复需要 resume 与此前 status 返回的 PLAN.expectedControl，驾驶员不会读取新目标覆盖它。\n');
     process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks, checkTimeoutMs。\nchecks 每项为 {id,command,timeoutMs?}；checkTimeoutMs 与每项 timeoutMs 为 1..3600000 整数，默认 900000 ms（15 分钟）。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。develop_redo 需要 mode:resume、permissions:["--allow-develop-redo"] 与 PLAN.reason，先确认会话已停止修改代码。 bootstrap_review_recover 需要 mode:resume、permissions:["--allow-bootstrap-review-recovery"] 与 PLAN.reason；只核对原运行的已写规则与 handoff，不需要答案文件。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务（纯规范 scope、单代码根、非 --protected-config）读 answers/init-generate.json（{status:"generated",documents:[{path,contentFile}]}，覆盖全部 targets）与 answers/init-verify.json（commands 为驾驶员实跑的草稿命令 {id,command,timeoutMs?}，可选 commandsNotRun；checks 只含 globs/file_references/constraint_preservation/rule_applicability；constraintChanges:[]；application/retrospective 沿原 Learning）；第 1 轮也可用 *-a1.json，第 2 轮只读 init-generate-a2.json 与 init-verify-a2.json，且须先 decision 读取首轮 findings，不能带 --allow-review-attempt 跨轮。commands 在宿主接受启动后、发送操作前由驾驶员实跑（须先带 --allow-bootstrap-write 等宿主授权；受保护模式在 specs 沙箱内），失败或改动了预检核对的文件即退出 2 且不发送操作（create 时改用 resume 重跑）；结果只来自实跑，答案文件不能提供。\n'
       +'develop.json.edits 每项是 scope 路径到下列之一："内容文件"（写入；已有文件保留权限，新文件 0644）、{"file":"内容文件","mode":"0755"|"0644"}、{"mode":"0755"|"0644"}（只改已有文件权限）、{"delete":true}（删除已有文件）。改名 = 删旧路径 + 写新路径，两者都要在 scope 内；同时列在 requirements 里的路径不能删除。\n'
       +'启动前拒绝：单个 scope 文件超过 1 MiB、审查材料（按审查包快照：scope、requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或超过 256 个文件、交付后与任务基线完全相同（edits 为空或内容和权限都没变）、开发检查点（含 handoff 与 AGENTS.md 回写，按宿主同一套构建代码计）装不进运行存档单条 1 MiB 记录减去为有界审查与完成记录推出的预留，或任务基线装不进一条记录。受保护模式（--protected-conversation-config）只收合法 UTF-8 文本，应答大于 --input-limit（默认 65536）时提示应加的值。\n'
@@ -569,6 +614,12 @@ function load(){
   const loaded=loadPlanFile({name:'cm-ai-drive.mjs',known:OPERATIONS});
   const {plan,operation,base}=loaded;
   requireFields(plan,['config','mode','hostContext','permissions']);
+  let control;
+  try{control=readDriverControl(plan,base,operation);}catch(error){stop(2,error.message);}
+  if(control?.policy.bootstrap==='write'&&!plan.permissions.includes('--bootstrap-config'))
+    stop(2,'invalid_arguments: bootstrap write 需要 --bootstrap-config');
+  if(control?.policy.qaFix==='disabled'&&['fix_advance','fix_run','fix_action'].includes(operation))
+    stop(2,'invalid_arguments: qaFix disabled 不执行 QA Fix 操作');
   if(Object.hasOwn(plan,'verificationPrecheck')&&typeof plan.verificationPrecheck!=='boolean')stop(2,'verificationPrecheck 需要 boolean');
   try{planCheckTimeout(plan);}catch(error){stop(2,error.message);}
   if(!['create','resume'].includes(plan.mode))stop(2,'mode 只能是 create 或 resume');
@@ -592,13 +643,18 @@ function load(){
   if(permissions.includes('--rebind-spec-material')!==permissions.includes('--spec-rebind-reason')
     ||permissions.includes('--rebind-spec-material')&&plan.mode!=='resume')
     stop(2,'--rebind-spec-material 只用于 mode resume，并须同时提供 --spec-rebind-reason 原因');
-  const abandonError=abandonReviewPlanError(operation,plan,permissions);
+  // V2 recovery operations are gated by the original expectedControl in the
+  // host, while the driver still validates the explicit operation and reason.
+  if(control&&['abandon_review','abandon_effect','bootstrap_review_recover','develop_redo'].includes(operation)
+    &&(plan.mode!=='resume'||!nonempty(plan.reason)||Buffer.byteLength(plan.reason,'utf8')>500||/[\r\n\0]/.test(plan.reason)))
+    stop(2,`${operation} 需要 resume、expectedControl 与单行 reason（最多 500 UTF-8 字节）`);
+  const abandonError=control?null:abandonReviewPlanError(operation,plan,permissions);
   if(abandonError)stop(2,abandonError);
-  const abandonEffectError=abandonEffectPlanError(operation,plan,permissions);
+  const abandonEffectError=control?null:abandonEffectPlanError(operation,plan,permissions);
   if(abandonEffectError)stop(2,abandonEffectError);
-  const developRedoError=developRedoPlanError(operation,plan,permissions);
+  const developRedoError=control?null:developRedoPlanError(operation,plan,permissions);
   if(developRedoError)stop(2,developRedoError);
-  const bootstrapRecoveryError=bootstrapReviewRecoveryPlanError(operation,plan,permissions);
+  const bootstrapRecoveryError=control?null:bootstrapReviewRecoveryPlanError(operation,plan,permissions);
   if(bootstrapRecoveryError)stop(2,bootstrapRecoveryError);
   const config=path.resolve(base,plan.config),answers=plan.answers?path.resolve(base,plan.answers):null;
   if(!fs.existsSync(config))stop(2,`运行定义不存在: ${config}`);
@@ -638,11 +694,11 @@ function load(){
     const file=path.resolve(base,permissions[i+1]);if(!fs.existsSync(file))stop(2,`${permissions[i]} 文件不存在: ${file}`);
     permissions[i+1]=file;permissionFiles.push(file);i++;
   }
-  const bootstrap=inspectDriverBootstrap({advance:ADVANCE.has(operation),definition,permissions});
+  const bootstrap=inspectDriverBootstrap({advance:ADVANCE.has(operation),definition,permissions,controlPolicy:control?.policy??null});
   if(bootstrap.gap)stop(2,bootstrap.gap);
   const rules=bootstrap.mode==='instructions';
-  const providerMode=permissions.includes('--protected-config');
-  const protectedMode=providerMode||permissions.includes('--protected-conversation-config');
+  const providerMode=control?control.policy.development==='provider':permissions.includes('--protected-config');
+  const protectedMode=permissions.includes('--protected-config')||permissions.includes('--protected-conversation-config');
   const asks=[];
   if(ADVANCE.has(operation)){
     // A pure rules scope never reaches develop: host-bootstrap.mjs asks the session instead.
@@ -652,15 +708,15 @@ function load(){
   }
   if((plan.verificationPrecheck===true||permissions.includes('--verification-precheck'))&&(ADVANCE.has(operation)||operation==='complete'))asks.push('verification_precheck');
   if(operation==='complete'&&!protectedMode)asks.push('check');
-  if((operation==='advance'||operation==='qa')&&workflow?.qa){asks.push('qa_assess');
+  if((operation==='advance'||operation==='qa')&&workflow&&(control||workflow.qa)){asks.push('qa_assess');
   }
-  if((operation==='advance'||operation==='qa')&&workflow?.qa){
+  if((operation==='advance'||operation==='qa')&&workflow?.qa&&(!control||control.policy.qa==='run')){
     try{asks.push(...predictedQaAsks(definition,workflow.qa));}
     catch(error){stop(2,`QA 请求预测失败: ${error.code??error.message}`);}
   }
   if(operation==='advance'&&workflow?.documentationPaths?.length&&!protectedMode)asks.push('documentation_sync');
   if(['advance','finish','run_finalize'].includes(operation)&&workflow)asks.push('documentation_inspect');
-  if(operation==='advance'&&permissions.includes('--auto-qa-fix')){
+  if(operation==='advance'&&(control?control.policy.qaFix==='auto':permissions.includes('--auto-qa-fix'))){
     asks.push(...new Set(Object.values(FIX_ASKS).flat()));
   }
   if(['fix_advance','fix_run'].includes(operation))asks.push(...new Set(Object.values(FIX_ASKS).flat()));
@@ -668,7 +724,7 @@ function load(){
     if(plan.fixOperation==='reconcile_review'&&(plan.mode!=='resume'||!nonempty(plan.invocationId)))stop(2,'fix reconciliation requires resume and original invocationId');
     if(!FIX_ACTIONS.has(plan.fixOperation))stop(2,'fix_action 需要宿主支持的 fixOperation');
     const actionFlag=FIX_ACTION_FLAGS[plan.fixOperation];
-    if(actionFlag&&!permissions.includes(actionFlag))stop(2,`${plan.fixOperation} 需要 ${actionFlag}`);
+    if(actionFlag&&!control&&!permissions.includes(actionFlag))stop(2,`${plan.fixOperation} 需要 ${actionFlag}`);
     if(FIX_REASONED.includes(plan.fixOperation)&&!(nonempty(plan.reason)&&Buffer.byteLength(plan.reason,'utf8')<=1000
       &&!/[\r\n\0\u0085\u2028\u2029]/.test(plan.reason)))stop(2,`${plan.fixOperation} 需要单行 reason（最多 1000 UTF-8 字节）`);
     if(plan.fixOperation==='rediagnose'&&plan.mode!=='resume')stop(2,'rediagnose 需要 mode:resume');
@@ -696,12 +752,16 @@ function load(){
     }
     catch(error){stop(2,`PLAN.checks 格式错误: ${error.code??error.message}`);}
   }
-  const reachable=(asks.includes('develop')||rules)&&!providerMode
-    ?reachableDevelopAttempts({plan,operation,journal,permissions})
+  let reachable=(asks.includes('develop')||rules)&&!providerMode
+    ?reachableDevelopAttempts({plan,operation,journal,permissions,controlPolicy:control?.policy??null})
     :{attempts:[],reviewFirst:false,packageDigest:null};
+  // Rules answers are authored after reading the review findings. V2 can run
+  // that review automatically, but it must stop before asking for a new draft.
+  const holdBootstrapRevision=Boolean(control&&rules&&reachable.reviewAfterDevelop);
+  if(holdBootstrapRevision)reachable={...reachable,attempts:reachable.attempts.filter(attempt=>attempt<2),reviewAfterDevelop:false,reviewFirst:false};
   const bootstrapAnswers=rules
-    ?readBootstrapRulesAnswers({answers,operation,definition,plan,permissions,bootstrap,reachable}):null;
-  const developAnswers=new Map(),deliveries=[];let holdRevision=false;
+    ?readBootstrapRulesAnswers({answers,operation,definition,plan,permissions,bootstrap,reachable,controlPolicy:control?.policy??null}):null;
+  const developAnswers=new Map(),deliveries=[];let holdRevision=holdBootstrapRevision;
   if(asks.includes('develop'))for(const attempt of reachable.attempts){
     const file=answerPath(answers??'',developFilename(answers??'',attempt));
     if(!answers||!fs.existsSync(file)){
@@ -740,7 +800,7 @@ function load(){
   });
   if(answer.documentation_sync)for(const target of Object.keys(answer.documentation_sync.edits))
     if(!workflow.documentationPaths.includes(target))stop(2,`documentation-sync.json.edits 越过文档 scope: ${target}`);
-  return {...loaded,definition,identity,permissions,config,answers,answer,developAnswers,live,executionPolicy,holdRevision,
+  return {...loaded,control,definition,identity,permissions,config,answers,answer,developAnswers,live,executionPolicy,holdRevision,
     bootstrapRules:bootstrapAnswers&&createBootstrapRulesResponder({definition,plan,bootstrap,answers:bootstrapAnswers,
       // Same execution as the task checks: the host's specs sandbox in protected mode, else the driver's own.
       specsRoot:protectedMode?definition.specsDir:null,watch:[config,...permissionFiles]})};
@@ -815,7 +875,11 @@ async function answerFor(row,answer,paths,control){
   return value??null;
 }
 export function buildCmAiDriveRequest(operation,plan,definition,identity=definition.identity){
-  return {version:1,identity,
+  // Recovery is bound to the caller's earlier preview, including its attempt.
+  // The host compares that whole target before dispatching anything.
+  if(Object.hasOwn(plan,'controlConfig')&&isControlRecovery(operation,plan))identity=plan.expectedControl?.identity??identity;
+  return {version:Object.hasOwn(plan,'controlConfig')?2:1,identity,
+    ...(Object.hasOwn(plan,'controlConfig')&&isControlRecovery(operation,plan)?{expectedControl:plan.expectedControl}:{}),
     ...(operation==='reconcile_review'?{invocationId:plan.invocationId}:{}),
     ...(['abandon_review','abandon_effect','bootstrap_review_recover','develop_redo'].includes(operation)?{reason:plan.reason}:{}),
     ...(PACKAGE_OPERATIONS.has(operation)?{packageDigest:plan.packageDigest}:{}),
@@ -827,9 +891,9 @@ export function buildCmAiDriveRequest(operation,plan,definition,identity=definit
         ...(plan.fixOperation==='recover_final_review'?{invocationId:plan.invocationId,reviewPackageDigest:plan.reviewPackageDigest,
           previousInvocationStopped:plan.previousInvocationStopped}:{})}: {})}: {})};
 }
-export function buildCmAiDriveHostArgs(plan,permissions,config){
+export function buildCmAiDriveHostArgs(plan,permissions,config,controlConfig=null){
   return ['serve','--config',config,'--mode',plan.mode,'--host-context',plan.hostContext,
-    '--allow-development',
+    ...(Object.hasOwn(plan,'controlConfig')?['--control-config',controlConfig??plan.controlConfig]:['--allow-development']),
     ...(plan.verificationPrecheck===true&&!permissions.includes('--verification-precheck')?['--verification-precheck']:[]),
     ...(plan.originalHostContext?['--original-host-context',plan.originalHostContext]:[]),
     '--runtime',plan.runtime??'codex',...permissions.filter(flag=>flag!=='--allow-development')];
@@ -849,7 +913,7 @@ async function main(){
   // Rules init_verify commands really run once the host has accepted the launch
   // (host_ready) and before the operation is sent: a failure never becomes an
   // unknown develop effect, and the host's own launch validation came first.
-  driveHost({host:HOST,args:[...buildCmAiDriveHostArgs(plan,permissions,config),...(loaded.holdRevision?['--hold-revision']:[])],cwd:definition.codeProject,operation,request,
+  driveHost({host:HOST,args:[...buildCmAiDriveHostArgs(plan,permissions,config,loaded.control?.file),...(loaded.holdRevision?['--hold-revision']:[])],cwd:definition.codeProject,operation,request,
     answers:answer,paths:{answers:loaded.answers},answerFor,
     ...(loaded.bootstrapRules?{beforeRequest:()=>loaded.bootstrapRules.prepare(plan.mode)}:{})});
 }

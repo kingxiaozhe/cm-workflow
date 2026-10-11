@@ -18,7 +18,9 @@ import {approvedTaskGrammar} from '../runtime/js/spec-task-line.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {inspectRunClosure as inspectClosure} from './cm-log-event.mjs';
 import {releaseVerifiedQaResources} from '../runtime/js/cm-ai/qa-resource-release.mjs';
-import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {readRunnerHistory,projectedRunnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
+import {readControlPolicy,controlTarget,readControlTarget} from '../runtime/js/cm-ai/control-policy.mjs';
 import {strictPriorAttemptResolved,sameTaskPriorAttemptResolved} from '../runtime/js/cm-ai/external-run-guard.mjs';
 
 const writer=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
@@ -89,7 +91,8 @@ export function memberSupersedeAdmitted(specsDir,runId,history){
 export function createCmAiBatch({configuration,executionFor,logHome,runtime='codex',checkCommands=null,checkTimeoutMs=60000,
   rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,holdRevisions=[],bootstrapKeys=[],memberActions={}}){
   const config=json(configuration);
-  shape(config,['version','repositoryId','batchId','specsDir','codeProject','tasks',...['externalModels','executionPolicy','codeProjects','parallel'].filter(name=>Object.hasOwn(config,name))]);
+  shape(config,['version','repositoryId','batchId','specsDir','codeProject','tasks',...['externalModels','executionPolicy','codeProjects','parallel','controlPolicy'].filter(name=>Object.hasOwn(config,name))]);
+  const controlPolicy=config.controlPolicy?readControlPolicy(config.controlPolicy):null;
   need(config.version===1);id(config.repositoryId);id(config.batchId);need(config.batchId.length>=8);
   need(typeof executionFor==='function'&&typeof logHome==='string'&&path.isAbsolute(logHome));
   need(Array.isArray(config.tasks)&&config.tasks.length>0&&config.tasks.length<=256);
@@ -135,6 +138,16 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   const groups=validateGroups(config,plans),membership=new Map(groups.flatMap(group=>group.map(key=>[key,group])));
   const originalMembership=new Map(membership),originalPlans=new Map(plans);
   const first=plans.keys().next().value,planDigest=digest(config),log=path.join(config.specsDir,'运行日志.jsonl');
+  const batchControlTarget=async(taskKey,state=progress())=>{
+    const definition=plans.get(taskKey);need(definition,'batch_member_action_unavailable');
+    if(membership.has(taskKey))bindWorktree(taskKey);
+    const run=await open(taskKey);need(run.controlHost,'fingerprint_mismatch');
+    try{
+      const observed=await run.controlHost.handle({version:2,operation:'status',requestId:'control-preview',identity:definition.identity});
+      return {version:2,batchId:config.batchId,taskKey,member:observed.controlTarget,
+        batchDigest:digest({planDigest,rows:state.rows})};
+    }finally{run.close();}
+  };
   // Q26: before any closure check, close cleanup_failed QA command resources whose
   // journaled process group the host proves gone (qa-resource-release.mjs).
   let stillOpen=[];
@@ -521,7 +534,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       ?membership.get(state.current).filter(key=>membership.has(key)&&!state.ready?.has(key)&&!state.done?.has(key)):[state.current];
     if(!stopped.includes(taskKey))return refuse('batch_member_action_not_current',
       `批次当前停在 ${stopped.join('、')}；恢复操作只转给当前停住的成员，不跨成员`);
-    if(!actionGrants.get(request.operation).has(taskKey))return refuse('batch_member_action_authorization_required',
+    if(!controlPolicy&&!actionGrants.get(request.operation).has(taskKey))return refuse('batch_member_action_authorization_required',
       `${request.operation} 需要批次宿主启动参数 ${flag} ${taskKey}；关闭批次宿主，带上该参数用同一批次配置重新启动后再发送`);
     if(membership.has(taskKey))bindWorktree(taskKey);
     const definition=plans.get(taskKey);
@@ -530,15 +543,19 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const run=await open(taskKey,{[option]:true});
     if(run.blocked)return {outcome:'blocked',code:run.blocked.reason,batchId:config.batchId};
     try{
-      const result=await run.host.handle({version:1,operation:request.operation,requestId:request.requestId,
-        identity:definition.identity,reason:request.reason});
+      const result=controlPolicy?await run.controlHost.handle({version:2,operation:request.operation,requestId:request.requestId,
+        identity:request.expectedControl.member.identity,reason:request.reason,expectedControl:request.expectedControl.member})
+        :await run.host.handle({version:1,operation:request.operation,requestId:request.requestId,
+          identity:definition.identity,reason:request.reason});
       actionGrants.get(request.operation).delete(taskKey);
       return {...result,batchId:config.batchId,taskKey};
     }finally{run.close();}
   }
-  return Object.freeze({async handle(raw){
+  return Object.freeze({controlTarget:()=>batchControlTarget(progress().current),async handle(raw){
     const request=json(raw);shape(request,['operation','requestId',...(request.operation==='reconcile_review'?['taskKey','invocationId']:[]),
-      ...(Object.hasOwn(BATCH_MEMBER_ACTIONS,request.operation??'')?['taskKey','reason']:[])]);id(request.requestId);
+      ...(Object.hasOwn(BATCH_MEMBER_ACTIONS,request.operation??'')?['taskKey','reason']:[]),
+      ...(controlPolicy?['version',...((IN_RUN_ACTIONS.has(request.operation??''))?['expectedControl']:[])]:[])]);id(request.requestId);
+    if(controlPolicy)need(request.version===2,'fingerprint_mismatch');
     need(['advance','status','cancel','reconcile_review',...Object.keys(BATCH_MEMBER_ACTIONS)].includes(request.operation));
     if(request.operation==='cancel'&&busy){
       cancelled=true;
@@ -557,6 +574,13 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     try{
       releaseLock=acquireBatchLock(config);
       const initial=progress();liveKey=initial.current;
+      if(controlPolicy&&IN_RUN_ACTIONS.has(request.operation)){
+        const expected=json(request.expectedControl);shape(expected,['version','batchId','taskKey','member','batchDigest']);
+        readControlTarget(expected.member);hex(expected.batchDigest);
+        if(membership.has(request.taskKey))bindWorktree(request.taskKey);
+        need(expected.version===2&&expected.batchId===config.batchId&&expected.taskKey===request.taskKey
+          &&expected.batchDigest===digest({planDigest,rows:initial.rows}),'snapshot_changed');
+      }
       const {externalModels:ignoredModels,executionPolicy:ignoredPolicy,...policyBatch}=config;
       const policy=readBatchExecutionPolicy({batch:policyBatch,started:initial.rows.length>0,enabled:!!config.executionPolicy});
       need(digest(policy)===digest(config.executionPolicy??null),'execution_policy_batch_binding');
@@ -569,7 +593,9 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         const definition=plans.get(request.taskKey);
         need(fs.existsSync(path.join(config.specsDir,'.reviews','.execution',definition.identity.runId,'state.json')),'review_reconciliation_unavailable');
         const run=await open(request.taskKey);
-        try{return await run.host.handle({version:1,operation:'reconcile_review',requestId:request.requestId,identity:definition.identity,invocationId:request.invocationId});}
+        try{return controlPolicy?await run.controlHost.handle({version:2,operation:'reconcile_review',requestId:request.requestId,
+          identity:request.expectedControl.member.identity,invocationId:request.invocationId,expectedControl:request.expectedControl.member})
+          :await run.host.handle({version:1,operation:'reconcile_review',requestId:request.requestId,identity:definition.identity,invocationId:request.invocationId});}
         finally{run.close();}
       }
       if(initial.stopped)return {outcome:'blocked',code:initial.code??'cancelled',batchId:config.batchId};

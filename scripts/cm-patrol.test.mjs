@@ -125,8 +125,9 @@ test('patrol: a single dead host names its run and workflow; rate-limited or off
 });
 
 test('--report prints the summary and neither notifies nor removes anything',t=>{
-  const h=home(t),gone=gonePid();
-  h.write(KEYS[1],{pid:gone});
+  const h=home(t),gone=gonePid(),now=Date.now();
+  // The CLI uses the real clock; this fixture must remain inside the unchanged TTL.
+  h.write(KEYS[1],{pid:gone,startedAt:new Date(now-3600000).toISOString(),at:new Date(now-600000).toISOString()});
   const run=spawnSync(process.execPath,[PATROL,'--report'],{encoding:'utf8',env:{...h.env,NODE_TEST_CONTEXT:undefined}});
   assert.equal(run.status,0,run.stderr);
   const summary=JSON.parse(run.stdout);

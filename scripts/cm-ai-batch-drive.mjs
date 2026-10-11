@@ -29,7 +29,8 @@ import {validateRunDefinition} from './cm-ai-run.mjs';
 import {createCmAiBatch} from './cm-ai-batch-run.mjs';
 import {readConversationReviewConfiguration,readConversationProtection} from './cm-ai-host.mjs';
 import {validateCmAiAnswer,developFilename,preflightDevelopDeliveries,baselineScope,inputLimitFrom,
-  applyDevelopEdits,protectedDevelopEdits,developPreview,plannedCheckResults,journalRestBytes} from './cm-ai-drive.mjs';
+  applyDevelopEdits,protectedDevelopEdits,developPreview,plannedCheckResults,journalRestBytes,
+  readDriverControl,controlDevelopAttempts} from './cm-ai-drive.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readRunnerHistory,projectedRunnerStatus,RECHECK_CODES,DOCUMENTATION_SYNC_CODES} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
@@ -60,7 +61,8 @@ export function batchMemberActionPlanError(operation,plan,permissions,keys){
   if(!permissions.some((name,index)=>name===flag&&permissions[index+1]===plan.taskKey))return `${operation} 需要 permissions 中的 ${flag} ${plan.taskKey}`;
   return null;
 }
-export function batchDevelopAttempts(state,key,permissions){
+export function batchDevelopAttempts(state,key,permissions,controlPolicy=null){
+  if(controlPolicy)return controlPolicy.development==='provider'?[]:controlDevelopAttempts(state,'advance').attempts;
   // The round-1 review this launch authorizes may lead into round 2 within the
   // same advance (Codex round 1 on Q28): list it too; a missing a2 answer then
   // holds the task after that review (revision_answer_required) instead of
@@ -105,6 +107,7 @@ function checkCommandShape(commands,key,plan,executionPolicy){
 }
 function preflight(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
+    process.stdout.write('新版 PLAN.controlConfig 为相对 PLAN 的 v2 控制配置路径；permissions 禁止所有 --allow-*，批次 qaFix 只能为 disabled。普通 advance 自动独立审查；缺少 develop-a2.json 时保持 revision_answer_required。显式成员恢复需要 resume、taskKey 与此前 status 返回的 PLAN.expectedControl，驾驶员不会读取新目标覆盖它。\n');
     process.stdout.write('用法: cm-ai-batch-drive.mjs --plan PLAN.json <operation>\n'
       +'operation: advance, status, cancel, reconcile_review（taskKey、invocationId）, develop_redo / abandon_effect / abandon_review / bootstrap_review_recover（resume、PLAN.taskKey、单行 PLAN.reason，permissions 带对应 --allow-… 任务）。PLAN: config, mode, hostContext, permissions, answers, checks, checkTimeoutMs。\n'
       +'checks 每项为 {id,command,timeoutMs?}；超时为 1..3600000 整数，默认 900000 ms（15 分钟）。\n'
@@ -115,6 +118,10 @@ function preflight(){
   const loaded=loadPlanFile({name:'cm-ai-batch-drive.mjs',known:new Set(['advance','status','cancel','reconcile_review',...Object.keys(MEMBER_ACTION_FLAGS)])});
   const {plan,base,operation}=loaded;
   requireFields(plan,['config','mode','hostContext','permissions']);
+  let control;
+  try{control=readDriverControl(plan,base,operation,operation==='reconcile_review'||Object.hasOwn(MEMBER_ACTION_FLAGS,operation));}
+  catch(error){stop(2,error.message);}
+  if(control&&control.policy.qaFix!=='disabled')stop(2,'invalid_arguments: batch qaFix 必须为 disabled');
   try{planCheckTimeout(plan);}catch(error){stop(2,error.message);}
   if(!['create','resume'].includes(plan.mode))stop(2,'mode 只能是 create 或 resume');
   if(!nonempty(plan.hostContext))stop(2,'hostContext 必须是当前真实会话 ID');
@@ -186,7 +193,11 @@ function preflight(){
   let externalModels;
   try{externalModels=readBatchExternalModels({batch,started:hasStore,enabled:permissions.includes('--external-models'),inputFile:argumentValue('--external-models-config'),providers:[routes.coderRuntime,routes.reviewerRuntime].filter(Boolean)});}catch(error){stop(2,error.code??'external_model_configuration_invalid');}
   if(operation==='reconcile_review'&&(plan.mode!=='resume'||!keys.includes(plan.taskKey)||!nonempty(plan.invocationId)))stop(2,'reconcile_review requires resume, taskKey and original invocationId');
-  const memberError=batchMemberActionPlanError(operation,plan,permissions,keys);if(memberError)stop(2,memberError);
+  if(control&&Object.hasOwn(MEMBER_ACTION_FLAGS,operation)){
+    if(!keys.includes(plan.taskKey)||!nonempty(plan.reason)||Buffer.byteLength(plan.reason,'utf8')>500||/[\r\n\0]/.test(plan.reason))
+      stop(2,`${operation} 需要本批次 taskKey、expectedControl 与单行 reason（最多 500 UTF-8 字节）`);
+  }
+  const memberError=control?null:batchMemberActionPlanError(operation,plan,permissions,keys);if(memberError)stop(2,memberError);
   for(let i=0;i<permissions.length;i++)if(PAIRS.has(permissions[i])){
     const name=permissions[i],value=permissions[++i];
     if(['--review-config','--protected-conversation-config','--protected-config'].includes(name)){
@@ -221,10 +232,10 @@ function preflight(){
     stop(2,'--allow-review 需要 --review-config');
   if(permissions.includes('--allow-provider-development')&&!permissions.includes('--protected-config'))
     stop(2,'--allow-provider-development 需要 --protected-config');
-  if(Object.values(bundle.workflows).some(workflow=>workflow?.qa)&&!permissions.includes('--allow-qa'))
+  if(!control&&Object.values(bundle.workflows).some(workflow=>workflow?.qa)&&!permissions.includes('--allow-qa'))
     stop(2,'有 QA 工作流时缺少 --allow-qa');
   const protectedMode=permissions.includes('--protected-config')||permissions.includes('--protected-conversation-config');
-  const providerAll=permissions.includes('--protected-config')&&keys.every(key=>
+  const providerAll=control?control.policy.development==='provider':permissions.includes('--protected-config')&&keys.every(key=>
     permissions.includes(`${key}:1`)&&permissions[permissions.indexOf(`${key}:1`)-1]==='--allow-provider-development');
   let live;
   try{live=driverLiveEvidence(plan,{base,protectedRoots:[batch.codeProject,batch.specsDir,path.resolve(batch.codeProject,'..','.cm-worktrees'),...(batch.codeProjects??[])],
@@ -246,11 +257,13 @@ function preflight(){
       kinds.push('check');
       if(workflow?.documentationPaths?.length)kinds.push('documentation_sync');
     }
-    if(workflow?.qa){
+    if(workflow&&(control||workflow.qa)){
       // A rescheduled second generation runs serially and asks qa_assess like a serial task.
       if(!batch.parallel?.some(group=>group.includes(key))||rescheduled.has(key))kinds.push('qa_assess');
-      const cases=readJson(path.join(batch.specsDir,task.feature,'test-cases.json'),'test-cases');
-      for(const kind of ['logic','browser'])if(cases?.cases?.some(item=>item.kind===kind))kinds.push(`qa_${kind}`);
+      if(workflow.qa&&(!control||control.policy.qa==='run')){
+        const cases=readJson(path.join(batch.specsDir,task.feature,'test-cases.json'),'test-cases');
+        for(const kind of ['logic','browser'])if(cases?.cases?.some(item=>item.kind===kind))kinds.push(`qa_${kind}`);
+      }
     }
     if(workflow)kinds.push('documentation_inspect');
     const evidence=kinds.filter(kind=>['qa_logic','qa_browser'].includes(kind)&&!live.has(kind));
@@ -271,14 +284,14 @@ function preflight(){
           const snapshot=readExecutionSnapshot({specsRoot:batch.specsDir,identity:{repositoryId:batch.repositoryId,runId:existing[0]}});
           const history=readRunnerHistory(snapshot.records,snapshot.records[0].payload.config,3);
           // Q28: decide from what the host will show (projected answer-gap blocks), not the raw replay state.
-          attempts=batchDevelopAttempts(projectedRunnerStatus(history,snapshot.records[0].payload.config),key,permissions);current=history.state.attempt;
+          attempts=batchDevelopAttempts(projectedRunnerStatus(history,snapshot.records[0].payload.config),key,permissions,control?.policy??null);current=history.state.attempt;
           journal={baseline:snapshot.records[0].payload.baseline,generation:existing[1].generation,
             frame:journalRestBytes(snapshot.records)};
         }catch(error){stop(2,`任务 ${key} 无法只读检查恢复存档: ${error.code??error.message}`);}
       }
       // A task with no run yet (a new batch, or a later task on resume) starts at
       // attempt 1; a first-round review grant can then reach attempt 2 as well.
-      if(journal===null&&permissions.some((flag,index)=>flag==='--allow-review'&&permissions[index+1]===`${key}:1`))attempts=[1,2];
+      if(journal===null&&(control||permissions.some((flag,index)=>flag==='--allow-review'&&permissions[index+1]===`${key}:1`)))attempts=[1,2];
       const deliveries=[],definition=definitions.get(key);
       for(const attempt of attempts){
         const file=path.join(taskRoot??'',developFilename(taskRoot??'',attempt));
@@ -322,7 +335,7 @@ function preflight(){
     if(answers[key].documentation_sync)for(const target of Object.keys(answers[key].documentation_sync.edits))
       if(!workflow.documentationPaths.includes(target))stop(2,`任务 ${key} documentation-sync.json.edits 越过文档 scope: ${target}`);
   }
-  return {...loaded,executionPolicy,bundle,definitions,runs,config,permissions,answers,developAnswers,answerRoot:root,holds,live};
+  return {...loaded,control,executionPolicy,bundle,definitions,runs,config,permissions,answers,developAnswers,answerRoot:root,holds,live};
 }
 
 let loaded;
@@ -386,12 +399,23 @@ async function answerFor(row,answers,paths,control){
   }
   return null;
 }
+export function buildCmAiBatchDriveHostArgs(plan,permissions,config,controlConfig=null,holds=[]){
+  return ['serve','--config',config,...(Object.hasOwn(plan,'controlConfig')?['--mode',plan.mode]:[]),
+    '--host-context',plan.hostContext,
+    ...(Object.hasOwn(plan,'controlConfig')?['--control-config',controlConfig??plan.controlConfig]:['--allow-development']),
+    ...permissions,...holds.flatMap(key=>['--hold-revision',key])];
+}
+export function buildCmAiBatchDriveRequest(operation,plan){
+  const recovery=operation==='reconcile_review'||Object.hasOwn(MEMBER_ACTION_FLAGS,operation);
+  return {...(Object.hasOwn(plan,'controlConfig')?{version:2,...(recovery?{expectedControl:plan.expectedControl}:{})}:{}),
+    ...(operation==='reconcile_review'?{taskKey:plan.taskKey,invocationId:plan.invocationId}
+      :Object.hasOwn(MEMBER_ACTION_FLAGS,operation)?{taskKey:plan.taskKey,reason:plan.reason}:{})};
+}
 function main(){
   loaded=preflight();
   const {plan,operation,bundle,config,permissions}=loaded;
-  driveHost({host:HOST,args:['serve','--config',config,'--host-context',plan.hostContext,
-    '--allow-development',...permissions,...loaded.holds.flatMap(key=>['--hold-revision',key])],cwd:bundle.batch.codeProject,operation,request:operation==='reconcile_review'?{taskKey:plan.taskKey,invocationId:plan.invocationId}
-      :Object.hasOwn(MEMBER_ACTION_FLAGS,operation)?{taskKey:plan.taskKey,reason:plan.reason}:{},
+  driveHost({host:HOST,args:buildCmAiBatchDriveHostArgs(plan,permissions,config,loaded.control?.file,loaded.holds),
+    cwd:bundle.batch.codeProject,operation,request:buildCmAiBatchDriveRequest(operation,plan),
     answers:loaded.answers,answerFor});
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))main();

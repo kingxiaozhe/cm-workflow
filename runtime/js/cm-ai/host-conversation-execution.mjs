@@ -1,5 +1,6 @@
 import {createNativeUsageLog} from './native-usage-log.mjs';
 import {readExecutionPolicy} from './execution-policy.mjs';
+import {readControlPolicy} from './control-policy.mjs';
 import {selectExternalModels} from './external-models.mjs';
 // Fixed current-conversation factory, separate from CLI top-level execution.
 import fs from 'node:fs';
@@ -107,11 +108,19 @@ export const REVIEW_BOUND_MARGIN_MS=60000;
 export const reviewRaceTimeout=(outerTimeoutMs,reviewTimeoutMs)=>Math.max(outerTimeoutMs,reviewTimeoutMs+REVIEW_BOUND_MARGIN_MS);
 export function createConversationExecution(definition,hostContextId,bridge,review=null,allowedAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
   definition=json(definition);workflow=workflow===null?null:json(workflow);options=json(options);
-  shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','externalModels','reviewerRuntime','reviewRuntime','parallelMember','verificationPrecheck','executionPolicy'].filter(key=>Object.hasOwn(options,key))]);
+  shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','externalModels','reviewerRuntime','reviewRuntime','parallelMember','verificationPrecheck','executionPolicy','controlPolicy'].filter(key=>Object.hasOwn(options,key))]);
+  const controlPolicy=options.controlPolicy?readControlPolicy(options.controlPolicy):null;
   need(!Object.hasOwn(options,'verificationPrecheck')||typeof options.verificationPrecheck==='boolean','invalid_input');
   const executionPolicy=options.executionPolicy?readExecutionPolicy(options.executionPolicy):null;
   const parallelMember=options.parallelMember??false;need(typeof parallelMember==='boolean','invalid_input');
   const provider=options.providerDevelopment??null;
+  if(controlPolicy){
+    need((controlPolicy.development==='provider')===Boolean(provider),'invalid_arguments');
+    need(controlPolicy.bootstrap!=='write'||Boolean(options.bootstrap),'invalid_arguments');
+    need(controlPolicy.qa!=='run'||workflow?.qa!=null,'invalid_arguments');
+    need(!options.bootstrap||controlPolicy.bootstrap==='write','invalid_arguments');
+    need(allowQa===(controlPolicy.qa==='run'),'invalid_input');
+  }
   if(provider){
     shape(provider,['model','attempt','coderRuntime','reviewerRuntime',...(Object.hasOwn(provider,'effort')?['effort']:[])]);
     need(options.protection&&review!==null,'protected_configuration_required');
@@ -148,7 +157,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   const check=projectExecution?.check??null;
   const documentationPaths=workflow?validateDocumentationPaths(workflow.documentationPaths,definition.scope):[];
   need(['codex','claude'].includes(runtime),'invalid_runtime');
-  const allowedAttempts=allowedAttempt===null?[]:Array.isArray(allowedAttempt)?json(allowedAttempt):[allowedAttempt];
+  const allowedAttempts=controlPolicy?[1,2]:allowedAttempt===null?[]:Array.isArray(allowedAttempt)?json(allowedAttempt):[allowedAttempt];
   need(allowedAttempts.length<=2&&new Set(allowedAttempts).size===allowedAttempts.length
     &&allowedAttempts.every(value=>value===1||value===2),'invalid_review_attempt');
   const author='cm-conversation-author',reviewContexts=['cm-conversation-review-1','cm-conversation-review-2'];
@@ -160,6 +169,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   // slice too. A transport is not physical protection of nested specs.
   need(protection||!definition.specsDir.startsWith(definition.codeProject+path.sep),'nested_specs_protection_required');
   const configuration={kind:'cm-current-conversation-v1',...(parallelMember?{parallelMember}:{}),definitionDigest:digest(definition),hostContextId:durableHostContextId,
+    ...(controlPolicy?{controlPolicy}:{}),
     ...(runtime==='claude'?{runtime}:{}),
     ...(options.reviewRuntime===undefined?{}:{reviewRuntime:options.reviewRuntime}),
     ...(executionPolicy?{executionPolicy}:{}),
@@ -235,14 +245,15 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   const execution={configuration,timeoutMs:outerTimeoutMs,excludedContexts:[durableHostContextId],hostDecision:null,applicableAgentFiles:[],
     ...(verificationGate?{verificationGate:(request,control)=>progress(request,control,'verifying',()=>verificationGate(request,control))}:{}),
     ...(bootstrap?{bootstrap}:{}),
-    ...(provider?{developmentAttempt:provider.attempt}:{}),
-    ...(workflow?createHostWorkflowCapabilities({definition,configuration:workflow,bridge,allowQa,runtime,protectedExecution:protection!==null,bootstrap,parallelMember}):{}),
+    ...(provider&&!controlPolicy?{developmentAttempt:provider.attempt}:{}),
+    ...(workflow?createHostWorkflowCapabilities({definition,configuration:workflow,bridge,allowQa,runtime,protectedExecution:protection!==null,bootstrap,parallelMember,controlPolicy}):{}),
     ...(options.qaLogHome?{qaLogHome:options.qaLogHome}:{}),
     ...(authority?{hostDecisionProvider:authority.hostDecisionProvider}:{}),
     developer:{provider:coderRuntime,requestedModel:provider?.model??'current-session',contextId:author,run:async(request,control)=>{
       const bound=(coderRuntime==='codex'?readCodexDeveloperRequest:readClaudeDeveloperRequest)(request);
       if(provider){
-        need(bound.identity.attempt===provider.attempt&&digest({...bound.identity,attempt:1})===digest(definition.identity),'permission_denied');
+        need((controlPolicy?[1,2].includes(bound.identity.attempt):bound.identity.attempt===provider.attempt)
+          &&digest({...bound.identity,attempt:1})===digest(definition.identity),'permission_denied');
         need(!used.has(bound.invocationId),'duplicate_dispatch');used.add(bound.invocationId);
       }
       const route=provider?null:resolveHostRole({definition,identity:bound.identity,role:'coder',signal:control.signal,runtime});
