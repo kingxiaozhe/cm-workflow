@@ -41,9 +41,22 @@ function fixture(runtime='codex'){
       ...(runtime==='claude'?['--runtime','claude']:[])]};
 }
 
-function execute(f,approvals,{cancel=false}={}){
+// Use an actual first-round review finding for a launch-only revision pause.
+// The synthetic native process still emits its normal bound review observation.
+function requestFirstRevision(f,taskIds){
+  const fake=path.join(f.root,'bin',f.runtime);
+  const first=`${JSON.stringify(taskIds)}.includes(data.reviewPackage.identity.taskId)&&data.reviewPackage.identity.attempt===1`;
+  const source=fs.readFileSync(fake,'utf8');
+  assert(source.includes("verdict:'approved'")&&source.includes('findings:[]'),'native review fixture must retain its known response fields');
+  fs.writeFileSync(fake,source
+    .replace("verdict:'approved'",`verdict:(${first})?'changes_requested':'approved'`)
+    .replace('findings:[]',`findings:(${first})?[{id:'F1',severity:'P2',path:'task'+Number(data.reviewPackage.identity.taskId.slice(-1))+'.mjs',message:'Recheck the export in a revision',evidence:'Synthetic first-round review finding'}]:[]`));
+  return taskIds.flatMap(taskId=>['--hold-revision',`1.work/${taskId}`]);
+}
+
+function execute(f,{cancel=false,args=[]}={}){
   return new Promise((resolve,reject)=>{
-    const child=spawn(process.execPath,[cli,...f.args,...approvals.flatMap(value=>['--allow-review',value])],
+    const child=spawn(process.execPath,[cli,...f.args,...args],
       {env:f.env,stdio:['pipe','pipe','pipe']});
     let buffer='',stderr='',sessionId;const calls=[],rows=[];
     const timer=setTimeout(()=>{child.kill('SIGTERM');reject(Error('batch host timeout'));},Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000));
@@ -69,7 +82,7 @@ function execute(f,approvals,{cancel=false}={}){
               assert.deepEqual(payload.request.payload.scope,f.batch.tasks[n-1].scope);
               assert.equal(payload.request.payload.specification.task.id,identity.taskId);
               assert.deepEqual(payload.request.payload.specification.sources,buildManifest(f.specsDir));
-              const content=`export const value = ${40+n};\n`;
+              const content=`export const value = ${40+n};\n${identity.attempt===2?"// Revised after the independent review finding.\n":""}`;
               if(!f.protected)fs.writeFileSync(path.join(cwd,`task${n}.mjs`),content);
               respond(row,{status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
                 retrospective:{status:'no_new_lesson',candidates:[],reason:null}},...(f.protected?{edits:
@@ -112,13 +125,16 @@ for(const runtime of ['codex','claude'])test(`${runtime} real batch host freezes
     const sent=path.join(f.root,'sent.jsonl'),fake=path.join(f.root,'bin',runtime);
     fs.writeFileSync(fake,fs.readFileSync(fake,'utf8').replace("import {randomUUID}",`import fs from 'node:fs';fs.appendFileSync(${JSON.stringify(sent)},JSON.stringify(process.argv.slice(2))+'\\n');\nimport {randomUUID}`));
     const review=JSON.parse(fs.readFileSync(f.review));review.effort=pair.effort;review.preflight.config_fingerprint=(runtime==='claude'?claudeReviewFingerprint:configFingerprint)({cwd:f.codeProject,...pair});fs.writeFileSync(f.review,JSON.stringify(review));f.args.push('--external-models');
-    const first=await execute(f,[]);assert.equal(first.result.state,'awaiting_review',first.stderr+JSON.stringify(first.result));
+    const held=requestFirstRevision(f,['T-001']);
+    const first=await execute(f,{args:held});assert.equal(first.result.state,'changes_requested',first.stderr+JSON.stringify(first.result));
+    assert.equal(first.result.code,'revision_answer_required');assert.equal(first.result.identity.attempt,2);
+    assert.deepEqual(first.calls,['T-001:develop','T-001:check']);
     const {batchTaskRunId}=await import('./cm-ai-batch-run.mjs');const statePath=n=>path.join(f.specsDir,'.reviews','.execution',batchTaskRunId(f.batch.batchId,'1.work/T-00'+n),'state.json');
     assert(!fs.existsSync(statePath(2)));assert.deepEqual(JSON.parse(fs.readFileSync(statePath(1))).records[0].payload.config.externalModels,models);
     fs.writeFileSync(settings,'invalid new user defaults');
-    const end=await execute(f,['1.work/T-001:1','1.work/T-002:1']);assert.equal(end.result.code,'run_done',end.stderr+JSON.stringify(end.result));
+    const end=await execute(f);assert.equal(end.result.code,'run_done',end.stderr+JSON.stringify(end.result));
     for(const n of [1,2])assert.deepEqual(JSON.parse(fs.readFileSync(statePath(n))).records[0].payload.config.externalModels,models);
-    const calls=fs.readFileSync(sent,'utf8').trim().split('\n').map(JSON.parse);assert.equal(calls.length,2);
+    const calls=fs.readFileSync(sent,'utf8').trim().split('\n').map(JSON.parse);assert.equal(calls.length,3);
     for(const args of calls){if(runtime==='codex'){assert(args.includes('model_reasoning_effort="low"'));assert(args.includes('--ephemeral'));}else{assert(!args.includes('--effort'));assert(args.includes('--no-session-persistence'));}}
     const tracked=spawnSync('git',['-C',f.codeProject,'ls-files'],{encoding:'utf8'});assert(!tracked.stdout.includes('.cm-external-models-v1.json'));assert(!tracked.stdout.includes('.cm-model-config.lock'));
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
@@ -136,7 +152,7 @@ test('new parallel batch merges reviewed members without committing private bind
     const review=JSON.parse(fs.readFileSync(f.review));review.effort='low';review.preflight.config_fingerprint=configFingerprint({cwd:f.codeProject,model:'fixture',effort:'low'});fs.writeFileSync(f.review,JSON.stringify(review));f.args.push('--external-models');
     fs.writeFileSync(path.join(f.codeProject,'README.md'),'# Exports 41 and 42\n');
     for(const args of [['add','README.md'],['commit','-m','fixture documentation']])assert.equal(spawnSync('git',['-C',f.codeProject,...args]).status,0);
-    const end=await execute(f,['1.work/T-001:1','1.work/T-002:1','1.work/T-003:1']);assert.equal(end.result.code,'run_done',end.stderr+JSON.stringify(end.result));
+    const end=await execute(f);assert.equal(end.result.code,'run_done',end.stderr+JSON.stringify(end.result));
     const tracked=spawnSync('git',['-C',f.codeProject,'ls-files'],{encoding:'utf8'}).stdout;assert(!tracked.includes('.cm-external-models-v1.json'));assert(!tracked.includes('.cm-model-config.lock'));
     for(const n of [1,2])assert(!fs.existsSync(path.join(f.root,'.cm-worktrees',f.batch.batchId.slice(0,8),'T-00'+n)));
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
@@ -145,12 +161,16 @@ test('new parallel batch merges reviewed members without committing private bind
 test('optimization-only serial batch freezes policy for later members after removing launch flag',async()=>{
   const f=fixture();f.args.push('--execution-optimizations');f.env.CM_WORKFLOW_HOME=path.join(f.root,'home');f.env.CM_WORKFLOW_LOG_HOME=path.join(f.root,'logs');
   try{
-    const first=await execute(f,[]);assert.equal(first.result.state,'awaiting_review',first.stderr+JSON.stringify(first.result));
+    const held=requestFirstRevision(f,['T-001']);
+    const first=await execute(f,{args:held});assert.equal(first.result.state,'changes_requested',first.stderr+JSON.stringify(first.result));
+    assert.equal(first.result.code,'revision_answer_required');assert.equal(first.result.identity.attempt,2);
+    assert.deepEqual(first.calls,['T-001:develop','T-001:check']);
     const {batchTaskRunId}=await import('./cm-ai-batch-run.mjs');
     const statePath=n=>path.join(f.specsDir,'.reviews','.execution',batchTaskRunId(f.batch.batchId,'1.work/T-00'+n),'state.json');
+    assert(!fs.existsSync(statePath(2)));
     assert.deepEqual(JSON.parse(fs.readFileSync(statePath(1))).records[0].payload.config.executionPolicy,EXECUTION_POLICY_V1);
     f.args=f.args.filter(arg=>arg!=='--execution-optimizations');
-    const end=await execute(f,['1.work/T-001:1','1.work/T-002:1']);assert.equal(end.result.code,'run_done',end.stderr+JSON.stringify(end.result));
+    const end=await execute(f);assert.equal(end.result.code,'run_done',end.stderr+JSON.stringify(end.result));
     for(const n of [1,2])assert.deepEqual(JSON.parse(fs.readFileSync(statePath(n))).records[0].payload.config.executionPolicy,EXECUTION_POLICY_V1);
     const tracked=spawnSync('git',['-C',f.codeProject,'ls-files'],{encoding:'utf8'});assert(!tracked.stdout.includes('.cm-external-models-v1.json'));
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}

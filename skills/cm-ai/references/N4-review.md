@@ -31,11 +31,11 @@ N3 生成下一次 handoff，避免已校验的证据与实际代码失配。
 
 1. `codex-subagent`：用当前运行时的 no-history/fresh-context 选项（如 `fork_turns: none`）新建独立 Codex 子代理/线程，只接收任务范围、验收标准、diff 和验证结果
 2. `codex-cli`：子代理不可用时，启动隔离的非交互 Codex CLI 审查会话；禁止它修改文件
-3. `claude-cli`：按项目声明选中 Claude 时，使用 protected host 的全新 CLI 审查进程，匹配诊断并逐轮授权；双家声明要求 coder 与 reviewer 不同家，单家使用同家的全新上下文
+3. `claude-cli`：按项目声明选中 Claude 时，使用 protected host 的全新 CLI 审查进程，匹配诊断后直接派发；双家声明要求 coder 与 reviewer 不同家，单家使用同家的全新上下文
 4. 所选独立通道不可用：保持待审，记录通道失败原因，不进入 N5；`self-degraded` 只作诊断，不能批准完成
 
 通道故障不伪造代码 finding，也不消耗实现审查轮次；有效阻塞 finding 不能靠换
-审查者洗掉。`claude-cli` 只有在 protected host 实际启动独立审查进程，并经 V3 登记、回收匹配凭证后，才可写 `independent: true`；声明、诊断或文本自报均不得冒充。真实模型实跑仍待验收。
+审查者洗掉。`claude-cli` 只有在 protected host 实际启动独立审查进程，并经 V3 登记、回收匹配凭证后，才可写 `independent: true`；声明、诊断或文本自报均不得冒充。这些字段是来源声明；门禁核对声明、材料与执行记录的一致性，不验证审查者身份。真实模型实跑仍待验收。
 
 审查输入只包含**本 task 的 diff**，不得将整个未分类 working tree 当作任务 diff。审查者必须：
 

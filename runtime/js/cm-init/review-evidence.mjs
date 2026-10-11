@@ -1,4 +1,4 @@
-// Immutable archive of host-attested review material, not a completion receipt.
+// Immutable archive of review source declarations, not proof of reviewer identity or execution.
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
@@ -10,6 +10,7 @@ import {writeReviewEvidence} from '../cm-ai/review-evidence-file.mjs';
 function archiveBytes({project,reviewPackage,review}){
   const {packageDigest,...body}=reviewPackage;
   need(packageDigest===digest(body)&&body.project===project,'review_package_mismatch');
+  // Legacy source/channel/independent labels are checked as declarations only.
   need(review.source==='current_host_review_attestation'&&review.packageDigest===packageDigest
     &&review.independent===true&&['codex-subagent','codex-cli','claude-cli'].includes(review.reviewer),
   'init_review_evidence_invalid');
@@ -18,6 +19,7 @@ function archiveBytes({project,reviewPackage,review}){
   const checked=reviewResultForPaths(review.result,reviewPackage,body.examinedPaths);
   need(checked.verdict==='approved','init_review_not_approved');
   need(path.isAbsolute(project)&&fs.realpathSync(project)===project,'unsupported_path');
+  // Retain legacy rendered labels to preserve existing archive bytes and recovery.
   const bytes=Buffer.from(['---','workflow: cm-init',`at: ${review.at}`,`reviewer: ${review.reviewer}`,
     'independent: true','verdict: approved',`package_sha256: ${packageDigest}`,'scope:',
     ...body.examinedPaths.map(file=>`  - ${file}`),'---','',

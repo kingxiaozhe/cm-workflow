@@ -43,7 +43,7 @@ function prepareCli(f){
   for(const [name,value] of Object.entries(files))fs.writeFileSync(path.join(f.root,name+'.json'),JSON.stringify(value));
   return {cli,env,args:['serve','--config',config,'--mode','create','--host-context','bootstrap-current-host','--allow-development',
     '--protected-conversation-config',path.join(f.root,'protection.json'),'--bootstrap-config',path.join(f.root,'bootstrap.json'),
-    '--allow-bootstrap-write','--review-config',path.join(f.root,'review.json'),'--allow-review-attempt','1',
+    '--allow-bootstrap-write','--review-config',path.join(f.root,'review.json'),
     '--workflow-config',path.join(f.root,'workflow.json'),'--allow-qa']};
 }
 

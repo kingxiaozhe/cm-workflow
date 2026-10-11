@@ -66,9 +66,22 @@ function fixture(runtime='codex'){
 // operations are sent one after another (each after the previous reply); the
 // session closes after the last. failDevelop: task ids whose next develop
 // answer is a bare failure after the session wrote (develop_answer_missing).
-function execute(f,approvals,{cancel=false,args=[],operations=[{operation:'advance',requestId:'advance'}],failDevelop=new Set()}={}){
+// Use an actual first-round review finding for a launch-only revision pause.
+// The synthetic native process still emits its normal bound review observation.
+function requestFirstRevision(f,taskIds,nativeFile=path.join(f.root,'bin',f.runtime)){
+  const fake=nativeFile;
+  const first=`${JSON.stringify(taskIds)}.includes(data.reviewPackage.identity.taskId)&&data.reviewPackage.identity.attempt===1`;
+  const source=fs.readFileSync(fake,'utf8');
+  assert(source.includes("verdict:'approved'")&&source.includes('findings:[]'),'native review fixture must retain its known response fields');
+  fs.writeFileSync(fake,source
+    .replace("verdict:'approved'",`verdict:(${first})?'changes_requested':'approved'`)
+    .replace('findings:[]',`findings:(${first})?[{id:'F1',severity:'P2',path:'task'+Number(data.reviewPackage.identity.taskId.slice(-1))+'.mjs',message:'Recheck the export in a revision',evidence:'Synthetic first-round review finding'}]:[]`));
+  return taskIds.flatMap(taskId=>['--hold-revision',`1.work/${taskId}`]);
+}
+
+function execute(f,{cancel=false,args=[],operations=[{operation:'advance',requestId:'advance'}],failDevelop=new Set()}={}){
   return new Promise((resolve,reject)=>{
-    const child=spawn(process.execPath,[cli,...f.args,...args,...approvals.flatMap(value=>['--allow-review',value])],
+    const child=spawn(process.execPath,[cli,...f.args,...args],
       {env:f.env,stdio:['pipe','pipe','pipe']});
     let buffer='',stderr='',sessionId;const calls=[],rows=[];
     const timer=setTimeout(()=>{child.kill('SIGTERM');reject(Error('batch host timeout'));},Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000));
@@ -94,7 +107,7 @@ function execute(f,approvals,{cancel=false,args=[],operations=[{operation:'advan
               assert.deepEqual(payload.request.payload.scope,f.batch.tasks[n-1].scope);
               assert.equal(payload.request.payload.specification.task.id,identity.taskId);
               assert.deepEqual(payload.request.payload.specification.sources,buildManifest(f.specsDir));
-              const content=`export const value = ${40+n};\n`;
+              const content=`export const value = ${40+n};\n${identity.attempt===2?"// Revised after the independent review finding.\n":""}`;
               if(!f.protected)fs.writeFileSync(path.join(cwd,`task${n}.mjs`),content);
               if(failDevelop.delete(identity.taskId)){respond(row,{status:'failed',code:'session_error'});continue;}
               respond(row,{status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
@@ -147,37 +160,40 @@ test('protected Claude batch uses actual sandbox edits/checks and original two-t
     fs.writeFileSync(protection,JSON.stringify({timeoutMs:5000,checkCommands:[{id:'syntax',command:[process.execPath,'-e',
       "const fs=require('node:fs'),a=require('node:assert/strict');a.throws(()=>fs.writeFileSync('specs/1.work/tasks.md','bad'));a.throws(()=>fs.writeFileSync('AGENTS.md','bad'));for(const p of fs.readdirSync('.').filter(p=>/^task.*mjs$/.test(p)))a.match(fs.readFileSync(p,'utf8'),/export const value = 4[12];/);"]}]}));
     f.args.push('--protected-conversation-config',protection);
-    const result=await execute(f,['1.work/T-001:1','1.work/T-002:1']);
+    const result=await execute(f);
     assert.equal(result.code,0,result.stderr);assert.equal(result.result.state,'run_done',JSON.stringify(result.result));
     assert.deepEqual(result.calls,['T-001:develop','T-001:qa_assess','T-002:develop','T-002:qa_assess','T-002:documentation_inspect']);
     assert.equal(fs.readFileSync(path.join(nested,'1.work/tasks.md'),'utf8').match(/\[x\]/g).length,2);
-    const resume=await execute(f,[]);assert.equal(resume.result.state,'run_done');assert.deepEqual(resume.calls,['T-002:documentation_inspect']);
+    const resume=await execute(f);assert.equal(resume.result.state,'run_done');assert.deepEqual(resume.calls,['T-002:documentation_inspect']);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
-for(const runtime of ['codex','claude'])test(`${runtime} batch CLI preserves per-task review authorization and reaches one original run_done without redispatch`,async()=>{
+for(const runtime of ['codex','claude'])test(`${runtime} batch CLI preserves held review revisions and reaches one original run_done without duplicate completion`,async()=>{
   const f=fixture(runtime);
   try{
-    const first=await execute(f,['1.work/T-001:1']);assert.equal(first.code,0,first.stderr);
-    assert.equal(first.result.identity.taskId,'T-002');assert.equal(first.result.code,'decision_required');
+    const held=requestFirstRevision(f,['T-002']);
+    const first=await execute(f,{args:held});assert.equal(first.code,0,first.stderr);
+    assert.equal(first.result.identity.taskId,'T-002');assert.equal(first.result.state,'changes_requested');
+    assert.equal(first.result.identity.attempt,2);assert.equal(first.result.code,'revision_answer_required');
     assert(fs.readFileSync(path.join(f.specsDir,'1.work','tasks.md'),'utf8').includes('[ ] T-002'));
     assert.deepEqual(first.calls,['T-001:develop','T-001:check','T-001:check','T-001:qa_assess',
       'T-002:develop','T-002:documentation_sync','T-002:check']);
     const original=fs.readFileSync(f.config,'utf8'),changed=JSON.parse(original);
     changed.workflows['1.work/T-002'].documentationPaths=[];
     fs.writeFileSync(f.config,JSON.stringify(changed));
-    const drift=await execute(f,['1.work/T-002:1']);
+    const drift=await execute(f);
     assert.equal(drift.result.outcome,'blocked');assert.deepEqual(drift.calls,[]);
     fs.writeFileSync(f.config,original);
     if(runtime==='claude'){
       const saved=[...f.args];f.args[f.args.length-1]='codex';
-      const wrongRuntime=await execute(f,[]);assert.equal(wrongRuntime.result.outcome,'blocked');
+      const wrongRuntime=await execute(f);assert.equal(wrongRuntime.result.outcome,'blocked');
       assert.deepEqual(wrongRuntime.calls,[]);f.args=saved;
     }
-    const second=await execute(f,['1.work/T-002:1']);assert.equal(second.code,0,second.stderr);
+    const second=await execute(f);assert.equal(second.code,0,second.stderr);
     assert.equal(second.result.state,'run_done',JSON.stringify(second.result));
-    assert.deepEqual(second.calls,['T-002:check','T-002:qa_assess','T-002:documentation_inspect']);
-    const reopened=await execute(f,[]);assert.equal(reopened.code,0,reopened.stderr);
+    assert.deepEqual(second.calls,['T-002:develop','T-002:documentation_sync','T-002:check','T-002:check',
+      'T-002:qa_assess','T-002:documentation_inspect']);
+    const reopened=await execute(f);assert.equal(reopened.code,0,reopened.stderr);
     assert.equal(reopened.result.state,'run_done',JSON.stringify(reopened.result));
     assert.deepEqual(reopened.calls,['T-002:documentation_inspect']);
     const rows=fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
@@ -187,15 +203,13 @@ for(const runtime of ['codex','claude'])test(`${runtime} batch CLI preserves per
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
-for(const runtime of ['codex','claude'])test(`${runtime} batch CLI cancellation remains durable and an unknown task approval rejects before execution`,async()=>{
+for(const runtime of ['codex','claude'])test(`${runtime} batch CLI cancellation remains durable`,async()=>{
   const f=fixture(runtime);
   try{
-    const bad=spawnSync(process.execPath,[cli,...f.args,'--allow-review','1.work/T-999:1'],{env:f.env,encoding:'utf8',timeout:3000});
-    assert.equal(bad.status,1);assert(bad.stderr.includes('review_task_mismatch'));assert(!fs.existsSync(path.join(f.specsDir,'.reviews')));
-    const stopped=await execute(f,[],{cancel:true});assert.equal(stopped.code,0,stopped.stderr);
+    const stopped=await execute(f,{cancel:true});assert.equal(stopped.code,0,stopped.stderr);
     assert.equal(stopped.result.code,'cancelled');assert.equal(stopped.calls.length,1);
     assert(stopped.rows.some(row=>row.requestId==='status'));
-    const reopened=await execute(f,[]);assert.equal(reopened.result.code,'cancelled');assert.deepEqual(reopened.calls,[]);
+    const reopened=await execute(f);assert.equal(reopened.result.code,'cancelled');assert.deepEqual(reopened.calls,[]);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
@@ -214,11 +228,12 @@ test('parallel member loopback preflights bind worktree cwd, stop before start a
     git(['add','-A']);git(['commit','--allow-empty','-m','synthetic baseline']);
     const log=path.join(f.root,'probe-cwds.jsonl'),fail=path.join(f.root,'fail-probe');
     fs.writeFileSync(fail,'fail second member');
-    const processFixture=fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url));
+    const processFixture=path.join(f.root,'native-review-process.mjs');
+    fs.copyFileSync(fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url)),processFixture);
     fs.writeFileSync(path.join(f.root,'bin','codex'),`#!${process.execPath}
 const fs=require('node:fs'),cp=require('node:child_process');
 const args=process.argv.slice(2),cwd=args[args.indexOf('--cd')+1];
-fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(cwd)+'\\n');
+if(args.includes('model_provider="cm_local_tool_preview"'))fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(cwd)+'\\n');
 if(cwd.endsWith('T-002')&&fs.existsSync(${JSON.stringify(fail)}))process.exit(1);
 let input='';process.stdin.on('data',part=>input+=part);process.stdin.on('end',()=>{
   const result=cp.spawnSync(process.execPath,[${JSON.stringify(processFixture)},...args],{input,encoding:'utf8'});
@@ -226,12 +241,13 @@ let input='';process.stdin.on('data',part=>input+=part);process.stdin.on('end',(
 });
 `,{mode:0o700});
     const probes=()=>fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse);
-    const failed=await execute(f,['1.work/T-001:1','1.work/T-002:1']);
+    const failed=await execute(f);
     assert.equal(failed.result.code,'review_preflight_failed',JSON.stringify(failed));
     assert.equal(failed.result.currentTask,'1.work/T-002');assert.deepEqual(failed.calls,[]);
     assert.equal(probes().length,2);
     fs.unlinkSync(fail);
-    const first=await execute(f,[]);assert.equal(first.result.code,'decision_required',JSON.stringify(first));
+    const held=requestFirstRevision(f,['T-001','T-002'],processFixture);
+    const first=await execute(f,{args:held});assert.equal(first.result.code,'revision_answer_required',JSON.stringify(first));
     assert.equal(first.calls.filter(call=>call.endsWith(':develop')).length,2,JSON.stringify(first));
     const directory=path.join(f.specsDir,'.reviews','.execution',f.batch.batchId);
     const receipts=[1,2].map(n=>fs.readFileSync(path.join(directory,`preflight-T-00${n}.json`),'utf8'));
@@ -243,12 +259,12 @@ let input='';process.stdin.on('data',part=>input+=part);process.stdin.on('end',(
       assert(probes().includes(cwd));
     }
     assert.equal(probes().length,3);
-    const resumed=await execute(f,[]);assert.equal(resumed.result.code,'decision_required');assert.deepEqual(resumed.calls,[]);
+    const resumed=await execute(f,{args:held});assert.equal(resumed.result.code,'revision_answer_required');assert.deepEqual(resumed.calls,[]);
     assert.equal(probes().length,3);
     assert.deepEqual([1,2].map(n=>fs.readFileSync(path.join(directory,`preflight-T-00${n}.json`),'utf8')),receipts);
     const stale=JSON.parse(receipts[1]);stale.preflight.config_fingerprint='0'.repeat(64);
     fs.writeFileSync(path.join(directory,'preflight-T-002.json'),JSON.stringify(stale));
-    const refreshed=await execute(f,[]);assert.equal(refreshed.result.code,'decision_required');assert.deepEqual(refreshed.calls,[]);
+    const refreshed=await execute(f,{args:held});assert.equal(refreshed.result.code,'revision_answer_required');assert.deepEqual(refreshed.calls,[]);
     assert.equal(probes().length,4);
     assert.equal(fs.readFileSync(path.join(directory,'preflight-T-002.json'),'utf8'),receipts[1]);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
@@ -283,11 +299,12 @@ test('execution-policy batch moves an exact old-layout member preflight cache ou
   try{
     const log=path.join(f.root,'probe-cwds.jsonl'),fail=path.join(f.root,'fail-probe');
     fs.writeFileSync(fail,'fail second member');
-    const processFixture=fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url));
+    const processFixture=path.join(f.root,'native-review-process.mjs');
+    fs.copyFileSync(fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url)),processFixture);
     fs.writeFileSync(path.join(f.root,'bin','codex'),`#!${process.execPath}
 const fs=require('node:fs'),cp=require('node:child_process');
 const args=process.argv.slice(2),cwd=args[args.indexOf('--cd')+1];
-fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(cwd)+'\\n');
+if(args.includes('model_provider="cm_local_tool_preview"'))fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(cwd)+'\\n');
 if(cwd.endsWith('T-002')&&fs.existsSync(${JSON.stringify(fail)}))process.exit(1);
 let input='';process.stdin.on('data',part=>input+=part);process.stdin.on('end',()=>{
   const result=cp.spawnSync(process.execPath,[${JSON.stringify(processFixture)},...args],{input,encoding:'utf8'});
@@ -297,7 +314,7 @@ let input='';process.stdin.on('data',part=>input+=part);process.stdin.on('end',(
     const probes=()=>fs.readFileSync(log,'utf8').trim().split('\n').length;
     const policy=['--execution-optimizations'];
     // Stop before any member run exists (T-002's loopback fails): T-001 gets a real receipt.
-    const failed=await execute(f,['1.work/T-001:1','1.work/T-002:1'],{args:policy});
+    const failed=await execute(f,{args:policy});
     assert.equal(failed.result.code,'review_preflight_failed',JSON.stringify(failed));
     fs.unlinkSync(fail);
     const real=fs.readFileSync(path.join(f.current,'preflight-T-001.json'),'utf8');
@@ -306,10 +323,10 @@ let input='';process.stdin.on('data',part=>input+=part);process.stdin.on('end',(
     const receipts={'preflight-T-001.json':real,'preflight-T-002.json':JSON.stringify(second)+'\n'};
     assert.deepEqual(Object.keys(JSON.parse(receipts['preflight-T-002.json'])),Object.keys(JSON.parse(real)));
     fs.rmSync(path.dirname(f.current),{recursive:true});writeLegacy(f,receipts);
-    const before=probes();
-    const resumed=await execute(f,[],{args:policy});
+    const before=probes(),held=requestFirstRevision(f,['T-001','T-002'],processFixture);
+    const resumed=await execute(f,{args:[...policy,...held]});
     assert.equal(resumed.code,0,resumed.stderr);
-    assert.equal(resumed.result.code,'decision_required',JSON.stringify(resumed.result));
+    assert.equal(resumed.result.code,'revision_answer_required',JSON.stringify(resumed.result));
     assert.equal(resumed.calls.filter(call=>call.endsWith(':develop')).length,2,JSON.stringify(resumed.calls));
     assert.equal(probes(),before,'migrated receipts are reused without a new loopback');
     assert(!fs.existsSync(f.legacy));
@@ -516,14 +533,13 @@ export async function serveCmAiHost({host}){await host.handle({});}
 test('Q24 batch host recovers a serial member stopped at develop_redo and continues the batch',async()=>{
   const f=fixture();
   try{
-    const approvals=['1.work/T-001:1','1.work/T-002:1'];
-    const first=await execute(f,approvals,{failDevelop:new Set(['T-001'])});
+    const first=await execute(f,{failDevelop:new Set(['T-001'])});
     assert.equal(first.code,0,first.stderr);
     assert.deepEqual([first.result.state,first.result.code,first.result.pendingAction],['blocked','develop_answer_missing','develop_redo'],JSON.stringify(first.result));
     assert.match(first.result.guidance.nextStep,/--allow-develop-redo 1\.work\/T-001/);assert.deepEqual(first.calls,['T-001:develop']);
     const redo={operation:'develop_redo',requestId:'redo',taskKey:'1.work/T-001',reason:'会话已停止修改代码'};
     // advance alone never redispatches; the operation needs its per-member grant.
-    const refused=await execute(f,approvals,{operations:[{operation:'advance',requestId:'advance'},redo]});
+    const refused=await execute(f,{operations:[{operation:'advance',requestId:'advance'},redo]});
     assert.equal(refused.results.advance.pendingAction,'develop_redo');
     assert.deepEqual([refused.result.outcome,refused.result.code],['rejected','batch_member_action_authorization_required']);
     assert.match(refused.result.reason,/--allow-develop-redo 1\.work\/T-001/);assert.deepEqual(refused.calls,[]);
@@ -533,7 +549,7 @@ test('Q24 batch host recovers a serial member stopped at develop_redo and contin
       const unsupported=spawnSync(process.execPath,[cli,...f.args,flag,'x'],{env:f.env,encoding:'utf8',timeout:5000});
       assert.equal(unsupported.status,1);assert.match(unsupported.stderr,new RegExp(code));assert.match(unsupported.stderr,/出口/);
     }
-    const recovered=await execute(f,approvals,{args:['--allow-develop-redo','1.work/T-001'],
+    const recovered=await execute(f,{args:['--allow-develop-redo','1.work/T-001'],
       operations:[redo,{operation:'advance',requestId:'advance'}]});
     assert.equal(recovered.code,0,recovered.stderr);
     assert.deepEqual([recovered.results.redo.outcome,recovered.results.redo.pendingAction,recovered.results.redo.taskKey],
@@ -548,8 +564,8 @@ test('Q24 batch host recovers a serial member stopped at develop_redo and contin
     // After cancel the batch stays stopped; a forwarded operation cannot reopen it.
     const g=fixture();
     try{
-      const stopped=await execute(g,[],{cancel:true});assert.equal(stopped.result.code,'cancelled');
-      const after=await execute(g,[],{args:['--allow-develop-redo','1.work/T-001'],operations:[redo]});
+      const stopped=await execute(g,{cancel:true});assert.equal(stopped.result.code,'cancelled');
+      const after=await execute(g,{args:['--allow-develop-redo','1.work/T-001'],operations:[redo]});
       assert.deepEqual([after.result.outcome,after.result.code],['blocked','cancelled']);
     }finally{fs.rmSync(g.root,{recursive:true,force:true});}
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}

@@ -243,9 +243,10 @@ let prompt='';process.stdin.on('data',part=>prompt+=part);process.stdin.on('end'
   assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 43;\n');
   assert.match(fs.readFileSync(path.join(f.specsDir,'1.work/tasks.md'),'utf8'),/\[x\] T-001/);
   const state=JSON.parse(fs.readFileSync(path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json')));
-  const grants=state.records.filter(row=>row.payload.type==='review-invocation-registered').map(row=>row.payload.grant);
-  assert.deepEqual(grants.map(grant=>[grant.identity.attempt,grant.decision]),[[1,'approved'],[2,'approved']]);
-  assert.equal(new Set(grants.map(grant=>grant.invocationId)).size,2);
+  const registrations=state.records.filter(row=>row.payload.type==='review-invocation-registered');
+  assert.deepEqual(registrations.map(row=>row.payload.binding.identity.attempt),[1,2]);
+  assert.equal(new Set(registrations.map(row=>row.payload.binding.invocationId)).size,2);
+  for(const row of registrations){assert.equal(Object.hasOwn(row.payload,'grant'),false);assert.equal(Object.hasOwn(row.payload,'authorizationAt'),false);}
   assert.equal(state.records[0].payload.config.controlPolicy.development,'provider','v2 is bound in the actual durable run');
 });
 test('v2 disabled QA still assesses mandatory feature completion and cannot report run_done or passed',t=>{

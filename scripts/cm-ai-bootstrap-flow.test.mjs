@@ -85,13 +85,7 @@ function open(f,taskId,mode='create',overrides={}){
         return {status:'succeeded',value:{verdict:revise?'changes_requested':'approved',packageDigest:request.payload.reviewPackage.packageDigest,
           examinedPaths:reviewPaths(request.payload.reviewPackage),findings:revise?[{id:'F1',severity:'P2',path:'AGENTS.md',
             message:'Reverify instruction applicability',evidence:'Synthetic revision fixture'}]:[],summary:'Synthetic independent review'}};}}],
-    reviewInvocation:{developerThreadId:'scaffold-author',excludedThreadIds:['main'],authorize:(request,{authorizationAt})=>{
-      const body={version:1,kind:'cm-review-dispatch-grant',grantId:'grant-'+request.identity.attempt,adapterId:'codex-review-adapter',
-        invocationId:request.invocationId,requestDigest:request.requestDigest,identity:request.identity,reviewerId:'reviewer',
-        logicalContextId:request.contextId,packageDigest:request.payload.reviewPackage.packageDigest,hostContextId:'main',
-        decisionId:'decision-'+request.identity.attempt,decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
-      return {...body,grantDigest:digest(body)};
-    }},
+    reviewInvocation:{developerThreadId:'scaffold-author',excludedThreadIds:['main']},
     check:createHostCheck({cwd:f.codeProject,timeoutMs:1000,commands:[{id:'syntax',command:[process.execPath,'--check','app.mjs']}]}),
     taskCompletion:{reviewsDir:path.join(f.specsDir,'.reviews'),handoffs:[1,2].map(a=>path.join(f.specsDir,'.reviews',`bootstrap-${taskId}-a${a}-handoff.json`))},
     persistence:{store,mode,version:3}});

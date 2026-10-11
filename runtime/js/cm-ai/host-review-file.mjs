@@ -15,7 +15,7 @@ export function publishHostReview({reviewsDir,feature,handoffPath,reviewPackage,
   const {receiptDigest,...body}=r;
   need(receiptDigest===digest(body)&&r.packageDigest===pkg.packageDigest
     &&digest(r.identity)===digest(pkg.identity),'review_package_mismatch');
-  need(r.execution.channel==='host-authorized'&&r.execution.started===true
+  need(['host-review','host-authorized'].includes(r.execution.channel)&&r.execution.started===true
     &&r.execution.terminal==='succeeded'&&['codex','claude'].includes(r.execution.provider),'execution_mismatch');
   id(r.execution.providerThreadId);
   const result=reviewResult(r.result,pkg);

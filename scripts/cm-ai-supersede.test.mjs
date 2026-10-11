@@ -1,3 +1,4 @@
+import {syntheticReviewConfig} from './cm-ai-host-fixture.mjs';
 import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -801,15 +802,7 @@ function executionFor(f,content,verdict='blocked',qaResult=null){
         JSON.parse(prompt.split('<cm-developer-data-json>\n')[1]).identity.attempt===1?content:content+'revised\n');
         return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
           retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};}})},
-    reviewers:[reviewer],reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control'],
-      authorize:(request,{authorizationAt})=>{
-        const body={version:1,kind:'cm-review-dispatch-grant',grantId:`grant-${request.identity.runId}`,
-          adapterId:'codex-review-adapter',invocationId:request.invocationId,requestDigest:request.requestDigest,
-          identity:request.identity,reviewerId:'reviewer',logicalContextId:request.contextId,
-          packageDigest:request.payload.reviewPackage.packageDigest,hostContextId:'control',decisionId:'approved',
-          decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
-        return {...body,grantDigest:digest(body)};
-      }},hostDecision:{status:'approved'},check:createHostCheck({cwd:f.codeProject,
+    reviewers:[reviewer],reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control']},check:createHostCheck({cwd:f.codeProject,
       commands:[{id:'syntax',command:[process.execPath,'--check','a.mjs']}]})};
   if(qaResult){
     execution.qaDecisionProvider={timeoutMs:1000,decide:async binding=>({decisionId:'qa-decision',
@@ -953,7 +946,7 @@ test('host launch prints supersede code drift reason and stderr hint',async()=>{
     const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
       identity:identityFor('run-host-new-0002'),scope:['a.mjs'],requirements:['requirements.md']};
     const config=path.join(f.root,'run.json');fs.writeFileSync(config,JSON.stringify(definition));
-    const review=path.join(f.root,'review.json');fs.writeFileSync(review,JSON.stringify({model:'fixture',preflight:{}}));
+    const review=path.join(f.root,'review.json');fs.writeFileSync(review,JSON.stringify(syntheticReviewConfig(f.codeProject,'claude')));
     const output=new PassThrough(),error=new PassThrough();let stderr='';error.on('data',chunk=>stderr+=chunk);
     assert.equal(await hostMain(['serve','--config',config,'--mode','create','--host-context','fixture-host',
       '--allow-development','--runtime','claude','--review-config',review,'--supersede-reviewed-evidence','--supersede-reason','restart'],

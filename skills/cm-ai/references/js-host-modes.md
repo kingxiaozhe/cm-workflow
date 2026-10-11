@@ -5,14 +5,14 @@
 ## 先选择原协议与实际执行模式
 
 v2 新运行使用 `--control-config POLICY.json`，恢复保持同一策略；请求 version 2，PLAN 带相对路径 `controlConfig`，禁止任何 `--allow-*`。
-配置仍提供模型、命令、路径与保护方式，不自动启用能力，也不是用户身份认证。常规独立审查最多两轮自动推进；旧运行保留 legacy 的按轮参数，不换协议规避记录。
+配置仍提供模型、命令、路径与保护方式，不自动启用能力。cm-ai 新旧入口的常规独立审查最多两轮直接推进；旧运行保留原请求版本和能力开关，不换协议规避记录。
 正文分别标出 v2 和 legacy；后者的旧命令/请求只用于旧运行。完整合同见 [control policy v2](../../../docs/cm-control-policy-v2.md)，异常恢复按 [R](js-host-recovery.md) 或 [Q](js-host-qa-recovery.md) 的对应 v2 分支。
 模式冲突/混入旧参数按 `invalid_arguments` 拒绝，缺配置沿原具体阻断；策略/原运行不匹配按 `fingerprint_mismatch`，不改配置重开或转 legacy。
 
 ## 按 provider 的外部模型配置
 
 单任务、批次和修复的外部 CLI 可显式启用[按 provider 的单组模型配置](../../../docs/external-models.md)：
-宿主会话保持当前模型，外部调用共用 provider pair，独立审查仍需新上下文。v2 在本次已确认的发送范围内常规两轮自动推进；legacy 保留逐轮授权。
+宿主会话保持当前模型，外部调用共用 provider pair，独立审查仍需新上下文。cm-ai 在本次已确认的发送范围内常规两轮直接推进；cm-fix 保留原审查参数合同。
 外部模型/执行策略的未知调用禁止直接 abandon／重派，恢复只读原快照。v2 只在有真实可对账回执时按 R 携带固定 wire target 执行 reconcile_review；没有可核对结果则保留 unknown，不换 provider、切 legacy 或走未开放的 supersede。R/Q 的一般重试不能覆盖这个限制。
 
 ## bootstrap 规范任务用单步驾驶员
@@ -32,7 +32,7 @@ v2 的 POLICY.json 完整填写 `{"version":2,"development":"conversation","boot
 - `answers/init-generate.json`：`{"status":"generated","documents":[{"path":"AGENTS.md","contentFile":"t002/AGENTS.md"},…]}`，逐项覆盖全部 targets（缺一不可、不能多），`contentFile` 为答案目录内的 UTF-8 普通文件。无法生成时不要启动驾驶员，报告缺口；`blocked` 会被拒绝。
 - `answers/init-verify.json`：会话实际核对草稿后填写。`commands` 列出草稿里可安全实跑的命令 `[{"id","command","timeoutMs"?}]`（1..32 条，至少一条），驾驶员在宿主接受启动（`host_ready`：宿主已用自己的读取器核对全部启动输入、admission、任务选择与运行存档）之后、发送操作之前，于代码根逐条真实运行（超时与输出规则同 `checks`；带 `--protected-conversation-config` 时与宿主的任务检查一样在 specs 沙箱内运行，specs 与 AGENTS.md/CLAUDE.md/.claude 只读），任何一条未通过即退出 2、不发送操作；宿主问到 `init_verify` 时回报这次实跑的退出码作为 commands 组的 status/evidence；可选单行 `commandsNotRun` 说明未实跑的命令（如需模拟器的测试）及其依据，它只是会话说明，不是执行证据。`checks` 只写 `globs`、`file_references`、`constraint_preservation`、`rule_applicability` 四组 `{status,evidence}`，status 只能是 `verified` 或 `not_applicable`；不得写 `commands` 组或任何命令结果。`constraintChanges` 必须是 `[]`，`application`/`retrospective` 沿原 Learning 字段，例如 `{"status":"no_relevant_lesson","note":null}` 与 `{"status":"no_new_lesson","candidates":[],"reason":null}`。
 
-第 1 轮也可命名为 `*-a1.json`（不能与无后缀文件并存）；第 2 轮只读 `init-generate-a2.json` 与 `init-verify-a2.json`，绝不复用第 1 轮答案。首次规则任务的修订轮 AGENTS.md 须保留既有非教训正文；同一 bootstrap feature 后续已批准的规则刷新任务可改写规则正文，但每轮都须逐字保留当前 `## 项目教训` 段，且经 `init_verify` 与独立 Review 核对。修订答案必须在读到首轮 findings 之后编写。v2 规范任务首轮始终 hold：advance 自动审查后若要求修改，停在 changes_requested/revision_answer_required，不发第 2 轮开发 intent；读取真实 r1，编写两份 a2 答案后以同一 controlConfig、mode:resume 再 advance，自动走 fresh 第 2 轮独立 Review。预写 a2 不免除先读真实 findings。legacy 仍先 advance 到 awaiting_review，使用返回 packageDigest 与原 --allow-review-attempt 1 执行 decision，读 findings 后写 a2；第 2 轮使用原 --allow-review-attempt 2，原驾驶员 decision 的首轮 identity 合同保持不变。
+第 1 轮也可命名为 `*-a1.json`（不能与无后缀文件并存）；第 2 轮只读 `init-generate-a2.json` 与 `init-verify-a2.json`，绝不复用第 1 轮答案。首次规则任务的修订轮 AGENTS.md 须保留既有非教训正文；同一 bootstrap feature 后续已批准的规则刷新任务可改写规则正文，但每轮都须逐字保留当前 `## 项目教训` 段，且经 `init_verify` 与独立 Review 核对。修订答案必须在读到首轮 findings 之后编写。v2 规范任务首轮始终 hold：advance 自动审查后若要求修改，停在 changes_requested/revision_answer_required，不发第 2 轮开发 intent；读取真实 r1，编写两份 a2 答案后以同一 controlConfig、mode:resume 再 advance，自动走 fresh 第 2 轮独立 Review。预写 a2 不免除先读真实 findings。旧入口也直接审查；同样先读真实首轮 findings，再准备 a2 并沿原运行 advance。
 
 启动前驾驶员会校验：targets 覆盖与内容文件安全、`inspectCmInitDraft` 结构检查（先查原稿，再按当前磁盘合入 AGENTS.md 后查）、单次回复不超过宿主 64 KiB、四组 status、`constraintChanges`、Learning 字段，以及目标文件的当前状态：首次规则任务尚未写入时目标不能已存在（仅允许带 `## 项目教训` 段的 AGENTS.md）；后续规则任务须匹配已绑定的提交基准；本运行已写入过（第 2 轮修订，或同轮重试）时每个目标须与运行存档记录的上次写入逐字节一致（AGENTS.md 按 Learning 回写后的摘要）。他人改动会被拒绝，先还原。启动宿主前，驾驶员还用宿主自己的函数提前拒绝：v2 的 bootstrap 未选择 write 或缺原配置；legacy 缺 `--allow-bootstrap-write`（宿主到开发步骤才查）、bootstrap 配置或受保护配置不能被宿主读取器接受（如符号链接、字段不符）、新建运行时 admission 不选中本任务、本任务不是 bootstrap 当前 nextTask（宿主在开发步骤内才查）。宿主启动时的其余核对（运行定义、嵌套 specs 保护、恢复的创建会话与 runtime 指纹等）都在 `host_ready` 之前由宿主本身完成，失败时命令不会运行。命令跑完后驾驶员重读预检时核对过的全部规范目标、运行定义、PLAN.permissions 中的文件及已批准的 bootstrap 规格（requirements/design/tasks 与 `.cm-specs-status`），任何一个变化都退出 2：命令须只读核验。静态校验失败在启动宿主前退出 2，运行存档不变。
 
@@ -92,7 +92,7 @@ legacy 按轮参数：用户已授权本任务该轮真实 Codex 开发调用及
 读取产品文档“普通单任务入口选择受保护模式”的配置和命令示例；配置只含model/checkCommands/timeoutMs，
 固定代码根/specs根、scope和实际宿主身份仍来自原run配置及host-context。命令也须事先获准。
 
-legacy 审查参数：启动须提供原`--review-config`诊断，但诊断不是审查许可；没有`--allow-review-attempt`时只到待审。
+旧入口的审查配置：启动须提供原 `--review-config` 诊断，普通 advance 直接派发 fresh 审查，不需要按轮审查参数。
 初次create只能授权开发attempt 1；修正轮resume须按真实审批改为attempt 2，不重置原轮次或身份。
 R1要求修改但尚未授权第2轮时保留changes_requested，不登记开发或当作unknown；补授权后再resume。
 收到host_ready后仍按原协议advance/status/cancel/host_close；开发和检查由适配器执行，

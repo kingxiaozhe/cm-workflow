@@ -54,7 +54,7 @@ export function controlTarget(status,snapshot){
   const registration=snapshot.records.findLast(row=>row.payload.type==='review-invocation-registered')?.payload;
   return readControlTarget({version:2,identity:status.identity,state:status.state,code:status.code??null,
     packageDigest:status.packageDigest??null,effectId:intent?.id??null,
-    invocationId:registration?.grant?.invocationId??null,revision:snapshot.revision});
+    invocationId:registration?.binding?.invocationId??null,revision:snapshot.revision});
 }
 export function isControlRecovery(request){
   return CONTROL_RECOVERY_OPERATIONS.includes(request.operation)

@@ -67,7 +67,7 @@ let input='';process.stdin.on('data',s=>input+=s);process.stdin.on('end',()=>{
       repair:{scope:['target.mjs','README.md'],requirements:['requirements.md']},
       walkthrough:{timeoutMs:2000,flows:[{id:'value',modules:['value'],steps:['Read exported value'],expected:['43'],kind:'commands',command}]}};
     const template=path.join(f.root,'template.json');fs.writeFileSync(template,JSON.stringify({specsRoot:f.specsDir,feature:'1.work',identity,configuration}));
-    f.args.push('--runtime',runtime,'--review-config',reviewFile,'--allow-review-attempt','1','--workflow-config',workflowFile,'--allow-qa',
+    f.args.push('--runtime',runtime,'--review-config',reviewFile,'--workflow-config',workflowFile,'--allow-qa',
       '--qa-fix-template-config',template,'--qa-fix-review-config',reviewFile,'--allow-qa-fix-start','--auto-qa-fix',
       ...permissions.map(name=>`--allow-qa-fix-${name}`));
     if(f.protected){
@@ -94,7 +94,7 @@ let input='';process.stdin.on('data',s=>input+=s);process.stdin.on('end',()=>{
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
-for(const runtime of ['codex','claude'])for(const initialWorkflow of ['absent','qa-null','qa'])test(`configured ${runtime} CLI waits for the authorized attempt and resumes via the original review worker/gate workflow=${initialWorkflow}`,async()=>{
+for(const runtime of ['codex','claude'])for(const initialWorkflow of ['absent','qa-null','qa'])test(`configured ${runtime} CLI starts development and resumes through direct review and resumes via the original review worker/gate workflow=${initialWorkflow}`,async()=>{
   const workflow=initialWorkflow==='qa';
   const f=fixture();
   try{
@@ -121,7 +121,7 @@ for(const runtime of ['codex','claude'])for(const initialWorkflow of ['absent','
     f.args.push('--review-config',config);
     if(runtime==='claude'){
       fs.writeFileSync(config,JSON.stringify({...review,preflight:{...review.preflight,provider:'codex'}}));
-      const denied=spawnSync(process.execPath,[cli,...f.args,'--allow-review-attempt','1'],{encoding:'utf8',env:f.env,timeout:3000});
+      const denied=spawnSync(process.execPath,[cli,...f.args],{encoding:'utf8',env:f.env,timeout:3000});
       assert.equal(denied.status,1);assert(denied.stderr.includes('tool_preflight_missing'));
       assert(!fs.existsSync(path.join(f.specsDir,'.reviews')));
       fs.writeFileSync(config,JSON.stringify(review));
@@ -146,8 +146,8 @@ for(const runtime of ['codex','claude'])for(const initialWorkflow of ['absent','
       fs.writeFileSync(attachmentFile,JSON.stringify({...attachmentConfig,qa:null}));
       f.args.push('--workflow-config',attachmentFile);
     }
-    const first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
-    assert.equal(first.rows.find(row=>row.requestId==='advance').result.code,'decision_required');
+    f.operation='start';const first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
+    assert.equal(first.rows.find(row=>row.requestId==='advance').result.code,null);
     const initialArgs=[...f.args];
     const attemptAttachment=()=>{
       fs.writeFileSync(attachmentFile,JSON.stringify(attachmentConfig));
@@ -163,11 +163,7 @@ for(const runtime of ['codex','claude'])for(const initialWorkflow of ['absent','
     }
 
     assert(fs.readFileSync(path.join(f.specsDir,'1.work','tasks.md'),'utf8').includes('[ ] T-001'));
-    // An approved different round cannot authorize this pending round.
-    f.args.push('--allow-review-attempt','2');
-    const wrong=await runCli(f,'normal','resume');assert.equal(wrong.code,0,wrong.stderr);
-    assert.deepEqual(wrong.calls,[]);assert.equal(wrong.rows.find(row=>row.requestId==='advance').result.code,'decision_required');
-    f.args[f.args.length-1]='1';
+    f.operation='advance';
     const completed=await runCli(f,'authorized-review','resume');assert.equal(completed.code,0,completed.stderr);
     assert.deepEqual(completed.calls,workflow?['check','qa_assess','documentation_inspect']:['check']);
     const result=completed.rows.find(row=>row.requestId==='advance').result;

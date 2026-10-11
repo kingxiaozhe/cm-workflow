@@ -18,7 +18,6 @@ import {createCodexReviewRun} from './codex-review-adapter.mjs';
 import {createClaudeReviewRun} from './claude-review-adapter.mjs';
 import {claudeWorker,claudePreflightMatches} from './worker-claude.mjs';
 import {codexWorker,preflightMatches} from './worker-codex.mjs';
-import {createHostReviewAuthority} from './host-review-authority.mjs';
 import {createHostWorkflowCapabilities} from './host-workflow-capabilities.mjs';
 import {resolveHostRole} from './host-role-routing.mjs';
 import {checklistGaps} from './checklist-coverage.mjs';
@@ -106,7 +105,7 @@ export function resolveReviewTimeout(review,protection){
 // after its own deadline; the margin leaves room for that and for close.
 export const REVIEW_BOUND_MARGIN_MS=60000;
 export const reviewRaceTimeout=(outerTimeoutMs,reviewTimeoutMs)=>Math.max(outerTimeoutMs,reviewTimeoutMs+REVIEW_BOUND_MARGIN_MS);
-export function createConversationExecution(definition,hostContextId,bridge,review=null,allowedAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
+export function createConversationExecution(definition,hostContextId,bridge,review=null,reservedReviewAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
   definition=json(definition);workflow=workflow===null?null:json(workflow);options=json(options);
   shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','externalModels','reviewerRuntime','reviewRuntime','parallelMember','verificationPrecheck','executionPolicy','controlPolicy'].filter(key=>Object.hasOwn(options,key))]);
   const controlPolicy=options.controlPolicy?readControlPolicy(options.controlPolicy):null;
@@ -157,9 +156,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   const check=projectExecution?.check??null;
   const documentationPaths=workflow?validateDocumentationPaths(workflow.documentationPaths,definition.scope):[];
   need(['codex','claude'].includes(runtime),'invalid_runtime');
-  const allowedAttempts=controlPolicy?[1,2]:allowedAttempt===null?[]:Array.isArray(allowedAttempt)?json(allowedAttempt):[allowedAttempt];
-  need(allowedAttempts.length<=2&&new Set(allowedAttempts).size===allowedAttempts.length
-    &&allowedAttempts.every(value=>value===1||value===2),'invalid_review_attempt');
+  need(reservedReviewAttempt===null,'invalid_input');
   const author='cm-conversation-author',reviewContexts=['cm-conversation-review-1','cm-conversation-review-2'];
   const durableHostContextId=options.originalHostContextId??hostContextId;
   for(const context of [hostContextId,durableHostContextId]){
@@ -184,13 +181,10 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     disabledSkills:review?.disabledSkills??[],
     ...resolveReviewTimeout(review,protection),
     promptTransport:'stdin',schemaPath:fileURLToPath(new URL('./review-result.schema.json',import.meta.url))};
-  need(!allowedAttempts.length||review!==null,'review_configuration_required');
-  if(allowedAttempts.length||provider)need((reviewerRuntime==='codex'?preflightMatches:claudePreflightMatches)(reviewOptions.preflight,reviewOptions),'tool_preflight_missing');
+  if(review!==null||provider)need((reviewerRuntime==='codex'?preflightMatches:claudePreflightMatches)(reviewOptions.preflight,reviewOptions),'tool_preflight_missing');
   need(reviewerRuntime!=='claude'||!review||review.disabledSkills.length===0,'invalid_review_config');
   // Preserve P4a's unauthorizable placeholder bytes for existing unconfigured runs.
   const reviewProvider=review?reviewerRuntime:'codex', adapterId=`${reviewProvider}-review-adapter`;
-  const authority=review?createHostReviewAuthority({hostContextId,reviewerId:'reviewer',adapterId,
-    decide:async binding=>allowedAttempts.includes(binding.identity.attempt)?{status:'approved'}:null}):null;
   // Reread role declarations at each boundary; never switch a bound invocation.
   // onWorker (provider development, task-runner.mjs) journals the worker's
   // identity right before and right after the spawn; a journal failure kills
@@ -242,18 +236,17 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   const outerTimeoutMs=provider?protection.timeoutMs:1800000;
   const progress=(request,control,stage,run,selectedRuntime=runtime)=>withHostProgress({definition,
     identity:request.identity,runtime:selectedRuntime,stage,signal:control.signal},run);
-  const execution={configuration,timeoutMs:outerTimeoutMs,excludedContexts:[durableHostContextId],hostDecision:null,applicableAgentFiles:[],
+  const execution={configuration,timeoutMs:outerTimeoutMs,excludedContexts:[durableHostContextId],applicableAgentFiles:[],
     ...(verificationGate?{verificationGate:(request,control)=>progress(request,control,'verifying',()=>verificationGate(request,control))}:{}),
     ...(bootstrap?{bootstrap}:{}),
     ...(provider&&!controlPolicy?{developmentAttempt:provider.attempt}:{}),
     ...(workflow?createHostWorkflowCapabilities({definition,configuration:workflow,bridge,allowQa,runtime,protectedExecution:protection!==null,bootstrap,parallelMember,controlPolicy}):{}),
     ...(options.qaLogHome?{qaLogHome:options.qaLogHome}:{}),
-    ...(authority?{hostDecisionProvider:authority.hostDecisionProvider}:{}),
     developer:{provider:coderRuntime,requestedModel:provider?.model??'current-session',contextId:author,run:async(request,control)=>{
       const bound=(coderRuntime==='codex'?readCodexDeveloperRequest:readClaudeDeveloperRequest)(request);
       if(provider){
         need((controlPolicy?[1,2].includes(bound.identity.attempt):bound.identity.attempt===provider.attempt)
-          &&digest({...bound.identity,attempt:1})===digest(definition.identity),'permission_denied');
+          &&digest({...bound.identity,attempt:1})===digest(definition.identity),'invalid_development_attempt');
         need(!used.has(bound.invocationId),'duplicate_dispatch');used.add(bound.invocationId);
       }
       const route=provider?null:resolveHostRole({definition,identity:bound.identity,role:'coder',signal:control.signal,runtime});
@@ -325,7 +318,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
             }
           }
           // CLI session identity comes from the observed process stream; current
-          // conversation responses retain the trusted host identity.
+          // conversation responses retain the declared host context.
           return {status:response.status,value:response.value,providerThread:provider?response.providerThread:hostContextId};
         }
         if(provider){const {providerThread,...failure}=response;shape(failure,['status','code']);return failure;}
@@ -340,8 +333,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
       return bridge.call('check',{...request,codeProject:definition.codeProject,
         scope:definition.scope,requirements:definition.requirements,route},control.signal);
     }),
-    // The opt-in path uses the original process adapter and observed events.
-    // Diagnostic preflight alone never grants review dispatch.
+    // The process adapter records observed reviewer events. Preflight checks capability.
     reviewers:[{id:'reviewer',adapterId,provider:reviewProvider,requestedModel:reviewOptions.model,
       allowed:true,available:true,contexts:reviewContexts,
       run:(request,control)=>{
@@ -361,8 +353,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
       }}],
     reviewInvocation:{developerThreadId:author,excludedThreadIds:[durableHostContextId],hostContextId,
       // Not journaled (unlike timeoutMs above), so a resumed run may raise it.
-      timeoutMs:reviewRaceTimeout(outerTimeoutMs,reviewOptions.timeoutMs),
-      authorize:authority?.authorize??(()=>({status:'denied',code:'permission_denied'}))},
+      timeoutMs:reviewRaceTimeout(outerTimeoutMs,reviewOptions.timeoutMs)},
   };
   if(definition.codeProjects)execution.applicableAgentFiles=[...new Set([...execution.applicableAgentFiles,
     ...codeProjectInstructionPaths(codeProjectPaths(definition.codeProject,definition.codeProjects))

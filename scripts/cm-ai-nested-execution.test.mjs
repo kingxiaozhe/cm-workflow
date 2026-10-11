@@ -74,8 +74,7 @@ async function fixture(fn){
       "require('node:assert/strict').equal(require('node:fs').readFileSync('a.js','utf8'),'new\\n')"]}],
     reviewerPreflight:{passed:true,cli_model:'synthetic',prompt_transport:'stdin',
       config_fingerprint:configFingerprint({cwd:codeProject,model:'synthetic'})}};
-  const authority={authorizeDevelopment:()=>({status:'approved'}),
-    authorizeReview:()=>assert.fail('No real review authorization'),hostDecision:{status:'denied',code:'permission_denied'}};
+  const authority={authorizeDevelopment:()=>({status:'approved'})};
   try{await fn({root,definition,config,authority});}finally{fs.rmSync(root,{recursive:true,force:true});}
 }
 
@@ -99,12 +98,12 @@ for(const runtime of ['codex','claude'])test(`protected ${runtime} conversation 
     const wrong={...definition,scope:['b.js']};
     await assert.rejects(openControlRun(wrong,'create',execution),{code:'execution_definition_mismatch'});
     let run=await openControlRun(definition,'create',execution);
-    try{const result=await run.host.handle(request('advance'));assert.equal(result.code,'decision_required',JSON.stringify(result));}
+    try{const result=await run.host.handle(request('start'));assert.equal(result.code,null,JSON.stringify(result));}
     finally{run.close();}
     assert.equal(fs.readFileSync(path.join(definition.codeProject,'a.js'),'utf8'),'new\n');
     assert.equal(calls,1);
     run=await openControlRun(definition,'resume',make());
-    try{const result=await run.host.handle(request('advance'));assert.equal(result.code,'decision_required');assert.equal(calls,1);}
+    try{const result=await run.host.handle(request('start'));assert.equal(result.code,null);assert.equal(calls,1);}
     finally{run.close();}
     assert.match(fs.readFileSync(path.join(definition.specsDir,definition.feature,'tasks.md'),'utf8'),/\[ \]/);
   }));
@@ -214,8 +213,7 @@ let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end'
             documentationPaths:['README.md'],applicableAgentFiles:[]};
           fs.writeFileSync(workflowFile,JSON.stringify(workflow));
           const args=['serve','--config',runFile,'--mode','create','--host-context','host','--allow-development',
-            '--protected-config',protectedFile,'--allow-provider-development-attempt','1','--review-config',reviewFile,
-            '--allow-review-attempt','1','--workflow-config',workflowFile,'--allow-qa'];
+            '--protected-config',protectedFile,'--allow-provider-development-attempt','1','--review-config',reviewFile,'--workflow-config',workflowFile,'--allow-qa'];
           const denied=spawnSync(process.execPath,[fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url)),...args.slice(0,-1)],{encoding:'utf8',timeout:5000});
           assert.equal(denied.status,1);assert(denied.stderr.includes('qa_authorization_required'));
           assert(!fs.existsSync(path.join(config.specsRoot,'.reviews')));
@@ -243,21 +241,21 @@ let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end'
           assert.equal(logs.find(row=>row.event==='test_run'&&row.phase==='complete').result,'PASS');
           return;
         }
-        const invoke=(mode,flags=[],attempt='1')=>{
+        const invoke=(mode,flags=[],attempt='1',operation='advance')=>{
           const child=spawnSync(process.execPath,[fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url)),
             'serve','--config',runFile,'--mode',mode,'--host-context','host','--allow-development',
             '--protected-config',protectedFile,'--allow-provider-development-attempt',attempt,'--review-config',reviewFile,...flags],
-          {encoding:'utf8',input:JSON.stringify(request('advance'))+'\n',timeout:12000});
+          {encoding:'utf8',input:JSON.stringify({...request(operation),identity:{...identity,attempt:Number(attempt)}})+'\n',timeout:12000});
           assert.equal(child.status,0,child.stderr);
           const rows=child.stdout.trim().split('\n').map(JSON.parse);
           assert(!rows.some(row=>row.type==='host_request'),'protected mode never asks current host to perform unprotected writes');
-          return rows.find(row=>row.requestId==='advance').result;
+          return rows.find(row=>row.requestId===operation).result;
         };
-        assert.equal(invoke('create').state,'awaiting_review');
+        assert.equal(invoke('create',[],'1','start').state,'awaiting_review');
         assert.equal(fs.readFileSync(calls,'utf8'),'developer\n');
-        assert.equal(invoke('resume').state,'awaiting_review');
+        assert.equal(invoke('resume',[],'1','start').state,'awaiting_review');
         assert.equal(fs.readFileSync(calls,'utf8'),'developer\n');
-        let result=invoke('resume',['--allow-review-attempt','1']);
+        let result=invoke('resume',[]);
         if(launch==='revision'){
           assert.equal(result.state,'changes_requested');assert.equal(result.identity.attempt,2);
           assert.equal(result.code,'provider_development_authorization_required');
@@ -266,9 +264,9 @@ let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end'
           const before=fs.readFileSync(journal);assert(!before.includes('"id":"develop-2"'));
           assert.equal(invoke('resume').code,'provider_development_authorization_required');
           assert.deepEqual(fs.readFileSync(journal),before,'waiting for permission does not mutate the journal');
-          result=invoke('resume',[],'2');assert.equal(result.state,'awaiting_review');
+          result=invoke('resume',[],'2','start');assert.equal(result.state,'awaiting_review');
           assert.equal(fs.readFileSync(calls,'utf8'),'developer\nreview\ndeveloper\n');
-          result=invoke('resume',['--allow-review-attempt','2'],'2');
+          result=invoke('resume',[],'2');
         }
         assert.equal(result.state,'fixture_completed',JSON.stringify(result));
         assert.equal(result.code,'qa_decision_required');
@@ -281,8 +279,8 @@ let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end'
       }
       const execution=await createCodexExecution(config,authority);
       run=await openControlRun(definition,'create',execution);
-      const result=await run.host.handle(request('advance'));
-      assert.equal(result.state,'awaiting_review',JSON.stringify(result));assert.equal(result.outcome,'denied');
+      const result=await run.host.handle(request('start'));
+      assert.equal(result.state,'awaiting_review',JSON.stringify(result));assert.equal(result.outcome,'advanced');
       assert.equal(fs.readFileSync(calls,'utf8'),'developer\n');
       assert.equal(fs.readFileSync(path.join(definition.codeProject,'a.js'),'utf8'),'new\n');
       const task=path.join(definition.specsDir,definition.feature,'tasks.md');
@@ -293,7 +291,7 @@ let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end'
       assert(!handoff.changed_files.some(file=>file.startsWith('specs/')));
       run.close();run=null;
       run=await openControlRun(definition,'resume',await createCodexExecution(config,authority));
-      assert.equal((await run.host.handle(request('advance'))).state,'awaiting_review');
+      assert.equal((await run.host.handle(request('start'))).state,'awaiting_review');
       assert.equal(fs.readFileSync(calls,'utf8'),'developer\n');
       assert.equal(fs.readFileSync(task,'utf8'),'- [ ] T-001: implement\n');
     }finally{run?.close();process.env.PATH=previousPath;}

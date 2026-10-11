@@ -47,11 +47,10 @@ cm-refactor 的 `refactor_unknown_effect` 列表成员是冗余防线：`unknown
 
 ## B 类：内部协议分支，值得测但不紧急
 
-清单已清空。六项都在 CI 执行的 `scripts/*.test.mjs` 里有了测试，每条都做过变异验证：
+清单已清空。现有五项都在 CI 执行的 `scripts/*.test.mjs` 里有了测试，每条都做过变异验证：
 
 | 分支 | 测试文件 |
 | --- | --- |
-| `cm-ai/durable-runner-state.mjs` 的 `grant_expired` / `clock_invalid` | `scripts/cm-ai-review-timeout.test.mjs` |
 | `cm-ai/cm-ai-conversation-entry.mjs` 的 `context_refresh` / `run_finalize` | `scripts/cm-ai-conversation-entry-ops.test.mjs` |
 | `cm-ai/contracts.mjs` 的 `waiting_user` / `deny` / `revoked` / `active` | `scripts/cm-ai-contracts.test.mjs` |
 | `cm-ai/tool-preview.mjs` 的 `argument` | `scripts/cm-claude-probe.test.mjs` |
@@ -99,4 +98,4 @@ cm-fix 根因审查拒绝后的恢复入口：standalone `rediagnose` 一次，
 
 取消向导测试的 SIGINT 路径现显式传入语言，并分别验证中英文取消与无写入，不再依赖宿主 locale。原两项失败的 red 记录和修复回归保留在本地审查包。
 
-人工补正：新增 `scripts/cm-task-gate-correction.test.mjs`，覆盖真实 JS CLI 与 Python 锁适配器完成、旧历史保留、必须明确授权与 Learning、漂移、旧/降级报告拒绝、一次 blocked 封存以及 symlink/hardlink 拒绝。合成报告只证明门禁合同，真实独立批准另留审查证据。
+人工补正：新增 `scripts/cm-task-gate-correction.test.mjs`，覆盖真实 JS CLI 与 Python 锁适配器完成、旧历史保留、补正原因来源声明与 Learning、漂移、旧/降级报告拒绝、一次 blocked 封存以及 symlink/hardlink 拒绝。合成报告只证明门禁合同，真实独立批准另留审查证据。

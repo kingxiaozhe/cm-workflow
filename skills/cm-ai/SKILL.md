@@ -35,13 +35,13 @@ $cm-ai ~/projects/specs 前端~/code/fe 后端~/code/api
    启动条件命中外部模型配置、bootstrap 规范任务、多代码根或同仓 specs 受保护执行／文本提案模式时，启动前先读 `references/js-host-modes.md` 对应一节（见 js-host.md“启动前”第 6 项）。
    运行停在阻断、unknown、待审失败或需异常恢复时，才按 js-host.md“文档分工与停机路由”表读取 `js-host-recovery.md` 或 `js-host-qa-recovery.md` 的对应一节。
    v2 使用 `--control-config`，不传任何 `--allow-*`；普通 `advance` 无需逐步授权 token。异常恢复携带此前 `status.controlTarget` 的固定副本作为 `expectedControl`，驾驶员不得自动刷新。具体配置与协议分界见 `../../docs/cm-control-policy-v2.md`。
-   cm-ai 单/批任务的 r2 blocked 仍无 runner-owned correction 完成入口；原兼容任务门禁的人工补正合同保持原样，不用它绕过旧 journal/owner。
+   cm-ai 单/批任务的 r2 blocked 仍无 runner-owned correction 完成入口；原兼容任务门禁的人工补正继续绑定原因与来源声明，不用它绕过旧 journal/owner。
    不含 control policy 的旧运行与旧 PLAN 沿原协议，不迁移 journal、指纹或历史批准；只有用户明确选择旧兼容流程且确认不是已有 JS 运行时，才进入下文兼容执行步骤。
 3. **JS 准入失败或不支持**：报告具体宿主、Node 版本、目录、配置或业务能力缺口并停止依赖该能力的执行；
    不静默回退兼容流程，不改 runId、runtime 或手工完成路径规避阻断。原生 Windows 尚不支持，Linux 支持声明不等于实机验收。
 
 JS 路由中的状态、日志、handoff、Review 凭证与任务勾选由原 JS owner 和唯一完成门禁负责；
-不得执行下文兼容步骤中的同类手工写入。策略文件只声明本次已授权范围内的执行能力；模型、operator 名称和 V3 grant 的完整性绑定都不是用户身份证明。fresh 独立 Review 与唯一完成门禁仍必需，push、发布、部署与资金动作仍须各自授权。
+不得执行下文兼容步骤中的同类手工写入。策略文件只声明本次已授权范围内的执行能力；`reviewer`、`independent` 与 `decision_source` 仅是来源声明，门禁核对其格式、任务材料和执行记录的一致性，不验证人员或实际人工交互。fresh 独立 Review 与唯一完成门禁仍必需，push、发布、部署与资金动作仍须各自授权。
 
 ### N1–N8 业务概览与兼容执行步骤
 

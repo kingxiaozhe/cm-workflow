@@ -1,5 +1,5 @@
-// Trusted host decision -> existing V3 synchronous grant. No dispatch or durable
-// authority database. The runner alone registers, consumes and replays grants.
+// CMFIX legacy decision-to-grant consistency adapter. It does not verify a person
+// or an independent identity. cm-ai no longer calls this adapter.
 import {randomUUID} from 'node:crypto';
 import {digest,id,json,need,shape,validIdentity} from './effect-contract.mjs';
 

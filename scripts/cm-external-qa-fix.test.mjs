@@ -58,7 +58,7 @@ async function fixture(t,{childHost=A,causeContext=null,lostCauseReviews=0,exter
       retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};
   }};
   const executionFor=live=>{
-    const execution=createConversationExecution(definition,live,bridge,review,1,workflow,true,'codex',
+    const execution=createConversationExecution(definition,live,bridge,review,null,workflow,true,'codex',
       live===A?{}:{originalHostContextId:A});
     execution.check=createHostCheck({cwd:codeProject,commands:[{id:'existing',command:[process.execPath,'existing.mjs']}]});
     execution.reviewers[0].run=async(request,{onEvent})=>{

@@ -63,13 +63,7 @@ function project(){
         return {status:'succeeded',value:{verdict:result,packageDigest:review.payload.reviewPackage.packageDigest,
           examinedPaths:reviewPaths(review.payload.reviewPackage),findings:result==='approved'?[]:
             [{id:'F1',severity:'P2',path:'b.mjs',message:'Again',evidence:'Synthetic'}],summary:'Synthetic review'}};}}],
-    reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control'],authorize:(review,{authorizationAt})=>{
-      const body={version:1,kind:'cm-review-dispatch-grant',grantId:`grant-${review.identity.runId}-${review.identity.attempt}`,
-        adapterId:'codex-review-adapter',invocationId:review.invocationId,requestDigest:review.requestDigest,identity:review.identity,
-        reviewerId:'reviewer',logicalContextId:review.contextId,packageDigest:review.payload.reviewPackage.packageDigest,hostContextId:'control',
-        decisionId:'decision',decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
-      return {...body,grantDigest:digest(body)};}},
-    hostDecision:{status:'approved'},check:createHostCheck({cwd:codeProject,commands:[{id:'syntax',command:[process.execPath,'--check','a.mjs']}]}),
+    reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control']},check:createHostCheck({cwd:codeProject,commands:[{id:'syntax',command:[process.execPath,'--check','a.mjs']}]}),
     qaLogHome:logHome,applicableAgentFiles:[],
     documentationProvider:{timeoutMs:5000,inspect:async binding=>{state.documentation++;
       return {syncId:binding.syncId,identity:binding.identity,packageDigest:binding.packageDigest,contextDigest:binding.contextDigest,

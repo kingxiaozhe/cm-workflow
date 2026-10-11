@@ -24,15 +24,14 @@ async function fixture(value,provider,fn){
   const adapter=createDeveloperRun({provider,requestedModel:'fixture',worker:async()=>{
     dispatched++;return {status:'succeeded',value};
   }});
-  const execution={configuration:{kind:'blocked-fixture-v1'},timeoutMs:3000,excludedContexts:['host'],
-    hostDecision:{status:'approved'},applicableAgentFiles:[],qaLogHome:path.join(root,'logs'),
+  const execution={configuration:{kind:'blocked-fixture-v1'},timeoutMs:3000,excludedContexts:['host'],applicableAgentFiles:[],qaLogHome:path.join(root,'logs'),
     developer:{provider,requestedModel:'fixture',contextId:'author',run:async(r,c)=>{
       request=r;terminal=await adapter(r,c);return terminal;
     }},
     check:()=>assert.fail('blocked must not run checks'),
     reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',
       allowed:true,available:true,contexts:['review-1','review-2'],run:()=>assert.fail('blocked must not run review')}],
-    reviewInvocation:{developerThreadId:'author',excludedThreadIds:['host'],authorize:()=>assert.fail('blocked must not authorize review')},
+    reviewInvocation:{developerThreadId:'author',excludedThreadIds:['host']},
   };
   const statePath=path.join(specsDir,'.reviews','.execution',identity.runId,'state.json');
   const read=()=>JSON.parse(fs.readFileSync(statePath,'utf8'));

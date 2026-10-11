@@ -8,7 +8,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
 import {
-  GateError,checkN4,checkN5,implementationSha256,loadHandoff,prepareMarkDone,verifyMarkDonePlan,
+  GateError,checkN4,checkN5,implementationSha256,loadHandoff,prepareMarkDone,verifyMarkDonePlan,validateReview,
   checkParallelWrite,markDoneLocked,
 } from './cm-task-gate.mjs';
 
@@ -199,4 +199,24 @@ test('Windows lock serializes two task completions without losing either checkbo
   const results=await Promise.all([launch('T-001'),launch('T-002')]);
   for(const result of results)assert.equal(result.status,0,result.stderr);
   assert.equal(fs.readFileSync(tasks,'utf8'),'- [x] T-001: first\r\n- [x] T-002: second\r\n');
+}));
+
+
+test('reviewer and independent fields validate declaration format and consistency',()=>fixture(root=>{
+  const handoff=path.join(root,'handoff.json'),review=path.join(root,'review.md');
+  writeHandoff(handoff);writeReview(review,{handoff});
+  const original=fs.readFileSync(review,'utf8'),selected={task:'T-001',attempt:1,handoff,changedFiles:['src/example.ts']};
+  assert.equal(validateReview(review,selected).reviewer,'codex-subagent');
+  for(const [before,after] of [
+    ['reviewer: codex-subagent','reviewer: unknown-source'],
+    ['independent: true','independent: yes'],
+    ['independent: true','independent: false'],
+    ['reviewer: codex-subagent','reviewer: self-degraded'],
+  ]){
+    fs.writeFileSync(review,original.replace(before,after));
+    assert.throws(()=>validateReview(review,selected),undefined,after);
+  }
+  fs.writeFileSync(review,original.replace('reviewer: codex-subagent','reviewer: self-degraded')
+    .replace('independent: true','independent: false').replace('scope:','degraded_reason: Declared fallback source\nscope:'));
+  assert.equal(validateReview(review,selected).reviewer,'self-degraded');
 }));

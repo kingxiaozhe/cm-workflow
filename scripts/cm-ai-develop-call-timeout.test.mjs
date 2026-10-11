@@ -50,14 +50,7 @@ function execution(f,answers){
         const worker=queue.shift();
         if(worker==='hang')return new Promise(()=>{});
         fs.writeFileSync(path.join(f.codeProject,'a.mjs'),worker);return {status:'succeeded',value:learning};}})},
-    reviewers:[reviewer],reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control'],
-      authorize:(value,{authorizationAt})=>{const body={version:1,kind:'cm-review-dispatch-grant',
-        grantId:'grant',adapterId:'codex-review-adapter',invocationId:value.invocationId,
-        requestDigest:value.requestDigest,identity:value.identity,reviewerId:'reviewer',
-        logicalContextId:value.contextId,packageDigest:value.payload.reviewPackage.packageDigest,
-        hostContextId:'control',decisionId:'approved',decision:'approved',issuedAt:authorizationAt,
-        expiresAt:authorizationAt+60000};return {...body,grantDigest:digest(body)};}},
-    hostDecision:{status:'approved'},check:createHostCheck({cwd:f.codeProject,
+    reviewers:[reviewer],reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control']},check:createHostCheck({cwd:f.codeProject,
       commands:[{id:'syntax',command:[process.execPath,'-e','0']}]})};
 }
 async function session(f,mode,answers,operations){

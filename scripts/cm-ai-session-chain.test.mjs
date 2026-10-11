@@ -41,10 +41,10 @@ function fixture(t){
   return {root,definition,codeProject,specsDir,config,review,reviewFile,records,fake,
     env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,CM_WORKFLOW_LOG_HOME:path.join(root,'logs')}};
 }
-function launch(f,{host='session-A',original,mode='resume',operation='status',review=false}={}){
+function launch(f,{host='session-A',original,mode='resume',operation='status',review=false,hold=false}={}){
   return new Promise((resolve,reject)=>{
     const args=['serve','--config',f.config,'--mode',mode,'--host-context',host,'--allow-development','--review-config',f.reviewFile,
-      ...(original===undefined?[]:['--original-host-context',original]),...(review?['--allow-review-attempt',String(review===true?1:review)]:[])];
+      ...(original===undefined?[]:['--original-host-context',original]),...(hold?['--hold-revision']:[])];
     const child=spawn(process.execPath,[cli,...args],{env:f.env,stdio:['pipe','pipe','pipe']});
     let buffer='',stderr='';const rows=[];
     const timer=setTimeout(()=>{child.kill();reject(Error('session chain timeout'));},15000);
@@ -76,11 +76,13 @@ function launch(f,{host='session-A',original,mode='resume',operation='status',re
       }
     });
     child.once('close',code=>{clearTimeout(timer);resolve({code,stderr,rows,result:rows.find(r=>r.requestId===operation)?.result});});
-    send({version:1,operation,requestId:operation,identity});
+    const attempt=fs.existsSync(path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json'))
+      ?runnerStatus(readRunnerHistory(f.records(),f.records()[0].payload.config,3).state,f.records()[0].payload.config).identity.attempt:1;
+    send({version:1,operation,requestId:operation,identity:{...identity,attempt}});
   });
 }
 const ok=run=>{assert.equal(run.code,0,run.stderr);return run.result;};
-async function created(t){const f=fixture(t);assert.equal(ok(await launch(f,{mode:'create',operation:'advance'})).code,'decision_required');return f;}
+async function created(t){const f=fixture(t);assert.equal(ok(await launch(f,{mode:'create',operation:'start'})).state,'awaiting_review');return f;}
 async function reviewed(t,host='session-B'){
   const f=await created(t);f.before=f.records().map(row=>JSON.stringify(row));
   assert.equal(ok(await launch(f,{host,original:'session-A',operation:'advance',review:true})).state,'fixture_completed');return f;
@@ -102,7 +104,7 @@ test('original-host-context on create fails before opening store, including equa
   }
 });
 
-test('A creates, B signs review, C declaring only A replays the completed run',async t=>{
+test('A creates, B runs review, C declaring only A replays the completed run',async t=>{
   const f=await reviewed(t),before=f.records();
   for(const host of ['session-C','session-B','session-A']){
     assert.equal(ok(await launch(f,{host,original:'session-A'})).state,'fixture_completed');
@@ -110,12 +112,12 @@ test('A creates, B signs review, C declaring only A replays the completed run',a
   }
 });
 
-test('joining host is journaled once immediately before its grant; old records keep exact bytes',async t=>{
+test('joining host is journaled once immediately before its review binding; old records keep exact bytes',async t=>{
   const f=await reviewed(t),rows=f.records(),joins=rows.filter(r=>r.payload.type==='host-joined');
   assert.equal(joins.length,1);assert.equal(joins[0].kind,'result');
   assert.deepEqual(joins[0].payload,{version:3,protocol:'cm-task-runner',type:'host-joined',hostContextId:'session-B'});
   const index=rows.indexOf(joins[0]);assert.equal(rows[index+1].payload.type,'review-invocation-registered');
-  assert.equal(rows[index+1].payload.grant.hostContextId,'session-B');
+  assert.equal(rows[index+1].payload.binding.hostContextId,'session-B');
   assert.deepEqual(rows.slice(0,f.before.length).map(row=>JSON.stringify(row)),f.before);
   for(const host of ['session-B','session-C'])ok(await launch(f,{host,original:'session-A'}));
   assert.deepEqual(f.records(),rows);
@@ -166,8 +168,9 @@ test('V3 joined-host grammar rejects misplaced, duplicate, durable and extra rec
 
 test('V3 joined-host grammar rejects an earlier reviewer joining before a later review registration',async t=>{
   const f=await created(t);reviewerResult(f,{thread:'earlier-reviewer',changes:true});
-  const revised=ok(await launch(f,{host:'session-B',original:'session-A',operation:'advance',review:true}));
-  assert.equal(revised.state,'awaiting_review');assert.equal(revised.code,'decision_required');
+  const revised=ok(await launch(f,{host:'session-B',original:'session-A',operation:'advance',review:true,hold:true}));
+  assert.equal(revised.state,'changes_requested');assert.equal(revised.code,'revision_answer_required');
+  assert.equal(ok(await launch(f,{host:'session-B',original:'session-A',operation:'start'})).state,'awaiting_review');
   const rows=f.records(),config=rows[0].payload.config;
   const reviewerThread=rows.find(r=>r.payload.type==='review-invocation-started').payload.providerThreadId;
   const firstIntent=rows.find(r=>r.payload.type==='effect-intent'&&r.payload.effect.kind==='review');
@@ -188,7 +191,7 @@ test('V3 joined-host grammar rejects an earlier reviewer joining before a later 
 
 test('development after cross-session reopen reports live provider thread without changing init',async t=>{
   const f=fixture(t);ok(await launch(f,{mode:'create'}));const before=f.records();
-  assert.equal(ok(await launch(f,{host:'session-B',original:'session-A',operation:'advance'})).code,'decision_required');
+  assert.equal(ok(await launch(f,{host:'session-B',original:'session-A',operation:'start'})).state,'awaiting_review');
   const rows=f.records();assert.deepEqual(rows.slice(0,before.length),before);
   assert.deepEqual(rows[0].payload.config.reviewInvocation,{developerThreadId:'cm-conversation-author',excludedThreadIds:['session-A']});
   const call=rows.filter(r=>r.payload.type==='effect-checkpoint').at(-1).payload.checkpoint.calls[0];
@@ -213,9 +216,9 @@ for(const thread of ['session-A','session-B'])test(`live reviewer cannot be dura
 
 test('second review excludes earlier joined host even when the current host is C',async t=>{
   const f=await created(t);reviewerResult(f,{changes:true});
-  const revised=ok(await launch(f,{host:'session-B',original:'session-A',operation:'advance',review:true}));
-  // advance also develops attempt 2, then waits for its separate review grant.
-  assert.equal(revised.state,'awaiting_review');assert.equal(revised.code,'decision_required');
+  const revised=ok(await launch(f,{host:'session-B',original:'session-A',operation:'advance',review:true,hold:true}));
+  assert.equal(revised.state,'changes_requested');assert.equal(revised.code,'revision_answer_required');
+  assert.equal(ok(await launch(f,{host:'session-B',original:'session-A',operation:'start'})).state,'awaiting_review');
   reviewerResult(f,{thread:'session-B'});
   const result=ok(await launch(f,{host:'session-C',original:'session-A',operation:'advance',review:2}));
   assert.equal(result.state,'unknown');
@@ -243,7 +246,7 @@ test('runner session chain without CLI reaches B grant and replays it in C',asyn
   }};
   const durable=createConversationExecution(f.definition,'session-A',bridge,f.review);
   const execution=(host,allow=false)=>{
-    const live=createConversationExecution(f.definition,host,bridge,f.review,allow?1:null);
+    const live=createConversationExecution(f.definition,host,bridge,f.review,null);
     return {...live,configuration:durable.configuration,excludedContexts:durable.excludedContexts,
       reviewInvocation:{...live.reviewInvocation,excludedThreadIds:durable.reviewInvocation.excludedThreadIds},
       reviewers:live.reviewers.map(reviewer=>({...reviewer,run(request,{onEvent}){
@@ -258,7 +261,7 @@ test('runner session chain without CLI reaches B grant and replays it in C',asyn
     const run=await openControlRun(f.definition,mode,execution(host,allow));
     try{return await run.host.handle({version:1,operation,requestId:operation,identity});}finally{run.close();}
   }
-  assert.equal((await session('session-A','create','advance')).code,'decision_required');
+  assert.equal((await session('session-A','create','start')).state,'awaiting_review');
   const reviewed=await session('session-B','resume','advance',true);
   assert.equal(reviewed.state,'fixture_completed',JSON.stringify(reviewed));
   assert.equal((await session('session-C','resume','status')).state,'fixture_completed');

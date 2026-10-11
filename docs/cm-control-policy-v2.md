@@ -36,19 +36,19 @@ control policy v2 把运行能力集中到一个严格的策略文件。原配�
 第 1 轮要求修改时，修订后使用 fresh Review；第 2 轮仍有阻断就停止，不创建第 3 轮。
 审查配置仍在 create 时冻结。`--review-config` 缺失、模型或保护配置不可用时保留原具体阻断。
 
-## 配置与授权的分工
+## 配置、来源声明与门禁的分工
 
 | 材料 | 提供什么 | 不能证明什么 |
 | --- | --- | --- |
-| 已批准规格与当前用户对话 | 任务范围和真实授权 | 不自动授权 push、发布、部署或资金动作 |
-| `POLICY.json` | 本次已授权范围内明确启用的运行能力 | 不证明用户身份，不扩大 scope，不提供缺失模型或命令 |
+| 已批准规格与当前用户对话 | 已确认任务范围与动作要求 | push、发布、部署或资金动作仍须单独确认 |
+| `POLICY.json` | 已确认范围内明确启用的运行能力 | 不扩大 scope，不提供缺失模型或命令 |
 | 原 review、workflow、protected、bootstrap、QA 修复配置 | 模型、命令、路径、保护方式与预算 | 加载配置不自动启用对应能力 |
-| V3 grant | 实际 request、invocation、package、host 与时限的机械派发绑定 | 完整性摘要不是身份认证，模型自报不是用户决定 |
+| `reviewer`、`independent`、`decision_source` | 审查或决定的来源声明 | 不验证审查者身份或实际人工交互 |
 | `expectedControl` | 显式恢复操作绑定的已展示状态目标 | 不授权新能力，不替代独立审查或完成凭证 |
 
-常规推进无需真人按轮批准或每步 token。当前会话仍核对真实用户已授权的任务与外部动作。
-策略、模型输出、operator 名称和返回 `approved` 都不能替代新动作所需的真实授权。
-不手造 grant、审查回执或完成凭证，不把本地执行能力扩成安装、push、发布、部署、资金或主网权限。
+CM 门禁检查来源声明的格式、任务与轮次、材料摘要、当前文件和执行记录的一致性，用于防手滑与过期证据。来源声明不验证审查者身份或实际人工交互；门禁不承诺抵抗拥有完整文件写权限和 shell 能力的会话造假。fresh 上下文、审查结果、检查通过和完成复查仍是正常工作流路径的完成条件。发布、部署、资金及其他范围外动作继续遵守其单独确认要求。
+
+cm-ai 新旧入口均直接推进常规审查，不使用按轮 grant、TTL 或拒绝确认预算。策略、模型输出、operator 名称和返回 `approved` 不扩大本次任务范围；安装、push、发布、部署、资金和主网动作按其单独确认要求执行。
 
 ## 单任务启动
 
@@ -208,7 +208,8 @@ v2 create supersede 尚未开放，返回 `supersede_unavailable`；保留原证
 
 | 输入或情形 | 结果 |
 | --- | --- |
-| PLAN 不含 `controlConfig` | 沿 legacy，保留旧参数与请求 version 1 |
+| PLAN 不含 `controlConfig` | 沿原请求 version 1 与能力开关，常规审查直接派发 |
+| cm-ai journal 含旧 grant 通道的审查登记 | `runner_invocation`，保留原记录，仅由原版本只读工具查看历史 |
 | v2 入口带任意 `--allow-*` | `invalid_arguments` 或驾驶员启动前迁移拒绝 |
 | 旧运行通过 v2 执行，或 v2 运行通过 legacy 执行 | `fingerprint_mismatch`，不转换历史后继续 |
 | 策略启用的能力缺配置 | 沿原具体配置阻断；模式冲突用 `invalid_arguments`，不自动开启 |
@@ -221,7 +222,7 @@ v2 create supersede 尚未开放，返回 `supersede_unavailable`；保留原证
 | v2 create supersede | `supersede_unavailable`，不走旧入口作废运行 |
 
 v2 策略随新运行持久化并纳入新版执行指纹。旧 metadata 中该字段缺省时，原格式与字节保持原样。
-不重写旧 journal、旧指纹、旧控制记录或旧 V3 grant grammar，不把能回放旧记录扩称允许跨入口执行。
+不重写旧 journal、旧指纹或旧控制记录，不把能回放旧记录扩称允许跨入口执行。
 只读 status 可用于核对历史；执行入口仍必须匹配原协议。迁移需要独立的新运行决定，不能就地换入口规避旧证据。
 单任务 QA 重跑、QA 配置修订与规格换绑使用上节 launchControlTarget；批次和 supersede 等出口以实际支持为准，不把单任务恢复合同理解成全部旧出口已开放。
 

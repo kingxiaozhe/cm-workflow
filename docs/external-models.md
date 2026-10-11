@@ -2,7 +2,7 @@
 
 当前宿主会话继续使用客户端当前模型；CM 不切换该会话。独立外部 CLI 调用按 provider
 保存一组模型及可选推理强度。同一个 provider 的外部开发、独立审查共用这组参数，
-审查仍使用新上下文和原逐轮授权。项目的 coder／reviewer runtime 路由保持原规则。
+审查仍使用新上下文；cm-ai 直接推进常规审查，cm-fix 保留原审查参数合同。项目的 coder／reviewer runtime 路由保持原规则。
 
 ## 配置一次
 
@@ -90,9 +90,9 @@ node scripts/cm-fix-drive.mjs --plan {FIX_PLAN.json} reconcile_review
 ```
 
 batch PLAN 还需原 `taskKey`。QA 子运行沿原 `fix_action`，`fixOperation: reconcile_review`
-及原 `invocationId`，仍核对父子关联。对账不签新 review grant、不启动模型或预检。
+及原 `invocationId`，仍核对父子关联。对账只核对原调用记录，不启动模型或预检。
 可信迟到合法结果恢复原审查状态；cm-ai 可信 provider failure 对账后允许原一次预算内、
-新授权与新上下文重试。cm-fix 对账失败只进入 `review_provider_failed` 明确阻断，未提供
+新上下文直接重试。cm-fix 对账失败只进入 `review_provider_failed` 明确阻断，未提供
 重试出口。无可信证据时禁止人工 abandon／recover 与自动重派。合法 `changes_requested`
 保留原第二轮预算。旧无新快照的 run 保留原恢复合同，未迁移旧 run。
 

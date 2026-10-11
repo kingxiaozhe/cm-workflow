@@ -216,9 +216,9 @@ export function readBootstrapRulesAnswers({answers,operation,definition,plan,per
   const result=new Map(),slug=`.reviews/${definition.feature.replace(/^\d+\./,'')}-${definition.identity.taskId}`;
   const pair=attempt=>`answers/init-generate-a${attempt}.json 与 answers/init-verify-a${attempt}.json`;
   if(reachable.reviewAfterDevelop)
-    stop(2,`规范任务的 advance 不能带 --allow-review-attempt 1 直接进入第 2 轮：修订答案须在读取首轮审查 findings 之后编写。请从 PLAN.permissions 移除 --allow-review-attempt 1，先 advance 到 awaiting_review；再用返回的 packageDigest 执行 decision，读取 ${slug}-r1.md 的 findings；若要求修改，写 ${pair(2)} 后 advance。`);
+    stop(2,`规范任务不能预先进入第 2 轮：修订答案须在读取首轮审查 findings 之后编写。首轮自动审查后停在 changes_requested；读取 ${slug}-r1.md 的 findings；若要求修改，写 ${pair(2)} 后 advance。`);
   if(reachable.reviewFirst)
-    stop(2,`规范修订答案须在读取首轮审查 findings 之后编写：请先以 decision 和当前 packageDigest ${reachable.packageDigest} 单独运行审查，读取 ${slug}-r1.md 的 findings，写 ${pair(2)} 后再 advance（不要带 --allow-review-attempt 1 advance）`);
+    stop(2,`规范修订答案须在读取首轮审查 findings 之后编写：请先以 decision 和当前 packageDigest ${reachable.packageDigest} 单独运行审查，读取 ${slug}-r1.md 的 findings，写 ${pair(2)} 后再 advance`);
   if(reachable.attempts.length)authorizeRulesLaunch({definition,plan,permissions,controlPolicy});
   for(const attempt of reachable.attempts){
     const names=['init-generate','init-verify'].map(name=>attemptAnswerName(answers??'',name,attempt));

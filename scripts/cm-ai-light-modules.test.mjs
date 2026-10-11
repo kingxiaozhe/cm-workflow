@@ -12,7 +12,7 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {CHECK_DRIVE_COPIED_FILES} from './cm-check-drive-files.mjs';
 
 const root=fileURLToPath(new URL('..',import.meta.url));
-const GUIDANCE='runtime/js/cm-ai/operator-guidance.mjs',LIMITS='runtime/js/cm-ai/review-dispatch-limits.mjs';
+const GUIDANCE='runtime/js/cm-ai/operator-guidance.mjs';
 
 // Copy exactly `files` (optionally appending `append` to `entry`) and import `entry` from the copy.
 function importFromCopy(t,entry,files,append=''){
@@ -26,11 +26,8 @@ function importFromCopy(t,entry,files,append=''){
     {encoding:'utf8',cwd:dir});
 }
 
-test('review-dispatch-limits.mjs imports with only itself copied',t=>{
-  const run=importFromCopy(t,LIMITS,[LIMITS]);assert.equal(run.status,0,run.stderr);
-});
-test('operator-guidance.mjs imports with only itself and review-dispatch-limits.mjs copied',t=>{
-  const run=importFromCopy(t,GUIDANCE,[GUIDANCE,LIMITS]);assert.equal(run.status,0,run.stderr);
+test('operator-guidance.mjs imports with only itself copied',t=>{
+  const run=importFromCopy(t,GUIDANCE,[GUIDANCE]);assert.equal(run.status,0,run.stderr);
 });
 test('operator-guidance.mjs imports from exactly the partial runtime cm-check-drive.test.mjs copies',t=>{
   const run=importFromCopy(t,GUIDANCE,CHECK_DRIVE_COPIED_FILES);assert.equal(run.status,0,run.stderr);
@@ -52,6 +49,6 @@ for(const [name,append] of REACH)
     assert.match(run.stderr,/ERR_MODULE_NOT_FOUND/);
   });
 test('guard fails when operator-guidance.mjs gains an import of a file only the wider cm-check copy has',t=>{
-  const run=importFromCopy(t,GUIDANCE,[GUIDANCE,LIMITS],"\nimport x from './effect-contract.mjs'\n");
+  const run=importFromCopy(t,GUIDANCE,[GUIDANCE],"\nimport x from './effect-contract.mjs'\n");
   assert.notEqual(run.status,0);assert.match(run.stderr,/ERR_MODULE_NOT_FOUND/);
 });

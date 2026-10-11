@@ -19,8 +19,7 @@ test('QA attachment projections preserve every non-workflow fingerprint input an
     execution:{kind:'cm-current-conversation-v1',hostContextId:'host',review:{model:'fixture'},
       workflow:{qa:{commands:[],environment:{}},documentationPaths:['README.md'],applicableAgentFiles:[]}},
     qaExecutor:{version:1,mode:'commands'},qaDecisionProvider:'host-v1',qaTimeoutMs:60000,
-    applicableAgentFiles:[],documentationProvider:{version:1,timeoutMs:60000},documentationSync:{version:1,paths:['README.md']},
-    hostDecisionProvider:{version:1,timeoutMs:60000},developmentAuthorization:'per-attempt-v1'};
+    applicableAgentFiles:[],documentationProvider:{version:1,timeoutMs:60000},documentationSync:{version:1,paths:['README.md']},developmentAuthorization:'per-attempt-v1'};
   const original=structuredClone(material),[withoutQa,withoutWorkflow]=preQaConfigurations(material);
   assert.deepEqual(material,original);
   assert.equal(withoutQa.execution.workflow.qa,null);
@@ -32,7 +31,6 @@ test('QA attachment projections preserve every non-workflow fingerprint input an
     assert.deepEqual(projection.definition,material.definition);
     assert.deepEqual(projection.execution.review,material.execution.review);
     assert.equal(projection.execution.hostContextId,'host');
-    assert.deepEqual(projection.hostDecisionProvider,material.hostDecisionProvider);
     assert.equal(projection.developmentAuthorization,material.developmentAuthorization);
     assert(!Object.hasOwn(projection,'qaExecutor'));
   }
@@ -53,8 +51,7 @@ test('fixed Codex assembly requires review preflight and denies developer dispat
   const {requestFor}=await import('../runtime/js/cm-ai/effect-contract.mjs');
   const config={codeProject:f.codeProject,developerModel:'fixture',reviewerModel:'fixture',hostContextId:'main',
     developerContextId:'author',checkCommands:[{id:'check',command:[process.execPath,'--version']}],timeoutMs:1000,reviewerPreflight:null};
-  let decisions=0;const authority={authorizeDevelopment:()=>{decisions++;return {status:'denied'};},
-    authorizeReview:()=>({status:'denied',code:'permission_denied'}),hostDecision:{status:'denied',code:'permission_denied'}};
+  let decisions=0;const authority={authorizeDevelopment:()=>{decisions++;return {status:'denied'};}};
   await assert.rejects(createCodexExecution(config,authority),{code:'tool_preflight_missing'});
   config.reviewerPreflight={passed:true,cli_model:'fixture',prompt_transport:'stdin',
     config_fingerprint:configFingerprint({cwd:f.codeProject,model:'fixture'})};
@@ -63,9 +60,9 @@ test('fixed Codex assembly requires review preflight and denies developer dispat
     contextId:'author',payload:{scope:['a.js'],requirements:[],priorReview:null}});
   await assert.rejects(execution.developer.run(request,{signal:new AbortController().signal}),{code:'permission_denied'});
   assert.equal(decisions,1);assert.equal(fs.readFileSync(path.join(f.codeProject,'a.js'),'utf8'),'old\n');
-  assert.equal(execution.reviewInvocation.authorize,authority.authorizeReview);
+  assert.equal(Object.hasOwn(execution.reviewInvocation,'authorize'),false);
 }));
-for(const [mode,nested] of [...['manual','approved','denied','awaiting','blocked','repair','review_limit','spec_drift'].map(mode=>[mode,false]),['approved',true],['blocked',true]])
+for(const [mode,nested] of [...['manual','approved','blocked','repair','review_limit','spec_drift'].map(mode=>[mode,false]),['approved',true],['blocked',true]])
 test(`trusted host execution uses the same entry and sole gate: ${mode} nested=${nested}`,
   {skip:!platform},()=>fixture(async f=>{
     const {main}=await import('./cm-ai-run.mjs');
@@ -105,34 +102,11 @@ test(`trusted host execution uses the same entry and sole gate: ${mode} nested=$
             examinedPaths:reviewPaths(request.payload.reviewPackage),findings:verdict==='changes_requested'
               ?[{id:'F1',severity:'P2',path:'a.js',message:'Synthetic repair required',evidence:'First implementation'}]:[],summary:'Synthetic review'}};
         }}],
-      reviewInvocation:{developerThreadId:'host-author',excludedThreadIds:['main'],
-        authorize:(request,{authorizationAt})=>{
-          assert(['approved','blocked','repair','review_limit','spec_drift'].includes(mode));
-          const body={version:1,kind:'cm-review-dispatch-grant',grantId:`grant-${request.identity.attempt}`,adapterId:'codex-review-adapter',
-            invocationId:request.invocationId,requestDigest:request.requestDigest,identity:request.identity,
-            reviewerId:'reviewer',logicalContextId:request.contextId,packageDigest:request.payload.reviewPackage.packageDigest,
-            hostContextId:'main',decisionId:`decision-${request.identity.attempt}`,decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
-          return {...body,grantDigest:digest(body)};
-        }},
-      hostDecision:mode==='awaiting'?null:['approved','blocked','repair','review_limit','spec_drift'].includes(mode)?{status:'approved'}:{status:'denied',code:'permission_denied'},
+      reviewInvocation:{developerThreadId:'host-author',excludedThreadIds:['main']},
       check:createHostCheck({cwd:f.codeProject,commands:[{id:'content',command:[process.execPath,'-e',
         "require('node:assert/strict').match(require('node:fs').readFileSync('a.js','utf8'),/^new( 2)?\\n$/)"]}]})};
-    let qaCalls=0,qaRuns=0,docInspections=0,docWrites=0,reviewDecisions=0;
+    let qaCalls=0,qaRuns=0,docInspections=0,docWrites=0;
     const dynamicQa=mode==='approved'&&!nested;
-    const dynamicReview=dynamicQa||mode==='repair';
-    if(dynamicReview){
-      const {createHostReviewAuthority}=await import('../runtime/js/cm-ai/host-review-authority.mjs');
-      const authority=createHostReviewAuthority({hostContextId:'main',reviewerId:'reviewer',adapterId:'codex-review-adapter',
-        timeoutMs:1000,decide:async(binding,signal)=>{
-          reviewDecisions++;await Promise.resolve();assert.equal(signal.aborted,false);
-          assert.equal(binding.identity.attempt,reviewDecisions);
-          const handoff=JSON.parse(fs.readFileSync(path.join(f.specsDir,'.reviews',`login-T-001-a${binding.identity.attempt}-handoff.json`),'utf8'));
-          assert.equal(handoff.status,'ready_for_review');assert.match(binding.packageDigest,/^[a-f0-9]{64}$/);
-          return {status:'approved'};
-        }});
-      execution.hostDecision=null;execution.hostDecisionProvider=authority.hostDecisionProvider;
-      execution.reviewInvocation.authorize=authority.authorize;
-    }
     if(dynamicQa){
       const definition=JSON.parse(fs.readFileSync(f.config,'utf8'));
       definition.scope.push('README.md');fs.writeFileSync(f.config,JSON.stringify(definition));
@@ -189,8 +163,6 @@ test(`trusted host execution uses the same entry and sole gate: ${mode} nested=$
     if(repaired)assert.equal(JSON.parse(stdout).result.identity.attempt,2);
     if(mode==='spec_drift')assert.equal(JSON.parse(stdout).result.code,'spec_drift');
     if(mode==='review_limit')assert.equal(JSON.parse(stdout).result.code,'review_limit');
-    if(mode==='denied')assert.equal(JSON.parse(stdout).result.outcome,'denied');
-    if(mode==='awaiting')assert.equal(JSON.parse(stdout).result.code,'decision_required');
     assert.equal(fs.readFileSync(path.join(f.specsDir,'1.login','tasks.md'),'utf8').includes('[x]'),completed);
     assert(fs.existsSync(path.join(f.specsDir,'.reviews','login-T-001-a1-handoff.json')));
     assert.equal(f.invoke('resume',[request('status')]).status,1);
@@ -201,7 +173,6 @@ test(`trusted host execution uses the same entry and sole gate: ${mode} nested=$
         {input:resumedInput,output:resumedOutput,error,execution}),0,stderr);
       assert.equal(JSON.parse(resumed).result.state,expected,resumed);
       assert.equal(calls,repaired?2:1);assert.equal(reviews,repaired?2:['approved','blocked','spec_drift'].includes(mode)?1:0);
-      if(dynamicReview)assert.equal(reviewDecisions,repaired?2:1,'reopen must not reauthorize completed review');
       if(dynamicQa){
         assert.equal(qaCalls,1);assert.equal(qaRuns,1);assert.equal(docInspections,2);assert.equal(docWrites,1);
         assert.equal(JSON.parse(resumed).result.code,'run_done');
@@ -400,13 +371,13 @@ test('trusted parallel selection binds admission, Learning, start and resume fin
   const learning={specsDir:f.specsDir,codeProject:f.codeProject,feature:'1.login',identity:definition.identity,applicableAgentFiles:[]};
   assert.throws(()=>inspectCmAiTaskLearningInput(learning),{code:'learning_context_invalid'});
   assert.equal(inspectCmAiTaskLearningInput(learning,{parallelSelection}).identity.taskId,'T-002');
-  const execution={configuration:{kind:'selection-fixture'},timeoutMs:2000,excludedContexts:['host'],hostDecision:null,
+  const execution={configuration:{kind:'selection-fixture'},timeoutMs:2000,excludedContexts:['host'],
     developer:{provider:'codex',requestedModel:'fixture',contextId:'author',run:createCodexDeveloperRun({requestedModel:'fixture',worker:async()=>{fs.writeFileSync(path.join(f.codeProject,'a.js'),'selected implementation\n');return {status:'succeeded',value:{outcome:'implemented',
       application:{status:'no_relevant_lesson',note:null},retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};}})},
     check:async()=>[{id:'check',command:['fixture'],outcome:'passed',exitCode:0,evidence:'fixture'}],reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',
       requestedModel:'fixture',allowed:true,available:true,contexts:['review-1','review-2'],
       run:async()=>{throw new Error('no review');}}],
-    reviewInvocation:{developerThreadId:'author',excludedThreadIds:['host'],authorize:()=>{throw new Error('no review');}}};
+    reviewInvocation:{developerThreadId:'author',excludedThreadIds:['host']}};
   await assert.rejects(openControlRun(definition,'create',execution),{code:'task_selection_mismatch'});
   await assert.rejects(openControlRun(definition,'create',execution,{parallelSelection:{version:1,group:['T-001','T-003']}}),{code:'task_selection_mismatch'});
   const direct=createCmAiHost({runner:{root:f.codeProject,identity:definition.identity,scope:['a.js'],requirements:['requirements.md'],

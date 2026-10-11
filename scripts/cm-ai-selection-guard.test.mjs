@@ -21,12 +21,12 @@ function fixture(t){
   const definition=(runId,taskId='T-001',taskSelection)=>validateRunDefinition({version:1,specsDir,codeProject,feature,
     identity:{repositoryId:'guard-fixture',runId,taskId,attempt:1},scope:['a.mjs'],requirements:[],
     ...(taskSelection?{taskSelection}: {})});
-  const execution={configuration:{kind:'guard-fixture'},timeoutMs:1000,excludedContexts:['host'],hostDecision:null,
+  const execution={configuration:{kind:'guard-fixture'},timeoutMs:1000,excludedContexts:['host'],
     qaLogHome:path.join(root,'logs'),
     developer:{provider:'codex',requestedModel:'fixture',contextId:'author',run:async()=>{throw Error('unexpected development');}},
     reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',allowed:true,
       available:true,contexts:['review-one','review-two'],run:async()=>{throw Error('unexpected review');}}],
-    reviewInvocation:{developerThreadId:'author',excludedThreadIds:['host'],authorize:()=>{throw Error('unexpected review');}},
+    reviewInvocation:{developerThreadId:'author',excludedThreadIds:['host']},
     check:async()=>{throw Error('unexpected check');}};
   return {root,specsDir,codeProject,feature,definition,execution};
 }

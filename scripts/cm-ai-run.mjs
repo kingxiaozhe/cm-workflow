@@ -55,16 +55,10 @@ export async function createCodexExecution(configuration,authority){
   need(!['codex-independent-review-1','codex-independent-review-2'].some(value=>
     value===config.hostContextId||value===config.developerContextId),'not_independent');
   validCallTimeout(config.timeoutMs);
-  shape(authority,['authorizeDevelopment','authorizeReview','hostDecision',
-    ...['hostDecisionProvider','developmentAttempt','workflow','bootstrap'].filter(key=>Object.hasOwn(authority,key))]);
-  need(typeof authority.authorizeDevelopment==='function'&&typeof authority.authorizeReview==='function');
+  shape(authority,['authorizeDevelopment',
+    ...['developmentAttempt','workflow','bootstrap'].filter(key=>Object.hasOwn(authority,key))]);
+  need(typeof authority.authorizeDevelopment==='function');
   if(Object.hasOwn(authority,'developmentAttempt'))need([1,2].includes(authority.developmentAttempt),'invalid_development_attempt');
-  if(Object.hasOwn(authority,'hostDecisionProvider')){
-    shape(authority.hostDecisionProvider,['decide','timeoutMs']);
-    need(typeof authority.hostDecisionProvider.decide==='function'
-      &&Number.isInteger(authority.hostDecisionProvider.timeoutMs)&&authority.hostDecisionProvider.timeoutMs>0
-      &&authority.hostDecisionProvider.timeoutMs<=60000,'invalid_input');
-  }
   const disabledSkills=config.disabledSkills??[];
   need(Array.isArray(disabledSkills)&&disabledSkills.length<=4096
     &&disabledSkills.every(p=>typeof p==='string'&&path.isAbsolute(p)&&!/[\n\r\0]/.test(p)),'invalid_review_config');
@@ -113,15 +107,13 @@ export async function createCodexExecution(configuration,authority){
   const execution={
     configuration:config,timeoutMs:config.timeoutMs,excludedContexts:[config.hostContextId],check,
     ...(bootstrap?{bootstrap}:{}),
-    hostDecision:json(authority.hostDecision),
     ...workflowCapabilities,
     ...(Object.hasOwn(authority,'developmentAttempt')?{developmentAttempt:authority.developmentAttempt}:{}),
-    ...(Object.hasOwn(authority,'hostDecisionProvider')?{hostDecisionProvider:authority.hostDecisionProvider}:{}),
     developer:{provider:'codex',requestedModel:config.developerModel,contextId:config.developerContextId,
       run:async(request,control)=>{
         const bound=readCodexDeveloperRequest(request);
         const decision=json(await authority.authorizeDevelopment(bound));
-        shape(decision,['status']);need(decision.status==='approved','permission_denied');
+        shape(decision,['status']);need(decision.status==='approved','invalid_development_attempt');
         need(!control.signal.aborted,'cancelled');
         need(!used.has(bound.invocationId),'duplicate_dispatch');used.add(bound.invocationId);
         // The runner journals the worker identity around the spawn (develop-worker).
@@ -147,8 +139,7 @@ export async function createCodexExecution(configuration,authority){
     reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:config.reviewerModel,
       allowed:true,available:true,contexts:['codex-independent-review-1','codex-independent-review-2'],
       run:(request,control)=>createCodexReviewRun(codexWorker(reviewOptions))(request,control)}],
-    reviewInvocation:{developerThreadId:config.developerContextId,excludedThreadIds:[config.hostContextId],
-      authorize:authority.authorizeReview},
+    reviewInvocation:{developerThreadId:config.developerContextId,excludedThreadIds:[config.hostContextId],hostContextId:config.hostContextId},
   };
   if(specsRoot!==null){
     // Do not permit later replacement of the developer/check or addition of an
@@ -241,7 +232,6 @@ export function runConfigMaterial(definition,execution,{parallelSelection=null,b
     ...(knowledgeCloseout===null?{}:{knowledgeCloseout}),
     ...(bootstrapConfig?{bootstrap:bootstrapConfig}:{}),
     ...(Object.hasOwn(execution,'developmentAttempt')?{developmentAuthorization:'per-attempt-v1'}:{}),
-    ...(execution.hostDecisionProvider?{hostDecisionProvider:{version:1,timeoutMs:execution.hostDecisionProvider.timeoutMs}}:{}),
     ...(execution.qaDecisionProvider?{qaDecisionProvider:'host-v1',qaTimeoutMs:execution.qaDecisionProvider.timeoutMs}:{}),
     ...(execution.qaExecutor?{qaExecutor:qaExecutorMaterial(execution.qaExecutor,legacyQa)}:{}),
     ...(execution.applicableAgentFiles?{applicableAgentFiles:execution.applicableAgentFiles}:{}),
@@ -320,8 +310,8 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   const {captureReviewBaseline}=await import('../runtime/js/cm-ai/review-package.mjs');
   if(execution!==null){
     const {shape,json,validCallTimeout}=await import('../runtime/js/cm-ai/effect-contract.mjs');
-    shape(execution,['configuration','developer','reviewers','reviewInvocation','check','hostDecision','excludedContexts','timeoutMs',
-      ...['bootstrap','developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult','documentationSync','verificationGate'].filter(key=>Object.hasOwn(execution,key))]);
+    shape(execution,['configuration','developer','reviewers','reviewInvocation','check','excludedContexts','timeoutMs',
+      ...['bootstrap','developmentAttempt','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult','documentationSync','verificationGate'].filter(key=>Object.hasOwn(execution,key))]);
     json(execution.configuration);validCallTimeout(execution.timeoutMs);
     if(Object.hasOwn(execution.configuration,'codeProject'))
       if(execution.configuration.codeProject!==definition.codeProject)fail('execution_root_mismatch');
@@ -517,8 +507,8 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
       entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,
         ...(definition.featureSelection?{featureSelection:definition.featureSelection.feature}:{}),
         ...(knowledgeCloseout===null?{}:{knowledgeCloseout,...(definition.codeProjects?{codeProjects:definition.codeProjects}:{})}),
-        ...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,allowDevelopRedo,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
-        ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
+        ...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,allowDevelopRedo,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{
+        ...Object.fromEntries(['developmentAttempt','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
     const logAbandonments=()=>{
       for(const record of store.snapshot().records.filter(row=>row.payload.type==='review-invocation-abandoned'))

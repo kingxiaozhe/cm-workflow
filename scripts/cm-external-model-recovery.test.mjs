@@ -12,12 +12,6 @@ import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {writeHandoff,writeReview} from '../experiments/js-orchestration/native-gate-fixture.mjs';
 import {acquireExternalRunGuard} from '../runtime/js/cm-ai/external-run-guard.mjs';
 import {memberSupersedeAdmitted} from './cm-ai-batch-run.mjs';
-const grant=(request,issuedAt)=>{
-  const value={version:1,kind:'cm-review-dispatch-grant',grantId:'grant-'+request.invocationId,adapterId:'codex-review-adapter',
-    invocationId:request.invocationId,requestDigest:request.requestDigest,identity:request.identity,reviewerId:'reviewer',logicalContextId:request.contextId,
-    packageDigest:request.payload.reviewPackage.packageDigest,hostContextId:'host',decisionId:'decision-'+request.invocationId,decision:'approved',issuedAt,expiresAt:issuedAt+60000};
-  return {...value,grantDigest:digest(value)};
-};
 async function fixture(fn,review,{strict=true,timeoutMs=2000,externalDeveloper=false,policyOnly=false}={}){
   const tmp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-external-recovery-'))),root=path.join(tmp,'code'),specsRoot=path.join(tmp,'specs');
   fs.mkdirSync(root);fs.mkdirSync(specsRoot);fs.mkdirSync(path.join(specsRoot,'feature'));fs.mkdirSync(path.join(specsRoot,'.reviews'));
@@ -33,7 +27,7 @@ async function fixture(fn,review,{strict=true,timeoutMs=2000,externalDeveloper=f
     }},reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',allowed:true,available:true,contexts:['review-1','review-2'],run:(request,control)=>{calls++;const result=review(request,control);if(result?.status==='succeeded')writeReview(path.join(specsRoot,'.reviews/feature-T-001-r'+request.identity.attempt+'.md'),path.join(specsRoot,'.reviews/feature-T-001-a'+request.identity.attempt+'-handoff.json'),request.identity.attempt,result.value.verdict);return result;}}],
     check:()=>[{id:'check',command:['controlled'],outcome:'passed',exitCode:0,evidence:'fixture'}],
     taskCompletion:{reviewsDir:path.join(specsRoot,'.reviews'),handoffs:[path.join(specsRoot,'.reviews/feature-T-001-a1-handoff.json'),path.join(specsRoot,'.reviews/feature-T-001-a2-handoff.json')]},
-    reviewInvocation:{developerThreadId:'developer-thread',excludedThreadIds:['host'],hostContextId:'host',authorize:(request,{authorizationAt})=>grant(request,authorizationAt)}};
+    reviewInvocation:{developerThreadId:'developer-thread',excludedThreadIds:['host'],hostContextId:'host'}};
   const make=mode=>createTaskRunner({...options,persistence:{store,mode,version:3}});
   const reopen=()=>{store.close();store=openTaskExecutionStore({...owner,create:false});return make('resume');};
   const records=()=>store.snapshot().records;
@@ -110,7 +104,7 @@ test('valid changes_requested permits a fresh separately authorized second attem
   const runner=f.make();await runner.executeEffect(f.effect('develop'));assert.equal((await runner.executeEffect(f.effect('review'))).state,'changes_requested');
   await runner.executeEffect(f.effect('develop',2));assert.equal((await runner.executeEffect(f.effect('review',2))).state,'approved');
   const done=await runner.executeEffect(f.effect('complete',2));assert.equal(done.state,'fixture_completed',JSON.stringify(done));assert.equal(f.calls(),2);
-  const registered=f.records().filter(row=>row.payload.type==='review-invocation-registered');assert.equal(registered.length,2);assert.notEqual(registered[0].payload.grant.invocationId,registered[1].payload.grant.invocationId);
+  const registered=f.records().filter(row=>row.payload.type==='review-invocation-registered');assert.equal(registered.length,2);assert.notEqual(registered[0].payload.binding.invocationId,registered[1].payload.binding.invocationId);
   assert.throws(()=>f.guard({identity:{repositoryId:'fixture',runId:'next-task-run',taskId:'T-002',attempt:1}}),{code:'external_prior_writer_active'});
   f.closeStore();
   const next=f.guard({identity:{repositoryId:'fixture',runId:'next-task-run',taskId:'T-002',attempt:1}});next.close();assert.equal(f.calls(),2);

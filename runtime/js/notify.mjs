@@ -381,7 +381,7 @@ const AI_PROGRESS_CODES=new Set(['context_refreshed','context_complete','qa_skip
 const AI_STUCK_STATES=new Set(['blocked','unknown','pending_review','cancelled','awaiting_spec_approval']);
 const AI_STUCK_ACTIONS=new Set(['reconcile','abandon_effect','abandon_review','reconcile_review','bootstrap_review_recover',
   'review_evidence','spec_rebind','fix_authorization','fix_dispatch','qa_execution']);
-const AI_STUCK_CODES=new Set(['decision_required','permission_denied','provider_development_authorization_required',
+const AI_STUCK_CODES=new Set(['permission_denied','provider_development_authorization_required',
   'qa_decision_required','qa_mandatory_required','qa_triggered','qa_blocked','qa_failed','qa_result_blocked',
   'qa_execution_unknown','correction_review_required','project_qa_not_passed','documentation_sync_blocked',
   'handoff_exists','spec_drift','qa_fix_code_unmatched',

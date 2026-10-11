@@ -24,15 +24,7 @@ const boundStatus=(status,identity)=>{validIdentity(status?.identity);
 // verdict and a verdict that broke the written contract share one redispatch
 // per attempt. Exported for the batch driver, like developmentRetryable.
 export const reviewRetryable=status=>status.state==='pending_review'
-  &&(['review_transport_timeout','review_abandoned','review_provider_failed','review_verdict_invalid'].includes(status.code)
-  // Registered but never dispatched (expired grant, clock ran backwards): no reviewer
-  // ran, so a fresh authorization redispatches it (REVIEW_NOT_DISPATCHED_CODES; the
-  // runner's not_dispatched halt is the only source of pending_review with these codes).
-  ||['grant_expired','clock_invalid'].includes(status.code)
-  // A refused authorization the operator has since confirmed (abandon_review): the same
-  // round asks for a fresh authorization. Unconfirmed (reviewDispatchConfirmRequired) it
-  // is not retryable here, so neither advance nor the batch driver ever redispatches it.
-  ||status.code==='permission_denied_confirmed');
+  &&['review_transport_timeout','review_abandoned','review_provider_failed','review_verdict_invalid'].includes(status.code);
 const retryReview=reviewRetryable;
 // Both mean the delivery itself must be redone: an invalid developer result, or
 // one that does not satisfy the task's own written verification. Exported so the
@@ -56,8 +48,6 @@ const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approv
   status.developRedoRequired===true?'develop_redo':
   // V5: the round's second no-result redispatch needs the operator's stop confirmation.
   status.reviewRedispatchStopRequired===true?'abandon_review':
-  // A review that never started and needs the operator's confirmation (abandon_review).
-  status.reviewDispatchConfirmRequired===true?'abandon_review':
   status.reviewReconciliation?.available?'reconcile_review':
   status.state==='changes_requested'||retryDeveloper(status)||retryReview(status)?'resume':
   status.state==='awaiting_review'?'decision':status.state==='unknown'
@@ -84,7 +74,6 @@ const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',ope
   ...(status.developRedoRequired===true?{developRedoRequired:true}:{}),
   ...(status.documentationSyncPending===true?{documentationSyncPending:true}:{}),
   ...(status.reviewRedispatchStopRequired===true?{reviewRedispatchStopRequired:true}:{}),
-  ...(status.reviewDispatchConfirmRequired===true?{reviewDispatchConfirmRequired:true}:{}),
   ...(typeof status.reviewAbandonRefusal==='string'?{reviewAbandonRefusal:status.reviewAbandonRefusal}:{}),
   ...(typeof status.reason==='string'?{reason:status.reason}:{}),
   ...(status.code==='handoff_exists'?{reason:REVIEWED_HANDOFF_HINT}:{}),
@@ -146,13 +135,7 @@ const rejected=(identity,error)=>{
     outcome:'rejected',state:null,code,packageDigest:null,pendingAction:'none'});
 };
 
-function validateHostDecision(decision,status) {
-  if(decision?.status==='denied'){
-    shape(decision,['status','code']);need(decision.code==='permission_denied','invalid_host_decision');return 'denied';
-  }
-  shape(decision,['status']);need(decision.status==='approved','invalid_host_decision');
-  need(status.packageDigest!==null,'stale_decision');return 'approved';
-}
+
 
 function effectSummary(operation,result,runner,identity) {
   if(result?.outcome==='rejected'){
@@ -210,8 +193,6 @@ function validateDocumentationResult(result,status,refresh,policy=null) {
 
 export function createCmAiConversationEntry(options) {
   const optionKeys=['specsDir','codeProject','feature','identity','runner'];
-  if(options&&Object.hasOwn(options,'hostDecision'))optionKeys.push('hostDecision');
-  if(options&&Object.hasOwn(options,'hostDecisionProvider'))optionKeys.push('hostDecisionProvider');
   if(options&&Object.hasOwn(options,'developmentAttempt'))optionKeys.push('developmentAttempt');
   if(options&&Object.hasOwn(options,'qaDecision'))optionKeys.push('qaDecision');
   if(options&&Object.hasOwn(options,'qaDecisionProvider'))optionKeys.push('qaDecisionProvider');
@@ -286,14 +267,6 @@ export function createCmAiConversationEntry(options) {
   need(options.allowDevelopRedo===undefined||typeof options.allowDevelopRedo==='boolean','invalid_input');
   let developRedoPermission=options.allowDevelopRedo===true;
 
-  const hostDecision=Object.hasOwn(options,'hostDecision')?json(options.hostDecision):null;
-  let hostDecisionProvider=null,pendingReviewDecision=null;
-  if(Object.hasOwn(options,'hostDecisionProvider')){
-    shape(options.hostDecisionProvider,['decide','timeoutMs']);
-    const {decide,timeoutMs}=options.hostDecisionProvider;
-    need(typeof decide==='function'&&Number.isInteger(timeoutMs)&&timeoutMs>=1&&timeoutMs<=60000);
-    need(hostDecision===null);hostDecisionProvider={decide,timeoutMs};
-  }
   const qaDecision=Object.hasOwn(options,'qaDecision')?json(options.qaDecision):null;
   const qaProvider=options.qaDecisionProvider??null;
   if(qaProvider!==null){
@@ -577,10 +550,9 @@ export function createCmAiConversationEntry(options) {
       return summary(operation,status,'reported');
     }
     if(operation.operation==='cancel'){
-      const interrupted=inFlightHandles.size>0||pendingReviewDecision!==null||pendingQa!==null
+      const interrupted=inFlightHandles.size>0||pendingQa!==null
         ||pendingExecution!==null||pendingDocumentation!==null;
       cancellationEpoch++;
-      pendingReviewDecision?.abort();
       pendingQa?.abort();
       pendingExecution?.abort();
       pendingDocumentation?.abort();
@@ -638,48 +610,17 @@ export function createCmAiConversationEntry(options) {
       const status=boundStatus(runner.status(),identity);
       need(status.packageDigest===operation.packageDigest,'stale_decision');
       if(status.code==='review_package_changed')return summary(operation,status,'rejected');
-      let decision=hostDecision;
-      if(hostDecisionProvider!==null){
-        // A historical terminal or outstanding invocation is owned by the runner;
-        // never ask for fresh authorization to replay or reopen it.
-        if(!(status.state==='awaiting_review'&&status.code===null)&&!retryReview(status))return summary(operation,status,'reported');
-        need(pendingReviewDecision===null,'review_decision_pending');
-        need(!status.cancellationRequested&&!status.cancelAfterCommit,'cancelled');
-        const controller=new AbortController();pendingReviewDecision=controller;
-        let timer,timedOut=false;
-        try{
-          const interrupted=new Promise((_,reject)=>{
-            controller.signal.addEventListener('abort',()=>reject(Object.assign(new Error('Review decision interrupted'),
-              {code:timedOut?'review_decision_timeout':'cancelled'})),{once:true});
-            timer=setTimeout(()=>{timedOut=true;controller.abort();},hostDecisionProvider.timeoutMs);
-          });
-          const binding=freeze(json({specsDir:options.specsDir,codeProject:options.codeProject,feature:options.feature,
-            identity,packageDigest:operation.packageDigest}));
-          decision=json(await Promise.race([Promise.resolve().then(()=>{
-            need(!controller.signal.aborted,'cancelled');return hostDecisionProvider.decide(binding,controller.signal);
-          }),interrupted]));
-          need(!controller.signal.aborted,'cancelled');
-          const current=boundStatus(runner.status(),identity);
-          need(current.state===status.state&&current.code===status.code
-            &&current.packageDigest===operation.packageDigest,'stale_decision');
-          need(!current.cancellationRequested&&!current.cancelAfterCommit,'cancelled');
-        }finally{clearTimeout(timer);pendingReviewDecision=null;}
-      }
-      if(decision===null)return summary(operation,{...status,code:'decision_required'},'awaiting');
-      if(validateHostDecision(decision,status)==='denied')
-        return summary(operation,{...status,code:'permission_denied'},'denied');
-      // A redispatch takes the next free id: at least the number of review effects THIS round's cache
-      // holds (runner.reviewEffectIds) and at least the host-authorized calls that ended without a
-      // verdict (an abandoned intent has a call but no cache entry), then skips any id already
-      // cached. A refused authorization leaves no call and keeps the previous round's
-      // reviewInvocation, so the call count alone can repeat an id and the cache would answer.
+      // Dispatch only a review-ready package. Completed or outstanding invocations
+      // remain runner-owned and cannot be reopened by a decision message.
+      if(!(status.state==='awaiting_review'&&status.code===null)&&!retryReview(status))return summary(operation,status,'reported');
+      need(!status.cancellationRequested&&!status.cancelAfterCommit,'cancelled');
       const resumed=runner.interruptions?.('review')??0,roundIds=runner.reviewEffectIds?.();
       const idFor=n=>`review-${identity.attempt}${n?`-retry-${n}`:''}${resumed?`-resume-${resumed}`:''}`;
       let retries=0;
       if(retryReview(status)){
         retries=Math.max(Array.isArray(roundIds)?roundIds.length:0,
-          status.calls.filter(call=>call.channel==='host-authorized'&&['failed','abandoned','not_dispatched'].includes(call.terminal)
-            &&call.contextId===status.reviewInvocation?.registration?.grant.logicalContextId).length);
+          status.calls.filter(call=>call.channel==='host-review'&&['failed','abandoned'].includes(call.terminal)
+            &&call.contextId===status.reviewInvocation?.registration?.binding.logicalContextId).length);
         if(Array.isArray(roundIds))while(roundIds.includes(idFor(retries)))retries++;
       }
       const effectId=idFor(retries);

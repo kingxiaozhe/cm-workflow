@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {readConversationReviewConfiguration,formatClaudeModelHint} from './cm-ai-host.mjs';
+import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {createConversationExecution,resolveReviewTimeout} from '../runtime/js/cm-ai/host-conversation-execution.mjs';
 
 const preflight={passed:true,provider:'claude',prompt_transport:'stdin',config_fingerprint:'x'};
@@ -68,7 +69,8 @@ test('review timeout changes do not alter the authorized execution configuration
   const definition={codeProject,specsDir,feature:'1.work',identity:{repositoryId:'fixture',runId:'run',taskId:'T-001',attempt:1},
     scope:['code.js'],requirements:[]};
   const bridge={call:()=>assert.fail('no host call expected')};
-  const review={model:'fixture',disabledSkills:[],preflight};
+  const review={model:'fixture',disabledSkills:[],preflight:{passed:true,cli_model:'fixture',prompt_transport:'stdin',
+    config_fingerprint:configFingerprint({cwd:codeProject,model:'fixture'})}};
   const earlier=createConversationExecution(definition,'host-fixture',bridge,{...review,timeoutMs:60000});
   const later=createConversationExecution(definition,'host-fixture',bridge,{...review,timeoutMs:900000});
   assert.deepEqual(earlier.configuration,later.configuration);

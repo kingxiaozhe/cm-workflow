@@ -1,6 +1,6 @@
 # Optional execution optimizations, v1
 
-Enable `--execution-optimizations` on a **new** `cm-ai-host`, `cm-ai-batch-host`, `cm-fix-host` or `cm-prd-host` launch. The matching drivers accept it in `PLAN.permissions`. Existing action permissions, model choices, review grants, round limits and timeouts still apply. No provider is called by the flag itself.
+Enable `--execution-optimizations` on a **new** `cm-ai-host`, `cm-ai-batch-host`, `cm-fix-host` or `cm-prd-host` launch. The matching drivers accept it in `PLAN.permissions`. Existing capability switches, model choices, round limits and timeouts still apply; cm-fix keeps its review grant contract, while cm-ai dispatches review directly. No provider is called by the flag itself.
 
 The versioned policy is frozen in the new run configuration. PRD uses a separate v2 session schema; batch has a private `.cm-execution-policy-v1` binding so later members retain the same selection. Recovery reads the original snapshot even if the flag is omitted. Legacy runs remain readable and reject enabling the policy during recovery. QA creates new children with the parent's frozen policy; a legacy child cannot be retrofitted. Removing the flag disables the policy for future runs only. Do not edit snapshots or migrate old runs.
 

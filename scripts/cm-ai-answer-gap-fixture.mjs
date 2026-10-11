@@ -67,14 +67,7 @@ export function gapExecution(f,{developer=[],checks=[],verdicts=[]}={}){
         throw Object.assign(new Error(beforeDispatch),{code:beforeDispatch});}
       return developerRun(request,control);
     }},
-    reviewers:[reviewer],reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control'],
-      authorize:(value,{authorizationAt})=>{const body={version:1,kind:'cm-review-dispatch-grant',
-        grantId:'grant',adapterId:'codex-review-adapter',invocationId:value.invocationId,
-        requestDigest:value.requestDigest,identity:value.identity,reviewerId:'reviewer',
-        logicalContextId:value.contextId,packageDigest:value.payload.reviewPackage.packageDigest,
-        hostContextId:'control',decisionId:'approved',decision:'approved',issuedAt:authorizationAt,
-        expiresAt:authorizationAt+60000};return {...body,grantDigest:digest(body)};}},
-    hostDecision:{status:'approved'},check:(request,control)=>{
+    reviewers:[reviewer],reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control']},check:(request,control)=>{
       f.calls.check++;
       const item=checkQueue.shift();
       if(item==='hang')return new Promise(()=>{});

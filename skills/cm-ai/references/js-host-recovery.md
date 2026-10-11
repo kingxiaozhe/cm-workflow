@@ -4,7 +4,7 @@
 
 ## 先确认原运行协议
 
-目标缺失或结构不符使用 `invalid_input`，目标过期使用 `snapshot_changed`；混入旧权限使用 `invalid_arguments`，策略/入口不匹配使用 `fingerprint_mismatch`，未开放的 supersede 使用 `supersede_unavailable`。拒绝后不自动刷新目标或换协议。
+目标缺失或结构不符使用 `invalid_input`，目标过期使用 `snapshot_changed`；混入旧权限使用 `invalid_arguments`，策略/入口不匹配使用 `fingerprint_mismatch`，未开放的 supersede 使用 `supersede_unavailable`。拒绝后不自动刷新目标或换协议。旧 grant 审查登记以 runner_invocation 拒绝；保留 journal，只用原版本只读工具查看历史，不在新版回放或迁移。
 
 原运行有 control policy v2 时，恢复继续提供相同 `--control-config`，请求为 `version:2`，不传任何 `--allow-*`。
 旧运行/不含 `controlConfig` 的旧 PLAN 沿 legacy，不能为恢复换协议。下文旧 `--allow-*`、version 1 与 supersede 参数只属 legacy；业务范围、进程退出、预算、漂移和独立审查条件仍需核对。
@@ -75,13 +75,7 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
 
 ## 第 2 轮答案缺失
 
-**v2：**常规审查自动推进；缺 a2 时驾驶员 hold 到 `changes_requested/revision_answer_required`，不写第 2 轮 intent。读取真实 r1 findings 后准备 `develop-a2.json`，用原 PLAN 的 `mode:"resume"` 再 `advance`，不新增授权旗标或改 identity；纯 bootstrap 首轮始终 hold。下面提前按轮授权的步骤只属 legacy。
-
-legacy：若第 1 轮已经待审且计划带
-`--allow-review-attempt 1`，`advance` 可能在同一次调用中进入第 2 轮；缺 `develop-a2.json` 时会在
-启动宿主前退出 2，并提示当前 `packageDigest`。此时先以该 digest 调用 `decision` 单独运行审查，
-读取 `.reviews/<feature>-<task>-r1.md` 的 findings，针对 findings 写好 `develop-a2.json`，再调用
-`advance`。
+新旧 cm-ai 入口的 advance 都直接审查。首轮审查要求修改但尚无 `develop-a2.json` 时，驾驶员给宿主加 `--hold-revision`，停在 `changes_requested/revision_answer_required`，不登记第 2 轮开发。先读原 r1 findings，再写实际修订答案并沿原 run advance。已处于 changes_requested 时缺该答案仍在启动前退出 2。
 
 ## 应答缺失、无效或迟到
 
@@ -90,7 +84,7 @@ legacy：若第 1 轮已经待审且计划带
 会话没给出可用应答时，宿主不再停在 `unknown/reconcile`，而是给出可重试的阻断；旧运行恢复后按原 journal 同样投影，原记录不改写，新记录只追加。
 每种出口每运行最多 2 次；用满后同样的卡点显示为明确的上限阻断（`check_answer_retry_limit`、`complete_recheck_limit`、`develop_redo_limit`、`documentation_sync_retry_limit`，`pendingAction=none`），legacy 的 reason 写明剩下的出口：查清根因后用 `--supersede-reviewed-evidence` 新建运行，本运行留在盘上的改动需还原或加 `--accept-superseded-code-drift`。上限阻断由 journal 推导，不另写记录。所有提问都有应答期限（`CM_HOST_ANSWER_TIMEOUT_MINUTES`，见 `docs/user-guide.md`），到期后才到的应答一律拒收为 `host_response_late`。
 
-单任务与批次驾驶员按宿主将显示的投影状态（而不是原始回放状态）决定预检哪一轮的开发答案：`develop_call_timeout`、`develop_answer_invalid`、`develop_dispatch_failed` 预检本轮 `develop*.json`；`check_answer_*` 与 `documentation_sync_*` 本轮不再问开发（后者只预检 `documentation-sync.json`）。legacy 第 1 轮恢复且带首轮审查授权（单任务 `--allow-review-attempt 1`、批次 `--allow-review 任务:1`）时，同一次 `advance` 可能在审查要求修改后进入第 2 轮，驾驶员也预检 `develop-a2.json`；没有这份答案时，单任务驾驶员给宿主加 `--hold-revision`、批次给该任务加 `--hold-revision`，任务在审查后停在 `changes_requested`（`revision_answer_required`），不发起答不上的第 2 轮开发。legacy 的 `develop_redo` 由驾驶员 PLAN 的 `mode:resume`、`permissions:["--allow-develop-redo"]` 与 `reason` 发出。
+单任务与批次驾驶员按宿主将显示的投影状态（而不是原始回放状态）决定预检哪一轮的开发答案：`develop_call_timeout`、`develop_answer_invalid`、`develop_dispatch_failed` 预检本轮 `develop*.json`；`check_answer_*` 与 `documentation_sync_*` 本轮不再问开发（后者只预检 `documentation-sync.json`）。第 1 轮恢复时同一次 advance 可能在审查要求修改后进入第 2 轮，驾驶员也预检 `develop-a2.json`；尚无该答案时给宿主加 `--hold-revision`，审查后停在 changes_requested/revision_answer_required，不发起第 2 轮开发。legacy 的 `develop_redo` 由驾驶员 PLAN 的 `mode:resume`、`permissions:["--allow-develop-redo"]` 与 `reason` 发出。
 
 - `blocked/check_answer_missing`、`blocked/check_answer_invalid`（`pendingAction=resume`）：开发已交付并写回 Learning，之后的检查或验证预检超时、断开、迟到或答复格式不合格（旧记录 `unknown/call_timeout`、`execution_error`、`invalid_input` 等，最后一次开发调用 `succeeded`）。
   先确认上一次检查命令已停止，再 `--mode resume` 后 `advance`：宿主追加 `develop-recheck` 记录，用新 effect id 只重跑检查、验证预检、handoff 与审查包，沿用原交付的 Learning 输入，不重发开发、不占开发调用与 effect 名额，重新划定检查新建文件。
@@ -149,11 +143,10 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 
 ## 审查计时与快照忽略
 
-**v2：**允许的 reviewer 纯传输超时按原合同调整。grant 过期/时钟问题的可重试 `pendingAction=resume` 用普通 `advance` 自动重新建立机械调用绑定；需显式确认时按下节 wire target。忽略规则不扩大业务 scope。
+允许的 reviewer 纯传输超时按原合同调整。新旧 cm-ai 入口均直接审查；忽略规则不扩大业务 scope。
 
 运行器对每次审查计时的上限取「journal 里的调用超时」与「审查预算 + 60000 毫秒余量」中较大者；这个上限不写入 journal，所以把 review-config 的 `timeoutMs` 调到 30 分钟以上（最多 3600000）不会再在 30 分钟被运行器截断，恢复时也可继续调大。
 新运行的代码根快照固定忽略 `.DS_Store`、`._*`、`.AppleDouble/`、`Thumbs.db`、`xcuserdata/`、`*.xcuserstate`、`.build/`、`.swiftpm/`、`DerivedData/`，也跳过 Git 报告为 ignored 的目录及路径；任务 scope、AGENTS.md 与 specs 仍须验证。基线有界保存 Git 忽略路径与目录，后续将基线和当前忽略决定的并集应用到比较两侧；规则文件和无关 Git 配置变化本身不阻断审查。Git 不可用或忽略结果超限时基线标明仅用固定列表。这有意缩小代码根检查面，被忽略的产物不构成已审代码；旧 journal 沿旧规则回放。
-审查已登记、但派发前授权已过期或派发时钟倒退（`pending_review/grant_expired`、`pending_review/clock_invalid`，调用记为 `not_dispatched`）：审查进程没有启动，也没有结论，不需要证明谁已停止。`pendingAction` 为 `resume`，在原运行 `advance` 会重新取得本轮授权并重派（新 effect id、同一审查轮次）；这次未派发不占调用或 effect 名额，但每轮最多这样重派 2 次：第 3 次仍在派发前作废时停为 `review_not_dispatched_limit`（`reason` 写明原因），出口见下文「审查从未启动：授权被拒与派发前作废」。批次成员同样在原运行重派，不改排。
 
 ## 规格漂移、代码漂移与审查失败
 
@@ -166,7 +159,7 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 普通 create 遇到同任务未被替代的旧运行留下的未审改动时返回 `supersede_code_drift`，按提示还原或 supersede。
 审查期间代码根非忽略路径漂移时，`blocked/review_package_changed` 保留 verdict、回执与最多 20 个差异路径；清理或还原后在原 run 继续 `advance`，不会重派 reviewer。结果已入 journal 而检查点未写入时，恢复会从同一结果补写检查点；结果仍可用，不消耗新轮次。审查前的漂移拒绝 `decision`，完成前的漂移拒绝 `complete`，均列出路径；完成检查期间新增文件进入可重试的 `blocked/completion_package_changed`，清理后在原 run 重发 `complete`。未匹配时 `pendingAction` 不提示会被拒绝的动作。
 审查传输超时且没有结果事件时，记录 `pending_review/review_transport_timeout`，可用 `--mode resume` 后 advance，
-每轮重新取得 Review 授权、grant 与 invocation 后重派；每轮的无结论重派见下文「每轮无结论重派」。
+绑定本轮材料、登记新的 invocation 后直接重派；每轮的无结论重派见下文「每轮无结论重派」。
 审查 CLI 没调用工具、没给结论就失败且进程已退出时（未登录 `reviewer_auth_failed`、额度 `reviewer_billing_error`、
 限流 `reviewer_rate_limited`、服务端错误或过载 `reviewer_server_error`、模型不存在 `reviewer_model_not_found`、
 其他 API 错误 `reviewer_api_error`、进程报告失败 `reviewer_provider_failed`、没有 init 或无法识别的事件
@@ -195,7 +188,7 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 
 - 第一次可重试的结束（`review_transport_timeout`、`review_provider_failed`、`review_verdict_invalid`）自动回到 `pending_review`；
 - 操作员的 `abandon_review`（已登记无结果、已有未被接收的结果，或下面的进程已退出中断）；
-- 本轮第二次可重试的结束：存档里仍是 `blocked/<同码>`（旧版本到此为止）。宿主只中止了原调用、没有等到审查进程退出，不能证明它已停止，所以状态保持 `blocked`，带 `reviewRedispatchStopRequired: true`、`pendingAction: abandon_review`，`reason` 以 `review_redispatch_stop_required:` 开头。操作员确认原审查进程（含子进程）已退出后，按原协议发送（legacy 使用 `--allow-abandon-review`，v2 使用上文固定 wire target 的） `abandon_review`（单行 reason），宿主追加 `review-redispatch`（绑定 effect、invocation、attempt、码、确认原因与时间），状态回到 `pending_review`，之后 `advance` 重新取得授权并重派。未确认前 `advance` 不派发。
+- 本轮第二次可重试的结束：存档里仍是 `blocked/<同码>`（旧版本到此为止）。宿主只中止了原调用、没有等到审查进程退出，不能证明它已停止，所以状态保持 `blocked`，带 `reviewRedispatchStopRequired: true`、`pendingAction: abandon_review`，`reason` 以 `review_redispatch_stop_required:` 开头。操作员确认原审查进程（含子进程）已退出后，按原协议发送（legacy 使用 `--allow-abandon-review`，v2 使用上文固定 wire target 的） `abandon_review`（单行 reason），宿主追加 `review-redispatch`（绑定 effect、invocation、attempt、码、确认原因与时间），状态回到 `pending_review`，之后 advance 绑定当前材料、登记新的 invocation 后直接重派。未确认前 `advance` 不派发。
 
 2 次用完后，可重试的结束显示 `blocked/review_redispatch_limit`，`reason` 写明先查登录、额度、网络或答复格式，再用 `--supersede-reviewed-evidence` 新建运行；`abandon_review` 拒绝为 `review_abandon_budget_exhausted`。回放从存档重新推导：伪造、重复或第三次 `review-redispatch` 一律 `runner_review_redispatch`；没有该记录的旧存档按原样回放。
 
@@ -209,25 +202,6 @@ worker 已证明审查进程退出、又没有结论的中断，`pendingAction` 
 | `review_abandon_budget_exhausted` | 本轮 2 次已用完 |
 
 外部模型与执行策略的审查不走以上出口：流里有回执就先 `reconcile_review` 对账采纳；没有回执宿主无法证明旧调用已停，`abandon_review`／`abandon_effect` 拒绝为 `external_review_reconciliation_required`，按 status 的 `reviewReconciliation.reason` 向原宿主或 provider 核对。
-
-### 审查从未启动：授权被拒与派发前作废
-
-**v2：**本节需要确认的历史投影同样不得自动确认。核对当前目标后，用 version 2 `abandon_review`、固定 `expectedControl` 与真实 reason 留痕，再普通 `advance`，不读取或复用旧按轮许可。限额仍相同；limit 用尽后的 legacy cancel→supersede 序列不适用于 v2，保留现场并报告无后续执行出口。
-
-下面两种停机的审查进程都从未启动、也没有写入，所以不需要证明谁已停止；但重派不能由宿主、批次驱动或一直批准的 `--allow-review-attempt` 悄悄完成，必须由操作员显式确认，并且有上限。确认就是已有的 `abandon_review`（legacy 参数为 `--mode resume --allow-abandon-review`，单行 reason，最多 500 字节）：这里它不放弃任何调用，只写一条审计记录 `review-dispatch-confirmed`（绑定 effect、轮次、原因码、reason、时间）。确认之后仍要 `advance` 重新取得本轮审查授权，旧授权不复用。
-
-| 停机 | 标志 | 确认的效果 | 每轮上限 |
-|---|---|---|---|
-| 原始 `pending_review/permission_denied`：审查授权被拒（或授权已超过 60 秒有效期），审查没有登记、没有派发 | `reviewDispatchConfirmRequired: true`、`pendingAction: abandon_review`、`reason` 以 `permission_denied:` 开头 | 变为 `pending_review/permission_denied_confirmed`（`pendingAction: resume`），`advance` 用新 effect id 重派；每次拒绝要自己的一次确认，再被拒就要再确认 | 2 次；第 3 次拒绝为 `blocked/review_permission_denied_limit` |
-| `blocked/review_not_dispatched_limit`：三次登记都在派发前作废（授权过期、派发时钟倒退） | 同上 | 回到可重试的 `pending_review/grant_expired`（或 `clock_invalid`），本轮再多重派 2 次（共 5 次登记） | 确认 1 次；再用满仍为 `review_not_dispatched_limit`，此时没有 `reviewDispatchConfirmRequired`、`pendingAction: none` |
-
-没有确认就直接发 review effect 会被拒绝：`review_dispatch_confirmation_required`（被拒的授权）或原来的 `review_not_dispatched_limit`；`abandon_review` 在用满后拒绝为同一个 limit 码并附 `reason`，不在这两种停机时仍是 `review_abandon_unavailable`。被拒的审查和作废的登记都不占调用或 effect 名额。回放用同一组函数从存档重新推导：伪造、重复、位置不对或超出上限的 `review-dispatch-confirmed` 一律 `runner_review_dispatch_confirm`；没有这条记录的旧存档按原样回放（旧存档里停在 `permission_denied` 的运行，现在多出 `reviewDispatchConfirmRequired` 和指引，状态码不变）。外部模型与执行策略运行同样适用，因为审查进程从未启动，不需要对账。批次成员停在这两个状态时返回 `batch_parallel_member_recovery_required`，legacy 按提示带 `--allow-abandon-review <feature/task>` 重启批次宿主再发 `abandon_review`；用满后成员原始状态仍是 `pending_review`，批次不改排。
-
-两个 limit 用满后没有进程内出口，唯一安全的手工步骤：
-
-1. `cancel` 取消本运行（审查从未启动，没有需要等待停下的写入方；原始 `pending_review` 可以取消，取消后原始状态是 `cancelled`，`--supersede-reviewed-evidence` 收这个状态）。
-2. 另存或还原本运行留在盘上的代码改动，再用 `--supersede-reviewed-evidence --supersede-reason 原因` 新建运行重做。不要加 `--accept-superseded-code-drift`：那会把这些没审过的改动当成已有代码，新运行的审查看不到它们。
-3. 原运行是外部模型或执行策略运行时，外部运行守卫会拒绝同一代码根上的新运行（被派发前作废的审查记录仍带对账标记，`strictPriorAttemptResolved`），这类运行没有新建运行的出口：保留运行记录与代码，把 `reason` 交给维护者。被拒授权（`review_permission_denied_limit`）的运行若此前没有未派发记录，守卫不拒绝。
 
 ### 已批准规格材料（第 24 步）
 
@@ -257,8 +231,8 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume --host-context
 legacy 协议示例：向宿主 JSONL 输入发送 `{"version":1,"requestId":"abandon-1","operation":"abandon_review","identity":{"repositoryId":"…","runId":"…","taskId":"…","attempt":1},"reason":"已确认旧进程退出"}`。
 `reason` 为非空单行、≤500 UTF-8 字节。旗标一次性消费，不持久化、不影响配置指纹；宿主无法验证进程已退出。
 成功后 journal 追加 `review-invocation-abandoned` 并写 `review_abandoned` 运行日志，状态为
-`pending_review/review_abandoned`，`pendingAction: resume`。新宿主以原配置、原 runId 和新的
-`--allow-review-attempt 1`（第二轮为 2）恢复并发送 `advance`，重新签发 grant、登记新 invocation。
+`pending_review/review_abandoned`，`pendingAction: resume`。新宿主以原配置和原 runId
+恢复并发送 `advance`，绑定当前材料、登记新 invocation 后直接审查。
 与本轮其他无结论重派共用每轮 2 次（见上文）；用完则拒绝为 `review_abandon_budget_exhausted`，拒绝结果带 `reason`。
 宿主在审查结果已写入存档、检查点还没写时退出（结果不是结论），恢复后 `pendingAction` 同样是 `abandon_review`；放弃记录带该结果的 `resultDigest`，并且必须紧跟在结果记录之后。
 旧 invocation 的迟到结果不能再接收；若要终止，abandon 后普通 `cancel` 才能得到 durable cancelled。
@@ -280,7 +254,7 @@ legacy 协议示例：向宿主发送 `{"version":1,"requestId":"abandon-effect-
 - `develop` → `blocked/develop_interrupted`，`pendingAction: resume`。`advance` 用新 effect id（`develop-N…-resume-K`）重发本轮；被中断的调用留一条 `abandoned` 审计记录，不占调用与 effect 名额。盘上改动保留，审查包仍对照运行创建时的任务基线，经检查与独立审查。bootstrap 规范任务在派发前照常核对规则文件，写到一半会停在 `bootstrap_instruction_conflict` 并列出路径。
 - 受保护当前会话开发和 Claude provider 开发：写入是由 sandbox 子进程应用提案，代码根必须仍等于本轮起点（`basis`），否则拒绝为 `effect_interrupt_root_changed`／`effect_interrupt_root_unpinned`；先把列出的文件还原到本轮起点再重试，半成品不会当成新交付送审。应用提案的子进程同样记 `develop-worker`（`apply_spawning`；`apply_started` 带 pid），宿主核对它们都已退出才放行。
 - provider 开发：新版本在 intent 上标 `workerJournal`，并在 worker 启动前后写 `develop-worker`（`spawning`；`started` 带 pid 即进程组、`ps` 启动时间）。宿主按记录核对进程组：已退出（或从未启动）才写 `effect-interrupted`（带 `worker` 绑定）；仍在运行拒绝为 `effect_interrupt_worker_process_alive`，Windows、无权限、读不到启动时间拒绝为 `effect_interrupt_worker_process_unknown`，只记到 `spawning` 拒绝为 `effect_interrupt_worker_identity_incomplete`，旧版本没记身份拒绝为 `effect_interrupt_worker_identity_unrecorded`（只能手工确认后新建运行替代）。
-- `review`（未登记）→ `awaiting_review`，`advance` 重新取得授权并派发，不占重派次数。
+- `review`（未登记）→ `awaiting_review`，`advance` 绑定当前材料后直接派发，不占重派次数。
 - `complete`（无 `task-commit-intent`）→ 回到中断前的状态（通常 `approved`），`complete` 重新复查并完成。
 
 同一类步骤每运行最多这样恢复 2 次。第 3 次中断时状态显示 `unknown/effect_interrupt_limit`，`abandon_effect` 只能按旧规则写 `effect-abandoned` 作废本运行（记过写入方的开发要带进程组已退出的证明），之后 supersede 新建运行。
@@ -311,7 +285,7 @@ worker 异常、超时或传输歧义仍是 `unknown`，旧 unknown 历史不自
 
 派发前可判定的规则基准冲突停在 `blocked/bootstrap_instruction_conflict`，修复目标后原 run `resume`；若要采用新的提交，用新 runId 重建。生成后的并发漂移仍按 unknown 保留证据，不覆盖或自动重派。
 
-规则文件、检查与 handoff 已写入，但审查包构建因目标证据不符而停在 `blocked/bootstrap_review_mismatch`，或旧宿主把同一阶段记为 `unknown/execution_error` 时，先确认旧 writer 已退出并保留原文件。仅原 run 的 attempt 1 可用 `bootstrap_review_recover`：以原 run 定义和原审查／workflow／bootstrap 配置 `--mode resume`，legacy 增加一次性 `--allow-bootstrap-review-recovery`；请求携带原任务 identity 和单行 `reason`。标准 driver 用 `node scripts/cm-ai-drive.mjs --plan recovery.json bootstrap_review_recover`，legacy PLAN 为 `mode:"resume"`、`permissions` 含上述旗标及原配置路径、`reason`；换会话还须 `originalHostContext`。此操作不读取生成答案、不重派开发或检查，而是核对六个目标当前 SHA、原 handoff 的 changed_files 与 implementation 摘要，重建原审查包，并在 journal 追加可回放的 `bootstrap-review-recovered`。成功后是 `awaiting_review`，legacy 须另行授权独立 `decision`，v2 普通 advance 自动进入独立 Review；若文件或 handoff 漂移，拒绝并保持原记录不变。
+规则文件、检查与 handoff 已写入，但审查包构建因目标证据不符而停在 `blocked/bootstrap_review_mismatch`，或旧宿主把同一阶段记为 `unknown/execution_error` 时，先确认旧 writer 已退出并保留原文件。仅原 run 的 attempt 1 可用 `bootstrap_review_recover`：以原 run 定义和原审查／workflow／bootstrap 配置 `--mode resume`，legacy 增加一次性 `--allow-bootstrap-review-recovery`；请求携带原任务 identity 和单行 `reason`。标准 driver 用 `node scripts/cm-ai-drive.mjs --plan recovery.json bootstrap_review_recover`，legacy PLAN 为 `mode:"resume"`、`permissions` 含上述旗标及原配置路径、`reason`；换会话还须 `originalHostContext`。此操作不读取生成答案、不重派开发或检查，而是核对六个目标当前 SHA、原 handoff 的 changed_files 与 implementation 摘要，重建原审查包，并在 journal 追加可回放的 `bootstrap-review-recovered`。成功后是 `awaiting_review`，新旧 cm-ai 入口均用普通 advance 直接进入 fresh Review；若文件或 handoff 漂移，拒绝并保持原记录不变。
 
 ## 已完成运行上的后续改动
 

@@ -17,13 +17,6 @@ import {recordReviewAbandonment} from '../runtime/js/cm-ai/review-abandon-log.mj
 
 
 const checks=[{id:'check',command:['synthetic'],outcome:'passed',exitCode:0,evidence:'fixture'}];
-const grantFor=(request,authorizationAt,change=grant=>grant)=>{
-  const body={version:1,kind:'cm-review-dispatch-grant',grantId:`grant-${request.invocationId}`,adapterId:`${request.provider}-review-adapter`,
-    invocationId:request.invocationId,requestDigest:request.requestDigest,identity:request.identity,
-    reviewerId:'reviewer',logicalContextId:request.contextId,packageDigest:request.payload.reviewPackage.packageDigest,
-    hostContextId:'actual-main',decisionId:'decision-1',decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
-  change(body);return {...body,grantDigest:digest(body)};
-};
 const events=(onEvent,thread='actual-review')=>{
   onEvent({event:'thread.started',provider_thread:thread});
   onEvent({event:'turn.started',item_type:null});
@@ -32,7 +25,7 @@ const events=(onEvent,thread='actual-review')=>{
   onEvent({event:'process_closed',exit_code:0,signal:null,timed_out:false});
 };
 
-async function fixture(fn,{reviewRun,authorize,times,timeoutMs=1000,provider='codex'}={}) {
+async function fixture(fn,{reviewRun,times,timeoutMs=1000,provider='codex'}={}) {
   const temp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-review-v3-')));
   const root=path.join(temp,'code'),specsRoot=path.join(temp,'specs'),reviewsDir=path.join(specsRoot,'.reviews');
   fs.mkdirSync(root);fs.mkdirSync(reviewsDir,{recursive:true});
@@ -56,8 +49,7 @@ async function fixture(fn,{reviewRun,authorize,times,timeoutMs=1000,provider='co
         dispatches++;lateEvent=control.onEvent;return (reviewRun??defaultRun)(request,control);
       }}],check:()=>checks,
     taskCompletion:{reviewsDir,handoffs:[path.join(reviewsDir,'a1.json'),path.join(reviewsDir,'a2.json')]},
-    reviewInvocation:{developerThreadId:'actual-developer',excludedThreadIds:['actual-main'],
-      authorize:authorize??((request,{authorizationAt})=>grantFor(request,authorizationAt))}};
+    reviewInvocation:{developerThreadId:'actual-developer',excludedThreadIds:['actual-main']}};
   const make=mode=>{
     const old=Date.now,values=times?[...times]:null;if(values)Date.now=()=>values.length>1?values.shift():values[0];
     try{return createTaskRunner({...options,persistence:{store,mode,version:3}});}finally{Date.now=old;}
@@ -84,106 +76,6 @@ const timeoutRun=(request,{onEvent})=>{
   return {status:'failed',code:'timeout'};
 };
 const retryEffect=(f,attempt=1)=>({...f.effect('review',attempt),id:`review-${attempt}-retry-1`});
-
-test('V3 expired dispatch grant is journaled as grant_expired without adapter dispatch',()=>fixture(async f=>{
-  const runner=f.make();await runner.executeEffect(f.effect('develop'));
-  const end=await runner.executeEffect(f.effect('review'));
-  assert.equal(end.state,'pending_review');assert.equal(end.code,'grant_expired');assert.equal(f.dispatches(),0);
-  assert.equal(end.reviewInvocation.result.outcome,'not_dispatched');
-  assert.equal(end.reviewInvocation.result.reason,'grant_expired');
-  assert.equal(end.reviewInvocation.result.dispatchAt,200);
-  assert.equal(end.reviewInvocation.registration.grant.expiresAt,150);
-  assert.equal(end.calls.at(-1).terminal,'not_dispatched');assert.equal(end.receipt,null);
-  const saved=f.getStore().snapshot();
-  assert.equal(readRunnerHistory(saved.records,saved.records[0].payload.config,3).state.code,'grant_expired');
-  assert.deepEqual(saved.records.slice(-3).map(record=>record.payload.type),
-    ['review-invocation-registered','review-invocation-result','effect-checkpoint']);
-  assert.deepEqual(f.reopen().status(),end);
-},{times:[100,101,200],authorize:(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{grant.expiresAt=150;})}));
-
-// Batch 4 review round 1: a registered review that was never dispatched (expired
-// grant) left the run at pending_review/grant_expired with no usable exit. No
-// reviewer ran, so the round redispatches under a fresh grant (new effect id), the
-// not-dispatched effect holds no call or effect slot, and the journal replays.
-test('a never-dispatched review (grant_expired) redispatches in its own run under a fresh grant and replays',()=>{
-  let expired=true;
-  return fixture(async f=>{
-    const runner=f.make();await runner.executeEffect(f.effect('develop'));
-    const end=await runner.executeEffect(f.effect('review'));
-    assert.deepEqual([end.state,end.code,f.dispatches()],['pending_review','grant_expired',0]);
-    assert.equal(end.calls.at(-1).terminal,'not_dispatched');assert.equal(end.calls.at(-1).started,false);
-    const saved=f.getStore().snapshot(),history=readRunnerHistory(saved.records,saved.records[0].payload.config,3);
-    assert.equal(completedEffectCount(history.state.cache,history.state.calls),1,'the never-dispatched review holds no effect slot');
-    // The cached effect id still replays the not-dispatched result unchanged.
-    const resumed=f.reopen();assert.deepEqual(await resumed.executeEffect(f.effect('review')),end);assert.equal(f.dispatches(),0);
-    expired=false;
-    const approved=await resumed.executeEffect({...f.effect('review'),id:'review-1-retry-1'});
-    assert.equal(approved.state,'approved',JSON.stringify(approved));assert.equal(f.dispatches(),1);
-    assert.equal(approved.calls.filter(call=>call.terminal==='not_dispatched').length,1);
-    assert.deepEqual(f.reopen().status(),approved);
-  },{times:[100,101,200],authorize:(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{if(expired)grant.expiresAt=150;})});
-});
-// Batch 4 review round 2: never-dispatched redispatches hold no call or effect slot
-// but have their own bound, two per review round. The third not-dispatched end is an
-// explicit limit block; live status and the replayed projection read the same count.
-test('never-dispatched review redispatches stop at review_not_dispatched_limit after two, identically live and replayed',()=>{
-  let expiring=3;
-  return fixture(async f=>{
-    const runner=f.make();await runner.executeEffect(f.effect('develop'));
-    let end=await runner.executeEffect(f.effect('review'));expiring--;
-    assert.deepEqual([end.state,end.code],['pending_review','grant_expired']);
-    for(const retry of [1,2]){
-      const next=f.reopen();
-      // Still redispatchable: same review round, no call or effect slot spent.
-      end=await next.executeEffect({...f.effect('review'),id:`review-1-retry-${retry}`});expiring--;
-      if(retry===1)assert.deepEqual([end.state,end.code],['pending_review','grant_expired']);
-    }
-    assert.equal(f.dispatches(),0);
-    assert.equal(end.state,'blocked');assert.equal(end.code,'review_not_dispatched_limit');
-    assert.match(end.reason,/^review_not_dispatched_limit: .*3 次.*派发前作废/);
-    const saved=f.getStore().snapshot(),config=saved.records[0].payload.config,history=readRunnerHistory(saved.records,config,3);
-    assert.deepEqual([history.state.state,history.state.code],['pending_review','grant_expired']);
-    assert.equal(completedEffectCount(history.state.cache,history.state.calls),1);
-    const projected=projectedRunnerStatus(history,config);
-    assert.deepEqual([projected.state,projected.code,projected.reason],[end.state,end.code,end.reason]);
-    // Replay applies the same stop: a journal carrying a fourth review intent is refused.
-    const intent=saved.records.findLast(record=>record.kind==='intent'&&record.payload.effect?.id==='review-1-retry-2');
-    assert(intent,'retry-2 intent');
-    const {digest:ignored,...body}=JSON.parse(JSON.stringify(intent).replaceAll('review-1-retry-2','review-1-retry-3'));
-    const last=saved.records.at(-1),forged={...body,seq:last.seq+1,id:`runner.${String(saved.records.length+1).padStart(6,'0')}`,previousDigest:last.digest};
-    assert.throws(()=>readRunnerHistory([...saved.records,{...forged,digest:digest(forged)}],config,3),{code:'runner_stage'});
-    const reopened=f.reopen();assert.deepEqual(reopened.status(),end);
-    // No fourth registration, even with a grant that would dispatch.
-    const refused=await reopened.executeEffect({...f.effect('review'),id:'review-1-retry-3'});
-    assert.deepEqual([refused.outcome,refused.code],['rejected','review_not_dispatched_limit']);
-    assert.equal(f.getStore().snapshot().records.length,saved.records.length);assert.equal(f.dispatches(),0);
-  },{times:[100,101,200],authorize:(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{if(expiring>0)grant.expiresAt=150;})});
-});
-// The bound counts not-dispatched ends only: two of them, then a dispatched review, is approved.
-test('a review dispatched on the second never-dispatched redispatch is accepted',()=>{
-  let expiring=2;
-  return fixture(async f=>{
-    const runner=f.make();await runner.executeEffect(f.effect('develop'));
-    await runner.executeEffect(f.effect('review'));expiring--;
-    await f.reopen().executeEffect({...f.effect('review'),id:'review-1-retry-1'});expiring--;
-    const approved=await f.reopen().executeEffect({...f.effect('review'),id:'review-1-retry-2'});
-    assert.equal(approved.state,'approved',JSON.stringify(approved));assert.equal(f.dispatches(),1);
-    assert.deepEqual(f.reopen().status(),approved);
-  },{times:[100,101,200],authorize:(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{if(expiring>0)grant.expiresAt=150;})});
-});
-test('V3 non-monotonic dispatch clock is journaled as clock_invalid without adapter dispatch',()=>fixture(async f=>{
-  const runner=f.make();await runner.executeEffect(f.effect('develop'));
-  const end=await runner.executeEffect(f.effect('review'));
-  assert.equal(end.state,'pending_review');assert.equal(end.code,'clock_invalid');assert.equal(f.dispatches(),0);
-  assert.equal(end.reviewInvocation.result.outcome,'not_dispatched');
-  assert.equal(end.reviewInvocation.result.reason,'clock_invalid');
-  assert.equal(end.reviewInvocation.result.dispatchAt,99);
-  assert.equal(end.reviewInvocation.registration.registeredAt,101);
-  assert.equal(end.calls.at(-1).terminal,'not_dispatched');assert.equal(end.receipt,null);
-  const saved=f.getStore().snapshot();
-  assert.equal(readRunnerHistory(saved.records,saved.records[0].payload.config,3).state.code,'clock_invalid');
-  assert.deepEqual(f.reopen().status(),end);
-},{times:[100,101,99]}));
 
 test('runner timer without a result shares pending/blocked timeout transitions and replay',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));
@@ -221,7 +113,7 @@ test('runner timer without a result shares pending/blocked timeout transitions a
   onEvent({event:'thread.started',provider_thread:`thread-${request.invocationId}`});return new Promise(()=>{});
 }}));
 
-test('each attempt gets one retry without consuming the six-effect budget or reusing grants',()=>fixture(async f=>{
+test('each attempt gets one retry without consuming the six-effect budget or reusing bindings',()=>fixture(async f=>{
   const attempts=new Map();
   f.options.reviewers[0].run=(request,control)=>{
     const attempt=request.identity.attempt,count=(attempts.get(attempt)??0)+1;attempts.set(attempt,count);
@@ -238,8 +130,8 @@ test('each attempt gets one retry without consuming the six-effect budget or reu
     runner=f.reopen();assert.deepEqual(runner.status(),first);
     const second=await runner.executeEffect(retryEffect(f,attempt));
     assert.equal(second.state,attempt===1?'changes_requested':'approved');
-    assert.notEqual(first.reviewInvocation.registration.grant.invocationId,second.reviewInvocation.registration.grant.invocationId);
-    assert.notEqual(first.reviewInvocation.registration.grant.grantDigest,second.reviewInvocation.registration.grant.grantDigest);
+    assert.notEqual(first.reviewInvocation.registration.binding.invocationId,second.reviewInvocation.registration.binding.invocationId);
+    assert.notEqual(first.reviewInvocation.registration.binding.requestDigest,second.reviewInvocation.registration.binding.requestDigest);
     runner=f.reopen();assert.deepEqual(runner.status(),second);
   }
   const records=f.getStore().snapshot().records,history=readRunnerHistory(records,records[0].payload.config,3);
@@ -271,10 +163,10 @@ test('interrupted V3 review needs explicit abandonment and replays the audited e
   const next=f.reopen();
   const result=await next.executeEffect(retryEffect(f));
   assert.equal(result.state,'approved');
-  assert.notEqual(result.reviewInvocation.registration.grant.invocationId,
-    abandoned.reviewInvocation.registration.grant.invocationId);
-  assert.notEqual(result.reviewInvocation.registration.grant.grantDigest,
-    abandoned.reviewInvocation.registration.grant.grantDigest);
+  assert.notEqual(result.reviewInvocation.registration.binding.invocationId,
+    abandoned.reviewInvocation.registration.binding.invocationId);
+  assert.notEqual(result.reviewInvocation.registration.binding.requestDigest,
+    abandoned.reviewInvocation.registration.binding.requestDigest);
 }));
 
 test('registered review without a started record can also be abandoned',()=>fixture(async f=>{
@@ -342,7 +234,7 @@ test('conversation reports unknown cancel truthfully, then consumes abandonment 
   assert.equal((await noFlag.handle(request('abandon_review',{reason:'old process exited'}))).outcome,'rejected');
   assert.deepEqual(f.getStore().snapshot(),before);
   const entry=createCmAiConversationEntry({specsDir:path.dirname(f.tasksPath),codeProject:f.root,
-    feature:'feature',identity:f.options.identity,runner,allowAbandonReview:true,hostDecision:{status:'approved'}});
+    feature:'feature',identity:f.options.identity,runner,allowAbandonReview:true});
   const cancelled=await entry.handle(request('cancel'));
   assert.equal(cancelled.outcome,'reported');assert.equal(cancelled.state,'unknown');
   assert.equal(cancelled.pendingAction,'abandon_review');
@@ -502,7 +394,7 @@ test(`factory passes exact configured timeout to ${runtime} reviewer, provider m
   const review={model:'fixture',disabledSkills:[],preflight:{passed:true,provider:runtime,cli_model:'fixture',
     prompt_transport:'stdin',config_fingerprint:(runtime==='codex'?configFingerprint:claudeReviewFingerprint)(workerOptions)}};
   const timeoutMs=providerMode?6789:5123;
-  const execution=createConversationExecution(definition,'host-test',{call:()=>assert.fail('unexpected host call')},review,1,null,false,runtime,
+  const execution=createConversationExecution(definition,'host-test',{call:()=>assert.fail('unexpected host call')},review,null,null,false,runtime,
     {protection:{checkCommands:[{id:'syntax',command:[process.execPath,'--version']}],timeoutMs},
       ...(providerMode?{providerDevelopment:{model:'fixture',attempt:1,coderRuntime:runtime,reviewerRuntime:runtime}}:{})});
   const timers=[],originalTimer=globalThis.setTimeout;
@@ -526,21 +418,16 @@ test(`factory passes exact configured timeout to ${runtime} reviewer, provider m
   }finally{t.mock.restoreAll();syncBuiltinESMExports();}
 }));
 
-for(const boundary of ['stale-grant','package-drift','cancelled'])
+for(const boundary of ['package-drift','cancelled'])
 test(`retry preserves original authorization/package/cancellation boundary: ${boundary}`,()=>fixture(async f=>{
-  if(boundary==='stale-grant'){
-    let firstGrant;
-    f.options.reviewInvocation.authorize=(request,{authorizationAt})=>firstGrant??=grantFor(request,authorizationAt);
-  }
   let runner=f.make();await runner.executeEffect(f.effect('develop'));
   const pending=await runner.executeEffect(f.effect('review'));assert.equal(pending.state,'pending_review');
   if(boundary==='package-drift')fs.writeFileSync(path.join(f.root,'code.js'),'outside drift\n');
   if(boundary==='cancelled')runner.cancel();
-  if(boundary!=='stale-grant')runner=f.reopen();
+  runner=f.reopen();
   const result=await runner.executeEffect(retryEffect(f));
-  assert.equal(result.code,boundary==='stale-grant'?'authorization_invalid':boundary==='package-drift'?'package_mismatch':'stage_mismatch');
+  assert.equal(result.code,boundary==='package-drift'?'package_mismatch':'stage_mismatch');
   assert.equal(f.dispatches(),1);
-  if(boundary==='stale-grant')assert.equal(f.reopen().status().state,'unknown');
 },{reviewRun:timeoutRun}));
 
 // V5 (A33): a reviewer whose worker proved its process gone without a final
@@ -619,7 +506,7 @@ test('review-redispatch replay refuses forged, duplicate and over-limit records'
   const duplicate=structuredClone(records.slice(0,at+1));duplicate.push(structuredClone(records[at]));
   assert.throws(()=>readRunnerHistory(resequence(duplicate),config,3),{code:'runner_review_redispatch'});
   const third=structuredClone(records);third.push({...structuredClone(records[at]),payload:{...records[at].payload,
-    effectId:'review-1-retry-2',invocationId:readRunnerHistory(records,config,3).state.reviewInvocation.registration.grant.invocationId}});
+    effectId:'review-1-retry-2',invocationId:readRunnerHistory(records,config,3).state.reviewInvocation.registration.binding.invocationId}});
   assert.throws(()=>readRunnerHistory(resequence(third),config,3),{code:'runner_review_redispatch'});
   // A journal without the record (older version) replays the spent block unchanged;
   // drivers read it through the same projection the host shows.

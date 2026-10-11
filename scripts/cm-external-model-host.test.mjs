@@ -62,7 +62,7 @@ else for(const event of [{type:'thread.started',thread_id:dev?'fake-author':'fak
     const routes=resolveProtectedRuntimes(loadConfig({projectRoot:codeProject}),'codex');
     const execution=(selected=models,{legacy=false}={})=>createConversationExecution(definition,'fixture-host',bridge,
       legacy?((({effort,...rest})=>({...rest,model:'fixture-codex',preflight:{...rest.preflight,config_fingerprint:configFingerprint({cwd:codeProject,model:'fixture-codex'})}}))(review)):review,
-      1,null,false,'codex',{
+      null,null,false,'codex',{
         ...(efficiency?{executionPolicy:EXECUTION_POLICY_V1}:{}),
         ...(!legacy?{externalModels:selected}:{}),
         ...(!session?{protection,providerDevelopment:{model:legacy?'fixture-codex':selected.providers.codex.model,

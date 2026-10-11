@@ -7,7 +7,6 @@ import path from 'node:path';
 import {openControlRun} from './cm-ai-run.mjs';
 import {createCodexDeveloperRun} from '../runtime/js/cm-ai/codex-developer-adapter.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
-import {createHostReviewAuthority} from '../runtime/js/cm-ai/host-review-authority.mjs';
 import {createQaFixOwnerHost} from '../runtime/js/cm-ai/host-qa-fix-owner.mjs';
 import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
 import {qaFixIdentity} from '../runtime/js/cm-fix/qa-source.mjs';
@@ -42,9 +41,8 @@ for(const mode of ['history','retest','unknown','failed-retest','double-pass','d
       {event:'item.completed',item_type:'agent_message'},{event:'turn.completed',item_type:null},
       {event:'process_closed',exit_code:0,signal:null,timed_out:false}])onEvent(event);
   };
-  const authority=createHostReviewAuthority({hostContextId:'parent-host',reviewerId:'reviewer',adapterId:'codex-review-adapter',decide:async()=>({status:'approved'})});
-  const execution={configuration:{kind:'synthetic-parent-fix'},timeoutMs:2000,excludedContexts:['parent-host'],hostDecision:null,
-    hostDecisionProvider:authority.hostDecisionProvider,
+
+  const execution={configuration:{kind:'synthetic-parent-fix'},timeoutMs:2000,excludedContexts:['parent-host'],
     developer:{provider:'codex',requestedModel:'synthetic',contextId:'author',run:createCodexDeveloperRun({requestedModel:'synthetic',worker:async()=>{
       developers++;fs.writeFileSync(path.join(codeProject,'value.mjs'),'export const value=1;');
       return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
@@ -56,7 +54,7 @@ for(const mode of ['history','retest','unknown','failed-retest','double-pass','d
         return {status:'succeeded',value:{verdict:'approved',packageDigest:request.payload.reviewPackage.packageDigest,
           examinedPaths:reviewPaths(request.payload.reviewPackage),findings:[],summary:'Synthetic parent review; QA exposes remaining defect'}};
       }}],
-    reviewInvocation:{developerThreadId:'author',excludedThreadIds:['parent-host'],authorize:authority.authorize},
+    reviewInvocation:{developerThreadId:'author',excludedThreadIds:['parent-host']},
     check:createHostCheck({cwd:codeProject,commands:[{id:'existing',command:[process.execPath,'existing.mjs']}]}),
     qaLogHome:path.join(root,'logs'),qaDecisionProvider:{timeoutMs:1000,decide:async binding=>({decisionId:'qa-parent',identity:binding.identity,packageDigest:binding.packageDigest,
       status:'triggered',reason:'feature_complete',score:null,at:'2026-09-08T01:00:00Z'})},
