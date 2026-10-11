@@ -397,22 +397,32 @@ export async function sendTest(home,{platform=process.platform,env=process.env,n
     child.stdin.end(`${JSON.stringify({title,body,event:'test',workflow:'cm-notify'})}\n`);
   });
   appendNotifyLog(home,now,{event:'test',workflow:'cm-notify',result:result.exit===0?'test ok':`test failed ${result.exit===null?result.reason:`exit_${result.exit}`}`});
-  return {kind:config.state,channel,dry:false,exit:result.exit,reason:result.reason};
+  return {kind:config.state,channel,dry:false,exit:result.exit,reason:result.reason,...(config.state==='managed'?{senderCurrent:config.senderCurrent===true}:{})};
 }
 
-export const EXIT_WORDS=Object.freeze({
+// Custom and legacy commands, and a managed sender copied by an older plugin,
+// keep the original words: there 3 may also be a timeout and 5/6 mean nothing.
+export const COMMAND_EXIT_WORDS=Object.freeze({
   [SEND_EXIT.ok]:'已被推送服务接受（不代表已送达）',
   [SEND_EXIT.config]:'配置或密钥问题',
-  [SEND_EXIT.network]:'网络请求失败',
+  [SEND_EXIT.network]:'网络失败或超时',
   [SEND_EXIT.rejected]:'服务端拒绝',
+});
+// Only the managed sender identical to this plugin's copy splits 3/5/6.
+export const EXIT_WORDS=Object.freeze({
+  ...COMMAND_EXIT_WORDS,
+  [SEND_EXIT.network]:'网络请求失败',
   [SEND_EXIT.deadline]:'超过 12 秒期限（可能已送达）',
   [SEND_EXIT.unexpected]:'意外错误',
 });
 export function formatTest(result){
   const who=result.kind==='custom'?'自定义命令':`渠道 ${result.channel}`;
   if(result.dry)return `${who}：演练模式（CM_NOTIFY_DRY_RUN=1），没有运行发送命令、没有联网，也没有读取或检查密钥文件（是否填好请用 /cm:notify 查看）；下面是按渠道设置生成的脱敏请求。\n${result.preview}`;
-  if(result.exit===null)return `${who}：命令没有正常结束（${result.reason}），未知。`;
-  return `${who}：退出码 ${result.exit}，${EXIT_WORDS[result.exit]??'未知'}。`;
+  const stale=result.kind==='managed'&&result.senderCurrent!==true;
+  const hint=stale?`托管发送器与当前插件版本不同，退出码按旧含义解释；重新执行 /cm:notify ${result.channel} 更新。`:'';
+  if(result.exit===null)return `${who}：命令没有正常结束（${result.reason}），未知。${hint}`;
+  const words=result.kind==='managed'&&!stale?EXIT_WORDS:COMMAND_EXIT_WORDS;
+  return `${who}：退出码 ${result.exit}，${words[result.exit]??'未知'}。${hint}`;
 }
 
 const USAGE='用法：cm-notify.mjs [status|bark|pushplus|off|test|preview] [--replace-custom] [--json]';

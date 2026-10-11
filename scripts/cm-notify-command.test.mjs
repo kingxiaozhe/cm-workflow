@@ -402,12 +402,14 @@ fs.writeFileSync(${JSON.stringify(record)},JSON.stringify({options:process.env.N
 process.stdout.write('${BARK_SECRET}\\n');process.stderr.write('cm-notify: leaked ${BARK_SECRET}\\n');process.exit(${code});});`;
   // The installed managed sender itself is replaced: same command shape, output still never shown.
   const preload=path.join(s.root,'preload.cjs');fs.writeFileSync(preload,'// harmless for the manager itself\n');
-  const words={0:'已被推送服务接受（不代表已送达）',2:'配置或密钥问题',3:'网络请求失败',4:'服务端拒绝',5:'超过 12 秒期限（可能已送达）',6:'意外错误',7:'未知'};
+  // The replaced sender is no longer this plugin's copy: original words, 5/6 unknown, and an update hint.
+  const words={0:'已被推送服务接受（不代表已送达）',2:'配置或密钥问题',3:'网络失败或超时',4:'服务端拒绝',5:'未知',6:'未知',7:'未知'};
+  const staleHint='托管发送器与当前插件版本不同，退出码按旧含义解释；重新执行 /cm:notify bark 更新。';
   for(const [code,word] of Object.entries(words)){
     fs.writeFileSync(managedSenderPath(s.home),fake(code),{mode:0o600});
     const result=s.cli(['test'],{NODE_OPTIONS:`--require=${preload}`});
     assert.equal(result.status,Number(code),result.stderr);
-    assert.equal(result.stdout,`渠道 bark：退出码 ${code}，${word}。\n`);noSecret(result.stdout+result.stderr);
+    assert.equal(result.stdout,`渠道 bark：退出码 ${code}，${word}。${staleHint}\n`);noSecret(result.stdout+result.stderr);
     assert.deepEqual(JSON.parse(fs.readFileSync(record,'utf8')),{options:null,execArgv:[]},'NODE_OPTIONS is not passed to the sender');
   }
   // Dry-run never runs the installed command.
@@ -423,7 +425,24 @@ process.stdout.write('${BARK_SECRET}\\n');process.stderr.write('cm-notify: leake
   s.write('notify.json',JSON.stringify({version:1,command:[process.execPath,managedSenderPath(s.home)]}));
   const result=await sendTest(s.home,{env:s.env,beforeSpawn:()=>s.write('notify.json',JSON.stringify({version:1,command:['/bin/sh','-c','exit 9']}))});
   assert.equal(result.exit,0);assert.deepEqual(JSON.parse(fs.readFileSync(record,'utf8')).execArgv,[]);
-  assert.equal(formatTest(result),'渠道 bark：退出码 0，已被推送服务接受（不代表已送达）。');
+  assert.equal(result.senderCurrent,false);
+  assert.equal(formatTest(result),`渠道 bark：退出码 0，已被推送服务接受（不代表已送达）。${staleHint}`);
+});
+
+test('test explains 3/5/6 with the new words only for the current managed sender',()=>{
+  const current={kind:'managed',channel:'bark',dry:false,reason:null,senderCurrent:true};
+  assert.equal(formatTest({...current,exit:3}),'渠道 bark：退出码 3，网络请求失败。');
+  assert.equal(formatTest({...current,exit:5}),'渠道 bark：退出码 5，超过 12 秒期限（可能已送达）。');
+  assert.equal(formatTest({...current,exit:6}),'渠道 bark：退出码 6，意外错误。');
+  assert.equal(formatTest({...current,exit:7}),'渠道 bark：退出码 7，未知。');
+  // A custom or legacy command keeps the original meaning of its exit codes.
+  for(const [kind,who] of [['custom','自定义命令'],['legacy','渠道 bark']])for(const [exit,word] of [[3,'网络失败或超时'],[5,'未知'],[6,'未知']])
+    assert.equal(formatTest({kind,channel:'bark',dry:false,reason:null,exit}),`${who}：退出码 ${exit}，${word}。`);
+  // An older managed sender: original words plus the update hint, also when the command did not end normally.
+  const stale={...current,senderCurrent:false},hint='托管发送器与当前插件版本不同，退出码按旧含义解释；重新执行 /cm:notify bark 更新。';
+  assert.equal(formatTest({...stale,exit:3}),`渠道 bark：退出码 3，网络失败或超时。${hint}`);
+  assert.equal(formatTest({...stale,exit:5}),`渠道 bark：退出码 5，未知。${hint}`);
+  assert.equal(formatTest({...stale,exit:null,reason:'timeout'}),`渠道 bark：命令没有正常结束（timeout），未知。${hint}`);
 });
 
 // Simulated slow reads: file-system calls of the sender replaced through its module API.
@@ -478,6 +497,23 @@ runCli({argv:[],deadlineMs:300,softDeadlineMs:1e9,senderOptions:{fileOps:{open:f
     assert.equal(result.status,SEND_EXIT.deadline,result.stderr);assert.equal(result.stdout,'');
     assert.equal(result.stderr,'cm-notify: 整次调用超过 1 秒，已放弃\n');
     assert(took<3000,`exited on time (${Math.round(took)} ms)`);
+  }
+});
+
+test('process-level errors (uncaught exception, unhandled rejection) exit 6 with only the fixed line',t=>{
+  const s=sandbox(t);
+  s.write('notify-channel.conf','CHANNEL=bark\n');s.write('bark.env',`BARK_KEY=${BARK_SECRET}\n`);
+  const sender=new URL('../runtime/js/notify-send.mjs',import.meta.url).href;
+  const faults={uncaught:`setImmediate(()=>{throw new Error('boom ${BARK_SECRET}');});`,
+    rejection:`Promise.reject(new Error('boom ${BARK_SECRET}'));`};
+  for(const [kind,fault] of Object.entries(faults)){
+    // The read never settles and the deadline is far away, so only the process-level handler can end it.
+    const script=`import {runCli} from ${JSON.stringify(sender)};
+import fsp from 'node:fs/promises';
+runCli({argv:[],deadlineMs:8000,softDeadlineMs:1e9,senderOptions:{fileOps:{open:fsp.open,lstat:()=>{${fault}return new Promise(()=>{});}}}});`;
+    const result=spawnSync(process.execPath,['--input-type=module','-e',script],{input:'{}\n',encoding:'utf8',env:s.env,timeout:10000});
+    assert.equal(result.status,SEND_EXIT.unexpected,`${kind} ${result.stderr}`);assert.equal(result.stdout,'',kind);
+    assert.equal(result.stderr,'cm-notify: 意外错误（详情已隐藏，避免带出密钥）\n',kind);noSecret(result.stderr);
   }
 });
 
