@@ -157,17 +157,17 @@ test('bark and pushplus requests: fields, numeric code check, rejected responses
   assert.deepEqual(JSON.parse(server.seen.at(-1).body),{token:PUSH_SECRET,title:'t'.repeat(100),content:'正文',template:'txt',channel:'wechat'});
 });
 
-test('network failure, deadline (also while waiting on stdin) and unexpected errors exit 3 without details',async t=>{
+test('network failure exits 3, the deadline (also while waiting on stdin) 5 and unexpected errors 6, without details',async t=>{
   const s=sandbox(t);
   s.write('notify-channel.conf','CHANNEL=bark\n');s.write('bark.env',`BARK_KEY=${BARK_SECRET}\n`);
   const server=await fakeServer(t,()=>{});// never answers
   let err=sink();
   let code=await runSender({env:s.env,home:s.home,stdin:endedStdin(),stdout:sink().stream,stderr:err.stream,request:server.request,deadlineMs:300});
-  assert.equal(code,SEND_EXIT.network);assert.equal(err.text(),'cm-notify: 整次调用超过 1 秒，已放弃\n');
+  assert.equal(code,SEND_EXIT.deadline);assert.equal(err.text(),'cm-notify: 整次调用超过 1 秒，已放弃\n');
   err=sink();const silent=new PassThrough();t.after(()=>silent.destroy());
   const started=process.hrtime.bigint();
   code=await runSender({env:s.env,home:s.home,stdin:silent,stdout:sink().stream,stderr:err.stream,request:()=>{throw new Error('must not send');},deadlineMs:200});
-  assert.equal(code,SEND_EXIT.network);assert.match(err.text(),/整次调用超过/);
+  assert.equal(code,SEND_EXIT.deadline);assert.match(err.text(),/整次调用超过/);
   assert(Number(process.hrtime.bigint()-started)/1e6<2000);
   // A line without EOF is enough: the sender does not wait for the stream to end.
   const open=new PassThrough();open.write('{"title":"x"}\n');t.after(()=>open.destroy());
@@ -175,11 +175,11 @@ test('network failure, deadline (also while waiting on stdin) and unexpected err
   assert.equal(code,0);
   err=sink();
   code=await runSender({env:s.env,home:s.home,stdin:endedStdin(),stdout:sink().stream,stderr:err.stream,request:()=>{throw new Error(`boom ${BARK_SECRET}`);}});
-  assert.equal(code,SEND_EXIT.network);assert.equal(err.text(),'cm-notify: 意外错误（详情已隐藏，避免带出密钥）\n');
+  assert.equal(code,SEND_EXIT.unexpected);assert.equal(err.text(),'cm-notify: 意外错误（详情已隐藏，避免带出密钥）\n');
   err=sink();
   code=await runSender({env:s.env,home:s.home,stdin:endedStdin(),stdout:sink().stream,stderr:err.stream,
     request:(options,callback)=>http.request({...options,hostname:'127.0.0.1',port:1},callback)});
-  assert.equal(code,SEND_EXIT.network);assert.equal(err.text(),'cm-notify: bark 请求失败或超时\n');
+  assert.equal(code,SEND_EXIT.network);assert.equal(err.text(),'cm-notify: bark 网络请求失败\n');
 });
 
 const [major,minor]=process.versions.node.split('.').map(Number);
@@ -338,7 +338,7 @@ test('test goes through the configured command, bypasses dedupe/limits, and repo
   assert.equal(s.log(),'','dry-run runs nothing');
   result=s.cli(['test']);// real sender, loopback port 1: refused connection, no external network
   assert.equal(result.status,SEND_EXIT.network,result.stderr);
-  assert.equal(result.stdout,'渠道 bark：退出码 3，网络失败或超时。\n');
+  assert.equal(result.stdout,'渠道 bark：退出码 3，网络请求失败。\n');
   noSecret(result.stdout+result.stderr);noSecret(s.log(),'notify.log');
   assert.match(s.log(),/test cm-notify key=- test failed exit_3/);
   // A custom command receives the same contract as the runtime launcher.
@@ -402,7 +402,7 @@ fs.writeFileSync(${JSON.stringify(record)},JSON.stringify({options:process.env.N
 process.stdout.write('${BARK_SECRET}\\n');process.stderr.write('cm-notify: leaked ${BARK_SECRET}\\n');process.exit(${code});});`;
   // The installed managed sender itself is replaced: same command shape, output still never shown.
   const preload=path.join(s.root,'preload.cjs');fs.writeFileSync(preload,'// harmless for the manager itself\n');
-  const words={0:'已被推送服务接受（不代表已送达）',2:'配置或密钥问题',3:'网络失败或超时',4:'服务端拒绝',7:'未知'};
+  const words={0:'已被推送服务接受（不代表已送达）',2:'配置或密钥问题',3:'网络请求失败',4:'服务端拒绝',5:'超过 12 秒期限（可能已送达）',6:'意外错误',7:'未知'};
   for(const [code,word] of Object.entries(words)){
     fs.writeFileSync(managedSenderPath(s.home),fake(code),{mode:0o600});
     const result=s.cli(['test'],{NODE_OPTIONS:`--require=${preload}`});
@@ -433,7 +433,7 @@ const delayedOps=({lstatMs=0,block=false,before}={})=>({open:fsp.open,lstat:asyn
   else if(lstatMs)await new Promise(resolve=>setTimeout(resolve,lstatMs));
   return fsp.lstat(file,options);}});
 
-test('slow reads (blocking or async) end with 3 on time; dry-run, --check and sends never return 0 after the budget',async t=>{
+test('slow reads (blocking or async) end with 5 on time; dry-run, --check and sends never return 0 after the budget',async t=>{
   const s=sandbox(t);
   s.write('notify-channel.conf','CHANNEL=bark\n');s.write('bark.env',`BARK_KEY=${BARK_SECRET}\n`);
   let sent=0;const request=()=>{sent++;throw new Error('must not send');};
@@ -442,7 +442,7 @@ test('slow reads (blocking or async) end with 3 on time; dry-run, --check and se
     const err=sink(),out=sink();const begin=performance.now();
     const code=await runSender({argv,env:{...s.env,...env},home:s.home,stdin:endedStdin(),stdout:out.stream,stderr:err.stream,fileOps,request,deadlineMs});
     const took=performance.now()-begin,label=`${kind} ${argv} ${JSON.stringify(env)} ${deadlineMs}`;
-    assert.equal(code,SEND_EXIT.network,label);assert.equal(out.text(),'',label);
+    assert.equal(code,SEND_EXIT.deadline,label);assert.equal(out.text(),'',label);
     assert.match(err.text(),/^cm-notify: 整次调用超过 1 秒，已放弃/,label);
     if(kind==='slowAsync')assert(took<deadlineMs+150,`${label} returned on time (${Math.round(took)} ms)`);
   }
@@ -454,16 +454,16 @@ test('slow reads (blocking or async) end with 3 on time; dry-run, --check and se
     const lastRead=argv.length||env.CM_NOTIFY_DRY_RUN?(argv.length?2:1):99;
     const code=await runSender({argv,env:{...s.env,...env},home:s.home,stdin:endedStdin(),stdout:out.stream,stderr:err.stream,deadlineMs:5000,
       clock:()=>now,request:(...args)=>{now=6000;return req(...args);},fileOps:delayedOps({before:()=>{if(++reads===lastRead)now=6000;}})});
-    assert.equal(code,SEND_EXIT.network,`${argv} ${JSON.stringify(env)}`);assert.equal(out.text(),'');assert.match(err.text(),/整次调用超过 5 秒，已放弃/);
+    assert.equal(code,SEND_EXIT.deadline,`${argv} ${JSON.stringify(env)}`);assert.equal(out.text(),'');assert.match(err.text(),/整次调用超过 5 秒，已放弃/);
   }
-  assert.equal(server0.seen.length,1,'the late send was accepted but is still reported as 3');
+  assert.equal(server0.seen.length,1,'the late send was accepted but is still reported as 5');
   // With enough budget the same slow read still sends.
   const server=await fakeServer(t,(req,res)=>json(res,200,{code:200}));
   const code=await runSender({env:s.env,home:s.home,stdin:endedStdin(),stdout:sink().stream,stderr:sink().stream,fileOps:kinds.blocking,request:server.request,deadlineMs:2000});
   assert.equal(code,0);assert.equal(server.seen.length,1);
 });
 
-test('the process entry arms a hard timer: a read that never settles still exits 3 at the deadline',async t=>{
+test('the process entry arms a hard timer: a read that never settles still exits 5 at the deadline',async t=>{
   const s=sandbox(t);
   s.write('notify-channel.conf','CHANNEL=bark\n');s.write('bark.env',`BARK_KEY=${BARK_SECRET}\n`);
   const sender=new URL('../runtime/js/notify-send.mjs',import.meta.url).href;
@@ -475,7 +475,7 @@ runCli({argv:[],deadlineMs:300,softDeadlineMs:1e9,senderOptions:{fileOps:{open:f
     const begin=performance.now();
     const result=spawnSync(process.execPath,['--input-type=module','-e',script],{input:'{}\n',encoding:'utf8',env:{...s.env,...extra},timeout:10000});
     const took=performance.now()-begin;
-    assert.equal(result.status,SEND_EXIT.network,result.stderr);assert.equal(result.stdout,'');
+    assert.equal(result.status,SEND_EXIT.deadline,result.stderr);assert.equal(result.stdout,'');
     assert.equal(result.stderr,'cm-notify: 整次调用超过 1 秒，已放弃\n');
     assert(took<3000,`exited on time (${Math.round(took)} ms)`);
   }
@@ -629,12 +629,12 @@ test('time spent before the sender work counts toward the same 12 s budget',asyn
   // The start recorded at entry is honoured: time already spent leaves no budget for an exit 0.
   for(const argv of [['--check'],[]]){
     const result=run(`import {performance} from 'node:perf_hooks';runCli({argv:${JSON.stringify(argv)},startedAt:performance.now()-12050});`,{CM_NOTIFY_DRY_RUN:'1'});
-    assert.equal(result.status,SEND_EXIT.network,`${argv} ${result.stderr}`);assert.equal(result.stdout,'');assert(result.took<5000);
+    assert.equal(result.status,SEND_EXIT.deadline,`${argv} ${result.stderr}`);assert.equal(result.stdout,'');assert(result.took<5000);
   }
-  // 250 ms already spent, the slow read needs more than the 50 ms left: 3, never 0.
+  // 250 ms already spent, the slow read needs more than the 50 ms left: 5, never 0.
   const result=run(`import {performance} from 'node:perf_hooks';import fsp from 'node:fs/promises';
 runCli({argv:['--check'],deadlineMs:300,startedAt:performance.now()-250,senderOptions:{fileOps:{open:fsp.open,lstat:async(f,o)=>{await new Promise(r=>setTimeout(r,200));return fsp.lstat(f,o);}}}});`);
-  assert.equal(result.status,SEND_EXIT.network,result.stderr);assert.equal(result.stdout,'');assert(result.took<3000);
+  assert.equal(result.status,SEND_EXIT.deadline,result.stderr);assert.equal(result.stdout,'');assert(result.took<3000);
 });
 
 test('entry is decided by import.meta.main alone: imported does nothing, unsupported Node exits 3, Windows is refused first',()=>{

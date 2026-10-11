@@ -403,8 +403,10 @@ export async function sendTest(home,{platform=process.platform,env=process.env,n
 export const EXIT_WORDS=Object.freeze({
   [SEND_EXIT.ok]:'已被推送服务接受（不代表已送达）',
   [SEND_EXIT.config]:'配置或密钥问题',
-  [SEND_EXIT.network]:'网络失败或超时',
+  [SEND_EXIT.network]:'网络请求失败',
   [SEND_EXIT.rejected]:'服务端拒绝',
+  [SEND_EXIT.deadline]:'超过 12 秒期限（可能已送达）',
+  [SEND_EXIT.unexpected]:'意外错误',
 });
 export function formatTest(result){
   const who=result.kind==='custom'?'自定义命令':`渠道 ${result.channel}`;
