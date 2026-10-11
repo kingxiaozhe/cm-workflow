@@ -263,11 +263,12 @@ test('integrated original multi-root conversation completes one task and resumes
       }};
       const review={model:'fixture',disabledSkills:[],preflight:{passed:true,provider:'claude',cli_model:'fixture',prompt_transport:'stdin',
         config_fingerprint:claudeReviewFingerprint({cwd:definition.codeProject,model:'fixture'})}};
-      const execution=createConversationExecution(definition,'multi-root-host',bridge,review,mode==='create'?null:1,
+      const execution=createConversationExecution(definition,'multi-root-host',bridge,review,null,
         workflow,true,'claude',{protection});
       const run=await openControlRun(definition,mode,execution);
       assert(run.host,JSON.stringify(run));
-      try{const result=await run.host.handle({version:1,operation:'advance',requestId:'advance',identity:definition.identity});
+      // Preserve the explicit pre-review checkpoint; advance now also performs review and closeout.
+      try{const result=await run.host.handle({version:1,operation:mode==='create'?'start':'advance',requestId:mode==='create'?'start':'advance',identity:definition.identity});
         process.stdout.write(JSON.stringify({result,calls,checkpoint:run.checkpoint()}));}finally{run.close();}`;
     const invoke=mode=>JSON.parse(execFileSync(process.execPath,['--input-type=module','-e',source,configFile,mode],
       {env,encoding:'utf8',timeout:18000,maxBuffer:2*1024*1024}));
