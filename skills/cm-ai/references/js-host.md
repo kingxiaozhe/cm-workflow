@@ -5,6 +5,23 @@
 明确开始；“继续”“可以”“好”“好的”“OK”“按最优解处理”“你看着办”“行”仍不审批。
 `not_approval` 时提示明确回复“开始”；写审批位仍须原 `--approve` 门禁。
 
+## 默认控制策略 v2
+
+新建运行先读 [control policy v2](../../../docs/cm-control-policy-v2.md)，写严格的 `POLICY.json`：
+
+```json
+{"version":2,"development":"conversation","bootstrap":"disabled","qa":"disabled","qaFix":"disabled"}
+```
+
+模型、命令和路径仍来自原配置。加载原配置不自动启用能力；policy 也不能替代所需配置。
+单任务启动顺序为 `serve --config RUN.json --mode create|resume --host-context ID --control-config POLICY.json`，
+后接原配置参数；**不得传任何 `--allow-*`**。批次入口同样显式提供 policy，`qaFix` 只能为 `disabled`。
+当前已选任务的常规独立审查最多两轮自动推进，不需要真人每轮批准；fresh 独立审查、包绑定和完成门禁保持原要求。
+普通 `advance` 不需要恢复目标。异常恢复用请求 `version:2` 与此前只读 `status` 给出的固定 `controlTarget`，
+将其完整复制为 `expectedControl`；目标陈旧时停止，先核对新状态和用户原决定，不自动刷新重发。
+不含 `controlConfig` 的旧 PLAN、旧运行沿 legacy；不能用 v2 执行旧运行，也不能用 legacy 执行 v2。
+下文旧 `--allow-*` 恢复参考说明旧操作业务前提，v2 的启动和目标绑定以 control policy v2 文档为准。
+
 ## 文档分工与停机路由
 
 本文只写正常路径。M 按「启动前」第 6 项在启动前读；R、Q 只在运行停住时按下表读：
@@ -21,6 +38,7 @@
 | `decision`、`complete`、`qa`、`qa_execution`（`qa_triggered`）、`context_refresh`（`qa_passed`、`qa_skipped`、`context_refreshed`）、`documentation_sync`（`documentation_sync_required`）、`run_finalize`（`documentation_synced`）、`finish`、`start_next_task`、`changes_requested`、`revision_answer_required` | 本文「单步驾驶员」「执行当前请求，而非手工跳节点」 |
 | `spec_approval`／`awaiting_spec_approval`、`not_approval` | 本文开头 |
 | `original_host_context_unavailable`、`review_configuration_required` | 本文「启动前」第 3、5 项 |
+| `fingerprint_mismatch`、`invalid_arguments`、`invalid_arguments`、`invalid_arguments`、`invalid_input`、`snapshot_changed` | control policy v2 文档「旧运行与迁移拒绝」「显式恢复」 |
 | `parallel_scope_existing_file`、`parallel_dependency_conflict` | 本文「启动前」3.1 |
 | `fingerprint_mismatch`、`invalid_arguments`、换会话恢复、`host-joined` | R「恢复参数与跨会话接手」 |
 | `resume` 下的 `develop_checks_not_passed`、旧 `checks_not_passed`、`develop_package_too_large`、`develop_empty_changes`、`develop_requirement_missing`、`develop_unchanged_after_review`、`develop_call_timeout`（开发应答超时）、`develop_answer_invalid`（开发应答超出字段上限）；`unknown/limit_exceeded`、`store_failure`、`empty_changes`；`request_too_large`、`host_response_too_large`、`host_response_mismatch`；大小上限或 `runId` 长度致退出 2 | R「开发交付阻断与存档限额」 |
@@ -71,7 +89,8 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 仓库自带 `../../../scripts/cm-ai-drive.mjs`，按上例一次启动宿主、发送一个 operation、回答这一轮的反问并打印结果。
 
 `PLAN.json` 与 cm-fix 驾驶员一样，以自身目录解析相对路径；填写 `config`（已批准的运行定义）、
-`mode`、当前真实 `hostContext`、`runtime`、原样传给宿主的 `permissions`、`answers` 和
+`mode`、当前真实 `hostContext`、`runtime`、`controlConfig`（相对 PLAN 的 policy 路径）、
+原样传给宿主的 `permissions`（只放配置与运行参数，v2 禁止所有 `--allow-*`）、`answers` 和
 `checks: [{"id":"syntax","command":["node","--check","target.mjs"]}]`。同会话恢复可省略
 `originalHostContext`；换会话恢复必须填创建运行的会话 ID，且运行存档必须已存在。第 1 轮开发结果放 `answers/develop.json`（也可用
 `develop-a1.json`，两者不能同时存在）；第 2 轮只读 `answers/develop-a2.json`，绝不复用第 1 轮答案。
@@ -81,15 +100,12 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 `requirements` 里的路径不能删除（审查包要求每个 requirements 文件存在），启动前即拒绝；当前会话若仍删掉了这类文件，
 结果是可重试的 `blocked/develop_requirement_missing`，恢复该文件后 `--mode resume` 再 `advance`。
 `resume` 时驾驶员按存档里的当前轮次发送 identity，第 2 轮的 `decision`、`complete`、`qa` 等无需手改。
-初次 `create` 或恢复到
-`ready` 第 1 轮时，若 `advance` 同时带 `--allow-review-attempt 1`，审查后可能直接进入第 2 轮开发；
-缺 `develop-a2.json` 会在启动前退出 2。尚未看到首轮 findings 时，从 `PLAN.permissions` 移除该审查授权，
-先 `advance` 到 `awaiting_review`，再以运行返回的 `packageDigest` 执行 `decision`；读取
-`.reviews/<feature>-<task>-r1.md`，如需修改则写好 `develop-a2.json` 再 `advance`。
-若有意一次完成，也可预先写好 `develop-a2.json` 后带审查授权运行。`develop-a2.json` 必须针对首轮 findings 修改：
-第 2 轮交付与第 1 轮被要求修改的代码逐字节相同（`artifactDigest` 相同）时停在可重试的
-`blocked/develop_unchanged_after_review`，不送审、不耗第 2 轮审查；改好 `develop-a2.json` 后在原 run `advance`，
-以新的 develop effect id 重新交付。
+v2 的 `advance` 自动执行常规审查。首次审查要求修改时才进入第 2 轮，第 2 轮只读
+`develop-a2.json`。尚无该文件时驾驶员停在 `changes_requested/revision_answer_required`，
+不写第 2 轮开发 intent；读取原 r1 findings 后准备实际修订，再在原 run `advance`。
+纯 bootstrap 规范任务首轮始终 hold，先读真实 r1，再准备第 2 轮答案。
+第 2 轮代码逐字节未变时仍停在 `blocked/develop_unchanged_after_review`，不送审、不耗第 2 轮审查。
+legacy 的提前授权与答案预检见文末兼容小节。
 其余人工文件为
 `qa-assess.json`、`documentation-inspect.json`、`documentation-sync.json`；QA 修复子运行沿用
 cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edits.json` 和
@@ -106,11 +122,14 @@ cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edit
 受保护执行由原宿主处理检查；驾驶员不把人工填写的结果冒充执行证据。一次 `advance` 可能走过多个阶段，
 驾驶员会按该宿主的请求路径提前检查本次可能用到的全部答案；只读 `status` 不需要答案。
 
-批次使用 `../../../scripts/cm-ai-batch-drive.mjs`，调用方式同为 `--plan PLAN.json advance|status|cancel`；成员恢复用 `develop_redo|abandon_effect|abandon_review|bootstrap_review_recover`（`mode:"resume"`、`taskKey`、单行 `reason`，`permissions` 带对应 `--allow-… 任务`，见 [批次成员的恢复操作](js-host-recovery.md#批次成员的恢复操作)）。
+批次使用 `../../../scripts/cm-ai-batch-drive.mjs`，调用方式同为 `--plan PLAN.json advance|status|cancel`；
+v2 PLAN 同样有 `controlConfig`，成员恢复带 `mode:"resume"`、`taskKey`、单行 `reason` 与此前
+status 返回的完整批次 `expectedControl`，不带 `--allow-*`。成员原业务前提见 [批次成员的恢复操作](js-host-recovery.md#批次成员的恢复操作)。
+legacy 成员恢复仍在 `permissions` 带原 `--allow-… 任务`。
 `config` 指向批次宿主的 `{batch,workflows}` 定义；`answers` 下按 `feature/taskId/` 放每个任务的
 `develop.json`（第 1 轮可改用 `develop-a1.json`，不得并存）、`qa-assess.json`、
 `documentation-sync.json`、`documentation-inspect.json`；第 2 轮开发必须另放 `develop-a2.json`，
-`checks` 按 `feature/taskId` 映射真实命令数组。带 `--allow-review 任务:1`（或待审时带本轮授权）但还没有
+`checks` 按 `feature/taskId` 映射真实命令数组。v2 自动审查；legacy 带 `--allow-review 任务:1`（或待审时带本轮授权）。还没有
 `develop-a2.json` 时照常启动：驾驶员给该任务加 `--hold-revision`，审查若要求修改，任务停在
 `changes_requested`（`revision_answer_required`），不写第 2 轮开发 intent；读取
 `.reviews/<feature>-<task>-r1.md` 的 findings 写好 `develop-a2.json` 后再 `advance`。已在 `changes_requested`
@@ -163,12 +182,12 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
 4. 核对任务所需能力后才启动。QA 使用原测试合同与已授权命令/环境；无 QA 配置不能宣称
    已完成必需 QA。文档路径预先纳入任务批准 scope；需要 AGENTS/CLAUDE 等保护指令同步、
    bootstrap规范用 js-host-modes.md 的单步驾驶员或受信入口；其他未满足的必需能力记录具体缺口，不降格成可选项。
-5. reviewer 配置在首次运行前绑定；本机 preflight 不是实际模型审查或调用许可。单任务 create
-   必须带 `--review-config`（审查配置进入运行指纹，resume 不能补加，缺少时 `review_configuration_required`）。
-   只有当前真实用户已授权本任务本轮、模型与发送包时，才传审查授权选项（`--allow-review-attempt`）；
-   无授权可以不带授权选项运行至待审，但不能完成。
-   批次按 feature/task:attempt 授权，不授权整个未来批次。
-   不把开发批准转换为网络、安装、Git、发布或真实 provider 调用批准。
+5. reviewer 配置在首次运行前绑定；单任务 create 必须带 `--review-config`，
+   审查配置进入运行指纹，resume 不能补加，缺少时 `review_configuration_required`。
+   v2 常规审查在已确认任务范围内自动推进，最多两轮，不逐轮询问真人。
+   V3 grant 绑定实际请求、invocation、包与时限，只是机械派发凭证，不证明真实用户身份。
+   会话仍核对用户真实授权；策略文件、模型自报和 operator 名称不扩大外发、安装、Git、发布或资金权限。
+   legacy 的逐轮选项见兼容小节。
 6. 启用外部模型配置、bootstrap 规范任务、多代码根（`codeProjects`）或同仓 specs 受保护执行／文本提案模式时，启动前先读 M（js-host-modes.md）对应一节。
 7. 派发与等待的纪律（真实运行里被时限停掉的后台任务，绝大多数出在这里，不在宿主）：
    - **一步一个调用**：驾驶员一次只发一个 operation；不要把「驱动 + 检查 + 审查 + QA」合成一条长后台命令去跑。
@@ -189,13 +208,16 @@ Review 头或完成记录；provider 身份由原 adapter/V3 绑定，失败不�
 `preflight --config {该代码根的单任务配置} --review-model {已选择模型} --runtime {当前端}`。
 即使后续执行批次，诊断仍用同一代码根的单任务配置，不把 batch/workflows 配置传给该命令。
 诊断输出直接作为 review-config 输入，不手造或修补 `passed`/指纹；失败则保留原因。
-本机配置诊断通过不证明模型可用、Review 协议成功或用户已批准外发；真实审查仍须第5项授权。
-不带对应 `--allow-review-attempt`（单任务）或 `--allow-review feature/task:attempt`（批次）
-可以准备并停在原待审点，不能自行追加这些选项推进。后续授权也不得改变原 scope 或身份。
+本机配置诊断通过不证明模型可用、Review 协议成功或用户已批准外发。
+v2 的自动审查仍使用冻结模型和完整审查包，恢复不得改变原 scope 或身份。
 
 ## QA 与文档基础
 
-首次create可同时提供原`--workflow-config`；有QA配置须另带`--allow-qa`，恢复保持原配置与授权。
+首次 create 可同时提供原 `--workflow-config`。v2 在 policy 中选择 `qa:"run"`；
+单任务 QA 修复明确选择 `qaFix:"manual"` 或 `"auto"`，批次必须为 `disabled`。
+配置缺失时如实阻断，不自动开启能力。disabled 仍执行 `qa_assess` 与原必需 QA 判定；
+触发后没有 executor 时停在 `qa_triggered/pendingAction:qa_execution`，不能报告 PASS 或 `run_done`。
+恢复保持原策略与配置，启动型恢复使用专门文档的 `launchControlTarget`，QA 修复子恢复使用 `fix_status` 的含 child 目标。
 QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.timeoutMs` 可设 1–3600000 毫秒，
 省略为 60000；`qa_assess` 的实际应答窗口另受决策通道约 60 秒上限约束。`qa_logic/qa_browser` 超时记
 `host_request_timeout` 并判该用例 BLOCKED，不把已有命令 PASS 用来覆盖超时。
@@ -235,6 +257,27 @@ JS 返回阻断、待授权、失败、取消、unknown 或补正要求时，报
 
 只以 JS 实际结果报告“已做、剩余、问题、下一步”。task 完成不等于 workflow 完成；
 只有原 finalizer 的 run_done 且本次必需业务证据齐备，才报告该运行完成。
+cm-ai 单/批任务 r2 仍 blocked，
+没有 runner-owned correction 完成入口；JS journal/run/unknown 证据禁止兼容 writer，不删证据或手改状态绕过。
 目前 CLI 有本地真实工具与合成 reviewer 组合证据，没有完整真实双宿主业务验收。
 本参考已接单/批双端源入口，但不证明已安装 Skill 已加载、真实模型Review或完整双宿主验收。
 普通布局权限、完整 N6 修复/重测、bootstrap、度量与其他入口的业务迁移仍按当前证据报告。
+
+## legacy 兼容：旧运行与旧 PLAN
+
+本节及旧恢复参考中的 `--allow-*` 只适用于未使用 control policy v2 的原入口。
+不含 `controlConfig` 的 PLAN 保持原语义；旧 journal、指纹与控制记录不改写。
+单任务原 `serve` 保留 `--allow-development`，create 的 reviewer 配置仍必须首次提供。
+只有当前真实用户已授权本任务本轮、模型与发送包时才传 `--allow-review-attempt 1|2`；
+无该选项可运行到待审但不能完成。批次仍按 `feature/task:attempt` 授权。
+QA 仍由原 `--workflow-config` 与 `--allow-qa` 接入，不因加载配置自动开启。
+
+初次 `create` 或恢复到
+`ready` 第 1 轮时，若 `advance` 同时带 `--allow-review-attempt 1`，审查后可能直接进入第 2 轮开发；
+缺 `develop-a2.json` 会在启动前退出 2。尚未看到首轮 findings 时，从 `PLAN.permissions` 移除该审查授权，
+先 `advance` 到 `awaiting_review`，再以运行返回的 `packageDigest` 执行 `decision`；读取
+`.reviews/<feature>-<task>-r1.md`，如需修改则写好 `develop-a2.json` 再 `advance`。
+若有意一次完成，也可预先写好 `develop-a2.json` 后带审查授权运行。`develop-a2.json` 必须针对首轮 findings 修改：
+第 2 轮交付与第 1 轮被要求修改的代码逐字节相同（`artifactDigest` 相同）时停在可重试的
+`blocked/develop_unchanged_after_review`，不送审、不耗第 2 轮审查；改好 `develop-a2.json` 后在原 run `advance`，
+以新的 develop effect id 重新交付。

@@ -65,7 +65,11 @@ The shared V3 runner now also accepts Claude-bound normalized review invocations
 using the same grant, registration, independent identity, replay and completion checks.
 Its registered result is published as `claude-cli`, never relabeled as Codex.
 The single-task host connects the Claude worker only with a matching diagnostic and
-separately authorized attempt. Claude preflight uses a macOS loopback-only sandbox,
+the active control contract: legacy uses a separately authorized attempt; control
+policy v2 advances the selected task's ordinary review rounds automatically within
+the confirmed scope. The V3 grant still binds the actual request, invocation,
+package, host and expiry; it is a mechanical dispatch binding, not identity
+authentication or proof of a real user decision. Claude preflight uses a macOS loopback-only sandbox,
 synthetic credentials and a rejecting local sink; it does not obtain a model review.
 The producer permits one empty startup health probe and rejects model requests locally.
 Installed CLI has passed this local request-surface probe. It uses the same bounded temporary

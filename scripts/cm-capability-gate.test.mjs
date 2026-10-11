@@ -10,6 +10,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
+import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 
 const isolatedHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-capability-home-'));
 process.env.CM_WORKFLOW_HOME=path.join(isolatedHome,'user');
@@ -195,4 +196,34 @@ test('declaring browser tests requires the role that serves them',()=>{
     write(logicOnly);
     assert.deepEqual(loadConfig({projectRoot:root}).policies.tests,['logic']);
   }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+for(const batch of [false,true])test(`v2 ${batch?'batch':'single'} inactive QA does not require browser capability`,()=>{
+  for(const qa of ['disabled','run'])for(const declaration of [null,'unavailable']){
+    const f=batch?batchFixture({}):fixture(true);
+    try{
+      const control=path.join(f.root,'control.json');
+      fs.writeFileSync(control,JSON.stringify({version:2,development:'conversation',bootstrap:'disabled',qa,qaFix:'disabled'}));
+      const review=path.join(f.root,'placeholder-review.json');
+      fs.writeFileSync(review,JSON.stringify({model:'fixture',preflight:{passed:true,cli_model:'fixture',
+        prompt_transport:'stdin',config_fingerprint:configFingerprint({cwd:f.codeProject,model:'fixture'})}}));
+      if(batch)for(const args of [['init','-b','main'],['config','user.name','Fixture'],['config','user.email','fixture@example.invalid'],['add','-A'],['commit','-m','baseline']]){
+        const result=spawnSync('git',['-C',f.codeProject,...args],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
+      }
+      const args=['serve','--config',f.config,...(batch?[]:['--mode','create']),'--host-context','gate-v2',
+        '--control-config',control,'--review-config',review,...(batch?[]:['--workflow-config',f.workflow]),
+        ...(declaration?['--browser-qa',declaration]:[])];
+      const request={version:2,operation:'status',requestId:'v2-status',...(batch?{}:{identity})};
+      const result=spawnSync(process.execPath,[batch?batchCli:cli,...args],{encoding:'utf8',timeout:20000,
+        input:JSON.stringify(request)+'\n',env:{...process.env,NODE_NO_WARNINGS:'1'}});
+      if(qa==='run')rejected(result,declaration?'browser_capability_unavailable':'browser_capability_required');
+      else if(declaration)rejected(result,'invalid_arguments');
+      else{
+        assert.equal(result.error,undefined);assert.equal(result.status,0,result.stderr);
+        const rows=result.stdout.trim().split('\n').map(JSON.parse);assert.equal(rows[0].type,'host_ready');
+        const response=rows.find(row=>row.requestId==='v2-status');assert.ok(response,result.stdout);
+        assert.notEqual(response.result.outcome,'rejected',result.stdout);assert.ok(response.result.state,result.stdout);
+      }
+    }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+  }
 });

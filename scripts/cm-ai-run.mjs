@@ -12,6 +12,8 @@ import {recordCmAiQaAttachment} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {writeCmAiQaStatus} from '../runtime/js/cm-ai/cm-ai-run-finalizer.mjs';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
+import {assertControlEntry,withControlPolicyHost,controlTarget,assertExpectedControl,readControlTarget} from '../runtime/js/cm-ai/control-policy.mjs';
+import {readRunnerHistory,projectedRunnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {hasLegacyQaPlanFingerprint,previousQaMaterial,qaConfigurationSlice,qaExecutorMaterial,qaInvariantDigest,qaRevisionChain,verifyQaRevisionMaterial} from '../runtime/js/cm-ai/qa-config-revision.mjs';
 import {hasCmAiQaRun,inspectCmAiQaRevisionTarget,recordCmAiQaConfigurationRevision} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {prepareReviewedEvidenceSupersession,archiveReviewedEvidence,recordEvidenceSupersession,assertNoUnrecordedPriorCode} from '../runtime/js/cm-ai/reviewed-evidence-supersede.mjs';
@@ -28,6 +30,17 @@ const usage='cm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resu
 const fail=code=>{throw Object.assign(new Error(code),{code});};
 // In-process provenance only; a config flag cannot certify protected callbacks.
 const protectedExecutions=new WeakMap();
+
+// Launch recovery binds the durable runner projection, while controlTarget on
+// ordinary status may additionally project current QA/specification evidence.
+export function controlLaunchTarget(snapshot){
+  const initial=snapshot.records[0]?.payload;
+  if(initial?.type!=='init')fail('snapshot_changed');
+  const history=readRunnerHistory(snapshot.records,initial.config,initial.version);
+  const status=projectedRunnerStatus(history,initial.config);
+  return controlTarget({...status,identity:{...initial.config.identity,attempt:status.attempt},
+    packageDigest:status.reviewPackage?.packageDigest??null},snapshot);
+}
 
 // Fixed adapter assembly for a trusted host. The authority callbacks are never
 // sourced from run.json or the JSONL channel. Construction performs no dispatch.
@@ -256,7 +269,7 @@ export async function openControlRun(definition,mode,execution=null,options={}){
     return {...result,close:()=>{try{close();}finally{guard?.close();}}};
   }catch(error){guard?.close();throw error;}
 }
-async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,allowDevelopRedo=false,holdRevision=false,specRebindReason=null}={},acquireGuard=async()=>{}){
+async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,allowDevelopRedo=false,holdRevision=false,specRebindReason=null,expectedControl=null}={},acquireGuard=async()=>{}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection,externalConversationDefinition}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
@@ -282,6 +295,26 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   if(typeof rerunUnknownQa!=='boolean'||typeof rerunBlockedQa!=='boolean'||rerunUnknownQa&&rerunBlockedQa
     ||(rerunUnknownQa||rerunBlockedQa)&&(mode!=='resume'||!execution?.qaExecutor))fail('qa_recovery_authorization_required');
   const {openTaskExecutionStore}=await import('../runtime/js/cm-ai/task-owner.mjs');
+  const controlPolicy=execution?.configuration?.controlPolicy??null;
+  const launchRecovery=qaConfigRevision!==null||rerunUnknownQa||rerunBlockedQa||specRebindReason!==null;
+  if(controlPolicy){
+    if(supersedeReason!==null)fail('supersede_unavailable');
+    if(launchRecovery){
+      if(mode!=='resume')fail('supersede_unavailable');
+      if(expectedControl===null)fail('invalid_input');
+      expectedControl=readControlTarget(expectedControl);
+    }else if(expectedControl!==null)fail('invalid_input');
+  }
+  if(mode==='resume'){
+    let snapshot;
+    try{snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,
+      identity:{repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});}
+    catch(error){
+      if(error.code!=='ENOENT')throw error;
+      // The existing owner reports missing stores and owns initializer recovery.
+    }
+    if(snapshot?.records.length)assertControlEntry(snapshot,controlPolicy);
+  }
   const {createCmAiHost}=await import('../runtime/js/cm-ai/host.mjs');
   const {inspectCmAiAdmission,matchesCmAiTaskSelection,explainCmAiTaskSelection,selectedFeature}=await import('../runtime/js/cm-ai/cm-ai-admission.mjs');
   const {captureReviewBaseline}=await import('../runtime/js/cm-ai/review-package.mjs');
@@ -444,6 +477,15 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   const {material:configMaterial,fingerprints,store,attaching,priorMaterial,chain,attached}=opened;
   const knowledgeCloseout=configMaterial.knowledgeCloseout??null;
   try{
+    // The store owns the actual writer lock. Check before constructing the
+    // runner (which may journal a session join), audit repair, or recovery.
+    if(controlPolicy&&launchRecovery){
+      try{assertExpectedControl(expectedControl,controlLaunchTarget(store.snapshot()));}
+      catch(error){
+        if(error.code==='snapshot_changed')error.reason='启动恢复目标已经变化；核对当前状态和原操作，不能自动替换原 launchControlTarget 后重试。';
+        throw error;
+      }
+    }
     let runnerMode=mode;
     if(mode==='resume'&&store.snapshot().records.length===0){
       // Only the genuine, fingerprint-matching empty initializer can be finished.
@@ -459,6 +501,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
         ...(knowledgeCloseout===null?{}:{knowledgeCloseout}),
         ...(execution?.configuration.executionPolicy?{executionPolicy:execution.configuration.executionPolicy}:{}),
         ...(execution?.configuration.externalModels?{externalModels:execution.configuration.externalModels}:{}),excludedContexts:['control-host'],
+        ...(controlPolicy?{controlPolicy}:{}),
         developer:{provider:'codex',requestedModel:'unconfigured',contextId:'control-developer',run:unavailable},
         reviewers:[],check:unavailable,taskCompletion:{reviewsDir,handoffs},taskLearning:{feature},
         persistence:{store,mode:runnerMode,version:execution===null?2:3},
@@ -530,7 +573,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
       // Replaying or repairing its audit mirror above is not new execution.
       if(!beforeQa)writeCmAiQaStatus({specsDir,feature,identity:current.identity,phase:'configuration_revised'});
     }
-    return {host:{async handle(request){
+    const legacyHost={async handle(request){
       if(execution===null&&!['status','cancel'].includes(request.operation)){
         // Do not imply an unavailable execution adapter was dispatched.
         return {outcome:'blocked',code:'execution_adapter_required',providerCalls:0};
@@ -538,7 +581,9 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
       const result=await host.handle(request);
       if(['abandon_review','abandon_effect'].includes(request.operation)&&['abandoned','recorded'].includes(result.outcome))logAbandonments();
       return result;
-    }},inspectFixAssociation:host.inspectFixAssociation,acceptCompletedFix:host.acceptCompletedFix,
+    }};
+    const controlHost=controlPolicy?withControlPolicyHost(legacyHost,{identity,snapshot:()=>store.snapshot(),launchTarget:controlLaunchTarget}):null;
+    return {host:legacyHost,...(controlHost?{controlHost}:{}),inspectFixAssociation:host.inspectFixAssociation,acceptCompletedFix:host.acceptCompletedFix,
       checkpoint:()=>store.snapshot().revision,close:()=>store.close()};
   }catch(error){store.close();throw error;}
 }

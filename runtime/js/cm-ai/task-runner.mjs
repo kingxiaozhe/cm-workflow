@@ -31,6 +31,7 @@ import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRu
   pendingDevelopStart,redoDevelopStart,workerGoneBinding,EFFECT_INTERRUPT_LIMIT_CODE,effectInterruptLimitReason,developRedoSource,COMMIT_INTERRUPTED_CODE,COMMIT_INTERRUPTED_REASON,
   DOCUMENTATION_SYNC_CODES,documentationSyncSource,documentationSyncRetryCode,documentationSyncStopReason } from './durable-runner-state.mjs';
 import {splitDocumentationState} from './host-documentation.mjs';
+import {readControlPolicy} from './control-policy.mjs';
 import {readProcessStartTime,inspectWorkerGroup} from './worker-process-identity.mjs';
 import {recoverRunnerCommitImage} from './task-commit.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
@@ -156,6 +157,7 @@ export function createTaskRunner(options) {
   if(options && Object.hasOwn(options,'knowledgeCloseout'))optionKeys.push('knowledgeCloseout');
   if(options && Object.hasOwn(options,'executionPolicy'))optionKeys.push('executionPolicy');
   if(options && Object.hasOwn(options,'externalModels'))optionKeys.push('externalModels');
+  if(options && Object.hasOwn(options,'controlPolicy'))optionKeys.push('controlPolicy');
   if(invocationMode)optionKeys.push('reviewInvocation');
   shape(options,optionKeys);
   need(options.providerDevelopment===undefined||typeof options.providerDevelopment==='boolean','invalid_input');
@@ -219,7 +221,8 @@ export function createTaskRunner(options) {
     ...(Object.hasOwn(options,'taskLearning')?{taskLearning:json(options.taskLearning)}:{}),
     ...(Object.hasOwn(options,'knowledgeCloseout')?{knowledgeCloseout:readCloseoutPolicy(options.knowledgeCloseout)}:{}),
     ...(Object.hasOwn(options,'executionPolicy')?{executionPolicy:readExecutionPolicy(options.executionPolicy)}:{}),
-    ...(Object.hasOwn(options,'externalModels')?{externalModels:readExternalModels(options.externalModels)}:{})});
+    ...(Object.hasOwn(options,'externalModels')?{externalModels:readExternalModels(options.externalModels)}:{}),
+    ...(Object.hasOwn(options,'controlPolicy')?{controlPolicy:readControlPolicy(options.controlPolicy)}:{})});
   const taskLearning=metadata.taskLearning??null;
   if(taskLearning!==null){need(taskMode,'runner_learning');
     shape(taskLearning,['feature',...(Object.hasOwn(taskLearning,'hostHandoff')?['hostHandoff']:[])]);

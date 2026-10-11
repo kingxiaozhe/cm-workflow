@@ -50,7 +50,9 @@ export function attemptAnswerName(root,name,attempt){
 }
 
 // Returns {mode,gap}; gap is a refusal for a bootstrap case this driver does not support.
-export function inspectDriverBootstrap({advance,definition,permissions}){
+export function inspectDriverBootstrap({advance,definition,permissions,controlPolicy=null}){
+  if(controlPolicy?.bootstrap==='disabled'&&permissions.includes('--bootstrap-config'))
+    return {mode:null,gap:'invalid_arguments: bootstrap disabled 禁止 --bootstrap-config；驾驶员未读取配置、未启动宿主'};
   if(!advance||!permissions.includes('--bootstrap-config'))return {mode:null,gap:null};
   let task;
   try{task=inspectCmAiBootstrapTask({specsDir:definition.specsDir,codeProject:definition.codeProject,
@@ -59,7 +61,8 @@ export function inspectDriverBootstrap({advance,definition,permissions}){
   }
   if(task.mode!=='instructions')return {mode:task.mode,gap:null};
   const gap=line=>({mode:'instructions',gap:`${line}；可由当前 AI 会话用 cm-ai-host.mjs serve 应答 init_generate/init_verify`});
-  if(permissions.includes('--protected-config'))return gap('规范任务不支持 --protected-config（provider 开发）驾驶');
+  if(controlPolicy?controlPolicy.development==='provider':permissions.includes('--protected-config'))
+    return gap(controlPolicy?'规范任务不支持 provider 开发驾驶':'规范任务不支持 --protected-config（provider 开发）驾驶');
   if(Object.hasOwn(definition,'codeProjects'))return gap('多代码根（codeProjects）规范任务驾驶员尚不支持');
   let selection;
   // The host's own reader: a regular, non-symlink file of at most 64 KiB with only selection.
@@ -186,9 +189,9 @@ function readVerify(root,name,{definition,plan,attempt}){
 // only when the develop effect starts, and the task entry inside it
 // (host-bootstrap.mjs run()), so both are required here; everything else the host
 // checks at launch runs before host_ready, before any command.
-function authorizeRulesLaunch({definition,plan,permissions}){
+function authorizeRulesLaunch({definition,plan,permissions,controlPolicy=null}){
   const refusal='；驾驶员不运行 init-verify 命令、不启动宿主';
-  refuse(permissions.includes('--allow-bootstrap-write'),
+  refuse(controlPolicy?controlPolicy.bootstrap==='write':permissions.includes('--allow-bootstrap-write'),
     `规范任务需要 --allow-bootstrap-write：宿主写规范前要求这一授权（bootstrap_write_authorization_required）${refusal}`);
   const protection=permissions.indexOf('--protected-conversation-config');
   if(protection!==-1)try{readConversationProtection(permissions[protection+1]);}
@@ -209,14 +212,14 @@ function authorizeRulesLaunch({definition,plan,permissions}){
     `${definition.identity.taskId} 不是当前可进入的 bootstrap 任务（nextTask ${entry?.id??'无'}，宿主以 bootstrap_task_required 拒绝）${refusal}`);
 }
 
-export function readBootstrapRulesAnswers({answers,operation,definition,plan,permissions,bootstrap,reachable}){
+export function readBootstrapRulesAnswers({answers,operation,definition,plan,permissions,bootstrap,reachable,controlPolicy=null}){
   const result=new Map(),slug=`.reviews/${definition.feature.replace(/^\d+\./,'')}-${definition.identity.taskId}`;
   const pair=attempt=>`answers/init-generate-a${attempt}.json 与 answers/init-verify-a${attempt}.json`;
   if(reachable.reviewAfterDevelop)
     stop(2,`规范任务的 advance 不能带 --allow-review-attempt 1 直接进入第 2 轮：修订答案须在读取首轮审查 findings 之后编写。请从 PLAN.permissions 移除 --allow-review-attempt 1，先 advance 到 awaiting_review；再用返回的 packageDigest 执行 decision，读取 ${slug}-r1.md 的 findings；若要求修改，写 ${pair(2)} 后 advance。`);
   if(reachable.reviewFirst)
     stop(2,`规范修订答案须在读取首轮审查 findings 之后编写：请先以 decision 和当前 packageDigest ${reachable.packageDigest} 单独运行审查，读取 ${slug}-r1.md 的 findings，写 ${pair(2)} 后再 advance（不要带 --allow-review-attempt 1 advance）`);
-  if(reachable.attempts.length)authorizeRulesLaunch({definition,plan,permissions});
+  if(reachable.attempts.length)authorizeRulesLaunch({definition,plan,permissions,controlPolicy});
   for(const attempt of reachable.attempts){
     const names=['init-generate','init-verify'].map(name=>attemptAnswerName(answers??'',name,attempt));
     for(const name of names){

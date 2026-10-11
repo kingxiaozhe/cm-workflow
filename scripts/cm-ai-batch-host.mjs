@@ -17,6 +17,7 @@ import {serveCmAiHost,parseHostInputLimit,inputLimitReason} from '../runtime/js/
 import {validateHostWorkflowConfiguration,featureHasBrowserCases,readBrowserCapability} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {digest,json,need,shape} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {identifyApprovedBootstrapFeature} from '../runtime/js/cm-ai/bootstrap-feature.mjs';
+import {readControlPolicyFile} from '../runtime/js/cm-ai/control-policy.mjs';
 
 const usage='cm-ai-batch-host.mjs serve --config PATH --host-context ID --allow-development --review-config PATH (required for a new batch; later launches pass the same file) [--execution-optimizations] [--external-models [--external-models-config PATH]] [--runtime codex|claude] [--input-limit BYTES] [--allow-review FEATURE/TASK:1|2]... [--allow-qa] [--rerun-unknown-qa | --rerun-blocked-qa [--qa-environment-failure REASON]] [--allow-develop-redo FEATURE/TASK]... [--allow-abandon-effect FEATURE/TASK]... [--allow-abandon-review FEATURE/TASK]... [--allow-bootstrap-review-recovery FEATURE/TASK]... [--verification-precheck] [--browser-qa available|unavailable] [--protected-conversation-config PATH | --protected-config PATH] [--allow-provider-development FEATURE/TASK:1|2]... [--hold-revision FEATURE/TASK]...';
 const safeCode=error=>typeof error?.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(error.code)?error.code:'batch_host_failed';
@@ -155,13 +156,24 @@ async function memberReviewConfiguration(batch,definition,review,runtime,pair=nu
 }
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr}={}){
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Control v2: serve --config BUNDLE --host-context ID --control-config POLICY --review-config REVIEW; no --allow-*. Batch qaFix must be disabled. See docs/cm-control-policy-v2.md.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Optional --execution-optimizations freezes policy v1 for new runs only; recovery retains the original policy and legacy runs reject retrofit. See docs/execution-optimizations.md.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('成员恢复（Q24）：--allow-develop-redo / --allow-abandon-effect / --allow-abandon-review / --allow-bootstrap-review-recovery FEATURE/TASK 各授权一次同名批次操作 {operation, requestId, taskKey, reason}，只转给批次当前停住的那个成员运行（同一 cm-ai 入口、只带这一项权限，不跨成员），之后 advance 继续本批次；缺授权返回 batch_member_action_authorization_required，非当前成员返回 batch_member_action_not_current。批次 cancel 后永久停止不变。--qa-environment-failure REASON 随 --rerun-blocked-qa / --rerun-unknown-qa 使用。--revise-qa-config 与 --rebind-spec-material 不支持（batch_qa_revision_unavailable / batch_spec_rebind_unavailable，原因里写明出口）。并行成员停在可在原运行内恢复的状态时返回 batch_parallel_member_recovery_required；结果未确认时返回 batch_parallel_member_unresolved 并留在原运行；只有原始存档为已 checkpoint 的 blocked 才改排串行第二代，且先停在 batch_member_rescheduled，下一次 advance 才开发第二代（普通批次与外部模型、执行策略批次相同）。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\nOptional --input-limit BYTES sets the host input transport limit to an integer from 65536 to 4194304 (default 65536); it may change on resume.\nOptional --protected-conversation-config PATH uses the shared current-host scoped text proposals and native sandbox checks; {checkCommands,timeoutMs}. No extra model call, same Codex/Claude runtime and per-task Review permissions. Optional --protected-config PATH {model,checkCommands,timeoutMs} enables CLI development only for per-task --allow-provider-development FEATURE/TASK:1|2 grants; mutually exclusive with --protected-conversation-config. Optional bundle.bootstraps maps approved bootstrap task keys to {selection}; --allow-bootstrap-write grants only those fixed instruction/scaffold steps. Optional batch.codeProjects uses prefixed paths and checks with codeProject per command; one task remains one completion gate.\n--review-config PATH is required when no member run of the batch exists yet (like single-task create): it is bound into every member fingerprint and cannot be added on resume. It is {model,preflight[,disabledSkills][,timeoutMs]}; timeoutMs is the reviewer transport budget in milliseconds (integer 1-3600000, default 900000). It is independent of --protected-conversation-config/--protected-config and wins over their timeoutMs for the reviewer. It is not part of the authorized configuration digest, so a resumed run may raise it after review_transport_timeout.\n--browser-qa available|unavailable declares interactive QA capability for applicable feature carriers including browser and ios-simulator; the flag name is retained for compatibility.\nOptional --rerun-unknown-qa / --rerun-blocked-qa carry the same single-task QA recovery into a batch and require --allow-qa; they are mutually exclusive. A batch has no --mode, so each task applies the flag only when it resumes an existing run and has a QA executor; a created run or a task without QA ignores it rather than failing the whole batch. Semantics, limits and the qaRound cap are the single-task ones, unchanged.\nOptional --verification-precheck sends the written verification of the task and the collected checks back as a verification_precheck request before any handoff or review package is built. It may only block: a requirement reported unsatisfied stops the task at blocked / verification_precheck_failed with pendingAction resume and spends no review round. Passing it is not an approval, writes no receipt and does not replace the independent review. A task with no written verification is unaffected.\nOptional --hold-revision FEATURE/TASK (repeatable, launch-only, never persisted) stops that task after a changes_requested review with code revision_answer_required, before any second-round develop intent; the next launch without it resumes the revision. It only narrows what this launch does.\nBatch entry requires a clean Git main checkout (including untracked files); batch_main_dirty lists dirty files before any task or worktree starts. Serial tasks are committed automatically before batch_handoff, with task_commit recording the SHA (null if unchanged). A parallel member whose raw journal is a checkpointed blocked terminal preserves WIP on its retained branch and falls back once to serial generation 2 after ready members merge; that advance stops at batch_member_rescheduled and the next one develops generation 2. Unconfirmed members stay in their original run.\n');return 0;}
   let bridge;
   try{
-    need(argv.length>=6&&argv[0]==='serve'&&argv[1]==='--config'&&argv[3]==='--host-context'
-      &&argv[5]==='--allow-development','host_launch_authorization_required');
+    let controlPolicy=null;
+    const withMode=argv[0]==='serve'&&argv[3]==='--mode'&&argv[5]==='--host-context'&&argv[7]==='--control-config';
+    if(withMode)need(['create','resume'].includes(argv[4]),'invalid_mode');
+    const contextOffset=withMode?5:3,controlOffset=withMode?7:5;
+    if(argv[0]==='serve'&&argv[controlOffset]==='--control-config'){
+      if(argv.some(value=>value.startsWith('--allow-')))throw Object.assign(new Error('invalid_arguments'),
+        {code:'invalid_arguments',reason:'新版批次不接受 --allow-*；旧批次请用原入口和参数。'});
+      controlPolicy=readControlPolicyFile(argv[controlOffset+1]);need(controlPolicy.qaFix==='disabled','invalid_arguments');
+    }
+    need(argv.length>=6&&argv[0]==='serve'&&argv[1]==='--config'&&argv[contextOffset]==='--host-context'
+      &&(controlPolicy!==null||argv[5]==='--allow-development'),'host_launch_authorization_required');
+    const hostContextId=argv[contextOffset+1];
     const stat=fs.lstatSync(argv[2]);need(stat.isFile()&&!stat.isSymbolicLink()&&stat.size<=64*1024,'invalid_batch_config');
     const bundle=json(JSON.parse(fs.readFileSync(argv[2],'utf8')));shape(bundle,['batch','workflows',...(Object.hasOwn(bundle,'bootstraps')?['bootstraps']:[])]);
     const {batch,workflows,bootstraps=null}=bundle;need(Array.isArray(batch.tasks),'invalid_batch_config');
@@ -179,7 +191,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     let rerunUnknownQa=false,rerunBlockedQa=false,verificationPrecheck=false,qaEnvironmentFailure=null;const approvals=new Set(),developments=new Map(),holds=new Set();
     const memberActions=Object.fromEntries(Object.keys(BATCH_MEMBER_ACTIONS).map(name=>[name,[]]));
     let externalEnabled=false,externalFile,executionPolicyEnabled=false;
-    for(let index=6;index<argv.length;index++){
+    for(let index=controlPolicy?controlOffset+2:6;index<argv.length;index++){
       const name=argv[index];
       if(name==='--execution-optimizations'){need(!executionPolicyEnabled,'invalid_arguments');executionPolicyEnabled=true;}
       else if(name==='--allow-qa'){need(!allowQa,'invalid_arguments');allowQa=true;}
@@ -237,6 +249,15 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         need(keys.includes(key)&&['1','2'].includes(attempt),'review_task_mismatch');approvals.add(approval);
       }else need(false,'invalid_arguments');
     }
+    if(controlPolicy){
+      allowQa=controlPolicy.qa==='run';allowBootstrap=controlPolicy.bootstrap==='write';
+      need((controlPolicy.development==='provider')===Boolean(providerConfig),'invalid_arguments');
+      need(controlPolicy.bootstrap!=='write'||bootstraps!==null,'invalid_arguments');
+      need(bootstraps===null||controlPolicy.bootstrap==='write','invalid_arguments');
+      for(const key of keys){approvals.add(`${key}:1`);approvals.add(`${key}:2`);
+        if(providerConfig)developments.set(key,1);}
+      need(!rerunUnknownQa&&!rerunBlockedQa,'supersede_unavailable');
+    }
     const started=keys.some(key=>fs.existsSync(path.join(batch.specsDir,'.reviews','.execution',batchTaskRunId(batch.batchId,key),'state.json')));
     // Same read-only create gate as the batch owner, before any model or policy configuration is read or frozen.
     for(const [index,task] of batch.tasks.entries())
@@ -256,7 +277,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(!developments.size||providerConfig!==null,'protected_configuration_required');
     // Same launch-time assertion as the single-task host, evaluated across every
     // task whose approved contract can select a browser case.
-    readBrowserCapability(browserQaFlag,keys.flatMap(key=>workflows[key]?.qa!=null
+    readBrowserCapability(browserQaFlag,keys.flatMap(key=>(!controlPolicy||allowQa)&&workflows[key]?.qa!=null
       &&featureHasBrowserCases(batch.specsDir,key.slice(0,key.lastIndexOf('/')),batch.codeProject)
         ?[workflows[key].qa.environment?.carrier??'browser']:[]));
     need(!approvals.size||review!==null,'review_configuration_required');
@@ -265,7 +286,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(!(rerunUnknownQa&&rerunBlockedQa),'qa_recovery_authorization_required');
     need(!(rerunUnknownQa||rerunBlockedQa)||allowQa,'qa_recovery_authorization_required');
     need(qaEnvironmentFailure===null||rerunUnknownQa||rerunBlockedQa,'qa_recovery_authorization_required');
-    need(allowQa||!Object.values(workflows).some(item=>item?.qa!=null),'qa_authorization_required');
+    need(controlPolicy||allowQa||!Object.values(workflows).some(item=>item?.qa!=null),'qa_authorization_required');
     // Same rule as single-task create: the reviewer binding is part of every
     // member's durable fingerprint and cannot be added on resume. A batch none
     // of whose member runs exist yet is being created. Batches that already
@@ -285,7 +306,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       hostCallTail=pending.then(()=>{},()=>{});return pending;
     }};
     let reconciling=false;
-    const driver=createCmAiBatch({configuration:{...batch,...(externalModels?{externalModels}:{}),...(executionPolicy?{executionPolicy}:{})},logHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
+    const driver=createCmAiBatch({configuration:{...batch,...(controlPolicy?{controlPolicy}:{}),...(externalModels?{externalModels}:{}),...(executionPolicy?{executionPolicy}:{})},logHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
       runtime:runtime??'codex',checkCommands:(providerConfig??protection)?.checkCommands??null,checkTimeoutMs:(providerConfig??protection)?.timeoutMs??60000,
       rerunUnknownQa,rerunBlockedQa,qaEnvironmentFailure,memberActions,holdRevisions:[...holds],bootstrapKeys:Object.keys(bootstraps??{}),
       executionFor:async(definition,{parallelMember=false}={})=>{
@@ -294,8 +315,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         const key=`${definition.feature}/${definition.identity.taskId}`;
         const attempts=[1,2].filter(attempt=>approvals.has(`${key}:${attempt}`));
         const memberReview=parallelMember?await memberReviewConfiguration(batch,definition,review,externalModels?routes.reviewerRuntime:runtime??'codex',externalModels?.providers[routes.reviewerRuntime]??null,!reconciling,Boolean(executionPolicy)):review;
-        const execution=createConversationExecution(definition,argv[4],parallelMember?memberBridge:bridge,memberReview,attempts,workflows[key],allowQa,runtime??'codex',
-          {parallelMember,...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels,...(providerConfig?{reviewerRuntime:routes.reviewerRuntime}:{})}:{}),...(verificationPrecheck?{verificationPrecheck:true}:{}),batchWorkflowsDigest:digest(executionPolicy?{workflows,bootstraps,externalModels,executionPolicy}:externalModels?{workflows,bootstraps,externalModels}:bootstraps?{workflows,bootstraps}:workflows),qaLogHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
+        const execution=createConversationExecution(definition,hostContextId,parallelMember?memberBridge:bridge,memberReview,attempts,workflows[key],allowQa,runtime??'codex',
+          {parallelMember,...(controlPolicy?{controlPolicy}:{}),...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels,...(providerConfig?{reviewerRuntime:routes.reviewerRuntime}:{})}:{}),...(verificationPrecheck?{verificationPrecheck:true}:{}),batchWorkflowsDigest:digest(executionPolicy?{workflows,bootstraps,externalModels,executionPolicy}:externalModels?{workflows,bootstraps,externalModels}:bootstraps?{workflows,bootstraps}:workflows),qaLogHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
             // A protected CLI config also protects unauthorized tasks: they stay on the
             // current-session transport but with the same sandbox checks (protected-text edits).
             ...(protection?{protection}:providerConfig?{protection:{checkCommands:providerConfig.checkCommands,timeoutMs:providerConfig.timeoutMs}}:{}),
@@ -308,7 +329,12 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         return execution;
       }});
     const host={async handle(request){
-      try{reconciling=request.operation==='reconcile_review';return await driver.handle(request);}
+      try{
+        reconciling=request.operation==='reconcile_review';const result=await driver.handle(request);
+        if(controlPolicy&&request.operation==='status'&&result.state!=='running')
+          return {...result,controlTarget:await driver.controlTarget()};
+        return result;
+      }
       catch(cause){const reason=boundedReason(cause);return {outcome:'blocked',code:safeCode(cause),...(reason?{reason}:{})};}
     }};
     const rawMode=input.isTTY&&typeof input.setRawMode==='function';if(rawMode)input.setRawMode(true);

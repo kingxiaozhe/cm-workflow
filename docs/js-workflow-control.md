@@ -1,5 +1,19 @@
 # JS workflow 控制与当前会话入口
 
+## 新入口：control policy v2
+
+新建 `cm-ai` 运行使用 [control policy v2](cm-control-policy-v2.md)。
+`serve` 在原 `--config`、`--mode`、`--host-context` 后传 `--control-config POLICY.json`，不传 `--allow-development` 或其他 `--allow-*`。
+策略明确选择开发、bootstrap、QA 与 QA 修复能力；模型、命令和路径仍来自原配置，加载配置不自动启用能力。
+普通 `advance` 在已确认范围内自动走常规 fresh 独立审查，最多两轮；异常恢复用此前 `status.controlTarget` 的固定副本。
+批次沿原能力，`qaFix` 必须为 `disabled`，不能通过策略启用尚未支持的 QA 修复。
+cm-ai 单/批 r2 blocked 的 runner-owned correction 尚未支持；原兼容任务门禁的人工补正合同保持原样，不能用来完成原 cm-ai run。
+
+**兼容范围：** 本文下方已有的 `cm-ai` `--allow-*`、请求 `version:1`、真人逐轮授权和旧 grant 示例属于 legacy。
+它们用于未启用 v2 的旧运行、旧 PLAN 或原进程内接线，保留原语义。v2 请使用上方专门文档，不能混用两种执行入口。
+`cm-fix`、`cm-prd`、`cm-init` 等独立入口不因这次控制改动而改变原协议。
+源文件更新不等于已安装副本加载，也不证明真实 provider 或生产发布可用。
+
 ## cm-ai 当前任务进度
 
 cm-ai 宿主返回的可选 `guidance` 说明当前阻塞与下一步：`summary` 是普通话摘要，
@@ -678,7 +692,7 @@ feature。恢复对应运行让 QA 通过后，再次 `advance` 本运行即可�
 重开复用原 QA/任务结果，只读文档核验可以再次进行，不能重发开发、文档写入或 QA。
 本地命令与合成 reviewer 的 CLI 组合已走到 run_done；这不代表真实模型、浏览器或全 N6 验收。
 
-### 配置与按轮启用独立审查
+### legacy：配置与按轮启用独立审查
 
 首次 create 前固定 reviewer 模型和本地诊断配置；未配置 reviewer 的旧运行保持原行为，
 不能在恢复时更换模型或把旧 control-only 记录转换成执行记录。
@@ -732,7 +746,7 @@ review.json 含 `{model, disabledSkills, preflight}`，另有可选 `timeoutMs`�
 本地证据包含合成 reviewer 可执行进程通过原门禁，以及实际本机 CLI 的合成 loopback 探测；
 二者都不是实际模型 Review。真实调用、用户级安装与 Git 交付仍分别需要明确授权。
 
-## 受信宿主执行组装
+## legacy：受信宿主执行组装
 
 `scripts/cm-ai-run.mjs` 的进程内 `main` 接受宿主提供的 execution；
 `createCodexExecution` 组合开发、检查与独立审查适配器。JSON 配置和 stdin 不能启用它。

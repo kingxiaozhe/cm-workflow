@@ -17,6 +17,8 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 
 ## 常用命令
 
+- CM control v2：新 cm-ai run 用 `--control-config POLICY.json` 明确运行能力，禁止 `--allow-*`；旧 run 沿 legacy，不迁移记录。配置、operator/model 与 V3 grant 不证明真人身份，真实对话及外部动作授权保持；详见 [控制策略与恢复合同](../docs/cm-control-policy-v2.md)。
+
 - 安全扫描：`$cm-security` / `/cm-security`，分支差异加已跟踪未提交修改；`--all` 扫全部已跟踪文件。工具缺失保留缺口，不自动修复或安装；定点验证 `node --test scripts/cm-security.test.mjs`。
 - 分支影响分析：直接 `$cm-test` / `/cm-test`；默认比较当前提交与主分支，输出业务影响和回归重点，再检查单测覆盖率；“补齐单测”连续补测、重跑、审查。显式目标保留原模式。
 
@@ -53,8 +55,8 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - 公开包检查: `python3 scripts/validate-public-repo.py`
 - 安全扫描: `python3 scripts/scan-public-safety.py`
 - JS runtime 兼容夹具: `node --test experiments/js-orchestration/*.test.mjs`（当前完整套件要求 macOS + Node.js 24.14+，含原生 SQLite；源码随 runtime 分发不等于 host 已激活）
-- JS 单任务入口: `node scripts/cm-ai-host.mjs --help`；默认当前会话，Codex同仓specs可显式选`--protected-config`并按轮授权真实开发/审查，原workflow配置接受保护QA与审前文档；限制见`docs/js-workflow-control.md`，安装与真实模型验收另验
-- JS 多任务入口: `node scripts/cm-ai-batch-host.mjs --help`；复用原batch/单任务宿主，Codex/Claude可选`--protected-conversation-config`同仓文本提案/沙箱，Review按feature/task/轮次授权
+- JS 单任务入口: `node scripts/cm-ai-host.mjs --help`；默认当前会话，Codex 同仓 specs 可显式选 `--protected-config`；v2 用策略启用开发与常规审查，legacy 保留原按轮选项；原 workflow 配置接受保护 QA 与审前文档，安装与真实模型验收另验
+- JS 多任务入口: `node scripts/cm-ai-batch-host.mjs --help`；复用原 batch/单任务宿主，Codex/Claude 可选 `--protected-conversation-config` 同仓文本提案/沙箱；v2 常规 Review 自动至两轮，legacy 保留按 feature/task/轮次授权
 - 当前会话执行证据：四驾驶员可显式配置 `liveEvidence`，合同与不可用恢复见 `docs/live-evidence-drivers.md`；静态文件不能代替实际执行。
 - 第二轮 blocked 后的人工补正：明确人审范围后使用一次性的 `cm-task-gate.mjs prepare-human-correction` / `publish-human-correction-review`；保留旧证据，补正独立 Review，详见 `docs/human-correction.md`。
 - cm-fix 原根因拒绝恢复：standalone `rediagnose` 需 `--allow-rediagnosis`；原 run 一次新诊断/fresh r2，历史不覆盖，第二次拒绝停机；详见 `skills/cm-fix/references/js-host.md`。

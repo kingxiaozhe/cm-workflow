@@ -31,15 +31,17 @@ $cm-ai ~/projects/specs 前端~/code/fe 后端~/code/api
 
 1. **恢复已有运行**：先读取原运行记录。已有 JS host/batch 沿原身份与配置恢复；已配置 QA 因命令配置错误卡住时，按 `references/js-host-qa-recovery.md` 的“QA 配置修订”显式授权，不重开已完成任务。
    已确认的旧兼容任务沿原流程续接，不因升级迁移状态。记录缺失、冲突或无法确定归属时只读核对，不能猜测或另开运行绕过历史。
-2. **新任务**：默认只读取 `references/js-host.md`（正常路径），由共享 JS 入口驱动阶段；当前会话只执行其工具请求。
+2. **新任务**：默认只读取 `references/js-host.md`（正常路径）。先明确 control policy v2 的开发、bootstrap、QA 与 QA 修复模式，再由共享 JS 入口驱动阶段；当前会话只执行其工具请求。
    启动条件命中外部模型配置、bootstrap 规范任务、多代码根或同仓 specs 受保护执行／文本提案模式时，启动前先读 `references/js-host-modes.md` 对应一节（见 js-host.md“启动前”第 6 项）。
    运行停在阻断、unknown、待审失败或需异常恢复时，才按 js-host.md“文档分工与停机路由”表读取 `js-host-recovery.md` 或 `js-host-qa-recovery.md` 的对应一节。
-   只有用户明确选择旧兼容流程、且确认不是已有 JS 运行时，才进入下文兼容执行步骤；不新增 CLI 参数。
+   v2 使用 `--control-config`，不传任何 `--allow-*`；普通 `advance` 无需逐步授权 token。异常恢复携带此前 `status.controlTarget` 的固定副本作为 `expectedControl`，驾驶员不得自动刷新。具体配置与协议分界见 `../../docs/cm-control-policy-v2.md`。
+   cm-ai 单/批任务的 r2 blocked 仍无 runner-owned correction 完成入口；原兼容任务门禁的人工补正合同保持原样，不用它绕过旧 journal/owner。
+   不含 control policy 的旧运行与旧 PLAN 沿原协议，不迁移 journal、指纹或历史批准；只有用户明确选择旧兼容流程且确认不是已有 JS 运行时，才进入下文兼容执行步骤。
 3. **JS 准入失败或不支持**：报告具体宿主、Node 版本、目录、配置或业务能力缺口并停止依赖该能力的执行；
    不静默回退兼容流程，不改 runId、runtime 或手工完成路径规避阻断。原生 Windows 尚不支持，Linux 支持声明不等于实机验收。
 
 JS 路由中的状态、日志、handoff、Review 凭证与任务勾选由原 JS owner 和唯一完成门禁负责；
-不得执行下文兼容步骤中的同类手工写入。节点参考的业务约束仍适用，默认路由不扩大开发、审查、QA、Git 或发布权限。
+不得执行下文兼容步骤中的同类手工写入。策略文件只声明本次已授权范围内的执行能力；模型、operator 名称和 V3 grant 的完整性绑定都不是用户身份证明。fresh 独立 Review 与唯一完成门禁仍必需，push、发布、部署与资金动作仍须各自授权。
 
 ### N1–N8 业务概览与兼容执行步骤
 
