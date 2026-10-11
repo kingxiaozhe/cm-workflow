@@ -7,13 +7,14 @@
 // supported yet: every path exits 2 there (owner/ACL checks of the secret
 // files are not verified on a real Windows machine). Total deadline: 12 s from
 // the moment this script starts executing. A hard timer armed first at entry
-// exits with 3; file reads are asynchronous so that timer can always fire, and the
+// exits with 5; file reads are asynchronous so that timer can always fire, and the
 // remaining budget is checked before every read, before the request and
 // before every exit 0. This stays inside the plugin's 15 s kill. Secret files are parsed as data
 // (never executed or exported) and their values are never printed or logged.
 // No retry: a timed-out request may already have been delivered.
-// Exit codes: 0 sent; 2 config or secret problem; 3 network failure or
-// timeout (also any unexpected error); 4 server rejected or odd response.
+// Exit codes: 0 sent; 2 config or secret problem; 3 network failure;
+// 4 server rejected or odd response; 5 deadline passed; 6 unexpected error.
+// Kept apart so the launcher's notify.log line (exit code only) tells them apart.
 // CM_NOTIFY_DRY_RUN=1: opens no secret file, no network, prints a redacted request.
 // --check: only verifies that the active channel's files parse; sends nothing.
 import fs from 'node:fs';
@@ -31,7 +32,7 @@ import {fileURLToPath} from 'node:url';
 // doing nothing. When run directly the
 // 12 s hard timer is armed next, and on Windows the very next action is the
 // refusal (exit 2), before anything reads a file. The timer is not unref'd:
-// the process ends with 3 at the deadline even if some work never settles.
+// the process ends with 5 at the deadline even if some work never settles.
 export const WINDOWS_UNSUPPORTED='/cm:notify 暂不支持 Windows：密钥文件权限核对尚未在 Windows 实机验证';
 export const NODE_UNSUPPORTED='cm-notify: 当前 Node 没有 import.meta.main，不受支持（插件要求 Node 24.14 或更高版本），没有发送';
 export function entryDecision(main,platform){
@@ -42,13 +43,13 @@ export function entryDecision(main,platform){
 const ENTRY_STARTED_AT=performance.now();
 const ENTRY=entryDecision(import.meta.main,process.platform);
 const armHardTimer=(deadlineMs,startedAt)=>setTimeout(()=>{
-  try{process.stderr.write(`cm-notify: 整次调用超过 ${Math.ceil(deadlineMs/1000)} 秒，已放弃\n`);}catch{}process.exit(3);
+  try{process.stderr.write(`cm-notify: 整次调用超过 ${Math.ceil(deadlineMs/1000)} 秒，已放弃\n`);}catch{}process.exit(5);
 },Math.max(0,deadlineMs-(performance.now()-startedAt)));
 if(ENTRY==='unsupported_node'){try{process.stderr.write(`${NODE_UNSUPPORTED}\n`);}catch{}process.exit(3);}
 const ENTRY_HARD_TIMER=ENTRY==='run'||ENTRY==='windows'?armHardTimer(12000,ENTRY_STARTED_AT):null;
 if(ENTRY==='windows'){try{process.stderr.write(`cm-notify: ${WINDOWS_UNSUPPORTED}\n`);}catch{}process.exit(2);}
 
-export const SEND_EXIT=Object.freeze({ok:0,config:2,network:3,rejected:4});
+export const SEND_EXIT=Object.freeze({ok:0,config:2,network:3,rejected:4,deadline:5,unexpected:6});
 export const DEADLINE_MS=12000;
 const MAX_FILE=64*1024,MAX_RESPONSE=64*1024,MAX_STDIN=64*1024;
 // Largest file the safe read boundary accepts; /cm:notify never writes a bigger notify.json.
@@ -214,9 +215,9 @@ export function postJson(url,data,{request=https.request,agent,signal}={}){
         parts.push(chunk);
       });
       response.on('end',()=>resolve({status:response.statusCode,raw:Buffer.concat(parts)}));
-      response.on('error',()=>reject(new SendError(SEND_EXIT.network,'请求失败或超时')));
+      response.on('error',()=>reject(new SendError(SEND_EXIT.network,'网络请求失败')));
     });
-    req.on('error',()=>reject(new SendError(SEND_EXIT.network,'请求失败或超时')));
+    req.on('error',()=>reject(new SendError(SEND_EXIT.network,'网络请求失败')));
     req.end(data);
   });
 }
@@ -259,7 +260,7 @@ export async function runSender({argv=[],env=process.env,stdin=process.stdin,std
   const started=startedAt??clock(),seconds=Math.ceil(deadlineMs/1000);
   const budget=()=>{
     const left=deadlineMs-(clock()-started);
-    if(left<=0)throw new SendError(SEND_EXIT.network,`整次调用超过 ${seconds} 秒，已放弃（未发送）`,{deadline:true});
+    if(left<=0)throw new SendError(SEND_EXIT.deadline,`整次调用超过 ${seconds} 秒，已放弃（未发送）`,{deadline:true});
     return left;
   };
   let timer;
@@ -281,21 +282,21 @@ export async function runSender({argv=[],env=process.env,stdin=process.stdin,std
     const code=responseCodeType(raw);
     if(status!==200||!code.ok)throw new SendError(SEND_EXIT.rejected,`推送返回 http=${Number.isSafeInteger(status)?status:'?'} code类型=${code.type}`);
     // Accepted, but too late: report the deadline (it may have been delivered).
-    if(deadlineMs-(clock()-started)<=0)throw new SendError(SEND_EXIT.network,`整次调用超过 ${seconds} 秒，已放弃（可能已送达）`,{deadline:true});
+    if(deadlineMs-(clock()-started)<=0)throw new SendError(SEND_EXIT.deadline,`整次调用超过 ${seconds} 秒，已放弃（可能已送达）`,{deadline:true});
     return SEND_EXIT.ok;
   })();
   try{
     const result=await Promise.race([work.then(code=>({code}),error=>({error})),deadline]);
-    if(result==='deadline'){work.catch(()=>{});say(stderr,`cm-notify: 整次调用超过 ${seconds} 秒，已放弃`);return SEND_EXIT.network;}
+    if(result==='deadline'){work.catch(()=>{});say(stderr,`cm-notify: 整次调用超过 ${seconds} 秒，已放弃`);return SEND_EXIT.deadline;}
     if(result.error){
       const error=result.error;
       if(error instanceof SendError){
         const prefix=error.exit===SEND_EXIT.config||error.detail.deadline?'':`${channel} `;
         say(stderr,`cm-notify: ${prefix}${error.message}`);return error.exit;
       }
-      say(stderr,'cm-notify: 意外错误（详情已隐藏，避免带出密钥）');return SEND_EXIT.network;
+      say(stderr,'cm-notify: 意外错误（详情已隐藏，避免带出密钥）');return SEND_EXIT.unexpected;
     }
-    if(result.code===SEND_EXIT.ok&&deadlineMs-(clock()-started)<=0){say(stderr,`cm-notify: 整次调用超过 ${seconds} 秒，已放弃`);return SEND_EXIT.network;}
+    if(result.code===SEND_EXIT.ok&&deadlineMs-(clock()-started)<=0){say(stderr,`cm-notify: 整次调用超过 ${seconds} 秒，已放弃`);return SEND_EXIT.deadline;}
     return result.code;
   }finally{clearTimeout(timer);}
 }
@@ -304,7 +305,7 @@ export async function runSender({argv=[],env=process.env,stdin=process.stdin,std
 // entry block above; tests call it with their own start and deadline.
 export function runCli({argv=process.argv.slice(2),deadlineMs=DEADLINE_MS,softDeadlineMs=deadlineMs,startedAt=performance.now(),
   hardTimer=armHardTimer(deadlineMs,startedAt),senderOptions={}}={}){
-  const hard=()=>{try{process.stderr.write('cm-notify: 意外错误（详情已隐藏，避免带出密钥）\n');}catch{}process.exit(SEND_EXIT.network);};
+  const hard=()=>{try{process.stderr.write('cm-notify: 意外错误（详情已隐藏，避免带出密钥）\n');}catch{}process.exit(SEND_EXIT.unexpected);};
   process.on('uncaughtException',hard);process.on('unhandledRejection',hard);
   return runSender({argv,deadlineMs:softDeadlineMs,startedAt,...senderOptions})
     .then(code=>{clearTimeout(hardTimer);process.exit(code);},hard);
