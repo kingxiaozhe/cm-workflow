@@ -177,7 +177,16 @@ test('rules answer files are validated before the host starts',t=>{
   f.write('init-verify.json',verifyAnswer());f.write('init-verify-a1.json',verifyAnswer());
   assertRefusedBeforeLaunch(f,run(),/init-verify\.json 与 init-verify-a1\.json 不能同时存在/);
   fs.rmSync(path.join(f.answers,'init-verify-a1.json'));
-  // Direct review holds the first revision even if attempt-2 documents were preloaded.
+  // The host inspects the raw draft before merging AGENTS.md lessons; so does the driver.
+  rulesDocuments(f,1);fs.writeFileSync(path.join(f.codeProject,'AGENTS.md'),'## 项目教训\n\n- 骨架教训\n');
+  f.write(generate.documents[0].contentFile,' \n');
+  assertRefusedBeforeLaunch(f,run(),/^\[drive\] init-generate\.json 无效: init_draft_invalid/m);
+});
+
+// The claude review preflight needs the macOS loopback sandbox; keep this case
+// darwin-only like the other review-dispatching cases in this file.
+test('direct review holds the first revision even when attempt-2 answers are preloaded',
+  {skip:process.platform!=='darwin'},t=>{
   const held=fixture(t,{scaffolded:true});held.writeRun('T-001',Object.keys(scaffold));held.writeRun('T-002',[...held.targets]);
   held.writeBootstrap(selection);prepareRules(held,1);reviewFixture(held);
   const paused=held.drive(held.plan('T-002','create',[...rulesPermissions,'--review-config','review.json']),'advance');
@@ -195,10 +204,6 @@ test('rules answer files are validated before the host starts',t=>{
   assert.equal(prematureRows.filter(row=>row.payload.type==='effect-intent'&&row.payload.effect.kind==='develop').length,1);
   assert.equal(read(preloaded,'.claude/rules/testing.md'),initial['.claude/rules/testing.md'],'preloaded a2 bytes are never consumed before findings');
   assert.equal(prematureRows.filter(row=>row.payload.type==='review-invocation-registered').length,1);
-  // The host inspects the raw draft before merging AGENTS.md lessons; so does the driver.
-  rulesDocuments(f,1);fs.writeFileSync(path.join(f.codeProject,'AGENTS.md'),'## 项目教训\n\n- 骨架教训\n');
-  f.write(generate.documents[0].contentFile,' \n');
-  assertRefusedBeforeLaunch(f,run(),/^\[drive\] init-generate\.json 无效: init_draft_invalid/m);
 });
 
 test('attempt 1 refuses existing instructions the host would not overwrite',t=>{
