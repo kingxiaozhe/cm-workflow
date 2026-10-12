@@ -38,14 +38,6 @@ const writeTestRun=({specsDir,codeProject,logHome,phase,data,at,runId=identity.r
   const result=spawnSync('python3',args,{encoding:'utf8',env:{...process.env,CM_WORKFLOW_LOG_HOME:logHome}});
   assert.equal(result.status,0,result.stderr);return JSON.parse(result.stdout);
 };
-const grantForRequest=(request,authorizationAt)=>{
-  const body={version:1,kind:'cm-review-dispatch-grant',grantId:'grant-live',adapterId:'codex-review-adapter',
-    invocationId:request.invocationId,requestDigest:request.requestDigest,identity:request.identity,reviewerId:'reviewer',
-    logicalContextId:request.contextId,packageDigest:request.payload.reviewPackage.packageDigest,
-    hostContextId:'actual-main',decisionId:'decision-live',decision:'approved',issuedAt:authorizationAt,
-    expiresAt:authorizationAt+60000};
-  return {...body,grantDigest:digest(body)};
-};
 const fixture=async fn=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-ai-conversation-')));
   const specsDir=path.join(root,'specs'),codeProject=path.join(root,'code'),feature=path.join(specsDir,'1.login');
@@ -147,51 +139,32 @@ test('blocked admission preserves the current repair attempt and rejects an inve
   assert.equal(effects,0);
 }));
 
-test('decision without trusted host input waits, and message self-approval is rejected',()=>fixture(async({specsDir,codeProject})=>{
+test('decision rejects message self-approval before direct review dispatch',()=>fixture(async({specsDir,codeProject})=>{
   let effects=0;
   const waiting={state:'awaiting_review',code:null,identity,packageDigest:'c'.repeat(64)};
   const runner={status:()=>waiting,executeEffect:async()=>{effects++;return waiting;},cancel:()=>waiting,run:async()=>waiting};
   const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
   const entry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner});
 
-  const result=await entry.handle(operation('decision',{packageDigest:'c'.repeat(64)}));
   const forged=await entry.handle({...operation('decision',{packageDigest:'c'.repeat(64)}),approved:true});
 
-  assert.equal(result.state,'awaiting_review');assert.equal(result.code,'decision_required');
-  assert.equal(result.pendingAction,'decision');assert.equal(result.outcome,'awaiting');
   assert.equal(forged.outcome,'rejected');assert.equal(forged.code,'invalid_input');assert.equal(effects,0);
 }));
 
-test('decision with current trusted host approval submits one deterministic review effect',()=>fixture(async({specsDir,codeProject})=>{
+test('decision directly submits one deterministic review effect for the current package',()=>fixture(async({specsDir,codeProject})=>{
   const effects=[];
   const waiting={state:'awaiting_review',code:null,identity,packageDigest:'c'.repeat(64)};
   const reviewed={state:'pending_review',code:'provider_review_observed',identity,packageDigest:'c'.repeat(64)};
   const runner={status:()=>waiting,executeEffect:async effect=>{effects.push(effect);return reviewed;},
     cancel:()=>waiting,run:async()=>waiting};
   const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
-  const entry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
-    hostDecision:{status:'approved'}});
+  const entry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner});
 
   const result=await entry.handle(operation('decision',{packageDigest:'c'.repeat(64)}));
 
   assert.deepEqual(effects,[{version:1,id:'review-1',identity,kind:'review'}]);
   assert.equal(result.state,'pending_review');assert.equal(result.pendingAction,'review_evidence');
   assert.equal(result.outcome,'advanced');
-}));
-
-test('denied host decision cannot enter the runner review path',()=>fixture(async({specsDir,codeProject})=>{
-  let effects=0;
-  const waiting={state:'awaiting_review',code:null,identity,packageDigest:'c'.repeat(64)};
-  const denied={state:'pending_review',code:'permission_denied',identity,packageDigest:'c'.repeat(64)};
-  const runner={status:()=>waiting,executeEffect:async()=>{effects++;return denied;},cancel:()=>waiting,run:async()=>waiting};
-  const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
-  const entry=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
-    hostDecision:{status:'denied',code:'permission_denied'}});
-
-  const result=await entry.handle(operation('decision',{packageDigest:'c'.repeat(64)}));
-
-  assert.equal(effects,0);assert.equal(result.state,'awaiting_review');assert.equal(result.code,'permission_denied');
-  assert.equal(result.pendingAction,'decision');
 }));
 
 test('resume develops only ready work and otherwise reports the existing durable state',()=>fixture(async({specsDir,codeProject})=>{
@@ -233,9 +206,8 @@ test('strict input, feature identity, and stale decisions reject before runner e
   assert.equal((await entry.handle(getter)).code,'invalid_input');
   const wrongFeature=createCmAiConversationEntry({specsDir,codeProject,feature:'2.profile',identity,runner});
   assert.equal((await wrongFeature.handle(operation('start'))).code,'task_mismatch');
-  const malformed=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
-    hostDecision:{status:'approved',source:'message'}});
-  assert.equal((await malformed.handle(operation('decision',{packageDigest:'c'.repeat(64)}))).code,'invalid_input');
+  const forged=await entry.handle({...operation('decision',{packageDigest:'c'.repeat(64)}),approved:true});
+  assert.equal(forged.outcome,'rejected');assert.equal(forged.code,'invalid_input');
   assert.equal(effects,0);
 }));
 
@@ -287,16 +259,15 @@ test('concurrent start preserves a busy runner rejection and current state',()=>
 
 test('review stage and develop package/store rejections remain safe rejected summaries',()=>fixture(async({specsDir,codeProject})=>{
   const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
-  for(const [name,current,op,hostDecision] of [
+  for(const [name,current,op] of [
     ['stage_mismatch',{state:'awaiting_review',code:null,identity,packageDigest:'c'.repeat(64)},
-      operation('decision',{packageDigest:'c'.repeat(64)}),{status:'approved'}],
-    ['package_mismatch',{state:'ready',code:null,identity,packageDigest:null,calls:[]},operation('start'),null],
-    ['store_failure',{state:'ready',code:null,identity,packageDigest:null,calls:[]},operation('start'),null],
+      operation('decision',{packageDigest:'c'.repeat(64)})],
+    ['package_mismatch',{state:'ready',code:null,identity,packageDigest:null,calls:[]},operation('start')],
+    ['store_failure',{state:'ready',code:null,identity,packageDigest:null,calls:[]},operation('start')],
   ]){
     const runner={status:()=>current,executeEffect:async()=>({outcome:'rejected',code:name}),
       cancel:()=>current,run:async()=>current};
     const args={specsDir,codeProject,feature:'1.login',identity,runner};
-    if(hostDecision)args.hostDecision=hostDecision;
     const result=await createCmAiConversationEntry(args).handle({...op,requestId:`reject-${name}`});
     assert.equal(result.outcome,'rejected',name);assert.equal(result.code,name,name);
     assert.equal(result.state,current.state,name);assert.deepEqual(result.identity,identity,name);
@@ -340,8 +311,7 @@ test('real V3/store composition completes through the existing owner and blocks 
       check:()=>[{id:'check',command:['synthetic'],outcome:'passed',exitCode:0,evidence:'fixture'}],
       taskLearning:{feature:'1.login'},
       taskCompletion:{reviewsDir,handoffs},
-      reviewInvocation:{developerThreadId:'actual-developer',excludedThreadIds:['actual-main'],
-        authorize:(request,{authorizationAt})=>grantForRequest(request,authorizationAt)}};
+      reviewInvocation:{developerThreadId:'actual-developer',excludedThreadIds:['actual-main']}};
     let runner=createTaskRunner({...runnerOptions,persistence:{store,mode:'create',version:3}});
     const {createCmAiConversationEntry}=await import('./cm-ai-conversation-entry.mjs');
     const start=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner});
@@ -355,8 +325,7 @@ test('real V3/store composition completes through the existing owner and blocks 
     const premature=await resumed.handle(operation('complete',{packageDigest:developed.packageDigest}));
     assert.equal(premature.outcome,'rejected');assert.equal(premature.code,'completion_not_ready');
     assert.deepEqual(store.snapshot(),beforePremature);assert.deepEqual(fs.readFileSync(tasksPath),taskBefore);
-    const decide=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner,
-      hostDecision:{status:'approved'}});
+    const decide=createCmAiConversationEntry({specsDir,codeProject,feature:'1.login',identity,runner});
     const reviewed=await decide.handle(operation('decision',{packageDigest:developed.packageDigest}));
     await decide.handle(operation('decision',{requestId:'decision-2',packageDigest:developed.packageDigest}));
     const beforeStale=store.snapshot();
