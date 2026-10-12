@@ -17,6 +17,8 @@ export const NOTIFY_LIMITS=Object.freeze({sameKeyMs:6*3600*1000,perMinute:4,perD
   commandTimeoutMs:15000,titleChars:60,bodyChars:500,defaultWaitMinutes:10,defaultCheckWaitMinutes:45,
   defaultIdleMinutes:45});
 const LOCK_STALE_MS=30000,LOG_LIMIT=256*1024;
+// Lock and dedup state are tiny JSON files; perDay sends bound the state size.
+const CONTROL_FILE_LIMIT=256*1024;
 const RUNNER=fileURLToPath(new URL('./notify-run.mjs',import.meta.url));
 
 export function notifyHome(env=process.env){
@@ -196,7 +198,28 @@ const keyHash=key=>createHash('sha256').update(key).digest('hex').slice(0,16);
 // older than 30 s; the critical section takes milliseconds) is reclaimed only
 // by renaming it to a unique name and confirming it is byte-identical to the
 // stale lock that was judged; anything else is put back and the notice skipped.
-function readLock(file){try{return fs.readFileSync(file,'utf8');}catch{return null;}}
+// Bounded read of a control file we may not own. lstat first: a symlink (even a
+// dangling one, and even where O_NOFOLLOW is 0 as on Windows), a non-regular
+// file or an oversized file never counts as readable. The descriptor is opened
+// without following links and without blocking (a FIFO cannot stall the host),
+// and must be the same inode lstat saw. Returns {missing:true} only for ENOENT;
+// every other trouble returns null, which skips the notice.
+function readBounded(file,limit){
+  let before;
+  try{before=fs.lstatSync(file);}catch(error){return error.code==='ENOENT'?{missing:true}:null;}
+  if(before.isSymbolicLink()||!before.isFile()||before.size>limit)return null;
+  let descriptor=null;
+  try{
+    descriptor=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK);
+    const info=fs.fstatSync(descriptor);
+    if(!info.isFile()||info.size>limit||info.dev!==before.dev||info.ino!==before.ino)return null;
+    const buffer=Buffer.alloc(info.size);
+    let offset=0;while(offset<info.size){const n=fs.readSync(descriptor,buffer,offset,info.size-offset,offset);if(n===0)break;offset+=n;}
+    return {text:buffer.subarray(0,offset).toString('utf8')};
+  }catch{return null;}
+  finally{if(descriptor!==null)try{fs.closeSync(descriptor);}catch{}}
+}
+function readLock(file){const read=readBounded(file,CONTROL_FILE_LIMIT);return read===null||read.missing?null:read.text;}
 function stale(raw){
   let value;try{value=JSON.parse(raw);}catch{return false;}
   if(!Number.isSafeInteger(value?.pid)||!Number.isFinite(value?.at))return false;
@@ -230,8 +253,8 @@ function reserve(home,hash,now){
   const lock=takeLock(lockFile);if(lock===null)return 'state_busy';
   try{
     let state={version:1,keys:{},sends:[]};
-    try{state=JSON.parse(fs.readFileSync(stateFile,'utf8'));}
-    catch(error){if(error.code!=='ENOENT')return 'state_invalid';}
+    const read=readBounded(stateFile,CONTROL_FILE_LIMIT);if(read===null)return 'state_invalid';
+    if(!read.missing){try{state=JSON.parse(read.text);}catch{return 'state_invalid';}}
     if(!state||state.version!==1||!state.keys||typeof state.keys!=='object'||Array.isArray(state.keys)
       ||!Array.isArray(state.sends)||!state.sends.every(Number.isFinite)
       ||!Object.values(state.keys).every(Number.isFinite))return 'state_invalid';

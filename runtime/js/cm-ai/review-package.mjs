@@ -343,7 +343,6 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
     let names;try{names=fs.readdirSync(path.join(root,dir)).sort();}catch{throw diagnostic('read_failed',dir);}
     for(const name of names){
       const p=dir+'/'+name;
-      if(inventoryOnly&&name==='.reviews')continue;
       let stat;try{stat=fs.lstatSync(path.join(root,p));}catch{throw diagnostic('read_failed',p);}
       if(name==='AGENTS.md')add(p,stat);
       else if(stat.isDirectory()&&!stat.isSymbolicLink())retainIgnoredInstructions(p,depth+1);
@@ -355,10 +354,12 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
     try { names=fs.readdirSync(path.join(root,rel)).sort(); } catch { fail('read_failed'); }
     for(const name of names) {
       const p=rel ? rel+'/'+name : name;
-      // Compatibility evidence is outside the code inventory. Existing JS
-      // snapshots retain their historical selection and exact record shape.
+      // Compatibility evidence is outside the code inventory: only the code
+      // root's own .reviews and the specs subtree. A nested directory that
+      // merely shares the name is ordinary code and stays in the inventory.
+      // Existing JS snapshots retain their historical selection and record shape.
       let s; try { s=fs.lstatSync(path.join(root,p)); } catch { fail('read_failed'); }
-      if(inventoryOnly&&name==='.reviews'&&p!==specsPath){
+      if(inventoryOnly&&p==='.reviews'&&p!==specsPath){
         need(s.isDirectory()&&!s.isSymbolicLink(),'unsupported_path');continue;
       }
       // Linked worktrees use a regular .git pointer file instead of a directory.

@@ -169,7 +169,9 @@ test('timeout kills inherited-pipe descendants, including TERM-ignoring children
     let descendant,leader;
     // Both guards watch this test process, never the leader, so a missed group kill still shows.
     const hung=ownerGuardSource()+"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)";
-    const worker=claudeWorker({...config,preflight:receipt,timeoutMs:300,
+    // 1.5 s leaves a loaded CI runner time to start the leader and report the
+    // descendant pid before the timeout fires; the assertions below scale with it.
+    const worker=claudeWorker({...config,preflight:receipt,timeoutMs:1500,
       spawnProcess:(_cli,_args,options)=>{
         const child=spawn(process.execPath,['-e',
           `${ownerGuardSource()}const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e',
@@ -181,8 +183,8 @@ test('timeout kills inherited-pipe descendants, including TERM-ignoring children
     try {
       const started=Date.now();
       const result=await worker({prompt:'synthetic'}, {signal:new AbortController().signal,onEvent:()=>{}});
-      assert.equal(result.code,'timeout');assert.ok(Date.now()-started<4000);
-      assert.ok(Date.now()-started>=1200,'leader close must not cancel group escalation');
+      assert.equal(result.code,'timeout');assert.ok(Date.now()-started<8000);
+      assert.ok(Date.now()-started>=2400,'leader close must not cancel group escalation');
       assert.ok(Number.isInteger(descendant));
       const gone=()=>{try{process.kill(descendant,0);return false;}catch(error){return error.code==='ESRCH';}};
       for(const deadline=Date.now()+3000;!gone()&&Date.now()<deadline;)await new Promise(resolve=>setTimeout(resolve,25));

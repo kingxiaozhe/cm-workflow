@@ -39,8 +39,9 @@ identity, canonical-root digest, stable ignore policy, relative file paths, SHA-
 byte sizes and executable bits with a whole-record digest; it stores no file bodies.
 The existing review-package scanner excludes dependencies, fixed junk, Git-ignored
 paths and specs. A nested canonical `.reviews` parent is the specs subtree; when
-`.reviews` is at the code root only that directory is excluded. All `.reviews`
-directories in the inventory are excluded. External specs do not enter the code root.
+`.reviews` is at the code root only that directory is excluded. Any other directory
+that merely shares the `.reviews` name is ordinary code and stays in the inventory.
+External specs do not enter the code root.
 The same baseline/current ignore union filters both sides; AGENTS.md remains checked.
 When Git ignore policy is unavailable (as may happen on Windows), scanning falls back to built-in rules; Git-ignored files count as changes and must be listed or handled before the gate can pass.
 Capture refuses beyond 10,000 files or 1 GiB of inventory bytes, names the triggering

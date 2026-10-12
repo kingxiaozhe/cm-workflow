@@ -142,13 +142,62 @@ const RUNTIME=new URL('../runtime/js/',import.meta.url);
 // lines), side-effect imports and dynamic import() with a literal specifier.
 // A dynamic import() with anything else as its argument is reported as
 // `nonLiteral` so the test fails instead of silently missing a dependency.
+// Lexes the source once: comments are dropped, and every string and regex
+// literal is replaced by a numbered placeholder so that "import x from './y'"
+// inside a string, a comment wedged between two strings, or a regex with quotes
+// in it can neither hide nor fake an import. Template literals keep only their
+// ${...} expressions, lexed the same way, so a dynamic import() inside one still
+// counts. Specifiers are read back from the placeholder table.
+const KEYWORDS=new Set(['return','typeof','instanceof','in','of','new','delete','void','throw','case','do','else','yield','await']);
+function lex(source,start,literals,stopAtBrace){
+  let out='',i=start,depth=0;const n=source.length;
+  // A `/` starts a regex after an operator, an opener or a keyword; it is a
+  // division after a value (identifier, number, `)`, `]`, postfix `++`/`--`).
+  // After `}` the two cannot be told apart without parsing (block end vs object
+  // literal), so the scan fails loudly instead of guessing.
+  const regexAllowed=()=>{
+    const head=out.replace(/\s+$/,''),prev=head.slice(-1),word=/(?:^|[^\w$])([A-Za-z_$][\w$]*)$/.exec(head)?.[1];
+    if(prev==='}')throw new Error(`import scan: ambiguous "/" after "}" at offset ${i}; rewrite the source so the scanner can tell division from a regex`);
+    if(/\+\+$|--$/.test(head))return false;
+    return prev===''||/[(,=:\[!&|?{;+\-*%<>~^]/.test(prev)||KEYWORDS.has(word);
+  };
+  const push=(kind,text)=>{literals.push({kind,text});out+=kind==='string'?`"\u00a7${literals.length-1}\u00a7"`:'/\u00a7R\u00a7/';};
+  while(i<n){
+    const c=source[i],d=source[i+1];
+    if(c==='/'&&d==='/'){while(i<n&&source[i]!=='\n')i++;continue;}
+    if(c==='/'&&d==='*'){const close=source.indexOf('*/',i+2);i=close===-1?n:close+2;out+=' ';continue;}
+    if(c==="'"||c==='"'){
+      let j=i+1;while(j<n&&source[j]!==c&&source[j]!=='\n'){if(source[j]==='\\')j++;j++;}
+      push('string',source.slice(i+1,j));i=j+1;continue;
+    }
+    if(c==='`'){
+      out+='`';let j=i+1;
+      while(j<n&&source[j]!=='`'){
+        if(source[j]==='\\'){j+=2;continue;}
+        if(source[j]==='$'&&source[j+1]==='{'){const inner=lex(source,j+2,literals,true);out+='${'+inner.code+'}';j=inner.index+1;continue;}
+        j++;
+      }
+      out+='`';i=j+1;continue;
+    }
+    if(c==='/'&&regexAllowed()){
+      let j=i+1,cls=false;
+      while(j<n){const ch=source[j];if(ch==='\\'){j+=2;continue;}if(ch==='\n')break;if(cls){if(ch===']')cls=false;}else if(ch==='[')cls=true;else if(ch==='/')break;j++;}
+      push('regex',source.slice(i+1,j));i=j+1;continue;
+    }
+    if(stopAtBrace){if(c==='{')depth++;else if(c==='}'){if(depth===0)return {code:out,index:i};depth--;}}
+    out+=c;i++;
+  }
+  return {code:out,index:i};
+}
+export function lexForImports(source){const literals=[];return {code:lex(source,0,literals,false).code,literals};}
 export function scanImports(source){
-  const code=source.replace(/\/\*[\s\S]*?\*\//g,'').replace(/^\s*\/\/.*$/gm,'');
+  const {code,literals}=lexForImports(source);
+  const text=index=>literals[Number(index)].text;
   const specifiers=[];
-  for(const m of code.matchAll(/\b(?:import|export)\b[^;'"`()]*?\bfrom\s*['"]([^'"]+)['"]/g))specifiers.push(m[1]);
-  for(const m of code.matchAll(/\bimport\s*['"]([^'"]+)['"]/g))specifiers.push(m[1]);
+  for(const m of code.matchAll(/\b(?:import|export)\b[^;"`()]*?\bfrom\s*"\u00a7(\d+)\u00a7"/g))specifiers.push(text(m[1]));
+  for(const m of code.matchAll(/\bimport\s*"\u00a7(\d+)\u00a7"/g))specifiers.push(text(m[1]));
   let literal=0;
-  for(const m of code.matchAll(/\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g)){specifiers.push(m[2]);literal+=1;}
+  for(const m of code.matchAll(/\bimport\s*\(\s*"\u00a7(\d+)\u00a7"\s*\)/g)){specifiers.push(text(m[1]));literal+=1;}
   const nonLiteral=[...code.matchAll(/\bimport\s*\(/g)].length-literal;
   return {specifiers,nonLiteral};
 }
@@ -173,6 +222,22 @@ test('import scanner: multi-line static imports, dynamic import() with a literal
   assert.equal(multi.nonLiteral,0);
   assert.equal(scanImports('const m=await import(name);import(`./${x}.mjs`);import("./ok.mjs");').nonLiteral,2);
   assert.equal(scanImports('console.log(import.meta.url);').nonLiteral,0);
+  // Literals cannot hide or fake an import: text inside strings, a block comment
+  // wedged between two strings, a line-end comment, a regex with quotes.
+  const tricky=scanImports(`const a='x'; /* import './hidden.mjs' */ const b="import z from './fake.mjs'";
+const c=a+'y'; // import './tail.mjs'
+const d=/['"]\\/import/.test(c); import real from './real.mjs';
+const e=\`import './tpl.mjs' \${await import('./dyn.mjs')}\`;`);
+  assert.deepEqual(tricky.specifiers.sort(),['./dyn.mjs','./real.mjs']);assert.equal(tricky.nonLiteral,0);
+  assert.deepEqual(lexForImports(`'a' /* c */ 'b'`).literals.map(l=>l.text),['a','b']);
+  // Division is not a regex: postfix ++/--, a value or a closing paren before "/"
+  // must not swallow a later import on the same line (or inside a template).
+  for(const source of ['let n=1; n++ / 2; function later(){ return import("./late.mjs"); }',
+    'const q=(a+b)/2, r=a/b; import late from "./late.mjs";',
+    'const t=`${n-- / 2} ${await import("./late.mjs")}`;']){
+    const found=scanImports(source);assert.deepEqual(found.specifiers,['./late.mjs'],source);assert.equal(found.nonLiteral,0,source);
+  }
+  assert.throws(()=>scanImports('const o={a:1}/2; import("./x.mjs");'),/ambiguous "\/" after "}"/);
 });
 
 const importChild=(file,env={})=>spawnSync(process.execPath,['--input-type=module','-e',

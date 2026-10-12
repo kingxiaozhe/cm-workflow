@@ -277,7 +277,7 @@ function readInventoryBaseline(file,{root,specsPath},feature,task){
       if(previous!==null&&previous>=f.path||aliases.has(f.path.toLowerCase())
         ||typeof f.sha256!=='string'||!/^([a-f0-9]{64})$/.test(f.sha256)
         ||!Number.isSafeInteger(f.size)||f.size<0||!Number.isInteger(f.mode)||f.mode<0||(f.mode&0o111)!==f.mode
-        ||f.path.split('/').includes('.reviews')||specsPath!==null&&(f.path===specsPath||f.path.startsWith(specsPath+'/')))
+        ||f.path==='.reviews'||f.path.startsWith('.reviews/')||specsPath!==null&&(f.path===specsPath||f.path.startsWith(specsPath+'/')))
         throw new GateError('invalid inventory baseline file');
       previous=f.path;aliases.add(f.path.toLowerCase());total+=f.size;
       if(total>INVENTORY_LIMIT)throw new GateError('invalid inventory baseline budget');
