@@ -133,7 +133,9 @@ handoff_sha256: <lowercase SHA-256 returned by check-n4>
 entry and the body must contain findings or an explicit zero-findings result.
 `changes_requested` returns to N3 and produces the next attempt. N4 never edits
 implementation files. Round 2 cannot create attempt 3: another blocking result
-becomes `blocked` and requires human resolution under `runtime/review.md`.
+becomes `blocked`. Safety/data-correctness disputes still require a real human
+decision under `runtime/review.md`; the separately bounded continuation protocols
+below do not create ordinary attempt 3 or erase blocking findings.
 
 For a correction with confirmed scope after round-two blocked, see
 `docs/human-correction.md`: `prepare-human-correction` and
@@ -141,6 +143,47 @@ For a correction with confirmed scope after round-two blocked, see
 one-shot correction with its reason and bound decision-source declaration. These
 records do not create approval. N4/N5 and locked completion accept its fixed `--correction`
 record; legacy-unbound flags do not weaken correction checks.
+
+A separate version-two compatibility taskgate entrance provides one-shot
+`cm-controlled-correction` evidence
+(`version:2`, `continuation:1`), prepared by `prepare-controlled-correction` and
+sealed by `publish-controlled-correction-review`; see `docs/cm-control-policy-v2.md`.
+It supports only tasks without JS ownership. Retained JS journal/run/unknown
+evidence blocks the compatibility writer and must reject preparation first;
+prepared/published correction evidence cannot bypass that ownership gate.
+`--decision-source operator|model` is provenance only, not authentication or human
+approval. Neither entrance accepts `--human-authorized`; the legacy human protocol
+binds only its reason and source declaration. The two continuations are mutually exclusive.
+Both prepare commands hold the shared `{feature}-{task}-correction-prepare.lock`
+through preparation, with PID/time ownership and fail-fast contention. A peer's
+orphan handoff alone is preserved for bounded preparation recovery; any peer
+record/review/receipt prevents another continuation. Interrupted locks are not
+automatically removed: verify the owner has exited, inspect preparation/sealed
+evidence and coordinate explicitly. An active or unknown owner never authorizes
+lock deletion, retry or automatic crash recovery.
+The gate pins the original r1/r2 handoff/review history, keeps blocked r2 and P2
+findings, and binds the corrected implementation plus finalized Learning/handoff.
+A fresh independent review must cover the complete correction scope, bind
+`correction_sha256` and `handoff_sha256`, and report approved with zero blocking
+findings. The v2 review's strict raw JSON body has exactly `conclusion`, `findings`
+and `resolved_findings`; item keys are exactly `id`, `priority` (P0-P3), and
+`evidence`, with ids unique across both arrays. Active findings count must equal
+`blocking_findings`; approved requires `"Zero findings."` with no active finding,
+while non-approved requires `"Blocking findings."`. Repaired historical P2 is
+recorded only in resolved findings. A zero-findings phrase does not suppress an
+active P2 or extra text; the old human body contract stays unchanged.
+N4/N5 and locked completion consume that sealed evidence through the
+existing fixed `--correction` selector. Drift, missing Learning, duplicate
+continuation or a new blocking finding refuses completion; no manual checkbox,
+third ordinary round, journal reset or extra completion path is introduced.
+This correction slice changes only owner-free compatibility taskgate evidence
+and the exact task checkbox. cm-ai v2 single-task and batch r2 remains formally
+blocked, with no runner-owned correction completion entrance. Compatibility
+`mark-done` cannot finish that JS-owned run, restore its batch, advance N6/N7/N8
+or publish `run_done`. Never delete ownership evidence or hand-edit journal/batch
+state to imply completion.
+The source declaration cannot widen real dialogue authorization or external
+push, publication, deployment and financial permissions.
 
 N5 must let the JavaScript gate validate and update the exact task checkbox while
 the compatibility entry holds the existing platform ownership lock:

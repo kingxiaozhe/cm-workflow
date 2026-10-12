@@ -121,6 +121,41 @@ reports, records the correction reason and bound source declaration, seals a fre
 independent correction review, and does not reopen a host journal or reset ordinary
 attempts. The record reports the supplied decision source; it does not create approval.
 
+A separate version-two taskgate protocol, `cm-controlled-correction`, is one-shot
+(`version:2`, `continuation:1`), described in `docs/cm-control-policy-v2.md`.
+It supports only compatibility taskgate tasks without JS ownership. A retained
+JS journal, JS run or unknown ownership evidence blocks the compatibility writer
+and must be rejected before correction preparation. Do not delete that evidence
+or hand-edit ownership to enter this protocol. It
+records the concrete correction decision as provenance-only `operator` or `model`,
+without claiming human authentication or approval. It keeps the original blocked
+round-two report and every blocking finding, including P2, as immutable history.
+Finalize the actual in-scope revision, relevant checks and Learning/handoff first;
+then review the complete revised package through a fresh independent channel.
+Only approved, zero-blocking evidence bound to the correction record, final
+handoff and current implementation can enter the existing N4/N5 completion gate.
+Its v2 correction review body is strict raw JSON with exactly `conclusion`,
+`findings`, and `resolved_findings`. Each finding has exactly `id`, `priority`
+(P0-P3), and nonempty `evidence`; ids are unique across both arrays. Active
+`findings.length` equals the header's `blocking_findings`. Approved requires
+`conclusion: "Zero findings."` and an empty active findings array; other verdicts
+require `"Blocking findings."`. Fixed historical P2 belongs only in
+`resolved_findings`. A zero-findings phrase cannot hide a remaining P2, extra prose
+or a mismatched count. This structured-body rule does not change legacy human
+correction review bodies.
+This slice connects only owner-free compatibility taskgate correction evidence
+and the exact task checkbox. cm-ai v2 single-task and batch round-two runs remain
+formally blocked; no runner-owned correction completion entrance exists. Even
+prepared/published taskgate evidence cannot complete a JS-owned run. No original
+batch restoration, N6/N7/N8 advance or `run_done` follows this compatibility
+protocol. Do not hand-edit journal or batch state to claim workflow completion.
+It is not attempt 3, does not reset a host journal, and cannot coexist with the
+legacy human continuation. Source labels, model output and V3 grants do not expand
+real conversation authorization, code scope, external sends, Git/push, publication,
+deployment or financial permissions. Safety/data-correctness disputes that need
+a human decision still require that decision; unavailable review capacity remains
+pending, never self-approved.
+
 At any stage, changing reviewed code, tests, or execution instructions invalidates
 approval for the changed content. N5 may record improvement suggestions, not make
 new implementation changes while writing lessons. After mark-done, preserve the
