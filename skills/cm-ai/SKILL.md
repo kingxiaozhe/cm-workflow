@@ -61,13 +61,13 @@ START
 │   ┌─► [N3: 执行 Task] ── 开发 → 末任务文档同步 → Learning/handoff 定稿
 │   │     │
 │   │     ▼
-│   │   [N4: Review] ── 主执行者自审 → 独立审查
+│   │   [N4: Review] ── 独立审查
 │   │     │
 │   │     ▼
 │   │   [N5: 标记完成] ── tasks.md 标 [x]、写 LESSONS.md
 │   │     │
 │   │     ▼
-│   │   [N6: QA 评估] ── 评分决定是否触发 cm-qa-engineer
+│   │   [N6: QA 评估] ── 固定检查点与登记路径决定是否触发 cm-qa-engineer
 │   │     │
 │   │     ▼
 │   │   [N7: 上下文管理] ── 从磁盘重读 specs 与项目约束
