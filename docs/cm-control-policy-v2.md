@@ -28,7 +28,8 @@ control policy v2 把运行能力集中到一个严格的策略文件。原配�
 `qaFix` 选择 `manual` 或 `auto` 时，`qa` 必须为 `run`；不满足时返回 `invalid_input`。
 批次目前不支持 QA 修复，`qaFix` 必须为 `disabled`。其他值返回 `invalid_arguments`。
 模式与配置冲突用 `invalid_arguments`；缺少必需配置仍沿原具体阻断，例如 `qa_fix_source_required`、`qa_fix_auto_authorization_required`。不得自动补开能力或改用另一入口。
-`qa:"disabled"` 只关闭实际 QA executor，仍执行原 `qa_assess` 和必需 QA 的机械判定，驾驶员仍需合法 assessment 答案。
+`qa:"disabled"` 只关闭实际 QA executor，仍执行 `qa_assess` 清单来源确认和固定检查点判定；驾驶员只需合法的 `{"confirmed":true}` 答案。
+关键路径登记使用现有工作流配置的 `qa.criticalPaths`，详见 [JS workflow control](js-workflow-control.md)。未登记关键路径的项目，N6 不做任何风险识别，只有这两个固定点。两点为 feature 完成及连续五项未 QA。`policies.tests` 只控制执行类型，不取消必跑；blocking cases 与环境 BLOCKED 合同不变。
 触发必需 QA 却没有 executor 时，真实停点为 `qa_triggered`、`pendingAction:"qa_execution"`；不得报告 QA PASS 或 `run_done`。
 `qaFix:"auto"` 只启用原自动修复能力，不替代其故障分型、范围、诊断、测试、fresh Review 和完成门禁。
 

@@ -631,7 +631,7 @@ JS 通过现有通道发出固定请求，结果由原组件校验：
 | kind | 当前会话的职责 | JS 的职责 |
 | --- | --- | --- |
 | documentation_sync | Review 前同步列明的文档，返回 `{status:"completed"}`（做不了返回 `{status:"blocked"}`） | 原 scope 检查、最终 handoff 与 Review 覆盖；问之前记下开发应答与文档起点，失败时只重问这一项 |
-| qa_assess | 返回原 scores/changes 语义评估 | 原 N6 强制触发、评分及日志 |
+| qa_assess | 核对请求里的清单与来源，只回 `{confirmed:true}` | 固定检查点、登记路径匹配及原 N6 日志 |
 | qa_logic | 返回原静态 verdict/evidence | 与实际命令覆盖关联，不把静态结论算执行 PASS |
 | qa_browser | 用获准工具实测，返回原 verdict/evidence/environment/cleanup；PASS 只因证据不在 specs 根的 `.reviews/` 下（或缺失、为空）时，宿主带 `correction` 再问一次同一用例，只改证据重答 | 原逐例日志、证据与载体校验、QA 结果 |
 | documentation_inspect | 只读核验，返回请求绑定的原文档结果 | 原 N8/finalizer，唯一 run_done |
@@ -921,16 +921,44 @@ P2 为合并前必须修的边界、错误处理、契约或测试缺陷，P3 �
 此回调只作决策，不执行 QA、外发或修改文件。JSON 配置/请求不能注入回调。
 
 宿主可使用 `runtime/js/cm-ai/host-qa-policy.mjs` 的
-`createHostQaDecisionProvider({assess, timeoutMs})` 作为上述 provider，不必自己实现N6规则。
-`assess` 接收当前身份、包摘要及JS从原tasks/QA日志推导的pending、mergeEligible、
-unassessedTasks；只返回语义评估：`scores`含scope/risk/accumulation/boundary（各1–5），
-`changes`含api/migration/authentication/authorization/payment（布尔值）。JS决定是否触发，
-不从文件名猜测API或支付风险。低分也不能跳过feature完成、migration、认证/授权/支付、
-连续五项未QA；普通评分≥8触发。API仅在本feature恰剩下一项且无其他触发条件时合并，
-原日志同时保留qa和decision/qa_merge。缺失历史QA留痕的已完成任务保守计入，不假设测过。
-历史已绑定决定仍由原entry恢复，不重复评估。此适配器不执行测试、路由角色或授权修复。
+`createHostQaDecisionProvider({assess, timeoutMs, criticalPaths})` 作为上述 provider，不必自己实现 N6 规则。
+`assess` 接收当前身份、包摘要及 JS 从原 tasks/QA 日志推导的 pending、mergeEligible、
+unassessedTasks，以及 runner 提供的 `changedFiles: {paths, source}` 和项目登记；只回 `{confirmed:true}`，不能决定类别或跳过理由。
+JS 根据登记与实际路径匹配 migration、authentication、authorization、payment、api。
+feature 完成和连续五项未 QA 沿用原机械计算，命中规则用逗号连接，`score: null`。
+未命中为 `skipped/no_fixed_trigger`；API 仅在本 feature 恰剩下一项、`mergeEligible` 为 true 且无其他触发条件时合并，
+原日志同时保留 qa 和 decision/qa_merge。缺失历史 QA 留痕的已完成任务保守计入，不假设测过。
+历史已绑定决定仍由原 entry 恢复，不重复评估。此适配器不执行测试、路由角色或授权修复。
+
+项目使用现有 `--workflow-config` 的 `qa.criticalPaths` 登记，批次使用 `workflows["feature/task"].qa.criticalPaths`。
+同一项目的任务应使用同一份登记。上层 `qa.commands`、`qa.environment` 与 `qa.timeoutMs` 保持原合同。
+登记示例（此 JSON 是 `qa.criticalPaths` 的值）：
+
+```json
+{
+  "migration": ["db/migrations/**"],
+  "authentication": ["src/login.mjs"],
+  "authorization": ["src/access/*.mjs"],
+  "payment": ["src/payments/**"],
+  "api": ["src/api/**"]
+}
+```
+
+类别可省略；值是最多 256 个无重复模式的数组。路径相对代码根，使用 `/`；多代码根使用共同 `codeProject` 根，模式须带子目录。
+精确路径匹配完整文件名；`*` 匹配段内任意字符，`?` 匹配一个字符，完整段 `**` 匹配零个或多个段。
+拒绝绝对路径、`.`/`..`、反斜线、空段、字符组、花括号和扩展 glob。缺省或空对象表示未登记。
+未登记关键路径的项目，N6 不做任何风险识别，只有这两个固定点。
+这两个固定点为 `feature_complete`、`five_tasks_without_qa`。本轮不输出文档或类型专属跳过理由。
+
+正式 runner 的 `qaChangedFiles(packageDigest)` 只读返回审查包的 `changes` 路径；该清单来自编辑前基线与实际内容，
+不按 handoff 作者清单重建。状态和包摘要沿用原 entry 前后核对。日志字段 `changed_files_source` 与 reason 分离：
+`review_package` 为基线核对清单，`handoff_only` 为可信适配器仅有 handoff 的兼容输入，`unavailable` 为旧适配器未提供清单。
+已有登记而清单 unavailable 时以原 `qa_policy_unavailable` 阻断，不能宣称无命中。
+登记沿用工作流配置指纹和原 QA 配置修订入口；已经记录的决策不重算。旧整数行保留原 4–20 范围及 skipped ≤7、triggered ≥8 的校验，新行不伪造数值。
+旧日志和 METRICS 一行不改写，METRICS 列顺序与只记实际 QA 结果的规则不变。
+
 已有绑定决策从 specs-local 日志恢复，不再次调用；取消和超时会中止等待并丢弃晚到结果，
-分别报告 `cancelled` / `qa_decision_timeout`，不会自动重试。新决定校验强制 QA 政策；
+分别报告 `cancelled` / `qa_decision_timeout`，不会自动重试。新决定使用固定 QA 政策；
 已经完整校验且绑定的历史决定沿原证据消费路径继续，不重新裁决或改写日志。
 适配能力和超时纳入执行配置指纹；未启用时保持旧指纹。测试可用 `qaLogHome` 隔离日志镜像。
 
@@ -1330,7 +1358,7 @@ key 形如 `1.work/T-001`，与 `tasks` 的 `feature/taskId` 一致。省略该�
 合并完成后移除该成员工作树。首次推进前主工作区必须干净（含未跟踪文件），否则整批停止
 并列出文件；被阻断的成员保留其 WIP 提交与原因，不自动丢弃。
 
-**QA 延后。** 成员的 N6 自动记为 `skipped`（`reason: parallel_member_deferred`，固定评分 4），
+**QA 延后。** 成员的 N6 自动记为 `skipped`（`reason: parallel_member_deferred`，`score: null`），
 不逐任务跑 QA；整个 feature 的 QA 在末任务触发一次，覆盖合并后的结果。
 
 **并行的边界。** 当前会话通道一次只接一个工具调用，成员的开发请求按序排队，

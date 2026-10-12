@@ -1,5 +1,7 @@
 # JS 宿主 QA 恢复
 
+N6 新决定按固定检查点和 `qa.criticalPaths` 登记匹配；`qa_assess` 只确认清单来源，回 `{"confirmed":true}`。恢复已记录决定时沿用原行，不重新裁决；登记和配置修订见 [N6 固定检查点](N6-qa-eval.md)。
+
 本文是 [js-host.md](js-host.md) 的 N6 QA 恢复引用：QA 超时、阻断、中断、配置填错或项目收尾 QA 未通过时，按 js-host.md 的停机路由表读取对应一节。
 
 ## v2 与 legacy 的恢复分界

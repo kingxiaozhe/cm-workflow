@@ -212,6 +212,8 @@ v2 的自动审查仍使用冻结模型和完整审查包，恢复不得改变�
 
 ## QA 与文档基础
 
+项目在现有 workflow JSON 的 `qa.criticalPaths` 登记关键路径，格式与清单来源见 [N6 固定检查点](N6-qa-eval.md)。未登记关键路径的项目，N6 不做任何风险识别，只有这两个固定点。两点为 feature 完成及连续五项未 QA。
+
 首次 create 可同时提供原 `--workflow-config`。v2 在 policy 中选择 `qa:"run"`；
 单任务 QA 修复明确选择 `qaFix:"manual"` 或 `"auto"`，批次必须为 `disabled`。
 配置缺失时如实阻断，不自动开启能力。disabled 仍执行 `qa_assess` 与原必需 QA 判定；
@@ -236,7 +238,8 @@ QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.tim
 | develop | 读取 N3 的业务约束、适用项目指令与请求中的 Learning；按 N3 的技能匹配读取并使用真实工程 Skill，只修改固定业务 scope，返回原开发/Learning 结果。不要执行 N3 的手工交接/标记流程。 |
 | check | 按原任务测试合同实际运行适量检查，返回实际退出码及证据；不把自审或静态推断写成测试通过。 |
 | documentation_sync | 使用 cm-doc-syncer 的文档判断，只同步请求列明且获准的普通文档；这是 Review 前写入，不新增完成后写入。只回 `{"status":"completed"}` 或 `{"status":"blocked"}`，不碰列明文档以外的文件；失败后宿主只重问这一项、不重问开发。 |
-| qa_assess / qa_logic / qa_browser | 使用 N6 与 cm-qa-engineer 的业务判断或获准工具；评分不替代 JS 的强制 QA 政策，静态判断不替代真实运行，不能改变载体或伪造浏览器证据。 |
+| qa_assess | 核对请求的 changedFiles 清单、来源与 criticalPaths 登记，只回 `{"confirmed":true}`；JS 按固定规则决定触发，不提交风险类别或跳过理由。 |
+| qa_logic / qa_browser | 使用 N6 与 cm-qa-engineer 的业务判断或获准工具；静态判断不替代真实运行，不能改变载体或伪造浏览器证据。 |
 | documentation_inspect | 按 N8 只读核对必需文档及收尾证据；缺文档、度量或必需能力返回 blocked。新 run 按冻结请求默认做[收尾资料核对](knowledge-closeout.md)，结果并入总结；关闭或缺报告如实记录。 |
 
 进入匹配角色前读取该 Skill 完整指令，但 JS 所有权不让渡给角色。实际模型路由、资源
