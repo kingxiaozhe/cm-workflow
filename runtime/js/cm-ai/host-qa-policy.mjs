@@ -1,4 +1,4 @@
-// N6 policy over host semantic assessment; no provider, QA execution or new state.
+// N6 fixed checkpoints over registered paths and runner-proven changes.
 import fs from 'node:fs';
 import path from 'node:path';
 import {inspectCmAiQaTaskContext} from './cm-ai-admission.mjs';
@@ -28,43 +28,85 @@ function history(binding,context) {
   return new Set([...unseen,...since,key(binding.feature,binding.identity.taskId)]).size;
 }
 
-export function decideHostQaPolicy({assessment,pending,mergeEligible,unassessedTasks}) {
-  const value=json(assessment);shape(value,['scores','changes']);
-  shape(value.scores,['scope','risk','accumulation','boundary']);
-  shape(value.changes,['api','migration','authentication','authorization','payment']);
-  for(const score of Object.values(value.scores))need(Number.isInteger(score)&&score>=1&&score<=5,'qa_assessment_invalid');
-  for(const flag of Object.values(value.changes))need(typeof flag==='boolean','qa_assessment_invalid');
+const categories=['migration','authentication','authorization','payment','api'];
+
+// Deliberately bounded POSIX glob grammar: literals, *, ?, and whole-segment **.
+// A registry never imports executable patterns, absolute roots or parent traversal.
+function relativePath(value,pattern=false){
+  need(typeof value==='string'&&value.length>0&&value.length<=1024&&!/[\\\r\n\0]/.test(value)
+    &&!value.startsWith('/')&&!/^[A-Za-z]:/.test(value),'qa_assessment_invalid');
+  const parts=value.split('/');
+  need(parts.every(part=>part.length>0&&part!=='.'&&part!=='..'),'qa_assessment_invalid');
+  if(pattern)need(!/[\[\]{}()!+@]/.test(value)&&parts.every(part=>!part.includes('**')||part==='**'),'qa_assessment_invalid');
+  return value;
+}
+export function readQaCriticalPaths(raw={}){
+  const registry=json(raw);need(registry&&typeof registry==='object'&&!Array.isArray(registry),'qa_assessment_invalid');
+  need(Object.keys(registry).every(name=>categories.includes(name)),'qa_assessment_invalid');
+  for(const patterns of Object.values(registry)){
+    need(Array.isArray(patterns)&&patterns.length<=256&&new Set(patterns).size===patterns.length,'qa_assessment_invalid');
+    patterns.forEach(pattern=>relativePath(pattern,true));
+  }
+  return registry;
+}
+function matchesPath(file,pattern){
+  const segments=pattern.split('/');
+  const source=segments.map((part,index)=>part==='**'
+    ?index===segments.length-1?'.*':'(?:[^/]+/)*'
+    :part.replace(/[.*+?^${}()|[\]\\]/g,char=>char==='*'?'[^/]*':char==='?'?'[^/]':`\\${char}`)
+      +(index===segments.length-1?'':'/')).join('');
+  return new RegExp(`^${source}$`).test(file);
+}
+export function readQaAssessment(raw){
+  const value=json(raw);shape(value,['confirmed']);need(value.confirmed===true,'qa_assessment_invalid');
+  return value;
+}
+export function readQaChangedFiles(raw){
+  const value=json(raw);shape(value,['paths','source']);
+  need(['review_package','handoff_only','unavailable'].includes(value.source),'qa_policy_unavailable');
+  need(Array.isArray(value.paths)&&value.paths.length<=10000&&new Set(value.paths).size===value.paths.length,'qa_policy_unavailable');
+  value.paths.forEach(file=>relativePath(file));
+  need(value.source!=='unavailable'||value.paths.length===0,'qa_policy_unavailable');
+  return value;
+}
+export function decideHostQaPolicy({changedFiles,criticalPaths={},pending,mergeEligible,unassessedTasks}) {
+  const registry=readQaCriticalPaths(criticalPaths);
+  need(Array.isArray(changedFiles)&&new Set(changedFiles).size===changedFiles.length,'qa_policy_unavailable');
+  changedFiles.forEach(file=>relativePath(file));
   need(Number.isSafeInteger(pending)&&pending>=0&&typeof mergeEligible==='boolean'
     &&Number.isSafeInteger(unassessedTasks)&&unassessedTasks>=1,'qa_policy_unavailable');
   need(!mergeEligible||pending===1,'qa_policy_unavailable');
-  const score=Object.values(value.scores).reduce((sum,item)=>sum+item,0);
+  const hits=new Set(categories.filter(name=>(registry[name]??[]).some(pattern=>changedFiles.some(file=>matchesPath(file,pattern)))));
   const reasons=[];
   if(pending===0)reasons.push('feature_complete');
-  for(const name of ['migration','authentication','authorization','payment'])if(value.changes[name])reasons.push(name);
+  for(const name of categories.slice(0,-1))if(hits.has(name))reasons.push(name);
   if(unassessedTasks>=5)reasons.push('five_tasks_without_qa');
-  if(value.changes.api&&!mergeEligible)reasons.push('api_change');
+  if(hits.has('api')&&!mergeEligible)reasons.push('api');
   if(reasons.length)return {status:'triggered',score:null,reason:reasons.join(',')};
-  if(score>=8)return {status:'triggered',score,reason:'risk_score'};
-  return {status:'skipped',score,reason:value.changes.api&&mergeEligible?'merged_to_feature_qa':'risk_score_below_threshold'};
+  return {status:'skipped',score:null,reason:hits.has('api')&&mergeEligible?'merged_to_feature_qa':'no_fixed_trigger'};
 }
 
 // Plug directly into the existing trusted qaDecisionProvider seam. The host
-// classifies meaning; this function owns the mechanical decision and binding.
-export function createHostQaDecisionProvider({assess,timeoutMs}) {
+// confirms the supplied inventory source; JS owns the decision and binding.
+export function createHostQaDecisionProvider({assess,timeoutMs,criticalPaths={}}) {
+  const registry=readQaCriticalPaths(criticalPaths);
   need(typeof assess==='function'&&Number.isSafeInteger(timeoutMs)&&timeoutMs>0&&timeoutMs<=60000,'qa_assessment_invalid');
   return Object.freeze({timeoutMs,async decide(raw,signal){
     const input=json(raw);
-    shape(input,['specsDir','codeProject','feature','identity','packageDigest',...(Object.hasOwn(input,'previousDecisionId')?['previousDecisionId']:[])]);
+    shape(input,['specsDir','codeProject','feature','identity','packageDigest',...(Object.hasOwn(input,'previousDecisionId')?['previousDecisionId']:[]),
+      ...(Object.hasOwn(input,'changedFiles')?['changedFiles']:[])]);
     // previousDecisionId names an older recorded decision that an explicit
     // recovery supersedes; it only derives a distinct id, never the assessment.
-    const {previousDecisionId=null,...binding}=input;if(previousDecisionId!==null)id(previousDecisionId);
+    const {previousDecisionId=null,changedFiles:rawFiles={paths:[],source:'unavailable'},...binding}=input;
+    const changedFiles=readQaChangedFiles(rawFiles);
+    need(changedFiles.source!=='unavailable'||!Object.values(registry).some(patterns=>patterns.length),'qa_policy_unavailable');
+    if(previousDecisionId!==null)id(previousDecisionId);
     validIdentity(binding.identity);hex(binding.packageDigest);
     const context=inspectCmAiQaTaskContext({...binding,taskId:binding.identity.taskId});
     const unassessedTasks=history(binding,context);
     need(!signal.aborted,'cancelled');
-    let assessment;
-    try{assessment=await assess(freeze({...binding,pending:context.pending,mergeEligible:context.mergeEligible,
-      unassessedTasks}),signal);}
+    try{readQaAssessment(await assess(freeze({...binding,pending:context.pending,mergeEligible:context.mergeEligible,
+      unassessedTasks,changedFiles,criticalPaths:registry}),signal));}
     catch(error){
       // A missed answer window is a transport outcome, not a QA decision. It is
       // reported like the outer decision timer: retryable, and nothing durable.
@@ -76,9 +118,9 @@ export function createHostQaDecisionProvider({assess,timeoutMs}) {
     // another decision; do not bind an answer to different policy inputs.
     const current=inspectCmAiQaTaskContext({...binding,taskId:binding.identity.taskId});
     need(digest(current)===digest(context)&&history(binding,current)===unassessedTasks,'stale_qa');
-    const result=decideHostQaPolicy({assessment,pending:context.pending,mergeEligible:context.mergeEligible,unassessedTasks});
+    const result=decideHostQaPolicy({changedFiles:changedFiles.paths,criticalPaths:registry,pending:context.pending,mergeEligible:context.mergeEligible,unassessedTasks});
     const bound={identity:binding.identity,packageDigest:binding.packageDigest,...(previousDecisionId===null?{}:{previousDecisionId})};
     return freeze({...result,decisionId:`qa-${digest(bound).slice(0,48)}`,
-      identity:binding.identity,packageDigest:binding.packageDigest,at:new Date().toISOString().replace(/\.\d{3}Z$/,'Z')});
+      identity:binding.identity,packageDigest:binding.packageDigest,changedFilesSource:changedFiles.source,at:new Date().toISOString().replace(/\.\d{3}Z$/,'Z')});
   }});
 }
