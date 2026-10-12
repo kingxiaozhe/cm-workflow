@@ -227,10 +227,105 @@ v2 策略随新运行持久化并纳入新版执行指纹。旧 metadata 中该�
 只读 status 可用于核对历史；执行入口仍必须匹配原协议。迁移需要独立的新运行决定，不能就地换入口规避旧证据。
 单任务 QA 重跑、QA 配置修订与规格换绑使用上节 launchControlTarget；批次和 supersede 等出口以实际支持为准，不把单任务恢复合同理解成全部旧出口已开放。
 
+## 兼容 taskgate 的一次受控补正
+
+**仅支持没有 JS ownership 的兼容 taskgate 任务。** cm-ai 新单任务和批次的第二轮仍正式 blocked，
+本轮没有 runner-owned correction 入口。它们不能通过这里的 prepare/publish/mark-done 完成原 run。
+存在保留的 JS journal、JS run 或 unknown ownership 证据时，兼容 writer 正式拒绝；不得删证据、手改 journal/batch 或改走兼容 writer 绕过 owner。
+准备前先核对该任务没有 JS ownership，准备入口也必须在发现这种证据时拒绝，不能先生成无法完成的半套补正材料。
+兼容 writer 自己会拒绝的残留（空数据库、缺少或不匹配的 `writer-ready.json`、孤立证书）同样在准备前拒绝，不自动修复或重新初始化。
+
+下面的 version 2 `cm-controlled-correction` 是独立 taskgate 证据协议，不表示 cm-ai v2 已支持阻断恢复。
+兼容 taskgate 的常规两轮仍有阻断时，保留原 blocked r2 与 P2 等 findings。
+确需在原批准范围内修订时最多使用一次；不新建第三轮，不覆盖 r1/r2 或旧人审协议。
+先实际修改批准 scope、完成相关检查与最终 Learning/handoff，再准备完整修订包。
+兼容 mark-done 只更新权威任务 checkbox，不推进 N6/N7/N8 或产生 `run_done`。
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs" prepare-controlled-correction \
+  --handoff "{最终修订handoff}" --reviews-dir "{原reviews目录}" \
+  --feature "{原feature}" --task "{原task}" --project-root "{原代码根}" \
+  --decision-source operator --reason "{真实补正原因}"
+```
+
+`--decision-source` 只允许 `operator` 或 `model`，记录为 provenance-only 的来源声明，非身份认证或人工批准。
+该新命令和旧人工补正命令都不接受 `--human-authorized`，不自动调用模型，也不允许自报批准完成。
+返回固定的新 `correction`、`handoff`、`review` 路径及 `correction_sha256`。
+在 Review 发布前，用新返回的 handoff 与 correction 通过原 N4 门禁：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs" check-n4 \
+  --handoff "{prepare返回的handoff}" --reviews-dir "{原reviews目录}" \
+  --feature "{原feature}" --task "{原task}" --project-root "{原代码根}" \
+  --correction "{prepare返回的correction}"
+```
+
+使用最终修订包执行 fresh 独立 Review，结果写入 prepare 返回的 review 路径。
+不得复制旧批准或把自审写成独立审查。
+
+新 Review 沿原头部字段，包含 `independent:true`、`attempt:2`、`round:2`、`handoff_sha256` 与完整 scope，
+另绑定 `correction_sha256`。`at` 不得早于补正记录时间，reviewer 必须独立。
+新版补正 Review 的正文必须是原始 JSON，精确包含 `conclusion`、`findings`、`resolved_findings` 三个键。
+每条 finding 精确包含非空 `id`、`priority`、非空 `evidence`，priority 只接受 `P0`、`P1`、`P2`、`P3`；两个数组的 ID 合起来必须唯一。
+`findings` 表示本次仍存在的问题，长度必须等于头部 `blocking_findings`。
+`approved` 必须使用 `conclusion:"Zero findings."` 且 `findings:[]`；非 approved 使用 `conclusion:"Blocking findings."`。
+已修复的历史 P2 只写在 `resolved_findings`，保留具体修复证据，不能混入当前 findings 后靠一句“零问题”宣布通过。
+正文不加 Markdown 围栏，不夹带额外文字、字段或第二个 JSON 值；旧 human Review 正文保持原合同。
+
+以下是新版补正 Review 文件的完整格式示例。占位摘要与证据必须替换成独立 reviewer 对最终包的真实结果，不可当作实际批准：
+
+```text
+---
+at: {独立审查实际ISO时间，且不早于补正记录}
+reviewer: codex-subagent
+independent: true
+task: T-001
+attempt: 2
+round: 2
+verdict: approved
+blocking_findings: 0
+handoff: example-T-001-controlled-correction-handoff.json
+handoff_sha256: {最终handoff的SHA-256}
+correction_sha256: {prepare返回的correction_sha256}
+scope:
+  - src/target.mjs
+---
+{
+  "conclusion": "Zero findings.",
+  "findings": [],
+  "resolved_findings": [
+    {
+      "id": "r2-P2-1",
+      "priority": "P2",
+      "evidence": "{已核对的修订路径、实际行为与回归检查证据}"
+    }
+  ]
+}
+```
+
+若仍有 P2，把它放在 `findings` 并使用 `Blocking findings.`，同时将头部 verdict 与计数改成真实阻断结果。
+合法的阻断 Review 可被封存，但不能完成任务。只有 `approved`、计数零、无当前 finding、完整 scope 与修订后实现/handoff/Learning 全部绑定有效才能通过完成门禁。
+发布调用仍为：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs" publish-controlled-correction-review \
+  --handoff "{prepare返回的handoff}" --reviews-dir "{原reviews目录}" \
+  --feature "{原feature}" --task "{原task}" --project-root "{原代码根}" \
+  --correction "{prepare返回的correction}"
+```
+
+发布仍不等于完成。仅满足无 JS ownership 前提的兼容任务继续 `check-n5` 和原 mark-done 门禁，传相同 selectors 与 correction；
+mark-done 另绑定权威 `tasks.md`。内容漂移、旧 r1/r2 不匹配、未定稿 Learning、重复续次或新阻断均拒绝。
+旧 `prepare-human-correction` 的授权与证据合同保持原样，两种 continuation 互斥，不能交叉消费证据。
+两种 prepare 共用固定的 `{feature}-{task}-correction-prepare.lock`，记录 owner PID 与时间；全段互斥，锁冲突立即拒绝，不轮询等待。
+另一协议只留下未封存的孤立 handoff 时，按原准备恢复核对保留它；已有 record、review 或 receipt 时禁止新增另一续次。
+进程中断遗留的锁不自动清理。先核对 owner 确已退出，再核对准备与封存证据，通过明确人工协调处置；
+owner 仍活跃或无法核实是否退出时保留锁与证据，不删锁重试，不宣称自动崩溃恢复。
+
 ## 交付证据范围
 
 这里说明源入口的控制合同。源文件更新不表示已安装插件、当前会话已加载新版 Skill 或真实模型可用。
 本地合成/临时目录检查、实际 provider 调用、独立 Review、安装与生产发布分别报告。
 定向夹具和源码审查结果见本轮交接记录；本文示例不等于真实 provider 或业务运行验收。
-cm-ai 新单任务/批次的 r2 blocked correction completion 未支持；本轮不新增补正协议。
+cm-ai 新单任务/批次的 r2 blocked correction completion 未支持；上方独立 taskgate 补正不提供原 runner 或 batch 的完成路径。
 本次本地方案不包含安装、提交、push、发布、部署或资金动作。

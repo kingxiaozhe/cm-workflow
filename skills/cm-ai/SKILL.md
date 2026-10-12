@@ -34,8 +34,8 @@ $cm-ai ~/projects/specs 前端~/code/fe 后端~/code/api
 2. **新任务**：默认只读取 `references/js-host.md`（正常路径）。先明确 control policy v2 的开发、bootstrap、QA 与 QA 修复模式，再由共享 JS 入口驱动阶段；当前会话只执行其工具请求。
    启动条件命中外部模型配置、bootstrap 规范任务、多代码根或同仓 specs 受保护执行／文本提案模式时，启动前先读 `references/js-host-modes.md` 对应一节（见 js-host.md“启动前”第 6 项）。
    运行停在阻断、unknown、待审失败或需异常恢复时，才按 js-host.md“文档分工与停机路由”表读取 `js-host-recovery.md` 或 `js-host-qa-recovery.md` 的对应一节。
-   v2 使用 `--control-config`，不传任何 `--allow-*`；普通 `advance` 无需逐步授权 token。异常恢复携带此前 `status.controlTarget` 的固定副本作为 `expectedControl`，驾驶员不得自动刷新。具体配置与协议分界见 `../../docs/cm-control-policy-v2.md`。
-   cm-ai 单/批任务的 r2 blocked 仍无 runner-owned correction 完成入口；原兼容任务门禁的人工补正继续绑定原因与来源声明，不用它绕过旧 journal/owner。
+   v2 使用 `--control-config`，不传任何 `--allow-*`；普通 `advance` 无需逐步授权 token。异常恢复携带此前 `status.controlTarget` 的固定副本作为 `expectedControl`，驾驶员不得自动刷新。具体配置、协议分界与受控补正见 `../../docs/cm-control-policy-v2.md`。
+   cm-ai 单/批任务的 r2 blocked 仍无 runner-owned correction 完成入口；原兼容任务门禁的人工补正继续绑定原因与来源声明，新版独立 taskgate 受控补正仅支持无 JS ownership 的兼容任务，两者都不用来绕过旧 journal/owner。
    不含 control policy 的旧运行与旧 PLAN 沿原协议，不迁移 journal、指纹或历史批准；只有用户明确选择旧兼容流程且确认不是已有 JS 运行时，才进入下文兼容执行步骤。
 3. **JS 准入失败或不支持**：报告具体宿主、Node 版本、目录、配置或业务能力缺口并停止依赖该能力的执行；
    不静默回退兼容流程，不改 runId、runtime 或手工完成路径规避阻断。原生 Windows 尚不支持，Linux 支持声明不等于实机验收。

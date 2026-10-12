@@ -605,6 +605,8 @@ export function prepareHumanCorrection(selectors){
   const {reviewsDir,feature,task,handoff,projectRoot,reason}=selectors;
   if(typeof reason!=='string'||!reason.trim()||reason.length>2000)
     throw new GateError('human correction requires a concrete bounded reason');
+  return withCorrectionPreparation(selectors,()=>{
+  noCorrectionEvidence(controlledCorrectionPaths(reviewsDir,feature,task),{includeOrphan:false});
   const paths=correctionPaths(reviewsDir,feature,task);
   absent(paths.record);absent(paths.review);absent(paths.receipt);
   const original=correctionHistory(selectors),draft=fileRevision(handoff,PREPARATION_FILE_LIMIT);
@@ -625,9 +627,11 @@ export function prepareHumanCorrection(selectors){
     history:original.history,handoff_sha256:sha256(paths.handoff)};
   requireRevisions(original.revisions);
   boundCorrectionHandoff(paths.handoff,task,projectRoot);
+  noCorrectionEvidence(controlledCorrectionPaths(reviewsDir,feature,task),{includeOrphan:false});
   fs.writeFileSync(paths.record,JSON.stringify(record,null,2)+'\n',{flag:'wx',mode:0o600});
   return {outcome:'ready_for_correction_review',correction:paths.record,handoff:paths.handoff,
     review:paths.review,correction_sha256:sha256(paths.record),attempt:2};
+  });
 }
 function inspectHumanCorrection(selectors){
   const {reviewsDir,feature,task,correction,handoff,projectRoot}=selectors;
@@ -689,10 +693,240 @@ function checkHumanCorrection(selectors,stage){
     content_bound:true,correction_sha256:correctionDigest,...inventory};
 }
 
+// Provenance is a declaration of who selected this bounded continuation. It is
+// neither authenticated identity nor authorization, and never a review verdict.
+function controlledCorrectionPaths(reviewsDir,feature,task){
+  const root=path.dirname(correctionPaths(reviewsDir,feature,task).record);
+  const prefix=path.join(root,`${feature}-${task}-controlled-correction`);
+  return {record:prefix+'.json',handoff:prefix+'-handoff.json',review:prefix+'.md',receipt:prefix+'-receipt.json'};
+}
+function noCorrectionEvidence(paths,{includeOrphan=true}={}){
+  for(const [kind,file] of Object.entries(paths)){
+    if(kind==='handoff'&&!includeOrphan)continue;
+    try{fs.lstatSync(file);throw new GateError('a correction continuation already exists; another continuation is forbidden');}
+    catch(error){if(error.code!=='ENOENT')throw error;}
+  }
+}
+function withCorrectionPreparation(selectors,action){
+  const {reviewsDir,feature,task}=selectors;
+  const lock=path.join(path.dirname(correctionPaths(reviewsDir,feature,task).record),`${feature}-${task}-correction-prepare.lock`);
+  let descriptor;
+  try{descriptor=fs.openSync(lock,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600);}
+  catch(error){
+    if(error.code==='EEXIST')throw new GateError(`blocked: correction preparation lock already exists; verify owner exit and reconcile retained evidence before removing ${lock}`);
+    throw error;
+  }
+  const owner=fs.fstatSync(descriptor,{bigint:true});
+  try{
+    fs.writeFileSync(descriptor,JSON.stringify({version:1,protocol:'cm-correction-prepare-lock',pid:process.pid,at:new Date().toISOString()})+'\n');
+    return action();
+  }finally{
+    try{
+      const current=fs.lstatSync(lock,{bigint:true});
+      if(!current.isFile()||current.isSymbolicLink()||current.nlink!==1n||current.dev!==owner.dev||current.ino!==owner.ino)
+        throw new GateError('blocked: correction preparation lock ownership changed; retained for reconciliation');
+      fs.unlinkSync(lock);
+    }finally{fs.closeSync(descriptor);}
+  }
+}
+function controlledCorrectionPayload(handoff,task,projectRoot,original){
+  const payload=boundCorrectionHandoff(handoff,task,projectRoot);
+  if(!sameSet(new Set(original.payload.changed_files),new Set(payload.changed_files)))
+    throw new GateError('controlled correction must retain the full original reviewed file scope');
+  if(payload.implementation_sha256===original.payload.implementation_sha256)
+    throw new GateError('controlled correction requires an actual implementation revision after blocked round 2');
+  return payload;
+}
+// This utility finishes through the compatibility writer, which cannot adopt a
+// retained JS run. Refuse before preparing evidence that it could never consume.
+function assertCompatibilityCorrectionOwner(reviewsDir){
+  const requested=path.resolve(reviewsDir),directory=fs.lstatSync(requested);
+  if(path.basename(requested)!=='.reviews'||!directory.isDirectory()||directory.isSymbolicLink())
+    throw new GateError('task ownership requires the canonical real non-symlink .reviews directory');
+  const local=fs.realpathSync(reviewsDir),roots=new Set([local]);
+  const binding=path.join(local,'.cm-task-owner.json');
+  let hasBinding=false;try{fs.lstatSync(binding);hasBinding=true;}catch(error){if(error.code!=='ENOENT')throw error;}
+  if(hasBinding){
+    const owner=parseJsonStrict(new TextDecoder('utf8',{fatal:true}).decode(fileRevision(binding,16384).bytes));
+    exactFields(owner,['version','tasksPath','specsRoot'],'task owner');
+    if(owner.version!==1n||typeof owner.specsRoot!=='string'||typeof owner.tasksPath!=='string'
+      ||path.dirname(owner.tasksPath)!==path.dirname(local)||path.basename(owner.tasksPath)!=='tasks.md'
+      ||![path.dirname(local),path.dirname(path.dirname(local))].includes(owner.specsRoot))
+      throw new GateError('invalid task owner; controlled correction requires the compatibility writer');
+    roots.add(path.join(owner.specsRoot,'.reviews'));
+  }
+  for(const root of roots){
+    try{
+      const directory=fs.lstatSync(root);
+      if(path.basename(root)!=='.reviews'||!directory.isDirectory()||directory.isSymbolicLink())
+        throw new GateError('task ownership requires the canonical real non-symlink .reviews directory');
+    }catch(error){if(error.code==='ENOENT')continue;throw error;}
+    const execution=path.join(root,'.execution');
+    let names;
+    try{
+      const stat=fs.lstatSync(execution);
+      if(!stat.isDirectory()||stat.isSymbolicLink())throw new GateError('unsupported execution owner evidence');
+      names=fs.readdirSync(execution);
+    }catch(error){if(error.code==='ENOENT')continue;throw error;}
+    for(const name of names){
+      if(!['writer.sqlite','writer-ready.json'].includes(name))
+        throw new GateError('retained journal, JS run or unknown evidence blocks compatibility controlled correction');
+      const item=fs.lstatSync(path.join(execution,name));
+      if(!item.isFile()||item.isSymbolicLink()||item.nlink!==1||item.size>65536||(item.mode&0o077)!==0)
+        throw new GateError('unsupported compatibility writer evidence');
+    }
+    // Mirror the compatibility writer's own initialization contract (cm-task-gate.py
+    // posix_writer/writer_ready) read-only: evidence it would refuse to adopt must
+    // refuse preparation here, before any correction artifact exists.
+    const hasDatabase=names.includes('writer.sqlite'),hasReady=names.includes('writer-ready.json');
+    if(hasReady&&!hasDatabase)throw new GateError('missing writer database with retained execution evidence');
+    if(hasDatabase){
+      const content=fs.readFileSync(path.join(execution,'writer.sqlite'));
+      if(content.length===0||!hasReady)throw new GateError('incomplete writer database');
+      const expected=JSON.stringify({version:1,protocol:'cm-writer-ready',databaseDigest:createHash('sha256').update(content).digest('hex')})+'\n';
+      if(fs.readFileSync(path.join(execution,'writer-ready.json'),'utf8')!==expected)
+        throw new GateError('invalid writer readiness; refusing recovery/adoption');
+    }
+  }
+}
+export function prepareControlledCorrection(selectors){
+  const {reviewsDir,feature,task,handoff,projectRoot,decisionSource,reason}=selectors;
+  if(!['operator','model'].includes(decisionSource))
+    throw new GateError('controlled correction requires decision source: operator or model; source is provenance only');
+  if(typeof reason!=='string'||!reason.trim()||reason.length>2000)
+    throw new GateError('controlled correction requires a concrete bounded reason');
+  return withCorrectionPreparation(selectors,()=>{
+  assertCompatibilityCorrectionOwner(reviewsDir);
+  const paths=controlledCorrectionPaths(reviewsDir,feature,task);
+  noCorrectionEvidence(correctionPaths(reviewsDir,feature,task),{includeOrphan:false});
+  absent(paths.record);absent(paths.review);absent(paths.receipt);
+  const original=correctionHistory(selectors),draft=fileRevision(handoff,PREPARATION_FILE_LIMIT);
+  controlledCorrectionPayload(handoff,task,projectRoot,original);
+  requireRevisions([...original.revisions,draft]);
+  // The only recoverable orphan is the exact handoff written before the record.
+  try{absent(paths.handoff);fs.writeFileSync(paths.handoff,draft.bytes,{flag:'wx',mode:0o600});}
+  catch(error){
+    if(error instanceof GateError&&!fs.existsSync(paths.record)&&fileRevision(paths.handoff,PREPARATION_FILE_LIMIT).bytes.equals(draft.bytes)){}
+    else throw error;
+  }
+  const record={version:2,protocol:'cm-controlled-correction',feature,task,attempt:2,continuation:1,
+    decision_source:decisionSource,source_semantics:'provenance-only',at:new Date().toISOString(),reason:reason.trim(),
+    history:original.history,handoff_sha256:sha256(paths.handoff)};
+  requireRevisions(original.revisions);
+  controlledCorrectionPayload(paths.handoff,task,projectRoot,original);
+  assertCompatibilityCorrectionOwner(reviewsDir);
+  noCorrectionEvidence(correctionPaths(reviewsDir,feature,task),{includeOrphan:false});
+  fs.writeFileSync(paths.record,JSON.stringify(record,null,2)+'\n',{flag:'wx',mode:0o600});
+  return {outcome:'ready_for_correction_review',correction:paths.record,handoff:paths.handoff,
+    review:paths.review,correction_sha256:sha256(paths.record),attempt:2,continuation:1};
+  });
+}
+function inspectControlledCorrection(selectors){
+  const {reviewsDir,feature,task,correction,handoff,projectRoot}=selectors;
+  assertCompatibilityCorrectionOwner(reviewsDir);
+  const paths=controlledCorrectionPaths(reviewsDir,feature,task);
+  if(typeof correction!=='string'||typeof handoff!=='string'||path.resolve(correction)!==paths.record||path.resolve(handoff)!==paths.handoff)
+    throw new GateError('controlled correction must use its fixed evidence paths');
+  // A losing concurrent preparation may leave an unsealed handoff. That does
+  // not invalidate this already-published continuation; sealed peers do.
+  noCorrectionEvidence(correctionPaths(reviewsDir,feature,task),{includeOrphan:false});
+  const pinned=fileRevision(paths.record,PREPARATION_FILE_LIMIT);
+  const record=parseJsonStrict(new TextDecoder('utf8',{fatal:true}).decode(pinned.bytes));
+  exactFields(record,['version','protocol','feature','task','attempt','continuation','decision_source','source_semantics','at','reason','history','handoff_sha256'],'controlled correction');
+  if(record.version!==2n||record.protocol!=='cm-controlled-correction'||record.feature!==feature||record.task!==task
+    ||record.attempt!==2n||record.continuation!==1n||!['operator','model'].includes(record.decision_source)
+    ||record.source_semantics!=='provenance-only'
+    ||typeof record.reason!=='string'||!record.reason.trim()||record.reason.length>2000
+    ||typeof record.at!=='string'||!/(?:Z|[+-]\d{2}:\d{2})$/.test(record.at)||Number.isNaN(Date.parse(record.at)))
+    throw new GateError('invalid controlled correction provenance record');
+  const original=correctionHistory(selectors);
+  if(canonical(record.history)!==canonical(original.history))throw new GateError('controlled correction history changed');
+  const handoffRevision=fileRevision(paths.handoff,PREPARATION_FILE_LIMIT);
+  const payload=controlledCorrectionPayload(paths.handoff,task,projectRoot,original);
+  if(record.handoff_sha256!==createHash('sha256').update(handoffRevision.bytes).digest('hex'))
+    throw new GateError('controlled correction handoff changed');
+  requireRevisions([pinned,handoffRevision,...original.revisions]);
+  return {paths,payload,record,correctionDigest:createHash('sha256').update(pinned.bytes).digest('hex')};
+}
+function controlledCorrectionReview(selectors,inspected){
+  const {paths,payload,record,correctionDigest}=inspected;
+  const header=validateReview(paths.review,{task:selectors.task,attempt:2,handoff:paths.handoff,changedFiles:payload.changed_files});
+  if(header.independent!=='true'||header.correction_sha256!==correctionDigest||Date.parse(header.at)<Date.parse(record.at))
+    throw new GateError('controlled correction requires fresh independent review bound to the correction record');
+  // Version 2 bodies use an exhaustive structured findings contract. Prose
+  // containing a zero-findings phrase cannot erase an active finding.
+  let result;
+  try{result=parseJsonStrict(parseReview(paths.review).body);}
+  catch{throw new GateError('controlled correction review requires a strict structured findings JSON body');}
+  exactFields(result,['conclusion','findings','resolved_findings'],'controlled correction structured findings');
+  if(!Array.isArray(result.findings)||!Array.isArray(result.resolved_findings))
+    throw new GateError('controlled correction structured findings must be arrays');
+  const ids=new Set();
+  for(const finding of [...result.findings,...result.resolved_findings]){
+    exactFields(finding,['id','priority','evidence'],'controlled correction structured finding');
+    requireString(finding.id,'controlled correction finding id');
+    requireString(finding.evidence,'controlled correction finding evidence');
+    if(!['P0','P1','P2','P3'].includes(finding.priority)||ids.has(finding.id))
+      throw new GateError('controlled correction findings require unique ids and P0-P3 priorities');
+    ids.add(finding.id);
+  }
+  if(integerHeader(header.blocking_findings,'review blocking_findings')!==BigInt(result.findings.length))
+    throw new GateError('controlled correction finding count does not match blocking_findings');
+  if(header.verdict==='approved'&&(result.conclusion!=='Zero findings.'||result.findings.length!==0))
+    throw new GateError('controlled correction approved review must have zero active findings');
+  if(header.verdict!=='approved'&&result.conclusion!=='Blocking findings.')
+    throw new GateError('controlled correction blocked review must declare Blocking findings.');
+  return header;
+}
+export function publishControlledCorrectionReview(selectors){
+  const inspected=inspectControlledCorrection(selectors),{paths,correctionDigest}=inspected;
+  absent(paths.receipt);
+  const pinned=fileRevision(paths.review,PREPARATION_FILE_LIMIT);
+  const header=controlledCorrectionReview(selectors,inspected);
+  requireRevisions([pinned]);
+  inspectControlledCorrection(selectors);
+  const receipt={version:2,protocol:'cm-controlled-correction-review',correction_sha256:correctionDigest,
+    review_sha256:createHash('sha256').update(pinned.bytes).digest('hex'),verdict:header.verdict};
+  fs.writeFileSync(paths.receipt,JSON.stringify(receipt,null,2)+'\n',{flag:'wx',mode:0o600});
+  return {outcome:header.verdict,receipt:paths.receipt};
+}
+function checkControlledCorrection(selectors,stage){
+  const inspected=inspectControlledCorrection(selectors),{paths,payload,correctionDigest}=inspected;
+  const inventory=selectors.inventory==='required'?verifyInventory(payload,selectors):{};
+  if(stage==='n4'){
+    absent(paths.receipt);
+    return {gate:'n4',task:selectors.task,attempt:2,continuation:1,outcome:'ready_for_review',content_bound:true,
+      handoff_sha256:sha256(paths.handoff),correction_sha256:correctionDigest,...inventory};
+  }
+  const pinned=fileRevision(paths.review,PREPARATION_FILE_LIMIT);
+  const result=controlledCorrectionReview(selectors,inspected);
+  const receiptRevision=fileRevision(paths.receipt,PREPARATION_FILE_LIMIT);
+  const receipt=parseJsonStrict(new TextDecoder('utf8',{fatal:true}).decode(receiptRevision.bytes));
+  exactFields(receipt,['version','protocol','correction_sha256','review_sha256','verdict'],'controlled correction receipt');
+  if(receipt.version!==2n||receipt.protocol!=='cm-controlled-correction-review'
+    ||receipt.correction_sha256!==correctionDigest||receipt.review_sha256!==sha256(paths.review)||receipt.verdict!==result.verdict)
+    throw new GateError('controlled correction review or receipt changed');
+  if(result.verdict!=='approved')throw new GateError('controlled correction remains blocked');
+  requireRevisions([pinned,receiptRevision]);
+  return {gate:'n5',task:selectors.task,attempt:2,continuation:1,outcome:'approved',review:paths.review,
+    content_bound:true,correction_sha256:correctionDigest,...inventory};
+}
+function selectedCorrectionPaths(selectors){
+  const {reviewsDir,feature,task,correction}=selectors;
+  const controlled=controlledCorrectionPaths(reviewsDir,feature,task);
+  return typeof correction==='string'&&path.resolve(correction)===controlled.record
+    ?controlled:correctionPaths(reviewsDir,feature,task);
+}
+function checkCorrection(selectors,stage){
+  const paths=selectedCorrectionPaths(selectors);
+  return paths.record.endsWith('-controlled-correction.json')
+    ?checkControlledCorrection(selectors,stage):checkHumanCorrection(selectors,stage);
+}
+
 // Only compatibility CLI entries opt into inventory validation. Library callers
 // retain the original content-binding contract and exact result shape.
 export function checkN4({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false,correction=null,inventory=null}){
-  if(correction!==null)return checkHumanCorrection({handoff,reviewsDir,feature,task,projectRoot,correction,allowLegacyUnbound,inventory},'n4');
+  if(correction!==null)return checkCorrection({handoff,reviewsDir,feature,task,projectRoot,correction,allowLegacyUnbound,inventory},'n4');
   requireTaskId(task,'task');
   const payload=loadHandoff(handoff,{task});
   if(payload.status!=='ready_for_review')throw new GateError('N4 requires a ready_for_review handoff');
@@ -706,7 +940,7 @@ export function checkN4({handoff,reviewsDir,feature,task,projectRoot=null,allowL
 }
 
 export function checkN5({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false,correction=null,inventory=null}){
-  if(correction!==null)return checkHumanCorrection({handoff,reviewsDir,feature,task,projectRoot,correction,allowLegacyUnbound,inventory},'n5');
+  if(correction!==null)return checkCorrection({handoff,reviewsDir,feature,task,projectRoot,correction,allowLegacyUnbound,inventory},'n5');
   requireTaskId(task,'task');
   const payload=loadHandoff(handoff,{task});
   if(payload.status!=='ready_for_review')throw new GateError('N5 requires a ready_for_review handoff');
@@ -778,7 +1012,7 @@ function pinApproval(selectors){
     }
   }
   if(selectors.correction){
-    const paths=correctionPaths(reviewsDir,feature,task);
+    const paths=selectedCorrectionPaths(selectors);
     for(const file of [paths.record,paths.review,paths.receipt])revisions.push(fileRevision(file,preparationReadLimit));
   }
   const approval={...checkN5(selectors)};
@@ -1028,12 +1262,12 @@ export function checkParallelWrite({repo,assignment}){
   return {gate:'parallel-write',outcome:'isolated',assignments:result};
 }
 
-function usage(){return 'usage: cm-task-gate.mjs {capture-baseline|validate-handoff|hash-implementation|check-n4|check-n5|prepare-mark-done|verify-mark-done-plan|prepare-human-correction|publish-human-correction-review|check-parallel-write} [options]';}
+function usage(){return 'usage: cm-task-gate.mjs {capture-baseline|validate-handoff|hash-implementation|check-n4|check-n5|prepare-mark-done|verify-mark-done-plan|prepare-human-correction|publish-human-correction-review|prepare-controlled-correction|publish-controlled-correction-review|check-parallel-write} [options]';}
 
 function parseCli(argv){
   if(argv.length===0||argv.includes('--help')||argv.includes('-h'))return {help:true};
   const command=argv[0];
-  if(!['capture-baseline','validate-handoff','hash-implementation','check-n4','check-n5','prepare-mark-done','verify-mark-done-plan','mark-done-locked','prepare-human-correction','publish-human-correction-review','check-parallel-write'].includes(command))
+  if(!['capture-baseline','validate-handoff','hash-implementation','check-n4','check-n5','prepare-mark-done','verify-mark-done-plan','mark-done-locked','prepare-human-correction','publish-human-correction-review','prepare-controlled-correction','publish-controlled-correction-review','check-parallel-write'].includes(command))
     throw new GateError('unsupported command');
   const allowed=command==='validate-handoff'?new Set(['--handoff','--task','--attempt'])
     :command==='capture-baseline'?new Set(['--project-root','--reviews-dir','--feature','--task'])
@@ -1041,6 +1275,7 @@ function parseCli(argv){
     :command==='check-parallel-write'?new Set(['--repo','--assignment'])
     :new Set(['--handoff','--reviews-dir','--feature','--task','--project-root','--allow-legacy-unbound','--require-learning','--correction',
       ...(command==='prepare-human-correction'?['--reason']:[]),
+      ...(command==='prepare-controlled-correction'?['--decision-source','--reason']:[]),
       ...(['prepare-mark-done','verify-mark-done-plan','mark-done-locked'].includes(command)?['--tasks']:[]),
       ...(['verify-mark-done-plan','mark-done-locked'].includes(command)?['--expected-plan-digest']:[])]);
   const required=command==='validate-handoff'?new Set(['--handoff','--task','--attempt'])
@@ -1062,7 +1297,7 @@ function parseCli(argv){
     const value=argv[index+1];if(value===undefined)throw new GateError('invalid arguments');
     const key={'--handoff':'handoff','--reviews-dir':'reviewsDir','--feature':'feature','--task':'task','--attempt':'attempt',
       '--tasks':'tasksPath','--expected-plan-digest':'expectedPlanDigest','--repo':'repo','--assignment':'assignment',
-      '--project-root':'projectRoot','--file':'file','--correction':'correction','--reason':'reason'}[flag];
+      '--project-root':'projectRoot','--file':'file','--correction':'correction','--reason':'reason','--decision-source':'decisionSource'}[flag];
     if(['assignment','file'].includes(key)){
       if(!Object.hasOwn(values,key))values[key]=[];
       values[key].push(value);
@@ -1075,7 +1310,7 @@ function parseCli(argv){
   for(const flag of required){
     const key={'--handoff':'handoff','--reviews-dir':'reviewsDir','--feature':'feature','--task':'task','--attempt':'attempt',
       '--tasks':'tasksPath','--expected-plan-digest':'expectedPlanDigest','--repo':'repo','--assignment':'assignment',
-      '--project-root':'projectRoot','--file':'file','--correction':'correction','--reason':'reason'}[flag];
+      '--project-root':'projectRoot','--file':'file','--correction':'correction','--reason':'reason','--decision-source':'decisionSource'}[flag];
     if(!Object.hasOwn(values,key))throw new GateError(`missing argument: ${flag}`);
   }
   if(Object.hasOwn(values,'attempt')){
@@ -1099,6 +1334,8 @@ export function main(argv=process.argv.slice(2),environment=process.env){
       implementation_sha256:implementationSha256(args.projectRoot,args.file),changed_files:[...args.file].sort((left,right)=>Buffer.compare(Buffer.from(left),Buffer.from(right)))};
     else if(args.command==='prepare-human-correction')result=prepareHumanCorrection(args);
     else if(args.command==='publish-human-correction-review')result=publishHumanCorrectionReview(args);
+    else if(args.command==='prepare-controlled-correction')result=prepareControlledCorrection(args);
+    else if(args.command==='publish-controlled-correction-review')result=publishControlledCorrectionReview(args);
     else if(args.command==='check-n4')result=checkN4({...args,inventory:'required'});
     else if(args.command==='check-n5')result=checkN5({...args,inventory:'required'});
     else if(args.command==='prepare-mark-done')result=prepareMarkDone({...args,inventory:'required'});

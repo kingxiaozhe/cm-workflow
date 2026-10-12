@@ -259,7 +259,7 @@ JS 返回阻断、待授权、失败、取消、unknown 或补正要求时，报
 
 只以 JS 实际结果报告“已做、剩余、问题、下一步”。task 完成不等于 workflow 完成；
 只有原 finalizer 的 run_done 且本次必需业务证据齐备，才报告该运行完成。
-cm-ai 单/批任务 r2 仍 blocked，
+受控补正本轮只支持无 JS ownership 的兼容 taskgate 任务。cm-ai 单/批任务 r2 仍 blocked，
 没有 runner-owned correction 完成入口；JS journal/run/unknown 证据禁止兼容 writer，不删证据或手改状态绕过。
 目前 CLI 有本地真实工具与合成 reviewer 组合证据，没有完整真实双宿主业务验收。
 本参考已接单/批双端源入口，但不证明已安装 Skill 已加载、真实模型Review或完整双宿主验收。
