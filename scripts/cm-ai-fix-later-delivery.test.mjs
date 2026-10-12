@@ -9,7 +9,6 @@ import {buildManifest} from './cm-spec-manifest.mjs';
 import {openControlRun} from './cm-ai-run.mjs';
 import {createCodexDeveloperRun} from '../runtime/js/cm-ai/codex-developer-adapter.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
-import {createHostReviewAuthority} from '../runtime/js/cm-ai/host-review-authority.mjs';
 import {createQaFixOwnerHost} from '../runtime/js/cm-ai/host-qa-fix-owner.mjs';
 import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
 import {qaFixIdentity} from '../runtime/js/cm-fix/qa-source.mjs';
@@ -56,10 +55,8 @@ for(const variant of ['separate','shared'])test(`#18 a QA fix for an earlier fea
   fs.writeFileSync(path.join(codeProject,'.cm-workflow.json'),JSON.stringify({version:1,policies:{delivery:'diff'}}));
   let qaRuns=0,childReviews=0,documentation=0;
   const execution=({feature,write,retrospective={status:'no_new_lesson',candidates:[],reason:null},qa})=>{
-    const authority=createHostReviewAuthority({hostContextId:'parent-host',reviewerId:'reviewer',adapterId:'codex-review-adapter',
-      decide:async()=>({status:'approved'})});
-    return {configuration:{kind:'synthetic-parent-fix'},timeoutMs:2000,excludedContexts:['parent-host'],hostDecision:null,
-      hostDecisionProvider:authority.hostDecisionProvider,
+
+    return {configuration:{kind:'synthetic-parent-fix'},timeoutMs:2000,excludedContexts:['parent-host'],
       developer:{provider:'codex',requestedModel:'synthetic',contextId:'author',run:createCodexDeveloperRun({requestedModel:'synthetic',worker:async()=>{
         write();return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},retrospective}};}})},
       reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'synthetic',allowed:true,available:true,
@@ -67,7 +64,7 @@ for(const variant of ['separate','shared'])test(`#18 a QA fix for an earlier fea
           events(onEvent,`synthetic-review-${request.identity.runId}`);
           return {status:'succeeded',value:{verdict:'approved',packageDigest:request.payload.reviewPackage.packageDigest,
             examinedPaths:reviewPaths(request.payload.reviewPackage),findings:[],summary:'Synthetic review'}};}}],
-      reviewInvocation:{developerThreadId:'author',excludedThreadIds:['parent-host'],authorize:authority.authorize},
+      reviewInvocation:{developerThreadId:'author',excludedThreadIds:['parent-host']},
       check:createHostCheck({cwd:codeProject,commands:[{id:'existing',command:[process.execPath,'existing.mjs']}]}),
       qaLogHome:path.join(root,'logs'),qaDecisionProvider:{timeoutMs:1000,decide:async binding=>({decisionId:`qa-${binding.identity.runId}`,
         identity:binding.identity,packageDigest:binding.packageDigest,status:'triggered',reason:'feature_complete',score:null,at:'2026-09-28T01:00:00Z'})},

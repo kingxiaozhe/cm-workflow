@@ -7,6 +7,7 @@ import childProcess,{spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
+import {installSyntheticReview,syntheticReviewConfig} from './cm-ai-host-fixture.mjs';
 import {createConversationExecution} from './cm-ai-host.mjs';
 import {createCmAiConversationEntry} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
@@ -35,14 +36,15 @@ function fixture(t){
   fs.writeFileSync(path.join(answers,'target.txt'),'export const value=42;\n');
   fs.writeFileSync(path.join(answers,'develop.json'),JSON.stringify({status:'succeeded',value:{outcome:'implemented',
     application:{status:'no_relevant_lesson',note:null},retrospective:{status:'no_new_lesson',candidates:[],reason:null}},edits:{'target.mjs':'target.txt'}}));
-  fs.writeFileSync(path.join(root,'review.json'),JSON.stringify({model:'fixture',preflight:{}}));
+  fs.writeFileSync(path.join(root,'review.json'),JSON.stringify(syntheticReviewConfig(codeProject)));
   const plan=(checks,extra={})=>{
     const file=path.join(root,'plan.json');
+    fs.writeFileSync(path.join(root,'review.json'),JSON.stringify(syntheticReviewConfig(codeProject,extra.runtime??'codex')));
     fs.writeFileSync(file,JSON.stringify({config:'run.json',mode:'create',hostContext:'progress-fixture-host',
       permissions:['--review-config','review.json'],answers:'answers',checks,...extra}));return file;
   };
-  const env={...process.env,CM_WORKFLOW_HOME:path.join(root,'home'),CM_WORKFLOW_LOG_HOME:path.join(root,'logs')};
-  const run=(checks,extra={})=>spawnSync(process.execPath,[driver,'--plan',plan(checks,extra),'advance'],{encoding:'utf8',timeout:30000,env});
+  const local=installSyntheticReview({root,codeProject});const env=local.env;
+  const run=(checks,extra={},operation='start')=>spawnSync(process.execPath,[driver,'--plan',plan(checks,extra),operation],{encoding:'utf8',timeout:30000,env});
   return {root,specsDir,codeProject,feature,definition,statusPath,old,env,plan,run,
     status:()=>JSON.parse(fs.readFileSync(statusPath,'utf8')),
     events:()=>fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse)};
@@ -62,7 +64,7 @@ for(const runtime of ['codex','claude'])test(`${runtime}: live check replaces ol
   const events=f.events().filter(row=>row.event==='progress');
   assert(events.some(row=>row.phase==='start'&&row.phase_name==='developing'));
   assert(events.some(row=>row.phase==='start'&&row.phase_name==='checking'));
-  assert(!events.some(row=>row.phase_name==='reviewing'),'No reviewer invocation was authorized');
+  assert(!events.some(row=>row.phase_name==='reviewing'),'start stops after development without dispatching review');
   for(const start of events.filter(row=>row.phase==='start'))assert(events.some(row=>row.phase==='complete'&&row.operation_id===start.operation_id));
   assert(fs.readFileSync(path.join(f.specsDir,f.feature,'tasks.md'),'utf8').includes('- [ ] T-001'));
 });
@@ -102,12 +104,12 @@ test('guidance survives original-run status and recovery without writing it into
   const after=snapshot();assert.deepEqual(after.records.slice(0,before.records.length),before.records);
   assert.equal(JSON.stringify(after.records).includes('recoveryOperation'),false);
   assert(fs.readFileSync(path.join(f.specsDir,f.feature,'tasks.md'),'utf8').includes('- [ ] T-001'));
-  assert(!f.events().some(row=>row.phase_name==='reviewing'),'no independent review grant');
+  assert(!f.events().some(row=>row.phase_name==='reviewing'),'start recovery preserves the development stage');
 });
 
 test('a quiet command announces its start before finishing and preserves the JSON result channel',async t=>{
   const f=fixture(t),plan=f.plan([check('quiet',"setTimeout(()=>process.exit(0),700)")]);
-  const child=spawn(process.execPath,[driver,'--plan',plan,'advance'],{env:f.env,stdio:['ignore','pipe','pipe']});
+  const child=spawn(process.execPath,[driver,'--plan',plan,'start'],{env:f.env,stdio:['ignore','pipe','pipe']});
   let out='',err='',seen=false,code;
   const timer=setTimeout(()=>child.kill('SIGKILL'),20000);t.after(()=>{clearTimeout(timer);if(child.exitCode===null)child.kill('SIGKILL');});
   child.stdout.on('data',b=>{out+=b;});child.stderr.on('data',b=>{
@@ -437,14 +439,14 @@ for(const verdict of ['approved','changes_requested'])test(`${verdict}: review p
   assert.equal(f.status().state,'awaiting_review');assert.equal(fs.existsSync(observed),false);
   const plan=f.plan(undefined,{mode:'resume',originalHostContext:'progress-fixture-host',answers:undefined,
     packageDigest:JSON.parse(first.stdout).result.packageDigest,
-    permissions:['--review-config','review.json','--allow-review-attempt','1']});
+    permissions:['--review-config','review.json']});
   const run=spawnSync(process.execPath,[driver,'--plan',plan,'decision'],{env:f.env,encoding:'utf8',timeout:30000});
   assert.equal(run.status,0,run.stderr);assert.equal(JSON.parse(run.stdout).result.state,verdict,run.stdout+run.stderr);
   assert.equal(JSON.parse(fs.readFileSync(observed)).state,'reviewing');assert.equal(f.status().state,verdict);
   assert.equal(f.status().attempt,verdict==='approved'?1:2);
   assert(fs.readFileSync(path.join(f.specsDir,f.feature,'tasks.md'),'utf8').includes('- [ ] T-001'));
   if(verdict==='approved'){
-    const completed=f.run([check('ok','0')],{mode:'resume',originalHostContext:'progress-fixture-host'});
+    const completed=f.run([check('ok','0')],{mode:'resume',originalHostContext:'progress-fixture-host'},'advance');
     assert.equal(completed.status,0,completed.stderr);
     assert.equal(JSON.parse(completed.stdout).result.state,'fixture_completed',completed.stdout+completed.stderr);
     assert.equal(f.status().state,'fixture_completed');assert.equal(f.status().node,'N5');

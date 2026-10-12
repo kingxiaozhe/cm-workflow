@@ -29,7 +29,7 @@ function fixture(t){
   const original=history.map(sha);fs.writeFileSync(code,'fixed');
   const draft=path.join(root,'draft.json');fs.writeFileSync(draft,JSON.stringify(payload(2)));
   const selectors={handoff:draft,reviewsDir,feature:'login',task:'T-001',projectRoot:root,
-    humanAuthorized:true,reason:'Human approved exact selector correction after original blocked round 2.'};
+    reason:'Correct exact selector after original blocked round 2.'};
   const prepare=()=>prepareHumanCorrection(selectors);
   const finish=(record,verdict='approved')=>{
     const selected={...selectors,...record,tasksPath:tasks};
@@ -54,9 +54,8 @@ test('one-shot human correction retains blocked history and completes through th
   assert.throws(()=>checkN5({...done,handoff:f.history[2],correction:null}),/implementation content changed/);
 });
 
-test('correction authorization, original verdict, full scope, and mandatory Learning cannot be omitted',t=>{
+test('correction reason, original verdict, full scope, and mandatory Learning cannot be omitted',t=>{
   const f=fixture(t);
-  assert.throws(()=>prepareHumanCorrection({...f.selectors,humanAuthorized:false}),/authorization/);
   assert.throws(()=>prepareHumanCorrection({...f.selectors,reason:''}),/reason/);
   const draft=JSON.parse(fs.readFileSync(f.draft));draft.evidence=['unbound application'];fs.writeFileSync(f.draft,JSON.stringify(draft));
   assert.throws(()=>prepareHumanCorrection({...f.selectors,allowLegacyUnbound:true}),/Learning/);
@@ -67,7 +66,7 @@ test('correction authorization, original verdict, full scope, and mandatory Lear
   f.review(f.history[3],f.history[2],2,'approved');assert.throws(()=>f.prepare(),/blocked round 2/);
 });
 
-test('original evidence, correction handoff, implementation and authorization record drift invalidate approval',t=>{
+test('original evidence, correction handoff, implementation and source record drift invalidate approval',t=>{
   const f=fixture(t),record=f.prepare(),done=f.finish(record),plan=prepareMarkDone(done);
   for(const file of [...f.history,record.correction,record.handoff,record.review,done.receipt??path.join(f.reviewsDir,'login-T-001-human-correction-receipt.json'),f.code]){
     const bytes=fs.readFileSync(file);fs.appendFileSync(file,'\nchanged');
@@ -87,13 +86,13 @@ test('blocked correction review is sealed once and cannot be replaced by a new a
   assert.throws(()=>f.prepare(),/already exists/);
 });
 
-test('old review or self-degraded review cannot authorize a correction',t=>{
+test('old review or self-degraded review does not meet correction declaration and binding requirements',t=>{
   const f=fixture(t),record=f.prepare(),selected={...f.selectors,...record};
   f.review(record.review,record.handoff,2,'approved');
-  assert.throws(()=>publishHumanCorrectionReview(selected),/fresh independent/);
+  assert.throws(()=>publishHumanCorrectionReview(selected),/independent: true.*bound/);
   f.review(record.review,record.handoff,2,'approved',record.correction_sha256);
   fs.writeFileSync(record.review,fs.readFileSync(record.review,'utf8').replace('codex-subagent','self-degraded').replace('independent: true','independent: false').replace('scope:','degraded_reason: fixture\nscope:'));
-  assert.throws(()=>publishHumanCorrectionReview(selected),/fresh independent/);
+  assert.throws(()=>publishHumanCorrectionReview(selected),/independent: true.*bound/);
 });
 
 test('correction file identities reject symlinks, hardlinks, sibling selection and duplicate record fields',t=>{
@@ -108,10 +107,33 @@ test('correction file identities reject symlinks, hardlinks, sibling selection a
   assert.throws(()=>checkN4(selected),/non-symlink/);
 });
 
-test('CLI human correction refuses missing human authorization and exposes the fixed review record',t=>{
+test('CLI correction works without an authorization flag and rejects the removed flag',t=>{
   const f=fixture(t),script=fileURLToPath(new URL('./cm-task-gate.mjs',import.meta.url));
-  const args=['prepare-human-correction','--handoff',f.draft,'--reviews-dir',f.reviewsDir,'--feature','login','--task','T-001','--project-root',f.root,'--reason','Explicit human correction'];
-  const denied=spawnSync(process.execPath,[script,...args],{encoding:'utf8'});assert.equal(denied.status,1);assert.match(denied.stderr,/authorization/);
-  const result=spawnSync(process.execPath,[script,...args,'--human-authorized'],{encoding:'utf8'});
+  const args=['prepare-human-correction','--handoff',f.draft,'--reviews-dir',f.reviewsDir,'--feature','login','--task','T-001','--project-root',f.root,'--reason','Correct exact selector'];
+  const removed=spawnSync(process.execPath,[script,...args,'--human-authorized'],{encoding:'utf8'});
+  assert.equal(removed.status,1);assert.match(removed.stderr,/invalid arguments/);
+  const result=spawnSync(process.execPath,[script,...args],{encoding:'utf8'});
   assert.equal(result.status,0,result.stderr);assert.equal(JSON.parse(result.stdout).attempt,2);
+});
+
+
+test('correction review declarations and candidate package bindings remain mandatory',t=>{
+  const f=fixture(t),record=f.prepare(),selected={...f.selectors,...record};
+  f.review(record.review,record.handoff,2,'approved',record.correction_sha256);
+  const original=fs.readFileSync(record.review,'utf8');
+  for(const [before,after] of [
+    ['independent: true','independent: yes'],
+    ['reviewer: codex-subagent','reviewer: arbitrary'],
+    ['handoff_sha256: '+sha(record.handoff),'handoff_sha256: '+'0'.repeat(64)],
+    ['correction_sha256: '+record.correction_sha256,'correction_sha256: '+'0'.repeat(64)],
+    ['verdict: approved','verdict: blocked'],
+  ]){
+    fs.writeFileSync(record.review,original.replace(before,after));
+    assert.throws(()=>publishHumanCorrectionReview(selected),undefined,before);
+    assert.equal(fs.existsSync(path.join(f.reviewsDir,'login-T-001-human-correction-receipt.json')),false);
+  }
+  fs.writeFileSync(record.review,original);
+  publishHumanCorrectionReview(selected);
+  assert.equal(checkN5(selected).outcome,'approved');
+  assert.deepEqual(f.history.map(sha),f.original);
 });

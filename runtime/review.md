@@ -2,6 +2,8 @@
 
 Every implementation task requires an independent review before it can be marked complete. The reviewer must not inherit the author's reasoning narrative.
 
+CM 门禁检查来源声明的格式、任务与轮次、材料摘要、当前文件和执行记录的一致性，用于防手滑与过期证据。来源声明不验证审查者身份或实际人工交互；门禁不承诺抵抗拥有完整文件写权限和 shell 能力的会话造假。fresh 上下文、审查结果、检查通过和完成复查仍是正常工作流路径的完成条件。发布、部署、资金及其他范围外动作继续遵守其单独确认要求。
+
 N4 accepts only a `ready_for_review` implementation handoff validated through
 `runtime/task-gates.md`. The handoff is author evidence, never an approval. The
 review file owns the disposition that controls whether N3 retries or N5 may mark
@@ -62,14 +64,18 @@ to erase a valid blocking finding.
 
 The shared-JS target supports a fresh reviewer on whichever provider is available.
 The shared V3 runner now also accepts Claude-bound normalized review invocations,
-using the same grant, registration, independent identity, replay and completion checks.
+using the same request/package binding, registration, reviewer source declarations, replay and completion checks.
+cm-ai uses the `host-review` source channel; cm-fix retains its existing
+`host-authorized` contract. A cm-ai journal with old grant-channel invocations is
+rejected as `runner_invocation`; preserve it and use the original version's
+read-only tools to inspect history. This entry does not replay or migrate those
+invocations.
 Its registered result is published as `claude-cli`, never relabeled as Codex.
 The single-task host connects the Claude worker only with a matching diagnostic and
-the active control contract: legacy uses a separately authorized attempt; control
-policy v2 advances the selected task's ordinary review rounds automatically within
-the confirmed scope. The V3 grant still binds the actual request, invocation,
-package, host and expiry; it is a mechanical dispatch binding, not identity
-authentication or proof of a real user decision. Claude preflight uses a macOS loopback-only sandbox,
+the active control contract: cm-ai advances ordinary review rounds directly within
+the confirmed scope, for both existing and new runs. Requests and receipts bind
+the actual invocation, package and execution records to detect stale or mismatched
+materials. Claude preflight uses a macOS loopback-only sandbox,
 synthetic credentials and a rejecting local sink; it does not obtain a model review.
 The producer permits one empty startup health probe and rejects model requests locally.
 Installed CLI has passed this local request-surface probe. It uses the same bounded temporary
@@ -109,10 +115,11 @@ PRD artifact 回执先比对原始字节，仅 Markdown 中 `tasks.md` 的任务
   proceed only when the reviewer records `approved` and the disagreement is
   preserved in `LESSONS.md`.
 
-A concrete human-approved local correction after blocked round two may use the
+A concrete local correction after the user confirms its scope may use the
 one-shot task-gate entrance in `docs/human-correction.md`. It preserves the original
-reports, seals a fresh independent correction review, and does not reopen a host
-journal or reset ordinary attempts. Without explicit human authorization, stop.
+reports, records the correction reason and bound source declaration, seals a fresh
+independent correction review, and does not reopen a host journal or reset ordinary
+attempts. The record reports the supplied decision source; it does not create approval.
 
 At any stage, changing reviewed code, tests, or execution instructions invalidates
 approval for the changed content. N5 may record improvement suggestions, not make
@@ -149,8 +156,7 @@ verdict 至少为 1。`self-degraded` 必须写 `independent: false` 并增加�
 `--project-root` 复算；否则文件内容在审查后变化时无法进入 N5。历史恢复显式使用
 `--allow-legacy-unbound` 时不属于内容绑定审查，必须在证据中披露。
 历史 `self-degraded` 可读取和审计，但不得据此授权新完成或补造独立审查。
-声明字段和 handoff 哈希不证明 reviewer 实际执行或代码快照未变；主执行者仍须
-核对真实通道、任务增量及验证证据，不把当前声明门禁当成完整执行凭据机制。
+`reviewer` 与 `independent` 是审查来源声明；`decision_source` 若由相应入口记录，也仅表示决定来源。字段和摘要用于核对本轮材料与执行记录的一致性。主执行者仍按正常工作流取得 fresh 审查、核对任务增量及验证证据。
 
 No matching evidence file means review did not happen. File existence alone is
 not approval: the completion node must run the `cm-task-gate.py mark-done` lock

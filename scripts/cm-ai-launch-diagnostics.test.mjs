@@ -9,6 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {readRunDefinition,openControlRun} from './cm-ai-run.mjs';
 import {createConversationExecution} from './cm-ai-host.mjs';
+import {syntheticReviewConfig} from './cm-ai-host-fixture.mjs';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 
 const home=fs.mkdtempSync(path.join(os.tmpdir(),'cm-launch-diagnostics-home-'));
@@ -29,10 +30,11 @@ function fixture(t){
   fs.writeFileSync(path.join(codeProject,'requirements.md'),'# Fixture\n');
   const config=path.join(root,'run.json'),review=path.join(root,'review.json'),workflow=path.join(root,'workflow.json');
   fs.writeFileSync(config,JSON.stringify({version:1,specsDir,codeProject,feature,identity,scope:['target.mjs'],requirements:['requirements.md']}));
-  fs.writeFileSync(review,JSON.stringify({model:'fixture',preflight:{}}));
+  fs.writeFileSync(review,JSON.stringify(syntheticReviewConfig(codeProject,'claude')));
   fs.writeFileSync(workflow,JSON.stringify({documentationPaths:[],applicableAgentFiles:[],qa:null}));
   const env={...process.env,CM_WORKFLOW_HOME:path.join(root,'home'),CM_WORKFLOW_LOG_HOME:path.join(root,'logs'),NODE_NO_WARNINGS:'1'};
   const host=(mode,{hostContext='session-a',extra=[]}={})=>{
+    fs.writeFileSync(review,JSON.stringify(syntheticReviewConfig(codeProject,extra.includes('claude')?'claude':'codex')));
     const result=spawnSync(process.execPath,[cli,'serve','--config',config,'--mode',mode,'--host-context',hostContext,
       '--allow-development',...extra],{encoding:'utf8',env,timeout:20000,
       input:JSON.stringify({version:1,operation:'status',requestId:'status',identity})+'\n'});
@@ -46,7 +48,7 @@ test('create without --review-config is refused with the reason and leaves no ru
   const f=fixture(t);
   const refused=f.host('create');
   assert.equal(refused.status,1);assert.equal(refused.error.code,'review_configuration_required');
-  assert.match(refused.error.reason,/--review-config/);assert.match(refused.error.reason,/preflight/);
+  assert.match(refused.error.reason,/--review-config/);assert.match(refused.error.reason,/自动派发 fresh Review/);
   assert.equal(fs.existsSync(path.join(f.specsDir,'.reviews','.execution',identity.runId)),false);
   const created=f.host('create',{extra:['--review-config',f.review]});
   assert.equal(created.status,0,created.stderr);
@@ -94,6 +96,7 @@ test('driver PLAN without runtime reaches the host diagnosis for a Claude run',t
   const plan=path.join(f.root,'plan.json');
   fs.writeFileSync(plan,JSON.stringify({config:'run.json',mode:'resume',hostContext:'session-a',
     permissions:['--review-config','review.json']}));
+  fs.writeFileSync(f.review,JSON.stringify(syntheticReviewConfig(f.codeProject,'codex')));
   const result=spawnSync(process.execPath,[driver,'--plan',plan,'status'],{encoding:'utf8',env:f.env,timeout:30000});
   assert.notEqual(result.status,0);
   assert.match(result.stderr,/fingerprint_mismatch/);assert.match(result.stderr,/--runtime：创建时为 claude/);
@@ -107,7 +110,6 @@ test('invalid_arguments names the argument',t=>{
     [['--browser-qa','available','--review-config',f.review],/没有适用的交互式 QA/],
     [['--no-such-flag'],/未知参数：--no-such-flag/],
     [['--review-config',f.review,'--review-config',f.review],/参数重复：--review-config/],
-    [['--allow-review-attempt','3','--review-config',f.review],/只接受 1 或 2/],
     [['--input-limit','12'],/--input-limit/],
   ]){
     const result=f.host('create',{extra});

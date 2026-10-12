@@ -176,7 +176,7 @@ test('Q16/Q17: documentation_sync retries are capped at two per run, then an exp
   assert.equal(projectedRunnerStatus(history,records(f)[0].payload.config).code,'documentation_sync_retry_limit');
 });
 
-test('Q16: drivers prepare no developer answer for a documentation block, before or after the confirmation',async t=>{
+test('Q16: drivers prepare only the reachable revision answer after documentation retry confirmation',async t=>{
   const f=docFixture(t,'doc-driver');
   await docSession(f,'create',docExecution(f,{developer:['delivered\n'],sync:[{hang:true}]}),[['advance',1]]);
   const {readRunnerHistory,projectedRunnerStatus}=await import('../runtime/js/cm-ai/durable-runner-state.mjs');
@@ -188,8 +188,8 @@ test('Q16: drivers prepare no developer answer for a documentation block, before
   await confirm(f);
   const status=project();
   assert.deepEqual([status.state,status.code],['blocked','documentation_sync_answer_missing']);
-  assert.deepEqual(projectDevelopAttempts(status,'advance',[]).attempts,[]);
-  assert.deepEqual(batchDevelopAttempts(status,'1.work/T-002',[]),[]);
+  assert.deepEqual(projectDevelopAttempts(status,'advance',[]).attempts,[2]);
+  assert.deepEqual(batchDevelopAttempts(status,'1.work/T-002',[]),[2]);
 });
 
 test('older journals keep their projection: a develop that failed out_of_scope without a documentation record stays unknown',async t=>{

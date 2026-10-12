@@ -25,13 +25,6 @@ import {createClaudeReviewRun} from '../runtime/js/cm-ai/claude-review-adapter.m
 
 
 const checks=[{id:'check',command:['synthetic'],outcome:'passed',exitCode:0,evidence:'fixture'}];
-const grantFor=(request,authorizationAt,change=grant=>grant)=>{
-  const body={version:1,kind:'cm-review-dispatch-grant',grantId:`grant-${request.invocationId}`,adapterId:`${request.provider}-review-adapter`,
-    invocationId:request.invocationId,requestDigest:request.requestDigest,identity:request.identity,
-    reviewerId:'reviewer',logicalContextId:request.contextId,packageDigest:request.payload.reviewPackage.packageDigest,
-    hostContextId:'actual-main',decisionId:'decision-1',decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
-  change(body);return {...body,grantDigest:digest(body)};
-};
 const events=(onEvent,thread='actual-review')=>{
   onEvent({event:'thread.started',provider_thread:thread});
   onEvent({event:'turn.started',item_type:null});
@@ -40,7 +33,7 @@ const events=(onEvent,thread='actual-review')=>{
   onEvent({event:'process_closed',exit_code:0,signal:null,timed_out:false});
 };
 
-async function fixture(fn,{reviewRun,authorize,times,timeoutMs=1000,provider='codex'}={}) {
+async function fixture(fn,{reviewRun,times,timeoutMs=1000,provider='codex'}={}) {
   const temp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-review-v3-')));
   const root=path.join(temp,'code'),specsRoot=path.join(temp,'specs'),reviewsDir=path.join(specsRoot,'.reviews');
   fs.mkdirSync(root);fs.mkdirSync(reviewsDir,{recursive:true});
@@ -64,8 +57,7 @@ async function fixture(fn,{reviewRun,authorize,times,timeoutMs=1000,provider='co
         dispatches++;lateEvent=control.onEvent;return (reviewRun??defaultRun)(request,control);
       }}],check:()=>checks,
     taskCompletion:{reviewsDir,handoffs:[path.join(reviewsDir,'a1.json'),path.join(reviewsDir,'a2.json')]},
-    reviewInvocation:{developerThreadId:'actual-developer',excludedThreadIds:['actual-main'],
-      authorize:authorize??((request,{authorizationAt})=>grantFor(request,authorizationAt))}};
+    reviewInvocation:{developerThreadId:'actual-developer',excludedThreadIds:['actual-main']}};
   const make=mode=>{
     const old=Date.now,values=times?[...times]:null;if(values)Date.now=()=>values.length>1?values.shift():values[0];
     try{return createTaskRunner({...options,persistence:{store,mode,version:3}});}finally{Date.now=old;}
@@ -127,7 +119,7 @@ for(const provider of ['codex','claude'])test(`${provider} late terminal receipt
   assert.equal(f.dispatches(),1);
 },{timeoutMs:20,provider,reviewRun:lateReceiptRun({duplicate:true})}));
 
-test('reconciled provider failure spends the original one-retry budget and requires a fresh grant',()=>fixture(async f=>{
+test('reconciled provider failure spends the original one-retry budget and requires a fresh request binding',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));
   const first=await runner.executeEffect(f.effect('review'));
   const after=runner.reconcileReview({invocationId:first.reviewReconciliation.invocationId});
@@ -135,7 +127,7 @@ test('reconciled provider failure spends the original one-retry budget and requi
   const second=await runner.executeEffect(retryEffect(f));assert.equal(second.state,'unknown');
   const final=runner.reconcileReview({invocationId:second.reviewReconciliation.invocationId});
   assert.equal(final.state,'blocked');assert.equal(final.code,'review_provider_failed');assert.equal(f.dispatches(),2);
-  assert.notEqual(first.reviewInvocation.registration.grant.grantDigest,second.reviewInvocation.registration.grant.grantDigest);
+  assert.notEqual(first.reviewInvocation.registration.binding.requestDigest,second.reviewInvocation.registration.binding.requestDigest);
   assert.equal((await runner.executeEffect({...retryEffect(f),id:'third-review'})).code,'stage_mismatch');
   assert.equal(f.dispatches(),2);assert.deepEqual(f.reopen().status(),final);
 },{timeoutMs:20,reviewRun:lateReceiptRun({failed:true})}));
@@ -147,7 +139,7 @@ test('replay rejects receipt or reconciliation bindings even when an attacker re
   const original=f.getStore().snapshot().records;
   for(const [type,key,value] of [
     ['review-invocation-receipt','invocationId','other-call'],['review-invocation-receipt','effectId','review-2'],
-    ['review-invocation-receipt','registeredDigest',digest('other-grant')],
+    ['review-invocation-receipt','registeredDigest',digest('other-registration')],
     ['review-invocation-receipt','startedDigest',digest('other-thread')],
     ['review-invocation-receipt','resultDigest',digest('other-result')],
     ['review-invocation-reconciled','receiptDigest',digest('other-receipt')],
@@ -160,16 +152,6 @@ test('replay rejects receipt or reconciliation bindings even when an attacker re
   assert.deepEqual(f.getStore().snapshot().records,original);assert.equal(f.dispatches(),1);
 },{timeoutMs:20,reviewRun:lateReceiptRun()}));
 
-test('reconciliation is not dispatch approval and the original grant cannot authorize another invocation',()=>{
-  let originalGrant;
-  return fixture(async f=>{
-    const runner=f.make();await runner.executeEffect(f.effect('develop'));
-    const first=await runner.executeEffect(f.effect('review'));
-    runner.reconcileReview({invocationId:first.reviewReconciliation.invocationId});
-    assert.equal((await runner.executeEffect(retryEffect(f))).code,'authorization_invalid');
-    assert.equal(f.dispatches(),1);
-  },{timeoutMs:20,reviewRun:lateReceiptRun({failed:true}),authorize:(request,{authorizationAt})=>originalGrant??=grantFor(request,authorizationAt)});
-});
 
 for(const [name,change] of [
   ['only local exit',r=>{r.events=r.events.filter(e=>!['item.completed','turn.completed'].includes(e.event));r.result={status:'failed',code:'incomplete_result'};}],
@@ -241,7 +223,7 @@ setInterval(()=>{},1000);
     const retry=await resumed.executeEffect(retryEffect(f));assert.equal(retry.state,'unknown');
     const exhausted=resumed.reconcileReview({invocationId:retry.reviewReconciliation.invocationId});
     assert.equal(exhausted.state,'blocked');assert.equal(spawns,2);
-    assert.notEqual(first.reviewInvocation.registration.grant.grantDigest,retry.reviewInvocation.registration.grant.grantDigest);
+    assert.notEqual(first.reviewInvocation.registration.binding.requestDigest,retry.reviewInvocation.registration.binding.requestDigest);
   }
 },{provider,timeoutMs:2000}));
 

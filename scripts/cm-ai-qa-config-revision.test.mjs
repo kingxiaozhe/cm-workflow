@@ -80,15 +80,7 @@ function buildExecution(f,{twoAttempts=false}={}){
           examinedPaths:reviewPaths(request.payload.reviewPackage),findings:verdict==='approved'?[]:
             [{id:'F1',severity:'P2',path:'a.js',message:'Review again',evidence:'Synthetic first attempt'}],summary:'Synthetic review'}};
       }}],
-    reviewInvocation:{developerThreadId:'host-author',excludedThreadIds:['main'],
-      authorize:(request,{authorizationAt})=>{
-        const body={version:1,kind:'cm-review-dispatch-grant',grantId:`grant-${request.identity.attempt}`,adapterId:'codex-review-adapter',
-          invocationId:request.invocationId,requestDigest:request.requestDigest,identity:request.identity,
-          reviewerId:'reviewer',logicalContextId:request.contextId,packageDigest:request.payload.reviewPackage.packageDigest,
-          hostContextId:'main',decisionId:`decision-${request.identity.attempt}`,decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
-        return {...body,grantDigest:digest(body)};
-      }},
-    hostDecision:{status:'approved'},
+    reviewInvocation:{developerThreadId:'host-author',excludedThreadIds:['main']},
     check:createHostCheck({cwd:f.codeProject,commands:[{id:'content',command:[process.execPath,'-e',
       "require('node:assert/strict').match(require('node:fs').readFileSync('a.js','utf8'),/^new( 2)?\\n$/)"]}]})};
 

@@ -7,6 +7,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
+import {claudeReviewFingerprint} from '../runtime/js/cm-ai/worker-claude.mjs';
 import {batchDevelopAttempts} from './cm-ai-batch-drive.mjs';
 import {runLiveDriver} from './fixtures/live-evidence-driver.mjs';
 
@@ -41,6 +42,8 @@ function fixture(t,count=1){
   fs.writeFileSync(path.join(root,'review.json'),JSON.stringify({model:'fixture',preflight:{passed:true,
     cli_model:'fixture',prompt_transport:'stdin',config_fingerprint:configFingerprint({cwd:codeProject,model:'fixture'})}}));
   fs.copyFileSync(reviewer,path.join(bin,'codex'));fs.chmodSync(path.join(bin,'codex'),0o700);
+  const claudeReviewer=fileURLToPath(new URL('./fixtures/claude-review-process.mjs',import.meta.url));
+  fs.copyFileSync(claudeReviewer,path.join(bin,'claude'));fs.chmodSync(path.join(bin,'claude'),0o700);
   const answers=path.join(root,'answers','1.work','T-001');fs.mkdirSync(answers,{recursive:true});
   fs.writeFileSync(path.join(answers,'target.txt'),'export const value = 42;\n');
   const write=(name,value)=>fs.writeFileSync(path.join(answers,name),JSON.stringify(value));
@@ -49,7 +52,7 @@ function fixture(t,count=1){
     const value={config:'batch.json',mode:'create',hostContext:'batch-host-a',
       permissions:['--allow-qa'],answers:'answers',checks:Object.fromEntries(batch.tasks.map(task=>
         [`1.work/${task.taskId}`,[{id:'syntax',command:[process.execPath,'--check',task.taskId==='T-001'?'target.mjs':'target2.mjs']}]])),...extra};
-    // A new batch requires a bound review configuration (it grants no review).
+    // A new batch requires bound review configuration for automatic review execution.
     if(!value.permissions.includes('--review-config'))value.permissions=[...value.permissions,'--review-config','review.json'];
     fs.writeFileSync(file,JSON.stringify(value));
     return file;
@@ -73,7 +76,7 @@ test('batch reaches live logic and browser QA through the real member host',asyn
     acIds:[],taskIds:['T-001'],title:'Fixture observation',preconditions:[],steps:['Observe fixture'],expected:['value is 42'],cleanup:[]}));
   fs.writeFileSync(path.join(f.specsDir,'1.work/test-cases.json'),JSON.stringify({schemaVersion:'1.0',feature:'work',cases}));
   fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(f.specsDir)}));
-  const plan=f.plan({permissions:['--allow-qa','--allow-review',`${key}:1`,'--browser-qa','available'],
+  const plan=f.plan({permissions:['--allow-qa','--browser-qa','available'],
     liveEvidence:{directory:'exchange',kinds:['qa_logic','qa_browser'],timeoutMs:1000}});
   const out=await runLiveDriver(DRIVER,plan,'advance',row=>row.kind==='qa_logic'
     ?{verdict:'SUPPORTED',evidence:['Fixture target.mjs exports 42']}
@@ -93,7 +96,7 @@ test('batch live verification request can reject a written requirement without r
     assert.equal(row.kind,'verification_precheck');
     assert.match(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),/42/);
     return {items:[{requirement:'value is 43',satisfied:false,evidence:'Fixture source exports 42'}]};
-  },{timeoutMs:60000,env:{...process.env,CM_WORKFLOW_HOME:path.join(f.root,'home'),CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')}});
+  },{timeoutMs:60000,env:{...process.env,PATH:path.join(f.root,'bin')+path.delimiter+process.env.PATH,CM_WORKFLOW_HOME:path.join(f.root,'home'),CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')}});
   assert.equal(out.status,0,out.stderr);assert.equal(out.requests.length,1);
   assert.match(out.stdout,/verification_precheck_failed/);
 });
@@ -125,10 +128,10 @@ test('real batch host advances with authored edit and actual check, then resumes
   const again=f.drive(f.plan({mode:'resume',originalHostContext:'batch-host-a'}),'advance');
   assert.equal(again.status,0,again.stderr);
 });
-test('real batch reaches completion with an independently dispatched fixture review',t=>{
+test('real batch reaches completion with automatic configured fixture review',t=>{
   const f=fixture(t);prepared(f);
   f.write('develop-a2.json',develop);
-  const permissions=['--allow-qa','--review-config','review.json','--allow-review',`${key}:1`];
+  const permissions=['--allow-qa','--review-config','review.json'];
   const first=f.drive(f.plan({permissions}),'advance');
   assert.equal(first.status,0,first.stderr);assert.match(first.stderr,/应答 check/);
   let result=JSON.parse(first.stdout).result,stderr=first.stderr;
@@ -156,7 +159,7 @@ const developIntents=f=>{
 };
 test('batch review without a second-round answer stops at changes_requested after the first review',t=>{
   const f=fixture(t);prepared(f);changesRequested(f);
-  const permissions=['--allow-qa','--review-config','review.json','--allow-review',`${key}:1`];
+  const permissions=['--allow-qa','--review-config','review.json'];
   const run=f.drive(f.plan({permissions}),'advance');
   assert.equal(run.status,0,run.stderr);
   assert.match(run.stderr,/没有 develop-a2\.json/);assert.match(run.stderr,/\.reviews\/work-T-001-r1\.md/);
@@ -182,16 +185,19 @@ test('batch resume holds a later task that has no run yet when its second-round 
   for(const name of ['qa-assess.json','documentation-inspect.json'])
     fs.copyFileSync(path.join(f.answers,name),path.join(later,name));
   fs.writeFileSync(path.join(later,'develop.json'),JSON.stringify({...develop,edits:{'target2.mjs':'target2.txt'}}));
-  // T-001 stops at awaiting_review first, so T-002 has no run when the batch resumes.
+  // T-001 holds after declared changes, so T-002 has no run when the batch resumes.
+  changesRequested(f);
   const first=f.drive(f.plan({permissions:['--allow-qa','--review-config','review.json']}),'advance');
-  assert.equal(first.status,0,first.stderr);assert.equal(JSON.parse(first.stdout).result.state,'awaiting_review');
+  assert.equal(first.status,0,first.stderr);assert.equal(JSON.parse(first.stdout).result.state,'changes_requested');
+  fs.writeFileSync(path.join(f.answers,'target-a2.txt'),'export const value = 42; // revised\n');
+  f.write('develop-a2.json',{...develop,edits:{'target.mjs':'target-a2.txt'}});
   // The reviewer approves T-001 and asks for changes on T-002.
   const cli=path.join(f.root,'bin','codex');
   fs.writeFileSync(cli,fs.readFileSync(reviewer,'utf8').replace("verdict:'approved'",
     "verdict:prompt.includes('target2.mjs')?'changes_requested':'approved'")
     .replace('findings:[]',"findings:prompt.includes('target2.mjs')?[{id:'F1',severity:'P2',path:'target2.mjs',message:'Revise',evidence:'Fixture finding'}]:[]"));
   fs.chmodSync(cli,0o700);
-  const permissions=['--allow-qa','--review-config','review.json','--allow-review',`${key}:1`,'--allow-review','1.work/T-002:1'];
+  const permissions=['--allow-qa','--review-config','review.json'];
   let result;
   for(let n=0;n<4;n++){
     const next=f.drive(f.plan({mode:'resume',originalHostContext:'batch-host-a',permissions}),'advance');
@@ -203,7 +209,7 @@ test('batch resume holds a later task that has no run yet when its second-round 
 });
 test('batch hold without a second-round answer does not interfere with an approving review',t=>{
   const f=fixture(t);prepared(f);
-  const permissions=['--allow-qa','--review-config','review.json','--allow-review',`${key}:1`];
+  const permissions=['--allow-qa','--review-config','review.json'];
   const first=f.drive(f.plan({permissions}),'advance');assert.equal(first.status,0,first.stderr);
   let result=JSON.parse(first.stdout).result;
   for(let n=0;n<4&&result.state!=='run_done';n++){
@@ -243,7 +249,7 @@ test('batch driver lets a later task\'s second-round delete bring its delivered 
   const later=path.join(f.root,'answers','1.work','T-002');
   fs.writeFileSync(path.join(later,'gen_c.bin.txt'),Buffer.alloc(100*1024,0x61));
   fs.writeFileSync(path.join(later,'develop-a2.json'),JSON.stringify({...develop,edits:{'gen/b.bin':{delete:true},'gen/c.bin':'gen_c.bin.txt'}}));
-  const run=f.drive(f.plan({permissions:['--allow-qa','--review-config','review.json','--allow-review','1.work/T-002:1']}),'advance');
+  const run=f.drive(f.plan({permissions:['--allow-qa','--review-config','review.json']}),'advance');
   assert.equal(run.status,0,run.stderr);assert.doesNotMatch(run.stderr,/仅答案写入/);assert.equal(fs.existsSync(f.store),true);
 });
 test('batch driver refuses a no-op or non-UTF-8 protected develop answer before launch',t=>{
@@ -264,7 +270,7 @@ test('batch review revision applies the second-round develop content',t=>{
     .replace('findings:[]',"findings:[{id:'F1',severity:'P2',path:'target.mjs',message:'Revise value',evidence:'Fixture finding'}]"));
   fs.writeFileSync(path.join(f.answers,'target-a2.txt'),'export const value = 43;\n');
   f.write('develop-a2.json',{...develop,edits:{'target.mjs':'target-a2.txt'}});
-  const permissions=['--allow-qa','--review-config','review.json','--allow-review',`${key}:1`];
+  const permissions=['--allow-qa','--review-config','review.json'];
   const run=f.drive(f.plan({permissions}),'advance');assert.equal(run.status,0,run.stderr);
   assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 43;\n');
 });
@@ -288,6 +294,8 @@ test('D1 batch rejects invalid check timeout before opening a host',t=>{
 
 test('D1 batch retries failed checks before review in the same attempt',t=>{
   const f=fixture(t);prepared(f);
+  fs.writeFileSync(path.join(f.root,'review.json'),JSON.stringify({model:'fixture',preflight:{passed:true,provider:'claude',
+    prompt_transport:'stdin',config_fingerprint:claudeReviewFingerprint({cwd:f.codeProject,model:'fixture'})}}));
   const failed={[key]:[{id:'test',command:[process.execPath,'-e','process.exit(1)']}]};
   const first=f.drive(f.plan({permissions:['--allow-qa','--runtime','claude'],checks:failed}),'advance');assert.equal(first.status,0,first.stderr);
   const result=JSON.parse(first.stdout).result;
@@ -360,8 +368,9 @@ test('optimized real batch driver shares only a declared same-plan check and rej
   const checks={[key]:[{id:'first',command},{id:'same',command,sameExecutionAs:'first'}]};
   const denied=f.drive(f.plan({checks}), 'advance');assert.equal(denied.status,2);noStore(f);assert(!fs.existsSync(counter));
   const out=f.drive(f.plan({permissions:['--allow-qa','--execution-optimizations'],checks}), 'advance');
-  assert.equal(out.status,0,out.stderr);assert.equal(JSON.parse(out.stdout).result.state,'awaiting_review',out.stdout+out.stderr);
-  assert.equal(fs.readFileSync(counter,'utf8'),'x');
+  assert.equal(out.status,0,out.stderr);assert.equal(JSON.parse(out.stdout).result.state,'run_done',out.stdout+out.stderr);
+  // One physical command per phase: development and the required completion recheck.
+  assert.equal(fs.readFileSync(counter,'utf8'),'xx');
 });
 
 // Q24 driver: develop_redo goes through the batch host to the stopped member; the
@@ -414,7 +423,7 @@ test(`${label} batch driver preflights a rescheduled second generation before it
   answer('T-003','target3','export const value = 3;\n');
   const checks=Object.fromEntries(['T-001','T-002','T-003'].map((id,n)=>[`1.work/${id}`,
     [{id:'syntax',command:[process.execPath,'--check',n===0?'target.mjs':`target${n+1}.mjs`]}]]));
-  const permissions=['--allow-qa',...(strict?['--execution-optimizations']:[]),...['T-001','T-002','T-003'].flatMap(id=>['--allow-review',`1.work/${id}:1`])];
+  const permissions=['--allow-qa',...(strict?['--execution-optimizations']:[])];
   const first=f.drive(f.plan({permissions,checks}),'advance');assert.equal(first.status,0,first.stderr);
   const stopped=JSON.parse(first.stdout).result;
   assert.equal(stopped.code,'batch_member_rescheduled',first.stdout+first.stderr);assert.deepEqual(stopped.rescheduled,['1.work/T-002']);
@@ -427,4 +436,40 @@ test(`${label} batch driver preflights a rescheduled second generation before it
   const done=JSON.parse(resumed.stdout).result;
   assert.equal(done.state,'run_done',resumed.stdout+resumed.stderr);
   assert.equal(fs.readFileSync(path.join(f.codeProject,'target2.mjs'),'utf8'),'export const value = 2;\n');
+});
+
+
+test('batch ordinary advance preflights reachable revision answers without review grants',()=>{
+  assert.deepEqual(batchDevelopAttempts({state:'ready',attempt:1},key,[]),[1,2]);
+  assert.deepEqual(batchDevelopAttempts({state:'awaiting_review',attempt:1},key,[]),[2]);
+  assert.deepEqual(batchDevelopAttempts({state:'pending_review',attempt:1},key,[]),[2]);
+  assert.deepEqual(batchDevelopAttempts({state:'blocked',code:'develop_checks_not_passed',attempt:1},key,[]),[1,2]);
+  assert.deepEqual(batchDevelopAttempts({state:'blocked',code:'check_answer_missing',attempt:1},key,[]),[2]);
+  assert.deepEqual(batchDevelopAttempts({state:'changes_requested',attempt:2},key,[]),[2]);
+});
+test('batch driver rejects removed review grant before starting a batch',t=>{
+  const f=fixture(t);prepared(f);
+  const out=f.drive(f.plan({permissions:['--allow-qa','--allow-review',key+':1']}),'advance');
+  assert.equal(out.status,2,out.stderr);assert.match(out.stderr,/permissions 无效.*--allow-review/);noStore(f);
+});
+
+test('batch configured review reaches both rounds and completes without a review grant',t=>{
+  const f=fixture(t);prepared(f);
+  fs.writeFileSync(path.join(f.answers,'revised.txt'),'export const value = 42; // revised after findings\n');
+  f.write('develop-a2.json',{...develop,edits:{'target.mjs':'revised.txt'}});
+  const cli=path.join(f.root,'bin','codex');
+  fs.writeFileSync(cli,fs.readFileSync(reviewer,'utf8')
+    .replace("verdict:'approved'","verdict:data.reviewPackage.identity.attempt===1?'changes_requested':'approved'")
+    .replace('findings:[]',"findings:data.reviewPackage.identity.attempt===1?[{id:'F1',severity:'P2',path:'target.mjs',message:'Revise',evidence:'Fixture finding'}]:[]"));
+  fs.chmodSync(cli,0o700);
+  let out=f.drive(f.plan(),'advance');assert.equal(out.status,0,out.stderr);
+  let result=JSON.parse(out.stdout).result;
+  for(let n=0;n<4&&result.state!=='run_done';n++){
+    out=f.drive(f.plan({mode:'resume',originalHostContext:'batch-host-a'}),'advance');
+    assert.equal(out.status,0,out.stderr);result=JSON.parse(out.stdout).result;
+  }
+  assert.equal(result.state,'run_done',JSON.stringify(result));
+  assert.deepEqual(developIntents(f),['develop-1','develop-2']);
+  assert.match(fs.readFileSync(path.join(f.specsDir,'.reviews','work-T-001-r1.md'),'utf8'),/verdict: changes_requested/);
+  assert.match(fs.readFileSync(path.join(f.specsDir,'.reviews','work-T-001-r2.md'),'utf8'),/verdict: approved/);
 });

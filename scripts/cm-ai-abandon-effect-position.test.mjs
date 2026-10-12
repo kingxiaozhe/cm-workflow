@@ -41,14 +41,7 @@ function execution(f,verdict='blocked'){
       requestedModel:'fixture',worker:async()=>{fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'written\n');
         return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
           retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};}})},
-    reviewers:[reviewer],reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control'],
-      authorize:(value,{authorizationAt})=>{const body={version:1,kind:'cm-review-dispatch-grant',
-        grantId:'grant',adapterId:'codex-review-adapter',invocationId:value.invocationId,
-        requestDigest:value.requestDigest,identity:value.identity,reviewerId:'reviewer',
-        logicalContextId:value.contextId,packageDigest:value.payload.reviewPackage.packageDigest,
-        hostContextId:'control',decisionId:'approved',decision:'approved',issuedAt:authorizationAt,
-        expiresAt:authorizationAt+60000};return {...body,grantDigest:digest(body)};}},
-    hostDecision:{status:'approved'},check:createHostCheck({cwd:f.codeProject,
+    reviewers:[reviewer],reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control']},check:createHostCheck({cwd:f.codeProject,
       commands:[{id:'syntax',command:[process.execPath,'--check','a.mjs']}]})};
 }
 async function start(f,runId,verdict='blocked',options={}){

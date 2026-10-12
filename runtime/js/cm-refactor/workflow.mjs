@@ -511,7 +511,7 @@ export function createCmRefactorHost(raw,{call}){
         files:changed.map(name=>({path:name,before:context.original[name],after:files[name]})),analysis,retrospective,rulebook,judgeBefore,reports,
         lessons:{path:lessons,before:context.lessons,after:files.__lessons??context.lessons},project,baselineCommands:config.baselineCommands,judgeCommand:config.judgeCommand,
         preTaskDirty:context.baseline.gitState,route:routes.reviewer,
-        instructions:'Fresh independent reviewer per runtime/review.md, no author history. Review ALL diff including tests/Learning/rules/docs/LESSONS and judge coverage. Return {markdown} with original N4 header binding exact handoff SHA, attempt=round, scope, findings. No writes or unapproved provider. Missing channel is blocked, never invent approval.'});
+        instructions:'Use an actual fresh reviewer context without author history per runtime/review.md. Treat reviewer channel and independent as source declarations; validate their format and consistency without treating them as proof of identity or execution. Review ALL diff including tests/Learning/rules/docs/LESSONS and judge coverage. Return {markdown} with original N4 header binding exact handoff SHA, attempt=round, scope, findings. No writes or unapproved provider. Missing channel is blocked, never invent approval.'});
       // The review is validated in full before it becomes immutable evidence, so a
       // reply that fails (missing header, wrong handoff digest, short scope) stays
       // discardable. An already published review is checked as before (old journals).

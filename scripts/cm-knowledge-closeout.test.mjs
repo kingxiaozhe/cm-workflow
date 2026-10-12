@@ -35,11 +35,11 @@ async function fixture(fn,{pending=false}={}){
   const stateFile=path.join(specsDir,'.reviews','.execution',identity.runId,'state.json');
   const definition={version:1,specsDir,codeProject,feature,identity,scope:['README.md'],requirements:[]};
   const execution=(enabled)=>({configuration:{kind:'synthetic-host-v1',...(enabled===undefined?{}:{workflow:{knowledgeCloseout:enabled}})},timeoutMs:1000,
-    excludedContexts:['main'],hostDecision:null,check:()=>[],applicableAgentFiles:[],documentationProvider:{timeoutMs:1000,inspect:async()=>{throw Error('unexpected inspection');}},
+    excludedContexts:['main'],check:()=>[],applicableAgentFiles:[],documentationProvider:{timeoutMs:1000,inspect:async()=>{throw Error('unexpected inspection');}},
     developer:{provider:'codex',requestedModel:'fixture',contextId:'author',run:async()=>{throw Error('unexpected dispatch');}},
     reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',allowed:true,available:true,
       contexts:['review-1','review-2'],run:async()=>{throw Error('unexpected review');}}],
-    reviewInvocation:{developerThreadId:'author',excludedThreadIds:['main'],hostContextId:'main',authorize:async()=>{throw Error('unexpected grant');}}});
+    reviewInvocation:{developerThreadId:'author',excludedThreadIds:['main'],hostContextId:'main'}});
   try{return await fn({root,specsDir,codeProject,feature,definition,entry,seedQa,response,stateFile,execution,effects:()=>effects});}
   finally{fs.rmSync(root,{recursive:true,force:true});}
 }
@@ -124,7 +124,7 @@ test('real legacy init without closeout resumes byte-identically; explicit activ
     excludedContexts:execution.excludedContexts,developer:execution.developer,reviewers:execution.reviewers,reviewInvocation:execution.reviewInvocation,
     check:()=>[],timeoutMs:1000,taskCompletion:{reviewsDir:path.join(f.specsDir,'.reviews'),handoffs:[1,2].map(n=>path.join(f.specsDir,'.reviews',`fixture-T-001-a${n}-handoff.json`))},
     taskLearning:{feature:f.feature,hostHandoff:true},persistence:{store,mode:'create',version:3}},entry:{specsDir:f.specsDir,codeProject:f.codeProject,
-    feature:f.feature,identity,hostDecision:null,applicableAgentFiles:[],documentationProvider:execution.documentationProvider}});}finally{store.close();}
+    feature:f.feature,identity,applicableAgentFiles:[],documentationProvider:execution.documentationProvider}});}finally{store.close();}
   const before=fs.readFileSync(f.stateFile);assert(!Object.hasOwn(JSON.parse(before).records[0].payload.config,'knowledgeCloseout'));
   const resumed=await openControlRun(f.definition,'resume',execution);resumed.close();assert.deepEqual(fs.readFileSync(f.stateFile),before);
   await assert.rejects(openControlRun(f.definition,'resume',f.execution(true)),{code:'closeout_policy_changed'});

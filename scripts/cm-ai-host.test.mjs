@@ -9,7 +9,7 @@ import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {createConversationExecution,main as hostMain} from './cm-ai-host.mjs';
 import {readRunDefinition,openControlRun} from './cm-ai-run.mjs';
 import {fixtureProcesses} from './fixtures/process-cleanup.mjs';
-import {cli,identity,request,fixture,launchArgs,runCli,protectedResultFixture,implementedValue,lastCheckpoint,installTimeoutReviewer} from './cm-ai-host-fixture.mjs';
+import {cli,identity,request,fixture,launchArgs,runCli,protectedResultFixture,implementedValue,lastCheckpoint,installTimeoutReviewer,syntheticReviewConfig} from './cm-ai-host-fixture.mjs';
 
 test('single host input limit parsing and transport pass-through need no running host',async()=>{
   const {serveHostTransport}=await import('./cm-ai-host.mjs');
@@ -169,8 +169,8 @@ test('host create refuses a scope with AGENTS.md and lists the protected paths b
 });
 
 
-test('current conversation CLI performs real file/check work and stops at the original unauthorised review gate',async()=>{
-  const f=fixture();
+test('current conversation start performs real file/check work and preserves its development-only replay',async()=>{
+  const f=fixture();f.operation='start';
   try{
     const denied=spawnSync(process.execPath,[cli,...f.args.slice(0,-1)],{encoding:'utf8',timeout:3000});
     assert.equal(denied.status,1);assert(denied.stderr.includes('host_launch_authorization_required'));
@@ -182,13 +182,13 @@ test('current conversation CLI performs real file/check work and stops at the or
     assert.deepEqual(roleEvents.map(row=>row.role),['coder','tester']);
     assert(roleEvents.every(row=>!Object.hasOwn(row,'effective_model')&&row.task==='T-001'));
     const result=first.rows.find(row=>row.requestId==='advance').result;
-    assert.equal(result.state,'awaiting_review');assert.equal(result.code,'decision_required');
+    assert.equal(result.state,'awaiting_review');assert.equal(result.code,null);
     assert(first.rows.some(row=>row.type==='host_response'&&row.accepted===false));
     assert(fs.readFileSync(path.join(f.specsDir,'1.work','tasks.md'),'utf8').includes('[ ] T-001'));
     const handoff=JSON.parse(fs.readFileSync(path.join(f.specsDir,'.reviews','work-T-001-a1-handoff.json'),'utf8'));
     assert.equal(handoff.status,'ready_for_review');assert(handoff.changed_files.includes('target.mjs'));
     const second=await runCli(f,'normal','resume');assert.equal(second.code,0,second.stderr);
-    assert.deepEqual(second.calls,[]);assert.equal(second.rows.find(row=>row.requestId==='advance').result.code,'decision_required');
+    assert.deepEqual(second.calls,[]);assert.equal(second.rows.find(row=>row.requestId==='advance').result.code,null);
     const resumedRoles=fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse)
       .filter(row=>row.event==='decision'&&row.phase==='route');
     assert.deepEqual(resumedRoles,roleEvents);
@@ -225,7 +225,7 @@ for(const mode of ['disconnect','cancel'])test(`current conversation ${mode} pre
 });
 
 for(const mode of ['normal','disconnect','cancel'])test(`Claude conversation uses original runner development and recovery: ${mode}`,async()=>{
-  const f=fixture();f.runtime='claude';f.args.push('--runtime','claude');
+  const f=fixture();f.operation='start';f.runtime='claude';f.args.push('--runtime','claude');
   try{
     const first=await runCli(f,mode);assert.equal(first.code,0,first.stderr);
     const state=mode==='normal'?'awaiting_review':mode==='disconnect'?'blocked':'cancelled';
@@ -251,7 +251,7 @@ for(const mode of ['normal','disconnect','cancel'])test(`Claude conversation use
 test('Claude Review option rejects before store instead of borrowing the Codex reviewer',()=>{
   const f=fixture();
   try{
-    const result=spawnSync(process.execPath,[cli,...f.args,'--runtime','claude','--allow-review-attempt','1'],{encoding:'utf8',timeout:3000});
+    const result=spawnSync(process.execPath,[cli,...f.args,'--runtime','claude'],{encoding:'utf8',timeout:3000});
     assert.equal(result.status,1);assert(result.stderr.includes('review_configuration_required'));
     assert(!fs.existsSync(path.join(f.specsDir,'.reviews')));
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
@@ -290,7 +290,7 @@ test('fixture watchdog stopping a host mid-review leaves no process from the fix
     // Keep the 15-minute reviewer budget: only the watchdog can end this review.
     const review=JSON.parse(preview.stdout);assert.equal(review.timeoutMs,900000);
     const config=path.join(f.root,'review.json');fs.writeFileSync(config,JSON.stringify(review));
-    f.args.push('--review-config',config,'--allow-review-attempt','1');
+    f.args.push('--review-config',config);
     f.develop=payload=>({status:'succeeded',value:implementedValue(),
       edits:[{path:'target.mjs',beforeSha256:payload.expected['target.mjs'],content:'export const value = 42;\n'}]});
     setMode('timeout');
@@ -324,14 +324,14 @@ test('new host refuses unapproved manifest bytes before any developer call',asyn
 });
 
 test('host develops from specification with no code requirements and replays identical material',async()=>{
-  const f=fixture();
+  const f=fixture();f.operation='start';
   try{
     const definition=JSON.parse(fs.readFileSync(f.config));definition.requirements=[];
     fs.writeFileSync(f.config,JSON.stringify(definition));
     const first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
     assert.equal(first.rows.find(row=>row.requestId==='advance').result.state,'awaiting_review');
     const resumed=await runCli(f,'normal','resume');assert.equal(resumed.code,0,resumed.stderr);assert.deepEqual(resumed.calls,[]);
-    assert.equal(resumed.rows.find(row=>row.requestId==='advance').result.code,'decision_required');
+    assert.equal(resumed.rows.find(row=>row.requestId==='advance').result.code,null);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
@@ -388,7 +388,7 @@ test('step31 CLI resumes completed evidence BLOCKED QA and reaches the original 
     fs.writeFileSync(workflow,JSON.stringify({documentationPaths:['README.md'],applicableAgentFiles:[],qa:{
       commands:[{id:'value-check',command:[process.execPath,'-e',"import('./target.mjs').then(m=>{if(m.value!==42)process.exit(1)})"],caseIds:[]}],
       environment:{kind:'web',carrier:'browser',target:'http://127.0.0.1',scope:'local'}}}));
-    f.args.push('--review-config',review,'--allow-review-attempt','1','--workflow-config',workflow,'--allow-qa','--browser-qa','available');
+    f.args.push('--review-config',review,'--workflow-config',workflow,'--allow-qa','--browser-qa','available');
     let corrected=false;
     f.qaBrowser=payload=>{
       const file=path.join(f.specsDir,'.reviews','browser-evidence.txt');fs.writeFileSync(file,'Synthetic observed browser evidence');
@@ -445,7 +445,7 @@ test('F7 CLI explicitly revises missing QA commands after N5 and resumes the sam
       environment:{kind:'web',carrier:'browser',target:'fixture',scope:'local'}}};
     const oldFile=path.join(f.root,'workflow-old.json'),file=path.join(f.root,'workflow.json');
     fs.writeFileSync(oldFile,JSON.stringify(oldWorkflow));fs.writeFileSync(file,JSON.stringify(oldWorkflow));
-    f.args.push('--review-config',review,'--allow-review-attempt','1','--workflow-config',file,'--allow-qa');
+    f.args.push('--review-config',review,'--workflow-config',file,'--allow-qa');
     const first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
     assert.equal(first.rows.find(row=>row.requestId==='advance').result.code,'qa_result_blocked');
     const stateFile=path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json');
@@ -485,9 +485,9 @@ function protectedDriveFixture({scope,files={},checkCommands=[{id:'noop',command
     const plan=path.join(f.root,`plan-${Math.random().toString(36).slice(2)}.json`);
     fs.writeFileSync(plan,JSON.stringify({config:'run.json',mode:'create',hostContext:'native-host-fixture',
       permissions:['--protected-conversation-config','protection.json','--review-config',f.reviewFile,...permissions],answers:'answers'}));
-    return spawnSync('/bin/sh',['-c',`umask ${umask}; exec "$0" "$@"`,process.execPath,protectedDriver,'--plan',plan,'advance'],
+    return spawnSync('/bin/sh',['-c',`umask ${umask}; exec "$0" "$@"`,process.execPath,protectedDriver,'--plan',plan,'start'],
       {encoding:'utf8',timeout:120000,
-        env:{...process.env,CM_WORKFLOW_HOME:path.join(f.root,'home'),CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')}});
+        env:{...f.env,CM_WORKFLOW_HOME:path.join(f.root,'home'),CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')}});
   };
   return f;
 }
@@ -534,8 +534,8 @@ const withEarlierPendingFeature=f=>{
   fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['0.early','1.work'],specFiles:buildManifest(f.specsDir)}));
 };
 const serveOnce=(f,extra,mode='create')=>{
-  const args=[...launchArgs(f)];args[4]=mode;
-  const out=spawnSync(process.execPath,[cli,...args,...extra],{encoding:'utf8',timeout:20000,
+  const args=[...launchArgs({...f,args:[...f.args,...extra]})];args[4]=mode;
+  const out=spawnSync(process.execPath,[cli,...args],{encoding:'utf8',timeout:20000,
     input:[request('status')].map(JSON.stringify).join('\n')+'\n'});
   return {...out,rows:out.stdout.trim().split('\n').filter(Boolean).map(JSON.parse)};
 };
@@ -572,7 +572,8 @@ test('--review-runtime binds the other tool as reviewer and must be repeated on 
     const {claudeReviewFingerprint}=await import('../runtime/js/cm-ai/worker-claude.mjs');
     const model='fixture';const review={model,disabledSkills:[],preflight:{passed:true,provider:'claude',
       config_fingerprint:claudeReviewFingerprint({cwd:f.codeProject,model}),prompt_transport:'stdin'}};
-    const make=options=>createConversationExecution(definition,'native-host-fixture',bridge,review,null,null,false,'codex',options);
+    const make=options=>createConversationExecution(definition,'native-host-fixture',bridge,
+      syntheticReviewConfig(f.codeProject,options.reviewRuntime??'codex'),null,null,false,'codex',options);
     const original=make({reviewRuntime:'claude'});
     assert.equal(original.developer.provider,'codex');assert.equal(original.reviewers[0].provider,'claude');
     assert.equal(original.configuration.reviewRuntime,'claude');
@@ -581,7 +582,7 @@ test('--review-runtime binds the other tool as reviewer and must be repeated on 
     await assert.rejects(openControlRun(definition,'resume',make({})),{code:'fingerprint_mismatch'});
     assert.throws(()=>make({reviewRuntime:'codex'}),{code:'runtime_selection_mismatch'});
     assert.throws(()=>make({reviewRuntime:'other'}),{code:'invalid_runtime'});
-    assert.throws(()=>createConversationExecution(definition,'native-host-fixture',bridge,{...review,preflight:{}},1,null,false,'codex',{reviewRuntime:'claude'}),{code:'tool_preflight_missing'});
+    assert.throws(()=>createConversationExecution(definition,'native-host-fixture',bridge,{...review,preflight:{}},null,null,false,'codex',{reviewRuntime:'claude'}),{code:'tool_preflight_missing'});
   }finally{bridge.close();fs.rmSync(f.root,{recursive:true,force:true});}
 });
 test('ordinary CLI accepts --review-runtime claude under a Codex host and refuses an invalid runtime before any journal',()=>{

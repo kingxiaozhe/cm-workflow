@@ -89,8 +89,7 @@ async function runnerFixture(t,scope){
     check:()=>{throw new Error('checks must not run');},
     taskCompletion:{reviewsDir,handoffs:[1,2].map(n=>path.join(reviewsDir,`api-native-reading-T-006-a${n}-handoff.json`))},
     taskLearning:{feature:FEATURE,hostHandoff:true},
-    reviewInvocation:{developerThreadId:'actual-developer',excludedThreadIds:['actual-main'],
-      authorize:()=>{throw new Error('review must not be authorized');}}};
+    reviewInvocation:{developerThreadId:'actual-developer',excludedThreadIds:['actual-main']}};
   const make=mode=>createTaskRunner({...options,persistence:{store,mode,version:3}});
   const statePath=path.join(reviewsDir,'.execution',identity.runId,'state.json');
   const reopen=()=>{store.close();store=openTaskExecutionStore({...owner,create:false});return make('resume');};

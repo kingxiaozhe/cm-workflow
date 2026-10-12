@@ -341,13 +341,14 @@ export function validateReview(review,{task,attempt,handoff,changedFiles}){
   const reviewRound=integerHeader(header.round,'review attempt and round');
   if(reviewAttempt!==BigInt(attempt)||reviewRound!==BigInt(attempt))
     throw new GateError('review attempt and round must match the handoff attempt');
-  if(!REVIEWERS.has(header.reviewer))throw new GateError(`unsupported reviewer channel: ${header.reviewer}`);
+  // Source declarations only: validate spelling and consistency, not reviewer identity.
+  if(!REVIEWERS.has(header.reviewer))throw new GateError(`unsupported reviewer source declaration: ${header.reviewer}`);
   const independent=header.independent.toLowerCase();
-  if(!['true','false'].includes(independent))throw new GateError('review independent must be true or false');
+  if(!['true','false'].includes(independent))throw new GateError('review independent declaration must be true or false');
   if(header.reviewer==='self-degraded'&&independent!=='false')
     throw new GateError('self-degraded review must declare independent: false');
   if(header.reviewer!=='self-degraded'&&independent!=='true')
-    throw new GateError('independent review channel must declare independent: true');
+    throw new GateError('reviewer source declaration must declare independent: true');
   if(!VERDICTS.has(header.verdict))throw new GateError(`unsupported review verdict: ${header.verdict}`);
   const blocking=integerHeader(header.blocking_findings,'review blocking_findings');
   if(blocking<0n)throw new GateError('review blocking_findings must not be negative');
@@ -472,8 +473,9 @@ function verifyLearningRecord(payload,projectRoot){
     throw new GateError('Learning requires a content-bound handoff');
 }
 
-// A single explicitly authorized human continuation after a blocked second
-// round. The ordinary two-attempt chain and original evidence stay intact.
+// A single correction continuation after a declared blocked second round.
+// Source declarations do not prove human approval or reviewer independence.
+// The ordinary two-attempt chain and original evidence stay intact.
 function correctionPaths(reviewsDir,feature,task){
   requireFeature(feature);requireTaskId(task,'task');
   const info=fs.lstatSync(reviewsDir);
@@ -499,7 +501,7 @@ function correctionHistory({reviewsDir,feature,task,projectRoot}){
   const review=reviewPath(reviewsDir,feature,task,2);
   const header=validateReview(review,{task,attempt:2,handoff,changedFiles:payload.changed_files});
   if(header.verdict!=='blocked'||header.independent!=='true')
-    throw new GateError('human correction requires an independent blocked round 2');
+    throw new GateError('human correction requires blocked round 2 declaring independent: true');
   const files=[expectedHandoff(reviewsDir,feature,task,1),reviewPath(reviewsDir,feature,task,1),handoff,review];
   const revisions=files.map(file=>fileRevision(file,PREPARATION_FILE_LIMIT));
   requireRevisions(revisions);
@@ -513,8 +515,7 @@ function boundCorrectionHandoff(handoff,task,projectRoot){
   return payload;
 }
 export function prepareHumanCorrection(selectors){
-  const {reviewsDir,feature,task,handoff,projectRoot,humanAuthorized,reason}=selectors;
-  if(humanAuthorized!==true)throw new GateError('human correction requires explicit human authorization');
+  const {reviewsDir,feature,task,handoff,projectRoot,reason}=selectors;
   if(typeof reason!=='string'||!reason.trim()||reason.length>2000)
     throw new GateError('human correction requires a concrete bounded reason');
   const paths=correctionPaths(reviewsDir,feature,task);
@@ -525,12 +526,13 @@ export function prepareHumanCorrection(selectors){
     throw new GateError('human correction must retain the full original reviewed file scope');
   requireRevisions([...original.revisions,draft]);
   // Permit only an identical orphan handoff after interruption before record
-  // creation. Published authorization/review/receipt are never overwritten.
+  // creation. Published source record/review/receipt are never overwritten.
   try{absent(paths.handoff);fs.writeFileSync(paths.handoff,draft.bytes,{flag:'wx',mode:0o600});}
   catch(error){
     if(error instanceof GateError&&!fs.existsSync(paths.record)&&fileRevision(paths.handoff,PREPARATION_FILE_LIMIT).bytes.equals(draft.bytes)){}
     else throw error;
   }
+  // Keep the legacy source label for record compatibility; it is not verified approval.
   const record={version:1,protocol:'cm-human-correction',feature,task,attempt:2,
     authorization:'explicit-human-confirmation',at:new Date().toISOString(),reason:reason.trim(),
     history:original.history,handoff_sha256:sha256(paths.handoff)};
@@ -552,7 +554,7 @@ function inspectHumanCorrection(selectors){
     ||record.attempt!==2n||record.authorization!=='explicit-human-confirmation'
     ||typeof record.reason!=='string'||!record.reason.trim()||record.reason.length>2000
     ||typeof record.at!=='string'||!/(?:Z|[+-]\d{2}:\d{2})$/.test(record.at)||Number.isNaN(Date.parse(record.at)))
-    throw new GateError('invalid human correction authorization record');
+    throw new GateError('invalid human correction source declaration record');
   const original=correctionHistory(selectors);
   if(canonical(record.history)!==canonical(original.history))throw new GateError('human correction history changed');
   const payload=boundCorrectionHandoff(paths.handoff,task,projectRoot);
@@ -569,7 +571,7 @@ export function publishHumanCorrectionReview(selectors){
   const pinned=fileRevision(paths.review,PREPARATION_FILE_LIMIT);
   const header=validateReview(paths.review,{task:selectors.task,attempt:2,handoff:paths.handoff,changedFiles:payload.changed_files});
   if(header.independent!=='true'||header.correction_sha256!==correctionDigest)
-    throw new GateError('human correction requires fresh independent review bound to the correction record');
+    throw new GateError('human correction requires review declaring independent: true bound to the correction record');
   requireRevisions([pinned]);
   inspectHumanCorrection(selectors);
   const receipt={version:1,protocol:'cm-human-correction-review',correction_sha256:correctionDigest,
@@ -626,7 +628,7 @@ export function checkN5({handoff,reviewsDir,feature,task,projectRoot=null,allowL
   const result=validateReview(review,{task,attempt,handoff,changedFiles:payload.changed_files});
   if(result.verdict!=='approved')throw new GateError(`N5 requires verdict: approved, got ${result.verdict}`);
   if(result.independent.toLowerCase()!=='true')
-    throw new GateError('N5 requires independent: true; self-degraded evidence is diagnostic only');
+    throw new GateError('N5 requires an independent: true source declaration; self-degraded evidence is diagnostic only');
   return {gate:'n5',task,attempt,outcome:'approved',review:fs.realpathSync(review),content_bound:contentBound};
 }
 
@@ -945,7 +947,7 @@ function parseCli(argv){
     :command==='hash-implementation'?new Set(['--project-root','--file'])
     :command==='check-parallel-write'?new Set(['--repo','--assignment'])
     :new Set(['--handoff','--reviews-dir','--feature','--task','--project-root','--allow-legacy-unbound','--require-learning','--correction',
-      ...(command==='prepare-human-correction'?['--human-authorized','--reason']:[]),
+      ...(command==='prepare-human-correction'?['--reason']:[]),
       ...(['prepare-mark-done','verify-mark-done-plan','mark-done-locked'].includes(command)?['--tasks']:[]),
       ...(['verify-mark-done-plan','mark-done-locked'].includes(command)?['--expected-plan-digest']:[])]);
   const required=command==='validate-handoff'?new Set(['--handoff','--task','--attempt'])
@@ -958,8 +960,8 @@ function parseCli(argv){
   for(let index=1;index<argv.length;){
     const flag=argv[index];
     if(!allowed.has(flag))throw new GateError('invalid arguments');
-    if(flag==='--allow-legacy-unbound'||flag==='--require-learning'||flag==='--human-authorized'){
-      const key=flag==='--human-authorized'?'humanAuthorized':flag==='--require-learning'?'requireLearning':'allowLegacyUnbound';
+    if(flag==='--allow-legacy-unbound'||flag==='--require-learning'){
+      const key=flag==='--require-learning'?'requireLearning':'allowLegacyUnbound';
       if(Object.hasOwn(values,key))throw new GateError(`duplicate argument: ${flag}`);
       values[key]=true;index++;continue;
     }

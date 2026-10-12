@@ -15,6 +15,7 @@ import {writeSpecsStatus,readSpecsStatus} from '../runtime/js/specs-status.mjs';
 import {createCodexDeveloperRun} from '../runtime/js/cm-ai/codex-developer-adapter.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
+import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 
@@ -62,15 +63,7 @@ function executionFor(f,{decision=null,onReview=()=>{},onDevelop=()=>{}}={}){
       requestedModel:'fixture',worker:async()=>{fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'export const a=2;\n');onDevelop();
         return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
           retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};}})},
-    reviewers:[reviewer],reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control'],
-      authorize:(request,{authorizationAt})=>{
-        const body={version:1,kind:'cm-review-dispatch-grant',grantId:`grant-${request.identity.runId}`,
-          adapterId:'codex-review-adapter',invocationId:request.invocationId,requestDigest:request.requestDigest,
-          identity:request.identity,reviewerId:'reviewer',logicalContextId:request.contextId,
-          packageDigest:request.payload.reviewPackage.packageDigest,hostContextId:'control',decisionId:'approved',
-          decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
-        return {...body,grantDigest:digest(body)};
-      }},hostDecision:decision,check:createHostCheck({cwd:f.codeProject,
+    reviewers:[reviewer],reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control']},check:createHostCheck({cwd:f.codeProject,
       commands:[{id:'syntax',command:[process.execPath,'--check','a.mjs']}]})};
 }
 async function withRun(f,mode,options,run,runId){
@@ -80,8 +73,8 @@ async function withRun(f,mode,options,run,runId){
 const ask=(host,identity,operation,extra={})=>host.handle({version:1,operation,requestId:operation,identity,...extra});
 async function awaitingReview(f){
   return withRun(f,'create',{},async(host,identity)=>{
-    const result=await ask(host,identity,'advance');
-    assert.equal(result.state,'awaiting_review',JSON.stringify(result));assert.equal(result.code,'decision_required');
+    const result=await ask(host,identity,'start');
+    assert.equal(result.state,'awaiting_review',JSON.stringify(result));assert.equal(result.code,null);
     return result.packageDigest;
   });
 }
@@ -96,8 +89,10 @@ test('another task changed and re-approved: status names spec_drift and the rebi
     assert.equal(status.state,'awaiting_review');assert.equal(status.code,'spec_drift');
     assert.equal(status.pendingAction,'spec_rebind');
     assert.match(status.reason,/1\.work\/tasks\.md/);assert.match(status.reason,/--rebind-spec-material/);
-    const decision=await ask(host,identity,'decision',{packageDigest});
-    assert.equal(decision.outcome,'rejected');assert.equal(decision.code,'spec_drift');
+    const beforeAction=fs.readFileSync(stateFile(f));
+    const decision=await ask(host,identity,'advance');
+    assert.deepEqual(fs.readFileSync(stateFile(f)),beforeAction,'spec drift dispatch refusal keeps exact journal bytes');
+    assert.equal(decision.outcome,'reported');assert.equal(decision.code,'spec_drift');
     assert.equal(decision.pendingAction,'spec_rebind');
   });
   const before=JSON.parse(fs.readFileSync(stateFile(f),'utf8')).records.length;
@@ -164,7 +159,7 @@ test('a rebind cannot carry changed content: a later content change still drifts
 // advertise an action the run would refuse.
 test('a spec change during review never leaves status advertising a refused action',async t=>{
   const f=fixture(t);
-  await withRun(f,'create',{},async(host,identity)=>assert.equal((await ask(host,identity,'advance')).state,'awaiting_review'));
+  await withRun(f,'create',{},async(host,identity)=>assert.equal((await ask(host,identity,'start')).state,'awaiting_review'));
   const changeDuringReview=()=>{
     fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a\n- [ ] T-002: 审查期间改了\n\n- T-002 依赖 T-001\n');reapprove(f);};
   await withRun(f,'resume',{decision:{status:'approved'},onReview:changeDuringReview},async(host,identity)=>{
@@ -179,7 +174,8 @@ test('a spec change during review never leaves status advertising a refused acti
 test('host CLI accepts the rebind only on resume with a single-line reason',t=>{
   const f=fixture(t),config=path.join(f.root,'run.json'),review=path.join(f.root,'review.json');
   fs.writeFileSync(config,JSON.stringify(f.definition('rebind-cli-run')));
-  fs.writeFileSync(review,JSON.stringify({model:'fixture',preflight:{}}));
+  fs.writeFileSync(review,JSON.stringify({model:'fixture',preflight:{passed:true,cli_model:'fixture',prompt_transport:'stdin',
+    config_fingerprint:configFingerprint({cwd:f.codeProject,model:'fixture'})}}));
   const launch=(mode,extra)=>{
     const result=spawnSync(process.execPath,[cli,'serve','--config',config,'--mode',mode,'--host-context','cli-host',
       '--allow-development','--review-config',review,...extra],{encoding:'utf8',timeout:20000,input:'',
@@ -209,7 +205,7 @@ test('a run rebound before its first delivery develops against the re-approved s
     assert.equal((await ask(host,identity,'advance')).code,'spec_drift');
   });
   await withRun(f,'resume',{specRebindReason:'只改了 T-002'},async(host,identity)=>{
-    const result=await ask(host,identity,'advance');
+    const result=await ask(host,identity,'start');
     assert.equal(result.state,'awaiting_review',JSON.stringify(result));
   });
 });
@@ -470,9 +466,9 @@ test('a batch member never advertises spec_rebind and names the real exits',asyn
   const batch=()=>createCmAiBatch({configuration:{version:1,repositoryId:'rebind-fixture',batchId:'rebind-batch-1',
     specsDir:f.specsDir,codeProject:f.codeProject,tasks:['T-001','T-002'].map(taskId=>({feature:f.feature,taskId,
       scope:[taskId==='T-001'?'a.mjs':'b.mjs'],requirements:['requirements.md']}))},
-  executionFor:async()=>executionFor(f),logHome:path.join(f.root,'batch-logs')});
+  executionFor:async()=>({...executionFor(f),check:createHostCheck({cwd:f.codeProject,commands:[{id:'hold',command:[process.execPath,'-e','process.exit(1)']}]})}),logHome:path.join(f.root,'batch-logs')});
   const first=await batch().handle({operation:'advance',requestId:'batch-advance'});
-  assert.equal(first.state,'awaiting_review',JSON.stringify(first));
+  assert.equal(first.state,'blocked',JSON.stringify(first));assert.equal(first.code,'develop_checks_not_passed');
   fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a\n- [ ] T-002: 新增 b 改\n\n- T-002 依赖 T-001\n');reapprove(f);
   const status=await batch().handle({operation:'status',requestId:'batch-status'});
   assert.equal(status.code,'spec_drift');assert.equal(status.pendingAction,'none');

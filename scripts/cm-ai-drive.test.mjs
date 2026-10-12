@@ -7,6 +7,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
+import {claudeReviewFingerprint} from '../runtime/js/cm-ai/worker-claude.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {cmInitRuleTargets} from '../runtime/js/cm-init/draft-generation.mjs';
 import {qaFixAnswerFor,projectDevelopAttempts,bootstrapReviewRecoveryPlanError,buildCmAiDriveRequest} from './cm-ai-drive.mjs';
@@ -31,12 +32,19 @@ function fixture(t){
   const answers=path.join(root,'answers');fs.mkdirSync(answers);
   const bin=path.join(root,'bin');fs.mkdirSync(bin);
   const write=(name,value)=>fs.writeFileSync(path.join(answers,name),JSON.stringify(value));
-  // create requires a bound review configuration; this one grants no review attempt.
-  fs.writeFileSync(path.join(root,'placeholder-review.json'),JSON.stringify({model:'fixture',preflight:{}}));
+  // Isolated executable reviewers and matching synthetic preflights; no model service.
+  for(const provider of ['codex','claude']){
+    const executable=path.join(bin,provider);
+    fs.copyFileSync(fileURLToPath(new URL(`./fixtures/${provider}-review-process.mjs`,import.meta.url)),executable);
+    fs.chmodSync(executable,0o700);
+    fs.writeFileSync(path.join(root,`${provider}-review.json`),JSON.stringify({model:'fixture',disabledSkills:[],preflight:{passed:true,
+      provider,prompt_transport:'stdin',...(provider==='codex'?{cli_model:'fixture'}:{}),
+      config_fingerprint:provider==='codex'?configFingerprint({cwd:codeProject,model:'fixture'}):claudeReviewFingerprint({cwd:codeProject,model:'fixture'})}}));
+  }
   const plan=(extra={})=>{const file=path.join(root,`plan-${Math.random().toString(36).slice(2)}.json`);
     const value={config:'run.json',mode:'create',hostContext:'drive-host-a',
       permissions:[],answers:'answers',checks:[{id:'syntax',command:[process.execPath,'--check','target.mjs']}],...extra};
-    if(!value.permissions.includes('--review-config'))value.permissions=[...value.permissions,'--review-config','placeholder-review.json'];
+    if(!value.permissions.includes('--review-config'))value.permissions=[...value.permissions,'--review-config',`${value.runtime==='claude'||value.permissions.includes('--review-runtime')?'claude':'codex'}-review.json`];
     fs.writeFileSync(file,JSON.stringify(value));
     return file;};
   const drive=(file,operation,timeout=30000)=>spawnSync(process.execPath,[DRIVER,'--plan',file,operation],
@@ -57,29 +65,18 @@ function changesRequestedReview(f){
   const cli=path.join(f.bin,'codex');fs.writeFileSync(cli,fake,{mode:0o700});
   fs.writeFileSync(path.join(f.root,'review.json'),JSON.stringify({model:'fixture',preflight:{passed:true,
     cli_model:'fixture',prompt_transport:'stdin',config_fingerprint:configFingerprint({cwd:f.codeProject,model:'fixture'})}}));
-  return ['--review-config','review.json','--allow-review-attempt','1'];
+  return ['--review-config','review.json'];
 }
 function reviewPending(f){
   prepared(f);const permissions=changesRequestedReview(f);
   const first=f.drive(f.plan({permissions:permissions.slice(0,2)}),'advance');assert.equal(first.status,0,first.stderr);
   return {permissions,packageDigest:JSON.parse(first.stdout).result.packageDigest};
 }
-function assertActionableFirstReviewHint(stderr){
-  assert.match(stderr,/develop-a2\.json/);
-  assert.match(stderr,/审查后可能直接进入第 2 轮 develop/);
-  assert.match(stderr,/移除 --allow-review-attempt 1/);
-  assert.match(stderr,/awaiting_review/);
-  assert.match(stderr,/packageDigest.*decision/);
-  assert.match(stderr,/\.reviews\/work-T-001-r1\.md/);
-  assert.match(stderr,/预先写.*develop-a2\.json/);
-  assert.match(stderr,/逐字节相同时.*develop_unchanged_after_review/);
-}
-test('review-enabled advance refuses missing second-round answer before host launch',t=>{
-  const f=fixture(t),{permissions,packageDigest}=reviewPending(f),before=fs.readFileSync(f.store);
+test('direct advance holds at changes_requested before the missing second-round answer',t=>{
+  const f=fixture(t),{permissions}=reviewPending(f),before=fs.readFileSync(f.store);
+  assert.equal(JSON.parse(before).records.filter(row=>row.payload.type==='review-invocation-started').length,1);
   const run=f.drive(f.plan({mode:'resume',originalHostContext:'drive-host-a',permissions}),'advance');
   assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/develop-a2\.json/);
-  assert.match(run.stderr,/decision/);assert.match(run.stderr,new RegExp(packageDigest));
-  assert.match(run.stderr,/\.reviews\/work-T-001-r1\.md/);
   assert.deepEqual(fs.readFileSync(f.store),before);
 });
 test('retryable blocked state projects the same develop attempt',()=>{
@@ -101,19 +98,20 @@ test('D1 real host retries a check-output-blocked develop with a fresh effect id
   const clean=[{id:'build',command:[process.execPath,'-e','0']}];
   const second=f.drive(f.plan({mode:'resume',originalHostContext:'drive-host-a',runtime:'claude',checks:clean}),'advance');
   assert.equal(second.status,0,second.stderr);
-  assert.equal(JSON.parse(second.stdout).result.state,'awaiting_review');
+  assert.equal(JSON.parse(second.stdout).result.state,'fixture_completed');
   assert.match(second.stderr,/应答 develop/);
   const intents=JSON.parse(fs.readFileSync(f.store)).records.filter(r=>r.payload.type==='effect-intent').map(r=>r.payload.effect.id);
-  assert.deepEqual(intents,['develop-1','develop-1-retry-1']);
+  assert.deepEqual(intents.slice(0,2),['develop-1','develop-1-retry-1']);
+  assert.equal(intents.filter(id=>id.startsWith('develop')).length,2);
   assert.match(fs.readFileSync(path.join(f.codeProject,'App','ContentView.swift'),'utf8'),/import SwiftUI/);
 });
 
 test('D1 per-check timeout lets a 61 second check finish under a 65 second limit',t=>{
-  const f=fixture(t);prepared(f);
+  const f=fixture(t);prepared(f);changesRequestedReview(f);
   const checks=[{id:'slow',command:[process.execPath,'-e','setTimeout(()=>{},61000)'],timeoutMs:65000}];
-  const run=f.drive(f.plan({checkTimeoutMs:1000,checks}),'advance',80000);
+  const run=f.drive(f.plan({checkTimeoutMs:1000,checks,permissions:['--review-config','review.json']}),'advance',80000);
   assert.equal(run.status,0,run.stderr);
-  assert.equal(JSON.parse(run.stdout).result.state,'awaiting_review');
+  assert.equal(JSON.parse(run.stdout).result.state,'changes_requested');
 });
 
 for(const plan of [{checkTimeoutMs:0},{checks:[{id:'syntax',command:[process.execPath,'--check','target.mjs'],timeoutMs:3600001}]}])
@@ -122,35 +120,14 @@ test(`D1 single driver rejects invalid timeout before host launch ${Object.keys(
   const run=f.drive(f.plan(plan),'advance');
   assert.equal(run.status,2);assert.match(run.stderr,/[tT]imeoutMs/);assert.equal(fs.existsSync(f.store),false);
 });
-test('review-authorized create preflights a possible second develop round',t=>{
+test('create direct review holds for an authored revision when only develop.json exists',t=>{
   const f=fixture(t);prepared(f);const permissions=changesRequestedReview(f);
-  const run=f.drive(f.plan({permissions}),'advance');
-  assert.equal(run.status,2,run.stderr);assertActionableFirstReviewHint(run.stderr);
-  assert.equal(fs.existsSync(f.store),false);
-});
-test('review-authorized resume from ready gives the same two paths before launch',t=>{
-  const f=fixture(t);prepared(f);const permissions=changesRequestedReview(f);
-  const status=f.drive(f.plan({permissions:permissions.slice(0,2),answers:undefined,checks:undefined}),'status');
-  assert.equal(status.status,0,status.stderr);assert.equal(JSON.parse(status.stdout).result.state,'ready');
-  const before=fs.readFileSync(f.store);
-  const run=f.drive(f.plan({mode:'resume',originalHostContext:'drive-host-a',permissions}),'advance');
-  assert.equal(run.status,2,run.stderr);assertActionableFirstReviewHint(run.stderr);
-  assert.deepEqual(fs.readFileSync(f.store),before);
-});
-test('create advance without review authorization accepts only develop.json',t=>{
-  const f=fixture(t);prepared(f);const permissions=changesRequestedReview(f).slice(0,2);
   assert.equal(fs.existsSync(path.join(f.answers,'develop-a2.json')),false);
   const run=f.drive(f.plan({permissions}),'advance');assert.equal(run.status,0,run.stderr);
-  assert.equal(JSON.parse(run.stdout).result.state,'awaiting_review');
-});
-test('decision dispatches only review and leaves changes_requested for authored revision',t=>{
-  const f=fixture(t),{permissions,packageDigest}=reviewPending(f);
-  const run=f.drive(f.plan({mode:'resume',originalHostContext:'drive-host-a',permissions,
-    packageDigest,answers:undefined,checks:undefined}),'decision');
-  assert.equal(run.status,0,run.stderr);
   assert.equal(JSON.parse(run.stdout).result.state,'changes_requested');
-  assert.equal(JSON.parse(run.stdout).result.identity.attempt,2);
-  assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 42;\n');
+  assert.equal(JSON.parse(run.stdout).result.code,'revision_answer_required');
+  const intents=JSON.parse(fs.readFileSync(f.store)).records.filter(row=>row.payload.type==='effect-intent');
+  assert.equal(intents.filter(row=>row.payload.effect.kind==='develop').length,1);
 });
 test('advance applies develop-a2 content after changes_requested review',t=>{
   const f=fixture(t),{permissions}=reviewPending(f);
@@ -264,17 +241,17 @@ test('create and advance run authored edits and actual check, then resume with o
   const f=fixture(t);prepared(f);
   const first=f.drive(f.plan(),'advance');assert.equal(first.status,0,first.stderr);
   const result=JSON.parse(first.stdout).result;
-  assert.equal(result.state,'awaiting_review');assert.equal(result.code,'decision_required');
+  assert.equal(result.state,'fixture_completed');assert.equal(result.code,'qa_decision_required');
   assert.match(first.stderr,/应答 develop/);assert.match(first.stderr,/应答 check/);
   assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 42;\n');
   assert(fs.existsSync(f.store));
   const resumed=f.drive(f.plan({mode:'resume',hostContext:'drive-host-b',originalHostContext:'drive-host-a'}),'advance');
-  assert.equal(resumed.status,0,resumed.stderr);assert.equal(JSON.parse(resumed.stdout).result.code,'decision_required');
+  assert.equal(resumed.status,0,resumed.stderr);assert.equal(JSON.parse(resumed.stdout).result.code,'qa_decision_required');
 });
 
 test('driver resumes an interrupted develop and sends the bound abandon_effect request',t=>{
   const f=fixture(t);prepared(f);
-  const first=f.drive(f.plan(),'advance');assert.equal(first.status,0,first.stderr);
+  const first=f.drive(f.plan({checks:[{id:'stop-before-review',command:[process.execPath,'-e','process.exit(7)']}]}),'advance');assert.equal(first.status,0,first.stderr);
   const current=JSON.parse(fs.readFileSync(f.store,'utf8'));
   const index=current.records.findIndex(row=>row.payload.type==='effect-intent'
     &&row.payload.effect.kind==='develop');assert(index>=0);
@@ -325,15 +302,8 @@ test('real host drives split-root bootstrap scaffold, then refuses rules without
   fs.writeFileSync(path.join(root,'review.json'),preview.stdout);
   writePlan('create',['--bootstrap-config','bootstrap.json','--allow-bootstrap-write','--review-config','review.json']);
   const scaffold=drive('advance');assert.equal(scaffold.status,0,scaffold.stderr);
-  const first=JSON.parse(scaffold.stdout).result;assert.equal(first.state,'awaiting_review');
+  const first=JSON.parse(scaffold.stdout).result;assert.equal(first.state,'fixture_completed');
   assert.equal(fs.readFileSync(path.join(codeProject,'app.mjs'),'utf8'),'export const app = true;\n');
-  writePlan('resume',['--bootstrap-config','bootstrap.json','--allow-bootstrap-write','--review-config','review.json',
-    '--allow-review-attempt','1'],{packageDigest:first.packageDigest});
-  const review=drive('decision');
-  assert.equal(review.status,0,review.stderr);assert.equal(JSON.parse(review.stdout).result.state,'approved');
-  writePlan('resume',['--bootstrap-config','bootstrap.json','--allow-bootstrap-write','--review-config','review.json']);
-  const completed=drive('advance');assert.equal(completed.status,0,completed.stderr);
-  assert.equal(JSON.parse(completed.stdout).result.state,'fixture_completed');
   assert.match(fs.readFileSync(path.join(specsDir,feature,'tasks.md'),'utf8'),/\[x\] T-001/);
   writeRun('T-002',cmInitRuleTargets(selection,codeProject));
   fs.writeFileSync(bootstrap,JSON.stringify({selection}));
@@ -479,7 +449,7 @@ test('same-session resume may omit originalHostContext and cross-session omissio
   const before=fs.readFileSync(f.store);
   const same=f.drive(f.plan({mode:'resume',answers:undefined,checks:undefined}),'status');
   assert.equal(same.status,0,same.stderr);
-  assert.equal(JSON.parse(same.stdout).result.state,'awaiting_review');
+  assert.equal(JSON.parse(same.stdout).result.state,'fixture_completed');
   const cross=f.drive(f.plan({mode:'resume',hostContext:'drive-host-b',answers:undefined,checks:undefined}),'status');
   assert.equal(cross.status,1,cross.stderr);assert.match(cross.stderr,/fingerprint_mismatch/);
   assert.deepEqual(fs.readFileSync(f.store),before);
@@ -509,26 +479,17 @@ test('status reads the existing run without answer files or checks',t=>{
   const f=fixture(t);prepared(f);assert.equal(f.drive(f.plan(),'advance').status,0);
   const before=fs.readFileSync(f.store);
   const status=f.drive(f.plan({mode:'resume',originalHostContext:'drive-host-a',answers:undefined,checks:undefined}),'status');
-  assert.equal(status.status,0,status.stderr);assert.equal(JSON.parse(status.stdout).result.state,'awaiting_review');
+  assert.equal(status.status,0,status.stderr);assert.equal(JSON.parse(status.stdout).result.state,'fixture_completed');
   assert.deepEqual(fs.readFileSync(f.store),before);
-});
-test('decision sends the package binding and needs no answer files',t=>{
-  const f=fixture(t);prepared(f);
-  const first=f.drive(f.plan(),'advance');assert.equal(first.status,0,first.stderr);
-  const packageDigest=JSON.parse(first.stdout).result.packageDigest;
-  const decision=f.drive(f.plan({mode:'resume',originalHostContext:'drive-host-a',
-    packageDigest,answers:undefined,checks:undefined}),'decision');
-  assert.equal(decision.status,0,decision.stderr);
-  assert.equal(JSON.parse(decision.stdout).result.code,'decision_required');
 });
 test('explicit allow-development permission reaches the host once',t=>{
   const f=fixture(t);prepared(f);
   const run=f.drive(f.plan({permissions:['--allow-development']}),'advance');
-  assert.equal(run.status,0,run.stderr);assert.equal(JSON.parse(run.stdout).result.code,'decision_required');
+  assert.equal(run.status,0,run.stderr);assert.equal(JSON.parse(run.stdout).result.code,'qa_decision_required');
 });
 test('QA-fix child operation forwards its binding and returns parent gate result',t=>{
-  const f=fixture(t);prepared(f);assert.equal(f.drive(f.plan(),'advance').status,0);
-  const binding={feature:'1.work',identity,packageDigest:'a'.repeat(64),testRunId:'qa-child'};
+  const f=fixture(t);prepared(f);changesRequestedReview(f);assert.equal(f.drive(f.plan({permissions:['--review-config','review.json']}),'advance').status,0);
+  const binding={feature:'1.work',identity:{...identity,attempt:2},packageDigest:'a'.repeat(64),testRunId:'qa-child'};
   fs.writeFileSync(path.join(f.root,'fix-owner.json'),JSON.stringify({specsRoot:f.specsDir,identity:{...identity,runId:'fix-run'},
     configuration:{hostContextId:'drive-host-a',reproduction:{cwd:f.codeProject},qaSource:binding}}));
   const attempt=f.drive(f.plan({mode:'resume',originalHostContext:'drive-host-a',
@@ -537,8 +498,8 @@ test('QA-fix child operation forwards its binding and returns parent gate result
   assert.match(attempt.stderr,/qa_fix_parent_not_completed/);
 });
 test('QA-fix child action requires its own answer before any host request',t=>{
-  const f=fixture(t);prepared(f);assert.equal(f.drive(f.plan(),'advance').status,0);
-  const binding={feature:'1.work',identity,packageDigest:'a'.repeat(64),testRunId:'qa-child'};
+  const f=fixture(t);prepared(f);changesRequestedReview(f);assert.equal(f.drive(f.plan({permissions:['--review-config','review.json']}),'advance').status,0);
+  const binding={feature:'1.work',identity:{...identity,attempt:2},packageDigest:'a'.repeat(64),testRunId:'qa-child'};
   fs.writeFileSync(path.join(f.root,'fix-owner.json'),JSON.stringify({specsRoot:f.specsDir,identity:{...identity,runId:'fix-run'},
     configuration:{hostContextId:'drive-host-a',reproduction:{cwd:f.codeProject},qaSource:binding}}));
   const options={mode:'resume',originalHostContext:'drive-host-a',packageDigest:'a'.repeat(64),
@@ -557,8 +518,8 @@ test('QA-fix child action requires its own answer before any host request',t=>{
   {outcome:'repaired',edits:[{path:'target.mjs',beforeSha256:'old-hash',content:'export const value = 43;\n'}]});
 });
 test('Q23 QA-fix recovery fixOperations need their parent flag and fields before any host request',t=>{
-  const f=fixture(t);prepared(f);assert.equal(f.drive(f.plan(),'advance').status,0);
-  const binding={feature:'1.work',identity,packageDigest:'a'.repeat(64),testRunId:'qa-child'};
+  const f=fixture(t);prepared(f);changesRequestedReview(f);assert.equal(f.drive(f.plan({permissions:['--review-config','review.json']}),'advance').status,0);
+  const binding={feature:'1.work',identity:{...identity,attempt:2},packageDigest:'a'.repeat(64),testRunId:'qa-child'};
   fs.writeFileSync(path.join(f.root,'fix-owner.json'),JSON.stringify({specsRoot:f.specsDir,identity:{...identity,runId:'fix-run'},
     configuration:{hostContextId:'drive-host-a',reproduction:{cwd:f.codeProject},qaSource:binding}}));
   const base={mode:'resume',originalHostContext:'drive-host-a',packageDigest:'a'.repeat(64),testRunId:'qa-child',
@@ -606,11 +567,11 @@ test('new policy real driver reuses only declared checks and frozen resume keeps
   const command=[process.execPath,'-e',"require('node:fs').appendFileSync("+JSON.stringify(path.join(f.root,'execution-count'))+",'x');console.log('tests 1\\npass 1')"];
   const checks=[{id:'tests',command},{id:'ui',command,sameExecutionAs:'tests'}];
   const plan=f.plan({permissions:['--execution-optimizations'],checks});
-  const first=f.drive(plan,'advance');assert.equal(first.status,0,first.stderr);assert.equal(JSON.parse(first.stdout).result.state,'awaiting_review',first.stdout+first.stderr);
-  assert.equal(fs.readFileSync(path.join(f.root,'execution-count'),'utf8'),'x');
+  const first=f.drive(plan,'advance');assert.equal(first.status,0,first.stderr);assert.equal(JSON.parse(first.stdout).result.state,'fixture_completed',first.stdout+first.stderr);
+  assert.equal(fs.readFileSync(path.join(f.root,'execution-count'),'utf8'),'xx');
   const before=fs.readFileSync(f.store),snapshot=JSON.parse(before);assert.equal(snapshot.records[0].payload.config.executionPolicy.checkReuse,'declared-adjacent-v1');
   const resume=f.plan({mode:'resume',checks});const status=f.drive(resume,'status');assert.equal(status.status,0,status.stderr);
-  assert.equal(fs.readFileSync(path.join(f.root,'execution-count'),'utf8'),'x');assert.deepEqual(fs.readFileSync(f.store),before);
+  assert.equal(fs.readFileSync(path.join(f.root,'execution-count'),'utf8'),'xx');assert.deepEqual(fs.readFileSync(f.store),before);
 });
 test('legacy real driver rejects optimization aliases before any host or command starts',t=>{
   const f=fixture(t);prepared(f);const command=[process.execPath,'-e',"require('node:fs').writeFileSync('marker','bad')"];

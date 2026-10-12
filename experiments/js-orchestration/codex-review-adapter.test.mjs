@@ -101,7 +101,7 @@ function fakeReviewProcess(seen,{incomplete=false,pending=false,dualFailure=fals
   };
 }
 
-async function wiredFixture(run,{authorize,incomplete=false,pending=false,dualFailure=false,timeoutMs=1000}={}) {
+async function wiredFixture(run,{incomplete=false,pending=false,dualFailure=false,timeoutMs=1000}={}) {
   const temp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-codex-review-wired-')));
   const root=path.join(temp,'code'),specsRoot=path.join(temp,'specs'),reviewsDir=path.join(specsRoot,'.reviews');
   fs.mkdirSync(root);fs.mkdirSync(reviewsDir,{recursive:true});
@@ -117,13 +117,6 @@ async function wiredFixture(run,{authorize,incomplete=false,pending=false,dualFa
     timeoutMs,promptTransport:'stdin',preflight:{passed:true,cli_model:workerOptions.model,
       config_fingerprint:configFingerprint(workerOptions),prompt_transport:'stdin'},
     spawnProcess:fakeReviewProcess(seen,{incomplete,pending,dualFailure})});
-  const grant=(request,authorizationAt)=>{
-    const body={version:1,kind:'cm-review-dispatch-grant',grantId:'grant-1',adapterId:'codex-review-adapter',
-      invocationId:request.invocationId,requestDigest:request.requestDigest,identity:request.identity,reviewerId:'reviewer',
-      logicalContextId:request.contextId,packageDigest:request.payload.reviewPackage.packageDigest,
-      hostContextId:'actual-main',decisionId:'decision-1',decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
-    return {...body,grantDigest:digest(body)};
-  };
   const options={root,identity,scope:['code.js'],requirements:['requirements.md'],excludedContexts:['main'],timeoutMs,
     developer:{provider:'codex',requestedModel:'fixture',contextId:'developer-logical',run:request=>{
       fs.writeFileSync(path.join(root,'code.js'),'new\n');return {version:1,invocationId:request.invocationId,
@@ -132,10 +125,7 @@ async function wiredFixture(run,{authorize,incomplete=false,pending=false,dualFa
     reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture-model',allowed:true,
       available:true,contexts:['review-logical-1','review-logical-2'],run:createCodexReviewRun(worker)}],check:()=>checks,
     taskCompletion:{reviewsDir,handoffs:[path.join(reviewsDir,'a1.json'),path.join(reviewsDir,'a2.json')]},
-    reviewInvocation:{developerThreadId:'actual-developer',excludedThreadIds:['actual-main'],authorize:(request,context)=>{
-      try{const value=(authorize??grant)(request,context.authorizationAt);seen.authorization=value;return value;}
-      catch(error){seen.authorizationError=error;throw error;}
-    }}};
+    reviewInvocation:{developerThreadId:'actual-developer',excludedThreadIds:['actual-main'],hostContextId:'actual-main'}};
   const make=mode=>createTaskRunner({...options,persistence:{store,mode,version:3}});
   const reopen=()=>{store.close();store=openTaskExecutionStore({...owner,create:false});return make('resume');};
   const effect=kind=>({version:1,id:`${kind}-1`,identity,kind});
@@ -148,7 +138,7 @@ test('wired Codex review registers before fake spawn, issues a receipt, and resu
   assert.deepEqual([end.state,end.code],['approved',null]);
   assert.equal(end.reviewInvocation.result.inspection.providerThreadId,'actual-fresh-review');
   assert.equal(end.reviewInvocation.result.inspection.completionEligible,false);
-  assert.equal(end.receipt.kind,'cm-review-receipt');assert.equal(end.receipt.execution.channel,'host-authorized');
+  assert.equal(end.receipt.kind,'cm-review-receipt');assert.equal(end.receipt.execution.channel,'host-review');
   assert.equal(f.seen.spawns,1);assert.equal(f.seen.cli,'/must-not-run');assert.equal(f.seen.args.at(-1),'-');
   assert.equal(f.seen.options.stdio[0],'pipe');assert.equal(f.seen.recordsAtSpawn.at(-1),'review-invocation-registered');
   assert.equal(fs.readFileSync(f.tasksPath,'utf8'),'- [ ] T-001: fixture\n');
@@ -156,14 +146,8 @@ test('wired Codex review registers before fake spawn, issues a receipt, and resu
   assert.equal(f.seen.spawns,1);assert.equal(fs.readFileSync(f.tasksPath,'utf8'),'- [ ] T-001: fixture\n');
 }));
 
-test('a denied host decision never reaches the wired fake process',()=>wiredFixture(async f=>{
-  const runner=f.make();await runner.executeEffect(f.effect('develop'));const end=await runner.executeEffect(f.effect('review'));
-  assert.deepEqual([end.state,end.code],['pending_review','permission_denied']);assert.equal(f.seen.spawns,0);
-  assert.equal(fs.readFileSync(f.tasksPath,'utf8'),'- [ ] T-001: fixture\n');assert.deepEqual(f.reopen().status(),end);
-},{authorize:()=>({status:'denied',code:'permission_denied'})}));
-
 // A reviewer that exits without a verdict is a durable retryable failure. The
-// retry needs a new effect id and fresh authorization; resume never redispatches.
+// retry needs a new effect id and fresh reviewer context; resume never redispatches.
 test('an incomplete signal-only worker result is a durable retryable failure, never redispatched by resume',()=>wiredFixture(async f=>{
   let runner=f.make();await runner.executeEffect(f.effect('develop'));const end=await runner.executeEffect(f.effect('review'));
   assert.equal(end.state,'pending_review');assert.equal(end.code,'review_provider_failed');assert.equal(f.seen.spawns,1);

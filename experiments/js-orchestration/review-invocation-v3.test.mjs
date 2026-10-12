@@ -13,13 +13,6 @@ import {createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective} f
 import {createClaudeReviewRun} from '../../runtime/js/cm-ai/claude-review-adapter.mjs';
 
 const checks=[{id:'check',command:['synthetic'],outcome:'passed',exitCode:0,evidence:'fixture'}];
-const grantFor=(request,authorizationAt,change=grant=>grant)=>{
-  const body={version:1,kind:'cm-review-dispatch-grant',grantId:'grant-1',adapterId:`${request.provider}-review-adapter`,
-    invocationId:request.invocationId,requestDigest:request.requestDigest,identity:request.identity,
-    reviewerId:'reviewer',logicalContextId:request.contextId,packageDigest:request.payload.reviewPackage.packageDigest,
-    hostContextId:'actual-main',decisionId:'decision-1',decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
-  change(body);return {...body,grantDigest:digest(body)};
-};
 const events=(onEvent,thread='actual-review')=>{
   onEvent({event:'thread.started',provider_thread:thread});
   onEvent({event:'turn.started',item_type:null});
@@ -57,7 +50,7 @@ test('V3 Finder junk written by the reviewer does not change the package',()=>fi
   assert.equal(reviewed.state,'approved');assert.equal(f.reopen().status().state,'approved');
 },{provider:'claude'}));
 
-async function fixture(fn,{reviewRun,authorize,times,timeoutMs=1000,provider='codex'}={}) {
+async function fixture(fn,{reviewRun,timeoutMs=1000,provider='codex'}={}) {
   const temp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-review-v3-')));
   const root=path.join(temp,'code'),specsRoot=path.join(temp,'specs'),reviewsDir=path.join(specsRoot,'.reviews');
   fs.mkdirSync(root);fs.mkdirSync(reviewsDir,{recursive:true});
@@ -81,12 +74,8 @@ async function fixture(fn,{reviewRun,authorize,times,timeoutMs=1000,provider='co
         dispatches++;lateEvent=control.onEvent;return (reviewRun??defaultRun)(request,control);
       }}],check:()=>checks,
     taskCompletion:{reviewsDir,handoffs:[path.join(reviewsDir,'a1.json'),path.join(reviewsDir,'a2.json')]},
-    reviewInvocation:{developerThreadId:'actual-developer',excludedThreadIds:['actual-main'],
-      authorize:authorize??((request,{authorizationAt})=>grantFor(request,authorizationAt))}};
-  const make=mode=>{
-    const old=Date.now,values=times?[...times]:null;if(values)Date.now=()=>values.length>1?values.shift():values[0];
-    try{return createTaskRunner({...options,persistence:{store,mode,version:3}});}finally{Date.now=old;}
-  };
+    reviewInvocation:{developerThreadId:'actual-developer',excludedThreadIds:['actual-main']}};
+  const make=mode=>createTaskRunner({...options,persistence:{store,mode,version:3}});
   const reopen=()=>{store.close();store=openTaskExecutionStore({...owner,create:false});return make('resume');};
   const resumePrefix=type=>{
     const current=store.snapshot(),at=current.records.findIndex(record=>record.payload.type===type);assert(at>=0);store.close();
@@ -195,17 +184,12 @@ test('V3 observed verdict crash prefix recovers with changed tree and reuses the
   assert.equal(f.dispatches(),1);
 }));
 
-test('Claude V3 cannot reuse author identity or a Codex adapter grant',async()=>{
+test('Claude V3 cannot reuse author identity',async()=>{
   await fixture(async f=>{
     const runner=f.make();await runner.executeEffect(f.effect('develop'));
     const result=await runner.executeEffect(f.effect('review'));
     assert.notEqual(result.state,'approved');assert.equal(f.reopen().status().state,result.state);
   },{provider:'claude',reviewRun:(_request,{onEvent})=>{events(onEvent,'actual-developer');return {status:'failed',code:'failed'};}});
-  await fixture(async f=>{
-    const runner=f.make();await runner.executeEffect(f.effect('develop'));
-    const result=await runner.executeEffect(f.effect('review'));
-    assert.equal(result.code,'authorization_invalid');assert.equal(f.dispatches(),0);
-  },{provider:'claude',authorize:(request,{authorizationAt})=>grantFor(request,authorizationAt,g=>{g.adapterId='codex-review-adapter';})});
 });
 
 for(const sameThread of [false,true])test(`P2 real developer thread survives replay with full host exclusions and excludes author ${sameThread}`,()=>fixture(async f=>{
@@ -222,11 +206,11 @@ for(const sameThread of [false,true])test(`P2 real developer thread survives rep
   assert.equal(reviewed.receipts.length,sameThread?0:1);
 }));
 
-test('V3 registers a completed host-authorized review as a durable receipt without completing the task',()=>fixture(async f=>{
+test('V3 registers a completed directly dispatched review as a durable receipt without completing the task',()=>fixture(async f=>{
   let runner=f.make();await runner.executeEffect(f.effect('develop'));const end=await runner.executeEffect(f.effect('review'));
   assert.equal(end.state,'approved');assert.equal(end.code,null);
   assert.equal(end.receipt.kind,'cm-review-receipt');assert.equal(end.receipts.length,1);
-  assert.equal(end.receipt.execution.channel,'host-authorized');
+  assert.equal(end.receipt.execution.channel,'host-review');
   assert.equal(end.receipt.execution.contextId,'review-logical-1');
   assert.equal(end.receipt.execution.providerThreadId,'actual-review');
   assert.equal(end.reviewInvocation.result.outcome,'observed');
@@ -281,32 +265,6 @@ test('V3 persists the accepted observation_invalid human-resolution variant and 
 },{reviewRun:(request,{onEvent})=>{onEvent({event:'thread.started',provider_thread:'actual-review'});
   onEvent({event:'item.completed',item_type:'reasoning'});return {status:'failed',code:'invalid_event'};}}));
 
-for(const [name,authorization,expected] of [
-  ['denied',()=>({status:'denied',code:'permission_denied'}),['pending_review','permission_denied']],
-  ['wrong request',(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{grant.requestDigest=digest('other');}),['unknown','authorization_invalid']],
-  ['wrong host',(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{grant.hostContextId='unbound-host';}),['unknown','authorization_invalid']],
-  ['wrong adapter',(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{grant.adapterId='other-adapter';}),['unknown','authorization_invalid']],
-  ['wrong invocation',(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{grant.invocationId='other-invocation';}),['unknown','authorization_invalid']],
-  ['wrong identity',(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{grant.identity={...grant.identity,taskId:'T-002'};}),['unknown','authorization_invalid']],
-  ['wrong reviewer',(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{grant.reviewerId='other-reviewer';}),['unknown','authorization_invalid']],
-  ['wrong logical context',(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{grant.logicalContextId='other-logical';}),['unknown','authorization_invalid']],
-  ['wrong package',(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{grant.packageDigest=digest('other');}),['unknown','authorization_invalid']],
-  ['expired before authorization',(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{grant.issuedAt=authorizationAt-2;grant.expiresAt=authorizationAt;}),['unknown','authorization_invalid']],
-])test(`V3 ${name} authorization stops before registration and dispatch`,()=>fixture(async f=>{
-  const runner=f.make();await runner.executeEffect(f.effect('develop'));const before=f.getStore().snapshot().records.length;
-  const end=await runner.executeEffect(f.effect('review'));assert.deepEqual([end.state,end.code],expected);assert.equal(f.dispatches(),0);
-  const added=f.getStore().snapshot().records.slice(before).map(record=>record.payload.type);
-  assert.deepEqual(added,['effect-intent','effect-checkpoint']);assert.deepEqual(f.reopen().status(),end);
-},{authorize:authorization}));
-
-test('V3 expired grant after registration records not_dispatched and never runs the adapter',()=>fixture(async f=>{
-  const runner=f.make();await runner.executeEffect(f.effect('develop'));const end=await runner.executeEffect(f.effect('review'));
-  assert.equal(end.state,'pending_review');assert.equal(end.code,'grant_expired');assert.equal(f.dispatches(),0);
-  assert.equal(end.reviewInvocation.result.outcome,'not_dispatched');assert.equal(end.reviewInvocation.result.reason,'grant_expired');
-  assert.deepEqual(f.getStore().snapshot().records.slice(-3).map(record=>record.payload.type),
-    ['review-invocation-registered','review-invocation-result','effect-checkpoint']);assert.deepEqual(f.reopen().status(),end);
-},{times:[100,101,200],authorize:(request,{authorizationAt})=>grantFor(request,authorizationAt,grant=>{grant.expiresAt=150;})}));
-
 test('V3 explicit durable cancel is the only cancellation cause and remains reconciliation-required',()=>fixture(async f=>{
   let started,late;const ready=new Promise(resolve=>{started=resolve;});
   f.options.reviewers[0].run=(request,{signal,onEvent})=>new Promise(resolve=>{
@@ -333,26 +291,26 @@ test('V3 local timeout remains pending, never inferred as cancellation, and neve
   assert.deepEqual(f.getStore().snapshot(),before);const restored=f.reopen();assert.deepEqual(await restored.run(),end);assert.equal(f.dispatches(),1);
 },{timeoutMs:10,reviewRun:(request,{onEvent})=>{onEvent({event:'thread.started',provider_thread:'actual-review'});return new Promise(()=>{});}}));
 
-test('V3 synchronous cancellation inside authorize checkpoints without registration or dispatch',()=>fixture(async f=>{
-  let runner;f.options.reviewInvocation.authorize=(request,{authorizationAt})=>{
-    runner.cancel();return grantFor(request,authorizationAt);
+// Direct dispatch registers the invocation before entering the reviewer callback.
+// Cancellation at that boundary must survive both a return and a thrown error.
+for(const throws of [false,true])
+test(`V3 synchronous cancellation inside direct dispatch remains durable throws=${throws}`,()=>fixture(async f=>{
+  let runner;
+  let dispatches=0;
+  f.options.reviewers[0].run=(request,control)=>{
+    dispatches++;runner.cancel();
+    if(throws)throw new Error('review failed after cancellation');
+    return {status:'cancelled',code:'cancelled'};
   };
   runner=f.make();await runner.executeEffect(f.effect('develop'));const before=f.getStore().snapshot().records.length;
   const end=await runner.executeEffect(f.effect('review'));assert.equal(end.state,'cancelled');assert.equal(end.code,'cancelled');
-  assert.equal(f.dispatches(),0);assert.equal(end.reviewInvocation,null);
+  assert.equal(dispatches,1);assert.equal(end.reviewInvocation.started,null);
+  assert.equal(end.reviewInvocation.result.outcome,'cancelled');
+  assert.equal(end.reviewInvocation.result.reconciliationRequired,true);assert.equal(end.receipt,null);
   assert.deepEqual(f.getStore().snapshot().records.slice(before).map(record=>record.payload.type),
-    ['effect-intent','control','effect-checkpoint']);assert.deepEqual(f.reopen().status(),end);
-}));
-
-test('V3 cancellation inside authorize remains durable when the callback throws',()=>fixture(async f=>{
-  let runner;f.options.reviewInvocation.authorize=()=>{
-    runner.cancel();throw new Error('authorization failed after cancellation');
-  };
-  runner=f.make();await runner.executeEffect(f.effect('develop'));const before=f.getStore().snapshot().records.length;
-  const end=await runner.executeEffect(f.effect('review'));assert.equal(end.state,'cancelled');assert.equal(end.code,'cancelled');
-  assert.equal(f.dispatches(),0);assert.equal(end.reviewInvocation,null);
-  assert.deepEqual(f.getStore().snapshot().records.slice(before).map(record=>record.payload.type),
-    ['effect-intent','control','effect-checkpoint']);assert.deepEqual(f.reopen().status(),end);
+    ['effect-intent','review-invocation-registered','control','review-invocation-result','effect-checkpoint']);
+  const resumed=f.reopen();assert.deepEqual(resumed.status(),end);
+  assert.deepEqual(await resumed.run(),end);assert.equal(dispatches,1);
 }));
 
 test('V3 adapter-originated cancelled observation stays unknown without claiming local cancellation',()=>fixture(async f=>{
@@ -451,7 +409,7 @@ test('V3 enforces the full durable envelope, hash chain, and semantic nested ord
 }));
 
 for(const prefix of ['review-invocation-registered','review-invocation-started','review-invocation-result'])
-test(`V3 durable ${prefix} crash prefix resumes without authorization or redispatch`,()=>fixture(async f=>{
+test(`V3 durable ${prefix} crash prefix resumes without redispatch`,()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
   const restored=f.resumePrefix(prefix),before=f.getStore().snapshot();
   if(prefix==='review-invocation-result')assert.equal(restored.status().state,'approved');

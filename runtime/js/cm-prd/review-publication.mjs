@@ -1,4 +1,4 @@
-// Publish an unchanged host-attested r1. Not a provider receipt or completion issuer.
+// Publish unchanged r1 source declarations. They do not prove reviewer identity or execution.
 import fs from 'node:fs';
 import {assertPrdBatchActive} from './inputs-replaced.mjs';
 import path from 'node:path';
@@ -15,8 +15,8 @@ export function inspectPrdReviewResponse({reviewPackage,packageDigest,authorCont
   need(typeof reviewPackage.feature==='string'&&/^[1-9]\d*\.[a-z0-9]+(?:-[a-z0-9]+)*$/.test(reviewPackage.feature),'prd_review_feature_invalid');
   const degraded=response.reviewer==='self-degraded';
   shape(response,['reviewer','contextId','independent','at','result',...(degraded?['degradedReason']:[])]);
-  // Native subagents return canonical context identities, not filesystem paths.
-  // Preserve their exact spelling; shared effect/path IDs keep their existing grammar.
+  // Declared subagent context IDs use canonical spelling, not filesystem paths.
+  // Validate declaration format and consistency only, not the actual reviewer identity.
   const context=response.contextId;
   need(typeof context==='string'&&context.length<=128&&!/\s/.test(context));
   if(response.reviewer==='codex-subagent'&&context.startsWith('/')){
@@ -53,6 +53,8 @@ export function publishPrdReview({specs,reviewPackage,packageDigest,authorContex
   need(gate.package_sha256===packageDigest&&['dispatch_unknown','resume_disposition','completed'].includes(gate.outcome),
     'prd_review_unclaimed');
   const {result,examinedPaths,degraded}=inspectPrdReviewResponse({reviewPackage,packageDigest,authorContextId,response});
+  // Preserve legacy rendered labels for exact archive-byte compatibility.
+  // Their attestation wording does not prove reviewer identity or execution.
   const bytes=Buffer.from(['---',`at: ${response.at}`,`reviewer: ${response.reviewer}`,`independent: ${response.independent}`,
     ...(degraded?[`degraded_reason: ${JSON.stringify(response.degradedReason)}`]:[]),`package_sha256: ${packageDigest}`,
     `verdict: ${result.verdict}`,'scope:',...examinedPaths.map(file=>`  - ${file}`),'---','',

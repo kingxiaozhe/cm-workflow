@@ -17,10 +17,9 @@ import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTas
 import { reviewResult,reviewReceipt,boundReviewText,reviewPaths } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
-  MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,effectSlotFree,reviewTimeoutTransition,validateReviewDispatchGrant,validateTaskLearningReviewPackage,
+  MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,effectSlotFree,reviewTimeoutTransition,validateTaskLearningReviewPackage,
   reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted,
-  MAX_REVIEW_REDISPATCHES,REVIEW_RETRY_CODES,reviewNotDispatchedExhausted,REVIEW_NOT_DISPATCHED_LIMIT_CODE,reviewNeverStartedStatus,reviewNotDispatchedLimitReason,reviewNotDispatchedExtendable,reviewDenialUnconfirmed,reviewDenialExhausted,reviewDenialConfirmable,reviewDenialLimitReason,
-  REVIEW_DENIAL_LIMIT_CODE,REVIEW_DISPATCH_CONFIRM_REQUIRED_CODE,countReviewDispatchConfirmations,reviewRedispatchCount,reviewRedispatchable,reviewRedispatchExhausted,REVIEW_REDISPATCH_LIMIT_CODE,reviewRedispatchLimitReason,reviewRedispatchStopReason,reviewAbandonRefusal,
+  MAX_REVIEW_REDISPATCHES,REVIEW_RETRY_CODES,reviewRedispatchCount,reviewRedispatchable,reviewRedispatchExhausted,REVIEW_REDISPATCH_LIMIT_CODE,reviewRedispatchLimitReason,reviewRedispatchStopReason,reviewAbandonRefusal,
   completionBlockCount,completionRetriesExhausted,supersededReviewPayload,bootstrapReviewRecoverable,protectedDevelopScope,protectedScopeBlockReason,
   developTimeoutBasis,developTimeoutEffect,developTimeoutState,DEVELOP_CALL_TIMEOUT_REASON,
   developAnswerInvalidEffect,developAnswerRetryable,developAnswerInvalidReason,
@@ -194,10 +193,10 @@ export function createTaskRunner(options) {
     if(invocationMode)id(r.adapterId);
     return {...v,...(invocationMode?{adapterId:r.adapterId}:{}),run};
   });
-  let invocationConfig=null,authorize=null,liveHostContextId=null,reviewTimeoutMs=null;
+  let invocationConfig=null,liveHostContextId=null,reviewTimeoutMs=null;
   if(invocationMode){
     need(reviewers.length===1&&['codex','claude'].includes(reviewers[0].provider)&&reviewers[0].allowed&&reviewers[0].available,'runner_invocation');
-    shape(options.reviewInvocation,['developerThreadId','excludedThreadIds','authorize',
+    shape(options.reviewInvocation,['developerThreadId','excludedThreadIds',
       ...['hostContextId','timeoutMs'].filter(key=>Object.hasOwn(options.reviewInvocation,key))]);
     liveHostContextId=options.reviewInvocation.hostContextId??null;
     // Transient like hostContextId, never journaled: the host sizes the review
@@ -208,7 +207,6 @@ export function createTaskRunner(options) {
     }
     if(liveHostContextId!==null){id(liveHostContextId);
       need(![developer.contextId,...reviewers.flatMap(r=>r.contexts)].includes(liveHostContextId),'not_independent');}
-    authorize=options.reviewInvocation.authorize;need(typeof authorize==='function','runner_invocation');
     invocationConfig=json({developerThreadId:options.reviewInvocation.developerThreadId,
       excludedThreadIds:options.reviewInvocation.excludedThreadIds});
     id(invocationConfig.developerThreadId);need(Array.isArray(invocationConfig.excludedThreadIds)
@@ -356,13 +354,10 @@ export function createTaskRunner(options) {
   function reviewRedispatchRecords(){
     return journal?.filter(row=>row.payload.type==='review-redispatch'&&row.payload.attempt===attempt).length??0;
   }
-  // The review effect ids of the current round: the entry derives the next redispatch id from
-  // them, never from reviewInvocation (a refused authorization leaves it at the previous round's
-  // value), so an id can never repeat one the cache holds.
+  // The entry derives each redispatch id from the current round's durable effects,
+  // so an id cannot repeat one the cache already holds.
   const reviewEffectIds=()=>[...cache.values()].filter(entry=>entry.effect.kind==='review'
     &&entry.effect.identity.attempt===attempt).map(entry=>entry.effect.id);
-  // Confirmations of this round (abandon_review on a review that never started).
-  const reviewDispatchConfirmations=()=>countReviewDispatchConfirmations((journal??[]).map(row=>row.payload),attempt);
   // A spent retryable review block this round may still redispatch (advance).
   const reviewRedispatchLive=()=>Boolean(!(metadata.externalModels||metadata.executionPolicy)&&invocationMode&&store&&!busy&&!poisoned
     &&!restored?.pending&&reviewRedispatchable({state,code,attempt,cache:[...cache.values()],calls,reviewInvocation},
@@ -618,12 +613,6 @@ export function createTaskRunner(options) {
       current=freeze({...current,reviewRedispatchStopRequired:true,reason:reviewRedispatchStopReason(current.code)});
     else if(current.state==='blocked'&&reviewRedispatchSpent())
       current=freeze({...current,code:REVIEW_REDISPATCH_LIMIT_CODE,reason:reviewRedispatchLimitReason(current.code)});
-    // A round whose review never started: a refused authorization (explicit confirmation
-    // needed) or registrations voided before dispatch three times. Shared with replay.
-    if(!busy&&current.state==='pending_review'){
-      const never=reviewNeverStartedStatus({state,code,attempt,cache:[...cache.values()]},reviewDispatchConfirmations());
-      if(never!==null)current=freeze({...current,...never});
-    }
     // Status only; never part of a cached result or checkpoint.
     if(current.state==='unknown'&&reviewResultAbandonable())current=freeze({...current,abandonableReviewResult:true});
     else if(current.state==='unknown'&&!(metadata.externalModels||metadata.executionPolicy)&&invocationMode&&store&&!busy&&!poisoned&&!restored?.pending){
@@ -634,8 +623,8 @@ export function createTaskRunner(options) {
       &&readRunnerHistory(journal,metadata,3).reviewReconciliation!==null;
     if((metadata.externalModels||metadata.executionPolicy)&&!busy&&!poisoned&&invocationMode&&store&&reviewInvocation?.registration
       &&(available||current.state==='unknown'&&reviewInvocation.result?.reconciliationRequired!==false)){
-      const grant=reviewInvocation.registration.grant;
-      current=freeze({...current,reviewReconciliation:{invocationId:grant.invocationId,requestDigest:grant.requestDigest,
+      const binding=reviewInvocation.registration.binding;
+      current=freeze({...current,reviewReconciliation:{invocationId:binding.invocationId,requestDigest:binding.requestDigest,
         provider:reviewers[0].provider,providerThreadId:reviewInvocation.started,available},
         reason:available?'原调用的终态与本地清理收据已保存；使用 reconcile_review 接纳证据，此操作不派发模型。'
           :'缺少原调用的可信终态或本地清理证据。保留本 run、attempt、journal 和快照；按 invocationId / providerThreadId 向原宿主或 provider 核对结果及终止状态，并确认本地后代已退出。当前适配器没有远端状态查询入口，人工说明、PID 消失或重启均不能解锁；不要删 journal、换 runId 或重派。'});
@@ -922,60 +911,26 @@ export function createTaskRunner(options) {
     const nextSequence=sequence+1,request=requestFor({invocationId:`${session}.${nextSequence}`,
       identity:{...config.identity,attempt},role:'reviewer',provider:adapter.provider,
       requestedModel:adapter.requestedModel,contextId,payload});
-    let authorizationAt;
-    try{authorizationAt=safeTime();}catch{halt('unknown','clock_invalid');return;}
-    let grant;
-    try{
-      const returned=authorize(request,Object.freeze({authorizationAt}));
-      if(types.isPromise(returned)){
-        observePromise(returned,ignorePromiseResult,ignorePromiseResult);
-        if(state==='cancelled'||controller.signal.aborted)return;
-        need(false,'authorization_invalid');
-      }
-      if(state==='cancelled'||controller.signal.aborted)return;
-      grant=json(returned);
-      if(digest(grant)===digest({status:'denied',code:'permission_denied'})){
-        halt('pending_review','permission_denied');return;
-      }
-    }catch(error){
-      if(state==='cancelled'||controller.signal.aborted)return;
-      halt('unknown',failureCode(error)==='clock_invalid'?'clock_invalid':'authorization_invalid');return;
-    }
-    if(state==='cancelled'||controller.signal.aborted)return;
     let registeredAt;
     try{registeredAt=safeTime();}catch{halt('unknown','clock_invalid');return;}
-    if(registeredAt<authorizationAt){halt('unknown','clock_invalid');return;}
-    try{grant=validateReviewDispatchGrant(grant,{request,reviewerId:adapter.id,adapterId:adapter.adapterId,
-      packageDigest:reviewPackage.packageDigest,hostContextIds:[invocationConfig.developerThreadId,...liveInvocation().excludedThreadIds],
-      authorizationAt,registeredAt});}
-    catch{halt('unknown','authorization_invalid');return;}
-    const registrationFields={effectId,reviewerId:adapter.id,adapterId:adapter.adapterId,requestDigest:request.requestDigest,
-      authorizationAt,registeredAt,grant};
-    // Validate first, then journal the signer immediately before registration.
-    // Durable host lists and prior joiners already have replayable authority.
-    if(![invocationConfig.developerThreadId,...invocationConfig.excludedThreadIds,...joinedHosts].includes(grant.hostContextId)){
+    if(state==='cancelled'||controller.signal.aborted)return;
+    const hostContextId=liveHostContextId??invocationConfig.developerThreadId;
+    const binding=json({adapterId:adapter.adapterId,invocationId:request.invocationId,requestDigest:request.requestDigest,
+      identity:request.identity,reviewerId:adapter.id,logicalContextId:request.contextId,
+      packageDigest:reviewPackage.packageDigest,hostContextId});
+    if(![invocationConfig.developerThreadId,...invocationConfig.excludedThreadIds,...joinedHosts].includes(hostContextId)){
       need(joinedHosts.length<MAX_AI_JOINED_HOSTS,'host_limit');
-      persist('host-joined',{hostContextId:grant.hostContextId});joinedHosts.push(grant.hostContextId);
+      persist('host-joined',{hostContextId});joinedHosts.push(hostContextId);
     }
-    persist('review-invocation-registered',registrationFields);
-    sequence=nextSequence;
     const registration=json({reviewerId:adapter.id,adapterId:adapter.adapterId,requestDigest:request.requestDigest,
-      authorizationAt,registeredAt,grant});
+      registeredAt,binding});
+    persist('review-invocation-registered',{effectId,...registration});
+    sequence=nextSequence;
     const call={invocationId:request.invocationId,contextId,provider:request.provider,requestedModel:adapter.requestedModel,
-      effectiveModel:'unknown',channel:'host-authorized',started:false,terminal:'running',requestDigest:request.requestDigest,
+      effectiveModel:'unknown',channel:'host-review',started:false,terminal:'running',requestDigest:request.requestDigest,
       resultDigest:null,providerThreadId:null};
     calls.push(call);
-    let dispatchAt=null,notDispatched=null;
-    try{dispatchAt=safeTime();if(dispatchAt<registeredAt)notDispatched='clock_invalid';
-      else if(dispatchAt>=grant.expiresAt)notDispatched='grant_expired';}
-    catch{notDispatched='clock_invalid';}
-    if(notDispatched){
-      const fields={effectId,invocationId:request.invocationId,dispatchAt,outcome:'not_dispatched',observation:null,inspection:null,
-        reconciliationRequired:true,reason:notDispatched};
-      persist('review-invocation-result',fields);const result=resultView(fields);
-      Object.assign(call,{terminal:'not_dispatched',resultDigest:digest(result)});
-      reviewInvocation=json({registration,started:null,result});halt('pending_review',notDispatched);return;
-    }
+    const dispatchAt=registeredAt;
     call.started=true;
     const expectation={request,developerThreadId:invocationConfig.developerThreadId,
       excludedThreadIds:reviewExclusions(liveInvocation(),calls,developer.contextId)};
@@ -1484,14 +1439,9 @@ export function createTaskRunner(options) {
         timeoutBasis=developTimeoutRetryBasis();need(timeoutBasis!==null,'develop_timeout_root_changed');
         if(state==='blocked')timeoutBasis=null;
       }
-      // A refused authorization is a decision: a review is admitted again only after the
-      // operator's journaled confirmation (abandon_review), bounded per round.
-      if(v.kind==='review'&&reviewDenialUnconfirmed({state,code}))
-        need(false,reviewDenialExhausted({state,code},reviewDispatchConfirmations())?REVIEW_DENIAL_LIMIT_CODE:REVIEW_DISPATCH_CONFIRM_REQUIRED_CODE);
       answerRetry=v.kind==='develop'&&state==='blocked'&&code==='failed'&&answerRetryable();
       need(timeoutBasis!==null||answerRetry||recheck!==null||completeSource!==null||dispatchBasis!==null
         ||stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(effectSlotFree(v.kind,[...cache.values()],calls),'limit_exceeded');
-      need(!(v.kind==='review'&&reviewNotDispatchedExhausted({state,code,attempt,cache:[...cache.values()]},reviewDispatchConfirmations().extended)),REVIEW_NOT_DISPATCHED_LIMIT_CODE);
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
     } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input',
@@ -1733,29 +1683,6 @@ export function createTaskRunner(options) {
   };
   const abandonReview=raw=>{
     try{
-      // A review that never started (a refused authorization, or the spent not-dispatched
-      // redispatch bound): nothing ran, so no process needs proving stopped, even for
-      // external-model runs. Only this explicit, audited confirmation leaves those ends.
-      if(invocationMode&&store&&!busy&&!poisoned&&!restored?.pending&&state==='pending_review'){
-        const confirmed=reviewDispatchConfirmations(),ended={state,code,attempt,cache:[...cache.values()]};
-        const denied=reviewDenialUnconfirmed(ended),voided=reviewNotDispatchedExhausted(ended,confirmed.extended);
-        if(denied||voided){
-          if(denied&&reviewDenialExhausted(ended,confirmed))
-            throw Object.assign(new Error(REVIEW_DENIAL_LIMIT_CODE),{code:REVIEW_DENIAL_LIMIT_CODE,reason:reviewDenialLimitReason()});
-          if(voided&&!reviewNotDispatchedExtendable(ended,confirmed))
-            throw Object.assign(new Error(REVIEW_NOT_DISPATCHED_LIMIT_CODE),
-              {code:REVIEW_NOT_DISPATCHED_LIMIT_CODE,reason:reviewNotDispatchedLimitReason(code,confirmed.extended)});
-          need(denied?reviewDenialConfirmable(ended,confirmed):true,'review_abandon_unavailable');
-          const value=json(raw);shape(value,['allowed','reason']);
-          need(value.allowed===true,'review_abandon_authorization_required');
-          need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=500
-            &&!/[\r\n\0]/.test(value.reason),'review_abandon_reason_required');
-          persist('review-dispatch-confirmed',{effectId:[...cache.values()].at(-1).effect.id,attempt,code,reason:value.reason,
-            at:new Date().toISOString()});
-          const recovered=readRunnerHistory(journal,metadata,3).state;
-          ({state,code}=recovered);reason=recovered.reason??null;publication=privateStatus();return status();
-        }
-      }
       need(!(metadata.externalModels||metadata.executionPolicy),'external_review_reconciliation_required');
       // V5 (A34): the operator confirms the spent block's reviewer stopped; this
       // journals the round's second no-result redispatch (no dispatch here).
@@ -1765,7 +1692,7 @@ export function createTaskRunner(options) {
         need(typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason,'utf8')<=500
           &&!/[\r\n\0]/.test(value.reason),'review_abandon_reason_required');
         persist('review-redispatch',{effectId:[...cache.values()].at(-1).effect.id,
-          invocationId:reviewInvocation.registration.grant.invocationId,attempt,code,reason:value.reason,at:new Date().toISOString()});
+          invocationId:reviewInvocation.registration.binding.invocationId,attempt,code,reason:value.reason,at:new Date().toISOString()});
         state='pending_review';publication=privateStatus();return status();
       }
       if(state==='blocked'&&reviewRedispatchSpent())throw Object.assign(new Error('review_abandon_budget_exhausted'),{code:'review_abandon_budget_exhausted'});
@@ -1807,7 +1734,7 @@ export function createTaskRunner(options) {
       need(reviewRedispatchCount(history.state.cache,history.state.calls,attempt,contextId,reviewRedispatchRecords())<MAX_REVIEW_REDISPATCHES,
         'review_abandon_budget_exhausted');
       const fields={effectId:history.pending.id,
-        invocationId:history.state.reviewInvocation.registration.grant.invocationId,
+        invocationId:history.state.reviewInvocation.registration.binding.invocationId,
         registeredDigest:registration.digest,startedDigest:started?.digest??null,
         ...(withResult?{resultDigest:last.digest}:{}),
         reason:value.reason,at:new Date().toISOString()};
@@ -1831,7 +1758,7 @@ export function createTaskRunner(options) {
       const {request,effect,before,result,...binding}=proof;
       const call=calls.find(item=>item.invocationId===value.invocationId);
       need(['unknown','failed'].includes(call?.terminal),'review_reconciliation_unavailable');
-      // Same call, same grant and same effect. The journal retains the original
+      // Same call, same binding and same effect. The journal retains the original
       // unknown and receipt; one atomic record contains the validated transition.
       Object.assign(call,{terminal:result.outcome==='observed'?'succeeded':'failed',
         resultDigest:digest(result.outcome==='observed'?result.inspection.review:result)});
@@ -2018,7 +1945,7 @@ export function createTaskRunner(options) {
   if(restored?.pendingObservedReview){
     const observed=restored.pendingObservedReview,request=observed.request,result=observed.result;
     const call={invocationId:request.invocationId,contextId:request.contextId,provider:request.provider,
-      requestedModel:request.requestedModel,effectiveModel:'unknown',channel:'host-authorized',
+      requestedModel:request.requestedModel,effectiveModel:'unknown',channel:'host-review',
       started:true,terminal:'succeeded',requestDigest:request.requestDigest,
       resultDigest:digest(result.inspection.review),providerThreadId:observed.started};
     sequence++;calls.push(call);

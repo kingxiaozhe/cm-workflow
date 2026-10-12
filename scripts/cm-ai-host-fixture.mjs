@@ -11,6 +11,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
+import {claudeReviewFingerprint} from '../runtime/js/cm-ai/worker-claude.mjs';
 import {guardFixtureSource,killFixtureProcesses} from './fixtures/process-cleanup.mjs';
 
 // Keep runtime declarations and log mirrors independent of the invoking user's home.
@@ -39,13 +41,40 @@ export function fixture(){
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
   fs.writeFileSync(path.join(codeProject,'requirements.md'),'# Fixture\n');
   fs.writeFileSync(config,JSON.stringify({version:1,specsDir,codeProject,feature,identity,scope:['target.mjs'],requirements:['requirements.md']}));
-  // create requires a bound review configuration; it grants no review attempt.
-  const reviewFile=path.join(root,'placeholder-review.json');
-  fs.writeFileSync(reviewFile,JSON.stringify({model:'fixture',preflight:{}}));
-  return {root,specsDir,codeProject,config,reviewFile,args:['serve','--config',config,'--mode','create','--host-context','native-host-fixture','--allow-development']};
+  const reviewFile=path.join(root,'synthetic-review.json');
+  const f={root,specsDir,codeProject,config,reviewFile,args:['serve','--config',config,'--mode','create','--host-context','native-host-fixture','--allow-development']};
+  installSyntheticReview(f);
+  return f;
 }
-// A test that supplies its own --review-config keeps it; others use the placeholder.
-export const launchArgs=f=>f.args.includes('--review-config')?f.args:[...f.args,'--review-config',f.reviewFile];
+export function syntheticReviewConfig(codeProject,runtime='codex',model='fixture'){
+  return {model,disabledSkills:[],preflight:{passed:true,provider:runtime,cli_model:model,prompt_transport:'stdin',
+    config_fingerprint:(runtime==='claude'?claudeReviewFingerprint:configFingerprint)({cwd:codeProject,model,disabledSkills:[]})}};
+}
+// Only review output is synthetic. Any sandbox request delegates to the actual
+// installed Codex, preserving native write-protection and command checks.
+export function installSyntheticReview(f){
+  const bin=path.join(f.root,'synthetic-review-bin');fs.mkdirSync(bin,{recursive:true});
+  const real=spawnSync('/usr/bin/which',['codex'],{encoding:'utf8'}).stdout.trim();
+  for(const runtime of ['codex','claude']){
+    const source=fileURLToPath(new URL(`./fixtures/${runtime}-review-process.mjs`,import.meta.url));
+    fs.writeFileSync(path.join(bin,runtime),`#!${process.execPath}\n`
+      +`const {spawnSync}=await import('node:child_process');\n`
+      +`if(process.argv[2]==='sandbox'){const r=spawnSync(${JSON.stringify(real)},process.argv.slice(2),{stdio:'inherit'});process.exitCode=r.status??1;}\n`
+      +`else await import(${JSON.stringify(new URL('file://'+source).href)});\n`,{mode:0o700});
+  }
+  f.env={...(f.env??process.env),PATH:bin+path.delimiter+(f.env?.PATH??process.env.PATH),
+    CM_WORKFLOW_HOME:path.join(f.root,'home'),CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')};
+  if(f.reviewFile)fs.writeFileSync(f.reviewFile,JSON.stringify(syntheticReviewConfig(f.codeProject,f.runtime)));
+  return f;
+}
+// Explicit review configs retain the case's intended missing/stale preflight.
+export const launchArgs=f=>{
+  if(f.args.includes('--review-config'))return f.args;
+  const index=f.args.indexOf('--review-runtime'),hostIndex=f.args.indexOf('--runtime');
+  const runtime=index>=0?f.args[index+1]:hostIndex>=0?f.args[hostIndex+1]:'codex';
+  fs.writeFileSync(f.reviewFile,JSON.stringify(syntheticReviewConfig(f.codeProject,runtime)));
+  return [...f.args,'--review-config',f.reviewFile];
+};
 
 export function runCli(f,mode,action='create'){
   return new Promise((resolve,reject)=>{
@@ -154,7 +183,7 @@ export function runCli(f,mode,action='create'){
       }
     });
     child.once('close',code=>{disarm();resolve({code,stderr,rows,calls});});
-    send(f.request??request('advance'));
+    send(f.request??{...request(f.operation??'advance'),requestId:'advance'});
   });
 }
 
@@ -220,7 +249,7 @@ export function protectedResultFixture(){
   fs.writeFileSync(config,JSON.stringify({timeoutMs:5000,
     checkCommands:[{id:'syntax',command:[process.execPath,'--check','target.mjs']}]}));
   f.args.push('--protected-conversation-config',config);
-  f.env={...process.env,CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')};
+  f.env={...f.env,CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')};
   return f;
 }
 export const implementedValue=()=>({outcome:'implemented',application:{status:'no_relevant_lesson',note:null},

@@ -32,8 +32,8 @@ function fixture(t,{legacy=false}={}){
     timeoutMs:1000,excludedContexts:['main'],developer:{provider:'codex',requestedModel:'fixture',contextId:'developer',run:()=>{throw new Error('must not execute');}},
     reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',allowed:true,available:true,
       contexts:['review-1','review-2'],run:()=>{throw new Error('must not review');}}],
-    reviewInvocation:{developerThreadId:'author',excludedThreadIds:['main'],authorize:()=>{throw new Error('must not review');}},
-    hostDecision:{status:'denied',code:'permission_denied'},check:createHostCheck({cwd:codeProject,commands:[{id:'syntax',command:[process.execPath,'--check','a.mjs']}]})};
+    reviewInvocation:{developerThreadId:'author',excludedThreadIds:['main']},
+    check:createHostCheck({cwd:codeProject,commands:[{id:'syntax',command:[process.execPath,'--check','a.mjs']}]})};
   const qa={commands:[],environment:{kind:'web',carrier:'browser',target:'fixture',scope:'local'}};
   execution.qaLogHome=path.join(root,'logs');
   execution.qaDecisionProvider={timeoutMs:1000,decide:()=>{throw new Error('must not assess');}};
@@ -193,7 +193,7 @@ test('v2 manual QA Fix loads status with a simple owner without unused review or
   assert.doesNotMatch(result.stderr,/test_author_configuration_required|repair_configuration_required|review_configuration_required/);
   const missingReview=spawnSync(process.execPath,args.filter((value,index)=>value!=='--review-config'&&args[index-1]!=='--review-config'),
     {encoding:'utf8'});
-  assert.equal(missingReview.status,1);assert.match(missingReview.stderr,/control-config/);
+  assert.equal(missingReview.status,1);assert.match(missingReview.stderr,/review_configuration_required/);assert.match(missingReview.stderr,/--review-config/);
   assert.doesNotMatch(missingReview.stderr,/allow-review-attempt/);
 });
 

@@ -115,7 +115,7 @@ function failingStartShim(f){
 function launch(f,{mode='resume',operation='advance',workflow=null,extra=[],answers={},review=true,pathPrefix=null}={}){
   return new Promise((resolve,reject)=>{
     const args=['serve','--config',f.config,'--mode',mode,'--host-context','session-A','--allow-development',
-      '--review-config',f.reviewFile,...(review?['--allow-review-attempt','1']:[]),
+      '--review-config',f.reviewFile,...(review?[]:[]),
       ...(workflow?['--workflow-config',workflow,'--allow-qa']:[]),...extra];
     const env=pathPrefix?{...f.env,PATH:pathPrefix+path.delimiter+f.env.PATH}:f.env;
     const child=spawn(process.execPath,[cli,...args],{env,stdio:['pipe','pipe','pipe']});
@@ -305,7 +305,7 @@ test('#26 a wrong QA workflow config is revised before any QA round, without con
   const f=fixture(t);
   const wrong=f.workflow('workflow-old',{commands:[{id:'probe',command:[process.execPath,'-e','process.exit(3)'],caseIds:[]}],environment:service});
   const fixed=f.workflow('workflow-new',probeQa());
-  const waiting=done(await launch(f,{mode:'create',workflow:wrong,review:false}));
+  const waiting=done(await launch(f,{mode:'create',workflow:wrong,operation:'start'}));
   assert.equal(waiting.state,'awaiting_review',JSON.stringify(waiting));
   const before=f.journal();
   const drift=await launch(f,{workflow:fixed,review:false});

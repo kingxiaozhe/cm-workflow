@@ -762,7 +762,7 @@ test('F05 legacy runner does not expose the Learning handoff attachment',()=>com
   assert(!Object.hasOwn(f.create(),'attachLearningEvidence'));
 }));
 
-test('C3b V3 host-authorized receipt enters the existing completion owner once',()=>composedFixture(async f=>{
+test('C3b V3 direct review receipt enters the existing completion owner once',()=>composedFixture(async f=>{
   let dispatches=0;
   const reviewers=[{id:'review',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',
     allowed:true,available:true,contexts:['r1','r2'],run:(request,{onEvent})=>{
@@ -772,18 +772,11 @@ test('C3b V3 host-authorized receipt enters the existing completion owner once',
       onEvent({event:'turn.completed',item_type:null});onEvent({event:'process_closed',exit_code:0,signal:null,timed_out:false});
       return {status:'succeeded',value:approved(request)};
     }}];
-  const reviewInvocation={developerThreadId:'actual-developer',excludedThreadIds:['actual-main'],
-    authorize:(request,{authorizationAt})=>{const grant={version:1,kind:'cm-review-dispatch-grant',grantId:'grant-1',
-      adapterId:'codex-review-adapter',invocationId:request.invocationId,requestDigest:request.requestDigest,
-      identity:request.identity,reviewerId:'review',logicalContextId:request.contextId,
-      packageDigest:request.payload.reviewPackage.packageDigest,hostContextId:'actual-main',decisionId:'decision-1',
-      decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
-      return {...grant,grantDigest:digest(grant)};
-    }};
+  const reviewInvocation={developerThreadId:'actual-developer',excludedThreadIds:['actual-main'],hostContextId:'actual-main'};
   const runner=createTaskRunner({...f.options,reviewers,reviewInvocation,
     persistence:{store:f.getStore(),mode:'create',version:3}});
   await runner.executeEffect(f.effect('develop'));const reviewed=await runner.executeEffect(f.effect('review'));
-  assert.equal(reviewed.state,'approved');assert.equal(reviewed.receipt.execution.channel,'host-authorized');
+  assert.equal(reviewed.state,'approved');assert.equal(reviewed.receipt.execution.channel,'host-review');
   const done=await runner.executeEffect(f.effect('complete'));assert.equal(done.state,'fixture_completed');
   assert.equal(fs.readFileSync(f.tasksPath,'utf8'),'- [x] T-001: fixture\r\n');
   assert.deepEqual(await runner.executeEffect(f.effect('complete')),done);assert.equal(dispatches,1);

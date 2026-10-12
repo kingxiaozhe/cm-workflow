@@ -7,12 +7,11 @@ export function createCmAiHost(options) {
   need(arguments.length===1,'invalid_input');
   shape(options,['runner','entry']);
   const keys=Object.keys(options.entry);shape(options.entry,keys);
-  const {hostDecisionProvider,qaDecisionProvider,qaExecutor,documentationProvider,...data}=options.entry;
+  const {qaDecisionProvider,qaExecutor,documentationProvider,...data}=options.entry;
   const entryOptions=json(data);
   need(!Object.hasOwn(entryOptions,'runner'),'invalid_input');
   const runner=createTaskRunner(options.runner);
   const entry=createCmAiConversationEntry({...entryOptions,runner,
-    ...(hostDecisionProvider===undefined?{}:{hostDecisionProvider}),
     ...(qaExecutor===undefined?{}:{qaExecutor}),
     ...(documentationProvider===undefined?{}:{documentationProvider}),
     ...(qaDecisionProvider===undefined?{}:{qaDecisionProvider})});

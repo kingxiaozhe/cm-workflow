@@ -20,20 +20,20 @@ test('drivers prepare the redo answer for a timed-out develop (develop_call_time
   assert.deepEqual(projectDevelopAttempts(history.state,'advance',[]).attempts,[]);
   const projected=projectedRunnerStatus(history,config);
   assert.deepEqual([projected.state,projected.code],['blocked','develop_call_timeout']);
-  assert.deepEqual(projectDevelopAttempts(projected,'advance',[]).attempts,[1]);
-  assert.deepEqual(batchDevelopAttempts(projected,'1.work/T-002',[]),[1]);
+  assert.deepEqual(projectDevelopAttempts(projected,'advance',[]).attempts,[1,2]);
+  assert.deepEqual(batchDevelopAttempts(projected,'1.work/T-002',[]),[1,2]);
 });
 test('drivers prepare no developer answer for a re-check (check_answer_missing)',async t=>{
   const f=gapFixture(t,'driver-recheck');
   await gapSession(f,'create',gapExecution(f,{developer:['round-1\n'],checks:['hang']}),[['advance',1]]);
   const {history,config}=replay(f),projected=projectedRunnerStatus(history,config);
   assert.deepEqual([projected.state,projected.code],['blocked','check_answer_missing']);
-  assert.deepEqual(projectDevelopAttempts(projected,'advance',[]).attempts,[]);
-  assert.deepEqual(batchDevelopAttempts(projected,'1.work/T-002',[]),[]);
-  // Codex round 1: with the round-1 review authorized, the same advance can reach round 2.
-  const reach=projectDevelopAttempts(projected,'advance',['--allow-review-attempt','1']);
+  assert.deepEqual(projectDevelopAttempts(projected,'advance',[]).attempts,[2]);
+  assert.deepEqual(batchDevelopAttempts(projected,'1.work/T-002',[]),[2]);
+  // Codex round 1: with direct round-1 review, the same advance can reach round 2.
+  const reach=projectDevelopAttempts(projected,'advance',[]);
   assert.deepEqual([reach.attempts,reach.reviewAfterDevelop,reach.holdable],[[2],true,true]);
-  assert.deepEqual(batchDevelopAttempts(projected,'1.work/T-002',['--allow-review','1.work/T-002:1']),[2]);
+  assert.deepEqual(batchDevelopAttempts(projected,'1.work/T-002',[]),[2]);
   // Without a round-2 answer the driver launches with --hold-revision: the re-check and
   // its review run, then the task stops at changes_requested; no develop is asked.
   const before=f.calls.developer;
@@ -41,11 +41,11 @@ test('drivers prepare no developer answer for a re-check (check_answer_missing)'
   assert.deepEqual([held.state,held.code,held.identity.attempt],['changes_requested','revision_answer_required',2],JSON.stringify(held));
   assert.equal(f.calls.developer,before);
 });
-test('drivers preflight both rounds for a retryable round-1 block when the round-1 review is authorized',()=>{
+test('drivers preflight both rounds for a retryable round-1 block before direct round-1 review',()=>{
   const status={state:'blocked',code:'develop_call_timeout',attempt:1};
-  const reach=projectDevelopAttempts(status,'advance',['--allow-review-attempt','1']);
+  const reach=projectDevelopAttempts(status,'advance',[]);
   assert.deepEqual([reach.attempts,reach.reviewAfterDevelop],[[1,2],true]);
-  assert.deepEqual(projectDevelopAttempts(status,'advance',[]).attempts,[1]);
-  assert.deepEqual(batchDevelopAttempts(status,'1.work/T-002',['--allow-review','1.work/T-002:1']),[1,2]);
-  assert.deepEqual(batchDevelopAttempts({...status,attempt:2},'1.work/T-002',['--allow-review','1.work/T-002:1']),[2]);
+  assert.deepEqual(projectDevelopAttempts(status,'advance',[]).attempts,[1,2]);
+  assert.deepEqual(batchDevelopAttempts(status,'1.work/T-002',[]),[1,2]);
+  assert.deepEqual(batchDevelopAttempts({...status,attempt:2},'1.work/T-002',[]),[2]);
 });

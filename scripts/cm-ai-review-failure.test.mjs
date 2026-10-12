@@ -117,9 +117,9 @@ function fixture(t,{reviewTimeoutMs=null}={}){
   const records=()=>JSON.parse(fs.readFileSync(store,'utf8')).records;
   const replay=()=>{const rows=records();return readRunnerHistory(rows,rows[0].payload.config,3);};
   const calls=()=>fs.existsSync(callsFile)?fs.readFileSync(callsFile,'utf8').trim().split('\n').map(line=>JSON.parse(line)):[];
-  const review=(attempt=1)=>['--review-config','review.json','--allow-review-attempt',String(attempt)];
+  const review=(attempt=1)=>['--review-config','review.json'];
   const awaitingReview=()=>{
-    const first=drive(plan(),'advance');assert.equal(first.status,0,first.stderr);
+    const first=drive(plan(),'start');assert.equal(first.status,0,first.stderr);
     assert.equal(first.result.state,'awaiting_review');return first.result.packageDigest;
   };
   const decide=(packageDigest,attempt=1)=>drive(plan({mode:'resume',permissions:review(attempt),packageDigest,answers:undefined,checks:undefined}),'decision');
@@ -198,15 +198,15 @@ test(`#8 ${error==='authentication_failed'?'real Claude CLI':'in-process Claude 
   assert.deepEqual(result.observation.events.map(event=>event.event),['thread.started','turn.started','process_closed']);
   const history=f.replay();assert.equal(history.state.state,'pending_review');assert.equal(history.state.code,'review_provider_failed');
   if(error!=='authentication_failed')return;
-  // After logging in, the same attempt is reviewed once more with a new grant.
+  // After logging in, the same attempt is reviewed once more with a fresh invocation binding.
   f.behave({mode:'ok'});
   const approved=f.decide(packageDigest);
   assert.equal(approved.status,0,approved.stderr);assert.equal(approved.result.state,'approved');
   assert.deepEqual(f.intents(),['develop-1','review-1','review-1-retry-1']);
   const registrations=f.records().filter(row=>row.payload.type==='review-invocation-registered');
   assert.equal(registrations.length,2);
-  assert.notEqual(registrations[0].payload.grant.invocationId,registrations[1].payload.grant.invocationId);
-  assert.notEqual(registrations[0].payload.grant.grantDigest,registrations[1].payload.grant.grantDigest);
+  assert.notEqual(registrations[0].payload.binding.invocationId,registrations[1].payload.binding.invocationId);
+  assert.notEqual(registrations[0].payload.binding.requestDigest,registrations[1].payload.binding.requestDigest);
   assert.equal(f.replay().state.state,'approved');assert.equal(f.calls().length,2);
 });
 
@@ -409,13 +409,7 @@ test('#8 legacy unknown results replay unchanged and forged failed results are r
 // Runner-level fixture: the real V3 task runner and execution store with
 // synthetic developer/reviewer adapters, for bounds the driver cannot reach fast.
 const checksPassed=[{id:'check',command:['synthetic'],outcome:'passed',exitCode:0,evidence:'fixture'}];
-const grantFor=(request,authorizationAt)=>{
-  const body={version:1,kind:'cm-review-dispatch-grant',grantId:`grant-${request.invocationId}`,adapterId:`${request.provider}-review-adapter`,
-    invocationId:request.invocationId,requestDigest:request.requestDigest,identity:request.identity,
-    reviewerId:'reviewer',logicalContextId:request.contextId,packageDigest:request.payload.reviewPackage.packageDigest,
-    hostContextId:'actual-main',decisionId:'decision-1',decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
-  return {...body,grantDigest:digest(body)};
-};
+
 const reviewEvents=(onEvent,request,{result=true,close=true}={})=>{
   onEvent({event:'thread.started',provider_thread:`thread-${request.invocationId}`});
   onEvent({event:'turn.started',item_type:null});
@@ -448,7 +442,6 @@ async function runnerFixture(t,fn,{timeoutMs=1000,reviewTimeoutMs,reviewerProvid
     check:request=>checks(request),
     taskCompletion:{reviewsDir,handoffs:[path.join(reviewsDir,'a1.json'),path.join(reviewsDir,'a2.json')]},
     reviewInvocation:{developerThreadId:'actual-developer',excludedThreadIds:['actual-main'],
-      authorize:(request,{authorizationAt})=>grantFor(request,authorizationAt),
       ...(reviewTimeoutMs===undefined?{}:{timeoutMs:reviewTimeoutMs})}};
   const make=(mode,extra={})=>createTaskRunner({...options,reviewInvocation:{...options.reviewInvocation,...extra},persistence:{store,mode,version:3}});
   const reopen=(extra={})=>{store.close();store=openTaskExecutionStore({...owner,create:false});return make('resume',extra);};
@@ -499,7 +492,8 @@ test('#20 the conversation factory sizes the review race above the reviewer budg
   const codeProject=path.join(root,'code'),specsDir=path.join(root,'specs');fs.mkdirSync(codeProject);fs.mkdirSync(specsDir);
   const definition={codeProject,specsDir,feature:'1.work',identity,scope:['code.js'],requirements:[]};
   const bridge={call:()=>assert.fail('no host call expected')};
-  const preflight={passed:true,provider:'claude',prompt_transport:'stdin',config_fingerprint:'x'};
+  const preflight={passed:true,provider:'claude',prompt_transport:'stdin',
+    config_fingerprint:claudeReviewFingerprint({cwd:codeProject,model:'fixture'})};
   return import('../runtime/js/cm-ai/host-conversation-execution.mjs').then(({createConversationExecution,REVIEW_BOUND_MARGIN_MS})=>{
     for(const [reviewTimeout,expected] of [[3000000,3000000+REVIEW_BOUND_MARGIN_MS],[3600000,3660000],[null,1800000],[60000,1800000]]){
       const review={model:'fixture',disabledSkills:[],preflight,...(reviewTimeout===null?{}:{timeoutMs:reviewTimeout})};
@@ -522,7 +516,7 @@ test('#20 the real host passes the raised review bound from review-config into t
   const definition=readRunDefinition(path.join(f.root,'run.json'));
   const review=readConversationReviewConfiguration(path.join(f.root,'review.json'));
   const execution=createConversationExecution(definition,'review-host-a',{call:()=>assert.fail('no host call expected')},
-    review,1,null,false,'claude');
+    review,null,null,false,'claude');
   const run=await openControlRun(definition,'resume',execution);
   t.after(()=>run.close());
   const delays=[],originalTimer=globalThis.setTimeout;
@@ -899,7 +893,7 @@ test('an approved run already holding all six effects (old grammar) completes (r
   for(let round=1;round<=4;round++)
     assert.equal(run('advance',round===1?{mode:'create',originalHostContext:undefined}:{}).result.code,'develop_checks_not_passed');
   fs.writeFileSync(marker,'pass\n');
-  const delivered=run('advance');assert.equal(delivered.result.state,'awaiting_review',JSON.stringify(delivered.result));
+  const delivered=run('start');assert.equal(delivered.result.state,'awaiting_review',JSON.stringify(delivered.result));
   const packageDigest=delivered.result.packageDigest;
   assert.equal(run('decision',{permissions:f.review(1),packageDigest}).result.state,'approved');
   const {completedEffectCount,effectSlotFree}=await import('../runtime/js/cm-ai/durable-runner-state.mjs');
@@ -947,7 +941,7 @@ function completionFixture(t){
 }
 test('repeated completion re-check blocks stop at completion_retry_limit instead of an uncompletable approval (real host)',t=>{
   const f=completionFixture(t);f.pass(true);
-  const delivered=f.run('advance',{mode:'create'});
+  const delivered=f.run('start',{mode:'create'});
   assert.equal(delivered.status,0,delivered.stderr);assert.equal(delivered.result.state,'awaiting_review');
   const packageDigest=delivered.result.packageDigest;
   assert.equal(f.run('decision',{review:true,packageDigest}).result.state,'approved');
@@ -980,7 +974,7 @@ test('completion re-checks no longer eat the six effects: develop blocks plus re
   const f=completionFixture(t);f.pass(false);
   for(const mode of ['create','resume'])assert.equal(f.run('advance',{mode}).result.code,'develop_checks_not_passed');
   f.pass(true);
-  const delivered=f.run('advance');assert.equal(delivered.result.state,'awaiting_review');
+  const delivered=f.run('start');assert.equal(delivered.result.state,'awaiting_review');
   const packageDigest=delivered.result.packageDigest;
   assert.equal(f.run('decision',{review:true,packageDigest}).result.state,'approved');
   // Four effects held; three re-check blocks would previously have used the rest.
@@ -994,7 +988,7 @@ test('completion re-checks no longer eat the six effects: develop blocks plus re
 
 test('#retry-limit replay accepts the completion limit only once the re-check bound is spent',t=>{
   const f=completionFixture(t);f.pass(true);
-  const packageDigest=f.run('advance',{mode:'create'}).result.packageDigest;
+  const packageDigest=f.run('start',{mode:'create'}).result.packageDigest;
   f.run('decision',{review:true,packageDigest});f.pass(false);
   for(let block=1;block<=4;block++)f.run('complete',{packageDigest});
   const records=f.records(),configuration=records[0].payload.config;

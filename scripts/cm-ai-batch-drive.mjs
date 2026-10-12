@@ -46,7 +46,7 @@ const KINDS={develop:'develop.json',qa_assess:'qa-assess.json',
 const MEMBER_ACTION_FLAGS={develop_redo:'--allow-develop-redo',abandon_effect:'--allow-abandon-effect',
   abandon_review:'--allow-abandon-review',bootstrap_review_recover:'--allow-bootstrap-review-recovery'};
 const PAIRS=new Set(['--external-models-config','--runtime','--review-config','--browser-qa','--protected-conversation-config',
-  '--protected-config','--allow-provider-development','--allow-review','--input-limit','--qa-environment-failure',...Object.values(MEMBER_ACTION_FLAGS)]);
+  '--protected-config','--allow-provider-development','--input-limit','--qa-environment-failure',...Object.values(MEMBER_ACTION_FLAGS)]);
 const FLAGS=new Set(['--execution-optimizations','--external-models','--allow-qa','--rerun-unknown-qa','--rerun-blocked-qa','--verification-precheck',
   '--allow-bootstrap-write']);
 const isObject=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
@@ -63,22 +63,19 @@ export function batchMemberActionPlanError(operation,plan,permissions,keys){
 }
 export function batchDevelopAttempts(state,key,permissions,controlPolicy=null){
   if(controlPolicy)return controlPolicy.development==='provider'?[]:controlDevelopAttempts(state,'advance').attempts;
-  // The round-1 review this launch authorizes may lead into round 2 within the
+  // The configured round-1 review may lead into round 2 within the
   // same advance (Codex round 1 on Q28): list it too; a missing a2 answer then
   // holds the task after that review (revision_answer_required) instead of
   // sending an unanswerable develop request.
-  const reviewNext=state.attempt===1&&permissions.some((flag,index)=>flag==='--allow-review'&&permissions[index+1]===`${key}:1`);
+  const reviewNext=state.attempt===1;
   // A re-check (check_answer_*) re-runs only the checks: no developer answer for this round.
   if(state.state==='blocked'&&RECHECK_CODES.includes(state.code))return reviewNext?[2]:[];
   // Q16/Q17: a documentation-only redo reuses the journaled developer answer.
   if(state.state==='blocked'&&DOCUMENTATION_SYNC_CODES.includes(state.code))return reviewNext?[2]:[];
   if(developmentRetryable(state))return reviewNext?[1,2]:[state.attempt];
-  if(state.state==='ready'&&state.attempt===1&&permissions.some((flag,index)=>
-    flag==='--allow-review'&&permissions[index+1]===`${key}:1`))return [1,2];
+  if(state.state==='ready'&&state.attempt===1)return [1,2];
   if(['ready','changes_requested'].includes(state.state))return [state.attempt];
-  if(['awaiting_review','pending_review'].includes(state.state)&&state.attempt<2
-    &&permissions.some((flag,index)=>flag==='--allow-review'
-      &&permissions[index+1]===`${key}:${state.attempt}`))return [state.attempt+1];
+  if(['awaiting_review','pending_review'].includes(state.state)&&state.attempt<2)return [state.attempt+1];
   return [];
 }
 function actualCwd(bundle,key,generation=1){
@@ -112,7 +109,7 @@ function preflight(){
       +'operation: advance, status, cancel, reconcile_review（taskKey、invocationId）, develop_redo / abandon_effect / abandon_review / bootstrap_review_recover（resume、PLAN.taskKey、单行 PLAN.reason，permissions 带对应 --allow-… 任务）。PLAN: config, mode, hostContext, permissions, answers, checks, checkTimeoutMs。\n'
       +'checks 每项为 {id,command,timeoutMs?}；超时为 1..3600000 整数，默认 900000 ms（15 分钟）。\n'
       +'develop.json.edits 与单任务驾驶员相同：内容文件、{file,mode}、{mode}、{delete:true}；启动前同样拒绝超限、空交付与受保护模式下的非 UTF-8 内容（尚未开跑的后续任务不看代码树，只做答案本身就能判定的检查：单文件 1 MiB、答案写入的 scope 文件合计 2 MiB，等等；运行存档单条记录上限要看该任务开跑时的代码树，驾驶员事先算不出，超限交付写入后由宿主拦下，停在可重试的 blocked/develop_package_too_large）。\n'
-      +'带 --allow-review 任务:1 但还没有 develop-a2.json 时照常启动：审查若要求修改，该任务停在 changes_requested（revision_answer_required），读 .reviews/<feature>-<task>-r1.md 的 findings 写好 develop-a2.json 后再 advance。\n');
+      +'按已有配置自动审查，还没有 develop-a2.json 时照常启动：审查若要求修改，该任务停在 changes_requested（revision_answer_required），读 .reviews/<feature>-<task>-r1.md 的 findings 写好 develop-a2.json 后再 advance。\n');
     process.exit(0);
   }
   const loaded=loadPlanFile({name:'cm-ai-batch-drive.mjs',known:new Set(['advance','status','cancel','reconcile_review',...Object.keys(MEMBER_ACTION_FLAGS)])});
@@ -217,7 +214,7 @@ function preflight(){
       permissions[i]=file;
     }else if(Object.values(MEMBER_ACTION_FLAGS).includes(name)){
       if(!keys.includes(value))stop(2,`${name} 需要本批次的 FEATURE/TASK: ${value}`);
-    }else if(['--allow-review','--allow-provider-development'].includes(name)){
+    }else if(name==='--allow-provider-development'){
       const cut=value.lastIndexOf(':');
       if(!keys.includes(value.slice(0,cut))||!['1','2'].includes(value.slice(cut+1)))
         stop(2,`${name} 任务授权无效: ${value}`);
@@ -228,8 +225,6 @@ function preflight(){
     stop(2,'--runtime 只能是 codex 或 claude');
   if(permissions.includes('--browser-qa')&&!['available','unavailable'].includes(argument('--browser-qa')))
     stop(2,'--browser-qa 只能是 available 或 unavailable');
-  if(permissions.includes('--allow-review')&&!permissions.includes('--review-config'))
-    stop(2,'--allow-review 需要 --review-config');
   if(permissions.includes('--allow-provider-development')&&!permissions.includes('--protected-config'))
     stop(2,'--allow-provider-development 需要 --protected-config');
   if(!control&&Object.values(bundle.workflows).some(workflow=>workflow?.qa)&&!permissions.includes('--allow-qa'))
@@ -290,17 +285,17 @@ function preflight(){
         }catch(error){stop(2,`任务 ${key} 无法只读检查恢复存档: ${error.code??error.message}`);}
       }
       // A task with no run yet (a new batch, or a later task on resume) starts at
-      // attempt 1; a first-round review grant can then reach attempt 2 as well.
-      if(journal===null&&(control||permissions.some((flag,index)=>flag==='--allow-review'&&permissions[index+1]===`${key}:1`)))attempts=[1,2];
+      // attempt 1; the configured first-round review can reach attempt 2 as well.
+      if(journal===null)attempts=[1,2];
       const deliveries=[],definition=definitions.get(key);
       for(const attempt of attempts){
         const file=path.join(taskRoot??'',developFilename(taskRoot??'',attempt));
         if(!taskRoot||!fs.existsSync(file)){
-          // A later attempt is only reached if the review this launch authorizes asks
+          // A later attempt is only reached if the configured review asks
           // for changes. Without its answer the task stops right after that review.
           if(attempt>current){
             holds.push(key);
-            stderr(`任务 ${key} 没有 ${path.basename(file)}：本次授权的审查若要求修改，任务会停在 changes_requested（revision_answer_required），不会发起第 ${attempt} 轮开发；读取 .reviews/${task.feature.replace(/^\d+\./,'')}-${task.taskId}-r${attempt-1}.md 的 findings，写 ${file} 后再 advance`);
+            stderr(`任务 ${key} 没有 ${path.basename(file)}：本次审查若要求修改，任务会停在 changes_requested（revision_answer_required），不会发起第 ${attempt} 轮开发；读取 .reviews/${task.feature.replace(/^\d+\./,'')}-${task.taskId}-r${attempt-1}.md 的 findings，写 ${file} 后再 advance`);
             continue;
           }
           stop(2,attempt===1?`任务 ${key} 会反问 develop，但答案文件不存在: ${file}`

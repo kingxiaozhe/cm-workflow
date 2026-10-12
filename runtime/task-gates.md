@@ -5,6 +5,8 @@ creating a second task-state database. `tasks.md` remains the authoritative
 business-task state. Handoffs and review files are content-bound evidence under the
 existing `{SPECS_DIR}/.reviews/` domain.
 
+CM 门禁检查来源声明的格式、任务与轮次、材料摘要、当前文件和执行记录的一致性，用于防手滑与过期证据。来源声明不验证审查者身份或实际人工交互；门禁不承诺抵抗拥有完整文件写权限和 shell 能力的会话造假。fresh 上下文、审查结果、检查通过和完成复查仍是正常工作流路径的完成条件。发布、部署、资金及其他范围外动作继续遵守其单独确认要求。
+
 ## Implementation handoff
 
 The active cm-ai Skill passes `--require-learning` to `check-n4` and the existing
@@ -84,10 +86,11 @@ entry and the body must contain findings or an explicit zero-findings result.
 implementation files. Round 2 cannot create attempt 3: another blocking result
 becomes `blocked` and requires human resolution under `runtime/review.md`.
 
-For an explicitly human-authorized correction after round-two blocked, see
+For a correction with confirmed scope after round-two blocked, see
 `docs/human-correction.md`: `prepare-human-correction` and
 `publish-human-correction-review` keep the original four records and bind a separate
-one-shot correction. N4/N5 and locked completion accept its fixed `--correction`
+one-shot correction with its reason and bound decision-source declaration. These
+records do not create approval. N4/N5 and locked completion accept its fixed `--correction`
 record; legacy-unbound flags do not weaken correction checks.
 
 N5 must let the JavaScript gate validate and update the exact task checkbox while
@@ -180,8 +183,10 @@ completion. Missing independent capacity leaves work pending; do not add a skip
 flag or treat diagnostic approval as independent. Existing completed tasks are
 not automatically reopened or assigned fabricated review evidence.
 
-This is a declaration gate, not proof of reviewer execution, an immutable code
-snapshot, or full crash-recoverable completion. Any post-review change to reviewed code,
+`reviewer`, `independent` and any `decision_source` are source declarations.
+This gate checks their format and binding to the task, materials and execution
+records; it does not authenticate the reviewer or the reported interaction. It
+also does not provide an immutable code snapshot or full crash-recoverable completion. Any post-review change to reviewed code,
 tests, or instructions needs fresh evidence under `runtime/review.md`, including
 changes suggested during N5 lesson recording.
 

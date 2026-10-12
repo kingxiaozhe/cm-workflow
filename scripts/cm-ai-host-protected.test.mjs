@@ -5,13 +5,13 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {readRunDefinition,openControlRun} from './cm-ai-run.mjs';
-import {cli,identity,request,fixture,runCli,installDispatchFakes,protectedResultFixture,implementedValue,lastCheckpoint,installTimeoutReviewer} from './cm-ai-host-fixture.mjs';
+import {cli,identity,request,fixture,runCli,installDispatchFakes,protectedResultFixture,implementedValue,lastCheckpoint,installTimeoutReviewer,syntheticReviewConfig} from './cm-ai-host-fixture.mjs';
 
 for(const [available,coder,reviewer,runtime] of [
   ['codex','codex','codex','codex'],['codex','codex','codex','claude'],['claude','claude','claude','codex'],
   ['both','codex','claude','claude'],['both','claude','codex','codex'],
 ])test(`protected dispatch ${available}: ${runtime} host -> ${coder} coder -> ${reviewer} reviewer`,async()=>{
-  const f=fixture();
+  const f=fixture();f.operation='start';
   try{
     installDispatchFakes(f);
     fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.json'),JSON.stringify({version:1,runtimes:{available},
@@ -27,16 +27,13 @@ for(const [available,coder,reviewer,runtime] of [
     assert(!fs.existsSync(path.join(f.codeProject,'target.mjs')));assert(!fs.existsSync(path.join(f.specsDir,'.reviews')));
     f.args.push('--allow-provider-development-attempt','1');
     const first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
-    assert.equal(first.rows.find(row=>row.requestId==='advance').result.code,'decision_required');assert.deepEqual(first.calls,[]);
+    assert.equal(first.rows.find(row=>row.requestId==='advance').result.code,null);assert.deepEqual(first.calls,[]);
     assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 42;\n');
     const readRoutes=()=>fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse)
       .filter(row=>row.phase==='route'&&row.event==='decision');
     assert.equal(readRoutes().filter(row=>row.role==='coder'&&row.route_state===(coder===runtime?'current-runtime':'cli-dispatch')).length,1);
     assert.equal(readRoutes().filter(row=>row.role==='reviewer').length,0);
-    f.args.push('--allow-review-attempt','2');
-    const wrong=await runCli(f,'normal','resume');assert.equal(wrong.rows.find(row=>row.requestId==='advance').result.code,'decision_required');
-    assert.equal(readRoutes().filter(row=>row.role==='reviewer').length,0);
-    f.args[f.args.length-1]='1';
+    f.operation='advance';
     const reviewed=await runCli(f,'normal','resume');assert.equal(reviewed.code,0,reviewed.stderr);
     assert.equal(reviewed.rows.find(row=>row.requestId==='advance').result.state,'fixture_completed',JSON.stringify(reviewed.rows));
     const route=readRoutes().find(row=>row.role==='reviewer');assert(route);
@@ -50,8 +47,8 @@ for(const [available,coder,reviewer,runtime] of [
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
-for(const available of ['unknown','codex'])test(`legacy protected ${available} run resumes with its original fingerprint and contexts`,async()=>{
-  const f=fixture();
+for(const available of ['unknown','codex'])test(`legacy protected ${available} run refuses the retired CLI assembly without changing its recorded contexts`,async()=>{
+  const f=fixture();f.operation='start';
   try{
     installDispatchFakes(f);
     const projectConfig=path.join(f.codeProject,'.cm-workflow.json');
@@ -69,39 +66,45 @@ for(const available of ['unknown','codex'])test(`legacy protected ${available} r
     fs.writeFileSync(initializer,`
 import fs from 'node:fs';
 import {readRunDefinition,createCodexExecution,openControlRun} from ${JSON.stringify(new URL('./cm-ai-run.mjs',import.meta.url).href)};
-import {createHostReviewAuthority} from ${JSON.stringify(new URL('../runtime/js/cm-ai/host-review-authority.mjs',import.meta.url).href)};
 const definition=readRunDefinition(${JSON.stringify(f.config)}),review=JSON.parse(fs.readFileSync(${JSON.stringify(reviewFile)}));
 const config=JSON.parse(fs.readFileSync(${JSON.stringify(protectedFile)}));
-const authority=createHostReviewAuthority({hostContextId:'native-host-fixture',reviewerId:'reviewer',adapterId:'codex-review-adapter',decide:async()=>null});
+
 const execution=await createCodexExecution({codeProject:definition.codeProject,specsRoot:definition.specsDir,
  developerModel:config.model,checkCommands:config.checkCommands,timeoutMs:config.timeoutMs,
  hostContextId:'native-host-fixture',developerContextId:'cm-protected-author',reviewerModel:review.model,
  reviewerPreflight:review.preflight,disabledSkills:review.disabledSkills},
- {hostDecision:null,developmentAttempt:1,hostDecisionProvider:authority.hostDecisionProvider,authorizeReview:authority.authorize,
+ {developmentAttempt:1,
  authorizeDevelopment:()=>({status:'approved'})});
 const run=await openControlRun(definition,'create',execution);
-try{console.log(JSON.stringify(await run.host.handle(${JSON.stringify(request('advance'))})));}finally{run.close();}
+try{console.log(JSON.stringify(await run.host.handle(${JSON.stringify(request('start'))})));}finally{run.close();}
 `);
     const old=spawnSync(process.execPath,[initializer],{encoding:'utf8',env:f.env,timeout:10000});
-    assert.equal(old.status,0,old.stderr);assert.equal(JSON.parse(old.stdout).code,'decision_required');
-    f.args.push('--protected-config',protectedFile,'--allow-provider-development-attempt','1','--review-config',reviewFile,'--allow-review-attempt','1');
+    assert.equal(old.status,0,old.stderr);assert.equal(JSON.parse(old.stdout).code,null);
+    f.args.push('--protected-config',protectedFile,'--allow-provider-development-attempt','1','--review-config',reviewFile);
     // A changed two-provider declaration cannot recover through Codex-only compatibility.
     fs.writeFileSync(projectConfig,JSON.stringify({version:1,runtimes:{available:'both'},
       roles:{coder:{adapter:'claude-cli'},reviewer:{adapter:'codex-cli'}}}));
     const mismatch=await runCli(f,'normal','resume');assert.equal(mismatch.code,1);assert.match(mismatch.stderr,/fingerprint_mismatch/);
     assert(!fs.readFileSync(path.join(f.specsDir,'1.work','tasks.md'),'utf8').includes('[x]'));
     fs.writeFileSync(projectConfig,JSON.stringify(declaration));
-    const resumed=await runCli(f,'normal','resume');assert.equal(resumed.code,0,resumed.stderr);
-    assert.match(resumed.stderr,/resumed original Codex protected execution after exact fingerprint validation/);
-    assert.equal(resumed.rows.find(row=>row.requestId==='advance').result.state,'fixture_completed');
-    assert.deepEqual(resumed.calls,[]);
-    assert.match(fs.readFileSync(path.join(f.specsDir,'.reviews','work-T-001-r1.md'),'utf8'),/reviewer: codex-cli/);
+    // Runtime routing now determines the reviewer before the exact old assembly
+    // fingerprint is checked; the diagnostic preflight must match that route.
+    fs.writeFileSync(reviewFile,JSON.stringify(syntheticReviewConfig(f.codeProject,available==='unknown'?'claude':'codex')));
+    const stateFile=path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json');
+    const before=fs.readFileSync(stateFile);
+    const resumed=await runCli(f,'normal','resume');assert.equal(resumed.code,1,resumed.stderr);
+    assert.match(resumed.stderr,/fingerprint_mismatch/);
+    assert.match(resumed.stderr,/旧 createCodexExecution.*停用/);
+    assert.match(resumed.stderr,/inspect-history --config/);
+    assert.deepEqual(resumed.calls,[]);assert.equal(resumed.rows.some(row=>row.type==='host_ready'),false);
+    assert.deepEqual(fs.readFileSync(stateFile),before);
+    assert(fs.readFileSync(path.join(f.specsDir,'1.work','tasks.md'),'utf8').includes('[ ] T-001'));
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
 
 test('protected local invalid_result writes nothing and corrected CLI resume keeps run and attempt',async()=>{
-  const f=protectedResultFixture(),target=path.join(f.codeProject,'target.mjs');
+  const f=protectedResultFixture();f.operation='start';const target=path.join(f.codeProject,'target.mjs');
   try{
     f.develop=payload=>{
       assert.equal(payload.editMode,'protected-text-v1');assert.equal(payload.expected['target.mjs'],null);
@@ -122,16 +125,16 @@ test('protected local invalid_result writes nothing and corrected CLI resume kee
       edits:[{path:'target.mjs',beforeSha256:payload.expected['target.mjs'],content:'export const value = 42;\n'}]});
     const resumed=await runCli(f,'normal','resume');assert.equal(resumed.code,0,resumed.stderr);
     const result=resumed.rows.find(row=>row.requestId==='advance').result;
-    assert.equal(result.state,'awaiting_review');assert.equal(result.code,'decision_required');
+    assert.equal(result.state,'awaiting_review');assert.equal(result.code,null);
     assert.deepEqual(result.identity,identity);assert.equal(fs.readFileSync(target,'utf8'),'export const value = 42;\n');
     assert.deepEqual(lastCheckpoint(f).calls.map(call=>call.terminal),[...Array(7).fill('failed'),'succeeded']);
     const reopened=await runCli(f,'normal','resume');assert.equal(reopened.code,0,reopened.stderr);
-    assert.deepEqual(reopened.calls,[]);assert.equal(reopened.rows.find(row=>row.requestId==='advance').result.code,'decision_required');
+    assert.deepEqual(reopened.calls,[]);assert.equal(reopened.rows.find(row=>row.requestId==='advance').result.code,null);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
 for(const matches of [true,false])test(`protected old proposal compares exact output with expected disk hashes: matches=${matches}`,async()=>{
-  const f=protectedResultFixture(),target=path.join(f.codeProject,'target.mjs');
+  const f=protectedResultFixture();f.operation='start';const target=path.join(f.codeProject,'target.mjs');
   try{
     // Simulate a proposal already applied before this invocation was rejected.
     const content='export const value = 42;\n';
@@ -146,7 +149,7 @@ for(const matches of [true,false])test(`protected old proposal compares exact ou
     const run=await runCli(f,'normal','resume');assert.equal(run.code,0,run.stderr);
     const result=run.rows.find(row=>row.requestId==='advance').result;
     assert.equal(result.state,matches?'awaiting_review':'blocked');
-    assert.equal(result.code,matches?'decision_required':'protected_edit_stale');
+    assert.equal(result.code,matches?null:'protected_edit_stale');
     assert.deepEqual(fs.readFileSync(target),before);
     const resumed=await runCli(f,'normal','resume');assert.equal(resumed.code,0,resumed.stderr);
     assert.deepEqual(resumed.calls,[]);
@@ -196,7 +199,7 @@ test(`protected conversation review timeout ${runtime} -> ${second}`,async()=>{
     const review=JSON.parse(preview.stdout);assert.equal(review.timeoutMs,900000);
     delete review.timeoutMs;
     const config=path.join(f.root,'review.json');fs.writeFileSync(config,JSON.stringify(review));
-    f.args.push('--review-config',config,'--allow-review-attempt','1');
+    f.args.push('--review-config',config);f.operation='advance';
     f.develop=payload=>({status:'succeeded',value:implementedValue(),
       edits:[{path:'target.mjs',beforeSha256:payload.expected['target.mjs'],content:'export const value = 42;\n'}]});
     setMode(second==='result'?'result':'timeout');
@@ -236,8 +239,8 @@ test(`protected conversation review timeout ${runtime} -> ${second}`,async()=>{
       assert.equal(end.state,second==='approved'?'fixture_completed':'blocked');
       assert.equal(end.code,second==='approved'?'qa_decision_required':'review_transport_timeout');
       assert.equal(after.cache.find(entry=>entry.effect.id==='review-1-retry-1').effect.identity.attempt,1);
-      assert.notEqual(after.reviewInvocation.registration.grant.invocationId,original.registration.grant.invocationId);
-      assert.notEqual(after.reviewInvocation.registration.grant.grantId,original.registration.grant.grantId);
+      assert.notEqual(after.reviewInvocation.registration.binding.invocationId,original.registration.binding.invocationId);
+      assert.notEqual(after.reviewInvocation.registration.binding.requestDigest,original.registration.binding.requestDigest);
       assert.notEqual(after.reviewInvocation.started,original.started);
       assert.deepEqual(after.calls.slice(0,before.calls.length),before.calls);
       assert.deepEqual(after.cache.slice(0,before.cache.length),before.cache);

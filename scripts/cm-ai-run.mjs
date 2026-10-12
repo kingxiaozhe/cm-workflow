@@ -26,7 +26,7 @@ import {JOURNAL_PAYLOAD_LIMIT,boundedReason} from '../runtime/js/cm-ai/effect-co
 import {protectedScopePaths} from '../runtime/js/cm-ai/developer-adapter.mjs';
 import {closeoutPolicyCandidates} from '../runtime/js/cm-ai/knowledge-closeout.mjs';
 
-const usage='cm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
+const usage='cm-ai-run.mjs inspect-history --config RUN_DEFINITION.json (validated read-only history; no owner lock or provider dispatch)\ncm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
 const fail=code=>{throw Object.assign(new Error(code),{code});};
 // In-process provenance only; a config flag cannot certify protected callbacks.
 const protectedExecutions=new WeakMap();
@@ -55,16 +55,10 @@ export async function createCodexExecution(configuration,authority){
   need(!['codex-independent-review-1','codex-independent-review-2'].some(value=>
     value===config.hostContextId||value===config.developerContextId),'not_independent');
   validCallTimeout(config.timeoutMs);
-  shape(authority,['authorizeDevelopment','authorizeReview','hostDecision',
-    ...['hostDecisionProvider','developmentAttempt','workflow','bootstrap'].filter(key=>Object.hasOwn(authority,key))]);
-  need(typeof authority.authorizeDevelopment==='function'&&typeof authority.authorizeReview==='function');
+  shape(authority,['authorizeDevelopment',
+    ...['developmentAttempt','workflow','bootstrap'].filter(key=>Object.hasOwn(authority,key))]);
+  need(typeof authority.authorizeDevelopment==='function');
   if(Object.hasOwn(authority,'developmentAttempt'))need([1,2].includes(authority.developmentAttempt),'invalid_development_attempt');
-  if(Object.hasOwn(authority,'hostDecisionProvider')){
-    shape(authority.hostDecisionProvider,['decide','timeoutMs']);
-    need(typeof authority.hostDecisionProvider.decide==='function'
-      &&Number.isInteger(authority.hostDecisionProvider.timeoutMs)&&authority.hostDecisionProvider.timeoutMs>0
-      &&authority.hostDecisionProvider.timeoutMs<=60000,'invalid_input');
-  }
   const disabledSkills=config.disabledSkills??[];
   need(Array.isArray(disabledSkills)&&disabledSkills.length<=4096
     &&disabledSkills.every(p=>typeof p==='string'&&path.isAbsolute(p)&&!/[\n\r\0]/.test(p)),'invalid_review_config');
@@ -113,15 +107,13 @@ export async function createCodexExecution(configuration,authority){
   const execution={
     configuration:config,timeoutMs:config.timeoutMs,excludedContexts:[config.hostContextId],check,
     ...(bootstrap?{bootstrap}:{}),
-    hostDecision:json(authority.hostDecision),
     ...workflowCapabilities,
     ...(Object.hasOwn(authority,'developmentAttempt')?{developmentAttempt:authority.developmentAttempt}:{}),
-    ...(Object.hasOwn(authority,'hostDecisionProvider')?{hostDecisionProvider:authority.hostDecisionProvider}:{}),
     developer:{provider:'codex',requestedModel:config.developerModel,contextId:config.developerContextId,
       run:async(request,control)=>{
         const bound=readCodexDeveloperRequest(request);
         const decision=json(await authority.authorizeDevelopment(bound));
-        shape(decision,['status']);need(decision.status==='approved','permission_denied');
+        shape(decision,['status']);need(decision.status==='approved','invalid_development_attempt');
         need(!control.signal.aborted,'cancelled');
         need(!used.has(bound.invocationId),'duplicate_dispatch');used.add(bound.invocationId);
         // The runner journals the worker identity around the spawn (develop-worker).
@@ -147,8 +139,7 @@ export async function createCodexExecution(configuration,authority){
     reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:config.reviewerModel,
       allowed:true,available:true,contexts:['codex-independent-review-1','codex-independent-review-2'],
       run:(request,control)=>createCodexReviewRun(codexWorker(reviewOptions))(request,control)}],
-    reviewInvocation:{developerThreadId:config.developerContextId,excludedThreadIds:[config.hostContextId],
-      authorize:authority.authorizeReview},
+    reviewInvocation:{developerThreadId:config.developerContextId,excludedThreadIds:[config.hostContextId],hostContextId:config.hostContextId},
   };
   if(specsRoot!==null){
     // Do not permit later replacement of the developer/check or addition of an
@@ -241,13 +232,33 @@ export function runConfigMaterial(definition,execution,{parallelSelection=null,b
     ...(knowledgeCloseout===null?{}:{knowledgeCloseout}),
     ...(bootstrapConfig?{bootstrap:bootstrapConfig}:{}),
     ...(Object.hasOwn(execution,'developmentAttempt')?{developmentAuthorization:'per-attempt-v1'}:{}),
-    ...(execution.hostDecisionProvider?{hostDecisionProvider:{version:1,timeoutMs:execution.hostDecisionProvider.timeoutMs}}:{}),
     ...(execution.qaDecisionProvider?{qaDecisionProvider:'host-v1',qaTimeoutMs:execution.qaDecisionProvider.timeoutMs}:{}),
     ...(execution.qaExecutor?{qaExecutor:qaExecutorMaterial(execution.qaExecutor,legacyQa)}:{}),
     ...(execution.applicableAgentFiles?{applicableAgentFiles:execution.applicableAgentFiles}:{}),
     ...(execution.documentationProvider?{documentationProvider:{version:1,timeoutMs:execution.documentationProvider.timeoutMs}}:{}),
     ...(execution.documentationResult?{documentationResult:execution.documentationResult}:{}),
     ...(execution.documentationSync?{documentationSync:{version:1,paths:execution.documentationSync.paths}}:{})};
+}
+// Inspect only the validated store envelope. Do not replay old grants or open
+// a writer merely to explain an unsupported historical execution.
+export function inspectRunHistory(definition){
+  const snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,
+    identity:{repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
+  return {identity:snapshot.identity,revision:snapshot.revision,fingerprints:snapshot.fingerprints,
+    records:snapshot.records.map(record=>({seq:record.seq,id:record.id,kind:record.kind,type:record.payload.type??null,
+      legacyReviewGrant:record.payload.type==='review-invocation-registered'
+        &&(Object.hasOwn(record.payload,'grant')||Object.hasOwn(record.payload,'authorizationAt'))}))};
+}
+export function assertSupportedResumeHistory(definition){
+  let snapshot;
+  try{snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,
+    identity:{repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});}
+  catch(error){if(error.code==='ENOENT')return null;throw error;}
+  if(snapshot.records.some(record=>record.payload.type==='review-invocation-registered'
+    &&(Object.hasOwn(record.payload,'grant')||Object.hasOwn(record.payload,'authorizationAt'))))
+    throw Object.assign(new Error('runner_invocation'),{code:'runner_invocation',
+      reason:'旧授权协议不支持恢复。原运行与审查历史已保留；重复原参数不会恢复。只读查看历史：node scripts/cm-ai-run.mjs inspect-history --config RUN_DEFINITION.json（使用原运行定义文件）。'});
+  return snapshot;
 }
 const LEGACY_QA_FINGERPRINT_REASON='运行指纹与当前配置不符。若此运行由之前的版本创建，它的指纹还含有当时生效的 CM 配置'
   +'（项目 .cm-workflow.yml、~/.cm-workflow/runtimes.yml 与插件内置默认值）：把这些配置恢复为创建时的内容即可恢复；'
@@ -306,13 +317,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
     }else if(expectedControl!==null)fail('invalid_input');
   }
   if(mode==='resume'){
-    let snapshot;
-    try{snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,
-      identity:{repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});}
-    catch(error){
-      if(error.code!=='ENOENT')throw error;
-      // The existing owner reports missing stores and owns initializer recovery.
-    }
+    const snapshot=assertSupportedResumeHistory(definition);
     if(snapshot?.records.length)assertControlEntry(snapshot,controlPolicy);
   }
   const {createCmAiHost}=await import('../runtime/js/cm-ai/host.mjs');
@@ -320,8 +325,8 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   const {captureReviewBaseline}=await import('../runtime/js/cm-ai/review-package.mjs');
   if(execution!==null){
     const {shape,json,validCallTimeout}=await import('../runtime/js/cm-ai/effect-contract.mjs');
-    shape(execution,['configuration','developer','reviewers','reviewInvocation','check','hostDecision','excludedContexts','timeoutMs',
-      ...['bootstrap','developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult','documentationSync','verificationGate'].filter(key=>Object.hasOwn(execution,key))]);
+    shape(execution,['configuration','developer','reviewers','reviewInvocation','check','excludedContexts','timeoutMs',
+      ...['bootstrap','developmentAttempt','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult','documentationSync','verificationGate'].filter(key=>Object.hasOwn(execution,key))]);
     json(execution.configuration);validCallTimeout(execution.timeoutMs);
     if(Object.hasOwn(execution.configuration,'codeProject'))
       if(execution.configuration.codeProject!==definition.codeProject)fail('execution_root_mismatch');
@@ -517,8 +522,8 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
       entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,
         ...(definition.featureSelection?{featureSelection:definition.featureSelection.feature}:{}),
         ...(knowledgeCloseout===null?{}:{knowledgeCloseout,...(definition.codeProjects?{codeProjects:definition.codeProjects}:{})}),
-        ...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,allowDevelopRedo,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{hostDecision:execution.hostDecision,
-        ...Object.fromEntries(['developmentAttempt','hostDecisionProvider','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
+        ...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,allowDevelopRedo,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{
+        ...Object.fromEntries(['developmentAttempt','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
     const logAbandonments=()=>{
       for(const record of store.snapshot().records.filter(row=>row.payload.type==='review-invocation-abandoned'))
@@ -594,6 +599,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
   if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\n');return 0;}
   let run;
   try{
+    if(argv.length===3&&argv[0]==='inspect-history'&&argv[1]==='--config'){
+      output.write(JSON.stringify(inspectRunHistory(readRunDefinition(argv[2])))+'\n');return 0;
+    }
     if(argv.length!==5||argv[0]!=='serve'||argv[1]!=='--config'||argv[3]!=='--mode')fail('invalid_arguments');
     run=await openControlRun(readRunDefinition(argv[2]),argv[4],execution);
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}
@@ -602,7 +610,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     // Config diagnostics contain field names/reasons, never field values or provider text.
     const code=typeof cause.code==='string'&&(/^[a-z_]+$/.test(cause.code)
       ||cause.code.startsWith('invalid_config: '))?cause.code:'control_failed';
-    error.write(JSON.stringify({error:{code}})+'\n');return 1;
+    const reason=code==='runner_invocation'&&typeof cause.reason==='string'?cause.reason:null;
+    error.write(JSON.stringify({error:{code,...(reason?{reason}:{})}})+'\n');return 1;
   }finally{run?.close();}
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))process.exitCode=await main();

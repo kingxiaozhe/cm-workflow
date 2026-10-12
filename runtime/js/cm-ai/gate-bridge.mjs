@@ -12,10 +12,10 @@ export function checkCompletion({receipt,registered,execution,reviewPackage,iden
   for(const field of ['packageDigest','baseIdentity','artifactDigest','requirementsDigest','checksDigest'])
     need(r[field]===reviewPackage[field],'receipt_package_mismatch');
   const executionKeys=['invocationId','contextId','provider','requestedModel','effectiveModel','channel','started','terminal','requestDigest','resultDigest'];
-  const hostAuthorized=r.execution?.channel==='host-authorized';
-  shape(r.execution,[...executionKeys,...(hostAuthorized?['providerThreadId']:[])]);
-  need(['fixture','host-authorized'].includes(r.execution.channel),'execution_mismatch');
-  if(hostAuthorized)id(r.execution.providerThreadId);
+  const observedReview=['host-review','host-authorized'].includes(r.execution?.channel);
+  shape(r.execution,[...executionKeys,...(observedReview?['providerThreadId']:[])]);
+  need(['fixture','host-review','host-authorized'].includes(r.execution.channel),'execution_mismatch');
+  if(observedReview)id(r.execution.providerThreadId);
   need(r.id===r.execution.invocationId && r.execution.started===true && r.execution.terminal==='succeeded'
     && digest(r.execution)===digest(json(execution)),'execution_mismatch');
   const result=reviewResult(r.result,reviewPackage);

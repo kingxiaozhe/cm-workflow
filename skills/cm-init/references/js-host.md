@@ -109,7 +109,7 @@ versionControl 为 remote/local/none；modules 只选实际存在的 frontend/mi
 
 6. 若为 `confirmation_required`，发送 `{"requestId":"confirm-1","operation":"advance"}`，处理 `init_confirm`。向当前用户展示 payload.changes 中的原约束/拟改正文及对应文件，明确询问是否允许这些具体改写，等待真实答复；模型判断、沉默、历史泛化批准不算本次确认。沿原host_result信封只返回 `result: {"decision":"approved"}` 或 `{"decision":"rejected"}`，不可替换草稿或扩大路径。取消则走cancel，不捏造拒绝答复。
 
-批准只进入review_required；拒绝停confirmation_rejected。JS在确认前后回读原目标，漂移拒绝并不写入；记录current_host_user_decision及同一draftDigest/路径。JS依赖受信宿主如实转交实际用户决定，不能自行证明对话真实发生。这不是调用grant或写入许可。
+批准只进入review_required；拒绝停confirmation_rejected。JS在确认前后回读原目标，漂移拒绝并不写入；记录current_host_user_decision及同一draftDigest/路径。current_host_user_decision 是来源声明，JS 核对请求和草稿绑定，不验证实际人工交互；该记录不扩大写入范围。
 
 7. review_required 时可先用 final_review_package 只读查看完整材料，再发送 `{"requestId":"review-1","operation":"advance"}`。init_review 要求宿主使用实际新建的独立 reviewer 上下文，按 runtime/review.md 的独立通道和 findings-first 纪律审查完整包。优先当前宿主已授权的原生子agent；本请求不授权安装、外部provider调用或跳过其单独审批。无法获得真实独立通道时停止并关闭本会话，不得自审或编造身份。启动时的host-context必须是实际作者上下文，不能为通过比较而随意填写。
 

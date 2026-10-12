@@ -23,11 +23,6 @@ export async function batchFixture(mode,options={}){
   const parallel=mode.startsWith('parallel');
   const recovery=mode==='parallel-recovery',blockedIds=options.blockedIds??['T-002'];
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-batch-')));
-  // parallel-grant-expired: right after T-002's first grant, registration reads the
-  // authorization instant and the dispatch clock reads past the 1 ms grant.
-  const realNow=Date.now;let expiry=null,expiredOnce=false,reviewDispatches=0;
-  if(mode==='parallel-grant-expired')Date.now=()=>{const now=realNow.call(Date);
-    if(expiry===null)return now;return expiry.reads++===0?expiry.at:Math.max(now,expiry.at+2);};
   try{
     const specsDir=path.join(root,'specs'),codeProject=path.join(root,'code'),feature='1.work';
     fs.mkdirSync(path.join(specsDir,feature),{recursive:true});fs.mkdirSync(codeProject);
@@ -47,7 +42,7 @@ export async function batchFixture(mode,options={}){
     let conflictHead=null,interrupted=false,reviewFailed=false,redoThrown=false;
     const developerModel=mode==='parallel-redo'?'current-session':'fixture';
     const executionFor=async(definition,{parallelMember=false}={})=>({configuration:{kind:'batch-fixture-v1',...(parallelMember?{parallelMember:true}:{})},timeoutMs:3000,
-      excludedContexts:['host'],hostDecision:{status:'approved'},applicableAgentFiles:[],
+      excludedContexts:['host'],applicableAgentFiles:[],
       developer:{provider:'codex',requestedModel:developerModel,contextId:'author',run:createCodexDeveloperRun({requestedModel:developerModel,
         worker:async({prompt},{signal})=>{
           const data=JSON.parse(prompt.split('<cm-developer-data-json>\n')[1]),material=data.specification;
@@ -107,7 +102,6 @@ export async function batchFixture(mode,options={}){
       },
       reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',allowed:true,available:true,
         contexts:['review-1','review-2'],run:(request,{onEvent})=>{
-          if(request.identity.taskId==='T-002')reviewDispatches++;
           assert.equal(request.payload.reviewPackage.specification.task.id,definition.identity.taskId);
           assert.deepEqual(request.payload.reviewPackage.specification.sources,buildManifest(specsDir));
           if(mode==='learning'&&request.identity.taskId==='T-001')
@@ -129,16 +123,7 @@ export async function batchFixture(mode,options={}){
           return {status:'succeeded',value:{verdict:retry?'changes_requested':'approved',packageDigest:request.payload.reviewPackage.packageDigest,
             examinedPaths:reviewPaths(request.payload.reviewPackage),findings:retry?[{id:'F1',severity:'P2',path:'file0.js',message:'Synthetic repair',evidence:'First implementation'}]:[],summary:'Synthetic independent review'}};
         }}],
-      reviewInvocation:{developerThreadId:'author',excludedThreadIds:['host'],authorize:(request,{authorizationAt})=>{
-        const body={version:1,kind:'cm-review-dispatch-grant',grantId:'grant',adapterId:'codex-review-adapter',
-          invocationId:request.invocationId,requestDigest:request.requestDigest,identity:request.identity,reviewerId:'reviewer',
-          logicalContextId:request.contextId,packageDigest:request.payload.reviewPackage.packageDigest,hostContextId:'host',
-          decisionId:'decision',decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
-        if(mode==='parallel-denied'&&request.identity.taskId==='T-002')return {status:'denied',code:'permission_denied'};
-        if(mode==='parallel-grant-expired'&&request.identity.taskId==='T-002'&&!expiredOnce){
-          expiredOnce=true;body.expiresAt=authorizationAt+1;expiry={at:authorizationAt,reads:0};}
-        return {...body,grantDigest:digest(body)};
-      }},
+      reviewInvocation:{developerThreadId:'author',excludedThreadIds:['host']},
       qaDecisionProvider:parallelMember?createParallelMemberQaDecisionProvider():mode==='policy'?createHostQaDecisionProvider({timeoutMs:1000,assess:async binding=>{
         assessments.push(binding.identity.taskId);
         return {scores:{scope:1,risk:1,accumulation:1,boundary:1},
@@ -257,37 +242,6 @@ export async function batchFixture(mode,options={}){
       // binding exists on that root (strictOnly) does not refuse this prior run.
       if(!options.executionPolicy)assert.equal(externalRunGuardExists(specsDir,worktree),false,'an ordinary single-task supersede takes no external run guard');
       acquireExternalRunGuard({specsDir,codeProject:worktree,identity,feature},{strictOnly:true}).close();
-      return;
-    }
-    if(mode==='parallel-denied'){
-      // A refused review authorization is a decision, never retried by the batch itself: the member
-      // stays in its own run and names the operator's confirmation (abandon_review), which the batch
-      // forwards only under --allow-abandon-review for that member.
-      assert.equal(result.code,'batch_parallel_member_recovery_required',JSON.stringify(result));
-      assert.deepEqual([result.currentTask,result.memberState,result.memberCode,result.pendingAction],
-        [`${feature}/T-002`,'pending_review','permission_denied','abandon_review'],JSON.stringify(result));
-      assert.match(result.reason,/--allow-abandon-review 1\.work\/T-002/);assert.equal(result.guidance.authorizationGranted,false);
-      assert(fs.existsSync(path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002')));
-      assert.equal(fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').includes('batch_member_blocked'),false);
-      const {classifyDriveResult}=await import('../runtime/js/notify.mjs');
-      assert.equal(classifyDriveResult('cm-ai-batch',{result}),'stuck');
-      return;
-    }
-    if(mode==='parallel-grant-expired'){
-      const logfile=path.join(specsDir,'运行日志.jsonl'),rows=()=>fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
-      assert(expiredOnce);
-      assert.deepEqual([result.state,result.code,result.pendingAction,result.identity.taskId],['pending_review','grant_expired','resume','T-002'],JSON.stringify(result));
-      assert.equal(reviewDispatches,0);
-      // Kept in its run: no reschedule, worktree and delivery stay.
-      assert.equal(rows().filter(row=>row.phase==='batch_member_blocked').length,0);
-      assert.equal(fs.readFileSync(path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002','file1.js'),'utf8'),'implemented\n');
-      result=await open().handle({operation:'advance',requestId:'after-grant-expired'});
-      assert.equal(result.code,'run_done',JSON.stringify(result));
-      assert.equal(reviewDispatches,1);assert.deepEqual(calls,['T-001','T-002','T-003']);
-      assert.equal(rows().filter(row=>row.phase==='batch_member_blocked').length,0);
-      const runId=`task-${digest({batchId:config.batchId,task:`${feature}/T-002`}).slice(0,48)}`;
-      const records=JSON.parse(fs.readFileSync(path.join(specsDir,'.reviews','.execution',runId,'state.json'),'utf8')).records;
-      assert.deepEqual(records.filter(row=>row.payload.type==='review-invocation-result').map(row=>row.payload.outcome),['not_dispatched','observed']);
       return;
     }
     if(mode==='parallel-redo'){
@@ -495,5 +449,5 @@ export async function batchFixture(mode,options={}){
       assert.equal(log.filter(row=>row.event==='decision'&&row.phase==='qa_merge'&&row.task==='T-001').length,1);
       assert(log.some(row=>row.event==='qa'&&row.task==='T-002'&&row.reason==='feature_complete'));
     }
-  }finally{Date.now=realNow;fs.rmSync(root,{recursive:true,force:true});}
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
 }

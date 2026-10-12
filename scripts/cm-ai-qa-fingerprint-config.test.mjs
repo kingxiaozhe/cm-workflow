@@ -88,13 +88,7 @@ function synthetic(f,{commands=syntax,browser=null}={}){
         onEvent({event:'process_closed',exit_code:0,signal:null,timed_out:false});
         return {status:'succeeded',value:{verdict:'approved',packageDigest:review.payload.reviewPackage.packageDigest,
           examinedPaths:reviewPaths(review.payload.reviewPackage),findings:[],summary:'Synthetic review'}};}}],
-    reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control'],authorize:(review,{authorizationAt})=>{
-      const body={version:1,kind:'cm-review-dispatch-grant',grantId:`grant-${review.identity.attempt}`,adapterId:'codex-review-adapter',
-        invocationId:review.invocationId,requestDigest:review.requestDigest,identity:review.identity,reviewerId:'reviewer',
-        logicalContextId:review.contextId,packageDigest:review.payload.reviewPackage.packageDigest,hostContextId:'control',
-        decisionId:'decision',decision:'approved',issuedAt:authorizationAt,expiresAt:authorizationAt+60000};
-      return {...body,grantDigest:digest(body)};}},
-    hostDecision:{status:'approved'},check:createHostCheck({cwd:f.codeProject,commands:[{id:'syntax',command:[process.execPath,'--check','a.mjs']}]}),
+    reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control']},check:createHostCheck({cwd:f.codeProject,commands:[{id:'syntax',command:[process.execPath,'--check','a.mjs']}]}),
     qaLogHome:logHome,
     qaDecisionProvider:{timeoutMs:1000,decide:async binding=>({decisionId:'qa-decision',identity:binding.identity,
       packageDigest:binding.packageDigest,status:'triggered',reason:'feature_complete',score:null,at:'2026-09-28T00:00:00Z'})},

@@ -43,7 +43,8 @@ function fixture(browserCase,{blocking=true,tests=['logic','commands','browser']
     qa:{commands:[{id:'unit',command:[process.execPath,'--version'],caseIds:browserCase?[]:['TC-001']}],
       environment:{kind:'web',carrier:'browser',target:'https://example.invalid/fixture',scope:'local'}}}));
   // create requires a bound review configuration; this one grants no review attempt.
-  const review=path.join(root,'placeholder-review.json');fs.writeFileSync(review,JSON.stringify({model:'fixture',preflight:{}}));
+  const review=path.join(root,'placeholder-review.json');fs.writeFileSync(review,JSON.stringify({model:'fixture',preflight:{passed:true,cli_model:'fixture',prompt_transport:'stdin',
+    config_fingerprint:configFingerprint({cwd:codeProject,model:'fixture'})}}));
   return {root,specsDir,codeProject,config,workflow,
     args:['serve','--config',config,'--mode','create','--host-context','gate-fixture','--allow-development',
       '--workflow-config',workflow,'--allow-qa','--review-config',review]};

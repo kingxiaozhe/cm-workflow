@@ -64,7 +64,7 @@ export function fixReviewedAt(specsRoot,evidence){
 // Journals without a registered V3 review have no order and never qualify.
 export function approvedReviewAt(state){
   const registration=state?.reviewInvocation?.registration;
-  return registration&&registration.grant?.packageDigest===state.reviewPackage?.packageDigest
+  return registration&&registration.binding?.packageDigest===state.reviewPackage?.packageDigest
     &&Number.isSafeInteger(registration.registeredAt)?registration.registeredAt:null;
 }
 
