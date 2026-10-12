@@ -66,7 +66,7 @@ test('Skill Learning gate rejects missing or pending records and binds reviewed 
   const handoff=path.join(reviews,'login-T-001-a1-handoff.json'),review=path.join(reviews,'login-T-001-r1.md');
   const tasks=path.join(root,'tasks.md');fs.writeFileSync(tasks,'- [ ] T-001: fixture\n');
   writeHandoff(handoff,{implementation:implementationSha256(root,['src/example.ts'])});
-  const options={handoff,reviewsDir:reviews,feature:'login',task:'T-001',projectRoot:root,requireLearning:true};
+  const options={handoff,reviewsDir:reviews,feature:'login',task:'T-001',projectRoot:root,requireLearning:true,allowLegacyUnbound:true};
   assert.throws(()=>checkN4(options),/Learning/);
   const payload=JSON.parse(fs.readFileSync(handoff));
   const save=()=>{fs.writeFileSync(handoff,JSON.stringify(payload));writeReview(review,{handoff});};
@@ -85,7 +85,7 @@ test('Skill Learning gate rejects missing or pending records and binds reviewed 
   assert.throws(()=>checkN5(options),/content changed/);
   payload.evidence=['learning: no_relevant_lesson','learning: retrospective no_new_lesson'];
   payload.changed_files=['src/example.ts'];payload.implementation_sha256=implementationSha256(root,payload.changed_files);save();
-  const args=['mark-done','--require-learning','--handoff',handoff,'--reviews-dir',reviews,'--feature','login','--task','T-001','--tasks',tasks,'--project-root',root];
+  const args=['mark-done','--allow-legacy-unbound','--require-learning','--handoff',handoff,'--reviews-dir',reviews,'--feature','login','--task','T-001','--tasks',tasks,'--project-root',root];
   payload.evidence=['synthetic implementation check passed'];save();
   assert.equal(checkN5({...options,requireLearning:false}).outcome,'approved');
   const blocked=spawnSync(process.env.CM_PYTHON_BIN||'python3',[pythonGate,...args],{encoding:'utf8'});
@@ -161,7 +161,7 @@ test('JS task gate binds N4/N5 to current implementation bytes and rejects drift
   const digest=implementationSha256(project,['src/example.ts']);
   const handoff=path.join(reviews,'bound-T-001-a1-handoff.json');
   writeHandoff(handoff,{implementation:digest});writeReview(path.join(reviews,'bound-T-001-r1.md'),{handoff});
-  const selectors={handoff,reviewsDir:reviews,feature:'bound',task:'T-001',projectRoot:project};
+  const selectors={handoff,reviewsDir:reviews,feature:'bound',task:'T-001',projectRoot:project,allowLegacyUnbound:true};
   assert.equal(checkN4(selectors).content_bound,true);assert.equal(checkN5(selectors).content_bound,true);
   const cli=spawnSync(process.execPath,[jsGate,'hash-implementation','--project-root',project,'--file','src/example.ts'],{encoding:'utf8'});
   assert.equal(cli.status,0,cli.stderr);assert.equal(JSON.parse(cli.stdout).implementation_sha256,digest);
@@ -219,4 +219,183 @@ test('reviewer and independent fields validate declaration format and consistenc
   fs.writeFileSync(review,original.replace('reviewer: codex-subagent','reviewer: self-degraded')
     .replace('independent: true','independent: false').replace('scope:','degraded_reason: Declared fallback source\nscope:'));
   assert.equal(validateReview(review,selected).reviewer,'self-degraded');
+}));
+
+// Compatibility inventory fixtures use the public CLI before any source edit.
+function inventoryFixture(root,{nested=false}={}){
+  const reviewsDir=path.join(root,nested?'specs/.reviews':'.reviews');fs.mkdirSync(reviewsDir,{recursive:true});
+  fs.mkdirSync(path.join(root,'src'));fs.writeFileSync(path.join(root,'src/example.ts'),'before');
+  const selectors={projectRoot:root,reviewsDir,feature:'inventory',task:'T-001',
+    handoff:path.join(reviewsDir,'inventory-T-001-a1-handoff.json')};
+  const capture=()=>spawnSync(process.execPath,[jsGate,'capture-baseline','--project-root',root,
+    '--reviews-dir',reviewsDir,'--feature','inventory','--task','T-001'],{encoding:'utf8'});
+  const deliver=(files=['src/example.ts'],attempt=1)=>{
+    selectors.handoff=path.join(reviewsDir,`inventory-T-001-a${attempt}-handoff.json`);
+    writeHandoff(selectors.handoff,{attempt,implementation:implementationSha256(root,files)});
+    const payload=JSON.parse(fs.readFileSync(selectors.handoff));payload.changed_files=files;
+    fs.writeFileSync(selectors.handoff,JSON.stringify(payload));
+    const review=path.join(reviewsDir,`inventory-T-001-r${attempt}.md`);
+    writeReview(review,{handoff:selectors.handoff,attempt});
+    fs.writeFileSync(review,fs.readFileSync(review,'utf8').replace('  - src/example.ts',files.map(p=>`  - ${p}`).join('\n')));
+  };
+  return {selectors,capture,deliver,baseline:path.join(reviewsDir,'inventory-T-001-baseline.json')};
+}
+
+test('library default N4 and N5 preserve exact results without an editing baseline',()=>fixture(root=>{
+  const f=inventoryFixture(root);f.deliver();
+  const n4={gate:'n4',task:'T-001',attempt:1,outcome:'ready_for_review',
+    handoff_sha256:createHash('sha256').update(fs.readFileSync(f.selectors.handoff)).digest('hex'),content_bound:true};
+  const n5={gate:'n5',task:'T-001',attempt:1,outcome:'approved',
+    review:path.join(f.selectors.reviewsDir,'inventory-T-001-r1.md'),content_bound:true};
+  assert.equal(JSON.stringify(checkN5(f.selectors)),JSON.stringify(n5));
+  assert.equal(JSON.stringify(checkN4(f.selectors)),JSON.stringify(n4));
+  // Even an invalid CLI baseline must not change a library caller's contract.
+  fs.writeFileSync(f.baseline,'invalid baseline');
+  assert.equal(JSON.stringify(checkN5(f.selectors)),JSON.stringify(n5));
+  fs.writeFileSync(path.join(root,'src/example.ts'),'drift');
+  for(const check of [checkN4,checkN5])assert.throws(()=>check(f.selectors),
+    {name:'GateError',message:'implementation content changed after handoff'});
+}));
+
+test('library default prepare and verify mark done succeed without an editing baseline',()=>fixture(root=>{
+  const f=inventoryFixture(root,{nested:true});f.deliver();
+  const tasksPath=path.join(root,'specs/tasks.md');fs.writeFileSync(tasksPath,'- [ ] T-001: fixture\n');
+  const selectors={...f.selectors,tasksPath},plan=prepareMarkDone(selectors);
+  assert.equal(plan.protocol,'cm-mark-done-plan');assert.equal(plan.evidence.length,2);
+  assert.equal(Buffer.from(plan.afterBase64,'base64').toString(),'- [x] T-001: fixture\n');
+  assert(!Object.keys(plan).some(key=>key.startsWith('inventory')));
+  assert.equal(JSON.stringify(verifyMarkDonePlan(selectors,plan.planDigest)),
+    JSON.stringify({outcome:'matched',planDigest:plan.planDigest}));
+  assert.throws(()=>verifyMarkDonePlan(selectors,'0'.repeat(64)),
+    {name:'GateError',message:'preparation plan changed; refusing stale proposal'});
+}));
+
+for(const command of ['check-n4','check-n5','prepare-mark-done','verify-mark-done-plan','mark-done-locked']){
+  test(`CLI ${command} requires an editing baseline`,()=>fixture(root=>{
+    const f=inventoryFixture(root,{nested:true});f.deliver();
+    const tasksPath=path.join(root,'specs/tasks.md');fs.writeFileSync(tasksPath,'- [ ] T-001: fixture\n');
+    const args=[command,'--handoff',f.selectors.handoff,'--reviews-dir',f.selectors.reviewsDir,
+      '--feature','inventory','--task','T-001','--project-root',root];
+    if(command.includes('mark-done'))args.push('--tasks',tasksPath);
+    if(['verify-mark-done-plan','mark-done-locked'].includes(command))args.push('--expected-plan-digest','0'.repeat(64));
+    const lock=process.platform==='win32'?path.join(f.selectors.reviewsDir,'.cm-task-write.lock')
+      :path.join(f.selectors.reviewsDir,'.execution/writer.sqlite');
+    if(command==='mark-done-locked'){fs.mkdirSync(path.dirname(lock),{recursive:true});fs.writeFileSync(lock,'');}
+    const result=spawnSync(process.execPath,[jsGate,...args],{encoding:'utf8',env:{...process.env,
+      CM_TASK_GATE_LOCK_ADAPTER:'1',CM_TASK_GATE_LOCK_PARENT_PID:String(process.pid),CM_TASK_GATE_WRITER_LOCK:lock}});
+    assert.equal(result.status,1,result.stderr);assert.match(result.stderr,/missing editing baseline/);
+    assert.equal(result.stdout,'');assert.equal(fs.readFileSync(tasksPath,'utf8'),'- [ ] T-001: fixture\n');
+  }));
+}
+
+test('inventory baseline capture seals metadata only and refuses overwrite',()=>fixture(root=>{
+  const f=inventoryFixture(root);fs.writeFileSync(path.join(root,'AGENTS.md'),'x'.repeat(1024*1024+1));
+  const result=f.capture();assert.equal(result.status,0,result.stderr);
+  const b=JSON.parse(fs.readFileSync(f.baseline));
+  assert.equal(b.kind,'cm-task-inventory-baseline');assert.deepEqual(b.identity,{feature:'inventory',task:'T-001'});
+  assert.match(b.rootDigest,/^[a-f0-9]{64}$/);assert.match(b.baselineDigest,/^[a-f0-9]{64}$/);
+  assert.equal(b.ignorePolicy.version,2);assert(!b.files.some(file=>'contentBase64' in file));
+  assert.deepEqual(b.files.map(file=>file.path),['AGENTS.md','src/example.ts']);
+  const original=fs.readFileSync(f.baseline);assert.notEqual(f.capture().status,0);assert.deepEqual(fs.readFileSync(f.baseline),original);
+}));
+
+test('inventory missing baseline refuses N4 and N5 unless legacy flag is explicit',()=>fixture(root=>{
+  const f=inventoryFixture(root);f.deliver();
+  for(const check of [checkN4,checkN5]){
+    assert.throws(()=>check({...f.selectors,inventory:'required'}),/baseline/);
+    const result=check({...f.selectors,inventory:'required',allowLegacyUnbound:true});assert.equal(result.inventory,'unverified');
+    assert.equal(result.inventory_note,'未捕获编辑前基线，不保证清单完整，只保证已列文件的内容绑定');
+    assert.equal(result.content_bound,true);
+  }
+}));
+
+test('inventory exact set catches omitted additions and falsely listed unchanged files',()=>fixture(root=>{
+  const f=inventoryFixture(root);assert.equal(f.capture().status,0);
+  fs.writeFileSync(path.join(root,'extra.ts'),'extra');f.deliver();
+  for(const check of [checkN4,checkN5])assert.throws(()=>check({...f.selectors,inventory:'required'}),error=>
+    error instanceof GateError&&/改了但没列.*extra.ts/.test(error.message)&&/列了但没改.*src\/example.ts/.test(error.message));
+  f.deliver(['extra.ts']);assert.deepEqual(checkN5({...f.selectors,inventory:'required'}).inventory_counts,{added:1,modified:0,deleted:0});
+}));
+
+test('inventory deletion must be listed and keeps missing-file content binding',()=>fixture(root=>{
+  const f=inventoryFixture(root);assert.equal(f.capture().status,0);
+  fs.unlinkSync(path.join(root,'src/example.ts'));f.deliver([]);
+  for(const check of [checkN4,checkN5])assert.throws(()=>check({...f.selectors,inventory:'required'}),/改了但没列.*src\/example.ts/);
+  f.deliver();assert.equal(checkN4({...f.selectors,inventory:'required'}).inventory,'verified');
+  assert.deepEqual(checkN5({...f.selectors,inventory:'required'}).inventory_counts,{added:0,modified:0,deleted:1});
+  fs.writeFileSync(path.join(root,'src/example.ts'),'recreated');assert.throws(()=>checkN5({...f.selectors,inventory:'required'}),/content changed/);
+}));
+
+test('inventory excludes root reviews and nested specs evidence throughout N4 and N5',()=>fixture(root=>{
+  const f=inventoryFixture(root,{nested:true});assert.equal(f.capture().status,0);
+  fs.mkdirSync(path.join(root,'.reviews'));fs.writeFileSync(path.join(root,'.reviews','unrelated-review.md'),'audit');
+  for(const p of ['specs/运行日志.jsonl','specs/.cm-status.json','specs/tasks.md'])fs.writeFileSync(path.join(root,p),'runtime');
+  fs.writeFileSync(path.join(root,'src/example.ts'),'after');f.deliver();
+  assert.equal(checkN4({...f.selectors,inventory:'required'}).inventory,'verified');
+  assert.deepEqual(checkN5({...f.selectors,inventory:'required'}).inventory_counts,{added:0,modified:1,deleted:0});
+}));
+
+test('inventory includes executable-only changes and cumulative attempt two edits',()=>fixture(root=>{
+  const f=inventoryFixture(root);assert.equal(f.capture().status,0);
+  fs.chmodSync(path.join(root,'src/example.ts'),0o755);f.deliver();
+  assert.deepEqual(checkN4({...f.selectors,inventory:'required'}).inventory_counts,{added:0,modified:1,deleted:0});
+  writeReview(path.join(f.selectors.reviewsDir,'inventory-T-001-r1.md'),{handoff:f.selectors.handoff,verdict:'changes_requested'});
+  fs.writeFileSync(path.join(root,'next.ts'),'second edit');f.deliver(['src/example.ts','next.ts'],2);
+  assert.deepEqual(checkN5({...f.selectors,inventory:'required'}).inventory_counts,{added:1,modified:1,deleted:0});
+}));
+
+test('inventory limit_exceeded identifies file and never writes a partial baseline',()=>fixture(root=>{
+  const f=inventoryFixture(root),large=path.join(root,'too-large.bin');fs.writeFileSync(large,'');fs.truncateSync(large,1024*1024*1024+1);
+  const result=f.capture();assert.notEqual(result.status,0);assert.match(result.stderr,/limit_exceeded.*too-large.bin/);
+  assert(!fs.existsSync(f.baseline));
+}));
+
+test('inventory baseline tampering or root mismatch cannot degrade through legacy flag',()=>fixture(root=>{
+  const f=inventoryFixture(root);assert.equal(f.capture().status,0);
+  fs.writeFileSync(path.join(root,'src/example.ts'),'after');f.deliver();
+  const original=fs.readFileSync(f.baseline),b=JSON.parse(original);b.files[0].sha256='0'.repeat(64);
+  fs.writeFileSync(f.baseline,JSON.stringify(b));assert.throws(()=>checkN4({...f.selectors,inventory:'required',allowLegacyUnbound:true}),/baseline/);
+  fs.writeFileSync(f.baseline,original);const other=path.join(root,'other');fs.mkdirSync(path.join(other,'src'),{recursive:true});
+  fs.writeFileSync(path.join(other,'src/example.ts'),'after');
+  assert.throws(()=>checkN4({...f.selectors,inventory:'required',projectRoot:other}),/baseline/);
+}));
+
+test('inventory stable policy unions old and current decisions on both sides while retaining AGENTS',()=>fixture(root=>{
+  const f=inventoryFixture(root);assert.equal(spawnSync('git',['init','-q',root]).status,0);
+  fs.writeFileSync(path.join(root,'.gitignore'),'old-cache/\n');
+  fs.mkdirSync(path.join(root,'old-cache'));fs.writeFileSync(path.join(root,'old-cache/value'),'ignored before');
+  fs.mkdirSync(path.join(root,'new-cache'));fs.writeFileSync(path.join(root,'new-cache/value'),'present before');
+  fs.mkdirSync(path.join(root,'node_modules'));fs.symlinkSync('/nonexistent/fixture',path.join(root,'node_modules/link'));
+  assert.equal(f.capture().status,0);
+  fs.writeFileSync(path.join(root,'.gitignore'),'new-cache/\n');
+  fs.writeFileSync(path.join(root,'old-cache/value'),'ignored by baseline');
+  fs.writeFileSync(path.join(root,'new-cache/value'),'ignored now');
+  fs.writeFileSync(path.join(root,'new-cache/AGENTS.md'),'must be reviewed');
+  f.deliver(['.gitignore']);assert.throws(()=>checkN4({...f.selectors,inventory:'required'}),/改了但没列.*new-cache\/AGENTS.md/);
+  f.deliver(['.gitignore','new-cache/AGENTS.md']);
+  assert.deepEqual(checkN5({...f.selectors,inventory:'required'}).inventory_counts,{added:1,modified:1,deleted:0});
+}));
+
+test('inventory count budget refuses the triggering file and bounds both mismatch lists',()=>fixture(root=>{
+  const f=inventoryFixture(root);assert.equal(f.capture().status,0);
+  for(let i=0;i<23;i++)fs.writeFileSync(path.join(root,`added-${String(i).padStart(2,'0')}.ts`),'new');
+  const extras=Array.from({length:22},(_,i)=>`missing-${String(i).padStart(2,'0')}.ts`);f.deliver(extras);
+  assert.throws(()=>checkN4({...f.selectors,inventory:'required'}),error=>/改了但没列:.*\(\+3 more\); 列了但没改:.*\(\+2 more\)/.test(error.message)
+    &&!error.message.includes('added-20.ts')&&!error.message.includes('missing-20.ts'));
+  fs.unlinkSync(f.baseline);
+  const empty=path.join(root,'empty');fs.mkdirSync(empty);
+  for(let i=0;i<10000;i++)fs.writeFileSync(path.join(empty,`f-${String(i).padStart(5,'0')}`),'');
+  const result=f.capture();assert.notEqual(result.status,0);assert.match(result.stderr,/limit_exceeded: empty\/f-09977.*file count > 10000/);
+  assert(!fs.existsSync(f.baseline));
+}));
+
+test('inventory baseline and evidence symlinks refuse instead of legacy degradation',()=>fixture(root=>{
+  const f=inventoryFixture(root);assert.equal(f.capture().status,0);
+  fs.writeFileSync(path.join(root,'src/example.ts'),'after');f.deliver();
+  const bytes=fs.readFileSync(f.baseline);fs.unlinkSync(f.baseline);
+  const target=path.join(f.selectors.reviewsDir,'other-baseline.json');fs.writeFileSync(target,bytes);fs.symlinkSync(target,f.baseline);
+  assert.throws(()=>checkN4({...f.selectors,inventory:'required',allowLegacyUnbound:true}),/baseline/);
+  fs.unlinkSync(f.baseline);fs.writeFileSync(f.baseline,bytes);
+  fs.mkdirSync(path.join(root,'linked'));fs.symlinkSync(f.selectors.reviewsDir,path.join(root,'linked/.reviews'));
+  assert.throws(()=>checkN4({...f.selectors,inventory:'required'}),/unsupported_path/);
 }));

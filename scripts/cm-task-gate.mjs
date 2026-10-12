@@ -9,6 +9,9 @@ import {fileURLToPath} from 'node:url';
 import {inspectFixWalkthrough,readFixWalkthrough,fixWalkthroughBinding} from '../runtime/js/cm-fix/walkthrough.mjs';
 import {inspectFixRegressionFailure} from '../runtime/js/cm-fix/regression-evidence.mjs';
 import {taskDeclarations,approvedTaskGrammar,TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
+import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {snapshot,rootPath,reviewSpecsPath,stableIgnorePolicy,stablePublicPolicy,stableSnapshotPolicy,
+  comparableFiles,validateStablePolicy,filePath,INVENTORY_COUNT,INVENTORY_LIMIT} from '../runtime/js/cm-ai/review-package.mjs';
 
 const TASK_RE=/^T-[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const REVIEWERS=new Set(['codex-subagent','codex-cli','claude-cli','self-degraded']);
@@ -219,6 +222,90 @@ function verifyImplementationBinding(payload,{projectRoot=null,allowLegacyUnboun
   if(implementationSha256(projectRoot,payload.changed_files)!==expected)
     throw new GateError('implementation content changed after handoff');
   return true;
+}
+
+const INVENTORY_BASELINE_LIMIT=64*1024*1024;
+const INVENTORY_UNVERIFIED='未捕获编辑前基线，不保证清单完整，只保证已列文件的内容绑定';
+function baselinePath(reviewsDir,feature,task){
+  requireFeature(feature);requireTaskId(task,'task');
+  const info=fs.lstatSync(reviewsDir);
+  if(!info.isDirectory()||info.isSymbolicLink())throw new GateError('baseline reviews directory must be real');
+  return path.join(fs.realpathSync(reviewsDir),`${feature}-${task}-baseline.json`);
+}
+function inventoryContext(projectRoot,reviewsDir){
+  if(!projectRoot)throw new GateError('inventory baseline requires --project-root');
+  const root=rootPath(path.resolve(projectRoot)),reviews=fs.realpathSync(reviewsDir);
+  const parent=path.dirname(reviews);
+  // A nested canonical .reviews lives inside the specs root. At the code root,
+  // exclude only .reviews, never the entire code tree. External specs map to null.
+  const specsRoot=path.basename(reviews)==='.reviews'&&parent.startsWith(root+path.sep)?parent:reviews;
+  return {root,specsPath:reviewSpecsPath(root,specsRoot)};
+}
+const inventoryFiles=(root,specsPath,policy)=>snapshot(root,specsPath,null,[],new Set(),policy,true)
+  .map(({path,sha256,size,mode})=>({path,sha256,size,mode:mode&0o111}));
+export function captureBaseline({projectRoot,reviewsDir,feature,task}){
+  try{
+    const target=baselinePath(reviewsDir,feature,task);
+    try{fs.lstatSync(target);throw new GateError(`baseline already exists; refusing overwrite: ${target}`);}
+    catch(error){if(error.code!=='ENOENT')throw error;}
+    const {root,specsPath}=inventoryContext(projectRoot,reviewsDir),policy=stableIgnorePolicy(root);
+    const data={kind:'cm-task-inventory-baseline',identity:{feature,task},rootDigest:createHash('sha256').update(root).digest('hex'),
+      specsPath,ignorePolicy:stablePublicPolicy(policy),files:inventoryFiles(root,specsPath,policy),capturedAt:new Date().toISOString()};
+    const baseline={...data,baselineDigest:digest(data)},encoded=JSON.stringify(baseline,null,2)+'\n';
+    if(Buffer.byteLength(encoded)>INVENTORY_BASELINE_LIMIT)throw new GateError('limit_exceeded: baseline metadata');
+    fs.writeFileSync(target,encoded,{flag:'wx',mode:0o600});
+    return {gate:'capture-baseline',outcome:'captured',baseline:target,baseline_sha256:baseline.baselineDigest,files:baseline.files.length};
+  }catch(error){if(error instanceof GateError)throw error;throw new GateError(error.message);}
+}
+function readInventoryBaseline(file,{root,specsPath},feature,task){
+  try{
+    const text=new TextDecoder('utf8',{fatal:true}).decode(fileRevision(file,INVENTORY_BASELINE_LIMIT).bytes);
+    parseJsonStrict(text); // Reject duplicate keys before the ordinary numeric decoder.
+    const b=JSON.parse(text);
+    exactFields(b,['kind','identity','rootDigest','specsPath','ignorePolicy','files','capturedAt','baselineDigest'],'baseline');
+    exactFields(b.identity,['feature','task'],'baseline identity');
+    const {baselineDigest,...data}=b;
+    if(b.kind!=='cm-task-inventory-baseline'||b.identity.feature!==feature||b.identity.task!==task
+      ||b.rootDigest!==createHash('sha256').update(root).digest('hex')||b.specsPath!==specsPath||digest(data)!==baselineDigest
+      ||typeof b.capturedAt!=='string'||!/(?:Z|[+-]\d{2}:\d{2})$/.test(b.capturedAt)||Number.isNaN(Date.parse(b.capturedAt)))
+      throw new GateError('invalid inventory baseline identity or digest');
+    validateStablePolicy(b.ignorePolicy);
+    if(!Array.isArray(b.files)||b.files.length>INVENTORY_COUNT)throw new GateError('invalid inventory baseline files');
+    let previous=null,total=0;const aliases=new Set();
+    for(const f of b.files){
+      exactFields(f,['path','sha256','size','mode'],'baseline file');filePath(f.path);
+      if(previous!==null&&previous>=f.path||aliases.has(f.path.toLowerCase())
+        ||typeof f.sha256!=='string'||!/^([a-f0-9]{64})$/.test(f.sha256)
+        ||!Number.isSafeInteger(f.size)||f.size<0||!Number.isInteger(f.mode)||f.mode<0||(f.mode&0o111)!==f.mode
+        ||f.path.split('/').includes('.reviews')||specsPath!==null&&(f.path===specsPath||f.path.startsWith(specsPath+'/')))
+        throw new GateError('invalid inventory baseline file');
+      previous=f.path;aliases.add(f.path.toLowerCase());total+=f.size;
+      if(total>INVENTORY_LIMIT)throw new GateError('invalid inventory baseline budget');
+    }
+    return b;
+  }catch(error){throw new GateError(`invalid inventory baseline: ${error.message}`);}
+}
+function verifyInventory(payload,{projectRoot,reviewsDir,feature,task,allowLegacyUnbound=false}){
+  try{
+    const file=baselinePath(reviewsDir,feature,task);
+    try{fs.lstatSync(file);}catch(error){
+      if(error.code!=='ENOENT')throw error;
+      if(allowLegacyUnbound)return {inventory:'unverified',inventory_note:INVENTORY_UNVERIFIED};
+      throw new GateError('missing editing baseline; capture-baseline before edits; legacy recovery requires --allow-legacy-unbound');
+    }
+    const context=inventoryContext(projectRoot,reviewsDir),b=readInventoryBaseline(file,context,feature,task);
+    const policy=stableSnapshotPolicy(context.root,b.ignorePolicy);
+    const before=new Map(comparableFiles(b.files,policy,new Set()).map(f=>[f.path,f]));
+    const after=new Map(inventoryFiles(context.root,context.specsPath,policy).map(f=>[f.path,f]));
+    const changes=[...new Set([...before.keys(),...after.keys()])].sort().filter(p=>digest(before.get(p)??null)!==digest(after.get(p)??null));
+    const listed=new Set(payload.changed_files),actual=new Set(changes);
+    const omitted=changes.filter(p=>!listed.has(p)),extra=[...listed].filter(p=>!actual.has(p)).sort();
+    const show=paths=>paths.slice(0,20).join(', ')+(paths.length>20?` (+${paths.length-20} more)`:'');
+    if(omitted.length||extra.length)throw new GateError(`changed_files inventory mismatch; 改了但没列: ${show(omitted)||'（无）'}; 列了但没改: ${show(extra)||'（无）'}`);
+    const counts={added:0,modified:0,deleted:0};
+    for(const p of changes)counts[!before.has(p)?'added':!after.has(p)?'deleted':'modified']++;
+    return {inventory:'verified',inventory_counts:counts,baseline_sha256:b.baselineDigest};
+  }catch(error){if(error instanceof GateError)throw error;throw new GateError(error.message);}
 }
 
 function sameSet(actual,expected){
@@ -581,10 +668,11 @@ export function publishHumanCorrectionReview(selectors){
 }
 function checkHumanCorrection(selectors,stage){
   const {paths,payload,correctionDigest}=inspectHumanCorrection(selectors);
+  const inventory=selectors.inventory==='required'?verifyInventory(payload,selectors):{};
   if(stage==='n4'){
     absent(paths.receipt);
     return {gate:'n4',task:selectors.task,attempt:2,outcome:'ready_for_review',content_bound:true,
-      handoff_sha256:sha256(paths.handoff),correction_sha256:correctionDigest};
+      handoff_sha256:sha256(paths.handoff),correction_sha256:correctionDigest,...inventory};
   }
   const pinned=fileRevision(paths.review,PREPARATION_FILE_LIMIT);
   const result=validateReview(paths.review,{task:selectors.task,attempt:2,handoff:paths.handoff,changedFiles:payload.changed_files});
@@ -598,11 +686,13 @@ function checkHumanCorrection(selectors,stage){
   if(result.verdict!=='approved'||result.independent!=='true')throw new GateError('human correction remains blocked');
   requireRevisions([pinned,receiptRevision]);
   return {gate:'n5',task:selectors.task,attempt:2,outcome:'approved',review:paths.review,
-    content_bound:true,correction_sha256:correctionDigest};
+    content_bound:true,correction_sha256:correctionDigest,...inventory};
 }
 
-export function checkN4({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false,correction=null}){
-  if(correction!==null)return checkHumanCorrection({handoff,reviewsDir,feature,task,projectRoot,correction},'n4');
+// Only compatibility CLI entries opt into inventory validation. Library callers
+// retain the original content-binding contract and exact result shape.
+export function checkN4({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false,correction=null,inventory=null}){
+  if(correction!==null)return checkHumanCorrection({handoff,reviewsDir,feature,task,projectRoot,correction,allowLegacyUnbound,inventory},'n4');
   requireTaskId(task,'task');
   const payload=loadHandoff(handoff,{task});
   if(payload.status!=='ready_for_review')throw new GateError('N4 requires a ready_for_review handoff');
@@ -611,11 +701,12 @@ export function checkN4({handoff,reviewsDir,feature,task,projectRoot=null,allowL
   requireExpectedHandoff(handoff,{reviewsDir,feature,task,attempt});
   validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoot);
   const contentBound=verifyImplementationBinding(payload,{projectRoot,allowLegacyUnbound});
-  return {gate:'n4',task,attempt,outcome:'ready_for_review',handoff_sha256:sha256(handoff),content_bound:contentBound};
+  const inventoryResult=inventory==='required'?verifyInventory(payload,{projectRoot,reviewsDir,feature,task,allowLegacyUnbound}):{};
+  return {gate:'n4',task,attempt,outcome:'ready_for_review',handoff_sha256:sha256(handoff),content_bound:contentBound,...inventoryResult};
 }
 
-export function checkN5({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false,correction=null}){
-  if(correction!==null)return checkHumanCorrection({handoff,reviewsDir,feature,task,projectRoot,correction},'n5');
+export function checkN5({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false,correction=null,inventory=null}){
+  if(correction!==null)return checkHumanCorrection({handoff,reviewsDir,feature,task,projectRoot,correction,allowLegacyUnbound,inventory},'n5');
   requireTaskId(task,'task');
   const payload=loadHandoff(handoff,{task});
   if(payload.status!=='ready_for_review')throw new GateError('N5 requires a ready_for_review handoff');
@@ -624,12 +715,13 @@ export function checkN5({handoff,reviewsDir,feature,task,projectRoot=null,allowL
   requireExpectedHandoff(handoff,{reviewsDir,feature,task,attempt});
   validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoot);
   const contentBound=verifyImplementationBinding(payload,{projectRoot,allowLegacyUnbound});
+  const inventoryResult=inventory==='required'?verifyInventory(payload,{projectRoot,reviewsDir,feature,task,allowLegacyUnbound}):{};
   const review=reviewPath(reviewsDir,feature,task,attempt);
   const result=validateReview(review,{task,attempt,handoff,changedFiles:payload.changed_files});
   if(result.verdict!=='approved')throw new GateError(`N5 requires verdict: approved, got ${result.verdict}`);
   if(result.independent.toLowerCase()!=='true')
     throw new GateError('N5 requires an independent: true source declaration; self-degraded evidence is diagnostic only');
-  return {gate:'n5',task,attempt,outcome:'approved',review:fs.realpathSync(review),content_bound:contentBound};
+  return {gate:'n5',task,attempt,outcome:'approved',review:fs.realpathSync(review),content_bound:contentBound,...inventoryResult};
 }
 
 function statIdentity(info){
@@ -936,14 +1028,15 @@ export function checkParallelWrite({repo,assignment}){
   return {gate:'parallel-write',outcome:'isolated',assignments:result};
 }
 
-function usage(){return 'usage: cm-task-gate.mjs {validate-handoff|hash-implementation|check-n4|check-n5|prepare-mark-done|verify-mark-done-plan|prepare-human-correction|publish-human-correction-review|check-parallel-write} [options]';}
+function usage(){return 'usage: cm-task-gate.mjs {capture-baseline|validate-handoff|hash-implementation|check-n4|check-n5|prepare-mark-done|verify-mark-done-plan|prepare-human-correction|publish-human-correction-review|check-parallel-write} [options]';}
 
 function parseCli(argv){
   if(argv.length===0||argv.includes('--help')||argv.includes('-h'))return {help:true};
   const command=argv[0];
-  if(!['validate-handoff','hash-implementation','check-n4','check-n5','prepare-mark-done','verify-mark-done-plan','mark-done-locked','prepare-human-correction','publish-human-correction-review','check-parallel-write'].includes(command))
+  if(!['capture-baseline','validate-handoff','hash-implementation','check-n4','check-n5','prepare-mark-done','verify-mark-done-plan','mark-done-locked','prepare-human-correction','publish-human-correction-review','check-parallel-write'].includes(command))
     throw new GateError('unsupported command');
   const allowed=command==='validate-handoff'?new Set(['--handoff','--task','--attempt'])
+    :command==='capture-baseline'?new Set(['--project-root','--reviews-dir','--feature','--task'])
     :command==='hash-implementation'?new Set(['--project-root','--file'])
     :command==='check-parallel-write'?new Set(['--repo','--assignment'])
     :new Set(['--handoff','--reviews-dir','--feature','--task','--project-root','--allow-legacy-unbound','--require-learning','--correction',
@@ -951,6 +1044,7 @@ function parseCli(argv){
       ...(['prepare-mark-done','verify-mark-done-plan','mark-done-locked'].includes(command)?['--tasks']:[]),
       ...(['verify-mark-done-plan','mark-done-locked'].includes(command)?['--expected-plan-digest']:[])]);
   const required=command==='validate-handoff'?new Set(['--handoff','--task','--attempt'])
+    :command==='capture-baseline'?new Set(['--project-root','--reviews-dir','--feature','--task'])
     :command==='hash-implementation'?new Set(['--project-root','--file'])
     :command==='check-parallel-write'?new Set(['--repo','--assignment'])
     :new Set(['--handoff','--reviews-dir','--feature','--task',
@@ -1000,15 +1094,16 @@ export function main(argv=process.argv.slice(2),environment=process.env){
       requireTaskId(args.task,'task');
       const payload=loadHandoff(args.handoff,{task:args.task,attempt:args.attempt});
       result={gate:'handoff',task:payload.task_id,attempt:payload.attempt,outcome:payload.status};
-    }else if(args.command==='hash-implementation')result={gate:'implementation-hash',
+    }else if(args.command==='capture-baseline')result=captureBaseline(args);
+    else if(args.command==='hash-implementation')result={gate:'implementation-hash',
       implementation_sha256:implementationSha256(args.projectRoot,args.file),changed_files:[...args.file].sort((left,right)=>Buffer.compare(Buffer.from(left),Buffer.from(right)))};
     else if(args.command==='prepare-human-correction')result=prepareHumanCorrection(args);
     else if(args.command==='publish-human-correction-review')result=publishHumanCorrectionReview(args);
-    else if(args.command==='check-n4')result=checkN4(args);
-    else if(args.command==='check-n5')result=checkN5(args);
-    else if(args.command==='prepare-mark-done')result=prepareMarkDone(args);
-    else if(args.command==='verify-mark-done-plan')result=verifyMarkDonePlan(args,args.expectedPlanDigest);
-    else if(args.command==='mark-done-locked')result=markDoneLocked(args,args.expectedPlanDigest,environment);
+    else if(args.command==='check-n4')result=checkN4({...args,inventory:'required'});
+    else if(args.command==='check-n5')result=checkN5({...args,inventory:'required'});
+    else if(args.command==='prepare-mark-done')result=prepareMarkDone({...args,inventory:'required'});
+    else if(args.command==='verify-mark-done-plan')result=verifyMarkDonePlan({...args,inventory:'required'},args.expectedPlanDigest);
+    else if(args.command==='mark-done-locked')result=markDoneLocked({...args,inventory:'required'},args.expectedPlanDigest,environment);
     else result=checkParallelWrite(args);
   }catch(error){
     process.stderr.write(`ERROR: ${error.message}\n`);return error instanceof GateError?1:2;

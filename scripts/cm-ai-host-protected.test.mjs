@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
 import {readRunDefinition,openControlRun} from './cm-ai-run.mjs';
+import {checkN4} from './cm-task-gate.mjs';
 import {cli,identity,request,fixture,runCli,installDispatchFakes,protectedResultFixture,implementedValue,lastCheckpoint,installTimeoutReviewer,syntheticReviewConfig} from './cm-ai-host-fixture.mjs';
 
 for(const [available,coder,reviewer,runtime] of [
@@ -40,10 +40,9 @@ for(const [available,coder,reviewer,runtime] of [
     assert.equal(route.adapter,`${reviewer}-cli`);assert.equal(route.route_state,reviewer===runtime?'current-runtime':'cli-dispatch');
     const receipt=fs.readFileSync(path.join(f.specsDir,'.reviews','work-T-001-r1.md'),'utf8');
     assert.match(receipt,new RegExp(`reviewer: ${reviewer}-cli`));assert.match(receipt,/independent: true/);
-    const gate=spawnSync(process.execPath,[fileURLToPath(new URL('./cm-task-gate.mjs',import.meta.url)),'check-n4',
-      '--handoff',path.join(f.specsDir,'.reviews','work-T-001-a1-handoff.json'),
-      '--reviews-dir',path.join(f.specsDir,'.reviews'),'--feature','work','--task','T-001','--project-root',f.codeProject],{encoding:'utf8'});
-    assert.equal(gate.status,0,gate.stderr);assert.equal(JSON.parse(gate.stdout).content_bound,true);
+    const gate=checkN4({handoff:path.join(f.specsDir,'.reviews','work-T-001-a1-handoff.json'),
+      reviewsDir:path.join(f.specsDir,'.reviews'),feature:'work',task:'T-001',projectRoot:f.codeProject});
+    assert.equal(gate.content_bound,true);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
