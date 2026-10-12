@@ -17,6 +17,14 @@
 
 ## 最近更新
 
+**0.17.0**
+
+- **升级注意**：新建 `cm-ai` 运行改用 `--control-config` 选能力（`development` / `bootstrap` / `qa` / `qaFix` 四个模式），不再传一串 `--allow-*`；`--human-authorized` 已删除。已经在跑的旧运行继续按原协议走完，两种入口不能互用。
+- **审查不再逐轮要授权**：常规独立审查在已确认范围内自动推进最多两轮；N4 不再先让作者自审。门禁的目标收缩为「防手滑、防过期证据」，文档写明它不承诺抵抗拥有完整写权限的人。
+- **N6 质检改成固定检查点**：feature 完成、连续五项没做 QA，以及 migration、认证、授权、支付、API 这些关键路径命中就触发，不再打四维分数。
+- **手工走 N1–N8 的项目也能核对改动清单**：N3 编辑前先 `capture-baseline`，N4/N5 和完成入口按实际新增、修改、删除的文件核对 `changed_files`；兼容任务第二轮阻断后可以做一次有来源声明的受控补正。
+- **提醒更结实**：设置、锁和状态文件被换成链接、管道或超大文件时直接跳过不卡住；发送失败能从 `notify.log` 看出是超时（5）、断网（3）还是意外错误（6）。
+
 **0.16.9**
 
 - **新增 `/cm:notify`（Codex 里是 `$cm-notify`）**：卡住、结束、等待的手机提醒可以在 Bark（iOS）和 pushplus（微信）之间一条命令切换，同一时刻只开一个。能看到两个渠道的密钥有没有填好（只说填没填，不显示内容），能发一条测试推送确认真的收得到，也能先预览、再自定义提醒的标题和正文。暂不支持 Windows。见[使用手册](docs/user-guide.md#卡住时提醒到手机可选)。
@@ -232,7 +240,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.16.9 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.17.0 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
