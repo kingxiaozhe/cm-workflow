@@ -87,6 +87,18 @@ diff、回归结果和对应规则；不重复投喂整仓、完整历史日志�
 
 ## 闭环七步（每个缺陷）
 
+手工命令行路径在写红灯测试或改代码前，先将 `{slug}` 规范为 ASCII kebab，创建
+`{SPECS_DIR}/.reviews`，再捕获本任务基线；JS 宿主使用自己的审查包基线，不执行此步。
+
+```bash
+node {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs capture-baseline \
+  --project-root {CODE_PROJECT} --reviews-dir {SPECS_DIR}/.reviews \
+  --feature fix-{slug} --task T-FIX-{slug}
+```
+
+下方命令行 `check-n4` / `check-n5` 会核对基线以来的实际清单与 `changed_files` 等集；
+attempt 2 沿用原基线，不重捕获。缺基线仅按 `../../runtime/task-gates.md` 的历史恢复规则处理。
+
 ### 1. 复现（不能复现的 bug 不许修）
 
 - 按描述复现：实际操作/运行一次，拿到**失败证据**（报错原文、错误截图、错误返回值）;**证据要用严格裁判**——宽容裁判会把坏产物蒙混成功（实跑:补丁类缺陷 GNU patch 的 fuzz 容错险些吞掉复现,换 git apply --check 才拿到硬证据）

@@ -296,6 +296,8 @@ def mark_done(raw_arguments: Sequence[str]) -> dict[str, object]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     raw_arguments = list(argv) if argv is not None else sys.argv[1:]
     if not raw_arguments or raw_arguments[0] != "mark-done":
         result = run_js(raw_arguments)

@@ -316,7 +316,7 @@ export function reviewSpecsPath(root,specsRoot) {
   need(root!==specsRoot&&!root.startsWith(specsRoot+path.sep),'overlapping_roots');
   return specsRoot.startsWith(root+path.sep)?filePath(path.relative(root,specsRoot).split(path.sep).join('/')):null;
 }
-function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selected=null,policy=null) {
+function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selected=null,policy=null,inventoryOnly=false) {
   if(specsPath!==null){
     const target=path.join(root,specsPath);
     need(fs.realpathSync(target)===target&&fs.lstatSync(target).isDirectory(),'unsupported_path');
@@ -324,9 +324,9 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
   const files=[],seen=new Set(); let total=0,materialBytes=0,materialCount=0,visitedSpecs=false;
   function add(p,s){
     if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1)throw diagnostic('unsupported_file',p);
-    const includeContent=selected===null||materialPath(p,selected);
-    const countLimit=selected===null?FILE_COUNT:INVENTORY_COUNT;
-    const byteLimit=selected===null?SNAPSHOT_LIMIT:INVENTORY_LIMIT;
+    const includeContent=!inventoryOnly&&(selected===null||materialPath(p,selected));
+    const countLimit=selected===null&&!inventoryOnly?FILE_COUNT:INVENTORY_COUNT;
+    const byteLimit=selected===null&&!inventoryOnly?SNAPSHOT_LIMIT:INVENTORY_LIMIT;
     if(files.length>=countLimit)throw diagnostic('limit_exceeded',p,`file count > ${countLimit}`);
     if(total+s.size>byteLimit)throw diagnostic('limit_exceeded',p,`inventory bytes > ${byteLimit}`);
     if(includeContent&&materialCount>=FILE_COUNT)
@@ -343,6 +343,7 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
     let names;try{names=fs.readdirSync(path.join(root,dir)).sort();}catch{throw diagnostic('read_failed',dir);}
     for(const name of names){
       const p=dir+'/'+name;
+      if(inventoryOnly&&name==='.reviews')continue;
       let stat;try{stat=fs.lstatSync(path.join(root,p));}catch{throw diagnostic('read_failed',p);}
       if(name==='AGENTS.md')add(p,stat);
       else if(stat.isDirectory()&&!stat.isSymbolicLink())retainIgnoredInstructions(p,depth+1);
@@ -354,7 +355,12 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
     try { names=fs.readdirSync(path.join(root,rel)).sort(); } catch { fail('read_failed'); }
     for(const name of names) {
       const p=rel ? rel+'/'+name : name;
+      // Compatibility evidence is outside the code inventory. Existing JS
+      // snapshots retain their historical selection and exact record shape.
       let s; try { s=fs.lstatSync(path.join(root,p)); } catch { fail('read_failed'); }
+      if(inventoryOnly&&name==='.reviews'&&p!==specsPath){
+        need(s.isDirectory()&&!s.isSymbolicLink(),'unsupported_path');continue;
+      }
       // Linked worktrees use a regular .git pointer file instead of a directory.
       // Treat both as Git metadata, never read/follow the pointer or traverse it.
       // Scope and requirement paths still cannot select any .git entry.
@@ -924,3 +930,8 @@ export function readReviewBaseline(raw) {
 export function readReviewPackage(raw) {
   const value=plain(raw);validPackage(value);return freeze(value);
 }
+
+// Reuse the same bounded scanner and two-sided stable policy for compatibility
+// inventories; the default snapshot mode above is unchanged for JS callers.
+export {snapshot,rootPath,stableIgnorePolicy,stablePublicPolicy,stableSnapshotPolicy,
+  comparableFiles,validateStablePolicy,filePath,INVENTORY_COUNT,INVENTORY_LIMIT};

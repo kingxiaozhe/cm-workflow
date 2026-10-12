@@ -6,16 +6,17 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {checkN4,checkN5,implementationSha256,prepareHumanCorrection,publishHumanCorrectionReview,
+import {captureBaseline,checkN4,checkN5,implementationSha256,prepareHumanCorrection,publishHumanCorrectionReview,
   prepareMarkDone,verifyMarkDonePlan} from './cm-task-gate.mjs';
 
 const sha=file=>createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 function fixture(t){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-human-correction-')));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const reviewsDir=path.join(root,'.reviews');fs.mkdirSync(reviewsDir);
+  const reviewsDir=path.join(root,'specs','.reviews');fs.mkdirSync(reviewsDir,{recursive:true});
   fs.mkdirSync(path.join(root,'src'));const code=path.join(root,'src/example.ts');fs.writeFileSync(code,'old');
-  const tasks=path.join(root,'tasks.md');fs.writeFileSync(tasks,'- [ ] T-001: fixture\n');
+  const tasks=path.join(root,'specs','tasks.md');fs.writeFileSync(tasks,'- [ ] T-001: fixture\n');
+  captureBaseline({projectRoot:root,reviewsDir,feature:'login',task:'T-001'});
   const payload=attempt=>({schema_version:1,task_id:'T-001',attempt,status:'ready_for_review',changed_files:['src/example.ts'],
     implementation_sha256:implementationSha256(root,['src/example.ts']),
     verification:[{command:'fixture',status:'passed',evidence:'synthetic fixture'}],
@@ -27,7 +28,7 @@ function fixture(t){
     fs.writeFileSync(handoff,JSON.stringify(payload(attempt)));review(file,handoff,attempt,verdict);history.push(handoff,file);
   }
   const original=history.map(sha);fs.writeFileSync(code,'fixed');
-  const draft=path.join(root,'draft.json');fs.writeFileSync(draft,JSON.stringify(payload(2)));
+  const draft=path.join(reviewsDir,'draft.json');fs.writeFileSync(draft,JSON.stringify(payload(2)));
   const selectors={handoff:draft,reviewsDir,feature:'login',task:'T-001',projectRoot:root,
     reason:'Correct exact selector after original blocked round 2.'};
   const prepare=()=>prepareHumanCorrection(selectors);
@@ -38,6 +39,36 @@ function fixture(t){
   };
   return {root,reviewsDir,code,tasks,draft,history,original,selectors,review,prepare,finish};
 }
+
+test('library default human correction preserves results without an editing baseline',t=>{
+  const f=fixture(t);fs.unlinkSync(path.join(f.reviewsDir,'login-T-001-baseline.json'));
+  const record=f.prepare(),selected={...f.selectors,...record};
+  assert.equal(JSON.stringify(checkN4(selected)),JSON.stringify({gate:'n4',task:'T-001',attempt:2,
+    outcome:'ready_for_review',content_bound:true,handoff_sha256:sha(record.handoff),correction_sha256:record.correction_sha256}));
+  const done=f.finish(record);
+  assert.equal(JSON.stringify(checkN5(done)),JSON.stringify({gate:'n5',task:'T-001',attempt:2,
+    outcome:'approved',review:record.review,content_bound:true,correction_sha256:record.correction_sha256}));
+  const plan=prepareMarkDone(done);assert.equal(plan.evidence.length,8);
+  assert.deepEqual(verifyMarkDonePlan(done,plan.planDigest),{outcome:'matched',planDigest:plan.planDigest});
+  assert.deepEqual(f.history.map(sha),f.original);
+});
+
+test('human correction CLI and internal opt-in still require an editing baseline',t=>{
+  const f=fixture(t);fs.unlinkSync(path.join(f.reviewsDir,'login-T-001-baseline.json'));
+  const record=f.prepare(),selected={...f.selectors,...record};
+  assert.throws(()=>checkN4({...selected,inventory:'required'}),/missing editing baseline/);
+  const script=fileURLToPath(new URL('./cm-task-gate.mjs',import.meta.url));
+  const cli=command=>spawnSync(process.execPath,[script,command,'--handoff',record.handoff,
+    '--reviews-dir',f.reviewsDir,'--feature','login','--task','T-001','--project-root',f.root,
+    '--correction',record.correction,...(command==='prepare-mark-done'?['--tasks',f.tasks]:[])],{encoding:'utf8'});
+  const n4=cli('check-n4');assert.equal(n4.status,1);assert.match(n4.stderr,/missing editing baseline/);
+  const done=f.finish(record);
+  assert.throws(()=>checkN5({...done,inventory:'required'}),/missing editing baseline/);
+  for(const command of ['check-n5','prepare-mark-done']){
+    const result=cli(command);assert.equal(result.status,1);assert.match(result.stderr,/missing editing baseline/);
+  }
+  assert.deepEqual(f.history.map(sha),f.original);assert.match(fs.readFileSync(f.tasks,'utf8'),/\[ \]/);
+});
 
 test('one-shot human correction retains blocked history and completes through the existing locked adapter',t=>{
   const f=fixture(t),record=f.prepare(),selected={...f.selectors,...record};
@@ -59,7 +90,7 @@ test('correction reason, original verdict, full scope, and mandatory Learning ca
   assert.throws(()=>prepareHumanCorrection({...f.selectors,reason:''}),/reason/);
   const draft=JSON.parse(fs.readFileSync(f.draft));draft.evidence=['unbound application'];fs.writeFileSync(f.draft,JSON.stringify(draft));
   assert.throws(()=>prepareHumanCorrection({...f.selectors,allowLegacyUnbound:true}),/Learning/);
-  assert.equal(fs.readdirSync(f.reviewsDir).length,4);
+  assert.equal(fs.readdirSync(f.reviewsDir).length,6);
   draft.evidence=['learning: no_relevant_lesson','learning: retrospective no_new_lesson'];draft.changed_files=['src/new.ts'];
   fs.writeFileSync(path.join(f.root,'src/new.ts'),'new');draft.implementation_sha256=implementationSha256(f.root,draft.changed_files);
   fs.writeFileSync(f.draft,JSON.stringify(draft));assert.throws(()=>f.prepare(),/full original/);

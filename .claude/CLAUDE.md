@@ -17,6 +17,8 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 
 ## 常用命令
 
+- 兼容手工任务：N3 编辑前运行 `node scripts/cm-task-gate.mjs capture-baseline --project-root {CODE_PROJECT} --reviews-dir {SPECS_DIR}/.reviews --feature {FEATURE_SLUG} --task {T-xxx}`；仅命令行 N4/N5 与完成入口开启清单核对，库调用默认行为不变，JS 使用自己的审查包基线。仅单代码根，历史缺基线用现有 `--allow-legacy-unbound` 披露清单未核验；详见 `runtime/task-gates.md`。
+
 - CM control v2：新 cm-ai run 用 `--control-config POLICY.json` 明确运行能力，禁止 `--allow-*`；旧 run 沿 legacy，不迁移记录。配置、operator/model 与 V3 grant 不证明真人身份，真实对话及外部动作授权保持；详见 [控制策略与恢复合同](../docs/cm-control-policy-v2.md)。
 
 - 安全扫描：`$cm-security` / `/cm-security`，分支差异加已跟踪未提交修改；`--all` 扫全部已跟踪文件。工具缺失保留缺口，不自动修复或安装；定点验证 `node --test scripts/cm-security.test.mjs`。
