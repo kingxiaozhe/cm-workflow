@@ -124,15 +124,14 @@ export async function batchFixture(mode,options={}){
             examinedPaths:reviewPaths(request.payload.reviewPackage),findings:retry?[{id:'F1',severity:'P2',path:'file0.js',message:'Synthetic repair',evidence:'First implementation'}]:[],summary:'Synthetic independent review'}};
         }}],
       reviewInvocation:{developerThreadId:'author',excludedThreadIds:['host']},
-      qaDecisionProvider:parallelMember?createParallelMemberQaDecisionProvider():mode==='policy'?createHostQaDecisionProvider({timeoutMs:1000,assess:async binding=>{
+      qaDecisionProvider:parallelMember?createParallelMemberQaDecisionProvider():mode==='policy'?createHostQaDecisionProvider({timeoutMs:1000,criticalPaths:{api:['file0.js']},assess:async binding=>{
         assessments.push(binding.identity.taskId);
-        return {scores:{scope:1,risk:1,accumulation:1,boundary:1},
-          changes:{api:binding.identity.taskId==='T-001',migration:false,authentication:false,authorization:false,payment:false}};
+        return {confirmed:true};
       }}):{timeoutMs:1000,decide:async binding=>{
         if(!qaReady)throw Object.assign(new Error('await QA decision'),{code:'qa_decision_required'});
         const skip=binding.identity.taskId==='T-001'&&mode!=='failed-qa';
         return {decisionId:`qa-${binding.identity.taskId}`,identity:binding.identity,packageDigest:binding.packageDigest,
-          status:skip?'skipped':'triggered',reason:'synthetic',score:skip?4:null,at:'2026-09-08T01:00:00Z'};
+          status:skip?'skipped':'triggered',reason:skip?'no_fixed_trigger':'feature_complete',score:null,at:'2026-09-08T01:00:00Z'};
       }},
       qaExecutor:mode==='executor'?(()=>{
         const executor=createHostQaExecutor({specsDir,codeProject,feature,runtime:'codex',requirements:definition.requirements,

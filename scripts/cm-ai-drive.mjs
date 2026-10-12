@@ -38,7 +38,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {createHostCheck,reportHostCheckProgress} from '../runtime/js/cm-ai/host-check.mjs';
-import {decideHostQaPolicy} from '../runtime/js/cm-ai/host-qa-policy.mjs';
+import {readQaAssessment} from '../runtime/js/cm-ai/host-qa-policy.mjs';
 import {createHostQaExecutor} from '../runtime/js/cm-ai/host-qa-executor.mjs';
 import {inspectCmAiQaTaskContext} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {readLearningRetrospectiveContent} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
@@ -547,7 +547,7 @@ export function validateCmAiAnswer(kind,value,root){
       try{developEntries(value.edits,root,'develop.json.edits');}catch(error){stop(2,`答案格式错误：${error.message}`);}
     }else {exact(value,['status','code'],'develop.json');requireShape(nonempty(value.code),'develop.json.code');}
   }else if(kind==='qa_assess'){
-    try{decideHostQaPolicy({assessment:value,pending:1,mergeEligible:false,unassessedTasks:1});}
+    try{readQaAssessment(value);}
     catch{stop(2,'答案格式错误：qa-assess.json');}
   }else if(kind==='documentation_inspect'){
     exact(value,['status','reason','at','closeout'],'documentation-inspect.json');

@@ -1937,7 +1937,14 @@ export function createTaskRunner(options) {
   };
   // Interrupted intents keep their ids; the entry derives fresh ones from this count.
   const interruptions=kind=>parsedHistory?.interrupted?.filter(item=>item.kind===kind).length??0;
-  const api={reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks,reviewEffectIds,recheckLearningInput,redoDevelop,recoverCommit,interruptions};
+  // Read-only projection of the baseline-derived reviewed change inventory.
+  // Entry checks current status before/after the call; do not rebuild a baseline
+  // from the author's handoff or change any completion/correction authority.
+  const qaChangedFiles=packageDigest=>{
+    need(state==='fixture_completed'&&reviewPackage?.packageDigest===packageDigest,'stale_qa');
+    return freeze({paths:reviewPackage.changes.map(change=>change.path),source:'review_package'});
+  };
+  const api={qaChangedFiles,reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks,reviewEffectIds,recheckLearningInput,redoDevelop,recoverCommit,interruptions};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   // A terminal reviewer observation is durable even if the host died before

@@ -221,6 +221,7 @@ export function createCmAiConversationEntry(options) {
   const ownerIdentity=json(options.identity);validIdentity(ownerIdentity);
   const runner=options.runner;
   const runnerKeys=['executeEffect','status','cancel','run'];
+  if(runner&&Object.hasOwn(runner,'qaChangedFiles'))runnerKeys.push('qaChangedFiles');
   if(runner&&Object.hasOwn(runner,'verificationBlocks'))runnerKeys.push('verificationBlocks');
   if(runner&&Object.hasOwn(runner,'completionBlocks'))runnerKeys.push('completionBlocks');
   if(runner&&Object.hasOwn(runner,'reviewEffectIds'))runnerKeys.push('reviewEffectIds');
@@ -241,6 +242,7 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'interruptions'))runnerKeys.push('interruptions');
   if(runner&&Object.hasOwn(runner,'inspectBootstrapAdmission'))runnerKeys.push('inspectBootstrapAdmission');
   shape(runner,runnerKeys);
+  if(Object.hasOwn(runner,'qaChangedFiles'))need(typeof runner.qaChangedFiles==='function');
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');
   if(Object.hasOwn(runner,'completionBlocks'))need(typeof runner.completionBlocks==='function');
   if(Object.hasOwn(runner,'reviewEffectIds'))need(typeof runner.reviewEffectIds==='function');
@@ -676,6 +678,7 @@ export function createCmAiConversationEntry(options) {
             decision=json(await Promise.race([
               Promise.resolve().then(()=>{need(!controller.signal.aborted,'cancelled');
                 return decideQa(freeze({...binding,codeProject:options.codeProject,
+                  changedFiles:runner.qaChangedFiles?.(operation.packageDigest)??{paths:[],source:'unavailable'},
                   ...(previousDecisionId===null?{}:{previousDecisionId})}),controller.signal);}),interrupted]));
             need(!controller.signal.aborted,'cancelled');
             const current=boundStatus(runner.status(),identity);
@@ -690,7 +693,7 @@ export function createCmAiConversationEntry(options) {
           return summary(operation,{...status,code:admission.reason},'awaiting');
         const feature=admission.features.find(item=>item.name===options.feature);
         need(feature,'qa_policy_unavailable');
-        // N6 feature completion is a mandatory trigger, regardless of score.
+        // N6 feature completion is a mandatory trigger, regardless of registered paths.
         // Ask for the proper bound decision; do not synthesize authorization.
         if(feature.pending===0)return summary(operation,{...status,code:'qa_mandatory_required'},'awaiting');
       }
