@@ -241,6 +241,32 @@ function inventoryFixture(root,{nested=false}={}){
   return {selectors,capture,deliver,baseline:path.join(reviewsDir,'inventory-T-001-baseline.json')};
 }
 
+test('Python mark-done emits UTF-8 JSON and errors under cp1252',()=>fixture(root=>{
+  const f=inventoryFixture(root,{nested:true});f.deliver();
+  const tasksPath=path.join(root,'specs/tasks.md');fs.writeFileSync(tasksPath,'- [ ] T-001: fixture\n');
+  const args=['mark-done','--allow-legacy-unbound','--handoff',f.selectors.handoff,
+    '--reviews-dir',f.selectors.reviewsDir,'--feature','inventory','--task','T-001',
+    '--tasks',tasksPath,'--project-root',root];
+  const run=()=>spawnSync(process.env.CM_PYTHON_BIN||'python3',[pythonGate,...args],
+    {env:{...process.env,PYTHONIOENCODING:'cp1252'}});
+  const done=run();
+  assert.equal(done.status,0,done.stderr.toString('utf8'));
+  const stdout=done.stdout.toString('utf8');assert.deepEqual(Buffer.from(stdout,'utf8'),done.stdout);
+  const result=JSON.parse(stdout);
+  assert.equal(result.inventory,'unverified');
+  assert.equal(result.inventory_note,'未捕获编辑前基线，不保证清单完整，只保证已列文件的内容绑定');
+  assert.match(fs.readFileSync(tasksPath,'utf8'),/\[x\]/);
+
+  fs.writeFileSync(tasksPath,'- [ ] T-001: fixture\n');assert.equal(f.capture().status,0);
+  fs.writeFileSync(path.join(root,'src/example.ts'),'after');fs.writeFileSync(path.join(root,'extra.ts'),'omitted');
+  f.deliver();
+  const blocked=run(),stderr=blocked.stderr.toString('utf8');
+  assert.equal(blocked.status,1);assert.equal(blocked.stdout.length,0);
+  assert.deepEqual(Buffer.from(stderr,'utf8'),blocked.stderr);
+  assert.match(stderr,/ERROR:.*改了但没列: extra.ts/);assert.doesNotMatch(stderr,/Traceback|UnicodeEncodeError/);
+  assert.match(fs.readFileSync(tasksPath,'utf8'),/\[ \]/);
+}));
+
 test('library default N4 and N5 preserve exact results without an editing baseline',()=>fixture(root=>{
   const f=inventoryFixture(root);f.deliver();
   const n4={gate:'n4',task:'T-001',attempt:1,outcome:'ready_for_review',
@@ -337,7 +363,9 @@ test('inventory excludes root reviews and nested specs evidence throughout N4 an
 
 test('inventory includes executable-only changes and cumulative attempt two edits',()=>fixture(root=>{
   const f=inventoryFixture(root);assert.equal(f.capture().status,0);
-  fs.chmodSync(path.join(root,'src/example.ts'),0o755);f.deliver();
+  if(process.platform==='win32')fs.writeFileSync(path.join(root,'src/example.ts'),'after');
+  else fs.chmodSync(path.join(root,'src/example.ts'),0o755);
+  f.deliver();
   assert.deepEqual(checkN4({...f.selectors,inventory:'required'}).inventory_counts,{added:0,modified:1,deleted:0});
   writeReview(path.join(f.selectors.reviewsDir,'inventory-T-001-r1.md'),{handoff:f.selectors.handoff,verdict:'changes_requested'});
   fs.writeFileSync(path.join(root,'next.ts'),'second edit');f.deliver(['src/example.ts','next.ts'],2);
@@ -367,13 +395,19 @@ test('inventory stable policy unions old and current decisions on both sides whi
   fs.mkdirSync(path.join(root,'new-cache'));fs.writeFileSync(path.join(root,'new-cache/value'),'present before');
   fs.mkdirSync(path.join(root,'node_modules'));fs.symlinkSync('/nonexistent/fixture',path.join(root,'node_modules/link'));
   assert.equal(f.capture().status,0);
+  const ignoreMode=JSON.parse(fs.readFileSync(f.baseline)).ignorePolicy.mode;
+  if(process.platform!=='win32')assert.equal(ignoreMode,'git');
   fs.writeFileSync(path.join(root,'.gitignore'),'new-cache/\n');
   fs.writeFileSync(path.join(root,'old-cache/value'),'ignored by baseline');
   fs.writeFileSync(path.join(root,'new-cache/value'),'ignored now');
   fs.writeFileSync(path.join(root,'new-cache/AGENTS.md'),'must be reviewed');
   f.deliver(['.gitignore']);assert.throws(()=>checkN4({...f.selectors,inventory:'required'}),/改了但没列.*new-cache\/AGENTS.md/);
   f.deliver(['.gitignore','new-cache/AGENTS.md']);
-  assert.deepEqual(checkN5({...f.selectors,inventory:'required'}).inventory_counts,{added:1,modified:1,deleted:0});
+  if(process.platform==='win32'&&ignoreMode!=='git'){
+    for(const check of [checkN4,checkN5])assert.throws(()=>check({...f.selectors,inventory:'required'}),error=>
+      error instanceof GateError&&/改了但没列:.*new-cache\/value/.test(error.message)
+      &&/改了但没列:.*old-cache\/value/.test(error.message));
+  }else assert.deepEqual(checkN5({...f.selectors,inventory:'required'}).inventory_counts,{added:1,modified:1,deleted:0});
 }));
 
 test('inventory count budget refuses the triggering file and bounds both mismatch lists',()=>fixture(root=>{

@@ -42,6 +42,7 @@ paths and specs. A nested canonical `.reviews` parent is the specs subtree; when
 `.reviews` is at the code root only that directory is excluded. All `.reviews`
 directories in the inventory are excluded. External specs do not enter the code root.
 The same baseline/current ignore union filters both sides; AGENTS.md remains checked.
+When Git ignore policy is unavailable (as may happen on Windows), scanning falls back to built-in rules; Git-ignored files count as changes and must be listed or handled before the gate can pass.
 Capture refuses beyond 10,000 files or 1 GiB of inventory bytes, names the triggering
 file and writes no partial baseline. Capture cannot prove it preceded an edit;
 executors and independent reviewers must verify that ordering.
