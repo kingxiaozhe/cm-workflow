@@ -30,7 +30,9 @@ export function recordCmAiQaAttachment({specsDir,codeProject,feature,identity,re
 }
 
 export function readDecision(raw,identity,packageDigest) {
-  const decision=json(raw);shape(decision,['decisionId','identity','packageDigest','status','reason','score','at']);
+  const decision=json(raw);shape(decision,['decisionId','identity','packageDigest','status','reason','score','at',
+    ...(Object.hasOwn(decision,'changedFilesSource')?['changedFilesSource']:[])]);
+  if(Object.hasOwn(decision,'changedFilesSource'))need(['review_package','handoff_only','unavailable'].includes(decision.changedFilesSource));
   id(decision.decisionId);validIdentity(decision.identity);hex(decision.packageDigest);
   need(sameIdentity(decision.identity,identity)&&decision.packageDigest===packageDigest,'qa_decision_mismatch');
   need(['triggered','skipped','blocked'].includes(decision.status));
@@ -39,7 +41,7 @@ export function readDecision(raw,identity,packageDigest) {
     &&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/.test(decision.at)
     &&Number.isFinite(Date.parse(decision.at)));
   if(decision.score!==null)need(Number.isInteger(decision.score)&&decision.score>=4&&decision.score<=20);
-  if(decision.status==='skipped')need(Number.isInteger(decision.score)&&decision.score<=7);
+  if(decision.status==='skipped'&&decision.score!==null)need(decision.score<=7);
   if(decision.status==='triggered'&&decision.score!==null)need(decision.score>=8);
   return json({...decision,at:decision.at.endsWith('Z')?`${decision.at.slice(0,-1)}+00:00`:decision.at});
 }
@@ -70,7 +72,8 @@ function existingDecision(specsDir,feature,identity,packageDigest,decision,previ
     const row=effectiveQaDecisionRow(matches,'qa_decision_conflict');
     if(row.decision_id===decision.decisionId){
       need(row.status===decision.status&&row.reason===decision.reason&&row.score===decision.score&&row.at===decision.at
-        &&(row.previous_decision_id??null)===previousDecisionId,'qa_decision_conflict');
+        &&(row.previous_decision_id??null)===previousDecisionId
+        &&(row.changed_files_source??null)===(decision.changedFilesSource??null),'qa_decision_conflict');
       return true;
     }
     // Only the single recorded timeout decision can be superseded, and once.
@@ -105,11 +108,12 @@ export function recordCmAiQaDecision(input) {
   const decision=readDecision(input.decision,input.identity,input.packageDigest);
   if(existingDecision(input.specsDir,input.feature,input.identity,input.packageDigest,decision,previousDecisionId))return;
   const detail=(decision.status==='triggered'?`触发:${decision.reason}`:
-    decision.status==='skipped'?`跳过:评分${decision.score}`:`阻塞:${decision.reason}`)
+    decision.status==='skipped'?`跳过:${decision.reason}`:`阻塞:${decision.reason}`)
     +(previousDecisionId===null?'':`（重新评估，替代 ${previousDecisionId}）`);
   const data={node:'N6',feature:input.feature,task:input.identity.taskId,attempt:input.identity.attempt,
     repository_id:input.identity.repositoryId,package_digest:input.packageDigest,decision_id:decision.decisionId,
     status:decision.status,reason:decision.reason,score:decision.score,
+    ...(Object.hasOwn(decision,'changedFilesSource')?{changed_files_source:decision.changedFilesSource}:{}),
     ...(previousDecisionId===null?{}:{previous_decision_id:previousDecisionId})};
   const args=[writer,'--workflow','cm-ai','--event','qa','--runtime','codex','--project-root',input.codeProject,
     '--specs-dir',input.specsDir,'--run-id',input.identity.runId,'--at',decision.at,'--detail',detail,
@@ -155,7 +159,8 @@ function findDecisionRow(input) {
 export function findCmAiQaDecision(input) {
   const row=findDecisionRow(input);if(row===null)return null;
   return readDecision({status:row.status,decisionId:row.decision_id,identity:input.identity,
-    packageDigest:input.packageDigest,reason:row.reason,score:row.score,at:row.at},input.identity,input.packageDigest);
+    packageDigest:input.packageDigest,reason:row.reason,score:row.score,at:row.at,
+    ...(Object.hasOwn(row,'changed_files_source')?{changedFilesSource:row.changed_files_source}:{})},input.identity,input.packageDigest);
 }
 
 // True when the effective decision is the linked replacement of a timed-out

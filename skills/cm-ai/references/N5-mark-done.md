@@ -112,7 +112,7 @@ git -C {CODE_PROJECT} commit -m "T-{编号} {feature名}: {任务标题}
 
 ```text
 ✅ Feature {F}/{总F} | 任务 {N}/{总数} — {标题}
-🔍 主执行者自审: {结果} | 🤖 独立审查({channel}): {结果}
+🤖 独立审查({channel}): {结果}
 🔁 回读: tasks.md T-{编号}[x]已确认 | commit {短sha}含T-{编号} | METRICS 行已写 | 门禁 {mark-done JSON 输出中的 review} | 学习 {AGENTS.md已写回并回读/已复盘，无新增}
 📊 Feature {done}/{total} | 总体 {done_f}/{total_f}
 ```

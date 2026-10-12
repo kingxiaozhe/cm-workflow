@@ -84,8 +84,7 @@ for(const transport of ['synchronous','jsonl','coalesced-jsonl'])test(`incident 
     const seen=[];
     const answer=row=>{
       seen.push(row.kind==='qa_assess'?row.kind:row.payload.case.id);
-      if(row.kind==='qa_assess')return {scores:{scope:1,risk:1,accumulation:1,boundary:1},
-        changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}};
+      if(row.kind==='qa_assess')return {confirmed:true};
       if(row.kind==='qa_logic')return {verdict:'SUPPORTED',evidence:['Synthetic static observation']};
       const artifact=path.join(f.configuration.specsDir,'.reviews',`${row.payload.case.id}.txt`);
       fs.writeFileSync(artifact,'Synthetic browser evidence; no real browser');

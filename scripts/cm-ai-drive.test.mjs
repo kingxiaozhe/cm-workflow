@@ -167,8 +167,7 @@ function qaFixture(f,kinds,caseIds=[]){
   fs.writeFileSync(path.join(f.root,'workflow.json'),JSON.stringify({documentationPaths:[],applicableAgentFiles:[],
     qa:{commands:[{id:'unit',command:[process.execPath,'--check','target.mjs'],caseIds}],
       environment:{kind:'web',carrier:'browser',target:'fixture-local',scope:'local'}}}));
-  f.write('qa-assess.json',{scores:{scope:1,risk:1,accumulation:1,boundary:1},
-    changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}});
+  f.write('qa-assess.json',{confirmed:true});
   f.write('documentation-inspect.json',{status:'blocked',reason:'Fixture stops before documentation review'});
   return f.plan({permissions:['--workflow-config','workflow.json','--allow-qa',
     ...(kinds.some(item=>item.kind==='browser')?['--browser-qa','available']:[])]});
@@ -220,8 +219,7 @@ test('progress R1: single driver forwards quiet QA command boundaries',t=>{
   const permissions=changesRequestedReview(f);
   fs.copyFileSync(fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url)),path.join(f.bin,'codex'));
   fs.chmodSync(path.join(f.bin,'codex'),0o700);
-  f.write('qa-assess.json',{scores:{scope:2,risk:2,accumulation:2,boundary:2},
-    changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}});
+  f.write('qa-assess.json',{confirmed:true});
   const workflowPath=path.join(f.root,'workflow.json'),workflow=JSON.parse(fs.readFileSync(workflowPath,'utf8'));
   workflow.qa.commands=[{id:'quiet-qa',command:[process.execPath,'-e','setTimeout(()=>process.exit(0),400)'],caseIds:[]}];
   fs.writeFileSync(workflowPath,JSON.stringify(workflow));

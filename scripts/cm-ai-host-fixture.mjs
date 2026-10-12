@@ -157,8 +157,7 @@ export function runCli(f,mode,action='create'){
               send(response(row,{status:'completed'}));
             }else if(row.kind==='qa_assess'){
               assert(f.workflow);assert.equal(row.payload.pending,0);
-              send(response(row,{scores:{scope:1,risk:1,accumulation:1,boundary:1},
-                changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}}));
+              send(response(row,{confirmed:true}));
             }else if(row.kind==='qa_browser'&&f.qaBrowser){
               send(response(row,f.qaBrowser(row.payload)));
             }else if(row.kind==='documentation_inspect'){

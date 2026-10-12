@@ -1,5 +1,7 @@
 # JS 宿主条件路径：外部模型、bootstrap 规范任务、多代码根与受保护执行
 
+N6 新决定按固定检查点和 `qa.criticalPaths` 登记匹配；`qa_assess` 只确认清单来源，回 `{"confirmed":true}`。恢复已记录决定时沿用原行，不重新裁决；登记和配置修订见 [N6 固定检查点](N6-qa-eval.md)。
+
 本文是 [js-host.md](js-host.md) 的条件引用：启用外部模型配置、运行 bootstrap 规范任务、多代码根，或同仓 specs 选择受保护执行／文本提案模式时，启动前读取。阻断与恢复见 js-host.md 的停机路由表。
 
 ## 先选择原协议与实际执行模式

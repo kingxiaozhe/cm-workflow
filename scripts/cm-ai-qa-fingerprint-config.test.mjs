@@ -44,9 +44,9 @@ const environment={kind:'web',carrier:'browser',target:'fixture',scope:'local'};
 const syntax=[{id:'unit',command:[process.execPath,'--check','a.mjs'],caseIds:[]}];
 
 // The real current-conversation factory builds the built-in QA executor.
-const conversation=(f,commands=syntax)=>createConversationExecution(f.definition,'host-session-1',
+const conversation=(f,commands=syntax,criticalPaths=undefined)=>createConversationExecution(f.definition,'host-session-1',
   {call:async()=>{throw new Error('not dispatched');}},null,null,
-  {qa:{commands,environment},documentationPaths:[],applicableAgentFiles:[]},true,'claude');
+  {qa:{commands,environment,...(criticalPaths===undefined?{}:{criticalPaths})},documentationPaths:[],applicableAgentFiles:[]},true,'claude');
 async function opens(f,mode,execution,options){
   const run=await openControlRun(f.definition,mode,execution,options);run.close();
 }
@@ -148,4 +148,13 @@ test('#14 a store fingerprinted in the historical plan form still opens and adva
   run=await openControlRun(f.definition,'resume',synthetic(f,{browser}),{rerunBlockedQa:true});
   assert.equal((await run.host.handle(request('advance'))).code,'qa_passed');run.close();
   assert.equal(JSON.parse(fs.readFileSync(state)).fingerprints.config,digest(legacy));
+});
+
+test('N6 registered critical paths use existing workflow QA seam and fingerprint',async()=>{
+  const f=fixture();userRuntimes('codex-codes');
+  const registry={payment:['src/payments/**'],api:['a.mjs']};
+  const execution=conversation(f,syntax,registry);
+  await opens(f,'create',execution);
+  await opens(f,'resume',conversation(f,syntax,registry));
+  await assert.rejects(opens(f,'resume',conversation(f,syntax,{payment:['src/billing/**']})),{code:'fingerprint_mismatch'});
 });

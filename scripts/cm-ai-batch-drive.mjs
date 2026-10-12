@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHostCheck,reportHostCheckProgress} from '../runtime/js/cm-ai/host-check.mjs';
-import {decideHostQaPolicy} from '../runtime/js/cm-ai/host-qa-policy.mjs';
+import {readQaAssessment} from '../runtime/js/cm-ai/host-qa-policy.mjs';
 import {validateHostWorkflowConfiguration} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {validateRunDefinition} from './cm-ai-run.mjs';
@@ -390,7 +390,7 @@ async function answerFor(row,answers,paths,control){
     contextDigest:row.payload.contextDigest,
     at:value.at??new Date().toISOString().replace(/\.\d{3}Z$/,'Z')};
   if(row.kind==='qa_assess'){
-    decideHostQaPolicy({assessment:value,pending:1,mergeEligible:false,unassessedTasks:1});return value;
+    readQaAssessment(value);return value;
   }
   return null;
 }

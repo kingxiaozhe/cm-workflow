@@ -65,8 +65,7 @@ function fixture(t,count=1){
 }
 function prepared(f){
   f.write('develop.json',develop);
-  f.write('qa-assess.json',{scores:{scope:2,risk:2,accumulation:2,boundary:2},
-    changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}});
+  f.write('qa-assess.json',{confirmed:true});
   f.write('documentation-inspect.json',{status:'completed',reason:'README and task artifacts inspected'});
 }
 function noStore(f){assert.equal(fs.existsSync(f.store),false);assert.equal(fs.existsSync(path.join(f.specsDir,'运行日志.jsonl')),false);}
@@ -413,8 +412,7 @@ test(`${label} batch driver preflights a rescheduled second generation before it
     fs.writeFileSync(path.join(dir(id),`${file}.txt`),content);
     fs.writeFileSync(path.join(dir(id),'develop.json'),JSON.stringify({...develop,
       value:outcome==='implemented'?develop.value:{outcome:'blocked',reason:'Synthetic dependency is missing'},edits:{[`${file}.mjs`]:`${file}.txt`}}));
-    for(const [name,value] of [['qa-assess.json',{scores:{scope:2,risk:2,accumulation:2,boundary:2},
-      changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}}],
+    for(const [name,value] of [['qa-assess.json',{confirmed:true}],
       ['documentation-inspect.json',{status:'completed',reason:'README and task artifacts inspected'}]])
       fs.writeFileSync(path.join(dir(id),name),JSON.stringify(value));
   };

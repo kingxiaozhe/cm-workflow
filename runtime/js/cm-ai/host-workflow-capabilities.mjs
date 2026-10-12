@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {digest,json,need,shape,validIdentity,hex} from './effect-contract.mjs';
-import {createHostQaDecisionProvider} from './host-qa-policy.mjs';
+import {createHostQaDecisionProvider,readQaCriticalPaths} from './host-qa-policy.mjs';
 import {createHostQaExecutor} from './host-qa-executor.mjs';
 import {loadConfig} from '../../../scripts/cm-workflow-config.mjs';
 import {validateTestCases} from '../../../scripts/validate-test-cases.mjs';
@@ -56,7 +56,9 @@ export function validateHostWorkflowConfiguration(raw){
   for(const key of ['documentationPaths','applicableAgentFiles'])
     need(Array.isArray(config[key])&&config[key].length<=256&&config[key].every(item=>typeof item==='string'),'invalid_workflow_config');
   if(config.qa!==null){
-    shape(config.qa,['commands','environment',...(Object.hasOwn(config.qa,'timeoutMs')?['timeoutMs']:[])]);
+    shape(config.qa,['commands','environment',...(Object.hasOwn(config.qa,'timeoutMs')?['timeoutMs']:[]),
+      ...(Object.hasOwn(config.qa,'criticalPaths')?['criticalPaths']:[])]);
+    if(Object.hasOwn(config.qa,'criticalPaths'))readQaCriticalPaths(config.qa.criticalPaths);
     // A real browser walkthrough of one blocking case runs for minutes, so this
     // follows the shared call-timeout range rather than a fixed minute. The
     // default below is unchanged; only an explicit configuration may raise it.
@@ -75,13 +77,13 @@ export function createHostWorkflowCapabilities({definition,configuration,bridge,
   if(!protectedExecution&&configuration.documentationPaths.length)result.documentationSync={paths:configuration.documentationPaths,
     run:(request,signal)=>bridge.call('documentation_sync',request,signal)};
   // The N6 disposition is required even when execution is disabled. Its
-  // semantic assessment plus the existing mechanical policy may require QA;
+  // fixed checkpoints and registered path matches may require QA;
   // only a configured executor can then supply actual execution evidence.
   // Legacy qa:null keeps its historical caller-supplied disposition contract.
   if(configuration.qa!==null||controlPolicy!==null){
     result.qaLogHome=logHome;
     const requestTimeout={timeoutMs:configuration.qa?.timeoutMs??60000};
-    result.qaDecisionProvider=parallelMember?createParallelMemberQaDecisionProvider():createHostQaDecisionProvider({timeoutMs:60000,
+    result.qaDecisionProvider=parallelMember?createParallelMemberQaDecisionProvider():createHostQaDecisionProvider({timeoutMs:60000,criticalPaths:configuration.qa?.criticalPaths??{},
       assess:(request,signal)=>bridge.call('qa_assess',request,signal,requestTimeout)});
   }
   if(configuration.qa!==null&&(controlPolicy===null||controlPolicy.qa==='run')){
@@ -92,7 +94,7 @@ export function createHostWorkflowCapabilities({definition,configuration,bridge,
     result.qaExecutor=Object.freeze({...createHostQaExecutor({specsDir,codeProject,feature,requirements,runtime,
       ...(definition.codeProjects?{codeProjects:definition.codeProjects}:{}),
       ...(bootstrap?{bootstrap:{requirements:bootstrap.configuration.bootstrapRequirements,scope:definition.scope}}:{}),
-      ...configuration.qa,timeoutMs:1800000,logHome,
+      commands:configuration.qa.commands,environment:configuration.qa.environment,timeoutMs:1800000,logHome,
       ...(protectedExecution?{specsRoot:specsDir}:{}),
       logic:(request,signal)=>bridge.call('qa_logic',request,signal,requestTimeout),
       browser:(request,signal)=>bridge.call('qa_browser',request,signal,requestTimeout)}),requestTimeoutMs:requestTimeout.timeoutMs});
@@ -102,10 +104,12 @@ export function createHostWorkflowCapabilities({definition,configuration,bridge,
 
 export function createParallelMemberQaDecisionProvider(){
   return Object.freeze({timeoutMs:60000,async decide(raw,signal){
-    const binding=json(raw);shape(binding,['specsDir','codeProject','feature','identity','packageDigest']);
+    const binding=json(raw);shape(binding,['specsDir','codeProject','feature','identity','packageDigest',
+      ...(Object.hasOwn(binding,'changedFiles')?['changedFiles']:[])]);
     validIdentity(binding.identity);hex(binding.packageDigest);need(!signal.aborted,'cancelled');
     return {decisionId:`qa-${digest({identity:binding.identity,packageDigest:binding.packageDigest}).slice(0,48)}`,
       identity:binding.identity,packageDigest:binding.packageDigest,status:'skipped',
-      reason:'parallel_member_deferred',score:4,at:new Date().toISOString().replace(/\.\d{3}Z$/,'Z')};
+      reason:'parallel_member_deferred',score:null,
+      ...(binding.changedFiles?{changedFilesSource:binding.changedFiles.source}:{}),at:new Date().toISOString().replace(/\.\d{3}Z$/,'Z')};
   }});
 }

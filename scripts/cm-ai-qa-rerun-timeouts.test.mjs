@@ -29,8 +29,7 @@ const POSIX={skip:process.platform==='win32'?'host-check QA commands and the fix
 const identity={repositoryId:'qa-rerun-fixture',runId:'qa-rerun-run',taskId:'T-001',attempt:1};
 const simulator={kind:'app',carrier:'ios-simulator',target:'Fixture-iPhone',scope:'local'};
 const service={kind:'service',carrier:'cli',target:'node',scope:'local'};
-const lowRisk={scores:{scope:1,risk:1,accumulation:1,boundary:1},
-  changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}};
+const lowRisk={confirmed:true};
 
 // The QA command stands in for xcodebuild/simulator scripts. It reads a mode
 // file outside both roots, so switching the "environment" never touches the

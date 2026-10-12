@@ -4,26 +4,38 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {inspectCmAiQaTaskContext} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
-import {createHostQaDecisionProvider,decideHostQaPolicy} from '../runtime/js/cm-ai/host-qa-policy.mjs';
+import {createHostQaDecisionProvider,decideHostQaPolicy,readQaAssessment} from '../runtime/js/cm-ai/host-qa-policy.mjs';
 
-const low=()=>({scores:{scope:1,risk:1,accumulation:1,boundary:1},
-  changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}});
-test('N6 enforces mandatory triggers ahead of low scores and bounds the API merge exemption',()=>{
-  const input={assessment:low(),pending:2,mergeEligible:false,unassessedTasks:1};
-  assert.equal(decideHostQaPolicy(input).status,'skipped');
+const low=()=>({confirmed:true});
+const basePolicy=()=>({changedFiles:['src/ordinary.mjs'],criticalPaths:{},pending:2,mergeEligible:false,unassessedTasks:1});
+test('N6 no_fixed_trigger is skipped with null score, without model risk inputs',()=>{
+  assert.deepEqual(decideHostQaPolicy(basePolicy()),{status:'skipped',score:null,reason:'no_fixed_trigger'});
+  const input=basePolicy();
   assert.equal(decideHostQaPolicy({...input,pending:0}).reason,'feature_complete');
   assert.equal(decideHostQaPolicy({...input,unassessedTasks:5}).reason,'five_tasks_without_qa');
-  for(const field of Object.keys(input.assessment.changes)){
-    const assessment=low();assessment.changes[field]=true;
-    assert.equal(decideHostQaPolicy({...input,assessment}).status,'triggered',field);
+});
+test('N6 registered path matching triggers all categories and bounds API merge',()=>{
+  const input=basePolicy();
+  for(const name of ['migration','authentication','authorization','payment','api']){
+    const criticalPaths={[name]:['src/**/critical?.mjs']};
+    assert.deepEqual(decideHostQaPolicy({...input,criticalPaths,changedFiles:['src/critical1.mjs']}),
+      {status:'triggered',score:null,reason:name});
+    assert.equal(decideHostQaPolicy({...input,criticalPaths,changedFiles:['src/deep/critical2.mjs']}).reason,name);
+    assert.equal(decideHostQaPolicy({...input,criticalPaths,changedFiles:['src/critical12.mjs']}).status,'skipped');
   }
-  const assessment=low();assessment.changes.api=true;
-  assert.equal(decideHostQaPolicy({...input,assessment,pending:1,mergeEligible:true}).reason,'merged_to_feature_qa');
-  assessment.changes.payment=true;
-  assert.equal(decideHostQaPolicy({...input,assessment,pending:1,mergeEligible:true}).reason,'payment');
-  const high=low();high.scores.risk=5;
-  assert.deepEqual(decideHostQaPolicy({...input,assessment:high}),{status:'triggered',score:8,reason:'risk_score'});
-  high.scores.risk=0;assert.throws(()=>decideHostQaPolicy({...input,assessment:high}),{code:'qa_assessment_invalid'});
+  const criticalPaths={api:['src/api/*'],payment:['src/pay.mjs'],migration:['db/schema.sql']};
+  assert.equal(decideHostQaPolicy({...input,criticalPaths,changedFiles:['src/api/a.mjs'],pending:1,mergeEligible:true}).reason,'merged_to_feature_qa');
+  assert.equal(decideHostQaPolicy({...input,criticalPaths,changedFiles:['src/api/deep/a.mjs']}).reason,'no_fixed_trigger');
+  assert.equal(decideHostQaPolicy({...input,criticalPaths,changedFiles:['db/schema.sql','src/pay.mjs','src/api/a.mjs'],pending:0,unassessedTasks:5}).reason,
+    'feature_complete,migration,payment,five_tasks_without_qa,api');
+  assert.equal(decideHostQaPolicy({...input,criticalPaths,changedFiles:['src/pay.mjs','src/api/a.mjs'],pending:1,mergeEligible:true}).reason,'payment');
+});
+test('N6 rejects unsafe registry and paths rather than silently missing triggers',()=>{
+  const input=basePolicy();
+  for(const criticalPaths of [{unknown:['a']},{api:'a'},{api:['../a']},{api:['/a']},{api:['src/{a,b}.mjs']},{api:['src/[ab].mjs']},{api:['src/**x.mjs']},{api:['src\\a.mjs']}])
+    assert.throws(()=>decideHostQaPolicy({...input,criticalPaths}));
+  for(const changedFiles of [['../a'],['/a'],['a\\b'],['a','a'],['a//b']])
+    assert.throws(()=>decideHostQaPolicy({...input,changedFiles}));
 });
 
 test('N6 derives consecutive work from original task inventory and QA log without a counter store',async()=>{
@@ -53,6 +65,15 @@ test('N6 derives consecutive work from original task inventory and QA log withou
     const skips=rows.map(row=>({...row,status:'skipped',score:4}));
     fs.writeFileSync(log,[oldCurrent,...skips].map(row=>JSON.stringify(row)).join('\n')+'\n');
     assert.equal((await decide()).reason,'five_tasks_without_qa');assert.equal(seen.at(-1),5);
+    const sourced=createHostQaDecisionProvider({timeoutMs:1000,criticalPaths:{payment:['source.js']},assess:async request=>{
+      assert.deepEqual(request.changedFiles,{paths:['source.js'],source:'review_package'});
+      assert.deepEqual(request.criticalPaths,{payment:['source.js']});
+      assert.equal(Object.hasOwn(request,'scores'),false);assert.equal(Object.hasOwn(request,'changes'),false);
+      return {confirmed:true};}});
+    const sourceBinding={...binding,changedFiles:{paths:['source.js'],source:'review_package'}};
+    const sourcedDecision=await sourced.decide(sourceBinding,new AbortController().signal);
+    assert.equal(sourcedDecision.reason,'payment,five_tasks_without_qa');assert.equal(sourcedDecision.changedFilesSource,'review_package');
+    await assert.rejects(sourced.decide(binding,new AbortController().signal),{code:'qa_policy_unavailable'});
     const stale=createHostQaDecisionProvider({timeoutMs:1000,assess:async()=>{
       fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [x] T-005: task\n');return low();}});
     await assert.rejects(stale.decide(binding,new AbortController().signal),{code:'stale_qa'});
@@ -90,4 +111,10 @@ test('step30 unseen excludes closed features, includes other open features, and 
     fs.appendFileSync(log,JSON.stringify({...row,feature:'2.closed-b',status:'triggered',score:null})+'\n');
     await decide();assert.equal(seen.at(-1),2);
   }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('qa_assess confirms only inventory source and rejects self-reported scores or risk flags',()=>{
+  assert.deepEqual(readQaAssessment({confirmed:true}),{confirmed:true});
+  for(const value of [{confirmed:false},{confirmed:true,scores:{scope:5}},{confirmed:true,changes:{api:true}},
+    {scores:{scope:1,risk:1,accumulation:1,boundary:1},changes:{api:false}}])assert.throws(()=>readQaAssessment(value));
 });

@@ -1,6 +1,6 @@
 # N6: QA 评估
 
-AI 动态决策是否触发 `cm-qa-engineer`，不按固定间隔。
+JS 按固定检查点和项目登记路径决定是否触发 `cm-qa-engineer`。会话不判断风险类别。
 
 QA 开始前解析 `tester` 角色并记录 `decision`/`phase: route`；浏览器走查另外解析
 `browser_qa`。路由元数据只说明请求的工具/模型别名，正式命令、逻辑核验和浏览器
@@ -16,36 +16,64 @@ taskIds 全部是 `[DROPPED]` 任务的用例（blocking 与否）不适用：�
 
 最新已 complete 的 QA 若为纯宿主/环境证据 BLOCKED、failed=0 且 qaRound<3，可按 [JS 宿主 QA 恢复](js-host-qa-recovery.md#已-complete-的宿主证据或环境阻断) 显式 `--rerun-blocked-qa --allow-qa` 恢复，以 superseded 关联下一轮全量重跑；产品 FAIL、commands 阻断与未 complete 不适用，完成后同步 N6 状态镜像。
 
-## 评分（1-5 分，总分 ≥ 8 触发）
+## 固定必跑点
 
-| 维度     | 1 分                 | 5 分                  |
-| -------- | -------------------- | --------------------- |
-| 变更范围 | 单文件小改动         | 跨多模块/多项目       |
-| 风险等级 | 纯 UI 文案           | 数据库/支付/认证      |
-| 累积变更 | 上次 QA 后 1 个 task | 上次 QA 后 5+ 个 task |
-| 功能边界 | 模块内部实现         | 完整用户可感知功能    |
+命中任一规则即 `triggered`，`score: null`。reason 按下表顺序用逗号连接所有命中的规则名。
 
-## 必须触发（无需打分）
+| 规则名 | 机械判定 |
+| --- | --- |
+| `feature_complete` | 本 feature 最后一个任务完成；沿用原任务清单计算 |
+| `migration` | 实际改动文件命中登记的 migration 路径 |
+| `authentication` | 实际改动文件命中登记的 authentication 路径 |
+| `authorization` | 实际改动文件命中登记的 authorization 路径 |
+| `payment` | 实际改动文件命中登记的 payment 路径 |
+| `five_tasks_without_qa` | 沿用原任务与 QA 日志计算连续五项未 QA；缺少历史行只计尚未完成 feature 的已完成任务，既有 skipped 计数语义不变 |
+| `api` | 实际改动文件命中登记的 api 路径；本 feature 恰剩一个任务且 `mergeEligible` 为 true 时豁免此项，其他必跑点仍生效 |
 
-- 当前 feature 所有 task 完成
-- API 接口变更（**收尾合并豁免**：下一个任务就是本 feature 最后一个任务时，可合并至 feature 级 QA 一次执行——避免背靠背双跑全量；合并决策记运行日志 `decision` 事件。实跑教训：后端 feature 几乎每任务都改 API,逐任务触发 QA 成本失衡）
-- 数据库 migration
-- 认证/授权/支付逻辑
-- 连续 5 个 task 未触发过 QA（缺少 N6 历史行的计数仅含尚未完成 feature 的已完成任务；自上次 triggered 以来的 skipped 任务语义不变）
+未登记关键路径的项目，N6 不做任何风险识别，只有这两个固定点。
+这两个固定点是 `feature_complete` 和 `five_tasks_without_qa`。路径登记只说明需要检查的范围，不证明文件具有某种业务含义。
 
-## 跳过
+## 项目登记与清单来源
 
-- 纯文档/注释/配置格式
-- 仅新增类型定义（未实现）
-- 上一个 task 刚触发过 QA 且当前变更极小
+使用现有 `--workflow-config` JSON 的 `qa.criticalPaths`。批次使用原 `workflows["feature/task"].qa.criticalPaths`；同一项目的任务应使用同一份登记。不新建配置文件。
 
-**跳过也必须留痕**：无论触发还是跳过，每个任务的 N6 结论都写一条 `qa` 事件进运行日志（`触发:原因` / `跳过:评分{N}` / `合并至feature级`）——cm:ai 必记事件本就含 qa，此处重申是因为实跑失守：json-keeper 7 个任务 0 条 qa 事件，N6 被整场静默绕过，连"连续 5 个 task 未触发"的必触发条款命中了都无人知晓。**不可见的跳过等于没有 N6**
+```json
+{
+  "migration": ["db/migrations/**"],
+  "authentication": ["src/login.mjs"],
+  "authorization": ["src/access/*.mjs"],
+  "payment": ["src/payments/**"],
+  "api": ["src/api/**"]
+}
+```
+
+上例是 `qa.criticalPaths` 的值。类别可省略，各类别是最多 256 个无重复模式的数组；空对象或缺字段表示未登记。
+模式相对代码根，使用 `/`。精确路径匹配整个文件名；`*` 匹配一个路径段内任意字符，`?` 匹配一个字符，完整路径段 `**` 匹配零个或多个段。
+不接受绝对路径、`.`/`..`、反斜线、空段、字符组、花括号或扩展 glob。多代码根使用宿主的共同 `codeProject` 根作为路径基准，登记应带对应子目录。
+登记随现有工作流配置纳入指纹；恢复沿用原登记，配置修订沿用原 QA 恢复合同。已记录的 QA 决策不因登记变化重算。
+
+正式 runner 从编辑前基线与实际内容产生的审查包 `changes` 读取清单，包含新增、删除和文件模式变化；不用作者自报的 handoff `changed_files` 代替它。
+日志的 `changed_files_source` 单独标注来源：`review_package` 为上述清单，`handoff_only` 为可信适配器仅有 handoff 的兼容输入，`unavailable` 为旧适配器未提供清单。
+有登记但清单 unavailable 时保留 `qa_policy_unavailable`，不能把缺失清单当作无命中。本轮不重建兼容路径的编辑前基线。
+宿主 `qa_assess` 请求列出清单、来源、登记及机械计数，会话只回 `{"confirmed":true}` 确认已看到这些输入，不能提交类别、跳过理由或修改清单。
+
+## 跳过与留痕
+
+| 条件 | status / score / reason |
+| --- | --- |
+| 无任何必跑点命中 | `skipped` / `null` / `no_fixed_trigger` |
+| 仅 api 命中，且满足收尾合并豁免 | `skipped` / `null` / `merged_to_feature_qa`；沿用 `decision/qa_merge` 和 QA 行 |
+
+本版本不输出 `docs_only` 或类型定义专属理由；会话自报不能证明这类条件。
+每个任务均写 `qa` 事件，detail 为 `触发:{reason}` / `跳过:{reason}` / `阻塞:{reason}`，不可静默跳过。
+并行成员沿用原 `parallel_member_deferred` 延后合同，新行同样为 `score: null`；合并后末任务触发 feature QA。
+旧整数行继续按原 4–20 范围与状态约束读取；旧日志和旧 METRICS 不改写，已绑定决策不重新裁决。三种 status 的新行均可使用 null，不新增运行协议号。
 
 ## 触发格式
 
 ```text
-🧪 触发 QA — 原因: {理由}
-   累积变更: {N} 个 task | 风险评估: {总分}
+🧪 触发 QA — 原因: {命中的规则名}
+   累积变更: {N} 个 task
 ```
 
 QA 通过 → 继续。发现问题时，**不得在 N6 直接修改**已由 N4 绑定并在 N5 提交的

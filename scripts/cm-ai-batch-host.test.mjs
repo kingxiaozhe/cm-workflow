@@ -120,8 +120,7 @@ function execute(f,{cancel=false,args=[],operations=[{operation:'advance',reques
                 const result=spawnSync(command[0],command.slice(1));assert.equal(result.status,0);
                 return {id:'syntax',command,outcome:'passed',exitCode:0,evidence:'Actual Node syntax check exited 0'};
               });respond(row,checks);
-            }else if(row.kind==='qa_assess')respond(row,{scores:{scope:2,risk:2,accumulation:2,boundary:2},
-              changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}});
+            }else if(row.kind==='qa_assess')respond(row,{confirmed:true});
             else if(row.kind==='documentation_sync'){
               assert.equal(identity.taskId,'T-002');assert.deepEqual(payload.paths,['README.md']);
               fs.writeFileSync(path.join(f.codeProject,'README.md'),'# Exports 41 and 42\n');respond(row,{status:'completed'});
@@ -171,6 +170,9 @@ test('protected Claude batch uses actual sandbox edits/checks and original two-t
 for(const runtime of ['codex','claude'])test(`${runtime} batch CLI preserves held review revisions and reaches one original run_done without duplicate completion`,async()=>{
   const f=fixture(runtime);
   try{
+    const bundle=JSON.parse(fs.readFileSync(f.config,'utf8'));
+    bundle.workflows['1.work/T-001'].qa.criticalPaths={payment:['task1.mjs']};
+    fs.writeFileSync(f.config,JSON.stringify(bundle));
     const held=requestFirstRevision(f,['T-002']);
     const first=await execute(f,{args:held});assert.equal(first.code,0,first.stderr);
     assert.equal(first.result.identity.taskId,'T-002');assert.equal(first.result.state,'changes_requested');
@@ -200,6 +202,12 @@ for(const runtime of ['codex','claude'])test(`${runtime} batch CLI preserves hel
     assert.equal(rows.filter(row=>row.event==='run_done').length,1);
     assert.equal(rows.filter(row=>row.event==='decision'&&row.phase==='batch_handoff').length,1);
     assert.equal(rows.filter(row=>row.event==='test_run'&&row.phase==='start').length,2);
+    const taskQa=rows.filter(row=>row.event==='qa'&&row.task==='T-001');
+    assert.equal(taskQa.length,1);
+    assert.equal(taskQa[0].status,'triggered');
+    assert(taskQa[0].reason.split(',').includes('payment'));
+    assert.equal(taskQa[0].score,null);
+    assert.equal(taskQa[0].changed_files_source,'review_package');
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 

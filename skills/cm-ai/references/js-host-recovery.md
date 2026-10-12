@@ -1,5 +1,7 @@
 # JS 宿主恢复：开发、审查、完成、规格与重跑
 
+N6 新决定按固定检查点和 `qa.criticalPaths` 登记匹配；`qa_assess` 只确认清单来源，回 `{"confirmed":true}`。恢复已记录决定时沿用原行，不重新裁决；登记和配置修订见 [N6 固定检查点](N6-qa-eval.md)。
+
 本文是 [js-host.md](js-host.md) 的恢复引用：运行停在阻断、待审失败、unknown 或被拒绝时，按 js-host.md 的停机路由表读取对应一节。QA 恢复见 [js-host-qa-recovery.md](js-host-qa-recovery.md)。
 
 ## 先确认原运行协议

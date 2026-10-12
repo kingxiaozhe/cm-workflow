@@ -67,8 +67,7 @@ function runCli(f,config,mode,operation){
             if(['init_generate','init_verify'].includes(row.kind)){assert(mode==='create'||f.resumeInit);
               response=reply(f,row.kind,row.payload);
               if(row.kind==='init_verify'&&f.failVerify>0){f.failVerify--;response.checks.commands={status:'failed',evidence:'npm test exited 1'};}}
-            else if(row.kind==='qa_assess')response={scores:{scope:5,risk:5,accumulation:5,boundary:5},
-              changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}};
+            else if(row.kind==='qa_assess')response={confirmed:true};
             else if(row.kind==='documentation_inspect'){
               const {syncId,identity,packageDigest,contextDigest}=row.payload;
               response={syncId,identity,packageDigest,contextDigest,status:'completed',reason:'Fixture instructions inspected; no documentation paths configured',

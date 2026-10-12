@@ -30,6 +30,9 @@ export function hostAnswerTimeoutMs(env=process.env){
   need(/^[1-9][0-9]?$/.test(raw)&&Number(raw)<=60,'host_answer_timeout_invalid');
   return Number(raw)*60000;
 }
+// qa_assess carries runner-proven changedFiles and project criticalPaths. Its
+// consumer validates only {confirmed:true}; scores/semantic risk flags are not
+// part of this kind's business contract. The bridge remains transport-only.
 // Every kind a workflow host may ask the session. A kind missing here makes
 // that step throw host_operation_invalid on every attempt (O20: the second-round
 // refactor judge revision, refactor_revise_tests, was missing).
