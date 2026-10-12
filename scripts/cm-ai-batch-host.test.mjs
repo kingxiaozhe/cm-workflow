@@ -170,6 +170,9 @@ test('protected Claude batch uses actual sandbox edits/checks and original two-t
 for(const runtime of ['codex','claude'])test(`${runtime} batch CLI preserves held review revisions and reaches one original run_done without duplicate completion`,async()=>{
   const f=fixture(runtime);
   try{
+    const bundle=JSON.parse(fs.readFileSync(f.config,'utf8'));
+    bundle.workflows['1.work/T-001'].qa.criticalPaths={payment:['task1.mjs']};
+    fs.writeFileSync(f.config,JSON.stringify(bundle));
     const held=requestFirstRevision(f,['T-002']);
     const first=await execute(f,{args:held});assert.equal(first.code,0,first.stderr);
     assert.equal(first.result.identity.taskId,'T-002');assert.equal(first.result.state,'changes_requested');
@@ -199,6 +202,12 @@ for(const runtime of ['codex','claude'])test(`${runtime} batch CLI preserves hel
     assert.equal(rows.filter(row=>row.event==='run_done').length,1);
     assert.equal(rows.filter(row=>row.event==='decision'&&row.phase==='batch_handoff').length,1);
     assert.equal(rows.filter(row=>row.event==='test_run'&&row.phase==='start').length,2);
+    const taskQa=rows.filter(row=>row.event==='qa'&&row.task==='T-001');
+    assert.equal(taskQa.length,1);
+    assert.equal(taskQa[0].status,'triggered');
+    assert(taskQa[0].reason.split(',').includes('payment'));
+    assert.equal(taskQa[0].score,null);
+    assert.equal(taskQa[0].changed_files_source,'review_package');
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 

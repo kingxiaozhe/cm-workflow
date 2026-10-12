@@ -16,6 +16,7 @@ import {captureReviewBaseline,createReviewPackage} from '../runtime/js/cm-ai/rev
 import {explainReviewedDrift} from '../runtime/js/cm-ai/fix-code-association.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {createTaskRunner} from '../runtime/js/cm-ai/task-runner.mjs';
 
 const isolated=fs.mkdtempSync(path.join(os.tmpdir(),'cm-project-qa-gate-'));
 const saved={CM_WORKFLOW_HOME:process.env.CM_WORKFLOW_HOME,CM_WORKFLOW_LOG_HOME:process.env.CM_WORKFLOW_LOG_HOME};
@@ -93,6 +94,36 @@ function project(){
   return {root,codeProject,specsDir,state,execution,definition,advance,first,firstExecution,reapprove};
 }
 const status=p=>JSON.parse(fs.readFileSync(path.join(p.specsDir,'.cm-status.json'),'utf8'));
+
+test('qaChangedFiles rejects stale_qa before completion and for a mismatched digest after completion',async()=>{
+  const p=project(),identity=p.first.identity;
+  const terminal=(request,result)=>({version:1,invocationId:request.invocationId,
+    contextId:request.contextId,provider:request.provider,effectiveModel:'fixture',status:'succeeded',accepted:true,result});
+  const runner=createTaskRunner({root:p.codeProject,identity,scope:p.first.scope,requirements:p.first.requirements,
+    excludedContexts:['control'],timeoutMs:5000,
+    developer:{provider:'codex',requestedModel:'fixture',contextId:'developer',run:request=>{
+      fs.writeFileSync(path.join(p.codeProject,'a.mjs'),'export const a=1;\n');
+      return terminal(request,{outcome:'implemented'});}},
+    reviewers:[{id:'reviewer',provider:'codex',requestedModel:'fixture',allowed:true,available:true,
+      contexts:['review-one','review-two'],run:request=>terminal(request,{verdict:'approved',
+        packageDigest:request.payload.reviewPackage.packageDigest,examinedPaths:reviewPaths(request.payload.reviewPackage),
+        findings:[],summary:'Synthetic review'})}],
+    check:()=>[{id:'syntax',command:[process.execPath,'--check','a.mjs'],outcome:'passed',exitCode:0,evidence:'fixture'}],
+    commit:()=>({outcome:'fixture_completed'})});
+  const effect=kind=>({version:1,id:`${kind}-1`,identity,kind});
+  const developed=await runner.executeEffect(effect('develop'));
+  assert.equal(developed.state,'awaiting_review',JSON.stringify(developed));
+  const reviewed=await runner.executeEffect(effect('review'));
+  assert.equal(reviewed.state,'approved',JSON.stringify(reviewed));
+  assert.throws(()=>runner.qaChangedFiles(reviewed.packageDigest),{code:'stale_qa'});
+  const completed=await runner.executeEffect(effect('complete'));
+  assert.equal(completed.state,'fixture_completed',JSON.stringify(completed));
+  assert.equal(completed.packageDigest,reviewed.packageDigest);
+  const wrongDigest=(completed.packageDigest[0]==='0'?'1':'0')+completed.packageDigest.slice(1);
+  assert.throws(()=>runner.qaChangedFiles(wrongDigest),{code:'stale_qa'});
+  assert.deepEqual(runner.qaChangedFiles(completed.packageDigest),{paths:['a.mjs'],source:'review_package'});
+  assert.equal(runner.status().state,'fixture_completed');
+});
 
 test('#17 an earlier feature whose QA is BLOCKED keeps the project from run_done until it is recovered; #18 its recovery survives a later reviewed task',async()=>{
   const p=project();
