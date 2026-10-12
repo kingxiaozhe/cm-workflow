@@ -329,6 +329,38 @@ test('command failure, timeout and broken state never throw; they log one line w
   for(const h of [failing,slow,missing,broken])assert(!/demo-app|T-001|核对|run-1/.test(h.log()));
 });
 
+// State and lock files are read bounded: a FIFO, a symlink (live or dangling)
+// or an oversized file never blocks the host and never counts as valid state.
+// FIFO cases run in a child with a hard deadline so a regression hangs the
+// child, not the suite.
+test('state and lock reads never block on a FIFO and refuse symlinks and oversized files',{skip:process.platform==='win32'},t=>{
+  const fifo=file=>{const made=spawnSync('mkfifo',[file]);assert.equal(made.status,0,`mkfifo ${file}`);};
+  const cases=[
+    ['state FIFO',h=>fifo(path.join(h.dir,'notify-state.json')),'state_invalid',true],
+    ['state symlink',h=>{fs.writeFileSync(path.join(h.dir,'real.json'),JSON.stringify({version:1,keys:{},sends:[]}));fs.symlinkSync(path.join(h.dir,'real.json'),path.join(h.dir,'notify-state.json'));},'state_invalid'],
+    ['state dangling symlink',h=>fs.symlinkSync(path.join(h.dir,'missing.json'),path.join(h.dir,'notify-state.json')),'state_invalid'],
+    ['state oversized',h=>fs.writeFileSync(path.join(h.dir,'notify-state.json'),JSON.stringify({version:1,keys:{},sends:[],pad:'x'.repeat(300*1024)})),'state_invalid'],
+    ['lock FIFO',h=>fifo(path.join(h.dir,'notify-state.lock')),'state_busy',true],
+    ['lock symlink',h=>{fs.writeFileSync(path.join(h.dir,'real.lock'),JSON.stringify({pid:process.pid,at:Date.now()-60000,token:'old'}));fs.symlinkSync(path.join(h.dir,'real.lock'),path.join(h.dir,'notify-state.lock'));},'state_busy'],
+    ['lock dangling symlink',h=>fs.symlinkSync(path.join(h.dir,'missing.lock'),path.join(h.dir,'notify-state.lock')),'state_busy'],
+  ];
+  for(const [name,arrange,reason,inChild=false] of cases){
+    const h=home(t);arrange(h);const listing=()=>fs.readdirSync(h.dir).filter(name=>name!=='notify.log').sort(),before=listing();
+    let result;
+    if(inChild){
+      const child=spawnSync(process.execPath,['--input-type=module','-e',
+        `import {notify} from ${JSON.stringify(NOTIFY_URL)};process.stdout.write(JSON.stringify(notify(${JSON.stringify(fields('f'))},{now:${NOW}})));`],
+        {encoding:'utf8',timeout:5000,env:h.env});
+      assert.equal(child.signal,null,`${name}: bounded read must not block (child killed by ${child.signal})`);
+      assert.equal(child.status,0,`${name}: ${child.stderr}`);result=JSON.parse(child.stdout);
+    }else result=notify(fields('f'),{env:h.env,now:NOW});
+    assert.deepEqual(result,{sent:false,reason},name);
+    assert.equal(h.rows().length,0,name);
+    // Nothing but the log is written through or beside the refused entry.
+    assert.deepEqual(listing(),before,name);assert.match(h.log(),new RegExp(`skipped ${reason}`),name);
+  }
+});
+
 // Lock contention never waits; only a provably stale lock is reclaimed, and
 // a live lock is never removed.
 test('lock: a live lock skips at once and is kept; a stale lock is reclaimed safely',async t=>{
@@ -590,48 +622,48 @@ await serveCmAiHost({host,input:process.stdin,output:process.stdout});`);
 const op=(n,answer,extra={})=>({requestId:`r${n}`,operation:'advance',answer,...extra});
 
 test('host session idle after a finished step notifies once: 疑似空转 for progress, 在等你 for a person',async t=>{
-  const h=home(t,{config:{idleMinutes:0.003}}),run=idleHost(h);
-  const progress=await run([[0,op(1,{stage:'requirements_analysis',runId:'prd-1'})],[900,null]]);
+  const h=home(t,{config:{idleMinutes:0.009}}),run=idleHost(h);
+  const progress=await run([[0,op(1,{stage:'requirements_analysis',runId:'prd-1'})],[2700,null]]);
   assert.equal(progress.code,0);
   assert(await h.until(()=>h.rows().length===1));
   const [idle]=h.rows();
   assert.equal(idle.title,'CM cm-prd 疑似空转 · '+path.basename(process.cwd()));
   assert.equal(idle.stdin.event,'idle');assert.equal(idle.stdin.code,'no_next_step');
   assert.equal(idle.stdin.runId,'prd-1');assert.equal(idle.stdin.stage,'requirements_analysis');
-  const waiting=home(t,{config:{idleMinutes:0.003}});
-  const review=await idleHost(waiting)([[0,op(1,{stage:'awaiting_user',runId:'prd-2'})],[900,null]]);
+  const waiting=home(t,{config:{idleMinutes:0.009}});
+  const review=await idleHost(waiting)([[0,op(1,{stage:'awaiting_user',runId:'prd-2'})],[2700,null]]);
   assert.equal(review.code,0);
   assert(await waiting.until(()=>waiting.rows().length===1));
   assert.equal(waiting.rows()[0].title,'CM cm-prd 在等你 · '+path.basename(process.cwd()));
   assert.equal(waiting.rows()[0].stdin.event,'idle_waiting');assert.equal(waiting.rows()[0].stdin.code,'waiting_for_you');
-  await new Promise(resolve=>setTimeout(resolve,300));
+  await new Promise(resolve=>setTimeout(resolve,900));
   assert.equal(h.rows().length,1);assert.equal(waiting.rows().length,1);
 });
 
 test('host session idle: next step, in-flight step and session end clear it; status polls do not',async t=>{
-  const h=home(t,{config:{idleMinutes:0.003}}),run=idleHost(h);
+  const h=home(t,{config:{idleMinutes:0.009}}),run=idleHost(h);
   // Steady progress: each next operation arrives before the threshold.
-  const steady=[];for(let n=1;n<=6;n++)steady.push([n===1?0:60,op(n,{stage:'requirements_analysis'})]);
-  assert.equal((await run([...steady,[60,null]])).code,0);
+  const steady=[];for(let n=1;n<=6;n++)steady.push([n===1?0:180,op(n,{stage:'requirements_analysis'})]);
+  assert.equal((await run([...steady,[180,null]])).code,0);
   // A long in-flight operation is not idleness; ending right after its reply clears the timer.
-  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'},{slowMs:900})],[950,null]])).code,0);
+  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'},{slowMs:2700})],[2850,null]])).code,0);
   // A slow next operation: its arrival clears the timer armed by the previous reply.
-  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],[60,op(2,{stage:'requirements_analysis'},{slowMs:900})],[950,null]])).code,0);
+  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],[180,op(2,{stage:'requirements_analysis'},{slowMs:2700})],[2850,null]])).code,0);
   // A cancel reply while another operation is still in flight does not arm it.
-  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'},{slowMs:900})],[60,{requestId:'c1',operation:'cancel'}],[900,null]])).code,0);
+  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'},{slowMs:2700})],[180,{requestId:'c1',operation:'cancel'}],[2700,null]])).code,0);
   // Driver shape: EOF right after the reply arrived.
   assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],['reply:r1',null]])).code,0);
   // A line the host rejects (not JSON, unknown operation) is still the session's next step.
-  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],[60,'not json'],[900,null]])).code,0);
-  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],[60,{requestId:'x',operation:'no_such_op'}],[900,null]])).code,0);
-  await new Promise(resolve=>setTimeout(resolve,500));
+  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],[180,'not json'],[2700,null]])).code,0);
+  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],[180,{requestId:'x',operation:'no_such_op'}],[2700,null]])).code,0);
+  await new Promise(resolve=>setTimeout(resolve,1500));
   assert.equal(h.rows().length,0,h.log());
   // Polls (status via the control path, fix_status via the normal path) neither
   // hold the timer off nor replace the last real step's result.
   for(const poll of ['status','fix_status']){
     const polls=[[0,op(1,{stage:'requirements_analysis',runId:`run-${poll}`})]];
-    for(let n=0;n<12;n++)polls.push([60,{requestId:`s${n}`,operation:poll}]);
-    assert.equal((await run([...polls,[60,null]])).code,0);
+    for(let n=0;n<12;n++)polls.push([180,{requestId:`s${n}`,operation:poll}]);
+    assert.equal((await run([...polls,[180,null]])).code,0);
     assert(await h.until(()=>h.rows().some(row=>row.stdin.runId===`run-${poll}`)));
     const row=h.rows().find(row=>row.stdin.runId===`run-${poll}`);
     assert.equal(row.stdin.event,'idle');assert.equal(row.stdin.stage,'requirements_analysis');
@@ -642,8 +674,8 @@ test('host session idle: next step, in-flight step and session end clear it; sta
 // A poll that is still running when the deadline passes holds the notice; it
 // goes out right after the poll replies, not during it.
 test('host session idle: a slow status in flight holds the notice until it replies',async t=>{
-  const h=home(t,{config:{idleMinutes:0.003}}),run=idleHost(h);
-  const result=await run([[0,op(1,{stage:'requirements_analysis'})],[60,{requestId:'s1',operation:'status',slowMs:700}],['reply:s1',undefined],[400,null]]);
+  const h=home(t,{config:{idleMinutes:0.009}}),run=idleHost(h);
+  const result=await run([[0,op(1,{stage:'requirements_analysis'})],[180,{requestId:'s1',operation:'status',slowMs:2100}],['reply:s1',undefined],[1200,null]]);
   assert.equal(result.code,0);
   const doneAt=JSON.parse(result.stdout.split('\n').find(line=>line.includes('"requestId":"s1"'))).result.doneAt;
   assert(await h.until(()=>h.rows().length===1));
@@ -653,7 +685,7 @@ test('host session idle: a slow status in flight holds the notice until it repli
 
 // Tool-bridge sessions end with host_close from the driver: exit 0, no notice.
 test('host session idle: host_close ends the session cleanly without a notice',async t=>{
-  const h=home(t,{config:{idleMinutes:0.003}});
+  const h=home(t,{config:{idleMinutes:0.009}});
   const script=path.join(h.dir,'cm-demo-host.mjs');
   fs.writeFileSync(script,`import {serveCmAiHost} from ${JSON.stringify(HOST_SESSION)};
 import {createHostToolBridge} from ${JSON.stringify(BRIDGE)};

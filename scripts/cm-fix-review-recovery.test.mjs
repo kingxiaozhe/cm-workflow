@@ -180,7 +180,7 @@ test('one authorized CLI continuation preserves old history and reaches the orig
   await resumed.reviewFinal();assert.equal(f.calls(),2);assert.equal(f.repairs(),1);
 });
 
-for(const mode of ['loss-again','reuse-thread','approved','changes_requested'])test(`continuation refuses unsafe reuse: ${mode}`,{timeout:10000},async t=>{
+for(const mode of ['loss-again','reuse-thread','approved','changes_requested'])test(`continuation refuses unsafe reuse: ${mode}`,{timeout:FIXTURE_TIMEOUT_MS},async t=>{
   const f=await fixture(t,mode);
   if(['approved','changes_requested'].includes(mode)){
     await f.cli([f.request],['--allow-final-review-recovery']).then(rows=>assert.equal(rows[0].error.code,'host_request_failed'));

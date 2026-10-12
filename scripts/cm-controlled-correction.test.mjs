@@ -132,11 +132,18 @@ test('incomplete or inconsistent compatibility writer evidence refuses preparati
 });
 
 test('library callers never require an editing baseline while CLI entries do',t=>{
-  const f=fixture(t),record=f.prepare(),selected={...f.selectors,...record};
+  const f=fixture(t),record=f.prepare(),selected={...f.selectors,...record,tasksPath:f.tasks};
   fs.rmSync(path.join(f.reviewsDir,'login-T-001-baseline.json'));
   assert.equal(checkN4(selected).outcome,'ready_for_review');
   const cli=spawnSync(process.execPath,[jsGate,...cliArgs('check-n4',f,selected)],{encoding:'utf8'});
   assert.equal(cli.status,1);assert.match(cli.stderr,/missing editing baseline/);
+  f.finish(record);
+  assert.equal(checkN5(selected).outcome,'approved');assert.equal(prepareMarkDone(selected).evidence.length,8);
+  for(const command of ['check-n5','prepare-mark-done']){
+    const refused=spawnSync(process.execPath,[jsGate,...cliArgs(command,f,selected),...(command==='prepare-mark-done'?['--tasks',f.tasks]:[])],{encoding:'utf8'});
+    assert.equal(refused.status,1,command);assert.match(refused.stderr,/missing editing baseline/,command);
+  }
+  assert.match(fs.readFileSync(f.tasks,'utf8'),/\[ \]/);
 });
 
 test('feature-local task owner cannot hide its specs-wide retained JS run from preparation',t=>{

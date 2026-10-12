@@ -91,6 +91,13 @@ test('direct review rejects a grant registration rather than accepting a second 
   registered.payload.grant={kind:'cm-review-dispatch-grant'};
   assert.throws(()=>readRunnerHistory(rechain(records),records[0].payload.config,3),{code:'runner_invocation'});
 }));
+test('direct review rejects a registration bound to a host that is neither the developer thread nor an excluded thread',()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
+  const snapshot=f.getStore().snapshot(),records=structuredClone(snapshot.records);
+  const registered=records.find(record=>record.payload.type==='review-invocation-registered');
+  registered.payload.binding.hostContextId='stranger-host';
+  assert.throws(()=>readRunnerHistory(rechain(records),records[0].payload.config,3),{code:'runner_invocation'});
+}));
 test('direct review rejects altered binding even with matching registration digest',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));await runner.executeEffect(f.effect('review'));
   const snapshot=f.getStore().snapshot(),at=snapshot.records.findIndex(record=>record.payload.type==='review-invocation-registered');

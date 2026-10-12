@@ -9,7 +9,7 @@ import {openTaskExecutionStore} from '../runtime/js/cm-ai/task-owner.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
-import {writeHandoff,writeReview} from '../experiments/js-orchestration/native-gate-fixture.mjs';
+import {writeHandoff,writeReview} from './fixtures/native-gate-fixture.mjs';
 import {acquireExternalRunGuard} from '../runtime/js/cm-ai/external-run-guard.mjs';
 import {memberSupersedeAdmitted} from './cm-ai-batch-run.mjs';
 async function fixture(fn,review,{strict=true,timeoutMs=2000,externalDeveloper=false,policyOnly=false}={}){

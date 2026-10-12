@@ -361,6 +361,19 @@ test('inventory excludes root reviews and nested specs evidence throughout N4 an
   assert.deepEqual(checkN5({...f.selectors,inventory:'required'}).inventory_counts,{added:0,modified:1,deleted:0});
 }));
 
+// Only the code root's own .reviews and the specs subtree are evidence; a
+// nested directory that merely shares the name is ordinary code.
+test('inventory counts a nested directory named .reviews as code',()=>fixture(root=>{
+  const f=inventoryFixture(root);assert.equal(f.capture().status,0);
+  fs.mkdirSync(path.join(root,'src/.reviews'));fs.writeFileSync(path.join(root,'src/.reviews/data.md'),'code');
+  fs.writeFileSync(path.join(root,'.reviews','unrelated-review.md'),'audit');
+  fs.writeFileSync(path.join(root,'src/example.ts'),'after');f.deliver();
+  assert.throws(()=>checkN4({...f.selectors,inventory:'required'}),/改了但没列: src\/\.reviews\/data\.md/);
+  f.deliver(['src/example.ts','src/.reviews/data.md']);
+  assert.equal(checkN4({...f.selectors,inventory:'required'}).inventory,'verified');
+  assert.deepEqual(checkN5({...f.selectors,inventory:'required'}).inventory_counts,{added:1,modified:1,deleted:0});
+}));
+
 test('inventory includes executable-only changes and cumulative attempt two edits',()=>fixture(root=>{
   const f=inventoryFixture(root);assert.equal(f.capture().status,0);
   if(process.platform==='win32')fs.writeFileSync(path.join(root,'src/example.ts'),'after');
@@ -430,6 +443,8 @@ test('inventory baseline and evidence symlinks refuse instead of legacy degradat
   const target=path.join(f.selectors.reviewsDir,'other-baseline.json');fs.writeFileSync(target,bytes);fs.symlinkSync(target,f.baseline);
   assert.throws(()=>checkN4({...f.selectors,inventory:'required',allowLegacyUnbound:true}),/baseline/);
   fs.unlinkSync(f.baseline);fs.writeFileSync(f.baseline,bytes);
+  // A nested entry merely named .reviews is ordinary code: a symlink there is
+  // refused like any other symlink in the inventory, never treated as evidence.
   fs.mkdirSync(path.join(root,'linked'));fs.symlinkSync(f.selectors.reviewsDir,path.join(root,'linked/.reviews'));
-  assert.throws(()=>checkN4({...f.selectors,inventory:'required'}),/unsupported_path/);
+  assert.throws(()=>checkN4({...f.selectors,inventory:'required'}),/unsupported_file: linked\/\.reviews/);
 }));

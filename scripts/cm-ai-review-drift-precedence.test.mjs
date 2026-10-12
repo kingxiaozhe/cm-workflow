@@ -9,7 +9,7 @@ import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {openTaskExecutionStore} from '../runtime/js/cm-ai/task-owner.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
-import {writeHandoff} from '../experiments/js-orchestration/native-gate-fixture.mjs';
+import {writeHandoff} from './fixtures/native-gate-fixture.mjs';
 
 const identity={repositoryId:'fixture',runId:'review-drift',taskId:'T-001',attempt:1};
 const terminal=(request,result)=>({version:1,invocationId:request.invocationId,

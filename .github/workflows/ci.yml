@@ -24,6 +24,8 @@ jobs:
           node-version: "24.14"
       - name: Check Darwin sandbox and Claude loopback probe
         run: node --test scripts/cm-claude-probe.test.mjs
+      - name: Run the darwin-only review-dispatch bootstrap rules (skipped on Linux shards)
+        run: node --test scripts/cm-ai-drive-bootstrap-rules.test.mjs
 
   node18-authorities:
     runs-on: ubuntu-latest
