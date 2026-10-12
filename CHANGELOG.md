@@ -5,6 +5,7 @@
 
 ## 未发布
 
+- 兼容手工 N1–N8 门禁新增 `capture-baseline`：N3 编辑前复用 review-package 捕获无内容清单；命令行 N4/N5 与完成入口按任务起点累计核对 `changed_files` 的新增、修改、删除等集，排除 specs 与 `.reviews`。库调用默认行为不变，JS 使用自己的审查包基线；cm-fix、cm-refactor 手工步骤补齐编辑前捕获。缺基线只经现有 `--allow-legacy-unbound` 披露清单未核验，原内容绑定与 handoff schema 保持不变。
 - N4 删除作者自审前置，直接进入独立审查；N3 的正常检查继续保留，历史非独立凭证仍不能授权完成。
 
 - N6 改为固定检查点：保留 feature 完成与连续五项未 QA；migration、认证、授权、支付和 API 由现有 workflow 的 `qa.criticalPaths` 与 runner 基线核对清单匹配。新决策 `score: null`，无命中为 `no_fixed_trigger`；API 收尾合并、旧整数记录、QA 执行类型与 blocking 用例合同保留。`qa_assess` 只确认清单来源，不再由会话提交类别。

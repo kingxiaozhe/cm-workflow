@@ -46,7 +46,7 @@ JS 路由中的状态、日志、handoff、Review 凭证与任务勾选由原 JS
 ### N1–N8 业务概览与兼容执行步骤
 
 下列流程图说明共同业务顺序；JS 的执行操作以 `references/js-host.md` 及其路由到的恢复／条件文档为准。
-仅已选定兼容流程时，按下文及 `references/` 节点执行手工步骤；入口更新不代表已安装副本或全阶段实机验收。
+仅已选定兼容流程时，按下文及 `references/` 节点执行手工步骤；N3 开工前先运行 `capture-baseline`，N4/N5 核对实际清单与 `changed_files` 相等；入口更新不代表已安装副本或全阶段实机验收。
 
 ```text
 START

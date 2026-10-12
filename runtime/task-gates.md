@@ -17,6 +17,40 @@ The flag checks record completeness, not the truth of an agent's statement; inde
 review still verifies the actual work. Legacy callers remain compatible without this
 flag, and the persistent runner retains its existing structured Learning checks.
 
+Inventory verification is enabled only by the compatibility command-line entry.
+`main()` passes the internal function option `inventory: 'required'` to `check-n4`,
+`check-n5`, `prepare-mark-done`, `verify-mark-done-plan` and `mark-done-locked`.
+Completion preparation and rechecks forward the same selectors to N5, including
+human corrections. This is not a CLI flag. Exported library functions default to
+the original result fields and errors without inventory checks; JS task completion,
+cm-fix and cm-refactor retain their own review-package baselines.
+
+Before compatibility N3 edits any file, the main executor captures the task's starting inventory:
+
+```bash
+node {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs capture-baseline \
+  --project-root {CODE_PROJECT} \
+  --reviews-dir {SPECS_DIR}/.reviews \
+  --feature {FEATURE_SLUG} --task {T-xxx}
+```
+
+This writes `{feature}-{task}-baseline.json` under the reviews directory. It seals
+identity, canonical-root digest, stable ignore policy, relative file paths, SHA-256,
+byte sizes and executable bits with a whole-record digest; it stores no file bodies.
+The existing review-package scanner excludes dependencies, fixed junk, Git-ignored
+paths and specs. A nested canonical `.reviews` parent is the specs subtree; when
+`.reviews` is at the code root only that directory is excluded. All `.reviews`
+directories in the inventory are excluded. External specs do not enter the code root.
+The same baseline/current ignore union filters both sides; AGENTS.md remains checked.
+Capture refuses beyond 10,000 files or 1 GiB of inventory bytes, names the triggering
+file and writes no partial baseline. Capture cannot prove it preceded an edit;
+executors and independent reviewers must verify that ordering.
+
+An existing baseline is never overwritten. If it is wrong, a human must delete
+that file, capture again, and add one `decision` line to the authoritative run log.
+Attempt 2 reuses attempt 1's baseline; changes accumulate from the task start.
+This compatibility command supports one `--project-root`, not `codeProjectPaths`.
+
 For attempt 1 or 2, N3 writes:
 
 ```text
@@ -38,7 +72,7 @@ portable across macOS, Linux, and Windows.
 Before writing a new handoff, hash the exact `changed_files` set:
 
 ```bash
-python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py hash-implementation \
+node {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs hash-implementation \
   --project-root {CODE_PROJECT} \
   --file path/one --file path/two
 ```
@@ -50,9 +84,23 @@ symlinks and directories are rejected. Historical unbound handoffs require the
 explicit recovery flag `--allow-legacy-unbound` and return `content_bound: false`;
 new work must not use that flag.
 
-The gate validates declaration consistency; it does not reconstruct a task diff
-from an already-dirty or multi-repository working tree. N3 remains responsible
-for comparing `changed_files` with the task-scoped diff before writing handoff.
+With a baseline, CLI `check-n4` and `check-n5` reconstruct the actual added, modified
+(including executable-bit changes) and deleted paths from the starting inventory
+and current tree. `changed_files` must equal that set. Mismatch lists “改了但没列”
+and “列了但没改”, each capped at 20 paths with `+N more`. Success returns
+`inventory: "verified"` and `inventory_counts: {added, modified, deleted}`.
+Content binding remains mandatory and independent of inventory verification.
+Preexisting dirty content is part of the baseline; concurrent unrelated edits are
+still task-period changes and must be reconciled before review.
+
+A missing baseline blocks these CLI entries. Only explicit `--allow-legacy-unbound`
+recovery returns `inventory: "unverified"` and the fixed `inventory_note`:
+“未捕获编辑前基线，不保证清单完整，只保证已列文件的内容绑定”。
+If the legacy handoff also lacks its content digest, `content_bound` remains false;
+the note does not create a missing content binding. The flag cannot bypass a corrupt,
+wrong-task or wrong-root baseline. The unchanged handoff schema carries no baseline
+fields. Before writing the handoff, reconcile the complete file list; after writing,
+run N4 and keep its digest and inventory result for independent review.
 
 Validate the evidence before N4:
 

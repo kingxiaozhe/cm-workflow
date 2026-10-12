@@ -8,9 +8,10 @@
 版本 1 不接受 `reviewer.adapter: openai-compatible`：该文本调用不能生成 N4 认可的
 独立凭证，配置校验会在调用前拒绝，避免白白消耗 API Token。
 
-开始审查前确认 N3 的 `check-n4` JSON 返回 `content_bound: true`。这表示 handoff 的
+开始审查前确认 N3 的 `check-n4` JSON 返回 `inventory: "verified"` 与 `content_bound: true`。这表示 handoff 的
 `implementation_sha256` 已按项目根复算，审查结论不仅绑定文件名，也绑定被审文件内容。
-历史无摘要 handoff 只能在明确披露降级时用 `--allow-legacy-unbound` 恢复，不能作为新任务凭证。
+`inventory_counts` 分别记录新增、修改、删除；确认 `changed_files` 与基线以来实际清单完全一致。
+历史缺基线或无摘要 handoff 只能在明确披露降级时用 `--allow-legacy-unbound` 恢复，并披露 `inventory: "unverified"` 或 `content_bound: false` 的具体缺口，不能作为新任务凭证。
 
 N3 保留开发期 lint 与测试；这些正常检查不构成作者自审前置，也不能作为独立批准凭证。历史 `independent: false` 自审记录继续可审计、不能授权完成。
 

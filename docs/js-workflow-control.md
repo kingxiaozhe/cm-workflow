@@ -7,6 +7,14 @@
 策略明确选择开发、bootstrap、QA 与 QA 修复能力；模型、命令和路径仍来自原配置，加载配置不自动启用能力。
 普通 `advance` 在已确认范围内自动走常规 fresh 独立审查，最多两轮；异常恢复用此前 `status.controlTarget` 的固定副本。
 批次沿原能力，`qaFix` 必须为 `disabled`，不能通过策略启用尚未支持的 QA 修复。
+明确选择手工 N1–N8 的兼容任务，在 N3 编辑前运行 `cm-task-gate.mjs capture-baseline`。
+兼容命令行 `check-n4` / `check-n5` 对单代码根比较任务起点清单与当前清单，要求 `changed_files` 等集，
+并保留原实现内容摘要绑定。attempt 2 共用起点基线；历史缺基线仅通过现有
+`--allow-legacy-unbound` 显式披露 `inventory: "unverified"`，详见 `../runtime/task-gates.md`。
+仅命令行入口传内部参数 `inventory: 'required'`，完成准备、计划复核和锁内完成也传递此参数。
+导出的库函数默认保持原返回字段和报错，不核对这份清单；JS runner、cm-fix、cm-refactor
+使用各自审查包基线，宿主和驾驶员行为不受影响。
+
 cm-ai 单/批 r2 blocked 的 runner-owned correction 尚未支持；原兼容任务门禁的人工补正合同保持原样，不能用来完成原 cm-ai run。
 
 下文原 `cm-ai` 能力开关和请求 `version:1` 示例用于未启用 v2 的旧运行、旧 PLAN 或原进程内接线。

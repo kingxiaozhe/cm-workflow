@@ -5,6 +5,18 @@
 按 `../../../runtime/project-learning.md` 从磁盘重读各目标项目的 `AGENTS.md`，
 在本任务计划中写明适用教训与验证动作；子 agent 只接收摘录、返回候选教训。
 
+兼容路径在动手改任何文件之前，由主执行者捕获编辑前清单：
+
+```bash
+node {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs capture-baseline \
+  --project-root {CODE_PROJECT} \
+  --reviews-dir {SPECS_DIR}/.reviews \
+  --feature {FEATURE_SLUG} --task {T-xxx}
+```
+
+同一任务不可覆盖；attempt 2 沿用 attempt 1 的基线，累计核对任务起点以来的改动。
+基线错了由人删除后重捕获，并在运行日志留一行 `decision`。仅支持单代码根。
+
 改文件前先记录每个目标仓库的 `git status --short`、本任务预期文件集与已存 dirty 文件的 diff 指纹。这份快照供 N4 排除用户改动、N5 精确 stage；未记录就不得使用自动提交。
 
 ```text
@@ -116,11 +128,12 @@ A、B、C 三种状态」就必须三种都在，写「在 X 路径上走查」�
 结论读起来像端到端验证过。这一步不是形式：本仓库实跑统计显示末任务
 （承担 feature 级走查与证据文档的那个）第一轮审查通过率仅 1/5，被打回的 P2 全部是
 「证据没满足任务里已写明的验证要求」——不是代码缺陷，是本可在此自查掉的遗漏。
-否则写 `blocked` 并停止，不进入 N4。写 handoff 前，必须以完全相同的
+否则写 `blocked` 并停止，不进入 N4。写 handoff 前，先核对基线以来所有新增、修改、删除文件与 `changed_files` 完全相等。
+证据与 specs 排除规则见 `../../../runtime/task-gates.md`。必须以完全相同的
 `changed_files` 计算实现内容摘要：
 
 ```bash
-python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py hash-implementation \
+node {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs hash-implementation \
   --project-root {CODE_PROJECT} \
   --file path/to/changed-file \
   --file path/to/another-file
@@ -141,4 +154,6 @@ node {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs check-n4 --require-learning \
 ```
 
 attempt 2 只有在第 1 轮凭证为 `changes_requested` 时才会通过。不得创建 attempt 3。
+新任务必须返回 `inventory: "verified"`、三类 `inventory_counts` 与 `content_bound: true`。
+缺基线只可用现有 `--allow-legacy-unbound` 恢复历史凭证，并披露清单未核验，不能用于新任务。
 保留命令 JSON 返回的 `handoff_sha256`，N4 写 Review 凭证时必须原样使用。

@@ -84,6 +84,18 @@ JS 宿主负责日志与状态，不再手工重复写 `run_start`。恢复保�
 
 ## G0.5: 判官自验证(无判官不开工)
 
+手工命令行路径在写判官测试或改代码前，先将 `{slug}` 规范为 ASCII kebab，创建
+`{SPECS_DIR}/.reviews`，再捕获本任务基线；JS 宿主使用自己的审查包基线，不执行此步。
+
+```bash
+node {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs capture-baseline \
+  --project-root {CODE_PROJECT} --reviews-dir {SPECS_DIR}/.reviews \
+  --feature refactor-{slug} --task T-REFACTOR-{slug}
+```
+
+下方命令行 `check-n4` / `check-n5` 会核对基线以来的实际清单与 `changed_files` 等集；
+attempt 2 沿用原基线，不重捕获。缺基线仅按 `../../runtime/task-gates.md` 的历史恢复规则处理。
+
 判官 = 能平等裁决改前改后代码的机械标准,分两层:
 
 - **基线层**:存量测试全量跑绿并记录;无测试资产 → 先写现状快照测试(B3 同款,锁行为不判对错)
