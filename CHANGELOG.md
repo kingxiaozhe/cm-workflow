@@ -5,15 +5,17 @@
 
 ## 未发布
 
-- 兼容手工 N1–N8 门禁新增 `capture-baseline`：N3 编辑前复用 review-package 捕获无内容清单；命令行 N4/N5 与完成入口按任务起点累计核对 `changed_files` 的新增、修改、删除等集，排除 specs 与 `.reviews`。库调用默认行为不变，JS 使用自己的审查包基线；cm-fix、cm-refactor 手工步骤补齐编辑前捕获。缺基线只经现有 `--allow-legacy-unbound` 披露清单未核验，原内容绑定与 handoff schema 保持不变。
-- N4 删除作者自审前置，直接进入独立审查；N3 的正常检查继续保留，历史非独立凭证仍不能授权完成。
+（暂无）
 
-- N6 改为固定检查点：保留 feature 完成与连续五项未 QA；migration、认证、授权、支付和 API 由现有 workflow 的 `qa.criticalPaths` 与 runner 基线核对清单匹配。新决策 `score: null`，无命中为 `no_fixed_trigger`；API 收尾合并、旧整数记录、QA 执行类型与 blocking 用例合同保留。`qa_assess` 只确认清单来源，不再由会话提交类别。
+## 0.17.0 — 2026-10-12
 
-- **提醒发送失败时能看出原因**：托管发送器把「超过 12 秒期限」改为退出码 5、「意外错误」改为退出码 6，网络请求失败仍是 3。`notify.log` 只记退出码，以前超时和断网都记成 `exit_3`，分不清；现在一眼能看出是哪种。`/cm:notify test` 的结果文案同步更新。
 - **新建 `cm-ai` 运行改用 `--control-config` 选能力**：`development` / `bootstrap` / `qa` / `qaFix` 四个模式替代逐项 `--allow-*`；常规独立审查在已确认范围内自动推进最多两轮，不再逐轮要授权参数。旧运行与旧 PLAN 继续走原协议，两种入口不能互用；异常恢复先 `status` 看到 `controlTarget`，再原样带回 `expectedControl`。合同见 `docs/cm-control-policy-v2.md`。
 - **门禁目标收缩为防手滑与过期证据**：cm-ai 独立审查改为直接派发，删除「决定 → grant」交换和 `--human-authorized`；`independent`、`reviewer`、`decision_source` 统一为「来源声明」，文档写明门禁不承诺抵抗拥有完整写权限的人。旧 grant 登记的运行在命令行入口确定性报 `runner_invocation`，新增只读 `inspect-history` 查看历史，不恢复 grant、不改 journal。
+- **N4 删除作者自审前置**，直接进入独立审查；N3 的正常检查继续保留，历史非独立凭证仍不能授权完成。
+- **N6 改为固定检查点**：保留 feature 完成与连续五项未 QA；migration、认证、授权、支付和 API 由现有 workflow 的 `qa.criticalPaths` 与 runner 基线核对清单匹配。新决策 `score: null`，无命中为 `no_fixed_trigger`；API 收尾合并、旧整数记录、QA 执行类型与 blocking 用例合同保留。`qa_assess` 只确认清单来源，不再由会话提交类别。
+- **兼容手工 N1–N8 门禁新增 `capture-baseline`**：N3 编辑前复用 review-package 捕获无内容清单；命令行 N4/N5 与完成入口按任务起点累计核对 `changed_files` 的新增、修改、删除等集，排除 specs 与 `.reviews`。库调用默认行为不变，JS 使用自己的审查包基线；cm-fix、cm-refactor 手工步骤补齐编辑前捕获。缺基线只经现有 `--allow-legacy-unbound` 披露清单未核验，原内容绑定与 handoff schema 保持不变。
 - **兼容任务第二轮阻断后可做一次受控补正**：新增 `prepare-controlled-correction` / `publish-controlled-correction-review`，在原批准范围内修订一次并做一次独立审查；补正审查正文为严格 JSON（`conclusion` / `findings` / `resolved_findings`），零问题措辞不能掩盖未解 P2。与旧人工补正共用准备锁、互斥；有 JS journal、run 或未知证据时拒绝准备。
+- **提醒发送失败时能看出原因**：托管发送器把「超过 12 秒期限」改为退出码 5、「意外错误」改为退出码 6，网络请求失败仍是 3。`notify.log` 只记退出码，以前超时和断网都记成 `exit_3`，分不清；现在一眼能看出是哪种。`/cm:notify test` 的结果文案同步更新。
 - **提醒不再被坏文件卡住**：锁文件与 `notify-state.json` 改为不跟随链接、不阻塞的有界读取，命名管道、符号链接、超大文件一律跳过并记进 `notify.log`。
 - **清单核对的排除范围收窄**：只排除代码根自己的 `.reviews` 和 specs 子树，代码里嵌套的同名目录算改动。导入扫描改为单遍词法分析，字符串、注释、正则里的假 `import` 不再误报漏报。`native-gate-fixture` 挪进 `scripts/fixtures` 随 npm 包发布，旧位置留转发。
 
