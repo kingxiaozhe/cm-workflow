@@ -493,7 +493,7 @@ test(`dynamic host QA decision binds the generated package: ${mode}`,()=>fixture
   const began=new Promise(resolve=>{started=resolve;});
   const options={specsDir,codeProject,feature:'1.login',identity,runner,qaLogHome:path.join(root,'logs'),
     qaDecisionProvider:{timeoutMs:mode==='timeout'?10:1000,decide:async(request,signal)=>{
-      calls++;assert.deepEqual(request,{specsDir,codeProject,feature:'1.login',identity,packageDigest});
+      calls++;assert.deepEqual(request,{specsDir,codeProject,feature:'1.login',identity,packageDigest,changedFiles:{paths:[],source:'unavailable'}});
       assert(Object.isFrozen(request.identity));assert.equal(signal.aborted,false);started();
       if(['cancel','timeout'].includes(mode))await new Promise(resolve=>{release=resolve;});
       return qaDecision('triggered',mode==='mismatch'?'b'.repeat(64):packageDigest,
