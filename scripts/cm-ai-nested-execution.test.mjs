@@ -36,8 +36,7 @@ function workflowCli(args,codeProject,documentationStatus='completed'){
           const row=JSON.parse(line);
           if(row.type==='host_request'){
             calls.push(row.kind);let value;
-            if(row.kind==='qa_assess')value={scores:{scope:1,risk:1,accumulation:1,boundary:1},
-              changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}};
+            if(row.kind==='qa_assess')value={confirmed:true};
             else{
               assert.equal(row.kind,'documentation_inspect','no unprotected write/check request');
               assert.equal(fs.readFileSync(path.join(codeProject,'README.md'),'utf8'),'# Updated\n');

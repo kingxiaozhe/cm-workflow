@@ -78,3 +78,10 @@ test('a single recovery flag with --allow-qa passes the launch guards', () => ba
   assert.equal(line(withFlag),line(without));
   assert.equal(withFlag.status,without.status);
 }));
+
+test('N6 QA critical paths accept grouped relative globs and reject malformed registration',()=>{
+  const criticalPaths={migration:['db/migrations/**'],authentication:['src/login.mjs'],authorization:['src/access/*.mjs'],payment:['src/payment?.mjs'],api:['src/api/**']};
+  assert.deepEqual(validateHostWorkflowConfiguration({...workflow(undefined),qa:{...qa(undefined),criticalPaths}}).qa.criticalPaths,criticalPaths);
+  for(const value of [null,[],{unknown:['src/**']},{api:'src/**'},{api:['../src/**']},{api:['src/{a,b}.mjs']}])
+    assert.throws(()=>validateHostWorkflowConfiguration({...workflow(undefined),qa:{...qa(undefined),criticalPaths:value}}));
+});

@@ -120,8 +120,7 @@ function execute(f,{cancel=false,args=[],operations=[{operation:'advance',reques
                 const result=spawnSync(command[0],command.slice(1));assert.equal(result.status,0);
                 return {id:'syntax',command,outcome:'passed',exitCode:0,evidence:'Actual Node syntax check exited 0'};
               });respond(row,checks);
-            }else if(row.kind==='qa_assess')respond(row,{scores:{scope:2,risk:2,accumulation:2,boundary:2},
-              changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}});
+            }else if(row.kind==='qa_assess')respond(row,{confirmed:true});
             else if(row.kind==='documentation_sync'){
               assert.equal(identity.taskId,'T-002');assert.deepEqual(payload.paths,['README.md']);
               fs.writeFileSync(path.join(f.codeProject,'README.md'),'# Exports 41 and 42\n');respond(row,{status:'completed'});

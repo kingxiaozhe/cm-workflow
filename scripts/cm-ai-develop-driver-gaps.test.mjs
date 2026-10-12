@@ -98,7 +98,7 @@ test('single advance reaches live logic and browser QA only after independent fi
   fs.writeFileSync(path.join(f.root,'workflow.json'),JSON.stringify({documentationPaths:[],applicableAgentFiles:[],qa:{
     commands:[{id:'fixture-check',caseIds:['TC-001'],command:[process.execPath,'-e','0']}],
     environment:{kind:'web',carrier:'browser',target:'fixture',scope:'local'}}}));
-  f.write('qa-assess.json',{scores:{scope:2,risk:2,accumulation:2,boundary:2},changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}});
+  f.write('qa-assess.json',{confirmed:true});
   f.write('documentation-inspect.json',{status:'completed',reason:'Fixture inspected'});
   const plan=f.plan({permissions:['--workflow-config','workflow.json','--allow-qa','--browser-qa','available'],
     liveEvidence:{directory:'exchange',kinds:['qa_logic','qa_browser'],timeoutMs:1000}});

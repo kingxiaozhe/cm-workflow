@@ -68,8 +68,10 @@ function project(){
     documentationProvider:{timeoutMs:5000,inspect:async binding=>{state.documentation++;
       return {syncId:binding.syncId,identity:binding.identity,packageDigest:binding.packageDigest,contextDigest:binding.contextDigest,
         status:'completed',reason:'Documentation checked',at:'2026-09-28T00:00:00Z'};}},
-    qaDecisionProvider:{timeoutMs:1000,decide:async binding=>({decisionId:`qa-${binding.identity.runId}`,identity:binding.identity,
-      packageDigest:binding.packageDigest,status:'triggered',reason:'feature_complete',score:null,at:'2026-09-28T00:00:00Z',...decision})},
+    qaDecisionProvider:{timeoutMs:1000,decide:async binding=>{assert.equal(binding.changedFiles.source,'review_package');
+      assert(binding.changedFiles.paths.includes(feature==='1.work'?'a.mjs':'b.mjs'));
+      return ({decisionId:`qa-${binding.identity.runId}`,identity:binding.identity,
+      packageDigest:binding.packageDigest,status:'triggered',reason:'feature_complete',score:null,at:'2026-09-28T00:00:00Z',...decision});}},
     qaExecutor:createExecutor({specsDir,codeProject,feature,requirements:['requirements.md'],runtime:'codex',
       commands:[{id:'unit',command:[process.execPath,'--check','a.mjs'],caseIds:[]}],environment,timeoutMs:60000,logHome,
       browser:browser??(async browserRequest=>{
@@ -356,7 +358,7 @@ test('#17 a skip is fine while tasks remain, but a terminal feature whose latest
   fs.writeFileSync(tasks,'- [ ] T-001: first\n- [ ] T-002: fixture\n');p.reapprove();
   const first=p.definition('1.work','T-001',['a.mjs']);
   const skipped=await p.advance(first,p.execution('1.work',{write:()=>fs.writeFileSync(path.join(p.codeProject,'a.mjs'),'export const a=1;\n'),
-    decision:{status:'skipped',reason:'risk_score_below_threshold',score:4}}),'create');
+    decision:{status:'skipped',reason:'no_fixed_trigger',score:null}}),'create');
   assert.equal(skipped.code,'context_refreshed',JSON.stringify(skipped));
   const midway=inspectCmAiAdmission({specsDir:p.specsDir,codeProject:p.codeProject});
   assert.equal(midway.nextTask.id,'T-002');assert(!midway.warnings.some(line=>line.includes('QA 未通过')),JSON.stringify(midway.warnings));

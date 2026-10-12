@@ -253,8 +253,7 @@ test('integrated original multi-root conversation completes one task and resumes
             retrospective:{status:'no_new_lesson',candidates:[],reason:null}},edits:definition.scope.map(file=>({
               path:file,beforeSha256:payload.expected[file],content:'export const value = 2;\\n'}))};
         }
-        if(kind==='qa_assess')return {scores:{scope:1,risk:1,accumulation:1,boundary:1},
-          changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}};
+        if(kind==='qa_assess')return {confirmed:true};
         assert.equal(kind,'documentation_inspect');
         for(const file of definition.scope)assert.equal(fs.readFileSync(path.join(definition.codeProject,file),'utf8'),'export const value = 2;\\n');
         const {syncId,identity,packageDigest,contextDigest}=payload;

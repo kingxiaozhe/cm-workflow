@@ -47,8 +47,7 @@ function fixture(t,batch=false,qaRun=false){
   fs.writeFileSync(path.join(answers,'develop.json'),JSON.stringify(answer));
   fs.writeFileSync(path.join(answers,'target.txt'),'export const value = 42;\n');
   fs.writeFileSync(path.join(answers,'documentation-inspect.json'),JSON.stringify({status:'completed',reason:'Fixture inspected'}));
-  fs.writeFileSync(path.join(answers,'qa-assess.json'),JSON.stringify({scores:{scope:1,risk:1,accumulation:1,boundary:1},
-    changes:{api:false,migration:false,authentication:false,authorization:false,payment:false}}));
+  fs.writeFileSync(path.join(answers,'qa-assess.json'),JSON.stringify({confirmed:true}));
   const review=verdict=>{
     let source=fs.readFileSync(REVIEW,'utf8');
     if(verdict==='changes_requested')source=source.replace("verdict:'approved'","verdict:'changes_requested'")
