@@ -361,6 +361,46 @@ test('state and lock reads never block on a FIFO and refuse symlinks and oversiz
   }
 });
 
+// Where O_NOFOLLOW is 0 (Windows), the open flags no longer refuse a symlink;
+// only the lstat check before the open does. The child masks O_NOFOLLOW out of
+// every open before the runtime loads (and proves the mask by opening a probe
+// link that an unmasked open would refuse) and records every path opened, so
+// the refusal is shown to happen before any open of the link: a build that
+// first opens and only then notices the link goes red on every platform, not
+// only in a Windows job. The link itself and its target are snapshotted so a
+// same-name replacement or a rewritten target cannot hide behind a name list.
+test('state and lock symlinks are refused before open when O_NOFOLLOW is masked (Windows semantics)',t=>{
+  const cases=[
+    ['state symlink','notify-state.json','real.json',JSON.stringify({version:1,keys:{},sends:[]}),'state_invalid'],
+    ['lock symlink','notify-state.lock','real.lock',JSON.stringify({pid:process.pid,at:Date.now()-60000,token:'old'}),'state_busy'],
+  ];
+  for(const [name,linkName,targetName,targetBody,reason] of cases){
+    const h=home(t),link=path.join(h.dir,linkName),target=path.join(h.dir,targetName);
+    try{fs.writeFileSync(target,targetBody);fs.symlinkSync(target,link);fs.writeFileSync(path.join(h.dir,'probe.txt'),'probe');fs.symlinkSync(path.join(h.dir,'probe.txt'),path.join(h.dir,'probe.link'));}
+    catch(error){if(process.platform==='win32'&&error.code==='EPERM'){t.skip('symlink creation needs a privilege on this Windows host');return;}throw error;}
+    const snapshot=()=>({names:fs.readdirSync(h.dir).filter(name=>name!=='notify.log').sort(),isLink:fs.lstatSync(link).isSymbolicLink(),points:fs.readlinkSync(link),target:fs.readFileSync(target,'utf8')});
+    const before=snapshot();
+    const child=spawnSync(process.execPath,['--input-type=module','-e',
+      `import fs from 'node:fs';import path from 'node:path';const open=fs.openSync,opened=[];
+fs.openSync=(file,flags,...rest)=>{opened.push(path.resolve(String(file)));return open(file,typeof flags==='number'?flags&~fs.constants.O_NOFOLLOW:flags,...rest);};
+const probe=fs.openSync(${JSON.stringify(path.join(h.dir,'probe.link'))},fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+const followed=fs.readFileSync(probe,'utf8');fs.closeSync(probe);
+const {notify}=await import(${JSON.stringify(NOTIFY_URL)});
+const result=notify(${JSON.stringify(fields('f'))},{now:${NOW}});
+process.stdout.write(JSON.stringify({followed,result,opened}));`],
+      {encoding:'utf8',timeout:5000,env:h.env});
+    assert.equal(child.status,0,`${name}: ${child.stderr}`);
+    const {followed,result,opened}=JSON.parse(child.stdout);
+    assert.equal(followed,'probe',`${name}: the masked open must follow links like a Windows open`);
+    assert.ok(opened.includes(path.join(h.dir,'probe.link')),`${name}: the open recorder must see the probe open`);
+    assert.ok(!opened.includes(link),`${name}: the link must be refused before any open of it (opened: ${opened.join(', ')})`);
+    assert.ok(!opened.includes(target),`${name}: the link target must never be opened`);
+    assert.deepEqual(result,{sent:false,reason},name);
+    assert.equal(h.rows().length,0,name);
+    assert.deepEqual(snapshot(),before,name);assert.match(h.log(),new RegExp(`skipped ${reason}`),name);
+  }
+});
+
 // Lock contention never waits; only a provably stale lock is reclaimed, and
 // a live lock is never removed.
 test('lock: a live lock skips at once and is kept; a stale lock is reclaimed safely',async t=>{
