@@ -33,6 +33,12 @@ export function createClaudeReviewStream(onEvent, onNotice = null) {
     b: typeof block?.type === 'string' && /^[A-Za-z_]{1,32}$/.test(block.type) ? block.type : null,
     t: typeof tool === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(tool) ? tool : null,
     e: typeof isError === 'boolean' ? isError : null});
+  const startupNotice = subtype => {
+    if (noticeCount >= 32) reject('unexpected_event');
+    noticeCount++;
+    if (subtype === 'dev_intent') reportClaudeDevIntentNotice(onNotice);
+    else try { if (typeof onNotice === 'function') onNotice({kind:'claude_system_notice', subtype:'ui_invalidate'}); } catch {}
+  };
   return Object.freeze({
     accept(message) {
       if (!message || typeof message !== 'object' || Array.isArray(message)) reject('invalid_event');
@@ -41,11 +47,11 @@ export function createClaudeReviewStream(onEvent, onNotice = null) {
         || message.session_id.length > 256) reject('invalid_session');
       if (session !== null && session !== message.session_id) reject('session_mismatch');
       if (stage === 'init') {
-        if (message.type === 'system' && message.subtype === 'dev_intent') {
-          if (noticeCount >= 32) reject('unexpected_event');
-          noticeCount++;
+        // CLI 2.1.289 emits UI invalidation before init. It has no review
+        // result and never initializes a turn; retain only its fixed subtype.
+        if (message.type === 'system' && ['dev_intent','ui_invalidate'].includes(message.subtype)) {
           session = message.session_id;
-          reportClaudeDevIntentNotice(onNotice);
+          startupNotice(message.subtype);
           return;
         }
         if (message.type !== 'system' || message.subtype !== 'init') reject('missing_init');
@@ -62,10 +68,8 @@ export function createClaudeReviewStream(onEvent, onNotice = null) {
         return;
       }
       if (message.type === 'system') {
-        if (message.subtype === 'dev_intent') {
-          if (noticeCount >= 32) reject('unexpected_event');
-          noticeCount++;
-          reportClaudeDevIntentNotice(onNotice);
+        if (['dev_intent','ui_invalidate'].includes(message.subtype)) {
+          startupNotice(message.subtype);
           return;
         }
         if (message.subtype === 'thinking_tokens') {

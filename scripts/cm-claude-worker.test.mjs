@@ -75,6 +75,22 @@ async function runMessages(wireMessages,onNotice){
     {signal:new AbortController().signal,onEvent:e=>events.push(e)});
   return {result,events};
 }
+test('UI invalidation prefix does not stop the Claude reviewer before init',async()=>{
+  const notices=[],notice={type:'system',subtype:'ui_invalidate',session_id:'fresh-review',payload:{text:'not forwarded'}};
+  const actual=await runMessages([notice,...messages],n=>notices.push(n));
+  assert.deepEqual(actual,await runMessages(messages));
+  assert.deepEqual(notices,[{kind:'claude_system_notice',subtype:'ui_invalidate'}]);
+});
+test('UI invalidation without init or with a different session never produces review success',async()=>{
+  const notice={type:'system',subtype:'ui_invalidate',session_id:'fresh-review'};
+  for(const [wire,code] of [[[notice],'incomplete_result'],[[notice,{...messages[0],session_id:'other'}],'session_mismatch'],
+    [[notice,...messages.slice(1)],'missing_init']]){
+    const actual=await runMessages(wire);
+    assert.deepEqual(actual.result,{status:'failed',code});
+    assert(!actual.events.some(e=>e.event==='turn.completed'));
+    assert.equal(actual.events.at(-1).event,'process_closed');
+  }
+});
 test('worker accepts 88 and 4096 thinking heartbeats but rejects 4097 without completion',async()=>{
   const baseline=await runMessages(messages);
   for(const count of [88,4096,4097]){

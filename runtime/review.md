@@ -83,6 +83,15 @@ directory for CLAUDE_CODE_TMPDIR and stops after the first valid message request
 termination is not user cancellation or a successful review; real model review remains unverified.
 Do not handcraft a passing diagnostic or approval to bypass readiness evidence.
 Claude review streams accept `system/api_retry`, `hook_started`, `hook_response` and `commands_changed` only as `onNotice` summaries, sharing a 32-notice limit with `rate_limit_event`; they never enter observation or advance the verdict stage, and unknown system subtypes still fail closed (2026-09-17 dogfood: a transient API retry was misclassified as `unexpected_event`).
+`system/ui_invalidate` is a fixed, body-free notice before or after `init`, as is
+the existing `dev_intent` startup notice. Both bind the session and share the
+same 32 slots; neither initializes a turn nor supplies a verdict. Missing init,
+cross-session messages, unknown subtypes and post-terminal messages still fail.
+The local probe still requires a compliant `/v1/messages` request; startup
+health checks alone cannot pass (Claude Code 2.1.289 startup regression).
+Claude probe model IDs are matched exactly against the outgoing request. Use
+the full model ID when a CLI alias resolves to a different ID; a health response
+or a mismatched model must not be converted into a passing diagnostic.
 `system/thinking_tokens` has a separate 4096-event budget and remains subject to the worker's total 1,000,000-byte output cap; it emits no observation or notice and never advances the verdict stage (2026-09-17 dogfood: an 88-heartbeat review exceeded the former 64-event cap). The 4097th heartbeat fails with `unexpected_event`; output overflow retains `output_limit`.
 
 ## Review scope

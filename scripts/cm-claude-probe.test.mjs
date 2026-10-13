@@ -12,6 +12,32 @@ import {ownerGuardSource} from './fixtures/process-cleanup.mjs';
 import {previewClaudeTools,claudeProbeSandbox,createClaudeModelMarkerDetector} from '../runtime/js/cm-ai/claude-tool-preview.mjs';
 import {previewPromptTransport,writePreviewPrompt} from '../runtime/js/cm-ai/tool-preview.mjs';
 
+for(const sendMessage of [true,false])test(`UI invalidation before init ${sendMessage?'permits a validated POST':'cannot make startup-only preflight pass'}`,
+  {skip:process.platform!=='darwin'},async()=>{
+    // Emit the real CLI ordering before POST. Existing HTTP-first fixtures cannot
+    // detect a worker that kills the child while decoding its startup notice.
+    const source=`let input='';process.stdin.on('data',s=>input+=s);process.stdin.on('end',async()=>{
+      await fetch(process.env.ANTHROPIC_BASE_URL+'/api/hello',{method:'HEAD'});
+      console.log(JSON.stringify({type:'system',subtype:'ui_invalidate',session_id:'probe-ui'}));
+      console.log(JSON.stringify({type:'system',subtype:'init',session_id:'probe-ui'}));
+      await new Promise(resolve=>setTimeout(resolve,100));
+      if(${sendMessage}){
+        await fetch(process.env.ANTHROPIC_BASE_URL+'/v1/messages',{method:'POST',
+          headers:{'x-api-key':'cm-synthetic-local-probe'},
+          body:JSON.stringify({model:'fixture',messages:[{role:'user',content:input}],tools:[]})});
+      }
+      process.exit(1);
+    });`;
+    const {preflight}=await previewClaudeTools({cwd:process.cwd(),model:'fixture',
+      spawnProcess:(command,args,options)=>spawn(command,[...args.slice(0,2),process.execPath,'-e',source],options)});
+    assert.equal(preflight.passed,sendMessage);
+    assert.equal(preflight.message_requests,sendMessage?1:0);
+    assert.equal(preflight.local_requests,sendMessage?2:1);
+    assert.equal(preflight.stopped_by_probe,sendMessage);
+    assert.equal(preflight.listener_closed,true);
+    if(sendMessage)assert.equal(preflight.request_checks[1].synthetic_auth,true);
+  });
+
 test('tool preview argument transport preserves a long Unicode argv prompt without stdin',()=>{
   const prompt='参数\n🚀'+'界'.repeat(10000);
   const transport=previewPromptTransport('argument',prompt);

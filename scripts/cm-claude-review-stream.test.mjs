@@ -9,6 +9,42 @@ const transcript = () => [
   {type:'result', subtype:'success', session_id:'fresh-review', is_error:false,
     num_turns:1, structured_output:{verdict:'approved'}},
 ];
+const uiInvalidate = (over={}) => ({type:'system',subtype:'ui_invalidate',session_id:'fresh-review',...over});
+test('UI invalidation before and after init is body-free and leaves review events unchanged',()=>{
+  const baseline=observe(transcript()),[init,...tail]=transcript();
+  for(const messages of [[uiInvalidate(),init,...tail],[init,uiInvalidate(),...tail],
+    [uiInvalidate({payload:{text:'do not forward'},structured_output:{verdict:'approved'}}),init,...tail]]){
+    const actual=observe(messages);
+    assert.deepEqual(actual.result,baseline.result);assert.deepEqual(actual.events,baseline.events);
+    assert.deepEqual(actual.notices,[{kind:'claude_system_notice',subtype:'ui_invalidate'}]);
+  }
+  const events=[],stream=createClaudeReviewStream(e=>events.push(e));stream.accept(uiInvalidate());
+  assert.deepEqual(events,[]);assert.throws(()=>stream.finish(),{code:'incomplete_result'});
+});
+test('UI invalidation preserves session, initialization and terminal boundaries',()=>{
+  const [init,text,result]=transcript();
+  for(const notice of [uiInvalidate({session_id:''}),uiInvalidate({session_id:null}),uiInvalidate({session_id:'x'.repeat(257)})])
+    assert.throws(()=>decode([notice,init,text,result]),{code:'invalid_session'});
+  assert.throws(()=>decode([uiInvalidate(),{...init,session_id:'other'}]),{code:'session_mismatch'});
+  assert.throws(()=>decode([init,uiInvalidate({session_id:'other'}),text,result]),{code:'session_mismatch'});
+  assert.throws(()=>decode([uiInvalidate(),text,result]),{code:'missing_init'});
+  assert.throws(()=>decode([init,uiInvalidate(),result]),{code:'unexpected_result'});
+  assert.throws(()=>decode([init,text,result,uiInvalidate()]),{code:'unexpected_event'});
+  assert.throws(()=>decode([uiInvalidate({subtype:'future_ui'}),init,text,result]),{code:'missing_init'});
+});
+test('UI invalidation shares the existing 32 notice slots across init',()=>{
+  const [init,...tail]=transcript(),dev={type:'system',subtype:'dev_intent',session_id:'fresh-review'};
+  const before=Array.from({length:16},(_,i)=>i%2?dev:uiInvalidate());
+  const after=Array.from({length:16},()=>uiInvalidate());
+  const actual=observe([...before,init,...after,...tail]);assert.equal(actual.notices.length,32);
+  assert.deepEqual(actual.events,observe(transcript()).events);
+  for(const callback of [null,()=>{throw Error('notice callback');}]){
+    const stream=createClaudeReviewStream(()=>{},callback);
+    [...before,init,...after].forEach(m=>stream.accept(m));
+    assert.throws(()=>stream.accept(uiInvalidate()),{code:'unexpected_event'});
+    assert.throws(()=>stream.finish(),{code:'incomplete_result'});
+  }
+});
 test('Claude result maps to original observer syntax, never invents process close', () => {
   const events=[], stream=createClaudeReviewStream(event=>events.push(event));
   transcript().forEach(message=>stream.accept(message));
