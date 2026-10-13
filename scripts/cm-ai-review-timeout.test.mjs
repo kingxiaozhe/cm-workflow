@@ -1,3 +1,4 @@
+import {withHostStageObserver} from '../runtime/js/cm-ai/host-stage-observer.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -514,3 +515,22 @@ test('review-redispatch replay refuses forged, duplicate and over-limit records'
   assert.equal(projectedRunnerStatus(older,config).state,'blocked');assert.equal(projectedRunnerStatus(older,config).reviewRedispatchStopRequired,true);
   assert.equal(projectedRunnerStatus(readRunnerHistory(records,config,3),config).code,'review_redispatch_limit');
 },{timeoutMs:20,reviewRun:timeoutRun}));
+
+// Transport telemetry must use the existing budgets without entering durable history.
+test('native review telemetry reports its configured deadline and leaves original replay unchanged',()=>fixture(async f=>{
+  f.options.reviewInvocation.timeoutMs=2500;
+  const runner=f.make(),rows=[];
+  await withHostStageObserver(row=>rows.push(row),async()=>{
+    await runner.executeEffect(f.effect('develop'));
+    const result=await runner.executeEffect(f.effect('review'));
+    assert.equal(result.state,'approved');
+  });
+  const review=rows.find(row=>row?.kind==='review');assert.ok(review);
+  assert.equal(review.deadlineMs-Date.parse(review.startedAt),2500);
+  assert.ok(rows.some(row=>row?.kind==='develop'));
+  assert.ok(rows.some(row=>row?.kind==='check'));
+  const before=JSON.stringify(f.getStore().snapshot());
+  assert.doesNotMatch(before,/nativeStage|host_heartbeat|lastProgressAt|deadlineMs/);
+  const resumed=f.reopen();assert.equal(resumed.status().state,'approved');
+  assert.equal(JSON.stringify(f.getStore().snapshot()),before);
+},{timeoutMs:5000}));

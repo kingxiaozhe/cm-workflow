@@ -300,3 +300,18 @@ test('saving after an unchanged feature split preserves pending revised features
   const f=await regenerate(await fixture(t));f.save();f.dispose(await f.review('split','2.second'));
   assert.equal(f.save().status,'draft_saved');await finish(f);assert.doesNotThrow(()=>f.host.validateCurrent());
 });
+
+// 2026-10-12 交叉审查 P2：历史 feature 带自检修订记录时，摘要还会经 inspectPrdSplitDesign 再查同一旧拆分回执。
+test('historical feature with a self-check revision is registered after a later approved change; current stays strict',async t=>{
+  const f=await regenerate(await fixture(t));await finish(f);
+  assert.doesNotThrow(()=>inspectPrdSummaryEvidence(f.specs,{currentFeatures:['1.guide','2.second']}));
+  fs.appendFileSync(path.join(f.specs,'1.guide/requirements.md'),'\nLater approved change');
+  const evidence=inspectPrdSummaryEvidence(f.specs,{currentFeatures:['2.second']});
+  const guide=evidence.features.find(item=>item.directory==='1.guide');
+  assert.equal(guide.historical,true);assert.equal(guide.reviews.split.archive,'unavailable');
+  assert.match(guide.reviews.split.reason,/^prd_review_artifact_changed; self_check_revision:\S+$/);
+  assert.ok(evidence.evidenceFiles.some(item=>item.path==='.reviews/prd-guide-self-check-revision.json'));
+  assert.equal(evidence.features.find(item=>item.directory==='2.second').reviews.split.gate.outcome,'completed');
+  assert.throws(()=>inspectPrdSummaryEvidence(f.specs,{currentFeatures:['1.guide','2.second']}),{code:'prd_review_artifact_changed'});
+  assert.throws(()=>inspectPrdSummaryEvidence(f.specs),{code:'prd_review_artifact_changed'});
+});

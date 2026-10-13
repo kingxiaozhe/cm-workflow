@@ -166,7 +166,7 @@ test('real host unknown call resumes with its original callId and requestDigest'
     if(row.type==='host_ready'){
       hostSession=row.sessionId;host.stdin.write(JSON.stringify({requestId:'one',operation:'start',text:'Analyze'})+'\n');
     }else if(row.type==='host_request'){
-      pending=row;host.stdin.write(JSON.stringify({type:'host_close',sessionId:hostSession})+'\n');break;
+      pending=row;host.stdin.write(JSON.stringify({type:'host_close',sessionId:hostSession,force:true})+'\n');break;
     }
   }
   assert.ok(pending,diagnostics);host.stdin.end();await closed;

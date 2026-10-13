@@ -1,3 +1,4 @@
+import {beginHostStage} from './host-stage-observer.mjs';
 import {readExecutionPolicy} from './execution-policy.mjs';
 import {readExternalModels} from './external-models.mjs';
 import {beforeFirstQaRound,readQaConfigRevision} from './qa-config-revision.mjs';
@@ -840,6 +841,7 @@ export function createTaskRunner(options) {
   function active(){need(!poisoned,'store_failure');need(state!=='cancelled','cancelled');}
   async function bounded(fn,request,extraControl=null) {
     active();let timer,abort;
+    const endStage=beginHostStage(request?.role==='developer'?'develop':request?.role==='reviewer'?'review':'check',config.timeoutMs);
     try {
       const boxed=await Promise.race([
         new Promise((resolve,reject)=>{
@@ -865,7 +867,7 @@ export function createTaskRunner(options) {
         })
       ]);
       return boxed.value;
-    } finally {clearTimeout(timer);controller.signal.removeEventListener('abort',abort);}
+    } finally {endStage();clearTimeout(timer);controller.signal.removeEventListener('abort',abort);}
   }
   async function invoke(adapter,role,contextId,payload,extraControl=null) {
     const request=requestFor({invocationId:`${session}.${++sequence}`,identity:{...config.identity,attempt},
@@ -981,6 +983,7 @@ export function createTaskRunner(options) {
       }
     };
     let timer,timedOut=false,cancelReject;
+    const endReviewStage=beginHostStage('review',reviewTimeoutMs??config.timeoutMs);
     try{
       let raw;
       try{
@@ -1090,7 +1093,7 @@ export function createTaskRunner(options) {
       else if(retry)halt(retry.state,retry.code);
       else halt('unknown',inspection.code??'reconciliation_required');
     }finally{
-      captureOpen=false;
+      endReviewStage();captureOpen=false;
       if((metadata.externalModels||metadata.executionPolicy)&&(state==='unknown'||state==='pending_review'&&code==='review_transport_timeout')
         &&started!==null&&!invalid&&!receiptConflict&&capturedReceipt)
         pendingReconciliation={effectId,invocationId:request.invocationId,receipt:capturedReceipt};

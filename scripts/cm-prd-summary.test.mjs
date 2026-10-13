@@ -229,3 +229,34 @@ for(const extra of ['none','same-feature','other-feature'])test(`failed-check me
   }
   evidenceFiles.forEach((file,i)=>assert.deepEqual(fs.readFileSync(file),before[i]));
 });
+
+// 2026-10-12 AI潮 dogfood：历史 feature 的拆分回执之后，需求经 --change 正常修改过；新建 feature 的
+// prepare_summary 在历史回执闸门处直接抛出 prd_review_artifact_changed，整批无法发布。
+test('historical receipt artifact changed by a later revision is a note; current and unscoped drift stay strict',async t=>{
+  const {specs}=fixture(t);
+  fs.appendFileSync(path.join(specs,'1.guide/requirements.md'),'\n- [ ] [AC-002] Later approved change');
+  const evidence=inspectPrdSummaryEvidence(specs,currentScope);
+  const split=evidence.features[0].reviews.split;
+  assert.equal(evidence.features[0].historical,true);
+  assert.equal(split.gate.outcome,'unavailable');assert.equal(split.archive,'unavailable');
+  assert.match(split.reason,/^prd_review_artifact_changed$/);
+  assert.equal(evidence.features[1].reviews.split.gate.outcome,'completed');
+  const summary=await summaryOwner()(specs,currentScope);
+  assert.equal(summary.readyForAwaitingReview,true);assert.deepEqual(summary.blockers,[]);
+  assert.match(summary.notes.join('\n'),/历史 feature 1\.guide：split 审查归档不可用，已登记未重审（prd_review_artifact_changed）/);
+  assert.doesNotMatch(summary.notes.join('\n'),/无处置回执|prd_summary_receipt_missing/);
+  assert.equal(publishPrdAwaitingReview({specs,summary,writeEnabled:true}).status,'awaiting_review');
+  const status=JSON.parse(fs.readFileSync(path.join(specs,'.cm-specs-status'),'utf8'));
+  assert.deepEqual(status.features,['1.guide','2.appendix']);assert.deepEqual(status.specFiles,evidence.specFiles);
+  assert.throws(()=>inspectPrdSummaryEvidence(specs),{code:'prd_review_artifact_changed'});
+  assert.throws(()=>inspectPrdSummaryEvidence(specs,{currentFeatures:['1.guide']}),{code:'prd_review_artifact_changed'});
+  fs.appendFileSync(path.join(specs,'2.appendix/design.md'),'\nUnreviewed current edit');
+  assert.throws(()=>inspectPrdSummaryEvidence(specs,currentScope),{code:'prd_review_artifact_changed'});
+});
+test('historical gate failure still rejects publication when history changes after preparation',async t=>{
+  const {specs}=fixture(t);
+  fs.appendFileSync(path.join(specs,'1.guide/requirements.md'),'\nLater approved change');
+  const summary=await summaryOwner()(specs,currentScope);assert.equal(summary.readyForAwaitingReview,true);
+  fs.appendFileSync(path.join(specs,'1.guide/requirements.md'),'\nAnother edit after preparation');
+  assert.throws(()=>publishPrdAwaitingReview({specs,summary,writeEnabled:true}),/prd_summary_inputs_changed/);
+});

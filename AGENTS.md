@@ -101,4 +101,8 @@ Read the relevant files under `.claude/rules/` when modifying shell scripts, doc
 
 - **失败终态计数与执行结论分别处理**：只从原生 CLI 的原会话终态读取官方 usage，失败仍失败；通用 error notice 不覆盖后续 turn.failed 的计数。按 provider 原生字段映射 cache-write 和 reasoning，reasoning 只作 output 子集，缺失明确 unavailable；记录失败不能重派或放行。来源：可选执行优化独立审查的失败终态与原生字段修复；证据：`scripts/cm-efficiency-usage.test.mjs` 的四 worker 成功／失败／缺失、双失败方言与字段冲突用例，`scripts/test-cm-native-usage.py` 的子集与去重用例。该教训随本轮改动待独立审查。
 
+- **「只登记不阻断」要覆盖每一层校验，入口本身也算**：历史 feature 的容错分支只包住了后续读取，回执闸门 `inspectPrdReview` 本身在 try 之外；补上后，自检修订核对 `inspectPrdSplitDesign` 又经另一条路径重查同一旧回执（交叉审查发现）。历史文件被批准的变更改动后，任一路径都会拦下整批摘要。给某类对象定「只登记」规则时，从第一个可能抛出的调用开始纳入同一边界，并用「当前对象仍严格、不带范围仍严格、准备后再变仍拒绝」三条反例锁住。来源：2026-10-12 AI潮第 7 批 prepare_summary 被 1.bootstrap 旧拆分回执阻断；证据：`runtime/js/cm-prd/summary.mjs`、`scripts/cm-prd-summary.test.mjs` 的历史回执产物变更两条用例、`scripts/cm-prd-self-check-revision.test.mjs` 的历史自检修订用例及改坏核对。该教训随本轮改动待独立审查。
+
 - **基线复现不能代替失败根因**：区分测试正文与清理钩子失败；相同基线失败只说明不是新增回归，丢失原 cause 后仍保留未知。预检与夹具失败只记录有限系统字段，不打印原 message／stderr，不把能力受限或超时改成通过；夹具总截止与已有驱动预算对齐，产品预算和业务断言保持原值。来源：执行优化回归的启动错误丢失、清理失败和外层夹具超时收尾；证据：`scripts/cm-efficiency-diagnostics.test.mjs` 的无真实枚举／监听错误注入、`scripts/cm-ai-batch-drive.test.mjs` 的实际 live 用例，以及保存的原始失败与基线对照。该教训随本轮改动待独立审查。
+
+- **传输探活不得替代业务进展或持久事实**：心跳只报告存活；阶段截止取既有执行预算，嵌套阶段结束恢复外层原期限。关闭保护按独立操作对象核对归属，不能以可重复 requestId 释放另一在途操作，故障清理也不能记成用户取消。来源：宿主防空等与防误关；证据：`scripts/cm-host-liveness.test.mjs`、`scripts/cm-drive-liveness.test.mjs`、`scripts/cm-host-stage-observer.test.mjs` 的拒关、重复 ID、嵌套期限、断连和无状态副作用用例。[已结构化]

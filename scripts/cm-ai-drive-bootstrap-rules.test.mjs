@@ -230,7 +230,7 @@ test('init-verify commands never run unless the host itself accepted the launch 
       {status:2,pattern:/T-002 现在不能新建运行：admission ready，nextTask T-001.*不运行 init-verify 命令/}],
     // No driver replica: the host's own launch check refuses before host_ready.
     ['nested specs without protection',{nested:true},f=>rulesPermissions,
-      {status:1,pattern:/nested_specs_protection_required/}],
+      {status:71,pattern:/nested_specs_protection_required/}],
   ];
   for(const [name,options,permissions,expected] of cases){
     const f=fixture(t,{scaffolded:!options.pending,nested:options.nested});
@@ -239,6 +239,7 @@ test('init-verify commands never run unless the host itself accepted the launch 
     prepareRules(f,1,{commands:[{id:'marker',command:['/bin/sh','-c',`echo ran > ${marker}`]}]});
     const run=f.drive(f.plan('T-002','create',permissions(f)),'advance');
     assert.equal(run.status,expected.status,`${name}: ${run.stderr}`);assert.match(run.stderr,expected.pattern,name);
+    if(expected.status===71)assert.match(run.stderr,/host_exited/,name);
     assert.equal(fs.existsSync(marker),false,`${name}: no command may run`);
     assert.equal(fs.existsSync(f.store('T-002')),false,name);
     assert.equal(fs.existsSync(path.join(f.codeProject,'.claude')),false,name);
@@ -407,7 +408,7 @@ test('real host drives split-root T-001 scaffold, then T-002 rules with a revisi
       launchReview=['--review-config','wrong-runtime-review.json'];
     }
     run=f.drive(f.plan('T-002','resume',[...rulesPermissions,...launchReview],extra),'start');
-    assert.equal(run.status,1,run.stderr);assert.match(run.stderr,/fingerprint_mismatch/);
+    assert.equal(run.status,71,run.stderr);assert.match(run.stderr,/host_exited/);assert.match(run.stderr,/fingerprint_mismatch/);
     assert.doesNotMatch(run.stderr,/\[drive init_verify/);
     assert.equal(fs.existsSync(marker),false);assert.deepEqual(fs.readFileSync(state),before);
   }

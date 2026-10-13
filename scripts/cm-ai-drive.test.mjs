@@ -449,17 +449,17 @@ test('same-session resume may omit originalHostContext and cross-session omissio
   assert.equal(same.status,0,same.stderr);
   assert.equal(JSON.parse(same.stdout).result.state,'fixture_completed');
   const cross=f.drive(f.plan({mode:'resume',hostContext:'drive-host-b',answers:undefined,checks:undefined}),'status');
-  assert.equal(cross.status,1,cross.stderr);assert.match(cross.stderr,/fingerprint_mismatch/);
+  assert.equal(cross.status,71,cross.stderr);assert.match(cross.stderr,/host_exited/);assert.match(cross.stderr,/fingerprint_mismatch/);
   assert.deepEqual(fs.readFileSync(f.store),before);
 });
 test('supersession flags reach create and incomplete or resume pairs stop before host launch',t=>{
   const f=fixture(t);prepared(f);
   const both=['--supersede-reviewed-evidence','--supersede-reason','operator restart'];
   const create=f.drive(f.plan({permissions:both}),'advance');
-  assert.equal(create.status,1,create.stderr);
+  assert.equal(create.status,71,create.stderr);assert.match(create.stderr,/host_exited/);
   assert.match(create.stderr,/supersede_unavailable/);
   const accepted=f.drive(f.plan({permissions:[...both,'--accept-superseded-code-drift']}),'advance');
-  assert.equal(accepted.status,1,accepted.stderr);
+  assert.equal(accepted.status,71,accepted.stderr);assert.match(accepted.stderr,/host_exited/);
   assert.match(accepted.stderr,/supersede_unavailable/);
   for(const permissions of [['--supersede-reviewed-evidence'],['--supersede-reason','operator restart']]){
     const refused=f.drive(f.plan({permissions}),'advance');

@@ -48,19 +48,25 @@ const lateDiagnostic=fields=>{try{process.stderr.write(JSON.stringify({diagnosti
 export function createHostToolBridge({responseLimit=64*1024,answerTimeoutMs=hostAnswerTimeoutMs()}={}){
   need(Number.isSafeInteger(responseLimit)&&responseLimit>=64*1024&&responseLimit<=4*1024*1024,'host_response_limit_invalid');
   need(Number.isSafeInteger(answerTimeoutMs)&&answerTimeoutMs>=1000&&answerTimeoutMs<=HOST_ANSWER_BACKSTOP_MS,'host_answer_timeout_invalid');
-  const sessionId=randomUUID();let send=null,pending=null,closed=false;
+  const sessionId=randomUUID();let send=null,pending=null,closed=false,lastProgressAt=Date.now();
+  // Metadata only: never expose the request payload or answer through liveness.
+  const inFlight=()=>pending?{callId:pending.request.callId,kind:pending.request.kind,
+    startedAt:new Date(pending.startedAt).toISOString(),deadlineMs:pending.deadlineMs}:null;
   const stopped=new Map();
   const stop=(code,call=pending)=>{
-    if(!call||pending!==call)return;pending=null;clearTimeout(call.timer);call.notice?.();
+    if(!call||pending!==call)return;pending=null;lastProgressAt=Date.now();clearTimeout(call.timer);call.notice?.();
     call.signal.removeEventListener('abort',call.abort);
     if(code!=='host_disconnected'){stopped.set(call.request.callId,{kind:call.request.kind,stoppedBy:code});
       if(stopped.size>LATE_CALLS)stopped.delete(stopped.keys().next().value);}
     call.reject(Object.assign(new Error(code),{code}));
   };
   return Object.freeze({
-    attach(sender){
+    sessionId,
+    inFlight,
+    lastProgressAt:()=>lastProgressAt,
+    attach(sender,{heartbeat=false}={}){
       need(send===null&&typeof sender==='function'&&!closed,'host_bridge_unavailable');send=sender;
-      Promise.resolve(send({type:'host_ready',sessionId})).catch(()=>{closed=true;stop('host_disconnected');});
+      Promise.resolve(send({type:'host_ready',sessionId,...(heartbeat?{heartbeat:{intervalMs:5000,timeoutMs:30000}}:{})})).catch(()=>{closed=true;stop('host_disconnected');});
     },
     call(kind,payload,signal,{timeoutMs=null}={}){
       need(send!==null&&!closed,'host_bridge_unavailable');need(pending===null,'host_bridge_busy');
@@ -73,7 +79,9 @@ export function createHostToolBridge({responseLimit=64*1024,answerTimeoutMs=host
           stop('cancelled',call);
           Promise.resolve(send({type:'host_call_cancelled',sessionId,callId:request.callId})).catch(()=>{});
         };
-        const call={request,signal,abort,resolve,reject,timer:null,notice:waitNotice(kind,request.callId)};pending=call;
+        const startedAt=Date.now(),duration=timeoutMs??(COMMAND_KINDS.has(kind)?Math.max(answerTimeoutMs,HOST_ANSWER_TIMEOUT_MAX_MS):answerTimeoutMs);
+        const call={request,signal,abort,resolve,reject,startedAt,deadlineMs:startedAt+duration,timer:null,notice:waitNotice(kind,request.callId)};
+        pending=call;lastProgressAt=startedAt;
         if(timeoutMs!==null)call.timer=setTimeout(()=>stop('host_request_timeout',call),timeoutMs);
         // The default deadline never keeps an otherwise finished process alive.
         else {call.timer=setTimeout(()=>stop('host_request_timeout',call),
@@ -85,12 +93,17 @@ export function createHostToolBridge({responseLimit=64*1024,answerTimeoutMs=host
         }).catch(()=>stop('host_disconnected',call));
       });
     },
-    accept(raw){
+    accept(raw,{inFlight:operation=null}={}){
       let reply;
       try{
         if(raw?.type==='host_close'){
-          shape(raw,['type','sessionId']);need(raw.sessionId===sessionId&&!closed,'host_response_mismatch');
-          closed=true;stop('host_disconnected');return {accepted:true,closing:true};
+          shape(raw,['type','sessionId',...(Object.hasOwn(raw,'force')?['force']:[])]);need(raw.sessionId===sessionId&&!closed,'host_response_mismatch');
+          need(raw.force===undefined||typeof raw.force==='boolean','host_response_mismatch');
+          const active=operation??(pending?{requestId:null,operation:null,startedAt:inFlight().startedAt,stage:pending.request.kind,call:inFlight()}:null);
+          if(active&&raw.force!==true)return {accepted:false,code:'host_close_busy',inFlight:active,
+            message:'上一步仍在执行，请继续等待其结果；只有明确放弃本次在途工作时才传 force:true。'};
+          closed=true;stop('host_disconnected');return {accepted:true,closing:true,...(active?{
+            warning:'已强制关闭在途工作，原运行可能进入 unknown；请核对原运行状态后恢复。',inFlight:active}:{})};
         }
         reply=json(raw,responseLimit);shape(reply,['type','sessionId','callId','requestDigest','result']);
         const late=reply.type==='host_result'&&reply.sessionId===sessionId&&pending?.request.callId!==reply.callId
@@ -100,7 +113,7 @@ export function createHostToolBridge({responseLimit=64*1024,answerTimeoutMs=host
         need(reply.type==='host_result'&&pending!==null&&!closed,'host_response_mismatch');
         for(const key of ['sessionId','callId','requestDigest'])need(reply[key]===pending.request[key],'host_response_mismatch');
       }catch(error){return {accepted:false,code:error?.code==='limit_exceeded'?'host_response_too_large':'host_response_mismatch'};}
-      const call=pending;pending=null;clearTimeout(call.timer);call.notice?.();call.signal.removeEventListener('abort',call.abort);
+      const call=pending;pending=null;lastProgressAt=Date.now();clearTimeout(call.timer);call.notice?.();call.signal.removeEventListener('abort',call.abort);
       call.resolve(reply.result);return {accepted:true,callId:reply.callId};
     },
     close(){closed=true;stop('host_disconnected');},

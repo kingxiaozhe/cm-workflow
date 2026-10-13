@@ -49,7 +49,7 @@ async function client(t,f){
   const ready=await wait(m=>m.type==='host_ready');
   return {wait,send,requests,request:(operation,fields={})=>{const requestId=`request-${++seq}`;
     const reply=wait(m=>m.requestId===requestId);send({requestId,operation,...fields});return reply;},
-  close:async()=>{send({type:'host_close',sessionId:ready.sessionId});assert.equal((await closed)[0],0,stderr);},
+  close:async({force=false}={})=>{send({type:'host_close',sessionId:ready.sessionId,...(force?{force:true}:{})});assert.equal((await closed)[0],0,stderr);},
   result:(call,result)=>send({type:'host_result',sessionId:ready.sessionId,callId:call.callId,requestDigest:call.requestDigest,result})};
 }
 function blocked(reply,reason){
@@ -59,7 +59,8 @@ function blocked(reply,reason){
 async function unknownSummary(t,f){
   const c=await client(t,f),pending=c.request('prepare_summary');
   const call=await c.wait(m=>m.type==='host_request');assert.equal(call.kind,'prd_summary');
-  await c.close();assert.equal((await pending).error.code,'host_request_failed');return call;
+  // This fixture intentionally interrupts the unanswered summary; ordinary closes remain protected.
+  await c.close({force:true});assert.equal((await pending).error.code,'host_request_failed');return call;
 }
 const abandon=call=>({callId:call.payload.recovery.callId,requestDigest:call.payload.recovery.requestDigest,
   abandon:true,evidence:'Synthetic original call unavailable; explicit discard reference'});
@@ -94,7 +95,8 @@ test('unknown summary exposes session reasons, abandon restores before and permi
   const retry=c.request('prepare_summary'),fresh=await c.wait(m=>m.type==='host_request');
   assert.equal(fresh.kind,'prd_summary');assert.notEqual(fresh.payload.recovery.callId,resolution.callId);
   assert.deepEqual(fresh.payload.evidence.currentFeatures,['1.guide']);
-  await c.close();await retry;
+  // The fresh dispatch is deliberately left unanswered to exercise its interrupted history.
+  await c.close({force:true});await retry;
 });
 
 for(const mode of ['summary','analysis','change'])test(`cancel clears pending ${mode} and stays terminal across restart`,{timeout:FIXTURE_TIMEOUT_MS},async t=>{

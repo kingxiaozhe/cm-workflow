@@ -3,6 +3,7 @@ import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {executionDiagnostic,need} from './effect-contract.mjs';
 import {diagnosticReason} from './diagnostic-reason.mjs';
+import {withHostStageObserver} from './host-stage-observer.mjs';
 
 const LIMIT=64*1024;
 // One wording for every host that stops on an over-limit line.
@@ -53,11 +54,18 @@ function idleNotice(sessionKey,seq,row,since){
 // A line above the transport limit ends the session. Carry a code and the
 // limit so every host can name it instead of a generic launch failure.
 const tooLarge=limit=>Object.assign(new Error('request_too_large'),{code:'request_too_large',limit});
-export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimit=LIMIT,errorOutput=process.stderr}){
+export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimit=LIMIT,errorOutput=process.stderr,heartbeat=process.env.CM_HOST_HEARTBEAT==='1'}){
   if(!Number.isSafeInteger(inputLimit)||inputLimit<LIMIT||inputLimit>4*1024*1024)throw Error('input_limit_invalid');
   let pending=null,buffer=Buffer.alloc(0),failure=null,closeRequested=false;
   let writing=Promise.resolve();
-  const controls=new Set();let queuedWrites=0;
+  const controls=new Set(),activeControls=new Map();let queuedWrites=0,activeOperation=null;
+  let progressAt=Date.now(),heartbeatTimer=null,heartbeatWriting=false;
+  const inFlight=()=>{
+    const operation=activeOperation??activeControls.values().next().value??null;
+    const call=toolBridge?.inFlight?.()??null;
+    return operation?{...operation,stage:call?.kind??operation.nativeStage?.kind??operation.operation,call}:
+      call?{requestId:null,operation:null,startedAt:call.startedAt,stage:call.kind,call}:null;
+  };
   const sessionKey=randomUUID(),startedAt=Date.now();let idle=null,seq=0,ended=false,lastRow=undefined,idleSince=0;
   // Host registry (runtime/js/notify.mjs): serialised so a session that ends at
   // once still removes its own entry. Each step is best-effort and synchronous.
@@ -93,7 +101,21 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
     writing.catch(error=>{failure=error;});
     return writing;
   };
-  toolBridge?.attach(reply);
+  toolBridge?.attach(reply,{heartbeat});
+  // Opt-in transport telemetry: no runner reads, journal writes or fingerprint changes.
+  // Keep at most one heartbeat queued so a slow peer cannot accumulate timer output.
+  if(heartbeat&&toolBridge){
+    const beat=()=>{
+      if(ended||failure||closeRequested||heartbeatWriting||queuedWrites>0)return;
+      heartbeatWriting=true;
+      reply({type:'host_heartbeat',sessionId:toolBridge.sessionId,pid:process.pid,at:new Date().toISOString(),
+        lastProgressAt:new Date(Math.max(progressAt,toolBridge.lastProgressAt?.()??0)).toISOString(),inFlight:inFlight()})
+        .catch(error=>{failure=error;}).finally(()=>{heartbeatWriting=false;});
+    };
+    // ready is already queued; send the first beat immediately after that write.
+    writing.then(beat).catch(()=>{});
+    heartbeatTimer=setInterval(beat,5000);heartbeatTimer.unref?.();
+  }
   async function dispatch(bytes){
     if(failure)throw failure;
     let request;
@@ -101,7 +123,7 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
       request=JSON.parse(bytes.toString('utf8'));
       if(POLLS.has(request?.operation))clearIdle();else nextStep();
       if(toolBridge!==null&&['host_result','host_close'].includes(request?.type)){
-        const accepted=toolBridge.accept(request);closeRequested=accepted.closing===true;
+        const accepted=toolBridge.accept(request,{inFlight:inFlight()});closeRequested=accepted.closing===true;
         reply({type:'host_response',...accepted}).catch(error=>{failure=error;});return;
       }
       if(!request||typeof request!=='object'||Array.isArray(request)
@@ -110,11 +132,20 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
     }catch{nextStep();reply({requestId:null,error:{code:'invalid_request'}}).catch(error=>{failure=error;});return;}
     const requestId=request.requestId;
     let row=null;
+    let operationActive=false,metadata=null;
+    const release=()=>{if(!operationActive)return;operationActive=false;
+      if(activeOperation===metadata)activeOperation=null;
+      activeControls.delete(request);if(!POLLS.has(request.operation))progressAt=Date.now();};
+    const begin=control=>{operationActive=true;const at=Date.now();if(!POLLS.has(request.operation))progressAt=at;
+      metadata={requestId,operation:request.operation,startedAt:new Date(at).toISOString(),nativeStage:null};
+      if(control)activeControls.set(request,metadata);else activeOperation=metadata;};
     const invoke=async()=>{
-      try{const result=await host.handle(request);row={result};await reply({requestId,result});}
+      try{const result=await withHostStageObserver(stage=>{
+          if(operationActive){metadata.nativeStage=stage;if(!POLLS.has(request.operation))progressAt=Date.now();}
+        },()=>host.handle(request));row={result};release();await reply({requestId,result});}
       catch(error){
         reportRequestFailure(errorOutput,request.operation,error);
-        row={error:{code:'host_request_failed'}};
+        row={error:{code:'host_request_failed'}};release();
         await reply({requestId,...row});
       }
       finally{if(!POLLS.has(request.operation))register(row,request.operation);}
@@ -123,10 +154,12 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
     if(request.operation==='status'||request.operation==='cancel'){
       // The input reader must not wait for a slow response consumer before it
       // can deliver the next control request (especially cancellation).
+      begin(true);
       const control=invoke().finally(()=>{controls.delete(control);finished(row,request.operation);});
       controls.add(control);control.catch(error=>{failure=error;});return;
     }
-    if(pending){reply({requestId,error:{code:'host_busy'}}).catch(error=>{failure=error;});return;}
+    if(pending){reply({requestId,error:{code:'host_busy',inFlight:inFlight(),message:'上一步仍在执行，请继续等待该请求的结果。'}}).catch(error=>{failure=error;});return;}
+    begin(false);
     pending=invoke().finally(()=>{pending=null;finished(row,request.operation);});
     pending.catch(error=>{failure=error;});
   }
@@ -150,7 +183,7 @@ export async function serveCmAiHost({host,input,output,toolBridge=null,inputLimi
   }finally{
     // With a duplex conversation, EOF means no more tool replies can arrive.
     // Reject that wait as disconnected, not as an explicit user cancellation.
-    toolBridge?.close();ended=true;clearIdle();
+    toolBridge?.close();ended=true;clearInterval(heartbeatTimer);clearIdle();
     // EOF is not a user cancellation. Finish the in-flight result before close.
     try{await Promise.allSettled([...(pending?[pending]:[]),...controls,writing]);}
     finally{

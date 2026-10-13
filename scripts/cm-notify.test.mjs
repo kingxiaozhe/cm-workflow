@@ -22,13 +22,29 @@ process.stdin.on('end',()=>{setTimeout(()=>{fs.appendFileSync(${JSON.stringify(s
 body:process.env.CM_NOTIFY_BODY,stdin:JSON.parse(input),at:Date.now()})+'\\n');process.exit(${exit});},${sleepMs});});`);
   fs.writeFileSync(path.join(dir,'notify.json'),JSON.stringify({version:1,command:[process.execPath,script],...config}));
   const env={...process.env,CM_WORKFLOW_HOME:dir};
-  const rows=()=>fs.existsSync(sent)?fs.readFileSync(sent,'utf8').trim().split('\n').map(line=>JSON.parse(line)):[];
+  const rows=()=>{
+    if(!fs.existsSync(sent))return [];
+    const contents=fs.readFileSync(sent,'utf8'),completeEnd=contents.lastIndexOf('\n')+1;
+    // appendFileSync may expose an empty file or an unfinished final record.
+    // Only complete JSONL records are consumable; malformed complete JSON fails.
+    return contents.slice(0,completeEnd).split('\n').slice(0,-1).map(line=>JSON.parse(line));
+  };
   const log=()=>fs.existsSync(path.join(dir,'notify.log'))?fs.readFileSync(path.join(dir,'notify.log'),'utf8'):'';
   const until=async(check,ms=8000)=>{const end=Date.now()+ms;while(!check()&&Date.now()<end)await new Promise(r=>setTimeout(r,25));return check();};
   return {dir,env,rows,log,until};
 }
 const fields=(key,over={})=>({key,event:'stuck',project:'/srv/work/demo-app',workflow:'cm-fix',runId:'run-1',
   task:'T-001',stage:'blocked',code:'checks_not_passed',nextAction:'核对 reason 后恢复原运行',...over});
+
+test('fixture JSONL reader waits for complete records and rejects malformed complete JSON',t=>{
+  const h=home(t),file=path.join(h.dir,'sent.jsonl');
+  assert.deepEqual(h.rows(),[]);
+  fs.writeFileSync(file,'');assert.deepEqual(h.rows(),[]);
+  fs.writeFileSync(file,'{"marker":1');assert.deepEqual(h.rows(),[]);
+  fs.appendFileSync(file,'}\n{"marker":');assert.deepEqual(h.rows(),[{marker:1}]);
+  fs.appendFileSync(file,'2}\n');assert.deepEqual(h.rows(),[{marker:1},{marker:2}]);
+  fs.appendFileSync(file,'{"bad":}\n');assert.throws(()=>h.rows(),SyntaxError);
+});
 
 test('off without notify.json, and off under node --test unless CM_WORKFLOW_HOME is explicit',async t=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cm-notify-empty-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));

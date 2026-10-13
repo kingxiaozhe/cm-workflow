@@ -83,7 +83,15 @@ function execute(f,{cancel=false,args=[],operations=[{operation:'advance',reques
   return new Promise((resolve,reject)=>{
     const child=spawn(process.execPath,[cli,...f.args,...args],
       {env:f.env,stdio:['pipe','pipe','pipe']});
-    let buffer='',stderr='',sessionId;const calls=[],rows=[];
+    let buffer='',stderr='',sessionId;const calls=[],rows=[],pendingControls=new Set();
+    let finalOperationReceived=false,closeRequested=false;
+    // Cancellation can finish the original advance before its status/cancel
+    // handlers return. Await those replies before requesting an idle close.
+    const closeWhenIdle=()=>{
+      if(finalOperationReceived&&pendingControls.size===0&&!closeRequested){
+        closeRequested=true;send({type:'host_close',sessionId});
+      }
+    };
     const timer=setTimeout(()=>{child.kill('SIGTERM');reject(Error('batch host timeout'));},Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000));
     child.stderr.on('data',part=>{stderr+=part;});child.once('error',reject);
     const send=value=>child.stdin.write(JSON.stringify(value)+'\n');
@@ -100,7 +108,7 @@ function execute(f,{cancel=false,args=[],operations=[{operation:'advance',reques
             const cwd=f.parallel&&identity.taskId!=='T-003'
               ?path.join(f.root,'.cm-worktrees',f.batch.batchId.slice(0,8),identity.taskId):f.codeProject;
             calls.push(`${identity.taskId}:${row.kind}`);
-            if(cancel){send({operation:'status',requestId:'status'});send({operation:'cancel',requestId:'cancel'});continue;}
+            if(cancel){pendingControls.add('status');pendingControls.add('cancel');send({operation:'status',requestId:'status'});send({operation:'cancel',requestId:'cancel'});continue;}
             if(row.kind==='develop'){
               assert.equal(payload.request.provider,f.runtime);
               const n=Number(identity.taskId.slice(-1));
@@ -133,8 +141,10 @@ function execute(f,{cancel=false,args=[],operations=[{operation:'advance',reques
           }
           const index=operations.findIndex(item=>item.requestId===row.requestId);
           if(index>=0&&(row.result||row.error)){
-            if(index+1<operations.length)send(operations[index+1]);else send({type:'host_close',sessionId});
+            if(index+1<operations.length)send(operations[index+1]);else finalOperationReceived=true;
           }
+          if(row.result||row.error)pendingControls.delete(row.requestId);
+          closeWhenIdle();
         }catch(error){clearTimeout(timer);child.kill('SIGTERM');reject(error);}
       }
     });

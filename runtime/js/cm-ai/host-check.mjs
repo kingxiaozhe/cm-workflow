@@ -1,6 +1,7 @@
 // Runs host-configured, already-authorized project checks. Commands may execute
 // project code; specsRoot opts into Codex's native sandbox for that subprocess.
 // Without specsRoot this preserves the existing direct host-check behavior.
+import {beginHostStage} from './host-stage-observer.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
@@ -55,6 +56,7 @@ export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,out
           ...(signature?{signatureMatched:original.signatureMatched}:{})});continue;
       }
       notify({phase:'start',id:item.id});
+      const endStage=beginHostStage('check',timeoutMs);
       const result=await new Promise(resolve=>{
         let child;
         try{
@@ -126,7 +128,7 @@ export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,out
               evidence:prefix+(summary.length?` (${summary.join(', ')})`:'')});
           }
         });
-      });
+      }).finally(endStage);
       notify({phase:'complete',id:item.id,outcome:result.outcome,exitCode:result.exitCode});
       need(!signal.aborted,'cancelled');
       results.push({id:item.id,command:item.command,...result,...(signature?{signatureMatched}:{})});

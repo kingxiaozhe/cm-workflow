@@ -46,9 +46,14 @@ export function inspectPrdSummaryEvidence(specs,{currentFeatures}={}){
         if(bytes!==null)evidenceFiles.push({path:file,sha256:sha(bytes)});
       }
       const args={stage,feature:slug,evidence:path.join(specs,prefix+'-r1.md'),receipt:path.join(specs,prefix+'-disposition.json')};
-      const gate=inspectPrdReview(args);
-      let findings=null,archiveIssue={},correctionSelfCheck=null;
-      try{
+      let findings=null,archiveIssue={},correctionSelfCheck=null,gate;
+      // A historical receipt may bind bytes that a later approved revision changed: register it, never block.
+      try{gate=inspectPrdReview(args);}
+      catch(error){
+        if(!historical)throw error;
+        gate={stage,feature:slug,outcome:'unavailable'};archiveIssue={archive:'unavailable',reason:error.code??error.message};
+      }
+      if(gate.outcome!=='unavailable')try{
         if(['resume_disposition','completed'].includes(gate.outcome))findings=inspectPrdFindings({specs,stage,feature:directory});
         if(gate.outcome==='completed'){
           const receipt=JSON.parse(readCmInitSource(specs,prefix+'-disposition.json').toString('utf8'));
@@ -67,7 +72,7 @@ export function inspectPrdSummaryEvidence(specs,{currentFeatures}={}){
         archiveIssue={archive:original!==null&&!/\n```json\n[^\n]+\n```\n$/.test(original.toString('utf8'))?'legacy_format':'unavailable',
           reason:error.message};
       }
-      if(historical&&gate.outcome!=='completed'&&(stage==='split'||gate.outcome!=='dispatch_once'))
+      if(historical&&!['completed','unavailable'].includes(gate.outcome)&&(stage==='split'||gate.outcome!=='dispatch_once'))
         archiveIssue={archive:archiveIssue.archive??'receipt_missing',
           reason:[archiveIssue.reason,'prd_summary_receipt_missing'].filter(Boolean).join('; ')};
       reviews[stage]={gate,independent:findings?.independent??null,verdict:findings?.verdict??null,
@@ -86,14 +91,24 @@ export function inspectPrdSummaryEvidence(specs,{currentFeatures}={}){
         cases={total:null,user:null,generated:null,status:'invalid',reason:'test_cases_invalid'};
       }
     }
-    const revision=readPrdSelfCheckRevision(specs,directory);
-    if(revision!==null){
-      const target=revision.features.find(f=>f.directory===directory);
-      evidenceFiles.push({path:prdSelfCheckRevisionPath(directory),sha256:sha(readCmInitSource(specs,prdSelfCheckRevisionPath(directory)))});
-      // The note is about exactly the revision reviewed by this split, including low-risk designs.
-      inspectPrdSplitDesign({specs,feature:directory,draftDigest:revision.draftDigest,
-        originalSha:target.documents.find(d=>d.path==='design.md').beforeSha256,
-        requirementsSha:target.documents.find(d=>d.path==='requirements.md').beforeSha256});
+    const revisionPath=prdSelfCheckRevisionPath(directory);let revision=null;
+    try{
+      revision=readPrdSelfCheckRevision(specs,directory);
+      if(revision!==null){
+        const target=revision.features.find(f=>f.directory===directory);
+        evidenceFiles.push({path:revisionPath,sha256:sha(readCmInitSource(specs,revisionPath))});
+        // The note is about exactly the revision reviewed by this split, including low-risk designs.
+        inspectPrdSplitDesign({specs,feature:directory,draftDigest:revision.draftDigest,
+          originalSha:target.documents.find(d=>d.path==='design.md').beforeSha256,
+          requirementsSha:target.documents.find(d=>d.path==='requirements.md').beforeSha256});
+      }
+    }catch(error){
+      // Same boundary as the review gate above: a historical revision check registers, never blocks.
+      if(!historical)throw error;
+      const bytes=readCmInitSource(specs,revisionPath);
+      if(bytes!==null&&!evidenceFiles.some(item=>item.path===revisionPath))evidenceFiles.push({path:revisionPath,sha256:sha(bytes)});
+      reviews.split={...reviews.split,archive:reviews.split.archive??'unavailable',
+        reason:[reviews.split.reason,`self_check_revision:${error.code??error.message}`].filter(Boolean).join('; ')};
     }
     features.push({directory,reviews,cases,...(revision?{selfCheckRevision:{reason:revision.reason,round:revision.round,
       changedFiles:revision.features.find(f=>f.directory===directory).changedFiles}}:{}),...(currentFeatures===undefined?{}:{historical})});

@@ -84,6 +84,38 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 
 先按下节准备计划及真实答案文件。计划中的 `checks` 须为实际可执行的命令；驱动不接受静态检查结果代替执行。
 
+## 探活、等待与关闭
+
+九个单步驾驶员共用 `drive-core`，自动启用 `CM_HOST_HEARTBEAT=1`。手动驱动可在启动宿主前设置同一环境变量；未启用时保留旧 JSONL 输出。心跳只存在于当前连接，不是新的存档文件，不写 journal、不改变运行配置指纹，也不调用 runner 的 `status`。
+
+支持探活的 `host_ready` 增加 `heartbeat:{intervalMs:5000,timeoutMs:30000}`。随后宿主立即发送、每 5 秒续发 `host_heartbeat`：
+
+```json
+{"type":"host_heartbeat","sessionId":"当前连接","pid":12345,"at":"2026-10-12T00:00:05.000Z","lastProgressAt":"2026-10-12T00:00:00.000Z","inFlight":{"requestId":"adv-1","operation":"advance","startedAt":"2026-10-12T00:00:00.000Z","stage":"check","nativeStage":null,"call":{"callId":"本次反问","kind":"check","startedAt":"2026-10-12T00:00:00.000Z","deadlineMs":1791764100000}}}
+```
+
+`inFlight:null` 表示传输层当前没有在途操作。`call:null` 表示没有等待会话回复的反问。`nativeStage` 为已接入的原生检查或 runner 开发／审查阶段，包含 `id`、`kind`、`startedAt`、`deadlineMs`；两者都为空时 `stage` 只表示 operation，不推断内部阶段或子进程状态。`deadlineMs` 是反问的绝对截止时间（Unix 毫秒）；心跳不携带业务 payload、代码或密钥。`lastProgressAt` 只随实际操作或反问变化，收到新心跳不代表工作取得进展。心跳不能证明检查通过、子进程退出或任务完成。
+
+重复 `advance` 返回 `host_busy` 时，错误包含 `inFlight` 的原 requestId、operation、阶段和开始时间。含义是“上一步仍在执行，继续等它的结果”。驾驶员继续接收原请求结果；手动驱动也须按原 requestId 读取，不能据此关闭宿主或重派开发。
+
+空闲时仍可发送原 `{"type":"host_close","sessionId":"…"}`。操作或反问在途时默认返回 `host_close_busy`，保持连接和原请求。确认要中断后，才发送 `{"type":"host_close","sessionId":"…","force":true}`；响应会警告原运行可能进入 `unknown`。驾驶员无法应答或应答被拒收时，会明确打印 force 中断原因。声明心跳的新宿主须先确认关闭，再结束输入；未声明能力的旧宿主使用已提示的 force + EOF 兼容路径，以保留旧宿主最终拒答结果。强制关闭、EOF、进程死亡均不等于用户取消。强制关闭后先核对原 run、实际文件和相关进程，再沿原恢复入口操作，不手改 journal 或自动重派审查。
+
+驾驶员默认等待期限：启动 60 秒；已声明心跳的宿主连续 30 秒无心跳即失败；反问与已接入原生阶段取原截止时间的较早者，加 30 秒清理余量。嵌套检查结束后恢复外层原截止时间，同一阶段的重复心跳不能延长预算。未声明阶段期限的操作（包括旧宿主）使用 6 小时后备上限；这不是已接入检查／审查的默认预算。完成结果或关闭请求后最多再等 5 秒；故障清理先 SIGTERM，1 秒后向仍存在的自有进程组发送 SIGKILL；宿主先退出也不取消这次清理，以覆盖忽略 SIGTERM 的同组子进程。只作用于驾驶员自己创建的进程／进程组。
+
+| 驾驶员退出码 | 含义及处理 |
+| --- | --- |
+| 0 | 收到正常结果；仍按结果内 state/code 判断业务是否完成 |
+| 1 | 宿主业务错误、unknown／reconcile 或应答失败；核对打印的原运行结果 |
+| 2 | 计划、答案预检或需人工回答的问题阻断；补齐输入再继续 |
+| 70 | `host_start_timeout`：启动后未按时收到 host_ready |
+| 71 | `host_start_failed`／`host_exited`：无法启动或结果前宿主退出 |
+| 72 | `host_heartbeat_timeout`：已声明的心跳超时，宿主可能卡死 |
+| 73 | `host_stage_timeout`：阶段截止或无阶段信息的后备期限已到 |
+| 74 | `host_pipe_closed`：管道读端已关闭，无法继续写入 |
+| 75 | `host_close_timeout`：结果或关闭后，宿主／继承管道未按时结束 |
+
+驾驶员看门狗的超时是连接故障，不能写成业务成功。它只处置自己启动的宿主并中止自己的应答；不能据此认定所有脱离宿主的后代进程都已退出。旧宿主未声明心跳时保留兼容等待，但仍有启动和操作截止。宿主不会因为单项任务 `fixture_completed` 自动关闭，后续 QA 与收尾继续使用原合同。
+
 ## 单步驾驶员
 
 仓库自带 `../../../scripts/cm-ai-drive.mjs`，按上例一次启动宿主、发送一个 operation、回答这一轮的反问并打印结果。
@@ -253,7 +285,7 @@ check 数组，也不是 QA/文档结果。只回报已实际执行的事实，�
 
 JS 返回阻断、待授权、失败、取消、unknown 或补正要求时，报告原因并保留磁盘证据；
 不重试未知调用、换 runId 绕过历史、手工勾 tasks 或启动旧兼容流程。允许 status 查询；
-只有用户明确取消才发送 cancel。结束用 host_close；断联不是用户取消。
+只有用户明确取消才发送 cancel。空闲结束用 host_close；在途关闭按上文“探活、等待与关闭”处理，断联不是用户取消。
 
 ## 汇报与能力边界
 
