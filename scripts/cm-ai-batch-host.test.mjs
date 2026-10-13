@@ -1,3 +1,4 @@
+import {hostDiagnostic} from './fixtures/host-diagnostic.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -92,16 +93,17 @@ function execute(f,{cancel=false,args=[],operations=[{operation:'advance',reques
         closeRequested=true;send({type:'host_close',sessionId});
       }
     };
-    const timer=setTimeout(()=>{child.kill('SIGTERM');reject(Error('batch host timeout'));},Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000));
-    child.stderr.on('data',part=>{stderr+=part;});child.once('error',reject);
-    const send=value=>child.stdin.write(JSON.stringify(value)+'\n');
+    const timeoutMs=Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000),trace=hostDiagnostic(child,{timeoutMs});
+    const timer=setTimeout(()=>{child.kill('SIGTERM');reject(trace.attach(Error('batch host timeout')));},timeoutMs);
+    child.stderr.on('data',part=>{stderr+=part;});child.once('error',error=>reject(trace.attach(error)));
+    const send=value=>{trace.send(value);child.stdin.write(JSON.stringify(value)+'\n');};
     const respond=(row,result)=>send({type:'host_result',sessionId:row.sessionId,callId:row.callId,requestDigest:row.requestDigest,result});
     child.stdout.on('data',part=>{
       buffer+=part;let newline;
       while((newline=buffer.indexOf('\n'))!==-1){
         const line=buffer.slice(0,newline);buffer=buffer.slice(newline+1);if(!line)continue;
         try{
-          const row=JSON.parse(line);rows.push(row);
+          const row=JSON.parse(line);rows.push(row);trace.receive(row);
           if(row.type==='host_ready')sessionId=row.sessionId;
           if(row.type==='host_request'){
             const payload=row.payload,identity=payload.identity??payload.request.identity;
@@ -145,10 +147,10 @@ function execute(f,{cancel=false,args=[],operations=[{operation:'advance',reques
           }
           if(row.result||row.error)pendingControls.delete(row.requestId);
           closeWhenIdle();
-        }catch(error){clearTimeout(timer);child.kill('SIGTERM');reject(error);}
+        }catch(error){clearTimeout(timer);child.kill('SIGTERM');reject(trace.attach(error));}
       }
     });
-    child.once('close',code=>{clearTimeout(timer);resolve({code,stderr,calls,rows,
+    child.once('close',code=>{clearTimeout(timer);resolve({code,stderr,calls,rows,diagnostic:trace.snapshot(),
       results:Object.fromEntries(operations.map(item=>[item.requestId,rows.find(row=>row.requestId===item.requestId)?.result])),
       result:rows.find(row=>row.requestId===operations.at(-1).requestId)?.result});});
     send(operations[0]);

@@ -1,6 +1,9 @@
 import test from 'node:test';
+import {operatorGuidance,guidanceText} from '../runtime/js/cm-ai/operator-guidance.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import {spawnSync} from 'node:child_process';
+import {createCmAiBatch,batchTaskRunId} from './cm-ai-batch-run.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import {buildManifest} from './cm-spec-manifest.mjs';
@@ -121,4 +124,69 @@ test('reused error codes do not swallow failures from the underlying host',async
     await assert.rejects(host.handle(wire(operation,operation==='abandon_effect'
       ?{expectedControl:controlTarget(status,snapshot())}:{})),error=>error===failure);
   }
+});
+
+
+test('v2 wrapper re-renders recovery guidance without reads, mutations or journal changes',async()=>{
+  let reads=0;const current=snapshot(),before=JSON.stringify(current);
+  const native={workflow:'cm-ai',...status,pendingAction:'abandon_effect',outcome:'reported'};
+  native.guidance=operatorGuidance(native);const nativeBefore=JSON.stringify(native);
+  const requests=[];
+  const host=withControlPolicyHost({async handle(request){requests.push(request);return native;}},
+    {identity,snapshot:()=>{reads++;return current;}});
+  for(const operation of ['status','advance']){
+    const output=await host.handle(wire(operation));
+    assert.doesNotMatch(guidanceText(output),/--allow-/);assert.match(guidanceText(output),/expectedControl/);
+    const {guidance,controlTarget:target,...unchanged}=output;
+    const {guidance:original,...expected}=native;assert.deepEqual(unchanged,expected);
+  }
+  assert.equal(reads,1,'guidance does not read state');assert.equal(requests.length,2,'guidance does not dispatch');
+  assert.equal(JSON.stringify(current),before);assert.equal(JSON.stringify(native),nativeBefore);
+});
+
+test('v2 wrapper preserves an active-operation suppression',async()=>{
+  const native={workflow:'cm-ai',...status,pendingAction:'abandon_effect',outcome:'reported'};
+  native.guidance=operatorGuidance(native,{executionActive:true});
+  const host=withControlPolicyHost({async handle(){return native;}},{identity,snapshot});
+  const output=await host.handle(wire('status'));
+  assert.equal(output.guidance.recoveryOperation,null);assert.match(guidanceText(output),/不重复派发/);
+});
+
+
+test('real v2 batch status and recovery render the batch target and leave status history unchanged',async t=>{
+  const root=temp(t),codeProject=path.join(root,'code'),specsDir=path.join(root,'specs'),logHome=path.join(root,'logs');
+  const feature='1.work',taskKey=`${feature}/T-001`,batchId='guidance-batch';
+  fs.mkdirSync(codeProject);fs.mkdirSync(path.join(specsDir,feature),{recursive:true});
+  // A clean disposable Git root without a commit; explicit scope remains authoritative.
+  const initialized=spawnSync('git',['init','-q',codeProject],{encoding:'utf8'});assert.equal(initialized.status,0);
+  fs.writeFileSync(path.join(codeProject,'.git/info/exclude'),'*\n');
+  fs.writeFileSync(path.join(codeProject,'.cm-workflow.json'),JSON.stringify({version:1,policies:{delivery:'diff'}}));
+  for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(specsDir,feature,name),'# Fixture\n');
+  fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: fixture\n');
+  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
+  let calls=0;
+  const configuration={version:1,repositoryId:identity.repositoryId,batchId,specsDir,codeProject,controlPolicy:policy,
+    tasks:[{feature,taskId:'T-001',scope:['target.mjs'],requirements:[]}]};
+  const batch=createCmAiBatch({configuration,logHome,executionFor:async definition=>createConversationExecution(
+    definition,'control-fixture-host',{async call(operation){
+      calls++;assert.equal(operation,'develop');fs.writeFileSync(path.join(codeProject,'target.mjs'),'// preserved edit\n');
+      throw Object.assign(new Error('Synthetic disconnect'),{code:'host_disconnected'});
+    }},{model:'fixture',disabledSkills:[],preflight:{passed:true,cli_model:'fixture',prompt_transport:'stdin',
+      config_fingerprint:configFingerprint({cwd:codeProject,model:'fixture'})}},null,null,false,'codex',{controlPolicy:policy,qaLogHome:logHome})});
+  const advance=await batch.handle({version:2,operation:'advance',requestId:'batch-advance'});
+  assert.equal(advance.pendingAction,'develop_redo',JSON.stringify(advance));
+  assert.match(guidanceText(advance),/完整批次 controlTarget/);assert.doesNotMatch(guidanceText(advance),/--allow-/);
+  const journal=path.join(specsDir,'.reviews/.execution',batchTaskRunId(batchId,taskKey),'state.json');
+  const before=fs.readFileSync(journal),log=path.join(specsDir,'运行日志.jsonl'),beforeLog=fs.readFileSync(log);
+  const reported=await batch.handle({version:2,operation:'status',requestId:'batch-status'});
+  assert.match(guidanceText(reported),/batchId、taskKey、member、batchDigest/);
+  assert.deepEqual(fs.readFileSync(journal),before);assert.deepEqual(fs.readFileSync(log),beforeLog);assert.equal(calls,1);
+  const expectedControl=await batch.controlTarget();
+  assert.deepEqual(fs.readFileSync(journal),before);assert.deepEqual(fs.readFileSync(log),beforeLog);
+  const recovered=await batch.handle({version:2,operation:'develop_redo',requestId:'batch-redo',taskKey,
+    reason:'Synthetic stopped conversation',expectedControl});
+  assert.equal(recovered.code,'develop_answer_missing',JSON.stringify(recovered));
+  assert.match(guidanceText(recovered),/原批次入口/);assert.doesNotMatch(guidanceText(recovered),/--allow-|恢复原运行/);
+  assert.equal(calls,1,'recovery only records confirmation');
+  assert.equal(fs.readFileSync(path.join(codeProject,'target.mjs'),'utf8'),'// preserved edit\n');
 });

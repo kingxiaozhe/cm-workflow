@@ -1,3 +1,4 @@
+import {hostDiagnostic} from './fixtures/host-diagnostic.mjs';
 // Shared real-host fixture for the cm-ai-host*.test.mjs files (the Codex-sandbox
 // set that CI cannot host). Importing it isolates CM_WORKFLOW_HOME/LOG_HOME for the
 // importing test file and sweeps every fixture root for leaked processes when that
@@ -81,6 +82,8 @@ export function runCli(f,mode,action='create'){
     const args=[...launchArgs(f)];args[4]=action;
     const child=spawn(process.execPath,[cli,...args],{stdio:['pipe','pipe','pipe'],env:f.env??process.env});
     let buffer='',stderr='',closed=false,sessionId;const rows=[],calls=[];
+    const timeoutMs=Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000);
+    const trace=hostDiagnostic(child,{timeoutMs:f.watchdog?null:timeoutMs});
     // Provider children run in their own process groups: stopping only the host
     // would orphan a hung fake reviewer, so failure and watchdog paths stop the
     // whole fixture tree. f.watchdog(expire) may replace the timer; it returns a disarm function.
@@ -88,13 +91,13 @@ export function runCli(f,mode,action='create'){
     const fail=error=>{
       disarm();child.kill('SIGKILL');
       try{killFixtureProcesses(f.root);}catch(cleanup){error=new AggregateError([error,cleanup],String(error?.message??error));}
-      reject(error);
+      reject(trace.attach(error));
     };
-    disarm=(f.watchdog??(expire=>{const timer=setTimeout(expire,Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000));
+    disarm=(f.watchdog??(expire=>{const timer=setTimeout(expire,timeoutMs);
       return ()=>clearTimeout(timer);}))(()=>fail(new Error('host fixture timed out')));
     child.stderr.on('data',chunk=>{stderr+=chunk;});
-    child.once('error',reject);
-    const send=value=>child.stdin.write(JSON.stringify(value)+'\n');
+    child.once('error',error=>reject(trace.attach(error)));
+    const send=value=>{trace.send(value);child.stdin.write(JSON.stringify(value)+'\n');};
     const response=(row,result)=>({type:'host_result',sessionId:row.sessionId,callId:row.callId,requestDigest:row.requestDigest,result});
     child.stdout.on('data',chunk=>{
       buffer+=chunk;
@@ -103,7 +106,7 @@ export function runCli(f,mode,action='create'){
         const line=buffer.slice(0,newline);buffer=buffer.slice(newline+1);
         if(!line)continue;
         try{
-          const row=JSON.parse(line);rows.push(row);
+          const row=JSON.parse(line);rows.push(row);trace.receive(row);
           if(row.type==='host_ready')sessionId=row.sessionId;
           if(row.type==='host_request'){
             calls.push(row.kind);
@@ -181,7 +184,7 @@ export function runCli(f,mode,action='create'){
         }catch(error){fail(error);return;}
       }
     });
-    child.once('close',code=>{disarm();resolve({code,stderr,rows,calls});});
+    child.once('close',code=>{disarm();resolve({code,stderr,rows,calls,diagnostic:trace.snapshot()});});
     send(f.request??{...request(f.operation??'advance'),requestId:'advance'});
   });
 }

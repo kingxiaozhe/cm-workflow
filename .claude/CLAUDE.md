@@ -41,6 +41,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - 开发运行: 不适用（直接维护 Markdown 与脚本）
 - 构建: 不适用（无构建产物）
 - 测试: `bash scripts/test-shell-compat.sh && node --test scripts/cm-ai-admission.test.mjs scripts/cm-workflow-config.test.mjs scripts/cm-log-event.test.mjs scripts/cm-task-gate.test.mjs scripts/validate-test-cases.test.mjs && python3 scripts/test-task-gate.py`
+- JS 分组测试：`node scripts/cm-test-suite.mjs check` 核对唯一清单；`run ordinary`、`run native --concurrency 1`、`run history --concurrency 4` 分别跑普通、原生沙箱和历史组，自动隔离 CM 配置与日志目录，不执行安装。要求与 CI 分片命令见 `CONTRIBUTING.md`。
 - Lint/安全: `python3 scripts/validate-public-repo.py && python3 scripts/scan-public-safety.py`
 - Bash 语法: `find . -type f -name '*.sh' -print0 | xargs -0 -n1 /bin/bash -n`
 - Pi/BYZ package: `pi install git:github.com/kingxiaozhe/cm-workflow`
@@ -57,7 +58,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - PRD JS 变更/会话恢复: `node scripts/cm-prd-host.mjs --help`；定点夹具 `node --test scripts/cm-prd-completion.test.mjs`
 - 公开包检查: `python3 scripts/validate-public-repo.py`
 - 安全扫描: `python3 scripts/scan-public-safety.py`
-- JS runtime 兼容夹具: `node --test experiments/js-orchestration/*.test.mjs`（当前完整套件要求 macOS + Node.js 24.14+，含原生 SQLite；源码随 runtime 分发不等于 host 已激活）
+- JS runtime 兼容夹具: `node --test experiments/js-orchestration/*.test.mjs`（完整宿主验证要求支持原生沙箱的平台与 Node.js 24.14+；历史夹具通过不等于真实模型验收）
 - JS 单任务入口: `node scripts/cm-ai-host.mjs --help`；默认当前会话，Codex 同仓 specs 可显式选 `--protected-config`；v2 用策略启用开发与常规审查，legacy 保留原按轮选项；原 workflow 配置接受保护 QA 与审前文档，安装与真实模型验收另验
 - JS 多任务入口: `node scripts/cm-ai-batch-host.mjs --help`；复用原 batch/单任务宿主，Codex/Claude 可选 `--protected-conversation-config` 同仓文本提案/沙箱；v2 常规 Review 自动至两轮，legacy 保留按 feature/task/轮次授权
 - 当前会话执行证据：四驾驶员可显式配置 `liveEvidence`，合同与不可用恢复见 `docs/live-evidence-drivers.md`；静态文件不能代替实际执行。
@@ -83,7 +84,7 @@ skills/                # Codex 权威流程与工种能力
 ├── cm-product-manager/、cm-finance-expert/、cm-doc-syncer/
 └── codebase-context/、external-expert/、darwin-skill/ # 独立工具；点子访谈引擎位于 cm-idea/references/
 agents/                # 并行子 agent → ~/.claude/agents/ —— agent 管纪律
-runtime/               # 双运行时共享合同；runtime/js/cm-ai 唯一 JS 源码，当前会话开发/检查可显式接入，完整 Skill host 未激活
+runtime/               # 双运行时共享合同；runtime/js/cm-ai 的 host/runner 是新 cm-ai 任务的默认执行与持久状态层
 templates/             # workflow config / rules 骨架 / hooks / statusline / dashboard / pixel
 docs/                  # 使用手册、安装架构、交付材料与示例 specs
 assets/                # README 与使用手册的本地视觉资产

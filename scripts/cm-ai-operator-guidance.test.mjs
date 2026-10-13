@@ -117,3 +117,59 @@ test('V5 the second no-result redispatch asks for the operator stop confirmation
   const g=explain('blocked','review_transport_timeout','abandon_review',{reviewRedispatchStopRequired:true});
   assert.equal(g.recoveryOperation,'abandon_review');assert.match(g.nextStep,/确认原审查进程/);assert.equal(g.authorizationGranted,false);
 });
+
+
+test('recovery guidance selects protocol and surface without changing native results',()=>{
+  const cases=[['unknown','execution_error','abandon_effect'],['unknown','execution_error','abandon_review'],
+    ['blocked','bootstrap_review_mismatch','bootstrap_review_recover'],['blocked','develop_answer_missing','develop_redo'],
+    ['blocked','documentation_sync_answer_missing','develop_redo']];
+  for(const protocol of ['legacy','v2'])for(const surface of ['single','batch'])for(const [state,code,action] of cases){
+    const input=result(state,code,action),before=JSON.stringify(input);
+    const value={...input,guidance:operatorGuidance(input,{protocol})};
+    const output=surface==='batch'?batchMemberResult(value,{protocol,taskKey:'1.work/T-001'}):value;
+    const rendered=guidanceText(output);
+    assert.equal(output.guidance.recoveryOperation,action);assert.equal(output.guidance.authorizationGranted,false);
+    assert.equal(JSON.stringify(input),before);
+    assert.equal(output.state,input.state);assert.equal(output.code,input.code);assert.equal(output.pendingAction,input.pendingAction);
+    if(protocol==='v2'){
+      assert.doesNotMatch(rendered,/--allow-|--supersede-reviewed-evidence/);
+      assert.match(rendered,/status/);assert.match(rendered,/expectedControl/);assert.match(rendered,/snapshot_changed/);
+      assert.match(rendered,/不自动刷新/);
+    }else assert.match(rendered,/--allow-/);
+    if(surface==='batch')assert.match(rendered,/批次/);
+    if(code==='documentation_sync_answer_missing')assert.match(rendered,/停止修改文档/);
+  }
+});
+
+test('v2 exhausted recovery and launch recovery never advertise legacy exits',()=>{
+  for(const code of ['review_redispatch_limit','documentation_sync_retry_limit','check_answer_retry_limit','complete_recheck_limit','develop_redo_limit']){
+    for(const protocol of ['legacy','v2'])for(const surface of ['single','batch']){
+      const input=result('blocked',code,'none');input.guidance=operatorGuidance(input,{protocol});
+      const output=surface==='batch'?batchMemberResult(input,{protocol}):input;
+      assert.equal(output.guidance.recoveryOperation,null);
+      if(protocol==='v2'){assert.doesNotMatch(guidanceText(output),/--supersede-reviewed-evidence|--accept-superseded-code-drift/);
+        assert.match(guidanceText(output),/保留/);}
+      else assert.match(guidanceText(output),/--supersede-reviewed-evidence/);
+    }
+  }
+  for(const refusal of ['review_process_unverified','review_observation_invalid','review_boundary_unverified','review_abandon_budget_exhausted']){
+    const input=result('unknown','transport_incomplete','reconcile',{reviewAbandonRefusal:refusal});
+    input.guidance=operatorGuidance(input,{protocol:'v2'});
+    assert.doesNotMatch(guidanceText(input),/--supersede-reviewed-evidence/);
+  }
+  const qa=result('fixture_completed','qa_execution_unknown','reconcile');qa.guidance=operatorGuidance(qa,{protocol:'v2'});
+  assert.match(guidanceText(qa),/launchControlTarget/);assert.match(guidanceText(qa),/--expected-control/);
+  assert.doesNotMatch(guidanceText(qa),/--supersede-reviewed-evidence/);
+  const batch=batchMemberResult(qa,{protocol:'v2'});
+  assert.doesNotMatch(guidanceText(batch),/--rerun-unknown-qa|--expected-control/);
+  const drift=result('blocked','spec_drift','spec_rebind',{reason:'synthetic'});drift.guidance=operatorGuidance(drift,{protocol:'v2'});
+  assert.doesNotMatch(JSON.stringify(batchMemberResult(drift,{protocol:'v2'})),/--supersede-reviewed-evidence/);
+});
+
+test('batch advance guidance uses the batch entry for every native resume family',()=>{
+  for(const code of ['documentation_sync_interrupted','develop_answer_missing','develop_out_of_scope','check_answer_missing','develop_checks_not_passed']){
+    const input=result('blocked',code,'resume');input.guidance=operatorGuidance(input);
+    const output=batchMemberResult(input);
+    assert.match(guidanceText(output),/原批次入口/);assert.doesNotMatch(guidanceText(output),/恢复原运行/);
+  }
+});

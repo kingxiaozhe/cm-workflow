@@ -1,5 +1,6 @@
 // Execution choices and stale-command protection, not human authentication.
 import fs from 'node:fs';
+import {projectOperatorGuidance} from './operator-guidance.mjs';
 import {digest,json,need,shape,validIdentity,hex,id} from './effect-contract.mjs';
 import {parseModelJson} from './model-configuration-file.mjs';
 
@@ -77,7 +78,7 @@ export function withControlPolicyHost(host,{identity,snapshot,launchTarget=null}
       need(recovering||!Object.hasOwn(request,'expectedControl'),'invalid_input');
       const {expectedControl,...wire}=request;wire.version=1;
       // A busy poll cannot publish a recovery target.
-      if(busy)return host.handle(wire);
+      if(busy)return projectOperatorGuidance(await host.handle(wire),{protocol:'v2'});
       busy=true;ownsBusy=true;
       if(recovering){
         checking=false;
@@ -92,7 +93,7 @@ export function withControlPolicyHost(host,{identity,snapshot,launchTarget=null}
         need(digest(wire.identity)===digest(status.identity),'snapshot_changed');
       }
       checking=false;
-      const result=await host.handle(wire);
+      const result=projectOperatorGuidance(await host.handle(wire),{protocol:'v2'});
       if(request.operation==='fix_status'&&result.childControlTarget){
         const parent=await host.handle({version:1,requestId:request.requestId,operation:'status',identity});
         return {...result,controlTarget:{...controlTarget(parent,snapshot()),child:readFixControlTarget(result.childControlTarget)}};

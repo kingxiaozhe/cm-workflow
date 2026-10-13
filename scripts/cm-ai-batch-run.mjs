@@ -31,16 +31,17 @@ export const batchTaskRunId=(batchId,taskKey)=>`task-${digest({batchId,task:task
 // never advertise it for them. Name the exits that do exist instead. An idle
 // cancel of a parallel group does not end its member runs, so a parallel
 // member cannot be superseded afterwards and only the spec revert applies.
-export function batchMemberResult(result,{parallel=false,taskKey=null}={}){
+export function batchMemberResult(result,{parallel=false,taskKey=null,protocol='legacy'}={}){
   const decorate=value=>{
-    const guidance=batchOperatorGuidance(value,{taskKey});
+    const guidance=batchOperatorGuidance(value,{taskKey,protocol});
     return guidance?Object.freeze({...value,guidance}):value;
   };
   if(result?.pendingAction!=='spec_rebind')return decorate(result);
   const files=/变更文件：([^；]+)/.exec(result.reason??'')?.[1]??'规格文件';
   const revert=`规格已重新批准（变更：${files}，只动了其他任务），但批次成员不能换绑。出口：还原这些规格改动并重新批准后继续本批次`;
   return decorate(Object.freeze({...result,pendingAction:'none',
-    reason:parallel?`${revert}。并行组成员没有单独重做的出口。`
+    reason:protocol==='v2'?`${revert}。v2 不支持作废旧证据后新建运行；保留原记录，不改走旧入口。`
+      :parallel?`${revert}。并行组成员没有单独重做的出口。`
       :`${revert}；或取消本批次，还原该任务已改动的代码后，用单任务宿主 cm-ai-host.mjs 以 --supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务。`}));
 }
 // Q24: single-task recovery operations a batch forwards to the member run it is
@@ -224,7 +225,9 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const run=await openControlRun(definition,mode,execution,{...recovery,...permission,...(held.has(taskKey)?{holdRevision:true}:{}),
       ...(membership.has(taskKey)?{parallelSelection:{version:1,group:membership.get(taskKey).map(key=>plans.get(key).identity.taskId)}}:{})});
     if(!run.host)return run;
-    return {...run,host:{...run.host,handle:async request=>batchMemberResult(await run.host.handle(request),{parallel:membership.has(taskKey),taskKey})}};
+    const decorate=host=>({...host,handle:async request=>batchMemberResult(await host.handle(request),
+      {parallel:membership.has(taskKey),taskKey,protocol:controlPolicy?'v2':'legacy'})});
+    return {...run,host:decorate(run.host),...(run.controlHost?{controlHost:decorate(run.controlHost)}:{})};
   }
   function parallelProgress(rows){
     const done=new Set(),ready=new Map(),merging=new Map(),blocked=new Map();let stopped=false,code=null;
@@ -488,7 +491,8 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       :!['blocked','cancelled','unknown','fixture_completed'].includes(history.state.state)?`supersede 不接受原始状态 ${raw}`
       :`外部运行守卫会拒绝在这个代码根上新建运行（原严格运行仍为 ${raw} 或有未对账的调用），原调用对账也不可用`;
     const exit=`只读核对 ${key} 原运行的记录、进程与 worktree（${location(key).worktree}）；`
-      +(supersedable?`确认旧宿主与该成员的会话或子进程已停止写入后，取消本批次，还原该任务已改动的代码，用单任务宿主 cm-ai-host.mjs（不加 --external-models、--execution-optimizations）以该 worktree 为代码根、--supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务`
+      +(controlPolicy?'v2 不支持作废旧证据后新建运行；保留原批次、运行与 worktree，核对原调用与 reason 后交由维护者处理，不改走旧入口'
+        :supersedable?`确认旧宿主与该成员的会话或子进程已停止写入后，取消本批次，还原该任务已改动的代码，用单任务宿主 cm-ai-host.mjs（不加 --external-models、--execution-optimizations）以该 worktree 为代码根、--supersede-reviewed-evidence --supersede-reason 原因 新建运行重做该任务`
         :`批次与单任务宿主目前都没有能处理它的操作：${why}${original}。保留批次、原运行和 worktree，不要取消批次或手改存档，把 rawState 与本 reason 交给维护者处理`);
     return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_parallel_member_unresolved',batchId:config.batchId,
       currentTask:key,identity:status.identity,memberState:status.state,memberCode:status.code??null,pendingAction:status.pendingAction??null,
@@ -508,7 +512,9 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   }
   function parallelRecoveryRequired(key,status){
     const action=status.pendingAction,grant=BATCH_MEMBER_ACTIONS[action];
-    const exit=action==='reconcile_review'
+    const exit=controlPolicy
+      ?`从原批次入口只读 status，展示并核对完整批次 controlTarget，按当前对话的具体决定固定为 expectedControl；发送 version:2 的批次操作 ${action}（taskKey ${key}、${action==='reconcile_review'?'原调用 invocationId':'单行 reason'}）；snapshot_changed 时停止，不自动刷新目标重试`
+      :action==='reconcile_review'
       ?`从批次入口发送 reconcile_review（taskKey ${key}、原调用 invocationId）对账原调用回执`
       :`关闭批次宿主，带 ${grant.flag} ${key} 用同一批次配置重新启动，发送批次操作 ${action}（taskKey ${key}、单行 reason）`;
     return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_parallel_member_recovery_required',batchId:config.batchId,

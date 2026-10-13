@@ -597,3 +597,18 @@ test('ordinary CLI accepts --review-runtime claude under a Codex host and refuse
     }finally{fs.rmSync(f.root,{recursive:true,force:true});}
   }
 });
+
+// Diagnostics must survive a real child startup failure without printing its inputs.
+test('host fixture startup failure retains bounded process diagnostics',async()=>{
+  const f=fixture();
+  try{
+    f.args.push('--synthetic-unknown-option');
+    const result=await runCli(f,'normal');
+    assert.equal(result.code,1);
+    assert.equal(result.diagnostic.exitCode,1);
+    assert.equal(result.diagnostic.lastOperation,'advance');
+    assert.equal(result.diagnostic.timeoutMs,Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000));
+    assert(result.diagnostic.stderrBytes>0);
+    assert(!JSON.stringify(result.diagnostic).includes(f.root));
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});

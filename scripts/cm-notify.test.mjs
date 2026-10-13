@@ -1,3 +1,4 @@
+import {hostDiagnostic} from './fixtures/host-diagnostic.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -646,34 +647,46 @@ test('checkWaitMinutes is validated like waitMinutes',t=>{
 // session sends no next operation for idleMinutes, one notice says so. A last
 // result that waits on a person says "在等你" instead. Any next operation or
 // session end clears it; status polls are not progress.
-function idleHost(h){
+function idleHost(h,{startupDelayMs=0}={}){
   const script=path.join(h.dir,'cm-prd-host.mjs');
   fs.writeFileSync(script,`import {serveCmAiHost} from ${JSON.stringify(HOST_SESSION)};
 const host={handle:async request=>{
   if(request.slowMs)await new Promise(resolve=>setTimeout(resolve,request.slowMs));
   if(['status','fix_status'].includes(request.operation))return {stage:'status_only',doneAt:Date.now()};
   return request.answer;}};
+if(${startupDelayMs})await new Promise(resolve=>setTimeout(resolve,${startupDelayMs}));
 await serveCmAiHost({host,input:process.stdin,output:process.stdout});`);
   const env={...h.env};delete env.NODE_TEST_CONTEXT;
   // steps: [delayMs, request object | raw line string | null to end stdin];
   // delay 'reply:<id>' waits until that requestId has been answered instead.
-  return async steps=>{
+  const history=[];
+  const run=async steps=>{
     const child=spawn(process.execPath,[script],{env,stdio:['pipe','pipe','pipe']});
-    let stdout='';child.stdout.on('data',chunk=>{stdout+=chunk;});
+    const trace=hostDiagnostic(child);
+    let stdout='',buffer='';child.stdout.on('data',chunk=>{
+      stdout+=chunk;buffer+=chunk;let end;
+      while((end=buffer.indexOf('\n'))!==-1){
+        const line=buffer.slice(0,end);buffer=buffer.slice(end+1);
+        try{trace.receive(JSON.parse(line));}catch{/* Raw lines are never retained in diagnostics. */}
+      }
+    });
     const exited=new Promise(resolve=>child.on('close',code=>resolve(code)));
     const replied=id=>stdout.includes(`"requestId":"${id}"`);
     for(const [delay,request] of steps){
       if(typeof delay==='string'){
         const id=delay.slice(6),deadline=Date.now()+15000;
-        while(!replied(id)){if(Date.now()>deadline){child.kill();throw new Error(`no reply for ${id}`);}await new Promise(resolve=>setTimeout(resolve,10));}
+        while(!replied(id)){if(Date.now()>deadline){child.kill();throw trace.attach(new Error('host fixture reply timeout'));}await new Promise(resolve=>setTimeout(resolve,10));}
       }
       else await new Promise(resolve=>setTimeout(resolve,delay));
-      if(request===null){child.stdin.end();break;}
+      if(request===null){trace.send({operation:'eof'});child.stdin.end();break;}
+      if(request!==undefined)trace.send(typeof request==='string'?{}:request);
       if(request!==undefined)child.stdin.write((typeof request==='string'?request:JSON.stringify(request))+'\n');
     }
     const started=Date.now(),code=await exited;
-    return {code,stdout,exitMs:Date.now()-started};
+    const diagnostic=trace.snapshot();history.push(diagnostic);if(history.length>8)history.shift();
+    return {code,stdout,exitMs:Date.now()-started,diagnostic};
   };
+  run.diagnostics=()=>history;return run;
 }
 const op=(n,answer,extra={})=>({requestId:`r${n}`,operation:'advance',answer,...extra});
 
@@ -696,28 +709,33 @@ test('host session idle after a finished step notifies once: 疑似空转 for pr
   assert.equal(h.rows().length,1);assert.equal(waiting.rows().length,1);
 });
 
-test('host session idle: next step, in-flight step and session end clear it; status polls do not',async t=>{
-  const h=home(t,{config:{idleMinutes:0.009}}),run=idleHost(h);
+for(const startupDelayMs of [0,750])test(`host session idle: next step, in-flight step and session end clear it; status polls do not (startup ${startupDelayMs}ms)`,async t=>{
+  const h=home(t,{config:{idleMinutes:0.009}}),run=idleHost(h,{startupDelayMs});
+  // Sending is not completion: a slow startup can otherwise batch the next
+  // line before the first reply, exercising host_busy instead of idle clearing.
   // Steady progress: each next operation arrives before the threshold.
-  const steady=[];for(let n=1;n<=6;n++)steady.push([n===1?0:180,op(n,{stage:'requirements_analysis'})]);
-  assert.equal((await run([...steady,[180,null]])).code,0);
+  const steady=[];for(let n=1;n<=6;n++){
+    if(n>1)steady.push([`reply:r${n-1}`,undefined]);
+    steady.push([n===1?0:180,op(n,{stage:'requirements_analysis'})]);
+  }
+  assert.equal((await run([...steady,['reply:r6',undefined],[180,null]])).code,0);
   // A long in-flight operation is not idleness; ending right after its reply clears the timer.
   assert.equal((await run([[0,op(1,{stage:'requirements_analysis'},{slowMs:2700})],[2850,null]])).code,0);
   // A slow next operation: its arrival clears the timer armed by the previous reply.
-  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],[180,op(2,{stage:'requirements_analysis'},{slowMs:2700})],[2850,null]])).code,0);
+  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],['reply:r1',undefined],[180,op(2,{stage:'requirements_analysis'},{slowMs:2700})],[2850,null]])).code,0);
   // A cancel reply while another operation is still in flight does not arm it.
   assert.equal((await run([[0,op(1,{stage:'requirements_analysis'},{slowMs:2700})],[180,{requestId:'c1',operation:'cancel'}],[2700,null]])).code,0);
   // Driver shape: EOF right after the reply arrived.
   assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],['reply:r1',null]])).code,0);
   // A line the host rejects (not JSON, unknown operation) is still the session's next step.
-  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],[180,'not json'],[2700,null]])).code,0);
-  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],[180,{requestId:'x',operation:'no_such_op'}],[2700,null]])).code,0);
+  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],['reply:r1',undefined],[180,'not json'],[2700,null]])).code,0);
+  assert.equal((await run([[0,op(1,{stage:'requirements_analysis'})],['reply:r1',undefined],[180,{requestId:'x',operation:'no_such_op'}],[2700,null]])).code,0);
   await new Promise(resolve=>setTimeout(resolve,1500));
-  assert.equal(h.rows().length,0,h.log());
+  assert.equal(h.rows().length,0,JSON.stringify(run.diagnostics()));
   // Polls (status via the control path, fix_status via the normal path) neither
   // hold the timer off nor replace the last real step's result.
   for(const poll of ['status','fix_status']){
-    const polls=[[0,op(1,{stage:'requirements_analysis',runId:`run-${poll}`})]];
+    const polls=[[0,op(1,{stage:'requirements_analysis',runId:`run-${poll}`})],['reply:r1',undefined]];
     for(let n=0;n<12;n++)polls.push([180,{requestId:`s${n}`,operation:poll}]);
     assert.equal((await run([...polls,[180,null]])).code,0);
     assert(await h.until(()=>h.rows().some(row=>row.stdin.runId===`run-${poll}`)));

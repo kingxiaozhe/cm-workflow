@@ -27,7 +27,7 @@ for(const [available,coder,reviewer,runtime] of [
     assert(!fs.existsSync(path.join(f.codeProject,'target.mjs')));assert(!fs.existsSync(path.join(f.specsDir,'.reviews')));
     f.args.push('--allow-provider-development-attempt','1');
     const first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
-    assert.equal(first.rows.find(row=>row.requestId==='advance').result.code,null);assert.deepEqual(first.calls,[]);
+    assert.equal(first.rows.find(row=>row.requestId==='advance').result.code,null,JSON.stringify(first.diagnostic));assert.deepEqual(first.calls,[]);
     assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 42;\n');
     const readRoutes=()=>fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse)
       .filter(row=>row.phase==='route'&&row.event==='decision');

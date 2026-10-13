@@ -14,7 +14,12 @@ flowchart LR
     Skills --> TaskGates["runtime/task-gates.md"]
     Skills --> Logging["runtime/logging.md"]
     Skills --> External["runtime/external-expert.md"]
-    RuntimeJS["runtime/js/cm-ai: shipped source + active N1/N2 admission"]
+    Skills --> Driver["scripts/cm-ai-drive / cm-ai-batch-drive"]
+    Driver --> Host["cm-ai-host / cm-ai-batch-host"]
+    Host --> RuntimeJS["runtime/js/cm-ai: owner / runner / gates"]
+    RuntimeJS --> Durable["specs .reviews/.execution: journal + checkpoints"]
+    RuntimeJS --> ToolRequest["current-session tool requests / configured workers"]
+    ToolRequest --> RuntimeJS
     Skills --> References["flow references: N1-N8 / PRD modes"]
     Skills --> Templates["templates/"]
     Skills --> Specs["requirements / design / tasks / optional test-cases"]
@@ -81,13 +86,21 @@ native filenames. Workflow assets resolve relative to the active Skill; no flow
 may hardcode a Codex cache path or treat `~/.claude` as the universal source
 root.
 
-`runtime/js/cm-ai/` is the sole source root for the accepted JS orchestration
-modules. `experiments/js-orchestration/` keeps thin re-exports plus historical
-fixtures so prior evidence paths remain readable. The active `cm-ai` Skill owns
-conversation/tool orchestration and invokes the shared JS gates directly; the
-dormant full-host factory is not a prerequisite and Claude does not need a second
-adapter protocol. Platform installation evidence and real task dogfood remain
-separate F09 work.
+`runtime/js/cm-ai/` is the sole source root for JS orchestration modules.
+`experiments/js-orchestration/` keeps thin re-exports plus historical fixtures
+so prior evidence paths remain readable. New cm-ai tasks use the shared JS host
+by default. The Skill selects the supported entry and fulfills its tool requests;
+the driver transports requests and responses, and the host/runner owns phase
+transitions, durable evidence and completion gates. `scripts/cm-ai-host.mjs`
+assembles the single-task host through `scripts/cm-ai-run.mjs`; the batch host
+coordinates the same task owners. Codex and Claude use this shared chain with
+their configured execution adapters.
+
+Existing JS runs resume with their original identity and stored configuration.
+The explicitly selected legacy conversation flow still uses the shared task
+gates; it does not take ownership of an existing JS run or migrate its journal.
+Source wiring, isolated CLI fixtures, installation and real-provider dogfood are
+separate evidence: one does not establish the others or universal platform support.
 
 The npm package includes root release notes through the `package.json` files
 allowlist. The Codex installer copies `CHANGELOG.md` alongside `README.md` and
@@ -129,11 +142,14 @@ them. Historical completed tasks are not automatically reopened.
 Parallel writers also pass the same gate tool with distinct registered
 worktrees and branches; failure downgrades execution to serial.
 
-This gate checks declarations and content-bound review evidence; it does not make
-one provider's result evidence for another provider. Codex and Claude both keep
-conversation orchestration in the active Skill and use the same JS gates, while a
-fresh context supplies independent review. Real durable N1–N8 dogfood and authorized
-installation evidence remain later work; no Claude-native adapter is required.
+This gate checks source declarations and content-bound review evidence; it does
+not authenticate a reviewer or resist a session with full filesystem write access.
+The default JS owner records review results and controls completion; the current
+session fulfills host requests without replacing that durable state. The legacy
+conversation flow invokes the same completion gates explicitly. Fresh review
+contexts and package bindings limit accidental self-review and stale evidence;
+neither provider names nor `independent: true` prove identity. Platform support
+and real-provider execution must be reported against their own verified evidence.
 
 ## Current-session driver evidence
 
