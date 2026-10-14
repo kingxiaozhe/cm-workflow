@@ -179,7 +179,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--hold-revision: 本次启动在第 1 轮审查要求修改后停在 changes_requested（revision_answer_required），不发起第 2 轮开发意图；只缩小本次启动，不写入配置，下次不带它即继续修订。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--allow-develop-redo: resume 原 run 后发送 develop_redo，request.reason 必须是单行且不超过 500 UTF-8 字节。当前会话开发（非受保护）的应答没拿到，或 provider 开发结果不明且存档记有 worker 进程身份（宿主先核对进程组已退出），pendingAction=develop_redo 时可用；操作员先确认会话已停止修改代码，宿主写入 develop-answer-redo 记录，之后 advance 重发本轮开发。旗标只消费一次，不写入配置。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--allow-bootstrap-review-recovery: resume 原 run 后发送 bootstrap_review_recover；只在 bootstrap develop 已完成且审查包构建失败时核对现有文件、handoff 与原始证据，并追加恢复记录，不重新派发开发。\n');
-  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--supersede-reviewed-evidence --supersede-reason REASON：仅新建同任务运行；旧运行都已终止且 tasks.md 未勾选时，先在新 journal 记授权，再归档旧审查证据。若保留直接前驱运行留下的代码漂移，可额外使用 --accept-superseded-code-drift；漂移文件会作为新运行的已有代码并记录当前 SHA-256。\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--supersede-reviewed-evidence --supersede-reason REASON：仅新建同任务运行；旧运行都已终止且 tasks.md 未勾选时，先在新 journal 记授权，再归档旧审查证据。若保留直接前驱运行留下的代码漂移，可额外使用 --accept-superseded-code-drift；漂移文件会作为新运行的已有代码并记录当前 SHA-256。新版 --control-config 运行另须 --supersede-target FILE：文件保存旧运行 cm-ai-run.mjs inspect-history 返回的 supersedeTarget；旧运行在预览后变化则拒绝为 snapshot_changed，不自动替换目标。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--rebind-spec-material --spec-rebind-reason REASON：仅 resume。规格经 cm-prd --change 重新批准后，若本任务的描述、验证要求、验收标准、设计摘录与测试用例都未变，只换绑批准哈希并写 specification-rebound 记录，已有开发与审查结论保留；内容有变则拒绝并列出变化。status 的 spec_drift 会说明是否可换绑。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('当前会话手动驱动请用 scripts/cm-ai-drive.mjs（批次 cm-ai-batch-drive.mjs；修复 cm-fix-drive.mjs；规格 cm-prd-drive.mjs）；详情见 skills/cm-ai/references/js-host.md。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('External-model mode freezes one model/effort pair per provider. Unknown or invalid external results require reconciliation; automatic retries and abandonment are disabled. See docs/external-models.md.\n');
@@ -216,7 +216,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const extra=new Map();
     for(let index=controlPolicy?9:8;index<argv.length;index++){
       const name=argv[index];refuse(!extra.has(name),'invalid_arguments',`参数重复：${name}`);
-      refuse(['--expected-control','--execution-optimizations','--external-models','--external-models-config','--verification-precheck','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure','--supersede-reviewed-evidence','--supersede-reason','--accept-superseded-code-drift','--rebind-spec-material','--spec-rebind-reason','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--hold-revision','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--review-runtime','--feature','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--qa-fix-final-review-recovery-invocation','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments',`未知参数：${name}`);
+      refuse(['--expected-control','--execution-optimizations','--external-models','--external-models-config','--verification-precheck','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure','--supersede-reviewed-evidence','--supersede-reason','--supersede-target','--accept-superseded-code-drift','--rebind-spec-material','--spec-rebind-reason','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--hold-revision','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--review-runtime','--feature','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--qa-fix-final-review-recovery-invocation','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments',`未知参数：${name}`);
       if(['--execution-optimizations','--external-models','--verification-precheck','--supersede-reviewed-evidence','--accept-superseded-code-drift','--rebind-spec-material','--allow-bootstrap-write','--allow-qa','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--hold-revision','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
       else{refuse(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments',`${name} 需要一个值`);extra.set(name,argv[++index]);}
     }
@@ -229,10 +229,14 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       refuse(controlPolicy.qaFix!=='disabled'||!['--qa-fix-owner-config','--qa-fix-template-config'].some(flag=>extra.has(flag)),
         'invalid_arguments','加载 QA 修复配置必须选择 manual 或 auto 模式。');
       refuse(!extra.has('--auto-qa-fix')||controlPolicy.qaFix==='auto','invalid_input','自动 QA 修复需要 qaFix:auto。');
+      // V2 supersede binds the predecessor state the operator previewed; it never
+      // refreshes the target or archives a run whose state moved after approval.
       refuse(!['--supersede-reviewed-evidence','--supersede-reason','--accept-superseded-code-drift']
-        .some(flag=>extra.has(flag)),'supersede_unavailable',
-        '新版启动入口暂不作废旧运行；保留现场，不自动更新目标后换运行。');
-    }
+        .some(flag=>extra.has(flag))||argv[4]==='create'&&extra.has('--supersede-target'),'supersede_unavailable',
+        '新版重开需要 --mode create 与 --supersede-target FILE（保存旧运行 inspect-history 返回的 supersedeTarget）；目标变化时先核对，不自动替换。');
+      refuse(!extra.has('--supersede-target')||extra.has('--supersede-reviewed-evidence'),'invalid_input',
+        '--supersede-target 只与 --supersede-reviewed-evidence、--supersede-reason 一起用于新版 create 重开。');
+    }else refuse(!extra.has('--supersede-target'),'invalid_arguments','--supersede-target 只用于新版 --control-config 的 create 重开。');
     const qaEnabled=controlPolicy?controlPolicy.qa==='run':extra.has('--allow-qa');
     const fixEnabled=controlPolicy?controlPolicy.qaFix!=='disabled':extra.has('--allow-qa-fix-start');
     const autoFix=controlPolicy?controlPolicy.qaFix==='auto':extra.has('--auto-qa-fix');
@@ -244,6 +248,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     if(controlPolicy&&launchRecovery)refuse(argv[4]==='resume'&&extra.has('--expected-control'),'invalid_input',
       '启动恢复需要 --mode resume 与 --expected-control FILE，文件须保存原 status 的 launchControlTarget；目标变化时先核对，不能自动替换。');
     const expectedControl=extra.has('--expected-control')?readLaunchControlFile(extra.get('--expected-control')):null;
+    const supersedeTarget=extra.has('--supersede-target')?readLaunchControlFile(extra.get('--supersede-target')):null;
     let inputLimit;
     try{inputLimit=parseHostInputLimit(extra.get('--input-limit'));}
     catch(error){refuse(error.code!=='invalid_arguments','invalid_arguments','--input-limit 须为 65536–4194304 的整数字节数');throw error;}
@@ -352,7 +357,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap,externalModels,executionPolicy,controlPolicy)
         :executionFor(definition,argv[6],bridge,review,null,workflow,qaEnabled,runtime,
           {...(controlPolicy?{controlPolicy}:{}),...(extra.has('--review-runtime')?{reviewRuntime:extra.get('--review-runtime')}:{}),...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels}:{}),...(extra.has('--verification-precheck')?{verificationPrecheck:true}:{}),...(extra.has('--original-host-context')?{originalHostContextId:extra.get('--original-host-context')}:{}),...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:(controlPolicy?controlPolicy.bootstrap==='write':extra.has('--allow-bootstrap-write'))}}:{})});
-      run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:recoveryEnabled('--allow-abandon-review'),allowAbandonEffect:recoveryEnabled('--allow-abandon-effect'),allowBootstrapReviewRecovery:recoveryEnabled('--allow-bootstrap-review-recovery'),allowDevelopRedo:recoveryEnabled('--allow-develop-redo'),...(extra.has('--hold-revision')?{holdRevision:true}:{}),specRebindReason:extra.get('--spec-rebind-reason')??null,expectedControl});
+      run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:recoveryEnabled('--allow-abandon-review'),allowAbandonEffect:recoveryEnabled('--allow-abandon-effect'),allowBootstrapReviewRecovery:recoveryEnabled('--allow-bootstrap-review-recovery'),allowDevelopRedo:recoveryEnabled('--allow-develop-redo'),...(extra.has('--hold-revision')?{holdRevision:true}:{}),specRebindReason:extra.get('--spec-rebind-reason')??null,expectedControl,supersedeTarget});
     }
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}
     if(hasFix){

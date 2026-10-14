@@ -91,7 +91,7 @@ const PAIR_FLAGS=new Set(['--external-models-config','--review-config','--workfl
   '--input-limit',
   '--protected-conversation-config','--protected-config','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure',
   '--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--browser-qa',
-  '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason','--spec-rebind-reason',
+  '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason','--supersede-target','--spec-rebind-reason',
   '--review-runtime','--feature','--qa-fix-final-review-recovery-invocation']);
 const FLAG_FLAGS=new Set(['--execution-optimizations','--external-models','--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
   '--verification-precheck',
@@ -620,6 +620,10 @@ function load(){
   if(permissions.includes('--accept-superseded-code-drift')&&!supersedeFlag)
     stop(2,'--accept-superseded-code-drift 需要 --supersede-reviewed-evidence 与 --supersede-reason');
   if(supersedeFlag&&plan.mode!=='create')stop(2,'supersede 只允许 mode create');
+  if(permissions.includes('--supersede-target')&&(!supersedeFlag||!control))
+    stop(2,'--supersede-target 只用于新版 controlConfig 的 create 重开，并须同时提供 --supersede-reviewed-evidence 与 --supersede-reason');
+  if(control&&supersedeFlag&&!permissions.includes('--supersede-target'))
+    stop(2,'新版重开需要 --supersede-target 文件：保存旧运行 inspect-history 返回的 supersedeTarget，不自动生成或替换');
   if(permissions.includes('--rebind-spec-material')!==permissions.includes('--spec-rebind-reason')
     ||permissions.includes('--rebind-spec-material')&&plan.mode!=='resume')
     stop(2,'--rebind-spec-material 只用于 mode resume，并须同时提供 --spec-rebind-reason 原因');

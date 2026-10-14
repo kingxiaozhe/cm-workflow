@@ -203,7 +203,21 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-host.mjs" serve \
 `launch-target.json` 保存此前展示的完整 launchControlTarget，不能从本次启动的新状态替换它。
 这些入口仍保留原 QA/规格恢复条件；新快照绑定不扩大可恢复状态、预算或范围。
 普通 wire 操作的 `expectedControl` 与启动参数 `--expected-control` 是两种用途，不可互换。
-v2 create supersede 尚未开放，返回 `supersede_unavailable`；保留原证据，不通过 legacy 作废旧运行。
+### 卡死任务重开：v2 create supersede
+
+旧运行已终止（blocked、cancelled、unknown 或符合原条件的 fixture_completed），且原运行没有剩余的合法恢复入口时，可用新 runId 重开同一任务：
+
+1. 用旧运行的原配置只读查看：`node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-run.mjs" inspect-history --config 旧run.json`，把返回的 `supersedeTarget` 原样保存为普通 UTF-8 JSON 文件，并向用户展示旧运行状态与重开原因。
+2. 用户批准后，新运行定义（同 feature、同 task、新 runId）启动：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-host.mjs" serve \
+  --config 新run.json --mode create --host-context "{当前真实会话ID}" \
+  --control-config POLICY.json --review-config review.json --runtime codex \
+  --supersede-reviewed-evidence --supersede-reason "单行原因" --supersede-target target.json
+```
+
+宿主在建新 journal 前沿用旧版重开的全部前提（tasks.md 未勾选、旧 writer 已关闭、无未结 effect、代码漂移规则不变），并额外要求：只有一条未被取代的直接前驱运行，且它当前的启动投影与 `target.json` 完全一致；宿主先锁住旧运行的 writer，再比较目标并**在锁内重新发现同任务运行**（必须仍只有这一条未被取代的直接前驱，且 `.execution` 下的运行目录集合与本次调用首次发现时完全相同（新增或消失的目录，包括尚无 journal 记录的失败残留目录，都算变化；首次发现之前就存在、无法归属任务的历史空目录不在此保证内）——否则 `snapshot_changed`；错开时间的第二次重开因此也被拒），并一直持有到新运行写完替代记录、归档完成（或失败）才释放；本次调用自己持有的这把锁不会被「旧运行 writer 是否被占用」的检查（含执行优化的 prior-writer guard）误判为外部占用，其他进程同时打开该文件时仍判占用：预览后旧运行已变化返回 `snapshot_changed`；旧运行正被恢复或另一次重开占用时返回 `supersede_unavailable`。两种情况都不自动刷新目标、不归档证据、不建新运行。缺少目标返回 `invalid_input`；legacy 入口带 `--supersede-target` 返回 `invalid_arguments`。新运行从第 1 轮开始，旧运行 journal 原样保留，旧 handoff／回执按旧版规则归档到 `.reviews/.superseded/`，最后一次审查结论作为参考带入。驾驶脚本 PLAN 把三项放进 `permissions`（`--supersede-target` 路径相对 PLAN）。
 
 ## 旧运行与迁移拒绝
 
@@ -220,12 +234,13 @@ v2 create supersede 尚未开放，返回 `supersede_unavailable`；保留原证
 | 固定目标已陈旧或不匹配当前状态 | `snapshot_changed`，不自动刷新 |
 | 恢复时策略改变 | `fingerprint_mismatch`，不替换原策略 |
 | 恢复时原配置发生变化 | 沿原指纹与配置漂移门禁拒绝 |
-| v2 create supersede | `supersede_unavailable`，不走旧入口作废运行 |
+| v2 create supersede 缺 `--supersede-target` | `supersede_unavailable` 或 `invalid_input`，不走旧入口作废运行 |
+| v2 create supersede 目标与旧运行当前状态不符 | `snapshot_changed`，不归档、不建新运行 |
 
 v2 策略随新运行持久化并纳入新版执行指纹。旧 metadata 中该字段缺省时，原格式与字节保持原样。
 不重写旧 journal、旧指纹或旧控制记录，不把能回放旧记录扩称允许跨入口执行。
 只读 status 可用于核对历史；执行入口仍必须匹配原协议。迁移需要独立的新运行决定，不能就地换入口规避旧证据。
-单任务 QA 重跑、QA 配置修订与规格换绑使用上节 launchControlTarget；批次和 supersede 等出口以实际支持为准，不把单任务恢复合同理解成全部旧出口已开放。
+单任务 QA 重跑、QA 配置修订与规格换绑使用上节 launchControlTarget；批次出口以实际支持为准（单任务 supersede 见上节），不把单任务恢复合同理解成全部旧出口已开放。
 
 ## 兼容 taskgate 的一次受控补正
 

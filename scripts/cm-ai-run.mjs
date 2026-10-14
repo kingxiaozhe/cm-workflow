@@ -244,7 +244,11 @@ export function runConfigMaterial(definition,execution,{parallelSelection=null,b
 export function inspectRunHistory(definition){
   const snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,
     identity:{repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
-  return {identity:snapshot.identity,revision:snapshot.revision,fingerprints:snapshot.fingerprints,
+  // The restart target is the same launch projection a v2 supersede compares;
+  // histories this runtime cannot project report null rather than a guess.
+  let supersedeTarget=null;
+  try{supersedeTarget=controlLaunchTarget(snapshot);}catch{supersedeTarget=null;}
+  return {identity:snapshot.identity,revision:snapshot.revision,fingerprints:snapshot.fingerprints,supersedeTarget,
     records:snapshot.records.map(record=>({seq:record.seq,id:record.id,kind:record.kind,type:record.payload.type??null,
       legacyReviewGrant:record.payload.type==='review-invocation-registered'
         &&(Object.hasOwn(record.payload,'grant')||Object.hasOwn(record.payload,'authorizationAt'))}))};
@@ -268,6 +272,8 @@ export async function openControlRun(definition,mode,execution=null,options={}){
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   if(!['create','resume'].includes(mode))fail('invalid_mode');
   let guard;
+  const holds=[];
+  const releaseHolds=()=>{for(const held of holds.splice(0)){try{held.close();}catch{}}};
   try{
     const acquire=async()=>{
       const {acquireExternalRunGuard,externalRunGuardExists}=await import('../runtime/js/cm-ai/external-run-guard.mjs');
@@ -275,12 +281,15 @@ export async function openControlRun(definition,mode,execution=null,options={}){
       // Switching this binary to a legacy launch must not bypass an existing strict attempt.
       if(strict||externalRunGuardExists(definition.specsDir,definition.codeProject))guard=acquireExternalRunGuard(definition,{strictOnly:!strict});
     };
-    const result=await openControlRunOwned(definition,mode,execution,options,acquire);
+    // A v2 restart holds the predecessor's writer lock from the target check until
+    // the new run has journaled and archived the supersession (or failed).
+    const result=await openControlRunOwned(definition,mode,execution,{...options,supersedeHolds:holds},acquire);
+    releaseHolds();
     const close=result.close;
     return {...result,close:()=>{try{close();}finally{guard?.close();}}};
-  }catch(error){guard?.close();throw error;}
+  }catch(error){releaseHolds();guard?.close();throw error;}
 }
-async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,allowDevelopRedo=false,holdRevision=false,specRebindReason=null,expectedControl=null}={},acquireGuard=async()=>{}){
+async function openControlRunOwned(definition,mode,execution=null,{supersedeHolds=null,supersedeTarget=null,rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,allowDevelopRedo=false,holdRevision=false,specRebindReason=null,expectedControl=null}={},acquireGuard=async()=>{}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection,externalConversationDefinition}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
@@ -292,6 +301,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   // paths are checked by createHostBootstrap against its business scope.
   if(mode==='create'&&!execution?.bootstrap)assertCreatableScope(definition?.scope);
   if(supersedeReason!==null&&mode!=='create')fail('supersede_unavailable');
+  if(supersedeTarget!==null&&!execution?.configuration?.controlPolicy)fail('invalid_arguments');
   if(allowAbandonEffect&&mode!=='resume')fail('effect_abandon_unavailable');
   if(allowBootstrapReviewRecovery&&mode!=='resume')fail('bootstrap_review_recovery_unavailable');
   if(allowDevelopRedo&&mode!=='resume')fail('develop_redo_unavailable');
@@ -309,7 +319,12 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   const controlPolicy=execution?.configuration?.controlPolicy??null;
   const launchRecovery=qaConfigRevision!==null||rerunUnknownQa||rerunBlockedQa||specRebindReason!==null;
   if(controlPolicy){
-    if(supersedeReason!==null)fail('supersede_unavailable');
+    // V2 restart: only create, only with the previewed predecessor launch target.
+    if(supersedeReason!==null){
+      if(mode!=='create')fail('supersede_unavailable');
+      if(supersedeTarget===null)fail('invalid_input');
+      supersedeTarget=readControlTarget(supersedeTarget);
+    }else if(supersedeTarget!==null)fail('invalid_input');
     if(launchRecovery){
       if(mode!=='resume')fail('supersede_unavailable');
       if(expectedControl===null)fail('invalid_input');
@@ -357,7 +372,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   const reviewsDir=path.join(specsDir,'.reviews');
   const supersession=mode==='create'&&supersedeReason!==null
     ?prepareReviewedEvidenceSupersession({specsDir,codeProject,feature,identity,reason:supersedeReason,tasksPath,
-      acceptSupersededCodeDrift}):null;
+      acceptSupersededCodeDrift,...(supersedeTarget?{expectedPredecessor:supersedeTarget,predecessorTarget:controlLaunchTarget,holds:supersedeHolds}:{})}):null;
   let bootstrapConfig=null;
   if(execution?.bootstrap){
     const {bootstrapConfiguration}=await import('../runtime/js/cm-ai/host-bootstrap.mjs');

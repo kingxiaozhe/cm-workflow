@@ -6,6 +6,7 @@ import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {readExecutionSnapshot} from './execution-snapshot.mjs';
+import {openExecutionStore} from './execution-store.mjs';
 import {readRunnerHistory} from './durable-runner-state.mjs';
 import {supersedeWorkflowFile} from './review-evidence-file.mjs';
 import {need,digest} from './effect-contract.mjs';
@@ -18,6 +19,7 @@ import {compareReviewInventoryToBaseline,readReviewBaseline} from './review-pack
 const writer=fileURLToPath(new URL('../../../scripts/cm-log-event.py',import.meta.url));
 const unavailable=reason=>{const error=new Error('supersede_unavailable');error.code='supersede_unavailable';error.reason=reason;throw error;};
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
+const targetChanged=reason=>{const error=new Error('snapshot_changed');error.code='snapshot_changed';error.reason=reason;throw error;};
 const codeDrift=reason=>{const error=new Error('supersede_code_drift');error.code='supersede_code_drift';error.reason=reason;throw error;};
 const driftInstruction='这些文件与直接前驱运行开工前的基线不一致。手动还原这些文件后重建运行；或确认保留这些改动时加 --accept-superseded-code-drift 重建（这些文件会被当成已有代码，不进新运行的审查改动）。';
 
@@ -72,6 +74,12 @@ function evidenceNames(reviewsDir,feature,taskId){
     .map(entry=>entry.name).sort();
 }
 
+// Writer files of predecessors this process locked itself for an in-flight v2 restart.
+// Only an exact registered lock held by this very process is exempt from the
+// open-descriptor check; any other process holding the file still counts.
+const ownedWriters=new Set();
+const onlyThisProcess=pids=>pids.length>0&&pids.every(pid=>Number(pid)===process.pid);
+
 export function oldWriterOpen(execution,runId,{lsofPath}={}){
   // Inspect descriptor ownership without opening the old SQLite store.
   const writerFile=path.join(execution,runId,'writer.sqlite');
@@ -83,6 +91,8 @@ export function oldWriterOpen(execution,runId,{lsofPath}={}){
     if(result.error||result.signal||![0,1].includes(result.status)||diagnostics.length)
       unavailable(`无法核对旧运行 ${runId} 的 writer 状态`);
     if(result.status===0&&!/^p\d+$/m.test(result.stdout))unavailable(`无法核对旧运行 ${runId} 的 writer 状态`);
+    if(result.status===0&&ownedWriters.has(writerFile)
+      &&onlyThisProcess([...result.stdout.matchAll(/^p(\d+)$/gm)].map(match=>match[1])))return false;
     return result.status===0;
   }
   const fuser='/usr/bin/fuser';
@@ -91,18 +101,30 @@ export function oldWriterOpen(execution,runId,{lsofPath}={}){
     if(result.error||result.signal||![0,1].includes(result.status))
       unavailable(`无法核对旧运行 ${runId} 的 writer 状态`);
     if(result.status===0&&!/\b\d+\b/.test(result.stdout))unavailable(`无法核对旧运行 ${runId} 的 writer 状态`);
+    if(result.status===0&&ownedWriters.has(writerFile)&&onlyThisProcess(result.stdout.match(/\b\d+\b/g)??[]))return false;
     return result.status===0;
   }
   unavailable(`缺少核对旧运行 ${runId} writer 占用的本地工具`);
 }
 
-export function prepareReviewedEvidenceSupersession({specsDir,codeProject,feature,identity,reason,tasksPath,acceptSupersededCodeDrift=false}){
+export function prepareReviewedEvidenceSupersession({specsDir,codeProject,feature,identity,reason,tasksPath,acceptSupersededCodeDrift=false,
+  expectedPredecessor=null,predecessorTarget=null,holds=null,afterDiscovery=null}){
+  if((expectedPredecessor===null)!==(predecessorTarget===null))unavailable('重开目标与核对函数必须同时提供');
   if(typeof reason!=='string'||!reason.trim()||Buffer.byteLength(reason,'utf8')>500||/[\r\n\0]/.test(reason))
     unavailable('必须提供单行且不超过 500 字节的 --supersede-reason');
   if(taskChecked(tasksPath,identity.taskId))unavailable('tasks.md 已将任务标为完成；若 QA BLOCKED 后确需重跑，先将该任务改回 - [ ]，再以 --supersede-reviewed-evidence 和 --supersede-reason 创建新运行');
   const reviewsDir=path.join(specsDir,'.reviews');
   if(!fs.existsSync(reviewsDir))unavailable('没有同 feature、task 的旧运行');
   const execution=path.join(reviewsDir,'.execution');
+  // Discovery runs once up front and, for a v2 restart, again under the predecessor lock.
+  // Every run directory that exists right now (except this call's own new run), including
+  // ones the scan below cannot attribute to a task yet, such as a fresh run whose journal
+  // is still empty. A directory that appears between the two discoveries is a new run.
+  const listRunDirectories=()=>fs.existsSync(execution)
+    ?fs.readdirSync(execution,{withFileTypes:true}).filter(entry=>entry.isDirectory()&&entry.name!==identity.runId)
+      .map(entry=>entry.name).sort():[];
+  const scan=()=>{
+  const runDirectories=listRunDirectories();
   const previousRunIds=[],priorRuns=[],alreadySuperseded=new Set();
   if(fs.existsSync(execution))for(const entry of fs.readdirSync(execution,{withFileTypes:true})){
     if(!entry.isDirectory()||entry.name===identity.runId)continue;
@@ -135,12 +157,58 @@ export function prepareReviewedEvidenceSupersession({specsDir,codeProject,featur
         :['PASS','PASSED'].includes(qa)?`旧运行 ${entry.name} 的 QA 已通过`
         :['FAIL','FAILED'].includes(qa)?`旧运行 ${entry.name} 的最新 QA 结果为 FAIL（未通过），失败要修复而不是重开发：在原运行上用 QA 修复（fix_advance / fix_run）处理；修复子运行的审查卡在结果未知时，确认旧进程已退出后用 abandon_review 放弃一次再重审`
         :`旧运行 ${entry.name} 的最新 QA 结果为 ${qa}，不是 BLOCKED，不能用重开发替换；请在原运行上按该结果的恢复入口处理`);
-    priorRuns.push({runId:entry.name,baseline:first.baseline,
+    priorRuns.push({runId:entry.name,baseline:first.baseline,snapshot,
       carriedReview:carriedReviewFrom(entry.name,history.state,history.supersession)});
     for(const runId of history.supersession?.previousRunIds??[])alreadySuperseded.add(runId);
     previousRunIds.push(entry.name);
   }
+  return {previousRunIds,priorRuns,alreadySuperseded,runDirectories};
+  };
+  let {previousRunIds,priorRuns,alreadySuperseded,runDirectories}=scan();
   if(!previousRunIds.length)unavailable('没有同 feature、task 的旧运行');
+  if(typeof afterDiscovery==='function')afterDiscovery();
+  if(expectedPredecessor){
+    // V2 approval names one predecessor state. More than one live predecessor is
+    // ambiguous, and any movement after the preview stops before archiving.
+    const direct=priorRuns.filter(run=>!alreadySuperseded.has(run.runId));
+    if(direct.length!==1)unavailable(`新版重开只接受一条未被取代的直接前驱运行，当前有 ${direct.length} 条`);
+    const [run]=direct;
+    if(expectedPredecessor.identity.repositoryId!==identity.repositoryId||expectedPredecessor.identity.runId!==run.runId
+      ||expectedPredecessor.identity.taskId!==identity.taskId)
+      targetChanged(`重开目标指向的旧运行与实际直接前驱 ${run.runId} 不一致；先只读 inspect-history 核对，不自动替换目标。`);
+    // Take the predecessor's writer lock BEFORE the final comparison and keep it
+    // (the caller releases it) through journaling and archiving. A concurrent
+    // resume of the old run, or a second restart naming a different new run, then
+    // fails as unavailable instead of racing this approval.
+    need(Array.isArray(holds),'supersede_unavailable');
+    let held;
+    try{held=openExecutionStore({specsRoot:specsDir,identity:{repositoryId:identity.repositoryId,runId:run.runId},
+      fingerprints:run.snapshot.fingerprints,create:false});}
+    catch(error){unavailable(`旧运行 ${run.runId} 的 writer 无法锁定（${error.code??'open_failed'}）；可能正被恢复或另一次重开占用`);}
+    const writerFile=path.join(execution,run.runId,'writer.sqlite'),release=held.close;
+    ownedWriters.add(writerFile);
+    held={snapshot:held.snapshot,close(){try{release();}finally{ownedWriters.delete(writerFile);}}};
+    holds.push(held);
+    let current;
+    try{current=held.snapshot();}catch(error){targetChanged(`旧运行 ${run.runId} 的状态无法再次验证（${error.code??'read_failed'}）；先只读 inspect-history 核对。`);}
+    if(digest(predecessorTarget(current))!==digest(expectedPredecessor))
+      targetChanged(`旧运行 ${run.runId} 的状态在预览后已经变化；先只读 inspect-history 核对当前 supersedeTarget，不自动替换目标。`);
+    // Discovery above ran before this lock. Another restart naming a different new
+    // run may have completed in between and become the live predecessor, so look
+    // again under the lock and require the very same single direct predecessor.
+    const again=scan();
+    const directNow=again.priorRuns.filter(prior=>!again.alreadySuperseded.has(prior.runId));
+    if(directNow.length!==1||directNow[0].runId!==run.runId
+      ||[...again.previousRunIds].sort().join('\n')!==[...previousRunIds].sort().join('\n'))
+      targetChanged('持锁后重新发现的同任务运行与批准时不同（另一次重开或新运行已出现）；先只读 inspect-history 核对，不自动替换目标。');
+    // A run directory with no readable task identity yet (for example the leftover of a
+    // restart that failed before its first journal record, still resumable) is invisible
+    // to the comparison above, so any directory that is new since the first discovery
+    // also stops this restart and keeps the scene.
+    if(again.runDirectories.join('\n')!==runDirectories.join('\n'))
+      targetChanged('持锁后 .execution 下出现了批准时没有的运行目录（可能是另一次重开的残留或新运行）；先只读核对该目录，不自动替换目标。');
+    ({previousRunIds,priorRuns,alreadySuperseded,runDirectories}=again);
+  }
   const drift=priorRuns.filter(run=>!alreadySuperseded.has(run.runId))
     .flatMap(run=>verifyOldCodeBaseline(codeProject,run.baseline)
       .map(file=>({predecessorRunId:run.runId,...file})))

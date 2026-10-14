@@ -309,7 +309,7 @@ worker 异常、超时或传输歧义仍是 `unknown`，旧 unknown 历史不自
 
 ## 已审交接后的任务重跑
 
-**v2：**本节 supersede 新建/归档/接受代码漂移尚未开放。遇 handoff_exists、r2 阻断或恢复预算用尽时保留原运行与证据，不取消后改 legacy 重开，不为套用下方步骤手改 tasks。单任务仍可按 Q 的固定 launch target 做已支持的 QA 恢复。以下重跑命令及手改 checkbox 前提只属 legacy 的原合同。
+**v2：**单任务 supersede 已开放，须带 `--supersede-target FILE`（旧运行 `cm-ai-run.mjs inspect-history` 返回的 `supersedeTarget`），合同见 `docs/cm-control-policy-v2.md`「卡死任务重开」；批次成员仍不支持。旧运行仍有合法恢复入口（QA 恢复、abandon、develop_redo 等）时先用原入口，不为重开手改 tasks。
 
 同名 handoff 已被审查回执消费时，新运行在创建 store 和开发前就拒绝 `handoff_exists`，错误的 `reason` 保留恢复提示。QA 配置错误用 [QA 恢复](js-host-qa-recovery.md#qa-配置修订) 的 `--revise-qa-config` 恢复原运行；宿主或环境证据不足用 `--rerun-blocked-qa` 恢复原运行。确需重新开发同一任务时，使用新的 runId 和下列显式授权：
 

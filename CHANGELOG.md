@@ -5,6 +5,8 @@
 
 ## 未发布
 
+- **v2 卡死任务可以正式重开**：控制策略 v2 的单任务运行在开发额度或恢复入口用完后，原来只能停在 `supersede_unavailable`。现在可用新 runId 重开：先用 `cm-ai-run.mjs inspect-history --config 旧run.json` 只读取得 `supersedeTarget` 并交用户批准，再以 `--supersede-reviewed-evidence --supersede-reason 原因 --supersede-target 文件` 新建。宿主沿用旧版重开的全部前提，并要求只有一条未被取代的直接前驱且其当前状态与预览完全一致，否则 `snapshot_changed`，不归档、不建新运行；legacy 入口拒绝该参数。见 `docs/cm-control-policy-v2.md`「卡死任务重开」。
+
 ## 0.17.1 — 2026-10-13
 
 - **新建批次的摘要不再被历史 feature 的旧回执拦住**：已批准的历史 feature 在其审查回执之后经 `--change` 正常修改过时，`prepare_summary` 以前在回执闸门处直接报 `prd_review_artifact_changed`，整批无法发布待审。现在历史 feature 的回执闸门失败、以及带自检修订记录时对同一旧回执的修订核对失败，都与其他历史归档问题一样只登记进摘要附注（「归档不可用，已登记未重审」），当前 feature 和不带范围的调用仍严格阻断；准备后历史文件再变化，发布照样拒绝。
