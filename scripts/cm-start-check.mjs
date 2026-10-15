@@ -14,6 +14,9 @@ import {git as safeGit} from '../runtime/js/cm-security/scan.mjs';
 // file guards that the literal is still there.
 export const CHECK_CALL_LIMIT_MS = 1800000;
 const MAX_LISTED = 20;
+// validateRunDefinition (scripts/cm-ai-run.mjs) refuses more than this many scope paths.
+// The test file guards that the literal is still there.
+export const MAX_SCOPE_PATHS = 256;
 
 class InputError extends Error {}
 
@@ -62,6 +65,8 @@ export function loadStartInputs(planFile) {
 }
 
 function checkProtectedScope(scope) {
+  if (scope.length > MAX_SCOPE_PATHS)
+    throw new InputError(`scope 有 ${scope.length} 条路径，超过创建运行允许的 ${MAX_SCOPE_PATHS} 条；创建会被拒绝，先拆任务或收窄 scope`);
   const protectedPaths = protectedScopePaths(scope);
   const rest = scope.filter(item => !protectedPaths.includes(item));
   if (rest.length > 0 || protectedPaths.length === 0) {
@@ -121,6 +126,13 @@ function checkChecks(plan) {
   return findings;
 }
 
+function hasGitMarker(root) {
+  for (let current = root; ; current = path.dirname(current)) {
+    if (fs.existsSync(path.join(current, '.git'))) return true;
+    if (path.dirname(current) === current) return false;
+  }
+}
+
 function checkDirtyScope(definition) {
   if (!fs.existsSync(definition.codeProject)) return [{level: 'warn', code: 'code_project_missing',
     message: `代码根不存在：${definition.codeProject}，没能核对 scope 是否干净`}];
@@ -135,8 +147,13 @@ function checkDirtyScope(definition) {
     return [{level: 'warn', code: 'git_unavailable',
       message: `Git 不可用或被拒绝（${error.message}），没能核对 scope 是否干净`}];
   }
-  if (inside === null || inside.toString('utf8').trim() !== 'true')
-    return [{level: 'info', code: 'not_git', message: '代码根不是 Git 仓库（或 Git 拒绝读取，如目录属主不同），已跳过 scope 未提交改动核对'}];
+  if (inside === null || inside.toString('utf8').trim() !== 'true') {
+    // The reader folds every non-zero exit into null. A repository marker that exists while git
+    // refuses it (damaged repo, unsafe owner) is a failed check, not a project without git.
+    if (hasGitMarker(root)) return [{level: 'warn', code: 'git_refused',
+      message: '代码根或其上级有 .git，但 Git 拒绝读取（仓库损坏或目录属主不同等），没能核对 scope 是否干净'}];
+    return [{level: 'info', code: 'not_git', message: '代码根不是 Git 仓库，已跳过 scope 未提交改动核对'}];
+  }
   let output;
   try { output = safeGit(root, ['--literal-pathspecs', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...definition.scope]); }
   catch (error) {
@@ -180,8 +197,10 @@ export function main(argv = process.argv.slice(2), out = process.stdout, err = p
   if (argv.includes('--json')) out.write(`${JSON.stringify({errors, warns, skipped, findings})}\n`);
   else {
     for (const item of findings) out.write(`[${item.level}] ${item.code}: ${item.message}\n`);
-    const note = skipped > 0 ? `（有 ${skipped} 项核对被跳过，见上）` : '';
-    out.write(errors + warns === 0 ? `体检通过：没有发现可提前识别的阻塞${note}\n` : `体检结果：${errors} 个 error，${warns} 个 warn${note}\n`);
+    const note = skipped > 0 ? `（另有 ${skipped} 项核对被跳过，见上）` : '';
+    if (errors + warns > 0) out.write(`体检结果：${errors} 个 error，${warns} 个 warn${note}\n`);
+    else if (skipped > 0) out.write(`体检完成：已核对的项目没有发现阻塞，但有 ${skipped} 项核对被跳过，见上\n`);
+    else out.write('体检通过：没有发现可提前识别的阻塞\n');
   }
   return errors > 0 || (argv.includes('--strict') && warns > 0) ? 1 : 0;
 }

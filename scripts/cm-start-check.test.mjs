@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {CHECK_CALL_LIMIT_MS} from './cm-start-check.mjs';
+import {CHECK_CALL_LIMIT_MS, MAX_SCOPE_PATHS} from './cm-start-check.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const script = path.join(here, 'cm-start-check.mjs');
@@ -158,6 +158,41 @@ test('a code root that is not a git repository is reported as info and exits 0',
   const text = run('--plan', p.planFile);
   assert.equal(text.status, 0);
   assert.match(text.out, /被跳过/);
+  assert.doesNotMatch(text.out, /体检通过/);
+});
+
+test('a .git that git refuses is a warn (--strict fails), unlike a project without any .git', t => {
+  const p = project(t, {repo: false, checks: [cmd('unit', ['x'])]});
+  fs.mkdirSync(path.join(p.root, '.git'));
+  const r = check(p);
+  assert.equal(r.status, 0);
+  assert.deepEqual(r.report.findings.map(item => [item.level, item.code]), [['warn', 'git_refused']]);
+  assert.equal(r.report.skipped, 0);
+  assert.equal(check(p, '--strict').status, 1);
+});
+
+test('a refused .git in a parent directory of the code root is a warn too', t => {
+  const p = project(t, {repo: false, checks: [cmd('unit', ['x'])]});
+  fs.mkdirSync(path.join(p.root, '.git'));
+  const nested = path.join(p.root, 'app');
+  fs.mkdirSync(nested);
+  fs.writeFileSync(path.join(p.planDir, 'run.json'), JSON.stringify({version: 1, codeProject: nested, scope: ['src/a.js']}));
+  assert.deepEqual(check(p).report.findings.map(item => [item.level, item.code]), [['warn', 'git_refused']]);
+});
+
+test('the scope path cap matches the run definition and is enforced at the boundary', t => {
+  assert.equal(MAX_SCOPE_PATHS, 256);
+  const source = fs.readFileSync(path.join(here, 'cm-ai-run.mjs'), 'utf8');
+  assert.match(source, /value\[key\]\.length>256/);
+  const scopeOf = count => Array.from({length: count}, (_, i) => `src/f${i}.js`);
+  const ok = check(project(t, {scope: scopeOf(256), checks: [cmd('unit', ['x'])]}));
+  assert.equal(ok.status, 0);
+  const over = run('--plan', project(t, {scope: scopeOf(257), checks: [cmd('unit', ['x'])]}).planFile, '--json');
+  assert.equal(over.status, 2);
+  assert.equal(over.out, '');
+  assert.match(over.err, /257 条路径，超过创建运行允许的 256 条/);
+  const mixed = run('--plan', project(t, {scope: ['AGENTS.md', ...scopeOf(256)], checks: [cmd('unit', ['x'])]}).planFile, '--json');
+  assert.equal(mixed.status, 2);
 });
 
 test('git that cannot run is a warn, not a pass: --strict then fails (no git on PATH)', t => {

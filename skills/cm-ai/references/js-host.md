@@ -230,7 +230,7 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
    `node "{CM_WORKFLOW_ROOT}/scripts/cm-start-check.mjs" --plan "{PLAN.json}"`。不写文件、不起宿主、不跑检查命令；Git 用扫描器的安全读取（可信 git、关闭仓库配置的 fsmonitor 与 clean/process 过滤器、不读用户配置）。只支持普通单任务、当前会话模式的 PLAN：`PLAN.permissions` 含受保护模式、provider 开发或 bootstrap 参数时退出 2，不给结论，请按下列各项手工核对。`error`（退出 1）必须先改；`warn` 逐条处理，保留要写明理由；`--strict` 让 warn 也退出 1。脚本核对：
    - scope 含受保护路径（AGENTS.md、tasks.md、`.reviews`、`.cm-*` 等）——创建必被 `protected_scope` 拒绝。scope 为空、重复，或含绝对路径、`..`、反斜杠、冒号——创建同样必被拒绝，脚本按输入不合法退出 2。
    - `PLAN.checks` 的命令重复、同一 scheme／目的地的 `xcodebuild test` 都没有 `-only-testing`（很可能各跑一遍全量）、各检查超时之和超过检查整步的 30 分钟期限（`sameExecutionAs` 不计）。实测：aihot 76 个检查步里，4 个恰在 30.0 分钟被中止，已完成的最长 29.9 分钟。
-   - scope 内文件在代码根已有未提交改动（含新建）：基线会把它们当起点，交审包里看不到这部分。Git 跑不起来是 warn，代码根不是 Git 仓库是 info；摘要会写出被跳过几项，不会写成通过。
+   - scope 内文件在代码根已有未提交改动（含新建）：基线会把它们当起点，交审包里看不到这部分。Git 跑不起来是 warn，代码根不是 Git 仓库是 info；有跳过项时摘要写成「体检完成……有 N 项核对被跳过」，不写「体检通过」。已有 `.git` 却被 Git 拒绝读取（仓库损坏、目录属主不同）是 warn。scope 超过 256 条创建会被拒，脚本按输入不合法退出 2。
    脚本看不到、要在创建前自己核对：
    - scope 含任务要改的测试与夹具文件；新增夹具路径一起列入，事后追加要走受控 scope 修订。
    - 检查命令是 `sh x.sh` 这类包装时，脚本内部是否又跑了同一套全量测试；脚本只认得直连的 `xcodebuild`。
