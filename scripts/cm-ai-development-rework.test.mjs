@@ -421,14 +421,3 @@ test('granted a2 review transport retry keeps fresh bindings and the original re
     ['review-2','review-2-retry-1']);
   assert.equal(h.state.receipts.length,2);assert.equal(h.state.receipts.at(-1).result.verdict,'approved');
 });
-
-test('a documentation-sync redo re-sends documentation only and is never refused by the one-time rework gate',()=>{
-  const consumed={developerConsumed:true,developerEffectId:'develop-2'};
-  const docBlock={state:'blocked',code:'documentation_sync_answer_missing'};
-  // Documentation redo holds no developer call or slot, with or without a consumed rework permission.
-  assert.equal(effectSlotFree('develop',[],[],[],consumed,'develop-3',docBlock),true);
-  assert.equal(effectSlotFree('develop',[],[],[],null,'develop-3',docBlock),true);
-  // The gate still refuses an ordinary second develop, and a develop that is not the bound one.
-  assert.equal(effectSlotFree('develop',[],[],[],consumed,'develop-3',{state:'blocked',code:'develop_checks_not_passed'}),false);
-  assert.equal(effectSlotFree('develop',[],[],[],{developerConsumed:false,developerEffectId:'develop-2'},'develop-9',{state:'blocked',code:'develop_checks_not_passed'}),false);
-});

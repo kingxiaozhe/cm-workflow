@@ -434,4 +434,5 @@ cm-ai 新单任务/批次的 r2 blocked correction completion 未支持；上方
 但仍须通过原 transport/abandon、fresh invocation、调用计数和重派上限校验；不因该名额接受旧 verdict、第三轮或任意 review ID。
 没有 Review 批准就不能 complete；完成前复查、任务门禁及原 QA 合同继续执行。
 回放按记录顺序验证原默认上限，然后从已验证的新增事件派生许可；checkpoint/config/模型自报额度无效。
+已知限制：已消费一次性返工许可的运行，若之后最后任务的文档同步失败，文档同步重发不可用（返工预算已用满，名额门与总预算预检都会拒绝），只能用 supersede 重开。
 旧 runtime 不认识新增事件时应拒绝读取，不能忽略事件降级执行。

@@ -534,9 +534,6 @@ export const MAX_RUNNER_EFFECTS=6;
 // develop intent is recorded, even a free timeout slot cannot dispatch again.
 export const effectSlotFree=(kind,cache,calls,recheckEffects=[],rework=null,effectId=null,before=null)=>{
   if(kind==='complete')return true;
-  // A documentation-sync redo re-sends documentation only: no developer call, no slot
-  // (completedEffectCount already leaves its source out), so the rework gate never applies.
-  if(kind==='develop'&&before?.state==='blocked'&&DOCUMENTATION_SYNC_CODES.includes(before.code))return true;
   const checkOnly=kind==='develop'&&before?.state==='blocked'&&RECHECK_CODES.includes(before.code);
   if(rework&&kind==='develop'&&!checkOnly&&(rework.developerConsumed||effectId!==rework.developerEffectId))return false;
   const bound=rework&&(kind==='develop'&&!rework.developerConsumed&&effectId===rework.developerEffectId
