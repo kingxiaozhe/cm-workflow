@@ -289,7 +289,7 @@ export async function openControlRun(definition,mode,execution=null,options={}){
     return {...result,close:()=>{try{close();}finally{guard?.close();}}};
   }catch(error){releaseHolds();guard?.close();throw error;}
 }
-async function openControlRunOwned(definition,mode,execution=null,{supersedeHolds=null,supersedeTarget=null,rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,allowDevelopRedo=false,holdRevision=false,specRebindReason=null,expectedControl=null}={},acquireGuard=async()=>{}){
+async function openControlRunOwned(definition,mode,execution=null,{supersedeHolds=null,supersedeTarget=null,rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,allowDevelopRedo=false,holdRevision=false,specRebindReason=null,expectedControl=null,scopeRevision=null,developmentReworkReason=null}={},acquireGuard=async()=>{}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection,externalConversationDefinition}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
@@ -317,7 +317,15 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
     ||(rerunUnknownQa||rerunBlockedQa)&&(mode!=='resume'||!execution?.qaExecutor))fail('qa_recovery_authorization_required');
   const {openTaskExecutionStore}=await import('../runtime/js/cm-ai/task-owner.mjs');
   const controlPolicy=execution?.configuration?.controlPolicy??null;
-  const launchRecovery=qaConfigRevision!==null||rerunUnknownQa||rerunBlockedQa||specRebindReason!==null;
+  const elevatedRecovery=scopeRevision!==null||developmentReworkReason!==null;
+  const launchRecovery=qaConfigRevision!==null||rerunUnknownQa||rerunBlockedQa||specRebindReason!==null||elevatedRecovery;
+  if(elevatedRecovery){
+    if(!controlPolicy||mode!=='resume'||parallelSelection!==null||conversationProtection(execution)!==null
+      ||protectedExecutions.has(execution)||execution.configuration.providerDevelopment)fail('recovery_launch_unavailable');
+    if([scopeRevision!==null,developmentReworkReason!==null,qaConfigRevision!==null,rerunUnknownQa,rerunBlockedQa,specRebindReason!==null].filter(Boolean).length!==1)fail('invalid_input');
+    const reason=scopeRevision?.reason??developmentReworkReason;
+    if(typeof reason!=='string'||!reason.trim()||Buffer.byteLength(reason,'utf8')>500||/[\r\n\0]/.test(reason))fail('invalid_input');
+  }
   if(controlPolicy){
     // V2 restart: only create, only with the previewed predecessor launch target.
     if(supersedeReason!==null){
@@ -522,6 +530,7 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
         ...(execution?.configuration.executionPolicy?{executionPolicy:execution.configuration.executionPolicy}:{}),
         ...(execution?.configuration.externalModels?{externalModels:execution.configuration.externalModels}:{}),excludedContexts:['control-host'],
         ...(controlPolicy?{controlPolicy}:{}),
+        ...(parallelSelection===null?{}:{parallelSelection}),
         developer:{provider:'codex',requestedModel:'unconfigured',contextId:'control-developer',run:unavailable},
         reviewers:[],check:unavailable,taskCompletion:{reviewsDir,handoffs},taskLearning:{feature},
         persistence:{store,mode:runnerMode,version:execution===null?2:3},
@@ -537,9 +546,15 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
       entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,
         ...(definition.featureSelection?{featureSelection:definition.featureSelection.feature}:{}),
         ...(knowledgeCloseout===null?{}:{knowledgeCloseout,...(definition.codeProjects?{codeProjects:definition.codeProjects}:{})}),
-        ...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,allowDevelopRedo,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{
+        ...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,allowDevelopRedo,allowCompletionRework:Boolean(controlPolicy)&&mode==='resume'&&parallelSelection===null&&conversationProtection(execution)===null
+          &&!protectedExecutions.has(execution)&&!execution.configuration.providerDevelopment,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{
         ...Object.fromEntries(['developmentAttempt','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
+    if(elevatedRecovery){
+      const result=scopeRevision!==null?host.reviseScope({allowed:true,...scopeRevision})
+        :host.reworkDevelopment({allowed:true,reason:developmentReworkReason});
+      if(result.outcome==='rejected')fail(result.code);
+    }
     const logAbandonments=()=>{
       for(const record of store.snapshot().records.filter(row=>row.payload.type==='review-invocation-abandoned'))
         recordReviewAbandonment({specsDir,codeProject,feature,identity,record,

@@ -213,7 +213,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   const verificationGate=options.verificationPrecheck===true?async(request,control)=>{
     const verdict=readVerificationPrecheck(await bridge.call('verification_precheck',
       {...request,codeProject:definition.codeProject,feature:definition.feature,
-        scope:definition.scope},control.signal));
+        scope:request.scope??definition.scope},control.signal));
     if(!verdict.satisfied)try{
       process.stderr.write(JSON.stringify({diagnostic:'verification_precheck_failed',
         task:request.identity.taskId,attempt:request.identity.attempt,
@@ -226,7 +226,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     try{
       const gaps=checklistGaps([request.description,request.verification]
         .filter(text=>typeof text==='string').join('\n'),
-        [verdict.evidence,deliveredText(definition.codeProject,definition.scope)].join('\n'));
+        [verdict.evidence,deliveredText(definition.codeProject,request.scope??definition.scope)].join('\n'));
       if(gaps.length>0)process.stderr.write(JSON.stringify({diagnostic:'checklist_coverage',
         task:request.identity.taskId,attempt:request.identity.attempt,advisory:true,
         gaps:gaps.map(gap=>({total:gap.total,missing:gap.missing}))})+'\n');
@@ -331,7 +331,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
       if(check)return check(request,control);
       const route=resolveHostRole({definition,identity:request.identity,role:'tester',signal:control.signal,runtime});
       return bridge.call('check',{...request,codeProject:definition.codeProject,
-        scope:definition.scope,requirements:definition.requirements,route},control.signal);
+        scope:request.scope??definition.scope,requirements:definition.requirements,route},control.signal);
     }),
     // The process adapter records observed reviewer events. Preflight checks capability.
     reviewers:[{id:'reviewer',adapterId,provider:reviewProvider,requestedModel:reviewOptions.model,

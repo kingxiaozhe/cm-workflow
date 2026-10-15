@@ -412,14 +412,17 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
   }
   return files.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
 }
-export function captureReviewInventory(root,baseline){
+// Recovery source bindings opt into file type/mode; ordinary checks keep the
+// historical path/content-only projection. Both use the same guarded snapshot.
+export function captureReviewInventory(root,baseline,{withMode=false}={}){
   validBaseline(baseline);
   const stable=baseline.ignorePolicy?.version===2;
   const policy=stable?stableSnapshotPolicy(root,baseline.ignorePolicy)
     :Object.hasOwn(baseline,'ignorePolicy')?ignorePolicy(root):null;
   return snapshot(root,baseline.specsPath??null,baseline.codeProjectPaths??null,
     stable?[]:baseline.files.map(file=>file.path),new Set(),policy)
-    .map(file=>({path:file.path,sha256:file.sha256}));
+    .map(file=>withMode?({path:file.path,type:file.type,mode:file.mode,sha256:file.sha256})
+      :({path:file.path,sha256:file.sha256}));
 }
 // withMode also reports permission-only changes; the mode is part of a reviewed
 // file record. The default keeps the historical content-only comparison.
@@ -465,7 +468,7 @@ const sealed = (data,key) => {
 };
 export function captureReviewBaseline(options,legacy=false,policyVersion=2,baselinePolicy=null) {
   const v=plain(options); keys(v,['root','identity','scope','requirements',
-    ...['specsRoot','codeProjectPaths','bootstrapRequirements','specification','version'].filter(key=>Object.hasOwn(v,key))]); identityCheck(v.identity);
+    ...['specsRoot','codeProjectPaths','bootstrapRequirements','specification','version','scopeRevisionPaths'].filter(key=>Object.hasOwn(v,key))]); identityCheck(v.identity);
   const version=v.version??2;need([1,2].includes(version));
   const bootstrap=Object.hasOwn(v,'bootstrapRequirements')?v.bootstrapRequirements:null;
   if(bootstrap!==null){
@@ -501,7 +504,7 @@ export function captureReviewBaseline(options,legacy=false,policyVersion=2,basel
     if(fs.existsSync(absolute)) need(fs.lstatSync(absolute).isFile(),'unsupported_file');
   }
   return sealed({version,kind:'cm-review-baseline',identity:v.identity,rootDigest:sha(root),
-    scope,requirements,files,...(specsPath===null?{}:{specsPath}),
+    scope,requirements,files,...(Object.hasOwn(v,'scopeRevisionPaths')?{scopeRevisionPaths:paths(v.scopeRevisionPaths)}:{}),...(specsPath===null?{}:{specsPath}),
     ...(projectPaths===null?{}:{codeProjectPaths:projectPaths}),
     ...(bootstrap===null?{}:{bootstrapRequirements:bootstrap}),
     ...(specification===null?{}:{specification,specificationRoot:v.specification.specsRoot}),
@@ -515,6 +518,70 @@ export function readReviewSourceFiles(root,selected){
     sourceParent(real,p);
     const file=readFile(real,p);total+=file.size;need(total<=SNAPSHOT_LIMIT,'limit_exceeded');return file;
   });
+  return freeze(files);
+}
+export const readReviewScope=value=>paths(value);
+// The same frozen exclusions govern source capture and pure journal replay.
+// Pods can be missing from the creation inventory without a Git-ignore row;
+// this narrow recovery API never opens a parent directory named Pods.
+function scopeRevisionAdditions(b,scope){
+  need(b.version===2&&b.ignorePolicy?.version!==1,'scope_revision_unsupported_baseline');
+  const additions=paths(scope).filter(p=>!b.scope.includes(p));
+  const ignoredPaths=new Set((b.ignorePolicy?.ignoredPaths??[]).map(p=>p.toLowerCase()));
+  const ignoredDirectories=(b.ignorePolicy?.ignoredDirectories??[]).map(p=>p.toLowerCase());
+  for(const p of additions)need(!inDependencyDirectory(p)
+    &&!p.split('/').slice(0,-1).some(part=>part.toLowerCase()==='pods')
+    &&!p.split('/').some(part=>junkDirectories.has(part.toLowerCase()))&&!junkFile(p.split('/').at(-1))
+    &&!ignoredPaths.has(p.toLowerCase())
+    &&!ignoredDirectories.some(dir=>p.toLowerCase()===dir||p.toLowerCase().startsWith(dir+'/')),'excluded_snapshot_path');
+  return additions;
+}
+// Promote only newly approved sparse inventory entries to exact material.
+// Existing business material and the original inventory hashes are preserved.
+export function extendReviewBaseline(raw,scope,files){
+  const b=readReviewBaseline(raw),desired=paths(scope);
+  const additions=scopeRevisionAdditions(b,desired);
+  need(b.scope.filter(p=>p!=='AGENTS.md').every(p=>desired.includes(p)),'scope_revision_shrink');
+  need(Array.isArray(files)&&files.length<=additions.length,'invalid_input');
+  const supplied=new Map();
+  for(const file of files){fileRecord(file);need(additions.includes(file.path)&&!supplied.has(file.path),'invalid_input');supplied.set(file.path,file);}
+  const inventory=new Map(b.files.map(file=>[file.path,file]));
+  const aliases=new Set(b.files.map(file=>file.path.toLowerCase()));
+  for(const p of additions){
+    const old=inventory.get(p),material=supplied.get(p);
+    need(old!==undefined||!aliases.has(p.toLowerCase()),'unsupported_path');
+    if(old){
+      need(material!==undefined,'scope_revision_source_missing');
+      const {contentBase64:discard,...oldMeta}=old,{contentBase64:body,...newMeta}=material;
+      need(digest(oldMeta)===digest(newMeta),'scope_revision_source_changed');
+      inventory.set(p,material);
+    }else need(material===undefined,'scope_revision_source_changed');
+  }
+  const {baselineDigest,...data}=b;
+  return readReviewBaseline(sealed({...data,scope:[...new Set([...b.scope,...desired])].sort(),scopeRevisionPaths:additions.sort(),
+    files:[...inventory.values()].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)},'baselineDigest'));
+}
+// New paths must be absent now; existing additions must still match the
+// creation inventory. Every parent is checked before a no-follow file read.
+export function captureScopeRevisionSources(root,baseline,scope){
+  const b=readReviewBaseline(baseline),real=rootPath(root),files=[];
+  const additions=scopeRevisionAdditions(b,scope);
+  need(sha(real)===b.rootDigest,'invalid_baseline');
+  for(const p of additions){
+    let parent=real;
+    for(const part of p.split('/').slice(0,-1)){
+      parent=path.join(parent,part);
+      try{const stat=fs.lstatSync(parent);need(stat.isDirectory()&&!stat.isSymbolicLink()&&fs.realpathSync(parent)===parent,'unsupported_path');}
+      catch(error){if(error.code==='ENOENT')break;throw error;}
+    }
+    const old=b.files.find(file=>file.path===p);
+    if(old)files.push(readFile(real,p));
+    else{
+      try{fs.lstatSync(path.join(real,p));need(false,'scope_revision_source_changed');}
+      catch(error){if(error.code!=='ENOENT')throw error;}
+    }
+  }
+  extendReviewBaseline(b,scope,files);
   return freeze(files);
 }
 function sourceParent(root,p){
@@ -610,7 +677,7 @@ export function readReviewSourceRecords(raw){
 function validBaseline(b) {
   try {
     keys(b,['version','kind','identity','rootDigest','scope','requirements','files','baselineDigest',
-      ...['specsPath','codeProjectPaths','bootstrapRequirements','specification','specificationRoot','ignorePolicy'].filter(key=>Object.hasOwn(b,key))]);
+      ...['specsPath','codeProjectPaths','bootstrapRequirements','specification','specificationRoot','ignorePolicy','scopeRevisionPaths'].filter(key=>Object.hasOwn(b,key))]);
     need([1,2].includes(b.version) && b.kind==='cm-review-baseline'); identityCheck(b.identity); hex(b.rootDigest);
     if(Object.hasOwn(b,'ignorePolicy')){
       if(b.ignorePolicy.version===2)validateStablePolicy(b.ignorePolicy);
@@ -631,6 +698,10 @@ function validBaseline(b) {
     }
     const bootstrap=Object.hasOwn(b,'bootstrapRequirements');if(bootstrap)validBootstrapRequirements(b.bootstrapRequirements);
     need(digest(b.scope)===digest(paths(b.scope)) && digest(b.requirements)===digest(requirementPaths(b.requirements,bootstrap||Object.hasOwn(b,'specification'))));
+    if(Object.hasOwn(b,'scopeRevisionPaths')){
+      need(digest(b.scopeRevisionPaths)===digest(paths(b.scopeRevisionPaths))
+        &&b.scopeRevisionPaths.every(p=>b.scope.includes(p)),'invalid_baseline');
+    }
     if(b.version===2)inventoryList(b);
     else if(!bootstrap||b.files.length)fileList(b.files);else need(Array.isArray(b.files));
     need(b.requirements.every(p=>b.files.some(f=>f.path===p)));
@@ -724,7 +795,7 @@ function assemblePackage({b,stable,policy,specification,bootstrap},files,checks,
   need(changes.length>0,'empty_changes');
   const changedPaths=new Set(changes.map(change=>change.path));
   const unchangedScope=b.scope.filter(p=>!changedPaths.has(p)&&after.has(p))
-    .map(p=>({path:p,sha256:after.get(p).sha256}));
+    .map(p=>b.scopeRevisionPaths?.includes(p)?after.get(p):({path:p,sha256:after.get(p).sha256}));
   const requirements=b.requirements.map(p=>{ need(after.has(p),'read_failed'); return after.get(p); });
   const pkg=sealed({version:1,kind:'cm-review-package',identity:b.identity,rootDigest:b.rootDigest,
     baseIdentity:b.baselineDigest,scope:b.scope,changes,unchangedScope,requirements,checks,
@@ -815,7 +886,8 @@ function validPackage(p) {
     if(Object.hasOwn(p,'unchangedScope')){
       need(Array.isArray(p.unchangedScope)&&p.unchangedScope.length<=FILE_COUNT);
       for(const file of p.unchangedScope){
-        keys(file,['path','sha256']);filePath(file.path);hex(file.sha256);
+        if(Object.hasOwn(file,'contentBase64'))fileRecord(file);
+        else{keys(file,['path','sha256']);filePath(file.path);hex(file.sha256);}
         need(p.scope.includes(file.path)&&!names.includes(file.path));
         for(const material of [...p.requirements,...(p.instructions??[])])
           if(material.path===file.path)need(material.sha256===file.sha256);

@@ -1,3 +1,4 @@
+import {taskDeclarations,approvedTaskGrammar} from '../spec-task-line.mjs';
 import {beginHostStage} from './host-stage-observer.mjs';
 import {readExecutionPolicy} from './execution-policy.mjs';
 import {readExternalModels} from './external-models.mjs';
@@ -12,16 +13,16 @@ import path from 'node:path';
 import {createRequire} from 'node:module';
 import {verifySpecificationMaterial,boundSpecificationMaterial,inspectSpecificationDrift,describeSpecificationDrift,
   readSpecificationRebind} from './specification-material.mjs';
-import { captureReviewBaseline, captureReviewInventory, compareReviewBaseline, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage, validChecks, readReviewSourceFiles } from './review-package.mjs';
+import { captureReviewBaseline, captureScopeRevisionSources, captureReviewInventory, compareReviewBaseline, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage, validChecks, readReviewSourceFiles } from './review-package.mjs';
 import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,validCallTimeout,requestFor,terminalFor,failureCode,
   JOURNAL_PAYLOAD_LIMIT,developCheckpointReserve,taskReviewScope,boundedReason } from './effect-contract.mjs';
 import { reviewResult,reviewReceipt,boundReviewText,reviewPaths } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
   MAX_AI_JOINED_HOSTS,controlledState,stageAllowed,effectSlotFree,reviewTimeoutTransition,validateTaskLearningReviewPackage,
-  reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted,
+  reviewRetrySpent,abandonableReviewResult,developBudget,developBudgetExhausted,verificationBlockCount,developmentReworkBinding,applyDevelopmentRework,
   MAX_REVIEW_REDISPATCHES,REVIEW_RETRY_CODES,reviewRedispatchCount,reviewRedispatchable,reviewRedispatchExhausted,REVIEW_REDISPATCH_LIMIT_CODE,reviewRedispatchLimitReason,reviewRedispatchStopReason,reviewAbandonRefusal,
-  completionBlockCount,completionRetriesExhausted,supersededReviewPayload,bootstrapReviewRecoverable,protectedDevelopScope,protectedScopeBlockReason,
+  completionBlockCount,completionRetriesExhausted,completionReworkBinding,applyCompletionRework,supersededReviewPayload,bootstrapReviewRecoverable,protectedDevelopScope,protectedScopeBlockReason,
   developTimeoutBasis,developTimeoutEffect,developTimeoutState,DEVELOP_CALL_TIMEOUT_REASON,
   developAnswerInvalidEffect,developAnswerRetryable,developAnswerInvalidReason,
   RECHECK_CODES,COMPLETE_RECHECK_CODE,developRecheckSource,developRecheckCode,developRecheckReason,
@@ -32,6 +33,7 @@ import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRu
   DOCUMENTATION_SYNC_CODES,documentationSyncSource,documentationSyncRetryCode,documentationSyncStopReason } from './durable-runner-state.mjs';
 import {splitDocumentationState} from './host-documentation.mjs';
 import {readControlPolicy} from './control-policy.mjs';
+import {scopeRevisionBinding,revisedScope,applyScopeRevision} from './scope-revision.mjs';
 import {readProcessStartTime,inspectWorkerGroup} from './worker-process-identity.mjs';
 import {recoverRunnerCommitImage} from './task-commit.mjs';
 import {commitRunnerFixture} from './task-commit.mjs';
@@ -158,6 +160,7 @@ export function createTaskRunner(options) {
   if(options && Object.hasOwn(options,'executionPolicy'))optionKeys.push('executionPolicy');
   if(options && Object.hasOwn(options,'externalModels'))optionKeys.push('externalModels');
   if(options && Object.hasOwn(options,'controlPolicy'))optionKeys.push('controlPolicy');
+  if(options && Object.hasOwn(options,'parallelSelection'))optionKeys.push('parallelSelection');
   if(invocationMode)optionKeys.push('reviewInvocation');
   shape(options,optionKeys);
   need(options.providerDevelopment===undefined||typeof options.providerDevelopment==='boolean','invalid_input');
@@ -221,7 +224,10 @@ export function createTaskRunner(options) {
     ...(Object.hasOwn(options,'knowledgeCloseout')?{knowledgeCloseout:readCloseoutPolicy(options.knowledgeCloseout)}:{}),
     ...(Object.hasOwn(options,'executionPolicy')?{executionPolicy:readExecutionPolicy(options.executionPolicy)}:{}),
     ...(Object.hasOwn(options,'externalModels')?{externalModels:readExternalModels(options.externalModels)}:{}),
-    ...(Object.hasOwn(options,'controlPolicy')?{controlPolicy:readControlPolicy(options.controlPolicy)}:{})});
+    ...(Object.hasOwn(options,'controlPolicy')?{controlPolicy:readControlPolicy(options.controlPolicy)}:{}),
+    ...(Object.hasOwn(options,'parallelSelection')&&
+      (options.persistence?.mode==='create'||options.persistence?.store?.snapshot().records[0]?.payload.config.parallelSelection)
+      ?{parallelSelection:json(options.parallelSelection)}:{})});
   const taskLearning=metadata.taskLearning??null;
   if(taskLearning!==null){need(taskMode,'runner_learning');
     shape(taskLearning,['feature',...(Object.hasOwn(taskLearning,'hostHandoff')?['hostHandoff']:[])]);
@@ -272,10 +278,14 @@ export function createTaskRunner(options) {
     need(completion&&specificationSelection.specsRoot===completion.owner.specsRoot
       &&specificationSelection.feature===taskLearning?.feature,'spec_drift');
   }
-  const baselineOptions=()=>({...configToBaseline(metadata),
+  let effectiveScope=restored?.effectiveScope??config.scope;
+  let scopeRevisionPaths=restored?.original.scopeRevisionPaths??null;
+  const effectiveMetadata=()=>({...metadata,scope:effectiveScope,...(scopeRevisionPaths?{scopeRevisionPaths}: {})});
+  const baselineOptions=()=>({...configToBaseline(effectiveMetadata()),
     ...(specificationSelection===null?{}:{specification:specificationSelection})});
-  const original=restored?.original??captureReviewBaseline(baselineOptions());
-  const controller=new AbortController(),calls=[],cache=new Map(),session=restored?.session??randomUUID(),registered=new Map(),receipts=[];
+  let original=restored?.original??captureReviewBaseline(baselineOptions());
+  let controller=new AbortController();
+  const calls=[],cache=new Map(),session=restored?.session??randomUUID(),registered=new Map(),receipts=[];
   let state=reviewers.some(r=>r.allowed&&r.available)?'ready':'pending_review',code=null,attempt=1;
   let busy=false,pending=null,sequence=0,base=original,reviewPackage=null,currentChecks=null,workflowRunning=false;
   let reason=null,checkNewPaths=null;
@@ -305,11 +315,7 @@ export function createTaskRunner(options) {
   // so the next corrected delivery needs a new effect id or it would just read
   // the blocked result back out of the cache. Counting them here keeps that
   // derivation in one place, next to the cache it is derived from.
-  const verificationBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='develop'
-    &&entry.result?.state==='blocked'
-    &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout'].includes(entry.result?.code)
-    ||developTimeoutEffect(entry)||developAnswerInvalidEffect(entry)||developRecheckSource(entry)||developRedoSource(entry)||developDispatchFailedEffect(entry)
-    ||documentationSyncSource(entry)).length;
+  const verificationBlocks=()=>verificationBlockCount([...cache.values()],parsedHistory?.developRecheckEffects);
   const completionBlocks=()=>[...cache.values()].filter(entry=>entry.effect.kind==='complete'
     &&entry.result?.state==='blocked'&&['completion_checks_changed','completion_package_changed'].includes(entry.result?.code)
     ||completeRecheckSource(entry)).length;
@@ -391,7 +397,7 @@ export function createTaskRunner(options) {
   const answerGapCount=type=>journal?.filter(row=>row.payload.type===type).length??0;
   const gapsLive=()=>Boolean(store&&taskMode&&invocationMode&&!busy&&!poisoned&&!(restored?.pending&&!cache.has(restored.pending.id)));
   const developRecheck=()=>gapsLive()?developRecheckCode({state,code,attempt,cache:[...cache.values()],learningResult,receipt},
-    metadata,answerGapCount('develop-recheck')):null;
+    metadata,answerGapCount('develop-recheck'),parsedHistory?.developRecheckRecovery):null;
   const completeRecheck=()=>gapsLive()&&completeRecheckable({state,code,attempt,cache:[...cache.values()],taskCommit},
     answerGapCount('complete-recheck'));
   // V2 + R3: a stuck current-session develop that only an operator confirmation
@@ -445,7 +451,7 @@ export function createTaskRunner(options) {
   // scope and the ignore policy bound at create, as the task baseline), split
   // at the documentation paths. The adapter takes its start and end with it too.
   function documentationSnapshot(paths){
-    const baseline=captureReviewBaseline({...configToBaseline(metadata),version:original.version,
+    const baseline=captureReviewBaseline({...configToBaseline(effectiveMetadata()),version:original.version,
       ...(Object.hasOwn(original,'specification')?{specification:{specsRoot:original.specificationRoot,feature:original.specification.feature}}:{})},
       !Object.hasOwn(original,'ignorePolicy'),original.ignorePolicy?.version??2,
       original.ignorePolicy?.version===2?original.ignorePolicy:null);
@@ -552,6 +558,7 @@ export function createTaskRunner(options) {
   };
   const status=()=>{
     let current=store?publication:privateStatus();
+    if(parsedHistory?.scopeRevisions)current=freeze({...current,effectiveScope});
     if(current.state==='unknown'&&commitRecoveryTransaction()!==null){
       const {reason:discard,...rest}=current;
       current=freeze({...rest,state:'blocked',code:COMMIT_INTERRUPTED_CODE,reason:COMMIT_INTERRUPTED_REASON});
@@ -596,7 +603,7 @@ export function createTaskRunner(options) {
     if((current.state==='unknown'||current.state==='blocked'&&['failed','unavailable'].includes(current.code))&&gapsLive()
       &&(options.providerDevelopment!==true||providerRun)){
       const limit=answerGapLimit({state,code,attempt,cache:[...cache.values()],calls,receipt,learningResult,taskCommit,reviewPackage,priorReview},
-        metadata,{developRecheck:answerGapCount('develop-recheck'),completeRecheck:answerGapCount('complete-recheck'),
+        metadata,{developRecheck:answerGapCount('develop-recheck'),developRecheckRecovery:parsedHistory?.developRecheckRecovery,completeRecheck:answerGapCount('complete-recheck'),
           developRedo:answerGapCount('develop-answer-redo'),developDispatch:answerGapCount('develop-dispatch-retry'),
           documentationSync:documentationRetries(),
           workers:parsedHistory?.workers??null});
@@ -694,7 +701,7 @@ export function createTaskRunner(options) {
   };
   const halt=(next,why,detail=null)=>{state=next;code=why;reason=detail;};
   function assertReadyBaseline(){
-    compareReviewBaseline(withBoundSpecification(captureReviewBaseline({...configToBaseline(metadata),version:original.version,
+    compareReviewBaseline(withBoundSpecification(captureReviewBaseline({...configToBaseline(effectiveMetadata()),version:original.version,
       ...(Object.hasOwn(original,'specification')?{specification:{specsRoot:original.specificationRoot,feature:original.specification.feature}}:{})},
       !Object.hasOwn(original,'ignorePolicy'),original.ignorePolicy?.version??2,
       original.ignorePolicy?.version===2?original.ignorePolicy:null)),original);
@@ -725,7 +732,7 @@ export function createTaskRunner(options) {
         'review-invocation-abandoned':'result','review-invocation-receipt':'result','review-invocation-reconciled':'result','effect-abandoned':'result',
         'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
         'evidence-superseded':'result','develop-retry-limit':'result','develop-worker':'result','effect-interrupted':'result','develop-timeout-retry':'result','develop-answer-retry':'result','develop-recheck':'result','complete-recheck':'result','develop-answer-redo':'result','develop-dispatch-retry':'result','review-redispatch':'result','review-dispatch-confirmed':'result','completion-retry-limit':'result','specification-rebound':'result','documentation-sync-started':'result','documentation-sync-retry':'result',
-        'bootstrap-review-recovered':'result'}[type],
+        'completion-rework-requested':'result','development-rework-authorized':'result','scope-revised':'result','bootstrap-review-recovered':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
     const body={version:1,seq:journal.length+1,...basic,previousDigest:journal.at(-1)?.digest??null};
     const record={...body,digest:digest(body)};boundRunnerRecord(record,body.seq);
@@ -1102,7 +1109,8 @@ export function createTaskRunner(options) {
   }
   async function collectChecks(){
     const before=new Map(captureReviewInventory(config.root,base).map(file=>[file.path,file.sha256]));
-    const results=json(await bounded(check,json({identity:{...config.identity,attempt}})));
+    const results=json(await bounded(check,json({identity:{...config.identity,attempt},
+      ...(parsedHistory?.scopeRevisions?{scope:effectiveScope}: {})})));
     validChecks(results);
     const after=captureReviewInventory(config.root,base);
     checkNewPaths=new Set(after.filter(file=>!before.has(file.path)).map(file=>file.path));
@@ -1131,7 +1139,8 @@ export function createTaskRunner(options) {
     const verdict=json(await bounded(verificationGate,
       json({identity:{...config.identity,attempt},
         ...(written(description)?{description}:{}),
-        ...(written(verification)?{verification}:{}),checks})));
+        ...(written(verification)?{verification}:{}),checks,
+        ...(parsedHistory?.scopeRevisions?{scope:effectiveScope}: {})})));
     shape(verdict,['satisfied']);need(typeof verdict.satisfied==='boolean','invalid_result');
     return verdict.satisfied;
   }
@@ -1139,12 +1148,12 @@ export function createTaskRunner(options) {
   // byte-identical to that rejected artifact cannot, so it never spends the
   // last review round; the same attempt may deliver again under a new effect id.
   function unchangedSinceRejection(){
-    if(attempt!==2||priorReview?.verdict!=='changes_requested')return null;
-    const rejected=receipts.findLast(item=>item.identity.attempt===1&&item.result.verdict==='changes_requested');
+    if(attempt!==2||!['changes_requested','approved'].includes(priorReview?.verdict))return null;
+    const rejected=receipts.findLast(item=>item.identity.attempt===1&&['changes_requested','approved'].includes(item.result.verdict));
     if(!rejected)return null;
     const candidate=createReviewPackage({root:config.root,baseline:base,checks:currentChecks});
     return candidate.artifactDigest===rejected.artifactDigest
-      ?`develop_unchanged_after_review: 第 2 轮交付与第 1 轮被要求修改的代码逐字节相同（artifactDigest ${rejected.artifactDigest.slice(0,12)}）；按审查 findings 修改后重新交付`:null;
+      ?`develop_unchanged_after_review: 第 2 轮交付与第 1 轮已审代码逐字节相同（artifactDigest ${rejected.artifactDigest.slice(0,12)}）；按审查 findings 修改后重新交付`:null;
   }
   // A delivery that changes nothing in scope has no review package to build. It
   // is the delivery that must be redone, exactly like failed checks, not an
@@ -1155,7 +1164,7 @@ export function createTaskRunner(options) {
   // packaged (every requirement must exist), which is again a delivery to redo.
   // Only in-scope requirements qualify: touching any other file stays out_of_scope,
   // which the package builder reports before it ever reads the requirements.
-  const missingScopeRequirements=()=>config.scope.filter(p=>config.requirements.includes(p)).filter(p=>{
+  const missingScopeRequirements=()=>effectiveScope.filter(p=>config.requirements.includes(p)).filter(p=>{
     try{const stat=fs.lstatSync(path.join(config.root,p));return !stat.isFile()||stat.isSymbolicLink();}
     catch(error){if(error.code==='ENOENT'||error.code==='ENOTDIR')return true;throw error;}
   });
@@ -1189,7 +1198,8 @@ export function createTaskRunner(options) {
     try{unchanged=unchangedSinceRejection();}catch(error){emptyDelivery(error);return false;}
     if(unchanged){halt('blocked','develop_unchanged_after_review',unchanged);return false;}
     try{createHostHandoff({root:config.root,baseline:base,checks:currentChecks,
-      handoffPath:completion.handoffs[attempt-1]});}
+      handoffPath:completion.handoffs[attempt-1],evidence:journal.filter(row=>row.payload.type==='completion-rework-requested')
+        .map(row=>'cm-completion-rework-v1: '+JSON.stringify({identity:{...config.identity,attempt:2},recordDigest:row.digest}))});}
     catch(error){emptyDelivery(error);return false;}
     return true;
   }
@@ -1266,7 +1276,7 @@ export function createTaskRunner(options) {
       const adapter=bootstrap===null?developer:{...developer,run:(request,control)=>
         bootstrap.run(request,control,developer.run,{previous:previousBootstrap,previousWriteback,baseline:original,
           verificationFailed:detail=>{verificationReason=detail;}})};
-      const result=await invoke(adapter,'developer',developer.contextId,{scope:config.scope,
+      const result=await invoke(adapter,'developer',developer.contextId,{scope:effectiveScope,
         requirements:original.files.filter(f=>config.requirements.includes(f.path)),priorReview,
         ...supersededReviewPayload(carriedReview,attempt),
         ...(Object.hasOwn(original,'specification')?{specification:verifySpecificationMaterial(original)}:{}),
@@ -1378,9 +1388,9 @@ export function createTaskRunner(options) {
   // No delivery can still be reviewed: journal the terminal limit instead of an
   // intent, so no developer call runs (see developBudgetExhausted).
   const retryLimitDue=()=>invocationMode&&store&&!poisoned
-    &&developBudgetExhausted({state,code,priorReview,calls,cache:[...cache.values()]});
+    &&developBudgetExhausted({state,code,attempt,priorReview,calls,cache:[...cache.values()]},parsedHistory?.developRecheckEffects,parsedHistory?.developmentRework);
   function recordRetryLimit(){
-    const used=developBudget({calls,cache:[...cache.values()]});
+    const used=developBudget({calls,cache:[...cache.values()]},parsedHistory?.developRecheckEffects,parsedHistory?.developmentRework);
     persist('develop-retry-limit',{fromState:state,fromCode:code,countedCalls:used.calls,countedEffects:used.effects});
     const recovered=readRunnerHistory(journal,metadata,3).state;
     ({state,code}=recovered);reason=recovered.reason??null;publication=privateStatus();return publication;
@@ -1422,6 +1432,7 @@ export function createTaskRunner(options) {
       if(v.kind==='develop'&&(recheck!==null||state==='blocked'&&RECHECK_CODES.includes(code)))
         need(digest(v.learningInput)===digest([...cache.values()].at(-1).effect.learningInput),'runner_learning');
       if(v.kind==='complete'&&state==='unknown'&&completeRecheck())completeSource=code;
+      if(recheck!==null||completeSource!==null)need(!cancellationRequested&&!cancelAfterCommit&&!workflowError,'cancelled');
       if(v.kind==='develop'&&state==='unknown'&&recheck===null)dispatchBasis=developDispatchRetry();
       // Q16/Q17: re-ask only documentation_sync; refused (nothing journaled)
       // while the code root outside the documentation paths changed, or while a
@@ -1444,7 +1455,8 @@ export function createTaskRunner(options) {
       }
       answerRetry=v.kind==='develop'&&state==='blocked'&&code==='failed'&&answerRetryable();
       need(timeoutBasis!==null||answerRetry||recheck!==null||completeSource!==null||dispatchBasis!==null
-        ||stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(effectSlotFree(v.kind,[...cache.values()],calls),'limit_exceeded');
+        ||stageAllowed(v.kind,state,code,priorReview?.verdict),'stage_mismatch');need(effectSlotFree(v.kind,[...cache.values()],calls,parsedHistory?.developRecheckEffects,parsedHistory?.developmentRework,v.id,recheck!==null?{state:'blocked',code:recheck}:{state,code}),'limit_exceeded');
+      if(v.kind==='develop'&&parsedHistory?.developmentRework&&!parsedHistory.developmentRework.developerConsumed)need(digest(captureReviewInventory(config.root,original,{withMode:true}))===parsedHistory.developmentRework.sourceDigest,'development_rework_source_changed');
       if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
       if(v.kind==='develop'&&bootstrap!==null)bootstrap.assertWriteAuthorized();
     } catch(error){return Promise.resolve(freeze({outcome:'rejected',code:error.code??'invalid_input',
@@ -1473,6 +1485,9 @@ export function createTaskRunner(options) {
       catch{return Promise.resolve(poison());}
       halt('blocked',COMPLETE_RECHECK_CODE,completeRecheckReason(completeSource));publication=privateStatus();
     }
+    // A check timeout aborted its signal, not the accepted delivery or review.
+    // Only these journaled check-only recoveries receive a fresh controller.
+    if(recheck!==null||completeSource!==null)controller=new AbortController();
     if(answerRetry){
       try{persist('develop-answer-retry',{effectId:[...cache.values()].at(-1).effect.id,invocationId:calls.at(-1).invocationId});}
       catch{return Promise.resolve(poison());}
@@ -1905,6 +1920,82 @@ export function createTaskRunner(options) {
     }catch(error){return freeze({outcome:'rejected',code:poisoned?'store_failure':error.code??'develop_redo_unavailable',
       ...(!poisoned&&error.reason?{reason:error.reason}:{})});}
   };
+  const reviseScope=raw=>{
+    try{
+      need(invocationMode&&store&&!busy&&!poisoned&&options.persistence.mode==='resume'
+        &&options.providerDevelopment!==true&&options.protectedDevelopment!==true,'scope_revision_unavailable');
+      const value=json(raw);shape(value,['allowed','reason','scope']);need(value.allowed===true,'scope_revision_authorization_required');
+      const history=readRunnerHistory(journal,metadata,3);
+      need(history.pending===null&&history.transaction===null,'scope_revision_unavailable');
+      const binding=scopeRevisionBinding(history.state,effectiveMetadata(),history.scopeRevisions);
+      need(!developBudgetExhausted(history.state,history.developRecheckEffects),'scope_revision_budget_exhausted');
+      const rows=taskDeclarations(fs.readFileSync(completion.owner.tasksPath,'utf8'),
+        {grammar:approvedTaskGrammar(completion.owner.specsRoot)}).filter(item=>item.id===config.identity.taskId);
+      need(rows.length===1&&!rows[0].completed,'scope_revision_task_completed');
+      if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
+      const scope=revisedScope(value.scope,effectiveScope);
+      const files=captureScopeRevisionSources(config.root,original,scope);
+      const record={fromDigest:journal.at(-1).digest,...binding,baselineDigest:original.baselineDigest,
+        scope,files,reason:value.reason,at:new Date().toISOString()};
+      applyScopeRevision(history.state,effectiveMetadata(),original,record,history.scopeRevisions);
+      assertJournalFits('scope-revised',record,'scope_revision_too_large');
+      persist('scope-revised',record);
+      original=parsedHistory.original;effectiveScope=parsedHistory.effectiveScope;scopeRevisionPaths=original.scopeRevisionPaths;
+      base=attemptBaseline(original,attempt);publication=privateStatus();return status();
+    }catch(error){return freeze({outcome:'rejected',code:poisoned?'store_failure':error.code??'scope_revision_unavailable'});}
+  };
+  const reworkDevelopment=raw=>{
+    try{
+      need(invocationMode&&store&&!busy&&!poisoned&&options.persistence.mode==='resume'
+        &&options.providerDevelopment!==true&&options.protectedDevelopment!==true,'development_rework_unavailable');
+      const value=json(raw);shape(value,['allowed','reason']);need(value.allowed===true,'development_rework_authorization_required');
+      const history=readRunnerHistory(journal,metadata,3);
+      need(history.pending===null&&history.transaction===null,'development_rework_unavailable');
+      const effectiveConfig={...metadata,scope:effectiveScope};
+      const binding=developmentReworkBinding(journal,history.state,effectiveConfig,original,
+        history.developRecheckEffects,history.developmentRework);
+      const rows=taskDeclarations(fs.readFileSync(completion.owner.tasksPath,'utf8'),
+        {grammar:approvedTaskGrammar(completion.owner.specsRoot)}).filter(item=>item.id===config.identity.taskId);
+      need(rows.length===1&&!rows[0].completed,'development_rework_task_completed');
+      if(Object.hasOwn(original,'specification'))verifySpecificationMaterial(original);
+      for(const file of [completion.handoffs[1],path.join(completion.reviewsDir,
+        completion.owner.feature.replace(/^\d+\./,'')+'-'+config.identity.taskId+'-r2.md')]){
+        try{fs.lstatSync(file);need(false,'development_rework_evidence_exists');}
+        catch(error){if(error.code!=='ENOENT')throw error;}
+      }
+      const record={fromDigest:journal.at(-1).digest,...binding,effectCredit:1,
+        sourceDigest:digest(captureReviewInventory(config.root,original,{withMode:true})),reason:value.reason,at:new Date().toISOString()};
+      applyDevelopmentRework(journal,history.state,effectiveConfig,original,record,history.developRecheckEffects,history.developmentRework);
+      persist('development-rework-authorized',record);
+      ({state,code,reason}=parsedHistory.state);publication=privateStatus();return status();
+    }catch(error){return freeze({outcome:'rejected',code:poisoned?'store_failure':error.code??'development_rework_unavailable'});}
+  };
+  const reworkCompletion=raw=>{
+    try{
+      need(invocationMode&&store&&!busy&&!poisoned&&options.persistence.mode==='resume'
+        &&(options.parallelSelection??null)===null&&options.providerDevelopment!==true&&options.protectedDevelopment!==true,'completion_rework_unavailable');
+      const value=json(raw);shape(value,['allowed','reason']);need(value.allowed===true,'completion_rework_authorization_required');
+      const binding=completionReworkBinding(frame(),metadata);
+      need(!readRunnerHistory(journal,metadata,3).pending,'completion_rework_unavailable');
+      publishRegisteredReview(true);
+      verifyReviewPackage({root:config.root,baseline:base,checks:currentChecks,reviewPackage,
+        expectedDigest:binding.packageDigest,...handoffBinding()});
+      const rows=taskDeclarations(fs.readFileSync(completion.owner.tasksPath,'utf8'),
+        {grammar:approvedTaskGrammar(completion.owner.specsRoot)}).filter(item=>item.id===config.identity.taskId);
+      need(rows.length===1&&!rows[0].completed,'completion_rework_task_completed');
+      for(const file of [completion.handoffs[1],path.join(completion.reviewsDir,
+        completion.owner.feature.replace(/^\d+\./,'')+'-'+config.identity.taskId+'-r2.md')]){
+        try{fs.lstatSync(file);need(false,'completion_rework_evidence_exists');}
+        catch(error){if(error.code!=='ENOENT')throw error;}
+      }
+      const record={...binding,fromAttempt:1,toAttempt:2,reason:value.reason,at:new Date().toISOString()};
+      applyCompletionRework(frame(),metadata,record);
+      persist('completion-rework-requested',record);
+      const next=readRunnerHistory(journal,metadata,3).state;
+      ({state,code,attempt,receipt,reviewInvocation,reason}=next);
+      base=attemptBaseline(original,attempt);publication=privateStatus();return publication;
+    }catch(error){return freeze({outcome:'rejected',code:error.code??'completion_rework_unavailable'});}
+  };
   const recoverBootstrapReview=raw=>{
     try{
       need(invocationMode&&store&&!busy&&!poisoned&&options.persistence.mode==='resume',
@@ -1947,7 +2038,7 @@ export function createTaskRunner(options) {
     need(state==='fixture_completed'&&reviewPackage?.packageDigest===packageDigest,'stale_qa');
     return freeze({paths:reviewPackage.changes.map(change=>change.path),source:'review_package'});
   };
-  const api={qaChangedFiles,reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks,reviewEffectIds,recheckLearningInput,redoDevelop,recoverCommit,interruptions};
+  const api={qaChangedFiles,reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,reworkCompletion,reworkDevelopment,reviseScope,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks,reviewEffectIds,recheckLearningInput,redoDevelop,recoverCommit,interruptions};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   // A terminal reviewer observation is durable even if the host died before
@@ -1971,6 +2062,7 @@ export function createTaskRunner(options) {
 function configToBaseline(c){
   const scope=Object.hasOwn(c,'taskLearning')?taskReviewScope(c.scope):c.scope;
   return {root:c.root,identity:c.identity,scope,requirements:c.requirements,
+    ...(c.scopeRevisionPaths?{scopeRevisionPaths:c.scopeRevisionPaths}:{}),
     ...(c.codeProjectPaths?{codeProjectPaths:c.codeProjectPaths}:{}),
     ...(c.bootstrap?{bootstrapRequirements:c.bootstrap.bootstrapRequirements}:{}),
     ...(c.completion?{specsRoot:c.completion.owner.specsRoot}:{})};

@@ -65,7 +65,7 @@ import {readControlPolicyFile,isControlRecovery as controlRecoveryRequest} from 
 
 // PLAN.liveEvidence: fresh current-session evidence; see docs/live-evidence-drivers.md.
 const HOST=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
-const OPERATIONS=new Set(['advance','start','resume','status','cancel','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','develop_redo','decision','complete','qa','qa_result',
+const OPERATIONS=new Set(['advance','start','resume','status','cancel','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','completion_rework','development_rework','revise_scope','develop_redo','decision','complete','qa','qa_result',
   'fix_status','fix_advance','fix_action','fix_run','run_finalize','context_refresh','finish']);
 const ADVANCE=new Set(['advance','start','resume']);
 const PACKAGE_OPERATIONS=new Set(['decision','complete','qa','qa_result','context_refresh','finish','run_finalize']);
@@ -87,13 +87,13 @@ const FIX_REASONED=['abandon_step','abandon_review','rediagnose','rerun_blocked_
 const FILES={develop:'develop.json',qa_assess:'qa-assess.json',documentation_inspect:'documentation-inspect.json',
   documentation_sync:'documentation-sync.json',fix_learning:'learning.json',fix_diagnose:'diagnosis.json',
   fix_test_author:'test-edits.json',fix_repair:'repair-edits.json',fix_retrospective:'retrospective.json'};
-const PAIR_FLAGS=new Set(['--external-models-config','--review-config','--workflow-config',
+const PAIR_FLAGS=new Set(['--expected-control','--revise-scope','--scope-revision-reason','--development-rework-reason','--external-models-config','--review-config','--workflow-config',
   '--input-limit',
   '--protected-conversation-config','--protected-config','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure',
   '--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--browser-qa',
   '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason','--supersede-target','--spec-rebind-reason',
   '--review-runtime','--feature','--qa-fix-final-review-recovery-invocation']);
-const FLAG_FLAGS=new Set(['--execution-optimizations','--external-models','--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
+const FLAG_FLAGS=new Set(['--development-rework','--execution-optimizations','--external-models','--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
   '--verification-precheck',
   '--allow-bootstrap-write','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
   '--supersede-reviewed-evidence','--accept-superseded-code-drift','--rebind-spec-material',
@@ -111,6 +111,8 @@ export function readDriverControl(plan,base,operation,recovery=null){
     throw Error('permissions 必须是宿主参数数组');
   if(plan.permissions.some(flag=>flag.startsWith('--allow-')))
     throw Error('control v2 迁移错误：permissions 禁止 --allow-*；请改用 controlConfig 的明确模式和 expectedControl');
+  if(['revise_scope','development_rework'].includes(operation))
+    throw Error('启动型恢复不发送 wire 操作；用 permissions 的专用启动参数、单行原因和 --expected-control FILE 保存原 launchControlTarget，再发送 status 或 advance');
   const recovering=recovery??isControlRecovery(operation,plan);
   if(plan.mode==='create'&&Object.hasOwn(plan,'expectedControl'))
     throw Error('control v2 create 禁止 expectedControl');
@@ -467,7 +469,8 @@ export function readRunJournal(definition){
   const snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,identity:{
     repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
   const first=snapshot.records[0];
-  return {history:readRunnerHistory(snapshot.records,first.payload.config,3),config:first.payload.config,baseline:first.payload.baseline,
+  const history=readRunnerHistory(snapshot.records,first.payload.config,3);
+  return {history,config:first.payload.config,baseline:history.original,
     frame:journalRestBytes(snapshot.records)};
 }
 function reachableDevelopAttempts({plan,operation,journal,permissions,controlPolicy=null}){
@@ -596,6 +599,7 @@ function load(){
   requireFields(plan,['config','mode','hostContext','permissions']);
   let control;
   try{control=readDriverControl(plan,base,operation);}catch(error){stop(2,error.message);}
+  if(operation==='revise_scope'&&!control)stop(2,'revise_scope 只用于原 v2 单任务运行');
   if(control?.policy.bootstrap==='write'&&!plan.permissions.includes('--bootstrap-config'))
     stop(2,'invalid_arguments: bootstrap write 需要 --bootstrap-config');
   if(control?.policy.qaFix==='disabled'&&['fix_advance','fix_run','fix_action'].includes(operation))
@@ -629,7 +633,7 @@ function load(){
     stop(2,'--rebind-spec-material 只用于 mode resume，并须同时提供 --spec-rebind-reason 原因');
   // V2 recovery operations are gated by the original expectedControl in the
   // host, while the driver still validates the explicit operation and reason.
-  if(control&&['abandon_review','abandon_effect','bootstrap_review_recover','develop_redo'].includes(operation)
+  if(control&&['abandon_review','abandon_effect','bootstrap_review_recover','completion_rework','development_rework','revise_scope','develop_redo'].includes(operation)
     &&(plan.mode!=='resume'||!nonempty(plan.reason)||Buffer.byteLength(plan.reason,'utf8')>500||/[\r\n\0]/.test(plan.reason)))
     stop(2,`${operation} 需要 resume、expectedControl 与单行 reason（最多 500 UTF-8 字节）`);
   const abandonError=control?null:abandonReviewPlanError(operation,plan,permissions);
@@ -640,6 +644,9 @@ function load(){
   if(developRedoError)stop(2,developRedoError);
   const bootstrapRecoveryError=control?null:bootstrapReviewRecoveryPlanError(operation,plan,permissions);
   if(bootstrapRecoveryError)stop(2,bootstrapRecoveryError);
+  for(const flag of ['--expected-control','--revise-scope']){
+    const at=permissions.indexOf(flag);if(at!==-1)permissions[at+1]=path.resolve(base,permissions[at+1]);
+  }
   const config=path.resolve(base,plan.config),answers=plan.answers?path.resolve(base,plan.answers):null;
   if(!fs.existsSync(config))stop(2,`运行定义不存在: ${config}`);
   let definition;
@@ -659,6 +666,7 @@ function load(){
   if(plan.mode==='resume'&&!fs.existsSync(path.join(store,'state.json')))stop(2,`恢复存档不存在: ${store}`);
   let journal=null;
   if(plan.mode==='resume')try{journal=readRunJournal(definition);}catch(error){journal={error};}
+  if(journal?.history?.scopeRevisions)definition={...definition,scope:journal.history.effectiveScope};
   // The run definition always says attempt 1. Package-bound operations must name
   // the attempt the run is on now, so send that; an unreadable journal keeps the
   // original identity and the host decides, exactly as before.
@@ -672,7 +680,7 @@ function load(){
   const permissionFiles=[];
   for(let i=0;i<permissions.length;i++)if(PAIR_FLAGS.has(permissions[i])
     &&permissions[i]!=='--browser-qa'
-    &&permissions[i]!=='--qa-config-revision-reason'&&permissions[i]!=='--qa-environment-failure'&&permissions[i]!=='--allow-provider-development-attempt'
+    &&permissions[i]!=='--scope-revision-reason'&&permissions[i]!=='--development-rework-reason'&&permissions[i]!=='--qa-config-revision-reason'&&permissions[i]!=='--qa-environment-failure'&&permissions[i]!=='--allow-provider-development-attempt'
     &&permissions[i]!=='--supersede-reason'&&permissions[i]!=='--spec-rebind-reason'&&permissions[i]!=='--input-limit'
     &&permissions[i]!=='--review-runtime'&&permissions[i]!=='--feature'&&permissions[i]!=='--qa-fix-final-review-recovery-invocation'){
     const file=path.resolve(base,permissions[i+1]);if(!fs.existsSync(file))stop(2,`${permissions[i]} 文件不存在: ${file}`);
@@ -863,7 +871,8 @@ export function buildCmAiDriveRequest(operation,plan,definition,identity=definit
   return {version:Object.hasOwn(plan,'controlConfig')?2:1,identity,
     ...(Object.hasOwn(plan,'controlConfig')&&isControlRecovery(operation,plan)?{expectedControl:plan.expectedControl}:{}),
     ...(operation==='reconcile_review'?{invocationId:plan.invocationId}:{}),
-    ...(['abandon_review','abandon_effect','bootstrap_review_recover','develop_redo'].includes(operation)?{reason:plan.reason}:{}),
+    ...(operation==='revise_scope'?{scope:plan.scope}:{}),
+    ...(['abandon_review','abandon_effect','bootstrap_review_recover','completion_rework','development_rework','revise_scope','develop_redo'].includes(operation)?{reason:plan.reason}:{}),
     ...(PACKAGE_OPERATIONS.has(operation)?{packageDigest:plan.packageDigest}:{}),
     ...(TEST_RUN_OPERATIONS.has(operation)?{testRunId:plan.testRunId}:{}),
     ...(['fix_status','fix_advance','fix_action','fix_run'].includes(operation)?{

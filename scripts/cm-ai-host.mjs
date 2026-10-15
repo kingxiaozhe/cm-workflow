@@ -24,6 +24,18 @@ import {readControlPolicyFile,withControlPolicyHost,readControlTarget} from '../
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {parseModelJson} from '../runtime/js/cm-ai/model-configuration-file.mjs';
 export {executionFor as createConversationExecution,reviewConfiguration as readConversationReviewConfiguration,reviewConfigurationValue as readConversationReviewConfigurationValue};
+export function readScopeRevisionFile(file){
+  const before=fs.lstatSync(file);
+  need(before.isFile()&&!before.isSymbolicLink()&&before.nlink===1&&before.size<=65536,'invalid_input');
+  const descriptor=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+  try{
+    const bytes=fs.readFileSync(descriptor),after=fs.fstatSync(descriptor),current=fs.lstatSync(file);
+    need([after,current].every(info=>['dev','ino','size','mtimeMs','ctimeMs'].every(key=>info[key]===before[key]))
+      &&bytes.length===before.size,'snapshot_changed');
+    return parseModelJson(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
+  }finally{fs.closeSync(descriptor);}
+}
+
 export function readLaunchControlFile(file){
   const before=fs.lstatSync(file);
   need(before.isFile()&&!before.isSymbolicLink()&&before.nlink===1&&before.size<=65536,'invalid_input');
@@ -32,7 +44,9 @@ export function readLaunchControlFile(file){
     const bytes=fs.readFileSync(descriptor),after=fs.fstatSync(descriptor),current=fs.lstatSync(file);
     need([after,current].every(info=>['dev','ino','size','mtimeMs','ctimeMs'].every(key=>info[key]===before[key]))
       &&bytes.length===before.size,'snapshot_changed');
-    return readControlTarget(parseModelJson(new TextDecoder('utf-8',{fatal:true}).decode(bytes)));
+    const target=parseModelJson(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
+    need(target!==null&&typeof target==='object'&&!Array.isArray(target),'invalid_input');
+    return readControlTarget(target);
   }finally{fs.closeSync(descriptor);}
 }
 export function withHandoffDiagnostic(host,error){
@@ -216,8 +230,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const extra=new Map();
     for(let index=controlPolicy?9:8;index<argv.length;index++){
       const name=argv[index];refuse(!extra.has(name),'invalid_arguments',`参数重复：${name}`);
-      refuse(['--expected-control','--execution-optimizations','--external-models','--external-models-config','--verification-precheck','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure','--supersede-reviewed-evidence','--supersede-reason','--supersede-target','--accept-superseded-code-drift','--rebind-spec-material','--spec-rebind-reason','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--hold-revision','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--review-runtime','--feature','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--qa-fix-final-review-recovery-invocation','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments',`未知参数：${name}`);
-      if(['--execution-optimizations','--external-models','--verification-precheck','--supersede-reviewed-evidence','--accept-superseded-code-drift','--rebind-spec-material','--allow-bootstrap-write','--allow-qa','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--hold-revision','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
+      refuse(['--revise-scope','--scope-revision-reason','--development-rework','--development-rework-reason','--expected-control','--execution-optimizations','--external-models','--external-models-config','--verification-precheck','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure','--supersede-reviewed-evidence','--supersede-reason','--supersede-target','--accept-superseded-code-drift','--rebind-spec-material','--spec-rebind-reason','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--hold-revision','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--review-runtime','--feature','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--qa-fix-final-review-recovery-invocation','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments',`未知参数：${name}`);
+      if(['--development-rework','--execution-optimizations','--external-models','--verification-precheck','--supersede-reviewed-evidence','--accept-superseded-code-drift','--rebind-spec-material','--allow-bootstrap-write','--allow-qa','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--hold-revision','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
       else{refuse(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments',`${name} 需要一个值`);extra.set(name,argv[++index]);}
     }
     if(controlPolicy){
@@ -242,12 +256,18 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const autoFix=controlPolicy?controlPolicy.qaFix==='auto':extra.has('--auto-qa-fix');
     const recoveryEnabled=flag=>controlPolicy?argv[4]==='resume':extra.has(flag);
     const launchRecovery=['--revise-qa-config','--qa-config-revision-reason','--rerun-unknown-qa','--rerun-blocked-qa',
-      '--rebind-spec-material','--spec-rebind-reason'].some(flag=>extra.has(flag));
+      '--rebind-spec-material','--spec-rebind-reason','--revise-scope','--scope-revision-reason','--development-rework','--development-rework-reason'].some(flag=>extra.has(flag));
     refuse(!extra.has('--expected-control')||(controlPolicy&&launchRecovery&&argv[4]==='resume'),'invalid_input',
-      '--expected-control 仅用于新版 --mode resume 的显式 QA 恢复、QA 配置修订或规格重绑。');
+      '--expected-control 仅用于新版 --mode resume 的显式启动恢复。');
     if(controlPolicy&&launchRecovery)refuse(argv[4]==='resume'&&extra.has('--expected-control'),'invalid_input',
       '启动恢复需要 --mode resume 与 --expected-control FILE，文件须保存原 status 的 launchControlTarget；目标变化时先核对，不能自动替换。');
     const expectedControl=extra.has('--expected-control')?readLaunchControlFile(extra.get('--expected-control')):null;
+    const scopeRequested=extra.has('--revise-scope')||extra.has('--scope-revision-reason');
+    const reworkRequested=extra.has('--development-rework')||extra.has('--development-rework-reason');
+    refuse(!scopeRequested&&!reworkRequested||controlPolicy&&argv[4]==='resume'
+      &&(!scopeRequested||extra.has('--revise-scope')&&extra.has('--scope-revision-reason'))
+      &&(!reworkRequested||extra.has('--development-rework')&&extra.has('--development-rework-reason')),'invalid_input');
+    const scopeRevision=scopeRequested?{scope:readScopeRevisionFile(extra.get('--revise-scope')),reason:extra.get('--scope-revision-reason')}:null;
     const supersedeTarget=extra.has('--supersede-target')?readLaunchControlFile(extra.get('--supersede-target')):null;
     let inputLimit;
     try{inputLimit=parseHostInputLimit(extra.get('--input-limit'));}
@@ -357,7 +377,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap,externalModels,executionPolicy,controlPolicy)
         :executionFor(definition,argv[6],bridge,review,null,workflow,qaEnabled,runtime,
           {...(controlPolicy?{controlPolicy}:{}),...(extra.has('--review-runtime')?{reviewRuntime:extra.get('--review-runtime')}:{}),...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels}:{}),...(extra.has('--verification-precheck')?{verificationPrecheck:true}:{}),...(extra.has('--original-host-context')?{originalHostContextId:extra.get('--original-host-context')}:{}),...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:(controlPolicy?controlPolicy.bootstrap==='write':extra.has('--allow-bootstrap-write'))}}:{})});
-      run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:recoveryEnabled('--allow-abandon-review'),allowAbandonEffect:recoveryEnabled('--allow-abandon-effect'),allowBootstrapReviewRecovery:recoveryEnabled('--allow-bootstrap-review-recovery'),allowDevelopRedo:recoveryEnabled('--allow-develop-redo'),...(extra.has('--hold-revision')?{holdRevision:true}:{}),specRebindReason:extra.get('--spec-rebind-reason')??null,expectedControl,supersedeTarget});
+      run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:recoveryEnabled('--allow-abandon-review'),allowAbandonEffect:recoveryEnabled('--allow-abandon-effect'),allowBootstrapReviewRecovery:recoveryEnabled('--allow-bootstrap-review-recovery'),allowDevelopRedo:recoveryEnabled('--allow-develop-redo'),...(extra.has('--hold-revision')?{holdRevision:true}:{}),scopeRevision,developmentReworkReason:extra.get('--development-rework-reason')??null,specRebindReason:extra.get('--spec-rebind-reason')??null,expectedControl,supersedeTarget});
     }
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}
     if(hasFix){
