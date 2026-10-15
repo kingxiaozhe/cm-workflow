@@ -5,6 +5,7 @@
 
 ## 未发布
 
+- **新增创建运行前的只读体检 `cm-start-check.mjs`**：把真实运行里开工前就能看出来的阻塞提前报出。`node scripts/cm-start-check.mjs --plan PLAN.json` 核对三件事：scope 含受保护路径（error，创建必被拒绝）；`PLAN.checks` 命令重复、同一 scheme 的全量 `xcodebuild test` 重复、各检查超时之和超过检查整步 30 分钟期限（warn）；scope 内文件已有未提交改动（warn）。只读，不写文件、不起宿主、不跑检查；`--strict` 让 warn 也退出 1，输入读不了退出 2。`cm-ai/references/js-host.md` 启动前清单新增第 8 项，同时列出脚本看不到、要自己核对的几项（测试夹具入 scope、包装脚本重复全量、模拟器独占、答案字段限额、不手放受保护文件、高风险任务拆小）。
 - **v2 卡死任务可以正式重开**：控制策略 v2 的单任务运行在开发额度或恢复入口用完后，原来只能停在 `supersede_unavailable`。现在可用新 runId 重开：先用 `cm-ai-run.mjs inspect-history --config 旧run.json` 只读取得 `supersedeTarget` 并交用户批准，再以 `--supersede-reviewed-evidence --supersede-reason 原因 --supersede-target 文件` 新建。宿主沿用旧版重开的全部前提，并要求只有一条未被取代的直接前驱且其当前状态与预览完全一致，否则 `snapshot_changed`，不归档、不建新运行；legacy 入口拒绝该参数。见 `docs/cm-control-policy-v2.md`「卡死任务重开」。
 
 ## 0.17.1 — 2026-10-13

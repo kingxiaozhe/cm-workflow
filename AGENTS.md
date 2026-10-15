@@ -108,3 +108,5 @@ Read the relevant files under `.claude/rules/` when modifying shell scripts, doc
 - **传输探活不得替代业务进展或持久事实**：心跳只报告存活；阶段截止取既有执行预算，嵌套阶段结束恢复外层原期限。关闭保护按独立操作对象核对归属，不能以可重复 requestId 释放另一在途操作，故障清理也不能记成用户取消。来源：宿主防空等与防误关；证据：`scripts/cm-host-liveness.test.mjs`、`scripts/cm-drive-liveness.test.mjs`、`scripts/cm-host-stage-observer.test.mjs` 的拒关、重复 ID、嵌套期限、断连和无状态副作用用例。[已结构化]
 
 - **派生档案命名空间须在大小写折叠后仍互斥**：不同任务前缀共用目录时，不能只靠大小写区分档案名；使用旧 slug 语法无法产生的分隔符，并验证大小写折叠后无碰撞。任务身份及既有档案名保持不变。来源：T-OBS 观测归档兼容；证据：`scripts/cm-fix-observation-task-id.test.mjs` 的双布局、任务身份和大小写折叠碰撞用例。[已结构化]
+
+- **体检里的运行时限制要和源码同源并设漂移守卫**：检查整步 30 分钟期限是 `host-conversation-execution.mjs` 里的字面量而非导出常量，体检脚本抄了一份时，用源码匹配测试守住，改动源码就让测试变红；再用真实日志（检查步用时分布）校准阈值，不凭记忆写数字。体检只读：git 调用带 `--no-optional-locks` 与 `--literal-pathspecs`，并用整目录哈希加 mtime 快照的测试证明未写入。来源：开工前体检；证据：`scripts/cm-start-check.test.mjs` 的 call limit 守卫与 never-writes 用例。该教训随本轮改动待独立审查。
