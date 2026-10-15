@@ -262,6 +262,10 @@ test('real admission and driver CLI require launch recovery and retain an inelig
   const before=records(f),target=success('status').launchControlTarget;
   const wire=drive('development_rework',{expectedControl:target,reason:'An explicit fixed recovery request'});
   assert.equal(wire.status,2);assert.match(wire.stderr,/启动型恢复/);
+  // A plan without controlConfig (legacy) is refused by the driver too, before any host starts.
+  const legacyWire=drive('development_rework',{controlConfig:undefined,expectedControl:undefined,reason:'Legacy plans cannot ask for it either'});
+  assert.equal(legacyWire.status,2);assert.match(legacyWire.stderr,/development_rework 只用于原 v2 单任务运行/);
+  assert.deepEqual(records(f),before,'a refused legacy plan starts no host and writes nothing');
   const permissions=['--review-config','review.json','--workflow-config','workflow.json','--development-rework',
     '--development-rework-reason','One explicit continuation','--expected-control','launch.json'];
   for(const [preview,code] of [[target,'development_rework_unavailable'],[{...target,revision:'0'.repeat(64)},'snapshot_changed']]){
@@ -416,4 +420,15 @@ test('granted a2 review transport retry keeps fresh bindings and the original re
   assert.deepEqual(h.state.cache.filter(x=>x.effect.kind==='review'&&x.effect.identity.attempt===2).map(x=>x.effect.id),
     ['review-2','review-2-retry-1']);
   assert.equal(h.state.receipts.length,2);assert.equal(h.state.receipts.at(-1).result.verdict,'approved');
+});
+
+test('a documentation-sync redo re-sends documentation only and is never refused by the one-time rework gate',()=>{
+  const consumed={developerConsumed:true,developerEffectId:'develop-2'};
+  const docBlock={state:'blocked',code:'documentation_sync_answer_missing'};
+  // Documentation redo holds no developer call or slot, with or without a consumed rework permission.
+  assert.equal(effectSlotFree('develop',[],[],[],consumed,'develop-3',docBlock),true);
+  assert.equal(effectSlotFree('develop',[],[],[],null,'develop-3',docBlock),true);
+  // The gate still refuses an ordinary second develop, and a develop that is not the bound one.
+  assert.equal(effectSlotFree('develop',[],[],[],consumed,'develop-3',{state:'blocked',code:'develop_checks_not_passed'}),false);
+  assert.equal(effectSlotFree('develop',[],[],[],{developerConsumed:false,developerEffectId:'develop-2'},'develop-9',{state:'blocked',code:'develop_checks_not_passed'}),false);
 });

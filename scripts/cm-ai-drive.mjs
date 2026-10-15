@@ -599,7 +599,7 @@ function load(){
   requireFields(plan,['config','mode','hostContext','permissions']);
   let control;
   try{control=readDriverControl(plan,base,operation);}catch(error){stop(2,error.message);}
-  if(operation==='revise_scope'&&!control)stop(2,'revise_scope 只用于原 v2 单任务运行');
+  if(['revise_scope','development_rework'].includes(operation)&&!control)stop(2,`${operation} 只用于原 v2 单任务运行`);
   if(control?.policy.bootstrap==='write'&&!plan.permissions.includes('--bootstrap-config'))
     stop(2,'invalid_arguments: bootstrap write 需要 --bootstrap-config');
   if(control?.policy.qaFix==='disabled'&&['fix_advance','fix_run','fix_action'].includes(operation))

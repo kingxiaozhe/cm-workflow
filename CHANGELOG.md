@@ -5,6 +5,12 @@
 
 ## 未发布
 
+- **v2 运行的恢复入口补强（范围追加、一次受控返工、检查重查取消、完成返工）**：来自 aihot T-006 原运行卡住后逐步补出的入口，全部要求人在 `serve --mode resume` 的启动边界显式批准，v2 wire 即使带着正确 controlTarget 也不能自批，默认的 6 次计数调用、6 个计数 effect 不放宽。
+  - **范围追加（`--revise-scope`）**：N3 检查失败后，经原因与记录时间追加路径；追加路径从同一事件进入开发请求、交接、审查和完成门禁，审查包里带完整记录。
+  - **一次受控返工（`--development-rework`）**：许可由原历史派生、在意图处消费，返工后只允许合法重查和原限次审查，不能再派第二次开发。
+  - **检查超时后的重查**：重查拿到刷新后的取消信号，真实用户取消仍会记录并中止；不再因复用已中止的信号被判成「已取消」。
+  - **完成检查失败后的返工（`completion_rework`）**：保留原 approved 与失败检查点，使用未用的第二轮；并行批次一律拒绝。
+  - 旧式驾驶计划发 `development_rework` 现在与 `revise_scope` 一样在启动前被驾驶脚本拒绝；许可消费后文档同步重发不再被返工名额门误拒；审查提示词与 `runtime/review.md` 补上「范围追加路径的 `unchangedScope` 项带完整记录」的例外。
 - **新增创建运行前的只读体检 `cm-start-check.mjs`**：把真实运行里开工前就能看出来的阻塞提前报出。`node scripts/cm-start-check.mjs --plan PLAN.json` 核对三件事：scope 含受保护路径（error，创建必被拒绝）；`PLAN.checks` 命令重复、同一 scheme 的全量 `xcodebuild test` 重复、各检查超时之和超过检查整步 30 分钟期限（warn）；scope 内文件已有未提交改动（warn）。只读，不写文件、不起宿主、不跑检查，Git 走扫描器的安全读取（不执行仓库配置的 fsmonitor、过滤器和项目内的 git）；`--strict` 让 warn 也退出 1。scope 为空、重复、绝对路径、含 `..`、反斜杠或冒号，以及 PLAN 含受保护模式、provider 开发、bootstrap 参数，都退出 2 而不给结论；Git 跑不起来是 warn。`cm-ai/references/js-host.md` 启动前清单新增第 8 项，同时列出脚本看不到、要自己核对的几项（测试夹具入 scope、包装脚本重复全量、模拟器独占、答案字段限额、不手放受保护文件、高风险任务拆小）。
 - **v2 卡死任务可以正式重开**：控制策略 v2 的单任务运行在开发额度或恢复入口用完后，原来只能停在 `supersede_unavailable`。现在可用新 runId 重开：先用 `cm-ai-run.mjs inspect-history --config 旧run.json` 只读取得 `supersedeTarget` 并交用户批准，再以 `--supersede-reviewed-evidence --supersede-reason 原因 --supersede-target 文件` 新建。宿主沿用旧版重开的全部前提，并要求只有一条未被取代的直接前驱且其当前状态与预览完全一致，否则 `snapshot_changed`，不归档、不建新运行；legacy 入口拒绝该参数。见 `docs/cm-control-policy-v2.md`「卡死任务重开」。
 
