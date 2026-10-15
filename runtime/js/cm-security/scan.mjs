@@ -21,7 +21,7 @@ const environment=(home,project)=>({PATH:cleanPath(project),HOME:home,USERPROFIL
   ...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{}),
   GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1',GIT_TERMINAL_PROMPT:'0',
   GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:os.devNull});
-const git=(project,args,optional=false)=>{
+export const git=(project,args,optional=false)=>{
   // Git status/diff can run clean/process filters. Suppress every configured driver,
   // including required=true, in addition to fsmonitor, external diff and textconv.
   let boundary=project;

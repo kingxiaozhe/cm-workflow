@@ -44,6 +44,10 @@ const check = (p, ...extra) => {
   const result = run('--plan', p.planFile, '--json', ...extra);
   return {...result, report: result.out ? JSON.parse(result.out) : null};
 };
+const checkWithEnv = (p, env) => {
+  const result = spawnSync(process.execPath, [script, '--plan', p.planFile, '--json'], {encoding: 'utf8', env});
+  return {status: result.status, out: result.stdout, err: result.stderr, report: result.stdout ? JSON.parse(result.stdout) : null};
+};
 const codes = report => report.findings.map(item => item.code);
 const cmd = (id, command, timeoutMs) => ({id, command, ...(timeoutMs === undefined ? {} : {timeoutMs})});
 const xcode = (id, ...extra) => cmd(id, ['xcodebuild', 'test', '-scheme', 'App', '-destination', 'id=U1', ...extra]);
@@ -66,7 +70,7 @@ test('a clean scope with distinct checks passes with no finding', t => {
   const p = project(t, {checks: [cmd('unit', ['node', '--test']), cmd('lint', ['node', '--check', 'src/a.js'])]});
   const r = check(p);
   assert.equal(r.status, 0);
-  assert.deepEqual(r.report, {errors: 0, warns: 0, findings: []});
+  assert.deepEqual(r.report, {errors: 0, warns: 0, skipped: 0, findings: []});
   const text = run('--plan', p.planFile);
   assert.equal(text.status, 0);
   assert.match(text.out, /体检通过/);
@@ -150,6 +154,20 @@ test('a code root that is not a git repository is reported as info and exits 0',
   const r = check(p);
   assert.equal(r.status, 0);
   assert.deepEqual(r.report.findings.map(item => [item.level, item.code]), [['info', 'not_git']]);
+  assert.equal(r.report.skipped, 1);
+  const text = run('--plan', p.planFile);
+  assert.equal(text.status, 0);
+  assert.match(text.out, /被跳过/);
+});
+
+test('git that cannot run is a warn, not a pass: --strict then fails (no git on PATH)', t => {
+  const p = project(t, {checks: [cmd('unit', ['x'])]});
+  const r = checkWithEnv(p, {PATH: ''});
+  assert.equal(r.status, 0);
+  assert.deepEqual(r.report.findings.map(item => [item.level, item.code]), [['warn', 'git_unavailable']]);
+  assert.match(r.report.findings[0].message, /没能核对/);
+  const strict = spawnSync(process.execPath, [script, '--plan', p.planFile, '--json', '--strict'], {encoding: 'utf8', env: {PATH: ''}});
+  assert.equal(strict.status, 1);
 });
 
 test('unreadable or unsupported input exits 2 with a Chinese reason and no report', t => {
@@ -188,4 +206,81 @@ test('the check never writes: every file, mtime and the git index are unchanged,
   assert.equal(r.status, 1);
   assert.ok(r.report.findings.length >= 3);
   assert.equal(snapshot(p.dir), before);
+});
+
+test('modes the check does not model exit 2 instead of a verdict (protected, provider, bootstrap)', t => {
+  const flags = ['--protected-config', '--protected-conversation-config', '--allow-provider-development-attempt', '--bootstrap-config', '--allow-bootstrap-write'];
+  for (const flag of flags) {
+    // A rule file in scope is legal for bootstrap; a 45 minute check is fine for a provider run.
+    const p = project(t, {scope: ['AGENTS.md'], checks: [cmd('ui', ['x'], 2700000)],
+      plan: {permissions: ['--allow-development', flag, ...(flag.endsWith('-write') ? [] : ['x.json'])]}});
+    const r = run('--plan', p.planFile, '--json');
+    assert.equal(r.status, 2, flag);
+    assert.equal(r.out, '', flag);
+    assert.match(r.err, new RegExp(`${flag}.*不给出结论`), flag);
+  }
+  const plain = project(t, {scope: ['src/a.js'], checks: [cmd('unit', ['x'])], plan: {permissions: ['--allow-development', '--review-config', 'review.json']}});
+  assert.equal(check(plain).status, 0);
+  const bad = project(t, {checks: [cmd('unit', ['x'])], plan: {permissions: 'nope'}});
+  assert.match(run('--plan', bad.planFile).err, /permissions 必须是字符串数组/);
+});
+
+test('a scope the runtime refuses at create is an input error, not a pass', t => {
+  const bads = [[], ['src/a.js', 'src/a.js'], ['src/../a.js'], ['/abs.js'], ['src\\a.js'], ['src:a.js'], ['./a.js'], ['']];
+  for (const scope of bads) {
+    const p = project(t, {scope, checks: [cmd('unit', ['x'])]});
+    const r = run('--plan', p.planFile, '--json');
+    assert.equal(r.status, 2, JSON.stringify(scope));
+    assert.equal(r.out, '', JSON.stringify(scope));
+    assert.match(r.err, /scope 不合法/, JSON.stringify(scope));
+  }
+  // A protected path next to a good one is still a finding (exit 1), and so is a protected-only scope.
+  assert.equal(check(project(t, {scope: ['AGENTS.md', 'src/a.js'], checks: [cmd('unit', ['x'])]})).status, 1);
+  assert.equal(check(project(t, {scope: ['AGENTS.md'], checks: [cmd('unit', ['x'])]})).status, 1);
+  // A bad path next to a protected one is still an input error.
+  assert.equal(run('--plan', project(t, {scope: ['AGENTS.md', '../x.js'], checks: [cmd('unit', ['x'])]}).planFile).status, 2);
+});
+
+test('repository config cannot run programs: fsmonitor, clean, process and required filters and a project-local git stay unexecuted', t => {
+  const cases = {
+    fsmonitor: (p, mark) => {
+      const hook = path.join(p.dir, 'fsmonitor.sh');
+      fs.writeFileSync(hook, `#!/bin/sh\ntouch '${mark}'\nprintf '\\0'\n`, {mode: 0o755});
+      git(p.root, 'config', 'core.fsmonitor', hook);
+    },
+    clean: (p, mark) => {
+      const filter = path.join(p.dir, 'clean.sh');
+      fs.writeFileSync(filter, `#!/bin/sh\ntouch '${mark}'\ncat\n`, {mode: 0o755});
+      git(p.root, 'config', 'filter.probe.clean', filter);
+      git(p.root, 'config', 'filter.probe.required', 'true');
+    },
+    process: (p, mark) => {
+      const filter = path.join(p.dir, 'process.sh');
+      fs.writeFileSync(filter, `#!/bin/sh\ntouch '${mark}'\nexit 1\n`, {mode: 0o755});
+      git(p.root, 'config', 'filter.probe.process', filter);
+      git(p.root, 'config', 'filter.probe.required', 'true');
+    }};
+  for (const [name, configure] of Object.entries(cases)) {
+    const p = project(t, {checks: [cmd('unit', ['x'])]});
+    const mark = path.join(p.dir, `ran-${name}`);
+    configure(p, mark);
+    fs.writeFileSync(path.join(p.root, '.gitattributes'), 'src/a.js filter=probe\n');
+    // Same size as the committed 'a\n': git then has to read the content (running the filter) to tell it changed.
+    fs.writeFileSync(path.join(p.root, 'src/a.js'), 'z\n');
+    // Control: a plain git status in this repository does run the configured program.
+    spawnSync('git', ['status', '--porcelain'], {cwd: p.root, env: gitEnv});
+    assert.equal(fs.existsSync(mark), true, `control ${name}: the fixture must make plain git run the program`);
+    fs.rmSync(mark);
+    const r = check(p);
+    assert.equal(fs.existsSync(mark), false, `${name} program ran during the check`);
+    assert.deepEqual(r.report.findings.map(item => item.code), ['scope_dirty'], name);
+  }
+  const p = project(t, {checks: [cmd('unit', ['x'])]});
+  const bin = path.join(p.root, 'bin');
+  fs.mkdirSync(bin);
+  const mark = path.join(p.dir, 'ran-local-git');
+  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\ntouch '${mark}'\nexit 1\n`, {mode: 0o755});
+  const r = checkWithEnv(p, {...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`});
+  assert.equal(fs.existsSync(mark), false);
+  assert.equal(r.status, 0);
 });

@@ -109,4 +109,4 @@ Read the relevant files under `.claude/rules/` when modifying shell scripts, doc
 
 - **派生档案命名空间须在大小写折叠后仍互斥**：不同任务前缀共用目录时，不能只靠大小写区分档案名；使用旧 slug 语法无法产生的分隔符，并验证大小写折叠后无碰撞。任务身份及既有档案名保持不变。来源：T-OBS 观测归档兼容；证据：`scripts/cm-fix-observation-task-id.test.mjs` 的双布局、任务身份和大小写折叠碰撞用例。[已结构化]
 
-- **体检里的运行时限制要和源码同源并设漂移守卫**：检查整步 30 分钟期限是 `host-conversation-execution.mjs` 里的字面量而非导出常量，体检脚本抄了一份时，用源码匹配测试守住，改动源码就让测试变红；再用真实日志（检查步用时分布）校准阈值，不凭记忆写数字。体检只读：git 调用带 `--no-optional-locks` 与 `--literal-pathspecs`，并用整目录哈希加 mtime 快照的测试证明未写入。来源：开工前体检；证据：`scripts/cm-start-check.test.mjs` 的 call limit 守卫与 never-writes 用例。该教训随本轮改动待独立审查。
+- **体检里的运行时限制要和源码同源并设漂移守卫**：检查整步 30 分钟期限是 `host-conversation-execution.mjs` 里的字面量而非导出常量，体检脚本抄了一份时，用源码匹配测试守住，改动源码就让测试变红；再用真实日志（检查步用时分布）校准阈值，不凭记忆写数字。体检只读：Git 只走扫描器的安全读取（可信 git、关闭 fsmonitor 与 clean/process/required 过滤器、不读用户配置），并把代码根转成真实路径再传入，否则符号链接目录会让「项目内的 git 不可信」的比较失效；用定向夹具（对照先证明普通 git 会执行配置程序）加整目录哈希与 mtime 快照证明未写入、未执行。体检只覆盖它建模的模式，其余模式退出 2，不给出「通过」。来源：开工前体检；证据：`scripts/cm-start-check.test.mjs` 的 call limit 守卫、never-writes、仓库配置不执行与不支持模式用例。该教训随本轮改动待独立审查。
