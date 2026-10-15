@@ -17,6 +17,8 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 
 ## 常用命令
 
+- 方案推敲：`$cm-challenge` / `/cm-challenge`，显式三轮或必要追问；复用 `runtime/steelman-review.md`，只输出讨论建议，不启动宿主、不替代正式审查。
+
 - 兼容手工任务：N3 编辑前运行 `node scripts/cm-task-gate.mjs capture-baseline --project-root {CODE_PROJECT} --reviews-dir {SPECS_DIR}/.reviews --feature {FEATURE_SLUG} --task {T-xxx}`；仅命令行 N4/N5 与完成入口开启清单核对，库调用默认行为不变，JS 使用自己的审查包基线。仅单代码根，历史缺基线用现有 `--allow-legacy-unbound` 披露清单未核验；详见 `runtime/task-gates.md`。
 
 - CM control v2：新 cm-ai run 用 `--control-config POLICY.json` 明确运行能力，禁止 `--allow-*`；旧 run 沿 legacy，不迁移记录。配置、operator/model 与 V3 grant 不证明真人身份，真实对话及外部动作授权保持；详见 [控制策略与恢复合同](../docs/cm-control-policy-v2.md)。
@@ -79,7 +81,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 ```text
 compat/claude-commands/ # macOS/Linux 历史 /cm:* 三行别名包装
 skills/                # Codex 权威流程与工种能力
-├── cm-{idea,init,prd,ai,test,fix,refactor,check,runtime}/
+├── cm-{challenge,idea,init,prd,ai,test,fix,refactor,check,runtime}/
 ├── cm-*-engineer/     # frontend/ui/miniprogram/backend/database/contract/qa/devops
 ├── cm-product-manager/、cm-finance-expert/、cm-doc-syncer/
 └── codebase-context/、external-expert/、darwin-skill/ # 独立工具；点子访谈引擎位于 cm-idea/references/

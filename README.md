@@ -272,10 +272,11 @@ git pull --ff-only origin main
 
 ## 选择命令
 
-以下是十一个核心入口（含独立配置工具 cm-runtime、cm-notify）。Codex 使用 `$cm-*`，Claude Code 使用 `/cm-*`。
+以下是十二个核心入口（含可选讨论入口 cm-challenge 与独立配置工具 cm-runtime、cm-notify）。Codex 使用 `$cm-*`，Claude Code 使用 `/cm-*`。
 
 | 你想做什么 | Codex 入口 | 产出或下一步 |
 | --- | --- | --- |
+| 推敲已有方案、三轮对抗分析或必要追问 | `$cm-challenge {方案}` | 对话中的建议与验证计划，不启动开发或正式审查 |
 | 把模糊点子变成需求 | `$cm-idea` | 形成 PRD，进入规格阶段 |
 | 第一次接管已有仓库 | `$cm-init` | 建立项目上下文与规范 |
 | 把需求拆成可开发任务 | `$cm-prd {specs路径}` | 需求、设计、任务和审批材料 |
@@ -444,11 +445,12 @@ Pi 资源加载器直接发现 Skills 与 Prompts，不运行上述安装器，�
 
 `skills/` 保存工作流与角色规则，`runtime/js/cm-ai/` 保存共享 JS 实现，`scripts/` 提供入口、单步驾驭员（`cm-*-drive.mjs`）与验证工具。`experiments/js-orchestration/` 是历史兼容夹具，CI 单独跑它但不阻断合并。`compat/claude-commands/` 只做历史命令转发；根 `package.json` 保存 Pi/BYZ 包元数据和 npm 安装命令入口，无 npm 依赖或构建脚本。
 
-入口目录与计数：11 个核心入口（包括独立工具 `cm-runtime`、`cm-notify`），11 个工种 Skill 与 6 个兼容 agent；独立工具不参与工种配对。
+入口目录与计数：12 个核心入口（包括可选讨论入口 `cm-challenge` 与独立工具 `cm-runtime`、`cm-notify`），11 个工种 Skill 与 6 个兼容 agent；独立工具不参与工种配对。
 
 ```text
 skills/
 ├── cm-{idea,init,prd,ai,test,security,fix,refactor,check}/
+├── cm-challenge/                # 可选方案推敲，不进入 N1–N8
 ├── cm-runtime/                  # 独立声明工具，不进入 N1–N8
 ├── cm-notify/                   # 独立提醒渠道工具，不进入 N1–N8
 ├── cm-*-engineer/、cm-*-expert/、cm-*-manager/、cm-doc-syncer/

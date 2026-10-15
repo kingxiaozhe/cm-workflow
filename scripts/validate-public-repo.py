@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CORE_SKILLS = (
+    "cm-challenge",
     "cm-idea",
     "cm-init",
     "cm-prd",
