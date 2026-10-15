@@ -41,6 +41,11 @@ flowchart LR
     Check -. validates .-> RuntimeJS
 ```
 
+`cm-challenge` is an optional conversation-only entry. It reads the existing
+`runtime/steelman-review.md` method and produces proposals, without starting a
+host, creating run records, changing approval state or replacing formal review.
+Its three analysis passes are not three independent review attempts.
+
 ## Sources of truth
 
 - Each numbered feature's `tasks.md` is the authoritative business-task state.

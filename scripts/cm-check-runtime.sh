@@ -652,7 +652,7 @@ for consumer in \
     fail "external-expert AUTO routing is not wired into $consumer"
 done
 
-for name in cm-idea cm-init cm-prd cm-ai cm-test cm-security cm-fix cm-refactor cm-check cm-runtime cm-notify; do
+for name in cm-challenge cm-idea cm-init cm-prd cm-ai cm-test cm-security cm-fix cm-refactor cm-check cm-runtime cm-notify; do
   require_file "skills/$name/SKILL.md"
   require_file "compat/claude-commands/$name.md"
   wrapper="$ROOT/compat/claude-commands/$name.md"

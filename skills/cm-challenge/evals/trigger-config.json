@@ -1,0 +1,28 @@
+{
+  "positive_concepts": {
+    "challenge": {
+      "weight": 1,
+      "phrases": [
+        "推敲已有方案",
+        "三轮对抗分析",
+        "挑战假设",
+        "grill me"
+      ]
+    }
+  },
+  "negative_concepts": {
+    "execution": {
+      "weight": 1,
+      "exclusive": true,
+      "phrases": [
+        "直接修复",
+        "安装这个插件",
+        "正式独立审查",
+        "运行测试"
+      ]
+    }
+  },
+  "fallback_positive_concepts": [
+    "challenge"
+  ]
+}
