@@ -106,3 +106,5 @@ Read the relevant files under `.claude/rules/` when modifying shell scripts, doc
 - **基线复现不能代替失败根因**：区分测试正文与清理钩子失败；相同基线失败只说明不是新增回归，丢失原 cause 后仍保留未知。预检与夹具失败只记录有限系统字段，不打印原 message／stderr，不把能力受限或超时改成通过；夹具总截止与已有驱动预算对齐，产品预算和业务断言保持原值。来源：执行优化回归的启动错误丢失、清理失败和外层夹具超时收尾；证据：`scripts/cm-efficiency-diagnostics.test.mjs` 的无真实枚举／监听错误注入、`scripts/cm-ai-batch-drive.test.mjs` 的实际 live 用例，以及保存的原始失败与基线对照。该教训随本轮改动待独立审查。
 
 - **传输探活不得替代业务进展或持久事实**：心跳只报告存活；阶段截止取既有执行预算，嵌套阶段结束恢复外层原期限。关闭保护按独立操作对象核对归属，不能以可重复 requestId 释放另一在途操作，故障清理也不能记成用户取消。来源：宿主防空等与防误关；证据：`scripts/cm-host-liveness.test.mjs`、`scripts/cm-drive-liveness.test.mjs`、`scripts/cm-host-stage-observer.test.mjs` 的拒关、重复 ID、嵌套期限、断连和无状态副作用用例。[已结构化]
+
+- **派生档案命名空间须在大小写折叠后仍互斥**：不同任务前缀共用目录时，不能只靠大小写区分档案名；使用旧 slug 语法无法产生的分隔符，并验证大小写折叠后无碰撞。任务身份及既有档案名保持不变。来源：T-OBS 观测归档兼容；证据：`scripts/cm-fix-observation-task-id.test.mjs` 的双布局、任务身份和大小写折叠碰撞用例。[已结构化]
