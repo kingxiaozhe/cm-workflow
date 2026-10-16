@@ -43,6 +43,7 @@ ALLOW_LOOPBACK_ENDPOINT_FILES = {
     Path("scripts/cm-ai-multi-root.test.mjs"),
     Path("scripts/cm-ai-nested-execution.test.mjs"),
     Path("scripts/cm-claude-probe.test.mjs"),
+    Path("scripts/cm-fix-review-verification-command.test.mjs"),
     Path("scripts/cm-fix-visual-bare.test.mjs"),
     Path("scripts/cm-fix-walkthrough.test.mjs"),
     Path("scripts/cm-notify-command.test.mjs"),

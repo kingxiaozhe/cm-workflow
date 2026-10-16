@@ -17,6 +17,13 @@
 
 ## 最近更新
 
+**0.17.1**
+
+- **PRD 历史回执不再阻断当前新批次**：旧 feature 的归档问题只登记附注，当前规格和准备后的漂移仍严格核对。
+- **宿主防空等与防误关**：驾驶员使用传输心跳和阶段期限；`host_busy` 说明原操作仍在执行，默认关闭拒绝在途工作。
+- **Claude 审查预检恢复正常启动**：兼容初始化前的 `ui_invalidate` 显示通知，保留原有解析和权限边界。
+- **恢复提示与贡献者测试入口对齐**：保留旧运行合同，统一测试清单并补齐失败诊断。详见[更新日志](CHANGELOG.md)。
+
 **0.17.0**
 
 - **升级注意**：新建 `cm-ai` 运行改用 `--control-config` 选能力（`development` / `bootstrap` / `qa` / `qaFix` 四个模式），不再传一串 `--allow-*`；`--human-authorized` 已删除。已经在跑的旧运行继续按原协议走完，两种入口不能互用。
@@ -240,7 +247,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.17.0 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.17.1 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 

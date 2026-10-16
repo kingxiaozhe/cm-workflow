@@ -14,6 +14,7 @@ import {createQaFixOwnerHost} from '../runtime/js/cm-ai/host-qa-fix-owner.mjs';
 import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
 import {qaFixIdentity} from '../runtime/js/cm-fix/qa-source.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
+import {claudeReviewFingerprint} from '../runtime/js/cm-ai/worker-claude.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
@@ -34,7 +35,7 @@ function events(onEvent,thread){
     {event:'item.completed',item_type:'agent_message'},{event:'turn.completed',item_type:null},
     {event:'process_closed',exit_code:0,signal:null,timed_out:false}])onEvent(event);
 }
-async function fixture(t,{childHost=A,causeContext=null,lostCauseReviews=0,external=false,lateCause=false,optimized=false}={}){
+async function fixture(t,{childHost=A,causeContext=null,lostCauseReviews=0,external=false,lateCause=false,optimized=false,reviewRuntime,reviewVerification=null}={}){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qa-fix-session-')));
   const codeProject=path.join(root,'code'),specsDir=path.join(root,'specs'),feature='1.value';
   fs.mkdirSync(codeProject);fs.mkdirSync(path.join(specsDir,feature),{recursive:true});
@@ -42,7 +43,7 @@ async function fixture(t,{childHost=A,causeContext=null,lostCauseReviews=0,exter
   fs.writeFileSync(path.join(codeProject,'requirements.md'),'Value must be 2.');
   fs.writeFileSync(path.join(codeProject,'red.mjs'),"import {value} from './value.mjs';if(value!==2){console.error('BUG');process.exit(1)}");
   fs.writeFileSync(path.join(codeProject,'existing.mjs'),"import {value} from './value.mjs';if(typeof value!=='number')process.exit(1)");
-  fs.writeFileSync(path.join(codeProject,'.cm-workflow.json'),JSON.stringify({version:1,policies:{delivery:'diff'}}));
+  fs.writeFileSync(path.join(codeProject,'.cm-workflow.json'),JSON.stringify({version:1,policies:{delivery:'diff'},...(reviewRuntime?{roles:{coder:{adapter:'codex-cli'},reviewer:{adapter:`${reviewRuntime}-cli`}},runtimes:{available:'both'}}:{})}));
   for(const name of ['requirements','design'])fs.writeFileSync(path.join(specsDir,feature,`${name}.md`),'# Fixture');
   fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: implement value\n');
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
@@ -84,9 +85,10 @@ async function fixture(t,{childHost=A,causeContext=null,lostCauseReviews=0,exter
     handoffDigest:failed.fixHandoff.handoffDigest};
   const permissions=['--allow-cause-review'];
   let causeReviews=0;
-  const models={schemaVersion:1,providers:{codex:{model:'fixture',effort:'low'}}};
-  const childReview=external?{...review,...(lateCause?{timeoutMs:20}:{}),effort:'low',preflight:{...review.preflight,config_fingerprint:configFingerprint({cwd:codeProject,model:'fixture',effort:'low'})}}:review;
-  const reviewHost=live=>createFixReviewHost({codeProject,hostContextId:live,review:childReview,permissions,...(optimized?{executionPolicy:EXECUTION_POLICY_V1,specsDir}:{}),...(external?{externalModels:models}:{}),workerFactory:()=>async({prompt},{onEvent,signal,onTerminal})=>{
+  const models={schemaVersion:1,providers:{codex:{model:'fixture',effort:'low'},...(reviewRuntime==='claude'?{claude:{model:'claude-fixture',effort:'high'}}:{})}};
+  const childModels=reviewRuntime?{schemaVersion:1,providers:{[reviewRuntime]:models.providers[reviewRuntime]}}:models;
+  const childReview=reviewRuntime==='claude'?{model:'claude-fixture',disabledSkills:[],...(external?{effort:'high'}:{}),preflight:{passed:true,provider:'claude',prompt_transport:'stdin',config_fingerprint:claudeReviewFingerprint({cwd:codeProject,model:'claude-fixture',...(external?{effort:'high'}:{}),verification:reviewVerification})}}:external?{...review,...(lateCause?{timeoutMs:20}:{}),effort:'low',preflight:{...review.preflight,config_fingerprint:configFingerprint({cwd:codeProject,model:'fixture',effort:'low'})}}:review;
+  const reviewHost=live=>createFixReviewHost({codeProject,hostContextId:live,runtime:'codex',reviewRuntime,verification:reviewVerification,review:childReview,permissions,...(optimized?{executionPolicy:EXECUTION_POLICY_V1,specsDir}:{}),...(external?{externalModels:models}:{}),workerFactory:()=>async({prompt},{onEvent,signal,onTerminal})=>{
     const parsed=JSON.parse(prompt.split('<cm-review-data-json>\n')[1]),data=parsed.presentation?expandReviewData(parsed):parsed;
     if(lateCause){causeReviews++;onEvent({event:'thread.started',provider_thread:'synthetic-child-review'});onEvent({event:'turn.started',item_type:null});
       return new Promise(resolve=>signal.addEventListener('abort',()=>setTimeout(()=>{
@@ -100,7 +102,7 @@ async function fixture(t,{childHost=A,causeContext=null,lostCauseReviews=0,exter
     return {status:'succeeded',value:{verdict:'approved',packageDigest:data.reviewPackage.packageDigest,
       examinedPaths:['value.mjs'],findings:[],summary:'Synthetic cause review'}};
   }});
-  const configuration={...(optimized?{executionPolicy:EXECUTION_POLICY_V1}:{}),...(external?{externalModels:models}:{}),hostContextId:childHost,defect:'Value must be 2',qaSource,
+  const configuration={...(reviewRuntime?{reviewRuntime}:{}),...(reviewVerification?{reviewVerification}:{}),...(optimized?{executionPolicy:EXECUTION_POLICY_V1}:{}),...(external?{externalModels:childModels}:{}),hostContextId:childHost,defect:'Value must be 2',qaSource,
     causeReview:{...reviewHost(A).reviewer,...(causeContext?{contextId:causeContext}:{})},
     reproduction:{cwd:codeProject,command:[process.execPath,'red.mjs'],expectedFailure:{exitCode:1,outputIncludes:'BUG'},timeoutMs:2000}};
   const fix={specsRoot:specsDir,identity:qaFixIdentity(qaSource),configuration};
@@ -124,7 +126,7 @@ async function fixture(t,{childHost=A,causeContext=null,lostCauseReviews=0,exter
   const records=()=>JSON.parse(fs.readFileSync(statePath)).records;
   const bin=path.join(root,'bin');fs.mkdirSync(bin);
   const fake=path.join(bin,'codex');fs.copyFileSync(fileURLToPath(new URL('./fixtures/codex-review-process.mjs',import.meta.url)),fake);fs.chmodSync(fake,0o700);
-  for(const [name,value] of Object.entries({run:definition,review,workflow,fix}))fs.writeFileSync(path.join(root,`${name}.json`),JSON.stringify(value));
+  for(const [name,value] of Object.entries({run:definition,review,workflow,fix,'child-review':childReview}))fs.writeFileSync(path.join(root,`${name}.json`),JSON.stringify(value));
   return {causeReviews:()=>causeReviews,models,open,close,bound,fix,childDir,statePath,records,reviewHost,root,bin,request};
 }
 
@@ -167,4 +169,84 @@ test('QA optimization child inherits frozen policy and resumes original child wi
 test('QA optimization refuses retrofitting a legacy child before opening a store',async t=>{
   const f=await fixture(t,{optimized:true});delete f.fix.configuration.executionPolicy;
   await assert.rejects(f.open(A),{code:'execution_policy_legacy_child_inheritance_forbidden'});assert(!fs.existsSync(f.statePath));
+});
+
+
+test('Codex QA parent keeps its host while Claude child reviewer inherits only its frozen pair across resume',async t=>{
+  const f=await fixture(t,{external:true,reviewRuntime:'claude'});
+  let owner=await f.open(A,{template:true});
+  assert.equal((await owner.handle(f.bound('fix_advance'))).fixStage,'cause_review_required');
+  const saved=f.records()[0].payload.configuration;
+  assert.equal(saved.runtime??'codex','codex');assert.equal(saved.reviewRuntime,'claude');
+  assert.equal(saved.hostContextId,A);assert.equal(saved.causeReview.provider,'claude');
+  assert.equal(saved.causeReview.requestedModel,'claude-fixture');
+  assert.deepEqual(saved.externalModels,{schemaVersion:1,providers:{claude:f.models.providers.claude}});
+  assert.equal((await owner.handle({...f.bound('fix_action'),fixOperation:'cause_review'})).fixStage,'red_test_required');
+  const registration=f.records().find(record=>record.id==='fix-cause-registered').payload;
+  assert.equal(registration.request.provider,'claude');assert.equal(registration.request.requestedModel,'claude-fixture');
+  assert.equal(registration.grant.hostContextId,A);assert.equal(registration.grant.adapterId,'claude-cause-review-adapter');
+  assert.equal(f.causeReviews(),1);
+  f.close();const before=f.records();owner=await f.open(B);
+  assert.equal((await owner.handle(f.bound('fix_status'))).fixStage,'red_test_required');
+  assert.deepEqual(f.records(),before);assert.equal(f.causeReviews(),1);
+  const logs=fs.readFileSync(path.join(f.fix.specsRoot,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+  for(const runId of ['qa-parent',f.fix.identity.runId]){
+    const rows=logs.filter(row=>row.run_id===runId);assert(rows.length>0);
+    assert(rows.every(row=>row.runtime==='codex'),'reviewer selection must not relabel either execution host');
+  }
+  f.close();f.fix.configuration.externalModels={schemaVersion:1,providers:{claude:{model:'changed-model',effort:'high'}}};
+  await assert.rejects(f.open(C),{code:'external_model_pair_conflict'});
+  assert.deepEqual(f.records(),before);assert.equal(f.causeReviews(),1);
+});
+
+// Spawn the public CLI, so accidentally dropping either child field at the
+// cm-ai-host -> createFixReviewHost boundary cannot hide behind direct fixtures.
+async function childCli(f,operation){
+  f.close();fs.writeFileSync(path.join(f.root,'fix.json'),JSON.stringify(f.fix));
+  const args=['serve','--config',path.join(f.root,'run.json'),'--mode','resume','--host-context',A,'--allow-development',
+    '--review-config',path.join(f.root,'review.json'),'--workflow-config',path.join(f.root,'workflow.json'),'--allow-qa',
+    '--qa-fix-owner-config',path.join(f.root,'fix.json'),'--allow-qa-fix-start','--runtime','codex',
+    '--qa-fix-review-config',path.join(f.root,'child-review.json'),'--allow-qa-fix-cause-review'];
+  return new Promise((resolve,reject)=>{
+    const child=spawn(process.execPath,[fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url)),...args],
+      {env:{...process.env,PATH:f.bin+path.delimiter+process.env.PATH},stdio:['pipe','pipe','pipe']});
+    let buffer='',stderr='',sessionId;const rows=[];
+    const timer=setTimeout(()=>{child.kill();reject(Error('QA child routing CLI timed out'));},15000);
+    child.on('error',error=>{clearTimeout(timer);reject(error);});
+    child.stderr.on('data',chunk=>{stderr+=chunk;});
+    child.stdout.on('data',chunk=>{
+      buffer+=chunk;
+      while(buffer.includes('\n')){
+        const end=buffer.indexOf('\n'),line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(!line)continue;
+        try{
+          const row=JSON.parse(line);rows.push(row);
+          if(row.type==='host_ready')sessionId=row.sessionId;
+          if(row.type==='host_request'){
+            assert(['fix_learning','fix_diagnose'].includes(row.kind),row.kind);
+            const result=row.kind==='fix_learning'?{contextDigest:row.payload.contextDigest,status:'no_relevant_lesson',summary:'Synthetic fixture'}:diagnosis;
+            child.stdin.write(JSON.stringify({type:'host_result',sessionId:row.sessionId,callId:row.callId,requestDigest:row.requestDigest,result})+'\n');
+          }
+          if(row.requestId===operation.requestId)child.stdin.write(JSON.stringify({type:'host_close',sessionId})+'\n');
+        }catch(error){child.kill();clearTimeout(timer);reject(error);}
+      }
+    });
+    child.on('close',code=>{clearTimeout(timer);resolve({code,stderr,rows,result:rows.find(row=>row.requestId===operation.requestId)?.result});});
+    child.stdin.write(JSON.stringify(operation)+'\n');
+  });
+}
+for(const verified of [false,true])test(`public QA CLI preserves ${verified?'Codex host Claude verified reviewer':'legacy absent reviewer fields'}`,
+  {skip:verified&&process.platform!=='darwin'},async t=>{
+  const reviewVerification=verified?{files:['value.mjs','red.mjs','existing.mjs'],checks:[{id:'unit',command:[process.execPath,'existing.mjs']}],mutationPaths:['value.mjs'],timeoutMs:2000}:null;
+  const f=await fixture(t,{...(verified?{reviewRuntime:'claude',reviewVerification}:{})});
+  const first=await childCli(f,f.bound('fix_advance'));
+  assert.equal(first.code,0,JSON.stringify(first));assert.equal(first.result?.fixStage,'cause_review_required',JSON.stringify(first));
+  const saved=f.records()[0].payload.configuration;
+  assert.equal(saved.runtime??'codex','codex');assert.equal(saved.hostContextId,A);
+  assert.equal(saved.causeReview.provider,verified?'claude':'codex');
+  if(verified){assert.equal(saved.reviewRuntime,'claude');assert.deepEqual(saved.reviewVerification,reviewVerification);}
+  else{assert.equal(Object.hasOwn(saved,'reviewRuntime'),false);assert.equal(Object.hasOwn(saved,'reviewVerification'),false);}
+  const before=fs.readFileSync(f.statePath),resumed=await childCli(f,f.bound('fix_status'));
+  assert.equal(resumed.code,0,JSON.stringify(resumed));assert.equal(resumed.result?.fixStage,'cause_review_required');
+  assert.deepEqual(fs.readFileSync(f.statePath),before);assert.equal(f.causeReviews(),0);
+  assert.equal(f.records().filter(r=>r.id.endsWith('-registered')).length,0,'routing readiness does not claim provider execution');
 });

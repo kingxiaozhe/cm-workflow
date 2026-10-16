@@ -6,16 +6,19 @@ import path from 'node:path';
 import {openFixExecution} from '../runtime/js/cm-fix/execution.mjs';
 import {createHostReviewAuthority} from '../runtime/js/cm-ai/host-review-authority.mjs';
 import {createCauseReviewRun} from '../runtime/js/cm-ai/codex-review-adapter.mjs';
+import {inspectCauseRegistration} from '../runtime/js/cm-fix/cause-invocation.mjs';
 
-for(const outcome of ['approved','incomplete','denied','timeout','cancelled'])test(`cause invocation ${outcome} uses original grant and durable registration`,async()=>{
+for(const [runtime,reviewRuntime] of [['codex',null],['claude',null],['codex','claude'],['claude','codex']])
+for(const outcome of ['approved','incomplete','denied','timeout','cancelled'])test(`${runtime}/${reviewRuntime??runtime} cause invocation ${outcome} uses original grant and durable registration`,async()=>{
+  const provider=reviewRuntime??runtime;
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fix-cause-call-')));
   const cwd=path.join(root,'code'),specsRoot=path.join(root,'specs');fs.mkdirSync(cwd);fs.mkdirSync(specsRoot);
   fs.writeFileSync(path.join(cwd,'value.mjs'),'export const value=1;');
   const identity={repositoryId:'fixture',runId:'cause-review-run',taskId:'T-FIX-cause',attempt:1};
-  const reviewer={reviewerId:'cause-reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'synthetic',
+  const reviewer={reviewerId:'cause-reviewer',adapterId:`${provider}-review-adapter`,provider,requestedModel:'synthetic',
     contextId:'logical-review',excludedThreadIds:['other-author']};
   fs.symlinkSync(root,path.join(root,'parent-alias'));
-  const options={specsRoot:outcome==='approved'?path.join(root,'parent-alias','specs'):specsRoot,identity,create:true,configuration:{hostContextId:'fixture-host',defect:'Synthetic value mismatch',causeReview:reviewer,
+  const options={specsRoot:outcome==='approved'?path.join(root,'parent-alias','specs'):specsRoot,identity,create:true,configuration:{hostContextId:'fixture-host',...(runtime==='claude'?{runtime}:{}),...(reviewRuntime?{reviewRuntime}:{}),defect:'Synthetic value mismatch',causeReview:reviewer,
     reproduction:{cwd,command:[process.execPath,'-e',"process.stderr.write('BUG');process.exit(3)"],
       expectedFailure:{exitCode:3,outputIncludes:'BUG'},timeoutMs:1000}}};
   const authority=createHostReviewAuthority({hostContextId:'fixture-host',reviewerId:reviewer.reviewerId,adapterId:reviewer.adapterId,
@@ -37,7 +40,7 @@ for(const outcome of ['approved','incomplete','denied','timeout','cancelled'])te
       {event:'turn.completed',item_type:null},{event:'process_closed',exit_code:0,signal:null,timed_out:false}])assert.equal(onEvent(event),true);
     return {status:'succeeded',value:{verdict:'approved',packageDigest:data.reviewPackage.packageDigest,
       examinedPaths:['value.mjs'],findings:[],summary:'No finding in synthetic package'}};
-  },'codex')};
+  },provider)};
   try{
     owner=openFixExecution(options,{causeReview,bridge:{async call(){return {status:'diagnosed',rootCause:'Cross-layer constant',
       plan:'Correct source after red test',affectedPaths:['value.mjs'],affectedModules:['value'],crossLayer:true};}}});
@@ -51,6 +54,18 @@ for(const outcome of ['approved','incomplete','denied','timeout','cancelled'])te
     if(lateEvent)assert.equal(lateEvent({event:'turn.started',item_type:null}),false);
     assert.equal((await owner.reviewCause()).stage,result.stage);assert.equal(calls,outcome==='denied'?0:1);
     if(outcome==='approved'){
+      const records=JSON.parse(fs.readFileSync(path.join(specsRoot,'.reviews','.execution',identity.runId,'state.json'))).records;
+      const registered=records.find(record=>record.id==='fix-cause-registered').payload;
+      assert.equal(registered.request.provider,provider);
+      assert.equal(registered.grant.adapterId,reviewer.adapterId);
+      assert.equal(registered.grant.hostContextId,'fixture-host');
+      assert.deepEqual(inspectCauseRegistration(registered,options.configuration),registered);
+      const wrongProvider=structuredClone(registered);wrongProvider.request.provider=provider==='codex'?'claude':'codex';
+      assert.throws(()=>inspectCauseRegistration(wrongProvider,options.configuration),{code:'cause_registration_mismatch'});
+      const wrongModel=structuredClone(registered);wrongModel.request.requestedModel='different-model';
+      assert.throws(()=>inspectCauseRegistration(wrongModel,options.configuration),{code:'cause_registration_mismatch'});
+      const expired=structuredClone(registered);expired.registeredAt=expired.grant.expiresAt;
+      assert.throws(()=>inspectCauseRegistration(expired,options.configuration),{code:'runner_grant'});
       const evidence=path.join(specsRoot,'.reviews','fix-cause-cause-r1.md');
       const bytes=fs.readFileSync(evidence);
       assert.match(bytes.toString(),/phase: cause\nround: 1\nverdict: approved/);

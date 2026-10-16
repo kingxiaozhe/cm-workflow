@@ -1,3 +1,5 @@
+import {inspectVerificationDiagnostic,splitVerificationResult,verificationCallbackFailure,inspectResultWithFailureDiagnostic} from './review-verification-diagnostic.mjs';
+import {readReviewVerification,inspectReviewVerificationEvidence} from './review-verification-contract.mjs';
 import {readExecutionPolicy} from '../cm-ai/execution-policy.mjs';
 import {inspectFixReconciledResult} from './review-reconciliation.mjs';
 // Existing V3 grants and standard implementation-review observations only.
@@ -17,7 +19,7 @@ import {inspectFixRegressionFailure} from './regression-evidence.mjs';
 export function fixFinalReviewConfiguration(configuration,causeThread=null){
   const hosts=fixHostContexts(configuration);
   const base=validateCauseReviewer(configuration.causeReview,hosts);
-  return {...(configuration.executionPolicy?{executionPolicy:readExecutionPolicy(configuration.executionPolicy)}:{}),...(configuration.externalModels?{externalModels:configuration.externalModels}:{}),hostContextId:configuration.hostContextId,...(hosts.length>1?{hostContextIds:hosts}:{}),
+  return {...(Object.hasOwn(configuration,'reviewVerification')?{reviewVerification:readReviewVerification(configuration.reviewVerification)}:{}),...(configuration.executionPolicy?{executionPolicy:readExecutionPolicy(configuration.executionPolicy)}:{}),...(configuration.externalModels?{externalModels:configuration.externalModels}:{}),hostContextId:configuration.hostContextId,...(hosts.length>1?{hostContextIds:hosts}:{}),
     reviewer:{...base,reviewerId:'fix-final-reviewer',
     adapterId:`${base.provider}-review-adapter`,contextId:'fix-final-review-context',
     excludedThreadIds:[...new Set([...base.excludedThreadIds,...(Array.isArray(causeThread)?causeThread:causeThread?[causeThread]:[])])]}};
@@ -61,13 +63,25 @@ export function inspectFixFinalRegistration(raw,configuration){
   return value;
 }
 export function inspectFixFinalResult(raw,registration,configuration,started){
-  const value=json(raw,1024*1024);shape(value,['dispatchAt','observation',...(Object.hasOwn(value,'reconciliationReceipt')?['reconciliationReceipt']:[])]);
+  const value=json(raw,1024*1024);shape(value,['dispatchAt','observation',...(Object.hasOwn(value,'reconciliationReceipt')?['reconciliationReceipt']:[]),...(Object.hasOwn(value,'verification')?['verification']:[]),...(Object.hasOwn(value,'verificationDiagnostic')?['verificationDiagnostic']:[])]);
   need(Number.isSafeInteger(value.dispatchAt)&&value.dispatchAt>=registration.registeredAt
     &&value.dispatchAt<registration.grant.expiresAt,'final_registration_mismatch');
   need(!value.reconciliationReceipt||(configuration.externalModels||configuration.executionPolicy),'review_reconciliation_unavailable');
   const expected=expectation(registration.request,configuration);
   const checked=value.reconciliationReceipt?inspectFixReconciledResult(value,expected):inspectProviderReview(JSON.stringify(value.observation),JSON.stringify(expected));
-  need(checked.providerThreadId===started,'final_registration_mismatch');return checked;
+  need(checked.providerThreadId===started,'final_registration_mismatch');
+  if(configuration.reviewVerification){
+    readReviewVerification(configuration.reviewVerification);
+    need(!value.reconciliationReceipt,'review_verification_invalid');
+    if(checked.observationStatus==='completed'||Object.hasOwn(value,'verification'))
+      inspectReviewVerificationEvidence(value.verification,{request:registration.request,configuration:configuration.reviewVerification,providerThreadId:started});
+  }else need(!Object.hasOwn(value,'verification'),'review_verification_invalid');
+  if(Object.hasOwn(value,'verificationDiagnostic')){
+    need(configuration.reviewVerification&&checked.observationStatus!=='completed','review_verification_invalid');
+    const diagnostic=inspectVerificationDiagnostic(value.verificationDiagnostic,{request:registration.request,configuration:configuration.reviewVerification,providerThreadId:started});
+    return {...checked,verificationDiagnostic:diagnostic};
+  }
+  return checked;
 }
 
 // Read-only feedback for the next repair; registration is still supplied by the
@@ -114,8 +128,10 @@ export function createFixFinalReview({reviewPackage,configuration,timeoutMs},{au
   const pkg=readReviewPackage(reviewPackage);need(pkg.handoff,'final_handoff_required');
   const config=json(configuration,12*1024*1024);shape(config,['hostContextId','reviewer',...(Object.hasOwn(config,'externalModels')?['externalModels']:[]),...(Object.hasOwn(config,'executionPolicy')?['executionPolicy']:[]),
     ...(Object.hasOwn(config,'hostContextIds')?['hostContextIds']:[]),
+    ...(Object.hasOwn(config,'reviewVerification')?['reviewVerification']:[]),
     ...(Object.hasOwn(config,'reviewFeedback')?['reviewFeedback']:[])]);
   if(config.executionPolicy)readExecutionPolicy(config.executionPolicy);
+  if(Object.hasOwn(config,'reviewVerification'))readReviewVerification(config.reviewVerification);
   const previous=config.reviewFeedback?inspectFixRepairReview(config.reviewFeedback,pkg.identity):null;
   const reviewer=validateCauseReviewer(config.reviewer,fixHostContexts(config),previous?35:34);
   if(previous)need(reviewer.excludedThreadIds.includes(previous.providerThreadId),'final_context_mismatch');
@@ -150,15 +166,30 @@ export function createFixFinalReview({reviewPackage,configuration,timeoutMs},{au
         events.push(event);return true;
       }catch(error){diagnostic=reviewDiagnostic(eventPhase,error,event);controller.abort();return false;}
     };
-    let transport;
+    let transport,verification,verificationInvalid=false,verificationError;
+    const onVerification=raw=>{
+      if(sealed||controller.signal.aborted)return false;
+      try{
+        need(config.reviewVerification&&verification===undefined&&!verificationInvalid,'review_verification_invalid');
+        const value=json(raw,1024*1024);
+        inspectReviewVerificationEvidence(value,{request,configuration:config.reviewVerification,providerThreadId:started});
+        verification=value;return undefined;
+      }catch(error){verificationInvalid=true;verificationError??=error;throw error;}
+    };
     try{
       timer=setTimeout(()=>{timedOut=true;controller.abort();},timeoutMs);
-      transport=Promise.resolve().then(()=>{need(!controller.signal.aborted,'cancelled');return run(request,{signal:controller.signal,onEvent,...(onReconciliation?{onReconciliation}:{})});});
-      const result=await Promise.race([interrupted,transport]);
+      transport=Promise.resolve().then(()=>{need(!controller.signal.aborted,'cancelled');return run(request,{signal:controller.signal,onEvent,...(config.reviewVerification?{onVerification}:{}),...(!config.reviewVerification&&onReconciliation?{onReconciliation}:{})});});
+      let result;try{result=await Promise.race([interrupted,transport]);}catch(error){
+        if(!verificationInvalid||controller.signal.aborted)throw error;
+      }
       need(!controller.signal.aborted,'interrupted');
-      const value={dispatchAt,observation:observation(result)};
+      if(verificationInvalid){result=verificationCallbackFailure(verificationError,{request,configuration:config.reviewVerification,providerThreadId:started});verification=undefined;}
+      const response=splitVerificationResult(result);
+      let value={dispatchAt,observation:observation(response.result),...(verification===undefined?{}:{verification}),
+        ...(response.verificationDiagnostic?{verificationDiagnostic:response.verificationDiagnostic}:{})};
       phase='result';
-      const inspection=inspectFixFinalResult(value,registration,config,started);
+      let inspection;({value,inspection}=inspectResultWithFailureDiagnostic(value,v=>inspectFixFinalResult(v,registration,config,started),
+        {request,configuration:config.reviewVerification,providerThreadId:started}));
       return {outcome:'observed',value,inspection,completionEligible:false};
     }catch(error){
       const reason=timedOut?'timeout':signal.aborted?'cancelled':'transport_incomplete';

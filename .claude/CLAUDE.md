@@ -27,6 +27,10 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - 安全扫描：`$cm-security` / `/cm-security`，分支差异加已跟踪未提交修改；`--all` 扫全部已跟踪文件。工具缺失保留缺口，不自动修复或安装；定点验证 `node --test scripts/cm-security.test.mjs`。
 - 分支影响分析：直接 `$cm-test` / `/cm-test`；默认比较当前提交与主分支，输出业务影响和回归重点，再检查单测覆盖率；“补齐单测”连续补测、重跑、审查。显式目标保留原模式。
 
+- cm-fix Claude 隔离验证：新运行可选 `reviewVerification`，`node scripts/cm-fix-review-preflight.mjs --config {运行定义.json} --model {Claude模型}` 生成诊断；限定 macOS 自包含命令，不迁移旧运行。详见 `skills/cm-fix/references/isolated-review.md`。
+
+- cm-fix 原运行更正：命令配置发现使用 `scripts/cm-fix-command-correction.mjs` 只读预览，随后独立授权 `prepare_command_correction`；已编写测试的限定回调类型更正使用 `scripts/cm-fix-test-type-correction.mjs` 和 `prepare_test_type_correction`。两者只追加原 owner 历史，原配置、审查次数与失败证据不改；详见 `skills/cm-fix/references/command-correction.md`、`test-type-correction.md`。
+
 - JS 修复入口: `node scripts/cm-fix-host.mjs --help`；同仓specs可显式配置`protectSpecs:true`，原权限/审查不变，宿主只回文本提案，由固定沙箱写入；QA子配置复用，详见`docs/js-workflow-control.md`
 
 - cm-ai 进度：当前任务真实阶段更新 `.cm-status.json`；单／批驱动检查边界及阻塞说明写 stderr。可选 guidance 只解释原恢复前提，不授予重试权限；保护模式不转发原始命令输出，并行状态卡旧完成不能抢占，详见 `docs/js-workflow-control.md`。
@@ -43,7 +47,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - 开发运行: 不适用（直接维护 Markdown 与脚本）
 - 构建: 不适用（无构建产物）
 - 测试: `bash scripts/test-shell-compat.sh && node --test scripts/cm-ai-admission.test.mjs scripts/cm-workflow-config.test.mjs scripts/cm-log-event.test.mjs scripts/cm-task-gate.test.mjs scripts/validate-test-cases.test.mjs && python3 scripts/test-task-gate.py`
-- JS 分组测试：`node scripts/cm-test-suite.mjs check` 核对唯一清单；`run ordinary`、`run native --concurrency 1`、`run history --concurrency 4` 分别跑普通、原生沙箱和历史组，自动隔离 CM 配置与日志目录，不执行安装。要求与 CI 分片命令见 `CONTRIBUTING.md`。
+- JS 分组测试：`node scripts/cm-test-suite.mjs check` 核对唯一清单；`run ordinary`、`run native --concurrency 1`、`run history --concurrency 4` 分别跑普通、原生沙箱和历史组，自动隔离 CM 配置与日志目录；安装兼容夹具只写各自临时目录，不改变用户安装。要求与 CI 分片命令见 `CONTRIBUTING.md`。
 - Lint/安全: `python3 scripts/validate-public-repo.py && python3 scripts/scan-public-safety.py`
 - Bash 语法: `find . -type f -name '*.sh' -print0 | xargs -0 -n1 /bin/bash -n`
 - Pi/BYZ package: `pi install git:github.com/kingxiaozhe/cm-workflow`

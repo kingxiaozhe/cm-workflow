@@ -1,3 +1,5 @@
+import {typeFiles} from './test-type-recovery.mjs';
+import {inspectTestTypeCorrection} from './test-type-correction.mjs';
 // Current-host minimal repair. The owner supplies prior admitted evidence and
 // durable registration; this capability neither runs providers nor completes a task.
 import {currentTestFiles,verifyExtensionFiles} from './test-extension.mjs';
@@ -10,9 +12,13 @@ import {inspectFixBaseline,fixBaselineFiles} from './baseline.mjs';
 import {digest,json,need,shape,validIdentity} from '../cm-ai/effect-contract.mjs';
 import {inspectFixRepairReview} from './final-review.mjs';
 
-// Fixed documentation targets are still required in the host-approved scope.
+// Fixed documentation targets, including subproject maps, still require the
+// host-approved scope and all developer/snapshot path protections.
 // They are not root-cause source material: new maps do not exist at cause Review.
-export const isFixMapPath=file=>typeof file==='string'&&/^docs\/codebase-context\/(?:00-index|01-overview|02-directory|03-architecture|04-api-routes|05-data-models|06-core-modules|07-business-logic|08-conventions|09-changelog)\.md$/.test(file);
+export function isFixMapPath(file){
+  try{validateDeveloperScope([file]);}catch{return false;}
+  return /^(?:[^/]+\/)*docs\/codebase-context\/(?:00-index|01-overview|02-directory|03-architecture|04-api-routes|05-data-models|06-core-modules|07-business-logic|08-conventions|09-changelog)\.md$/.test(file);
+}
 
 export function inspectFixRepair(raw,baselineRaw,{allowUnchanged=false}={}){
   const baseline=readReviewBaseline(baselineRaw),value=json(raw);
@@ -35,12 +41,19 @@ export function inspectFixRepair(raw,baselineRaw,{allowUnchanged=false}={}){
   return value;
 }
 
-export function verifyFixRepair({codeProject,specsRoot,baseline,result,allowUnchanged=false}){
+export function verifyFixRepair({codeProject,specsRoot,baseline,result,allowUnchanged=false,testTypeCorrection=null,allowTypeBefore=false}){
   const checked=inspectFixRepair(result,baseline,{allowUnchanged});
   const after=captureReviewBaseline({root:codeProject,specsRoot,identity:baseline.identity,version:baseline.version,scope:baseline.scope,requirements:baseline.requirements});
   const previous=new Map(baseline.files.map(file=>[file.path,file])),current=new Map(after.files.map(file=>[file.path,file]));
+  // One proof per fresh snapshot; unrelated inventory entries do not change it.
+  const c=testTypeCorrection?inspectTestTypeCorrection(testTypeCorrection):null;
+  const metadata=f=>{if(!f)return null;const {contentBase64,...rest}=f;return rest;};
   for(const file of new Set([...previous.keys(),...current.keys()])){
-    if(!baseline.scope.includes(file))need(digest(previous.get(file)??null)===digest(current.get(file)??null),'out_of_scope');
+    if(!baseline.scope.includes(file)){
+      const allowed=c&&file===c.path&&digest(metadata(previous.get(file)))===digest(metadata(c.before))
+        &&(digest(metadata(current.get(file)))===digest(metadata(c.after))||allowTypeBefore&&digest(metadata(current.get(file)))===digest(metadata(c.before)));
+      need(allowed||digest(previous.get(file)??null)===digest(current.get(file)??null),'out_of_scope');
+    }
   }
   const files=after.files.filter(file=>baseline.scope.includes(file.path)).map(({contentBase64,...metadata})=>metadata);
   need(digest(files)===digest(checked.files),'repair_evidence_changed');
@@ -48,7 +61,7 @@ export function verifyFixRepair({codeProject,specsRoot,baseline,result,allowUnch
 
 export function prepareFixRepair(options,{bridge,assertReviewReady,pinnedBaseline=null,protectedMode=false}){
   const config=json(options);shape(config,['codeProject','specsRoot','identity','scope','requirements','defect','diagnosis',
-    'redTest','baseline','redEvidence','beforeBaseline',...(Object.hasOwn(config,'reviewFeedback')?['reviewFeedback']:[]),...(Object.hasOwn(config,'testExtension')?['testExtension']:[])]);
+    'redTest','baseline','redEvidence','beforeBaseline',...(Object.hasOwn(config,'reviewFeedback')?['reviewFeedback']:[]),...(Object.hasOwn(config,'testExtension')?['testExtension']:[]),...(Object.hasOwn(config,'testTypeCorrection')?['testTypeCorrection']:[])]);
   const priorReview=Object.hasOwn(config,'reviewFeedback')?inspectFixRepairReview(config.reviewFeedback,config.identity):null;
   validIdentity(config.identity);validateDeveloperScope(config.scope);
   need(config.diagnosis.status==='diagnosed'&&Array.isArray(config.diagnosis.affectedPaths)
@@ -66,8 +79,8 @@ export function prepareFixRepair(options,{bridge,assertReviewReady,pinnedBaselin
   need(bridge&&typeof bridge.call==='function'&&typeof assertReviewReady==='function','repair_unavailable');
   const verifyTests=()=>{
     verifyExtensionFiles(config.codeProject,config.testExtension);
-    verifyFixRedEvidence(red,config.redTest,config.specsRoot,currentTestFiles(red.testFiles,config.testExtension));
-    need(digest(fixBaselineFiles(config.baseline))===digest(currentTestFiles(previous.testFiles,config.testExtension)),'baseline_files_changed');
+    verifyFixRedEvidence(red,config.redTest,config.specsRoot,currentTestFiles(typeFiles(red.testFiles,config.testTypeCorrection),config.testExtension));
+    need(digest(fixBaselineFiles(config.baseline))===digest(currentTestFiles(typeFiles(previous.testFiles,config.testTypeCorrection),config.testExtension)),'baseline_files_changed');
   };
   verifyTests();
   const capture=()=>captureReviewBaseline({root:config.codeProject,specsRoot:config.specsRoot,identity:config.identity,

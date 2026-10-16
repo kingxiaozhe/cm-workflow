@@ -34,6 +34,7 @@ export function createFixCausePackage({codeProject,defect,status,context=true}){
     reproduction:status.reproduction,diagnosis:status.diagnosis,learning:status.learning,
     ...(status.rediagnosis?{rediagnosis:rediagnosisPackage(status.rediagnosis)}:{}),
     ...(status.causeReviewCorrection?{correction:status.causeReviewCorrection}:{}),
+    ...(status.sourceRevision?{sourceRevision:status.sourceRevision}:{}),
     files:readReviewSourceFiles(codeProject,status.diagnosis.affectedPaths),...(contextFiles.length?{contextFiles}:{})},4*1024*1024);
   return json({...value,packageDigest:digest(value)},4*1024*1024);
 }
@@ -42,7 +43,12 @@ export function readFixCausePackage(raw){
   const value=json(raw,4*1024*1024);
   shape(value,['version','kind','identity','defect','reproduction','diagnosis','learning','files','packageDigest',
     ...(Object.hasOwn(value,'correction')?['correction']:[]),...(Object.hasOwn(value,'rediagnosis')?['rediagnosis']:[]),
-    ...(Object.hasOwn(value,'contextFiles')?['contextFiles']:[])]);
+    ...(Object.hasOwn(value,'contextFiles')?['contextFiles']:[]),...(Object.hasOwn(value,'sourceRevision')?['sourceRevision']:[])]);
+  if(value.sourceRevision){
+    shape(value.sourceRevision,['previousPackageDigest','correctionDigest','path','beforeSha256','afterSha256']);
+    const r=value.sourceRevision;need([r.previousPackageDigest,r.correctionDigest,r.beforeSha256,r.afterSha256].every(v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v))
+      &&r.beforeSha256!==r.afterSha256&&value.files.some(f=>f.path===r.path&&f.sha256===r.afterSha256),'invalid_package');
+  }
   if(value.rediagnosis){
     shape(value.rediagnosis,['historyDigest','priorPackageDigest','priorObservationDigest','reason','reviewFeedback']);
     need([value.rediagnosis.historyDigest,value.rediagnosis.priorPackageDigest,value.rediagnosis.priorObservationDigest].every(v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v)), 'invalid_package');

@@ -8,6 +8,7 @@ import {EventEmitter} from 'node:events';
 import {PassThrough} from 'node:stream';
 import {codexWorker} from '../runtime/js/cm-ai/worker-codex.mjs';
 import {claudeWorker,claudeReviewFingerprint} from '../runtime/js/cm-ai/worker-claude.mjs';
+import {ownedProcessCleanup} from '../runtime/js/cm-ai/owned-process-cleanup.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {readModelJson,writeModelJson} from '../runtime/js/cm-ai/model-configuration-file.mjs';
 const fixture=t=>{const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-security-fix-')));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));return root;};
@@ -68,4 +69,40 @@ test('Windows old reviewer keeps successful dispatch; termination uncertainty ca
     }
     assert.equal(kills,2);
   }finally{Object.defineProperty(process,'platform',original);}
+});
+
+// Signal delivery is asynchronous. The last member can be exiting until the
+// next event-loop turn; a probe must not run in the SIGKILL delivery turn.
+test('owned cleanup waits for asynchronous exit before its first group probe',{skip:process.platform==='win32'},async()=>{
+  const calls=[];let reaped=false;
+  const cleanup=ownedProcessCleanup({pid:12345},{graceMs:0,killProcess:(pid,signal)=>{
+    assert.equal(pid,-12345);calls.push(signal);
+    if(signal==='SIGKILL'){setTimeout(()=>{reaped=true;},0);return;}
+    if(signal===0){
+      if(!reaped)throw Object.assign(new Error('synthetic exit still pending'),{code:'EPERM'});
+      throw Object.assign(new Error('synthetic group gone'),{code:'ESRCH'});
+    }
+  }});
+  await cleanup();assert.equal(reaped,true);assert.deepEqual(calls,['SIGTERM','SIGKILL',0]);
+});
+
+for(const failureAt of ['SIGTERM','SIGKILL',0])test(`owned cleanup stops at permission refusal during ${failureAt}`,{skip:process.platform==='win32'},async()=>{
+  const calls=[];
+  const cleanup=ownedProcessCleanup({pid:12345},{graceMs:0,killProcess:(pid,signal)=>{
+    assert.equal(pid,-12345);calls.push(signal);
+    if(signal===failureAt)throw Object.assign(new Error('synthetic permission denied'),{code:'EPERM'});
+  }});
+  await assert.rejects(cleanup(),{code:'process_cleanup_unknown'});
+  assert.deepEqual(calls,['SIGTERM','SIGKILL',0].slice(0,['SIGTERM','SIGKILL',0].indexOf(failureAt)+1));
+  await assert.rejects(cleanup(),{code:'process_cleanup_unknown'});
+  assert.equal(calls.length,['SIGTERM','SIGKILL',0].indexOf(failureAt)+1);
+});
+
+test('owned cleanup keeps a live group unknown at its original deadline',{skip:process.platform==='win32'},async()=>{
+  const calls=[];
+  const cleanup=ownedProcessCleanup({pid:12345},{graceMs:0,killWaitMs:0,killProcess:(pid,signal)=>{
+    assert.equal(pid,-12345);calls.push(signal);
+  }});
+  await assert.rejects(cleanup(),{code:'process_cleanup_unknown'});
+  assert.deepEqual(calls,['SIGTERM','SIGKILL',0]);
 });

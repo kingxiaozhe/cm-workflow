@@ -17,6 +17,13 @@ export function ownedProcessCleanup(child,{graceMs=250,killWaitMs=750,killProces
     await pause(graceMs);
     if(!signal('SIGKILL'))return;
     const until=Date.now()+killWaitMs;
-    while(signal(0)){if(Date.now()>=until)throw error();await pause(25);}
+    // SIGKILL delivery is asynchronous. Give the group one polling turn to
+    // exit before probing; this wait consumes the existing deadline. An actual
+    // permission error still fails immediately, without another probe.
+    do {
+      await pause(Math.min(25,Math.max(0,until-Date.now())));
+      if(!signal(0))return;
+    } while(Date.now()<until);
+    throw error();
   })();
 }

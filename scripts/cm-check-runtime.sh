@@ -903,6 +903,22 @@ elif grep -Fq 'ls {SPECS_DIR}/.reviews/fix-{slug}-r*.md' "$ROOT/skills/cm-fix/SK
 else
   fail "cm-fix is missing the mechanical post-fix review evidence gate"
 fi
+# Fixed recovery producers, transport consumers and documentation stay paired.
+for correction in command-correction test-type-correction; do
+  operation="prepare_${correction//-/_}"
+  permission="--allow-${correction}"
+  require_file "runtime/js/cm-fix/${correction}.mjs"
+  require_file "scripts/cm-fix-${correction}.mjs"
+  require_file "skills/cm-fix/references/${correction}.md"
+  for surface in runtime/js/cm-ai/host-session.mjs runtime/js/cm-fix/host.mjs scripts/cm-fix-drive.mjs; do
+    grep -Fq "'${operation}'" "$ROOT/$surface" || fail "${surface} does not route ${operation}"
+  done
+  for surface in scripts/cm-fix-host.mjs scripts/cm-fix-drive.mjs; do
+    grep -Fq -e "$permission" "$ROOT/$surface" || fail "${surface} does not bind ${permission}"
+  done
+  grep -Fq "${correction}.md" "$ROOT/skills/cm-fix/references/js-host.md" ||
+    fail "cm-fix host manual does not link ${correction}"
+done
 require_file "skills/cm-fix/references/cross-boundary-debugging.md"
 grep -q "references/cross-boundary-debugging.md" "$ROOT/skills/cm-fix/SKILL.md" ||
   fail "cm-fix does not load its cross-boundary debugging reference"

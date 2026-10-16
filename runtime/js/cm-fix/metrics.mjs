@@ -7,6 +7,7 @@ import {readReviewSourceFiles} from '../cm-ai/review-package.mjs';
 import {eventsAt} from './log-events.mjs';
 import {id,need,validIdentity} from '../cm-ai/effect-contract.mjs';
 import {METRICS_HEADER as header,METRICS_SEPARATOR as separator,hasMetricsHeader} from '../cm-ai/metrics-table.mjs';
+import {runStepsSync} from './cooperative.mjs';
 const cell=value=>String(value).replaceAll('|','&#124;').replace(/[\r\n]+/g,' ');
 const same=(event,identity)=>event.workflow==='cm-fix'&&event.node==='FIX'&&event.run_id===identity.runId
   &&event.repository_id===identity.repositoryId&&event.task===identity.taskId;
@@ -35,14 +36,14 @@ export function fixMetricsRow({events,identity,dossierFile}){
   return {line:`| ${row.map(cell).join(' | ')} |`,completionEventId:end.event_id};
 }
 
-export function appendFixMetrics({specsRoot,identity,dossierFile},{assertOwned}){
+export function* appendFixMetricsSteps({specsRoot,identity,dossierFile},{assertOwned}){
   need(typeof assertOwned==='function','metrics_owner_required');
   const owned=()=>{
     const result=assertOwned();
     if(types.isPromise(result))Promise.prototype.then.call(result,()=>{},()=>{});
     need(result===undefined,'metrics_owner_required');
   };
-  owned();
+  yield;owned();
   need(path.isAbsolute(specsRoot)&&fs.realpathSync(specsRoot)===specsRoot,'unsupported_path');
   // Streamed: the log may exceed the 1 MiB review-material limit (see log-events.mjs).
   const events=eventsAt(specsRoot);
@@ -58,17 +59,29 @@ export function appendFixMetrics({specsRoot,identity,dossierFile},{assertOwned})
     const matches=content.split(/\r?\n/).filter(line=>line.startsWith(`| ${dossierFile} | fix |`));
     if(matches.length){
       need(matches.length===1&&matches[0]===record.line,'metrics_row_conflict');
+      yield;owned();
       const current=fs.lstatSync(target);need(!current.isSymbolicLink()&&current.dev===stat.dev&&current.ino===stat.ino&&current.size===stat.size,'metrics_file_changed');
-      owned();return {...record,path:target,deduplicated:true};
+      const [verified]=readReviewSourceFiles(specsRoot,['METRICS.md']);
+      need(Buffer.from(verified.contentBase64,'base64').equals(before),'metrics_file_changed');
+      return {...record,path:target,deduplicated:true};
     }
     if(before.length)need(hasMetricsHeader(content),'metrics_table_invalid');
     const bytes=Buffer.from((before.length?(content.endsWith('\n')?'':'\n'):`${header}\n${separator}\n`)+record.line+'\n');
-    need(before.length+bytes.length<=1024*1024,'limit_exceeded');owned();
+    need(before.length+bytes.length<=1024*1024,'limit_exceeded');yield;owned();
     const current=fs.lstatSync(target);need(!current.isSymbolicLink()&&current.dev===stat.dev&&current.ino===stat.ino&&current.size===stat.size,'metrics_file_changed');
+    const [pinned]=readReviewSourceFiles(specsRoot,['METRICS.md']);
+    need(Buffer.from(pinned.contentBase64,'base64').equals(before),'metrics_file_changed');
     // One append preserves existing bytes; a short/uncertain write is not success.
     need(fs.writeSync(fd,bytes)===bytes.length,'metrics_write_unknown');fs.fsyncSync(fd);
     const [written]=readReviewSourceFiles(specsRoot,['METRICS.md']),all=Buffer.from(written.contentBase64,'base64');
     need(all.subarray(0,before.length).equals(before)&&all.includes(bytes),'metrics_write_unknown');
-    owned();return {...record,path:target,deduplicated:false};
+    yield;owned();
+    const [verified]=readReviewSourceFiles(specsRoot,['METRICS.md']);
+    need(Buffer.from(verified.contentBase64,'base64').equals(all),'metrics_file_changed');
+    return {...record,path:target,deduplicated:false};
   }finally{if(fd!==undefined)fs.closeSync(fd);}
+}
+
+export function appendFixMetrics(options,control){
+  return runStepsSync(appendFixMetricsSteps(options,control));
 }

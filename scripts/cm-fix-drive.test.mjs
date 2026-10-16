@@ -8,6 +8,8 @@ import {fileURLToPath} from 'node:url';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
 import {openFixExecution} from '../runtime/js/cm-fix/execution.mjs';
 import {openExecutionStore} from '../runtime/js/cm-ai/execution-store.mjs';
+import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
+import {claudeReviewFingerprint} from '../runtime/js/cm-ai/worker-claude.mjs';
 import {startFixRun} from '../runtime/js/cm-fix/start.mjs';
 
 // Never write the real ~/.cm-workflow home or its global log from this suite.
@@ -149,4 +151,51 @@ test('revision repair requires its own answer before launching the host',{skip},
   const run=drive(f.plan({mode:'resume',permissions:['--allow-repair']}),'repair');
   assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/repair-edits-a2\.json/);
   assert.deepEqual(fs.readFileSync(statePath),before);
+});
+
+for(const [runtime,reviewRuntime] of [['codex','claude'],['claude','codex']])
+  test(`${runtime}/${reviewRuntime} driver preserves reviewer configuration on resume and refuses drift`,{skip},t=>{
+    const f=fixture(t),model='synthetic';
+    fs.writeFileSync(path.join(f.cwd,'.cm-workflow.json'),JSON.stringify({version:1,policies:{delivery:'diff'},
+      roles:{coder:{adapter:`${runtime}-cli`},reviewer:{adapter:`${reviewRuntime}-cli`}},runtimes:{available:'both'}}));
+    const review={model,disabledSkills:[],preflight:reviewRuntime==='claude'
+      ?{passed:true,provider:'claude',prompt_transport:'stdin',config_fingerprint:claudeReviewFingerprint({cwd:f.cwd,model})}
+      :{passed:true,cli_model:model,prompt_transport:'stdin',config_fingerprint:configFingerprint({cwd:f.cwd,model,disabledSkills:[],promptTransport:'stdin'})}};
+    fs.writeFileSync(path.join(f.root,'review.json'),JSON.stringify(review));
+    const selected={runtime,reviewRuntime,reviewConfig:'review.json'};
+    const created=drive(f.plan(selected),'status');assert.equal(created.status,0,created.stderr);
+    const statePath=path.join(f.archive,'.reviews','.execution','drive-demo','state.json');
+    const before=fs.readFileSync(statePath),saved=JSON.parse(before).records[0].payload;
+    assert.equal(saved.configuration.runtime??'codex',runtime);
+    assert.equal(saved.configuration.reviewRuntime,reviewRuntime);
+    assert.equal(saved.configuration.causeReview.provider,reviewRuntime);
+    const resumed=drive(f.plan({...selected,mode:'resume'}),'status');assert.equal(resumed.status,0,resumed.stderr);
+    assert.deepEqual(fs.readFileSync(statePath),before,'status resume must not dispatch or rewrite history');
+    const omitted=drive(f.plan({...selected,reviewRuntime:undefined,mode:'resume'}),'status');
+    assert.notEqual(omitted.status,0);assert.deepEqual(fs.readFileSync(statePath),before);
+    const switched=drive(f.plan({...selected,reviewRuntime:runtime,mode:'resume'}),'status');
+    assert.notEqual(switched.status,0);assert.deepEqual(fs.readFileSync(statePath),before);
+    review.model='different';fs.writeFileSync(path.join(f.root,'review.json'),JSON.stringify(review));
+    const stale=drive(f.plan({...selected,mode:'resume'}),'status');
+    assert.notEqual(stale.status,0);assert.match(stale.stderr,/tool_preflight_missing/);
+    assert.deepEqual(fs.readFileSync(statePath),before);
+    if(reviewRuntime==='codex')review.preflight.cli_model=review.model;
+    review.preflight.config_fingerprint=(reviewRuntime==='claude'?claudeReviewFingerprint:configFingerprint)({cwd:f.cwd,model:review.model,disabledSkills:[],promptTransport:'stdin'});
+    fs.writeFileSync(path.join(f.root,'review.json'),JSON.stringify(review));
+    const changed=drive(f.plan({...selected,mode:'resume'}),'status');
+    assert.notEqual(changed.status,0);assert.match(changed.stderr,/fingerprint_mismatch/);
+    assert.deepEqual(fs.readFileSync(statePath),before);
+  });
+
+test('driver refuses retrofitting an explicit reviewer onto a legacy same-tool run',{skip},t=>{
+  const f=fixture(t),model='synthetic';
+  fs.writeFileSync(path.join(f.cwd,'.cm-workflow.json'),JSON.stringify({version:1,runtimes:{available:'codex'}}));
+  fs.writeFileSync(path.join(f.root,'review.json'),JSON.stringify({model,disabledSkills:[],preflight:{passed:true,
+    cli_model:model,prompt_transport:'stdin',config_fingerprint:configFingerprint({cwd:f.cwd,model,disabledSkills:[],promptTransport:'stdin'})}}));
+  const created=drive(f.plan({reviewConfig:'review.json'}),'status');assert.equal(created.status,0,created.stderr);
+  const statePath=path.join(f.archive,'.reviews','.execution','drive-demo','state.json'),before=fs.readFileSync(statePath);
+  const attempted=drive(f.plan({mode:'resume',reviewRuntime:'codex',reviewConfig:'review.json'}),'status');
+  assert.notEqual(attempted.status,0);assert.match(attempted.stderr,/fingerprint_mismatch/);
+  assert.deepEqual(fs.readFileSync(statePath),before);
+  assert.equal(drive(f.plan({mode:'resume',reviewConfig:'review.json'}),'status').status,0);
 });

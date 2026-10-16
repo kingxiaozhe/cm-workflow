@@ -364,9 +364,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       let fixPermissions=[...fixLocalPermissions].filter(([flag])=>controlPolicy
         ?!['test-author','repair','cause-review','final-review'].some(name=>flag.endsWith('-'+name))
         :extra.has(flag)).map(([,permission])=>permission);
-      const fixRuntime=fix.configuration.runtime??'codex';
-      const fixModels=externalModels?selectExternalModels(externalModels,[fixRuntime]):null;
-      const fixReview=extra.has('--qa-fix-review-config')?reviewConfiguration(extra.get('--qa-fix-review-config'),fixModels?.providers[fixRuntime]??null):null;
+      const fixRuntime=fix.configuration.runtime??'codex',fixReviewRuntime=fix.configuration.reviewRuntime??fixRuntime;
+      const fixModels=externalModels?selectExternalModels(externalModels,[fixReviewRuntime]):null;
+      const fixReview=extra.has('--qa-fix-review-config')?reviewConfiguration(extra.get('--qa-fix-review-config'),fixModels?.providers[fixReviewRuntime]??null):null;
       if(controlPolicy&&fixReview)fixPermissions.push(...[...fixLocalPermissions]
         .filter(([flag])=>flag.endsWith('-cause-review')||flag.endsWith('-final-review')
           ||fix.configuration.testAuthor&&flag.endsWith('-test-author')||fix.configuration.repair&&flag.endsWith('-repair'))
@@ -374,10 +374,10 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       need(!fixPermissions.includes('--allow-test-author')||(fix.configuration.testAuthor&&fixReview),'test_author_configuration_required');
       need(!fixPermissions.includes('--allow-repair')||(fix.configuration.repair&&fixReview),'repair_configuration_required');
       const fixReviewHost=createFixReviewHost({codeProject:definition.codeProject,
-        hostContextId:argv[6],runtime:fix.configuration.runtime??'codex',
+        hostContextId:argv[6],runtime:fixRuntime,reviewRuntime:fix.configuration.reviewRuntime,verification:fix.configuration.reviewVerification??null,
         review:fixReview,permissions:fixPermissions,externalModels:fixModels,executionPolicy,specsDir:definition.specsDir});
       if(fixModels||executionPolicy){
-        if(fixModels&&fix.configuration.causeReview)need(fix.configuration.causeReview.requestedModel===fixModels.providers[fixRuntime].model&&fix.configuration.causeReview.provider===fixRuntime,'external_model_pair_conflict');
+        if(fixModels&&fix.configuration.causeReview)need(fix.configuration.causeReview.requestedModel===fixModels.providers[fixReviewRuntime].model&&fix.configuration.causeReview.provider===fixReviewRuntime,'external_model_pair_conflict');
         if(fixReview){
           // Preserve explicit reviewer contexts/exclusions; changing them changes the durable run.
           need(!fix.configuration.causeReview||digest(fix.configuration.causeReview)===digest(fixReviewHost.reviewer),'qa_fix_review_configuration_mismatch');

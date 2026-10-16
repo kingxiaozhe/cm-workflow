@@ -1,4 +1,5 @@
 import {createProviderUsageCapture} from './provider-usage.mjs';
+import {VERIFICATION_TOOLS,readReviewVerification} from '../cm-fix/review-verification-contract.mjs';
 import {externalEffort} from './external-models.mjs';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
@@ -15,15 +16,24 @@ export function claudeBaseArgs(model,effort=null) {
     '--permission-mode','dontAsk','--no-chrome','--no-session-persistence',
     '--prompt-suggestions','false'];
 }
-export function claudeReviewArgs(model,effort=null) {
+export function claudeReviewArgs(model,effort=null,verification=null,transport=null) {
   const args=claudeBaseArgs(model,effort);
+  if(verification){
+    readReviewVerification(verification);
+    // safe-mode suppresses even explicitly configured MCP servers. Restricted
+    // mode keeps native tools disabled while allowing this fixed stdio server.
+    args[args.indexOf('--safe-mode')]='--restricted';
+    args.push('--settings',JSON.stringify({disableAllHooks:true,enabledPlugins:{},autoMemoryEnabled:false}));
+    args[args.indexOf('--mcp-config')+1]=transport?.mcpConfig??'CM_ISOLATED_REVIEW_TOOLS';
+    args.push('--allowedTools',...VERIFICATION_TOOLS);
+  }
   const schema=JSON.parse(readFileSync(new URL('./review-result.schema.json',import.meta.url),'utf8'));
   // Claude's schema engine does not accept the draft-2020-12 metadata.
   delete schema.$schema;delete schema.$id;
   return [...args,'--json-schema',JSON.stringify(schema)];
 }
-export function claudeReviewFingerprint({cwd,model,cli='claude',effort=null}) {
-  return createHash('sha256').update(JSON.stringify({cwd,cli,args:claudeReviewArgs(model,effort),
+export function claudeReviewFingerprint({cwd,model,cli='claude',effort=null,verification=null}) {
+  return createHash('sha256').update(JSON.stringify({cwd,cli,args:claudeReviewArgs(model,effort,verification),...(verification?{verification:readReviewVerification(verification)}:{}),
     environmentPolicy:1,promptTransport:'stdin'})).digest('hex');
 }
 export function claudeEnvironment() {
@@ -39,16 +49,17 @@ export function claudePreflightMatches(receipt,options) {
 // Diagnostic receipt is NOT authorization. Only the original V3 owner may dispatch this worker.
 // A matching diagnostic receipt remains required separately from the V3 grant.
 export function claudeWorker({cwd,model,preflight,cli='claude',timeoutMs=60000,spawnProcess=spawn,effort=null,
-  killProcess=(pid,signal)=>process.kill(pid,signal),onNotice=null,onUsage=null,onUsageClaim=null}) {
-  const args=claudeReviewArgs(model,effort);
+  killProcess=(pid,signal)=>process.kill(pid,signal),onNotice=null,onUsage=null,onUsageClaim=null,verification=null,verificationTransport=null}) {
+  const args=claudeReviewArgs(model,effort,verification,verificationTransport);
   if (!Number.isSafeInteger(timeoutMs)||timeoutMs<1) throw new Error('invalid_timeout');
   let used=false;
   return async (request,{signal,onEvent,onTerminal})=>{
     if (process.platform==='win32') return {status:'blocked',code:'unsupported_process_cleanup'};
     if (used) return {status:'blocked',code:'worker_dispatch_limit'};
-    if (!claudePreflightMatches(preflight,{cwd,model,cli,effort})) {
+    if (!claudePreflightMatches(preflight,{cwd,model,cli,effort,verification})) {
       return {status:'blocked',code:'tool_preflight_missing'};
     }
+    if (verification&&!verificationTransport?.mcpConfig) return {status:'blocked',code:'review_verification_transport_missing'};
     if (signal.aborted) return {status:'cancelled',code:'cancelled_before_dispatch'};
     if (typeof request?.prompt!=='string') return {status:'failed',code:'invalid_prompt'};
     used=true;
@@ -56,7 +67,7 @@ export function claudeWorker({cwd,model,preflight,cli='claude',timeoutMs=60000,s
     try{onUsageClaim?.();}catch{}
     return new Promise(resolve=>{
       let child;
-      try { child=spawnProcess(cli,args,{cwd,env:claudeEnvironment(),stdio:['pipe','pipe','pipe'],detached:true}); }
+      try { child=spawnProcess(cli,args,{cwd:verificationTransport?.cwd??cwd,env:claudeEnvironment(),stdio:['pipe','pipe','pipe'],detached:true}); }
       catch { usage.complete();resolve({status:'failed',code:'spawn_failed'});return; }
       let buffer='', bytes=0, failure=null, settled=false, timedOut=false, killTimer, pendingClose;
       let providerThread=null,providerTerminal=false,failedTerminal=false,receiptInvalid=false,failureDetail=null;
@@ -73,7 +84,7 @@ export function claudeWorker({cwd,model,preflight,cli='claude',timeoutMs=60000,s
         if(event.event==='thread.started')providerThread=event.provider_thread;
         if(event.event==='turn.completed')providerTerminal=true;
         onEvent(event);
-      },onNotice);
+      },onNotice,verification?VERIFICATION_TOOLS:[]);
       const stop=code=>{
         if(!['cancelled','timeout','provider_failed','reviewer_auth_failed','reviewer_billing_error',
           'reviewer_rate_limited','reviewer_server_error','reviewer_model_not_found','reviewer_api_error'].includes(code))receiptInvalid=true;
@@ -139,7 +150,7 @@ export function claudeWorker({cwd,model,preflight,cli='claude',timeoutMs=60000,s
         if (buffer.trim()) accept(buffer);
         pendingClose=async()=>{
         settled=true;clean();
-        if(typeof onTerminal==='function')try{await cleanupGroup();}catch{failure='process_cleanup_unknown';}
+        if(verification||typeof onTerminal==='function')try{await cleanupGroup();}catch{failure='process_cleanup_unknown';}
         usage.complete();
         onEvent({event:'process_closed',exit_code:code,signal:exitSignal,timed_out:timedOut});
         if(failure==='process_cleanup_unknown'){resolve({status:'failed',code:failure});return;}

@@ -1,3 +1,4 @@
+import {setImmediate as yieldHost} from 'node:timers/promises';
 // Shared original cm-fix action dispatch for standalone and parent hosts.
 import {inspectFixQaSource} from './qa-source.mjs';
 import {startFixRun} from './start.mjs';
@@ -5,12 +6,15 @@ import {digest,need,shape} from '../cm-ai/effect-contract.mjs';
 import {fixArchiveRoot} from './layout.mjs';
 import {fixProgress} from './progress.mjs';
 
-export function createFixHost({owner,config,runtime='codex',permissions=[],authority=null,finalAuthority=null,recoveryInvocationId=null}){
+export function createFixHost({owner,config,runtime='codex',reviewRuntime,permissions=[],authority=null,finalAuthority=null,recoveryInvocationId=null,verificationRecoveryAuthorization=null}){
   const extra=new Set(permissions);
     const host={async handle(request){
       shape(request,['requestId','operation',...(request.operation==='resume'?['evidenceFiles']:[]),
         ...(['abandon_step','abandon_review','rediagnose','rerun_blocked_step'].includes(request.operation)&&Object.hasOwn(request,'reason')?['reason']:[]),
         ...(request.operation==='prepare_revision'&&Object.hasOwn(request,'tests')?['tests']:[]),
+        ...(request.operation==='prepare_test_type_correction'?['expected','testTypeCorrection','previousInvocationStopped','reason']:[]),
+        ...(request.operation==='prepare_command_correction'?['expected','commandCorrection','previousInvocationStopped','reason']:[]),
+        ...(request.operation==='prepare_verification_recovery'?['expected','previousInvocationStopped','reason',...(Object.hasOwn(request,'sourceCorrection')?['sourceCorrection']:[])]:[]),
         ...(request.operation==='reconcile_review'?['invocationId']:[]),
         ...(request.operation==='recover_final_review'?['invocationId','packageDigest','previousInvocationStopped','reason']:[])]);
       if(config.qaSource&&!['status','cancel','completion_evidence'].includes(request.operation))
@@ -21,9 +25,23 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
         const recoveryAllowed=!status.finalReviewRecovery||extra.has('--allow-final-review-recovery')
           &&(status.finalReviewRecoveryCount<=1&&recoveryInvocationId===null
             ||recoveryInvocationId===status.finalReviewRecovery.invocationId);
-        return {...status,progress:fixProgress(status,config,{finalReviewAllowed:finalAuthority!==null
-          &&extra.has('--allow-final-review')&&recoveryAllowed})};
+        const bounded=status.verificationRecovery,phase=bounded?.target.phase;
+        const boundedWaiting=bounded&&!bounded.used&&status.stage===`${phase}_required`;
+        const boundedFailed=bounded?.used&&status.stage==='unknown'&&(
+          phase==='cause_review'&&status.causeReview?.observationStatus!=='completed'
+          ||phase==='final_review'&&status.finalReview?.observationStatus!=='completed'
+          ||phase==='revision_final_review'&&status.revisionFinalReview?.observationStatus!=='completed');
+        const progress=fixProgress(status,config,{finalReviewAllowed:finalAuthority!==null
+          &&extra.has('--allow-final-review')&&recoveryAllowed&&(!boundedWaiting||verificationRecoveryAuthorization===bounded.authorizationDigest)});
+        if(boundedFailed)Object.assign(progress,{blocker:'fix_verification_recovery_used',requiresUser:true,
+          nextAction:'本次有界验证续审已消耗；保留失败历史，不再放弃、续审或重建运行绕过。'});
+        if(boundedWaiting&&verificationRecoveryAuthorization!==bounded.authorizationDigest)Object.assign(progress,{blocker:'fix_verification_recovery_authorization_required',requiresUser:true,
+          nextAction:'重新启动原 run，显式传入 --verification-recovery-authorization 和本次准备记录摘要，并保留原审查权限；准备操作不授权派发。'});
+        return {...status,progress};
       }
+      if(request.operation==='prepare_test_type_correction')return owner.prepareTestTypeCorrection({authorized:extra.has('--allow-test-type-correction'),expected:request.expected,declaration:request.testTypeCorrection,previousInvocationStopped:request.previousInvocationStopped,reason:request.reason});
+      if(request.operation==='prepare_command_correction')return owner.prepareCommandCorrection({authorized:extra.has('--allow-command-correction'),expected:request.expected,declaration:request.commandCorrection,previousInvocationStopped:request.previousInvocationStopped,reason:request.reason});
+      if(request.operation==='prepare_verification_recovery')return owner.prepareVerificationRecovery({authorized:extra.has('--allow-verification-recovery'),sourceCorrectionAuthorized:extra.has('--allow-source-correction'),expected:request.expected,...(Object.hasOwn(request,'sourceCorrection')?{sourceCorrection:request.sourceCorrection}:{}),previousInvocationStopped:request.previousInvocationStopped,reason:request.reason});
       if(request.operation==='reconcile_review')return owner.reconcileReview({invocationId:request.invocationId});
       if(request.operation==='recover_final_review')return owner.recoverFinalReview({
         authorized:extra.has('--allow-final-review-recovery'),recoveryInvocationId,invocationId:request.invocationId,
@@ -34,7 +52,7 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
       if(request.operation==='abandon_review')return owner.abandonReview({authorized:extra.has('--allow-abandon-review'),reason:request.reason});
       if(request.operation==='rediagnose')return owner.rediagnose({authorized:extra.has('--allow-rediagnosis'),reason:request.reason});
       if(request.operation==='completion_evidence')return owner.completionEvidence();
-      if(request.operation==='finish')return owner.finish({authorized:extra.has('--allow-finish')});
+      if(request.operation==='finish')return owner.finish({authorized:extra.has('--allow-finish'),cooperative:true});
       if(request.operation==='author_tests')return owner.authorTests({authorized:extra.has('--allow-test-author')});
       if(request.operation==='repair')return owner.repair({authorized:extra.has('--allow-repair')});
       if(request.operation==='revision_test_check')return owner.runRevisionTests({authorized:extra.has('--allow-regression')});
@@ -50,32 +68,35 @@ export function createFixHost({owner,config,runtime='codex',permissions=[],autho
       if(request.operation==='walkthrough')return owner.runWalkthrough({authorized:extra.has('--allow-walkthrough')});
       if(request.operation==='post_review_regression')return owner.runRegression({authorized:extra.has('--allow-regression'),postReview:true});
       if(request.operation==='final_review'){
-        if(!['final_review_required','revision_final_review_required'].includes(owner.status().stage))return owner.reviewFinal();
-        if(owner.status().stage==='final_review_required'&&owner.status().finalReviewRecovery){
+        const current=owner.status();
+        if(!['final_review_required','revision_final_review_required'].includes(current.stage))return owner.reviewFinal({verificationRecoveryAuthorization});
+        if(current.stage==='final_review_required'&&current.finalReviewRecovery){
           need(extra.has('--allow-final-review-recovery'),'fix_review_recovery_authorization_required');
-          if(owner.status().finalReviewRecoveryCount>1||recoveryInvocationId!==null)
-            need(recoveryInvocationId===owner.status().finalReviewRecovery.invocationId,'fix_review_recovery_authorization_required');
+          if(current.finalReviewRecoveryCount>1||recoveryInvocationId!==null)
+            need(recoveryInvocationId===current.finalReviewRecovery.invocationId,'fix_review_recovery_authorization_required');
         }
         need(finalAuthority!==null,'review_configuration_required');
         const pkg=owner.finalReviewPackage();
+        // Run transport timers before signing; reviewFinal rechecks the live package.
+        await yieldHost();
         await finalAuthority.hostDecisionProvider.decide({identity:pkg.identity,packageDigest:pkg.packageDigest},new AbortController().signal);
-        return owner.reviewFinal();
+        return owner.reviewFinal({verificationRecoveryAuthorization});
       }
       if(request.operation==='red_test')return owner.runRedTest({authorized:extra.has('--allow-red-test')});
       if(request.operation==='baseline')return owner.captureBaseline({authorized:extra.has('--allow-baseline')});
       if(request.operation==='cause_review_package')return owner.causeReviewPackage();
       if(request.operation==='cause_review'){
-        if(!['cause_review_required','observation_cause_review_correction_required'].includes(owner.status().stage))return owner.reviewCause();
+        if(!['cause_review_required','observation_cause_review_correction_required'].includes(owner.status().stage))return owner.reviewCause({verificationRecoveryAuthorization});
         need(authority!==null,'review_configuration_required');
         const pkg=owner.causeReviewPackage();
         await authority.hostDecisionProvider.decide({identity:config.identity,packageDigest:pkg.packageDigest},new AbortController().signal);
-        return owner.reviewCause();
+        return owner.reviewCause({verificationRecoveryAuthorization});
       }
       if(request.operation==='cancel')return owner.cancel();
       if(request.operation==='advance'){
         need(extra.has('--allow-reproduction'),'fix_execution_authorization_required');
         if(['reproduce','diagnose'].includes(owner.status().stage))startFixRun({specsRoot:fixArchiveRoot(config.specsRoot,config.reproduction.cwd),
-          identity:config.identity,configuration:{reproduction:config.reproduction,...(config.specsRoot==null?{archiveMode:'bare'}:{}),...(runtime==='claude'?{runtime}:{})}});
+          identity:config.identity,configuration:{reproduction:config.reproduction,...(config.specsRoot==null?{archiveMode:'bare'}:{}),...(runtime==='claude'?{runtime}:{}),...(reviewRuntime!==undefined?{reviewRuntime}:{})}});
         return owner.advance({authorized:true});
       }
       need(false,'fix_operation_unavailable');
