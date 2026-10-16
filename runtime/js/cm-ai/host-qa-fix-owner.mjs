@@ -46,7 +46,7 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
     if(fixedTemplate)fixedTemplate=inherited;else definition=inherited;
   }
   if(externalModels){
-    const target=fixedTemplate??definition,runtime=target.configuration.runtime??'codex';
+    const target=fixedTemplate??definition,runtime=target.configuration.reviewRuntime??target.configuration.runtime??'codex';
     const selected=selectExternalModels(externalModels,[runtime]);
     if(!fixedTemplate&&!target.configuration.externalModels)need(false,'external_model_legacy_child_inheritance_forbidden');
     if(target.configuration.externalModels)need(digest(target.configuration.externalModels)===digest(selected),'external_model_pair_conflict');
@@ -121,7 +121,7 @@ export function createQaFixOwnerHost({parent,reopenParent,hostContextId,parentHo
         let actionResult;
         if(advancing||acting){
           const host=createFixHost({owner:child,config:{...definition.configuration,specsRoot:definition.specsRoot,identity:definition.identity},
-            runtime:definition.configuration.runtime??'codex',permissions:[...permissions,'--allow-reproduction'],...fixAuthorities,recoveryInvocationId});
+            runtime:definition.configuration.runtime??'codex',reviewRuntime:definition.configuration.reviewRuntime,permissions:[...permissions,'--allow-reproduction'],...fixAuthorities,recoveryInvocationId});
           const action=advancing?{operation:'advance'}:{operation:value.fixOperation,
             ...(value.fixOperation==='reconcile_review'?{invocationId:value.invocationId}:{}),
             ...(QA_FIX_REASONED.includes(value.fixOperation)?{reason:value.reason}:{}),

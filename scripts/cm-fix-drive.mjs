@@ -19,6 +19,7 @@
 //     "hostContext": "<当前真实会话 ID>",
 //     "originalHostContext": "<旧会话 ID>", 只在换会话恢复时填
 //     "runtime": "codex" | "claude",        缺省 codex
+//     "reviewRuntime": "codex" | "claude",  可选；省略沿用 runtime，恢复不能改
 //     "reviewConfig": "review.json",         可选
 //     "permissions": ["--allow-red-test", ...],   原样传给宿主，不另造一套词
 //     "answers": "answers",                  答案目录；abandon_step / abandon_review 可省略
@@ -34,7 +35,15 @@
 //   retrospective.json  {status, candidates, reason}
 //   test-edits.json     {"仓库内路径": "本目录下的内容文件"}；修订轮用 test-edits-a2.json
 //   repair-edits.json   同上；修订轮用 repair-edits-a2.json
+//
+// 受控 Jest 启动更正：先用 cm-fix-command-correction.mjs --config FIX_CONFIG
+// --jest-config mobile/package.json 只读预览；再用原 PLAN 执行 prepare_command_correction。
+// PLAN 须 mode:resume、完整 expected、commandCorrection:{kind:'jest-config-path',path}、
+// previousInvocationStopped:true、reason 和 permissions:['--allow-command-correction']。
+// 只追加 --config，保留原配置/历史，每 run 一次；准备不跑测试或 provider。
+// 详见 skills/cm-fix/references/command-correction.md。新 run 会预检 Jest 配置发现。
 import fs from 'node:fs';
+import {assertJestConfigurationDiscovery} from '../runtime/js/cm-fix/jest-command-correction.mjs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {fixEvidenceNames} from '../runtime/js/cm-fix/layout.mjs';
@@ -60,13 +69,15 @@ const ASKS={
 const READ_ONLY=new Set(['status','final_review_package','completion_evidence','cause_review_package']);
 const KNOWN=new Set([...Object.keys(ASKS),...READ_ONLY,'cancel','handoff','publish_review','check_n5',
   'publish_dossier','learning_writeback','walkthrough','finish','final_review','cause_review',
-  'reconcile_review','recover_final_review','abandon_step','abandon_review','rerun_blocked_step','resume','revision_test_check']);
+  'prepare_test_type_correction','prepare_command_correction','prepare_verification_recovery','reconcile_review','recover_final_review','abandon_step','abandon_review','rerun_blocked_step','resume','revision_test_check']);
 
 function loadPlan(){
   const {operation,plan,base}=loadPlanFile({name:'cm-fix-drive.mjs',known:KNOWN});
   const abandoning=['abandon_step','abandon_review','rerun_blocked_step'].includes(operation);
-  requireFields(plan,['config','cwd','mode','hostContext','permissions',...(abandoning||operation==='reconcile_review'?[]:['answers'])]);
+  requireFields(plan,['config','cwd','mode','hostContext','permissions',...(abandoning||['reconcile_review','prepare_test_type_correction','prepare_command_correction','prepare_verification_recovery','recover_final_review'].includes(operation)?[]:['answers'])]);
   if(!['create','resume'].includes(plan.mode))stop(2,'mode 只能是 create 或 resume');
+  for(const key of ['runtime','reviewRuntime'])
+    if(Object.hasOwn(plan,key)&&!['codex','claude'].includes(plan[key]))stop(2,`${key} 只能是 codex 或 claude`);
   if(!Array.isArray(plan.permissions))stop(2,'permissions must be an array');
   for(let i=0;i<plan.permissions.length;i++){
     const flag=plan.permissions[i];
@@ -75,6 +86,11 @@ function loadPlan(){
       plan.permissions[++i]=path.resolve(base,plan.permissions[i]);
     }else if(!['--execution-optimizations','--external-models'].includes(flag)&&!/^--allow-[a-z-]+$/.test(flag))stop(2,'invalid permissions');
   }
+  if(operation==='prepare_test_type_correction'&&(plan.mode!=='resume'||!plan.permissions.includes('--allow-test-type-correction')||!plan.expected||!plan.testTypeCorrection||plan.previousInvocationStopped!==true||typeof plan.reason!=='string'||!plan.reason.trim()))stop(2,'prepare_test_type_correction requires resume, expected, testTypeCorrection, stopped confirmation, reason and --allow-test-type-correction');
+  if(operation==='prepare_command_correction'&&(plan.mode!=='resume'||!plan.permissions.includes('--allow-command-correction')||!plan.expected||!plan.commandCorrection||plan.previousInvocationStopped!==true||typeof plan.reason!=='string'||!plan.reason.trim()))stop(2,'prepare_command_correction requires resume, expected, commandCorrection, stopped confirmation, reason and --allow-command-correction');
+  if(operation==='prepare_verification_recovery'&&(plan.mode!=='resume'||!plan.permissions.includes('--allow-verification-recovery')||!plan.expected||plan.previousInvocationStopped!==true||typeof plan.reason!=='string'||!plan.reason.trim()))stop(2,'prepare_verification_recovery 需要 resume、expected、previousInvocationStopped:true、reason 和 --allow-verification-recovery');
+  if(Object.hasOwn(plan,'sourceCorrection')&&(operation!=='prepare_verification_recovery'||plan.mode!=='resume'||!plan.permissions.includes('--allow-source-correction')))stop(2,'sourceCorrection 仅用于 resume 的 prepare_verification_recovery，并须 --allow-source-correction');
+  if(Object.hasOwn(plan,'verificationRecoveryAuthorization')&&!/^[a-f0-9]{64}$/.test(plan.verificationRecoveryAuthorization))stop(2,'verificationRecoveryAuthorization 必须是准备记录的摘要');
   if(operation==='reconcile_review'&&(plan.mode!=='resume'||typeof plan.invocationId!=='string'||!plan.invocationId))stop(2,'reconcile_review requires resume and original invocationId');
   const abandonFlag=operation==='abandon_review'?'--allow-abandon-review':operation==='rerun_blocked_step'?'--allow-rerun-blocked-step':'--allow-abandon';
   if(abandoning&&(!plan.permissions.includes(abandonFlag)||typeof plan.reason!=='string'
@@ -157,6 +173,7 @@ export function preflight({operation,plan,paths}){
     return map;
   });
   if(plan.mode==='create'){
+    try{assertJestConfigurationDiscovery(config);}catch(e){stop(2,`${e.code}: Jest needs an explicit --config path before this run is frozen; --rootDir is not config discovery.`);}
     // 建运行前的体检：宿主也会查，但这里把「是哪个文件」提前说清。
     const cwd=path.resolve(plan.cwd);
     for(const file of [...(config.testAuthor?.requirements??[]),...(config.repair?.requirements??[]),
@@ -183,7 +200,10 @@ function hostArgs({plan,paths}){
   return [HOST,'serve','--config',paths.config,'--mode',plan.mode,'--host-context',plan.hostContext,'--allow-reproduction',
     ...(plan.originalHostContext?['--original-host-context',plan.originalHostContext]:[]),
     '--runtime',plan.runtime??'codex',
+    ...(Object.hasOwn(plan,'reviewRuntime')?['--review-runtime',plan.reviewRuntime]:[]),
     ...(Object.hasOwn(plan,'inputLimit')?['--input-limit',String(plan.inputLimit)]:[]),
+    ...(plan.verificationRecoveryAuthorization?['--verification-recovery-authorization',plan.verificationRecoveryAuthorization]:[]),
+    ...(plan.finalReviewRecoveryInvocation?['--final-review-recovery-invocation',plan.finalReviewRecoveryInvocation]:[]),
     ...(paths.review?['--review-config',paths.review]:[]),
     ...plan.permissions];
 }
@@ -233,7 +253,9 @@ function main(){
   const {answers,round}=preflight(loaded);
   const {operation,plan,paths}=loaded;
   driveHost({host:HOST,args:hostArgs(loaded).slice(1),cwd:path.resolve(plan.cwd),operation,
-    request:{...(operation==='reconcile_review'?{invocationId:plan.invocationId}:{}),...(['abandon_step','abandon_review','rediagnose','rerun_blocked_step'].includes(operation)?{reason:plan.reason}:{}),
+    request:{...(operation==='prepare_test_type_correction'?{expected:plan.expected,testTypeCorrection:plan.testTypeCorrection,previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),...(operation==='prepare_command_correction'?{expected:plan.expected,commandCorrection:plan.commandCorrection,previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),...(operation==='prepare_verification_recovery'?{expected:plan.expected,...(Object.hasOwn(plan,'sourceCorrection')?{sourceCorrection:plan.sourceCorrection}:{}),previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),
+      ...(operation==='recover_final_review'?{invocationId:plan.invocationId,packageDigest:plan.packageDigest,previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),
+      ...(operation==='reconcile_review'?{invocationId:plan.invocationId}:{}),...(['abandon_step','abandon_review','rediagnose','rerun_blocked_step'].includes(operation)?{reason:plan.reason}:{}),
       ...(operation==='prepare_revision'&&Object.hasOwn(plan,'revisionTests')?{tests:plan.revisionTests}:{})},
     answers,paths:{...paths,round},answerFor});
 }

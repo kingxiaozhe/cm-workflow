@@ -6,10 +6,11 @@ import {checkN5} from '../../../scripts/cm-task-gate.mjs';
 import {readReviewSourceFiles} from '../cm-ai/review-package.mjs';
 import {digest,need} from '../cm-ai/effect-contract.mjs';
 import {publishFixDossier} from './dossier.mjs';
-import {appendFixMetrics,fixMetricsRow} from './metrics.mjs';
+import {appendFixMetricsSteps,fixMetricsRow} from './metrics.mjs';
 import {logFixEvent} from './start.mjs';
 import {loadConfig} from '../../../scripts/cm-workflow-config.mjs';
 import {fixDossierRelative} from './layout.mjs';
+import {runStepsSync,runStepsCooperatively} from './cooperative.mjs';
 
 export {eventsAt} from './log-events.mjs';
 import {eventsAt} from './log-events.mjs';
@@ -29,17 +30,18 @@ function lessonRecord(identity,status){
     +JSON.stringify(candidates,null,2).split('\n').map(line=>`    ${line}`).join('\n')+'\n';
   return {marker,block};
 }
-function appendLessons({specsRoot,identity,status},verify){
+function* appendLessonsSteps({specsRoot,identity,status},verify){
   if(!status.retrospective.content.candidates.length)return;
   const {marker,block}=lessonRecord(identity,status);
-  const target=path.join(specsRoot,'LESSONS.md');verify();let fd;
+  const target=path.join(specsRoot,'LESSONS.md');yield;verify();let fd;
   try{
     fd=fs.openSync(target,fs.constants.O_RDWR|fs.constants.O_CREAT|fs.constants.O_APPEND|(fs.constants.O_NOFOLLOW??0),0o600);
     const before=fs.fstatSync(fd);need(before.isFile()&&before.nlink===1&&before.size<=1024*1024,'fix_lessons_invalid');
     const content=fs.readFileSync(fd).toString('utf8');
     if(content.includes(marker)){need(content.split(marker).length===2&&content.includes(block),'fix_lessons_conflict');return;}
     const bytes=Buffer.from((content.endsWith('\n')||!content?'':'\n')+block);need(before.size+bytes.length<=1024*1024,'limit_exceeded');
-    verify();const current=fs.lstatSync(target);need(!current.isSymbolicLink()&&current.dev===before.dev&&current.ino===before.ino&&current.size===before.size,'fix_lessons_changed');
+    yield;verify();const current=fs.lstatSync(target);need(!current.isSymbolicLink()&&current.dev===before.dev&&current.ino===before.ino&&current.size===before.size,'fix_lessons_changed');
+    need(fs.readFileSync(fd).toString('utf8')===content,'fix_lessons_changed');
     need(fs.writeSync(fd,bytes)===bytes.length,'fix_lessons_write_unknown');fs.fsyncSync(fd);
     const [written]=readReviewSourceFiles(specsRoot,['LESSONS.md']);need(Buffer.from(written.contentBase64,'base64').toString('utf8').includes(block),'fix_lessons_write_unknown');
   }finally{if(fd!==undefined)fs.closeSync(fd);}
@@ -73,7 +75,9 @@ export function fixCompletionProjection({specsRoot,identity,status,configuration
   }catch{return {...status,completionHistory,...(status.stage==='closeout_required'?{stage:'closeout_incomplete'}:{})};}
 }
 
-export function finishFix({specsRoot,identity,configuration,status,registeredAt},{assertOwned}){
+export function finishFix(options,guard){return runStepsSync(finishFixSteps(options,guard));}
+export function finishFixCooperatively(options,guard){return runStepsCooperatively(finishFixSteps(options,guard));}
+export function* finishFixSteps({specsRoot,identity,configuration,status,registeredAt},{assertOwned}){
   need(['closeout_required','closeout_incomplete','completed'].includes(status.stage),'fix_closeout_unavailable');
   requireCloseoutEvidence(status);
   const feature=`fix-${identity.taskId.slice(6)}`,reviewsDir=path.join(specsRoot,'.reviews');
@@ -98,9 +102,9 @@ export function finishFix({specsRoot,identity,configuration,status,registeredAt}
       reviewsDir,feature,task:identity.taskId,projectRoot:configuration.reproduction.cwd,requireLearning:true});
     need(digest(gate)===digest(status.n5.gate),'n5_evidence_changed');
   };
-  verify();
+  yield;verify();
   const dossier=publishFixDossier({specsRoot,identity,configuration,status:{...status,stage:'closeout_required',completionEligible:false},registeredAt,final:true});
-  appendLessons({specsRoot,identity,status},verify);
+  yield* appendLessonsSteps({specsRoot,identity,status},verify);
   const bare=configuration.archiveMode==='bare';
   const data={result:'completed',package_digest:status.n5.packageDigest,dossier_file:fixDossierRelative(configuration,path.basename(dossier.path)),
     dossier_sha256:dossier.sha256,walkthrough_result:'passed'};
@@ -109,12 +113,12 @@ export function finishFix({specsRoot,identity,configuration,status,registeredAt}
     event:'task_done',event_id:'preflight',at:new Date().toISOString(),...data};
   const events=eventsAt(specsRoot,configuration),prior=events.filter(row=>matches(row,identity)&&row.event==='task_done');
   if(!bare)fixMetricsRow({events:prior.length?events:[...events,provisional],identity,dossierFile:path.basename(dossier.path)});
-  verify();
+  yield;verify();
   const task=logFixEvent({specsRoot,identity,configuration,event:'task_done',detail:'JS defect verified and dossier finalized',data});
-  const metrics=bare?null:appendFixMetrics({specsRoot,identity,dossierFile:path.basename(dossier.path)},{assertOwned:verify});
-  verify();
+  const metrics=bare?null:yield* appendFixMetricsSteps({specsRoot,identity,dossierFile:path.basename(dossier.path)},{assertOwned:verify});
+  yield;verify();
   logFixEvent({specsRoot,identity,configuration,event:'run_done',detail:'JS defect closeout completed',data:{...data,
     completion_event_id:task.event_id,...(bare?{metrics_skipped:'no_specs'}:{metrics_row_digest:digest(metrics.line)})}});
-  verify();
+  yield;verify();
   return fixCompletionProjection({specsRoot,identity,configuration,status:{...status,stage:'closeout_required',completionEligible:false}});
 }

@@ -39,9 +39,12 @@ export function startFixRun({specsRoot,identity,configuration}){
   log('run_start','Initial JS fix stages started',{});
   log('task_start','JS defect task started',{});
   for(const [role,route] of Object.entries(routes)){
-    log('decision',`Current conversation fix role: ${role}`,{role,adapter:route.adapter,
-      requested_model:route.model,source:route.source,purpose:'fix',route_state:route.route_state},'route');
-    if(!['current-runtime','local-tool'].includes(route.route_state))
+    const selected=role==='reviewer'&&configuration.reviewRuntime;
+    // Selection is not evidence of dispatch; the invocation records establish that later.
+    log('decision',selected?'Independent review tool selected; dispatch has not occurred':`Current conversation fix role: ${role}`,
+      {role,adapter:route.adapter,requested_model:route.model,source:route.source,purpose:'fix',route_state:route.route_state,
+        ...(selected?{review_runtime:configuration.reviewRuntime,outcome:'selected_not_dispatched'}:{})},'route');
+    if(!selected&&!['current-runtime','local-tool'].includes(route.route_state))
       log('degrade','Requested fix adapter not invoked; current conversation only',
         {role,adapter:route.adapter,route_state:route.route_state,outcome:'current_conversation_only'});
   }

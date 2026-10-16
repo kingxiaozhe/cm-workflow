@@ -24,12 +24,15 @@
    可选 `redTest`、`baseline`、`testAuthor`、`repair`、`walkthrough`、`applicableAgentFiles`
    必须先按 `../../../runtime/js/cm-fix/` 中对应模块的实际合同配置，不能临场发明字段。
    首次启动前固定所需配置；持久运行不支持通过改配置文件解除阻断。
+   新运行会预检 Jest 从命令 cwd 向上能否发现配置；`--rootDir` 不替代 `--config`。
+   子项目配置须在创建前明确写入命令。旧运行已因该启动错误卡在 `red_test_not_confirmed` 时，
+   仅使用[受控 Jest 配置发现更正](command-correction.md)，保留原配置与失败历史。
    地图同步按 `../../codebase-context/references/writeback.md` 在启动前确定文档路径并纳入
    已批准的 `repair.scope`；`fix_repair` 内完成回写，缺范围不在宿主外补写。
    本次参考且保留路径的现有地图加入 `repair.requirements` 作为只读审核材料；新建或已批准删除/改名
    的地图只进写 scope，由真实 diff 的 after/before 携带；不能为审核把只读材料变成写权限。
 4. 根因/最终 reviewer 配置及诊断沿用 `../../../scripts/cm-ai-host.mjs` 的
-   `readConversationReviewConfiguration` 和对应 runtime preflight 合同；诊断输入是该脚本
+   `readConversationReviewConfiguration` 和所选 reviewer 的 preflight 合同；诊断输入是该脚本
    所要求的 cm-ai 配置，不把 fix 配置直接当作诊断配置。诊断不等于真实模型可用或外发批准。
    Claude 不能复用 Codex receipt 或非空 disabledSkills；不手造诊断、grant 或 Review 结果。
 5. 启动参数只包含当前已获授权的操作。`--allow-reproduction` 授权实际复现，不是只读开关。
@@ -44,6 +47,45 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-fix-host.mjs" serve \
 
 这是已授权复现的最小启动示意，不是完整修复配置。Claude 改为 `--runtime claude`；
 重开使用 `--mode resume`，它与下文观测恢复消息 `resume` 不是同一操作。
+
+### 审查工具与宿主分离
+
+`--runtime` 始终填写当前真实执行宿主。新运行需要另一工具审查时，显式添加
+`--review-runtime codex|claude`；根因审查和最终审查共用该选择，测试编写、修复与本地命令仍走原通道。
+宿主用共享角色解析器核对代码项目的 coder/reviewer 与这两个工具一致；不匹配时报
+`fix_review_runtime_mismatch`，不自动换工具。显式选择时，即使本次尚不派发审查，也须提供匹配的审查配置与 preflight。
+省略 `--review-runtime` 保留旧同工具 fresh-context 行为，不因角色声明变化静默改写历史运行。
+
+例如当前 Codex 执行、项目 reviewer 为 Claude 时，保留原 FIX_CONFIG，在创建命令中使用：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-fix-host.mjs" serve \
+  --config "{FIX_CONFIG}" --mode create --host-context "{真实当前Codex会话ID}" \
+  --allow-reproduction --runtime codex --review-runtime claude \
+  --review-config "{CLAUDE_REVIEW_CONFIG}"
+```
+
+审查配置必须由 Claude 对应诊断产生，使用实际 Claude model 与空 `disabledSkills`；
+Codex preflight 不能证明 Claude 就绪。反向组合使用 `--runtime claude --review-runtime codex`，
+并使用 Codex 的诊断与审查配置。诊断只证明启动配置匹配，不证明模型已成功审查。
+实际派发仍须已有 `--allow-cause-review` / `--allow-final-review` 与相应阶段、包和模型范围。
+
+驾驶员 PLAN 对应填写 `"runtime":"codex"`、`"reviewRuntime":"claude"` 与
+`"reviewConfig":"{CLAUDE_REVIEW_CONFIG}"`；`reviewRuntime` 是 PLAN 字段，不放进 `permissions`。
+新建成功后恢复只把 `mode` 改为 `resume`，保留原 `runtime`、`reviewRuntime` 和审查配置。
+原运行省略 `reviewRuntime`，恢复仍须省略；原运行显式选择过，则不得改换、补入或删除该字段。
+审查配置已绑定持久指纹；不能通过修改配置更换 provider/model，不能清空审查历史或重置轮次。
+重新诊断、审查失败后的受控重试与换会话恢复都沿用同一选择，仍受下文原恢复条件约束。
+
+缺少审查配置或对应 preflight 时先补齐所选工具的真实诊断；`tool_preflight_missing` 不能通过
+复制另一工具的凭证解除。CLI 不存在、认证失败、超时或返回不合合同的结果时，报告该工具的实际失败，
+保留原运行并按对应恢复入口处理；创建了进程或角色为 `declared-adapter` 都不等于审查完成。
+`fingerprint_mismatch` 应核对创建时保存的配置，不修改 journal 或换工具继续。
+
+**能力边界：** 默认 Claude worker 保持无工具审查。新建运行可使用
+[隔离检查与变异验证](isolated-review.md) 的 `reviewVerification`，由 Claude 调用三个固定工具，宿主记录真实检查与恢复证据。
+旧运行不自动升级。自包含命令实跑不证明 Xcode、模拟器或真机测试可用；材料或工具链不可访问时明确失败，不降为同工具或手工流程。
+已持久化 `review_verification_evidence` 且需要额外一次续审时，使用[隔离验证失败的有界恢复](verification-recovery.md)。先只读检查资格；准备不调用 Claude，派发另需明确授权。
 
 ### 用驾驭员，不要手搓中间人
 
@@ -105,7 +147,7 @@ standalone cm-fix 可在原配置、原 run、原 task attempt 下显式 `rediag
 在原fix启动配置显式设置`"protectSpecs":true`，QA子运行则设在原owner/template的configuration内。
 这不增加权限：原复现、编写测试、修复、回归、Review、Learning写回和finish仍分别授权。
 复现/红测/存量基线/修后及审后回归/命令走查使用同一原生specs只读沙箱；日志、证据和Learning仍由原owner负责。
-固定命令执行器使用本机Codex sandbox，不调用模型；Claude宿主的推理和Review仍属Claude，不借用Codex身份或诊断。
+固定命令执行器使用本机Codex sandbox，不调用模型；宿主推理仍属真实 runtime，Review 属于选定的 reviewRuntime（省略时沿用 runtime），不互借身份或诊断。
 
 沙箱里 `network={enabled=false}`，而这个开关同时管着 unix domain socket 的 listen。于是**凡是要开本地
 IPC socket 的命令都会失败**，典型的是 `tsx` CLI（启动时在 TMPDIR 建 `<pid>.pipe`，报
@@ -153,6 +195,10 @@ beforeSha256严格复制expected中该路径的摘要（原不存在则null）�
 经过根因审查的运行，放弃修复后本轮残留不再判为 `cause_review_drift`；修订轮重做沿用固定基线，不再因残留报 `fix_revision_source_mismatch`。旧运行没有 `baselinePinned` 的记录按原样回放。
 
 ### 合法阻断结论的带理由重跑
+
+已编写测试缺少回调参数结构类型，且真实红灯、修后红测和冻结 TypeScript 失败满足限定合同时，
+先走[原运行测试类型更正](test-type-correction.md)。该一次性入口保留原失败记录，完成后仍为
+`regression_blocked`；随后才按本节单独授权 `rerun_blocked_step` 与 `regression`，不直接改测试。
 
 `test_author_blocked`、`repair_blocked`（会话答 blocked）、`regression_blocked`（回归结论 inconclusive，含视觉 BLOCKED）、`post_review_regression_blocked`、`walkthrough_blocked`
 （证据缺、环境不符、清理失败）以及它们的 `revision_` 形式不是应答失败，但处理好原因后可在原运行重跑这一步：以 `--allow-rerun-blocked-step` 启动 cm-fix 宿主，

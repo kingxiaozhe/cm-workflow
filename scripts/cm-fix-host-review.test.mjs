@@ -19,8 +19,10 @@ process.env.CM_WORKFLOW_HOME=path.join(isolatedWorkflowHome,'user');
 process.env.CM_WORKFLOW_LOG_HOME=path.join(isolatedWorkflowHome,'logs');
 after(()=>fs.rmSync(isolatedWorkflowHome,{recursive:true,force:true}));
 
-for(const runtime of ['codex','claude']){
-test(`${runtime} CLI cause review requires opt-in and matching diagnostic, then resumes without dispatch`,async()=>{
+for(const [runtime,reviewRuntime] of [['codex',null],['claude',null],['codex','claude'],['claude','codex']]){
+const selectedReview=reviewRuntime??runtime;
+const workflow={version:1,policies:{delivery:'diff'},...(reviewRuntime?{roles:{coder:{adapter:`${runtime}-cli`},reviewer:{adapter:`${reviewRuntime}-cli`}},runtimes:{available:'both'}}:{})};
+test(`${runtime}/${selectedReview} CLI cause review requires opt-in and matching diagnostic, then resumes without dispatch`,async()=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fix-host-review-')));
   const cwd=path.join(root,'code'),specsRoot=path.join(root,'specs');fs.mkdirSync(cwd);fs.mkdirSync(specsRoot);
   fs.writeFileSync(path.join(cwd,'value.mjs'),'export const value=1;');
@@ -30,10 +32,11 @@ test(`${runtime} CLI cause review requires opt-in and matching diagnostic, then 
       expectedFailure:{exitCode:3,outputIncludes:'BUG'},timeoutMs:1000}}));
   const review={model:'synthetic-model',disabledSkills:[],preflight:{passed:true,cli_model:'synthetic-model',prompt_transport:'stdin',
     config_fingerprint:configFingerprint({cwd,model:'synthetic-model',disabledSkills:[],promptTransport:'stdin'})}};
-  if(runtime==='claude')review.preflight={passed:true,provider:'claude',prompt_transport:'stdin',config_fingerprint:claudeReviewFingerprint({cwd,model:review.model})};
+  if(selectedReview==='claude')review.preflight={passed:true,provider:'claude',prompt_transport:'stdin',config_fingerprint:claudeReviewFingerprint({cwd,model:review.model})};
   fs.writeFileSync(reviewConfig,JSON.stringify({...review,preflight:{...review.preflight,passed:false}}));
   const args=['serve','--config',config,'--mode','create','--host-context','fixture-host','--allow-reproduction','--review-config',reviewConfig];
   if(runtime==='claude')args.push('--runtime','claude');
+  if(reviewRuntime){args.push('--review-runtime',reviewRuntime);fs.writeFileSync(path.join(cwd,'.cm-workflow.json'),JSON.stringify(workflow));}
   let calls=0;
   const reviewWorkerFactory=()=>async({prompt},{onEvent})=>{
     calls++;const data=JSON.parse(prompt.split('<cm-review-data-json>\n')[1]);
@@ -47,7 +50,7 @@ test(`${runtime} CLI cause review requires opt-in and matching diagnostic, then 
     const discard=new Writable({write(c,e,cb){cb();}});
     assert.equal(await main([...args,'--allow-cause-review'],{error:discard,reviewWorkerFactory}),1);
     assert.equal(fs.existsSync(path.join(specsRoot,'.reviews')),false);assert.equal(calls,0);
-    if(runtime==='claude'){
+    if(selectedReview==='claude'){
       const wrong={passed:true,cli_model:review.model,prompt_transport:'stdin',
         config_fingerprint:configFingerprint({cwd,model:review.model,disabledSkills:[],promptTransport:'stdin'})};
       fs.writeFileSync(reviewConfig,JSON.stringify({...review,preflight:wrong}));
@@ -88,13 +91,13 @@ test(`${runtime} CLI cause review requires opt-in and matching diagnostic, then 
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 
-test(`${runtime} CLI stages independently authorize writes and synthetic final review, then resume without redispatch`,{timeout:FIXTURE_TIMEOUT_MS},async()=>{
+test(`${runtime}/${selectedReview} CLI stages independently authorize writes and synthetic final review, then resume without redispatch`,{timeout:FIXTURE_TIMEOUT_MS},async()=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fix-host-author-')));
   const cwd=path.join(root,'code'),specsRoot=path.join(root,'specs');fs.mkdirSync(cwd);fs.mkdirSync(specsRoot);
   fs.writeFileSync(path.join(cwd,'value.mjs'),'export const value=1;');
   const config=path.join(root,'config.json'),reviewConfig=path.join(root,'review.json');
   fs.writeFileSync(path.join(cwd,'existing.mjs'),"import {value} from './value.mjs';if(typeof value!=='number')process.exit(1)");
-  fs.writeFileSync(path.join(cwd,'.cm-workflow.json'),JSON.stringify({version:1,policies:{delivery:'diff'}}));
+  fs.writeFileSync(path.join(cwd,'.cm-workflow.json'),JSON.stringify(workflow));
   fs.writeFileSync(config,JSON.stringify({specsRoot,identity:{repositoryId:'fixture',runId:'fix-author-cli',taskId:'T-FIX-author',attempt:1},
     defect:'Synthetic',reproduction:{cwd,command:[process.execPath,'-e',"console.error('BUG');process.exit(1)"],expectedFailure:{exitCode:1,outputIncludes:'BUG'},timeoutMs:2000},
     redTest:{cwd,testFiles:['regression.mjs'],command:[process.execPath,'regression.mjs'],expectedFailure:{exitCode:1,outputIncludes:'BUG'},timeoutMs:2000},
@@ -103,9 +106,10 @@ test(`${runtime} CLI stages independently authorize writes and synthetic final r
     baseline:{cwd,testFiles:['existing.mjs'],commands:[{id:'existing',command:[process.execPath,'existing.mjs']}],timeoutMs:2000}}));
   const review={model:'synthetic-model',disabledSkills:[],preflight:{passed:true,cli_model:'synthetic-model',prompt_transport:'stdin',
     config_fingerprint:configFingerprint({cwd,model:'synthetic-model',disabledSkills:[],promptTransport:'stdin'})}};
-  if(runtime==='claude')review.preflight={passed:true,provider:'claude',prompt_transport:'stdin',config_fingerprint:claudeReviewFingerprint({cwd,model:review.model})};
+  if(selectedReview==='claude')review.preflight={passed:true,provider:'claude',prompt_transport:'stdin',config_fingerprint:claudeReviewFingerprint({cwd,model:review.model})};
   const args=['serve','--config',config,'--mode','create','--host-context','fixture-host','--allow-reproduction','--review-config',reviewConfig];
   if(runtime==='claude')args.push('--runtime','claude');
+  if(reviewRuntime){args.push('--review-runtime',reviewRuntime);fs.writeFileSync(path.join(cwd,'.cm-workflow.json'),JSON.stringify(workflow));}
   let providerCalls=0,writes=0,repairs=0,retrospectives=0;const reviewWorkerFactory=()=>async({prompt},{onEvent})=>{
     providerCalls++;
     const data=JSON.parse(prompt.split('<cm-review-data-json>\n')[1]);assert(data.reviewPackage.handoff);
@@ -191,6 +195,9 @@ test(`${runtime} CLI stages independently authorize writes and synthetic final r
     assert.doesNotThrow(()=>checkN4(gateOptions));
     const bytes=fs.readFileSync(reviewPath),state=JSON.parse(fs.readFileSync(path.join(reviewsDir,'.execution','fix-author-cli','state.json')));
     const saved=state.records[0].payload;
+    assert.equal(saved.configuration.runtime??'codex',runtime);
+    assert.equal(saved.configuration.causeReview.provider,selectedReview);
+    assert.equal(saved.configuration.reviewRuntime,reviewRuntime??undefined);
     let owner=openFixExecution({specsRoot,identity:saved.identity,configuration:saved.configuration,create:false});
     try{
       const closed=owner.status();assert.equal(closed.stage,'closeout_required');assert.equal(closed.n5.gate.outcome,'approved');
@@ -229,10 +236,15 @@ test(`${runtime} CLI stages independently authorize writes and synthetic final r
         const expected=resolveRole(loadConfig({projectRoot:cwd}),row.role,runtime);
         assert.equal(row.adapter,expected.adapter);assert.equal(row.route_state,expected.route_state);
       }
+      if(reviewRuntime){
+        assert.equal(routes.find(row=>row.role==='reviewer').review_runtime,reviewRuntime);
+        assert.equal(routes.find(row=>row.role==='reviewer').outcome,'selected_not_dispatched');
+        assert(!logs.some(row=>row.event==='degrade'&&row.role==='reviewer'));
+      }
       const reviews=logs.filter(row=>row.event==='review');assert.equal(reviews.length,1);
       assert.equal(reviews[0].node,'FIX');assert.equal(reviews[0].result,'approved');assert.equal(reviews[0].package_digest,walked.n5.packageDigest);
-      assert.equal(reviews[0].provider,runtime);
-      assert(bytes.toString().includes(`reviewer: ${runtime}-cli`));
+      assert.equal(reviews[0].provider,selectedReview);
+      assert(bytes.toString().includes(`reviewer: ${selectedReview}-cli`));
       assert.equal(logs.filter(row=>row.event==='task_start').length,1);
       assert(!logs.some(row=>['task_done','run_done'].includes(row.event)));
       fs.appendFileSync(reviewPath,'conflicting bytes');assert.equal(owner.status().stage,'final_review_evidence_required');

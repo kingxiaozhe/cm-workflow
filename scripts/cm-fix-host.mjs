@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {assertJestConfigurationDiscovery} from '../runtime/js/cm-fix/jest-command-correction.mjs';
 // Opt-in fix stages; cause review dispatch needs explicit launch authority and matching diagnostics.
 import {readFixExecutionPolicy} from '../runtime/js/cm-ai/execution-policy.mjs';
 import {readFixExternalModels} from '../runtime/js/cm-ai/external-group-models.mjs';
@@ -13,9 +14,12 @@ import {id,json,need,shape,digest} from '../runtime/js/cm-ai/effect-contract.mjs
 import {readConversationReviewConfiguration} from './cm-ai-host.mjs';
 import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
 
-const usage='cm-fix-host.mjs serve --config PATH --mode create|resume --host-context ID --allow-reproduction [--original-host-context ID] [--execution-optimizations] [--external-models [--external-models-config PATH]] [--runtime codex|claude] [--input-limit BYTES] [--review-config PATH] [--allow-cause-review] [--allow-rediagnosis] [--allow-final-review] [--allow-test-author] [--allow-red-test] [--allow-baseline] [--allow-repair] [--allow-regression] [--allow-learning-writeback]\nCodex or Claude current-host operations: rediagnose, prepare_revision, revision_test_check, advance, cause_review_package, cause_review, author_tests, red_test, baseline, repair, regression, retrospective, learning_writeback, handoff, final_review_package, final_review, publish_review, check_n5, post_review_regression, status, cancel. Runtime defaults to codex; claude uses its own matching diagnostic receipt and cannot reuse Codex preflight or disabledSkills settings. Runtime selection is bound to recovery; switching providers requires a separate run. This selects existing adapters, not permission to call them. Each write/check needs its respective launch flag and configuration. Test authoring, repair, cause and final review dispatch require matching existing stdin diagnostics; diagnostic alone is not authorization. Passing regression stops at handoff_required. The read-only retrospective operation yields handoff_ready or learning_writeback_required. learning_writeback requires its own flag, preserves project instructions and includes AGENTS.md in the review scope; it does not authorize provider calls. handoff publishes the fixed specs-local handoff with Learning evidence and moves to final_review_required; no provider is called and no task is completed. final_review_package is read-only and returns the final content-bound review package. final_review requires its own flag and matching diagnostics; observations do not complete the task. publish_review projects the registered result into the existing review file; it does not dispatch or complete tasks. check_n5 runs the original Learning-aware gate; post_review_regression requires --allow-regression and reaches closeout_required, not completion.';
+const usage='cm-fix-host.mjs serve --config PATH --mode create|resume --host-context ID --allow-reproduction [--original-host-context ID] [--execution-optimizations] [--external-models [--external-models-config PATH]] [--runtime codex|claude] [--review-runtime codex|claude] [--input-limit BYTES] [--review-config PATH] [--allow-cause-review] [--allow-rediagnosis] [--allow-final-review] [--allow-test-author] [--allow-red-test] [--allow-baseline] [--allow-repair] [--allow-regression] [--allow-learning-writeback]\nCodex or Claude current-host operations: rediagnose, prepare_revision, revision_test_check, advance, cause_review_package, cause_review, author_tests, red_test, baseline, repair, regression, retrospective, learning_writeback, handoff, final_review_package, final_review, publish_review, check_n5, post_review_regression, status, cancel. Runtime is the actual execution host and defaults to codex. Optional --review-runtime selects the independent reviewer using the declared coder/reviewer roles; omission preserves legacy same-tool routing. Review configuration and diagnostics must match the selected reviewer; Claude cannot reuse Codex preflight or disabledSkills settings. Explicit review runtime is bound to recovery; adding, removing or switching it on an existing run is refused. This selects existing adapters, not permission to call them. Each write/check needs its respective launch flag and configuration. Test authoring, repair, cause and final review dispatch require matching existing stdin diagnostics; diagnostic alone is not authorization. Passing regression stops at handoff_required. The read-only retrospective operation yields handoff_ready or learning_writeback_required. learning_writeback requires its own flag, preserves project instructions and includes AGENTS.md in the review scope; it does not authorize provider calls. handoff publishes the fixed specs-local handoff with Learning evidence and moves to final_review_required; no provider is called and no task is completed. final_review_package is read-only and returns the final content-bound review package. final_review requires its own flag and matching diagnostics; observations do not complete the task. publish_review projects the registered result into the existing review file; it does not dispatch or complete tasks. check_n5 runs the original Learning-aware gate; post_review_regression requires --allow-regression and reaches closeout_required, not completion.';
 
 export async function main(argv=process.argv.slice(2),{input=process.stdin,output=process.stdout,error=process.stderr,reviewWorkerFactory=null}={}){
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('prepare_test_type_correction requires resume and --allow-test-type-correction with the latest complete expected target, testTypeCorrection declaration, stopped confirmation and reason. It inserts one runtime-equivalent callback parameter type into an owner-authored test; see test-type-correction.md. It preserves the original red/baseline and leaves regression_blocked for the separately authorized rerun_blocked_step and regression.\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Bounded isolated verification recovery: inspect with cm-fix-verification-recovery.mjs (no writer/provider); prepare_verification_recovery requires --allow-verification-recovery, expected target, stopped confirmation and reason. It runs frozen checks in isolation and prepares at most one continuation per run. Later cause_review/final_review requires --verification-recovery-authorization DIGEST plus its original review permission. Optional type-import-split sourceCorrection additionally requires --allow-source-correction in resume mode; preview uses --source-correction JSON_PATH on the read-only inspector. The same one-run recovery budget and original dispatch permissions apply. See skills/cm-fix/references/verification-recovery.md.\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Bounded Jest command correction: inspect read-only with cm-fix-command-correction.mjs --config PATH --jest-config PROJECT_PACKAGE_JSON. prepare_command_correction requires --mode resume --allow-command-correction, the latest complete expected, commandCorrection:{kind:"jest-config-path",path}, previousInvocationStopped:true and reason. It appends only --config to eligible original Jest argv and one history record per run; original configuration, fingerprint and failure records remain unchanged. Preparation executes no check or provider. Red test, baseline, regression, post-review regression and command walkthrough then use the recorded overlay under their original permissions and review gates. Drift stops continuation. New runs precheck Jest configuration discovery. See skills/cm-fix/references/command-correction.md.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Optional --execution-optimizations freezes policy v1 for new runs only; recovery retains the original policy and legacy runs reject retrofit. See docs/execution-optimizations.md.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Design-change escalation: approved cause_review reaches design_change_required when redTest is configured (test_author_required first if needed); author_tests/red_test keep their original flags and evidence checks. Confirmed red reaches escalation_required, never baseline/repair/regression. Non-visual runs without redTest reach escalation_required directly after approval and record why no failing test exists. Visual runs require a matching visual redTest with testFiles:[] and must complete the visual red step before escalation; opening without it fails with fix_visual_configuration_required. publish_dossier saves an 升级立项 dossier; finish requires --allow-finish, records run_done phase escalation/result escalated and closes the owner with escalationRunEnded:true. Retained tests become acceptance checks for the suggested $cm-prd --change. Resume the same run after a crash; conflicting exits fail with fix_escalation_exit_conflict. Terminal escalated is not completed: no task_done, metrics, repair or parent QA completion.\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('Omit specsRoot or use null for a bare project: the same owner stores archives in docs/fixes and reviews in docs/fixes/.reviews, uses the original no-specs log mode, and skips METRICS. No specs skeleton is created. Visual-only reproduction/redTest may use kind:visual with cwd, timeoutMs, before:{path,sha256,kind:screenshot|video,description}, reason explaining why automated red cannot be written, environment, steps and expected; redTest also has testFiles:[]. No testAuthor or fake red/green command. Repair/regression/review/finish permissions remain mandatory. qa_browser returns actual after carrier metadata; missing evidence blocks.\n');
@@ -37,7 +41,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(['create','resume'].includes(argv[4]),'invalid_arguments');id(argv[6]);
     const extra=new Map();
     for(let index=8;index<argv.length;index++){
-      const flag=argv[index];need(!extra.has(flag)&&['--execution-optimizations','--external-models','--external-models-config','--runtime','--input-limit','--review-config','--original-host-context','--final-review-recovery-invocation','--allow-qa-fix','--allow-rediagnosis','--allow-cause-review','--allow-final-review','--allow-final-review-recovery','--allow-abandon','--allow-abandon-review','--allow-rerun-blocked-step','--allow-red-test','--allow-baseline','--allow-test-author','--allow-repair','--allow-regression','--allow-learning-writeback','--allow-walkthrough','--allow-finish'].includes(flag),'invalid_arguments');
+      const flag=argv[index];need(!extra.has(flag)&&['--execution-optimizations','--external-models','--external-models-config','--runtime','--review-runtime','--input-limit','--review-config','--original-host-context','--final-review-recovery-invocation','--verification-recovery-authorization','--allow-verification-recovery','--allow-source-correction','--allow-command-correction','--allow-test-type-correction','--allow-qa-fix','--allow-rediagnosis','--allow-cause-review','--allow-final-review','--allow-final-review-recovery','--allow-abandon','--allow-abandon-review','--allow-rerun-blocked-step','--allow-red-test','--allow-baseline','--allow-test-author','--allow-repair','--allow-regression','--allow-learning-writeback','--allow-walkthrough','--allow-finish'].includes(flag),'invalid_arguments');
       if(flag.startsWith('--allow-')||flag==='--external-models'||flag==='--execution-optimizations')extra.set(flag,true);
       else{need(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments');extra.set(flag,argv[++index]);}
     }
@@ -46,9 +50,17 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     // while --host-context stays the real current session for every live decision.
     const originalHostContext=extra.get('--original-host-context')??null;
     if(originalHostContext!==null){id(originalHostContext);need(argv[4]==='resume','fix_original_host_context_unavailable');}
+    const verificationRecoveryAuthorization=extra.get('--verification-recovery-authorization')??null;
+    if(verificationRecoveryAuthorization!==null)need(argv[4]==='resume'&&/^[a-f0-9]{64}$/.test(verificationRecoveryAuthorization),'fix_verification_recovery_authorization_required');
+    if(extra.has('--allow-test-type-correction'))need(argv[4]==='resume','fix_test_type_correction_unavailable');
+    if(extra.has('--allow-command-correction'))need(argv[4]==='resume','fix_command_correction_unavailable');
+    if(extra.has('--allow-verification-recovery'))need(argv[4]==='resume','fix_verification_recovery_unavailable');
+    if(extra.has('--allow-source-correction'))need(argv[4]==='resume'&&extra.has('--allow-verification-recovery'),'fix_source_correction_authorization_required');
     const recoveryInvocationId=extra.get('--final-review-recovery-invocation')??null;
     if(recoveryInvocationId!==null){id(recoveryInvocationId);need(extra.has('--allow-final-review-recovery'),'fix_review_recovery_authorization_required');}
     const runtime=extra.get('--runtime')??'codex';need(['codex','claude'].includes(runtime),'invalid_runtime');
+    const reviewRuntime=extra.get('--review-runtime'),selectedReviewRuntime=reviewRuntime??runtime;
+    need(['codex','claude'].includes(selectedReviewRuntime),'invalid_runtime');
     // Transport only, like the cm-ai hosts: lines and tool replies share one limit.
     const inputLimit=parseHostInputLimit(extra.get('--input-limit'));
     let review;
@@ -56,14 +68,16 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(stat.isFile()&&!stat.isSymbolicLink()&&stat.size<=64*1024,'invalid_fix_config');
     const config=json(JSON.parse(fs.readFileSync(argv[2],'utf8')),64*1024);
     shape(config,['identity','defect','reproduction',...(Object.hasOwn(config,'specsRoot')?['specsRoot']:[]),...(Object.hasOwn(config,'applicableAgentFiles')?['applicableAgentFiles']:[]),
+      ...(Object.hasOwn(config,'reviewVerification')?['reviewVerification']:[]),
       ...(Object.hasOwn(config,'protectSpecs')?['protectSpecs']:[]),
       ...(Object.hasOwn(config,'qaSource')?['qaSource']:[]),
       ...(Object.hasOwn(config,'redTest')?['redTest']:[]),...(Object.hasOwn(config,'baseline')?['baseline']:[]),
       ...(Object.hasOwn(config,'testAuthor')?['testAuthor']:[]),...(Object.hasOwn(config,'repair')?['repair']:[]),...(Object.hasOwn(config,'walkthrough')?['walkthrough']:[])]);
+    if(argv[4]==='create')assertJestConfigurationDiscovery(config);
     const executionPolicy=readFixExecutionPolicy({config,mode:argv[4],enabled:extra.has('--execution-optimizations')});
-    const externalModels=readFixExternalModels({config,mode:argv[4],enabled:extra.has('--external-models'),inputFile:extra.get('--external-models-config'),runtime});
-    review=extra.has('--review-config')?readConversationReviewConfiguration(extra.get('--review-config'),externalModels?.providers[runtime]??null):null;
-    need(runtime!=='claude'||!review||review.disabledSkills.length===0,'invalid_review_config');
+    const externalModels=readFixExternalModels({config,mode:argv[4],enabled:extra.has('--external-models'),inputFile:extra.get('--external-models-config'),runtime:selectedReviewRuntime});
+    review=extra.has('--review-config')?readConversationReviewConfiguration(extra.get('--review-config'),externalModels?.providers[selectedReviewRuntime]??null):null;
+    need(selectedReviewRuntime!=='claude'||!review||review.disabledSkills.length===0,'invalid_review_config');
     need(!extra.has('--allow-cause-review')||review!==null,'review_configuration_required');
     need(!extra.has('--allow-final-review')||review!==null,'review_configuration_required');
     need(!extra.has('--allow-walkthrough')||config.walkthrough,'walkthrough_configuration_required');
@@ -75,7 +89,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(!extra.has('--allow-repair')||(config.repair&&review),'repair_configuration_required');
     need(!extra.has('--allow-regression')||(config.repair&&config.redTest&&config.baseline),'regression_configuration_required');
     const {reviewer,authority,finalAuthority,execution:reviewExecution}=createFixReviewHost({
-      codeProject:config.reproduction.cwd,hostContextId:argv[6],runtime,review,
+      codeProject:config.reproduction.cwd,hostContextId:argv[6],runtime,reviewRuntime,review,verification:config.reviewVerification??null,
       permissions:[...extra.keys()],workerFactory:reviewWorkerFactory,externalModels,executionPolicy,specsDir:config.specsRoot??null});
     bridge=createHostToolBridge({responseLimit:inputLimit,answerTimeoutMs:HOST_ANSWER_BACKSTOP_MS});
     owner=openFixExecution({specsRoot:config.specsRoot??null,identity:config.identity,create:argv[4]==='create',
@@ -84,6 +98,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         ...(Object.hasOwn(config,'protectSpecs')?{protectSpecs:config.protectSpecs}:{}),
         ...(Object.hasOwn(config,'qaSource')?{qaSource:config.qaSource}:{}),
         ...(runtime==='claude'?{runtime}:{}),
+        ...(reviewRuntime!==undefined?{reviewRuntime}:{}),
+        ...(Object.hasOwn(config,'reviewVerification')?{reviewVerification:config.reviewVerification}:{}),
         ...(reviewer?{causeReview:reviewer}:{}),
         ...(Object.hasOwn(config,'redTest')?{redTest:config.redTest}:{}),
         ...(Object.hasOwn(config,'baseline')?{baseline:config.baseline}:{}),
@@ -94,7 +110,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       ...reviewExecution,
       prepare:createFixLearningPreparation({bridge,codeProject:config.reproduction.cwd,
         applicableAgentFiles:config.applicableAgentFiles??[]})});
-    const host=createFixHost({owner,config,runtime,permissions:[...extra.keys(),'--allow-reproduction'],authority,finalAuthority,recoveryInvocationId});
+    const host=createFixHost({owner,config,runtime,reviewRuntime,permissions:[...extra.keys(),'--allow-reproduction'],authority,finalAuthority,recoveryInvocationId,verificationRecoveryAuthorization});
     const rawMode=input.isTTY&&typeof input.setRawMode==='function';
     if(rawMode)input.setRawMode(true);
     try{await serveCmAiHost({host,input,output,toolBridge:bridge,inputLimit});}
@@ -102,7 +118,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     return 0;
   }catch(cause){
     const code=typeof cause?.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(cause.code)?cause.code:'fix_host_failed';
-    error.write(JSON.stringify({error:{code,...(code==='request_too_large'?{reason:inputLimitReason(cause.limit)}:{})}})+'\n');return 1;
+    error.write(JSON.stringify({error:{code,...(code==='request_too_large'?{reason:inputLimitReason(cause.limit)}:code==='fix_review_runtime_mismatch'?{reason:'执行宿主与审查工具须匹配项目 coder/reviewer 角色；恢复时保留原审查配置。'}:code==='invalid_workflow_config'?{reason:'请检查项目 .cm-workflow 配置及继承的用户默认配置，确认 coder/reviewer 与 runtimes 声明一致。'}:code==='tool_preflight_missing'?{reason:'请为选定审查工具在相同项目、模型与配置下重新运行 preflight；另一工具的诊断不能复用。'}:{})}})+'\n');return 1;
   }finally{bridge?.close();owner?.close();}
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))process.exitCode=await main();

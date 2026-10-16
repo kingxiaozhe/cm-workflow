@@ -1,5 +1,6 @@
 // Synthetic request capture only. No forwarding, review package, grant or task mutation.
 import fs from 'node:fs';
+import {VERIFICATION_TOOLS} from '../cm-fix/review-verification-contract.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
@@ -39,20 +40,20 @@ export function createClaudeModelMarkerDetector(onMarker) {
   };
 }
 
-export function claudeProbeSandbox(temp,port) {
+export function claudeProbeSandbox(temp,port,writeRoot=null) {
   if(!path.isAbsolute(temp)||!Number.isInteger(port)||port<1||port>65535)throw Error('invalid_probe');
   return `(version 1)(allow default)(deny network*)
     (allow network-outbound (remote ip "localhost:${port}"))
-    (deny file-write*)(allow file-write* (subpath ${JSON.stringify(temp)}) (literal "/dev/null"))`;
+    (deny file-write*)(allow file-write* (subpath ${JSON.stringify(temp)}) (literal "/dev/null") ${writeRoot?`(subpath ${JSON.stringify(writeRoot)})`:""})`;
 }
 
-export async function previewClaudeTools({cwd,model,effort,cli='claude',spawnProcess=spawn}) {
+export async function previewClaudeTools({cwd,model,effort,cli='claude',spawnProcess=spawn,verification=null,verificationTransport=null}) {
   if(process.platform!=='darwin'||!fs.existsSync('/usr/bin/sandbox-exec')) {
     throw Object.assign(Error('unsupported_probe_isolation'),{code:'unsupported_probe_isolation'});
   }
   cwd=fs.realpathSync(cwd);
   if(!fs.statSync(cwd).isDirectory())throw Error('invalid_code_project');
-  const fingerprint=claudeReviewFingerprint({cwd,model,effort,cli});
+  const fingerprint=claudeReviewFingerprint({cwd,model,effort,cli,verification});
   const temp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-claude-probe-')));
   const observations=[];
   const controller=new AbortController();let stoppedByProbe=false,modelMarker=null;
@@ -94,10 +95,11 @@ export async function previewClaudeTools({cwd,model,effort,cli='claude',spawnPro
         const checks={json:true,post:request.method==='POST',
           messages_endpoint:new URL(request.url,'http://127.0.0.1').pathname==='/v1/messages',
           model_matches:data.model===model,messages_array:Array.isArray(data.messages),
-          tools_allowed:Array.isArray(tools)&&(tools.length===0
-            ||(tools.length===1&&tools[0]?.name==='StructuredOutput')),
+          tools_allowed:Array.isArray(tools)&&(verification
+            ?VERIFICATION_TOOLS.every(name=>tools.some(t=>t.name===name))&&tools.every(t=>t.name==='StructuredOutput'||VERIFICATION_TOOLS.includes(t.name))
+            :tools.length===0||(tools.length===1&&tools[0]?.name==='StructuredOutput')),
           synthetic_auth:request.headers['x-api-key']==='cm-synthetic-local-probe'};
-        safe={valid:Object.values(checks).every(Boolean),checks};
+        safe={valid:Object.values(checks).every(Boolean),checks:{...checks,...(verification?{tool_names:tools.map(t=>typeof t?.name==='string'?t.name.slice(0,80):'invalid').slice(0,16)}:{})}};
       }catch{}
       // Never retain raw request bodies, auth headers, local context or diagnostics.
       if(index<8)observations[index]=safe;
@@ -115,10 +117,10 @@ export async function previewClaudeTools({cwd,model,effort,cli='claude',spawnPro
     const preflight={passed:true,provider:'claude',prompt_transport:'stdin',config_fingerprint:fingerprint};
     // Internal diagnostic bootstrap: same worker lifecycle, forced sink and synthetic prompt only.
     // This object is never returned as a passing receipt without examining the captured request.
-    const worker=claudeWorker({cwd,model,effort,cli,preflight,timeoutMs:15000,
+    const worker=claudeWorker({cwd,model,effort,cli,preflight,timeoutMs:15000,verification,verificationTransport,
       spawnProcess:(command,args,options)=>{
         const child=spawnProcess('/usr/bin/sandbox-exec',
-          ['-p',claudeProbeSandbox(temp,port),command,...args],{...options,env:{...options.env,
+          ['-p',claudeProbeSandbox(temp,port,verificationTransport?.cwd?path.dirname(verificationTransport.cwd):null),command,...args],{...options,env:{...options.env,
           ANTHROPIC_API_KEY:'cm-synthetic-local-probe',ANTHROPIC_BASE_URL:`http://127.0.0.1:${port}`,
           CLAUDE_CONFIG_DIR:temp,CLAUDE_CODE_TMPDIR:temp,
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1',TMPDIR:temp}});

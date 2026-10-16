@@ -1,3 +1,5 @@
+import {inspectVerificationDiagnostic} from './review-verification-diagnostic.mjs';
+import {readReviewVerification,inspectReviewVerificationEvidence} from './review-verification-contract.mjs';
 import {inspectFixReconciledResult} from './review-reconciliation.mjs';
 // Shared V3 grant and normalized observation contracts; no completion receipt issuer.
 import {validateReviewDispatchGrant} from '../cm-ai/durable-runner-state.mjs';
@@ -50,11 +52,23 @@ export function inspectCauseRegistration(raw,configuration){
   return value;
 }
 export function inspectCauseResult(raw,registration,configuration,started){
-  const value=json(raw,1024*1024);shape(value,['dispatchAt','observation',...(Object.hasOwn(value,'reconciliationReceipt')?['reconciliationReceipt']:[])]);
+  const value=json(raw,1024*1024);shape(value,['dispatchAt','observation',...(Object.hasOwn(value,'reconciliationReceipt')?['reconciliationReceipt']:[]),...(Object.hasOwn(value,'verification')?['verification']:[]),...(Object.hasOwn(value,'verificationDiagnostic')?['verificationDiagnostic']:[])]);
   need(Number.isSafeInteger(value.dispatchAt)&&value.dispatchAt>=registration.registeredAt
     &&value.dispatchAt<registration.grant.expiresAt,'cause_registration_mismatch');
   need(!value.reconciliationReceipt||(configuration.externalModels||configuration.executionPolicy),'review_reconciliation_unavailable');
   const expected=causeExpectation(registration.request,configuration);
   const result=value.reconciliationReceipt?inspectFixReconciledResult(value,expected,true):inspectProviderCauseReview(JSON.stringify(value.observation),JSON.stringify(expected));
-  need(result.providerThreadId===started,'cause_registration_mismatch');return result;
+  need(result.providerThreadId===started,'cause_registration_mismatch');
+  if(configuration.reviewVerification){
+    readReviewVerification(configuration.reviewVerification);
+    need(!value.reconciliationReceipt,'review_verification_invalid');
+    if(result.observationStatus==='completed'||Object.hasOwn(value,'verification'))
+      inspectReviewVerificationEvidence(value.verification,{request:registration.request,configuration:configuration.reviewVerification,providerThreadId:started});
+  }else need(!Object.hasOwn(value,'verification'),'review_verification_invalid');
+  if(Object.hasOwn(value,'verificationDiagnostic')){
+    need(configuration.reviewVerification&&result.observationStatus!=='completed','review_verification_invalid');
+    const diagnostic=inspectVerificationDiagnostic(value.verificationDiagnostic,{request:registration.request,configuration:configuration.reviewVerification,providerThreadId:started});
+    return {...result,verificationDiagnostic:diagnostic};
+  }
+  return result;
 }

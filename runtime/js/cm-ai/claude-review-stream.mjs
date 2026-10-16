@@ -20,7 +20,8 @@ const API_ERROR_CLASSES = Object.freeze({authentication_failed:'reviewer_auth_fa
   billing_error:'reviewer_billing_error', rate_limit:'reviewer_rate_limited',
   server_error:'reviewer_server_error', model_not_found:'reviewer_model_not_found'});
 
-export function createClaudeReviewStream(onEvent, onNotice = null) {
+export function createClaudeReviewStream(onEvent, onNotice = null, allowedTools = []) {
+  const permitted=new Set(allowedTools);
   let session = null, stage = 'init', value, noticeCount = 0, thinkingCount = 0, rejectedAttempts = 0;
   const pendingTools = new Map(), toolIds = new Set();
   const reject = (code, detail = null) => {
@@ -152,7 +153,7 @@ export function createClaudeReviewStream(onEvent, onNotice = null) {
           if (block?.type !== 'tool_result') reject('unexpected_tool_or_content', summary('user_content', 'user', block));
           if (!pendingTools.has(block.tool_use_id)) reject('unexpected_tool_or_content', summary('unknown_tool_result', 'user', block));
           const name = pendingTools.get(block.tool_use_id);
-          if (name !== 'StructuredOutput' && block.is_error !== true) {
+          if (name !== 'StructuredOutput' && !permitted.has(name) && block.is_error !== true) {
             // A successful non-StructuredOutput tool is a real boundary break.
             reject('unexpected_tool_or_content', summary('tool_result_not_error', 'user', block, name, block.is_error));
           }

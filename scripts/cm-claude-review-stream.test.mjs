@@ -387,3 +387,16 @@ test('API error classes before any tool call name the reviewer failure',()=>{
     assert.throws(()=>messages.forEach(message=>stream.accept(message)),{code:'unexpected_assistant'});
   }
 });
+
+test('opt-in verification permits only the fixed MCP tools; default remains no-tools',()=>{
+  const names=['mcp__cm_review__read_file','mcp__cm_review__run_check','mcp__cm_review__mutate_check'];
+  for(const name of names){
+    const messages=[transcript()[0],assistant([tool('verify',name)]),toolResult('verify'),transcript()[2]];
+    assert.throws(()=>decode(messages),{code:'unexpected_tool_or_content'});
+    const stream=createClaudeReviewStream(()=>{},null,names);messages.forEach(m=>stream.accept(m));assert.equal(stream.finish().status,'succeeded');
+  }
+  for(const name of ['Bash','Read','mcp__other__run_check']){
+    const stream=createClaudeReviewStream(()=>{},null,names);stream.accept(transcript()[0]);stream.accept(assistant([tool('bad',name)]));
+    assert.throws(()=>stream.accept(toolResult('bad')),{code:'unexpected_tool_or_content'});
+  }
+});

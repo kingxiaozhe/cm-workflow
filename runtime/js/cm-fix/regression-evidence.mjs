@@ -1,12 +1,13 @@
+import {typeFiles} from './test-type-recovery.mjs';
 // Shared read-only regression evidence checks; no execution or review authority.
 import {currentTestFiles,inspectExtensionCheck} from './test-extension.mjs';
 import {inspectFixBaseline} from './baseline.mjs';
 import {digest,json,need,shape,text} from '../cm-ai/effect-contract.mjs';
 import {isVisual,inspectVisualAfter} from './visual.mjs';
 
-export function inspectFixRegression(raw,{redTest,baseline,beforeBaseline,testExtension=null}){
+export function inspectFixRegression(raw,{redTest,baseline,beforeBaseline,testExtension=null,testTypeCorrection=null}){
   const value=json(raw);shape(value,['status','red','baseline','comparison','completionEligible',...(testExtension?['testExtension']:[])]);
-  beforeBaseline={...beforeBaseline,testFiles:currentTestFiles(beforeBaseline.testFiles,testExtension)};
+  beforeBaseline={...beforeBaseline,testFiles:currentTestFiles(typeFiles(beforeBaseline.testFiles,testTypeCorrection),testExtension)};
   const extra=testExtension?inspectExtensionCheck(value.testExtension,{redTest},testExtension.plan,testExtension.files):null;
   if(isVisual(redTest)){
     const observed=inspectVisualAfter(value.red,redTest),comparison=compareFixBaseline(beforeBaseline,value.baseline,baseline);

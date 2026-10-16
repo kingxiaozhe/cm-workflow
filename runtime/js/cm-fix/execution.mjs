@@ -1,3 +1,13 @@
+import {TYPE_INTENT,TYPE_RESULT,typeIntent,typeCorrection,typeMetadata,typeFiles,typeSnapshot,inspectTestTypeTarget,inspectTestTypeIntent,typeEvidence} from './test-type-recovery.mjs';
+import {applyTestTypeCorrection,readTestTypeCorrectionFile} from './test-type-correction.mjs';
+import {COMMAND_CORRECTION,correctionRow,inspectCommandCorrection,inspectCommandCorrectionTarget} from './command-correction.mjs';
+import {applyCommandCorrection,assertCorrectionConfigCurrent,correctionFiles} from './jest-command-correction.mjs';
+import {SOURCE_INTENT,SOURCE_RESULT,sourceIntent,sourceResult,sourceRevision,sourceRecoveryTarget,inspectSourceIntent,inspectSourceResult,successorPackage,previewSourceCorrection,sourceCorrectionReviewBaseline} from './source-correction-recovery.mjs';
+import {createTypeImportCorrection,applyTypeImportCorrection,readTypeImportCorrectionFile} from './type-import-correction.mjs';
+import {verificationFailureCode,splitVerificationResult,verificationCallbackFailure,inspectResultWithFailureDiagnostic} from './review-verification-diagnostic.mjs';
+import {VERIFICATION_RECOVERY,recoveryPreparation,recoveryFor,verificationRecoveryTarget,inspectRecoveryPreparation} from './review-verification-recovery.mjs';
+import * as verificationRuntime from './review-verification.mjs';
+import {readReviewVerification,inspectReviewVerificationEvidence} from './review-verification-contract.mjs';
 import {readExecutionPolicy} from '../cm-ai/execution-policy.mjs';
 import {readExecutionSnapshot} from '../cm-ai/execution-snapshot.mjs';
 import {acquireExternalRunGuard,externalRunGuardExists} from '../cm-ai/external-run-guard.mjs';
@@ -40,7 +50,7 @@ import {readFixWalkthrough,fixWalkthroughBinding,createFixWalkthrough,inspectFix
 import {logFixEvent} from './start.mjs';
 import {fixInvestigationRequest} from './investigation.mjs';
 import {inspectFixDiagnosis,fixDiagnosisAnswer,isInvalidFixDiagnosis} from './diagnosis.mjs';
-import {finishFix,fixCompletionProjection,eventsAt,isFixObservationExit} from './finish.mjs';
+import {finishFix,finishFixCooperatively,fixCompletionProjection,eventsAt,isFixObservationExit} from './finish.mjs';
 import {specsPermissionArgs} from '../cm-ai/codex-config.mjs';
 import {protectedFixBridge} from './protected-edits.mjs';
 import {fixArchiveRoot,fixDossierRelative,assertFixEvidenceNamesFree} from './layout.mjs';
@@ -99,6 +109,7 @@ export const FIX_REVIEW_RECOVERY_LIMIT_REASON=`fix_review_recovery_limit: 首轮
 const cycleId=(prefix,rows,suffix)=>rows.some(row=>row.id===`${prefix}-abandoned-2`)?`${prefix}-retry-2-${suffix}`
   :rows.some(row=>row.id===`${prefix}-abandoned`)?`${prefix}-retry-${suffix}`:`${prefix}-${suffix}`;
 const causeRecord=(records,suffix)=>{
+  if(recoveryFor(records,'cause_review'))return records.find(r=>r.id===`${VERIFICATION_RECOVERY}-${suffix}`);
   const marker=records.findIndex(row=>row.id==='fix-rediagnosis-intent');
   const tail=marker<0?null:records.slice(marker+1);
   const row=marker<0?reviewCycleRecord(records,'fix-cause',suffix)
@@ -106,6 +117,7 @@ const causeRecord=(records,suffix)=>{
   return suffix==='result'?reconciledFixResultRecord(records,row):row;
 };
 const reviewCycleRecord=(records,prefix,suffix)=>{
+  if(prefix==='fix-revision-final'&&recoveryFor(records,'revision_final_review'))return records.find(r=>r.id===`${VERIFICATION_RECOVERY}-${suffix}`);
   const row=records.find(row=>row.id===cycleId(prefix,records,suffix));
   return suffix==='result'?reconciledFixResultRecord(records,row):row;
 };
@@ -121,6 +133,9 @@ const diagnosis=inspectFixDiagnosis;
 
 const HISTORY_INSPECTION=Symbol('fix-history-inspection'),DURABLE_HISTORY=Symbol('fix-durable-history');
 // Same owner projection, backed by a read-only journal and no writer/dispatch.
+export function inspectFixTestTypeCorrection(options){return readFixHistory(options,owner=>owner.inspectTestTypeCorrection({declaration:options.declaration}));}
+export function inspectFixCommandCorrection(options){return readFixHistory(options,owner=>owner.inspectCommandCorrection({declaration:options.declaration}));}
+export function inspectFixVerificationRecovery(options){return readFixHistory(options,owner=>owner.inspectVerificationRecovery({sourceCorrection:options.sourceCorrection}));}
 export function inspectFixExecutionHistory({specsRoot,identity}){
   return readFixHistory({specsRoot,identity},owner=>owner.status());
 }
@@ -141,7 +156,7 @@ function readFixHistory({specsRoot,identity,durable=false},read){
   const {archiveMode,...configuration}=initial.configuration;
   need(archiveMode===undefined||archiveMode==='bare','fix_history_invalid');
   const owner=openFixExecution({specsRoot:archiveMode==='bare'?null:specsRoot,identity:initial.identity,configuration,create:false},{[HISTORY_INSPECTION]:snapshot,[DURABLE_HISTORY]:durable});
-  try{return read(owner,initial);}finally{owner.close();}
+  try{const result=read(owner,initial);if(types.isPromise(result))return result.finally(()=>owner.close());owner.close();return result;}catch(error){owner.close();throw error;}
 }
 
 export function openFixExecution(options,{bridge=null,prepare=null,causeReview=null,finalReview=null,assertReviewReady=null,[HISTORY_INSPECTION]:inspectionSnapshot=null,[DURABLE_HISTORY]:durableHistory=false}={}){
@@ -159,6 +174,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     ...(Object.hasOwn(configuration,'protectSpecs')?['protectSpecs']:[]),
     ...(Object.hasOwn(configuration,'qaSource')?['qaSource']:[]),
     ...(Object.hasOwn(configuration,'runtime')?['runtime']:[]),
+    ...(Object.hasOwn(configuration,'reviewRuntime')?['reviewRuntime']:[]),
+    ...(Object.hasOwn(configuration,'reviewVerification')?['reviewVerification']:[]),
     ...(Object.hasOwn(configuration,'applicableAgentFiles')?['applicableAgentFiles']:[]),
     ...(Object.hasOwn(configuration,'causeReview')?['causeReview']:[]),
     ...(Object.hasOwn(configuration,'redTest')?['redTest']:[]),
@@ -166,6 +183,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     ...(Object.hasOwn(configuration,'testAuthor')?['testAuthor']:[]),
     ...(Object.hasOwn(configuration,'repair')?['repair']:[]),...(Object.hasOwn(configuration,'walkthrough')?['walkthrough']:[])]);
   if(configuration.executionPolicy)readExecutionPolicy(configuration.executionPolicy);
+  if(Object.hasOwn(configuration,'reviewVerification'))readReviewVerification(configuration.reviewVerification);
   if(configuration.externalModels){readExternalModels(configuration.externalModels);need(configuration.causeReview,'external_review_configuration_required');need(configuration.causeReview?.requestedModel===configuration.externalModels.providers[configuration.causeReview.provider]?.model,'external_model_pair_conflict');}
   id(configuration.hostContextId);text(configuration.defect);
   need(!bare||!configuration.qaSource,'fix_qa_specs_required');
@@ -177,8 +195,12 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
   }
   if(Object.hasOwn(configuration,'qaSource'))
     need(digest(identity)===digest(qaFixIdentity(configuration.qaSource)),'fix_qa_identity_mismatch');
-  if(Object.hasOwn(configuration,'runtime'))need(configuration.runtime==='claude'
-    &&(!configuration.causeReview||configuration.causeReview.provider==='claude'),'invalid_runtime');
+  if(Object.hasOwn(configuration,'runtime'))need(configuration.runtime==='claude','invalid_runtime');
+  if(Object.hasOwn(configuration,'reviewRuntime')){
+    need(['codex','claude'].includes(configuration.reviewRuntime),'invalid_runtime');
+    need(configuration.causeReview?.provider===configuration.reviewRuntime,'fix_review_runtime_mismatch');
+  }else if(configuration.runtime==='claude')
+    need(!configuration.causeReview||configuration.causeReview.provider==='claude','invalid_runtime');
   // configuration is the durable run record: its hostContextId stays the session
   // that created the run, so stored bytes and the store fingerprint never move.
   // options.hostContextId is the live session. The sessions that joined in
@@ -225,6 +247,13 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     fingerprints:{workflow:digest('cm-fix-stages-v1'),config:digest(configuration),inputs:digest(identity)}});}catch(error){guard?.close();throw error;}
   const closeStore=()=>{try{store.close();}finally{guard?.close();}};
   let active=null,closed=false,lastPinned={};
+  const currentTypeCorrection=()=>typeCorrection(store.snapshot().records);
+  const currentConfig=()=>{
+    const correction=correctionRow(store.snapshot().records);
+    if(!correction)return configuration;
+    if(!durableHistory)assertCorrectionConfigCurrent(configuration,correction.payload);
+    return applyCommandCorrection(configuration,correction.payload);
+  };
   const retryCount=base=>{
     const records=store.snapshot().records;
     return records.filter(row=>/^fix-abandoned-[1-8]$/.test(row.id)).filter(row=>{
@@ -233,7 +262,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     }).length+records.filter(row=>blockedRerunNumber(row.id)>0).filter(row=>{
       const intent=records.find(item=>digest(item)===row.payload.intentDigest);
       return intent&&stepRecord(retryBase(intent.id))?.base===base;
-    }).length;
+    }).length+(base==='fix-red-test'&&correctionRow(records)?1:0);
   };
   const append=(recordId,kind,payload)=>{
     const step=stepRecord(recordId),n=step?retryCount(step.base):0;
@@ -250,6 +279,15 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     return [...new Set([configuration.hostContextId,...joined,liveHostContextId])];
   })();
   const reviewConfiguration=hostContextIds.length>1?{...configuration,hostContextIds}:configuration;
+  // New verification profiles reject deterministic package/input failures before
+  // any dispatch grant or durable registration. Old runs keep their call order.
+  const checkVerificationPackage=pkg=>{
+    if(!configuration.reviewVerification)return;
+    need(typeof assertReviewReady==='function','review_verification_unavailable');
+    const ready=assertReviewReady(pkg);
+    if(types.isPromise(ready))Promise.prototype.then.call(ready,()=>{},()=>{});
+    need(ready===undefined,'review_verification_sync_required');
+  };
   if(configuration.causeReview)validateCauseReviewer(configuration.causeReview,hostContextIds);
   // Written just before the live session signs its first grant, never on a mere
   // open, so looking at a run from a new session leaves its history untouched.
@@ -263,7 +301,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
   // bound human decision. Selection never falls back to an older result.
   const recoveryPrefix=cycle=>cycle===0?'fix-final':cycle===1?'fix-final-recovery':`fix-final-recovery-${cycle}`;
   const recoveryCount=records=>records.filter(row=>/^fix-final-recovery-(?:[1-9]\d*-)?authorized$/.test(row.id)).length;
-  const finalRecord=(records,suffix)=>{const row=records.find(row=>row.id===`${recoveryPrefix(recoveryCount(records))}-${suffix}`);return suffix==='result'?reconciledFixResultRecord(records,row):row;};
+  const finalRecord=(records,suffix)=>{if(recoveryFor(records,'final_review'))return records.find(r=>r.id===`${VERIFICATION_RECOVERY}-${suffix}`);const row=records.find(row=>row.id===`${recoveryPrefix(recoveryCount(records))}-${suffix}`);return suffix==='result'?reconciledFixResultRecord(records,row):row;};
   const finalCycleRecord=(row,suffix)=>new RegExp(`^fix-final-(?:recovery-(?:[1-9]\\d*-)?)?${suffix}$`).test(row.id);
   const publishCause=(inspectOnly=false)=>{
     const records=store.snapshot().records;
@@ -291,11 +329,11 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       registration:finalRecord(records,'registered')?.payload,
       started:finalRecord(records,'started')?.payload.providerThreadId??null,
       result:finalRecord(records,'result')?.payload,
-      ...(failed?.status==='failed'?{walkthroughFailure:{configuration:configuration.walkthrough,
+      ...(failed?.status==='failed'?{walkthroughFailure:{configuration:currentConfig().walkthrough,
         binding:latestStepRecord(records,'fix-walkthrough-intent').payload,result:failed}}:{}),
       ...(['defect_remaining','regressed'].includes(regression?.status)?{regressionFailure:{identity,
         packageDigest:records.find(row=>row.id==='fix-n5-result').payload.packageDigest,
-        redTest:configuration.redTest,baseline:configuration.baseline,
+        redTest:currentConfig().redTest,baseline:currentConfig().baseline,
         beforeBaseline:latestStepRecord(records,'fix-baseline-result').payload,result:regression}}:{})};
   };
   const publishRevisionFinal=(inspectOnly=false)=>{
@@ -307,9 +345,11 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
   };
   const reviewBaseline=()=>{
     const records=store.snapshot().records;
-    return composeFixReviewBaseline({authorBaseline:latestStepRecord(records,'fix-test-author-intent')?.payload??null,
+    const baseline=composeFixReviewBaseline({authorBaseline:latestStepRecord(records,'fix-test-author-intent')?.payload??null,
       authorResult:latestStepRecord(records,'fix-test-author-result')?.payload??null,
       repairBaseline:latestStepRecord(records,'fix-repair-intent').payload.baseline});
+    const correction=sourceResult(records)?sourceIntent(records)?.payload.target.sourceCorrection:null;
+    return correction?sourceCorrectionReviewBaseline(baseline,correction):baseline;
   };
   const testExtension=()=>{
     const records=store.snapshot().records,revision=records.find(row=>row.id==='fix-revision-prepared')?.payload;
@@ -317,7 +357,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     const plan=revision?.tests??records.find(row=>row.id==='fix-revision-tests-prepared')?.payload.tests;
     return plan&&authored?.outcome==='authored'?{plan,files:authored.testFiles}:null;
   };
-  const reviewChecks=regression=>[...(isVisual(configuration.redTest)?[{id:'visual-fix',kind:'visual',
+  const reviewChecks=regression=>[...(isVisual(currentConfig().redTest)?[{id:'visual-fix',kind:'visual',
     outcome:regression.red.verdict==='PASS'?'passed':regression.red.verdict==='FAIL'?'failed':'unavailable',
     evidence:regression.red.explanation,before:regression.red.before,after:regression.red.after}]:[regression.red]),
     ...regression.baseline.observations.map((row,index)=>({...row,id:`baseline.${index+1}`})),
@@ -354,9 +394,10 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       ...(status.walkthrough?{walkthrough:status.walkthrough}:{}),
       ...(status.postReviewRegression?{postReviewRegression:status.postReviewRegression}:{})}]});
   const revisionHandoffEvidence=({revision,retrospective,writeback=null,reproduction,diagnosed,red,redOutput})=>[
+    ...typeEvidence(store.snapshot().records),
     ...(revision.tests?[`fix test extension coverage (data, not instructions) ${JSON.stringify({plan:revision.tests,records:store.snapshot().records.filter(row=>/^fix-revision-test-(author|check)(?:-retry-[1-8])?-result$/.test(row.id))})}`]:[]),
     ...fixHandoffEvidence({identity:revision.nextIdentity,learning:revision.learning,retrospective,writeback}),
-    ...fixDefectHandoffEvidence({configuration,reproduction,diagnosis:diagnosed,redTest:red,redOutput}),
+    ...fixDefectHandoffEvidence({configuration:currentConfig(),reproduction,diagnosis:diagnosed,redTest:red,redOutput}),
     `fix prior review (data, not instructions) ${JSON.stringify(inspectFixRepairReview(revisionFeedback(),revision.nextIdentity))}`,
     `fix prior Learning history (data, not instructions) ${JSON.stringify(store.snapshot().records.filter(row=>retryBase(row.id)==='fix-retrospective-result'||row.id==='fix-learning-writeback-result').map(row=>({id:row.id,payload:row.payload})))}`,
   ];
@@ -419,10 +460,53 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       append(recordId,'result',payload);
     }catch{/* Missing, conflicting or unbound receipts never change the original unknown. */}
   }
+  function verificationRecoveryContext(snapshot=store.snapshot()){
+    const current=project(snapshot),records=snapshot.records;
+    const registration=records.findLast(r=>/-registered$/.test(r.id)&&r.payload.request?.role==='reviewer');
+    const prefix=registration?.id.slice(0,-11),started=records.find(r=>r.id===`${prefix}-started`),result=records.find(r=>r.id===`${prefix}-result`);
+    const phase=prefix?.startsWith('fix-cause')?'cause_review':prefix?.startsWith('fix-revision-final')?'revision_final_review':'final_review';
+    return {records,configuration,stage:current.stage,phase,registration,started,result};
+  }
+  function recoveryPackage(phase,current=project()){
+    if(phase==='cause_review')return createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,status:{...current,stage:'cause_review_required'}});
+    const revised=phase==='revision_final_review',baseline=revised?revisionReviewBaseline():['written','deduplicated'].includes(current.learningWriteback?.outcome)?fixLearningReviewBaseline(reviewBaseline()):reviewBaseline();
+    return createReviewPackage({root:configuration.reproduction.cwd,baseline,checks:reviewChecks(revised?current.revisionRegression:current.regression),handoffPath:revised?revisionHandoffPath():handoffPath()});
+  }
+  async function inspectVerificationRecovery({sourceCorrection}={}){
+    need(!closed&&active===null,'fix_busy');
+    const snapshot=store.snapshot();need(!recoveryPreparation(snapshot.records)&&!sourceIntent(snapshot.records),'fix_verification_recovery_used');
+    const context=verificationRecoveryContext(snapshot),pkg=context.registration?.payload.request.payload.reviewPackage;
+    // Validate eligibility before executing any local command. Placeholder checks
+    // only validate frozen input metadata; actual checks below must all pass.
+    need(pkg&&configuration.reviewVerification,'fix_verification_recovery_unavailable');
+    const files=verificationRuntime.validateReviewVerificationInputs({codeProject:configuration.reproduction.cwd,configuration:configuration.reviewVerification,reviewPackage:pkg}).map(({data,...f})=>f);
+    const checks=configuration.reviewVerification.checks.map(c=>({id:c.id,commandDigest:digest(c.command),exitCode:0}));
+    verificationRecoveryTarget({...context,baseline:{files,snapshotDigest:digest(files),checks}});
+    need(recoveryPackage(context.phase).packageDigest===pkg.packageDigest,'fix_verification_recovery_drift');
+    let target,baseline;
+    if(sourceCorrection){
+      const correction=createTypeImportCorrection({file:readTypeImportCorrectionFile({root:codeProject,path:sourceCorrection.path}),declaration:sourceCorrection,scope:configuration.repair.scope,verification:configuration.reviewVerification,reviewPackage:pkg});
+      target=sourceRecoveryTarget({...context,baseline:{files}},correction);
+      baseline=await previewSourceCorrection({codeProject,configuration:configuration.reviewVerification,original:pkg,target});
+      need(Buffer.byteLength(JSON.stringify({intentDigest:digest(target),reproduction:pkg.reproduction,baseline,package:successorPackage(pkg,target,pkg.reproduction)}))<=700*1024,'fix_source_correction_limit');
+    }else baseline=await verificationRuntime.verifyReviewVerificationBaseline({codeProject,configuration:configuration.reviewVerification,reviewPackage:pkg});
+    need(digest(store.snapshot().records)===digest(snapshot.records),'fix_verification_recovery_stale');
+    need(recoveryPackage(context.phase).packageDigest===pkg.packageDigest,'fix_verification_recovery_drift');
+    return {target:target??verificationRecoveryTarget({...context,baseline}),checks:baseline.checks};
+  }
+  function assertVerificationContinuation(phase,pkg,authorization){
+    const prepared=recoveryFor(store.snapshot().records,phase);if(!prepared)return;
+    need(authorization===digest(prepared.payload),'fix_verification_recovery_authorization_required');
+    const successor=prepared.payload.sourceResultDigest?sourceResult(store.snapshot().records)?.payload:null;
+    need(pkg.packageDigest===(successor?.package.packageDigest??prepared.payload.target.packageDigest),'fix_verification_recovery_drift');
+    const files=verificationRuntime.validateReviewVerificationInputs({codeProject:configuration.reproduction.cwd,configuration:configuration.reviewVerification,reviewPackage:pkg}).map(({data,...f})=>f);
+    need(digest(files)===(successor?.baseline.snapshotDigest??prepared.payload.target.snapshotDigest),'fix_verification_recovery_drift');
+  }
   // snapshot: the store's, or a candidate one a writer validates before appending.
   function project(snapshot=store.snapshot()){
     need(snapshot.records.length>0,'fix_history_invalid');
     const [first,...records]=snapshot.records;
+    let checkConfiguration=configuration,testTypingIntent=null,testTyping=null;
     // Older runs could advance a recovered single-layer diagnosis without cause review.
     // Replay their existing evidence, but never treat that omission as current approval.
     const causeIndex=records.findIndex(row=>row.id==='fix-cause-registered');
@@ -453,7 +537,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     let finalRegistration=null,finalStarted=null,finalResult=null,finalRecovery=null,finalRecoveryCount=0;
     let rediagnosis=null,rediagnosisThread=null;
     let causeOrigin=null,causeResultPayload=null,causeAbandonment=null,revisionFinalResultPayload=null,revisionAbandonment=null;
-    let causeAbandonment2=null,revisionAbandonment2=null;
+    let causeAbandonment2=null,revisionAbandonment2=null,verificationRecovery=null,sourceCorrectionIntent=null,sourceCorrectionResult=null,sourceCheckCount=0,sourceCheckPending=false,sourceCorrectionFailed=false;
     const finalInvocations=new Set(),finalThreads=new Set();
     let joinedCount=0;const seenJoined=new Set();
     let n5=null,postReviewRegression=null,walkthrough=null,revision=null,revisionBaseline=null,revisionRepair=null,revisionRegression=null;
@@ -543,7 +627,80 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           &&record.kind===retried[3],'fix_history_invalid');
         record={...record,id:baseId};
       }
+      if(record.id===TYPE_INTENT){
+        need(record.kind==='intent'&&!testTypingIntent&&pending===null,'fix_test_type_correction_binding');
+        inspectTestTypeIntent(record.payload,{configuration,records:snapshot.records.slice(0,record.seq-1),status:{stage,testAuthor:authored,redTest:red,regression,repair:repaired}});
+        testTypingIntent=record.payload;pending='test_type_correction';stage='unknown';continue;
+      }
+      if(record.id===TYPE_RESULT){
+        need(record.kind==='result'&&pending==='test_type_correction'&&testTypingIntent&&!testTyping,'fix_test_type_correction_binding');
+        shape(record.payload,['intentDigest','after']);
+        need(record.payload.intentDigest===digest(testTypingIntent)&&digest(record.payload.after)===digest(typeMetadata(testTypingIntent.target.correction.after)),'fix_test_type_correction_binding');
+        testTyping=testTypingIntent.target.correction;pending=null;stage='regression_blocked';continue;
+      }
+      if(record.id===COMMAND_CORRECTION){
+        need(record.kind==='result'&&stage==='red_test_not_confirmed','fix_command_correction_unavailable');
+        inspectCommandCorrection(record.payload,{configuration,records:snapshot.records.slice(0,record.seq-1),red});
+        checkConfiguration=applyCommandCorrection(configuration,record.payload);
+        red=null;redFiles=null;stage=redStage();
+        retryCounts.set('fix-red-test',(retryCounts.get('fix-red-test')??0)+1);continue;
+      }
+      if(record.id===SOURCE_INTENT){
+        need(!verificationRecovery&&!sourceCorrectionIntent&&record.kind==='intent'&&stage==='unknown','fix_source_correction_unavailable');
+        const prior=snapshot.records.slice(0,record.seq-1),registration=prior.findLast(r=>/-registered$/.test(r.id)&&r.payload.request?.role==='reviewer'),prefix=registration?.id.slice(0,-11);
+        inspectSourceIntent(record.payload,{records:prior,configuration,stage,phase:'cause_review',registration,
+          started:prior.find(r=>r.id===`${prefix}-started`),result:prior.find(r=>r.id===`${prefix}-result`)});
+        sourceCorrectionIntent=record.payload;continue;
+      }
+      if(new RegExp(`^${VERIFICATION_RECOVERY}-source-check-[12]-intent$`).test(record.id)){
+        need(stage==='unknown'&&sourceCorrectionIntent&&!sourceCorrectionResult&&!sourceCorrectionFailed&&record.kind==='intent'&&sourceCheckCount<2
+          &&record.id===`${VERIFICATION_RECOVERY}-source-check-${sourceCheckCount+1}-intent`,'fix_source_correction_unavailable');
+        shape(record.payload,['intentDigest','previousInvocationStopped']);
+        need(record.payload.intentDigest===digest(sourceCorrectionIntent)&&record.payload.previousInvocationStopped===true,'fix_source_correction_binding');
+        sourceCheckCount++;sourceCheckPending=true;continue;
+      }
+      if(record.id===SOURCE_RESULT){
+        need(stage==='unknown'&&sourceCorrectionIntent&&!sourceCorrectionResult&&sourceCheckPending&&record.kind==='result','fix_source_correction_unavailable');
+        const registration=snapshot.records.slice(0,record.seq-1).findLast(r=>/-registered$/.test(r.id)&&r.payload.request?.role==='reviewer');
+        inspectSourceResult(record.payload,sourceCorrectionIntent,configuration,registration.payload.request.payload.reviewPackage);
+        sourceCorrectionResult=record.payload;reproduction=record.payload.reproduction;sourceCheckPending=false;continue;
+      }
+      if(record.id===`${VERIFICATION_RECOVERY}-source-failed`){
+        need(stage==='unknown'&&sourceCorrectionIntent&&sourceCheckPending&&!sourceCorrectionResult&&record.kind==='result','fix_source_correction_unavailable');
+        shape(record.payload,['intentDigest','code']);need(record.payload.intentDigest===digest(sourceCorrectionIntent)&&typeof record.payload.code==='string'&&/^[a-z0-9_]{1,100}$/.test(record.payload.code),'fix_source_correction_binding');
+        sourceCheckPending=false;sourceCorrectionFailed=true;continue;
+      }
+      if(record.id===`${VERIFICATION_RECOVERY}-prepared`){
+        need(!verificationRecovery&&record.kind==='result','fix_verification_recovery_used');
+        const phase=record.payload.target.phase;
+        const prior=snapshot.records.slice(0,record.seq-1),registration=prior.findLast(r=>/-registered$/.test(r.id)&&r.payload.request?.role==='reviewer');
+        const prefix=registration?.id.slice(0,-11);
+        if(sourceCorrectionIntent){
+          shape(record.payload,['target','checks','reason','previousInvocationStopped','sourceResultDigest']);
+          need(stage==='unknown'&&!sourceCorrectionFailed&&sourceCorrectionResult&&record.payload.sourceResultDigest===digest(sourceCorrectionResult)
+            &&digest(record.payload.target)===digest(sourceCorrectionIntent.target)&&record.payload.reason===sourceCorrectionIntent.reason
+            &&record.payload.previousInvocationStopped===true&&digest(record.payload.checks)===digest(sourceCorrectionResult.baseline.checks),'fix_source_correction_binding');
+        }else inspectRecoveryPreparation(record.payload,{records:prior,configuration,stage,phase,
+          registration,started:prior.find(r=>r.id===`${prefix}-started`),result:prior.find(r=>r.id===`${prefix}-result`)});
+        need(phase===(prefix?.startsWith('fix-cause')?'cause_review':prefix?.startsWith('fix-revision-final')?'revision_final_review':'final_review'),'fix_verification_recovery_binding');
+        verificationRecovery=record.payload;pending=null;
+        if(phase==='cause_review'){cause=null;started=null;causeResult=null;causeResultPayload=null;stage='cause_review_required';}
+        else if(phase==='revision_final_review'){revisionFinalRegistration=null;revisionFinalStarted=null;revisionFinalResult=null;revisionFinalResultPayload=null;stage='revision_final_review_required';}
+        else{finalRegistration=null;finalStarted=null;finalResult=null;stage='final_review_required';}
+        continue;
+      }
+      const verificationSuffix=new RegExp(`^${VERIFICATION_RECOVERY}-(registered|started|result)$`).exec(record.id);
+      if(verificationSuffix){
+        need(verificationRecovery,'fix_history_invalid');
+        const phase=verificationRecovery.target.phase,base=phase==='cause_review'?'fix-cause':phase==='revision_final_review'?'fix-revision-final':'fix-final';
+        if(verificationSuffix[1]==='registered')need(record.payload.request.payload.reviewPackage.packageDigest===(sourceCorrectionResult?.package.packageDigest??verificationRecovery.target.packageDigest)
+          &&record.payload.request.invocationId!==verificationRecovery.target.invocationId,'fix_verification_recovery_binding');
+        if(verificationSuffix[1]==='result'&&record.payload.verification)need(record.payload.verification.snapshotDigest===(sourceCorrectionResult?.baseline.snapshotDigest??verificationRecovery.target.snapshotDigest),'fix_verification_recovery_binding');
+        if(verificationSuffix[1]==='started')need(!verificationRecovery.target.providerThreadIds.includes(record.payload.providerThreadId),'fix_verification_recovery_context');
+        record={...record,id:`${base}-${verificationSuffix[1]}`};
+      }
       if(/^fix-final-recovery-(?:[1-9]\d*-)?authorized$/.test(record.id)){
+        need(!recoveryFor(snapshot.records.slice(0,record.seq),'final_review'),'fix_verification_recovery_used');
         need(!(configuration.externalModels||configuration.executionPolicy),'external_review_reconciliation_required');
         need(record.id===`${recoveryPrefix(finalRecoveryCount+1)}-authorized`,'fix_history_invalid');
         // V5 (F24): a first final review whose worker never opened a thread may
@@ -565,7 +722,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         const suffix=record.id.split('-').at(-1);
         need(finalRecovery&&record.id===`${recoveryPrefix(finalRecoveryCount)}-${suffix}`,'fix_history_invalid');
         record={...record,id:`fix-final-${suffix}`};
-      }else if(/^fix-final-(registered|started|result)$/.test(record.id))need(!finalRecovery,'fix_history_invalid');
+      }else if(!verificationSuffix&&/^fix-final-(registered|started|result)$/.test(record.id))need(!finalRecovery,'fix_history_invalid');
       if(record.id==='fix-rediagnosis-intent'){
         need(record.kind==='intent'&&stage==='rediagnosis_required'&&pending===null&&rediagnosis===null
           &&causeResult?.observationStatus==='completed'&&causeResult.review.verdict==='changes_requested'
@@ -590,7 +747,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       // Round 2 (after rediagnosis) replays as the cause review cycle, including its own one-time abandonment and retry.
       const causeRevised=/^fix-cause-rediagnosis-((?:retry-(?:2-)?)?(?:registered|started|result)|abandoned(?:-2)?)$/.exec(record.id);
       if(causeRevised){need(rediagnosis!==null,'fix_history_invalid');record={...record,id:`fix-cause-${causeRevised[1]}`};}
-      else if(rediagnosis!==null&&/^fix-cause-(?:(?:retry-(?:2-)?)?(?:registered|started|result)|abandoned(?:-2)?)$/.test(record.id))need(false,'fix_history_invalid');
+      else if(!verificationSuffix&&rediagnosis!==null&&/^fix-cause-(?:(?:retry-(?:2-)?)?(?:registered|started|result)|abandoned(?:-2)?)$/.test(record.id))need(false,'fix_history_invalid');
       // After an abandonment only the next cycle's records are valid: retry-*
       // after the first, retry-2-* after the second (V5, at most two per round).
       const reviewRetry=/^(fix-cause|fix-revision-final)-retry-(2-)?(registered|started|result)$/.exec(record.id);
@@ -599,8 +756,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         const second=reviewRetry[1]==='fix-cause'?causeAbandonment2:revisionAbandonment2;
         need(reviewRetry[2]?second!==null:first!==null&&second===null,'fix_history_invalid');
         record={...record,id:`${reviewRetry[1]}-${reviewRetry[3]}`};
-      }else if(/^fix-cause-(registered|started|result)$/.test(record.id))need(causeAbandonment===null,'fix_history_invalid');
-      else if(/^fix-revision-final-(registered|started|result)$/.test(record.id))need(revisionAbandonment===null,'fix_history_invalid');
+      }else if(!verificationSuffix&&/^fix-cause-(registered|started|result)$/.test(record.id))need(causeAbandonment===null,'fix_history_invalid');
+      else if(!verificationSuffix&&/^fix-revision-final-(registered|started|result)$/.test(record.id))need(revisionAbandonment===null,'fix_history_invalid');
       const observed=/^fix-observation-(?:(\d+)-)?(resume-prepared|reproduce-intent|reproduce-result|diagnose-intent|diagnose-result)$/.exec(record.id);
       if(observed){
         const cycle=observed[2]==='resume-prepared'?observationCycle+1:observationCycle;
@@ -686,7 +843,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(record.id==='fix-revision-prepared'){
         need(['final_review_changes_requested','walkthrough_blocked','post_review_regression_blocked'].includes(stage)&&revision===null&&record.kind==='result','fix_history_invalid');
         shape(record.payload,['nextIdentity','reviewDigest','learning',...(Object.hasOwn(record.payload,'tests')?['tests']:[])]);
-        if(record.payload.tests)readTestExtensionPlan(record.payload.tests,{configuration,feedback:inspectFixRepairReview(revisionFeedback(),{...identity,attempt:2}),files:repairBaseline.files});
+        if(record.payload.tests)readTestExtensionPlan(record.payload.tests,{configuration:checkConfiguration,feedback:inspectFixRepairReview(revisionFeedback(),{...identity,attempt:2}),files:repairBaseline.files});
         const nextIdentity={...identity,attempt:2};
         const feedback=inspectFixRepairReview(revisionFeedback(),nextIdentity);
         need(digest(record.payload.nextIdentity)===digest(nextIdentity)&&record.payload.reviewDigest===digest(feedback),'fix_revision_binding_mismatch');
@@ -702,7 +859,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           &&record.kind==='result','fix_history_invalid');
         shape(record.payload,['revisionDigest','tests']);
         need(record.payload.revisionDigest===digest(revision),'fix_revision_binding_mismatch');
-        const tests=readTestExtensionPlan(record.payload.tests,{configuration,
+        const tests=readTestExtensionPlan(record.payload.tests,{configuration:checkConfiguration,
           feedback:inspectFixRepairReview(revisionFeedback(),revision.nextIdentity),files:repairBaseline.files});
         revision={...revision,tests};stage='revision_test_author_required';continue;
       }
@@ -730,7 +887,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       if(record.id==='fix-revision-test-check-result'){
         need(pending==='revision_test_check'&&record.kind==='result','fix_history_invalid');
-        revisionTestCheck=inspectExtensionCheck(record.payload,configuration,revision.tests,revisionAuthored.testFiles);pending=null;
+        revisionTestCheck=inspectExtensionCheck(record.payload,checkConfiguration,revision.tests,revisionAuthored.testFiles);pending=null;
         stage=revisionTestCheck.status==='recorded'?'revision_prepared':'revision_test_check_blocked';continue;
       }
       if(record.id==='fix-revision-repair-intent'){
@@ -761,7 +918,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       if(record.id==='fix-revision-regression-result'){
         need(revision&&pending==='revision_regression'&&record.kind==='result','fix_history_invalid');
-        revisionRegression=inspectFixRegression(record.payload,{redTest:configuration.redTest,baseline:configuration.baseline,beforeBaseline:baseline,testExtension:revision.tests?{plan:revision.tests,files:revisionAuthored.testFiles}:null});
+        revisionRegression=inspectFixRegression(record.payload,{redTest:checkConfiguration.redTest,baseline:checkConfiguration.baseline,beforeBaseline:baseline,testTypeCorrection:testTyping,testExtension:revision.tests?{plan:revision.tests,files:revisionAuthored.testFiles}:null});
         pending=null;stage=revisionRegression.status==='passed'?'revision_handoff_required':'revision_regression_blocked';continue;
       }
       if(record.id==='fix-revision-retrospective-intent'){
@@ -814,6 +971,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         revisionHandoff=record.payload;pending=null;stage='revision_final_review_required';continue;
       }
       if(/^(fix-cause|fix-revision-final)-abandoned(-2)?$/.test(record.id)){
+        need(!recoveryFor(snapshot.records.slice(0,record.seq),record.id.startsWith('fix-cause')?'cause_review':'revision_final_review'),'fix_verification_recovery_used');
         need(!(configuration.externalModels||configuration.executionPolicy),'external_review_reconciliation_required');
         const causeKind=record.id.startsWith('fix-cause-'),secondAbandon=record.id.endsWith('-2');
         const registration=causeKind?cause:revisionFinalRegistration,result=causeKind?causeResult:revisionFinalResult;
@@ -875,30 +1033,30 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       if(record.id==='fix-revision-post-regression-result'){
         need(revision&&pending==='revision_post_review_regression'&&record.kind==='result','fix_history_invalid');
-        revisionPostRegression=inspectFixRegression(record.payload,{redTest:configuration.redTest,baseline:configuration.baseline,beforeBaseline:baseline,testExtension:revision.tests?{plan:revision.tests,files:revisionAuthored.testFiles}:null});
+        revisionPostRegression=inspectFixRegression(record.payload,{redTest:checkConfiguration.redTest,baseline:checkConfiguration.baseline,beforeBaseline:baseline,testTypeCorrection:testTyping,testExtension:revision.tests?{plan:revision.tests,files:revisionAuthored.testFiles}:null});
         pending=null;stage=revisionPostRegression.status==='passed'?'revision_closeout_required':'revision_post_review_regression_blocked';continue;
       }
       if(record.id==='fix-revision-walkthrough-intent'){
-        need(revision&&stage==='revision_closeout_required'&&record.kind==='intent'&&configuration.walkthrough,'fix_history_invalid');
-        const binding=fixWalkthroughBinding({identity:revision.nextIdentity,packageDigest:revisionN5.packageDigest,diagnosis:diagnosed,configuration:configuration.walkthrough});
+        need(revision&&stage==='revision_closeout_required'&&record.kind==='intent'&&checkConfiguration.walkthrough,'fix_history_invalid');
+        const binding=fixWalkthroughBinding({identity:revision.nextIdentity,packageDigest:revisionN5.packageDigest,diagnosis:diagnosed,configuration:checkConfiguration.walkthrough});
         need(digest(record.payload)===digest(binding),'walkthrough_binding_mismatch');stage='unknown';pending='revision_walkthrough';continue;
       }
       if(record.id==='fix-revision-walkthrough-result'){
         need(revision&&pending==='revision_walkthrough'&&record.kind==='result','fix_history_invalid');
-        const binding=fixWalkthroughBinding({identity:revision.nextIdentity,packageDigest:revisionN5.packageDigest,diagnosis:diagnosed,configuration:configuration.walkthrough});
-        revisionWalkthrough=inspectFixWalkthrough(record.payload,{binding,configuration:configuration.walkthrough});
+        const binding=fixWalkthroughBinding({identity:revision.nextIdentity,packageDigest:revisionN5.packageDigest,diagnosis:diagnosed,configuration:checkConfiguration.walkthrough});
+        revisionWalkthrough=inspectFixWalkthrough(record.payload,{binding,configuration:checkConfiguration.walkthrough});
         pending=null;stage=revisionWalkthrough.status==='passed'?'revision_closeout_required':'revision_walkthrough_blocked';continue;
       }
       need(revision===null||record.kind==='cancel','fix_history_invalid');
       if(record.id==='fix-walkthrough-intent'){
-        need(stage==='closeout_required'&&record.kind==='intent'&&configuration.walkthrough,'fix_history_invalid');
-        const binding=fixWalkthroughBinding({identity,packageDigest:n5.packageDigest,diagnosis:diagnosed,configuration:configuration.walkthrough});
+        need(stage==='closeout_required'&&record.kind==='intent'&&checkConfiguration.walkthrough,'fix_history_invalid');
+        const binding=fixWalkthroughBinding({identity,packageDigest:n5.packageDigest,diagnosis:diagnosed,configuration:checkConfiguration.walkthrough});
         need(digest(record.payload)===digest(binding),'walkthrough_binding_mismatch');stage='unknown';pending='walkthrough';continue;
       }
       if(record.id==='fix-walkthrough-result'){
         need(pending==='walkthrough'&&record.kind==='result','fix_history_invalid');
-        const binding=fixWalkthroughBinding({identity,packageDigest:n5.packageDigest,diagnosis:diagnosed,configuration:configuration.walkthrough});
-        walkthrough=inspectFixWalkthrough(record.payload,{binding,configuration:configuration.walkthrough});
+        const binding=fixWalkthroughBinding({identity,packageDigest:n5.packageDigest,diagnosis:diagnosed,configuration:checkConfiguration.walkthrough});
+        walkthrough=inspectFixWalkthrough(record.payload,{binding,configuration:checkConfiguration.walkthrough});
         pending=null;stage=walkthrough.status==='passed'?'closeout_required':'walkthrough_blocked';continue;
       }
       if(record.id==='fix-n5-result'){
@@ -916,7 +1074,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       if(record.id==='fix-post-regression-result'){
         need(pending==='post_review_regression'&&record.kind==='result','fix_history_invalid');
-        postReviewRegression=inspectFixRegression(record.payload,{redTest:configuration.redTest,baseline:configuration.baseline,beforeBaseline:baseline});
+        postReviewRegression=inspectFixRegression(record.payload,{redTest:checkConfiguration.redTest,baseline:checkConfiguration.baseline,beforeBaseline:baseline,testTypeCorrection:testTyping});
         pending=null;stage=postReviewRegression.status==='passed'?'closeout_required':'post_review_regression_blocked';continue;
       }
       if(record.id==='fix-final-registered'){
@@ -950,10 +1108,10 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(stage==='handoff_ready'&&record.kind==='intent','fix_history_invalid');
         const evidence=fixHandoffEvidence({identity,learning,retrospective,writeback});
         const extension=Object.hasOwn(record.payload,'redOutput')?{redOutput:record.payload.redOutput}:{};
-        if(Object.hasOwn(extension,'redOutput'))evidence.push(...fixDefectHandoffEvidence({configuration,reproduction,diagnosis:diagnosed,redTest:red,redOutput:extension.redOutput}));
+        if(Object.hasOwn(extension,'redOutput'))evidence.push(...fixDefectHandoffEvidence({configuration:checkConfiguration,reproduction,diagnosis:diagnosed,redTest:red,redOutput:extension.redOutput}));
         if(Object.hasOwn(record.payload,'observationFiles'))extension.observationFiles=record.payload.observationFiles;
         if(Object.hasOwn(record.payload,'observationArchive'))extension.observationArchive=record.payload.observationArchive;
-        evidence.push(...observationReviewEvidence(observationResume,extension.observationFiles,extension.observationArchive));
+        evidence.push(...typeEvidence(snapshot.records.slice(0,record.seq-1)),...observationReviewEvidence(observationResume,extension.observationFiles,extension.observationArchive));
         need(digest(record.payload)===digest({packageDigest:(learningPackage??retrospectivePackage).packageDigest,evidence,...extension}),'handoff_binding_mismatch');
         stage='unknown';pending='handoff';continue;
       }
@@ -984,6 +1142,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         const metadata=file=>{if(file===null)return null;const {contentBase64,...rest}=file;return rest;};
         const oldFiles=new Map(before.files.map(file=>[file.path,metadata(file)]));
         const afterFiles=new Map([...repairBaseline.files.filter(file=>!repairBaseline.scope.includes(file.path)),...repaired.files].map(file=>[file.path,metadata(file)]));
+        if(testTyping)afterFiles.set(testTyping.path,typeMetadata(testTyping.after));
         const changes=[...new Set([...oldFiles.keys(),...afterFiles.keys()])].sort()
           .map(path=>({path,before:oldFiles.get(path)??null,after:afterFiles.get(path)??null}))
           .filter(change=>digest(change.before)!==digest(change.after));
@@ -1007,7 +1166,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       if(record.id==='fix-regression-result'){
         need(pending==='regression'&&record.kind==='result','fix_history_invalid');
-        regression=inspectFixRegression(record.payload,{redTest:configuration.redTest,baseline:configuration.baseline,beforeBaseline:baseline});
+        regression=inspectFixRegression(record.payload,{redTest:checkConfiguration.redTest,baseline:checkConfiguration.baseline,beforeBaseline:baseline,testTypeCorrection:testTyping});
         pending=null;stage=regression.status==='passed'?'handoff_required':'regression_blocked';continue;
       }
       if(record.id==='fix-repair-intent'){
@@ -1021,7 +1180,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           &&digest(repairBaseline.requirements)===digest([...configuration.repair.requirements].sort())
           &&record.payload.redDigest===digest(red)&&record.payload.testBaselineDigest===digest(baseline),'repair_binding_mismatch');
         need(repairBaseline.scope.every(file=>(diagnosed.affectedPaths.includes(file)||isFixMapPath(file))
-          &&![...configuration.redTest.testFiles,...configuration.baseline.testFiles].some(test=>test.toLowerCase()===file.toLowerCase())),'repair_scope_mismatch');
+          &&![...checkConfiguration.redTest.testFiles,...checkConfiguration.baseline.testFiles].some(test=>test.toLowerCase()===file.toLowerCase())),'repair_scope_mismatch');
         stage='unknown';pending='repair';continue;
       }
       if(record.id==='fix-repair-result'){
@@ -1035,7 +1194,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         const codeRoot=fs.realpathSync(configuration.reproduction.cwd);
         need(authorBaseline.rootDigest===createHash('sha256').update(codeRoot).digest('hex')
           &&(authorBaseline.specsPath??null)===reviewSpecsPath(codeRoot,evidenceSpecsRoot),'test_author_binding_mismatch');
-        need(digest(authorBaseline.identity)===digest(identity)&&digest(authorBaseline.scope)===digest([...configuration.redTest.testFiles].sort())
+        need(digest(authorBaseline.identity)===digest(identity)&&digest(authorBaseline.scope)===digest([...checkConfiguration.redTest.testFiles].sort())
           &&digest(authorBaseline.requirements)===digest([...configuration.testAuthor.requirements].sort()),'test_author_binding_mismatch');
         stage='unknown';pending='test_author';continue;
       }
@@ -1048,24 +1207,24 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(stage==='baseline_required'&&runBaseline&&record.kind==='intent','fix_history_invalid');
         shape(record.payload,['testFiles','redDigest']);baselineFiles=record.payload.testFiles;
         need(record.payload.redDigest===digest(red)&&Array.isArray(baselineFiles)
-          &&digest(baselineFiles.map(file=>file.path))===digest([...configuration.baseline.testFiles].sort()),'baseline_mismatch');
+          &&digest(baselineFiles.map(file=>file.path))===digest([...checkConfiguration.baseline.testFiles].sort()),'baseline_mismatch');
         stage='unknown';pending='baseline';continue;
       }
       if(record.id==='fix-baseline-result'){
         need(pending==='baseline'&&record.kind==='result','fix_history_invalid');
-        baseline=inspectFixBaseline(record.payload,configuration.baseline,baselineFiles);pending=null;
+        baseline=inspectFixBaseline(record.payload,checkConfiguration.baseline,baselineFiles);pending=null;
         stage=baseline.status==='recorded'?'repair_required':'baseline_blocked';continue;
       }
       if(record.id==='fix-red-test-intent'){
         need(stage===redStage()&&runRed&&record.kind==='intent','fix_history_invalid');
         need(!configuration.testAuthor||authored?.outcome==='authored','test_author_required');
         shape(record.payload,['testFiles']);redFiles=record.payload.testFiles;
-        need(Array.isArray(redFiles)&&digest(redFiles.map(file=>file.path))===digest([...configuration.redTest.testFiles].sort()),'red_test_mismatch');
+        need(Array.isArray(redFiles)&&digest(redFiles.map(file=>file.path))===digest([...checkConfiguration.redTest.testFiles].sort()),'red_test_mismatch');
         stage='unknown';pending='red_test';continue;
       }
       if(record.id==='fix-red-test-result'){
         need(pending==='red_test'&&record.kind==='result','fix_history_invalid');
-        red=inspectFixRedTest(record.payload,configuration.redTest,identity,redFiles,retried?Number(retried[2]):0);pending=null;
+        red=inspectFixRedTest(record.payload,checkConfiguration.redTest,identity,redFiles,retried?Number(retried[2]):0);pending=null;
         stage=red.status==='red_confirmed'?(diagnosed.status==='design_change'?'escalation_required':'baseline_required'):red.status==='blocked'?'red_test_blocked':'red_test_not_confirmed';continue;
       }
       if(record.id==='fix-cause-registered'){
@@ -1108,6 +1267,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(digest(pkg.identity)===digest(identity)&&pkg.defect===configuration.defect
           &&digest(pkg.reproduction)===digest(reproduction)&&digest(pkg.diagnosis)===digest(diagnosed)
           &&digest(pkg.learning)===digest(learning)
+          &&digest(pkg.sourceRevision??null)===digest(sourceCorrectionResult?sourceRevision(sourceCorrectionIntent.target):null)
           &&digest(pkg.rediagnosis??null)===digest(rediagnosis===null?null:rediagnosisPackage(rediagnosis)),'cause_registration_mismatch');
         causeOrigin=stage;stage='unknown';pending='cause_review';continue;
       }
@@ -1163,14 +1323,26 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     // 走查声明与诊断不符应尽早阻断，避免完成独立审查后才发现。
     // 只在「刚诊断完、还没往下走」时改阶段：已经跑过头的旧记录保持原样。回放循环
     // 会拿当前阶段去校验下一条记录，所以这个判断必须放在循环之后，不能插在循环里。
-    if(configuration.walkthrough&&diagnosed?.status==='diagnosed'
+    if(checkConfiguration.walkthrough&&diagnosed?.status==='diagnosed'
       &&['red_test_required','cause_review_required'].includes(stage)
-      &&!walkthroughCoversDiagnosis(configuration.walkthrough,diagnosed))stage='walkthrough_configuration_mismatch';
+      &&!walkthroughCoversDiagnosis(checkConfiguration.walkthrough,diagnosed))stage='walkthrough_configuration_mismatch';
     // Live re-verification of the run's evidence against the current tree. A
     // durable history read (a completed run as a later delivery of its root) asks
     // only what the journal and its closeout settled: later reviewed changes may
     // legitimately move these files, and the caller checks the tree itself.
     if(!durableHistory){
+      const pendingTyping=testTypingIntent?.target.correction;
+      let liveTyping=testTyping;
+      if(pendingTyping&&!testTyping){
+        const current=readTestTypeCorrectionFile({root:configuration.reproduction.cwd,path:pendingTyping.path});
+        need(digest(current)===digest(pendingTyping.before)||digest(current)===digest(pendingTyping.after),'fix_test_type_correction_drift');
+        if(digest(current)===digest(pendingTyping.after))liveTyping=pendingTyping;
+      }
+      const correction=correctionRow(snapshot.records);
+      if(correction&&!red&&!repairBaseline){
+        try{need(digest(correctionFiles(configuration,correction.payload.target.declaration))===correction.payload.target.snapshotDigest,'fix_command_correction_drift');}
+        catch{stage='command_correction_drift';}
+      }
       // F14 exemption: once a repair (or, while it is being redone, a test
       // authoring) pinned its baseline, that intent already passed this check;
       // the residue in its scope is the redo's input and is reviewed against
@@ -1181,6 +1353,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           const current=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,
             context:Object.hasOwn(cause.request.payload.reviewPackage,'contextFiles'),status:{identity,stage:'cause_review_required',reproduction,diagnosis:diagnosed,learning,
               ...(rediagnosis?{rediagnosis}:{}),
+              ...(sourceCorrectionResult?{sourceRevision:sourceRevision(sourceCorrectionIntent.target)}:{}),
               ...(cause.request.payload.reviewPackage.correction?{causeReviewCorrection:cause.request.payload.reviewPackage.correction}:{})}});
           verifyFixCauseTransition(cause.request.payload.reviewPackage,current,authorBaseline,authored);
         }catch{stage='cause_review_drift';}
@@ -1189,19 +1362,19 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         try{publishCause(true);}catch{stage='cause_review_evidence_required';}
       }
       if(red&&!(revisionAuthorBaseline&&stage==='unknown')&&!['cancelled','cause_review_drift','cause_review_evidence_required'].includes(stage)){
-        try{verifyFixRedEvidence(red,configuration.redTest,evidenceSpecsRoot,currentTestFiles(red.testFiles,revisionAuthored?.outcome==='authored'?{files:revisionAuthored.testFiles}:null));}catch{stage='red_test_evidence_required';}
+        try{verifyFixRedEvidence(red,checkConfiguration.redTest,evidenceSpecsRoot,currentTestFiles(typeFiles(red.testFiles,liveTyping),revisionAuthored?.outcome==='authored'?{files:revisionAuthored.testFiles}:null));}catch{stage='red_test_evidence_required';}
       }
       if(baseline&&['repair_required','baseline_blocked'].includes(stage)){
-        try{need(digest(fixBaselineFiles(configuration.baseline))===digest(baseline.testFiles),'baseline_files_changed');}
+        try{need(digest(fixBaselineFiles(checkConfiguration.baseline))===digest(baseline.testFiles),'baseline_files_changed');}
         catch{stage='baseline_evidence_required';}
       }
       if(stage===redStage()&&configuration.testAuthor&&!authored)stage='test_author_required';
       if(stage===redStage()&&authored){
-        try{need(digest(redTestFiles(configuration.redTest))===digest(authored.testFiles),'test_author_drift');}
+        try{need(digest(redTestFiles(checkConfiguration.redTest))===digest(authored.testFiles),'test_author_drift');}
         catch{stage='test_author_evidence_required';}
       }
       if(!revisionAuthorBaseline&&repaired&&!learningPackage&&['regression_required','repair_blocked','handoff_required','regression_blocked','handoff_ready','learning_writeback_required','learning_writeback_blocked',...finalStages].includes(stage)){
-        try{verifyFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,baseline:repairBaseline,result:repaired});}
+        try{verifyFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,baseline:repairBaseline,result:repaired,testTypeCorrection:pendingTyping??null,allowTypeBefore:!testTyping});}
         catch{stage='repair_evidence_required';}
       }
       if(!revisionAuthorBaseline&&retrospective&&!learningPackage&&['handoff_ready','learning_writeback_required',...finalStages].includes(stage)){
@@ -1294,7 +1467,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       }
       stage='observation_cause_review_correction_required';
     }
-    if(isVisual(configuration.redTest)&&!['cancelled','unknown'].includes(stage)){
+    if(isVisual(checkConfiguration.redTest)&&!['cancelled','unknown'].includes(stage)){
       try{for(const observed of [regression,postReviewRegression,revisionRegression,revisionPostRegression])
         if(observed?.red.after)verifyVisualCarrier(observed.red.after);}
       catch{stage='visual_evidence_required';}
@@ -1307,11 +1480,16 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     const causeNoResult=noReviewResult(cause,causeResult,'cause_review');
     const revisionNoResult=noReviewResult(revisionFinalRegistration,revisionFinalResult,'revision_final_review');
     if(stage==='unknown'&&[...reviewLedger.receipts.values()].some(p=>reviewLedger.applied.has(p.invocationId)&&p.inspection.kind==='cm-provider-review-failure')){stage='review_provider_failed';pending=null;}
-    const reviewAbandonable=!(configuration.externalModels||configuration.executionPolicy)&&causeNoResult&&!causeAbandonment2?'cause_review':!(configuration.externalModels||configuration.executionPolicy)&&revisionNoResult&&!revisionAbandonment2?'revision_final_review':null;
+    const reviewAbandonable=!recoveryFor(snapshot.records,'cause_review')&&!(configuration.externalModels||configuration.executionPolicy)&&causeNoResult&&!causeAbandonment2?'cause_review':!recoveryFor(snapshot.records,'revision_final_review')&&!(configuration.externalModels||configuration.executionPolicy)&&revisionNoResult&&!revisionAbandonment2?'revision_final_review':null;
     lastPinned=pinned;
     const rerunKind=RERUNNABLE[stage]&&(revision===null)!==RERUNNABLE[stage].startsWith('revision_')?RERUNNABLE[stage]:null;
-    const status=json({identity,stage,pending,abandoned,executionActive:active!==null,reproduction,diagnosis:diagnosed,learning,causeReview:causeResult,
-      ...(reviewAbandonable?{reviewAbandonable}:{}),
+    const status=json({identity,stage,pending,abandoned,
+      ...(testTypingIntent?{testTypeCorrection:{target:testTypingIntent.target,applied:Boolean(testTyping)}}:{}),
+      ...(correctionRow(snapshot.records)?{commandCorrection:correctionRow(snapshot.records).payload}:{}),executionActive:active!==null,reproduction,diagnosis:diagnosed,learning,causeReview:causeResult,
+      ...(reviewAbandonable&&(!sourceCorrectionIntent||snapshot.records.some(r=>r.id===`${VERIFICATION_RECOVERY}-registered`))?{reviewAbandonable}:{}),
+      ...(sourceCorrectionIntent?{sourceCorrection:{target:sourceCorrectionIntent.target,checksUsed:sourceCheckCount,failed:snapshot.records.some(r=>r.id===`${VERIFICATION_RECOVERY}-source-failed`),applied:sourceCorrectionResult!==null}}:{}),
+      ...(sourceCorrectionResult?{sourceRevision:sourceRevision(sourceCorrectionIntent.target)}:{}),
+      ...(verificationRecovery?{verificationRecovery:{...verificationRecovery,authorizationDigest:digest(verificationRecovery),used:snapshot.records.some(r=>r.id===`${VERIFICATION_RECOVERY}-registered`)}}:{}),
       ...(Object.keys(pinned).length?{pinnedBaselines:Object.fromEntries(Object.entries(pinned).map(([kind,value])=>[kind,value.baselineDigest]))}:{}),
       ...(Object.keys(blockedReruns).length?{blockedReruns}:{}),
       ...(rerunKind?{blockedRerun:{pending:rerunKind,used:blockedReruns[rerunKind]??0,limit:MAX_FIX_BLOCKED_RERUNS}}:{}),
@@ -1335,7 +1513,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       ...(revisionFinalResult?{revisionFinalReview:revisionFinalResult}:{}),
       ...(revisionN5?{revisionN5}:{}),
       ...(revisionPostRegression?{revisionPostRegression}:{}),
-      ...(configuration.walkthrough&&revision?{revisionWalkthrough}:{}),
+      ...(checkConfiguration.walkthrough&&revision?{revisionWalkthrough}:{}),
       ...(runRed?{redTest:red}:{}),...(runBaseline?{baseline}:{}),
       ...(configuration.testAuthor?{testAuthor:authored}:{}),...(configuration.repair?{repair:repaired,regression}:{}),
       ...(retrospective?{retrospective}:{}),...(writeback?{learningWriteback:writeback}:{}),...(handoff?{handoff,
@@ -1345,14 +1523,14 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       ...(finalRegistration?{finalReviewInvocation:{invocationId:finalRegistration.request.invocationId,
         packageDigest:finalRegistration.request.payload.reviewPackage.packageDigest,providerThreadId:finalStarted}}:{}),
       ...(finalResult?{finalReview:finalResult}:{}),...(n5?{n5}:{}),...(postReviewRegression?{postReviewRegression}:{}),
-      ...(configuration.walkthrough?{walkthrough}:{}),completionEligible:false});
+      ...(checkConfiguration.walkthrough?{walkthrough}:{}),completionEligible:false});
     if(revisionN5){
-      const projected=fixCompletionProjection({specsRoot:evidenceSpecsRoot,configuration,identity:revision.nextIdentity,status:revisionCloseoutStatus(status)});
+      const projected=fixCompletionProjection({specsRoot:evidenceSpecsRoot,configuration:checkConfiguration,identity:revision.nextIdentity,status:revisionCloseoutStatus(status)});
       return json({...status,...(projected.completionHistory?{completionHistory:projected.completionHistory}:{}),
         stage:projected.stage==='completed'?'completed':projected.stage==='closeout_incomplete'?'revision_closeout_incomplete':status.stage,
         completionEligible:projected.completionEligible});
     }
-    return n5?json(fixCompletionProjection({specsRoot:evidenceSpecsRoot,configuration,identity,status})):status;
+    return n5?json(fixCompletionProjection({specsRoot:evidenceSpecsRoot,configuration:checkConfiguration,identity,status})):status;
   }
   try{
     // The existing shared writer lock is already held here: a live parent
@@ -1382,6 +1560,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const current=project();
       need(authorized===true&&current.stage==='unknown'&&abandonable.has(current.pending),'fix_abandon_unavailable');
       need(current.abandoned.length<8,'fix_abandon_limit');
+      // The correction consumes retry 1. Never authorize a ninth red intent.
+      if(current.pending==='red_test')need(retryCount('fix-red-test')<8,'fix_abandon_limit');
       need(typeof reason==='string'&&reason.trim().length>0
         &&Buffer.byteLength(reason,'utf8')<=1000&&!/[\r\n\0\u0085\u2028\u2029]/.test(reason),'fix_abandon_unavailable');
       const intent=[...store.snapshot().records].reverse().find(row=>row.kind==='intent'
@@ -1421,11 +1601,131 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         detail:`带理由重跑合法阻断的步骤：${kind}`,data:{pending:kind,stage:current.stage,reason}});
       return project();
     },
+    inspectTestTypeCorrection({declaration}={}){
+      need(!closed&&active===null,'fix_busy');
+      return inspectTestTypeTarget({configuration,records:store.snapshot().records,status:project(),identity,specsRoot:evidenceSpecsRoot,declaration});
+    },
+    prepareTestTypeCorrection({authorized=false,expected,declaration,previousInvocationStopped=false,reason}={}){
+      need(!closed&&active===null,'fix_busy');need(authorized===true,'fix_test_type_correction_authorization_required');
+      const records=store.snapshot().records,prior=typeIntent(records);let payload;
+      if(prior){
+        need(!typeCorrection(records),'fix_test_type_correction_used');
+        need(digest(prior.payload.target)===digest(expected)&&previousInvocationStopped===true&&reason===prior.payload.reason,'fix_test_type_correction_stale');
+        payload=prior.payload;
+        const c=payload.target.correction;
+        need(digest(declaration)===digest({kind:c.kind,path:c.path,beforeSha256:c.before.sha256,line:c.line,parameter:c.parameter,annotation:c.annotation}),'fix_test_type_correction_stale');
+      }else{
+        const target=this.inspectTestTypeCorrection({declaration});need(digest(target)===digest(expected),'fix_test_type_correction_stale');
+        payload=inspectTestTypeIntent({target,reason,previousInvocationStopped},{configuration,records,status:project()});
+      }
+      const c=payload.target.correction;
+      need(typeSnapshot({configuration,identity,specsRoot:evidenceSpecsRoot,correction:c})===payload.target.snapshotDigest,'fix_test_type_correction_drift');
+      if(!prior)append(TYPE_INTENT,'intent',payload);
+      applyTestTypeCorrection({root:configuration.reproduction.cwd,correction:c});
+      need(typeSnapshot({configuration,identity,specsRoot:evidenceSpecsRoot,correction:c})===payload.target.snapshotDigest,'fix_test_type_correction_drift');
+      append(TYPE_RESULT,'result',{intentDigest:digest(payload),after:typeMetadata(c.after)});return project();
+    },
+    // Qualification only reads bound files and history; it never executes a command or provider.
+    inspectCommandCorrection({declaration}={}){
+      need(!closed&&active===null,'fix_busy');
+      return inspectCommandCorrectionTarget({configuration,records:store.snapshot().records,status:project(),specsRoot:evidenceSpecsRoot,declaration});
+    },
+    prepareCommandCorrection({authorized=false,expected,declaration,previousInvocationStopped=false,reason}={}){
+      need(!closed&&active===null,'fix_busy');need(authorized===true,'fix_command_correction_authorization_required');
+      const target=inspectCommandCorrectionTarget({configuration,records:store.snapshot().records,status:project(),specsRoot:evidenceSpecsRoot,declaration});
+      need(digest(target)===digest(expected),'fix_command_correction_stale');
+      const payload=inspectCommandCorrection({target,reason,previousInvocationStopped},{configuration,records:store.snapshot().records,red:project().redTest});
+      const snapshot=store.snapshot(),candidate={version:1,seq:snapshot.records.length+1,id:COMMAND_CORRECTION,kind:'result',payload,previousDigest:snapshot.records.at(-1).digest};
+      project({...snapshot,records:[...snapshot.records,{...candidate,digest:digest(candidate)}]});
+      append(COMMAND_CORRECTION,'result',payload);return project();
+    },
+    async inspectVerificationRecovery(options={}){return (await inspectVerificationRecovery(options)).target;},
+    async prepareVerificationRecovery({authorized=false,sourceCorrectionAuthorized=false,expected,sourceCorrection,previousInvocationStopped=false,reason}={}){
+      need(!closed&&active===null,'fix_busy');need(authorized===true,'fix_verification_recovery_authorization_required');
+      need(!sourceCorrection||sourceCorrectionAuthorized===true,'fix_source_correction_authorization_required');
+      const existing=recoveryPreparation(store.snapshot().records);
+      if(existing){
+        if(existing.payload.sourceResultDigest){
+          const c=existing.payload.target.sourceCorrection;
+          need(sourceCorrectionAuthorized===true&&sourceCorrection,'fix_source_correction_authorization_required');
+          need(digest(sourceCorrection)===digest({kind:c.kind,path:c.path,beforeSha256:c.before.sha256,typeNames:c.typeNames}),'fix_source_correction_binding');
+        }else need(!sourceCorrection,'fix_source_correction_binding');
+        need(!store.snapshot().records.some(r=>r.id===`${VERIFICATION_RECOVERY}-registered`),'fix_verification_recovery_used');
+        need(digest(expected)===digest(existing.payload.target)&&previousInvocationStopped===true&&reason===existing.payload.reason,'fix_verification_recovery_binding');
+        if(existing.payload.sourceResultDigest){const result=sourceResult(store.snapshot().records).payload;
+          need(recoveryPackage('cause_review').packageDigest===result.package.packageDigest,'fix_source_correction_drift');
+          const files=verificationRuntime.validateReviewVerificationInputs({codeProject,configuration:configuration.reviewVerification,reviewPackage:result.package}).map(({data,...f})=>f);
+          need(digest(files)===result.baseline.snapshotDigest,'fix_source_correction_drift');}
+        return {...existing.payload,authorizationDigest:digest(existing.payload)};
+      }
+      need(previousInvocationStopped===true,'fix_verification_recovery_confirmation');
+      const source=sourceIntent(store.snapshot().records);
+      if(sourceCorrection||source){
+        need(sourceCorrectionAuthorized===true&&sourceCorrection,'fix_source_correction_authorization_required');
+        need(project().stage==='unknown','fix_source_correction_unavailable');
+        need(!store.snapshot().records.some(r=>r.id===`${VERIFICATION_RECOVERY}-source-failed`),'fix_source_correction_failed');
+        if(!source){
+          const check=inspectVerificationRecovery({sourceCorrection});active=new AbortController();let checked;
+          try{checked=await check;}finally{active=null;}
+          need(digest(checked.target)===digest(expected),'fix_verification_recovery_stale');
+          const value={target:checked.target,reason,previousInvocationStopped};inspectSourceIntent(value,verificationRecoveryContext());
+          append(SOURCE_INTENT,'intent',value);
+        }
+        const intent=sourceIntent(store.snapshot().records).payload,c=intent.target.sourceCorrection;
+        need(digest(expected)===digest(intent.target)&&reason===intent.reason&&previousInvocationStopped===true
+          &&digest(sourceCorrection)===digest({kind:c.kind,path:c.path,beforeSha256:c.before.sha256,typeNames:c.typeNames}),'fix_source_correction_binding');
+        let result=sourceResult(store.snapshot().records)?.payload;
+        const pkg=store.snapshot().records.findLast(r=>/-registered$/.test(r.id)&&r.payload.request?.role==='reviewer').payload.request.payload.reviewPackage;
+        const currentFile=readTypeImportCorrectionFile({root:codeProject,path:c.path});
+        const after=digest(currentFile)===digest(c.after);
+        need(after||digest(currentFile)===digest(c.before),'type_import_correction_stale');
+        const boundPackage=result?.package??(after?successorPackage(pkg,intent.target,pkg.reproduction):pkg);
+        const actual=verificationRuntime.validateReviewVerificationInputs({codeProject,configuration:configuration.reviewVerification,reviewPackage:boundPackage}).map(({data,...f})=>f);
+        const expectedFiles=intent.target.files.map(f=>after&&f.path===c.path?{path:f.path,sha256:c.after.sha256,mode:c.after.mode}:f);
+        need(digest(actual)===(result?.baseline.snapshotDigest??digest(expectedFiles)),'fix_source_correction_drift');
+        if(!result){
+          const used=store.snapshot().records.filter(r=>new RegExp(`^${VERIFICATION_RECOVERY}-source-check-[12]-intent$`).test(r.id)).length;
+          need(used<2,'fix_source_correction_check_budget');
+          // Only the exact before or after image is acceptable after interruption.
+          applyTypeImportCorrection({root:codeProject,correction:c});
+          append(`${VERIFICATION_RECOVERY}-source-check-${used+1}-intent`,'intent',{intentDigest:digest(intent),previousInvocationStopped:true});
+          const controller=new AbortController();active=controller;const timer=setTimeout(()=>controller.abort(),configuration.reproduction.timeoutMs);
+          try{
+            const reproduction=await createFixReproduction(configuration.reproduction,{specsRoot:protectedSpecsRoot})({identity},{signal:controller.signal,authorized:true});
+            clearTimeout(timer);need(reproduction.status==='reproduced','fix_source_correction_reproduction_changed');
+            const successor=successorPackage(pkg,intent.target,reproduction);
+            const currentPackage=()=>createFixCausePackage({codeProject,defect:configuration.defect,status:{...project(),stage:'cause_review_required',reproduction,sourceRevision:sourceRevision(intent.target)}});
+            need(currentPackage().packageDigest===successor.packageDigest,'fix_source_correction_drift');
+            const baseline=await verificationRuntime.verifyReviewVerificationBaseline({codeProject,configuration:configuration.reviewVerification,reviewPackage:successor,signal:controller.signal});
+            need(currentPackage().packageDigest===successor.packageDigest,'fix_source_correction_drift');
+            result={intentDigest:digest(intent),reproduction,baseline,package:successor};inspectSourceResult(result,intent,configuration,pkg);
+            need(!closed,'store_closed');need(!controller.signal.aborted&&project().stage==='unknown','cancelled');
+          }catch(error){if(!closed&&project().stage==='unknown')append(`${VERIFICATION_RECOVERY}-source-failed`,'result',{intentDigest:digest(intent),code:['fix_source_correction_reproduction_changed','fix_source_correction_drift','store_closed'].includes(error?.code)?error.code:verificationFailureCode(error)});throw error;}
+          finally{clearTimeout(timer);active=null;}
+          // A durable append failure has unknown outcome: never append a competing failure.
+          append(SOURCE_RESULT,'result',result);
+        }
+        need(recoveryPackage('cause_review').packageDigest===result.package.packageDigest,'fix_source_correction_drift');
+        const value={target:intent.target,checks:result.baseline.checks,reason,previousInvocationStopped:true,sourceResultDigest:digest(result)};
+        append(`${VERIFICATION_RECOVERY}-prepared`,'result',value);project();
+        return {...value,authorizationDigest:digest(value)};
+      }
+      const pendingCheck=inspectVerificationRecovery();active=new AbortController();
+      let checked;try{checked=await pendingCheck;}finally{active=null;}
+      need(!closed,'store_closed');
+      need(digest(checked.target)===digest(expected),'fix_verification_recovery_stale');
+      const value={target:checked.target,checks:checked.checks,reason,previousInvocationStopped};
+      inspectRecoveryPreparation(value,verificationRecoveryContext());
+      append(`${VERIFICATION_RECOVERY}-prepared`,'result',value);
+      return {...value,authorizationDigest:digest(value)};
+    },
     // One audited abandonment per review kind, mirroring cm-ai abandon_review. The
     // host confirms the old reviewer process stopped; the record binds the exact
     // registration, thread and any no-result observation. The retry needs the
     // original review permission and a fresh reviewer thread.
     abandonReview({reason,authorized=false}={}){
+      const latestReview=store.snapshot().records.findLast(r=>r.id.endsWith('-registered')&&r.payload.request?.role==='reviewer');
+      need(latestReview?.id!==`${VERIFICATION_RECOVERY}-registered`&&(!sourceIntent(store.snapshot().records)||store.snapshot().records.some(r=>r.id===`${VERIFICATION_RECOVERY}-registered`)),'fix_verification_recovery_used');
       need(!(configuration.externalModels||configuration.executionPolicy),'external_review_reconciliation_required');
       need(!closed&&active===null,'fix_busy');need(authorized===true,'fix_review_abandon_authorization_required');
       need(typeof reason==='string'&&reason.trim().length>0&&Buffer.byteLength(reason,'utf8')<=1000
@@ -1447,6 +1747,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       return project();
     },
     recoverFinalReview({authorized=false,recoveryInvocationId=null,invocationId,packageDigest,previousInvocationStopped,reason}={}){
+      need(!recoveryFor(store.snapshot().records,'final_review'),'fix_verification_recovery_used');
       need(!(configuration.externalModels||configuration.executionPolicy),'external_review_reconciliation_required');
       need(!closed&&active===null,'fix_busy');need(authorized===true,'fix_review_recovery_authorization_required');
       const current=project(),records=store.snapshot().records;
@@ -1514,8 +1815,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(start.revision){
         need(['revision_prepared','revision_test_author_required'].includes(start.stage),'fix_revision_unavailable');
         if(start.stage==='revision_prepared'&&!start.revision.tests&&tests!==undefined){
-          need(!isVisual(configuration.redTest),'fix_test_extension_unavailable');
-          tests=readTestExtensionPlan(tests,{configuration,feedback:inspectFixRepairReview(revisionFeedback(),start.revision.nextIdentity),
+          need(!isVisual(currentConfig().redTest),'fix_test_extension_unavailable');
+          tests=readTestExtensionPlan(tests,{configuration:currentConfig(),feedback:inspectFixRepairReview(revisionFeedback(),start.revision.nextIdentity),
             files:latestStepRecord(store.snapshot().records,'fix-repair-intent').payload.baseline.files});
           append('fix-revision-tests-prepared','result',{revisionDigest:digest(start.revision),tests});return project();
         }
@@ -1524,11 +1825,11 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       need(['final_review_changes_requested','walkthrough_blocked','post_review_regression_blocked'].includes(start.stage)&&identity.attempt===1,'fix_revision_unavailable');
       need(typeof prepare==='function','fix_learning_preparation_required');
       const nextIdentity={...identity,attempt:2},feedback=inspectFixRepairReview(revisionFeedback(),nextIdentity);
-      if(tests!==undefined){need(!isVisual(configuration.redTest),'fix_test_extension_unavailable');tests=readTestExtensionPlan(tests,{configuration,feedback,files:latestStepRecord(store.snapshot().records,'fix-repair-intent').payload.baseline.files});}
+      if(tests!==undefined){need(!isVisual(currentConfig().redTest),'fix_test_extension_unavailable');tests=readTestExtensionPlan(tests,{configuration:currentConfig(),feedback,files:latestStepRecord(store.snapshot().records,'fix-repair-intent').payload.baseline.files});}
       const controller=new AbortController();active=controller;
       let onAbort;
       const interrupted=new Promise((resolve,reject)=>{onAbort=()=>reject(Object.assign(new Error('Learning interrupted'),{code:'fix_learning_interrupted'}));controller.signal.addEventListener('abort',onAbort,{once:true});});
-      const timer=setTimeout(()=>controller.abort(),configuration.redTest.timeoutMs);
+      const timer=setTimeout(()=>controller.abort(),currentConfig().redTest.timeoutMs);
       try{
         const nextLearning=inspectFixLearning(await Promise.race([interrupted,Promise.resolve().then(()=>prepare({identity:nextIdentity,defect:configuration.defect},controller.signal))]));
         need(!controller.signal.aborted,'fix_learning_interrupted');
@@ -1543,9 +1844,18 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         return project();
       }finally{clearTimeout(timer);controller.signal.removeEventListener('abort',onAbort);active=null;}
     },
-    finish({authorized=false}={}){
+    finish({authorized=false,cooperative=false}={}){
       need(!closed&&active===null,'fix_busy');need(authorized===true,'fix_finish_authorization_required');
       const status=project();
+      // Keep direct callers synchronous. The host yields only before fresh checks;
+      // the existing serial owner remains busy throughout cooperative closeout.
+      const finish=(options,guard)=>{
+        if(!cooperative)return finishFix(options,guard);
+        const controller=new AbortController();active=controller;
+        return finishFixCooperatively(options,{assertOwned(){
+          need(!controller.signal.aborted&&!closed,'fix_closeout_interrupted');guard.assertOwned();
+        }}).finally(()=>{active=null;});
+      };
       if(status.stage==='escalation_required'||status.stage==='escalated'){
         const archived=this.publishDossier();
         const dossier={path:fixDossierRelative(configuration,path.basename(archived.dossier.path)),sha256:archived.dossier.sha256};
@@ -1575,15 +1885,15 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       if(status.revisionN5){
         need(['revision_closeout_required','revision_closeout_incomplete','completed'].includes(status.stage),'fix_closeout_unavailable');
         const registration=reviewCycleRecord(store.snapshot().records,'fix-revision-final','registered');
-        finishFix({specsRoot:evidenceSpecsRoot,identity:status.revision.nextIdentity,configuration,status:revisionCloseoutStatus(status),registeredAt:registration.payload.registeredAt},{assertOwned(){
+        const result=finish({specsRoot:evidenceSpecsRoot,identity:status.revision.nextIdentity,configuration:currentConfig(),status:revisionCloseoutStatus(status),registeredAt:registration.payload.registeredAt},{assertOwned(){
           const current=project();need(['revision_closeout_required','revision_closeout_incomplete','completed'].includes(current.stage),'fix_evidence_changed');
           need(digest(current.revisionN5)===digest(status.revisionN5)&&digest(current.revisionWalkthrough)===digest(status.revisionWalkthrough),'fix_evidence_changed');
         }});
-        return project();
+        return cooperative?result.then(()=>project()):project();
       }
       const registration=finalRecord(store.snapshot().records,'registered');
       need(registration,'fix_closeout_unavailable');
-      return finishFix({specsRoot:evidenceSpecsRoot,identity,configuration,status,registeredAt:registration.payload.registeredAt},{assertOwned(){
+      return finish({specsRoot:evidenceSpecsRoot,identity,configuration:currentConfig(),status,registeredAt:registration.payload.registeredAt},{assertOwned(){
         const current=project();need(['closeout_required','closeout_incomplete','completed'].includes(current.stage),'fix_evidence_changed');
         need(digest(current.n5)===digest(status.n5)&&digest(current.walkthrough)===digest(status.walkthrough),'fix_evidence_changed');
       }});
@@ -1593,9 +1903,9 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const revising=start.stage==='revision_closeout_required';
       if(!['closeout_required','revision_closeout_required'].includes(start.stage)||(revising?start.revisionWalkthrough:start.walkthrough))return start;
       const executionIdentity=revising?start.revision.nextIdentity:identity,gate=revising?start.revisionN5:start.n5,prefix=revising?'fix-revision-walkthrough':'fix-walkthrough';
-      need(authorized===true,'walkthrough_authorization_required');need(configuration.walkthrough,'walkthrough_configuration_required');
+      need(authorized===true,'walkthrough_authorization_required');need(currentConfig().walkthrough,'walkthrough_configuration_required');
       const controller=new AbortController(),run=createFixWalkthrough({cwd:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,identity:executionIdentity,
-        packageDigest:gate.packageDigest,diagnosis:start.diagnosis,configuration:configuration.walkthrough},bridge?{
+        packageDigest:gate.packageDigest,diagnosis:start.diagnosis,configuration:currentConfig().walkthrough},bridge?{
           browser:(request,signal)=>bridge.call('qa_browser',{workflow:'cm-fix',...request},signal),
           logic:(request,signal)=>bridge.call('qa_logic',{workflow:'cm-fix',...request},signal),protectedSpecsRoot}:{protectedSpecsRoot});
       const verify=()=>{
@@ -1604,7 +1914,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(digest(checkN5(revising?revisionN5Options():n5Options()))===digest(gate.gate),'n5_evidence_changed');
       };
       verify();active=controller;let registered=false;
-      const timer=setTimeout(()=>controller.abort(),configuration.walkthrough.timeoutMs);
+      const timer=setTimeout(()=>controller.abort(),currentConfig().walkthrough.timeoutMs);
       try{
         append(`${prefix}-intent`,'intent',run.binding);registered=true;
         const result=await run.run({authorized:true,signal:controller.signal});
@@ -1634,9 +1944,9 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         return {...project(),dossier};
       }
       need(current.stage==='closeout_required','fix_closeout_unavailable');
-      need(!configuration.walkthrough||current.walkthrough?.status==='passed','walkthrough_required');
+      need(!currentConfig().walkthrough||current.walkthrough?.status==='passed','walkthrough_required');
       const registration=finalRecord(store.snapshot().records,'registered').payload;
-      const dossier=publishFixDossier({specsRoot:evidenceSpecsRoot,configuration,status:current,registeredAt:registration.registeredAt});
+      const dossier=publishFixDossier({specsRoot:evidenceSpecsRoot,configuration:currentConfig(),status:current,registeredAt:registration.registeredAt});
       return {...project(),dossier};
     },
     checkCompletionGate(){
@@ -1677,10 +1987,12 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           review_file:`.reviews/fix-${identity.taskId.slice(6)}-${identity.taskId}-r${identity.attempt}.md`}});
       return project();
     },
-    async reviewFinal(){
+    async reviewFinal({verificationRecoveryAuthorization=null}={}){
       need(!closed&&active===null,'fix_busy');const start=project();if(!['final_review_required','revision_final_review_required'].includes(start.stage))return start;
       const revising=start.stage==='revision_final_review_required';
-      const prefix=revising?(start.revisionFinalReviewAbandonment2?'fix-revision-final-retry-2':start.revisionFinalReviewAbandonment?'fix-revision-final-retry':'fix-revision-final'):recoveryPrefix(start.finalReviewRecoveryCount);
+      const phase=revising?'revision_final_review':'final_review';
+      const recovery=recoveryFor(store.snapshot().records,phase);
+      const prefix=recovery?VERIFICATION_RECOVERY:revising?(start.revisionFinalReviewAbandonment2?'fix-revision-final-retry-2':start.revisionFinalReviewAbandonment?'fix-revision-final-retry':'fix-revision-final'):recoveryPrefix(start.finalReviewRecoveryCount);
       need(finalReview&&typeof assertReviewReady==='function','final_review_unavailable');
       const ready=assertReviewReady();if(types.isPromise(ready))Promise.prototype.then.call(ready,()=>{},()=>{});
       need(ready===undefined,'final_sync_registration_required');
@@ -1688,18 +2000,22 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const checks=reviewChecks(revising?start.revisionRegression:start.regression),selectedHandoff=revising?revisionHandoffPath():handoffPath();
       const pkg=createReviewPackage({root:configuration.reproduction.cwd,baseline,checks,handoffPath:selectedHandoff});
       if(start.finalReviewRecovery&&!revising)need(pkg.packageDigest===start.finalReviewRecovery.packageDigest,'fix_review_recovery_drift');
+      assertVerificationContinuation(phase,pkg,verificationRecoveryAuthorization);
+      checkVerificationPackage(pkg);
       const run=createFixFinalReview({reviewPackage:pkg,configuration:revising?fixRevisionReviewConfiguration(revisionFeedback(),start.revision.nextIdentity,hostContextIds):fixFinalReviewConfiguration(reviewConfiguration,causeThreads(start.causeReview?.providerThreadId)),
         timeoutMs:reviewTimeout(finalReview,configuration.reproduction.timeoutMs)},finalReview);
       const controller=new AbortController();active=controller;let registered=false,capturedReceipt=null,receiptConflict=false;
       try{
-        const result=await run({signal:controller.signal,...((configuration.externalModels||configuration.executionPolicy)?{onReconciliation(raw){try{const receipt=readReconciliationReceipt(raw);if(capturedReceipt&&digest(receipt)!==digest(capturedReceipt))receiptConflict=true;else capturedReceipt=receipt;}catch{receiptConflict=true;}}}:{}),register(value){
+        const result=await run({signal:controller.signal,...(!configuration.reviewVerification&&(configuration.externalModels||configuration.executionPolicy)?{onReconciliation(raw){try{const receipt=readReconciliationReceipt(raw);if(capturedReceipt&&digest(receipt)!==digest(capturedReceipt))receiptConflict=true;else capturedReceipt=receipt;}catch{receiptConflict=true;}}}:{}),register(value){
           need(project().stage===start.stage,'fix_evidence_changed');
           if(!revising)need(!store.snapshot().records.some(row=>finalCycleRecord(row,'registered')
             &&row.payload.request.invocationId===value.request.invocationId),'fix_review_recovery_mismatch');
           const current=createReviewPackage({root:configuration.reproduction.cwd,baseline,checks,handoffPath:selectedHandoff});
           need(current.packageDigest===pkg.packageDigest,'final_package_mismatch');
+          assertVerificationContinuation(phase,pkg,verificationRecoveryAuthorization);
           joinLiveHost();append(`${prefix}-registered`,'intent',value);registered=true;
         },onStarted(providerThreadId){
+          need(!recovery?.payload.target.providerThreadIds.includes(providerThreadId),'fix_verification_recovery_context');
           need(providerThreadId!==start.finalReviewRecovery?.providerThreadId
             &&!(revising&&[start.revisionFinalReviewAbandonment?.providerThreadId,start.revisionFinalReviewAbandonment2?.providerThreadId].filter(Boolean).includes(providerThreadId)),'final_context_mismatch');
           if(!revising)need(!store.snapshot().records.some(row=>finalCycleRecord(row,'started')
@@ -1707,6 +2023,16 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           append(`${prefix}-started`,'result',{providerThreadId});
         }});
         if(result.outcome==='denied')return {...project(),reason:'permission_denied'};
+        if(recovery&&result.value?.verification&&result.value.verification.snapshotDigest!==recovery.payload.target.snapshotDigest){
+          // A returned proof can bind its package yet differ from the separately
+          // prepared auxiliary snapshot. Retain a failed result, never approval.
+          const request=store.snapshot().records.find(r=>r.id===`${prefix}-registered`).payload.request;
+          const rejected=verificationCallbackFailure({code:'fix_verification_recovery_binding'},
+            {request,configuration:configuration.reviewVerification,providerThreadId:result.value.verification.providerThreadId});
+          const {verification,...without}=result.value;
+          const {verificationDiagnostic,...failure}=rejected;
+          result.value={...without,observation:{...without.observation,result:failure},verificationDiagnostic};
+        }
         if((result.outcome==='observed'||(configuration.externalModels||configuration.executionPolicy)&&result.value)&&!controller.signal.aborted)append(`${prefix}-result`,'result',result.value);
         if(!receiptConflict)saveReviewReceipt(prefix,capturedReceipt);
         if(result.outcome==='unknown')return {...project(),reason:result.reason,diagnostic:result.diagnostic};
@@ -1730,14 +2056,14 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     createHandoff(){
       need(!closed&&active===null,'fix_busy');const start=project();if(!['handoff_ready','revision_handoff_ready'].includes(start.stage))return start;
       const revising=start.stage==='revision_handoff_ready',prefix=revising?'fix-revision-handoff':'fix-handoff';
-      const redOutput=verifyFixRedEvidence(start.redTest,configuration.redTest,evidenceSpecsRoot,currentTestFiles(start.redTest.testFiles,testExtension()));
+      const redOutput=verifyFixRedEvidence(start.redTest,currentConfig().redTest,evidenceSpecsRoot,currentTestFiles(typeFiles(start.redTest.testFiles,currentTypeCorrection()),testExtension()));
       const evidence=revising?revisionHandoffEvidence({revision:start.revision,retrospective:start.revisionRetrospective,writeback:start.revisionLearningWriteback??null,reproduction:start.reproduction,diagnosed:start.diagnosis,red:start.redTest,redOutput})
         :[...fixHandoffEvidence({identity,learning:start.learning,retrospective:start.retrospective,writeback:start.learningWriteback??null}),
-          ...fixDefectHandoffEvidence({configuration,reproduction:start.reproduction,diagnosis:start.diagnosis,redTest:start.redTest,redOutput})];
+          ...fixDefectHandoffEvidence({configuration:currentConfig(),reproduction:start.reproduction,diagnosis:start.diagnosis,redTest:start.redTest,redOutput})];
       const observationFiles=start.observationResume?readReviewSourceFiles(evidenceSpecsRoot,start.observationResume.files.map(file=>file.path)):undefined;
       const observationArchive=start.observationCycle>1?{...start.observationResume.dossier,
         contentBase64:readFixObservationArchive({specsRoot:evidenceSpecsRoot,resume:start.observationResume}).original.toString('base64')}:undefined;
-      evidence.push(...observationReviewEvidence(start.observationResume,observationFiles,observationArchive));
+      evidence.push(...typeEvidence(store.snapshot().records),...observationReviewEvidence(start.observationResume,observationFiles,observationArchive));
       const withLearning=['written','deduplicated'].includes(start.learningWriteback?.outcome);
       const pkg=revising?revisionImplementationPackage(start.revisionRegression):implementationPackage(start.regression,withLearning);
       const input={root:configuration.reproduction.cwd,baseline:revising?revisionReviewBaseline():withLearning?fixLearningReviewBaseline(reviewBaseline()):reviewBaseline(),
@@ -1790,7 +2116,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const executionLearning=revising?start.revision.learning:start.learning,prefix=revising?'fix-revision-retrospective':'fix-retrospective';
       need(executionLearning&&bridge,'retrospective_learning_required');
       const controller=new AbortController();active=controller;let registered=false;
-      const timer=setTimeout(()=>controller.abort(),configuration.redTest.timeoutMs);
+      const timer=setTimeout(()=>controller.abort(),currentConfig().redTest.timeoutMs);
       try{
         if(prepare!==null){
           const learning=inspectFixLearning(await prepare({identity:executionIdentity,defect:configuration.defect},controller.signal));
@@ -1825,18 +2151,19 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
           const sorted=values=>[...values].sort((a,b)=>a.path.localeCompare(b.path));
           need(digest(sorted(files))===digest(sorted(expected)),'fix_learning_context_changed');
         }else if(prepare!==null){
-          timer=setTimeout(()=>{timedOut=true;controller.abort();},configuration.redTest.timeoutMs);
+          timer=setTimeout(()=>{timedOut=true;controller.abort();},currentConfig().redTest.timeoutMs);
           const learning=inspectFixLearning(await prepare({identity:executionIdentity,defect:configuration.defect},controller.signal));
           need(digest(learning)===digest(executionLearning),'fix_learning_context_changed');clearTimeout(timer);
         }
         need(!controller.signal.aborted,'cancelled');preparing=false;need(project().stage===requiredStage,'fix_evidence_changed');
-        const run=createFixRegression({identity:executionIdentity,specsRoot:evidenceSpecsRoot,redTest:configuration.redTest,baseline:configuration.baseline,
+        const run=createFixRegression({identity:executionIdentity,specsRoot:evidenceSpecsRoot,redTest:currentConfig().redTest,baseline:currentConfig().baseline,
+          ...(currentTypeCorrection()?{testTypeCorrection:currentTypeCorrection()}:{}),
           ...(revising?{reviewFeedback:revisionFeedback(),...(testExtension()?{testExtension:testExtension()}:{})}:{}),
           redEvidence:start.redTest,beforeBaseline:start.baseline},{specsRoot:protectedSpecsRoot,bridge});
         append(`${prefix}-intent`,'intent',{repairDigest:digest(revising?start.revisionRepair:start.repair),redDigest:digest(start.redTest),baselineDigest:digest(start.baseline),...(postReview?{n5Digest:digest(revising?start.revisionN5:start.n5)}:{})});registered=true;
         const result=await run({identity:executionIdentity},{authorized:true,signal:controller.signal});
         if(controller.signal.aborted)return project();
-        inspectFixRegression(result,{redTest:configuration.redTest,baseline:configuration.baseline,beforeBaseline:start.baseline,testExtension:revising?testExtension():null});
+        inspectFixRegression(result,{redTest:currentConfig().redTest,baseline:currentConfig().baseline,beforeBaseline:start.baseline,testTypeCorrection:currentTypeCorrection(),testExtension:revising?testExtension():null});
         append(`${prefix}-result`,'result',result);return project();
       }catch(error){
         if(preparing&&timedOut)need(false,'fix_learning_interrupted');
@@ -1853,7 +2180,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       need(configuration.repair&&typeof assertReviewReady==='function'&&bridge,'repair_unavailable');
       const controller=new AbortController();active=controller;let registered=false,timer,preparing=true,timedOut=false;
       try{
-        timer=setTimeout(()=>{timedOut=true;controller.abort();},configuration.redTest.timeoutMs);
+        timer=setTimeout(()=>{timedOut=true;controller.abort();},currentConfig().redTest.timeoutMs);
         if(prepare!==null){
           const learning=inspectFixLearning(await prepare({identity:executionIdentity,defect:configuration.defect},controller.signal));
           need(digest(learning)===digest(executionLearning),'fix_learning_context_changed');
@@ -1867,7 +2194,8 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         const repair=prepareFixRepair({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,identity:executionIdentity,
           ...configuration.repair,defect:configuration.defect,diagnosis:start.diagnosis,
           ...(revising?{reviewFeedback:revisionFeedback(),...(testExtension()?{testExtension:testExtension()}:{})}:{}),
-          redTest:configuration.redTest,baseline:configuration.baseline,redEvidence:start.redTest,beforeBaseline:start.baseline},{bridge,assertReviewReady,
+          redTest:currentConfig().redTest,baseline:currentConfig().baseline,redEvidence:start.redTest,beforeBaseline:start.baseline,
+          ...(currentTypeCorrection()?{testTypeCorrection:currentTypeCorrection()}:{} )},{bridge,assertReviewReady,
           pinnedBaseline:lastPinned[revising?'revision_repair':'repair']??null,protectedMode:protectedSpecsRoot!==null});
         const result=await repair.execute({authorized:true,signal:controller.signal,register(baseline){
           append(`${prefix}-intent`,'intent',{baseline,redDigest:digest(start.redTest),testBaselineDigest:digest(start.baseline),...(revising?{revisionDigest:digest(start.revision)}:{})});registered=true;
@@ -1888,7 +2216,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       need(authorized===true,'regression_authorization_required');
       const controller=new AbortController();active=controller;let registered=false;
       try{
-        const run=createFixBaseline(extensionConfig(configuration,start.revision.tests),{specsRoot:protectedSpecsRoot});
+        const run=createFixBaseline(extensionConfig(currentConfig(),start.revision.tests),{specsRoot:protectedSpecsRoot});
         append('fix-revision-test-check-intent','intent',{revisionDigest:digest(start.revision),authorDigest:digest(start.revisionTestAuthor)});registered=true;
         const result=await run({identity:start.revision.nextIdentity},{authorized:true,signal:controller.signal});
         if(!controller.signal.aborted)append('fix-revision-test-check-result','result',result);
@@ -1904,7 +2232,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       need(typeof assertReviewReady==='function'&&bridge,'test_author_unavailable');
       const controller=new AbortController();active=controller;let registered=false,timer,preparing=true,timedOut=false;
       try{
-        timer=setTimeout(()=>{timedOut=true;controller.abort();},configuration.redTest.timeoutMs);
+        timer=setTimeout(()=>{timedOut=true;controller.abort();},currentConfig().redTest.timeoutMs);
         if(prepare!==null){
           const learning=inspectFixLearning(await prepare({identity:executionIdentity,defect:configuration.defect},controller.signal));
           need(digest(learning)===digest(learningExpected),'fix_learning_context_changed');
@@ -1912,7 +2240,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(!controller.signal.aborted,'cancelled');preparing=false;
         need(project().stage===start.stage,'fix_evidence_changed');
         const author=prepareFixTestAuthor({codeProject:configuration.reproduction.cwd,specsRoot:evidenceSpecsRoot,identity:executionIdentity,
-          testFiles:revising?start.revision.tests.testFiles:configuration.redTest.testFiles,requirements:revising?configuration.repair.requirements:configuration.testAuthor.requirements,
+          testFiles:revising?start.revision.tests.testFiles:currentConfig().redTest.testFiles,requirements:revising?configuration.repair.requirements:configuration.testAuthor.requirements,
           defect:configuration.defect,diagnosis:start.diagnosis,reproduction:start.reproduction,...(revising?{reviewFeedback:inspectFixRepairReview(revisionFeedback(),executionIdentity),testPlan:start.revision.tests}:{})},{bridge,assertReviewReady,
           pinnedBaseline:lastPinned[revising?'revision_test_author':'test_author']??null,protectedMode:protectedSpecsRoot!==null});
         const result=await author.execute({authorized:true,signal:controller.signal,register(baseline){
@@ -1936,18 +2264,18 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const controller=new AbortController();active=controller;let registered=false,timer,preparationTimedOut=false;
       try{
         if(prepare!==null){
-          timer=setTimeout(()=>{preparationTimedOut=true;controller.abort();},configuration.baseline.timeoutMs);
+          timer=setTimeout(()=>{preparationTimedOut=true;controller.abort();},currentConfig().baseline.timeoutMs);
           const learning=inspectFixLearning(await prepare({identity,defect:configuration.defect},controller.signal));
           need(!controller.signal.aborted,'fix_learning_interrupted');
           need(digest(learning)===digest(start.learning),'fix_learning_context_changed');clearTimeout(timer);
         }
         need(!controller.signal.aborted,'cancelled');need(project().stage==='baseline_required','fix_evidence_changed');
-        const testFiles=fixBaselineFiles(configuration.baseline);
+        const testFiles=fixBaselineFiles(currentConfig().baseline);
         append('fix-baseline-intent','intent',{testFiles,redDigest:digest(start.redTest)});registered=true;
-        const baselineRunner=retryCount('fix-baseline')?createFixBaseline(configuration.baseline,{specsRoot:protectedSpecsRoot}):runBaseline;
+        const baselineRunner=retryCount('fix-baseline')||correctionRow(store.snapshot().records)?createFixBaseline(currentConfig().baseline,{specsRoot:protectedSpecsRoot}):runBaseline;
         const result=await baselineRunner({identity},{signal:controller.signal,authorized:true});
         if(controller.signal.aborted)return project();
-        inspectFixBaseline(result,configuration.baseline,testFiles);
+        inspectFixBaseline(result,currentConfig().baseline,testFiles);
         append('fix-baseline-result','result',result);return project();
       }catch(error){
         if(preparationTimedOut)need(false,'fix_learning_interrupted');
@@ -1960,10 +2288,13 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       need(!closed&&active===null,'fix_busy');const start=project();
       if(!['red_test_required','design_change_required'].includes(start.stage))return start;
       need(authorized===true,'red_test_authorization_required');need(runRed,'red_test_unavailable');
+      // Older compatible histories may already have authorized all abandons.
+      // Reject before appending, without rewriting that history.
+      need(retryCount('fix-red-test')<=8,'fix_abandon_limit');
       const controller=new AbortController();active=controller;let registered=false,timer,preparationTimedOut=false;
       try{
         if(prepare!==null){
-          timer=setTimeout(()=>{preparationTimedOut=true;controller.abort();},configuration.redTest.timeoutMs);
+          timer=setTimeout(()=>{preparationTimedOut=true;controller.abort();},currentConfig().redTest.timeoutMs);
           const learning=inspectFixLearning(await prepare({identity,defect:configuration.defect},controller.signal));
           need(!controller.signal.aborted,'fix_learning_interrupted');
           // A changed instruction/application needs renewed diagnosis, not silent alteration of a cause approval.
@@ -1971,13 +2302,13 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         }
         need(!controller.signal.aborted,'cancelled');
         need(project().stage===start.stage,'fix_evidence_changed');
-        const testFiles=redTestFiles(configuration.redTest);
+        const testFiles=redTestFiles(currentConfig().redTest);
         append('fix-red-test-intent','intent',{testFiles});registered=true;
         const redo=retryCount('fix-red-test');
-        const redRunner=redo?createFixRedTest(configuration.redTest,{specsRoot:evidenceSpecsRoot,identity,protectedSpecsRoot,retry:redo}):runRed;
+        const redRunner=redo?createFixRedTest(currentConfig().redTest,{specsRoot:evidenceSpecsRoot,identity,protectedSpecsRoot,retry:redo}):runRed;
         const result=await redRunner({identity},{signal:controller.signal,authorized:true});
         if(controller.signal.aborted)return project();
-        inspectFixRedTest(result,configuration.redTest,identity,testFiles,redo);
+        inspectFixRedTest(result,currentConfig().redTest,identity,testFiles,redo);
         append('fix-red-test-result','result',result);return project();
       }catch(error){
         if(preparationTimedOut)need(false,'fix_learning_interrupted');
@@ -1990,18 +2321,28 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       need(!closed,'store_closed');need(active===null,'fix_busy');
       return createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,status:project()});
     },
-    async reviewCause(){
+    async reviewCause({verificationRecoveryAuthorization=null}={}){
       need(!closed&&active===null,'fix_busy');
       const status=project();
       if(status.stage==='cause_review_evidence_required'){publishCause();return project();}
       if(status.stage!=='cause_review_required'
         &&!(status.stage==='observation_cause_review_correction_required'&&status.causeReviewCorrection))return status;
       need(configuration.causeReview&&causeReview&&typeof causeReview.authorize==='function'&&typeof causeReview.run==='function','cause_review_unavailable');
+      // Reject known local routing/diagnostic drift before consuming the grant
+      // or registering an invocation. Legacy direct owners omit this callback.
+      if(assertReviewReady!==null){
+        need(typeof assertReviewReady==='function','cause_review_unavailable');
+        const ready=assertReviewReady();if(types.isPromise(ready))Promise.prototype.then.call(ready,()=>{},()=>{});
+        need(ready===undefined,'cause_review_unavailable');
+      }
       const reviewer=configuration.causeReview;
       const budget=reviewTimeout(causeReview,configuration.reproduction.timeoutMs);
-      const prefix=`${status.rediagnosis?'fix-cause-rediagnosis':'fix-cause'}${status.causeReviewAbandonment2?'-retry-2':status.causeReviewAbandonment?'-retry':''}`;
-      const abandonedThreads=[status.causeReviewAbandonment?.providerThreadId,status.causeReviewAbandonment2?.providerThreadId].filter(Boolean);
+      const recovery=recoveryFor(store.snapshot().records,'cause_review');
+      const prefix=recovery?VERIFICATION_RECOVERY:`${status.rediagnosis?'fix-cause-rediagnosis':'fix-cause'}${status.causeReviewAbandonment2?'-retry-2':status.causeReviewAbandonment?'-retry':''}`;
+      const abandonedThreads=[...(recovery?.payload.target.providerThreadIds??[]),status.causeReviewAbandonment?.providerThreadId,status.causeReviewAbandonment2?.providerThreadId].filter(Boolean);
       const pkg=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,status});
+      assertVerificationContinuation('cause_review',pkg,verificationRecoveryAuthorization);
+      checkVerificationPackage(pkg);
       const request=requestFor({invocationId:`fix-cause.${randomUUID()}`,identity,role:'reviewer',provider:reviewer.provider,
         requestedModel:reviewer.requestedModel,contextId:reviewer.contextId,payload:{reviewPackage:pkg,priorReview:null}});
       const controller=new AbortController();active=controller;let timer,registered=false,capturedReceipt=null,receiptConflict=false;
@@ -2011,10 +2352,21 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         need(!controller.signal.aborted,'cancelled');
         if(digest(grant)===digest({status:'denied',code:'permission_denied'}))return {...project(),reason:'permission_denied'};
         const registration=inspectCauseRegistration({request,authorizationAt,registeredAt:Date.now(),grant},reviewConfiguration);
+        assertVerificationContinuation('cause_review',pkg,verificationRecoveryAuthorization);
         joinLiveHost();append(`${prefix}-registered`,'intent',registration);
         registered=true;
         const dispatchAt=Date.now();need(dispatchAt>=registration.registeredAt&&dispatchAt<grant.expiresAt,'grant_expired');
-        const events=[];let invalid=false,sealed=false,timedOut=false,started=null;
+        const events=[];let invalid=false,sealed=false,timedOut=false,started=null,verification,verificationInvalid=false,verificationError;
+        const onVerification=raw=>{
+          if(sealed||controller.signal.aborted)return false;
+          try{
+            need(configuration.reviewVerification&&verification===undefined&&!verificationInvalid,'review_verification_invalid');
+            const value=json(raw,1024*1024);
+            inspectReviewVerificationEvidence(value,{request,configuration:configuration.reviewVerification,providerThreadId:started});
+            if(recovery)need(value.snapshotDigest===(recovery.payload.sourceResultDigest?sourceResult(store.snapshot().records).payload.baseline.snapshotDigest:recovery.payload.target.snapshotDigest),'fix_verification_recovery_binding');
+            verification=value;return undefined;
+          }catch(error){verificationInvalid=true;verificationError??=error;throw error;}
+        };
         const observation=result=>({version:1,kind:'cm-provider-review-observation',requestDigest:request.requestDigest,events,result});
         const onEvent=raw=>{
           if(sealed||controller.signal.aborted)return false;
@@ -2038,16 +2390,19 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         try{
           transport=Promise.resolve().then(()=>{
             need(!controller.signal.aborted,'cause_review_interrupted');
-            return causeReview.run(request,{signal:controller.signal,onEvent,...((configuration.externalModels||configuration.executionPolicy)?{onReconciliation(raw){try{const receipt=readReconciliationReceipt(raw);if(capturedReceipt&&digest(receipt)!==digest(capturedReceipt))receiptConflict=true;else capturedReceipt=receipt;}catch{receiptConflict=true;}}}:{})});
+            return causeReview.run(request,{signal:controller.signal,onEvent,...(configuration.reviewVerification?{onVerification}:{}),...(!configuration.reviewVerification&&(configuration.externalModels||configuration.executionPolicy)?{onReconciliation(raw){try{const receipt=readReconciliationReceipt(raw);if(capturedReceipt&&digest(receipt)!==digest(capturedReceipt))receiptConflict=true;else capturedReceipt=receipt;}catch{receiptConflict=true;}}}:{})});
           });
           result=await Promise.race([interrupted,transport]);
-        }catch(error){if(!timedOut||invalid)throw error;if((configuration.externalModels||configuration.executionPolicy)){let drain;await Promise.race([transport.catch(()=>{}),new Promise(resolve=>{drain=setTimeout(resolve,2500);})]);clearTimeout(drain);}}
+        }catch(error){if(verificationInvalid&&!invalid&&!controller.signal.aborted)result=verificationCallbackFailure(verificationError,{request,configuration:configuration.reviewVerification,providerThreadId:started});else{if(!timedOut||invalid)throw error;if((configuration.externalModels||configuration.executionPolicy)){let drain;await Promise.race([transport.catch(()=>{}),new Promise(resolve=>{drain=setTimeout(resolve,2500);})]);clearTimeout(drain);}}}
         finally{sealed=true;controller.signal.removeEventListener('abort',rejectAbort);}
         // The review budget expiring is a recorded no-result observation, not an
         // unrecorded interruption; a cancellation or invalid stream stays unknown.
         if(invalid||controller.signal.aborted&&!timedOut||project().stage==='cancelled')return project();
-        let value={dispatchAt,observation:observation(timedOut?{status:'failed',code:'timeout'}:result)};
-        try{inspectCauseResult(value,registration,reviewConfiguration,started);}
+        if(verificationInvalid){result=verificationCallbackFailure(verificationError,{request,configuration:configuration.reviewVerification,providerThreadId:started});verification=undefined;}
+        const transportResult=splitVerificationResult(timedOut?{status:'failed',code:'timeout'}:result);
+        let value={dispatchAt,observation:observation(transportResult.result),...(verification===undefined?{}:{verification}),...(transportResult.verificationDiagnostic?{verificationDiagnostic:transportResult.verificationDiagnostic}:{})};
+        try{({value}=inspectResultWithFailureDiagnostic(value,v=>inspectCauseResult(v,registration,reviewConfiguration,started),
+          {request,configuration:configuration.reviewVerification,providerThreadId:started}));}
         catch(error){
           // A reviewer that finished but whose answer breaks the verdict contract
           // (e.g. invalid_finding_path, missing_material) is a recorded failed
