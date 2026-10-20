@@ -1651,7 +1651,11 @@ test('S2b protocol result size limit and getters fail without exposing private e
 
 test('S2b full package payload above 1MiB remains reviewable within S2a bound',()=>fixture(async({runner})=>{
   assert.equal((await runner.run()).state,'fixture_completed');
-},(o,{root})=>{fs.writeFileSync(path.join(root,'a.js'),Buffer.alloc(800000,65));o.developer.run=r=>{
+},(o,{root})=>{
+  // This fixture tests archive capacity with an explicitly larger review scope.
+  // Default review admission is tested separately and remains conservative.
+  o.reviewScopeLimits={pageCount:256,materialBytes:4*1024*1024};
+  fs.writeFileSync(path.join(root,'a.js'),Buffer.alloc(800000,65));o.developer.run=r=>{
   fs.writeFileSync(path.join(root,'a.js'),Buffer.alloc(800000,66));return terminal(r,{outcome:'implemented'});
 };}));
 

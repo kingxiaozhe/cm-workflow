@@ -230,7 +230,7 @@ test('only the original independent blocked r2 can enter the continuation',t=>{
   fs.writeFileSync(f.history[3],original.toString().replace('codex-subagent','self-degraded').replace('independent: true','independent: false').replace('scope:','degraded_reason: fixture\nscope:'));
   assert.throws(()=>f.prepare(),/blocked round 2 declaring independent/);
   fs.writeFileSync(f.history[3],original);
-  f.review(f.history[1],f.history[0],1,'blocked');assert.throws(()=>f.prepare(),/changes_requested/);
+  f.review(f.history[1],f.history[0],1,'blocked');assert.throws(()=>f.prepare(),/blocked r1 requires bound native recovery owner/);
 });
 
 test('sealed blocked correction cannot become approved or acquire another continuation',t=>{

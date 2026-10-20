@@ -1,4 +1,5 @@
-// Real native owner/check/QA; synthetic provider verdicts are protocol evidence only.
+// Real owner/check/QA with synthetic providers and command transport; no OS sandbox acceptance.
+import {protocolSandboxBranch} from './fixtures/protocol-sandbox.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -36,8 +37,7 @@ test('native original blocked review preserves verdict and budgets while evidenc
  fs.writeFileSync(path.join(answers,'qa-assess.json'),JSON.stringify({confirmed:true}));
  fs.writeFileSync(path.join(answers,'documentation-inspect.json'),JSON.stringify({status:'completed',reason:'Fixture empty documentation checked'}));
  const fake=path.join(f.root,'synthetic-review-bin','codex');
- const originalFake=fs.readFileSync(fake,'utf8');
- const sandbox=originalFake.slice(originalFake.indexOf('if(process.argv[2]'),originalFake.indexOf('\nelse'));
+ const sandbox=protocolSandboxBranch(f);
  fs.writeFileSync(fake,`#!${process.execPath}\nimport fs from 'node:fs';import assert from 'node:assert/strict';import {randomUUID,createHash} from 'node:crypto';const {spawnSync}=await import('node:child_process');\n${sandbox}\nelse {let p='';for await(const s of process.stdin)p+=s;const pkg=JSON.parse(p.split('<cm-review-data-json>\\n')[1]).reviewPackage;const paths=[...new Set([...pkg.changes.map(c=>c.path),...pkg.requirements.map(c=>c.path),...(pkg.unchangedScope??[]).map(c=>c.path)])].sort();const images=process.argv.slice(2).filter((v,i,a)=>a[i-1]==='--image');if(pkg.identity.attempt===2){assert.equal(images.length,1);assert.equal(createHash('sha256').update(fs.readFileSync(images[0])).digest('hex'),${JSON.stringify('IMAGE_SHA')});assert.equal(pkg.checks.filter(c=>c.kind==='native-evidence').length,1);}const r={verdict:pkg.identity.attempt===1?'blocked':'approved',packageDigest:pkg.packageDigest,examinedPaths:paths,findings:pkg.identity.attempt===1?[{id:'R1',severity:'P1',path:'target.mjs',message:'Missing native material and scoped correction',evidence:'Synthetic first round, no business verdict'}]:[],summary:'Synthetic protocol only; native evidence integrity is not visual acceptance'};for(const v of [{type:'thread.started',thread_id:randomUUID()},{type:'turn.started'},{type:'item.completed',item:{type:'agent_message',text:JSON.stringify(r)}},{type:'turn.completed'}])console.log(JSON.stringify(v));}\n`,{mode:0o700});
  const sourceRoot=path.join(f.root,'native');fs.mkdirSync(sourceRoot);
  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2lZ0AAAAASUVORK5CYII=','base64');

@@ -8,7 +8,7 @@ const result=(state,code,pendingAction,extra={})=>({workflow:'cm-ai',identity,st
 const explain=(...args)=>operatorGuidance(result(...args));
 
 test('only native resume paths advertise same-run development and never grant permission',()=>{
-  for(const code of ['develop_checks_not_passed','develop_package_too_large','developer_result_invalid',
+  for(const code of ['develop_checks_not_passed','developer_result_invalid',
     'verification_precheck_failed','check_output_out_of_scope','develop_empty_changes','develop_unchanged_after_review',
     'develop_requirement_missing','bootstrap_verification_failed']){
     const input=result('blocked',code,'resume',{reason:'technical detail'}),before=JSON.stringify(input);
@@ -19,7 +19,10 @@ test('only native resume paths advertise same-run development and never grant pe
     assert.equal(explain('blocked',code,'none').recoveryOperation,null,'no action when native recovery unavailable');
     assert.equal(explain('unknown',code,'reconcile').recoveryOperation,null,'same code is not retry permission');
   }
-  assert.match(explain('blocked','develop_package_too_large','resume').nextStep,/先走规格变更/);
+  const capacity=explain('blocked','develop_package_too_large','resume');
+  assert.equal(capacity.recoveryOperation,null);assert.equal(capacity.authorizationGranted,false);
+  assert.match(capacity.nextStep,/cm-ai-drive\.mjs --plan PLAN\.json preflight/);
+  assert.match(capacity.nextStep,/不能删必要审查材料或提高上限/);
   assert.match(explain('blocked','develop_checks_not_passed','resume').summary,/尚未进入独立审查/);
 });
 test('bootstrap recovery restores the package without redispatching developer',()=>{
