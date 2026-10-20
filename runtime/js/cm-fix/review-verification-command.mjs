@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {types} from 'node:util';
 import {ownedProcessCleanup} from '../cm-ai/owned-process-cleanup.mjs';
 
@@ -23,8 +23,12 @@ function profile(cwd){
       metadata.add(parent);if(parent===path.dirname(parent))break;
     }
   }
+  // A native helper in the copy could otherwise read any same-user process's launch
+  // arguments and environment (KERN_PROCARGS2), including the host's credentials.
+  // Both rules are needed; denying all of sysctl* instead makes Node abort at startup.
   return `(version 1)(allow default)
     (deny file-read*)(deny file-write*)(deny network*)(deny signal)(deny mach-lookup)
+    (deny process-info*)(deny sysctl-read (sysctl-name-prefix "kern.proc"))
     (allow signal (target children))
     (allow file-read* ${readable.map(p=>`(subpath ${JSON.stringify(p)})`).join(' ')}
       (literal ${JSON.stringify(fs.realpathSync(process.execPath))})
@@ -113,4 +117,18 @@ export async function runVerificationCommand({cwd,command,timeoutMs,signal,onSpa
     });
   }catch{return unavailable('verification_isolation_failed');}
   finally{if(scratch)try{fs.rmSync(scratch,{recursive:true,force:true});}catch{/* private disposable copy remains caller-owned */}}
+}
+
+// Writes a file of the disposable copy from inside the same sandbox as the commands, so a
+// path that an escaped command replaced with a link cannot redirect the write outside it.
+const WRITER="const fs=require('fs');const data=fs.readFileSync(0);"
+  +"const fd=fs.openSync(process.argv[1],fs.constants.O_WRONLY|fs.constants.O_TRUNC|fs.constants.O_NOFOLLOW);"
+  +"try{fs.writeSync(fd,data,0,data.length,0);if(process.argv[2]!=='keep')fs.fchmodSync(fd,Number(process.argv[2]));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}";
+export function writeInsideCopy({cwd,file,data,mode=null}){
+  if(typeof file!=='string'||!file||path.isAbsolute(file)||file.split('/').some(part=>!part||part==='.'||part==='..')
+    ||!Buffer.isBuffer(data)||(mode!==null&&!(Number.isInteger(mode)&&mode>=0&&mode<=0o7777)))throw Error('verification_write_invalid');
+  if(process.platform!=='darwin'||!fs.existsSync('/usr/bin/sandbox-exec'))throw Error('verification_isolation_unsupported');
+  const written=spawnSync('/usr/bin/sandbox-exec',['-p',profile(cwd),process.execPath,'-e',WRITER,path.join(cwd,file),mode===null?'keep':String(mode)],
+    {cwd,input:data,env:{PATH:'/usr/bin:/bin',LANG:'C.UTF-8',LC_ALL:'C.UTF-8'},timeout:30000,maxBuffer:1024*1024});
+  if(written.error||written.status!==0)throw Error('review_verification_copy_drift');
 }

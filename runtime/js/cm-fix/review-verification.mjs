@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {digest,need,shape,json} from '../cm-ai/effect-contract.mjs';
 import {readReviewVerification,verificationPath,inspectReviewVerificationEvidence,bindVerificationFiles} from './review-verification-contract.mjs';
 import {ownedProcessCleanup} from '../cm-ai/owned-process-cleanup.mjs';
-import {runVerificationCommand} from './review-verification-command.mjs';
+import {runVerificationCommand,writeInsideCopy} from './review-verification-command.mjs';
 import {verificationFailure,verificationFailureCode,bindVerificationDiagnostic} from './review-verification-diagnostic.mjs';
 const sha=b=>createHash('sha256').update(b).digest('hex');
 function readPage(file,offset=0){
@@ -89,7 +89,14 @@ export function createReviewVerificationSession({codeProject,configuration,reque
    }
    fs.rmSync(root,{recursive:true,force:true});}};
 }
-export function createVerificationTools({configuration,cwd,files,requestDigest,packageDigest,evidencePath,activePath,diagnosticPath=path.join(path.dirname(evidencePath),'diagnostic.json'),runCommand=runVerificationCommand}){
+// The previous direct write, kept for injected (non-sandboxed) command runners.
+function hostWrite({cwd,file,data,mode}){
+  const target=path.join(cwd,file);
+  if(mode===null)fs.writeFileSync(target,data);else{fs.writeFileSync(target,data);fs.chmodSync(target,mode);}
+}
+export function createVerificationTools({configuration,cwd,files,requestDigest,packageDigest,evidencePath,activePath,diagnosticPath=path.join(path.dirname(evidencePath),'diagnostic.json'),runCommand=runVerificationCommand,
+  // Real commands may leave an escaped descendant behind; their copy writes then go through the sandbox too.
+  writeFile=runCommand===runVerificationCommand?writeInsideCopy:hostWrite}){
  const c=readReviewVerification(configuration);let calls=0,busy=false;
  const checks=new Map(),mutations=[];
  const failures=()=>fs.existsSync(diagnosticPath)?JSON.parse(fs.readFileSync(diagnosticPath,'utf8')):[];
@@ -153,13 +160,13 @@ export function createVerificationTools({configuration,cwd,files,requestDigest,p
    clearFailure(a.checkId);
    let mutated,restored;
    try{
-    fs.writeFileSync(path.join(cwd,a.path),changed,{mode:f.mode});
+    writeFile({cwd,file:a.path,data:changed,mode:null});
     mutated=await run(check,signal);
     const expected=files.map(r=>r.path===a.path?{...r,sha256:sha(changed)}:r);
     need(digest(manifest(cwd,c).map(record))===digest(expected),'review_verification_copy_drift');
    }finally{
     // Refuse a replaced path; do not follow a test-created link during restoration.
-    read(cwd,a.path);fs.writeFileSync(path.join(cwd,a.path),f.data);fs.chmodSync(path.join(cwd,a.path),f.mode);same();
+    read(cwd,a.path);writeFile({cwd,file:a.path,data:f.data,mode:f.mode});same();
    }
    need(!signal.aborted,'cancelled');restored=await run(check,signal);same();
    const killed=mutated.outcome==='failed'&&Number.isInteger(mutated.exitCode)&&mutated.exitCode>0&&restored.outcome==='passed';

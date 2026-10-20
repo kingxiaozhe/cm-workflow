@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import {spawnSync} from 'node:child_process';
-import {runVerificationCommand} from '../runtime/js/cm-fix/review-verification-command.mjs';
+import {spawn,spawnSync} from 'node:child_process';
+import {runVerificationCommand,writeInsideCopy} from '../runtime/js/cm-fix/review-verification-command.mjs';
 
 const supported=process.platform==='darwin';
 function fixture(t){
@@ -98,6 +98,33 @@ test('verification sandbox rejects external reads, source writes and symlink esc
   assert.equal(result.outcome,'passed',result.output);assert.equal(result.output.trim(),'4');
   assert.equal(fs.readFileSync(source,'utf8'),'original');
 });
+const PROCARGS_PROBE=`#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/sysctl.h>
+int main(int argc,char**argv){int mib[3]={CTL_KERN,KERN_PROCARGS2,atoi(argv[1])};size_t size=0;
+if(sysctl(mib,3,NULL,&size,NULL,0)!=0){perror("sysctl");return 2;}char*b=malloc(size);
+if(sysctl(mib,3,b,&size,NULL,0)!=0){perror("sysctl");return 3;}size_t n=strlen(argv[2]);
+for(size_t i=0;i+n<=size;i++)if(!memcmp(b+i,argv[2],n)){puts("FOUND");return 0;}puts("NOTFOUND");return 0;}`;
+test('verification sandbox cannot read another process environment through a native helper',{skip:!supported||!fs.existsSync('/usr/bin/clang')},async t=>{
+  const {root,cwd}=fixture(t),source=path.join(root,'probe.c'),probe=path.join(cwd,'probe');
+  fs.writeFileSync(source,PROCARGS_PROBE);
+  const built=spawnSync('/usr/bin/clang',['-o',probe,source],{encoding:'utf8'});
+  if(built.status!==0){t.skip('clang cannot build the probe here');return;}
+  const secret=`cm-probe-${process.pid}-${Date.now()}`;
+  const holder=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{env:{...process.env,CM_PROBE_SECRET:secret},stdio:'ignore'});
+  t.after(()=>holder.kill('SIGKILL'));
+  // The fixture is valid only if the same probe does find the secret outside the sandbox.
+  const outside=spawnSync(probe,[String(holder.pid),secret],{encoding:'utf8'});
+  assert.equal(outside.stdout.trim(),'FOUND');
+  const inside=await runVerificationCommand({cwd,command:[probe,String(holder.pid),secret],timeoutMs:20000,signal:new AbortController().signal});
+  assert.equal(inside.outcome,'failed');
+  assert.doesNotMatch(inside.output,/FOUND/);
+  assert.match(inside.output,/Operation not permitted/);
+  // The same rules still let ordinary Node code inspect its own machine and spawn children.
+  const node=await run(cwd,"const os=require('os');const r=require('child_process').spawnSync(process.execPath,['-e','process.exit(0)']);process.exit(os.cpus().length>0&&r.status===0?0:9)");
+  assert.equal(node.outcome,'passed');
+});
 test('verification sandbox rejects loopback network access',{skip:!supported},async t=>{
   const {cwd}=fixture(t);let requests=0;
   const server=http.createServer((_req,res)=>{requests++;res.end('unexpected');});
@@ -173,6 +200,25 @@ test('verification does not claim cleanup when a detached descendant holds its o
     assert.equal(result.outcome,'unavailable');assert.equal(result.code,'verification_cleanup_unknown');
     assert.equal(closed,false);assert(Number.isInteger(pid)&&pid>0);
   }finally{if(Number.isInteger(pid)&&pid>0)try{process.kill(-pid,'SIGKILL');}catch(error){if(error.code!=='ESRCH')throw error;}}
+});
+test('copy writes run inside the sandbox and cannot follow a link out of the copy',{skip:!supported},async t=>{
+  const {root,cwd}=fixture(t),outside=path.join(root,'outside.txt');
+  fs.writeFileSync(outside,'keep');
+  fs.writeFileSync(path.join(cwd,'a.txt'),'old',{mode:0o644});
+  writeInsideCopy({cwd,file:'a.txt',data:Buffer.from('new'),mode:0o600});
+  assert.equal(fs.readFileSync(path.join(cwd,'a.txt'),'utf8'),'new');
+  assert.equal(fs.statSync(path.join(cwd,'a.txt')).mode&0o7777,0o600);
+  writeInsideCopy({cwd,file:'a.txt',data:Buffer.from('kept mode'),mode:null});
+  assert.equal(fs.statSync(path.join(cwd,'a.txt')).mode&0o7777,0o600);
+  fs.symlinkSync(outside,path.join(cwd,'link.txt'));
+  assert.throws(()=>writeInsideCopy({cwd,file:'link.txt',data:Buffer.from('escaped'),mode:null}),{message:'review_verification_copy_drift'});
+  fs.mkdirSync(path.join(root,'outdir'));fs.writeFileSync(path.join(root,'outdir','b.txt'),'keep');
+  fs.symlinkSync(path.join(root,'outdir'),path.join(cwd,'dir'));
+  assert.throws(()=>writeInsideCopy({cwd,file:'dir/b.txt',data:Buffer.from('escaped'),mode:null}),{message:'review_verification_copy_drift'});
+  assert.equal(fs.readFileSync(outside,'utf8'),'keep');
+  assert.equal(fs.readFileSync(path.join(root,'outdir','b.txt'),'utf8'),'keep');
+  for(const file of ['../outside.txt','/etc/hosts','a/../../x',''])
+    assert.throws(()=>writeInsideCopy({cwd,file,data:Buffer.from('x'),mode:null}),{message:'verification_write_invalid'});
 });
 test('verification command rejects unsupported isolation without executing',{skip:supported},async t=>{
   const {cwd}=fixture(t),result=await run(cwd,'process.exit(0)');
