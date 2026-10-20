@@ -52,8 +52,8 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - Bash 语法: `find . -type f -name '*.sh' -print0 | xargs -0 -n1 /bin/bash -n`
 - Pi/BYZ package: `pi install git:github.com/kingxiaozhe/cm-workflow`
 - Codex 安装: `./install-codex.sh`（装完新开会话跑 `$cm-check`）
-- Claude 安装: `./install.sh`（核心运行时原子更新/失败回滚；可选更新器 best-effort，装完跑 `/cm-check`）；它与 `install-codex.sh` 按安装清单发现手改即停下（退出码 3），`--yes` 不绕过，确认丢弃加 `--overwrite-local-edits`；同一目标并发安装时后来者以退出码 4 停下，锁残留需人工确认后清理
-- Windows 安装: `powershell -ExecutionPolicy Bypass -File install.ps1`（同样原子更新）
+- Claude 安装: `./install.sh`（核心运行时整体更新、失败回滚，但安装中运行的会话可能读到新旧混合文件，见 docs/installation.md 限制表；可选更新器 best-effort，装完跑 `/cm-check`）；它与 `install-codex.sh` 按安装清单发现手改即停下（退出码 3），`--yes` 不绕过，确认丢弃加 `--overwrite-local-edits`；同一目标并发安装时后来者以退出码 4 停下，锁残留需人工确认后清理
+- Windows 安装: `powershell -ExecutionPolicy Bypass -File install.ps1`（同样整体更新、失败回滚）
 - 一致性自检: `./scripts/cm-check-runtime.sh`；完整当前会话机械/语义接线：`node scripts/cm-check-host.mjs --help`
 - 完整 `cm-check` 默认先调用 `scripts/cm-check-update.mjs` 查询并升级已管理安装，再检查返回目录；低层检查仍只读。定点测试：`node --test scripts/cm-check-update.test.mjs scripts/cm-check-host.test.mjs`。
 - 全局日志夹具: `./scripts/cm-check-runtime.sh --log-fixtures`

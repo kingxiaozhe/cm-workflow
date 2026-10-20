@@ -9,8 +9,8 @@
   - `install.sh` 安装成功后写 `<CLAUDE_HOME>/cm-workflow/install-manifest.sha256`，`install-codex.sh` 写 `~/plugins/cm-workflow/.cm-install-manifest.sha256`，记录每个核心文件的相对路径和 sha256；`__pycache__`、`.DS_Store` 和 `~/.cm-workflow` 下的可选更新器不记录，含反斜杠的文件名拒绝。逻辑在共用的 `scripts/cm-install-manifest.sh`。
   - 重装时，清单里有、目标里也在的文件，sha256 变了、变成链接或目录、上级目录变成链接，都算手改：列出并以退出码 3 停下。`--yes` 和交互回答 y 都不能绕过，只有 `--overwrite-local-edits` 才覆盖；清单损坏或不是普通文件同样停下；没有旧清单时打印一行说明后照常安装。
   - 核对分三次：写入前、覆盖确认后，以及事务中。事务中那次，`install.sh` 在每个文件复制前核对内容、类型和上级路径，发现变化时已写的文件回滚、被改的文件不动；`install-codex.sh` 在旧插件目录改名移开后核对，发现变化就移回。
-  - 同一真实目标同一时刻只允许一个安装：锁是目标旁的 `.<目标名>.cm-install.lock`（默认 Claude 为 `~/..claude.cm-install.lock`，Codex 为 `~/plugins/.cm-workflow.cm-install.lock`）。目标先解析成真实路径，不同写法和两个安装器指向同一目录时共用一把锁。拿不到锁以退出码 4 停下并报出持有进程；残留锁不自动抢占，只打印转义后的 `rm -rf` 命令。加锁与登记之间、Codex 改名与登记之间收到信号会先登记再退出，保证解锁和恢复。
-  - 安装根不能是符号链接；Codex 的 `~/plugins`、`~/.agents/plugins` 和 `marketplace.json` 不能是链接。回滚某一步失败时继续其余恢复并解锁，报告「回滚不完整」并保留恢复材料。
+  - 同一真实目标同一时刻只允许一个安装：锁是目标旁的 `.<目标名>.cm-install.lock`（默认 Claude 为 `~/..claude.cm-install.lock`，Codex 为 `~/plugins/.cm-workflow.cm-install.lock`）。目标先解析成真实路径，不同写法和两个安装器指向同一目录时共用一把锁。拿不到锁以退出码 4 停下并报出持有进程；残留锁不自动抢占，只打印转义后的 `rm -rf` 命令。加锁与登记之间、Codex 改名与登记之间收到信号会先登记再退出；加锁的 `mkdir` 和 Codex 改名的 `mv` 在忽略 HUP/INT/TERM 的子进程里执行，整个进程组收到信号时也能拿到确定结果，保证解锁和恢复。
+  - 安装根不能是符号链接；Codex 的 `~/plugins`、`~/.agents`、`~/.agents/plugins` 和 `marketplace.json` 不能是链接，marketplace 必须是普通文件，写入前和回滚写回前都再查一次；回滚时类型不对就不写、保留备份并报告回滚不完整。回滚某一步失败时继续其余恢复并解锁，报告「回滚不完整」并保留恢复材料。
   - **已知限制**：核对与写入之间的窗口只缩到单个文件，不能完全消除，安装期间不要编辑已安装的 CM 文件；安装对正在运行的 CM 会话不是原子更新；SIGKILL、断电不保证回滚；`install.ps1`（Windows）没有这些保护；npm 入口和 `$cm-check` 自动升级只传 `--yes`，遇手改时 `$cm-check` 报 `blocked`（退出码 1），需手动运行安装器；`~/.cm-workflow/cm-update.sh` 在安装前删除上游已移除文件，不经过这把锁和核对；锁不协调其他插件对 marketplace 的写入。
 - **阶段交界直接给结论，复盘分出机械性错误**：借鉴 [mattpocock/skills](https://github.com/mattpocock/skills) 的阶段交界判断和复盘思路，只改文字。
   - `cm-ai` 单任务结束、`cm-prd` 人审停点、`cm-fix` 收尾三处，原来各写一段「建议开新会话」，同一真实项目里没有改变使用习惯。现在三处统一指向 `runtime/model-efficiency.md`「Session boundary」的判断表，按顺序判断「继续本会话 / 留在本会话 / 换新会话（默认）」，换新会话时附上新会话里要运行的入口；不设写交接文件，压缩放在最后。

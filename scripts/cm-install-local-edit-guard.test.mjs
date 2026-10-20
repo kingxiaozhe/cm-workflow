@@ -463,3 +463,47 @@ test('manifest helper: a name containing a backslash is refused instead of writi
     assert.equal(result.stdout.trim(), 'status=1', result.stdout + result.stderr);
     assert.equal(fs.existsSync(path.join(dir, 'manifest')), false);
   });
+
+const realTool = name => spawnSync('/bin/sh', ['-c', `command -v ${name}`], {encoding: 'utf8'}).stdout.trim();
+function fakeBin(home, name, body) {
+  const bin = path.join(home, 'fake-bin');
+  fs.mkdirSync(bin, {recursive: true});
+  fs.writeFileSync(path.join(bin, name), ['#!/bin/sh', ...body, ''].join('\n'), {mode: 0o755});
+  return bin;
+}
+
+test('fault: a lock mkdir that succeeds but is then killed by a group signal still releases the lock',
+  {skip: process.platform === 'win32', timeout: 120000}, t => {
+    const {home, target, env} = sandbox(t, 'cm-install-fault-mkdir-');
+    const mkdir = realTool('mkdir');
+    // Real side effect first, then the signal reaches both the installer and this command.
+    const bin = fakeBin(home, 'mkdir', [`${mkdir} "$@"; rc=$?`,
+      'case "$*" in *.cm-install.lock) kill -TERM "$PPID"; kill -TERM $$ ;; esac', 'exit $rc']);
+    const result = install({...env, PATH: `${bin}:${env.PATH}`}, ['--yes']);
+    assert.equal(result.status, 143, output(result));
+    assert.equal(fs.existsSync(lockOf(target)), false, 'the lock this run created must be released');
+    assert.equal(fs.existsSync(target), false);
+    assert.deepEqual(leftovers(home), []);
+  });
+
+test('fault: a file copy that fails half-written is rolled back with the files before it',
+  {skip: process.platform === 'win32', timeout: 300000}, t => {
+    const {home, target, env} = installedClone(t, 'cm-install-fault-halfcopy-');
+    olderVersion(target, EARLY, '# older early file\n');
+    const manifestBefore = fs.readFileSync(path.join(target, MANIFEST), 'utf8');
+    const late = path.join(target, EDITED);
+    const lateBefore = fs.readFileSync(late);
+    const marker = path.join(home, 'cp-failed-once');
+    const bin = fakeBin(home, 'cp', [
+      `if [ "$#" -eq 3 ] && [ "$3" = '${late}' ] && [ ! -e '${marker}' ]; then`,
+      `  : > '${marker}'; head -c 64 "$2" > "$3"; exit 1`,
+      'fi', `exec ${realTool('cp')} "$@"`]);
+    const result = install({...env, PATH: `${bin}:${env.PATH}`}, ['--yes']);
+    assert.equal(result.status, 1, output(result));
+    assert.ok(fs.existsSync(marker), 'the half-written copy must have happened');
+    assert.deepEqual(fs.readFileSync(late), lateBefore, 'the half-written file is restored');
+    assert.equal(fs.readFileSync(path.join(target, EARLY), 'utf8'), '# older early file\n');
+    assert.equal(fs.readFileSync(path.join(target, MANIFEST), 'utf8'), manifestBefore);
+    assert.equal(fs.existsSync(lockOf(target)), false);
+    assert.deepEqual(leftovers(home), []);
+  });

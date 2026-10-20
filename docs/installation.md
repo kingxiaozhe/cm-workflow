@@ -225,13 +225,20 @@ spellings such as `~/.claude/.` and a Claude install aimed at
 and names the holder pid, its start time and whether it is still running. A
 leftover lock is never taken over automatically: the installer prints a
 shell-quoted `rm -rf` command to run after you confirm no install is in progress.
-The lock is released on success, on failure, and on HUP/INT/TERM.
+The lock is released on success, on failure, and on HUP/INT/TERM, including a
+signal sent to the whole process group: the lock `mkdir` and the Codex rename run
+with those signals ignored, so their result is always recorded before the
+installer exits.
 
 **Paths.** The install root must not be a symlink (`CLAUDE_HOME=/link/.` is
 refused); its parent directories are resolved with `pwd -P`. For Codex,
 `~/plugins`, `~/plugins/cm-workflow`, `~/.agents`, `~/.agents/plugins` and
 `marketplace.json` must not be symlinks, and the marketplace must be a regular
-file. Use real directories at those paths.
+file. Use real directories at those paths. The marketplace and its two parent
+directories are checked again right before the marketplace is written and right
+before a rollback writes it back; if a rollback finds the wrong type there, it
+writes nothing, reports the rollback as incomplete and keeps the marketplace
+backup.
 
 **Rollback.** A failed install restores what it wrote. If a restore step itself
 fails, the installer still tries the remaining steps and releases the lock, reports

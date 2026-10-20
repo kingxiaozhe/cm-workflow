@@ -198,9 +198,11 @@ cm_manifest_file_hash() {
 
 # cm_install_lock_acquire LOCK_DIR -> 0 acquired, 1 not acquired. Call it
 # between cm_defer_signals and cm_resume_signals and register ownership right
-# after, so no signal can land between taking and registering the lock.
+# after. mkdir runs via cm_run_shielded, so a signal sent to the whole process
+# group cannot kill it after the directory exists: the exit status always
+# tells whether this run created the lock.
 cm_install_lock_acquire() {
-  mkdir "$1" 2>/dev/null
+  cm_run_shielded mkdir "$1" 2>/dev/null
 }
 
 # cm_install_lock_write_owner LOCK_DIR TARGET
@@ -287,6 +289,16 @@ cm_resume_signals() {
   if [ -n "$CM_PENDING_SIGNAL" ]; then
     exit "$CM_PENDING_SIGNAL"
   fi
+}
+
+# cm_run_shielded COMMAND [ARGS...]
+# Run one state-changing external command with HUP/INT/TERM ignored (the
+# ignored disposition survives exec), so its exit status reports whether the
+# side effect happened even when the whole process group is signalled. The
+# parent records such signals through cm_defer_signals and acts on them after
+# registering the result.
+cm_run_shielded() {
+  (trap '' HUP INT TERM; exec "$@")
 }
 
 # Test-only fault injection point. CM_INSTALL_TEST_HOOK is unset outside the

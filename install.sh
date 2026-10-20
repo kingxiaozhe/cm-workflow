@@ -192,7 +192,7 @@ confirm_bundle_conflicts() {
   echo "⚠ 以下 CM 文件已存在，将作为一个整体更新："
   printf '%s' "$conflicts" | sed '/^$/d; s/^/    /'
   [ "$ASSUME_YES" -eq 1 ] && return 0
-  read -r -p "  继续原子更新全部 CM 文件？[y/N] " answer
+  read -r -p "  继续整体更新全部 CM 文件（失败时回滚）？[y/N] " answer
   case "$answer" in
     y|Y) return 0 ;;
     *) echo "安装已取消，未修改现有运行时。"; return 1 ;;

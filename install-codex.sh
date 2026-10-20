@@ -92,20 +92,36 @@ done
 # Managed roots must be real directories and the marketplace a real file, so no
 # write can be redirected through a symlink, and every spelling of the target
 # resolves to one canonical path (one lock identity).
-for managed_path in "$PLUGIN_PARENT" "$PLUGIN_DEST" "$(dirname "$MARKETPLACE_ROOT")" "$MARKETPLACE_ROOT" "$MARKETPLACE_PATH"; do
+# One structure check for the marketplace and its managed parents, used at
+# entry, right before the helper writes it, and right before rollback writes
+# it: ~/.agents and ~/.agents/plugins must be real directories (or missing) and
+# marketplace.json a regular file (or missing). Prints the offending path.
+marketplace_structure_problem() {
+  for marketplace_dir in "$(dirname "$MARKETPLACE_ROOT")" "$MARKETPLACE_ROOT"; do
+    if [ -L "$marketplace_dir" ] || { [ -e "$marketplace_dir" ] && [ ! -d "$marketplace_dir" ]; }; then
+      printf '%s\n' "$marketplace_dir"
+      return 0
+    fi
+  done
+  if [ -L "$MARKETPLACE_PATH" ] || { [ -e "$MARKETPLACE_PATH" ] && [ ! -f "$MARKETPLACE_PATH" ]; }; then
+    printf '%s\n' "$MARKETPLACE_PATH"
+    return 0
+  fi
+  return 1
+}
+
+for managed_path in "$PLUGIN_PARENT" "$PLUGIN_DEST"; do
   if [ -L "$managed_path" ]; then
     echo "Refusing a symlinked install path: $managed_path. Installation stopped; nothing was changed." >&2
     exit 2
   fi
 done
-for managed_dir in "$PLUGIN_PARENT" "$(dirname "$MARKETPLACE_ROOT")" "$MARKETPLACE_ROOT"; do
-  if [ -e "$managed_dir" ] && [ ! -d "$managed_dir" ]; then
-    echo "Install path must be a directory: $managed_dir. Installation stopped; nothing was changed." >&2
-    exit 2
-  fi
-done
-if [ -e "$MARKETPLACE_PATH" ] && [ ! -f "$MARKETPLACE_PATH" ]; then
-  echo "Marketplace must be a regular file: $MARKETPLACE_PATH. Installation stopped; nothing was changed." >&2
+if [ -e "$PLUGIN_PARENT" ] && [ ! -d "$PLUGIN_PARENT" ]; then
+  echo "Install path must be a directory: $PLUGIN_PARENT. Installation stopped; nothing was changed." >&2
+  exit 2
+fi
+if marketplace_problem=$(marketplace_structure_problem); then
+  echo "Refusing a symlinked or wrong-type install path: $marketplace_problem. Installation stopped; nothing was changed." >&2
   exit 2
 fi
 if ! PLUGIN_DEST_CANONICAL=$(cm_install_canonical_target "$PLUGIN_DEST"); then
@@ -148,8 +164,8 @@ cleanup() {
       fi
     fi
     if [ "$MARKETPLACE_TOUCHED" -eq 1 ]; then
-      if [ -L "$MARKETPLACE_PATH" ]; then
-        rollback_fail "$MARKETPLACE_PATH (became a symlink; not written)"
+      if marketplace_problem=$(marketplace_structure_problem); then
+        rollback_fail "$MARKETPLACE_PATH (not written: $marketplace_problem is a symlink or the wrong type)"
       elif [ "$MARKETPLACE_EXISTED" -eq 1 ] && [ -f "$MARKETPLACE_BACKUP" ]; then
         cp "$MARKETPLACE_BACKUP" "$MARKETPLACE_PATH" || rollback_fail "$MARKETPLACE_PATH"
       elif [ -f "$MARKETPLACE_PATH" ]; then
@@ -316,8 +332,9 @@ run_local_edit_guard recheck
 
 # Use the first-party helper to own marketplace.json updates, but scaffold in
 # a disposable directory so an interrupted install cannot damage the plugin.
-if [ -L "$MARKETPLACE_PATH" ] || { [ -e "$MARKETPLACE_PATH" ] && [ ! -f "$MARKETPLACE_PATH" ]; }; then
-  echo "Marketplace must be a regular file: $MARKETPLACE_PATH. Installation stopped; nothing was changed." >&2
+cm_install_test_hook before-marketplace-check
+if marketplace_problem=$(marketplace_structure_problem); then
+  echo "Refusing a symlinked or wrong-type install path: $marketplace_problem. Installation stopped; nothing was changed." >&2
   exit 2
 fi
 if [ -f "$MARKETPLACE_PATH" ]; then
@@ -376,6 +393,7 @@ if [ -e "$PLUGIN_DEST" ]; then
     echo "Plugin directory changed type during the install: $PLUGIN_DEST. Installation stopped." >&2
     exit 3
   fi
+  cm_install_test_hook before-plugin-rename
   mv "$PLUGIN_DEST" "$BACKUP"
   # Edits written by path before the rename landed in the moved directory, so
   # one last check there closes the gap after the recheck above. An exit here
@@ -398,7 +416,7 @@ fi
 # Register the swap together with the rename: a signal in between is held
 # until DEST_REPLACED is set, so cleanup always knows to put the old plugin back.
 cm_defer_signals
-mv "$STAGE" "$PLUGIN_DEST"
+cm_run_shielded mv "$STAGE" "$PLUGIN_DEST"
 cm_install_test_hook after-stage-moved
 DEST_REPLACED=1
 cm_resume_signals

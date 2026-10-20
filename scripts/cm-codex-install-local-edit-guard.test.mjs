@@ -34,7 +34,7 @@ function sandbox(t) {
   fs.writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\nexit 0\n', {mode: 0o755});
   const env = {...process.env, HOME: home, CODEX_HOME: codexHome, PATH: `${bin}:${process.env.PATH}`,
     CM_WORKFLOW_HOME: path.join(home, 'workflow'), CM_WORKFLOW_LOG_HOME: path.join(home, 'logs')};
-  return {plugin: path.join(home, 'plugins/cm-workflow'), marketplace: path.join(home, '.agents/plugins/marketplace.json'), env};
+  return {home, bin, plugin: path.join(home, 'plugins/cm-workflow'), marketplace: path.join(home, '.agents/plugins/marketplace.json'), env};
 }
 
 function install(env, args) {
@@ -202,7 +202,7 @@ test('codex path safety: a symlinked marketplace or plugins root is refused befo
     fs.symlinkSync(outside, marketplace);
     const linkedMarketplace = install(env, ['--yes']);
     assert.equal(linkedMarketplace.status, 2, output(linkedMarketplace));
-    assert.match(linkedMarketplace.stderr, /Refusing a symlinked install path/);
+    assert.match(linkedMarketplace.stderr, /Refusing a symlinked or wrong-type install path/);
     assert.equal(fs.readFileSync(outside, 'utf8'), '{"name":"someone-else","plugins":[]}\n');
     assert.equal(fs.existsSync(plugin), false);
     fs.unlinkSync(marketplace);
@@ -215,4 +215,121 @@ test('codex path safety: a symlinked marketplace or plugins root is refused befo
     assert.match(linkedRoot.stderr, /Refusing a symlinked install path/);
     assert.deepEqual(fs.readdirSync(realPlugins), []);
     assert.equal(fs.existsSync(marketplace), false);
+  });
+
+// ---- Fault injection on a copy of one real install --------------------------
+let codexTemplate;
+function installedCodexClone(t) {
+  if (!codexTemplate) {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cm-codex-install-template-')));
+    process.on('exit', () => fs.rmSync(home, {recursive: true, force: true}));
+    const box = sandbox({after: () => {}});
+    const first = install(box.env, ['--yes']);
+    assert.equal(first.status, 0, output(first));
+    for (const dir of ['plugins', '.agents']) {
+      assert.equal(spawnSync('cp', ['-Rp', path.join(box.home, dir), path.join(home, dir)]).status, 0);
+    }
+    fs.rmSync(box.home, {recursive: true, force: true});
+    codexTemplate = home;
+  }
+  const box = sandbox(t);
+  for (const dir of ['plugins', '.agents']) {
+    assert.equal(spawnSync('cp', ['-Rp', path.join(codexTemplate, dir), path.join(box.home, dir)]).status, 0);
+  }
+  const pluginJson = path.join(box.plugin, '.codex-plugin/plugin.json');
+  box.before = {json: fs.readFileSync(pluginJson), manifest: fs.readFileSync(path.join(box.plugin, MANIFEST)),
+    marketplace: fs.readFileSync(box.marketplace)};
+  box.pluginJson = pluginJson;
+  return box;
+}
+
+const realTool = name => spawnSync('/bin/sh', ['-c', `command -v ${name}`], {encoding: 'utf8'}).stdout.trim();
+function fakeTool(bin, name, body) {
+  fs.writeFileSync(path.join(bin, name), ['#!/bin/sh', ...body, ''].join('\n'), {mode: 0o755});
+}
+const pluginsLeftovers = plugin => fs.readdirSync(path.dirname(plugin)).filter(name => name !== 'cm-workflow');
+
+test('codex fault: a rename that completes but is then killed by a group signal still restores the previous plugin',
+  {skip: process.platform === 'win32', timeout: 600000}, t => {
+    const box = installedCodexClone(t);
+    const mv = realTool('mv');
+    // Real side effect first, then the signal reaches both the installer and this command.
+    fakeTool(box.bin, 'mv', [`${mv} "$@"; rc=$?`,
+      'case "$1" in *"/.cm-workflow.stage."*) kill -TERM "$PPID"; kill -TERM $$ ;; esac', 'exit $rc']);
+    const result = install(box.env, ['--yes']);
+    assert.equal(result.status, 143, output(result));
+    assert.deepEqual(fs.readFileSync(box.pluginJson), box.before.json, 'the previous plugin is back');
+    assert.deepEqual(fs.readFileSync(path.join(box.plugin, MANIFEST)), box.before.manifest);
+    assert.deepEqual(fs.readFileSync(box.marketplace), box.before.marketplace);
+    assert.equal(fs.existsSync(lockOf(box.plugin)), false);
+    assert.deepEqual(pluginsLeftovers(box.plugin), []);
+  });
+
+test('codex fault: a failing rollback step still restores the marketplace, unlocks and keeps the previous plugin',
+  {skip: process.platform === 'win32', timeout: 600000}, t => {
+    const box = installedCodexClone(t);
+    const mv = realTool('mv');
+    fakeTool(box.bin, 'codex', ['exit 17']);
+    fakeTool(box.bin, 'mv', ['case "$2" in *"/.cm-workflow.failed."*) exit 1 ;; esac', `exec ${mv} "$@"`]);
+    const result = install(box.env, ['--yes']);
+    assert.equal(result.status, 17, output(result));
+    assert.match(result.stderr, /rollback is incomplete/);
+    assert.deepEqual(fs.readFileSync(box.marketplace), box.before.marketplace, 'later restores still run');
+    assert.equal(fs.existsSync(lockOf(box.plugin)), false, 'the lock is released even when the rollback is incomplete');
+    const kept = pluginsLeftovers(box.plugin).filter(name => name.startsWith('.cm-workflow.backup.'));
+    assert.equal(kept.length, 1, 'the previous plugin must be kept');
+    assert.deepEqual(fs.readFileSync(path.join(path.dirname(box.plugin), kept[0], '.codex-plugin/plugin.json')), box.before.json);
+    assert.match(result.stderr, new RegExp(kept[0].replace(/\./g, '\\.')));
+  });
+
+test('codex fault: an edit landing right before the old plugin is renamed aside is caught there and the plugin is put back',
+  {skip: process.platform === 'win32', timeout: 600000}, t => {
+    const box = installedCodexClone(t);
+    const edited = path.join(box.plugin, EDITED);
+    const handEdit = fs.readFileSync(edited, 'utf8') + '\n<!-- edited during the install -->\n';
+    const hook = writeHook(box.home, ['[ "$1" = before-plugin-rename ] || exit 0',
+      `printf '\\n<!-- edited during the install -->\\n' >> '${edited}'`]);
+    const result = install({...box.env, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 3, output(result));
+    assert.match(result.stderr, /changed during the install/);
+    assert.equal(fs.readFileSync(edited, 'utf8'), handEdit);
+    assert.deepEqual(fs.readFileSync(path.join(box.plugin, MANIFEST)), box.before.manifest);
+    assert.deepEqual(fs.readFileSync(box.marketplace), box.before.marketplace);
+    assert.equal(fs.existsSync(lockOf(box.plugin)), false);
+    assert.deepEqual(pluginsLeftovers(box.plugin), []);
+  });
+
+test('codex path safety: a marketplace parent swapped for a symlink before the marketplace is written is refused',
+  {skip: process.platform === 'win32', timeout: 600000}, t => {
+    const box = installedCodexClone(t);
+    const elsewhere = path.join(box.home, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    fs.writeFileSync(path.join(elsewhere, 'marketplace.json'), '{"name":"someone-else","plugins":[]}\n');
+    const parent = path.dirname(box.marketplace);
+    const hook = writeHook(box.home, ['[ "$1" = before-marketplace-check ] || exit 0',
+      `mv '${parent}' '${parent}.moved'`, `ln -s '${elsewhere}' '${parent}'`]);
+    const result = install({...box.env, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 2, output(result));
+    assert.match(result.stderr, /symlinked or wrong-type install path/);
+    assert.equal(fs.readFileSync(path.join(elsewhere, 'marketplace.json'), 'utf8'), '{"name":"someone-else","plugins":[]}\n');
+    assert.deepEqual(fs.readFileSync(path.join(`${parent}.moved`, 'marketplace.json')), box.before.marketplace);
+    assert.deepEqual(fs.readFileSync(box.pluginJson), box.before.json);
+    assert.equal(fs.existsSync(lockOf(box.plugin)), false);
+    assert.deepEqual(pluginsLeftovers(box.plugin), []);
+  });
+
+test('codex fault: a marketplace that became a directory is not "restored" into it; the backup is kept and reported',
+  {skip: process.platform === 'win32', timeout: 600000}, t => {
+    const box = installedCodexClone(t);
+    fakeTool(box.bin, 'codex', [`rm -f '${box.marketplace}'`, `mkdir '${box.marketplace}'`, 'exit 17']);
+    const result = install(box.env, ['--yes']);
+    assert.equal(result.status, 17, output(result));
+    assert.match(result.stderr, /rollback is incomplete/);
+    assert.ok(fs.statSync(box.marketplace).isDirectory());
+    assert.deepEqual(fs.readdirSync(box.marketplace), [], 'nothing may be copied into the directory');
+    const kept = pluginsLeftovers(box.plugin).filter(name => name.startsWith('.cm-workflow.marketplace.backup.'));
+    assert.equal(kept.length, 1, 'the marketplace backup must be kept');
+    assert.deepEqual(fs.readFileSync(path.join(path.dirname(box.plugin), kept[0])), box.before.marketplace);
+    assert.deepEqual(fs.readFileSync(box.pluginJson), box.before.json, 'the previous plugin is still restored');
+    assert.equal(fs.existsSync(lockOf(box.plugin)), false);
   });
