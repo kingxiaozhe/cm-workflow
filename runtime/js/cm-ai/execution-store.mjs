@@ -34,7 +34,7 @@ function regular(p,limit) {
   need(s.isFile() && !s.isSymbolicLink() && s.nlink===1,'unsupported_file');
   need((s.mode&0o077)===0,'store_permissions');need(s.size<=limit,'limit_exceeded');return s;
 }
-function readState(p) {
+function readState(p,{withBytes=false}={}) {
   const before=regular(p,STATE_LIMIT),fd=fs.openSync(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
   try {
     need(sameInode(before,fs.fstatSync(fd)),'snapshot_changed');
@@ -44,7 +44,8 @@ function readState(p) {
       && before.ctimeMs===after.ctimeMs && bytes.length===after.size,'snapshot_changed');
     const raw=bytes.toString('utf8'),value=JSON.parse(raw);
     // Compare original bytes: replacement decoding must never repair corruption.
-    need(Buffer.from(JSON.stringify(value)+'\n').equals(bytes),'store_corrupt');return value;
+    need(Buffer.from(JSON.stringify(value)+'\n').equals(bytes),'store_corrupt');
+    return withBytes?{value,bytes}:value;
   }finally{fs.closeSync(fd);}
 }
 function validateState(raw,options) {
@@ -214,15 +215,19 @@ export function openExecutionStore(input) {
     };
     const statePath=path.join(dir,'state.json');
     if(options.create)atomicState(dir,seal({version:1,identity:options.identity,fingerprints:options.fingerprints,records:[]}));
-    let physicalState=null;
+    let physicalState=null,validatedBytes=null,validatedLogical=null;
     const snapshot=()=>{
       need(!closed,'store_closed');need(!poisoned,'store_poisoned');
       try{
         guard();runBytes(dir);
-        const physical=readState(statePath),logical=validateState(unpackFixJournalState(physical),options);
+        const {value:physical,bytes}=readState(statePath,{withBytes:true});
+        // Reuse only after every fresh path/ownership/read/canonical check above.
+        // The buffer stays private; validateState returns a deeply frozen value.
+        if(validatedBytes!==null && validatedBytes.equals(bytes))return validatedLogical;
+        const logical=validateState(unpackFixJournalState(physical),options);
         // Private physical rows never escape to the logical owner. Append keeps
         // these validated old objects verbatim instead of encoding them again.
-        physicalState=physical;return logical;
+        physicalState=physical;validatedBytes=bytes;validatedLogical=logical;return logical;
       }catch(error){poisoned=true;throw error;}
     };
     snapshot();
@@ -245,7 +250,11 @@ export function openExecutionStore(input) {
         ...(Buffer.byteLength(JSON.stringify(v.payload))>JOURNAL_PAYLOAD_LIMIT?[record.seq]:[])];
       const physicalNext={...physicalData,records:[...physicalState.records,{...record,payload:physicalPayload,digest:digest(record)}],
         revision:next.revision,...(encodedSequences.length?{storageEncoding:{version:1,kind:'cm-fix-review-payloads-v1',records:encodedSequences}}:{})};
-      try{guard();atomicState(dir,next,physicalNext);}catch(error){poisoned=true;throw error;}
+      try{
+        guard();atomicState(dir,next,physicalNext);
+        // A new physical state must take the full validation path on next read.
+        validatedBytes=null;validatedLogical=null;
+      }catch(error){poisoned=true;throw error;}
       return next;
     };
     return Object.freeze({snapshot,append,close});
