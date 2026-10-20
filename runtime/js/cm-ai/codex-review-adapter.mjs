@@ -9,6 +9,9 @@ import {readFixCausePackage,causeReviewPaths} from '../cm-fix/cause-package.mjs'
 import {readCarriedReview} from './reviewed-evidence-supersession-record.mjs';
 
 const REQUEST_LIMIT=10*1024*1024,PROMPT_LIMIT=11*1024*1024;
+// Codex rejects native input above 1,048,576 characters. Bound UTF-8 bytes
+// conservatively: this also fits that character limit, including multibyte text.
+const CODEX_INPUT_LIMIT=1024*1024;
 // The rules review-runner.mjs enforces. A reply that breaks them never becomes a
 // receipt; the owner keeps the original call and applies its recovery contract.
 export const VERDICT_RULES=`Verdict rules; a reply that breaks them cannot authorize completion:
@@ -61,7 +64,7 @@ export function buildReviewPrompt(raw,provider,executionPolicy=null) {
     ...(Object.hasOwn(request.payload,'supersededReview')?{supersededReview:request.payload.supersededReview}:{}),
     examinedPaths:reviewPaths(reviewPackage),
     ...(reviewPackage.handoff?{handoffPath:reviewPackage.handoff.path}:{})},REQUEST_LIMIT);
-  return presentationPrompt(data,INSTRUCTIONS,executionPolicy);
+  return presentationPrompt(data,INSTRUCTIONS,executionPolicy,provider);
 }
 
 export function buildCauseReviewPrompt(raw,provider,executionPolicy=null){
@@ -74,19 +77,21 @@ ${VERDICT_RULES}
 Each finding.path must be exactly one of examinedPaths.${reviewPackage.contextFiles?`
 reviewPackage.contextFiles are read-only context: files the previous round's review (rediagnosis.reviewFeedback) examined or cited that are outside the revised affectedPaths. They are examinedPaths and may be cited.`:''}`;
   const data=json({reviewPackage,priorReview:request.payload.priorReview,examinedPaths:causeReviewPaths(reviewPackage)},REQUEST_LIMIT);
-  return presentationPrompt(data,instructions,executionPolicy);
+  return presentationPrompt(data,instructions,executionPolicy,provider);
 }
 
-function presentationPrompt(data,instructions,policy){
+function presentationPrompt(data,instructions,policy,provider){
   const full=`${instructions}\n<cm-review-data-json>\n${JSON.stringify(data)}`;
   let prompt=full;
-  if(policy){
-    readExecutionPolicy(policy);
+  if(policy)readExecutionPolicy(policy);
+  // An immutable legacy policy stays null. Only an otherwise untransportable
+  // Codex input needs this lossless fallback; small legacy prompts stay exact.
+  if(policy||provider==='codex'&&Buffer.byteLength(full,'utf8')>CODEX_INPUT_LIMIT){
     const compact=`${presentationInstructions(instructions)}\n<cm-review-data-json>\n${JSON.stringify(compactReviewData(data))}`;
     // Select by actual bytes, never estimated provider tokens. Fallback is complete.
     if(Buffer.byteLength(compact,'utf8')<Buffer.byteLength(full,'utf8'))prompt=compact;
   }
-  need(Buffer.byteLength(prompt,'utf8')<=PROMPT_LIMIT,'limit_exceeded');return prompt;
+  need(Buffer.byteLength(prompt,'utf8')<=(provider==='codex'?CODEX_INPUT_LIMIT:PROMPT_LIMIT),'limit_exceeded');return prompt;
 }
 
 export function createCauseReviewRun(worker,provider,executionPolicy=null){
