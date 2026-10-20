@@ -10,7 +10,7 @@ const codes=new Set(['review_verification_failed','review_verification_check_fai
   'review_verification_mutation','review_verification_check','review_verification_prompt_contract',
   'review_verification_callback_failed','fix_verification_recovery_binding','reviewer_auth_failed','review_verification_isolation_unavailable','review_verification_tool','cancelled','review_verification_cleanup_unknown','process_cleanup_unknown',
   'verification_cleanup_unknown','verification_timeout','verification_cancelled','verification_signal_exit',
-  'verification_spawn_failed','verification_isolation_failed','verification_isolation_unsupported',
+  'verification_spawn_failed','verification_isolation_failed','verification_isolation_unsupported','verification_write_invalid',
   'verification_path_invalid','verification_command_invalid','verification_output_limit','verification_output_failed',
   'verification_observer_failed']);
 export const verificationFailureCode=error=>{

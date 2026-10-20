@@ -6,6 +6,7 @@ import path from 'node:path';
 import http from 'node:http';
 import {spawn,spawnSync} from 'node:child_process';
 import {runVerificationCommand,writeInsideCopy} from '../runtime/js/cm-fix/review-verification-command.mjs';
+import {verificationFailureCode,verificationFailure} from '../runtime/js/cm-fix/review-verification-diagnostic.mjs';
 
 const supported=process.platform==='darwin';
 function fixture(t){
@@ -224,6 +225,16 @@ test('copy writes run inside the sandbox and cannot follow a link out of the cop
   assert.equal(fs.readFileSync(path.join(root,'outdir','b.txt'),'utf8'),'keep');
   for(const file of ['../outside.txt','/etc/hosts','a/../../x','','a\\b','a\0b'])
     assert.throws(()=>writeInsideCopy({cwd,file,data:Buffer.from('x'),mode:null}),{code:'verification_write_invalid'});
+});
+test('copy write failures keep their exact code through the persisted diagnostic',()=>{
+  // Argument validation runs before any platform check, so this holds on every platform.
+  let thrown;
+  try{writeInsideCopy({cwd:'/nonexistent',file:'../x',data:Buffer.from('x'),mode:null});}catch(error){thrown=error;}
+  assert.equal(thrown?.code,'verification_write_invalid');
+  for(const code of ['verification_write_invalid','verification_isolation_unsupported','review_verification_copy_drift']){
+    assert.equal(verificationFailureCode(Object.assign(Error(code),{code})),code);
+    assert.equal(verificationFailure({phase:'mutation',code}).code,code);
+  }
 });
 test('verification command rejects unsupported isolation without executing',{skip:supported},async t=>{
   const {cwd}=fixture(t),result=await run(cwd,'process.exit(0)');
