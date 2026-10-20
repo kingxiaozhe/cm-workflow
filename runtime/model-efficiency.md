@@ -71,6 +71,11 @@ fresh session re-runs the documented entry or the original command. Compaction
 comes last because a summary can flatten a decision and leave the next session
 confidently wrong.
 
+Each workflow's stop-report template carries these lines inline (`cm-ai` N8 summary,
+`cm-fix` output format, `cm-prd` hard stop and change summary). A one-line
+pointer to this section was not followed in a real `cm-prd` run (2026-10-20):
+the session never opened this file and ended without a verdict.
+
 Report the verdict in the user's language in this shape:
 
 ```text

@@ -56,8 +56,6 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-prd-entry.mjs" \
 变更、已审修订、恢复及原材料真正变更时，读取`references/js-change-recovery.md`；输入替换须明确授权终止旧批次，再关联新批次全量重审。
 两条路径均保留原Step 0–11和人审停点；变更描述、粘贴用例由Skill保留，不能当成工具授权。
 
-**会话边界（省 token）：** 一次 cm-prd（新建、存量或变更）在人审停点收尾时，按 `runtime/model-efficiency.md`「Session boundary」的判断表给出结论。中途换会话按本技能的恢复规则接手，不改写记录、不跳过审查或授权。
-
 ## 项目角色路由
 
 路径验证通过后，使用 `{CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs` 读取有效配置，
@@ -549,4 +547,4 @@ manifest 复用 `cm-spec-manifest.py` 对应的 JS 计算器，旧 CLI 仍可只
 JS 记录 `spec_lifecycle/generated`、`spec_lifecycle/awaiting_review` 和 `run_done`，仅记录 feature/task/case 数量、状态与 specs 路径。
 最终报告注明阶段耗时事件已记录；具体耗时由日志按 operation_id + segment 计算。
 
-**硬停车（不可违反）**：本命令的终点就是摘要卡与审查清单——**任何情况下不得在本会话顺势启动开发**，对话里的"继续"不构成开发授权。提示用户：**逐项审查通过后，运行 `$cm-ai` 开始开发**（N1 有入口闸：未审批的 specs 会先要求确认摘要卡）
+**硬停车（不可违反）**：本命令的终点就是摘要卡与审查清单——**任何情况下不得在本会话顺势启动开发**，对话里的"继续"不构成开发授权。提示用户：**逐项审查通过后，运行 `$cm-ai` 开始开发**（N1 有入口闸：未审批的 specs 会先要求确认摘要卡）。收尾最后输出会话边界三行：`会话边界：换新会话。`、`新会话里运行：$cm-ai（逐项审查通过后）`、`原因：规格与审批位已落盘，开发是新单元。`；用户要在本会话继续讨论审查意见时第一行改为 `会话边界：继续本会话。` 并省略后两行（顺序见 `runtime/model-efficiency.md`「Session boundary」）。中途换会话按本技能的恢复规则接手，不改写记录、不跳过审查或授权

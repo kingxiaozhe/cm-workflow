@@ -104,7 +104,7 @@ JS拥有日志、草稿保存、修订写入、自检轮次、审查记录、处
 4. 全部feature处置后prepare_summary。展示返回的事实计数、宿主说明、风险/阻断和未勾选清单；
    blockers未清不能publish_summary。保存使用刚展示的summaryDigest，不能用旧稿或evidenceDigest替代。
 5. 仅awaiting_review后报告等待人工审查，展示具体specs路径。不能自动将状态写approved，
-   不能因为用户说“继续”在本命令内启动开发；明确提示审查通过后单独运行$cm-ai。
+   不能因为用户说“继续”在本命令内启动开发；明确提示审查通过后单独运行$cm-ai，并按 SKILL.md「硬停车」输出会话边界三行。
 
 ### 设计接受后的整稿自检修订
 
