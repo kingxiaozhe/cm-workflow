@@ -69,12 +69,12 @@ const ASKS={
 const READ_ONLY=new Set(['status','final_review_package','completion_evidence','cause_review_package']);
 const KNOWN=new Set([...Object.keys(ASKS),...READ_ONLY,'cancel','handoff','publish_review','check_n5',
   'publish_dossier','learning_writeback','walkthrough','finish','final_review','cause_review',
-  'prepare_test_type_correction','prepare_command_correction','prepare_verification_recovery','reconcile_review','recover_final_review','abandon_step','abandon_review','rerun_blocked_step','resume','revision_test_check']);
+  'prepare_test_type_correction','prepare_command_correction','prepare_diagnosis_module_correction','prepare_verification_recovery','reconcile_review','recover_final_review','abandon_step','abandon_review','rerun_blocked_step','resume','revision_test_check']);
 
 function loadPlan(){
   const {operation,plan,base}=loadPlanFile({name:'cm-fix-drive.mjs',known:KNOWN});
   const abandoning=['abandon_step','abandon_review','rerun_blocked_step'].includes(operation);
-  requireFields(plan,['config','cwd','mode','hostContext','permissions',...(abandoning||['reconcile_review','prepare_test_type_correction','prepare_command_correction','prepare_verification_recovery','recover_final_review'].includes(operation)?[]:['answers'])]);
+  requireFields(plan,['config','cwd','mode','hostContext','permissions',...(abandoning||['reconcile_review','prepare_test_type_correction','prepare_command_correction','prepare_diagnosis_module_correction','prepare_verification_recovery','recover_final_review'].includes(operation)?[]:['answers'])]);
   if(!['create','resume'].includes(plan.mode))stop(2,'mode 只能是 create 或 resume');
   for(const key of ['runtime','reviewRuntime'])
     if(Object.hasOwn(plan,key)&&!['codex','claude'].includes(plan[key]))stop(2,`${key} 只能是 codex 或 claude`);
@@ -88,6 +88,7 @@ function loadPlan(){
   }
   if(operation==='prepare_test_type_correction'&&(plan.mode!=='resume'||!plan.permissions.includes('--allow-test-type-correction')||!plan.expected||!plan.testTypeCorrection||plan.previousInvocationStopped!==true||typeof plan.reason!=='string'||!plan.reason.trim()))stop(2,'prepare_test_type_correction requires resume, expected, testTypeCorrection, stopped confirmation, reason and --allow-test-type-correction');
   if(operation==='prepare_command_correction'&&(plan.mode!=='resume'||!plan.permissions.includes('--allow-command-correction')||!plan.expected||!plan.commandCorrection||plan.previousInvocationStopped!==true||typeof plan.reason!=='string'||!plan.reason.trim()))stop(2,'prepare_command_correction requires resume, expected, commandCorrection, stopped confirmation, reason and --allow-command-correction');
+  if(operation==='prepare_diagnosis_module_correction'&&(plan.mode!=='resume'||!plan.permissions.includes('--allow-diagnosis-module-correction')||!plan.expected||plan.previousInvocationStopped!==true||typeof plan.reason!=='string'||!plan.reason.trim()||Buffer.byteLength(plan.reason,'utf8')>1000||/[\r\n\0\u0085\u2028\u2029]/.test(plan.reason)))stop(2,'prepare_diagnosis_module_correction requires resume, complete expected, stopped confirmation, single-line reason and --allow-diagnosis-module-correction');
   if(operation==='prepare_verification_recovery'&&(plan.mode!=='resume'||!plan.permissions.includes('--allow-verification-recovery')||!plan.expected||plan.previousInvocationStopped!==true||typeof plan.reason!=='string'||!plan.reason.trim()))stop(2,'prepare_verification_recovery 需要 resume、expected、previousInvocationStopped:true、reason 和 --allow-verification-recovery');
   if(Object.hasOwn(plan,'sourceCorrection')&&(operation!=='prepare_verification_recovery'||plan.mode!=='resume'||!plan.permissions.includes('--allow-source-correction')))stop(2,'sourceCorrection 仅用于 resume 的 prepare_verification_recovery，并须 --allow-source-correction');
   if(Object.hasOwn(plan,'verificationRecoveryAuthorization')&&!/^[a-f0-9]{64}$/.test(plan.verificationRecoveryAuthorization))stop(2,'verificationRecoveryAuthorization 必须是准备记录的摘要');
@@ -253,7 +254,7 @@ function main(){
   const {answers,round}=preflight(loaded);
   const {operation,plan,paths}=loaded;
   driveHost({host:HOST,args:hostArgs(loaded).slice(1),cwd:path.resolve(plan.cwd),operation,
-    request:{...(operation==='prepare_test_type_correction'?{expected:plan.expected,testTypeCorrection:plan.testTypeCorrection,previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),...(operation==='prepare_command_correction'?{expected:plan.expected,commandCorrection:plan.commandCorrection,previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),...(operation==='prepare_verification_recovery'?{expected:plan.expected,...(Object.hasOwn(plan,'sourceCorrection')?{sourceCorrection:plan.sourceCorrection}:{}),previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),
+    request:{...(operation==='prepare_diagnosis_module_correction'?{expected:plan.expected,previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),...(operation==='prepare_test_type_correction'?{expected:plan.expected,testTypeCorrection:plan.testTypeCorrection,previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),...(operation==='prepare_command_correction'?{expected:plan.expected,commandCorrection:plan.commandCorrection,previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),...(operation==='prepare_verification_recovery'?{expected:plan.expected,...(Object.hasOwn(plan,'sourceCorrection')?{sourceCorrection:plan.sourceCorrection}:{}),previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),
       ...(operation==='recover_final_review'?{invocationId:plan.invocationId,packageDigest:plan.packageDigest,previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),
       ...(operation==='reconcile_review'?{invocationId:plan.invocationId}:{}),...(['abandon_step','abandon_review','rediagnose','rerun_blocked_step'].includes(operation)?{reason:plan.reason}:{}),
       ...(operation==='prepare_revision'&&Object.hasOwn(plan,'revisionTests')?{tests:plan.revisionTests}:{})},

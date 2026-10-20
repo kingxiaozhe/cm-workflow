@@ -373,3 +373,15 @@ SKILL 第 7 步单独完成并记 `delivery` 事件。Git/发布/安装都不在
 本次未新增多场景调度、配置入口或执行权限，不把这一条记录当作已完成探索的证据。
 Skill 第 1 步的单维度探索与 3 个场景/15 分钟上限仍适用；需要改变命令/环境而当前
 owner 配置不能表达时，报告接线缺口，保持原运行身份与权限边界，不在 owner 外补跑或改 journal。
+
+## One module-only diagnosis correction
+
+The original owner may only fill omitted modules in a just-completed first diagnosed answer: the original modules must be a strict subset of the exact union of the original frozen walkthrough flow modules. Any original module outside that union is refused; this cannot rename, remove or replace a declared module. This does not change the original configuration, diagnostic record, root cause, plan, affected paths, investigation, reproduction, execution permissions or budgets. It is unavailable after any cause review, observation, test authoring, red test, baseline or repair activity, and cannot be repeated for another declaration.
+
+Read-only preview is `inspectFixDiagnosisModuleCorrection({specsRoot,identity})` from `runtime/js/cm-fix/execution.mjs`; `identity` is the existing `{repositoryId,runId}`. It opens no writer or provider. The complete returned target binds the immutable history/configuration/diagnosis/reproduction/walkthrough and the current diagnosed source metadata. Do not guess the target or change the original answer/configuration.
+
+Resume the same host with `--allow-diagnosis-module-correction`, then send `prepare_diagnosis_module_correction` with the exact `expected` preview, `previousInvocationStopped:true` and a nonempty single-line reason up to 1000 UTF-8 bytes. The driver accepts the same fields in its existing PLAN; no answers directory is needed for this operation. Preparation validates a complete candidate replay, rechecks history and source metadata, and appends only `fix-diagnosis-module-corrected`. It executes no check or review and does not reset a retry or abandon count. An identical immediate retry is idempotent, but is refused after any later record or source drift.
+
+Projection keeps `originalDiagnosis` and a separate content-bound `diagnosisModuleCorrection`; only the effective `diagnosis.affectedModules` changes. Cause packages carry the strict optional correction relation, including the original answer and correction digest. Implementation/retrospective/final packages bind that relation in existing check evidence; handoffs bind it in evidence. Original plan/root-cause/investigation text is never a transport for new instructions. All original independent review, N5, regression, walkthrough and finish gates remain mandatory.
+
+The shared stdio allowlist also retains the already implemented `revision_test_check` operation; its original regression permission is unchanged.
