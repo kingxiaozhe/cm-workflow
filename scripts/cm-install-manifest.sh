@@ -76,35 +76,86 @@ cm_manifest_write() {
   rm -f "${mw_out}.body"
 }
 
+# cm_manifest_validate MANIFEST
+# Check the whole manifest in one awk pass that always reads to the end (an
+# early-exit `grep -q` at the end of a pipeline dies with SIGPIPE under
+# pipefail and silently skipped these checks). Returns 0 when valid, 3 when
+# malformed (bad header, bad hash/separator, empty or absolute path, or a `..`
+# segment), 1 when the check itself failed.
+cm_manifest_validate() {
+  if awk -v header="$CM_MANIFEST_HEADER" '
+    NR == 1 { if ($0 != header) bad = 1; next }
+    {
+      hash = substr($0, 1, 64)
+      relative = substr($0, 67)
+      if (length($0) < 67 || length(hash) != 64 || hash ~ /[^0-9a-f]/ || substr($0, 65, 2) != "  ") { bad = 1; next }
+      if (relative ~ /^\// || ("/" relative "/") ~ /\/\.\.\//) bad = 1
+    }
+    END { if (NR < 1) bad = 1; exit (bad ? 3 : 0) }' "$1"; then
+    return 0
+  else
+    va_status=$?
+    [ "$va_status" -eq 3 ] && return 3
+    return 1
+  fi
+}
+
+# cm_manifest_parent_is_safe ROOT RELATIVE
+# Returns 1 when any parent directory of RELATIVE under ROOT is a symlink or
+# not a directory, so hashing never follows a link out of the install root.
+cm_manifest_parent_is_safe() {
+  ps_current=$1
+  ps_remaining=$(dirname "$2")
+  while [ -n "$ps_remaining" ] && [ "$ps_remaining" != "." ]; do
+    case "$ps_remaining" in
+      */*) ps_component=${ps_remaining%%/*}; ps_remaining=${ps_remaining#*/} ;;
+      *) ps_component=$ps_remaining; ps_remaining="" ;;
+    esac
+    ps_current="$ps_current/$ps_component"
+    if [ -L "$ps_current" ]; then
+      return 1
+    fi
+    if [ -e "$ps_current" ] && [ ! -d "$ps_current" ]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
 # cm_manifest_find_edits ROOT MANIFEST EDITS_OUT WORK_DIR
 # Write to EDITS_OUT every manifest path that still exists under ROOT but no
-# longer matches its recorded hash (a symlink or non-file at that path also
-# counts). Paths absent from ROOT or from the manifest are not judged.
-# Returns 0 on success, 3 when the manifest is malformed, 1 on hashing failure.
+# longer matches its recorded hash. A symlink or non-file at that path, or a
+# symlinked / non-directory parent, also counts. Paths absent from ROOT or from
+# the manifest are not judged.
+# Returns 0 on success, 3 when the manifest is malformed or not a regular file,
+# 1 on any check or hashing failure.
 cm_manifest_find_edits() {
   fe_root=$1
   fe_manifest=$2
   fe_edits=$(cm_manifest_abs "$3")
   fe_work=$(cm_manifest_abs "$4")
   : > "$fe_edits" || return 1
-  [ "$(sed -n '1p' "$fe_manifest")" = "$CM_MANIFEST_HEADER" ] || return 3
-  if sed '1d' "$fe_manifest" | grep -Ev '^[0-9a-f]{64}  [^/].*$' | grep -q .; then
+  if [ -L "$fe_manifest" ] || [ ! -f "$fe_manifest" ]; then
     return 3
   fi
-  if sed '1d' "$fe_manifest" | cut -c67- | grep -Eq '(^|/)\.\.(/|$)'; then
-    return 3
+  if cm_manifest_validate "$fe_manifest"; then
+    :
+  else
+    return $?
   fi
-  sed '1d' "$fe_manifest" | cut -c67- > "$fe_work/recorded-paths" || return 1
-  : > "$fe_work/existing-paths"
+  awk 'NR > 1 { print substr($0, 67) }' "$fe_manifest" > "$fe_work/recorded-paths" || return 1
+  : > "$fe_work/existing-paths" || return 1
   while IFS= read -r fe_rel; do
     [ -n "$fe_rel" ] || continue
     fe_target="$fe_root/$fe_rel"
-    if [ -L "$fe_target" ]; then
-      printf '%s\n' "$fe_rel" >> "$fe_edits"
+    if ! cm_manifest_parent_is_safe "$fe_root" "$fe_rel"; then
+      printf '%s\n' "$fe_rel" >> "$fe_edits" || return 1
+    elif [ -L "$fe_target" ]; then
+      printf '%s\n' "$fe_rel" >> "$fe_edits" || return 1
     elif [ -f "$fe_target" ]; then
-      printf '%s\n' "$fe_rel" >> "$fe_work/existing-paths"
+      printf '%s\n' "$fe_rel" >> "$fe_work/existing-paths" || return 1
     elif [ -e "$fe_target" ]; then
-      printf '%s\n' "$fe_rel" >> "$fe_edits"
+      printf '%s\n' "$fe_rel" >> "$fe_edits" || return 1
     fi
   done < "$fe_work/recorded-paths"
   cm_manifest_hash_list "$fe_root" "$fe_work/existing-paths" "$fe_work/current-hashes" || return 1

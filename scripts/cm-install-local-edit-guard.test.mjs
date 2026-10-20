@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {spawnSync} from 'node:child_process';
+import {spawn, spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
 const source = fileURLToPath(new URL('..', import.meta.url));
@@ -30,8 +30,35 @@ function install(env, args, extra = {}) {
 
 const output = result => result.stdout + result.stderr;
 
+// Run an interactive install, call onPrompt() once the overwrite prompt is
+// reached, then answer "y" (simulates another session editing meanwhile).
+function installAtPrompt(env, args, promptPattern, onPrompt) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('/bin/bash', [path.join(source, 'install.sh'), ...args], {cwd: source, env});
+    let stdout = '', stderr = '', answered = false;
+    const timer = setTimeout(() => child.kill('SIGKILL'), 150000);
+    const check = () => {
+      if (answered || !promptPattern.test(stdout + stderr)) return;
+      answered = true;
+      onPrompt();
+      child.stdin.end('y\n');
+    };
+    child.stdout.on('data', chunk => { stdout += chunk; check(); });
+    child.stderr.on('data', chunk => { stderr += chunk; check(); });
+    child.on('error', reject);
+    child.on('close', status => { clearTimeout(timer); resolve({status, stdout, stderr, answered}); });
+  });
+}
+
+function runHelper(script, cwd) {
+  return spawnSync('/bin/bash', ['-c', `set -euo pipefail; . "$1"; cm_manifest_select_hasher; ${script}`,
+    'helper', path.join(source, 'scripts/cm-install-manifest.sh')], {cwd, encoding: 'utf8', timeout: 60000});
+}
+
+const HEADER = '# cm-workflow install manifest v1';
+
 test('install manifest: first install records hashes, unchanged reinstall passes, --yes cannot overwrite a hand edit, --overwrite-local-edits can',
-  {skip: process.platform === 'win32', timeout: 600000}, t => {
+  {skip: process.platform === 'win32', timeout: 600000}, async t => {
     const {target, env} = sandbox(t, 'cm-install-guard-');
     const manifest = path.join(target, MANIFEST);
 
@@ -51,8 +78,15 @@ test('install manifest: first install records hashes, unchanged reinstall passes
 
     const edited = path.join(target, EDITED);
     const handEdit = fs.readFileSync(edited, 'utf8') + '\n// approved local edit\n';
-    fs.writeFileSync(edited, handEdit);
     const manifestBefore = fs.readFileSync(manifest, 'utf8');
+
+    // Regression: edited by another session while this one waits at the overwrite prompt.
+    const raced = await installAtPrompt(env, [], /以下 CM 文件已存在/, () => fs.writeFileSync(edited, handEdit));
+    assert.equal(raced.answered, true, output(raced));
+    assert.equal(raced.status, 3, output(raced));
+    assert.match(raced.stderr, /scripts\/cm-ai-host\.mjs/);
+    assert.equal(fs.readFileSync(edited, 'utf8'), handEdit, 'an edit made while waiting at the prompt must survive "y"');
+    assert.equal(fs.readFileSync(manifest, 'utf8'), manifestBefore);
 
     const refused = install(env, ['--yes']);
     assert.equal(refused.status, 3, output(refused));
@@ -114,4 +148,47 @@ test('install manifest: a missing sha256 tool stops before any write instead of 
     assert.equal(result.status, 2, output(result));
     assert.match(result.stderr, /未找到 shasum 或 sha256sum/);
     assert.equal(fs.existsSync(target), false, 'nothing may be written without the check');
+  });
+
+test('manifest helper: a large manifest full of malformed records is rejected, not skipped by SIGPIPE',
+  {skip: process.platform === 'win32'}, t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-install-guard-helper-'));
+    t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+    fs.mkdirSync(path.join(dir, 'root'));
+    const bad = Array.from({length: 20000}, (_, i) => `bad  missing/file-${i}.md`);
+    fs.writeFileSync(path.join(dir, 'manifest'), [HEADER, ...bad, ''].join('\n'));
+    const result = runHelper('if cm_manifest_find_edits root manifest edits .; then echo status=0; else echo status=$?; fi', dir);
+    assert.equal(result.stdout.trim(), 'status=3', result.stdout + result.stderr);
+  });
+
+test('manifest helper: a `..` record at the front of a large manifest is rejected',
+  {skip: process.platform === 'win32'}, t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-install-guard-helper-'));
+    t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+    fs.mkdirSync(path.join(dir, 'root/a'), {recursive: true});
+    fs.writeFileSync(path.join(dir, 'root/a/f'), 'same\n');
+    const hash = '0'.repeat(64);
+    const records = [`${hash}  ../outside`, ...Array.from({length: 20000}, () => `${hash}  a/f`)];
+    fs.writeFileSync(path.join(dir, 'manifest'), [HEADER, ...records, ''].join('\n'));
+    const result = runHelper('if cm_manifest_find_edits root manifest edits .; then echo status=0; else echo status=$?; fi', dir);
+    assert.equal(result.stdout.trim(), 'status=3', result.stdout + result.stderr);
+  });
+
+test('manifest helper: a symlinked parent directory counts as an edit and is never hashed through',
+  {skip: process.platform === 'win32'}, t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-install-guard-helper-'));
+    t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+    fs.mkdirSync(path.join(dir, 'root'));
+    fs.mkdirSync(path.join(dir, 'outside'));
+    fs.writeFileSync(path.join(dir, 'outside/SKILL.md'), 'outside\n');
+    fs.symlinkSync(path.join(dir, 'outside'), path.join(dir, 'root/skill'));
+    // The recorded hash equals the outside file, so following the link would report no edit.
+    fs.mkdirSync(path.join(dir, 'recorded/skill'), {recursive: true});
+    fs.copyFileSync(path.join(dir, 'outside/SKILL.md'), path.join(dir, 'recorded/skill/SKILL.md'));
+    fs.writeFileSync(path.join(dir, 'list'), 'skill/SKILL.md\n');
+    const written = runHelper('cm_manifest_write recorded list manifest', dir);
+    assert.equal(written.status, 0, written.stdout + written.stderr);
+    const result = runHelper('cm_manifest_find_edits root manifest edits . && cat edits', dir);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(result.stdout, 'skill/SKILL.md\n');
   });

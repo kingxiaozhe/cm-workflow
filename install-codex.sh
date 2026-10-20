@@ -123,17 +123,24 @@ fi
 
 # Stop before any write when a file recorded by the previous install changed.
 # --yes only accepts replacing the plugin; it never discards hand edits.
+# Runs up front, again after the replace prompt (before the marketplace is
+# touched), and once more right before the plugin directory is swapped, because
+# another session may edit an installed file while this one waits or stages.
 guard_local_edits() {
+  guard_mode=${1:-initial}
   if ! cm_manifest_select_hasher; then
     echo "Neither shasum nor sha256sum was found, so local edits to the installed plugin cannot be checked. Installation stopped; nothing was changed." >&2
     return 2
   fi
-  if [ -L "$PLUGIN_DEST" ] || [ -L "$INSTALL_MANIFEST" ]; then
-    echo "Refusing to read an install manifest through a symlink: $INSTALL_MANIFEST" >&2
+  if [ -L "$PLUGIN_DEST" ]; then
+    echo "Refusing to read an install manifest through a symlinked plugin directory: $PLUGIN_DEST" >&2
     return 2
   fi
-  if [ ! -f "$INSTALL_MANIFEST" ]; then
-    echo "No previous install manifest found (first install or installed by an older version); local edits are not checked this time. A manifest is written after a successful install."
+  # A manifest path that exists as a directory, symlink or other non-file is a
+  # corrupt manifest, not a pre-manifest install.
+  if [ ! -e "$INSTALL_MANIFEST" ] && [ ! -L "$INSTALL_MANIFEST" ]; then
+    [ "$guard_mode" = recheck ] ||
+      echo "No previous install manifest found (first install or installed by an older version); local edits are not checked this time. A manifest is written after a successful install."
     return 0
   fi
   edits="$GUARD_TMP/local-edits"
@@ -154,6 +161,9 @@ guard_local_edits() {
     return 1
   fi
   [ -s "$edits" ] || return 0
+  if [ "$OVERWRITE_LOCAL_EDITS" -eq 1 ] && [ "$guard_mode" = recheck ]; then
+    return 0
+  fi
   echo "These installed CM files changed since the last install (sha256 differs from the install manifest):" >&2
   sed 's/^/    /' "$edits" >&2
   if [ "$OVERWRITE_LOCAL_EDITS" -eq 1 ]; then
@@ -175,13 +185,16 @@ run_official_validation() {
 }
 
 GUARD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/cm-install-guard.XXXXXX")"
-if guard_local_edits; then
-  :
-else
-  guard_status=$?
-  [ "$guard_status" -eq 1 ] && exit 3
-  exit "$guard_status"
-fi
+run_local_edit_guard() {
+  if guard_local_edits "$1"; then
+    :
+  else
+    guard_status=$?
+    [ "$guard_status" -eq 1 ] && exit 3
+    exit "$guard_status"
+  fi
+}
+run_local_edit_guard initial
 
 "$PYTHON_BIN" "$SRC_DIR/scripts/validate-public-repo.py"
 "$SRC_DIR/scripts/cm-check-runtime.sh" --project "$SRC_DIR"
@@ -202,6 +215,8 @@ if [ -e "$PLUGIN_DEST" ] && [ "$ASSUME_YES" -ne 1 ]; then
     *) echo "Installation cancelled."; exit 0 ;;
   esac
 fi
+
+run_local_edit_guard recheck
 
 # Use the first-party helper to own marketplace.json updates, but scaffold in
 # a disposable directory so an interrupted install cannot damage the plugin.
@@ -251,6 +266,10 @@ if ! cm_manifest_write "$STAGE" "$GUARD_TMP/managed-files" "$GUARD_TMP/new-manif
   exit 1
 fi
 cp "$GUARD_TMP/new-manifest" "$STAGE/$INSTALL_MANIFEST_NAME"
+
+# Final check right before the installed plugin is swapped out; an exit here
+# restores the marketplace through cleanup.
+run_local_edit_guard recheck
 
 if [ -e "$PLUGIN_DEST" ]; then
   mv "$PLUGIN_DEST" "$BACKUP"

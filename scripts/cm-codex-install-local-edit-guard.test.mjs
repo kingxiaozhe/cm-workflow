@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {spawnSync} from 'node:child_process';
+import {spawn, spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
 const source = fileURLToPath(new URL('..', import.meta.url));
@@ -34,7 +34,7 @@ function sandbox(t) {
   fs.writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\nexit 0\n', {mode: 0o755});
   const env = {...process.env, HOME: home, CODEX_HOME: codexHome, PATH: `${bin}:${process.env.PATH}`,
     CM_WORKFLOW_HOME: path.join(home, 'workflow'), CM_WORKFLOW_LOG_HOME: path.join(home, 'logs')};
-  return {plugin: path.join(home, 'plugins/cm-workflow'), env};
+  return {plugin: path.join(home, 'plugins/cm-workflow'), marketplace: path.join(home, '.agents/plugins/marketplace.json'), env};
 }
 
 function install(env, args) {
@@ -44,9 +44,29 @@ function install(env, args) {
 
 const output = result => result.stdout + result.stderr;
 
+// Run an interactive install, call onPrompt() once the replace prompt is
+// reached, then answer "y" (simulates another session editing meanwhile).
+function installAtPrompt(env, onPrompt) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('/bin/bash', [path.join(source, 'install-codex.sh')], {cwd: source, env});
+    let stdout = '', stderr = '', answered = false;
+    const timer = setTimeout(() => child.kill('SIGKILL'), 240000);
+    const check = () => {
+      if (answered || !/Replace the existing Codex plugin/.test(stdout)) return;
+      answered = true;
+      onPrompt();
+      child.stdin.end('y\n');
+    };
+    child.stdout.on('data', chunk => { stdout += chunk; check(); });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', status => { clearTimeout(timer); resolve({status, stdout, stderr, answered}); });
+  });
+}
+
 test('codex install manifest: first install records hashes, unchanged reinstall passes, --yes cannot overwrite a hand edit, --overwrite-local-edits can',
-  {skip: process.platform === 'win32', timeout: 900000}, t => {
-    const {plugin, env} = sandbox(t);
+  {skip: process.platform === 'win32', timeout: 900000}, async t => {
+    const {plugin, marketplace, env} = sandbox(t);
     const manifest = path.join(plugin, MANIFEST);
 
     const first = install(env, ['--yes']);
@@ -66,7 +86,15 @@ test('codex install manifest: first install records hashes, unchanged reinstall 
 
     const edited = path.join(plugin, EDITED);
     const handEdit = fs.readFileSync(edited, 'utf8') + '\n<!-- approved local edit -->\n';
-    fs.writeFileSync(edited, handEdit);
+
+    // Regression: edited by another session while this one waits at the replace prompt.
+    const marketplaceBefore = fs.readFileSync(marketplace, 'utf8');
+    const raced = await installAtPrompt(env, () => fs.writeFileSync(edited, handEdit));
+    assert.equal(raced.answered, true, output(raced));
+    assert.equal(raced.status, 3, output(raced));
+    assert.match(raced.stderr, /skills\/cm-check\/SKILL\.md/);
+    assert.equal(fs.readFileSync(edited, 'utf8'), handEdit, 'an edit made while waiting at the prompt must survive "y"');
+    assert.equal(fs.readFileSync(marketplace, 'utf8'), marketplaceBefore);
     // A file the installer never recorded is not judged.
     fs.writeFileSync(path.join(plugin, 'scripts/my-own-tool.sh'), 'echo mine\n');
 
@@ -81,4 +109,17 @@ test('codex install manifest: first install records hashes, unchanged reinstall 
     assert.equal(overwritten.status, 0, output(overwritten));
     assert.match(overwritten.stdout, /these edits will be replaced/);
     assert.equal(fs.readFileSync(edited, 'utf8'), fs.readFileSync(path.join(source, EDITED), 'utf8'));
+  });
+
+test('codex install manifest: a manifest path that is a directory is a corrupt manifest, not a missing one',
+  {skip: process.platform === 'win32', timeout: 120000}, t => {
+    const {plugin, env} = sandbox(t);
+    fs.mkdirSync(path.join(plugin, MANIFEST), {recursive: true});
+    fs.mkdirSync(path.join(plugin, 'skills/cm-check'), {recursive: true});
+    fs.writeFileSync(path.join(plugin, EDITED), 'hand edit\n');
+    const refused = install(env, ['--yes']);
+    assert.equal(refused.status, 3, output(refused));
+    assert.match(refused.stderr, /Unrecognized install manifest/);
+    assert.doesNotMatch(refused.stdout, /No previous install manifest found/);
+    assert.equal(fs.readFileSync(path.join(plugin, EDITED), 'utf8'), 'hand edit\n');
   });

@@ -7,7 +7,8 @@
 
 - **重装前发现手改就停下**：多个会话同时用 CM 时，曾有一个会话经用户同意手改了已安装的 `~/.claude/scripts/cm-ai-host.mjs`，另一个会话随后 `./install.sh --yes` 把它静默覆盖。
   - `install.sh` 安装成功后写安装清单 `~/.claude/cm-workflow/install-manifest.sha256`（每个受管文件的相对路径 + sha256）；`install-codex.sh` 写 `~/plugins/cm-workflow/.cm-install-manifest.sha256`。清单逻辑在 `scripts/cm-install-manifest.sh`，两个安装器共用。
-  - 再次安装时，清单里有、目标里也在的文件，sha256 与记录不一致就算手改：列出文件并以退出码 3 停下，不写任何文件。`--yes` 和交互回答 y 都不能绕过；只有新参数 `--overwrite-local-edits` 才覆盖。清单格式无法识别时同样停下。
+  - 再次安装时，清单里有、目标里也在的文件，sha256 与记录不一致就算手改：列出文件并以退出码 3 停下，不写任何文件。`--yes` 和交互回答 y 都不能绕过；只有新参数 `--overwrite-local-edits` 才覆盖。清单格式无法识别、含 `..` 路径或清单位置不是普通文件时同样停下；记录文件的上级目录变成符号链接也算手改，不顺着链接读外部文件。
+  - 安装器在覆盖确认和暂存之后、第一次写正式目标前再核对一次，等待确认期间别的会话改了已装文件也会停下；Claude 安装失败回滚时旧清单一并恢复。
   - 没有旧清单（首次安装或旧版本装的）时打印一行说明后照常安装；清单外的文件、`__pycache__` 和 `.DS_Store` 不判定。macOS 用 `shasum -a 256`，Linux 用 `sha256sum`，两者都没有时报错停下，不跳过核对。
   - **已知限制**：`install.ps1`（Windows）还没有这项保护；npm 入口 `cm-workflow install` 和 `$cm-check` 自动升级只传 `--yes`，遇到手改会停在退出码 3，需手动运行安装器并加 `--overwrite-local-edits`；`~/.cm-workflow/cm-update.sh` 自动更新同样会因手改失败，且它在安装前删除上游已移除文件的步骤不经过这项核对。
 

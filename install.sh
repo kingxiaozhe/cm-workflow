@@ -16,6 +16,8 @@ DEST_TOUCHED=0
 INSTALL_MANIFEST_RELATIVE="cm-workflow/install-manifest.sha256"
 INSTALL_MANIFEST="$DEST/$INSTALL_MANIFEST_RELATIVE"
 GUARD_TMP=""
+MANIFEST_PUBLISHED=0
+MANIFEST_SAVED_NAME=".cm-previous-install-manifest"
 
 for arg in "$@"; do
   case "$arg" in
@@ -49,6 +51,14 @@ cleanup() {
         rm -f "$target"
       fi
     done < "$STAGE/.cm-managed-files"
+    # Keep the manifest paired with the restored files.
+    if [ "$MANIFEST_PUBLISHED" -eq 1 ]; then
+      if [ -f "$BACKUP/$MANIFEST_SAVED_NAME" ]; then
+        cp -p "$BACKUP/$MANIFEST_SAVED_NAME" "$INSTALL_MANIFEST"
+      else
+        rm -f "$INSTALL_MANIFEST"
+      fi
+    fi
     echo "安装失败，已回滚本次写入。" >&2
   fi
   rm -rf "$STAGE" "$BACKUP"
@@ -142,7 +152,11 @@ confirm_bundle_conflicts() {
 
 # Stop before any write when a file recorded by the previous install changed.
 # --yes only accepts replacing CM files; it never discards hand edits.
+# Runs twice: once up front, and again ("recheck") after staging and the
+# overwrite prompt, right before the first write, because another session may
+# edit an installed file while this one waits for an answer.
 guard_local_edits() {
+  guard_mode=${1:-initial}
   if ! cm_manifest_select_hasher; then
     echo "未找到 shasum 或 sha256sum，无法核对已安装文件是否被手改；安装已停止，未修改任何文件。" >&2
     return 2
@@ -150,8 +164,9 @@ guard_local_edits() {
   if ! assert_safe_target "$INSTALL_MANIFEST_RELATIVE"; then
     return 2
   fi
-  if [ ! -f "$INSTALL_MANIFEST" ]; then
-    echo "ℹ 未找到上次的安装清单（首次安装或旧版本安装），本次不核对手改；安装成功后会生成清单。"
+  if [ ! -e "$INSTALL_MANIFEST" ]; then
+    [ "$guard_mode" = recheck ] ||
+      echo "ℹ 未找到上次的安装清单（首次安装或旧版本安装），本次不核对手改；安装成功后会生成清单。"
     return 0
   fi
   edits="$GUARD_TMP/local-edits"
@@ -172,6 +187,9 @@ guard_local_edits() {
     return 1
   fi
   [ -s "$edits" ] || return 0
+  if [ "$OVERWRITE_LOCAL_EDITS" -eq 1 ] && [ "$guard_mode" = recheck ]; then
+    return 0
+  fi
   echo "⚠ 以下 CM 文件在上次安装后被改动过（与安装清单记录的 sha256 不一致）：" >&2
   sed 's/^/    /' "$edits" >&2
   if [ "$OVERWRITE_LOCAL_EDITS" -eq 1 ]; then
@@ -288,6 +306,18 @@ while IFS= read -r relative; do
     cp -p "$DEST/$relative" "$BACKUP/$relative"
   fi
 done < "$STAGE/.cm-managed-files"
+if [ -f "$INSTALL_MANIFEST" ] && [ ! -L "$INSTALL_MANIFEST" ]; then
+  cp -p "$INSTALL_MANIFEST" "$BACKUP/$MANIFEST_SAVED_NAME"
+fi
+
+# Second check, just before the first write to the real target.
+if guard_local_edits recheck; then
+  :
+else
+  guard_status=$?
+  [ "$guard_status" -eq 1 ] && exit 3
+  exit "$guard_status"
+fi
 
 mkdir -p "$DEST"
 DEST_TOUCHED=1
@@ -300,6 +330,7 @@ done < "$STAGE/.cm-managed-files"
 "$DEST/scripts/cm-check-runtime.sh" --project "$SRC_DIR"
 mkdir -p "$(dirname "$INSTALL_MANIFEST")"
 cp "$GUARD_TMP/new-manifest" "${INSTALL_MANIFEST}.tmp.$$"
+MANIFEST_PUBLISHED=1
 mv -f "${INSTALL_MANIFEST}.tmp.$$" "$INSTALL_MANIFEST"
 INSTALL_COMPLETE=1
 echo "✓ 安装清单已写入: ${INSTALL_MANIFEST}"
