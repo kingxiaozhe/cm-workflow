@@ -10,6 +10,8 @@ import {readRunnerHistory} from '../cm-ai/durable-runner-state.mjs';
 import {inspectCmAiAdmission,parseFeatureTaskText,validDependencies} from '../cm-ai/cm-ai-admission.mjs';
 import {approvedTaskGrammar} from '../spec-task-line.mjs';
 import {readEvidenceSupersession} from '../cm-ai/reviewed-evidence-supersession-record.mjs';
+import {readRegistry,openDispatches,registryProblem} from './dispatch-registry.mjs';
+import {decideRecovery} from './decision.mjs';
 
 export const LEDGER_VERSION=1;
 export const IDLE_MINUTES=45;
@@ -135,7 +137,7 @@ const OPEN=['executing','in_progress','stopped','unverified'];
 const sameTask=(a,b)=>slug(a.feature??'')===slug(b.feature??'')&&a.taskId===b.taskId;
 
 // Pure composition, so every rule is testable without a disk fixture.
-export function composeLedger({specsDir,admission,features,runs,runsError=null,log,now}){
+export function composeLedger({specsDir,admission,features,runs,runsError=null,log,now,dispatches=[],registryError=null}){
   const nowMs=at(now);if(nowMs===null)throw Object.assign(new Error('invalid_now'),{code:'invalid_now'});
   const inconsistencies=[],byId=new Map(runs.filter(r=>r.kind==='cm-ai').map(r=>[r.runId,r]));
   // Only a replayed or structurally checked supersession retires a run, and only
@@ -195,7 +197,7 @@ export function composeLedger({specsDir,admission,features,runs,runsError=null,l
   const queue=[];
   for(const run of open){
     const task=taskOf.get(`${slug(run.feature??'')}/${run.taskId}`);
-    const base={kind:'attend_run',feature:run.feature,task:run.taskId,runId:run.runId,how};
+    const base={kind:'attend_run',feature:run.feature,task:run.taskId,runId:run.runId,how,decision:decideRecovery(run)};
     if(settledHistory.has(run.runId))continue;
     if(task?.completed||task?.dropped){
       queue.push({rank:0,...base,why:`任务已${task.completed?'勾选':'作废'}，但运行`+(run.pending?`留着未结的 ${run.pending}`
@@ -218,6 +220,15 @@ export function composeLedger({specsDir,admission,features,runs,runsError=null,l
   for(const item of inconsistencies.filter(i=>i.kind==='unverified_supersession'))queue.push({rank:1,kind:'check_records',
     runId:item.runId,feature:item.feature,task:item.task,why:`${item.runId} 声称取代 ${item.previous}，但这条取代没法核验`,
     how:'人工核对两条运行记录；核对前两者都视为在途'});
+  // Registered jobs: past its deadline a job is checked first, since whatever it
+  // was waiting on may have hung; an unreadable registry is never "no jobs".
+  for(const job of dispatches.filter(job=>job.overdue))queue.push({rank:0,kind:'overdue_dispatch',dispatchId:job.id,runId:job.runId,
+    why:`派出的活「${job.label}」已超过截止时间 ${job.overdueMinutes} 分钟，仍未登记结束`,
+    how:'看它的输出或进程：结束了就 dispatch done 登记结果；卡住了先停掉再决定是否重派'});
+  if(registryError)queue.push({rank:1,kind:'check_records',why:`派活登记读不了（${registryError}），不能确认有没有在途的活`,
+    how:'先核对 CM 目录下的 commander 登记文件；确认前不派新活'});
+  for(const job of dispatches.filter(job=>!job.overdue))queue.push({rank:3,kind:'wait_dispatch',dispatchId:job.id,runId:job.runId,
+    idle:0,why:`派出的活「${job.label}」还没到截止时间（${job.deadline}）`,how:'等它结束；到期仍未结束再处理'});
   queue.sort((a,b)=>a.rank-b.rank||(a.rank===3?(a.idle??0)-(b.idle??0):(b.idle??0)-(a.idle??0)));
   const reason=admission.reason??admission.code??null;
   let next;
@@ -231,8 +242,15 @@ export function composeLedger({specsDir,admission,features,runs,runsError=null,l
   return {version:LEDGER_VERSION,specsDir,generatedAt:new Date(nowMs).toISOString(),authority:'journal',
     admission:{state:admission.state,reason,nextTask:admission.nextTask??null,...(admission.detail?{detail:admission.detail}:{}),
       warnings:admission.warnings??[]},
-    features:table,runs:ai,otherRuns:others,runsError,inconsistencies,
+    features:table,runs:ai,otherRuns:others,runsError,inconsistencies,dispatches,registryError,
     queue:queue.slice(1).map(({rank,idle,...item})=>item),log:{present:log.present,invalidLines:log.invalid},next};
+}
+
+// The registry as the ledger sees it: open jobs, and any health problem, which
+// keeps the ledger from reading a torn or partly unreadable registry as empty.
+export function registryInput(specsDir,now){
+  const registry=readRegistry(specsDir);
+  return {dispatches:openDispatches(registry,now),registryError:registryProblem(registry)};
 }
 
 export function buildLedger({specsDir,codeProject,now=new Date().toISOString()}){
@@ -243,5 +261,5 @@ export function buildLedger({specsDir,codeProject,now=new Date().toISOString()})
     .sort((a,b)=>Number(a.split('.')[0])-Number(b.split('.')[0])||(a<b?-1:1));
   const {runs,error}=readRuns(root);
   return composeLedger({specsDir:root,admission,features:readFeatureTasks(root,names),runs,runsError:error,
-    log:readLogEvents(root),now});
+    log:readLogEvents(root),now,...registryInput(root,now)});
 }
