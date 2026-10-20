@@ -5,6 +5,12 @@
 
 ## 未发布
 
+- **重装前发现手改就停下**：多个会话同时用 CM 时，曾有一个会话经用户同意手改了已安装的 `~/.claude/scripts/cm-ai-host.mjs`，另一个会话随后 `./install.sh --yes` 把它静默覆盖。
+  - `install.sh` 安装成功后写安装清单 `~/.claude/cm-workflow/install-manifest.sha256`（每个受管文件的相对路径 + sha256）；`install-codex.sh` 写 `~/plugins/cm-workflow/.cm-install-manifest.sha256`。清单逻辑在 `scripts/cm-install-manifest.sh`，两个安装器共用。
+  - 再次安装时，清单里有、目标里也在的文件，sha256 与记录不一致就算手改：列出文件并以退出码 3 停下，不写任何文件。`--yes` 和交互回答 y 都不能绕过；只有新参数 `--overwrite-local-edits` 才覆盖。清单格式无法识别时同样停下。
+  - 没有旧清单（首次安装或旧版本装的）时打印一行说明后照常安装；清单外的文件、`__pycache__` 和 `.DS_Store` 不判定。macOS 用 `shasum -a 256`，Linux 用 `sha256sum`，两者都没有时报错停下，不跳过核对。
+  - **已知限制**：`install.ps1`（Windows）还没有这项保护；npm 入口 `cm-workflow install` 和 `$cm-check` 自动升级只传 `--yes`，遇到手改会停在退出码 3，需手动运行安装器并加 `--overwrite-local-edits`；`~/.cm-workflow/cm-update.sh` 自动更新同样会因手改失败，且它在安装前删除上游已移除文件的步骤不经过这项核对。
+
 - **阶段交界直接给结论，复盘分出机械性错误**：借鉴 [mattpocock/skills](https://github.com/mattpocock/skills) 的阶段交界判断和复盘思路，只改文字。
   - `cm-ai` 单任务结束、`cm-prd` 人审停点、`cm-fix` 收尾三处，原来各写一段「建议开新会话」，同一真实项目里没有改变使用习惯。现在三处统一指向 `runtime/model-efficiency.md`「Session boundary」的判断表，按顺序判断「继续本会话 / 留在本会话 / 换新会话（默认）」，换新会话时附上新会话里要运行的入口；不设写交接文件，压缩放在最后。
   - 三行结论（「会话边界：…」「新会话里运行：…」「原因：…」）直接写进各流程的收尾输出模板：`cm-ai` N8 总结、`cm-fix` 输出格式、`cm-prd` 硬停车与变更摘要。原因是 e2e-real 实跑 `cm-prd` 时，模型没有顺着一行指针去读判断表，收尾没有给出结论。

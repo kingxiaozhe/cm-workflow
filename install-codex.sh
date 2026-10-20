@@ -23,6 +23,11 @@ VALIDATE_PLUGIN="$CREATOR_ROOT/scripts/validate_plugin.py"
 UPDATE_CACHEBUSTER="$CREATOR_ROOT/scripts/update_plugin_cachebuster.py"
 READ_MARKETPLACE="$CREATOR_ROOT/scripts/read_marketplace_name.py"
 ASSUME_YES=0
+OVERWRITE_LOCAL_EDITS=0
+# Records what this install wrote so the next install can tell hand edits apart.
+INSTALL_MANIFEST_NAME=".cm-install-manifest.sha256"
+INSTALL_MANIFEST="$PLUGIN_DEST/$INSTALL_MANIFEST_NAME"
+GUARD_TMP=""
 INSTALL_COMPLETE=0
 DEST_REPLACED=0
 MARKETPLACE_TOUCHED=0
@@ -65,14 +70,19 @@ if ! NODE_BIN="$(find_node)"; then
   exit 1
 fi
 
-case "${1:-}" in
-  "") ;;
-  --yes) ASSUME_YES=1 ;;
-  *)
-    echo "Usage: $0 [--yes]" >&2
-    exit 2
-    ;;
-esac
+for arg in "$@"; do
+  case "$arg" in
+    --yes) ASSUME_YES=1 ;;
+    --overwrite-local-edits) OVERWRITE_LOCAL_EDITS=1 ;;
+    *)
+      echo "Usage: $0 [--yes] [--overwrite-local-edits]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# shellcheck source=scripts/cm-install-manifest.sh
+. "$SRC_DIR/scripts/cm-install-manifest.sh"
 
 cleanup() {
   status=$?
@@ -94,6 +104,7 @@ cleanup() {
   fi
   rm -rf "$STAGE" "$SCAFFOLD_PARENT" "$FAILED_DEST" "$FAILED_MARKETPLACE"
   rm -f "$MARKETPLACE_BACKUP"
+  [ -z "$GUARD_TMP" ] || rm -rf "$GUARD_TMP"
   if [ "$INSTALL_COMPLETE" -eq 1 ]; then
     rm -rf "$BACKUP"
   fi
@@ -110,6 +121,49 @@ if [ ! -f "$CREATE_PLUGIN" ]; then
   exit 1
 fi
 
+# Stop before any write when a file recorded by the previous install changed.
+# --yes only accepts replacing the plugin; it never discards hand edits.
+guard_local_edits() {
+  if ! cm_manifest_select_hasher; then
+    echo "Neither shasum nor sha256sum was found, so local edits to the installed plugin cannot be checked. Installation stopped; nothing was changed." >&2
+    return 2
+  fi
+  if [ -L "$PLUGIN_DEST" ] || [ -L "$INSTALL_MANIFEST" ]; then
+    echo "Refusing to read an install manifest through a symlink: $INSTALL_MANIFEST" >&2
+    return 2
+  fi
+  if [ ! -f "$INSTALL_MANIFEST" ]; then
+    echo "No previous install manifest found (first install or installed by an older version); local edits are not checked this time. A manifest is written after a successful install."
+    return 0
+  fi
+  edits="$GUARD_TMP/local-edits"
+  if cm_manifest_find_edits "$PLUGIN_DEST" "$INSTALL_MANIFEST" "$edits" "$GUARD_TMP"; then
+    :
+  else
+    find_status=$?
+    if [ "$find_status" -ne 3 ]; then
+      echo "Checking installed files failed. Installation stopped; nothing was changed." >&2
+      return 2
+    fi
+    echo "Unrecognized install manifest: $INSTALL_MANIFEST" >&2
+    if [ "$OVERWRITE_LOCAL_EDITS" -eq 1 ]; then
+      echo "--overwrite-local-edits given; skipping the local-edit check and writing a new manifest."
+      return 0
+    fi
+    echo "Installation stopped; nothing was changed. Rerun with --overwrite-local-edits to replace the installed plugin." >&2
+    return 1
+  fi
+  [ -s "$edits" ] || return 0
+  echo "These installed CM files changed since the last install (sha256 differs from the install manifest):" >&2
+  sed 's/^/    /' "$edits" >&2
+  if [ "$OVERWRITE_LOCAL_EDITS" -eq 1 ]; then
+    echo "--overwrite-local-edits given; these edits will be replaced."
+    return 0
+  fi
+  echo "Installation stopped; nothing was changed. --yes does not discard local edits. Save or merge them first, then rerun with --overwrite-local-edits to discard them." >&2
+  return 1
+}
+
 run_official_validation() {
   target=$1
   if [ -f "$VALIDATE_PLUGIN" ] && "$PYTHON_BIN" -c 'import yaml' >/dev/null 2>&1; then
@@ -119,6 +173,15 @@ run_official_validation() {
     echo "The dependency-free repository validator and codex plugin add remain required." >&2
   fi
 }
+
+GUARD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/cm-install-guard.XXXXXX")"
+if guard_local_edits; then
+  :
+else
+  guard_status=$?
+  [ "$guard_status" -eq 1 ] && exit 3
+  exit "$guard_status"
+fi
 
 "$PYTHON_BIN" "$SRC_DIR/scripts/validate-public-repo.py"
 "$SRC_DIR/scripts/cm-check-runtime.sh" --project "$SRC_DIR"
@@ -180,6 +243,14 @@ fi
 "$PYTHON_BIN" "$STAGE/scripts/validate-public-repo.py"
 run_official_validation "$STAGE"
 "$STAGE/scripts/cm-check-runtime.sh" --project "$STAGE"
+
+# Hash the exact bytes that will be installed (after the cache-version stamp).
+(cd "$STAGE" && find . -type f | sed 's#^\./##' | LC_ALL=C sort) > "$GUARD_TMP/managed-files"
+if ! cm_manifest_write "$STAGE" "$GUARD_TMP/managed-files" "$GUARD_TMP/new-manifest"; then
+  echo "Writing the install manifest failed. Installation stopped; the existing plugin was not replaced." >&2
+  exit 1
+fi
+cp "$GUARD_TMP/new-manifest" "$STAGE/$INSTALL_MANIFEST_NAME"
 
 if [ -e "$PLUGIN_DEST" ]; then
   mv "$PLUGIN_DEST" "$BACKUP"

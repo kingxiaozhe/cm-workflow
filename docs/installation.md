@@ -141,6 +141,14 @@ accept replacement of all listed CM files:
 ./install.sh --yes
 ```
 
+Each successful install records the sha256 of every file it wrote
+(`~/.claude/cm-workflow/install-manifest.sha256`; Codex:
+`~/plugins/cm-workflow/.cm-install-manifest.sha256`). On reinstall, a recorded
+file whose hash changed is treated as a local edit: both Bash installers list it
+and exit with status 3 before writing anything, and `--yes` does not bypass this.
+Pass `--overwrite-local-edits` only when you intend to discard those edits.
+Without a previous manifest the check is skipped with a notice.
+
 The installer runs the shared mechanical check before reporting success. Start a
 new Claude Code session, then run `/cm-check`. The installer also keeps the
 historic `/cm:check` alias on macOS/Linux. The installed manual is available at

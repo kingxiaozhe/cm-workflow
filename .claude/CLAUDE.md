@@ -52,7 +52,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - Bash 语法: `find . -type f -name '*.sh' -print0 | xargs -0 -n1 /bin/bash -n`
 - Pi/BYZ package: `pi install git:github.com/kingxiaozhe/cm-workflow`
 - Codex 安装: `./install-codex.sh`（装完新开会话跑 `$cm-check`）
-- Claude 安装: `./install.sh`（核心运行时原子更新/失败回滚；可选更新器 best-effort，装完跑 `/cm-check`）
+- Claude 安装: `./install.sh`（核心运行时原子更新/失败回滚；可选更新器 best-effort，装完跑 `/cm-check`）；它与 `install-codex.sh` 按安装清单发现手改即停下（退出码 3），`--yes` 不绕过，确认丢弃加 `--overwrite-local-edits`
 - Windows 安装: `powershell -ExecutionPolicy Bypass -File install.ps1`（同样原子更新）
 - 一致性自检: `./scripts/cm-check-runtime.sh`；完整当前会话机械/语义接线：`node scripts/cm-check-host.mjs --help`
 - 完整 `cm-check` 默认先调用 `scripts/cm-check-update.mjs` 查询并升级已管理安装，再检查返回目录；低层检查仍只读。定点测试：`node --test scripts/cm-check-update.test.mjs scripts/cm-check-host.test.mjs`。

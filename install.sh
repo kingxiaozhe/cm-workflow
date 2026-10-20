@@ -9,14 +9,24 @@ VERSION="$(cat "$SRC_DIR/VERSION" 2>/dev/null || echo 未知)"
 STAGE="$DEST_PARENT/.cm-claude.stage.$$"
 BACKUP="$DEST_PARENT/.cm-claude.backup.$$"
 ASSUME_YES=0
+OVERWRITE_LOCAL_EDITS=0
 INSTALL_COMPLETE=0
 DEST_TOUCHED=0
+# Records what this install wrote so the next install can tell hand edits apart.
+INSTALL_MANIFEST_RELATIVE="cm-workflow/install-manifest.sha256"
+INSTALL_MANIFEST="$DEST/$INSTALL_MANIFEST_RELATIVE"
+GUARD_TMP=""
 
-case "${1:-}" in
-  "") ;;
-  --yes) ASSUME_YES=1 ;;
-  *) echo "用法: $0 [--yes]" >&2; exit 2 ;;
-esac
+for arg in "$@"; do
+  case "$arg" in
+    --yes) ASSUME_YES=1 ;;
+    --overwrite-local-edits) OVERWRITE_LOCAL_EDITS=1 ;;
+    *) echo "用法: $0 [--yes] [--overwrite-local-edits]" >&2; exit 2 ;;
+  esac
+done
+
+# shellcheck source=scripts/cm-install-manifest.sh
+. "$SRC_DIR/scripts/cm-install-manifest.sh"
 
 if ! command -v node >/dev/null 2>&1 ||
   ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' >/dev/null 2>&1; then
@@ -42,6 +52,8 @@ cleanup() {
     echo "安装失败，已回滚本次写入。" >&2
   fi
   rm -rf "$STAGE" "$BACKUP"
+  [ -z "$GUARD_TMP" ] || rm -rf "$GUARD_TMP"
+  rm -f "${INSTALL_MANIFEST}.tmp.$$"
   exit "$status"
 }
 trap cleanup EXIT
@@ -128,6 +140,48 @@ confirm_bundle_conflicts() {
   esac
 }
 
+# Stop before any write when a file recorded by the previous install changed.
+# --yes only accepts replacing CM files; it never discards hand edits.
+guard_local_edits() {
+  if ! cm_manifest_select_hasher; then
+    echo "未找到 shasum 或 sha256sum，无法核对已安装文件是否被手改；安装已停止，未修改任何文件。" >&2
+    return 2
+  fi
+  if ! assert_safe_target "$INSTALL_MANIFEST_RELATIVE"; then
+    return 2
+  fi
+  if [ ! -f "$INSTALL_MANIFEST" ]; then
+    echo "ℹ 未找到上次的安装清单（首次安装或旧版本安装），本次不核对手改；安装成功后会生成清单。"
+    return 0
+  fi
+  edits="$GUARD_TMP/local-edits"
+  if cm_manifest_find_edits "$DEST" "$INSTALL_MANIFEST" "$edits" "$GUARD_TMP"; then
+    :
+  else
+    find_status=$?
+    if [ "$find_status" -ne 3 ]; then
+      echo "核对已安装文件失败，安装已停止，未修改任何文件。" >&2
+      return 2
+    fi
+    echo "⚠ 安装清单格式无法识别: ${INSTALL_MANIFEST}" >&2
+    if [ "$OVERWRITE_LOCAL_EDITS" -eq 1 ]; then
+      echo "已指定 --overwrite-local-edits，跳过手改核对并重新生成清单。"
+      return 0
+    fi
+    echo "安装已停止，未修改任何文件。确认要覆盖现有 CM 文件时，加 --overwrite-local-edits 重新运行。" >&2
+    return 1
+  fi
+  [ -s "$edits" ] || return 0
+  echo "⚠ 以下 CM 文件在上次安装后被改动过（与安装清单记录的 sha256 不一致）：" >&2
+  sed 's/^/    /' "$edits" >&2
+  if [ "$OVERWRITE_LOCAL_EDITS" -eq 1 ]; then
+    echo "已指定 --overwrite-local-edits，将覆盖以上改动。"
+    return 0
+  fi
+  echo "安装已停止，未修改任何文件。--yes 不会覆盖手改；请先保存或合并这些改动，确认丢弃时加 --overwrite-local-edits 重新运行。" >&2
+  return 1
+}
+
 copy_file_atomic() {
   src=$1
   dst=$2
@@ -156,7 +210,17 @@ echo "  来源: $SRC_DIR"
 echo "  目标: $DEST"
 echo
 
-mkdir -p "$DEST_PARENT" "$STAGE"
+mkdir -p "$DEST_PARENT"
+GUARD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/cm-install-guard.XXXXXX")"
+if guard_local_edits; then
+  :
+else
+  guard_status=$?
+  [ "$guard_status" -eq 1 ] && exit 3
+  exit "$guard_status"
+fi
+
+mkdir -p "$STAGE"
 for part in skills agents runtime scripts compat; do
   stage_tree "$SRC_DIR/$part" "$part"
 done
@@ -203,6 +267,10 @@ done
 
 (cd "$STAGE" && find . -type f ! -name .cm-managed-files | sed 's#^\./##' | sort) \
   > "$STAGE/.cm-managed-files"
+if ! cm_manifest_write "$STAGE" "$STAGE/.cm-managed-files" "$GUARD_TMP/new-manifest"; then
+  echo "生成安装清单失败，安装已停止，未修改任何文件。" >&2
+  exit 1
+fi
 
 if confirm_bundle_conflicts; then
   :
@@ -230,7 +298,11 @@ while IFS= read -r relative; do
 done < "$STAGE/.cm-managed-files"
 
 "$DEST/scripts/cm-check-runtime.sh" --project "$SRC_DIR"
+mkdir -p "$(dirname "$INSTALL_MANIFEST")"
+cp "$GUARD_TMP/new-manifest" "${INSTALL_MANIFEST}.tmp.$$"
+mv -f "${INSTALL_MANIFEST}.tmp.$$" "$INSTALL_MANIFEST"
 INSTALL_COMPLETE=1
+echo "✓ 安装清单已写入: ${INSTALL_MANIFEST}"
 
 # User runtimes.yml: only after the verified core install, before updater prompts.
 if [ "$ASSUME_YES" -ne 1 ] && [ -t 0 ] && [ -t 1 ]; then
