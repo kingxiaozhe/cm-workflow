@@ -62,9 +62,9 @@ Work the table top to bottom; the first match wins:
 
 | Order | Condition | Verdict |
 | --- | --- | --- |
-| 1 | The next step continues the same unit and needs discussion from this conversation that is not on disk (for example, the user is answering the review stop of the same feature, or asks about this run's result) | Continue in this session |
-| 2 | The next step is a new unit (next task, next defect, next feature, or the implementation run after approval), or everything it needs is already on disk (`tasks.md`, specs, `.reviews/`, run log, defect archive) | Start a fresh session (the default) |
-| 3 | The user declines a fresh session, or the host cannot open one | Stay; if the context must shrink, compact with an instruction naming the next unit |
+| 1 | The next step continues the same unit and needs discussion from this conversation that is not on disk: the user is still discussing the review stop of the same feature before approving it, or asks about this run's result | Continue in this session |
+| 2 | The user declines a fresh session, or the host cannot open one | Stay; if the context must shrink, compact with an instruction naming the next unit |
+| 3 | Any other case: a new unit (next task, next defect, next feature, or the implementation run after approval), or a next step whose inputs are all on disk (`tasks.md`, specs, `.reviews/`, run log, defect archive) | Start a fresh session (the default) |
 
 There is no "write a handoff file" verdict: CM resumes from disk records, so a
 fresh session re-runs the documented entry or the original command. Compaction
@@ -79,7 +79,7 @@ Report the verdict in the user's language in this shape:
 原因：{一句话}
 ```
 
-For order 1 the first line is `会话边界：继续本会话。`; for order 3 it is
+For order 1 the first line is `会话边界：继续本会话。`; for order 2 it is
 `会话边界：留在本会话（{原因}）。`; both omit the command line. Take the command
 from the active Skill's documented entry. If it cannot be determined, give the
 original command and say that the next entry is unknown; never invent flags.
