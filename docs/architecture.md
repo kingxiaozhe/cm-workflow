@@ -18,6 +18,8 @@ flowchart LR
     Driver --> Host["cm-ai-host / cm-ai-batch-host"]
     Host --> RuntimeJS["runtime/js/cm-ai: owner / runner / gates"]
     RuntimeJS --> Durable["specs .reviews/.execution: journal + checkpoints"]
+    RuntimeJS --> Binary["opt-in .reviews/.binary-assets: immutable bounded bytes + SHA references"]
+    Binary --> ReviewTools["bound before/after byte reads + independent verification"]
     RuntimeJS --> ToolRequest["current-session tool requests / configured workers"]
     ToolRequest --> RuntimeJS
     Skills --> References["flow references: N1-N8 / PRD modes"]
@@ -102,6 +104,11 @@ coordinates the same task owners. Codex and Claude use this shared chain with
 their configured execution adapters.
 
 Existing JS runs resume with their original identity and stored configuration.
+A v2 single-task run without a workflow configuration still has the fixed N6
+assessment required by its policy. This derived runtime capability preserves
+the original configuration material and adds no executor or documentation
+capability; an accepted skip proceeds through the existing N7 context refresh.
+
 The explicitly selected legacy conversation flow still uses the shared task
 gates; it does not take ownership of an existing JS run or migrate its journal.
 Source wiring, isolated CLI fixtures, installation and real-provider dogfood are
@@ -155,6 +162,43 @@ conversation flow invokes the same completion gates explicitly. Fresh review
 contexts and package bindings limit accidental self-review and stale evidence;
 neither provider names nor `independent: true` prove identity. Platform support
 and real-provider execution must be reported against their own verified evidence.
+
+### Codex review material transport
+
+Archive budgets and provider input admission are separate contracts. Before a new
+review effect intent, the runner builds the exact selected Codex request and final
+presentation. CM uses a conservative initial-input ceiling of 1,048,576 Unicode
+scalars, measured with codex-cli 0.159.2; this is not a model context guarantee.
+Larger text uses an immutable material snapshot and one fixed read-only
+`cm_review.read_material` operation, with 16 KiB UTF-8 pages and at most 256 pages
+and tool requests. The optional `count` (1–8) serves a consecutive complete prefix;
+`nextPage` continues it. Missing `count` retains the v1 single-page response.
+The batch shrinks to fit 120 KiB serialized MCP response and 240 KiB double-encoded JSON,
+inside the existing 256 KiB native-event line and 131072-token tool-output envelope.
+The signed v2 ledger separately caps tool requests at 256 and logical work at 256:
+each returned page (including duplicates) and each failed RPC consumes one unit.
+`pageReadCount` counts returned pages, while `toolFailureCount` counts failed RPCs;
+their sum is the original logical budget. A durable overflow flag prevents finish.
+A durable pending-read marker is saved before coverage changes; the independent
+host rejects it if coverage publication and rollback both fail. Successful page
+publication removes it only as the last operation before returning the response.
+New v2 proofs bind both request and returned-page counts; v1 saved proofs/results
+keep their original validation and bytes. Existing v2 eight-page proofs remain
+readable. Failure v4 records returned-only `pageReadCount` and separate failures (unknown remains null); v3 retains its historical attempt-count meaning and older failure
+records are not rewritten. The fixed review deadline never resets on progress.
+Ordinary tool-output settings and all original material remain unchanged.
+The canonical request/package, complete before/after text, native
+image order, prior findings and acceptance criteria remain unchanged.
+The material server exposes no project paths, commands or mutation operation.
+The host persists and rereads full page coverage bound to the original request,
+package, prompt hash and provider thread before forwarding a successful terminal
+or reconciliation evidence. An already observed provider terminal is retained
+for reconciliation even if local cancellation later changes the local outcome. The normal receipt and completion gates still decide
+acceptance; material coverage alone is not independent review or authorization.
+A larger material snapshot, or a material-only transport combined with the
+separate main `binaryAssets` verification profile, is refused before intent.
+Claude does not inherit the Codex input ceiling. Existing failed invocations and
+consumed grants remain recorded; this transport never grants another call.
 
 ## Current-session driver evidence
 
@@ -278,3 +322,5 @@ gaps. The current host reviews business boundaries and checks the source digest 
 scanner output is candidate evidence, never a task-completion or release gate.
 
 人工补正合同：`docs/human-correction.md`。第二轮 blocked 后，仅经明确人审范围的一次性 task-gate 入口可封存独立补正审查；原证据与普通 attempt 上限保留，宿主 journal 不自动重开。
+
+已授权规则接纳：task-review-origin 复用 scope-continued；rule-acceptance.mjs 校验原创建/当前提交摘要，派生审查可见性与业务写权限分开。新接续无损压缩只影响派生表示，旧基线/r1/预算保留；合同见 docs/cm-control-policy-v2.md。

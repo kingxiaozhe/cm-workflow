@@ -5,9 +5,13 @@ import {groupCodeProjectPaths,resolveCodeProjects} from './code-projects.mjs';
 import {createHostCheck,reportHostCheckProgress} from './host-check.mjs';
 import {specsPermissionArgs} from './codex-config.mjs';
 import {digest,json,need,shape,id} from './effect-contract.mjs';
+import {readBinaryAssetConfiguration} from './binary-assets.mjs';
+import {binaryAssetBinding} from './protected-binary-edits.mjs';
 
-export function createProjectExecution({definition,protection,executionPolicy=null}){
+export function createProjectExecution({definition,protection,executionPolicy=null,commandProjection=null,scopeProjection=null}){
   const data=json(definition),config=json(protection);
+  const binaryAssets=config.binaryAssets?binaryAssetBinding(readBinaryAssetConfiguration(config.binaryAssets,{
+    scope:data.scope,codeProject:data.codeProject,specsDir:data.specsDir,identity:data.identity})):null;
   const roots=data.codeProjects?resolveCodeProjects(data.codeProject,data.codeProjects):[data.codeProject];
   for(const root of roots)specsPermissionArgs({cwd:root,specsRoot:data.specsDir});
   const groups=scope=>data.codeProjects?groupCodeProjectPaths(data.codeProject,roots,scope)
@@ -27,33 +31,39 @@ export function createProjectExecution({definition,protection,executionPolicy=nu
     if(plans.at(-1)?.cwd!==cwd)plans.push({cwd,commands:[]});
     const {codeProject,...local}=command;plans.at(-1).commands.push(local);
   }
-  const checks=plans.map(plan=>({cwd:plan.cwd,check:createHostCheck({cwd:plan.cwd,specsRoot:data.specsDir,
-    timeoutMs:config.timeoutMs,onProgress:reportHostCheckProgress,commands:plan.commands,
-    reuseDeclared:executionPolicy?.checkReuse==='declared-adjacent-v1'})}));
+  const checksFor=()=>{const projected=commandProjection?commandProjection(commands):commands;
+    const byId=new Map(projected.map(item=>[item.id,item]));
+    return plans.map(plan=>({cwd:plan.cwd,check:createHostCheck({cwd:plan.cwd,specsRoot:data.specsDir,
+    timeoutMs:config.timeoutMs,onProgress:reportHostCheckProgress,commands:plan.commands.map(item=>({...item,command:byId.get(item.id).command})),
+    reuseDeclared:executionPolicy?.checkReuse==='declared-adjacent-v1'})}));};
+  const checks=checksFor();
   need(roots.every(root=>checks.some(item=>item.cwd===root)),'code_project_checks_required');
   const recheck=()=>{if(data.codeProjects)need(digest(resolveCodeProjects(data.codeProject,roots))===digest(roots),'execution_root_mismatch');};
   return Object.freeze({
     expected(scope){recheck();return Object.fromEntries(groups(scope).flatMap(group=>
-      Object.entries(group.paths.length?captureProtectedEdits(group.codeProject,group.paths):{}).map(([file,hash])=>[full(group,file),hash])));},
+      Object.entries(group.paths.length?captureProtectedEdits(group.codeProject,group.paths,binaryAssets):{}).map(([file,hash])=>[full(group,file),hash])));},
     async commit({scope,edits,expected,identity,signal,onApply=null}){
       recheck();need(Array.isArray(edits),'protected_edit_invalid');
       for(const edit of edits)need(scope.includes(edit.path),'out_of_scope');
       // Precheck all roots before the first root writes; no claim of atomicity.
       const selected=groups(scope);
-      for(const group of selected)for(const [file,hash] of Object.entries(group.paths.length?captureProtectedEdits(group.codeProject,group.paths):{}))
+      for(const group of selected)for(const [file,hash] of Object.entries(group.paths.length?captureProtectedEdits(group.codeProject,group.paths,binaryAssets):{}))
         need(hash===expected[full(group,file)],'protected_edit_stale');
       for(const group of selected){
         const local=edits.filter(edit=>group.paths.some(file=>full(group,file)===edit.path))
           .map(edit=>({...edit,path:group.prefix?edit.path.slice(group.prefix.length+1):edit.path}));
         if(!local.length)continue;
         await commitProtectedEdits({cwd:group.codeProject,specsRoot:data.specsDir,scope:group.paths,edits:local,
-          expected:Object.fromEntries(group.paths.map(file=>[file,expected[full(group,file)]])),identity,signal,timeoutMs:config.timeoutMs,onApply});
+          expected:Object.fromEntries(group.paths.map(file=>[file,expected[full(group,file)]])),identity,signal,timeoutMs:config.timeoutMs,onApply,
+          ...(binaryAssets?{binaryAssets}:{})});
       }
     },
     async check(request,control){
-      recheck();const result=[];
-      for(const item of checks){
-        const rows=await item.check(request,control);
+      recheck();shape(request,['identity',...(Object.hasOwn(request,'scope')?['scope']:[])]);
+      if(Object.hasOwn(request,'scope'))need(digest(request.scope)===digest(scopeProjection?scopeProjection():data.scope),'out_of_scope');
+      const bound={identity:request.identity},result=[];
+      for(const item of commandProjection?checksFor():checks){
+        const rows=await item.check(bound,control);
         result.push(...rows.map(row=>data.codeProjects?{...row,evidence:`cwd=${item.cwd}; ${row.evidence}`}:row));
         if(rows.some(row=>row.outcome!=='passed'))break;
       }

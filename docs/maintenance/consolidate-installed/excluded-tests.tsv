@@ -1,0 +1,38 @@
+文件	状态	秒数	理由
+scripts/cm-ai-batch-drive.test.mjs	预先排除	441	仓库记录耗时超过 300 秒
+scripts/cm-ai-batch-run-member-stops.test.mjs	预先排除	377	仓库记录耗时超过 300 秒
+scripts/cm-ai-batch-run-parallel.test.mjs	预先排除	338	仓库记录耗时超过 300 秒
+scripts/cm-ai-batch-run-reschedule.test.mjs	预先排除	436	仓库记录耗时超过 300 秒
+scripts/cm-ai-control-v2-drive.test.mjs	运行后超时排除	300.05	单文件到达 300 秒，停止且不计通过
+scripts/cm-ai-drive.test.mjs	运行后超时排除	300.05	单文件到达 300 秒，停止且不计通过
+scripts/cm-ai-fix-integration.test.mjs	运行后超时排除	300.03	单文件到达 300 秒，停止且不计通过
+scripts/cm-ai-qa-rerun-timeouts.test.mjs	运行后超时排除	300.05	单文件到达 300 秒，停止且不计通过
+scripts/cm-ai-review-failure.test.mjs	运行后超时排除	300.05	单文件到达 300 秒，停止且不计通过
+scripts/cm-fixture-process-cleanup.test.mjs	运行后超时排除	300.05	单文件到达 300 秒，停止且不计通过
+scripts/cm-host-qa-executor.test.mjs	运行后超时排除	300.02	单文件到达 300 秒，停止且不计通过
+scripts/cm-refactor-gaps.test.mjs	运行后超时排除	300.03	单文件到达 300 秒，停止且不计通过
+experiments/js-orchestration/cm-ai-admission.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/cm-ai-conversation-entry.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/cm-ai-learning-writer.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/cm-ai-runtime-root.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/cm-check-entry.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/cm-fix-entry.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/cm-init-entry.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/cm-planning-entry.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/cm-refactor-entry.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/cm-test-entry.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/codex-review-adapter.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/contracts.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/durable-runner-state.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/execution-store.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/provider-review-observation.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/replay.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/review-invocation-v3.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/review-package.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/review-runner.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/smoke.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/task-commit-codec.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/task-commit.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/task-owner.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+experiments/js-orchestration/task-runner.test.mjs	历史组未运行		cm-test-suite 的 history 组，不属于当前 ordinary/native 快速集
+scripts/test-shell-compat.sh	复合检查未取得退出状态		不计通过；非 TTY Ctrl-C 输入未能停止该调用

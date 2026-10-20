@@ -1,3 +1,4 @@
+import {protocolSandboxBranch} from './fixtures/protocol-sandbox.mjs';
 import test from 'node:test';
 import {EXECUTION_POLICY_V1,readLaunchExecutionPolicy} from '../runtime/js/cm-ai/execution-policy.mjs';
 import assert from 'node:assert/strict';
@@ -37,7 +38,7 @@ async function fixture(fn,{both=false,session=false,reviewProvider='codex',effic
     const settings=path.join(home,'external-models-v1.json');fs.writeFileSync(settings,JSON.stringify(models));
     const sent=path.join(tmp,'sent.jsonl');
     const source=`import fs from 'node:fs';import {randomUUID} from 'node:crypto';import {spawnSync} from 'node:child_process';
-if(process.argv[2]==='sandbox'){const args=process.argv.slice(2),i=args.indexOf('--');const result=spawnSync(args[i+1],args.slice(i+2),{stdio:'inherit'});process.exit(result.status??1);}
+${protocolSandboxBranch({codeProject,specsDir})}
 fs.appendFileSync(${JSON.stringify(sent)},JSON.stringify({provider:process.env.CM_FAKE_PROVIDER,argv:process.argv.slice(2)})+'\\n');
 let prompt='';for await(const part of process.stdin)prompt+=part;
 const dev=prompt.includes('<cm-developer-data-json>');const data=JSON.parse(prompt.split(dev?'<cm-developer-data-json>\\n':'<cm-review-data-json>\\n')[1]);

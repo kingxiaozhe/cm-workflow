@@ -4,6 +4,12 @@ N6 新决定按固定检查点和 `qa.criticalPaths` 登记匹配；`qa_assess` 
 
 本文是 [js-host.md](js-host.md) 的 N6 QA 恢复引用：QA 超时、阻断、中断、配置填错或项目收尾 QA 未通过时，按 js-host.md 的停机路由表读取对应一节。
 
+## v2 未配置 workflow 的 N6 续接
+
+原 v2 单任务 `qa:disabled` 且没有 `--workflow-config` 时，仍须确认 `qa_assess`；disabled 默认不创建执行器，只有下方“补挂 QA”的受控首轮附件是窄例外。驾驶员的 `advance` / `qa` 预检 `answers/qa-assess.json`，只接受 `{"confirmed":true}`，不接收自报风险、skipped 或 PASS。没有 criticalPaths 登记仍按真实任务和日志检查 feature 完成、连续五项未 QA。
+已 `fixture_completed`、停在 `qa_decision_required` 的原运行，保留原配置与审查包，使用原 mode:resume PLAN 并绑定已返回的 packageDigest，执行 `qa`。不要重复 develop、检查、review 或 complete，不补空 workflow、不改策略或指纹、不另建 run。
+由原规则正式记录 `qa_skipped` 后，再以同一包与 `testRunId:null` 执行 `context_refresh`，读取实际下一任务。已存在决定不重复询问或追加。必需 QA 被触发但无 executor 时停 `qa_triggered / qa_execution`，没有 QA PASS 或 run_done；不得因本修复自动打开执行能力。
+
 ## v2 与 legacy 的恢复分界
 
 目标缺失或结构不符使用 `invalid_input`，目标过期使用 `snapshot_changed`；混入旧权限使用 `invalid_arguments`，策略/入口不匹配使用 `fingerprint_mismatch`，未开放的 supersede 使用 `supersede_unavailable`。拒绝后不自动刷新目标或换协议。
@@ -26,7 +32,30 @@ QA 修复子操作使用原已配置 `qaFix:"manual"|"auto"`；先 fix_status �
 
 ## 补挂 QA
 
-**v2：** 不能靠补挂把冻结的 qa:disabled 改为 qa:run，也不能用 legacy 权限绕开策略/配置指纹。没有可用 QA 配置/执行能力时保留 qa_triggered 或具体准入阻断，报告当前缺口；本轮未提供切换策略的补挂恢复入口。下面一次性附加步骤仅用于 legacy 的原运行。
+**v2：** 只允许给原已完成任务附加首轮 QA 执行器；不切换冻结策略，不用 legacy 权限。须为创建时同一真实 host 续接的单任务，冻结策略精确为 `development:conversation`、`bootstrap:disabled`、`qa:disabled`、`qaFix:disabled`，且无 workflow、旧 `qa-attached` 或 `qa-config-revised`。任务已 `fixture_completed`，当前代码和审查材料仍有效；原日志已有绑定同一任务与包的合法 `triggered` 决定，而且原 run 无任何 QA 轮次。
+
+1. 确认原作者及 writer 已空闲，保留原 POLICY、冻结 inputs、审查包、完成记录及任务勾选。以原配置只读 `status`，将该次完整 `result.launchControlTarget` 保存为 `launch-target.json`；不使用业务 `controlTarget`，不自动刷新目标。
+2. 另存 `qa-executor.json`，严格只含 `{commands,environment,timeoutMs?}`，命令及环境沿现有 QA schema。不得添加 `criticalPaths`、文档或其他能力；适用交互式用例仍要求原浏览器能力声明和真实 runner。
+3. 原 PLAN 保持 `mode:resume` 和原 review/protection 等参数，在 permissions 中增加下列参数。reason 为非空单行、最多 500 UTF-8 字节；不添加 `PLAN.expectedControl` 或 wire expectedControl。
+
+```json
+["--review-config", "review.json",
+ "--qa-executor-config", "qa-executor.json",
+ "--attach-qa-executor-reason", "为原已完成任务执行已触发的必需 QA",
+ "--expected-control", "launch-target.json"]
+```
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan PLAN-attach.json status
+```
+
+该启动只追加唯一 `qa-executor-attached`，不运行 QA，不重新裁决原决定，旧 fingerprints 与所有 records 前缀不变；不重复 develop、check、review 或 complete。缺目标、目标陈旧、源码漂移、未触发或已有 QA 轮次均拒绝，不能与配置修订、QA 重跑、规格换绑或 legacy 附加混用。
+
+登记后普通 resume 仅保留新增的 `--qa-executor-config` 和全部原 review/protection 参数，删除 reason/expected 两个登记参数。`qa` 仍只返回原判定；以原已完成任务显式 `advance`，沿原 `packageDigest` 和决定运行现有 QA 执行器。真实 PASS 后该入口才自动进入 `context_refresh`，失败时不会进入 N7 或派发下一任务。FAIL、BLOCKED 或 unknown 保留并阻止后续门禁；登记不等于 QA 通过，也不启用 QA Fix 或文档能力。
+
+缺少或改变已绑定 executor 配置时拒绝恢复。重复登记只在尚无 QA、原代码仍有效、target/reason/config 全部精确相同时幂等；QA 开跑后须去掉 reason/expected，不能重登记来重置结果或预算。新任务应在 create 前配好真实 QA workflow 并选择 `qa:run`，避免再次冻结缺少执行器的运行。完整配置示例见 [附加首轮 QA 执行器](../../../docs/cm-control-policy-v2.md#附加首轮-qa-执行器)。
+
+下面一次性 `qa-attached` 步骤只用于 legacy 原运行；不能据此暗改 v2 的 `qa:disabled` 为 `qa:run`，或把新附件解释成可切换策略。
 
 legacy：原无workflow或`qa:null`且任务已为`fixture_completed`时，可在`--mode resume`显式提供
 含QA的`--workflow-config`与`--allow-qa`，一次性附加N6；原definition/scope/requirements/identity、

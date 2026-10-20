@@ -46,7 +46,11 @@ export function boundedReason(head,items,tail=''){
 // Explicit host call budget, shared by live initialization and journal replay.
 // This is not the short-lived authorization grant expiry.
 export const validCallTimeout=value=>need(Number.isInteger(value)&&value>=1&&value<=3600000);
-const failureCodes=new Set(['invalid_input','limit_exceeded','call_timeout','cancelled','terminal_mismatch','invalid_result',
+const failureCodes=new Set([
+  'review_scope_too_large','review_scope_limits_invalid','review_input_too_large','review_input_invalid','review_material_invalid','review_material_encoding','review_material_binding',
+  'review_material_path','review_material_changed','review_material_limit','review_material_tool','review_material_page',
+  'review_material_closed','review_material_incomplete','review_material_profile_unsupported',
+  'invalid_input','limit_exceeded','call_timeout','cancelled','terminal_mismatch','invalid_result',
   'review_package_mismatch','missing_material','contradictory_verdict','execution_mismatch','receipt_version',
   'unregistered_receipt','invalid_receipt','receipt_identity','receipt_package_mismatch','review_not_approved',
   'checks_not_passed','async_commit','commit_unknown','unsupported_path','unsupported_file','read_failed',

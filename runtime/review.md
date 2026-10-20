@@ -46,7 +46,7 @@ At task start, record the existing working-tree status and the task's intended f
 
 Do not send the whole working tree merely because it is convenient.
 
-New `cm-review-package` version 1 packages include `unchangedScope`: sorted `{path, sha256}` entries for existing, unchanged scope files, bound into `packageDigest` without adding their bodies. These paths belong in `examinedPaths` and may receive evidence-backed findings, but must not be used to require changes to unchanged files or infer contents from hashes. Legacy packages without this field retain their original digest, path set and receipt verification.
+New `cm-review-package` version 1 packages include `unchangedScope`: sorted `{path, sha256}` entries for existing, unchanged scope files, bound into `packageDigest` without adding their bodies. These paths belong in `examinedPaths` and may receive evidence-backed findings, but must not be used to require changes to unchanged files or infer contents from hashes. Entries for files added by a recorded scope revision instead carry the full file record, contents included, and may be examined normally. Legacy packages without this field retain their original digest, path set and receipt verification.
 
 New cm-ai runs additionally bind `specification` into the baseline, developer request and `packageDigest`: feature, task description/verification, all acceptance criteria, design excerpt (up to 64 KiB UTF-8, `truncated:true` above that), task-related test cases and approved source hashes. Review implementation against these ACs and interface contracts. Source paths are relative to the specs root, not writable code scope or extra examinedPaths. Hashes use the existing manifest normalization for runtime task/AC checkboxes. Missing optional test-cases.json yields an empty list and three sources. Live source/approval drift blocks as `spec_drift`, including reapproval of a different contract during a run; material is never silently refreshed. Historical baselines/packages without specification retain their original digest and receipt/completion rules. (Dogfood: separate specs/code roots previously hid the task and interface contracts from both developer and reviewer.)
 
@@ -118,7 +118,11 @@ PRD artifact 回执先比对原始字节，仅 Markdown 中 `tasks.md` 的任务
 - Accepted findings are fixed and re-reviewed against the new attempt handoff.
 - Rejected findings record a short evidence-based reason.
 - Only independent `approved` permits N5; `changes_requested` permits only the next attempt;
-  `blocked` permits neither N3 auto-retry nor N5.
+  `blocked` permits neither N3 auto-retry nor N5. An explicit user-authorized
+  first-round native-evidence recovery may use `--recover-blocked-review` under
+  `docs/cm-control-policy-v2.md`: the original blocked receipt stays unchanged,
+  a bound append-only record consumes the existing attempt2, and fresh review is
+  still required. This is neither automatic retry nor verdict conversion.
 - After round two, any remaining blocking finding becomes `blocked`. Safety or
   data-correctness disputes require human resolution; preference disputes may
   proceed only when the reviewer records `approved` and the disagreement is
@@ -207,3 +211,19 @@ not approval: the completion node must run the `cm-task-gate.py mark-done` lock
 adapter, which delegates the decision and replacement to `cm-task-gate.mjs` and
 revalidates the current attempt's `verdict: approved` and `independent: true` while atomically updating
 the exact task checkbox.
+
+## Large Codex input
+
+The initial Codex input is admitted separately from journal/package size. The
+runner and dispatch use the same complete presentation. Oversized input may use
+the fixed immutable material reader described in `docs/architecture.md`; all
+material pages must be served, cryptographically bound, persisted and reread
+before the trusted adapter forwards a successful terminal or reconciliation.
+A completed provider terminal may retain its coverage and reconciliation evidence
+while the local outcome remains cancelled. The bounded material-only output
+envelope preserves a fully JSON-escaped page through the native tool response.
+This does not change the canonical package, approve its contents, expand scope,
+refund a failed invocation, or permit a new review beyond the existing grant.
+Historical receipts remain authoritative and are not retroactively required to
+carry a new transport proof. Native image arguments retain the package order.
+Input admission cannot guarantee a later model verdict or total context fit.

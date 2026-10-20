@@ -15,7 +15,8 @@ import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs'
 import {assertControlEntry,withControlPolicyHost,controlTarget,assertExpectedControl,readControlTarget} from '../runtime/js/cm-ai/control-policy.mjs';
 import {readRunnerHistory,projectedRunnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {hasLegacyQaPlanFingerprint,previousQaMaterial,qaConfigurationSlice,qaExecutorMaterial,qaInvariantDigest,qaRevisionChain,verifyQaRevisionMaterial} from '../runtime/js/cm-ai/qa-config-revision.mjs';
-import {hasCmAiQaRun,inspectCmAiQaRevisionTarget,recordCmAiQaConfigurationRevision} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
+import {hasCmAiQaRun,findCmAiQaDecision,inspectCmAiQaRevisionTarget,recordCmAiQaConfigurationRevision} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
+import {qaExecutorAttachmentIn,validateQaExecutorAttachmentReason} from '../runtime/js/cm-ai/qa-executor-attachment.mjs';
 import {prepareReviewedEvidenceSupersession,archiveReviewedEvidence,recordEvidenceSupersession,assertNoUnrecordedPriorCode} from '../runtime/js/cm-ai/reviewed-evidence-supersede.mjs';
 import {explainFingerprintMismatch} from '../runtime/js/cm-ai/launch-mismatch.mjs';
 import {recordReviewAbandonment} from '../runtime/js/cm-ai/review-abandon-log.mjs';
@@ -25,6 +26,7 @@ import {RUN_ID_RULE,validRunId} from './cm-log-event.mjs';
 import {JOURNAL_PAYLOAD_LIMIT,boundedReason} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {protectedScopePaths} from '../runtime/js/cm-ai/developer-adapter.mjs';
 import {closeoutPolicyCandidates} from '../runtime/js/cm-ai/knowledge-closeout.mjs';
+import {implicitHostQaDecision,isQaExecutorAttachment,preQaExecutorMaterial} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 
 const usage='cm-ai-run.mjs inspect-history --config RUN_DEFINITION.json (validated read-only history; no owner lock or provider dispatch)\ncm-ai-run.mjs serve --config RUN_DEFINITION.json --mode create|resume (no provider dispatch)\nNew runs bind approved specification material from specsDir; requirements may be [] or supplemental code-project files. Manifest drift blocks as spec_drift; legacy journals retain their original format.';
 const fail=code=>{throw Object.assign(new Error(code),{code});};
@@ -232,8 +234,11 @@ export function runConfigMaterial(definition,execution,{parallelSelection=null,b
     ...(knowledgeCloseout===null?{}:{knowledgeCloseout}),
     ...(bootstrapConfig?{bootstrap:bootstrapConfig}:{}),
     ...(Object.hasOwn(execution,'developmentAttempt')?{developmentAuthorization:'per-attempt-v1'}:{}),
-    ...(execution.qaDecisionProvider?{qaDecisionProvider:'host-v1',qaTimeoutMs:execution.qaDecisionProvider.timeoutMs}:{}),
+    // Only the fixed factory-bound v2 default retains its historical material.
+    // A future configurable/default semantic change needs an explicit compatibility decision.
+    ...(execution.qaDecisionProvider&&!implicitHostQaDecision(execution)?{qaDecisionProvider:'host-v1',qaTimeoutMs:execution.qaDecisionProvider.timeoutMs}:{}),
     ...(execution.qaExecutor?{qaExecutor:qaExecutorMaterial(execution.qaExecutor,legacyQa)}:{}),
+    ...(isQaExecutorAttachment(execution)?{qaExecutorAttachment:{version:1,requestTimeoutMs:execution.qaExecutor.requestTimeoutMs}}:{}),
     ...(execution.applicableAgentFiles?{applicableAgentFiles:execution.applicableAgentFiles}:{}),
     ...(execution.documentationProvider?{documentationProvider:{version:1,timeoutMs:execution.documentationProvider.timeoutMs}}:{}),
     ...(execution.documentationResult?{documentationResult:execution.documentationResult}:{}),
@@ -244,7 +249,11 @@ export function runConfigMaterial(definition,execution,{parallelSelection=null,b
 export function inspectRunHistory(definition){
   const snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,
     identity:{repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
-  return {identity:snapshot.identity,revision:snapshot.revision,fingerprints:snapshot.fingerprints,
+  // The restart target is the same launch projection a v2 supersede compares;
+  // histories this runtime cannot project report null rather than a guess.
+  let supersedeTarget=null;
+  try{supersedeTarget=controlLaunchTarget(snapshot);}catch{supersedeTarget=null;}
+  return {identity:snapshot.identity,revision:snapshot.revision,fingerprints:snapshot.fingerprints,supersedeTarget,
     records:snapshot.records.map(record=>({seq:record.seq,id:record.id,kind:record.kind,type:record.payload.type??null,
       legacyReviewGrant:record.payload.type==='review-invocation-registered'
         &&(Object.hasOwn(record.payload,'grant')||Object.hasOwn(record.payload,'authorizationAt'))}))};
@@ -268,6 +277,8 @@ export async function openControlRun(definition,mode,execution=null,options={}){
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   if(!['create','resume'].includes(mode))fail('invalid_mode');
   let guard;
+  const holds=[];
+  const releaseHolds=()=>{for(const held of holds.splice(0)){try{held.close();}catch{}}};
   try{
     const acquire=async()=>{
       const {acquireExternalRunGuard,externalRunGuardExists}=await import('../runtime/js/cm-ai/external-run-guard.mjs');
@@ -275,15 +286,18 @@ export async function openControlRun(definition,mode,execution=null,options={}){
       // Switching this binary to a legacy launch must not bypass an existing strict attempt.
       if(strict||externalRunGuardExists(definition.specsDir,definition.codeProject))guard=acquireExternalRunGuard(definition,{strictOnly:!strict});
     };
-    const result=await openControlRunOwned(definition,mode,execution,options,acquire);
+    // A v2 restart holds the predecessor's writer lock from the target check until
+    // the new run has journaled and archived the supersession (or failed).
+    const result=await openControlRunOwned(definition,mode,execution,{...options,supersedeHolds:holds},acquire);
+    releaseHolds();
     const close=result.close;
     return {...result,close:()=>{try{close();}finally{guard?.close();}}};
-  }catch(error){guard?.close();throw error;}
+  }catch(error){releaseHolds();guard?.close();throw error;}
 }
-async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,allowDevelopRedo=false,holdRevision=false,specRebindReason=null,expectedControl=null}={},acquireGuard=async()=>{}){
+async function openControlRunOwned(definition,mode,execution=null,{reviewerSwitchReason=null,qaExecutorAttachmentReason=null,supersedeHolds=null,supersedeTarget=null,rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,allowDevelopRedo=false,holdRevision=false,specRebindReason=null,expectedControl=null,scopeRevision=null,developmentReworkReason=null,nativeCorrection=null,nativeReviewRecovery=null}={},acquireGuard=async()=>{}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
-  const {conversationProtection,externalConversationDefinition}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
+  const {conversationProtection,externalConversationDefinition,bindConversationScopeSupplement,supportsConversationScopeSupplement,verifyConversationScopeSupplement,conversationReviewerSwitch,bindConversationReviewerSwitch,supportsConversationNativeEvidence,bindConversationNativeEvidence}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
   if(!['create','resume'].includes(mode))fail('invalid_mode');
   if(mode==='create')assertCreatableRunId(definition?.identity);
   // The developer adapter refuses these paths on every dispatch. Refuse the
@@ -292,6 +306,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   // paths are checked by createHostBootstrap against its business scope.
   if(mode==='create'&&!execution?.bootstrap)assertCreatableScope(definition?.scope);
   if(supersedeReason!==null&&mode!=='create')fail('supersede_unavailable');
+  if(supersedeTarget!==null&&!execution?.configuration?.controlPolicy)fail('invalid_arguments');
   if(allowAbandonEffect&&mode!=='resume')fail('effect_abandon_unavailable');
   if(allowBootstrapReviewRecovery&&mode!=='resume')fail('bootstrap_review_recovery_unavailable');
   if(allowDevelopRedo&&mode!=='resume')fail('develop_redo_unavailable');
@@ -307,9 +322,83 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
     ||(rerunUnknownQa||rerunBlockedQa)&&(mode!=='resume'||!execution?.qaExecutor))fail('qa_recovery_authorization_required');
   const {openTaskExecutionStore}=await import('../runtime/js/cm-ai/task-owner.mjs');
   const controlPolicy=execution?.configuration?.controlPolicy??null;
-  const launchRecovery=qaConfigRevision!==null||rerunUnknownQa||rerunBlockedQa||specRebindReason!==null;
+  const elevatedRecovery=scopeRevision!==null||developmentReworkReason!==null;
+  if(nativeCorrection!==null){
+    if(nativeReviewRecovery!==null)fail('native_correction_unavailable');
+    if(!controlPolicy||mode!=='resume'||parallelSelection!==null||!supportsConversationNativeEvidence(execution)
+      ||elevatedRecovery||reviewerSwitchReason!==null||qaExecutorAttachmentReason!==null||qaConfigRevision!==null
+      ||rerunUnknownQa||rerunBlockedQa||specRebindReason!==null||holdRevision)fail('native_review_recovery_unavailable');
+    const {shape}=await import('../runtime/js/cm-ai/effect-contract.mjs');
+    if(Object.hasOwn(nativeCorrection,'providerReviewRecovery')){
+      const {providerRecoveryRequest}=await import('../runtime/js/cm-ai/provider-review-recovery.mjs');providerRecoveryRequest(nativeCorrection);
+    }else if(Object.hasOwn(nativeCorrection,'evidenceContinuation')||Object.hasOwn(nativeCorrection,'evidenceReview')){
+      const {evidenceRequest}=await import('../runtime/js/cm-ai/valid-review-evidence-continuation.mjs');evidenceRequest(nativeCorrection);
+    }else if(Object.hasOwn(nativeCorrection,'materialReadContinuation')||Object.hasOwn(nativeCorrection,'materialTimeoutContinuation')){
+      const timeout=Object.hasOwn(nativeCorrection,'materialTimeoutContinuation'),flag=timeout?'materialTimeoutContinuation':'materialReadContinuation';
+      shape(nativeCorrection,['version','reason',flag,'source','oldInvocationStopped']);
+      if(nativeCorrection.version!==1||nativeCorrection[flag]!==true||nativeCorrection.oldInvocationStopped!==true)fail('material_continuation_authorization');
+      const {readMaterialContinuationSource}=await import('../runtime/js/cm-ai/material-review-continuation.mjs');
+      readMaterialContinuationSource(nativeCorrection.source,timeout);
+    }else if(Object.hasOwn(nativeCorrection,'textEvidenceReview')){
+
+      shape(nativeCorrection,['version','reason','textEvidenceReview','nativeEvidence','textManifestDigest']);
+      if(nativeCorrection.version!==1||nativeCorrection.textEvidenceReview!==true)fail('native_material_review_unavailable');
+      const {readNativeEvidenceProfile}=await import('../runtime/js/cm-ai/native-review-evidence.mjs');
+      readNativeEvidenceProfile(nativeCorrection.nativeEvidence,{codeProject:definition.codeProject,specsDir:definition.specsDir});
+    }else if(Object.hasOwn(nativeCorrection,'technicalReviewRetry')||Object.hasOwn(nativeCorrection,'transportReviewRetry')){
+      const flag=Object.hasOwn(nativeCorrection,'transportReviewRetry')?'transportReviewRetry':'technicalReviewRetry';
+      shape(nativeCorrection,['version','reason',flag]);
+      if(nativeCorrection.version!==1||nativeCorrection[flag]!==true)fail('native_review_retry_unavailable');
+    }else{
+      shape(nativeCorrection,['version','reason','nativeEvidence',...['scope','checkSupplement'].filter(key=>Object.hasOwn(nativeCorrection,key))]);
+      if(Object.hasOwn(nativeCorrection,'scope')!==Object.hasOwn(nativeCorrection,'checkSupplement')
+        ||Object.hasOwn(nativeCorrection,'scope')&&!supportsConversationScopeSupplement(execution))fail('native_correction_scope');
+      if(nativeCorrection.version!==1)fail('native_review_recovery_unavailable');
+      const {readNativeEvidenceProfile}=await import('../runtime/js/cm-ai/native-review-evidence.mjs');
+      readNativeEvidenceProfile(nativeCorrection.nativeEvidence,{codeProject:definition.codeProject,specsDir:definition.specsDir});
+    }
+  }
+  if(nativeReviewRecovery!==null){
+    if(!controlPolicy||mode!=='resume'||parallelSelection!==null||!supportsConversationNativeEvidence(execution)
+      ||elevatedRecovery||reviewerSwitchReason!==null||qaExecutorAttachmentReason!==null||qaConfigRevision!==null
+      ||rerunUnknownQa||rerunBlockedQa||specRebindReason!==null||holdRevision)fail('native_review_recovery_unavailable');
+    const {shape}=await import('../runtime/js/cm-ai/effect-contract.mjs');
+    shape(nativeReviewRecovery,['version','reason','nativeEvidence']);
+    if(nativeReviewRecovery.version!==1)fail('native_review_recovery_unavailable');
+    const {readNativeEvidenceProfile}=await import('../runtime/js/cm-ai/native-review-evidence.mjs');
+    readNativeEvidenceProfile(nativeReviewRecovery.nativeEvidence,{codeProject:definition.codeProject,specsDir:definition.specsDir});
+  }
+  const executorOverlay=isQaExecutorAttachment(execution);
+  const reviewerSwitch=conversationReviewerSwitch(execution);
+  if(reviewerSwitch||reviewerSwitchReason!==null){
+    if(mode!=='resume'||!controlPolicy||!reviewerSwitch||parallelSelection!==null||qaExecutorAttachmentReason!==null
+      ||executorOverlay||qaConfigRevision!==null||rerunUnknownQa||rerunBlockedQa||specRebindReason!==null||elevatedRecovery)
+      fail('reviewer_switch_unavailable');
+    if(reviewerSwitchReason!==null&&(typeof reviewerSwitchReason!=='string'||!reviewerSwitchReason.trim()
+      ||Buffer.byteLength(reviewerSwitchReason,'utf8')>500||/[\r\n\0]/.test(reviewerSwitchReason)))fail('reviewer_switch_unavailable');
+  }
+  if(executorOverlay||qaExecutorAttachmentReason!==null){
+    if(mode!=='resume'||!executorOverlay||parallelSelection!==null||qaConfigRevision!==null
+      ||rerunUnknownQa||rerunBlockedQa||specRebindReason!==null||elevatedRecovery)fail('qa_executor_attachment_unavailable');
+    if(qaExecutorAttachmentReason!==null)validateQaExecutorAttachmentReason(qaExecutorAttachmentReason);
+  }
+  const launchRecovery=nativeCorrection!==null||nativeReviewRecovery!==null||reviewerSwitchReason!==null||qaExecutorAttachmentReason!==null||qaConfigRevision!==null||rerunUnknownQa||rerunBlockedQa||specRebindReason!==null||elevatedRecovery;
+  if(elevatedRecovery){
+    const protectedScope=scopeRevision?.checkSupplement!==undefined&&supportsConversationScopeSupplement(execution);
+    if(!controlPolicy||mode!=='resume'||parallelSelection!==null||conversationProtection(execution)!==null&&!protectedScope
+      ||protectedExecutions.has(execution)||execution.configuration.providerDevelopment)fail('recovery_launch_unavailable');
+    if(scopeRevision?.checkSupplement!==undefined&&!protectedScope)fail('scope_revision_unavailable');
+    if([scopeRevision!==null,developmentReworkReason!==null,qaConfigRevision!==null,rerunUnknownQa,rerunBlockedQa,specRebindReason!==null].filter(Boolean).length!==1)fail('invalid_input');
+    const reason=scopeRevision?.reason??developmentReworkReason;
+    if(typeof reason!=='string'||!reason.trim()||Buffer.byteLength(reason,'utf8')>500||/[\r\n\0]/.test(reason))fail('invalid_input');
+  }
   if(controlPolicy){
-    if(supersedeReason!==null)fail('supersede_unavailable');
+    // V2 restart: only create, only with the previewed predecessor launch target.
+    if(supersedeReason!==null){
+      if(mode!=='create')fail('supersede_unavailable');
+      if(supersedeTarget===null)fail('invalid_input');
+      supersedeTarget=readControlTarget(supersedeTarget);
+    }else if(supersedeTarget!==null)fail('invalid_input');
     if(launchRecovery){
       if(mode!=='resume')fail('supersede_unavailable');
       if(expectedControl===null)fail('invalid_input');
@@ -326,7 +415,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   if(execution!==null){
     const {shape,json,validCallTimeout}=await import('../runtime/js/cm-ai/effect-contract.mjs');
     shape(execution,['configuration','developer','reviewers','reviewInvocation','check','excludedContexts','timeoutMs',
-      ...['bootstrap','developmentAttempt','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult','documentationSync','verificationGate'].filter(key=>Object.hasOwn(execution,key))]);
+      ...['reviewScopeLimits','bootstrap','developmentAttempt','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult','documentationSync','verificationGate'].filter(key=>Object.hasOwn(execution,key))]);
     json(execution.configuration);validCallTimeout(execution.timeoutMs);
     if(Object.hasOwn(execution.configuration,'codeProject'))
       if(execution.configuration.codeProject!==definition.codeProject)fail('execution_root_mismatch');
@@ -357,7 +446,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   const reviewsDir=path.join(specsDir,'.reviews');
   const supersession=mode==='create'&&supersedeReason!==null
     ?prepareReviewedEvidenceSupersession({specsDir,codeProject,feature,identity,reason:supersedeReason,tasksPath,
-      acceptSupersededCodeDrift}):null;
+      acceptSupersededCodeDrift,...(supersedeTarget?{expectedPredecessor:supersedeTarget,predecessorTarget:controlLaunchTarget,holds:supersedeHolds}:{})}):null;
   let bootstrapConfig=null;
   if(execution?.bootstrap){
     const {bootstrapConfiguration}=await import('../runtime/js/cm-ai/host-bootstrap.mjs');
@@ -400,6 +489,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   // baseline must not strand an otherwise unused run ID.
   const specification={specsRoot:specsDir,feature};
   const baselineOptions={root:codeProject,specsRoot:specsDir,identity,scope,requirements,specification,
+    ...(execution&&conversationProtection(execution)?.binaryAssets?{binaryAssets:conversationProtection(execution).binaryAssets}:{}),
     ...(bootstrapConfig?{bootstrapRequirements:bootstrapConfig.bootstrapRequirements}:{}),
     ...(selectedRoots?{codeProjectPaths:selectedRoots}:{})};
   if(mode==='create'){
@@ -407,7 +497,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
     // is refused here, before any store exists; the runner checks the exact record.
     const preview=captureReviewBaseline(baselineOptions),bytes=Buffer.byteLength(JSON.stringify(preview));
     if(bytes>JOURNAL_PAYLOAD_LIMIT){
-      const largest=preview.files.filter(file=>Object.hasOwn(file,'contentBase64')).sort((a,b)=>b.size-a.size).slice(0,3)
+      const largest=preview.files.filter(file=>(Object.hasOwn(file,'contentBase64')||Object.hasOwn(file,'contentGzipBase64'))).sort((a,b)=>b.size-a.size).slice(0,3)
         .map(file=>`${file.path} ${file.size} bytes`);
       throw Object.assign(new Error(boundedReason(`limit_exceeded: the task baseline alone is ${bytes} bytes, above the journal record limit `
         +`${JOURNAL_PAYLOAD_LIMIT}; largest baseline material: `,largest)),{code:'limit_exceeded'});
@@ -428,10 +518,20 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
     catch(error){
       if(mode!=='resume'||error.code!=='fingerprint_mismatch')throw error;
       const snapshot=readExecutionSnapshot({specsRoot:specsDir,identity:storeIdentity});
+      const executorAttachment=qaExecutorAttachmentIn(snapshot);
+      if(executorOverlay){
+        const original=preQaExecutorMaterial(execution,material);
+        if(sha(original)!==snapshot.fingerprints.config)throw error;
+        if(executorAttachment){if(executorAttachment.toFingerprint!==fingerprints.config
+          ||executorAttachment.executorDigest!==sha({executor:material.qaExecutor,attachment:material.qaExecutorAttachment}))throw error;}
+        else if(qaExecutorAttachmentReason===null)fail('qa_executor_attachment_authorization_required');
+        if(snapshot.records.some(row=>['qa-attached','qa-config-revised'].includes(row.payload.type)))fail('qa_executor_attachment_conflict');
+        store=openTaskExecutionStore({...storeOptions,fingerprints:{...fingerprints,config:snapshot.fingerprints.config}});
+      }
       const last=qaRevisionChain(snapshot).revisions.at(-1);
       if(priorMaterial&&last?.toFingerprint===fingerprints.config&&last.fromFingerprint===sha(priorMaterial)
         &&last.reason===qaConfigRevision.reason)priorMaterial=null;
-      if(priorMaterial||snapshot.records.some(row=>row.payload.type==='qa-config-revised')){
+      if(!store&&(priorMaterial||snapshot.records.some(row=>row.payload.type==='qa-config-revised'))){
         verifyQaRevisionMaterial(snapshot,material,priorMaterial);
         store=openTaskExecutionStore({...storeOptions,fingerprints:{...fingerprints,config:snapshot.fingerprints.config}});
       }
@@ -445,6 +545,9 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
       }
     }
     try{
+      const executorAttachment=qaExecutorAttachmentIn(store.snapshot());
+      if(executorAttachment&&(!executorOverlay||executorAttachment.toFingerprint!==fingerprints.config))
+        fail('fingerprint_mismatch');
       const chain=qaRevisionChain(store.snapshot());
       if(chain.revisions.length&&chain.fingerprint!==fingerprints.config&&!priorMaterial)
         throw Object.assign(new Error('fingerprint_mismatch'),{code:'fingerprint_mismatch',
@@ -457,7 +560,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
         throw Object.assign(new Error('fingerprint_mismatch'),{code:'fingerprint_mismatch',
           reason:'启动配置与事后附加 QA 时绑定的配置不同；请用附加 QA 时的 --workflow-config 与参数恢复'});
       if(attaching&&store.snapshot().records.length===0)fail('qa_attach_not_completed');
-      return {material,fingerprints,store,attaching,priorMaterial,chain,attached};
+      return {material,fingerprints,store,attaching,priorMaterial,chain,attached,executorAttachment};
     }catch(error){store.close();throw error;}
   };
   const snapshot=mode==='resume'&&(execution?.documentationProvider||execution?.documentationResult)
@@ -479,13 +582,41 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
     }
   }
   if(!opened)throw lastMismatch;
-  const {material:configMaterial,fingerprints,store,attaching,priorMaterial,chain,attached}=opened;
+  const {material:configMaterial,fingerprints,store,attaching,priorMaterial,chain,attached,executorAttachment}=opened;
   const knowledgeCloseout=configMaterial.knowledgeCloseout??null;
   try{
     // The store owns the actual writer lock. Check before constructing the
     // runner (which may journal a session join), audit repair, or recovery.
+    const switches=store.snapshot().records.filter(row=>row.payload.type==='reviewer-switched');
+    if(switches.length>1)fail('reviewer_switch_unavailable');
+    const previousSwitch=switches.length?((({version,protocol,type,...record})=>record)(switches[0].payload)):null;
+    if(previousSwitch){
+      if(!reviewerSwitch)fail('reviewer_switch_configuration_required');
+      if(previousSwitch.configurationDigest!==reviewerSwitch.configurationDigest
+        ||sha(previousSwitch.toReviewer)!==sha(reviewerSwitch.toReviewer))fail('reviewer_switch_configuration_mismatch');
+    }else if(reviewerSwitch&&reviewerSwitchReason===null)fail('reviewer_switch_authorization_required');
     if(controlPolicy&&launchRecovery){
-      try{assertExpectedControl(expectedControl,controlLaunchTarget(store.snapshot()));}
+      try{
+        let targetSnapshot=store.snapshot();
+        if(reviewerSwitchReason!==null&&previousSwitch){
+          if(reviewerSwitchReason!==previousSwitch.reason)fail('reviewer_switch_configuration_mismatch');
+          const at=targetSnapshot.records.findIndex(row=>row.payload.type==='reviewer-switched');
+          const {revision,...body}=targetSnapshot;const prefix={...body,records:body.records.slice(0,at)};
+          targetSnapshot={...prefix,revision:sha(prefix)};
+        }
+        if(qaExecutorAttachmentReason!==null&&executorAttachment){
+          if(qaExecutorAttachmentReason!==executorAttachment.reason)fail('qa_executor_attachment_mismatch');
+          const at=targetSnapshot.records.findIndex(row=>row.payload.type==='qa-executor-attached');
+          const {revision,...body}=targetSnapshot;const prefix={...body,records:body.records.slice(0,at)};
+          targetSnapshot={...prefix,revision:sha(prefix)};
+        }
+        if(nativeCorrection?.providerReviewRecovery===true||nativeCorrection?.evidenceContinuation===true||nativeCorrection?.evidenceReview===true){
+          const requestDigest=sha(nativeCorrection),type=nativeCorrection.providerReviewRecovery?'review-provider-recovery-authorized':nativeCorrection.evidenceReview?'review-evidence-authorized':'review-evidence-registered';
+          const at=targetSnapshot.records.findIndex(row=>row.payload.type===type&&row.payload.requestDigest===requestDigest);
+          if(at>=0){const {revision,...body}=targetSnapshot,prefix={...body,records:body.records.slice(0,at)};targetSnapshot={...prefix,revision:sha(prefix)};}
+        }
+        assertExpectedControl(expectedControl,controlLaunchTarget(targetSnapshot));
+      }
       catch(error){
         if(error.code==='snapshot_changed')error.reason='启动恢复目标已经变化；核对当前状态和原操作，不能自动替换原 launchControlTarget 后重试。';
         throw error;
@@ -503,10 +634,13 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
     const unavailable=()=>fail('execution_adapter_required');
     const host=createCmAiHost({
       runner:{root:codeProject,identity,scope,requirements,specification,...(selectedRoots?{codeProjectPaths:selectedRoots}:{}),
+        ...(execution&&conversationProtection(execution)?.binaryAssets?{binaryAssets:conversationProtection(execution).binaryAssets}:{}),
         ...(knowledgeCloseout===null?{}:{knowledgeCloseout}),
         ...(execution?.configuration.executionPolicy?{executionPolicy:execution.configuration.executionPolicy}:{}),
         ...(execution?.configuration.externalModels?{externalModels:execution.configuration.externalModels}:{}),excludedContexts:['control-host'],
         ...(controlPolicy?{controlPolicy}:{}),
+        ...(reviewerSwitch?{reviewerSwitchConfigurationDigest:reviewerSwitch.configurationDigest}:{}),
+        ...(parallelSelection===null?{}:{parallelSelection}),
         developer:{provider:'codex',requestedModel:'unconfigured',contextId:'control-developer',run:unavailable},
         reviewers:[],check:unavailable,taskCompletion:{reviewsDir,handoffs},taskLearning:{feature},
         persistence:{store,mode:runnerMode,version:execution===null?2:3},
@@ -516,15 +650,68 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
           ...(execution.bootstrap?{bootstrap:execution.bootstrap}:{}),
           reviewInvocation:execution.reviewInvocation,check:execution.check,
           excludedContexts:execution.excludedContexts,timeoutMs:execution.timeoutMs,
+          ...(execution.reviewScopeLimits?{reviewScopeLimits:execution.reviewScopeLimits}:{}),
           ...(Object.hasOwn(execution,'verificationGate')?{verificationGate:execution.verificationGate}:{}),
           taskLearning:{feature,hostHandoff:true}})},
       // The entry validates the declaration (single line, with --rerun-blocked-qa) before any durable write.
       entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,
         ...(definition.featureSelection?{featureSelection:definition.featureSelection.feature}:{}),
         ...(knowledgeCloseout===null?{}:{knowledgeCloseout,...(definition.codeProjects?{codeProjects:definition.codeProjects}:{})}),
-        ...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,allowDevelopRedo,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{
+        ...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,allowDevelopRedo,allowCompletionRework:Boolean(controlPolicy)&&mode==='resume'&&parallelSelection===null&&conversationProtection(execution)===null
+          &&!protectedExecutions.has(execution)&&!execution.configuration.providerDevelopment,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{
         ...Object.fromEntries(['developmentAttempt','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
     });
+    if(reviewerSwitch){
+      let record=previousSwitch;
+      if(!record){
+        const result=host.switchReviewer({allowed:true,...reviewerSwitch,reason:reviewerSwitchReason,
+          sourceRevision:store.snapshot().revision,hostContextId:execution.configuration.hostContextId});
+        if(result.outcome==='rejected')throw Object.assign(new Error(result.code),{code:result.code,...(result.reason?{reason:result.reason}:{})});
+        record=result.record;
+      }
+      bindConversationReviewerSwitch(execution,record);
+    }
+    if(elevatedRecovery){
+      const {checkSupplement,...scopeRequest}=scopeRevision??{};
+      const protectedSupplement=checkSupplement===undefined?null:(await import('../runtime/js/cm-ai/protected-scope-supplement.mjs')).createProtectedScopeSupplement(
+        checkSupplement,{material:configMaterial,configFingerprint:fingerprints.config,scope:scopeRequest.scope});
+      if(protectedSupplement)verifyConversationScopeSupplement(execution,protectedSupplement,scopeRequest.scope,fingerprints.config);
+      const result=scopeRevision!==null?host.reviseScope({allowed:true,...scopeRequest,...(protectedSupplement?{protectedSupplement}:{})})
+        :host.reworkDevelopment({allowed:true,reason:developmentReworkReason});
+      if(result.outcome==='rejected')throw Object.assign(new Error(result.code),{code:result.code,...(result.reason?{reason:result.reason}:{})});
+    }
+    let nativeRecord=store.snapshot().records.find(row=>row.payload.type==='review-evidence-recovered')?.payload;
+    if(nativeReviewRecovery!==null){
+      const result=host.recoverNativeReview({allowed:true,reason:nativeReviewRecovery.reason,nativeEvidence:nativeReviewRecovery.nativeEvidence});
+      if(result.outcome==='rejected')throw Object.assign(new Error(result.code),{code:result.code});
+      nativeRecord=result.record;
+    }
+    const existingCorrection=store.snapshot().records.find(row=>row.payload.type==='native-correction-authorized')?.payload;
+    if(nativeCorrection!==null){
+      const transportReviewRetry=nativeCorrection.transportReviewRetry===true;
+      const timeoutContinuation=nativeCorrection.materialTimeoutContinuation===true;
+      const materialContinuation=nativeCorrection.materialReadContinuation===true||timeoutContinuation;
+      const technicalReviewRetry=nativeCorrection.technicalReviewRetry===true||transportReviewRetry;
+      const protectedSupplement=Object.hasOwn(nativeCorrection,'scope')?(await import('../runtime/js/cm-ai/protected-scope-supplement.mjs')).createProtectedScopeSupplement(
+        nativeCorrection.checkSupplement,{material:configMaterial,configFingerprint:fingerprints.config,scope:nativeCorrection.scope}):null;
+      if(protectedSupplement)verifyConversationScopeSupplement(execution,protectedSupplement,nativeCorrection.scope,fingerprints.config);
+      const result=host.authorizeNativeCorrection({allowed:true,reason:nativeCorrection.reason,
+        ...((nativeCorrection.providerReviewRecovery===true||nativeCorrection.evidenceContinuation===true||nativeCorrection.evidenceReview===true)?Object.fromEntries(Object.entries(nativeCorrection).filter(([key])=>!['version','reason'].includes(key))):materialContinuation?{[timeoutContinuation?'materialTimeoutContinuation':'materialReadContinuation']:true,source:nativeCorrection.source,oldInvocationStopped:nativeCorrection.oldInvocationStopped}:nativeCorrection.textEvidenceReview===true?{textEvidenceReview:true,nativeEvidence:nativeCorrection.nativeEvidence,textManifestDigest:nativeCorrection.textManifestDigest}:technicalReviewRetry?{[transportReviewRetry?'transportReviewRetry':'technicalReviewRetry']:true}:{nativeEvidence:nativeCorrection.nativeEvidence,
+          ...(protectedSupplement?{scope:nativeCorrection.scope,protectedSupplement}:{})})});
+      if(result.outcome==='rejected')throw Object.assign(new Error(result.code),{code:result.code,...(result.reason?{reason:result.reason}:{})});
+      // A technical retry has no replacement material or scope. Continue binding
+      // the original correction profile and any original protected supplement.
+      nativeRecord=technicalReviewRetry||materialContinuation||nativeCorrection.providerReviewRecovery||nativeCorrection.evidenceContinuation||nativeCorrection.evidenceReview?existingCorrection:result.record;
+    }else if(existingCorrection)nativeRecord=existingCorrection;
+    const materialRecord=store.snapshot().records.find(row=>row.payload.type==='native-material-review-authorized')?.payload;
+    if(materialRecord)nativeRecord={...nativeRecord,nativeEvidence:materialRecord.nativeEvidence};
+    if(nativeRecord)bindConversationNativeEvidence(execution,nativeRecord.nativeEvidence);
+    const scopeRecord=nativeRecord?.protectedSupplement?nativeRecord:store.snapshot().records.find(row=>row.payload.type==='scope-revised')?.payload;
+    if(scopeRecord&&Boolean(conversationProtection(execution))!==Boolean(scopeRecord.protectedSupplement))fail('scope_check_supplement_drift');
+    if(scopeRecord?.protectedSupplement){
+      if(!supportsConversationScopeSupplement(execution)||sha(scopeRecord.protectedSupplement.material)!==sha(configMaterial))fail('scope_check_supplement_drift');
+      bindConversationScopeSupplement(execution,scopeRecord.protectedSupplement,scopeRecord.scope,fingerprints.config);
+    }
     const logAbandonments=()=>{
       for(const record of store.snapshot().records.filter(row=>row.payload.type==='review-invocation-abandoned'))
         recordReviewAbandonment({specsDir,codeProject,feature,identity,record,
@@ -553,6 +740,29 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
     }
     const qaBinding={specsDir,codeProject,feature,identity,
       ...(execution?.qaLogHome?{logHome:execution.qaLogHome}:{})};
+    if(executorOverlay){
+      const current=await host.handle({version:1,operation:'status',requestId:'qa-executor-attachment-status',identity});
+      if(current.state!=='fixture_completed'||current.code!==null||current.cancellationRequested
+        ||current.cancelAfterCommit||current.workflowError)fail('qa_executor_attachment_unavailable');
+      const binding={...qaBinding,identity:current.identity,packageDigest:current.packageDigest};
+      const decision=findCmAiQaDecision({specsDir,feature,identity:current.identity,packageDigest:current.packageDigest});
+      if(decision?.status!=='triggered')fail('qa_executor_attachment_unavailable');
+      if(executorAttachment){
+        if(executorAttachment.packageDigest!==current.packageDigest||executorAttachment.taskAttempt!==current.identity.attempt
+          ||executorAttachment.decisionId!==decision.decisionId||executorAttachment.decisionDigest!==sha(decision))fail('qa_executor_attachment_mismatch');
+      }
+      if(qaExecutorAttachmentReason!==null){
+        if(hasCmAiQaRun(binding))fail('qa_executor_attachment_qa_started');
+        const record=executorAttachment??{version:1,fromFingerprint:store.snapshot().fingerprints.config,toFingerprint:fingerprints.config,
+          executorDigest:sha({executor:configMaterial.qaExecutor,attachment:configMaterial.qaExecutorAttachment}),
+          sourceRevision:store.snapshot().revision,packageDigest:current.packageDigest,
+          taskCommitDigest:store.snapshot().records.findLast(row=>row.payload.type==='task-commit-result')?.digest??null,
+          decisionId:decision.decisionId,decisionDigest:sha(decision),taskAttempt:current.identity.attempt,
+          reason:qaExecutorAttachmentReason,hostContextId:execution.configuration.hostContextId,
+          attachedAt:new Date().toISOString().replace(/\.\d{3}Z$/,'Z')};
+        host.attachQaExecutor(record);
+      }else if(!executorAttachment)fail('qa_executor_attachment_authorization_required');
+    }
     // Repair a crash after the journal append, before the log supersession.
     for(const record of chain.revisions)recordCmAiQaConfigurationRevision({...qaBinding,identity:{...identity,attempt:record.taskAttempt},packageDigest:record.packageDigest},record);
     if(specRebindReason!==null){

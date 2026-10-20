@@ -10,6 +10,9 @@ import {fileURLToPath} from 'node:url';
 import {inspectPrdChangeSnapshot,inspectPrdChangeProposal,applyPrdChange,assertPrdReviewsSettled} from '../runtime/js/cm-prd/change.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
 import {recordPrdReview} from './cm-prd-review-gate.mjs';
+import {createHash} from 'node:crypto';
+import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {importPrdDesignBaseline,publishPrdBaselineForFeature} from '../runtime/js/cm-prd/design-baseline.mjs';
 
 // Keep runtime declarations and log mirrors independent of the invoking user's home.
 const isolatedWorkflowHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-completion-home-'));
@@ -63,6 +66,125 @@ function changeResponse({kind,payload}){
   assert.equal(kind,'prd_self_check');return {draftDigest:payload.draft.draftDigest,features:payload.draft.features.map(f=>({directory:f.directory,
     checks:payload.draft.mechanicalSelfCheck.pending.map(id=>({id,status:'passed',evidence:['Synthetic fixture exact original task and code inspection']}))}))};
 }
+const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
+function baselineArgs(dir,{size=2*1024*1024+17,user='Synthetic pixel confirmation'}={}){
+  const prototypeRoot=path.join(dir,'prototype');fs.mkdirSync(prototypeRoot);
+  const html='<button>Next</button>',image=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aMuoAAAAASUVORK5CYII=','base64');
+  const font=Buffer.alloc(size);font.write('OTTO');
+  for(const [name,bytes] of [['index.html',html],['screen.png',image],['font.otf',font]])fs.writeFileSync(path.join(prototypeRoot,name),bytes);
+  const input={prototypeRoot,captureRoot:null,confirmation:{reference:'synthetic-user-message',messageDigest:digest(user),level:'pixel',nativeDifferences:'list_each_platform_difference'},
+    sources:[{sourcePath:'index.html',sha256:hash(html)}],screenshots:[{id:'main',sourcePath:'screen.png',sha256:hash(image),width:1,height:1,page:'main',skin:'warm',state:'default'}],
+    fonts:[{id:'round',sourcePath:'font.otf',sha256:hash(font),license:'Synthetic fixture only',source:'Synthetic test bytes, no real font redistributed'}],
+    specSheet:{source:'rendered-computed',channel:'codex-in-app',url:'https://prototype.example/',viewport:{width:390,height:844,deviceScaleFactor:1},elements:[{sel:'button',geo:{x:0,y:0,w:20,h:20},font:null,style:{color:'rgb(0, 0, 0)'}}]},
+    interaction:{status:'complete',channel:'codex-in-app',coverage:['main'],steps:[{id:'tap',action:'Synthetic click',result:'Synthetic next state',screenshots:['main']}]},cssSource:null};
+  return {project:dir,specs:dir,sessionId:'prd-baseline-revision',sourceDigest:'a'.repeat(64),configDigest:'b'.repeat(64),writeEnabled:true,input};
+}
+function addBaseline(dir,options={}){
+  const args=baselineArgs(dir,options),baseline=importPrdDesignBaseline(args);
+  publishPrdBaselineForFeature({...args,baseline,feature:'1.guide'});
+  return {args,baseline,font:path.join(dir,'1.guide/design-baseline/font-1.otf')};
+}
+function changeProposal(dir,before){return inspectPrdChangeProposal(before,{status:'draft',summary:'Add example',removed:[],features:[
+  {directory:'1.guide',documents:revised(),testCasesReason:'no_observable_behavior'}]},['1.guide'],loadConfig({projectRoot:dir}));}
+
+test('baseline revision snapshots and saves a registered 67.5MB font without changing history or asset bytes',t=>{
+  const dir=fixture(t),{font}=addBaseline(dir,{size:67520564}),original=fs.readFileSync(font);
+  const before=inspectPrdChangeSnapshot(dir),row=before.trees['1.guide'].find(row=>row.path.endsWith('/font-1.otf'));
+  assert.deepEqual(row,{path:'1.guide/design-baseline/font-1.otf',sha256:hash(original)});
+  assert.equal(Object.keys(before.files).some(file=>file.includes('design-baseline')),false,'binary bytes never enter text draft/session fields');
+  const proposal=changeProposal(dir,before),saved=applyPrdChange({specs:dir,before,proposal,selected:['1.guide']});
+  assert.equal(saved.status,'awaiting_review');assert.equal(saved.completionAuthorized,false);
+  assert.deepEqual(fs.readFileSync(font),original);
+  const archive=JSON.parse(fs.readFileSync(path.join(dir,saved.archive)));assert.deepEqual(archive.before,before);
+  assert.equal(applyPrdChange({specs:dir,before,proposal,selected:['1.guide']}).status,'awaiting_review','same original snapshot resumes idempotently');
+  assert.match(fs.readFileSync(path.join(dir,'1.guide/tasks.md'),'utf8'),/- \[x\] T-001: Existing guide/);
+});
+for(const mode of ['symlink','hardlink','private-drift','published-drift','oversize','unregistered'])test(`baseline revision rejects ${mode} without changing documents`,t=>{
+  const dir=fixture(t),{font,baseline}=addBaseline(dir),before=inspectPrdChangeSnapshot(dir),proposal=changeProposal(dir,before);
+  const prior=docs().map(doc=>[doc.path,fs.readFileSync(path.join(dir,'1.guide',doc.path))]);
+  if(mode==='symlink'){fs.renameSync(font,font+'.original');fs.symlinkSync(font+'.original',font);}
+  if(mode==='hardlink')fs.linkSync(font,path.join(dir,'external-font-copy'));
+  if(mode==='private-drift')fs.appendFileSync(path.join(dir,path.dirname(baseline.path),'font-1.otf'),'changed');
+  if(mode==='published-drift')fs.appendFileSync(font,'changed');
+  if(mode==='oversize')fs.truncateSync(font,128*1024*1024+1);
+  if(mode==='unregistered')fs.writeFileSync(path.join(dir,'1.guide/design-baseline/unregistered.otf'),Buffer.alloc(2*1024*1024));
+  assert.throws(()=>applyPrdChange({specs:dir,before,proposal,selected:['1.guide']}));
+  for(const [name,bytes] of prior)assert.deepEqual(fs.readFileSync(path.join(dir,'1.guide',name)),bytes);
+  assert.equal(fs.existsSync(path.join(dir,'.cm-specs-status')),false);
+});
+test('baseline revision retains the 1MiB limit for specification text and unregistered auxiliary files',t=>{
+  const dir=fixture(t);addBaseline(dir);const file=path.join(dir,'1.guide/requirements.md'),original=fs.readFileSync(file);
+  fs.writeFileSync(file,'x'.repeat(1048577));assert.throws(()=>inspectPrdChangeSnapshot(dir),/init_draft_target_invalid/);
+  fs.writeFileSync(file,original);fs.writeFileSync(path.join(dir,'1.guide/extra.otf'),Buffer.alloc(1048577));
+  assert.throws(()=>inspectPrdChangeSnapshot(dir),/init_draft_target_invalid/);
+});
+test('baseline revision detects asset drift after the immutable revision archive exists',t=>{
+  const dir=fixture(t),{font}=addBaseline(dir),before=inspectPrdChangeSnapshot(dir),proposal=changeProposal(dir,before);
+  const saved=applyPrdChange({specs:dir,before,proposal,selected:['1.guide']}),archive=fs.readFileSync(path.join(dir,saved.archive));
+  fs.appendFileSync(font,'changed after save');
+  assert.throws(()=>applyPrdChange({specs:dir,before,proposal,selected:['1.guide']}));
+  assert.deepEqual(fs.readFileSync(path.join(dir,saved.archive)),archive);
+});
+test('baseline revision rejects a fully registered replacement against the original archived hashes',t=>{
+  const dir=fixture(t),{args}=addBaseline(dir),before=inspectPrdChangeSnapshot(dir),proposal=changeProposal(dir,before);
+  const saved=applyPrdChange({specs:dir,before,proposal,selected:['1.guide']}),archive=fs.readFileSync(path.join(dir,saved.archive));
+  const source=path.join(args.input.prototypeRoot,'font.otf');fs.appendFileSync(source,'new valid font');
+  args.input.fonts[0].sha256=hash(fs.readFileSync(source));const baseline=importPrdDesignBaseline(args);
+  // Only this fixture's projection is replaced; both old and new private copies remain.
+  fs.rmSync(path.join(dir,'1.guide/design-baseline'),{recursive:true});publishPrdBaselineForFeature({...args,baseline,feature:'1.guide'});
+  assert.doesNotThrow(()=>inspectPrdChangeSnapshot(dir),'replacement itself is a valid registered baseline');
+  assert.throws(()=>applyPrdChange({specs:dir,before,proposal,selected:['1.guide']}),/prd_change_asset_changed/);
+  assert.deepEqual(fs.readFileSync(path.join(dir,saved.archive)),archive);
+});
+test('baseline revision leaves pre-baseline snapshot rows byte-compatible',t=>{
+  const dir=fixture(t),snapshot=inspectPrdChangeSnapshot(dir);
+  assert.deepEqual(snapshot.trees['1.guide'],[...docs()].sort((a,b)=>a.path<b.path?-1:1).map(doc=>({path:`1.guide/${doc.path}`,sha256:hash(doc.content)})));
+  const saved=applyPrdChange({specs:dir,before:snapshot,proposal:changeProposal(dir,snapshot),selected:['1.guide']});
+  assert.equal(saved.status,'awaiting_review');
+});
+test('actual host prepare_revision with large baseline resumes the same run and saves only a human-review proposal',{timeout:25000},async t=>{
+  const dir=fixture(t),user='Synthetic pixel confirmation';let reviewCalls=0;
+  const respond=({kind,payload})=>{
+    if(kind==='prd_analyze')return {status:'analyzed',summary:'Guide',sourcePaths:['docs/input.md'],openQuestions:[]};
+    if(kind==='prd_generate')return {status:'draft',summary:'Guide',features:[{name:'new-guide',documents:docs().map(doc=>({...doc,content:doc.content.replace('[x]','[ ]')})),testCasesReason:'no_observable_behavior'}]};
+    if(kind==='prd_self_check')return {draftDigest:payload.draft.draftDigest,features:payload.draft.features.map(f=>({directory:f.directory,
+      checks:payload.draft.mechanicalSelfCheck.pending.map(id=>({id,status:'passed',evidence:['Synthetic fixture context check']}))}))};
+    assert.equal(kind,'prd_review');reviewCalls++;return {reviewer:'codex-subagent',contextId:'synthetic-independent',independent:true,at:'2026-10-16T00:00:00.000Z',
+      result:{verdict:'approved',packageDigest:payload.package.packageDigest,examinedPaths:payload.examinedPaths,findings:[],summary:'Synthetic wiring result, not real Claude'}};
+  };
+  let c=await client(t,dir,respond,{change:false,review:true});
+  assert.equal((await c.request('start',{text:user})).result.stage,'analysis_ready');
+  const args=baselineArgs(dir,{user});assert.ok((await c.request('import_baseline',{baseline:args.input})).result);
+  assert.ok((await c.request('advance',{text:'Draft'})).result);await c.request('advance',{text:'Check'});await c.request('save_draft');
+  assert.equal((await c.request('final_review',{stage:'split',feature:'2.new-guide',mode:'independent'})).result.reviewState.status,'review_recorded');
+  const findings=(await c.request('review_findings',{stage:'split',feature:'2.new-guide'})).result;
+  assert.equal((await c.request('review_disposition',{stage:'split',feature:'2.new-guide',packageDigest:findings.packageDigest,decisions:[],artifacts:findings.reviewedArtifacts})).result.status,'disposition_recorded');
+  const runId=(await c.request('status')).result.runId,statePath=path.join(dir,'.reviews/prd-sessions',runId,'state.json');
+  const original=JSON.parse(fs.readFileSync(statePath)),font=path.join(dir,'2.new-guide/design-baseline/font-1.otf'),fontSha=hash(fs.readFileSync(font));
+  const review=path.join(dir,'.reviews/prd-new-guide-split-r1.md'),reviewBytes=fs.readFileSync(review);
+  const prepared=await c.request('prepare_revision',{reason:'User requested iPhone-only acceptance and bounded rendering differences'});
+  assert.equal(prepared.result?.stage,'ready',JSON.stringify(prepared));assert.equal(prepared.result.mode,'change');
+  const persisted=JSON.parse(fs.readFileSync(statePath));assert.deepEqual(persisted.identity,original.identity);
+  assert.deepEqual(persisted.checkpoint.analysis,original.checkpoint.analysis);assert.deepEqual(persisted.checkpoint.reviewState,original.checkpoint.reviewState);
+  await c.close();
+  c=await client(t,dir,message=>{
+    if(message.kind==='prd_analyze')return {status:'analyzed',summary:'Revise acceptance',openQuestions:[]};
+    if(message.kind==='prd_self_check')return changeResponse(message);
+    assert.equal(message.kind,'prd_generate');const full=message.payload.phase==='change_tasks';
+    return {status:full?'draft':'documents',summary:'Revise acceptance',features:[{directory:'2.new-guide',
+      documents:revised().filter(doc=>full||doc.path==='requirements.md'||message.payload.phase==='change_design'&&doc.path==='design.md')
+        .map(doc=>({...doc,content:doc.content.replace('[x]','[ ]')})),...(full?{testCasesReason:'no_observable_behavior'}:{})}],removed:[]};
+  },{session:runId,change:false,review:true});
+  assert.equal((await c.request('status')).result.stage,'ready');
+  let result;for(const text of ['Analyze revision','Requirements','Design','Tasks','Self-check'])result=await c.request('advance',{text});
+  assert.equal(result.result?.stage,'change_confirmation',JSON.stringify(result));
+  const proposalDigest=result.result.proposal.proposalDigest;
+  assert.ok((await c.request('decision',{proposalDigest,approved:true,allowUserCaseChanges:false})).result);
+  const saved=(await c.request('save_draft')).result;assert.equal(saved.status,'awaiting_review');assert.equal(saved.completionAuthorized,false);
+  assert.deepEqual(fs.readFileSync(review),reviewBytes);assert.equal(hash(fs.readFileSync(font)),fontSha);assert.equal(reviewCalls,1);
+  assert.equal(fs.existsSync(path.join(dir,'.reviews/prd-new-guide-split-r2.md')),false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(statePath)).checkpoint.analysis,original.checkpoint.analysis);await c.close();
+});
 test('actual change CLI resumes unsaved phase across processes and stops at human review', {timeout:25000},async t=>{
   const dir=fixture(t);let calls=0;const respond=message=>{calls++;return changeResponse(message);};
   let c=await client(t,dir,respond);let result=await c.request('start',{text:'Add example'});assert.equal(result.result.stage,'change_requirements');

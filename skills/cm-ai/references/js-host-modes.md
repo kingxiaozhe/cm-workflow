@@ -84,8 +84,14 @@ QA 实跑需 qa:run 与原 workflow；QA 修复单任务另选 qaFix:manual/auto
 
 develop若有`editMode:"protected-text-v1"`，只读并返回`{status:"succeeded",value:{原开发/Learning结果},edits:[{path,beforeSha256,content[,mode]}]}`；
 使用scope内expected摘要，正文完整UTF-8，null删除；可选`mode`为"0755"或"0644"，只用于写入的文件。新文件为0644。不得先自行写文件或执行命令。失败返回原status/code，blocked不能带改动。
-驾驶员在受保护模式只接受严格UTF-8内容（保留BOM与CRLF），二进制文件启动前拒绝，不会被替换字符悄悄改坏。cm-fix的受保护提案仍只接受`{path,beforeSha256,content}`。
-固定沙箱负责应用提案和原检查，不再请求宿主check；文档同步包含在同次develop提案。通道默认64KiB，可用`--input-limit`调到4MiB；二进制/超限明确阻断。
+新建单代码根 current-conversation 的受保护文本任务，可显式用 `--review-runtime codex` 选择本运行的 fresh Codex 审查，即使项目 reviewer 默认为 Claude；已声明 coder 仍须匹配当前 Codex。选择冻结在原 run，后续 resume 必须保留精确参数与原 review 配置，不能改写旧运行的 reviewer；不改项目或个人默认，不扩大 provider/bootstrap/batch/多 root 入口。原合成配置预检、独立上下文、真实回执、完成复查和 QA/N7 门禁仍适用。
+
+默认受保护模式只接受严格UTF-8内容（保留BOM与CRLF），未声明的二进制文件启动前拒绝。新单任务可按[受保护二进制资产](js-host-binary-assets.md)显式声明资产路径和源根；原保护、Review及恢复门禁不变。cm-fix的受保护提案仍只接受`{path,beforeSha256,content}`。
+
+受保护检查为每条命令创建独占的0700临时目录，并仅向该子进程设置 `TMPDIR`；通过 Codex 原生 `--allow-unix-socket` 只允许该目录下的 AF_UNIX bind/connect，供 tsx 等本地测试 IPC 使用。specs、项目指令保护和网络禁用保持不变，目录外 AF_UNIX 与 TCP/UDP 仍拒绝；进程树清理确认后删除本次临时目录，清理不确定则阻断并保留。普通非受保护检查不变。
+本机 `codex sandbox --help` 必须支持该参数；不支持时检查返回 `unavailable / unix_socket_permission_unavailable`，不派发项目命令、不退回无保护执行。临时目录父路径须在代码根/specs之外，不满足时返回 `temporary_directory_unavailable`。此执行环境修复不改冻结命令、模型、控制策略或 journal；旧 `develop_checks_not_passed` 沿原配置 resume 后 advance，依原合同重发同轮开发并重新检查，不重建运行或改历史。
+
+固定沙箱负责应用提案和原检查，不再请求宿主check；文档同步包含在同次develop提案。通道默认64KiB，可用`--input-limit`调到4MiB；未声明的二进制或超限内容明确阻断，已声明资产通过有界引用交付，独立资产预算不增加文本/控制记录预算。
 本机Codex sandbox不调用模型，也不改变Claude身份。其余QA/文档核验/子fix权限不变，不与下述protected-config混用。
 
 legacy 按轮参数：用户已授权本任务该轮真实 Codex 开发调用及发送范围时，可选普通单任务入口的

@@ -23,6 +23,8 @@ $cm-ai specs在~/projects/my-app-specs，代码在~/code/my-app
 $cm-ai ~/projects/specs 前端~/code/fe 后端~/code/api
 ```
 
+只读任务可行性核对使用 `cm-ai-drive.mjs --plan PLAN.json preflight`。a2 已审任务的精确追加材料 `--task-review-origin` 仅按 [原运行恢复合同](references/js-host-recovery.md) 登记；不替换 run、旧审查、预算或真实独立审查。
+
 ## 流程图
 
 ### 执行路由（新任务默认 JS）
@@ -141,3 +143,12 @@ node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
 **任务状态镜像：** `tasks.md` 是唯一权威任务源。运行时支持任务面板时，可将未完成任务镜像到 Codex/OMX 计划或 Claude 任务清单；N3/N5 同步状态。断点恢复必须由磁盘重建镜像：`[x]` 跳过或标为 completed，`[DROPPED]` 不镜像，不得重复创建条目。
 
 **执行策略：** 遵守 `runtime/orchestration.md`；串行默认，只有无依赖、文件边界不重叠、契约已稳定且环境确实支持时才可并行。
+
+
+### 原第二轮无结论审查改用 Codex
+
+原 owner 可通过已授权的 `resume status --reviewer-switch-config FILE --reviewer-switch-reason TEXT --expected-control FILE` 登记当前第二轮明确 Claude quota 失败的唯一提供方变更；保留原配置、包、历史与预算，不重派开发。之后保留精确 switch config，去掉 reason/expected-control，普通 advance 由新 fresh Codex 审查当前包。必须按 `references/js-host-recovery.md`「原运行第二轮审查端变更」核对实际适用条件及正式隔离预检；不将 --failover 当在途切换，不静默附加 binary/provider/batch 能力。
+
+原生材料缺失并收到首轮正式 blocked 时，不能自动返工。用户明确授权当前任务补证及范围内修复后，可按 `docs/cm-control-policy-v2.md` 的 `--recover-blocked-review` 在原 run 登记一次接续；固定旧目标、保留原回执/历史/预算，仅使用剩余 r2。材料完整性通过不代表视觉验收，不替代 fresh Codex 审查、完成复查或 QA。
+
+两次原生审查均 blocked 且六次正常预算耗尽后，不自动返工。仅用户另行明确授权一次开发加一次 Codex 独审时，按 `docs/cm-control-policy-v2.md` 的 `--native-correction FILE --expected-control FILE` 在原 run 登记一次独立补正 epoch；原 attempt、两个旧 verdict、配置、历史和已用计数保留。先备齐候选/原生证据，补正失败不再循环；真实独审、N5、完成复查、原 QA/N7 不能省略。

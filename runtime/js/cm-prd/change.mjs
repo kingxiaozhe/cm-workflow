@@ -10,6 +10,7 @@ import {buildManifest} from '../../../scripts/cm-spec-manifest.mjs';
 import {specLines,taskDeclarations,TASK_GRAMMAR,LEGACY_TASK_GRAMMAR} from '../spec-task-line.mjs';
 import {inspectPrdReview} from '../../../scripts/cm-prd-review-gate.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
+import {inspectPrdBaselineChangeTree} from './design-baseline.mjs';
 import {writeImmutableWorkflowFile} from '../cm-ai/review-evidence-file.mjs';
 import {need,json,shape,digest} from '../cm-ai/effect-contract.mjs';
 import {inspectPrdDraft} from './draft.mjs';
@@ -28,7 +29,10 @@ export function inspectPrdChangeSnapshot(specs){
     const visit=relative=>{for(const name of fs.readdirSync(path.join(specs,relative)).sort()){
       const file=`${relative}/${name}`,stat=fs.lstatSync(path.join(specs,file));
       need(!stat.isSymbolicLink(),'prd_change_symlink');
-      if(stat.isDirectory())visit(file);
+      if(stat.isDirectory()){
+        const baseline=file===`${directory}/design-baseline`?inspectPrdBaselineChangeTree({specs,feature:directory}):null;
+        if(baseline===null)visit(file);else tree.push(...baseline);
+      }
       else{const bytes=readCmInitSource(specs,file);need(bytes!==null,'prd_change_file_missing');tree.push({path:file,sha256:sha(bytes)});}
     }};visit(directory);trees[directory]=tree;
     for(const name of names){const file=`${directory}/${name}`,content=read(specs,file);
@@ -265,8 +269,10 @@ export function applyPrdChange({specs,before,proposal,selected}){
     }
     for(const dir of actualDirs){
       for(const filename of names)need(!fs.existsSync(path.join(specs,dir,filename))||Object.hasOwn(before.files,`${dir}/${filename}`)||Object.hasOwn(expected,`${dir}/${filename}`),'prd_change_inventory_conflict');
+      const baseline=(before.trees[dir]??[]).some(row=>row.path.startsWith(`${dir}/design-baseline/`))?
+        new Map((inspectPrdBaselineChangeTree({specs,feature:dir})??[]).map(row=>[row.path,row.sha256])):new Map();
       for(const row of before.trees[dir]??[])if(!names.includes(row.path.slice(dir.length+1)))
-        need(sha(readCmInitSource(specs,row.path))===row.sha256,'prd_change_asset_changed');
+        need((baseline.has(row.path)?baseline.get(row.path):sha(readCmInitSource(specs,row.path)))===row.sha256,'prd_change_asset_changed');
     }
     const status=read(specs,'.cm-specs-status');
     if(status!==before.status){const value=JSON.parse(status);need(value.status==='awaiting_review'&&value.revisionDigest===proposal.proposalDigest,'prd_change_status_conflict');}

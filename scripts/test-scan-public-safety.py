@@ -48,6 +48,14 @@ class PublicSafetyTests(unittest.TestCase):
                 result = self.scan({APPROVED: '"http://' + authority + '/capture"'})
                 self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_material_cli_fixture_exempts_only_reviewed_loopback_authority(self):
+        name = "scripts/cm-review-material-cli.test.mjs"
+        self.assertEqual(self.scan({name: '"' + LOOPBACK + ':1234/capture"'}).returncode, 0)
+        for endpoint in [PRIVATE, LOOPBACK + '.attacker.invalid', LOOPBACK + '@private.invalid']:
+            result = self.scan({name: '"' + LOOPBACK + ':1234/capture"\n"' + endpoint + '"'})
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("private endpoint", result.stderr)
+
     def test_loopback_in_unreviewed_path_is_still_reported(self):
         result = self.scan({"docs/unreviewed.md": LOOPBACK + "/capture"})
         self.assertEqual(result.returncode, 1)

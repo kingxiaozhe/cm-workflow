@@ -1,0 +1,243 @@
+类别	路径	origin-main-blob	installed-blob
+installed_only	docs/cm-valid-blocked-evidence-continuation.md		b7d60e5c6decca9a2d4e483c0e2b0aeba5d747e0
+installed_only	docs/provider-review-diagnostics.md		3376b8766b394660d2329b64165769b557e47e01
+installed_only	runtime/js/cm-ai/binary-assets.mjs		ad67aad98fc344d8a9f506c4ef54380606dbb808
+installed_only	runtime/js/cm-ai/checkpoint-package-material.mjs		091ed168c3e6ac850b164845250b1e159ef042aa
+installed_only	runtime/js/cm-ai/codex-reconnect-notice.mjs		54d5cf72c082c445b815cc8fdd8cfaf83bdd9cc9
+installed_only	runtime/js/cm-ai/codex-review-input.mjs		96070748776a801df3339f2fd4789d19377c154c
+installed_only	runtime/js/cm-ai/continuation-preflight.mjs		3429c883b6db4d5da89ff564ec701e145709c63c
+installed_only	runtime/js/cm-ai/host-binary-review.mjs		7f61b545310608c165008bbd6c34e219dcb4cc9f
+installed_only	runtime/js/cm-ai/host-material-review.mjs		facf2e35f32cefba5136df3158c87ac5010a10b0
+installed_only	runtime/js/cm-ai/material-review-continuation.mjs		0c54ac5be0d5091c1672e78faaa00a4cb7a5f572
+installed_only	runtime/js/cm-ai/native-correction-publication.mjs		ae84cef94af4623a2121fb25c055909110d4f221
+installed_only	runtime/js/cm-ai/native-json-carrier.mjs		8182ea54686e37476a8e643f4d6480084c7b640b
+installed_only	runtime/js/cm-ai/native-material-review.mjs		36cc14de20e9402c2607ab74035ac28a3de23ddd
+installed_only	runtime/js/cm-ai/native-review-evidence.mjs		4d7d8cefe93c9412b0c2c8a58e21fc3ee10d9f29
+installed_only	runtime/js/cm-ai/native-text-evidence.mjs		50b7be7feff89b7e8e3f34758f267f64c302c456
+installed_only	runtime/js/cm-ai/protected-binary-edits.mjs		8bd6628f2642b236f2abae7abaf9dd3fa6b148d5
+installed_only	runtime/js/cm-ai/protected-scope-supplement.mjs		f29ae3e89fcc7ef87bdb7ea353bd34d4a3c7e740
+installed_only	runtime/js/cm-ai/provider-failure-diagnostic.mjs		fba71a3b640ee1a9177b6366db4ec9cc5591969a
+installed_only	runtime/js/cm-ai/provider-review-recovery.mjs		de9aa1f369c5a9d2aa5290cc57e2dc1ceddf4323
+installed_only	runtime/js/cm-ai/qa-executor-attachment.mjs		7f078948122f0433340ea2ed6d53359322fe88e2
+installed_only	runtime/js/cm-ai/recovery-capabilities.mjs		724d214cf5fbc5829c07163e54fd3c01873fccd2
+installed_only	runtime/js/cm-ai/recovery-capacity.mjs		2370d4fe9eebdba25cc8ac4f676ffb893340fe09
+installed_only	runtime/js/cm-ai/review-material-server.mjs		dd2f522d34d3d9e3e87e9b224d6be1f50413199d
+installed_only	runtime/js/cm-ai/review-material.mjs		396b36991a1e50156f69498fc2eb0dee593d8cc7
+installed_only	runtime/js/cm-ai/reviewer-switch.mjs		9996d0a4a65ee89e3d18fc7b5b76b19906b75b0c
+installed_only	runtime/js/cm-ai/rule-acceptance.mjs		1daf0808d2b7a9b57c261e27176cdb1e627047ff
+installed_only	runtime/js/cm-ai/scope-revision.mjs		411f83c7e656f9100bb6615b53320da69f2025b9
+installed_only	runtime/js/cm-ai/task-review-origin.mjs		3db4e8ae2d08859bd50fe2e204a52577a7b11ef4
+installed_only	runtime/js/cm-ai/valid-review-evidence-continuation.mjs		77c482ff9808e690842462ea441fe298a8fc5a48
+installed_only	runtime/js/cm-fix/review-verification-binary.mjs		3014c777a02762be986b7e9b69453f59e2545673
+installed_only	runtime/js/cm-fix/review-verification-path.mjs		c9d9380bcf85016b661b1a462914874e4ba37302
+installed_only	runtime/js/cm-prd/design-baseline.mjs		ea3b3d605ffd16929627e41e74f609e0c845145c
+installed_only	runtime/js/cm-prd/planning-recovery.mjs		d7be7e0fed4f5dd491eed668bc4fbc21103f2887
+installed_only	runtime/js/cm-prd/review-route.mjs		45afe978dcbbf5a1e3b8bf5a9423f2e7561a15a1
+installed_only	scripts/cm-ai-binary-assets.test.mjs		6ab410e2e4dd4148960bb6a33833012da733abf6
+installed_only	scripts/cm-ai-binary-review-contract.test.mjs		ad992784bd1d3473fc060ebbd188461df1a75e4d
+installed_only	scripts/cm-ai-bounded-native-correction.test.mjs		dae6d474b22addd585e5363c404666f8e35a4233
+installed_only	scripts/cm-ai-check-recheck-cancellation.test.mjs		b8b309265586dacc569873d1196522cdfd14ca19
+installed_only	scripts/cm-ai-checkpoint-package-material.test.mjs		7532bf6ef8b69da0d52d963d4126a8b076c7a4d8
+installed_only	scripts/cm-ai-checkpoint-package-owner.test.mjs		e4b61d9d42115d2d94426c0793b4d0454c41b48e
+installed_only	scripts/cm-ai-control-v2-supersede-race.mjs		91378572d6969155fdf238d80f1b98ad9f4d4350
+installed_only	scripts/cm-ai-control-v2-supersede.test.mjs		8dca7bcbaaaa7fe8d36d9f2e3686143ab658b1f2
+installed_only	scripts/cm-ai-development-rework.test.mjs		8b6f90c1fc51ce60089d13668be67b24e4928391
+installed_only	scripts/cm-ai-drive-selection.test.mjs		b064feae10aebfcd4cbff4730d3c51e363e5681e
+installed_only	scripts/cm-ai-evidence-package-reference.test.mjs		7c68c378a43dedae895ffdc8bd3a6acaa171b643
+installed_only	scripts/cm-ai-host-binary-review.test.mjs		ef98afd77435f19b6013dd07ac4c2b40c90b556d
+installed_only	scripts/cm-ai-material-chain.test.mjs		25286e8c5ef37ada7a32318e22a09ab77d826306
+installed_only	scripts/cm-ai-material-review-host.test.mjs		beb706afd51add8db0abec84e6af6891f267a5e3
+installed_only	scripts/cm-ai-material-timeout-continuation.test.mjs		8e6089da1342b894059766ee9b0770e96232be3d
+installed_only	scripts/cm-ai-native-material-review.test.mjs		999ca3bf55fe04c58bfcd02c825756c647ded3e4
+installed_only	scripts/cm-ai-native-review-continuation.test.mjs		120a73d0befd9630fc86d6f8c944bc9eab1674af
+installed_only	scripts/cm-ai-native-review-evidence.test.mjs		cee140edbbae127c2c8918c0d42079dad9f7a561
+installed_only	scripts/cm-ai-native-text-evidence.test.mjs		f7d9aff0216d60d6e80d181a8089b9f6d08c14cc
+installed_only	scripts/cm-ai-prevention-native.test.mjs		5e1bdc329a24b2faf2afb445ad9ba6c4ebc498c9
+installed_only	scripts/cm-ai-protected-binary.test.mjs		df8bfe150bb23fb19cf47006f7009279916d8b03
+installed_only	scripts/cm-ai-protected-scope-supplement-contract.test.mjs		74ca35cd6460f412038f8593e1435abbfaac14d0
+installed_only	scripts/cm-ai-protected-scope-supplement.test.mjs		b759795947cd5e174322719f5bca2fb4e7e9e995
+installed_only	scripts/cm-ai-protected-scope-wiring.test.mjs		1601ed13825717c15c1ab918011a9d5c0ac59e00
+installed_only	scripts/cm-ai-provider-review-recovery-contract.test.mjs		fee923e3c9ad661b032817f3a623a0574fa7e4fc
+installed_only	scripts/cm-ai-provider-review-recovery.test.mjs		67114db8b3c291bde3bff48c42b54e929f3a8908
+installed_only	scripts/cm-ai-qa-default.test.mjs		86216bdfc3bf029cf204b10b36c3fea6d4d9bbd9
+installed_only	scripts/cm-ai-qa-executor-attachment.test.mjs		6b421a6c8e5c920a75efb4ec3b9767b02e430c13
+installed_only	scripts/cm-ai-qa-executor-preflight.test.mjs		f91a8fd4c6066e05d7e6fd3381d136152c381c7c
+installed_only	scripts/cm-ai-recovery-capacity.test.mjs		34cf245f889bcdf16b6f8acb81df8f899322210e
+installed_only	scripts/cm-ai-recovery-preflight.test.mjs		aea762a377e20e59063b35ce1050d1acd0b079b1
+installed_only	scripts/cm-ai-review-input-admission.test.mjs		090704058537f67fb7afa943f1c8647289c93981
+installed_only	scripts/cm-ai-reviewer-switch-native.test.mjs		4366d28c3c8f2232fa79fa9a8d4bf2103e9f2880
+installed_only	scripts/cm-ai-reviewer-switch.test.mjs		9e6dd84ba7191271abf7f2f1818a1149d96589e3
+installed_only	scripts/cm-ai-scope-revision.test.mjs		73990466d936800ccc042f0153d838721086354e
+installed_only	scripts/cm-ai-task-continuation.test.mjs		f8688faf6e1ffdb3ab5d7e544d1b4c64d6ac7256
+installed_only	scripts/cm-ai-task-review-origin.test.mjs		28ebb2e3a66af1f80a1d17ac90a2b808bbdd957f
+installed_only	scripts/cm-ai-transport-review-retry.test.mjs		f8fdd20f89e6ffd296c08320df3e83e127dce22e
+installed_only	scripts/cm-ai-valid-evidence-continuation.test.mjs		5a198b9bacd2dd2ccc4d7a15b007bc12c942b181
+installed_only	scripts/cm-claude-model-alias.test.mjs		56b811808e68e25994cf7c39e1bd30973095fcd5
+installed_only	scripts/cm-codex-review-failure-diagnostic.test.mjs		cae7a30bf78ae6014a41519c3da78251f80f0b71
+installed_only	scripts/cm-fix-observation-task-id.test.mjs		a8932075be5610b59e307ae58a433768eb19434f
+installed_only	scripts/cm-fix-review-verification-binary.test.mjs		a70b78b07d0ba596afd6bc1b854871c9a75dc343
+installed_only	scripts/cm-host-check-ipc.test.mjs		1bd113d8acc2190822da2339381b170a1790e60d
+installed_only	scripts/cm-native-text-preflight.mjs		bbb09c465dcc7a0e1cb997d310c4446ca1684c92
+installed_only	scripts/cm-prd-baseline-flow.test.mjs		bc95051405f1c751ac75d759583c4d25775d5b31
+installed_only	scripts/cm-prd-design-baseline.test.mjs		e9c9eb4fe62b988464c8116570a5748ca66f3bbe
+installed_only	scripts/cm-prd-planning-recovery.test.mjs		9cd0d0ac4168d09c455c6a89b90fc72838a9a627
+installed_only	scripts/cm-prd-prototype-host.test.mjs		1d331418c7b65ea5699ceb10946e9ffc93a6764e
+installed_only	scripts/cm-prd-review-route.test.mjs		873adccfe63c898fda09e39bfa9a6fe18a7104bf
+installed_only	scripts/cm-review-material-batch.test.mjs		a37c843a5ee662f02be0a2ec5f97abe2cc1c2706
+installed_only	scripts/cm-review-material-cli.test.mjs		659fcd166d37786578a93eca27725c38a8bed340
+installed_only	scripts/cm-review-material-deadline.test.mjs		761d9dcfb7df9abc0b6acb9400aa22119b69a4e2
+installed_only	scripts/cm-review-material-worker.test.mjs		77292e6623b2963e59328a11449a333049519f12
+installed_only	scripts/cm-review-material.test.mjs		090379de0e8f9f7fba38ce9e0e88f73e60847710
+installed_only	scripts/cm-review-presentation-fragments.test.mjs		271ac5f234440c1f88e3dc7046ddee373ee7cb5a
+installed_only	scripts/cm-review-text-codec.test.mjs		1ec0a569fab404ff28a317ec836bbe0855ea8818
+installed_only	scripts/cm-start-check.mjs		eae646db5037821137260e2131f12d0da5ae5a24
+installed_only	scripts/cm-start-check.test.mjs		966a1bf6bfee4ee52203a604ccf9c862b5bf3bb0
+installed_only	scripts/cm-ui-lens-extract.test.mjs		ff700f0230936734753bd55f64378e7f0e66fe49
+installed_only	scripts/fixtures/binary-review-claude.mjs		34c8af952cc521473d8374746fefd4c7385b4a9f
+installed_only	scripts/fixtures/binary-review-codex.mjs		1872153e4a1f116bb090dd726aa9c915edb019d7
+installed_only	scripts/fixtures/material-review-codex-helper.mjs		dbd32a975368b92baa15df5b07ddf4a3140dc2fa
+installed_only	scripts/fixtures/provider-review-recovery-fixture.mjs		355fbbd566dd2e5eabec0cbd0d6eb651161180f2
+installed_only	scripts/fixtures/valid-evidence-continuation-fixture.mjs		412f60d4fa9ef2aedcaa310f409100b2f5bdc0d3
+installed_only	skills/cm-ai/references/js-host-binary-assets.md		5a6f7c42f82ba62e1022ce45d45c472dc5600413
+installed_only	skills/cm-prd/references/prototype-baseline.md		4082a96258c6058eea649f644c9a8d4c85ee49fa
+different	.codex-plugin/plugin.json	943d9137264c7c818bade2f22d3b0b2a410bf89f	62e97d01c968ce9ebf0d38850a5021af368379d4
+different	AGENTS.md	7c979910f33ab16ed1a3d55ae391ac556a07106b	dd0e068924ff8a0aa0b83b57530cae68cacd6b00
+different	CHANGELOG.md	40f354dbb22af61dfe3a2044f439e6f0ef8b43d9	683e6713430575598816e397e57c1b63bbb1b258
+different	docs/architecture.md	4fcad625d246109920100c9321c9b45d8862f5c1	bbb3ba9eaf542e85b9ab9f9f17f7474f33d54261
+different	docs/cm-control-policy-v2.md	eb073b68eb6588c6bcaa93f230b0b0b55f5042eb	8d668d0ca4e79996ca08d57f0f0c810379a046e4
+different	docs/js-workflow-control.md	c762aefa04da5d626ad8984f065a98e77220c9f5	dc90d1ba2d4c061b8fc19a0d4c745029a79c737c
+different	runtime/js/cm-ai/claude-tool-preview.mjs	dad1543737188eed991adb559df2ad6828c4771f	e4da90d2a1ad2799df9af7e036bf0b6c14492a56
+different	runtime/js/cm-ai/cm-ai-conversation-entry.mjs	0628996326090c6212ee7aa9f6a52ddbd427a649	be8fdbfb1b67277811c10726249c352ff9263ace
+different	runtime/js/cm-ai/codex-config.mjs	dcac835d1b435e688d4303953cdb0b49156c48fd	95618256b1b527b7230611e11baae567d668ffeb
+different	runtime/js/cm-ai/codex-review-adapter.mjs	be61f6ebbe424af82dd30964053a516d210bce28	3b1dbff620ba6238608e418ffe73341f0ac40249
+different	runtime/js/cm-ai/control-policy.mjs	49a6ac314dca25c2e5ed80c6e46a3f0675e63655	c417763d98755db0b95ba9f11c776b9265488ac3
+different	runtime/js/cm-ai/durable-runner-state.mjs	5423311d406b3fc2a17af4fedb8a940d1ad5061d	21da887453318c68344b51cc7b587f6114c55494
+different	runtime/js/cm-ai/effect-contract.mjs	7b42f74e074856e460f28ed3d4dc38b6e903ec6e	74a7f52c10e335bf597cd3cba6cc5c7034d124df
+different	runtime/js/cm-ai/fix-code-association.mjs	cff5d4fb99e277c3c6dec90b07df94d56525cc29	bfa3f4de7c4a2bf0ddb9e31890c926cb6bf00ee5
+different	runtime/js/cm-ai/host-check.mjs	9e1f9f5a84f796207d55d2dcaf5e9665ccb4de9f	e4d269345421536006b523356f51d3361aaef4ec
+different	runtime/js/cm-ai/host-conversation-execution.mjs	553a17aa36a5a5e7abdfc080208139b127318046	e050f93cf4f9f2f188348f0fca72664009fb976e
+different	runtime/js/cm-ai/host-handoff.mjs	fd8cbe2d6dc2a38cd31a740f28081f19012e81d7	28bd389e54919283cbcf671382098bd51a52bad2
+different	runtime/js/cm-ai/host-project-execution.mjs	2128394ead2bf64f5d2710caaad76f615f9bdc40	e737acc872fafcd33b606003eaf97b9ed31b8616
+different	runtime/js/cm-ai/host-qa-executor.mjs	91a5c68279938dc9c6e0ac9b95129f42dfc662ed	38b5484ddafae7175c4670cbe07a65f1b81d4754
+different	runtime/js/cm-ai/host-review-file.mjs	91482321747b896d91e332d8ef254081e9fb0a5a	d8d42350df78a9dfb1a882f6ef30e55fa611194d
+different	runtime/js/cm-ai/host-session.mjs	cfb4f40830062f90e2d2535622417dec49ce2464	f014a0f46f0f8ae0b3d5a1e1fd1685862d653d9b
+different	runtime/js/cm-ai/host-workflow-capabilities.mjs	ec3003056257f2161509a7fbbf3606698b7beb33	1281dea8c20d3a16d72031b1748c4a669af0c464
+different	runtime/js/cm-ai/host.mjs	c696202732bb72bd069ab19d5df8f1b2bd874c83	5456ecbfc2517f7055a79743b8c36f813f7cca94
+different	runtime/js/cm-ai/operator-guidance.mjs	92c39cc755d57e4071c44fddb38e44754c408ef8	8fca4979a7500be7eade08f5eb53a876d49fb737
+different	runtime/js/cm-ai/provider-review-observation.mjs	7d3228427208ec05048b6a54cccf15be97ed7e3a	aff35c37f9e15238c13c09c8749d4afda321830d
+different	runtime/js/cm-ai/qa-config-revision.mjs	4e578641d8d2e5c768bbde36762e819e864e7548	44a4cf58bd94da2a2878e311df4a05bedb4cf8ae
+different	runtime/js/cm-ai/review-package.mjs	9ae9b18203d4a4fb93f424b6982f639b57025b95	d0231e7d529468ae5fb27677b854963d40f48e85
+different	runtime/js/cm-ai/review-presentation.mjs	2ef3d9f19a3323ade27c6ff6190bf62a190ef12f	0362d914c241eb12f66c60a0934185aadaee8a38
+different	runtime/js/cm-ai/reviewed-evidence-supersede.mjs	bfc66f49c15962f15a846b4ffb99dcee0bec0fb4	1afe4fc0c25a869ce3c4be5b16120f1fefc6ebb7
+different	runtime/js/cm-ai/task-commit-codec.mjs	8165326dd3a9c1543b61fae2d4390e803d8e0163	fc5fad371cbd054359dcafbb6f9996d6c4b973f2
+different	runtime/js/cm-ai/task-commit.mjs	374b6f9434ec5c9262ac4cfa8209580045f6ed75	eb7ce628eaf3d5de52dcb1d357285dbaf0a4ccb4
+different	runtime/js/cm-ai/task-runner.mjs	3bc0cb15055b1dc095c3554913863b184f7778fa	a54ec1f6672e22bca85bd5ee24f6829045fd908d
+different	runtime/js/cm-ai/tool-preview.mjs	0a40fd808949c7f3c3a186b6279c8a44c1582a3c	ab205405d982cda73a090e77d1a066dcdbda9eb7
+different	runtime/js/cm-ai/worker-claude.mjs	bd5600c2449a4a805c63cfea6a5cf5df6a005c9d	4b9d7900a5c2fa978b9e6cdb0a509389b2f3b70e
+different	runtime/js/cm-ai/worker-codex-developer.mjs	f078afb5e8dc9066c19a7f33f4db1588d32a5845	af05764db6c2af1e9bfc9fefcadc50bb28e81e60
+different	runtime/js/cm-ai/worker-codex.mjs	06851adad5c86652cbeb6fda3044d6649d97e52e	dcdfd0a86d2776e3e7895877a3714ecc1d924590
+different	runtime/js/cm-fix/dossier.mjs	1a7da1b4257baf919470ab52799630d15a160c06	fe96cfe31d606c5d2637d3899ef47e06f72ba07e
+different	runtime/js/cm-fix/protected-edits.mjs	da91e83bac174f31e777e413ef3d7ac5716e0426	3895802bbe19dfbf38f2910787d66404ace0092d
+different	runtime/js/cm-fix/review-verification-contract.mjs	af3eadc53b17e730459123129112ffa6be6ef16c	8234a0df866617bd3d317f9fcb7ebac385754593
+different	runtime/js/cm-fix/review-verification-server.mjs	0da5ecb4e78a97d4263f1be64b129d4ca1b4a30e	071d1d9c187bcaae3fc44eea1890844fa4cc60ec
+different	runtime/js/cm-fix/review-verification.mjs	939ffcc4b3ec7f3047777680e03e07bb03907f8d	b3137b01d7e3db71066a9f2b8ab684b3aa975c34
+different	runtime/js/cm-prd/analysis.mjs	ae0b82c41512dba07dafdbc1f3a29c7133f2af46	dcb2a1963790c8687889088404c2de7e7ca8f250
+different	runtime/js/cm-prd/change.mjs	b4a4fddaa8a7e2bce22f9f034fc8cf7041904980	fab83cde5cdffe5c29178ce0d63ae482e5c4ef4e
+different	runtime/js/cm-prd/review-host.mjs	b9f496dca16aff37c5211b92a4ca0ac58d91b44e	877375cef04aa57bd43ece3cd0f45e77ce47df47
+different	runtime/js/cm-prd/review-preparation.mjs	5cd6edd6734fbb575c7bab970d7c6efb774db51e	debbeaa78e0e51fb8db6a708412474fa696ff113
+different	runtime/js/cm-prd/review-publication.mjs	981bf77d1c361df8768c17d123f2f4c3d462c5ca	00bc7c3c4c5a03eccad45e8a56d07be28a603206
+different	runtime/js/cm-prd/session.mjs	f51cf70584b93c94cca319b986cc7a7ae50d92a1	5052c46211e5531300d822110bbd3643aa48b7d1
+different	runtime/js/cm-security/scan.mjs	18e6b34449f32bded80f0f65e5616ca67b0115d2	34efbd925557647bc7eccfe89fdf53de2dda1beb
+different	runtime/review.md	ea67573d462d7e385f2972993bed91627d69bf17	a97ab2ee7d90ae8bf233b37bbac3aaf3974921d4
+different	scripts/cm-ai-control-v2-drive.test.mjs	195cfb696bd820bac04eb5d35d9e5a89c8b52ed5	fb68fe03919196fbb6c19a901cdbebd31a3520f3
+different	scripts/cm-ai-drive.mjs	ae2ef5cf191bac8d6ae1421acf86a663c0634b95	c452acdd2c4ba243513c70acef6bf4fc92554458
+different	scripts/cm-ai-host.mjs	c959e2e867d3618e3aa052a47b91c13b16147504	473bd9f6a8bb5b944bffba71d2c5d42346b2018f
+different	scripts/cm-ai-host.test.mjs	08880e5b08bff1cdebdeeee157ca697b23fd976c	a7c527e3aa2f89c6161522f43c69d41157f11d30
+different	scripts/cm-ai-operator-guidance.test.mjs	c8c06a380c4e7068a71428a8ccf17ce778c2382a	fe9a36e9d1512ae211de540d65fc074e1da9e9f9
+different	scripts/cm-ai-run.mjs	ad03420d4bcc81edd985a3445901fbb1cbecccd7	d6d9e0114812e4398530b2fbb9e8418cca1064a2
+different	scripts/cm-check-runtime.sh	d17bcf52bf496868e596bc2cdb701ecd6017f4ac	26dce849b530342414b069caa4d5d153320bcaa4
+different	scripts/cm-codex-review-progress.test.mjs	fdd688b97c019baac922cbdedb174207fe4ea817	a80f81160b098c502e4d129abd58d5ea413332e7
+different	scripts/cm-host-check.test.mjs	04d1e0c0a6f952a997d38c9928c9840d2b70f7a5	619f219ba325c605c49ac27a82d6fc1b2d0099d8
+different	scripts/cm-prd-completion.test.mjs	26d34bf868ded07605ee909fac3fb8b34e595011	b9864fa57ecb12566338466d222011b9e555ed86
+different	scripts/cm-prd-drive.mjs	e27ba8104da71d1bbb8e0a66e689801ce6e7772a	71dee849d95ee3ec6e2ffc7df2c6af5f1aa6c2b4
+different	scripts/cm-prd-host.mjs	8e601cc6b401f76d56439e2e87d3400125bd7075	72ecdebe4c72e770f0a94b8b45fdb12a4746a2b3
+different	scripts/cm-prd-review-gate.mjs	a36e8855e3ad373922025d307c4122cb0621ebd0	7e7541de475606eea5bf2af0d4bf865152c23b8b
+different	scripts/cm-prd-task-grouping.test.mjs	c60270adb7a3d244ced4dccd68ce46971379c6cf	f255c8e03c666ae2ae94bf96f989ad372fd8b3d3
+different	scripts/cm-task-gate.mjs	5bc8db98d3dc3aded1181fdfdd04da00b2840db3	ac87f4056eecc2a6823153417eb4a64ee4594213
+different	scripts/cm-test-suite.mjs	6c224f624f3cf4eb3a2c11a78d4c303c676b31cb	aab89326f0934b22f9b46ec55bccaa199bac1412
+different	scripts/cm-test-suite.test.mjs	2a75dd4b66a3daf90c80e7c49c0e8e89cfa86067	0ffc02afbd9edb3668009525ffd51b3ca2ddeb08
+different	scripts/cm-tool-preview-context.test.mjs	cd6e013ff0ca19a4acff2dd17f51a0e9e526a1bd	e5a194847dd1b6eef519bad4fad3a8623f050dd5
+different	scripts/scan-public-safety.py	affc78ffd7c99605aa5f92982aaba8411dc64b45	e80c7d9b1e7204d3fb2541c03993b700feb7f8e3
+different	scripts/test-scan-public-safety.py	84fcfa8aad1dea027f8723bc7a93492773b76e8c	75b847df5cba93b97c15c86f676a44805ebeded0
+different	skills/cm-ai/SKILL.md	f0414fd7f453dd3123497be135aabc0627712378	a4240d8bee4ecee6747b5cab0522bd4e13c12370
+different	skills/cm-ai/references/js-host-modes.md	e171b7b90efd97076140f1ea0b1287926c418334	8645890e94711946a6f1133658cedceec040ee2b
+different	skills/cm-ai/references/js-host-qa-recovery.md	c4f7ecb653e6f440dc3c5b9358a327729987d937	1aa309485d29005633e46c34d8e72a66c036d243
+different	skills/cm-ai/references/js-host-recovery.md	0028f9eb5331046e8fcfcdf22927109d6db2a941	d30685df5275769c98485305d0e98ca84862a40c
+different	skills/cm-ai/references/js-host.md	a22621e513306dbc5ce35a7ce20cc235c3163df6	3b404b06138efde350c017a42a616ec23817936e
+different	skills/cm-prd/SKILL.md	77eceb1aa5bf25f7c0c245f3dd6768f72a25f353	bf3d12eccc207b57455a277fe4416b5cc116a462
+different	skills/cm-prd/references/js-change-recovery.md	736c0ff260fbb37cc0626f3e3dd73c229a2d84bf	26137b219fc00ddac18a6c61ba496025c905a237
+different	skills/cm-prd/references/js-host.md	78f3d2dc47e4d8193a33db9770afd65de2e40304	38f6fb5b7c3e2b0de34fc17ed2da0464d1292d4b
+different	skills/cm-ui-engineer/SKILL.md	15e37b5816e8efcf08a3a64df65bf495c2b66f4b	93286f209fdd29163591dc848d0a2049ace81782
+different	templates/ui-lens/cm-ui-lens-extract.mjs	1964bac14338f77fd6dfa154b4c64019e67b4332	bd96e6000f307ceaea4418461b695be891c69ab5
+main_only	.claude/CLAUDE.md	87496443f433914ccacd2645fc20ede4d3632a51	
+main_only	.claude/rules/coding-style.md	7437f32f927f7dab019e42117f2367ec05969137	
+main_only	.claude/rules/git-workflow.md	216535728891c740aef1805ddfa26329d7610bbd	
+main_only	.claude/rules/security.md	5dfe414972390537bdea40d5ca94fd964b270cfa	
+main_only	.claude/rules/testing.md	aadecef773ce010faaf88eca94ac4f8efedc89ee	
+main_only	.github/workflows/ci.yml	718d957d4e18444b67a215b8a987299961327453	
+main_only	.gitignore	439aeb33d652e483b56ca243fc6ae2c047494045	
+main_only	.gitleaksignore	ea2fc273c85ad1513dbf870e4db6a2d418d1d13f	
+main_only	experiments/js-orchestration/README.md	f47626df129d34d3a9b0f8945e24db89ba02d322	
+main_only	experiments/js-orchestration/cm-ai-admission.mjs	a2b8e2a2c303d304f6b0415501b66e4a6bccdcda	
+main_only	experiments/js-orchestration/cm-ai-admission.test.mjs	ade48a15523f1bd853f24bfa5d05717b34cd0e33	
+main_only	experiments/js-orchestration/cm-ai-context-refresh.mjs	6b1d288ebc2ad0dc0543d6ab74163e2026ff957c	
+main_only	experiments/js-orchestration/cm-ai-conversation-entry.mjs	4c167a2a9fec2adaef8c602b28b16c83c5073205	
+main_only	experiments/js-orchestration/cm-ai-conversation-entry.test.mjs	7df7c31a99e88812c8b26eb1adee06541a0eacf6	
+main_only	experiments/js-orchestration/cm-ai-learning-handoff-writer.mjs	25df712b4f35ba3a6c3dd6977a052c48387b410a	
+main_only	experiments/js-orchestration/cm-ai-learning-writer.mjs	9426f985600372829fc1d0e889920eacd7435c74	
+main_only	experiments/js-orchestration/cm-ai-learning-writer.test.mjs	da5f07bc1674a932688a91ac753da462d75cbc3b	
+main_only	experiments/js-orchestration/cm-ai-qa-log.mjs	14c3697fbeb8ddd6d8faa32cad20fc6607ccd642	
+main_only	experiments/js-orchestration/cm-ai-run-finalizer.mjs	97dc38cee945e14df500d77e73b16f5f81b4bb6d	
+main_only	experiments/js-orchestration/cm-ai-runtime-root.test.mjs	08d2a67fb58d3fd711cfc32207c28a7da79e24bc	
+main_only	experiments/js-orchestration/cm-check-entry.test.mjs	2d877ba74bb6e518a49d019db23dd2dabfa4980c	
+main_only	experiments/js-orchestration/cm-fix-entry.test.mjs	482ce66a73a97960aa6a1bdce84ea2c143d4aa4c	
+main_only	experiments/js-orchestration/cm-init-entry.test.mjs	d5e6313a1e849ad05c198be8a2c85fd95c8b757d	
+main_only	experiments/js-orchestration/cm-planning-entry.test.mjs	7d4f4d9d0c77143707912e4f7eb5964aded2d920	
+main_only	experiments/js-orchestration/cm-refactor-entry.test.mjs	c2a02ebc2cea49f01adbd433df6455b1b963f0af	
+main_only	experiments/js-orchestration/cm-test-entry.test.mjs	5d3208424f01ddea984d24079bb6a73baa85fb9c	
+main_only	experiments/js-orchestration/codex-config.mjs	bd701e02ba75cb054ffedc087cb67bbd9a0254d0	
+main_only	experiments/js-orchestration/codex-review-adapter.mjs	a17d7bd9a16f8bfe96d7f4598068afd5dc713d79	
+main_only	experiments/js-orchestration/codex-review-adapter.test.mjs	f6c702e1d0ea3d57d73ffa00cca5fc99f9bb134b	
+main_only	experiments/js-orchestration/contracts.mjs	9a7bbaae435d76d726e3c03a77533c29a1e9c40a	
+main_only	experiments/js-orchestration/contracts.test.mjs	321ee2fa121a84f3e599f82dd67e808888fb2727	
+main_only	experiments/js-orchestration/durable-runner-state.mjs	523781de1863e9492ff96f802cc085a421dbb25b	
+main_only	experiments/js-orchestration/durable-runner-state.test.mjs	0d93500590728cf6a0ea5d292939f9732d5a18b4	
+main_only	experiments/js-orchestration/effect-contract.mjs	71983eb5efe3854eb5cfedb564c0e364572bb9fa	
+main_only	experiments/js-orchestration/execution-store.mjs	4be7a5badf2b353bf1a853a0d0915d02df0c24da	
+main_only	experiments/js-orchestration/execution-store.test.mjs	52f19cede23474d2270ce0acc7c87f5f2782612a	
+main_only	experiments/js-orchestration/gate-bridge.mjs	5a7bbe42cf46125fbf8a4b4b790274aab5782b67	
+main_only	experiments/js-orchestration/host.mjs	d6dfbe27bdba66e735928605558ec0881f4f48c8	
+main_only	experiments/js-orchestration/inspect-task.mjs	2e3148695107ca0da566cc88d7dd10233469b66e	
+main_only	experiments/js-orchestration/native-gate-fixture.mjs	735570b39e8c77f96b26dee81361d2d6a023d8ef	
+main_only	experiments/js-orchestration/provider-review-observation.mjs	2e65ba511401f6f975276c02733d95d3583aa796	
+main_only	experiments/js-orchestration/provider-review-observation.test.mjs	3ba4fb09598ab3923c3c4d4d4c2e05096ae9ae45	
+main_only	experiments/js-orchestration/replay.mjs	4c60fd3880c06bf08fa2fa56623147fd03434b71	
+main_only	experiments/js-orchestration/replay.test.mjs	b84f25306b1eb5c1122241d4cbef0f07803a60cd	
+main_only	experiments/js-orchestration/review-invocation-v3.test.mjs	0ce9dd5df9bd76e3299c04e6e56cf8c979850d04	
+main_only	experiments/js-orchestration/review-package.mjs	aa562f6c4b2fab7c46017b4a9d43b1e63ab5dd82	
+main_only	experiments/js-orchestration/review-package.test.mjs	85808219cc0f7be40889a9f45c84ea830352b5be	
+main_only	experiments/js-orchestration/review-runner.mjs	1367ce8491d90670ca4df756e04f1437f7a3d112	
+main_only	experiments/js-orchestration/review-runner.test.mjs	36b0042adcf24d7a9b3ebacaa3e31b152ddc5034	
+main_only	experiments/js-orchestration/run-demo.mjs	a431143d97f5f109f67499e48935179f598fc578	
+main_only	experiments/js-orchestration/smoke.test.mjs	92689bfa07af758fe6e1883beee5d41f51c46de1	
+main_only	experiments/js-orchestration/task-commit-codec.mjs	cdf932244c10ac61180e49ddf136ef3fbe220bef	
+main_only	experiments/js-orchestration/task-commit-codec.test.mjs	262a5071f995a35a19a12b5a810b1e61c21dbd3a	
+main_only	experiments/js-orchestration/task-commit.mjs	02db4e5f51296a39c3a20d099e5cb939d5e11bbe	
+main_only	experiments/js-orchestration/task-commit.test.mjs	cae4a95098d58d845c992e74ca42405f36b180d7	
+main_only	experiments/js-orchestration/task-owner.mjs	112b756a4953cf8be2ca3dab639ec02488529d10	
+main_only	experiments/js-orchestration/task-owner.test.mjs	e212e60030a04ef2b6b1f14d9c907d9790e4f23a	
+main_only	experiments/js-orchestration/task-runner.mjs	135cf13a9f872ef0676dbe35fdc60e1635073f6e	
+main_only	experiments/js-orchestration/task-runner.test.mjs	547e22cefdfaad0773f307a77159172a45ec9b7f	
+main_only	experiments/js-orchestration/tool-preview.mjs	a6c0df4078fdedc6213fe275571c206f8e4ce857	
+main_only	experiments/js-orchestration/two-step.mjs	06f328253329d810c4d580d789e0696c638cdcc1	
+main_only	experiments/js-orchestration/worker-codex.mjs	e5c69c83b9b1af36acd4f1bd8176fd3b130b4841	

@@ -10,3 +10,12 @@ test('real, unresolved and unknown catalogs remain blocked',()=>{
  for(const content of ['- sample (file: /tmp/sample/SKILL.md)','- sample (file: r99/sample/SKILL.md)','Unrecognized catalog content'])
   assert.equal(skillContext(input('<skills_instructions>\n### Available skills\n'+retainedPreamble+'\n'+content+'\n</skills_instructions>')).present,true);
 });
+
+test('Codex binary preflight reads Responses Lite namespaces and retains unexpected tools',async()=>{
+ const {requestTools}=await import('../runtime/js/cm-ai/tool-preview.mjs');
+ const raw={input:[{type:'additional_tools',role:'developer',tools:[{type:'namespace',name:'mcp__cm_review',tools:
+  ['read_binary','read_file','run_check'].map(name=>({type:'function',name}))}]}]};
+ assert.deepEqual(requestTools(raw,true),['read_binary','read_file','run_check'].map(name=>({type:'function',name:'mcp__cm_review__'+name})));
+ raw.tools=[{type:'function',name:'unauthorized'}];assert.equal(requestTools(raw,true).length,4,'top-level tools must not be hidden by Lite schemas');
+ raw.input[0].tools[0].tools=null;assert.equal(requestTools(raw,true),null);
+});

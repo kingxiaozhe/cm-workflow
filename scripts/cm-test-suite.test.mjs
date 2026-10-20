@@ -32,9 +32,9 @@ function fixture(t, source = 'import test from "node:test"; test("fixture",()=>{
 }
 
 test('approved native inventory is fixed, complete and disjoint from ordinary tests', () => {
-  assert.equal(nativeTests.length, 9);
+  assert.equal(nativeTests.length, 16);
   // Approval fingerprint prevents additions, omissions and substitutions without a reviewed change.
-  assert.equal(createHash('sha256').update(nativeTests.join('\n')).digest('hex'), 'e036b229f15e0acca13f43c29a35a2cbc830b1dcdd812b1f379b46253f3eadce');
+  assert.equal(createHash('sha256').update(nativeTests.join('\n')).digest('hex'), '65b6f95c12982ba14d4a1f607d592b698ac6302d128f9bbd0ac89f86e2a49b95');
   const groups = inventory(root);
   const discovered = fs.readdirSync(path.join(root, 'scripts'))
     .filter(name => name.endsWith('.test.mjs')).map(name => `scripts/${name}`).sort();
@@ -58,6 +58,7 @@ test('listing every group is install-free and ordinary shards reuse the existing
 
 test('new ordinary tests are included and missing native members stop the CLI', t => {
   const dir = fixture(t);
+  const groups=inventory(dir);assert.equal(groups.native.length,16);assert(groups.native.includes('scripts/cm-ai-valid-evidence-continuation.test.mjs'));assert(!groups.ordinary.includes('scripts/cm-ai-valid-evidence-continuation.test.mjs'));
   fs.writeFileSync(path.join(dir, 'scripts/new.test.mjs'), '');
   assert.match(cli(['list', 'ordinary'], dir).stdout, /scripts\/new.test.mjs/);
   fs.unlinkSync(path.join(dir, nativeTests[0]));

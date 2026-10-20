@@ -10,12 +10,19 @@ import {assignShards, readWeights} from './ci-test-shards.mjs';
 const root = fileURLToPath(new URL('..', import.meta.url));
 export const nativeTests = Object.freeze([
   'scripts/cm-ai-batch-host.test.mjs',
+  'scripts/cm-ai-valid-evidence-continuation.test.mjs',
+  'scripts/cm-ai-provider-review-recovery.test.mjs',
   'scripts/cm-ai-bootstrap.test.mjs',
   'scripts/cm-ai-host.test.mjs',
   'scripts/cm-ai-host-cli-workflow.test.mjs',
   'scripts/cm-ai-host-protected.test.mjs',
   'scripts/cm-ai-multi-root.test.mjs',
   'scripts/cm-ai-nested-execution.test.mjs',
+  'scripts/cm-ai-protected-binary.test.mjs',
+  'scripts/cm-ai-protected-scope-supplement.test.mjs',
+  'scripts/cm-ai-checkpoint-package-owner.test.mjs',
+  'scripts/cm-ai-task-continuation.test.mjs',
+  'scripts/cm-ai-reviewer-switch-native.test.mjs',
   'scripts/cm-fix-protected-edits.test.mjs',
   'scripts/cm-host-check.test.mjs',
 ].sort());
@@ -26,7 +33,7 @@ export function inventory(repo = root) {
     .map(entry => `${dir}/${entry.name}`).sort();
   const all = discover('scripts');
   const native = [...nativeTests];
-  if (native.length !== 9 || new Set(native).size !== 9) throw new Error('native inventory must contain exactly nine unique tests');
+  if (native.length !== 16 || new Set(native).size !== 16) throw new Error('native inventory must contain exactly sixteen unique tests');
   for (const file of native) if (!all.includes(file)) throw new Error(`missing native test: ${file}`);
   const ordinary = all.filter(file => !native.includes(file));
   const combined = [...ordinary, ...native];

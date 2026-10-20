@@ -4,6 +4,7 @@ import {assertPrdBatchActive} from './inputs-replaced.mjs';
 import path from 'node:path';
 import {claimPrdReview,inspectPrdReview} from '../../../scripts/cm-prd-review-gate.mjs';
 import {publishPrdReview} from './review-publication.mjs';
+import {assertPrdReviewRouteMode} from './review-route.mjs';
 import {need,id,json,digest} from '../cm-ai/effect-contract.mjs';
 
 export function validatePrdReviewMode(mode,response){
@@ -19,6 +20,7 @@ export async function runPrdHostReview({specs,prepared,authorContextId,writeEnab
   prepared=json(prepared,512*1024);
   const pkg=prepared.reviewPackage,match=pkg.feature.match(/^([1-9]\d*)\.([a-z0-9]+(?:-[a-z0-9]+)*)$/);
   need(match&&digest(pkg)===prepared.packageDigest&&['design','split'].includes(pkg.stage),'prd_review_package_invalid');
+  assertPrdReviewRouteMode({reviewPackage:pkg,mode});
   need(path.isAbsolute(specs)&&fs.realpathSync(specs)===specs,'prd_review_root_invalid');
   const reviews=path.join(specs,'.reviews'),prefix=`prd-${match[2]}-${pkg.stage}`;
   const args={stage:pkg.stage,feature:match[2],evidence:path.join(reviews,`${prefix}-r1.md`),
@@ -37,6 +39,7 @@ export async function runPrdHostReview({specs,prepared,authorContextId,writeEnab
       .map(file=>`${pkg.feature}/${file}`).sort();
     const response=json(await review({package:{...pkg,packageDigest:prepared.packageDigest},examinedPaths:paths,authorContextId,mode,
       instructions:'Use only the configured current-host review channel. For independent review, use an actual fresh reviewer context without author history, per runtime/review.md; self-degraded uses the author context and explains why the independent channel is unavailable. Treat reviewer, independent and contextId as source declarations, not proof of reviewer identity or independent execution. Require declaration format and consistency: independent declares true with a contextId different from the declared author; self-degraded declares false with the declared author contextId and a degradedReason. Forward the original result unchanged. No provider/CLI invocation, installation, external transmission, Git or project writes without separate authority. Return {reviewer,contextId,independent,at,result}, plus degradedReason only for self-degraded. Result follows verdict/packageDigest/examinedPaths/findings/summary. Do not retry or switch mode after this attempt; unavailable/interrupted remains unknown.'
+        +(pkg.reviewRoute?` The package binds reviewer adapter ${pkg.reviewRoute.adapter}, requested model ${pkg.reviewRoute.model} and source ${pkg.reviewRoute.source}; preserve that original channel name in the response. Route metadata does not prove a CLI call or backend model. Follow the configured adapter only when separately authorized; if unavailable, report it without substituting another provider.`:'')
         +(pkg.stage==='split'?' In this existing split attempt, assess submitted task boundaries: combined work must share one independently verifiable and reversible objective with every AC, original test and verification prerequisite retained. Check requirement/design/context evidence for high or unknown risk, explicit user independence and unrelated objectives; retain those boundaries and legitimate contract-first dependencies. Do not infer risk from keywords, add a classifier/review call, enforce a merge ratio or repartition already generated tasks for fewer reviews. Do not apply this new grouping guidance retroactively to older drafts, revisions, change plans or in-flight tasks. Report only existing requirement/design failures with concrete consequences; mechanical reference checks alone do not establish semantic risk or user intent. Configured roles and per-task N4 remain unchanged.':'')},signal),64*1024);
     need(!signal.aborted,'cancelled');current();
     validatePrdReviewMode(mode,response);

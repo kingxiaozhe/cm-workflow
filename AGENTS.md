@@ -60,6 +60,24 @@ Read the relevant files under `.claude/rules/` when modifying shell scripts, doc
 
 ## 项目教训
 
+- **失败事件的原因须随原调用持久保存**：原生 `error/turn.failed` 即使伴随退出 0 仍是失败；先在 worker 边界提取有界固定分类与消息摘要，再由同一 observation/journal 保存。双失败方言仍只留一个业务终态，后到原因在关闭事件合并，冲突保持 conflict；未知历史不倒填原因，诊断不扩展许可。来源：第14次无结论审查的错误留存修复；证据：`scripts/cm-codex-review-failure-diagnostic.test.mjs`、`scripts/cm-ai-material-review-host.test.mjs`。[已结构化]
+
+- **包材料与检查点状态须在同一次追加中接受**：大包仍装得进原单条记录、但后续回执预留不足时，首次开发检查点原子保存完整材料，后续仅引用已验证前序摘要；引用绑定包自身轮次，当前检查点合法跨轮时仍由原状态机裁决；先解引用再走原门禁，不能降预留、提高上限或在材料与状态之间留下 crash 窗口。来源：受保护范围追加后的检查点容量阻断；证据：`scripts/cm-ai-checkpoint-package-material.test.mjs`、`scripts/cm-ai-checkpoint-package-owner.test.mjs`。随本轮改动待独立审查。
+
+- **范围恢复与冻结检查须共享已接受的投影**：原受保护运行追加范围时，保留原配置字节和指纹，以原失败绑定的追加记录派生有效范围；开发、完成复查与 QA 只替换已证明的原 scope 输入，其余检查和断言不动。将 scope 直接透传给只收 identity 的检查器会破坏严格合同，应先私有核对再适配。来源：受保护范围和检查补充；证据：`scripts/cm-ai-protected-scope-supplement-contract.test.mjs`、`scripts/cm-ai-protected-scope-supplement.test.mjs` 的原材料、实际检查/QA、越界和业务失败用例。随本轮改动待独立审查。
+
+- **大资产的字节与控制记录分别限额，预检沿用冻结选择**：显式二进制资产用原运行绑定的不可变字节存档与精确 SHA 引用，不提高文本或 journal 上限；原版本/新版本与中断发布都须校验。驾驶员投影与 owner 共用已冻结 taskSelection，不从 taskId 推断准入。来源：受保护二进制资产与已选择任务预检；证据：`scripts/cm-ai-binary-assets.test.mjs`、`scripts/cm-ai-protected-binary.test.mjs`、`scripts/cm-ai-drive-selection.test.mjs` 的大文件、漂移、原运行恢复及选择变异用例。随本轮改动待独立审查。
+
+- **补执行器须绑定原完成证据且恢复不得丢配置**：已完成、无 workflow 的 v2 单任务遇到必需 QA 时，只能在原决定与首轮前显式附加窄执行器；原策略和指纹不改。附加后即使原指纹仍能直接打开 store，也须拒绝缺失或改变的附件配置；同锁核对旧目标、包、提交与源码，live/replay 共用验证。来源：必需 QA 首轮执行器恢复；证据：`scripts/cm-ai-qa-executor-attachment.test.mjs` 与 `scripts/cm-ai-control-v2-drive.test.mjs` 的原材料还原、真实 PASS/FAIL、幂等漂移与重封历史拒绝用例。[已结构化]
+
+- **必需决策不能依赖可选执行配置**：可选 QA 执行器缺席时，仍按已冻结策略接入固定 N6 判定；只补决策，不补造 workflow 或执行/文档能力。固定内建能力的来源与适用条件共用边界，旧运行以原配置材料恢复，显式配置及自定义回调仍绑定指纹。来源：无 workflow 的 v2 N6 阻断；证据：`scripts/cm-ai-qa-default.test.mjs`、`scripts/cm-ai-control-v2-drive.test.mjs` 的已完成任务续接、指纹、固定必跑点、幂等与 N7 用例。[已结构化]
+
+- **本地 IPC 须按独占路径授权，不能放开网络解阻**：受保护检查的临时文件可写不代表 AF_UNIX 可监听；复现时区分文件写入与 socket 权限，复用原生目录限定能力，仅给本次检查独占 TMPDIR 授权并在确认进程树退出后清理。缺能力或清理不确定仍阻断，冻结配置与历史不改。来源：tsx IPC 检查阻断；证据：`scripts/cm-host-check.test.mjs` 的真实 IPC/保护/断言与 `scripts/cm-host-check-ipc.test.mjs` 的能力、临时目录及取消用例。[已结构化]
+
+- **别名解析须在冻结配置前完成并复核具体请求**：CLI 别名与出站模型 ID 不必同名；先在既有隔离边界捕获有界 ID，再独立严格预检，用具体 ID 进入原配置指纹，保留别名及合成诊断来源。旧凭证和运行不重写，诊断不能证明账号默认值或后端模型。来源：Claude default 预检阻断；证据：`scripts/cm-claude-model-alias.test.mjs` 的双探针、负例与旧凭证用例，以及 `scripts/cm-ai-host.test.mjs` 的创建/恢复模型漂移用例。[已结构化]
+
+- **新增资产须验证后续修订和续写的读取合同**：正式保存的二进制基准不能交给规格文本读取器；准备、保存及存档续写共用登记资产的路径与摘要核对，保留旧快照形状和文本上限。来源：PRD 大字体基准修订阻断；证据：`scripts/cm-prd-completion.test.mjs` 的大字体、真实宿主修订、存档恢复与链接/漂移拒绝用例。[已结构化]
+
 - **显示投影须在资格判断后惰性读取真实状态**：状态查询与规格准入摘要不能为显示层额外访问 runner；可投影响应只在既有异常隔离内读取一次最新状态，再核对 state/run/task/attempt。用准入摘要的私有来源标记区分实际等待转换，不能笼统跳过所有 awaiting；读取失败保留原业务结果，取消 epoch 与锁内归属检查仍须生效。来源：基线状态读取回归修复；证据：`scripts/cm-ai-progress.test.mjs` 的只读 status、准入、真实等待、异常读取、迟到与取消用例。[已结构化]
 
 - **状态归属核对与替换必须在同一个锁区间**：多运行共享状态卡时，真实阶段开始认领，完成只更新仍属同一 feature/task/run/attempt 的状态，并用阶段 token 拒绝迟到回调；核对后另行原子改名仍有竞态。复用既有跨进程锁覆盖核对和替换，QA／收尾也使用归属规则，历史回放不算新阶段，状态只作显示。来源：当前任务进度修复；证据：`scripts/cm-ai-progress.test.mjs` 的两进程、旧 QA／N8 和迟到响应用例，`scripts/cm-ai-qa-config-revision.test.mjs` 的真实 resume/status 回放用例。[已结构化]
@@ -106,3 +124,43 @@ Read the relevant files under `.claude/rules/` when modifying shell scripts, doc
 - **基线复现不能代替失败根因**：区分测试正文与清理钩子失败；相同基线失败只说明不是新增回归，丢失原 cause 后仍保留未知。预检与夹具失败只记录有限系统字段，不打印原 message／stderr，不把能力受限或超时改成通过；夹具总截止与已有驱动预算对齐，产品预算和业务断言保持原值。来源：执行优化回归的启动错误丢失、清理失败和外层夹具超时收尾；证据：`scripts/cm-efficiency-diagnostics.test.mjs` 的无真实枚举／监听错误注入、`scripts/cm-ai-batch-drive.test.mjs` 的实际 live 用例，以及保存的原始失败与基线对照。该教训随本轮改动待独立审查。
 
 - **传输探活不得替代业务进展或持久事实**：心跳只报告存活；阶段截止取既有执行预算，嵌套阶段结束恢复外层原期限。关闭保护按独立操作对象核对归属，不能以可重复 requestId 释放另一在途操作，故障清理也不能记成用户取消。来源：宿主防空等与防误关；证据：`scripts/cm-host-liveness.test.mjs`、`scripts/cm-drive-liveness.test.mjs`、`scripts/cm-host-stage-observer.test.mjs` 的拒关、重复 ID、嵌套期限、断连和无状态副作用用例。[已结构化]
+
+- **体检里的运行时限制要和源码同源并设漂移守卫**：检查整步 30 分钟期限是 `host-conversation-execution.mjs` 里的字面量而非导出常量，体检脚本抄了一份时，用源码匹配测试守住，改动源码就让测试变红；再用真实日志（检查步用时分布）校准阈值，不凭记忆写数字。体检只读：Git 只走扫描器的安全读取（可信 git、关闭 fsmonitor 与 clean/process/required 过滤器、不读用户配置），并把代码根转成真实路径再传入，否则符号链接目录会让「项目内的 git 不可信」的比较失效；用定向夹具（对照先证明普通 git 会执行配置程序）加整目录哈希与 mtime 快照证明未写入、未执行。体检只覆盖它建模的模式，其余模式退出 2，不给出「通过」。来源：开工前体检；证据：`scripts/cm-start-check.test.mjs` 的 call limit 守卫、never-writes、仓库配置不执行与不支持模式用例。该教训随本轮改动待独立审查。
+
+- **已批准后返工要贯穿原生完成门禁**：完成检查失败后使用未用的第二轮，保留原 approved 与失败 checkpoint；新的 handoff 只定位原 owner journal，完成门禁核验真实恢复转换、旧包和新交付，不能把文字标记当批准，也不能伪造 r1 changes_requested。来源：完成复查失败原运行返工；证据：`scripts/cm-ai-control-v2-drive.test.mjs` 的真实 CLI、旧目标/源漂移/占位拒绝、摘要篡改与所有 crash prefix 回放用例。[已结构化]
+
+- **范围恢复必须保留原基线并进入真实派发与审查**：N3 检查失败后的显式范围追加绑定原目标、失败 checkpoint 与创建时 inventory；新增旧文件仅在原 SHA/模式仍相同时保存原字节，新路径必须原来和当前都不存在。原基线可判定的路径限制必须供执行和回放共用；原配置和旧记录不变，新增路径从同一追加事件进入 developer、handoff、Review 和完成门禁，未改文件也携带完整材料。来源：T-006 原运行范围恢复；证据：`scripts/cm-ai-scope-revision.test.mjs` 的真实 CLI 29/30 路径、原配置不变、完整材料、拒绝与回放用例。准入生成的 taskSelection 是单任务身份声明，不能当作并行组；权限入口核对原始 trusted parallelSelection，真实准入夹具须同时覆盖 taskSelection 与 featureSelection。该教训随本轮改动待独立审查。
+
+- **检查重查须刷新信号并保留真实取消**：检查超时会中止当前信号，合法 check-only 重查须创建新信号；持久状态仍在 blocked 重查起点且 effect 在途时，真实用户取消也必须写入控制记录并中止新信号，live 与 replay 保持一致。旧 unknown/cancelled 只接受已校验的 timeout→真实 develop-recheck→同成功开发与 Learning 的检查取消链，保留原两次上限、轮次和历史，不重派开发。派发、恢复和检查点须使用同一已校验计数清单，原上限不变；在检查点校验前按已验证的在途检查重查起点纳入当前步骤，不能只在派发时排除、落盘时重新计入。旧记录没有保存的业务快照不能补称已验证，源码继续受原规格、范围和审查门禁约束。来源：T-006 检查超时后原运行恢复；证据：`scripts/cm-ai-check-recheck-cancellation.test.mjs` 的真实 v2 CLI、同宿主、取消、历史、预算与漂移用例及两项定向改坏核对。该教训随本轮改动待独立审查。
+
+- **一次性恢复许可须由原历史派生并在意图处消费**：先按原上限核验历史前缀，再用固定失败、目标、源码字节及模式与下一调用身份追加受控许可；默认上限不变，派发与检查点共用已校验的单次额度，失败或重启不产生第二次开发。持久起点仍阻断而实际 writer 已在途时，取消例外只认该许可绑定的真实 pending 意图；简化 live 状态时也须保留资格字段，不让 live 与 replay 得出不同预算。配置修订与业务执行须按已校验记录合同及历史位置区分，不能只看事件前缀；新许可捕获与派发前比较共用 path/type/mode/SHA 投影，旧快照默认语义保持不变。来源：T-006 a2 一次受控返工；证据：`scripts/cm-ai-development-rework.test.mjs` 的真实 v2 host/CLI、崩溃前缀、取消、伪许可与两项定向变异。该教训随本轮改动待独立审查。
+
+- **扩权恢复须在启动边界显式批准，状态快照只防陈旧**：范围追加和突破默认 effect 预算的续次不因 v2 resume 自动开放；由人工启动参数、原 launchControlTarget、原因和记录时间绑定，wire 即使持有正确 controlTarget 也不能自批。completion_rework 的批次排除同时落在启动权限与持久 binding，受保护开发保留原边界。来源：control-v2 Claude 窄审修复；证据：`scripts/cm-ai-development-rework.test.mjs` 的 wire 拒绝和启动快照用例、`scripts/cm-ai-scope-revision.test.mjs` 的批次与保护拒绝、`scripts/cm-ai-control-v2-drive.test.mjs` 的 durable batch 拒绝。该教训随本轮改动待独立审查。
+
+- **许可消费后仍须区分开发与只重跑检查**：返工许可消费只封住第二次开发；实时名额预检须使用已验证的重查转换，与 journal 中 blocked 起点一致，不能因尚为 unknown 而拒绝合法 check-only。返工轮无结论 Review 重派沿既有身份和次数门禁，不泛化为任意新审查名额。来源：control-v2 Claude 窄审修复；证据：`scripts/cm-ai-development-rework.test.mjs` 的返工后检查超时重查、Review transport retry 与 effect ID 反例。该教训随本轮改动待独立审查。
+
+- **派生档案命名空间须在大小写折叠后仍互斥**：不同任务前缀共用目录时，不能只靠大小写区分档案名；使用旧 slug 语法无法产生的分隔符，并验证大小写折叠后无碰撞。任务身份及既有档案名保持不变。来源：T-OBS 观测归档兼容；证据：`scripts/cm-fix-observation-task-id.test.mjs` 的双布局、任务身份和大小写折叠碰撞用例。[已结构化]
+
+- **当前执行快照不能替代任务审查基线**：已有审查后的范围接续，以独立追加记录绑定原失败和回执、固定 Git before 与当前文件摘要；旧 r1 保持原基线，r2 审查完整任务差异，不因接受现有代码而吞掉改动或取得新预算。存储表示资格按持久执行合同判定，不能依赖无关的范围授权记录。来源：a2 容量与范围接续；证据：`scripts/cm-ai-task-continuation.test.mjs`、`scripts/cm-ai-task-review-origin.test.mjs`、`scripts/cm-ai-recovery-capacity.test.mjs` 的双基线、原历史保留与大小边界用例。[已结构化]
+
+- **预防核对须复用真实阶段与材料合同**：只读预检按 journal 当前阶段选择开发投影或已保存审查包，待审/完成不能重放旧开发答案。原生 manifest、报告、PNG 与最终有效范围 SHA 共用正式捕获校验，投影不发布归档、不产生 passed 检查或授予恢复额度；未知归档/外部结果保持未知，不新增通用人工关卡。来源：当前 Wue 原生补正预防；证据：`scripts/cm-ai-prevention-native.test.mjs` 的只读投影与真实 driver 拒绝、`scripts/cm-ai-bounded-native-correction.test.mjs` 的原范围补正和阶段接续核对。该教训随本轮改动待独立审查。
+
+- **后续检查点按实际大小验限，已记失败只补持久记录**：开发预留用于首次材料决策，后续 inline 审查/完成记录不能再次扣除预留而误创建仅开发可建的材料格式；真实超过单条上限仍拒绝。唯一补正的审查结果已登记但检查点缺失时，只沿原调用补记失败，不重派模型或返还已消费许可。来源：T004 审查失败存档修复；证据：`scripts/cm-ai-checkpoint-package-material.test.mjs` 与 `scripts/cm-ai-bounded-native-correction.test.mjs` 的失败模式恢复用例。
+
+- **最终输入准入与存档容量分开验限**：Codex 完整呈现须在接受 review effect intent 前及 dispatch 前核对；大包只读分页保持原请求、完整材料和图片顺序，完整覆盖证明持久化回读后才能转发成功终态或 reconciliation。拒绝不增加记录、调用或授权，Claude 不套用 Codex 上限。来源：真实审查初始文本超限；证据：`scripts/cm-ai-review-input-admission.test.mjs`、`scripts/cm-review-material.test.mjs`、`scripts/cm-ai-material-review-host.test.mjs` 及 opt-in `scripts/cm-review-material-cli.test.mjs`。该教训随本轮改动待独立审查。
+
+- **附件完整性与视觉验收分开，展示压缩须无损回读**：显式文本附件按原身份与完整原字节摘要存档，发送前一次列出声明缺项；大 JSON 可只移除字符串外排版空白，但须保留全部 token、数字原写法、重复键与原字节压缩体，完整还原核对后才投递。材料齐全不等于视觉通过，不自动换包或新增审查许可。来源：原生审查校准资料承载；证据：`scripts/cm-ai-native-text-evidence.test.mjs` 的原字节还原、缺项聚合、旧格式、身份与中断发布用例。该教训随本轮改动待独立审查。
+
+- **有效拒绝后补材料须另绑原结论与唯一审查额度**：原调用已有合法 blocked 时，保留旧包、回执、文件与全部历史；仅白名单补完整文本资料，原任务 baseline 和代码不变，新回执另存。注册先验最终包/输入/记录容量，intent 消费唯一 slot，live/replay 与完成门禁共用边界，失败或重启不增新开发/审查。来源：原生文本资料原运行恢复；证据：`scripts/cm-ai-bounded-native-correction.test.mjs` 的 material review 模式及崩溃前缀/旧证据保留用例。随本轮改动待独立审查。
+
+- **材料结果留存与 owner 接收分层**：完整覆盖后先保存绑定原调用的有效业务结果，再发布证明；发布或清理失败保留失败，接回仍核对原登记、线程、完整包与冻结配置，仅补同调用记录，不从 sidecar 自动批准或返还名额。来源：材料审查完整链修复；证据：`scripts/cm-ai-material-review-host.test.mjs`、`scripts/cm-ai-material-chain.test.mjs` 的发布故障、同调用重入和完整历史断言。随本轮改动待独立审查。
+
+- **材料批读须同时约束输出和逐页预算**：为减少固定工具边界开销而批读时，保留完整逐页摘要与nextPage，用原输出包络自适应返回连续前缀；工具请求和页尝试分开计数，重复及非法消耗不能因批读隐藏，超限必须签名持久化并拒绝完成。旧proof与结果按原字节恢复，固定时限不因进展续期。来源：材料读取与审查时限修复；证据：`scripts/cm-review-material.test.mjs`、`scripts/cm-review-material-deadline.test.mjs`及材料owner链。
+
+- **读取策略修复不自动返还调用许可**：材料超时后的新机会须另有明确授权，并绑定原失败调用、完整包、配置、前一消费记录和实际批读配置摘要；沿原锁/固定目标追加一次可回放记录，intent消费且不能再循环。来源：材料时限续接准备；证据：`scripts/cm-ai-material-timeout-continuation.test.mjs`及材料超时owner链。
+
+- **批量交付须按原逻辑工作量计费并原子记录覆盖**：工具请求次数与返回页数分开记录，每个失败请求仍消耗原256逻辑读取额度；先按嵌套JSON字节缩批，整批成功保存后才授予覆盖，保存失败须回滚未返回页，回滚也失败时以跨进程持久标记阻止成功凭证。旧v1凭证按原规则验证，新v2凭证不能把请求次数当页数。来源：有界批量材料交付；证据：`scripts/cm-review-material-batch.test.mjs` 的混合预算、重复页、最坏转义、fsync故障及完整全文用例，`scripts/cm-ai-material-review-host.test.mjs` 的v1/v2接收用例。
+
+- **规则接纳要同时保留三种基线并分离权限**：在已审第二轮接续中，创建规则、Git审查起点规则和当前已提交规则可能不同；精确绑定创建与当前摘要并追加记录，审查展示Git before到当前规则，业务scope不取得规则写权限。派生材料可无损压缩，不能改原init/r1或原文限额。来源：已批准规则的a2接续；证据：scripts/cm-ai-task-continuation.test.mjs 的A/B/C、完整QA、漂移/中断和容量用例。该教训随本轮变更独立审查。
+
+- **补证登记与新增审查授权分别持久保存**：有效 blocked 后补证只追加绑定原回执、完整任务包和新材料的记录，不授开发或审查权限；单独授权的唯一审查在 intent 消费，重启不得返还。新旧材料和原基线到最终候选的全部变化必须一起审，作者补证不是验收通过。来源：原生补证接续；证据：`scripts/cm-ai-valid-evidence-continuation.test.mjs` 的正式入口、保留历史、结果恢复与三种结论分支。该教训随本轮改动待独立审查。

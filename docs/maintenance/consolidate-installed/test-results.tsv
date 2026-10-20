@@ -1,0 +1,316 @@
+测试文件	候选结果	秒数	origin/main 对照	安装基线对照	归因	失败测试名
+scripts/ci-test-shards.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	0.53	未执行	未执行	通过	
+scripts/cm-ai-abandon-effect-position.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	24.81	未执行	未执行	通过	
+scripts/cm-ai-admission.test.mjs	27/27 通过, 0 失败, 0 跳过; exit 0	8.43	未执行	未执行	通过	
+scripts/cm-ai-answer-gap-dispatch.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	13.24	未执行	未执行	通过	
+scripts/cm-ai-answer-gap-driver.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	6.39	未执行	未执行	通过	
+scripts/cm-ai-answer-gap-recheck.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	11.26	未执行	未执行	通过	
+scripts/cm-ai-answer-gap-redo.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	8.8	未执行	未执行	通过	
+scripts/cm-ai-batch-drive.test.mjs	预先排除	441	未执行	未执行	仓库记录耗时 > 300 秒	
+scripts/cm-ai-batch-host.test.mjs	12/15 通过, 3 失败, 0 跳过; exit 1	267.82	300 秒超时	300 秒超时	对照未完整匹配，尚不能归因	protected Claude batch uses actual sandbox edits/checks and original two-task completion with nested specs | parallel member loopback preflights bind worktree cwd, stop before start and reuse on resume | execution-policy batch moves an exact old-layout member preflight cache out of the run directory and reuses it
+scripts/cm-ai-batch-run-member-stops.test.mjs	预先排除	377	未执行	未执行	仓库记录耗时 > 300 秒	
+scripts/cm-ai-batch-run-parallel.test.mjs	预先排除	338	未执行	未执行	仓库记录耗时 > 300 秒	
+scripts/cm-ai-batch-run-reschedule.test.mjs	预先排除	436	未执行	未执行	仓库记录耗时 > 300 秒	
+scripts/cm-ai-batch-run.test.mjs	12/12 通过, 0 失败, 0 跳过; exit 0	278.74	未执行	未执行	通过	
+scripts/cm-ai-binary-assets.test.mjs	15/15 通过, 0 失败, 0 跳过; exit 0	3.88	未执行	未执行	通过	
+scripts/cm-ai-binary-review-contract.test.mjs	11/12 通过, 1 失败, 0 跳过; exit 1	0.74	无同名测试文件	11/12 通过, 1 失败, 0 跳过; exit 1	安装版已有失败；origin/main 无同名文件	binary tool gate requires both exact version reads and an actual fixed check before evidence can pass
+scripts/cm-ai-bootstrap-driver-preflight.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	0.58	未执行	未执行	通过	
+scripts/cm-ai-bootstrap-flow.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	15.86	未执行	未执行	通过	
+scripts/cm-ai-bootstrap-merge.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	3.88	未执行	未执行	通过	
+scripts/cm-ai-bootstrap.test.mjs	6/8 通过, 2 失败, 0 跳过; exit 1	41.27	6/8 通过, 2 失败, 0 跳过; exit 1	6/8 通过, 2 失败, 0 跳过; exit 1	origin/main 同名失败复现	empty T001 then protected current-host CLI rules task, actual QA and N7 use original gates | current-session host: round-1 init_verify that fails blocks and a resumed advance redoes it in the same run
+scripts/cm-ai-bounded-native-correction.test.mjs	0/2 通过, 2 失败, 0 跳过; exit 1	5.5	无同名测试文件	0/2 通过, 2 失败, 0 跳过; exit 1	安装版已有失败；origin/main 无同名文件	original double-blocked native run grants exactly one separate correction and preserves all six spent calls through N5 QA replay | <SOURCE_ROOT>/scripts/cm-ai-host-fixture.mjs
+scripts/cm-ai-check-recheck-cancellation.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	37.39	未执行	未执行	通过	
+scripts/cm-ai-checklist-coverage.test.mjs	9/9 通过, 0 失败, 0 跳过; exit 0	0.25	未执行	未执行	通过	
+scripts/cm-ai-checkpoint-package-material.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	0.74	未执行	未执行	通过	
+scripts/cm-ai-checkpoint-package-owner.test.mjs	0/3 通过, 3 失败, 0 跳过; exit 1	8.02	无同名测试文件	0/3 通过, 3 失败, 0 跳过; exit 1	安装版已有失败；origin/main 无同名文件	large protected supplemented owner archives one full checkpoint and completes with exact package references | supplemented capacity owner preserves r1 changes_requested through failed r2 and finishes the original second attempt | <SOURCE_ROOT>/scripts/cm-ai-host-fixture.mjs
+scripts/cm-ai-contracts.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	0.14	未执行	未执行	通过	
+scripts/cm-ai-control-launch.test.mjs	12/12 通过, 0 失败, 0 跳过; exit 0	8.12	未执行	未执行	通过	
+scripts/cm-ai-control-policy.test.mjs	11/11 通过, 0 失败, 0 跳过; exit 0	5.42	未执行	未执行	通过	
+scripts/cm-ai-control-v2-drive.test.mjs	300 秒超时	300.05	未执行	未执行	到达 300 秒，超时排除；不声称通过	
+scripts/cm-ai-control-v2-supersede.test.mjs	14/14 通过, 0 失败, 0 跳过; exit 0	169.05	未执行	未执行	通过	
+scripts/cm-ai-conversation-entry-ops.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	2.03	未执行	未执行	通过	
+scripts/cm-ai-develop-answer-invalid.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	4.32	未执行	未执行	通过	
+scripts/cm-ai-develop-call-timeout.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	16.12	未执行	未执行	通过	
+scripts/cm-ai-develop-driver-gaps.test.mjs	62/62 通过, 0 失败, 0 跳过; exit 0	295.76	未执行	未执行	通过	
+scripts/cm-ai-development-rework.test.mjs	13/13 通过, 0 失败, 0 跳过; exit 0	122.43	未执行	未执行	通过	
+scripts/cm-ai-direct-review.test.mjs	21/21 通过, 0 失败, 0 跳过; exit 0	21.97	未执行	未执行	通过	
+scripts/cm-ai-documentation-sync-gap.test.mjs	23/23 通过, 0 失败, 0 跳过; exit 0	73.14	未执行	未执行	通过	
+scripts/cm-ai-drive-bootstrap-rules.test.mjs	8/12 通过, 4 失败, 0 跳过; exit 1	14.99	8/12 通过, 4 失败, 0 跳过; exit 1	8/12 通过, 4 失败, 0 跳过; exit 1	origin/main 同名失败复现	direct review holds the first revision even when attempt-2 answers are preloaded | real host drives split-root T-001 scaffold, then T-002 rules with a revision round | a failing init_verify command really runs after the host accepts the launch and before any operation | rules written by this run survive a failed task check: fix the environment, advance again, reach review
+scripts/cm-ai-drive-selection.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	1.07	未执行	未执行	通过	
+scripts/cm-ai-drive-timeout.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	0.15	未执行	未执行	通过	
+scripts/cm-ai-drive.test.mjs	300 秒超时	300.05	未执行	未执行	到达 300 秒，超时排除；不声称通过	
+scripts/cm-ai-evidence-package-reference.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.32	未执行	未执行	通过	
+scripts/cm-ai-execution-diagnostic.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	0.27	未执行	未执行	通过	
+scripts/cm-ai-feature-selection.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	3.43	未执行	未执行	通过	
+scripts/cm-ai-fix-integration.test.mjs	300 秒超时	300.03	未执行	未执行	到达 300 秒，超时排除；不声称通过	
+scripts/cm-ai-fix-later-delivery.test.mjs	7/7 通过, 0 失败, 0 跳过; exit 0	125.65	未执行	未执行	通过	
+scripts/cm-ai-fix-run-delivery.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	42.71	未执行	未执行	通过	
+scripts/cm-ai-host-binary-review.test.mjs	2/14 通过, 12 失败, 0 跳过; exit 1	3.57	无同名测试文件	2/14 通过, 12 失败, 0 跳过; exit 1	安装版已有失败；origin/main 无同名文件	actual binary review tools gate valid | actual binary review tools gate metadata-only | actual binary review tools gate missing-before | actual binary review tools gate bad-format | actual binary review tools gate deleted | actual binary review tools gate unchanged | completion readback rejects missing, changed or differently bound binary evidence | binary-only evidence does not relax ordinary CM fix mutation requirement | historical binary proof survives new parent instructions without widening profile | historical binary proof survives removed parent instructions without widening profile | Codex mixed font review valid requires original/current bytes and fixed integrity evidence | Codex mixed font review metadata-only requires original/current bytes and fixed integrity evidence
+scripts/cm-ai-host-cli-workflow.test.mjs	0/10 通过, 10 失败, 0 跳过; exit 1	2.73	0/10 通过, 10 失败, 0 跳过; exit 1	0/10 通过, 10 失败, 0 跳过; exit 1	origin/main 同名失败复现	automatic fix codex CLI starts before QA and finishes through original transport | automatic fix claude CLI starts before QA and finishes through original transport | automatic fix protected CLI starts before QA and finishes through original transport | configured codex CLI starts development and resumes through direct review and resumes via the original review worker/gate workflow=absent | configured codex CLI starts development and resumes through direct review and resumes via the original review worker/gate workflow=qa-null | configured codex CLI starts development and resumes through direct review and resumes via the original review worker/gate workflow=qa | configured claude CLI starts development and resumes through direct review and resumes via the original review worker/gate workflow=absent | configured claude CLI starts development and resumes through direct review and resumes via the original review worker/gate workflow=qa-null | configured claude CLI starts development and resumes through direct review and resumes via the original review worker/gate workflow=qa | <SOURCE_ROOT>/scripts/cm-ai-host-fixture.mjs
+scripts/cm-ai-host-protected.test.mjs	6/21 通过, 15 失败, 0 跳过; exit 1	59.18	6/21 通过, 15 失败, 0 跳过; exit 1	6/21 通过, 15 失败, 0 跳过; exit 1	origin/main 同名失败复现	protected dispatch codex: codex host -> codex coder -> codex reviewer | protected dispatch codex: claude host -> codex coder -> codex reviewer | protected dispatch claude: codex host -> claude coder -> claude reviewer | protected dispatch both: claude host -> codex coder -> claude reviewer | protected dispatch both: codex host -> claude coder -> codex reviewer | legacy protected unknown run refuses the retired CLI assembly without changing its recorded contexts | legacy protected codex run refuses the retired CLI assembly without changing its recorded contexts | protected local invalid_result writes nothing and corrected CLI resume keeps run and attempt | protected old proposal compares exact output with expected disk hashes: matches=true | protected conversation review timeout codex -> approved | protected conversation review timeout claude -> approved | protected conversation review timeout codex -> timeout | protected conversation review timeout codex -> result | protected conversation review timeout claude -> result | <SOURCE_ROOT>/scripts/cm-ai-host-fixture.mjs
+scripts/cm-ai-host.test.mjs	29/36 通过, 7 失败, 0 跳过; exit 1	72.76	28/34 通过, 6 失败, 0 跳过; exit 1	29/36 通过, 7 失败, 0 跳过; exit 1	安装版已有失败；origin/main 结果不同或不完整，见对照	fixture watchdog stopping a host mid-review leaves no process from the fixture root | step31 CLI resumes completed evidence BLOCKED QA and reaches the original finalizer | F7 CLI explicitly revises missing QA commands after N5 and resumes the same run | \#10 the driver carries a protected develop reply above 64 KiB once --input-limit is raised | \#11 \#31 protected driver deletes, sets the executable bit, creates new files 0644 and keeps BOM/CRLF text exact | protected text explicitly binds Codex review without changing Claude defaults and preserves original resume | <SOURCE_ROOT>/scripts/cm-ai-host-fixture.mjs
+scripts/cm-ai-launch-diagnostics.test.mjs	7/7 通过, 0 失败, 0 跳过; exit 0	10.99	未执行	未执行	通过	
+scripts/cm-ai-legacy-history.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	1.59	未执行	未执行	通过	
+scripts/cm-ai-light-modules.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	0.91	未执行	未执行	通过	
+scripts/cm-ai-material-chain.test.mjs	0/4 通过, 4 失败, 0 跳过; exit 1	8.13	无同名测试文件	0/4 通过, 4 失败, 0 跳过; exit 1	安装版已有失败；origin/main 无同名文件	original material failure through controlled continuation and owner reception
+scripts/cm-ai-material-review-host.test.mjs	23/23 通过, 0 失败, 0 跳过; exit 0	50.37	未执行	未执行	通过	
+scripts/cm-ai-material-timeout-continuation.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	0.21	未执行	未执行	通过	
+scripts/cm-ai-multi-root.test.mjs	8/10 通过, 2 失败, 0 跳过; exit 1	7.52	8/10 通过, 2 失败, 0 跳过; exit 1	8/10 通过, 2 失败, 0 跳过; exit 1	origin/main 同名失败复现	native protected edits and real checks run per declared cwd and bind into one package | integrated original multi-root conversation completes one task and resumes without redispatch
+scripts/cm-ai-native-material-review.test.mjs	0/2 通过, 2 失败, 0 跳过; exit 1	5.9	无同名测试文件	0/2 通过, 2 失败, 0 跳过; exit 1	安装版已有失败；origin/main 无同名文件	original failed correction grants only one technical review of the unchanged package and completes QA | <SOURCE_ROOT>/scripts/cm-ai-host-fixture.mjs
+scripts/cm-ai-native-review-continuation.test.mjs	0/2 通过, 2 失败, 0 跳过; exit 1	5.06	无同名测试文件	0/2 通过, 2 失败, 0 跳过; exit 1	安装版已有失败；origin/main 无同名文件	native original blocked review preserves verdict and budgets while evidence recovery uses only round two then completes QA and resume | <SOURCE_ROOT>/scripts/cm-ai-host-fixture.mjs
+scripts/cm-ai-native-review-evidence.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	1.3	未执行	未执行	通过	
+scripts/cm-ai-native-text-evidence.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	5.32	未执行	未执行	通过	
+scripts/cm-ai-nested-execution.test.mjs	2/8 通过, 6 失败, 0 跳过; exit 1	23.14	2/8 通过, 6 失败, 0 跳过; exit 1	2/8 通过, 6 失败, 0 跳过; exit 1	origin/main 同名失败复现	protected codex conversation retains host identity, scope protection and no redispatch on resume | protected claude conversation retains host identity, scope protection and no redispatch on resume | factory: synthetic coding CLI receives native protection; real sandbox checks feed original runner and recovery | host: synthetic coding CLI receives native protection; real sandbox checks feed original runner and recovery | revision: synthetic coding CLI receives native protection; real sandbox checks feed original runner and recovery | workflow: synthetic coding CLI receives native protection; real sandbox checks feed original runner and recovery
+scripts/cm-ai-operator-guidance.test.mjs	15/16 通过, 1 失败, 0 跳过; exit 1	0.35	15/15 通过, 0 失败, 0 跳过; exit 0	15/16 通过, 1 失败, 0 跳过; exit 1	安装版已有失败；origin/main 结果不同或不完整，见对照	only native resume paths advertise same-run development and never grant permission
+scripts/cm-ai-prevention-native.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	1.03	未执行	未执行	通过	
+scripts/cm-ai-progress.test.mjs	36/37 通过, 1 失败, 0 跳过; exit 1	93.73	36/37 通过, 1 失败, 0 跳过; exit 1	36/37 通过, 1 失败, 0 跳过; exit 1	origin/main 同名失败复现	protected checks announce quiet command boundaries through the same executor
+scripts/cm-ai-project-qa-gate.test.mjs	12/12 通过, 0 失败, 0 跳过; exit 0	184.16	未执行	未执行	通过	
+scripts/cm-ai-protected-binary.test.mjs	10/20 通过, 10 失败, 0 跳过; exit 1	68.65	无同名测试文件	10/20 通过, 10 失败, 0 跳过; exit 1	安装版已有失败；origin/main 无同名文件	real protected driver CLI preflights >2 MiB binary references then starts and resumes the same owner | real protected mixed >1 MiB binary runs checks, synthetic review, completion and exact durable resume | real protected mixed >1 MiB binary Codex native MCP runs checks, synthetic review, completion and exact durable resume | protected binary text-only approved review cannot complete without actual asset tool evidence | completed protected binary owner rejects missing review sidecar without rewriting its history | approved protected binary owner cannot complete after losing its real tool evidence | protected binary round two resumes with an unchanged >2 MiB asset and completes after real tool review | protected binary corrupt stored bytes cannot resume into review or completion | old protected text owner still reaches completion without binary configuration | <SOURCE_ROOT>/scripts/cm-ai-host-fixture.mjs
+scripts/cm-ai-protected-scope-supplement-contract.test.mjs	12/12 通过, 0 失败, 0 跳过; exit 0	0.39	未执行	未执行	通过	
+scripts/cm-ai-protected-scope-supplement.test.mjs	0/5 通过, 5 失败, 0 跳过; exit 1	23.46	无同名测试文件	0/5 通过, 5 失败, 0 跳过; exit 1	安装版已有失败；origin/main 无同名文件	native protected owner appends six scoped tests and check supplement without rewriting frozen inputs | native protected owner appends scope with unchanged checks and no scope input through completion QA and resume | native protected supplement still rejects other protected paths and failing business assertions | native protected supplement refuses stale launch, changed frozen config, and a resealed record missing its supplement | <SOURCE_ROOT>/scripts/cm-ai-host-fixture.mjs
+scripts/cm-ai-protected-scope-wiring.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	2.16	未执行	未执行	通过	
+scripts/cm-ai-protected-scope.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	6.04	未执行	未执行	通过	
+scripts/cm-ai-provider-review-recovery-contract.test.mjs	5/5 通过, 0 失败, 0 跳过; exit 0	0.32	未执行	未执行	通过	
+scripts/cm-ai-provider-review-recovery.test.mjs	0/1 通过, 1 失败, 0 跳过; exit 1	6.05	无同名测试文件	0/1 通过, 1 失败, 0 跳过; exit 1	安装版已有失败；origin/main 无同名文件	one failed evidence review grants one separate provider recovery, four real owner verdict branches
+scripts/cm-ai-qa-answer-gaps.test.mjs	3/4 通过, 1 失败, 0 跳过; exit 1	0.39	3/4 通过, 1 失败, 0 跳过; exit 1	3/4 通过, 1 失败, 0 跳过; exit 1	origin/main 同名失败复现	cleanup_failed QA command resources are released only once their process group is proven gone
+scripts/cm-ai-qa-config-revision.test.mjs	20/20 通过, 0 失败, 0 跳过; exit 0	206.52	未执行	未执行	通过	
+scripts/cm-ai-qa-default.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	0.39	未执行	未执行	通过	
+scripts/cm-ai-qa-executor-attachment.test.mjs	14/14 通过, 0 失败, 0 跳过; exit 0	0.51	未执行	未执行	通过	
+scripts/cm-ai-qa-executor-preflight.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	4.49	未执行	未执行	通过	
+scripts/cm-ai-qa-fingerprint-config.test.mjs	5/5 通过, 0 失败, 0 跳过; exit 0	32.06	未执行	未执行	通过	
+scripts/cm-ai-qa-fix-cross-session.test.mjs	22/22 通过, 0 失败, 0 跳过; exit 0	265.99	未执行	未执行	通过	
+scripts/cm-ai-qa-fix-policy.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	21.56	未执行	未执行	通过	
+scripts/cm-ai-qa-fixed-log.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	1.64	未执行	未执行	通过	
+scripts/cm-ai-qa-recovery-args.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	1.51	未执行	未执行	通过	
+scripts/cm-ai-qa-rerun-timeouts.test.mjs	300 秒超时	300.05	未执行	未执行	到达 300 秒，超时排除；不声称通过	
+scripts/cm-ai-recovery-capacity.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	1.93	未执行	未执行	通过	
+scripts/cm-ai-recovery-preflight.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	2.41	未执行	未执行	通过	
+scripts/cm-ai-review-drift-precedence.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	3.94	未执行	未执行	通过	
+scripts/cm-ai-review-failure.test.mjs	300 秒超时	300.05	未执行	未执行	到达 300 秒，超时排除；不声称通过	\#8 real Claude CLI authentication_failed ends in a retryable review that names reviewer_auth_failed | \#8 a reviewer with no init line is redispatched twice per round; the third failure is a limit and abandon is refused | \#9 approved with a P2 note is a retryable contradictory_verdict, never a receipt | \#9 changes_requested with only P3 is a retryable contradictory_verdict, never a receipt | \#9 a finding on a specification file is a retryable invalid_finding_path, never a receipt | \#9 examinedPaths not copied exactly is a retryable missing_material, never a receipt | \#9 a blocked verdict stays terminal and says why instead of a bare code | \#8 a final message cut off by the reviewer timeout has an audited exit sharing the round's two redispatches | \#8 the journaled-result exit leads to a normal review and completion | \#8 legacy unknown results replay unchanged and forged failed results are refused | \#20 the real host passes the raised review bound from review-config into the runner race | \#21 an attempt-2 delivery identical to the rejected attempt 1 is a retryable same-attempt block
+scripts/cm-ai-review-input-admission.test.mjs	11/11 通过, 0 失败, 0 跳过; exit 0	合并运行 18.15	未执行	未执行	通过	
+scripts/cm-ai-review-timeout-config.test.mjs	9/9 通过, 0 失败, 0 跳过; exit 0	0.3	未执行	未执行	通过	
+scripts/cm-ai-review-timeout.test.mjs	31/31 通过, 0 失败, 0 跳过; exit 0	52.06	未执行	未执行	通过	
+scripts/cm-ai-reviewer-switch-native.test.mjs	0/5 通过, 5 失败, 0 跳过; exit 1	96.83	无同名测试文件	0/5 通过, 5 失败, 0 跳过; exit 1	安装版已有失败；origin/main 无同名文件	switch factory retains exact original configuration and reviewer metadata; copied factories cannot bind | switch config parser normalizes disabledSkills and factory requires exact Codex preflight | native reviewer switch registers without a model, retains original launch and requires exact config on every resume | protected scope recovery, 620 KiB second-round material and original QA survive a reviewer switch | native switch rejects a Codex reviewer that reuses the original host physical thread
+scripts/cm-ai-reviewer-switch.test.mjs	7/7 通过, 0 失败, 0 跳过; exit 0	0.26	未执行	未执行	通过	
+scripts/cm-ai-run.test.mjs	23/23 通过, 0 失败, 0 跳过; exit 0	37.19	未执行	未执行	通过	
+scripts/cm-ai-runner-error-code-regression.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	2.75	未执行	未执行	通过	
+scripts/cm-ai-scope-revision.test.mjs	12/12 通过, 0 失败, 0 跳过; exit 0	178.14	未执行	未执行	通过	
+scripts/cm-ai-selection-guard.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	6.08	未执行	未执行	通过	
+scripts/cm-ai-session-chain.test.mjs	14/14 通过, 0 失败, 0 跳过; exit 0	129.14	未执行	未执行	通过	
+scripts/cm-ai-spec-rebind.test.mjs	27/27 通过, 0 失败, 0 跳过; exit 0	45.51	未执行	未执行	通过	
+scripts/cm-ai-supersede.test.mjs	38/41 通过, 3 失败, 0 跳过; exit 1	210.4	38/41 通过, 3 失败, 0 跳过; exit 1	38/41 通过, 3 失败, 0 跳过; exit 1	origin/main 同名失败复现	provider develop interruption waits for the journaled worker process group to be gone | provider develop without a usable result is redone after its worker group is gone | Claude provider interruption needs every apply subprocess gone and the round start intact
+scripts/cm-ai-task-continuation.test.mjs	1/7 通过, 6 失败, 0 跳过; exit 1	52.35	无同名测试文件	1/7 通过, 6 失败, 0 跳过; exit 1	安装版已有失败；origin/main 无同名文件	native original a2 task continuation reviews complete Git before, preserves its prefix and reaches required QA | native a2 continuation refuses stale, missing origin, digest drift and symlink without changing history | authorized rule acceptance keeps creation A and Git before B while reviewing committed current C through fresh r2 and QA | authorized rule acceptance refuses unbound metadata, protected paths and committed-byte drift without changing history | rule acceptance preflight retains a real uncompressible complete-package capacity refusal and original history | <SOURCE_ROOT>/scripts/cm-ai-host-fixture.mjs
+scripts/cm-ai-task-review-origin.test.mjs	7/7 通过, 0 失败, 0 跳过; exit 0	10.57	未执行	未执行	通过	
+scripts/cm-ai-transport-review-retry.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	0.18	未执行	未执行	通过	
+scripts/cm-ai-valid-evidence-continuation.test.mjs	0/1 通过, 1 失败, 0 跳过; exit 1	4.0	无同名测试文件	0/1 通过, 1 失败, 0 跳过; exit 1	安装版已有失败；origin/main 无同名文件	one blocked native seed, three queued evidence review verdict branches
+scripts/cm-ai-verification-gate.test.mjs	11/11 通过, 0 失败, 0 跳过; exit 0	0.37	未执行	未执行	通过	
+scripts/cm-announce-hook.test.mjs	7/7 通过, 0 失败, 0 跳过; exit 0	0.19	未执行	未执行	通过	
+scripts/cm-blocked-reason.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	2.2	未执行	未执行	通过	
+scripts/cm-bootstrap-review-recovery.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	8.63	未执行	未执行	通过	
+scripts/cm-capability-gate.test.mjs	14/14 通过, 0 失败, 0 跳过; exit 0	13.98	未执行	未执行	通过	
+scripts/cm-challenge.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.19	未执行	未执行	通过	
+scripts/cm-check-drive.test.mjs	5/5 通过, 0 失败, 0 跳过; exit 0	3.88	未执行	未执行	通过	
+scripts/cm-check-host.test.mjs	25/25 通过, 0 失败, 0 跳过; exit 0	15.17	未执行	未执行	通过	
+scripts/cm-check-update.test.mjs	24/24 通过, 0 失败, 0 跳过; exit 0	1.03	未执行	未执行	通过	
+scripts/cm-claude-developer-worker.test.mjs	21/21 通过, 0 失败, 0 跳过; exit 0	46.64	未执行	未执行	通过	
+scripts/cm-claude-install-layout.test.mjs	0/1 通过, 1 失败, 0 跳过; exit 1	61.28	1/1 通过, 0 失败, 0 跳过; exit 0	1/1 通过, 0 失败, 0 跳过; exit 0	既有机械检查 SIGPIPE 波动；主分支直接检查已复现，安装夹具单次对照通过	real isolated Claude install checks correction docs at its installed layout and refuses a missing document
+scripts/cm-claude-model-alias.test.mjs	4/11 通过, 7 失败, 0 跳过; exit 1	0.2	无同名测试文件	4/11 通过, 7 失败, 0 跳过; exit 1	安装版已有失败；origin/main 无同名文件	Claude alias default is captured then verified by a separate concrete-id probe | Claude alias opus is captured then verified by a separate concrete-id probe | Claude alias sonnet is captured then verified by a separate concrete-id probe | Claude alias haiku is captured then verified by a separate concrete-id probe | Claude alias discovery cannot permit explicit mismatch, wrong family, unsafe ids or divergent requests | Claude alias concrete-id recheck cannot accept a second alias resolution | Claude alias verification transport is consumed only by the concrete probe
+scripts/cm-claude-probe.test.mjs	2/21 通过, 19 失败, 0 跳过; exit 1	0.53	2/21 通过, 19 失败, 0 跳过; exit 1	2/21 通过, 19 失败, 0 跳过; exit 1	origin/main 同名失败复现	UI invalidation before init permits a validated POST | UI invalidation before init cannot make startup-only preflight pass | Claude probe gzip body reaches only its declared decoder | Claude probe zstd body reaches only its declared decoder | Claude probe br body reaches only its declared decoder | probe accepts only empty tools or one internal StructuredOutput tool | probe accepts at most two compliant requests and validates every request | diagnostic still accepts one tool-free message request from an older CLI | Claude preflight rejects fake CLI with unrecognized_model stderr | Claude preflight accepts fake CLI without unrecognized_model stderr | Claude preflight CLI exits 1 with model_recognized false and leaves normal receipt unchanged | probe sandbox denies sibling writes and connections to a different loopback port | malformed request target returns a failed receipt and closes the listener
+scripts/cm-claude-review-stream.test.mjs	24/24 通过, 0 失败, 0 跳过; exit 0	0.19	未执行	未执行	通过	
+scripts/cm-claude-review-synthetic.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	0.19	未执行	未执行	通过	
+scripts/cm-claude-worker.test.mjs	13/13 通过, 0 失败, 0 跳过; exit 0	18.32	未执行	未执行	通过	
+scripts/cm-codex-developer-adapter.test.mjs	22/22 通过, 0 失败, 0 跳过; exit 0	0.3	未执行	未执行	通过	
+scripts/cm-codex-developer-reconnect-notice.test.mjs	9/9 通过, 0 失败, 0 跳过; exit 0	合并运行 18.15	未执行	未执行	通过	
+scripts/cm-codex-developer-worker.test.mjs	28/28 通过, 0 失败, 0 跳过; exit 0	13.71	未执行	未执行	通过	
+scripts/cm-codex-plugin-metadata.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	2.34	未执行	未执行	通过	
+scripts/cm-codex-reconnect-notice.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	合并运行 18.15	未执行	未执行	通过	
+scripts/cm-codex-review-failure-diagnostic.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	0.35	未执行	未执行	通过	
+scripts/cm-codex-review-progress.test.mjs	25/25 通过, 0 失败, 0 跳过; exit 0	4.72	未执行	未执行	通过	
+scripts/cm-controlled-correction.test.mjs	31/32 通过, 1 失败, 0 跳过; exit 1	9.28	32/32 通过, 0 失败, 0 跳过; exit 0	31/32 通过, 1 失败, 0 跳过; exit 1	安装版已有失败；origin/main 结果不同或不完整，见对照	only the original independent blocked r2 can enter the continuation
+scripts/cm-drive-liveness.test.mjs	15/15 通过, 0 失败, 0 跳过; exit 0	5.67	未执行	未执行	通过	
+scripts/cm-efficiency-checks.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	0.47	未执行	未执行	通过	
+scripts/cm-efficiency-diagnostics.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	1.65	未执行	未执行	通过	
+scripts/cm-efficiency-policy.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	0.91	未执行	未执行	通过	
+scripts/cm-efficiency-presentation.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	0.19	未执行	未执行	通过	
+scripts/cm-efficiency-response.test.mjs	13/13 通过, 0 失败, 0 跳过; exit 0	1.28	未执行	未执行	通过	
+scripts/cm-efficiency-usage.test.mjs	27/27 通过, 0 失败, 0 跳过; exit 0	15.64	未执行	未执行	通过	
+scripts/cm-execution-platform.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	0.2	未执行	未执行	通过	
+scripts/cm-external-batch-host.test.mjs	3/4 通过, 1 失败, 0 跳过; exit 1	222.62	3/4 通过, 1 失败, 0 跳过; exit 1	3/4 通过, 1 失败, 0 跳过; exit 1	origin/main 同名失败复现	new parallel batch merges reviewed members without committing private bindings
+scripts/cm-external-fix-host.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	163.86	未执行	未执行	通过	
+scripts/cm-external-fix-reconciliation.test.mjs	12/12 通过, 0 失败, 0 跳过; exit 0	14.64	未执行	未执行	通过	
+scripts/cm-external-group-models.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	0.78	未执行	未执行	通过	
+scripts/cm-external-model-host.test.mjs	6/11 通过, 5 失败, 0 跳过; exit 1	31.28	11/11 通过, 0 失败, 0 跳过; exit 0	6/11 通过, 5 失败, 0 跳过; exit 1	安装版已有失败；origin/main 结果不同或不完整，见对照	new mode owns a serial lease and a different run ID cannot bypass unfinished work | one Codex pair reaches actual dev and fresh review; immutable snapshot resumes with corrupt new defaults | both-runtime routing still uses Codex development and fresh Claude review with its own single pair | codex new policy actual dev/review records original usage once and replay adds no tokens | claude new policy actual dev/review records original usage once and replay adds no tokens
+scripts/cm-external-model-recovery.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	18.15	未执行	未执行	通过	
+scripts/cm-external-models.test.mjs	5/5 通过, 0 失败, 0 跳过; exit 0	0.96	未执行	未执行	通过	
+scripts/cm-external-process-cleanup.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	0.78	未执行	未执行	通过	
+scripts/cm-external-qa-fix.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	131.18	未执行	未执行	通过	
+scripts/cm-external-review-reconciliation.test.mjs	20/20 通过, 0 失败, 0 跳过; exit 0	38.76	未执行	未执行	通过	
+scripts/cm-failover.test.mjs	16/16 通过, 0 失败, 0 跳过; exit 0	1.08	未执行	未执行	通过	
+scripts/cm-fix-abandon.test.mjs	33/33 通过, 0 失败, 0 跳过; exit 0	140.49	未执行	未执行	通过	
+scripts/cm-fix-cause-invocation.test.mjs	20/20 通过, 0 失败, 0 跳过; exit 0	17.42	未执行	未执行	通过	
+scripts/cm-fix-cause-package.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	1.48	未执行	未执行	通过	
+scripts/cm-fix-code-association.test.mjs	5/5 通过, 0 失败, 0 跳过; exit 0	1.32	未执行	未执行	通过	
+scripts/cm-fix-command-correction.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	25.86	未执行	未执行	通过	
+scripts/cm-fix-cooperative-closeout.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	0.29	未执行	未执行	通过	
+scripts/cm-fix-cross-session-host.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	0.71	未执行	未执行	通过	
+scripts/cm-fix-drive-unprotected.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	0.25	未执行	未执行	通过	
+scripts/cm-fix-drive.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	25.8	未执行	未执行	通过	
+scripts/cm-fix-escalation.test.mjs	16/16 通过, 0 失败, 0 跳过; exit 0	46.01	未执行	未执行	通过	
+scripts/cm-fix-execution.test.mjs	9/9 通过, 0 失败, 0 跳过; exit 0	6.61	未执行	未执行	通过	
+scripts/cm-fix-final-review.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	1.04	未执行	未执行	通过	
+scripts/cm-fix-host-review-assembly.test.mjs	15/15 通过, 0 失败, 0 跳过; exit 0	2.04	未执行	未执行	通过	
+scripts/cm-fix-host-review.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	131.1	未执行	未执行	通过	
+scripts/cm-fix-host-sequence.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	0.2	未执行	未执行	通过	
+scripts/cm-fix-host.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	8.12	未执行	未执行	通过	
+scripts/cm-fix-large-log.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	11.18	未执行	未执行	通过	
+scripts/cm-fix-learning-writeback.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	1.5	未执行	未执行	通过	
+scripts/cm-fix-learning.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	1.25	未执行	未执行	通过	
+scripts/cm-fix-metrics.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	0.3	未执行	未执行	通过	
+scripts/cm-fix-monorepo-map.test.mjs	5/5 通过, 0 失败, 0 跳过; exit 0	1.0	未执行	未执行	通过	
+scripts/cm-fix-no-existing-tests.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	3.55	未执行	未执行	通过	
+scripts/cm-fix-observation-dossier.test.mjs	13/13 通过, 0 失败, 0 跳过; exit 0	254.06	未执行	未执行	通过	
+scripts/cm-fix-observation-task-id.test.mjs	17/17 通过, 0 失败, 0 跳过; exit 0	7.39	未执行	未执行	通过	
+scripts/cm-fix-progress.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.16	未执行	未执行	通过	
+scripts/cm-fix-protected-edits.test.mjs	1/3 通过, 2 失败, 0 跳过; exit 1	1.54	1/3 通过, 2 失败, 0 跳过; exit 1	1/3 通过, 2 失败, 0 跳过; exit 1	origin/main 同名失败复现	protected test-author response uses native edits and rejects late bytes, without a provider | protected bridge commits a lock-sized text proposal above 64KiB
+scripts/cm-fix-qa-source.test.mjs	5/5 通过, 0 失败, 0 跳过; exit 0	19.87	未执行	未执行	通过	
+scripts/cm-fix-red-owner.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	4.3	未执行	未执行	通过	
+scripts/cm-fix-red-test.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	1.54	未执行	未执行	通过	
+scripts/cm-fix-rediagnosis.test.mjs	15/15 通过, 0 失败, 0 跳过; exit 0	10.68	未执行	未执行	通过	
+scripts/cm-fix-regression.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	1.67	未执行	未执行	通过	
+scripts/cm-fix-repair-owner.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	147.24	未执行	未执行	通过	
+scripts/cm-fix-repair.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	1.67	未执行	未执行	通过	
+scripts/cm-fix-reproduce.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	0.47	未执行	未执行	通过	
+scripts/cm-fix-retrospective.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	0.32	未执行	未执行	通过	
+scripts/cm-fix-review-baseline.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	0.64	未执行	未执行	通过	
+scripts/cm-fix-review-budget.test.mjs	5/5 通过, 0 失败, 0 跳过; exit 0	3.39	未执行	未执行	通过	
+scripts/cm-fix-review-file-paging.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	0.37	未执行	未执行	通过	
+scripts/cm-fix-review-recovery.test.mjs	11/11 通过, 0 失败, 0 跳过; exit 0	98.84	未执行	未执行	通过	
+scripts/cm-fix-review-verification-binary.test.mjs	5/7 通过, 2 失败, 0 跳过; exit 1	1.45	无同名测试文件	5/7 通过, 2 失败, 0 跳过; exit 1	安装版已有失败；origin/main 无同名文件	isolated binary before/after survives replacement and real checks/mutation | isolated binary before/after survives deletion and real checks/mutation
+scripts/cm-fix-review-verification-command.test.mjs	3/18 通过, 14 失败, 1 跳过; exit 1	1.45	3/18 通过, 14 失败, 1 跳过; exit 1	3/18 通过, 14 失败, 1 跳过; exit 1	origin/main 同名失败复现	verification sandbox does not read the local administrator prefix | verification sandbox rejects the data volume alias of an external fixture | verification sandbox denies credential and other Mach service lookups without contacting services | verification command preserves exit status and uses a private environment | verification runs a real script entry without granting ancestor file contents | verification runs a real Node test file without Mach service access | verification sandbox rejects external reads, source writes and symlink escapes | verification sandbox rejects loopback network access | verification command timeout and cancellation are unavailable, never passed | verification command bounds retained output and rejects output floods | verification timeout cleans its owned child process group | verification sandbox cannot signal its outer host | verification reports process ownership and cleans up when its observer rejects | verification does not claim cleanup when a detached descendant holds its output open
+scripts/cm-fix-review-verification-evidence.test.mjs	25/25 通过, 0 失败, 0 跳过; exit 0	16.04	未执行	未执行	通过	
+scripts/cm-fix-review-verification-integration.test.mjs	2/6 通过, 4 失败, 0 跳过; exit 1	2.18	2/6 通过, 4 失败, 0 跳过; exit 1	2/6 通过, 4 失败, 0 跳过; exit 1	origin/main 同名失败复现	real MCP server and CLI protocol valid preserves mechanical cause evidence across resume | real MCP server and CLI protocol missing-mutation preserves mechanical cause evidence across resume | real MCP server and CLI protocol failed-check preserves mechanical cause evidence across resume | synthetic local preflight checks the actual MCP tool catalog through the same args
+scripts/cm-fix-review-verification-recovery.test.mjs	2/18 通过, 16 失败, 0 跳过; exit 1	43.74	2/18 通过, 16 失败, 0 跳过; exit 1	2/18 通过, 16 失败, 0 跳过; exit 1	origin/main 同名失败复现	cause verification recovery is single prepared and explicitly dispatched without rewriting history | final verification recovery is single prepared and explicitly dispatched without rewriting history | revision verification recovery is single prepared and explicitly dispatched without rewriting history | verification recovery refuses source drift before preparing history | verification recovery refuses auxiliary drift before preparing history | verification recovery refuses baseline drift before preparing history | preparation and continuation reject missing confirmations, stale targets and old threads | prepared auxiliary snapshot stays binding at dispatch and across resume | read-only inspection CLI reports frozen baseline failure without a writer or provider | real driver prepares once and forwards bounded startup authorization without dispatch permission | cause recovered valid review publishes original round without rewriting failed evidence | final recovered valid review publishes original round without rewriting failed evidence | observation-cause correction packages are explicitly outside verification recovery | cause recovery persists rejected auxiliary proof as a failed observation | final recovery persists rejected auxiliary proof as a failed observation | real driver preserves F24 request and invocation permissions through bounded final recovery
+scripts/cm-fix-review-verification.test.mjs	6/10 通过, 4 失败, 0 跳过; exit 1	7.36	7/10 通过, 3 失败, 0 跳过; exit 1	6/10 通过, 4 失败, 0 跳过; exit 1	安装版已有失败；origin/main 结果不同或不完整，见对照	isolated session mechanically runs baseline, killed mutation and restoration without changing source | each command removes unregistered artifacts before reusing the snapshot | host closes a registered command group after its MCP server is killed | fixed verification baseline observes cancellation instead of waiting for command timeout
+scripts/cm-fix-session-chain.test.mjs	16/16 通过, 0 失败, 0 跳过; exit 0	29.2	未执行	未执行	通过	
+scripts/cm-fix-source-correction.test.mjs	1/21 通过, 20 失败, 0 跳过; exit 1	33.65	1/21 通过, 20 失败, 0 跳过; exit 1	1/21 通过, 20 失败, 0 跳过; exit 1	origin/main 同名失败复现	type-import source correction previews in isolation then preserves original history and final diff | real source-correction inspector and driver preserve previews and require separate startup authority | source correction rejects missing authority, wrong expected and wrong declaration before writes | source correction refuses a third source image and unapproved manual correction | source correction resumes the exact recorded intent after an injected post-rename interruption | source correction cannot replace a prepared declaration or claim a second recovery budget | source correction records failure and cannot dispatch when original reproduction no longer matches | interrupted source checks consume their bounded attempts without resetting review calls | source intent rejects non-target profile drift before applying the recorded patch | source result cannot prepare after profile drift in the result-to-prepared interruption gap | durable source result survives a post-rename store interruption without competing failure or repeated checks | cancelling an active source reproduction cannot publish a prepared continuation | successful source cause recovery retains original F24 final recovery and replays its fresh review | source correction replay rejects resealed package tampering | source correction replay rejects resealed reproduction tampering | source correction replay rejects resealed baseline tampering | source correction replay rejects resealed sourceResultDigest tampering | source correction replay rejects resealed sourceRevision tampering | source correction completes the original JS gates with walkthrough frozen at creation | cancelling formal source baseline interrupts its frozen check before completion
+scripts/cm-fix-test-author.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	2.93	未执行	未执行	通过	
+scripts/cm-fix-test-extension.test.mjs	12/12 通过, 0 失败, 0 跳过; exit 0	65.13	未执行	未执行	通过	
+scripts/cm-fix-test-type-correction.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	0.51	未执行	未执行	通过	
+scripts/cm-fix-test-type-owner.test.mjs	7/7 通过, 0 失败, 0 跳过; exit 0	49.67	未执行	未执行	通过	
+scripts/cm-fix-test-type-verification-cost.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.97	未执行	未执行	通过	
+scripts/cm-fix-type-import-correction.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	0.36	未执行	未执行	通过	
+scripts/cm-fix-verification-diagnostic.test.mjs	10/14 通过, 4 失败, 0 跳过; exit 1	0.46	10/14 通过, 4 失败, 0 跳过; exit 1	10/14 通过, 4 失败, 0 跳过; exit 1	origin/main 同名失败复现	Node type-only export failure keeps a bound check diagnostic after session cleanup | successful checks without a mutation report the precise missing step | baseline-only verification succeeds without requiring or inventing a mutation | baseline-only verification refuses an incompatible frozen check with safe diagnostics
+scripts/cm-fix-visual-bare.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	26.98	未执行	未执行	通过	
+scripts/cm-fix-visual-carrier.test.mjs	5/5 通过, 0 失败, 0 跳过; exit 0	0.19	未执行	未执行	通过	
+scripts/cm-fix-walkthrough.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	0.25	未执行	未执行	通过	
+scripts/cm-fixture-process-cleanup.test.mjs	300 秒超时	300.05	未执行	未执行	到达 300 秒，超时排除；不声称通过	a guarded detached fixture dies with the test process that created it, even when TERM-resistant | a guarded fixture stops at its lifetime ceiling while the owner lives | killFixtureProcesses removes a marked detached leader and its unmarked TERM-resistant descendant | an unrelated process that merely names the fixture root survives, as does this test group
+scripts/cm-host-answer-timeout.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	2.5	未执行	未执行	通过	
+scripts/cm-host-call-kinds.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	0.13	未执行	未执行	通过	
+scripts/cm-host-check-ipc.test.mjs	9/9 通过, 0 失败, 0 跳过; exit 0	3.43	未执行	未执行	通过	
+scripts/cm-host-check.test.mjs	11/15 通过, 2 失败, 2 跳过; exit 1	6.23	11/12 通过, 1 失败, 0 跳过; exit 1	11/15 通过, 2 失败, 2 跳过; exit 1	安装版已有失败；origin/main 结果不同或不完整，见对照	native Codex profile allows business writes but protects specs for project checks | native protected IPC allows only owned AF_UNIX while specs, instructions, TCP and UDP remain denied
+scripts/cm-host-diagnostic.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	0.13	未执行	未执行	通过	
+scripts/cm-host-documentation.test.mjs	11/11 通过, 0 失败, 0 跳过; exit 0	0.79	未执行	未执行	通过	
+scripts/cm-host-handoff.test.mjs	13/13 通过, 0 失败, 0 跳过; exit 0	2.7	未执行	未执行	通过	
+scripts/cm-host-liveness.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	10.31	未执行	未执行	通过	
+scripts/cm-host-qa-executor.test.mjs	300 秒超时	300.02	未执行	未执行	到达 300 秒，超时排除；不声称通过	progress R1: quiet QA command boundaries; protected=true
+scripts/cm-host-qa-policy.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	0.24	未执行	未执行	通过	
+scripts/cm-host-review-authority.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	0.19	未执行	未执行	通过	
+scripts/cm-host-role-routing.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	1.36	未执行	未执行	通过	
+scripts/cm-host-session-diagnostic.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	0.14	未执行	未执行	通过	
+scripts/cm-host-stage-observer.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	0.19	未执行	未执行	通过	
+scripts/cm-host-tool-bridge.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	0.14	未执行	未执行	通过	
+scripts/cm-idea-answer-gaps.test.mjs	7/7 通过, 0 失败, 0 跳过; exit 0	5.57	未执行	未执行	通过	
+scripts/cm-idea-drive.test.mjs	5/5 通过, 0 失败, 0 跳过; exit 0	3.66	未执行	未执行	通过	
+scripts/cm-idea-host.test.mjs	9/9 通过, 0 失败, 0 跳过; exit 0	0.82	未执行	未执行	通过	
+scripts/cm-idea-recovery.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	1.85	未执行	未执行	通过	
+scripts/cm-init-analysis-host.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	0.52	未执行	未执行	通过	
+scripts/cm-init-answer-gaps.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	8.65	未执行	未执行	通过	
+scripts/cm-init-draft-generation.test.mjs	9/9 通过, 0 失败, 0 跳过; exit 0	0.36	未执行	未执行	通过	
+scripts/cm-init-draft-inspection.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	0.35	未执行	未执行	通过	
+scripts/cm-init-drive.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	3.8	未执行	未执行	通过	
+scripts/cm-init-host.test.mjs	23/23 通过, 0 失败, 0 跳过; exit 0	3.75	未执行	未执行	通过	
+scripts/cm-init-project-analysis.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	0.19	未执行	未执行	通过	
+scripts/cm-init-project-scan.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	0.29	未执行	未执行	通过	
+scripts/cm-init-revision-host.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.46	未执行	未执行	通过	
+scripts/cm-init-session.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	5.55	未执行	未执行	通过	
+scripts/cm-interactive-qa-diagnostic.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.41	未执行	未执行	通过	
+scripts/cm-knowledge-closeout.test.mjs	20/20 通过, 0 失败, 0 跳过; exit 0	10.9	未执行	未执行	通过	
+scripts/cm-live-evidence.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	0.47	未执行	未执行	通过	
+scripts/cm-log-event.test.mjs	5/5 通过, 0 失败, 0 跳过; exit 0	6.12	未执行	未执行	通过	
+scripts/cm-notify-command.test.mjs	36/40 通过, 4 失败, 0 跳过; exit 1	11.47	36/40 通过, 4 失败, 0 跳过; exit 1	36/40 通过, 4 失败, 0 跳过; exit 1	origin/main 同名失败复现	bark and pushplus requests: fields, numeric code check, rejected responses never echo values | network failure exits 3, the deadline (also while waiting on stdin) 5 and unexpected errors 6, without details | HTTPS_PROXY is honoured through a CONNECT tunnel on Node 24.5+ | slow reads (blocking or async) end with 5 on time; dry-run, --check and sends never return 0 after the budget
+scripts/cm-notify-read-drift.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	1.21	未执行	未执行	通过	
+scripts/cm-notify.test.mjs	35/35 通过, 0 失败, 0 跳过; exit 0	80.84	未执行	未执行	通过	
+scripts/cm-patrol.test.mjs	7/7 通过, 0 失败, 0 跳过; exit 0	2.04	未执行	未执行	通过	
+scripts/cm-prd-analysis.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	0.3	未执行	未执行	通过	
+scripts/cm-prd-answer-gaps.test.mjs	5/5 通过, 0 失败, 0 跳过; exit 0	22.77	未执行	未执行	通过	
+scripts/cm-prd-baseline-flow.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	2.72	未执行	未执行	通过	
+scripts/cm-prd-completion.test.mjs	26/26 通过, 0 失败, 0 跳过; exit 0	57.92	未执行	未执行	通过	
+scripts/cm-prd-design-baseline.test.mjs	26/26 通过, 0 失败, 0 跳过; exit 0	4.07	未执行	未执行	通过	
+scripts/cm-prd-design-phase.test.mjs	38/38 通过, 0 失败, 0 跳过; exit 0	128.4	未执行	未执行	通过	
+scripts/cm-prd-draft-save.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	0.51	未执行	未执行	通过	
+scripts/cm-prd-draft.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	0.22	未执行	未执行	通过	
+scripts/cm-prd-drive.test.mjs	13/13 通过, 0 失败, 0 跳过; exit 0	39.1	未执行	未执行	通过	
+scripts/cm-prd-gate-diagnostic.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	5.38	未执行	未执行	通过	
+scripts/cm-prd-host.test.mjs	9/9 通过, 0 失败, 0 跳过; exit 0	32.97	未执行	未执行	通过	
+scripts/cm-prd-inputs-replaced.test.mjs	12/12 通过, 0 失败, 0 跳过; exit 0	5.21	未执行	未执行	通过	
+scripts/cm-prd-materials.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	0.19	未执行	未执行	通过	
+scripts/cm-prd-planning-recovery.test.mjs	31/31 通过, 0 失败, 0 跳过; exit 0	2.96	未执行	未执行	通过	
+scripts/cm-prd-prototype-host.test.mjs	11/11 通过, 0 失败, 0 跳过; exit 0	22.34	未执行	未执行	通过	
+scripts/cm-prd-review-claim.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.36	未执行	未执行	通过	
+scripts/cm-prd-review-disposition.test.mjs	28/28 通过, 0 失败, 0 跳过; exit 0	5.93	未执行	未执行	通过	
+scripts/cm-prd-review-gate.test.mjs	26/26 通过, 0 失败, 0 跳过; exit 0	1.38	未执行	未执行	通过	
+scripts/cm-prd-review-host.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	0.43	未执行	未执行	通过	
+scripts/cm-prd-review-preparation.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	0.41	未执行	未执行	通过	
+scripts/cm-prd-review-publication.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	0.52	未执行	未执行	通过	
+scripts/cm-prd-review-route.test.mjs	15/15 通过, 0 失败, 0 跳过; exit 0	0.54	未执行	未执行	通过	
+scripts/cm-prd-revision.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.25	未执行	未执行	通过	
+scripts/cm-prd-self-check-revision.test.mjs	26/26 通过, 0 失败, 0 跳过; exit 0	24.29	未执行	未执行	通过	
+scripts/cm-prd-self-check.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.14	未执行	未执行	通过	
+scripts/cm-prd-session-recovery.test.mjs	14/14 通过, 0 失败, 0 跳过; exit 0	27.61	未执行	未执行	通过	
+scripts/cm-prd-sources.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.73	未执行	未执行	通过	
+scripts/cm-prd-summary.test.mjs	17/17 通过, 0 失败, 0 跳过; exit 0	2.61	未执行	未执行	通过	
+scripts/cm-prd-task-grouping.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	0.85	未执行	未执行	通过	
+scripts/cm-qa-environment.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.14	未执行	未执行	通过	
+scripts/cm-refactor-answer-gaps.test.mjs	9/9 通过, 0 失败, 0 跳过; exit 0	67.35	未执行	未执行	通过	
+scripts/cm-refactor-drive.test.mjs	7/7 通过, 0 失败, 0 跳过; exit 0	61.22	未执行	未执行	通过	
+scripts/cm-refactor-gaps.test.mjs	300 秒超时	300.03	未执行	未执行	到达 300 秒，超时排除；不声称通过	
+scripts/cm-refactor-host.test.mjs	9/9 通过, 0 失败, 0 跳过; exit 0	115.86	未执行	未执行	通过	
+scripts/cm-refactor-judge-revision.test.mjs	25/25 通过, 0 失败, 0 跳过; exit 0	280.26	未执行	未执行	通过	
+scripts/cm-review-dependency-snapshot.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	0.92	未执行	未执行	通过	
+scripts/cm-review-inventory.test.mjs	56/56 通过, 0 失败, 0 跳过; exit 0	31.35	未执行	未执行	通过	
+scripts/cm-review-material-batch.test.mjs	13/13 通过, 0 失败, 0 跳过; exit 0	22.65	未执行	未执行	通过	
+scripts/cm-review-material-cli.test.mjs	0/3 通过, 0 失败, 3 跳过; exit 0	0.13	未执行	未执行	通过	
+scripts/cm-review-material-deadline.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	7.39	未执行	未执行	通过	
+scripts/cm-review-material-worker.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.24	未执行	未执行	通过	
+scripts/cm-review-material.test.mjs	13/13 通过, 0 失败, 0 跳过; exit 0	13.66	未执行	未执行	通过	
+scripts/cm-review-presentation-fragments.test.mjs	5/5 通过, 0 失败, 0 跳过; exit 0	0.19	未执行	未执行	通过	
+scripts/cm-review-schema.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.14	未执行	未执行	通过	
+scripts/cm-review-scope-recovery.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.99	未执行	未执行	通过	
+scripts/cm-review-size-gate.test.mjs	9/9 通过, 0 失败, 0 跳过; exit 0	合并运行 18.15	未执行	未执行	通过	
+scripts/cm-review-text-codec.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.52	未执行	未执行	通过	
+scripts/cm-runtime-failover.test.mjs	16/16 通过, 0 失败, 0 跳过; exit 0	0.24	未执行	未执行	通过	
+scripts/cm-runtime.test.mjs	28/28 通过, 0 失败, 0 跳过; exit 0	5.3	未执行	未执行	通过	
+scripts/cm-security.test.mjs	27/27 通过, 0 失败, 0 跳过; exit 0	53.73	未执行	未执行	通过	
+scripts/cm-spec-manifest.test.mjs	1/1 通过, 0 失败, 0 跳过; exit 0	0.13	未执行	未执行	通过	
+scripts/cm-spec-task-line.test.mjs	8/8 通过, 0 失败, 0 跳过; exit 0	3.34	未执行	未执行	通过	
+scripts/cm-specs-status.test.mjs	5/5 通过, 0 失败, 0 跳过; exit 0	3.28	未执行	未执行	通过	
+scripts/cm-start-check.test.mjs	18/18 通过, 0 失败, 0 跳过; exit 0	11.66	未执行	未执行	通过	
+scripts/cm-task-gate-correction.test.mjs	10/10 通过, 0 失败, 0 跳过; exit 0	1.73	未执行	未执行	通过	
+scripts/cm-task-gate.test.mjs	26/27 通过, 0 失败, 1 跳过; exit 0	8.75	未执行	未执行	通过	
+scripts/cm-test-answer-gaps.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	10.97	未执行	未执行	通过	
+scripts/cm-test-branch-impact.test.mjs	13/13 通过, 0 失败, 0 跳过; exit 0	48.36	未执行	未执行	通过	
+scripts/cm-test-declared-command.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	0.13	未执行	未执行	通过	
+scripts/cm-test-drive.test.mjs	6/6 通过, 0 失败, 0 跳过; exit 0	13.57	未执行	未执行	通过	
+scripts/cm-test-host.test.mjs	11/11 通过, 0 失败, 0 跳过; exit 0	19.9	未执行	未执行	通过	
+scripts/cm-test-logic-results.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	0.13	未执行	未执行	通过	
+scripts/cm-test-session.test.mjs	19/19 通过, 0 失败, 0 跳过; exit 0	9.46	未执行	未执行	通过	
+scripts/cm-test-suite.test.mjs	9/9 通过, 0 失败, 0 跳过; exit 0	1.19	未执行	未执行	通过	
+scripts/cm-token-report.test.mjs	17/17 通过, 0 失败, 0 跳过; exit 0	1.57	未执行	未执行	通过	
+scripts/cm-tool-preview-context.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.14	未执行	未执行	通过	
+scripts/cm-ui-lens-extract.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.19	未执行	未执行	通过	
+scripts/cm-unit-coverage.test.mjs	11/11 通过, 0 失败, 0 跳过; exit 0	12.15	未执行	未执行	通过	
+scripts/cm-workflow-config.test.mjs	12/12 通过, 0 失败, 0 跳过; exit 0	2.11	未执行	未执行	通过	
+scripts/cm-workflow.test.mjs	4/4 通过, 0 失败, 0 跳过; exit 0	0.13	未执行	未执行	通过	
+scripts/correction-check.test.mjs	3/3 通过, 0 失败, 0 跳过; exit 0	0.25	未执行	未执行	通过	
+scripts/policy-binding-compat.test.mjs	5/5 通过, 0 失败, 0 跳过; exit 0	2.88	未执行	未执行	通过	
+scripts/validate-test-cases.test.mjs	2/2 通过, 0 失败, 0 跳过; exit 0	0.5	未执行	未执行	通过	

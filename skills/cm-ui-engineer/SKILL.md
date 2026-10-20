@@ -24,7 +24,7 @@ description: UI 还原工程师 Skill，把已确认的设计基准像素级还�
 ### 1. 读取基准
 
 - `specs/{N}.{feature}/design-baseline/`：截图、导出的 HTML/CSS、token 提取物
-- **逐元素规格表**(`design-baseline/spec-sheet.json`,prd 8.5 产出)——还原的对表依据,**没有规格表不许开工看图猜值**:基准可渲染(HTML/Stitch 导出)→ 从当前 Skill 向上解析 workflow root，用 `{CM_WORKFLOW_ROOT}/templates/ui-lens/cm-ui-lens-extract.mjs` 跑基准补一份;纯截图基准 → 色板精确采样、几何标「估算档」,汇报注明精度降级并建议人补设计源
+- **逐元素规格表** `design-baseline/spec-sheet.json` 是对表依据，缺失时不看图猜值。HTML/Stitch 先读 [原型基准合同](../cm-prd/references/prototype-baseline.md)，从当前 Skill 解析 workflow root，用提取器 `--page-script` 配合 Codex 内置浏览器读计算值；不能直接启动 Playwright 或手写冻结基准。缺已登记资产应回报原规格流程补齐；CSS 源码、计算值与实际交互分别记录。纯截图色板精确、几何标估算档，说明精度降级并建议补设计源。
 - design.md 的组件契约与基准路径
 - **不得修改基准文件**；基准与需求矛盾 → 上报
 

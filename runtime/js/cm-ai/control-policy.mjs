@@ -5,7 +5,7 @@ import {digest,json,need,shape,validIdentity,hex,id} from './effect-contract.mjs
 import {parseModelJson} from './model-configuration-file.mjs';
 
 export const CONTROL_RECOVERY_OPERATIONS=Object.freeze(['abandon_review','abandon_effect','develop_redo',
-  'bootstrap_review_recover','reconcile_review']);
+  'bootstrap_review_recover','completion_rework','development_rework','revise_scope','reconcile_review']);
 export const CONTROL_FIX_RECOVERY_OPERATIONS=Object.freeze(['abandon_step','abandon_review','rediagnose',
   'rerun_blocked_step','recover_final_review','reconcile_review']);
 export function readControlPolicy(raw){

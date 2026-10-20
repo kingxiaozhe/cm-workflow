@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import net from 'node:net';
+import {createProjectExecution} from '../runtime/js/cm-ai/host-project-execution.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {captureReviewBaseline} from '../runtime/js/cm-ai/review-package.mjs';
 import {createHostHandoff} from '../runtime/js/cm-ai/host-handoff.mjs';
@@ -136,3 +138,61 @@ test('cancelled check dispatches nothing and hung check is unavailable',()=>fixt
   const results=await check({identity},control());assert.equal(results[0].outcome,'unavailable');
   assert.equal(results[0].evidence,'host check: timeout');
 }));
+
+// This file belongs to the existing native-Codex test inventory. Optional tsx
+// uses a caller-supplied existing CLI; no test installs dependencies.
+async function ipcFixture(run){
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-ipc-native-'))),cwd=path.join(root,'code'),specsRoot=path.join(cwd,'specs');
+  fs.mkdirSync(specsRoot,{recursive:true});fs.mkdirSync(path.join(cwd,'.claude'));
+  for(const [name,value]of [['specs/tasks.md','host-owned'],['AGENTS.md','instructions'],['CLAUDE.md','instructions'],['.claude/rule.md','instructions']])fs.writeFileSync(path.join(cwd,name),value);
+  try{return await run({root,cwd,specsRoot});}finally{fs.rmSync(root,{recursive:true,force:true});}
+}
+const ipcCommand=code=>command('ipc',code);
+test('native protected IPC allows only owned AF_UNIX while specs, instructions, TCP and UDP remain denied',
+  {skip:process.platform!=='darwin'},()=>ipcFixture(async({root,cwd,specsRoot})=>{
+    const outsideSocket=path.join(root,'host.pipe'),unix=net.createServer(c=>c.end('forbidden')),tcp=net.createServer(c=>c.end('forbidden'));
+    try{
+      await new Promise((ok,no)=>{unix.once('error',no);unix.listen(outsideSocket,ok)});
+      await new Promise((ok,no)=>{tcp.once('error',no);tcp.listen(0,'127.0.0.1',ok)});
+    const code=`(async()=>{
+      const fs=require('node:fs'),net=require('node:net'),dgram=require('node:dgram'),path=require('node:path'),assert=require('node:assert/strict');
+      const tmp=process.env.TMPDIR;fs.writeFileSync('private-tmp.txt',tmp);assert.equal(fs.statSync(tmp).mode&511,448);
+      const socket=path.join(tmp,'fixture.pipe'),server=net.createServer(c=>c.end('IPC_OK'));
+      await new Promise((ok,no)=>{server.once('error',no);server.listen(socket,ok)});
+      const reply=await new Promise((ok,no)=>{const c=net.connect(socket);let s='';c.on('data',x=>s+=x);c.once('end',()=>ok(s));c.once('error',no)});
+      assert.equal(reply,'IPC_OK');await new Promise(ok=>server.close(ok));
+      const denied=fn=>assert.throws(fn,e=>['EPERM','EACCES','EROFS'].includes(e.code));
+      for(const p of ['specs/tasks.md','specs/new.md','AGENTS.md','CLAUDE.md','.claude/rule.md'])denied(()=>fs.writeFileSync(p,'bad'));
+      denied(()=>fs.renameSync('specs','moved-specs'));
+      for(const target of [{path:path.resolve('outside-private.pipe')},{port:0,host:'127.0.0.1'}]){
+        const s=net.createServer();const e=await new Promise(ok=>{s.once('error',ok);s.listen(target,()=>{s.close();ok(null)})});
+        assert(e&&['EPERM','EACCES'].includes(e.code),'unscoped AF_UNIX/TCP listen was not refused');
+      }
+      for(const target of [${JSON.stringify(outsideSocket)},{port:${tcp.address().port},host:'127.0.0.1'}]){
+        const c=net.connect(target);const e=await new Promise(ok=>{c.once('error',ok);c.once('connect',()=>ok(null))});c.destroy();
+        assert(e&&['EPERM','EACCES'].includes(e.code),'outbound AF_UNIX/TCP connect was not refused');
+      }
+      const udp=dgram.createSocket('udp4');const e=await new Promise(ok=>{udp.once('error',ok);udp.bind(0,'127.0.0.1',()=>ok(null))});
+      try{udp.close()}catch{}assert(e&&['EPERM','EACCES'].includes(e.code));
+      console.log('tests 1');console.log('pass 1');
+    })().catch(e=>{console.error(e);process.exitCode=1});`;
+    const rows=await createProjectExecution({definition:{codeProject:cwd,specsDir:specsRoot,identity,scope:['private-tmp.txt']},
+      protection:{checkCommands:[ipcCommand(code)],timeoutMs:15000}}).check({identity},control());
+    assert.equal(rows[0].outcome,'passed',JSON.stringify(rows));assert.equal(rows[0].exitCode,0);
+    const tmp=fs.readFileSync(path.join(cwd,'private-tmp.txt'),'utf8');assert(!fs.existsSync(tmp));
+    assert.equal(fs.readFileSync(path.join(specsRoot,'tasks.md'),'utf8'),'host-owned');
+    }finally{await Promise.all([unix,tcp].map(s=>s.listening?new Promise(ok=>s.close(ok)):Promise.resolve()));}
+  }));
+const tsx=process.env.CM_TEST_TSX_CLI;
+for(const failed of [false,true])test(`native protected npm/tsx reaches real ${failed?'failing':'passing'} assertion and preserves exit`,
+  {skip:process.platform!=='darwin'||!tsx},()=>ipcFixture(async({cwd,specsRoot})=>{
+    assert(fs.statSync(tsx).isFile());fs.mkdirSync(path.join(cwd,'mobile'));
+    fs.writeFileSync(path.join(cwd,'mobile/logic.ts'),`import assert from 'node:assert/strict';const n:number=2;assert.equal(n,${failed?3:2});console.log('TSX_REACHED');`);
+    fs.writeFileSync(path.join(cwd,'mobile/package.json'),JSON.stringify({name:'cm-isolated-ipc',version:'1.0.0',scripts:{test:`${JSON.stringify(process.execPath)} ${JSON.stringify(tsx)} logic.ts`}}));
+    const run=ipcCommand(`const fs=require('node:fs'),r=require('node:child_process').spawnSync('npm',['test'],{cwd:'mobile',encoding:'utf8'});fs.writeFileSync('tsx.log',(r.stdout??'')+(r.stderr??''));process.exit(r.status??99)`);
+    const rows=await createProjectExecution({definition:{codeProject:cwd,specsDir:specsRoot,identity,scope:['mobile/logic.ts']},
+      protection:{checkCommands:[run],timeoutMs:15000}}).check({identity},control());
+    assert.equal(rows[0].outcome,failed?'failed':'passed');assert.equal(rows[0].exitCode,failed?1:0);
+    const output=fs.readFileSync(path.join(cwd,'tsx.log'),'utf8');assert(!output.includes('listen EPERM'));
+    assert(output.includes(failed?'AssertionError':'TSX_REACHED'),output);
+  }));

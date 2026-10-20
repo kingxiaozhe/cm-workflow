@@ -1,0 +1,90 @@
+类别	路径	理由	candidate-SHA256	installed-SHA256
+candidate_only	.claude/CLAUDE.md	源码规则入口；同步安装功能说明，保留主分支约束	0a0e91e2c562cdab50ce4322183751fc3d51de6a70177c1727fde594dd7bacc2	
+candidate_only	.claude/rules/coding-style.md	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	e0373fd7422882a27b791bfd0345331966cad43129dd6f22ffbe016ebe062015	
+candidate_only	.claude/rules/git-workflow.md	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	acf5331b03391a2e8c49929abf47cdaa72c8153ad18112aac888b5772898ea8e	
+candidate_only	.claude/rules/security.md	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	ddcfa0dd15ebc9e5db509dd91ff58a7d9e8aaf351ff1681c2a6cdb3a19bd48ce	
+candidate_only	.claude/rules/testing.md	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	9f6e14515f6b741d43e7a16075baf1ce27e77779686ec9e149a416854d7e12ca	
+different	.codex-plugin/plugin.json	保留 origin/main 语义版本 0.17.1；安装器生成的 +codex 缓存后缀不进入源码	d003937a38a8470c822070b6600a987541841e55649d4875965cec04adb0fedd	e5cc0cba2d52e41ee3ad60769b0f28e9094060171b0622d6db16c23b6a69c256
+candidate_only	.github/workflows/ci.yml	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	dd0d9ffdcfc7d1eab4fde5a699a760e1f451065a62c2098680b150df46060cb7	
+candidate_only	.gitignore	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	7574aa5685d562663fe2c6deea990b4926846329f1d64fdf8d1b4d34e3a7665d	
+candidate_only	.gitleaksignore	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	b620c4a4426fe365766c72636840ca4cba9cd0a826e5bec2812ea5c61113f365	
+candidate_only	docs/fixes/20261019-review-size-gate.md	69bc28d 随附的已有修复说明；其中旧测试结果不是本轮结果	a259ea19342e5d43232f69102796aaf926d7115a536689b7c9ea98aa8cde7ae5	
+report_only	docs/maintenance/consolidate-installed/README.md	本次盘点、来源、测试和交接证据；非运行时功能		
+report_only	docs/maintenance/consolidate-installed/branch-comparison.tsv	本次盘点、来源、测试和交接证据；非运行时功能		
+report_only	docs/maintenance/consolidate-installed/candidate-manifest.tsv	本次盘点、来源、测试和交接证据；非运行时功能		
+report_only	docs/maintenance/consolidate-installed/excluded-tests.tsv	本次盘点、来源、测试和交接证据；非运行时功能		
+report_only	docs/maintenance/consolidate-installed/initial-differences.tsv	本次盘点、来源、测试和交接证据；非运行时功能		
+report_only	docs/maintenance/consolidate-installed/installed-manifest.tsv	本次盘点、来源、测试和交接证据；非运行时功能		
+report_only	docs/maintenance/consolidate-installed/remaining-differences.tsv	本次盘点、来源、测试和交接证据；非运行时功能		
+report_only	docs/maintenance/consolidate-installed/repository-checks.tsv	本次盘点、来源、测试和交接证据；非运行时功能		
+report_only	docs/maintenance/consolidate-installed/source-attribution.tsv	本次盘点、来源、测试和交接证据；非运行时功能		
+report_only	docs/maintenance/consolidate-installed/source-content-sha256.txt	本次盘点、来源、测试和交接证据；非运行时功能		
+report_only	docs/maintenance/consolidate-installed/test-results.tsv	本次盘点、来源、测试和交接证据；非运行时功能		
+candidate_only	experiments/js-orchestration/README.md	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	c74af3a24be1e5d77ec40b5acd69c775f7ffdad279bcd8a27f8dbc58432eb8b2	
+candidate_only	experiments/js-orchestration/cm-ai-admission.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	b3d2f584492586a0ad7fbf795834a4bdb6574603e5ac7b0fef548ddce9663886	
+candidate_only	experiments/js-orchestration/cm-ai-admission.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	4bcdf0bcaf9e9599f54fa6f8538b8f8ccd53d7c0c7719c827911b522e773d759	
+candidate_only	experiments/js-orchestration/cm-ai-context-refresh.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	4e9e272aa9869338839759b3e3485f06e19912742070ab7279c8332c4f667242	
+candidate_only	experiments/js-orchestration/cm-ai-conversation-entry.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	82b5349fb84b93d762041620c8e1960bfba8c88cc17172b29ce3e57733fde4dd	
+candidate_only	experiments/js-orchestration/cm-ai-conversation-entry.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	e0bb1b5daf28fe18711b9d11814b0b6fa39e573817ea96fa255069454fa45e70	
+candidate_only	experiments/js-orchestration/cm-ai-learning-handoff-writer.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	65656a22ed627e9aea772d82b916d5acb0dc767fa2f7bf438f1990e1985a5640	
+candidate_only	experiments/js-orchestration/cm-ai-learning-writer.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	c04d8fcd001405e14dbfe3c4b1186fb3f6c0022c491fba0c17c3cc1fd6a10a05	
+candidate_only	experiments/js-orchestration/cm-ai-learning-writer.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	55a13d6c8cf1fa386ec32ef394e750084d8ee43c5cf5cb4af2e8aa70def0dddc	
+candidate_only	experiments/js-orchestration/cm-ai-qa-log.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	200704accb9fe2fcdfc6498cce4cb69d27843ee80be9990926f49136070a376c	
+candidate_only	experiments/js-orchestration/cm-ai-run-finalizer.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	9fc03628544f9452d6baf085988d492462ea2dd877a0a8c942641da3224b7b65	
+candidate_only	experiments/js-orchestration/cm-ai-runtime-root.test.mjs	12b7ce9 的真实历史增量：宿主操作清单补 reviseScope/reworkDevelopment	4df6a6eca260b2c5f671f73cd61919561fc7f4a7a6af56e2fac0956f40b0cc8c	
+candidate_only	experiments/js-orchestration/cm-check-entry.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	1422645c33eb9725b606a0fb13698164ebbbae4087485a5c06829c08dd4e5dc9	
+candidate_only	experiments/js-orchestration/cm-fix-entry.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	fb37590bbf0ce2f87c308a9f34280a5c36b855f1fbb122c44d23e6abf27c7e64	
+candidate_only	experiments/js-orchestration/cm-init-entry.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	ba4b2dee5c59307660e97a92ed532594be7deb38ab0f2a0a4ca3b3fa324c48da	
+candidate_only	experiments/js-orchestration/cm-planning-entry.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	524425b9d39f3b17fd326ee60923cdc35802efa2f8ef0468dbb4bd6c6d6475ff	
+candidate_only	experiments/js-orchestration/cm-refactor-entry.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	66cc89ffc19ecb3516c900f318de04a84487455c3e63d2aa0107cf86a0eb941d	
+candidate_only	experiments/js-orchestration/cm-test-entry.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	72c4fbc28a1ddc3012a81598cc91045dd268be55c5f4c1fa376b4800a5f74850	
+candidate_only	experiments/js-orchestration/codex-config.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	5065a025d0867cfb702764157f154f79c2e1c799cad42911cca43f9e5f9425cc	
+candidate_only	experiments/js-orchestration/codex-review-adapter.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	c2c8b7cd2cb9b068ac74ddbd0a3d023bd968dd8cf5f712258ff7b13bdcd315c4	
+candidate_only	experiments/js-orchestration/codex-review-adapter.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	9734cab14c28c40b3927ffa234a5d57dc59e2f17bbcd171e7ca3dcc62a28cf03	
+candidate_only	experiments/js-orchestration/contracts.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	4867fc39ab915a0b0129af78d3dd53f74bde3c309f008134c8d1c99d40579195	
+candidate_only	experiments/js-orchestration/contracts.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	bacffa2d130d840c6defc39f3c06152f305fd7801678f0a55b82b50198ec18e8	
+candidate_only	experiments/js-orchestration/durable-runner-state.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	ab788083098b99e2258ed455701f8bde0a078abed4cff4da41ecca0bba0fa8b4	
+candidate_only	experiments/js-orchestration/durable-runner-state.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	aecd9ce14eeb1565965302791bc9c8966364b2bc2fd10863f1dece3f188d86d7	
+candidate_only	experiments/js-orchestration/effect-contract.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	a9b7dd601a18d508da9c915eea3d604747f53aaa1b086ed2b1d07434e33e508f	
+candidate_only	experiments/js-orchestration/execution-store.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	1ffdd2378fd687b3211ee4f312a0f429701db5f80b096104cc4a42bec1d32dc8	
+candidate_only	experiments/js-orchestration/execution-store.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	111eb163a1cb996ef501a54ec15277672cc2393fb6b275dabee2248a60c740bd	
+candidate_only	experiments/js-orchestration/gate-bridge.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	cd62a1c55bc7193078f2b4ae5c21d83838f52e1ee31a029834d11f9329459929	
+candidate_only	experiments/js-orchestration/host.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	40d3a72e572a2c27caa09375eff61f2416ca229447d2a235902df29f269bfc36	
+candidate_only	experiments/js-orchestration/inspect-task.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	6e142cc97d024852225d5bb95fcd613d2e1c518663d474c1f615385526bd5b12	
+candidate_only	experiments/js-orchestration/native-gate-fixture.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	3cb5a1b3a9750f4cc42e8cdb67b25dcfb9024a54ed4be4984a4574a66142b9ac	
+candidate_only	experiments/js-orchestration/provider-review-observation.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	0cda3efb7494d4c81284eaf96bcfd97edcc17a4106d7456033abedc7daa00d63	
+candidate_only	experiments/js-orchestration/provider-review-observation.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	aaef85bef12c04b18320a9de9af01ed23a98cc22adfa234ab8e75bf97511da3e	
+candidate_only	experiments/js-orchestration/replay.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	faf77e6c9dbdd49ac9822d10dc35e9056628ed8e3ee72ab101eeef63817ec1dc	
+candidate_only	experiments/js-orchestration/replay.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	83fd50a8cfb65fbb4997c38909ecf8c35f577afc0b858562714204ad1b43604b	
+candidate_only	experiments/js-orchestration/review-invocation-v3.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	3c45c1fa7f0db566e4c249e88a675b240f5f0fe18c5b56e8cac33a185a85fbeb	
+candidate_only	experiments/js-orchestration/review-package.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	7ae8f489c75713ea059eaec62b1527053df597c91de8ea2b2c658b8385fa0a62	
+candidate_only	experiments/js-orchestration/review-package.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	d6198b57eeac4c27fcc59cd13cc7a0bad73a1b1b783653694a8075e04c007a87	
+candidate_only	experiments/js-orchestration/review-runner.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	62e007e2e495f626861f5a047d23fe56bb974ce847d1ce6015dc0e7f4d9395e2	
+candidate_only	experiments/js-orchestration/review-runner.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	4f9bb6cdb445efc0d4261bfca980748c637ef6df8442815de0b75d9b1c1284bd	
+candidate_only	experiments/js-orchestration/run-demo.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	59321f3c16600e5e05819b66596466496b17a9ec3a098eb04f3c6c6f0764bd5f	
+candidate_only	experiments/js-orchestration/smoke.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	07b6a97bb02d380125f5f14683a046e24e94b9ed76af1b1c617c22ea55f18a5e	
+candidate_only	experiments/js-orchestration/task-commit-codec.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	b55316a59c337c61d6b15686987f61bff0c41ba22adf3797a3060b58164c87e9	
+candidate_only	experiments/js-orchestration/task-commit-codec.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	55d9ed8e932772cf2391cb5dbd270d5deba75eac8a9f996d1b61f04c7ce192f6	
+candidate_only	experiments/js-orchestration/task-commit.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	9c1571d8d666395c91d3ff946bce65aa8ffb556caa7d4fe8ab3101e6e2bc91cc	
+candidate_only	experiments/js-orchestration/task-commit.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	f31a061f1e8557140137e403ebdec6480b55875b6b98673668ee1f90497648fe	
+candidate_only	experiments/js-orchestration/task-owner.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	a1c55ae8636df74ce67ae1b1a7550a3170bafdd47970b1407e2336e02e33c37f	
+candidate_only	experiments/js-orchestration/task-owner.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	19c3319986300992bfbee79fbd691018c19d4c229e906fcd8077bce247ed2485	
+candidate_only	experiments/js-orchestration/task-runner.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	8cce5663ea7d3c6c52d5cdc39f95a62a1c7d9b76358598ebd7d0aa4cea185ac8	
+candidate_only	experiments/js-orchestration/task-runner.test.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	0eaccd8a68b683df8de1ae2a5efaa98c07bc5e54f0385476be6716087bfaf46d	
+candidate_only	experiments/js-orchestration/tool-preview.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	d0d87388cf12b0025862ef7a3212a013f57bfa47531babbb4bd7e598769357e8	
+candidate_only	experiments/js-orchestration/two-step.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	319f024805deea9b2116a9cfc0501047c3a272d8125ad082852bfd791c70f24d	
+candidate_only	experiments/js-orchestration/worker-codex.mjs	保留 origin/main 的源码/CI/规则/历史兼容夹具；安装包未分发	648661ce61b580450425540591a9c5c9603b8ee884b7a3fa644faa9ede0fd6a8	
+different	runtime/js/cm-ai/claude-review-adapter.mjs	69bc28d 的规模统计、配置透传或发起前拦截；四处冲突只保留规模增量	a10f92f99da1ba6cf45c30e221bffd064559a23f5226d4c66ad471cd0ef49711	9ce6bee07aa6c92d46c51b318491c476703dad9881b62f04df192f403b1dbb17
+different	runtime/js/cm-ai/codex-review-adapter.mjs	69bc28d 的规模统计、配置透传或发起前拦截；四处冲突只保留规模增量	dd81568d4674cfd4eb3448556650b215a91dd2f20a3c430332fc3dfbe648159e	db6f1a5302b32a65df44fc2afd30caa69023f0460f3bb10d4bcc1e9f0e53d4b8
+different	runtime/js/cm-ai/codex-review-input.mjs	69bc28d 的规模统计、配置透传或发起前拦截；四处冲突只保留规模增量	b299a73dfcbb4cf9d0342cde4afaa000550d3295e019083433059dafe94f1753	856439cc9230d42b8af15ee180f9312dcb2b213f884628e35293468503fb9ef9
+different	runtime/js/cm-ai/continuation-preflight.mjs	69bc28d 的规模统计、配置透传或发起前拦截；四处冲突只保留规模增量	9c61bc198d52783db54819a10c8553fcc15871e3fba00683686edb908e924f5f	9841a40a1f41275169b0d4fb4cf9a35f5807793fd250de4477957cc472450f81
+different	runtime/js/cm-ai/effect-contract.mjs	69bc28d 的规模统计、配置透传或发起前拦截；四处冲突只保留规模增量	de3750cb6dbd50a6672498124cd9ff22fb321e075859bdf13f5699788f31c75b	f3aa99085b9e2e1e8ed92387e524025d79390bb97e0135f049d9afb1e4a26114
+different	runtime/js/cm-ai/host-conversation-execution.mjs	69bc28d 的规模统计、配置透传或发起前拦截；四处冲突只保留规模增量	addde1b2be710db96b3e9a4c654f367c9a1138ce03c4b119a0a869917c58a21e	eb147549c3833d94052a6ef9da5465e5485bfe131e1c090985b8366dde44c456
+candidate_only	runtime/js/cm-ai/review-scope-policy.mjs	69bc28d 新增的审查规模策略	06438452b4d26c62687626fd4bed13b03ec832756b81534a3b77e7b5d440239f	
+different	runtime/js/cm-ai/task-runner.mjs	69bc28d 的规模统计、配置透传或发起前拦截；四处冲突只保留规模增量	c751e600655280f193e3ff93627b10035e10628fd68045c7156a8eb6a5426f56	54bfbb03305753d979f9fb08119ae43cc939152ddec6c535fb6b4d3690530f13
+different	scripts/cm-ai-host.mjs	69bc28d 的规模统计、配置透传或发起前拦截；四处冲突只保留规模增量	7658d88c391b83a2875b799f4806782d4efdad545320315fe34d4421c9d7a2ba	bcd8d49f3ae8a5fb0882f169fe16133c347d4a4def123c7f0a90e6e0fd89456a
+different	scripts/cm-ai-review-input-admission.test.mjs	69bc28d 的规模统计、配置透传或发起前拦截；四处冲突只保留规模增量	8ae4f8fc86e8074a7695750015257b9293307199e5ebdcf57dd869c34dc62c6f	086aaf343a98636c4b91a3942cec9933040d2d5413bc7cd3cf013412fe5fe55c
+different	scripts/cm-ai-run.mjs	69bc28d 的规模统计、配置透传或发起前拦截；四处冲突只保留规模增量	e14d1661b073ecf00164922c836835da0f63e236d43b4e4a191b1b9c2aee22fd	d89a027e6827e1f66cac95d9812fc6ba926d4b1ec5a33f1943e2ba3b89f755e0
+candidate_only	scripts/cm-codex-developer-reconnect-notice.test.mjs	0599bff 开发 worker 重连回归	56b9eb3c4955ab7e9bc1b5cb3f49c46815ec49ddfb5d0a816f10a2c6e21b3a44	
+candidate_only	scripts/cm-codex-reconnect-notice.test.mjs	0599bff 审查 worker 重连回归	bc19a7932aa6f733b595c2add3fb14f75c5a740480c8138d015fe21664f5b53b	
+candidate_only	scripts/cm-review-size-gate.test.mjs	69bc28d 规模闸门回归	be9f78ed553e98ddaf8ca6bd55a7c8e800cfcee24fb4ee7681acdb3a12ec17da	

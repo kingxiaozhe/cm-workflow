@@ -1,0 +1,38 @@
+file	test_name	category
+experiments/js-orchestration/cm-ai-runtime-root.test.mjs	public host composes the existing runner and conversation entry without a second control surface	a
+experiments/js-orchestration/smoke.test.mjs	CLI adapter normalizes duplicate provider failure terminals and still records process close	b
+experiments/js-orchestration/smoke.test.mjs	CLI notice is reported but does not substitute for completion	b
+experiments/js-orchestration/smoke.test.mjs	invalid unterminated event is rejected during process closure	b
+experiments/js-orchestration/smoke.test.mjs	malformed JSON fails closed	b
+experiments/js-orchestration/smoke.test.mjs	no terminal completion is not a successful result	b
+experiments/js-orchestration/smoke.test.mjs	process timeout is explicit and fake child closes	b
+experiments/js-orchestration/smoke.test.mjs	review notice after error stays failed	b
+experiments/js-orchestration/smoke.test.mjs	review notice after turn.completed stays failed	b
+experiments/js-orchestration/smoke.test.mjs	review notice after turn.failed stays failed	b
+experiments/js-orchestration/smoke.test.mjs	review notice callback: non-function	b
+experiments/js-orchestration/smoke.test.mjs	review notice callback: omitted	b
+experiments/js-orchestration/smoke.test.mjs	review notice callback: throwing	b
+experiments/js-orchestration/smoke.test.mjs	review notices cannot hide a nonzero exit	b
+experiments/js-orchestration/smoke.test.mjs	review worker notice boundary: error/	b
+experiments/js-orchestration/smoke.test.mjs	review worker notice boundary: item.completed/future_item	b
+experiments/js-orchestration/smoke.test.mjs	review worker notice boundary: item.started/error	b
+experiments/js-orchestration/smoke.test.mjs	review worker notice boundary: turn.failed/	b
+experiments/js-orchestration/smoke.test.mjs	review worker reports both startup notices through onNotice without changing result shape	b
+experiments/js-orchestration/smoke.test.mjs	spawn failure settles without a second event after closure	b
+experiments/js-orchestration/smoke.test.mjs	unexpected tool event remains blocked	b
+experiments/js-orchestration/smoke.test.mjs	valid consumed events allow unrelated provider metadata	b
+experiments/js-orchestration/task-runner.test.mjs	S2b full package payload above 1MiB remains reviewable within S2a bound	d
+scripts/cm-ai-bounded-native-correction.test.mjs	original double-blocked native run grants exactly one separate correction and preserves all six spent calls through N5 QA replay	c
+scripts/cm-ai-bounded-native-correction.test.mjs	original failed correction grants only one technical review of the unchanged package and completes QA	c
+scripts/cm-ai-material-chain.test.mjs	approved	c
+scripts/cm-ai-material-chain.test.mjs	blocked	c
+scripts/cm-ai-material-chain.test.mjs	changes_requested	c
+scripts/cm-ai-native-review-continuation.test.mjs	native original blocked review preserves verdict and budgets while evidence recovery uses only round two then completes QA and resume	c
+scripts/cm-ai-operator-guidance.test.mjs	only native resume paths advertise same-run development and never grant permission	c
+scripts/cm-controlled-correction.test.mjs	only the original independent blocked r2 can enter the continuation	c
+scripts/cm-external-model-host.test.mjs	both-runtime routing still uses Codex development and fresh Claude review with its own single pair	c
+scripts/cm-external-model-host.test.mjs	claude new policy actual dev/review records original usage once and replay adds no tokens	c
+scripts/cm-external-model-host.test.mjs	codex new policy actual dev/review records original usage once and replay adds no tokens	c
+scripts/cm-external-model-host.test.mjs	new mode owns a serial lease and a different run ID cannot bypass unfinished work	c
+scripts/cm-external-model-host.test.mjs	one Codex pair reaches actual dev and fresh review; immutable snapshot resumes with corrupt new defaults	c
+scripts/cm-ai-material-chain.test.mjs	original material failure through controlled continuation and owner reception (parent summary)	c
