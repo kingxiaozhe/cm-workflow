@@ -15,7 +15,9 @@ import {buildManifest} from './cm-spec-manifest.mjs';
 
 const INPUT_LIMIT=1048576,marker='\n<cm-review-data-json>\n';
 // Captured from the a401 baseline INSTRUCTIONS, not copied from the repair.
-const LEGACY_PREFIX_SHA='d4c4037ea964dc971d79e8eaadddf6dc8937ec7c735a9b99cf979e7f07fc5ae0';
+// The legacy prompt of the current main: it carries the scope-revision unchangedScope
+// clause added after #223, so its digest differs from the #223-era value.
+const LEGACY_PREFIX_SHA='3856cd689760c325740f82d02e679ae6fb9785cf139068611caad056815fc73f';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const checks=[{id:'unit',command:['node','synthetic-unit.mjs'],outcome:'passed',exitCode:0,evidence:'Synthetic unit evidence, not a command execution'},
   {id:'boundary',command:['node','synthetic-boundary.mjs'],outcome:'passed',exitCode:0,evidence:'Synthetic boundary evidence, not a provider call'}];
