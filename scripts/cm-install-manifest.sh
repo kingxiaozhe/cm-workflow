@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Shared install-manifest helpers for install.sh and install-codex.sh.
+# Shared install-manifest and install-lock helpers for install.sh and
+# install-codex.sh.
 # Sourced by the installers (bash 3.2 compatible); it prints nothing itself so
 # each installer keeps its own language. A manifest records the sha256 of every
 # file the previous install wrote; a mismatch on reinstall means a local edit
@@ -163,4 +164,54 @@ cm_manifest_find_edits() {
        { path = substr($0, 67); if (recorded[path] != substr($0, 1, 64)) print path }' \
     "$fe_manifest" "$fe_work/current-hashes" >> "$fe_edits" || return 1
   LC_ALL=C sort -o "$fe_edits" "$fe_edits" || return 1
+}
+
+# cm_manifest_recorded_hash MANIFEST RELATIVE
+# Print the recorded hash for RELATIVE (empty when not recorded). The manifest
+# must already have passed cm_manifest_validate.
+cm_manifest_recorded_hash() {
+  awk -v wanted="$2" 'NR > 1 && substr($0, 67) == wanted { print substr($0, 1, 64); exit }' "$1"
+}
+
+# cm_manifest_file_hash FILE
+# Print the sha256 of one file; returns 1 on failure.
+cm_manifest_file_hash() {
+  if [ "$CM_SHA256_TOOL" = shasum ]; then
+    fh_line=$(shasum -a 256 < "$1") || return 1
+  else
+    fh_line=$(sha256sum < "$1") || return 1
+  fi
+  printf '%s\n' "${fh_line%% *}"
+}
+
+# ---- Install lock -----------------------------------------------------------
+# One install transaction per target at a time (bash 3.2: `mkdir` is atomic).
+# A stale lock is never taken over automatically; the installer reports the
+# holder and the manual removal command, and a person decides.
+
+# cm_install_lock_acquire LOCK_DIR TARGET -> 0 acquired, 1 held by someone else
+cm_install_lock_acquire() {
+  mkdir "$1" 2>/dev/null || return 1
+  printf 'pid=%s\nstarted=%s\ntarget=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" > "$1/owner" || true
+  return 0
+}
+
+# cm_install_lock_field LOCK_DIR FIELD -> value from the owner file, or empty
+cm_install_lock_field() {
+  [ -f "$1/owner" ] || return 0
+  awk -v key="$2" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }' "$1/owner"
+}
+
+# cm_install_lock_pid_state PID -> alive | not-running | unknown
+cm_install_lock_pid_state() {
+  case "$1" in
+    ''|*[!0-9]*) echo unknown; return 0 ;;
+  esac
+  if kill -0 "$1" 2>/dev/null; then
+    echo alive
+  elif ps -p "$1" >/dev/null 2>&1; then
+    echo alive
+  else
+    echo not-running
+  fi
 }

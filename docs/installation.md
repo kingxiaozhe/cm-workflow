@@ -148,6 +148,12 @@ file whose hash changed is treated as a local edit: both Bash installers list it
 and exit with status 3 before writing anything, and `--yes` does not bypass this.
 Pass `--overwrite-local-edits` only when you intend to discard those edits.
 Without a previous manifest the check is skipped with a notice.
+Only one install per target runs at a time: a second one exits with status 4
+and names the lock holder; a leftover lock is never taken over automatically,
+and the installer prints the `rm -rf` command to remove it once you have
+confirmed no install is running. `install.sh` re-checks each file right before
+copying it, which narrows but cannot remove the race, so do not edit installed
+CM files while an install is running.
 
 The installer runs the shared mechanical check before reporting success. Start a
 new Claude Code session, then run `/cm-check`. The installer also keeps the

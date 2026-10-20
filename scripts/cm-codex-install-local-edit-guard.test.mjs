@@ -109,6 +109,8 @@ test('codex install manifest: first install records hashes, unchanged reinstall 
     assert.equal(overwritten.status, 0, output(overwritten));
     assert.match(overwritten.stdout, /these edits will be replaced/);
     assert.equal(fs.readFileSync(edited, 'utf8'), fs.readFileSync(path.join(source, EDITED), 'utf8'));
+    assert.equal(fs.existsSync(path.join(path.dirname(plugin), '.cm-workflow.install.lock')), false,
+      'every finished install releases its lock');
   });
 
 test('codex install manifest: a manifest path that is a directory is a corrupt manifest, not a missing one',
@@ -122,4 +124,34 @@ test('codex install manifest: a manifest path that is a directory is a corrupt m
     assert.match(refused.stderr, /Unrecognized install manifest/);
     assert.doesNotMatch(refused.stdout, /No previous install manifest found/);
     assert.equal(fs.readFileSync(path.join(plugin, EDITED), 'utf8'), 'hand edit\n');
+  });
+
+test('codex install lock: a held lock refuses the install without writing; a stale one is reported, never taken over',
+  {skip: process.platform === 'win32', timeout: 120000}, async t => {
+    const {plugin, marketplace, env} = sandbox(t);
+    const lock = path.join(path.dirname(plugin), '.cm-workflow.install.lock');
+    fs.mkdirSync(lock, {recursive: true});
+    const holder = spawn('/bin/sleep', ['60']);
+    t.after(() => holder.kill('SIGKILL'));
+    const owner = pid => `pid=${pid}\nstarted=2026-10-20T00:00:00Z\ntarget=${plugin}\n`;
+    fs.writeFileSync(path.join(lock, 'owner'), owner(holder.pid));
+
+    const busy = install(env, ['--yes']);
+    assert.equal(busy.status, 4, output(busy));
+    assert.match(busy.stderr, /Another CM install is writing the same target/);
+    assert.match(busy.stderr, new RegExp(`Holder pid: ${holder.pid}`));
+    assert.match(busy.stderr, /still running/);
+    assert.equal(fs.existsSync(plugin), false);
+    assert.equal(fs.existsSync(marketplace), false);
+    assert.equal(fs.readFileSync(path.join(lock, 'owner'), 'utf8'), owner(holder.pid));
+
+    const exited = new Promise(resolve => holder.on('close', resolve));
+    holder.kill('SIGKILL');
+    await exited;
+    const stale = install(env, ['--yes']);
+    assert.equal(stale.status, 4, output(stale));
+    assert.match(stale.stderr, /no longer running/);
+    assert.ok(stale.stderr.includes(`rm -rf '${lock}'`), stale.stderr);
+    assert.equal(fs.existsSync(plugin), false);
+    assert.equal(fs.readFileSync(path.join(lock, 'owner'), 'utf8'), owner(holder.pid));
   });

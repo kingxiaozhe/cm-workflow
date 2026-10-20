@@ -28,6 +28,9 @@ OVERWRITE_LOCAL_EDITS=0
 INSTALL_MANIFEST_NAME=".cm-install-manifest.sha256"
 INSTALL_MANIFEST="$PLUGIN_DEST/$INSTALL_MANIFEST_NAME"
 GUARD_TMP=""
+# One install transaction per target; never taken over automatically.
+LOCK_DIR="$PLUGIN_PARENT/.cm-workflow.install.lock"
+LOCK_HELD=0
 INSTALL_COMPLETE=0
 DEST_REPLACED=0
 MARKETPLACE_TOUCHED=0
@@ -108,6 +111,7 @@ cleanup() {
   if [ "$INSTALL_COMPLETE" -eq 1 ]; then
     rm -rf "$BACKUP"
   fi
+  [ "$LOCK_HELD" -ne 1 ] || rm -rf "$LOCK_DIR"
   exit "$status"
 }
 trap cleanup EXIT
@@ -183,6 +187,30 @@ run_official_validation() {
     echo "The dependency-free repository validator and codex plugin add remain required." >&2
   fi
 }
+
+mkdir -p "$PLUGIN_PARENT"
+if cm_install_lock_acquire "$LOCK_DIR" "$PLUGIN_DEST"; then
+  LOCK_HELD=1
+elif [ ! -d "$LOCK_DIR" ] || [ -L "$LOCK_DIR" ]; then
+  echo "Cannot create the install lock: $LOCK_DIR. Installation stopped; nothing was changed." >&2
+  exit 2
+else
+  lock_pid=$(cm_install_lock_field "$LOCK_DIR" pid)
+  lock_started=$(cm_install_lock_field "$LOCK_DIR" started)
+  lock_state=$(cm_install_lock_pid_state "$lock_pid")
+  echo "Another CM install is writing the same target. Installation stopped; nothing was changed." >&2
+  echo "    Lock: $LOCK_DIR" >&2
+  echo "    Holder pid: ${lock_pid:-unknown} (started ${lock_started:-unknown})" >&2
+  case "$lock_state" in
+    alive) echo "    That process is still running; retry after it finishes." >&2 ;;
+    not-running) echo "    That process is no longer running; the lock may be left over from an interrupted install." >&2
+      echo "    After confirming no install is in progress, remove it manually and retry:" >&2
+      echo "    rm -rf '$LOCK_DIR'" >&2 ;;
+    *) echo "    Cannot tell whether that process is still running. After confirming no install is in progress, remove it manually and retry:" >&2
+      echo "    rm -rf '$LOCK_DIR'" >&2 ;;
+  esac
+  exit 4
+fi
 
 GUARD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/cm-install-guard.XXXXXX")"
 run_local_edit_guard() {
@@ -273,6 +301,23 @@ run_local_edit_guard recheck
 
 if [ -e "$PLUGIN_DEST" ]; then
   mv "$PLUGIN_DEST" "$BACKUP"
+  # Edits written by path before the rename landed in the moved directory, so
+  # one last check there closes the gap after the recheck above. An exit here
+  # moves the old plugin back and restores the marketplace through cleanup.
+  if [ "$OVERWRITE_LOCAL_EDITS" -ne 1 ] && [ -f "$BACKUP/$INSTALL_MANIFEST_NAME" ] &&
+    [ ! -L "$BACKUP/$INSTALL_MANIFEST_NAME" ]; then
+    if cm_manifest_find_edits "$BACKUP" "$BACKUP/$INSTALL_MANIFEST_NAME" "$GUARD_TMP/late-edits" "$GUARD_TMP"; then
+      late_status=0
+    else
+      late_status=$?
+    fi
+    if [ "$late_status" -ne 0 ] || [ -s "$GUARD_TMP/late-edits" ]; then
+      echo "Installed CM files changed during the install; the previous plugin was restored and nothing was replaced:" >&2
+      [ ! -s "$GUARD_TMP/late-edits" ] || sed 's/^/    /' "$GUARD_TMP/late-edits" >&2
+      [ "$late_status" -eq 0 ] || [ "$late_status" -eq 3 ] || exit 2
+      exit 3
+    fi
+  fi
 fi
 mv "$STAGE" "$PLUGIN_DEST"
 DEST_REPLACED=1

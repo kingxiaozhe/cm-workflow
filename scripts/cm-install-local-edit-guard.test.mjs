@@ -4,6 +4,7 @@
 // ~/.claude/scripts/cm-ai-host.mjs). Every run uses a disposable HOME.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -56,6 +57,13 @@ function runHelper(script, cwd) {
 }
 
 const HEADER = '# cm-workflow install manifest v1';
+const lockOf = target => path.join(path.dirname(target), `.${path.basename(target)}.cm-install.lock`);
+const sha256 = text => crypto.createHash('sha256').update(text).digest('hex');
+
+function deadPid() {
+  const child = spawnSync('/bin/sh', ['-c', 'echo $$'], {encoding: 'utf8'});
+  return Number(child.stdout.trim());
+}
 
 test('install manifest: first install records hashes, unchanged reinstall passes, --yes cannot overwrite a hand edit, --overwrite-local-edits can',
   {skip: process.platform === 'win32', timeout: 600000}, async t => {
@@ -108,6 +116,7 @@ test('install manifest: first install records hashes, unchanged reinstall passes
 
     const afterOverwrite = install(env, ['--yes']);
     assert.equal(afterOverwrite.status, 0, output(afterOverwrite));
+    assert.equal(fs.existsSync(lockOf(target)), false, 'every finished install releases its lock');
   });
 
 test('install manifest: files outside the manifest are not judged and a malformed manifest stops the install',
@@ -191,4 +200,77 @@ test('manifest helper: a symlinked parent directory counts as an edit and is nev
     const result = runHelper('cm_manifest_find_edits root manifest edits . && cat edits', dir);
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.equal(result.stdout, 'skill/SKILL.md\n');
+  });
+
+test('install lock: a concurrent install of the same target is refused without writing, and a later install succeeds',
+  {skip: process.platform === 'win32', timeout: 600000}, async t => {
+    const {target, env} = sandbox(t, 'cm-install-guard-lock-');
+    const lock = lockOf(target);
+    const first = spawn('/bin/bash', [path.join(source, 'install.sh'), '--yes'], {cwd: source, env, stdio: ['ignore', 'pipe', 'pipe']});
+    let firstOut = '';
+    first.stdout.on('data', chunk => { firstOut += chunk; });
+    first.stderr.on('data', chunk => { firstOut += chunk; });
+    const firstDone = new Promise(resolve => first.on('close', resolve));
+    const deadline = Date.now() + 60000;
+    while (!fs.existsSync(path.join(lock, 'owner')) && Date.now() < deadline) await new Promise(r => setTimeout(r, 50));
+    assert.ok(fs.existsSync(path.join(lock, 'owner')), firstOut);
+
+    const second = install(env, ['--yes']);
+    assert.equal(second.status, 4, output(second));
+    assert.match(second.stderr, /另一个 CM 安装正在写同一目标/);
+    assert.match(second.stderr, new RegExp(`持有进程: ${first.pid}`));
+    assert.match(second.stderr, /该进程仍在运行/);
+    assert.doesNotMatch(output(second), /未找到上次的安装清单|安装清单已写入/);
+    assert.ok(fs.existsSync(lock), 'a refused install must not release or take over the holder\'s lock');
+
+    assert.equal(await firstDone, 0, firstOut);
+    assert.equal(fs.existsSync(lock), false);
+    const later = install(env, ['--yes']);
+    assert.equal(later.status, 0, output(later));
+  });
+
+test('install lock: a stale lock is reported with a manual cleanup command and never taken over',
+  {skip: process.platform === 'win32', timeout: 120000}, t => {
+    const {target, env} = sandbox(t, 'cm-install-guard-stale-');
+    const lock = lockOf(target);
+    fs.mkdirSync(lock);
+    const owner = `pid=${deadPid()}\nstarted=2026-10-20T00:00:00Z\ntarget=${target}\n`;
+    fs.writeFileSync(path.join(lock, 'owner'), owner);
+    const refused = install(env, ['--yes']);
+    assert.equal(refused.status, 4, output(refused));
+    assert.match(refused.stderr, /该进程已不在运行/);
+    assert.ok(refused.stderr.includes(`rm -rf '${lock}'`), refused.stderr);
+    assert.equal(fs.readFileSync(path.join(lock, 'owner'), 'utf8'), owner);
+    assert.equal(fs.existsSync(target), false, 'nothing may be written while the lock is held');
+  });
+
+test('per-file check: a file edited mid-copy stops the install with 3 and rolls back the files already written',
+  {skip: process.platform === 'win32', timeout: 300000}, t => {
+    const {home, target, env} = sandbox(t, 'cm-install-guard-midcopy-');
+    const first = install(env, ['--yes']);
+    assert.equal(first.status, 0, output(first));
+    // Simulate an older installed version of an early file, recorded in the manifest.
+    const early = 'agents/cm-backend-agent.md';
+    const olderContent = '# older installed version\n';
+    fs.writeFileSync(path.join(target, early), olderContent);
+    const manifest = path.join(target, MANIFEST);
+    const lines = fs.readFileSync(manifest, 'utf8').split('\n')
+      .map(line => line.endsWith(`  ${early}`) ? `${sha256(olderContent)}  ${early}` : line);
+    fs.writeFileSync(manifest, lines.join('\n'));
+    const manifestBefore = fs.readFileSync(manifest, 'utf8');
+    const late = path.join(target, EDITED);
+    const handEdit = fs.readFileSync(late, 'utf8') + '\n// edited while the install was copying\n';
+    const hook = path.join(home, 'hook.sh');
+    // Appends to a later file only when the first file is about to be copied.
+    fs.writeFileSync(hook, ['#!/bin/sh', `[ "$2" = "${early}" ] || exit 0`,
+      `printf '\\n// edited while the install was copying\\n' >> '${late}'`, ''].join('\n'), {mode: 0o755});
+
+    const result = install({...env, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 3, output(result));
+    assert.match(result.stderr, /安装过程中 scripts\/cm-ai-host\.mjs 被改动/);
+    assert.match(result.stderr, /已回滚本次写入/);
+    assert.equal(fs.readFileSync(late, 'utf8'), handEdit, 'the file edited mid-copy must stay untouched');
+    assert.equal(fs.readFileSync(path.join(target, early), 'utf8'), olderContent, 'files already written must be rolled back');
+    assert.equal(fs.readFileSync(manifest, 'utf8'), manifestBefore);
+    assert.equal(fs.existsSync(lockOf(target)), false, 'a failed install releases its lock');
   });

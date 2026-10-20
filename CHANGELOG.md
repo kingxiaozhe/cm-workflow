@@ -9,6 +9,8 @@
   - `install.sh` 安装成功后写安装清单 `~/.claude/cm-workflow/install-manifest.sha256`（每个受管文件的相对路径 + sha256）；`install-codex.sh` 写 `~/plugins/cm-workflow/.cm-install-manifest.sha256`。清单逻辑在 `scripts/cm-install-manifest.sh`，两个安装器共用。
   - 再次安装时，清单里有、目标里也在的文件，sha256 与记录不一致就算手改：列出文件并以退出码 3 停下，不写任何文件。`--yes` 和交互回答 y 都不能绕过；只有新参数 `--overwrite-local-edits` 才覆盖。清单格式无法识别、含 `..` 路径或清单位置不是普通文件时同样停下；记录文件的上级目录变成符号链接也算手改，不顺着链接读外部文件。
   - 安装器在覆盖确认和暂存之后、第一次写正式目标前再核对一次，等待确认期间别的会话改了已装文件也会停下；Claude 安装失败回滚时旧清单一并恢复。
+  - 同一安装目标同一时刻只允许一个安装：`install.sh` 在目标父目录建 `.<目标目录名>.cm-install.lock`（默认 `~/.claude.cm-install.lock`），`install-codex.sh` 建 `~/plugins/.cm-workflow.install.lock`，里面记录 pid 与开始时间。拿不到锁时报出持有进程、它是否还在运行，以退出码 4 停下，不写任何文件；正常结束、失败和中断都会释放。锁残留时不自动抢占，只给出 `rm -rf` 清理命令，由人确认后执行。
+  - `install.sh` 每复制一个文件前，再比对它当前的 sha256 与旧清单；不一致立刻停下（退出码 3），只回滚本次已写的文件，被改的文件保持原样。`install-codex.sh` 在把旧插件目录改名移开后再核对一次，不一致就移回原目录。核对与写入之间的窗口因此缩到单个文件的复制之间，**不能完全消除；安装进行中不要编辑已安装的 CM 文件**。`CM_INSTALL_TEST_HOOK` 仅供仓库测试在每个文件复制前插入动作，默认不设置、没有作用。
   - 没有旧清单（首次安装或旧版本装的）时打印一行说明后照常安装；清单外的文件、`__pycache__` 和 `.DS_Store` 不判定。macOS 用 `shasum -a 256`，Linux 用 `sha256sum`，两者都没有时报错停下，不跳过核对。
   - **已知限制**：`install.ps1`（Windows）还没有这项保护；npm 入口 `cm-workflow install` 和 `$cm-check` 自动升级只传 `--yes`，遇到手改会停在退出码 3，需手动运行安装器并加 `--overwrite-local-edits`；`~/.cm-workflow/cm-update.sh` 自动更新同样会因手改失败，且它在安装前删除上游已移除文件的步骤不经过这项核对。
 

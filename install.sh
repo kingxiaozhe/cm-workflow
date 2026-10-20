@@ -17,6 +17,13 @@ INSTALL_MANIFEST_RELATIVE="cm-workflow/install-manifest.sha256"
 INSTALL_MANIFEST="$DEST/$INSTALL_MANIFEST_RELATIVE"
 GUARD_TMP=""
 MANIFEST_PUBLISHED=0
+# One install transaction per target; never taken over automatically.
+LOCK_DIR="$DEST_PARENT/.$(basename "$DEST").cm-install.lock"
+LOCK_HELD=0
+# Files this run started writing; rollback restores only these, so a file that
+# was never copied (e.g. one found hand-edited mid-copy) is left untouched.
+WRITTEN_LIST=""
+VERIFIED_MANIFEST=""
 MANIFEST_SAVED_NAME=".cm-previous-install-manifest"
 
 for arg in "$@"; do
@@ -50,7 +57,7 @@ cleanup() {
       elif [ -f "$target" ] || [ -L "$target" ]; then
         rm -f "$target"
       fi
-    done < "$STAGE/.cm-managed-files"
+    done < "$WRITTEN_LIST"
     # Keep the manifest paired with the restored files.
     if [ "$MANIFEST_PUBLISHED" -eq 1 ]; then
       if [ -f "$BACKUP/$MANIFEST_SAVED_NAME" ]; then
@@ -64,6 +71,7 @@ cleanup() {
   rm -rf "$STAGE" "$BACKUP"
   [ -z "$GUARD_TMP" ] || rm -rf "$GUARD_TMP"
   rm -f "${INSTALL_MANIFEST}.tmp.$$"
+  [ "$LOCK_HELD" -ne 1 ] || rm -rf "$LOCK_DIR"
   exit "$status"
 }
 trap cleanup EXIT
@@ -229,7 +237,30 @@ echo "  目标: $DEST"
 echo
 
 mkdir -p "$DEST_PARENT"
+if cm_install_lock_acquire "$LOCK_DIR" "$DEST"; then
+  LOCK_HELD=1
+elif [ ! -d "$LOCK_DIR" ] || [ -L "$LOCK_DIR" ]; then
+  echo "无法创建安装锁: ${LOCK_DIR}；安装已停止，未修改任何文件。" >&2
+  exit 2
+else
+  lock_pid=$(cm_install_lock_field "$LOCK_DIR" pid)
+  lock_started=$(cm_install_lock_field "$LOCK_DIR" started)
+  lock_state=$(cm_install_lock_pid_state "$lock_pid")
+  echo "⚠ 另一个 CM 安装正在写同一目标，本次已停止，未修改任何文件。" >&2
+  echo "    锁: ${LOCK_DIR}" >&2
+  echo "    持有进程: ${lock_pid:-未知}（开始于 ${lock_started:-未知}）" >&2
+  case "$lock_state" in
+    alive) echo "    该进程仍在运行；等它结束后重试。" >&2 ;;
+    not-running) echo "    该进程已不在运行，锁可能是中断遗留。确认没有安装在进行后，手动清理再重试：" >&2
+      echo "    rm -rf '${LOCK_DIR}'" >&2 ;;
+    *) echo "    无法判断持有进程是否还在；确认没有安装在进行后，手动清理再重试：" >&2
+      echo "    rm -rf '${LOCK_DIR}'" >&2 ;;
+  esac
+  exit 4
+fi
 GUARD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/cm-install-guard.XXXXXX")"
+WRITTEN_LIST="$GUARD_TMP/written-files"
+: > "$WRITTEN_LIST"
 if guard_local_edits; then
   :
 else
@@ -318,11 +349,40 @@ else
   [ "$guard_status" -eq 1 ] && exit 3
   exit "$guard_status"
 fi
+# Freeze the manifest the recheck just accepted for the per-file checks below.
+if [ "$OVERWRITE_LOCAL_EDITS" -ne 1 ] && [ -f "$INSTALL_MANIFEST" ]; then
+  VERIFIED_MANIFEST="$GUARD_TMP/verified-manifest"
+  cp "$INSTALL_MANIFEST" "$VERIFIED_MANIFEST"
+  if ! cm_manifest_validate "$VERIFIED_MANIFEST"; then
+    echo "⚠ 安装清单在核对后发生变化，安装已停止，未修改任何文件。" >&2
+    exit 3
+  fi
+fi
 
+# Narrow the check-to-write window to a single file: right before each copy,
+# compare the file's current sha256 with the previous manifest. This cannot be
+# atomic; do not edit installed CM files while an install is running.
+# CM_INSTALL_TEST_HOOK is for the repository's tests only (unset by default):
+# it runs as `$CM_INSTALL_TEST_HOOK before-copy <relative>` before each file.
 mkdir -p "$DEST"
 DEST_TOUCHED=1
 while IFS= read -r relative; do
   [ -n "$relative" ] || continue
+  if [ -n "${CM_INSTALL_TEST_HOOK:-}" ]; then
+    "$CM_INSTALL_TEST_HOOK" before-copy "$relative"
+  fi
+  if [ -n "$VERIFIED_MANIFEST" ] && [ -f "$DEST/$relative" ]; then
+    recorded=$(cm_manifest_recorded_hash "$VERIFIED_MANIFEST" "$relative")
+    if [ -n "$recorded" ]; then
+      current=$(cm_manifest_file_hash "$DEST/$relative")
+      if [ "$current" != "$recorded" ]; then
+        echo "⚠ 安装过程中 ${relative} 被改动（与安装清单记录的 sha256 不一致），已停止并回滚已写入的文件；该文件保持原样。" >&2
+        echo "  确认丢弃这个改动时，加 --overwrite-local-edits 重新运行。" >&2
+        exit 3
+      fi
+    fi
+  fi
+  printf '%s\n' "$relative" >> "$WRITTEN_LIST"
   mkdir -p "$(dirname "$DEST/$relative")"
   cp -p "$STAGE/$relative" "$DEST/$relative"
 done < "$STAGE/.cm-managed-files"
