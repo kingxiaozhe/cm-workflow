@@ -12,6 +12,7 @@ import {taskDeclarations,approvedTaskGrammar,TASK_GRAMMAR} from '../runtime/js/s
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {resolveCheckpointPackage} from '../runtime/js/cm-ai/checkpoint-package-material.mjs';
 import {publishHostReview} from '../runtime/js/cm-ai/host-review-file.mjs';
 import {snapshot,rootPath,reviewSpecsPath,stableIgnorePolicy,stablePublicPolicy,stableSnapshotPolicy,
   comparableFiles,validateStablePolicy,filePath,INVENTORY_COUNT,INVENTORY_LIMIT} from '../runtime/js/cm-ai/review-package.mjs';
@@ -586,9 +587,12 @@ function validateCompletionRework({payload,priorPayload,feature,task,projectRoot
       ||history.state.reviewPackage.handoff?.sha256!==sha256(expectedHandoff(reviewsDir,feature,task,2))
       ||history.state.reviewPackage.artifactDigest===record.artifactDigest)
       throw new GateError('completion rework must bind a new reviewed delivery');
-    const originalReview=snapshot.records.find(row=>row.payload.type==='effect-checkpoint'
+    // A large package may be stored once and referenced by later checkpoints;
+    // resolve it with the same validation replay uses.
+    const originalReview=snapshot.records.map((row,index)=>row.payload.type==='effect-checkpoint'
       &&row.payload.checkpoint.receipt?.receiptDigest===prior.receiptDigest
-      &&row.payload.checkpoint.reviewPackage?.identity.attempt===1);
+      ?{payload:{checkpoint:resolveCheckpointPackage(row.payload,snapshot.records.slice(0,index),config.identity)}}:null)
+      .find(row=>row?.payload.checkpoint.reviewPackage?.identity.attempt===1);
     const originalRegistration=snapshot.records.find(row=>row.payload.type==='review-invocation-registered'
       &&row.payload.binding.invocationId===prior.id);
     if(!originalReview||!originalRegistration)throw new GateError('missing original approved review');

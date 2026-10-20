@@ -1,3 +1,4 @@
+import {packageMaterialEligible,checkpointStoragePlan,checkpointPackageBudget,packageMaterialReference} from './checkpoint-package-material.mjs';
 import {taskDeclarations,approvedTaskGrammar} from '../spec-task-line.mjs';
 import {beginHostStage} from './host-stage-observer.mjs';
 import {readExecutionPolicy} from './execution-policy.mjs';
@@ -724,7 +725,21 @@ export function createTaskRunner(options) {
     same(current.identity,storeIdentity,'identity_mismatch');same(current.fingerprints,completion.fingerprints,'identity_mismatch');
     need(current.revision===storeRevision,'runner_store_changed');need(!poisoned,'store_failure');return current;
   }
+  const packageMaterialEnabled=()=>packageMaterialEligible(metadata,version);
+  function checkpointReserve(checkpoint){
+    if(!checkpoint.reviewPackage)return 0;
+    const size=value=>Buffer.byteLength(JSON.stringify(value??null));
+    return developCheckpointReserve({examinedPathsBytes:size(reviewPaths(checkpoint.reviewPackage)),
+      receiptsBytes:size(checkpoint.receipts),callsBytes:size(checkpoint.calls),writebackBytes:size(checkpoint.learningResult?.writeback)});
+  }
   function candidate(type,fields){
+    if(['effect-checkpoint','review-invocation-reconciled'].includes(type)&&packageMaterialEnabled()){
+      const plan=checkpointStoragePlan({records:journal,effectId:fields.effectId,checkpoint:fields.checkpoint,
+        identity:{...config.identity,attempt:fields.checkpoint.attempt},enabled:packageMaterialEnabled(),
+        reserve:checkpointReserve(fields.checkpoint),type,
+        binding:type==='effect-checkpoint'?{}:Object.fromEntries(['invocationId','registeredDigest','startedDigest','resultDigest','receiptDigest'].map(key=>[key,fields[key]]))});
+      fields={...fields,checkpoint:plan.checkpoint,...plan.payloadFields};
+    }
     const basic={id:`runner.${String(journal.length+1).padStart(6,'0')}`,
       kind:{init:'result','effect-intent':'intent','effect-checkpoint':'result',control:'cancel',
         'task-commit-intent':'commit-intent','task-commit-result':'commit-result',
@@ -1541,7 +1556,10 @@ export function createTaskRunner(options) {
         const reserve=developCheckpointReserve({examinedPathsBytes:size(reviewPaths(reviewPackage)),
           receiptsBytes:size(receipts),callsBytes:size(calls),writebackBytes:size(learningResult?.writeback)});
         const budget=JOURNAL_PAYLOAD_LIMIT-reserve;
-        if(bytes>budget){
+        const enabled=packageMaterialEnabled();
+        const capacity=enabled?checkpointPackageBudget({inlineBytes:bytes,packageBytes:size(reviewPackage),reserve,enabled,
+          referenced:packageMaterialReference(journal,reviewPackage,{...config.identity,attempt})!==null}):{fits:bytes<=budget};
+        if(!capacity.fits){
           const changed=reviewPackage.changes.filter(change=>change.after).map(change=>change.after);
           reviewPackage=packageBefore;
           halt('blocked','develop_package_too_large',boundedReason(`develop_package_too_large: the review checkpoint would be ${bytes} bytes, `

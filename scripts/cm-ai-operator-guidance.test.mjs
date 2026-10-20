@@ -173,3 +173,14 @@ test('batch advance guidance uses the batch entry for every native resume family
     assert.match(guidanceText(output),/原批次入口/);assert.doesNotMatch(guidanceText(output),/恢复原运行/);
   }
 });
+
+
+test('invalid checkpoint package material remains a preservation-only diagnostic without redispatch authority',()=>{
+  for(const state of ['blocked','unknown']){
+    const input=result(state,'checkpoint_package_material_invalid','resume'),before=JSON.stringify(input);
+    const guidance=operatorGuidance(input);
+    assert.match(guidance.summary,/引用或原始材料校验失败/);assert.match(guidance.nextStep,/不改写历史或重新派发/);
+    assert.equal(guidance.recoveryOperation,null);assert.equal(guidance.authorizationGranted,false);
+    assert.equal(JSON.stringify(input),before);
+  }
+});

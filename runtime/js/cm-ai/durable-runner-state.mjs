@@ -1,3 +1,4 @@
+import {packageMaterialEligible,resolveCheckpointPackage} from './checkpoint-package-material.mjs';
 import {readExecutionPolicy} from './execution-policy.mjs';
 import {readControlPolicy} from './control-policy.mjs';
 import {applyScopeRevision} from './scope-revision.mjs';
@@ -1477,7 +1478,7 @@ export function readRunnerHistory(raw,config,version=1) {
       resultRecord=r;
     } else if(version===3&&['review-invocation-receipt','review-invocation-reconciled'].includes(p.type)) {
       const bindingKeys=['effectId','invocationId','registeredDigest','startedDigest','resultDigest'];
-      shape(p,[...common,...bindingKeys,...(p.type==='review-invocation-receipt'?['receipt']:['receiptDigest','checkpoint'])]);
+      shape(p,[...common,...bindingKeys,...(p.type==='review-invocation-receipt'?['receipt']:['receiptDigest','checkpoint',...['packageMaterial','packageRef'].filter(key=>Object.hasOwn(p,key))])]);
       need((config.externalModels||config.executionPolicy)&&r.kind==='result'&&pending===null&&lastReview!==null
         &&(state.state==='unknown'&&lastReview.invocation.result.reconciliationRequired===true
           ||state.state==='pending_review'&&reviewTransportTimeout(lastReview.invocation.result))
@@ -1499,7 +1500,9 @@ export function readRunnerHistory(raw,config,version=1) {
         lastReview.reconciliation={receiptDigest:r.digest,result};
       }else{
         need(lastReview.reconciliation?.receiptDigest===p.receiptDigest,'review_reconciliation_evidence_required');
-        state=checkpoint(lastReview.before,p.checkpoint,lastReview.effect,config,original,session,lastReview.controls,version,
+        if(['packageMaterial','packageRef'].some(key=>Object.hasOwn(p,key)))need(packageMaterialEligible(config,version),'checkpoint_package_material_invalid');
+        const recovered=resolveCheckpointPackage(p,records.slice(0,index),lastReview.effect.identity);
+        state=checkpoint(lastReview.before,recovered,lastReview.effect,config,original,session,lastReview.controls,version,
           state.taskCommit??null,{...lastReview.invocation,result:lastReview.reconciliation.result},supersession?.carriedReview??null,null,developRecheckEffects,developmentRework);
         lastReview=null;
       }
@@ -1821,8 +1824,12 @@ export function readRunnerHistory(raw,config,version=1) {
       state.state='cancelled';state.code='effect_abandoned';state.reason=p.reason;state.sequence++;
       pending=null;beforeIntent=null;
     } else if(p.type==='effect-checkpoint') {
-      shape(p,[...common,'effectId','checkpoint']);need(r.kind==='result' && pending && p.effectId===pending.id,'runner_checkpoint');
-      state=checkpoint(beforeIntent,p.checkpoint,pending,config,original,session,controls,version,state.taskCommit??null,invocation,
+      shape(p,[...common,'effectId','checkpoint',...['packageMaterial','packageRef'].filter(key=>Object.hasOwn(p,key))]);
+      need(r.kind==='result' && pending && p.effectId===pending.id,'runner_checkpoint');
+      const material=Object.hasOwn(p,'packageMaterial'),reference=Object.hasOwn(p,'packageRef');
+      if(material||reference)need(packageMaterialEligible(config,version),'checkpoint_package_material_invalid');
+      const checkpointValue=resolveCheckpointPackage(p,records.slice(0,index),pending.identity);
+      state=checkpoint(beforeIntent,checkpointValue,pending,config,original,session,controls,version,state.taskCommit??null,invocation,
         supersession?.carriedReview??null,pendingDocumentation,developRecheckEffects,developmentRework);pendingDocumentation=null;
       if(version===3&&pending.kind==='develop'&&beforeIntent.state==='blocked'&&RECHECK_CODES.includes(beforeIntent.code))
         developRecheckEffects.push(pending.id);

@@ -388,6 +388,35 @@ test('completion_rework keeps the original run and failure, requires fresh a2 re
 });
 
 
+// review-capacity: an approved a1 package too large to repeat inline is stored
+// once and referenced by its review checkpoint; the N5 owner gate must still
+// find that original approved review instead of reporting it missing.
+test('review-capacity: completion rework gate resolves a referenced a1 review package',t=>{
+  const f=fixture(t);f.review('approved');
+  fs.writeFileSync(path.join(f.answers,'target.txt'),'export const value = 42;\n//'+'x'.repeat(600*1024)+'\n');
+  const marker=path.join(f.root,'checks-pass');fs.writeFileSync(marker,'pass');
+  const checks=[{id:'gate',command:[process.execPath,'-e',`process.exit(require('node:fs').existsSync(${JSON.stringify(marker)})?0:1)`]}];
+  const run=(op,extra={})=>{const r=f.drive(f.plan({mode:'resume',originalHostContext:'v2-fixture-host',checks,...extra}),op);
+    assert.equal(r.status,0,r.stderr);return JSON.parse(r.stdout).result;};
+  const delivered=run('start',{mode:'create',originalHostContext:undefined});
+  assert.equal(delivered.state,'awaiting_review',JSON.stringify(delivered));
+  const pkg=delivered.packageDigest;assert.equal(run('decision',{packageDigest:pkg}).state,'approved');
+  const store=path.join(f.specsDir,'.reviews/.execution',identity.runId,'state.json');
+  const records=()=>JSON.parse(fs.readFileSync(store)).records;
+  assert.ok(records().some(row=>row.payload.packageMaterial===true),'a1 package is archived once');
+  assert.ok(records().some(row=>row.payload.packageRef&&row.payload.checkpoint.receipt),'the approved review checkpoint references it');
+  fs.rmSync(marker);assert.equal(run('complete',{packageDigest:pkg}).code,'completion_checks_changed');
+  const target=run('status').controlTarget;
+  assert.equal(run('completion_rework',{reason:'Fix the failed test',expectedControl:target}).identity.attempt,2);
+  fs.writeFileSync(path.join(f.answers,'develop-a2.json'),JSON.stringify(answer));fs.writeFileSync(marker,'pass');
+  fs.writeFileSync(path.join(f.answers,'target.txt'),'export const value = 43;\n');
+  const revised=run('start');assert.equal(revised.identity.attempt,2,JSON.stringify(revised));
+  assert.equal(run('decision',{identity:{...identity,attempt:2},packageDigest:revised.packageDigest}).state,'approved');
+  const reviewDir=path.join(f.specsDir,'.reviews');
+  checkN5({handoff:path.join(reviewDir,'work-T-001-a2-handoff.json'),reviewsDir:reviewDir,feature:'work',task:'T-001',projectRoot:f.codeProject});
+  assert.equal(run('complete',{identity:{...identity,attempt:2},packageDigest:revised.packageDigest}).state,'fixture_completed');
+});
+
 test('completion_rework resumes a real interrupted a2 developer without changing r1',async t=>{
   const f=fixture(t);f.review('approved');const marker=path.join(f.root,'gate');fs.writeFileSync(marker,'pass');
   const checks=[{id:'gate',command:[process.execPath,'-e',`process.exit(require('node:fs').existsSync(${JSON.stringify(marker)})?0:1)`]}];

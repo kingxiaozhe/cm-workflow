@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {packageMaterialEligible,checkpointPackageBudget} from '../runtime/js/cm-ai/checkpoint-package-material.mjs';
 // cm-ai host 的单步驾驶员。PLAN 路径相对 PLAN 文件；命令仅在 codeProject 内执行。
 // 请求表来自 host-session.mjs operationNames（传输允许集）、host-conversation-execution.mjs
 // developer/check/verificationGate、host-workflow-capabilities.mjs QA/文档接线、
@@ -276,7 +277,7 @@ export function journalRestBytes(records){
   return {restBytes:size(last.payload)-size(frame.reviewPackage),resultBytes:size(frame.cache.at(-1)?.result),
     receiptsBytes:size(frame.receipts),callsBytes:size(frame.calls)};
 }
-export function developPreview({definition,codeProject=definition.codeProject,journal=null,parallelSelection=null,exact=true}){
+export function developPreview({definition,codeProject=definition.codeProject,journal=null,parallelSelection=null,exact=true,controlPolicy=null}){
   let baseline=journal?.baseline??null;
   try{
     if(baseline===null){
@@ -293,6 +294,9 @@ export function developPreview({definition,codeProject=definition.codeProject,jo
       }
     }
     return {definition,baseline,material:reviewMaterialSizes({root:codeProject,baseline}),parallelSelection,
+      packageMaterialEnabled:journal?.packageMaterialEnabled===true||journal===null&&packageMaterialEligible({
+        ...definition,root:codeProject,controlPolicy,...(parallelSelection?{parallelSelection}:{})}),
+      archivedPackageDigests:journal?.archivedPackageDigests??[],
       exact:exact&&!definition.codeProjects,...(journal?.frame??journalRestBytes([]))};
   }catch(error){
     if(error.code==='limit_exceeded')stop(2,`交付前的审查材料已超出审查包上限：${error.message}`);
@@ -435,7 +439,10 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
         const reserve=developCheckpointReserve({examinedPathsBytes:size(reviewPaths(pkg)),receiptsBytes:preview.receiptsBytes,
           callsBytes:preview.callsBytes+1024,writebackBytes:1024});
         const budget=JOURNAL_PAYLOAD_LIMIT-reserve;
-        if(bytes>budget){
+        const enabled=preview.packageMaterialEnabled===true;
+        const capacity=enabled?checkpointPackageBudget({inlineBytes:bytes,packageBytes,reserve,enabled,
+          referenced:preview.archivedPackageDigests.includes(pkg.packageDigest)}):{fits:bytes<=budget};
+        if(!capacity.fits){
           const largest=pkg.changes.filter(change=>change.after).map(change=>change.after).sort((a,b)=>b.size-a.size).slice(0,3)
             .map(file=>`${file.path} ${kib(file.size)}`).join('，');
           stop(2,`${label}: 交付后的开发检查点约 ${kib(bytes)}（其中审查包 ${kib(packageBytes)}，含 handoff），超过运行存档单条记录上限 ${JOURNAL_PAYLOAD_LIMIT} `
@@ -471,6 +478,8 @@ export function readRunJournal(definition){
   const first=snapshot.records[0];
   const history=readRunnerHistory(snapshot.records,first.payload.config,3);
   return {history,config:first.payload.config,baseline:history.original,
+    packageMaterialEnabled:packageMaterialEligible(first.payload.config,first.payload.version),
+    archivedPackageDigests:snapshot.records.filter(row=>row.payload.type==='effect-checkpoint'&&row.payload.packageMaterial===true).map(row=>row.payload.checkpoint.reviewPackage.packageDigest),
     frame:journalRestBytes(snapshot.records)};
 }
 function reachableDevelopAttempts({plan,operation,journal,permissions,controlPolicy=null}){
@@ -778,7 +787,7 @@ function load(){
     scope:definition.scope,requirements:definition.requirements,
     baseline:plan.mode==='create'?'disk':baselineScope(journal.baseline,definition.scope),
     protectedMode,inputLimit:inputLimitFrom(permissions),checks:plannedCheckResults(protectedMode?null:plan.checks),
-    preview:developPreview({definition,journal:plan.mode==='create'?null:journal,
+    preview:developPreview({definition,journal:plan.mode==='create'?null:journal,controlPolicy:control?.policy??null,
       exact:!permissions.includes('--bootstrap-config')})});
   const unique=[...new Set(asks.filter(kind=>FILES[kind]&&kind!=='develop'))];
   const answer=preflightAnswers(unique,kind=>{

@@ -54,6 +54,9 @@ function renderOperatorGuidance(result,{executionActive=false,protocol='legacy',
   if(outcome==='rejected'||outcome==='denied')return explain('本次操作被拒绝，运行状态没有因此获得新的执行权限。',
     '先核对 code 与 reason，修正请求或取得所需授权；不要据此重复开发或审查。');
   if(executionActive)return explain('原运行仍有操作在执行。','等待原操作结果；可读取状态，不重复派发。');
+  if(code==='checkpoint_package_material_invalid')return explain('检查点审查包引用或原始材料校验失败，后续执行已停止。',
+    '保留原运行与全部记录，核对被引用记录的摘要和任务身份；交由维护者处理，不改写历史或重新派发。',null,
+    ['不得替换被引用的原记录','不改变原运行身份与恢复预算']);
   if(code==='spec_drift')return explain('已批准规格发生变化，后续执行被阻止。',
     action==='spec_rebind'?(v2?'先核对重新批准的规格；符合原条件时，只读 status 并展示 launchControlTarget，将完整固定副本写入文件，以原策略和配置带 --expected-control FILE、--rebind-spec-material 与单行 --spec-rebind-reason 恢复；snapshot_changed 时停止，不自动刷新。':'先核对重新批准的规格；符合原任务内容未变的条件时，在原运行显式换绑规格。')
       :'先核对规格变更与原任务绑定；当前没有可直接继续的恢复动作。',null,['保留原运行身份与历史','不得绕过规格审批']);
