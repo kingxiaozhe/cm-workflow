@@ -45,9 +45,13 @@ function renderOperatorGuidance(result,{executionActive=false,protocol='legacy',
   const v2=protocol==='v2',batch=surface==='batch';
   const resume=batch?'从原批次入口发送 advance':'恢复原运行并发送 advance';
   const permission=flag=>v2?fixedTarget:`显式 ${flag}，并提供单行 reason`;
-  const supersede=v2?'当前 v2 没有作废旧证据并新建运行的出口；保留原运行、文件与证据，核对 reason 后交由维护者处理，不改走旧入口。'
+  // V2 does have a supersede exit (create with a fixed supersedeTarget); it is a
+  // new run the user approves, never a flag this guidance hands out.
+  const supersede=v2?`${batch?'批次成员先取消本批次，再按单任务处理；':''}`
+    +'原运行确无合法恢复出口时，用原配置只读 inspect-history 取得 supersedeTarget 并保存，向用户展示旧状态与重开原因；'
+    +'用户批准后按 v2 create 重开流程以新 runId 重开同一任务（docs/cm-control-policy-v2.md「卡死任务重开」）。目标与旧运行不符返回 snapshot_changed 时停止，不自动刷新。'
     :'修好后按 reason 用 --supersede-reviewed-evidence 新建运行重做。';
-  const supersedePrerequisites=v2?['原运行记录与现有文件保留，不改写','不改变协议、身份或恢复预算']
+  const supersedePrerequisites=v2?['原运行记录与现有文件保留，不改写','重开须经用户批准且绑定已展示的 supersedeTarget','不改变原运行的协议、身份或恢复预算']
     :['原运行记录保留，不改写','本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift'];
   if(result?.workflow!=='cm-ai'||!result.state||!result.identity)return null;
   const {state,code,pendingAction:action,outcome}=result;

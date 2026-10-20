@@ -148,7 +148,11 @@ test('v2 exhausted recovery and launch recovery never advertise legacy exits',()
       const output=surface==='batch'?batchMemberResult(input,{protocol}):input;
       assert.equal(output.guidance.recoveryOperation,null);
       if(protocol==='v2'){assert.doesNotMatch(guidanceText(output),/--supersede-reviewed-evidence|--accept-superseded-code-drift/);
-        assert.match(guidanceText(output),/保留/);}
+        assert.match(guidanceText(output),/保留/);
+        // commander phase 0: v2 has a create supersede exit; guidance names it instead of denying it.
+        assert.match(guidanceText(output),/inspect-history/);assert.match(guidanceText(output),/supersedeTarget/);
+        assert.doesNotMatch(guidanceText(output),/没有作废旧证据/);
+        if(surface==='batch')assert.match(guidanceText(output),/取消本批次/);}
       else assert.match(guidanceText(output),/--supersede-reviewed-evidence/);
     }
   }

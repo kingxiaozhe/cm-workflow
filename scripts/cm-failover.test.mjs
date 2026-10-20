@@ -96,6 +96,40 @@ test('全部完成后断点推进到 QA',()=>{
   assert.equal(inspectSpecs(root).features[0].breakpoint.node,'N6');
 });
 
+// 总指挥第 0 期：接手脚本的「当前任务」与 cm-ai admission 同一规则。
+test('当前任务跳过 DROPPED，并等依赖完成或作废',()=>{
+  const root=sandbox();
+  const dir=feature(root,'1.demo',[{id:'T-001',title:'a',done:false},{id:'T-002',title:'b',done:false},{id:'T-003',title:'c',done:false}]);
+  const text=fs.readFileSync(path.join(dir,'tasks.md'),'utf8')
+    .replace('T-001: a','T-001: ~~a~~ [DROPPED 不再需要]')+'\n- T-002 依赖 T-003\n';
+  fs.writeFileSync(path.join(dir,'tasks.md'),text);
+  const only=inspectSpecs(root).features[0];
+  assert.equal(only.currentTask.id,'T-003','T-001 作废被跳过，T-002 依赖未满足');
+  assert.equal(only.dropped,1);
+  fs.writeFileSync(path.join(dir,'tasks.md'),text.replace('- [ ] T-003','- [x] T-003'));
+  assert.equal(inspectSpecs(root).features[0].currentTask.id,'T-002','依赖完成后才轮到 T-002');
+  fs.writeFileSync(path.join(dir,'tasks.md'),text.replace('- [ ] T-002','- [x] T-002').replace('- [ ] T-003','- [x] T-003'));
+  assert.equal(inspectSpecs(root).features[0].breakpoint.state,'all_tasks_done','只剩作废任务算全部完成');
+});
+
+test('依赖成环或指向未知任务时按 admission 规则拒绝，不乱选',()=>{
+  const root=sandbox();
+  const dir=feature(root,'1.demo',[{id:'T-001',title:'a',done:false},{id:'T-002',title:'b',done:false}]);
+  fs.appendFileSync(path.join(dir,'tasks.md'),'\n- T-001 依赖 T-002\n- T-002 依赖 T-001\n');
+  assert.throws(()=>inspectSpecs(root),FailoverError,'成环依赖按 admission 规则拒绝');
+  fs.writeFileSync(path.join(dir,'tasks.md'),'# d\n\n- [ ] T-001: a\n\n- T-001 依赖 T-009\n');
+  assert.throws(()=>inspectSpecs(root),FailoverError,'未知依赖按 admission 规则拒绝');
+});
+
+test('JS 运行的交接证据在 specs 根 .reviews 下按去编号的 feature 名读取',()=>{
+  const root=sandbox();
+  feature(root,'1.demo',[{id:'T-001',title:'a',done:false}]);
+  fs.mkdirSync(path.join(root,'.reviews'),{recursive:true});
+  handoff(root,'demo','T-001',1,{});review(root,'demo','T-001',1,'approved');
+  const point=inspectSpecs(root).features[0].breakpoint;
+  assert.equal(point.state,'approved');assert.equal(point.node,'N5');
+});
+
 test('blocked 交接把阻塞项带进简报',()=>{
   const root=sandbox();
   const dir=feature(root,'1.demo',[{id:'T-001',title:'a',done:false}]);
