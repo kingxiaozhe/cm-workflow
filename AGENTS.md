@@ -46,6 +46,7 @@ Install commands modify user-level runtime directories; run them only for an int
 - Serial execution is the default. Parallel workers may not write specs, mark tasks complete, or commit.
 - Preserve user changes and avoid destructive git operations.
 - Keep production release, infrastructure changes, destructive migrations, and mainnet actions behind explicit human confirmation.
+- Before starting a new design or a multi-round adversarial analysis, check `docs/out-of-scope/`; if the idea is listed there, state which reopen condition is now met before discussing it.
 
 ## Compatibility rules
 
