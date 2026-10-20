@@ -1,6 +1,7 @@
 // Fixed current-conversation capabilities over the existing N6/N8 adapters.
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import {digest,json,need,shape,validIdentity,hex} from './effect-contract.mjs';
 import {createHostQaDecisionProvider,readQaCriticalPaths} from './host-qa-policy.mjs';
 import {createHostQaExecutor} from './host-qa-executor.mjs';
@@ -68,7 +69,81 @@ export function validateHostWorkflowConfiguration(raw){
   return config;
 }
 
-export function createHostWorkflowCapabilities({definition,configuration,bridge,allowQa,runtime='codex',protectedExecution=false,bootstrap=null,parallelMember=false,controlPolicy=null}){
+// This fixed v2 single-task capability was always required by qa:disabled.
+// It is derived from existing frozen inputs, not a new configurable workflow.
+const implicitQaProviders=new WeakSet();
+const attachedQaExecutors=new WeakSet();
+export function implicitQaConfiguration(configuration){
+  return configuration?.kind==='cm-current-conversation-v1'
+    &&configuration.controlPolicy?.version===2&&configuration.controlPolicy.qa==='disabled'
+    &&!Object.hasOwn(configuration,'workflow')&&configuration.parallelMember!==true;
+}
+export function implicitHostQaDecision(execution){
+  return implicitQaConfiguration(execution?.configuration)&&(!execution.qaExecutor||isQaExecutorAttachment(execution))
+    &&implicitQaProviders.has(execution.qaDecisionProvider);
+}
+export function isQaExecutorAttachment(execution){
+  const policy=execution?.configuration?.controlPolicy;
+  return implicitQaConfiguration(execution?.configuration)&&policy.development==='conversation'
+    &&policy.bootstrap==='disabled'&&policy.qaFix==='disabled'
+    &&attachedQaExecutors.has(execution.qaExecutor)&&implicitQaProviders.has(execution.qaDecisionProvider);
+}
+export function preQaExecutorMaterial(execution,material){
+  need(isQaExecutorAttachment(execution)&&material.qaExecutorAttachment?.version===1,'qa_executor_attachment_required');
+  const original=structuredClone(json(material));
+  delete original.qaExecutor;delete original.qaExecutorAttachment;
+  return original;
+}
+export function readQaExecutorConfiguration(raw){
+  const qa=json(raw);shape(qa,['commands','environment',...(Object.hasOwn(qa,'timeoutMs')?['timeoutMs']:[])]);
+  if(Object.hasOwn(qa,'timeoutMs'))need(Number.isSafeInteger(qa.timeoutMs)&&qa.timeoutMs>0
+    &&qa.timeoutMs<=3600000,'invalid_workflow_config');
+  return qa;
+}
+export function readQaExecutorConfigurationFile(file){
+  const before=fs.lstatSync(file);
+  need(before.isFile()&&!before.isSymbolicLink()&&before.nlink===1&&before.size<=65536,'invalid_workflow_config');
+  const fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+  try{
+    const bytes=fs.readFileSync(fd),after=fs.fstatSync(fd),current=fs.lstatSync(file);
+    need([after,current].every(s=>['dev','ino','size','mtimeMs','ctimeMs'].every(k=>s[k]===before[k]))
+      &&bytes.length===before.size,'snapshot_changed');
+    return readQaExecutorConfiguration(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)));
+  }finally{fs.closeSync(fd);}
+}
+// This supplies a candidate capability only. The owner must register or replay
+// its exact material before exposing the host, and never changes frozen policy.
+export function createAttachedHostQaCapabilities({definition,configuration,qa,bridge,runtime,protectedExecution=false}){
+  need(implicitQaConfiguration(configuration)&&configuration.controlPolicy.development==='conversation'
+    &&configuration.controlPolicy.bootstrap==='disabled'&&configuration.controlPolicy.qaFix==='disabled','qa_executor_attachment_required');
+  qa=readQaExecutorConfiguration(qa);
+  const rawHome=process.env.CM_WORKFLOW_LOG_HOME??path.join(os.homedir(),'.cm-workflow','logs');
+  const logHome=path.resolve(rawHome==='~'?os.homedir():rawHome.startsWith('~/')?path.join(os.homedir(),rawHome.slice(2)):rawHome);
+  const {specsDir,codeProject,feature,requirements}=definition;
+  const requestTimeout={timeoutMs:qa.timeoutMs??60000};
+  const qaExecutor=Object.freeze({...createHostQaExecutor({specsDir,codeProject,feature,requirements,runtime,
+    ...(definition.codeProjects?{codeProjects:definition.codeProjects}:{}),
+    commands:qa.commands,environment:qa.environment,timeoutMs:1800000,logHome,
+    ...(protectedExecution?{specsRoot:specsDir}:{}),
+    logic:(request,signal)=>bridge.call('qa_logic',request,signal,requestTimeout),
+    browser:(request,signal)=>bridge.call('qa_browser',request,signal,requestTimeout)}),requestTimeoutMs:requestTimeout.timeoutMs});
+  attachedQaExecutors.add(qaExecutor);
+  return {...createImplicitHostQaCapabilities({configuration,bridge}),qaExecutor};
+}
+function hostQaDecisionProvider({qa,bridge,parallelMember=false}){
+  const requestTimeout={timeoutMs:qa?.timeoutMs??60000};
+  return parallelMember?createParallelMemberQaDecisionProvider():createHostQaDecisionProvider({timeoutMs:60000,
+    criticalPaths:qa?.criticalPaths??{},assess:(request,signal)=>bridge.call('qa_assess',request,signal,requestTimeout)});
+}
+export function createImplicitHostQaCapabilities({configuration,bridge}){
+  need(implicitQaConfiguration(configuration),'invalid_input');
+  const qaDecisionProvider=hostQaDecisionProvider({qa:null,bridge});
+  implicitQaProviders.add(qaDecisionProvider);
+  // Preserve the original log/mirror selection and all absent executors/docs.
+  return {qaDecisionProvider};
+}
+
+export function createHostWorkflowCapabilities({definition,configuration,bridge,allowQa,runtime='codex',protectedExecution=false,bootstrap=null,parallelMember=false,controlPolicy=null,commandProjection=null}){
   need(['codex','claude'].includes(runtime),'invalid_runtime');
   const {specsDir,codeProject,feature,requirements}=definition;
   const logHome=path.join(specsDir,'.reviews','host-log-mirror');
@@ -82,9 +157,7 @@ export function createHostWorkflowCapabilities({definition,configuration,bridge,
   // Legacy qa:null keeps its historical caller-supplied disposition contract.
   if(configuration.qa!==null||controlPolicy!==null){
     result.qaLogHome=logHome;
-    const requestTimeout={timeoutMs:configuration.qa?.timeoutMs??60000};
-    result.qaDecisionProvider=parallelMember?createParallelMemberQaDecisionProvider():createHostQaDecisionProvider({timeoutMs:60000,criticalPaths:configuration.qa?.criticalPaths??{},
-      assess:(request,signal)=>bridge.call('qa_assess',request,signal,requestTimeout)});
+    result.qaDecisionProvider=hostQaDecisionProvider({qa:configuration.qa,bridge,parallelMember});
   }
   if(configuration.qa!==null&&(controlPolicy===null||controlPolicy.qa==='run')){
     need(allowQa===true,'qa_authorization_required');
@@ -95,6 +168,7 @@ export function createHostWorkflowCapabilities({definition,configuration,bridge,
       ...(definition.codeProjects?{codeProjects:definition.codeProjects}:{}),
       ...(bootstrap?{bootstrap:{requirements:bootstrap.configuration.bootstrapRequirements,scope:definition.scope}}:{}),
       commands:configuration.qa.commands,environment:configuration.qa.environment,timeoutMs:1800000,logHome,
+      ...(commandProjection?{commandProjection}:{}),
       ...(protectedExecution?{specsRoot:specsDir}:{}),
       logic:(request,signal)=>bridge.call('qa_logic',request,signal,requestTimeout),
       browser:(request,signal)=>bridge.call('qa_browser',request,signal,requestTimeout)}),requestTimeoutMs:requestTimeout.timeoutMs});

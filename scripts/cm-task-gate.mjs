@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {verifyCmAiTaskLearningHandoff} from '../runtime/js/cm-ai/cm-ai-learning-handoff-writer.mjs';
 // JavaScript authority for CM handoff, review, and read-only completion-plan gates.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,6 +11,10 @@ import {inspectFixWalkthrough,readFixWalkthrough,fixWalkthroughBinding} from '..
 import {inspectFixRegressionFailure} from '../runtime/js/cm-fix/regression-evidence.mjs';
 import {taskDeclarations,approvedTaskGrammar,TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
+import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {nativeCorrectionPaths,inspectNativeCorrectionOwner} from '../runtime/js/cm-ai/native-correction-publication.mjs';
+import {publishHostReview} from '../runtime/js/cm-ai/host-review-file.mjs';
 import {snapshot,rootPath,reviewSpecsPath,stableIgnorePolicy,stablePublicPolicy,stableSnapshotPolicy,
   comparableFiles,validateStablePolicy,filePath,INVENTORY_COUNT,INVENTORY_LIMIT} from '../runtime/js/cm-ai/review-package.mjs';
 
@@ -524,8 +529,130 @@ function validateFixWalkthroughRetry({prior,payload,priorPayload,priorReview,fea
   }
 }
 
-function validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoot){
+// Discover this task's recovery from retained owner records, so deleting a
+// handoff marker or changing a Markdown verdict cannot select legacy gates.
+function completionReworkOwner(reviewsDir,feature,task,projectRoot){
+  const root=path.join(reviewsDir,'.execution');let names;
+  try{const stat=fs.lstatSync(root);if(!stat.isDirectory()||stat.isSymbolicLink()||fs.realpathSync(root)!==root)
+    throw new GateError('invalid completion rework owner directory');
+    names=fs.readdirSync(root);}catch(error){if(error.code==='ENOENT')return null;throw error;}
+  if(names.length>1024)throw new GateError('completion rework owner inventory exceeds bound');
+  const candidates=[];
+  for(const name of names){
+    const dir=path.join(root,name),stat=fs.lstatSync(dir);
+    if(stat.isSymbolicLink())throw new GateError('invalid completion rework owner directory');
+    if(!stat.isDirectory())continue;
+    const file=path.join(dir,'state.json');let raw;
+    try{fs.lstatSync(file);}catch(error){if(error.code==='ENOENT')continue;throw error;}
+    try{raw=JSON.parse(fileRevision(file,16*1024*1024).bytes.toString('utf8'));}
+    catch(error){if(error.code==='ENOENT')continue;throw error;}
+    const config=raw.records?.[0]?.payload?.config;
+    if(config?.identity?.taskId!==task||config.taskLearning?.feature.replace(/^\d+\./,'')!==feature
+      ||projectRoot!==null&&config.root!==projectRoot
+      ||!raw.records.some(row=>['review-evidence-recovered','completion-rework-requested','evidence-superseded'].includes(row.payload.type)))continue;
+    const snapshot=readExecutionSnapshot({specsRoot:path.dirname(reviewsDir),identity:raw.identity});
+    const history=readRunnerHistory(snapshot.records,config,3);candidates.push({snapshot,history});
+  }
+  return activeCompletionReworkOwner(candidates);
+}
+// Called only after strict snapshot/replay validation. Supersession never
+// deletes the old evidence; it prevents a retired owner blocking its successor.
+export function activeCompletionReworkOwner(candidates){
+  const retired=new Set(candidates.flatMap(({history})=>history.supersession?.previousRunIds??[]));
+  const owners=candidates.filter(({snapshot})=>!retired.has(snapshot.identity.runId)
+    &&snapshot.records.some(row=>['review-evidence-recovered','completion-rework-requested'].includes(row.payload.type)));
+  if(owners.length>1)throw new GateError('ambiguous completion rework owner');
+  return owners[0]?.snapshot??null;
+}
+
+// This marker locates the real owner journal; it is never itself approval.
+function validateCompletionRework({payload,priorPayload,feature,task,projectRoot,reviewsDir,stage,owner}){
+  const prefix='cm-completion-rework-v1: ',markers=payload.evidence.filter(item=>item.startsWith(prefix));
+  if(markers.length!==1)throw new GateError('approved r1 requires a bound completion rework');
+  try{
+    const marker=JSON.parse(markers[0].slice(prefix.length));
+    if(canonical(Object.keys(marker).sort())!==canonical(['identity','recordDigest'])
+      ||marker.identity.taskId!==task||marker.identity.attempt!==2)throw new GateError('invalid completion rework');
+    const snapshot=readExecutionSnapshot({specsRoot:fs.realpathSync(reviewsDir+'/..'),
+      identity:{repositoryId:marker.identity.repositoryId,runId:marker.identity.runId}});
+    if(owner&&owner.revision!==snapshot.revision)throw new GateError('completion rework owner changed');
+    const config=snapshot.records[0].payload.config;
+    const records=snapshot.records.filter(row=>row.payload.type==='completion-rework-requested');
+    if(records.length!==1||records[0].digest!==marker.recordDigest||config.taskLearning?.feature.replace(/^\d+\./,'')!==feature
+      ||config.identity.taskId!==task||config.root!==fs.realpathSync(projectRoot))throw new GateError('unbound completion rework');
+    const history=readRunnerHistory(snapshot.records,config,3),record=records[0].payload;
+    const prior=history.state.receipts.find(item=>item.identity.attempt===1);
+    if(!prior||prior.result.verdict!=='approved'||prior.receiptDigest!==record.receiptDigest
+      ||prior.packageDigest!==record.packageDigest||history.state.attempt!==2
+      ||history.state.reviewPackage?.identity.attempt!==2
+      ||history.state.reviewPackage.handoff?.sha256!==sha256(expectedHandoff(reviewsDir,feature,task,2))
+      ||history.state.reviewPackage.artifactDigest===record.artifactDigest)
+      throw new GateError('completion rework must bind a new reviewed delivery');
+    const originalReview=snapshot.records.find(row=>row.payload.type==='effect-checkpoint'
+      &&row.payload.checkpoint.receipt?.receiptDigest===prior.receiptDigest
+      &&row.payload.checkpoint.reviewPackage?.identity.attempt===1);
+    const originalRegistration=snapshot.records.find(row=>row.payload.type==='review-invocation-registered'
+      &&row.payload.binding.invocationId===prior.id);
+    if(!originalReview||!originalRegistration)throw new GateError('missing original approved review');
+    publishHostReview({reviewsDir,feature,handoffPath:expectedHandoff(reviewsDir,feature,task,1),
+      reviewPackage:originalReview.payload.checkpoint.reviewPackage,receipt:prior,registered:prior,
+      at:originalRegistration.payload.registeredAt,inspectOnly:true});
+    if(stage==='n5'){
+      const receipt=history.state.receipt,pkg=history.state.reviewPackage;
+      if(receipt?.identity.attempt!==2||receipt.result.verdict!=='approved'||receipt.packageDigest!==pkg.packageDigest)
+        throw new GateError('completion rework requires the real approved a2 receipt');
+      publishHostReview({reviewsDir,feature,handoffPath:expectedHandoff(reviewsDir,feature,task,2),reviewPackage:pkg,
+        receipt,registered:receipt,at:history.state.reviewInvocation.registration.registeredAt,inspectOnly:true});
+    }
+
+  }catch(error){throw new GateError('invalid completion rework owner evidence: '+error.message);}
+}
+
+// Marker only locates the strictly replayed original owner; it grants no approval.
+function validateNativeReviewRecovery({payload,feature,task,projectRoot,reviewsDir,stage,owner}){
+  const prefix='cm-native-review-recovery-v1: ',markers=payload.evidence.filter(item=>item.startsWith(prefix));
+  if(markers.length!==1||!projectRoot)throw new GateError('blocked r1 requires bound native recovery owner');
+  try{
+    const marker=JSON.parse(markers[0].slice(prefix.length));
+    if(canonical(Object.keys(marker).sort())!==canonical(['identity','recordDigest'])
+      ||marker.identity.taskId!==task||marker.identity.attempt!==2)throw new GateError('invalid native recovery marker');
+    const snapshot=readExecutionSnapshot({specsRoot:fs.realpathSync(reviewsDir+'/..'),
+      identity:{repositoryId:marker.identity.repositoryId,runId:marker.identity.runId}});
+    if(!owner||owner.revision!==snapshot.revision)throw new GateError('native recovery owner changed');
+    const config=snapshot.records[0].payload.config,history=readRunnerHistory(snapshot.records,config,3);
+    const records=snapshot.records.filter(row=>row.payload.type==='review-evidence-recovered');
+    if(records.length!==1||records[0].digest!==marker.recordDigest||config.root!==fs.realpathSync(projectRoot)
+      ||config.identity.taskId!==task||config.taskLearning?.feature.replace(/^\d+\./,'')!==feature)
+      throw new GateError('unbound native recovery');
+    const record=records[0].payload,prior=history.state.receipts.find(item=>item.identity.attempt===1),pkg=history.state.reviewPackage;
+    if(!prior||prior.result.verdict!=='blocked'||prior.receiptDigest!==record.receiptDigest
+      ||prior.packageDigest!==record.packageDigest||history.state.attempt!==2||pkg?.identity.attempt!==2
+      ||pkg.handoff?.sha256!==sha256(expectedHandoff(reviewsDir,feature,task,2))
+      ||pkg.checks.filter(c=>c.kind==='native-evidence'&&c.outcome==='passed').length!==1)
+      throw new GateError('native recovery must retain old blocked and bind new native package');
+    const old=snapshot.records.find(row=>row.payload.type==='effect-checkpoint'
+      &&row.payload.checkpoint.receipt?.receiptDigest===prior.receiptDigest);
+    const registration=snapshot.records.find(row=>row.payload.type==='review-invocation-registered'&&row.payload.binding.invocationId===prior.id);
+    if(!old||!registration)throw new GateError('missing original blocked receipt');
+    publishHostReview({reviewsDir,feature,handoffPath:expectedHandoff(reviewsDir,feature,task,1),
+      reviewPackage:old.payload.checkpoint.reviewPackage,receipt:prior,registered:prior,
+      at:registration.payload.registeredAt,inspectOnly:true});
+    if(stage==='n5'){
+      const receipt=history.state.receipt;
+      if(receipt?.identity.attempt!==2||receipt.result.verdict!=='approved'||receipt.packageDigest!==pkg.packageDigest)
+        throw new GateError('native recovery requires real approved r2');
+      publishHostReview({reviewsDir,feature,handoffPath:expectedHandoff(reviewsDir,feature,task,2),
+        reviewPackage:pkg,receipt,registered:receipt,at:history.state.reviewInvocation.registration.registeredAt,inspectOnly:true});
+    }
+  }catch(error){throw new GateError('invalid native recovery owner evidence: '+error.message);}
+}
+
+function validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoot,stage='n4'){
   if(attempt!==2)return;
+  if(projectRoot!==null)projectRoot=fs.realpathSync(path.resolve(projectRoot));
+  const requestedReviews=path.resolve(reviewsDir),reviewStat=fs.lstatSync(requestedReviews);
+  if(!reviewStat.isDirectory()||reviewStat.isSymbolicLink())throw new GateError('invalid completion rework review directory');
+  reviewsDir=fs.realpathSync(requestedReviews);
   const priorHandoff=expectedHandoff(reviewsDir,feature,task,1);
   requireExpectedHandoff(priorHandoff,{reviewsDir,feature,task,attempt:1});
   const priorPayload=loadHandoff(priorHandoff,{task,attempt:1});
@@ -534,9 +661,14 @@ function validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoo
   const prior=validateReview(reviewPath(reviewsDir,feature,task,1),{
     task,attempt:1,handoff:priorHandoff,changedFiles:priorPayload.changed_files,
   });
-  if(prior.verdict==='approved'){
+  const owner=completionReworkOwner(reviewsDir,feature,task,projectRoot);
+  if(prior.verdict==='blocked'||payload.evidence.some(item=>item.startsWith('cm-native-review-recovery-v1: ')))
+    validateNativeReviewRecovery({payload,feature,task,projectRoot,reviewsDir,stage,owner});
+  else if(owner||payload.evidence.some(item=>item.startsWith('cm-completion-rework-v1: ')))
+    validateCompletionRework({payload,priorPayload,feature,task,projectRoot,reviewsDir,stage,owner});
+  else if(prior.verdict==='approved')
     validateFixWalkthroughRetry({prior,payload,priorPayload,priorReview:reviewPath(reviewsDir,feature,task,1),feature,task,projectRoot});
-  }else if(prior.verdict!=='changes_requested')
+  else if(prior.verdict!=='changes_requested')
     throw new GateError('attempt 2 requires round 1 verdict: changes_requested');
 }
 
@@ -911,13 +1043,89 @@ function checkControlledCorrection(selectors,stage){
   return {gate:'n5',task:selectors.task,attempt:2,continuation:1,outcome:'approved',review:paths.review,
     content_bound:true,correction_sha256:correctionDigest,...inventory};
 }
+function checkNativeCorrection(selectors,stage){
+  const {reviewsDir,feature,task,handoff,projectRoot}=selectors;
+  let paths=nativeCorrectionPaths(reviewsDir,feature,task);
+  if(handoff!==paths.handoff||!projectRoot)throw new GateError('native correction requires fixed handoff and project root');
+  const pinned=fileRevision(paths.record,PREPARATION_FILE_LIMIT);
+  const source=new TextDecoder('utf8',{fatal:true}).decode(pinned.bytes);parseJsonStrict(source);
+  const sidecar=JSON.parse(source);
+  exactFields(sidecar,['version','identity','recordDigest','executionStatePath'],'native correction sidecar');
+  if(sidecar.version!==1)throw new GateError('invalid native correction sidecar');
+  const {version,...correction}=sidecar;
+  const owner=inspectNativeCorrectionOwner({reviewsDir,feature,task,correction});
+  paths=owner.paths;
+  if(owner.config.root!==fs.realpathSync(projectRoot))throw new GateError('native correction project root changed');
+  const payload=loadHandoff(handoff,{task,attempt:2});
+  if(payload.status!=='ready_for_review')throw new GateError('native correction requires ready_for_review');
+  verifyImplementationBinding(payload,{projectRoot});
+  const learning=owner.history.state.learningResult;
+  const delivery=owner.history.state.cache.slice(owner.history.nativeCorrection.cacheAtGrant).find(entry=>entry.effect.kind==='develop');
+  if(!learning||!delivery?.effect.learningInput)throw new GateError('native correction requires its original-owner Learning');
+  verifyCmAiTaskLearningHandoff({handoffPath:handoff,feature:owner.config.taskLearning.feature,
+    identity:correction.identity,learningInput:delivery.effect.learningInput,
+    ...(Object.hasOwn(learning,'application')?{application:learning.application}:{}),retrospective:learning.retrospective,writeback:learning.writeback});
+  const markers=payload.evidence.filter(item=>item.startsWith('cm-native-correction-v1: '));
+  if(markers.length!==1)throw new GateError('native correction requires exactly one owner marker');
+  const markerSource=markers[0].slice('cm-native-correction-v1: '.length);parseJsonStrict(markerSource);
+  if(canonical(JSON.parse(markerSource))!==canonical(sidecar))throw new GateError('native correction marker changed');
+  const original=loadHandoff(expectedHandoff(reviewsDir,feature,task,2),{task,attempt:2});
+  for(const attempt of [1,2]){
+    const oldHandoff=expectedHandoff(reviewsDir,feature,task,attempt),oldPayload=loadHandoff(oldHandoff,{task,attempt});
+    const old=validateReview(reviewPath(reviewsDir,feature,task,attempt),{task,attempt,handoff:oldHandoff,changedFiles:oldPayload.changed_files});
+    if(old.verdict!=='blocked'||old.independent!=='true')throw new GateError('native correction must retain both blocked reviews');
+  }
+  // Scope growth is authority only when strictly replayed from this one
+  // correction grant. Keep every original task change in the new review;
+  // additions cannot be inferred from a handoff or a modified launch file.
+  const additions=owner.record.payload.files?.map(file=>file.path)??[];
+  const expectedChanges=new Set([...original.changed_files,...additions]);
+  if(!sameSet(expectedChanges,new Set(payload.changed_files))
+    ||payload.changed_files.some(file=>!owner.history.effectiveScope.includes(file))
+    ||original.implementation_sha256===payload.implementation_sha256)throw new GateError('native correction requires revised implementation with full original scope and exactly authorized additions');
+  const pkg=owner.history.state.reviewPackage;
+  if(pkg?.identity.attempt!==2||pkg.handoff?.path!==path.basename(handoff)||pkg.handoff.sha256!==sha256(handoff))
+    throw new GateError('native correction package does not bind its handoff');
+  const inventory=selectors.inventory==='required'?verifyInventory(payload,selectors):{};
+  if(stage==='n4'){
+    absent(paths.receipt);requireRevisions([pinned]);
+    return {gate:'n4',task,attempt:2,continuation:1,outcome:'ready_for_review',content_bound:true,
+      handoff_sha256:sha256(handoff),correction_sha256:correction.recordDigest,...inventory};
+  }
+  const receipt=owner.history.state.receipt,registration=owner.history.state.reviewInvocation?.registration;
+  if(receipt?.identity.attempt!==2||receipt.packageDigest!==pkg.packageDigest||receipt.result.verdict!=='approved'
+    ||receipt.execution.provider!=='codex'||registration?.binding?.invocationId!==receipt.id)
+    throw new GateError('native correction requires its genuine registered approved Codex receipt');
+  publishHostReview({reviewsDir,feature,handoffPath:handoff,reviewPackage:pkg,receipt,registered:receipt,
+    at:registration.registeredAt,inspectOnly:true,correction});
+  const header=validateReview(paths.review,{task,attempt:2,handoff,changedFiles:payload.changed_files});
+  if(header.correction_epoch!=='1'||header.correction_sha256!==correction.recordDigest)
+    throw new GateError('native correction review marker changed');
+  requireRevisions([pinned]);
+  return {gate:'n5',task,attempt:2,continuation:1,outcome:'approved',review:paths.review,
+    content_bound:true,correction_sha256:correction.recordDigest,...inventory};
+}
 function selectedCorrectionPaths(selectors){
   const {reviewsDir,feature,task,correction}=selectors;
+  if(correction===1){
+    const fixed=nativeCorrectionPaths(reviewsDir,feature,task),sidecar=JSON.parse(fs.readFileSync(fixed.record,'utf8'));
+    const {version,...binding}=sidecar;
+    return inspectNativeCorrectionOwner({reviewsDir,feature,task,correction:binding}).paths;
+  }
   const controlled=controlledCorrectionPaths(reviewsDir,feature,task);
   return typeof correction==='string'&&path.resolve(correction)===controlled.record
     ?controlled:correctionPaths(reviewsDir,feature,task);
 }
+// Callers obtain paths only from selectedCorrectionPaths, whose native owner
+// strictly replays the authorization and receipt. Reuse the existing evidence
+// preparation surface for its one provider recovery; no caller path grants it.
+function supplementalNativePaths(selectors,paths){
+  const {reviewsDir,feature,task}=selectors;
+  return paths.review===nativeCorrectionPaths(reviewsDir,feature,task,true,true).review
+    ||paths.review===nativeCorrectionPaths(reviewsDir,feature,task,true,true,true).review;
+}
 function checkCorrection(selectors,stage){
+  if(selectors.correction===1)return checkNativeCorrection(selectors,stage);
   const paths=selectedCorrectionPaths(selectors);
   return paths.record.endsWith('-controlled-correction.json')
     ?checkControlledCorrection(selectors,stage):checkHumanCorrection(selectors,stage);
@@ -947,7 +1155,7 @@ export function checkN5({handoff,reviewsDir,feature,task,projectRoot=null,allowL
   if(requireLearning)verifyLearningRecord(payload,projectRoot);
   const attempt=payload.attempt;
   requireExpectedHandoff(handoff,{reviewsDir,feature,task,attempt});
-  validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoot);
+  validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoot,'n5');
   const contentBound=verifyImplementationBinding(payload,{projectRoot,allowLegacyUnbound});
   const inventoryResult=inventory==='required'?verifyInventory(payload,{projectRoot,reviewsDir,feature,task,allowLegacyUnbound}):{};
   const review=reviewPath(reviewsDir,feature,task,attempt);
@@ -1013,7 +1221,8 @@ function pinApproval(selectors){
   }
   if(selectors.correction){
     const paths=selectedCorrectionPaths(selectors);
-    for(const file of [paths.record,paths.review,paths.receipt])revisions.push(fileRevision(file,preparationReadLimit));
+    for(const file of [...new Set([paths.record,paths.review,paths.receipt,...(selectors.correction===1?[nativeCorrectionPaths(reviewsDir,feature,task).review,nativeCorrectionPaths(reviewsDir,feature,task).receipt,
+      ...(supplementalNativePaths(selectors,paths)&&fs.existsSync(nativeCorrectionPaths(reviewsDir,feature,task,true).receipt)?[nativeCorrectionPaths(reviewsDir,feature,task,true).review,nativeCorrectionPaths(reviewsDir,feature,task,true).receipt]:[])]:[])])])revisions.push(fileRevision(file,preparationReadLimit));
   }
   const approval={...checkN5(selectors)};
   requireRevisions(revisions);
@@ -1120,7 +1329,8 @@ export function prepareMarkDone(selectors){
       if(existing&&!sameRevision(existing,pinned))throw new GateError('conflicting revisions for physical preparation evidence');
       physical.set(pinned.path,pinned);
     }
-    if(physical.size>(selectors.correction?8:4))throw new GateError('preparation evidence count exceeds bound');
+    const materialReview=selectors.correction===1&&selectedCorrectionPaths(selectors).review===nativeCorrectionPaths(selectors.reviewsDir,selectors.feature,selectors.task,true).review;
+    if(physical.size>(selectors.correction===1&&supplementalNativePaths(selectors,selectedCorrectionPaths(selectors))?12:materialReview?10:selectors.correction?8:4))throw new GateError('preparation evidence count exceeds bound');
     const plan={
       version:1,protocol:'cm-mark-done-plan',feature:selectors.feature,taskId:selectors.task,
       attempt:approval.attempt,tasksPath:revision.path,mode:Number(BigInt(revision.stat[2])&0o7777n),

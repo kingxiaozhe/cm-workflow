@@ -115,7 +115,9 @@ export function commitRunnerFixture(token,store,input,signal) {
 function commitCore(input,signal,owner,initial,guard,appendIntent,appendResult) {
   cancellation(signal);const v=json(input,16*MiB);
   shape(v,['selectors','root','identity','baseline','reviewPackage','checks','receipt','registered','execution']);
-  shape(v.selectors,['handoff','reviewsDir','tasksPath','feature']);validIdentity(v.identity);
+  shape(v.selectors,['handoff','reviewsDir','tasksPath','feature',...(Object.hasOwn(v.selectors,'correction')?['correction']:[])]);
+  if(Object.hasOwn(v.selectors,'correction'))need(v.selectors.correction===1,'invalid_native_correction');
+  validIdentity(v.identity);
   need(equal(initial.identity,{repositoryId:v.identity.repositoryId,runId:v.identity.runId}),'identity_mismatch');
   const selectors=v.selectors;
   need(selectors.tasksPath===owner.tasksPath && selectors.feature===owner.feature,'task_owner_mismatch');

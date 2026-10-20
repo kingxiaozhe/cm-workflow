@@ -49,7 +49,11 @@ export function publishFixObservationDossier({specsRoot,configuration,status,reg
   need(status.stage==='observation'&&status.completionEligible===false,'fix_observation_unavailable');
   const reproduction=inspectFixReproduction(status.reproduction,configuration.reproduction,{requireAttempts:Object.hasOwn(status.reproduction,'attempts')});
   need(reproduction.status==='not_reproduced'||status.diagnosis?.status==='needs_evidence','fix_observation_unavailable');
-  const slug=/^T-FIX-([a-z0-9]+(?:-[a-z0-9]+)*)$/.exec(status.identity.taskId)?.[1];
+  // Only the private observation filename adapts; identity and repair gates stay intact.
+  // A dot separates its namespace from legacy slugs, including on case-insensitive filesystems.
+  const observed=/^T-OBS-([a-z0-9]+(?:-[a-z0-9]+)*)$/.exec(status.identity.taskId)?.[1];
+  const slug=/^T-FIX-([a-z0-9]+(?:-[a-z0-9]+)*)$/.exec(status.identity.taskId)?.[1]
+    ??(observed?`obs.${observed}`:null);
   need(slug&&Number.isSafeInteger(registeredAt)&&registeredAt>=0&&Number.isFinite(new Date(registeredAt).getTime()),'invalid_fix_dossier');
   need(path.isAbsolute(specsRoot)&&fs.realpathSync(specsRoot)===specsRoot,'unsupported_path');
   const section=(title,value)=>`## ${title}\n\n${JSON.stringify(value,null,2).split('\n').map(line=>`    ${line}`).join('\n')}\n\n`;

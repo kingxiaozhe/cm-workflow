@@ -3,6 +3,7 @@ import {digest,json,shape,need,hex,id,text} from './effect-contract.mjs';
 import {createHostQaExecutor} from './host-qa-executor.mjs';
 import {validateHostWorkflowConfiguration} from './host-workflow-capabilities.mjs';
 import {preQaConfigurations,readQaAttachment} from './qa-attachment.mjs';
+import {qaExecutorAttachmentIn} from './qa-executor-attachment.mjs';
 
 const workflow=material=>material.execution?.workflow?.configuration??material.execution?.workflow;
 const BUILT_IN='cm-host-qa-executor-v1';
@@ -89,7 +90,8 @@ export function readQaConfigRevision(raw){
 export const qaRevisionFollows=(next,previous)=>next.qaRound>previous.qaRound
   ||beforeFirstQaRound(next)&&beforeFirstQaRound(previous);
 export function qaRevisionChain(snapshot){
-  let fingerprint=snapshot.fingerprints.config,invariant=null,attached=false;const revisions=[];
+  const executorAttachment=qaExecutorAttachmentIn(snapshot);
+  let fingerprint=executorAttachment?.toFingerprint??snapshot.fingerprints.config,invariant=null,attached=false;const revisions=[];
   for(const row of snapshot.records){
     if(row.payload.type==='qa-attached'){
       need(!attached,'qa_attachment_duplicate');attached=true;

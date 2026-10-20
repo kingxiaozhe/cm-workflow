@@ -7,8 +7,9 @@ import {createHash} from 'node:crypto';
 import {createHostCheck} from '../cm-ai/host-check.mjs';
 import {validateDeveloperScope} from '../cm-ai/developer-adapter.mjs';
 import {json,need,shape} from '../cm-ai/effect-contract.mjs';
+import {captureBinaryAsset,readBinaryAssetBytes} from '../cm-ai/binary-assets.mjs';
 
-function snapshot(cwd,file){
+function snapshot(cwd,file,binaryAssets=null){
   let cursor=cwd;
   for(const part of file.split('/')){
     cursor=path.join(cursor,part);
@@ -17,6 +18,7 @@ function snapshot(cwd,file){
   }
   const target=path.join(cwd,file);
   try{
+    if(binaryAssets?.paths.includes(file))return captureBinaryAsset({root:cwd,path:file,binding:binaryAssets}).sha256;
     const stat=fs.lstatSync(target);need(stat.isFile()&&stat.nlink===1&&stat.size<=1024*1024,'protected_edit_invalid');
     return createHash('sha256').update(fs.readFileSync(target)).digest('hex');
   }catch(error){if(error.code==='ENOENT')return null;throw error;}
@@ -24,23 +26,35 @@ function snapshot(cwd,file){
 
 // Optional mode sets the permission bits of a written file (never of a deletion).
 const EDIT_MODES=new Map([['0644',0o644],['0755',0o755]]);
-export function applyProtectedEdits({cwd,scope,edits}){
+export function applyProtectedEdits({cwd,scope,edits,binaryAssets=null}){
   validateDeveloperScope(scope);need(fs.realpathSync(cwd)===cwd,'unsupported_path');
   need(Array.isArray(edits)&&edits.length>0&&edits.length<=scope.length,'protected_edit_invalid');
   const seen=new Set();
+  const binaryBytes=new Map();
   for(const edit of edits){
-    shape(edit,['path','beforeSha256','content',...(Object.hasOwn(edit,'mode')?['mode']:[])]);
+    const binary=Object.hasOwn(edit,'contentBlob');
+    if(binary){
+      shape(edit,['path','beforeSha256','contentBlob','size','mode']);
+      need(binaryAssets?.paths.includes(edit.path)&&edit.mode==='0644','protected_edit_invalid');
+      binaryBytes.set(edit.path,readBinaryAssetBytes({binding:binaryAssets,record:{path:edit.path,type:'file',mode:0o644,
+        size:edit.size,sha256:edit.contentBlob,contentBlob:edit.contentBlob}}));
+    }else shape(edit,['path','beforeSha256','content',...(Object.hasOwn(edit,'mode')?['mode']:[])]);
+    if(binary){
+      need(scope.includes(edit.path)&&!seen.has(edit.path),'out_of_scope');seen.add(edit.path);
+      need(edit.beforeSha256===snapshot(cwd,edit.path,binaryAssets),'protected_edit_stale');
+      continue;
+    }
     need(!Object.hasOwn(edit,'mode')||edit.content!==null&&EDIT_MODES.has(edit.mode),'protected_edit_invalid');
     need(scope.includes(edit.path)&&!seen.has(edit.path),'out_of_scope');seen.add(edit.path);
     need(edit.content===null||typeof edit.content==='string','protected_edit_invalid');
     need(edit.content===null||Buffer.byteLength(edit.content)<=1024*1024,'limit_exceeded');
-    need(edit.beforeSha256===snapshot(cwd,edit.path),'protected_edit_stale');
+    need(edit.beforeSha256===snapshot(cwd,edit.path,binaryAssets),'protected_edit_stale');
     need(edit.content!==null||edit.beforeSha256!==null,'protected_edit_invalid');
   }
   for(const edit of edits){
-    need(edit.beforeSha256===snapshot(cwd,edit.path),'protected_edit_stale');
+    need(edit.beforeSha256===snapshot(cwd,edit.path,binaryAssets),'protected_edit_stale');
     const target=path.join(cwd,edit.path);
-    if(edit.content===null)fs.unlinkSync(target);
+    if(edit.content===null&&!Object.hasOwn(edit,'contentBlob'))fs.unlinkSync(target);
     else{
       fs.mkdirSync(path.dirname(target),{recursive:true});
       // O_NOFOLLOW avoids silently replacing a last-moment link target. A new
@@ -48,7 +62,7 @@ export function applyProtectedEdits({cwd,scope,edits}){
       const created=edit.beforeSha256===null;
       const fd=fs.openSync(target,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_TRUNC|fs.constants.O_NOFOLLOW,0o644);
       try{
-        fs.writeFileSync(fd,edit.content);
+        fs.writeFileSync(fd,binaryBytes.get(edit.path)??edit.content);
         if(created||Object.hasOwn(edit,'mode'))fs.fchmodSync(fd,EDIT_MODES.get(edit.mode)??0o644);
         fs.fsyncSync(fd);
       }finally{fs.closeSync(fd);}
@@ -56,22 +70,22 @@ export function applyProtectedEdits({cwd,scope,edits}){
   }
 }
 
-export function captureProtectedEdits(cwd,scope){
+export function captureProtectedEdits(cwd,scope,binaryAssets=null){
   validateDeveloperScope(scope);
-  return Object.fromEntries(scope.map(file=>[file,snapshot(cwd,file)]));
+  return Object.fromEntries(scope.map(file=>[file,snapshot(cwd,file,binaryAssets)]));
 }
 
 // onApply (cm-ai protected development) journals the applying subprocess:
 // apply_spawning before the spawn, apply_started with its pid right after. A
 // journal failure kills the new group and fails the apply.
-export async function commitProtectedEdits({cwd,specsRoot,scope,edits,expected,identity,timeoutMs,signal,onApply=null}){
+export async function commitProtectedEdits({cwd,specsRoot,scope,edits,expected,identity,timeoutMs,signal,onApply=null,binaryAssets=null}){
   need(Array.isArray(edits),'protected_edit_invalid');
   for(const edit of edits)need(Object.hasOwn(expected,edit.path)&&edit.beforeSha256===expected[edit.path],'protected_edit_stale');
   need(!signal.aborted,'cancelled');
   if(edits.length===0)return;
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cm-fix-edits-')),file=path.join(dir,'edits.json');
   try{
-    fs.writeFileSync(file,JSON.stringify({cwd,scope,edits}),{mode:0o600,flag:'wx'});
+    fs.writeFileSync(file,JSON.stringify({cwd,scope,edits,...(binaryAssets?{binaryAssets}:{})}),{mode:0o600,flag:'wx'});
     let journalFailed=false;
     onApply?.({phase:'apply_spawning'});
     const check=createHostCheck({cwd,specsRoot,timeoutMs,commands:[{id:'protected-edits',

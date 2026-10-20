@@ -116,7 +116,7 @@ function evidenceHeader(file){
   }
   for(const key of ['at','reviewer','independent','scope'])need(fields.has(key),`PRD review evidence is missing ${key}`,'prd_review_evidence_invalid',where(key));
   const reviewer=fields.get('reviewer');
-  need(['codex-subagent','codex-cli','self-degraded'].includes(reviewer),'PRD review evidence reviewer is not a supported channel','prd_review_evidence_invalid',where('reviewer'));
+  need(['codex-subagent','codex-cli','claude-cli','self-degraded'].includes(reviewer),'PRD review evidence reviewer is not a supported source declaration','prd_review_evidence_invalid',where('reviewer'));
   need(reviewer==='self-degraded'?fields.get('independent')==='false'&&Boolean(fields.get('degraded_reason'))
     :fields.get('independent')==='true','PRD review independence evidence invalid','prd_review_evidence_invalid',where('independent'));
   need(!fields.get('scope')&&scope.length>0&&scope.every(Boolean),'PRD review evidence scope must be a non-empty list','prd_review_evidence_invalid',where('scope'));

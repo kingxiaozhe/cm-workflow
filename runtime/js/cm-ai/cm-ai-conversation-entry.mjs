@@ -44,6 +44,7 @@ export const completionRetryable=status=>status.state==='blocked'
 const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approval':
   // The runner reports spec_drift over any state whose next effect would be refused.
   status.code==='spec_drift'?(status.specificationRebind==='available'?'spec_rebind':'none'):
+  status.materialReviewFailure===true&&!status.reviewReconciliation?.available?'none':
   status.bootstrapReviewRecovery===true?'bootstrap_review_recover':
   status.developRedoRequired===true?'develop_redo':
   // V5: the round's second no-result redispatch needs the operator's stop confirmation.
@@ -70,7 +71,11 @@ const pendingAction=status=>status.state==='awaiting_spec_approval'?'spec_approv
 const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',operation:operation.operation,
   requestDigest:digest(operation),identity:status.identity,outcome,state:status.state,code:status.code??null,
   packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),
+  ...(status.providerReviewRecovery?{providerReviewRecovery:status.providerReviewRecovery}:{}),
+  ...(status.evidenceContinuation?{evidenceContinuation:status.evidenceContinuation}:{}),
+  ...(status.materialReviewFailure?{materialReviewFailure:true,materialContinuationSource:status.materialContinuationSource??null,materialContinuationSpent:status.materialContinuationSpent===true,materialTimeoutContinuationSource:status.materialTimeoutContinuationSource??null,materialTimeoutContinuationSpent:status.materialTimeoutContinuationSpent===true}:{}),
   ...(status.reviewReconciliation?{reviewReconciliation:status.reviewReconciliation}:{}),
+  ...(status.effectiveScope?{effectiveScope:status.effectiveScope}:{}),
   ...(status.developRedoRequired===true?{developRedoRequired:true}:{}),
   ...(status.documentationSyncPending===true?{documentationSyncPending:true}:{}),
   ...(status.reviewRedispatchStopRequired===true?{reviewRedispatchStopRequired:true}:{}),
@@ -97,11 +102,12 @@ function readOperation(raw) {
   const operation=json(raw),keys=['version','operation','requestId','identity'];
   if(['decision','complete','qa','qa_result','context_refresh','finish','run_finalize'].includes(operation?.operation))keys.push('packageDigest');
   if(['qa_result','context_refresh','finish','run_finalize'].includes(operation?.operation))keys.push('testRunId');
-  if(['abandon_review','abandon_effect','bootstrap_review_recover','develop_redo'].includes(operation?.operation))keys.push('reason');
+  if(['abandon_review','abandon_effect','bootstrap_review_recover','develop_redo','completion_rework','development_rework','revise_scope'].includes(operation?.operation))keys.push('reason');
   if(operation?.operation==='reconcile_review')keys.push('invocationId');
+  if(operation?.operation==='revise_scope')keys.push('scope');
   shape(operation,keys);
   if(operation?.operation==='reconcile_review')id(operation.invocationId);
-  need(operation.version===1&&['advance','start','status','decision','complete','qa','qa_result','context_refresh','finish','run_finalize','cancel','resume','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','develop_redo']
+  need(operation.version===1&&['advance','start','status','decision','complete','qa','qa_result','context_refresh','finish','run_finalize','cancel','resume','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','develop_redo','completion_rework','development_rework','revise_scope']
     .includes(operation.operation));
   id(operation.requestId);validIdentity(operation.identity);
   if(operation.operation==='abandon_review')need(typeof operation.reason==='string'
@@ -110,6 +116,10 @@ function readOperation(raw) {
   if(operation.operation==='abandon_effect')need(typeof operation.reason==='string'
     &&operation.reason.trim().length>0&&Buffer.byteLength(operation.reason,'utf8')<=500
     &&!/[\r\n\0]/.test(operation.reason),'effect_abandon_reason_required');
+  if(operation.operation==='revise_scope')need(typeof operation.reason==='string'&&operation.reason.trim().length>0
+    &&Buffer.byteLength(operation.reason,'utf8')<=500&&!/[\r\n\0]/.test(operation.reason),'scope_revision_reason_required');
+  if(['completion_rework','development_rework'].includes(operation.operation))need(typeof operation.reason==='string'&&operation.reason.trim().length>0
+    &&Buffer.byteLength(operation.reason,'utf8')<=500&&!/[\r\n\0]/.test(operation.reason),`${operation.operation}_reason_required`);
   if(operation.operation==='develop_redo')need(typeof operation.reason==='string'
     &&operation.reason.trim().length>0&&Buffer.byteLength(operation.reason,'utf8')<=500
     &&!/[\r\n\0]/.test(operation.reason),'develop_redo_reason_required');
@@ -210,6 +220,9 @@ export function createCmAiConversationEntry(options) {
   if(options&&Object.hasOwn(options,'allowAbandonReview'))optionKeys.push('allowAbandonReview');
   if(options&&Object.hasOwn(options,'allowAbandonEffect'))optionKeys.push('allowAbandonEffect');
   if(options&&Object.hasOwn(options,'allowBootstrapReviewRecovery'))optionKeys.push('allowBootstrapReviewRecovery');
+  if(options&&Object.hasOwn(options,'allowCompletionRework'))optionKeys.push('allowCompletionRework');
+  if(options&&Object.hasOwn(options,'allowDevelopmentRework'))optionKeys.push('allowDevelopmentRework');
+  if(options&&Object.hasOwn(options,'allowScopeRevision'))optionKeys.push('allowScopeRevision');
   if(options&&Object.hasOwn(options,'allowDevelopRedo'))optionKeys.push('allowDevelopRedo');
   if(options&&Object.hasOwn(options,'holdRevision'))optionKeys.push('holdRevision');
   if(options&&Object.hasOwn(options,'featureSelection'))optionKeys.push('featureSelection');
@@ -224,12 +237,14 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'qaChangedFiles'))runnerKeys.push('qaChangedFiles');
   if(runner&&Object.hasOwn(runner,'verificationBlocks'))runnerKeys.push('verificationBlocks');
   if(runner&&Object.hasOwn(runner,'completionBlocks'))runnerKeys.push('completionBlocks');
+  if(runner&&Object.hasOwn(runner,'materialReviewEffectId'))runnerKeys.push('materialReviewEffectId');
   if(runner&&Object.hasOwn(runner,'reviewEffectIds'))runnerKeys.push('reviewEffectIds');
   if(runner&&Object.hasOwn(runner,'recheckLearningInput'))runnerKeys.push('recheckLearningInput');
   if(runner&&Object.hasOwn(runner,'attachLearningEvidence'))runnerKeys.push('attachLearningEvidence');
   if(runner&&Object.hasOwn(runner,'inspectFixAssociation'))runnerKeys.push('inspectFixAssociation');
   if(runner&&Object.hasOwn(runner,'acceptCompletedFix'))runnerKeys.push('acceptCompletedFix');
   if(runner&&Object.hasOwn(runner,'attachQa'))runnerKeys.push('attachQa');
+  if(runner&&Object.hasOwn(runner,'attachQaExecutor'))runnerKeys.push('attachQaExecutor');
   if(runner&&Object.hasOwn(runner,'reviseQa'))runnerKeys.push('reviseQa');
   if(runner&&Object.hasOwn(runner,'supersedeEvidence'))runnerKeys.push('supersedeEvidence');
   if(runner&&Object.hasOwn(runner,'rebindSpecification'))runnerKeys.push('rebindSpecification');
@@ -237,6 +252,13 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'reconcileReview'))runnerKeys.push('reconcileReview');
   if(runner&&Object.hasOwn(runner,'abandonEffect'))runnerKeys.push('abandonEffect');
   if(runner&&Object.hasOwn(runner,'recoverBootstrapReview'))runnerKeys.push('recoverBootstrapReview');
+  if(runner&&Object.hasOwn(runner,'reworkCompletion'))runnerKeys.push('reworkCompletion');
+  if(runner&&Object.hasOwn(runner,'reworkDevelopment'))runnerKeys.push('reworkDevelopment');
+  if(runner&&Object.hasOwn(runner,'correctionEpoch'))runnerKeys.push('correctionEpoch');
+  if(runner&&Object.hasOwn(runner,'authorizeNativeCorrection'))runnerKeys.push('authorizeNativeCorrection');
+  if(runner&&Object.hasOwn(runner,'recoverNativeReview'))runnerKeys.push('recoverNativeReview');
+  if(runner&&Object.hasOwn(runner,'reviseScope'))runnerKeys.push('reviseScope');
+  if(runner&&Object.hasOwn(runner,'switchReviewer'))runnerKeys.push('switchReviewer');
   if(runner&&Object.hasOwn(runner,'redoDevelop'))runnerKeys.push('redoDevelop');
   if(runner&&Object.hasOwn(runner,'recoverCommit'))runnerKeys.push('recoverCommit');
   if(runner&&Object.hasOwn(runner,'interruptions'))runnerKeys.push('interruptions');
@@ -245,12 +267,14 @@ export function createCmAiConversationEntry(options) {
   if(Object.hasOwn(runner,'qaChangedFiles'))need(typeof runner.qaChangedFiles==='function');
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');
   if(Object.hasOwn(runner,'completionBlocks'))need(typeof runner.completionBlocks==='function');
+  if(Object.hasOwn(runner,'materialReviewEffectId'))need(typeof runner.materialReviewEffectId==='function');
   if(Object.hasOwn(runner,'reviewEffectIds'))need(typeof runner.reviewEffectIds==='function');
   if(Object.hasOwn(runner,'recheckLearningInput'))need(typeof runner.recheckLearningInput==='function');
   if(Object.hasOwn(runner,'attachLearningEvidence'))need(typeof runner.attachLearningEvidence==='function');
   if(Object.hasOwn(runner,'inspectFixAssociation'))need(typeof runner.inspectFixAssociation==='function');
   if(Object.hasOwn(runner,'acceptCompletedFix'))need(typeof runner.acceptCompletedFix==='function');
   if(Object.hasOwn(runner,'attachQa'))need(typeof runner.attachQa==='function');
+  if(Object.hasOwn(runner,'attachQaExecutor'))need(typeof runner.attachQaExecutor==='function');
   if(Object.hasOwn(runner,'reviseQa'))need(typeof runner.reviseQa==='function');
   if(Object.hasOwn(runner,'abandonReview'))need(typeof runner.abandonReview==='function');
   if(Object.hasOwn(runner,'reconcileReview'))need(typeof runner.reconcileReview==='function');
@@ -268,6 +292,15 @@ export function createCmAiConversationEntry(options) {
   let bootstrapReviewRecoveryPermission=options.allowBootstrapReviewRecovery===true;
   need(options.allowDevelopRedo===undefined||typeof options.allowDevelopRedo==='boolean','invalid_input');
   let developRedoPermission=options.allowDevelopRedo===true;
+  need(options.allowCompletionRework===undefined||typeof options.allowCompletionRework==='boolean','invalid_input');
+  if(Object.hasOwn(runner,'reworkCompletion'))need(typeof runner.reworkCompletion==='function');
+  let completionReworkPermission=options.allowCompletionRework===true;
+  need(options.allowDevelopmentRework===undefined||typeof options.allowDevelopmentRework==='boolean','invalid_input');
+  if(Object.hasOwn(runner,'reworkDevelopment'))need(typeof runner.reworkDevelopment==='function');
+  // Elevated recovery is launch-only; wire options cannot grant it.
+  need(options.allowScopeRevision===undefined||typeof options.allowScopeRevision==='boolean','invalid_input');
+  if(Object.hasOwn(runner,'reviseScope'))need(typeof runner.reviseScope==='function');
+  // Elevated recovery is launch-only; wire options cannot grant it.
 
   const qaDecision=Object.hasOwn(options,'qaDecision')?json(options.qaDecision):null;
   const qaProvider=options.qaDecisionProvider??null;
@@ -379,7 +412,7 @@ export function createCmAiConversationEntry(options) {
     need(sameTask(identity,ownerIdentity)&&identity.attempt>=ownerIdentity.attempt,'identity_mismatch');
     // Stable run-definition identity can query/control or resume the current
     // attempt. Package-bound mutations must name the current attempt exactly.
-    const stableControl=['status','cancel','advance','resume','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','develop_redo'].includes(operation.operation)
+    const stableControl=['status','cancel','advance','resume','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','develop_redo','completion_rework','development_rework','revise_scope'].includes(operation.operation)
       &&sameIdentity(operation.identity,ownerIdentity);
     need(sameIdentity(operation.identity,identity)||stableControl,'identity_mismatch');
     if(operation.operation==='advance'){
@@ -588,6 +621,17 @@ export function createCmAiConversationEntry(options) {
       // V8: an interrupted step continues in the run (recorded); a void ends it.
       return summary(operation,boundStatus(result,identity),result.code==='effect_abandoned'?'abandoned':'recorded');
     }
+    if(operation.operation==='revise_scope'||operation.operation==='development_rework')
+      return summary(operation,{...runner.status(),code:operation.operation==='revise_scope'
+        ?'scope_revision_authorization_required':'development_rework_authorization_required'},'rejected');
+    if(operation.operation==='completion_rework'){
+      if(!completionReworkPermission)return summary(operation,{...runner.status(),code:'completion_rework_authorization_required'},'rejected');
+      completionReworkPermission=false;
+      const result=runner.reworkCompletion?.({allowed:true,reason:operation.reason})
+        ??{outcome:'rejected',code:'completion_rework_unavailable'};
+      if(result.outcome==='rejected')return summary(operation,{...runner.status(),code:result.code},'rejected');
+      return summary(operation,boundStatus(result,{...identity,attempt:2}),'recorded');
+    }
     if(operation.operation==='develop_redo'){
       if(!developRedoPermission)return summary(operation,{...runner.status(),
         code:'develop_redo_authorization_required'},'rejected');
@@ -617,7 +661,7 @@ export function createCmAiConversationEntry(options) {
       if(!(status.state==='awaiting_review'&&status.code===null)&&!retryReview(status))return summary(operation,status,'reported');
       need(!status.cancellationRequested&&!status.cancelAfterCommit,'cancelled');
       const resumed=runner.interruptions?.('review')??0,roundIds=runner.reviewEffectIds?.();
-      const idFor=n=>`review-${identity.attempt}${n?`-retry-${n}`:''}${resumed?`-resume-${resumed}`:''}`;
+      const idFor=n=>`review-${identity.attempt}${n?`-retry-${n}`:''}${resumed?`-resume-${resumed}`:''}${runner.correctionEpoch?.()?'-correction-1':''}`;
       let retries=0;
       if(retryReview(status)){
         retries=Math.max(Array.isArray(roundIds)?roundIds.length:0,
@@ -625,7 +669,7 @@ export function createCmAiConversationEntry(options) {
             &&call.contextId===status.reviewInvocation?.registration?.binding.logicalContextId).length);
         if(Array.isArray(roundIds))while(roundIds.includes(idFor(retries)))retries++;
       }
-      const effectId=idFor(retries);
+      const effectId=runner.materialReviewEffectId?.()??idFor(retries);
       const result=await runner.executeEffect({version:1,id:effectId,identity,kind:'review'});
       return effectSummary(operation,result,runner,identity);
     }
@@ -830,7 +874,7 @@ export function createCmAiConversationEntry(options) {
     // Both kinds of local rejection need a fresh effect id: an invalid developer
     // result, and one the host gate blocked before the review package existed.
     const retries=rejectedValues+(runner.verificationBlocks?.()??0),resumed=runner.interruptions?.('develop')??0;
-    const effectId=`develop-${identity.attempt}${retries?`-retry-${retries}`:''}${resumed?`-resume-${resumed}`:''}`;
+    const effectId=`develop-${identity.attempt}${retries?`-retry-${retries}`:''}${resumed?`-resume-${resumed}`:''}${runner.correctionEpoch?.()?'-correction-1':''}`;
     const result=await runner.executeEffect({version:1,id:effectId,identity,kind:'develop',learningInput});
     return effectSummary(operation,result,runner,identity);
   }
@@ -838,7 +882,7 @@ export function createCmAiConversationEntry(options) {
     let token=null,operation=null;const epoch=cancellationEpoch;
     try{
       operation=readOperation(raw);
-      if(!['status','cancel','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','develop_redo'].includes(operation.operation)){
+      if(!['status','cancel','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','develop_redo','completion_rework','development_rework','revise_scope'].includes(operation.operation)){
         token=Symbol(operation.operation);inFlightHandles.add(token);
       }
       const routed=await route(operation);

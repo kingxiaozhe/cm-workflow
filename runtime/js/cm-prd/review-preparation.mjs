@@ -10,12 +10,13 @@ import {inspectPrdFindings} from './review-findings.mjs';
 import {inspectPrdSplitDesign} from './split-design.mjs';
 import {need,json,digest} from '../cm-ai/effect-contract.mjs';
 import {needPrd} from './validation-reason.mjs';
+import {inspectPrdReviewRoute} from './review-route.mjs';
 const sha=text=>createHash('sha256').update(text).digest('hex');
 function sections(text,pattern){
   const parts=text.split(/(?=^##\s+)/m);
   return parts.filter(part=>pattern.test(part.split('\n')[0])).join('\n').trim();
 }
-export function preparePrdReview({specs,draft,stage,feature}){
+export function preparePrdReview({specs,draft,stage,feature,reviewRoute,designBaseline=null}){
   assertPrdBatchActive(specs,[feature]);
   need(['design','split'].includes(stage),'prd_review_stage_invalid');
   need(fs.realpathSync(specs)===specs,'prd_review_root_invalid');
@@ -70,13 +71,22 @@ export function preparePrdReview({specs,draft,stage,feature}){
       'Non-empty section content'});
   const revision=stage==='split'?readPrdSelfCheckRevision(specs,feature):null;
   const revised=revision?.features.find(f=>f.directory===feature);
-  const reviewPackage=json({workflow:'cm-prd',stage,feature,draftDigest:draft.draftDigest,content,
+  let reviewPackage=json({workflow:'cm-prd',stage,feature,draftDigest:draft.draftDigest,content,
     artifacts:target.documents.map(document=>({path:`${feature}/${document.path}`,sha256:sha(document.content)})),
+    ...(designBaseline===null?{}:{designBaseline}),
     ...(revision?{selfCheckRevision:{reason:revision.reason,round:revision.round,changedFiles:revised.changedFiles,
       documents:target.documents.filter(doc=>revised.changedFiles.includes(doc.path))}}:{}),
     instructions:stage==='design'?'Apply original Step 9.5 only when its risk triggers were established. Read relevant project rules and changed-module context plus steelman-review. No second attempt.':
       revision?'Apply original Step 10.6 to the current requirements, design and tasks. Review the included self-check revision documents and reason: these changes followed a failed whole-draft self-check and have not had a separate design review. Review these changes in this split attempt; do not dispatch another design review. No second attempt.':
       'Apply original Step 10.6 to the functional requirements, complete task list and selected design sections. Respect prior design review and do not repeat it. No second attempt.'});
+  if(reviewRoute!==undefined){
+    const route=inspectPrdReviewRoute(reviewRoute);
+    // An already claimed old package remains byte-for-byte identical. New
+    // routes bind only an unclaimed package, or match its original route.
+    const originalDefault=route.configuredAdapter==='current-ai'&&route.adapter==='codex-cli'
+      &&route.model==='default'&&route.source==='local';
+    if(!originalDefault&&gate.package_sha256!==digest(reviewPackage))reviewPackage=json({...reviewPackage,reviewRoute:route});
+  }
   if(gate.package_sha256!==undefined)need(gate.package_sha256===digest(reviewPackage),'prd_review_dispatch_package_changed');
   return json({gate,paths:args,reviewPackage,packageDigest:digest(reviewPackage),
     stageSelection:'caller_must_apply_original_risk_rules',dispatchAuthorized:false,writeAuthorized:false,completionAuthorized:false});

@@ -14,6 +14,7 @@
 
 单步操作可用随仓库的 `scripts/cm-prd-drive.mjs`：`node "{CM_WORKFLOW_ROOT}/scripts/cm-prd-drive.mjs" --plan PLAN.json <operation>`。
 PLAN 填 `project`、`specs`、`request`，继续时填状态中的 `runId` 为 `session`；变更模式填 `change`，
+升级执行入口但保留旧会话身份时，`sessionSkillDir` 填原 `identity.entry.skillDir`，不能冒充新版已加载；
 人工内容放 `answers/analyze.json`、`generate.json`、`review.json`、`correct.json` 或 `summary.json`。
 路径相对 PLAN 文件。驾驶员先校验答案、范围、当前会话和恢复绑定，再启动宿主；缺少 PDF/HTML 的真实读取或浏览器执行器时，
 `prd_materials` 会在启动前拒绝。`prd_self_check` 需要 PLAN 的 `contextChecks` 命令和逐项 `contextJudgements`，
@@ -21,8 +22,9 @@ PLAN 填 `project`、`specs`、`request`，继续时填状态中的 `runId` 为 
 用 `--help` 查看格式。审查、处置和发布仍受宿主原权限与门禁约束。
 
 核对真实代码根、specs根、docs材料、可选用例文件和真实runtime（codex或claude）。
-根据原Step 0–5完成交付形态、目录用途、代码地图/平台约束的理解；需要创建项目指令、基准资产、
-ADR或其他当前JS未提供的写入能力时，先报告具体缺口，不能跳过该业务要求或旁路手写。
+根据原Step 0–5完成交付形态、目录用途、代码地图/平台约束的理解。像素基准按
+[prototype-baseline.md](prototype-baseline.md) 的 `import_baseline` / `inspect_baseline` 登记，不能旁路手写。
+项目指令、ADR或其他JS尚未提供的写入能力仍须报告具体缺口，不能跳过业务要求。
 在整稿生成或保存之前，按原9.5逐feature核对全部风险信号；全部低风险走原整稿路径，
 含任一高风险feature（包括混合风险）走下述设计先行路径。信息不足先提问，不能按低风险放行。
 同批保持原清单，只对高风险feature审设计；低风险不加审，也不拆会话绕过原清单。
@@ -53,6 +55,20 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-prd-host.mjs" serve \
 需要处置回执时追加--allow-disposition-write。这些开关不授权额外provider进程或安装。
 无法维持双向会话、启动所需环境不支持或缺权限时停止并解释，不声称已执行JS，也不自动重启换路径。
 
+## 像素基准与已结束的规划阻断
+
+像素档在 `plan_design` 前保存真实渲染/交互/字体证据：`import_baseline` 需 `--allow-spec-write`，
+`inspect_baseline` 只读复核。确认引用绑定原用户消息；缺证据返回基准 `ready:false`，不能生成设计。
+导入先写 session 私有目录，不占 feature 编号；`save_design` 再投影 `design-baseline/`，审查包绑定资产摘要。
+完整字段、提取办法及边界见 [prototype-baseline.md](prototype-baseline.md)。
+
+`blocked + active:null` 的已完成设计规划拒绝不是丢失调用，不用普通 `resume`：
+先 `inspect_planning_recovery` 取得当前绑定，再以原绑定加非空 `reason` 发 `recover_planning`。
+只在原分析完成、尚无草稿/审查/自检消耗的同一新建会话允许一次；返回 `analysis_ready`，不自动生成或批准。
+若需导入基准，应先导入再读取恢复绑定，避免 checkpoint 摘要过期。相同绑定重入幂等，原阻断及全部历史保留。
+升级时用新可执行根 `--skill-dir`，并用 `--session-skill-dir` 指明原冻结 Skill；`--session` 必需。
+有待返回旧调用、来源/配置漂移或不满足资格时停止，不清档、重置计数、另建 run 或换 reviewer。
+
 ## 控制与宿主请求
 
 收到host_ready后发送`{requestId,operation:"start",text:"用户实际需求"}`，再按状态用advance传真实回答。
@@ -71,11 +87,12 @@ result必须填真实结果，不留空对象。不同kind的合同见当前请�
 | prd_materials | 用已可用、已授权的实际工具处理材料；HTML交互只走Codex内置浏览器，PDF逐页覆盖，不伪造截图/页数/证据。能力不足返回blocked。 |
 | prd_generate | 按payload.phase执行：design只做Step6–9的需求/设计；tasks_after_design默认保留acceptedDesign原feature及正文；整稿自检失败时按下文登记同清单修订；full_draft走原Step6–10。保留UI基准与原粒度约束，只回正文不写文件。 |
 | prd_self_check | 读取spec-self-check.md与相关真实代码/地图/用例，逐项返回有依据的结果；机械通过不等于语义通过，不能用自检冒充独立审查。 |
-| prd_review | 按原9.5或10.6，使用实际授权的新上下文独立审查，核对作者与审查者上下文标识、材料摘要并原样回传。无法独立时只允许预先选定的显式self-degraded；开始后不换模式或补审。 |
+| prd_review | 按原9.5或10.6及payload.package.reviewRoute，实际调用配置通道的新上下文独立审查；Claude结果保留claude-cli，核对上下文、包摘要并原样回传。来源声明/预检/启动进程不等于审查通过；指定跨工具时不可降级自审或换标识。旧未声明路由的会话沿原合同。 |
 | prd_correct | 对原findings提出完整原路径清单与逐项采纳/升级决定；不自行写规格，不新增范围/勾任务/再次review。 |
 | prd_summary | 按原Step11核对交付形态、开放问题、风险、平台/UI基准及原9.5风险信号；未知明确写待核对，不能推断人工批准。 |
 
-读取角色Skill不代表配置模型已调用；非当前runtime角色路由被JS阻断时如实报告。
+读取角色Skill不代表配置模型已调用；分析/规划的非当前runtime路由被JS阻断时如实报告。
+审查按包内reviewRoute实际执行，不能把Claude结果改标Codex；不可用时停在原待审点，不伪造回包。
 JS拥有日志、草稿保存、修订写入、自检轮次、审查记录、处置和审批位写入；宿主不再运行
 主Skill中的同名手工写入命令补齐缺口。JS记录配对阶段事件；合并生成的阶段共享真实调用区间，不能相加或编造内部耗时。
 

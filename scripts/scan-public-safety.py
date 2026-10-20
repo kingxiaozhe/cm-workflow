@@ -31,6 +31,7 @@ PATTERNS = {
 # contain loopback URLs. Other private endpoints and all secret/path patterns
 # remain checked even inside these files.
 ALLOW_LOOPBACK_ENDPOINT_FILES = {
+    Path("scripts/cm-review-material-cli.test.mjs"),
     Path("scripts/test-cm-openai-compatible-call.py"),
     Path("templates/dashboard/serve.sh"),
     Path("templates/pixel/serve.sh"),

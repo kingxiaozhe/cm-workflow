@@ -5,6 +5,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {commonArgs,cleanEnvironment,specsPermissionArgs} from './codex-config.mjs';
 import {need,text,validCallTimeout,json} from './effect-contract.mjs';
+import {CODEX_RECONNECT_NOTICE_LIMIT,isCodexReconnectNotice} from './codex-reconnect-notice.mjs';
 
 export function developerArgs({cwd,model,effort,schemaPath,disabledSkills=[],specsRoot=null}) {
   text(cwd);text(schemaPath);
@@ -49,7 +50,7 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
       try{child=spawnProcess(cli,args,{cwd,env:cleanEnvironment(),stdio:['pipe','pipe','pipe'],shell:false,detached:true});}
       catch{usage.complete();resolve({status:'unavailable',code:'spawn_failed'});return;}
       let buffer='',bytes=0,thread=null,turnStarted=false,completed=false,lastMessage=null;
-      let failure=null,closed=false,timer,cleanup,noticeCount=0;
+      let failure=null,closed=false,timer,cleanup,noticeCount=0,reconnectNoticeCount=0;
       const signalGroup=signalName=>{
         if(!Number.isInteger(child.pid)||child.pid<=0)return false;
         try{process.kill(-child.pid,signalName);return true;}
@@ -77,6 +78,13 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
         if(!event||Array.isArray(event)||typeof event.type!=='string'){stop('invalid_event');return;}
         if(event.type==='turn.failed'&&thread&&turnStarted&&!completed)usage.terminal(event.usage);
         if(failure==='provider_failed')return;
+        // Reconnects may precede thread initialization, but never bypass a
+        // completed turn. Keep their budget separate from item notices.
+        if(!completed&&isCodexReconnectNotice(event)&&reconnectNoticeCount<CODEX_RECONNECT_NOTICE_LIMIT){
+          reconnectNoticeCount++;
+          try{if(typeof onNotice==='function')onNotice(event.message.slice(0,200));}catch{}
+          return;
+        }
         if(event.type==='error'||event.type==='turn.failed'){stop('provider_failed');return;}
         if(completed){
           stop(event.type==='item.completed'&&event.item?.type==='error'?'invalid_event':'event_after_terminal');return;

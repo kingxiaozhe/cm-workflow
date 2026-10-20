@@ -9,6 +9,7 @@ import {readReviewVerification,verificationPath,inspectReviewVerificationEvidenc
 import {ownedProcessCleanup} from '../cm-ai/owned-process-cleanup.mjs';
 import {runVerificationCommand} from './review-verification-command.mjs';
 import {verificationFailure,verificationFailureCode,bindVerificationDiagnostic} from './review-verification-diagnostic.mjs';
+import {binaryVerificationVersions,readVerificationBinary,safeBinaryRoot,BINARY_TOTAL_LIMIT} from './review-verification-binary.mjs';
 const sha=b=>createHash('sha256').update(b).digest('hex');
 function readPage(file,offset=0){
  const data=file.data;
@@ -28,22 +29,45 @@ function read(root,p){
  const st=fs.lstatSync(target);need(st.isFile()&&st.nlink===1&&st.size<=2*1024*1024,'review_verification_path');
  const data=fs.readFileSync(target);return {path:p,sha256:sha(data),mode:st.mode&511,data};
 }
-const record=({data,...r})=>r;
-function manifest(root,config){let bytes=0;return config.files.map(p=>{let f;try{f=read(root,p);}catch(e){if(e.code!=='ENOENT')throw e;f={path:p,sha256:null,mode:null,data:null};}bytes+=f.data?.length??0;need(bytes<=16*1024*1024,'review_verification_limit');return f;});}
+const record=({data,binary,...r})=>r;
+function manifest(root,config){let bytes=0,binaryBytes=0;return config.files.map(p=>{let f;try{
+ if(config.binaryAssets?.paths.includes(p)){
+  const {contentBase64,...metadata}=readVerificationBinary(root,p);f={path:p,...metadata,binary:true};binaryBytes+=f.size;
+ }else f=read(root,p);
+ }catch(e){if(e.code!=='ENOENT')throw e;f={path:p,sha256:null,mode:null,data:null};}bytes+=f.data?.length??0;
+ need(bytes<=16*1024*1024&&binaryBytes<=BINARY_TOTAL_LIMIT,'review_verification_limit');return f;});}
+function inspectBinaryStore(pkg,versions,copyRoot=null){
+ if(!versions.length)return;
+ const root=safeBinaryRoot(pkg.binaryAssets.storeRoot),copied=new Set();
+ for(const r of versions){
+  const destination=copyRoot!==null&&!copied.has(r.contentBlob)?path.join(copyRoot,r.contentBlob):null;
+  readVerificationBinary(root,r.contentBlob,{expected:{sha256:r.sha256,size:r.size},copyTo:destination});copied.add(r.contentBlob);
+ }
+}
 export function assertVerificationIsolation(){need(process.platform==='darwin'&&fs.existsSync('/usr/bin/sandbox-exec'),'review_verification_isolation_unavailable');}
 export function validateReviewVerificationInputs({codeProject,configuration,reviewPackage}){
  assertVerificationIsolation();const config=readReviewVerification(configuration);
  need(fs.realpathSync(codeProject)===codeProject,'review_verification_path');
+ const binaryFiles=binaryVerificationVersions(config,reviewPackage);
+ inspectBinaryStore(reviewPackage,binaryFiles);
  const files=manifest(codeProject,config);bindVerificationFiles(files.map(record),reviewPackage);
  return files;
 }
-export function createReviewVerificationSession({codeProject,configuration,request}){
+export function createReviewVerificationSession({codeProject,configuration,request,binaryReview=false}){
  const config=readReviewVerification(configuration),pkg=request.payload.reviewPackage;
+ const binaryFiles=binaryVerificationVersions(config,pkg);
  const files=validateReviewVerificationInputs({codeProject,configuration:config,reviewPackage:pkg}),records=files.map(record);
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-review-verification-'))),cwd=path.join(root,'project');fs.mkdirSync(cwd,{mode:448});
- for(const f of files){if(f.data===null)continue;const target=path.join(cwd,f.path);fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,f.data,{mode:f.mode});}
+ let binaryArchiveRoot;
+ try{
+  if(config.binaryAssets){binaryArchiveRoot=path.join(root,'binary-versions');fs.mkdirSync(binaryArchiveRoot,{mode:448});inspectBinaryStore(pkg,binaryFiles,binaryArchiveRoot);}
+  for(const f of files){if(f.data===null)continue;const target=path.join(cwd,f.path);fs.mkdirSync(path.dirname(target),{recursive:true});
+   if(f.binary){readVerificationBinary(codeProject,f.path,{expected:f,copyTo:target});fs.chmodSync(target,f.mode);}
+   else fs.writeFileSync(target,f.data,{mode:f.mode});}
+ }catch(error){fs.rmSync(root,{recursive:true,force:true});throw error;}
  const activePath=path.join(root,'active-command.json');
- const options={configuration:config,cwd,files:records,requestDigest:request.requestDigest,packageDigest:pkg.packageDigest,activePath};
+ const options={configuration:config,cwd,files:records,requestDigest:request.requestDigest,packageDigest:pkg.packageDigest,activePath,
+  ...(config.binaryAssets?{binaryFiles,binaryArchiveRoot}:{})};
  const configPath=path.join(root,'tools.json'),evidencePath=path.join(root,'evidence.json');
  fs.writeFileSync(configPath,JSON.stringify({...options,evidencePath}),{mode:384});
  const diagnosticPath=path.join(root,'diagnostic.json');
@@ -66,15 +90,16 @@ export function createReviewVerificationSession({codeProject,configuration,reque
   return bindVerificationDiagnostic(failure,{request,configuration:config,providerThreadId});
  };
  return {cwd,configPath,transport:{cwd,mcpConfig:JSON.stringify({mcpServers:{cm_review:{command:process.execPath,args:[fileURLToPath(new URL('./review-verification-server.mjs',import.meta.url)),configPath]}}})},
-  prompt:`\nUse only the cm_review tools. This is an isolated verification copy, not the source project. Read relevant files with read_file. The ONLY callable check IDs and commands are ${JSON.stringify(config.checks)}. Package checks may have different labels; never use those labels as tool IDs. Run EVERY registered check by its exact tool ID. Then use mutate_check with an exact unique find/replace on one allowed implementation path (${config.mutationPaths.join(', ')}), selecting a check that detects that defect. The host executes baseline, mutation and exact restoration checks. A successful verdict requires all baseline checks and at least one killed and restored mutation. Do not claim a test was executed based on text. Tool failure or unsupported required checks are missing evidence, never success. No other tools or changes to the original project are allowed.\n`,
+  prompt:`\nUse only the cm_review tools. This is an isolated verification copy, not the source project. Read relevant files with read_file.${config.binaryAssets?` Binary paths ${JSON.stringify(config.binaryAssets.paths)} are available only through read_binary with version before or after (default after), offset and length at most 16384 bytes; SHA and size bind the complete exact file. Deleted files have only before. Binary bodies are not text. Registered checks may inspect the exact current binary copy.`:''} The ONLY callable check IDs and commands are ${JSON.stringify(config.checks)}. Package checks may have different labels; never use those labels as tool IDs. Run EVERY registered check by its exact tool ID. ${binaryReview?'Read EVERY binary before and after version listed in the review package with read_binary; all registered checks and all binary version reads are mechanically required. No mutation is authorized by this asset-only review profile.':`Then use mutate_check with an exact unique find/replace on one allowed implementation path (${config.mutationPaths.join(', ')}), selecting a check that detects that defect. The host executes baseline, mutation and exact restoration checks. A successful verdict requires all baseline checks and at least one killed and restored mutation.`} Do not claim a test was executed based on text. Tool failure or unsupported required checks are missing evidence, never success. No other tools or changes to the original project are allowed.\n`,
   call:tools.call,diagnostic,
   finish(providerThreadId){
    try{
    need(!fs.existsSync(activePath),'review_verification_cleanup');
+   inspectBinaryStore(pkg,binaryFiles);
    need(digest(manifest(codeProject,config).map(record))===digest(records),'review_verification_source_drift');
    need(digest(manifest(cwd,config).map(record))===digest(records),'review_verification_copy_drift');
    const raw=JSON.parse(fs.readFileSync(evidencePath,'utf8'));
-   return inspectReviewVerificationEvidence({...raw,providerThreadId},{request,configuration:config,providerThreadId});
+   return inspectReviewVerificationEvidence({...raw,providerThreadId},{request,configuration:config,providerThreadId,binaryReview});
    }catch(error){error.verificationDiagnostic=diagnostic(providerThreadId,error);throw error;}
   },
   async close(){
@@ -89,9 +114,9 @@ export function createReviewVerificationSession({codeProject,configuration,reque
    }
    fs.rmSync(root,{recursive:true,force:true});}};
 }
-export function createVerificationTools({configuration,cwd,files,requestDigest,packageDigest,evidencePath,activePath,diagnosticPath=path.join(path.dirname(evidencePath),'diagnostic.json'),runCommand=runVerificationCommand}){
+export function createVerificationTools({configuration,cwd,files,requestDigest,packageDigest,evidencePath,activePath,binaryFiles=[],binaryArchiveRoot=null,diagnosticPath=path.join(path.dirname(evidencePath),'diagnostic.json'),runCommand=runVerificationCommand}){
  const c=readReviewVerification(configuration);let calls=0,busy=false;
- const checks=new Map(),mutations=[];
+ const checks=new Map(),mutations=[],binaryReads=new Map();
  const failures=()=>fs.existsSync(diagnosticPath)?JSON.parse(fs.readFileSync(diagnosticPath,'utf8')):[];
  const saveFailures=items=>{
   const temporary=diagnosticPath+'.tmp';fs.writeFileSync(temporary,JSON.stringify(items),{mode:384});fs.renameSync(temporary,diagnosticPath);
@@ -108,7 +133,8 @@ export function createVerificationTools({configuration,cwd,files,requestDigest,p
  const resultCode=(result,fallback)=>result.outcome==='unavailable'?verificationFailureCode(result):fallback;
  const invalidate=id=>{checks.delete(id);for(let i=mutations.length-1;i>=0;i--)if(mutations[i].checkId===id)mutations.splice(i,1);};
  const persist=()=>{
-  const e={version:1,requestDigest,packageDigest,profileDigest:digest(c),providerThreadId:'pending',files,snapshotDigest:digest(files),checks:c.checks.filter(x=>checks.has(x.id)).map(x=>checks.get(x.id)),mutations};
+  const e={version:1,requestDigest,packageDigest,profileDigest:digest(c),providerThreadId:'pending',files,snapshotDigest:digest(files),checks:c.checks.filter(x=>checks.has(x.id)).map(x=>checks.get(x.id)),mutations,
+   ...(c.binaryAssets?{binaryFiles}:{}),...(c.binaryReview?{binaryReads:binaryFiles.filter(r=>binaryReads.has(r.path+'\0'+r.version)).map(({path,version,sha256,size})=>({path,version,sha256,size}))}:{})};
   const tmp=evidencePath+'.tmp';fs.writeFileSync(tmp,JSON.stringify(e),{mode:384});fs.renameSync(tmp,evidencePath);
  };
  const resetExtras=(dir=cwd)=>{
@@ -120,19 +146,40 @@ export function createVerificationTools({configuration,cwd,files,requestDigest,p
    else fs.rmSync(full,{recursive:true,force:true});
   }
  };
- const same=()=>need(digest(manifest(cwd,c).map(record))===digest(files),'review_verification_copy_drift');
+ const same=()=>{
+  need(digest(manifest(cwd,c).map(record))===digest(files),'review_verification_copy_drift');
+  if(c.binaryAssets){
+   need(binaryArchiveRoot===path.join(path.dirname(cwd),'binary-versions'),'review_verification_path');
+   for(const r of binaryFiles){need(c.binaryAssets.paths.includes(r.path),'review_verification_path');
+    readVerificationBinary(binaryArchiveRoot,r.contentBlob,{expected:{sha256:r.sha256,size:r.size}});}
+  }
+ };
  const run=async(check,signal)=>{need(!fs.existsSync(activePath),'review_verification_cleanup');resetExtras();try{return await runCommand({cwd,command:check.command,timeoutMs:c.timeoutMs,signal,
   onSpawn:pid=>{const tmp=activePath+'.tmp';fs.writeFileSync(tmp,JSON.stringify({pid}),{mode:384});fs.renameSync(tmp,activePath);},
   onClose:()=>fs.rmSync(activePath,{force:true})});}finally{resetExtras();}};
  persist();
  return {async call(name,raw,signal=new AbortController().signal){
-  need(!busy&&++calls<=32,'review_verification_limit');busy=true;
+  need(!busy&&++calls<=(c.binaryReview?Math.min(256,32+2*binaryFiles.length):32),'review_verification_limit');busy=true;
   try{
    need(!fs.existsSync(activePath),'review_verification_cleanup');
    const a=json(raw,32768);same();
    if(name==='read_file'){
     shape(a,Object.hasOwn(a,'offset')?['path','offset']:['path']);need(c.files.includes(a.path),'review_verification_path');
+    need(!c.binaryAssets?.paths.includes(a.path),'review_verification_encoding');
     return readPage(read(cwd,a.path),Object.hasOwn(a,'offset')?a.offset:0);
+   }
+   if(name==='read_binary'){
+    need(!signal.aborted,'cancelled');
+    shape(a,['path',...['version','offset','length'].filter(key=>Object.hasOwn(a,key))]);
+    need(c.binaryAssets?.paths.includes(a.path),'review_verification_path');
+    const version=a.version??'after';need(['before','after'].includes(version),'review_verification_binary_version');
+    const expected=binaryFiles.find(r=>r.path===a.path&&r.version===version);need(expected,'review_verification_binary_version');
+    const offset=a.offset??0,length=a.length??16384;need(Number.isSafeInteger(length)&&length>0&&length<=16384,'review_verification_offset');
+    const observed=readVerificationBinary(version==='before'?binaryArchiveRoot:cwd,version==='before'?expected.contentBlob:a.path,
+     {expected:{sha256:expected.sha256,size:expected.size,...(version==='after'?{mode:expected.mode}:{})},offset,length});
+    if(c.binaryReview){binaryReads.set(a.path+'\0'+version,true);persist();}
+    return {path:a.path,examinedPath:a.path,version,sha256:observed.sha256,totalBytes:observed.size,offset,
+     nextOffset:offset+length<observed.size?offset+length:null,contentBase64:observed.contentBase64};
    }
    if(name==='run_check'){
     shape(a,['id']);const check=c.checks.find(c=>c.id===a.id);need(check,'review_verification_check');

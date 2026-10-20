@@ -59,7 +59,7 @@ async function review(f,host,inspect){
   const result=await runPrdHostReview({specs:f.dir,prepared:original,authorContextId:'author',writeEnabled:true,mode:'independent',
     revalidate:prepare,signal:new AbortController().signal,review:async payload=>{
       f.calls.push('review');inspect?.(payload);
-      return {reviewer:'codex-subagent',contextId:'fresh-reviewer',independent:true,at:'2026-10-06T00:00:00.000Z',
+      return {reviewer:'codex-cli',contextId:'fresh-reviewer',independent:true,at:'2026-10-06T00:00:00.000Z',
         result:{verdict:'approved',packageDigest:payload.package.packageDigest,examinedPaths:payload.examinedPaths,findings:[],summary:'Synthetic scope review'}};
     }});
   assert.equal(result.status,'review_recorded');

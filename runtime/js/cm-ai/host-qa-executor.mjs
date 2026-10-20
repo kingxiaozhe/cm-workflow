@@ -160,8 +160,9 @@ function saveReport(configuration,binding,rows,summary,plan) {
 
 export function createHostQaExecutor(options) {
   const keys=['specsDir','codeProject','feature','runtime','requirements','commands','environment','timeoutMs','logHome'];
-  shape(options,[...keys,...['logic','browser','specsRoot','codeProjects','bootstrap'].filter(key=>Object.hasOwn(options,key))]);
-  const {logic=null,browser=null,...raw}=options,configuration=json(raw);
+  shape(options,[...keys,...['logic','browser','specsRoot','codeProjects','bootstrap','commandProjection'].filter(key=>Object.hasOwn(options,key))]);
+  const {logic=null,browser=null,commandProjection=null,...raw}=options,configuration=json(raw);
+  need(commandProjection===null||typeof commandProjection==='function','invalid_input');
   for(const capability of [logic,browser])need(capability===null||typeof capability==='function');
   for(const name of ['specsDir','codeProject','logHome'])need(path.isAbsolute(configuration[name]),'unsupported_path');
   for(const name of ['specsDir','codeProject'])need(fs.realpathSync(configuration[name])===configuration[name],'unsupported_path');
@@ -224,6 +225,7 @@ export function createHostQaExecutor(options) {
         ...(configuration.bootstrap?{bootstrapRequirements:configuration.bootstrap.requirements}:{}),
         ...(roots?{codeProjectPaths:codeProjectPaths(configuration.codeProject,resolveCodeProjects(configuration.codeProject,roots))}:{})});
       const before=snapshot(),rows=[],commandResults=new Map();
+      const projectedCommands=()=>new Map((commandProjection?commandProjection(configuration.commands):configuration.commands).map(item=>[item.id,item]));
       const route=role=>{
         notCancelled();unchanged();
         const result=resolveRole(loadConfig({projectRoot:configuration.codeProject}),role,configuration.runtime);
@@ -246,7 +248,7 @@ export function createHostQaExecutor(options) {
             // Q13: the command's process group identity, so a cleanup_failed row can
             // later be released once the host proves that group gone.
             let spawned=null;
-            const check=createHostCheck({cwd:roots?command.codeProject:configuration.codeProject,commands:[{id:command.id,command:command.command}],
+            const check=createHostCheck({cwd:roots?command.codeProject:configuration.codeProject,commands:[{id:command.id,command:projectedCommands().get(command.id).command}],
               timeoutMs:configuration.timeoutMs,specsRoot:configuration.specsRoot??null,onProgress:reportHostCheckProgress,
               onSpawn:({pid})=>{spawned={pid,process_start_time:readProcessStartTime(pid)};}});
             const failedCleanup=()=>({...resource,...(spawned?spawned:{})});

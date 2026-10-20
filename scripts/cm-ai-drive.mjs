@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import {NATIVE_CORRECTION_HELP,NATIVE_REVIEW_RECOVERY_HELP,CONTINUATION_HELP,PREFLIGHT_HELP,SUPERSEDE_HELP} from '../runtime/js/cm-ai/recovery-capabilities.mjs';
+import {packageMaterialEligible,checkpointPackageBudget} from '../runtime/js/cm-ai/checkpoint-package-material.mjs';
 // cm-ai host 的单步驾驶员。PLAN 路径相对 PLAN 文件；命令仅在 codeProject 内执行。
 // 请求表来自 host-session.mjs operationNames（传输允许集）、host-conversation-execution.mjs
 // developer/check/verificationGate、host-workflow-capabilities.mjs QA/文档接线、
@@ -33,12 +35,16 @@
 // intentionally not advertised as cm-ai operations.
 // For unsupported evidence kinds, preflight refuses before the host starts.
 import fs from 'node:fs';
+import {readBinaryAssetConfiguration,importBinaryAsset,captureBinaryAsset,BINARY_ASSET_LIMITS} from '../runtime/js/cm-ai/binary-assets.mjs';
+import {binaryAssetBinding} from '../runtime/js/cm-ai/protected-binary-edits.mjs';
+import {inspectNativeReviewEvidence} from '../runtime/js/cm-ai/native-review-evidence.mjs';
 import {readLaunchExecutionPolicy} from '../runtime/js/cm-ai/execution-policy.mjs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {createHostCheck,reportHostCheckProgress} from '../runtime/js/cm-ai/host-check.mjs';
 import {readQaAssessment} from '../runtime/js/cm-ai/host-qa-policy.mjs';
+import {readQaExecutorConfigurationFile} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {createHostQaExecutor} from '../runtime/js/cm-ai/host-qa-executor.mjs';
 import {inspectCmAiQaTaskContext} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {readLearningRetrospectiveContent} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
@@ -65,7 +71,7 @@ import {readControlPolicyFile,isControlRecovery as controlRecoveryRequest} from 
 
 // PLAN.liveEvidence: fresh current-session evidence; see docs/live-evidence-drivers.md.
 const HOST=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
-const OPERATIONS=new Set(['advance','start','resume','status','cancel','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','develop_redo','decision','complete','qa','qa_result',
+const OPERATIONS=new Set(['advance','start','resume','status','cancel','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','completion_rework','development_rework','revise_scope','develop_redo','decision','complete','qa','qa_result',
   'fix_status','fix_advance','fix_action','fix_run','run_finalize','context_refresh','finish']);
 const ADVANCE=new Set(['advance','start','resume']);
 const PACKAGE_OPERATIONS=new Set(['decision','complete','qa','qa_result','context_refresh','finish','run_finalize']);
@@ -87,13 +93,13 @@ const FIX_REASONED=['abandon_step','abandon_review','rediagnose','rerun_blocked_
 const FILES={develop:'develop.json',qa_assess:'qa-assess.json',documentation_inspect:'documentation-inspect.json',
   documentation_sync:'documentation-sync.json',fix_learning:'learning.json',fix_diagnose:'diagnosis.json',
   fix_test_author:'test-edits.json',fix_repair:'repair-edits.json',fix_retrospective:'retrospective.json'};
-const PAIR_FLAGS=new Set(['--external-models-config','--review-config','--workflow-config',
+const PAIR_FLAGS=new Set(['--native-correction','--recover-blocked-review','--reviewer-switch-config','--reviewer-switch-reason','--qa-executor-config','--attach-qa-executor-reason','--expected-control','--revise-scope','--scope-check-supplement','--task-review-origin','--scope-revision-reason','--development-rework-reason','--external-models-config','--review-config','--workflow-config',
   '--input-limit',
   '--protected-conversation-config','--protected-config','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure',
   '--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--browser-qa',
-  '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason','--spec-rebind-reason',
+  '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason','--supersede-target','--spec-rebind-reason',
   '--review-runtime','--feature','--qa-fix-final-review-recovery-invocation']);
-const FLAG_FLAGS=new Set(['--execution-optimizations','--external-models','--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
+const FLAG_FLAGS=new Set(['--development-rework','--execution-optimizations','--external-models','--allow-development','--allow-qa','--allow-qa-fix-start','--auto-qa-fix',
   '--verification-precheck',
   '--allow-bootstrap-write','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--rerun-unknown-qa','--rerun-blocked-qa','--failover',
   '--supersede-reviewed-evidence','--accept-superseded-code-drift','--rebind-spec-material',
@@ -103,6 +109,17 @@ const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value)
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;
 // V2 control is explicit configuration. Never derive a fresh recovery target
 // from the journal or status here: the caller must carry its earlier preview.
+export function readDriverPermissions(raw){
+  if(!Array.isArray(raw)||!raw.every(value=>typeof value==='string'))throw Error('permissions 必须是宿主参数数组');
+  const result=[];
+  for(let i=0;i<raw.length;i++){
+    const flag=raw[i];
+    if(FLAG_FLAGS.has(flag))result.push(flag);
+    else if(PAIR_FLAGS.has(flag)&&nonempty(raw[i+1]))result.push(flag,raw[++i]);
+    else throw Error(`permissions 无效或缺少参数: ${flag}`);
+  }
+  return result;
+}
 export function readDriverControl(plan,base,operation,recovery=null){
   if(!Object.hasOwn(plan,'controlConfig'))return null;
   if(!nonempty(plan.controlConfig)||path.isAbsolute(plan.controlConfig))
@@ -111,6 +128,8 @@ export function readDriverControl(plan,base,operation,recovery=null){
     throw Error('permissions 必须是宿主参数数组');
   if(plan.permissions.some(flag=>flag.startsWith('--allow-')))
     throw Error('control v2 迁移错误：permissions 禁止 --allow-*；请改用 controlConfig 的明确模式和 expectedControl');
+  if(['revise_scope','development_rework'].includes(operation))
+    throw Error('启动型恢复不发送 wire 操作；用 permissions 的专用启动参数、单行原因和 --expected-control FILE 保存原 launchControlTarget，再发送合同要求的启动操作（范围追加先 status）');
   const recovering=recovery??isControlRecovery(operation,plan);
   if(plan.mode==='create'&&Object.hasOwn(plan,'expectedControl'))
     throw Error('control v2 create 禁止 expectedControl');
@@ -211,12 +230,20 @@ function developEntries(map,root,label){
 const strictUtf8=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
 function protectedText(bytes,target){
   try{return strictUtf8.decode(bytes);}
-  catch{throw answerError(`${target} 不是合法 UTF-8 文本；受保护模式只能提交 UTF-8 文本，二进制文件（图片、证书等）请移出 scope 或改用非受保护模式`);}
+  catch{throw answerError(`${target} 不是合法 UTF-8 文本；受保护模式只能提交 UTF-8 文本，未声明的二进制资产请先在新任务保护配置中显式声明 binaryAssets，不得绕过保护直接写入`);}
 }
-export function protectedDevelopEdits(map,answersRoot,codeProject,expected){
+export function protectedDevelopEdits(map,answersRoot,codeProject,expected,binaryAssets=null){
   return developEntries(map,answersRoot,'develop.json.edits').map(([target,entry])=>{
     const beforeSha256=expected?.[target]??null;
     if(entry.kind==='delete')return {path:target,beforeSha256,content:null};
+    if(binaryAssets?.paths.includes(target)){
+      if(entry.kind!=='write'||entry.mode&&entry.mode!=='0644')throw answerError('二进制资产只允许完整文件写入、0644 或删除');
+      if(fs.realpathSync(answersRoot)!==binaryAssets.sourceRoot)throw answerError('二进制资产答案根与冻结 sourceRoot 不同');
+      const source=answerPath(answersRoot,entry.local),stat=fs.lstatSync(source);
+      if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.size>BINARY_ASSET_LIMITS.file)throw answerError('二进制资产源无效或超限');
+      return {path:target,beforeSha256,asset:{path:entry.local,sha256:sha256(fs.readFileSync(source)),size:stat.size},
+        ...(entry.mode?{mode:entry.mode}:{})};
+    }
     const source=entry.kind==='mode'?path.join(codeProject,target):answerPath(answersRoot,entry.local);
     return {path:target,beforeSha256,content:protectedText(fs.readFileSync(source),target),
       ...(entry.mode?{mode:entry.mode}:{})};
@@ -243,10 +270,12 @@ export function applyDevelopEdits(map,answersRoot,codeProject,allowed){
   }
 }
 const sha256=bytes=>createHash('sha256').update(bytes).digest('hex');
-function diskScopeEntry(codeProject,target){
+function diskScopeEntry(codeProject,target,binaryAssets=null){
   const file=path.join(codeProject,target);let stat;
   try{stat=fs.lstatSync(file);}catch(error){if(error.code==='ENOENT'||error.code==='ENOTDIR')return null;throw error;}
   if(!stat.isFile()||stat.isSymbolicLink())return {unsupported:true};
+  if(binaryAssets?.paths.includes(target))return {...captureBinaryAsset({root:codeProject,path:target,
+    binding:binaryAssetBinding(binaryAssets)}),source:file};
   return {size:stat.size,mode:stat.mode&0o7777,source:file,
     sha256:stat.size<=REVIEW_MATERIAL_LIMITS.file?sha256(fs.readFileSync(file)):null};
 }
@@ -267,19 +296,20 @@ const kib=bytes=>`${bytes} 字节`;
 // the Learning result and the check evidence the stand-in checks cannot know.
 const FRAME_ALLOWANCE=16*1024,CHECK_EVIDENCE_ALLOWANCE=512;
 const size=value=>Buffer.byteLength(JSON.stringify(value??null));
-export function journalRestBytes(records){
+export function journalRestBytes(records,restored=null){
   const last=records.findLast(row=>row.payload.type==='effect-checkpoint');
   if(!last)return {restBytes:0,resultBytes:0,receiptsBytes:2,callsBytes:2};
-  const frame=last.payload.checkpoint;
-  return {restBytes:size(last.payload)-size(frame.reviewPackage),resultBytes:size(frame.cache.at(-1)?.result),
+  const frame=restored??last.payload.checkpoint;
+  return {restBytes:size({...last.payload,checkpoint:frame})-size(frame.reviewPackage),resultBytes:size(frame.cache.at(-1)?.result),
     receiptsBytes:size(frame.receipts),callsBytes:size(frame.calls)};
 }
-export function developPreview({definition,codeProject=definition.codeProject,journal=null,parallelSelection=null,exact=true}){
+export function developPreview({definition,codeProject=definition.codeProject,journal=null,parallelSelection=null,exact=true,binaryAssets=null}){
   let baseline=journal?.baseline??null;
   try{
     if(baseline===null){
       // The same baseline the runner captures (taskReviewScope, specsRoot, specification).
       baseline=captureReviewBaseline({root:codeProject,specsRoot:definition.specsDir,identity:definition.identity,
+        ...(binaryAssets?{binaryAssets:binaryAssetBinding(binaryAssets)}:{}),
         scope:taskReviewScope(definition.scope),requirements:definition.requirements,specification:{specsRoot:definition.specsDir,feature:definition.feature},
         ...(definition.codeProjects?{codeProjectPaths:codeProjectPaths(codeProject,resolveCodeProjects(codeProject,definition.codeProjects))}:{})});
       // The new run journals this baseline as one record, next to its own metadata.
@@ -290,7 +320,10 @@ export function developPreview({definition,codeProject=definition.codeProject,jo
         stop(2,`任务基线的运行存档记录约 ${kib(bytes)}，超过单条记录上限 ${JOURNAL_PAYLOAD_LIMIT}（含运行元数据）；最大的基线材料是 ${largest}；请把大文件移出 scope/requirements 后再建运行`);
       }
     }
-    return {definition,baseline,material:reviewMaterialSizes({root:codeProject,baseline}),parallelSelection,
+    return {definition,baseline,taskContinuation:journal?.history?.taskContinuation??null,nativeCorrection:journal?.history?.nativeCorrection??null,material:reviewMaterialSizes({root:codeProject,baseline}),
+      parallelSelection:parallelSelection??definition.taskSelection??null,
+      packageMaterialEnabled:journal?.packageMaterialEnabled===true,
+      archivedPackageDigests:journal?.archivedPackageDigests??[],
       exact:exact&&!definition.codeProjects,...(journal?.frame??journalRestBytes([]))};
   }catch(error){
     if(error.code==='limit_exceeded')stop(2,`交付前的审查材料已超出审查包上限：${error.message}`);
@@ -322,15 +355,18 @@ export function projectDevelopCheckpoint({preview,codeProject,attempt,value,proj
       contentBase64:Buffer.from(plan.content).toString('base64'),
       mode:current?.mode??(exists?fs.statSync(disk).mode&0o7777:0o644)});}
   }
-  const baseline=attemptBaseline(preview.baseline,attempt),scopeFiles=[...files.values()];
+  const baseline=attemptBaseline(preview.baseline,attempt,preview.taskContinuation??null),scopeFiles=[...files.values()];
   let initial;
   try{initial=projectedReviewPackage({root:codeProject,baseline,checks,scopeFiles});}
   catch(error){if(['empty_changes','out_of_scope','read_failed'].includes(error.code))return null;throw error;}
-  const {payload}=hostHandoffDocument({baseline,checks,reviewPackage:initial,implementationSha256:'0'.repeat(64)});
+  const correction=preview.nativeCorrection?{version:1,recordDigest:preview.nativeCorrection.recordDigest,identity,
+    executionStatePath:path.join(definition.specsDir,'.reviews','.execution',identity.runId,'state.json')}:null;
+  const {payload}=hostHandoffDocument({baseline,checks,reviewPackage:initial,implementationSha256:'0'.repeat(64),
+    ...(correction?{evidence:['cm-native-correction-v1: '+JSON.stringify(correction)]}:{})});
   const handoff=taskLearningHandoffBytes({handoff:payload,feature:definition.feature,identity,learningInput,
     application,retrospective,includeAgents});
   const pkg=projectedReviewPackage({root:codeProject,baseline,checks,scopeFiles,handoff:{
-    name:`${definition.feature.replace(/^\d+\./,'')}-${identity.taskId}-a${attempt}-handoff.json`,
+    name:`${definition.feature.replace(/^\d+\./,'')}-${identity.taskId}-${correction?'native-correction-1':`a${attempt}`}-handoff.json`,
     contentBase64:handoff.toString('base64'),mode:0o600}});
   return {pkg,learningBytes:size({application,retrospective})};
 }
@@ -339,11 +375,11 @@ export function projectDevelopCheckpoint({preview,codeProject,attempt,value,proj
 export const plannedCheckResults=commands=>(Array.isArray(commands)&&commands.length?commands:[{id:'check',command:['check']}])
   .map(({id,command})=>({id,command,outcome:'passed',exitCode:0,evidence:'host check exited 0'}));
 export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,scope,requirements,
-  baseline='disk',diskChecks=true,protectedMode=false,inputLimit=65536,preview=null,checks=plannedCheckResults(null)}){
+  baseline='disk',diskChecks=true,protectedMode=false,inputLimit=65536,preview=null,checks=plannedCheckResults(null),binaryAssets=null,nativeEvidence=null,nativeContext=null}){
   const {file:FILE,total:TOTAL,count:COUNT}=REVIEW_MATERIAL_LIMITS;
   let material=diskChecks&&preview?new Map(preview.material.map(item=>[item.path,item.size])):null;
   const projected=new Map();
-  let previous=diskChecks?new Map(scope.map(target=>[target,diskScopeEntry(codeProject,target)])):null;
+  let previous=diskChecks?new Map(scope.map(target=>[target,diskScopeEntry(codeProject,target,binaryAssets)])):null;
   const base=!diskChecks?null:baseline==='disk'?previous:baseline;
   // Without the tree (a later batch task), the scope files the answers write are
   // still known to exist in the review material with exactly these sizes; the
@@ -361,11 +397,13 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
     const next=previous&&new Map(previous);
     for(const [target,entry] of entries){
       const before=previous?.get(target)??null;
+      const binary=binaryAssets?.paths.includes(target)??false;
       // Scope and requirements may overlap; every review package must still carry
       // each requirement file, so a delivery cannot delete one.
       if(entry.kind==='delete'&&requirements.includes(target))
         stop(2,`${label}.edits.${target}: 该路径同时列在运行定义的 requirements 中，审查包要求它存在，不能删除；可改写其内容，或先在新运行定义里把它移出 requirements`);
       if(entry.kind!=='write'){
+        if(binary&&entry.kind==='mode')stop(2,`${label}: 二进制资产权限变更须使用完整文件交付且保持0644`);
         if(entry.kind==='delete')delivered?.delete(target);
         if(previous&&(before===null||before.unsupported))
           stop(2,`${label}.edits.${target}: 要${entry.kind==='delete'?'删除':'改权限'}的文件在交付前不存在或不是普通文件`);
@@ -373,6 +411,13 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
         continue;
       }
       const source=answerPath(answersRoot,entry.local),size=fs.lstatSync(source).size;
+      if(binary){
+        if(entry.mode&&entry.mode!=='0644')stop(2,`${label}: 二进制资产只能使用0644`);
+        const asset=importBinaryAsset({binding:binaryAssetBinding(binaryAssets),sourceRoot:binaryAssets.sourceRoot,
+          sourcePath:entry.local,sha256:sha256(fs.readFileSync(source)),size});
+        next?.set(target,{path:target,type:'file',mode:0o644,size,sha256:asset.sha256,contentBlob:asset.contentBlob,source});
+        continue;
+      }
       if(size>FILE)stop(2,`${label}.edits.${target}: 内容 ${kib(size)}，超过审查包单文件上限 ${FILE}（1 MiB）；大文件请移出 scope`);
       if(scope.includes(target))delivered?.set(target,size);
       next?.set(target,{size,source,sha256:sha256(fs.readFileSync(source)),
@@ -383,6 +428,10 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
       try{
         for(const [target,entry] of entries){
           if(entry.kind==='delete'){edits.push({path:target,beforeSha256:'0'.repeat(64),content:null});continue;}
+          if(binaryAssets?.paths.includes(target)){
+            const [edit]=protectedDevelopEdits({[target]:value.edits[target]},answersRoot,codeProject,{[target]:'0'.repeat(64)},binaryAssets);
+            edits.push(edit);continue;
+          }
           const source=entry.kind==='write'?answerPath(answersRoot,entry.local):previous?.get(target)?.source??path.join(codeProject,target);
           if(!fs.existsSync(source))continue;
           edits.push({path:target,beforeSha256:'0'.repeat(64),content:protectedText(fs.readFileSync(source),target),
@@ -403,17 +452,27 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
       if(total>TOTAL)stop(2,`${label}: 仅答案写入的 scope 文件就合计 ${kib(total)}，超过审查包上限 ${TOTAL}（2 MiB），与该任务开跑时的树无关；最大的是 ${largest}`);
     }
     if(!next)continue;
-    for(const [target,entry] of next)if(entry&&!entry.unsupported&&entry.size>FILE)
+    for(const [target,entry] of next)if(entry&&!entry.unsupported&&!binaryAssets?.paths.includes(target)&&entry.size>FILE)
       stop(2,`${label}: 交付后 ${target} 为 ${kib(entry.size)}，超过审查包单文件上限 ${FILE}（1 MiB）；大文件请移出 scope`);
     // The snapshot's material with this delivery's scope files applied on top.
     if(material){
       const after=new Map(material);
-      for(const [target,entry] of next){if(entry&&!entry.unsupported)after.set(target,entry.size);else after.delete(target);}
+      for(const [target,entry] of next){if(entry&&!entry.unsupported&&!binaryAssets?.paths.includes(target))after.set(target,entry.size);else after.delete(target);}
       const total=[...after.values()].reduce((sum,size)=>sum+size,0);
       const largest=[...after].sort((a,b)=>b[1]-a[1]).slice(0,3).map(([target,size])=>`${target} ${kib(size)}`).join('，');
       if(total>TOTAL)stop(2,`${label}: 交付后审查材料（scope、requirements 与树中全部 AGENTS.md 正文）合计 ${kib(total)}，超过审查包上限 ${TOTAL}（2 MiB）；最大的是 ${largest}`);
       if(after.size>COUNT)stop(2,`${label}: 交付后审查材料共 ${after.size} 个文件，超过审查包上限 ${COUNT}`);
       material=after;
+    }
+    // Reuse the owner's strict material reader before consuming a develop slot.
+    // This inspects candidate hashes, never archives images or claims visual PASS.
+    if(nativeEvidence&&attempt===2&&value.value?.outcome==='implemented'){
+      try{inspectNativeReviewEvidence(nativeEvidence,{...nativeContext,codeProject,scope,
+        identity:{...nativeContext.identity,attempt},sourceFiles:[...next].map(([target,row])=>{
+          if(!row||row.unsupported)throw Object.assign(new Error('native_evidence_sources'),{code:'native_evidence_sources'});
+          return {path:target,sha256:row.sha256};
+        }).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)});}
+      catch(error){stop(2,`${label}: 原生送审材料预检失败 (${error.code??'native_evidence_unavailable'})；保留原运行和预算，先补齐已声明 manifest/PNG/报告并绑定最终 scope SHA，再重试；此检查不代表视觉验收`);}
     }
     // The develop checkpoint journals the review package as one record. Build the
     // package this delivery would produce with the runner's own assembly code and
@@ -422,6 +481,9 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
     if(projectable){
       for(const [target] of entries){
         const after=next.get(target);
+        if(after&&binaryAssets?.paths.includes(target)){
+          const {source,...record}=after;projected.set(target,record);continue;
+        }
         projected.set(target,after===null?{path:target,contentBase64:null,mode:null}
           :{path:target,contentBase64:fs.readFileSync(after.source).toString('base64'),mode:after.mode});
       }
@@ -433,7 +495,9 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
         const reserve=developCheckpointReserve({examinedPathsBytes:size(reviewPaths(pkg)),receiptsBytes:preview.receiptsBytes,
           callsBytes:preview.callsBytes+1024,writebackBytes:1024});
         const budget=JOURNAL_PAYLOAD_LIMIT-reserve;
-        if(bytes>budget){
+        const capacity=checkpointPackageBudget({inlineBytes:bytes,packageBytes,reserve,enabled:preview.packageMaterialEnabled===true,
+          referenced:preview.archivedPackageDigests.includes(pkg.packageDigest)});
+        if(!capacity.fits){
           const largest=pkg.changes.filter(change=>change.after).map(change=>change.after).sort((a,b)=>b.size-a.size).slice(0,3)
             .map(file=>`${file.path} ${kib(file.size)}`).join('，');
           stop(2,`${label}: 交付后的开发检查点约 ${kib(bytes)}（其中审查包 ${kib(packageBytes)}，含 handoff），超过运行存档单条记录上限 ${JOURNAL_PAYLOAD_LIMIT} `
@@ -462,13 +526,17 @@ export const inputLimitFrom=permissions=>{
   try{return parseHostInputLimit(at===-1?undefined:permissions[at+1]);}
   catch{stop(2,'--input-limit 需要 65536–4194304 的整数（字节）');}
 };
-// Read-only view of an existing run: its runner state and original baseline.
+// Read-only view: r1 keeps its original baseline; continued a2 uses its task origin.
+export const driverTaskBaseline=history=>history.taskContinuation?.baseline??history.original;
 export function readRunJournal(definition){
   const snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,identity:{
     repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
   const first=snapshot.records[0];
-  return {history:readRunnerHistory(snapshot.records,first.payload.config,3),config:first.payload.config,baseline:first.payload.baseline,
-    frame:journalRestBytes(snapshot.records)};
+  const history=readRunnerHistory(snapshot.records,first.payload.config,3);
+  return {history,config:first.payload.config,baseline:driverTaskBaseline(history),
+    packageMaterialEnabled:packageMaterialEligible(first.payload.config,first.payload.version),
+    archivedPackageDigests:snapshot.records.filter(row=>row.payload.type==='effect-checkpoint'&&row.payload.packageMaterial===true).map(row=>row.payload.checkpoint.reviewPackage.packageDigest),
+    snapshot,frame:journalRestBytes(snapshot.records,history.state)};
 }
 function reachableDevelopAttempts({plan,operation,journal,permissions,controlPolicy=null}){
   if(plan.mode==='create'){
@@ -584,7 +652,14 @@ export function validateCmAiAnswer(kind,value,root){
 }
 function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
+    process.stdout.write('Provider no-result recovery: original owner resume status --native-correction FILE --expected-control FILE; FILE exactly {version:1,reason,providerReviewRecovery:true,source,oldInvocationStopped:true}, using status.providerReviewRecovery.source. Requires separate explicit authority, verified native failure and confirmed close/cleanup; registration never dispatches. One new review intent, old counts/grants retained, no development or global limit changes; legacy unknown same-call saved results require reconcile_review; a success sidecar conflicting with a full provider failure blocks as provider_recovery_result_conflict. No second recovery after failure or interruption. Evidence-only valid blocked continuation: resume status --native-correction FILE --expected-control FILE. FILE {version:1,reason,evidenceContinuation:true,source,nativeEvidence,manifestDigest,findings:[{id,disposition,evidenceIds}]} uses status.evidenceContinuation.source and only registers material; it grants zero calls. A second explicitly authorized FILE {version:1,reason,evidenceReview:true,source} uses status.evidenceContinuation.reviewSource and grants one intent. Existing nativeCorrection protected single-root current-conversation runs only; any code drift requires a separate formal repair contract. Original limits/history remain unchanged, new verdict is immutable -evidence-1. Material continuation: original owner resume status --native-correction FILE --expected-control FILE; FILE exactly {version:1,reason,materialReadContinuation:true,source,oldInvocationStopped:true}. source is status.materialContinuationSource. This grants one NEW opportunity, never a refund; saved same-call valid results use fixed-target reconcile_review without a model call. See js-host-recovery.md. A separately authorized twelve-call transport timeout may use materialTimeoutContinuation:true with status.materialTimeoutContinuationSource (including transportProfileDigest), once only; thirteen is a new opportunity and is never automatic.\n');
+    process.stdout.write([NATIVE_CORRECTION_HELP,NATIVE_REVIEW_RECOVERY_HELP,CONTINUATION_HELP,PREFLIGHT_HELP,SUPERSEDE_HELP].join('\n')+'\n');
     process.stdout.write('新版 PLAN.controlConfig 为相对 PLAN 的 v2 控制配置路径；development、bootstrap、qa、qaFix 使用明确模式，permissions 禁止所有 --allow-*。普通 advance 自动独立审查；缺少 develop-a2.json 时保持 revision_answer_required。显式恢复需要 resume 与此前 status 返回的 PLAN.expectedControl，驾驶员不会读取新目标覆盖它。\n');
+    process.stdout.write('v2 单任务无 workflow 仍执行 N6 决策：advance/qa 预检 answers/qa-assess.json，只接受 {confirmed:true}；已完成任务从 qa 再到 context_refresh，不重做开发、审查或 complete。\n');
+    process.stdout.write('原 v2 单任务第二轮无结论容量失败：resume status 首次带 --reviewer-switch-config FILE --reviewer-switch-reason TEXT --expected-control FILE；保留原审查配置和路由。后续每次 resume 保留精确 switch config，去掉 reason/expected；只切换后续 fresh Review，不重开或增加轮次。\n');
+    process.stdout.write('原已完成 v2 无 workflow 任务可在必需 QA 首轮前附加 --qa-executor-config FILE；首次同时提供 --attach-qa-executor-reason TEXT 和 --expected-control FILE，以 resume status 登记。后续只保留 config，advance 运行 QA 并仅在 PASS 后自动 N7。原策略及完成记录保留；详见 docs/cm-control-policy-v2.md。\n');
+    process.stdout.write(NATIVE_REVIEW_RECOVERY_HELP+'\n');
+    process.stdout.write('Protected scope recovery: PLAN.permissions may add --scope-check-supplement FILE only with --revise-scope, --scope-revision-reason and fixed --expected-control in resume status. Consume registration parameters once, then resume the original configuration. See docs/cm-control-policy-v2.md.\n');
     process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks, checkTimeoutMs。\nchecks 每项为 {id,command,timeoutMs?}；checkTimeoutMs 与每项 timeoutMs 为 1..3600000 整数，默认 900000 ms（15 分钟）。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。develop_redo 需要 mode:resume、permissions:["--allow-develop-redo"] 与 PLAN.reason，先确认会话已停止修改代码。 bootstrap_review_recover 需要 mode:resume、permissions:["--allow-bootstrap-review-recovery"] 与 PLAN.reason；只核对原运行的已写规则与 handoff，不需要答案文件。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务（纯规范 scope、单代码根、非 --protected-config）读 answers/init-generate.json（{status:"generated",documents:[{path,contentFile}]}，覆盖全部 targets）与 answers/init-verify.json（commands 为驾驶员实跑的草稿命令 {id,command,timeoutMs?}，可选 commandsNotRun；checks 只含 globs/file_references/constraint_preservation/rule_applicability；constraintChanges:[]；application/retrospective 沿原 Learning）；第 1 轮也可用 *-a1.json，第 2 轮只读 init-generate-a2.json 与 init-verify-a2.json，审查自动派发；缺少第2轮草稿时先停在 changes_requested，读取首轮 findings 后再写草稿。commands 在宿主接受启动后、发送操作前由驾驶员实跑（须先带 --allow-bootstrap-write 等宿主授权；受保护模式在 specs 沙箱内），失败或改动了预检核对的文件即退出 2 且不发送操作（create 时改用 resume 重跑）；结果只来自实跑，答案文件不能提供。\n'
       +'develop.json.edits 每项是 scope 路径到下列之一："内容文件"（写入；已有文件保留权限，新文件 0644）、{"file":"内容文件","mode":"0755"|"0644"}、{"mode":"0755"|"0644"}（只改已有文件权限）、{"delete":true}（删除已有文件）。改名 = 删旧路径 + 写新路径，两者都要在 scope 内；同时列在 requirements 里的路径不能删除。\n'
       +'启动前拒绝：单个 scope 文件超过 1 MiB、审查材料（按审查包快照：scope、requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或超过 256 个文件、交付后与任务基线完全相同（edits 为空或内容和权限都没变）、开发检查点（含 handoff 与 AGENTS.md 回写，按宿主同一套构建代码计）装不进运行存档单条 1 MiB 记录减去为有界审查与完成记录推出的预留，或任务基线装不进一条记录。受保护模式（--protected-conversation-config）只收合法 UTF-8 文本，应答大于 --input-limit（默认 65536）时提示应加的值。\n'
@@ -596,6 +671,7 @@ function load(){
   requireFields(plan,['config','mode','hostContext','permissions']);
   let control;
   try{control=readDriverControl(plan,base,operation);}catch(error){stop(2,error.message);}
+  if(['revise_scope','development_rework'].includes(operation)&&!control)stop(2,`${operation} 只用于原 v2 单任务运行`);
   if(control?.policy.bootstrap==='write'&&!plan.permissions.includes('--bootstrap-config'))
     stop(2,'invalid_arguments: bootstrap write 需要 --bootstrap-config');
   if(control?.policy.qaFix==='disabled'&&['fix_advance','fix_run','fix_action'].includes(operation))
@@ -606,13 +682,7 @@ function load(){
   if(!nonempty(plan.hostContext))stop(2,'hostContext 必须是当前真实会话 ID');
   if(plan.mode==='create'&&plan.originalHostContext)stop(2,'originalHostContext 只在 resume 时有意义');
   if(!Array.isArray(plan.permissions)||!plan.permissions.every(x=>typeof x==='string'))stop(2,'permissions 必须是宿主参数数组');
-  const permissions=[];
-  for(let i=0;i<plan.permissions.length;i++){
-    const flag=plan.permissions[i];
-    if(FLAG_FLAGS.has(flag))permissions.push(flag);
-    else if(PAIR_FLAGS.has(flag)&&nonempty(plan.permissions[i+1]))permissions.push(flag,plan.permissions[++i]);
-    else stop(2,`permissions 无效或缺少参数: ${flag}`);
-  }
+  let permissions;try{permissions=readDriverPermissions(plan.permissions);}catch(error){stop(2,error.message);}
   const supersedeFlag=permissions.includes('--supersede-reviewed-evidence');
   const supersedeReason=permissions.includes('--supersede-reason');
   if(supersedeFlag!==supersedeReason)
@@ -620,12 +690,16 @@ function load(){
   if(permissions.includes('--accept-superseded-code-drift')&&!supersedeFlag)
     stop(2,'--accept-superseded-code-drift 需要 --supersede-reviewed-evidence 与 --supersede-reason');
   if(supersedeFlag&&plan.mode!=='create')stop(2,'supersede 只允许 mode create');
+  if(permissions.includes('--supersede-target')&&(!supersedeFlag||!control))
+    stop(2,'--supersede-target 只用于新版 controlConfig 的 create 重开，并须同时提供 --supersede-reviewed-evidence 与 --supersede-reason');
+  if(control&&supersedeFlag&&!permissions.includes('--supersede-target'))
+    stop(2,'新版重开需要 --supersede-target 文件：保存旧运行 inspect-history 返回的 supersedeTarget，不自动生成或替换');
   if(permissions.includes('--rebind-spec-material')!==permissions.includes('--spec-rebind-reason')
     ||permissions.includes('--rebind-spec-material')&&plan.mode!=='resume')
     stop(2,'--rebind-spec-material 只用于 mode resume，并须同时提供 --spec-rebind-reason 原因');
   // V2 recovery operations are gated by the original expectedControl in the
   // host, while the driver still validates the explicit operation and reason.
-  if(control&&['abandon_review','abandon_effect','bootstrap_review_recover','develop_redo'].includes(operation)
+  if(control&&['abandon_review','abandon_effect','bootstrap_review_recover','completion_rework','development_rework','revise_scope','develop_redo'].includes(operation)
     &&(plan.mode!=='resume'||!nonempty(plan.reason)||Buffer.byteLength(plan.reason,'utf8')>500||/[\r\n\0]/.test(plan.reason)))
     stop(2,`${operation} 需要 resume、expectedControl 与单行 reason（最多 500 UTF-8 字节）`);
   const abandonError=control?null:abandonReviewPlanError(operation,plan,permissions);
@@ -636,6 +710,9 @@ function load(){
   if(developRedoError)stop(2,developRedoError);
   const bootstrapRecoveryError=control?null:bootstrapReviewRecoveryPlanError(operation,plan,permissions);
   if(bootstrapRecoveryError)stop(2,bootstrapRecoveryError);
+  for(const flag of ['--native-correction','--recover-blocked-review','--expected-control','--revise-scope','--scope-check-supplement','--task-review-origin']){
+    const at=permissions.indexOf(flag);if(at!==-1)permissions[at+1]=path.resolve(base,permissions[at+1]);
+  }
   const config=path.resolve(base,plan.config),answers=plan.answers?path.resolve(base,plan.answers):null;
   if(!fs.existsSync(config))stop(2,`运行定义不存在: ${config}`);
   let definition;
@@ -655,6 +732,7 @@ function load(){
   if(plan.mode==='resume'&&!fs.existsSync(path.join(store,'state.json')))stop(2,`恢复存档不存在: ${store}`);
   let journal=null;
   if(plan.mode==='resume')try{journal=readRunJournal(definition);}catch(error){journal={error};}
+  if(journal?.history?.scopeRevisions)definition={...definition,scope:journal.history.effectiveScope};
   // The run definition always says attempt 1. Package-bound operations must name
   // the attempt the run is on now, so send that; an unreadable journal keeps the
   // original identity and the host decides, exactly as before.
@@ -668,17 +746,34 @@ function load(){
   const permissionFiles=[];
   for(let i=0;i<permissions.length;i++)if(PAIR_FLAGS.has(permissions[i])
     &&permissions[i]!=='--browser-qa'
-    &&permissions[i]!=='--qa-config-revision-reason'&&permissions[i]!=='--qa-environment-failure'&&permissions[i]!=='--allow-provider-development-attempt'
+    &&permissions[i]!=='--reviewer-switch-reason'&&permissions[i]!=='--attach-qa-executor-reason'&&permissions[i]!=='--scope-revision-reason'&&permissions[i]!=='--development-rework-reason'&&permissions[i]!=='--qa-config-revision-reason'&&permissions[i]!=='--qa-environment-failure'&&permissions[i]!=='--allow-provider-development-attempt'
     &&permissions[i]!=='--supersede-reason'&&permissions[i]!=='--spec-rebind-reason'&&permissions[i]!=='--input-limit'
     &&permissions[i]!=='--review-runtime'&&permissions[i]!=='--feature'&&permissions[i]!=='--qa-fix-final-review-recovery-invocation'){
     const file=path.resolve(base,permissions[i+1]);if(!fs.existsSync(file))stop(2,`${permissions[i]} 文件不存在: ${file}`);
     permissions[i+1]=file;permissionFiles.push(file);i++;
   }
+  if((permissions.includes('--native-correction')||permissions.includes('--recover-blocked-review'))&&(operation!=='status'||plan.mode!=='resume'||!permissions.includes('--expected-control')))stop(2,'Native blocked review recovery registration requires explicit resume status and fixed expected-control');
+  if(permissions.includes('--reviewer-switch-reason')&&(operation!=='status'||plan.mode!=='resume'))stop(2,'Reviewer switch registration requires resume status');
+  if(permissions.includes('--attach-qa-executor-reason')&&(operation!=='status'||plan.mode!=='resume'))stop(2,'QA executor attachment registration requires resume status');
+  if(permissions.includes('--scope-check-supplement')&&(operation!=='status'||plan.mode!=='resume'||!permissions.includes('--revise-scope')))stop(2,'Protected scope supplement registration requires explicit resume status with scope revision');
+  if(permissions.includes('--task-review-origin')&&(operation!=='status'||plan.mode!=='resume'||!permissions.includes('--revise-scope')))stop(2,'task-review-origin registration requires explicit resume status with scope revision');
+  const qaExecutorAt=permissions.indexOf('--qa-executor-config');
+  const qaExecutorConfiguration=qaExecutorAt===-1?null:readQaExecutorConfigurationFile(permissions[qaExecutorAt+1]);
   const bootstrap=inspectDriverBootstrap({advance:ADVANCE.has(operation),definition,permissions,controlPolicy:control?.policy??null});
   if(bootstrap.gap)stop(2,bootstrap.gap);
   const rules=bootstrap.mode==='instructions';
   const providerMode=control?control.policy.development==='provider':permissions.includes('--protected-config');
   const protectedMode=permissions.includes('--protected-config')||permissions.includes('--protected-conversation-config');
+  let binaryAssets=null;
+  const conversationAt=permissions.indexOf('--protected-conversation-config');
+  if(conversationAt!==-1){
+    const protection=readJson(permissions[conversationAt+1],'protected-conversation-config');
+    if(Object.hasOwn(protection,'binaryAssets')){
+      binaryAssets=readBinaryAssetConfiguration(protection.binaryAssets,{scope:definition.scope,requirements:definition.requirements,
+        codeProject:definition.codeProject,specsDir:definition.specsDir,identity:definition.identity});
+      if(answers===null||fs.realpathSync(answers)!==binaryAssets.sourceRoot)stop(2,'二进制 sourceRoot 必须是本次 PLAN.answers 的规范目录');
+    }
+  }
   const asks=[];
   if(ADVANCE.has(operation)){
     // A pure rules scope never reaches develop: host-bootstrap.mjs asks the session instead.
@@ -688,10 +783,11 @@ function load(){
   }
   if((plan.verificationPrecheck===true||permissions.includes('--verification-precheck'))&&(ADVANCE.has(operation)||operation==='complete'))asks.push('verification_precheck');
   if(operation==='complete'&&!protectedMode)asks.push('check');
-  if((operation==='advance'||operation==='qa')&&workflow&&(control||workflow.qa)){asks.push('qa_assess');
+  if((operation==='advance'||operation==='qa')&&(control||workflow?.qa)){asks.push('qa_assess');
   }
-  if((operation==='advance'||operation==='qa')&&workflow?.qa&&(!control||control.policy.qa==='run')){
-    try{asks.push(...predictedQaAsks(definition,workflow.qa));}
+  const executableQa=qaExecutorConfiguration??((!control||control.policy.qa==='run')?workflow?.qa:null);
+  if((operation==='advance'||operation==='qa')&&executableQa){
+    try{asks.push(...predictedQaAsks(definition,executableQa));}
     catch(error){stop(2,`QA 请求预测失败: ${error.code??error.message}`);}
   }
   if(operation==='advance'&&workflow?.documentationPaths?.length&&!protectedMode)asks.push('documentation_sync');
@@ -765,9 +861,12 @@ function load(){
   if(deliveries.length)preflightDevelopDeliveries({deliveries,answersRoot:answers,codeProject:definition.codeProject,
     scope:definition.scope,requirements:definition.requirements,
     baseline:plan.mode==='create'?'disk':baselineScope(journal.baseline,definition.scope),
-    protectedMode,inputLimit:inputLimitFrom(permissions),checks:plannedCheckResults(protectedMode?null:plan.checks),
+    protectedMode,binaryAssets,
+    nativeEvidence:journal?.history?.nativeCorrection?.nativeEvidence??journal?.history?.nativeReviewRecovery?.nativeEvidence??null,
+    nativeContext:{specsDir:definition.specsDir,identity:definition.identity},
+    inputLimit:inputLimitFrom(permissions),checks:plannedCheckResults(protectedMode?null:plan.checks),
     preview:developPreview({definition,journal:plan.mode==='create'?null:journal,
-      exact:!permissions.includes('--bootstrap-config')})});
+      exact:!permissions.includes('--bootstrap-config'),binaryAssets})});
   const unique=[...new Set(asks.filter(kind=>FILES[kind]&&kind!=='develop'))];
   const answer=preflightAnswers(unique,kind=>{
     // A rediagnosis is a new conclusion; never reuse the first diagnosis file (same as cm-fix-drive).
@@ -778,7 +877,7 @@ function load(){
   });
   if(answer.documentation_sync)for(const target of Object.keys(answer.documentation_sync.edits))
     if(!workflow.documentationPaths.includes(target))stop(2,`documentation-sync.json.edits 越过文档 scope: ${target}`);
-  return {...loaded,control,definition,identity,permissions,config,answers,answer,developAnswers,live,executionPolicy,holdRevision,
+  return {...loaded,control,definition,identity,permissions,config,answers,answer,developAnswers,live,executionPolicy,holdRevision,binaryAssets,
     bootstrapRules:bootstrapAnswers&&createBootstrapRulesResponder({definition,plan,bootstrap,answers:bootstrapAnswers,
       // Same execution as the task checks: the host's specs sandbox in protected mode, else the driver's own.
       specsRoot:protectedMode?definition.specsDir:null,watch:[config,...permissionFiles]})};
@@ -839,7 +938,7 @@ async function answerFor(row,answer,paths,control){
     if(!value)throw Error(`develop attempt ${row.payload.request?.identity?.attempt??row.payload.identity?.attempt} 未预检，拒绝复用旧答案`);
     if(value.status!=='succeeded')return {status:'failed',code:value.code};
     if(row.payload.editMode==='protected-text-v1')return {status:'succeeded',value:value.value,
-      edits:protectedDevelopEdits(value.edits,loaded.answers,loaded.definition.codeProject,row.payload.expected)};
+      edits:protectedDevelopEdits(value.edits,loaded.answers,loaded.definition.codeProject,row.payload.expected,loaded.binaryAssets)};
     applyDevelopEdits(value.edits,loaded.answers,loaded.definition.codeProject,row.payload.request.payload.scope);
     return {status:'succeeded',value:value.value};
   }
@@ -859,7 +958,8 @@ export function buildCmAiDriveRequest(operation,plan,definition,identity=definit
   return {version:Object.hasOwn(plan,'controlConfig')?2:1,identity,
     ...(Object.hasOwn(plan,'controlConfig')&&isControlRecovery(operation,plan)?{expectedControl:plan.expectedControl}:{}),
     ...(operation==='reconcile_review'?{invocationId:plan.invocationId}:{}),
-    ...(['abandon_review','abandon_effect','bootstrap_review_recover','develop_redo'].includes(operation)?{reason:plan.reason}:{}),
+    ...(operation==='revise_scope'?{scope:plan.scope}:{}),
+    ...(['abandon_review','abandon_effect','bootstrap_review_recover','completion_rework','development_rework','revise_scope','develop_redo'].includes(operation)?{reason:plan.reason}:{}),
     ...(PACKAGE_OPERATIONS.has(operation)?{packageDigest:plan.packageDigest}:{}),
     ...(TEST_RUN_OPERATIONS.has(operation)?{testRunId:plan.testRunId}:{}),
     ...(['fix_status','fix_advance','fix_action','fix_run'].includes(operation)?{
@@ -877,6 +977,11 @@ export function buildCmAiDriveHostArgs(plan,permissions,config,controlConfig=nul
     '--runtime',plan.runtime??'codex',...permissions.filter(flag=>flag!=='--allow-development')];
 }
 async function main(){
+  if(process.argv.length===5&&process.argv[2]==='--plan'&&process.argv[4]==='preflight'){
+    const {inspectContinuationPlan}=await import('../runtime/js/cm-ai/continuation-preflight.mjs');
+    const report=inspectContinuationPlan(path.resolve(process.argv[3]));
+    process.stdout.write(JSON.stringify(report,null,2)+'\n');process.exitCode=report.status==='blocked'?2:0;return;
+  }
   loaded=load();
   const {plan,operation,definition,permissions,config,answer}=loaded;
   if(operation==='reconcile_review'&&(plan.mode!=='resume'||!nonempty(plan.invocationId)))

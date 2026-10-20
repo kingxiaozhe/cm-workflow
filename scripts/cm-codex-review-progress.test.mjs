@@ -13,6 +13,32 @@ import {codexWorker} from '../runtime/js/cm-ai/worker-codex.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {createFixFinalReview} from '../runtime/js/cm-fix/final-review.mjs';
 
+test('nonzero Codex exit diagnostic is bounded and private while the failed result stays unchanged',async()=>{
+  const options={cwd:'/fixture',model:'fixture'},diagnostics=[],events=[],notices=[];
+  const privateText='Authorization: Bearer fixture-private-token\n'+ 'private-prompt-data'.repeat(300);
+  const stderr='error: invalid argument\n'+privateText;
+  const worker=codexWorker({...options,schemaPath:'/unused',timeoutMs:1000,
+    preflight:{passed:true,cli_model:options.model,config_fingerprint:configFingerprint(options)},
+    onDiagnostic:diagnostic=>diagnostics.push(diagnostic),onNotice:notice=>notices.push(notice),
+    spawnProcess(){
+      const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>true;
+      queueMicrotask(()=>{
+        child.stdout.write(JSON.stringify({type:'thread.started',thread_id:'fixture-thread'})+'\n');
+        child.stderr.write(stderr);child.stdout.end();child.stderr.end();child.emit('close',1,null);
+      });
+      return child;
+    }});
+  const result=await worker({prompt:'private-prompt-data'},{signal:new AbortController().signal,onEvent:event=>events.push(event)});
+  assert.deepEqual(result,{status:'failed',code:'incomplete_result'});
+  assert.deepEqual(diagnostics,[{kind:'codex_review_exit',category:'unknown',httpStatus:null,exitCode:1,
+    signal:null,timedOut:false,stderrByteCount:Buffer.byteLength(stderr)}]);
+  assert.equal(notices.length,0);assert(!JSON.stringify(diagnostics).includes('private-'));
+  assert.deepEqual(events.map(event=>event.event),['thread.started','process_closed']);
+  const host=fs.readFileSync(new URL('../runtime/js/cm-ai/host-conversation-execution.mjs',import.meta.url),'utf8');
+  assert.match(host,/onDiagnostic:diagnostic=>process\.stderr\.write\('\[codex-review-diagnostic\] '\+JSON\.stringify\(diagnostic\)\+'\\n'\)/);
+  assert.match(host,/const selectedOptions=\{\.\.\.\(reviewerSwitch\?\.bound\?reviewerSwitch\.workerOptions:reviewOptions\)/);
+});
+
 // Synthetic raw CLI stream through the actual worker/adapter/fix observer.
 // No provider process, real project, credentials or completion writes.
 for(const mode of ['progress','tool','late-progress','early-progress','missing-result','wrong-digest','private-event','private-error',

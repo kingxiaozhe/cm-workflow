@@ -612,3 +612,47 @@ test('host fixture startup failure retains bounded process diagnostics',async()=
     assert(!JSON.stringify(result.diagnostic).includes(f.root));
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
+
+test('resolved Claude alias model is frozen across real owner create and resume without changing provider roles',async()=>{
+  const f=fixture(),bridge=createHostToolBridge();
+  try{
+    fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.yml'),crossToolRoles);
+    const definition=readRunDefinition(f.config);
+    const {claudeReviewFingerprint}=await import('../runtime/js/cm-ai/worker-claude.mjs');
+    const make=model=>{
+      const review={model,disabledSkills:[],preflight:{passed:true,provider:'claude',prompt_transport:'stdin',
+        config_fingerprint:claudeReviewFingerprint({cwd:f.codeProject,model}),
+        model_resolution:{requested_model:'default',resolved_model:model,resolution_context:'synthetic-api-key-probe'}}};
+      return createConversationExecution(definition,'native-host-fixture',bridge,review,null,null,false,'codex',{reviewRuntime:'claude'});
+    };
+    const original=make('claude-opus-5-5');
+    assert.equal(original.developer.provider,'codex');assert.equal(original.reviewers[0].provider,'claude');
+    assert.equal(original.configuration.review.model,'claude-opus-5-5');
+    const created=await openControlRun(definition,'create',original);created.close();
+    const resumed=await openControlRun(definition,'resume',make('claude-opus-5-5'));resumed.close();
+    await assert.rejects(openControlRun(definition,'resume',make('claude-sonnet-5-5')),{code:'fingerprint_mismatch'});
+  }finally{bridge.close();fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+
+test('protected text explicitly binds Codex review without changing Claude defaults and preserves original resume',
+ {skip:process.platform!=='darwin',timeout:30000},async()=>{
+ const f=protectedResultFixture();
+ try{
+  const roleFile=path.join(f.codeProject,'.cm-workflow.yml');fs.writeFileSync(roleFile,crossToolRoles);
+  const roles=fs.readFileSync(roleFile);f.args.push('--review-runtime','codex');
+  f.develop=payload=>({status:'succeeded',value:implementedValue(),edits:[{path:'target.mjs',beforeSha256:payload.expected['target.mjs'],content:'export const value = 42;\n'}]});
+  const first=await runCli(f,'normal');assert.equal(first.code,0,first.stderr);
+  const result=first.rows.find(row=>row.requestId==='advance').result;
+  assert.equal(result.state,'fixture_completed',JSON.stringify(result));
+  const end=lastCheckpoint(f);assert.equal(end.receipt.execution.provider,'codex');assert.equal(end.receipt.result.verdict,'approved');
+  assert.equal(end.currentChecks[0].outcome,'passed');assert.equal(end.taskCommit.outcome,'fixture_committed');
+  assert.equal(fs.readFileSync(path.join(f.codeProject,'target.mjs'),'utf8'),'export const value = 42;\n');
+  const stateFile=path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json'),state=fs.readFileSync(stateFile);
+  f.operation='status';const resumed=await runCli(f,'normal','resume');assert.equal(resumed.code,0,resumed.stderr);
+  assert.deepEqual(resumed.calls,[]);assert.deepEqual(fs.readFileSync(stateFile),state);
+  f.args[f.args.indexOf('--review-runtime')+1]='claude';
+  const changed=await runCli(f,'normal','resume');assert.equal(changed.code,1);assert.match(changed.stderr,/fingerprint_mismatch/);
+  assert.deepEqual(fs.readFileSync(stateFile),state);assert.deepEqual(fs.readFileSync(roleFile),roles);
+ }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});

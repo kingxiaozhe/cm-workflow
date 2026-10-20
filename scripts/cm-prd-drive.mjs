@@ -25,6 +25,9 @@
 // prd_self_check evidence comes from actual PLAN.contextChecks commands, never a static evidence file.
 import fs from 'node:fs';
 import {readPrdRepairBinding,recoverPrdResponse} from '../runtime/js/cm-prd/response-recovery.mjs';
+import {resolvePrdReviewRoute} from '../runtime/js/cm-prd/review-route.mjs';
+import {inspectPrdPublishedBaseline} from '../runtime/js/cm-prd/design-baseline.mjs';
+import {inspectPrdPlanningRecovery,recoverPrdPlanningState} from '../runtime/js/cm-prd/planning-recovery.mjs';
 import {inspectPrdReviewResponse} from '../runtime/js/cm-prd/review-publication.mjs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -49,7 +52,7 @@ import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
 // PLAN.liveEvidence: fresh current-session evidence; see docs/live-evidence-drivers.md.
 const HOST=fileURLToPath(new URL('./cm-prd-host.mjs',import.meta.url));
 const SKILL=fileURLToPath(new URL('../skills/cm-prd',import.meta.url));
-const KNOWN=new Set(['repair_review_response','start','advance','plan_design','promote_design','select_design_reviews','status','cancel',
+const KNOWN=new Set(['import_baseline','inspect_baseline','inspect_planning_recovery','recover_planning','repair_review_response','start','advance','plan_design','promote_design','select_design_reviews','status','cancel',
   'final_review_package','final_review','review_findings','review_disposition','save_draft','save_design',
   'correct_findings','prepare_summary','publish_summary','inspect_correction','resume_correction',
   'prepare_revision','decision','resume','read_batch','replace_inputs']);
@@ -72,7 +75,9 @@ function load(){
   const project=resolve(plan.project),specs=resolve(plan.specs),runtime=plan.runtime??'codex';
   if(!['codex','claude'].includes(runtime))stop(2,'runtime 只能是 codex 或 claude');
   if(plan.session!==undefined&&!/^prd-[a-zA-Z0-9-]{1,80}$/.test(plan.session))stop(2,'session 格式错误');
-  const entry={skillDir:SKILL,project,specs,...(plan.change?{change:plan.change}:{}),...(plan.cases?{cases:resolve(plan.cases)}:{})};
+  if(plan.sessionSkillDir!==undefined&&(!plan.session||!nonempty(plan.sessionSkillDir)))stop(2,'sessionSkillDir requires the original session');
+  const sessionSkillDir=plan.sessionSkillDir===undefined?SKILL:resolve(plan.sessionSkillDir);
+  const entry={skillDir:sessionSkillDir,project,specs,...(plan.change?{change:plan.change}:{}),...(plan.cases?{cases:resolve(plan.cases)}:{})};
   let admission,sources=null,config;
   try{admission=inspectCmPrdAdmission(entry);config=loadConfig({projectRoot:project});
     if(admission.mode==='new'&&admission.status==='ready')sources=inspectCmPrdSources(entry);}
@@ -84,7 +89,7 @@ function load(){
   if(new Set(plan.permissions??[]).size!==(plan.permissions??[]).length)stop(2,'permissions 不可重复');
   if(plan.predecessor&&!fs.existsSync(resolve(plan.predecessor)))stop(2,`predecessor 文件不存在: ${resolve(plan.predecessor)}`);
   if(plan.permissions?.includes('--allow-review-write')&&!nonempty(plan.hostContext))stop(2,'--allow-review-write 需要 hostContext');
-  if(['save_draft','save_design','publish_summary','resume_correction','correct_findings'].includes(operation)
+  if(['import_baseline','save_draft','save_design','publish_summary','resume_correction','correct_findings'].includes(operation)
     &&!plan.permissions?.includes('--allow-spec-write'))stop(2,`${operation} 需要 --allow-spec-write`);
   if(['final_review','repair_review_response'].includes(operation)&&!plan.permissions?.includes('--allow-review-write'))stop(2,'final_review 需要 --allow-review-write');
   if(operation==='review_disposition'&&!plan.permissions?.includes('--allow-disposition-write'))stop(2,'review_disposition 需要 --allow-disposition-write');
@@ -97,7 +102,7 @@ function load(){
   const state=store?readJson(store,'恢复存档'):null;
   if(state){
     const identity=state.identity;
-    if(identity?.entry?.project!==project||identity.entry.specs!==specs||identity.entry.skillDir!==SKILL
+    if(identity?.entry?.project!==project||identity.entry.specs!==specs||identity.entry.skillDir!==sessionSkillDir
       ||identity.entry.change!==entry.change||identity.entry.cases!==entry.cases||identity.runtime!==runtime)
       stop(2,'恢复身份不匹配：project/specs/skillDir/change/cases/runtime');
     if(state.active&&!['resume','repair_review_response'].includes(operation)&&!['status','read_batch','replace_inputs','cancel'].includes(operation))
@@ -106,14 +111,22 @@ function load(){
   }
   const request=plan.request??{};
   exact(request,['text','stage','feature','mode','packageDigest','decisions','artifacts','summaryDigest','draftDigest',
-    'risks','reason','proposalDigest','approved','allowUserCaseChanges','resolution','successorSpecs','successorSessionId','binding'], 'PLAN.request');
-  const needed={repair_review_response:['binding'],start:['text'],advance:['text'],plan_design:['text'],promote_design:['draftDigest','reason'],
+    'risks','reason','proposalDigest','approved','allowUserCaseChanges','resolution','successorSpecs','successorSessionId','binding','baseline'], 'PLAN.request');
+  const needed={import_baseline:['baseline'],recover_planning:['binding'],repair_review_response:['binding'],start:['text'],advance:['text'],plan_design:['text'],promote_design:['draftDigest','reason'],
     select_design_reviews:['draftDigest','risks'],final_review_package:['stage','feature'],final_review:['stage','feature','mode'],
     review_findings:['stage','feature'],review_disposition:['stage','feature','packageDigest','decisions','artifacts'],
     correct_findings:['stage','feature'],inspect_correction:['stage','feature'],resume_correction:['stage','feature'],
     publish_summary:['summaryDigest'],prepare_revision:['reason'],decision:['proposalDigest','approved','allowUserCaseChanges'],
     replace_inputs:['approved','reason','successorSpecs','successorSessionId']};
   for(const key of needed[operation]??[])if(!Object.hasOwn(request,key))stop(2,`${operation} 缺少 PLAN.request.${key}`);
+  if(['inspect_planning_recovery','recover_planning'].includes(operation)){
+    try{const validateCurrent=()=>{check(state.checkpoint.analysis.sourceDigest===digest(sources)
+      &&state.checkpoint.analysis.configDigest===digest(config),'prd_inputs_changed');};
+      validateCurrent();
+      if(operation==='inspect_planning_recovery')inspectPrdPlanningRecovery(state,{sessionId:plan.session});
+      else recoverPrdPlanningState(state,request.binding,{sessionId:plan.session,validateCurrent});
+    }catch(error){fail('planning recovery preflight',error.code??error.message);}
+  }
   if(operation==='repair_review_response'){
     try{
       const binding=readPrdRepairBinding(request.binding);
@@ -200,7 +213,7 @@ function load(){
   const answers=preflightAnswers([...new Set(asks.filter(k=>FILES[k]))],kind=>{
     const file=path.join(answersRoot??base,FILES[kind]);const value=readJson(file,kind);
     if(value===undefined)stop(2,`步骤 ${operation} 会反问 ${kind}，但答案文件不存在: ${file}`);
-    validate(kind,value,{stage,change,sources,config,specs,state,request,admission,hostContext:plan.hostContext});return value;
+    validate(kind,value,{stage,change,sources,config,specs,state,request,admission,project,runtime,plan,hostContext:plan.hostContext});return value;
   });
   if(asks.includes('prd_self_check')){
     if(!Array.isArray(plan.contextChecks)||plan.contextChecks.length===0)
@@ -259,14 +272,15 @@ function validate(kind,value,ctx){
       const nextIndex=Number(ctx.state?.checkpoint?.analysis?.acceptedDesign?.features?.[0]?.directory?.split('.')[0]
         ??ctx.state?.checkpoint?.analysis?.draft?.features?.[0]?.directory?.split('.')[0]
         ??nextPrdFeatureIndex(prdFeatureInventory(ctx.specs)));
-      try{if(value.status==='design')inspectPrdDesignDraft(value,{nextIndex});
-        else inspectPrdDraft(value,{nextIndex,generateCases:ctx.config.policies.generate_cases,
+      const {selfCheckRevisionReason,...draftReply}=value;
+      try{if(value.status==='design')inspectPrdDesignDraft(draftReply,{nextIndex});
+        else inspectPrdDraft(draftReply,{nextIndex,generateCases:ctx.config.policies.generate_cases,
           userCasesProvided:ctx.sources.sourceInspection.userCases!==null});}
       catch(e){fail('generate.json 不符合草稿 schema',e.code??e.message);}
     }
   }else if(kind==='prd_review'){
     exact(value,['reviewer','contextId','independent','at','result','degradedReason'],'review.json');
-    check(['codex-subagent','codex-cli','self-degraded'].includes(value.reviewer)&&nonempty(value.contextId)
+    check(['codex-subagent','codex-cli','claude-cli','self-degraded'].includes(value.reviewer)&&nonempty(value.contextId)
       &&typeof value.independent==='boolean'&&Number.isFinite(Date.parse(value.at))&&object(value.result),'review.json');
     check(ctx.request.mode==='self-degraded'?value.reviewer==='self-degraded'&&value.independent===false
       &&value.contextId===ctx.hostContext&&nonempty(value.degradedReason):
@@ -275,7 +289,12 @@ function validate(kind,value,ctx){
     check(['approved','changes_requested','blocked'].includes(value.result.verdict)&&hash(value.result.packageDigest)
       &&Array.isArray(value.result.examinedPaths)&&Array.isArray(value.result.findings)&&nonempty(value.result.summary),'review.json.result');
     try{const draft=ctx.request.stage==='design'?ctx.state?.checkpoint?.analysis?.designDraft:ctx.state?.checkpoint?.analysis?.draft;
-      const prepared=preparePrdReview({specs:ctx.specs,draft,stage:ctx.request.stage,feature:ctx.request.feature});
+      const saved=ctx.state?.checkpoint?.analysis;
+      const prepared=preparePrdReview({specs:ctx.specs,draft,stage:ctx.request.stage,feature:ctx.request.feature,
+        reviewRoute:resolvePrdReviewRoute({project:ctx.project,runtime:ctx.runtime}),
+        ...(saved?.designBaseline?{designBaseline:inspectPrdPublishedBaseline({project:ctx.project,specs:ctx.specs,
+          sessionId:ctx.plan.session,baseline:saved.designBaseline,sourceDigest:saved.sourceDigest,configDigest:saved.configDigest,
+          feature:ctx.request.feature})}:{})});
       const paths=(ctx.request.stage==='design'?['requirements.md','design.md']:['requirements.md','design.md','tasks.md'])
         .map(name=>`${ctx.request.feature}/${name}`).sort();
       inspectPrdReviewResponse({reviewPackage:prepared.reviewPackage,packageDigest:prepared.packageDigest,authorContextId:ctx.hostContext,response:value});}
@@ -341,7 +360,7 @@ function main(){
   loaded=load();const {operation,plan,project,specs,runtime,request,answers}=loaded;
   const args=['serve','--skill-dir',SKILL,'--project',project,'--specs',specs,'--runtime',runtime,'--allow-log-write',
     ...(plan.cases?['--cases',path.resolve(loaded.base,plan.cases)]:[]),...(plan.change?['--change',plan.change]:[]),
-    ...(plan.session?['--session',plan.session]:[]),...(plan.predecessor?['--predecessor',path.resolve(loaded.base,plan.predecessor)]:[]),
+    ...(plan.session?['--session',plan.session]:[]),...(plan.sessionSkillDir?['--session-skill-dir',path.resolve(loaded.base,plan.sessionSkillDir)]:[]),...(plan.predecessor?['--predecessor',path.resolve(loaded.base,plan.predecessor)]:[]),
     ...(plan.hostContext?['--host-context',plan.hostContext]:[]),...(plan.permissions??[])];
   driveHost({host:HOST,args,cwd:project,operation,request,answers,paths:{answers:loaded.answersRoot},answerFor});
 }

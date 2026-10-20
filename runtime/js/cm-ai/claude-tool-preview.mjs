@@ -1,12 +1,12 @@
 // Synthetic request capture only. No forwarding, review package, grant or task mutation.
 import fs from 'node:fs';
-import {VERIFICATION_TOOLS} from '../cm-fix/review-verification-contract.mjs';
+import {verificationTools} from '../cm-fix/review-verification-contract.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import {spawn} from 'node:child_process';
 import {gunzipSync,zstdDecompressSync} from 'node:zlib';
-import {claudeWorker,claudeReviewFingerprint} from './worker-claude.mjs';
+import {claudeWorker,claudeReviewFingerprint,claudeAliasModelMatches} from './worker-claude.mjs';
 
 const UNRECOGNIZED_MODEL_MARKER='[claude-code:unrecognized_model]';
 export function createClaudeModelMarkerDetector(onMarker) {
@@ -47,7 +47,24 @@ export function claudeProbeSandbox(temp,port,writeRoot=null) {
     (deny file-write*)(allow file-write* (subpath ${JSON.stringify(temp)}) (literal "/dev/null") ${writeRoot?`(subpath ${JSON.stringify(writeRoot)})`:""})`;
 }
 
-export async function previewClaudeTools({cwd,model,effort,cli='claude',spawnProcess=spawn,verification=null,verificationTransport=null}) {
+export async function previewClaudeTools(options) {
+  const alias=['default','opus','sonnet','haiku'].includes(options.model);
+  // The verification transport owns a single-use server. Discovery is tool-free;
+  // only the exact concrete-id probe may consume that transport/profile.
+  const captured=await probeClaudeTools(alias?{...options,verification:null,verificationTransport:null}:options,alias);
+  if(!alias||!captured.preflight.passed)return captured;
+  const resolved=captured.preflight.observed_models;
+  if(resolved?.length!==1)return {...captured,preflight:{...captured.preflight,passed:false}};
+  // Discovery is never a passing public receipt. Issue one only after a fresh,
+  // exact-id probe. Returning the concrete model lets existing owner/configuration
+  // digests pin it without a new journal shape or a mutable alias on resume.
+  const verified=await probeClaudeTools({...options,model:resolved[0]},false);
+  if(!verified.preflight.passed)return {...captured,preflight:{...captured.preflight,passed:false,
+    resolution_check:verified.preflight}};
+  return {...verified,preflight:{...verified.preflight,model_resolution:{requested_model:options.model,
+    resolved_model:resolved[0],resolution_context:'synthetic-api-key-probe'}}};
+}
+async function probeClaudeTools({cwd,model,effort,cli='claude',spawnProcess=spawn,verification=null,verificationTransport=null},discoverAlias) {
   if(process.platform!=='darwin'||!fs.existsSync('/usr/bin/sandbox-exec')) {
     throw Object.assign(Error('unsupported_probe_isolation'),{code:'unsupported_probe_isolation'});
   }
@@ -94,12 +111,12 @@ export async function previewClaudeTools({cwd,model,effort,cli='claude',spawnPro
         const tools=data.tools??[];
         const checks={json:true,post:request.method==='POST',
           messages_endpoint:new URL(request.url,'http://127.0.0.1').pathname==='/v1/messages',
-          model_matches:data.model===model,messages_array:Array.isArray(data.messages),
+          model_matches:discoverAlias?claudeAliasModelMatches(model,data.model):data.model===model,messages_array:Array.isArray(data.messages),
           tools_allowed:Array.isArray(tools)&&(verification
-            ?VERIFICATION_TOOLS.every(name=>tools.some(t=>t.name===name))&&tools.every(t=>t.name==='StructuredOutput'||VERIFICATION_TOOLS.includes(t.name))
+            ?verificationTools(verification).every(name=>tools.some(t=>t.name===name))&&tools.every(t=>t.name==='StructuredOutput'||verificationTools(verification).includes(t.name))
             :tools.length===0||(tools.length===1&&tools[0]?.name==='StructuredOutput')),
           synthetic_auth:request.headers['x-api-key']==='cm-synthetic-local-probe'};
-        safe={valid:Object.values(checks).every(Boolean),checks:{...checks,...(verification?{tool_names:tools.map(t=>typeof t?.name==='string'?t.name.slice(0,80):'invalid').slice(0,16)}:{})}};
+        safe={...(claudeAliasModelMatches('default',data.model)?{observedModel:data.model}:{}),valid:Object.values(checks).every(Boolean),checks:{...checks,...(verification?{tool_names:tools.map(t=>typeof t?.name==='string'?t.name.slice(0,80):'invalid').slice(0,16)}:{})}};
       }catch{}
       // Never retain raw request bodies, auth headers, local context or diagnostics.
       if(index<8)observations[index]=safe;
@@ -139,9 +156,11 @@ export async function previewClaudeTools({cwd,model,effort,cli='claude',spawnPro
     fs.rmSync(temp,{recursive:true,force:true});
   }
   const messages=observations.filter(item=>item.startup!==true);
+  const observedModels=[...new Set(messages.map(item=>item.observedModel).filter(Boolean))];
   return {model,...(effort===undefined?{}:{effort}),disabledSkills:[],preflight:{provider:'claude',prompt_transport:'stdin',
-    config_fingerprint:fingerprint,passed:modelMarker===null&&messages.length>=1&&messages.length<=2&&messages.every(message=>message.valid)
+    config_fingerprint:fingerprint,passed:(!discoverAlias||observedModels.length===1)&&modelMarker===null&&messages.length>=1&&messages.length<=2&&messages.every(message=>message.valid)
       &&stoppedByProbe&&result?.status==='cancelled'&&closeEvidence!==null&&!closeEvidence.timed_out,
+    ...(observedModels.length?{observed_models:observedModels}:{}),
     local_requests:observations.length,message_requests:messages.length,message_requests_expected:'1-2',
     listener_closed:closed,isolation:'macos-loopback-sandbox',
     process_code:result?.code??'unknown',stopped_by_probe:stoppedByProbe,exit_code:closeEvidence?.exit_code??null,

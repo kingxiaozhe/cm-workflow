@@ -1,11 +1,23 @@
+import {applyProviderRecovery,providerRecoveryExhausted} from './provider-review-recovery.mjs';
+import {applyEvidenceRegistration,applyEvidenceAuthorization} from './valid-review-evidence-continuation.mjs';
+import {applyMaterialContinuation} from './material-review-continuation.mjs';
+import {applyNativeMaterialReview} from './native-material-review.mjs';
+import {validateProtectedScopeSupplement} from './protected-scope-supplement.mjs';
+import {readNativeEvidenceProfile} from './native-review-evidence.mjs';
+import {applyTaskReviewOrigin} from './task-review-origin.mjs';
+import {readReviewerSwitch,effectiveReviewer} from './reviewer-switch.mjs';
+import {packageMaterialEligible,resolveCheckpointPackage} from './checkpoint-package-material.mjs';
 import {readExecutionPolicy} from './execution-policy.mjs';
 import {readControlPolicy} from './control-policy.mjs';
+import {taskContinuationBinding,revisedScope,applyScopeRevision} from './scope-revision.mjs';
+import {readBinaryAssetBinding} from './binary-assets.mjs';
 import {readExternalModels} from './external-models.mjs';
 import {beforeFirstQaRound,qaRevisionFollows,readQaConfigRevision} from './qa-config-revision.mjs';
+import {validateQaExecutorAttachment} from './qa-executor-attachment.mjs';
 import {readCloseoutPolicy} from './knowledge-closeout.mjs';
 // Host-only S3b2b journal grammar. Data validation grants no provider authority.
 import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,requestFor,JOURNAL_REASON_LIMIT,boundedReason} from './effect-contract.mjs';
-import {readReviewBaseline,readReviewPackage,reviewSpecsPath,reviewMaterialLimitReason} from './review-package.mjs';
+import {extendReviewBaseline,readReviewBaseline,readReviewPackage,reviewSpecsPath,reviewMaterialLimitReason} from './review-package.mjs';
 import {reviewResult,reviewReceipt} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
 import path from 'node:path';
@@ -57,6 +69,14 @@ export const reviewerFailure=result=>result?.outcome==='failed'&&result.reconcil
 export const reviewRetryCode=result=>reviewTransportTimeout(result)?'review_transport_timeout'
   :reviewerFailure(result)?(result.inspection.category==='verdict'?'review_verdict_invalid':'review_provider_failed'):null;
 export const REVIEW_RETRY_CODES=Object.freeze(['review_transport_timeout','review_abandoned','review_provider_failed','review_verdict_invalid']);
+// A correction grant has no technical redispatch slot; the intent consumed it.
+export const nativeCorrectionReviewExhausted=(s,correction)=>correction?.reviewConsumed===true&&(!correction.reviewRetry||correction.reviewRetry.consumed)
+  &&(!correction.transportReviewRetry||correction.transportReviewRetry.consumed)
+  &&(!correction.materialReview||correction.materialReview.consumed)
+  &&(!correction.materialContinuation||correction.materialContinuation.consumed)
+  &&(!correction.materialTimeoutContinuation||correction.materialTimeoutContinuation.consumed)
+  &&['pending_review','blocked'].includes(s.state)&&REVIEW_RETRY_CODES.includes(s.code)
+  &&s.cache.at(-1)?.effect.kind==='review';
 const timeoutEffect=entry=>entry.effect.kind==='review'&&reviewRetryCode(entry.result.reviewInvocation?.result)!==null
   &&entry.result.code===reviewRetryCode(entry.result.reviewInvocation.result);
 export const reviewRetrySpent=(cache,calls,attempt,contextId)=>cache.some(entry=>entry.effect.identity.attempt===attempt&&timeoutEffect(entry))
@@ -138,8 +158,17 @@ function pinnedDevelopStart(s,skip,from=s.cache.length-2){
   for(let i=from;i>=0;i--){
     const entry=s.cache[i];
     if(skip(entry)&&entry.effect.identity.attempt===s.attempt)continue;
-    return s.attempt===2&&entry.effect.kind==='review'&&entry.result.state==='changes_requested'
-      &&s.reviewPackage?.identity.attempt===1&&s.priorReview?.verdict==='changes_requested'?'reviewed_package':null;
+    const reviewed=s.attempt===2&&s.reviewPackage?.identity.attempt===1;
+    const rejected=entry.effect.kind==='review'&&entry.result.state==='changes_requested'
+      &&s.priorReview?.verdict==='changes_requested';
+    // Only the validated completion-rework transition produces a2 with an
+    // approved a1 prior review and this retained failed complete at its start.
+    const rework=entry.effect.kind==='complete'&&entry.effect.identity.attempt===1
+      &&entry.result.state==='blocked'&&entry.result.code==='completion_checks_changed'
+      &&s.priorReview?.verdict==='approved'&&entry.result.packageDigest===s.reviewPackage?.packageDigest
+      &&entry.result.receipt?.identity.attempt===1&&entry.result.receipt.result.verdict==='approved'
+      &&entry.result.receipt.packageDigest===s.reviewPackage?.packageDigest;
+    return reviewed&&(rejected||rework)?'reviewed_package':null;
   }
   return s.attempt===1&&s.reviewPackage===null?'baseline':null;
 }
@@ -200,10 +229,43 @@ export const developRecheckSource=entry=>{
     &&call?.terminal==='succeeded'&&call.channel==='fixture'
     &&result.learningWriteback!=null&&result.learningWriteback.outcome!=='writeback_pending';
 };
-export function developRecheckCode(s,config,recorded=0){
+// Only a validated journal can prove the old timeout -> recheck -> stale-signal
+// cancellation chain. A cancelled code alone never grants a retry.
+export function developRecheckCancellationBinding(records,s,config){
+  if(records[0]?.payload.version!==3||s.state!=='unknown'||s.code!=='cancelled'
+    ||config.developer.requestedModel!=='current-session'||config.controlPolicy?.development==='provider'
+    ||config.externalModels||config.executionPolicy||s.cancellationRequested||s.cancelAfterCommit||s.workflowError
+    ||s.reviewPackage!==null||s.receipt!==null||s.receipts.length||s.priorReview!==null||s.reviewInvocation!==null
+    ||s.taskCommit!=null||s.learningResult==null||s.learningResult.writeback.outcome==='writeback_pending')return null;
+  const checkpointIndex=records.findLastIndex(row=>row.payload.type==='effect-checkpoint');
+  const intentIndex=records.slice(0,checkpointIndex).findLastIndex(row=>row.payload.type==='effect-intent');
+  const recheckIndex=records.slice(0,intentIndex).findLastIndex(row=>row.payload.type==='develop-recheck');
+  const sourceIndex=records.slice(0,recheckIndex).findLastIndex(row=>row.payload.type==='effect-checkpoint');
+  if(sourceIndex<0||recheckIndex<0||intentIndex<0)return null;
+  const sourceRecord=records[sourceIndex],source=sourceRecord.payload.checkpoint;
+  const recheck=records[recheckIndex],intent=records[intentIndex],checkpoint=records[checkpointIndex],last=s.cache.at(-1);
+  const previous=source.cache.at(-1),call=source.calls.at(-1);
+  if(source.state!=='unknown'||source.code!=='call_timeout'||source.cancellationRequested||source.cancelAfterCommit||source.workflowError
+    ||!developRecheckSource(previous)||recheck.payload.code!=='check_answer_missing'
+    ||recheck.payload.effectId!==previous.effect.id||recheck.payload.invocationId!==call.invocationId
+    ||intent.payload.effect.kind!=='develop'||intent.payload.effect.id!==last?.effect.id
+    ||checkpoint.payload.effectId!==last.effect.id||source.attempt!==s.attempt
+    ||digest(intent.payload.effect.learningInput)!==digest(previous.effect.learningInput)
+    ||digest(source.calls)!==digest(s.calls)||digest(source.learningResult)!==digest(s.learningResult)
+    ||records.slice(sourceIndex+1).some(row=>row.payload.type==='control'
+      &&['cancel','late-cancel','workflow-error'].includes(row.payload.event))
+    ||records.slice(recheckIndex+1,intentIndex).some(row=>row.payload.type!=='host-joined')
+    ||records.slice(intentIndex+1,checkpointIndex).some(row=>row.payload.type!=='host-joined')
+    ||records.slice(checkpointIndex+1).some(row=>row.payload.type!=='host-joined'))return null;
+  return {effectId:last.effect.id,invocationId:call.invocationId,sourceEffectId:previous.effect.id,
+    sourceCheckpointDigest:sourceRecord.digest,recheckDigest:recheck.digest,checkpointDigest:checkpoint.digest};
+}
+export function developRecheckCode(s,config,recorded=0,cancelledBinding=null){
   if(config.bootstrap?.mode==='instructions'||config.taskLearning?.hostHandoff!==true)return null;
   const last=s.cache.at(-1);
-  if(!last||last.effect.identity.attempt!==s.attempt||!developRecheckSource(last)
+  const cancelledRecheck=s.state==='unknown'&&s.code==='cancelled'&&last?.result.state==='unknown'&&last.result.code==='cancelled'
+    &&cancelledBinding?.effectId===last.effect.id&&cancelledBinding.invocationId===last.result.calls.at(-1)?.invocationId;
+  if(!last||last.effect.identity.attempt!==s.attempt||!(developRecheckSource(last)||cancelledRecheck)
     ||s.learningResult==null||s.receipt!==null)return null;
   if(s.state==='blocked'&&RECHECK_CODES.includes(s.code))return s.code;
   if(!(s.state==='unknown'&&s.code===last.result.code)||recorded>=MAX_ANSWER_GAP_RETRIES)return null;
@@ -477,16 +539,40 @@ const COMPLETION_RETRY_CODES=['completion_checks_changed','completion_package_ch
 const completionBlock=entry=>entry.effect.kind==='complete'&&entry.result.state==='blocked'
   &&COMPLETION_RETRY_CODES.includes(entry.result.code);
 export const completionBlockCount=cache=>cache.filter(completionBlock).length;
-export const completedEffectCount=(cache,calls=[])=>cache.filter(entry=>!(entry.effect.kind==='develop'
+export const completedEffectCount=(cache,calls=[],recheckEffects=[])=>cache.filter(entry=>!(entry.effect.kind==='develop'
   &&entry.result.state==='blocked'&&['developer_result_invalid','check_output_out_of_scope'].includes(entry.result.code))
   &&!timeoutEffect(entry)&&!developTimeoutEffect(entry)&&!developAnswerInvalidEffect(entry)&&!developRecheckSource(entry)
   &&!developRedoSource(entry)&&!developDispatchFailedEffect(entry)&&!documentationSyncSource(entry)
+  &&!(entry.result.state==='unknown'&&entry.result.code==='cancelled'&&recheckEffects.includes(entry.effect.id))
   &&!abandonedResult(entry,calls)&&entry.effect.kind!=='complete').length;
 // The six-effect cap counts develop and review effects only; completion (above),
 // QA, documentation and finalization hold no slot.
 export const MAX_RUNNER_EFFECTS=6;
 // Only develop and review intents need a free slot; complete is gated by stage.
-export const effectSlotFree=(kind,cache,calls)=>kind==='complete'||completedEffectCount(cache,calls)<MAX_RUNNER_EFFECTS;
+// Only journal-derived rework identities may use the one extra slot. Once its
+// develop intent is recorded, even a free timeout slot cannot dispatch again.
+export const effectSlotFree=(kind,cache,calls,recheckEffects=[],rework=null,effectId=null,before=null,correction=null,evidence=null,recovery=null)=>{
+  if(kind==='complete')return true;
+  if(recovery)return kind==='review'&&!recovery.consumed&&effectId===recovery.record.reviewEffectId;
+  if(evidence)return kind==='review'&&Boolean(evidence.authorization)&&!evidence.consumed&&effectId===evidence.authorization.reviewEffectId;
+  if(correction?.materialTimeoutContinuation&&kind==='review')return !correction.materialTimeoutContinuation.consumed&&effectId===correction.materialTimeoutContinuation.effectId;
+  if(correction?.materialContinuation&&kind==='review')return !correction.materialContinuation.consumed&&effectId===correction.materialContinuation.effectId;
+  if(correction?.materialReview&&kind==='review')return !correction.materialReview.consumed&&effectId===correction.materialReview.effectId;
+  if(correction?.transportReviewRetry&&kind==='review')return !correction.transportReviewRetry.consumed&&effectId===correction.transportReviewRetry.effectId;
+  if(correction?.reviewRetry&&kind==='review')return !correction.reviewRetry.consumed&&effectId===correction.reviewRetry.effectId;
+  if(correction)return kind==='develop'?!correction.developConsumed:kind==='review'&&correction.developConsumed&&!correction.reviewConsumed;
+  const checkOnly=kind==='develop'&&before?.state==='blocked'&&RECHECK_CODES.includes(before.code);
+  if(rework&&kind==='develop'&&!checkOnly&&(rework.developerConsumed||effectId!==rework.developerEffectId))return false;
+  const bound=rework&&(kind==='develop'&&!rework.developerConsumed&&effectId===rework.developerEffectId
+    ||checkOnly&&rework.developerConsumed
+    ||kind==='review'&&rework.developerConsumed&&/^review-2(?:-retry-[1-9][0-9]*)?(?:-resume-[1-9][0-9]*)?$/.test(effectId??''));
+  return completedEffectCount(cache,calls,recheckEffects)<MAX_RUNNER_EFFECTS+(bound?1:0);
+};
+export const verificationBlockCount=(cache,recheckEffects=[])=>cache.filter(entry=>entry.effect.kind==='develop'
+  &&entry.result?.state==='blocked'
+  &&['verification_precheck_failed','check_output_out_of_scope','develop_checks_not_passed','develop_unchanged_after_review','develop_empty_changes','develop_requirement_missing','develop_package_too_large','bootstrap_verification_failed','bootstrap_instruction_conflict','develop_call_timeout'].includes(entry.result?.code)
+  ||developTimeoutEffect(entry)||developAnswerInvalidEffect(entry)||developRecheckSource(entry)||developRedoSource(entry)||developDispatchFailedEffect(entry)
+  ||documentationSyncSource(entry)||recheckEffects.includes(entry.effect.id)).length;
 // A delivery is only worth starting while it could still be reviewed: its own
 // call and effect slot, and its review's. Otherwise the run could only end in a
 // refused checkpoint after the developer or reviewer already ran, so it stops
@@ -494,16 +580,204 @@ export const effectSlotFree=(kind,cache,calls)=>kind==='complete'||completedEffe
 // retryable. (Today every counted develop/review effect in a developable state
 // also holds a counted call, so the call term decides; the effect term keeps
 // the rule true for blocks that could stop before their developer call.)
-export const developBudget=s=>({calls:countedCalls(s.calls,s.cache),effects:completedEffectCount(s.cache,s.calls)});
-export const developBudgetExhausted=s=>{
+export const developBudget=(s,recheckEffects=[])=>({calls:countedCalls(s.calls,s.cache),effects:completedEffectCount(s.cache,s.calls,recheckEffects)});
+export const developBudgetExhausted=(s,recheckEffects=[],rework=null,correction=null)=>{
   if(!stageAllowed('develop',s.state,s.code,s.priorReview?.verdict))return false;
+  if(correction)return correction.developConsumed;
   // A re-check makes no developer call: only its review needs one.
-  const used=developBudget(s),calls=RECHECK_CODES.includes(s.code)?1:2;
-  return used.calls+calls>MAX_RUNNER_CALLS||used.effects+2>MAX_RUNNER_EFFECTS;
+  const used=developBudget(s,recheckEffects),calls=RECHECK_CODES.includes(s.code)?1:2;
+  const credit=rework&&s.attempt===2&&s.state==='blocked'
+    &&(!rework.developerConsumed&&s.code==='develop_checks_not_passed'||rework.developerConsumed&&RECHECK_CODES.includes(s.code))?1:0;
+  return used.calls+calls>MAX_RUNNER_CALLS||used.effects+2>MAX_RUNNER_EFFECTS+credit;
 };
 // At most this many re-checks after a blocked completion. Each re-runs only the
 // local checks and the commit gate, so a small fixed bound keeps the journal
 // bounded; an environment that keeps changing needs fixing, not more attempts.
+// An explicit request may use the unused second review round after a genuine
+// failed complete. It never changes an approved verdict or creates a third round.
+export function completionReworkBinding(s,config){
+  const entry=s.cache.at(-1),pkg=s.reviewPackage,receipt=s.receipt;
+  need(config.controlPolicy?.version===2&&config.controlPolicy.development==='conversation'&&config.bootstrap==null
+    &&(config.parallelSelection??null)===null
+    &&s.state==='blocked'&&s.code==='completion_checks_changed'&&s.attempt===1
+    &&s.taskCommit==null&&!s.cancellationRequested&&!s.cancelAfterCommit&&!s.workflowError
+    &&entry?.effect.kind==='complete'&&entry.effect.identity.attempt===1
+    &&entry.result.state==='blocked'&&entry.result.code===s.code
+    &&pkg?.identity.attempt===1&&receipt?.identity.attempt===1
+    &&receipt.result.verdict==='approved'&&s.priorReview?.verdict==='approved'
+    &&receipt.packageDigest===pkg.packageDigest,'completion_rework_unavailable');
+  const used=developBudget(s);
+  need(used.calls+2<=MAX_RUNNER_CALLS&&used.effects+2<=MAX_RUNNER_EFFECTS,'completion_rework_budget_exhausted');
+  return {effectId:entry.effect.id,failedCheckpointDigest:digest(entry),packageDigest:pkg.packageDigest,
+    receiptDigest:receipt.receiptDigest,artifactDigest:pkg.artifactDigest,handoffDigest:digest(pkg.handoff??null)};
+}
+export function applyCompletionRework(s,config,record){
+  const binding=completionReworkBinding(s,config);
+  for(const key of Object.keys(binding))same(record[key],binding[key]);
+  need(record.fromAttempt===1&&record.toAttempt===2,'completion_rework_unavailable');
+  need(typeof record.reason==='string'&&record.reason.trim().length>0
+    &&Buffer.byteLength(record.reason,'utf8')<=500&&!/[\r\n\0]/.test(record.reason),'completion_rework_reason_required');
+  need(typeof record.at==='string'&&new Date(record.at).toISOString()===record.at,'completion_rework_unavailable');
+  return {...s,state:'changes_requested',code:null,reason:null,attempt:2,receipt:null,reviewInvocation:null};
+}
+// This binding is computed only after the historical prefix passed the normal
+// journal validator. The event cannot retroactively enlarge earlier budgets.
+export function developmentReworkBinding(records,s,config,original,rechecks=[],rework=null){
+  const limit=records.at(-1),failure=records.at(-2),entry=s.cache.at(-1),receipt=s.receipts.at(-1),pkg=s.reviewPackage;
+  const used=developBudget(s,rechecks),call=s.calls.at(-1);
+  need(rework===null&&config.controlPolicy?.version===2&&config.controlPolicy.development==='conversation'
+    &&config.controlPolicy.bootstrap==='disabled'&&config.controlPolicy.qaFix==='disabled'&&config.bootstrap==null
+    &&config.developer.requestedModel==='current-session'&&!config.externalModels&&!config.executionPolicy
+    &&s.state==='blocked'&&s.code==='develop_retry_limit'&&s.attempt===2
+    &&s.taskCommit==null&&!s.cancellationRequested&&!s.cancelAfterCommit&&!s.workflowError
+    &&limit?.payload.type==='develop-retry-limit'&&limit.payload.fromState==='blocked'
+    &&limit.payload.fromCode==='develop_checks_not_passed'&&limit.payload.countedCalls===4&&limit.payload.countedEffects===5
+    &&failure?.payload.type==='effect-checkpoint'&&failure.payload.effectId===entry?.effect.id
+    &&entry?.effect.kind==='develop'&&entry.effect.identity.attempt===2
+    &&entry.result.state==='blocked'&&entry.result.code==='develop_checks_not_passed'
+    &&call?.terminal==='succeeded'&&call.channel==='fixture'&&s.learningResult?.writeback!=null
+    &&s.learningResult.writeback.outcome!=='writeback_pending'
+    &&Array.isArray(s.currentChecks)&&s.currentChecks.some(check=>check.outcome==='failed')&&used.calls===4&&used.effects===5
+    &&s.receipt===null&&s.receipts.length===1&&receipt.identity.attempt===1
+    &&receipt.result.verdict==='changes_requested'&&s.priorReview?.verdict==='changes_requested'
+    &&pkg?.identity.attempt===1&&pkg.packageDigest===receipt.packageDigest
+    &&!s.cache.some(item=>item.effect.kind==='review'&&item.effect.identity.attempt===2)
+    &&!records.some(row=>row.payload.type==='review-invocation-registered'&&row.payload.binding.identity.attempt===2)
+    &&!records.some(row=>row.payload.type==='effect-interrupted'||row.payload.type.startsWith('qa-')
+      &&(row.payload.type!=='qa-config-revised'||!beforeFirstQaRound(readQaConfigRevision(row.payload.record)))
+      ||row.payload.type==='control'&&['cancel','late-cancel','workflow-error'].includes(row.payload.event))
+    &&used.calls+2<=MAX_RUNNER_CALLS,'development_rework_unavailable');
+  // Canonical entry IDs come from the same cache derivation as live dispatch.
+  const rejected=s.calls.filter(call=>call.terminal==='failed'&&call.failureResult?.code==='invalid_result'
+    &&call.failureResult.retryable===true).length;
+  return {effectId:entry.effect.id,failedCheckpointDigest:failure.digest,limitDigest:limit.digest,
+    deliveryDigest:digest(entry),packageDigest:pkg.packageDigest,receiptDigest:receipt.receiptDigest,
+    baselineDigest:original.baselineDigest,scopeDigest:digest(config.scope),configDigest:digest(config),
+    developerEffectId:`develop-2-retry-${rejected+verificationBlockCount(s.cache,rechecks)}`,reviewEffectId:'review-2'};
+}
+export function applyDevelopmentRework(records,s,config,original,record,rechecks=[],rework=null){
+  const binding=developmentReworkBinding(records,s,config,original,rechecks,rework);
+  for(const key of Object.keys(binding))same(record[key],binding[key]);
+  need(record.fromDigest===records.at(-1).digest&&record.effectCredit===1,'development_rework_unavailable');
+  hex(record.sourceDigest);
+  need(typeof record.reason==='string'&&record.reason.trim().length>0&&Buffer.byteLength(record.reason,'utf8')<=500
+    &&!/[\r\n\0]/.test(record.reason),'development_rework_reason_required');
+  need(typeof record.at==='string'&&Number.isFinite(Date.parse(record.at))&&new Date(record.at).toISOString()===record.at,
+    'development_rework_unavailable');
+  return {...s,state:'blocked',code:'develop_checks_not_passed',reason:null};
+}
+// Explicitly authorized recovery consumes the existing second round; old blocked verdict stays history.
+export function nativeReviewRecoveryBinding(s,config,existing=null,rechecks=[]){
+  const entry=s.cache.at(-1),pkg=s.reviewPackage,receipt=s.receipt;
+  need(existing===null&&config.controlPolicy?.version===2&&config.controlPolicy.development==='conversation'
+    &&config.controlPolicy.bootstrap==='disabled'&&config.controlPolicy.qaFix==='disabled'&&!config.bootstrap
+    &&!config.parallelSelection&&!config.codeProjectPaths&&!config.binaryAssets&&!config.externalModels&&!config.executionPolicy
+    &&config.developer.provider==='codex'&&config.developer.requestedModel==='current-session'
+    &&config.reviewers.length===1&&config.reviewers[0].provider==='codex'
+    &&s.state==='blocked'&&s.code==='review_blocked'&&s.attempt===1
+    &&!s.taskCommit&&!s.cancellationRequested&&!s.cancelAfterCommit&&!s.workflowError
+    &&entry?.effect.kind==='review'&&entry.effect.identity.attempt===1&&entry.result.code==='review_blocked'
+    &&pkg?.identity.attempt===1&&receipt?.identity.attempt===1&&receipt.result.verdict==='blocked'
+    &&s.priorReview?.verdict==='blocked'&&receipt.packageDigest===pkg.packageDigest&&s.receipts.length===1,
+    'native_review_recovery_unavailable');
+  const used=developBudget(s,rechecks);
+  need(used.calls+2<=MAX_RUNNER_CALLS&&used.effects+2<=MAX_RUNNER_EFFECTS,'native_review_recovery_budget_exhausted');
+  return {effectId:entry.effect.id,failedCheckpointDigest:digest(entry),packageDigest:pkg.packageDigest,
+    receiptDigest:receipt.receiptDigest,configDigest:digest(config),countedCalls:used.calls,countedEffects:used.effects};
+}
+export function applyNativeReviewRecovery(s,config,record,existing=null,rechecks=[]){
+  const binding=nativeReviewRecoveryBinding(s,config,existing,rechecks);
+  for(const key of Object.keys(binding))same(record[key],binding[key]);
+  need(record.fromAttempt===1&&record.toAttempt===2,'native_review_recovery_unavailable');
+  need(typeof record.reason==='string'&&record.reason.trim()&&Buffer.byteLength(record.reason)<=500
+    &&!/[\r\n\0]/.test(record.reason),'native_review_recovery_reason_required');
+  need(typeof record.at==='string'&&new Date(record.at).toISOString()===record.at,'native_review_recovery_unavailable');
+  readNativeEvidenceProfile(record.nativeEvidence,{codeProject:config.root,specsDir:config.completion.owner.specsRoot,inspectCurrent:false});
+  return {...s,state:'changes_requested',code:null,reason:null,attempt:2,receipt:null,reviewInvocation:null};
+}
+// One explicit current-run correction epoch, separate from the two normal attempts.
+export function nativeCorrectionBinding(s,config,original,existing=null,nativeRecovery=null,rechecks=[]){
+ const entry=s.cache.at(-1),receipt=s.receipt,pkg=s.reviewPackage,used=developBudget(s,rechecks);
+ need(existing===null&&nativeRecovery!==null&&s.state==='blocked'&&s.code==='review_blocked'&&s.attempt===2
+  &&config.controlPolicy?.version===2&&config.controlPolicy.development==='conversation'
+  &&config.controlPolicy.bootstrap==='disabled'&&config.controlPolicy.qaFix==='disabled'&&!config.bootstrap
+  &&!config.parallelSelection&&!config.codeProjectPaths&&!config.binaryAssets&&!config.externalModels&&!config.executionPolicy
+  &&config.developer.provider==='codex'&&config.developer.requestedModel==='current-session'
+  &&config.reviewers.length===1&&config.reviewers[0].provider==='codex'
+  &&!s.taskCommit&&!s.cancellationRequested&&!s.cancelAfterCommit&&!s.workflowError
+  &&entry?.effect.kind==='review'&&entry.effect.identity.attempt===2&&entry.result.code==='review_blocked'
+  &&pkg?.identity.attempt===2&&receipt?.identity.attempt===2&&receipt.result.verdict==='blocked'
+  &&s.priorReview?.verdict==='blocked'&&receipt.packageDigest===pkg.packageDigest
+  &&s.receipts.length===2&&s.receipts.every(r=>r.result.verdict==='blocked')
+  &&used.calls===6&&used.effects===6,'native_correction_unavailable');
+ return {effectId:entry.effect.id,failedCheckpointDigest:digest(entry),packageDigest:pkg.packageDigest,
+  receiptDigest:receipt.receiptDigest,configDigest:digest(config),baselineDigest:original.baselineDigest,
+  scopeDigest:digest(config.scope),countedCalls:used.calls,countedEffects:used.effects};
+}
+// The unique correction grant may capture exact material for explicitly added
+// existing paths. It never re-enters the unreviewed scope-revision protocol.
+export function applyNativeCorrectionScope(config,original,record){
+ const present=['scope','files','protectedSupplement'].filter(key=>Object.hasOwn(record,key));
+ if(present.length===0)return {scope:config.scope,baseline:original};
+ need(present.length===3,'native_correction_scope');
+ const scope=revisedScope(record.scope,config.scope);
+ same(scope,record.scope);
+ const additions=scope.filter(p=>!config.scope.includes(p));
+ need(Array.isArray(record.files)&&digest(record.files.map(file=>file.path))===digest(additions),'native_correction_scope');
+ validateProtectedScopeSupplement(record.protectedSupplement,{
+  configFingerprint:config.completion.fingerprints.config,scope,
+  originalScope:record.protectedSupplement.material?.definition?.scope});
+ return {scope,baseline:extendReviewBaseline(original,scope,record.files)};
+}
+export function applyNativeCorrection(s,config,original,record,existing=null,nativeRecovery=null,rechecks=[]){
+ const binding=nativeCorrectionBinding(s,config,original,existing,nativeRecovery,rechecks);
+ for(const key of Object.keys(binding))same(record[key],binding[key]);
+ need(record.correctionVersion===1&&record.epoch===1&&record.callLimit===8&&record.effectLimit===8,'native_correction_unavailable');
+ need(typeof record.reason==='string'&&record.reason.trim()&&Buffer.byteLength(record.reason)<=500&&!/[\r\n\0]/.test(record.reason),'native_correction_reason_required');
+ need(typeof record.at==='string'&&new Date(record.at).toISOString()===record.at,'native_correction_unavailable');
+ need(Array.isArray(record.retainedEvidence)&&record.retainedEvidence.length===4&&new Set(record.retainedEvidence.map(r=>r.path)).size===4,'native_correction_evidence');
+ for(const row of record.retainedEvidence){shape(row,['path','sha256']);need(typeof row.path==='string'&&path.isAbsolute(row.path),'native_correction_evidence');hex(row.sha256);}
+ need(record.sourceDigest===digest(record.retainedEvidence),'native_correction_evidence');
+ applyNativeCorrectionScope(config,original,record);
+ readNativeEvidenceProfile(record.nativeEvidence,{codeProject:config.root,specsDir:config.completion.owner.specsRoot,inspectCurrent:false});
+ return {...s,state:'changes_requested',code:null,reason:null,receipt:null,reviewInvocation:null};
+}
+// Separate one-use technical review authority. The original correction remains spent.
+function nativeReviewRetrySource(s,config,original,correction,transport=false){
+ const entry=s.cache.at(-1),result=s.reviewInvocation?.result;
+ const callCount=transport?9:8;
+ need(correction?.epoch===1&&correction.developConsumed&&correction.reviewConsumed
+  &&(transport?correction.reviewRetry?.consumed===true&&!correction.transportReviewRetry
+    &&entry?.effect.id===correction.reviewRetry.effectId:!correction.reviewRetry&&!correction.transportReviewRetry)
+  &&s.state===(transport?'blocked':'pending_review')&&s.code==='review_provider_failed'&&s.attempt===2
+  &&s.calls.length===callCount&&s.sequence===callCount&&s.calls.at(-1)?.terminal==='failed'
+  &&entry?.effect.kind==='review'&&entry.effect.identity.attempt===2
+  &&reviewerFailure(result)&&result.inspection.category==='provider'
+  &&result.inspection.failure==='reviewer_exited'&&!s.taskCommit&&!s.cancellationRequested&&!s.cancelAfterCommit&&!s.workflowError
+  &&s.receipt===null&&s.receipts.length===2&&s.receipts.every(r=>r.result.verdict==='blocked')
+  &&config.controlPolicy?.version===2&&config.controlPolicy.development==='conversation'&&config.controlPolicy.bootstrap==='disabled'
+  &&config.controlPolicy.qaFix==='disabled'&&!config.bootstrap&&!config.parallelSelection&&!config.codeProjectPaths
+  &&!config.binaryAssets&&!config.externalModels&&!config.executionPolicy&&config.developer.provider==='codex'
+  &&config.developer.requestedModel==='current-session'&&config.reviewers.length===1&&config.reviewers[0].provider==='codex'
+  &&s.reviewPackage?.packageDigest===entry.result.packageDigest,'native_review_retry_unavailable');
+ const round=s.cache.filter(c=>c.effect.kind==='review'&&c.effect.identity.attempt===2).map(c=>c.effect.id);
+ const context=s.reviewInvocation.registration.binding.logicalContextId;
+ let n=Math.max(round.length,s.calls.filter(c=>c.channel==='host-review'&&['failed','abandoned'].includes(c.terminal)&&c.contextId===context).length);
+ const name=n=>`review-2${n?`-retry-${n}`:''}-correction-1`;while(round.includes(name(n)))n++;
+ return {effectId:entry.effect.id,failedCheckpointDigest:digest(entry),packageDigest:s.reviewPackage.packageDigest,
+  invocationId:s.calls.at(-1).invocationId,resultDigest:digest(result),correctionDigest:correction.recordDigest,
+  configDigest:digest(config),baselineDigest:original.baselineDigest,scopeDigest:digest(config.scope),callCount,retryEffectId:name(n),
+  ...(transport?{priorRetryDigest:correction.reviewRetry.recordDigest}:{})};
+}
+export const nativeReviewRetryBinding=(s,config,original,correction)=>nativeReviewRetrySource(s,config,original,correction);
+export const nativeTransportReviewRetryBinding=(s,config,original,correction)=>nativeReviewRetrySource(s,config,original,correction,true);
+export function applyNativeReviewRetry(s,config,original,correction,record,transport=false){
+ const binding=nativeReviewRetrySource(s,config,original,correction,transport);
+ for(const key of Object.keys(binding))same(record[key],binding[key]);
+ need(typeof record.reason==='string'&&record.reason.trim()&&Buffer.byteLength(record.reason)<=500&&!/[\r\n\0]/.test(record.reason),'native_review_retry_reason_required');
+ need(typeof record.at==='string'&&new Date(record.at).toISOString()===record.at,'native_review_retry_unavailable');
+ return {...s,state:'pending_review',code:'review_provider_failed',reason:transport?'Explicit one-use review after transport repair registered; original nine calls retained.':'Explicit one-use technical review authorization registered; original eight calls retained.'};
+}
 export const MAX_COMPLETION_RETRIES=3;
 export const completionRetriesExhausted=s=>s.state==='blocked'&&COMPLETION_RETRY_CODES.includes(s.code)
   &&completionBlockCount(s.cache)>MAX_COMPLETION_RETRIES;
@@ -596,7 +870,8 @@ export function boundRunnerRecord({id,kind,payload},seq) {
   // Exact S3a envelope width. Digest contents do not affect encoded byte count.
   json({version:1,seq,id,kind,payload,previousDigest:seq>1?'0'.repeat(64):null,digest:'0'.repeat(64)});
 }
-export function attemptBaseline(original,attempt) {
+export function attemptBaseline(original,attempt,continuation=null) {
+  if(continuation!==null&&attempt===2)return readReviewBaseline(continuation.baseline);
   const {baselineDigest,...data}=original,next={...data,identity:{...original.identity,attempt}};
   return readReviewBaseline({...next,baselineDigest:digest(next)});
 }
@@ -613,19 +888,22 @@ export function runnerStatus(s,config) {
     ...(Object.hasOwn(s,'reviewInvocation')?{reviewInvocation:s.reviewInvocation}:{}),
     ...(Object.hasOwn(config,'taskLearning')?{learningWriteback:s.learningResult?.writeback??null}:{})},LIMIT);
 }
-export function controlledState(state,event,outstanding,version=1) {
+export function controlledState(state,event,outstanding,version=1,developmentReworkPending=false) {
   const s=structuredClone(state);
   const unresolvedReview=version===3&&s.reviewInvocation?.result?.reconciliationRequired===true
     &&s.reviewInvocation.registration?.binding?.identity?.attempt===s.attempt;
   if(event==='workflow-error') {s.workflowError='workflow_error';if(!outstanding && s.state!=='fixture_completed'
     && !(s.state==='unknown'&&(version>=2&&s.taskCommit||unresolvedReview))){s.state='blocked';s.code='workflow_error';if(Object.hasOwn(s,'reason'))s.reason=null;}}
   else if(event==='late-cancel'){s.cancelAfterCommit=true;s.cancellationRequested=true;}
-  else if(event==='cancel') {if(!['blocked','unknown','cancelled','fixture_completed'].includes(s.state)){s.state='cancelled';s.code='cancelled';if(Object.hasOwn(s,'reason'))s.reason=null;s.cancellationRequested=true;}}
+  else if(event==='cancel') {if(!['blocked','unknown','cancelled','fixture_completed'].includes(s.state)
+    ||outstanding&&s.state==='blocked'&&([...RECHECK_CODES,COMPLETE_RECHECK_CODE].includes(s.code)
+      ||developmentReworkPending&&s.code==='develop_checks_not_passed')){
+    s.state='cancelled';s.code='cancelled';if(Object.hasOwn(s,'reason'))s.reason=null;s.cancellationRequested=true;}}
   else need(false,'runner_control');
   return s;
 }
-function packageLink(pkg,original,attempt,checks) {
-  const p=readReviewPackage(pkg),b=attemptBaseline(original,attempt);
+function packageLink(pkg,original,attempt,checks,continuation=null) {
+  const p=readReviewPackage(pkg),b=attemptBaseline(original,attempt,continuation);
   same(p.identity,b.identity);same(p.scope,b.scope);same(p.checks,checks);
   need(p.baseIdentity===b.baselineDigest && p.rootDigest===b.rootDigest,'runner_package');
   const files=new Map(b.files.map(f=>[f.path,f]));
@@ -633,11 +911,13 @@ function packageLink(pkg,original,attempt,checks) {
   if(Object.hasOwn(p,'unchangedScope')){
     const changed=new Set(p.changes.map(c=>c.path));
     same(p.unchangedScope,b.scope.filter(path=>!changed.has(path)&&files.has(path))
-      .map(path=>({path,sha256:files.get(path).sha256})));
+      .map(path=>b.scopeRevisionPaths?.includes(path)||files.get(path).contentBlob?files.get(path):({path,sha256:files.get(path).sha256})));
   }
   same(p.specification??null,b.specification??null);
   same(p.requirements,b.requirements.map(path=>files.get(path)??null));
   same(p.codeProjectPaths??null,b.codeProjectPaths??null);
+  same(p.binaryAssets??null,b.binaryAssets??null);
+  same(p.ruleAcceptance??null,b.taskReviewOrigin?.ruleAcceptance??null);
   same(p.ignorePolicy??null,b.ignorePolicy??null);
   if(Object.hasOwn(b,'bootstrapRequirements'))same(p.bootstrapRequirements,{feature:b.bootstrapRequirements.feature,
     rootDigest:digestRoot(b.bootstrapRequirements.specsRoot),files:b.bootstrapRequirements.files});
@@ -780,7 +1060,7 @@ function invocationCall(call,registration,started,result,before) {
     &&call.resultDigest===digest(result.outcome==='observed'?result.inspection.review:result)
     &&before.sequence+1===Number(request.invocationId.split('.').at(-1)),'runner_call');
 }
-function checkpoint(before,raw,effect,config,original,session,controls,version=1,taskCommit=null,invocation=null,carried=null,documentation=null) {
+function checkpoint(before,raw,effect,config,original,session,controls,version=1,taskCommit=null,invocation=null,carried=null,documentation=null,recheckEffects=[],rework=null,continuation=null,correction=null,evidence=null,recovery=null) {
   const s=json(raw,LIMIT);
   shape(s,['state','code','attempt','session','sequence','reviewPackage','currentChecks','receipt','receipts','calls','cache',
     ...(Object.hasOwn(s,'reason')?['reason']:[]),
@@ -803,8 +1083,17 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
   // An abandoned invocation holds no effect slot (its pending effect was never
   // checkpointed, or its journaled result was abandoned), so it holds no call
   // slot either; the attempt's one redispatch is bounded by reviewRetrySpent.
-  need(Array.isArray(s.calls) && countedCalls(s.calls,s.cache)<=MAX_RUNNER_CALLS && s.sequence===s.calls.length,'runner_calls');
-  need(Array.isArray(s.receipts) && s.receipts.length<=2 && Array.isArray(s.cache) && completedEffectCount(s.cache,s.calls)<=6,'runner_limits');
+  if(recovery)need(s.calls.length<=recovery.callsAtGrant+1&&s.receipts.length<=recovery.receiptsAtGrant+1
+    &&s.cache.filter(c=>c.effect.kind!=='complete').length<=recovery.effectsAtGrant+1&&s.sequence===s.calls.length,'provider_recovery_limits');
+  else if(evidence?.authorization)need(s.calls.length<=evidence.callsAtRegistration+1&&s.receipts.length<=evidence.receiptsAtRegistration+1
+    &&s.cache.filter(c=>c.effect.kind!=='complete').length<=evidence.effectsAtRegistration+1&&s.sequence===s.calls.length,'evidence_review_limits');
+  else need(Array.isArray(s.calls) && countedCalls(s.calls,s.cache)<=MAX_RUNNER_CALLS+(correction?.materialTimeoutContinuation?7:correction?.materialContinuation?6:correction?.materialReview?5:correction?.transportReviewRetry?4:correction?.reviewRetry?3:correction?2:0)
+    &&(!correction||s.calls.length<=correction.callsAtGrant+(correction.materialTimeoutContinuation?7:correction.materialContinuation?6:correction.materialReview?5:correction.transportReviewRetry?4:correction.reviewRetry?3:2)) && s.sequence===s.calls.length,'runner_calls');
+  // The current check-only intent is already derived from the validated journal;
+  // its checkpoint still has to pass the unchanged-call/Learning checks below.
+  const rechecks=version===3&&effect.kind==='develop'&&before.state==='blocked'&&RECHECK_CODES.includes(before.code)
+    ?[...recheckEffects,effect.id]:recheckEffects;
+  if(!recovery&&!evidence?.authorization)need(Array.isArray(s.receipts) && s.receipts.length<=(correction?.materialReview?4:correction?3:2) && Array.isArray(s.cache) && completedEffectCount(s.cache,s.calls,rechecks)<=MAX_RUNNER_EFFECTS+(correction?.materialTimeoutContinuation?7:correction?.materialContinuation?6:correction?.materialReview?5:correction?.transportReviewRetry?4:correction?.reviewRetry?3:correction?2:rework?.developerConsumed?1:0),'runner_limits');
   prefix(before.calls,s.calls);prefix(before.receipts,s.receipts);prefix(before.cache,s.cache);
   need(s.cache.length===before.cache.length+1,'runner_cache');
   const entry=s.cache.at(-1);shape(entry,['effect','digest','result']);same(entry.effect,effect);same(entry.digest,digest(effect));
@@ -892,7 +1181,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
       need((recheck||added.length===1) && developerCall?.terminal==='succeeded' && developerCall.resultDigest===digest(developerResult),'runner_develop');
       if(Object.hasOwn(config,'taskLearning'))need(s.learningResult!==null
         &&s.learningResult.writeback.outcome!=='writeback_pending','runner_learning');
-      packageLink(s.reviewPackage,original,before.attempt,s.currentChecks);
+      packageLink(s.reviewPackage,original,before.attempt,s.currentChecks,continuation);
       if(Object.hasOwn(config,'taskLearning'))validateTaskLearningReviewPackage(s.reviewPackage,
         s.learningResult.writeback,effect.learningInput,s.learningResult.bootstrap??null,config.bootstrap??null);
       expectedState='awaiting_review';
@@ -907,7 +1196,8 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
       need(digest(s.reviewPackage)===digest(before.reviewPackage),'runner_develop');
       same(s.receipts,before.receipts);
       if(s.code==='develop_unchanged_after_review')
-        need(before.attempt===2&&before.priorReview?.verdict==='changes_requested','runner_develop');
+        need(before.attempt===2&&(['changes_requested','approved'].includes(before.priorReview?.verdict)
+          ||correction!==null&&before.priorReview?.verdict==='blocked'),'runner_develop');
       expectedState='blocked';expectedCode=s.code;
     }
     if(added[0]?.terminal==='succeeded'&&s.code==='bootstrap_review_mismatch'){
@@ -1022,7 +1312,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
   if(!['unknown','cancelled'].includes(s.state))need(s.state===expectedState,'runner_transition');
   if(expectedCode && !['unknown','cancelled'].includes(s.state))need(s.code===expectedCode,'runner_transition');
   if(['awaiting_review','approved','fixture_completed'].includes(s.state)) {
-    need(s.code===null,'runner_transition');packageLink(s.reviewPackage,original,s.attempt,s.currentChecks);
+    need(s.code===null,'runner_transition');packageLink(s.reviewPackage,original,s.attempt,s.currentChecks,continuation);
   }
   need(s.workflowError===(controls.workflowError??before.workflowError),'runner_control');
   need(s.cancelAfterCommit===(controls.cancelAfterCommit||before.cancelAfterCommit),'runner_control');
@@ -1085,8 +1375,19 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
 function completionConfig(config,version){
   shape(config,['root','identity','scope','requirements','excludedContexts','timeoutMs','developer','reviewers','completion',
     ...(version===3?['reviewInvocation']:[]),...(Object.hasOwn(config,'taskLearning')?['taskLearning']:[]),
-    ...['bootstrap','codeProjectPaths','knowledgeCloseout','externalModels','executionPolicy','controlPolicy'].filter(key=>Object.hasOwn(config,key))]);
+    ...['bootstrap','codeProjectPaths','knowledgeCloseout','externalModels','executionPolicy','controlPolicy','parallelSelection','binaryAssets'].filter(key=>Object.hasOwn(config,key))]);
+  if(Object.hasOwn(config,'binaryAssets')){
+    same(config.binaryAssets,readBinaryAssetBinding(config.binaryAssets));
+    need(version===3&&config.binaryAssets.paths.every(p=>config.scope.includes(p)&&!config.requirements.includes(p)),'runner_binary_assets');
+    need(config.binaryAssets.storeRoot===path.join(config.completion.owner.specsRoot,'.reviews','.binary-assets',
+      config.identity.repositoryId,config.identity.runId),'runner_binary_assets');
+  }
   if(Object.hasOwn(config,'controlPolicy')){same(config.controlPolicy,readControlPolicy(config.controlPolicy));need(version===3,'runner_version');}
+  if(Object.hasOwn(config,'parallelSelection')){
+    shape(config.parallelSelection,['version','group']);need(config.parallelSelection.version===1&&Array.isArray(config.parallelSelection.group)
+      &&config.parallelSelection.group.length>=2&&config.parallelSelection.group.includes(config.identity.taskId),'runner_config');
+    for(const task of config.parallelSelection.group)id(task);
+  }
   if(Object.hasOwn(config,'knowledgeCloseout'))readCloseoutPolicy(config.knowledgeCloseout);
   if(Object.hasOwn(config,'executionPolicy')){same(config.executionPolicy,readExecutionPolicy(config.executionPolicy));need(version===3,'execution_policy_runner_version');}
   if(Object.hasOwn(config,'externalModels')){same(config.externalModels,readExternalModels(config.externalModels));need(version===3,'external_model_runner_version');}
@@ -1177,15 +1478,18 @@ export function readRunnerHistory(raw,config,version=1) {
   const completion=version>=2?completionConfig(config,version):null;
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
   let invocation={registration:null,started:null,result:null};let registrationRecord=null,startedRecord=null,resultRecord=null,lastReview=null;
-  const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false,supersession=null;
+  const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaExecutorAttachment=null,qaRevision=null,joinedForInvocation=false,supersession=null;
+  let scopeRevisions=0,developmentRework=null,taskContinuation=null,reviewerSwitch=null,nativeReviewRecovery=null,nativeCorrection=null,evidenceContinuation=null,providerRecovery=null;
   const answerGaps={developRecheck:0,completeRecheck:0,developRedo:0,developDispatch:0,documentationSync:0,reviewRedispatch:{1:0,2:0}};
+  const developRecheckEffects=[];
   // Q16: documentation-sync-started records by digest, and the pending develop's.
   const documentationRecords=new Map();let pendingDocumentation=null,documentationStop=null;
   // V8/V9: interrupted intents (their ids are never reused) and the provider
   // worker records of the pending develop and of every checkpointed develop.
   const interrupted=[],workers={};let pendingWorker=null;
   const reviewConfig=(calls=[])=>({...config,reviewInvocation:{...config.reviewInvocation,
-    excludedThreadIds:reviewExclusions({excludedThreadIds:[...config.reviewInvocation.excludedThreadIds,...joinedHosts]},
+    excludedThreadIds:reviewExclusions({excludedThreadIds:[...config.reviewInvocation.excludedThreadIds,...joinedHosts,
+      ...(providerRecovery?calls.map(c=>c.providerThreadId).filter(v=>typeof v==='string'):[])]},
       calls,config.developer.contextId)}});
   const reconciliationBinding=()=>({effectId:lastReview.effect.id,invocationId:lastReview.request.invocationId,
     registeredDigest:lastReview.registrationRecord.digest,startedDigest:lastReview.startedRecord?.digest??null,
@@ -1243,6 +1547,7 @@ export function readRunnerHistory(raw,config,version=1) {
         ?[...config.scope,'AGENTS.md']:[...config.scope];
       same(original.identity,config.identity);same(original.scope,reviewScope.sort());same(original.requirements,[...config.requirements].sort());
       same(original.codeProjectPaths??null,config.codeProjectPaths??null);
+      same(original.binaryAssets??null,config.binaryAssets??null);
       same(original.bootstrapRequirements??null,config.bootstrap?.bootstrapRequirements??null);
       if(Object.hasOwn(original,'specification')){
         need(completion&&config.taskLearning,'runner_package');
@@ -1293,7 +1598,14 @@ export function readRunnerHistory(raw,config,version=1) {
       if(Object.hasOwn(e,'learningInput')){need(e.kind==='develop'&&Object.hasOwn(config,'taskLearning'),'runner_learning');
         validTaskLearningInput(e.learningInput,e.identity,config.taskLearning.feature);}
       same(e.identity,{...config.identity,attempt:state.attempt});need(e.version===1 && stageAllowed(e.kind,state.state,state.code,state.priorReview?.verdict),'runner_stage');
-      need(effectSlotFree(e.kind,state.cache,state.calls) && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
+      need(effectSlotFree(e.kind,state.cache,state.calls,developRecheckEffects,developmentRework,e.id,state,nativeCorrection,evidenceContinuation,providerRecovery) && !state.cache.some(c=>c.effect.id===e.id),'runner_cache');
+      if(providerRecovery&&e.kind==='review')providerRecovery.consumed=true;
+      if(evidenceContinuation&&e.kind==='review')evidenceContinuation.consumed=true;
+      if(nativeCorrection){if(e.kind==='develop')nativeCorrection.developConsumed=true;if(e.kind==='review'){nativeCorrection.reviewConsumed=true;if(nativeCorrection.reviewRetry)nativeCorrection.reviewRetry.consumed=true;if(nativeCorrection.transportReviewRetry)nativeCorrection.transportReviewRetry.consumed=true;if(nativeCorrection.materialReview)nativeCorrection.materialReview.consumed=true;if(nativeCorrection.materialContinuation)nativeCorrection.materialContinuation.consumed=true;if(nativeCorrection.materialTimeoutContinuation)nativeCorrection.materialTimeoutContinuation.consumed=true;}}
+      if(developmentRework){
+        if(e.kind==='develop')developmentRework.developerConsumed=true;
+        if(e.kind==='review'&&e.id===developmentRework.reviewEffectId)developmentRework.reviewConsumed=true;
+      }
       pending=e;beforeIntent=structuredClone(state);controls={};completeIntentDigest=e.kind==='complete'?r.digest:null;pendingDocumentation=null;documentationStop=null;
       invocation={registration:null,started:null,result:null};registrationRecord=null;startedRecord=null;resultRecord=null;
       joinedForInvocation=false;lastReview=null;
@@ -1325,8 +1637,8 @@ export function readRunnerHistory(raw,config,version=1) {
       resultRecord=r;
     } else if(version===3&&['review-invocation-receipt','review-invocation-reconciled'].includes(p.type)) {
       const bindingKeys=['effectId','invocationId','registeredDigest','startedDigest','resultDigest'];
-      shape(p,[...common,...bindingKeys,...(p.type==='review-invocation-receipt'?['receipt']:['receiptDigest','checkpoint'])]);
-      need((config.externalModels||config.executionPolicy)&&r.kind==='result'&&pending===null&&lastReview!==null
+      shape(p,[...common,...bindingKeys,...(p.type==='review-invocation-receipt'?['receipt',...(Object.hasOwn(p,'materialResultDigest')?['materialResultDigest']:[])]:['receiptDigest','checkpoint',...(Object.hasOwn(p,'packageRef')?['packageRef']:[])])]);
+      need((config.externalModels||config.executionPolicy||nativeCorrection?.materialReview||evidenceContinuation?.authorization)&&r.kind==='result'&&pending===null&&lastReview!==null
         &&(state.state==='unknown'&&lastReview.invocation.result.reconciliationRequired===true
           ||state.state==='pending_review'&&reviewTransportTimeout(lastReview.invocation.result))
         &&lastReview.invocation.result.inspection!==null&&lastReview.invocation.started!==null,
@@ -1334,6 +1646,11 @@ export function readRunnerHistory(raw,config,version=1) {
       same(Object.fromEntries(bindingKeys.map(key=>[key,p[key]])),reconciliationBinding());
       if(p.type==='review-invocation-receipt'){
         need(!lastReview.reconciliation,'review_reconciliation_duplicate');
+        if(!(config.externalModels||config.executionPolicy)){
+          hex(p.materialResultDigest);
+          need(lastReview.effect.id===(providerRecovery?.record.reviewEffectId??evidenceContinuation?.authorization?.reviewEffectId??nativeCorrection.materialTimeoutContinuation?.effectId??nativeCorrection.materialContinuation?.effectId??nativeCorrection.materialReview.effectId)
+            &&p.receipt.result?.status==='succeeded','review_reconciliation_unavailable');
+        }else need(!Object.hasOwn(p,'materialResultDigest'),'review_reconciliation_unavailable');
         const receipt=readReconciliationReceipt(p.receipt);
         prefix(lastReview.invocation.result.observation.events,receipt.events);
         const observation={version:1,kind:'cm-provider-review-observation',requestDigest:lastReview.request.requestDigest,
@@ -1347,19 +1664,22 @@ export function readRunnerHistory(raw,config,version=1) {
         lastReview.reconciliation={receiptDigest:r.digest,result};
       }else{
         need(lastReview.reconciliation?.receiptDigest===p.receiptDigest,'review_reconciliation_evidence_required');
-        state=checkpoint(lastReview.before,p.checkpoint,lastReview.effect,config,original,session,lastReview.controls,version,
-          state.taskCommit??null,{...lastReview.invocation,result:lastReview.reconciliation.result},supersession?.carriedReview??null);
+        if(Object.hasOwn(p,'packageRef'))need(packageMaterialEligible(config,version),'checkpoint_package_material_invalid');
+        const recovered=resolveCheckpointPackage(p,records.slice(0,index),lastReview.effect.identity);
+        state=checkpoint(lastReview.before,recovered,lastReview.effect,config,original,session,lastReview.controls,version,
+          state.taskCommit??null,{...lastReview.invocation,result:lastReview.reconciliation.result},supersession?.carriedReview??null,null,developRecheckEffects,developmentRework,taskContinuation,nativeCorrection,evidenceContinuation,providerRecovery);
         lastReview=null;
       }
     } else if(version===3&&p.type==='develop-retry-limit') {
       // Terminal: written instead of a develop intent when no delivery can still
       // be reviewed. Every field is recomputed from the replayed state.
       shape(p,[...common,'fromState','fromCode','countedCalls','countedEffects']);
-      const used=developBudget(state);
-      need(r.kind==='result'&&pending===null&&developBudgetExhausted(state)&&p.fromState===state.state
+      const used=developBudget(state,developRecheckEffects);
+      need(r.kind==='result'&&pending===null&&developBudgetExhausted(state,developRecheckEffects,developmentRework,nativeCorrection)&&p.fromState===state.state
         &&p.fromCode===state.code&&p.countedCalls===used.calls&&p.countedEffects===used.effects,'runner_retry_limit');
       state.state='blocked';state.code='develop_retry_limit';
-      state.reason=developRetryLimitReason(p);lastReview=null;
+      if(nativeCorrection){state.code='native_correction_exhausted';state.reason='native_correction_exhausted: 唯一补正开发已消费；保留原运行、原两次 blocked 与本次失败，不自动重派或增加审查。';}
+      else state.reason=developRetryLimitReason(p);lastReview=null;
     } else if(version===3&&p.type==='develop-answer-retry') {
       // Written by advance for a current-session answer the host rejected as
       // invalid; replay re-derives the whole condition from the journal.
@@ -1379,11 +1699,102 @@ export function readRunnerHistory(raw,config,version=1) {
       // Written by advance for a delivered develop whose later checks never got
       // a usable answer; everything is re-derived from the replayed journal.
       shape(p,[...common,'effectId','invocationId','code']);
-      const code=developRecheckCode(state,config,answerGaps.developRecheck);
+      const code=developRecheckCode(state,config,answerGaps.developRecheck,
+        developRecheckCancellationBinding(records.slice(0,index),state,config));
       need(r.kind==='result'&&pending===null&&state.state==='unknown'&&code!==null&&p.code===code
         &&p.effectId===state.cache.at(-1).effect.id&&p.invocationId===state.calls.at(-1).invocationId,'runner_develop_recheck');
       answerGaps.developRecheck++;
       state.state='blocked';state.code=code;state.reason=developRecheckReason(code,state.cache.at(-1).result.code,state.cache.at(-1).result.reason);lastReview=null;
+    } else if(version===3&&p.type==='scope-revised') {
+      shape(p,[...common,'fromDigest','effectId','failedCheckpointDigest','previousScopeDigest','baselineDigest','scope','files','reason','at',
+        ...(Object.hasOwn(p,'protectedSupplement')?['protectedSupplement']:[])]);
+      need(r.kind==='result'&&pending===null&&transaction===null&&p.fromDigest===records[index-1].digest,'scope_revision_unavailable');
+      need(!developBudgetExhausted(state,developRecheckEffects,developmentRework),'scope_revision_budget_exhausted');
+      const next=applyScopeRevision(state,config,original,p,scopeRevisions);
+      original=next.baseline;config={...config,scope:next.scope};scopeRevisions++;
+    } else if(version===3&&p.type==='scope-continued') {
+      shape(p,[...common,'fromDigest','effectId','failedCheckpointDigest','previousScopeDigest','baselineDigest',
+        'priorPackageDigest','priorReceiptDigest','scope','taskReviewOrigin','reason','at']);
+      need(r.kind==='result'&&pending===null&&transaction===null&&p.fromDigest===records[index-1].digest
+        &&taskContinuation===null,'task_continuation_unavailable');
+      const binding=taskContinuationBinding(state,config,scopeRevisions);
+      for(const key of Object.keys(binding))need(p[key]===binding[key],'task_continuation_source_changed');
+      need(p.baselineDigest===original.baselineDigest,'task_continuation_source_changed');
+      need(!developBudgetExhausted(state,developRecheckEffects,developmentRework),'scope_revision_budget_exhausted');
+      const scope=revisedScope(p.scope,config.scope);
+      need(typeof p.reason==='string'&&p.reason.trim().length>0&&Buffer.byteLength(p.reason)<=500
+        &&!/[\r\n\0]/.test(p.reason)&&typeof p.at==='string'&&new Date(p.at).toISOString()===p.at,'invalid_input');
+      const applied=applyTaskReviewOrigin({original,scope,record:p.taskReviewOrigin,config,state});
+      taskContinuation={...applied,origin:p.taskReviewOrigin,previousScope:config.scope};
+      config={...config,scope};scopeRevisions++;
+    } else if(version===3&&p.type==='development-rework-authorized') {
+      shape(p,[...common,'fromDigest','effectId','failedCheckpointDigest','limitDigest','deliveryDigest','packageDigest',
+        'receiptDigest','baselineDigest','scopeDigest','configDigest','developerEffectId','reviewEffectId',
+        'effectCredit','sourceDigest','reason','at']);
+      need(r.kind==='result'&&pending===null&&transaction===null,'development_rework_unavailable');
+      state=applyDevelopmentRework(records.slice(0,index),state,config,original,p,developRecheckEffects,developmentRework,taskContinuation,nativeCorrection,evidenceContinuation,providerRecovery);
+      developmentRework={developerEffectId:p.developerEffectId,reviewEffectId:p.reviewEffectId,sourceDigest:p.sourceDigest,
+        authorizationDigest:r.digest,developerConsumed:false,reviewConsumed:false};lastReview=null;
+    } else if(version===3&&p.type==='review-evidence-recovered') {
+      shape(p,[...common,'fromDigest','effectId','failedCheckpointDigest','packageDigest','receiptDigest','configDigest',
+        'countedCalls','countedEffects','fromAttempt','toAttempt','reason','at','nativeEvidence']);
+      need(r.kind==='result'&&pending===null&&transaction===null&&p.fromDigest===records[index-1].digest,'native_review_recovery_unavailable');
+      state=applyNativeReviewRecovery(state,config,p,nativeReviewRecovery,developRecheckEffects);
+      nativeReviewRecovery=p;lastReview=null;
+    } else if(version===3&&['native-review-retry-authorized','native-review-transport-retry-authorized'].includes(p.type)) {
+      const transport=p.type==='native-review-transport-retry-authorized';
+      shape(p,[...common,'fromDigest','effectId','failedCheckpointDigest','packageDigest','invocationId','resultDigest',
+       'correctionDigest','configDigest','baselineDigest','scopeDigest','callCount','retryEffectId','reason','at',...(transport?['priorRetryDigest']:[])]);
+      need(r.kind==='result'&&pending===null&&transaction===null&&p.fromDigest===records[index-1].digest,'native_review_retry_unavailable');
+      state=applyNativeReviewRetry(state,config,original,nativeCorrection,p,transport);
+      nativeCorrection={...nativeCorrection,[transport?'transportReviewRetry':'reviewRetry']:{recordDigest:r.digest,effectId:p.retryEffectId,consumed:false}};
+    } else if(version===3&&['material-review-continuation-authorized','material-review-timeout-continuation-authorized'].includes(p.type)) {
+      const timeout=p.type==='material-review-timeout-continuation-authorized';
+      shape(p,[...common,'fromDigest','source','failedCheckpointDigest','failedResultDigest','configDigest','baselineDigest',
+        'scopeDigest','materialGrantDigest','reviewEffectId','oldInvocationStopped','reason','at',...(timeout?['priorContinuationDigest']:[])]);
+      need(r.kind==='result'&&pending===null&&transaction===null&&p.fromDigest===records[index-1].digest,'material_continuation_unavailable');
+      state=applyMaterialContinuation(records.slice(0,index),state,config,original,nativeCorrection,p,timeout);
+      nativeCorrection={...nativeCorrection,[timeout?'materialTimeoutContinuation':'materialContinuation']:{recordDigest:r.digest,effectId:p.reviewEffectId,consumed:false}};
+      lastReview=null;
+    } else if(version===3&&p.type==='review-evidence-registered') {
+      shape(p,[...common,'fromDigest','source','request','requestDigest','retainedEvidence','reviewPackage','at']);
+      need(r.kind==='result'&&pending===null&&transaction===null,'evidence_continuation_unavailable');
+      evidenceContinuation={...applyEvidenceRegistration(records.slice(0,index),state,config,original,nativeCorrection,p,evidenceContinuation),recordDigest:r.digest};
+    } else if(version===3&&p.type==='review-provider-recovery-authorized') {
+      shape(p,[...common,'fromDigest','request','requestDigest','reviewEffectId','at']);
+      need(r.kind==='result'&&pending===null&&transaction===null,'provider_recovery_unavailable');
+      const before=state;
+      state=applyProviderRecovery(records.slice(0,index),state,config,original,nativeCorrection,evidenceContinuation,providerRecovery,p);
+      providerRecovery={record:p,recordDigest:r.digest,consumed:false,callsAtGrant:before.calls.length,
+        effectsAtGrant:before.cache.filter(c=>c.effect.kind!=='complete').length,receiptsAtGrant:before.receipts.length};lastReview=null;
+    } else if(version===3&&p.type==='review-evidence-authorized') {
+      shape(p,[...common,'fromDigest','registrationDigest','request','requestDigest','reviewEffectId','at']);
+      need(r.kind==='result'&&pending===null&&transaction===null,'evidence_review_unavailable');
+      state=applyEvidenceAuthorization(records.slice(0,index),state,config,original,evidenceContinuation,p);
+      evidenceContinuation={...evidenceContinuation,authorization:p,authorizationDigest:r.digest};lastReview=null;
+    } else if(version===3&&p.type==='native-material-review-authorized') {
+      shape(p,[...common,'fromDigest','effectId','checkpointDigest','packageDigest','receiptDigest','invocationId',
+        'correctionDigest','technicalRetryDigest','transportRetryDigest','configDigest','baselineDigest','scopeDigest',
+        'callCount','reviewEffectId','sourceDigest','retainedEvidence','reviewPackage','nativeEvidence','reason','at']);
+      need(r.kind==='result'&&pending===null&&transaction===null&&p.fromDigest===records[index-1].digest,'native_material_review_unavailable');
+      state=applyNativeMaterialReview(state,config,original,nativeCorrection,p);
+      nativeCorrection={...nativeCorrection,materialReview:{recordDigest:r.digest,effectId:p.reviewEffectId,consumed:false,nativeEvidence:p.nativeEvidence}};
+      lastReview=null;
+    } else if(version===3&&p.type==='native-correction-authorized') {
+      shape(p,[...common,'correctionVersion','epoch','fromDigest','effectId','failedCheckpointDigest','packageDigest','receiptDigest',
+        'configDigest','baselineDigest','scopeDigest','countedCalls','countedEffects','callLimit','effectLimit',
+        'retainedEvidence','sourceDigest','nativeEvidence','reason','at',
+        ...['scope','files','protectedSupplement'].filter(key=>Object.hasOwn(p,key))]);
+      need(r.kind==='result'&&pending===null&&transaction===null&&p.fromDigest===records[index-1].digest,'native_correction_unavailable');
+      const callsAtGrant=state.calls.length,cacheAtGrant=state.cache.length;
+      state=applyNativeCorrection(state,config,original,p,nativeCorrection,nativeReviewRecovery,developRecheckEffects);
+      const previousBaseline=original,corrected=applyNativeCorrectionScope(config,original,p);original=corrected.baseline;config={...config,scope:corrected.scope};
+      nativeCorrection={...p,...(Object.hasOwn(p,'scope')?{previousBaseline}:{}),recordDigest:r.digest,callsAtGrant,cacheAtGrant,developConsumed:false,reviewConsumed:false};lastReview=null;
+    } else if(version===3&&p.type==='completion-rework-requested') {
+      shape(p,[...common,'effectId','failedCheckpointDigest','packageDigest','receiptDigest','artifactDigest','handoffDigest',
+        'fromAttempt','toAttempt','reason','at']);
+      need(r.kind==='result'&&pending===null,'completion_rework_unavailable');
+      state=applyCompletionRework(state,config,p);lastReview=null;
     } else if(version===3&&p.type==='develop-answer-redo') {
       // The operator confirmed the session stopped writing (R3); the redo itself
       // is the next develop intent. Re-derived from the journal, never the disk.
@@ -1463,6 +1874,18 @@ export function readRunnerHistory(raw,config,version=1) {
         &&p.effectId===state.cache.at(-1).effect.id&&p.source===state.code,'runner_complete_recheck');
       answerGaps.completeRecheck++;
       state.state='blocked';state.code=COMPLETE_RECHECK_CODE;state.reason=completeRecheckReason(p.source);lastReview=null;
+    } else if(version===3&&p.type==='reviewer-switched') {
+      const {version:recordVersion,protocol,type,...record}=p;
+      need(r.kind==='result','reviewer_switch_unavailable');
+      const prefix={version:1,identity:{repositoryId:config.identity.repositoryId,runId:config.identity.runId},
+        fingerprints:completion.fingerprints,records:records.slice(0,index)};
+      reviewerSwitch=readReviewerSwitch(record,{config,state,pending,transaction,reviewer:config.reviewers[0],
+        redispatches:roundRedispatches(),maxRedispatches:MAX_REVIEW_REDISPATCHES,
+        switches:reviewerSwitch===null?0:1,lastDigest:records[index-1].digest,
+        sourceRevision:digest(prefix),hostContextId:config.excludedContexts[0]});
+      answerGaps.reviewRedispatch[state.attempt]++;
+      config={...config,reviewers:[effectiveReviewer(config.reviewers[0],reviewerSwitch)]};
+      state.state='pending_review';state.code='review_provider_failed';state.reason=null;lastReview=null;
     } else if(version===3&&p.type==='review-redispatch') {
       // V5 (A34): written by abandon_review from this round's spent retryable
       // review block while the round has a no-result redispatch left: the
@@ -1649,9 +2072,16 @@ export function readRunnerHistory(raw,config,version=1) {
       state.state='cancelled';state.code='effect_abandoned';state.reason=p.reason;state.sequence++;
       pending=null;beforeIntent=null;
     } else if(p.type==='effect-checkpoint') {
-      shape(p,[...common,'effectId','checkpoint']);need(r.kind==='result' && pending && p.effectId===pending.id,'runner_checkpoint');
-      state=checkpoint(beforeIntent,p.checkpoint,pending,config,original,session,controls,version,state.taskCommit??null,invocation,
-        supersession?.carriedReview??null,pendingDocumentation);pendingDocumentation=null;
+      shape(p,[...common,'effectId','checkpoint',...['packageMaterial','packageRef'].filter(key=>Object.hasOwn(p,key))]);
+      need(r.kind==='result' && pending && p.effectId===pending.id,'runner_checkpoint');
+      const material=Object.hasOwn(p,'packageMaterial'),reference=Object.hasOwn(p,'packageRef');
+      if(material||reference)need(packageMaterialEligible(config,version),'checkpoint_package_material_invalid');
+      if(material)need(pending.kind==='develop'&&p.checkpoint.state==='awaiting_review','checkpoint_package_material_invalid');
+      const checkpointValue=resolveCheckpointPackage(p,records.slice(0,index),pending.identity);
+      state=checkpoint(beforeIntent,checkpointValue,pending,config,original,session,controls,version,state.taskCommit??null,invocation,
+        supersession?.carriedReview??null,pendingDocumentation,developRecheckEffects,developmentRework,taskContinuation,nativeCorrection,evidenceContinuation,providerRecovery);pendingDocumentation=null;
+      if(version===3&&pending.kind==='develop'&&beforeIntent.state==='blocked'&&RECHECK_CODES.includes(beforeIntent.code))
+        developRecheckEffects.push(pending.id);
       lastReview=version===3&&pending.kind==='review'&&invocation.result?{effect:pending,request:invocation.registration.request,
         registrationRecord,startedRecord,resultRecord,before:beforeIntent,controls,invocation}:null;
       if(pending.kind==='develop'&&pendingWorker?.journal)workers[pending.id]=workerSummary(pendingWorker);
@@ -1663,8 +2093,8 @@ export function readRunnerHistory(raw,config,version=1) {
         need(r.kind==='commit-intent'&&transaction===null
           &&(beforeIntent.state==='approved'||beforeIntent.state==='blocked'
             &&['completion_checks_changed','completion_package_changed','review_package_changed',COMPLETE_RECHECK_CODE].includes(beforeIntent.code)),'runner_commit');
-        const c=readCommitIntent(p.commit,{owner:completion.owner,identity:pending.identity,fingerprints:completion.fingerprints});
-        const base=attemptBaseline(original,pending.identity.attempt),s=beforeIntent;
+        const c=readCommitIntent(p.commit,{owner:completion.owner,identity:pending.identity,fingerprints:completion.fingerprints,nativeCorrection});
+        const base=attemptBaseline(original,pending.identity.attempt,taskContinuation),s=beforeIntent;
         checkCompletion({receipt:s.receipt,registered:s.receipts.find(x=>x.id===s.receipt?.id),
           execution:s.calls.find(x=>x.invocationId===s.receipt?.id),reviewPackage:s.reviewPackage,identity:pending.identity});
         same(c.proof,{root:config.root,baselineDigest:base.baselineDigest,packageDigest:s.reviewPackage.packageDigest,
@@ -1678,13 +2108,27 @@ export function readRunnerHistory(raw,config,version=1) {
         readCommitResult(p.commit,{intentDigest:transaction.intentRecord.digest,planDigest:state.taskCommit.planDigest});
         transaction.resultRecord=r;state.taskCommit={...state.taskCommit,resultDigest:r.digest,outcome:'fixture_committed'};
       }
+    } else if(version===3&&p.type==='qa-executor-attached') {
+      shape(p,[...common,'record']);need(r.kind==='result'&&!qaAttachment&&!qaRevision,'qa_executor_attachment_conflict');
+      need(!controls.cancelled&&!controls.workflowError&&!state.cancelAfterCommit&&!state.workflowError,
+        'qa_executor_attachment_unavailable');
+      const sourceRevision=digest({version:1,identity:{repositoryId:config.identity.repositoryId,runId:config.identity.runId},
+        fingerprints:completion.fingerprints,records:records.slice(0,index)});
+      qaExecutorAttachment=validateQaExecutorAttachment(p.record,{fingerprints:completion.fingerprints,
+        identity:{...config.identity,attempt:state.attempt},packageDigest:state.reviewPackage?.packageDigest??null,
+        taskCommitDigest:state.taskCommit?.resultDigest??null,state:state.state,code:state.code,pending,
+        previous:qaExecutorAttachment,sourceRevision,controlPolicy:config.controlPolicy??null});
+      need(config.excludedContexts.length===1&&config.excludedContexts[0]===qaExecutorAttachment.hostContextId,
+        'qa_executor_attachment_mismatch');
     } else if(version===3&&p.type==='qa-attached') {
       shape(p,[...common,'record']);
+      need(!qaExecutorAttachment,'qa_executor_attachment_conflict');
       need(r.kind==='result'&&pending===null&&state.state==='fixture_completed','qa_attach_not_completed');
       need(qaRevision===null,'qa_revision_chain_invalid');
       need(qaAttachment===null,'qa_attachment_duplicate');qaAttachment=readQaAttachment(p.record);
     } else if(version===3&&p.type==='qa-config-revised') {
       shape(p,[...common,'record']);
+      need(!qaExecutorAttachment,'qa_executor_attachment_conflict');
       need(r.kind==='result'&&pending===null,'qa_revision_not_completed');
       const revision=readQaConfigRevision(p.record);
       // Before any QA round the revision may precede N5; it still never lands
@@ -1701,13 +2145,16 @@ export function readRunnerHistory(raw,config,version=1) {
     } else if(version===3&&p.type==='qa-fix-accepted') {
       shape(p,[...common,'record']);need(r.kind==='result'&&pending===null&&state.state==='fixture_completed','fix_parent_not_completed');
       acceptedFixes.push(validateAcceptedFix({record:p.record,previous:acceptedFixes,
-        baseline:attemptBaseline(original,state.attempt),parentPackage:state.reviewPackage,feature:config.taskLearning?.feature}));
+        baseline:attemptBaseline(original,state.attempt,taskContinuation),parentPackage:state.reviewPackage,feature:config.taskLearning?.feature}));
     } else if(p.type==='control') {
       shape(p,[...common,'event']);need(r.kind==='cancel' && ++controlCount<=16,'runner_control');
       if(p.event==='late-cancel')need(state.state==='fixture_completed' || pending?.kind==='complete','runner_control');
       if(p.event==='cancel')need(state.state!=='fixture_completed','runner_control');
       if(version>=2&&p.event==='cancel')need(transaction===null,'runner_control');
-      const next=controlledState(state,p.event,pending!==null,version);need(digest(next)!==digest(state),'runner_control');state=next;
+      const reworkPending=developmentRework?.developerConsumed===true&&pending?.kind==='develop'
+        &&pending.id===developmentRework.developerEffectId&&beforeIntent.state==='blocked'
+        &&beforeIntent.code==='develop_checks_not_passed';
+      const next=controlledState(state,p.event,pending!==null,version,reworkPending);need(digest(next)!==digest(state),'runner_control');state=next;
       if(pending){if(p.event==='cancel')controls.cancelled=true;if(p.event==='late-cancel')controls.cancelAfterCommit=true;
         if(p.event==='workflow-error')controls.workflowError='workflow_error';}
     } else need(false,'runner_record');
@@ -1731,7 +2178,8 @@ export function readRunnerHistory(raw,config,version=1) {
   const interruptLimit=pending!==null&&!interruptible
     &&interrupted.filter(item=>item.kind===pending.kind).length>=MAX_EFFECT_INTERRUPTIONS;
   const workerVoidable=pending!==null&&pendingWorkerVoidable(pending,lastIntentIndex,records.length);
-  return {original,session,state,pending,acceptedFixes,qaAttachment,answerGaps,
+  return {original,taskContinuation,reviewerSwitch,nativeReviewRecovery,nativeCorrection,evidenceContinuation,providerRecovery,effectiveScope:config.scope,scopeRevisions,session,state,pending,acceptedFixes,qaAttachment,qaExecutorAttachment,answerGaps,
+    developmentRework,developRecheckEffects,developRecheckRecovery:pending===null?developRecheckCancellationBinding(records,state,config):null,
     ...(version===3?{joinedHosts,reviewerThreads,supersession,pendingAbandonable,reviewResultAbandon,
       interrupted,workers,pendingInterruptible:interruptible,pendingReviewExhausted:pendingReviewExhausted(),
       pendingResultAbandonable:pending!==null&&pendingResultAbandonable(),
@@ -1740,7 +2188,24 @@ export function readRunnerHistory(raw,config,version=1) {
       pendingDocumentation:documentationOrigin(),
       reviewReconciliation:lastReview?.reconciliation&&['unknown','pending_review'].includes(state.state)?{...reconciliationBinding(),
         ...lastReview.reconciliation,request:lastReview.request,effect:lastReview.effect,before:lastReview.before}:null,
+      materialReviewResult:(nativeCorrection?.materialReview||evidenceContinuation?.authorization)&&!(config.externalModels||config.executionPolicy)
+        &&!state.cancellationRequested&&!state.cancelAfterCommit&&!state.workflowError&&!controls.cancelled&&!controls.workflowError
+        &&['unknown','pending_review'].includes(state.state)
+        ?pending?.kind==='review'&&invocation.registration&&invocation.started&&!invocation.result
+          ?{pending:true,request:invocation.registration.request,effect:pending,registration:invocation.registration.record,started:invocation.started}
+          :pending===null&&lastReview&&lastReview.invocation.result.reconciliationRequired===true
+            ?{pending:false,request:lastReview.request,effect:lastReview.effect,registration:lastReview.invocation.registration,
+              started:lastReview.invocation.started,binding:reconciliationBinding()}:null
+        :null,
       pendingObservedReview:pending?.kind==='review'&&invocation.result?.outcome==='observed'
+        &&!state.cancellationRequested&&!controls.cancelled&&!controls.workflowError
+        ?{request:invocation.registration.request,registration:invocation.registration.record,
+          started:invocation.started,result:invocation.result}:null,
+      // Finish only an already validated, process-closed failure of the original
+      // correction effect. No retry/grant/verdict is generated by this view.
+      pendingFailedReview:nativeCorrection?.reviewConsumed===true&&pending?.kind==='review'
+        &&reviewerFailure(invocation.result)&&invocation.started!==null
+        &&!controls.cancelled&&!controls.workflowError&&!transaction
         ?{request:invocation.registration.request,registration:invocation.registration.record,
           started:invocation.started,result:invocation.result}:null}:{}),
     ...(version>=2?{transaction}:{})};
@@ -1759,7 +2224,7 @@ const gapLimitReason=(code,what,source)=>`${code}: ${what}（原记录 ${source}
 export function answerGapLimit(s,config,gaps={}){
   if(!['unknown','blocked'].includes(s.state))return null;
   const source=`${s.state}/${s.code}`;
-  if(s.state==='unknown'&&(gaps.developRecheck??0)>=MAX_ANSWER_GAP_RETRIES&&developRecheckCode(s,config,0)!==null)
+  if(s.state==='unknown'&&(gaps.developRecheck??0)>=MAX_ANSWER_GAP_RETRIES&&developRecheckCode(s,config,0,gaps.developRecheckRecovery)!==null)
     return {code:'check_answer_retry_limit',reason:gapLimitReason('check_answer_retry_limit','开发后的检查或验证预检重跑',source)};
   if(s.state==='unknown'&&(gaps.completeRecheck??0)>=MAX_ANSWER_GAP_RETRIES&&completeRecheckable(s,0))
     return {code:'complete_recheck_limit',reason:gapLimitReason('complete_recheck_limit','完成前复查重跑',source)};
@@ -1778,8 +2243,10 @@ export function answerGapLimit(s,config,gaps={}){
 // missing one ends a real redo in host_close. Exits that need an operator
 // confirmation first (develop_redo) are not projected as retryable.
 export function projectedRunnerStatus(history,config){
-  const s=history.state,gaps=history.answerGaps??{};
+  const s=history.state,gaps={...history.answerGaps,developRecheckRecovery:history.developRecheckRecovery};
   const project=code=>({...s,state:'blocked',code});
+  if(providerRecoveryExhausted(s,history.providerRecovery))return project('provider_review_recovery_exhausted');
+  if(nativeCorrectionReviewExhausted(s,history.nativeCorrection))return project('native_correction_exhausted');
   if(s.state==='blocked'&&s.code==='failed'&&developAnswerRetryable(s,config.bootstrap))return project('develop_answer_invalid');
   if(s.state==='blocked'&&s.code==='failed'){const limit=answerGapLimit(s,config,gaps);
     return limit?{...s,state:'blocked',code:limit.code,reason:limit.reason}:s;}
@@ -1792,7 +2259,7 @@ export function projectedRunnerStatus(history,config){
     if(reviewRedispatchExhausted(s,contextId,records))return {...s,code:REVIEW_REDISPATCH_LIMIT_CODE,reason:reviewRedispatchLimitReason(s.code)};
   }
   if(s.state!=='unknown')return s;
-  const recheck=developRecheckCode(s,config,gaps.developRecheck??0);
+  const recheck=developRecheckCode(s,config,gaps.developRecheck??0,history.developRecheckRecovery);
   if(recheck!==null)return project(recheck);
   if(completeRecheckable(s,gaps.completeRecheck??0))return project(COMPLETE_RECHECK_CODE);
   // Q16/Q17: a failed documentation_sync needs the operator's stop

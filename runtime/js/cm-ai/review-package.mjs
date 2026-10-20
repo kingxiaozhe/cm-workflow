@@ -1,17 +1,39 @@
+import {readRuleAcceptance,assertAcceptedRuleFiles} from './rule-acceptance.mjs';
 // S2a offline content binding only. No reviewer authentication or task writes.
 // Trusted fixture hosts only: callers own authorization and a quiescent root.
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
+import {gzipSync,gunzipSync} from 'node:zlib';
 import {spawnSync} from 'node:child_process';
 import { digest } from './contracts.mjs';
 import {captureSpecificationMaterial,readSpecificationMaterial,verifySpecificationMaterial} from './specification-material.mjs';
 import {resolveCodeProjects,validateCodeProjectPaths,
   codeProjectInstructionPaths,assertCodeProjectSelections} from './code-projects.mjs';
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
+import {readBinaryAssetBinding,binaryAssetRecord,captureBinaryAsset,binaryAssetStoreRoot} from './binary-assets.mjs';
+
+import {validateEvidenceSupplement} from './valid-review-evidence-continuation.mjs';
+import {validateNativeEvidenceCheck,nativeEvidenceImagePaths} from './native-review-evidence.mjs';
 
 const FILE_LIMIT=1024*1024, SNAPSHOT_LIMIT=2*1024*1024, FILE_COUNT=256;
+const TEXT_COMPRESSION_MIN=64*1024,CONTINUATION_COMPRESSION_MIN=1024;
+const hasTextMaterial=f=>Object.hasOwn(f,'contentBase64')||Object.hasOwn(f,'contentGzipBase64');
+const materialMetadata=({contentBase64,contentGzipBase64,...metadata})=>metadata;
+const exactUtf8=bytes=>{
+  try{return Buffer.from(new TextDecoder('utf8',{fatal:true}).decode(bytes)).equals(bytes);}
+  catch{return false;}
+};
+// New scope material may compress large text. Existing capture APIs keep their
+// original inline encoding; raw-byte limits and exact SHA never change.
+function textContent(bytes,compress=false,minimum=TEXT_COMPRESSION_MIN){
+  if(compress&&bytes.length>=minimum&&exactUtf8(bytes)){
+    const compressed=gzipSync(bytes);
+    if(compressed.length<bytes.length)return {contentGzipBase64:compressed.toString('base64')};
+  }
+  return {contentBase64:bytes.toString('base64')};
+}
 // Read-only view for callers that must refuse an oversized delivery before it is written.
 export const REVIEW_MATERIAL_LIMITS=Object.freeze({file:FILE_LIMIT,total:SNAPSHOT_LIMIT,count:FILE_COUNT});
 // Inventory budgets bound scanning, independently of the much smaller review body.
@@ -280,7 +302,7 @@ function rootPath(root) {
   catch(error) { if(error.code==='unsupported_file')throw error; fail('read_failed'); }
 }
 const statKey = s => [s.dev,s.ino,s.mode,s.nlink,s.size,s.mtimeNs,s.ctimeNs].join(':');
-function readFile(root,p,includeContent=true,limit=FILE_LIMIT,contentLimit=limit) {
+function readFile(root,p,includeContent=true,limit=FILE_LIMIT,contentLimit=limit,compress=false) {
   let fd;
   try {
     const abs=path.join(root,p),before=fs.lstatSync(abs,{bigint:true});
@@ -302,7 +324,7 @@ function readFile(root,p,includeContent=true,limit=FILE_LIMIT,contentLimit=limit
     need(statKey(before)===statKey(after) && statKey(before)===statKey(last)
       && offset===Number(before.size),'snapshot_changed');
     return {path:p,type:'file',mode:Number(before.mode & 0o7777n),size:offset,
-      sha256:hash.digest('hex'),...(includeContent?{contentBase64:Buffer.concat(chunks).toString('base64')}:{})};
+      sha256:hash.digest('hex'),...(includeContent?textContent(Buffer.concat(chunks),compress&&contentLimit>=offset,typeof compress==='number'?compress:TEXT_COMPRESSION_MIN):{})};
   } catch(error) {
     if(['unsupported_file','limit_exceeded','snapshot_changed'].includes(error.code))throw diagnostic(error.code,p,
       error.code==='limit_exceeded'?`file bytes > ${limit}`:'');
@@ -316,7 +338,7 @@ export function reviewSpecsPath(root,specsRoot) {
   need(root!==specsRoot&&!root.startsWith(specsRoot+path.sep),'overlapping_roots');
   return specsRoot.startsWith(root+path.sep)?filePath(path.relative(root,specsRoot).split(path.sep).join('/')):null;
 }
-function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selected=null,policy=null,inventoryOnly=false) {
+function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selected=null,policy=null,inventoryOnly=false,binaryAssets=null,compressedPaths=new Set(),compactText=false) {
   if(specsPath!==null){
     const target=path.join(root,specsPath);
     need(fs.realpathSync(target)===target&&fs.lstatSync(target).isDirectory(),'unsupported_path');
@@ -325,17 +347,19 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
   function add(p,s){
     if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1)throw diagnostic('unsupported_file',p);
     const includeContent=!inventoryOnly&&(selected===null||materialPath(p,selected));
+    const binary=includeContent&&binaryAssets?.paths.includes(p);
     const countLimit=selected===null&&!inventoryOnly?FILE_COUNT:INVENTORY_COUNT;
     const byteLimit=selected===null&&!inventoryOnly?SNAPSHOT_LIMIT:INVENTORY_LIMIT;
     if(files.length>=countLimit)throw diagnostic('limit_exceeded',p,`file count > ${countLimit}`);
     if(total+s.size>byteLimit)throw diagnostic('limit_exceeded',p,`inventory bytes > ${byteLimit}`);
     if(includeContent&&materialCount>=FILE_COUNT)
       throw diagnostic('limit_exceeded',p,`material file count > ${FILE_COUNT}`);
-    if(includeContent&&materialBytes+s.size>SNAPSHOT_LIMIT)
+    if(includeContent&&!binary&&materialBytes+s.size>SNAPSHOT_LIMIT)
       throw diagnostic('limit_exceeded',p,`material bytes ${materialBytes}+${s.size} > ${SNAPSHOT_LIMIT}; scope, requirements and AGENTS.md content count`);
-    const f=readFile(root,p,includeContent,includeContent?Math.min(FILE_LIMIT,SNAPSHOT_LIMIT-materialBytes):byteLimit-total);
+    const f=binary?captureBinaryAsset({root,path:p,binding:binaryAssets})
+      :readFile(root,p,includeContent,includeContent?Math.min(FILE_LIMIT,SNAPSHOT_LIMIT-materialBytes):byteLimit-total,FILE_LIMIT,compressedPaths.has(p)&&(compactText?CONTINUATION_COMPRESSION_MIN:true));
     total+=f.size;
-    if(includeContent){materialBytes+=f.size;materialCount++;}
+    if(includeContent){if(!binary)materialBytes+=f.size;materialCount++;}
     files.push(f);
   }
   function retainIgnoredInstructions(dir,depth=0){
@@ -412,14 +436,17 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
   }
   return files.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
 }
-export function captureReviewInventory(root,baseline){
+// Recovery source bindings opt into file type/mode; ordinary checks keep the
+// historical path/content-only projection. Both use the same guarded snapshot.
+export function captureReviewInventory(root,baseline,{withMode=false}={}){
   validBaseline(baseline);
   const stable=baseline.ignorePolicy?.version===2;
   const policy=stable?stableSnapshotPolicy(root,baseline.ignorePolicy)
     :Object.hasOwn(baseline,'ignorePolicy')?ignorePolicy(root):null;
   return snapshot(root,baseline.specsPath??null,baseline.codeProjectPaths??null,
     stable?[]:baseline.files.map(file=>file.path),new Set(),policy)
-    .map(file=>({path:file.path,sha256:file.sha256}));
+    .map(file=>withMode?({path:file.path,type:file.type,mode:file.mode,sha256:file.sha256})
+      :({path:file.path,sha256:file.sha256}));
 }
 // withMode also reports permission-only changes; the mode is part of a reviewed
 // file record. The default keeps the historical content-only comparison.
@@ -445,8 +472,8 @@ export function compareReviewBaseline(current,expected){
   const policy=stable?{ignored:new Set(useGit?[...current.ignorePolicy.ignoredPaths,...expected.ignorePolicy.ignoredPaths]:[]),
     ignoredDirectories:new Set(useGit?[...current.ignorePolicy.ignoredDirectories,...expected.ignorePolicy.ignoredDirectories]:[])}:null;
   const protectedPaths=new Set([...expected.scope,...expected.requirements]);
-  const before=new Map((stable?comparableFiles(expected.files,policy,protectedPaths):expected.files).map(file=>[file.path,digest(file)]));
-  const after=new Map((stable?comparableFiles(current.files,policy,protectedPaths):current.files).map(file=>[file.path,digest(file)]));
+  const before=new Map((stable?comparableFiles(expected.files,policy,protectedPaths):expected.files).map(file=>[file.path,digest(hasTextMaterial(file)?{...materialMetadata(file),contentSha256:sha(readReviewFileBytes(file))}:file)]));
+  const after=new Map((stable?comparableFiles(current.files,policy,protectedPaths):current.files).map(file=>[file.path,digest(hasTextMaterial(file)?{...materialMetadata(file),contentSha256:sha(readReviewFileBytes(file))}:file)]));
   const paths=[...new Set([...before.keys(),...after.keys()])].filter(p=>before.get(p)!==after.get(p)).sort();
   if(!stable&&digest(current.ignorePolicy??null)!==digest(expected.ignorePolicy??null))paths.push(...policyDifferencePaths(current.ignorePolicy,expected.ignorePolicy));
   if(stable){
@@ -465,7 +492,7 @@ const sealed = (data,key) => {
 };
 export function captureReviewBaseline(options,legacy=false,policyVersion=2,baselinePolicy=null) {
   const v=plain(options); keys(v,['root','identity','scope','requirements',
-    ...['specsRoot','codeProjectPaths','bootstrapRequirements','specification','version'].filter(key=>Object.hasOwn(v,key))]); identityCheck(v.identity);
+    ...['specsRoot','codeProjectPaths','bootstrapRequirements','specification','version','scopeRevisionPaths','binaryAssets'].filter(key=>Object.hasOwn(v,key))]); identityCheck(v.identity);
   const version=v.version??2;need([1,2].includes(version));
   const bootstrap=Object.hasOwn(v,'bootstrapRequirements')?v.bootstrapRequirements:null;
   if(bootstrap!==null){
@@ -480,6 +507,10 @@ export function captureReviewBaseline(options,legacy=false,policyVersion=2,basel
     specification=captureSpecificationMaterial({...v.specification,taskId:v.identity.taskId});
   }
   const scope=paths(v.scope), requirements=requirementPaths(v.requirements,bootstrap!==null||specification!==null),root=rootPath(v.root);
+  const binaryAssets=Object.hasOwn(v,'binaryAssets')?readBinaryAssetBinding(v.binaryAssets,v.identity):null;
+  if(binaryAssets){need(version===2&&Object.hasOwn(v,'specsRoot'),'invalid_baseline');
+    need(binaryAssets.paths.every(p=>scope.includes(p)&&!requirements.includes(p)),'invalid_baseline');
+    need(binaryAssets.storeRoot===binaryAssetStoreRoot({specsDir:v.specsRoot,identity:v.identity}),'invalid_baseline');}
   need(![...scope,...requirements].some(p=>inDependencyDirectory(p)||inCocoaPodsTree(root,p)),'excluded_snapshot_path');
   const projectPaths=Object.hasOwn(v,'codeProjectPaths')?validateCodeProjectPaths(v.codeProjectPaths):null;
   if(projectPaths!==null)resolveCodeProjects(v.root,projectPaths.map(prefix=>path.join(root,prefix)));
@@ -494,14 +525,15 @@ export function captureReviewBaseline(options,legacy=false,policyVersion=2,basel
   const policy=legacy||version===1?null:policyVersion===1?ignorePolicy(root)
     :stableIgnorePolicy(root,baselinePolicy?.mode==='builtin_limit');
   const snapshotPolicy=baselinePolicy===null?policy:stableSnapshotPolicy(root,baselinePolicy,policy);
-  const files=snapshot(root,specsPath,projectPaths,[],version===1?null:new Set([...scope,...requirements]),snapshotPolicy);
+  const files=snapshot(root,specsPath,projectPaths,[],version===1?null:new Set([...scope,...requirements]),snapshotPolicy,false,binaryAssets);
   need(requirements.every(p=>files.some(f=>f.path===p)),'read_failed');
   for(const p of scope) {
     const absolute=path.join(root,p);
     if(fs.existsSync(absolute)) need(fs.lstatSync(absolute).isFile(),'unsupported_file');
   }
   return sealed({version,kind:'cm-review-baseline',identity:v.identity,rootDigest:sha(root),
-    scope,requirements,files,...(specsPath===null?{}:{specsPath}),
+    scope,requirements,files,...(Object.hasOwn(v,'scopeRevisionPaths')?{scopeRevisionPaths:paths(v.scopeRevisionPaths)}:{}),...(specsPath===null?{}:{specsPath}),
+    ...(binaryAssets===null?{}:{binaryAssets}),
     ...(projectPaths===null?{}:{codeProjectPaths:projectPaths}),
     ...(bootstrap===null?{}:{bootstrapRequirements:bootstrap}),
     ...(specification===null?{}:{specification,specificationRoot:v.specification.specsRoot}),
@@ -515,6 +547,71 @@ export function readReviewSourceFiles(root,selected){
     sourceParent(real,p);
     const file=readFile(real,p);total+=file.size;need(total<=SNAPSHOT_LIMIT,'limit_exceeded');return file;
   });
+  return freeze(files);
+}
+export const readReviewScope=value=>paths(value);
+// The same frozen exclusions govern source capture and pure journal replay.
+// Pods can be missing from the creation inventory without a Git-ignore row;
+// this narrow recovery API never opens a parent directory named Pods.
+function scopeRevisionAdditions(b,scope){
+  need(b.version===2&&b.ignorePolicy?.version!==1,'scope_revision_unsupported_baseline');
+  const additions=paths(scope).filter(p=>!b.scope.includes(p));
+  const ignoredPaths=new Set((b.ignorePolicy?.ignoredPaths??[]).map(p=>p.toLowerCase()));
+  const ignoredDirectories=(b.ignorePolicy?.ignoredDirectories??[]).map(p=>p.toLowerCase());
+  for(const p of additions)need(!inDependencyDirectory(p)
+    &&!p.split('/').slice(0,-1).some(part=>part.toLowerCase()==='pods')
+    &&!p.split('/').some(part=>junkDirectories.has(part.toLowerCase()))&&!junkFile(p.split('/').at(-1))
+    &&!ignoredPaths.has(p.toLowerCase())
+    &&!ignoredDirectories.some(dir=>p.toLowerCase()===dir||p.toLowerCase().startsWith(dir+'/')),'excluded_snapshot_path');
+  return additions;
+}
+// Promote only newly approved sparse inventory entries to exact material.
+// Existing business material and the original inventory hashes are preserved.
+export const reviewScopeAdditions=(baseline,scope)=>scopeRevisionAdditions(readReviewBaseline(baseline),scope);
+export function extendReviewBaseline(raw,scope,files){
+  const b=readReviewBaseline(raw),desired=paths(scope);
+  const additions=scopeRevisionAdditions(b,desired);
+  need(b.scope.filter(p=>p!=='AGENTS.md').every(p=>desired.includes(p)),'scope_revision_shrink');
+  need(Array.isArray(files)&&files.length<=additions.length,'invalid_input');
+  const supplied=new Map();
+  for(const file of files){fileRecord(file);need(additions.includes(file.path)&&!supplied.has(file.path),'invalid_input');supplied.set(file.path,file);}
+  const inventory=new Map(b.files.map(file=>[file.path,file]));
+  const aliases=new Set(b.files.map(file=>file.path.toLowerCase()));
+  for(const p of additions){
+    const old=inventory.get(p),material=supplied.get(p);
+    need(old!==undefined||!aliases.has(p.toLowerCase()),'unsupported_path');
+    if(old){
+      need(material!==undefined,'scope_revision_source_missing');
+      const oldMeta=materialMetadata(old),newMeta=materialMetadata(material);
+      need(digest(oldMeta)===digest(newMeta),'scope_revision_source_changed');
+      inventory.set(p,material);
+    }else need(material===undefined,'scope_revision_source_changed');
+  }
+  const {baselineDigest,...data}=b;
+  return readReviewBaseline(sealed({...data,scope:[...new Set([...b.scope,...desired])].sort(),scopeRevisionPaths:[...new Set([...(b.scopeRevisionPaths??[]),...additions])].sort(),
+    files:[...inventory.values()].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)},'baselineDigest'));
+}
+// New paths must be absent now; existing additions must still match the
+// creation inventory. Every parent is checked before a no-follow file read.
+export function captureScopeRevisionSources(root,baseline,scope){
+  const b=readReviewBaseline(baseline),real=rootPath(root),files=[];
+  const additions=scopeRevisionAdditions(b,scope);
+  need(sha(real)===b.rootDigest,'invalid_baseline');
+  for(const p of additions){
+    let parent=real;
+    for(const part of p.split('/').slice(0,-1)){
+      parent=path.join(parent,part);
+      try{const stat=fs.lstatSync(parent);need(stat.isDirectory()&&!stat.isSymbolicLink()&&fs.realpathSync(parent)===parent,'unsupported_path');}
+      catch(error){if(error.code==='ENOENT')break;throw error;}
+    }
+    const old=b.files.find(file=>file.path===p);
+    if(old)files.push(readFile(real,p,true,FILE_LIMIT,FILE_LIMIT,true));
+    else{
+      try{fs.lstatSync(path.join(real,p));need(false,'scope_revision_source_changed');}
+      catch(error){if(error.code!=='ENOENT')throw error;}
+    }
+  }
+  extendReviewBaseline(b,scope,files);
   return freeze(files);
 }
 function sourceParent(root,p){
@@ -550,19 +647,40 @@ function requirementPaths(value,bootstrap){
   return bootstrap&&Array.isArray(value)&&value.length===0?[]:paths(value);
 }
 const hex = v => need(typeof v==='string' && /^[a-f0-9]{64}$/.test(v));
-function fileRecord(f) {
-  keys(f,['path','type','mode','size','sha256','contentBase64']); filePath(f.path);
+function fileRecord(f,binaryAssets=null) {
+  if(Object.hasOwn(f,'contentBlob')){need(binaryAssets!==null);binaryAssetRecord(f,binaryAssets);return;}
+  const compressed=Object.hasOwn(f,'contentGzipBase64'),field=compressed?'contentGzipBase64':'contentBase64';
+  keys(f,['path','type','mode','size','sha256',field]); filePath(f.path);
   need(f.type==='file' && Number.isInteger(f.mode) && f.mode>=0 && f.mode<=0o7777);
   need(Number.isInteger(f.size) && f.size>=0 && f.size<=FILE_LIMIT);
-  hex(f.sha256); need(typeof f.contentBase64==='string' && f.contentBase64.length<=Math.ceil(FILE_LIMIT/3)*4);
-  const bytes=Buffer.from(f.contentBase64,'base64');
-  need(bytes.toString('base64')===f.contentBase64 && bytes.length===f.size && sha(bytes)===f.sha256);
+  hex(f.sha256); const encoded=f[field];
+  need(typeof encoded==='string' && encoded.length<=Math.ceil(FILE_LIMIT/3)*4);
+  const stored=Buffer.from(encoded,'base64');need(stored.toString('base64')===encoded);
+  let bytes=stored;
+  if(compressed){
+    need(f.size>=CONTINUATION_COMPRESSION_MIN&&stored.length<f.size);
+    try{bytes=gunzipSync(stored,{maxOutputLength:Math.min(FILE_LIMIT,Math.max(1,f.size))});}
+    catch{fail('invalid_input');}
+    need(exactUtf8(bytes));
+  }
+  need(bytes.length===f.size && sha(bytes)===f.sha256);return bytes;
 }
-function fileList(files) {
+// Re-encode only a newly authorized derived snapshot, never historic records.
+// File size and SHA continue to describe the complete original bytes.
+export function compressedReviewSourceRecord(raw){
+  const bytes=readReviewFileBytes(raw),{contentBase64,contentGzipBase64,...metadata}=raw;
+  return freeze({...metadata,...textContent(bytes,true,CONTINUATION_COMPRESSION_MIN)});
+}
+// Strict and bounded: callers never interpret compressed transport as source text.
+export function readReviewFileBytes(raw){
+  const value=plain(raw);need(!Object.hasOwn(value,'contentBlob'));
+  return fileRecord(value);
+}
+function fileList(files,binaryAssets=null) {
   need(Array.isArray(files) && files.length>0 && files.length<=FILE_COUNT);
-  files.forEach(fileRecord);
+  files.forEach(f=>fileRecord(f,binaryAssets));
   const names=files.map(f=>f.path); need(digest(names)===digest(paths(names)));
-  need(files.reduce((sum,f)=>sum+f.size,0)<=SNAPSHOT_LIMIT,'limit_exceeded');
+  need(files.reduce((sum,f)=>sum+(Object.hasOwn(f,'contentBlob')?0:f.size),0)<=SNAPSHOT_LIMIT,'limit_exceeded');
 }
 // V2 keeps exact records for review material and digest-only records elsewhere.
 // V1 validation stays unchanged for existing journals and their fixed digests.
@@ -573,8 +691,8 @@ function inventoryList(b) {
   for(const f of files){
     // Legacy dependency records retain their original full bytes and drift checks.
     // Ordinary sparse inventory entries still reject unsolicited bodies.
-    const legacyDependency=!Object.hasOwn(b,'specification')&&inDependencyDirectory(f.path)&&Object.hasOwn(f,'contentBase64');
-    if(materialPath(f.path,selected)||legacyDependency){fileRecord(f);material.push(f);}
+    const legacyDependency=!Object.hasOwn(b,'specification')&&inDependencyDirectory(f.path)&&hasTextMaterial(f);
+    if(materialPath(f.path,selected)||legacyDependency){fileRecord(f,b.binaryAssets??null);material.push(f);}
     else{
       keys(f,['path','type','mode','size','sha256']);filePath(f.path);
       need(f.type==='file'&&Number.isInteger(f.mode)&&f.mode>=0&&f.mode<=0o7777);
@@ -584,7 +702,7 @@ function inventoryList(b) {
     need(!aliases.has(f.path.toLowerCase()));aliases.add(f.path.toLowerCase());
     total+=f.size;need(total<=INVENTORY_LIMIT);
   }
-  if(material.length)fileList(material);
+  if(material.length)fileList(material,b.binaryAssets??null);
   need(Buffer.byteLength(JSON.stringify(b))<=8*1024*1024,'limit_exceeded');
 }
 const bootstrapPaths=feature=>[`${feature}/design.md`,`${feature}/requirements.md`];
@@ -610,8 +728,11 @@ export function readReviewSourceRecords(raw){
 function validBaseline(b) {
   try {
     keys(b,['version','kind','identity','rootDigest','scope','requirements','files','baselineDigest',
-      ...['specsPath','codeProjectPaths','bootstrapRequirements','specification','specificationRoot','ignorePolicy'].filter(key=>Object.hasOwn(b,key))]);
+      ...['specsPath','codeProjectPaths','bootstrapRequirements','specification','specificationRoot','ignorePolicy','scopeRevisionPaths','binaryAssets','taskReviewOrigin'].filter(key=>Object.hasOwn(b,key))]);
     need([1,2].includes(b.version) && b.kind==='cm-review-baseline'); identityCheck(b.identity); hex(b.rootDigest);
+    if(Object.hasOwn(b,'binaryAssets')){const assets=readBinaryAssetBinding(b.binaryAssets,b.identity);need(b.version===2
+      &&assets.paths.every(p=>b.scope.includes(p)&&!b.requirements.includes(p)),'invalid_baseline');
+      for(const f of b.files)need(assets.paths.includes(f.path)===Object.hasOwn(f,'contentBlob'),'invalid_baseline');}
     if(Object.hasOwn(b,'ignorePolicy')){
       if(b.ignorePolicy.version===2)validateStablePolicy(b.ignorePolicy);
       else{
@@ -631,9 +752,21 @@ function validBaseline(b) {
     }
     const bootstrap=Object.hasOwn(b,'bootstrapRequirements');if(bootstrap)validBootstrapRequirements(b.bootstrapRequirements);
     need(digest(b.scope)===digest(paths(b.scope)) && digest(b.requirements)===digest(requirementPaths(b.requirements,bootstrap||Object.hasOwn(b,'specification'))));
+    if(Object.hasOwn(b,'scopeRevisionPaths')){
+      need(digest(b.scopeRevisionPaths)===digest(paths(b.scopeRevisionPaths))
+        &&b.scopeRevisionPaths.every(p=>b.scope.includes(p)),'invalid_baseline');
+    }
     if(b.version===2)inventoryList(b);
     else if(!bootstrap||b.files.length)fileList(b.files);else need(Array.isArray(b.files));
-    need(b.requirements.every(p=>b.files.some(f=>f.path===p)));
+    if(Object.hasOwn(b,'taskReviewOrigin')){
+      const o=b.taskReviewOrigin;keys(o,['version','commit','sourceBaselineDigest','originDigest','missingRequirements',...(Object.hasOwn(o,'ruleAcceptance')?['ruleAcceptance']:[])]);
+      if(Object.hasOwn(o,'ruleAcceptance')){const rules=readRuleAcceptance(o.ruleAcceptance);
+        need(rules.sourceBaselineDigest===o.sourceBaselineDigest&&rules.files.every(f=>b.scope.includes(f.path)),'invalid_baseline');}
+      need(o.version===1&&b.version===2&&b.identity.attempt===2&&typeof o.commit==='string'&&/^[a-f0-9]{40}$/.test(o.commit));
+      hex(o.sourceBaselineDigest);hex(o.originDigest);
+      const missing=b.requirements.filter(p=>!b.files.some(f=>f.path===p));
+      need(digest(o.missingRequirements)===digest(missing)&&missing.every(p=>b.scope.includes(p)));
+    }else need(b.requirements.every(p=>b.files.some(f=>f.path===p)));
     if(Object.hasOwn(b,'specsPath'))validateSpecsSelection(b.specsPath,[...b.scope,...b.requirements,...b.files.map(f=>f.path)]);
     if(Object.hasOwn(b,'codeProjectPaths')){
       need(digest(b.codeProjectPaths)===digest(validateCodeProjectPaths(b.codeProjectPaths)));
@@ -648,6 +781,7 @@ export function validChecks(checks) {
   need(Buffer.byteLength(JSON.stringify(checks))<=64*1024,'limit_exceeded');
   const ids=new Set();
   for(const c of checks) {
+    if(c.kind==='native-evidence'){validateNativeEvidenceCheck(c);need(!ids.has(c.id));ids.add(c.id);continue;}
     if(c.kind==='visual'){
       keys(c,['id','kind','outcome','evidence','before','after']);id(c.id);need(!ids.has(c.id));ids.add(c.id);
       need(['passed','failed','unavailable'].includes(c.outcome));
@@ -675,17 +809,24 @@ export function validChecks(checks) {
 // and material (scope, requirements, earlier material and every AGENTS.md).
 const packagePolicy=(root,b)=>b.ignorePolicy?.version===2?stableSnapshotPolicy(root,b.ignorePolicy)
   :Object.hasOwn(b,'ignorePolicy')?ignorePolicy(root):null;
+function preserveCompressedRecord(file,baseline){
+  const original=baseline.files.find(f=>f.path===file.path&&Object.hasOwn(f,'contentGzipBase64'));
+  return original&&digest(materialMetadata(original))===digest(materialMetadata(file))?original:file;
+}
 function packageSnapshot(root,b,policy){
   const selected=b.version===1?null:new Set([...b.scope,...b.requirements,
-    ...b.files.filter(f=>Object.hasOwn(f,'contentBase64')).map(f=>f.path)]);
-  return snapshot(root,b.specsPath??null,b.codeProjectPaths??null,b.ignorePolicy?.version===2?[]:b.files.map(f=>f.path),selected,policy);
+    ...b.files.filter(f=>hasTextMaterial(f)||Object.hasOwn(f,'contentBlob')).map(f=>f.path)]);
+  const compressedPaths=b.taskReviewOrigin?.ruleAcceptance?[...b.scope,...b.requirements]
+    :b.files.filter(f=>Object.hasOwn(f,'contentGzipBase64')).map(f=>f.path);
+  return snapshot(root,b.specsPath??null,b.codeProjectPaths??null,b.ignorePolicy?.version===2?[]:b.files.map(f=>f.path),selected,policy,false,b.binaryAssets??null,new Set(compressedPaths),Boolean(b.taskReviewOrigin?.ruleAcceptance))
+    .map(file=>preserveCompressedRecord(file,b));
 }
 // Read-only: path and size of every material body a package built from the
 // current tree would carry. Callers use it to refuse a delivery before writing it.
 export function reviewMaterialSizes(options){
   const v=plain(options);keys(v,['root','baseline']);const b=v.baseline;validBaseline(b);
   const root=rootPath(v.root);need(sha(root)===b.rootDigest,'invalid_baseline');
-  return freeze(packageSnapshot(root,b,packagePolicy(root,b)).filter(f=>Object.hasOwn(f,'contentBase64'))
+  return freeze(packageSnapshot(root,b,packagePolicy(root,b)).filter(hasTextMaterial)
     .map(f=>({path:f.path,size:f.size})));
 }
 // Validation, specification, policy and bootstrap material a package is built
@@ -705,6 +846,8 @@ function packageContext(v){
   return {b,root,stable,policy,specification,bootstrap};
 }
 function assemblePackage({b,stable,policy,specification,bootstrap},files,checks,handoff){
+  const ruleAcceptance=b.taskReviewOrigin?.ruleAcceptance??null;
+  if(ruleAcceptance)assertAcceptedRuleFiles(ruleAcceptance,files);
   const protectedPaths=new Set([...b.scope,...b.requirements]);
   const before=new Map((stable?comparableFiles(b.files,policy,protectedPaths):b.files).map(f=>[f.path,f]));
   const after=new Map(files.map(f=>[f.path,f]));
@@ -724,10 +867,12 @@ function assemblePackage({b,stable,policy,specification,bootstrap},files,checks,
   need(changes.length>0,'empty_changes');
   const changedPaths=new Set(changes.map(change=>change.path));
   const unchangedScope=b.scope.filter(p=>!changedPaths.has(p)&&after.has(p))
-    .map(p=>({path:p,sha256:after.get(p).sha256}));
+    .map(p=>b.scopeRevisionPaths?.includes(p)||Object.hasOwn(after.get(p),'contentBlob')?after.get(p):({path:p,sha256:after.get(p).sha256}));
   const requirements=b.requirements.map(p=>{ need(after.has(p),'read_failed'); return after.get(p); });
   const pkg=sealed({version:1,kind:'cm-review-package',identity:b.identity,rootDigest:b.rootDigest,
     baseIdentity:b.baselineDigest,scope:b.scope,changes,unchangedScope,requirements,checks,
+    ...(ruleAcceptance?{ruleAcceptance}:{}),
+    ...(Object.hasOwn(b,'binaryAssets')?{binaryAssets:b.binaryAssets}:{}),
     ...(Object.hasOwn(b,'codeProjectPaths')?{codeProjectPaths:b.codeProjectPaths,
       instructions:files.filter(file=>file.path.split('/').at(-1)==='AGENTS.md')}:{}),
     ...(bootstrap===null?{}:{bootstrapRequirements:bootstrap}),
@@ -753,11 +898,13 @@ export function projectedReviewPackage(options){
   const context=packageContext(v);need(Array.isArray(v.scopeFiles),'invalid_input');
   const files=new Map(packageSnapshot(context.root,context.b,context.policy).map(file=>[file.path,file]));
   for(const item of v.scopeFiles){
+    if(Object.hasOwn(item,'contentBlob')){fileRecord(item,context.b.binaryAssets??null);need(context.b.scope.includes(item.path),'out_of_scope');files.set(item.path,item);continue;}
     keys(item,['path','contentBase64','mode']);need(context.b.scope.includes(item.path),'out_of_scope');
     if(item.contentBase64===null){need(item.mode===null);files.delete(item.path);continue;}
     need(typeof item.contentBase64==='string'&&Number.isInteger(item.mode)&&item.mode>=0&&item.mode<=0o7777);
     const bytes=Buffer.from(item.contentBase64,'base64');need(bytes.toString('base64')===item.contentBase64);
-    files.set(item.path,{path:item.path,type:'file',mode:item.mode,size:bytes.length,sha256:sha(bytes),contentBase64:item.contentBase64});
+    files.set(item.path,preserveCompressedRecord({path:item.path,type:'file',mode:item.mode,size:bytes.length,sha256:sha(bytes),
+      ...textContent(bytes,Boolean(context.b.taskReviewOrigin?.ruleAcceptance)||context.b.files.some(f=>f.path===item.path&&Object.hasOwn(f,'contentGzipBase64')),context.b.taskReviewOrigin?.ruleAcceptance?CONTINUATION_COMPRESSION_MIN:TEXT_COMPRESSION_MIN)},context.b));
   }
   // A projected handoff ({name,contentBase64,mode}) takes the record shape the
   // package reads back from the published file.
@@ -780,7 +927,11 @@ function validPackage(p) {
       ...(Object.hasOwn(p,'handoff')?['handoff']:[]),
       ...(Object.hasOwn(p,'codeProjectPaths')?['codeProjectPaths','instructions']:[]),
       ...(Object.hasOwn(p,'bootstrapRequirements')?['bootstrapRequirements']:[]),
-      ...(Object.hasOwn(p,'ignorePolicy')?['ignorePolicy']:[])]);
+      ...(Object.hasOwn(p,'ignorePolicy')?['ignorePolicy']:[]),
+      ...(Object.hasOwn(p,'binaryAssets')?['binaryAssets']:[]),
+      ...(Object.hasOwn(p,'ruleAcceptance')?['ruleAcceptance']:[]),
+      ...(Object.hasOwn(p,'evidenceContinuation')?['evidenceContinuation']:[])]);
+    if(p.evidenceContinuation)validateEvidenceSupplement(p);
     if(Object.hasOwn(p,'ignorePolicy')){
       if(p.ignorePolicy.version===2)validateStablePolicy(p.ignorePolicy);
       else{
@@ -795,6 +946,8 @@ function validPackage(p) {
       fileRecord(p.handoff);need(!p.handoff.path.includes('/')&&p.handoff.size<=256*1024);
     }
     need(p.version===1 && p.kind==='cm-review-package'); identityCheck(p.identity);
+    if(Object.hasOwn(p,'binaryAssets')){const assets=readBinaryAssetBinding(p.binaryAssets,p.identity);
+      need(assets.paths.every(name=>p.scope.includes(name)&&!p.requirements.some(f=>f.path===name)),'invalid_package');}
     if(Object.hasOwn(p,'specification'))readSpecificationMaterial(p.specification,p.identity.taskId);
     [p.rootDigest,p.baseIdentity,p.artifactDigest,p.requirementsDigest,p.checksDigest,p.packageDigest].forEach(hex);
     need(digest(p.scope)===digest(paths(p.scope)));
@@ -803,7 +956,8 @@ function validPackage(p) {
     for(const change of p.changes) {
       keys(change,['path','before','after']); filePath(change.path); need(p.scope.includes(change.path));
       names.push(change.path); need(change.before!==null || change.after!==null);
-      for(const f of [change.before,change.after]) if(f!==null) { fileRecord(f); need(f.path===change.path); }
+      for(const f of [change.before,change.after]) if(f!==null) { fileRecord(f,p.binaryAssets??null); need(f.path===change.path);
+        need((p.binaryAssets?.paths.includes(f.path)??false)===Object.hasOwn(f,'contentBlob'),'invalid_package');}
       need(digest(change.before)!==digest(change.after));
     }
     need(digest(names)===digest(paths(names)));
@@ -815,7 +969,10 @@ function validPackage(p) {
     if(Object.hasOwn(p,'unchangedScope')){
       need(Array.isArray(p.unchangedScope)&&p.unchangedScope.length<=FILE_COUNT);
       for(const file of p.unchangedScope){
-        keys(file,['path','sha256']);filePath(file.path);hex(file.sha256);
+        if(p.binaryAssets?.paths.includes(file.path)){
+          need(Object.hasOwn(file,'contentBlob'));fileRecord(file,p.binaryAssets);
+        }else if(hasTextMaterial(file))fileRecord(file);
+        else{keys(file,['path','sha256']);filePath(file.path);hex(file.sha256);}
         need(p.scope.includes(file.path)&&!names.includes(file.path));
         for(const material of [...p.requirements,...(p.instructions??[])])
           if(material.path===file.path)need(material.sha256===file.sha256);
@@ -823,7 +980,10 @@ function validPackage(p) {
       const unchangedNames=p.unchangedScope.map(file=>file.path);
       if(unchangedNames.length)need(digest(unchangedNames)===digest(paths(unchangedNames)));
     }
-    validChecks(p.checks);
+    if(Object.hasOwn(p,'ruleAcceptance')){const rules=readRuleAcceptance(p.ruleAcceptance);
+      need(p.identity.attempt===2&&rules.files.every(f=>p.scope.includes(f.path)),'invalid_package');
+      assertAcceptedRuleFiles(rules,[...p.changes.map(c=>c.after).filter(Boolean),...(p.unchangedScope??[])]);}
+    validChecks(p.checks);nativeEvidenceImagePaths(p);
     if(Object.hasOwn(p,'codeProjectPaths')){
       need(digest(p.codeProjectPaths)===digest(validateCodeProjectPaths(p.codeProjectPaths)));
       need(Array.isArray(p.instructions));if(p.instructions.length)fileList(p.instructions);
@@ -851,6 +1011,7 @@ export function verifyReviewPackage(options) {
   need(digest(v.reviewPackage.ignorePolicy??null)===digest(v.baseline.ignorePolicy??null),'package_mismatch');
   let current=createReviewPackage({root:v.root,baseline:v.baseline,checks:v.checks,
     ...(Object.hasOwn(v,'handoffPath')?{handoffPath:v.handoffPath}:{})});
+  if(v.reviewPackage.evidenceContinuation){const {packageDigest,...body}=current;current=sealed({...body,evidenceContinuation:v.reviewPackage.evidenceContinuation},'packageDigest');}
   // Rebuild the historical representation for legacy receipts, without rewriting them.
   if(!Object.hasOwn(v.reviewPackage,'unchangedScope')){
     const {unchangedScope,packageDigest,...legacy}=current;
@@ -876,10 +1037,12 @@ export function verifyCompletionReviewPackage(options) {
     const {unchangedScope,packageDigest,...legacy}=current;
     current=sealed(legacy,'packageDigest');
   }
+  if(v.reviewPackage.evidenceContinuation){const {packageDigest,...body}=current;current=sealed({...body,evidenceContinuation:v.reviewPackage.evidenceContinuation},'packageDigest');}
   const withoutChecks=({checks,checksDigest,packageDigest,...fields})=>fields;
   if(digest(withoutChecks(current))!==digest(withoutChecks(v.reviewPackage)))throw packageMismatch(current,v.reviewPackage);
   const checkIdentities=checks=>checks.map(c=>c.kind==='visual'
     ?{id:c.id,kind:c.kind}
+    :c.kind==='native-evidence'?{id:c.id,kind:c.kind,materialDigest:c.materialDigest??null}
     :{id:c.id,command:c.command});
   // A42: the completion re-check answered with another check list (ids or
   // commands) than the reviewed delivery. The code is unchanged, so this is a

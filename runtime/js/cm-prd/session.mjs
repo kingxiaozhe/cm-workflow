@@ -6,6 +6,7 @@ import {need,json,digest,shape} from '../cm-ai/effect-contract.mjs';
 import {readExecutionPolicy} from '../cm-ai/execution-policy.mjs';
 import {recoverPrdResponse,readPrdRepairBinding} from './response-recovery.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
+import {inspectPrdPlanningRecovery,recoverPrdPlanningState} from './planning-recovery.mjs';
 
 export function readPrdSessionFile(root,relative){
   if(!['state.json','inputs-replaced.json'].includes(relative))return readCmInitSource(root,relative)?.toString('utf8')??null;
@@ -51,7 +52,7 @@ export function openPrdSession({specs,sessionId,identity,executionPolicy=null}){
     else need(executionPolicy===null,'execution_policy_legacy_run');}
   catch(e){fs.unlinkSync(lock);throw e;}
   let cursor=0;
-  const save=()=>{const next=JSON.stringify(state);replaceSessionFile(directory,'state.json',bytes,next);bytes=next;};
+  const save=(nextState=state)=>{const next=JSON.stringify(nextState);replaceSessionFile(directory,'state.json',bytes,next);bytes=next;state=nextState;};
   const projected=call=>{
     if(!call.responseRepair)return call.result;
     need(state.version===2&&call.kind==='prd_review'&&digest({kind:call.kind,payload:call.payload})===call.requestDigest,'prd_recovery_binding');
@@ -67,6 +68,13 @@ export function openPrdSession({specs,sessionId,identity,executionPolicy=null}){
   return {
     get state(){return json(state,12*1024*1024);},
     reviewResponse(call){return projected(call);},
+    inspectPlanningRecovery(){return inspectPrdPlanningRecovery(state,{sessionId});},
+    recoverPlanning(binding,{validateCurrent}={}){
+      const before=digest(state),result=recoverPrdPlanningState(state,binding,{sessionId,validateCurrent});
+      need(digest(state)===before,'prd_planning_recovery_conflict');
+      if(result.changed)save(JSON.parse(JSON.stringify(result.state)));
+      return {outcome:'planning_recovered',recovery:result.record,completionAuthorized:false};
+    },
     repairReviewResponse(binding){
       need(state.version===2&&state.executionPolicy.responseRecovery==='mechanical-v1','execution_policy_required');
       binding=readPrdRepairBinding(binding);

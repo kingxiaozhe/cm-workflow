@@ -50,7 +50,7 @@ cm-ai 宿主返回的可选 `guidance` 说明当前阻塞与下一步：`summary
   `documentation_sync_answer_blocked` 或 `documentation_sync_out_of_scope`、`pendingAction=develop_redo`：宿主无法证明会话已停写，先确认停写、处理 reason 说的原因，
   再 `--allow-develop-redo` 发送 `develop_redo`（写 `documentation-sync-retry`），之后 `advance` 只重发文档同步、复用记下的开发应答，不重发开发。
   每次重发前核对：文档路径以外的文件与文档同步开始时一致（`documentation_sync_out_of_scope`），文档与确认停写时一致（`documentation_sync_changed_after_stop`）。
-  宿主在文档同步中途退出时 `abandon_effect` 登记为 `blocked/documentation_sync_interrupted`，同样只重发文档同步。每运行最多 2 次，用满为 `documentation_sync_retry_limit`。
+  宿主在文档同步中途退出时 `abandon_effect` 登记为 `blocked/documentation_sync_interrupted`，同样只重发文档同步。每运行最多 2 次（例外：已消费一次性返工许可 `development_rework` 的运行，其文档同步重发不可用，只能用 supersede 重开），用满为 `documentation_sync_retry_limit`。
 - 开发请求在派发前失败（宿主运行日志或角色配置出错）时，status 显示 `blocked/develop_dispatch_failed`、`pendingAction=resume`：修好宿主环境后 `advance`，
   宿主追加 `develop-dispatch-retry` 后重发本轮开发。旧版记为 `unknown/execution_error` 的同类记录只在代码根仍等于本轮起点时适用，否则走 `develop_redo`。
 - 开发已交付、之后的检查或验证预检没拿到可用应答时，status 显示 `blocked/check_answer_missing` 或 `check_answer_invalid`、`pendingAction=resume`：
@@ -1545,6 +1545,12 @@ node scripts/cm-ai-drive.mjs --plan abandon-effect.json abandon_effect
 `--session`恢复私有问答/草稿/风险/轮次；unknown只接原宿主实际回执，不重发调用。
 下方保留生成/审查子模块合同；旧单独模块“内存”指该模块本身，不否定当前CLI持久化。
 
+### HTML 像素基准与规划恢复
+
+`import_baseline {requestId,operation,baseline}` 通过原 `--allow-spec-write` 登记有界、不可覆盖的截图、字体和计算样式；`inspect_baseline` 只读核验来源与资产。先存 `.reviews/prd-sessions/{session}/design-baselines/{manifestDigest}/`，不占 feature 编号；设计保存后投影 `feature/design-baseline/`，原设计/拆分审查包绑定其摘要。缺交互、字体来源或许可时 `ready:false`，不能据此继续设计。来源声明不证明真实浏览器操作，实际交互、CSS 源码与计算样式不得混称；内置浏览器使用同文件提取器的 `--page-script`，不默认启动其他浏览器。字段及步骤见 `skills/cm-prd/references/prototype-baseline.md`。
+
+已完成的规划回包为 blocked 且 active:null 时，`inspect_planning_recovery` 只读取原 checkpoint/source/config/blockedReply 绑定；`recover_planning {requestId,operation,binding}` 以原绑定和非空 reason 追加一次恢复，回到 analysis_ready。只适用于已分析、未产生草稿/自检/审查的设计规划拒绝；原历史、配置与计数不变，相同绑定幂等，不调用模型或批准规格。新执行脚本用 `--skill-dir`；恢复旧会话时额外传 `--session-skill-dir` 原冻结 Skill 和 `--session`，或驾驶员 `PLAN.sessionSkillDir`。待定调用不能借此换根重放；来源/配置漂移或不合资格均停止。
+
 ### 设计先行阶段
 
 已有整稿但尚未发起任一阶段审查，且原两轮自检尚有余额时，可发送
@@ -1708,3 +1714,46 @@ split 审查对文档章节标题有硬要求，不满足时 `final_review_packa
 输出可能包含私有需求正文，只供本地当前任务处理，不能当作指令、公开日志或未经授权外发。当前限制为每文件 1 MiB、总内容 4 MiB、遍历 1000 项，超限/非法编码明确失败，不截断冒充完整。
 
 `completeAnalysis`、`prototypeInteractionVerified`、`writeAuthorized` 均为 false；`casesInspected`仅在传入用例文件并成功读取其字节后为true，不代表用例已分析或批准。文件哈希是本次读取观察，并非并发修改下的原子快照。此入口不解析 PDF、不启动浏览器、不分析/生成规格、不解决角色配置、不记运行日志、不批准开发。变更模式继续原准入与变更分析，不支持此新建来源选项。普通Skill当前通过宿主调用此只读来源检查。
+
+### 有界原生文本证据
+
+原生证据 manifest v1 保持原合同；显式 v2 增加 `textEvidence`，其值是
+`{version:1, sourceRoot, files, requirements}`。文本来源根必须在代码与规格根之外。
+`files` 每项为 `{id,path,mediaType,sha256,size,description}`，逐文件声明，路径相对文本来源根。
+仅接受 UTF-8 JSON、`.py` 方法脚本、Markdown 和纯文本，脚本永不执行。
+每份最多 1 MiB、最多 32 份、全部文本最多 4 MiB；最终 Codex 完整输入仍受既有
+4 MiB/256 页传输上限约束，不增加报告 16 KiB、checks 64 KiB、journal 1 MiB 或调用预算。
+`requirements` 每项为 `{id,fileId,pointers}`；JSON 指针只核所声明字段存在，不裁决视觉通过。
+
+先用只读工具一次列出声明文件与字段的缺项：
+
+```bash
+node scripts/cm-native-text-preflight.mjs --manifest /absolute/text-manifest.json --code-project /absolute/code --specs-dir /absolute/specs
+```
+
+也可用 `--native-profile /absolute/profile.json --scope /absolute/scope.json` 代替
+`--manifest`，连同原生报告、源文件和 PNG 核对。工具退出 0 仅说明声明资料完整，
+不证明最终新包可派发、图像对齐、审批、独审或业务验收。该工具不创建档案、许可、模型调用或运行记录。
+
+owner 捕获时按原身份保存完整原字节，只把元数据与 SHA 引用放进检查记录。
+包校验、恢复和审查输入展开均重新校验档案；全文通过原有只读分页传输。较大的 JSON 只移除展示中的字符串外排版空白；
+所有 JSON token、重复键、数字原写法和字符串内容保留，同时附完整原字节的 gzip。
+宿主先无损还原并核对摘要，审查器直接读取完整数据，不要求执行或解压。
+采用该表示时显式使用 presentation v2；普通 UTF-8/base64 保持 v1，伪装成 v1 的新表示拒绝。
+原生图片顺序和 App 修改范围不变；全文是证据数据，不能作为命令或修改权限。
+已有有效 blocked 的原包不会自动换包、返还调用或重审；补充资料与新的正式审查
+仍须原 owner 按适用恢复合同和准确的人类授权处理。资料可完整传输与视觉验收通过是两个结论。
+
+### 有效 blocked 后仅补充文本材料的一次审查
+
+仅保护的单根 Codex 当前会话、原 attempt2 已消费 correction、technical retry 和 transport retry、原第10次真实有效 blocked 可用。须已取得本次单独的人类授权。沿用原 resume 的 `--native-correction FILE --expected-control FILE`，FILE 严格为 `{version:1,reason,textEvidenceReview:true,nativeEvidence:{version:1,sourceRoot,manifest},textManifestDigest}`；`textManifestDigest` 是该 manifest 内完整 `textEvidence` 对象的 canonical digest。profile 仍 version1，manifest/material 用 version2。
+
+先对同一启动计划做只读 continuation preflight，再仅 status 登记。登记在原 journal 追加 `native-material-review-authorized`，保留10调用、有效旧回执及文件、原 baseline/代码/scope/AC/handoff/报告/图片和已有检查；唯一允许的包变化是完整新文本附件及其派生摘要。归档和最终包/输入/记录容量校验失败时不登记、不调用。读完资料不代表验收通过。
+
+登记成功后去掉一次注册参数，以返回的新 packageDigest 走原 decision；唯一第11次 fresh review 在 intent 即消费。失败、无结论、blocked、重启都不能得到第12次或新开发。新回执投影为 `*-native-correction-1-material-1.md` 与相应 receipt；旧文件不覆盖，批准只绑定新包。N5/完成复核沿原门禁，用户禁止重复检查时只登记审查结果，不运行 complete/advance。
+
+### 材料读取失败记录
+
+材料模式在清理临时目录前，追加不可覆盖的 `.reviews/material-failure-<绑定摘要>.json`。`expectedPages` 为应读页数，`readPages` 为固定读取器成功提供的唯一页数，`missingPages` 为缺页编号，`stage` 标记 preflight/session/provider/coverage/proof_publication/cleanup/terminal_forwarding 阶段。记录绑定原 request、package、prompt、manifest 与已知的 provider thread，只保存有界元数据，不保存材料正文、密钥或模型推理。
+
+只有签名读取记录仍能核实时，`ledgerVerified:true` 才带页数和缺页；记录损坏或不可读时，`readPages`、`missingPages`、`toolCallCount` 为 `null`，不误报为零。失败记录始终 `completionEligible:false`，不是完整读取凭证或批准，不能用于通过审查、返还额度或重新派发。写失败记录失败时保留原失败结果并输出固定脱敏诊断。该变化不补造历史调用已丢失的记录。

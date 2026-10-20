@@ -4,7 +4,9 @@
 import {beginHostStage} from './host-stage-observer.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
-import {spawn} from 'node:child_process';
+import os from 'node:os';
+import {spawn,spawnSync} from 'node:child_process';
+import {ownedProcessCleanup} from './owned-process-cleanup.mjs';
 import {types} from 'node:util';
 import {StringDecoder} from 'node:string_decoder';
 import {cleanEnvironment,specsPermissionArgs} from './codex-config.mjs';
@@ -58,17 +60,38 @@ export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,out
       notify({phase:'start',id:item.id});
       const endStage=beginHostStage('check',timeoutMs);
       const result=await new Promise(resolve=>{
-        let child;
+        let child,temporaryRoot=null;
+        const removeTemporary=()=>{if(temporaryRoot!==null)fs.rmSync(temporaryRoot,{recursive:true,force:true});};
         try{
           const protectedArgs=specsRoot===null?null:specsPermissionArgs({cwd,specsRoot});
+          if(protectedArgs!==null){
+            // Query supported native capability, never fall back to direct execution.
+            const help=spawnSync('codex',['sandbox','--help'],{cwd,env:cleanEnvironment(),encoding:'utf8',
+              timeout:Math.min(timeoutMs,2000),maxBuffer:65536});
+            if(help.status!==0||!help.stdout?.includes('--allow-unix-socket')){
+              resolve({outcome:'unavailable',exitCode:null,evidence:'host check: unix_socket_permission_unavailable'});return;
+            }
+            const base=fs.realpathSync(os.tmpdir());
+            if([cwd,specsRoot].some(root=>base===root||base.startsWith(root+path.sep))){
+              resolve({outcome:'unavailable',exitCode:null,evidence:'host check: temporary_directory_unavailable'});return;
+            }
+            temporaryRoot=fs.mkdtempSync(path.join(base,'cmc-'));fs.chmodSync(temporaryRoot,0o700);
+          }
           child=spawn(protectedArgs===null?item.command[0]:'codex',protectedArgs===null?item.command.slice(1):
-            ['sandbox','-P','cm-specs','--include-managed-config','-C',cwd,...protectedArgs,'--',...item.command],{cwd,env:cleanEnvironment(),
+            ['sandbox','-P','cm-specs','--include-managed-config','-C',cwd,...protectedArgs,
+              '--allow-unix-socket',temporaryRoot,'--','/usr/bin/env',`TMPDIR=${temporaryRoot}`,...item.command],{cwd,
+              // Resolve native filesystem permissions with the original TMPDIR.
+              // Only the command inside that sandbox receives the private one.
+              env:cleanEnvironment(),
               shell:false,detached:true,stdio:['ignore','pipe','pipe']});
         }
-        catch{resolve({outcome:'unavailable',exitCode:null,evidence:'host check: spawn_failed'});return;}
+        catch{
+          let evidence='host check: spawn_failed';try{removeTemporary();}catch{evidence='host check: temporary_cleanup_failed';}
+          resolve({outcome:'unavailable',exitCode:null,evidence});return;
+        }
         // Observers cannot change results or prevent cleanup.
         if(onSpawn&&Number.isInteger(child.pid)&&child.pid>0)try{onSpawn(Object.freeze({id:item.id,pid:child.pid}));}catch{}
-        let failure=null,cleanup,bytes=0;
+        let failure=null,cleanup,cleanupUnknown=false,bytes=0;
         const counts=new Map();
         const collect=line=>{
           const match=line.trim().match(/^[^0-9A-Za-z]*(tests|suites|pass|passed|passing|fail|failed|failing|skipped|todo)\s*[:=]?\s*(\d+)\s*$/i);
@@ -79,7 +102,8 @@ export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,out
           try{process.kill(-child.pid,name);return true;}
           catch(error){if(error.code!=='ESRCH')failure??='cleanup_failed';return false;}
         };
-        const clean=()=>cleanup??=(kill('SIGTERM')
+        const protectedCleanup=temporaryRoot===null?null:ownedProcessCleanup(child);
+        const clean=()=>cleanup??=(protectedCleanup?protectedCleanup().catch(()=>{cleanupUnknown=true;failure??='cleanup_failed';}):kill('SIGTERM')
           ?new Promise(done=>setTimeout(()=>{kill('SIGKILL');done();},1000)):Promise.resolve());
         const stop=reason=>{failure??=reason;clean();};
         const abort=()=>stop('cancelled');
@@ -113,10 +137,13 @@ export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,out
         child.once('exit',clean);
         child.once('close',async(code,exitSignal)=>{
           clearTimeout(timer);signal.removeEventListener('abort',abort);await clean();
+          // A failed group cleanup retains its private root. Removing it must not
+          // race descendants that can still create sockets or temporary files.
+          if(!cleanupUnknown)try{removeTemporary();}catch{failure??='temporary_cleanup_failed';}
           // Keep evidence stable across repeated checks. Raw output can contain
           // credentials and nondeterministic timing; do not put it in review data.
           if(failure||exitSignal||!Number.isInteger(code))resolve({outcome:'unavailable',exitCode:null,
-            evidence:`host check: ${failure??'signal_exit'}`});
+            evidence:`host check: ${failure??'signal_exit'}${cleanupUnknown&&failure!=='cleanup_failed'?'; cleanup_failed':''}`});
           else{
             const prefix=`host check exited ${code}`,summary=[];
             for(const [label,count] of counts){

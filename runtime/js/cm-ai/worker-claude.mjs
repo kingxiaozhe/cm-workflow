@@ -1,5 +1,5 @@
 import {createProviderUsageCapture} from './provider-usage.mjs';
-import {VERIFICATION_TOOLS,readReviewVerification} from '../cm-fix/review-verification-contract.mjs';
+import {verificationTools,readReviewVerification} from '../cm-fix/review-verification-contract.mjs';
 import {externalEffort} from './external-models.mjs';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
@@ -25,7 +25,7 @@ export function claudeReviewArgs(model,effort=null,verification=null,transport=n
     args[args.indexOf('--safe-mode')]='--restricted';
     args.push('--settings',JSON.stringify({disableAllHooks:true,enabledPlugins:{},autoMemoryEnabled:false}));
     args[args.indexOf('--mcp-config')+1]=transport?.mcpConfig??'CM_ISOLATED_REVIEW_TOOLS';
-    args.push('--allowedTools',...VERIFICATION_TOOLS);
+    args.push('--allowedTools',...verificationTools(verification));
   }
   const schema=JSON.parse(readFileSync(new URL('./review-result.schema.json',import.meta.url),'utf8'));
   // Claude's schema engine does not accept the draft-2020-12 metadata.
@@ -41,8 +41,27 @@ export function claudeEnvironment() {
   return {...Object.fromEntries(Object.entries(process.env).filter(([key])=>allowed.includes(key))),
     CLAUDE_CODE_MAX_RETRIES:'0',CLAUDE_CODE_RETRY_WATCHDOG:'0'};
 }
+// Only these bounded CLI aliases may be discovered by the synthetic probe.
+// The result describes an outbound request id, not an authenticated backend model.
+export function claudeAliasModelMatches(alias,model) {
+  if(!['default','opus','sonnet','haiku'].includes(alias)||typeof model!=='string'
+    ||model.length>96||!/^claude-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(model))return false;
+  const parts=model.split('-').slice(1),families=parts.filter(p=>['opus','sonnet','haiku'].includes(p));
+  return families.length===1&&parts.some(p=>/^\d+$/.test(p))
+    &&parts.every(p=>families.includes(p)||/^\d+$/.test(p))
+    &&(alias==='default'||families[0]===alias);
+}
+function modelResolutionMatches(receipt,model) {
+  if(!Object.hasOwn(receipt??{},'model_resolution'))return true; // legacy bytes remain authoritative
+  const resolution=receipt.model_resolution;
+  return resolution!==null&&typeof resolution==='object'&&!Array.isArray(resolution)
+    &&Object.keys(resolution).sort().join(',')==='requested_model,resolution_context,resolved_model'
+    &&resolution.resolution_context==='synthetic-api-key-probe'
+    &&resolution.resolved_model===model
+    &&claudeAliasModelMatches(resolution.requested_model,model);
+}
 export function claudePreflightMatches(receipt,options) {
-  return receipt?.passed===true && receipt.provider==='claude'
+  return receipt?.passed===true && receipt.provider==='claude' && modelResolutionMatches(receipt,options.model)
     && receipt.config_fingerprint===claudeReviewFingerprint(options) && receipt.prompt_transport==='stdin';
 }
 
@@ -84,7 +103,7 @@ export function claudeWorker({cwd,model,preflight,cli='claude',timeoutMs=60000,s
         if(event.event==='thread.started')providerThread=event.provider_thread;
         if(event.event==='turn.completed')providerTerminal=true;
         onEvent(event);
-      },onNotice,verification?VERIFICATION_TOOLS:[]);
+      },onNotice,verification?verificationTools(verification):[]);
       const stop=code=>{
         if(!['cancelled','timeout','provider_failed','reviewer_auth_failed','reviewer_billing_error',
           'reviewer_rate_limited','reviewer_server_error','reviewer_model_not_found','reviewer_api_error'].includes(code))receiptInvalid=true;

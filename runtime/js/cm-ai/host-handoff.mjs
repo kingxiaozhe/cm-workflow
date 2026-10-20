@@ -40,7 +40,7 @@ export function hostHandoffDocument({baseline,checks,reviewPackage,implementatio
     implementation_sha256:implementationSha256,
     verification:checks.map(check=>({command:check.kind==='visual'
       ?`Visual inspection (not a shell command): ${check.before.kind} before/after comparison`
-      :JSON.stringify(check.command),
+      :check.kind==='native-evidence'?'MATERIAL integrity only: native evidence; not visual acceptance':JSON.stringify(check.command),
       status:check.outcome==='passed'?'passed':'failed',evidence:check.evidence})),
     evidence:[`host review package ${reviewPackage.packageDigest}`,...evidence],
     blockers:passed?[]:checks.filter(check=>check.outcome!=='passed').map(check=>`check ${check.id}: ${check.outcome}`),

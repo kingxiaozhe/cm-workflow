@@ -7,6 +7,7 @@ import {writeReviewEvidence} from '../cm-ai/review-evidence-file.mjs';
 import {reviewResultForPaths} from '../cm-ai/review-runner.mjs';
 import {need,shape,json,digest,id} from '../cm-ai/effect-contract.mjs';
 import {needPrd} from './validation-reason.mjs';
+import {assertPrdReviewRoute} from './review-route.mjs';
 
 export function inspectPrdReviewResponse({reviewPackage,packageDigest,authorContextId,response}){
   reviewPackage=json(reviewPackage,256*1024);response=json(response,64*1024);id(authorContextId);
@@ -22,10 +23,11 @@ export function inspectPrdReviewResponse({reviewPackage,packageDigest,authorCont
   if(response.reviewer==='codex-subagent'&&context.startsWith('/')){
     need(/^\/root(?:\/[a-z0-9_]+)+$/.test(context));
   }else id(context);
+  assertPrdReviewRoute({reviewPackage,response});
   need(degraded?response.independent===false&&response.contextId===authorContextId
     &&typeof response.degradedReason==='string'&&response.degradedReason.trim().length>0
     &&!/[\r\n\v\f\x1c-\x1e\x85\u2028\u2029\0]/.test(response.degradedReason):
-    ['codex-subagent','codex-cli'].includes(response.reviewer)&&response.independent===true&&response.contextId!==authorContextId,
+    ['codex-subagent','codex-cli',...(Object.hasOwn(reviewPackage,'reviewRoute')?['claude-cli']:[])].includes(response.reviewer)&&response.independent===true&&response.contextId!==authorContextId,
     'prd_review_independence_invalid');
   needPrd(typeof response.at==='string'&&Number.isFinite(Date.parse(response.at))
     &&new Date(response.at).toISOString()===response.at,'prd_review_timestamp_invalid',

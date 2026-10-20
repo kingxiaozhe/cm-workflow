@@ -18,7 +18,11 @@ export function planBytes(raw){
   validIdentity({repositoryId:'plan',runId:'plan',taskId:p.taskId,attempt:p.attempt});absolute(p.tasksPath);
   need(Number.isInteger(p.mode)&&p.mode>=0&&p.mode<=0o7777,'invalid_plan');
   for(const k of ['beforeDigest','afterDigest','taskRevision','planDigest'])hex(p[k]);
-  need(Array.isArray(p.evidence)&&p.evidence.length>0&&p.evidence.length<=4,'invalid_plan');
+  const nativeNames=['a1-handoff.json','a2-handoff.json','r1.md','r2.md','native-correction-1-handoff.json',
+    'native-correction-1.json','native-correction-1.md','native-correction-1-receipt.json','native-correction-1-material-1.md','native-correction-1-material-1-receipt.json','native-correction-1-evidence-1.md','native-correction-1-evidence-1-receipt.json','native-correction-1-provider-recovery-1.md','native-correction-1-provider-recovery-1-receipt.json'].map(suffix=>`${p.feature}-${p.taskId}-${suffix}`);
+  const nativeEvidence=Array.isArray(p.evidence)&&[8,10,12].includes(p.evidence.length)&&new Set(p.evidence.map(e=>path.basename(e.path))).size===p.evidence.length
+    &&p.evidence.every(e=>nativeNames.includes(path.basename(e.path)));
+  need(Array.isArray(p.evidence)&&p.evidence.length>0&&(p.evidence.length<=4||nativeEvidence),'invalid_plan');
   let previous;
   for(const e of p.evidence){shape(e,['path','revision']);absolute(e.path);hex(e.revision);
     need(previous===undefined||Buffer.compare(Buffer.from(previous),Buffer.from(e.path))<0,'invalid_plan');previous=e.path;}
@@ -30,12 +34,12 @@ export function planBytes(raw){
     need(before[n]===32&&after[n]===120,'invalid_plan');changes++;}
   need(changes===1,'invalid_plan');return {before,after};
 }
-export function readCommitIntent(raw,{owner,identity,fingerprints}){
+export function readCommitIntent(raw,{owner,identity,fingerprints,nativeCorrection=null}){
   const p=json(raw);
   shape(p,['version','protocol','type','identity','owner','fingerprints','plan','proof','parent','temporaryName']);
   need(p.version===1&&p.protocol==='cm-task-commit'&&p.type==='intent','commit_history_invalid');
   validIdentity(p.identity);same(p.identity,identity);same(p.owner,owner);same(p.fingerprints,fingerprints);
-  planBytes(p.plan);need(p.plan.feature===owner.feature&&p.plan.tasksPath===owner.tasksPath
+  planBytes(p.plan);need(p.plan.evidence.length<=4||nativeCorrection?.epoch===1,'commit_history_invalid');need(p.plan.feature===owner.feature&&p.plan.tasksPath===owner.tasksPath
     &&p.plan.taskId===p.identity.taskId&&p.plan.attempt===p.identity.attempt,'commit_history_invalid');
   shape(p.proof,['root','baselineDigest','packageDigest','receiptDigest','checksDigest']);absolute(p.proof.root);
   for(const k of ['baselineDigest','packageDigest','receiptDigest','checksDigest'])hex(p.proof[k]);

@@ -22,7 +22,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - 兼容手工任务：N3 编辑前运行 `node scripts/cm-task-gate.mjs capture-baseline --project-root {CODE_PROJECT} --reviews-dir {SPECS_DIR}/.reviews --feature {FEATURE_SLUG} --task {T-xxx}`；仅命令行 N4/N5 与完成入口开启清单核对，库调用默认行为不变，JS 使用自己的审查包基线。仅单代码根，历史缺基线用现有 `--allow-legacy-unbound` 披露清单未核验；详见 `runtime/task-gates.md`。
 
 - CM control v2：新 cm-ai run 用 `--control-config POLICY.json` 明确运行能力，禁止 `--allow-*`；旧 run 沿 legacy，不迁移记录。配置、operator/model 与 V3 grant 不证明真人身份，真实对话及外部动作授权保持；详见 [控制策略与恢复合同](../docs/cm-control-policy-v2.md)。
-- v2 受控补正仅适用于无 JS ownership 的兼容 taskgate 任务；cm-ai 单/批 r2 blocked 仍无 runner-owned correction 完成入口，不删 journal 或绕过 owner 门禁。
+- v2 兼容 taskgate 人工补正限无 JS ownership 的任务。已有受保护 `nativeCorrection` 单根 Codex 当前会话运行收到有效 blocked 后，可由原 owner 通过 `resume status --native-correction FILE --expected-control FILE` 先登记 `evidenceContinuation`；另获一次新审查的明确授权后登记 `evidenceReview`。只补证据，不授开发权限；保留原完整差异、旧结论、历史和已用次数。普通 r1/r2、多根、批处理及 provider 模式不适用。详见 [有效 blocked 证据接续](../docs/cm-valid-blocked-evidence-continuation.md)。
 
 - 安全扫描：`$cm-security` / `/cm-security`，分支差异加已跟踪未提交修改；`--all` 扫全部已跟踪文件。工具缺失保留缺口，不自动修复或安装；定点验证 `node --test scripts/cm-security.test.mjs`。
 - 分支影响分析：直接 `$cm-test` / `/cm-test`；默认比较当前提交与主分支，输出业务影响和回归重点，再检查单测覆盖率；“补齐单测”连续补测、重跑、审查。显式目标保留原模式。
@@ -67,6 +67,7 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - JS runtime 兼容夹具: `node --test experiments/js-orchestration/*.test.mjs`（完整宿主验证要求支持原生沙箱的平台与 Node.js 24.14+；历史夹具通过不等于真实模型验收）
 - JS 单任务入口: `node scripts/cm-ai-host.mjs --help`；默认当前会话，Codex 同仓 specs 可显式选 `--protected-config`；v2 用策略启用开发与常规审查，legacy 保留原按轮选项；原 workflow 配置接受保护 QA 与审前文档，安装与真实模型验收另验
 - JS 多任务入口: `node scripts/cm-ai-batch-host.mjs --help`；复用原 batch/单任务宿主，Codex/Claude 可选 `--protected-conversation-config` 同仓文本提案/沙箱；v2 常规 Review 自动至两轮，legacy 保留按 feature/task/轮次授权
+- JS 单任务二进制资产：新当前会话任务可显式声明 `binaryAssets`，精确字节进入原运行绑定的私有存档，原文本/journal预算及保护、Review、恢复门禁保留；合同见 `skills/cm-ai/references/js-host-binary-assets.md`，不能向旧运行静默补能力。
 - 当前会话执行证据：四驾驶员可显式配置 `liveEvidence`，合同与不可用恢复见 `docs/live-evidence-drivers.md`；静态文件不能代替实际执行。
 - 第二轮 blocked 后的人工补正：明确人审范围后使用一次性的 `cm-task-gate.mjs prepare-human-correction` / `publish-human-correction-review`；保留旧证据，补正独立 Review，详见 `docs/human-correction.md`。
 - cm-fix 原根因拒绝恢复：standalone `rediagnose` 需 `--allow-rediagnosis`；原 run 一次新诊断/fresh r2，历史不覆盖，第二次拒绝停机；详见 `skills/cm-fix/references/js-host.md`。
@@ -119,3 +120,15 @@ CHANGELOG.md           # 用户可感知的版本变化；未发布改动单独�
 @rules/testing.md
 @rules/security.md
 @rules/git-workflow.md
+
+容量预判与 a2 已审范围接续：复用 v2 resume/status 和固定目标；只读 `cm-ai-drive preflight`、`--task-review-origin` 及双基线合同见 `docs/cm-control-policy-v2.md`。可选已提交规则接纳复用ORIGIN.ruleAcceptance，规则进入审查而不进入业务写scope；旧基线/r1/次数不变。不自动继任、安装或重置预算。
+
+原 v3/control-v2 第二轮 Claude 无结论额度失败的受控 Codex 切换使用 `--reviewer-switch-config`，保留原指纹和旧 reviewer 声明，通过唯一追加记录派生有效审查端，详见 docs/cm-control-policy-v2.md「原运行第二轮审查端变更」。不得直接修改原 review.json 或将 --failover 当恢复入口。
+
+受保护二进制新任务的 Codex 审查复用原字节读取/完整性工具与证据门禁，入口和明确的单运行选择见 `skills/cm-ai/references/js-host-binary-assets.md`；不修改旧运行审查端或默认路由。
+
+当前原生受保护任务在双 blocked 后仅凭另行明确授权，可通过 `--native-correction FILE --expected-control FILE` 登记一次独立补正 epoch；原 run/attempt2/旧证据/六次计数保留，只追加一次开发及一次 Codex 独审，N5/完成复查/原 QA 不变。详见 `docs/cm-control-policy-v2.md`。
+
+- 材料续审：原已消费材料失败只可显式登记一次新增机会，绑定原宿主/调用/完整包/配置和固定目标；同调用有效结果接回不派模型。参数、无授权停止和验收见 `skills/cm-ai/references/js-host-recovery.md`。
+
+- 审查错误留存：退出 0 不覆盖原生失败；固定分类、消息摘要、双失败合并及未知历史边界见 `docs/provider-review-diagnostics.md`。诊断不授予重派或完成权限，技术恢复仍须绑定原失败并另获明确授权。

@@ -51,9 +51,30 @@ function renderOperatorGuidance(result,{executionActive=false,protocol='legacy',
     :['原运行记录保留，不改写','本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift'];
   if(result?.workflow!=='cm-ai'||!result.state||!result.identity)return null;
   const {state,code,pendingAction:action,outcome}=result;
+  if(code==='provider_recovery_result_conflict'||result.providerReviewRecovery?.conflict)return explain('同调用有效结果与已记录失败终态不一致。','保留双方证据待核对；不能新增调用，现有 reconcile_review 不适用。');
   if(outcome==='rejected'||outcome==='denied')return explain('本次操作被拒绝，运行状态没有因此获得新的执行权限。',
     '先核对 code 与 reason，修正请求或取得所需授权；不要据此重复开发或审查。');
   if(executionActive)return explain('原运行仍有操作在执行。','等待原操作结果；可读取状态，不重复派发。');
+  const completionOrQa=action==='complete'||['qa','qa_result'].includes(action)||String(code).startsWith('complete_')||String(code).startsWith('qa_');
+  if(result.providerReviewRecovery&&!completionOrQa&&!result.reviewReconciliation?.available&&!['approved','fixture_completed','run_done'].includes(state)){
+    const r=result.providerReviewRecovery;
+    if(r.source)return explain('补证审查发生已确认关闭的原生 provider 失败，没有有效结论。','须另获一次明确授权，由原宿主绑定 source 和固定 launchControlTarget 登记技术续审；授权不自动派发、不返还旧调用。');
+    if(r.consumed)return explain('单独授权的一次技术续审机会已经消费。','保留原失败和新增调用的真实结果；本合同没有第二次续审或开发出口。');
+    return explain('一次技术续审已单独授权，尚未派发。','下一次 review intent 消费唯一新增机会；完整原包和冻结配置仍须通过原门禁。');
+  }
+  if(result.evidenceContinuation&&!completionOrQa&&!['approved','fixture_completed','run_done'].includes(state)&&!result.reviewReconciliation?.available){
+    const e=result.evidenceContinuation;
+    if(e.source)return explain('最近一次独立审查有效 blocked，仍有未解决发现。','原宿主可单独登记完整补充证据和逐项说明；登记不授权审查或开发，之后须另获一次明确审查授权。');
+    if(e.reviewSource)return explain('补充证据已登记，原 blocked 和全部调用保留。','只有另获明确授权后，原宿主才可绑定 reviewSource 登记一次新审查；本提示不授予调用权限。');
+    if(e.consumed&&action!=='reconcile_review')return explain('唯一补证审查机会已经消费。','保留实际结论、源码、配置和历史。本合同没有再次审查或开发出口；源码修改须另行建立正式修复合同。');
+  }
+  if(result.materialReviewFailure&&result.materialTimeoutContinuationSource&&!result.reviewReconciliation?.available)return explain('第12次材料审查已超时，没有有效结论；旧许可均已消费。','原宿主须另获明确授权，绑定原失败、完整包、配置和新版批读指纹登记一次新增机会；维护补丁不代表真实调用已获授权。');
+  if(result.materialReviewFailure&&!result.reviewReconciliation?.available&&(result.materialContinuationSpent||!result.materialContinuationSource))return explain('材料传输或验证失败，结果未被接受。当前没有可登记的续审机会。','保留原运行、诊断与全部调用；由 CM 维护者核对。本合同不能继续重派、放弃重试或新建运行绕过。');
+  if(result.materialReviewFailure&&!result.reviewReconciliation?.available)return explain('审查材料未完整读取，结果没有被原工作流接受。旧页数或退出信息不足时仍为未知。',
+    '由 CM 维护者核对诊断和旧进程。原宿主须取得新的明确续审授权后，以当前固定快照登记一次新增机会；本提示不授权调用，不返还旧名额。当前不执行接回结果、放弃重试或新建运行。',null,
+    ['保留原运行、冻结配置、全部调用和失败记录','新授权必须绑定原调用、完整审查包、配置指纹与当前 revision']);
+  if(code==='native_correction_exhausted')return explain('唯一补正审查已消费，但没有有效结论；原失败与全部已用调用保留。',
+    '保留原运行、包、回执与失败记录。原宿主恢复只补齐已产生结果的检查点，不调用模型；新的业务审查需要另行明确授权。');
   if(code==='spec_drift')return explain('已批准规格发生变化，后续执行被阻止。',
     action==='spec_rebind'?(v2?'先核对重新批准的规格；符合原条件时，只读 status 并展示 launchControlTarget，将完整固定副本写入文件，以原策略和配置带 --expected-control FILE、--rebind-spec-material 与单行 --spec-rebind-reason 恢复；snapshot_changed 时停止，不自动刷新。':'先核对重新批准的规格；符合原任务内容未变的条件时，在原运行显式换绑规格。')
       :'先核对规格变更与原任务绑定；当前没有可直接继续的恢复动作。',null,['保留原运行身份与历史','不得绕过规格审批']);
@@ -116,6 +137,10 @@ function renderOperatorGuidance(result,{executionActive=false,protocol='legacy',
   if(state==='blocked'&&action==='complete'&&code==='complete_recheck_failed')return explain('完成前复查没有正常结束（应答缺失或宿主在提交前出错），任务尚未勾选。',
     '恢复原运行并发送 complete，重新复查并完成；不重新开发或审查。',
     'complete',['原 run 与已审交接、范围和包绑定不变','task-commit-intent 尚未写入；每运行最多 2 次']);
+  if(state==='blocked'&&code==='develop_package_too_large')return explain(
+    '审查包交付停在容量门，历史失败与原审查保持。',
+    '先运行 cm-ai-drive.mjs --plan PLAN.json preflight，只读核对当前范围、原基线、预算和恢复条件。仅执行报告中已核对的恢复动作；容量不足不能删必要审查材料或提高上限。',
+    null,['保留原 run、配置、失败、r1 回执和已应用改动','不自动迁移、继任、重派或刷新陈旧目标']);
   if(state==='blocked'&&action==='resume'&&Object.hasOwn(deliveryMessages,code)){
     const [summary,repair]=deliveryMessages[code];
     return explain(summary,`${repair}；然后${resume}，重做本轮交付和检查。`,

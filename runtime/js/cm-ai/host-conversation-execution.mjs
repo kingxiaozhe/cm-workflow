@@ -1,4 +1,8 @@
+import {runMaterialReview} from './host-material-review.mjs';
+import {prepareCodexReviewInput} from './codex-review-adapter.mjs';
+import {readNativeEvidenceProfile,captureNativeReviewEvidence} from './native-review-evidence.mjs';
 import {createNativeUsageLog} from './native-usage-log.mjs';
+import {validateProtectedScopeSupplement,projectProtectedScopeCommands} from './protected-scope-supplement.mjs';
 import {readExecutionPolicy} from './execution-policy.mjs';
 import {readControlPolicy} from './control-policy.mjs';
 import {selectExternalModels} from './external-models.mjs';
@@ -17,12 +21,15 @@ import {createDeveloperRun,validateDeveloperValue} from './developer-adapter.mjs
 import {createCodexReviewRun} from './codex-review-adapter.mjs';
 import {createClaudeReviewRun} from './claude-review-adapter.mjs';
 import {claudeWorker,claudePreflightMatches} from './worker-claude.mjs';
+import {runBinaryAssetReview} from './host-binary-review.mjs';
 import {codexWorker,preflightMatches} from './worker-codex.mjs';
-import {createHostWorkflowCapabilities} from './host-workflow-capabilities.mjs';
+import {createHostWorkflowCapabilities,createImplicitHostQaCapabilities,createAttachedHostQaCapabilities,implicitQaConfiguration} from './host-workflow-capabilities.mjs';
 import {resolveHostRole} from './host-role-routing.mjs';
 import {checklistGaps} from './checklist-coverage.mjs';
 import {specsPermissionArgs} from './codex-config.mjs';
 import {createProjectExecution} from './host-project-execution.mjs';
+import {readBinaryAssetConfiguration} from './binary-assets.mjs';
+import {binaryAssetBinding,prepareProtectedEdit,protectedEditAfterHash} from './protected-binary-edits.mjs';
 import {codeProjectPaths,codeProjectInstructionPaths,resolveCodeProjects} from './code-projects.mjs';
 import {readProjectInstructionContext} from './cm-ai-context-refresh.mjs';
 import {validateDocumentationPaths} from './host-documentation.mjs';
@@ -36,6 +43,32 @@ export const protectedTextInstructions='\nProtected current-host mode: do not wr
   +'optional mode "0755" or "0644" sets the permission bits of a written file. '
   +'Only the supplied scope and expected hashes are allowed. The fixed sandbox applies these edits. On failure return {status,code} without edits. '
   +'status must be exactly "succeeded" on success (with value and edits) or "failed" (with code). Return the object through the structured output schema; never wrap it in markdown fences.';
+const nativeEvidenceProfiles=new WeakMap();
+export const supportsConversationNativeEvidence=execution=>nativeEvidenceProfiles.has(execution);
+export function bindConversationNativeEvidence(execution,profile){
+  const bind=nativeEvidenceProfiles.get(execution);need(bind,'native_review_recovery_unavailable');bind(profile);
+}
+const scopeSupplements=new WeakMap();
+const reviewerSwitches=new WeakMap();
+export function conversationReviewerSwitch(execution){
+  const candidate=reviewerSwitches.get(execution);
+  return candidate?json({configurationDigest:candidate.configurationDigest,toReviewer:candidate.toReviewer}):null;
+}
+export function bindConversationReviewerSwitch(execution,record){
+  const candidate=reviewerSwitches.get(execution);need(candidate,'reviewer_switch_configuration_required');
+  need(record?.configurationDigest===candidate.configurationDigest
+    &&digest(record.toReviewer)===digest(candidate.toReviewer),'reviewer_switch_configuration_mismatch');
+  candidate.bound=true;
+}
+export const supportsConversationScopeSupplement=execution=>scopeSupplements.has(execution);
+export function verifyConversationScopeSupplement(execution,supplement,scope,configFingerprint){
+  const controller=scopeSupplements.get(execution);need(controller,'scope_revision_unavailable');
+  return controller.preview(supplement,scope,configFingerprint);
+}
+export function bindConversationScopeSupplement(execution,supplement,scope,configFingerprint){
+  const controller=scopeSupplements.get(execution);need(controller,'scope_revision_unavailable');
+  controller.bind(supplement,scope,configFingerprint);
+}
 const protectedConversations=new WeakMap();
 export const conversationProtection=execution=>protectedConversations.get(execution)??null;
 const externalConversations=new WeakMap();
@@ -107,7 +140,7 @@ export const REVIEW_BOUND_MARGIN_MS=60000;
 export const reviewRaceTimeout=(outerTimeoutMs,reviewTimeoutMs)=>Math.max(outerTimeoutMs,reviewTimeoutMs+REVIEW_BOUND_MARGIN_MS);
 export function createConversationExecution(definition,hostContextId,bridge,review=null,reservedReviewAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
   definition=json(definition);workflow=workflow===null?null:json(workflow);options=json(options);
-  shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','externalModels','reviewerRuntime','reviewRuntime','parallelMember','verificationPrecheck','executionPolicy','controlPolicy'].filter(key=>Object.hasOwn(options,key))]);
+  shape(options,[...['reviewerSwitchConfiguration','qaExecutorConfiguration','originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','externalModels','reviewerRuntime','reviewRuntime','parallelMember','verificationPrecheck','executionPolicy','controlPolicy'].filter(key=>Object.hasOwn(options,key))]);
   const controlPolicy=options.controlPolicy?readControlPolicy(options.controlPolicy):null;
   need(!Object.hasOwn(options,'verificationPrecheck')||typeof options.verificationPrecheck==='boolean','invalid_input');
   const executionPolicy=options.executionPolicy?readExecutionPolicy(options.executionPolicy):null;
@@ -130,14 +163,23 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   }
   if(Object.hasOwn(options,'reviewerRuntime'))need(options.externalModels&&['codex','claude'].includes(options.reviewerRuntime)
     &&options.reviewerRuntime===resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),runtime).reviewerRuntime,'runtime_selection_mismatch');
-  // --review-runtime: the current session develops, the other tool reviews.
-  // It must match the declared roles/runtimes and is bound into the run (the
+  // --review-runtime: the current session develops; the explicit reviewer is
+  // bound into the run, preserving old declarations/resume fingerprints (the
   // configuration key reviewRuntime, as the 0.16.6 project patch wrote it).
   need(options.reviewRuntime===undefined||['codex','claude'].includes(options.reviewRuntime),'invalid_runtime');
   need(options.reviewRuntime===undefined||provider===null&&!Object.hasOwn(options,'reviewerRuntime'),'invalid_input');
   const coderRuntime=provider?.coderRuntime??runtime,reviewerRuntime=provider?.reviewerRuntime??options.reviewerRuntime??options.reviewRuntime??runtime;
-  if(options.reviewRuntime!==undefined)need(digest(resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),runtime))
-    ===digest({coderRuntime,reviewerRuntime}),'runtime_selection_mismatch');
+  // Explicit Codex review belongs to this protected text/asset conversation
+  // run. Keep the declared coder and freeze reviewRuntime without rewriting
+  // project defaults or changing existing runs through a new launch choice.
+  const explicitCodexProtected=runtime==='codex'&&options.reviewRuntime==='codex'&&provider===null
+    &&!options.bootstrap&&!parallelMember&&!options.batchWorkflowsDigest&&!definition.codeProjects
+    &&Boolean(options.protection);
+  if(options.reviewRuntime!==undefined){
+    const declared=resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),runtime);
+    need(digest(declared)===digest({coderRuntime,reviewerRuntime})
+      ||explicitCodexProtected&&declared.coderRuntime===coderRuntime,'runtime_selection_mismatch');
+  }
   const externalModels=options.externalModels?selectExternalModels(options.externalModels,provider?[coderRuntime,reviewerRuntime]:[reviewerRuntime]):null;
   if(externalModels){
     const selected=externalModels.providers[reviewerRuntime];need(review!==null&&review.model===selected.model&&review.effort===selected.effort,'external_model_configuration_conflict');
@@ -150,9 +192,22 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
       selection:options.bootstrap.selection,bridge,allowWrite:options.bootstrap.allowWrite});
   }
   const protection=options.protection??null;
-  if(protection){shape(protection,['checkCommands','timeoutMs']);specsPermissionArgs({cwd:definition.codeProject,specsRoot:definition.specsDir});}
+  let binaryAssets=null;
+  if(protection){
+    shape(protection,['checkCommands','timeoutMs',...(Object.hasOwn(protection,'binaryAssets')?['binaryAssets']:[])]);
+    specsPermissionArgs({cwd:definition.codeProject,specsRoot:definition.specsDir});
+    if(Object.hasOwn(protection,'binaryAssets')){
+      need(!provider&&!options.bootstrap&&!definition.codeProjects&&!parallelMember,'protected_binary_mode_unavailable');
+      need(['codex','claude'].includes(reviewerRuntime),'binary_review_provider');
+      binaryAssets=readBinaryAssetConfiguration(protection.binaryAssets,{scope:definition.scope,
+        codeProject:definition.codeProject,specsDir:definition.specsDir,identity:definition.identity});
+      need(binaryAssets.paths.every(p=>!definition.requirements.includes(p)),'protected_binary_scope');
+    }
+  }
   need(!definition.codeProjects||protection,'multi_root_protection_required');
-  const projectExecution=protection?createProjectExecution({definition,protection,executionPolicy}):null;
+  let scopeSupplement=null,supplementScope=null,nativeEvidenceProfile=null;
+  const commandProjection=commands=>scopeSupplement?projectProtectedScopeCommands(commands,scopeSupplement,supplementScope):commands;
+  const projectExecution=protection?createProjectExecution({definition,protection,executionPolicy,commandProjection,scopeProjection:()=>supplementScope??definition.scope}):null;
   const check=projectExecution?.check??null;
   const documentationPaths=workflow?validateDocumentationPaths(workflow.documentationPaths,definition.scope):[];
   need(['codex','claude'].includes(runtime),'invalid_runtime');
@@ -177,14 +232,39 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     ...(options.batchWorkflowsDigest?{batchWorkflowsDigest:options.batchWorkflowsDigest}:{}),
     ...(review?{review:{version:1,model:review.model,disabledSkills:review.disabledSkills,...(externalModels?{effort:review.effort}:{})}}:{}),
     ...(workflow?{workflow}: {})};
+  if(Object.hasOwn(options,'qaExecutorConfiguration'))need(workflow===null&&!parallelMember
+    &&!options.bootstrap&&!options.providerDevelopment&&!options.externalModels&&!options.qaLogHome
+    &&durableHostContextId===hostContextId,'qa_executor_attachment_required');
   const reviewOptions={cwd:definition.codeProject,model:review?.model??'unconfigured',...(externalModels?{effort:review.effort}:{}),preflight:review?.preflight??null,
     disabledSkills:review?.disabledSkills??[],
+    onDiagnostic:diagnostic=>process.stderr.write('[codex-review-diagnostic] '+JSON.stringify(diagnostic)+'\n'),
     ...resolveReviewTimeout(review,protection),
     promptTransport:'stdin',schemaPath:fileURLToPath(new URL('./review-result.schema.json',import.meta.url))};
   if(review!==null||provider)need((reviewerRuntime==='codex'?preflightMatches:claudePreflightMatches)(reviewOptions.preflight,reviewOptions),'tool_preflight_missing');
   need(reviewerRuntime!=='claude'||!review||review.disabledSkills.length===0,'invalid_review_config');
   // Preserve P4a's unauthorizable placeholder bytes for existing unconfigured runs.
   const reviewProvider=review?reviewerRuntime:'codex', adapterId=`${reviewProvider}-review-adapter`;
+  let reviewerSwitch=null;
+  if(Object.hasOwn(options,'reviewerSwitchConfiguration')){
+    need(controlPolicy?.development==='conversation'&&reviewProvider==='claude'&&durableHostContextId===hostContextId&&!provider&&!bootstrap
+      &&!parallelMember&&!definition.codeProjects&&!binaryAssets&&!externalModels&&!executionPolicy,
+    'reviewer_switch_unavailable');
+    const candidate=json(options.reviewerSwitchConfiguration);shape(candidate,['version','provider','review']);
+    need(candidate.version===1&&candidate.provider==='codex','reviewer_switch_configuration_invalid');
+    const replacement=candidate.review;
+    shape(replacement,['model','preflight','disabledSkills',...(Object.hasOwn(replacement,'timeoutMs')?['timeoutMs']:[])]);
+    need(typeof replacement.model==='string'&&/^[a-zA-Z0-9._-]+$/.test(replacement.model)
+      &&Array.isArray(replacement.disabledSkills)&&replacement.disabledSkills.length<=4096
+      &&replacement.disabledSkills.every(item=>typeof item==='string'&&path.isAbsolute(item)&&!/[\r\n\0]/.test(item)),
+    'reviewer_switch_configuration_invalid');
+    if(Object.hasOwn(replacement,'timeoutMs'))need(Number.isInteger(replacement.timeoutMs)
+      &&replacement.timeoutMs>=1&&replacement.timeoutMs<=3600000,'reviewer_switch_configuration_invalid');
+    const workerOptions={...reviewOptions,...replacement,...resolveReviewTimeout(replacement,protection)};
+    need(preflightMatches(replacement.preflight,workerOptions),'tool_preflight_missing');
+    reviewerSwitch={configurationDigest:digest(candidate),workerOptions,bound:false,
+      toReviewer:{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:replacement.model,
+        allowed:true,available:true,contexts:reviewContexts}};
+  }
   // Reread role declarations at each boundary; never switch a bound invocation.
   // onWorker (provider development, task-runner.mjs) journals the worker's
   // identity right before and right after the spawn; a journal failure kills
@@ -213,7 +293,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   const verificationGate=options.verificationPrecheck===true?async(request,control)=>{
     const verdict=readVerificationPrecheck(await bridge.call('verification_precheck',
       {...request,codeProject:definition.codeProject,feature:definition.feature,
-        scope:definition.scope},control.signal));
+        scope:request.scope??definition.scope},control.signal));
     if(!verdict.satisfied)try{
       process.stderr.write(JSON.stringify({diagnostic:'verification_precheck_failed',
         task:request.identity.taskId,attempt:request.identity.attempt,
@@ -226,7 +306,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     try{
       const gaps=checklistGaps([request.description,request.verification]
         .filter(text=>typeof text==='string').join('\n'),
-        [verdict.evidence,deliveredText(definition.codeProject,definition.scope)].join('\n'));
+        [verdict.evidence,deliveredText(definition.codeProject,request.scope??definition.scope)].join('\n'));
       if(gaps.length>0)process.stderr.write(JSON.stringify({diagnostic:'checklist_coverage',
         task:request.identity.taskId,attempt:request.identity.attempt,advisory:true,
         gaps:gaps.map(gap=>({total:gap.total,missing:gap.missing}))})+'\n');
@@ -236,11 +316,14 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   const outerTimeoutMs=provider?protection.timeoutMs:1800000;
   const progress=(request,control,stage,run,selectedRuntime=runtime)=>withHostProgress({definition,
     identity:request.identity,runtime:selectedRuntime,stage,signal:control.signal},run);
-  const execution={configuration,timeoutMs:outerTimeoutMs,excludedContexts:[durableHostContextId],applicableAgentFiles:[],
+  const execution={...(review?.scopeLimits?{reviewScopeLimits:review.scopeLimits}:{}),configuration,timeoutMs:outerTimeoutMs,excludedContexts:[durableHostContextId],applicableAgentFiles:[],
     ...(verificationGate?{verificationGate:(request,control)=>progress(request,control,'verifying',()=>verificationGate(request,control))}:{}),
     ...(bootstrap?{bootstrap}:{}),
     ...(provider&&!controlPolicy?{developmentAttempt:provider.attempt}:{}),
-    ...(workflow?createHostWorkflowCapabilities({definition,configuration:workflow,bridge,allowQa,runtime,protectedExecution:protection!==null,bootstrap,parallelMember,controlPolicy}):{}),
+    ...(Object.hasOwn(options,'qaExecutorConfiguration')?createAttachedHostQaCapabilities({definition,configuration,
+      qa:options.qaExecutorConfiguration,bridge,runtime,protectedExecution:protection!==null})
+      :workflow?createHostWorkflowCapabilities({definition,configuration:workflow,bridge,allowQa,runtime,protectedExecution:protection!==null,bootstrap,parallelMember,controlPolicy,...(protection?{commandProjection}:{})})
+      :implicitQaConfiguration(configuration)?createImplicitHostQaCapabilities({configuration,bridge}):{}),
     ...(options.qaLogHome?{qaLogHome:options.qaLogHome}:{}),
     developer:{provider:coderRuntime,requestedModel:provider?.model??'current-session',contextId:author,run:async(request,control)=>{
       const bound=(coderRuntime==='codex'?readCodexDeveloperRequest:readClaudeDeveloperRequest)(request);
@@ -266,13 +349,16 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
         const expected=projectExecution?projectExecution.expected(bound.payload.scope):null;
         if(protection){
           prompt+=protectedTextInstructions;
+          if(binaryAssets)prompt+=' Declared binary assets: '+JSON.stringify(binaryAssets.paths)
+            +'. For these paths return {path,beforeSha256,asset:{path,sha256,size},mode?:"0644"}; asset.path is relative to the frozen sourceRoot. '
+            +'Never embed binary bytes as text or choose another source root. Deletion still uses content:null. The owner imports exact bytes and the sandbox applies them.';
           if(!parallelMember&&documentationPaths.length&&isFinalCmAiTask({specsDir:definition.specsDir,codeProject:definition.codeProject,
             feature:definition.feature,taskId:bound.identity.taskId,featureSelection:definition.featureSelection?.feature}))prompt+=' Include necessary documentation synchronization in the same edits: '+JSON.stringify(documentationPaths);
         }
         const response=provider?await processWorker({prompt:prompt+'\n'+JSON.stringify({editMode:'protected-text-v1',expected})},control):json(await bridge.call('develop',{request:bound,prompt,codeProject:definition.codeProject,route,
           ...(definition.codeProjects?{codeProjects:resolveCodeProjects(definition.codeProject,definition.codeProjects),
             projectInstructions:definition.codeProjects.map(root=>({codeProject:root,files:readProjectInstructionContext(root)}))}:{}),
-          ...(protection?{editMode:'protected-text-v1',expected}: {})},control.signal));
+          ...(protection?{editMode:'protected-text-v1',expected,...(binaryAssets?{binaryAssets}: {})}: {})},control.signal));
         if(provider)developerLog?.complete(developerUsage??{usage_state:'unavailable'},response.status==='succeeded'?'success':response.status==='cancelled'?'cancelled':'error');
         if(response.status==='succeeded'){
           const edits=[];
@@ -286,19 +372,15 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
               if(response.value.outcome==='blocked')need(response.edits.length===0,'protected_edit_invalid');
               const seen=new Set();
               for(const edit of response.edits){
-                shape(edit,['path','beforeSha256','content',...(Object.hasOwn(edit,'mode')?['mode']:[])]);
-                need(!Object.hasOwn(edit,'mode')||edit.content!==null&&['0644','0755'].includes(edit.mode),'protected_edit_invalid');
                 need(bound.payload.scope.includes(edit.path)&&!seen.has(edit.path),'out_of_scope');seen.add(edit.path);
-                if(edit.beforeSha256!==null)hex(edit.beforeSha256);
-                need(edit.content===null||typeof edit.content==='string','protected_edit_invalid');
-                need(edit.content===null||Buffer.byteLength(edit.content)<=1024*1024,'limit_exceeded');
-                need(edit.content!==null||edit.beforeSha256!==null,'protected_edit_invalid');
+                const prepared=prepareProtectedEdit(edit,{binaryAssets,scope:bound.payload.scope,expected});
                 // Reuse a previous proposal only when its exact output is
                 // already present. A stale proposal never overwrites drift.
                 if(edit.beforeSha256!==expected[edit.path]){
-                  const after=edit.content===null?null:createHash('sha256').update(edit.content).digest('hex');
+                  const after=protectedEditAfterHash(prepared);
                   need(after===expected[edit.path],'protected_edit_stale');
-                }else edits.push(edit);
+                  if(Object.hasOwn(prepared,'contentBlob'))need((fs.lstatSync(path.join(definition.codeProject,edit.path)).mode&0o7777)===0o644,'protected_edit_stale');
+                }else edits.push(prepared);
               }
             }
           }catch(error){return {status:'failed',code:error.code==='protected_edit_stale'?'protected_edit_stale':'invalid_result',
@@ -327,38 +409,73 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
       return progress(bound,control,'developing',()=>createDeveloperRun({worker,provider:coderRuntime,requestedModel:provider?.model??'current-session',
         protectedCurrentSession:protection!==null&&provider===null})(bound,control),coderRuntime);
     }},
-    check:(request,control)=>progress(request,control,'checking',()=>{
-      if(check)return check(request,control);
+    check:(request,control)=>progress(request,control,'checking',async()=>{
+      if(check){
+        const result=await check(request,control);
+        if(!nativeEvidenceProfile||request.identity.attempt!==2||!Array.isArray(result)
+          ||!result.every(item=>item.outcome==='passed'&&item.exitCode===0))return result;
+        let material;
+        try{material=captureNativeReviewEvidence(nativeEvidenceProfile,{codeProject:definition.codeProject,
+          specsDir:definition.specsDir,identity:request.identity,scope:request.scope??supplementScope??definition.scope});}
+        catch(error){material={id:'native-evidence',kind:'native-evidence',outcome:'unavailable',exitCode:null,evidence:error.code??'native_evidence_unavailable'};}
+        return [...result,material];
+      }
       const route=resolveHostRole({definition,identity:request.identity,role:'tester',signal:control.signal,runtime});
       return bridge.call('check',{...request,codeProject:definition.codeProject,
-        scope:definition.scope,requirements:definition.requirements,route},control.signal);
+        scope:request.scope??definition.scope,requirements:definition.requirements,route},control.signal);
     }),
     // The process adapter records observed reviewer events. Preflight checks capability.
     reviewers:[{id:'reviewer',adapterId,provider:reviewProvider,requestedModel:reviewOptions.model,
       allowed:true,available:true,contexts:reviewContexts,
       run:(request,control)=>{
         need(review!==null,'review_configuration_required');
-        let observedUsage=null;const usageLog=executionPolicy?createNativeUsageLog({definition,request,provider:reviewerRuntime,role:'reviewer'}):null;
-        const selectedOptions={...reviewOptions,...(usageLog?{onUsageClaim:()=>usageLog.claimed(),onUsage:value=>{observedUsage=value;}}:{}),...(provider?{spawnProcess:dispatchSpawn('reviewer',request.identity,control.signal)}:{})};
+        const selectedRuntime=reviewerSwitch?.bound?'codex':reviewerRuntime;
+        need(request.provider===selectedRuntime,'reviewer_switch_configuration_mismatch');
+        let observedUsage=null;const usageLog=executionPolicy?createNativeUsageLog({definition,request,provider:selectedRuntime,role:'reviewer'}):null;
+        const selectedOptions={...(reviewerSwitch?.bound?reviewerSwitch.workerOptions:reviewOptions),...(usageLog?{onUsageClaim:()=>usageLog.claimed(),onUsage:value=>{observedUsage=value;}}:{}),...(provider?{spawnProcess:dispatchSpawn('reviewer',request.identity,control.signal)}:{})};
         return progress(request,control,'review_starting',async observation=>{
           const observedControl={...control,onEvent:event=>{
             control.onEvent(event);
             if(event.event==='thread.started')observation.reviewStarted();
           }};
-          const result=await (reviewerRuntime==='codex'?createCodexReviewRun(codexWorker(selectedOptions),executionPolicy)(request,observedControl)
+          const result=await (binaryAssets?runBinaryAssetReview({definition,binaryAssets,reviewOptions:selectedOptions,request,control:observedControl,executionPolicy})
+            :selectedRuntime==='codex'?(prepareCodexReviewInput(request,executionPolicy).material
+              ?runMaterialReview({definition,reviewOptions:selectedOptions,request,control:observedControl,executionPolicy})
+              :createCodexReviewRun(codexWorker(selectedOptions),executionPolicy)(request,observedControl))
             :createClaudeReviewRun(claudeWorker(selectedOptions),executionPolicy)(request,observedControl));
           usageLog?.complete(observedUsage??{usage_state:'unavailable'},result.status==='succeeded'?'success':result.status==='cancelled'?'cancelled':'error');
           return result;
-        },reviewerRuntime);
+        },selectedRuntime);
       }}],
     reviewInvocation:{developerThreadId:author,excludedThreadIds:[durableHostContextId],hostContextId,
       // Not journaled (unlike timeoutMs above), so a resumed run may raise it.
-      timeoutMs:reviewRaceTimeout(outerTimeoutMs,reviewOptions.timeoutMs)},
+      timeoutMs:reviewRaceTimeout(outerTimeoutMs,Math.max(reviewOptions.timeoutMs,reviewerSwitch?.workerOptions.timeoutMs??0))},
   };
+  if(protection&&!provider&&!bootstrap&&!parallelMember&&!definition.codeProjects&&!binaryAssets
+    &&coderRuntime==='codex'&&reviewerRuntime==='codex'&&!externalModels&&!executionPolicy){
+    nativeEvidenceProfiles.set(execution,profile=>{
+      need(nativeEvidenceProfile===null,'native_review_recovery_unavailable');
+      nativeEvidenceProfile=readNativeEvidenceProfile(profile,{codeProject:definition.codeProject,specsDir:definition.specsDir,inspectCurrent:false});
+    });
+  }
+  if(reviewerSwitch)reviewerSwitches.set(execution,reviewerSwitch);
   if(definition.codeProjects)execution.applicableAgentFiles=[...new Set([...execution.applicableAgentFiles,
     ...codeProjectInstructionPaths(codeProjectPaths(definition.codeProject,definition.codeProjects))
       .filter(file=>file!=='AGENTS.md'&&fs.existsSync(path.join(definition.codeProject,file)))])];
-  if(protection){freeze(execution);protectedConversations.set(execution,freeze({codeProject:definition.codeProject,
+  if(protection&&!provider&&!bootstrap&&!parallelMember&&!definition.codeProjects&&!binaryAssets){
+    const preview=(supplement,scope,configFingerprint)=>{
+      const checked=validateProtectedScopeSupplement(supplement,{configFingerprint,scope,originalScope:definition.scope});
+      need(digest(checked.material.execution)===digest(configuration)&&digest(checked.material.definition)===digest(definition),'scope_check_supplement_drift');
+      projectProtectedScopeCommands(protection.checkCommands,checked,scope);
+      if(workflow?.qa)projectProtectedScopeCommands(workflow.qa.commands,checked,scope);
+      return checked;
+    };
+    scopeSupplements.set(execution,{preview,bind(supplement,scope,configFingerprint){
+      need(scopeSupplement===null,'scope_revision_unavailable');
+      scopeSupplement=preview(supplement,scope,configFingerprint);supplementScope=freeze(json(scope));
+    }});
+  }
+  if(protection){freeze(execution);protectedConversations.set(execution,freeze({...(binaryAssets?{binaryAssets:binaryAssetBinding(binaryAssets)}:{}),codeProject:definition.codeProject,
     specsRoot:definition.specsDir,definitionDigest:digest(definition)}));}
   if(externalModels||executionPolicy){freeze(execution);externalConversations.set(execution,digest(definition));}
   return execution;

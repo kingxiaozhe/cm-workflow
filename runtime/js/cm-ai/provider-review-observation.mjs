@@ -4,6 +4,7 @@ import {readReviewPackage} from './review-package.mjs';
 import {reviewResult,reviewResultForPaths} from './review-runner.mjs';
 import {MAX_REVIEW_EXCLUSIONS} from './effect-contract.mjs';
 import {readFixCausePackage,causeReviewPaths} from '../cm-fix/cause-package.mjs';
+import {readProviderFailureDiagnostic} from './provider-failure-diagnostic.mjs';
 
 function decode(raw,limit) {
   need(typeof raw==='string');need(Buffer.byteLength(raw,'utf8')<=limit,'limit_exceeded');
@@ -31,7 +32,8 @@ function eventStream(events,excluded) {
   for(const e of events) {
     need(close===null);
     if(e?.event==='process_closed') {
-      shape(e,['event','exit_code','signal','timed_out']);
+      shape(e,['event','exit_code','signal','timed_out',...(Object.hasOwn(e,'diagnostic')?['diagnostic']:[])]);
+      if(Object.hasOwn(e,'diagnostic')){readProviderFailureDiagnostic(e.diagnostic);need(['error','turn.failed'].includes(terminal),'provider_diagnostic_invalid');}
       need(e.exit_code===null||Number.isInteger(e.exit_code)&&e.exit_code>=-255&&e.exit_code<=255);
       need(e.signal===null||typeof e.signal==='string'&&e.signal.trim().length>0&&e.signal.length<=64);
       need(typeof e.timed_out==='boolean');close=e;continue;
@@ -41,7 +43,12 @@ function eventStream(events,excluded) {
       shape(e,['event','provider_thread']);need(stage===0);id(e.provider_thread);
       need(!excluded.has(e.provider_thread),'observation_context');thread=e.provider_thread;stage=1;
     }else {
-      shape(e,['event','item_type']);
+      shape(e,['event','item_type',...(Object.hasOwn(e,'diagnostic')?['diagnostic']:[])]);
+      if(Object.hasOwn(e,'diagnostic')){
+        readProviderFailureDiagnostic(e.diagnostic);
+        need(['error','turn.failed'].includes(e.event),'provider_diagnostic_invalid');
+        need(e.diagnostic.source===(e.event==='error'?'stdout_error':'stdout_turn_failed'),'provider_diagnostic_invalid');
+      }
       if(e.event==='turn.started'){need(stage===1&&e.item_type===null);stage=2;}
       else if(e.event==='item.completed'){need(stage===2&&e.item_type==='agent_message');stage=3;hasResult=true;}
       else if(e.event==='turn.completed'){need(stage===3&&e.item_type===null);terminal=e.event;}
@@ -177,10 +184,11 @@ export function inspectProviderReviewFailure(observationText,expectationText){
     try{reviewResult(r.value,expected.pkg);return null;}
     catch(error){if(!REVIEWER_VERDICT_FAILURES.includes(error?.code))return null;category='verdict';failure=error.code;}
   }
+  const diagnostic=close?.diagnostic??observation.events.find(e=>['error','turn.failed'].includes(e.event))?.diagnostic;
   return json({version:1,kind:'cm-provider-review-failure',requestDigest:expected.request.requestDigest,
     observationDigest:digest(observation),identity:expected.request.identity,logicalContextId:expected.request.contextId,
     provider:expected.request.provider,requestedModel:expected.request.requestedModel,providerThreadId:thread,
-    category,failure,completionEligible:false});
+    category,failure,completionEligible:false,...(diagnostic?{diagnostic}:{} )});
 }
 
 export function inspectProviderReviewReconciliation(observationText,expectationText,cause=false){
@@ -192,8 +200,9 @@ export function inspectProviderReviewReconciliation(observationText,expectationT
   }
   need(['error','turn.failed'].includes(terminal)&&r.status==='failed'&&r.code==='provider_failed',
     'review_reconciliation_evidence_required');
+  const diagnostic=close?.diagnostic??observation.events.find(e=>['error','turn.failed'].includes(e.event))?.diagnostic;
   return json({version:1,kind:'cm-provider-review-failure',requestDigest:expected.request.requestDigest,
     observationDigest:digest(observation),identity:expected.request.identity,logicalContextId:expected.request.contextId,
     provider:expected.request.provider,requestedModel:expected.request.requestedModel,providerThreadId:thread,
-    category:'provider',failure:'reviewer_provider_failed',completionEligible:false});
+    category:'provider',failure:'reviewer_provider_failed',completionEligible:false,...(diagnostic?{diagnostic}:{})});
 }

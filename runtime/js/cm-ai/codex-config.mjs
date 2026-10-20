@@ -2,6 +2,9 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {readReviewVerification,verificationTools} from '../cm-fix/review-verification-contract.mjs';
+import {readReviewMaterialManifest} from './review-material.mjs';
 import {externalEffort} from './external-models.mjs';
 
 // Native profile, not an outer sandbox. Keep the built-in workspace protections.
@@ -26,9 +29,9 @@ export const disabledFeatures = Object.freeze([
   'skill_mcp_dependency_install', 'tool_suggest',
 ]);
 
-export function commonArgs({ cwd, model, effort, disabledSkills = [] }) {
+export function commonArgs({ cwd, model, effort, disabledSkills = [], verification = null, verificationTransport = null, material = null, materialTransport = null }) {
   if (!/^[a-zA-Z0-9._-]+$/.test(model)) throw new Error('invalid model');
-  return ['exec', '--ignore-user-config', '--strict-config', '--ephemeral',
+  const args=['exec', '--ignore-user-config', '--strict-config', '--ephemeral',
     '--sandbox', 'read-only', '--skip-git-repo-check', '--cd', cwd, '--json',
     ...disabledFeatures.flatMap(name => ['--disable', name]),
     '-c', 'approval_policy="never"', '-c', 'web_search="disabled"',
@@ -43,9 +46,69 @@ export function commonArgs({ cwd, model, effort, disabledSkills = [] }) {
     '-c', 'skills.include_instructions=false',
     '-c', `skills.config=[${[...disabledSkills].sort().map(folder =>
       `{path=${JSON.stringify(folder)},enabled=false}`).join(',')}]`];
+  if(verification){
+    const config=readReviewVerification(verification);
+    if(!config.binaryReview)throw Object.assign(Error('unsupported_verification'),{code:'unsupported_verification'});
+    const server=fileURLToPath(new URL('../cm-fix/review-verification-server.mjs',import.meta.url));
+    let copy='CM_ISOLATED_REVIEW_COPY',configPath='CM_ISOLATED_REVIEW_CONFIG';
+    if(verificationTransport){
+      const transport=JSON.parse(verificationTransport.mcpConfig),mcp=transport?.mcpServers?.cm_review;
+      copy=verificationTransport.cwd;
+      if(Object.keys(transport).join(',')!=='mcpServers'||Object.keys(transport.mcpServers).join(',')!=='cm_review'
+        ||!mcp||Object.keys(mcp).sort().join(',')!=='args,command'||mcp.command!==process.execPath
+        ||!Array.isArray(mcp.args)||mcp.args.length!==2||mcp.args[0]!==server
+        ||typeof copy!=='string'||!path.isAbsolute(copy)||fs.realpathSync(copy)!==copy
+        ||path.basename(copy)!=='project'||!path.basename(path.dirname(copy)).startsWith('cm-review-verification-')
+        ||mcp.args[1]!==path.join(path.dirname(copy),'tools.json'))
+        throw Object.assign(Error('review_verification_transport_missing'),{code:'review_verification_transport_missing'});
+      configPath=mcp.args[1];
+    }
+    args[args.indexOf('--cd')+1]=copy;
+    const names=verificationTools(config).map(name=>name.slice('mcp__cm_review__'.length));
+    args[args.indexOf('mcp_servers={}')]=`mcp_servers={cm_review={command=${JSON.stringify(process.execPath)},args=${JSON.stringify([server,configPath])},enabled_tools=${JSON.stringify(names)},required=true}}`;
+    // Current models force code-mode-only tool metadata. Keep its execution host
+    // provider disabled; only the fixed MCP namespace is callable directly.
+    args.push('-c','features.code_mode={enabled=false,direct_only_tool_namespaces=["mcp__cm_review"]}',
+      '-c','features.code_mode_host={enabled=false,disable_in_process_fallback=false}',
+      '-c','agents.enabled=false','--disable','sleep_tool','--disable','view_image',
+      '--disable','default_mode_request_user_input','-c','tools.experimental_request_user_input.enabled=false',
+      '-c','mcp_optional_startup_grace_ms=0');
+  }
+  if(material){
+    if(verification)throw Object.assign(Error('review_material_configuration'),{code:'review_material_configuration'});
+    readReviewMaterialManifest(material);
+    const server=fileURLToPath(new URL('./review-material-server.mjs',import.meta.url));
+    let copy='CM_ISOLATED_MATERIAL_COPY',configPath='CM_ISOLATED_MATERIAL_CONFIG';
+    if(materialTransport){
+      const transport=JSON.parse(materialTransport.mcpConfig),mcp=transport?.mcpServers?.cm_review;
+      copy=materialTransport.cwd;
+      if(Object.keys(transport).join(',')!=='mcpServers'||Object.keys(transport.mcpServers).join(',')!=='cm_review'
+        ||!mcp||Object.keys(mcp).sort().join(',')!=='args,command'||mcp.command!==process.execPath
+        ||!Array.isArray(mcp.args)||mcp.args.length!==2||mcp.args[0]!==server
+        ||typeof copy!=='string'||!path.isAbsolute(copy)||fs.realpathSync(copy)!==copy
+        ||path.basename(copy)!=='project'||!path.basename(path.dirname(copy)).startsWith('cm-review-material-')
+        ||mcp.args[1]!==path.join(path.dirname(copy),'tools.json'))
+        throw Object.assign(Error('review_material_transport'),{code:'review_material_transport'});
+      configPath=mcp.args[1];
+    }
+    args[args.indexOf('--cd')+1]=copy;
+    args[args.indexOf('mcp_servers={}')]=`mcp_servers={cm_review={command=${JSON.stringify(process.execPath)},args=${JSON.stringify([server,configPath])},enabled_tools=["read_material"],required=true}}`;
+    // At most16KiB source/page; JSON escapes can expand it sixfold. This
+    // material-only envelope prevents native tool-result truncation.
+    args.push('-c','tool_output_token_limit=131072');
+    args.push('-c','features.code_mode={enabled=false,direct_only_tool_namespaces=["mcp__cm_review"]}',
+      '-c','features.code_mode_host={enabled=false,disable_in_process_fallback=false}',
+      '-c','agents.enabled=false','--disable','sleep_tool','--disable','view_image',
+      '--disable','default_mode_request_user_input','-c','tools.experimental_request_user_input.enabled=false',
+      '-c','mcp_optional_startup_grace_ms=0');
+  }
+  return args;
 }
 
 export function configFingerprint(options) {
+  if(options.material)return createHash('sha256').update(JSON.stringify({cwd:options.cwd,args:commonArgs({...options,materialTransport:null}),material:readReviewMaterialManifest(options.material)})).digest('hex');
+  if(options.verification)return createHash('sha256').update(JSON.stringify({cwd:options.cwd,
+    args:commonArgs({...options,verificationTransport:null}),verification:readReviewVerification(options.verification)})).digest('hex');
   return createHash('sha256').update(JSON.stringify(commonArgs(options))).digest('hex');
 }
 

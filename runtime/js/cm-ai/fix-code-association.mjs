@@ -4,7 +4,7 @@ import {verifySpecificationMaterial} from './specification-material.mjs';
 import {CONFIG_FILENAMES} from '../../../scripts/cm-workflow-config.mjs';
 import {digest,hex,id,json,need,shape} from './effect-contract.mjs';
 
-const inventoryFile=({contentBase64,...metadata})=>metadata;
+const inventoryFile=({contentBase64,contentGzipBase64,...metadata})=>metadata;
 const sameFile=(a,b)=>digest(a===null?null:inventoryFile(a))===digest(b===null?null:inventoryFile(b));
 // Recorded steps are compact (run id and package digest). The list is not a
 // search bound: it is every qualifying delivery, and the whole accepted-fix

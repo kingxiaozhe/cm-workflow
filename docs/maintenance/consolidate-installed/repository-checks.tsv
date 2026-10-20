@@ -1,0 +1,12 @@
+命令	候选	origin/main 对照	说明
+bash scripts/cm-check-runtime.sh	0 / PASSED	首次1 / 最终0	首次候选/主分支均出现两项 PRD 误报；独立管道状态 141 0；最终候选机械检查通过
+python3 scripts/validate-public-repo.py	0 / PASSED	未重复	最终公开包校验通过
+python3 scripts/scan-public-safety.py	0 / PASSED	未重复	包含最终报告与逐文件清单
+Bash 全部 .sh 语法检查	PASSED	未重复	bash-syntax.log 无错误；未修改 shell 源码后复用
+node scripts/cm-test-suite.mjs check	PASSED	未重复	ordinary 299 / native 16 / history 24
+python3 scripts/test-task-gate.py	日志 PASSED	未重复	Python lock-only wrapper；原始执行日志保留
+python3 scripts/test-cm-usage-report.py	日志 PASSED	未重复	用量夹具；原始执行日志保留
+python3 scripts/test-cm-prd-review-gate.py	日志 PASSED	未重复	PRD recovery fixture
+python3 scripts/test-scan-public-safety.py	日志 PASSED	未重复	扫描器边界夹具
+python3 scripts/test-cm-openai-compatible-call.py	1 / FAILED	1 / FAILED	两边 loopback bind 均 PermissionError，未建立外部连接
+bash scripts/test-shell-compat.sh	未取得退出结果	未重复	复合长链路不计通过；原命令会话38616

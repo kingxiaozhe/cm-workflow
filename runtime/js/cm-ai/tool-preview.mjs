@@ -6,6 +6,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync, zstdDecompressSync } from 'node:zlib';
 import { commonArgs, cleanEnvironment, configFingerprint } from './codex-config.mjs';
+import {verificationTools} from '../cm-fix/review-verification-contract.mjs';
+import {ownedProcessCleanup} from './owned-process-cleanup.mjs';
 
 export function previewPromptTransport(promptTransport, prompt) {
   if (!['argument', 'stdin'].includes(promptTransport)) throw new Error('invalid prompt transport');
@@ -31,12 +33,28 @@ export function writePreviewPrompt(child, promptTransport, prompt, onFailure) {
   return () => { active = false; input.removeListener?.('error', fail); };
 }
 
-export function requestTools(parsed) {
+export function requestTools(parsed, includeAdditionalTools = false) {
   if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.input)) return null;
-  if (!Object.hasOwn(parsed, 'tools')) return [];
-  return Array.isArray(parsed.tools) ? parsed.tools.map(tool => ({
-    type: tool.type, name: tool.name ?? tool.function?.name ?? null,
-  })) : null;
+  const lists=[];
+  if(Object.hasOwn(parsed,'tools'))lists.push(parsed.tools);
+  // Codex Responses Lite serializes schemas as an additional_tools input item.
+  // Inspect both surfaces; neither an extra namespace nor a duplicate is ignored.
+  if(includeAdditionalTools)for(const item of parsed.input)if(item?.type==='additional_tools')lists.push(item.tools);
+  const out=[];
+  for(const list of lists){
+    if(!Array.isArray(list))return null;
+    for(const tool of list){
+      if(!tool||typeof tool!=='object')return null;
+      if(tool.type==='namespace'){
+        if(typeof tool.name!=='string'||!Array.isArray(tool.tools))return null;
+        for(const child of tool.tools){
+          if(!child||typeof child.name!=='string'||!['function','custom'].includes(child.type))return null;
+          out.push({type:child.type,name:tool.name==='functions'?child.name:tool.name+'__'+child.name});
+        }
+      }else out.push({type:tool.type,name:tool.name??tool.function?.name??null});
+    }
+  }
+  return out;
 }
 
 export function skillContext(parsed) {
@@ -70,11 +88,15 @@ export function skillContext(parsed) {
 }
 
 export async function previewTools({ cwd, model, effort, fixtureResponse = false, disabledSkills = [],
-  promptTransport = 'argument', cli = 'codex', allowCodeProject = false }) {
+  promptTransport = 'argument', cli = 'codex', allowCodeProject = false,verification=null,verificationTransport=null,material=null,materialTransport=null }) {
+  const toolMode=Boolean(verification||material);
   cwd = fs.realpathSync(cwd);
   if (typeof allowCodeProject !== 'boolean' || !fs.statSync(cwd).isDirectory()) throw new Error('invalid code project');
   if (!allowCodeProject && !/^\/private\/tmp\/cm-js-b1-[A-Za-z0-9]+$/.test(cwd)) throw new Error('invalid fixture');
   if (!/^[a-zA-Z0-9._-]+$/.test(model)) throw new Error('invalid model');
+  if(verification&&!verificationTransport)throw Object.assign(Error('review_verification_transport_missing'),{code:'review_verification_transport_missing'});
+  if(material&&!materialTransport)throw Object.assign(Error('review_material_transport'),{code:'review_material_transport'});
+  const baseArgs=commonArgs({cwd,model,effort,disabledSkills,verification,verificationTransport,material,materialTransport});
   const seen = [];
   const discoveredSkills = new Set();
   const server = http.createServer((request, response) => {
@@ -92,7 +114,7 @@ export async function previewTools({ cwd, model, effort, fixtureResponse = false
         if (request.headers['content-encoding'] === 'zstd') body = zstdDecompressSync(body, { maxOutputLength: 1_000_000 });
         const parsed = JSON.parse(body.toString('utf8'));
         // Persist neither headers nor prompt/input. Only safe structural metadata.
-        const tools = requestTools(parsed);
+        const tools = requestTools(parsed, toolMode);
         const context = skillContext(parsed);
         for (const folder of context.folders) discoveredSkills.add(folder);
         seen.push({ method: request.method, path: request.url, model: parsed.model,
@@ -130,7 +152,7 @@ export async function previewTools({ cwd, model, effort, fixtureResponse = false
   const loopbackBase = `http://${server.address().address}:${port}`;
   const previewPrompt = 'Return a greeting for synthetic task A-DEMO-001.';
   const transport = previewPromptTransport(promptTransport, previewPrompt);
-  const args = [...commonArgs({ cwd, model, effort, disabledSkills }),
+  const args = [...baseArgs,
     '-c', 'model_provider="cm_local_tool_preview"',
     '-c', `model_providers.cm_local_tool_preview={name="CM local tool preview",base_url="${loopbackBase}/v1",wire_api="responses",env_key="CM_JS_PROBE_AUTH",requires_openai_auth=false,request_max_retries=0,stream_max_retries=0}`,
     transport.argument];
@@ -139,7 +161,9 @@ export async function previewTools({ cwd, model, effort, fixtureResponse = false
   let result;
   try {
     result = await new Promise((resolve, reject) => {
-      const child = spawn(cli, args, { cwd, env, stdio: transport.stdio });
+      const child = spawn(cli, args, { cwd:materialTransport?.cwd??verificationTransport?.cwd??cwd, env, stdio: transport.stdio,
+        ...(toolMode?{detached:process.platform!=='win32'}:{}) });
+      const cleanup=toolMode?ownedProcessCleanup(child):async()=>{};
       let stderr = '', timedOut = false, stdout = '', promptWriteFailed = false;
       let cleanPrompt = () => {};
       child.stdout.setEncoding('utf8');
@@ -147,7 +171,7 @@ export async function previewTools({ cwd, model, effort, fixtureResponse = false
       child.stderr.on('data', chunk => { if(stderr.length < 16000) stderr += chunk; });
       const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 20000);
       child.once('error', error => { clearTimeout(timer); cleanPrompt(); reject(error); });
-      child.once('close', (code, signal) => {
+      child.once('close', async(code, signal) => {
         const events = stdout.trim().split('\n').filter(Boolean).map(line => {
           try {
             const e = JSON.parse(line);
@@ -157,7 +181,8 @@ export async function previewTools({ cwd, model, effort, fixtureResponse = false
                 ? String(e.item.message).slice(0,500) : undefined };
           } catch { return { invalid_json: true }; }
         });
-        clearTimeout(timer); cleanPrompt(); resolve({ code, signal, timedOut, promptWriteFailed, events,
+        let cleanupFailed=false;try{await cleanup();}catch{cleanupFailed=true;}
+        clearTimeout(timer); cleanPrompt(); resolve({ code, signal, timedOut, promptWriteFailed, events,...(toolMode?{cleanupFailed}:{}),
           // Config/startup diagnostics only when no model request reached the sink.
           diagnostic: seen.length ? null : stderr.slice(-2500) });
       });
@@ -172,11 +197,23 @@ export async function previewTools({ cwd, model, effort, fixtureResponse = false
     await new Promise(resolve => server.close(resolve));
   }
   const posts = seen.filter(r => r.method === 'POST' && r.path === '/v1/responses');
+  const observed=posts[0]?.tools;
+  // Code-mode-only catalogs retain exec/wait even when the disabled session
+  // provider rejects them before JavaScript execution. request_user_input_async
+  // can message only this reviewer; any such non-MCP event fails the worker.
+  // No control schema substitutes for actual fixed-MCP verification proof.
+  const controls=new Map([['exec','custom'],['wait','function'],['request_user_input_async','function']]);
+  const active=toolMode?observed?.filter(t=>!controls.has(t.name)):observed;
+  const controlsValid=!toolMode||(Array.isArray(observed)&&new Set(observed.map(t=>t.name)).size===observed.length
+    &&observed.every(t=>!controls.has(t.name)||controls.get(t.name)===t.type));
+  const expected=material?['mcp__cm_review__read_material']:verification?verificationTools(verification).slice().sort():[];
+  const actual=active?.map(tool=>tool.name).sort();
   const passed = posts.length === 1 && posts[0].model === model
-    && posts[0].tools?.length === 0 && posts[0].auth_is_synthetic
+    && JSON.stringify(actual)===JSON.stringify(expected)&&controlsValid
+    &&(!toolMode||active.every(tool=>tool.type==='function')) && posts[0].auth_is_synthetic
     && posts[0].skill_catalog_present === false
-    && result.code === (fixtureResponse ? 0 : 1) && !result.timedOut && !result.promptWriteFailed;
-  const receipt = { cli_model: model, config_fingerprint: configFingerprint({ cwd, model, effort, disabledSkills }),
+    && result.code === (fixtureResponse ? 0 : 1) && !result.timedOut && !result.promptWriteFailed&&!result.cleanupFailed;
+  const receipt = { cli_model: model, config_fingerprint: configFingerprint({ cwd, model, effort, disabledSkills,verification,material }),
     passed, fixture_response: fixtureResponse, prompt_transport: promptTransport,
     real_model_requests: 0, local_requests: seen,
     disabled_skill_count: disabledSkills.length, process: result, listener_closed: true };

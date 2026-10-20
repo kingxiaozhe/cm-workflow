@@ -173,3 +173,13 @@ test('batch advance guidance uses the batch entry for every native resume family
     assert.match(guidanceText(output),/原批次入口/);assert.doesNotMatch(guidanceText(output),/恢复原运行/);
   }
 });
+
+test('spent provider and evidence review grants do not mask original completion or QA gates',()=>{
+ const spent={providerReviewRecovery:{consumed:true,source:null},evidenceContinuation:{consumed:true,source:null,reviewSource:null}};
+ for(const code of ['complete_recheck_failed','complete_commit_interrupted','completion_checks_changed','completion_package_changed']){
+  const g=explain('blocked',code,'complete',spent);assert.equal(g.recoveryOperation,'complete',code);assert.doesNotMatch(g.summary,/技术续审机会已经消费/);
+ }
+ const qa=explain('fixture_completed','qa_execution_unknown','none',spent);assert.match(qa.summary,/QA/);assert.match(qa.nextStep,/上一轮/);
+ assert.equal(explain('run_done',null,'none',spent),null);
+ assert.match(explain('blocked','provider_review_recovery_exhausted','none',spent).summary,/已经消费/);
+});

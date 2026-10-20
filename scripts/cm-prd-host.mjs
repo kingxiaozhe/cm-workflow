@@ -45,6 +45,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       output.write('promote_design {requestId,operation,draftDigest,reason} moves an unreviewed full draft to design while preserving draft and self-check rounds. Saved drafts require complete exact original bytes with private permissions; partial/conflicting saves, prior review and exhausted rounds are rejected. Saved task revisions archive both versions before replacement; no approval is implied.\n');
       output.write('select_design_reviews {requestId,operation,draftDigest,risks:[{feature,signals,evidence}]} at design_ready freezes host-reported Step 9.5 risks for every feature. Only high-risk features may request design review; low-risk exact saved designs continue without it. Not approval; existing attempts cannot be downgraded.\n');
       output.write('plan_design {requestId,operation,text} generates requirements/design only. design_ready permits save_design with --allow-spec-write and original design review. After original design disposition, advance generates tasks from the exact current design, then original self-check/save_draft. No approval is implied.\n');
+      output.write('import_baseline {requestId,operation,baseline} uses --allow-spec-write for bounded immutable pixel assets; inspect_baseline reads their binding. Missing rendered/interaction/font evidence is incomplete. Import does not occupy a feature number; save_design projects assets later.\n');
+      output.write('inspect_planning_recovery reads the exact blocked checkpoint binding. recover_planning {requestId,operation,binding} appends one recovery for a completed pre-draft design refusal; identical binding is idempotent. No provider, counter reset or approval.\n');
+      output.write('--session-skill-dir OLD_SKILL with --session preserves frozen identity and source paths while --skill-dir selects this executable asset root. Pending calls from another root cannot silently replay.\n');
       output.write('Optional --allow-spec-write enables save_draft and publish_summary. prepare_summary is read-only; publish_summary {requestId,operation,summaryDigest} requires the exact current prepared summary and writes awaiting_review only, then stops execution. --allow-disposition-write enables original disposition receipts. correct_findings requires both spec and review writes. None grants provider access or specification approval.\n');
       output.write('Optional --allow-review-write --host-context ACTUAL_AUTHOR_ID enables final_review {requestId,operation,stage,feature,mode:independent|self-degraded}. This permits original claim/r1 writes only; the trusted host must have actual review-channel authority. No provider authorization is implied. Interrupted attempts remain unknown and are not retried.\n');
       output.write('cm-prd-host.mjs serve --skill-dir PATH --project PATH --specs PATH --runtime codex|claude --allow-log-write [--cases PATH] [--change SELECTOR] [--session prd-ID]\nJSONL start/advance {requestId,operation,text}; status/cancel/resume. Conversations and pending requests persist privately under specs/.reviews/prd-sessions, never in global log bodies. No provider calls, approval or development.\n');return 0;
@@ -61,28 +64,36 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     need(argv.filter(x=>x==='--execution-optimizations').length<=1,'invalid_arguments');
     const args=argv.slice(1).filter(x=>!['--execution-optimizations','--allow-log-write','--allow-review-write','--allow-disposition-write','--allow-spec-write','--allow-review-abandon'].includes(x)),options={};
     for(let i=0;i<args.length;i+=2){
-      need(['--skill-dir','--project','--specs','--runtime','--cases','--host-context','--change','--session','--predecessor'].includes(args[i])
+      need(['--skill-dir','--session-skill-dir','--project','--specs','--runtime','--cases','--host-context','--change','--session','--predecessor'].includes(args[i])
         &&!Object.hasOwn(options,args[i])&&typeof args[i+1]==='string','invalid_arguments');
       options[args[i]]=args[i+1];
     }
     const runtime=options['--runtime'];need(['codex','claude'].includes(runtime),'invalid_runtime');
     const authorContextId=options['--host-context']??null;
     if(authorContextId!==null)id(authorContextId);if(reviewEnabled)need(authorContextId!==null,'prd_review_host_context_required');
-    const entry={skillDir:options['--skill-dir'],project:options['--project'],specs:options['--specs'],
+    need(!options['--session-skill-dir']||options['--session'],'prd_execution_assets_session_required');
+    const entry={skillDir:options['--session-skill-dir']??options['--skill-dir'],project:options['--project'],specs:options['--specs'],
       ...(options['--change']?{change:options['--change']} : {}),
       ...(options['--cases']?{cases:options['--cases']}:{})};
     const admission=inspectCmPrdAdmission(entry);
+    const executionAdmission=inspectCmPrdAdmission({...entry,skillDir:options['--skill-dir']});
+    const executionRoot=executionAdmission.workflowRoot;
     const runId=options['--session']??`prd-${randomUUID()}`;let routeTurn=0;
     let ended=readPrdInputsReplacement(admission.specs,runId);
     need(ended||admission.status==='ready'||options['--session']&&admission.mode==='change'&&admission.reason==='feature_missing','prd_admission_blocked');
-    need(fileURLToPath(import.meta.url)===path.join(admission.workflowRoot,'scripts/cm-prd-host.mjs'),'entry_path_invalid');
+    need(fileURLToPath(import.meta.url)===path.join(executionRoot,'scripts/cm-prd-host.mjs'),'entry_path_invalid');
     const predecessor=bindPrdPredecessor({entry,runtime,sessionId:runId,predecessor:options['--predecessor']});
+    if(options['--session-skill-dir'])need(fs.existsSync(path.join(admission.specs,'.reviews/prd-sessions',runId,'state.json')),
+      'prd_execution_assets_session_required');
+    // Reuse the original locked session reader and its existing16MiB limit; do not treat history as a1MiB source file.
     session=openPrdSession({specs:admission.specs,sessionId:runId,identity:{entry,runtime,...(predecessor?{predecessor}:{})},executionPolicy:argv.includes('--execution-optimizations')?EXECUTION_POLICY_V1:null});
+    if(options['--session-skill-dir'])need(session.state.active===null||session.state.active.calls.every(call=>!call.payload.reference
+      ||call.payload.reference.startsWith(executionRoot+path.sep)),'prd_execution_assets_pending');
     if(!ended&&admission.status!=='ready')need(session.state.checkpoint?.change?.stage==='awaiting_review'
       ||session.state.active?.request.operation==='save_draft','prd_admission_blocked');
     record=({event,phase='analysis',data={},at=null})=>{
       if(event==='decision')data={...data,analysis_turn:++routeTurn};
-      const result=spawnSync('python3',[path.join(admission.workflowRoot,'scripts/cm-log-event.py'),
+      const result=spawnSync('python3',[path.join(executionRoot,'scripts/cm-log-event.py'),
         '--workflow','cm-prd','--event',event,'--phase',phase,'--runtime',runtime,
         '--project-root',admission.project,'--specs-dir',admission.specs,'--run-id',runId,
         '--detail','Current conversation PRD workflow','--data-json',JSON.stringify(data),...(at?['--at',at]:[])],
@@ -104,6 +115,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       return session.call(kind,payload,signal,(body,sig)=>bridge.call(kind,body,sig));
     };
     const restoreAnalysis=restored=>admission.mode==='new'?createCmPrdAnalysis({input:entry,runtime,record,restored,allowInputDrift:true,
+      sessionId:runId,executionSkillDir:executionAdmission.skillDir,
       checkContext:(payload,signal)=>call('prd_self_check',payload,signal),
       generate:(payload,signal)=>call('prd_generate',payload,signal),
       processMaterials:(payload,signal)=>call('prd_materials',payload,signal),
@@ -113,15 +125,15 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     let summaryState=null,publishedSummary=false;
     const summarize=createPrdSummaryOwner({summarize:(payload,signal)=>call('prd_summary',{
       ...payload,project:admission.project,analysis:analysis.status(),
-      reference:path.join(admission.workflowRoot,'skills/cm-prd/SKILL.md')},signal)});
+      reference:path.join(executionRoot,'skills/cm-prd/SKILL.md')},signal)});
     const makeCorrect=()=>createPrdCorrectionOwner({correct:(payload,signal)=>call('prd_correct',{
       ...payload,project:admission.project,specs:admission.specs,
-      reference:path.join(admission.workflowRoot,'skills/cm-prd/SKILL.md')},signal)});
+      reference:path.join(executionRoot,'skills/cm-prd/SKILL.md')},signal)});
     let correct=makeCorrect();
     const dispose=createPrdDispositionOwner({validateCurrent:input=>{if(input.stage==='split')analysis.validateCurrent(input);},canRecoverRecorded:()=>replaying&&session.state.active.calls.some(call=>call.kind==='prd_self_check'&&Object.hasOwn(call,'result')),
       checkContext:(payload,signal)=>call('prd_self_check',{
       ...payload,project:admission.project,specs:admission.specs,
-      reference:path.join(admission.workflowRoot,'skills/cm-prd/references/spec-self-check.md')},signal)});
+      reference:path.join(executionRoot,'skills/cm-prd/references/spec-self-check.md')},signal)});
     const restore=value=>{
       correct=makeCorrect();
       analysis=restoreAnalysis(value?.analysis??null);
@@ -141,8 +153,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         ({callId,requestDigest,kind,status:result===undefined?'unknown':'recorded'}))}:null});
     const handle=async raw=>{
       const request=json(raw);
-      need(['start','advance','plan_design','promote_design','select_design_reviews','status','cancel','final_review_package','final_review','review_findings','review_disposition','save_draft','save_design','correct_findings','prepare_summary','publish_summary','inspect_correction','resume_correction','prepare_revision','decision'].includes(request.operation),'host_operation_invalid');
+      need(['import_baseline','start','advance','plan_design','promote_design','select_design_reviews','status','cancel','final_review_package','final_review','review_findings','review_disposition','save_draft','save_design','correct_findings','prepare_summary','publish_summary','inspect_correction','resume_correction','prepare_revision','decision'].includes(request.operation),'host_operation_invalid');
       shape(request,['requestId','operation',...(['start','advance','plan_design'].includes(request.operation)?['text']:
+        request.operation==='import_baseline'?['baseline']:
         ['final_review_package','review_findings','correct_findings','inspect_correction','resume_correction'].includes(request.operation)?['stage','feature',...(request.operation==='review_findings'&&Object.hasOwn(request,'packageDigest')?['packageDigest','decisions','artifacts']:[])]:
           request.operation==='review_disposition'?['stage','feature','packageDigest','decisions','artifacts']:
           request.operation==='publish_summary'?['summaryDigest']:request.operation==='select_design_reviews'?['draftDigest','risks']:
@@ -169,6 +182,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         if(!started){record({event:'run_start'});started=true;}return change.advance(request.text,reviewController.signal);
       }
       need(!publishedSummary,'prd_human_review_required');
+      if(request.operation==='import_baseline'){need(change===null,'prd_baseline_not_ready');return analysis.importBaseline(request.baseline,{writeEnabled:specWriteEnabled});}
       if(request.operation==='promote_design')return analysis.promoteDesign({draftDigest:request.draftDigest,reason:request.reason});
       if(request.operation==='select_design_reviews')return analysis.selectDesignReviews({draftDigest:request.draftDigest,risks:request.risks});
       if(request.operation==='resume_correction')return resumePrdCorrection({specs:admission.specs,stage:request.stage,
@@ -203,11 +217,18 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
           record({event:'spec_lifecycle',phase,data:{feature_count:result.features.length,task_count:summaryState.totals.tasks}});
         return result;
       }
-      if(request.operation==='save_draft')return (analysis.checkpoint().selfCheckRevision?savePrdDraft:analysis.status().designPromotion?.saved===true?savePrdPromotedDraft:savePrdDraft)({specs:admission.specs,
-        writeEnabled:specWriteEnabled,getDraft:()=>analysis.currentDraftForSave({selfCheckRevisionSave:true}),getOriginal:()=>analysis.originalPromotedDraft(),
-        getSelfCheckRevision:()=>analysis.checkpoint().selfCheckRevision??null,onSelfCheckRevisionSaved:()=>analysis.acceptSelfCheckRevisionSave()});
-      if(request.operation==='save_design')return savePrdDesign({specs:admission.specs,
-        writeEnabled:specWriteEnabled,getDraft:()=>analysis.currentDesignForSave()});
+      if(request.operation==='save_draft'){
+        const saved=(analysis.checkpoint().selfCheckRevision?savePrdDraft:analysis.status().designPromotion?.saved===true?savePrdPromotedDraft:savePrdDraft)({specs:admission.specs,
+          writeEnabled:specWriteEnabled,getDraft:()=>analysis.currentDraftForSave({selfCheckRevisionSave:true}),getOriginal:()=>analysis.originalPromotedDraft(),
+          getSelfCheckRevision:()=>analysis.checkpoint().selfCheckRevision??null,onSelfCheckRevisionSaved:()=>analysis.acceptSelfCheckRevisionSave()});
+        analysis.publishBaseline(analysis.status().draft.features.map(feature=>feature.directory),{writeEnabled:specWriteEnabled});
+        return saved;
+      }
+      if(request.operation==='save_design'){
+        const saved=savePrdDesign({specs:admission.specs,writeEnabled:specWriteEnabled,getDraft:()=>analysis.currentDesignForSave()});
+        analysis.publishBaseline(analysis.status().designDraft.features.map(feature=>feature.directory),{writeEnabled:specWriteEnabled});
+        return saved;
+      }
       if(request.operation==='correct_findings'){
         if(replaying&&fs.existsSync(path.join(admission.specs,`.reviews/prd-${request.feature.replace(/^\d+\./,'')}-${request.stage}-correction.md`)))
           return resumePrdCorrection({specs:admission.specs,stage:request.stage,feature:request.feature,writeEnabled:specWriteEnabled&&reviewEnabled},reviewController.signal);
@@ -234,7 +255,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         reviewState=await runPrdHostReview({specs:admission.specs,prepared,authorContextId,writeEnabled:reviewEnabled,
           mode:request.mode,signal:reviewController.signal,revalidate:()=>analysis.prepareReview(request.stage,request.feature),
           review:(payload,signal)=>call('prd_review',{...payload,project:admission.project,specs:admission.specs,
-            reference:path.join(admission.workflowRoot,'runtime/steelman-review.md')},signal)});
+            reference:path.join(executionRoot,'runtime/steelman-review.md')},signal)});
         return status();
       }
       need(request.operation==='start'?!started:started,'prd_turn_not_ready');
@@ -264,6 +285,18 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const dispatch=async request=>{
       ended=readPrdInputsReplacement(admission.specs,runId);
       if(request.operation==='status')return status();
+      if(['inspect_planning_recovery','recover_planning'].includes(request.operation)){
+        shape(request,['requestId','operation',...(request.operation==='recover_planning'?['binding']:[])]);
+        need(!ended&&analysis!==null,'prd_planning_recovery_not_ready');
+        analysis.validateCurrent();
+        if(request.operation==='inspect_planning_recovery')return session.inspectPlanningRecovery();
+        const recovered=session.recoverPlanning(request.binding,{validateCurrent:()=>analysis.validateCurrent()});
+        restore(session.state.checkpoint);return {...recovered,runId,stage:analysis.status().stage};
+      }
+      if(request.operation==='inspect_baseline'){
+        shape(request,['requestId','operation']);need(!ended&&analysis!==null,'prd_baseline_not_ready');
+        return analysis.inspectBaseline();
+      }
       if(request.operation==='repair_review_response'){
         shape(request,['requestId','operation','binding']);need(reviewEnabled,'prd_review_not_enabled');
         need(!ended,'prd_batch_inputs_replaced');
@@ -370,7 +403,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const host={handle:async request=>{
       try{return await dispatch(request);}
       catch(cause){
-        if(sessionFailureCodes.has(cause?.code))return {status:'blocked',reason:cause.code,
+        if(sessionFailureCodes.has(cause?.code)||/^prd_(planning_recovery|baseline|execution_assets|review_route)_/.test(cause?.code??''))return {status:'blocked',reason:cause.code,
           recovery:status().recovery,completionAuthorized:false};
         throw cause;
       }
