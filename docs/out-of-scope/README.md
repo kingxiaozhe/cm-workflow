@@ -14,13 +14,12 @@
 ## 规则
 
 - 命中这里的概念时，先说明哪条重开条件已满足，再讨论方案；条件没满足就直接引用本文件结束讨论。
-- 只有真实运行里观察到的失败才算重开理由；「改了可能更好」不算。
+- 满足对应记录里至少一条可核对的重开条件才重开；「改了可能更好」不算。
 - 理由变了就在原文件追加带日期的新段落，不改写旧段落。
 - 只记被否决的方案。已经做完的功能、暂缓等待条件的事项不放这里，暂缓事项写进 `docs/next-steps.md`。
 
 ## 目录
 
 - [常驻监督进程与日志静默看门狗](background-supervisor.md)
-- [`/cm:notify` 的 Windows 支持](notify-windows.md)
 
 本目录的做法借鉴自 [mattpocock/skills](https://github.com/mattpocock/skills) 的 `.out-of-scope/`（MIT），按本仓库约定改写。
