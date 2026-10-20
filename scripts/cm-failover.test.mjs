@@ -110,6 +110,18 @@ test('当前任务跳过 DROPPED，并等依赖完成或作废',()=>{
   assert.equal(inspectSpecs(root).features[0].currentTask.id,'T-002','依赖完成后才轮到 T-002');
   fs.writeFileSync(path.join(dir,'tasks.md'),text.replace('- [ ] T-002','- [x] T-002').replace('- [ ] T-003','- [x] T-003'));
   assert.equal(inspectSpecs(root).features[0].breakpoint.state,'all_tasks_done','只剩作废任务算全部完成');
+  fs.writeFileSync(path.join(dir,'tasks.md'),'# d\n\n- [ ] T-001: ~~a~~ [DROPPED 不再需要]\n- [ ] T-002: b\n\n- T-002 依赖 T-001\n');
+  assert.equal(inspectSpecs(root).features[0].currentTask.id,'T-002','依赖的任务作废也算满足');
+});
+
+test('feature 去编号后重名时拒绝读取共享证据，不把别的 feature 的批准算进来',()=>{
+  const root=sandbox();
+  feature(root,'1.demo',[{id:'T-001',title:'a',done:false}]);
+  const second=feature(root,'2.demo',[{id:'T-001',title:'b',done:false}]);
+  fs.mkdirSync(path.join(root,'.reviews'),{recursive:true});
+  handoff(root,'demo','T-001',1,{});review(root,'demo','T-001',1,'approved');
+  assert.throws(()=>inspectSpecs(root),/feature_contract_invalid/);
+  assert.throws(()=>inspectSpecs(second),/feature_contract_invalid/,'直接指向单个 feature 也核对同根冲突');
 });
 
 test('依赖成环或指向未知任务时按 admission 规则拒绝，不乱选',()=>{

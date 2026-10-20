@@ -177,13 +177,27 @@ function inspectFeature(featureDir,feature){
     breakpoint};
 }
 
+// Shared .reviews evidence is keyed by the feature name without its number, so
+// two features that collide on either form cannot be told apart. Refuse them,
+// as cm-ai admission does (feature_contract_invalid), before reading evidence.
+function assertDistinctFeatureKeys(specsRoot){
+  const names=readDirectory(specsRoot,'specs directory')
+    .filter(entry=>entry.isDirectory()&&FEATURE_RE.test(entry.name)&&fs.existsSync(path.join(specsRoot,entry.name,'tasks.md')))
+    .map(entry=>entry.name);
+  const keys=names.flatMap(name=>[...new Set([name,name.replace(/^\d+\./,'')])]);
+  if(new Set(keys).size!==keys.length)
+    throw new FailoverError('feature names collide once their number is removed (feature_contract_invalid); shared review evidence would be ambiguous');
+}
+
 export function inspectSpecs(specsDir){
   const resolved=path.resolve(specsDir);
   if(fs.existsSync(path.join(resolved,'tasks.md'))){
     const feature=path.basename(resolved);
     if(!FEATURE_RE.test(feature))throw new FailoverError(`unsupported feature directory name: ${feature}`);
+    assertDistinctFeatureKeys(path.dirname(resolved));
     return {specsDir:resolved,features:[inspectFeature(resolved,feature)]};
   }
+  assertDistinctFeatureKeys(resolved);
   const features=[];
   for(const entry of readDirectory(resolved,'specs directory')){
     if(!entry.isDirectory()||!FEATURE_RE.test(entry.name))continue;
