@@ -13,15 +13,23 @@ import {isVisual,observeVisualAfter} from './visual.mjs';
 
 
 export function createFixRegression(options,{specsRoot:protectedSpecsRoot=null,bridge=null}={}){
-  shape(options,['identity','specsRoot','redTest','baseline','redEvidence','beforeBaseline',...(Object.hasOwn(options,'reviewFeedback')?['reviewFeedback']:[]),...(Object.hasOwn(options,'testExtension')?['testExtension']:[]),...(Object.hasOwn(options,'testTypeCorrection')?['testTypeCorrection']:[])]);
-  const {identity,specsRoot,redTest,baseline,redEvidence,beforeBaseline}=json(options);
+  // Validate the entire plain input before reading any option value. Complete
+  // feedback has its existing 12 MiB contract; ordinary arguments stay at 1 MiB.
+  const hasReviewFeedback=options!==null&&typeof options==='object'&&Object.hasOwn(options,'reviewFeedback');
+  const config=hasReviewFeedback?json(options,13*1024*1024+Buffer.byteLength(',"reviewFeedback":')):json(options);
+  if(hasReviewFeedback){
+    const {reviewFeedback,...parameters}=config;
+    json(parameters);
+  }
+  shape(config,['identity','specsRoot','redTest','baseline','redEvidence','beforeBaseline',...(Object.hasOwn(config,'reviewFeedback')?['reviewFeedback']:[]),...(Object.hasOwn(config,'testExtension')?['testExtension']:[]),...(Object.hasOwn(config,'testTypeCorrection')?['testTypeCorrection']:[])]);
+  const {identity,specsRoot,redTest,baseline,redEvidence,beforeBaseline}=config;
   validIdentity(identity);
-  const priorReview=Object.hasOwn(options,'reviewFeedback')?inspectFixRepairReview(options.reviewFeedback,identity):null;
+  const priorReview=Object.hasOwn(config,'reviewFeedback')?inspectFixRepairReview(config.reviewFeedback,identity):null;
   const redIdentity=priorReview&&redEvidence.output?.path?.startsWith(`.reviews/fix-${identity.taskId.slice(6)}-a1-red-output`)?priorReview.identity:identity;
   const originalRed=inspectFixRedTest(redEvidence,redTest,redIdentity,redEvidence.testFiles,redEvidenceRetry(redEvidence));
   need(originalRed.status==='red_confirmed','red_test_not_confirmed');
   const originalBaseline=inspectFixBaseline(beforeBaseline,baseline,beforeBaseline.testFiles);
-  const correction=options.testTypeCorrection,extension=options.testExtension,comparisonBaseline={...originalBaseline,testFiles:currentTestFiles(typeFiles(originalBaseline.testFiles,correction),extension)};
+  const correction=config.testTypeCorrection,extension=config.testExtension,comparisonBaseline={...originalBaseline,testFiles:currentTestFiles(typeFiles(originalBaseline.testFiles,correction),extension)};
   need(originalBaseline.status==='recorded','baseline_unavailable');
   need(redTest.cwd===baseline.cwd,'baseline_project_mismatch');
   const redCheck=isVisual(redTest)?null:createHostCheck({cwd:redTest.cwd,commands:[{id:'red-test',command:redTest.command}],timeoutMs:redTest.timeoutMs,specsRoot:protectedSpecsRoot});
