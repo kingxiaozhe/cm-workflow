@@ -106,11 +106,16 @@ int main(int argc,char**argv){int mib[3]={CTL_KERN,KERN_PROCARGS2,atoi(argv[1])}
 if(sysctl(mib,3,NULL,&size,NULL,0)!=0){perror("sysctl");return 2;}char*b=malloc(size);
 if(sysctl(mib,3,b,&size,NULL,0)!=0){perror("sysctl");return 3;}size_t n=strlen(argv[2]);
 for(size_t i=0;i+n<=size;i++)if(!memcmp(b+i,argv[2],n)){puts("FOUND");return 0;}puts("NOTFOUND");return 0;}`;
-test('verification sandbox cannot read another process environment through a native helper',{skip:!supported||!fs.existsSync('/usr/bin/clang')},async t=>{
+// CI sets CM_REQUIRE_NATIVE_PROBE=1 so a missing or broken compiler fails instead of skipping.
+const requireProbe=process.env.CM_REQUIRE_NATIVE_PROBE==='1';
+test('verification sandbox cannot read another process environment through a native helper',{skip:!supported||(!requireProbe&&!fs.existsSync('/usr/bin/clang'))},async t=>{
   const {root,cwd}=fixture(t),source=path.join(root,'probe.c'),probe=path.join(cwd,'probe');
   fs.writeFileSync(source,PROCARGS_PROBE);
   const built=spawnSync('/usr/bin/clang',['-o',probe,source],{encoding:'utf8'});
-  if(built.status!==0){t.skip('clang cannot build the probe here');return;}
+  if(built.status!==0){
+    assert.equal(requireProbe,false,`the native probe must build in CI: ${built.stderr}`);
+    t.skip('clang cannot build the probe here');return;
+  }
   const secret=`cm-probe-${process.pid}-${Date.now()}`;
   const holder=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{env:{...process.env,CM_PROBE_SECRET:secret},stdio:'ignore'});
   t.after(()=>holder.kill('SIGKILL'));
@@ -211,14 +216,14 @@ test('copy writes run inside the sandbox and cannot follow a link out of the cop
   writeInsideCopy({cwd,file:'a.txt',data:Buffer.from('kept mode'),mode:null});
   assert.equal(fs.statSync(path.join(cwd,'a.txt')).mode&0o7777,0o600);
   fs.symlinkSync(outside,path.join(cwd,'link.txt'));
-  assert.throws(()=>writeInsideCopy({cwd,file:'link.txt',data:Buffer.from('escaped'),mode:null}),{message:'review_verification_copy_drift'});
+  assert.throws(()=>writeInsideCopy({cwd,file:'link.txt',data:Buffer.from('escaped'),mode:null}),{code:'review_verification_copy_drift'});
   fs.mkdirSync(path.join(root,'outdir'));fs.writeFileSync(path.join(root,'outdir','b.txt'),'keep');
   fs.symlinkSync(path.join(root,'outdir'),path.join(cwd,'dir'));
-  assert.throws(()=>writeInsideCopy({cwd,file:'dir/b.txt',data:Buffer.from('escaped'),mode:null}),{message:'review_verification_copy_drift'});
+  assert.throws(()=>writeInsideCopy({cwd,file:'dir/b.txt',data:Buffer.from('escaped'),mode:null}),{code:'review_verification_copy_drift'});
   assert.equal(fs.readFileSync(outside,'utf8'),'keep');
   assert.equal(fs.readFileSync(path.join(root,'outdir','b.txt'),'utf8'),'keep');
-  for(const file of ['../outside.txt','/etc/hosts','a/../../x',''])
-    assert.throws(()=>writeInsideCopy({cwd,file,data:Buffer.from('x'),mode:null}),{message:'verification_write_invalid'});
+  for(const file of ['../outside.txt','/etc/hosts','a/../../x','','a\\b','a\0b'])
+    assert.throws(()=>writeInsideCopy({cwd,file,data:Buffer.from('x'),mode:null}),{code:'verification_write_invalid'});
 });
 test('verification command rejects unsupported isolation without executing',{skip:supported},async t=>{
   const {cwd}=fixture(t),result=await run(cwd,'process.exit(0)');
