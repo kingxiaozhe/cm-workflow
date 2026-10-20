@@ -28,9 +28,11 @@ OVERWRITE_LOCAL_EDITS=0
 INSTALL_MANIFEST_NAME=".cm-install-manifest.sha256"
 INSTALL_MANIFEST="$PLUGIN_DEST/$INSTALL_MANIFEST_NAME"
 GUARD_TMP=""
-# One install transaction per target; never taken over automatically.
-LOCK_DIR="$PLUGIN_PARENT/.cm-workflow.install.lock"
+# One install transaction per target; never taken over automatically. The path
+# is set from the canonical target below (shared rule with install.sh).
+LOCK_DIR=""
 LOCK_HELD=0
+ROLLBACK_FAILED=0
 INSTALL_COMPLETE=0
 DEST_REPLACED=0
 MARKETPLACE_TOUCHED=0
@@ -87,31 +89,90 @@ done
 # shellcheck source=scripts/cm-install-manifest.sh
 . "$SRC_DIR/scripts/cm-install-manifest.sh"
 
+# Managed roots must be real directories and the marketplace a real file, so no
+# write can be redirected through a symlink, and every spelling of the target
+# resolves to one canonical path (one lock identity).
+for managed_path in "$PLUGIN_PARENT" "$PLUGIN_DEST" "$(dirname "$MARKETPLACE_ROOT")" "$MARKETPLACE_ROOT" "$MARKETPLACE_PATH"; do
+  if [ -L "$managed_path" ]; then
+    echo "Refusing a symlinked install path: $managed_path. Installation stopped; nothing was changed." >&2
+    exit 2
+  fi
+done
+for managed_dir in "$PLUGIN_PARENT" "$(dirname "$MARKETPLACE_ROOT")" "$MARKETPLACE_ROOT"; do
+  if [ -e "$managed_dir" ] && [ ! -d "$managed_dir" ]; then
+    echo "Install path must be a directory: $managed_dir. Installation stopped; nothing was changed." >&2
+    exit 2
+  fi
+done
+if [ -e "$MARKETPLACE_PATH" ] && [ ! -f "$MARKETPLACE_PATH" ]; then
+  echo "Marketplace must be a regular file: $MARKETPLACE_PATH. Installation stopped; nothing was changed." >&2
+  exit 2
+fi
+if ! PLUGIN_DEST_CANONICAL=$(cm_install_canonical_target "$PLUGIN_DEST"); then
+  echo "Cannot resolve the plugin directory: $PLUGIN_DEST. Installation stopped; nothing was changed." >&2
+  exit 2
+fi
+PLUGIN_DEST="$PLUGIN_DEST_CANONICAL"
+PLUGIN_PARENT="$(dirname "$PLUGIN_DEST")"
+STAGE="$PLUGIN_PARENT/.cm-workflow.stage.$$"
+BACKUP="$PLUGIN_PARENT/.cm-workflow.backup.$$"
+SCAFFOLD_PARENT="$PLUGIN_PARENT/.cm-workflow.scaffold.$$"
+MARKETPLACE_BACKUP="$PLUGIN_PARENT/.cm-workflow.marketplace.backup.$$"
+FAILED_DEST="$PLUGIN_PARENT/.cm-workflow.failed.$$"
+FAILED_MARKETPLACE="$PLUGIN_PARENT/.cm-workflow.marketplace.failed.$$"
+INSTALL_MANIFEST="$PLUGIN_DEST/$INSTALL_MANIFEST_NAME"
+LOCK_DIR="$(cm_install_lock_path "$PLUGIN_DEST")"
+
+# Rollback keeps going after a failed step (no errexit, signals ignored), keeps
+# every recovery copy whenever anything could not be restored, and always
+# unlocks.
+rollback_fail() {
+  echo "  Restore failed: $1" >&2
+  ROLLBACK_FAILED=1
+}
+
 cleanup() {
   status=$?
-  trap - EXIT HUP INT TERM
+  set +e
+  trap '' HUP INT TERM
+  trap - EXIT
   if [ "$INSTALL_COMPLETE" -ne 1 ]; then
     if [ "$DEST_REPLACED" -eq 1 ] && [ -e "$PLUGIN_DEST" ]; then
-      mv "$PLUGIN_DEST" "$FAILED_DEST"
+      mv "$PLUGIN_DEST" "$FAILED_DEST" || rollback_fail "$PLUGIN_DEST (new plugin could not be moved aside)"
     fi
-    if [ -d "$BACKUP" ] && [ ! -e "$PLUGIN_DEST" ]; then
-      mv "$BACKUP" "$PLUGIN_DEST"
-    fi
-    if [ "$MARKETPLACE_TOUCHED" -eq 1 ]; then
-      if [ "$MARKETPLACE_EXISTED" -eq 1 ] && [ -f "$MARKETPLACE_BACKUP" ]; then
-        cp "$MARKETPLACE_BACKUP" "$MARKETPLACE_PATH"
-      elif [ -f "$MARKETPLACE_PATH" ]; then
-        mv "$MARKETPLACE_PATH" "$FAILED_MARKETPLACE"
+    if [ -d "$BACKUP" ]; then
+      if [ ! -e "$PLUGIN_DEST" ] && [ ! -L "$PLUGIN_DEST" ]; then
+        mv "$BACKUP" "$PLUGIN_DEST" || rollback_fail "$PLUGIN_DEST (previous plugin is in $BACKUP)"
+      else
+        rollback_fail "$PLUGIN_DEST (occupied; previous plugin is in $BACKUP)"
       fi
     fi
+    if [ "$MARKETPLACE_TOUCHED" -eq 1 ]; then
+      if [ -L "$MARKETPLACE_PATH" ]; then
+        rollback_fail "$MARKETPLACE_PATH (became a symlink; not written)"
+      elif [ "$MARKETPLACE_EXISTED" -eq 1 ] && [ -f "$MARKETPLACE_BACKUP" ]; then
+        cp "$MARKETPLACE_BACKUP" "$MARKETPLACE_PATH" || rollback_fail "$MARKETPLACE_PATH"
+      elif [ -f "$MARKETPLACE_PATH" ]; then
+        mv "$MARKETPLACE_PATH" "$FAILED_MARKETPLACE" || rollback_fail "$MARKETPLACE_PATH"
+      fi
+    fi
+    if [ "$ROLLBACK_FAILED" -eq 1 ]; then
+      echo "Installation failed and the rollback is incomplete. Recovery copies were kept:" >&2
+      for kept in "$BACKUP" "$FAILED_DEST" "$MARKETPLACE_BACKUP" "$FAILED_MARKETPLACE"; do
+        [ ! -e "$kept" ] || echo "    $kept" >&2
+      done
+    fi
   fi
-  rm -rf "$STAGE" "$SCAFFOLD_PARENT" "$FAILED_DEST" "$FAILED_MARKETPLACE"
-  rm -f "$MARKETPLACE_BACKUP"
+  rm -rf "$STAGE" "$SCAFFOLD_PARENT"
+  if [ "$ROLLBACK_FAILED" -ne 1 ]; then
+    rm -rf "$FAILED_DEST" "$FAILED_MARKETPLACE"
+    rm -f "$MARKETPLACE_BACKUP"
+  fi
   [ -z "$GUARD_TMP" ] || rm -rf "$GUARD_TMP"
   if [ "$INSTALL_COMPLETE" -eq 1 ]; then
     rm -rf "$BACKUP"
   fi
-  [ "$LOCK_HELD" -ne 1 ] || rm -rf "$LOCK_DIR"
+  [ "$LOCK_HELD" -ne 1 ] || rm -rf "$LOCK_DIR" || echo "Could not release the install lock: $LOCK_DIR" >&2
   exit "$status"
 }
 trap cleanup EXIT
@@ -189,8 +250,15 @@ run_official_validation() {
 }
 
 mkdir -p "$PLUGIN_PARENT"
-if cm_install_lock_acquire "$LOCK_DIR" "$PLUGIN_DEST"; then
+cm_defer_signals
+if cm_install_lock_acquire "$LOCK_DIR"; then
+  cm_install_test_hook lock-acquired
   LOCK_HELD=1
+  cm_install_lock_write_owner "$LOCK_DIR" "$PLUGIN_DEST"
+fi
+cm_resume_signals
+if [ "$LOCK_HELD" -eq 1 ]; then
+  :
 elif [ ! -d "$LOCK_DIR" ] || [ -L "$LOCK_DIR" ]; then
   echo "Cannot create the install lock: $LOCK_DIR. Installation stopped; nothing was changed." >&2
   exit 2
@@ -205,9 +273,9 @@ else
     alive) echo "    That process is still running; retry after it finishes." >&2 ;;
     not-running) echo "    That process is no longer running; the lock may be left over from an interrupted install." >&2
       echo "    After confirming no install is in progress, remove it manually and retry:" >&2
-      echo "    rm -rf '$LOCK_DIR'" >&2 ;;
+      echo "    rm -rf $(cm_install_quote "$LOCK_DIR")" >&2 ;;
     *) echo "    Cannot tell whether that process is still running. After confirming no install is in progress, remove it manually and retry:" >&2
-      echo "    rm -rf '$LOCK_DIR'" >&2 ;;
+      echo "    rm -rf $(cm_install_quote "$LOCK_DIR")" >&2 ;;
   esac
   exit 4
 fi
@@ -248,6 +316,10 @@ run_local_edit_guard recheck
 
 # Use the first-party helper to own marketplace.json updates, but scaffold in
 # a disposable directory so an interrupted install cannot damage the plugin.
+if [ -L "$MARKETPLACE_PATH" ] || { [ -e "$MARKETPLACE_PATH" ] && [ ! -f "$MARKETPLACE_PATH" ]; }; then
+  echo "Marketplace must be a regular file: $MARKETPLACE_PATH. Installation stopped; nothing was changed." >&2
+  exit 2
+fi
 if [ -f "$MARKETPLACE_PATH" ]; then
   cp "$MARKETPLACE_PATH" "$MARKETPLACE_BACKUP"
   MARKETPLACE_EXISTED=1
@@ -300,6 +372,10 @@ cp "$GUARD_TMP/new-manifest" "$STAGE/$INSTALL_MANIFEST_NAME"
 run_local_edit_guard recheck
 
 if [ -e "$PLUGIN_DEST" ]; then
+  if [ -L "$PLUGIN_DEST" ] || [ ! -d "$PLUGIN_DEST" ]; then
+    echo "Plugin directory changed type during the install: $PLUGIN_DEST. Installation stopped." >&2
+    exit 3
+  fi
   mv "$PLUGIN_DEST" "$BACKUP"
   # Edits written by path before the rename landed in the moved directory, so
   # one last check there closes the gap after the recheck above. An exit here
@@ -319,8 +395,13 @@ if [ -e "$PLUGIN_DEST" ]; then
     fi
   fi
 fi
+# Register the swap together with the rename: a signal in between is held
+# until DEST_REPLACED is set, so cleanup always knows to put the old plugin back.
+cm_defer_signals
 mv "$STAGE" "$PLUGIN_DEST"
+cm_install_test_hook after-stage-moved
 DEST_REPLACED=1
+cm_resume_signals
 
 if [ -f "$READ_MARKETPLACE" ]; then
   marketplace_name="$("$PYTHON_BIN" "$READ_MARKETPLACE" --marketplace-path "$MARKETPLACE_PATH")"

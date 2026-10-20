@@ -5,15 +5,13 @@
 
 ## 未发布
 
-- **重装前发现手改就停下**：多个会话同时用 CM 时，曾有一个会话经用户同意手改了已安装的 `~/.claude/scripts/cm-ai-host.mjs`，另一个会话随后 `./install.sh --yes` 把它静默覆盖。
-  - `install.sh` 安装成功后写安装清单 `~/.claude/cm-workflow/install-manifest.sha256`（每个受管文件的相对路径 + sha256）；`install-codex.sh` 写 `~/plugins/cm-workflow/.cm-install-manifest.sha256`。清单逻辑在 `scripts/cm-install-manifest.sh`，两个安装器共用。
-  - 再次安装时，清单里有、目标里也在的文件，sha256 与记录不一致就算手改：列出文件并以退出码 3 停下，不写任何文件。`--yes` 和交互回答 y 都不能绕过；只有新参数 `--overwrite-local-edits` 才覆盖。清单格式无法识别、含 `..` 路径或清单位置不是普通文件时同样停下；记录文件的上级目录变成符号链接也算手改，不顺着链接读外部文件。
-  - 安装器在覆盖确认和暂存之后、第一次写正式目标前再核对一次，等待确认期间别的会话改了已装文件也会停下；Claude 安装失败回滚时旧清单一并恢复。
-  - 同一安装目标同一时刻只允许一个安装：`install.sh` 在目标父目录建 `.<目标目录名>.cm-install.lock`（默认 `~/.claude.cm-install.lock`），`install-codex.sh` 建 `~/plugins/.cm-workflow.install.lock`，里面记录 pid 与开始时间。拿不到锁时报出持有进程、它是否还在运行，以退出码 4 停下，不写任何文件；正常结束、失败和中断都会释放。锁残留时不自动抢占，只给出 `rm -rf` 清理命令，由人确认后执行。
-  - `install.sh` 每复制一个文件前，再比对它当前的 sha256 与旧清单；不一致立刻停下（退出码 3），只回滚本次已写的文件，被改的文件保持原样。`install-codex.sh` 在把旧插件目录改名移开后再核对一次，不一致就移回原目录。核对与写入之间的窗口因此缩到单个文件的复制之间，**不能完全消除；安装进行中不要编辑已安装的 CM 文件**。`CM_INSTALL_TEST_HOOK` 仅供仓库测试在每个文件复制前插入动作，默认不设置、没有作用。
-  - 没有旧清单（首次安装或旧版本装的）时打印一行说明后照常安装；清单外的文件、`__pycache__` 和 `.DS_Store` 不判定。macOS 用 `shasum -a 256`，Linux 用 `sha256sum`，两者都没有时报错停下，不跳过核对。
-  - **已知限制**：`install.ps1`（Windows）还没有这项保护；npm 入口 `cm-workflow install` 和 `$cm-check` 自动升级只传 `--yes`，遇到手改会停在退出码 3，需手动运行安装器并加 `--overwrite-local-edits`；`~/.cm-workflow/cm-update.sh` 自动更新同样会因手改失败，且它在安装前删除上游已移除文件的步骤不经过这项核对。
-
+- **重装前发现手改就停下**：多个会话同时用 CM 时，曾有一个会话经用户同意手改了已安装的 `~/.claude/scripts/cm-ai-host.mjs`，另一个会话随后 `./install.sh --yes` 把它静默覆盖。完整说明与已知限制见 `docs/installation.md`「Local edits, install lock and known limitations」。
+  - `install.sh` 安装成功后写 `<CLAUDE_HOME>/cm-workflow/install-manifest.sha256`，`install-codex.sh` 写 `~/plugins/cm-workflow/.cm-install-manifest.sha256`，记录每个核心文件的相对路径和 sha256；`__pycache__`、`.DS_Store` 和 `~/.cm-workflow` 下的可选更新器不记录，含反斜杠的文件名拒绝。逻辑在共用的 `scripts/cm-install-manifest.sh`。
+  - 重装时，清单里有、目标里也在的文件，sha256 变了、变成链接或目录、上级目录变成链接，都算手改：列出并以退出码 3 停下。`--yes` 和交互回答 y 都不能绕过，只有 `--overwrite-local-edits` 才覆盖；清单损坏或不是普通文件同样停下；没有旧清单时打印一行说明后照常安装。
+  - 核对分三次：写入前、覆盖确认后，以及事务中。事务中那次，`install.sh` 在每个文件复制前核对内容、类型和上级路径，发现变化时已写的文件回滚、被改的文件不动；`install-codex.sh` 在旧插件目录改名移开后核对，发现变化就移回。
+  - 同一真实目标同一时刻只允许一个安装：锁是目标旁的 `.<目标名>.cm-install.lock`（默认 Claude 为 `~/..claude.cm-install.lock`，Codex 为 `~/plugins/.cm-workflow.cm-install.lock`）。目标先解析成真实路径，不同写法和两个安装器指向同一目录时共用一把锁。拿不到锁以退出码 4 停下并报出持有进程；残留锁不自动抢占，只打印转义后的 `rm -rf` 命令。加锁与登记之间、Codex 改名与登记之间收到信号会先登记再退出，保证解锁和恢复。
+  - 安装根不能是符号链接；Codex 的 `~/plugins`、`~/.agents/plugins` 和 `marketplace.json` 不能是链接。回滚某一步失败时继续其余恢复并解锁，报告「回滚不完整」并保留恢复材料。
+  - **已知限制**：核对与写入之间的窗口只缩到单个文件，不能完全消除，安装期间不要编辑已安装的 CM 文件；安装对正在运行的 CM 会话不是原子更新；SIGKILL、断电不保证回滚；`install.ps1`（Windows）没有这些保护；npm 入口和 `$cm-check` 自动升级只传 `--yes`，遇手改时 `$cm-check` 报 `blocked`（退出码 1），需手动运行安装器；`~/.cm-workflow/cm-update.sh` 在安装前删除上游已移除文件，不经过这把锁和核对；锁不协调其他插件对 marketplace 的写入。
 - **阶段交界直接给结论，复盘分出机械性错误**：借鉴 [mattpocock/skills](https://github.com/mattpocock/skills) 的阶段交界判断和复盘思路，只改文字。
   - `cm-ai` 单任务结束、`cm-prd` 人审停点、`cm-fix` 收尾三处，原来各写一段「建议开新会话」，同一真实项目里没有改变使用习惯。现在三处统一指向 `runtime/model-efficiency.md`「Session boundary」的判断表，按顺序判断「继续本会话 / 留在本会话 / 换新会话（默认）」，换新会话时附上新会话里要运行的入口；不设写交接文件，压缩放在最后。
   - 三行结论（「会话边界：…」「新会话里运行：…」「原因：…」）直接写进各流程的收尾输出模板：`cm-ai` N8 总结、`cm-fix` 输出格式、`cm-prd` 硬停车与变更摘要。原因是 e2e-real 实跑 `cm-prd` 时，模型没有顺着一行指针去读判断表，收尾没有给出结论。

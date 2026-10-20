@@ -17,9 +17,11 @@ INSTALL_MANIFEST_RELATIVE="cm-workflow/install-manifest.sha256"
 INSTALL_MANIFEST="$DEST/$INSTALL_MANIFEST_RELATIVE"
 GUARD_TMP=""
 MANIFEST_PUBLISHED=0
-# One install transaction per target; never taken over automatically.
-LOCK_DIR="$DEST_PARENT/.$(basename "$DEST").cm-install.lock"
+# One install transaction per target; never taken over automatically. The path
+# is set from the canonical target below (shared rule with install-codex.sh).
+LOCK_DIR=""
 LOCK_HELD=0
+ROLLBACK_FAILED=0
 # Files this run started writing; rollback restores only these, so a file that
 # was never copied (e.g. one found hand-edited mid-copy) is left untouched.
 WRITTEN_LIST=""
@@ -43,35 +45,74 @@ if ! command -v node >/dev/null 2>&1 ||
   exit 1
 fi
 
+# Canonical install root: one physical path per real target, never a symlink.
+if DEST_CANONICAL=$(cm_install_canonical_target "$DEST"); then
+  :
+else
+  canonical_status=$?
+  if [ "$canonical_status" -eq 2 ]; then
+    echo "安装目录不能是符号链接或非目录: ${DEST}；安装已停止，未修改任何文件。" >&2
+  else
+    echo "无法确定安装目录的真实路径: ${DEST}；安装已停止，未修改任何文件。" >&2
+  fi
+  exit 2
+fi
+DEST="$DEST_CANONICAL"
+DEST_PARENT="$(dirname "$DEST")"
+STAGE="$DEST_PARENT/.cm-claude.stage.$$"
+BACKUP="$DEST_PARENT/.cm-claude.backup.$$"
+INSTALL_MANIFEST="$DEST/$INSTALL_MANIFEST_RELATIVE"
+LOCK_DIR="$(cm_install_lock_path "$DEST")"
+
+# Rollback keeps going after a failed step (no errexit, signals ignored), keeps
+# the backup whenever anything could not be restored, and always unlocks.
+rollback_fail() {
+  echo "  恢复失败: $1" >&2
+  ROLLBACK_FAILED=1
+}
+
 cleanup() {
   status=$?
-  trap - EXIT HUP INT TERM
+  set +e
+  trap '' HUP INT TERM
+  trap - EXIT
   if [ "$INSTALL_COMPLETE" -ne 1 ] && [ "$DEST_TOUCHED" -eq 1 ]; then
     while IFS= read -r relative; do
       [ -n "$relative" ] || continue
       target="$DEST/$relative"
       saved="$BACKUP/$relative"
+      if ! assert_safe_target "$relative"; then
+        rollback_fail "$target（路径类型已变化，未写入）"
+        continue
+      fi
       if [ -f "$saved" ]; then
-        mkdir -p "$(dirname "$target")"
-        cp -p "$saved" "$target"
-      elif [ -f "$target" ] || [ -L "$target" ]; then
-        rm -f "$target"
+        { mkdir -p "$(dirname "$target")" && cp -p "$saved" "$target"; } || rollback_fail "$target"
+      elif [ -f "$target" ]; then
+        rm -f "$target" || rollback_fail "$target"
       fi
     done < "$WRITTEN_LIST"
     # Keep the manifest paired with the restored files.
     if [ "$MANIFEST_PUBLISHED" -eq 1 ]; then
-      if [ -f "$BACKUP/$MANIFEST_SAVED_NAME" ]; then
-        cp -p "$BACKUP/$MANIFEST_SAVED_NAME" "$INSTALL_MANIFEST"
+      if ! assert_safe_target "$INSTALL_MANIFEST_RELATIVE"; then
+        rollback_fail "$INSTALL_MANIFEST（路径类型已变化，未写入）"
+      elif [ -f "$BACKUP/$MANIFEST_SAVED_NAME" ]; then
+        cp -p "$BACKUP/$MANIFEST_SAVED_NAME" "$INSTALL_MANIFEST" || rollback_fail "$INSTALL_MANIFEST"
       else
-        rm -f "$INSTALL_MANIFEST"
+        rm -f "$INSTALL_MANIFEST" || rollback_fail "$INSTALL_MANIFEST"
       fi
     fi
-    echo "安装失败，已回滚本次写入。" >&2
+    if [ "$ROLLBACK_FAILED" -eq 1 ]; then
+      echo "⚠ 安装失败，回滚不完整。恢复材料保留在: ${BACKUP}" >&2
+      echo "  （按相对路径存放的原文件；旧安装清单为 ${BACKUP}/${MANIFEST_SAVED_NAME}）" >&2
+    else
+      echo "安装失败，已回滚本次写入。" >&2
+    fi
   fi
-  rm -rf "$STAGE" "$BACKUP"
+  rm -rf "$STAGE"
+  [ "$ROLLBACK_FAILED" -eq 1 ] || rm -rf "$BACKUP"
   [ -z "$GUARD_TMP" ] || rm -rf "$GUARD_TMP"
   rm -f "${INSTALL_MANIFEST}.tmp.$$"
-  [ "$LOCK_HELD" -ne 1 ] || rm -rf "$LOCK_DIR"
+  [ "$LOCK_HELD" -ne 1 ] || rm -rf "$LOCK_DIR" || echo "⚠ 无法释放安装锁: ${LOCK_DIR}" >&2
   exit "$status"
 }
 trap cleanup EXIT
@@ -237,8 +278,15 @@ echo "  目标: $DEST"
 echo
 
 mkdir -p "$DEST_PARENT"
-if cm_install_lock_acquire "$LOCK_DIR" "$DEST"; then
+cm_defer_signals
+if cm_install_lock_acquire "$LOCK_DIR"; then
+  cm_install_test_hook lock-acquired
   LOCK_HELD=1
+  cm_install_lock_write_owner "$LOCK_DIR" "$DEST"
+fi
+cm_resume_signals
+if [ "$LOCK_HELD" -eq 1 ]; then
+  :
 elif [ ! -d "$LOCK_DIR" ] || [ -L "$LOCK_DIR" ]; then
   echo "无法创建安装锁: ${LOCK_DIR}；安装已停止，未修改任何文件。" >&2
   exit 2
@@ -252,9 +300,9 @@ else
   case "$lock_state" in
     alive) echo "    该进程仍在运行；等它结束后重试。" >&2 ;;
     not-running) echo "    该进程已不在运行，锁可能是中断遗留。确认没有安装在进行后，手动清理再重试：" >&2
-      echo "    rm -rf '${LOCK_DIR}'" >&2 ;;
+      echo "    rm -rf $(cm_install_quote "$LOCK_DIR")" >&2 ;;
     *) echo "    无法判断持有进程是否还在；确认没有安装在进行后，手动清理再重试：" >&2
-      echo "    rm -rf '${LOCK_DIR}'" >&2 ;;
+      echo "    rm -rf $(cm_install_quote "$LOCK_DIR")" >&2 ;;
   esac
   exit 4
 fi
@@ -332,6 +380,10 @@ fi
 mkdir -p "$BACKUP"
 while IFS= read -r relative; do
   [ -n "$relative" ] || continue
+  if ! assert_safe_target "$relative"; then
+    echo "安装目标在确认后发生结构变化，安装已停止，未修改任何文件。" >&2
+    exit 3
+  fi
   if [ -f "$DEST/$relative" ]; then
     mkdir -p "$(dirname "$BACKUP/$relative")"
     cp -p "$DEST/$relative" "$BACKUP/$relative"
@@ -368,8 +420,12 @@ mkdir -p "$DEST"
 DEST_TOUCHED=1
 while IFS= read -r relative; do
   [ -n "$relative" ] || continue
-  if [ -n "${CM_INSTALL_TEST_HOOK:-}" ]; then
-    "$CM_INSTALL_TEST_HOOK" before-copy "$relative"
+  cm_install_test_hook before-copy "$relative"
+  # Type and parent path first: never write through a symlink or into a
+  # directory that replaced a file after the earlier checks.
+  if ! assert_safe_target "$relative"; then
+    echo "⚠ 安装过程中 ${relative} 的路径类型发生变化，已停止并回滚已写入的文件；该路径保持原样。" >&2
+    exit 3
   fi
   if [ -n "$VERIFIED_MANIFEST" ] && [ -f "$DEST/$relative" ]; then
     recorded=$(cm_manifest_recorded_hash "$VERIFIED_MANIFEST" "$relative")
@@ -389,9 +445,14 @@ done < "$STAGE/.cm-managed-files"
 
 "$DEST/scripts/cm-check-runtime.sh" --project "$SRC_DIR"
 mkdir -p "$(dirname "$INSTALL_MANIFEST")"
+if ! assert_safe_target "$INSTALL_MANIFEST_RELATIVE"; then
+  echo "安装清单路径类型发生变化，已停止并回滚。" >&2
+  exit 3
+fi
 cp "$GUARD_TMP/new-manifest" "${INSTALL_MANIFEST}.tmp.$$"
 MANIFEST_PUBLISHED=1
 mv -f "${INSTALL_MANIFEST}.tmp.$$" "$INSTALL_MANIFEST"
+cm_install_test_hook after-manifest-publish
 INSTALL_COMPLETE=1
 echo "✓ 安装清单已写入: ${INSTALL_MANIFEST}"
 

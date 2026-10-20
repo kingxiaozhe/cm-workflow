@@ -43,6 +43,7 @@ function install(env, args) {
 }
 
 const output = result => result.stdout + result.stderr;
+const lockOf = target => path.join(path.dirname(target), `.${path.basename(target)}.cm-install.lock`);
 
 // Run an interactive install, call onPrompt() once the replace prompt is
 // reached, then answer "y" (simulates another session editing meanwhile).
@@ -109,7 +110,7 @@ test('codex install manifest: first install records hashes, unchanged reinstall 
     assert.equal(overwritten.status, 0, output(overwritten));
     assert.match(overwritten.stdout, /these edits will be replaced/);
     assert.equal(fs.readFileSync(edited, 'utf8'), fs.readFileSync(path.join(source, EDITED), 'utf8'));
-    assert.equal(fs.existsSync(path.join(path.dirname(plugin), '.cm-workflow.install.lock')), false,
+    assert.equal(fs.existsSync(lockOf(plugin)), false,
       'every finished install releases its lock');
   });
 
@@ -129,7 +130,7 @@ test('codex install manifest: a manifest path that is a directory is a corrupt m
 test('codex install lock: a held lock refuses the install without writing; a stale one is reported, never taken over',
   {skip: process.platform === 'win32', timeout: 120000}, async t => {
     const {plugin, marketplace, env} = sandbox(t);
-    const lock = path.join(path.dirname(plugin), '.cm-workflow.install.lock');
+    const lock = lockOf(plugin);
     fs.mkdirSync(lock, {recursive: true});
     const holder = spawn('/bin/sleep', ['60']);
     t.after(() => holder.kill('SIGKILL'));
@@ -151,7 +152,67 @@ test('codex install lock: a held lock refuses the install without writing; a sta
     const stale = install(env, ['--yes']);
     assert.equal(stale.status, 4, output(stale));
     assert.match(stale.stderr, /no longer running/);
-    assert.ok(stale.stderr.includes(`rm -rf '${lock}'`), stale.stderr);
+    assert.ok(stale.stderr.includes(`rm -rf ${lock}`), stale.stderr);
     assert.equal(fs.existsSync(plugin), false);
     assert.equal(fs.readFileSync(path.join(lock, 'owner'), 'utf8'), owner(holder.pid));
+  });
+
+function writeHook(dir, lines) {
+  const hook = path.join(dir, 'hook.sh');
+  fs.writeFileSync(hook, ['#!/bin/sh', ...lines, 'exit 0', ''].join('\n'), {mode: 0o755});
+  return hook;
+}
+
+test('codex fault: a signal between taking the install lock and registering it still releases the lock',
+  {skip: process.platform === 'win32', timeout: 120000}, t => {
+    const {plugin, marketplace, env} = sandbox(t);
+    const hook = writeHook(path.dirname(path.dirname(plugin)), ['[ "$1" = lock-acquired ] || exit 0', 'kill -TERM "$PPID"']);
+    const result = install({...env, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 143, output(result));
+    assert.equal(fs.existsSync(lockOf(plugin)), false);
+    assert.equal(fs.existsSync(plugin), false);
+    assert.equal(fs.existsSync(marketplace), false);
+  });
+
+test('codex fault: a signal right after the new plugin is renamed into place restores the previous plugin',
+  {skip: process.platform === 'win32', timeout: 600000}, t => {
+    const {plugin, marketplace, env} = sandbox(t);
+    const first = install(env, ['--yes']);
+    assert.equal(first.status, 0, output(first));
+    const pluginJson = path.join(plugin, '.codex-plugin/plugin.json');
+    const before = {json: fs.readFileSync(pluginJson), manifest: fs.readFileSync(path.join(plugin, MANIFEST)),
+      marketplace: fs.readFileSync(marketplace)};
+    const hook = writeHook(path.dirname(path.dirname(plugin)), ['[ "$1" = after-stage-moved ] || exit 0', 'kill -TERM "$PPID"']);
+    const result = install({...env, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 143, output(result));
+    assert.deepEqual(fs.readFileSync(pluginJson), before.json, 'the previous plugin (its cache-version stamp) is back');
+    assert.deepEqual(fs.readFileSync(path.join(plugin, MANIFEST)), before.manifest);
+    assert.deepEqual(fs.readFileSync(marketplace), before.marketplace);
+    assert.equal(fs.existsSync(lockOf(plugin)), false);
+    assert.deepEqual(fs.readdirSync(path.dirname(plugin)).filter(name => name !== 'cm-workflow'), []);
+  });
+
+test('codex path safety: a symlinked marketplace or plugins root is refused before anything is written',
+  {skip: process.platform === 'win32', timeout: 120000}, t => {
+    const {plugin, marketplace, env} = sandbox(t);
+    const home = path.dirname(path.dirname(plugin));
+    const outside = path.join(home, 'outside-marketplace.json');
+    fs.writeFileSync(outside, '{"name":"someone-else","plugins":[]}\n');
+    fs.mkdirSync(path.dirname(marketplace), {recursive: true});
+    fs.symlinkSync(outside, marketplace);
+    const linkedMarketplace = install(env, ['--yes']);
+    assert.equal(linkedMarketplace.status, 2, output(linkedMarketplace));
+    assert.match(linkedMarketplace.stderr, /Refusing a symlinked install path/);
+    assert.equal(fs.readFileSync(outside, 'utf8'), '{"name":"someone-else","plugins":[]}\n');
+    assert.equal(fs.existsSync(plugin), false);
+    fs.unlinkSync(marketplace);
+
+    const realPlugins = path.join(home, 'real-plugins');
+    fs.mkdirSync(realPlugins);
+    fs.symlinkSync(realPlugins, path.dirname(plugin));
+    const linkedRoot = install(env, ['--yes']);
+    assert.equal(linkedRoot.status, 2, output(linkedRoot));
+    assert.match(linkedRoot.stderr, /Refusing a symlinked install path/);
+    assert.deepEqual(fs.readdirSync(realPlugins), []);
+    assert.equal(fs.existsSync(marketplace), false);
   });

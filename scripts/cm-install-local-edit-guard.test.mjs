@@ -229,17 +229,26 @@ test('install lock: a concurrent install of the same target is refused without w
     assert.equal(later.status, 0, output(later));
   });
 
-test('install lock: a stale lock is reported with a manual cleanup command and never taken over',
+test('install lock: a stale lock is reported with a correctly quoted manual cleanup command and never taken over',
   {skip: process.platform === 'win32', timeout: 120000}, t => {
-    const {target, env} = sandbox(t, 'cm-install-guard-stale-');
+    const {home, env} = sandbox(t, 'cm-install-guard-stale-');
+    // A quote and a command substitution in the path must survive copy-paste.
+    const parent = path.join(home, "it's $(touch pwned)");
+    fs.mkdirSync(parent);
+    const target = path.join(parent, '.claude');
     const lock = lockOf(target);
     fs.mkdirSync(lock);
     const owner = `pid=${deadPid()}\nstarted=2026-10-20T00:00:00Z\ntarget=${target}\n`;
     fs.writeFileSync(path.join(lock, 'owner'), owner);
-    const refused = install(env, ['--yes']);
+    const refused = install({...env, CLAUDE_HOME: target}, ['--yes']);
     assert.equal(refused.status, 4, output(refused));
     assert.match(refused.stderr, /该进程已不在运行/);
-    assert.ok(refused.stderr.includes(`rm -rf '${lock}'`), refused.stderr);
+    const command = refused.stderr.split('\n').find(line => line.trim().startsWith('rm -rf '));
+    assert.ok(command, refused.stderr);
+    const parsed = spawnSync('/bin/bash', ['-c', `set -- ${command.trim().slice('rm -rf '.length)}; printf '%s|%s' "$#" "$1"`],
+      {cwd: home, encoding: 'utf8'});
+    assert.equal(parsed.stdout, `1|${lock}`, 'the printed command must name exactly the lock directory');
+    assert.equal(fs.existsSync(path.join(home, 'pwned')), false);
     assert.equal(fs.readFileSync(path.join(lock, 'owner'), 'utf8'), owner);
     assert.equal(fs.existsSync(target), false, 'nothing may be written while the lock is held');
   });
@@ -273,4 +282,184 @@ test('per-file check: a file edited mid-copy stops the install with 3 and rolls 
     assert.equal(fs.readFileSync(path.join(target, early), 'utf8'), olderContent, 'files already written must be rolled back');
     assert.equal(fs.readFileSync(manifest, 'utf8'), manifestBefore);
     assert.equal(fs.existsSync(lockOf(target)), false, 'a failed install releases its lock');
+  });
+
+// ---- Fault injection (CM_INSTALL_TEST_HOOK) -----------------------------------
+// One real install is shared as a template; each fault test copies it.
+let template;
+function installedClone(t, prefix) {
+  if (!template) {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cm-install-guard-template-')));
+    process.on('exit', () => fs.rmSync(home, {recursive: true, force: true}));
+    const target = path.join(home, '.claude');
+    const env = {...process.env, HOME: home, CLAUDE_HOME: target,
+      CM_WORKFLOW_HOME: path.join(home, 'workflow'), CM_WORKFLOW_LOG_HOME: path.join(home, 'logs')};
+    const first = install(env, ['--yes']);
+    assert.equal(first.status, 0, output(first));
+    template = target;
+  }
+  const box = sandbox(t, prefix);
+  const copied = spawnSync('cp', ['-Rp', template, box.target]);
+  assert.equal(copied.status, 0, String(copied.stderr));
+  return box;
+}
+
+function writeHook(home, lines) {
+  const hook = path.join(home, 'hook.sh');
+  fs.writeFileSync(hook, ['#!/bin/sh', ...lines, 'exit 0', ''].join('\n'), {mode: 0o755});
+  return hook;
+}
+
+// Make an early managed file look like an older installed version recorded in
+// the manifest, so a rollback is observable byte for byte.
+function olderVersion(target, relative, content) {
+  fs.writeFileSync(path.join(target, relative), content);
+  const manifest = path.join(target, MANIFEST);
+  const lines = fs.readFileSync(manifest, 'utf8').split('\n')
+    .map(line => line.endsWith(`  ${relative}`) ? `${sha256(content)}  ${relative}` : line);
+  fs.writeFileSync(manifest, lines.join('\n'));
+}
+
+const leftovers = home => fs.readdirSync(home).filter(name => /^\.cm-claude\.(stage|backup)\./.test(name));
+const EARLY = 'agents/cm-backend-agent.md';
+const SECOND = 'agents/cm-contract-agent.md';
+
+test('fault: a signal between taking the install lock and registering it still releases the lock',
+  {skip: process.platform === 'win32', timeout: 120000}, t => {
+    const {home, target, env} = sandbox(t, 'cm-install-fault-lock-');
+    const hook = writeHook(home, ['[ "$1" = lock-acquired ] || exit 0', 'kill -TERM "$PPID"']);
+    const result = install({...env, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 143, output(result));
+    assert.equal(fs.existsSync(lockOf(target)), false, 'the lock taken just before the signal must be released');
+    assert.equal(fs.existsSync(target), false);
+    assert.deepEqual(leftovers(home), []);
+  });
+
+test('fault: a copy failing midway rolls back the written files, keeps the old manifest and unlocks',
+  {skip: process.platform === 'win32', timeout: 300000}, t => {
+    const {home, target, env} = installedClone(t, 'cm-install-fault-copy-');
+    olderVersion(target, EARLY, '# older early file\n');
+    const manifestBefore = fs.readFileSync(path.join(target, MANIFEST), 'utf8');
+    const lateBefore = fs.readFileSync(path.join(target, EDITED), 'utf8');
+    const hook = writeHook(home, [`[ "$1" = before-copy ] && [ "$2" = "${EDITED}" ] && exit 7`]);
+    const result = install({...env, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 7, output(result));
+    assert.match(result.stderr, /安装失败，已回滚本次写入/);
+    assert.equal(fs.readFileSync(path.join(target, EARLY), 'utf8'), '# older early file\n');
+    assert.equal(fs.readFileSync(path.join(target, EDITED), 'utf8'), lateBefore);
+    assert.equal(fs.readFileSync(path.join(target, MANIFEST), 'utf8'), manifestBefore);
+    assert.equal(fs.existsSync(lockOf(target)), false);
+    assert.deepEqual(leftovers(home), []);
+  });
+
+test('fault: a failure right after the new manifest is published restores the old manifest and the files',
+  {skip: process.platform === 'win32', timeout: 300000}, t => {
+    const {home, target, env} = installedClone(t, 'cm-install-fault-publish-');
+    olderVersion(target, EARLY, '# older early file\n');
+    const manifestBefore = fs.readFileSync(path.join(target, MANIFEST), 'utf8');
+    const hook = writeHook(home, ['[ "$1" = after-manifest-publish ] && exit 9']);
+    const result = install({...env, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 9, output(result));
+    assert.equal(fs.readFileSync(path.join(target, EARLY), 'utf8'), '# older early file\n');
+    assert.equal(fs.readFileSync(path.join(target, MANIFEST), 'utf8'), manifestBefore);
+    assert.equal(fs.readdirSync(path.join(target, 'cm-workflow')).some(name => name.includes('.tmp.')), false);
+    assert.equal(fs.existsSync(lockOf(target)), false);
+    assert.deepEqual(leftovers(home), []);
+  });
+
+test('fault: a failing rollback step does not stop the rest of the rollback or the unlock, and keeps the recovery copies',
+  {skip: process.platform === 'win32' || process.getuid?.() === 0, timeout: 300000}, t => {
+    const {home, target, env} = installedClone(t, 'cm-install-fault-rollback-');
+    olderVersion(target, EARLY, '# older early file\n');
+    olderVersion(target, SECOND, '# older second file\n');
+    const manifestBefore = fs.readFileSync(path.join(target, MANIFEST), 'utf8');
+    // After both early files are written, make the first one unrestorable, then fail.
+    const hook = writeHook(home, [`[ "$1" = before-copy ] && [ "$2" = "${EDITED}" ] || exit 0`,
+      `chmod 0444 '${path.join(target, EARLY)}'`, 'exit 7']);
+    const result = install({...env, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 7, output(result));
+    assert.match(result.stderr, /回滚不完整/);
+    assert.match(result.stderr, /恢复失败: .*agents\/cm-backend-agent\.md/);
+    assert.equal(fs.readFileSync(path.join(target, SECOND), 'utf8'), '# older second file\n', 'later restores still run');
+    assert.equal(fs.readFileSync(path.join(target, EARLY), 'utf8'), fs.readFileSync(path.join(source, EARLY), 'utf8'));
+    assert.equal(fs.readFileSync(path.join(target, MANIFEST), 'utf8'), manifestBefore);
+    assert.equal(fs.existsSync(lockOf(target)), false, 'the lock is released even when the rollback is incomplete');
+    const kept = leftovers(home).filter(name => name.startsWith('.cm-claude.backup.'));
+    assert.equal(kept.length, 1, 'the recovery copy must be kept');
+    assert.equal(fs.readFileSync(path.join(home, kept[0], EARLY), 'utf8'), '# older early file\n');
+    assert.match(result.stderr, new RegExp(`恢复材料保留在: .*${kept[0].replace(/\./g, '\\.')}`));
+  });
+
+test('fault: a later file replaced by a symlink before its turn is never written through',
+  {skip: process.platform === 'win32', timeout: 300000}, t => {
+    const {home, target, env} = installedClone(t, 'cm-install-fault-symlink-');
+    const manifestBefore = fs.readFileSync(path.join(target, MANIFEST), 'utf8');
+    const outside = path.join(home, 'outside.mjs');
+    // Same bytes as the recorded file, so a content-only check would pass.
+    fs.copyFileSync(path.join(target, EDITED), outside);
+    const outsideBefore = fs.readFileSync(outside);
+    const late = path.join(target, EDITED);
+    const hook = writeHook(home, [`[ "$1" = before-copy ] && [ "$2" = "${EARLY}" ] || exit 0`,
+      `rm -f '${late}'`, `ln -s '${outside}' '${late}'`]);
+    const result = install({...env, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 3, output(result));
+    assert.match(result.stderr, /路径类型发生变化/);
+    assert.ok(fs.lstatSync(late).isSymbolicLink());
+    assert.deepEqual(fs.readFileSync(outside), outsideBefore, 'the file outside the install root must not be written');
+    assert.equal(fs.readFileSync(path.join(target, MANIFEST), 'utf8'), manifestBefore);
+    assert.equal(fs.existsSync(lockOf(target)), false);
+  });
+
+test('lock identity: other spellings of the same target and the Codex installer aimed at it share one lock',
+  {skip: process.platform === 'win32', timeout: 120000}, t => {
+    const {home, target, env} = sandbox(t, 'cm-install-lock-identity-');
+    const holder = spawn('/bin/sleep', ['60']);
+    t.after(() => holder.kill('SIGKILL'));
+    const hold = dir => {
+      const lock = lockOf(dir);
+      fs.mkdirSync(lock, {recursive: true});
+      fs.writeFileSync(path.join(lock, 'owner'), `pid=${holder.pid}\nstarted=2026-10-20T00:00:00Z\ntarget=${dir}\n`);
+      return lock;
+    };
+    const lock = hold(target);
+    fs.symlinkSync(home, path.join(home, 'alias'));
+    for (const spelling of [`${target}/.`, `${target}/`, path.join(home, 'alias', '.claude')]) {
+      const refused = install({...env, CLAUDE_HOME: spelling}, ['--yes']);
+      assert.equal(refused.status, 4, `${spelling}\n${output(refused)}`);
+      assert.match(refused.stderr, new RegExp(`持有进程: ${holder.pid}`));
+    }
+    assert.equal(fs.existsSync(target), false);
+    assert.ok(fs.existsSync(lock));
+    // The Codex plugin directory is guarded by the same rule.
+    const codexTarget = path.join(home, 'plugins', 'cm-workflow');
+    hold(codexTarget);
+    const cross = install({...env, CLAUDE_HOME: codexTarget}, ['--yes']);
+    assert.equal(cross.status, 4, output(cross));
+    assert.equal(fs.existsSync(codexTarget), false);
+  });
+
+test('path safety: an install root reached through a symlink spelling is refused without writing',
+  {skip: process.platform === 'win32', timeout: 120000}, t => {
+    const {home, env} = sandbox(t, 'cm-install-root-link-');
+    const real = path.join(home, 'real-claude');
+    fs.mkdirSync(real);
+    fs.symlinkSync(real, path.join(home, 'link-claude'));
+    for (const spelling of [path.join(home, 'link-claude'), `${path.join(home, 'link-claude')}/.`]) {
+      const refused = install({...env, CLAUDE_HOME: spelling}, ['--yes']);
+      assert.equal(refused.status, 2, `${spelling}\n${output(refused)}`);
+      assert.match(refused.stderr, /安装目录不能是符号链接/);
+    }
+    assert.deepEqual(fs.readdirSync(real), []);
+  });
+
+test('manifest helper: a name containing a backslash is refused instead of writing a manifest that cannot round-trip',
+  {skip: process.platform === 'win32'}, t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-install-guard-helper-'));
+    t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+    fs.mkdirSync(path.join(dir, 'root'));
+    fs.writeFileSync(path.join(dir, 'root', 'a\\b.md'), 'x\n');
+    fs.writeFileSync(path.join(dir, 'list'), 'a\\b.md\n');
+    const result = runHelper('if cm_manifest_write root list manifest; then echo status=0; else echo status=$?; fi', dir);
+    assert.equal(result.stdout.trim(), 'status=1', result.stdout + result.stderr);
+    assert.equal(fs.existsSync(path.join(dir, 'manifest')), false);
   });

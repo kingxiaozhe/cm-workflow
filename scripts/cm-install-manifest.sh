@@ -66,6 +66,11 @@ cm_manifest_hash_list() {
 # look like hand edits).
 cm_manifest_write() {
   mw_out=$(cm_manifest_abs "$3")
+  # The line format cannot round-trip a backslash in a name (GNU checksum
+  # tools escape it); refuse such names instead of writing a bad manifest.
+  if grep -q '\\' "$2"; then
+    return 1
+  fi
   grep -Ev '(^|/)__pycache__/|(^|/)\.DS_Store$' "$2" > "${mw_out}.list" || [ $? -eq 1 ] || return 1
   cm_manifest_hash_list "$1" "${mw_out}.list" "${mw_out}.body" ||
     { rm -f "${mw_out}.list" "${mw_out}.body"; return 1; }
@@ -75,6 +80,8 @@ cm_manifest_write() {
     LC_ALL=C sort -k2 "${mw_out}.body"
   } > "$mw_out" || { rm -f "${mw_out}.body"; return 1; }
   rm -f "${mw_out}.body"
+  # Never publish a manifest the next install would reject as malformed.
+  cm_manifest_validate "$mw_out" || return 1
 }
 
 # cm_manifest_validate MANIFEST
@@ -189,11 +196,16 @@ cm_manifest_file_hash() {
 # A stale lock is never taken over automatically; the installer reports the
 # holder and the manual removal command, and a person decides.
 
-# cm_install_lock_acquire LOCK_DIR TARGET -> 0 acquired, 1 held by someone else
+# cm_install_lock_acquire LOCK_DIR -> 0 acquired, 1 not acquired. Call it
+# between cm_defer_signals and cm_resume_signals and register ownership right
+# after, so no signal can land between taking and registering the lock.
 cm_install_lock_acquire() {
-  mkdir "$1" 2>/dev/null || return 1
+  mkdir "$1" 2>/dev/null
+}
+
+# cm_install_lock_write_owner LOCK_DIR TARGET
+cm_install_lock_write_owner() {
   printf 'pid=%s\nstarted=%s\ntarget=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" > "$1/owner" || true
-  return 0
 }
 
 # cm_install_lock_field LOCK_DIR FIELD -> value from the owner file, or empty
@@ -213,5 +225,74 @@ cm_install_lock_pid_state() {
     echo alive
   else
     echo not-running
+  fi
+}
+
+# cm_install_lock_path CANONICAL_TARGET -> the one lock path for that target.
+# Both installers use this rule, so any spelling of the same real directory
+# (and the Claude and Codex installers aimed at the same directory) share it.
+cm_install_lock_path() {
+  printf '%s/.%s.cm-install.lock\n' "$(dirname "$1")" "$(basename "$1")"
+}
+
+# cm_install_canonical_target PATH
+# Print the physical path of an install root: trailing "/" and "/." are
+# dropped and the parent is resolved with `pwd -P` (creating it if needed).
+# Returns 2 when the root itself is a symlink or not a directory, 1 when the
+# path is empty, ends in ".." or its parent cannot be resolved.
+cm_install_canonical_target() {
+  ct_path=$1
+  while :; do
+    case "$ct_path" in
+      ?*/) ct_path=${ct_path%/} ;;
+      ?*/.) ct_path=${ct_path%/.} ;;
+      *) break ;;
+    esac
+  done
+  case "$ct_path" in
+    ''|.|..|*/..|/) return 1 ;;
+  esac
+  if [ -L "$ct_path" ]; then
+    return 2
+  fi
+  if [ -e "$ct_path" ] && [ ! -d "$ct_path" ]; then
+    return 2
+  fi
+  ct_parent=$(dirname "$ct_path")
+  mkdir -p "$ct_parent" 2>/dev/null || return 1
+  ct_parent=$(cd "$ct_parent" 2>/dev/null && pwd -P) || return 1
+  printf '%s/%s\n' "${ct_parent%/}" "$(basename "$ct_path")"
+}
+
+# Shell-quote one argument for a command shown to a person (bash 3.2 %q).
+cm_install_quote() {
+  printf '%q' "$1"
+}
+
+# ---- Signal deferral ----------------------------------------------------------
+# Between a state change and the variable that tells cleanup about it (lock
+# taken / directory renamed), HUP/INT/TERM are recorded instead of acted on,
+# then honoured once the state is registered.
+CM_PENDING_SIGNAL=""
+cm_defer_signals() {
+  CM_PENDING_SIGNAL=""
+  trap 'CM_PENDING_SIGNAL=129' HUP
+  trap 'CM_PENDING_SIGNAL=130' INT
+  trap 'CM_PENDING_SIGNAL=143' TERM
+}
+cm_resume_signals() {
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  if [ -n "$CM_PENDING_SIGNAL" ]; then
+    exit "$CM_PENDING_SIGNAL"
+  fi
+}
+
+# Test-only fault injection point. CM_INSTALL_TEST_HOOK is unset outside the
+# repository's tests; when set it is run as `$CM_INSTALL_TEST_HOOK <point> ...`.
+cm_install_test_hook() {
+  if [ -n "${CM_INSTALL_TEST_HOOK:-}" ]; then
+    "$CM_INSTALL_TEST_HOOK" "$@"
   fi
 }
