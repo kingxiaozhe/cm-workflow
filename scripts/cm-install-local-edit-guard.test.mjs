@@ -563,3 +563,56 @@ test('manifest helper: a missing or unreadable scan list is a check failure, nev
     fs.writeFileSync(path.join(dir, 'manifest'), `${HEADER}\n${'0'.repeat(64)}  a/f\n`);
     assert.equal(status('cm_manifest_find_edits root manifest edits work'), 'status=1');
   });
+
+test('fault: a cut-short rollback record is reported and never used to delete or restore a file',
+  {skip: process.platform === 'win32', timeout: 300000}, t => {
+    const {home, target, env} = installedClone(t, 'cm-install-fault-partial-');
+    olderVersion(target, EARLY, '# older early file\n');
+    // A user's own file whose name is a prefix of a managed path.
+    const userFile = path.join(target, 'scripts', 'cm-ai-host');
+    fs.writeFileSync(userFile, 'my own file\n');
+    const tmp = path.join(home, 'tmp');
+    fs.mkdirSync(tmp);
+    // Simulate a write that stopped after "scripts/cm-ai-host" of the next record.
+    const hook = writeHook(home, [`[ "$1" = before-copy ] && [ "$2" = "${EDITED}" ] || exit 0`,
+      `for work in '${tmp}'/cm-install-guard.*; do printf '%s' 'scripts/cm-ai-host' >> "$work/written-files"; done`, 'exit 7']);
+    const result = install({...env, TMPDIR: tmp, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 7, output(result));
+    assert.match(result.stderr, /回滚清单记录不完整，未使用: scripts\/cm-ai-host/);
+    assert.match(result.stderr, /回滚不完整/);
+    assert.equal(fs.readFileSync(userFile, 'utf8'), 'my own file\n', 'the user file must not be deleted');
+    assert.equal(fs.readFileSync(path.join(target, EARLY), 'utf8'), '# older early file\n', 'complete records are still restored');
+    const kept = leftovers(home).filter(name => name.startsWith('.cm-claude.backup.'));
+    assert.equal(kept.length, 1, 'the backup is kept');
+    assert.equal(fs.existsSync(lockOf(target)), false);
+  });
+
+test('access: an install directory that cannot be searched stops the install instead of looking like "no manifest"',
+  {skip: process.platform === 'win32' || process.getuid?.() === 0, timeout: 300000}, t => {
+    const {target, env} = installedClone(t, 'cm-install-noaccess-');
+    const manifestDir = path.join(target, 'cm-workflow');
+    const manifestBefore = fs.readFileSync(path.join(target, MANIFEST));
+    fs.chmodSync(manifestDir, 0o600);
+    t.after(() => { if (fs.existsSync(manifestDir)) fs.chmodSync(manifestDir, 0o755); });
+    const result = install(env, ['--yes']);
+    fs.chmodSync(manifestDir, 0o755);
+    assert.equal(result.status, 2, output(result));
+    assert.match(result.stderr, /安装目录无法访问，无法判断上次的安装清单是否存在/);
+    assert.doesNotMatch(result.stdout, /未找到上次的安装清单/);
+    assert.deepEqual(fs.readFileSync(path.join(target, MANIFEST)), manifestBefore);
+    assert.equal(fs.existsSync(lockOf(target)), false);
+  });
+
+test('manifest helper: a recorded file under a directory that cannot be searched is a check failure, not "deleted"',
+  {skip: process.platform === 'win32' || process.getuid?.() === 0}, t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-install-guard-helper-'));
+    t.after(() => { fs.chmodSync(path.join(dir, 'root/a'), 0o755); fs.rmSync(dir, {recursive: true, force: true}); });
+    fs.mkdirSync(path.join(dir, 'root/a'), {recursive: true});
+    fs.writeFileSync(path.join(dir, 'root/a/f'), 'edited\n');
+    fs.mkdirSync(path.join(dir, 'work'));
+    fs.writeFileSync(path.join(dir, 'manifest'), `${HEADER}\n${'0'.repeat(64)}  a/f\n`);
+    fs.chmodSync(path.join(dir, 'root/a'), 0o644);
+    const status = script => runHelper(`if ${script}; then echo status=0; else echo status=$?; fi`, dir).stdout.trim();
+    assert.equal(status('cm_manifest_parent_is_safe root a/f'), 'status=2');
+    assert.equal(status('cm_manifest_find_edits root manifest edits work'), 'status=1');
+  });

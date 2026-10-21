@@ -197,7 +197,9 @@ sha256 changed is a local edit. A symlink, a directory, or a symlinked parent at
 a recorded path also counts. The installer lists the files and exits with
 status 3; `--yes` and an interactive `y` do not bypass this. Pass
 `--overwrite-local-edits` only to discard those edits. A manifest that is
-malformed or not a regular file also stops the install. Without a previous
+malformed or not a regular file also stops the install, and so does any
+check that cannot read its own files or cannot search a directory holding a
+recorded file (that is never taken as "deleted"). Without a previous
 manifest (first install or an older version) the check is skipped with a
 notice, so edits made before the first manifest cannot be detected. A recorded
 file that was deleted is not treated as an edit.
@@ -240,7 +242,10 @@ before a rollback writes it back; if a rollback finds the wrong type there, it
 writes nothing, reports the rollback as incomplete and keeps the marketplace
 backup.
 
-**Rollback.** A failed install restores what it wrote. If a restore step itself
+**Rollback.** A failed install restores what it wrote. It trusts only complete
+records of its own list of written files that name a file this install manages;
+a record cut short (for example by a full disk) or an unknown one is not used and
+makes the rollback incomplete. If a restore step itself
 fails, the installer still tries the remaining steps and releases the lock, reports
 that the rollback is incomplete (`回滚不完整` / `rollback is incomplete`), and keeps the recovery copies
 (`.cm-claude.backup.<pid>` next to the Claude target, holding the previous files

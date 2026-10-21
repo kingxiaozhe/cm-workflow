@@ -116,10 +116,22 @@ cm_manifest_validate() {
 }
 
 # cm_manifest_parent_is_safe ROOT RELATIVE
-# Returns 1 when any parent directory of RELATIVE under ROOT is a symlink or
-# not a directory, so hashing never follows a link out of the install root.
+# Whether RELATIVE's existence can be judged inside ROOT. Returns 0 when every
+# existing parent (ROOT included) is a real, searchable directory, so `-e`,
+# `-f` and `-L` on RELATIVE are trustworthy; 1 when ROOT or a parent is a
+# symlink or not a directory (hashing must never follow a link out of ROOT);
+# 2 when ROOT or a parent cannot be searched, so "absent" cannot be told apart
+# from "not accessible" and the caller must treat it as a check failure.
 cm_manifest_parent_is_safe() {
   ps_current=$1
+  if [ -L "$ps_current" ]; then
+    return 1
+  fi
+  if [ ! -e "$ps_current" ]; then
+    return 0
+  fi
+  [ -d "$ps_current" ] || return 1
+  [ -x "$ps_current" ] || return 2
   ps_remaining=$(dirname "$2")
   while [ -n "$ps_remaining" ] && [ "$ps_remaining" != "." ]; do
     case "$ps_remaining" in
@@ -130,9 +142,12 @@ cm_manifest_parent_is_safe() {
     if [ -L "$ps_current" ]; then
       return 1
     fi
-    if [ -e "$ps_current" ] && [ ! -d "$ps_current" ]; then
-      return 1
+    # The parent of this component was searchable, so "missing" is real.
+    if [ ! -e "$ps_current" ]; then
+      return 0
     fi
+    [ -d "$ps_current" ] || return 1
+    [ -x "$ps_current" ] || return 2
   done
   return 0
 }
@@ -141,7 +156,8 @@ cm_manifest_parent_is_safe() {
 # Write to EDITS_OUT every manifest path that still exists under ROOT but no
 # longer matches its recorded hash. A symlink or non-file at that path, or a
 # symlinked / non-directory parent, also counts. Paths absent from ROOT or from
-# the manifest are not judged.
+# the manifest are not judged; a path whose parent cannot be searched is a
+# check failure (status 1), never "absent".
 # Returns 0 on success, 3 when the manifest is malformed or not a regular file,
 # 1 on any check or hashing failure.
 cm_manifest_find_edits() {
@@ -172,7 +188,13 @@ cm_manifest_find_edits() {
   for fe_rel in $fe_paths; do
     [ -n "$fe_rel" ] || continue
     fe_target="$fe_root/$fe_rel"
-    if ! cm_manifest_parent_is_safe "$fe_root" "$fe_rel"; then
+    fe_parent=0
+    cm_manifest_parent_is_safe "$fe_root" "$fe_rel" || fe_parent=$?
+    if [ "$fe_parent" -eq 2 ]; then
+      # Cannot tell "deleted" from "not accessible": a check failure.
+      fe_failed=1
+      break
+    elif [ "$fe_parent" -ne 0 ]; then
       printf '%s\n' "$fe_rel" >> "$fe_edits" || { fe_failed=1; break; }
     elif [ -L "$fe_target" ]; then
       printf '%s\n' "$fe_rel" >> "$fe_edits" || { fe_failed=1; break; }

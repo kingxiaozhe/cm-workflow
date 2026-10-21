@@ -389,3 +389,22 @@ test('codex fault: an unreadable scan file during the last check stops the insta
     assert.equal(fs.existsSync(lockOf(box.plugin)), false);
     assert.deepEqual(pluginsLeftovers(box.plugin), []);
   });
+
+test('codex access: a hand-edited file under a directory that cannot be searched stops the install',
+  {skip: process.platform === 'win32' || process.getuid?.() === 0, timeout: 600000}, t => {
+    const box = installedCodexClone(t);
+    const edited = path.join(box.plugin, EDITED);
+    const handEdit = fs.readFileSync(edited, 'utf8') + '\n<!-- hand edit -->\n';
+    fs.writeFileSync(edited, handEdit);
+    const hidden = path.dirname(edited);
+    fs.chmodSync(hidden, 0o644);
+    t.after(() => { if (fs.existsSync(hidden)) fs.chmodSync(hidden, 0o755); });
+    const result = install(box.env, ['--yes']);
+    fs.chmodSync(hidden, 0o755);
+    assert.equal(result.status, 2, output(result));
+    assert.equal(fs.readFileSync(edited, 'utf8'), handEdit, 'the hand edit must not be replaced');
+    assert.deepEqual(fs.readFileSync(path.join(box.plugin, MANIFEST)), box.before.manifest);
+    assert.deepEqual(fs.readFileSync(box.marketplace), box.before.marketplace);
+    assert.equal(fs.existsSync(lockOf(box.plugin)), false);
+    assert.deepEqual(pluginsLeftovers(box.plugin), []);
+  });

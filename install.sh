@@ -26,6 +26,9 @@ ROLLBACK_FAILED=0
 # Files this run started writing; rollback restores only these, so a file that
 # was never copied (e.g. one found hand-edited mid-copy) is left untouched.
 WRITTEN_LIST=""
+# Each rollback record is "<relative><TAB>W"; a record without this ending was
+# cut short (e.g. a disk-full partial write) and is never used.
+WRITTEN_MARK="$(printf '\tW')"
 VERIFIED_MANIFEST=""
 MANIFEST_SAVED_NAME=".cm-previous-install-manifest"
 
@@ -91,10 +94,28 @@ cleanup() {
     IFS='
 '
     set -f
-    for relative in $written_files; do
-      [ -n "$relative" ] || continue
+    for record in $written_files; do
+      [ -n "$record" ] || continue
+      # Only complete records naming a file this install manages are used; a
+      # cut-short prefix could name an unrelated user file.
+      case "$record" in
+        *"$WRITTEN_MARK") relative=${record%"$WRITTEN_MARK"} ;;
+        *) rollback_fail "回滚清单记录不完整，未使用: ${record}"; continue ;;
+      esac
+      member=0
+      grep -Fxq -- "$relative" "$STAGE/.cm-managed-files" || member=$?
+      if [ "$member" -ne 0 ]; then
+        rollback_fail "回滚清单记录不属于本次安装或无法核对，未使用: ${relative}"
+        continue
+      fi
       target="$DEST/$relative"
       saved="$BACKUP/$relative"
+      access=0
+      cm_manifest_parent_is_safe "$DEST" "$relative" || access=$?
+      if [ "$access" -eq 2 ]; then
+        rollback_fail "$target（上级目录无法访问，未写入）"
+        continue
+      fi
       if ! assert_safe_target "$relative"; then
         rollback_fail "$target（路径类型已变化，未写入）"
         continue
@@ -228,6 +249,12 @@ guard_local_edits() {
     return 2
   fi
   if ! assert_safe_target "$INSTALL_MANIFEST_RELATIVE"; then
+    return 2
+  fi
+  manifest_access=0
+  cm_manifest_parent_is_safe "$DEST" "$INSTALL_MANIFEST_RELATIVE" || manifest_access=$?
+  if [ "$manifest_access" -eq 2 ]; then
+    echo "安装目录无法访问，无法判断上次的安装清单是否存在: ${INSTALL_MANIFEST}；安装已停止，未修改任何文件。" >&2
     return 2
   fi
   if [ ! -e "$INSTALL_MANIFEST" ]; then
@@ -401,6 +428,12 @@ while IFS= read -r relative; do
     echo "安装目标在确认后发生结构变化，安装已停止，未修改任何文件。" >&2
     exit 3
   fi
+  access=0
+  cm_manifest_parent_is_safe "$DEST" "$relative" || access=$?
+  if [ "$access" -eq 2 ]; then
+    echo "安装目标 ${relative} 的上级目录无法访问，安装已停止，未修改任何文件。" >&2
+    exit 2
+  fi
   if [ -f "$DEST/$relative" ]; then
     mkdir -p "$(dirname "$BACKUP/$relative")"
     cp -p "$DEST/$relative" "$BACKUP/$relative"
@@ -444,6 +477,12 @@ while IFS= read -r relative; do
     echo "⚠ 安装过程中 ${relative} 的路径类型发生变化，已停止并回滚已写入的文件；该路径保持原样。" >&2
     exit 3
   fi
+  access=0
+  cm_manifest_parent_is_safe "$DEST" "$relative" || access=$?
+  if [ "$access" -eq 2 ]; then
+    echo "⚠ 安装过程中 ${relative} 的上级目录无法访问，已停止并回滚已写入的文件。" >&2
+    exit 2
+  fi
   if [ -n "$VERIFIED_MANIFEST" ] && [ -f "$DEST/$relative" ]; then
     recorded=$(cm_manifest_recorded_hash "$VERIFIED_MANIFEST" "$relative")
     if [ -n "$recorded" ]; then
@@ -455,7 +494,7 @@ while IFS= read -r relative; do
       fi
     fi
   fi
-  printf '%s\n' "$relative" >> "$WRITTEN_LIST"
+  printf '%s\tW\n' "$relative" >> "$WRITTEN_LIST"
   mkdir -p "$(dirname "$DEST/$relative")"
   cp -p "$STAGE/$relative" "$DEST/$relative"
 done < "$STAGE/.cm-managed-files"

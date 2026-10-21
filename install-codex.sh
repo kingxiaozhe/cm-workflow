@@ -98,7 +98,9 @@ done
 # marketplace.json a regular file (or missing). Prints the offending path.
 marketplace_structure_problem() {
   for marketplace_dir in "$(dirname "$MARKETPLACE_ROOT")" "$MARKETPLACE_ROOT"; do
-    if [ -L "$marketplace_dir" ] || { [ -e "$marketplace_dir" ] && [ ! -d "$marketplace_dir" ]; }; then
+    # A directory that cannot be searched would make the marketplace look
+    # missing; treat it as a problem rather than as "no marketplace yet".
+    if [ -L "$marketplace_dir" ] || { [ -e "$marketplace_dir" ] && { [ ! -d "$marketplace_dir" ] || [ ! -x "$marketplace_dir" ]; }; }; then
       printf '%s\n' "$marketplace_dir"
       return 0
     fi
@@ -142,7 +144,7 @@ LOCK_DIR="$(cm_install_lock_path "$PLUGIN_DEST")"
 # PLUGIN_PARENT is the physical directory resolved at entry; a later symlink
 # or different physical path there means it was replaced during the install.
 plugin_parent_unchanged() {
-  [ ! -L "$PLUGIN_PARENT" ] && [ -d "$PLUGIN_PARENT" ] &&
+  [ ! -L "$PLUGIN_PARENT" ] && [ -d "$PLUGIN_PARENT" ] && [ -x "$PLUGIN_PARENT" ] &&
     [ "$(cd "$PLUGIN_PARENT" 2>/dev/null && pwd -P)" = "$PLUGIN_PARENT" ]
 }
 
@@ -228,7 +230,7 @@ guard_local_edits() {
     return 2
   fi
   if ! plugin_parent_unchanged; then
-    echo "The plugins directory is no longer the one checked at start: $PLUGIN_PARENT. Installation stopped." >&2
+    echo "The plugins directory is no longer the one checked at start, or cannot be searched: $PLUGIN_PARENT. Installation stopped." >&2
     return 2
   fi
   if [ -L "$PLUGIN_DEST" ]; then
@@ -237,6 +239,12 @@ guard_local_edits() {
   fi
   # A manifest path that exists as a directory, symlink or other non-file is a
   # corrupt manifest, not a pre-manifest install.
+  manifest_access=0
+  cm_manifest_parent_is_safe "$PLUGIN_DEST" "$INSTALL_MANIFEST_NAME" || manifest_access=$?
+  if [ "$manifest_access" -eq 2 ]; then
+    echo "The plugin directory cannot be searched, so whether an install manifest exists cannot be told: $PLUGIN_DEST. Installation stopped; nothing was changed." >&2
+    return 2
+  fi
   if [ ! -e "$INSTALL_MANIFEST" ] && [ ! -L "$INSTALL_MANIFEST" ]; then
     [ "$guard_mode" = recheck ] ||
       echo "No previous install manifest found (first install or installed by an older version); local edits are not checked this time. A manifest is written after a successful install."
@@ -421,6 +429,12 @@ if [ -e "$PLUGIN_DEST" ]; then
   # Edits written by path before the rename landed in the moved directory, so
   # one last check there closes the gap after the recheck above. An exit here
   # moves the old plugin back and restores the marketplace through cleanup.
+  backup_access=0
+  cm_manifest_parent_is_safe "$BACKUP" "$INSTALL_MANIFEST_NAME" || backup_access=$?
+  if [ "$OVERWRITE_LOCAL_EDITS" -ne 1 ] && [ "$backup_access" -ne 0 ]; then
+    echo "The previous plugin directory cannot be checked; it was restored and nothing was replaced: $PLUGIN_DEST" >&2
+    exit 2
+  fi
   if [ "$OVERWRITE_LOCAL_EDITS" -ne 1 ] && [ -f "$BACKUP/$INSTALL_MANIFEST_NAME" ] &&
     [ ! -L "$BACKUP/$INSTALL_MANIFEST_NAME" ]; then
     if cm_manifest_find_edits "$BACKUP" "$BACKUP/$INSTALL_MANIFEST_NAME" "$GUARD_TMP/late-edits" "$GUARD_TMP"; then
