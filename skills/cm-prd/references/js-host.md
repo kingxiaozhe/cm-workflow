@@ -14,7 +14,7 @@
 
 单步操作可用随仓库的 `scripts/cm-prd-drive.mjs`：`node "{CM_WORKFLOW_ROOT}/scripts/cm-prd-drive.mjs" --plan PLAN.json <operation>`。
 
-**在 Claude Code 里调用驾驶员：** 单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-prd-drive.mjs ...`（PLAN 用绝对路径），以 `node ~/.claude/scripts/` 开头，前面不接 `cd`、变量赋值或其他命令，也不用 `&&`、`;` 和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样才能命中本技能声明的放行规则，自动模式下不被拦。Codex 等其他运行时照原写法。
+**在 Claude Code 里调用驾驶员：** 当前 Skill 目录在 `~/.claude/skills/` 下（默认安装）时，驾驶员单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-prd-drive.mjs --plan <PLAN 绝对路径> <操作>`：前面不接 `cd`、变量赋值，也不用 `&&`、`;`、管道和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样能匹配本技能声明的放行规则。Skill 不在默认位置（自定义 `CLAUDE_HOME`、源码目录），或更新器返回了别的工作流根时，照原写法用实际根的路径，按正常权限确认处理，不改去调用 `~/.claude` 下的另一份。需要固定工作目录时，先用单独一条 `cd` 切换，不与驾驶员连写。Codex 等其他运行时照原写法。
 PLAN 填 `project`、`specs`、`request`，继续时填状态中的 `runId` 为 `session`；变更模式填 `change`，
 人工内容放 `answers/analyze.json`、`generate.json`、`review.json`、`correct.json` 或 `summary.json`。
 路径相对 PLAN 文件。驾驶员先校验答案、范围、当前会话和恢复绑定，再启动宿主；缺少 PDF/HTML 的真实读取或浏览器执行器时，

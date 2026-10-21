@@ -9,7 +9,7 @@
 
 单步调用可用 `node scripts/cm-refactor-drive.mjs --plan PLAN.json <start|resume|finish|status|cancel|prepare_judge_revision>`。
 
-**在 Claude Code 里调用驾驶员：** 单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-refactor-drive.mjs ...`（PLAN 用绝对路径），以 `node ~/.claude/scripts/` 开头，前面不接 `cd`、变量赋值或其他命令，也不用 `&&`、`;` 和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样才能命中本技能声明的放行规则，自动模式下不被拦。Codex 等其他运行时照原写法。
+**在 Claude Code 里调用驾驶员：** 当前 Skill 目录在 `~/.claude/skills/` 下（默认安装）时，驾驶员单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-refactor-drive.mjs --plan <PLAN 绝对路径> <操作>`：前面不接 `cd`、变量赋值，也不用 `&&`、`;`、管道和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样能匹配本技能声明的放行规则。Skill 不在默认位置（自定义 `CLAUDE_HOME`、源码目录），或更新器返回了别的工作流根时，照原写法用实际根的路径，按正常权限确认处理，不改去调用 `~/.claude` 下的另一份。需要固定工作目录时，先用单独一条 `cd` 切换，不与驾驶员连写。Codex 等其他运行时照原写法。
 PLAN 写 `{ "config":"config.json", "answers":"answers" }`，路径相对 PLAN；答案按驾驶员 `--help` 与文件头准备。
 驾驶员发送前核对配置、scope、内容文件、人工分析/审查/确认和恢复记录；缺项退出 2，不启动宿主。
 基线、判官、变异及批量语法命令仍由宿主实际执行；结果不从答案文件读取。未知执行结果需原回执，驾驶员拒绝静态补写。

@@ -97,7 +97,7 @@ Codex preflight 不能证明 Claude 就绪。反向组合使用 `--runtime claud
 node "{CM_WORKFLOW_ROOT}/scripts/cm-fix-drive.mjs" --plan "{PLAN}" advance
 ```
 
-**在 Claude Code 里调用驾驶员：** 单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-fix-drive.mjs ...`（PLAN 用绝对路径），以 `node ~/.claude/scripts/` 开头，前面不接 `cd`、变量赋值或其他命令，也不用 `&&`、`;` 和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样才能命中本技能声明的放行规则，自动模式下不被拦。Codex 等其他运行时照原写法。
+**在 Claude Code 里调用驾驶员：** 当前 Skill 目录在 `~/.claude/skills/` 下（默认安装）时，驾驶员单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-fix-drive.mjs --plan <PLAN 绝对路径> <操作>`：前面不接 `cd`、变量赋值，也不用 `&&`、`;`、管道和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样能匹配本技能声明的放行规则。Skill 不在默认位置（自定义 `CLAUDE_HOME`、源码目录），或更新器返回了别的工作流根时，照原写法用实际根的路径，按正常权限确认处理，不改去调用 `~/.claude` 下的另一份。需要固定工作目录时，先用单独一条 `cd` 切换，不与驾驶员连写。Codex 等其他运行时照原写法。`cm-fix` 的 PLAN.cwd 写代码根的规范绝对路径，并与配置中的 `reproduction.cwd` 一致。
 
 `PLAN` 是一份小 JSON：宿主配置路径、代码根、`create|resume`、当前真实会话 ID、换会话时的
 原会话 ID、`--allow-*` 开关数组（原样传给宿主，不另造一套词）、答案目录。宿主中途的反问

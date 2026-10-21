@@ -5,9 +5,10 @@
 
 ## 未发布
 
-- **Claude Code 自动模式下驾驶员不再被误拦**：`cm-ai`、`cm-prd`、`cm-fix`、`cm-test`、`cm-idea`、`cm-init`、`cm-check`、`cm-refactor` 八个技能的描述头用多行列表声明 `allowed-tools`，放行各自的驾驶员 `node ~/.claude/scripts/cm-*-drive.mjs *`；各技能 `references/js-host.md` 在驾驶员命令旁写明：驾驶员单独一条调用、以 `node ~/.claude/scripts/` 开头、前面不接 `cd` 或变量、PLAN 先用写文件工具写好，否则放行规则匹配不上。
-  - 实测（干净目录探针）：声明了的技能在批准调用后命令自动放行，没声明的被拒；逗号分隔的单行写法不生效，必须用多行列表。
-  - **已知限制**：带 `allowed-tools` 的技能首次调用需用户批准一次；只对 Claude Code 生效，Codex 照原写法；自动模式下能否盖过安全检查只依据配置说明，未找到能稳定触发拦截的命令做对照实测。
+- **为 Claude Code 驾驶员声明工具放行规则**：`cm-ai`、`cm-prd`、`cm-fix`、`cm-test`、`cm-idea`、`cm-check`、`cm-refactor` 七个技能的描述头用多行列表声明 `allowed-tools`，放行各自的驾驶员 `node ~/.claude/scripts/cm-*-drive.mjs *`；调用说明写明：默认安装（Skill 在 `~/.claude/skills/` 下）时驾驶员单独一条调用、以该字面路径开头、PLAN 先用写文件工具写好；自定义安装根或更新器返回别的根时照原写法用实际路径。
+  - 探针结果（干净目录、本机 Claude Code）：批准调用技能后，声明的命令自动放行，没声明的被拒；被测的逗号分隔单行写法未生效，多行列表生效。
+  - `cm-init` 不加声明：它的技能说明与调用说明参与会话绑定，改动会挡住在途会话恢复。`cm-test` 的调用规则写在技能说明里，原因相同。
+  - **已知限制**：带 `allowed-tools` 的技能首次调用需用户批准；只对 Claude Code 生效；原先在自动模式下被安全检查误拦的场景尚未做对照实测，组织级权限策略仍可能拒绝。
 - **重装前发现手改就停下**：多个会话同时用 CM 时，曾有一个会话经用户同意手改了已安装的 `~/.claude/scripts/cm-ai-host.mjs`，另一个会话随后 `./install.sh --yes` 把它静默覆盖。完整说明与已知限制见 `docs/installation.md`「Local edits, install lock and known limitations」。
   - `install.sh` 安装成功后写 `<CLAUDE_HOME>/cm-workflow/install-manifest.sha256`，`install-codex.sh` 写 `~/plugins/cm-workflow/.cm-install-manifest.sha256`，记录每个核心文件的相对路径和 sha256；`__pycache__`、`.DS_Store` 和 `~/.cm-workflow` 下的可选更新器不记录，含反斜杠的文件名拒绝。逻辑在共用的 `scripts/cm-install-manifest.sh`。
   - 重装时，清单里有、目标里也在的文件，sha256 变了、变成链接或目录、上级目录变成链接，都算手改：列出并以退出码 3 停下。`--yes` 和交互回答 y 都不能绕过，只有 `--overwrite-local-edits` 才覆盖；清单损坏或不是普通文件同样停下；核对过程中任何中间文件读不到都算核对失败并停下，不会当成「没有手改」；受管目录不可搜索、无法判断文件在不在时同样算核对失败，不会当成「文件已删除」；Codex 安装失败时若 `~/plugins` 本身不可搜索，清理不在其中做任何恢复，如实报告回滚不完整、打印预定的恢复材料路径，并保留锁由人处理；没有旧清单时打印一行说明后照常安装。

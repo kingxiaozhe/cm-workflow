@@ -1,8 +1,6 @@
 # cm-test：共享 JS 会话入口
 
 单步调用可用 `node scripts/cm-test-drive.mjs --plan PLAN.json <start|resume|status|cancel>`。
-
-**在 Claude Code 里调用驾驶员：** 单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-test-drive.mjs ...`（PLAN 用绝对路径），以 `node ~/.claude/scripts/` 开头，前面不接 `cd`、变量赋值或其他命令，也不用 `&&`、`;` 和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样才能命中本技能声明的放行规则，自动模式下不被拦。Codex 等其他运行时照原写法。
 PLAN 写 `{ "config":"config.json", "answers":"answers", "sessionDir":"session" }`，路径相对 PLAN；恢复另写 `"resolution":null`。
 驾驶员先核对配置、判断答案和会话绑定，缺项退出 2 且不启动宿主。项目声明命令仍由宿主实际执行；
 浏览器/设备观察没有驾驶员 runner，包含 `qa_browser` 的步骤会在发送前拒绝，不能用静态文件冒充执行证据。

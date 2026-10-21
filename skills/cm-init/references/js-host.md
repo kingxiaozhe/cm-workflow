@@ -2,8 +2,6 @@
 
 单步调用可用 `node scripts/cm-init-drive.mjs --plan PLAN.json <start|advance|status|resume>`。计划写规范 `project`、私有 `sessionFile`、`mode:create|resume`、当前 `hostContext`；恢复另写 `originalHostContext`。首次 `advance` 写 `selection`；`answers/generate.json` 将固定目标映射到同目录草稿内容文件，后续人工答案依次为 `analyze.json`、`verify.json`、`confirm.json`、`review.json`。驾驶员按存档阶段预检；`init_write` 仅在本次 `allowWrite:true` 时按已审文档实际写入并回报，宿主仍回读。私有会话记录的授权、当前用户确认及真实独立审查要求沿用下文，答案文件不能代替这些事实。`status` 只读；未知调用只用原回执恢复。
 
-**在 Claude Code 里调用驾驶员：** 单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-init-drive.mjs ...`（PLAN 用绝对路径），以 `node ~/.claude/scripts/` 开头，前面不接 `cd`、变量赋值或其他命令，也不用 `&&`、`;` 和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样才能命中本技能声明的放行规则，自动模式下不被拦。Codex 等其他运行时照原写法。
-
 ## 中断后恢复
 
 若本次启用了下方`--session-file`，先用原私有记录恢复；只有已进入写入且结果未知，才走已审档案分支。不要从文件时间猜选记录或把两种恢复模式混用。本批之前版本（0b3040e）创建的私有记录绑定的是旧版本文档摘要：只要其余规则模板与SKILL逐字未变、本文档是已知的新版本，宿主按原绑定继续（受控迁移，见`runtime/js/policy-binding-compat.mjs`）；其他任何漂移仍报`idea_session_binding_changed`。

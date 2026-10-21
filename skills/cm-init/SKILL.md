@@ -1,8 +1,6 @@
 ---
 name: cm-init
 description: 用户说“第一次接管这个项目”“分析仓库并生成项目规则”时使用。分析已有代码并生成 Codex AGENTS.md 与 CM/Claude 兼容规则；仅适用于非空存量项目，不创建脚手架、不承接普通代码修改。
-allowed-tools:
-  - Bash(node ~/.claude/scripts/cm-init-drive.mjs *)
 ---
 
 # cm-init — 项目上下文初始化
