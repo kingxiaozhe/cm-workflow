@@ -362,7 +362,7 @@ test('fault: a failure right after the new manifest is published restores the ol
     assert.equal(result.status, 9, output(result));
     assert.equal(fs.readFileSync(path.join(target, EARLY), 'utf8'), '# older early file\n');
     assert.equal(fs.readFileSync(path.join(target, MANIFEST), 'utf8'), manifestBefore);
-    assert.equal(fs.readdirSync(path.join(target, 'cm-workflow')).some(name => name.includes('.tmp.')), false);
+    assert.equal(fs.readdirSync(path.join(target, 'cm-workflow')).some(name => name.startsWith('.install-manifest.')), false);
     assert.equal(fs.existsSync(lockOf(target)), false);
     assert.deepEqual(leftovers(home), []);
   });
@@ -506,4 +506,41 @@ test('fault: a file copy that fails half-written is rolled back with the files b
     assert.equal(fs.readFileSync(path.join(target, MANIFEST), 'utf8'), manifestBefore);
     assert.equal(fs.existsSync(lockOf(target)), false);
     assert.deepEqual(leftovers(home), []);
+  });
+
+test('fault: an unreadable rollback list is reported as an incomplete rollback and the backup is kept',
+  {skip: process.platform === 'win32' || process.getuid?.() === 0, timeout: 300000}, t => {
+    const {home, target, env} = installedClone(t, 'cm-install-fault-list-');
+    olderVersion(target, EARLY, '# older early file\n');
+    const manifestBefore = fs.readFileSync(path.join(target, MANIFEST), 'utf8');
+    const tmp = path.join(home, 'tmp');
+    fs.mkdirSync(tmp);
+    const hook = writeHook(home, [`[ "$1" = before-copy ] && [ "$2" = "${EDITED}" ] || exit 0`,
+      `chmod 000 '${tmp}'/cm-install-guard.*/written-files`, 'exit 7']);
+    const result = install({...env, TMPDIR: tmp, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 7, output(result));
+    assert.match(result.stderr, /回滚清单不可读/);
+    assert.match(result.stderr, /回滚不完整/);
+    assert.doesNotMatch(result.stderr, /已回滚本次写入/);
+    const kept = leftovers(home).filter(name => name.startsWith('.cm-claude.backup.'));
+    assert.equal(kept.length, 1, 'the backup must be kept');
+    assert.equal(fs.readFileSync(path.join(home, kept[0], EARLY), 'utf8'), '# older early file\n');
+    assert.equal(fs.readFileSync(path.join(target, MANIFEST), 'utf8'), manifestBefore);
+    assert.equal(fs.existsSync(lockOf(target)), false, 'the lock is still released');
+  });
+
+test('fault: a failure after the temporary manifest is created removes only that file and keeps the old manifest',
+  {skip: process.platform === 'win32', timeout: 300000}, t => {
+    const {home, target, env} = installedClone(t, 'cm-install-fault-tmpmanifest-');
+    const manifestBefore = fs.readFileSync(path.join(target, MANIFEST), 'utf8');
+    const unrelated = path.join(target, 'cm-workflow', 'install-manifest.sha256.tmp.notmine');
+    fs.writeFileSync(unrelated, 'not created by this install\n');
+    const hook = writeHook(home, ['[ "$1" = before-manifest-publish ] && exit 9']);
+    const result = install({...env, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 9, output(result));
+    const names = fs.readdirSync(path.join(target, 'cm-workflow'));
+    assert.equal(names.some(name => name.startsWith('.install-manifest.')), false, 'the temporary manifest is removed');
+    assert.equal(fs.readFileSync(unrelated, 'utf8'), 'not created by this install\n');
+    assert.equal(fs.readFileSync(path.join(target, MANIFEST), 'utf8'), manifestBefore);
+    assert.equal(fs.existsSync(lockOf(target)), false);
   });

@@ -17,6 +17,7 @@ INSTALL_MANIFEST_RELATIVE="cm-workflow/install-manifest.sha256"
 INSTALL_MANIFEST="$DEST/$INSTALL_MANIFEST_RELATIVE"
 GUARD_TMP=""
 MANIFEST_PUBLISHED=0
+MANIFEST_TMP=""
 # One install transaction per target; never taken over automatically. The path
 # is set from the canonical target below (shared rule with install-codex.sh).
 LOCK_DIR=""
@@ -77,7 +78,20 @@ cleanup() {
   trap '' HUP INT TERM
   trap - EXIT
   if [ "$INSTALL_COMPLETE" -ne 1 ] && [ "$DEST_TOUCHED" -eq 1 ]; then
-    while IFS= read -r relative; do
+    # Without a readable list of what was written nothing can be restored
+    # safely: report it and keep the backup instead of claiming success.
+    if written_files=$(cat "$WRITTEN_LIST" 2>/dev/null); then
+      :
+    else
+      written_files=""
+      rollback_fail "回滚清单不可读: ${WRITTEN_LIST}（已写入的文件未恢复）"
+    fi
+    # Split on newlines only (no temporary file, unlike a here-document).
+    saved_ifs=$IFS
+    IFS='
+'
+    set -f
+    for relative in $written_files; do
       [ -n "$relative" ] || continue
       target="$DEST/$relative"
       saved="$BACKUP/$relative"
@@ -90,7 +104,9 @@ cleanup() {
       elif [ -f "$target" ]; then
         rm -f "$target" || rollback_fail "$target"
       fi
-    done < "$WRITTEN_LIST"
+    done
+    set +f
+    IFS=$saved_ifs
     # Keep the manifest paired with the restored files.
     if [ "$MANIFEST_PUBLISHED" -eq 1 ]; then
       if ! assert_safe_target "$INSTALL_MANIFEST_RELATIVE"; then
@@ -111,7 +127,8 @@ cleanup() {
   rm -rf "$STAGE"
   [ "$ROLLBACK_FAILED" -eq 1 ] || rm -rf "$BACKUP"
   [ -z "$GUARD_TMP" ] || rm -rf "$GUARD_TMP"
-  rm -f "${INSTALL_MANIFEST}.tmp.$$"
+  # Only the temporary manifest this run created (mktemp) is removed.
+  [ -z "$MANIFEST_TMP" ] || rm -f "$MANIFEST_TMP"
   [ "$LOCK_HELD" -ne 1 ] || rm -rf "$LOCK_DIR" || echo "⚠ 无法释放安装锁: ${LOCK_DIR}" >&2
   exit "$status"
 }
@@ -280,8 +297,8 @@ echo
 mkdir -p "$DEST_PARENT"
 cm_defer_signals
 if cm_install_lock_acquire "$LOCK_DIR"; then
-  cm_install_test_hook lock-acquired
   LOCK_HELD=1
+  cm_install_test_hook lock-acquired
   cm_install_lock_write_owner "$LOCK_DIR" "$DEST"
 fi
 cm_resume_signals
@@ -449,9 +466,17 @@ if ! assert_safe_target "$INSTALL_MANIFEST_RELATIVE"; then
   echo "安装清单路径类型发生变化，已停止并回滚。" >&2
   exit 3
 fi
-cp "$GUARD_TMP/new-manifest" "${INSTALL_MANIFEST}.tmp.$$"
+# The temporary manifest is created exclusively by mktemp under a random name
+# in the checked directory; cleanup removes only this file.
+cm_defer_signals
+MANIFEST_TMP=$(cm_run_shielded mktemp "$(dirname "$INSTALL_MANIFEST")/.install-manifest.XXXXXX")
+cm_resume_signals
+cp "$GUARD_TMP/new-manifest" "$MANIFEST_TMP"
+chmod 644 "$MANIFEST_TMP"
+cm_install_test_hook before-manifest-publish
 MANIFEST_PUBLISHED=1
-mv -f "${INSTALL_MANIFEST}.tmp.$$" "$INSTALL_MANIFEST"
+mv -f "$MANIFEST_TMP" "$INSTALL_MANIFEST"
+MANIFEST_TMP=""
 cm_install_test_hook after-manifest-publish
 INSTALL_COMPLETE=1
 echo "✓ 安装清单已写入: ${INSTALL_MANIFEST}"

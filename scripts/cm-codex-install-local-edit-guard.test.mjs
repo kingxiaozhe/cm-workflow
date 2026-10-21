@@ -17,9 +17,11 @@ const EDITED = 'skills/cm-check/SKILL.md';
 const STUB_CREATOR = `import json, pathlib, sys
 args = sys.argv[1:]
 path = pathlib.Path(args[args.index('--marketplace-path') + 1])
-if not path.exists():
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({'name': 'personal', 'plugins': [{'name': 'cm-workflow'}]}) + '\\n')
+# Every run changes the file, so a later rollback has something to undo.
+data = json.loads(path.read_text()) if path.exists() else {'name': 'personal', 'plugins': [{'name': 'cm-workflow'}]}
+data['stubWrites'] = data.get('stubWrites', 0) + 1
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(data) + '\\n')
 `;
 
 function sandbox(t) {
@@ -332,4 +334,37 @@ test('codex fault: a marketplace that became a directory is not "restored" into 
     assert.deepEqual(fs.readFileSync(path.join(path.dirname(box.plugin), kept[0])), box.before.marketplace);
     assert.deepEqual(fs.readFileSync(box.pluginJson), box.before.json, 'the previous plugin is still restored');
     assert.equal(fs.existsSync(lockOf(box.plugin)), false);
+  });
+
+test('codex path safety: a plugins directory replaced by a symlink during the install stops at the next check',
+  {skip: process.platform === 'win32', timeout: 600000}, t => {
+    const box = installedCodexClone(t);
+    const plugins = path.dirname(box.plugin);
+    const elsewhere = path.join(box.home, 'elsewhere-plugins');
+    fs.mkdirSync(elsewhere);
+    const hook = writeHook(box.home, ['[ "$1" = before-marketplace-check ] || exit 0',
+      `mv '${plugins}' '${plugins}.moved'`, `ln -s '${elsewhere}' '${plugins}'`]);
+    const result = install({...box.env, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 2, output(result));
+    assert.match(result.stderr, /no longer the one checked at start/);
+    assert.match(result.stderr, /lock location cannot be confirmed/);
+    assert.deepEqual(fs.readdirSync(elsewhere), [], 'nothing may be written through the replaced directory');
+    const moved = path.join(`${plugins}.moved`, 'cm-workflow');
+    assert.deepEqual(fs.readFileSync(path.join(moved, '.codex-plugin/plugin.json')), box.before.json);
+    assert.deepEqual(fs.readFileSync(path.join(moved, MANIFEST)), box.before.manifest);
+    assert.deepEqual(fs.readFileSync(box.marketplace), box.before.marketplace);
+  });
+
+test('codex path safety: ~/.agents replaced by a symlink before the marketplace directory is created is refused there',
+  {skip: process.platform === 'win32', timeout: 300000}, t => {
+    const {home, plugin, env} = sandbox(t);
+    const elsewhere = path.join(home, 'elsewhere-agents');
+    const hook = writeHook(home, ['[ "$1" = before-marketplace-check ] || exit 0',
+      `mkdir '${elsewhere}'`, `ln -s '${elsewhere}' '${path.join(home, '.agents')}'`]);
+    const result = install({...env, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 2, output(result));
+    assert.match(result.stderr, /symlinked or wrong-type install path/);
+    assert.deepEqual(fs.readdirSync(elsewhere), [], 'no directory may be created through the symlink');
+    assert.equal(fs.existsSync(plugin), false);
+    assert.equal(fs.existsSync(lockOf(plugin)), false);
   });

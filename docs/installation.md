@@ -247,6 +247,16 @@ that the rollback is incomplete (`回滚不完整` / `rollback is incomplete`), 
 and `.cm-previous-install-manifest`; for Codex the listed backup, failed-plugin
 and marketplace-backup paths under `~/plugins`).
 
+Protection boundary (decided for this feature):
+
+> 安装器以用户本人账号运行，「安装进行途中有人故意把受管目录或其父目录替换成符号链接」不在本功能防护范围内——能这样做的人本来就能直接改家目录任何文件，安装器挡不住。本功能要防的是别的会话手改已装文件后被静默覆盖。入口处已有的静态链接拒绝保留。
+
+In English: the installers run as you. Deliberately swapping a managed directory
+or one of its parents for a symlink while an install runs is out of scope,
+because whoever can do that can already change any file in your home directory.
+This feature protects files that another session edited from being silently
+overwritten. The symlink refusals at the entry checks stay.
+
 Known limitations:
 
 | Limitation | Why / what to do |
@@ -259,6 +269,8 @@ Known limitations:
 | No forced overwrite from npm or `$cm-check` | Intentional: they stop on local edits; run the Bash installer yourself to discard edits. |
 | `~/.cm-workflow/cm-update.sh` deletes first | The optional auto-updater uses its own lock and older path list and deletes files removed upstream before it runs `install.sh`, outside this lock and check. It can delete a file and then stop on a local edit. |
 | Other marketplace writers and Codex internal state | The lock only coordinates CM installers. Do not manage other Codex plugins while CM installs: a rollback restores the whole previous `marketplace.json`. Cleanup does not undo Codex cache or registration side effects of `codex plugin add`. |
+| Directories replaced while an install runs | Out of scope (see the boundary above). Partial checks remain: the marketplace structure is re-checked before its directory is first created, before it is written and before a rollback writes it; the Codex local-edit checks stop with status 2 when `~/plugins` is no longer the physical directory resolved at start, and then the lock is not deleted through the replaced path (remove it by hand). Other write points are not re-checked. |
+| Temporary manifest | `install.sh` writes the new manifest to a random `.install-manifest.XXXXXX` file created by `mktemp` next to it and removes only that file on failure. |
 | File names | The manifest is line based; names containing a newline or a backslash are not supported. |
 | Test hook | `CM_INSTALL_TEST_HOOK` exists for the repository's fault-injection tests. It is unset normally; when set, the installer runs that program at fixed points, so never set it outside tests. |
 

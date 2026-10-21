@@ -139,6 +139,13 @@ FAILED_MARKETPLACE="$PLUGIN_PARENT/.cm-workflow.marketplace.failed.$$"
 INSTALL_MANIFEST="$PLUGIN_DEST/$INSTALL_MANIFEST_NAME"
 LOCK_DIR="$(cm_install_lock_path "$PLUGIN_DEST")"
 
+# PLUGIN_PARENT is the physical directory resolved at entry; a later symlink
+# or different physical path there means it was replaced during the install.
+plugin_parent_unchanged() {
+  [ ! -L "$PLUGIN_PARENT" ] && [ -d "$PLUGIN_PARENT" ] &&
+    [ "$(cd "$PLUGIN_PARENT" 2>/dev/null && pwd -P)" = "$PLUGIN_PARENT" ]
+}
+
 # Rollback keeps going after a failed step (no errexit, signals ignored), keeps
 # every recovery copy whenever anything could not be restored, and always
 # unlocks.
@@ -188,7 +195,14 @@ cleanup() {
   if [ "$INSTALL_COMPLETE" -eq 1 ]; then
     rm -rf "$BACKUP"
   fi
-  [ "$LOCK_HELD" -ne 1 ] || rm -rf "$LOCK_DIR" || echo "Could not release the install lock: $LOCK_DIR" >&2
+  if [ "$LOCK_HELD" -eq 1 ]; then
+    if plugin_parent_unchanged; then
+      rm -rf "$LOCK_DIR" || echo "Could not release the install lock: $LOCK_DIR" >&2
+    else
+      # Never delete through a replaced parent: the lock may be elsewhere now.
+      echo "The plugins directory was replaced during the install, so the lock location cannot be confirmed. Find and remove it by hand after checking no install is running: $(cm_install_quote "$LOCK_DIR")" >&2
+    fi
+  fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -211,6 +225,10 @@ guard_local_edits() {
   guard_mode=${1:-initial}
   if ! cm_manifest_select_hasher; then
     echo "Neither shasum nor sha256sum was found, so local edits to the installed plugin cannot be checked. Installation stopped; nothing was changed." >&2
+    return 2
+  fi
+  if ! plugin_parent_unchanged; then
+    echo "The plugins directory is no longer the one checked at start: $PLUGIN_PARENT. Installation stopped." >&2
     return 2
   fi
   if [ -L "$PLUGIN_DEST" ]; then
@@ -268,8 +286,8 @@ run_official_validation() {
 mkdir -p "$PLUGIN_PARENT"
 cm_defer_signals
 if cm_install_lock_acquire "$LOCK_DIR"; then
-  cm_install_test_hook lock-acquired
   LOCK_HELD=1
+  cm_install_test_hook lock-acquired
   cm_install_lock_write_owner "$LOCK_DIR" "$PLUGIN_DEST"
 fi
 cm_resume_signals
@@ -311,6 +329,12 @@ run_local_edit_guard initial
 "$PYTHON_BIN" "$SRC_DIR/scripts/validate-public-repo.py"
 "$SRC_DIR/scripts/cm-check-runtime.sh" --project "$SRC_DIR"
 run_official_validation "$SRC_DIR"
+# Re-check the marketplace structure before the first directory is created.
+cm_install_test_hook before-marketplace-check
+if marketplace_problem=$(marketplace_structure_problem); then
+  echo "Refusing a symlinked or wrong-type install path: $marketplace_problem. Installation stopped; nothing was changed." >&2
+  exit 2
+fi
 mkdir -p "$PLUGIN_PARENT" "$MARKETPLACE_ROOT"
 
 if [ -d "$PLUGIN_DEST" ] && [ "$(cd "$PLUGIN_DEST" && pwd -P)" = "$SRC_DIR" ]; then
@@ -332,7 +356,6 @@ run_local_edit_guard recheck
 
 # Use the first-party helper to own marketplace.json updates, but scaffold in
 # a disposable directory so an interrupted install cannot damage the plugin.
-cm_install_test_hook before-marketplace-check
 if marketplace_problem=$(marketplace_structure_problem); then
   echo "Refusing a symlinked or wrong-type install path: $marketplace_problem. Installation stopped; nothing was changed." >&2
   exit 2
@@ -417,8 +440,8 @@ fi
 # until DEST_REPLACED is set, so cleanup always knows to put the old plugin back.
 cm_defer_signals
 cm_run_shielded mv "$STAGE" "$PLUGIN_DEST"
-cm_install_test_hook after-stage-moved
 DEST_REPLACED=1
+cm_install_test_hook after-stage-moved
 cm_resume_signals
 
 if [ -f "$READ_MARKETPLACE" ]; then
