@@ -5,7 +5,7 @@
 
 ## 未发布
 
-- **为 Claude Code 驾驶员声明工具放行规则**：`cm-ai`、`cm-prd`、`cm-fix`、`cm-test`、`cm-idea`、`cm-check`、`cm-refactor` 七个技能的描述头用多行列表声明 `allowed-tools`，放行各自的驾驶员 `node ~/.claude/scripts/cm-*-drive.mjs *`；调用说明写明：默认安装（Skill 在 `~/.claude/skills/` 下）时驾驶员单独一条调用、以该字面路径开头、PLAN 先用写文件工具写好；自定义安装根或更新器返回别的根时照原写法用实际路径。
+- **为 Claude Code 驾驶员声明工具放行规则**：`cm-ai`、`cm-prd`、`cm-fix`、`cm-test`、`cm-idea`、`cm-check`、`cm-refactor` 七个技能的描述头用多行列表声明 `allowed-tools`，放行各自的驾驶员 `node ~/.claude/scripts/cm-*-drive.mjs *`；调用说明写明：按共享路径合同最终解析的工作流根确为默认 `~/.claude` 时驾驶员单独一条调用、以该字面路径开头、PLAN 先用写文件工具写好；显式 `CM_WORKFLOW_HOME`、自定义安装根或更新器返回别的根时照原写法用实际路径。
   - 探针结果（干净目录、本机 Claude Code）：批准调用技能后，声明的命令自动放行，没声明的被拒；被测的逗号分隔单行写法未生效，多行列表生效。
   - `cm-init` 不加声明：它的技能说明与调用说明参与会话绑定，改动会挡住在途会话恢复。`cm-test` 的调用规则写在技能说明里，原因相同。
   - **已知限制**：带 `allowed-tools` 的技能首次调用需用户批准；只对 Claude Code 生效；原先在自动模式下被安全检查误拦的场景尚未做对照实测，组织级权限策略仍可能拒绝。

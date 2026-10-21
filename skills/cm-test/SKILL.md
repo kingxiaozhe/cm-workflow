@@ -7,7 +7,7 @@ allowed-tools:
 
 # cm-test — 分支影响分析与存量功能只读测试
 
-**在 Claude Code 里调用驾驶员：** 当前 Skill 目录在 `~/.claude/skills/` 下（默认安装）时，驾驶员单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-test-drive.mjs --plan <PLAN 绝对路径> <操作>`：前面不接 `cd`、变量赋值，也不用 `&&`、`;`、管道和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样能匹配本技能声明的放行规则。Skill 不在默认位置（自定义 `CLAUDE_HOME`、源码目录），或更新器返回了别的工作流根时，照原写法用实际根的路径，按正常权限确认处理，不改去调用 `~/.claude` 下的另一份。需要固定工作目录时，先用单独一条 `cd` 切换，不与驾驶员连写。Codex 等其他运行时照原写法。（`references/js-host.md` 参与会话绑定，此条写在这里。）
+**在 Claude Code 里调用驾驶员：** 按共享路径合同（`runtime/project-context.md`）最终解析并验证的工作流根确为默认 `~/.claude` 时，驾驶员单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-test-drive.mjs --plan <PLAN 绝对路径> <操作>`：前面不接 `cd`、变量赋值，也不用 `&&`、`;`、管道和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样能匹配本技能声明的放行规则。用户显式提供的 `CM_WORKFLOW_HOME`、自定义 `CLAUDE_HOME`、源码目录或更新器返回的根指向别处时，照原写法用实际根的路径，按正常权限确认处理，不改去调用 `~/.claude` 下的另一份。需要固定工作目录时，先用单独一条 `cd` 切换，不与驾驶员连写。Codex 等其他运行时照原写法。（`references/js-host.md` 参与会话绑定，此条写在这里。）
 
 执行前读取 `../../runtime/project-context.md`、`../../runtime/test-contract.md`、
 `../../runtime/model-efficiency.md` 与 `../../runtime/logging.md`。使用 `--generate-cases`
