@@ -191,13 +191,16 @@ test(`closeout real driver completes the original workflow with ${mode}`,t=>{
   f.write('documentation-inspect.json',{status:'completed',reason:'Controlled required-document fixture',
     ...(mode==='report'?{closeout}:{})});
   plan.permissions=['--workflow-config','workflow.json','--allow-qa',...permissions];
-  let result;
+  let result,last;
   for(let n=0;n<4;n++){
     const out=f.drive(f.plan({...plan,...(n?{mode:'resume',originalHostContext:'drive-host-a'}:{})}),'advance');
-    assert.equal(out.status,0,out.stderr);result=JSON.parse(out.stdout).result;
+    assert.equal(out.status,0,out.stderr);result=JSON.parse(out.stdout).result;last=out;
     if(result.state==='run_done')break;
+    assert.doesNotMatch(out.stderr,/会话边界：换新会话。/,'no verdict before run_done');
   }
   assert.equal(result.state,'run_done',JSON.stringify(result));
+  // The real driver prints the session-boundary verdict itself at run_done.
+  assert.match(last.stderr,/会话边界：换新会话。\n新会话里运行：无，1\.work 的任务已全部完成/);
   assert.equal(result.knowledgeCloseout.status,mode==='report'?'reported':mode==='off'?'disabled':'not_completed');
   if(mode==='report')assert.deepEqual(result.knowledgeCloseout.items,closeout.items);
   const state=JSON.parse(fs.readFileSync(f.store)),before=fs.readFileSync(path.join(f.codeProject,'target.mjs'));

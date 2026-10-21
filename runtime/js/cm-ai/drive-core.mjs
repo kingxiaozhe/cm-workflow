@@ -200,7 +200,7 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
       done=true;finalRow=row;control.abort();
       process.stdout.write(JSON.stringify(row,null,2)+'\n');
       // The driver prints the session-boundary verdict itself so the model only relays it;
-      if(typeof sessionBoundary==='function'&&!row.error){let block=null;try{block=sessionBoundary(row.result,operation);}catch{}
+      if(typeof sessionBoundary==='function'&&!row.error){let block=null;try{block=sessionBoundary(row.result,operation);}catch{stderr('会话边界结论生成失败；请按技能输出模板手写三行结论（业务结果不受影响）');}
         // stderr, not stdout: callers parse stdout as one JSON result.
         if(typeof block==='string'&&block)process.stderr.write(block+'\n');}
       const guidance=guidanceText(row.result);if(guidance)stderr(guidance);
