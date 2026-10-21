@@ -219,6 +219,7 @@
   "cm-workflow.test.mjs": 1,
   "correction-check.test.mjs": 1,
   "policy-binding-compat.test.mjs": 2,
+  "session-boundary.test.mjs": 1,
   "validate-test-cases.test.mjs": 1
  }
 }

@@ -76,6 +76,11 @@ Each workflow's stop-report template carries these lines inline (`cm-ai` N8 summ
 pointer to this section was not followed in a real `cm-prd` run (2026-10-20):
 the session never opened this file and ended without a verdict.
 
+For `cm-ai` single-task runs and `cm-fix` runs driven by the JS drivers, the driver
+prints these lines itself on stderr after the final result
+(`runtime/js/session-boundary.mjs`); the model relays them verbatim. Two real
+runs showed the model rewriting a template-only verdict into one sentence.
+
 Report the verdict in the user's language in this shape:
 
 ```text

@@ -65,7 +65,7 @@ export function deliberatelyUnanswered(message){
 // The long fallback covers hosts that cannot advertise individual phase budgets.
 export const DRIVE_LIVENESS_DEFAULTS=Object.freeze({startupMs:60000,operationMs:21600000,
   heartbeatMs:30000,graceMs:30000,closeMs:5000,killMs:1000,pollMs:250});
-export function driveHost({host,args,cwd,operation,request={},answers,paths,answerFor,beforeRequest=null,liveness={}}){
+export function driveHost({host,args,cwd,operation,request={},answers,paths,answerFor,beforeRequest=null,liveness={},sessionBoundary=null}){
   const budget={...DRIVE_LIVENESS_DEFAULTS,...liveness};
   for(const value of Object.values(budget))if(!Number.isSafeInteger(value)||value<1)throw Error('driver_liveness_invalid');
   const ownGroup=process.platform!=='win32';
@@ -199,6 +199,10 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
       }
       done=true;finalRow=row;control.abort();
       process.stdout.write(JSON.stringify(row,null,2)+'\n');
+      // The driver prints the session-boundary verdict itself so the model only relays it;
+      if(typeof sessionBoundary==='function'&&!row.error){let block=null;try{block=sessionBoundary(row.result,operation);}catch{}
+        // stderr, not stdout: callers parse stdout as one JSON result.
+        if(typeof block==='string'&&block)process.stderr.write(block+'\n');}
       const guidance=guidanceText(row.result);if(guidance)stderr(guidance);
       if(row.result?.stage)stderr(`stage = ${row.result.stage}`);
       if(row.error)stderr(`宿主拒绝：${row.error.code}（真实原因和位置在上面 [host] 那行 diagnostic 里）`);

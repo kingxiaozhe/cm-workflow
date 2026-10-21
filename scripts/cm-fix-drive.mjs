@@ -50,6 +50,7 @@ import {fixEvidenceNames} from '../runtime/js/cm-fix/layout.mjs';
 import {inspectFixDiagnosis,describeFixDiagnosisError} from '../runtime/js/cm-fix/diagnosis.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
+import {cmFixSessionBoundary} from '../runtime/js/session-boundary.mjs';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 const HOST=path.join(here,'cm-fix-host.mjs');
@@ -258,7 +259,7 @@ function main(){
       ...(operation==='recover_final_review'?{invocationId:plan.invocationId,packageDigest:plan.packageDigest,previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),
       ...(operation==='reconcile_review'?{invocationId:plan.invocationId}:{}),...(['abandon_step','abandon_review','rediagnose','rerun_blocked_step'].includes(operation)?{reason:plan.reason}:{}),
       ...(operation==='prepare_revision'&&Object.hasOwn(plan,'revisionTests')?{tests:plan.revisionTests}:{})},
-    answers,paths:{...paths,round},answerFor});
+    answers,paths:{...paths,round},answerFor,sessionBoundary:cmFixSessionBoundary});
 }
 
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))main();

@@ -189,7 +189,7 @@ export const PREVIEW_EVENTS=Object.freeze([
   {event:'idle',name:'疑似空转',stage:'requirements_analysis',code:'no_next_step',nextAction:'上一步已结束约 45 分钟，会话没有发下一步，请回到会话查看'},
   {event:'idle_waiting',name:'在等你',stage:'blocked',code:'waiting_for_you',nextAction:'上一步停在需要你处理的状态，约 45 分钟没有下一步，请回到会话处理'},
   {event:'dead',name:'宿主已退出未收尾',stage:'1 个宿主进程已不在',code:'host_process_gone',nextAction:'请回到会话用 status 核对运行状态，需要时按恢复说明接手'},
-  {event:'done',name:'流程已结束',stage:'run_done',code:'run_done',nextAction:'建议在新会话里开始下一个任务，减少重复读入的上下文'}]);
+  {event:'done',name:'流程已结束',stage:'run_done',code:'run_done',nextAction:'会话边界：换新会话，下一项在新会话里运行'}]);
 export async function previewText(home,{now=Date.now(),timeZone}={}){
   const {state,textState=null,textReason=null,textSpec=null}=await loadConfig(home);
   const messages=PREVIEW_EVENTS.map(({name,...fields})=>({event:fields.event,name,
