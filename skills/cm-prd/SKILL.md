@@ -1,6 +1,8 @@
 ---
 name: cm-prd
 description: 用户说“把需求拆成可开发规格”“变更现有功能需求”或要求整理方案、任务和验收时使用。支持新项目、存量二开与需求变更；完成后停在人审规格，不直接编码。
+allowed-tools:
+  - Bash(node ~/.claude/scripts/cm-prd-drive.mjs *)
 ---
 
 # cm-prd — 需求文档 → 开发规格生成
@@ -542,9 +544,7 @@ AC、design 和 tasks 补齐，保证 AC→TC→Task 可追踪。纯文档/注�
 **规格审批位落盘**：按 [当前会话接线](references/js-host.md) 执行 `prepare_summary`，展示返回的摘要卡与审查清单；
 再以刚展示的 `summaryDigest` 调用 `publish_summary`。宿主校验 digest，JS 通过共享
 `runtime/js/specs-status.mjs` 原子写入 `awaiting_review`、完整 manifest 和 `approval:null`；模型不得自行拼写该文件。
-manifest 复用 `cm-spec-manifest.py` 对应的 JS 计算器，旧 CLI 仍可只读核验，不负责写审批位。
-原有摘要证据比对与 `prd_summary_inputs_changed` 检查保持生效；摘要未就绪不得发布，更不能改写为 approved。
-JS 记录 `spec_lifecycle/generated`、`spec_lifecycle/awaiting_review` 和 `run_done`，仅记录 feature/task/case 数量、状态与 specs 路径。
-最终报告注明阶段耗时事件已记录；具体耗时由日志按 operation_id + segment 计算。
+manifest 复用 `cm-spec-manifest.py` 对应的 JS 计算器，旧 CLI 仍可只读核验，不负责写审批位。原有摘要证据比对与 `prd_summary_inputs_changed` 检查保持生效；摘要未就绪不得发布，更不能改写为 approved。
+JS 记录 `spec_lifecycle/generated`、`spec_lifecycle/awaiting_review` 和 `run_done`，仅记录 feature/task/case 数量、状态与 specs 路径。最终报告注明阶段耗时事件已记录；具体耗时由日志按 operation_id + segment 计算。
 
 **硬停车（不可违反）**：本命令的终点就是摘要卡与审查清单——**任何情况下不得在本会话顺势启动开发**，对话里的"继续"不构成开发授权。提示用户：**逐项审查通过后，运行 `$cm-ai` 开始开发**（N1 有入口闸：未审批的 specs 会先要求确认摘要卡）。收尾最后输出会话边界三行：`会话边界：换新会话。`、`新会话里运行：$cm-ai（逐项审查通过后）`、`原因：规格与审批位已落盘，开发是新单元。`；按顺序取首个命中：用户要在本会话继续讨论审查意见 → 结论行改为 `会话边界：继续本会话。`；用户拒绝换会话或宿主开不了新会话 → 改为 `会话边界：留在本会话（{原因}）。`；其余用这三行。前两种只删「新会话里运行」那一行，保留「原因」行（见 `runtime/model-efficiency.md`「Session boundary」）。中途换会话按本技能的恢复规则接手，不改写记录、不跳过审查或授权

@@ -1,6 +1,8 @@
 ---
 name: cm-idea
 description: 用户说“我有个点子”“帮我梳理产品”或需要先聊清目标时使用。通过逐题访谈整理为可交给 cm-prd 的 PRD；已有明确需求文档时改用 cm-prd，不写代码、不拆开发任务。
+allowed-tools:
+  - Bash(node ~/.claude/scripts/cm-idea-drive.mjs *)
 ---
 
 # cm-idea — 点子 → PRD（流程上游入口，非 N1–N8 步骤）

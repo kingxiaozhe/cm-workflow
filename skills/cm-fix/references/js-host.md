@@ -97,6 +97,8 @@ Codex preflight 不能证明 Claude 就绪。反向组合使用 `--runtime claud
 node "{CM_WORKFLOW_ROOT}/scripts/cm-fix-drive.mjs" --plan "{PLAN}" advance
 ```
 
+**在 Claude Code 里调用驾驶员：** 单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-fix-drive.mjs ...`（PLAN 用绝对路径），以 `node ~/.claude/scripts/` 开头，前面不接 `cd`、变量赋值或其他命令，也不用 `&&`、`;` 和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样才能命中本技能声明的放行规则，自动模式下不被拦。Codex 等其他运行时照原写法。
+
 `PLAN` 是一份小 JSON：宿主配置路径、代码根、`create|resume`、当前真实会话 ID、换会话时的
 原会话 ID、`--allow-*` 开关数组（原样传给宿主，不另造一套词）、答案目录。宿主中途的反问
 （学习记录、诊断、测试内容、修复内容、复盘）从答案目录里按种类读文件——**你的工作是把内容

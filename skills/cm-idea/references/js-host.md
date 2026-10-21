@@ -2,6 +2,8 @@
 
 单步调用可用 `node scripts/cm-idea-drive.mjs --plan PLAN.json <start|advance|status|finish|resume>`。计划写 `project`、获准保存的私有 `sessionFile`、`mode:create|resume`、用户本轮 `text`，升档时写 `maturity`；`answers/interview.json` 存本轮人工问题或草稿。保存时写规范 `saveRoot`、安全 `filename`，`answers/confirm-save.json` 只记录本次用户对精确路径和正文的真实决定。驾驶员预检后发一条操作；实际创建文件及回读仍由宿主完成。`status` 只读，未知调用只凭原结果回执恢复。
 
+**在 Claude Code 里调用驾驶员：** 单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-idea-drive.mjs ...`（PLAN 用绝对路径），以 `node ~/.claude/scripts/` 开头，前面不接 `cd`、变量赋值或其他命令，也不用 `&&`、`;` 和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样才能命中本技能声明的放行规则，自动模式下不被拦。Codex 等其他运行时照原写法。
+
 本文件只接线，访谈内容、领域包和L1/L2/L3模板仍以idea-to-prd.md为准。默认不联网、不安装、不调用额外provider，不执行cm-prd或开发。无法维持双向宿主会话时明确报告缺口，不伪造已走JS。
 
 ## 启动与逐轮访谈

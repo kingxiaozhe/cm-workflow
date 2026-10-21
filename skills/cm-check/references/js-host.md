@@ -6,6 +6,8 @@
 
 单步调用可用 `node scripts/cm-check-drive.mjs --plan PLAN.json start`。计划写 `skillDir`、`project`、可选 `config`/`runtime`/`quick`，以及 `checks:[{id:"check_runtime",command:[checker,"--project",project,"--runtime",runtime,"--print-effective"]}]`（未指定 `runtime` 时去掉该对参数）；命令须与宿主声明逐项一致。完整模式的 `answers/check-semantic.json` 只写人工八组判断及五个可选项，不写 `sourceDigest`；驾驶员从当次请求绑定摘要。驾驶员实际运行机械 checker，保留真实退出码与输出。`status` 只读；该宿主没有跨进程恢复，驾驶员拒绝 `resume`。
 
+**在 Claude Code 里调用驾驶员：** 单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-check-drive.mjs ...`（PLAN 用绝对路径），以 `node ~/.claude/scripts/` 开头，前面不接 `cd`、变量赋值或其他命令，也不用 `&&`、`;` 和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样才能命中本技能声明的放行规则，自动模式下不被拦。Codex 等其他运行时照原写法。
+
 完整 Skill 先执行 `cm-check-update.mjs` 的默认更新步骤，再从返回的根目录启动此控制器。
 更新不在控制器会话内进行，避免基线在检查中漂移；低层控制器单独调用保持只读。
 

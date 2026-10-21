@@ -1,6 +1,8 @@
 ---
 name: cm-fix
 description: 用户说“修复这个可复现 bug”或要求根据失败报告修代码时使用。执行红灯测试、根因定位、最小修复、独立审查和回归；尚未确认的问题先用 cm-test，新功能和架构重设计转交 cm-prd。
+allowed-tools:
+  - Bash(node ~/.claude/scripts/cm-fix-drive.mjs *)
 ---
 
 # cm-fix — 缺陷修复小闭环

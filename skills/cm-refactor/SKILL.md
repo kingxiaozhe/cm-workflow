@@ -1,6 +1,8 @@
 ---
 name: cm-refactor
 description: 用户明确要求“只整理结构，不改变行为”时使用。执行边界分流、行为判官、分批重构和独立审查；缺陷修复转交 cm-fix，新增或变化的业务行为转交 cm-prd。
+allowed-tools:
+  - Bash(node ~/.claude/scripts/cm-refactor-drive.mjs *)
 ---
 
 # cm-refactor — 重构闭环（行为保持）

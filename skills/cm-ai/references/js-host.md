@@ -82,6 +82,8 @@
 node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 ```
 
+**在 Claude Code 里调用驾驶员：** 单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-ai-drive.mjs ...` / `node ~/.claude/scripts/cm-ai-batch-drive.mjs ...`（PLAN 用绝对路径），以 `node ~/.claude/scripts/` 开头，前面不接 `cd`、变量赋值或其他命令，也不用 `&&`、`;` 和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样才能命中本技能声明的放行规则，自动模式下不被拦。Codex 等其他运行时照原写法。
+
 先按下节准备计划及真实答案文件。计划中的 `checks` 须为实际可执行的命令；驱动不接受静态检查结果代替执行。
 
 ## 探活、等待与关闭

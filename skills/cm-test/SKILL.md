@@ -1,6 +1,8 @@
 ---
 name: cm-test
 description: 用户直接运行 cm-test、要求分析当前分支相对主分支的业务影响，或说“测试已有功能”“根据代码生成用例”“用浏览器走查”时使用。无参数分析已提交差异、单测覆盖率与回归重点；明确说“补齐单测”时连续补测并重跑、审查。显式目标保留原模式，不擅自修产品代码。
+allowed-tools:
+  - Bash(node ~/.claude/scripts/cm-test-drive.mjs *)
 ---
 
 # cm-test — 分支影响分析与存量功能只读测试

@@ -1,6 +1,9 @@
 ---
 name: cm-ai
 description: 用户明确说“规格已确认，开始实现”或要求按已审批 CM specs 开发时使用。新任务默认由 JS workflow 驱动 N1-N8，完成开发、独立审查、QA 与文档同步；模糊点子、未审规格和单独一句“继续”不能触发编码批准。
+allowed-tools:
+  - Bash(node ~/.claude/scripts/cm-ai-drive.mjs *)
+  - Bash(node ~/.claude/scripts/cm-ai-batch-drive.mjs *)
 ---
 
 # cm-ai — 自动开发
