@@ -70,7 +70,7 @@
   "cm-claude-worker.test.mjs": 14,
   "cm-codex-developer-adapter.test.mjs": 1,
   "cm-codex-developer-worker.test.mjs": 14,
-  "cm-codex-install-local-edit-guard.test.mjs": 450,
+  "cm-codex-install-local-edit-guard.test.mjs": 510,
   "cm-codex-plugin-metadata.test.mjs": 1,
   "cm-codex-review-progress.test.mjs": 4,
   "cm-efficiency-checks.test.mjs": 1,

@@ -544,3 +544,22 @@ test('fault: a failure after the temporary manifest is created removes only that
     assert.equal(fs.readFileSync(path.join(target, MANIFEST), 'utf8'), manifestBefore);
     assert.equal(fs.existsSync(lockOf(target)), false);
   });
+
+test('manifest helper: a missing or unreadable scan list is a check failure, never an empty list',
+  {skip: process.platform === 'win32' || process.getuid?.() === 0}, t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-install-guard-helper-'));
+    t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+    fs.mkdirSync(path.join(dir, 'root/a'), {recursive: true});
+    fs.writeFileSync(path.join(dir, 'root/a/f'), 'edited\n');
+    fs.writeFileSync(path.join(dir, 'empty'), '');
+    const status = script => runHelper(`if ${script}; then echo status=0; else echo status=$?; fi`, dir).stdout.trim();
+    assert.equal(status('cm_manifest_hash_list root empty out'), 'status=0', 'a readable empty list is fine');
+    assert.equal(status('cm_manifest_hash_list root missing out'), 'status=1');
+    fs.writeFileSync(path.join(dir, 'unreadable'), 'a/f\n', {mode: 0o200});
+    assert.equal(status('cm_manifest_hash_list root unreadable out'), 'status=1');
+    // A write-only scan file can be written but not read back: that must not mean "no edits".
+    fs.mkdirSync(path.join(dir, 'work'));
+    fs.writeFileSync(path.join(dir, 'work/recorded-paths'), '', {mode: 0o200});
+    fs.writeFileSync(path.join(dir, 'manifest'), `${HEADER}\n${'0'.repeat(64)}  a/f\n`);
+    assert.equal(status('cm_manifest_find_edits root manifest edits work'), 'status=1');
+  });

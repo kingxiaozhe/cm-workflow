@@ -36,12 +36,16 @@ cm_manifest_abs() {
 
 # cm_manifest_hash_list ROOT LIST OUT
 # Hash each relative path listed in LIST (one per line) under ROOT and write
-# "<hash>  <path>" lines to OUT. Returns 1 on any hashing failure.
+# "<hash>  <path>" lines to OUT. Returns 1 on any hashing failure, and when
+# LIST is missing or unreadable (only a readable empty LIST is an empty list).
 cm_manifest_hash_list() {
   hl_root=$1
   hl_list=$(cm_manifest_abs "$2")
   hl_out=$(cm_manifest_abs "$3")
   [ -n "$CM_SHA256_TOOL" ] || return 1
+  if [ ! -f "$hl_list" ] || [ ! -r "$hl_list" ]; then
+    return 1
+  fi
   : > "$hl_out" || return 1
   [ -s "$hl_list" ] || return 0
   if [ "$CM_SHA256_TOOL" = shasum ]; then
@@ -51,12 +55,14 @@ cm_manifest_hash_list() {
   fi
   # GNU sha256sum escapes names containing a backslash or newline with a leading
   # backslash; such names cannot round-trip through this format.
-  if grep -q '^\\' "$hl_out"; then
-    return 1
-  fi
-  if [ "$(wc -l < "$hl_out" | tr -d ' ')" != "$(wc -l < "$hl_list" | tr -d ' ')" ]; then
-    return 1
-  fi
+  hl_grep=0
+  grep -q '^\\' "$hl_out" || hl_grep=$?
+  [ "$hl_grep" -eq 1 ] || return 1
+  # Every listed file must have exactly one hash line; a failed count is a
+  # failure, never an "equal" pair of empty strings.
+  hl_out_lines=$(wc -l < "$hl_out") || return 1
+  hl_list_lines=$(wc -l < "$hl_list") || return 1
+  [ -n "$hl_out_lines" ] && [ "$((hl_out_lines))" -eq "$((hl_list_lines))" ] || return 1
 }
 
 # cm_manifest_write ROOT LIST OUT
@@ -68,9 +74,10 @@ cm_manifest_write() {
   mw_out=$(cm_manifest_abs "$3")
   # The line format cannot round-trip a backslash in a name (GNU checksum
   # tools escape it); refuse such names instead of writing a bad manifest.
-  if grep -q '\\' "$2"; then
-    return 1
-  fi
+  mw_grep=0
+  grep -q '\\' "$2" || mw_grep=$?
+  # 0: a backslash was found; 2: LIST could not be read. Only 1 may continue.
+  [ "$mw_grep" -eq 1 ] || return 1
   grep -Ev '(^|/)__pycache__/|(^|/)\.DS_Store$' "$2" > "${mw_out}.list" || [ $? -eq 1 ] || return 1
   cm_manifest_hash_list "$1" "${mw_out}.list" "${mw_out}.body" ||
     { rm -f "${mw_out}.list" "${mw_out}.body"; return 1; }
@@ -153,19 +160,31 @@ cm_manifest_find_edits() {
   fi
   awk 'NR > 1 { print substr($0, 67) }' "$fe_manifest" > "$fe_work/recorded-paths" || return 1
   : > "$fe_work/existing-paths" || return 1
-  while IFS= read -r fe_rel; do
+  # Read the whole list first so an open or read failure is a check failure;
+  # a loop fed by `< file` would just see no lines and report "no edits".
+  fe_paths=$(cat "$fe_work/recorded-paths") || return 1
+  case $- in *f*) fe_noglob=1 ;; *) fe_noglob=0 ;; esac
+  fe_saved_ifs=$IFS
+  IFS='
+'
+  set -f
+  fe_failed=0
+  for fe_rel in $fe_paths; do
     [ -n "$fe_rel" ] || continue
     fe_target="$fe_root/$fe_rel"
     if ! cm_manifest_parent_is_safe "$fe_root" "$fe_rel"; then
-      printf '%s\n' "$fe_rel" >> "$fe_edits" || return 1
+      printf '%s\n' "$fe_rel" >> "$fe_edits" || { fe_failed=1; break; }
     elif [ -L "$fe_target" ]; then
-      printf '%s\n' "$fe_rel" >> "$fe_edits" || return 1
+      printf '%s\n' "$fe_rel" >> "$fe_edits" || { fe_failed=1; break; }
     elif [ -f "$fe_target" ]; then
-      printf '%s\n' "$fe_rel" >> "$fe_work/existing-paths" || return 1
+      printf '%s\n' "$fe_rel" >> "$fe_work/existing-paths" || { fe_failed=1; break; }
     elif [ -e "$fe_target" ]; then
-      printf '%s\n' "$fe_rel" >> "$fe_edits" || return 1
+      printf '%s\n' "$fe_rel" >> "$fe_edits" || { fe_failed=1; break; }
     fi
-  done < "$fe_work/recorded-paths"
+  done
+  IFS=$fe_saved_ifs
+  [ "$fe_noglob" -eq 1 ] || set +f
+  [ "$fe_failed" -eq 0 ] || return 1
   cm_manifest_hash_list "$fe_root" "$fe_work/existing-paths" "$fe_work/current-hashes" || return 1
   awk 'NR == FNR { if (FNR > 1) recorded[substr($0, 67)] = substr($0, 1, 64); next }
        { path = substr($0, 67); if (recorded[path] != substr($0, 1, 64)) print path }' \

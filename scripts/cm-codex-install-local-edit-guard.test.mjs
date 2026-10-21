@@ -368,3 +368,24 @@ test('codex path safety: ~/.agents replaced by a symlink before the marketplace 
     assert.equal(fs.existsSync(plugin), false);
     assert.equal(fs.existsSync(lockOf(plugin)), false);
   });
+
+test('codex fault: an unreadable scan file during the last check stops the install instead of reporting no edits',
+  {skip: process.platform === 'win32' || process.getuid?.() === 0, timeout: 600000}, t => {
+    const box = installedCodexClone(t);
+    const tmp = path.join(box.home, 'tmp');
+    fs.mkdirSync(tmp);
+    const edited = path.join(box.plugin, EDITED);
+    const handEdit = fs.readFileSync(edited, 'utf8') + '\n<!-- edited during the install -->\n';
+    // Right before the last scan: a hand edit lands, and the scan's own list becomes write-only.
+    const hook = writeHook(box.home, ['[ "$1" = before-plugin-rename ] || exit 0',
+      `printf '\\n<!-- edited during the install -->\\n' >> '${edited}'`,
+      `for work in '${tmp}'/cm-install-guard.*; do : > "$work/recorded-paths"; chmod 0200 "$work/recorded-paths"; done`]);
+    const result = install({...box.env, TMPDIR: tmp, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 2, output(result));
+    assert.match(result.stderr, /changed during the install/);
+    assert.equal(fs.readFileSync(edited, 'utf8'), handEdit, 'the hand edit must not be replaced');
+    assert.deepEqual(fs.readFileSync(path.join(box.plugin, MANIFEST)), box.before.manifest);
+    assert.deepEqual(fs.readFileSync(box.marketplace), box.before.marketplace);
+    assert.equal(fs.existsSync(lockOf(box.plugin)), false);
+    assert.deepEqual(pluginsLeftovers(box.plugin), []);
+  });
