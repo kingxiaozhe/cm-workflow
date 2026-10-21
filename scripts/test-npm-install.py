@@ -60,7 +60,16 @@ def main():
         # Include spaces to catch unsafe shell/path forwarding.
         unpack = temp / 'npm package'
         unpack.mkdir()
-        info = json.loads(run(['npm', 'pack', '--ignore-scripts', '--json', '--pack-destination', str(temp)]))[0]
+        # Every npm call uses a disposable cache, logs and config, never the real ~/.npm or ~/.npmrc.
+        (temp / 'npmrc').write_text('')
+        (temp / 'global-npmrc').write_text('')
+        npm_env = {**os.environ, 'npm_config_cache': str(temp / 'npm-cache'),
+                   'npm_config_logs_dir': str(temp / 'npm-logs'),
+                   'npm_config_userconfig': str(temp / 'npmrc'),
+                   'npm_config_globalconfig': str(temp / 'global-npmrc'),
+                   'npm_config_update_notifier': 'false'}
+        info = json.loads(run(['npm', 'pack', '--ignore-scripts', '--json', '--pack-destination', str(temp)],
+                              env=npm_env))[0]
         archive = temp / info['filename']
         packed_paths = {f['path'] for f in info['files']}
         assert {'.codex-plugin/plugin.json', 'install-codex.sh', 'install.sh', 'install.ps1',
@@ -75,7 +84,7 @@ def main():
         outside = temp / 'unrelated project'
         outside.mkdir()
         help_text = run(['npm', 'exec', '--offline', '--yes', '--cache', str(temp / 'npm-cache'),
-                         '--package', str(archive), '--', 'cm-workflow', '--help'], cwd=outside)
+                         '--package', str(archive), '--', 'cm-workflow', '--help'], cwd=outside, env=npm_env)
         assert 'Usage: cm-workflow install' in help_text, help_text
         (outside / 'tasks.md').write_text('T-001 remains pending\n')
         project_before = tree(outside)

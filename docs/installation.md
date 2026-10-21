@@ -96,9 +96,11 @@ Running `cm-workflow install` through npm installs into the
 same `~/plugins/cm-workflow` directory and personal marketplace as the source
 installer. Existing installations require confirmation; `install --yes` accepts
 replacement. The npm `--yes` before `--package` only accepts npm's package-fetch
-prompt; it does not accept plugin replacement. Direct edits to the managed
-plugin are overwritten; source checkouts, project code and specs remain outside
-the managed destination. Installing older source afterward can downgrade it.
+prompt; it does not accept plugin replacement. Files of the managed plugin that
+were edited after the last install stop the replacement (see
+[Local edits, install lock and known limitations](#local-edits-install-lock-and-known-limitations));
+files the installer never recorded are removed with the old plugin directory.
+Source checkouts, project code and specs remain outside the managed destination. Installing older source afterward can downgrade it.
 Start a new Codex task after an upgrade. `npx --yes` accepts npm's download
 prompt only; `install --yes` separately accepts replacing the managed plugin.
 
@@ -141,6 +143,9 @@ accept replacement of all listed CM files:
 ./install.sh --yes
 ```
 
+Both Bash installers refuse to discard local edits; see
+[Local edits, install lock and known limitations](#local-edits-install-lock-and-known-limitations).
+
 The installer runs the shared mechanical check before reporting success. Start a
 new Claude Code session, then run `/cm-check`. The installer also keeps the
 historic `/cm:check` alias on macOS/Linux. The installed manual is available at
@@ -175,6 +180,108 @@ Claude-specific workflow fork is installed.
 ```
 
 这只是启动命令的建议规则，不是 CM 的运行授权；计划文件里的操作与权限仍须逐项审查。覆盖旧审查证据的 `--supersede-reviewed-evidence`、保留前驱代码漂移的 `--accept-superseded-code-drift`、SwiftPM 的 `--disable-sandbox`、QA 重跑的 `--rerun-unknown-qa`／`--rerun-blocked-qa`、放弃审查的 `--allow-abandon-review`，以及修改权限配置，都应由用户针对本次动作确认。尤其 `--supersede-reviewed-evidence` 和 `--accept-superseded-code-drift` 可以写在驱动的 `PLAN.permissions` 中，单凭上面的 Bash 通配规则无法识别；无法逐次审阅计划时，不要启用这些通配规则。要试改驱动脚本，请把副本放在项目或临时工作目录，不在 `~/.claude/scripts/` 原地编辑。若组织级权限策略继续拒绝，即使项目规则允许也应遵循该策略。
+
+## Local edits, install lock and known limitations
+
+Applies to `install.sh` and `install-codex.sh` (not `install.ps1`).
+
+**Install manifest.** A successful install records the sha256 of each core file
+it wrote: `<CLAUDE_HOME>/cm-workflow/install-manifest.sha256` (default
+`~/.claude/...`) and `~/plugins/cm-workflow/.cm-install-manifest.sha256`.
+`__pycache__` and `.DS_Store` files are copied but not recorded, and the optional
+updater scripts in `~/.cm-workflow` are outside the core install and the manifest.
+A file name containing a backslash is refused.
+
+**Local edits.** On reinstall, a recorded file that still exists but whose
+sha256 changed is a local edit. A symlink, a directory, or a symlinked parent at
+a recorded path also counts. The installer lists the files and exits with
+status 3; `--yes` and an interactive `y` do not bypass this. Pass
+`--overwrite-local-edits` only to discard those edits. A manifest that is
+malformed or not a regular file also stops the install, and so does any
+check that cannot read its own files or cannot search a directory holding a
+recorded file (that is never taken as "deleted"). Without a previous
+manifest (first install or an older version) the check is skipped with a
+notice, so edits made before the first manifest cannot be detected. A recorded
+file that was deleted is not treated as an edit.
+
+The check runs before anything is written, again after the overwrite prompt,
+and again in the middle of the transaction:
+
+| Installer | When the late check finds a change | What is left |
+| ---- | ---- | ---- |
+| `install.sh` | Right before each file is copied (content, file type and parent path) | Exit 3 after files were already written: the files written so far are rolled back; the changed file is untouched |
+| `install-codex.sh` | After the old plugin directory is renamed aside | Exit 3: the old directory is moved back and the marketplace restored |
+
+The npm entry and `$cm-check` automatic upgrades only pass `--yes`. When the
+installer stops for local edits, `$cm-check` reports the upgrade as `blocked`
+(its CLI exits 1, not 3). Save your edits, then run the Bash installer yourself
+with `--overwrite-local-edits` if you want to discard them.
+
+**Install lock.** One install per real target at a time. The lock is a
+directory next to the target named `.<target name>.cm-install.lock`:
+`~/..claude.cm-install.lock` for the default Claude target (two dots: the target
+name itself starts with a dot) and `~/plugins/.cm-workflow.cm-install.lock` for
+Codex. Paths are resolved to their physical location first, so `CLAUDE_HOME`
+spellings such as `~/.claude/.` and a Claude install aimed at
+`~/plugins/cm-workflow` share the same lock. A second install exits with status 4
+and names the holder pid, its start time and whether it is still running. A
+leftover lock is never taken over automatically: the installer prints a
+shell-quoted `rm -rf` command to run after you confirm no install is in progress.
+The lock is released on success, on failure, and on HUP/INT/TERM, including a
+signal sent to the whole process group: the lock `mkdir` and the Codex rename run
+with those signals ignored, so their result is always recorded before the
+installer exits.
+
+**Paths.** The install root must not be a symlink (`CLAUDE_HOME=/link/.` is
+refused); its parent directories are resolved with `pwd -P`. For Codex,
+`~/plugins`, `~/plugins/cm-workflow`, `~/.agents`, `~/.agents/plugins` and
+`marketplace.json` must not be symlinks, and the marketplace must be a regular
+file. Use real directories at those paths. The marketplace and its two parent
+directories are checked again right before the marketplace is written and right
+before a rollback writes it back; if a rollback finds the wrong type there, it
+writes nothing, reports the rollback as incomplete and keeps the marketplace
+backup.
+
+**Rollback.** A failed install restores what it wrote. It trusts only complete
+records of its own list of written files that name a file this install manages;
+a record cut short (for example by a full disk) or an unknown one is not used and
+makes the rollback incomplete. If a restore step itself
+fails, the installer still tries the remaining steps and releases the lock, reports
+that the rollback is incomplete (`回滚不完整` / `rollback is incomplete`), and keeps the recovery copies
+(`.cm-claude.backup.<pid>` next to the Claude target, holding the previous files
+and `.cm-previous-install-manifest`; for Codex the listed backup, failed-plugin
+and marketplace-backup paths under `~/plugins`).
+If `~/plugins` itself cannot be searched when a Codex install fails, the
+installer cannot tell what is there: it restores nothing under it, reports the
+rollback as incomplete, prints the expected recovery paths, and leaves the lock
+for you to remove after restoring access.
+
+Protection boundary (decided for this feature):
+
+> 安装器以用户本人账号运行，「安装进行途中有人故意把受管目录或其父目录替换成符号链接」不在本功能防护范围内——能这样做的人本来就能直接改家目录任何文件，安装器挡不住。本功能要防的是别的会话手改已装文件后被静默覆盖。入口处已有的静态链接拒绝保留。
+
+In English: the installers run as you. Deliberately swapping a managed directory
+or one of its parents for a symlink while an install runs is out of scope,
+because whoever can do that can already change any file in your home directory.
+This feature protects files that another session edited from being silently
+overwritten. The symlink refusals at the entry checks stay.
+
+Known limitations:
+
+| Limitation | Why / what to do |
+| ---- | ---- |
+| No atomic exclusion against people editing files | A file can still change between its check and its copy, and a rollback can overwrite an edit made to a file after it was written. Do not edit installed CM files while an install runs. |
+| Readers see the transaction | `install.sh` copies file by file, so a running CM session can read a mix of versions or a half-written file; `install-codex.sh` leaves the plugin directory briefly missing between its two renames. Finish active CM tasks first, then start a new session after installing. |
+| SIGKILL, power loss, kernel or storage failure | The exit trap cannot run and there is no persistent recovery journal. The lock and the backup directory may remain; recover by hand using them. |
+| No manifest yet; deleted and unrecorded files | Without a manifest nothing can be judged. A deleted recorded file is not an edit. Codex replaces the whole directory, so unrecorded files you added there are removed; Claude leaves files it does not install in place. |
+| Windows and the optional updater | `install.ps1` has none of this protection. `~/.cm-workflow/cm-update.sh` and `cm-announce.sh` are not in the manifest. |
+| No forced overwrite from npm or `$cm-check` | Intentional: they stop on local edits; run the Bash installer yourself to discard edits. |
+| `~/.cm-workflow/cm-update.sh` deletes first | The optional auto-updater uses its own lock and older path list and deletes files removed upstream before it runs `install.sh`, outside this lock and check. It can delete a file and then stop on a local edit. |
+| Other marketplace writers and Codex internal state | The lock only coordinates CM installers. Do not manage other Codex plugins while CM installs: a rollback restores the whole previous `marketplace.json`. Cleanup does not undo Codex cache or registration side effects of `codex plugin add`. |
+| Directories replaced while an install runs | Out of scope (see the boundary above). Partial checks remain: the marketplace structure is re-checked before its directory is first created, before it is written and before a rollback writes it; the Codex local-edit checks stop with status 2 when `~/plugins` is no longer the physical directory resolved at start, and then the lock is not deleted through the replaced path (remove it by hand). Other write points are not re-checked. |
+| Temporary manifest | `install.sh` writes the new manifest to a random `.install-manifest.XXXXXX` file created by `mktemp` next to it and removes only that file on failure. |
+| File names | The manifest is line based; names containing a newline or a backslash are not supported. |
+| Test hook | `CM_INSTALL_TEST_HOOK` exists for the repository's fault-injection tests. It is unset normally; when set, the installer runs that program at fixed points, so never set it outside tests. |
 
 ## Claude Code on Windows
 
