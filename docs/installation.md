@@ -251,6 +251,10 @@ that the rollback is incomplete (`回滚不完整` / `rollback is incomplete`), 
 (`.cm-claude.backup.<pid>` next to the Claude target, holding the previous files
 and `.cm-previous-install-manifest`; for Codex the listed backup, failed-plugin
 and marketplace-backup paths under `~/plugins`).
+If `~/plugins` itself cannot be searched when a Codex install fails, the
+installer cannot tell what is there: it restores nothing under it, reports the
+rollback as incomplete, prints the expected recovery paths, and leaves the lock
+for you to remove after restoring access.
 
 Protection boundary (decided for this feature):
 

@@ -35,6 +35,8 @@ LOCK_HELD=0
 ROLLBACK_FAILED=0
 INSTALL_COMPLETE=0
 DEST_REPLACED=0
+# Set before the old plugin is moved aside, so cleanup knows a restore may be due.
+PLUGIN_MOVED_ASIDE=0
 MARKETPLACE_TOUCHED=0
 MARKETPLACE_EXISTED=0
 MARKETPLACE_BACKUP="$PLUGIN_PARENT/.cm-workflow.marketplace.backup.$$"
@@ -161,7 +163,21 @@ cleanup() {
   set +e
   trap '' HUP INT TERM
   trap - EXIT
-  if [ "$INSTALL_COMPLETE" -ne 1 ]; then
+  # The plugins directory must be searchable for any existence test below to
+  # mean anything; otherwise report the restore as incomplete, never skip it.
+  parent_ok=1
+  { [ -d "$PLUGIN_PARENT" ] && [ -x "$PLUGIN_PARENT" ]; } || parent_ok=0
+  if [ "$INSTALL_COMPLETE" -ne 1 ] && [ "$parent_ok" -eq 0 ]; then
+    if [ "$DEST_REPLACED" -eq 1 ] || [ "$PLUGIN_MOVED_ASIDE" -eq 1 ]; then
+      rollback_fail "$PLUGIN_DEST (the plugins directory cannot be accessed; the previous plugin is expected at $BACKUP)"
+    fi
+    if [ "$MARKETPLACE_TOUCHED" -eq 1 ] && [ "$MARKETPLACE_EXISTED" -eq 1 ]; then
+      rollback_fail "$MARKETPLACE_PATH (its backup in the plugins directory cannot be accessed: $MARKETPLACE_BACKUP)"
+    elif [ "$MARKETPLACE_TOUCHED" -eq 1 ]; then
+      rollback_fail "$MARKETPLACE_PATH (left in place: it can only be moved aside into the plugins directory, which cannot be accessed)"
+    fi
+  fi
+  if [ "$INSTALL_COMPLETE" -ne 1 ] && [ "$parent_ok" -eq 1 ]; then
     if [ "$DEST_REPLACED" -eq 1 ] && [ -e "$PLUGIN_DEST" ]; then
       mv "$PLUGIN_DEST" "$FAILED_DEST" || rollback_fail "$PLUGIN_DEST (new plugin could not be moved aside)"
     fi
@@ -181,10 +197,17 @@ cleanup() {
         mv "$MARKETPLACE_PATH" "$FAILED_MARKETPLACE" || rollback_fail "$MARKETPLACE_PATH"
       fi
     fi
-    if [ "$ROLLBACK_FAILED" -eq 1 ]; then
+  fi
+  if [ "$INSTALL_COMPLETE" -ne 1 ] && [ "$ROLLBACK_FAILED" -eq 1 ]; then
+    if [ "$parent_ok" -eq 1 ]; then
       echo "Installation failed and the rollback is incomplete. Recovery copies were kept:" >&2
       for kept in "$BACKUP" "$FAILED_DEST" "$MARKETPLACE_BACKUP" "$FAILED_MARKETPLACE"; do
         [ ! -e "$kept" ] || echo "    $kept" >&2
+      done
+    else
+      echo "Installation failed and the rollback is incomplete. The plugins directory cannot be accessed, so recovery copies could not be checked; restore access, then look for:" >&2
+      for kept in "$BACKUP" "$FAILED_DEST" "$MARKETPLACE_BACKUP" "$FAILED_MARKETPLACE"; do
+        echo "    $kept" >&2
       done
     fi
   fi
@@ -200,6 +223,8 @@ cleanup() {
   if [ "$LOCK_HELD" -eq 1 ]; then
     if plugin_parent_unchanged; then
       rm -rf "$LOCK_DIR" || echo "Could not release the install lock: $LOCK_DIR" >&2
+    elif [ "$parent_ok" -eq 0 ] && [ ! -L "$PLUGIN_PARENT" ]; then
+      echo "The plugins directory cannot be accessed, so the install lock was not released. Restore access, check no install is running, then remove it: $(cm_install_quote "$LOCK_DIR")" >&2
     else
       # Never delete through a replaced parent: the lock may be elsewhere now.
       echo "The plugins directory was replaced during the install, so the lock location cannot be confirmed. Find and remove it by hand after checking no install is running: $(cm_install_quote "$LOCK_DIR")" >&2
@@ -425,6 +450,7 @@ if [ -e "$PLUGIN_DEST" ]; then
     exit 3
   fi
   cm_install_test_hook before-plugin-rename
+  PLUGIN_MOVED_ASIDE=1
   mv "$PLUGIN_DEST" "$BACKUP"
   # Edits written by path before the rename landed in the moved directory, so
   # one last check there closes the gap after the recheck above. An exit here

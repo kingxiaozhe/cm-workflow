@@ -194,6 +194,32 @@ test('codex fault: a signal right after the new plugin is renamed into place res
     assert.deepEqual(fs.readdirSync(path.dirname(plugin)).filter(name => name !== 'cm-workflow'), []);
   });
 
+test('codex access: a plugins directory that becomes unsearchable after the rename reports an incomplete rollback and keeps the lock and backup',
+  {skip: process.platform === 'win32' || process.getuid?.() === 0, timeout: 600000}, t => {
+    const {plugin, marketplace, env} = sandbox(t);
+    const first = install(env, ['--yes']);
+    assert.equal(first.status, 0, output(first));
+    const pluginJson = path.join(plugin, '.codex-plugin/plugin.json');
+    const before = {json: fs.readFileSync(pluginJson), marketplace: fs.readFileSync(marketplace)};
+    const plugins = path.dirname(plugin);
+    t.after(() => { try { fs.chmodSync(plugins, 0o755); } catch {} });
+    const hook = writeHook(path.dirname(plugins), ['[ "$1" = after-stage-moved ] || exit 0',
+      `chmod 000 '${plugins}'`, 'kill -TERM "$PPID"']);
+    const result = install({...env, CM_INSTALL_TEST_HOOK: hook}, ['--yes']);
+    assert.equal(result.status, 143, output(result));
+    assert.match(result.stderr, /rollback is incomplete/, 'the skipped restore must be reported');
+    assert.match(result.stderr, /plugins directory cannot be accessed/);
+    assert.doesNotMatch(result.stderr, /was replaced during the install/, 'unsearchable is not "replaced"');
+    fs.chmodSync(plugins, 0o755);
+    const lock = lockOf(plugin);
+    assert.equal(fs.existsSync(lock), true, 'the lock is left for a person, not removed blind');
+    assert.match(result.stderr, new RegExp(path.basename(lock).replace(/\./g, '\\.')));
+    const kept = fs.readdirSync(plugins).filter(name => name.startsWith('.cm-workflow.backup.'));
+    assert.equal(kept.length, 1, 'the previous plugin must be kept');
+    assert.deepEqual(fs.readFileSync(path.join(plugins, kept[0], '.codex-plugin/plugin.json')), before.json);
+    assert.match(result.stderr, new RegExp(kept[0].replace(/\./g, '\\.')), 'its location is printed');
+  });
+
 test('codex path safety: a symlinked marketplace or plugins root is refused before anything is written',
   {skip: process.platform === 'win32', timeout: 120000}, t => {
     const {plugin, marketplace, env} = sandbox(t);
