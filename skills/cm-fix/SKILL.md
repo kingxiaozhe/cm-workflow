@@ -171,7 +171,8 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n4 \
 - 独立审查凭证严格落
   `{SPECS_DIR}/.reviews/fix-{slug}-T-FIX-{slug}-r{attempt}.md`，包含当前 handoff
   文件名和 SHA。审查完成后必须真跑下列命令；只有当前 attempt 的
-  `independent: true` 且 `verdict: approved` 才能进入第 6 步：
+  `independent: true` 且 `verdict: approved` 才能进入第 6 步。凭证由审查方按
+  `runtime/review.md`「Evidence file」模板完整产出、你原样保存；门禁报格式错就把报错交回审查方重出，不自己改：
 
 ```bash
 python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n5 \

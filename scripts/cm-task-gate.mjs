@@ -9,6 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {inspectFixWalkthrough,readFixWalkthrough,fixWalkthroughBinding} from '../runtime/js/cm-fix/walkthrough.mjs';
 import {inspectFixRegressionFailure} from '../runtime/js/cm-fix/regression-evidence.mjs';
 import {taskDeclarations,approvedTaskGrammar,TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
+import {ZERO_BLOCKING_FINDINGS,ZERO_BLOCKING_PHRASES,REVIEWER_SOURCES} from '../runtime/js/review-findings.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
@@ -18,7 +19,7 @@ import {snapshot,rootPath,reviewSpecsPath,stableIgnorePolicy,stablePublicPolicy,
   comparableFiles,validateStablePolicy,filePath,INVENTORY_COUNT,INVENTORY_LIMIT} from '../runtime/js/cm-ai/review-package.mjs';
 
 const TASK_RE=/^T-[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const REVIEWERS=new Set(['codex-subagent','codex-cli','claude-cli','self-degraded']);
+const REVIEWERS=new Set(REVIEWER_SOURCES);
 const VERDICTS=new Set(['approved','changes_requested','blocked']);
 const PREPARATION_FILE_LIMIT=256*1024;
 let preparationReadLimit=null;
@@ -433,7 +434,7 @@ export function validateReview(review,{task,attempt,handoff,changedFiles}){
   if(reviewAttempt!==BigInt(attempt)||reviewRound!==BigInt(attempt))
     throw new GateError('review attempt and round must match the handoff attempt');
   // Source declarations only: validate spelling and consistency, not reviewer identity.
-  if(!REVIEWERS.has(header.reviewer))throw new GateError(`unsupported reviewer source declaration: ${header.reviewer}`);
+  if(!REVIEWERS.has(header.reviewer))throw new GateError(`unsupported reviewer source declaration: ${header.reviewer} (write exactly one of ${REVIEWER_SOURCES.join(', ')}; put model or other notes in the body; ask the reviewer to regenerate the evidence, do not edit it yourself)`);
   const independent=header.independent.toLowerCase();
   if(!['true','false'].includes(independent))throw new GateError('review independent declaration must be true or false');
   if(header.reviewer==='self-degraded'&&independent!=='false')
@@ -449,8 +450,8 @@ export function validateReview(review,{task,attempt,handoff,changedFiles}){
     throw new GateError('non-approved review must declare at least one blocking finding');
   if(header.reviewer==='self-degraded'&&!header.degraded_reason?.trim())
     throw new GateError('self-degraded review must include degraded_reason');
-  if(header.verdict==='approved'&&!/(零发现|无阻塞发现|未发现阻塞|zero findings|no findings|no blocking findings)/i.test(body))
-    throw new GateError('approved review body must explicitly state zero blocking findings');
+  if(header.verdict==='approved'&&!ZERO_BLOCKING_FINDINGS.test(body))
+    throw new GateError(`approved review body must explicitly state zero blocking findings (accepted: ${ZERO_BLOCKING_PHRASES.join(' / ')}; ask the reviewer to regenerate the evidence, do not edit it yourself)`);
   if(attempt===2&&header.verdict==='changes_requested')
     throw new GateError('round 2 blocking findings must use verdict: blocked');
   if(header.handoff!==path.basename(handoff))

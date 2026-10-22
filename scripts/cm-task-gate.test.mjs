@@ -202,6 +202,22 @@ test('Windows lock serializes two task completions without losing either checkbo
 }));
 
 
+test('approved body accepts every listed zero-blocking phrase and the errors say what to write',()=>fixture(root=>{
+  const handoff=path.join(root,'handoff.json'),review=path.join(root,'review.md');
+  writeHandoff(handoff);writeReview(review,{handoff});
+  const original=fs.readFileSync(review,'utf8'),selected={task:'T-001',attempt:1,handoff,changedFiles:['src/example.ts']};
+  for(const phrase of ['零发现','零阻塞发现','零阻断发现','无阻塞发现','无阻断发现','未发现阻塞','未发现阻断','Zero findings','no findings','No blocking findings']){
+    fs.writeFileSync(review,original.replace('Zero findings.',`结论：${phrase}。`));
+    assert.equal(validateReview(review,selected).verdict,'approved',phrase);
+  }
+  fs.writeFileSync(review,original.replace('Zero findings.','blocker、major、minor 都是 0。'));
+  assert.throws(()=>validateReview(review,selected),error=>error instanceof GateError
+    &&/explicitly state zero blocking findings/.test(error.message)&&/零阻塞发现/.test(error.message)&&/regenerate/.test(error.message));
+  fs.writeFileSync(review,original.replace('reviewer: codex-subagent','reviewer: codex-cli (gpt-6.1-sol, reasoning high, read-only)'));
+  assert.throws(()=>validateReview(review,selected),error=>error instanceof GateError
+    &&/unsupported reviewer source declaration/.test(error.message)&&/codex-subagent, codex-cli, claude-cli, self-degraded/.test(error.message));
+}));
+
 test('reviewer and independent fields validate declaration format and consistency',()=>fixture(root=>{
   const handoff=path.join(root,'handoff.json'),review=path.join(root,'review.md');
   writeHandoff(handoff);writeReview(review,{handoff});

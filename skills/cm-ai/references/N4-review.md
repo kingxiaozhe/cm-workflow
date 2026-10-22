@@ -80,7 +80,8 @@ scope:
 
 `attempt` 必须等于 `round`，`handoff` 必须指向本轮 N3 的执行证据，
 `handoff_sha256` 必须逐字使用 `check-n4` 的输出。`scope` 必须逐项覆盖 handoff
-里的全部 `changed_files`；正文必须写实际 findings 或明确的「零发现」。
+里的全部 `changed_files`；正文必须写实际 findings 或明确的「零发现」（门禁认可的全部说法见 `runtime/review.md`）。
+`reviewer` 只原样写一个允许值，模型等说明写进正文。凭证由审查方完整产出、主执行者原样保存；门禁报格式错时交回审查方重出，不自行改写。
 `approved` 必须写 `blocking_findings: 0`；其他 verdict 至少为 1。
 `self-degraded` 必须写 `independent: false`，并用非空 `degraded_reason` 记录所选独立
 通道为何不可用。

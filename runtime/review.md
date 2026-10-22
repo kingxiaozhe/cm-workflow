@@ -193,7 +193,8 @@ scope:
 ```
 
 `attempt` 必须等于 `round`。`approved` 必须写 `blocking_findings: 0`，其他
-verdict 至少为 1。`self-degraded` 必须写 `independent: false` 并增加非空的
+verdict 至少为 1。`reviewer` 只能原样写上面四个值之一，不加括号、模型或其他说明；模型、推理强度等写进正文。`approved` 的正文必须明确写出零阻塞，门禁只认这些说法（不区分大小写）：零发现、零阻塞发现、零阻断发现、无阻塞发现、无阻断发现、未发现阻塞、未发现阻断、zero findings、no findings、no blocking findings（清单见 `runtime/js/review-findings.mjs`）；建议正文末尾单独一行「结论：零阻塞发现」。
+凭证由审查方按本模板完整产出（含头部），主执行者只原样保存到上述路径，不改写其中任何字段或措辞。门禁因格式拒绝时，把报错原文交回审查方重新产出；主执行者自行修改审查结论等于自我批准，不允许。`self-degraded` 必须写 `independent: false` 并增加非空的
 `degraded_reason`；其他独立通道只有在新上下文中实际执行时才可写 `true`。
 `handoff_sha256` 将结论绑定到本轮 handoff 内容；handoff 改动后必须重新审查。
 新 handoff 还必须包含 `implementation_sha256`，并让 N4/N5 使用
