@@ -236,7 +236,8 @@ function preflight(){
   try{live=driverLiveEvidence(plan,{base,protectedRoots:[batch.codeProject,batch.specsDir,path.resolve(batch.codeProject,'..','.cm-worktrees'),...(batch.codeProjects??[])],
     allowedKinds:['qa_logic','qa_browser','verification_precheck'],maxBytes:inputLimitFrom(permissions)});}
   catch(error){stop(2,error.message);}
-  if(operation==='advance'&&permissions.includes('--verification-precheck')&&!live.has('verification_precheck'))
+  if(operation==='advance'&&(permissions.includes('--verification-precheck')||control?.policy.verification==='precheck')
+    &&!live.has('verification_precheck'))
     stop(2,'缺少真实执行 runner: verification_precheck；不能从静态答案文件应答');
   if(operation==='advance'&&bundle.bootstraps&&Object.keys(bundle.bootstraps).length)
     stop(2,'缺少真实执行 runner: init_verify；不能从静态答案文件应答');

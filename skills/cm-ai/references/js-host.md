@@ -10,9 +10,10 @@
 新建运行先读 [control policy v2](../../../docs/cm-control-policy-v2.md)，写严格的 `POLICY.json`：
 
 ```json
-{"version":2,"development":"conversation","bootstrap":"disabled","qa":"disabled","qaFix":"disabled"}
+{"version":2,"development":"conversation","bootstrap":"disabled","qa":"disabled","qaFix":"disabled","verification":"precheck"}
 ```
 
+`verification:"precheck"` 开启交付前验证闸门：审查前宿主发 `verification_precheck`，当前会话逐条回答任务描述与验证要求的满足情况和实际证据（基线计数、RED 失败用例名、位置清单等），证据写进交接文件给独立审查看。PLAN 须配 `liveEvidence`（kinds 含 `verification_precheck`，见 `../../../docs/live-evidence-drivers.md`），否则驾驶员启动前退出 2。
 模型、命令和路径仍来自原配置。加载原配置不自动启用能力；policy 也不能替代所需配置。
 单任务启动顺序为 `serve --config RUN.json --mode create|resume --host-context ID --control-config POLICY.json`，
 后接原配置参数；**不得传任何 `--allow-*`**。批次入口同样显式提供 policy，`qaFix` 只能为 `disabled`。

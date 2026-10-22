@@ -17,7 +17,8 @@ const INPUT_LIMIT=1048576,marker='\n<cm-review-data-json>\n';
 // Captured from the a401 baseline INSTRUCTIONS, not copied from the repair.
 // The legacy prompt of the current main: it carries the scope-revision unchangedScope
 // clause added after #223, so its digest differs from the #223-era value.
-const LEGACY_PREFIX_SHA='3856cd689760c325740f82d02e679ae6fb9785cf139068611caad056815fc73f';
+// Re-pinned deliberately when the reviewer instructions gained the requirement-evidence rule.
+const LEGACY_PREFIX_SHA='b69f7260a89c92741f125b92207f4a25c44dd399ac1d105da96f3af19e8a9a06';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const checks=[{id:'unit',command:['node','synthetic-unit.mjs'],outcome:'passed',exitCode:0,evidence:'Synthetic unit evidence, not a command execution'},
   {id:'boundary',command:['node','synthetic-boundary.mjs'],outcome:'passed',exitCode:0,evidence:'Synthetic boundary evidence, not a provider call'}];

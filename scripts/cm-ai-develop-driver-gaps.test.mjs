@@ -123,6 +123,62 @@ test('single live verification precheck executes after checks and blocks before 
   assert.equal(result(out).pendingAction,'resume');
 });
 
+// A satisfied gate's per-requirement answers are the only place a task's process
+// evidence (baseline counts, RED failures, location lists) can reach the reviewer.
+const handoffOf=f=>JSON.parse(fs.readFileSync(path.join(f.specsDir,'.reviews','work-T-001-a1-handoff.json'),'utf8'));
+const requirementEntries=handoff=>handoff.evidence.filter(item=>item.startsWith('cm-requirement-evidence-v1: '));
+function precheckFixture(t){
+  const f=fixture(t);f.content('target.mjs','export const value = 42;\n');f.develop({'target.mjs':'target.mjs'});
+  fs.writeFileSync(path.join(f.specsDir,'1.work/tasks.md'),'- [ ] T-001: fixture\n  - 验证: 记录实现前基线；value is 42\n');
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(f.specsDir)}));
+  return f;
+}
+const satisfiedItems=[{requirement:'记录实现前基线',satisfied:true,evidence:'改前 npm test：tests 49 / pass 49 / fail 0'},
+  {requirement:'value is 42',satisfied:true,evidence:'target.mjs 第 1 行导出 42'}];
+test('a satisfied precheck writes its requirement evidence into the reviewed handoff',async t=>{
+  const f=precheckFixture(t);
+  const plan=f.plan({verificationPrecheck:true,liveEvidence:{directory:'exchange',kinds:['verification_precheck'],timeoutMs:1000}});
+  const out=await runLiveDriver(DRIVER,plan,'advance',()=>({items:satisfiedItems}),{env:f.env});
+  assert.equal(out.status,0,out.stderr);assert.equal(out.requests.length,1);
+  assert.notEqual(result(out).code,'verification_precheck_failed');
+  const handoff=handoffOf(f),entries=requirementEntries(handoff);
+  assert.equal(entries.length,1);
+  const record=JSON.parse(entries[0].slice('cm-requirement-evidence-v1: '.length));
+  assert.deepEqual(record.identity,f.identity);
+  assert.deepEqual(record.items,satisfiedItems.map(({requirement,evidence})=>({requirement,evidence})));
+  // The handoff the reviewer read is the one carrying the record.
+  const receipt=fs.readFileSync(path.join(f.specsDir,'.reviews','work-T-001-r1.md'),'utf8');
+  assert.match(receipt,new RegExp(`handoff_sha256: ${crypto.createHash('sha256').update(fs.readFileSync(path.join(f.specsDir,'.reviews','work-T-001-a1-handoff.json'))).digest('hex')}`));
+});
+test('without the gate the handoff carries no requirement evidence entry',t=>{
+  const f=precheckFixture(t);
+  const out=f.drive(f.plan(),'advance');
+  assert.equal(out.status,0,out.stderr);
+  assert.deepEqual(requirementEntries(handoffOf(f)),[]);
+});
+function v2Policy(f,extra={}){
+  fs.writeFileSync(path.join(f.root,'POLICY.json'),JSON.stringify({version:2,development:'conversation',
+    bootstrap:'disabled',qa:'disabled',qaFix:'disabled',...extra}));
+  f.write('qa-assess.json',{confirmed:true});
+}
+test('a v2 policy with verification precheck enables the gate without the launch flag',async t=>{
+  const f=precheckFixture(t);v2Policy(f,{verification:'precheck'});
+  // Without a live runner the driver refuses before launch, exactly as for the flag.
+  const refused=f.drive(f.plan({controlConfig:'POLICY.json'}),'advance');
+  assert.equal(refused.status,2);assert.match(refused.stderr,/verification_precheck/);
+  noRun(f);
+  const plan=f.plan({controlConfig:'POLICY.json',liveEvidence:{directory:'exchange',kinds:['verification_precheck'],timeoutMs:1000}});
+  const out=await runLiveDriver(DRIVER,plan,'advance',()=>({items:satisfiedItems}),{env:f.env});
+  assert.equal(out.status,0,out.stderr);assert.equal(out.requests.length,1);
+  assert.equal(requirementEntries(handoffOf(f)).length,1);
+});
+test('a v2 policy without the verification field keeps the gate off',t=>{
+  const f=precheckFixture(t);v2Policy(f);
+  const out=f.drive(f.plan({controlConfig:'POLICY.json'}),'advance');
+  assert.equal(out.status,0,out.stderr);
+  assert.deepEqual(requirementEntries(handoffOf(f)),[]);
+});
+
 // ---- #24 run ID length -------------------------------------------------------------------------
 test('#24 a run ID shorter than 8 characters is refused before the driver launches a host',t=>{
   const f=fixture(t,{runId:'short'});f.content('target.mjs','export const value = 42;\n');f.develop({'target.mjs':'target.mjs'});

@@ -721,7 +721,8 @@ function load(){
     else if(!providerMode)asks.push('develop');
     if(!protectedMode)asks.push('check');
   }
-  if((plan.verificationPrecheck===true||permissions.includes('--verification-precheck'))&&(ADVANCE.has(operation)||operation==='complete'))asks.push('verification_precheck');
+  if((plan.verificationPrecheck===true||permissions.includes('--verification-precheck')||control?.policy.verification==='precheck')
+    &&(ADVANCE.has(operation)||operation==='complete'))asks.push('verification_precheck');
   if(operation==='complete'&&!protectedMode)asks.push('check');
   // v2 没有 workflow 配置时宿主也会隐式补上 QA 判定（implicit-qa-decision.mjs）。
   if((operation==='advance'||operation==='qa')&&(control||workflow?.qa)){asks.push('qa_assess');

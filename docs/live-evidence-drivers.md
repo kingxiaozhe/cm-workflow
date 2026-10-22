@@ -16,8 +16,8 @@
 
 只声明本次会实际处理的种类。未配置通道时，原来的启动前拒绝继续生效；静态
 `qa-browser.json`、`materials.json` 等文件不能变成执行证据。单任务验证开关是
-`PLAN.verificationPrecheck:true` 或 permissions 的 `--verification-precheck`；批次用后者。
-验证请求只能拦下未满足的任务要求，不能代替独立审查。
+`PLAN.verificationPrecheck:true` 或 permissions 的 `--verification-precheck`；批次用后者。v2 控制策略写 `"verification":"precheck"` 时单任务与批次都自动开启。
+验证请求只能拦下未满足的任务要求，不能代替独立审查。全部满足时，各条 requirement 与 evidence 写进交接文件（`cm-requirement-evidence-v1:` 条目）供独立审查阅读；它是开发方自报记录，审查仍按代码与检查核对。
 
 directory 相对 PLAN 文件解析，必须在全部代码根、specs 根及批量任务未来的 `.cm-worktrees` 根外，不能是这些根的祖先，
 不能经过符号链接。已存在目录须属于当前用户且无组/其他用户权限；新目录创建为 0700。

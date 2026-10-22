@@ -8,14 +8,20 @@ export const CONTROL_RECOVERY_OPERATIONS=Object.freeze(['abandon_review','abando
   'bootstrap_review_recover','completion_rework','development_rework','revise_scope','reconcile_review']);
 export const CONTROL_FIX_RECOVERY_OPERATIONS=Object.freeze(['abandon_step','abandon_review','rediagnose',
   'rerun_blocked_step','recover_final_review','reconcile_review']);
+// verification is optional so policies saved before it existed keep their exact
+// digest; absent means the same as disabled. precheck enables the delivery
+// verification gate for every launch of the run it is saved into.
 export function readControlPolicy(raw){
-  const value=json(raw);shape(value,['version','development','bootstrap','qa','qaFix']);
+  const value=json(raw);
+  shape(value,['version','development','bootstrap','qa','qaFix',...(Object.hasOwn(value,'verification')?['verification']:[])]);
   need(value.version===2&&['conversation','provider'].includes(value.development)
     &&['disabled','write'].includes(value.bootstrap)&&['disabled','run'].includes(value.qa)
     &&['disabled','manual','auto'].includes(value.qaFix),'invalid_input');
+  need(!Object.hasOwn(value,'verification')||['disabled','precheck'].includes(value.verification),'invalid_input');
   need(value.qaFix==='disabled'||value.qa==='run','invalid_input');
   return value;
 }
+export const policyVerificationPrecheck=policy=>policy?.verification==='precheck';
 export function readControlPolicyFile(file){
   const before=fs.lstatSync(file);
   need(before.isFile()&&!before.isSymbolicLink()&&before.nlink===1&&before.size<=65536,'invalid_input');
