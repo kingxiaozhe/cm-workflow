@@ -47,7 +47,9 @@ the active/terminal state from the authoritative project log. After `run_done`,
 the next `run_start` creates a new run. A `run_start` from a different workflow
 than the one that opened the still-running run (for example `cm-fix` after an
 unfinished `cm-ai` run) also creates a new run instead of joining it; the
-earlier run stays as it was in the log.
+earlier run stays as it was in the log. The pointer only stores the current
+default run: after it moves to the new run, events for the earlier run must pass
+its original `--run-id`, otherwise they are recorded under the current run.
 
 ## Event envelope
 

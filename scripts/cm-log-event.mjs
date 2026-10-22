@@ -163,7 +163,7 @@ export function selectRunId({explicit,event,workflow,pointer,latestProjectRun,pr
   if(pointer?.status==='running'&&projectStates[pointer.run_id]!=='done'&&joinable(pointer.run_id,pointer.workflow))
     return {runId:pointer.run_id,newRun:false};
   if(pointer?.status==='done'&&TERMINAL_EVENTS.has(event))return {runId:pointer.run_id,newRun:false};
-  if(latestProjectRun&&projectStates[latestProjectRun]==='running'&&joinable(latestProjectRun))return {runId:latestProjectRun,newRun:false};
+  if(latestProjectRun&&projectStates[latestProjectRun]==='running'&&joinable(latestProjectRun,latestProjectRun===pointer?.run_id?pointer.workflow:undefined))return {runId:latestProjectRun,newRun:false};
   if(latestProjectRun&&projectStates[latestProjectRun]==='done'&&TERMINAL_EVENTS.has(event))
     return {runId:latestProjectRun,newRun:false};
   return {runId:generatedRunId(now,uuid),newRun:true};

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {applyResourceTransition,buildEvent,parseData,unclosedResources,UsageError} from './cm-log-event.mjs';
+import {applyResourceTransition,buildEvent,parseData,selectRunId,unclosedResources,UsageError} from './cm-log-event.mjs';
 
 const pythonWriter=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
 
@@ -70,6 +70,16 @@ test('regression: run_start of another workflow opens a new run instead of joini
     fs.rmSync(path.join(specs,'.cm-run.json'));
     assert.notEqual(write('cm-test','run_start'),orphan);
   }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('regression: run_start falls back to the pointer workflow when history rows lack one',()=>{
+  const base={event:'run_start',workflow:'cm-fix',latestProjectRun:'old-ai-run',projectStates:{'old-ai-run':'running'},projectWorkflows:{},
+    now:new Date('2026-10-21T00:00:00Z'),uuid:'00000000-0000-4000-8000-000000000000'};
+  const pointer={run_id:'old-ai-run',status:'running',workflow:'cm-ai'};
+  assert.notEqual(selectRunId({...base,pointer}).runId,'old-ai-run');
+  // 指针指向别的运行时，不能借用它的工作流；双方都不知道所属工作流时仍按原行为沿用。
+  assert.equal(selectRunId({...base,pointer:{...pointer,run_id:'other-run',status:'done'}}).runId,'old-ai-run');
+  assert.equal(selectRunId({...base,pointer:null}).runId,'old-ai-run');
 });
 
 test('JS log decision core rejects secrets and blocks completion with live resources',()=>{
