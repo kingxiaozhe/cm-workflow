@@ -5,6 +5,10 @@
 
 ## 未发布
 
+- **任务编号与 PRD 资产的通用修复**（Codex 编写，从 Wue 审查拆分候选中单独抽出；拆分协议本身未合入，原样保存在 `parked/codex-wue-review-split`）：
+  - 核心任务解析、依赖解析与 `test-cases.json` 校验统一用一套任务编号语法（`T-` 后接字母数字及 `._-`），`taskIds` 也接受 `T-004a`、`T-FIX-api` 这类编号，非法编号明确报错。看板、像素验收、状态栏等展示脚本仍按纯数字编号显示，尚未统一。
+  - PRD 变更模式核对资产时按原始字节流式计算哈希，不再受文档读取 1 MB 上限限制，大字体、图片等资产不会让变更失败；路径从规格根逐级检查，任一层是符号链接、文件有多个硬链接都拒绝，从已有存档恢复时同样如此。与旧算法同为原始字节的 SHA-256，在途变更会话不受影响。
+
 - **已完成运行的受控集成（ai-tool-manager 收尾）**：已审交付因文档合并、跨 worktree 集成或 `package.json` 改名导致 `repositoryId` 分流而接不上原运行时，新增显式接纳入口：`scripts/cm-ai-integration-preview.mjs` 只读预检；独立审查（作者 Codex、审查须为另一工具）批准后，原 owner 以 `--integration-evidence`、`--accept-integration-digest` 和原 `--expected-control` 在 v2 resume 的 status 连接里接纳一次，只追加 `reviewed-integration-accepted` 记录，保留原历史、次数和 QA 结果。可选接纳固定的 `reports/**/AGENTS.md` 证据副本。说明见 `docs/reviewed-integration.md`。
   - 完成后交付核验：父任务审查期间同仓库兄弟任务已审交付，可按审查顺序从原基线组合解释父任务范围之外的文件；父任务范围内仍以其最终已审字节为准。
   - Claude 审查：传输层把 CLI 2.x 的 `tool_progress` 心跳绑定到已登记的允许工具，拒绝时附不含正文的诊断字段；新增可选 `EXECUTION_POLICY_V2`（`utf8-delta-v2`），对同一路径的前后版本做无损差分呈现，传输前完整还原核对。

@@ -20,8 +20,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 export const TASK_GRAMMAR=2;
 export const LEGACY_TASK_GRAMMAR=1;
+// IDs are intentionally broader than numbered tasks (for example T-FIX-api).
+// Test references and new-draft dependency checks use this same declaration ID.
+export const TASK_ID_SOURCE='T-[A-Za-z0-9][A-Za-z0-9._-]*';
+const TASK_ID=new RegExp(`^${TASK_ID_SOURCE}(?![\\s\\S])`);
+export const isTaskId=value=>typeof value==='string'&&TASK_ID.test(value);
 const LEGACY_DECLARATION=/^((\s*-\s*)\[([ xX])\]\s+(?:~~)?(T-[A-Za-z0-9][A-Za-z0-9._-]*))(?=[:\s])[:\s]*(.*)$/;
-const DECLARATION=/^(\s*-\s*)\[([ xX])\]\s+(?:~~)?(T-[A-Za-z0-9][A-Za-z0-9._-]*)(?=[:：\s])/u;
+const DECLARATION=new RegExp(`^(\\s*-\\s*)\\[([ xX])\\]\\s+(?:~~)?(${TASK_ID_SOURCE})(?=[:：\\s])`,'u');
 const FENCE=/^[ ]{0,3}(`{3,}|~{3,})/;
 
 export function matchTaskDeclaration(line){

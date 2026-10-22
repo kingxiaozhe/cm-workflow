@@ -8,11 +8,10 @@ import {readSpecsStatus,writeSpecsStatus} from '../specs-status.mjs';
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 import {buildManifest,verifyApprovedManifest} from '../../../scripts/cm-spec-manifest.mjs';
 import {outstandingFeatureQa,describeOutstandingQa} from './project-qa-gate.mjs';
-import {taskLines,taskDeclarations,approvedTaskGrammar,TASK_GRAMMAR,LEGACY_TASK_GRAMMAR} from '../spec-task-line.mjs';
+import {taskLines,taskDeclarations,approvedTaskGrammar,TASK_GRAMMAR,LEGACY_TASK_GRAMMAR,TASK_ID_SOURCE,isTaskId} from '../spec-task-line.mjs';
 export {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 
-export const DEPENDENCY=/^\s*-\s*(T-[A-Za-z0-9][A-Za-z0-9._-]*)\s+依赖\s+(.+)$/;
-const TASK_ID=/^T-[A-Za-z0-9][A-Za-z0-9._-]*$/;
+export const DEPENDENCY=new RegExp(`^\\s*-\\s*(${TASK_ID_SOURCE})\\s+依赖\\s+(.+)$`);
 const ACCEPTANCE=/^\s*[-*]\s+(?:\[[ xX]\]\s+)?(?:\[(AC-\d{3,})\]|(AC-\d{3,}))(?=[:\s])/;
 const FEATURE=/^(\d+)\.(.+)$/;
 const TEST_CASE_VALIDATOR=fileURLToPath(new URL('../../../scripts/validate-test-cases.mjs',import.meta.url));
@@ -247,7 +246,7 @@ export function parseFeatureTaskText(source,{allowDependencyPunctuation=false,gr
       // Only cm-ai admission opts in; cm-prd self-check retains strict parsing.
       const required=dependency[2].split(/[,，]/).map(value=>value.trim()).filter(Boolean)
         .map(value=>allowDependencyPunctuation?value.replace(/[。．.；;、\s]+$/u,''):value);
-      if(!required.length||required.some(id=>!TASK_ID.test(id)))return invalid('dependencies_invalid',index);
+      if(!required.length||required.some(id=>!isTaskId(id)))return invalid('dependencies_invalid',index);
       dependencies.set(dependency[1],required);
       dependencyLocations.set(dependency[1],location(index));
     }
@@ -507,6 +506,6 @@ export function matchesCmAiTaskSelection(admission,feature,taskId,parallelSelect
   return admission.state==='ready'&&value?.version===1
     &&Object.keys(value).sort().join(',')==='group,version'&&Array.isArray(value.group)
     &&value.group.length>=2&&new Set(value.group).size===value.group.length
-    &&value.group.every(id=>typeof id==='string'&&TASK_ID.test(id))&&value.group.includes(taskId)
+    &&value.group.every(isTaskId)&&value.group.includes(taskId)
     &&admission.eligibleTasks?.some(task=>task.feature===feature&&task.id===taskId)===true;
 }
