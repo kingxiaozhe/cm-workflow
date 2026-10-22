@@ -49,7 +49,7 @@ export function claudePreflightMatches(receipt,options) {
 // Diagnostic receipt is NOT authorization. Only the original V3 owner may dispatch this worker.
 // A matching diagnostic receipt remains required separately from the V3 grant.
 export function claudeWorker({cwd,model,preflight,cli='claude',timeoutMs=60000,spawnProcess=spawn,effort=null,
-  killProcess=(pid,signal)=>process.kill(pid,signal),onNotice=null,onUsage=null,onUsageClaim=null,verification=null,verificationTransport=null}) {
+  killProcess=(pid,signal)=>process.kill(pid,signal),onNotice=null,onDiagnostic=null,onUsage=null,onUsageClaim=null,verification=null,verificationTransport=null}) {
   const args=claudeReviewArgs(model,effort,verification,verificationTransport);
   if (!Number.isSafeInteger(timeoutMs)||timeoutMs<1) throw new Error('invalid_timeout');
   let used=false;
@@ -70,7 +70,14 @@ export function claudeWorker({cwd,model,preflight,cli='claude',timeoutMs=60000,s
       try { child=spawnProcess(cli,args,{cwd:verificationTransport?.cwd??cwd,env:claudeEnvironment(),stdio:['pipe','pipe','pipe'],detached:true}); }
       catch { usage.complete();resolve({status:'failed',code:'spawn_failed'});return; }
       let buffer='', bytes=0, failure=null, settled=false, timedOut=false, killTimer, pendingClose;
-      let providerThread=null,providerTerminal=false,failedTerminal=false,receiptInvalid=false,failureDetail=null;
+      let providerThread=null,providerTerminal=false,failedTerminal=false,receiptInvalid=false,failureDetail=null,diagnosticReported=false;
+      // Optional, body-free diagnostics are separate from the strict observation
+      // receipt. Neither a callback nor its failure can change provider outcome.
+      const reportDiagnostic=error=>{
+        if(diagnosticReported||failure!==null||!error?.failureDetail)return;
+        diagnosticReported=true;
+        try{if(typeof onDiagnostic==='function')onDiagnostic({code:error.code,failureDetail:error.failureDetail});}catch{}
+      };
       // The boundary code carries the stream's body-free summary so the record
       // shows what was rejected; stop() and callers keep matching the base code.
       const withDetail=code=>code==='unexpected_tool_or_content'&&failureDetail!==null
@@ -126,6 +133,7 @@ export function claudeWorker({cwd,model,preflight,cli='claude',timeoutMs=60000,s
           stream.accept(message);
         }
         catch (error) {
+          reportDiagnostic(error);
           if(failure===null&&error?.code==='unexpected_tool_or_content'&&error.detail)failureDetail=error.detail;
           stop(error instanceof SyntaxError?'invalid_event':error.code??'invalid_event');
         }
@@ -163,7 +171,7 @@ export function claudeWorker({cwd,model,preflight,cli='claude',timeoutMs=60000,s
           resolve({status:'failed',code:withDetail(failure??'incomplete_result')});return;
         }
         try {resolve(stream.finish());}
-        catch(error){resolve({status:'failed',code:error.code??'incomplete_result'});}
+        catch(error){reportDiagnostic(error);resolve({status:'failed',code:error.code??'incomplete_result'});}
         };
         // Leader close does not prove group cleanup: redirected descendant pipes may close early.
         if (!killTimer) pendingClose();

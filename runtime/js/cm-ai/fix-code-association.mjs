@@ -3,6 +3,7 @@ import {captureReviewBaseline,compareReviewInventoryToBaseline,readReviewBaselin
 import {verifySpecificationMaterial} from './specification-material.mjs';
 import {CONFIG_FILENAMES} from '../../../scripts/cm-workflow-config.mjs';
 import {digest,hex,id,json,need,shape} from './effect-contract.mjs';
+import {assertSnapshotBoundaries} from './integration-snapshots.mjs';
 
 const inventoryFile=({contentBase64,...metadata})=>metadata;
 const sameFile=(a,b)=>digest(a===null?null:inventoryFile(a))===digest(b===null?null:inventoryFile(b));
@@ -35,6 +36,16 @@ const compact=steps=>steps.map(({beforeFix,runId,packageDigest})=>({beforeFix,ru
 // deliveries: [{runId,packages:[{pkg,reviewedAt}]}].
 export const deliveredAfter=(item,after)=>Number.isSafeInteger(after)
   &&Number.isSafeInteger(item.reviewedAt)&&item.reviewedAt>after;
+// Only the runner's already-validated journal supplies this lower bound. Its
+// first review registration is necessarily after its frozen baseline. Missing
+// legacy evidence keeps the historical, final-review-only composition.
+export function firstReviewAt(records,identity){
+  const row=records?.find(record=>record.payload?.type==='review-invocation-registered')?.payload;
+  const bound=(row?.binding??row?.grant)?.identity;
+  return row?.version===3&&row.protocol==='cm-task-runner'&&Number.isSafeInteger(row.registeredAt)
+    &&bound?.repositoryId===identity.repositoryId&&bound.runId===identity.runId&&bound.taskId===identity.taskId
+    &&Number.isInteger(bound.attempt)&&bound.attempt>=1?row.registeredAt:null;
+}
 const key=file=>file===null||file===undefined?null:`${file.sha256}:${file.mode}`;
 const applyMeta=(state,pkg)=>{for(const change of pkg.changes){
   if(change.after===null)state.delete(change.path);else state.set(change.path,inventoryFile(change.after));}};
@@ -130,7 +141,7 @@ export function explainReviewedDrift({root,baseline,composed,ownScope,deliveries
 }
 
 // Completed run without accepted fixes: its own reviewed composition, then drift.
-export function explainCompletedDelivery({root,baseline,parentPackage,deliveries,after}){
+export function explainCompletedDelivery({root,baseline,parentPackage,deliveries,after,since=null}){
   const base=readReviewBaseline(baseline),parent=readReviewPackage(parentPackage);
   need(parent.baseIdentity===base.baselineDigest&&parent.rootDigest===base.rootDigest
     &&digest(parent.identity)===digest(base.identity),'fix_parent_binding_mismatch');
@@ -140,7 +151,67 @@ export function explainCompletedDelivery({root,baseline,parentPackage,deliveries
     need(sameFile(expected.get(change.path)??null,change.before),'fix_before_mismatch');
     if(change.after===null)expected.delete(change.path);else expected.set(change.path,inventoryFile(change.after));
   }
-  explainReviewedDrift({root,baseline:base,composed:[...expected.values()],ownScope:parent.scope,deliveries,after});
+  try{
+    explainReviewedDrift({root,baseline:base,composed:[...expected.values()],ownScope:parent.scope,deliveries,after});
+    return;
+  }catch(error){
+    if(error.code!=='fix_current_code_unexplained'||base.version!==2||!Number.isSafeInteger(since)
+      ||!Number.isSafeInteger(after)||since>=after)throw error;
+    // A sibling can finish while the parent is being revised. Prove the whole
+    // bounded interval from the unchanged baseline, in durable review order;
+    // never select packages or stop the chain to fit the current tree.
+    const earlier=laterSequence(deliveries,since,base.rootDigest).filter(entry=>entry.reviewedAt<after);
+    if(!earlier.length)throw error;
+    const interval=new Map(base.files.map(file=>[file.path,inventoryFile(file)]));
+    for(const entry of earlier){
+      need(entry.pkg.identity.repositoryId===parent.identity.repositoryId&&entry.pkg.identity.runId===entry.runId
+        &&entry.runId!==parent.identity.runId&&entry.pkg.identity.taskId!==parent.identity.taskId,'fix_association_unverified');
+      applyDelivery(interval,entry.pkg,strict);
+    }
+    // The parent's own reviewed scope remains authoritative, including paths
+    // that were unchanged or absent in its final package. Earlier deliveries
+    // can explain only the rest of the tree; they cannot undo a parent change.
+    const own=new Set(parent.scope);
+    for(const p of new Set([...expected.keys(),...interval.keys()]))if(!own.has(p)){
+      if(interval.has(p))expected.set(p,interval.get(p));else expected.delete(p);
+    }
+    explainReviewedDrift({root,baseline:base,composed:[...expected.values()],ownScope:parent.scope,deliveries,after});
+  }
+}
+
+// Called only after the explicit integration evidence has authenticated each
+// additional source in its original namespace. Never rewrite package identity
+// or rootDigest to make it pass ordinary delivery discovery.
+export function explainIntegratedDelivery({root,baseline,parentPackage,deliveries,after,since,sources,documents,snapshots}){
+  const base=readReviewBaseline(baseline),parent=readReviewPackage(parentPackage);
+  need(base.version===2&&parent.baseIdentity===base.baselineDigest&&parent.rootDigest===base.rootDigest
+    &&digest(parent.identity)===digest(base.identity),'fix_parent_binding_mismatch');
+  if(base.specification)verifySpecificationMaterial(base);
+  const expected=new Map(base.files.map(file=>[file.path,inventoryFile(file)]));
+  applyDelivery(expected,parent,strict);
+  const earlier=laterSequence(deliveries,since,base.rootDigest).filter(entry=>entry.reviewedAt<after);
+  if(earlier.length){
+    const interval=new Map(base.files.map(file=>[file.path,inventoryFile(file)]));
+    for(const entry of earlier)applyDelivery(interval,entry.pkg,strict);
+    const own=new Set(parent.scope);
+    for(const p of new Set([...expected.keys(),...interval.keys()]))if(!own.has(p)){
+      if(interval.has(p))expected.set(p,interval.get(p));else expected.delete(p);
+    }
+  }
+  // These exact transitions have their own new independent review; historical
+  // merge prose is never interpreted as approval. Parent scope is unchanged.
+  applyDelivery(expected,{changes:documents},strict);
+  const ordinary=laterSequence(deliveries,after,base.rootDigest);
+  const imported=sources.flatMap(delivery=>delivery.packages.map((item,index)=>({
+    runId:delivery.runId,index,reviewedAt:item.reviewedAt,pkg:readReviewPackage(item.pkg)})));
+  const later=[...ordinary,...imported].sort((a,b)=>a.reviewedAt-b.reviewedAt
+    ||(a.runId<b.runId?-1:a.runId>b.runId?1:0)||a.index-b.index);
+  need(new Set(later.map(entry=>entry.runId+'\0'+entry.pkg.packageDigest)).size===later.length,'fix_association_unverified');
+  const tolerated=toleratedConfig(parent.scope);
+  for(const entry of later)applyDelivery(expected,entry.pkg,tolerated);
+  assertSnapshotBoundaries(snapshots,base,[parent,...earlier.map(entry=>entry.pkg),...later.map(entry=>entry.pkg)]);
+  if(snapshots)applyDelivery(expected,{changes:snapshots.files.map(file=>({path:file.path,before:null,after:file}))},strict);
+  compareCurrent({root,base,state:expected,tolerated});
 }
 
 // One deterministic order for a run with QA fixes, from facts fixed at

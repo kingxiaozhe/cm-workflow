@@ -278,3 +278,9 @@ gaps. The current host reviews business boundaries and checks the source digest 
 scanner output is candidate evidence, never a task-completion or release gate.
 
 人工补正合同：`docs/human-correction.md`。第二轮 blocked 后，仅经明确人审范围的一次性 task-gate 入口可封存独立补正审查；原证据与普通 attempt 上限保留，宿主 journal 不自动重开。
+
+Explicit completed-run integration uses reviewed-integration.mjs and the read-only cm-ai-integration-preview.mjs. The existing owner accepts a fixed independently reviewed plan under its original writer lock; ordinary discovery, history and budgets stay authoritative. See [the integration contract](reviewed-integration.md).
+
+integration-snapshots.mjs binds explicitly reviewed additions of evidence copies to their exact paths, original modes and full bytes. The normal inventory still protects every AGENTS.md. Copies cannot cover an existing baseline file or an applicable instruction for a reviewed scope; source provenance and deduplicated data files belong to the independent review package.
+
+For explicitly selected new maintenance reviews, review-presentation-delta.mjs encodes exact before/after shared ranges with complete inline inserts and verifies the full reconstruction before dispatch. The V2 prompt policy does not change V1/null defaults, canonical review evidence or journal storage encoding.

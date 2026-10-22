@@ -23,7 +23,7 @@ import {recordReviewAbandonment} from '../runtime/js/cm-ai/review-abandon-log.mj
 import {recordEffectAbandonment} from '../runtime/js/cm-ai/effect-abandon-log.mjs';
 import {reviewConsumedHandoff,reviewedHandoffConflict} from '../runtime/js/cm-ai/host-handoff.mjs';
 import {RUN_ID_RULE,validRunId} from './cm-log-event.mjs';
-import {JOURNAL_PAYLOAD_LIMIT,boundedReason} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {JOURNAL_PAYLOAD_LIMIT,boundedReason,shape,hex} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {protectedScopePaths} from '../runtime/js/cm-ai/developer-adapter.mjs';
 import {closeoutPolicyCandidates} from '../runtime/js/cm-ai/knowledge-closeout.mjs';
 
@@ -290,7 +290,7 @@ export async function openControlRun(definition,mode,execution=null,options={}){
     return {...result,close:()=>{try{close();}finally{guard?.close();}}};
   }catch(error){releaseHolds();guard?.close();throw error;}
 }
-async function openControlRunOwned(definition,mode,execution=null,{supersedeHolds=null,supersedeTarget=null,rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,allowDevelopRedo=false,holdRevision=false,specRebindReason=null,expectedControl=null,scopeRevision=null,developmentReworkReason=null}={},acquireGuard=async()=>{}){
+async function openControlRunOwned(definition,mode,execution=null,{supersedeHolds=null,supersedeTarget=null,rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,allowDevelopRedo=false,holdRevision=false,specRebindReason=null,expectedControl=null,scopeRevision=null,developmentReworkReason=null,reviewedIntegration=null}={},acquireGuard=async()=>{}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection,externalConversationDefinition}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
@@ -319,13 +319,22 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
   const {openTaskExecutionStore}=await import('../runtime/js/cm-ai/task-owner.mjs');
   const controlPolicy=execution?.configuration?.controlPolicy??null;
   const elevatedRecovery=scopeRevision!==null||developmentReworkReason!==null;
-  const launchRecovery=qaConfigRevision!==null||rerunUnknownQa||rerunBlockedQa||specRebindReason!==null||elevatedRecovery;
+  const launchRecovery=qaConfigRevision!==null||rerunUnknownQa||rerunBlockedQa||specRebindReason!==null||elevatedRecovery||reviewedIntegration!==null;
   if(elevatedRecovery){
     if(!controlPolicy||mode!=='resume'||parallelSelection!==null||conversationProtection(execution)!==null
       ||protectedExecutions.has(execution)||execution.configuration.providerDevelopment)fail('recovery_launch_unavailable');
     if([scopeRevision!==null,developmentReworkReason!==null,qaConfigRevision!==null,rerunUnknownQa,rerunBlockedQa,specRebindReason!==null].filter(Boolean).length!==1)fail('invalid_input');
     const reason=scopeRevision?.reason??developmentReworkReason;
     if(typeof reason!=='string'||!reason.trim()||Buffer.byteLength(reason,'utf8')>500||/[\r\n\0]/.test(reason))fail('invalid_input');
+  }
+  if(reviewedIntegration!==null){
+    shape(reviewedIntegration,['evidenceFile','expectedDigest']);hex(reviewedIntegration.expectedDigest);
+    if(typeof reviewedIntegration.evidenceFile!=='string'||!path.isAbsolute(reviewedIntegration.evidenceFile)
+      ||reviewedIntegration.evidenceFile.includes('\0'))fail('invalid_input');
+    if(!controlPolicy||mode!=='resume'||parallelSelection!==null)fail('recovery_launch_unavailable');
+    // Integration adoption is its own launch: never together with another recovery.
+    if(qaConfigRevision!==null||rerunUnknownQa||rerunBlockedQa||qaEnvironmentFailure!==null
+      ||specRebindReason!==null||supersedeReason!==null||holdRevision||elevatedRecovery||supersedeTarget!==null)fail('invalid_input');
   }
   if(controlPolicy){
     // V2 restart: only create, only with the previewed predecessor launch target.
@@ -525,6 +534,8 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
         throw error;
       }
     }
+    // Integration acceptance never attaches QA or repairs unrelated audit mirrors.
+    if(reviewedIntegration!==null&&attaching)fail('integration_launch_qa_attachment_unavailable');
     let runnerMode=mode;
     if(mode==='resume'&&store.snapshot().records.length===0){
       // Only the genuine, fingerprint-matching empty initializer can be finished.
@@ -562,8 +573,9 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
         ...Object.fromEntries(['developmentAttempt','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)
           &&!(implicitQaSuppressed&&key==='qaDecisionProvider')).map(key=>[key,execution[key]]))})},
     });
-    if(elevatedRecovery){
-      const result=scopeRevision!==null?host.reviseScope({allowed:true,...scopeRevision})
+    if(elevatedRecovery||reviewedIntegration!==null){
+      const result=reviewedIntegration!==null?host.acceptReviewedIntegration({allowed:true,...reviewedIntegration})
+        :scopeRevision!==null?host.reviseScope({allowed:true,...scopeRevision})
         :host.reworkDevelopment({allowed:true,reason:developmentReworkReason});
       if(result.outcome==='rejected')fail(result.code);
     }
@@ -577,15 +589,15 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
           runtime:execution?.developer?.provider??'codex',
           ...(execution?.qaLogHome?{logHome:execution.qaLogHome}:{})});
     };
-    if(mode==='resume')logAbandonments();
+    if(mode==='resume'&&reviewedIntegration===null)logAbandonments();
     const recorded=store.snapshot().records.find(row=>row.payload.type==='evidence-superseded')?.payload.record??null;
-    if(supersession!==null||recorded!==null){
+    if(reviewedIntegration===null&&(supersession!==null||recorded!==null)){
       const record=host.supersedeEvidence(supersession??recorded);
       archiveReviewedEvidence(reviewsDir,record);
       recordEvidenceSupersession({specsDir,codeProject,identity,record,
         ...(execution?.qaLogHome?{logHome:execution.qaLogHome}:{})});
     }
-    if(attaching||attached){
+    if(reviewedIntegration===null&&(attaching||attached)){
       const record=host.attachQa(attached??{version:1,qaFingerprint:fingerprints.config,
         attachedAt:new Date().toISOString().replace(/\.\d{3}Z$/,'Z'),hostContextId:execution.configuration.hostContextId});
       // Repeating this deterministic log write also repairs a crash after the
@@ -596,7 +608,7 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
     const qaBinding={specsDir,codeProject,feature,identity,
       ...(execution?.qaLogHome?{logHome:execution.qaLogHome}:{})};
     // Repair a crash after the journal append, before the log supersession.
-    for(const record of chain.revisions)recordCmAiQaConfigurationRevision({...qaBinding,identity:{...identity,attempt:record.taskAttempt},packageDigest:record.packageDigest},record);
+    for(const record of reviewedIntegration===null?chain.revisions:[])recordCmAiQaConfigurationRevision({...qaBinding,identity:{...identity,attempt:record.taskAttempt},packageDigest:record.packageDigest},record);
     if(specRebindReason!==null){
       // Consumed once on this launch; the journal record is the audit trail.
       host.rebindSpecification({version:1,reason:specRebindReason,at:new Date().toISOString()});
@@ -620,7 +632,9 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
       // Replaying or repairing its audit mirror above is not new execution.
       if(!beforeQa)writeCmAiQaStatus({specsDir,feature,identity:current.identity,phase:'configuration_revised'});
     }
-    const legacyHost={async handle(request){
+    const legacyHost={acceptReviewedIntegration:host.acceptReviewedIntegration,async handle(request){
+      if(reviewedIntegration!==null&&request.operation!=='status')
+        return {outcome:'rejected',code:'integration_launch_status_only'};
       if(execution===null&&!['status','cancel'].includes(request.operation)){
         // Do not imply an unavailable execution adapter was dispatched.
         return {outcome:'blocked',code:'execution_adapter_required',providerCalls:0};
@@ -630,7 +644,7 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
       return result;
     }};
     const controlHost=controlPolicy?withControlPolicyHost(legacyHost,{identity,snapshot:()=>store.snapshot(),launchTarget:controlLaunchTarget}):null;
-    return {host:legacyHost,...(controlHost?{controlHost}:{}),inspectFixAssociation:host.inspectFixAssociation,acceptCompletedFix:host.acceptCompletedFix,
+    return {host:legacyHost,...(controlHost?{controlHost}:{}),inspectFixAssociation:host.inspectFixAssociation,acceptCompletedFix:host.acceptCompletedFix,acceptReviewedIntegration:host.acceptReviewedIntegration,
       checkpoint:()=>store.snapshot().revision,close:()=>store.close()};
   }catch(error){store.close();throw error;}
 }

@@ -1,4 +1,5 @@
 import {packageMaterialEligible,resolveCheckpointPackage} from './checkpoint-package-material.mjs';
+import {validateIntegrationRecord} from './reviewed-integration.mjs';
 import {readExecutionPolicy} from './execution-policy.mjs';
 import {readControlPolicy} from './control-policy.mjs';
 import {applyScopeRevision} from './scope-revision.mjs';
@@ -1323,6 +1324,7 @@ export function readRunnerHistory(raw,config,version=1) {
   need(records[0]?.payload?.version===version,'runner_version');
   const completion=version>=2?completionConfig(config,version):null;
   let original,session,state,pending=null,beforeIntent=null,controlCount=0,controls={},completeIntentDigest=null,transaction=null;
+  let acceptedIntegration=null;
   let invocation={registration:null,started:null,result:null};let registrationRecord=null,startedRecord=null,resultRecord=null,lastReview=null;
   const acceptedFixes=[],joinedHosts=[],reviewerThreads=[];let qaAttachment=null,qaRevision=null,joinedForInvocation=false,supersession=null;
   let scopeRevisions=0,developmentRework=null;
@@ -1879,7 +1881,15 @@ export function readRunnerHistory(raw,config,version=1) {
         &&revision.previousQaDigest===qaRevision.qaDigest&&qaRevisionFollows(revision,qaRevision),'qa_revision_chain_invalid');
       else need(revision.fromFingerprint===(qaAttachment?.qaFingerprint??completion.fingerprints.config),'qa_revision_chain_invalid');
       qaRevision=revision;
+    } else if(version===3&&p.type==='reviewed-integration-accepted') {
+      shape(p,[...common,'record']);
+      need(r.kind==='result'&&pending===null&&state.state==='fixture_completed'
+        &&state.taskCommit?.outcome==='fixture_committed'&&acceptedFixes.length===0
+        &&acceptedIntegration===null,'integration_parent_not_completed');
+      acceptedIntegration=validateIntegrationRecord({record:p.record,
+        baseline:attemptBaseline(original,state.attempt),parentPackage:state.reviewPackage,records:records.slice(0,index)});
     } else if(version===3&&p.type==='qa-fix-accepted') {
+      need(acceptedIntegration===null,'integration_fix_unsupported');
       shape(p,[...common,'record']);need(r.kind==='result'&&pending===null&&state.state==='fixture_completed','fix_parent_not_completed');
       acceptedFixes.push(validateAcceptedFix({record:p.record,previous:acceptedFixes,
         baseline:attemptBaseline(original,state.attempt),parentPackage:state.reviewPackage,feature:config.taskLearning?.feature}));
@@ -1916,6 +1926,7 @@ export function readRunnerHistory(raw,config,version=1) {
     &&interrupted.filter(item=>item.kind===pending.kind).length>=MAX_EFFECT_INTERRUPTIONS;
   const workerVoidable=pending!==null&&pendingWorkerVoidable(pending,lastIntentIndex,records.length);
   return {original,effectiveScope:config.scope,scopeRevisions,session,state,pending,acceptedFixes,qaAttachment,answerGaps,
+    ...(acceptedIntegration===null?{}:{acceptedIntegration}),
     developmentRework,developRecheckEffects,developRecheckRecovery:pending===null?developRecheckCancellationBinding(records,state,config):null,
     ...(version===3?{joinedHosts,reviewerThreads,supersession,pendingAbandonable,reviewResultAbandon,
       interrupted,workers,pendingInterruptible:interruptible,pendingReviewExhausted:pendingReviewExhausted(),

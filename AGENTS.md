@@ -123,3 +123,9 @@ Read the relevant files under `.claude/rules/` when modifying shell scripts, doc
 - **扩权恢复须在启动边界显式批准，状态快照只防陈旧**：范围追加和突破默认 effect 预算的续次不因 v2 resume 自动开放；由人工启动参数、原 launchControlTarget、原因和记录时间绑定，wire 即使持有正确 controlTarget 也不能自批。completion_rework 的批次排除同时落在启动权限与持久 binding，受保护开发保留原边界。来源：control-v2 Claude 窄审修复；证据：`scripts/cm-ai-development-rework.test.mjs` 的 wire 拒绝和启动快照用例、`scripts/cm-ai-scope-revision.test.mjs` 的批次与保护拒绝、`scripts/cm-ai-control-v2-drive.test.mjs` 的 durable batch 拒绝。该教训随本轮改动待独立审查。
 
 - **许可消费后仍须区分开发与只重跑检查**：返工许可消费只封住第二次开发；实时名额预检须使用已验证的重查转换，与 journal 中 blocked 起点一致，不能因尚为 unknown 而拒绝合法 check-only。返工轮无结论 Review 重派沿既有身份和次数门禁，不泛化为任意新审查名额。来源：control-v2 Claude 窄审修复；证据：`scripts/cm-ai-development-rework.test.mjs` 的返工后检查超时重查、Review transport retry 与 effect ID 反例。该教训随本轮改动待独立审查。
+
+- **父任务批准前的交付也须证明完整转换链**：仅用已回放验证的首轮与最终审查注册时间限定窗口；窗口内同仓库、同根且已提交的交付必须从原基线逐文件连续组合，再只投影到父任务 scope 之外。父任务 scope 保留最终已审字节，窗口后的交付继续严格接续；时间、Git 合并或其他 worktree 的批准不能代替当前根的转换证据。来源：T-010 已审交付接续修复；证据：`scripts/cm-ai-prefinal-delivery.test.mjs` 的两轮原运行、父 scope、链断裂、回退、身份拒绝与历史次数保全用例。
+
+- **显式集成须保留来源身份并固定转换证据**：跨 worktree 或 repositoryId 的历史交付不能靠别名放行；逐 run 绑定原身份、根、revision 和包，文档桥接由新的独立审查绑定准确 before/after，最终整树仍须相等。原 owner 锁内核对固定目标后只追加接纳记录，旧失败、次数和完成事实保留；来源或审查证据变化重新阻断。来源：已完成任务受控集成；证据：scripts/cm-ai-integration-adoption.test.mjs、scripts/cm-ai-integration-launch.test.mjs。
+
+- **证据副本不能靠忽略指令文件来接纳**：先核实来源，再由新独立审查绑定固定新增路径、原权限和全部字节；审查载体按摘要去重并作为数据，不把副本提升为执行指令。旧基线、已审范围及其适用祖先指令继续保护，新增副本只能在完整交付链之后加入严格整树比较，遗漏、替换或漂移均拒绝。来源：reports 指令快照受控处理；证据：scripts/cm-ai-integration-snapshots.test.mjs。

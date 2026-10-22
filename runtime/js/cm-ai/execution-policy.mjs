@@ -8,8 +8,10 @@ import {readExecutionSnapshot} from './execution-snapshot.mjs';
 import {scanRows} from './log-rows.mjs';
 export const EXECUTION_POLICY_V1=Object.freeze({version:1,responseRecovery:'mechanical-v1',
   checkReuse:'declared-adjacent-v1',reviewPresentation:'utf8-v1',usage:'provider-terminal-v1'});
+export const EXECUTION_POLICY_V2=Object.freeze({...EXECUTION_POLICY_V1,version:2,reviewPresentation:'utf8-delta-v2'});
 export function readExecutionPolicy(raw){
-  const value=json(raw);need(digest(value)===digest(EXECUTION_POLICY_V1),'execution_policy_invalid');return value;
+  const value=json(raw),key=digest(value);
+  need(key===digest(EXECUTION_POLICY_V1)||key===digest(EXECUTION_POLICY_V2),'execution_policy_invalid');return value;
 }
 export function readLaunchExecutionPolicy({definition,mode,enabled=false}){
   need(['create','resume'].includes(mode),'invalid_mode');
