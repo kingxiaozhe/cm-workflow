@@ -170,6 +170,10 @@ export function sessionTitle(env=process.env){
         // must still be the same real directory, and the transcript path must
         // still name the opened regular file; a directory swapped for a link
         // (or swapped and restored) around the open fails one of these.
+        // Known limit: repeated swaps between these checks are not covered.
+        // Whoever can swap this directory can already write the transcript
+        // (and so its title) directly; the checks only keep static links,
+        // FIFOs and simple replacements out.
         const opened=fs.fstatSync(fd);
         let after,again;try{after=fs.lstatSync(folder);again=fs.lstatSync(file);}catch{return null;}
         if(!opened.isFile()||!same(opened,stat)||!after.isDirectory()||!same(after,before)||!same(again,opened))return null;
