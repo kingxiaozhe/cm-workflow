@@ -80,13 +80,13 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
   let deadline=Date.now()+budget.startupMs,phase='startup',closeDeadline=null,killTimer=null,forceTimer=null;
   // Optional notices never change the result or make watchdog failures successful.
   const notice=failure=>{
-    if(noticed)return;noticed=true;
+    if(noticed)return;noticed=true;const finishedAt=Date.now();
     if(rejected!==null)failure='host_response_rejected';else if(!failure&&unanswered&&!finalRow)failure='host_request_unanswered';
     import('../notify.mjs').then(({driveNotice,notify,driveProgressKey,clearAttention})=>{
       const fields=driveNotice({host,cwd,args,operation,row:finalRow,failure});
       if(fields)return notify(fields);
       const progress=driveProgressKey({host,cwd,args,operation,row:finalRow,failure});
-      return progress?clearAttention(progress):null;
+      return progress?clearAttention(progress,{before:finishedAt}):null;
     }).catch(()=>{});
   };
   const signalOwnHost=(signal,cleanup=false)=>{

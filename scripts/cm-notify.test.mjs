@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
-import {notify,clearAttention,readNotifyConfig,parseNotifyConfig,buildNotifyMessage,normalizeNotifyText,driveNotice,NOTIFY_LIMITS,NOTIFY_WORKFLOWS,DEFAULT_NOTIFY_TEXT} from '../runtime/js/notify.mjs';
+import {notify,clearAttention,scheduleWaitNotice,driveProgressKey,readNotifyConfig,parseNotifyConfig,buildNotifyMessage,normalizeNotifyText,driveNotice,NOTIFY_LIMITS,NOTIFY_WORKFLOWS,DEFAULT_NOTIFY_TEXT} from '../runtime/js/notify.mjs';
 
 const NOW=Date.parse('2026-10-08T08:00:00.000Z');
 const DRIVE_CORE=new URL('../runtime/js/cm-ai/drive-core.mjs',import.meta.url).href;
@@ -325,6 +325,48 @@ test('sends through env and stdin once per key; the same key within 6 hours is s
   assert(!fs.existsSync(path.join(h.dir,'notify-state.lock')));
 });
 
+test('a busy state lock delays the progress clear instead of dropping it; a clear that never gets the lock is logged',async t=>{
+  const h=home(t),key='attn|work/demo-app|4f9fa27f',lock=path.join(h.dir,'notify-state.lock');
+  assert.equal(notify(fields('b1',{attentionKey:key}),{env:h.env,now:NOW}).sent,true);
+  // A lock held by another live process (the parent) is not stale.
+  const hold=()=>fs.writeFileSync(lock,JSON.stringify({pid:process.ppid,at:Date.now(),token:'held'}));
+  hold();setTimeout(()=>fs.unlinkSync(lock),60);
+  assert.equal(await clearAttention(key,{env:h.env,before:NOW+1,attempts:20,delayMs:20}),true);
+  assert.equal(notify(fields('b2',{attentionKey:key}),{env:h.env,now:NOW+60000}).sent,true,'the next stop is sent at once');
+  hold();
+  assert.equal(await clearAttention(key,{env:h.env,before:NOW+60001,attempts:3,delayMs:5}),false);
+  assert.match(h.log(),/ clear - key=[0-9a-f]{16} failed state_busy\n/);
+  fs.unlinkSync(lock);
+});
+
+test('the session is kept whole in the subtitle; a long feature name is shortened instead',()=>{
+  const message=buildNotifyMessage(fields('k',{feature:'12.'+'f'.repeat(45),session:'4f9fa27f'}),{now:NOW,timeZone:'UTC'});
+  assert(Array.from(message.subtitle).length<=NOTIFY_LIMITS.titleChars,message.subtitle);
+  // ' · 会话 4f9fa27f' takes 14 of 60 characters; the rest is cut to 46 (45 + …).
+  assert.equal(message.subtitle,'cm-fix · 12.'+'f'.repeat(33)+'… · 会话 4f9fa27f');
+});
+
+test('a host still waiting sends one follow-up after followUpMinutes; answering first cancels it',async t=>{
+  const h=home(t,{config:{waitMinutes:0.001,frequency:{followUpMinutes:1}}});
+  t.mock.timers.enable({apis:['setTimeout','Date'],now:NOW});
+  const wait=()=>scheduleWaitNotice({kind:'qa_browser',callId:'c1',workflow:'cm-demo',project:'/work/demo-app',session:'4f9fa27f',env:h.env});
+  let cancel=wait();
+  t.mock.timers.tick(100);
+  t.mock.timers.tick(60000);
+  cancel();
+  t.mock.timers.reset();
+  assert(await h.until(()=>h.rows().length===2));
+  assert.equal(h.rows().filter(row=>/^第 2 次提醒：/.test(row.body)).length,1);
+  // Answered before the follow-up: the second timer is cancelled with the first.
+  const other=home(t,{config:{waitMinutes:0.001,frequency:{followUpMinutes:1}}});
+  t.mock.timers.enable({apis:['setTimeout','Date'],now:NOW});
+  cancel=scheduleWaitNotice({kind:'qa_browser',callId:'c2',workflow:'cm-demo',project:'/work/demo-app',session:'aaaa0000',env:other.env});
+  t.mock.timers.tick(100);cancel();t.mock.timers.tick(120000);
+  t.mock.timers.reset();
+  assert(await other.until(()=>other.rows().length===1));
+  await new Promise(resolve=>setTimeout(resolve,500));assert.equal(other.rows().length,1);
+});
+
 test('at most 3 per 10 minutes and 150 per day across keys; skipped notices are counted into the next one',async t=>{
   const h=home(t);
   for(let i=0;i<3;i++)assert.equal(notify(fields(`m${i}`),{env:h.env,now:NOW+i}).sent,true);
@@ -346,7 +388,7 @@ test('at most 3 per 10 minutes and 150 per day across keys; skipped notices are 
   // The window and the follow-up delay come from notify.json `frequency`.
   assert.deepEqual(parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true'],frequency:{followUpMinutes:30,windowMinutes:5,perWindow:2}})).config,
     {command:['/bin/true'],waitMs:600000,checkWaitMs:2700000,idleMs:2700000,followUpMs:1800000,windowMs:300000,perWindow:2});
-  for(const frequency of [{perWindow:0},{perWindow:1.5},{windowMinutes:0},{followUpMinutes:2000},{other:1},[]])
+  for(const frequency of [{perWindow:0},{perWindow:1.5},{windowMinutes:0},{windowMinutes:0.5},{followUpMinutes:0.1},{followUpMinutes:2000},{other:1},[]])
     assert.equal(parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true'],frequency})).reason,'frequency',JSON.stringify(frequency));
 });
 
@@ -369,10 +411,11 @@ test('one session needs one notice: stuck, waiting and idle share it; a new stat
   const other='attn|work/demo-app|aaaa0000';
   assert.equal(notify(fields('o1',{attentionKey:other,event:'idle',code:'no_next_step'}),{env:h.env,now:NOW+5*3600000}).sent,true);
   assert.equal(notify(fields('o2',{attentionKey:other,event:'waiting',code:'waiting_session_answer'}),{env:h.env,now:NOW+5*3600000+1}).sent,true);
-  // Progress clears the record: the same stop is sent at once again.
-  assert.equal(clearAttention(attentionKey,{env:h.env}),true);
+  // Progress clears the record: the same stop is sent at once again. A record newer than the step stays.
+  assert.equal(await clearAttention(attentionKey,{env:h.env,before:NOW+240000+7200000-1}),false,'newer record kept');
+  assert.equal(await clearAttention(attentionKey,{env:h.env,before:NOW+240000+7200000}),true);
   assert.equal(notify(at({key:'s7',code:'qa_decision_required'}),{env:h.env,now:NOW+8*3600000}).sent,true);
-  assert.equal(clearAttention('attn|unknown',{env:h.env}),false);
+  assert.equal(await clearAttention('attn|unknown',{env:h.env}),false);
   // done keeps its own once-per-key rule and never takes the attention path.
   assert.equal(notify(at({key:'d1',event:'done'}),{env:h.env,now:NOW+9*3600000}).sent,true);
   assert.deepEqual(notify(at({key:'d1',event:'done'}),{env:h.env,now:NOW+9*3600000+1}),{sent:false,reason:'duplicate'});
@@ -608,6 +651,11 @@ test('driver classification follows each workflow contract (table)',()=>{
   // Without --host-context the attention record is per project, workflow and run; a non-UUID context is kept as given.
   assert.equal(driveNotice({host:'cm-ai-host.mjs',cwd:'/w/p',args:['serve'],operation:'advance',row:{requestId:'drive',result:ai({state:'blocked',code:'x'})}}).attentionKey,'attn|w/p|cm-ai|run-1');
   assert.equal(driveNotice({host:'cm-ai-host.mjs',cwd:'/w/p',args:['--host-context','claude-session-e2e'],operation:'advance',failure:'host_exited'}).session,'claude-session-e2e');
+  // No session and no returned run: the launch arguments keep two runs apart, and progress clears the same key.
+  const exited=args=>driveNotice({host:'cm-ai-host.mjs',cwd:'/w/p',args,operation:'advance',failure:'host_exited'}).attentionKey;
+  assert.notEqual(exited(['--config','/tmp/run-a.json']),exited(['--config','/tmp/run-b.json']));
+  assert.equal(driveProgressKey({host:'cm-ai-host.mjs',cwd:'/w/p',args:['--config','/tmp/run-a.json'],operation:'advance',
+    row:{requestId:'drive',result:{workflow:'cm-ai',state:'ready'}}}),exited(['--config','/tmp/run-a.json']));
   // done keeps only its own key, not an attention record.
   assert.equal(Object.hasOwn(driveNotice({host:'cm-test-host.mjs',cwd:'/w/p',operation:'start',row:{requestId:'drive',result:{stage:'reported',runId:'t',overall:'PASS'}}}),'attentionKey'),false);
   const batch=driveNotice({host:'cm-ai-batch-host.mjs',cwd:'/w/p',args:['a'],operation:'advance',

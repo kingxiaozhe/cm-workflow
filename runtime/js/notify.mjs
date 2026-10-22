@@ -71,7 +71,7 @@ export function parseNotifyConfig(raw){
     const frequency=value.frequency;
     if(!frequency||typeof frequency!=='object'||Array.isArray(frequency)
       ||!Object.keys(frequency).every(key=>['followUpMinutes','windowMinutes','perWindow'].includes(key)))return {reason:'frequency'};
-    const range=(raw,max)=>raw===undefined||(typeof raw==='number'&&Number.isFinite(raw)&&raw>0&&raw<=max);
+    const range=(raw,max)=>raw===undefined||(typeof raw==='number'&&Number.isFinite(raw)&&raw>=1&&raw<=max);
     if(!range(frequency.followUpMinutes,1440)||!range(frequency.windowMinutes,1440)
       ||!(frequency.perWindow===undefined||(Number.isInteger(frequency.perWindow)&&frequency.perWindow>=1&&frequency.perWindow<=50)))return {reason:'frequency'};
     if(frequency.followUpMinutes!==undefined)config.followUpMs=ms(frequency.followUpMinutes);
@@ -229,7 +229,9 @@ export function buildNotifyMessage(fields,{now=Date.now(),timeZone,text,followUp
   const head=[spec.titlePrefix,spec.headlines[event]].filter(Boolean).join(' ');
   const title=cut(`${head}${project?` · ${project}`:''}`,NOTIFY_LIMITS.titleChars);
   const feature=clean(fields.feature,FIELD_CAPS.feature),task=clean(fields.task,FIELD_CAPS.task),session=clean(fields.session,24);
-  const subtitle=cut([workflow,[feature,task].filter(Boolean).join(' '),session?`会话 ${session}`:''].filter(Boolean).join(' · '),NOTIFY_LIMITS.titleChars);
+  // The session is what says where to act: it is kept whole and the rest is shortened first.
+  const sessionPart=session?` · 会话 ${session}`:'',rest=[workflow,[feature,task].filter(Boolean).join(' ')].filter(Boolean).join(' · ');
+  const subtitle=cut(rest,Math.max(1,NOTIFY_LIMITS.titleChars-Array.from(sessionPart).length))+sessionPart;
   const value=name=>name==='time'?localClock(now,timeZone):name==='project'?project:name==='workflow'?workflow
     :name==='code'?codeWords(fields.code):clean(fields[name],FIELD_CAPS[name]);
   const rows=spec.fields[fields.event==='done'?'done':'default'].map(name=>[spec.labels[name],value(name)]);
@@ -355,17 +357,28 @@ function reserve(home,{hash,attention=null,event,code=null},now,limits){
   });
 }
 
-// A real step forward ends the attention record, so the next stop is sent at once.
-export function clearAttention(attentionKey,{env=process.env}={}){
+// A real step forward ends the attention record, so the next stop is sent at
+// once. Only a record from before the step (lastAt <= before) is removed: a
+// newer stop recorded meanwhile stays. A busy lock is retried a few times;
+// a clear that still fails is logged, never silently dropped.
+export async function clearAttention(attentionKey,{env=process.env,before=Date.now(),attempts=10,delayMs=100}={}){
   try{
     if(typeof attentionKey!=='string'||!attentionKey||!readNotifyConfig(env))return false;
     const home=notifyHome(env),hash=keyHash(attentionKey);
-    const result=withState(home,state=>{
-      if(!Object.hasOwn(state.attention,hash))return {status:'unchanged'};
-      const attention={...state.attention};delete attention[hash];
-      return writeState(home,{...state,version:2,attention})?{status:'ok'}:{status:'state_write_failed'};
-    });
-    return result.status==='ok';
+    for(let attempt=1;;attempt++){
+      const result=withState(home,state=>{
+        const record=state.attention[hash];
+        if(!record||record.lastAt>before)return {status:'unchanged'};
+        const attention={...state.attention};delete attention[hash];
+        return writeState(home,{...state,version:2,attention})?{status:'ok'}:{status:'state_write_failed'};
+      });
+      if(result.status==='ok')return true;
+      if(result.status==='unchanged')return false;
+      if(result.status!=='state_busy'||attempt>=attempts){
+        appendNotifyLog(home,Date.now(),{event:'clear',hash,result:`failed ${result.status}`});return false;
+      }
+      await new Promise(resolve=>setTimeout(resolve,delayMs));
+    }
   }catch{return false;}
 }
 
@@ -434,6 +447,15 @@ export function removeHostRegistry(sessionKey,{env=process.env}={}){
 // Host side: one notice when a host_request has waited waitMinutes for the
 // session's answer. The timer never keeps the process alive.
 const CHECK_KINDS=new Set(['check','verification_precheck','init_verify']);
+// A host that is still waiting re-sends once followUpMs after its first notice
+// (reserve() decides whether it is due); answering or ending the session
+// cancels it. A driver that already exited has no process left to do this.
+function armed(delay,fire,config){
+  let follow=null;
+  const timer=setTimeout(()=>{fire();follow=setTimeout(fire,config.followUpMs);follow.unref?.();},delay);
+  timer.unref?.();
+  return ()=>{clearTimeout(timer);if(follow)clearTimeout(follow);};
+}
 export function scheduleWaitNotice({kind,callId,workflow,project,session=notifySessionLabel(process.argv.slice(2)),env=process.env}){
   try{
     const config=readNotifyConfig(env);if(!config)return null;
@@ -442,11 +464,9 @@ export function scheduleWaitNotice({kind,callId,workflow,project,session=notifyS
     // minutes; waiting that long is not idleness, so it uses its own threshold.
     const waitMs=CHECK_KINDS.has(kind)?config.checkWaitMs:config.waitMs;
     const minutes=Math.max(1,Math.round(waitMs/60000));
-    const timer=setTimeout(()=>{notify({key:`wait|${workflow}|${callId}`,event:'waiting',workflow,project,stage:kind,session,
+    return armed(waitMs,()=>notify({key:`wait|${workflow}|${callId}`,event:'waiting',workflow,project,stage:kind,session,
       attentionKey:attentionKeyFor({project,session,workflow}),
-      code:'waiting_session_answer',nextAction:`宿主已等待会话应答约 ${minutes} 分钟，请回到会话处理`},{env});},waitMs);
-    timer.unref?.();
-    return ()=>clearTimeout(timer);
+      code:'waiting_session_answer',nextAction:`宿主已等待会话应答约 ${minutes} 分钟，请回到会话处理`},{env}),config);
   }catch{return null;}
 }
 
@@ -468,11 +488,9 @@ export function scheduleIdleNotice({workflow,project,sessionKey,seq,row,since=Da
     const nextAction=kind==='done'?`流程已结束，宿主仍开着约 ${minutes} 分钟没有下一步，请回到会话收尾或开始下一项`
       :kind==='stuck'?`上一步停在需要你处理的状态，约 ${minutes} 分钟没有下一步，请回到会话处理`
       :`上一步已结束约 ${minutes} 分钟，会话没有发下一步，请回到会话查看`;
-    const timer=setTimeout(()=>{notify({key:`idle|${workflow}|${sessionKey}|${seq}`,event:kind?'idle_waiting':'idle',
+    return armed(delay,()=>notify({key:`idle|${workflow}|${sessionKey}|${seq}`,event:kind?'idle_waiting':'idle',
       workflow,project,runId,feature,task,stage,session,attentionKey:attentionKeyFor({project,session,workflow,runId}),
-      code:kind?'waiting_for_you':'no_next_step',nextAction},{env});},delay);
-    timer.unref?.();
-    return ()=>clearTimeout(timer);
+      code:kind?'waiting_for_you':'no_next_step',nextAction},{env}),config);
   }catch{return null;}
 }
 
@@ -614,7 +632,7 @@ export function driveNotice({host,cwd,args=[],operation,row=null,failure=null}){
   const run=runId??`args:${keyHash(args.map(String).join('\0'))}`;
   const project=cwd?path.resolve(cwd):null,session=notifySessionLabel(args),feature=text(result.feature)??text(result.identity?.feature);
   return {key:[workflow,run,task??'',attempt??'',stage??'',done?'done':code??''].join('|'),
-    ...(done?{}:{attentionKey:attentionKeyFor({project,session,workflow,runId})}),
+    ...(done?{}:{attentionKey:attentionKeyFor({project,session,workflow,runId:run})}),
     event:kind,workflow,project,runId,feature,task,stage,session,
     code:done?(text(result.code)??text(result.overall)??text(nested.overall)??'done'):code,
     // A finished unit is the natural point to start a fresh session (runtime/model-efficiency.md).
@@ -627,7 +645,9 @@ export function driveProgressKey({host,cwd,args=[],operation,row=null,failure=nu
   const workflow=path.basename(String(host??'')).replace(/-host\.mjs$/,'').replace(/\.mjs$/,'')||'cm';
   if(classifyDriveResult(workflow,row))return null;
   const result=obj(row?.result),runId=text(result.identity?.runId)??text(result.runId)??text(result.batchId);
-  return attentionKeyFor({project:cwd?path.resolve(cwd):null,session:notifySessionLabel(args),workflow,runId});
+  // Same fallback as driveNotice: without a returned run, the launch arguments identify it.
+  const run=runId??`args:${keyHash(args.map(String).join('\0'))}`;
+  return attentionKeyFor({project:cwd?path.resolve(cwd):null,session:notifySessionLabel(args),workflow,runId:run});
 }
 
 // One stderr line telling which project and session this driver's notices name.
