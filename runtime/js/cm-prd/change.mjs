@@ -30,7 +30,7 @@ export function inspectPrdChangeSnapshot(specs){
       const file=`${relative}/${name}`,stat=fs.lstatSync(path.join(specs,file));
       need(!stat.isSymbolicLink(),'prd_change_symlink');
       if(stat.isDirectory())visit(file);
-      else tree.push({path:file,sha256:prdTreeFileDigest(path.join(specs,file))});
+      else tree.push({path:file,sha256:prdTreeFileDigest(specs,file)});
     }};visit(directory);trees[directory]=tree;
     for(const name of names){const file=`${directory}/${name}`,content=read(specs,file);
       need(content!==null||name==='test-cases.json','prd_change_triad_missing');if(content!==null)files[file]=content;}
@@ -126,7 +126,8 @@ export function inspectPrdChangeProposal(before,raw,selected,config){
   const changedUserCases=userCases(before.files).filter(item=>selected.includes(item.feature)
     &&!userCases(files).some(next=>next.feature===item.feature&&digest(next.value)===digest(item.value)));
   const draft={summary:raw.summary,features,draftDigest:digest({summary:raw.summary,features})};
-  const mechanics=checkPrdDraftMechanics(draft,{change:true});
+  const mechanics=checkPrdDraftMechanics(draft,{change:true,
+    previous:new Map(selected.map(dir=>[dir,before.files[`${dir}/tasks.md`]]).filter(([,text])=>typeof text==='string'))});
   need(mechanics.status==='mechanical_subset_passed','prd_change_mechanics_failed');
   return json({...draft,mechanicalSelfCheck:mechanics,removed:raw.removed,files,changedUserCases,
     proposalDigest:digest({before,raw,selected}),counts:{added:resultDirs.filter(dir=>!before.directories.includes(dir)).length,
@@ -267,7 +268,7 @@ export function applyPrdChange({specs,before,proposal,selected}){
     for(const dir of actualDirs){
       for(const filename of names)need(!fs.existsSync(path.join(specs,dir,filename))||Object.hasOwn(before.files,`${dir}/${filename}`)||Object.hasOwn(expected,`${dir}/${filename}`),'prd_change_inventory_conflict');
       for(const row of before.trees[dir]??[])if(!names.includes(row.path.slice(dir.length+1)))
-        need(prdTreeFileDigest(path.join(specs,row.path))===row.sha256,'prd_change_asset_changed');
+        need(prdTreeFileDigest(specs,row.path)===row.sha256,'prd_change_asset_changed');
     }
     const status=read(specs,'.cm-specs-status');
     if(status!==before.status){const value=JSON.parse(status);need(value.status==='awaiting_review'&&value.revisionDigest===proposal.proposalDigest,'prd_change_status_conflict');}

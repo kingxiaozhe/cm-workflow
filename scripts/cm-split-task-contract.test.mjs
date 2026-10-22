@@ -96,6 +96,28 @@ test('split contract: exact change proposal preserves completed lines and user c
   assert.equal(proposal.changedUserCases.length,1);
 });
 
+test('change mode keeps untouched historical lines and dependencies under their approved rules; new ones are strict',()=>{
+  const propose=(priorTasks,nextTasks)=>{
+    const old=rawDraft(`${priorTasks}\n| date | v1 | Original |`,{...cases,cases:[{...cases.cases[0],taskIds:['T-005']}]}).features[0];
+    const before={directories:['1.sample'],status:JSON.stringify({status:'approved',taskGrammar:2}),
+      files:Object.fromEntries(old.documents.map(doc=>[`1.sample/${doc.path}`,doc.content]))};
+    // The change itself only adds a version-history row; everything else is as approved.
+    const next=rawDraft(`${nextTasks}\n| date | v1 | Original |\n| date | v2 | Clarify |`,{...cases,cases:[{...cases.cases[0],taskIds:['T-005']}]}).features[0];
+    const documents=next.documents;
+    return inspectPrdChangeProposal(before,{status:'draft',summary:'Clarify wording only',
+      features:[{directory:'1.sample',documents,testCasesReason:null}],removed:[]},['1.sample'],{policies:{generate_cases:true}});
+  };
+  // An odd historical task-looking line the old parser ignored: untouched, it does not block the change.
+  const oddHistory=[...completed,'- [x] T-002/a: Historical note',...pending].join('\n');
+  assert.equal(propose(oddHistory,oddHistory).mechanicalSelfCheck.status,'mechanical_subset_passed');
+  assert.throws(()=>propose(oddHistory,`${oddHistory}\n- [ ] T-099/b: New malformed line`),{code:'prd_change_mechanics_failed'});
+  // A historical dependency on a dropped task stays as approved; a new one is refused.
+  const droppedHistory=[...completed,'- [ ] T-004: Original task [DROPPED v2: retired]',...pending,'- T-005 依赖 T-004'].join('\n');
+  assert.equal(propose(droppedHistory,droppedHistory).mechanicalSelfCheck.status,'mechanical_subset_passed');
+  assert.throws(()=>propose(droppedHistory,`${droppedHistory}\n- T-006 依赖 T-004`),{code:'prd_change_mechanics_failed'});
+  assert.throws(()=>propose(droppedHistory,droppedHistory.replace('- T-005 依赖 T-004','- T-005 依赖 T-004, T-001')),{code:'prd_change_mechanics_failed'});
+});
+
 test('split contract: validator CLI accepts suffixed references and rejects invalid IDs with explicit diagnostics',t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'cm-split-case-contract-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));

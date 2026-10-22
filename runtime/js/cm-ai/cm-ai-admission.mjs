@@ -217,7 +217,7 @@ export function declaredAcceptanceIds(source){
 }
 
 // Shared declaration grammar (spec-task-line.mjs), versioned by the approval.
-export function parseFeatureTaskText(source,{allowDependencyPunctuation=false,grammar=TASK_GRAMMAR,strictTaskIds=false}={}){
+export function parseFeatureTaskText(source,{allowDependencyPunctuation=false,grammar=TASK_GRAMMAR,strictTaskIds=false,preservedLines=null}={}){
   const lines=taskLines(source,{grammar});
   const tasks=[];
   const taskIds=new Set();
@@ -242,8 +242,9 @@ export function parseFeatureTaskText(source,{allowDependencyPunctuation=false,gr
     }
     const dependency=line.match(DEPENDENCY);
     // New proposals must not silently discard malformed task-looking lines.
-    // Old approvals retain the parser semantics that approved their bytes.
-    if(strictTaskIds&&!dependency){
+    // Old approvals retain the parser semantics that approved their bytes, and
+    // a change keeps lines it did not touch (preservedLines) under those semantics.
+    if(strictTaskIds&&!dependency&&!preservedLines?.has(line)){
       if(/^\s*-\s*\[[^\]]*\]\s+(?:~~)?T-/.test(line))return invalid('tasks_invalid',index);
       if(/^\s*-\s*T-\S*\s+依赖(?:\s|$)/.test(line))return invalid('dependencies_invalid',index);
     }
@@ -261,6 +262,7 @@ export function parseFeatureTaskText(source,{allowDependencyPunctuation=false,gr
   return {tasks,dependencies,dependencyLocations};
 }
 
+// rejectDropped: true, or a predicate on the dependent task id (a change exempts unchanged dependencies).
 export function validDependencies(tasks,dependencies,{rejectDropped=false}={}){
   return invalidDependency(tasks,dependencies,{rejectDropped})===null;
 }
@@ -269,7 +271,8 @@ function invalidDependency(tasks,dependencies,{rejectDropped=false}={}){
   const ids=new Set(tasks.map(task=>task.id));
   const dropped=new Set(tasks.filter(task=>task.dropped).map(task=>task.id));
   for(const [taskId,required] of dependencies){
-    if(!ids.has(taskId)||required.some(id=>id===taskId||!ids.has(id)||rejectDropped&&dropped.has(id)))return taskId;
+    const reject=typeof rejectDropped==='function'?rejectDropped(taskId):rejectDropped;
+    if(!ids.has(taskId)||required.some(id=>id===taskId||!ids.has(id)||reject&&dropped.has(id)))return taskId;
   }
   const visiting=new Set(),visited=new Set();
   let cycleTask=null;
