@@ -89,7 +89,7 @@ const FIX_REASONED=['abandon_step','abandon_review','rediagnose','rerun_blocked_
 const FILES={develop:'develop.json',qa_assess:'qa-assess.json',documentation_inspect:'documentation-inspect.json',
   documentation_sync:'documentation-sync.json',fix_learning:'learning.json',fix_diagnose:'diagnosis.json',
   fix_test_author:'test-edits.json',fix_repair:'repair-edits.json',fix_retrospective:'retrospective.json'};
-const PAIR_FLAGS=new Set(['--expected-control','--revise-scope','--scope-revision-reason','--development-rework-reason','--external-models-config','--review-config','--workflow-config',
+const PAIR_FLAGS=new Set(['--integration-evidence','--accept-integration-digest','--expected-control','--revise-scope','--scope-revision-reason','--development-rework-reason','--external-models-config','--review-config','--workflow-config',
   '--input-limit',
   '--protected-conversation-config','--protected-config','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure',
   '--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--browser-qa',
@@ -627,6 +627,19 @@ function load(){
     else if(PAIR_FLAGS.has(flag)&&nonempty(plan.permissions[i+1]))permissions.push(flag,plan.permissions[++i]);
     else stop(2,`permissions 无效或缺少参数: ${flag}`);
   }
+  const integrationEvidence=permissions.includes('--integration-evidence');
+  const integrationDigest=permissions.includes('--accept-integration-digest');
+  if(integrationEvidence||integrationDigest){
+    if(!integrationEvidence||!integrationDigest||!control||plan.mode!=='resume'||operation!=='status'
+      ||!permissions.includes('--expected-control')
+      ||!/^[a-f0-9]{64}$/.test(permissions[permissions.indexOf('--accept-integration-digest')+1]))
+      stop(2,'受控集成接纳只允许新版 resume 的 status；需要成对 --integration-evidence、--accept-integration-digest 和原 --expected-control 文件');
+    if(['--revise-scope','--scope-revision-reason','--development-rework','--development-rework-reason',
+      '--revise-qa-config','--qa-config-revision-reason','--rerun-unknown-qa','--rerun-blocked-qa','--qa-environment-failure',
+      '--rebind-spec-material','--spec-rebind-reason','--supersede-reviewed-evidence','--supersede-reason',
+      '--supersede-target','--accept-superseded-code-drift','--hold-revision'].some(flag=>permissions.includes(flag)))
+      stop(2,'受控集成接纳不得并用其他恢复或 QA 重跑');
+  }
   const supersedeFlag=permissions.includes('--supersede-reviewed-evidence');
   const supersedeReason=permissions.includes('--supersede-reason');
   if(supersedeFlag!==supersedeReason)
@@ -689,7 +702,7 @@ function load(){
   }
   const permissionFiles=[];
   for(let i=0;i<permissions.length;i++)if(PAIR_FLAGS.has(permissions[i])
-    &&permissions[i]!=='--browser-qa'
+    &&permissions[i]!=='--browser-qa'&&permissions[i]!=='--accept-integration-digest'
     &&permissions[i]!=='--scope-revision-reason'&&permissions[i]!=='--development-rework-reason'&&permissions[i]!=='--qa-config-revision-reason'&&permissions[i]!=='--qa-environment-failure'&&permissions[i]!=='--allow-provider-development-attempt'
     &&permissions[i]!=='--supersede-reason'&&permissions[i]!=='--spec-rebind-reason'&&permissions[i]!=='--input-limit'
     &&permissions[i]!=='--review-runtime'&&permissions[i]!=='--feature'&&permissions[i]!=='--qa-fix-final-review-recovery-invocation'){

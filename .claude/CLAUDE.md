@@ -17,6 +17,8 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 
 ## 常用命令
 
+- 已完成运行受控集成：node scripts/cm-ai-integration-preview.mjs --run-definition {原run.json} --plan {plan.json} 只读预检；独立审查后由原 owner 用固定目标显式接纳，保留历史和次数。详见 docs/reviewed-integration.md。
+
 - 方案推敲：`$cm-challenge` / `/cm-challenge`，显式三轮或必要追问；复用 `runtime/steelman-review.md`，只输出讨论建议，不启动宿主、不替代正式审查。
 
 - 兼容手工任务：N3 编辑前运行 `node scripts/cm-task-gate.mjs capture-baseline --project-root {CODE_PROJECT} --reviews-dir {SPECS_DIR}/.reviews --feature {FEATURE_SLUG} --task {T-xxx}`；仅命令行 N4/N5 与完成入口开启清单核对，库调用默认行为不变，JS 使用自己的审查包基线。仅单代码根，历史缺基线用现有 `--allow-legacy-unbound` 披露清单未核验；详见 `runtime/task-gates.md`。

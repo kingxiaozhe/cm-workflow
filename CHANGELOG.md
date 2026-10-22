@@ -5,6 +5,11 @@
 
 ## 未发布
 
+- **已完成运行的受控集成（ai-tool-manager 收尾）**：已审交付因文档合并、跨 worktree 集成或 `package.json` 改名导致 `repositoryId` 分流而接不上原运行时，新增显式接纳入口：`scripts/cm-ai-integration-preview.mjs` 只读预检；独立审查（作者 Codex、审查须为另一工具）批准后，原 owner 以 `--integration-evidence`、`--accept-integration-digest` 和原 `--expected-control` 在 v2 resume 的 status 连接里接纳一次，只追加 `reviewed-integration-accepted` 记录，保留原历史、次数和 QA 结果。可选接纳固定的 `reports/**/AGENTS.md` 证据副本。说明见 `docs/reviewed-integration.md`。
+  - 完成后交付核验：父任务审查期间同仓库兄弟任务已审交付，可按审查顺序从原基线组合解释父任务范围之外的文件；父任务范围内仍以其最终已审字节为准。
+  - Claude 审查：传输层把 CLI 2.x 的 `tool_progress` 心跳绑定到已登记的允许工具，拒绝时附不含正文的诊断字段；新增可选 `EXECUTION_POLICY_V2`（`utf8-delta-v2`），对同一路径的前后版本做无损差分呈现，传输前完整还原核对。
+  - **已知限制**：V2 只在显式登记的新维护审查中使用，新建运行仍默认 V1，普通运行遇到审查输入过长时仍会报错；接纳后每次 status 都会重读证据并调用 git 核对，有额外耗时。
+
 - **补测试与文字**：新增受保护会话的回归测试——修复前创建、没有工作流配置的 v2 受保护运行，经隐式 QA 判定的兼容路径恢复后仍保持受保护（返工入口保持关闭）；用户手册补充「两级同名目录只显示一级」与会话标题还会出现在发送命令的输入和本机宿主登记里；提醒模块中关于符号链接的注释改为准确表述。
 
 - **提醒写清是哪个项目、哪个会话，且不再刷屏**：收到 Bark 提醒时分不清是哪个项目、哪个会话，同一次卡住还会连推 2～3 条。现在：

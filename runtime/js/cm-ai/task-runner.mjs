@@ -1,5 +1,6 @@
 import {packageMaterialEligible,checkpointStoragePlan,checkpointPackageBudget,packageMaterialReference} from './checkpoint-package-material.mjs';
 import {taskDeclarations,approvedTaskGrammar} from '../spec-task-line.mjs';
+import {readIntegrationEvidenceFile,validateIntegrationRecord,verifyReviewedIntegration} from './reviewed-integration.mjs';
 import {beginHostStage} from './host-stage-observer.mjs';
 import {readExecutionPolicy} from './execution-policy.mjs';
 import {readExternalModels} from './external-models.mjs';
@@ -45,7 +46,7 @@ import {readCmAiProjectLearningWriteback,writeCmAiProjectLearning} from './cm-ai
 import {verifyCmAiTaskLearningHandoff,writeCmAiTaskLearningHandoff} from './cm-ai-learning-handoff-writer.mjs';
 import {implementationSha256,loadHandoff} from '../../../scripts/cm-task-gate.mjs';
 import {createHostHandoff} from './host-handoff.mjs';
-import {inspectFixCodeAssociation,explainCompletedDelivery} from './fix-code-association.mjs';
+import {inspectFixCodeAssociation,explainCompletedDelivery,firstReviewAt} from './fix-code-association.mjs';
 import {approvedReviewAt,completedReviewedDeliveries,fixReviewedAt,resolveDeliverySteps} from './reviewed-deliveries.mjs';
 import {validateAcceptedFix} from './accepted-fix.mjs';
 import {appendFits} from './execution-store-limits.mjs';
@@ -295,6 +296,7 @@ export function createTaskRunner(options) {
   // Journaled supersession context: shown, never counted as a review verdict.
   let carriedReview=restored?.supersession?.carriedReview??null;
   const acceptedFixes=structuredClone(restored?.acceptedFixes??[]);
+  let acceptedIntegration=restored?.acceptedIntegration??null;
   let qaAttachment=restored?.qaAttachment??null;
   // A fresh ready-state capture carries the current material; represent an
   // accepted (identical or explicitly rebound) one by the bound material.
@@ -668,6 +670,10 @@ export function createTaskRunner(options) {
     }
     if(current.state!=='fixture_completed')return current;
     try {
+      if(acceptedIntegration){
+        inspectAcceptedIntegration(acceptedIntegration);
+        return freeze({...current,acceptedIntegrationDigest:acceptedIntegration.planDigest});
+      }
       if(acceptedFixes.length){
         for(const item of acceptedFixes){
           const {handoffDigest,...binding}=item.evidence.qaSource;
@@ -691,7 +697,8 @@ export function createTaskRunner(options) {
           const handoff=handoffBinding().handoffPath;
           need(digest(readReviewSourceFiles(path.dirname(handoff),[path.basename(handoff)])[0])===digest(reviewPackage.handoff),'package_mismatch');
         }
-        explainCompletedDelivery({root:config.root,baseline:base,parentPackage:reviewPackage,deliveries:laterDeliveries(),after:reviewedAt()});
+        explainCompletedDelivery({root:config.root,baseline:base,parentPackage:reviewPackage,deliveries:laterDeliveries(),after:reviewedAt(),
+          since:firstReviewAt(journal,config.identity)});
       }
       return current;
     } catch(error){
@@ -745,7 +752,7 @@ export function createTaskRunner(options) {
         'task-commit-intent':'commit-intent','task-commit-result':'commit-result',
         'review-invocation-registered':'intent','review-invocation-started':'result','review-invocation-result':'result',
         'review-invocation-abandoned':'result','review-invocation-receipt':'result','review-invocation-reconciled':'result','effect-abandoned':'result',
-        'host-joined':'result','qa-fix-accepted':'result','qa-attached':'result','qa-config-revised':'result',
+        'host-joined':'result','qa-fix-accepted':'result','reviewed-integration-accepted':'result','qa-attached':'result','qa-config-revised':'result',
         'evidence-superseded':'result','develop-retry-limit':'result','develop-worker':'result','effect-interrupted':'result','develop-timeout-retry':'result','develop-answer-retry':'result','develop-recheck':'result','complete-recheck':'result','develop-answer-redo':'result','develop-dispatch-retry':'result','review-redispatch':'result','review-dispatch-confirmed':'result','completion-retry-limit':'result','specification-rebound':'result','documentation-sync-started':'result','documentation-sync-retry':'result',
         'completion-rework-requested':'result','development-rework-authorized':'result','scope-revised':'result','bootstrap-review-recovered':'result'}[type],
       payload:version===3?runnerPayloadV3(type,fields):runnerPayload(type,fields,version)};
@@ -1646,8 +1653,48 @@ export function createTaskRunner(options) {
     }
     return status();
   }
+  function inspectAcceptedIntegration(record){
+    const {evidence,reference}=readIntegrationEvidenceFile(record.reviewFile.path);
+    same(reference,record.reviewFile,'integration_evidence_changed');
+    same(evidence.plan,record.plan,'integration_evidence_changed');
+    if(reviewPackage.handoff){
+      const handoff=handoffBinding().handoffPath;
+      need(digest(readReviewSourceFiles(path.dirname(handoff),[path.basename(handoff)])[0])===digest(reviewPackage.handoff),'package_mismatch');
+    }
+    return verifyReviewedIntegration({root:config.root,specsRoot:completion.owner.specsRoot,
+      baseline:base,parentPackage:reviewPackage,records:journal.slice(0,record.plan.target.recordCount),...evidence});
+  }
+  // Launch-only authority. The existing owner holds the store lock; evidence
+  // never grants itself permission. No provider, QA, commit, or product write.
+  const acceptReviewedIntegration=raw=>{
+    try{
+      shape(raw,['allowed','evidenceFile','expectedDigest']);
+      need(raw.allowed===true,'integration_authorization_required');
+      need(invocationMode&&store&&completion&&!busy&&!poisoned&&!restored?.pending
+        &&state==='fixture_completed'&&acceptedFixes.length===0,'integration_parent_not_completed');
+      currentStore();
+      const {evidence,reference}=readIntegrationEvidenceFile(raw.evidenceFile);
+      need(raw.expectedDigest===digest(evidence.plan),'integration_target_changed');
+      if(acceptedIntegration){
+        same(acceptedIntegration.plan,evidence.plan,'integration_target_changed');
+        same(acceptedIntegration.reviewFile,reference,'integration_evidence_changed');
+        inspectAcceptedIntegration(acceptedIntegration);return status();
+      }
+      const record=validateIntegrationRecord({record:{version:1,plan:evidence.plan,reviewFile:reference,
+        reason:'Explicit reviewed integration',planDigest:raw.expectedDigest},
+        baseline:base,parentPackage:reviewPackage,records:journal});
+      inspectAcceptedIntegration(record);
+      // Re-read exact evidence after all source, Git, and inventory checks.
+      same(readIntegrationEvidenceFile(raw.evidenceFile).reference,reference,'integration_evidence_changed');
+      assertJournalFits('reviewed-integration-accepted',{record},'integration_storage_limit');
+      persist('reviewed-integration-accepted',{record});acceptedIntegration=record;
+      return status();
+    }catch(error){return freeze({outcome:'rejected',code:error?.code??'integration_evidence_invalid',
+      ...(Array.isArray(error.paths)?{reason:error.paths.join(', ').slice(0,8192)}:{})});}
+  };
   // Read-only content comparison, not completion authority or a JSON operation.
   const inspectFixAssociation=(fixPackage,evidence=null)=>{
+    need(acceptedIntegration===null,'integration_fix_unsupported');
     need(!busy&&!poisoned,'host_busy');
     const current=status();
     need(current.state==='fixture_completed'&&current.code!=='review_publication_required','qa_fix_parent_not_completed');
@@ -2056,7 +2103,7 @@ export function createTaskRunner(options) {
     need(state==='fixture_completed'&&reviewPackage?.packageDigest===packageDigest,'stale_qa');
     return freeze({paths:reviewPackage.changes.map(change=>change.path),source:'review_package'});
   };
-  const api={qaChangedFiles,reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,reworkCompletion,reworkDevelopment,reviseScope,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,attachQa,verificationBlocks,completionBlocks,reviewEffectIds,recheckLearningInput,redoDevelop,recoverCommit,interruptions};
+  const api={qaChangedFiles,reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,reworkCompletion,reworkDevelopment,reviseScope,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,acceptReviewedIntegration,attachQa,verificationBlocks,completionBlocks,reviewEffectIds,recheckLearningInput,redoDevelop,recoverCommit,interruptions};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   // A terminal reviewer observation is durable even if the host died before

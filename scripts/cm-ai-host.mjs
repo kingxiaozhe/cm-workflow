@@ -197,6 +197,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--rebind-spec-material --spec-rebind-reason REASON：仅 resume。规格经 cm-prd --change 重新批准后，若本任务的描述、验证要求、验收标准、设计摘录与测试用例都未变，只换绑批准哈希并写 specification-rebound 记录，已有开发与审查结论保留；内容有变则拒绝并列出变化。status 的 spec_drift 会说明是否可换绑。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('当前会话手动驱动请用 scripts/cm-ai-drive.mjs（批次 cm-ai-batch-drive.mjs；修复 cm-fix-drive.mjs；规格 cm-prd-drive.mjs）；详情见 skills/cm-ai/references/js-host.md。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('External-model mode freezes one model/effort pair per provider. Unknown or invalid external results require reconciliation; automatic retries and abandonment are disabled. See docs/external-models.md.\n');
+  if(argv.length===1&&['--help','-h'].includes(argv[0]))output.write('--integration-evidence FILE --accept-integration-digest HEX：新版 resume 启动时接纳已审集成计划；须提供原 --expected-control FILE。本连接仅允许 status，不执行开发、审查或 QA。\n');
   if(argv.length===1&&['--help','-h'].includes(argv[0])){output.write(usage+'\nV2: replace --allow-development with --control-config FILE. Explicit resume QA reruns, QA configuration revisions and specification rebinds require --expected-control FILE containing the original status.launchControlTarget; ordinary host recovery uses status.controlTarget.\n');return 0;}
   let run,bridge;
   try{
@@ -230,7 +231,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const extra=new Map();
     for(let index=controlPolicy?9:8;index<argv.length;index++){
       const name=argv[index];refuse(!extra.has(name),'invalid_arguments',`参数重复：${name}`);
-      refuse(['--revise-scope','--scope-revision-reason','--development-rework','--development-rework-reason','--expected-control','--execution-optimizations','--external-models','--external-models-config','--verification-precheck','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure','--supersede-reviewed-evidence','--supersede-reason','--supersede-target','--accept-superseded-code-drift','--rebind-spec-material','--spec-rebind-reason','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--hold-revision','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--review-runtime','--feature','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--qa-fix-final-review-recovery-invocation','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments',`未知参数：${name}`);
+      refuse(['--integration-evidence','--accept-integration-digest','--revise-scope','--scope-revision-reason','--development-rework','--development-rework-reason','--expected-control','--execution-optimizations','--external-models','--external-models-config','--verification-precheck','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure','--supersede-reviewed-evidence','--supersede-reason','--supersede-target','--accept-superseded-code-drift','--rebind-spec-material','--spec-rebind-reason','--original-host-context','--bootstrap-config','--allow-bootstrap-write','--protected-conversation-config','--protected-config','--allow-provider-development-attempt','--review-config','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--hold-revision','--workflow-config','--allow-qa','--browser-qa','--rerun-unknown-qa','--rerun-blocked-qa','--runtime','--review-runtime','--feature','--input-limit','--failover','--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--qa-fix-final-review-recovery-invocation','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name),'invalid_arguments',`未知参数：${name}`);
       if(['--development-rework','--execution-optimizations','--external-models','--verification-precheck','--supersede-reviewed-evidence','--accept-superseded-code-drift','--rebind-spec-material','--allow-bootstrap-write','--allow-qa','--allow-abandon-review','--allow-abandon-effect','--allow-bootstrap-review-recovery','--allow-develop-redo','--hold-revision','--rerun-unknown-qa','--rerun-blocked-qa','--failover','--allow-qa-fix-start','--auto-qa-fix',...fixLocalPermissions.keys()].includes(name))extra.set(name,true);
       else{refuse(typeof argv[index+1]==='string'&&!argv[index+1].startsWith('--'),'invalid_arguments',`${name} 需要一个值`);extra.set(name,argv[++index]);}
     }
@@ -255,7 +256,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const fixEnabled=controlPolicy?controlPolicy.qaFix!=='disabled':extra.has('--allow-qa-fix-start');
     const autoFix=controlPolicy?controlPolicy.qaFix==='auto':extra.has('--auto-qa-fix');
     const recoveryEnabled=flag=>controlPolicy?argv[4]==='resume':extra.has(flag);
-    const launchRecovery=['--revise-qa-config','--qa-config-revision-reason','--rerun-unknown-qa','--rerun-blocked-qa',
+    const launchRecovery=['--integration-evidence','--accept-integration-digest','--revise-qa-config','--qa-config-revision-reason','--rerun-unknown-qa','--rerun-blocked-qa',
       '--rebind-spec-material','--spec-rebind-reason','--revise-scope','--scope-revision-reason','--development-rework','--development-rework-reason'].some(flag=>extra.has(flag));
     refuse(!extra.has('--expected-control')||(controlPolicy&&launchRecovery&&argv[4]==='resume'),'invalid_input',
       '--expected-control 仅用于新版 --mode resume 的显式启动恢复。');
@@ -269,6 +270,16 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       &&(!reworkRequested||extra.has('--development-rework')&&extra.has('--development-rework-reason')),'invalid_input');
     const scopeRevision=scopeRequested?{scope:readScopeRevisionFile(extra.get('--revise-scope')),reason:extra.get('--scope-revision-reason')}:null;
     const supersedeTarget=extra.has('--supersede-target')?readLaunchControlFile(extra.get('--supersede-target')):null;
+    const integrationRequested=extra.has('--integration-evidence')||extra.has('--accept-integration-digest');
+    refuse(!integrationRequested||controlPolicy&&argv[4]==='resume'&&extra.has('--integration-evidence')
+      &&extra.has('--accept-integration-digest')&&/^[a-f0-9]{64}$/.test(extra.get('--accept-integration-digest'))
+      &&!['--revise-scope','--scope-revision-reason','--development-rework','--development-rework-reason',
+        '--revise-qa-config','--qa-config-revision-reason','--rerun-unknown-qa','--rerun-blocked-qa','--qa-environment-failure',
+        '--rebind-spec-material','--spec-rebind-reason','--supersede-reviewed-evidence','--supersede-reason',
+        '--supersede-target','--accept-superseded-code-drift','--hold-revision'].some(flag=>extra.has(flag)),
+      'invalid_input','受控集成接纳需要新版 resume、成对证据与批准摘要及原 launchControlTarget；不得并用其他恢复。');
+    const reviewedIntegration=integrationRequested?{evidenceFile:path.resolve(extra.get('--integration-evidence')),
+      expectedDigest:extra.get('--accept-integration-digest')}:null;
     let inputLimit;
     try{inputLimit=parseHostInputLimit(extra.get('--input-limit'));}
     catch(error){refuse(error.code!=='invalid_arguments','invalid_arguments','--input-limit 须为 65536–4194304 的整数字节数');throw error;}
@@ -377,10 +388,10 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         ?await protectedExecutionFor(definition,argv[6],extra,review,argv[4],workflow,bridge,bootstrap,externalModels,executionPolicy,controlPolicy)
         :executionFor(definition,argv[6],bridge,review,null,workflow,qaEnabled,runtime,
           {...(controlPolicy?{controlPolicy}:{}),...(extra.has('--review-runtime')?{reviewRuntime:extra.get('--review-runtime')}:{}),...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels}:{}),...(extra.has('--verification-precheck')?{verificationPrecheck:true}:{}),...(extra.has('--original-host-context')?{originalHostContextId:extra.get('--original-host-context')}:{}),...(protection?{protection}:{}),...(bootstrap?{bootstrap:{...bootstrap,allowWrite:(controlPolicy?controlPolicy.bootstrap==='write':extra.has('--allow-bootstrap-write'))}}:{})});
-      run=await openControlRun(definition,argv[4],execution,{qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:recoveryEnabled('--allow-abandon-review'),allowAbandonEffect:recoveryEnabled('--allow-abandon-effect'),allowBootstrapReviewRecovery:recoveryEnabled('--allow-bootstrap-review-recovery'),allowDevelopRedo:recoveryEnabled('--allow-develop-redo'),...(extra.has('--hold-revision')?{holdRevision:true}:{}),scopeRevision,developmentReworkReason:extra.get('--development-rework-reason')??null,specRebindReason:extra.get('--spec-rebind-reason')??null,expectedControl,supersedeTarget});
+      run=await openControlRun(definition,argv[4],execution,{reviewedIntegration,qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:recoveryEnabled('--allow-abandon-review'),allowAbandonEffect:recoveryEnabled('--allow-abandon-effect'),allowBootstrapReviewRecovery:recoveryEnabled('--allow-bootstrap-review-recovery'),allowDevelopRedo:recoveryEnabled('--allow-develop-redo'),...(extra.has('--hold-revision')?{holdRevision:true}:{}),scopeRevision,developmentReworkReason:extra.get('--development-rework-reason')??null,specRebindReason:extra.get('--spec-rebind-reason')??null,expectedControl,supersedeTarget});
     }
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}
-    if(hasFix){
+    if(hasFix&&reviewedIntegration===null){
       need(fs.realpathSync(fix.specsRoot)===fs.realpathSync(definition.specsDir)
         &&fs.realpathSync(fix.configuration.reproduction.cwd)===fs.realpathSync(definition.codeProject)
         &&(templated?fix.feature:fix.configuration.qaSource.feature)===definition.feature,'qa_fix_source_mismatch');
@@ -422,7 +433,11 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const rawMode=input.isTTY&&typeof input.setRawMode==='function';if(rawMode)input.setRawMode(true);
     const controlled=controlPolicy?withControlPolicyHost(run.host,{identity:definition.identity,
       snapshot:()=>readExecutionSnapshot({specsRoot:definition.specsDir,identity:{repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}}),launchTarget:controlLaunchTarget}):run.host;
-    const diagnosticHost=withHandoffDiagnostic(controlled,error);
+    const launchHost=reviewedIntegration===null?controlled:{...controlled,async handle(request){
+      if(request.operation!=='status')return {outcome:'rejected',code:'integration_launch_status_only'};
+      return controlled.handle(request);
+    }};
+    const diagnosticHost=withHandoffDiagnostic(launchHost,error);
     try{await serveHostTransport({host:diagnosticHost,input,output,toolBridge:bridge,errorOutput:error},extra.get('--input-limit'));}
     finally{if(rawMode)input.setRawMode(false);}
     return 0;

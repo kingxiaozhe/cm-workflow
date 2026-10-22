@@ -72,6 +72,7 @@ const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',ope
   packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),
   ...(status.reviewReconciliation?{reviewReconciliation:status.reviewReconciliation}:{}),
   ...(status.effectiveScope?{effectiveScope:status.effectiveScope}:{}),
+  ...(status.acceptedIntegrationDigest?{acceptedIntegrationDigest:status.acceptedIntegrationDigest}:{}),
   ...(status.developRedoRequired===true?{developRedoRequired:true}:{}),
   ...(status.documentationSyncPending===true?{documentationSyncPending:true}:{}),
   ...(status.reviewRedispatchStopRequired===true?{reviewRedispatchStopRequired:true}:{}),
@@ -238,6 +239,7 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'attachLearningEvidence'))runnerKeys.push('attachLearningEvidence');
   if(runner&&Object.hasOwn(runner,'inspectFixAssociation'))runnerKeys.push('inspectFixAssociation');
   if(runner&&Object.hasOwn(runner,'acceptCompletedFix'))runnerKeys.push('acceptCompletedFix');
+  if(runner&&Object.hasOwn(runner,'acceptReviewedIntegration'))runnerKeys.push('acceptReviewedIntegration');
   if(runner&&Object.hasOwn(runner,'attachQa'))runnerKeys.push('attachQa');
   if(runner&&Object.hasOwn(runner,'reviseQa'))runnerKeys.push('reviseQa');
   if(runner&&Object.hasOwn(runner,'supersedeEvidence'))runnerKeys.push('supersedeEvidence');
