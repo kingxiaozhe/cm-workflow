@@ -98,7 +98,7 @@ test('patrol: dead hosts are merged into one notice and their entries removed; l
   assert.equal(first.notice,'sent');assert.equal(first.dead,2);
   assert(await h.until(()=>h.rows().length===1));
   const [row]=h.rows();
-  assert.equal(row.title,'CM cm 宿主已退出未收尾 · demo-app');
+  assert.equal(row.title,'CM 宿主已退出未收尾 · work/demo-app');assert.equal(row.stdin.subtitle,'cm');
   assert.equal(row.stdin.code,'host_process_gone');assert.equal(row.stdin.stage,'2 个宿主进程已不在');
   assert.match(row.body,/cm-ai run-1 T-003 awaiting_review 最后动静 07:45Z；cm-fix fix-2 repair_required 最后动静 07:55Z/);
   assert.doesNotMatch(row.body+JSON.stringify(row.stdin),/srv|demo-app\//,'no paths in body or payload');
@@ -113,11 +113,11 @@ test('patrol: a single dead host names its run and workflow; rate-limited or off
   h.write(KEYS[1],{pid:gone,workflow:'cm-prd',runId:'prd-7',task:null,stage:'awaiting_user'});
   const state={version:1,keys:{},sends:Array.from({length:4},()=>NOW-1000)};
   fs.writeFileSync(path.join(h.dir,'notify-state.json'),JSON.stringify(state));
-  assert.equal(patrol({env:h.env,now:NOW}).notice,'rate_minute');
+  assert.equal(patrol({env:h.env,now:NOW}).notice,'rate_window');
   assert.deepEqual(h.registry(),[`${KEYS[1]}.json`],'kept for the next pass');
-  assert.equal(patrol({env:h.env,now:NOW+61000}).notice,'sent');
+  assert.equal(patrol({env:h.env,now:NOW+10*60000}).notice,'sent');
   assert(await h.until(()=>h.rows().length===1));
-  assert.equal(h.rows()[0].title,'CM cm-prd 宿主已退出未收尾 · demo-app');
+  assert.equal(h.rows()[0].title,'CM 宿主已退出未收尾 · work/demo-app');
   assert.equal(h.rows()[0].stdin.runId,'prd-7');assert.equal(h.rows()[0].stdin.stage,'1 个宿主进程已不在');
   assert.deepEqual(h.registry(),[]);
   const off=home(t,{withConfig:false});off.write(KEYS[1],{pid:gone});

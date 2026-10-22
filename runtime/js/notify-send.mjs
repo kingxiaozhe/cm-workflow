@@ -177,14 +177,18 @@ export async function readSecret(home,channel,fileOptions={}){
 }
 
 const chars=(text,max)=>Array.from(text).slice(0,max).join('');
+const BARK_LEVELS=new Set(['active','timeSensitive','passive']);
 export async function buildRequest(channel,{home,env=process.env,dry=false,fileOptions={}}){
   const title=chars(env.CM_NOTIFY_TITLE||'CM 提醒',100),body=chars(env.CM_NOTIFY_BODY||'（无正文）',1000);
+  const subtitle=chars(env.CM_NOTIFY_SUBTITLE||'',100);
   if(channel==='bark'){
     const {key,server}=dry?{key:'<已隐藏>',server:BARK_DEFAULT_SERVER}:await readSecret(home,'bark',fileOptions);
-    return {url:`${server}/push`,payload:{device_key:key,title,body,group:'CM',level:'active'}};
+    // Bark folds one group together on the phone: one group per project. A finished run does not ring.
+    const group=chars(env.CM_NOTIFY_GROUP||'CM',48),level=BARK_LEVELS.has(env.CM_NOTIFY_LEVEL)?env.CM_NOTIFY_LEVEL:'active';
+    return {url:`${server}/push`,payload:{device_key:key,title,...(subtitle?{subtitle}:{}),body,group,level}};
   }
   const {token}=dry?{token:'<已隐藏>'}:await readSecret(home,'pushplus',fileOptions);
-  return {url:PUSHPLUS_URL,payload:{token,title,content:body,template:'txt',channel:'wechat'}};
+  return {url:PUSHPLUS_URL,payload:{token,title,content:subtitle?`${subtitle}\n${body}`:body,template:'txt',channel:'wechat'}};
 }
 
 // Node 24.5+ routes https.Agent through HTTPS_PROXY/NO_PROXY when given

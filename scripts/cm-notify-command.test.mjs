@@ -134,6 +134,15 @@ test('bark and pushplus requests: fields, numeric code check, rejected responses
   assert.deepEqual(server.targets.at(-1),{hostname:'bark.example.com',path:'/push',rejectUnauthorized:true});
   assert.deepEqual(JSON.parse(server.seen.at(-1).body),{device_key:BARK_SECRET,title:'t'.repeat(100),body:'正文',group:'CM',level:'active'});
   assert.match(server.seen.at(-1).headers['content-type'],/application\/json/);
+  // Subtitle, one group per project and the ring level come from the notice; an unknown level falls back to active.
+  result=await run({CM_NOTIFY_SUBTITLE:'cm-ai · 1.login T-001 · 会话 4f9fa27f',CM_NOTIFY_GROUP:'work/demo-app',CM_NOTIFY_LEVEL:'timeSensitive'});
+  assert.equal(result.code,0,result.err);
+  assert.deepEqual(JSON.parse(server.seen.at(-1).body),{device_key:BARK_SECRET,title:'t'.repeat(100),
+    subtitle:'cm-ai · 1.login T-001 · 会话 4f9fa27f',body:'正文',group:'work/demo-app',level:'timeSensitive'});
+  for(const [level,want] of [['passive','passive'],['critical','active'],['','active']]){
+    result=await run({CM_NOTIFY_LEVEL:level});assert.equal(result.code,0,result.err);
+    assert.equal(JSON.parse(server.seen.at(-1).body).level,want,level);
+  }
   for(const [status,body,type] of [[200,{code:'200',echo:BARK_SECRET},'string'],[200,{code:true},'boolean'],[500,{code:200},'number'],
     [200,`{"code":400,"msg":"${BARK_SECRET}"}`,'number'],[200,'not json '+BARK_SECRET,'not_json']]){
     reply=(req,res)=>json(res,status,body);
@@ -155,6 +164,9 @@ test('bark and pushplus requests: fields, numeric code check, rejected responses
   assert.equal(result.code,0,result.err);
   assert.deepEqual(server.targets.at(-1),{hostname:'www.pushplus.plus',path:'/send',rejectUnauthorized:true});
   assert.deepEqual(JSON.parse(server.seen.at(-1).body),{token:PUSH_SECRET,title:'t'.repeat(100),content:'正文',template:'txt',channel:'wechat'});
+  // pushplus has no subtitle field: it becomes the first line of the content.
+  result=await run({CM_NOTIFY_SUBTITLE:'cm-ai · T-001 · 会话 4f9fa27f'});assert.equal(result.code,0,result.err);
+  assert.equal(JSON.parse(server.seen.at(-1).body).content,'cm-ai · T-001 · 会话 4f9fa27f\n正文');
 });
 
 test('network failure exits 3, the deadline (also while waiting on stdin) 5 and unexpected errors 6, without details',async t=>{
@@ -799,28 +811,30 @@ test('preview prints every event from sample fields with the current text; it se
   const at={now:Date.parse('2026-10-08T08:00:00.000Z'),timeZone:'Asia/Shanghai'};
   let preview=await previewText(s.home,at);
   assert.equal(preview.textState,null);assert.deepEqual(preview.messages.map(m=>m.event),['stuck','waiting','idle','idle_waiting','dead','done']);
-  assert.equal(preview.messages[0].title,'CM cm-ai 需要人处理 · demo-app');
-  assert.equal(preview.messages[5].body,'项目：demo-app\n任务：T-001\n时间：16:00');
+  assert.equal(preview.messages[0].title,'CM 需要人处理 · demo-app');
+  assert.equal(preview.messages[0].subtitle,'cm-ai · 1.demo-feature T-001 · 会话 4f9fa27f');
+  assert.equal(preview.messages[0].body,'下一步：核对原因后恢复原运行\n卡在：checks_not_passed\n时间：16:00');
+  assert.equal(preview.messages[5].body,'下一步：会话边界：换新会话，下一项在新会话里运行\n时间：16:00');
   assert.match(formatPreview(preview),/^提醒文案预览，用示例字段生成，不发送。文案：默认（没有生效的 notify.json，按默认文案预览）\n/);
   // Point notify.json at a command that would record any run: preview must never run it.
   const ran=path.join(s.root,'ran');
   s.write('notify.json',JSON.stringify({version:1,command:[process.execPath,'-e',`require('fs').writeFileSync(${JSON.stringify(ran)},'x')`],text:CUSTOM_TEXT}));
   preview=await previewText(s.home,at);
   assert.equal(preview.textState,'custom');
-  assert.deepEqual(preview.messages.map(m=>m.title),['提醒 cm-ai 卡住了 · demo-app','提醒 cm-ai 等待会话应答 · demo-app','提醒 cm-ai 疑似空转 · demo-app',
-    '提醒 cm-ai 在等你 · demo-app','提醒 cm-ai 宿主已退出未收尾 · demo-app','提醒 cm-ai 完工 · demo-app']);
+  assert.deepEqual(preview.messages.map(m=>m.title),['提醒 卡住了 · demo-app','提醒 等待会话应答 · demo-app','提醒 疑似空转 · demo-app',
+    '提醒 在等你 · demo-app','提醒 宿主已退出未收尾 · demo-app','提醒 完工 · demo-app']);
   assert.equal(preview.messages[0].body,'下一步：核对原因后恢复原运行\n工单：T-001\n时间：16:00');
-  assert.equal(preview.messages[5].body,'项目：demo-app\n工单：T-001\n时间：16:00');
+  assert.equal(preview.messages[5].body,'下一步：会话边界：换新会话，下一项在新会话里运行\n时间：16:00');
   const before=s.snapshot();
   let result=s.cli(['preview']);assert.equal(result.status,0,result.stderr);
-  assert.match(result.stdout,/^提醒文案预览，用示例字段生成，不发送。文案：自定义\n\n【卡住，需要人处理】stuck\n标题：提醒 cm-ai 卡住了 · demo-app\n下一步：核对原因后恢复原运行\n工单：T-001\n时间：\d\d:\d\d\n/);
-  assert.match(result.stdout,/【流程已结束】done\n标题：提醒 cm-ai 完工 · demo-app\n/);
+  assert.match(result.stdout,/^提醒文案预览，用示例字段生成，不发送。文案：自定义\n\n【卡住，需要人处理】stuck\n标题：提醒 卡住了 · demo-app\n副标题：cm-ai · 1.demo-feature T-001 · 会话 4f9fa27f\n下一步：核对原因后恢复原运行\n工单：T-001\n时间：\d\d:\d\d\n/);
+  assert.match(result.stdout,/【流程已结束】done\n标题：提醒 完工 · demo-app\n/);
   assert.equal(JSON.parse(s.cli(['preview','--json']).stdout).messages.length,6);
   // Also allowed on Windows: it reads notify.json only, never a secret file.
   const out=sink();assert.equal(await main(['preview'],{env:s.env,stdout:out.stream,stderr:sink().stream,platform:'win32'}),0);
-  assert.match(out.text(),/标题：提醒 cm-ai 卡住了 · demo-app/);
+  assert.match(out.text(),/标题：提醒 卡住了 · demo-app/);
   s.write('notify.json',JSON.stringify({version:1,command:['/bin/true'],text:{labels:{secret:'x'}}}));
-  assert.match(s.cli(['preview']).stdout,/文案：默认（notify.json 里的 text 无效：labels，已改用默认文案，提醒照常发送）\n\n【卡住，需要人处理】stuck\n标题：CM cm-ai 需要人处理 · demo-app\n/);
+  assert.match(s.cli(['preview']).stdout,/文案：默认（notify.json 里的 text 无效：labels，已改用默认文案，提醒照常发送）\n\n【卡住，需要人处理】stuck\n标题：CM 需要人处理 · demo-app\n/);
   s.write('notify.json','not json');
   assert.match(s.cli(['preview']).stdout,/文案：默认（notify.json 无效，按默认文案预览）/);
   s.write('notify.json',JSON.stringify({version:1,command:[process.execPath,'-e',`require('fs').writeFileSync(${JSON.stringify(ran)},'x')`],text:CUSTOM_TEXT}));
@@ -843,7 +857,7 @@ test('status, preview, test and switch never follow a notify.json symlink or rea
   assert.match(result.stdout,/发送命令：notify.json 不是普通文件（可能是符号链接），cm-notify 不读取它，无法确认提醒是否生效/);
   const preview=await previewText(s.home,{now:Date.parse('2026-10-08T08:00:00.000Z'),timeZone:'UTC'});
   assert.equal(preview.state,'invalid');assert.equal(preview.textState,null);
-  assert.equal(preview.messages[0].title,'CM cm-ai 需要人处理 · demo-app');
+  assert.equal(preview.messages[0].title,'CM 需要人处理 · demo-app');
   result=s.cli(['preview']);assert.equal(result.status,0);assert.doesNotMatch(result.stdout,/LEAKED/);
   assert.match(result.stdout,/文案：默认（notify.json 无效，按默认文案预览）/);
   result=s.cli(['test']);assert.equal(result.status,2);assert.match(result.stderr,/notify.json 无效（not_regular_file）/);

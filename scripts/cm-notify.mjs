@@ -182,7 +182,7 @@ const textLine=config=>config.textState==='custom'?'文案：自定义（/cm:not
 
 // Read-only preview of every event's title and body under the current
 // notify.json text, built from fixed sample fields. Sends and logs nothing.
-const PREVIEW_SAMPLE=Object.freeze({project:'demo-app',workflow:'cm-ai',runId:'run-sample-1',task:'T-001'});
+const PREVIEW_SAMPLE=Object.freeze({project:'demo-app',workflow:'cm-ai',runId:'run-sample-1',feature:'1.demo-feature',task:'T-001',session:'4f9fa27f'});
 export const PREVIEW_EVENTS=Object.freeze([
   {event:'stuck',name:'卡住，需要人处理',stage:'blocked',code:'checks_not_passed',nextAction:'核对原因后恢复原运行'},
   {event:'waiting',name:'等待会话应答',stage:'check',code:'waiting_session_answer',nextAction:'宿主已等待会话应答约 10 分钟，请回到会话处理'},
@@ -200,7 +200,8 @@ export function formatPreview(preview){
   const head=preview.textState?textLine(preview).replace('（/cm:notify preview 查看效果）','')
     :`文案：默认（${preview.state==='invalid'?'notify.json 无效':'没有生效的 notify.json'}，按默认文案预览）`;
   const lines=[`提醒文案预览，用示例字段生成，不发送。${head}`];
-  for(const message of preview.messages)lines.push('',`【${message.name}】${message.event}`,`标题：${message.title}`,message.body);
+  for(const message of preview.messages)lines.push('',`【${message.name}】${message.event}`,`标题：${message.title}`,
+    ...(message.subtitle?[`副标题：${message.subtitle}`]:[]),message.body);
   return lines.join('\n');
 }
 

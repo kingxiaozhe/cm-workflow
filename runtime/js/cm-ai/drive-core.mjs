@@ -69,6 +69,8 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
   const budget={...DRIVE_LIVENESS_DEFAULTS,...liveness};
   for(const value of Object.values(budget))if(!Number.isSafeInteger(value)||value<1)throw Error('driver_liveness_invalid');
   const ownGroup=process.platform!=='win32';
+  // Notices on: name the project and session they will show, so a notice can be matched to this session.
+  import('../notify.mjs').then(({notifyIdentityLine})=>{const line=notifyIdentityLine({cwd,args});if(line)stderr(line);}).catch(()=>{});
   const child=spawn(process.execPath,[host,...args],{cwd,stdio:['pipe','pipe','pipe'],detached:ownGroup,
     env:{...process.env,CM_HOST_HEARTBEAT:'1'}});
   const control=new AbortController();
@@ -80,9 +82,11 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
   const notice=failure=>{
     if(noticed)return;noticed=true;
     if(rejected!==null)failure='host_response_rejected';else if(!failure&&unanswered&&!finalRow)failure='host_request_unanswered';
-    import('../notify.mjs').then(({driveNotice,notify})=>{
+    import('../notify.mjs').then(({driveNotice,notify,driveProgressKey,clearAttention})=>{
       const fields=driveNotice({host,cwd,args,operation,row:finalRow,failure});
-      return fields?notify(fields):null;
+      if(fields)return notify(fields);
+      const progress=driveProgressKey({host,cwd,args,operation,row:finalRow,failure});
+      return progress?clearAttention(progress):null;
     }).catch(()=>{});
   };
   const signalOwnHost=(signal,cleanup=false)=>{

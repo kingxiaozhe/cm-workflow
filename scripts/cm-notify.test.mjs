@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
-import {notify,readNotifyConfig,parseNotifyConfig,buildNotifyMessage,normalizeNotifyText,driveNotice,NOTIFY_LIMITS,NOTIFY_WORKFLOWS,DEFAULT_NOTIFY_TEXT} from '../runtime/js/notify.mjs';
+import {notify,clearAttention,readNotifyConfig,parseNotifyConfig,buildNotifyMessage,normalizeNotifyText,driveNotice,NOTIFY_LIMITS,NOTIFY_WORKFLOWS,DEFAULT_NOTIFY_TEXT} from '../runtime/js/notify.mjs';
 
 const NOW=Date.parse('2026-10-08T08:00:00.000Z');
 const DRIVE_CORE=new URL('../runtime/js/cm-ai/drive-core.mjs',import.meta.url).href;
@@ -34,6 +34,7 @@ body:process.env.CM_NOTIFY_BODY,stdin:JSON.parse(input),at:Date.now()})+'\\n');p
   const until=async(check,ms=8000)=>{const end=Date.now()+ms;while(!check()&&Date.now()<end)await new Promise(r=>setTimeout(r,25));return check();};
   return {dir,env,rows,log,until};
 }
+const label=dir=>`${path.basename(path.dirname(dir))}/${path.basename(dir)}`;
 const fields=(key,over={})=>({key,event:'stuck',project:'/srv/work/demo-app',workflow:'cm-fix',runId:'run-1',
   task:'T-001',stage:'blocked',code:'checks_not_passed',nextAction:'核对 reason 后恢复原运行',...over});
 
@@ -64,7 +65,7 @@ test('invalid config turns the feature off: relative command, bad version, bad w
   }
   assert.match(h.log(),/config - key=- off invalid_config command_not_absolute/);
   fs.writeFileSync(file,JSON.stringify({version:1,command:['/bin/true'],waitMinutes:0.5}));
-  assert.deepEqual(readNotifyConfig(h.env),{command:['/bin/true'],waitMs:30000,checkWaitMs:2700000,idleMs:2700000});
+  assert.deepEqual(readNotifyConfig(h.env),{command:['/bin/true'],waitMs:30000,checkWaitMs:2700000,idleMs:2700000,followUpMs:7200000,windowMs:600000,perWindow:3});
 });
 
 // The runtime reads notify.json through the same safe boundary as /cm:notify:
@@ -73,7 +74,7 @@ test('invalid config turns the feature off: relative command, bad version, bad w
 // Each probe runs in its own process: the log line is once per process, and a
 // build that blocks on a FIFO fails by timeout instead of hanging the suite.
 const posix=process.platform!=='win32';
-const CONFIG={version:1,command:['/bin/true']},PARSED={command:['/bin/true'],waitMs:600000,checkWaitMs:2700000,idleMs:2700000};
+const CONFIG={version:1,command:['/bin/true']},PARSED={command:['/bin/true'],waitMs:600000,checkWaitMs:2700000,idleMs:2700000,followUpMs:7200000,windowMs:600000,perWindow:3};
 const NOTIFY_URL=new URL('../runtime/js/notify.mjs',import.meta.url).href;
 function probe(h){
   const child=spawnSync(process.execPath,['--input-type=module','-e',
@@ -137,19 +138,26 @@ test('message is bounded and built only from the structured fields',()=>{
     assert(!message.body.includes(forbidden)&&!message.title.includes(forbidden),forbidden);
   assert.match(message.body,/<路径>/);
   const short=buildNotifyMessage(fields('k'),{now:NOW,timeZone:'Asia/Shanghai'});
-  assert.equal(short.title,'CM cm-fix 需要人处理 · demo-app');
-  assert.equal(short.body,'下一步：核对 reason 后恢复原运行\n项目：demo-app\n流程：cm-fix\n任务：T-001\n阶段：blocked\n原因：checks_not_passed\n时间：16:00');
+  assert.equal(short.title,'CM 需要人处理 · work/demo-app');
+  assert.equal(short.subtitle,'cm-fix · T-001');
+  assert.equal(short.body,'下一步：核对 reason 后恢复原运行\n卡在：checks_not_passed\n时间：16:00');
+  const named=buildNotifyMessage(fields('k',{feature:'12.app-version-footer',session:'4f9fa27f',code:'qa_decision_required'}),{now:NOW,timeZone:'Asia/Shanghai'});
+  assert.equal(named.subtitle,'cm-fix · 12.app-version-footer T-001 · 会话 4f9fa27f');
+  assert.equal(named.body,'下一步：核对 reason 后恢复原运行\n卡在：在等 QA 判定（qa_decision_required）\n时间：16:00');
+  assert.equal(buildNotifyMessage(fields('k'),{now:NOW,timeZone:'Asia/Shanghai',followUp:true,suppressed:2}).body,
+    '第 2 次提醒：上次提醒后仍未处理\n下一步：核对 reason 后恢复原运行\n卡在：checks_not_passed\n时间：16:00\n另有 2 条提醒为避免刷屏已合并，请一并查看各会话');
   assert.doesNotMatch(short.body,/运行：|run-1|CM 不会自动继续/);
 });
 
-test('done shows only project, task and local time; empty fields are left out',()=>{
+test('done shows the next step and local time; project in the title, task in the subtitle; empty fields are left out',()=>{
   const done=buildNotifyMessage(fields('k',{event:'done',stage:'run_done',code:'run_done',nextAction:'建议在新会话里开始下一个任务'}),
     {now:NOW,timeZone:'Asia/Shanghai'});
-  assert.equal(done.title,'CM cm-fix 流程已结束 · demo-app');
-  assert.equal(done.body,'项目：demo-app\n任务：T-001\n时间：16:00');
-  assert.equal(buildNotifyMessage(fields('k',{event:'done',task:null}),{now:NOW,timeZone:'UTC'}).body,'项目：demo-app\n时间：08:00');
-  assert.equal(buildNotifyMessage({workflow:'cm-ai',event:'waiting'},{now:NOW,timeZone:'America/New_York'}).body,'流程：cm-ai\n时间：04:00');
-  assert.equal(buildNotifyMessage({workflow:'cm-ai'},{now:Date.parse('2026-10-08T16:05:00.000Z'),timeZone:'Asia/Shanghai'}).body,'流程：cm-ai\n时间：00:05');
+  assert.equal(done.title,'CM 流程已结束 · work/demo-app');assert.equal(done.subtitle,'cm-fix · T-001');
+  assert.equal(done.body,'下一步：建议在新会话里开始下一个任务\n时间：16:00');
+  const bare=buildNotifyMessage(fields('k',{event:'done',task:null,nextAction:null}),{now:NOW,timeZone:'UTC'});
+  assert.equal(bare.body,'时间：08:00');assert.equal(bare.subtitle,'cm-fix');
+  assert.equal(buildNotifyMessage({workflow:'cm-ai',event:'waiting'},{now:NOW,timeZone:'America/New_York'}).body,'时间：04:00');
+  assert.equal(buildNotifyMessage({workflow:'cm-ai'},{now:Date.parse('2026-10-08T16:05:00.000Z'),timeZone:'Asia/Shanghai'}).body,'时间：00:05');
 });
 
 test('without an injected time zone the clock follows the process TZ',()=>{
@@ -157,7 +165,7 @@ test('without an injected time zone the clock follows the process TZ',()=>{
 process.stdout.write(buildNotifyMessage({workflow:'cm-ai',event:'done',project:'/p/demo'},{now:${NOW}}).body);`;
   for(const [tz,clock] of [['Asia/Shanghai','16:00'],['UTC','08:00'],['America/Los_Angeles','01:00']]){
     const run=spawnSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8',env:{...process.env,TZ:tz}});
-    assert.equal(run.status,0,run.stderr);assert.equal(run.stdout,`项目：demo\n时间：${clock}`);
+    assert.equal(run.status,0,run.stderr);assert.equal(run.stdout,`时间：${clock}`);
   }
 });
 
@@ -169,14 +177,15 @@ test('custom text: without `text` (or with an empty one) every event is byte-ide
   const at={now:NOW,timeZone:'Asia/Shanghai'};
   for(const [event,headline] of EVENTS){
     const base=buildNotifyMessage(fields('k',{event}),at);
-    assert.equal(base.title,`CM cm-fix ${headline} · demo-app`,String(event));
-    assert.equal(base.body,event==='done'?'项目：demo-app\n任务：T-001\n时间：16:00'
-      :'下一步：核对 reason 后恢复原运行\n项目：demo-app\n流程：cm-fix\n任务：T-001\n阶段：blocked\n原因：checks_not_passed\n时间：16:00');
+    assert.equal(base.title,`CM ${headline} · work/demo-app`,String(event));
+    assert.equal(base.body,event==='done'?'下一步：核对 reason 后恢复原运行\n时间：16:00'
+      :'下一步：核对 reason 后恢复原运行\n卡在：checks_not_passed\n时间：16:00');
     for(const text of [{},DEFAULT_NOTIFY_TEXT,null,normalizeNotifyText({}).text])
       assert.deepEqual(buildNotifyMessage(fields('k',{event}),{...at,text}),base,`${event} ${JSON.stringify(text)}`);
   }
   const plainConfig=parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true']}));
-  assert.deepEqual(plainConfig,{config:{command:['/bin/true'],waitMs:600000,checkWaitMs:2700000,idleMs:2700000}});
+  assert.deepEqual(plainConfig,{config:{command:['/bin/true'],waitMs:600000,checkWaitMs:2700000,idleMs:2700000,
+    followUpMs:7200000,windowMs:600000,perWindow:3}});
   assert.equal(Object.hasOwn(plainConfig.config,'text'),false);
 });
 
@@ -190,15 +199,15 @@ test('custom text: prefix, headlines, field order (runId included) and labels',(
   const want={done:'完工',waiting:'等你回话',idle:'没动静',idle_waiting:'该你了',dead:'宿主没了',stuck:'卡住了'};
   for(const [event,headline] of Object.entries(want)){
     const message=buildNotifyMessage(fields('k',{event}),{...at,text:custom});
-    assert.equal(message.title,`【工作流】 cm-fix ${headline} · demo-app`);
+    assert.equal(message.title,`【工作流】 ${headline} · work/demo-app`);
     assert.equal(message.body,event==='done'?'时刻：16:00\n工单：T-001':'代码：checks_not_passed\n编号：run-1\n时刻：16:00');
   }
   // Partial text: only what is given changes; an empty prefix drops it from the title.
   const partial=buildNotifyMessage(fields('k'),{...at,text:{titlePrefix:'',labels:{nextAction:'先做'}}});
-  assert.equal(partial.title,'cm-fix 需要人处理 · demo-app');
-  assert.equal(partial.body,'先做：核对 reason 后恢复原运行\n项目：demo-app\n流程：cm-fix\n任务：T-001\n阶段：blocked\n原因：checks_not_passed\n时间：16:00');
-  assert.equal(buildNotifyMessage(fields('k',{event:'waiting'}),{...at,text:{headlines:{waiting:'等'}}}).title,'CM cm-fix 等 · demo-app');
-  assert.equal(buildNotifyMessage(fields('k',{event:'idle'}),{...at,text:{headlines:{waiting:'等'}}}).title,'CM cm-fix 疑似空转 · demo-app');
+  assert.equal(partial.title,'需要人处理 · work/demo-app');
+  assert.equal(partial.body,'先做：核对 reason 后恢复原运行\n卡在：checks_not_passed\n时间：16:00');
+  assert.equal(buildNotifyMessage(fields('k',{event:'waiting'}),{...at,text:{headlines:{waiting:'等'}}}).title,'CM 等 · work/demo-app');
+  assert.equal(buildNotifyMessage(fields('k',{event:'idle'}),{...at,text:{headlines:{waiting:'等'}}}).title,'CM 疑似空转 · work/demo-app');
   // Empty field values are still left out under a custom order.
   assert.equal(buildNotifyMessage({workflow:'cm-ai'},{...at,text:{fields:{default:['runId','workflow','time']}}}).body,'流程：cm-ai\n时间：16:00');
 });
@@ -210,9 +219,9 @@ test('custom text strings are cleaned like field values: paths redacted, control
   const message=buildNotifyMessage(fields('k'),{...at,text});
   for(const forbidden of ['/Users','example\\','secret','/srv/','push.env','~/proj','\\\\srv','\u0007','\u001b','\u0000','\n见'])
     assert(!message.title.includes(forbidden)&&!message.body.split('\n').map(line=>line.split('：')[0]).join('|').includes(forbidden),JSON.stringify(forbidden));
-  assert.equal(message.title,'CM <路径> cm-fix 卡住 见<路径> [31m · demo-app');
+  assert.equal(message.title,'CM <路径> 卡住 见<路径> [31m · work/demo-app');
   assert.equal(message.body.split('\n')[0],'<路径> 下一步：核对 reason 后恢复原运行');
-  assert.match(message.body,/\n<路径>：demo-app\n/);
+  assert.equal(text.labels.project,'<路径>');
   assert.match(message.body,/\n<路径>：checks_not_passed\n/);
   // Caps: prefix 16, headline 24, label 12 characters (… included); title 60, body 500.
   const long=normalizeNotifyText({titlePrefix:'前'.repeat(40),headlines:{default:'标'.repeat(40)},labels:{nextAction:'签'.repeat(40)}}).text;
@@ -235,8 +244,8 @@ test('custom text loses bidi and zero-width characters; a string left with nothi
     labels:{code:'‮原因',task:'​工‍单﻿'}}).text;
   const message=buildNotifyMessage(fields('k'),{...at,text});
   for(const char of hidden)assert(!message.title.includes(char)&&!message.body.includes(char),`U+${char.codePointAt(0).toString(16)}`);
-  assert.equal(message.title,'CM cm-fix 卡住了 · demo-app');
-  assert.match(message.body,/\n工单：T-001\n/);assert.match(message.body,/\n原因：checks_not_passed\n/);
+  assert.equal(message.title,'CM 卡住了 · work/demo-app');
+  assert.equal(text.labels.task,'工单');assert.match(message.body,/\n原因：checks_not_passed\n/);
   // Nothing visible left: the whole text is invalid and the default text is used.
   for(const [value,reason] of [[{headlines:{default:'​⁦⁩'}},'headlines'],[{labels:{code:'‮ ‏'}},'labels'],
     [{titlePrefix:'​'},'title_prefix'],[{titlePrefix:'  '},'title_prefix'],[{headlines:{done:'̀'}},'headlines']]){
@@ -245,7 +254,7 @@ test('custom text loses bidi and zero-width characters; a string left with nothi
     assert.deepEqual(buildNotifyMessage(fields('k'),{...at,text:value}),buildNotifyMessage(fields('k'),at));
   }
   // Field values are not part of the text layer: the default path is unchanged.
-  assert.equal(buildNotifyMessage(fields('k',{task:'T​-1'}),at).body.split('\n')[3],'任务：T​-1');
+  assert.equal(buildNotifyMessage(fields('k',{task:'T​-1'}),at).subtitle,'cm-fix · T​-1');
 });
 
 test('custom text redacts absolute paths even when letters touch them; field values keep the shared rule',()=>{
@@ -257,12 +266,12 @@ test('custom text redacts absolute paths even when letters touch them; field val
     const text=normalizeNotifyText({headlines:{default:raw},labels:{code:raw}}).text;
     assert.equal(text.headlines.default,want,raw);assert.equal(text.labels.code,want.slice(0,12),raw);
     const message=buildNotifyMessage(fields('k'),{...at,text});
-    assert.equal(message.title,`CM cm-fix ${want} · demo-app`,raw);
+    assert.equal(message.title,`CM ${want} · work/demo-app`,raw);
     for(const leak of ['/Users','Users\\','\\\\srv','/srv','~/proj','/etc','/tmp'])assert(!message.title.includes(leak)&&!message.body.includes(leak),`${raw} ${leak}`);
   }
   // The shared rule for field values (and so the default text) is unchanged.
-  assert.equal(buildNotifyMessage(fields('k',{task:'see/Users/example/key'}),at).body.split('\n')[3],'任务：see/Users/example/key');
-  assert.equal(buildNotifyMessage(fields('k',{task:'见 /Users/example/key'}),at).body.split('\n')[3],'任务：见 <路径>');
+  assert.equal(buildNotifyMessage(fields('k',{task:'see/Users/example/key'}),at).subtitle,'cm-fix · see/Users/example/key');
+  assert.equal(buildNotifyMessage(fields('k',{task:'见 /Users/example/key'}),at).subtitle,'cm-fix · 见 <路径>');
 });
 
 test('invalid text falls back to the default text with one text_config log line; notices stay on',async t=>{
@@ -283,8 +292,8 @@ test('invalid text falls back to the default text with one text_config log line;
   assert.equal(readNotifyConfig(h.env).text,undefined);
   assert.deepEqual(notify(fields('typo'),{env:h.env,now:NOW}),{sent:true,reason:'launched'});
   assert(await h.until(()=>h.rows().length===1));
-  assert.equal(h.rows()[0].title,'CM cm-fix 需要人处理 · demo-app');
-  assert.match(h.rows()[0].body,/^下一步：核对 reason 后恢复原运行\n项目：demo-app\n/);
+  assert.equal(h.rows()[0].title,'CM 需要人处理 · work/demo-app');
+  assert.match(h.rows()[0].body,/^下一步：核对 reason 后恢复原运行\n卡在：checks_not_passed\n/);
   readNotifyConfig(h.env);
   const lines=h.log().split('\n').filter(line=>line.includes('text_config'));
   assert.equal(lines.length,1,h.log());assert.match(lines[0],/ config - key=- default_text text_config fields$/);
@@ -296,7 +305,7 @@ test('custom text reaches the command in CM_NOTIFY_TITLE/BODY and the stdin JSON
   assert.equal(notify(fields('custom'),{env:h.env,now:NOW}).sent,true);
   assert(await h.until(()=>h.rows().length===1));
   const [row]=h.rows();
-  assert.equal(row.title,'提醒 cm-fix 卡住了 · demo-app');assert.equal(row.body,'工单：T-001\n原因：checks_not_passed');
+  assert.equal(row.title,'提醒 卡住了 · work/demo-app');assert.equal(row.body,'工单：T-001\n卡在：checks_not_passed');
   assert.equal(row.stdin.title,row.title);assert.equal(row.stdin.body,row.body);assert.equal(row.stdin.runId,'run-1');
 });
 
@@ -306,8 +315,8 @@ test('sends through env and stdin once per key; the same key within 6 hours is s
   assert.deepEqual(notify(fields('same'),{env:h.env,now:NOW+5*3600*1000}),{sent:false,reason:'duplicate'});
   assert(await h.until(()=>h.rows().length===1));
   const [row]=h.rows();
-  assert.equal(row.title,'CM cm-fix 需要人处理 · demo-app');assert.equal(row.stdin.title,row.title);assert.equal(row.stdin.body,row.body);
-  assert.equal(row.stdin.project,'demo-app');assert.equal(row.stdin.code,'checks_not_passed');assert.equal(row.stdin.key,undefined);
+  assert.equal(row.title,'CM 需要人处理 · work/demo-app');assert.equal(row.stdin.title,row.title);assert.equal(row.stdin.body,row.body);
+  assert.equal(row.stdin.subtitle,'cm-fix · T-001');assert.equal(row.stdin.project,'work/demo-app');assert.equal(row.stdin.code,'checks_not_passed');assert.equal(row.stdin.key,undefined);
   assert.equal(notify(fields('same'),{env:h.env,now:NOW+6*3600*1000+1}).sent,true);
   assert(await h.until(()=>h.rows().length===2));
   assert.equal(h.rows()[0].stdin.CM_NOTIFY_PAYLOAD,undefined);
@@ -316,17 +325,57 @@ test('sends through env and stdin once per key; the same key within 6 hours is s
   assert(!fs.existsSync(path.join(h.dir,'notify-state.lock')));
 });
 
-test('at most 4 per rolling minute and 150 per day across keys',async t=>{
+test('at most 3 per 10 minutes and 150 per day across keys; skipped notices are counted into the next one',async t=>{
   const h=home(t);
-  for(let i=0;i<4;i++)assert.equal(notify(fields(`m${i}`),{env:h.env,now:NOW+i}).sent,true);
-  assert.deepEqual(notify(fields('m4'),{env:h.env,now:NOW+10}),{sent:false,reason:'rate_minute'});
-  assert.equal(notify(fields('m4'),{env:h.env,now:NOW+60010}).sent,true);
-  assert.match(h.log(),/skipped rate_minute/);
+  for(let i=0;i<3;i++)assert.equal(notify(fields(`m${i}`),{env:h.env,now:NOW+i}).sent,true);
+  assert.deepEqual(notify(fields('m3'),{env:h.env,now:NOW+10}),{sent:false,reason:'rate_window'});
+  assert.deepEqual(notify(fields('m4'),{env:h.env,now:NOW+9*60000}),{sent:false,reason:'rate_window'});
+  assert.match(h.log(),/skipped rate_window/);
+  assert.equal(notify(fields('m5'),{env:h.env,now:NOW+10*60000+1}).sent,true);
+  assert(await h.until(()=>h.rows().length===4));
+  // Rows arrive in completion order of the background senders: look them up by content, not position.
+  const merged=h.rows().filter(row=>/另有/.test(row.body));
+  assert.equal(merged.length,1);assert.match(merged[0].body,/\n另有 2 条提醒为避免刷屏已合并，请一并查看各会话$/);
+  // A version 1 state file is still read; the per-day cap is unchanged.
   const sends=Array.from({length:150},(_,i)=>NOW+120000+i*60000);
   fs.writeFileSync(path.join(h.dir,'notify-state.json'),JSON.stringify({version:1,keys:{},sends}));
   assert.deepEqual(notify(fields('day'),{env:h.env,now:NOW+200*60000}),{sent:false,reason:'rate_day'});
   assert.equal(notify(fields('day'),{env:h.env,now:NOW+120000+24*3600*1000}).sent,true);
-  assert(await h.until(()=>h.rows().length===6));
+  assert(await h.until(()=>h.rows().length===5));
+  assert.equal(h.rows().filter(row=>/\n另有 1 条提醒/.test(row.body)).length,1);
+  // The window and the follow-up delay come from notify.json `frequency`.
+  assert.deepEqual(parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true'],frequency:{followUpMinutes:30,windowMinutes:5,perWindow:2}})).config,
+    {command:['/bin/true'],waitMs:600000,checkWaitMs:2700000,idleMs:2700000,followUpMs:1800000,windowMs:300000,perWindow:2});
+  for(const frequency of [{perWindow:0},{perWindow:1.5},{windowMinutes:0},{followUpMinutes:2000},{other:1},[]])
+    assert.equal(parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true'],frequency})).reason,'frequency',JSON.stringify(frequency));
+});
+
+test('one session needs one notice: stuck, waiting and idle share it; a new state or one follow-up after 2 hours resends',async t=>{
+  const h=home(t),attentionKey='attn|work/demo-app|4f9fa27f',at=over=>fields(over.key,{attentionKey,session:'4f9fa27f',...over});
+  assert.equal(notify(at({key:'s1'}),{env:h.env,now:NOW}).sent,true);
+  // Same session, same stuck reason, or a lower/equal level: not sent again.
+  assert.deepEqual(notify(at({key:'s2'}),{env:h.env,now:NOW+60000}),{sent:false,reason:'duplicate'});
+  assert.deepEqual(notify(at({key:'w1',event:'waiting',code:'waiting_session_answer'}),{env:h.env,now:NOW+120000}),{sent:false,reason:'duplicate'});
+  assert.deepEqual(notify(at({key:'i1',event:'idle_waiting',code:'waiting_for_you'}),{env:h.env,now:NOW+180000}),{sent:false,reason:'duplicate'});
+  // A different stuck reason is a new state.
+  assert.equal(notify(at({key:'s3',code:'qa_decision_required'}),{env:h.env,now:NOW+240000}).sent,true);
+  // Still unhandled 2 hours later: one follow-up, then nothing more.
+  assert.deepEqual(notify(at({key:'s4',code:'qa_decision_required'}),{env:h.env,now:NOW+240000+7199000}),{sent:false,reason:'duplicate'});
+  assert.equal(notify(at({key:'s5',code:'qa_decision_required'}),{env:h.env,now:NOW+240000+7200000}).sent,true);
+  assert.deepEqual(notify(at({key:'s6',code:'qa_decision_required'}),{env:h.env,now:NOW+240000+3*7200000}),{sent:false,reason:'duplicate'});
+  assert(await h.until(()=>h.rows().length===3));
+  assert.equal(h.rows().filter(row=>/^第 2 次提醒：上次提醒后仍未处理\n/.test(row.body)).length,1);
+  // An idle notice first, then waiting for the session: the higher level is sent.
+  const other='attn|work/demo-app|aaaa0000';
+  assert.equal(notify(fields('o1',{attentionKey:other,event:'idle',code:'no_next_step'}),{env:h.env,now:NOW+5*3600000}).sent,true);
+  assert.equal(notify(fields('o2',{attentionKey:other,event:'waiting',code:'waiting_session_answer'}),{env:h.env,now:NOW+5*3600000+1}).sent,true);
+  // Progress clears the record: the same stop is sent at once again.
+  assert.equal(clearAttention(attentionKey,{env:h.env}),true);
+  assert.equal(notify(at({key:'s7',code:'qa_decision_required'}),{env:h.env,now:NOW+8*3600000}).sent,true);
+  assert.equal(clearAttention('attn|unknown',{env:h.env}),false);
+  // done keeps its own once-per-key rule and never takes the attention path.
+  assert.equal(notify(at({key:'d1',event:'done'}),{env:h.env,now:NOW+9*3600000}).sent,true);
+  assert.deepEqual(notify(at({key:'d1',event:'done'}),{env:h.env,now:NOW+9*3600000+1}),{sent:false,reason:'duplicate'});
 });
 
 test('command failure, timeout and broken state never throw; they log one line without content',async t=>{
@@ -551,11 +600,16 @@ test('driver classification follows each workflow contract (table)',()=>{
     assert.equal(driveNotice({host:`${workflow}-host.mjs`,cwd:'/w/p',operation:'advance',row:{requestId:'drive',error:{code:'host_request_failed'}}}).event,'stuck');
     assert.equal(driveNotice({host:`${workflow}-host.mjs`,cwd:'/w/p',operation:'advance',failure:'host_exited'}).code,'host_exited');
   }
-  const blocked=driveNotice({host:'/x/scripts/cm-ai-host.mjs',cwd:'/work/demo-app',args:['serve'],operation:'advance',
-    row:{requestId:'drive',result:ai({outcome:'advanced',state:'blocked',code:'develop_checks_not_passed',pendingAction:'resume',
+  const blocked=driveNotice({host:'/x/scripts/cm-ai-host.mjs',cwd:'/work/demo-app',args:['serve','--host-context','4F9FA27F-6196-4f1f-9bb7-fe5bcd5614fa'],operation:'advance',
+    row:{requestId:'drive',result:ai({outcome:'advanced',state:'blocked',code:'develop_checks_not_passed',pendingAction:'resume',feature:'1.login',
       guidance:{nextStep:'修复后 advance'}})}});
-  assert.deepEqual({...blocked},{key:'cm-ai|run-1|T-001|1|blocked|develop_checks_not_passed',event:'stuck',workflow:'cm-ai',
-    project:'demo-app',runId:'run-1',task:'T-001',stage:'blocked',code:'develop_checks_not_passed',nextAction:'修复后 advance'});
+  assert.deepEqual({...blocked},{key:'cm-ai|run-1|T-001|1|blocked|develop_checks_not_passed',attentionKey:'attn|work/demo-app|4f9fa27f',event:'stuck',workflow:'cm-ai',
+    project:'/work/demo-app',runId:'run-1',feature:'1.login',task:'T-001',stage:'blocked',session:'4f9fa27f',code:'develop_checks_not_passed',nextAction:'修复后 advance'});
+  // Without --host-context the attention record is per project, workflow and run; a non-UUID context is kept as given.
+  assert.equal(driveNotice({host:'cm-ai-host.mjs',cwd:'/w/p',args:['serve'],operation:'advance',row:{requestId:'drive',result:ai({state:'blocked',code:'x'})}}).attentionKey,'attn|w/p|cm-ai|run-1');
+  assert.equal(driveNotice({host:'cm-ai-host.mjs',cwd:'/w/p',args:['--host-context','claude-session-e2e'],operation:'advance',failure:'host_exited'}).session,'claude-session-e2e');
+  // done keeps only its own key, not an attention record.
+  assert.equal(Object.hasOwn(driveNotice({host:'cm-test-host.mjs',cwd:'/w/p',operation:'start',row:{requestId:'drive',result:{stage:'reported',runId:'t',overall:'PASS'}}}),'attentionKey'),false);
   const batch=driveNotice({host:'cm-ai-batch-host.mjs',cwd:'/w/p',args:['a'],operation:'advance',
     row:{requestId:'drive',result:{outcome:'blocked',code:'merge_conflict',batchId:'b1'}}});
   assert.equal(batch.runId,'b1');assert.equal(batch.code,'merge_conflict');
@@ -572,21 +626,35 @@ test('driver ending in blocked notifies exactly once, never waits for the comman
   fs.writeFileSync(host,`process.stdout.write(JSON.stringify({type:'host_ready',sessionId:'s'})+'\\n');
 process.stdin.on('data',chunk=>{for(const line of String(chunk).split('\\n').filter(Boolean)){const row=JSON.parse(line);
  if(row.requestId==='drive')process.stdout.write(JSON.stringify({requestId:'drive',result:{workflow:'cm-ai',outcome:'advanced',state:'blocked',
-  code:'checks_not_passed',pendingAction:'none',identity:{runId:'run-7',taskId:'T-001',attempt:1}}})+'\\n');}});
+  code:process.env.FIXTURE_STATE==='progress'?null:'checks_not_passed',pendingAction:'none',identity:{runId:'run-7',taskId:'T-001',attempt:1},
+  ...(process.env.FIXTURE_STATE==='progress'?{state:'ready'}:{})}})+'\\n');}});
 process.stdin.on('end',()=>process.exit(0));`);
   fs.writeFileSync(wrapper,`import {driveHost} from ${JSON.stringify(DRIVE_CORE)};
-driveHost({host:${JSON.stringify(host)},args:['serve'],cwd:${JSON.stringify(project)},operation:'advance',answers:{},answerFor:()=>null});`);
+driveHost({host:${JSON.stringify(host)},args:['serve','--host-context','4f9fa27f-6196-4f1f-9bb7-fe5bcd5614fa'],cwd:${JSON.stringify(project)},operation:'advance',answers:{},answerFor:()=>null});`);
   const env={...h.env};delete env.NODE_TEST_CONTEXT;
   for(let i=0;i<2;i++){
     const started=performance.now(),run=spawnSync(process.execPath,[wrapper],{encoding:'utf8',env,timeout:20000});
     assert.equal(run.status,0,run.stderr);assert.equal(JSON.parse(run.stdout).result.state,'blocked');
     assert(performance.now()-started<2000,`driver exit waited on the notify command: ${performance.now()-started} ms`);
     assert.equal(h.rows().length,0,`run ${i}: the command is still running in the background`);
+    assert.match(run.stderr,new RegExp(`\\[drive\\] 提醒里的标识：项目 ${label(project)} · 会话 4f9fa27f\\n`));
   }
   assert(await h.until(()=>h.rows().length===1));
   await new Promise(resolve=>setTimeout(resolve,500));assert.equal(h.rows().length,1);
   const [row]=h.rows();
-  assert.equal(row.title,'CM cm-ai 需要人处理 · demo-app');assert.equal(row.stdin.runId,'run-7');assert.equal(row.stdin.code,'checks_not_passed');
+  assert.equal(row.title,`CM 需要人处理 · ${label(project)}`);assert.equal(row.stdin.runId,'run-7');assert.equal(row.stdin.code,'checks_not_passed');
+  assert.equal(row.stdin.session,'4f9fa27f');assert.equal(row.stdin.subtitle,'cm-ai · T-001 · 会话 4f9fa27f');
+  // A step that moves on clears the session's record: the same stop is sent at once, not after the 2-hour follow-up.
+  const progress=spawnSync(process.execPath,[wrapper],{encoding:'utf8',env:{...env,FIXTURE_STATE:'progress'},timeout:20000});
+  assert.equal(progress.status,0,progress.stderr);assert.equal(JSON.parse(progress.stdout).result.state,'ready');
+  const cleared=()=>Object.keys(JSON.parse(fs.readFileSync(path.join(h.dir,'notify-state.json'),'utf8')).attention).length===0;
+  assert(await h.until(cleared),'progress cleared the attention record');
+  // Keep the per-window cap out of the way: only the attention rule is under test here.
+  const state=JSON.parse(fs.readFileSync(path.join(h.dir,'notify-state.json'),'utf8'));state.sends=[];
+  fs.writeFileSync(path.join(h.dir,'notify-state.json'),JSON.stringify(state));
+  const again=spawnSync(process.execPath,[wrapper],{encoding:'utf8',env,timeout:20000});
+  assert.equal(again.status,0,again.stderr);
+  assert(await h.until(()=>h.rows().length===2),'the stop after progress is sent again');
 });
 
 // Host bridge: a host_request outstanding past waitMinutes notifies once;
@@ -606,7 +674,7 @@ if(mode==='hang')bridge.call('develop',{},new AbortController().signal).catch(()
   const late=spawnSync(process.execPath,[script,'late'],{encoding:'utf8',env,timeout:20000});
   assert.equal(late.status,0,late.stderr);
   assert(await h.until(()=>h.rows().length===1));
-  assert.equal(h.rows()[0].title,'CM cm-demo 等待会话应答 · '+path.basename(process.cwd()));
+  assert.equal(h.rows()[0].title,'CM 等待会话应答 · '+label(process.cwd()));assert.equal(h.rows()[0].stdin.subtitle,'cm-demo');
   assert.equal(h.rows()[0].stdin.stage,'qa_browser');assert.equal(h.rows()[0].stdin.code,'waiting_session_answer');
   const early=spawnSync(process.execPath,[script,'early'],{encoding:'utf8',env,timeout:20000});
   assert.equal(early.status,0,early.stderr);await new Promise(resolve=>setTimeout(resolve,300));assert.equal(h.rows().length,1);
@@ -696,14 +764,14 @@ test('host session idle after a finished step notifies once: 疑似空转 for pr
   assert.equal(progress.code,0);
   assert(await h.until(()=>h.rows().length===1));
   const [idle]=h.rows();
-  assert.equal(idle.title,'CM cm-prd 疑似空转 · '+path.basename(process.cwd()));
+  assert.equal(idle.title,'CM 疑似空转 · '+label(process.cwd()));assert.equal(idle.stdin.subtitle,'cm-prd');
   assert.equal(idle.stdin.event,'idle');assert.equal(idle.stdin.code,'no_next_step');
   assert.equal(idle.stdin.runId,'prd-1');assert.equal(idle.stdin.stage,'requirements_analysis');
   const waiting=home(t,{config:{idleMinutes:0.009}});
   const review=await idleHost(waiting)([[0,op(1,{stage:'awaiting_user',runId:'prd-2'})],[2700,null]]);
   assert.equal(review.code,0);
   assert(await waiting.until(()=>waiting.rows().length===1));
-  assert.equal(waiting.rows()[0].title,'CM cm-prd 在等你 · '+path.basename(process.cwd()));
+  assert.equal(waiting.rows()[0].title,'CM 在等你 · '+label(process.cwd()));
   assert.equal(waiting.rows()[0].stdin.event,'idle_waiting');assert.equal(waiting.rows()[0].stdin.code,'waiting_for_you');
   await new Promise(resolve=>setTimeout(resolve,900));
   assert.equal(h.rows().length,1);assert.equal(waiting.rows().length,1);
