@@ -46,16 +46,16 @@ export function checkPrdDraftMechanics(draft,{change=false}={}){
     const add=code=>findings.push({feature:feature.directory,code,
       ...(code==='dependencies_invalid'?{reason:{field:`${feature.directory}/tasks.md`,
         expected:'One line per task; comma-separated prerequisites, e.g. - T-003 依赖 T-001, T-002'}}:{})});
-    const parsed=parseFeatureTaskText(files.get('tasks.md'));
+    const parsed=parseFeatureTaskText(files.get('tasks.md'),{strictTaskIds:true});
     const acIds=declaredAcceptanceIds(outsideFences(files.get('requirements.md')));
     if(acIds.size===0)add('acceptance_missing');
     let taskIds=new Set();
     if(parsed.error)add(parsed.error);
     else{
       taskIds=new Set(parsed.tasks.map(task=>task.id));
-      if(parsed.tasks.length>15)add('task_limit_exceeded');
+      if(parsed.tasks.filter(task=>!task.dropped).length>15)add('task_limit_exceeded');
       if(!change&&parsed.tasks.some(task=>task.completed||task.dropped))add('new_task_not_pending');
-      if(!validDependencies(parsed.tasks,parsed.dependencies))add('dependencies_invalid');
+      if(!validDependencies(parsed.tasks,parsed.dependencies,{rejectDropped:true}))add('dependencies_invalid');
     }
     if(files.has('test-cases.json')){
       let cases;try{cases=JSON.parse(files.get('test-cases.json'));}catch{add('test_cases_invalid');}
@@ -69,7 +69,9 @@ export function checkPrdDraftMechanics(draft,{change=false}={}){
         }
       }
     }
-    features.push({directory:feature.directory,tasks:taskIds.size,acceptanceCriteria:acIds.size});
+    const historicalTasks=parsed.error?0:parsed.tasks.filter(task=>task.dropped).length;
+    features.push({directory:feature.directory,tasks:taskIds.size,acceptanceCriteria:acIds.size,
+      ...(historicalTasks?{executionTasks:taskIds.size-historicalTasks,historicalTasks}:{})});
   }
   return json({draftDigest:draft.draftDigest,status:findings.length?'failed':'mechanical_subset_passed',features,findings,
     pending:['task_boundary_and_existing_asset_overlap','acceptance_verifiability','user_case_semantics',
