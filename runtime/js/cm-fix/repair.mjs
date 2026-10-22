@@ -60,7 +60,15 @@ export function verifyFixRepair({codeProject,specsRoot,baseline,result,allowUnch
 }
 
 export function prepareFixRepair(options,{bridge,assertReviewReady,pinnedBaseline=null,protectedMode=false}){
-  const config=json(options);shape(config,['codeProject','specsRoot','identity','scope','requirements','defect','diagnosis',
+  // Inspect only the own-key before json validates every descriptor/plain value;
+  // never read a feedback getter or strip unvalidated evidence to make it fit.
+  const hasReviewFeedback=options!==null&&typeof options==='object'&&Object.hasOwn(options,'reviewFeedback');
+  const config=hasReviewFeedback?json(options,13*1024*1024+Buffer.byteLength(',"reviewFeedback":')):json(options);
+  if(hasReviewFeedback){
+    const {reviewFeedback,...parameters}=config;
+    json(parameters); // All ordinary repair arguments retain their original 1 MiB budget.
+  }
+  shape(config,['codeProject','specsRoot','identity','scope','requirements','defect','diagnosis',
     'redTest','baseline','redEvidence','beforeBaseline',...(Object.hasOwn(config,'reviewFeedback')?['reviewFeedback']:[]),...(Object.hasOwn(config,'testExtension')?['testExtension']:[]),...(Object.hasOwn(config,'testTypeCorrection')?['testTypeCorrection']:[])]);
   const priorReview=Object.hasOwn(config,'reviewFeedback')?inspectFixRepairReview(config.reviewFeedback,config.identity):null;
   validIdentity(config.identity);validateDeveloperScope(config.scope);

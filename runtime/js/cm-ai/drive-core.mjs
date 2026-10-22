@@ -65,24 +65,29 @@ export function deliberatelyUnanswered(message){
 // The long fallback covers hosts that cannot advertise individual phase budgets.
 export const DRIVE_LIVENESS_DEFAULTS=Object.freeze({startupMs:60000,operationMs:21600000,
   heartbeatMs:30000,graceMs:30000,closeMs:5000,killMs:1000,pollMs:250});
-export function driveHost({host,args,cwd,operation,request={},answers,paths,answerFor,beforeRequest=null,liveness={}}){
+export function driveHost({host,args,cwd,operation,request={},answers,paths,answerFor,beforeRequest=null,liveness={},sessionBoundary=null}){
   const budget={...DRIVE_LIVENESS_DEFAULTS,...liveness};
   for(const value of Object.values(budget))if(!Number.isSafeInteger(value)||value<1)throw Error('driver_liveness_invalid');
   const ownGroup=process.platform!=='win32';
+  // Notices on: name the project and session they will show, so a notice can be matched to this session.
+  import('../notify.mjs').then(({notifyIdentityLine})=>{const line=notifyIdentityLine({cwd,args});if(line)stderr(line);}).catch(()=>{});
   const child=spawn(process.execPath,[host,...args],{cwd,stdio:['pipe','pipe','pipe'],detached:ownGroup,
     env:{...process.env,CM_HOST_HEARTBEAT:'1'}});
   const control=new AbortController();
   child.stderr.on('data',chunk=>process.stderr.write(chunk));
-  let done=false,refused=false,rejected=null,unanswered=false,finalRow=null,noticed=false,failureCode=null;
+  let done=false,refused=false,rejected=null,unanswered=false,finalRow=null,finalAt=null,noticed=false,failureCode=null;
   let sessionId=null,ready=false,heartbeat=false,lastBeat=0,waitingFor='drive',stopping=false,closed=false;
   let deadline=Date.now()+budget.startupMs,phase='startup',closeDeadline=null,killTimer=null,forceTimer=null;
   // Optional notices never change the result or make watchdog failures successful.
   const notice=failure=>{
     if(noticed)return;noticed=true;
     if(rejected!==null)failure='host_response_rejected';else if(!failure&&unanswered&&!finalRow)failure='host_request_unanswered';
-    import('../notify.mjs').then(({driveNotice,notify})=>{
+    import('../notify.mjs').then(({driveNotice,notify,driveProgressKey,clearAttention})=>{
       const fields=driveNotice({host,cwd,args,operation,row:finalRow,failure});
-      return fields?notify(fields):null;
+      if(fields)return notify(fields);
+      const progress=driveProgressKey({host,cwd,args,operation,row:finalRow,failure});
+      // The step moved on when its final result arrived, not when the host closed later.
+      return progress&&finalAt!==null?clearAttention(progress,{before:finalAt}):null;
     }).catch(()=>{});
   };
   const signalOwnHost=(signal,cleanup=false)=>{
@@ -197,8 +202,12 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
         if(typeof inFlight?.requestId==='string')waitingFor=inFlight.requestId;
         phaseBudget(inFlight);stderr(`host_busy：上一步仍在执行，继续等待 ${waitingFor} 的结果`);return;
       }
-      done=true;finalRow=row;control.abort();
+      done=true;finalRow=row;finalAt=Date.now();control.abort();
       process.stdout.write(JSON.stringify(row,null,2)+'\n');
+      // The driver prints the session-boundary verdict itself so the model only relays it;
+      if(typeof sessionBoundary==='function'&&!row.error){let block=null;try{block=sessionBoundary(row.result,operation);}catch{stderr('会话边界结论生成失败；请按技能输出模板手写三行结论（业务结果不受影响）');}
+        // stderr, not stdout: callers parse stdout as one JSON result.
+        if(typeof block==='string'&&block)process.stderr.write(block+'\n');}
       const guidance=guidanceText(row.result);if(guidance)stderr(guidance);
       if(row.result?.stage)stderr(`stage = ${row.result.stage}`);
       if(row.error)stderr(`宿主拒绝：${row.error.code}（真实原因和位置在上面 [host] 那行 diagnostic 里）`);

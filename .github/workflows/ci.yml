@@ -26,6 +26,10 @@ jobs:
         run: node --test scripts/cm-claude-probe.test.mjs
       - name: Run the darwin-only review-dispatch bootstrap rules (skipped on Linux shards)
         run: node --test scripts/cm-ai-drive-bootstrap-rules.test.mjs
+      - name: Run the darwin-only isolated-review sandbox checks (skipped on Linux shards)
+        env:
+          CM_REQUIRE_NATIVE_PROBE: "1"
+        run: node --test scripts/cm-fix-review-verification-command.test.mjs
 
   node18-authorities:
     runs-on: ubuntu-latest

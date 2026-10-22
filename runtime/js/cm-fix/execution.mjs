@@ -25,7 +25,7 @@ import {inspectFixQaSource,readFixQaSourceHistory,qaFixIdentity,fixQaDiagnosisEv
 import {digest,id,json,need,shape,text,validIdentity,requestFor,failureCode} from '../cm-ai/effect-contract.mjs';
 import {createFixReproduction,inspectFixReproduction} from './reproduce.mjs';
 import {inspectFixLearning} from './learning.mjs';
-import {createFixCausePackage,verifyFixCauseTransition,rediagnosisPackage} from './cause-package.mjs';
+import {createFixCausePackage,verifyFixCauseTransition,rediagnosisPackage,readDiagnosisModuleCorrection} from './cause-package.mjs';
 import {validateCauseReviewer,inspectCauseRegistration,inspectCauseResult,causeExpectation,fixHostContexts,MAX_FIX_JOINED_HOSTS} from './cause-invocation.mjs';
 import {inspectProviderCauseReview} from '../cm-ai/provider-review-observation.mjs';
 import {publishCauseEvidence} from './cause-evidence.mjs';
@@ -130,11 +130,67 @@ function reviewTimeout(adapter,fallback){
 }
 
 const diagnosis=inspectFixDiagnosis;
+const DIAGNOSIS_MODULE_CORRECTION='fix-diagnosis-module-corrected';
+const moduleCorrectionRow=records=>records.find(row=>row.id===DIAGNOSIS_MODULE_CORRECTION);
+const moduleCorrectionSourcePending=records=>{
+  const index=records.findIndex(row=>row.id===DIAGNOSIS_MODULE_CORRECTION);
+  // Joining another host (or other metadata) does not capture source. Keep the
+  // admitted bytes guarded until a validated cause package or full-root author/
+  // repair baseline takes that binding. Red/baseline checks only bind testFiles.
+  return index>=0&&!records.slice(index+1).some(row=>row.kind==='intent'
+    &&['fix-cause-registered','fix-test-author-intent','fix-repair-intent'].includes(retryBase(row.id)));
+};
+const moduleCorrectionReason=reason=>need(typeof reason==='string'&&reason.trim().length>0
+  &&Buffer.byteLength(reason)<=1000&&!/[\r\n\0\u0085\u2028\u2029]/.test(reason),'fix_diagnosis_module_correction_confirmation');
+// Shared by live preview and replay: only the just-completed first diagnosis
+// may be aligned to the exact union of the already frozen walkthrough flows.
+function moduleCorrectionTarget({configuration,identity,records,files}){
+  const last=records.at(-1),original=last?.payload?.value;
+  need(!moduleCorrectionRow(records)&&last?.id==='fix-diagnose-result'&&last.kind==='result'
+    &&last.payload.stage==='diagnose'&&original?.status==='diagnosed'
+    &&configuration.walkthrough&&records.every(row=>['fix-configuration','fix-reproduce-intent','fix-reproduce-result',
+      'fix-diagnose-intent','fix-diagnose-result'].includes(row.id)||/^fix-learning-[1-9]\d*-[a-f0-9]{64}$/.test(row.id)),
+    'fix_diagnosis_module_correction_unavailable');
+  const diagnosed=diagnosis(original),modules=[...new Set(configuration.walkthrough.flows.flatMap(flow=>flow.modules))].sort();
+  need(diagnosed.affectedModules.length<modules.length&&diagnosed.affectedModules.every(module=>modules.includes(module)),
+    'fix_diagnosis_module_correction_unavailable');
+  diagnosis({...diagnosed,affectedModules:modules});
+  const reproduction=records.find(row=>row.id==='fix-reproduce-result')?.payload.value;
+  need(reproduction?.status==='reproduced','fix_diagnosis_module_correction_unavailable');
+  return json({identity,configurationDigest:digest(configuration),historyDigest:digest(records),
+    diagnosisRecordDigest:digest(last),diagnosisDigest:digest(diagnosed),reproductionDigest:digest(reproduction),
+    walkthroughDigest:digest(configuration.walkthrough),originalModules:diagnosed.affectedModules,modules,files,snapshotDigest:digest(files)});
+}
+function moduleCorrectionPayload(raw,{configuration,identity,records}){
+  const p=json(raw,128*1024);shape(p,['target','reason','previousInvocationStopped']);
+  moduleCorrectionReason(p.reason);need(p.previousInvocationStopped===true,'fix_diagnosis_module_correction_confirmation');
+  const target=moduleCorrectionTarget({configuration,identity,records,files:p.target?.files});
+  need(digest(target)===digest(p.target),'fix_diagnosis_module_correction_binding');
+  readDiagnosisModuleCorrection({originalDiagnosis:records.at(-1).payload.value,...p,correctionDigest:digest(p)},{identity});
+  return p;
+}
+function moduleCorrectionRelation(records){
+  const row=moduleCorrectionRow(records);if(!row)return null;
+  return readDiagnosisModuleCorrection({originalDiagnosis:records.find(r=>r.id==='fix-diagnose-result').payload.value,
+    ...row.payload,correctionDigest:digest(row.payload)});
+}
+function assertInitialCauseModuleBinding(records,pkg){
+  const relation=moduleCorrectionRelation(records);
+  if(!relation||records.some(row=>row.id==='fix-cause-registered'))return false;
+  const files=pkg.files.map(({contentBase64,...metadata})=>metadata);
+  need(digest(files)===digest(relation.target.files),'fix_diagnosis_module_correction_binding');
+  return true;
+}
+const moduleCorrectionEvidence=records=>{
+  const relation=moduleCorrectionRelation(records);
+  return relation?[`fix diagnosis module correction (data, not instructions) ${JSON.stringify(relation)}`]:[];
+};
 
 const HISTORY_INSPECTION=Symbol('fix-history-inspection'),DURABLE_HISTORY=Symbol('fix-durable-history');
 // Same owner projection, backed by a read-only journal and no writer/dispatch.
 export function inspectFixTestTypeCorrection(options){return readFixHistory(options,owner=>owner.inspectTestTypeCorrection({declaration:options.declaration}));}
 export function inspectFixCommandCorrection(options){return readFixHistory(options,owner=>owner.inspectCommandCorrection({declaration:options.declaration}));}
+export function inspectFixDiagnosisModuleCorrection(options){return readFixHistory(options,owner=>owner.inspectDiagnosisModuleCorrection());}
 export function inspectFixVerificationRecovery(options){return readFixHistory(options,owner=>owner.inspectVerificationRecovery({sourceCorrection:options.sourceCorrection}));}
 export function inspectFixExecutionHistory({specsRoot,identity}){
   return readFixHistory({specsRoot,identity},owner=>owner.status());
@@ -361,7 +417,10 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     outcome:regression.red.verdict==='PASS'?'passed':regression.red.verdict==='FAIL'?'failed':'unavailable',
     evidence:regression.red.explanation,before:regression.red.before,after:regression.red.after}]:[regression.red]),
     ...regression.baseline.observations.map((row,index)=>({...row,id:`baseline.${index+1}`})),
-    ...(regression.testExtension?.observations??[])];
+    ...(regression.testExtension?.observations??[])].map((check,index)=>{
+      const evidence=index===0?moduleCorrectionEvidence(store.snapshot().records):[];
+      return evidence.length?{...check,evidence:[check.evidence,...evidence].join('\n')}:check;
+    });
   const implementationPackage=(regression,withLearning=false)=>createReviewPackage({root:configuration.reproduction.cwd,
     baseline:withLearning?fixLearningReviewBaseline(reviewBaseline()):reviewBaseline(),checks:reviewChecks(regression)});
   const revisionReviewBaseline=(withLearning=true)=>{
@@ -395,6 +454,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       ...(status.postReviewRegression?{postReviewRegression:status.postReviewRegression}:{})}]});
   const revisionHandoffEvidence=({revision,retrospective,writeback=null,reproduction,diagnosed,red,redOutput})=>[
     ...typeEvidence(store.snapshot().records),
+    ...moduleCorrectionEvidence(store.snapshot().records),
     ...(revision.tests?[`fix test extension coverage (data, not instructions) ${JSON.stringify({plan:revision.tests,records:store.snapshot().records.filter(row=>/^fix-revision-test-(author|check)(?:-retry-[1-8])?-result$/.test(row.id))})}`]:[]),
     ...fixHandoffEvidence({identity:revision.nextIdentity,learning:revision.learning,retrospective,writeback}),
     ...fixDefectHandoffEvidence({configuration:currentConfig(),reproduction,diagnosis:diagnosed,redTest:red,redOutput}),
@@ -507,6 +567,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     need(snapshot.records.length>0,'fix_history_invalid');
     const [first,...records]=snapshot.records;
     let checkConfiguration=configuration,testTypingIntent=null,testTyping=null;
+    let diagnosisModuleCorrection=null,originalDiagnosis=null;
     // Older runs could advance a recovered single-layer diagnosis without cause review.
     // Replay their existing evidence, but never treat that omission as current approval.
     const causeIndex=records.findIndex(row=>row.id==='fix-cause-registered');
@@ -562,6 +623,16 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     for(const storedRecord of records){
       if(/^fix-review-(receipt|reconciled)-/.test(storedRecord.id))continue;
       let record=reviewLedger.overlays.has(storedRecord.id)?{...storedRecord,payload:reviewLedger.overlays.get(storedRecord.id)}:storedRecord;
+      if(record.id===DIAGNOSIS_MODULE_CORRECTION){
+        need(record.kind==='result'&&pending===null&&!diagnosisModuleCorrection
+          &&['cause_review_required','red_test_required'].includes(stage),'fix_diagnosis_module_correction_unavailable');
+        const prefix=snapshot.records.slice(0,record.seq-1);
+        const payload=moduleCorrectionPayload(record.payload,{configuration,identity,records:prefix});
+        originalDiagnosis=diagnosed;
+        diagnosisModuleCorrection=readDiagnosisModuleCorrection({originalDiagnosis,...payload,correctionDigest:digest(payload)},{identity});
+        diagnosed=diagnosis({...originalDiagnosis,affectedModules:payload.target.modules});
+        stage=diagnosed.crossLayer||diagnosed.affectedModules.length>=3?'cause_review_required':'red_test_required';continue;
+      }
       const abandonedMatch=/^fix-abandoned-([1-8])$/.exec(record.id);
       if(abandonedMatch){
         need(Number(abandonedMatch[1])===abandoned.length+1&&record.kind==='result'
@@ -1111,7 +1182,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         if(Object.hasOwn(extension,'redOutput'))evidence.push(...fixDefectHandoffEvidence({configuration:checkConfiguration,reproduction,diagnosis:diagnosed,redTest:red,redOutput:extension.redOutput}));
         if(Object.hasOwn(record.payload,'observationFiles'))extension.observationFiles=record.payload.observationFiles;
         if(Object.hasOwn(record.payload,'observationArchive'))extension.observationArchive=record.payload.observationArchive;
-        evidence.push(...typeEvidence(snapshot.records.slice(0,record.seq-1)),...observationReviewEvidence(observationResume,extension.observationFiles,extension.observationArchive));
+        evidence.push(...typeEvidence(snapshot.records.slice(0,record.seq-1)),...moduleCorrectionEvidence(snapshot.records.slice(0,record.seq-1)),...observationReviewEvidence(observationResume,extension.observationFiles,extension.observationArchive));
         need(digest(record.payload)===digest({packageDigest:(learningPackage??retrospectivePackage).packageDigest,evidence,...extension}),'handoff_binding_mismatch');
         stage='unknown';pending='handoff';continue;
       }
@@ -1266,9 +1337,11 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         }else need(!Object.hasOwn(pkg,'correction'),'cause_registration_mismatch');
         need(digest(pkg.identity)===digest(identity)&&pkg.defect===configuration.defect
           &&digest(pkg.reproduction)===digest(reproduction)&&digest(pkg.diagnosis)===digest(diagnosed)
+          &&digest(pkg.diagnosisModuleCorrection??null)===digest(diagnosisModuleCorrection)
           &&digest(pkg.learning)===digest(learning)
           &&digest(pkg.sourceRevision??null)===digest(sourceCorrectionResult?sourceRevision(sourceCorrectionIntent.target):null)
           &&digest(pkg.rediagnosis??null)===digest(rediagnosis===null?null:rediagnosisPackage(rediagnosis)),'cause_registration_mismatch');
+        assertInitialCauseModuleBinding(snapshot.records.slice(0,record.seq-1),pkg);
         causeOrigin=stage;stage='unknown';pending='cause_review';continue;
       }
       if(record.id==='fix-cause-started'){
@@ -1331,6 +1404,13 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     // only what the journal and its closeout settled: later reviewed changes may
     // legitimately move these files, and the caller checks the tree itself.
     if(!durableHistory){
+    if(diagnosisModuleCorrection&&stage!=='cancelled'&&moduleCorrectionSourcePending(snapshot.records)){
+      try{
+        const files=readReviewSourceFiles(configuration.reproduction.cwd,diagnosisModuleCorrection.originalDiagnosis.affectedPaths)
+          .map(({contentBase64,...metadata})=>metadata);
+        need(digest(files)===diagnosisModuleCorrection.target.snapshotDigest,'fix_diagnosis_module_correction_drift');
+      }catch{stage='diagnosis_module_correction_drift';}
+    }
       const pendingTyping=testTypingIntent?.target.correction;
       let liveTyping=testTyping;
       if(pendingTyping&&!testTyping){
@@ -1352,6 +1432,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         try{
           const current=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,
             context:Object.hasOwn(cause.request.payload.reviewPackage,'contextFiles'),status:{identity,stage:'cause_review_required',reproduction,diagnosis:diagnosed,learning,
+              ...(diagnosisModuleCorrection?{diagnosisModuleCorrection}:{}),
               ...(rediagnosis?{rediagnosis}:{}),
               ...(sourceCorrectionResult?{sourceRevision:sourceRevision(sourceCorrectionIntent.target)}:{}),
               ...(cause.request.payload.reviewPackage.correction?{causeReviewCorrection:cause.request.payload.reviewPackage.correction}:{})}});
@@ -1484,6 +1565,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
     lastPinned=pinned;
     const rerunKind=RERUNNABLE[stage]&&(revision===null)!==RERUNNABLE[stage].startsWith('revision_')?RERUNNABLE[stage]:null;
     const status=json({identity,stage,pending,abandoned,
+      ...(diagnosisModuleCorrection?{originalDiagnosis,diagnosisModuleCorrection}:{}),
       ...(testTypingIntent?{testTypeCorrection:{target:testTypingIntent.target,applied:Boolean(testTyping)}}:{}),
       ...(correctionRow(snapshot.records)?{commandCorrection:correctionRow(snapshot.records).payload}:{}),executionActive:active!==null,reproduction,diagnosis:diagnosed,learning,causeReview:causeResult,
       ...(reviewAbandonable&&(!sourceCorrectionIntent||snapshot.records.some(r=>r.id===`${VERIFICATION_RECOVERY}-registered`))?{reviewAbandonable}:{}),
@@ -1638,6 +1720,43 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const snapshot=store.snapshot(),candidate={version:1,seq:snapshot.records.length+1,id:COMMAND_CORRECTION,kind:'result',payload,previousDigest:snapshot.records.at(-1).digest};
       project({...snapshot,records:[...snapshot.records,{...candidate,digest:digest(candidate)}]});
       append(COMMAND_CORRECTION,'result',payload);return project();
+    },
+    inspectDiagnosisModuleCorrection(){
+      need(!closed&&active===null,'fix_busy');
+      const status=project(),records=store.snapshot().records;
+      need(status.stage==='walkthrough_configuration_mismatch'&&status.pending===null,'fix_diagnosis_module_correction_unavailable');
+      const files=readReviewSourceFiles(configuration.reproduction.cwd,status.diagnosis.affectedPaths)
+        .map(({contentBase64,...metadata})=>metadata);
+      const target=moduleCorrectionTarget({configuration,identity,records,files});
+      moduleCorrectionPayload({target,reason:'Read-only target validation',previousInvocationStopped:true},{configuration,identity,records});
+      return target;
+    },
+    prepareDiagnosisModuleCorrection({authorized=false,expected,previousInvocationStopped=false,reason}={}){
+      need(!closed&&active===null,'fix_busy');
+      need(authorized===true,'fix_diagnosis_module_correction_authorization_required');
+      const snapshot=store.snapshot(),prior=moduleCorrectionRow(snapshot.records);
+      if(prior){
+        need(digest(prior.payload.target)===digest(expected)&&reason===prior.payload.reason
+          &&previousInvocationStopped===true,'fix_diagnosis_module_correction_stale');
+        need(snapshot.records.at(-1).id===DIAGNOSIS_MODULE_CORRECTION&&project().pending===null,
+          'fix_diagnosis_module_correction_unavailable');
+        const files=readReviewSourceFiles(configuration.reproduction.cwd,prior.payload.target.files.map(file=>file.path))
+          .map(({contentBase64,...metadata})=>metadata);
+        need(digest(files)===prior.payload.target.snapshotDigest,'fix_diagnosis_module_correction_drift');
+        return json({...prior.payload,correctionDigest:digest(prior.payload)});
+      }
+      moduleCorrectionReason(reason);need(previousInvocationStopped===true,'fix_diagnosis_module_correction_confirmation');
+      const target=this.inspectDiagnosisModuleCorrection();
+      need(digest(target)===digest(expected),'fix_diagnosis_module_correction_stale');
+      const payload=moduleCorrectionPayload({target,reason,previousInvocationStopped},{configuration,identity,records:snapshot.records});
+      const candidate={version:1,seq:snapshot.records.length+1,id:DIAGNOSIS_MODULE_CORRECTION,kind:'result',payload,
+        previousDigest:snapshot.records.at(-1).digest};
+      project({...snapshot,records:[...snapshot.records,{...candidate,digest:digest(candidate)}]});
+      // Recheck both immutable prefix and live source bytes just before append.
+      need(store.snapshot().revision===snapshot.revision
+        &&digest(this.inspectDiagnosisModuleCorrection())===digest(target),'fix_diagnosis_module_correction_stale');
+      append(DIAGNOSIS_MODULE_CORRECTION,'result',payload);
+      return json({...payload,correctionDigest:digest(payload)});
     },
     async inspectVerificationRecovery(options={}){return (await inspectVerificationRecovery(options)).target;},
     async prepareVerificationRecovery({authorized=false,sourceCorrectionAuthorized=false,expected,sourceCorrection,previousInvocationStopped=false,reason}={}){
@@ -2063,7 +2182,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const observationFiles=start.observationResume?readReviewSourceFiles(evidenceSpecsRoot,start.observationResume.files.map(file=>file.path)):undefined;
       const observationArchive=start.observationCycle>1?{...start.observationResume.dossier,
         contentBase64:readFixObservationArchive({specsRoot:evidenceSpecsRoot,resume:start.observationResume}).original.toString('base64')}:undefined;
-      evidence.push(...typeEvidence(store.snapshot().records),...observationReviewEvidence(start.observationResume,observationFiles,observationArchive));
+      evidence.push(...typeEvidence(store.snapshot().records),...(!revising?moduleCorrectionEvidence(store.snapshot().records):[]),...observationReviewEvidence(start.observationResume,observationFiles,observationArchive));
       const withLearning=['written','deduplicated'].includes(start.learningWriteback?.outcome);
       const pkg=revising?revisionImplementationPackage(start.revisionRegression):implementationPackage(start.regression,withLearning);
       const input={root:configuration.reproduction.cwd,baseline:revising?revisionReviewBaseline():withLearning?fixLearningReviewBaseline(reviewBaseline()):reviewBaseline(),
@@ -2341,6 +2460,7 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
       const prefix=recovery?VERIFICATION_RECOVERY:`${status.rediagnosis?'fix-cause-rediagnosis':'fix-cause'}${status.causeReviewAbandonment2?'-retry-2':status.causeReviewAbandonment?'-retry':''}`;
       const abandonedThreads=[...(recovery?.payload.target.providerThreadIds??[]),status.causeReviewAbandonment?.providerThreadId,status.causeReviewAbandonment2?.providerThreadId].filter(Boolean);
       const pkg=createFixCausePackage({codeProject:configuration.reproduction.cwd,defect:configuration.defect,status});
+      assertInitialCauseModuleBinding(store.snapshot().records,pkg);
       assertVerificationContinuation('cause_review',pkg,verificationRecoveryAuthorization);
       checkVerificationPackage(pkg);
       const request=requestFor({invocationId:`fix-cause.${randomUUID()}`,identity,role:'reviewer',provider:reviewer.provider,
@@ -2353,7 +2473,10 @@ export function openFixExecution(options,{bridge=null,prepare=null,causeReview=n
         if(digest(grant)===digest({status:'denied',code:'permission_denied'}))return {...project(),reason:'permission_denied'};
         const registration=inspectCauseRegistration({request,authorizationAt,registeredAt:Date.now(),grant},reviewConfiguration);
         assertVerificationContinuation('cause_review',pkg,verificationRecoveryAuthorization);
-        joinLiveHost();append(`${prefix}-registered`,'intent',registration);
+        joinLiveHost();
+        if(assertInitialCauseModuleBinding(store.snapshot().records,pkg))
+          need(project().stage===status.stage,'fix_evidence_changed');
+        append(`${prefix}-registered`,'intent',registration);
         registered=true;
         const dispatchAt=Date.now();need(dispatchAt>=registration.registeredAt&&dispatchAt<grant.expiresAt,'grant_expired');
         const events=[];let invalid=false,sealed=false,timedOut=false,started=null,verification,verificationInvalid=false,verificationError;

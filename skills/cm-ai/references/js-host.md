@@ -82,6 +82,8 @@
 node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan "{PLAN.json}" advance
 ```
 
+**在 Claude Code 里调用驾驶员：** 按共享路径合同（`runtime/project-context.md`）最终解析并验证的工作流根确为默认 `~/.claude` 时，驾驶员单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-ai-drive.mjs --plan <PLAN 绝对路径> <操作>` / `node ~/.claude/scripts/cm-ai-batch-drive.mjs --plan <PLAN 绝对路径> <操作>`：前面不接 `cd`、变量赋值，也不用 `&&`、`;`、管道和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样能匹配本技能声明的放行规则。用户显式提供的 `CM_WORKFLOW_HOME`、自定义 `CLAUDE_HOME`、源码目录或更新器返回的根指向别处时，照原写法用实际根的路径，按正常权限确认处理，不改去调用 `~/.claude` 下的另一份。需要固定工作目录时，先用单独一条 `cd` 切换，不与驾驶员连写。Codex 等其他运行时照原写法。
+
 先按下节准备计划及真实答案文件。计划中的 `checks` 须为实际可执行的命令；驱动不接受静态检查结果代替执行。
 
 ## 探活、等待与关闭
@@ -226,6 +228,18 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
    - **等已有任务用运行时的等待接口**：要等某个子代理或后台任务，优先用当前运行时实际提供的任务等待／完成通知接口，不要另写「循环等文件」的后台脚本；等待条件写错就会空转到被停。确实只能等文件时，循环必须带总时长上限。
    - **非交互调用 Codex 要关输入**：`codex exec` 一类命令放后台时必须关闭标准输入（`</dev/null` 或等价写法），否则它会一直等输入直到被停。
    - **拿到终态先报告，不盲目重启**：后台任务被停、失败或超时后，先用 `status` 核对运行的真实状态并向用户报告，再决定重跑；不要在没看状态的情况下自动重启宿主或重发同一步。
+8. 创建运行前体检（只读，几秒内跑完；真实运行里不少阻塞在开工前就能看出来）：
+   `node "{CM_WORKFLOW_ROOT}/scripts/cm-start-check.mjs" --plan "{PLAN.json}"`。不写文件、不起宿主、不跑检查命令；Git 用扫描器的安全读取（可信 git、关闭仓库配置的 fsmonitor 与 clean/process 过滤器、不读用户配置）。只支持普通单任务、当前会话模式的 PLAN：`PLAN.permissions` 含受保护模式、provider 开发或 bootstrap 参数时退出 2，不给结论，请按下列各项手工核对。`error`（退出 1）必须先改；`warn` 逐条处理，保留要写明理由；`--strict` 让 warn 也退出 1。脚本核对：
+   - scope 含受保护路径（AGENTS.md、tasks.md、`.reviews`、`.cm-*` 等）——创建必被 `protected_scope` 拒绝。scope 为空、重复，或含绝对路径、`..`、反斜杠、冒号——创建同样必被拒绝，脚本按输入不合法退出 2。
+   - `PLAN.checks` 的命令重复、同一 scheme／目的地的 `xcodebuild test` 都没有 `-only-testing`（很可能各跑一遍全量）、各检查超时之和超过检查整步的 30 分钟期限（`sameExecutionAs` 不计）。实测：aihot 76 个检查步里，4 个恰在 30.0 分钟被中止，已完成的最长 29.9 分钟。
+   - scope 内文件在代码根已有未提交改动（含新建）：基线会把它们当起点，交审包里看不到这部分。Git 跑不起来是 warn，代码根不是 Git 仓库是 info；有跳过项时摘要写成「体检完成……有 N 项核对被跳过」，不写「体检通过」。已有 `.git` 却被 Git 拒绝读取（仓库损坏、目录属主不同）是 warn。scope 超过 256 条创建会被拒，脚本按输入不合法退出 2。
+   脚本看不到、要在创建前自己核对：
+   - scope 含任务要改的测试与夹具文件；新增夹具路径一起列入，事后追加要走受控 scope 修订。
+   - 检查命令是 `sh x.sh` 这类包装时，脚本内部是否又跑了同一套全量测试；脚本只认得直连的 `xcodebuild`。
+   - 模拟器独占：显式指定 UDID，同一设备同一时刻只有一个会话在测；并行台数要限。aihot 记录：四台并行出现元素超时，日志量过大会让测试框架崩溃。
+   - 开发答案 `application.note` 不超过 512 字（UTF-16 单位）且必填字段齐全；审查材料（截图等）先压缩到审查包上限内。
+   - 不要手动把 `AGENTS.md` 等受保护指令放回代码根；教训走 Learning 写回，手放会让写回卡死。
+   - 高风险任务先拆小：改动文件多（T-006 范围约 30 个）或涉及原生滚动、手势、多 iOS 版本矩阵。每个运行只有 6 次计数调用、6 个计数 effect，开发额度用完只能走 supersede 重开。
    卡住时的手机提醒（`notify.json`）只覆盖宿主和驾驶员自己看得见的事（等待应答、空转、宿主异常退出、停在要人处理的状态），且要提醒已配置、推送成功；会话派出去的后台命令它看不见，不能替代上面这几条。
 
 ## 同一引擎的双端启动
@@ -248,7 +262,7 @@ v2 的自动审查仍使用冻结模型和完整审查包，恢复不得改变�
 
 首次 create 可同时提供原 `--workflow-config`。v2 在 policy 中选择 `qa:"run"`；
 单任务 QA 修复明确选择 `qaFix:"manual"` 或 `"auto"`，批次必须为 `disabled`。
-配置缺失时如实阻断，不自动开启能力。disabled 仍执行 `qa_assess` 与原必需 QA 判定；
+配置缺失时如实阻断，不自动开启能力。disabled 仍执行 `qa_assess` 与原必需 QA 判定；v2 没给 `--workflow-config` 时宿主也只补这一步判定（不加执行器和文档能力），驾驶员照样要求 `qa-assess.json`；
 触发后没有 executor 时停在 `qa_triggered/pendingAction:qa_execution`，不能报告 PASS 或 `run_done`。
 恢复保持原策略与配置，启动型恢复使用专门文档的 `launchControlTarget`，QA 修复子恢复使用 `fix_status` 的含 child 目标。
 QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.timeoutMs` 可设 1–3600000 毫秒，
@@ -290,7 +304,7 @@ JS 返回阻断、待授权、失败、取消、unknown 或补正要求时，报
 ## 汇报与能力边界
 
 只以 JS 实际结果报告“已做、剩余、问题、下一步”。task 完成不等于 workflow 完成；
-只有原 finalizer 的 run_done 且本次必需业务证据齐备，才报告该运行完成。
+只有原 finalizer 的 run_done 且本次必需业务证据齐备，才报告该运行完成；报告末尾照 N8「输出总结」最后三行给出会话边界结论。
 受控补正本轮只支持无 JS ownership 的兼容 taskgate 任务。cm-ai 单/批任务 r2 仍 blocked，
 没有 runner-owned correction 完成入口；JS journal/run/unknown 证据禁止兼容 writer，不删证据或手改状态绕过。
 目前 CLI 有本地真实工具与合成 reviewer 组合证据，没有完整真实双宿主业务验收。

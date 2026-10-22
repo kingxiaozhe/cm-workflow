@@ -8,6 +8,7 @@ const sqlite=()=>process.getBuiltinModule('node:sqlite');
 import { need,shape,id,hex,json,digest,freeze,JOURNAL_PAYLOAD_LIMIT } from './effect-contract.mjs';
 import { isSupportedExecutionPlatform } from './execution-platform.mjs';
 import { MiB,STATE_LIMIT,PHYSICAL_LIMIT } from './execution-store-limits.mjs';
+import {fixJournalWorkflow,packFixJournalPayload,packFixJournalState,unpackFixJournalState} from './review-presentation.mjs';
 
 const APP_ID=0x434d5831;
 const PROTOCOL_SQL='CREATE TABLE protocol(version INTEGER NOT NULL CHECK(version=1))';
@@ -33,7 +34,7 @@ function regular(p,limit) {
   need(s.isFile() && !s.isSymbolicLink() && s.nlink===1,'unsupported_file');
   need((s.mode&0o077)===0,'store_permissions');need(s.size<=limit,'limit_exceeded');return s;
 }
-function readState(p) {
+function readState(p,{withBytes=false}={}) {
   const before=regular(p,STATE_LIMIT),fd=fs.openSync(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
   try {
     need(sameInode(before,fs.fstatSync(fd)),'snapshot_changed');
@@ -43,7 +44,8 @@ function readState(p) {
       && before.ctimeMs===after.ctimeMs && bytes.length===after.size,'snapshot_changed');
     const raw=bytes.toString('utf8'),value=JSON.parse(raw);
     // Compare original bytes: replacement decoding must never repair corruption.
-    need(Buffer.from(JSON.stringify(value)+'\n').equals(bytes),'store_corrupt');return value;
+    need(Buffer.from(JSON.stringify(value)+'\n').equals(bytes),'store_corrupt');
+    return withBytes?{value,bytes}:value;
   }finally{fs.closeSync(fd);}
 }
 function validateState(raw,options) {
@@ -56,7 +58,8 @@ function validateState(raw,options) {
   for(const [index,r] of v.records.entries()) {
     shape(r,['version','seq','id','kind','payload','previousDigest','digest']);
     need(r.version===1,'store_version');need(r.seq===index+1 && r.previousDigest===previous,'store_corrupt');
-    id(r.id);need(!ids.has(r.id) && kinds.has(r.kind),'store_corrupt');ids.add(r.id);json(r.payload,JOURNAL_PAYLOAD_LIMIT);
+    id(r.id);need(!ids.has(r.id) && kinds.has(r.kind),'store_corrupt');ids.add(r.id);
+    need(Buffer.byteLength(JSON.stringify(packFixJournalPayload(r.payload,{workflow:fixJournalWorkflow(v)})))<=JOURNAL_PAYLOAD_LIMIT,'limit_exceeded');
     const {digest:checksum,...data}=r;hex(checksum);need(digest(data)===checksum,'store_corrupt');previous=checksum;
   }
   const {revision,...data}=v;hex(revision);need(digest(data)===revision,'store_corrupt');return v;
@@ -72,8 +75,10 @@ function runBytes(dir) {
   }
   need(total<=PHYSICAL_LIMIT,'limit_exceeded');return total;
 }
-function atomicState(dir,value) {
-  const bytes=Buffer.from(JSON.stringify(value)+'\n');need(bytes.length<=STATE_LIMIT,'limit_exceeded');
+function atomicState(dir,value,physical=null) {
+  const encoded=physical??packFixJournalState(value);
+  if(physical!==null)need(digest(unpackFixJournalState(physical))===digest(value),'store_corrupt');
+  const bytes=Buffer.from(JSON.stringify(encoded)+'\n');need(bytes.length<=STATE_LIMIT,'limit_exceeded');
   need(runBytes(dir)+bytes.length<=PHYSICAL_LIMIT,'limit_exceeded');
   const tmp=path.join(dir,`.state.${randomUUID()}.tmp`);let fd,renamed=false;
   try {
@@ -210,16 +215,29 @@ export function openExecutionStore(input) {
     };
     const statePath=path.join(dir,'state.json');
     if(options.create)atomicState(dir,seal({version:1,identity:options.identity,fingerprints:options.fingerprints,records:[]}));
+    let physicalState=null,validatedBytes=null,validatedLogical=null;
     const snapshot=()=>{
       need(!closed,'store_closed');need(!poisoned,'store_poisoned');
-      try{guard();runBytes(dir);return validateState(readState(statePath),options);}catch(error){poisoned=true;throw error;}
+      try{
+        guard();runBytes(dir);
+        const {value:physical,bytes}=readState(statePath,{withBytes:true});
+        // Reuse only after every fresh path/ownership/read/canonical check above.
+        // The buffer stays private; validateState returns a deeply frozen value.
+        if(validatedBytes!==null && validatedBytes.equals(bytes))return validatedLogical;
+        const logical=validateState(unpackFixJournalState(physical),options);
+        // Private physical rows never escape to the logical owner. Append keeps
+        // these validated old objects verbatim instead of encoding them again.
+        physicalState=physical;validatedBytes=bytes;validatedLogical=logical;return logical;
+      }catch(error){poisoned=true;throw error;}
     };
     snapshot();
     const append=input=>{
       need(!closed,'store_closed');need(!poisoned,'store_poisoned');
-      const v=json(input,MiB+1024);shape(v,['id','kind','payload','expectedRevision']);
-      id(v.id);hex(v.expectedRevision);need(kinds.has(v.kind));json(v.payload,JOURNAL_PAYLOAD_LIMIT);
-      const current=snapshot(),existing=current.records.find(r=>r.id===v.id);
+      const v=json(input,10*MiB);shape(v,['id','kind','payload','expectedRevision']);
+      id(v.id);hex(v.expectedRevision);need(kinds.has(v.kind));
+      const current=snapshot(),physicalPayload=packFixJournalPayload(v.payload,{workflow:fixJournalWorkflow(current)});
+      need(Buffer.byteLength(JSON.stringify({...v,payload:physicalPayload}))<=MiB+1024,'limit_exceeded');
+      const existing=current.records.find(r=>r.id===v.id);
       if(existing){need(existing.kind===v.kind && digest(existing.payload)===digest(v.payload),'record_conflict');return current;}
       need(v.expectedRevision===current.revision,'revision_mismatch');
       need(current.records.length<1024,'limit_exceeded');
@@ -227,7 +245,16 @@ export function openExecutionStore(input) {
         previousDigest:current.records.at(-1)?.digest??null};
       const {revision:oldRevision,...data}=current;
       const next=validateState(seal({...data,records:[...current.records,{...record,digest:digest(record)}]}),options);
-      try{guard();atomicState(dir,next);}catch(error){poisoned=true;throw error;}
+      const {storageEncoding,...physicalData}=physicalState;
+      const encodedSequences=[...(storageEncoding?.records??[]),
+        ...(Buffer.byteLength(JSON.stringify(v.payload))>JOURNAL_PAYLOAD_LIMIT?[record.seq]:[])];
+      const physicalNext={...physicalData,records:[...physicalState.records,{...record,payload:physicalPayload,digest:digest(record)}],
+        revision:next.revision,...(encodedSequences.length?{storageEncoding:{version:1,kind:'cm-fix-review-payloads-v1',records:encodedSequences}}:{})};
+      try{
+        guard();atomicState(dir,next,physicalNext);
+        // A new physical state must take the full validation path on next read.
+        validatedBytes=null;validatedLogical=null;
+      }catch(error){poisoned=true;throw error;}
       return next;
     };
     return Object.freeze({snapshot,append,close});

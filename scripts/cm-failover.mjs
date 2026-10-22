@@ -8,6 +8,7 @@ import childProcess from 'node:child_process';
 // Single source of truth for role primary/standby; shared with the cm-ai host.
 import {ROLE_ROUTING} from '../runtime/js/cm-ai/runtime-failover.mjs';
 import {taskDeclarations,approvedTaskGrammar,TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
+import {parseFeatureTaskText,validDependencies} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 
 export {ROLE_ROUTING};
 
@@ -135,22 +136,57 @@ export function classifyBreakpoint(task,attempts){
     summary:`第 ${last.attempt} 次审查结论无法识别，需人工确认`};
 }
 
+function reviewEntries(reviewsDir){
+  if(!fs.existsSync(reviewsDir))return new Set();
+  return new Set(readDirectory(reviewsDir,'reviews directory').filter(e=>e.isFile()).map(e=>e.name));
+}
+
+// The current task follows the cm-ai admission rule: DROPPED tasks are skipped,
+// and a task is ready only once each prerequisite is completed or DROPPED.
+// Evidence of JS runs lives in <specs>/.reviews under the feature name without
+// its number prefix; legacy runs keep <feature>/.reviews. The JS location wins.
 function inspectFeature(featureDir,feature){
-  const tasks=parseTasks(readTextFile(path.join(featureDir,'tasks.md'),'tasks.md'),approvedTaskGrammar(path.dirname(featureDir)));
-  const reviewsDir=path.join(featureDir,'.reviews');
-  let entries=new Set();
-  if(fs.existsSync(reviewsDir))
-    entries=new Set(readDirectory(reviewsDir,'reviews directory').filter(e=>e.isFile()).map(e=>e.name));
-  const pending=tasks.filter(task=>!task.done);
-  const current=pending[0]??null;
-  const breakpoint=current===null
-    ? {node:'N6',state:'all_tasks_done',summary:'全部任务已标记完成，进入 QA 评估'}
-    : classifyBreakpoint(current,attemptEvidence(reviewsDir,entries,feature,current.id));
+  const grammar=approvedTaskGrammar(path.dirname(featureDir));
+  const text=readTextFile(path.join(featureDir,'tasks.md'),'tasks.md');
+  const tasks=parseTasks(text,grammar);
+  const parsed=parseFeatureTaskText(text,{allowDependencyPunctuation:true,grammar});
+  if(parsed.error)throw new FailoverError(`tasks.md is not readable by the cm-ai task rule: ${parsed.error}`);
+  if(!validDependencies(parsed.tasks,parsed.dependencies))throw new FailoverError('tasks.md dependencies are invalid by the cm-ai task rule: dependencies_invalid');
+  const dropped=new Set(parsed.tasks.filter(task=>task.dropped).map(task=>task.id));
+  const settled=id=>dropped.has(id)||tasks.some(task=>task.id===id&&task.done);
+  const ready=task=>(parsed.dependencies.get(task.id)??[]).every(settled);
+  const pending=tasks.filter(task=>!task.done&&!dropped.has(task.id));
+  const current=pending.find(ready)??null;
+  const specsReviews=path.join(path.dirname(featureDir),'.reviews'),slug=feature.replace(/^\d+\./,'');
+  const evidence=task=>{
+    const js=attemptEvidence(specsReviews,reviewEntries(specsReviews),slug,task.id);
+    if(js.length)return js;
+    const legacy=path.join(featureDir,'.reviews');
+    return attemptEvidence(legacy,reviewEntries(legacy),feature,task.id);
+  };
+  const breakpoint=pending.length===0
+    ? {node:'N6',state:'all_tasks_done',summary:'全部任务已标记完成或作废，进入 QA 评估'}
+    : current===null
+      ? {node:'N2',state:'dependencies_not_ready',summary:`剩余 ${pending.length} 个任务的依赖都未满足，需先处理依赖`}
+      : classifyBreakpoint(current,evidence(current));
   return {feature,featureDir,tasks,
     done:tasks.filter(task=>task.done).length,
+    dropped:dropped.size,
     total:tasks.length,
     currentTask:current,
     breakpoint};
+}
+
+// Shared .reviews evidence is keyed by the feature name without its number, so
+// two features that collide on either form cannot be told apart. Refuse them,
+// as cm-ai admission does (feature_contract_invalid), before reading evidence.
+function assertDistinctFeatureKeys(specsRoot){
+  const names=readDirectory(specsRoot,'specs directory')
+    .filter(entry=>entry.isDirectory()&&FEATURE_RE.test(entry.name)&&fs.existsSync(path.join(specsRoot,entry.name,'tasks.md')))
+    .map(entry=>entry.name);
+  const keys=names.flatMap(name=>[...new Set([name,name.replace(/^\d+\./,'')])]);
+  if(new Set(keys).size!==keys.length)
+    throw new FailoverError('feature names collide once their number is removed (feature_contract_invalid); shared review evidence would be ambiguous');
 }
 
 export function inspectSpecs(specsDir){
@@ -158,8 +194,10 @@ export function inspectSpecs(specsDir){
   if(fs.existsSync(path.join(resolved,'tasks.md'))){
     const feature=path.basename(resolved);
     if(!FEATURE_RE.test(feature))throw new FailoverError(`unsupported feature directory name: ${feature}`);
+    assertDistinctFeatureKeys(path.dirname(resolved));
     return {specsDir:resolved,features:[inspectFeature(resolved,feature)]};
   }
+  assertDistinctFeatureKeys(resolved);
   const features=[];
   for(const entry of readDirectory(resolved,'specs directory')){
     if(!entry.isDirectory()||!FEATURE_RE.test(entry.name))continue;

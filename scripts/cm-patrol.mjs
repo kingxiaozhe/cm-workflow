@@ -30,7 +30,8 @@ function readEntry(file){
     if(!Number.isSafeInteger(value.pid)||value.pid<=0)return null;
     const at=Date.parse(value.at);if(!Number.isFinite(at))return null;
     return {file,pid:value.pid,at,sessionKey:text(value.sessionKey),workflow:text(value.workflow)??'cm',project:text(value.project),
-      runId:text(value.runId),task:text(value.task),stage:text(value.stage),operation:text(value.operation)};
+      runId:text(value.runId),task:text(value.task),stage:text(value.stage),operation:text(value.operation),
+      sessionTitle:text(value.sessionTitle)};
   }catch{return null;}
 }
 
@@ -70,6 +71,8 @@ export function patrol({env=process.env,now=Date.now(),report=false}={}){
   const sent=notify({key:`dead|${dead.map(entry=>entry.sessionKey??entry.file).sort().join(',')}`,event:'dead',
     workflow:workflows.size===1?[...workflows][0]:'cm',project:projects.size===1?[...projects][0]:null,
     runId:dead.length===1?dead[0].runId:null,task:dead.length===1?dead[0].task:null,
+    // The dead hosts' own sessions, never the session that runs this patrol.
+    sessionTitle:[...new Set(dead.map(entry=>entry.sessionTitle).filter(Boolean))].join('、')||null,
     stage:`${dead.length} 个宿主进程已不在`,code:'host_process_gone',
     nextAction:`${listed.join('；')}。请回到会话用 status 核对运行状态，需要时按恢复说明接手`},{env,now});
   if(sent.sent||sent.reason==='duplicate')for(const entry of dead){try{fs.unlinkSync(entry.file);}catch{}}

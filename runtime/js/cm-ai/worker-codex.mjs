@@ -2,6 +2,7 @@ import {createProviderUsageCapture} from './provider-usage.mjs';
 import { spawn } from 'node:child_process';
 import { commonArgs, cleanEnvironment, configFingerprint } from './codex-config.mjs';
 import {ownedProcessCleanup} from './owned-process-cleanup.mjs';
+import {CODEX_RECONNECT_NOTICE_LIMIT,isCodexReconnectNotice} from './codex-reconnect-notice.mjs';
 
 // A preflight receipt is diagnostic evidence, not a human approval token.
 export function preflightMatches(receipt, options) {
@@ -47,7 +48,7 @@ export function codexWorker({ cwd, model, schemaPath, preflight, effort='high',
       });
       const cleanupGroup=ownedProcessCleanup(child);
       let buffer = '', outputBytes = 0, value, completion = false, failure, settled = false;
-      let failureTerminal = false, noticeCount = 0, receiptInvalid=false;
+      let failureTerminal = false, noticeCount = 0, reconnectNoticeCount = 0, receiptInvalid=false;
       let providerThread, turnStarted = false, usageContextInvalid=false, timedOut = false, closeTimer, closing=false, terminationRequested=false;
       const cleanup=()=>process.platform==='win32'&&!terminationRequested?Promise.resolve():
         cleanupGroup().catch(()=>{failure='process_cleanup_unknown';});
@@ -73,6 +74,13 @@ export function codexWorker({ cwd, model, schemaPath, preflight, effort='high',
         let message;
         try { message = JSON.parse(line); } catch { stop('invalid_event'); return; }
         if (!validEventShape(message)) { stop('invalid_event'); return; }
+        // Codex emits reconnect notices as errors but may subsequently recover.
+        // Keep a separate bounded notice budget; overflow follows fatal handling.
+        if (isCodexReconnectNotice(message) && reconnectNoticeCount < CODEX_RECONNECT_NOTICE_LIMIT) {
+          reconnectNoticeCount++;
+          try { if (typeof onNotice === 'function') onNotice(message.message.slice(0, 200)); } catch {}
+          return;
+        }
         // Notices stay outside the observer protocol and result contract.
         if (message.type === 'item.completed' && message.item.type === 'error') {
           if (typeof message.item.message !== 'string' || !providerThread

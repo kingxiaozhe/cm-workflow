@@ -120,7 +120,7 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-drive.mjs" --plan PLAN.json advance
 
 ## 显式恢复：先展示目标，再固定它
 
-`abandon_review`、`abandon_effect`、`develop_redo`、`bootstrap_review_recover`、`reconcile_review`
+`abandon_review`、`abandon_effect`、`develop_redo`、`bootstrap_review_recover`、`completion_rework`、`reconcile_review`
 及原 QA 修复 `fix_action` 的显式恢复子操作，
 必须绑定操作者实际看到并选择的原状态。普通 `advance` 的自动推进不需要这个绑定。
 
@@ -178,7 +178,7 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-batch-host.mjs" serve \
 
 ## 单任务启动型恢复：launchControlTarget
 
-QA 重跑、QA 配置修订与规格换绑在创建 host 前改变恢复输入，使用单独的启动快照。
+QA 重跑、QA 配置修订、规格换绑、范围追加和一次开发续次在创建 host 前改变恢复输入，使用单独的启动快照。
 先按原配置只读 status，展示操作和前提，把原 `status.launchControlTarget` 完整保存到普通 UTF-8 JSON 文件，
 再在原 `serve --mode resume` 启动中提供 `--expected-control FILE`。不能用 `status.controlTarget` 代替启动快照。
 目标文件严格校验，拒绝重复键、软链接或硬链接；不自动计算或刷新目标。
@@ -189,6 +189,8 @@ QA 重跑、QA 配置修订与规格换绑在创建 host 前改变恢复输入�
 | 重跑未知 QA | `--rerun-unknown-qa`；环境故障还可提供原 `--qa-environment-failure REASON` |
 | 重跑已阻断 QA | `--rerun-blocked-qa`；仍满足原可重跑条件与预算 |
 | QA 配置修订 | `--revise-qa-config OLD_WORKFLOW.json --qa-config-revision-reason REASON`；当前 `--workflow-config` 提供已核对的新配置 |
+| 原运行范围追加 | `--revise-scope SCOPE.json --scope-revision-reason REASON`；SCOPE.json 是包含全部原路径的完整 JSON 数组 |
+| 一次 a2 开发续次 | `--development-rework --development-rework-reason REASON`；不改变 scope |
 | 已批准规格材料换绑 | `--rebind-spec-material --spec-rebind-reason REASON`；保留原重新批准与漂移门禁 |
 
 例如重跑符合原条件的已阻断 QA：
@@ -201,9 +203,23 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-host.mjs" serve \
 ```
 
 `launch-target.json` 保存此前展示的完整 launchControlTarget，不能从本次启动的新状态替换它。
-这些入口仍保留原 QA/规格恢复条件；新快照绑定不扩大可恢复状态、预算或范围。
+这些入口仍保留各自原恢复条件。范围追加与一次开发续次必须由人工在启动时显式开启，不能由会话 wire 请求自行开启；批准原因与实际追加时间写入原 journal。它们互斥，也不能与其他启动恢复合用。启动参数不是人工身份认证机制，执行者仍须遵守当前对话的人工批准边界。
 普通 wire 操作的 `expectedControl` 与启动参数 `--expected-control` 是两种用途，不可互换。
-v2 create supersede 尚未开放，返回 `supersede_unavailable`；保留原证据，不通过 legacy 作废旧运行。
+### 卡死任务重开：v2 create supersede
+
+旧运行已终止（blocked、cancelled、unknown 或符合原条件的 fixture_completed），且原运行没有剩余的合法恢复入口时，可用新 runId 重开同一任务：
+
+1. 用旧运行的原配置只读查看：`node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-run.mjs" inspect-history --config 旧run.json`，把返回的 `supersedeTarget` 原样保存为普通 UTF-8 JSON 文件，并向用户展示旧运行状态与重开原因。
+2. 用户批准后，新运行定义（同 feature、同 task、新 runId）启动：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-host.mjs" serve \
+  --config 新run.json --mode create --host-context "{当前真实会话ID}" \
+  --control-config POLICY.json --review-config review.json --runtime codex \
+  --supersede-reviewed-evidence --supersede-reason "单行原因" --supersede-target target.json
+```
+
+宿主在建新 journal 前沿用旧版重开的全部前提（tasks.md 未勾选、旧 writer 已关闭、无未结 effect、代码漂移规则不变），并额外要求：只有一条未被取代的直接前驱运行，且它当前的启动投影与 `target.json` 完全一致；宿主先锁住旧运行的 writer，再比较目标并**在锁内重新发现同任务运行**（必须仍只有这一条未被取代的直接前驱，且 `.execution` 下的运行目录集合与本次调用首次发现时完全相同（新增或消失的目录，包括尚无 journal 记录的失败残留目录，都算变化；首次发现之前就存在、无法归属任务的历史空目录不在此保证内）——否则 `snapshot_changed`；错开时间的第二次重开因此也被拒），并一直持有到新运行写完替代记录、归档完成（或失败）才释放；本次调用自己持有的这把锁不会被「旧运行 writer 是否被占用」的检查（含执行优化的 prior-writer guard）误判为外部占用，其他进程同时打开该文件时仍判占用：预览后旧运行已变化返回 `snapshot_changed`；旧运行正被恢复或另一次重开占用时返回 `supersede_unavailable`。两种情况都不自动刷新目标、不归档证据、不建新运行。缺少目标返回 `invalid_input`；legacy 入口带 `--supersede-target` 返回 `invalid_arguments`。新运行从第 1 轮开始，旧运行 journal 原样保留，旧 handoff／回执按旧版规则归档到 `.reviews/.superseded/`，最后一次审查结论作为参考带入。驾驶脚本 PLAN 把三项放进 `permissions`（`--supersede-target` 路径相对 PLAN）。
 
 ## 旧运行与迁移拒绝
 
@@ -220,12 +236,13 @@ v2 create supersede 尚未开放，返回 `supersede_unavailable`；保留原证
 | 固定目标已陈旧或不匹配当前状态 | `snapshot_changed`，不自动刷新 |
 | 恢复时策略改变 | `fingerprint_mismatch`，不替换原策略 |
 | 恢复时原配置发生变化 | 沿原指纹与配置漂移门禁拒绝 |
-| v2 create supersede | `supersede_unavailable`，不走旧入口作废运行 |
+| v2 create supersede 缺 `--supersede-target` | `supersede_unavailable` 或 `invalid_input`，不走旧入口作废运行 |
+| v2 create supersede 目标与旧运行当前状态不符 | `snapshot_changed`，不归档、不建新运行 |
 
 v2 策略随新运行持久化并纳入新版执行指纹。旧 metadata 中该字段缺省时，原格式与字节保持原样。
 不重写旧 journal、旧指纹或旧控制记录，不把能回放旧记录扩称允许跨入口执行。
 只读 status 可用于核对历史；执行入口仍必须匹配原协议。迁移需要独立的新运行决定，不能就地换入口规避旧证据。
-单任务 QA 重跑、QA 配置修订与规格换绑使用上节 launchControlTarget；批次和 supersede 等出口以实际支持为准，不把单任务恢复合同理解成全部旧出口已开放。
+单任务 QA 重跑、QA 配置修订、规格换绑、范围追加和一次开发续次使用上节 launchControlTarget；批次出口以实际支持为准（单任务 supersede 见上节），不把单任务恢复合同理解成全部旧出口已开放。
 
 ## 兼容 taskgate 的一次受控补正
 
@@ -329,3 +346,93 @@ owner 仍活跃或无法核实是否退出时保留锁与证据，不删锁重�
 定向夹具和源码审查结果见本轮交接记录；本文示例不等于真实 provider 或业务运行验收。
 cm-ai 新单任务/批次的 r2 blocked correction completion 未支持；上方独立 taskgate 补正不提供原 runner 或 batch 的完成路径。
 本次本地方案不包含安装、提交、push、发布、部署或资金动作。
+
+
+## 完成检查失败后原运行返工
+
+`completion_rework` 只在 v2 单任务、未受保护的原配置 resume 且 `development:conversation` 使用，提交真实单行 `reason`（最多 500 UTF-8 字节）及先前 status 返回的固定 `expectedControl`。它不执行开发；成功后发送 `advance`，实际 develop 请求到达后才能修改代码。
+
+仅未完成任务的第 1 轮、有效 approved 回执、最后 complete 检查失败 `completion_checks_changed`、代码/handoff/规格仍精确等于旧包且还有 develop+review 预算时允许。已有 a2 handoff 或 r2 文件拒绝。已完成、取消、pending、提交开始、其他漂移、重复及第 2 轮都拒绝。
+
+宿主追加 `completion-rework-requested`，绑定原失败 checkpoint、effect、包、receipt、artifact/handoff 摘要及原因，保留旧 r1、a1 handoff、journal 与失败记录；把原运行推进 a2，清当前完成凭证，不改旧批准 verdict。a2 须改变已审代码并产出 fresh r2；旧批准不能完成新交付。第 2 轮未通过仍按既有上限停止，不开启第 3 轮。
+
+该操作不提供 legacy、batch、bootstrap、跨运行 supersede 或已完成任务重开的入口。原 `complete` 仍支持仅修环境后对同一包复查。
+
+当前入口仅支持原会话开发；provider 模式缺少绑定失败上下文的开发请求合同，因此明确拒绝，不将原 approved 当作修改指令。该能力须另行设计，不随本次原运行恢复扩大。
+
+## 开发检查失败后追加原运行范围
+
+`revise_scope` 只用于 v2 单任务、未受保护的 `development:conversation` 原配置 resume。
+第 1 轮必须停在 `blocked/develop_checks_not_passed`，没有在途 effect、Review、提交或取消。
+`bootstrap`、`qaFix` 必须 disabled；`qa:run` 保留原 QA 配置、执行及完成门禁。
+每个运行只追加一次，不缩减原范围，不变更 run、attempt、规格或冻结配置，也不替代当前对话对具体新增路径的批准。
+
+先展示 status 的真实 `launchControlTarget` 与具体新增路径，由人工批准后保存原启动快照。
+`SCOPE.json` 为包含全部原路径的完整 JSON 数组，原因是非空单行文本（最多 500 UTF-8 字节）。
+在原 `serve --mode resume` 增加 `--expected-control launch-target.json --revise-scope SCOPE.json --scope-revision-reason REASON`。
+驾驶脚本 PLAN 的 `permissions` 同样包含这些启动参数；文件路径相对 PLAN 解析。运行 `status` 检查追加结果，再用原配置 `advance`。
+不再使用 PLAN.scope、PLAN.reason 或 PLAN.expectedControl 发 `revise_scope`；wire 请求即使带正确 controlTarget 也拒绝。
+陈旧目标、重复或缩减路径、保护路径、越界、链接、缺来源、漂移、已送审或名额不足均拒绝。
+
+宿主追加 `scope-revised`，绑定原失败 checkpoint、原范围、创建基线、前一记录及原因。
+新增既有路径必须与创建时全代码根 inventory 的 SHA、大小和文件模式一致；仅为这些路径有界补齐原字节。
+新增文件路径必须在原 inventory 和当前磁盘均不存在，父目录不得由链接改写。
+扩展必须使用创建时 version 2 的完整 inventory；version 1 基线或缺少冻结忽略路径清单的旧 version 1 ignore 证据返回 `scope_revision_unsupported_baseline`，普通旧运行读取和恢复保持兼容。
+忽略、依赖和保护路径不通过该操作开放。原范围中的已改业务文件不重新取基线。
+固定依赖、杂项及原 ignore 的路径限制由同一纯函数供执行和回放核对。该恢复入口也拒绝父目录名 Pods；它不改通用快照的 CocoaPods 判定。父目录、链接、当前存在性和文件读取仍在执行时核对。
+
+成功后 status.effectiveScope 展示追加后的真实范围。关闭并按原 run.json、POLICY resume 后，
+驾驶员预检、真实开发与检查请求、handoff、Review 和完成复查使用回放派生的完整范围。
+业务旧 diff 保留，新增文件在 Review 中仍为创建 diff；新增既有文件若暂未修改，
+其完整原字节、SHA 和模式仍进入 unchangedScope，并在送审和完成前验证。
+成功追加不代表开发、检查、Review 或完成已通过；继续 advance，实际 develop 请求到达后才写入。
+该入口不开放 legacy、provider、受保护开发、bootstrap、batch、QA 修复或已完成任务重开。
+
+### 一次受控的 a2 开发续次
+
+`development_rework` 仅用于原 v2 单任务、未受保护的 `development:conversation` resume。
+由人工核对并保存原 `status.launchControlTarget` 为 `launch-target.json`，在 `serve --mode resume` 增加
+`--expected-control launch-target.json --development-rework --development-rework-reason REASON`。
+原因用于审计，须为非空单行文本（最多 500 UTF-8 字节）；不根据新 status 自动刷新旧目标。
+
+只有 attempt2 已持久化 `develop_retry_limit`，紧前记录是有成功开发调用、完整 Learning 和真实 failed check
+的 `develop_checks_not_passed` checkpoint，且已有 a1 `changes_requested` 原包/凭证时允许。
+固定计数必须是 4 calls / 5 effects；没有 pending、r2 登记或凭证、提交、取消、workflow error 或 QA。
+任务已完成、r2/handoff 占位文件、provider、protected、parallel batch 及规格漂移均拒绝。
+
+操作只追加 `development-rework-authorized`，绑定原失败、limit、r1、配置、有效 scope、原基线和当前源摘要。
+不重拍原基线，不改变 attempt 或 scope，不减免旧成功重查，不重写历史。
+默认 6 calls / 6 effects 保留；事件只给绑定的下一 developer 和 fresh `review-2` 配对一个额外 effect。
+开发 intent 即消费单次开发许可；失败、超时、中断和重启不会恢复第二次开发权限。
+新开发开始前仍核对源和规格；若在许可后漂移则拒绝，不能自动更新绑定。
+当前源摘要只说明新增许可时的源，并不声称旧失败时的代码已经被历史快照证明。
+
+驾驶脚本使用 `cm-ai-drive.mjs --plan PLAN.json status`，PLAN 示例（原 review、workflow 等配置保持不变）：
+
+```json
+{
+  "config": "run.json",
+  "controlConfig": "control.json",
+  "mode": "resume",
+  "hostContext": "{当前真实会话ID}",
+  "permissions": [
+    "--review-config", "review.json",
+    "--workflow-config", "workflow.json",
+    "--expected-control", "launch-target.json",
+    "--development-rework", "--development-rework-reason", "{人工批准本次续次的实际原因}"
+  ]
+}
+```
+
+范围追加用 `--revise-scope SCOPE.json --scope-revision-reason REASON` 替换上述两项开发续次参数。
+两个动作都不新增 `--allow-*`，不发送 `development_rework` / `revise_scope` wire 操作。
+启动追加一次记录后，从后续 PLAN.permissions 移除专用恢复参数及 `--expected-control`，再按原配置 `advance`；不能重复消费旧启动目标。
+成功返回原 attempt2 的 `blocked/develop_checks_not_passed`，随后 `advance` 才会发真实 develop 请求。
+等待请求后修改代码，重新检查、生成交付包并派发独立 r2；r1 不替代 r2。
+开发许可消费后，合法 `blocked/check_answer_*` 的只重跑检查仍沿原两次重查上限执行，不派第二次开发。
+返工轮审查保留现有无结论重派策略：`review-2-retry-N` / `review-2-resume-N` 及组合 ID 可使用绑定 review 的额外 effect 名额，
+但仍须通过原 transport/abandon、fresh invocation、调用计数和重派上限校验；不因该名额接受旧 verdict、第三轮或任意 review ID。
+没有 Review 批准就不能 complete；完成前复查、任务门禁及原 QA 合同继续执行。
+回放按记录顺序验证原默认上限，然后从已验证的新增事件派生许可；checkpoint/config/模型自报额度无效。
+已知限制：已消费一次性返工许可的运行，若之后最后任务的文档同步失败，文档同步重发不可用（返工预算已用满，名额门与总预算预检都会拒绝），只能用 supersede 重开。
+旧 runtime 不认识新增事件时应拒绝读取，不能忽略事件降级执行。

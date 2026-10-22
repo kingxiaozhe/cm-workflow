@@ -149,14 +149,21 @@ export function generatedRunId(now=new Date(),uuid=randomUUID()){
   return `${stamp}-${uuid.replaceAll('-','').slice(0,8)}`;
 }
 
-export function selectRunId({explicit,event,pointer,latestProjectRun,projectStates,now,uuid}){
+export function selectRunId({explicit,event,workflow,pointer,latestProjectRun,projectStates,projectWorkflows={},now,uuid}){
   if(explicit!==null&&explicit!==undefined){
     if(typeof explicit!=='string'||!RUN_ID.test(explicit))throw new UsageError('invalid --run-id');
     return {runId:explicit,newRun:event==='run_start'};
   }
-  if(pointer?.status==='running'&&projectStates[pointer.run_id]!=='done')return {runId:pointer.run_id,newRun:false};
+  // 另一个工作流的 run_start 不可能是续跑：不接到别人遗留的进行中运行上，开新运行。
+  const joinable=(runId,fallbackWorkflow)=>{
+    if(event!=='run_start')return true;
+    const owner=projectWorkflows[runId]??fallbackWorkflow;
+    return typeof owner!=='string'||owner===workflow;
+  };
+  if(pointer?.status==='running'&&projectStates[pointer.run_id]!=='done'&&joinable(pointer.run_id,pointer.workflow))
+    return {runId:pointer.run_id,newRun:false};
   if(pointer?.status==='done'&&TERMINAL_EVENTS.has(event))return {runId:pointer.run_id,newRun:false};
-  if(latestProjectRun&&projectStates[latestProjectRun]==='running')return {runId:latestProjectRun,newRun:false};
+  if(latestProjectRun&&projectStates[latestProjectRun]==='running'&&joinable(latestProjectRun,latestProjectRun===pointer?.run_id?pointer.workflow:undefined))return {runId:latestProjectRun,newRun:false};
   if(latestProjectRun&&projectStates[latestProjectRun]==='done'&&TERMINAL_EVENTS.has(event))
     return {runId:latestProjectRun,newRun:false};
   return {runId:generatedRunId(now,uuid),newRun:true};
@@ -252,8 +259,9 @@ export function buildEvent(input,state={}){
   const project=input.project??(projectRoot?path.basename(projectRoot):'unscoped');
   if(typeof project!=='string'||[...project].length>120||/[\n\r\0]/.test(project))
     throw new UsageError('--project must be one line and at most 120 characters');
-  const selection=selectRunId({explicit:input.runId??null,event,pointer:state.pointer??null,
-    latestProjectRun:state.latestProjectRun??null,projectStates:state.projectStates??{},now:state.now,uuid:state.uuid});
+  const selection=selectRunId({explicit:input.runId??null,event,workflow,pointer:state.pointer??null,
+    latestProjectRun:state.latestProjectRun??null,projectStates:state.projectStates??{},projectWorkflows:state.projectWorkflows??{},
+    now:state.now,uuid:state.uuid});
   const value={schema_version:1,run_id:selection.runId,at,workflow,event,runtime,project,detail};
   if(phase)value.phase=phase;if(projectRoot)value.project_path=projectRoot;if(specsDir)value.specs_path=specsDir;
   Object.assign(value,data);value.event_id=deterministicEventId(value);
@@ -298,17 +306,18 @@ function readJsonLines(file,{strict=false}={}){
 }
 
 function loadProjectRunState(file){
-  let latestProjectRun=null;const projectStates={};
+  let latestProjectRun=null;const projectStates={},projectWorkflows={};
   try{
     for(const value of readJsonLines(file)){
       if(!value||typeof value!=='object'||typeof value.run_id!=='string'||!RUN_ID.test(value.run_id)||typeof value.event!=='string')continue;
       latestProjectRun=value.run_id;
+      if(!Object.hasOwn(projectWorkflows,value.run_id)&&typeof value.workflow==='string')projectWorkflows[value.run_id]=value.workflow;
       if(value.event==='run_start'||value.event==='resume')projectStates[value.run_id]='running';
       else if(TERMINAL_EVENTS.has(value.event))projectStates[value.run_id]='done';
       else if(!Object.hasOwn(projectStates,value.run_id))projectStates[value.run_id]='running';
     }
-  }catch{return {latestProjectRun:null,projectStates:{}};}
-  return {latestProjectRun,projectStates};
+  }catch{return {latestProjectRun:null,projectStates:{},projectWorkflows:{}};}
+  return {latestProjectRun,projectStates,projectWorkflows};
 }
 
 function findJsonlEvent(file,eventId){

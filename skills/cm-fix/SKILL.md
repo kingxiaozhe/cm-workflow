@@ -1,6 +1,8 @@
 ---
 name: cm-fix
 description: 用户说“修复这个可复现 bug”或要求根据失败报告修代码时使用。执行红灯测试、根因定位、最小修复、独立审查和回归；尚未确认的问题先用 cm-test，新功能和架构重设计转交 cm-prd。
+allowed-tools:
+  - Bash(node ~/.claude/scripts/cm-fix-drive.mjs *)
 ---
 
 # cm-fix — 缺陷修复小闭环
@@ -57,7 +59,7 @@ JS 步骤留在 `unknown` 时先检查原调用和磁盘现场。只有本地复
 以下手工流程中，两个路径校验通过后调用统一写入器记录 `run_start`；暂停/续跑沿用同一
 `.cm-run.json`，本次缺陷闭环或观测闭环退出时写 `run_done`。不得直接拼 JSON。
 
-**会话边界（省 token）：** 一个缺陷的 cm-fix 运行收尾后，提示用户在新会话里开始下一项，以减少历史上下文的重复读入：长会话每次调用都要重读整段历史，在一个真实项目样本中占了大部分用量（见 `runtime/model-efficiency.md`「Session boundary」）。中途换会话按本技能的恢复规则接手，不改写记录、不跳过审查或授权。
+**会话边界（省 token）：** 一个缺陷的 cm-fix 运行收尾时，按 `runtime/model-efficiency.md`「Session boundary」的判断表给出结论。中途换会话按本技能的恢复规则接手，不改写记录、不跳过审查或授权。
 
 ## 项目角色路由
 
@@ -169,7 +171,8 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n4 \
 - 独立审查凭证严格落
   `{SPECS_DIR}/.reviews/fix-{slug}-T-FIX-{slug}-r{attempt}.md`，包含当前 handoff
   文件名和 SHA。审查完成后必须真跑下列命令；只有当前 attempt 的
-  `independent: true` 且 `verdict: approved` 才能进入第 6 步：
+  `independent: true` 且 `verdict: approved` 才能进入第 6 步。凭证由审查方按
+  `runtime/review.md`「Evidence file」模板完整产出、你原样保存；门禁报格式错就把报错交回审查方重出，不自己改：
 
 ```bash
 python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n5 \
@@ -223,7 +226,12 @@ python3 {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.py check-n5 \
 档案: fixes/{文件名}   METRICS 已记
 学习: {AGENTS.md已写回并回读/已复盘，无新增}
 业务地图: {已更新/已建局部地图/无需更新/项目规则豁免/待同步} {路径或原因}
+会话边界：换新会话。
+新会话里运行：{下一个缺陷的 $cm-fix 入口；没有下一项时写「无」}
+原因：{一句话}
 ```
+
+最后三行是会话边界结论（走 JS 驾驶员时由驾驶员在收尾后打印默认三行，默认分支原样放在回复最后），按顺序取首个命中：用户还要在本会话讨论 → 结论行改为 `会话边界：继续本会话。`；用户拒绝换会话或宿主开不了新会话 → 改为 `会话边界：留在本会话（{原因}）。`；其余用上面的默认三行。前两种只删「新会话里运行」那一行，保留「原因」行。
 
 ## 边界
 

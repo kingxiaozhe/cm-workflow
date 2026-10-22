@@ -7,6 +7,42 @@ import {inspectFixReproductionAttempts} from './reproduce.mjs';
 import {inspectFixTestAuthor} from './test-author.mjs';
 import {inventory} from './test-extension.mjs';
 import {inspectVisualCarrier} from './visual.mjs';
+import {inspectFixDiagnosis} from './diagnosis.mjs';
+
+// A module-only correction is separate evidence, never a rewritten diagnosis or
+// permission to change the code scope. The owner binds the target to history;
+// every cause package carries both the original answer and that exact binding.
+export function readDiagnosisModuleCorrection(raw,{identity,diagnosis}={}){
+  const value=json(raw,128*1024);
+  shape(value,['originalDiagnosis','target','reason','previousInvocationStopped','correctionDigest']);
+  const original=inspectFixDiagnosis(value.originalDiagnosis),t=value.target;
+  shape(t,['identity','configurationDigest','historyDigest','diagnosisRecordDigest','diagnosisDigest',
+    'reproductionDigest','walkthroughDigest','originalModules','modules','files','snapshotDigest']);
+  validIdentity(t.identity);
+  need(original.status==='diagnosed'&&value.previousInvocationStopped===true
+    &&typeof value.reason==='string'&&value.reason.trim().length>0&&Buffer.byteLength(value.reason)<=1000
+    &&!/[\r\n\0\u0085\u2028\u2029]/.test(value.reason),'fix_diagnosis_module_correction_binding');
+  need(['configurationDigest','historyDigest','diagnosisRecordDigest','diagnosisDigest','reproductionDigest','walkthroughDigest','snapshotDigest']
+    .every(key=>typeof t[key]==='string'&&/^[a-f0-9]{64}$/.test(t[key])),'fix_diagnosis_module_correction_binding');
+  const corrected=inspectFixDiagnosis({...original,affectedModules:t.modules});
+  need(digest(t.modules)===digest([...new Set(t.modules)].sort())
+    &&digest(t.originalModules)===digest(original.affectedModules)
+    &&t.originalModules.length<t.modules.length&&t.originalModules.every(module=>t.modules.includes(module))
+    &&t.diagnosisDigest===digest(original),'fix_diagnosis_module_correction_binding');
+  need(Array.isArray(t.files)&&t.files.length>0&&t.files.length<=32
+    &&digest(t.files.map(file=>file.path))===digest([...original.affectedPaths].sort()),'fix_diagnosis_module_correction_binding');
+  for(const file of t.files){
+    shape(file,['path','type','mode','size','sha256']);
+    need(file.type==='file'&&Number.isInteger(file.mode)&&file.mode>=0&&file.mode<=511
+      &&Number.isSafeInteger(file.size)&&file.size>=0&&file.size<=1024*1024
+      &&typeof file.sha256==='string'&&/^[a-f0-9]{64}$/.test(file.sha256),'fix_diagnosis_module_correction_binding');
+  }
+  need(t.snapshotDigest===digest(t.files)&&value.correctionDigest===digest({target:t,reason:value.reason,
+    previousInvocationStopped:value.previousInvocationStopped}),'fix_diagnosis_module_correction_binding');
+  if(identity!==undefined)need(digest(t.identity)===digest(identity),'fix_diagnosis_module_correction_binding');
+  if(diagnosis!==undefined)need(digest(corrected)===digest(diagnosis),'fix_diagnosis_module_correction_binding');
+  return value;
+}
 
 export const rediagnosisPackage=value=>({historyDigest:value.historyDigest,priorPackageDigest:value.priorPackageDigest,
   priorObservationDigest:value.priorObservationDigest,reason:value.reason,reviewFeedback:value.reviewFeedback});
@@ -32,6 +68,7 @@ export function createFixCausePackage({codeProject,defect,status,context=true}){
   const contextFiles=context&&status.rediagnosis?readContextFiles(codeProject,status.rediagnosis.reviewFeedback,status.diagnosis.affectedPaths):[];
   const value=json({version:1,kind:'cm-fix-cause-review-package',identity:status.identity,defect,
     reproduction:status.reproduction,diagnosis:status.diagnosis,learning:status.learning,
+    ...(status.diagnosisModuleCorrection?{diagnosisModuleCorrection:readDiagnosisModuleCorrection(status.diagnosisModuleCorrection,{identity:status.identity,...(!status.rediagnosis?{diagnosis:status.diagnosis}:{})})}:{}),
     ...(status.rediagnosis?{rediagnosis:rediagnosisPackage(status.rediagnosis)}:{}),
     ...(status.causeReviewCorrection?{correction:status.causeReviewCorrection}:{}),
     ...(status.sourceRevision?{sourceRevision:status.sourceRevision}:{}),
@@ -43,7 +80,9 @@ export function readFixCausePackage(raw){
   const value=json(raw,4*1024*1024);
   shape(value,['version','kind','identity','defect','reproduction','diagnosis','learning','files','packageDigest',
     ...(Object.hasOwn(value,'correction')?['correction']:[]),...(Object.hasOwn(value,'rediagnosis')?['rediagnosis']:[]),
-    ...(Object.hasOwn(value,'contextFiles')?['contextFiles']:[]),...(Object.hasOwn(value,'sourceRevision')?['sourceRevision']:[])]);
+    ...(Object.hasOwn(value,'contextFiles')?['contextFiles']:[]),...(Object.hasOwn(value,'sourceRevision')?['sourceRevision']:[]),
+    ...(Object.hasOwn(value,'diagnosisModuleCorrection')?['diagnosisModuleCorrection']:[])]);
+  if(Object.hasOwn(value,'diagnosisModuleCorrection'))readDiagnosisModuleCorrection(value.diagnosisModuleCorrection,{identity:value.identity,...(!value.rediagnosis?{diagnosis:value.diagnosis}:{})});
   if(value.sourceRevision){
     shape(value.sourceRevision,['previousPackageDigest','correctionDigest','path','beforeSha256','afterSha256']);
     const r=value.sourceRevision;need([r.previousPackageDigest,r.correctionDigest,r.beforeSha256,r.afterSha256].every(v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v))

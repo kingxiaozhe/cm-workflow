@@ -202,6 +202,41 @@ test('Windows lock serializes two task completions without losing either checkbo
 }));
 
 
+test('approved body must open with an unindented zero-blocking conclusion line; older evidence keeps the legacy reading',()=>fixture(root=>{
+  const handoff=path.join(root,'handoff.json'),review=path.join(root,'review.md');
+  writeHandoff(handoff);writeReview(review,{handoff});
+  const legacy=fs.readFileSync(review,'utf8'),selected={task:'T-001',attempt:1,handoff,changedFiles:['src/example.ts']};
+  const strict=legacy.replace('at: 2026-09-06T07:00:00-07:00','at: 2026-10-21T08:00:00Z');
+  const accepts=(base,body)=>{fs.writeFileSync(review,base.replace('Zero findings.',body));return validateReview(review,selected).verdict==='approved';};
+  const rejects=(base,body)=>{fs.writeFileSync(review,base.replace('Zero findings.',body));
+    assert.throws(()=>validateReview(review,selected),error=>error instanceof GateError&&/explicitly state zero blocking findings/.test(error.message),body);};
+  for(const phrase of ['零发现','零阻塞发现','零阻断发现','无阻塞发现','无阻断发现','未发现阻塞','未发现阻断','Zero findings','no findings','No blocking findings'])
+    assert.ok(accepts(strict,`结论：${phrase}。\n\n审查了全部范围。`),phrase);
+  for(const body of ['Zero findings.','No blocking findings.','- **结论：** 零阻断发现。','**结论：零阻塞发现。**','**结论**：零阻塞发现。',
+'Conclusion: no blocking findings','结论：零阻塞发现。\r\n\r\n说明。'])
+    assert.ok(accepts(strict,body),body);
+  for(const body of ['未发现阻断问题以外的问题。','零阻断发现？','零阻断发现 ？','不能说零阻塞发现。','零阻断发现，并不成立。仍有一个阻断问题。',
+    '不能宣称 e.g. no blocking findings，因为仍有阻断问题。','结论：approved，零 findings。No blocking findings. 已核对 handoff。',
+    '> 其他审查：零阻断发现\n\n本次仍存在一个阻断问题。','> 结论：零阻塞发现。\n\n本次仍存在一个阻断问题。','{"conclusion":"> Zero findings."}','```\nZero findings.\n```','~~~\n~~~javascript\nZero findings.',
+    '{"conclusion":"> 旧结果。No blocking findings."}','{"conclusion":"~~~\\n说明。Zero findings.\\n~~~"}','["e.g. No blocking findings."]',
+    '{"summary":"x"}\n','blocker、major、minor 都是 0。',
+    '- ~~~\n  Zero findings.\n  ~~~\n\n本次仍有阻断。','- a\n  - ````\n    零阻塞发现。\n    ````','1. ```\nZero findings.\n```',
+    '<!--\nZero findings.\n-->','<!-- 草稿 -->\n    Zero findings.','说明。\n  结论：零阻塞发现。','- 第一项\n  零阻塞发现。',
+    '说明。\n\n结论：零阻塞发现。','- ~~~\n  示例\n  ~~~\n\n结论：零阻塞发现。','~~~markdown\n> ~~~\nZero findings.\n~~~\n本轮仍有 major。',
+    '<!-- old --> <!-- example\nZero findings.\n-->','\n    Zero findings.\n\n本轮仍有 major。','\tZero findings.','```示例```\n\nZero findings.',
+    ...['\\u2028','\\u2029','\\u000b','\\u000c','\\u0085','\\r'].map(separator=>`{"conclusion":"结论：${separator}Zero findings."}`),'结论：\u2028Zero findings.'])
+    rejects(strict,body);
+  // 启用前的凭证按原判定：原有说法出现在任意位置即可，新增说法不回溯放宽。
+  assert.ok(accepts(legacy,'结论：approved，零 findings。No blocking findings. 已核对 handoff。'));
+  rejects(legacy,'结论：零阻断发现。');
+  fs.writeFileSync(review,strict.replace('Zero findings.','blocker、major、minor 都是 0。'));
+  assert.throws(()=>validateReview(review,selected),error=>error instanceof GateError
+    &&/as its first line, unindented/.test(error.message)&&/零阻塞发现/.test(error.message)&&/regenerate/.test(error.message));
+  fs.writeFileSync(review,strict.replace('reviewer: codex-subagent','reviewer: codex-cli (gpt-6.1-sol, reasoning high, read-only)'));
+  assert.throws(()=>validateReview(review,selected),error=>error instanceof GateError
+    &&/unsupported reviewer source declaration/.test(error.message)&&/codex-subagent, codex-cli, claude-cli, self-degraded/.test(error.message));
+}));
+
 test('reviewer and independent fields validate declaration format and consistency',()=>fixture(root=>{
   const handoff=path.join(root,'handoff.json'),review=path.join(root,'review.md');
   writeHandoff(handoff);writeReview(review,{handoff});

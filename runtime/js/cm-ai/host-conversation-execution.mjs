@@ -18,7 +18,7 @@ import {createCodexReviewRun} from './codex-review-adapter.mjs';
 import {createClaudeReviewRun} from './claude-review-adapter.mjs';
 import {claudeWorker,claudePreflightMatches} from './worker-claude.mjs';
 import {codexWorker,preflightMatches} from './worker-codex.mjs';
-import {createHostWorkflowCapabilities} from './host-workflow-capabilities.mjs';
+import {createHostWorkflowCapabilities,createImplicitQaDecision} from './host-workflow-capabilities.mjs';
 import {resolveHostRole} from './host-role-routing.mjs';
 import {checklistGaps} from './checklist-coverage.mjs';
 import {specsPermissionArgs} from './codex-config.mjs';
@@ -213,7 +213,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   const verificationGate=options.verificationPrecheck===true?async(request,control)=>{
     const verdict=readVerificationPrecheck(await bridge.call('verification_precheck',
       {...request,codeProject:definition.codeProject,feature:definition.feature,
-        scope:definition.scope},control.signal));
+        scope:request.scope??definition.scope},control.signal));
     if(!verdict.satisfied)try{
       process.stderr.write(JSON.stringify({diagnostic:'verification_precheck_failed',
         task:request.identity.taskId,attempt:request.identity.attempt,
@@ -226,7 +226,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     try{
       const gaps=checklistGaps([request.description,request.verification]
         .filter(text=>typeof text==='string').join('\n'),
-        [verdict.evidence,deliveredText(definition.codeProject,definition.scope)].join('\n'));
+        [verdict.evidence,deliveredText(definition.codeProject,request.scope??definition.scope)].join('\n'));
       if(gaps.length>0)process.stderr.write(JSON.stringify({diagnostic:'checklist_coverage',
         task:request.identity.taskId,attempt:request.identity.attempt,advisory:true,
         gaps:gaps.map(gap=>({total:gap.total,missing:gap.missing}))})+'\n');
@@ -240,7 +240,8 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     ...(verificationGate?{verificationGate:(request,control)=>progress(request,control,'verifying',()=>verificationGate(request,control))}:{}),
     ...(bootstrap?{bootstrap}:{}),
     ...(provider&&!controlPolicy?{developmentAttempt:provider.attempt}:{}),
-    ...(workflow?createHostWorkflowCapabilities({definition,configuration:workflow,bridge,allowQa,runtime,protectedExecution:protection!==null,bootstrap,parallelMember,controlPolicy}):{}),
+    ...(workflow?createHostWorkflowCapabilities({definition,configuration:workflow,bridge,allowQa,runtime,protectedExecution:protection!==null,bootstrap,parallelMember,controlPolicy})
+      :controlPolicy?createImplicitQaDecision({definition,bridge,parallelMember,controlPolicy}):{}),
     ...(options.qaLogHome?{qaLogHome:options.qaLogHome}:{}),
     developer:{provider:coderRuntime,requestedModel:provider?.model??'current-session',contextId:author,run:async(request,control)=>{
       const bound=(coderRuntime==='codex'?readCodexDeveloperRequest:readClaudeDeveloperRequest)(request);
@@ -331,7 +332,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
       if(check)return check(request,control);
       const route=resolveHostRole({definition,identity:request.identity,role:'tester',signal:control.signal,runtime});
       return bridge.call('check',{...request,codeProject:definition.codeProject,
-        scope:definition.scope,requirements:definition.requirements,route},control.signal);
+        scope:request.scope??definition.scope,requirements:definition.requirements,route},control.signal);
     }),
     // The process adapter records observed reviewer events. Preflight checks capability.
     reviewers:[{id:'reviewer',adapterId,provider:reviewProvider,requestedModel:reviewOptions.model,

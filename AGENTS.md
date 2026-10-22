@@ -46,6 +46,7 @@ Install commands modify user-level runtime directories; run them only for an int
 - Serial execution is the default. Parallel workers may not write specs, mark tasks complete, or commit.
 - Preserve user changes and avoid destructive git operations.
 - Keep production release, infrastructure changes, destructive migrations, and mainnet actions behind explicit human confirmation.
+- Before starting a new design or a multi-round adversarial analysis, check `docs/out-of-scope/`; if the idea is listed there, state which reopen condition is now met before discussing it.
 
 ## Compatibility rules
 
@@ -106,3 +107,19 @@ Read the relevant files under `.claude/rules/` when modifying shell scripts, doc
 - **基线复现不能代替失败根因**：区分测试正文与清理钩子失败；相同基线失败只说明不是新增回归，丢失原 cause 后仍保留未知。预检与夹具失败只记录有限系统字段，不打印原 message／stderr，不把能力受限或超时改成通过；夹具总截止与已有驱动预算对齐，产品预算和业务断言保持原值。来源：执行优化回归的启动错误丢失、清理失败和外层夹具超时收尾；证据：`scripts/cm-efficiency-diagnostics.test.mjs` 的无真实枚举／监听错误注入、`scripts/cm-ai-batch-drive.test.mjs` 的实际 live 用例，以及保存的原始失败与基线对照。该教训随本轮改动待独立审查。
 
 - **传输探活不得替代业务进展或持久事实**：心跳只报告存活；阶段截止取既有执行预算，嵌套阶段结束恢复外层原期限。关闭保护按独立操作对象核对归属，不能以可重复 requestId 释放另一在途操作，故障清理也不能记成用户取消。来源：宿主防空等与防误关；证据：`scripts/cm-host-liveness.test.mjs`、`scripts/cm-drive-liveness.test.mjs`、`scripts/cm-host-stage-observer.test.mjs` 的拒关、重复 ID、嵌套期限、断连和无状态副作用用例。[已结构化]
+
+- **派生档案命名空间须在大小写折叠后仍互斥**：不同任务前缀共用目录时，不能只靠大小写区分档案名；使用旧 slug 语法无法产生的分隔符，并验证大小写折叠后无碰撞。任务身份及既有档案名保持不变。来源：T-OBS 观测归档兼容；证据：`scripts/cm-fix-observation-task-id.test.mjs` 的双布局、任务身份和大小写折叠碰撞用例。[已结构化]
+
+- **体检里的运行时限制要和源码同源并设漂移守卫**：检查整步 30 分钟期限是 `host-conversation-execution.mjs` 里的字面量而非导出常量，体检脚本抄了一份时，用源码匹配测试守住，改动源码就让测试变红；再用真实日志（检查步用时分布）校准阈值，不凭记忆写数字。体检只读：Git 只走扫描器的安全读取（可信 git、关闭 fsmonitor 与 clean/process/required 过滤器、不读用户配置），并把代码根转成真实路径再传入，否则符号链接目录会让「项目内的 git 不可信」的比较失效；用定向夹具（对照先证明普通 git 会执行配置程序）加整目录哈希与 mtime 快照证明未写入、未执行。体检只覆盖它建模的模式，其余模式退出 2，不给出「通过」。来源：开工前体检；证据：`scripts/cm-start-check.test.mjs` 的 call limit 守卫、never-writes、仓库配置不执行与不支持模式用例。该教训随本轮改动待独立审查。
+
+- **已批准后返工要贯穿原生完成门禁**：完成检查失败后使用未用的第二轮，保留原 approved 与失败 checkpoint；新的 handoff 只定位原 owner journal，完成门禁核验真实恢复转换、旧包和新交付，不能把文字标记当批准，也不能伪造 r1 changes_requested。来源：完成复查失败原运行返工；证据：`scripts/cm-ai-control-v2-drive.test.mjs` 的真实 CLI、旧目标/源漂移/占位拒绝、摘要篡改与所有 crash prefix 回放用例。[已结构化]
+
+- **范围恢复必须保留原基线并进入真实派发与审查**：N3 检查失败后的显式范围追加绑定原目标、失败 checkpoint 与创建时 inventory；新增旧文件仅在原 SHA/模式仍相同时保存原字节，新路径必须原来和当前都不存在。原基线可判定的路径限制必须供执行和回放共用；原配置和旧记录不变，新增路径从同一追加事件进入 developer、handoff、Review 和完成门禁，未改文件也携带完整材料。来源：T-006 原运行范围恢复；证据：`scripts/cm-ai-scope-revision.test.mjs` 的真实 CLI 29/30 路径、原配置不变、完整材料、拒绝与回放用例。准入生成的 taskSelection 是单任务身份声明，不能当作并行组；权限入口核对原始 trusted parallelSelection，真实准入夹具须同时覆盖 taskSelection 与 featureSelection。该教训随本轮改动待独立审查。
+
+- **检查重查须刷新信号并保留真实取消**：检查超时会中止当前信号，合法 check-only 重查须创建新信号；持久状态仍在 blocked 重查起点且 effect 在途时，真实用户取消也必须写入控制记录并中止新信号，live 与 replay 保持一致。旧 unknown/cancelled 只接受已校验的 timeout→真实 develop-recheck→同成功开发与 Learning 的检查取消链，保留原两次上限、轮次和历史，不重派开发。派发、恢复和检查点须使用同一已校验计数清单，原上限不变；在检查点校验前按已验证的在途检查重查起点纳入当前步骤，不能只在派发时排除、落盘时重新计入。旧记录没有保存的业务快照不能补称已验证，源码继续受原规格、范围和审查门禁约束。来源：T-006 检查超时后原运行恢复；证据：`scripts/cm-ai-check-recheck-cancellation.test.mjs` 的真实 v2 CLI、同宿主、取消、历史、预算与漂移用例及两项定向改坏核对。该教训随本轮改动待独立审查。
+
+- **一次性恢复许可须由原历史派生并在意图处消费**：先按原上限核验历史前缀，再用固定失败、目标、源码字节及模式与下一调用身份追加受控许可；默认上限不变，派发与检查点共用已校验的单次额度，失败或重启不产生第二次开发。持久起点仍阻断而实际 writer 已在途时，取消例外只认该许可绑定的真实 pending 意图；简化 live 状态时也须保留资格字段，不让 live 与 replay 得出不同预算。配置修订与业务执行须按已校验记录合同及历史位置区分，不能只看事件前缀；新许可捕获与派发前比较共用 path/type/mode/SHA 投影，旧快照默认语义保持不变。来源：T-006 a2 一次受控返工；证据：`scripts/cm-ai-development-rework.test.mjs` 的真实 v2 host/CLI、崩溃前缀、取消、伪许可与两项定向变异。该教训随本轮改动待独立审查。
+
+- **扩权恢复须在启动边界显式批准，状态快照只防陈旧**：范围追加和突破默认 effect 预算的续次不因 v2 resume 自动开放；由人工启动参数、原 launchControlTarget、原因和记录时间绑定，wire 即使持有正确 controlTarget 也不能自批。completion_rework 的批次排除同时落在启动权限与持久 binding，受保护开发保留原边界。来源：control-v2 Claude 窄审修复；证据：`scripts/cm-ai-development-rework.test.mjs` 的 wire 拒绝和启动快照用例、`scripts/cm-ai-scope-revision.test.mjs` 的批次与保护拒绝、`scripts/cm-ai-control-v2-drive.test.mjs` 的 durable batch 拒绝。该教训随本轮改动待独立审查。
+
+- **许可消费后仍须区分开发与只重跑检查**：返工许可消费只封住第二次开发；实时名额预检须使用已验证的重查转换，与 journal 中 blocked 起点一致，不能因尚为 unknown 而拒绝合法 check-only。返工轮无结论 Review 重派沿既有身份和次数门禁，不泛化为任意新审查名额。来源：control-v2 Claude 窄审修复；证据：`scripts/cm-ai-development-rework.test.mjs` 的返工后检查超时重查、Review transport retry 与 effect ID 反例。该教训随本轮改动待独立审查。

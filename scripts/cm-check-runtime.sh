@@ -287,6 +287,36 @@ for module in \
   task-owner.mjs task-runner.mjs worker-codex.mjs operator-guidance.mjs; do
   require_file "runtime/js/cm-ai/$module"
 done
+# completion_rework is a paired producer/consumer contract, including transport.
+CONTROL_POLICY_DOC="docs/cm-control-policy-v2.md"
+if [ "$MODE" != "plugin" ]; then
+  CONTROL_POLICY_DOC="cm-workflow/docs/cm-control-policy-v2.md"
+fi
+for consumer in runtime/js/cm-ai/control-policy.mjs runtime/js/cm-ai/host-session.mjs \
+  runtime/js/cm-ai/cm-ai-conversation-entry.mjs scripts/cm-ai-drive.mjs "$CONTROL_POLICY_DOC"; do
+  grep -q 'completion_rework' "$ROOT/$consumer" || fail "missing completion_rework consumer: $consumer"
+done
+for consumer in runtime/js/cm-ai/task-runner.mjs runtime/js/cm-ai/durable-runner-state.mjs scripts/cm-ai-control-v2-drive.test.mjs; do
+  grep -q 'completion-rework-requested' "$ROOT/$consumer" || fail "missing completion rework journal pairing: $consumer"
+done
+grep -q 'cm-completion-rework-v1:' "$ROOT/scripts/cm-task-gate.mjs" || fail "missing native completion rework verifier"
+require_file "scripts/cm-ai-development-rework.test.mjs"
+for consumer in runtime/js/cm-ai/control-policy.mjs runtime/js/cm-ai/host-session.mjs \
+  runtime/js/cm-ai/cm-ai-conversation-entry.mjs scripts/cm-ai-drive.mjs "$CONTROL_POLICY_DOC"; do
+  grep -q 'development_rework' "$ROOT/$consumer" || fail "missing development rework consumer: $consumer"
+done
+for consumer in runtime/js/cm-ai/task-runner.mjs runtime/js/cm-ai/durable-runner-state.mjs scripts/cm-ai-development-rework.test.mjs; do
+  grep -q 'development-rework-authorized' "$ROOT/$consumer" || fail "missing development rework journal pairing: $consumer"
+done
+require_file "runtime/js/cm-ai/scope-revision.mjs"
+require_file "scripts/cm-ai-scope-revision.test.mjs"
+for consumer in runtime/js/cm-ai/control-policy.mjs runtime/js/cm-ai/host-session.mjs \
+  runtime/js/cm-ai/cm-ai-conversation-entry.mjs scripts/cm-ai-drive.mjs "$CONTROL_POLICY_DOC"; do
+  grep -q 'revise_scope' "$ROOT/$consumer" || fail "missing scope revision consumer: $consumer"
+done
+for consumer in runtime/js/cm-ai/task-runner.mjs runtime/js/cm-ai/durable-runner-state.mjs scripts/cm-ai-scope-revision.test.mjs; do
+  grep -q 'scope-revised' "$ROOT/$consumer" || fail "missing scope revision journal pairing: $consumer"
+done
 require_file "scripts/cm-check-runtime.ps1"
 require_file "scripts/cm-security.mjs"
 require_file "scripts/cm-security.test.mjs"

@@ -14,6 +14,7 @@ export function createFixHost({owner,config,runtime='codex',reviewRuntime,permis
         ...(request.operation==='prepare_revision'&&Object.hasOwn(request,'tests')?['tests']:[]),
         ...(request.operation==='prepare_test_type_correction'?['expected','testTypeCorrection','previousInvocationStopped','reason']:[]),
         ...(request.operation==='prepare_command_correction'?['expected','commandCorrection','previousInvocationStopped','reason']:[]),
+        ...(request.operation==='prepare_diagnosis_module_correction'?['expected','previousInvocationStopped','reason']:[]),
         ...(request.operation==='prepare_verification_recovery'?['expected','previousInvocationStopped','reason',...(Object.hasOwn(request,'sourceCorrection')?['sourceCorrection']:[])]:[]),
         ...(request.operation==='reconcile_review'?['invocationId']:[]),
         ...(request.operation==='recover_final_review'?['invocationId','packageDigest','previousInvocationStopped','reason']:[])]);
@@ -41,6 +42,7 @@ export function createFixHost({owner,config,runtime='codex',reviewRuntime,permis
       }
       if(request.operation==='prepare_test_type_correction')return owner.prepareTestTypeCorrection({authorized:extra.has('--allow-test-type-correction'),expected:request.expected,declaration:request.testTypeCorrection,previousInvocationStopped:request.previousInvocationStopped,reason:request.reason});
       if(request.operation==='prepare_command_correction')return owner.prepareCommandCorrection({authorized:extra.has('--allow-command-correction'),expected:request.expected,declaration:request.commandCorrection,previousInvocationStopped:request.previousInvocationStopped,reason:request.reason});
+      if(request.operation==='prepare_diagnosis_module_correction')return owner.prepareDiagnosisModuleCorrection({authorized:extra.has('--allow-diagnosis-module-correction'),expected:request.expected,previousInvocationStopped:request.previousInvocationStopped,reason:request.reason});
       if(request.operation==='prepare_verification_recovery')return owner.prepareVerificationRecovery({authorized:extra.has('--allow-verification-recovery'),sourceCorrectionAuthorized:extra.has('--allow-source-correction'),expected:request.expected,...(Object.hasOwn(request,'sourceCorrection')?{sourceCorrection:request.sourceCorrection}:{}),previousInvocationStopped:request.previousInvocationStopped,reason:request.reason});
       if(request.operation==='reconcile_review')return owner.reconcileReview({invocationId:request.invocationId});
       if(request.operation==='recover_final_review')return owner.recoverFinalReview({

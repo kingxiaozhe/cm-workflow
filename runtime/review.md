@@ -46,7 +46,7 @@ At task start, record the existing working-tree status and the task's intended f
 
 Do not send the whole working tree merely because it is convenient.
 
-New `cm-review-package` version 1 packages include `unchangedScope`: sorted `{path, sha256}` entries for existing, unchanged scope files, bound into `packageDigest` without adding their bodies. These paths belong in `examinedPaths` and may receive evidence-backed findings, but must not be used to require changes to unchanged files or infer contents from hashes. Legacy packages without this field retain their original digest, path set and receipt verification.
+New `cm-review-package` version 1 packages include `unchangedScope`: sorted `{path, sha256}` entries for existing, unchanged scope files, bound into `packageDigest` without adding their bodies. These paths belong in `examinedPaths` and may receive evidence-backed findings, but must not be used to require changes to unchanged files or infer contents from hashes. Entries for files added by a recorded scope revision instead carry the full file record, contents included, and may be examined normally. Legacy packages without this field retain their original digest, path set and receipt verification.
 
 New cm-ai runs additionally bind `specification` into the baseline, developer request and `packageDigest`: feature, task description/verification, all acceptance criteria, design excerpt (up to 64 KiB UTF-8, `truncated:true` above that), task-related test cases and approved source hashes. Review implementation against these ACs and interface contracts. Source paths are relative to the specs root, not writable code scope or extra examinedPaths. Hashes use the existing manifest normalization for runtime task/AC checkboxes. Missing optional test-cases.json yields an empty list and three sources. Live source/approval drift blocks as `spec_drift`, including reapproval of a different contract during a run; material is never silently refreshed. Historical baselines/packages without specification retain their original digest and receipt/completion rules. (Dogfood: separate specs/code roots previously hid the task and interface contracts from both developer and reviewer.)
 
@@ -193,7 +193,8 @@ scope:
 ```
 
 `attempt` 必须等于 `round`。`approved` 必须写 `blocking_findings: 0`，其他
-verdict 至少为 1。`self-degraded` 必须写 `independent: false` 并增加非空的
+verdict 至少为 1。`reviewer` 只能原样写上面四个值之一，不加括号、模型或其他说明；模型、推理强度等写进正文。`approved` 的正文第一个非空行必须顶格、整行只写零阻塞结论：可选「结论：」或 `Conclusion:`，加一个认可说法，可选句号，前面可带列表符或加粗（`**结论：**`、`**结论**：` 均可），例如「结论：零阻塞发现。」，详细说明写在后面。只认第一行：结论写在后文、缩进、写成问句或否定、与其他文字同行都不算。认可的说法（不区分大小写）：零发现、零阻塞发现、零阻断发现、无阻塞发现、无阻断发现、未发现阻塞、未发现阻断、zero findings、no findings、no blocking findings（清单见 `runtime/js/review-findings.mjs`）。正文整段是带 `conclusion` 字段的 JSON 时（受控补正），该字段本身必须是这样一行。头部 `at` 早于 2026-10-21T00:00:00Z 的历史凭证按启用前的判定读取（正文任意位置出现原有说法即可），新增说法不回溯；改写 `at` 只能退回旧判定，不会比旧规则更松。
+手写 Markdown 凭证时，凭证由审查方按本模板完整产出（含头部），主执行者只原样保存到上述路径，不改写其中任何字段或措辞。门禁因格式拒绝时，把报错原文交回审查方重新产出；主执行者自行修改审查结论等于自我批准，不允许。JS 宿主或驾驶员依据已登记、已绑定的审查结果确定性生成凭证（如 `host-review-file.mjs`、`cm-refactor` 驾驶员）不在此列；但主执行者同样不得改动其中的审查结论、来源声明或计数。`self-degraded` 必须写 `independent: false` 并增加非空的
 `degraded_reason`；其他独立通道只有在新上下文中实际执行时才可写 `true`。
 `handoff_sha256` 将结论绑定到本轮 handoff 内容；handoff 改动后必须重新审查。
 新 handoff 还必须包含 `implementation_sha256`，并让 N4/N5 使用

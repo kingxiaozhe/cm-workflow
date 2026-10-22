@@ -9,12 +9,17 @@ import {fileURLToPath} from 'node:url';
 import {inspectFixWalkthrough,readFixWalkthrough,fixWalkthroughBinding} from '../runtime/js/cm-fix/walkthrough.mjs';
 import {inspectFixRegressionFailure} from '../runtime/js/cm-fix/regression-evidence.mjs';
 import {taskDeclarations,approvedTaskGrammar,TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
+import {statesZeroBlockingFindings,ZERO_BLOCKING_PHRASES,REVIEWER_SOURCES} from '../runtime/js/review-findings.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
+import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {resolveCheckpointPackage} from '../runtime/js/cm-ai/checkpoint-package-material.mjs';
+import {publishHostReview} from '../runtime/js/cm-ai/host-review-file.mjs';
 import {snapshot,rootPath,reviewSpecsPath,stableIgnorePolicy,stablePublicPolicy,stableSnapshotPolicy,
   comparableFiles,validateStablePolicy,filePath,INVENTORY_COUNT,INVENTORY_LIMIT} from '../runtime/js/cm-ai/review-package.mjs';
 
 const TASK_RE=/^T-[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const REVIEWERS=new Set(['codex-subagent','codex-cli','claude-cli','self-degraded']);
+const REVIEWERS=new Set(REVIEWER_SOURCES);
 const VERDICTS=new Set(['approved','changes_requested','blocked']);
 const PREPARATION_FILE_LIMIT=256*1024;
 let preparationReadLimit=null;
@@ -398,9 +403,9 @@ function parseReview(review){
   }
   if(scope.length===0)throw new GateError(`review evidence scope must contain at least one entry: ${review}`);
   if(new Set(scope).size!==scope.length)throw new GateError(`review evidence scope must not contain duplicates: ${review}`);
-  const body=lines.slice(end+1).join('\n').trim();
+  const rawBody=lines.slice(end+1).join('\n'),body=rawBody.trim();
   if(!body)throw new GateError(`review evidence body must not be empty: ${review}`);
-  return {header:scalars,scope,body};
+  return {header:scalars,scope,body,rawBody};
 }
 
 function sha256(file){
@@ -417,7 +422,7 @@ function integerHeader(value,label){
 }
 
 export function validateReview(review,{task,attempt,handoff,changedFiles}){
-  const {header,scope,body}=parseReview(review);
+  const {header,scope,rawBody}=parseReview(review);
   const required=['at','reviewer','independent','task','attempt','round','verdict','handoff','handoff_sha256','blocking_findings'];
   const missing=required.filter(field=>!Object.hasOwn(header,field)).sort();
   if(missing.length)throw new GateError(`review header missing fields: ${missing.join(', ')}`);
@@ -429,7 +434,7 @@ export function validateReview(review,{task,attempt,handoff,changedFiles}){
   if(reviewAttempt!==BigInt(attempt)||reviewRound!==BigInt(attempt))
     throw new GateError('review attempt and round must match the handoff attempt');
   // Source declarations only: validate spelling and consistency, not reviewer identity.
-  if(!REVIEWERS.has(header.reviewer))throw new GateError(`unsupported reviewer source declaration: ${header.reviewer}`);
+  if(!REVIEWERS.has(header.reviewer))throw new GateError(`unsupported reviewer source declaration: ${header.reviewer} (write exactly one of ${REVIEWER_SOURCES.join(', ')}; put model or other notes in the body; ask the reviewer to regenerate the evidence, do not edit it yourself)`);
   const independent=header.independent.toLowerCase();
   if(!['true','false'].includes(independent))throw new GateError('review independent declaration must be true or false');
   if(header.reviewer==='self-degraded'&&independent!=='false')
@@ -445,8 +450,8 @@ export function validateReview(review,{task,attempt,handoff,changedFiles}){
     throw new GateError('non-approved review must declare at least one blocking finding');
   if(header.reviewer==='self-degraded'&&!header.degraded_reason?.trim())
     throw new GateError('self-degraded review must include degraded_reason');
-  if(header.verdict==='approved'&&!/(零发现|无阻塞发现|未发现阻塞|zero findings|no findings|no blocking findings)/i.test(body))
-    throw new GateError('approved review body must explicitly state zero blocking findings');
+  if(header.verdict==='approved'&&!statesZeroBlockingFindings(rawBody,{at:header.at}))
+    throw new GateError(`approved review body must explicitly state zero blocking findings as its first line, unindented and containing only the conclusion, e.g. "结论：零阻塞发现。" (accepted phrases: ${ZERO_BLOCKING_PHRASES.join(' / ')}); ask the reviewer to regenerate the evidence, do not edit it yourself)`);
   if(attempt===2&&header.verdict==='changes_requested')
     throw new GateError('round 2 blocking findings must use verdict: blocked');
   if(header.handoff!==path.basename(handoff))
@@ -524,8 +529,94 @@ function validateFixWalkthroughRetry({prior,payload,priorPayload,priorReview,fea
   }
 }
 
-function validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoot){
+// Discover this task's recovery from retained owner records, so deleting a
+// handoff marker or changing a Markdown verdict cannot select legacy gates.
+function completionReworkOwner(reviewsDir,feature,task,projectRoot){
+  const root=path.join(reviewsDir,'.execution');let names;
+  try{const stat=fs.lstatSync(root);if(!stat.isDirectory()||stat.isSymbolicLink()||fs.realpathSync(root)!==root)
+    throw new GateError('invalid completion rework owner directory');
+    names=fs.readdirSync(root);}catch(error){if(error.code==='ENOENT')return null;throw error;}
+  if(names.length>1024)throw new GateError('completion rework owner inventory exceeds bound');
+  const candidates=[];
+  for(const name of names){
+    const dir=path.join(root,name),stat=fs.lstatSync(dir);
+    if(stat.isSymbolicLink())throw new GateError('invalid completion rework owner directory');
+    if(!stat.isDirectory())continue;
+    const file=path.join(dir,'state.json');let raw;
+    try{fs.lstatSync(file);}catch(error){if(error.code==='ENOENT')continue;throw error;}
+    try{raw=JSON.parse(fileRevision(file,16*1024*1024).bytes.toString('utf8'));}
+    catch(error){if(error.code==='ENOENT')continue;throw error;}
+    const config=raw.records?.[0]?.payload?.config;
+    if(config?.identity?.taskId!==task||config.taskLearning?.feature.replace(/^\d+\./,'')!==feature
+      ||projectRoot!==null&&config.root!==projectRoot
+      ||!raw.records.some(row=>['completion-rework-requested','evidence-superseded'].includes(row.payload.type)))continue;
+    const snapshot=readExecutionSnapshot({specsRoot:path.dirname(reviewsDir),identity:raw.identity});
+    const history=readRunnerHistory(snapshot.records,config,3);candidates.push({snapshot,history});
+  }
+  return activeCompletionReworkOwner(candidates);
+}
+// Called only after strict snapshot/replay validation. Supersession never
+// deletes the old evidence; it prevents a retired owner blocking its successor.
+export function activeCompletionReworkOwner(candidates){
+  const retired=new Set(candidates.flatMap(({history})=>history.supersession?.previousRunIds??[]));
+  const owners=candidates.filter(({snapshot})=>!retired.has(snapshot.identity.runId)
+    &&snapshot.records.some(row=>row.payload.type==='completion-rework-requested'));
+  if(owners.length>1)throw new GateError('ambiguous completion rework owner');
+  return owners[0]?.snapshot??null;
+}
+
+// This marker locates the real owner journal; it is never itself approval.
+function validateCompletionRework({payload,priorPayload,feature,task,projectRoot,reviewsDir,stage,owner}){
+  const prefix='cm-completion-rework-v1: ',markers=payload.evidence.filter(item=>item.startsWith(prefix));
+  if(markers.length!==1)throw new GateError('approved r1 requires a bound completion rework');
+  try{
+    const marker=JSON.parse(markers[0].slice(prefix.length));
+    if(canonical(Object.keys(marker).sort())!==canonical(['identity','recordDigest'])
+      ||marker.identity.taskId!==task||marker.identity.attempt!==2)throw new GateError('invalid completion rework');
+    const snapshot=readExecutionSnapshot({specsRoot:fs.realpathSync(reviewsDir+'/..'),
+      identity:{repositoryId:marker.identity.repositoryId,runId:marker.identity.runId}});
+    if(owner&&owner.revision!==snapshot.revision)throw new GateError('completion rework owner changed');
+    const config=snapshot.records[0].payload.config;
+    const records=snapshot.records.filter(row=>row.payload.type==='completion-rework-requested');
+    if(records.length!==1||records[0].digest!==marker.recordDigest||config.taskLearning?.feature.replace(/^\d+\./,'')!==feature
+      ||config.identity.taskId!==task||config.root!==fs.realpathSync(projectRoot))throw new GateError('unbound completion rework');
+    const history=readRunnerHistory(snapshot.records,config,3),record=records[0].payload;
+    const prior=history.state.receipts.find(item=>item.identity.attempt===1);
+    if(!prior||prior.result.verdict!=='approved'||prior.receiptDigest!==record.receiptDigest
+      ||prior.packageDigest!==record.packageDigest||history.state.attempt!==2
+      ||history.state.reviewPackage?.identity.attempt!==2
+      ||history.state.reviewPackage.handoff?.sha256!==sha256(expectedHandoff(reviewsDir,feature,task,2))
+      ||history.state.reviewPackage.artifactDigest===record.artifactDigest)
+      throw new GateError('completion rework must bind a new reviewed delivery');
+    // A large package may be stored once and referenced by later checkpoints;
+    // resolve it with the same validation replay uses.
+    const originalReview=snapshot.records.map((row,index)=>row.payload.type==='effect-checkpoint'
+      &&row.payload.checkpoint.receipt?.receiptDigest===prior.receiptDigest
+      ?{payload:{checkpoint:resolveCheckpointPackage(row.payload,snapshot.records.slice(0,index),config.identity)}}:null)
+      .find(row=>row?.payload.checkpoint.reviewPackage?.identity.attempt===1);
+    const originalRegistration=snapshot.records.find(row=>row.payload.type==='review-invocation-registered'
+      &&row.payload.binding.invocationId===prior.id);
+    if(!originalReview||!originalRegistration)throw new GateError('missing original approved review');
+    publishHostReview({reviewsDir,feature,handoffPath:expectedHandoff(reviewsDir,feature,task,1),
+      reviewPackage:originalReview.payload.checkpoint.reviewPackage,receipt:prior,registered:prior,
+      at:originalRegistration.payload.registeredAt,inspectOnly:true});
+    if(stage==='n5'){
+      const receipt=history.state.receipt,pkg=history.state.reviewPackage;
+      if(receipt?.identity.attempt!==2||receipt.result.verdict!=='approved'||receipt.packageDigest!==pkg.packageDigest)
+        throw new GateError('completion rework requires the real approved a2 receipt');
+      publishHostReview({reviewsDir,feature,handoffPath:expectedHandoff(reviewsDir,feature,task,2),reviewPackage:pkg,
+        receipt,registered:receipt,at:history.state.reviewInvocation.registration.registeredAt,inspectOnly:true});
+    }
+
+  }catch(error){throw new GateError('invalid completion rework owner evidence: '+error.message);}
+}
+
+function validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoot,stage='n4'){
   if(attempt!==2)return;
+  if(projectRoot!==null)projectRoot=fs.realpathSync(path.resolve(projectRoot));
+  const requestedReviews=path.resolve(reviewsDir),reviewStat=fs.lstatSync(requestedReviews);
+  if(!reviewStat.isDirectory()||reviewStat.isSymbolicLink())throw new GateError('invalid completion rework review directory');
+  reviewsDir=fs.realpathSync(requestedReviews);
   const priorHandoff=expectedHandoff(reviewsDir,feature,task,1);
   requireExpectedHandoff(priorHandoff,{reviewsDir,feature,task,attempt:1});
   const priorPayload=loadHandoff(priorHandoff,{task,attempt:1});
@@ -534,9 +625,12 @@ function validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoo
   const prior=validateReview(reviewPath(reviewsDir,feature,task,1),{
     task,attempt:1,handoff:priorHandoff,changedFiles:priorPayload.changed_files,
   });
-  if(prior.verdict==='approved'){
+  const owner=completionReworkOwner(reviewsDir,feature,task,projectRoot);
+  if(owner||payload.evidence.some(item=>item.startsWith('cm-completion-rework-v1: ')))
+    validateCompletionRework({payload,priorPayload,feature,task,projectRoot,reviewsDir,stage,owner});
+  else if(prior.verdict==='approved')
     validateFixWalkthroughRetry({prior,payload,priorPayload,priorReview:reviewPath(reviewsDir,feature,task,1),feature,task,projectRoot});
-  }else if(prior.verdict!=='changes_requested')
+  else if(prior.verdict!=='changes_requested')
     throw new GateError('attempt 2 requires round 1 verdict: changes_requested');
 }
 
@@ -947,7 +1041,7 @@ export function checkN5({handoff,reviewsDir,feature,task,projectRoot=null,allowL
   if(requireLearning)verifyLearningRecord(payload,projectRoot);
   const attempt=payload.attempt;
   requireExpectedHandoff(handoff,{reviewsDir,feature,task,attempt});
-  validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoot);
+  validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoot,'n5');
   const contentBound=verifyImplementationBinding(payload,{projectRoot,allowLegacyUnbound});
   const inventoryResult=inventory==='required'?verifyInventory(payload,{projectRoot,reviewsDir,feature,task,allowLegacyUnbound}):{};
   const review=reviewPath(reviewsDir,feature,task,attempt);

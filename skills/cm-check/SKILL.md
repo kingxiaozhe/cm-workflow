@@ -1,6 +1,8 @@
 ---
 name: cm-check
 description: 用户说“检查工作流是否安装正确”“为什么找不到 cm 命令”时使用。默认查询 npm 稳定版，有新版自动升级已管理的 CM 安装，再检查插件、核心 Skills、兼容包装与模板引用；不测试或修改业务代码。
+allowed-tools:
+  - Bash(node ~/.claude/scripts/cm-check-drive.mjs *)
 ---
 
 # cm-check — 双运行时一致性自检

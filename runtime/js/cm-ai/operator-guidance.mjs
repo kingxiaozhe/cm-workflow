@@ -45,15 +45,22 @@ function renderOperatorGuidance(result,{executionActive=false,protocol='legacy',
   const v2=protocol==='v2',batch=surface==='batch';
   const resume=batch?'从原批次入口发送 advance':'恢复原运行并发送 advance';
   const permission=flag=>v2?fixedTarget:`显式 ${flag}，并提供单行 reason`;
-  const supersede=v2?'当前 v2 没有作废旧证据并新建运行的出口；保留原运行、文件与证据，核对 reason 后交由维护者处理，不改走旧入口。'
+  // V2 does have a supersede exit (create with a fixed supersedeTarget); it is a
+  // new run the user approves, never a flag this guidance hands out.
+  const supersede=v2?`${batch?'批次成员先取消本批次，再按单任务处理；':''}`
+    +'原运行确无合法恢复出口时，用原配置只读 inspect-history 取得 supersedeTarget 并保存，向用户展示旧状态与重开原因；'
+    +'用户批准后按 v2 create 重开流程以新 runId 重开同一任务（docs/cm-control-policy-v2.md「卡死任务重开」）。目标与旧运行不符返回 snapshot_changed 时停止，不自动刷新。'
     :'修好后按 reason 用 --supersede-reviewed-evidence 新建运行重做。';
-  const supersedePrerequisites=v2?['原运行记录与现有文件保留，不改写','不改变协议、身份或恢复预算']
+  const supersedePrerequisites=v2?['原运行记录与现有文件保留，不改写','重开须经用户批准且绑定已展示的 supersedeTarget','不改变原运行的协议、身份或恢复预算']
     :['原运行记录保留，不改写','本运行留在盘上的改动需还原，或加 --accept-superseded-code-drift'];
   if(result?.workflow!=='cm-ai'||!result.state||!result.identity)return null;
   const {state,code,pendingAction:action,outcome}=result;
   if(outcome==='rejected'||outcome==='denied')return explain('本次操作被拒绝，运行状态没有因此获得新的执行权限。',
     '先核对 code 与 reason，修正请求或取得所需授权；不要据此重复开发或审查。');
   if(executionActive)return explain('原运行仍有操作在执行。','等待原操作结果；可读取状态，不重复派发。');
+  if(code==='checkpoint_package_material_invalid')return explain('检查点审查包引用或原始材料校验失败，后续执行已停止。',
+    '保留原运行与全部记录，核对被引用记录的摘要和任务身份；交由维护者处理，不改写历史或重新派发。',null,
+    ['不得替换被引用的原记录','不改变原运行身份与恢复预算']);
   if(code==='spec_drift')return explain('已批准规格发生变化，后续执行被阻止。',
     action==='spec_rebind'?(v2?'先核对重新批准的规格；符合原条件时，只读 status 并展示 launchControlTarget，将完整固定副本写入文件，以原策略和配置带 --expected-control FILE、--rebind-spec-material 与单行 --spec-rebind-reason 恢复；snapshot_changed 时停止，不自动刷新。':'先核对重新批准的规格；符合原任务内容未变的条件时，在原运行显式换绑规格。')
       :'先核对规格变更与原任务绑定；当前没有可直接继续的恢复动作。',null,['保留原运行身份与历史','不得绕过规格审批']);

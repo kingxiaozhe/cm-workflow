@@ -6,6 +6,8 @@
 
 单步调用可用 `node scripts/cm-check-drive.mjs --plan PLAN.json start`。计划写 `skillDir`、`project`、可选 `config`/`runtime`/`quick`，以及 `checks:[{id:"check_runtime",command:[checker,"--project",project,"--runtime",runtime,"--print-effective"]}]`（未指定 `runtime` 时去掉该对参数）；命令须与宿主声明逐项一致。完整模式的 `answers/check-semantic.json` 只写人工八组判断及五个可选项，不写 `sourceDigest`；驾驶员从当次请求绑定摘要。驾驶员实际运行机械 checker，保留真实退出码与输出。`status` 只读；该宿主没有跨进程恢复，驾驶员拒绝 `resume`。
 
+**在 Claude Code 里调用驾驶员：** 按共享路径合同（`runtime/project-context.md`）最终解析并验证的工作流根确为默认 `~/.claude` 时，驾驶员单独一条 Bash 调用，写成 `node ~/.claude/scripts/cm-check-drive.mjs --plan <PLAN 绝对路径> <操作>`：前面不接 `cd`、变量赋值，也不用 `&&`、`;`、管道和别的命令连在一起；PLAN 与答案文件先用写文件工具写好。这样能匹配本技能声明的放行规则。用户显式提供的 `CM_WORKFLOW_HOME`、自定义 `CLAUDE_HOME`、源码目录或更新器返回的根指向别处时，照原写法用实际根的路径，按正常权限确认处理，不改去调用 `~/.claude` 下的另一份。需要固定工作目录时，先用单独一条 `cd` 切换，不与驾驶员连写。Codex 等其他运行时照原写法。`cm-check` 以更新器返回的 `workflowRoot` 为准，只有它就是 `~/.claude` 时才用上面的字面写法。
+
 完整 Skill 先执行 `cm-check-update.mjs` 的默认更新步骤，再从返回的根目录启动此控制器。
 更新不在控制器会话内进行，避免基线在检查中漂移；低层控制器单独调用保持只读。
 

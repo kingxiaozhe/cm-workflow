@@ -8,6 +8,7 @@ import {serveCmAiHost} from '../runtime/js/cm-ai/host-session.mjs';
 import {digest as sha} from '../runtime/js/cm-ai/contracts.mjs';
 import {resolveCodeProjects,codeProjectPaths,assertCodeProjectSelections} from '../runtime/js/cm-ai/code-projects.mjs';
 import {preQaConfigurations,readQaAttachment} from '../runtime/js/cm-ai/qa-attachment.mjs';
+import {isImplicitQaDecision} from '../runtime/js/cm-ai/implicit-qa-decision.mjs';
 import {recordCmAiQaAttachment} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {writeCmAiQaStatus} from '../runtime/js/cm-ai/cm-ai-run-finalizer.mjs';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
@@ -244,7 +245,11 @@ export function runConfigMaterial(definition,execution,{parallelSelection=null,b
 export function inspectRunHistory(definition){
   const snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,
     identity:{repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
-  return {identity:snapshot.identity,revision:snapshot.revision,fingerprints:snapshot.fingerprints,
+  // The restart target is the same launch projection a v2 supersede compares;
+  // histories this runtime cannot project report null rather than a guess.
+  let supersedeTarget=null;
+  try{supersedeTarget=controlLaunchTarget(snapshot);}catch{supersedeTarget=null;}
+  return {identity:snapshot.identity,revision:snapshot.revision,fingerprints:snapshot.fingerprints,supersedeTarget,
     records:snapshot.records.map(record=>({seq:record.seq,id:record.id,kind:record.kind,type:record.payload.type??null,
       legacyReviewGrant:record.payload.type==='review-invocation-registered'
         &&(Object.hasOwn(record.payload,'grant')||Object.hasOwn(record.payload,'authorizationAt'))}))};
@@ -268,6 +273,8 @@ export async function openControlRun(definition,mode,execution=null,options={}){
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   if(!['create','resume'].includes(mode))fail('invalid_mode');
   let guard;
+  const holds=[];
+  const releaseHolds=()=>{for(const held of holds.splice(0)){try{held.close();}catch{}}};
   try{
     const acquire=async()=>{
       const {acquireExternalRunGuard,externalRunGuardExists}=await import('../runtime/js/cm-ai/external-run-guard.mjs');
@@ -275,12 +282,15 @@ export async function openControlRun(definition,mode,execution=null,options={}){
       // Switching this binary to a legacy launch must not bypass an existing strict attempt.
       if(strict||externalRunGuardExists(definition.specsDir,definition.codeProject))guard=acquireExternalRunGuard(definition,{strictOnly:!strict});
     };
-    const result=await openControlRunOwned(definition,mode,execution,options,acquire);
+    // A v2 restart holds the predecessor's writer lock from the target check until
+    // the new run has journaled and archived the supersession (or failed).
+    const result=await openControlRunOwned(definition,mode,execution,{...options,supersedeHolds:holds},acquire);
+    releaseHolds();
     const close=result.close;
     return {...result,close:()=>{try{close();}finally{guard?.close();}}};
-  }catch(error){guard?.close();throw error;}
+  }catch(error){releaseHolds();guard?.close();throw error;}
 }
-async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,allowDevelopRedo=false,holdRevision=false,specRebindReason=null,expectedControl=null}={},acquireGuard=async()=>{}){
+async function openControlRunOwned(definition,mode,execution=null,{supersedeHolds=null,supersedeTarget=null,rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,parallelSelection=null,qaConfigRevision=null,supersedeReason=null,acceptSupersededCodeDrift=false,allowAbandonReview=false,allowAbandonEffect=false,allowBootstrapReviewRecovery=false,allowDevelopRedo=false,holdRevision=false,specRebindReason=null,expectedControl=null,scopeRevision=null,developmentReworkReason=null}={},acquireGuard=async()=>{}){
   // Check before importing node:sqlite: legacy Node users get a useful error.
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   const {conversationProtection,externalConversationDefinition}=await import('../runtime/js/cm-ai/host-conversation-execution.mjs');
@@ -292,6 +302,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   // paths are checked by createHostBootstrap against its business scope.
   if(mode==='create'&&!execution?.bootstrap)assertCreatableScope(definition?.scope);
   if(supersedeReason!==null&&mode!=='create')fail('supersede_unavailable');
+  if(supersedeTarget!==null&&!execution?.configuration?.controlPolicy)fail('invalid_arguments');
   if(allowAbandonEffect&&mode!=='resume')fail('effect_abandon_unavailable');
   if(allowBootstrapReviewRecovery&&mode!=='resume')fail('bootstrap_review_recovery_unavailable');
   if(allowDevelopRedo&&mode!=='resume')fail('develop_redo_unavailable');
@@ -307,9 +318,22 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
     ||(rerunUnknownQa||rerunBlockedQa)&&(mode!=='resume'||!execution?.qaExecutor))fail('qa_recovery_authorization_required');
   const {openTaskExecutionStore}=await import('../runtime/js/cm-ai/task-owner.mjs');
   const controlPolicy=execution?.configuration?.controlPolicy??null;
-  const launchRecovery=qaConfigRevision!==null||rerunUnknownQa||rerunBlockedQa||specRebindReason!==null;
+  const elevatedRecovery=scopeRevision!==null||developmentReworkReason!==null;
+  const launchRecovery=qaConfigRevision!==null||rerunUnknownQa||rerunBlockedQa||specRebindReason!==null||elevatedRecovery;
+  if(elevatedRecovery){
+    if(!controlPolicy||mode!=='resume'||parallelSelection!==null||conversationProtection(execution)!==null
+      ||protectedExecutions.has(execution)||execution.configuration.providerDevelopment)fail('recovery_launch_unavailable');
+    if([scopeRevision!==null,developmentReworkReason!==null,qaConfigRevision!==null,rerunUnknownQa,rerunBlockedQa,specRebindReason!==null].filter(Boolean).length!==1)fail('invalid_input');
+    const reason=scopeRevision?.reason??developmentReworkReason;
+    if(typeof reason!=='string'||!reason.trim()||Buffer.byteLength(reason,'utf8')>500||/[\r\n\0]/.test(reason))fail('invalid_input');
+  }
   if(controlPolicy){
-    if(supersedeReason!==null)fail('supersede_unavailable');
+    // V2 restart: only create, only with the previewed predecessor launch target.
+    if(supersedeReason!==null){
+      if(mode!=='create')fail('supersede_unavailable');
+      if(supersedeTarget===null)fail('invalid_input');
+      supersedeTarget=readControlTarget(supersedeTarget);
+    }else if(supersedeTarget!==null)fail('invalid_input');
     if(launchRecovery){
       if(mode!=='resume')fail('supersede_unavailable');
       if(expectedControl===null)fail('invalid_input');
@@ -357,7 +381,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
   const reviewsDir=path.join(specsDir,'.reviews');
   const supersession=mode==='create'&&supersedeReason!==null
     ?prepareReviewedEvidenceSupersession({specsDir,codeProject,feature,identity,reason:supersedeReason,tasksPath,
-      acceptSupersededCodeDrift}):null;
+      acceptSupersededCodeDrift,...(supersedeTarget?{expectedPredecessor:supersedeTarget,predecessorTarget:controlLaunchTarget,holds:supersedeHolds}:{})}):null;
   let bootstrapConfig=null;
   if(execution?.bootstrap){
     const {bootstrapConfiguration}=await import('../runtime/js/cm-ai/host-bootstrap.mjs');
@@ -478,6 +502,16 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
       }
     }
   }
+  // 修复前创建、没有 workflow 配置的 v2 运行：指纹里没有隐式 QA 判定，按原样打开，行为不变。
+  // 只用去掉判定的副本算指纹；execution 本身不换，受保护会话等按对象身份登记的状态保持原样。
+  let implicitQaSuppressed=false;
+  if(!opened&&mode==='resume'&&isImplicitQaDecision(execution?.qaDecisionProvider)){
+    const {qaDecisionProvider,...original}=execution;
+    for(const knowledgeCloseout of closeoutPolicyCandidates(original,mode,snapshot)){
+      try{opened=openFor(runConfigMaterial(definition,original,{parallelSelection,bootstrapConfig,knowledgeCloseout}));implicitQaSuppressed=true;break;}
+      catch(error){if(error.code!=='fingerprint_mismatch')throw error;}
+    }
+  }
   if(!opened)throw lastMismatch;
   const {material:configMaterial,fingerprints,store,attaching,priorMaterial,chain,attached}=opened;
   const knowledgeCloseout=configMaterial.knowledgeCloseout??null;
@@ -507,6 +541,7 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
         ...(execution?.configuration.executionPolicy?{executionPolicy:execution.configuration.executionPolicy}:{}),
         ...(execution?.configuration.externalModels?{externalModels:execution.configuration.externalModels}:{}),excludedContexts:['control-host'],
         ...(controlPolicy?{controlPolicy}:{}),
+        ...(parallelSelection===null?{}:{parallelSelection}),
         developer:{provider:'codex',requestedModel:'unconfigured',contextId:'control-developer',run:unavailable},
         reviewers:[],check:unavailable,taskCompletion:{reviewsDir,handoffs},taskLearning:{feature},
         persistence:{store,mode:runnerMode,version:execution===null?2:3},
@@ -522,9 +557,16 @@ async function openControlRunOwned(definition,mode,execution=null,{rerunUnknownQ
       entry:{specsDir,codeProject,feature,identity,rerunUnknownQa,rerunBlockedQa,
         ...(definition.featureSelection?{featureSelection:definition.featureSelection.feature}:{}),
         ...(knowledgeCloseout===null?{}:{knowledgeCloseout,...(definition.codeProjects?{codeProjects:definition.codeProjects}:{})}),
-        ...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,allowDevelopRedo,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{
-        ...Object.fromEntries(['developmentAttempt','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
+        ...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,allowDevelopRedo,allowCompletionRework:Boolean(controlPolicy)&&mode==='resume'&&parallelSelection===null&&conversationProtection(execution)===null
+          &&!protectedExecutions.has(execution)&&!execution.configuration.providerDevelopment,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{
+        ...Object.fromEntries(['developmentAttempt','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)
+          &&!(implicitQaSuppressed&&key==='qaDecisionProvider')).map(key=>[key,execution[key]]))})},
     });
+    if(elevatedRecovery){
+      const result=scopeRevision!==null?host.reviseScope({allowed:true,...scopeRevision})
+        :host.reworkDevelopment({allowed:true,reason:developmentReworkReason});
+      if(result.outcome==='rejected')fail(result.code);
+    }
     const logAbandonments=()=>{
       for(const record of store.snapshot().records.filter(row=>row.payload.type==='review-invocation-abandoned'))
         recordReviewAbandonment({specsDir,codeProject,feature,identity,record,

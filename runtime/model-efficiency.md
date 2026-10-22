@@ -39,16 +39,65 @@ Conversation length can outweigh packet size. In one real project sample
 (2026-09-27 to 10-09, 8,417 calls, measured with a local token report), a single
 long session carried 89% of weighted usage: each call re-read about 480k tokens
 of prior history while producing a few hundred output tokens. This is one
-sample, not a general measurement; it motivates suggesting fresh sessions, not a
-claim about every project.
+sample, not a general measurement; it motivates the fresh-session default below,
+not a claim about every project.
 
-Workflows therefore suggest, at the end of a unit of work (a single-task cm-ai
-run at `run_done`, a cm-prd human-review stop, a cm-fix run), starting the next
-unit in a fresh session, which becomes the next run's host context. Batches are
-excluded: a batch hands over to its next task inside the same `advance` and
-keeps its original host context; the suggestion comes only after the whole batch
-ends. Mid-run handover uses the workflow's documented cross-session resume. Changing sessions never rewrites records, skips review, or resets
-authorization.
+At the end of a unit of work the workflow gives the user a **verdict**, not an
+optional hint. In the same project a hint-only wording did not change behaviour:
+an interim reading three days after it shipped still showed every Claude call in
+one session.
+
+Decide only at these boundaries:
+
+| Workflow | Boundary |
+| --- | --- |
+| `cm-ai` | a single-task run at `run_done`; a batch only after the whole batch ends (inside a batch the runner hands over within the same `advance` and keeps the original host context) |
+| `cm-prd` | the human-review stop of a new, existing-code, or change run |
+| `cm-fix` | the end of one defect run |
+
+Mid-run there is no boundary decision: continue, or use the workflow's documented
+cross-session resume. Do not compact mid-run.
+
+Work the table top to bottom; the first match wins:
+
+| Order | Condition | Verdict |
+| --- | --- | --- |
+| 1 | The next step continues the same unit and needs discussion from this conversation that is not on disk: the user is still discussing the review stop of the same feature before approving it, or asks about this run's result | Continue in this session |
+| 2 | The user declines a fresh session, or the host cannot open one | Stay; if the context must shrink, compact with an instruction naming the next unit |
+| 3 | Any other case: a new unit (next task, next defect, next feature, or the implementation run after approval), or a next step whose inputs are all on disk (`tasks.md`, specs, `.reviews/`, run log, defect archive) | Start a fresh session (the default) |
+
+There is no "write a handoff file" verdict: CM resumes from disk records, so a
+fresh session re-runs the documented entry or the original command. Compaction
+comes last because a summary can flatten a decision and leave the next session
+confidently wrong.
+
+Each workflow's stop-report template carries these lines inline (`cm-ai` N8 summary,
+`cm-fix` output format, `cm-prd` hard stop and change summary). A one-line
+pointer to this section was not followed in a real `cm-prd` run (2026-10-20):
+the session never opened this file and ended without a verdict.
+
+For `cm-ai` single-task runs and `cm-fix` runs driven by the JS drivers, the driver
+prints these lines itself on stderr after the final result
+(`runtime/js/session-boundary.mjs`); the model relays them verbatim. Two real
+runs showed the model rewriting a template-only verdict into one sentence.
+
+Report the verdict in the user's language in this shape:
+
+```text
+会话边界：换新会话。
+新会话里运行：{下一单元的入口：按当前 Skill 文档写出调用或原命令，带必需参数}
+原因：{一句话}
+```
+
+For order 1 the first line is `会话边界：继续本会话。`; for order 2 it is
+`会话边界：留在本会话（{原因}）。`; both omit the command line. Take the command
+from the active Skill's documented entry. If it cannot be determined, give the
+original command and say that the next entry is unknown; never invent flags.
+Changing sessions never rewrites records, skips review, or resets authorization.
+
+The ordered check and the compact-last rule are adapted from the phase-boundary
+tree in [mattpocock/skills](https://github.com/mattpocock/skills)
+(`skills/engineering/ask-matt/PHASE-BOUNDARIES.md`, MIT).
 
 ## Stable prefix
 

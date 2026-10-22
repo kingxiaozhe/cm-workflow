@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {applyResourceTransition,buildEvent,parseData,unclosedResources,UsageError} from './cm-log-event.mjs';
+import {applyResourceTransition,buildEvent,parseData,selectRunId,unclosedResources,UsageError} from './cm-log-event.mjs';
 
 const pythonWriter=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
 
@@ -41,6 +41,45 @@ test('resume restores the original run from the authoritative log and duplicate 
     write('done');write('resume'); // duplicate old resume must not reopen a later completed run
     assert.equal(JSON.parse(fs.readFileSync(path.join(specs,'.cm-run.json'))).status,'done');
   }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('regression: run_start of another workflow opens a new run instead of joining a stale running one',()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-log-cross-')));
+  try{
+    const project=path.join(root,'project'),specs=path.join(root,'specs');fs.mkdirSync(project);fs.mkdirSync(specs);
+    const env={...process.env,CM_WORKFLOW_LOG_HOME:path.join(root,'logs')};
+    const write=(workflow,event)=>{
+      const result=spawnSync(process.env.CM_PYTHON_BIN||'python3',[pythonWriter,'--workflow',workflow,'--event',event,'--runtime','codex',
+        '--project-root',project,'--specs-dir',specs,'--detail',event],{encoding:'utf8',env});
+      assert.equal(result.status,0,result.stderr);return JSON.parse(result.stdout).run_id;
+    };
+    const stale=write('cm-ai','run_start'); // 9 月遗留：cm-ai 开了运行但没写 run_done
+    assert.equal(write('cm-ai','run_start'),stale,'same-workflow run_start still continues the running run');
+    const fix=write('cm-fix','run_start');
+    assert.notEqual(fix,stale);
+    assert.equal(write('cm-fix','progress'),fix);
+    assert.equal(write('cm-fix','run_done'),fix);
+    const pointer=JSON.parse(fs.readFileSync(path.join(specs,'.cm-run.json'),'utf8'));
+    assert.equal(pointer.run_id,fix);assert.equal(pointer.workflow,'cm-fix');
+    const rows=fs.readFileSync(path.join(specs,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual([...new Set(rows.filter(row=>row.run_id===stale).map(row=>row.workflow))],['cm-ai']);
+    // 指针丢失时从项目日志重建，同样不把新工作流接到别人的运行上。
+    fs.rmSync(specs,{recursive:true});fs.mkdirSync(specs);
+    const orphan=write('cm-ai','run_start');fs.rmSync(path.join(specs,'.cm-run.json'));
+    assert.equal(write('cm-ai','progress'),orphan,'same workflow still reconstructs its running run');
+    fs.rmSync(path.join(specs,'.cm-run.json'));
+    assert.notEqual(write('cm-test','run_start'),orphan);
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('regression: run_start falls back to the pointer workflow when history rows lack one',()=>{
+  const base={event:'run_start',workflow:'cm-fix',latestProjectRun:'old-ai-run',projectStates:{'old-ai-run':'running'},projectWorkflows:{},
+    now:new Date('2026-10-21T00:00:00Z'),uuid:'00000000-0000-4000-8000-000000000000'};
+  const pointer={run_id:'old-ai-run',status:'running',workflow:'cm-ai'};
+  assert.notEqual(selectRunId({...base,pointer}).runId,'old-ai-run');
+  // 指针指向别的运行时，不能借用它的工作流；双方都不知道所属工作流时仍按原行为沿用。
+  assert.equal(selectRunId({...base,pointer:{...pointer,run_id:'other-run',status:'done'}}).runId,'old-ai-run');
+  assert.equal(selectRunId({...base,pointer:null}).runId,'old-ai-run');
 });
 
 test('JS log decision core rejects secrets and blocks completion with live resources',()=>{

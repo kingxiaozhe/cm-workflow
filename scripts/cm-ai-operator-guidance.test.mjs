@@ -148,7 +148,11 @@ test('v2 exhausted recovery and launch recovery never advertise legacy exits',()
       const output=surface==='batch'?batchMemberResult(input,{protocol}):input;
       assert.equal(output.guidance.recoveryOperation,null);
       if(protocol==='v2'){assert.doesNotMatch(guidanceText(output),/--supersede-reviewed-evidence|--accept-superseded-code-drift/);
-        assert.match(guidanceText(output),/保留/);}
+        assert.match(guidanceText(output),/保留/);
+        // commander phase 0: v2 has a create supersede exit; guidance names it instead of denying it.
+        assert.match(guidanceText(output),/inspect-history/);assert.match(guidanceText(output),/supersedeTarget/);
+        assert.doesNotMatch(guidanceText(output),/没有作废旧证据/);
+        if(surface==='batch')assert.match(guidanceText(output),/取消本批次/);}
       else assert.match(guidanceText(output),/--supersede-reviewed-evidence/);
     }
   }
@@ -171,5 +175,16 @@ test('batch advance guidance uses the batch entry for every native resume family
     const input=result('blocked',code,'resume');input.guidance=operatorGuidance(input);
     const output=batchMemberResult(input);
     assert.match(guidanceText(output),/原批次入口/);assert.doesNotMatch(guidanceText(output),/恢复原运行/);
+  }
+});
+
+
+test('invalid checkpoint package material remains a preservation-only diagnostic without redispatch authority',()=>{
+  for(const state of ['blocked','unknown']){
+    const input=result(state,'checkpoint_package_material_invalid','resume'),before=JSON.stringify(input);
+    const guidance=operatorGuidance(input);
+    assert.match(guidance.summary,/引用或原始材料校验失败/);assert.match(guidance.nextStep,/不改写历史或重新派发/);
+    assert.equal(guidance.recoveryOperation,null);assert.equal(guidance.authorizationGranted,false);
+    assert.equal(JSON.stringify(input),before);
   }
 });

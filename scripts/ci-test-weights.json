@@ -70,6 +70,7 @@
   "cm-claude-worker.test.mjs": 14,
   "cm-codex-developer-adapter.test.mjs": 1,
   "cm-codex-developer-worker.test.mjs": 14,
+  "cm-codex-install-local-edit-guard.test.mjs": 540,
   "cm-codex-plugin-metadata.test.mjs": 1,
   "cm-codex-review-progress.test.mjs": 4,
   "cm-efficiency-checks.test.mjs": 1,
@@ -154,6 +155,7 @@
   "cm-init-project-scan.test.mjs": 1,
   "cm-init-revision-host.test.mjs": 1,
   "cm-init-session.test.mjs": 4,
+  "cm-install-local-edit-guard.test.mjs": 890,
   "cm-interactive-qa-diagnostic.test.mjs": 1,
   "cm-knowledge-closeout.test.mjs": 6,
   "cm-live-evidence.test.mjs": 1,
@@ -217,6 +219,7 @@
   "cm-workflow.test.mjs": 1,
   "correction-check.test.mjs": 1,
   "policy-binding-compat.test.mjs": 2,
+  "session-boundary.test.mjs": 1,
   "validate-test-cases.test.mjs": 1
  }
 }

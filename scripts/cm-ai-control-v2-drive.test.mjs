@@ -3,8 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {spawnSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
+const digestForFile=file=>createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {readRunnerHistory,completionReworkBinding,pendingDevelopStart,developTimeoutBasis} from '../runtime/js/cm-ai/durable-runner-state.mjs';
+import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {checkN5,activeCompletionReworkOwner} from './cm-task-gate.mjs';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {readDriverControl,controlDevelopAttempts,buildCmAiDriveHostArgs,buildCmAiDriveRequest} from './cm-ai-drive.mjs';
@@ -63,7 +68,8 @@ function fixture(t,batch=false,qaRun=false){
   };
   const drive=(file,operation='advance')=>spawnSync(process.execPath,[batch?BATCH:SINGLE,'--plan',file,operation],{encoding:'utf8',timeout:60000,
     env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,CM_WORKFLOW_HOME:path.join(root,'home'),CM_WORKFLOW_LOG_HOME:path.join(root,'logs')}});
-  return {root,codeProject,specsDir,answers,plan,drive,review};
+  return {root,codeProject,specsDir,answers,plan,drive,review,env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,
+    CM_WORKFLOW_HOME:path.join(root,'home'),CM_WORKFLOW_LOG_HOME:path.join(root,'logs')}};
 }
 
 test('v2 launch arguments replace the development grant and leave legacy launch intact',()=>{
@@ -263,8 +269,236 @@ test('v2 disabled QA still assesses mandatory feature completion and cannot repo
   assert.ok(rows.some(row=>row.event==='qa'&&row.status==='triggered'&&row.reason==='feature_complete'));
   assert.equal(rows.some(row=>row.node==='N6'&&row.event==='test_run'&&row.phase==='complete'&&row.result==='PASS'),false);
 });
+test('regression: single-task v2 without --workflow-config still asks qa_assess instead of stalling at qa_decision_required',t=>{
+  const f=fixture(t);f.review('approved');
+  let r=f.drive(f.plan());assert.equal(r.status,0,r.stderr);
+  let result=JSON.parse(r.stdout).result,combined=r.stderr;
+  for(let n=0;n<3&&!['qa_triggered','qa_decision_required'].includes(result.code);n++){
+    r=f.drive(f.plan({mode:'resume'}));assert.equal(r.status,0,r.stderr);
+    result=JSON.parse(r.stdout).result;combined+=r.stderr;
+  }
+  assert.notEqual(result.code,'qa_decision_required',JSON.stringify(result));
+  assert.match(combined,/应答 qa_assess/);
+  // 唯一任务完成即 feature 完成：必需 QA 被触发，但 disabled 没有执行器，停在 qa_execution，不能报 run_done。
+  assert.equal(result.code,'qa_triggered',JSON.stringify(result));assert.equal(result.pendingAction,'qa_execution');
+});
+
+test('regression: serial batch member with workflows[key]:null answers the implicit qa_assess',t=>{
+  const f=fixture(t,true);f.review('approved');
+  const run=path.join(f.root,'run.json'),config=JSON.parse(fs.readFileSync(run,'utf8'));
+  config.workflows[key]=null;fs.writeFileSync(run,JSON.stringify(config));
+  let r=f.drive(f.plan());assert.equal(r.status,0,r.stderr);
+  let result=JSON.parse(r.stdout).result,combined=r.stderr;
+  for(let n=0;n<3&&result.code!=='qa_triggered';n++){
+    r=f.drive(f.plan({mode:'resume',originalHostContext:'v2-fixture-host'}));assert.equal(r.status,0,r.stderr);
+    result=JSON.parse(r.stdout).result;combined+=r.stderr;
+  }
+  assert.match(combined,/应答 qa_assess/);
+  assert.equal(result.code,'qa_triggered',JSON.stringify(result));assert.equal(result.pendingAction,'qa_execution');
+});
+
 test('batch refuses unavailable QA Fix mode before starting the host',t=>{
   const f=fixture(t,true);fs.writeFileSync(path.join(f.root,'control.json'),JSON.stringify({...policy,qa:'run',qaFix:'auto'}));
   const r=f.drive(f.plan());assert.equal(r.status,2,r.stderr);assert.match(r.stderr,/invalid_arguments/);
   assert.equal(fs.existsSync(path.join(f.specsDir,'.reviews/.execution')),false);
+});
+
+
+test('completion_rework keeps the original run and failure, requires fresh a2 review (real CLI)',t=>{
+  const f=fixture(t);f.review('approved');
+  fs.writeFileSync(path.join(f.specsDir,'1.work/tasks.md'),'  -   [ ]   T-001：fixture\n\n```md\n- [ ] T-001: example\n```\n');
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',taskGrammar:2,
+    features:['1.work'],specFiles:buildManifest(f.specsDir)}));
+  const marker=path.join(f.root,'checks-pass');fs.writeFileSync(marker,'pass');
+  const checks=[{id:'gate',command:[process.execPath,'-e',`process.exit(require('node:fs').existsSync(${JSON.stringify(marker)})?0:1)`]}];
+  const run=(op,extra={})=>{const r=f.drive(f.plan({mode:'resume',originalHostContext:'v2-fixture-host',checks,...extra}),op);
+    assert.equal(r.status,0,r.stderr);return JSON.parse(r.stdout).result;};
+  const delivered=run('start',{mode:'create',originalHostContext:undefined});
+  const pkg=delivered.packageDigest;assert.equal(run('decision',{packageDigest:pkg}).state,'approved');
+  const reviewDir=path.join(f.specsDir,'.reviews'),r1=path.join(reviewDir,'work-T-001-r1.md');
+  const handoff=path.join(reviewDir,'work-T-001-a1-handoff.json');
+  const oldReview=fs.readFileSync(r1),oldHandoff=fs.readFileSync(handoff);
+  fs.rmSync(marker);assert.equal(run('complete',{packageDigest:pkg}).code,'completion_checks_changed');
+  const status=run('status'),target=status.controlTarget;
+  assert.equal(run('completion_rework',{reason:'Fix the failed test',expectedControl:{...target,revision:'0'.repeat(64)}}).code,'snapshot_changed');
+  const store=path.join(f.specsDir,'.reviews/.execution',identity.runId,'state.json');
+  const blockedBytes=fs.readFileSync(store);
+  const reject=(expected)=>{
+    const result=run('completion_rework',{reason:'Fix the failed test',expectedControl:target});
+    assert.equal(result.code,expected);assert.deepEqual(fs.readFileSync(store),blockedBytes);
+  };
+  const r2=path.join(reviewDir,'work-T-001-r2.md');fs.writeFileSync(r2,'occupied');
+  reject('completion_rework_evidence_exists');fs.rmSync(r2);
+  const source=path.join(f.codeProject,'target.mjs'),beforeSource=fs.readFileSync(source);
+  fs.appendFileSync(source,'// drift\n');
+  assert.equal(run('completion_rework',{reason:'Fix the failed test',expectedControl:target}).outcome,'rejected');
+  assert.deepEqual(fs.readFileSync(store),blockedBytes);fs.writeFileSync(source,beforeSource);
+  const rows=JSON.parse(blockedBytes).records,config=rows[0].payload.config;
+  const state=readRunnerHistory(rows,config,3).state;
+  for(const change of [{attempt:2},{state:'approved',code:null},{taskCommit:{}},{cancellationRequested:true},{workflowError:'workflow_error'},
+    {receipt:null},{code:'completion_package_changed'}])
+    assert.throws(()=>completionReworkBinding({...state,...change},config),{code:'completion_rework_unavailable'});
+  assert.throws(()=>completionReworkBinding(state,{...config,controlPolicy:{...config.controlPolicy,development:'provider'}}),
+    {code:'completion_rework_unavailable'},'this entry is limited to conversation-owned development');
+  assert.throws(()=>completionReworkBinding(state,{...config,parallelSelection:{version:1,group:['T-001','T-002']}}),
+    {code:'completion_rework_unavailable'},'batch completion rework is forbidden at the durable binding');
+  const rework=run('completion_rework',{reason:'Fix the failed test',expectedControl:target});
+  const reworkedRows=JSON.parse(fs.readFileSync(store)).records;
+  assert.equal(reworkedRows.at(-1).payload.type,'completion-rework-requested');
+  assert.equal(readRunnerHistory(reworkedRows,config,3).state.priorReview.verdict,'approved');
+  const reworkedState=readRunnerHistory(reworkedRows,config,3).state;
+  assert.equal(pendingDevelopStart(reworkedState),'reviewed_package');
+  const {receipts:ignoredReceipts,...slimReworked}=reworkedState;
+  assert.equal(pendingDevelopStart(slimReworked),'reviewed_package','compact live states match replay without a receipts array');
+  const oldOwner={snapshot:{identity:{runId:identity.runId},records:reworkedRows},history:{supersession:null}};
+  const successor={snapshot:{identity:{runId:'successor'},records:[]},history:{supersession:{previousRunIds:[identity.runId]}}};
+  assert.equal(activeCompletionReworkOwner([oldOwner,successor]),null,'retired evidence is retained but does not own successor gates');
+  const freshOwner={...successor,snapshot:{...successor.snapshot,records:reworkedRows}};
+  assert.equal(activeCompletionReworkOwner([oldOwner,freshOwner]).identity.runId,'successor');
+  for(const field of ['failedCheckpointDigest','packageDigest','receiptDigest','artifactDigest','handoffDigest']){
+    const forged=structuredClone(reworkedRows);forged.at(-1).payload[field]='0'.repeat(64);
+    let previous=null;for(const row of forged){row.previousDigest=previous;const {digest:old,...body}=row;row.digest=digest(body);previous=row.digest;}
+    assert.throws(()=>readRunnerHistory(forged,config,3),{code:'runner_history_mismatch'});
+  }
+
+  assert.equal(rework.state,'changes_requested');assert.equal(rework.identity.attempt,2);
+  assert.deepEqual(fs.readFileSync(r1),oldReview);assert.deepEqual(fs.readFileSync(handoff),oldHandoff);
+  assert.equal(run('completion_rework',{reason:'Duplicate',expectedControl:target}).code,'snapshot_changed');
+  const beforeMissing=fs.readFileSync(store);
+  const missing=f.drive(f.plan({mode:'resume',originalHostContext:'v2-fixture-host',checks}),'start');
+  assert.equal(missing.status,2);assert.match(missing.stderr,/develop-a2/);assert.deepEqual(fs.readFileSync(store),beforeMissing);
+  fs.writeFileSync(path.join(f.answers,'develop-a2.json'),JSON.stringify(answer));fs.writeFileSync(marker,'pass');
+  assert.equal(run('start').code,'develop_unchanged_after_review','unchanged approved artifact cannot spend r2');
+  fs.writeFileSync(path.join(f.answers,'target.txt'),'export const value = 43;\n');
+  const revised=run('start');assert.equal(revised.identity.attempt,2);assert.notEqual(revised.packageDigest,pkg);
+  assert.equal(run('complete',{identity:{...identity,attempt:2},packageDigest:pkg}).code,'stale_completion');
+  const revisedHandoff=path.join(reviewDir,'work-T-001-a2-handoff.json');
+  const handoffSha=digestForFile(revisedHandoff);
+  fs.writeFileSync(r2,oldReview.toString().replace('attempt: 1','attempt: 2').replace('round: 1','round: 2')
+    .replace('a1-handoff.json','a2-handoff.json').replace(/handoff_sha256: [a-f0-9]{64}/,'handoff_sha256: '+handoffSha));
+  assert.throws(()=>checkN5({handoff:revisedHandoff,reviewsDir:reviewDir,feature:'work',task:'T-001',projectRoot:f.codeProject}),/completion rework/,
+    'a forged r2 cannot stand in for the real second review');
+  fs.writeFileSync(r1,oldReview.toString().replace('verdict: approved','verdict: changes_requested').replace('blocking_findings: 0','blocking_findings: 1'));
+  assert.throws(()=>checkN5({handoff:revisedHandoff,reviewsDir:reviewDir,feature:'work',task:'T-001',projectRoot:f.codeProject}),/completion rework/,
+    'changing a textual r1 verdict cannot downgrade to legacy gates');
+  const originalA2=fs.readFileSync(revisedHandoff),withoutMarker=JSON.parse(originalA2);
+  withoutMarker.evidence=withoutMarker.evidence.filter(x=>!x.startsWith('cm-completion-rework-v1: '));
+  fs.writeFileSync(revisedHandoff,JSON.stringify(withoutMarker,null,2)+'\n');
+  fs.writeFileSync(r2,fs.readFileSync(r2,'utf8').replace(/handoff_sha256: [a-f0-9]{64}/,'handoff_sha256: '+digestForFile(revisedHandoff)));
+  assert.throws(()=>checkN5({handoff:revisedHandoff,reviewsDir:reviewDir,feature:'work',task:'T-001',projectRoot:f.codeProject}),/completion rework/,
+    'removing the marker cannot downgrade the retained JS owner');
+  const alias=path.join(f.root,'app-alias');fs.symlinkSync(f.codeProject,alias,'dir');
+  for(const projectRoot of [f.codeProject+'/',f.codeProject+'/.',path.relative(process.cwd(),f.codeProject),alias])
+    assert.throws(()=>checkN5({handoff:revisedHandoff,reviewsDir:reviewDir,feature:'work',task:'T-001',projectRoot}),/completion rework/,
+      'aliases of the same root must still find its owner');
+
+  delete withoutMarker.implementation_sha256;fs.writeFileSync(revisedHandoff,JSON.stringify(withoutMarker,null,2)+'\n');
+  fs.writeFileSync(r2,fs.readFileSync(r2,'utf8').replace(/handoff_sha256: [a-f0-9]{64}/,'handoff_sha256: '+digestForFile(revisedHandoff)));
+  assert.throws(()=>checkN5({handoff:revisedHandoff,reviewsDir:reviewDir,feature:'work',task:'T-001',allowLegacyUnbound:true}),/completion rework/,
+    'omitting projectRoot and enabling legacy unbound cannot hide a retained owner');
+  fs.writeFileSync(revisedHandoff,originalA2);fs.writeFileSync(r1,oldReview);fs.rmSync(r2);
+
+  assert.equal(run('decision',{identity:{...identity,attempt:2},packageDigest:revised.packageDigest}).state,'approved');
+  checkN5({handoff:path.join(reviewDir,'work-T-001-a2-handoff.json'),reviewsDir:reviewDir,feature:'work',task:'T-001',projectRoot:f.codeProject});
+  checkN5({handoff:revisedHandoff,reviewsDir:path.relative(process.cwd(),reviewDir),feature:'work',task:'T-001',projectRoot:f.codeProject});
+  const registeredR2=fs.readFileSync(r2);
+  fs.writeFileSync(r2,registeredR2.toString().replace(/Registered receipt: [a-f0-9]{64}/,'Registered receipt: '+'0'.repeat(64)));
+  assert.throws(()=>checkN5({handoff:revisedHandoff,reviewsDir:reviewDir,feature:'work',task:'T-001',projectRoot:f.codeProject}),/completion rework/);
+  fs.writeFileSync(r2,registeredR2);
+
+  const completed=run('complete',{identity:{...identity,attempt:2},packageDigest:revised.packageDigest});
+  assert.equal(completed.state,'fixture_completed',JSON.stringify(completed));
+  assert.ok(fs.existsSync(path.join(reviewDir,'work-T-001-r2.md')));
+  const finalRows=JSON.parse(fs.readFileSync(store)).records;
+  for(let n=1;n<=finalRows.length;n++)readRunnerHistory(finalRows.slice(0,n),config,3);
+  assert.deepEqual(finalRows.slice(0,rows.length),rows,'all previous failure and review records unchanged');
+  assert.deepEqual(fs.readFileSync(r1),oldReview);assert.deepEqual(fs.readFileSync(handoff),oldHandoff);
+});
+
+
+// review-capacity: an approved a1 package too large to repeat inline is stored
+// once and referenced by its review checkpoint; the N5 owner gate must still
+// find that original approved review instead of reporting it missing.
+test('review-capacity: completion rework gate resolves a referenced a1 review package',t=>{
+  const f=fixture(t);f.review('approved');
+  fs.writeFileSync(path.join(f.answers,'target.txt'),'export const value = 42;\n//'+'x'.repeat(600*1024)+'\n');
+  const marker=path.join(f.root,'checks-pass');fs.writeFileSync(marker,'pass');
+  const checks=[{id:'gate',command:[process.execPath,'-e',`process.exit(require('node:fs').existsSync(${JSON.stringify(marker)})?0:1)`]}];
+  const run=(op,extra={})=>{const r=f.drive(f.plan({mode:'resume',originalHostContext:'v2-fixture-host',checks,...extra}),op);
+    assert.equal(r.status,0,r.stderr);return JSON.parse(r.stdout).result;};
+  const delivered=run('start',{mode:'create',originalHostContext:undefined});
+  assert.equal(delivered.state,'awaiting_review',JSON.stringify(delivered));
+  const pkg=delivered.packageDigest;assert.equal(run('decision',{packageDigest:pkg}).state,'approved');
+  const store=path.join(f.specsDir,'.reviews/.execution',identity.runId,'state.json');
+  const records=()=>JSON.parse(fs.readFileSync(store)).records;
+  assert.ok(records().some(row=>row.payload.packageMaterial===true),'a1 package is archived once');
+  assert.ok(records().some(row=>row.payload.packageRef&&row.payload.checkpoint.receipt),'the approved review checkpoint references it');
+  fs.rmSync(marker);assert.equal(run('complete',{packageDigest:pkg}).code,'completion_checks_changed');
+  const target=run('status').controlTarget;
+  assert.equal(run('completion_rework',{reason:'Fix the failed test',expectedControl:target}).identity.attempt,2);
+  fs.writeFileSync(path.join(f.answers,'develop-a2.json'),JSON.stringify(answer));fs.writeFileSync(marker,'pass');
+  fs.writeFileSync(path.join(f.answers,'target.txt'),'export const value = 43;\n');
+  const revised=run('start');assert.equal(revised.identity.attempt,2,JSON.stringify(revised));
+  assert.equal(run('decision',{identity:{...identity,attempt:2},packageDigest:revised.packageDigest}).state,'approved');
+  const reviewDir=path.join(f.specsDir,'.reviews');
+  checkN5({handoff:path.join(reviewDir,'work-T-001-a2-handoff.json'),reviewsDir:reviewDir,feature:'work',task:'T-001',projectRoot:f.codeProject});
+  assert.equal(run('complete',{identity:{...identity,attempt:2},packageDigest:revised.packageDigest}).state,'fixture_completed');
+});
+
+test('completion_rework resumes a real interrupted a2 developer without changing r1',async t=>{
+  const f=fixture(t);f.review('approved');const marker=path.join(f.root,'gate');fs.writeFileSync(marker,'pass');
+  const checks=[{id:'gate',command:[process.execPath,'-e',`process.exit(require('node:fs').existsSync(${JSON.stringify(marker)})?0:1)`]}];
+  const run=(op,extra={})=>{const out=f.drive(f.plan({mode:'resume',originalHostContext:'v2-fixture-host',checks,...extra}),op);
+    assert.ok(out.status===0||op==='status'&&out.status===1,out.stderr);return JSON.parse(out.stdout).result;};
+  const pkg=run('start',{mode:'create',originalHostContext:undefined}).packageDigest;
+  assert.equal(run('decision',{packageDigest:pkg}).state,'approved');fs.rmSync(marker);
+  assert.equal(run('complete',{packageDigest:pkg}).code,'completion_checks_changed');
+  const expectedControl=run('status').controlTarget;
+  assert.equal(run('completion_rework',{reason:'Fix the failed check',expectedControl}).identity.attempt,2);
+  const host=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
+  const child=spawn(process.execPath,[host,'serve','--config',path.join(f.root,'run.json'),'--mode','resume',
+    '--host-context','v2-fixture-host','--control-config',path.join(f.root,'control.json'),
+    '--original-host-context','v2-fixture-host','--runtime','codex','--review-config',path.join(f.root,'review.json')],
+    {cwd:f.codeProject,env:f.env,detached:true,stdio:['pipe','pipe','pipe']});
+  let buffer='',received=false,stderr='';child.stderr.on('data',part=>stderr+=part);
+  await new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{child.kill('SIGKILL');reject(new Error('fixture host did not dispatch develop: '+stderr));},30000);
+    child.stdout.on('data',part=>{buffer+=part;let newline;
+      while((newline=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,newline);buffer=buffer.slice(newline+1);let row;try{row=JSON.parse(line);}catch{continue;}
+        if(row.type==='host_ready')child.stdin.write(JSON.stringify({version:2,operation:'start',requestId:'interrupted-a2',identity:{...identity,attempt:2}})+'\n');
+        if(row.type==='host_request'&&row.kind==='develop'){received=true;child.kill('SIGKILL');}
+      }});
+    child.once('error',error=>{clearTimeout(timer);reject(error);});
+    child.once('exit',()=>{clearTimeout(timer);resolve();});
+  });
+  assert.ok(received,stderr);
+  const store=path.join(f.specsDir,'.reviews/.execution',identity.runId,'state.json');
+  const interruptedRows=JSON.parse(fs.readFileSync(store)).records,config=interruptedRows[0].payload.config;
+  const history=readRunnerHistory(interruptedRows,config,3);assert.equal(history.pending.kind,'develop');
+  assert.equal(pendingDevelopStart(history.state),'reviewed_package');
+  const status=run('status');
+  assert.equal(run('abandon_effect',{reason:'Fixture host exited before answering',expectedControl:status.controlTarget}).code,'develop_interrupted');
+  fs.writeFileSync(path.join(f.answers,'develop-a2.json'),JSON.stringify(answer));
+  fs.writeFileSync(path.join(f.answers,'target.txt'),'export const value = 43;\n');fs.writeFileSync(marker,'pass');
+  const revised=run('start');assert.equal(revised.state,'awaiting_review');assert.equal(revised.identity.attempt,2);
+  assert.equal(run('decision',{identity:{...identity,attempt:2},packageDigest:revised.packageDigest}).state,'approved');
+  assert.equal(run('complete',{identity:{...identity,attempt:2},packageDigest:revised.packageDigest}).state,'fixture_completed');
+});
+
+
+test('completion_rework accepts a reviewed mode-only repair (real CLI)',t=>{
+  const f=fixture(t);f.review('approved');const marker=path.join(f.root,'gate');fs.writeFileSync(marker,'pass');
+  const checks=[{id:'gate',command:[process.execPath,'-e',`process.exit(require('node:fs').existsSync(${JSON.stringify(marker)})?0:1)`]}];
+  const run=(op,extra={})=>{const out=f.drive(f.plan({mode:'resume',originalHostContext:'v2-fixture-host',checks,...extra}),op);
+    assert.equal(out.status,0,out.stderr);return JSON.parse(out.stdout).result;};
+  const pkg=run('start',{mode:'create',originalHostContext:undefined}).packageDigest;
+  assert.equal(run('decision',{packageDigest:pkg}).state,'approved');fs.rmSync(marker);
+  assert.equal(run('complete',{packageDigest:pkg}).code,'completion_checks_changed');
+  assert.equal(run('completion_rework',{reason:'Repair executable permissions',expectedControl:run('status').controlTarget}).identity.attempt,2);
+  fs.writeFileSync(path.join(f.answers,'develop-a2.json'),JSON.stringify({...answer,edits:{'target.mjs':{mode:'0755'}}}));
+  const before=fs.readFileSync(path.join(f.codeProject,'target.mjs'));fs.writeFileSync(marker,'pass');
+  const revised=run('start');assert.equal(revised.state,'awaiting_review');assert.deepEqual(fs.readFileSync(path.join(f.codeProject,'target.mjs')),before);
+  assert.equal(fs.statSync(path.join(f.codeProject,'target.mjs')).mode&0o777,0o755);
+  assert.equal(run('decision',{identity:{...identity,attempt:2},packageDigest:revised.packageDigest}).state,'approved');
+  assert.equal(run('complete',{identity:{...identity,attempt:2},packageDigest:revised.packageDigest}).state,'fixture_completed');
 });

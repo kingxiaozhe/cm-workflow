@@ -12,6 +12,7 @@ import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {createHostQaExecutor} from '../runtime/js/cm-ai/host-qa-executor.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
+import {markImplicitQaDecision} from '../runtime/js/cm-ai/implicit-qa-decision.mjs';
 
 const policy={version:2,development:'conversation',bootstrap:'disabled',qa:'run',qaFix:'disabled'};
 const cli=fileURLToPath(new URL('./cm-ai-host.mjs',import.meta.url));
@@ -103,6 +104,26 @@ test('v1 recovery retains its original no-target and fingerprint behavior',async
   fs.writeFileSync(path.join(f.specsDir,f.feature,'tasks.md'),'- [ ] T-001: implement a\n- [ ] T-002: another unchanged dependency\n');f.approve();
   const run=await openControlRun(f.definition,'resume',f.execution,{specRebindReason:'Legacy explicit reason.'});run.close();
   assert.equal(f.snapshot().records.find(row=>row.payload.type==='specification-rebound').payload.record.reason,'Legacy explicit reason.');
+});
+
+test('regression: a v2 run created before the implicit QA decision still resumes in its original form',async t=>{
+  const f=fixture(t);
+  // 修复前没有 workflow 配置的 v2 运行：没有 workflow、执行器，也没有 QA 判定。
+  delete f.execution.configuration.workflow;delete f.execution.qaExecutor;delete f.execution.qaDecisionProvider;
+  const original={...f.execution};
+  const created=await openControlRun(f.definition,'create',original);created.close();
+  const provider={timeoutMs:1000,decide:()=>{throw new Error('must not assess');}};
+  const implicit={...original,qaDecisionProvider:markImplicitQaDecision(provider)};
+  const resumed=await openControlRun(f.definition,'resume',implicit);resumed.close();
+  // 没有隐式标记的判定不能借这条兼容路径改变指纹。
+  await assert.rejects(openControlRun(f.definition,'resume',{...original,qaDecisionProvider:{...provider}}),/fingerprint_mismatch/);
+  // 修复后新建的运行带着隐式判定的指纹，按新形式正常恢复。
+  const g=fixture(t);
+  delete g.execution.configuration.workflow;delete g.execution.qaExecutor;
+  g.execution.qaDecisionProvider=markImplicitQaDecision({timeoutMs:1000,decide:()=>{throw new Error('must not assess');}});
+  const fresh=await openControlRun(g.definition,'create',g.execution);fresh.close();
+  const again=await openControlRun(g.definition,'resume',g.execution);again.close();
+  await assert.rejects(openControlRun(g.definition,'resume',(({qaDecisionProvider,...rest})=>rest)(g.execution)),/fingerprint_mismatch/);
 });
 
 test('target file rejects unknown fields, malformed targets, symlinks and hardlinks',async t=>{

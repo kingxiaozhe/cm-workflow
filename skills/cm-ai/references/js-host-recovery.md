@@ -14,8 +14,8 @@ N6 新决定按固定检查点和 `qa.criticalPaths` 登记匹配；`qa_assess` 
 
 | v2 恢复类型 | 取得与携带目标 |
 | --- | --- |
-| 单任务 `develop_redo`、`abandon_review`、`abandon_effect`、`bootstrap_review_recover`、可用的 `reconcile_review` | 先只读 `status`；将原完整 `controlTarget` 放进请求/PLAN 的 `expectedControl` |
-| 单任务规格换绑、QA 重跑与 QA 配置修订 | 将原 `status.launchControlTarget` 保存到普通 JSON 文件；启动加 `--expected-control FILE`，不能使用 wire target 代替 |
+| 单任务 `develop_redo`、`abandon_review`、`abandon_effect`、`bootstrap_review_recover`、`completion_rework`、可用的 `reconcile_review` | 先只读 `status`；将原完整 `controlTarget` 放进请求/PLAN 的 `expectedControl` |
+| 单任务规格换绑、QA 重跑、QA 配置修订、范围追加与一次开发续次 | 将原 `status.launchControlTarget` 保存到普通 JSON 文件；启动加 `--expected-control FILE`，不能使用 wire target 代替 |
 | 批次当前成员的 wire 恢复 | 原批次 `status.controlTarget` 完整对象作为 `expectedControl`；带原 `taskKey`，不自行拼 member |
 | QA 修复子操作 | 先 `fix_status`；使用含 `child` 的完整 target，父 status 不提供 child |
 
@@ -90,6 +90,7 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
 
 - `blocked/check_answer_missing`、`blocked/check_answer_invalid`（`pendingAction=resume`）：开发已交付并写回 Learning，之后的检查或验证预检超时、断开、迟到或答复格式不合格（旧记录 `unknown/call_timeout`、`execution_error`、`invalid_input` 等，最后一次开发调用 `succeeded`）。
   先确认上一次检查命令已停止，再 `--mode resume` 后 `advance`：宿主追加 `develop-recheck` 记录，用新 effect id 只重跑检查、验证预检、handoff 与审查包，沿用原交付的 Learning 输入，不重发开发、不占开发调用与 effect 名额，重新划定检查新建文件。
+  同宿主的合法 `develop-recheck`／`complete-recheck` 使用新取消 signal；重查中的用户取消仍写入原 control 记录并终止检查。旧 `unknown/cancelled` 仅在完整 journal 证明 `unknown/call_timeout → develop-recheck → 检查取消`、原开发调用和 Learning 完全未变、没有用户取消／Review／pending／provider 时投影为此检查重查；仍合计最多 2 次，不改旧记录。旧记录没有保存超时后完整代码快照；恢复沿用原 scope、基线及交付身份合同，由当前检查和审查验证当前代码。
 - `blocked/develop_out_of_scope`（`pendingAction=resume`）：开发已交付并写回 Learning，但建 handoff 或审查包时发现改动超出任务 scope（旧记录 `unknown/out_of_scope`，不只是检查新建的文件）。reason 列出路径。这些可能是会话越界写的，也可能是你自己的改动：还原或移出代码根（确需改动先走规格变更扩大 scope），再 `--mode resume` 后 `advance`：宿主追加 `develop-recheck`（`code: develop_out_of_scope`），只重跑检查、预检、handoff 与审查包，不重发开发、不占名额，每运行最多 2 次。
 - `blocked/develop_answer_missing`，`pendingAction=develop_redo`：当前会话开发（非受保护、非 provider、非规则 bootstrap）的应答没拿到——超时后代码根已变化或起点无法核对（`unknown/call_timeout`）、会话断开或应答形状错（`unknown/unknown`、旧 `execution_error`）、只回了 `failed` 没有结果（`blocked/failed`）。
   会话可能仍在写文件，宿主看不到，所以 `advance` 不会重发。先确认会话已停止修改代码，再按原协议恢复（legacy 为 `--mode resume --allow-develop-redo`；v2 为上文固定 wire target）启动并发送 `develop_redo`（单行 reason，最多 500 UTF-8 字节，写进 `develop-answer-redo` 记录）；之后 status 为 `pendingAction=resume`，`advance` 用新 effect id 重发本轮开发。
@@ -309,7 +310,7 @@ worker 异常、超时或传输歧义仍是 `unknown`，旧 unknown 历史不自
 
 ## 已审交接后的任务重跑
 
-**v2：**本节 supersede 新建/归档/接受代码漂移尚未开放。遇 handoff_exists、r2 阻断或恢复预算用尽时保留原运行与证据，不取消后改 legacy 重开，不为套用下方步骤手改 tasks。单任务仍可按 Q 的固定 launch target 做已支持的 QA 恢复。以下重跑命令及手改 checkbox 前提只属 legacy 的原合同。
+**v2：**单任务 supersede 已开放，须带 `--supersede-target FILE`（旧运行 `cm-ai-run.mjs inspect-history` 返回的 `supersedeTarget`），合同见 `docs/cm-control-policy-v2.md`「卡死任务重开」；批次成员仍不支持。旧运行仍有合法恢复入口（QA 恢复、abandon、develop_redo 等）时先用原入口，不为重开手改 tasks。
 
 同名 handoff 已被审查回执消费时，新运行在创建 store 和开发前就拒绝 `handoff_exists`，错误的 `reason` 保留恢复提示。QA 配置错误用 [QA 恢复](js-host-qa-recovery.md#qa-配置修订) 的 `--revise-qa-config` 恢复原运行；宿主或环境证据不足用 `--rerun-blocked-qa` 恢复原运行。确需重新开发同一任务时，使用新的 runId 和下列显式授权：
 
@@ -357,3 +358,31 @@ legacy 批次不支持、启动即拒绝的单任务参数：`--revise-qa-config
 普通批次没有 `reconcile_review`（只属于外部模型或执行策略运行）。`batch_parallel_member_unresolved` 的出口按真实入口条件写：legacy 只有 supersede 的状态检查（没有在途 effect 的原始 blocked/cancelled/unknown/fixture_completed）和外部运行守卫都会放行时，才写“确认旧写入方已停后取消批次，以该成员 worktree 为代码根、用不加外部模型和执行优化参数的单任务宿主 supersede”；外部模型或执行策略的成员运行仍为原始 `unknown` 或有未对账调用时，守卫会拒绝同一代码根上的新运行，原调用对账也不可用，`reason` 直接说明并要求保留批次与 worktree 交维护者；原始 `pending_review` 或仍有在途 effect 时同样交维护者，不再列出用不上的操作；停在 `develop_redo` 等操作的成员同样返回 `batch_parallel_member_recovery_required`，用上表的一次性授权在原运行里恢复。已写入日志的旧 `batch_member_blocked` 记录照原样回放，不重新判定。
 
 资源闭合：批次交接前对 `cleanup_failed` 的 QA 命令资源先由宿主核对进程组已退出并补记 `released`（第 2 批）；仍未闭合时返回 `batch_resources_open`，`reason` 列出未释放的资源及原因（进程组仍在、没有记录进程身份、无法核实）。
+
+
+## v2 完成检查失败后返工
+
+用户已要求修复失败且必须改动代码时，可在单任务、未受保护的原配置 resume 且 development:conversation 时发送 `completion_rework`，携带固定 status.controlTarget 为 expectedControl 与真实单行 reason。仅 a1 的 completion_checks_changed、未完成任务、有效旧 approved、精确旧包及足够预算允许；其他前提见 docs/cm-control-policy-v2.md。旧 r1 与失败 checkpoint 保留；成功进入 a2 后，发送 advance，等真实 develop 请求到达再改代码，随后 fresh r2 和完成复查。不是 develop_redo，不新增 run、不手改 journal 或回执。旧 complete 环境重查路径保持原样。
+
+
+v2 单任务在 a1 `blocked/develop_checks_not_passed`、尚无 Review/在途 effect 时，可对已确认的具体新增路径显式 `revise_scope`。
+原未受保护会话开发、配置和 QA 保持原值；bootstrap/qaFix disabled。由人工在启动时提供 `--expected-control FILE --revise-scope SCOPE.json --scope-revision-reason REASON`；FILE 保存原 status.launchControlTarget，SCOPE.json 是包含原范围的完整 JSON 数组。只追加一次，原范围不得缩减。
+宿主用原创建 inventory 核对新增既有文件并补齐原字节，新文件要求原基线和当前均不存在；旧业务 diff 保留。成功后 effectiveScope 来自原 journal 的合法追加事件，继续原 run/attempt 的 develop、检查、handoff、fresh Review 与完成复查。详细拒绝及边界见 docs/cm-control-policy-v2.md。
+
+### a2 开发预算已不足的一次受控续次
+
+用户已明确要求同运行返工时，原 v2 单任务、未受保护的 conversation resume 在启动时提供
+`--expected-control FILE --development-rework --development-rework-reason REASON`；FILE 保存原 status.launchControlTarget。
+仅 a2 的 develop_retry_limit 及紧前真实 develop_checks_not_passed、旧 r1 changes_requested、
+4 calls / 5 effects、未完成且没有 r2/在途/取消等满足 docs/cm-control-policy-v2.md 的严格合同才准入。
+事件绑定原失败、limit、原基线/有效 scope/规格及当前源，不改 scope、不抹去成功重查费用。
+默认 6 calls 保持；只给固定下一开发与 fresh review-2 配对 1 个 effect credit，开发 intent 消费一次许可。
+成功后发送 advance，真实请求到达才能改代码；中断或失败不能取得第二次开发。
+随后新包、fresh r2、完成复查与原 QA 仍必须执行；不改旧 journal、不重新基线、不新 run 或 install。
+
+范围追加和一次开发续次均沿 `serve --mode resume` 的启动快照合同，由人工显式开启，原因及时间写入 journal。
+驾驶脚本 PLAN 把参数放入 `permissions`，文件路径相对 PLAN；先发送 `status` 核对，移除已消费的恢复参数后再 `advance`。
+不再用 PLAN.scope / PLAN.reason / PLAN.expectedControl 或 wire 操作触发这两个许可，也不新增 `--allow-*`。
+返工后的合法只重跑检查保留原每运行两次上限；仍不会派第二次开发。
+返工 r2 的 `review-2-retry-N` / `review-2-resume-N`（及组合）保留原无结论重派策略和预算，继续核对独立调用与 fresh 绑定。
+`completion_rework` 同样排除批次和受保护开发；不能把单任务恢复能力当作批次入口。详细命令及边界见 docs/cm-control-policy-v2.md。

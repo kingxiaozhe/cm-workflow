@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {digest,need,shape,id,hex,json} from './effect-contract.mjs';
+import {fixJournalWorkflow,packFixJournalPayload,unpackFixJournalState} from './review-presentation.mjs';
 export function readExecutionSnapshot({specsRoot,identity}){
   shape(identity,['repositoryId','runId']);Object.values(identity).forEach(id);
   need(path.isAbsolute(specsRoot)&&fs.realpathSync(specsRoot)===specsRoot,'unsupported_path');
@@ -21,8 +22,9 @@ export function readExecutionSnapshot({specsRoot,identity}){
     need([after,current].every(s=>['dev','ino','size','mtimeMs','ctimeMs'].every(k=>s[k]===before[k]))
       &&bytes.length===before.size,'snapshot_changed');
   }finally{fs.closeSync(fd);}
-  const raw=JSON.parse(bytes.toString('utf8')),v=json(raw,16*1024*1024);
+  const raw=JSON.parse(bytes.toString('utf8'));
   need(Buffer.from(JSON.stringify(raw)+'\n').equals(bytes),'store_corrupt');
+  const v=unpackFixJournalState(raw);
   shape(v,['version','identity','fingerprints','records','revision']);
   need(v.version===1&&digest(v.identity)===digest(identity),'identity_mismatch');
   shape(v.fingerprints,['workflow','config','inputs']);Object.values(v.fingerprints).forEach(hex);
@@ -30,7 +32,7 @@ export function readExecutionSnapshot({specsRoot,identity}){
   let previous=null;const ids=new Set();
   for(const [index,r] of v.records.entries()){
     shape(r,['version','seq','id','kind','payload','previousDigest','digest']);id(r.id);hex(r.digest);
-    json(r.payload,1024*1024);
+    need(Buffer.byteLength(JSON.stringify(packFixJournalPayload(r.payload,{workflow:fixJournalWorkflow(v)})))<=1024*1024,'limit_exceeded');
     const {digest:checksum,...body}=r;
     need(r.version===1&&r.seq===index+1&&r.previousDigest===previous&&!ids.has(r.id)
       &&['intent','result','cancel','commit-intent','commit-result','finalized'].includes(r.kind)
