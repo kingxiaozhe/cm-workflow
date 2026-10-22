@@ -126,8 +126,7 @@ export function inspectPrdChangeProposal(before,raw,selected,config){
   const changedUserCases=userCases(before.files).filter(item=>selected.includes(item.feature)
     &&!userCases(files).some(next=>next.feature===item.feature&&digest(next.value)===digest(item.value)));
   const draft={summary:raw.summary,features,draftDigest:digest({summary:raw.summary,features})};
-  const mechanics=checkPrdDraftMechanics(draft,{change:true,
-    previous:new Map(selected.map(dir=>[dir,before.files[`${dir}/tasks.md`]]).filter(([,text])=>typeof text==='string'))});
+  const mechanics=checkPrdDraftMechanics(draft,{change:true});
   need(mechanics.status==='mechanical_subset_passed','prd_change_mechanics_failed');
   return json({...draft,mechanicalSelfCheck:mechanics,removed:raw.removed,files,changedUserCases,
     proposalDigest:digest({before,raw,selected}),counts:{added:resultDirs.filter(dir=>!before.directories.includes(dir)).length,

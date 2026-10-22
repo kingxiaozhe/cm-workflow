@@ -39,30 +39,23 @@ function outsideFences(source){
     return fence===null?line:'';
   }).join('\n');
 }
-// previous: Map of feature directory -> its tasks.md before a change. Lines and
-// dependencies a change leaves untouched keep the rules they were approved under.
-export function checkPrdDraftMechanics(draft,{change=false,previous=null}={}){
+export function checkPrdDraftMechanics(draft,{change=false}={}){
   const findings=[],features=[];
   for(const feature of draft.features){
     const files=new Map(feature.documents.map(document=>[document.path,document.content]));
     const add=code=>findings.push({feature:feature.directory,code,
       ...(code==='dependencies_invalid'?{reason:{field:`${feature.directory}/tasks.md`,
         expected:'One line per task; comma-separated prerequisites, e.g. - T-003 依赖 T-001, T-002'}}:{})});
-    const before=typeof previous?.get(feature.directory)==='string'?previous.get(feature.directory):null;
-    const preservedLines=before===null?null:new Set(before.split(/\r?\n/));
-    const parsed=parseFeatureTaskText(files.get('tasks.md'),{strictTaskIds:true,preservedLines});
-    const earlier=before===null?null:parseFeatureTaskText(before);
-    const sameDependency=taskId=>!earlier?.error&&earlier?.dependencies?.has(taskId)
-      &&earlier.dependencies.get(taskId).join(',')===parsed.dependencies?.get(taskId)?.join(',');
+    const parsed=parseFeatureTaskText(files.get('tasks.md'));
     const acIds=declaredAcceptanceIds(outsideFences(files.get('requirements.md')));
     if(acIds.size===0)add('acceptance_missing');
     let taskIds=new Set();
     if(parsed.error)add(parsed.error);
     else{
       taskIds=new Set(parsed.tasks.map(task=>task.id));
-      if(parsed.tasks.filter(task=>!task.dropped).length>15)add('task_limit_exceeded');
+      if(parsed.tasks.length>15)add('task_limit_exceeded');
       if(!change&&parsed.tasks.some(task=>task.completed||task.dropped))add('new_task_not_pending');
-      if(!validDependencies(parsed.tasks,parsed.dependencies,{rejectDropped:taskId=>!sameDependency(taskId)}))add('dependencies_invalid');
+      if(!validDependencies(parsed.tasks,parsed.dependencies))add('dependencies_invalid');
     }
     if(files.has('test-cases.json')){
       let cases;try{cases=JSON.parse(files.get('test-cases.json'));}catch{add('test_cases_invalid');}
@@ -76,9 +69,7 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null}={}){
         }
       }
     }
-    const historicalTasks=parsed.error?0:parsed.tasks.filter(task=>task.dropped).length;
-    features.push({directory:feature.directory,tasks:taskIds.size,acceptanceCriteria:acIds.size,
-      ...(historicalTasks?{executionTasks:taskIds.size-historicalTasks,historicalTasks}:{})});
+    features.push({directory:feature.directory,tasks:taskIds.size,acceptanceCriteria:acIds.size});
   }
   return json({draftDigest:draft.draftDigest,status:findings.length?'failed':'mechanical_subset_passed',features,findings,
     pending:['task_boundary_and_existing_asset_overlap','acceptance_verifiability','user_case_semantics',
