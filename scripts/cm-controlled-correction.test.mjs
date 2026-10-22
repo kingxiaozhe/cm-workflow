@@ -316,7 +316,9 @@ test('structured review rejects missing fields, extra prose, duplicate keys, inv
   for(const body of malformed){
     f.review(record.review,record.handoff,2,'approved',record.correction_sha256);
     reviewBody(record.review,typeof body==='string'?body:JSON.stringify(body));
-    assert.throws(()=>publishControlledCorrectionReview(selected),/controlled correction/);
+    // JSON 后接散文已不是结构化正文，通用门禁先以「没有零阻塞结论句」拒绝。
+    const expected=body===JSON.stringify(valid)+'\nP2 remains unresolved.'?/explicitly state zero blocking findings/:/controlled correction/;
+    assert.throws(()=>publishControlledCorrectionReview(selected),expected);
   }
   f.review(record.review,record.handoff,2,'blocked',record.correction_sha256);
   reviewBody(record.review,JSON.stringify({conclusion:'Blocking findings.',

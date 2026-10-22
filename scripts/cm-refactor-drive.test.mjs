@@ -31,6 +31,15 @@ test('real light host: start, status, new-process resume, finish',t=>{
   out=f.run('resume');assert.equal(out.status,0,out.stderr);assert.equal(JSON.parse(out.stdout).result.stage,'awaiting_finish');
   out=f.run('finish');assert.equal(out.status,0,out.stderr);assert.equal(JSON.parse(out.stdout).result.stage,'done');
 });
+test('review.json body accepts a new zero-blocking phrase and rejects a non-conclusion mention',t=>{
+  const review=f=>path.join(f.answers,'review.json'),body=(f,text)=>write(review(f),{...JSON.parse(fs.readFileSync(review(f))),body:text});
+  let f=setup(t);body(f,'结论：零阻断发现。');
+  let out=f.run('start');assert.equal(out.status,0,out.stderr);assert.equal(JSON.parse(out.stdout).result.stage,'awaiting_finish');
+  const saved=fs.readdirSync(f.project,{recursive:true}).filter(file=>/-r1\.md$/.test(file)).map(file=>fs.readFileSync(path.join(f.project,file),'utf8'));
+  assert.ok(saved.some(text=>/^verdict: approved$/m.test(text)&&text.includes('结论：零阻断发现。')),'review evidence saved through the host gate');
+  f=setup(t);body(f,'不能说零阻塞发现，仍有一个阻断问题。');
+  out=f.run('start');assert.notEqual(out.status,0);assert.match(out.stderr,/review\.json/);
+});
 test('missing, malformed and out-of-scope answers refuse before store creation',t=>{
   for(const change of ['missing','malformed','scope']){
     const f=setup(t),file=path.join(f.answers,'apply.json');

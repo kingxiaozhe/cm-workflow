@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {inspectFixWalkthrough,readFixWalkthrough,fixWalkthroughBinding} from '../runtime/js/cm-fix/walkthrough.mjs';
 import {inspectFixRegressionFailure} from '../runtime/js/cm-fix/regression-evidence.mjs';
 import {taskDeclarations,approvedTaskGrammar,TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
-import {ZERO_BLOCKING_FINDINGS,ZERO_BLOCKING_PHRASES,REVIEWER_SOURCES} from '../runtime/js/review-findings.mjs';
+import {statesZeroBlockingFindings,ZERO_BLOCKING_PHRASES,REVIEWER_SOURCES} from '../runtime/js/review-findings.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
@@ -450,8 +450,8 @@ export function validateReview(review,{task,attempt,handoff,changedFiles}){
     throw new GateError('non-approved review must declare at least one blocking finding');
   if(header.reviewer==='self-degraded'&&!header.degraded_reason?.trim())
     throw new GateError('self-degraded review must include degraded_reason');
-  if(header.verdict==='approved'&&!ZERO_BLOCKING_FINDINGS.test(body))
-    throw new GateError(`approved review body must explicitly state zero blocking findings (accepted: ${ZERO_BLOCKING_PHRASES.join(' / ')}; ask the reviewer to regenerate the evidence, do not edit it yourself)`);
+  if(header.verdict==='approved'&&!statesZeroBlockingFindings(body))
+    throw new GateError(`approved review body must explicitly state zero blocking findings at the start of a conclusion line outside quotes and code blocks (accepted: ${ZERO_BLOCKING_PHRASES.join(' / ')}; e.g. "结论：零阻塞发现。"; ask the reviewer to regenerate the evidence, do not edit it yourself)`);
   if(attempt===2&&header.verdict==='changes_requested')
     throw new GateError('round 2 blocking findings must use verdict: blocked');
   if(header.handoff!==path.basename(handoff))

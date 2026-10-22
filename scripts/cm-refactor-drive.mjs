@@ -30,7 +30,7 @@ import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {readLearningRetrospectiveContent} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,deliberatelyUnanswered} from '../runtime/js/cm-ai/drive-core.mjs';
-import {ZERO_BLOCKING_FINDINGS} from '../runtime/js/review-findings.mjs';
+import {statesZeroBlockingFindings} from '../runtime/js/review-findings.mjs';
 
 const HOST=fileURLToPath(new URL('./cm-refactor-host.mjs',import.meta.url));
 const KNOWN=new Set(['start','resume','finish','prepare_judge_revision','status','cancel']);
@@ -69,7 +69,7 @@ function review(value,label){
     &&(value.verdict==='approved'?value.blocking_findings===0:value.blocking_findings>0)
     &&nonempty(value.body)&&nonempty(value.at)&&Number.isFinite(Date.parse(value.at))
     &&/(Z|[+-]\d\d:\d\d)$/.test(value.at),label);
-  if(value.verdict==='approved')valid(ZERO_BLOCKING_FINDINGS.test(value.body),`${label}.body`);
+  if(value.verdict==='approved')valid(statesZeroBlockingFindings(value.body),`${label}.body`);
   if(value.judgeRevision)valid(Array.isArray(value.judgeRevision.paths)&&value.judgeRevision.paths.length>0
     &&nonempty(value.judgeRevision.reason),`${label}.judgeRevision`);
   valid(Object.keys(value).every(key=>['reviewer','verdict','blocking_findings','body','at','judgeRevision'].includes(key)),label);

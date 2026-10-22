@@ -202,7 +202,7 @@ test('Windows lock serializes two task completions without losing either checkbo
 }));
 
 
-test('approved body accepts every listed zero-blocking phrase and the errors say what to write',()=>fixture(root=>{
+test('approved body needs a listed zero-blocking phrase as a conclusion sentence, and the errors say what to write',()=>fixture(root=>{
   const handoff=path.join(root,'handoff.json'),review=path.join(root,'review.md');
   writeHandoff(handoff);writeReview(review,{handoff});
   const original=fs.readFileSync(review,'utf8'),selected={task:'T-001',attempt:1,handoff,changedFiles:['src/example.ts']};
@@ -210,6 +210,13 @@ test('approved body accepts every listed zero-blocking phrase and the errors say
     fs.writeFileSync(review,original.replace('Zero findings.',`结论：${phrase}。`));
     assert.equal(validateReview(review,selected).verdict,'approved',phrase);
   }
+  for(const body of ['未发现阻断问题以外的问题。','零阻断发现？','不能说零阻塞发现。','> 其他审查：零阻断发现\n\n本次仍存在一个阻断问题。',
+    '```\nZero findings.\n```','blocker、major、minor 都是 0。']){
+    fs.writeFileSync(review,original.replace('Zero findings.',body));
+    assert.throws(()=>validateReview(review,selected),error=>error instanceof GateError&&/explicitly state zero blocking findings/.test(error.message),body);
+  }
+  fs.writeFileSync(review,original.replace('Zero findings.','结论：approved，零 findings。No blocking findings. 已核对 handoff。'));
+  assert.equal(validateReview(review,selected).verdict,'approved');
   fs.writeFileSync(review,original.replace('Zero findings.','blocker、major、minor 都是 0。'));
   assert.throws(()=>validateReview(review,selected),error=>error instanceof GateError
     &&/explicitly state zero blocking findings/.test(error.message)&&/零阻塞发现/.test(error.message)&&/regenerate/.test(error.message));

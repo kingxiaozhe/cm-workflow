@@ -193,8 +193,8 @@ scope:
 ```
 
 `attempt` 必须等于 `round`。`approved` 必须写 `blocking_findings: 0`，其他
-verdict 至少为 1。`reviewer` 只能原样写上面四个值之一，不加括号、模型或其他说明；模型、推理强度等写进正文。`approved` 的正文必须明确写出零阻塞，门禁只认这些说法（不区分大小写）：零发现、零阻塞发现、零阻断发现、无阻塞发现、无阻断发现、未发现阻塞、未发现阻断、zero findings、no findings、no blocking findings（清单见 `runtime/js/review-findings.mjs`）；建议正文末尾单独一行「结论：零阻塞发现」。
-凭证由审查方按本模板完整产出（含头部），主执行者只原样保存到上述路径，不改写其中任何字段或措辞。门禁因格式拒绝时，把报错原文交回审查方重新产出；主执行者自行修改审查结论等于自我批准，不允许。`self-degraded` 必须写 `independent: false` 并增加非空的
+verdict 至少为 1。`reviewer` 只能原样写上面四个值之一，不加括号、模型或其他说明；模型、推理强度等写进正文。`approved` 的正文必须有一句以零阻塞说法开头的结论：位于行首，或紧跟句号、分号、叹号之后（前面可带列表符、加粗和「结论：」），说法后紧跟行尾、空白或非问号的标点；引用行（`>`）、代码块、问句和句中片段（如「不能说零阻塞发现」）都不算。门禁只认这些说法（不区分大小写）：零发现、零阻塞发现、零阻断发现、无阻塞发现、无阻断发现、未发现阻塞、未发现阻断、zero findings、no findings、no blocking findings（清单见 `runtime/js/review-findings.mjs`）；建议正文末尾单独一行「结论：零阻塞发现」。
+手写 Markdown 凭证时，凭证由审查方按本模板完整产出（含头部），主执行者只原样保存到上述路径，不改写其中任何字段或措辞。门禁因格式拒绝时，把报错原文交回审查方重新产出；主执行者自行修改审查结论等于自我批准，不允许。JS 宿主或驾驶员依据已登记、已绑定的审查结果确定性生成凭证（如 `host-review-file.mjs`、`cm-refactor` 驾驶员）不在此列；但主执行者同样不得改动其中的审查结论、来源声明或计数。`self-degraded` 必须写 `independent: false` 并增加非空的
 `degraded_reason`；其他独立通道只有在新上下文中实际执行时才可写 `true`。
 `handoff_sha256` 将结论绑定到本轮 handoff 内容；handoff 改动后必须重新审查。
 新 handoff 还必须包含 `implementation_sha256`，并让 N4/N5 使用
