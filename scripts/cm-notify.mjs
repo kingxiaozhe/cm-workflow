@@ -118,10 +118,10 @@ async function loadConfig(home){
   if(bytes===null)return {file,state:lstat(off)?'off':'missing',command:null};
   const parsed=parseNotifyConfig(bytes.toString('utf8'));
   if(parsed.reason)return {file,state:'invalid',reason:parsed.reason,command:null};
-  const {command,text}=parsed.config;
+  const {command,text,layout='full'}=parsed.config;
   // Optional custom text: default, custom, or invalid (then the default text is used).
   const textState=parsed.textReason?'invalid':text?'custom':'default';
-  return {file,state:classifyCommand(home,command),command,textState,...(parsed.textReason?{textReason:parsed.textReason}:{}),textSpec:text??null};
+  return {file,state:classifyCommand(home,command),command,textState,...(parsed.textReason?{textReason:parsed.textReason}:{}),textSpec:text??null,layout};
 }
 // Status view of a snapshot; neither the command (custom arguments may hold
 // anything) nor the custom strings are included.
@@ -182,7 +182,7 @@ const textLine=config=>config.textState==='custom'?'文案：自定义（/cm:not
 
 // Read-only preview of every event's title and body under the current
 // notify.json text, built from fixed sample fields. Sends and logs nothing.
-const PREVIEW_SAMPLE=Object.freeze({project:'demo-app',workflow:'cm-ai',runId:'run-sample-1',feature:'1.demo-feature',task:'T-001',session:'4f9fa27f'});
+const PREVIEW_SAMPLE=Object.freeze({project:'demo-app',workflow:'cm-ai',runId:'run-sample-1',feature:'1.demo-feature',task:'T-001',session:'4f9fa27f',sessionTitle:'示例会话标题'});
 export const PREVIEW_EVENTS=Object.freeze([
   {event:'stuck',name:'卡住，需要人处理',stage:'blocked',code:'checks_not_passed',nextAction:'核对原因后恢复原运行'},
   {event:'waiting',name:'等待会话应答',stage:'check',code:'waiting_session_answer',nextAction:'宿主已等待会话应答约 10 分钟，请回到会话处理'},
@@ -191,9 +191,9 @@ export const PREVIEW_EVENTS=Object.freeze([
   {event:'dead',name:'宿主已退出未收尾',stage:'1 个宿主进程已不在',code:'host_process_gone',nextAction:'请回到会话用 status 核对运行状态，需要时按恢复说明接手'},
   {event:'done',name:'流程已结束',stage:'run_done',code:'run_done',nextAction:'会话边界：换新会话，下一项在新会话里运行'}]);
 export async function previewText(home,{now=Date.now(),timeZone}={}){
-  const {state,textState=null,textReason=null,textSpec=null}=await loadConfig(home);
+  const {state,textState=null,textReason=null,textSpec=null,layout='full'}=await loadConfig(home);
   const messages=PREVIEW_EVENTS.map(({name,...fields})=>({event:fields.event,name,
-    ...buildNotifyMessage({...PREVIEW_SAMPLE,...fields},{now,timeZone,text:textSpec})}));
+    ...buildNotifyMessage({...PREVIEW_SAMPLE,...fields},{now,timeZone,text:textSpec,layout})}));
   return {state,textState,textReason,messages};
 }
 export function formatPreview(preview){

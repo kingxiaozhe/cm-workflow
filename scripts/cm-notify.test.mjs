@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
-import {notify,clearAttention,scheduleWaitNotice,driveProgressKey,readNotifyConfig,parseNotifyConfig,buildNotifyMessage,normalizeNotifyText,driveNotice,NOTIFY_LIMITS,NOTIFY_WORKFLOWS,DEFAULT_NOTIFY_TEXT} from '../runtime/js/notify.mjs';
+import {notify,clearAttention,sessionTitle,scheduleWaitNotice,driveProgressKey,readNotifyConfig,parseNotifyConfig,buildNotifyMessage,normalizeNotifyText,driveNotice,NOTIFY_LIMITS,NOTIFY_WORKFLOWS,DEFAULT_NOTIFY_TEXT} from '../runtime/js/notify.mjs';
 
 const NOW=Date.parse('2026-10-08T08:00:00.000Z');
 const DRIVE_CORE=new URL('../runtime/js/cm-ai/drive-core.mjs',import.meta.url).href;
@@ -22,7 +22,8 @@ function home(t,{exit=0,sleepMs=0,config={}}={}){
 process.stdin.on('end',()=>{setTimeout(()=>{fs.appendFileSync(${JSON.stringify(sent)},JSON.stringify({title:process.env.CM_NOTIFY_TITLE,
 body:process.env.CM_NOTIFY_BODY,stdin:JSON.parse(input),at:Date.now()})+'\\n');process.exit(${exit});},${sleepMs});});`);
   fs.writeFileSync(path.join(dir,'notify.json'),JSON.stringify({version:1,command:[process.execPath,script],...config}));
-  const env={...process.env,CM_WORKFLOW_HOME:dir};
+  // Never read the real Claude Code session of whoever runs the tests.
+  const env={...process.env,CM_WORKFLOW_HOME:dir};delete env.CLAUDE_CODE_SESSION_ID;
   const rows=()=>{
     if(!fs.existsSync(sent))return [];
     const contents=fs.readFileSync(sent,'utf8'),completeEnd=contents.lastIndexOf('\n')+1;
@@ -375,6 +376,43 @@ test('two hosts without a session id waiting in one project are two notices: the
   t.mock.timers.tick(100);t.mock.timers.reset();
   assert(await h.until(()=>h.rows().length===2));
   assert.equal(Object.keys(JSON.parse(fs.readFileSync(path.join(h.dir,'notify-state.json'),'utf8')).attention).length,2);
+});
+
+test('compact layout: title is the project, subtitle the session title, body only why it stopped',()=>{
+  const at={now:NOW,timeZone:'UTC',layout:'compact'};
+  const stuck=fields('k',{code:'qa_decision_required',session:'4f9fa27f',sessionTitle:'分析 skills 库'});
+  assert.deepEqual(buildNotifyMessage(stuck,at),{title:'work/demo-app',subtitle:'会话：分析 skills 库',body:'在等 QA 判定'});
+  // No plain-words entry: the event headline, never the English code. No title: the short session id; neither: the workflow.
+  assert.deepEqual(buildNotifyMessage(fields('k',{session:'4f9fa27f'}),{...at,text:{headlines:{default:'要你出手'}}}),
+    {title:'work/demo-app',subtitle:'会话：4f9fa27f',body:'要你出手'});
+  assert.equal(buildNotifyMessage(fields('k'),at).subtitle,'cm-fix');
+  assert.equal(buildNotifyMessage(fields('k',{event:'done',code:'qa_decision_required'}),at).body,'流程已结束');
+  assert.equal(buildNotifyMessage(stuck,{...at,followUp:true,suppressed:2}).body,'第 2 次：在等 QA 判定\n另有 2 条提醒已合并');
+  assert.deepEqual(parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true'],layout:'compact'})).config.layout,'compact');
+  assert.equal(Object.hasOwn(parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true'],layout:'full'})).config,'layout'),false);
+  assert.equal(parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true'],layout:'tiny'})).reason,'layout');
+});
+
+test('session title: last custom-title (else ai-title) from the tail of the session transcript; nothing read without a session or under tests',t=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-notify-title-')));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const id='2e015f08-c743-427a-95fa-0e471a851593',dir=path.join(root,'-Users-x-proj');fs.mkdirSync(dir);
+  const file=path.join(dir,`${id}.jsonl`),line=value=>JSON.stringify(value)+'\n';
+  const env={CLAUDE_CODE_SESSION_ID:id,CM_NOTIFY_CLAUDE_PROJECTS:root,NODE_TEST_CONTEXT:'child-v8'};
+  fs.writeFileSync(file,line({type:'ai-title',aiTitle:'自动标题'})+line({type:'user',message:'x'}));
+  assert.equal(sessionTitle(env),'自动标题');
+  fs.appendFileSync(file,line({type:'custom-title',customTitle:'分析 skills 库'})+line({type:'ai-title',aiTitle:'更晚的自动标题'}));
+  assert.equal(sessionTitle(env),'分析 skills 库','a title the person set wins');
+  fs.appendFileSync(file,line({type:'custom-title',customTitle:'改名后 /srv/x/secret'}));
+  assert.equal(sessionTitle(env),'改名后 <路径>');
+  // Only the last 1 MiB is read: a title further back is not found.
+  fs.writeFileSync(file,line({type:'custom-title',customTitle:'很早的标题'})+'x'.repeat(1024*1024+10)+'\n');
+  assert.equal(sessionTitle(env),null);
+  // A symlinked transcript is never followed.
+  fs.writeFileSync(path.join(root,'real.jsonl'),line({type:'custom-title',customTitle:'别读我'}));
+  fs.rmSync(file);fs.symlinkSync(path.join(root,'real.jsonl'),file);
+  assert.equal(sessionTitle(env),null);
+  for(const bad of [{...env,CLAUDE_CODE_SESSION_ID:undefined},{...env,CLAUDE_CODE_SESSION_ID:'../x'},{...env,CM_NOTIFY_CLAUDE_PROJECTS:undefined}])
+    assert.equal(sessionTitle(bad),null,JSON.stringify(bad));
 });
 
 test('at most 3 per 10 minutes and 150 per day across keys; skipped notices are counted into the next one',async t=>{

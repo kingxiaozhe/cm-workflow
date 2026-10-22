@@ -806,13 +806,26 @@ test('custom text survives switch, off and on; status shows 文案：默认/自�
   noSecret(s.cli([]).stdout);
 });
 
+test('compact layout: preview shows only project, session and why it stopped',async t=>{
+  const s=sandbox(t);
+  s.write('notify.json',JSON.stringify({version:1,command:['/bin/true'],layout:'compact',text:{headlines:{default:'要你出手',done:'跑完了'}}}));
+  const preview=await previewText(s.home,{now:Date.parse('2026-10-08T08:00:00.000Z'),timeZone:'Asia/Shanghai'});
+  assert.deepEqual(preview.messages.map(({title,subtitle,body})=>[title,subtitle,body]),[
+    ['demo-app','会话：示例会话标题','要你出手'],
+    ['demo-app','会话：示例会话标题','在等会话应答'],
+    ['demo-app','会话：示例会话标题','会话没有发下一步'],
+    ['demo-app','会话：示例会话标题','在等你处理'],
+    ['demo-app','会话：示例会话标题','宿主已退出未收尾'],
+    ['demo-app','会话：示例会话标题','跑完了']]);
+});
+
 test('preview prints every event from sample fields with the current text; it sends, logs and changes nothing',async t=>{
   const s=sandbox(t);
   const at={now:Date.parse('2026-10-08T08:00:00.000Z'),timeZone:'Asia/Shanghai'};
   let preview=await previewText(s.home,at);
   assert.equal(preview.textState,null);assert.deepEqual(preview.messages.map(m=>m.event),['stuck','waiting','idle','idle_waiting','dead','done']);
   assert.equal(preview.messages[0].title,'CM 需要人处理 · demo-app');
-  assert.equal(preview.messages[0].subtitle,'cm-ai · 1.demo-feature T-001 · 会话 4f9fa27f');
+  assert.equal(preview.messages[0].subtitle,'cm-ai · 1.demo-feature T-001 · 会话 示例会话标题');
   assert.equal(preview.messages[0].body,'下一步：核对原因后恢复原运行\n卡在：checks_not_passed\n时间：16:00');
   assert.equal(preview.messages[5].body,'下一步：会话边界：换新会话，下一项在新会话里运行\n时间：16:00');
   assert.match(formatPreview(preview),/^提醒文案预览，用示例字段生成，不发送。文案：默认（没有生效的 notify.json，按默认文案预览）\n/);
@@ -827,7 +840,7 @@ test('preview prints every event from sample fields with the current text; it se
   assert.equal(preview.messages[5].body,'下一步：会话边界：换新会话，下一项在新会话里运行\n时间：16:00');
   const before=s.snapshot();
   let result=s.cli(['preview']);assert.equal(result.status,0,result.stderr);
-  assert.match(result.stdout,/^提醒文案预览，用示例字段生成，不发送。文案：自定义\n\n【卡住，需要人处理】stuck\n标题：提醒 卡住了 · demo-app\n副标题：cm-ai · 1.demo-feature T-001 · 会话 4f9fa27f\n下一步：核对原因后恢复原运行\n工单：T-001\n时间：\d\d:\d\d\n/);
+  assert.match(result.stdout,/^提醒文案预览，用示例字段生成，不发送。文案：自定义\n\n【卡住，需要人处理】stuck\n标题：提醒 卡住了 · demo-app\n副标题：cm-ai · 1.demo-feature T-001 · 会话 示例会话标题\n下一步：核对原因后恢复原运行\n工单：T-001\n时间：\d\d:\d\d\n/);
   assert.match(result.stdout,/【流程已结束】done\n标题：提醒 完工 · demo-app\n/);
   assert.equal(JSON.parse(s.cli(['preview','--json']).stdout).messages.length,6);
   // Also allowed on Windows: it reads notify.json only, never a secret file.

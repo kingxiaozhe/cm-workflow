@@ -80,6 +80,11 @@ export function parseNotifyConfig(raw){
   }
   // An unusable `text` never turns notices off: the default text is used and
   // the caller is told why (textReason), so a typo cannot silence notices.
+  // Optional layout: "full" (default) or "compact" (project, session, reason only).
+  if(value.layout!==undefined){
+    if(!['full','compact'].includes(value.layout))return {reason:'layout'};
+    if(value.layout==='compact')config.layout='compact';
+  }
   if(value.text===undefined)return {config};
   const text=normalizeNotifyText(value.text);
   if(text.reason)return {config,textReason:text.reason};
@@ -135,6 +140,40 @@ export function notifySessionLabel(args=[]){
   const at=list.indexOf('--host-context'),raw=at>=0?list[at+1]:null;
   if(typeof raw!=='string'||!raw||raw.startsWith('--'))return null;
   return SESSION_UUID.test(raw)?raw.slice(0,8).toLowerCase():clean(raw,24)||null;
+}
+// The title the person sees for the Claude Code session that runs this
+// process (its sidebar name): the last custom-title (else ai-title) record in
+// the tail of <claude config>/projects/*/<CLAUDE_CODE_SESSION_ID>.jsonl. Only
+// the last 1 MiB is read, never through a symlink. Under node --test only an
+// explicit CM_NOTIFY_CLAUDE_PROJECTS directory is read. null when unknown.
+const TITLE_TAIL_BYTES=1024*1024;
+export function sessionTitle(env=process.env){
+  try{
+    const id=env.CLAUDE_CODE_SESSION_ID;
+    if(typeof id!=='string'||!SESSION_UUID.test(id))return null;
+    const projects=env.CM_NOTIFY_CLAUDE_PROJECTS||(env.NODE_TEST_CONTEXT?null
+      :path.join(env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),'.claude'),'projects'));
+    if(!projects)return null;
+    for(const dir of fs.readdirSync(projects)){
+      const file=path.join(projects,dir,`${id}.jsonl`);
+      let stat;try{stat=fs.lstatSync(file);}catch{continue;}
+      if(!stat.isFile())continue;
+      const fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+      try{
+        const length=Math.min(stat.size,TITLE_TAIL_BYTES),buffer=Buffer.alloc(length);
+        fs.readSync(fd,buffer,0,length,stat.size-length);
+        let custom=null,ai=null;
+        for(const line of buffer.toString('utf8').split('\n')){
+          if(!line.includes('-title"'))continue;
+          let row;try{row=JSON.parse(line);}catch{continue;}
+          if(row?.type==='custom-title'&&typeof row.customTitle==='string')custom=row.customTitle;
+          if(row?.type==='ai-title'&&typeof row.aiTitle==='string')ai=row.aiTitle;
+        }
+        return clean(custom??ai??'',40)||null;
+      }finally{fs.closeSync(fd);}
+    }
+    return null;
+  }catch{return null;}
 }
 // Without a returned run id, the launch arguments identify the run (the
 // driver passes the same arguments to the host it starts).
@@ -225,13 +264,25 @@ export function normalizeNotifyText(value){
 // The default text is a next-step-first layout; a finished run only names
 // project, task and time. `text` is a normalized notify.json `text`; anything
 // unusable falls back to the default.
-export function buildNotifyMessage(fields,{now=Date.now(),timeZone,text,followUp=false,suppressed=0}={}){
+export function buildNotifyMessage(fields,{now=Date.now(),timeZone,text,followUp=false,suppressed=0,layout='full'}={}){
   const spec=text===undefined||text===null?DEFAULT_NOTIFY_TEXT:normalizeNotifyText(text).text??DEFAULT_NOTIFY_TEXT;
   const workflow=clean(fields.workflow,24)||'cm',project=projectName(fields.project);
   const event=Object.hasOwn(spec.headlines,fields.event)&&fields.event!=='default'?fields.event:'default';
+  if(layout==='compact'){
+    // Only which project, which session and why it stopped. A code without a
+    // plain-words entry falls back to the event headline; the code itself stays
+    // in the stdin JSON for anyone who needs it.
+    const session=clean(fields.sessionTitle,40)||clean(fields.session,24),code=clean(fields.code,64);
+    const reason=event!=='done'&&Object.hasOwn(CODE_WORDS,code)?CODE_WORDS[code]:spec.headlines[event];
+    const lines=[`${followUp?'第 2 次：':''}${reason}`];
+    if(Number.isSafeInteger(suppressed)&&suppressed>0)lines.push(`另有 ${suppressed} 条提醒已合并`);
+    return {title:cut(project||workflow,NOTIFY_LIMITS.titleChars),subtitle:session?`会话：${session}`:workflow,
+      body:cut(lines.join('\n'),NOTIFY_LIMITS.bodyChars)};
+  }
   const head=[spec.titlePrefix,spec.headlines[event]].filter(Boolean).join(' ');
   const title=cut(`${head}${project?` · ${project}`:''}`,NOTIFY_LIMITS.titleChars);
-  const feature=clean(fields.feature,FIELD_CAPS.feature),task=clean(fields.task,FIELD_CAPS.task),session=clean(fields.session,24);
+  const feature=clean(fields.feature,FIELD_CAPS.feature),task=clean(fields.task,FIELD_CAPS.task);
+  const session=clean(fields.sessionTitle,40)||clean(fields.session,24);
   // The session is what says where to act: it is kept whole and the rest is shortened first.
   const sessionPart=session?` · 会话 ${session}`:'',rest=[workflow,[feature,task].filter(Boolean).join(' ')].filter(Boolean).join(' · ');
   const subtitle=cut(rest,Math.max(1,NOTIFY_LIMITS.titleChars-Array.from(sessionPart).length))+sessionPart;
@@ -400,9 +451,10 @@ export function notify(fields,{env=process.env,now=Date.now(),timeoutMs=NOTIFY_L
       if(reserved.status!=='duplicate')appendNotifyLog(home,now,{event,workflow,hash,result:`skipped ${reserved.status}`});
       return {sent:false,reason:reserved.status};
     }
-    const message=buildNotifyMessage(fields,{now,text:config.text,followUp:reserved.followUp,suppressed:reserved.suppressed});
+    if(fields.sessionTitle===undefined)fields={...fields,sessionTitle:sessionTitle(env)};
+    const message=buildNotifyMessage(fields,{now,text:config.text,layout:config.layout,followUp:reserved.followUp,suppressed:reserved.suppressed});
     const payload={...message,event};
-    for(const name of ['project','workflow','runId','feature','task','stage','code','nextAction','session']){
+    for(const name of ['project','workflow','runId','feature','task','stage','code','nextAction','session','sessionTitle']){
       const value=name==='project'?projectName(fields.project):clean(fields[name],name==='nextAction'?200:64);
       if(value)payload[name]=value;
     }
@@ -657,7 +709,7 @@ export function driveProgressKey({host,cwd,args=[],operation,row=null,failure=nu
 export function notifyIdentityLine({cwd,args=[]},{env=process.env}={}){
   try{
     if(!readNotifyConfig(env))return null;
-    const project=projectName(cwd?path.resolve(cwd):''),session=notifySessionLabel(args);
+    const project=projectName(cwd?path.resolve(cwd):''),session=sessionTitle(env)??notifySessionLabel(args);
     return `提醒里的标识：项目 ${project||'-'}${session?` · 会话 ${session}`:''}`;
   }catch{return null;}
 }
