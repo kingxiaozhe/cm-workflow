@@ -12,8 +12,10 @@ const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
 // 只认第一行：它前面没有任何内容，不会落在代码围栏、引用或 HTML 注释里，无需解析 Markdown 结构。
 // 后文与结论矛盾时由审查方负责；头部 verdict 与 blocking_findings 才是结构化结论。
 const CONCLUSION=new RegExp(`^(?:(?:结论|conclusion)\\s*[:：]\\s*)?(?:${ZERO_BLOCKING_PHRASES.map(escape).join('|')})\\s*[。.]?$`,'i');
+// 任何换行类字符都会把一行拆成多行，结论里一律不允许。
+const LINE_BREAK=/[\r\n\v\f\u0085\u2028\u2029]/;
 function conclusionLine(text){
-  if(/^\s/.test(text))return false;
+  if(/^\s/.test(text)||LINE_BREAK.test(text))return false;
   let line=text.trim().replace(/^[-*+]\s+/,'');
   line=line.replace(/^\*\*((?:结论|conclusion)\s*[:：])\s*\*\*\s*/i,'$1').replace(/^\*\*(结论|conclusion)\*\*\s*([:：])\s*/i,'$1$2');
   const bold=/^\*\*([^*]+)\*\*$/.exec(line);
@@ -25,7 +27,7 @@ function strictZeroBlocking(body){
   let structured=null;
   try{structured=JSON.parse(body);}catch{}
   if(structured&&typeof structured==='object'&&!Array.isArray(structured)&&Object.hasOwn(structured,'conclusion'))
-    return typeof structured.conclusion==='string'&&!/[\r\n]/.test(structured.conclusion)&&conclusionLine(structured.conclusion);
+    return typeof structured.conclusion==='string'&&conclusionLine(structured.conclusion);
   const first=body.split(/\r?\n/).find(line=>line.trim()!=='');
   return first!==undefined&&conclusionLine(first);
 }

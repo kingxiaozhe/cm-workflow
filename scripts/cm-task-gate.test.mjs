@@ -223,7 +223,8 @@ test('approved body must open with an unindented zero-blocking conclusion line; 
     '- ~~~\n  Zero findings.\n  ~~~\n\n本次仍有阻断。','- a\n  - ````\n    零阻塞发现。\n    ````','1. ```\nZero findings.\n```',
     '<!--\nZero findings.\n-->','<!-- 草稿 -->\n    Zero findings.','说明。\n  结论：零阻塞发现。','- 第一项\n  零阻塞发现。',
     '说明。\n\n结论：零阻塞发现。','- ~~~\n  示例\n  ~~~\n\n结论：零阻塞发现。','~~~markdown\n> ~~~\nZero findings.\n~~~\n本轮仍有 major。',
-    '<!-- old --> <!-- example\nZero findings.\n-->','\n    Zero findings.\n\n本轮仍有 major。','\tZero findings.','```示例```\n\nZero findings.'])
+    '<!-- old --> <!-- example\nZero findings.\n-->','\n    Zero findings.\n\n本轮仍有 major。','\tZero findings.','```示例```\n\nZero findings.',
+    ...['\\u2028','\\u2029','\\u000b','\\u000c','\\u0085','\\r'].map(separator=>`{"conclusion":"结论：${separator}Zero findings."}`),'结论：\u2028Zero findings.'])
     rejects(strict,body);
   // 启用前的凭证按原判定：原有说法出现在任意位置即可，新增说法不回溯放宽。
   assert.ok(accepts(legacy,'结论：approved，零 findings。No blocking findings. 已核对 handoff。'));
