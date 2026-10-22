@@ -35,7 +35,9 @@ body:process.env.CM_NOTIFY_BODY,stdin:JSON.parse(input),at:Date.now()})+'\\n');p
   const until=async(check,ms=8000)=>{const end=Date.now()+ms;while(!check()&&Date.now()<end)await new Promise(r=>setTimeout(r,25));return check();};
   return {dir,env,rows,log,until};
 }
-const label=dir=>`${path.basename(path.dirname(dir))}/${path.basename(dir)}`;
+// The project shown in notices: the last two path segments, one when they are the same name
+// (CI checks the repository out as .../cm-workflow/cm-workflow).
+const label=dir=>{const base=path.basename(dir),parent=path.basename(path.dirname(dir));return parent&&parent!==base?`${parent}/${base}`:base;};
 const fields=(key,over={})=>({key,event:'stuck',project:'/srv/work/demo-app',workflow:'cm-fix',runId:'run-1',
   task:'T-001',stage:'blocked',code:'checks_not_passed',nextAction:'核对 reason 后恢复原运行',...over});
 
@@ -141,6 +143,7 @@ test('message is bounded and built only from the structured fields',()=>{
   const short=buildNotifyMessage(fields('k'),{now:NOW,timeZone:'Asia/Shanghai'});
   assert.equal(short.title,'CM 需要人处理 · work/demo-app');
   assert.equal(short.subtitle,'cm-fix · T-001');
+  assert.equal(buildNotifyMessage(fields('k',{project:'/home/runner/work/cm-workflow/cm-workflow'}),{now:NOW,timeZone:'Asia/Shanghai'}).title,'CM 需要人处理 · cm-workflow');
   assert.equal(short.body,'下一步：核对 reason 后恢复原运行\n卡在：检查没通过（checks_not_passed）\n时间：16:00');
   const named=buildNotifyMessage(fields('k',{feature:'12.app-version-footer',session:'4f9fa27f',code:'qa_decision_required'}),{now:NOW,timeZone:'Asia/Shanghai'});
   assert.equal(named.subtitle,'cm-fix · 12.app-version-footer T-001 · 会话 4f9fa27f');
