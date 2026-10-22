@@ -262,7 +262,7 @@ v2 的自动审查仍使用冻结模型和完整审查包，恢复不得改变�
 
 首次 create 可同时提供原 `--workflow-config`。v2 在 policy 中选择 `qa:"run"`；
 单任务 QA 修复明确选择 `qaFix:"manual"` 或 `"auto"`，批次必须为 `disabled`。
-配置缺失时如实阻断，不自动开启能力。disabled 仍执行 `qa_assess` 与原必需 QA 判定；
+配置缺失时如实阻断，不自动开启能力。disabled 仍执行 `qa_assess` 与原必需 QA 判定；v2 没给 `--workflow-config` 时宿主也只补这一步判定（不加执行器和文档能力），驾驶员照样要求 `qa-assess.json`；
 触发后没有 executor 时停在 `qa_triggered/pendingAction:qa_execution`，不能报告 PASS 或 `run_done`。
 恢复保持原策略与配置，启动型恢复使用专门文档的 `launchControlTarget`，QA 修复子恢复使用 `fix_status` 的含 child 目标。
 QA 的 `qa_assess/qa_logic/qa_browser` 请求独立计时，workflow 的 `qa.timeoutMs` 可设 1–3600000 毫秒，

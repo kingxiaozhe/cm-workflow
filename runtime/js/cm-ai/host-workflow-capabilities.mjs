@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {digest,json,need,shape,validIdentity,hex} from './effect-contract.mjs';
 import {createHostQaDecisionProvider,readQaCriticalPaths} from './host-qa-policy.mjs';
+import {markImplicitQaDecision} from './implicit-qa-decision.mjs';
 import {createHostQaExecutor} from './host-qa-executor.mjs';
 import {loadConfig} from '../../../scripts/cm-workflow-config.mjs';
 import {validateTestCases} from '../../../scripts/validate-test-cases.mjs';
@@ -112,4 +113,12 @@ export function createParallelMemberQaDecisionProvider(){
       reason:'parallel_member_deferred',score:null,
       ...(binding.changedFiles?{changedFilesSource:binding.changedFiles.source}:{}),at:new Date().toISOString().replace(/\.\d{3}Z$/,'Z')};
   }});
+}
+
+// v2 的 N6 判定不依赖 workflow 配置；没有 --workflow-config 时只补判定本身，
+// 不加执行器、文档核对或写回，避免改变这类运行的其他请求。
+export function createImplicitQaDecision({definition,bridge,parallelMember=false,controlPolicy}){
+  const {qaLogHome,qaDecisionProvider}=createHostWorkflowCapabilities({definition,
+    configuration:{qa:null,documentationPaths:[],applicableAgentFiles:[]},bridge,allowQa:false,parallelMember,controlPolicy});
+  return {qaLogHome,qaDecisionProvider:markImplicitQaDecision(qaDecisionProvider)};
 }

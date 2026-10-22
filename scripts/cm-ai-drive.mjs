@@ -710,7 +710,8 @@ function load(){
   }
   if((plan.verificationPrecheck===true||permissions.includes('--verification-precheck'))&&(ADVANCE.has(operation)||operation==='complete'))asks.push('verification_precheck');
   if(operation==='complete'&&!protectedMode)asks.push('check');
-  if((operation==='advance'||operation==='qa')&&workflow&&(control||workflow.qa)){asks.push('qa_assess');
+  // v2 没有 workflow 配置时宿主也会隐式补上 QA 判定（implicit-qa-decision.mjs）。
+  if((operation==='advance'||operation==='qa')&&(control||workflow?.qa)){asks.push('qa_assess');
   }
   if((operation==='advance'||operation==='qa')&&workflow?.qa&&(!control||control.policy.qa==='run')){
     try{asks.push(...predictedQaAsks(definition,workflow.qa));}

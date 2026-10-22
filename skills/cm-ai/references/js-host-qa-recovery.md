@@ -26,7 +26,7 @@ QA 修复子操作使用原已配置 `qaFix:"manual"|"auto"`；先 fix_status �
 
 ## 补挂 QA
 
-**v2：** 不能靠补挂把冻结的 qa:disabled 改为 qa:run，也不能用 legacy 权限绕开策略/配置指纹。没有可用 QA 配置/执行能力时保留 qa_triggered 或具体准入阻断，报告当前缺口；本轮未提供切换策略的补挂恢复入口。下面一次性附加步骤仅用于 legacy 的原运行。
+**v2：** 不能靠补挂把冻结的 qa:disabled 改为 qa:run，也不能用 legacy 权限绕开策略/配置指纹。没给 `--workflow-config` 的 v2 运行也有 `qa_assess` 判定；本修复前创建的这类运行恢复时按原样打开，仍会停在 `qa_decision_required`，只能按「卡死任务重开」用新 runId 重做。没有可用 QA 配置/执行能力时保留 qa_triggered 或具体准入阻断，报告当前缺口；本轮未提供切换策略的补挂恢复入口。下面一次性附加步骤仅用于 legacy 的原运行。
 
 legacy：原无workflow或`qa:null`且任务已为`fixture_completed`时，可在`--mode resume`显式提供
 含QA的`--workflow-config`与`--allow-qa`，一次性附加N6；原definition/scope/requirements/identity、

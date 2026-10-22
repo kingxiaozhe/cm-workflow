@@ -8,6 +8,7 @@ import {serveCmAiHost} from '../runtime/js/cm-ai/host-session.mjs';
 import {digest as sha} from '../runtime/js/cm-ai/contracts.mjs';
 import {resolveCodeProjects,codeProjectPaths,assertCodeProjectSelections} from '../runtime/js/cm-ai/code-projects.mjs';
 import {preQaConfigurations,readQaAttachment} from '../runtime/js/cm-ai/qa-attachment.mjs';
+import {isImplicitQaDecision} from '../runtime/js/cm-ai/implicit-qa-decision.mjs';
 import {recordCmAiQaAttachment} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {writeCmAiQaStatus} from '../runtime/js/cm-ai/cm-ai-run-finalizer.mjs';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
@@ -499,6 +500,14 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
         if(cause.code!=='fingerprint_mismatch')throw cause;
         lastMismatch=Object.assign(error,{reason:error.reason?`${error.reason}。${LEGACY_QA_FINGERPRINT_REASON}`:LEGACY_QA_FINGERPRINT_REASON});
       }
+    }
+  }
+  if(!opened&&mode==='resume'&&isImplicitQaDecision(execution?.qaDecisionProvider)){
+    // 修复前创建、没有 workflow 配置的 v2 运行：指纹里没有隐式 QA 判定，按原样打开，行为不变。
+    const {qaDecisionProvider,...original}=execution;
+    for(const knowledgeCloseout of closeoutPolicyCandidates(original,mode,snapshot)){
+      try{opened=openFor(runConfigMaterial(definition,original,{parallelSelection,bootstrapConfig,knowledgeCloseout}));execution=original;break;}
+      catch(error){if(error.code!=='fingerprint_mismatch')throw error;}
     }
   }
   if(!opened)throw lastMismatch;

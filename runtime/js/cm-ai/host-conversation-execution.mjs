@@ -18,7 +18,7 @@ import {createCodexReviewRun} from './codex-review-adapter.mjs';
 import {createClaudeReviewRun} from './claude-review-adapter.mjs';
 import {claudeWorker,claudePreflightMatches} from './worker-claude.mjs';
 import {codexWorker,preflightMatches} from './worker-codex.mjs';
-import {createHostWorkflowCapabilities} from './host-workflow-capabilities.mjs';
+import {createHostWorkflowCapabilities,createImplicitQaDecision} from './host-workflow-capabilities.mjs';
 import {resolveHostRole} from './host-role-routing.mjs';
 import {checklistGaps} from './checklist-coverage.mjs';
 import {specsPermissionArgs} from './codex-config.mjs';
@@ -240,7 +240,8 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     ...(verificationGate?{verificationGate:(request,control)=>progress(request,control,'verifying',()=>verificationGate(request,control))}:{}),
     ...(bootstrap?{bootstrap}:{}),
     ...(provider&&!controlPolicy?{developmentAttempt:provider.attempt}:{}),
-    ...(workflow?createHostWorkflowCapabilities({definition,configuration:workflow,bridge,allowQa,runtime,protectedExecution:protection!==null,bootstrap,parallelMember,controlPolicy}):{}),
+    ...(workflow?createHostWorkflowCapabilities({definition,configuration:workflow,bridge,allowQa,runtime,protectedExecution:protection!==null,bootstrap,parallelMember,controlPolicy})
+      :controlPolicy?createImplicitQaDecision({definition,bridge,parallelMember,controlPolicy}):{}),
     ...(options.qaLogHome?{qaLogHome:options.qaLogHome}:{}),
     developer:{provider:coderRuntime,requestedModel:provider?.model??'current-session',contextId:author,run:async(request,control)=>{
       const bound=(coderRuntime==='codex'?readCodexDeveloperRequest:readClaudeDeveloperRequest)(request);
