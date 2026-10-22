@@ -283,6 +283,20 @@ test('regression: single-task v2 without --workflow-config still asks qa_assess 
   assert.equal(result.code,'qa_triggered',JSON.stringify(result));assert.equal(result.pendingAction,'qa_execution');
 });
 
+test('regression: serial batch member with workflows[key]:null answers the implicit qa_assess',t=>{
+  const f=fixture(t,true);f.review('approved');
+  const run=path.join(f.root,'run.json'),config=JSON.parse(fs.readFileSync(run,'utf8'));
+  config.workflows[key]=null;fs.writeFileSync(run,JSON.stringify(config));
+  let r=f.drive(f.plan());assert.equal(r.status,0,r.stderr);
+  let result=JSON.parse(r.stdout).result,combined=r.stderr;
+  for(let n=0;n<3&&result.code!=='qa_triggered';n++){
+    r=f.drive(f.plan({mode:'resume',originalHostContext:'v2-fixture-host'}));assert.equal(r.status,0,r.stderr);
+    result=JSON.parse(r.stdout).result;combined+=r.stderr;
+  }
+  assert.match(combined,/应答 qa_assess/);
+  assert.equal(result.code,'qa_triggered',JSON.stringify(result));assert.equal(result.pendingAction,'qa_execution');
+});
+
 test('batch refuses unavailable QA Fix mode before starting the host',t=>{
   const f=fixture(t,true);fs.writeFileSync(path.join(f.root,'control.json'),JSON.stringify({...policy,qa:'run',qaFix:'auto'}));
   const r=f.drive(f.plan());assert.equal(r.status,2,r.stderr);assert.match(r.stderr,/invalid_arguments/);

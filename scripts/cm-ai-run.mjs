@@ -502,11 +502,13 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
       }
     }
   }
+  // 修复前创建、没有 workflow 配置的 v2 运行：指纹里没有隐式 QA 判定，按原样打开，行为不变。
+  // 只用去掉判定的副本算指纹；execution 本身不换，受保护会话等按对象身份登记的状态保持原样。
+  let implicitQaSuppressed=false;
   if(!opened&&mode==='resume'&&isImplicitQaDecision(execution?.qaDecisionProvider)){
-    // 修复前创建、没有 workflow 配置的 v2 运行：指纹里没有隐式 QA 判定，按原样打开，行为不变。
     const {qaDecisionProvider,...original}=execution;
     for(const knowledgeCloseout of closeoutPolicyCandidates(original,mode,snapshot)){
-      try{opened=openFor(runConfigMaterial(definition,original,{parallelSelection,bootstrapConfig,knowledgeCloseout}));execution=original;break;}
+      try{opened=openFor(runConfigMaterial(definition,original,{parallelSelection,bootstrapConfig,knowledgeCloseout}));implicitQaSuppressed=true;break;}
       catch(error){if(error.code!=='fingerprint_mismatch')throw error;}
     }
   }
@@ -557,7 +559,8 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
         ...(knowledgeCloseout===null?{}:{knowledgeCloseout,...(definition.codeProjects?{codeProjects:definition.codeProjects}:{})}),
         ...(qaEnvironmentFailure===null?{}:{qaEnvironmentFailure}),allowAbandonReview,allowAbandonEffect,allowBootstrapReviewRecovery,allowDevelopRedo,allowCompletionRework:Boolean(controlPolicy)&&mode==='resume'&&parallelSelection===null&&conversationProtection(execution)===null
           &&!protectedExecutions.has(execution)&&!execution.configuration.providerDevelopment,...(holdRevision?{holdRevision}:{}),...(selection===null?{}:{parallelSelection:selection}),...(execution===null?{}:{
-        ...Object.fromEntries(['developmentAttempt','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)).map(key=>[key,execution[key]]))})},
+        ...Object.fromEntries(['developmentAttempt','qaDecisionProvider','qaLogHome','qaExecutor','applicableAgentFiles','documentationProvider','documentationResult'].filter(key=>Object.hasOwn(execution,key)
+          &&!(implicitQaSuppressed&&key==='qaDecisionProvider')).map(key=>[key,execution[key]]))})},
     });
     if(elevatedRecovery){
       const result=scopeRevision!==null?host.reviseScope({allowed:true,...scopeRevision})
