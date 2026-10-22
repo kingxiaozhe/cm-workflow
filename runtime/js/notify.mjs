@@ -158,15 +158,21 @@ export function sessionTitle(env=process.env){
     // The projects root may itself be a link (a moved config directory); the
     // project directories below it and the transcript must not be.
     const dirs=fs.readdirSync(projects,{withFileTypes:true}).filter(entry=>entry.isDirectory()).slice(0,TITLE_DIR_LIMIT);
+    const same=(a,b)=>a.dev===b.dev&&a.ino===b.ino;
     for(const dir of dirs){
-      const file=path.join(projects,dir.name,`${id}.jsonl`);
-      let stat;try{stat=fs.lstatSync(file);}catch{continue;}
-      if(!stat.isFile())continue;
+      const folder=path.join(projects,dir.name),file=path.join(folder,`${id}.jsonl`);
+      let before,stat;
+      try{before=fs.lstatSync(folder);stat=fs.lstatSync(file);}catch{continue;}
+      if(!before.isDirectory()||!stat.isFile())continue;
       const fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
       try{
-        // The opened file must be the regular file lstat saw, not a replacement.
+        // Node has no openat: re-check after opening. The project directory
+        // must still be the same real directory, and the transcript path must
+        // still name the opened regular file; a directory swapped for a link
+        // (or swapped and restored) around the open fails one of these.
         const opened=fs.fstatSync(fd);
-        if(!opened.isFile()||opened.dev!==stat.dev||opened.ino!==stat.ino)return null;
+        let after,again;try{after=fs.lstatSync(folder);again=fs.lstatSync(file);}catch{return null;}
+        if(!opened.isFile()||!same(opened,stat)||!after.isDirectory()||!same(after,before)||!same(again,opened))return null;
         const length=Math.min(opened.size,TITLE_TAIL_BYTES),buffer=Buffer.alloc(length);
         fs.readSync(fd,buffer,0,length,opened.size-length);
         let custom=null,ai=null;

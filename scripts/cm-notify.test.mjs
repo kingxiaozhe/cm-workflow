@@ -427,6 +427,37 @@ test('session title: last custom-title (else ai-title) from the tail of the sess
     assert.equal(sessionTitle(bad),null,JSON.stringify(bad));
 });
 
+test('session title: a project directory swapped for a link while the transcript is opened is not read',t=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-notify-race-')));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const outside=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-notify-race-out-')));t.after(()=>fs.rmSync(outside,{recursive:true,force:true}));
+  const id='2e015f08-c743-427a-95fa-0e471a851593',dir=path.join(root,'p'),moved=path.join(root,'.moved');
+  const env={CLAUDE_CODE_SESSION_ID:id,CM_NOTIFY_CLAUDE_PROJECTS:root,NODE_TEST_CONTEXT:'child-v8'};
+  const title=value=>JSON.stringify({type:'custom-title',customTitle:value})+'\n';
+  fs.writeFileSync(path.join(outside,`${id}.jsonl`),title('外部目录标题'));
+  const lstat=fs.lstatSync,open=fs.openSync;t.after(()=>{fs.lstatSync=lstat;fs.openSync=open;});
+  const target=path.join(dir,`${id}.jsonl`);
+  for(const restore of [false,true]){
+    fs.rmSync(dir,{recursive:true,force:true});fs.rmSync(moved,{recursive:true,force:true});
+    fs.mkdirSync(dir);fs.writeFileSync(target,title('本会话标题'));
+    assert.equal(sessionTitle(env),'本会话标题');
+    // The directory checks out, then is swapped for a link to the outside just
+    // before the transcript is looked at, so the file check and the open both
+    // see the outside file; optionally it is put back right after the open.
+    let swapped=false;
+    fs.lstatSync=(file,...rest)=>{
+      if(!swapped&&String(file)===target){swapped=true;fs.renameSync(dir,moved);fs.symlinkSync(outside,dir);}
+      return lstat(file,...rest);
+    };
+    fs.openSync=(file,...rest)=>{
+      const fd=open(file,...rest);
+      if(restore&&String(file)===target&&swapped&&fs.existsSync(moved)){fs.unlinkSync(dir);fs.renameSync(moved,dir);}
+      return fd;
+    };
+    assert.equal(sessionTitle(env),null,restore?'swapped and restored':'left as a link');
+    fs.lstatSync=lstat;fs.openSync=open;
+  }
+});
+
 test('at most 3 per 10 minutes and 150 per day across keys; skipped notices are counted into the next one',async t=>{
   const h=home(t);
   for(let i=0;i<3;i++)assert.equal(notify(fields(`m${i}`),{env:h.env,now:NOW+i}).sent,true);
