@@ -12,6 +12,7 @@ import {recordCmAiQaAttachment} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {writeCmAiQaStatus} from '../runtime/js/cm-ai/cm-ai-run-finalizer.mjs';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
+import {assertOrdinaryRun,reviewOnlyTask,reviewOnlyRunId} from '../runtime/js/cm-ai/review-only-split.mjs';
 import {assertControlEntry,withControlPolicyHost,controlTarget,assertExpectedControl,readControlTarget} from '../runtime/js/cm-ai/control-policy.mjs';
 import {readRunnerHistory,projectedRunnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {hasLegacyQaPlanFingerprint,previousQaMaterial,qaConfigurationSlice,qaExecutorMaterial,qaInvariantDigest,qaRevisionChain,verifyQaRevisionMaterial} from '../runtime/js/cm-ai/qa-config-revision.mjs';
@@ -254,6 +255,7 @@ export function assertSupportedResumeHistory(definition){
   try{snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,
     identity:{repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});}
   catch(error){if(error.code==='ENOENT')return null;throw error;}
+  assertOrdinaryRun(snapshot);
   if(snapshot.records.some(record=>record.payload.type==='review-invocation-registered'
     &&(Object.hasOwn(record.payload,'grant')||Object.hasOwn(record.payload,'authorizationAt'))))
     throw Object.assign(new Error('runner_invocation'),{code:'runner_invocation',
@@ -265,6 +267,9 @@ const LEGACY_QA_FINGERPRINT_REASON='运行指纹与当前配置不符。若此�
   +'现在新建的运行不再把这些可变配置写进指纹。否则请核对 run.json、--workflow-config、宿主身份及授权参数是否与创建时一致。';
 
 export async function openControlRun(definition,mode,execution=null,options={}){
+  if(reviewOnlyRunId(definition?.identity?.runId)||typeof definition?.specsDir==='string'&&definition?.identity
+    &&reviewOnlyTask({specsDir:definition.specsDir,feature:definition.feature,taskId:definition.identity.taskId}))
+    fail('review_only_split_no_ordinary_run');
   if(!isSupportedExecutionPlatform())fail('unsupported_runner_platform');
   if(!['create','resume'].includes(mode))fail('invalid_mode');
   let guard;

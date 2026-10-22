@@ -17,6 +17,8 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 
 ## 常用命令
 
+- 已有实现拆分候选：`node scripts/cm-ai-review-split.mjs prepare|inspect|register --plan SPLIT_PLAN.json`；材料 `node scripts/cm-review-split-material.mjs prepare|verify --help`。只准备来源与材料，不派发模型或分配调用；普通 advance 拒绝承接记录，送审适配器未实现，见 `docs/review-only-task-split.md`。
+
 - 方案推敲：`$cm-challenge` / `/cm-challenge`，显式三轮或必要追问；复用 `runtime/steelman-review.md`，只输出讨论建议，不启动宿主、不替代正式审查。
 
 - 兼容手工任务：N3 编辑前运行 `node scripts/cm-task-gate.mjs capture-baseline --project-root {CODE_PROJECT} --reviews-dir {SPECS_DIR}/.reviews --feature {FEATURE_SLUG} --task {T-xxx}`；仅命令行 N4/N5 与完成入口开启清单核对，库调用默认行为不变，JS 使用自己的审查包基线。仅单代码根，历史缺基线用现有 `--allow-legacy-unbound` 披露清单未核验；详见 `runtime/task-gates.md`。

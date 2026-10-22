@@ -9,6 +9,8 @@ import childProcess from 'node:child_process';
 import {ROLE_ROUTING} from '../runtime/js/cm-ai/runtime-failover.mjs';
 import {taskDeclarations,approvedTaskGrammar,TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
 
+import {reviewOnlyTask} from '../runtime/js/cm-ai/review-only-split.mjs';
+
 export {ROLE_ROUTING};
 
 export class FailoverError extends Error {
@@ -142,6 +144,9 @@ function inspectFeature(featureDir,feature){
   if(fs.existsSync(reviewsDir))
     entries=new Set(readDirectory(reviewsDir,'reviews directory').filter(e=>e.isFile()).map(e=>e.name));
   const pending=tasks.filter(task=>!task.done);
+  const reviewOnly=pending.find(task=>reviewOnlyTask({specsDir:path.dirname(featureDir),feature,taskId:task.id}));
+  if(reviewOnly)return {feature,featureDir,tasks,done:tasks.filter(task=>task.done).length,total:tasks.length,currentTask:reviewOnly,
+    breakpoint:{node:'N5',state:'review_only_split',summary:'Split provenance forbids ordinary development and failover; dispatch adapter not implemented'}};
   const current=pending[0]??null;
   const breakpoint=current===null
     ? {node:'N6',state:'all_tasks_done',summary:'全部任务已标记完成，进入 QA 评估'}
@@ -270,6 +275,8 @@ export function main(argv){
   const report=inspectSpecs(options.specs);
   if(command==='status')
     return {text:options.json?JSON.stringify(report,null,2):renderStatus(report),code:0};
+  if(report.features.some(feature=>feature.breakpoint.state==='review_only_split'))
+    throw new FailoverError('review_only_split: ordinary failover cannot resume review-only provenance; no dispatch adapter is available');
   if(typeof options.to!=='string'||!RUNTIMES.has(options.to))
     throw new FailoverError('--to must be codex or claude');
   return {text:options.json

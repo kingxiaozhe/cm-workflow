@@ -3,10 +3,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {isTaskId} from '../runtime/js/spec-task-line.mjs';
 
 const CASE_ID=/^TC-(\d{3,})$/;
 const FEATURE=/^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const REF_IDS={acIds:/^AC-\d{3,}$/,taskIds:/^T-\d{3,}$/};
+const REF_IDS={acIds:/^AC-\d{3,}$/};
 const CASE_FIELDS=new Set(['id','origin','kind','blocking','acIds','taskIds','title','preconditions','steps','expected','cleanup']);
 const STRING_LISTS=['acIds','taskIds','preconditions','steps','expected','cleanup'];
 const pythonRepr=value=>`'${value.replaceAll('\\','\\\\').replaceAll("'","\\'")}'`;
@@ -18,7 +19,7 @@ function validateStringList(item,field,index,failures){
   }
   if(['steps','expected'].includes(field)&&value.length===0)failures.push(`cases[${index}].${field} must not be empty`);
   const pattern=REF_IDS[field];
-  if(pattern)for(const entry of value)if(!pattern.test(entry))
+  if(pattern||field==='taskIds')for(const entry of value)if(field==='taskIds'?!isTaskId(entry):!pattern.test(entry))
     failures.push(`cases[${index}].${field} has invalid id: ${pythonRepr(entry)}`);
 }
 
