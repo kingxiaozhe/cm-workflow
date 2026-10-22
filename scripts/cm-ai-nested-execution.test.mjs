@@ -5,10 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {createCodexExecution,openControlRun} from './cm-ai-run.mjs';
+import {createCodexExecution,openControlRun,runConfigMaterial} from './cm-ai-run.mjs';
 import {createConversationExecution,conversationProtection} from './cm-ai-host.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {buildManifest} from './cm-spec-manifest.mjs';
+import {digest} from '../runtime/js/cm-ai/contracts.mjs';
+import {openTaskExecutionStore} from '../runtime/js/cm-ai/task-owner.mjs';
+import {isImplicitQaDecision} from '../runtime/js/cm-ai/implicit-qa-decision.mjs';
 import {loadConfig,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
 
 // Keep runtime declarations and log mirrors independent of the invoking user's home.
@@ -105,6 +108,31 @@ for(const runtime of ['codex','claude'])test(`protected ${runtime} conversation 
     try{const result=await run.host.handle(request('start'));assert.equal(result.code,null);assert.equal(calls,1);}
     finally{run.close();}
     assert.match(fs.readFileSync(path.join(definition.specsDir,definition.feature,'tasks.md'),'utf8'),/\[ \]/);
+  }));
+
+test('a protected v2 run created before the implicit QA decision resumes still protected: completion rework stays closed',
+  {skip:!supported},()=>fixture(async({definition,config})=>{
+    const policy={version:2,development:'conversation',bootstrap:'disabled',qa:'disabled',qaFix:'disabled'};
+    const review={model:'synthetic',disabledSkills:[],preflight:config.reviewerPreflight};
+    const execution=createConversationExecution(definition,'host',{async call(){throw new Error('no dispatch');}},review,null,null,false,'codex',
+      {protection:{checkCommands:config.checkCommands,timeoutMs:config.timeoutMs},controlPolicy:policy});
+    assert.notEqual(conversationProtection(execution),null);assert.equal(isImplicitQaDecision(execution.qaDecisionProvider),true);
+    // A store created before the fix: its fingerprint has no QA decision. The
+    // frozen, factory-registered execution cannot be copied into that form, so
+    // the store is created directly from the earlier material.
+    const {qaDecisionProvider,...earlier}=execution;
+    const fingerprints={workflow:digest('cm-ai-host-execution-v1'),config:digest(runConfigMaterial(definition,earlier)),
+      inputs:digest({feature:definition.feature,task:identity.taskId})};
+    openTaskExecutionStore({tasksPath:path.join(definition.specsDir,definition.feature,'tasks.md'),feature:definition.feature.replace(/^\d+\./,''),
+      specsRoot:definition.specsDir,identity:{repositoryId:identity.repositoryId,runId:identity.runId},fingerprints,create:true}).close();
+    const run=await openControlRun(definition,'resume',execution);
+    try{
+      assert.equal((await run.host.handle(request('status'))).state,'ready');
+      // Still protected after the fallback: the completion rework entry stays closed
+      // (a lost protection identity opens it and the runner answers completion_rework_unavailable).
+      const rework=await run.host.handle({...request('completion_rework'),reason:'regression probe'});
+      assert.equal(rework.code,'completion_rework_authorization_required',JSON.stringify(rework));
+    }finally{run.close();}
   }));
 
 test('protected factory binds exact roots and rejects copied/mutable claims before creating a store',
