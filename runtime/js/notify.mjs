@@ -136,6 +136,9 @@ export function notifySessionLabel(args=[]){
   if(typeof raw!=='string'||!raw||raw.startsWith('--'))return null;
   return SESSION_UUID.test(raw)?raw.slice(0,8).toLowerCase():clean(raw,24)||null;
 }
+// Without a returned run id, the launch arguments identify the run (the
+// driver passes the same arguments to the host it starts).
+export const launchRunKey=(args=[])=>`args:${keyHash((Array.isArray(args)?args:[]).map(String).join('\0'))}`;
 // One attention record per project and session: stuck, waiting and idle
 // notices about the same session are one thing to handle, not three.
 export function attentionKeyFor({project,session,workflow,runId}){
@@ -456,7 +459,7 @@ function armed(delay,fire,config){
   timer.unref?.();
   return ()=>{clearTimeout(timer);if(follow)clearTimeout(follow);};
 }
-export function scheduleWaitNotice({kind,callId,workflow,project,session=notifySessionLabel(process.argv.slice(2)),env=process.env}){
+export function scheduleWaitNotice({kind,callId,workflow,project,args=process.argv.slice(2),session=notifySessionLabel(args),env=process.env}){
   try{
     const config=readNotifyConfig(env);if(!config)return null;
     // A check request is answered only after the session has run the project's
@@ -465,7 +468,7 @@ export function scheduleWaitNotice({kind,callId,workflow,project,session=notifyS
     const waitMs=CHECK_KINDS.has(kind)?config.checkWaitMs:config.waitMs;
     const minutes=Math.max(1,Math.round(waitMs/60000));
     return armed(waitMs,()=>notify({key:`wait|${workflow}|${callId}`,event:'waiting',workflow,project,stage:kind,session,
-      attentionKey:attentionKeyFor({project,session,workflow}),
+      attentionKey:attentionKeyFor({project,session,workflow,runId:launchRunKey(args)}),
       code:'waiting_session_answer',nextAction:`宿主已等待会话应答约 ${minutes} 分钟，请回到会话处理`},{env}),config);
   }catch{return null;}
 }
@@ -475,7 +478,7 @@ export function scheduleWaitNotice({kind,callId,workflow,project,session=notifyS
 // result that already waits on a person (or ended the run) says so instead of
 // "idle". Built only from that result's structured fields; the timer never
 // keeps the process alive.
-export function scheduleIdleNotice({workflow,project,sessionKey,seq,row,since=Date.now(),session=notifySessionLabel(process.argv.slice(2)),env=process.env}){
+export function scheduleIdleNotice({workflow,project,sessionKey,seq,row,since=Date.now(),args=process.argv.slice(2),session=notifySessionLabel(args),env=process.env}){
   try{
     const config=readNotifyConfig(env);if(!config)return null;
     // `since` is the last real reply: re-arming after a poll keeps that deadline.
@@ -489,7 +492,7 @@ export function scheduleIdleNotice({workflow,project,sessionKey,seq,row,since=Da
       :kind==='stuck'?`上一步停在需要你处理的状态，约 ${minutes} 分钟没有下一步，请回到会话处理`
       :`上一步已结束约 ${minutes} 分钟，会话没有发下一步，请回到会话查看`;
     return armed(delay,()=>notify({key:`idle|${workflow}|${sessionKey}|${seq}`,event:kind?'idle_waiting':'idle',
-      workflow,project,runId,feature,task,stage,session,attentionKey:attentionKeyFor({project,session,workflow,runId}),
+      workflow,project,runId,feature,task,stage,session,attentionKey:attentionKeyFor({project,session,workflow,runId:runId??launchRunKey(args)}),
       code:kind?'waiting_for_you':'no_next_step',nextAction},{env}),config);
   }catch{return null;}
 }
@@ -629,7 +632,7 @@ export function driveNotice({host,cwd,args=[],operation,row=null,failure=null}){
   const task=text(result.identity?.taskId)??text(result.taskId);
   const attempt=Number.isSafeInteger(result.identity?.attempt)?result.identity.attempt:null;
   const stage=text(result.stage)??text(result.state)??text(result.status)??operation??null;
-  const run=runId??`args:${keyHash(args.map(String).join('\0'))}`;
+  const run=runId??launchRunKey(args);
   const project=cwd?path.resolve(cwd):null,session=notifySessionLabel(args),feature=text(result.feature)??text(result.identity?.feature);
   return {key:[workflow,run,task??'',attempt??'',stage??'',done?'done':code??''].join('|'),
     ...(done?{}:{attentionKey:attentionKeyFor({project,session,workflow,runId:run})}),
@@ -646,7 +649,7 @@ export function driveProgressKey({host,cwd,args=[],operation,row=null,failure=nu
   if(classifyDriveResult(workflow,row))return null;
   const result=obj(row?.result),runId=text(result.identity?.runId)??text(result.runId)??text(result.batchId);
   // Same fallback as driveNotice: without a returned run, the launch arguments identify it.
-  const run=runId??`args:${keyHash(args.map(String).join('\0'))}`;
+  const run=runId??launchRunKey(args);
   return attentionKeyFor({project:cwd?path.resolve(cwd):null,session:notifySessionLabel(args),workflow,runId:run});
 }
 

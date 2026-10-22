@@ -367,6 +367,16 @@ test('a host still waiting sends one follow-up after followUpMinutes; answering 
   await new Promise(resolve=>setTimeout(resolve,500));assert.equal(other.rows().length,1);
 });
 
+test('two hosts without a session id waiting in one project are two notices: the launch arguments keep them apart',async t=>{
+  const h=home(t,{config:{waitMinutes:0.001}});
+  t.mock.timers.enable({apis:['setTimeout','Date'],now:NOW});
+  for(const name of ['prd-a','prd-b'])
+    scheduleWaitNotice({kind:'answer',callId:'c1',workflow:'cm-prd',project:'/work/demo-app',args:['serve','--session',name],env:h.env});
+  t.mock.timers.tick(100);t.mock.timers.reset();
+  assert(await h.until(()=>h.rows().length===2));
+  assert.equal(Object.keys(JSON.parse(fs.readFileSync(path.join(h.dir,'notify-state.json'),'utf8')).attention).length,2);
+});
+
 test('at most 3 per 10 minutes and 150 per day across keys; skipped notices are counted into the next one',async t=>{
   const h=home(t);
   for(let i=0;i<3;i++)assert.equal(notify(fields(`m${i}`),{env:h.env,now:NOW+i}).sent,true);
@@ -676,7 +686,7 @@ process.stdin.on('data',chunk=>{for(const line of String(chunk).split('\\n').fil
  if(row.requestId==='drive')process.stdout.write(JSON.stringify({requestId:'drive',result:{workflow:'cm-ai',outcome:'advanced',state:'blocked',
   code:process.env.FIXTURE_STATE==='progress'?null:'checks_not_passed',pendingAction:'none',identity:{runId:'run-7',taskId:'T-001',attempt:1},
   ...(process.env.FIXTURE_STATE==='progress'?{state:'ready'}:{})}})+'\\n');}});
-process.stdin.on('end',()=>process.exit(0));`);
+process.stdin.on('end',()=>setTimeout(()=>process.exit(0),Number(process.env.FIXTURE_CLOSE_DELAY??0)));`);
   fs.writeFileSync(wrapper,`import {driveHost} from ${JSON.stringify(DRIVE_CORE)};
 driveHost({host:${JSON.stringify(host)},args:['serve','--host-context','4f9fa27f-6196-4f1f-9bb7-fe5bcd5614fa'],cwd:${JSON.stringify(project)},operation:'advance',answers:{},answerFor:()=>null});`);
   const env={...h.env};delete env.NODE_TEST_CONTEXT;
@@ -703,6 +713,18 @@ driveHost({host:${JSON.stringify(host)},args:['serve','--host-context','4f9fa27f
   const again=spawnSync(process.execPath,[wrapper],{encoding:'utf8',env,timeout:20000});
   assert.equal(again.status,0,again.stderr);
   assert(await h.until(()=>h.rows().length===2),'the stop after progress is sent again');
+  // The clear is bounded by when the final result arrived, not by when the host closed:
+  // a stop recorded while the old host is still closing stays.
+  const late=spawn(process.execPath,[wrapper],{env:{...env,FIXTURE_STATE:'progress',FIXTURE_CLOSE_DELAY:'1500'}});
+  let out='';late.stdout.on('data',chunk=>out+=chunk);
+  const exited=new Promise(resolve=>late.on('close',resolve));
+  assert(await h.until(()=>/"state": ?"ready"/.test(out)),'final result printed before the host closed');
+  await new Promise(resolve=>setTimeout(resolve,100));
+  const fresh=`attn|${label(project)}|4f9fa27f`;
+  assert.equal(notify(fields('late-stop',{project,attentionKey:fresh,code:'review_blocked'}),{env:h.env}).sent,true);
+  assert.equal(await exited,0);
+  await new Promise(resolve=>setTimeout(resolve,300));
+  assert.equal(Object.keys(JSON.parse(fs.readFileSync(path.join(h.dir,'notify-state.json'),'utf8')).attention).length,1,'the newer stop is kept');
 });
 
 // Host bridge: a host_request outstanding past waitMinutes notifies once;
