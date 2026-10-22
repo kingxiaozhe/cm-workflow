@@ -1236,6 +1236,16 @@ export function createTaskRunner(options) {
     catch(error){emptyDelivery(error);return false;}
     return true;
   }
+  // The Learning evidence is appended to the handoff hostDeliveryChecks just
+  // published. A delivery whose handoff fit before the append and not after
+  // (requirement evidence makes that reachable) is the same retryable package
+  // block as an oversized initial handoff, never an unknown effect.
+  function appendLearningHandoff(v,{application,retrospective,writeback}){
+    try{writeCmAiTaskLearningHandoff({handoffPath:completion.handoffs[attempt-1],feature:taskLearning.feature,
+      identity:{...config.identity,attempt},learningInput:v.learningInput,application,retrospective,writeback});}
+    catch(error){emptyDelivery(error);return false;}
+    return true;
+  }
   async function packageDelivery(v){
     active();
     let nextPackage;
@@ -1287,9 +1297,7 @@ export function createTaskRunner(options) {
       // the checks, the precheck, the handoff and the package. No developer call.
       if(recheck){
         if(!await hostDeliveryChecks())return;
-        writeCmAiTaskLearningHandoff({handoffPath:completion.handoffs[attempt-1],feature:taskLearning.feature,
-          identity:{...config.identity,attempt},learningInput:v.learningInput,application:learningResult.application,
-          retrospective:learningResult.retrospective,writeback:learningResult.writeback});
+        if(!appendLearningHandoff(v,learningResult))return;
         await packageDelivery(v);return;
       }
       const previousLearning=learningResult;
@@ -1350,8 +1358,7 @@ export function createTaskRunner(options) {
         learningResult=freeze({application,retrospective,writeback,...(instructionEvidence?{bootstrap:instructionEvidence}:{})});
         if(writeback.outcome==='writeback_pending'){halt('blocked','learning_writeback_pending');return;}
         if(taskLearning.hostHandoff===true&&!await hostDeliveryChecks())return;
-        writeCmAiTaskLearningHandoff({handoffPath:completion.handoffs[attempt-1],feature:taskLearning.feature,
-          identity:{...config.identity,attempt},learningInput:v.learningInput,application,retrospective,writeback});
+        if(!appendLearningHandoff(v,{application,retrospective,writeback}))return;
       }
       need(result.response.result.outcome==='implemented','invalid_result');
       if(taskLearning?.hostHandoff!==true){

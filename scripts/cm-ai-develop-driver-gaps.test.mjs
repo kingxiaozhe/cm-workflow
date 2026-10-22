@@ -179,6 +179,35 @@ test('a v2 policy without the verification field keeps the gate off',t=>{
   assert.deepEqual(requirementEntries(handoffOf(f)),[]);
 });
 
+// The requirement entry can push a handoff that fit before the Learning append
+// over the 256 KiB limit only after it. Reaching that window needs the run
+// definition, the check commands and the precheck answer all near their own
+// bounds at once, so this pins the structure instead: every append goes through
+// the guarded helper, which maps a size failure to the retryable package block.
+test('every Learning append to the host handoff takes the retryable package boundary',()=>{
+  const source=fs.readFileSync(new URL('../runtime/js/cm-ai/task-runner.mjs',import.meta.url),'utf8');
+  const calls=[...source.matchAll(/writeCmAiTaskLearningHandoff\(/g)].length;
+  assert.equal(calls,1,'Learning must be appended only inside appendLearningHandoff');
+  const helper=/function appendLearningHandoff\(v,\{application,retrospective,writeback\}\)\{([\s\S]*?)\n  \}/.exec(source);
+  assert.notEqual(helper,null,'appendLearningHandoff not found');
+  assert.match(helper[1],/try\{writeCmAiTaskLearningHandoff\(/);
+  assert.match(helper[1],/catch\(error\)\{emptyDelivery\(error\);return false;\}/);
+  // Both delivery paths (fresh develop and check-only recheck) use it.
+  assert.equal([...source.matchAll(/if\(!appendLearningHandoff\(v,/g)].length,2);
+  // emptyDelivery is where limit_exceeded becomes develop_package_too_large.
+  assert.match(source,/if\(error\?\.code==='limit_exceeded'&&metadata\.bootstrap\?\.mode!=='instructions'\)\{\n\s*halt\('blocked','develop_package_too_large'/);
+});
+test('complete under a precheck policy needs no verification runner',async t=>{
+  const f=precheckFixture(t);v2Policy(f,{verification:'precheck'});
+  const live=f.plan({controlConfig:'POLICY.json',liveEvidence:{directory:'exchange',kinds:['verification_precheck'],timeoutMs:1000}});
+  const first=await runLiveDriver(DRIVER,live,'advance',()=>({items:satisfiedItems}),{env:f.env});
+  assert.equal(first.status,0,first.stderr);
+  const packageDigest=result(first).packageDigest??JSON.stringify(records(f)).match(/"packageDigest":"([a-f0-9]{64})"/)[1];
+  // The same run, a PLAN without the verification channel: complete never asks it.
+  const out=f.drive(f.plan({controlConfig:'POLICY.json',mode:'resume',packageDigest}),'complete');
+  assert.doesNotMatch(out.stderr,/缺少真实执行 runner: verification_precheck/);
+});
+
 // ---- #24 run ID length -------------------------------------------------------------------------
 test('#24 a run ID shorter than 8 characters is refused before the driver launches a host',t=>{
   const f=fixture(t,{runId:'short'});f.content('target.mjs','export const value = 42;\n');f.develop({'target.mjs':'target.mjs'});
