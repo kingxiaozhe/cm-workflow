@@ -143,7 +143,7 @@ test('message is bounded and built only from the structured fields',()=>{
   const short=buildNotifyMessage(fields('k'),{now:NOW,timeZone:'Asia/Shanghai'});
   assert.equal(short.title,'CM 需要人处理 · work/demo-app');
   assert.equal(short.subtitle,'cm-fix · T-001');
-  assert.equal(buildNotifyMessage(fields('k',{project:'/home/runner/work/cm-workflow/cm-workflow'}),{now:NOW,timeZone:'Asia/Shanghai'}).title,'CM 需要人处理 · cm-workflow');
+  assert.equal(buildNotifyMessage(fields('k',{project:'/srv/work/cm-workflow/cm-workflow'}),{now:NOW,timeZone:'Asia/Shanghai'}).title,'CM 需要人处理 · cm-workflow');
   assert.equal(short.body,'下一步：核对 reason 后恢复原运行\n卡在：检查没通过（checks_not_passed）\n时间：16:00');
   const named=buildNotifyMessage(fields('k',{feature:'12.app-version-footer',session:'4f9fa27f',code:'qa_decision_required'}),{now:NOW,timeZone:'Asia/Shanghai'});
   assert.equal(named.subtitle,'cm-fix · 12.app-version-footer T-001 · 会话 4f9fa27f');
