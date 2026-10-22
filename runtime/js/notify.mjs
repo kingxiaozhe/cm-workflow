@@ -144,7 +144,9 @@ export function notifySessionLabel(args=[]){
 // The title the person sees for the Claude Code session that runs this
 // process (its sidebar name): the last custom-title (else ai-title) record in
 // the tail of <claude config>/projects/*/<CLAUDE_CODE_SESSION_ID>.jsonl. Only
-// the last 1 MiB is read, never through a symlink. Under node --test only an
+// the last 1 MiB is read. Static links (a linked project directory or
+// transcript) and replacements the re-checks below can see are refused; see
+// the known limit there for concurrent swaps. Under node --test only an
 // explicit CM_NOTIFY_CLAUDE_PROJECTS directory is read. null when unknown.
 const TITLE_TAIL_BYTES=1024*1024;
 const TITLE_DIR_LIMIT=2000;
