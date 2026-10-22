@@ -31,8 +31,8 @@ test('real light host: start, status, new-process resume, finish',t=>{
   out=f.run('resume');assert.equal(out.status,0,out.stderr);assert.equal(JSON.parse(out.stdout).result.stage,'awaiting_finish');
   out=f.run('finish');assert.equal(out.status,0,out.stderr);assert.equal(JSON.parse(out.stdout).result.stage,'done');
 });
-test('review.json body accepts a new zero-blocking phrase and rejects a non-conclusion mention',t=>{
-  const review=f=>path.join(f.answers,'review.json'),body=(f,text)=>write(review(f),{...JSON.parse(fs.readFileSync(review(f))),body:text});
+test('review.json body accepts a standalone new zero-blocking conclusion and rejects a non-conclusion mention',t=>{
+  const review=f=>path.join(f.answers,'review.json'),body=(f,text)=>write(review(f),{...JSON.parse(fs.readFileSync(review(f))),at:'2026-10-21T08:00:00+00:00',body:text});
   let f=setup(t);body(f,'结论：零阻断发现。');
   let out=f.run('start');assert.equal(out.status,0,out.stderr);assert.equal(JSON.parse(out.stdout).result.stage,'awaiting_finish');
   const saved=fs.readdirSync(f.project,{recursive:true}).filter(file=>/-r1\.md$/.test(file)).map(file=>fs.readFileSync(path.join(f.project,file),'utf8'));

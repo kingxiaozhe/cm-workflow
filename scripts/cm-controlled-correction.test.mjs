@@ -312,13 +312,17 @@ test('structured review rejects missing fields, extra prose, duplicate keys, inv
     JSON.stringify(valid)+'\nP2 remains unresolved.',
     'Zero findings.\n'+JSON.stringify(valid),
     '{"conclusion":"Zero findings.","findings":[],"findings":[],"resolved_findings":[]}',
+    // 通过通用门禁、但要由补正门禁拦下：严格 JSON 后不得附带散文；结论必须逐字是 Zero findings.
+    JSON.stringify(valid)+'\nZero findings.\nP2 remains unresolved.',
+    {...valid,conclusion:'结论：零阻塞发现。'},
   ];
   for(const body of malformed){
     f.review(record.review,record.handoff,2,'approved',record.correction_sha256);
     reviewBody(record.review,typeof body==='string'?body:JSON.stringify(body));
-    // JSON 后接散文已不是结构化正文，通用门禁先以「没有零阻塞结论句」拒绝。
-    const expected=body===JSON.stringify(valid)+'\nP2 remains unresolved.'?/explicitly state zero blocking findings/:/controlled correction/;
-    assert.throws(()=>publishControlledCorrectionReview(selected),expected);
+    // 这两种正文没有整行零阻塞结论，通用门禁先拒绝；其余由补正门禁拒绝。
+    const generic=[JSON.stringify(valid)+'\nP2 remains unresolved.',JSON.stringify({...valid,conclusion:'Zero findings. P2 remains unresolved.'})];
+    const expected=generic.includes(typeof body==='string'?body:JSON.stringify(body))?/explicitly state zero blocking findings/:/controlled correction/;
+    assert.throws(()=>publishControlledCorrectionReview(selected),expected,String(typeof body==='string'?body:JSON.stringify(body)));
   }
   f.review(record.review,record.handoff,2,'blocked',record.correction_sha256);
   reviewBody(record.review,JSON.stringify({conclusion:'Blocking findings.',

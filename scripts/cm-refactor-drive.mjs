@@ -69,7 +69,7 @@ function review(value,label){
     &&(value.verdict==='approved'?value.blocking_findings===0:value.blocking_findings>0)
     &&nonempty(value.body)&&nonempty(value.at)&&Number.isFinite(Date.parse(value.at))
     &&/(Z|[+-]\d\d:\d\d)$/.test(value.at),label);
-  if(value.verdict==='approved')valid(statesZeroBlockingFindings(value.body),`${label}.body`);
+  if(value.verdict==='approved')valid(statesZeroBlockingFindings(value.body,{at:value.at}),`${label}.body`);
   if(value.judgeRevision)valid(Array.isArray(value.judgeRevision.paths)&&value.judgeRevision.paths.length>0
     &&nonempty(value.judgeRevision.reason),`${label}.judgeRevision`);
   valid(Object.keys(value).every(key=>['reviewer','verdict','blocking_findings','body','at','judgeRevision'].includes(key)),label);
